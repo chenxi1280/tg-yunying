@@ -51,7 +51,7 @@ from app.services.task_center.task_group_bot_admission_recovery import (
 )
 from app.services.task_center.fulfillment_remote_facts import ensure_action_obligation
 from app.services.task_center.executors import group_ai_chat
-from app.services.task_center import dispatcher
+from app.services.task_center import dispatcher, service as task_service
 
 
 pytestmark = pytest.mark.no_postgres
@@ -337,13 +337,17 @@ def test_direct_claim_separates_search_lane_and_waits_for_ai_generation(
     assert session.get(Action, "lane-ai-pending").status == "pending"
 
 
-def test_fact_first_ai_slot_ignores_legacy_capacity_and_runs_now(
+def test_fact_first_ai_slot_ignores_legacy_capacity_without_overwriting_schedule(
     session: Session,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     task = _task("fact-first-capacity")
+    task.pacing_config = {
+        "operation_profile": {"hourly_activity_curve": [1] * 24},
+    }
     accounts = [TgAccount(id=101, tenant_id=1), TgAccount(id=102, tenant_id=1)]
     now_value = datetime(2026, 8, 4, 12, 0)
+    planned_at = datetime(2026, 8, 4, 13, 0)
     monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
     monkeypatch.setattr(
         group_ai_chat,
@@ -354,23 +358,122 @@ def test_fact_first_ai_slot_ignores_legacy_capacity_and_runs_now(
     account, planned_at = group_ai_chat._choose_capacity_slot(
         session,
         task,
-        accounts,
-        datetime(2030, 1, 1),
-        0,
-        set(),
-        True,
-        {"deficit": 999},
-        [],
-        object(),
+        selected=accounts,
+        planned_at=planned_at,
+        index=0,
+        used_account_ids=set(),
+        allow_repeat=True,
+        progress={"deficit": 999},
+        reservations=[],
+        capacity_cache=object(),
     )
 
     assert account in accounts
-    assert planned_at == now_value
-    assert group_ai_chat._schedule_times_for_plan(task, {}, 3, "正常期") == [
-        now_value,
-        now_value,
-        now_value,
-    ]
+    assert planned_at == datetime(2026, 8, 4, 13, 0)
+    schedule = group_ai_chat._schedule_times_for_plan(task, {}, 3, mode="正常期")
+    assert schedule[0] == now_value
+    assert schedule == sorted(schedule)
+    assert len(set(schedule)) == 3
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    [("channel_view", 796), ("channel_like", 50), ("group_ai_chat", 20)],
+)
+def test_fact_first_human_paced_actions_keep_future_schedule(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    scenario: tuple[str, int],
+) -> None:
+    task_type, action_count = scenario
+    now_value = datetime(2026, 8, 5, 12, 0)
+    future = now_value + timedelta(hours=6)
+    task = _task(f"paced-{task_type}")
+    task.type = task_type
+    action_type = {
+        "channel_like": "like_message",
+        "channel_view": "view_message",
+        "group_ai_chat": "send_message",
+    }[task_type]
+    expected = [future + timedelta(seconds=index) for index in range(action_count)]
+    session.add(task)
+    session.add_all([
+        Action(
+            id=f"paced-action-{task_type}-{index}",
+            tenant_id=1,
+            task_id=task.id,
+            task_type=task_type,
+            action_type=action_type,
+            status="pending",
+            scheduled_at=scheduled_at,
+        )
+        for index, scheduled_at in enumerate(expected)
+    ])
+    session.flush()
+    monkeypatch.setattr(task_service, "_now", lambda: now_value)
+
+    task_service._make_fact_first_actions_immediate(session, task)
+    session.flush()
+    session.expire_all()
+    actual = list(session.scalars(
+        select(Action.scheduled_at)
+        .where(Action.task_id == task.id)
+        .order_by(Action.scheduled_at)
+    ))
+
+    assert actual == expected
+
+
+@pytest.mark.parametrize("task_type", ["channel_comment", "search_click"])
+def test_fact_first_immediate_task_keeps_existing_behavior(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    task_type: str,
+) -> None:
+    now_value = datetime(2026, 8, 5, 12, 0)
+    task = _task(f"immediate-{task_type}")
+    task.type = task_type
+    action = Action(
+        id=f"immediate-{task_type}-action",
+        tenant_id=1,
+        task_id=task.id,
+        task_type=task.type,
+        action_type="search_click" if task_type == "search_click" else "post_comment",
+        status="pending",
+        scheduled_at=now_value + timedelta(hours=6),
+    )
+    session.add_all([task, action])
+    session.flush()
+    monkeypatch.setattr(task_service, "_now", lambda: now_value)
+
+    task_service._make_fact_first_actions_immediate(session, task)
+    session.flush()
+    session.refresh(action)
+
+    assert action.scheduled_at == now_value
+
+
+@pytest.mark.parametrize("task_type", ["channel_view", "channel_like", "group_ai_chat"])
+def test_fact_first_human_paced_task_uses_type_specific_next_run(
+    monkeypatch: pytest.MonkeyPatch,
+    task_type: str,
+) -> None:
+    expected = datetime(2026, 8, 5, 12, 5)
+    task = _task(f"next-run-{task_type}")
+    task.type = task_type
+    monkeypatch.setattr(task_service, "next_run_after_task", lambda _task: expected)
+
+    assert task_service._next_planner_run_at(task) == expected
+
+
+def test_fact_first_coverage_need_uses_group_due_instead_of_midnight_debt() -> None:
+    task = _task("paced-coverage-need")
+
+    assert group_ai_chat._effective_coverage_due_debt(
+        task,
+        coverage_due_debt=400,
+        volume_need=3,
+    ) == 3
 
 
 def test_open_obligation_rebinds_after_pre_gateway_failure(session: Session) -> None:

@@ -699,7 +699,13 @@ def test_coverage_plan_state_materializes_scope_once_and_reuses_rows(session: Se
         count_ensure,
     )
 
-    state = _coverage_plan_state(session, task, group, task.type_config, {})
+    state = _coverage_plan_state(
+        session,
+        task,
+        group,
+        config=task.type_config,
+        progress={},
+    )
 
     assert calls == 1
     assert set(state.rows_by_account) == {1}
@@ -740,7 +746,13 @@ def test_coverage_plan_state_reconciles_remote_success_before_capacity_gate(
     ])
     session.flush()
 
-    state = _coverage_plan_state(session, task, group, task.type_config, {})
+    state = _coverage_plan_state(
+        session,
+        task,
+        group,
+        config=task.type_config,
+        progress={},
+    )
 
     assert state.confirmed_count == 1
     assert session.get(TaskAccountDailyCoverage, "coverage-1").state == "confirmed"
@@ -935,6 +947,7 @@ def test_daily_coverage_open_action_gate_keeps_volume_due_without_bound_actions(
     task, group = _seed(session)
     group.active_window = "00:00-23:59"
     now_value = datetime.combine(beijing_now().date(), time(23, 59))
+    task.scheduled_start = now_value - timedelta(hours=12)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
 
     assert requires_planning_with_open_actions(session, task) is True

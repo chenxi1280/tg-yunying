@@ -179,7 +179,6 @@ def _daily_group_target_stats(
     due = daily_group_due_message_count(
         target,
         task.pacing_config or {},
-        immediate=task.fulfillment_contract_version == "fact_first_v3",
         now=timestamp,
     )
     target.due_message_count = due

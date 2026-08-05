@@ -34,7 +34,13 @@ def ensure_task_group_daily_target(
     timestamp = now or _now()
     target = _locked_target(session, task, group, target_date)
     if target is None:
-        target = _new_target(session, task, group, target_date, timestamp)
+        target = _new_target(
+            session,
+            task,
+            group,
+            target_date=target_date,
+            timestamp=timestamp,
+        )
         session.add(target)
         session.flush()
     return refresh_task_group_daily_target(session, target)
@@ -87,16 +93,15 @@ def daily_group_due_message_count(
     target: TaskGroupDailyTarget,
     pacing_config: dict,
     *,
-    immediate: bool = False,
     now: datetime | None = None,
 ) -> int:
     timestamp = _wall_time(now or _now())
     day_start = datetime.combine(target.target_date, time.min)
     day_end = day_start + timedelta(days=1)
     start = max(day_start, _wall_time(target.scope_frozen_at))
-    if timestamp < start:
+    if timestamp <= start:
         return 0
-    if immediate or timestamp >= day_end:
+    if timestamp >= day_end:
         return target.effective_message_target
     curve = _positive_hourly_curve(pacing_config)
     ratio = _weighted_seconds(start, timestamp, curve) / max(
@@ -128,13 +133,20 @@ def _new_target(
     session: Session,
     task: Task,
     group: TgGroup,
+    *,
     target_date: date,
     timestamp: datetime,
 ) -> TaskGroupDailyTarget:
     frozen_accounts = _frozen_account_count(session, task, group, target_date)
     configured = max(1, int((task.type_config or {}).get("daily_message_target") or 1))
     phase, committed_at = _fulfillment_phase(task, target_date)
-    scope_frozen_at = timestamp if phase == "admission_warming" else committed_at
+    scope_frozen_at = _scope_frozen_at(
+        task,
+        target_date=target_date,
+        fallback=timestamp,
+        committed_at=committed_at,
+        phase=phase,
+    )
     return TaskGroupDailyTarget(
         tenant_id=task.tenant_id,
         task_id=task.id,
@@ -151,6 +163,22 @@ def _new_target(
         scope_frozen_at=scope_frozen_at,
         full_day_committed_at=committed_at,
     )
+
+
+def _scope_frozen_at(
+    task: Task,
+    *,
+    target_date: date,
+    fallback: datetime,
+    committed_at: datetime,
+    phase: str,
+) -> datetime:
+    if phase != "admission_warming":
+        return committed_at
+    started_at = task.scheduled_start or task.created_at
+    if started_at is None or _wall_time(started_at).date() != target_date:
+        return fallback
+    return _wall_time(started_at)
 
 
 def _frozen_account_count(

@@ -393,7 +393,13 @@ def _load_plan_facts(session: Session, task: Task) -> PlanFacts | PlanAbort:
     gate_abort = _plan_outbound_target_abort(session, task, target, group, progress)
     if gate_abort:
         return gate_abort
-    coverage = _coverage_plan_state(session, task, group, config, progress)
+    coverage = _coverage_plan_state(
+        session,
+        task,
+        group,
+        config=config,
+        progress=progress,
+    )
     _record_daily_coverage_next_check(task, coverage.required_new > 0)
     label = target.title if target and target.tenant_id == task.tenant_id else group.title
     active_config = _with_active_conversation_targets(session, task, config, group)
@@ -1054,7 +1060,12 @@ def _load_turn_plan(
         hard_progress=facts.hard_progress,
         has_daily_coverage_debt=facts.coverage.required_new > 0,
     )
-    times = _schedule_times_for_plan(task, facts.hard_progress, turn_count, context.mode)
+    times = _schedule_times_for_plan(
+        task,
+        facts.hard_progress,
+        turn_count,
+        mode=context.mode,
+    )
     turn_count, _times = _limit_context_bound_turns(
         task,
         facts.config,
@@ -1234,7 +1245,10 @@ def _finalize_generation_schedule(
     quality_items: list[dict],
 ) -> tuple[list[dict], list[datetime]] | None:
     times = _schedule_times_for_plan(
-        task, facts.hard_progress, len(quality_items), context.mode,
+        task,
+        facts.hard_progress,
+        len(quality_items),
+        mode=context.mode,
     )
     quality_items, times = _limit_context_bound_quality_schedule(
         task,
@@ -1899,14 +1913,14 @@ def _prepare_action_slots(
         account, planned_at = _choose_capacity_slot(
             session,
             task,
-            candidates,
-            generation.times[index],
-            index,
-            used_ids,
-            allow_repeat,
-            progress,
-            reservations,
-            capacity_cache,
+            selected=candidates,
+            planned_at=generation.times[index],
+            index=index,
+            used_account_ids=used_ids,
+            allow_repeat=allow_repeat,
+            progress=progress,
+            reservations=reservations,
+            capacity_cache=capacity_cache,
         )
         if not account:
             _hard_blocker_inc(blockers, "account_capacity", progress)
@@ -2742,6 +2756,7 @@ def _record_hard_hourly_distribution_skew(task: Task, skew: dict[str, int]) -> N
 def _choose_capacity_slot(
     session: Session,
     task: Task,
+    *,
     selected: list,
     planned_at: datetime,
     index: int,
@@ -2755,7 +2770,7 @@ def _choose_capacity_slot(
         available = [item for item in selected if item.id not in used_account_ids]
         if not available and allow_repeat:
             available = list(selected)
-        return (random.SystemRandom().choice(available), _now()) if available else (None, _now())
+        return (random.SystemRandom().choice(available), planned_at) if available else (None, planned_at)
     candidate_limit = _capacity_candidate_limit(used_account_ids)
     available = _available_accounts_at(session, task, selected, planned_at, reservations, capacity_cache, limit=candidate_limit)
     account = _choose_turn_account(available, available, index, used_account_ids, allow_repeat)
@@ -3050,9 +3065,11 @@ def _coverage_plan_state(
     session: Session,
     task: Task,
     group: TgGroup,
+    *,
     config: dict,
-    _progress: dict[str, object],
+    progress: dict[str, object],
 ) -> CoveragePlanState:
+    del progress
     timestamp = _now()
     if not _all_accounts_daily_coverage(config):
         ensure_task_day_ledger(session, task, now=timestamp)
@@ -3069,6 +3086,35 @@ def _coverage_plan_state(
     release_voice_profile_coverage_for_check_in(session, task, now=timestamp)
     backfill_daily_coverage_confirmations(session, task, timestamp.date())
     totals = coverage_plan_totals(session, task, group, now=timestamp)
+    target, due_message_count, volume_need = _daily_group_due_state(
+        session,
+        task,
+        group,
+        timestamp=timestamp,
+    )
+    rows = _ready_coverage_rows_for_plan(session, task, timestamp=timestamp)
+    effective_due_debt = _effective_coverage_due_debt(
+        task,
+        coverage_due_debt=totals.due_debt,
+        volume_need=volume_need,
+    )
+    return _build_coverage_plan_state(
+        rows,
+        totals=totals,
+        target=target,
+        due_message_count=due_message_count,
+        volume_need=volume_need,
+        effective_due_debt=effective_due_debt,
+    )
+
+
+def _daily_group_due_state(
+    session: Session,
+    task: Task,
+    group: TgGroup,
+    *,
+    timestamp: datetime,
+) -> tuple[TaskGroupDailyTarget, int, int]:
     target = ensure_task_group_daily_target(
         session,
         task,
@@ -3079,7 +3125,6 @@ def _coverage_plan_state(
     due_message_count = daily_group_due_message_count(
         target,
         task.pacing_config or {},
-        immediate=task.fulfillment_contract_version == "fact_first_v3",
         now=timestamp,
     )
     target.due_message_count = due_message_count
@@ -3096,17 +3141,37 @@ def _coverage_plan_state(
         hard_hourly_required_new=0,
         now=timestamp,
     )
+    return target, due_message_count, volume_need
+
+
+def _ready_coverage_rows_for_plan(
+    session: Session,
+    task: Task,
+    *,
+    timestamp: datetime,
+) -> list[TaskAccountDailyCoverage]:
     configured_limit = int(getattr(get_settings(), "daily_coverage_plan_batch_limit", 20) or 20)
-    rows = ready_coverage_plan_batch(
+    return ready_coverage_plan_batch(
         session,
         task,
         now=timestamp,
         limit=configured_limit,
     ).rows
+
+
+def _build_coverage_plan_state(
+    rows: list[TaskAccountDailyCoverage],
+    *,
+    totals,
+    target: TaskGroupDailyTarget,
+    due_message_count: int,
+    volume_need: int,
+    effective_due_debt: int,
+) -> CoveragePlanState:
     return CoveragePlanState(
         rows=rows,
         rows_by_account={row.account_id: row for row in rows},
-        due_debt=totals.due_debt,
+        due_debt=effective_due_debt,
         account_count=totals.account_count,
         target_per_account=totals.target_per_account,
         confirmed_count=totals.confirmed_count,
@@ -3114,13 +3179,24 @@ def _coverage_plan_state(
         sendable_account_count=totals.sendable_account_count,
         sendable_confirmed_count=totals.sendable_confirmed_count,
         sendable_reserved_count=totals.sendable_reserved_count,
-        required_new=max(totals.due_debt, volume_need),
+        required_new=max(effective_due_debt, volume_need),
         daily_group_target_id=target.id,
         effective_daily_target=target.effective_message_target,
         due_message_count=due_message_count,
         confirmed_message_count=target.confirmed_message_count,
         volume_need_now=volume_need,
     )
+
+
+def _effective_coverage_due_debt(
+    task: Task,
+    *,
+    coverage_due_debt: int,
+    volume_need: int,
+) -> int:
+    if task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION:
+        return max(0, int(volume_need))
+    return max(0, int(coverage_due_debt))
 
 
 def _valid_open_daily_send_count(session: Session, task: Task) -> int:
@@ -3182,7 +3258,6 @@ def requires_planning_with_open_actions(session: Session, task: Task) -> bool:
     due = daily_group_due_message_count(
         target,
         task.pacing_config or {},
-        immediate=task.fulfillment_contract_version == "fact_first_v3",
         now=_now(),
     )
     volume_need = max(
@@ -3923,10 +3998,13 @@ def _choose_turn_account(available: list, selected: list, index: int, used_accou
     return candidates[index % len(candidates)] if candidates else None
 
 
-def _schedule_times_for_plan(task: Task, progress: dict[str, object], total: int, mode: str) -> list[datetime]:
-    if task.fulfillment_contract_version == "fact_first_v3":
-        now_value = _now()
-        return [now_value for _ in range(total)]
+def _schedule_times_for_plan(
+    task: Task,
+    progress: dict[str, object],
+    total: int,
+    *,
+    mode: str,
+) -> list[datetime]:
     return _hard_hourly_schedule(task, progress, total) or _round_schedule_times(total, task.pacing_config or {}, mode)
 
 

@@ -185,6 +185,11 @@ _retry_failed_actions = retry_failed_actions
 logger = logging.getLogger(__name__)
 PLANNER_RUNTIME_ERROR_RETRY_SECONDS = 30
 FACT_FIRST_PLANNER_POLL_SECONDS = 2
+HUMAN_PACED_FACT_FIRST_TASK_TYPES = frozenset({
+    "channel_like",
+    "channel_view",
+    "group_ai_chat",
+})
 OPEN_ACTION_PLANNER_RECHECK_SECONDS = 30
 PLANNER_GLOBAL_PENDING_SESSION_KEY = "planner_global_pending"
 CHANNEL_COMMENT_SCENE = "channel_comment"
@@ -3364,18 +3369,18 @@ def _plan_due_task_batch(
             session.commit()
             return processed, 0, False, current_global_pending
         planned = build_task_plan(session, task)
-        _make_fact_first_actions_immediate(session, task)
-        _clear_planner_runtime_error(task)
         processed += planned
         current_global_pending += max(0, int(planned))
-        if task.status == "running":
-            task.next_run_at = (
-                _now() + timedelta(seconds=FACT_FIRST_PLANNER_POLL_SECONDS)
-                if task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION
-                else next_run_after_task(task)
-            )
-        session.commit()
+        _commit_planned_task(session, task)
         return processed, planned, False, current_global_pending
+
+
+def _commit_planned_task(session: Session, task: Task) -> None:
+    _make_fact_first_actions_immediate(session, task)
+    _clear_planner_runtime_error(task)
+    if task.status == "running":
+        task.next_run_at = _next_planner_run_at(task)
+    session.commit()
 
 
 def _prepare_task_planning_transaction(
@@ -3658,7 +3663,7 @@ def _planning_backlog_blocked(session: Session, task: Task) -> bool:
 
 
 def _make_fact_first_actions_immediate(session: Session, task: Task) -> None:
-    if task.fulfillment_contract_version != CURRENT_CONTRACT_VERSION:
+    if not _uses_immediate_fact_first_pacing(task):
         return
     session.execute(
         update(Action)
@@ -3668,6 +3673,19 @@ def _make_fact_first_actions_immediate(session: Session, task: Task) -> None:
             Action.scheduled_at > _now(),
         )
         .values(scheduled_at=_now())
+    )
+
+
+def _next_planner_run_at(task: Task) -> datetime:
+    if _uses_immediate_fact_first_pacing(task):
+        return _now() + timedelta(seconds=FACT_FIRST_PLANNER_POLL_SECONDS)
+    return next_run_after_task(task)
+
+
+def _uses_immediate_fact_first_pacing(task: Task) -> bool:
+    return (
+        task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION
+        and task.type not in HUMAN_PACED_FACT_FIRST_TASK_TYPES
     )
 
 
