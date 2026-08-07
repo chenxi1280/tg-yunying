@@ -109,6 +109,7 @@ def _create_like_actions(
         task.pacing_config or {},
         start_at=now_value,
         deadline_at=deadline_at,
+        preserve_minimum_spacing=True,
     )
     times = reserve_task_schedule_times(
         session,

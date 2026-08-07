@@ -47,6 +47,7 @@ def prepare_comment_actions(
         task.pacing_config or {},
         start_at=now_value,
         deadline_at=deadline_at,
+        preserve_minimum_spacing=True,
     )
     planned_times = reserve_task_schedule_times(
         session,

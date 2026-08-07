@@ -1,6 +1,6 @@
 # 项目数据流转索引
 
-> **2026-08-08 DF-193B 跨批排期占位：** AI 活群、频道评论、频道点赞和频道浏览的 Planner 在 `schedule_times()` 生成单批时间后，按同 Task、同动作类型仍有效的 open Action 最晚 `scheduled_at` 继续占位；新批首条至少保留当前模板/轮次的最小间隔，窗口不足时不压缩建单。存量整点聚集 Action 只能在新代码部署后按 ID、version、旧时间和状态 CAS 审计重排，不能把本地排期修复当作远端履约完成。
+> **2026-08-08 DF-193B 非压缩排期：** AI 活群、频道评论、频道点赞和频道浏览的 `schedule_times()` 在单批曲线分配后仍强制模板/轮次最小间隔，deadline 放不下的候选截断为 shortfall；Planner 再按同 Task、同动作类型仍有效的 open Action 最晚 `scheduled_at` 跨批继续占位。存量整点聚集 Action 只能在新代码部署后按 ID、version、旧时间和状态 CAS 审计重排，不能把本地排期修复当作远端履约完成。
 
 > **2026-08-05 DF-193A current_contract：** 对 AI/评论/点赞/浏览与纯 `search_click + click_only`，`task-fulfillment-classified-recovery-prd.md` 和 `task-fulfillment-contract-closure-prd.md` supersede 本索引内全部冲突旧流；AI 群日和纯搜索分别由 `ai-group-daily-group-target-redesign-prd.md`、重写后的 `search-click-daily-fulfillment-remediation-prd.md` 补充。任何“搜索与普通互动共享 active claim/Dispatcher capacity”“TaskAllocation/DispatchReservation/预扣”“搜索 Window”“验证码 AI/VLM/模型投票”“冻结不可缩小账号分母”“ContentMix 拥有数量”“旧 Task 迁移/同 Task 双写”“跨表最终结算锁序”“远端当前不存在即可重开 unknown”的既有段落均为 `historical_do_not_implement`。当前流使用任务类型到期策略和真实资源槽：AI/点赞/浏览按任务日 pacing 领取当前 due，评论/纯搜索保持各自即时合同；其余继续逐行 version CAS、权威 remote fact 先提交与投影最终收敛、持久 search assignment/page phase、唯一 active Provider key、绑定明确 observation surface 的 C2 30 秒观察，以及 prepared 新 Task 直接 canary、单行 route epoch 切换、旧 Task 异步删除。本索引后续代码结构更新必须删除旧入口，不能把它们解释为兼容分支。
 
