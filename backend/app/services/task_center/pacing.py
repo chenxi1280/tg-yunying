@@ -8,6 +8,8 @@ from zoneinfo import ZoneInfo
 from app.services._common import _now
 from app.timezone import BEIJING_TZ
 
+from .pacing_curve_schedule import curve_schedule_times
+
 
 TEMPLATES = {
     "aggressive_1h": (3600, 30, 90, 40),
@@ -175,43 +177,8 @@ def _next_active_time(value: datetime, config: dict, *, timezone_name: str | Non
 
 def _curve_schedule_times(total_actions: int, config: dict, start_at: datetime) -> list[datetime]:
     curve = _operation_curve(config)
-    total_weight = sum(curve)
-    if total_weight <= 0:
-        return []
     max_per_hour = int(config.get("max_actions_per_hour") or 0)
-    slots: list[tuple[int, int, float]] = []
-    for offset in range(24):
-        hour = (start_at.hour + offset) % 24
-        weight = curve[hour]
-        if weight <= 0:
-            continue
-        exact = total_actions * (weight / total_weight)
-        count = int(exact)
-        if max_per_hour:
-            count = min(count, max_per_hour)
-        slots.append((offset, count, exact - count))
-    assigned = sum(count for _offset, count, _fraction in slots)
-    capacity = sum((max_per_hour or total_actions) - count for _offset, count, _fraction in slots)
-    remaining = min(total_actions - assigned, max(0, capacity))
-    slots = sorted(slots, key=lambda item: item[2], reverse=True)
-    next_slots: list[tuple[int, int, float]] = []
-    for offset, count, fraction in slots:
-        if remaining > 0 and (not max_per_hour or count < max_per_hour):
-            count += 1
-            remaining -= 1
-        next_slots.append((offset, count, fraction))
-    result: list[datetime] = []
-    for offset, count, _fraction in sorted(next_slots, key=lambda item: item[0]):
-        if count <= 0:
-            continue
-        hour_start = start_at.replace(minute=0, second=0, microsecond=0) + timedelta(hours=offset)
-        if offset == 0:
-            hour_start = max(start_at, hour_start)
-        available_seconds = max(1, int(((hour_start.replace(minute=59, second=59, microsecond=0) - hour_start).total_seconds())))
-        step = max(1, available_seconds // max(count, 1))
-        for index in range(count):
-            result.append(hour_start + timedelta(seconds=min(available_seconds, index * step)))
-    return sorted(result)[:total_actions]
+    return curve_schedule_times(total_actions, curve, max_per_hour, start_at)
 
 
 def _duration_and_interval(config: dict, total: int) -> tuple[int, int, int, int]:
@@ -338,17 +305,38 @@ def schedule_times(
     *,
     start_at: datetime | None = None,
     deadline_at: datetime | None = None,
+    preserve_minimum_spacing: bool = False,
 ) -> list[datetime]:
     if total_actions <= 0:
         return []
     config = _effective_fulfillment_config(config)
     now = start_at or _now()
+    times = _initial_schedule_times(total_actions, config, now)
+    return _finalize_schedule(
+        times,
+        config,
+        now,
+        deadline_at,
+        preserve_minimum_spacing=preserve_minimum_spacing,
+    )
+
+
+def _initial_schedule_times(total_actions: int, config: dict, now: datetime) -> list[datetime]:
     mode = config.get("mode") or "template"
     if mode == "fixed" and _fixed_interval_is_immediate(config):
         return [now for _ in range(total_actions)]
     curve_times = [] if mode == "fixed" else _curve_schedule_times(total_actions, config, now)
     if curve_times:
-        return _fit_before_deadline(curve_times, now, deadline_at)
+        return curve_times
+    return _interval_schedule_times(total_actions, config, now, mode)
+
+
+def _interval_schedule_times(
+    total_actions: int,
+    config: dict,
+    now: datetime,
+    mode: str,
+) -> list[datetime]:
     duration, lo, hi, jitter = _duration_and_interval(config, total_actions)
     times: list[datetime] = []
     if mode == "curve":
@@ -373,15 +361,41 @@ def schedule_times(
                 interval = max(0, interval + random.randint(-spread, spread))
             times.append(cursor)
             cursor += timedelta(seconds=interval)
+    return times
+
+
+def _finalize_schedule(
+    times: list[datetime],
+    config: dict,
+    start_at: datetime,
+    deadline_at: datetime | None,
+    *,
+    preserve_minimum_spacing: bool,
+) -> list[datetime]:
     max_per_hour = config.get("max_actions_per_hour")
     if max_per_hour:
         min_gap = int(3600 / max(1, int(max_per_hour)))
-        for index in range(1, len(times)):
-            floor = times[index - 1] + timedelta(seconds=min_gap)
-            if times[index] < floor:
-                times[index] = floor
+        times = _enforce_minimum_spacing(times, min_gap)
+    if preserve_minimum_spacing:
+        times = _enforce_minimum_spacing(times, minimum_schedule_gap_seconds(config))
     adjusted = _apply_quiet_hours_preserving_spacing(times, config)
-    return _fit_before_deadline(adjusted, now, deadline_at)
+    if preserve_minimum_spacing:
+        return _truncate_after_deadline(adjusted, deadline_at)
+    return _fit_before_deadline(adjusted, start_at, deadline_at)
+
+
+def _enforce_minimum_spacing(times: list[datetime], minimum_gap_seconds: int) -> list[datetime]:
+    adjusted: list[datetime] = []
+    gap = timedelta(seconds=max(MIN_SCHEDULE_GAP_SECONDS, minimum_gap_seconds))
+    for value in sorted(times):
+        adjusted.append(max(value, adjusted[-1] + gap) if adjusted else value)
+    return adjusted
+
+
+def _truncate_after_deadline(times: list[datetime], deadline_at: datetime | None) -> list[datetime]:
+    if deadline_at is None:
+        return times
+    return [value for value in times if value <= deadline_at]
 
 
 def _apply_quiet_hours_preserving_spacing(times: list[datetime], config: dict) -> list[datetime]:

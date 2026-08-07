@@ -8,7 +8,7 @@ import pytest
 
 from app.models import Task
 from app.services.task_center.executors import group_ai_chat
-from app.services.task_center.pacing import minimum_schedule_gap_seconds
+from app.services.task_center.pacing import minimum_schedule_gap_seconds, schedule_times
 from app.services.task_center.schedule_reservation import (
     continue_schedule_after,
     reserve_task_schedule_times,
@@ -86,3 +86,29 @@ def test_context_window_does_not_pull_reserved_ai_action_earlier(monkeypatch) ->
     assert (turn_count, turn_times) == (0, [])
     assert quality_items == []
     assert quality_times == []
+
+
+def test_operation_curve_preserves_template_gap_and_truncates_deadline() -> None:
+    start = datetime(2026, 8, 8, 18, 0)
+    deadline = start + timedelta(minutes=10)
+    config = {
+        "mode": "template",
+        "template": "moderate_6h",
+        "operation_profile": {"hourly_activity_curve": [10] * 24},
+        "max_actions_per_hour": 1_000_000,
+    }
+
+    planned = schedule_times(
+        1_000,
+        config,
+        start_at=start,
+        deadline_at=deadline,
+        preserve_minimum_spacing=True,
+    )
+
+    assert planned == [
+        start,
+        start + timedelta(minutes=3),
+        start + timedelta(minutes=6),
+        start + timedelta(minutes=9),
+    ]

@@ -4002,7 +4002,12 @@ def _schedule_times_for_plan(
     if hard_times:
         return hard_times
     round_config = _round_schedule_config(task.pacing_config or {}, mode)
-    times = schedule_times(total, round_config, start_at=_now())
+    times = schedule_times(
+        total,
+        round_config,
+        start_at=_now(),
+        preserve_minimum_spacing=True,
+    )
     return reserve_task_schedule_times(
         session,
         task,
@@ -4097,7 +4102,12 @@ def _clear_context_bound_limit_stats(task: Task) -> None:
 
 
 def _round_schedule_times(total: int, pacing_config: dict, mode: str) -> list[datetime]:
-    return schedule_times(total, _round_schedule_config(pacing_config, mode), start_at=_now())
+    return schedule_times(
+        total,
+        _round_schedule_config(pacing_config, mode),
+        start_at=_now(),
+        preserve_minimum_spacing=True,
+    )
 
 
 def _round_schedule_config(pacing_config: dict, mode: str) -> dict:
