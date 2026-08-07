@@ -5277,8 +5277,10 @@ def test_group_ai_chat_waits_when_no_new_real_context(monkeypatch):
         )
         task = session.get(Task, "ai-wait-new")
 
-    assert len(generated) == first_generation_call_count + 1
+    assert len(generated) == first_generation_call_count
     assert action_count == planned + 1
+    assert next_action.payload["message_text"] == "签到"
+    assert next_action.payload["quality_fallback"] == "check_in_fallback"
     assert task.last_error == "群日目标按计划推进中，等待下一发送时点"
     assert task.stats["skip_reason"] == "daily_target_pacing"
 
