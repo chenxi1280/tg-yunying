@@ -370,7 +370,7 @@ def test_fact_first_ai_slot_ignores_legacy_capacity_without_overwriting_schedule
 
     assert account in accounts
     assert planned_at == datetime(2026, 8, 4, 13, 0)
-    schedule = group_ai_chat._schedule_times_for_plan(task, {}, 3, mode="正常期")
+    schedule = group_ai_chat._schedule_times_for_plan(session, task, {}, 3, mode="正常期")
     assert schedule[0] == now_value
     assert schedule == sorted(schedule)
     assert len(set(schedule)) == 3

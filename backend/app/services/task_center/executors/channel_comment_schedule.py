@@ -24,7 +24,7 @@ def materialized_reply_slots(
     cutoff = now_value + timedelta(seconds=_window_seconds(task.type_config or {}))
     selected: list[tuple[object, datetime]] = []
     deferred_times: list[datetime] = []
-    for slot, planned_at in zip(slots, planned_times, strict=True):
+    for slot, planned_at in zip(slots, planned_times, strict=False):
         if not slot.reply_target:
             selected.append((slot, planned_at))
             continue

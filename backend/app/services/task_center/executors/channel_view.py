@@ -27,6 +27,7 @@ from ..pacing import (
     task_pacing_anchor,
 )
 from ..payloads import ViewMessagePayload, create_view_action
+from ..schedule_reservation import reserve_task_schedule_times
 from .common import adjust_for_account_hour_limit, channel_message_payload, channel_scope, quantity_jitter_bounds, quantity_with_jitter, record_channel_capacity_warning
 
 
@@ -131,20 +132,29 @@ def _create_view_actions(
     context: "ViewCreationContext",
 ) -> int:
     now_value = _now()
+    deadline_at = next_local_day_deadline(now_value, task.timezone)
     times = schedule_times(
         len(actions),
         task.pacing_config or {},
         start_at=now_value,
-        deadline_at=next_local_day_deadline(now_value, task.timezone),
+        deadline_at=deadline_at,
+    )
+    times = reserve_task_schedule_times(
+        session,
+        task,
+        "view_message",
+        times,
+        pacing_config=task.pacing_config or {},
+        deadline_at=deadline_at,
     )
     created = 0
-    for index, (message, account_id) in enumerate(actions):
+    for (message, account_id), scheduled_at in zip(actions, times, strict=False):
         planned_at = adjust_for_account_hour_limit(
             session,
             task,
             account_id,
             "view_message",
-            times[index],
+            scheduled_at,
             context.config,
         )
         obligation = ensure_view_obligation(
