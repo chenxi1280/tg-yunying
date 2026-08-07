@@ -188,6 +188,7 @@ eligible/recovering -> abandoned_for_day
 - 当前到期量为 `max(1,floor(pacing_target * curve_weight(pacing_anchor,now) / full_24h_curve_weight))`。分母必须是完整任务自然日或完整来源滚动 24 小时，禁止使用 `pacing_anchor..deadline` 的剩余曲线权重，禁止 `_fit_before_deadline` 或等价逻辑把完整目标缩放进短窗口。已确认、Gateway-started、unknown hold 和有效 open Action 必须从当前到期量中扣除。
 - `channel_comment/channel_like/channel_view` 只为当前累计到期缺口建单并保留 `schedule_times()` 生成的 future `scheduled_at`。Planner、takeover 和 Recovery 不得在建单后把 future pending Action 批量改成当前时间；晚采集来源在当前自然日只形成按可执行时段折算的量，余量保持 open/shortfall，不突发追赶。
 - quiet-hours 调整必须顺序处理：第一条移到合法窗口后，后续 Action 至少保留调整前相邻间隔；若再次落入 quiet-hours，继续移到下一个合法窗口并从该点保留间隔。`max_actions_per_hour` 的间隔下限在后置调整后仍必须成立，禁止多个时间落到同一窗口起点。
+- 拟人间隔同时约束同批和跨 Planner 批次：`channel_comment/channel_like/channel_view/group_ai_chat` 每次物化前，必须读取同 Task、同 `action_type` 尚未终结 Action 的最晚 `scheduled_at`，新批首条至少排在该时间加当前节奏最小间隔之后，后续条目保持原相邻间隔。任务窗口放不下时少建或不建并等待下一窗口，禁止因为每轮只补一条而反复落到同一曲线整点，也禁止压缩到 deadline。
 - AI 每轮只物化当前缺口；同批 `scheduled_at` 使用正常期/启动期/低频期的现有间隔与 jitter，不得因 fact-first 改为同一个 `now`。绕过 legacy 账号容量时只能绕过旧容量判断，不能改写已经计算的 `planned_at`。
 - Planner 有当前到期欠额时可按现有 debt recheck 节奏继续推进；没有欠额时按 `next_run_after_task()` 等待下一个曲线时点。禁止对这四类任务固定每 2 秒无节奏追赶。
 - 暂停、恢复、晚启动或容量不足不回填已逝时间：只在剩余任务日曲线内推进，deadline 到达后将欠额投影为 `terminal_shortfall/content_capacity_gap`。不通过提高本地上限、缩短间隔或重写历史 Action 伪装完成。

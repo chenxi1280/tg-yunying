@@ -11,6 +11,7 @@ from app.services._common import _now
 from ..fulfillment_activation import CURRENT_CONTRACT_VERSION
 from ..pacing import next_local_day_deadline, schedule_times
 from ..payloads import PostCommentPayload
+from ..schedule_reservation import reserve_task_schedule_times
 from .channel_comment_schedule import materialized_reply_slots
 from .common import (
     adjust_for_account_hour_limit,
@@ -36,15 +37,24 @@ def prepare_comment_actions(
     payload_builder: Callable,
 ) -> list[PreparedCommentAction]:
     now_value = _now()
+    deadline_at = (
+        None
+        if task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION
+        else next_local_day_deadline(now_value, task.timezone)
+    )
     planned_times = schedule_times(
         len(slots),
         task.pacing_config or {},
         start_at=now_value,
-        deadline_at=(
-            None
-            if task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION
-            else next_local_day_deadline(now_value, task.timezone)
-        ),
+        deadline_at=deadline_at,
+    )
+    planned_times = reserve_task_schedule_times(
+        session,
+        task,
+        "post_comment",
+        planned_times,
+        pacing_config=task.pacing_config or {},
+        deadline_at=deadline_at,
     )
     materialized = materialized_reply_slots(
         task,

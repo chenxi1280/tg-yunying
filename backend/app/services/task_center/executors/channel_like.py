@@ -19,6 +19,7 @@ from ..channel_membership import channel_member_accounts, gate_channel_membershi
 from ..fulfillment_activation import CURRENT_CONTRACT_VERSION
 from ..pacing import next_local_day_deadline, schedule_times, source_rolling_pacing_due
 from ..payloads import LikeMessagePayload, create_like_action
+from ..schedule_reservation import reserve_task_schedule_times
 from .common import adjust_for_account_hour_limit, channel_message_payload, channel_scope, quantity_jitter_bounds, quantity_with_jitter, record_channel_capacity_warning
 
 PRIMARY_REACTION_RATIO = 0.7
@@ -98,19 +99,27 @@ def _create_like_actions(
     actions: list[tuple[ChannelMessage, int, str]],
 ) -> int:
     now_value = _now()
+    deadline_at = (
+        None
+        if task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION
+        else next_local_day_deadline(now_value, task.timezone)
+    )
     times = schedule_times(
         len(actions),
         task.pacing_config or {},
         start_at=now_value,
-        deadline_at=(
-            None
-            if task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION
-            else next_local_day_deadline(now_value, task.timezone)
-        ),
+        deadline_at=deadline_at,
+    )
+    times = reserve_task_schedule_times(
+        session,
+        task,
+        "like_message",
+        times,
+        pacing_config=task.pacing_config or {},
+        deadline_at=deadline_at,
     )
     created = 0
-    for index, (message, account_id, reaction) in enumerate(actions):
-        planned_at = times[index]
+    for (message, account_id, reaction), planned_at in zip(actions, times, strict=False):
         planned_at = adjust_for_account_hour_limit(session, task, account_id, "like_message", planned_at, config)
         obligation = ensure_reaction_obligation(session, task, message, account_id)
         if not obligation_accepts_new_action(obligation):

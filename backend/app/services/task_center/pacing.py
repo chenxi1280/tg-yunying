@@ -17,6 +17,7 @@ TEMPLATES = {
 }
 FULFILLMENT_SOFT_PACING_VERSION = "nonzero_v1"
 DEFAULT_AI_ROUNDS_PER_HOUR = 12
+MIN_SCHEDULE_GAP_SECONDS = 1
 
 
 def _operation_curve(config: dict) -> list[int]:
@@ -225,6 +226,16 @@ def _duration_and_interval(config: dict, total: int) -> tuple[int, int, int, int
         return duration, max(1, int(interval * 0.7)), max(1, int(interval * 1.3)), int(config.get("jitter_percent") or 30)
     duration, lo, hi, jitter = TEMPLATES.get(config.get("template") or "moderate_6h", TEMPLATES["moderate_6h"])
     return duration, lo, hi, int(config.get("jitter_percent") or jitter)
+
+
+def minimum_schedule_gap_seconds(config: dict) -> int:
+    effective = _effective_fulfillment_config(config or {})
+    _duration, interval_min, _interval_max, _jitter = _duration_and_interval(effective, 1)
+    if (effective.get("mode") or "template") == "fixed" and _fixed_interval_is_immediate(effective):
+        interval_min = 0
+    hourly_cap = int(effective.get("max_actions_per_hour") or 0)
+    hourly_gap = math.ceil(3600 / hourly_cap) if hourly_cap > 0 else 0
+    return max(MIN_SCHEDULE_GAP_SECONDS, interval_min, hourly_gap)
 
 
 def quiet_hours_active(value: datetime, config: dict, *, timezone_name: str | None = None) -> bool:

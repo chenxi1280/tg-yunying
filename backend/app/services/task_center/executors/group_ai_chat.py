@@ -122,6 +122,7 @@ from ..pacing import (
     task_pacing_anchor,
 )
 from ..payloads import SendMessagePayload, create_send_action
+from ..schedule_reservation import reserve_task_schedule_times
 from ..targets import group_from_reference
 from .common import stats_inc
 
@@ -1066,6 +1067,7 @@ def _load_turn_plan(
         has_daily_coverage_debt=facts.coverage.required_new > 0,
     )
     times = _schedule_times_for_plan(
+        session,
         task,
         facts.hard_progress,
         turn_count,
@@ -1080,7 +1082,10 @@ def _load_turn_plan(
         turn_count=turn_count,
         planned_times=times,
     )
-    selected = selected[: max(1, min(len(selected), turn_count))]
+    if turn_count <= 0:
+        task.last_error = "已有待执行消息占满上下文有效窗口，等待现有消息执行后继续规划"
+        return PlanAbort()
+    selected = selected[: min(len(selected), turn_count)]
     history = _context_plan_history(facts, context)
     return TurnPlanState(cycle_index, round_config, selected, turn_count, history)
 
@@ -1223,7 +1228,7 @@ def _load_generation_plan(
         _mark_empty_generation_plan(task, facts, context, chat_mode=chat_mode)
         return PlanAbort()
     schedule = _finalize_generation_schedule(
-        task, facts, context, quality_items=quality_items,
+        session, task, facts, context, quality_items=quality_items,
     )
     if schedule is None:
         return PlanAbort()
@@ -1243,6 +1248,7 @@ def _load_generation_plan(
 
 
 def _finalize_generation_schedule(
+    session: Session,
     task: Task,
     facts: PlanFacts,
     context: ContextPlanState,
@@ -1250,6 +1256,7 @@ def _finalize_generation_schedule(
     quality_items: list[dict],
 ) -> tuple[list[dict], list[datetime]] | None:
     times = _schedule_times_for_plan(
+        session,
         task,
         facts.hard_progress,
         len(quality_items),
@@ -3984,13 +3991,25 @@ def _choose_turn_account(available: list, selected: list, index: int, used_accou
 
 
 def _schedule_times_for_plan(
+    session: Session,
     task: Task,
     progress: dict[str, object],
     total: int,
     *,
     mode: str,
 ) -> list[datetime]:
-    return _hard_hourly_schedule(task, progress, total) or _round_schedule_times(total, task.pacing_config or {}, mode)
+    hard_times = _hard_hourly_schedule(task, progress, total)
+    if hard_times:
+        return hard_times
+    round_config = _round_schedule_config(task.pacing_config or {}, mode)
+    times = schedule_times(total, round_config, start_at=_now())
+    return reserve_task_schedule_times(
+        session,
+        task,
+        "send_message",
+        times,
+        pacing_config=round_config,
+    )
 
 
 def _limit_context_bound_turns(
@@ -4009,11 +4028,9 @@ def _limit_context_bound_turns(
     window_seconds = _context_bound_schedule_window_seconds(config)
     cutoff = _task_datetime(task, _now()) + timedelta(seconds=window_seconds)
     allowed_count = len([time_item for time_item in planned_times if _task_datetime(task, time_item) <= cutoff])
-    limited_count = max(1, min(int(turn_count or 1), allowed_count))
+    limited_count = min(int(turn_count or 0), allowed_count)
     _record_context_bound_limit_stats(task, turn_count, limited_count, window_seconds)
     limited_times = planned_times[:limited_count]
-    if allowed_count == 0 and limited_times:
-        limited_times[0] = cutoff
     return limited_count, limited_times
 
 
@@ -4032,7 +4049,7 @@ def _limit_context_bound_quality_schedule(
     window_seconds = _context_bound_schedule_window_seconds(config)
     cutoff = _task_datetime(task, _now()) + timedelta(seconds=window_seconds)
     allowed_count = len([item for item in planned_times if _task_datetime(task, item) <= cutoff])
-    limited_count = max(1, min(len(quality_items), allowed_count)) if quality_items else 0
+    limited_count = min(len(quality_items), allowed_count)
     _record_context_bound_limit_stats(
         task,
         int((task.stats or {}).get("context_bound_requested_turns") or len(quality_items)),
@@ -4040,8 +4057,6 @@ def _limit_context_bound_quality_schedule(
         window_seconds,
     )
     limited_times = planned_times[:limited_count]
-    if allowed_count == 0 and limited_times:
-        limited_times[0] = cutoff
     return quality_items[:limited_count], limited_times
 
 
@@ -4082,19 +4097,19 @@ def _clear_context_bound_limit_stats(task: Task) -> None:
 
 
 def _round_schedule_times(total: int, pacing_config: dict, mode: str) -> list[datetime]:
+    return schedule_times(total, _round_schedule_config(pacing_config, mode), start_at=_now())
+
+
+def _round_schedule_config(pacing_config: dict, mode: str) -> dict:
     if not (pacing_config or {}).get("operation_profile"):
-        return schedule_times(total, pacing_config or {})
+        return pacing_config or {}
     lo, hi = AI_CHAT_ROUND_INTERVALS_SECONDS.get(mode, AI_CHAT_ROUND_INTERVALS_SECONDS["正常期"])
     hourly_cap = int((pacing_config or {}).get("max_actions_per_hour") or 0)
     if hourly_cap > 0:
         min_gap = max(1, (3600 + hourly_cap - 1) // hourly_cap)
         lo = max(lo, min_gap)
         hi = max(hi, lo)
-    return schedule_times(
-        total,
-        {"mode": "fixed", "interval_seconds_min": lo, "interval_seconds_max": hi, "jitter_percent": 20},
-        start_at=_now(),
-    )
+    return {"mode": "fixed", "interval_seconds_min": lo, "interval_seconds_max": hi, "jitter_percent": 20}
 
 
 def _hard_hourly_round_config(config: dict, progress: dict[str, object]) -> dict:
