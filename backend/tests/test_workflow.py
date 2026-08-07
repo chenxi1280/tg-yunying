@@ -4477,6 +4477,14 @@ def test_task_center_channel_comment_capacity_check_accepts_comment_task_type():
 
 def test_task_center_channel_like_and_view_cap_per_message_by_unique_accounts(monkeypatch):
     monkeypatch.setattr(
+        "app.services.task_center.executors.channel_like.source_rolling_pacing_due",
+        lambda target, *_args, **_kwargs: target,
+    )
+    monkeypatch.setattr(
+        "app.services.task_center.executors.channel_view.cumulative_pacing_due",
+        lambda target, *_args, **_kwargs: target,
+    )
+    monkeypatch.setattr(
         "app.services.task_center.dispatcher.gateway.view_channel_message",
         lambda *args, **kwargs: OperationResult(True, detail="viewed"),
     )
@@ -4589,6 +4597,10 @@ def test_task_center_channel_like_and_view_cap_per_message_by_unique_accounts(mo
 
 
 def test_task_center_channel_comment_allows_multiple_replies_per_account(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.task_center.executors.channel_comment_budget.source_rolling_pacing_due",
+        lambda target, *_args, **_kwargs: target,
+    )
     replies: list[tuple[int, str]] = []
     monkeypatch.setattr(
         "app.services.task_center.dispatcher.gateway.reply_channel_message",
