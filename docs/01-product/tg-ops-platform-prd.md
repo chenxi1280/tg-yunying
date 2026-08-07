@@ -1,6 +1,6 @@
 # TG 运营管理平台 PRD
 
-> **2026-08-05 一天任务拟人节奏生产纠偏：** `fact_first_v3` 只定义 typed remote fact、防重、准入、恢复和 projector，不再等同于“全部义务立即 due”。`group_ai_chat/channel_like/channel_view` 以任务日 ledger 的 `planning_anchor_at..deadline_at` 和 `natural_full_day` 计算当前累计到期量与 future `scheduled_at`；partial-start 从 anchor=0 起算，容量不足写 shortfall，禁止 Planner、takeover 或 Recovery 把 future Action 批量改成当前时间。本文中与此冲突的“AI/点赞/浏览资源空闲即清空、不计算 due_by_now”统一为 `historical_do_not_implement`；频道评论和纯搜索点击不在本次节奏变更范围。专项合同见 `task-fulfillment-classified-recovery-prd.md` §4.5。
+> **2026-08-07 四类互动拟人节奏生产纠偏：** `fact_first_v3` 只定义 typed remote fact、防重、准入、恢复和 projector，不再等同于“全部义务立即 due”。`group_ai_chat/channel_comment/channel_like/channel_view` 只物化完整 24 小时 pacing period 中当前累计到期的缺口：AI/浏览按任务自然日，评论/点赞按来源消息首次采集后的滚动 24 小时；`pacing_anchor` 取 period、任务实际启动/恢复和来源采集时间的较晚者，分母不得缩成剩余窗口。容量不足写 shortfall，禁止 Planner、takeover 或 Recovery 把 future Action 批量改成当前时间或在日末压缩追赶。本文中与此冲突的“四类互动资源空闲即清空、不计算 due_by_now”统一为 `historical_do_not_implement`；纯搜索点击不在本次节奏变更范围。专项合同见 `task-fulfillment-classified-recovery-prd.md` §4.5。
 
 > **2026-08-04 分类履约最终合同优先级：** 对 `group_ai_chat/channel_comment/channel_like/channel_view/search_click(click_only)`，当前产品合同由 `task-fulfillment-classified-recovery-prd.md` 与 `task-fulfillment-contract-closure-prd.md` 共同组成并 supersede 本文所有冲突旧述。本文中仍用于事故取证的“冻结账号分母”“搜索与普通互动共用 active claim/Dispatcher 容量”“TaskAllocation/DispatchReservation/预扣”“搜索 Window”“验证码 AI/VLM/模型投票”“显式 `FOR UPDATE/SKIP_LOCKED` 或跨表锁链”“旧 Task 迁移或同 Task 新旧双写”“仅凭远端当前不存在即可重开 unknown”均统一视为 `historical_do_not_implement`。当前实现必须使用任务内动态账号范围、任务类型到期策略、单行 version CAS、唯一远端事实先行与幂等 projector、interaction/search 独立 lane、持久搜索 assignment/page phase、RapidOCR→ddddOCR、全系统唯一 active AI Provider key、绑定 target-group surface 的 C2 连续 30 秒观察，以及永久 unknown 的远端只对账终态。运营先创建 prepared 新 Task，真实 canary 只证明 remote fact 链，随后 CAS route epoch 使新 Task 从 0 运行并 fence 旧 Task，再异步物理删除旧 Task。
 
@@ -5393,8 +5393,8 @@ fulfillment.calculated_at
 | 任务类型 | 本地群日限额/群冷却 | 账号与 Telegram 事实 | 时间规则 |
 | --- | --- | --- | --- |
 | `group_ai_chat` | 删除，不再调用 `legacy_group_slot` | 登录、授权代理路线、mutation-key 幂等、准入、SlowMode/FloodWait 与远端回执保留 | 按任务日 `natural_full_day` 累计 due；当前到期量由资源槽执行，future 义务不提前 |
-| 频道点赞、浏览 | 不使用 AI 群本地槽；按任务专用义务与各自真实执行槽 | 登录、授权、目标准入、mutation-key 幂等和各类型远端事实保留 | 在任务日剩余曲线内生成 future `scheduled_at`，禁止全局提前 |
-| 当前频道评论、纯搜索点击 | 不使用 AI 群本地槽；按任务专用义务与各自真实执行槽 | 登录、授权、目标准入、mutation-key 幂等和各类型远端事实保留 | 保持各自当前即时/搜索 solver 合同；不创建中央 Window 或预扣 |
+| 频道评论、点赞、浏览 | 不使用 AI 群本地槽；按任务专用义务与各自真实执行槽 | 登录、授权、目标准入、mutation-key 幂等和各类型远端事实保留 | 只物化累计到期缺口并保留 future `scheduled_at`；评论/点赞按来源滚动 24 小时，浏览按任务自然日；禁止全局提前或日末压缩 |
+| 纯搜索点击 | 不使用 AI 群本地槽；按任务专用义务与搜索真实执行槽 | 登录、授权、代理/OCR、mutation-key 幂等和点击远端事实保留 | 保持即时搜索 solver 合同；不创建中央 Window 或预扣 |
 
 存量 `send_limit_mode` 只作为迁移和历史审计输入，不能继续控制 AI 新 Action。同远程副作用幂等、Telegram 真实限制与 unknown 防重仍不得绕过；账号级全局互斥不再生效。
 
@@ -5402,7 +5402,7 @@ fulfillment.calculated_at
 
 历史 `hard_hourly_*` bucket、credit、durable debt、checkpoint 和 claim class 只读保留审计；迁移不得把它们转换为群日成功、不得自动复活旧 Action，也不得创建新的小时义务。`Task.config_revision` 继续用于目标引用、任务时区、群日目标和内容合同变更，但不再驱动小时桶。
 
-当前五类任务只使用任务专用义务账本和真实资源状态，不创建任务份额、预扣、`TaskAllocation` 或 `DispatchReservation`。AI 活群、频道点赞和频道浏览额外以任务日 ledger/pacing 计算或持久化当前 `due_by_now` 与 future `scheduled_at`；频道评论和纯搜索点击保持各自即时合同。每一阶段分别计算真实空闲槽：Generation、interaction、search、OCR；槽位释放后只能领取该类型当前已到期的下一条。
+当前五类任务只使用任务专用义务账本和真实资源状态，不创建任务份额、预扣、`TaskAllocation` 或 `DispatchReservation`。AI 活群、频道评论、频道点赞和频道浏览计算当前 `due_by_now` 并保留 future `scheduled_at`；纯搜索点击保持即时合同。每一阶段分别计算真实空闲槽：Generation、interaction、search、OCR；槽位释放后只能领取该类型当前已到期的下一条。
 
 每轮先从每个 running Task 至多领取一条 ready 义务，再按 `opened_at,task_id,obligation_id` 填满该阶段剩余槽位。该规则不产生持久配额，不存在“任务抢账号”；同一账号可为不同 Task 并发执行非冲突 RPC，只有同 remote mutation、账号 FloodWait、群 SlowMode 或强上下文依赖串行。
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+from datetime import datetime
 
 from sqlalchemy.orm import Session
 
@@ -15,7 +16,8 @@ from ..channel_fulfillment import (
     reaction_account_ids_for_messages,
 )
 from ..channel_membership import channel_member_accounts, gate_channel_membership
-from ..pacing import next_local_day_deadline, schedule_times
+from ..fulfillment_activation import CURRENT_CONTRACT_VERSION
+from ..pacing import next_local_day_deadline, schedule_times, source_rolling_pacing_due
 from ..payloads import LikeMessagePayload, create_like_action
 from .common import adjust_for_account_hour_limit, channel_message_payload, channel_scope, quantity_jitter_bounds, quantity_with_jitter, record_channel_capacity_warning
 
@@ -64,7 +66,17 @@ def build_plan(session: Session, task: Task) -> int:
         task,
         messages,
     )
-    actions = _like_actions_for_messages(session, task, config, messages, accounts, reactions, target_per_message, account_ids_by_message)
+    actions = _like_actions_for_messages(
+        session,
+        task,
+        config,
+        messages,
+        accounts,
+        reactions,
+        target_per_message,
+        account_ids_by_message,
+        now=_now(),
+    )
     if not actions:
         task.last_error = _empty_like_plan_message(task, messages, target_per_message, account_ids_by_message)
         return 0
@@ -90,7 +102,11 @@ def _create_like_actions(
         len(actions),
         task.pacing_config or {},
         start_at=now_value,
-        deadline_at=next_local_day_deadline(now_value, task.timezone),
+        deadline_at=(
+            None
+            if task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION
+            else next_local_day_deadline(now_value, task.timezone)
+        ),
     )
     created = 0
     for index, (message, account_id, reaction) in enumerate(actions):
@@ -126,6 +142,8 @@ def _like_actions_for_messages(
     reactions: list[str],
     target_per_message: int,
     account_ids_by_message: dict[int, set[int]],
+    *,
+    now: datetime,
 ) -> list[tuple[ChannelMessage, int, str]]:
     coverage_remaining = daily_uncovered_account_count(session, task.id, ("like_message",), accounts)
     actions: list[tuple[ChannelMessage, int, str]] = []
@@ -133,12 +151,31 @@ def _like_actions_for_messages(
         used_accounts = account_ids_by_message[message.id]
         available_accounts = [account for account in accounts if account.id not in used_accounts]
         base_desired = quantity_with_jitter(target_per_message, float(config.get("like_count_jitter") or 0))
-        target_deficit = max(0, base_desired - len(used_accounts))
+        desired = _paced_like_target(task, message, base_desired, now=now)
+        target_deficit = max(0, desired - len(used_accounts))
         quantity = min(target_deficit, len(available_accounts))
         message_reactions = _reaction_plan(reactions, quantity, str(config.get("reaction_type") or "random"))
         actions.extend((message, available_accounts[index].id, message_reactions[index]) for index in range(quantity))
         coverage_remaining = max(0, coverage_remaining - quantity)
     return actions
+
+
+def _paced_like_target(
+    task: Task,
+    message: ChannelMessage,
+    target: int,
+    *,
+    now: datetime,
+) -> int:
+    if task.fulfillment_contract_version != CURRENT_CONTRACT_VERSION:
+        return target
+    return source_rolling_pacing_due(
+        target,
+        task.pacing_config or {},
+        task=task,
+        source_observed_at=message.created_at,
+        now=now,
+    )
 
 
 def _empty_like_plan_message(

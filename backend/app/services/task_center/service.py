@@ -186,6 +186,7 @@ logger = logging.getLogger(__name__)
 PLANNER_RUNTIME_ERROR_RETRY_SECONDS = 30
 FACT_FIRST_PLANNER_POLL_SECONDS = 2
 HUMAN_PACED_FACT_FIRST_TASK_TYPES = frozenset({
+    "channel_comment",
     "channel_like",
     "channel_view",
     "group_ai_chat",
@@ -5092,6 +5093,7 @@ def _mark_task_started(session: Session, task: Task) -> None:
 
         rearm_stopped_admission_actions(session, task=task)
     now = _now()
+    previous_status = task.status
     scheduled_start = _naive_datetime(task.scheduled_start)
     next_status = "pending" if scheduled_start and scheduled_start > now else "running"
     _advance_task_lifecycle_epoch(task, next_status)
@@ -5099,6 +5101,8 @@ def _mark_task_started(session: Session, task: Task) -> None:
     task.next_run_at = scheduled_start if task.status == "pending" else now
     stats = dict(task.stats or empty_stats())
     stats["started_at"] = stats.get("started_at") or now.isoformat()
+    if previous_status not in {"running", "pending"}:
+        stats["pacing_anchor_at"] = now.isoformat()
     if task.type == "group_ai_chat":
         stats["force_bootstrap_once"] = True
     task.stats = stats

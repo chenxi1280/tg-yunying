@@ -22,6 +22,7 @@ from app.services._common import _now
 
 from .daily_coverage import ensure_task_daily_coverage
 from .daily_group_target import ensure_task_group_daily_target
+from .pacing import task_pacing_anchor
 from .search_click_revisions import apply_pending_search_click_revision
 from .search_click_target_progress import _active_click_quarantine_count
 
@@ -139,7 +140,7 @@ def _new_ledger(
 
 
 def _day_phase(task: Task, local_now: datetime) -> str:
-    started_at = task.scheduled_start or task.created_at
+    started_at = task_pacing_anchor(task)
     if started_at is None:
         return "full_day"
     zone = local_now.tzinfo

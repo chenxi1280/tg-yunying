@@ -189,6 +189,28 @@ def test_midday_start_begins_with_zero_due(session: Session) -> None:
     ) == 0
 
 
+def test_manual_start_uses_runtime_start_instead_of_draft_creation(
+    session: Session,
+) -> None:
+    task, group = _seed(session, configured=800, account_count=3)
+    created_at = datetime(2026, 7, 28, 8)
+    started_at = datetime(2026, 7, 28, 18)
+    task.scheduled_start = None
+    task.created_at = created_at
+    task.stats = {"started_at": started_at.isoformat()}
+
+    target = ensure_task_group_daily_target(
+        session,
+        task,
+        group,
+        started_at.date(),
+        now=started_at,
+    )
+
+    assert target.scope_frozen_at == started_at
+    assert daily_group_due_message_count(target, {}, now=started_at) == 0
+
+
 def test_full_day_800_target_is_only_partially_due_at_noon(session: Session) -> None:
     task, group = _seed(session, configured=800, account_count=3)
     timestamp = datetime(2026, 7, 28, 12)
@@ -201,6 +223,32 @@ def test_full_day_800_target_is_only_partially_due_at_noon(session: Session) -> 
     )
 
     assert daily_group_due_message_count(target, {}, now=timestamp) == 400
+
+
+def test_evening_start_does_not_compress_full_target_into_remaining_day(
+    session: Session,
+) -> None:
+    task, group = _seed(session, configured=800, account_count=3)
+    started_at = datetime(2026, 7, 28, 18)
+    task.scheduled_start = started_at
+    target = ensure_task_group_daily_target(
+        session,
+        task,
+        group,
+        started_at.date(),
+        now=started_at,
+    )
+
+    assert daily_group_due_message_count(
+        target,
+        {},
+        now=datetime(2026, 7, 28, 21),
+    ) == 100
+    assert daily_group_due_message_count(
+        target,
+        {},
+        now=datetime(2026, 7, 29),
+    ) == 200
 
 
 def test_zero_quiet_curve_weight_reduces_volume_without_blocking(session: Session) -> None:

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 from datetime import date, datetime, time, timedelta
 
 from sqlalchemy import func, select
@@ -17,6 +16,7 @@ from app.models import (
     TgGroup,
 )
 from app.services._common import _now
+from .pacing import cumulative_pacing_due, task_pacing_anchor
 
 
 def effective_daily_message_target(configured: int, current_required: int) -> int:
@@ -93,25 +93,26 @@ def daily_group_due_message_count(
     target: TaskGroupDailyTarget,
     pacing_config: dict,
     *,
+    anchor_at: datetime | None = None,
     now: datetime | None = None,
 ) -> int:
     timestamp = _wall_time(now or _now())
     day_start = datetime.combine(target.target_date, time.min)
     day_end = day_start + timedelta(days=1)
-    start = max(day_start, _wall_time(target.scope_frozen_at))
+    anchors = [day_start, _wall_time(target.scope_frozen_at)]
+    if anchor_at is not None:
+        anchors.append(_wall_time(anchor_at))
+    start = max(anchors)
     if timestamp <= start:
         return 0
-    if timestamp >= day_end:
-        return target.effective_message_target
-    curve = _positive_hourly_curve(pacing_config)
-    ratio = _weighted_seconds(start, timestamp, curve) / max(
-        1.0,
-        _weighted_seconds(start, day_end, curve),
-    )
-    return max(1, min(
+    return cumulative_pacing_due(
         target.effective_message_target,
-        math.floor(target.effective_message_target * ratio),
-    ))
+        pacing_config,
+        anchor_at=start,
+        period_start_at=day_start,
+        period_end_at=day_end,
+        now=timestamp,
+    )
 
 
 def _locked_target(
@@ -175,7 +176,7 @@ def _scope_frozen_at(
 ) -> datetime:
     if phase != "admission_warming":
         return committed_at
-    started_at = task.scheduled_start or task.created_at
+    started_at = task_pacing_anchor(task)
     if started_at is None or _wall_time(started_at).date() != target_date:
         return fallback
     return _wall_time(started_at)
@@ -290,7 +291,7 @@ def _unknown_hold_count(
 
 def _fulfillment_phase(task: Task, target_date: date) -> tuple[str, datetime]:
     day_start = datetime.combine(target_date, time.min)
-    started_at = task.scheduled_start or task.created_at
+    started_at = task_pacing_anchor(task)
     if started_at and _wall_time(started_at).date() == target_date and _wall_time(started_at) > day_start:
         return "admission_warming", day_start + timedelta(days=1)
     return "full_day_committed", day_start
@@ -378,28 +379,6 @@ def _coverage_confirmed_count(session: Session, target: TaskGroupDailyTarget) ->
 
 def _wall_time(value: datetime) -> datetime:
     return value.replace(tzinfo=None) if value.tzinfo else value
-
-
-def _positive_hourly_curve(pacing_config: dict) -> list[int]:
-    profile = pacing_config.get("operation_profile") or {}
-    raw = profile.get("hourly_activity_curve") if isinstance(profile, dict) else None
-    if not isinstance(raw, list) or len(raw) != 24:
-        return [1] * 24
-    try:
-        return [max(1, int(value)) for value in raw]
-    except (TypeError, ValueError):
-        return [1] * 24
-
-
-def _weighted_seconds(start: datetime, end: datetime, curve: list[int]) -> float:
-    cursor = start
-    total = 0.0
-    while cursor < end:
-        next_hour = cursor.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
-        boundary = min(end, next_hour)
-        total += curve[cursor.hour] * (boundary - cursor).total_seconds()
-        cursor = boundary
-    return total
 
 
 __all__ = [
