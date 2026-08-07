@@ -5367,8 +5367,9 @@ def test_group_ai_chat_idle_continuation_waits_until_interval(monkeypatch):
             Action.action_type == "send_message",
         ))
 
-    assert len(generated) == 1
+    assert generated == []
     assert action_count == 1
+    assert action.payload["quality_fallback"] == "check_in_fallback"
     assert task.status == "running"
     assert task.last_error == "群日目标按计划推进中，等待下一发送时点"
     assert task.stats["skip_reason"] == "daily_target_pacing"
@@ -5420,8 +5421,9 @@ def test_group_ai_chat_idle_continuation_generates_after_interval(monkeypatch):
             Action.action_type == "send_message",
         )))
 
-    assert len(generated) == 1
+    assert generated == []
     assert len(actions) == 1
+    assert first_action.payload["quality_fallback"] == "check_in_fallback"
     assert task.status == "running"
     assert task.last_error == "群日目标按计划推进中，等待下一发送时点"
 
@@ -5587,8 +5589,9 @@ def test_group_ai_chat_blocks_unanchored_idle_experience_claims(monkeypatch):
             Action.action_type == "send_message",
         ))
 
-    assert len(generated) == 1
+    assert generated == []
     assert action_count == 1
+    assert first_action.payload["quality_fallback"] == "check_in_fallback"
 
 
 @pytest.mark.no_postgres
@@ -5825,8 +5828,9 @@ def test_group_ai_chat_idle_continuation_can_be_disabled(monkeypatch):
             Action.action_type == "send_message",
         ))
 
-    assert len(generated) == 1
+    assert generated == []
     assert action_count == 1
+    assert first_action.payload["quality_fallback"] == "check_in_fallback"
     assert task.status == "running"
     assert task.last_error == "群日目标按计划推进中，等待下一发送时点"
     assert task.stats["skip_reason"] == "daily_target_pacing"
