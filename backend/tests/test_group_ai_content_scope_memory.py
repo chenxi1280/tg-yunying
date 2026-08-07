@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.models import Action, AiGroupMessageMemory, GroupContextMessage, Task, TgAccount
+from app.models import Action, AiGroupMessageMemory, ExecutionAttempt, GroupContextMessage, Task, TgAccount
 from app.services.task_center import dispatcher
 from app.services.task_center.ai_generation_dependencies import GenerationDependencies
 from app.services.task_center.ai_generation_dispatch import ensure_send_message_content
@@ -117,6 +117,13 @@ def test_provider_rebuilds_prompt_inputs_from_target_group_only():
     )
     action = _action(payload, action_id="scope-prompt-rebuild")
     session.add(action)
+    session.flush()
+    session.add(ExecutionAttempt(
+        tenant_id=1,
+        action_id="sent-b-prompt",
+        status="success",
+        remote_message_id="8001",
+    ))
     session.commit()
     observed: list[tuple[str, dict, dict]] = []
 

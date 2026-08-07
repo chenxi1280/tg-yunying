@@ -110,6 +110,7 @@ def seed_reply_action(session: Session, now_value):
     session.add_all([source, action])
     session.flush()
     session.add(ExecutionAttempt(
+        tenant_id=1,
         action_id=source.id,
         status="success",
         remote_message_id="9001",

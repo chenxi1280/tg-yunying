@@ -4101,7 +4101,7 @@ def test_task_center_group_ai_chat_runs_from_worker_loop(monkeypatch):
 
 def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(monkeypatch):
     context_suffix = uuid4().hex[:8]
-    context_message_id = int(uuid4().int % 1_000_000_000) + 1
+    context_message_id = 2
     second_context_marker = f"second-cycle-{context_suffix}"
     due_message_count = 1
     monkeypatch.setattr(
@@ -4115,15 +4115,17 @@ def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(monkeypatch):
     draft_sequence = 0
 
     def fake_fetch_group_messages(*args, **kwargs):
+        after_message_id = int(kwargs.get("after_message_id") or 0)
         return [
             GroupMessageSnapshot(
                 remote_message_id=remote_id,
                 sender_peer_id="pytest-real-user",
                 sender_name="真人用户",
                 content=content,
-                sent_at=datetime.now(UTC).replace(tzinfo=None),
+                sent_at=(datetime.now(UTC) - timedelta(seconds=1)).replace(tzinfo=None),
             )
             for remote_id, content in messages
+            if int(remote_id) > after_message_id
         ]
 
     def fake_generate_drafts(_credentials, prompt, **_kwargs):
@@ -4209,6 +4211,7 @@ def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(monkeypatch):
                 "participation_jitter": 0,
                 "messages_per_round_mode": "manual",
                 "messages_per_round": 1,
+                "reply_min_per_round": 0,
                 "daily_message_target": 2,
             },
         )
@@ -4224,6 +4227,10 @@ def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(monkeypatch):
             db_group = session.get(TgGroup, group["id"])
             assert db_group is not None
             collect_group_context(session, db_group, [account["id"]])
+            assert db_group.listener_cursor_status == "contiguous", {
+                "remote_cursor": db_group.listener_remote_cursor,
+                "cursor_status": db_group.listener_cursor_status,
+            }
             session.commit()
         drain_task_center(SessionLocal, 10)
         if not sends:

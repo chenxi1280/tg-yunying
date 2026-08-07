@@ -2163,6 +2163,25 @@ def test_hard_hourly_reply_send_keeps_context_expiration(monkeypatch):
             "reply_to_message_id": 1001,
             "voice_profile_contract_version": "style_only_v2",
         }
+        source = Action(
+            id="hard-hourly-own-source",
+            tenant_id=1,
+            task_id="task-cycle-skip",
+            task_type="group_ai_chat",
+            action_type="send_message",
+            account_id=11,
+            status="success",
+            executed_at=now_value - timedelta(minutes=2),
+            payload={"group_id": 7, "message_text": "旧上下文"},
+        )
+        session.add(source)
+        session.flush()
+        session.add(ExecutionAttempt(
+            tenant_id=1,
+            action_id=source.id,
+            status="success",
+            remote_message_id="1001",
+        ))
         session.add(_cycle_action("action-hard-hourly-reply", now_value, payload))
         session.commit()
         monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())

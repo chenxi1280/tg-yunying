@@ -16,6 +16,7 @@ from app.models import (
     Action,
     AiAccountVoiceProfile,
     AiGroupMessageMemory,
+    ExecutionAttempt,
     GroupContextMessage,
     SchedulingSetting,
     Task,
@@ -301,6 +302,10 @@ def _concurrent_claim_ids() -> tuple[list[list[str]], list[float]]:
 
 def _cleanup_scope(scope: RecoveryScope) -> None:
     with SessionLocal() as session:
+        session.execute(delete(ExecutionAttempt).where(ExecutionAttempt.action_id.in_([
+            scope.action_id,
+            _reply_source_action_id(scope),
+        ])))
         session.execute(delete(AiGroupMessageMemory).where(AiGroupMessageMemory.tenant_id == scope.tenant_id))
         session.execute(delete(TaskAccountDailyCoverage).where(TaskAccountDailyCoverage.tenant_id == scope.tenant_id))
         session.execute(delete(Action).where(Action.tenant_id == scope.tenant_id))
@@ -345,6 +350,25 @@ def _seed_reserved_reply_action(session, scope: RecoveryScope = DEFAULT_SCOPE):
     )
     session.add(context)
     session.flush()
+    source = Action(
+        id=_reply_source_action_id(scope),
+        tenant_id=scope.tenant_id,
+        task_id=scope.task_id,
+        task_type="group_ai_chat",
+        action_type="send_message",
+        account_id=scope.account_id,
+        status="success",
+        executed_at=timestamp - timedelta(minutes=1),
+        payload={"group_id": scope.group_id, "message_text": "今天按原计划吗？"},
+    )
+    session.add(source)
+    session.flush()
+    session.add(ExecutionAttempt(
+        tenant_id=scope.tenant_id,
+        action_id=source.id,
+        status="success",
+        remote_message_id="9001",
+    ))
     action = _new_action(context.id, timestamp, scope)
     session.add(action)
     session.flush()
@@ -353,6 +377,10 @@ def _seed_reserved_reply_action(session, scope: RecoveryScope = DEFAULT_SCOPE):
     session.add(coverage)
     session.commit()
     return action, coverage
+
+
+def _reply_source_action_id(scope: RecoveryScope) -> str:
+    return f"reply-source-{scope.tenant_id}"
 
 
 def _seed_scope(session, timestamp, scope: RecoveryScope) -> None:
@@ -444,9 +472,9 @@ def _reply_payload(context_id: int, scope: RecoveryScope) -> dict:
         "slot_id": "cycle-reply:turn:1",
         "turn_index": 1,
         "reply_to_message_id": 9001,
-        "reply_target_author": "真人用户",
+        "reply_target_author": "账号A",
         "reply_target_preview": "今天按原计划吗？",
-        "reply_target_source": "human_context",
+        "reply_target_source": "own_history",
         "context_snapshot_message_id": context_id,
         "context_message_ids": [context_id],
         "ai_generation_id": "cycle-reply",

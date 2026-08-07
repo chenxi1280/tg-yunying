@@ -141,6 +141,35 @@ def _add_group_task(session: Session, type_config: dict) -> Task:
     return task
 
 
+def _add_own_group_history(session: Session, task: Task, *message_ids: int) -> None:
+    for message_id in message_ids:
+        context = session.get(GroupContextMessage, message_id)
+        account_id = int(context.listener_account_id)
+        action = Action(
+            id=f"own-group-history-{message_id}",
+            tenant_id=task.tenant_id,
+            task_id=task.id,
+            task_type="group_ai_chat",
+            action_type="send_message",
+            account_id=account_id,
+            status="success",
+            executed_at=context.sent_at - timedelta(days=1),
+            payload={
+                "group_id": 7,
+                "message_text": context.content,
+                "account_role": f"账号{account_id}",
+            },
+        )
+        session.add(action)
+        session.flush()
+        session.add(ExecutionAttempt(
+            tenant_id=task.tenant_id,
+            action_id=action.id,
+            status="success",
+            remote_message_id=str(message_id),
+        ))
+
+
 def _forbid_planner_ai_generation(monkeypatch) -> None:
     def fail(*_args, **_kwargs):
         pytest.fail("planner phase must not call AI generation")
@@ -745,15 +774,19 @@ def test_group_ai_plans_reply_turns_with_bound_targets(monkeypatch):
                 "participation_jitter": 0,
             },
         )
+        _add_own_group_history(session, task, 43, 44)
         session.commit()
 
         created = build_group_ai_chat_plan(session, task)
-        actions = sorted(session.scalars(select(Action).where(Action.task_id == task.id)).all(), key=lambda action: action.payload["turn_index"])
+        actions = sorted(session.scalars(select(Action).where(
+            Action.task_id == task.id,
+            Action.status == "pending",
+        )).all(), key=lambda action: action.payload["turn_index"])
 
     assert created == 3
     assert all(action.payload["ai_generation_status"] == "pending" for action in actions)
     assert [action.payload["reply_to_message_id"] for action in actions[:2]] == [44, 43]
-    assert [action.payload["reply_target_author"] for action in actions[:2]] == ["另一个真人", "真人用户"]
+    assert [action.payload["reply_target_author"] for action in actions[:2]] == ["账号102", "账号101"]
     assert actions[1].payload["reply_target_preview"] == "今天群里有什么安排"
     assert actions[2].payload["reply_to_message_id"] is None
 
@@ -858,6 +891,7 @@ def test_group_ai_reuses_completed_reply_targets_across_rounds(monkeypatch):
                 "participation_jitter": 0,
             },
         )
+        _add_own_group_history(session, task, 44)
         session.add(
             Action(
                 id="used-group-reply-action",
@@ -875,7 +909,10 @@ def test_group_ai_reuses_completed_reply_targets_across_rounds(monkeypatch):
         session.commit()
 
         created = build_group_ai_chat_plan(session, task)
-        actions = session.scalars(select(Action).where(Action.task_id == task.id, Action.id != "used-group-reply-action")).all()
+        actions = session.scalars(select(Action).where(
+            Action.task_id == task.id,
+            Action.status == "pending",
+        )).all()
 
     assert created == 1
     assert actions[0].payload["ai_generation_status"] == "pending"
@@ -1087,10 +1124,14 @@ def test_group_ai_defers_reply_candidate_quality_to_dispatcher(monkeypatch):
                 "participation_jitter": 0,
             },
         )
+        _add_own_group_history(session, task, 43, 44)
         session.commit()
 
         created = build_group_ai_chat_plan(session, task)
-        actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
+        actions = list(session.scalars(select(Action).where(
+            Action.task_id == task.id,
+            Action.status == "pending",
+        )))
 
     assert created == 3
     assert len(actions) == 3
