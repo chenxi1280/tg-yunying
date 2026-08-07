@@ -38,6 +38,23 @@ def test_repeated_template_batch_continues_after_latest_open_action() -> None:
     ]
 
 
+def test_completed_batch_keeps_success_execution_as_pacing_anchor() -> None:
+    success_at = datetime(2026, 8, 8, 18, 0)
+    session = Mock()
+    session.scalar.side_effect = [None, success_at]
+    task = SimpleNamespace(id="completed-paced-task")
+
+    reserved = reserve_task_schedule_times(
+        session,
+        task,
+        "send_message",
+        [success_at + timedelta(minutes=1)],
+        pacing_config={"mode": "template", "template": "moderate_6h"},
+    )
+
+    assert reserved == [success_at + timedelta(minutes=3)]
+
+
 def test_schedule_reservation_drops_rows_that_do_not_fit_deadline() -> None:
     start = datetime(2026, 8, 8, 23, 57)
 

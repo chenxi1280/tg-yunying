@@ -30,16 +30,24 @@ def reserve_task_schedule_times(
 ) -> list[datetime]:
     if not planned_times:
         return []
-    latest = session.scalar(
+    latest_open = session.scalar(
         select(func.max(Action.scheduled_at)).where(
             Action.task_id == task.id,
             Action.action_type == action_type,
             Action.status.in_(OPEN_PACING_RESERVATION_STATUSES),
         )
     )
+    latest_success = session.scalar(
+        select(func.max(Action.executed_at)).where(
+            Action.task_id == task.id,
+            Action.action_type == action_type,
+            Action.status == "success",
+            Action.executed_at.is_not(None),
+        )
+    )
     return continue_schedule_after(
         planned_times,
-        latest_scheduled_at=latest,
+        latest_scheduled_at=_latest_anchor(latest_open, latest_success),
         minimum_gap_seconds=minimum_schedule_gap_seconds(pacing_config),
         deadline_at=deadline_at,
     )
@@ -75,6 +83,11 @@ def _match_timezone(value: datetime | None, reference: datetime) -> datetime | N
     if value.tzinfo is None:
         return value.replace(tzinfo=reference.tzinfo)
     return value.astimezone(reference.tzinfo)
+
+
+def _latest_anchor(*values: datetime | None) -> datetime | None:
+    present = [value for value in values if value is not None]
+    return max(present) if present else None
 
 
 __all__ = ["continue_schedule_after", "reserve_task_schedule_times"]
