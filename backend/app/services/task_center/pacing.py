@@ -369,8 +369,21 @@ def schedule_times(
             floor = times[index - 1] + timedelta(seconds=min_gap)
             if times[index] < floor:
                 times[index] = floor
-    adjusted = [_apply_quiet_hours(item, config) for item in sorted(times)]
+    adjusted = _apply_quiet_hours_preserving_spacing(times, config)
     return _fit_before_deadline(adjusted, now, deadline_at)
+
+
+def _apply_quiet_hours_preserving_spacing(times: list[datetime], config: dict) -> list[datetime]:
+    ordered = sorted(times)
+    adjusted: list[datetime] = []
+    for index, original in enumerate(ordered):
+        candidate = _apply_quiet_hours(original, config)
+        if index:
+            original_gap = original - ordered[index - 1]
+            candidate = max(candidate, adjusted[-1] + original_gap)
+            candidate = _apply_quiet_hours(candidate, config)
+        adjusted.append(candidate)
+    return adjusted
 
 
 def _fit_before_deadline(

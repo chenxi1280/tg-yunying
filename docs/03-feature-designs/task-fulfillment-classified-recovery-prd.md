@@ -8,7 +8,7 @@
 | 需求级别 | L3：生产多类任务长期按时按量履约失败 |
 | 适用任务 | `group_ai_chat`、`channel_comment`、`channel_like`、`channel_view`、纯 `search_click` |
 | 文档状态 | `approved_product_handoff` |
-| 设计状态 | `product_design_complete`；2026-08-07 生产复核后，`fact_first_v3` 只定义事实、防重、准入与恢复，评论、浏览、点赞、AI 活群统一执行非压缩拟人节奏；闭合合同见 `task-fulfillment-contract-closure-prd.md` |
+| 设计状态 | `product_design_complete`；2026-08-08 生产复核补充 AI 仅引用我方消息、无法解析目标实体的准入终态、quiet-hours 后置去折叠和历史 unknown/绑定收口；闭合合同见 `task-fulfillment-contract-closure-prd.md` |
 | 开发交接 | `dev_handoff_ready=true`；本文与闭合专项是本轮唯一实现合同，主 PRD与主数据流索引已同步产品合同；项目结构索引只在代码与 QA 稳定后按真实入口更新 |
 | 生产状态 | `production_blocked`；部署、健康或局部远端事实不等于当日履约完成 |
 | 统计时区 | 默认 `Asia/Shanghai`，以 `Task.timezone` 为准 |
@@ -57,6 +57,10 @@
 21. 一个搜索 Task 只允许一个目标；多目标必须创建多个独立 Task 并行执行。
 22. `签到` 不进入普通正文 10 天去重，可计群日总量并可同时完成对应账号 coverage，但不得替代 reply 或高质量 AI 正文指标。
 23. ContentMix 投影、义务与 Action 的幂等身份必须有数据库唯一约束，不能只靠应用层查询防重。
+24. AI 活群 Telegram 原生引用只允许同 tenant、同 Task、同群的历史成功 Action + 成功 Attempt 远端消息；真人 listener 消息只作上下文。
+25. `resolve_telethon_target()` 已完成账号 dialog 回退后仍返回“无法解析 PeerChannel”时，当前账号/Task/目标路径当日终结，不能每 30 秒无限重启 observation；不把该事实传播成全局账号终态。
+26. 多条 Action 离开 quiet-hours 后必须保留原相邻间隔和 `max_actions_per_hour` 下限；禁止全部映射到窗口开始同一秒。
+27. 历史 unknown 只允许从已存在的 Gateway-started Attempt 生成 `remote_outcome_unknown` 事实并补 deadline，不得重发；终态 Action 绑定的未确认频道义务只清空绑定并回到 open，不伪造远端完成。
 
 ### 2.2 取消“冻结账号分母”，改为任务内每日动态账号范围
 
@@ -155,6 +159,7 @@ eligible/recovering -> abandoned_for_day
 - `recovering`：存在已验证可用的自动恢复路径，例如备用授权、可用代理、已知准入流程或可重新探测的短暂离线。它保留本任务义务，但不占用正文 AI 生成和发送 ready 位。
 - `abandoned_for_day`：Telegram/Session 权威确认该账号当前无法发送，或当前任务日没有合法执行路线。必须保存原因、事实版本和判定时间，终结未进 Gateway 的当日 coverage/Action，释放义务、worker claim/lease、ContentMix 绑定和实际槽位。
 - `session_invalid|session_revoked|session_unauthorized|need_relogin|write_forbidden|account_restricted|account_banned|cannot_send` 一经权威确认，立即在该 Task/目标/任务日放弃；同日不自动复活旧义务。目标群 `target_dissolved|peer_invalid|target_deleted` 是目标级终态，终结该 Task/目标，不能把账号全局判废。
+- Telegram client 已尝试 `get_entity` 和当前账号 dialog 枚举后仍无法解析目标 `PeerChannel`，记为 `target_entity_unresolvable`：只终结当前账号 + Task + 目标的当日准入/未进 Gateway Action，coverage 保留显式 shortfall 并在下一任务日重新评估；不能继续 observation gap 循环，也不能据此判定目标对所有账号失效。
 - FloodWait/SlowMode 只在明确 `retry_at < deadline_at` 时延后；跨过 deadline 才放弃任务日。网络 timeout、listener/cursor gap 和 unknown 不属于权威无法发送证据。
 - 已放弃旧事实版本和旧 Action 不复活；新任务日重新按当日事实评估，定时扫描或重启不能复活旧任务日。该状态只作用于当前 Task/目标，不写全局冻结。
 - 已进 Gateway 的 unknown 继续走远程对账，不得通过“放弃账号”绕过防重。
@@ -182,6 +187,7 @@ eligible/recovering -> abandoned_for_day
 - 四类任务统一使用 `pacing_anchor=max(period_start,task_activation_anchor,source_observed_at when source-scoped)`；在 anchor 精确时刻累计到期量为 0。AI/浏览的 pacing period 是当前任务自然日；评论/点赞的 pacing period 是来源消息首次采集后的滚动 24 小时。
 - 当前到期量为 `max(1,floor(pacing_target * curve_weight(pacing_anchor,now) / full_24h_curve_weight))`。分母必须是完整任务自然日或完整来源滚动 24 小时，禁止使用 `pacing_anchor..deadline` 的剩余曲线权重，禁止 `_fit_before_deadline` 或等价逻辑把完整目标缩放进短窗口。已确认、Gateway-started、unknown hold 和有效 open Action 必须从当前到期量中扣除。
 - `channel_comment/channel_like/channel_view` 只为当前累计到期缺口建单并保留 `schedule_times()` 生成的 future `scheduled_at`。Planner、takeover 和 Recovery 不得在建单后把 future pending Action 批量改成当前时间；晚采集来源在当前自然日只形成按可执行时段折算的量，余量保持 open/shortfall，不突发追赶。
+- quiet-hours 调整必须顺序处理：第一条移到合法窗口后，后续 Action 至少保留调整前相邻间隔；若再次落入 quiet-hours，继续移到下一个合法窗口并从该点保留间隔。`max_actions_per_hour` 的间隔下限在后置调整后仍必须成立，禁止多个时间落到同一窗口起点。
 - AI 每轮只物化当前缺口；同批 `scheduled_at` 使用正常期/启动期/低频期的现有间隔与 jitter，不得因 fact-first 改为同一个 `now`。绕过 legacy 账号容量时只能绕过旧容量判断，不能改写已经计算的 `planned_at`。
 - Planner 有当前到期欠额时可按现有 debt recheck 节奏继续推进；没有欠额时按 `next_run_after_task()` 等待下一个曲线时点。禁止对这四类任务固定每 2 秒无节奏追赶。
 - 暂停、恢复、晚启动或容量不足不回填已逝时间：只在剩余任务日曲线内推进，deadline 到达后将欠额投影为 `terminal_shortfall/content_capacity_gap`。不通过提高本地上限、缩短间隔或重写历史 Action 伪装完成。
@@ -388,6 +394,8 @@ gateway_started + result_unknown
 - Action open 但 lease owner heartbeat 过期：先以 `populate_existing=True` 或等价新 Session 强制重读 owner heartbeat 和 Action，再以旧 `owner_id + owner_fencing_epoch + action_version + lease_expires_at` 做单行 CAS，递增 fencing epoch 并接管；不显式锁两行。旧 owner 的续租、结果和终结提交都必须带原 epoch，不匹配写 `stale_owner_rejected`。未进 Gateway 可回收，已进 Gateway 转 `unknown_hold`。
 - heartbeat/lease 是否过期只使用同一 PostgreSQL 事务内的 `clock_timestamp()`，全部时间为 UTC-aware `timestamptz`；禁止用 worker 本地时钟、容器时区或 naive datetime 参与接管 CAS。
 - coverage、数量槽、ContentMix 和 Action 绑定不一致时，以任务专用义务账本为准重建投影，不新增目标。
+- `reaction/view` 义务若仍指向 `failed|skipped|cancelled` Action 且不存在 typed remote fact，CAS 清空 `current_action_id` 并恢复 `open`；不得把旧日义务重新批量执行，也不得改写已 confirmed 义务。
+- 历史 `unknown_after_send` 缺 deadline 时，仅当最新 Attempt 已进入 Gateway 且仍无权威 remote outcome，才幂等追加 `remote_outcome_unknown` 事实并从修复时刻建立 reconcile deadline；deadline 到期只转 `closed_unknown/closed_with_unknown_shortfall`，禁止重发或记成功。
 - 每次状态修复写 `RecoveryAudit`，包含 before/after hash、义务身份、旧 Action 和原因。
 
 ### 10.3 跨日收口

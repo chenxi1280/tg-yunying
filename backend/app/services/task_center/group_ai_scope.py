@@ -152,8 +152,8 @@ def _context_violation(
         context_ids=context_ids,
     ) != len(context_ids):
         return GroupAiScopeViolation("context_message_ids", "上下文或 snapshot 不属于 Action 目标群")
-    if payload.reply_to_message_id and not _reply_target_exists(session, action, payload):
-        return GroupAiScopeViolation("reply_to_message_id", "引用目标不属于 Action 目标群")
+    if payload.reply_to_message_id and not own_history_reply_target_exists(session, action, payload):
+        return GroupAiScopeViolation("reply_to_message_id", "引用目标不是当前任务已成功发送的历史消息")
     return None
 
 
@@ -174,18 +174,11 @@ def _scoped_context_count(
     return int(count or 0)
 
 
-def _reply_target_exists(
+def own_history_reply_target_exists(
     session: Session,
     action: Action,
     payload: SendMessagePayload,
 ) -> bool:
-    human_target = session.scalar(select(GroupContextMessage.id).where(
-        GroupContextMessage.tenant_id == action.tenant_id,
-        GroupContextMessage.group_id == payload.group_id,
-        GroupContextMessage.remote_message_id == str(payload.reply_to_message_id),
-    ))
-    if human_target:
-        return True
     return bool(successful_own_history_reply_facts(
         session,
         tenant_id=action.tenant_id,

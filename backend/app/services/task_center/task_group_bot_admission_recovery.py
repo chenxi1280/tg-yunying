@@ -32,6 +32,30 @@ def restart_unproven_admission(
     session: Session,
     admission: TaskGroupBotAdmission,
 ) -> bool:
+    return _restart_admission_observation(
+        session,
+        admission,
+        outcome="unproven_local_terminal_reopened",
+    )
+
+
+def restart_task_day_admission(
+    session: Session,
+    admission: TaskGroupBotAdmission,
+) -> bool:
+    return _restart_admission_observation(
+        session,
+        admission,
+        outcome="target_entity_recheck_on_new_task_day",
+    )
+
+
+def _restart_admission_observation(
+    session: Session,
+    admission: TaskGroupBotAdmission,
+    *,
+    outcome: str,
+) -> bool:
     account = session.get(TgAccount, admission.account_id)
     group = session.get(TgGroup, admission.target_group_id)
     if not _account_can_be_observed(account) or group is None:
@@ -50,7 +74,7 @@ def restart_unproven_admission(
     )
     _apply_restart(admission, identity=identity, now_value=now_value)
     record_fact(session, admission, "post_follow_visibility", outcome={
-        "outcome": "unproven_local_terminal_reopened",
+        "outcome": outcome,
         "surface_identity_hash": admission.surface_identity_hash,
     })
     return True
@@ -134,4 +158,8 @@ def _reopen_coverages(
         row.next_eligible_at = _now()
 
 
-__all__ = ["reopen_unproven_task_coverages", "restart_unproven_admission"]
+__all__ = [
+    "reopen_unproven_task_coverages",
+    "restart_task_day_admission",
+    "restart_unproven_admission",
+]

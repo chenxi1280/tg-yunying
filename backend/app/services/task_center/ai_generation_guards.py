@@ -20,7 +20,7 @@ from .direct_check_in import (
 )
 from .group_ai_scope import (
     LOCAL_REPLY_TARGET_MISSING_DETAIL,
-    successful_own_history_reply_facts,
+    own_history_reply_target_exists,
     validate_group_ai_content_scope,
 )
 from .payloads import SendMessagePayload
@@ -318,7 +318,7 @@ def validate_local_reply_target(
         TgGroupAccount.account_id == account_id,
         TgGroupAccount.can_send.is_(True),
     ))
-    if group and link and _local_reply_target_exists(session, action, payload=payload):
+    if group and link and own_history_reply_target_exists(session, action, payload):
         return group.tg_peer_id
     fail_generation_action(
         action,
@@ -328,31 +328,6 @@ def validate_local_reply_target(
     )
     session.commit()
     raise AiGenerationUnavailable("reply_target_missing")
-
-
-def _local_reply_target_exists(
-    session: Session,
-    action: Action,
-    *,
-    payload: SendMessagePayload,
-) -> bool:
-    target = session.scalar(select(GroupContextMessage.id).where(
-        GroupContextMessage.tenant_id == action.tenant_id,
-        GroupContextMessage.group_id == payload.group_id,
-        GroupContextMessage.remote_message_id == str(payload.reply_to_message_id),
-    ))
-    if target:
-        return True
-    return bool(successful_own_history_reply_facts(
-        session,
-        tenant_id=action.tenant_id,
-        task_id=str(action.task_id or ""),
-        group_id=payload.group_id,
-        remote_message_id=str(payload.reply_to_message_id),
-        exclude_action_id=action.id,
-        limit=1,
-    ))
-
 
 def latest_context_rows(session: Session, payload: SendMessagePayload, task: Task) -> list[GroupContextMessage]:
     depth = min(CONTEXT_HISTORY_LIMIT, max(1, int((task.type_config or {}).get("chat_history_depth") or CONTEXT_HISTORY_LIMIT)))

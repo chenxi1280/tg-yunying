@@ -2686,7 +2686,7 @@ def _reply_targets_for_plan(
         if daily_coverage_debt:
             stats_inc(task, "coverage_reply_shortfall_cycle_count")
             return [], True
-        task.last_error = "可引用消息不足，等待监听到可回复消息后继续执行"
+        task.last_error = "我方可引用消息不足，等待本任务产生可引用消息后继续执行"
         return None, False
     return reply_target_pool[:reply_min], False
 
@@ -3865,9 +3865,8 @@ def _provider_generation_payload(item: dict) -> dict[str, object]:
     return {key: item[key] for key in keys if key in item}
 
 
-def _group_reply_target_pool(session: Session, task: Task, group: TgGroup, rows: list) -> list[dict]:
-    targets = [_reply_target_from_context_row(row) for row in reversed(rows) if _reply_target_from_context_row(row)]
-    targets.extend(_historical_group_reply_targets(session, task, group))
+def _group_reply_target_pool(session: Session, task: Task, group: TgGroup, _rows: list) -> list[dict]:
+    targets = _historical_group_reply_targets(session, task, group)
     deduped = _dedupe_reply_targets(targets)
     candidate_ids = _reply_message_ids(deduped)
     used_ids = _used_group_reply_target_ids(session, task, group, candidate_ids)
@@ -3901,27 +3900,6 @@ def _exclude_used_reply_targets(targets: list[dict], used_ids: set[int]) -> list
 
 def _reply_message_ids(targets: list[dict]) -> set[int]:
     return {message_id for target in targets if (message_id := int(target.get("message_id") or 0))}
-
-
-def _reply_target_from_context_row(row) -> dict | None:
-    message_id = _context_remote_message_id(row)
-    preview = str(getattr(row, "content", "") or "").strip()
-    if not message_id or not preview:
-        return None
-    return {
-        "message_id": message_id,
-        "author": str(getattr(row, "sender_name", "") or "群友").strip(),
-        "preview": preview[:120],
-        "source": "human_context",
-    }
-
-
-def _context_remote_message_id(row) -> int:
-    raw = str(getattr(row, "remote_message_id", "") or "").strip()
-    if raw.isdigit():
-        return int(raw)
-    return 0
-
 
 def _historical_group_reply_targets(session: Session, task: Task, group: TgGroup, *, limit: int = 20) -> list[dict]:
     rows = successful_own_history_reply_facts(

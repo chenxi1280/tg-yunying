@@ -11,6 +11,10 @@ from app.models import GroupContextMessage, TgAccount, TgAccountAuthorization, T
 
 
 SURFACE_POLICY_VERSION = 1
+TARGET_ENTITY_UNRESOLVABLE_MARKERS = (
+    "could not find the input entity",
+    "could not find input entity",
+)
 
 
 @dataclass(frozen=True)
@@ -134,6 +138,11 @@ def unusable_telegram_error(exc: Exception) -> bool:
     ))
 
 
+def target_entity_unresolvable_error(exc: Exception) -> bool:
+    detail = f"{type(exc).__name__}:{exc}".lower()
+    return any(marker in detail for marker in TARGET_ENTITY_UNRESOLVABLE_MARKERS)
+
+
 __all__ = [
     "ProbeSurface",
     "current_authorization",
@@ -143,5 +152,6 @@ __all__ = [
     "numeric_cursor",
     "surface_identity",
     "surface_is_current",
+    "target_entity_unresolvable_error",
     "unusable_telegram_error",
 ]
