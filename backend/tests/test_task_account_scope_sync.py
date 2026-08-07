@@ -327,6 +327,11 @@ def test_new_account_event_reaches_online_daily_target_planner(session: Session,
         "app.services.task_center.account_voice_profiles.cached_voice_profile_prompt_details",
         lambda _tenant_id, account_ids: ({}, account_ids),
     )
+    monkeypatch.setattr(
+        group_ai_chat,
+        "daily_group_due_message_count",
+        lambda *_args, **_kwargs: 1,
+    )
     task = _seed_new_account_e2e(session)
 
     assert process_account_eligibility_events(session, limit=10, now=now) == 1

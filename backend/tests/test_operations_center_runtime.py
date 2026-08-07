@@ -5221,6 +5221,10 @@ def test_group_ai_chat_waits_when_no_new_real_context(monkeypatch):
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
     monkeypatch.setattr("app.services.account_online_state._now", lambda: now_value)
     monkeypatch.setattr("app.services.task_center.dispatcher._now", lambda: now_value)
+    monkeypatch.setattr(
+        "app.services.task_center.executors.group_ai_chat.daily_group_due_message_count",
+        lambda *_args, **_kwargs: 1,
+    )
     _forbid_planner_ai_generation(monkeypatch)
 
     with Session(engine) as session:
@@ -5327,6 +5331,10 @@ def test_group_ai_chat_idle_continuation_waits_until_interval(monkeypatch):
 
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
     monkeypatch.setattr("app.services.account_online_state._now", lambda: now_value)
+    monkeypatch.setattr(
+        "app.services.task_center.executors.group_ai_chat.daily_group_due_message_count",
+        lambda *_args, **_kwargs: 1,
+    )
     monkeypatch.setattr("app.services.account_online_state._now", lambda: now_value)
 
     with Session(engine) as session:
@@ -5378,6 +5386,10 @@ def test_group_ai_chat_idle_continuation_generates_after_interval(monkeypatch):
 
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
     monkeypatch.setattr("app.services.account_online_state._now", lambda: now_value)
+    monkeypatch.setattr(
+        "app.services.task_center.executors.group_ai_chat.daily_group_due_message_count",
+        lambda *_args, **_kwargs: 1,
+    )
 
     with Session(engine) as session:
         _seed_group_ai_context_task(
@@ -5425,6 +5437,10 @@ def test_group_ai_chat_rotates_single_turn_accounts_between_cycles(monkeypatch):
     monkeypatch.setattr(
         "app.services.account_online_state._now",
         lambda: clock["now"],
+    )
+    monkeypatch.setattr(
+        "app.services.task_center.executors.group_ai_chat.daily_group_due_message_count",
+        lambda *_args, **_kwargs: 3,
     )
 
     with Session(engine) as session:
@@ -5538,6 +5554,10 @@ def test_group_ai_chat_blocks_unanchored_idle_experience_claims(monkeypatch):
         return _slot_bound_contents(config, ["走之前还确认了下 挺细心"]), 0
 
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
+    monkeypatch.setattr(
+        "app.services.task_center.executors.group_ai_chat.daily_group_due_message_count",
+        lambda *_args, **_kwargs: 1,
+    )
 
     with Session(engine) as session:
         _seed_group_ai_context_task(
@@ -5768,6 +5788,10 @@ def test_group_ai_chat_idle_continuation_can_be_disabled(monkeypatch):
         return _slot_bound_contents(config, ["只应该生成第一轮。"]), 0
 
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
+    monkeypatch.setattr(
+        "app.services.task_center.executors.group_ai_chat.daily_group_due_message_count",
+        lambda *_args, **_kwargs: 1,
+    )
 
     with Session(engine) as session:
         _seed_group_ai_context_task(

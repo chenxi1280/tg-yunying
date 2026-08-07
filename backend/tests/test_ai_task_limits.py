@@ -841,6 +841,10 @@ def test_group_ai_uses_direct_daily_coverage_when_only_other_task_has_history(mo
 def test_group_ai_reuses_completed_reply_targets_across_rounds(monkeypatch):
     _forbid_planner_ai_generation(monkeypatch)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: NOW)
+    monkeypatch.setattr(
+        "app.services.task_center.executors.group_ai_chat.daily_group_due_message_count",
+        lambda *_args, **_kwargs: 2,
+    )
     with _session() as session:
         _add_tenant(session)
         _add_group(session, account_count=1)
@@ -880,6 +884,10 @@ def test_group_ai_reuses_completed_reply_targets_across_rounds(monkeypatch):
 
 def test_group_ai_reply_target_check_does_not_scan_irrelevant_history(monkeypatch):
     _forbid_planner_ai_generation(monkeypatch)
+    monkeypatch.setattr(
+        "app.services.task_center.executors.group_ai_chat.daily_group_due_message_count",
+        lambda *_args, **_kwargs: 2,
+    )
     def fail_on_irrelevant_history(action, key: str) -> int:
         if str(action.id).startswith("irrelevant-history-"):
             raise AssertionError("reply target lookup loaded irrelevant historical action payloads")
