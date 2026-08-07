@@ -4774,9 +4774,10 @@ def test_task_center_channel_like_auto_collects_dynamic_new_messages(monkeypatch
             task.next_run_at = _now() - timedelta(seconds=1)
             session.commit()
         assert drain_task_center(SessionLocal, 10) >= 1
-        if calls == [4101]:
-            assert drain_task_center(SessionLocal, 10) >= 1
-        assert calls == [4101, 4102]
+        assert calls == [4101]
+        actions = task_detail_actions(client, headers, task_id, action_type="like_message")
+        replacement = next(action for action in actions if action["payload"]["message_id"] == 4102)
+        assert replacement["status"] == "pending"
         messages = client.get(f"/api/channel-messages?channel_target_id={channel_target['id']}", headers=headers).json()
         assert {message["message_id"] for message in messages} >= {4101, 4102}
         detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
@@ -5052,13 +5053,13 @@ def test_task_center_reset_channel_view_rebuilds_from_latest_messages(monkeypatc
 
         drain_task_center(SessionLocal, 10)
         detail = task_detail_after_metrics(client, headers, task_id)
-        assert views[0] == 4301
-        assert 4302 in views
+        assert views == [4301]
         actions = task_detail_actions(client, headers, task_id)
         assert len(actions) == 2
         assert all(action["action_type"] == "view_message" for action in actions)
-        assert any(action["payload"]["message_id"] == 4302 for action in actions)
-        assert detail["task"]["stats"]["success_count"] == 2
+        replacement = next(action for action in actions if action["payload"]["message_id"] == 4302)
+        assert replacement["status"] == "pending"
+        assert detail["task"]["stats"]["success_count"] == 1
 
 
 def test_task_center_reset_channel_comment_rebuilds_auto_plan(monkeypatch):
@@ -5145,8 +5146,9 @@ def test_task_center_reset_channel_comment_rebuilds_auto_plan(monkeypatch):
         drain_task_center(SessionLocal, 10)
         final_detail = task_detail_after_metrics(client, headers, task_id)
         new_action = next(action for action in actions if action["payload"]["message_id"] == 4402)
-        assert comments[-1] == (4402, new_action["payload"]["comment_text"])
-        assert final_detail["task"]["stats"]["success_count"] == 2
+        assert comments == [(4401, old_actions[0]["payload"]["comment_text"])]
+        assert new_action["status"] == "pending"
+        assert final_detail["task"]["stats"]["success_count"] == 1
 
 
 def test_task_center_reset_group_ai_chat_respects_idle_window(monkeypatch):
