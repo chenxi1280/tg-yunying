@@ -9,6 +9,7 @@ from app.database import Base, SessionLocal, engine
 from app.models import (
     Action,
     AiAccountVoiceProfile,
+    ExecutionAttempt,
     GroupContextMessage,
     MessageFingerprint,
     OperationTarget,
@@ -125,11 +126,33 @@ def test_postgres_planner_phase_a_creates_pending_actions_for_dispatcher(monkeyp
                 remote_message_id="9001",
                 sent_at=timestamp - timedelta(minutes=1),
             ))
+            source = Action(
+                id="pg-planner-own-reply-source",
+                tenant_id=TENANT_ID,
+                task_id=TASK_ID,
+                task_type="group_ai_chat",
+                action_type="send_message",
+                account_id=ACCOUNT_BASE,
+                status="success",
+                executed_at=timestamp - timedelta(minutes=1),
+                payload={"group_id": GROUP_ID, "message_text": "今天群里聊什么？"},
+            )
+            session.add(source)
+            session.flush()
+            session.add(ExecutionAttempt(
+                tenant_id=TENANT_ID,
+                action_id=source.id,
+                status="success",
+                remote_message_id="9001",
+            ))
             session.commit()
 
         assert _run_real_planner_rounds(1) == [10]
         with SessionLocal() as session:
-            actions = list(session.scalars(select(Action).where(Action.task_id == TASK_ID)))
+            actions = list(session.scalars(select(Action).where(
+                Action.task_id == TASK_ID,
+                Action.status == "pending",
+            )))
             cursor = session.scalar(select(TaskDailyCoveragePlanCursor).where(
                 TaskDailyCoveragePlanCursor.task_id == TASK_ID,
             ))

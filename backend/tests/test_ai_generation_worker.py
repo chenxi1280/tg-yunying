@@ -526,7 +526,9 @@ def test_production_generation_pipeline_returns_batch_to_pending_dispatch(
     assert processed == 1
     with Session(engine) as session:
         actions = list(session.scalars(
-            select(Action).order_by(Action.id),
+            select(Action)
+            .where(Action.id != "source-reply-9001")
+            .order_by(Action.id),
         ))
         assert [action.status for action in actions] == ["pending", "pending"]
         assert [bool(action.payload["message_text"]) for action in actions].count(True) == 1
@@ -574,7 +576,11 @@ def test_generation_worker_keeps_recovery_status_in_same_normal_batch(
     ) == 1
 
     with Session(engine) as session:
-        actions = list(session.scalars(select(Action).order_by(Action.id)))
+        actions = list(session.scalars(
+            select(Action)
+            .where(Action.id != "source-reply-9001")
+            .order_by(Action.id),
+        ))
         assert all(action.status == "pending" for action in actions)
         assert [action.payload["ai_generation_status"] for action in actions].count("ready") == 1
 
@@ -613,7 +619,11 @@ def test_generation_worker_defers_unproven_listener_watermark_without_spinning(
 
     assert processed == 2
     with Session(engine) as session:
-        actions = list(session.scalars(select(Action).order_by(Action.id)))
+        actions = list(session.scalars(
+            select(Action)
+            .where(Action.id != "source-reply-9001")
+            .order_by(Action.id),
+        ))
         assert all(action.status == "pending" for action in actions)
         assert all(
             action.result["error_code"] == "context_freshness_unproven"
