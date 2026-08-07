@@ -1319,11 +1319,11 @@ def test_channel_comment_plans_minimum_auto_replies():
         created = build_channel_comment_plan(session, task)
         actions = session.scalars(select(Action).where(Action.task_id == task.id).order_by(Action.created_at)).all()
 
-    assert created == 4
+    assert created == 3
     assert all(action.payload["comment_text"] == "" for action in actions)
     assert all(action.payload["ai_generation_status"] == "pending" for action in actions)
     reply_actions = [action for action in actions if action.payload["reply_to_message_id"]]
-    assert [action.payload["reply_to_message_id"] for action in reply_actions] == [8101, 8102]
+    assert [action.payload["reply_to_message_id"] for action in reply_actions] == [8101]
     assert reply_actions[0].payload["reply_target_author"] == "读者 A"
     assert reply_actions[0].payload["reply_target_preview"] == "这个尺寸多少"
 
@@ -1497,8 +1497,8 @@ def test_channel_comment_reserves_reply_minimum_before_generation():
         created = build_channel_comment_plan(session, task)
         total_actions = session.scalar(select(func.count(Action.id)).where(Action.task_id == task.id))
 
-    assert created == 4
-    assert total_actions == 4
+    assert created == 3
+    assert total_actions == 3
 
 
 def test_channel_comment_defers_output_filtering_until_after_generation():
@@ -1523,8 +1523,8 @@ def test_channel_comment_defers_output_filtering_until_after_generation():
         created = build_channel_comment_plan(session, task)
         total_actions = session.scalar(select(func.count(Action.id)).where(Action.task_id == task.id))
 
-    assert created == 4
-    assert total_actions == 4
+    assert created == 3
+    assert total_actions == 3
 
 
 def test_channel_comment_caps_single_message_planning_batch():

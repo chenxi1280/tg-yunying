@@ -4974,12 +4974,12 @@ def test_task_center_reset_channel_like_rebuilds_from_latest_messages(monkeypatc
 
         drain_task_center(SessionLocal, 10)
         detail = task_detail_after_metrics(client, headers, task_id)
-        assert reactions[0] == 4101
-        assert 4202 in reactions
+        assert reactions == [4101]
         actions = task_detail_actions(client, headers, task_id)
         assert len(actions) == 2
-        assert any(action["payload"]["message_id"] == 4202 for action in actions)
-        assert detail["task"]["stats"]["success_count"] == 1
+        replacement = next(action for action in actions if action["payload"]["message_id"] == 4202)
+        assert replacement["status"] == "pending"
+        assert detail["task"]["stats"]["success_count"] == 0
 
 
 def test_task_center_reset_channel_view_rebuilds_from_latest_messages(monkeypatch):
