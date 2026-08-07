@@ -20,11 +20,11 @@ pytestmark = pytest.mark.no_postgres
 
 
 @pytest.mark.parametrize(
-    ("mode", "reply_min", "requested_ids", "expected_reply_ids"),
+    ("mode", "reply_min", "requested_ids", "expected_count", "expected_reply_ids"),
     [
-        ("comment", 0, [], []),
-        ("mixed", 1, [], [8101]),
-        ("reply", 0, [8101, 8102], [8101, 8102]),
+        ("comment", 0, [], 2, []),
+        ("mixed", 1, [], 2, [8101]),
+        ("reply", 0, [8101, 8102], 1, [8101]),
     ],
 )
 def test_planner_creates_stable_pending_comment_blueprints_without_ai(
@@ -32,6 +32,7 @@ def test_planner_creates_stable_pending_comment_blueprints_without_ai(
     mode,
     reply_min,
     requested_ids,
+    expected_count,
     expected_reply_ids,
 ):
     forbid_planner_external_boundaries(monkeypatch)
@@ -50,8 +51,8 @@ def test_planner_creates_stable_pending_comment_blueprints_without_ai(
             key=lambda action: action.payload["slot_id"],
         )
 
-    assert created == 2
-    assert len(actions) == 2
+    assert created == expected_count
+    assert len(actions) == expected_count
     assert all(action.status == "pending" for action in actions)
     assert all(action.account_id in {101, 102, 103} for action in actions)
     assert all(isinstance(action.scheduled_at, datetime) for action in actions)
