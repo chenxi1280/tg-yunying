@@ -11,6 +11,7 @@ from app.integrations.telegram import OperationResult, SendResult
 from app.models import (
     Action,
     AiAccountVoiceProfile,
+    ExecutionAttempt,
     GroupContextMessage,
     Task,
     TaskAccountDailyCoverage,
@@ -84,6 +85,17 @@ def profile_sender(session: Session, observed: dict[str, int]):
 
 def seed_reply_action(session: Session, now_value):
     context = _seed_reply_scope(session, now_value)
+    source = Action(
+        id="source-reply-9001",
+        tenant_id=1,
+        task_id="task-reply-generation",
+        task_type="group_ai_chat",
+        action_type="send_message",
+        account_id=11,
+        status="success",
+        executed_at=now_value - timedelta(minutes=1),
+        payload={"group_id": 7, "message_text": "今天按原计划吗？"},
+    )
     action = Action(
         id="action-reply-generation",
         tenant_id=1,
@@ -95,7 +107,13 @@ def seed_reply_action(session: Session, now_value):
         scheduled_at=now_value,
         payload=_reply_payload(context.id),
     )
-    session.add(action)
+    session.add_all([source, action])
+    session.flush()
+    session.add(ExecutionAttempt(
+        action_id=source.id,
+        status="success",
+        remote_message_id="9001",
+    ))
     session.commit()
     return action
 
@@ -296,10 +314,7 @@ def _normal_coverage(index: int, account_id: int, now_value) -> TaskAccountDaily
 
 def invalidate_reply_target(session: Session, action: Action, *, invalidation: str, now_value) -> None:
     if invalidation == "local_missing":
-        target = session.scalar(select(GroupContextMessage).where(
-            GroupContextMessage.remote_message_id == "9001",
-        ))
-        session.delete(target)
+        session.get(Action, "source-reply-9001").status = "failed"
     elif invalidation == "stale":
         action.created_at = now_value - timedelta(minutes=10)
     elif invalidation == "permission":
@@ -346,9 +361,9 @@ def _reply_payload(context_id: int) -> dict:
         "slot_id": "cycle-reply:turn:1",
         "turn_index": 1,
         "reply_to_message_id": 9001,
-        "reply_target_author": "真人用户",
+        "reply_target_author": "账号A",
         "reply_target_preview": "今天按原计划吗？",
-        "reply_target_source": "human_context",
+        "reply_target_source": "own_history",
         "context_snapshot_message_id": context_id,
         "context_message_ids": [context_id],
         "ai_generation_id": "cycle-reply",

@@ -1,5 +1,7 @@
 # TG 运营管理平台 PRD
 
+> **2026-08-08 线上二次纠偏：** AI 活群的 Telegram 原生引用只允许绑定同 tenant、同 Task、同目标群且已有成功 Attempt 与非空远端消息 ID 的平台托管历史消息；真人/其他成员消息只能进入生成上下文。引用候选须在规划与生成前各校验一次，候选不足写 `reply_target_shortfall`，不得降级引用真人。群管 surface 在 `get_entity + dialog` 解析后仍返回 “Could not find the input entity” 时，按当前 Task × 账号 × 目标 × 任务日写 `target_entity_unresolvable` 并当日终结该账号准入，不得每 30 秒重启观察，也不得扩大为账号或目标的全局终态。四类互动的 quiet-hours 调整必须保留原计划相邻间距与小时限速，多个时间点不得折叠到静默结束同一秒。存量 Gateway-started 且无权威结果的发送只补 `remote_outcome_unknown + unknown_deadline` 并进入只读对账，禁止重发；终态 Action 无类型远端事实时，仅可用 CAS 解除浏览/点赞义务的陈旧绑定并恢复为 open，不得伪造成功或执行过期任务日。
+
 > **2026-08-07 四类互动拟人节奏生产纠偏：** `fact_first_v3` 只定义 typed remote fact、防重、准入、恢复和 projector，不再等同于“全部义务立即 due”。`group_ai_chat/channel_comment/channel_like/channel_view` 只物化完整 24 小时 pacing period 中当前累计到期的缺口：AI/浏览按任务自然日，评论/点赞按来源消息首次采集后的滚动 24 小时；`pacing_anchor` 取 period、任务实际启动/恢复和来源采集时间的较晚者，分母不得缩成剩余窗口。容量不足写 shortfall，禁止 Planner、takeover 或 Recovery 把 future Action 批量改成当前时间或在日末压缩追赶。本文中与此冲突的“四类互动资源空闲即清空、不计算 due_by_now”统一为 `historical_do_not_implement`；纯搜索点击不在本次节奏变更范围。专项合同见 `task-fulfillment-classified-recovery-prd.md` §4.5。
 
 > **2026-08-04 分类履约最终合同优先级：** 对 `group_ai_chat/channel_comment/channel_like/channel_view/search_click(click_only)`，当前产品合同由 `task-fulfillment-classified-recovery-prd.md` 与 `task-fulfillment-contract-closure-prd.md` 共同组成并 supersede 本文所有冲突旧述。本文中仍用于事故取证的“冻结账号分母”“搜索与普通互动共用 active claim/Dispatcher 容量”“TaskAllocation/DispatchReservation/预扣”“搜索 Window”“验证码 AI/VLM/模型投票”“显式 `FOR UPDATE/SKIP_LOCKED` 或跨表锁链”“旧 Task 迁移或同 Task 新旧双写”“仅凭远端当前不存在即可重开 unknown”均统一视为 `historical_do_not_implement`。当前实现必须使用任务内动态账号范围、任务类型到期策略、单行 version CAS、唯一远端事实先行与幂等 projector、interaction/search 独立 lane、持久搜索 assignment/page phase、RapidOCR→ddddOCR、全系统唯一 active AI Provider key、绑定 target-group surface 的 C2 连续 30 秒观察，以及永久 unknown 的远端只对账终态。运营先创建 prepared 新 Task，真实 canary 只证明 remote fact 链，随后 CAS route epoch 使新 Task 从 0 运行并 fence 旧 Task，再异步物理删除旧 Task。
@@ -533,6 +535,7 @@ tenant_id + account_id + developer_app_id/api_id + authorization_id + session_ro
 - AI 活跃群和 AI 评论新增 Telegram 原生引用回复口径：引用回复必须在 Planner 阶段规划为独立 action，不得在执行层临时决定或用文本假引用替代。
 - AI 活跃群配置“每轮最少引用回复数”，AI 评论配置“每条频道消息最少引用回复数”。新建任务默认值均为 `1`，最小值为 `1`；Planner 必须按最少数量创建带 `reply_to_message_id` 的引用回复 action。若当前目标没有合格候选，必须记录 `reply_target_shortfall` 并显式等待/跳过，不能把引用要求关闭、伪造引用或用普通正文替代。
 - 2026-08-06 起，AI 活群不提供引用范围选择并固定只引用同 tenant、同 Task、同目标群的托管账号历史成功消息，且必须由成功 Attempt 的远端消息 ID 证明；监听到的其他成员消息只作上下文，不得成为 `reply_to_message_id`。频道评论仍按自身评论候选合同选择，不受此限制。
+- 引用候选必须在 Planner/历史池选取和生成前 guard 各校验一次；两次都只能读取上述平台自有历史。候选不足时记录 `reply_target_shortfall` 并保持引用义务未满足，不得从 `GroupContextMessage`、真人消息或其他成员消息补齐。
 - 普通消息和引用回复消息必须走不同生成提示词。引用回复在生成前先绑定具体引用对象，Prompt 必须包含被回复消息作者、原文、当前上下文和“本条是引用回复”的生成要求；不做生成后的语义匹配校验。
 - 任务详情、Action payload、执行结果和审计必须展示引用关系，包括引用对象 ID、作者、预览、来源、Telegram 远端消息 ID 和失败原因，便于区分内容不自然、引用对象不足和 Telegram 执行失败。
 

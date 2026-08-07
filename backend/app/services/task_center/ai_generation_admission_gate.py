@@ -90,7 +90,11 @@ def _persist_fact_first_abandonment(
 ) -> None:
     from . import dispatcher
 
-    dispatcher._abandon_fact_first_account_for_task(session, action)
+    dispatcher._abandon_fact_first_account_for_task(
+        session,
+        action,
+        reason=decision.terminal_reason,
+    )
     dispatcher._skip(
         action,
         decision.code,

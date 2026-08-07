@@ -8302,7 +8302,11 @@ def _fact_first_group_bot_admission_gate(
         }
         return True
     if decision.code == "c2_account_abandoned":
-        _abandon_fact_first_account_for_task(session, action)
+        _abandon_fact_first_account_for_task(
+            session,
+            action,
+            reason=decision.terminal_reason,
+        )
         _skip(
             action,
             decision.code,
@@ -8322,20 +8326,35 @@ def _fact_first_group_bot_admission_gate(
     return False
 
 
-def _abandon_fact_first_account_for_task(session: Session, action: Action) -> None:
+def _abandon_fact_first_account_for_task(
+    session: Session,
+    action: Action,
+    *,
+    reason: str = "",
+) -> None:
     if action.account_id is None:
         return
     _abandon_pending_account_actions(session, action)
+    blocker_code = (
+        "target_entity_unresolvable"
+        if reason == "target_entity_unresolvable"
+        else "account_task_abandoned"
+    )
     rows = session.scalars(select(TaskAccountDailyCoverage).where(
         TaskAccountDailyCoverage.task_id == action.task_id,
         TaskAccountDailyCoverage.account_id == action.account_id,
-        TaskAccountDailyCoverage.state.in_(("ready", "reserved", "unknown")),
+        TaskAccountDailyCoverage.coverage_date == _now().date(),
+        TaskAccountDailyCoverage.state.in_(("pending_admission", "ready", "reserved", "unknown")),
     ))
     for row in rows:
         row.state = "abandoned_for_day"
-        row.blocker_code = "account_task_abandoned"
+        row.blocker_code = blocker_code
         row.blocker_stage = "admission"
-        row.blocker_detail = "该账号在当前任务与目标内无法发送，当前任务日放弃"
+        row.blocker_detail = (
+            "当前授权无法解析目标群实体，当前任务日放弃"
+            if blocker_code == "target_entity_unresolvable"
+            else "该账号在当前任务与目标内无法发送，当前任务日放弃"
+        )
         row.recovery_path = "next_task_day_recheck"
         row.next_eligible_at = None
 

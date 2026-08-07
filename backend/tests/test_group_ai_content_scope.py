@@ -161,6 +161,39 @@ def test_scope_validator_accepts_authoritative_own_history_without_listener_cont
     assert violation is None
 
 
+def test_scope_validator_rejects_human_context_as_reply_target():
+    session = _session()
+    _seed_scope(session)
+    human = session.get(GroupContextMessage, 801)
+    human.remote_message_id = "3721281"
+    payload = _payload(reply_to_message_id=3721281)
+    action = _action(payload, action_id="current-human-context-reply")
+    session.add(action)
+    session.commit()
+
+    violation = validate_group_ai_content_scope(session, action, payload=payload, account_id=11)
+
+    assert violation is not None
+    assert violation.field == "reply_to_message_id"
+
+
+def test_reply_target_pool_ignores_human_context_rows():
+    session = _session()
+    _seed_scope(session)
+    human = session.get(GroupContextMessage, 801)
+    human.remote_message_id = "3721281"
+    session.commit()
+
+    targets = _group_reply_target_pool(
+        session,
+        session.get(Task, "task-b"),
+        session.get(TgGroup, 8),
+        [human],
+    )
+
+    assert targets == []
+
+
 def test_scope_validator_rejects_own_history_without_successful_attempt():
     session = _session()
     _seed_scope(session)

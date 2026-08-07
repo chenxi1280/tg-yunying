@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import date, timedelta
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
@@ -25,6 +25,7 @@ from .task_group_bot_admission_surface import (
     ProbeSurface,
     surface_identity as _surface_identity,
     surface_is_current,
+    target_entity_unresolvable_error as _target_entity_unresolvable_error,
     unusable_telegram_error as _unusable_telegram_error,
 )
 from .task_group_bot_admission_facts import record_fact as _record_fact
@@ -38,6 +39,7 @@ class AdmissionDecision:
     code: str
     admission_id: str
     version: int
+    terminal_reason: str = ""
 def evaluate_task_admission(
     session: Session,
     *,
@@ -78,6 +80,15 @@ def evaluate_task_admission(
 
             if restart_unproven_admission(session, admission):
                 return _decision(admission, False, "c2_observation_restarted")
+        if _target_entity_terminal_expired(admission):
+            from .task_group_bot_admission_recovery import restart_task_day_admission
+
+            if restart_task_day_admission(session, admission):
+                return _decision(
+                    admission,
+                    False,
+                    "c2_observation_restarted_for_task_day",
+                )
         return _decision(admission, False, "c2_account_abandoned")
     if admission.observation_gap:
         return _decision(admission, False, "c2_observation_gap")
@@ -241,6 +252,8 @@ def _fetch_surface_messages(
             after_message_id=probe.start_cursor,
         )
     except Exception as exc:
+        if _target_entity_unresolvable_error(exc):
+            return _abandon(session, admission, "target_entity_unresolvable")
         if _unusable_telegram_error(exc):
             return _abandon(session, admission, str(exc) or type(exc).__name__)
         return _restart_with_gap(session, admission, type(exc).__name__)
@@ -551,9 +564,19 @@ def _abandon(
     admission.terminal_evidence = {
         "outcome": "abandoned_for_task",
         "detail": reason[:160],
+        "terminal_date": _now().date().isoformat(),
     }
     admission.version = int(admission.version or 1) + 1
     return _decision(admission, False, "c2_account_abandoned")
+
+
+def _target_entity_terminal_expired(admission: TaskGroupBotAdmission) -> bool:
+    if admission.terminal_reason != "target_entity_unresolvable":
+        return False
+    terminal_date = date.fromisoformat(
+        str((admission.terminal_evidence or {}).get("terminal_date") or "")
+    )
+    return terminal_date < _now().date()
 
 
 def _decision(
@@ -561,7 +584,13 @@ def _decision(
     allowed: bool,
     code: str,
 ) -> AdmissionDecision:
-    return AdmissionDecision(allowed, code, admission.id, int(admission.version or 1))
+    return AdmissionDecision(
+        allowed,
+        code,
+        admission.id,
+        int(admission.version or 1),
+        str(admission.terminal_reason or ""),
+    )
 
 
 __all__ = [

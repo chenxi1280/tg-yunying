@@ -682,6 +682,117 @@ def test_c2_no_prompt_passes_only_after_exact_30_second_surface(
     assert second.code == "c2_no_prompt_30s_passed"
 
 
+def test_c2_unresolvable_target_entity_becomes_stable_task_terminal(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scope = _seed_unresolvable_c2_scope(session, monkeypatch)
+    first = _evaluate_c2_scope(session, scope)
+    admission = session.get(TaskGroupBotAdmission, first.admission_id)
+    admission.no_prompt_pass_at = datetime(2000, 1, 1)
+    terminal = _evaluate_c2_scope(session, scope)
+    terminal_version = admission.version
+    repeated = _evaluate_c2_scope(session, scope)
+
+    assert terminal.code == "c2_account_abandoned"
+    assert admission.state == "abandoned"
+    assert admission.terminal_reason == "target_entity_unresolvable"
+    assert repeated.code == "c2_account_abandoned"
+    assert admission.version == terminal_version
+    admission.terminal_evidence = {
+        **admission.terminal_evidence,
+        "terminal_date": (_now().date() - timedelta(days=1)).isoformat(),
+    }
+
+    next_day = _evaluate_c2_scope(session, scope)
+
+    assert next_day.code == "c2_observation_restarted_for_task_day"
+    assert admission.state == "observing"
+
+
+def _seed_unresolvable_c2_scope(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[Task, TgAccount, TgGroup]:
+    task = _task("c2-unresolvable-target")
+    account = TgAccount(
+        id=26, tenant_id=1, display_name="小磊", phone_masked="***0026",
+        session_ciphertext="encrypted-session", status=AccountStatus.ACTIVE.value,
+    )
+    group = TgGroup(id=36, tenant_id=1, tg_peer_id="-10036", title="不可解析目标群")
+    session.add_all([task, account, group])
+    session.flush()
+    monkeypatch.setattr(
+        "app.services.task_center.task_group_bot_admission_v2.credentials_for_account",
+        lambda *_: object(),
+    )
+    monkeypatch.setattr(
+        "app.services.task_center.task_group_bot_admission_v2.gateway.fetch_group_messages",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            ValueError("Could not find the input entity for PeerChannel(channel_id=36)")
+        ),
+    )
+    return task, account, group
+
+
+def _evaluate_c2_scope(
+    session: Session,
+    scope: tuple[Task, TgAccount, TgGroup],
+):
+    task, account, group = scope
+    return evaluate_task_admission(
+        session,
+        task_id=task.id,
+        tenant_id=task.tenant_id,
+        group_id=group.id,
+        account_id=account.id,
+    )
+
+
+def test_c2_abandonment_projects_only_current_task_day_with_specific_reason(
+    session: Session,
+) -> None:
+    task = _task("c2-current-day-terminal")
+    action = Action(
+        id="c2-current-day-action",
+        tenant_id=1,
+        task_id=task.id,
+        task_type="group_ai_chat",
+        action_type="send_message",
+        account_id=27,
+        status="pending",
+        payload={"group_id": 37},
+    )
+    current = TaskAccountDailyCoverage(
+        tenant_id=1,
+        task_id=task.id,
+        group_id=37,
+        account_id=27,
+        coverage_date=_now().date(),
+        state="reserved",
+    )
+    historical = TaskAccountDailyCoverage(
+        tenant_id=1,
+        task_id=task.id,
+        group_id=37,
+        account_id=27,
+        coverage_date=_now().date() - timedelta(days=1),
+        state="ready",
+    )
+    session.add_all([task, action, current, historical])
+    session.flush()
+
+    dispatcher._abandon_fact_first_account_for_task(
+        session,
+        action,
+        reason="target_entity_unresolvable",
+    )
+
+    assert current.state == "abandoned_for_day"
+    assert current.blocker_code == "target_entity_unresolvable"
+    assert historical.state == "ready"
+
+
 def test_c2_missing_current_authorization_observes_with_session_identity(
     session: Session,
     monkeypatch: pytest.MonkeyPatch,
