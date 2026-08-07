@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from sqlalchemy.orm import Session
 
@@ -19,7 +19,13 @@ from ..channel_fulfillment import (
 )
 from ..channel_membership import channel_member_accounts, gate_channel_membership
 from ..daily_ledgers import ensure_task_day_ledger
-from ..pacing import next_local_day_deadline, schedule_times
+from ..fulfillment_activation import CURRENT_CONTRACT_VERSION
+from ..pacing import (
+    cumulative_pacing_due,
+    next_local_day_deadline,
+    schedule_times,
+    task_pacing_anchor,
+)
 from ..payloads import ViewMessagePayload, create_view_action
 from .common import adjust_for_account_hour_limit, channel_message_payload, channel_scope, quantity_jitter_bounds, quantity_with_jitter, record_channel_capacity_warning
 
@@ -45,7 +51,8 @@ def build_plan(session: Session, task: Task) -> int:
         task.last_error = "没有可用账号，等待账号恢复后继续执行"
         return 0
     record_channel_capacity_warning(task, "浏览", daily_target, len(accounts))
-    ledger = ensure_task_day_ledger(session, task, now=_now())
+    now_value = _now()
+    ledger = ensure_task_day_ledger(session, task, now=now_value)
     execution_date = ledger.obligation_local_date.isoformat()
     daily_counts = view_daily_counts(session, ledger)
     task_remaining_today = _remaining_task_daily_capacity(effective_daily_cap, daily_counts.total)
@@ -72,6 +79,8 @@ def build_plan(session: Session, task: Task) -> int:
             task_remaining_today=task_remaining_today,
             completed_counts=completed_counts,
             daily_counts_by_account=daily_counts.by_account,
+            ledger=ledger,
+            now=now_value,
         ),
         account_ids_by_message,
     )
@@ -189,7 +198,14 @@ def _view_actions_for_messages(
     for message in inputs.messages:
         if _message_expired(message, config):
             continue
-        quantity = _view_quantity_for_message(config, inputs, message, coverage_remaining, account_ids_by_message)
+        quantity = _view_quantity_for_message(
+            task,
+            config,
+            inputs,
+            message,
+            coverage_remaining,
+            account_ids_by_message,
+        )
         quantity = min(quantity, task_remaining_today)
         if quantity <= 0:
             continue
@@ -213,9 +229,12 @@ class ViewPlanInputs:
     task_remaining_today: int
     completed_counts: dict[int, int]
     daily_counts_by_account: dict[int, int]
+    ledger: TaskDayLedger
+    now: datetime
 
 
 def _view_quantity_for_message(
+    task: Task,
     config: dict,
     inputs: ViewPlanInputs,
     message: ChannelMessage,
@@ -226,8 +245,30 @@ def _view_quantity_for_message(
     completed_count = inputs.completed_counts.get(message.id, 0)
     if completed_count >= inputs.total_target:
         return 0
+    target = min(max(base, coverage_remaining), inputs.total_target - completed_count)
+    if task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION:
+        target = _current_view_due(task, inputs, message, target)
     used_count = len(account_ids_by_message[message.id])
-    return max(0, min(max(base, coverage_remaining), inputs.total_target - completed_count) - used_count)
+    return max(0, target - used_count)
+
+
+def _current_view_due(
+    task: Task,
+    inputs: ViewPlanInputs,
+    message: ChannelMessage,
+    target: int,
+) -> int:
+    period_start = inputs.ledger.period_start_at
+    task_anchor = task_pacing_anchor(task)
+    anchor = max(task_anchor, message.created_at) if task_anchor else message.created_at
+    return cumulative_pacing_due(
+        target,
+        task.pacing_config or {},
+        anchor_at=anchor,
+        period_start_at=period_start,
+        period_end_at=inputs.ledger.deadline_at,
+        now=inputs.now,
+    )
 
 
 def _remaining_task_daily_capacity(daily_cap: int | None, planned_today: int) -> int:

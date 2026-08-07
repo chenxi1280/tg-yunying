@@ -8,14 +8,14 @@
 | 需求级别 | L3：生产多类任务长期按时按量履约失败 |
 | 适用任务 | `group_ai_chat`、`channel_comment`、`channel_like`、`channel_view`、纯 `search_click` |
 | 文档状态 | `approved_product_handoff` |
-| 设计状态 | `product_design_complete`；2026-08-05 生产事故纠偏后，`fact_first_v3` 只定义事实、防重、准入与恢复，浏览、点赞、AI 活群恢复任务日拟人节奏；闭合合同见 `task-fulfillment-contract-closure-prd.md` |
+| 设计状态 | `product_design_complete`；2026-08-07 生产复核后，`fact_first_v3` 只定义事实、防重、准入与恢复，评论、浏览、点赞、AI 活群统一执行非压缩拟人节奏；闭合合同见 `task-fulfillment-contract-closure-prd.md` |
 | 开发交接 | `dev_handoff_ready=true`；本文与闭合专项是本轮唯一实现合同，主 PRD与主数据流索引已同步产品合同；项目结构索引只在代码与 QA 稳定后按真实入口更新 |
 | 生产状态 | `production_blocked`；部署、健康或局部远端事实不等于当日履约完成 |
 | 统计时区 | 默认 `Asia/Shanghai`，以 `Task.timezone` 为准 |
 
 本文在用户确认后，按明确章节 supersede 以下冲突口径：
 
-- 2026-08-04 本文及主 PRD 中将 `fact_first_v3` 等同于“全部义务立即 due/资源空闲即清空”的口径；该口径仅对仍明确采用即时 solver 的任务类型有效，`group_ai_chat/channel_like/channel_view` 必须按 §4.5 的任务日节奏执行；
+- 2026-08-04 本文及主 PRD 中将 `fact_first_v3` 等同于“全部义务立即 due/资源空闲即清空”的口径；该口径仅对仍明确采用即时 solver 的任务类型有效，`group_ai_chat/channel_comment/channel_like/channel_view` 必须按 §4.5 的拟人节奏执行；
 
 - `ai-group-daily-group-target-redesign-prd.md`、`all-task-fulfillment-recovery-prd.md`和主 PRD 中“任务日冻结账号分母、当日不可缩小、暂停/删除任务仍保留运行义务”的部分；
 - `all-task-fulfillment-recovery-prd.md` 中由 ContentMix 持有数量义务、搜索与普通互动共享执行容量的部分，以及 `shared-dispatch-and-ai-fulfillment-recovery-prd.md` 的全部共享 active claim/中央 TaskAllocation/Reservation 方案；
@@ -52,7 +52,7 @@
 16. C8 远程引用探针从当前可访问候选账号中随机选取；确定性账号不可用时仅从本次候选池 `-1` 后继续，不冻结全局账号。
 17. 所有旧合同 Task（包括 running）不迁移运行状态；发布切换时统一 fence、保存最小远端防重事实、物理删除，再由运营按新合同创建新 Task。
 18. 同日删除重建的新 Task 从 `0` 建立自己的目标和完成量；旧 Task 当日成功不抵扣新 Task，创建确认必须明确提示可能增加当日实际执行量。
-19. `fact_first_v3` 不创建任务份额或中央 Reservation，但不得覆盖任务类型自己的执行时机；AI 活群、频道点赞和频道浏览按任务日账本与 `natural_full_day` 计算 `due_by_now`，只执行当前累计到期义务。
+19. `fact_first_v3` 不创建任务份额或中央 Reservation，但不得覆盖任务类型自己的执行时机；AI 活群、频道评论、频道点赞和频道浏览按 §4.5 的 `natural_full_day` 计算 `due_by_now`，只执行当前累计到期义务。
 20. AI Provider 只允许一个 active Provider key；多个模型共享该 key 的同一真实额度，可并发但不得各自复制整套额度。
 21. 一个搜索 Task 只允许一个目标；多目标必须创建多个独立 Task 并行执行。
 22. `签到` 不进入普通正文 10 天去重，可计群日总量并可同时完成对应账号 coverage，但不得替代 reply 或高质量 AI 正文指标。
@@ -169,20 +169,21 @@ eligible/recovering -> abandoned_for_day
 
 ### 4.4 C1 多任务并发调度
 
-- 任务启动、任务日开始或目标/账号范围变化时立即建立或终结自己的稳定义务；义务存在不等于已经到期。三类拟人任务按 §4.5 计算当前累计到期量，不创建任务份额或中央 Reservation。
-- Planner 只建立主义务；AI 只为当前已到期且真实执行槽可用的义务创建有限 Action，浏览/点赞允许建立有界 future Action，但必须依靠 `scheduled_at` 保持不可领取。禁止把全天目标一次预建成可立即领取的陈旧 Action 队列。每轮先查询所有 running Task 的窄字段候选 ID，再以单行 version CAS 领取到期义务；不使用 `FOR UPDATE/SKIP LOCKED` 或跨 Task 锁。
+- 任务启动、任务日开始或目标/账号范围变化时立即建立或终结自己的稳定义务；义务存在不等于已经到期。四类拟人任务按 §4.5 计算当前累计到期量，不创建任务份额或中央 Reservation。
+- Planner 只建立主义务；AI 只为当前已到期且真实执行槽可用的义务创建有限 Action，评论/浏览/点赞允许建立有界 future Action，但必须依靠 `scheduled_at` 保持不可领取。禁止把全天目标一次预建成可立即领取的陈旧 Action 队列。每轮先查询所有 running Task 的窄字段候选 ID，再以单行 version CAS 领取到期义务；不使用 `FOR UPDATE/SKIP LOCKED` 或跨 Task 锁。
 - 同一账号可由不同任务并发发起 Telegram RPC，不做账号内任务抢占或公平轮转。仅对同一 `remote_mutation_key`/同一 callback/同一群同一消息的冲突副作执行幂等 CAS；账号级 FloodWait 约束该账号后续 RPC，群级 SlowMode 只约束对应 peer，二者都不改写任务资格。
 - Session transport 必须以 `rpc_id + authorization_id + task_id + action_id + remote_mutation_key` 隔离并发请求、响应、timeout 和 cancel；不支持安全并发的 adapter 要使用独立 transport channel/client instance，不能退回账号级全局串行，也不能让一个请求覆盖另一个请求的上下文或结果。
 - 生产展示既报每任务履约，也报聚合履约。例如 `4000 + 5000 + 800 + 800 = 10600`是四个同时运行的独立目标，不是要依次排空的四段队列。
 - Provider、数据库或 worker 真实资源已满时展示当前使用量、等待义务和具体安全 blocker；不展示或计算任务“获配份额”，也不得通过冻结分母、全局串行或让单任务排空后再执行其他任务来掩盖。到 deadline 仍无法自然完成时写显式 shortfall，禁止压缩剩余义务形成突发补量。
 
-### 4.5 浏览、点赞与 AI 活群任务日拟人节奏
+### 4.5 评论、浏览、点赞与 AI 活群非压缩拟人节奏
 
 - `fact_first_v3` 与执行节奏正交：typed remote fact、Gateway unknown、防重、准入、恢复和 projector 合同保持不变；只有 Action 的到期量和 `scheduled_at` 改由任务类型节奏决定。
-- `channel_view/channel_like` 继续使用现有 `schedule_times()` 和 `natural_full_day` 快照，在当前任务日 `planning_anchor_at..deadline_at` 内生成 future `scheduled_at`。Planner、takeover 和 Recovery 不得在建单后把 future pending Action 批量改成当前时间。
-- `group_ai_chat` 在不可变 `planning_anchor_at` 精确时刻的累计到期量为 0；进入有效任务日后为 `max(1,floor(effective_daily_target * elapsed_curve_weight / remaining_day_curve_weight))`，避免单条小目标直到日末才执行，其余按剩余任务日增长。已确认、Gateway-started、unknown hold 和有效 open Action 必须从当前到期量中扣除。
+- 四类任务统一使用 `pacing_anchor=max(period_start,task_activation_anchor,source_observed_at when source-scoped)`；在 anchor 精确时刻累计到期量为 0。AI/浏览的 pacing period 是当前任务自然日；评论/点赞的 pacing period 是来源消息首次采集后的滚动 24 小时。
+- 当前到期量为 `max(1,floor(pacing_target * curve_weight(pacing_anchor,now) / full_24h_curve_weight))`。分母必须是完整任务自然日或完整来源滚动 24 小时，禁止使用 `pacing_anchor..deadline` 的剩余曲线权重，禁止 `_fit_before_deadline` 或等价逻辑把完整目标缩放进短窗口。已确认、Gateway-started、unknown hold 和有效 open Action 必须从当前到期量中扣除。
+- `channel_comment/channel_like/channel_view` 只为当前累计到期缺口建单并保留 `schedule_times()` 生成的 future `scheduled_at`。Planner、takeover 和 Recovery 不得在建单后把 future pending Action 批量改成当前时间；晚采集来源在当前自然日只形成按可执行时段折算的量，余量保持 open/shortfall，不突发追赶。
 - AI 每轮只物化当前缺口；同批 `scheduled_at` 使用正常期/启动期/低频期的现有间隔与 jitter，不得因 fact-first 改为同一个 `now`。绕过 legacy 账号容量时只能绕过旧容量判断，不能改写已经计算的 `planned_at`。
-- Planner 有当前到期欠额时可按现有 debt recheck 节奏继续推进；没有欠额时按 `next_run_after_task()` 等待下一个曲线时点。禁止对这三类任务固定每 2 秒无节奏追赶。
+- Planner 有当前到期欠额时可按现有 debt recheck 节奏继续推进；没有欠额时按 `next_run_after_task()` 等待下一个曲线时点。禁止对这四类任务固定每 2 秒无节奏追赶。
 - 暂停、恢复、晚启动或容量不足不回填已逝时间：只在剩余任务日曲线内推进，deadline 到达后将欠额投影为 `terminal_shortfall/content_capacity_gap`。不通过提高本地上限、缩短间隔或重写历史 Action 伪装完成。
 
 ## 5. C2：AI 活群账号资格与群准入
@@ -485,8 +486,8 @@ Task 主状态仍可为 running；任务中心必须展示上述当前业务状�
 - 高目标 revision 已合法发送后账号放弃导致当前目标下调时，只记 target-reduction overage；下调后逐义务 CAS 取消尚未 Gateway 的多余义务，不使用账本预算锁。明确 pre-accept 失败将同一义务释放回 open，不出现替代义务或重复 mutation。
 - 暂停/停止/删除任务后，Planner/Generation/Dispatcher 新领取、活跃容量和任务统计立即为 0；未进 Gateway 残留被清理，unknown 仍只远程对账。
 - 同时启动目标 4000/5000/800/800 的四任务；四任务必须同时持续产生 GenerationJob/Action/Attempt，同一账号也能为不同任务并发发起非冲突 RPC，不存在账号抢占或任务间转移使用权；自然日最终逐任务满足计划目标且无超发。
-- `channel_like/channel_view` 建单后 future `scheduled_at` 保持在当前任务日内分布，Planner 同事务不得改成当前时间；50 点赞、796 浏览的单批红测必须存在多个不同未来时点。
-- AI 日目标在 `planning_anchor_at` 时 `due=0`，完整日中途只增长到曲线累计量；`immediate=True`、fact-first 同批全 `now` 和容量槽改写 `planned_at` 的红测必须失败。
+- `channel_comment/channel_like/channel_view` 建单后 future `scheduled_at` 不得被 Planner 同事务改成当前时间；80 评论、50 点赞、796 浏览的晚采集来源红测必须只物化当前累计到期缺口，不能单批生成完整目标。
+- AI 日目标在 `planning_anchor_at` 时 `due=0`，完整日中途只增长到曲线累计量；晚启动 800 目标在剩余 6 小时内不得放大成 800。`immediate=True`、fact-first 同批全 `now`、剩余日分母和容量槽改写 `planned_at` 的红测必须失败。
 - 暂停恢复或中途创建任务不追赶已逝时段；剩余曲线容量不足时输出 shortfall/blocker，不能在短窗口清空剩余日目标。
 
 ### 14.1 AI 准入
@@ -572,7 +573,7 @@ Task 主状态仍可为 running；任务中心必须展示上述当前业务状�
 | Telegram 无法发送统一放弃 | complete；Session/权限权威事实按授权槽复用、按 Task 日独立物化，目标解散终结目标，unknown 不误判 |
 | Search 唤醒与页面状态持久化 | complete；assignment 是持久工作，通知可丢，所有 hot-list/category/result/challenge/click phase 先 CAS 后前进 |
 | 无 Reservation 的最快并行执行 | complete；四类真实阶段槽 JIT 领取，多 Task 同时推进，不创建份额、Window、预扣或中央 Reservation |
-| 三类拟人任务节奏 | complete；AI 活群、频道点赞、频道浏览只领取当前任务日累计到期义务，partial_start 从 anchor=0 起算，future Action 不被全局提前 |
+| 四类拟人任务节奏 | complete；AI 活群、频道评论、频道点赞、频道浏览只领取当前累计到期义务，partial_start/晚采集来源从 anchor=0 起算，完整 24 小时分母不被剩余窗口替换，future Action 不被全局提前 |
 | 新建/切换/删除顺序 | complete；prepared 新 Task先创建，真实 canary 事实链后 CAS route epoch，新 Task从 0运行再异步删除旧 Task |
 | ordinal、Provider、签到与 tombstone 统一 | complete；义务 UUID 可释放重领、单 active key、多模型共享、direct 签到任务日唯一、只留最小远端防重事实 |
 | Recovery 权威时钟 | complete；lease/heartbeat takeover 只认同事务 PostgreSQL clock_timestamp() 与 UTC-aware timestamptz |
@@ -583,4 +584,4 @@ Task 主状态仍可为 running；任务中心必须展示上述当前业务状�
 
 ## 17. Product Handoff（已生效）
 
-Dev 必须按 release batch 拆分实现；本次节奏修复先覆盖 `channel_view/channel_like/group_ai_chat` 的 future Action、累计 due、partial_start、同批排期和 next-run 红测，并保持单函数、单文件和复杂度限制。主 PRD、主数据流已同步产品合同；代码与 QA 稳定后只按真实入口更新项目结构索引，并对实现造成的数据流差异做 resync。QA 必须提供真实 PostgreSQL 并发、故障注入、完整相关回归、静态检查和旧 Task删除 preview。Product 只验收需求与状态合同；最终 `production_fixed` 只能由发布后的完整自然日任务专用远端 E4 证据给出。
+Dev 必须按 release batch 拆分实现；本次节奏修复覆盖 `channel_comment/channel_view/channel_like/group_ai_chat` 的 future Action、累计 due、partial-start/晚采集来源、完整 24 小时分母、同批排期和 next-run 红测，并保持单函数、单文件和复杂度限制。主 PRD、主数据流已同步产品合同；代码与 QA 稳定后只按真实入口更新项目结构索引，并对实现造成的数据流差异做 resync。QA 必须提供真实 PostgreSQL并发、故障注入、完整相关回归、静态检查和旧 Task删除 preview。Product 只验收需求与状态合同；最终 `production_fixed` 只能由发布后的完整任务窗口任务专用远端 E4 证据给出。

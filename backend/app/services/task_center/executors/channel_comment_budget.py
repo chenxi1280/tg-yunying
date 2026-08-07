@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
@@ -17,6 +17,8 @@ from app.models import (
 from app.services._common import _now
 
 from ..ai_limits import allocate_message_budget
+from ..fulfillment_activation import CURRENT_CONTRACT_VERSION
+from ..pacing import source_rolling_pacing_due
 from .common import quantity_with_jitter
 
 COMMENT_RESERVATION_STATUSES = ("pending", "claiming", "executing", "success", "unknown_after_send")
@@ -52,7 +54,17 @@ def message_comment_quantities(
     message_states: dict[int, MessageCommentPlanState] | None = None,
 ) -> list[tuple[ChannelMessage, int]]:
     states = message_states if message_states is not None else load_message_comment_plan_states(session, task, messages)
-    deficits = [_message_comment_deficit(config, states[message.id]) for message in messages]
+    now_value = _now()
+    deficits = [
+        _message_comment_deficit(
+            config,
+            states[message.id],
+            task=task,
+            message=message,
+            now=now_value,
+        )
+        for message in messages
+    ]
     coverage_floor = min(max(0, int(daily_coverage_min_total or 0)), sum(deficits))
     deficits = _apply_daily_coverage_minimum(deficits, coverage_floor)
     hour_limit = _task_hour_limit(task)
@@ -340,11 +352,23 @@ def _apply_daily_coverage_minimum(deficits: list[int], minimum: int) -> list[int
 def _message_comment_deficit(
     config: dict,
     state: MessageCommentPlanState,
+    *,
+    task: Task,
+    message: ChannelMessage,
+    now: datetime,
 ) -> int:
     desired = quantity_with_jitter(
         int(config.get("target_comments_per_message") or 1),
         float(config.get("comment_count_jitter") or 0),
     )
+    if task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION:
+        desired = source_rolling_pacing_due(
+            desired,
+            task.pacing_config or {},
+            task=task,
+            source_observed_at=message.created_at,
+            now=now,
+        )
     used_count = max(
         state.reservation_count,
         state.managed_collected_count,

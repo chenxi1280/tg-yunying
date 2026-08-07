@@ -378,7 +378,12 @@ def test_fact_first_ai_slot_ignores_legacy_capacity_without_overwriting_schedule
 
 @pytest.mark.parametrize(
     "scenario",
-    [("channel_view", 796), ("channel_like", 50), ("group_ai_chat", 20)],
+    [
+        ("channel_comment", 80),
+        ("channel_view", 796),
+        ("channel_like", 50),
+        ("group_ai_chat", 20),
+    ],
 )
 def test_fact_first_human_paced_actions_keep_future_schedule(
     session: Session,
@@ -391,6 +396,7 @@ def test_fact_first_human_paced_actions_keep_future_schedule(
     task = _task(f"paced-{task_type}")
     task.type = task_type
     action_type = {
+        "channel_comment": "post_comment",
         "channel_like": "like_message",
         "channel_view": "view_message",
         "group_ai_chat": "send_message",
@@ -424,7 +430,7 @@ def test_fact_first_human_paced_actions_keep_future_schedule(
     assert actual == expected
 
 
-@pytest.mark.parametrize("task_type", ["channel_comment", "search_click"])
+@pytest.mark.parametrize("task_type", ["search_click"])
 def test_fact_first_immediate_task_keeps_existing_behavior(
     session: Session,
     monkeypatch: pytest.MonkeyPatch,
@@ -453,7 +459,10 @@ def test_fact_first_immediate_task_keeps_existing_behavior(
     assert action.scheduled_at == now_value
 
 
-@pytest.mark.parametrize("task_type", ["channel_view", "channel_like", "group_ai_chat"])
+@pytest.mark.parametrize(
+    "task_type",
+    ["channel_comment", "channel_view", "channel_like", "group_ai_chat"],
+)
 def test_fact_first_human_paced_task_uses_type_specific_next_run(
     monkeypatch: pytest.MonkeyPatch,
     task_type: str,

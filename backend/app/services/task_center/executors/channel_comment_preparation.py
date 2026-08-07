@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.models import CommentFulfillmentObligation, Task
 from app.services._common import _now
 
+from ..fulfillment_activation import CURRENT_CONTRACT_VERSION
 from ..pacing import next_local_day_deadline, schedule_times
 from ..payloads import PostCommentPayload
 from .channel_comment_schedule import materialized_reply_slots
@@ -39,7 +40,11 @@ def prepare_comment_actions(
         len(slots),
         task.pacing_config or {},
         start_at=now_value,
-        deadline_at=next_local_day_deadline(now_value, task.timezone),
+        deadline_at=(
+            None
+            if task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION
+            else next_local_day_deadline(now_value, task.timezone)
+        ),
     )
     materialized = materialized_reply_slots(
         task,

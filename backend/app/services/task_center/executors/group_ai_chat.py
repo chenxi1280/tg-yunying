@@ -115,7 +115,12 @@ from ..legacy_anchor_rewrite import (
     expire_incomplete_daily_contract_actions,
     expire_legacy_anchor_rewritten_actions,
 )
-from ..pacing import current_hour_rounds, operation_intensity, schedule_times
+from ..pacing import (
+    current_hour_rounds,
+    operation_intensity,
+    schedule_times,
+    task_pacing_anchor,
+)
 from ..payloads import SendMessagePayload, create_send_action
 from ..targets import group_from_reference
 from .common import stats_inc
@@ -3125,6 +3130,7 @@ def _daily_group_due_state(
     due_message_count = daily_group_due_message_count(
         target,
         task.pacing_config or {},
+        anchor_at=task_pacing_anchor(task),
         now=timestamp,
     )
     target.due_message_count = due_message_count
@@ -3258,6 +3264,7 @@ def requires_planning_with_open_actions(session: Session, task: Task) -> bool:
     due = daily_group_due_message_count(
         target,
         task.pacing_config or {},
+        anchor_at=task_pacing_anchor(task),
         now=_now(),
     )
     volume_need = max(

@@ -22,6 +22,7 @@ from .pacing import (
     ai_next_run_after,
     fulfillment_pacing_config,
     next_run_after,
+    task_pacing_anchor,
 )
 from .planner_backlog import planner_backlog_snapshot
 from app.services.runtime_action_queries import task_action_status_counts_statement
@@ -179,6 +180,7 @@ def _daily_group_target_stats(
     due = daily_group_due_message_count(
         target,
         task.pacing_config or {},
+        anchor_at=task_pacing_anchor(task),
         now=timestamp,
     )
     target.due_message_count = due
