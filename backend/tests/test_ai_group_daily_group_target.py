@@ -621,11 +621,11 @@ def test_planner_includes_safe_post_follow_probe_candidate(
     assert admission.state == "awaiting_group_bot_confirmation"
 
 
-def test_group_volume_candidates_scan_past_uncovered_admission_debt(
+def test_group_volume_candidates_require_current_coverage_and_active_mask(
     session: Session,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    task, group = _seed(session, configured=5, account_count=3)
+    task, group = _seed(session, configured=6, account_count=4)
     timestamp = datetime(2026, 7, 28, 12)
     ensure_task_day_ledger(session, task, now=timestamp)
     target = ensure_task_group_daily_target(
@@ -635,7 +635,17 @@ def test_group_volume_candidates_scan_past_uncovered_admission_debt(
         timestamp.date(),
         now=timestamp,
     )
-    accounts = [SimpleNamespace(id=account_id) for account_id in (1, 2, 3)]
+    coverage_by_account = {
+        row.account_id: row
+        for row in session.query(TaskAccountDailyCoverage).filter_by(
+            task_id=task.id,
+            task_day_ledger_id=target.task_day_ledger_id,
+        )
+    }
+    for account_id in (1, 2, 4):
+        coverage_by_account[account_id].state = "confirmed"
+        coverage_by_account[account_id].confirmed_count = 1
+    accounts = [SimpleNamespace(id=account_id) for account_id in (1, 2, 3, 4)]
     captured: dict[str, object] = {}
 
     def select_accounts(*_args, **kwargs):
@@ -656,12 +666,15 @@ def test_group_volume_candidates_scan_past_uncovered_admission_debt(
     monkeypatch.setattr(
         group_ai_chat,
         "voice_profile_prompt_details",
-        lambda *_args, **_kwargs: {},
+        lambda *_args, **_kwargs: {
+            account_id: {"version": 1, "summary": f"面具{account_id}"}
+            for account_id in (2, 3, 4)
+        },
     )
     monkeypatch.setattr(
         group_ai_chat,
         "_daily_success_counts",
-        lambda *_args: {1: 2, 2: 0, 3: 1},
+        lambda *_args: {1: 0, 2: 1, 3: 0, 4: 2},
     )
     facts = SimpleNamespace(
         config=task.type_config,
@@ -681,7 +694,67 @@ def test_group_volume_candidates_scan_past_uncovered_admission_debt(
     )
 
     assert captured["scan_all_candidates"] is True
-    assert [account.id for account in selected] == [2, 3]
+    assert [account.id for account in selected] == [2, 4]
+
+
+def test_group_volume_candidates_return_empty_without_eligible_mask(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task, group = _seed(session, configured=2, account_count=1)
+    timestamp = datetime(2026, 7, 28, 12)
+    ensure_task_day_ledger(session, task, now=timestamp)
+    target = ensure_task_group_daily_target(
+        session,
+        task,
+        group,
+        timestamp.date(),
+        now=timestamp,
+    )
+    coverage = session.query(TaskAccountDailyCoverage).filter_by(
+        task_id=task.id,
+        task_day_ledger_id=target.task_day_ledger_id,
+        account_id=1,
+    ).one()
+    coverage.state = "confirmed"
+    coverage.confirmed_count = 1
+    monkeypatch.setattr(
+        group_ai_chat,
+        "select_task_accounts",
+        lambda *_args, **_kwargs: [SimpleNamespace(id=1)],
+    )
+    monkeypatch.setattr(
+        group_ai_chat,
+        "_online_ready_accounts",
+        lambda _session, _task, candidates, _progress: candidates,
+    )
+    monkeypatch.setattr(
+        group_ai_chat,
+        "_group_bot_ready_accounts_for_plan",
+        lambda _session, _task, _group, candidates: candidates,
+    )
+    monkeypatch.setattr(
+        group_ai_chat,
+        "voice_profile_prompt_details",
+        lambda *_args, **_kwargs: {},
+    )
+
+    selected = group_ai_chat._daily_group_extra_accounts(
+        session,
+        task,
+        SimpleNamespace(
+            config=task.type_config,
+            group=group,
+            coverage=SimpleNamespace(
+                daily_group_target_id=target.id,
+                volume_need_now=1,
+            ),
+        ),
+        selected=[],
+        account_limit=1,
+    )
+
+    assert selected == []
 
 
 @pytest.mark.parametrize(("extra_account_id", "expected_ids"), [(3, [3]), (None, [1])])
