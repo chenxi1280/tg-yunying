@@ -14,6 +14,8 @@
 
 本文仅是账号面具初始化、生成失败恢复状态机的专项真相源；AI 活群任务范围、发送义务、签到计数和调度以当前分类/闭合/群日专项为准。
 
+> **2026-08-08 extra-volume 资格纠偏（supersede 2026-08-04 的“可用于额外补量”短写）：** 缺面具账号只可用精确 `签到` 完成该账号当前任务日尚未完成的 coverage；该同一条 Telegram 真实成功消息同时增加 1 条群日总量，但不得再领取独立 extra-volume 义务。extra-volume Planner 候选必须同时属于当前 `TaskDayLedger` 的 `confirmed` coverage、存在 active/usable 面具、在线且通过 Task-scoped 群准入；候选过滤必须扫描到合格账号，不能让一个 `manual_required` 缺面具账号反复排第一并饿死其他账号。全部候选不合格时不创建 Action，显示真实容量等待，Dispatcher 的面具证据 fail-closed 继续保留。
+
 > **2026-08-04 统一签到 supersede：** 账号面具缺失仍不阻塞其他账号，面具恢复状态机保持有效；但下文所有 `mask_missing_check_in` 类型、冻结覆盖分母、只计 coverage/禁止额外补量和专用重试序号均为历史。当前只创建统一 `content_source=check_in`：正文精确 `签到`，绑定稳定数量义务与 remote mutation identity，账号未覆盖时同时绑定 coverage，可用于额外补量，不计高质量正文或 reply，不进入普通正文 10 天去重；Gateway unknown 保持原义务只复探。旧 Task 不迁移，物理删除后按新合同重建。
 
 > **2026-07-28 缺面具日覆盖兜底 supersede：** 面具初始化与恢复状态机仍以本文为准，但 AI 活群发送影响改为：缺面具账号不得生成普通正文或群总量额外消息；若该账号当天 coverage 未完成且准入、在线、安全条件满足，允许一条 `mask_missing_check_in` 精确 `签到` 完成最低覆盖。该兜底不进入普通 10 天内容去重，由任务+群+账号+日期+来源唯一键防重，也不停止面具恢复。

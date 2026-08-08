@@ -3996,7 +3996,7 @@ AI 活跃群 Planner 需要额外满足：
 
 - 任务日固定 `timezone_snapshot` 和 deadline，不生成 24 小时权重或 due-by-now。
 - 本轮按 coverage/extra 两类不可互换主义务的 open 状态和 Generation/interaction 真实空闲槽形成 JIT `batch_size`；blocked coverage 不转成 extra，资源已满显示 `capacity_gap`，不形成预扣或任务份额。
-- 每个本任务当前必达账号当日至少 1 条；先从开放、未覆盖且 ready 的 coverage 义务选择账号。extra-volume 义务可按成功数最少、最久未发和稳定账号 ID 选择已覆盖账号，绝不能抢占 recovering 账号的 coverage 义务。
+- 每个本任务当前必达账号当日至少 1 条；先从开放、未覆盖且 ready 的 coverage 义务选择账号。extra-volume 义务只能从当前任务日 ledger 已 `confirmed` 且存在 active/usable 账号面具的 ready 账号中，按成功数最少、最久未发和稳定账号 ID 选择，绝不能抢占 recovering 账号的 coverage 义务。缺面具账号的 coverage 签到远端成功时可同时增加 1 条群日总量，但不得因此领取独立 extra-volume 义务；单账号缺面具不得阻塞其他合格账号继续补量。
 - Action 编排与 Dispatcher 生成结果必须记录漏斗：请求 Turn 数、AI 返回候选数、清洗过滤数、质量过滤数、最终 ready / 终结 action 数。
 - 引用回复规划必须发生在 AI 生成前。Planner 先确定本轮总 Turn，再按 `reply_min_per_round` 拆出不可变引用回复 Turn，选择可回复消息，创建带固定引用目标和 `ai_generation_status=pending` 的 `send_message` action；Prompt 组装、AI 生成和 provider-backed 质量判断全部由 Dispatcher claim 提交后执行。日容量、硬小时、活动时段或兜底逻辑均不得把该槽位改成普通发言。
 - 引用回复 Turn 不能复用普通发言候选后再临时挂 `reply_to_message_id`；普通发言和引用回复是两类生成任务。引用回复候选不足时，本轮引用回复缺口必须写入任务 stats / last_error 或 generation 记录。

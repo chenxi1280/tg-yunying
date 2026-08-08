@@ -810,11 +810,57 @@ def _daily_group_extra_accounts(
     candidates = _group_bot_ready_accounts_for_plan(
         session, task, facts.group, candidates,
     )
+    candidates = _eligible_daily_group_extra_accounts(
+        session,
+        task,
+        facts=facts,
+        accounts=candidates,
+    )
     counts = _daily_success_counts(session, task)
     return sorted(
         candidates,
         key=lambda account: (counts.get(account.id, 0), account.id),
     )[:remaining]
+
+
+def _eligible_daily_group_extra_accounts(
+    session: Session,
+    task: Task,
+    *,
+    facts: PlanFacts,
+    accounts: list,
+) -> list:
+    target_id = str(facts.coverage.daily_group_target_id or "")
+    target = session.get(TaskGroupDailyTarget, target_id) if target_id else None
+    if target is None or not target.task_day_ledger_id or not accounts:
+        return []
+    confirmed_ids = set(session.scalars(
+        select(TaskAccountDailyCoverage.account_id).where(
+            TaskAccountDailyCoverage.tenant_id == task.tenant_id,
+            TaskAccountDailyCoverage.task_id == task.id,
+            TaskAccountDailyCoverage.group_id == facts.group.id,
+            TaskAccountDailyCoverage.task_day_ledger_id
+            == target.task_day_ledger_id,
+            TaskAccountDailyCoverage.state == "confirmed",
+            TaskAccountDailyCoverage.confirmed_count
+            >= TaskAccountDailyCoverage.target_count,
+        )
+    ))
+    covered_accounts = [
+        account for account in accounts if int(account.id) in confirmed_ids
+    ]
+    if not covered_accounts:
+        return []
+    profiles = voice_profile_prompt_details(
+        session,
+        tenant_id=task.tenant_id,
+        account_ids=[int(account.id) for account in covered_accounts],
+    )
+    ready_accounts, _missing_ids = _accounts_with_ready_voice_profiles(
+        covered_accounts,
+        profiles,
+    )
+    return ready_accounts
 
 
 def _daily_group_extra_account_limit(
