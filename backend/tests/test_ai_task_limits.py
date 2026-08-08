@@ -56,6 +56,10 @@ NOW = datetime(2026, 5, 30, 10, 0, 0)
 def assume_group_ai_accounts_ready_for_limit_tests(monkeypatch):
     assume_default_ai_group_voice_profiles(monkeypatch)
     monkeypatch.setattr(
+        "app.services.task_center.executors.channel_comment_preparation._now",
+        lambda: NOW,
+    )
+    monkeypatch.setattr(
         "app.services.task_center.executors.group_ai_chat.online_ready_account_ids_for_planning",
         lambda _session, *, tenant_id, accounts, now=None: {account.id for account in accounts},
     )
@@ -1351,11 +1355,7 @@ def test_channel_comment_comment_mode_ignores_stale_reply_minimum():
     assert all(not action.payload["reply_to_message_id"] for action in actions)
 
 
-def test_channel_comment_does_not_reuse_reply_targets_when_pool_is_short(monkeypatch):
-    monkeypatch.setattr(
-        "app.services.task_center.executors.channel_comment_preparation._now",
-        lambda: NOW,
-    )
+def test_channel_comment_does_not_reuse_reply_targets_when_pool_is_short():
     with _session() as session:
         _add_tenant(session)
         _add_channel(session, message_count=1, account_count=4)
@@ -1463,6 +1463,7 @@ def test_channel_comment_finds_unused_reply_target_beyond_initial_window():
                     action_type="post_comment",
                     account_id=101,
                     status="pending",
+                    scheduled_at=NOW,
                     payload={
                         "channel_target_id": 31,
                         "channel_message_id": 41,
@@ -1482,11 +1483,7 @@ def test_channel_comment_finds_unused_reply_target_beyond_initial_window():
     assert [action.payload["reply_to_message_id"] for action in actions] == [8121]
 
 
-def test_channel_comment_reserves_reply_minimum_before_generation(monkeypatch):
-    monkeypatch.setattr(
-        "app.services.task_center.executors.channel_comment_preparation._now",
-        lambda: NOW,
-    )
+def test_channel_comment_reserves_reply_minimum_before_generation():
     with _session() as session:
         _add_tenant(session)
         _add_channel(session, message_count=1, account_count=4)
@@ -1509,11 +1506,7 @@ def test_channel_comment_reserves_reply_minimum_before_generation(monkeypatch):
     assert total_actions == 3
 
 
-def test_channel_comment_defers_output_filtering_until_after_generation(monkeypatch):
-    monkeypatch.setattr(
-        "app.services.task_center.executors.channel_comment_preparation._now",
-        lambda: NOW,
-    )
+def test_channel_comment_defers_output_filtering_until_after_generation():
     with _session() as session:
         _add_tenant(session)
         _add_channel(session, message_count=1, account_count=4)
