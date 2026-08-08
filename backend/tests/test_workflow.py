@@ -4844,7 +4844,7 @@ def test_task_center_channel_view_and_comment_default_dynamic_new_keep_collectin
             json={
                 "name": f"pytest default dynamic {action_type}",
                 "account_config": {"selection_mode": "manual", "account_ids": [account["id"]], "max_concurrent": 1, "cooldown_per_account_minutes": 0},
-                "pacing_config": {"mode": "fixed", "interval_seconds_min": 3600, "interval_seconds_max": 3600, "jitter_percent": 0},
+                "pacing_config": {"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
                 "target_channel_id": channel_target["id"],
                 "message_count": 1,
                 **payload_extra,
