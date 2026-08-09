@@ -116,7 +116,8 @@ def _cache_with_account(session, material: Material, *, cache_peer_id: str, cand
             type(exc).__name__,
         )
         return type("_MaterialCacheResult", (), {"ok": False, "failure_type": "cache_failed", "detail": str(exc), "remote_message_id": ""})()
-    logger.info(
+    log_result = logger.info if result.ok else logger.warning
+    log_result(
         "material_cache_trace phase=attempt_finished material_id=%s account_id=%s ok=%s failure_type=%s",
         material.id,
         candidate.id,
