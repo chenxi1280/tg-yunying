@@ -118,13 +118,18 @@ def _cache_with_account(session, material: Material, *, cache_peer_id: str, cand
         return type("_MaterialCacheResult", (), {"ok": False, "failure_type": "cache_failed", "detail": str(exc), "remote_message_id": ""})()
     log_result = logger.info if result.ok else logger.warning
     log_result(
-        "material_cache_trace phase=attempt_finished material_id=%s account_id=%s ok=%s failure_type=%s",
+        "material_cache_trace phase=attempt_finished material_id=%s account_id=%s ok=%s failure_type=%s detail=%s",
         material.id,
         candidate.id,
         bool(result.ok),
         str(result.failure_type or ""),
+        _trace_detail(result.detail),
     )
     return result
+
+
+def _trace_detail(value: object) -> str:
+    return " ".join(str(value or "").split())[:240]
 
 
 def _apply_cache_result(session, material: Material, *, cache_peer_id: str, result, account: TgAccount | None) -> None:
