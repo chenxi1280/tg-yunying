@@ -5,6 +5,8 @@ import html
 import json
 import os
 import re
+import subprocess
+import sys
 import time
 import urllib.parse
 import urllib.request
@@ -15,7 +17,6 @@ from sqlalchemy import select
 
 from app.database import SessionLocal
 from app.models import AvatarMaterialSource, Material
-from app.services.ai_config import create_uploaded_material
 from app.services.avatar_material_import import (
     AvatarSourceInput,
     assert_avatar_candidates_importable,
@@ -33,7 +34,6 @@ TENANT_ID = int(os.getenv("AVATAR_MATERIAL_IMPORT_TENANT_ID", "1"))
 EXPECTED_SHA256 = os.getenv("AVATAR_MATERIAL_IMPORT_EXPECTED_SHA256", "").strip().lower()
 DEPLOYED_SHA = os.getenv("AVATAR_MATERIAL_IMPORT_DEPLOYED_SHA", "").strip()
 APPROVAL_REF = os.getenv("AVATAR_MATERIAL_IMPORT_APPROVAL_REF", "").strip()
-ACTOR = "github-actions-avatar-material-import"
 VALID_MODES = {"preview", "apply", "readback"}
 USER_AGENT = "tg-yunying-avatar-curation/1.0 (https://github.com/chenxi1280/tg-yunying)"
 MAX_DOWNLOAD_BYTES = 10 * 1024 * 1024
@@ -244,45 +244,38 @@ def _apply(manifest: dict[str, Any], manifest_sha: str) -> list[int]:
         with SessionLocal() as session:
             if item["page_id"] in _imported_page_ids(session, TENANT_ID):
                 continue
-            data = _download_manifest_item(item)
-            material = _create_material(session, item, data, manifest_sha)
-            imported_ids.append(int(material.id))
+        imported_ids.append(_apply_item_isolated(item, manifest_sha))
     return imported_ids
 
 
-def _download_manifest_item(item: dict[str, Any]) -> bytes:
-    source = AvatarSourceInput(**item["source"])
-    data = _fetch_bytes(source.source_file_url)
-    prepared = inspect_avatar_source(data=data, source=source)
-    expected = {
-        "content_sha256": item["content_sha256"],
-        "perceptual_hash": item["perceptual_hash"],
-        "width": item["width"],
-        "height": item["height"],
-        "detected_mime_type": item["detected_mime_type"],
-    }
-    actual = {key: getattr(prepared, key) for key in expected}
-    if actual != expected:
-        raise RuntimeError(f"avatar manifest item drift: page_id={item['page_id']}")
-    return data
-
-
-def _create_material(session, item: dict[str, Any], data: bytes, manifest_sha: str):
-    source = AvatarSourceInput(**item["source"])
-    actor = f"{ACTOR}:{APPROVAL_REF}:{manifest_sha[:12]}"
-    return create_uploaded_material(
-        session,
-        tenant_id=TENANT_ID,
-        title=str(item["title"]),
-        material_type="图片",
-        tags="头像,Commons,许可素材",
-        caption=f"{source.attribution_text} · {source.license_code}",
-        filename=str(item["filename"]),
-        content_type=str(item["mime_type"]),
-        data=data,
-        actor=actor,
-        avatar_source=source,
+def _apply_item_isolated(item: dict[str, Any], manifest_sha: str) -> int:
+    environment = dict(os.environ)
+    environment.update(
+        {
+            "AVATAR_ITEM_JSON": json.dumps(item, ensure_ascii=False, sort_keys=True),
+            "AVATAR_ITEM_MANIFEST_SHA256": manifest_sha,
+            "AVATAR_ITEM_APPROVAL_REF": APPROVAL_REF,
+            "AVATAR_ITEM_TENANT_ID": str(TENANT_ID),
+        }
     )
+    result = subprocess.run(
+        [sys.executable, "-m", "app.services.avatar_material_import_worker"],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip().splitlines()[-1:]
+        raise RuntimeError(
+            f"avatar item process failed: page_id={item['page_id']};"
+            f"exit_code={result.returncode};detail={''.join(detail)[:240]}"
+        )
+    output = result.stdout.strip().splitlines()
+    if not output:
+        raise RuntimeError("avatar item process returned no material id")
+    return int(output[-1])
 
 
 if __name__ == "__main__":

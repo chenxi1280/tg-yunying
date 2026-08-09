@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from importlib.util import module_from_spec, spec_from_file_location
 from io import BytesIO
 from pathlib import Path
@@ -11,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.models import AvatarMaterialSource, Material, Tenant
+from app.services import avatar_material_import_worker as worker
 
 pytestmark = pytest.mark.no_postgres
 
@@ -79,9 +81,78 @@ def test_apply_rejects_manifest_hash_mismatch(monkeypatch):
         script._apply({"items": []}, "1" * 64)
 
 
-def test_apply_redownload_rejects_item_drift(monkeypatch):
+def test_apply_uses_one_isolated_process_per_missing_item(monkeypatch):
     script = _load_script()
-    source = script.AvatarSourceInput(
+    script.EXPECTED_SHA256 = "a" * 64
+    calls: list[str] = []
+    monkeypatch.setattr(script, "SessionLocal", lambda: _empty_session())
+    monkeypatch.setattr(
+        script,
+        "_apply_item_isolated",
+        lambda item, _sha: calls.append(item["page_id"]) or int(item["page_id"]),
+    )
+
+    imported = script._apply({"items": [{"page_id": "101"}, {"page_id": "102"}]}, "a" * 64)
+
+    assert calls == ["101", "102"]
+    assert imported == [101, 102]
+
+
+def test_isolated_item_process_uses_fresh_python(monkeypatch):
+    script = _load_script()
+    script.APPROVAL_REF = "approval-1"
+    script.TENANT_ID = 7
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, stdout="321\n", stderr="")
+
+    monkeypatch.setattr(script.subprocess, "run", run)
+
+    material_id = script._apply_item_isolated({"page_id": "101"}, "a" * 64)
+
+    assert material_id == 321
+    assert calls[0][0] == [script.sys.executable, "-m", "app.services.avatar_material_import_worker"]
+    assert calls[0][1]["env"]["AVATAR_ITEM_TENANT_ID"] == "7"
+    assert calls[0][1]["env"]["AVATAR_ITEM_APPROVAL_REF"] == "approval-1"
+
+
+def test_item_worker_accepts_exact_manifest_image():
+    source = _worker_source()
+    prepared = worker.inspect_avatar_source(data=_image_bytes(), source=source)
+    item = {
+        "page_id": "101",
+        "source": source.__dict__,
+        "content_sha256": prepared.content_sha256,
+        "perceptual_hash": prepared.perceptual_hash,
+        "width": prepared.width,
+        "height": prepared.height,
+        "detected_mime_type": prepared.detected_mime_type,
+    }
+
+    worker._assert_manifest_item(item, _image_bytes())
+
+
+def test_item_worker_rejects_manifest_drift():
+    source = _worker_source()
+    prepared = worker.inspect_avatar_source(data=_image_bytes(), source=source)
+    item = {
+        "page_id": "101",
+        "source": source.__dict__,
+        "content_sha256": "0" * 64,
+        "perceptual_hash": prepared.perceptual_hash,
+        "width": prepared.width,
+        "height": prepared.height,
+        "detected_mime_type": prepared.detected_mime_type,
+    }
+
+    with pytest.raises(RuntimeError, match="avatar manifest item drift"):
+        worker._assert_manifest_item(item, _image_bytes())
+
+
+def _worker_source():
+    return worker.AvatarSourceInput(
         source_page_id="101",
         source_page_url="https://commons.wikimedia.org/wiki/File:Avatar-101.jpg",
         source_file_url="https://upload.wikimedia.org/avatar-101.jpg",
@@ -89,20 +160,12 @@ def test_apply_redownload_rejects_item_drift(monkeypatch):
         license_url="https://creativecommons.org/licenses/by/4.0/",
         attribution_text="Example Author",
     )
-    prepared = script.inspect_avatar_source(data=_image_bytes(), source=source)
-    item = {
-        "page_id": "101",
-        "source": prepared.source.__dict__,
-        "content_sha256": "0" * 64,
-        "perceptual_hash": prepared.perceptual_hash,
-        "width": prepared.width,
-        "height": prepared.height,
-        "detected_mime_type": prepared.detected_mime_type,
-    }
-    monkeypatch.setattr(script, "_fetch_bytes", lambda _url: _image_bytes())
 
-    with pytest.raises(RuntimeError, match="avatar manifest item drift"):
-        script._download_manifest_item(item)
+
+def _empty_session() -> Session:
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    return Session(engine)
 
 
 def test_readback_requires_reviewed_tg_cache_ready_material():

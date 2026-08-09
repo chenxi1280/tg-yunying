@@ -36,11 +36,11 @@
 - `account_profile_duplicate_reconcile.py`：精确重复组、keeper、全目标预检、分批旧值复核、manifest SHA、重复 apply 批次复用及逐账号 Telegram profile 回读。
 - 删除历史 `account_profile_half_rename.py` 及其“改一半”workflow 入口。
 - `AvatarMaterialSource` + `0144_avatar_material_sources.py`：来源、许可、署名、内容 SHA、感知哈希。
-- `account_avatar_material_import.py`：固定 17 个 Commons 非真人候选，显式节流、无重定向、限大小、稳定 manifest、逐张流式 apply、幂等续跑及逐素材 TG cache readback。
+- `account_avatar_material_import.py`：固定 17 个 Commons 非真人候选，显式节流、无重定向、限大小、稳定 manifest、逐张全新 Python 进程隔离 apply、幂等续跑及逐素材 TG cache readback。
 
 ## QA
 
-- 账号安全、唯一性、迁移、头像、workflow 上限、apply 幂等、低内存流式导入及远端回读定向回归：67 passed、44 deselected。
+- 账号安全、唯一性、迁移、头像、workflow 上限、apply 幂等、低内存进程隔离及远端回读定向回归：67 passed、44 deselected。
 - 旧素材上传路径测试需要 PostgreSQL fixture，本地无 `TEST_DATABASE_URL`，blocked。
 - 新增 PostgreSQL 并发争名测试，等待 CI 的 PostgreSQL 分区执行。
 - compileall、workflow YAML、Alembic single-head、`git diff --check`：passed。
@@ -51,6 +51,7 @@
 - 最终 release run `31293088430`：前端、双后端完整分区、镜像和 deploy 全部成功；生产 release `20260809035358_54cff40a`、Alembic `0144`、health ok。
 - 生产 preview：昵称 892 active 普通账号、49 重复组、533 重复账号、484 目标，manifest `99de6b1c...d216f`；头像 17 目标、0 已导入，manifest `c781003e...cff53`。
 - 首次头像 apply run `31293669338` 在导入 1 张后以 exit 137 失败；只读回读为 page `1260937` / material `296` / `not_cached`，昵称 apply 尚未启动。根因是 build 阶段将 17 张下载内容保留到 apply，已改为 manifest 完成后逐张重新下载、复核并立即落库，同一 manifest 幂等续跑。
+- 流式修复 release `99a7022b` 的第二次 apply run `31294601765` 又导入 page `2336845` 后以 exit 137 失败，生产累计 2/17；说明长寿命 Python 进程仍保留 Pillow/native 内存。后续修复改为每张素材由全新外部 Python 进程完成下载、验签和提交后退出，不使用会继承 SQLAlchemy/psycopg 状态的 `fork`。
 - 17 个 Commons 候选真实下载：17/17 可解码，许可/署名完整，候选间无 SHA/感知哈希冲突。
 
 ## Release Gate
@@ -61,14 +62,14 @@
 - `worker_impact`: account-security worker 在 Gateway 前校验 claim；material-cache 负责新素材缓存。
 - `external_platform_impact`: 发布本身不改 Telegram；后续账号改名批次才调用 Telegram。
 - `rollback_plan`: 新表和 claim 保留；停止新批次，不恢复旧重复名。迁移应用后应用降级安全性未证明，不执行猜测回滚。
-- `status`: `avatar_streaming_apply_fix_pending_ci`
+- `status`: `avatar_process_isolation_fix_pending_ci`
 
 ## 当前结论
 
 - `local_qa`: pass for focused scope
 - `postgres_concurrency`: passed in CI collection; full partition remaining failure is one obsolete profile-name assertion
-- `release`: `54cff40a` deployed; avatar streaming follow-up pending release
+- `release`: `99a7022b` deployed; avatar process-isolation follow-up pending release
 - `production_name_apply`: not_started
-- `production_avatar_apply`: partial_failed_1_of_17_exit_137
+- `production_avatar_apply`: partial_failed_2_of_17_exit_137
 - `telegram_readback`: unproven
 - `production_fixed`: false
