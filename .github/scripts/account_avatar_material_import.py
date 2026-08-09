@@ -12,6 +12,7 @@ import time
 import urllib.parse
 import urllib.request
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
@@ -155,8 +156,13 @@ def _avatar_readback_item(source: AvatarMaterialSource, material: Material) -> d
         "page_id": source.source_page_id,
         "material_id": int(material.id),
         "status": "ready" if cache_ready else "not_ready",
+        "material_type": material.material_type,
+        "content_present": bool(material.content),
+        "content_file_exists": bool(material.content and Path(material.content).is_file()),
+        "file_size": int(material.file_size or 0),
         "review_status": material.review_status,
         "cache_ready_status": material.cache_ready_status,
+        "last_cache_error": material.last_cache_error or "",
     }
 
 
