@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import os
+from collections import Counter
 from typing import Any
 
 from sqlalchemy import select
@@ -103,6 +104,10 @@ def _readback_summary(payload: dict[str, Any]) -> dict[str, Any]:
         "remote_matched_count": payload["remote_matched_count"],
         "after_duplicate_group_count": payload["after_duplicate_group_count"],
         "after_rename_target_count": payload["after_rename_target_count"],
+        "batch_status_counts": payload["batch_status_counts"],
+        "item_status_counts": payload["item_status_counts"],
+        "profile_status_counts": payload["profile_status_counts"],
+        "failure_type_counts": payload["failure_type_counts"],
         "complete": payload["complete"],
     }
 
@@ -228,6 +233,7 @@ def remote_readback() -> dict[str, Any]:
         rows = _readback_rows(session, TENANT_ID, EXPECTED_SHA256)
         results = [_read_remote_profile(session, item, account) for _, item, account in rows]
     batch_ids = sorted({int(batch.id) for batch, _, _ in rows})
+    status_counts = _readback_status_counts(rows)
     expected_target_count = _readback_target_count(rows)
     terminal_success = bool(rows) and all(result["status"] == "matched" for result in results)
     return {
@@ -240,7 +246,19 @@ def remote_readback() -> dict[str, Any]:
         "results": results,
         "after_duplicate_group_count": current["duplicate_group_count"],
         "after_rename_target_count": current["rename_target_count"],
+        **status_counts,
         "complete": terminal_success and len(rows) == expected_target_count and current["rename_target_count"] == 0,
+    }
+
+
+def _readback_status_counts(rows: list[tuple[Any, Any, TgAccount]]) -> dict[str, dict[str, int]]:
+    return {
+        "batch_status_counts": dict(sorted(Counter(batch.status for batch, _, _ in rows).items())),
+        "item_status_counts": dict(sorted(Counter(item.status for _, item, _ in rows).items())),
+        "profile_status_counts": dict(sorted(Counter(item.profile_status for _, item, _ in rows).items())),
+        "failure_type_counts": dict(
+            sorted(Counter(item.failure_type for _, item, _ in rows if item.failure_type).items())
+        ),
     }
 
 
