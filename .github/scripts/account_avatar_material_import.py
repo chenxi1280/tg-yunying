@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import html
 import json
@@ -63,6 +64,7 @@ def main() -> int:
         "mode": MODE,
         "manifest": manifest,
         "manifest_sha256": manifest_sha,
+        "manifest_sha256_b64": _sha256_b64(manifest_sha),
         "imported_material_ids": imported_ids,
         "curated_page_count": len(CURATED_PAGE_IDS),
         "curated_pages_imported_count": len(imported_page_ids.intersection(CURATED_PAGE_IDS)),
@@ -234,6 +236,10 @@ def _imported_page_ids(session, tenant_id: int) -> set[str]:
 def manifest_sha256(manifest: dict[str, Any]) -> str:
     encoded = json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _sha256_b64(value: str) -> str:
+    return base64.b64encode(bytes.fromhex(value)).decode("ascii")
 
 
 def _apply(manifest: dict[str, Any], manifest_sha: str) -> list[int]:

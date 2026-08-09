@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -80,6 +81,7 @@ def _reconcile_summary(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "mode": payload["mode"],
         "manifest_sha256": payload["manifest_sha256"],
+        "manifest_sha256_b64": _sha256_b64(payload["manifest_sha256"]),
         "active_operational_account_count": manifest["active_operational_account_count"],
         "duplicate_group_count": manifest["duplicate_group_count"],
         "duplicate_account_count": manifest["duplicate_account_count"],
@@ -94,6 +96,7 @@ def _readback_summary(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "mode": payload["mode"],
         "manifest_sha256": payload["manifest_sha256"],
+        "manifest_sha256_b64": _sha256_b64(payload["manifest_sha256"]),
         "batch_ids": payload["batch_ids"],
         "expected_target_count": payload["expected_target_count"],
         "target_count": payload["target_count"],
@@ -102,6 +105,10 @@ def _readback_summary(payload: dict[str, Any]) -> dict[str, Any]:
         "after_rename_target_count": payload["after_rename_target_count"],
         "complete": payload["complete"],
     }
+
+
+def _sha256_b64(value: str) -> str:
+    return base64.b64encode(bytes.fromhex(value)).decode("ascii")
 
 
 def _validate_inputs() -> None:
