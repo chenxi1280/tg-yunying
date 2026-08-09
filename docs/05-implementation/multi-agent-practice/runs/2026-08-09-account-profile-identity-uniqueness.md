@@ -40,7 +40,7 @@
 
 ## QA
 
-- 账号安全、唯一性、迁移、头像、workflow 上限、apply 幂等、低内存进程隔离及远端回读定向回归：67 passed、44 deselected。
+- 账号安全、唯一性、迁移、头像、workflow 上限、apply 幂等、低内存进程隔离及远端回读定向回归：68 passed、44 deselected。
 - 旧素材上传路径测试需要 PostgreSQL fixture，本地无 `TEST_DATABASE_URL`，blocked。
 - 新增 PostgreSQL 并发争名测试，等待 CI 的 PostgreSQL 分区执行。
 - compileall、workflow YAML、Alembic single-head、`git diff --check`：passed。
@@ -52,6 +52,7 @@
 - 生产 preview：昵称 892 active 普通账号、49 重复组、533 重复账号、484 目标，manifest `99de6b1c...d216f`；头像 17 目标、0 已导入，manifest `c781003e...cff53`。
 - 首次头像 apply run `31293669338` 在导入 1 张后以 exit 137 失败；只读回读为 page `1260937` / material `296` / `not_cached`，昵称 apply 尚未启动。根因是 build 阶段将 17 张下载内容保留到 apply，已改为 manifest 完成后逐张重新下载、复核并立即落库，同一 manifest 幂等续跑。
 - 流式修复 release `99a7022b` 的第二次 apply run `31294601765` 又导入 page `2336845` 后以 exit 137 失败，生产累计 2/17；说明长寿命 Python 进程仍保留 Pillow/native 内存。后续修复改为每张素材由全新外部 Python 进程完成下载、验签和提交后退出，不使用会继承 SQLAlchemy/psycopg 状态的 `fork`。
+- 进程隔离 release `bc600067` 的第三次 apply run `31295700949` 不再 OOM；首个子进程已成功提交第三张素材，但受进程内后台生命周期影响未自然退出，父进程 300 秒后显式 timeout，生产累计 3/17。一次性 worker 改为事务提交、Session 关闭、stdout/stderr 刷新后 `os._exit(0)`；异常路径保留 traceback 并 `os._exit(1)`，避免把提交成功误报为运行完成。
 - 17 个 Commons 候选真实下载：17/17 可解码，许可/署名完整，候选间无 SHA/感知哈希冲突。
 
 ## Release Gate
@@ -62,14 +63,14 @@
 - `worker_impact`: account-security worker 在 Gateway 前校验 claim；material-cache 负责新素材缓存。
 - `external_platform_impact`: 发布本身不改 Telegram；后续账号改名批次才调用 Telegram。
 - `rollback_plan`: 新表和 claim 保留；停止新批次，不恢复旧重复名。迁移应用后应用降级安全性未证明，不执行猜测回滚。
-- `status`: `avatar_process_isolation_fix_pending_ci`
+- `status`: `avatar_worker_explicit_exit_fix_pending_ci`
 
 ## 当前结论
 
 - `local_qa`: pass for focused scope
 - `postgres_concurrency`: passed in CI collection; full partition remaining failure is one obsolete profile-name assertion
-- `release`: `99a7022b` deployed; avatar process-isolation follow-up pending release
+- `release`: `bc600067` deployed; avatar worker explicit-exit follow-up pending release
 - `production_name_apply`: not_started
-- `production_avatar_apply`: partial_failed_2_of_17_exit_137
+- `production_avatar_apply`: partial_failed_3_of_17_child_exit_timeout
 - `telegram_readback`: unproven
 - `production_fixed`: false

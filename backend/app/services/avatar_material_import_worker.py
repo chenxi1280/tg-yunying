@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+import traceback
 import urllib.request
 from dataclasses import dataclass
 from typing import Any
@@ -113,5 +115,17 @@ def _create_material(session, context: ImportContext, data: bytes):
     )
 
 
+def _run_cli() -> None:
+    exit_code = 0
+    try:
+        exit_code = main()
+    except BaseException:  # noqa: BLE001 - one-shot child must return a nonzero process status.
+        traceback.print_exc()
+        exit_code = 1
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(exit_code)
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    _run_cli()

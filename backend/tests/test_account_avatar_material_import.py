@@ -151,6 +151,16 @@ def test_item_worker_rejects_manifest_drift():
         worker._assert_manifest_item(item, _image_bytes())
 
 
+def test_item_worker_hard_exits_after_success(monkeypatch):
+    exits = []
+    monkeypatch.setattr(worker, "main", lambda: 0)
+    monkeypatch.setattr(worker.os, "_exit", lambda code: exits.append(code))
+
+    worker._run_cli()
+
+    assert exits == [0]
+
+
 def _worker_source():
     return worker.AvatarSourceInput(
         source_page_id="101",
