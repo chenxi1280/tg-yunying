@@ -2133,7 +2133,8 @@ def test_username_taken_creates_partial_success_without_rolling_back_profile():
         assert item.profile_status == "succeeded"
         assert item.username_status == "failed"
         assert updated.display_name == "旧账号"
-        assert updated.tg_first_name == item.generated_first_name
+        assert updated.tg_first_name == updated.display_name
+        assert updated.tg_last_name == ""
 
 
 def test_preview_overrides_are_persisted_and_existing_profile_is_not_overwritten():

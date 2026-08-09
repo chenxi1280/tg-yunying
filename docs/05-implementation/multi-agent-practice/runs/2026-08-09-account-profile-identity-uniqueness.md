@@ -47,6 +47,7 @@
 - 首次 release workflow 解析失败，根因是 `workflow_dispatch` 输入超过 25 上限；拆分后 CI 正常创建 jobs。
 - 拆分后的 CI 完整 `no_postgres`：2779 passed、783 deselected；前端正式构建通过。
 - PostgreSQL 分区：764 passed、14 skipped、2 xfailed、3 failed；失败均为保留现有 display name 且 TG first name 为空时未预先 claim 最终实际发送名，已补红测和修复，等待同 SHA CI 重跑。
+- 第二次 PostgreSQL 分区：766 passed、14 skipped、2 xfailed、1 failed；唯一失败是旧测试仍要求保留 display name 时写入不同的随机 TG first name，与新合同冲突，已只更新过期断言，业务代码不回退。
 - 17 个 Commons 候选真实下载：17/17 可解码，许可/署名完整，候选间无 SHA/感知哈希冲突。
 
 ## Release Gate
@@ -57,12 +58,12 @@
 - `worker_impact`: account-security worker 在 Gateway 前校验 claim；material-cache 负责新素材缓存。
 - `external_platform_impact`: 发布本身不改 Telegram；后续账号改名批次才调用 Telegram。
 - `rollback_plan`: 新表和 claim 保留；停止新批次，不恢复旧重复名。迁移应用后应用降级安全性未证明，不执行猜测回滚。
-- `status`: `postgres_final_name_claim_fix_pending_ci`
+- `status`: `postgres_legacy_assertion_update_pending_ci`
 
 ## 当前结论
 
 - `local_qa`: pass for focused scope
-- `postgres_concurrency`: passed in CI collection; full partition still failed on three adjacent account-security assertions
+- `postgres_concurrency`: passed in CI collection; full partition remaining failure is one obsolete profile-name assertion
 - `release`: failed before build/deploy; follow-up fix pending
 - `production_name_apply`: not_started
 - `production_avatar_apply`: not_started
