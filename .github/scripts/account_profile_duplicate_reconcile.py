@@ -47,6 +47,7 @@ def main() -> int:
     if MODE == "readback":
         payload = remote_readback()
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        _print_summary("ACCOUNT_PROFILE_DUPLICATE_READBACK_SUMMARY", _readback_summary(payload))
         print("ACCOUNT_PROFILE_DUPLICATE_READBACK=" + encoded, flush=True)
         if not payload["complete"]:
             raise RuntimeError("account profile duplicate readback is incomplete")
@@ -65,8 +66,42 @@ def main() -> int:
         "after_duplicate_group_count": after["duplicate_group_count"],
         "after_rename_target_count": after["rename_target_count"],
     }
+    _print_summary("ACCOUNT_PROFILE_DUPLICATE_RECONCILE_SUMMARY", _reconcile_summary(payload))
     print("ACCOUNT_PROFILE_DUPLICATE_RECONCILE=" + json.dumps(payload, ensure_ascii=False, sort_keys=True), flush=True)
     return 0
+
+
+def _print_summary(prefix: str, payload: dict[str, Any]) -> None:
+    print(prefix + "=" + json.dumps(payload, ensure_ascii=False, sort_keys=True), flush=True)
+
+
+def _reconcile_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    manifest = payload["manifest"]
+    return {
+        "mode": payload["mode"],
+        "manifest_sha256": payload["manifest_sha256"],
+        "active_operational_account_count": manifest["active_operational_account_count"],
+        "duplicate_group_count": manifest["duplicate_group_count"],
+        "duplicate_account_count": manifest["duplicate_account_count"],
+        "rename_target_count": manifest["rename_target_count"],
+        "batch_ids": payload["batch_ids"],
+        "after_duplicate_group_count": payload["after_duplicate_group_count"],
+        "after_rename_target_count": payload["after_rename_target_count"],
+    }
+
+
+def _readback_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "mode": payload["mode"],
+        "manifest_sha256": payload["manifest_sha256"],
+        "batch_ids": payload["batch_ids"],
+        "expected_target_count": payload["expected_target_count"],
+        "target_count": payload["target_count"],
+        "remote_matched_count": payload["remote_matched_count"],
+        "after_duplicate_group_count": payload["after_duplicate_group_count"],
+        "after_rename_target_count": payload["after_rename_target_count"],
+        "complete": payload["complete"],
+    }
 
 
 def _validate_inputs() -> None:

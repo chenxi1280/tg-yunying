@@ -102,6 +102,30 @@ def test_manifest_targets_only_duplicate_non_keepers_and_is_stable():
     assert script.manifest_sha256(first) == script.manifest_sha256(second)
 
 
+def test_reconcile_summary_keeps_hash_and_counts_without_targets():
+    script = _load_script()
+    payload = {
+        "mode": "preview",
+        "manifest_sha256": "a" * 64,
+        "manifest": {
+            "active_operational_account_count": 892,
+            "duplicate_group_count": 49,
+            "duplicate_account_count": 533,
+            "rename_target_count": 484,
+            "targets": [{"account_id": account_id} for account_id in range(484)],
+        },
+        "batch_ids": [],
+        "after_duplicate_group_count": 49,
+        "after_rename_target_count": 484,
+    }
+
+    summary = script._reconcile_summary(payload)
+
+    assert summary["manifest_sha256"] == "a" * 64
+    assert summary["rename_target_count"] == 484
+    assert "manifest" not in summary
+
+
 def test_assert_unchanged_rejects_old_name_drift():
     script = _load_script()
     with _session() as session:
