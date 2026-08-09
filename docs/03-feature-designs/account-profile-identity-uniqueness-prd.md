@@ -157,6 +157,7 @@
 - 下载后验证 MIME、可解码性、尺寸、文件大小；保存 SHA-256 和感知哈希。
 - SHA-256 相同直接拒绝；感知哈希距离低于阈值进入人工复核，不能静默当新图。
 - manifest hash 的人工批准视为这批固定候选的素材审核；apply 后仍需走 TG cache worker，只有 `已审核 + cache_ready` 才能用于头像。
+- material-cache 每次远端上传使用一次性 Telethon client，完成或异常后都断开；禁止复用已经执行多次媒体上传的进程级 client 让单个陈旧连接拖住整批素材。
 
 ### 6.3 分配策略
 
@@ -190,6 +191,7 @@
 8. 头像导入拒绝未知许可、重复 SHA、不可解码文件、内网 URL 和超限响应；近似重复进入复核。
 9. 存量脚本默认 preview，未提供 manifest hash/actor/ref 时不能 apply。
 10. `material-cache` 调用阻塞时，`account-security` 仍能独立推进不依赖头像缓存的昵称批次；生产 compose 和发布检查必须包含两个 worker。
+11. 连续缓存多张素材时每张都新建并断开 Telethon client；前一张连接异常不得污染下一张素材上传。
 
 ### 9.2 E4 生产验收
 

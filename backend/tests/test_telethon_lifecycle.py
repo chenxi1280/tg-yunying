@@ -8,7 +8,12 @@ from concurrent.futures import TimeoutError as FutureTimeoutError
 import pytest
 
 from app.config import Settings
-from app.integrations.telegram import AccountHealth, DeveloperAppCredentials, TelethonTelegramGateway
+from app.integrations.telegram import (
+    AccountHealth,
+    DeveloperAppCredentials,
+    SendResult,
+    TelethonTelegramGateway,
+)
 from app.telethon_lifecycle import (
     TelethonClientLifecycle,
     shutdown_telethon_lifecycle,
@@ -427,6 +432,50 @@ def test_account_health_uses_ephemeral_client_and_disconnects(monkeypatch):
 
     assert health.status == "在线"
     assert calls == ["connect", "authorized", "get_me", "disconnect"]
+
+
+@pytest.mark.no_postgres
+def test_material_cache_uses_ephemeral_client_and_disconnects(monkeypatch):
+    gateway = TelethonTelegramGateway(Settings())
+    calls: list[str] = []
+
+    class FakeClient:
+        async def connect(self):
+            calls.append("connect")
+
+        async def is_user_authorized(self):
+            calls.append("authorized")
+            return True
+
+        async def disconnect(self):
+            calls.append("disconnect")
+
+    async def fake_cache(_client, source, peer, caption, _map_error):
+        calls.append(f"cache:{source}:{peer}:{caption}")
+        return SendResult(True, remote_message_id="cached-1")
+
+    monkeypatch.setattr("app.integrations.telegram.gateway.decrypt_session", lambda _value: "raw-session")
+    monkeypatch.setattr("app.integrations.telegram.gateway.telethon_content.cache_material_source", fake_cache)
+    monkeypatch.setattr(gateway, "_new_client", lambda *_args, **_kwargs: FakeClient())
+    monkeypatch.setattr(
+        gateway,
+        "_get_or_create_client",
+        lambda *_args, **_kwargs: pytest.fail("material cache must not use the persistent client cache"),
+    )
+    credentials = DeveloperAppCredentials(app_id=1, api_id=123, api_hash="hash", credentials_version=1)
+
+    result = asyncio.run(
+        gateway._cache_material_source_async(
+            "encrypted-session",
+            "/app/media/avatar.jpg",
+            "cache-peer",
+            "caption",
+            credentials,
+        )
+    )
+
+    assert result.ok is True
+    assert calls == ["connect", "authorized", "cache:/app/media/avatar.jpg:cache-peer:caption", "disconnect"]
 
 
 @pytest.mark.no_postgres
