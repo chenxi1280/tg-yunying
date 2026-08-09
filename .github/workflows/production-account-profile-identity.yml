@@ -79,8 +79,10 @@ jobs:
           if [[ "${OPERATION}" == profile_dedupe ]]; then
             test -n "${SEED}"
           fi
-          if [[ "${MODE}" == apply ]]; then
+          if [[ "${MODE}" =~ ^(apply|readback)$ ]]; then
             test -n "${MANIFEST_SHA}"
+          fi
+          if [[ "${MODE}" == apply ]]; then
             test -n "${APPROVAL_REF}"
           fi
 

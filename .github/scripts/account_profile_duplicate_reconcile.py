@@ -8,7 +8,12 @@ from typing import Any
 from sqlalchemy import select
 
 from app.database import SessionLocal
-from app.models import AccountStatus, TgAccount
+from app.models import (
+    AccountStatus,
+    TgAccount,
+    TgAccountSecurityBatch,
+    TgAccountSecurityBatchItem,
+)
 from app.schemas.account_security import (
     AccountSecurityBatchCreate,
     AccountSecurityProfileOverride,
@@ -20,8 +25,10 @@ from app.services.account_profile_identity import (
     generate_unique_display_names,
     unavailable_name_keys,
 )
+from app.services._common import gateway
 from app.services.account_security import create_account_security_batch
 from app.services.account_usage_policy import apply_operational_account_filters
+from app.services.developer_apps import credentials_for_account
 
 
 MODE = os.getenv("ACCOUNT_PROFILE_DEDUPE_MODE", "preview").strip().lower()
@@ -37,6 +44,13 @@ VALID_MODES = {"preview", "apply", "readback"}
 
 def main() -> int:
     _validate_inputs()
+    if MODE == "readback":
+        payload = remote_readback()
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        print("ACCOUNT_PROFILE_DUPLICATE_READBACK=" + encoded, flush=True)
+        if not payload["complete"]:
+            raise RuntimeError("account profile duplicate readback is incomplete")
+        return 0
     with SessionLocal() as session:
         manifest = build_manifest(session, tenant_id=TENANT_ID, seed=SEED, deployed_sha=DEPLOYED_SHA)
     manifest_sha = manifest_sha256(manifest)
@@ -62,11 +76,11 @@ def _validate_inputs() -> None:
         raise ValueError("ACCOUNT_PROFILE_DEDUPE_SEED is required")
     if not DEPLOYED_SHA:
         raise ValueError("ACCOUNT_PROFILE_DEDUPE_DEPLOYED_SHA is required")
-    if MODE != "apply":
+    if MODE not in {"apply", "readback"}:
         return
     if not EXPECTED_SHA256:
-        raise ValueError("ACCOUNT_PROFILE_DEDUPE_EXPECTED_SHA256 is required for apply")
-    if not APPROVAL_REF:
+        raise ValueError("ACCOUNT_PROFILE_DEDUPE_EXPECTED_SHA256 is required for apply/readback")
+    if MODE == "apply" and not APPROVAL_REF:
         raise ValueError("ACCOUNT_PROFILE_DEDUPE_APPROVAL_REF is required for apply")
 
 
@@ -122,20 +136,113 @@ def _apply(manifest: dict[str, Any], manifest_sha: str) -> list[int]:
     targets = list(manifest["targets"])
     if not targets:
         raise RuntimeError("apply requires a non-empty exact target set")
+    tenant_id = int(manifest["tenant_id"])
     with SessionLocal() as session:
-        _assert_unchanged(session, int(manifest["tenant_id"]), targets)
-    batch_ids: list[int] = []
-    for chunk in _chunks(targets, BATCH_SIZE):
+        batch_ids, existing_ids = _existing_batch_state(session, tenant_id, manifest_sha, targets)
+        missing = [target for target in targets if int(target["account_id"]) not in existing_ids]
+        _assert_unchanged(session, tenant_id, missing)
+    for chunk in _chunks(missing, BATCH_SIZE):
         with SessionLocal() as session:
-            _assert_unchanged(session, int(manifest["tenant_id"]), chunk)
+            _assert_unchanged(session, tenant_id, chunk)
             batch = create_account_security_batch(
                 session,
-                int(manifest["tenant_id"]),
-                _batch_payload(chunk, manifest_sha),
+                tenant_id,
+                _batch_payload(chunk, manifest_sha, len(targets)),
                 ACTOR,
             )
             batch_ids.append(int(batch.id))
-    return batch_ids
+    return sorted(batch_ids)
+
+
+def _existing_batch_state(
+    session,
+    tenant_id: int,
+    manifest_sha: str,
+    targets: list[dict[str, Any]],
+) -> tuple[list[int], set[int]]:
+    expected = {int(target["account_id"]): str(target["new_display_name"]) for target in targets}
+    stmt = (
+        select(TgAccountSecurityBatch, TgAccountSecurityBatchItem)
+        .join(TgAccountSecurityBatchItem, TgAccountSecurityBatchItem.batch_id == TgAccountSecurityBatch.id)
+        .where(
+            TgAccountSecurityBatch.tenant_id == tenant_id,
+            TgAccountSecurityBatch.reason.like(_batch_reason(manifest_sha, len(targets)) + "%"),
+        )
+    )
+    batch_ids: set[int] = set()
+    account_ids: set[int] = set()
+    for batch, item in session.execute(stmt):
+        expected_name = expected.get(int(item.account_id))
+        if expected_name != item.generated_display_name or int(item.account_id) in account_ids:
+            raise RuntimeError(f"existing manifest batch drift: account_id={item.account_id}")
+        batch_ids.add(int(batch.id))
+        account_ids.add(int(item.account_id))
+    return sorted(batch_ids), account_ids
+
+
+def remote_readback() -> dict[str, Any]:
+    with SessionLocal() as session:
+        current = build_manifest(session, tenant_id=TENANT_ID, seed=SEED, deployed_sha=DEPLOYED_SHA)
+        rows = _readback_rows(session, TENANT_ID, EXPECTED_SHA256)
+        results = [_read_remote_profile(session, item, account) for _, item, account in rows]
+    batch_ids = sorted({int(batch.id) for batch, _, _ in rows})
+    expected_target_count = _readback_target_count(rows)
+    terminal_success = bool(rows) and all(result["status"] == "matched" for result in results)
+    return {
+        "mode": MODE,
+        "manifest_sha256": EXPECTED_SHA256,
+        "batch_ids": batch_ids,
+        "expected_target_count": expected_target_count,
+        "target_count": len(rows),
+        "remote_matched_count": sum(result["status"] == "matched" for result in results),
+        "results": results,
+        "after_duplicate_group_count": current["duplicate_group_count"],
+        "after_rename_target_count": current["rename_target_count"],
+        "complete": terminal_success and len(rows) == expected_target_count and current["rename_target_count"] == 0,
+    }
+
+
+def _readback_rows(session, tenant_id: int, manifest_sha: str) -> list[tuple[Any, Any, TgAccount]]:
+    stmt = (
+        select(TgAccountSecurityBatch, TgAccountSecurityBatchItem, TgAccount)
+        .join(TgAccountSecurityBatchItem, TgAccountSecurityBatchItem.batch_id == TgAccountSecurityBatch.id)
+        .join(TgAccount, TgAccount.id == TgAccountSecurityBatchItem.account_id)
+        .where(
+            TgAccountSecurityBatch.tenant_id == tenant_id,
+            TgAccountSecurityBatch.reason.like(f"重复昵称治理 manifest={manifest_sha} target_count=%"),
+        )
+        .order_by(TgAccountSecurityBatchItem.account_id.asc())
+    )
+    return list(session.execute(stmt))
+
+
+def _readback_target_count(rows: list[tuple[Any, Any, TgAccount]]) -> int:
+    counts = {
+        int(batch.reason.split(" target_count=", 1)[1].split(" ", 1)[0])
+        for batch, _, _ in rows
+    }
+    if len(counts) != 1:
+        raise RuntimeError("manifest batch target count is missing or inconsistent")
+    return counts.pop()
+
+
+def _read_remote_profile(session, item: TgAccountSecurityBatchItem, account: TgAccount) -> dict[str, Any]:
+    base = {"account_id": int(account.id), "expected_display_name": item.generated_display_name}
+    if item.status != "succeeded" or item.profile_status != "succeeded":
+        return {**base, "status": "batch_incomplete", "item_status": item.status, "profile_status": item.profile_status}
+    try:
+        profile = gateway.pull_profile(
+            account.id,
+            account.session_ciphertext,
+            credentials_for_account(session, account),
+        )
+    except Exception as exc:
+        return {**base, "status": "pull_failed", "error_type": type(exc).__name__}
+    actual_first_name = profile.first_name or ""
+    actual_last_name = profile.last_name or ""
+    actual_name = f"{actual_first_name} {actual_last_name}".strip()
+    status = "matched" if actual_first_name == item.generated_display_name and not actual_last_name else "mismatched"
+    return {**base, "status": status, "actual_display_name": actual_name}
 
 
 def _assert_unchanged(session, tenant_id: int, targets: list[dict[str, Any]]) -> None:
@@ -158,7 +265,7 @@ def _target_matches(account: TgAccount, target: dict[str, Any]) -> bool:
     )
 
 
-def _batch_payload(targets: list[dict[str, Any]], manifest_sha: str) -> AccountSecurityBatchCreate:
+def _batch_payload(targets: list[dict[str, Any]], manifest_sha: str, target_count: int) -> AccountSecurityBatchCreate:
     strategy = ProfileGenerationStrategy(
         generation_mode="local_random",
         language_style="中文",
@@ -171,7 +278,7 @@ def _batch_payload(targets: list[dict[str, Any]], manifest_sha: str) -> AccountS
         account_ids=[int(target["account_id"]) for target in targets],
         action_types=["update_profile"],
         confirm_text="确认",
-        reason=f"重复昵称治理 manifest={manifest_sha} approval={APPROVAL_REF}",
+        reason=_batch_reason(manifest_sha, target_count) + APPROVAL_REF,
         profile_strategy=strategy,
         avatar_strategy=AvatarStrategy(mode="none"),
         preview_overrides=[
@@ -184,6 +291,10 @@ def _batch_payload(targets: list[dict[str, Any]], manifest_sha: str) -> AccountS
             for target in targets
         ],
     )
+
+
+def _batch_reason(manifest_sha: str, target_count: int) -> str:
+    return f"重复昵称治理 manifest={manifest_sha} target_count={target_count} approval="
 
 
 def _chunks(values: list[dict[str, Any]], size: int) -> list[list[dict[str, Any]]]:
