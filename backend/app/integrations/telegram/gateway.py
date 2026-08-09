@@ -2893,10 +2893,32 @@ class TelethonTelegramGateway(TelegramGateway):
             return SendResult(False, failure_type="cache_peer_unavailable", detail="缺少素材缓存 peer")
         if not source:
             return SendResult(False, failure_type="cache_not_ready", detail="素材缺少来源")
-        client = await self._get_or_create_client(credentials, raw_session)
-        if not await client.is_user_authorized():
-            return SendResult(False, failure_type=FailureType.ACCOUNT_UNAVAILABLE.value, detail="session 已失效")
-        return await telethon_content.cache_material_source(client, source, cache_peer_id, caption, self._map_send_error)
+        client = self._new_client(credentials, raw_session)
+        operation_error: BaseException | None = None
+        try:
+            await asyncio.wait_for(client.connect(), timeout=self.settings.telethon_client_connect_timeout_seconds)
+            if not await client.is_user_authorized():
+                return SendResult(False, failure_type=FailureType.ACCOUNT_UNAVAILABLE.value, detail="session 已失效")
+            return await telethon_content.cache_material_source(
+                client,
+                source,
+                cache_peer_id,
+                caption,
+                self._map_send_error,
+            )
+        except BaseException as exc:
+            operation_error = exc
+            raise
+        finally:
+            await self._disconnect_material_cache_client(client, operation_error)
+
+    async def _disconnect_material_cache_client(self, client: Any, operation_error: BaseException | None) -> None:
+        try:
+            await asyncio.wait_for(client.disconnect(), timeout=ACCOUNT_HEALTH_DISCONNECT_TIMEOUT_SECONDS)
+        except BaseException:
+            if operation_error is None:
+                raise
+            logger.warning("material cache client disconnect failed after upload error", exc_info=True)
 
     def cache_material_source(
         self,

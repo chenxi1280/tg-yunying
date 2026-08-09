@@ -103,6 +103,8 @@ Repository variables:
 
 生产环境不要开启 `ENABLE_EMBEDDED_WORKER`。compose 会单独启动 backend 以及 planner / dispatcher / listener / recovery / account-security / material-cache / metrics worker。`material-cache` 独立推进素材 TG 暂存，`account-security` 只处理账号安全和资料批次；需要头像的批次项仍等待 `cache_ready_status=ready`。两个队列必须使用独立容器和 heartbeat，避免素材远端调用阻塞纯昵称、2FA 或设备清理。临时诊断可以单独运行 `python -m app.worker --role material-cache`，但不得与常驻 worker 并发处理同一素材。
 
+素材 TG 暂存每张文件使用一次性 Telethon client，调用完成或异常后都断开，不进入进程级 client cache。线上出现前几张 ready、后续全部长期 `not_cached` 时，要同时核对 material-cache heartbeat、当前最小未缓存 material 和远端上传耗时；不能仅凭容器 healthy 判断队列正常，也不能用重启反复重传未知结果。
+
 worker 容器不暴露 backend API 端口，健康检查不能使用 `curl 127.0.0.1:8000/api/health`。生产 compose 的 Docker healthcheck 读取 worker 主循环写入的本地 heartbeat 文件（默认 `/tmp/tgyunying-worker-heartbeat`），避免每 20 秒为每个 worker 启动 Python 并查询 DB；业务观测仍看 `worker_heartbeats` 表。如果某个 worker unhealthy，先看容器内 heartbeat 文件时间、`worker_heartbeats`、容器日志和数据库连接，而不是先排查 backend API。
 
 发布替换 worker 容器后，Recovery 先限定为当前 `executing` Action 的 lease owner，再以过期 heartbeat 的完整 `worker_id` 或 `hostname + pid` 匹配租约；heartbeat ID 末尾的角色后缀不参与 legacy 租约匹配。没有 executing lease 时不得扫描历史 heartbeat。未进入 Telegram Gateway 的旧容器执行项应立即按 `stale_worker` 回收，已进入 Gateway 的仍按 unknown 防重复口径处理。
