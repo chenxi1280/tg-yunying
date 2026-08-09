@@ -253,9 +253,6 @@ def _apply(manifest: dict[str, Any], manifest_sha: str) -> list[int]:
         raise RuntimeError(f"manifest hash mismatch: expected={EXPECTED_SHA256};actual={manifest_sha}")
     imported_ids: list[int] = []
     for item in manifest["items"]:
-        with SessionLocal() as session:
-            if item["page_id"] in _imported_page_ids(session, TENANT_ID):
-                continue
         imported_ids.append(_apply_item_isolated(item, manifest_sha))
     return imported_ids
 
