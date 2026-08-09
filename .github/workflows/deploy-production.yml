@@ -38,51 +38,6 @@ name: Deploy Production
         required: false
         default: false
         type: boolean
-      run_account_profile_dedupe:
-        description: Preview, apply, or read back exact duplicate account profile names
-        required: false
-        default: false
-        type: boolean
-      account_profile_dedupe_mode:
-        description: Account profile dedupe mode (preview, apply, readback)
-        required: false
-        default: preview
-        type: string
-      account_profile_dedupe_seed:
-        description: Stable seed used to reproduce the exact preview manifest
-        required: false
-        default: ''
-        type: string
-      account_profile_dedupe_expected_sha256:
-        description: Required preview manifest SHA-256 for apply
-        required: false
-        default: ''
-        type: string
-      account_profile_dedupe_approval_ref:
-        description: Required approval or incident reference for apply
-        required: false
-        default: ''
-        type: string
-      run_avatar_material_import:
-        description: Preview, apply, or read back licensed Wikimedia Commons avatar materials
-        required: false
-        default: false
-        type: boolean
-      avatar_material_import_mode:
-        description: Avatar material import mode (preview, apply, readback)
-        required: false
-        default: preview
-        type: string
-      avatar_material_import_expected_sha256:
-        description: Required avatar preview manifest SHA-256 for apply
-        required: false
-        default: ''
-        type: string
-      avatar_material_import_approval_ref:
-        description: Required approval or incident reference for avatar apply
-        required: false
-        default: ''
-        type: string
       update_account_masks_direction:
         description: Update all active production account masks to the adult male everyday-social direction
         required: false
@@ -571,51 +526,6 @@ jobs:
           ssh silicon-valley-production-server 'timeout 1200 docker exec -e ACCOUNT_PROFILE_RECONCILE_APPLY=true -e ACCOUNT_PROFILE_RECONCILE_DRAIN_ONCE=true -i tgyunying-backend python -' \
             < .github/scripts/account_profile_initialization_reconcile.py
           echo "ACCOUNT_PROFILE_RECONCILE_END"
-
-      - name: Reconcile duplicate account profile names
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_account_profile_dedupe }}
-        env:
-          DEDUPE_MODE: ${{ inputs.account_profile_dedupe_mode }}
-          DEDUPE_SEED: ${{ inputs.account_profile_dedupe_seed }}
-          DEDUPE_EXPECTED_SHA256: ${{ inputs.account_profile_dedupe_expected_sha256 }}
-          DEDUPE_APPROVAL_REF: ${{ inputs.account_profile_dedupe_approval_ref }}
-        run: |
-          set -euo pipefail
-          [[ "$DEDUPE_MODE" =~ ^(preview|apply|readback)$ ]]
-          [[ "$DEDUPE_SEED" =~ ^[A-Za-z0-9._-]{1,80}$ ]]
-          [[ -z "$DEDUPE_EXPECTED_SHA256" || "$DEDUPE_EXPECTED_SHA256" =~ ^[0-9a-f]{64}$ ]]
-          [[ -z "$DEDUPE_APPROVAL_REF" || "$DEDUPE_APPROVAL_REF" =~ ^[A-Za-z0-9._:/-]{1,120}$ ]]
-          echo "ACCOUNT_PROFILE_DUPLICATE_RECONCILE_START"
-          ssh silicon-valley-production-server "timeout 1800 docker exec \
-            -e ACCOUNT_PROFILE_DEDUPE_MODE=$DEDUPE_MODE \
-            -e ACCOUNT_PROFILE_DEDUPE_SEED=$DEDUPE_SEED \
-            -e ACCOUNT_PROFILE_DEDUPE_EXPECTED_SHA256=$DEDUPE_EXPECTED_SHA256 \
-            -e ACCOUNT_PROFILE_DEDUPE_DEPLOYED_SHA=$GITHUB_SHA \
-            -e ACCOUNT_PROFILE_DEDUPE_APPROVAL_REF=$DEDUPE_APPROVAL_REF \
-            -i tgyunying-backend python -" \
-            < .github/scripts/account_profile_duplicate_reconcile.py
-          echo "ACCOUNT_PROFILE_DUPLICATE_RECONCILE_END"
-
-      - name: Import licensed account avatar materials
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_avatar_material_import }}
-        env:
-          AVATAR_MODE: ${{ inputs.avatar_material_import_mode }}
-          AVATAR_EXPECTED_SHA256: ${{ inputs.avatar_material_import_expected_sha256 }}
-          AVATAR_APPROVAL_REF: ${{ inputs.avatar_material_import_approval_ref }}
-        run: |
-          set -euo pipefail
-          [[ "$AVATAR_MODE" =~ ^(preview|apply|readback)$ ]]
-          [[ -z "$AVATAR_EXPECTED_SHA256" || "$AVATAR_EXPECTED_SHA256" =~ ^[0-9a-f]{64}$ ]]
-          [[ -z "$AVATAR_APPROVAL_REF" || "$AVATAR_APPROVAL_REF" =~ ^[A-Za-z0-9._:/-]{1,120}$ ]]
-          echo "ACCOUNT_AVATAR_MATERIAL_IMPORT_START"
-          ssh silicon-valley-production-server "timeout 1800 docker exec \
-            -e AVATAR_MATERIAL_IMPORT_MODE=$AVATAR_MODE \
-            -e AVATAR_MATERIAL_IMPORT_EXPECTED_SHA256=$AVATAR_EXPECTED_SHA256 \
-            -e AVATAR_MATERIAL_IMPORT_DEPLOYED_SHA=$GITHUB_SHA \
-            -e AVATAR_MATERIAL_IMPORT_APPROVAL_REF=$AVATAR_APPROVAL_REF \
-            -i tgyunying-backend python -" \
-            < .github/scripts/account_avatar_material_import.py
-          echo "ACCOUNT_AVATAR_MATERIAL_IMPORT_END"
 
       - name: Update account masks direction
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.update_account_masks_direction }}
