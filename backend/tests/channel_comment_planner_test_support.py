@@ -1,5 +1,6 @@
 import ast
 import inspect
+from datetime import datetime
 
 import pytest
 from sqlalchemy import create_engine
@@ -22,7 +23,12 @@ from app.services import group_listeners
 from app.services.grok_cli_bridge import GrokCliBridge
 from app.services.task_center import ai_generator
 from app.services.task_center.executors import channel_comment
+from app.services.task_center.executors import channel_comment_budget
+from app.services.task_center.executors import channel_comment_preparation
+from app.services.task_center.executors import channel_comment_schedule
 from app.services.task_center.executors import common as executor_common
+
+STABLE_PLANNER_NOW = datetime(2030, 8, 2, 10, 0, 0)
 
 
 def planner_session() -> Session:
@@ -200,6 +206,7 @@ def add_existing_comment_action(session: Session, task: Task, status: str) -> No
         action_type="post_comment",
         account_id=101,
         status=status,
+        scheduled_at=STABLE_PLANNER_NOW,
         payload={
             "channel_target_id": 31,
             "channel_message_id": 41,
@@ -249,6 +256,9 @@ def planner_external_boundary_references() -> set[str]:
 
 
 def fixed_profile(monkeypatch) -> None:
+    monkeypatch.setattr(channel_comment_budget, "_now", lambda: STABLE_PLANNER_NOW)
+    monkeypatch.setattr(channel_comment_preparation, "_now", lambda: STABLE_PLANNER_NOW)
+    monkeypatch.setattr(channel_comment_schedule, "_now", lambda: STABLE_PLANNER_NOW)
     monkeypatch.setattr(
         channel_comment,
         "tenant_learning_profile_preview",
