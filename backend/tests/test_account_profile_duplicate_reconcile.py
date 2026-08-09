@@ -127,6 +127,27 @@ def test_reconcile_summary_keeps_hash_and_counts_without_targets():
     assert "manifest" not in summary
 
 
+def test_readback_status_counts_exposes_worker_outcomes():
+    script = _load_script()
+    rows = [
+        (
+            SimpleNamespace(status="running"),
+            SimpleNamespace(status="pending", profile_status="pending", failure_type=""),
+            _account(1, "海盐日记"),
+        ),
+        (
+            SimpleNamespace(status="partial_success"),
+            SimpleNamespace(status="failed", profile_status="failed", failure_type="执行异常"),
+            _account(2, "云边散步"),
+        ),
+    ]
+
+    counts = script._readback_status_counts(rows)
+
+    assert counts["item_status_counts"] == {"failed": 1, "pending": 1}
+    assert counts["failure_type_counts"] == {"执行异常": 1}
+
+
 def test_assert_unchanged_rejects_old_name_drift():
     script = _load_script()
     with _session() as session:
