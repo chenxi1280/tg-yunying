@@ -36,11 +36,11 @@
 - `account_profile_duplicate_reconcile.py`：精确重复组、keeper、全目标预检、分批旧值复核、manifest SHA、重复 apply 批次复用及逐账号 Telegram profile 回读。
 - 删除历史 `account_profile_half_rename.py` 及其“改一半”workflow 入口。
 - `AvatarMaterialSource` + `0144_avatar_material_sources.py`：来源、许可、署名、内容 SHA、感知哈希。
-- `account_avatar_material_import.py`：固定 17 个 Commons 非真人候选，显式节流、无重定向、限大小和 preview/apply/readback。
+- `account_avatar_material_import.py`：固定 17 个 Commons 非真人候选，显式节流、无重定向、限大小、稳定 manifest、幂等续跑及逐素材 TG cache readback。
 
 ## QA
 
-- 账号安全、唯一性、迁移、头像、workflow 上限、apply 幂等及远端回读定向回归：65 passed、44 deselected。
+- 账号安全、唯一性、迁移、头像、workflow 上限、apply 幂等及远端回读定向回归：66 passed、44 deselected。
 - 旧素材上传路径测试需要 PostgreSQL fixture，本地无 `TEST_DATABASE_URL`，blocked。
 - 新增 PostgreSQL 并发争名测试，等待 CI 的 PostgreSQL 分区执行。
 - compileall、workflow YAML、Alembic single-head、`git diff --check`：passed。

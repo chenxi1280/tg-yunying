@@ -14,7 +14,7 @@ from typing import Any
 from sqlalchemy import select
 
 from app.database import SessionLocal
-from app.models import AvatarMaterialSource
+from app.models import AvatarMaterialSource, Material
 from app.services.ai_config import create_uploaded_material
 from app.services.avatar_material_import import (
     AvatarSourceInput,
@@ -47,6 +47,12 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 def main() -> int:
     _validate_inputs()
+    if MODE == "readback":
+        output = avatar_material_readback()
+        print("ACCOUNT_AVATAR_MATERIAL_READBACK=" + json.dumps(output, ensure_ascii=False, sort_keys=True), flush=True)
+        if not output["complete"]:
+            raise RuntimeError("account avatar material readback is incomplete")
+        return 0
     with SessionLocal() as session:
         manifest, downloads = build_manifest(session, deployed_sha=DEPLOYED_SHA)
     manifest_sha = manifest_sha256(manifest)
@@ -70,17 +76,16 @@ def _validate_inputs() -> None:
         raise ValueError(f"unsupported mode: {MODE}")
     if not DEPLOYED_SHA:
         raise ValueError("AVATAR_MATERIAL_IMPORT_DEPLOYED_SHA is required")
-    if MODE != "apply":
+    if MODE not in {"apply", "readback"}:
         return
     if not EXPECTED_SHA256:
-        raise ValueError("AVATAR_MATERIAL_IMPORT_EXPECTED_SHA256 is required for apply")
-    if not APPROVAL_REF:
+        raise ValueError("AVATAR_MATERIAL_IMPORT_EXPECTED_SHA256 is required for apply/readback")
+    if MODE == "apply" and not APPROVAL_REF:
         raise ValueError("AVATAR_MATERIAL_IMPORT_APPROVAL_REF is required for apply")
 
 
 def build_manifest(session, *, deployed_sha: str) -> tuple[dict[str, Any], dict[str, bytes]]:
     pages = _fetch_commons_pages()
-    existing = _imported_page_ids(session, TENANT_ID)
     items: list[dict[str, Any]] = []
     downloads: dict[str, bytes] = {}
     prepared_candidates = []
@@ -94,7 +99,6 @@ def build_manifest(session, *, deployed_sha: str) -> tuple[dict[str, Any], dict[
                 "title": metadata["title"],
                 "mime_type": prepared.detected_mime_type,
                 "filename": metadata["filename"],
-                "already_imported": page_id in existing,
                 **asdict(prepared),
                 "source": asdict(source),
             }
@@ -105,6 +109,55 @@ def build_manifest(session, *, deployed_sha: str) -> tuple[dict[str, Any], dict[
             time.sleep(DOWNLOAD_INTERVAL_SECONDS)
     assert_avatar_candidates_importable(session, tenant_id=TENANT_ID, candidates=prepared_candidates)
     return {"tenant_id": TENANT_ID, "deployed_sha": deployed_sha, "items": items}, downloads
+
+
+def avatar_material_readback() -> dict[str, Any]:
+    with SessionLocal() as session:
+        rows = _avatar_readback_rows(session, TENANT_ID)
+    results = [_avatar_readback_item(source, material) for source, material in rows]
+    found_ids = {result["page_id"] for result in results}
+    missing_ids = sorted(set(CURATED_PAGE_IDS) - found_ids)
+    ready_count = sum(result["status"] == "ready" for result in results)
+    return {
+        "mode": MODE,
+        "manifest_sha256": EXPECTED_SHA256,
+        "curated_page_count": len(CURATED_PAGE_IDS),
+        "found_count": len(found_ids),
+        "ready_count": ready_count,
+        "missing_page_ids": missing_ids,
+        "results": results,
+        "complete": not missing_ids and ready_count == len(CURATED_PAGE_IDS),
+    }
+
+
+def _avatar_readback_rows(session, tenant_id: int) -> list[tuple[AvatarMaterialSource, Material]]:
+    stmt = (
+        select(AvatarMaterialSource, Material)
+        .join(Material, Material.id == AvatarMaterialSource.material_id)
+        .where(
+            AvatarMaterialSource.tenant_id == tenant_id,
+            AvatarMaterialSource.source_page_id.in_(CURATED_PAGE_IDS),
+        )
+        .order_by(AvatarMaterialSource.source_page_id.asc())
+    )
+    return list(session.execute(stmt))
+
+
+def _avatar_readback_item(source: AvatarMaterialSource, material: Material) -> dict[str, Any]:
+    cache_ready = (
+        material.review_status == "已审核"
+        and material.cache_ready_status == "ready"
+        and bool(material.tg_cache_peer_id)
+        and bool(material.tg_cache_message_id)
+        and material.tg_cache_account_id is not None
+    )
+    return {
+        "page_id": source.source_page_id,
+        "material_id": int(material.id),
+        "status": "ready" if cache_ready else "not_ready",
+        "review_status": material.review_status,
+        "cache_ready_status": material.cache_ready_status,
+    }
 
 
 def _fetch_commons_pages() -> dict[str, dict[str, Any]]:
