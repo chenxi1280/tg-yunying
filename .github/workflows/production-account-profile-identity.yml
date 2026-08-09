@@ -1,0 +1,152 @@
+name: Production Account Profile Identity Operations
+
+'on':
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Guarded production operation
+        required: true
+        type: choice
+        options:
+          - profile_dedupe
+          - avatar_import
+      mode:
+        description: Read-only preview/readback or guarded apply
+        required: true
+        default: preview
+        type: choice
+        options:
+          - preview
+          - apply
+          - readback
+      seed:
+        description: Stable profile-name seed; required for profile_dedupe
+        required: false
+        default: ''
+        type: string
+      deployed_sha:
+        description: Exact deployed release SHA
+        required: true
+        type: string
+      expected_manifest_sha256:
+        description: Exact preview manifest SHA-256; required for apply
+        required: false
+        default: ''
+        type: string
+      approval_ref:
+        description: Approval or incident reference; required for apply
+        required: false
+        default: ''
+        type: string
+
+concurrency:
+  group: production-account-profile-identity-operations
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  operate:
+    runs-on: ubuntu-latest
+    environment: production-silicon-valley
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate inputs and secrets
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SILICON_VALLEY_PRODUCTION_SSH_PRIVATE_KEY }}
+          DEPLOY_HOST: ${{ secrets.SILICON_VALLEY_PRODUCTION_HOST }}
+          DEPLOY_USER: ${{ secrets.SILICON_VALLEY_PRODUCTION_USER }}
+          OPERATION: ${{ inputs.operation }}
+          MODE: ${{ inputs.mode }}
+          SEED: ${{ inputs.seed }}
+          EXPECTED_SHA: ${{ inputs.deployed_sha }}
+          MANIFEST_SHA: ${{ inputs.expected_manifest_sha256 }}
+          APPROVAL_REF: ${{ inputs.approval_ref }}
+        run: |
+          set -euo pipefail
+          test -n "${SSH_PRIVATE_KEY}"
+          test -n "${DEPLOY_HOST}"
+          test -n "${DEPLOY_USER}"
+          [[ "${OPERATION}" =~ ^(profile_dedupe|avatar_import)$ ]]
+          [[ "${MODE}" =~ ^(preview|apply|readback)$ ]]
+          [[ "${EXPECTED_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${GITHUB_SHA}" == "${EXPECTED_SHA}" ]]
+          [[ -z "${SEED}" || "${SEED}" =~ ^[A-Za-z0-9._-]{1,80}$ ]]
+          [[ -z "${MANIFEST_SHA}" || "${MANIFEST_SHA}" =~ ^[0-9a-f]{64}$ ]]
+          [[ -z "${APPROVAL_REF}" || "${APPROVAL_REF}" =~ ^[A-Za-z0-9._:/#-]{1,160}$ ]]
+          if [[ "${OPERATION}" == profile_dedupe ]]; then
+            test -n "${SEED}"
+          fi
+          if [[ "${MODE}" == apply ]]; then
+            test -n "${MANIFEST_SHA}"
+            test -n "${APPROVAL_REF}"
+          fi
+
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SILICON_VALLEY_PRODUCTION_SSH_PRIVATE_KEY }}
+          DEPLOY_HOST: ${{ secrets.SILICON_VALLEY_PRODUCTION_HOST }}
+          DEPLOY_USER: ${{ secrets.SILICON_VALLEY_PRODUCTION_USER }}
+          DEPLOY_PORT: ${{ secrets.SILICON_VALLEY_PRODUCTION_PORT }}
+          SSH_CONNECT_TIMEOUT: ${{ vars.SSH_CONNECT_TIMEOUT }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${SSH_PRIVATE_KEY}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<EOF
+          Host production
+            HostName ${DEPLOY_HOST}
+            User ${DEPLOY_USER}
+            Port ${DEPLOY_PORT:-22}
+            IdentityFile ~/.ssh/id_ed25519
+            IdentitiesOnly yes
+            StrictHostKeyChecking accept-new
+            ConnectTimeout ${SSH_CONNECT_TIMEOUT:-60}
+            ConnectionAttempts 3
+            ServerAliveInterval 15
+            ServerAliveCountMax 8
+          EOF
+          chmod 600 ~/.ssh/config
+
+      - name: Verify deployed release
+        env:
+          BASE_DIR: ${{ vars.SILICON_VALLEY_PRODUCTION_BASE_DIR }}
+          EXPECTED_SHA: ${{ inputs.deployed_sha }}
+        run: |
+          set -euo pipefail
+          CURRENT="$(ssh production "readlink -f '${BASE_DIR:-/data/tgyunying}/current'")"
+          [[ "$(basename "${CURRENT}")" == *_"${EXPECTED_SHA:0:8}" ]]
+          echo "ACCOUNT_PROFILE_IDENTITY_RELEASE=${CURRENT}"
+
+      - name: Run guarded operation
+        env:
+          OPERATION: ${{ inputs.operation }}
+          MODE: ${{ inputs.mode }}
+          SEED: ${{ inputs.seed }}
+          EXPECTED_SHA: ${{ inputs.deployed_sha }}
+          MANIFEST_SHA: ${{ inputs.expected_manifest_sha256 }}
+          APPROVAL_REF: ${{ inputs.approval_ref }}
+        run: |
+          set -euo pipefail
+          if [[ "${OPERATION}" == profile_dedupe ]]; then
+            ssh production "timeout 1800 docker exec -i \
+              -e ACCOUNT_PROFILE_DEDUPE_MODE='${MODE}' \
+              -e ACCOUNT_PROFILE_DEDUPE_SEED='${SEED}' \
+              -e ACCOUNT_PROFILE_DEDUPE_EXPECTED_SHA256='${MANIFEST_SHA}' \
+              -e ACCOUNT_PROFILE_DEDUPE_DEPLOYED_SHA='${EXPECTED_SHA}' \
+              -e ACCOUNT_PROFILE_DEDUPE_APPROVAL_REF='${APPROVAL_REF}' \
+              tgyunying-backend python -" \
+              < .github/scripts/account_profile_duplicate_reconcile.py
+            exit 0
+          fi
+          ssh production "timeout 1800 docker exec -i \
+            -e AVATAR_MATERIAL_IMPORT_MODE='${MODE}' \
+            -e AVATAR_MATERIAL_IMPORT_EXPECTED_SHA256='${MANIFEST_SHA}' \
+            -e AVATAR_MATERIAL_IMPORT_DEPLOYED_SHA='${EXPECTED_SHA}' \
+            -e AVATAR_MATERIAL_IMPORT_APPROVAL_REF='${APPROVAL_REF}' \
+            tgyunying-backend python -" \
+            < .github/scripts/account_avatar_material_import.py

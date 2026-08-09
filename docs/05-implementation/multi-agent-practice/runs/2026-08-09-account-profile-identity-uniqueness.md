@@ -40,7 +40,7 @@
 
 ## QA
 
-- 账号安全、唯一性、迁移、头像定向回归：61 passed、43 deselected。
+- 账号安全、唯一性、迁移、头像及 workflow 上限定向回归：62 passed、44 deselected。
 - 旧素材上传路径测试需要 PostgreSQL fixture，本地无 `TEST_DATABASE_URL`，blocked。
 - 新增 PostgreSQL 并发争名测试，等待 CI 的 PostgreSQL 分区执行。
 - compileall、workflow YAML、Alembic single-head、`git diff --check`：passed。
@@ -50,12 +50,12 @@
 ## Release Gate
 
 - `release_mode`: `github_actions`
-- `release_path`: `master -> release -> Deploy Production`
+- `release_path`: `master -> release -> Deploy Production`；生产数据操作另走 `Production Account Profile Identity Operations`
 - `migration_impact`: 新增 0143/0144；0143 只 backfill 普通账号当前昵称 keeper，不改 Telegram。
 - `worker_impact`: account-security worker 在 Gateway 前校验 claim；material-cache 负责新素材缓存。
 - `external_platform_impact`: 发布本身不改 Telegram；后续账号改名批次才调用 Telegram。
 - `rollback_plan`: 新表和 claim 保留；停止新批次，不恢复旧重复名。迁移应用后应用降级安全性未证明，不执行猜测回滚。
-- `status`: `pending_ci`
+- `status`: `release_workflow_input_limit_fix_pending_ci`
 
 ## 当前结论
 

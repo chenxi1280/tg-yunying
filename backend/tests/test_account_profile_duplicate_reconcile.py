@@ -4,6 +4,7 @@ from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
 import pytest
+import yaml
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
@@ -14,14 +15,40 @@ from app.security import encrypt_session
 
 pytestmark = pytest.mark.no_postgres
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
 
 def _load_script():
-    path = Path(__file__).resolve().parents[2] / ".github/scripts/account_profile_duplicate_reconcile.py"
+    path = PROJECT_ROOT / ".github/scripts/account_profile_duplicate_reconcile.py"
     spec = spec_from_file_location("account_profile_duplicate_reconcile", path)
     assert spec and spec.loader
     module = module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _workflow_inputs(path: Path) -> dict:
+    workflow = yaml.safe_load(path.read_text())
+    return workflow["on"]["workflow_dispatch"]["inputs"]
+
+
+def test_identity_operations_use_separate_bounded_workflow():
+    deploy_inputs = _workflow_inputs(PROJECT_ROOT / ".github/workflows/deploy-production.yml")
+    identity_inputs = _workflow_inputs(
+        PROJECT_ROOT / ".github/workflows/production-account-profile-identity.yml"
+    )
+
+    assert len(deploy_inputs) <= 25
+    assert "run_account_profile_dedupe" not in deploy_inputs
+    assert "run_avatar_material_import" not in deploy_inputs
+    assert set(identity_inputs) == {
+        "operation",
+        "mode",
+        "seed",
+        "deployed_sha",
+        "expected_manifest_sha256",
+        "approval_ref",
+    }
 
 
 def _session() -> Session:
