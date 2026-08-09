@@ -2896,18 +2896,28 @@ class TelethonTelegramGateway(TelegramGateway):
         client = self._new_client(credentials, raw_session)
         operation_error: BaseException | None = None
         try:
+            logger.info("material_cache_trace phase=connect_started")
             await asyncio.wait_for(client.connect(), timeout=self.settings.telethon_client_connect_timeout_seconds)
+            logger.info("material_cache_trace phase=connect_finished")
             if not await client.is_user_authorized():
                 return SendResult(False, failure_type=FailureType.ACCOUNT_UNAVAILABLE.value, detail="session 已失效")
-            return await telethon_content.cache_material_source(
+            logger.info("material_cache_trace phase=authorized")
+            result = await telethon_content.cache_material_source(
                 client,
                 source,
                 cache_peer_id,
                 caption,
                 self._map_send_error,
             )
+            logger.info(
+                "material_cache_trace phase=send_finished ok=%s failure_type=%s",
+                bool(result.ok),
+                str(result.failure_type or ""),
+            )
+            return result
         except BaseException as exc:
             operation_error = exc
+            logger.warning("material_cache_trace phase=gateway_failed error_type=%s", type(exc).__name__)
             raise
         finally:
             await self._disconnect_material_cache_client(client, operation_error)
@@ -2915,6 +2925,7 @@ class TelethonTelegramGateway(TelegramGateway):
     async def _disconnect_material_cache_client(self, client: Any, operation_error: BaseException | None) -> None:
         try:
             await asyncio.wait_for(client.disconnect(), timeout=ACCOUNT_HEALTH_DISCONNECT_TIMEOUT_SECONDS)
+            logger.info("material_cache_trace phase=disconnect_finished")
         except BaseException:
             if operation_error is None:
                 raise
