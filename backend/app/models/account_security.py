@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -170,10 +170,31 @@ class TgAccountProfileBatchRule(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
+class TgAccountProfileNameClaim(Base):
+    __tablename__ = "tg_account_profile_name_claims"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "name_key", name="uq_account_profile_name_claim_tenant_key"),
+        UniqueConstraint("tenant_id", "account_id", "name_key", name="uq_account_profile_name_claim_idempotency"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
+    account_id: Mapped[int] = mapped_column(ForeignKey("tg_accounts.id"))
+    display_name: Mapped[str] = mapped_column(String(120))
+    name_key: Mapped[str] = mapped_column(String(160))
+    source: Mapped[str] = mapped_column(String(40), default="")
+    batch_id: Mapped[int | None] = mapped_column(ForeignKey("tg_account_security_batches.id"), nullable=True)
+    batch_item_id: Mapped[int | None] = mapped_column(ForeignKey("tg_account_security_batch_items.id"), nullable=True)
+    trace_id: Mapped[str] = mapped_column(String(80), default="")
+    created_by: Mapped[str] = mapped_column(String(100), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
 __all__ = [
     "TgAccountAuthorizationSnapshot",
     "TgAccountDeviceCleanupPrecheck",
     "TgAccountProfileBatchRule",
+    "TgAccountProfileNameClaim",
     "TgAccountSecurityBatch",
     "TgAccountSecurityBatchItem",
     "TgAccountSecuritySnapshot",

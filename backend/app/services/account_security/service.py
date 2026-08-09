@@ -48,6 +48,14 @@ from app.storage import media_root, object_path, save_avatar_bytes
 
 from .._common import _now, ai_gateway, audit, gateway, require_tenant
 from ..account_authorizations import attempt_standby_authorization_recovery, start_standby_authorization_login, verify_standby_authorization_login
+from ..account_profile_identity import (
+    NameClaimRequest,
+    assert_profile_name_claimed,
+    claim_profile_names,
+    generate_unique_display_names,
+    normalize_display_name,
+    unavailable_name_keys,
+)
 from .device_classification import classify_account_authorization_snapshots, cleanup_candidate_authorization_snapshots, cleanup_eligible_authorization_snapshots
 from ..account_two_fa import (
     MANAGED_TWO_FA_HINT,
@@ -97,98 +105,6 @@ class ProfileUpdateValues:
     replace_bio: bool
 
 
-PROFILE_NAME_PREFIXES = [
-    "锅巴",
-    "蕉太",
-    "早睡",
-    "小熊",
-    "香菜",
-    "月亮",
-    "西瓜",
-    "糯米",
-    "橘子",
-    "云朵",
-    "薄荷",
-    "汽水",
-    "青柠",
-    "山竹",
-    "奶盖",
-    "小满",
-    "晚风",
-    "松弛",
-    "芋泥",
-    "海盐",
-]
-PROFILE_NAME_SUFFIXES = [
-    "洋芋",
-    "打烊",
-    "便利店",
-    "失败",
-    "不加冰",
-    "慢半拍",
-    "看热闹",
-    "路过中",
-    "在摸鱼",
-    "今天困",
-    "小卖部",
-    "备忘录",
-    "散步中",
-    "没电了",
-    "等风来",
-    "加点糖",
-    "观察员",
-    "碎碎念",
-    "日记本",
-    "开小差",
-]
-PROFILE_NAME_SHORTS = [
-    "阿柚",
-    "小葵",
-    "山风",
-    "七七",
-    "橘白",
-    "南星",
-    "一栗",
-    "鹿鹿",
-    "木子",
-    "小满",
-    "青团",
-    "半夏",
-]
-PROFILE_NAME_SCENES = [
-    "凌晨三点还醒着",
-    "便利店门口等雨停",
-    "今天也没想好昵称",
-    "薯条没有番茄酱",
-    "路灯下面看消息",
-    "周末不想出门",
-    "把奶茶喝到见底",
-    "在阳台吹晚风",
-    "刚刚路过这里",
-    "耳机里放小雨",
-    "晚一点再回复",
-    "先把热闹收藏",
-]
-PROFILE_NAME_PLAYFUL = [
-    "不吃香菜",
-    "早睡失败",
-    "奶盖加满",
-    "路过一下",
-    "慢半拍中",
-    "月亮打烊",
-    "橘子汽水",
-    "糯米团团",
-    "薄荷小窗",
-    "西瓜边角",
-    "海盐日记",
-    "芋泥备忘",
-]
-PROFILE_NAME_UNIQUE_TAILS = ["呢", "呀", "喔", "啦", "中", "了", "哈", "哦", "吧", "哇", "慢", "早", "晚", "轻", "小", "新", "晴", "雨", "风", "云"]
-PROFILE_NAME_VARIANT_COUNT = 4
-PROFILE_NAME_POOL_ACCOUNT_FACTOR = 5
-PROFILE_NAME_POOL_INDEX_FACTOR = 6
-PROFILE_NAME_VARIANT_ACCOUNT_FACTOR = 5
-PROFILE_NAME_VARIANT_INDEX_FACTOR = 2
 PROFILE_BIO_POOL = [
     "日常在线，随缘交流",
     "看到有意思的会回两句",
@@ -832,7 +748,13 @@ def precheck_account_security_batch(session: Session, tenant_id: int, payload: A
             account.id: generated_item
             for account, generated_item in zip(
                 accounts_needing_generation,
-                _generate_profiles(session, tenant_id, accounts_needing_generation, payload.profile_strategy) if accounts_needing_generation else [],
+                _generate_profiles(
+                    session,
+                    tenant_id=tenant_id,
+                    accounts=accounts_needing_generation,
+                    strategy=payload.profile_strategy,
+                    seed=trace_id,
+                ) if accounts_needing_generation else [],
             )
         }
         generated = [
@@ -943,6 +865,14 @@ def precheck_account_security_batch(session: Session, tenant_id: int, payload: A
 def create_account_security_batch(session: Session, tenant_id: int, payload: AccountSecurityBatchCreate, actor: str) -> AccountSecurityBatchOut:
     preview = precheck_account_security_batch(session, tenant_id, payload)
     confirmed = _is_batch_confirmed(payload.confirm_text)
+    if confirmed and "update_profile" in preview.action_types:
+        _claim_preview_profile_names(
+            session,
+            tenant_id=tenant_id,
+            preview=preview,
+            payload=payload,
+            actor=actor,
+        )
     initial_status = "running" if confirmed and preview.summary.get("executable", 0) > 0 else "ready"
     profile_strategy_payload = payload.profile_strategy.model_dump(mode="json")
     profile_strategy_payload["standby_slot_strategy"] = payload.standby_slot_strategy
@@ -1019,6 +949,33 @@ def create_account_security_batch(session: Session, tenant_id: int, payload: Acc
     _refresh_batch_counts(session, batch)
     session.commit()
     return account_security_batch_detail(session, tenant_id, batch.id)
+
+
+def _claim_preview_profile_names(
+    session: Session,
+    *,
+    tenant_id: int,
+    preview,
+    payload: AccountSecurityBatchCreate,
+    actor: str,
+) -> None:
+    requests: list[NameClaimRequest] = []
+    for item in preview.items:
+        account = _require_account(session, tenant_id, item.account_id)
+        should_replace = payload.profile_strategy.overwrite_existing or _can_replace_display_name(account.display_name)
+        if item.precheck_status != "executable" or not should_replace:
+            continue
+        requests.append(
+            NameClaimRequest(
+                tenant_id=account.tenant_id,
+                account_id=account.id,
+                display_name=item.generated_display_name,
+                source=payload.profile_strategy.generation_mode,
+                actor=actor,
+                trace_id=preview.trace_id,
+            )
+        )
+    claim_profile_names(session, requests)
 
 
 def list_account_security_batches(session: Session, tenant_id: int, limit: int = 50) -> list[AccountSecurityBatchOut]:
@@ -1180,6 +1137,8 @@ def _execute_batch_item(session: Session, item_id: int) -> None:
             failures.extend(_execute_standby_session_provision(session, account, item, action_types))
         if "update_profile" in action_types and item.profile_status not in {"succeeded", "skipped"}:
             profile_values = _profile_update_values(account, item, overwrite_existing=batch.overwrite_existing_profile)
+            if profile_values.replace_tg_name:
+                assert_profile_name_claimed(session, account.tenant_id, account.id, profile_values.display_name)
             profile_result = gateway.update_profile(
                 account.session_ciphertext,
                 first_name=profile_values.first_name or profile_values.display_name or account.display_name,
@@ -1650,6 +1609,10 @@ def _execute_avatar_update(session: Session, account: TgAccount, item: TgAccount
     account.profile_sync_status = "已同步"
     account.profile_sync_error = ""
     account.profile_synced_at = _now()
+    material = _material_for_avatar_source(session, item.avatar_source)
+    if material:
+        material.usage_count += 1
+        material.last_used_at = _now()
     return SimpleNamespace(ok=True, status="succeeded", detail="头像已更新", failure_type="")
 
 
@@ -1879,18 +1842,32 @@ def _accounts_for_payload(session: Session, tenant_id: int, account_ids: list[in
     return accounts
 
 
-def _generate_profiles(session: Session, tenant_id: int, accounts: list[TgAccount], strategy) -> list[dict[str, object]]:
+def _generate_profiles(
+    session: Session,
+    *,
+    tenant_id: int,
+    accounts: list[TgAccount],
+    strategy,
+    seed: str,
+) -> list[dict[str, object]]:
+    unavailable = unavailable_name_keys(session, tenant_id)
     if strategy.generation_mode == "ai_random":
         last_error: Exception | None = None
         try:
-            return _generate_profiles_with_ai(session, tenant_id, accounts, strategy)
+            return _generate_profiles_with_ai(
+                session,
+                tenant_id=tenant_id,
+                accounts=accounts,
+                strategy=strategy,
+                unavailable=unavailable,
+            )
         except Exception as exc:  # noqa: BLE001 - surfaced as preview warning.
             last_error = exc
-        fallback = _generate_profiles_from_local_pool(accounts, strategy)
+        fallback = _generate_profiles_from_local_pool(accounts, strategy, unavailable=unavailable, seed=seed)
         for item in fallback:
             item["generation_warning"] = _profile_ai_fallback_warning(last_error)
         return fallback
-    return _generate_profiles_from_local_pool(accounts, strategy)
+    return _generate_profiles_from_local_pool(accounts, strategy, unavailable=unavailable, seed=seed)
 
 
 def _profile_ai_fallback_warning(exc: Exception | None) -> str:
@@ -1924,7 +1901,14 @@ def _apply_preview_override(generated_item: dict[str, object], override) -> dict
     return item
 
 
-def _generate_profiles_with_ai(session: Session, tenant_id: int, accounts: list[TgAccount], strategy) -> list[dict[str, object]]:
+def _generate_profiles_with_ai(
+    session: Session,
+    *,
+    tenant_id: int,
+    accounts: list[TgAccount],
+    strategy,
+    unavailable: set[str],
+) -> list[dict[str, object]]:
     setting = get_tenant_ai_setting(session, tenant_id)
     provider = _profile_ai_provider(session, setting.default_provider_id)
     if not provider:
@@ -1963,7 +1947,7 @@ def _generate_profiles_with_ai(session: Session, tenant_id: int, accounts: list[
         reasoning_retry_max_tokens=max(setting.max_tokens, count * 512, 2048),
         timeout=_profile_ai_timeout_seconds(count),
     )
-    return _parse_ai_profile_items(raw, count, strategy)
+    return _parse_ai_profile_items(raw, count, strategy, unavailable=unavailable)
 
 
 def _profile_ai_provider(session: Session, provider_id: int | None) -> AiProvider | None:
@@ -1978,7 +1962,7 @@ def _profile_ai_provider(session: Session, provider_id: int | None) -> AiProvide
     )
 
 
-def _parse_ai_profile_items(raw: str, count: int, strategy) -> list[dict[str, object]]:
+def _parse_ai_profile_items(raw: str, count: int, strategy, *, unavailable: set[str] | None = None) -> list[dict[str, object]]:
     clean = raw.strip()
     if clean.startswith("```"):
         clean = clean.strip("`").removeprefix("json").strip()
@@ -1987,7 +1971,7 @@ def _parse_ai_profile_items(raw: str, count: int, strategy) -> list[dict[str, ob
     if not isinstance(items, list):
         raise RuntimeError("AI 输出不是 items 数组")
     results: list[dict[str, object]] = []
-    used_names: set[str] = set()
+    used_names: set[str] = set(unavailable or set())
     used_usernames: set[str] = set()
     forbidden = {word.strip() for word in strategy.forbidden_words if word.strip()}
     for raw_item in items:
@@ -2001,7 +1985,8 @@ def _parse_ai_profile_items(raw: str, count: int, strategy) -> list[dict[str, ob
         candidates = [str(candidate).strip().lstrip("@") for candidate in candidates_raw if isinstance(candidate, str)]
         candidates = [candidate for candidate in candidates if USERNAME_RE.match(candidate)]
         candidates = [candidate for candidate in candidates if candidate.lower() not in used_usernames]
-        if not display_name or display_name in used_names:
+        display_name_key = normalize_display_name(display_name)
+        if not display_name_key or display_name_key in used_names:
             continue
         if _has_profile_ascii_text(display_name, first_name, bio):
             continue
@@ -2009,7 +1994,7 @@ def _parse_ai_profile_items(raw: str, count: int, strategy) -> list[dict[str, ob
             continue
         if strategy.username_enabled and not candidates:
             continue
-        used_names.add(display_name)
+        used_names.add(display_name_key)
         used_usernames.update(candidate.lower() for candidate in candidates)
         results.append(
             {
@@ -2038,20 +2023,27 @@ def _has_profile_ascii_text(*values: str) -> bool:
     return any(ASCII_LETTER_RE.search(value or "") for value in values)
 
 
-def _generate_profiles_from_local_pool(accounts: list[TgAccount], strategy) -> list[dict[str, object]]:
+def _generate_profiles_from_local_pool(
+    accounts: list[TgAccount],
+    strategy,
+    *,
+    unavailable: set[str] | None = None,
+    seed: str = "local-profile",
+) -> list[dict[str, object]]:
     forbidden = {word.strip() for word in strategy.forbidden_words if word.strip()}
+    generated_names = generate_unique_display_names(
+        len(accounts),
+        set(unavailable or set()),
+        seed,
+        forbidden_words=forbidden,
+    )
     results: list[dict[str, object]] = []
-    used_names: set[str] = set()
     for index, account in enumerate(accounts):
-        display_name = _unique_local_profile_display_name(_local_profile_display_name(account.id, index), used_names)
-        used_names.add(display_name)
+        display_name = generated_names[index]
         bio = (
             PROFILE_BIO_POOL[(account.id * 3 + index) % len(PROFILE_BIO_POOL)]
             + PROFILE_BIO_TAILS[(account.id * 5 + index) % len(PROFILE_BIO_TAILS)]
         )
-        if any(word in display_name for word in forbidden):
-            display_name = f"用户{account.id}"
-            used_names.add(display_name)
         first_name = display_name
         last_name = ""
         username_base = (strategy.username_prefix_hint or _local_profile_username_base(account.id, index) or _romanize_name(display_name) or f"user{account.id}").lower()
@@ -2067,49 +2059,6 @@ def _generate_profiles_from_local_pool(accounts: list[TgAccount], strategy) -> l
             }
         )
     return results
-
-
-def _unique_local_profile_display_name(name: str, used_names: set[str]) -> str:
-    if name not in used_names:
-        return name
-    for tail in PROFILE_NAME_UNIQUE_TAILS:
-        candidate = f"{name}{tail}"
-        if candidate not in used_names:
-            return candidate
-    raise RuntimeError("本地随机中文名池不足，无法生成不重复昵称")
-
-
-def _local_profile_display_name(account_id: int, index: int) -> str:
-    seed = _local_profile_name_seed(account_id, index)
-    variant = _local_profile_name_variant(account_id, index)
-    if variant == 0:
-        name = PROFILE_NAME_SHORTS[seed % len(PROFILE_NAME_SHORTS)]
-    elif variant == 1:
-        name = _local_compound_profile_name(seed)
-    elif variant == 2:
-        name = PROFILE_NAME_PLAYFUL[seed % len(PROFILE_NAME_PLAYFUL)]
-    else:
-        name = PROFILE_NAME_SCENES[seed % len(PROFILE_NAME_SCENES)]
-    return name
-
-
-def _local_profile_name_variant(account_id: int, index: int) -> int:
-    return (
-        account_id * PROFILE_NAME_VARIANT_ACCOUNT_FACTOR
-        + index * PROFILE_NAME_VARIANT_INDEX_FACTOR
-    ) % PROFILE_NAME_VARIANT_COUNT
-
-
-def _local_profile_name_seed(account_id: int, index: int) -> int:
-    return account_id * PROFILE_NAME_POOL_ACCOUNT_FACTOR + index * PROFILE_NAME_POOL_INDEX_FACTOR
-
-
-def _local_compound_profile_name(seed: int) -> str:
-    combo_count = len(PROFILE_NAME_PREFIXES) * len(PROFILE_NAME_SUFFIXES)
-    combo_index = seed % combo_count
-    prefix = PROFILE_NAME_PREFIXES[combo_index // len(PROFILE_NAME_SUFFIXES)]
-    suffix = PROFILE_NAME_SUFFIXES[combo_index % len(PROFILE_NAME_SUFFIXES)]
-    return f"{prefix}{suffix}"
 
 
 def _local_profile_username_base(account_id: int, index: int) -> str:
@@ -2139,8 +2088,8 @@ def _profile_update_values(account: TgAccount, item: TgAccountSecurityBatchItem,
     display_name = item.generated_display_name if replace_display_name else account.display_name
     return ProfileUpdateValues(
         display_name=display_name or "",
-        first_name=item.generated_first_name if replace_tg_name else account.tg_first_name,
-        last_name=item.generated_last_name if replace_tg_name else account.tg_last_name,
+        first_name=display_name if replace_tg_name else account.tg_first_name,
+        last_name="" if replace_tg_name else account.tg_last_name,
         bio=item.generated_bio if replace_bio else account.tg_bio,
         replace_tg_name=replace_tg_name,
         replace_bio=replace_bio,
@@ -2171,7 +2120,7 @@ def _material_avatar_sources(session: Session, tenant_id: int, strategy) -> list
             Material.mime_type.in_(["image/jpeg", "image/png", "image/webp"]),
             or_(Material.content != "", Material.cache_ready_status == "ready"),
         )
-        .order_by(Material.id.asc())
+        .order_by(Material.usage_count.asc(), Material.id.asc())
     )
     materials = list(session.scalars(stmt))
     if strategy.material_group_id:

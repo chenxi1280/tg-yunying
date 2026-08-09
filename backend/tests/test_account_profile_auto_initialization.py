@@ -8,7 +8,7 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import AccountPool, AccountStatus, AiAccountVoiceProfile, AiAccountVoiceProfileGenerationItem, TelegramDeveloperApp, Tenant, TgAccount, TgAccountSecurityBatch, TgAccountSecurityBatchItem, TgLoginFlow
+from app.models import AccountPool, AccountStatus, AiAccountVoiceProfile, AiAccountVoiceProfileGenerationItem, TelegramDeveloperApp, Tenant, TgAccount, TgAccountProfileNameClaim, TgAccountSecurityBatch, TgAccountSecurityBatchItem, TgLoginFlow
 from app.schemas.account_security import AccountSecurityPrecheckRequest, ProfileGenerationStrategy
 from app.security import encrypt_secret, encrypt_session
 from app.services import account_profile_auto_init
@@ -91,6 +91,7 @@ def test_verify_login_queues_chinese_profile_initialization_for_english_account(
 
         batch = session.scalar(select(TgAccountSecurityBatch))
         item = session.scalar(select(TgAccountSecurityBatchItem))
+        claim = session.scalar(select(TgAccountProfileNameClaim))
         assert batch is not None
         assert item is not None
         assert batch.status == "running"
@@ -104,6 +105,9 @@ def test_verify_login_queues_chinese_profile_initialization_for_english_account(
         assert item.status == "pending"
         assert item.generated_display_name
         assert not any("A" <= char <= "z" for char in item.generated_display_name)
+        assert claim is not None
+        assert claim.account_id == account.id
+        assert claim.display_name == item.generated_display_name
 
 
 def test_verify_login_queues_missing_ai_voice_profile_generation(monkeypatch):
