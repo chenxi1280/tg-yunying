@@ -127,6 +127,9 @@ jobs:
           MATERIAL_CACHE_STATE="$(ssh production 'docker inspect --format "{{.State.Status}}/{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}" tgyunying-worker-material-cache')"
           echo "ACCOUNT_PROFILE_IDENTITY_WORKER=tgyunying-worker-account-security:${ACCOUNT_SECURITY_STATE}"
           echo "ACCOUNT_AVATAR_MATERIAL_WORKER=tgyunying-worker-material-cache:${MATERIAL_CACHE_STATE}"
+          ssh production \
+            'docker logs --since 20m tgyunying-worker-material-cache 2>&1 | grep "material_cache_trace" | tail -80 || true' \
+            | sed 's/^/ACCOUNT_AVATAR_MATERIAL_TRACE=/'
 
       - name: Run guarded operation
         env:
