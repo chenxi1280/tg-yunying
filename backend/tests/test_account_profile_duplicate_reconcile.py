@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -9,7 +10,14 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import AccountPool, AccountStatus, Tenant, TgAccount
+from app.models import (
+    AccountPool,
+    AccountStatus,
+    Tenant,
+    TgAccount,
+    TgAccountSecurityBatch,
+    TgAccountSecurityBatchItem,
+)
 from app.security import encrypt_session
 
 
@@ -114,3 +122,53 @@ def test_assert_unchanged_rejects_old_name_drift():
                     }
                 ],
             )
+
+
+def test_existing_manifest_batch_is_idempotently_reused():
+    script = _load_script()
+    target = {"account_id": 2, "new_display_name": "云边散步"}
+    with _session() as session:
+        batch = TgAccountSecurityBatch(
+            tenant_id=1,
+            reason=script._batch_reason("a" * 64, 1) + "approval-ref",
+        )
+        session.add(batch)
+        session.flush()
+        session.add(
+            TgAccountSecurityBatchItem(
+                batch_id=batch.id,
+                tenant_id=1,
+                account_id=2,
+                generated_display_name="云边散步",
+            )
+        )
+        session.commit()
+        batch_id = int(batch.id)
+
+        batch_ids, account_ids = script._existing_batch_state(session, 1, "a" * 64, [target])
+
+    assert batch_ids == [batch_id]
+    assert account_ids == {2}
+
+
+def test_remote_readback_requires_exact_first_name_and_empty_last_name(monkeypatch):
+    script = _load_script()
+    item = TgAccountSecurityBatchItem(
+        account_id=1,
+        status="succeeded",
+        profile_status="succeeded",
+        generated_display_name="海边走走",
+    )
+    account = _account(1, "海边走走")
+    monkeypatch.setattr(script, "credentials_for_account", lambda _session, _account: object())
+    monkeypatch.setattr(
+        script.gateway,
+        "pull_profile",
+        lambda *_args, **_kwargs: SimpleNamespace(first_name="海边", last_name="走走"),
+    )
+
+    with _session() as session:
+        result = script._read_remote_profile(session, item, account)
+
+    assert result["status"] == "mismatched"
+    assert result["actual_display_name"] == "海边 走走"

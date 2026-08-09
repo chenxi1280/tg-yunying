@@ -963,13 +963,15 @@ def _claim_preview_profile_names(
     for item in preview.items:
         account = _require_account(session, tenant_id, item.account_id)
         should_replace = payload.profile_strategy.overwrite_existing or _can_replace_display_name(account.display_name)
-        if item.precheck_status != "executable" or not should_replace:
+        should_replace_tg_name = should_replace or not account.tg_first_name
+        if item.precheck_status != "executable" or not should_replace_tg_name:
             continue
+        display_name = item.generated_display_name if should_replace else account.display_name
         requests.append(
             NameClaimRequest(
                 tenant_id=account.tenant_id,
                 account_id=account.id,
-                display_name=item.generated_display_name,
+                display_name=display_name,
                 source=payload.profile_strategy.generation_mode,
                 actor=actor,
                 trace_id=preview.trace_id,

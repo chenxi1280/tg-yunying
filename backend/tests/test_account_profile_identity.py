@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine, select
@@ -8,9 +9,10 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.models import TelegramDeveloperApp, Tenant, TgAccount, TgAccountProfileNameClaim
-from app.schemas import TgAccountCreate, TgAccountProfileUpdate
+from app.schemas import AccountSecurityBatchCreate, TgAccountCreate, TgAccountProfileUpdate
 from app.security import encrypt_secret
 from app.services import accounts as accounts_service
+from app.services.account_security import service as account_security_service
 from app.services.account_profile_identity import (
     DisplayNameConflict,
     NameClaimRequest,
@@ -164,3 +166,38 @@ def test_manual_profile_update_rejects_a_name_claimed_by_another_account():
                 TgAccountProfileUpdate(display_name="唯一昵称", tg_first_name="唯一昵称"),
                 "tester",
             )
+
+
+def test_profile_batch_claims_existing_name_when_only_tg_name_is_missing():
+    with _session() as session:
+        account = _account(1, "旧账号")
+        account.tg_first_name = ""
+        session.add(account)
+        session.commit()
+        payload = AccountSecurityBatchCreate(
+            account_ids=[1],
+            action_types=["update_profile"],
+            confirm_text="确认",
+        )
+        preview = SimpleNamespace(
+            trace_id="preview-trace",
+            items=[
+                SimpleNamespace(
+                    account_id=1,
+                    precheck_status="executable",
+                    generated_display_name="不会使用的新名",
+                )
+            ],
+        )
+
+        account_security_service._claim_preview_profile_names(
+            session,
+            tenant_id=1,
+            preview=preview,
+            payload=payload,
+            actor="tester",
+        )
+        claim = session.scalar(select(TgAccountProfileNameClaim))
+
+    assert claim is not None
+    assert claim.display_name == "旧账号"
