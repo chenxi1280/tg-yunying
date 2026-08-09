@@ -2948,6 +2948,9 @@ def _plan_account_limit(
         transaction_limit = MAX_DAILY_COVERAGE_PLAN_BATCH
         if planning_limit is not None:
             transaction_limit = min(transaction_limit, max(1, int(planning_limit)))
+        if task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION:
+            # Current capacity is narrowed by due/candidates, not the legacy task field.
+            return transaction_limit
         return min(limit, transaction_limit)
     return limit
 

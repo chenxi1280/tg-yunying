@@ -85,6 +85,7 @@ from .dispatcher import (
     recover_pending_visibility_credits,
 )
 from .daily_coverage import recover_terminal_coverage_reservations
+from .daily_coverage_planning import MAX_DAILY_COVERAGE_PLAN_BATCH
 from .daily_fulfillment import record_daily_fulfillment_decision
 from .executors import build_task_plan, channel_comment, prepare_open_actions_for_planning, requires_planning_with_open_actions
 from .fulfillment_takeover import (
@@ -3306,7 +3307,7 @@ def _plan_due_task(
     limit: int,
     global_pending: int | None = None,
 ) -> tuple[int, bool, int]:
-    round_goal = _coverage_round_goal(session_factory, task_id)
+    round_goal, yield_after_batch = _coverage_round_goal(session_factory, task_id)
     processed = 0
     planned = 0
     future_open = False
@@ -3322,7 +3323,7 @@ def _plan_due_task(
         )
         processed += batch_processed
         planned += batch_planned
-        if batch_planned <= 0 or round_goal == 1:
+        if batch_planned <= 0 or yield_after_batch:
             break
     return processed, future_open, global_pending
 
@@ -3430,19 +3431,26 @@ def _task_open_action_count(session: Session, task: Task) -> int:
     return int(count or 0)
 
 
-def _coverage_round_goal(session_factory, task_id: str) -> int:
+def _coverage_round_goal(session_factory, task_id: str) -> tuple[int, bool]:
     with session_factory() as session:
         task = session.get(Task, task_id)
         config = task.type_config if task and isinstance(task.type_config, dict) else {}
         if not task or task.type != "group_ai_chat":
-            return 1
+            return 1, False
         if task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION:
-            return 1
+            if config.get("account_coverage_mode") != "all_accounts_daily":
+                return 1, True
+            return _fact_first_planner_batch_limit(), True
         if config.get("account_coverage_mode") != "all_accounts_daily":
-            return 1
+            return 1, False
         if config.get("messages_per_round_mode") != "manual":
-            return 1
-        return max(1, int(config.get("messages_per_round") or 1))
+            return 1, False
+        return max(1, int(config.get("messages_per_round") or 1)), False
+
+
+def _fact_first_planner_batch_limit() -> int:
+    configured = max(1, int(get_settings().daily_coverage_plan_batch_limit or 1))
+    return min(configured, MAX_DAILY_COVERAGE_PLAN_BATCH)
 
 
 def _skip_open_ai_plan(session: Session, task: Task, has_open_actions: bool, *, allow_planning: bool) -> bool:
