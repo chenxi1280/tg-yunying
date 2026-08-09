@@ -1006,7 +1006,7 @@ generation_prompt_version
 - username 候选按顺序尝试；都失败则只标记 username 失败，不回滚昵称和头像。
 - avatar 步骤必须区分 `waiting_cache`、`succeeded`、`skipped`、`failed`；等待缓存不是资料初始化完成，不得把批次提前标成成功。
 - 任务中心必须能按批次展示头像缓存进度：待缓存、缓存中、已 ready、FloodWait、缓存失败、不可恢复。
-- `account-security` worker 每轮必须先推进素材 TG 缓存，再执行资料初始化批次；也允许单独启动 `material-cache` worker 只处理素材暂存。
+- 素材 TG 缓存必须由常驻独立 `material-cache` worker 推进；`account-security` worker 只执行账号安全与资料初始化批次，避免单次素材远端调用阻塞昵称、2FA 或设备清理。需要头像的资料项仍必须等待素材 `cache_ready_status=ready`，不得绕过缓存依赖。
 - 登录后自动资料初始化只负责创建批次，不直接执行 profile / username / avatar 更新；执行仍统一进入 `account-security` worker。若头像素材池为空或缓存未 ready，账号项必须在批次详情中显示跳过、等待或失败原因，不允许静默当作已完整初始化。
 - 接码专用账号在登录后自动资料初始化、账号面具初始化、批量资料预检、设置 2FA 预检、设备清理预检和 `account-security` worker 执行前都必须硬拦截；拦截状态写 `code_receiver_reserved` 或等价可读原因。接码账号登录遇到 Telegram 2FA 时只能记录当前输入密码，不得调用 Telegram 修改 / 轮换真实 2FA 密码。备用 session 补齐 / 自愈不属于该禁用动作集合，仍可执行。
 - 执行完成后调用现有资料同步能力刷新账号详情。

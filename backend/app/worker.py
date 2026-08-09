@@ -189,10 +189,7 @@ def _drain_legacy_once(limit: int = 100) -> int:
 
 
 def _drain_account_security_once(limit: int) -> int:
-    material_cache_count = drain_material_cache(SessionLocal, max(1, limit))
-    remaining = max(1, limit - material_cache_count)
-    account_security_count = drain_account_security_batches(SessionLocal, remaining)
-    return material_cache_count + account_security_count
+    return drain_account_security_batches(SessionLocal, max(1, limit))
 
 
 def _safe_optional_drain(name: str, func, *args, **kwargs) -> int:

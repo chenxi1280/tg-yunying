@@ -123,8 +123,10 @@ jobs:
           CURRENT="$(ssh production "readlink -f '${BASE_DIR:-/data/tgyunying}/current'")"
           [[ "$(basename "${CURRENT}")" == *_"${EXPECTED_SHA:0:8}" ]]
           echo "ACCOUNT_PROFILE_IDENTITY_RELEASE=${CURRENT}"
-          WORKER_STATE="$(ssh production 'docker inspect --format "{{.State.Status}}/{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}" tgyunying-worker-account-security')"
-          echo "ACCOUNT_PROFILE_IDENTITY_WORKER=tgyunying-worker-account-security:${WORKER_STATE}"
+          ACCOUNT_SECURITY_STATE="$(ssh production 'docker inspect --format "{{.State.Status}}/{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}" tgyunying-worker-account-security')"
+          MATERIAL_CACHE_STATE="$(ssh production 'docker inspect --format "{{.State.Status}}/{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}" tgyunying-worker-material-cache')"
+          echo "ACCOUNT_PROFILE_IDENTITY_WORKER=tgyunying-worker-account-security:${ACCOUNT_SECURITY_STATE}"
+          echo "ACCOUNT_AVATAR_MATERIAL_WORKER=tgyunying-worker-material-cache:${MATERIAL_CACHE_STATE}"
 
       - name: Run guarded operation
         env:
