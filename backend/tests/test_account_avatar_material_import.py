@@ -151,6 +151,27 @@ def test_item_worker_rejects_manifest_drift():
         worker._assert_manifest_item(item, _image_bytes())
 
 
+def test_item_worker_skips_expensive_material_reference_summary(monkeypatch):
+    calls = []
+    context = worker.ImportContext(
+        item={
+            "page_id": "101",
+            "title": "Avatar 101",
+            "filename": "avatar-101.jpg",
+            "mime_type": "image/jpeg",
+            "source": _worker_source().__dict__,
+        },
+        tenant_id=1,
+        manifest_sha256="a" * 64,
+        approval_ref="approval-1",
+    )
+    monkeypatch.setattr(worker, "create_uploaded_material", lambda *args, **kwargs: calls.append(kwargs) or object())
+
+    worker._create_material(object(), context, _image_bytes())
+
+    assert calls[0]["attach_reference_summary"] is False
+
+
 def test_item_worker_hard_exits_after_success(monkeypatch):
     exits = []
     monkeypatch.setattr(worker, "main", lambda: 0)

@@ -1007,6 +1007,7 @@ def create_uploaded_material(
     emoji_asset_kind: str = "",
     actor: str = "普通用户",
     avatar_source: AvatarSourceInput | None = None,
+    attach_reference_summary: bool = True,
 ) -> Material:
     require_tenant(session, tenant_id)
     prepared_source = None
@@ -1048,7 +1049,9 @@ def create_uploaded_material(
     audit(session, tenant_id=material.tenant_id, actor=actor, action="上传素材", target_type="material", target_id=str(material.id))
     session.commit()
     session.refresh(material)
-    return _attach_material_reference_summary(session, material)
+    if attach_reference_summary:
+        return _attach_material_reference_summary(session, material)
+    return material
 
 
 def create_uploaded_materials(
