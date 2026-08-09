@@ -54,9 +54,9 @@ def main() -> int:
             raise RuntimeError("account avatar material readback is incomplete")
         return 0
     with SessionLocal() as session:
-        manifest, downloads = build_manifest(session, deployed_sha=DEPLOYED_SHA)
+        manifest = build_manifest(session, deployed_sha=DEPLOYED_SHA)
     manifest_sha = manifest_sha256(manifest)
-    imported_ids = _apply(manifest, downloads, manifest_sha) if MODE == "apply" else []
+    imported_ids = _apply(manifest, manifest_sha) if MODE == "apply" else []
     with SessionLocal() as session:
         imported_page_ids = _imported_page_ids(session, TENANT_ID)
     output = {
@@ -84,10 +84,9 @@ def _validate_inputs() -> None:
         raise ValueError("AVATAR_MATERIAL_IMPORT_APPROVAL_REF is required for apply")
 
 
-def build_manifest(session, *, deployed_sha: str) -> tuple[dict[str, Any], dict[str, bytes]]:
+def build_manifest(session, *, deployed_sha: str) -> dict[str, Any]:
     pages = _fetch_commons_pages()
     items: list[dict[str, Any]] = []
-    downloads: dict[str, bytes] = {}
     prepared_candidates = []
     for index, page_id in enumerate(CURATED_PAGE_IDS):
         source, metadata = _source_from_page(page_id, pages[page_id])
@@ -103,12 +102,11 @@ def build_manifest(session, *, deployed_sha: str) -> tuple[dict[str, Any], dict[
                 "source": asdict(source),
             }
         )
-        downloads[page_id] = data
         prepared_candidates.append(prepared)
         if index + 1 < len(CURATED_PAGE_IDS):
             time.sleep(DOWNLOAD_INTERVAL_SECONDS)
     assert_avatar_candidates_importable(session, tenant_id=TENANT_ID, candidates=prepared_candidates)
-    return {"tenant_id": TENANT_ID, "deployed_sha": deployed_sha, "items": items}, downloads
+    return {"tenant_id": TENANT_ID, "deployed_sha": deployed_sha, "items": items}
 
 
 def avatar_material_readback() -> dict[str, Any]:
@@ -238,7 +236,7 @@ def manifest_sha256(manifest: dict[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _apply(manifest: dict[str, Any], downloads: dict[str, bytes], manifest_sha: str) -> list[int]:
+def _apply(manifest: dict[str, Any], manifest_sha: str) -> list[int]:
     if manifest_sha != EXPECTED_SHA256:
         raise RuntimeError(f"manifest hash mismatch: expected={EXPECTED_SHA256};actual={manifest_sha}")
     imported_ids: list[int] = []
@@ -246,9 +244,27 @@ def _apply(manifest: dict[str, Any], downloads: dict[str, bytes], manifest_sha: 
         with SessionLocal() as session:
             if item["page_id"] in _imported_page_ids(session, TENANT_ID):
                 continue
-            material = _create_material(session, item, downloads[item["page_id"]], manifest_sha)
+            data = _download_manifest_item(item)
+            material = _create_material(session, item, data, manifest_sha)
             imported_ids.append(int(material.id))
     return imported_ids
+
+
+def _download_manifest_item(item: dict[str, Any]) -> bytes:
+    source = AvatarSourceInput(**item["source"])
+    data = _fetch_bytes(source.source_file_url)
+    prepared = inspect_avatar_source(data=data, source=source)
+    expected = {
+        "content_sha256": item["content_sha256"],
+        "perceptual_hash": item["perceptual_hash"],
+        "width": item["width"],
+        "height": item["height"],
+        "detected_mime_type": item["detected_mime_type"],
+    }
+    actual = {key: getattr(prepared, key) for key in expected}
+    if actual != expected:
+        raise RuntimeError(f"avatar manifest item drift: page_id={item['page_id']}")
+    return data
 
 
 def _create_material(session, item: dict[str, Any], data: bytes, manifest_sha: str):

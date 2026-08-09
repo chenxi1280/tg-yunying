@@ -61,8 +61,8 @@ def test_manifest_is_stable_and_contains_license(monkeypatch):
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
         session.commit()
-        first, _ = script.build_manifest(session, deployed_sha="abc123")
-        second, _ = script.build_manifest(session, deployed_sha="abc123")
+        first = script.build_manifest(session, deployed_sha="abc123")
+        second = script.build_manifest(session, deployed_sha="abc123")
 
     assert first == second
     assert first["items"][0]["source"]["license_code"] == "CC BY 4.0"
@@ -76,7 +76,33 @@ def test_apply_rejects_manifest_hash_mismatch(monkeypatch):
     script = _load_script()
     monkeypatch.setattr(script, "EXPECTED_SHA256", "0" * 64)
     with pytest.raises(RuntimeError, match="manifest hash mismatch"):
-        script._apply({"items": []}, {}, "1" * 64)
+        script._apply({"items": []}, "1" * 64)
+
+
+def test_apply_redownload_rejects_item_drift(monkeypatch):
+    script = _load_script()
+    source = script.AvatarSourceInput(
+        source_page_id="101",
+        source_page_url="https://commons.wikimedia.org/wiki/File:Avatar-101.jpg",
+        source_file_url="https://upload.wikimedia.org/avatar-101.jpg",
+        license_code="CC BY 4.0",
+        license_url="https://creativecommons.org/licenses/by/4.0/",
+        attribution_text="Example Author",
+    )
+    prepared = script.inspect_avatar_source(data=_image_bytes(), source=source)
+    item = {
+        "page_id": "101",
+        "source": prepared.source.__dict__,
+        "content_sha256": "0" * 64,
+        "perceptual_hash": prepared.perceptual_hash,
+        "width": prepared.width,
+        "height": prepared.height,
+        "detected_mime_type": prepared.detected_mime_type,
+    }
+    monkeypatch.setattr(script, "_fetch_bytes", lambda _url: _image_bytes())
+
+    with pytest.raises(RuntimeError, match="avatar manifest item drift"):
+        script._download_manifest_item(item)
 
 
 def test_readback_requires_reviewed_tg_cache_ready_material():
