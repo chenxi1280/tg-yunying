@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime
 
 import pytest
 from sqlalchemy import create_engine
@@ -17,7 +18,7 @@ from app.services.operations import _execute_operation_attempt
 from app.services.task_center import dispatcher
 from app.services.task_center.channel_membership import gate_channel_membership
 from app.services.task_center.dispatcher import dispatch_action
-from app.services.task_center.executors import build_task_plan
+from app.services.task_center.executors import build_task_plan, channel_view
 from app.services.task_center.service import create_and_start_channel_view_task, get_task_detail, list_membership_items_page, precheck_task_creation
 
 
@@ -242,9 +243,10 @@ def test_channel_like_all_accounts_precheck_capacity_uses_effective_accounts_not
     assert precheck["capacity_summary"]["effective_account_count"] == 30
 
 
-def test_channel_view_planner_uses_post_daily_target_and_task_safety_cap():
+def test_channel_view_planner_uses_post_daily_target_and_task_safety_cap(monkeypatch):
     engine = _engine()
-    now_value = _now()
+    now_value = datetime(2030, 8, 2, 10, 0, 0)
+    monkeypatch.setattr(channel_view, "_now", lambda: now_value)
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
