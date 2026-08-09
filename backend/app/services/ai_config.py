@@ -78,6 +78,7 @@ from app.schemas.ai_config import (
 from app.security import decrypt_secret, encrypt_secret
 
 from ._common import _now, ai_gateway, audit, gateway, require_tenant
+from .avatar_material_import import AvatarSourceInput, new_avatar_material_source, prepare_avatar_source
 from .material_ingestion import URL_MATERIAL_TYPES, save_material_upload_temp, validate_material_url
 from .material_versions import record_material_asset_version, record_material_tg_ref_version, record_material_versions
 
@@ -1005,8 +1006,20 @@ def create_uploaded_material(
     data: bytes,
     emoji_asset_kind: str = "",
     actor: str = "普通用户",
+    avatar_source: AvatarSourceInput | None = None,
 ) -> Material:
     require_tenant(session, tenant_id)
+    prepared_source = None
+    if avatar_source:
+        prepared_source = prepare_avatar_source(
+            session,
+            tenant_id=tenant_id,
+            data=data,
+            source=avatar_source,
+        )
+        declared_type = (content_type or "").split(";", 1)[0].strip().lower()
+        if declared_type != prepared_source.detected_mime_type:
+            raise ValueError("头像素材声明 MIME 与实际图片格式不一致")
     material = _new_uploaded_material(
         tenant_id=tenant_id,
         title=title,
@@ -1020,6 +1033,17 @@ def create_uploaded_material(
     )
     session.add(material)
     session.flush()
+    if prepared_source:
+        material.width = prepared_source.width
+        material.height = prepared_source.height
+        session.add(
+            new_avatar_material_source(
+                prepared_source,
+                tenant_id=tenant_id,
+                material_id=material.id,
+                actor=actor,
+            )
+        )
     record_material_versions(session, material, actor=actor)
     audit(session, tenant_id=material.tenant_id, actor=actor, action="上传素材", target_type="material", target_id=str(material.id))
     session.commit()

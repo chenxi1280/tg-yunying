@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import timedelta
 import json
 import os
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -2248,7 +2249,8 @@ def test_profile_init_replaces_remote_tg_name_when_platform_name_is_placeholder(
         assert calls == [{"first_name": "锅巴洋芋", "last_name": "", "bio": "看到有意思的会回两句"}]
 
 
-def test_create_account_generates_import_time_phone_tail_sequence_name():
+@pytest.mark.no_postgres
+def test_create_account_generates_unique_import_time_phone_tail_name():
     with _session() as session:
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(
@@ -2265,8 +2267,9 @@ def test_create_account_generates_import_time_phone_tail_sequence_name():
         first = create_account(session, TgAccountCreate(tenant_id=1, display_name="新托管账号", phone_number="+8613800011234"), "tester")
         second = create_account(session, TgAccountCreate(tenant_id=1, display_name="", phone_number="+8613800015678"), "tester")
 
-        assert first.display_name.endswith("-1234-001")
-        assert second.display_name.endswith("-5678-002")
+        assert re.match(rf"^导入{_now():%m%d}-1234-001-[0-9a-f]{{6}}$", first.display_name)
+        assert re.match(rf"^导入{_now():%m%d}-5678-002-[0-9a-f]{{6}}$", second.display_name)
+        assert first.display_name != second.display_name
         assert first.display_name.startswith(f"导入{_now():%m%d}-")
 
 

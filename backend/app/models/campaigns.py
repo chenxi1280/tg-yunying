@@ -182,6 +182,30 @@ class Material(Base):
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
+class AvatarMaterialSource(Base):
+    __tablename__ = "avatar_material_sources"
+    __table_args__ = (
+        UniqueConstraint("material_id", name="uq_avatar_material_sources_material"),
+        UniqueConstraint("tenant_id", "source_page_id", name="uq_avatar_material_sources_source_page"),
+        UniqueConstraint("tenant_id", "content_sha256", name="uq_avatar_material_sources_content"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
+    material_id: Mapped[int] = mapped_column(ForeignKey("materials.id"))
+    source_page_id: Mapped[str] = mapped_column(String(40))
+    source_page_url: Mapped[str] = mapped_column(String(1024))
+    source_file_url: Mapped[str] = mapped_column(String(2048))
+    license_code: Mapped[str] = mapped_column(String(40))
+    license_url: Mapped[str] = mapped_column(String(1024))
+    attribution_text: Mapped[str] = mapped_column(Text)
+    content_sha256: Mapped[str] = mapped_column(String(64))
+    perceptual_hash: Mapped[str] = mapped_column(String(16))
+    contains_person: Mapped[bool] = mapped_column(Boolean, default=False)
+    imported_by: Mapped[str] = mapped_column(String(100), default="")
+    imported_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
 class MaterialImportJob(Base):
     __tablename__ = "material_import_jobs"
 
@@ -263,6 +287,7 @@ __all__ = [
     "MessageTaskAttempt",
     "CampaignProcessedMessage",
     "Material",
+    "AvatarMaterialSource",
     "MaterialGroup",
     "MaterialImportJob",
     "MaterialAssetVersion",

@@ -39,6 +39,7 @@ from app.storage import object_path, preview_url, save_avatar_bytes
 from ._common import _is_expired, _now, audit, gateway, get_account_phone, mask_phone, require_tenant
 from .account_authorizations import attempt_primary_proxy_recovery, attempt_standby_authorization_recovery, is_proxy_recovery_signal
 from .account_profile_auto_init import queue_login_profile_initialization
+from .account_profile_identity import DisplayNameConflict, NameClaimRequest, claim_profile_names
 from .account_search import filter_accounts_by_search
 from .account_two_fa import record_managed_two_fa_password, rotate_managed_two_fa_after_login
 from .developer_apps import credentials_for_account, first_assignable_developer_app
@@ -157,6 +158,11 @@ def create_account(session: Session, payload: TgAccountCreate, actor: str = "普
     account = TgAccount(**data)
     session.add(account)
     session.flush()
+    if account.account_identity == "normal":
+        claim_profile_names(
+            session,
+            [NameClaimRequest(account.tenant_id, account.id, account.display_name, "registration", actor)],
+        )
     _emit_account_eligibility_event(session, account.id, "account_created")
     audit(session, tenant_id=account.tenant_id, actor=actor, action="添加TG账号", target_type="tg_account", target_id=str(account.id))
     session.commit()
@@ -205,7 +211,7 @@ def _account_display_name(session: Session, tenant_id: int, display_name: str, p
             TgAccount.created_at >= day_start,
         )
     ) or 0
-    return f"导入{now_value:%m%d}-{tail}-{imported_today + 1:03d}"
+    return f"导入{now_value:%m%d}-{tail}-{imported_today + 1:03d}-{uuid4().hex[:6]}"
 
 
 def soft_delete_account(session: Session, account_id: int, actor: str = "普通用户", reason: str = "用户移除") -> TgAccount:
@@ -365,11 +371,20 @@ def update_account_profile(session: Session, account_id: int, payload: TgAccount
         raise ValueError("display_name is required")
     if payload.avatar_object_key and not payload.avatar_object_key.startswith(f"avatars/{account.tenant_id}/{account.id}/"):
         raise ValueError("avatar does not belong to this account")
+    if account.account_identity == "normal":
+        claim_profile_names(
+            session,
+            [NameClaimRequest(account.tenant_id, account.id, payload.display_name, "manual", actor)],
+        )
 
     before = account_profile_snapshot(account)
     account.display_name = payload.display_name.strip()
-    account.tg_first_name = payload.tg_first_name.strip()
-    account.tg_last_name = payload.tg_last_name.strip()
+    if account.account_identity == "normal":
+        account.tg_first_name = account.display_name
+        account.tg_last_name = ""
+    else:
+        account.tg_first_name = payload.tg_first_name.strip()
+        account.tg_last_name = payload.tg_last_name.strip()
     account.tg_bio = payload.tg_bio.strip()
     account.avatar_object_key = payload.avatar_object_key.strip()
     account.profile_sync_status = "排队中"
@@ -935,6 +950,18 @@ def sync_remote_profile(session: Session, account_id: int, actor: str) -> TgAcco
     credentials = credentials_for_account(session, account)
     profile = gateway.pull_profile(account.id, account.session_ciphertext, credentials)
     first_name, last_name, display_name, profile_note = _remote_profile_names_for_storage(account, profile.first_name, profile.last_name)
+    if account.account_identity == "normal":
+        try:
+            claim_profile_names(
+                session,
+                [NameClaimRequest(account.tenant_id, account.id, display_name, "remote_sync", actor)],
+            )
+        except DisplayNameConflict:
+            account.profile_sync_status = "昵称冲突"
+            account.profile_sync_error = "display_name_conflict"
+            audit(session, tenant_id=account.tenant_id, actor=actor, action="TG账号远端昵称冲突", target_type="tg_account", target_id=str(account.id))
+            session.commit()
+            raise
     account.tg_first_name = first_name
     account.tg_last_name = last_name
     account.display_name = display_name
