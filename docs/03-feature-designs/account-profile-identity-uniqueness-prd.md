@@ -158,6 +158,8 @@
 - SHA-256 相同直接拒绝；感知哈希距离低于阈值进入人工复核，不能静默当新图。
 - manifest hash 的人工批准视为这批固定候选的素材审核；apply 后仍需走 TG cache worker，只有 `已审核 + cache_ready` 才能用于头像。
 - material-cache 每次远端上传使用一次性 Telethon client，完成或异常后都断开；禁止复用已经执行多次媒体上传的进程级 client 让单个陈旧连接拖住整批素材。
+- Commons 导入素材在 `cache_ready` 前不得依赖短 TTL 清理后不可恢复的临时文件。若 apply 发现同一 `source_page_id` 已存在但本地内容文件缺失，必须重新下载 manifest 中的受控 URL，复核许可、来源字段、SHA-256、感知哈希、MIME 和尺寸均与现有来源记录及本次 manifest 完全一致，再幂等恢复原 Material 的上传文件并写审计；任一字段漂移时显式失败，不新建重复素材、不覆盖已 ready 的 TG 缓存引用。
+- 恢复仍遵守 `preview -> manifest SHA -> apply -> readback`：preview 不写入；apply 只恢复缺失文件或幂等跳过已有/已 ready 素材；readback 必须报告本地内容是否存在、缓存错误和 TG cache 三元组。队头素材缺文件时必须先修复该精确素材，禁止将其静默标成 ready 或跳过到后续素材。
 
 ### 6.3 分配策略
 
@@ -192,6 +194,7 @@
 9. 存量脚本默认 preview，未提供 manifest hash/actor/ref 时不能 apply。
 10. `material-cache` 调用阻塞时，`account-security` 仍能独立推进不依赖头像缓存的昵称批次；生产 compose 和发布检查必须包含两个 worker。
 11. 连续缓存多张素材时每张都新建并断开 Telethon client；前一张连接异常不得污染下一张素材上传。
+12. 已导入但临时文件被清理的素材在新 manifest apply 中只恢复同一 Material；来源或哈希漂移时零写入，已有文件与已 ready 素材保持幂等不变，恢复后 material-cache 能继续推进后续素材。
 
 ### 9.2 E4 生产验收
 

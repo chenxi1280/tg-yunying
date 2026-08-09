@@ -82,11 +82,10 @@ def test_apply_rejects_manifest_hash_mismatch(monkeypatch):
         script._apply({"items": []}, "1" * 64)
 
 
-def test_apply_uses_one_isolated_process_per_missing_item(monkeypatch):
+def test_apply_uses_one_isolated_process_per_manifest_item(monkeypatch):
     script = _load_script()
     script.EXPECTED_SHA256 = "a" * 64
     calls: list[str] = []
-    monkeypatch.setattr(script, "SessionLocal", lambda: _empty_session())
     monkeypatch.setattr(
         script,
         "_apply_item_isolated",
@@ -173,6 +172,49 @@ def test_item_worker_skips_expensive_material_reference_summary(monkeypatch):
     assert calls[0]["attach_reference_summary"] is False
 
 
+def test_item_worker_repairs_missing_file_for_existing_source(monkeypatch, tmp_path):
+    data = _image_bytes()
+    context, engine = _existing_context(tmp_path / "missing.jpg")
+    monkeypatch.setenv("MEDIA_ROOT", str(tmp_path))
+    monkeypatch.setattr(worker, "SessionLocal", lambda: Session(engine))
+    monkeypatch.setattr(worker, "_fetch_bytes", lambda _url: data)
+
+    material_id = worker.main_with_context(context)
+
+    with Session(engine) as session:
+        material = session.get(Material, material_id)
+        sources = session.query(AvatarMaterialSource).all()
+    assert material is not None
+    assert Path(material.content).is_file()
+    assert Path(material.content).read_bytes() == data
+    assert material.cache_ready_status == "not_cached"
+    assert len(sources) == 1
+
+
+def test_item_worker_keeps_existing_file_without_download(monkeypatch, tmp_path):
+    existing_path = tmp_path / "existing.jpg"
+    existing_path.write_bytes(_image_bytes())
+    context, engine = _existing_context(existing_path)
+    monkeypatch.setattr(worker, "SessionLocal", lambda: Session(engine))
+    monkeypatch.setattr(worker, "_fetch_bytes", lambda _url: pytest.fail("must not download"))
+
+    material_id = worker.main_with_context(context)
+
+    assert material_id > 0
+    assert existing_path.is_file()
+
+
+def test_item_worker_rejects_existing_source_manifest_drift(monkeypatch, tmp_path):
+    context, engine = _existing_context(tmp_path / "missing.jpg")
+    context.item["source"]["license_code"] = "CC0"
+    monkeypatch.setenv("MEDIA_ROOT", str(tmp_path))
+    monkeypatch.setattr(worker, "SessionLocal", lambda: Session(engine))
+    monkeypatch.setattr(worker, "_fetch_bytes", lambda _url: _image_bytes())
+
+    with pytest.raises(RuntimeError, match="existing avatar source drift"):
+        worker.main_with_context(context)
+
+
 def test_item_worker_hard_exits_after_success(monkeypatch):
     exits = []
     monkeypatch.setattr(worker, "main", lambda: 0)
@@ -194,10 +236,60 @@ def _worker_source():
     )
 
 
-def _empty_session() -> Session:
+def _existing_context(content_path: Path):
+    source = _worker_source()
+    data = _image_bytes()
+    prepared = worker.inspect_avatar_source(data=data, source=source)
+    item = {
+        "page_id": "101",
+        "title": "Avatar 101",
+        "filename": "avatar-101.jpg",
+        "mime_type": prepared.detected_mime_type,
+        "source": source.__dict__,
+        "content_sha256": prepared.content_sha256,
+        "perceptual_hash": prepared.perceptual_hash,
+        "width": prepared.width,
+        "height": prepared.height,
+        "detected_mime_type": prepared.detected_mime_type,
+    }
+    context = worker.ImportContext(item, 1, "a" * 64, "approval-1")
     engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
-    return Session(engine)
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        material = Material(
+            tenant_id=1,
+            title="Avatar 101",
+            material_type="图片",
+            content=str(content_path),
+            review_status="已审核",
+            source_kind="upload",
+            asset_fingerprint=prepared.content_sha256,
+            cache_ready_status="not_cached",
+            file_name="avatar-101.jpg",
+            mime_type=prepared.detected_mime_type,
+            file_size=len(data),
+            width=prepared.width,
+            height=prepared.height,
+        )
+        session.add(material)
+        session.flush()
+        session.add(
+            AvatarMaterialSource(
+                tenant_id=1,
+                material_id=material.id,
+                source_page_id=source.source_page_id,
+                source_page_url=source.source_page_url,
+                source_file_url=source.source_file_url,
+                license_code=source.license_code,
+                license_url=source.license_url,
+                attribution_text=source.attribution_text,
+                content_sha256=prepared.content_sha256,
+                perceptual_hash=prepared.perceptual_hash,
+            )
+        )
+        session.commit()
+    return context, engine
 
 
 def test_readback_requires_reviewed_tg_cache_ready_material():
