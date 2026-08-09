@@ -218,3 +218,22 @@ def test_remote_readback_requires_exact_first_name_and_empty_last_name(monkeypat
 
     assert result["status"] == "mismatched"
     assert result["actual_display_name"] == "海边 走走"
+
+
+def test_remote_readback_recounts_duplicates_without_regenerating_names(monkeypatch):
+    script = _load_script()
+    batch = SimpleNamespace(id=541, status="succeeded")
+    item = SimpleNamespace(status="succeeded", profile_status="succeeded", failure_type="")
+    rows = [(batch, item, _account(1, "海边走走"))]
+
+    monkeypatch.setattr(script, "SessionLocal", _session)
+    monkeypatch.setattr(script, "build_manifest", lambda *_args, **_kwargs: pytest.fail("readback must not generate names"))
+    monkeypatch.setattr(script, "_current_duplicate_counts", lambda *_args: {"duplicate_group_count": 0, "rename_target_count": 0})
+    monkeypatch.setattr(script, "_readback_rows", lambda *_args: rows)
+    monkeypatch.setattr(script, "_readback_target_count", lambda _rows: 1)
+    monkeypatch.setattr(script, "_read_remote_profile", lambda *_args: {"status": "matched"})
+
+    result = script.remote_readback()
+
+    assert result["complete"] is True
+    assert result["remote_matched_count"] == 1

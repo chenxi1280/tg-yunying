@@ -229,7 +229,7 @@ def _existing_batch_state(
 
 def remote_readback() -> dict[str, Any]:
     with SessionLocal() as session:
-        current = build_manifest(session, tenant_id=TENANT_ID, seed=SEED, deployed_sha=DEPLOYED_SHA)
+        current = _current_duplicate_counts(session, TENANT_ID)
         rows = _readback_rows(session, TENANT_ID, EXPECTED_SHA256)
         results = [_read_remote_profile(session, item, account) for _, item, account in rows]
     batch_ids = sorted({int(batch.id) for batch, _, _ in rows})
@@ -248,6 +248,14 @@ def remote_readback() -> dict[str, Any]:
         "after_rename_target_count": current["rename_target_count"],
         **status_counts,
         "complete": terminal_success and len(rows) == expected_target_count and current["rename_target_count"] == 0,
+    }
+
+
+def _current_duplicate_counts(session, tenant_id: int) -> dict[str, int]:
+    groups = duplicate_name_groups(_active_accounts(session, tenant_id))
+    return {
+        "duplicate_group_count": len(groups),
+        "rename_target_count": sum(len(group.target_account_ids) for group in groups),
     }
 
 
