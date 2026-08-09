@@ -112,6 +112,7 @@ def _create_material(session, context: ImportContext, data: bytes):
         data=data,
         actor=actor,
         avatar_source=source,
+        attach_reference_summary=False,
     )
 
 
