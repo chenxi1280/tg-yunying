@@ -177,6 +177,7 @@ WORKER_SERVICES=(
   worker-listener
   worker-recovery
   worker-account-security
+  worker-material-cache
   worker-voice-profile
   worker-account-online
   worker-ai-memory

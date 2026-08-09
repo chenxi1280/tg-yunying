@@ -306,6 +306,23 @@ services:
     networks:
       - infra_default
 
+  worker-material-cache:
+    image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
+    container_name: tgyunying-worker-material-cache
+    restart: unless-stopped
+    command: ["python", "-m", "app.worker", "--role", "material-cache", "--limit", "${MATERIAL_CACHE_WORKER_DRAIN_LIMIT:-20}", "--interval", "${MATERIAL_CACHE_WORKER_INTERVAL_SECONDS:-2.0}"]
+    environment:
+      <<: *backend-env
+      WORKER_ROLE: material-cache
+    volumes:
+      - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck: *worker-healthcheck
+    networks:
+      - infra_default
+
   worker-voice-profile:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
     container_name: tgyunying-worker-voice-profile

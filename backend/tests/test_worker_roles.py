@@ -38,7 +38,7 @@ def test_drain_once_dispatches_task_center_roles(monkeypatch):
     assert worker.drain_once(7, role="dispatcher") == 2
     assert worker.drain_once(7, role="listener") == 3
     assert worker.drain_once(7, role="recovery") == 4
-    assert worker.drain_once(7, role="account-security") == 7
+    assert worker.drain_once(7, role="account-security") == 6
     assert worker.drain_once(7, role="material-cache") == 1
     assert worker.drain_once(7, role="metrics") == 5
     assert worker.drain_once(7, role="account-online") == 11
@@ -51,8 +51,7 @@ def test_drain_once_dispatches_task_center_roles(monkeypatch):
         ("dispatcher", 7),
         ("listener", 7),
         ("recovery", 7),
-        ("material_cache", 7),
-        ("account_security", 6),
+        ("account_security", 7),
         ("material_cache", 7),
         ("metrics", 7),
         ("account_online", 7),
@@ -179,6 +178,21 @@ def test_server_compose_starts_online_and_ai_memory_workers():
     assert 'ACCOUNT_ONLINE_PROBE_CONCURRENCY=32' in env_example
     assert 'ACCOUNT_ONLINE_PROBE_TIMEOUT_SECONDS=30' in env_example
     assert 'ACCOUNT_ONLINE_WORKER_DRAIN_LIMIT=1000' in env_example
+
+
+def test_server_compose_isolates_account_security_and_material_cache_workers():
+    root = Path(__file__).resolve().parents[2]
+    compose = (root / "docker-compose.server.yml").read_text()
+    compose_up = (root / "deploy/compose-up.sh").read_text()
+    check_web = (root / "deploy/check-web.sh").read_text()
+
+    assert "  worker-account-security:" in compose
+    assert "container_name: tgyunying-worker-account-security" in compose
+    assert "  worker-material-cache:" in compose
+    assert "container_name: tgyunying-worker-material-cache" in compose
+    assert "WORKER_ROLE: material-cache" in compose
+    assert "  worker-material-cache" in compose_up
+    assert "  tgyunying-worker-material-cache" in check_web
 
 
 def test_server_compose_starts_search_dispatcher_worker():

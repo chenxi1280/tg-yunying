@@ -135,6 +135,13 @@
 - Telegram 验证：逐账号远端 profile 读取的 `first_name/last_name` 与目标一致。
 - `persisted_verified` 不能代替 Telegram 业务结果；只有全部目标具备远端回读才能报告本次改名完成。
 
+### 5.4 生产队列隔离
+
+- `account-security` worker 只执行账号安全和资料批次；素材 TG 暂存由常驻 `material-cache` worker 独立执行。
+- 素材上传超时、FloodWait 或缓存账号异常不得阻塞纯昵称更新、2FA、设备清理等不依赖头像缓存的批次。
+- 资料批次若需要头像，仍必须逐项检查 `cache_ready_status=ready`；未 ready 时保持 `waiting_cache`，不得绕过素材缓存或静默当作完整成功。
+- 发布检查必须同时验证两个容器和两个独立 heartbeat；容器 healthy 只证明进程存活，生产验收仍以批次项和素材状态持续推进为准。
+
 ## 6. 头像素材补充与分配
 
 ### 6.1 来源规则
@@ -182,6 +189,7 @@
 7. worker 缺 claim 时不调用 Telegram；失败/unknown 不释放 claim。
 8. 头像导入拒绝未知许可、重复 SHA、不可解码文件、内网 URL 和超限响应；近似重复进入复核。
 9. 存量脚本默认 preview，未提供 manifest hash/actor/ref 时不能 apply。
+10. `material-cache` 调用阻塞时，`account-security` 仍能独立推进不依赖头像缓存的昵称批次；生产 compose 和发布检查必须包含两个 worker。
 
 ### 9.2 E4 生产验收
 
