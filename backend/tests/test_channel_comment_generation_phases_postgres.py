@@ -18,6 +18,7 @@ from app.models import (
     TgAccount,
 )
 from app.services.task_center.executors import channel_comment
+from channel_comment_planner_test_support import fixed_profile
 
 
 TENANT_ID = 914_214
@@ -66,6 +67,7 @@ def test_postgres_two_planners_keep_lifetime_cap_across_two_messages(monkeypatch
 
 
 def _configure_concurrent_planners(monkeypatch) -> Barrier:
+    fixed_profile(monkeypatch)
     start = Barrier(2)
     planning_ready = Barrier(2)
     original_planning_accounts = channel_comment._planning_accounts
