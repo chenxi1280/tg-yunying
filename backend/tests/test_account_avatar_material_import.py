@@ -72,6 +72,7 @@ def test_manifest_is_stable_and_contains_license(monkeypatch):
     assert "already_imported" not in first["items"][0]
     assert len(first["items"][0]["content_sha256"]) == 64
     assert script.manifest_sha256(first) == script.manifest_sha256(second)
+    assert script._sha256_b64("a" * 64).endswith("=")
 
 
 def test_apply_rejects_manifest_hash_mismatch(monkeypatch):

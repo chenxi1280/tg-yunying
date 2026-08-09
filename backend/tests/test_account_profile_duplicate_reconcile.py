@@ -122,6 +122,7 @@ def test_reconcile_summary_keeps_hash_and_counts_without_targets():
     summary = script._reconcile_summary(payload)
 
     assert summary["manifest_sha256"] == "a" * 64
+    assert summary["manifest_sha256_b64"] == script._sha256_b64("a" * 64)
     assert summary["rename_target_count"] == 484
     assert "manifest" not in summary
 
