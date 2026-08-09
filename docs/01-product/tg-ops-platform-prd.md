@@ -1,5 +1,7 @@
 # TG 运营管理平台 PRD
 
+> **2026-08-09 AI 活群有界批次纠偏：** `fact_first_v3` 的“每个 Task 每轮只物化一个可直接执行批次”指一次 Phase A 原子事务内可物化 1～20 条当前已到期义务，绝不等于固定只创建 1 条 Action。服务层只用 20 条硬事务上限和 `daily_coverage_plan_batch_limit` 给出一次调用预算；执行器再按当前 due 欠量、有效 open/unknown 占位、distinct ready/online/准入可推进账号和真实空闲槽收窄实际条数。`messages_per_round` 仍只定义 Cycle Turn；存量 `max_concurrent`、`participation_rate` 和退役 hard-hourly 均不得截断 current-contract 事务预算或形成 fact-first 业务上限。一次调用提交后立即轮转其他到期 Task。重复/质量/准入失败继续 fail-closed，并释放各自未进入 Gateway 的义务供后续有界批次回补，禁止通过放宽质量或制造无界 backlog 提速。
+
 > **2026-08-08 线上二次纠偏：** AI 活群的 Telegram 原生引用只允许绑定同 tenant、同 Task、同目标群且已有成功 Attempt 与非空远端消息 ID 的平台托管历史消息；真人/其他成员消息只能进入生成上下文。引用候选须在规划与生成前各校验一次，候选不足写 `reply_target_shortfall`，不得降级引用真人。群管 surface 在 `get_entity + dialog` 解析后仍返回 “Could not find the input entity” 时，按当前 Task × 账号 × 目标 × 任务日写 `target_entity_unresolvable` 并当日终结该账号准入，不得每 30 秒重启观察，也不得扩大为账号或目标的全局终态。四类互动的 quiet-hours 调整必须保留原计划相邻间距与小时限速，多个时间点不得折叠到静默结束同一秒。存量 Gateway-started 且无权威结果的发送只补 `remote_outcome_unknown + unknown_deadline` 并进入只读对账，禁止重发；终态 Action 无类型远端事实时，仅可用 CAS 解除浏览/点赞义务的陈旧绑定并恢复为 open，不得伪造成功或执行过期任务日。
 
 > **2026-08-07 四类互动拟人节奏生产纠偏：** `fact_first_v3` 只定义 typed remote fact、防重、准入、恢复和 projector，不再等同于“全部义务立即 due”。`group_ai_chat/channel_comment/channel_like/channel_view` 只物化完整 24 小时 pacing period 中当前累计到期的缺口：AI/浏览按任务自然日，评论/点赞按来源消息首次采集后的滚动 24 小时；`pacing_anchor` 取 period、任务实际启动/恢复和来源采集时间的较晚者，分母不得缩成剩余窗口。容量不足写 shortfall，禁止 Planner、takeover 或 Recovery 把 future Action 批量改成当前时间或在日末压缩追赶。本文中与此冲突的“四类互动资源空闲即清空、不计算 due_by_now”统一为 `historical_do_not_implement`；纯搜索点击不在本次节奏变更范围。专项合同见 `task-fulfillment-classified-recovery-prd.md` §4.5。
@@ -4424,8 +4426,8 @@ AI 活跃群和频道评论 / 回复不能共用同一数量合同：AI 按配�
 ```text
 结构合法的 Task 创建成功
   -> 启动时只冻结任务日时间边界；账号范围 / ready / blocker 按任务内事实动态刷新
-  -> AI 活跃群 planned_daily_target（兼容 effective 同值）+ 当前开放义务/真实阶段空闲槽
-  -> coverage_need + volume_need -> 有界 batch
+  -> AI 活跃群 natural_full_day due_by_now + 当前占位/真实阶段空闲槽
+  -> coverage_need + volume_need -> planning_need -> 单次有界 batch
      频道评论按每条消息目标补差额
   -> 按最少引用回复数拆分普通消息和引用回复消息
   -> 建立不可变 ContentMixContract 与 policy_min/selector_plan 素材义务
@@ -4438,7 +4440,7 @@ AI 活跃群和频道评论 / 回复不能共用同一数量合同：AI 按配�
 默认推荐公式必须满足以下产品口径，具体系数可配置但不能写死到前端：
 
 - AI 活跃群只推荐 `daily_message_target`，默认等于创建时该任务当前合格账号数；启动后 `planned_daily_target=max(配置值,current_required_account_count)` 并随任务内资格事实刷新，兼容 effective 字段与 planned 同值，已确认数不抬高计划；不推荐或保存每小时目标/上限。
-- AI 活跃群不再生成或执行 24 小时分布权重、静默权重与批次节奏。页面只展示任务日目标、真实 open/generating/executing/unknown/confirmed 和阶段空闲槽；这些观测不得降低群日目标或控制领取。
+- AI 活跃群不执行退役 hard-hourly 目标或 quiet-hours 静默停发，但仍按 24 小时 `natural_full_day` 曲线计算 `due_by_now`。页面展示任务日目标、当前累计到期量、真实 open/generating/executing/unknown/confirmed 和阶段空闲槽；这些观测不得降低群日目标或把 future 义务提前领取。
 - 频道评论 / 回复默认任务小时量按可评论账号数动态推荐，例如以 `可评论账号数 * 4` 为基准，并设置产品上下限。
 - 频道评论 / 回复的每条消息累计评论目标按可评论账号数动态推荐，例如以 `可评论账号数 * 0.6` 为基准，并设置产品上下限。
 - 频道评论 / 回复的任务内 `max_comments_per_account_per_hour` 是只读系统异常门禁，固定 `1_000_000`，不再根据账号数推荐或形成任务级硬上限；账号全局硬安全容量由系统调度。
@@ -4467,7 +4469,7 @@ AI 活跃群的默认策略是“接话为主、低频暖场为辅”：
 
 - 最近存在可用真人消息时进入接话模式。系统只围绕最近 3-8 条真人消息、被 @ 的对象、当前人名 / 话题 / 问题生成短句回复，优先追问、附和、吐槽、补充和轻量转场。
 - 长时间没有可接真人消息且任务允许空闲续聊时进入低频暖场模式。暖场只允许少量账号抛轻量话题或延续任务主题，不能编造账号面具和任务上下文之外的具体经历、位置、回访、准点、穿着、服务过程等事实。
-- 上下文不足、重复风险高、事实锚点不足、规则命中或目标群当前话题不适合接入时，正常候选进入质量拒绝并记录原因。所有开放群日/覆盖义务立即可执行；主 AI 最多 3 轮、备用 AI 最多 3 轮仍无可用候选后，只有该账号本 Task 日尚未发送过签到时才可由原 direct 槽位发送精确 `签到`，否则暴露 `content_capacity_gap`。
+- 上下文不足、重复风险高、事实锚点不足、规则命中或目标群当前话题不适合接入时，正常候选进入质量拒绝并记录原因。所有当前累计到期的群日/覆盖义务可执行，future 义务继续等待；主 AI 最多 3 轮、备用 AI 最多 3 轮仍无可用候选后，只有该账号本 Task 日尚未发送过签到时才可由原 direct 槽位发送精确 `签到`，否则暴露 `content_capacity_gap`。
 - 每条候选消息必须记录事实锚点，锚点可以是真人消息 ID、当前话题、素材 ID 或账号画像。没有锚点的具体事实必须被丢弃或改写为泛化追问 / 附和。
 - 全站目标画像只影响表达方式、常见话题和句式，不允许成为具体事实来源。画像不可用或样本不足时，AI 活跃群仍可围绕实时上下文生成；没有开放义务时不制造消息，存在开放义务时按同一 active Provider key 下主/备用模型各 3 轮与签到唯一合同收口。
 - 同一轮多个账号必须有角色分工，例如起哄、追问、补充、降温、观察，不允许多个托管账号连续表达同一语义。
@@ -4479,6 +4481,7 @@ AI 活跃群的默认策略是“接话为主、低频暖场为辅”：
 - 账号选择必须优先补同一任务当日未覆盖、已准入且存在安全传输路线的当前必达账号；recovering 保留自身义务，当前事实版本不可恢复则当日 abandoned 并释放未进 Gateway 义务。任何参与比例、批次大小或容量风险都不得降低配置目标或恢复任务级小时预算门禁。
 - 同轮默认优先一号一条。即使本轮 Turn 数超过可用账号数，也不得让同号在没有真人消息间隔的情况下连续发送；没有可替代账号时，剩余 Turn 写为 `speaker_rotation_wait`。跨轮复用同样以真实真人消息打断为前提，并受账号小时上限和全局风控约束。
 - 系统必须根据群日当前欠额/占位、未覆盖 ready 账号和 Generation/interaction 实际空闲槽计算本轮计划数，不得固定为极低的 1 条、固定 2-5 个账号或固定每小时轮数。
+- `volume_need=max(due_by_now-confirmed-gateway_started-unknown_hold-valid_open,0)`；`coverage_need` 为当前到期、未确认且没有有效 Action/unknown 占位的 coverage 数；`planning_need=max(volume_need,coverage_need)`。每个 due 的 `fact_first_v3` Task 在一次 Planner 轮转只调用一次 `build_plan`，实际批次为 `min(planning_need,distinct ready/online/Task-scoped 可推进账号数,Generation/interaction 真实空闲槽,daily_coverage_plan_batch_limit,20)`，随后立即轮转其他 Task；不得把“一次批次”实现成 1 条，也不得在同一 Task 内循环排空。
 - 不再提供用户手动“每轮计划发言数”模式；运营数量合同只有 `daily_message_target`，批次上限由运行时控制且不得改变群日总量。
 - 详情页必须展示系统本批请求 Turn 数、AI 返回候选数、清洗过滤数、质量过滤数、签到兜底数、最终 Action 数和等待/减少原因。
 - 准入子任务通过的新账号必须在后续 Cycle 动态加入账号选择池，分担发言；准入失败、待验证、人工处理账号不得进入主互动。
@@ -4498,7 +4501,7 @@ AI 活跃群质量管线必须先做确定性约束，再做 AI 生成，最后�
 
 - Planner 启动本轮前读取 ready pool、在线状态和授权路线。正常正文固化 active 面具、短期立场、最新上下文和同账号最近 10 天消息记忆。缺面具直接把当前义务转为精确 `签到`；`proxy_failed` 先按既有授权资产合同切换到已验证路线后签到，没有路线则 `waiting_transport`。其他 ready 账号继续。
 - `all_accounts_daily` 选号必须按显式覆盖扫描页读取 ready 候选并批量判定实时在线状态，再从在线子集按本轮消息预算取账号；候选扫描页大小不能被单轮 Action 预算或当前 `due_debt` 缩成 1，也不得先按 `max_concurrent` / 小时缺口截断、再过滤在线状态，否则靠前离线账号会遮蔽后续在线账号并形成虚假的“账号在线状态不可用”。扫描页只用于候选资格判定，离线页会显式标阻塞并由后续页继续，不改变单轮消息预算、欠账数量、容量、冷却或风控规则，也不构成服务上线账号总量限制。
-- `all_accounts_daily` Planner 以群日 `planned_daily_target - confirmed_message_count - gateway_started_count - unknown_hold_count` 和当前应覆盖但尚无有效 Action 的账号数两者较大值作为 planning need，再受本轮 ready/online 账号数及 Generation/interaction 真实空闲槽约束。准入、面具或在线 blocker 只影响对应账号，不得清零其他账号或群总量欠额。
+- `all_accounts_daily` Planner 以群日 `max(due_by_now - confirmed_message_count - gateway_started_count - unknown_hold_count - valid_open_count, 0)` 和当前到期、应覆盖但尚无有效 Action/unknown 占位的账号数两者较大值作为 planning need，再受本轮 distinct ready/online 账号数、Generation/interaction 真实空闲槽与 20 条技术上限约束。准入、面具或在线 blocker 只影响对应账号，不得清零其他账号或群总量欠额。
 - 新实现不得创建 hard-hourly bucket、credit、checkpoint 或 claim class。存量 hard-hourly Action 和统计只由迁移/审计收口，不得继续参与当前 Planner、Dispatcher 份额或任务详情完成口径。
 - 全系统同一时刻只允许一个 active `ai_provider_key_version`，所有文本模型共享该 key 的 `max_inflight/RPM/TPM`；任务可选择该 Provider 支持的模型，但不得激活第二个 key 或为模型复制一套总额度。搜索验证码固定 RapidOCR→ddddOCR，不调用任何 AI/VLM Provider。
 - 每个 Turn 先确定 `slot_id`、`act_type`、引用对象、账号、话题方向和讨论对象，再进入批量 Prompt。`act_type` 必须使用 PRD 词表，历史别名只能在兼容层读取并归一；Planner、AI Prompt、Action payload、任务详情、短期立场记忆和 Redis 热缓存都必须输出归一后的标准值。AI 只能填充 slot 内容，不能反向新增账号、增加本轮 Turn 数或改变引用关系。
@@ -5408,6 +5411,8 @@ fulfillment.calculated_at
 当前五类任务只使用任务专用义务账本和真实资源状态，不创建任务份额、预扣、`TaskAllocation` 或 `DispatchReservation`。AI 活群、频道评论、频道点赞和频道浏览计算当前 `due_by_now` 并保留 future `scheduled_at`；纯搜索点击保持即时合同。每一阶段分别计算真实空闲槽：Generation、interaction、search、OCR；槽位释放后只能领取该类型当前已到期的下一条。
 
 每轮先从每个 running Task 至多领取一条 ready 义务，再按 `opened_at,task_id,obligation_id` 填满该阶段剩余槽位。该规则不产生持久配额，不存在“任务抢账号”；同一账号可为不同 Task 并发执行非冲突 RPC，只有同 remote mutation、账号 FloodWait、群 SlowMode 或强上下文依赖串行。
+
+对 AI 活群 Phase A，以上“先取一条”只是跨 Task 公平种子，不是单 Task 的 Action 上限。轮到某个 `fact_first_v3 + all_accounts_daily` Task 时，服务层只执行一次有界事务调用：先按 20 条硬上限和 `daily_coverage_plan_batch_limit` 给出预算，再由执行器按任务当日 due 欠量、有效 open/unknown 占位、distinct ready/online/准入可推进账号和 Generation/interaction 真实空闲槽收窄实际条数；本批提交后必须轮转，不能继续把该 Task 的完整 Cycle 排空。`messages_per_round` 保持单个 Cycle 的 Turn 上限；存量 `max_concurrent` 不得截断 current-contract 事务预算。二者都不能在服务层变成新的 fact-first 批次循环。自动轮次或资源不足使实际产出少于预算时，也视为本 Task 本轮批次已经结束。
 
 热领取查询必须与闭合专项使用完全相同的 partial index 合同：`ix_fop_claim_ready(tenant_id,work_lane,opened_at,task_id,obligation_id) WHERE state='open'`、`uq_actions_open_obligation(obligation_type,obligation_id) WHERE status IN ('pending','claiming','executing','unknown_after_send')`、`ix_actions_lane_claim_ready(tenant_id,execution_lane,scheduled_at,task_id,id) WHERE status='pending'`、`ix_generation_jobs_claim_ready(created_at,id) WHERE state='pending'`、`ix_search_assignments_claim_ready(obligation_deadline_at,id) WHERE state='open'`、`ix_admissions_observation_due(no_prompt_pass_at,task_id,account_id) WHERE state='observing' AND observation_gap=false`、`ix_recoverable_leases_due(lease_expires_at,work_type,work_id) WHERE owner_id IS NOT NULL`、`ix_remote_reconcile_due(next_probe_at,id) WHERE state='open'`、`ix_fact_projection_pending(next_retry_at,fact_id,projection_kind) WHERE state IN ('pending','failed')`。领取只做当前/未截止任务日 keyset，批次为 `min(stage_free_slots,stage_claim_batch_limit)`；禁止 OFFSET、历史全表、JSON 排序、`FOR UPDATE` 和 `SKIP LOCKED`，候选 ID 后逐行单行 CAS。索引列、partial predicate 或状态名不得在实现中自行弱化或另造第二套。
 

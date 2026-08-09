@@ -176,6 +176,7 @@ eligible/recovering -> abandoned_for_day
 
 - 任务启动、任务日开始或目标/账号范围变化时立即建立或终结自己的稳定义务；义务存在不等于已经到期。四类拟人任务按 §4.5 计算当前累计到期量，不创建任务份额或中央 Reservation。
 - Planner 只建立主义务；AI 只为当前已到期且真实执行槽可用的义务创建有限 Action，评论/浏览/点赞允许建立有界 future Action，但必须依靠 `scheduled_at` 保持不可领取。禁止把全天目标一次预建成可立即领取的陈旧 Action 队列。每轮先查询所有 running Task 的窄字段候选 ID，再以单行 version CAS 领取到期义务；不使用 `FOR UPDATE/SKIP LOCKED` 或跨 Task 锁。
+- `fact_first_v3` AI 活群的公平单位是“一 Task 一次有界 `build_plan` 调用”：服务层按 `min(daily_coverage_plan_batch_limit,20)` 给出调用预算，执行器按 §4.5 的当前 planning need、候选和真实空闲槽收窄；调用提交后立即轮转下一个 due Task。禁止把单批误写成单条，也禁止按 `messages_per_round` 在同一 Task 内循环排空。
 - 同一账号可由不同任务并发发起 Telegram RPC，不做账号内任务抢占或公平轮转。仅对同一 `remote_mutation_key`/同一 callback/同一群同一消息的冲突副作执行幂等 CAS；账号级 FloodWait 约束该账号后续 RPC，群级 SlowMode 只约束对应 peer，二者都不改写任务资格。
 - Session transport 必须以 `rpc_id + authorization_id + task_id + action_id + remote_mutation_key` 隔离并发请求、响应、timeout 和 cancel；不支持安全并发的 adapter 要使用独立 transport channel/client instance，不能退回账号级全局串行，也不能让一个请求覆盖另一个请求的上下文或结果。
 - 生产展示既报每任务履约，也报聚合履约。例如 `4000 + 5000 + 800 + 800 = 10600`是四个同时运行的独立目标，不是要依次排空的四段队列。
@@ -186,6 +187,7 @@ eligible/recovering -> abandoned_for_day
 - `fact_first_v3` 与执行节奏正交：typed remote fact、Gateway unknown、防重、准入、恢复和 projector 合同保持不变；只有 Action 的到期量和 `scheduled_at` 改由任务类型节奏决定。
 - 四类任务统一使用 `pacing_anchor=max(period_start,task_activation_anchor,source_observed_at when source-scoped)`；在 anchor 精确时刻累计到期量为 0。AI/浏览的 pacing period 是当前任务自然日；评论/点赞的 pacing period 是来源消息首次采集后的滚动 24 小时。
 - 当前到期量为 `max(1,floor(pacing_target * curve_weight(pacing_anchor,now) / full_24h_curve_weight))`。分母必须是完整任务自然日或完整来源滚动 24 小时，禁止使用 `pacing_anchor..deadline` 的剩余曲线权重，禁止 `_fit_before_deadline` 或等价逻辑把完整目标缩放进短窗口。已确认、Gateway-started、unknown hold 和有效 open Action 必须从当前到期量中扣除。
+- AI 活群的 `volume_need=max(due_by_now-confirmed-gateway_started-unknown_hold-valid_open,0)`；`coverage_need` 为当前到期、未确认且没有有效 Action/unknown 占位的 coverage 数；`planning_need=max(volume_need,coverage_need)`。一次实际物化量为 `min(planning_need,distinct ready/online/Task-scoped 可推进账号数,Generation/interaction 真实空闲槽,daily_coverage_plan_batch_limit,20)`；暂时不合格的前排账号只跳过自身并继续扫描后页，不能把候选页或本批预算缩成 1。
 - `channel_comment/channel_like/channel_view` 只为当前累计到期缺口建单并保留 `schedule_times()` 生成的 future `scheduled_at`。Planner、takeover 和 Recovery 不得在建单后把 future pending Action 批量改成当前时间；晚采集来源在当前自然日只形成按可执行时段折算的量，余量保持 open/shortfall，不突发追赶。
 - quiet-hours 调整必须顺序处理：第一条移到合法窗口后，后续 Action 至少保留调整前相邻间隔；若再次落入 quiet-hours，继续移到下一个合法窗口并从该点保留间隔。`max_actions_per_hour` 的间隔下限在后置调整后仍必须成立，禁止多个时间落到同一窗口起点。
 - `operation_profile.hourly_activity_curve` 只决定动作落在哪些小时，不能绕过所选 template/fixed pacing 的最小间隔；曲线小时内候选过多时按最小间隔顺延，超出 deadline 的候选截断为 shortfall，禁止为了塞入曲线小时而缩短到秒级。

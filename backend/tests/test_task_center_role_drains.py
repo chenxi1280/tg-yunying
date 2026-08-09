@@ -403,6 +403,11 @@ def test_fact_first_planner_yields_after_one_batch(monkeypatch) -> None:
         return min(20, int(session.info["daily_coverage_plan_limit"]))
 
     monkeypatch.setattr(service, "build_task_plan", fake_build)
+    monkeypatch.setattr(
+        service,
+        "get_settings",
+        lambda: SimpleNamespace(daily_coverage_plan_batch_limit=100),
+    )
     with SessionFactory() as session:
         session.add(Tenant(id=1, name="default"))
         session.add(Task(
@@ -417,8 +422,98 @@ def test_fact_first_planner_yields_after_one_batch(monkeypatch) -> None:
         ))
         session.commit()
 
-    assert service.drain_task_planner(SessionFactory, 1) == 1
+    assert service.drain_task_planner(SessionFactory, 1) == 20
     assert calls == ["task-fact-first-yield"]
+
+
+@pytest.mark.no_postgres
+def test_fact_first_planner_yields_when_executor_does_not_fill_batch(monkeypatch) -> None:
+    SessionFactory = _session_factory()
+    plan_limits: list[int] = []
+
+    def fake_build(session: Session, _task: Task) -> int:
+        plan_limit = int(session.info["daily_coverage_plan_limit"])
+        plan_limits.append(plan_limit)
+        return min(3, plan_limit)
+
+    monkeypatch.setattr(service, "build_task_plan", fake_build)
+    monkeypatch.setattr(
+        service,
+        "get_settings",
+        lambda: SimpleNamespace(daily_coverage_plan_batch_limit=100),
+    )
+    with SessionFactory() as session:
+        session.add(Tenant(id=1, name="default"))
+        session.add(Task(
+            id="task-fact-first-short-batch", tenant_id=1, name="fact first short",
+            type="group_ai_chat", status="running", next_run_at=_now() - timedelta(seconds=1),
+            fulfillment_contract_version="fact_first_v3",
+            type_config={"account_coverage_mode": "all_accounts_daily"},
+        ))
+        session.commit()
+
+    assert service.drain_task_planner(SessionFactory, 1) == 3
+    assert plan_limits == [20]
+
+
+@pytest.mark.no_postgres
+def test_fact_first_planner_respects_configured_batch_limit(monkeypatch) -> None:
+    SessionFactory = _session_factory()
+    plan_limits: list[int] = []
+
+    def fake_build(session: Session, _task: Task) -> int:
+        plan_limit = int(session.info["daily_coverage_plan_limit"])
+        plan_limits.append(plan_limit)
+        return plan_limit
+
+    monkeypatch.setattr(service, "build_task_plan", fake_build)
+    monkeypatch.setattr(
+        service,
+        "get_settings",
+        lambda: SimpleNamespace(daily_coverage_plan_batch_limit=7),
+    )
+    with SessionFactory() as session:
+        session.add(Tenant(id=1, name="default"))
+        session.add(Task(
+            id="task-fact-first-configured-batch", tenant_id=1, name="configured batch",
+            type="group_ai_chat", status="running", next_run_at=_now() - timedelta(seconds=1),
+            fulfillment_contract_version="fact_first_v3",
+            type_config={"account_coverage_mode": "all_accounts_daily"},
+        ))
+        session.commit()
+
+    assert service.drain_task_planner(SessionFactory, 1) == 7
+    assert plan_limits == [7]
+
+
+@pytest.mark.no_postgres
+def test_fact_first_planner_yields_to_next_due_task(monkeypatch) -> None:
+    SessionFactory = _session_factory()
+    calls: list[str] = []
+
+    def fake_build(session: Session, task: Task) -> int:
+        calls.append(task.id)
+        return min(3, int(session.info["daily_coverage_plan_limit"]))
+
+    monkeypatch.setattr(service, "build_task_plan", fake_build)
+    monkeypatch.setattr(
+        service,
+        "get_settings",
+        lambda: SimpleNamespace(daily_coverage_plan_batch_limit=100),
+    )
+    with SessionFactory() as session:
+        session.add(Tenant(id=1, name="default"))
+        for task_id in ("task-fact-first-a", "task-fact-first-b"):
+            session.add(Task(
+                id=task_id, tenant_id=1, name=task_id,
+                type="group_ai_chat", status="running", next_run_at=_now() - timedelta(seconds=1),
+                fulfillment_contract_version="fact_first_v3",
+                type_config={"account_coverage_mode": "all_accounts_daily"},
+            ))
+        session.commit()
+
+    assert service.drain_task_planner(SessionFactory, 2) == 6
+    assert sorted(calls) == ["task-fact-first-a", "task-fact-first-b"]
 
 
 @pytest.mark.no_postgres

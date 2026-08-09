@@ -25,3 +25,12 @@ def test_all_account_daily_planner_never_exceeds_twenty_transaction_slots() -> N
 
     assert _plan_account_limit(task, {}, planning_limit=60) == 20
     assert _plan_account_limit(task, {"deficit": 60}, planning_limit=60) == 20
+
+
+def test_fact_first_batch_budget_is_not_legacy_max_concurrent() -> None:
+    task = _all_account_task()
+    task.fulfillment_contract_version = "fact_first_v3"
+    task.account_config = {"max_concurrent": 1}
+
+    assert _plan_account_limit(task, {}, planning_limit=20) == 20
+    assert _plan_account_limit(task, {}, planning_limit=7) == 7
