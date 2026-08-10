@@ -1098,6 +1098,10 @@ def _load_turn_plan(
         daily_coverage_uncovered_count=_turn_daily_uncovered_count(
             session, task, facts, accounts=accounts,
         ),
+        bounded_daily_coverage_batch=(
+            task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION
+            and _all_accounts_daily_coverage(facts.config)
+        ),
     )
     if not selected or turn_count <= 0:
         _mark_daily_target_pacing(task)
@@ -1124,7 +1128,9 @@ def _load_turn_plan(
         facts.config,
         has_context=bool(context.usable_rows),
         progress=facts.hard_progress,
-        deferred_generation=deferred,
+        deferred_generation=(
+            deferred and task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION
+        ),
         turn_count=turn_count,
         planned_times=times,
     )
@@ -4141,6 +4147,7 @@ def _requires_context_bound_window(
     return (
         bool(has_context)
         and not progress
+        and not deferred_generation
         and int(config.get("context_expire_after_messages") or 0) > 0
     )
 
@@ -4318,10 +4325,14 @@ def _select_cycle_accounts(
     cycle_index: int = 1,
     pacing_config: dict | None = None,
     daily_coverage_uncovered_count: int = 0,
+    bounded_daily_coverage_batch: bool = False,
 ) -> tuple[list, int]:
     coverage_count = max(0, min(int(daily_coverage_uncovered_count or 0), len(accounts)))
     if _all_accounts_daily_coverage(config) and coverage_count == 0 and not bool(config.get("hard_hourly_planning")):
         return [], 0
+    if bounded_daily_coverage_batch and coverage_count:
+        selected = accounts[:coverage_count]
+        return selected, coverage_count
     rotated_accounts = accounts if coverage_count else _rotate_accounts(accounts, cycle_index)
     if str(config.get("messages_per_round_mode") or "auto") == "manual":
         messages_per_round = _manual_messages_per_round(config, mode)

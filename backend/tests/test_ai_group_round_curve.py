@@ -88,6 +88,30 @@ def test_daily_coverage_does_not_exceed_manual_round_cap(monkeypatch) -> None:
     assert turn_count == 2
 
 
+@pytest.mark.parametrize("round_mode", ["manual", "auto"])
+def test_fact_first_daily_coverage_batch_ignores_conversation_round_cap(monkeypatch, round_mode: str) -> None:
+    accounts = [SimpleNamespace(id=account_id) for account_id in range(1, 21)]
+    monkeypatch.setattr(group_ai_chat.random, "uniform", lambda _lo, _hi: 1.0)
+
+    selected, turn_count = group_ai_chat._select_cycle_accounts(
+        accounts,
+        {
+            "account_coverage_mode": "all_accounts_daily",
+            "messages_per_round_mode": round_mode,
+            "messages_per_round": 1,
+            "participation_rate": 0.1,
+        },
+        "正常期",
+        1.0,
+        has_context=True,
+        daily_coverage_uncovered_count=20,
+        bounded_daily_coverage_batch=True,
+    )
+
+    assert [account.id for account in selected] == list(range(1, 21))
+    assert turn_count == 20
+
+
 def test_daily_coverage_does_not_plan_before_current_window_debt(monkeypatch) -> None:
     accounts = [SimpleNamespace(id=account_id) for account_id in range(1, 4)]
     monkeypatch.setattr(group_ai_chat.random, "uniform", lambda _lo, _hi: 1.0)
