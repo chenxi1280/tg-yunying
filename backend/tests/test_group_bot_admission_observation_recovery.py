@@ -187,6 +187,61 @@ def test_collect_group_context_writes_observation_after_listener_poll(monkeypatc
         assert admission.state == "group_bot_policy_unresolved"
 
 
+def test_collect_group_context_fetches_all_listeners_before_database_writes(monkeypatch) -> None:
+    from app.services import group_listeners
+
+    with _session() as session:
+        session.add(Tenant(id=1, name="t"))
+        group = _group(session)
+        listeners = [
+            TgAccount(
+                id=account_id,
+                tenant_id=1,
+                display_name=f"listener-{account_id}",
+                phone_masked=f"+{account_id}",
+                status=AccountStatus.ACTIVE.value,
+                session_ciphertext=f"session-{account_id}",
+            )
+            for account_id in (21, 22)
+        ]
+        session.add_all(listeners)
+        session.add_all([
+            TgGroupAccount(
+                tenant_id=1,
+                group_id=group.id,
+                account_id=account.id,
+                is_listener=True,
+            )
+            for account in listeners
+        ])
+        session.commit()
+        order: list[str] = []
+        monkeypatch.setattr(group_listeners, "credentials_for_account", lambda *_args: object())
+        monkeypatch.setattr(group_listeners, "_listener_context_account_error", lambda _account: "")
+
+        def fetch(_session, *, account, **_kwargs):
+            order.append(f"fetch:{account.id}")
+            return [[_snapshot(str(account.id))]]
+
+        def persist(_session, _group, account, _snapshots, **_kwargs):
+            order.append(f"write:{account.id}")
+            return 0
+
+        def observe(_session, *, account, **_kwargs):
+            order.append(f"observe:{account.id}")
+
+        monkeypatch.setattr(group_listeners, "fetch_listener_snapshot_pages", fetch)
+        monkeypatch.setattr(group_listeners, "insert_context_snapshots", persist)
+        monkeypatch.setattr(group_listeners, "record_group_bot_observations", observe)
+
+        assert group_listeners.collect_group_context(session, group) == 0
+        assert order == [
+            "fetch:21", "fetch:22",
+            "write:21", "observe:21",
+            "write:22", "observe:22",
+        ]
+
+
 def test_listener_fetch_failure_persists_stale_observation_after_worker_rollback(monkeypatch) -> None:
     from app.services import group_listeners
 

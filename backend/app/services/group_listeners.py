@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import timedelta
 
 from sqlalchemy import select
@@ -39,6 +40,16 @@ from .group_listener_admission import (
 )
 from .developer_apps import credentials_for_account
 from .tenant_learning_samples import GROUP_CHAT_SCENE
+
+
+@dataclass(frozen=True)
+class _ListenerFetchBatch:
+    account: TgAccount
+    pages: tuple[tuple[object, ...], ...]
+
+    @property
+    def snapshots(self) -> tuple[object, ...]:
+        return tuple(snapshot for page in self.pages for snapshot in page)
 
 
 def validate_listener_accounts(session: Session, group: TgGroup, account_ids: list[int]) -> list[TgGroupAccount]:
@@ -172,27 +183,65 @@ def collect_group_context(
     listener_links = _listener_context_links(session, group, account_ids)
     if not listener_links:
         return 0
-    ignored_sender_identity = _listener_ignored_sender_identity(session, group)
-    invalid_listener_errors: list[str] = []
-    usable_listener_count = 0
-    inserted = 0
     cursor_after = listener_after_message_id(group)
-    cursor_pages: list[list[object]] | None = None
+    batches, invalid_errors = _fetch_listener_batches(
+        session,
+        group,
+        listener_links,
+    )
+    if invalid_errors and not batches:
+        group.listener_last_error = "监听账号用途不允许：" + "；".join(invalid_errors[:3])
+        raise ValueError(group.listener_last_error)
+    inserted = _persist_listener_batches(
+        session,
+        group,
+        batches,
+        create_source_media=create_source_media,
+        learning_scene=learning_scene,
+    )
+    if batches:
+        _advance_listener_cursor_pages(group, [list(page) for page in batches[0].pages], cursor_after)
+    return inserted
+
+
+def _fetch_listener_batches(
+    session: Session,
+    group: TgGroup,
+    listener_links: list[TgGroupAccount],
+) -> tuple[tuple[_ListenerFetchBatch, ...], list[str]]:
+    batches: list[_ListenerFetchBatch] = []
+    invalid_errors: list[str] = []
     for link in listener_links:
         account = session.get(TgAccount, link.account_id)
         policy_error = _listener_context_account_error(account)
         if policy_error == "account_unavailable":
             continue
         if policy_error:
-            invalid_listener_errors.append(f"{account.id}:{policy_error}")
+            invalid_errors.append(f"{account.id}:{policy_error}")
             continue
-        usable_listener_count += 1
         credentials = credentials_for_account(session, account)
         pages = fetch_listener_snapshot_pages(
             session, group=group, account=account, credentials=credentials,
         )
-        snapshots = [snapshot for page in pages for snapshot in page]
-        cursor_pages = pages if cursor_pages is None else cursor_pages
+        batches.append(_ListenerFetchBatch(
+            account=account,
+            pages=tuple(tuple(page) for page in pages),
+        ))
+    return tuple(batches), invalid_errors
+
+
+def _persist_listener_batches(
+    session: Session,
+    group: TgGroup,
+    batches: tuple[_ListenerFetchBatch, ...],
+    *,
+    create_source_media: bool,
+    learning_scene: str | None,
+) -> int:
+    ignored_sender_identity = _listener_ignored_sender_identity(session, group)
+    inserted = 0
+    for batch in batches:
+        snapshots = batch.snapshots
         ignored_sender_identity = with_outbound_remote_ids(
             ignored_sender_identity,
             outbound_remote_ids_for_snapshots(session, group, snapshots),
@@ -200,18 +249,18 @@ def collect_group_context(
         inserted += insert_context_snapshots(
             session,
             group,
-            account,
+            batch.account,
             snapshots,
             ignored_sender=lambda snapshot: _is_ignored_sender(snapshot, ignored_sender_identity),
             create_source_media=create_source_media,
             learning_scene=learning_scene,
         )
-        record_group_bot_observations(session, group=group, account=account, snapshots=snapshots)
-    if invalid_listener_errors and usable_listener_count == 0:
-        group.listener_last_error = "监听账号用途不允许：" + "；".join(invalid_listener_errors[:3])
-        raise ValueError(group.listener_last_error)
-    if usable_listener_count:
-        _advance_listener_cursor_pages(group, cursor_pages or [[]], cursor_after)
+        record_group_bot_observations(
+            session,
+            group=group,
+            account=batch.account,
+            snapshots=snapshots,
+        )
     return inserted
 
 
