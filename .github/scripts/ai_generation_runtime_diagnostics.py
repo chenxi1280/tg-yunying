@@ -32,6 +32,21 @@ DATABASE_ACTIVITY_QUERY = text("""
            pg_blocking_pids(pid) AS blocking_pids,
            MD5(query) AS query_fingerprint,
            CASE
+             WHEN query ~* '^\\s*SELECT' THEN 'select'
+             WHEN query ~* '^\\s*UPDATE' THEN 'update'
+             WHEN query ~* '^\\s*INSERT' THEN 'insert'
+             WHEN query ~* '^\\s*DELETE' THEN 'delete'
+             ELSE 'other'
+           END AS query_verb,
+           ARRAY_REMOVE(ARRAY[
+             CASE WHEN query ~* '\\mactions\\M' THEN 'actions' END,
+             CASE WHEN query ~* '\\mgeneration_jobs\\M' THEN 'generation_jobs' END,
+             CASE WHEN query ~* '\\mfulfillment_obligation_projections\\M'
+                  THEN 'fulfillment_obligation_projections' END,
+             CASE WHEN query ~* '\\mtasks\\M' THEN 'tasks' END,
+             CASE WHEN query ~* '\\mworker_heartbeats\\M' THEN 'worker_heartbeats' END
+           ], NULL) AS query_relations,
+           CASE
              WHEN query LIKE '%ai_generation_status%'
                   AND query LIKE '%actions_2%' THEN 'ai_generation_claim'
              WHEN query ~* '^\\s*UPDATE\\s+actions' THEN 'action_update'
@@ -69,6 +84,30 @@ BLOCKING_EDGE_QUERY = text("""
     WHERE blocked.datname = current_database()
     ORDER BY blocked.xact_start, blocked.pid, blocker.pid
     LIMIT 100
+""")
+
+BLOCKING_LOCK_QUERY = text("""
+    SELECT activity.pid,
+           MD5(activity.query) AS query_fingerprint,
+           lock.mode,
+           lock.granted,
+           COALESCE(relation.relname, '') AS relation_name,
+           lock.locktype
+    FROM pg_stat_activity AS activity
+    JOIN pg_locks AS lock ON lock.pid = activity.pid
+    LEFT JOIN pg_class AS relation ON relation.oid = lock.relation
+    WHERE activity.datname = current_database()
+      AND (
+        cardinality(pg_blocking_pids(activity.pid)) > 0
+        OR activity.pid IN (
+          SELECT unnest(pg_blocking_pids(blocked.pid))
+          FROM pg_stat_activity AS blocked
+          WHERE blocked.datname = current_database()
+        )
+      )
+      AND (lock.locktype <> 'relation' OR lock.mode <> 'AccessShareLock')
+    ORDER BY activity.pid, lock.granted DESC, relation.relname, lock.locktype, lock.mode
+    LIMIT 300
 """)
 
 RUNTIME_SCOPE_QUERY = text("""
@@ -110,10 +149,12 @@ def main() -> None:
         claims = _rows(session, AI_CLAIM_QUERY)
         activities = _rows(session, DATABASE_ACTIVITY_QUERY)
         blocking_edges = _rows(session, BLOCKING_EDGE_QUERY)
+        blocking_locks = _rows(session, BLOCKING_LOCK_QUERY)
         scopes = _rows(session, RUNTIME_SCOPE_QUERY)
     _print_rows("AI_GENERATION_GLOBAL_CLAIM", claims)
     _print_rows("AI_GENERATION_DATABASE_ACTIVITY", activities)
     _print_rows("AI_GENERATION_DATABASE_BLOCKING_EDGE", blocking_edges)
+    _print_rows("AI_GENERATION_DATABASE_BLOCKING_LOCK", blocking_locks)
     _print_rows("AI_GENERATION_RUNTIME_SCOPE", scopes)
 
 
