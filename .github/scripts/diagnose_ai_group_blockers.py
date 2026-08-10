@@ -56,6 +56,54 @@ def _tasks(
     ]
 
 
+def _task_scope_rows(session, task_id: str) -> list[dict]:
+    return _rows(
+        session,
+        """
+        SELECT phase, state, COUNT(*) AS item_count
+        FROM task_membership_admission_items
+        WHERE task_id = :task_id
+        GROUP BY phase, state
+        ORDER BY phase, state
+        """,
+        task_id=task_id,
+    )
+
+
+def _task_scope_config(session, task_id: str) -> list[dict]:
+    return _rows(
+        session,
+        """
+        SELECT encode(convert_to(id::text, 'UTF8'), 'base64') AS task_id_b64,
+               COALESCE(account_config ->> 'selection_mode', 'all') AS selection_mode,
+               COALESCE(jsonb_array_length(account_config -> 'account_ids'), 0)
+                   AS configured_account_count,
+               COALESCE(type_config ->> 'account_coverage_mode', '')
+                   AS account_coverage_mode,
+               config_revision, task_lifecycle_epoch
+        FROM tasks
+        WHERE id = :task_id
+        """,
+        task_id=task_id,
+    )
+
+
+def _tenant_eligible_account_count(session, tenant_id: int) -> list[dict]:
+    return _rows(
+        session,
+        """
+        SELECT COUNT(*) AS active_session_account_count
+        FROM tg_accounts
+        WHERE tenant_id = :tenant_id
+          AND deleted_at IS NULL
+          AND status = 'active'
+          AND session_ciphertext IS NOT NULL
+          AND session_ciphertext <> ''
+        """,
+        tenant_id=tenant_id,
+    )
+
+
 def _ledger_rows(session, task_id: str, local_date) -> list[dict]:
     return _rows(
         session,
@@ -427,6 +475,11 @@ def _task_snapshot(session, task: dict, local_date) -> dict:
     targets = _target_rows(session, task["id"], local_date)
     snapshot = {
         "task": task,
+        "scope_config": _task_scope_config(session, task["id"]),
+        "scope_items": _task_scope_rows(session, task["id"]),
+        "tenant_account_capacity": _tenant_eligible_account_count(
+            session, int(task["tenant_id"])
+        ),
         "target": targets,
         "coverage": _coverage_rows(session, task["id"], local_date),
         "admissions": _admission_rows(session, task["id"], local_date),
