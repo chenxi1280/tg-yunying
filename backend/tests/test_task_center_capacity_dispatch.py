@@ -6004,6 +6004,39 @@ def test_group_ai_context_bound_quality_schedule_cuts_final_candidates(monkeypat
 
 
 @pytest.mark.no_postgres
+def test_group_ai_context_window_only_cuts_late_replies_from_daily_coverage(monkeypatch):
+    now_value = datetime(2026, 6, 29, 15, 0)
+    monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
+    task = Task(id="task-mixed-context", tenant_id=1, name="混合覆盖", type="group_ai_chat", stats={})
+    quality_items = [
+        {"content": "近窗回复", "reply_target": {"message_id": 1}},
+        {"content": "远窗回复", "reply_target": {"message_id": 2}},
+        {"content": "远窗直发", "reply_target": None},
+    ]
+    planned_times = [
+        now_value,
+        now_value + timedelta(minutes=20),
+        now_value + timedelta(hours=2),
+    ]
+
+    limited_items, limited_times = group_ai_chat._limit_context_bound_quality_schedule(
+        task,
+        {"context_expire_after_messages": 1, "context_bound_schedule_window_seconds": 300},
+        has_context=True,
+        progress={},
+        deferred_generation=True,
+        context_bound_reply_only=True,
+        quality_items=quality_items,
+        planned_times=planned_times,
+    )
+
+    assert limited_items == [quality_items[0], quality_items[2]]
+    assert limited_times == [planned_times[0], planned_times[2]]
+    assert task.stats["context_bound_requested_turns"] == 2
+    assert task.stats["context_bound_planned_turns"] == 1
+
+
+@pytest.mark.no_postgres
 def test_group_ai_context_bound_limit_compares_aware_schedule_in_task_timezone(monkeypatch):
     now_value = datetime(2026, 6, 29, 15, 0)
     monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
@@ -6067,7 +6100,11 @@ def _add_ready_daily_coverage(
 
 
 @pytest.mark.no_postgres
-def test_fact_first_high_coverage_debt_materializes_bounded_multi_action_batch(monkeypatch):
+@pytest.mark.parametrize("with_reply_history", [False, True])
+def test_fact_first_high_coverage_debt_materializes_bounded_multi_action_batch(
+    monkeypatch,
+    with_reply_history,
+):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = datetime(2026, 7, 13, 23, 59)
@@ -6082,7 +6119,7 @@ def test_fact_first_high_coverage_debt_materializes_bounded_multi_action_batch(m
                 task_id="task-fact-first-high-debt",
                 task_name="高欠量公平批次",
                 profile_summaries=tuple(f"账号{index}短句" for index in range(20)),
-                messages_per_round=1,
+                messages_per_round=20 if with_reply_history else 1,
                 max_concurrent=1,
             ),
         )
@@ -6093,7 +6130,28 @@ def test_fact_first_high_coverage_debt_materializes_bounded_multi_action_batch(m
             "account_coverage_mode": "all_accounts_daily",
             "daily_message_target": 21,
             "context_expire_after_messages": 1,
+            "reply_min_per_round": 1 if with_reply_history else 0,
         }
+        if with_reply_history:
+            history_action = Action(
+                id="high-debt-own-history",
+                tenant_id=task.tenant_id,
+                task_id=task.id,
+                task_type=task.type,
+                action_type="send_message",
+                account_id=11,
+                status="success",
+                executed_at=now_value - timedelta(minutes=2),
+                payload={"group_id": 7, "message_text": "之前发过的消息"},
+            )
+            session.add(history_action)
+            session.flush()
+            session.add(ExecutionAttempt(
+                action_id=history_action.id,
+                attempt_no=1,
+                status="success",
+                remote_message_id="88001",
+            ))
         session.add(GroupContextMessage(
             tenant_id=1, group_id=7, listener_account_id=11, sender_name="真人",
             content="今晚继续聊", message_type="text", remote_message_id="high-debt-context",
@@ -6114,11 +6172,16 @@ def test_fact_first_high_coverage_debt_materializes_bounded_multi_action_batch(m
         actions = list(session.scalars(select(Action).where(
             Action.task_id == task.id,
             Action.action_type == "send_message",
+            Action.status == "pending",
         )))
 
     assert created == 20, (task.last_error, task.stats)
     assert len(actions) == 20
     assert len({action.account_id for action in actions}) == 20
+    reply_actions = [action for action in actions if action.payload.get("reply_to_message_id")]
+    assert len(reply_actions) == (1 if with_reply_history else 0)
+    if reply_actions:
+        assert reply_actions[0].scheduled_at <= now_value + timedelta(minutes=5)
 
 
 @pytest.mark.no_postgres

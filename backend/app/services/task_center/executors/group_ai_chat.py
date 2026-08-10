@@ -1083,6 +1083,10 @@ def _load_turn_plan(
     context: ContextPlanState,
 ) -> TurnPlanState | PlanAbort:
     cycle_index = _next_cycle_index(session, task)
+    bounded_daily_coverage_batch = (
+        task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION
+        and _all_accounts_daily_coverage(facts.config)
+    )
     round_config = _coverage_round_config(
         _hard_hourly_round_config(facts.config, facts.hard_progress),
         facts.hard_progress,
@@ -1098,10 +1102,7 @@ def _load_turn_plan(
         daily_coverage_uncovered_count=_turn_daily_uncovered_count(
             session, task, facts, accounts=accounts,
         ),
-        bounded_daily_coverage_batch=(
-            task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION
-            and _all_accounts_daily_coverage(facts.config)
-        ),
+        bounded_daily_coverage_batch=bounded_daily_coverage_batch,
     )
     if not selected or turn_count <= 0:
         _mark_daily_target_pacing(task)
@@ -1131,6 +1132,7 @@ def _load_turn_plan(
         deferred_generation=(
             deferred and task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION
         ),
+        preserve_daily_coverage_batch=bounded_daily_coverage_batch,
         turn_count=turn_count,
         planned_times=times,
     )
@@ -1285,12 +1287,15 @@ def _load_generation_plan(
     if schedule is None:
         return PlanAbort()
     quality_items, times = schedule
+    requested_reply_count = sum(
+        1 for item in quality_items if item.get("reply_target")
+    )
     message_ids = [int(row.id) for row in context.usable_rows[-context.history_depth:]]
     source = _generation_source(context.usable_rows, context.idle_continuation)
     return GenerationPlanState(
         quality_items,
         times,
-        len(reply_targets),
+        requested_reply_count,
         coverage_reply_shortfall,
         burst_plan,
         chat_mode,
@@ -1320,6 +1325,10 @@ def _finalize_generation_schedule(
         has_context=bool(context.usable_rows),
         progress=facts.hard_progress,
         deferred_generation=True,
+        context_bound_reply_only=(
+            task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION
+            and _all_accounts_daily_coverage(facts.config)
+        ),
         quality_items=quality_items,
         planned_times=times,
     )
@@ -4097,9 +4106,13 @@ def _limit_context_bound_turns(
     has_context: bool,
     progress: dict[str, object],
     deferred_generation: bool = False,
+    preserve_daily_coverage_batch: bool = False,
     turn_count: int,
     planned_times: list[datetime],
 ) -> tuple[int, list[datetime]]:
+    if preserve_daily_coverage_batch:
+        _clear_context_bound_limit_stats(task)
+        return turn_count, planned_times
     if not _requires_context_bound_window(config, has_context, progress, deferred_generation):
         _clear_context_bound_limit_stats(task)
         return turn_count, planned_times
@@ -4119,9 +4132,16 @@ def _limit_context_bound_quality_schedule(
     has_context: bool,
     progress: dict[str, object],
     deferred_generation: bool = False,
+    context_bound_reply_only: bool = False,
     quality_items: list[dict[str, str]],
     planned_times: list[datetime],
 ) -> tuple[list[dict[str, str]], list[datetime]]:
+    if context_bound_reply_only and _requires_context_bound_window(
+        config, has_context, progress, deferred_generation=False,
+    ):
+        return _limit_context_bound_reply_items(
+            task, config, quality_items=quality_items, planned_times=planned_times,
+        )
     if not _requires_context_bound_window(config, has_context, progress, deferred_generation):
         return quality_items, planned_times
     window_seconds = _context_bound_schedule_window_seconds(config)
@@ -4136,6 +4156,30 @@ def _limit_context_bound_quality_schedule(
     )
     limited_times = planned_times[:limited_count]
     return quality_items[:limited_count], limited_times
+
+
+def _limit_context_bound_reply_items(
+    task: Task,
+    config: dict,
+    *,
+    quality_items: list[dict[str, str]],
+    planned_times: list[datetime],
+) -> tuple[list[dict[str, str]], list[datetime]]:
+    window_seconds = _context_bound_schedule_window_seconds(config)
+    cutoff = _task_datetime(task, _now()) + timedelta(seconds=window_seconds)
+    retained = [
+        (item, planned_at)
+        for item, planned_at in zip(quality_items, planned_times, strict=False)
+        if not item.get("reply_target") or _task_datetime(task, planned_at) <= cutoff
+    ]
+    requested = sum(1 for item in quality_items if item.get("reply_target"))
+    planned = sum(1 for item, _planned_at in retained if item.get("reply_target"))
+    if requested != planned:
+        _record_context_bound_limit_stats(task, requested, planned, window_seconds)
+    if not retained:
+        return [], []
+    items, times = zip(*retained, strict=True)
+    return list(items), list(times)
 
 
 def _requires_context_bound_window(
