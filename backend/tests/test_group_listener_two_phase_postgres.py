@@ -84,6 +84,7 @@ def _snapshot(account_id: int) -> GroupMessageSnapshot:
 def _seed() -> None:
     with SessionLocal() as session:
         session.add(Tenant(id=TENANT_ID, name="listener two phase"))
+        session.flush()
         session.add(TgGroup(
             id=GROUP_ID,
             tenant_id=TENANT_ID,
@@ -91,6 +92,7 @@ def _seed() -> None:
             title="listener two phase",
             listener_enabled=True,
         ))
+        session.flush()
         session.add(ConversationSpeakerState(
             tenant_id=TENANT_ID,
             surface="group_ai_chat",
