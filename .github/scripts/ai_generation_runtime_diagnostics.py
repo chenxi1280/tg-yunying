@@ -25,13 +25,19 @@ AI_CLAIM_QUERY = text("""
 """)
 
 DATABASE_ACTIVITY_QUERY = text("""
-    SELECT pid, state,
+    SELECT pid, state, application_name,
            ROUND(EXTRACT(EPOCH FROM (NOW() - query_start))::numeric, 1) AS query_age_seconds,
+           ROUND(EXTRACT(EPOCH FROM (NOW() - xact_start))::numeric, 1) AS transaction_age_seconds,
            wait_event_type, wait_event,
+           pg_blocking_pids(pid) AS blocking_pids,
            MD5(query) AS query_fingerprint,
            CASE
              WHEN query LIKE '%ai_generation_status%'
                   AND query LIKE '%actions_2%' THEN 'ai_generation_claim'
+             WHEN query ~* '^\\s*UPDATE\\s+actions' THEN 'action_update'
+             WHEN query ~* '^\\s*INSERT\\s+INTO\\s+generation_jobs' THEN 'generation_job_insert'
+             WHEN query ~* '^\\s*UPDATE\\s+generation_jobs' THEN 'generation_job_update'
+             WHEN query ~* '^\\s*SELECT' AND query LIKE '%generation_jobs%' THEN 'generation_job_select'
              WHEN query LIKE '%worker_heartbeats%' THEN 'worker_heartbeat'
              WHEN query LIKE '%actions%' THEN 'other_action_query'
              ELSE 'other'
@@ -41,6 +47,27 @@ DATABASE_ACTIVITY_QUERY = text("""
       AND pid <> pg_backend_pid()
       AND state <> 'idle'
     ORDER BY query_start
+    LIMIT 100
+""")
+
+BLOCKING_EDGE_QUERY = text("""
+    SELECT blocked.pid AS blocked_pid,
+           blocker.pid AS blocking_pid,
+           blocked.application_name AS blocked_application_name,
+           blocker.application_name AS blocking_application_name,
+           ROUND(EXTRACT(EPOCH FROM (NOW() - blocked.xact_start))::numeric, 1)
+               AS blocked_transaction_age_seconds,
+           ROUND(EXTRACT(EPOCH FROM (NOW() - blocker.xact_start))::numeric, 1)
+               AS blocking_transaction_age_seconds,
+           blocked.wait_event_type, blocked.wait_event,
+           MD5(blocked.query) AS blocked_query_fingerprint,
+           MD5(blocker.query) AS blocking_query_fingerprint,
+           blocker.state AS blocking_state
+    FROM pg_stat_activity AS blocked
+    CROSS JOIN LATERAL unnest(pg_blocking_pids(blocked.pid)) AS edge(blocking_pid)
+    JOIN pg_stat_activity AS blocker ON blocker.pid = edge.blocking_pid
+    WHERE blocked.datname = current_database()
+    ORDER BY blocked.xact_start, blocked.pid, blocker.pid
     LIMIT 100
 """)
 
@@ -82,9 +109,11 @@ def main() -> None:
     with SessionLocal() as session:
         claims = _rows(session, AI_CLAIM_QUERY)
         activities = _rows(session, DATABASE_ACTIVITY_QUERY)
+        blocking_edges = _rows(session, BLOCKING_EDGE_QUERY)
         scopes = _rows(session, RUNTIME_SCOPE_QUERY)
     _print_rows("AI_GENERATION_GLOBAL_CLAIM", claims)
     _print_rows("AI_GENERATION_DATABASE_ACTIVITY", activities)
+    _print_rows("AI_GENERATION_DATABASE_BLOCKING_EDGE", blocking_edges)
     _print_rows("AI_GENERATION_RUNTIME_SCOPE", scopes)
 
 
