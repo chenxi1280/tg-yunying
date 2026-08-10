@@ -91,6 +91,29 @@ def test_current_daily_due_does_not_subtract_lifetime_account_identities() -> No
     assert quantity == 10
 
 
+def test_fixed_zero_interval_target_is_due_immediately() -> None:
+    now_value = datetime(2026, 8, 11, 10, 0)
+    _task, _channel, _message, ledger = _scope(now_value)
+    target = SimpleNamespace(
+        effective_target_snapshot=3,
+        accrual_anchor_at=now_value,
+        active_until=ledger.deadline_at,
+    )
+
+    due = channel_view_target_due(
+        target,
+        ledger,
+        {
+            "mode": "fixed",
+            "interval_seconds_min": 0,
+            "interval_seconds_max": 0,
+        },
+        now=now_value,
+    )
+
+    assert due == 3
+
+
 def test_target_attach_freezes_global_and_current_ledger_fact_baselines() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

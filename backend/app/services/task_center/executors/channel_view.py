@@ -223,10 +223,11 @@ def _view_schedule_times(
     *,
     deadline_at: datetime,
 ) -> list[datetime]:
+    now_value = _matching_datetime(_now(), deadline_at)
     times = schedule_times(
         count,
         task.pacing_config or {},
-        start_at=_now(),
+        start_at=now_value,
         deadline_at=deadline_at,
         preserve_minimum_spacing=False,
     )
@@ -251,8 +252,9 @@ def _create_scheduled_view_action(session: Session, request: "ViewActionRequest"
         request.scheduled_at,
         context.config,
     )
-    if planned_at >= context.ledger.deadline_at:
-        _record_deadline_capacity_blocker(request.task, planned_at, context.ledger.deadline_at)
+    deadline_at = _matching_datetime(context.ledger.deadline_at, planned_at)
+    if planned_at >= deadline_at:
+        _record_deadline_capacity_blocker(request.task, planned_at, deadline_at)
         return 0
     obligation = ensure_view_obligation(session, context.ledger, request.message, request.account_id)
     if not obligation_accepts_new_action(obligation):
@@ -307,6 +309,14 @@ def _record_deadline_capacity_blocker(
     }
     task.stats = stats
     task.last_error = "账号容量可用时刻已越过当前浏览任务日截止时间，未创建跨日 Action"
+
+
+def _matching_datetime(value: datetime, reference: datetime) -> datetime:
+    if reference.tzinfo is None:
+        return value.replace(tzinfo=None)
+    if value.tzinfo is None:
+        return value.replace(tzinfo=reference.tzinfo)
+    return value.astimezone(reference.tzinfo)
 
 
 @dataclass(frozen=True)
