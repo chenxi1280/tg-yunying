@@ -45,6 +45,7 @@ TASK_IDS_ENV = "TASK_FULFILLMENT_E4_TASK_IDS"
 RELEASE_LIVE_AT_ENV = "TASK_FULFILLMENT_RELEASE_LIVE_AT"
 SUPPORTED_TASK_TYPES = {"group_ai_chat", "search_click", "channel_view"}
 SAMPLE_LIMIT = 8
+DISCOVER_CHANNEL_VIEW = "__discover_channel_view__"
 BUSINESS_ACTION_TYPES = {
     "group_ai_chat": "send_message",
     "search_click": "search_join",
@@ -55,7 +56,7 @@ BUSINESS_ACTION_TYPES = {
 def parse_task_ids(session) -> list[str]:
     values = [value.strip() for value in os.getenv(TASK_IDS_ENV, "").split(",")]
     task_ids = list(dict.fromkeys(value for value in values if value))
-    if task_ids:
+    if task_ids and task_ids != [DISCOVER_CHANNEL_VIEW]:
         return task_ids
     return list(
         session.scalars(
