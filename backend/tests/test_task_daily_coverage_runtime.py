@@ -172,11 +172,22 @@ def test_membership_failure_remains_visible_as_daily_blocker() -> None:
         assert row.blocker_detail == "账号受限，无法入群"
 
 
-def test_membership_success_releases_membership_unknown_coverage() -> None:
+@pytest.mark.parametrize(
+    "account_config",
+    [
+        {"selection_mode": "all"},
+        {"selection_mode": "group", "account_group_id": 10},
+    ],
+    ids=("all", "group"),
+)
+def test_membership_success_releases_membership_unknown_coverage(
+    account_config: dict,
+) -> None:
     engine = _engine()
     Base.metadata.create_all(engine)
     with Session(engine) as session:
         task, account = _seed(session)
+        task.account_config = account_config
         item = TaskMembershipAdmissionItem(
             tenant_id=1,
             task_id=task.id,
@@ -229,8 +240,6 @@ def test_membership_success_releases_membership_unknown_coverage() -> None:
         assert row.state == "ready"
         assert row.blocker_code == ""
         assert row.blocker_detail == ""
-
-
 def test_target_admission_retry_success_refreshes_all_account_coverage() -> None:
     engine = _engine()
     Base.metadata.create_all(engine)

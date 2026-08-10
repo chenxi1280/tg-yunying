@@ -887,7 +887,7 @@ def _refresh_group_permission_coverage(
     account_id: int,
     timestamp: datetime,
 ) -> None:
-    from app.services.task_center.account_scope import is_all_accounts_task
+    from app.services.task_center.account_scope import is_daily_coverage_task
     from app.services.task_center.daily_coverage import ensure_task_daily_coverage
     from app.services.task_center.targets import group_from_reference
 
@@ -898,7 +898,7 @@ def _refresh_group_permission_coverage(
         Task.deleted_at.is_(None),
     ))
     for coverage_task in tasks:
-        if not is_all_accounts_task(coverage_task):
+        if not is_daily_coverage_task(coverage_task):
             continue
         type_config = coverage_task.type_config or {}
         target_group = group_from_reference(
