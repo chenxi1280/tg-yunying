@@ -52,12 +52,22 @@ BUSINESS_ACTION_TYPES = {
 }
 
 
-def parse_task_ids() -> list[str]:
+def parse_task_ids(session) -> list[str]:
     values = [value.strip() for value in os.getenv(TASK_IDS_ENV, "").split(",")]
     task_ids = list(dict.fromkeys(value for value in values if value))
-    if not task_ids:
-        raise ValueError(f"{TASK_IDS_ENV} is required")
-    return task_ids
+    if task_ids:
+        return task_ids
+    return list(
+        session.scalars(
+            select(Task.id)
+            .where(
+                Task.type == "channel_view",
+                Task.status.in_(("running", "completed")),
+            )
+            .order_by(Task.updated_at.desc())
+            .limit(10)
+        )
+    )
 
 def parse_release_since() -> datetime:
     raw = os.getenv(RELEASE_LIVE_AT_ENV, "").strip()
@@ -680,9 +690,11 @@ def _view_blockers(snapshot: dict[str, Any]) -> list[str]:
 
 def main() -> None:
     since = parse_release_since()
-    task_ids = parse_task_ids()
     rows: list[dict[str, Any]] = []
     with SessionLocal() as session:
+        task_ids = parse_task_ids(session)
+        if not task_ids:
+            raise ValueError("no active channel_view tasks discovered")
         for task_id in task_ids:
             snapshot = task_snapshot(session, task_id, since)
             snapshot["blockers"] = e4_blockers(snapshot)
