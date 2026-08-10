@@ -12,6 +12,7 @@ from app.database import SessionLocal
 from app.models import (
     Action,
     ChannelMessage,
+    ChannelViewDailyMessageTarget,
     ExecutionAttempt,
     SearchClickAssignmentEpoch,
     SearchClickFulfillmentObligation,
@@ -29,6 +30,13 @@ from app.services.task_center.production_e4_diagnostics import (
     ai_open_action_details,
     search_claimed_details,
     view_open_details,
+)
+from app.services.task_center.channel_fulfillment import (
+    view_materialized_account_ids_for_messages,
+)
+from app.services.task_center.channel_view_targets import (
+    channel_view_target_due,
+    target_messages,
 )
 
 
@@ -321,26 +329,187 @@ def _search_post_release_case(since: datetime):
     )
 
 
-def _view_snapshot(session, ledger: TaskDayLedger, since: datetime) -> dict[str, int]:
-    required, confirmed = session.execute(
-        select(
-            func.count(ViewFulfillmentObligation.id),
-            func.coalesce(func.sum(case((ViewFulfillmentObligation.status == "confirmed", 1), else_=0)), 0),
-        ).where(ViewFulfillmentObligation.task_day_ledger_id == ledger.id)
-    ).one()
-    fact_query = select(
-        func.count(ViewRemoteFact.id),
-        func.coalesce(func.sum(case((ViewRemoteFact.remote_confirmed_at >= since, 1), else_=0)), 0),
-    ).join(ViewFulfillmentObligation, ViewFulfillmentObligation.id == ViewRemoteFact.obligation_id)
-    facts = session.execute(
-        fact_query.where(ViewFulfillmentObligation.task_day_ledger_id == ledger.id)
-    ).one()
+def _view_snapshot(
+    session,
+    task: Task,
+    ledger: TaskDayLedger,
+    since: datetime,
+) -> dict[str, Any]:
+    task_stats = dict(task.stats or {})
+    due = _view_due_snapshot(session, task, ledger, since)
     return {
-        "required_count": int(required),
-        "confirmed_count": int(confirmed),
-        "remote_fact_count": int(facts[0]),
-        "post_release_remote_fact_count": int(facts[1]),
+        "required_count": due["expected_due_count"],
+        "expected_due_count": due["expected_due_count"],
+        "materialized_count": due["materialized_count"],
+        "materialization_gap": due["materialization_gap"],
+        "confirmation_gap": due["confirmation_gap"],
+        "remote_fact_gap": due["remote_fact_gap"],
+        "target_deficit_count": due["target_deficit_count"],
+        "targets": due["targets"],
+        "source_state": due["source_state"],
+        "source_message_count": due["source_message_count"],
+        "capacity_warning": str(task_stats.get("capacity_warning") or ""),
+        "target_per_message": int(task_stats.get("target_per_message") or 0),
+        "max_effective_per_message": int(
+            task_stats.get("max_effective_per_message") or 0
+        ),
+        "confirmed_count": due["confirmed_count"],
+        "remote_fact_count": due["remote_fact_count"],
+        "post_release_remote_fact_count": due["post_release_remote_fact_count"],
     }
+
+
+def _view_due_snapshot(
+    session,
+    task: Task,
+    ledger: TaskDayLedger,
+    since: datetime | None = None,
+) -> dict[str, Any]:
+    config = dict(task.type_config or {})
+    targets = list(session.scalars(select(ChannelViewDailyMessageTarget).where(
+        ChannelViewDailyMessageTarget.task_day_ledger_id == ledger.id,
+    )))
+    rows = _view_target_rows(session, task, ledger, targets, since)
+    return {
+        "expected_due_count": sum(row["due_count"] for row in rows),
+        "materialized_count": sum(row["materialized_count"] for row in rows),
+        "materialization_gap": sum(row["materialization_gap"] for row in rows),
+        "confirmed_count": sum(row["confirmed_count"] for row in rows),
+        "confirmation_gap": sum(row["confirmation_gap"] for row in rows),
+        "remote_fact_count": sum(row["remote_fact_count"] for row in rows),
+        "remote_fact_gap": sum(row["remote_fact_gap"] for row in rows),
+        "post_release_remote_fact_count": sum(
+            row["post_release_remote_fact_count"] for row in rows
+        ),
+        "target_deficit_count": sum(
+            1 for row in rows if row["materialization_gap"] or row["confirmation_gap"]
+        ),
+        "targets": rows,
+        "source_message_count": len(targets),
+        "source_state": _view_source_state(task, bool(targets), config),
+    }
+
+
+def _view_target_rows(
+    session,
+    task: Task,
+    ledger: TaskDayLedger,
+    targets: list[ChannelViewDailyMessageTarget],
+    since: datetime | None,
+) -> list[dict[str, Any]]:
+    messages = target_messages(session, {target.channel_message_id: target for target in targets})
+    materialized = view_materialized_account_ids_for_messages(
+        session,
+        ledger,
+        messages,
+    )
+    confirmed = _view_confirmed_status_counts(session, ledger)
+    facts = _view_fact_counts(session, ledger, targets, since=since)
+    now_value = datetime.now(tz=BEIJING)
+    rows: list[dict[str, Any]] = []
+    for target in targets:
+        message_id = int(target.channel_message_id)
+        due = max(
+            int(target.due_count or 0),
+            channel_view_target_due(
+                target,
+                ledger,
+                task.pacing_config or {},
+                now=now_value,
+            ),
+        )
+        fact_count, post_release_count = facts.get(message_id, (0, 0))
+        attach_baseline = int(target.ledger_confirmed_at_attach or 0)
+        materialized_count = max(
+            0,
+            len(materialized.get(message_id, set())) - attach_baseline,
+        )
+        confirmed_count = max(0, confirmed.get(message_id, 0) - attach_baseline)
+        fact_count = max(0, fact_count - attach_baseline)
+        rows.append({
+            "channel_message_id": message_id,
+            "due_count": due,
+            "materialized_count": materialized_count,
+            "materialization_gap": max(0, due - materialized_count),
+            "confirmed_count": confirmed_count,
+            "confirmation_gap": max(0, due - confirmed_count),
+            "remote_fact_count": fact_count,
+            "remote_fact_gap": max(0, confirmed_count - fact_count),
+            "post_release_remote_fact_count": post_release_count,
+            "source_state": target.source_state,
+        })
+    return rows
+
+
+def _view_confirmed_status_counts(session, ledger: TaskDayLedger) -> dict[int, int]:
+    rows = session.execute(
+        select(
+            ViewFulfillmentObligation.channel_message_id,
+            func.count(ViewFulfillmentObligation.id),
+        )
+        .where(
+            ViewFulfillmentObligation.task_day_ledger_id == ledger.id,
+            ViewFulfillmentObligation.status == "confirmed",
+        )
+        .group_by(ViewFulfillmentObligation.channel_message_id)
+    )
+    return {int(message_id): int(count) for message_id, count in rows}
+
+
+def _view_fact_counts(
+    session,
+    ledger: TaskDayLedger,
+    targets: list[ChannelViewDailyMessageTarget],
+    *,
+    since: datetime | None,
+) -> dict[int, tuple[int, int]]:
+    if not targets:
+        return {}
+    post_release = _view_post_release_case(since)
+    rows = session.execute(
+        select(
+            ChannelViewDailyMessageTarget.channel_message_id,
+            func.count(ViewRemoteFact.id),
+            func.coalesce(func.sum(post_release), 0),
+        )
+        .select_from(ChannelViewDailyMessageTarget)
+        .join(
+            ViewFulfillmentObligation,
+            and_(
+                ViewFulfillmentObligation.task_day_ledger_id
+                == ChannelViewDailyMessageTarget.task_day_ledger_id,
+                ViewFulfillmentObligation.channel_message_id
+                == ChannelViewDailyMessageTarget.channel_message_id,
+            ),
+        )
+        .join(ViewRemoteFact, ViewRemoteFact.obligation_id == ViewFulfillmentObligation.id)
+        .where(ChannelViewDailyMessageTarget.task_day_ledger_id == ledger.id)
+        .group_by(ChannelViewDailyMessageTarget.channel_message_id)
+    )
+    return {
+        int(message_id): (int(count), int(post_count))
+        for message_id, count, post_count in rows
+    }
+
+
+def _view_post_release_case(since: datetime | None):
+    conditions = [
+        ViewRemoteFact.remote_confirmed_at
+        >= ChannelViewDailyMessageTarget.created_at,
+    ]
+    if since is not None:
+        conditions.append(ViewRemoteFact.remote_confirmed_at >= since)
+    return case((and_(*conditions), 1), else_=0)
+
+
+def _view_source_state(task: Task, has_targets: bool, config: dict) -> str:
+    if has_targets:
+        return "active"
+    if str(task.last_error or "").startswith("采集频道消息失败"):
+        return "listener_stalled"
+    if config.get("listen_new_messages") is False:
+        return "source_empty_terminal"
+    return "waiting_for_source"
 
 
 def _view_message_snapshot(session, ledger: TaskDayLedger) -> list[dict[str, Any]]:
@@ -380,7 +549,7 @@ def task_snapshot(session, task_id: str, since: datetime) -> dict[str, Any]:
         snapshot["search_click"] = _search_snapshot(session, ledger, since)
         snapshot["search_runtime"] = _search_runtime_snapshot(session, ledger)
     elif task.type == "channel_view":
-        snapshot["channel_view"] = _view_snapshot(session, ledger, since)
+        snapshot["channel_view"] = _view_snapshot(session, task, ledger, since)
         snapshot["channel_view_messages"] = _view_message_snapshot(session, ledger)
         snapshot["view_runtime"] = view_open_details(session, ledger)
     return snapshot
@@ -467,10 +636,42 @@ def _search_blockers(snapshot: dict[str, Any]) -> list[str]:
 def _view_blockers(snapshot: dict[str, Any]) -> list[str]:
     view = dict(snapshot.get("channel_view") or {})
     required = int(view.get("required_count") or 0)
-    blockers = ["channel_view_obligation_missing"] if required <= 0 else []
-    if int(view.get("confirmed_count") or 0) < required:
+    materialized_gap = int(
+        view.get("materialization_gap")
+        if view.get("materialization_gap") is not None
+        else max(0, required - int(view.get("materialized_count") or 0))
+    )
+    confirmation_gap = int(
+        view.get("confirmation_gap")
+        if view.get("confirmation_gap") is not None
+        else max(0, required - int(view.get("confirmed_count") or 0))
+    )
+    source_state = str(view.get("source_state") or "")
+    blockers: list[str] = []
+    if source_state == "listener_stalled":
+        blockers.append("channel_view_listener_stalled")
+    elif source_state == "waiting_for_source":
+        blockers.append("channel_view_waiting_for_source")
+    elif source_state == "source_empty_terminal":
+        blockers.append("channel_view_source_empty_terminal")
+    elif required <= 0:
+        blockers.append("channel_view_not_due")
+    if str(view.get("capacity_warning") or ""):
+        blockers.append("channel_view_structural_capacity_shortfall")
+    if materialized_gap > 0:
+        blockers.append("channel_view_due_unmaterialized")
+    if confirmation_gap > 0:
         blockers.append("channel_view_unmet")
-    if int(view.get("remote_fact_count") or 0) < int(view.get("confirmed_count") or 0):
+    remote_fact_gap = int(
+        view.get("remote_fact_gap")
+        if view.get("remote_fact_gap") is not None
+        else max(
+            0,
+            int(view.get("confirmed_count") or 0)
+            - int(view.get("remote_fact_count") or 0),
+        )
+    )
+    if remote_fact_gap > 0:
         blockers.append("channel_view_remote_fact_missing")
     if int(view.get("post_release_remote_fact_count") or 0) <= 0:
         blockers.append("channel_view_post_release_fact_missing")

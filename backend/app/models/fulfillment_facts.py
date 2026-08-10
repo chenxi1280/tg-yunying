@@ -184,6 +184,42 @@ class ViewFulfillmentObligation(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
+class ChannelViewDailyMessageTarget(Base):
+    __tablename__ = "channel_view_daily_message_targets"
+    __table_args__ = (
+        UniqueConstraint(
+            "task_day_ledger_id",
+            "target_peer_id",
+            "channel_message_id",
+            name="uq_channel_view_daily_message_target",
+        ),
+        Index("ix_channel_view_daily_target_ledger", "task_day_ledger_id", "id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"))
+    task_day_ledger_id: Mapped[str] = mapped_column(
+        ForeignKey("task_day_ledgers.id", ondelete="CASCADE")
+    )
+    target_peer_id: Mapped[str] = mapped_column(String(120))
+    channel_message_id: Mapped[int] = mapped_column(
+        ForeignKey("channel_messages.id", ondelete="RESTRICT")
+    )
+    target_revision: Mapped[int] = mapped_column(Integer)
+    daily_target_snapshot: Mapped[int] = mapped_column(Integer)
+    total_target_snapshot: Mapped[int] = mapped_column(Integer)
+    lifetime_confirmed_at_attach: Mapped[int] = mapped_column(Integer, default=0)
+    ledger_confirmed_at_attach: Mapped[int] = mapped_column(Integer, default=0)
+    effective_target_snapshot: Mapped[int] = mapped_column(Integer)
+    accrual_anchor_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    active_until: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    due_count: Mapped[int] = mapped_column(Integer, default=0)
+    source_state: Mapped[str] = mapped_column(String(24), default="active")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
 class ViewRemoteFact(Base):
     __tablename__ = "view_remote_facts"
     __table_args__ = (
@@ -312,6 +348,7 @@ class TaskDayLedgerLifecycleEvent(Base):
 
 
 __all__ = [
+    "ChannelViewDailyMessageTarget",
     "CommentFulfillmentObligation",
     "ConsistencyQuarantine",
     "ReactionFulfillmentObligation",

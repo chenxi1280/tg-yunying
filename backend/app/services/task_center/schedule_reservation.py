@@ -27,9 +27,12 @@ def reserve_task_schedule_times(
     *,
     pacing_config: dict,
     deadline_at: datetime | None = None,
+    enforce_task_spacing: bool = True,
 ) -> list[datetime]:
     if not planned_times:
         return []
+    if not enforce_task_spacing:
+        return _before_deadline(planned_times, deadline_at)
     latest_open = session.scalar(
         select(func.max(Action.scheduled_at)).where(
             Action.task_id == task.id,
@@ -69,10 +72,18 @@ def continue_schedule_after(
         if ordered[0] < floor:
             shift = floor - ordered[0]
             ordered = [item + shift for item in ordered]
-    if deadline_at is None:
+    return _before_deadline(ordered, deadline_at)
+
+
+def _before_deadline(
+    planned_times: list[datetime],
+    deadline_at: datetime | None,
+) -> list[datetime]:
+    ordered = sorted(planned_times)
+    if not ordered or deadline_at is None:
         return ordered
     deadline = _match_timezone(deadline_at, ordered[0])
-    return [item for item in ordered if deadline is not None and item <= deadline]
+    return [item for item in ordered if deadline is not None and item < deadline]
 
 
 def _match_timezone(value: datetime | None, reference: datetime) -> datetime | None:

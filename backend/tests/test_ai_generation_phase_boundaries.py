@@ -498,7 +498,7 @@ def test_daily_coverage_sends_exact_check_in_without_ai_provider(monkeypatch) ->
         assert observed == {"provider_calls": 0, "gateway_calls": 1}
 
 
-def test_daily_coverage_rejects_same_account_check_in_within_ten_days(monkeypatch) -> None:
+def test_daily_coverage_allows_other_scope_check_in_text(monkeypatch) -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     observed = {"provider_calls": 0, "gateway_calls": 0}
@@ -530,11 +530,10 @@ def test_daily_coverage_rejects_same_account_check_in_within_ten_days(monkeypatc
             ),
         ) is True
 
-        assert actions[0].status == "failed"
-        assert actions[0].result["error_code"] == "direct_check_in_10d_duplicate"
-        assert actions[0].payload.get("message_text") != "签到"
-        assert coverages[0].state == "ready"
-        assert observed == {"provider_calls": 0, "gateway_calls": 0}
+        assert actions[0].status == "success", actions[0].result
+        assert actions[0].payload["message_text"] == "签到"
+        assert coverages[0].state == "confirmed"
+        assert observed == {"provider_calls": 0, "gateway_calls": 1}
 
 
 def test_direct_check_in_preserves_admission_probe_fields_written_after_payload_validation() -> None:
@@ -613,7 +612,7 @@ def test_daily_coverage_replaces_unsent_ai_content_with_direct_check_in(monkeypa
         assert observed == {"provider_calls": 0, "gateway_calls": 1}
 
 
-def test_daily_coverage_replan_rejects_same_account_check_in_within_ten_days() -> None:
+def test_daily_coverage_replan_rejects_occupied_check_in_scope() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     with Session(engine) as session:
@@ -647,7 +646,7 @@ def test_daily_coverage_replan_rejects_same_account_check_in_within_ten_days() -
         session.add(second)
         session.commit()
 
-        with pytest.raises(AiGenerationUnavailable, match="direct_check_in_10d_duplicate"):
+        with pytest.raises(AiGenerationUnavailable, match="check_in_scope_occupied"):
             ai_generation_dispatch.ensure_send_message_content(
                 session,
                 second,
@@ -660,7 +659,7 @@ def test_daily_coverage_replan_rejects_same_account_check_in_within_ten_days() -
 
     assert first_memory_id
     assert second_status == "failed"
-    assert second_error == "direct_check_in_10d_duplicate"
+    assert second_error == "check_in_scope_occupied"
 
 
 def test_ready_normal_generation_expires_when_new_context_arrives() -> None:
