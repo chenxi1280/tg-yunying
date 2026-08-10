@@ -428,6 +428,7 @@ def _target_membership_abort(
 ) -> PlanAbort | None:
     if not target or target.tenant_id != task.tenant_id or target.target_type != "group":
         return None
+    bootstrap_missing_all_account_task_scope(session, task, now=_now())
     lifecycle_abort = _plan_outbound_target_abort(session, task, target, None, progress)
     if lifecycle_abort:
         return lifecycle_abort

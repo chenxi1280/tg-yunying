@@ -410,12 +410,10 @@ def _account_can_attempt_membership(account: TgAccount) -> bool:
 
 
 def _uses_persisted_all_account_scope(task: Task) -> bool:
-    account_config = task.account_config or {}
-    type_config = task.type_config or {}
     return (
         task.type == "group_ai_chat"
-        and str(account_config.get("selection_mode") or "all") == "all"
-        and type_config.get("account_coverage_mode") == "all_accounts_daily"
+        and (task.type_config or {}).get("account_coverage_mode")
+        == "all_accounts_daily"
     )
 
 
