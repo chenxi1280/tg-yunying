@@ -141,7 +141,7 @@ def _task_scope_config(session, task_id: str) -> list[dict]:
         """
         SELECT encode(convert_to(id::text, 'UTF8'), 'base64') AS task_id_b64,
                COALESCE(account_config ->> 'selection_mode', 'all') AS selection_mode,
-               COALESCE(jsonb_array_length(account_config -> 'account_ids'), 0)
+               COALESCE(json_array_length(account_config -> 'account_ids'), 0)
                    AS configured_account_count,
                COALESCE(type_config ->> 'account_coverage_mode', '')
                    AS account_coverage_mode,
