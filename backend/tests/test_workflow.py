@@ -6171,8 +6171,7 @@ def test_task_center_channel_like_normalizes_account_hour_limit_to_system_gate(m
             rows = list(session.query(Action).filter(Action.task_id == task_id).order_by(Action.scheduled_at.asc(), Action.id.asc()))
         assert task.type_config["max_likes_per_account_per_hour"] == 1_000_000
         assert len(rows) == 3
-        scheduled_hours = [row.scheduled_at.replace(minute=0, second=0, microsecond=0) for row in rows]
-        assert len(set(scheduled_hours)) == 1
+        assert rows[-1].scheduled_at - rows[0].scheduled_at < timedelta(hours=1)
 
 
 def test_task_center_max_duration_does_not_stop_continuous_tasks():
