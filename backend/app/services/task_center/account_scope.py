@@ -100,8 +100,20 @@ def bootstrap_missing_all_account_task_scope(
 
 def _scope_account_ids(session: Session, task: Task) -> list[int]:
     eligible_ids = eligible_account_ids(session, task.tenant_id)
-    if is_all_accounts_task(task):
+    selection_mode = str((task.account_config or {}).get("selection_mode") or "all")
+    if selection_mode == "all":
         return eligible_ids
+    if selection_mode == "group":
+        pool_id = int((task.account_config or {}).get("account_group_id") or 0)
+        if pool_id <= 0 or not eligible_ids:
+            return []
+        scoped_ids = set(session.scalars(
+            select(TgAccount.id).where(
+                TgAccount.id.in_(eligible_ids),
+                TgAccount.pool_id == pool_id,
+            )
+        ))
+        return [account_id for account_id in eligible_ids if account_id in scoped_ids]
     configured_ids = {
         int(account_id)
         for account_id in (task.account_config or {}).get("account_ids", [])
