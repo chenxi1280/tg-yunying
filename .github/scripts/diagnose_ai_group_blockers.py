@@ -17,7 +17,7 @@ DEFAULT_TASK_NAMES = (
     "郑州学生会",
 )
 LOCAL_TIMEZONE = ZoneInfo("Asia/Shanghai")
-RECENT_TASK_LOOKBACK = timedelta(hours=24)
+RECENT_TASK_LOOKBACK = timedelta(days=7)
 
 
 def _rows(session, statement: str, **params) -> list[dict]:
@@ -42,7 +42,7 @@ def _tasks(
           AND type = 'group_ai_chat'
           AND (
               name IN :names
-              OR (status = 'running' AND created_at >= :recent_since)
+              OR created_at >= :recent_since
           )
         ORDER BY created_at DESC, name
         """
