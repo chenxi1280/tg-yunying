@@ -1,12 +1,14 @@
 # AI 活群“群日目标 + 全账号必达 + 账号面具内容记忆”重构 PRD
 
+> **2026-08-09 current failure-state supersede：** 本文的群日目标、动态 coverage、内容质量和统一 check-in 业务要求继续有效；但 current `fact_first_v3` 的 ledger-bound quantity ordinal/due、aggregate allocation/assignment、current intent pointer/variation、dirty-clock wake/projector、scoped claim、fleet inventory item+task enrollment+task-day route/lifecycle fence、原子 ledger bootstrap/takeover activate、Gateway call-issued、ledger-level read-model API、存量 preparing→quiescence→readback 接管和失败 UI 以 `ai-group-generation-failure-churn-remediation-prd.md` 为准。本文中“所有开放义务立即执行”不得覆盖主 PRD 2026-08-07 `natural_full_day due_by_now`；“质量失败释放后继续补”只允许复用同一稳定 due unit 且 external basis 改变，禁止立即创建新 Action 身份或重置 3+3；legacy quantity slot/ContentMix 不得恢复为 current 发送真相源。本文原 `product_design_complete` 只描述未冲突的历史业务设计，不是 current dev handoff 状态。
+
 ## 1. 文档状态
 
 | 项目 | 内容 |
 | --- | --- |
 | Intake ID | `intake-2026-07-27-ai-group-daily-group-target-001` |
 | 需求级别 | L3：现网长期无法按时按量完成 |
-| 设计状态 | `product_design_complete`；prepared 新 Task先创建、route 切换后删除旧 Task、动态范围、无显式跨表锁、资源空闲即执行、direct 独立并发、统一签到和单 active Provider key 已闭合，尚未实现/发布/E4 |
+| 设计状态 | `historical_product_design_complete`；current dev handoff、实现状态和 Release Gate 只认上方 failure-state 专项，尚未实现/发布/E4 |
 | 适用任务 | `group_ai_chat` |
 | 产品目标 | 每个目标群按自然日完成配置总发送量，并保证该任务当日动态必达账号每个至少真实成功发送 1 条 |
 | 内容质量目标 | 正常正文绑定发送账号和该账号面具并执行同账号最近 10 天硬去重；统一兜底正文只能是精确 `签到`，计群日数量，账号未覆盖时同时完成 coverage，但不计高质量正文 |

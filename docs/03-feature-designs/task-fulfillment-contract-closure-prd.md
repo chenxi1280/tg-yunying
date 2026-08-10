@@ -1,13 +1,15 @@
 # 生产任务履约合同闭合专项 PRD
 
+> **2026-08-10 current scope supersede：** 本文继续提供不冲突的Telegram/Gateway/Task删除/C2-C8闭合合同；但AI活群的quantity ordinal、typed obligation/content intent/wake、fleet inventory/in-place takeover、lifecycle/bootstrap/blocker、fact binding/timeliness/deadline settlement以`ai-group-generation-failure-churn-remediation-prd.md`为唯一交接，频道浏览的message target+due ordinal、账号slot匹配、source event、Action/fact binding、settlement与原地route以`channel-view-planner-starvation-remediation-prd.md`为唯一交接。本文中“不分配ordinal”“prepared新Task从0”“只迁移running”“无规范跨表锁序”“confirmed>=planned即可E4”等冲突表述均为`historical_do_not_implement`。
+
 ## 1. 文档状态与优先级
 
 | 项目 | 内容 |
 | --- | --- |
 | Intake ID | `intake-2026-08-03-task-fulfillment-contract-closure-002` |
 | 需求级别 | L3：生产多任务长期欠量与恢复反复失效 |
-| 设计状态 | `product_design_complete` |
-| 开发交接 | `dev_handoff_ready=true`；须与分类恢复 PRD 一并实现和验收 |
+| 设计状态 | `historical_product_design_complete`；AI/view current部分只认上方两个专项 |
+| 开发交接 | 非冲突通用合同可引用；AI/view须等待current专项独立验收后交接 |
 | 生产状态 | `production_blocked`；本文件不代表代码、发布或 E4 已完成 |
 
 本文补齐 `task-fulfillment-classified-recovery-prd.md` 中尚未闭合的执行合同，并 supersede 与下列规则冲突的旧表述：
@@ -17,9 +19,11 @@
 - 暂停、停止、删除仅修改 Task 状态或删除运行行，不建立 worker/Gateway fencing；
 - `abandoned_for_day` 既是当日永久终态又能无条件自动复活；
 - 本地找不到引用评论即可推定 Telegram 评论已删除；
-- 旧 Task 运行状态迁移、quarantine 或 shadow 双写；当前合同只允许 fence、最小远端 tombstone、物理删除和新 Task 重建。
+- 非AI/view旧Task的历史release-train规则；AI/view current禁止复制新Task从0，必须按各自FleetPolicy/inventory/final-manifest在原Task原ledger上in-place takeover并保留lifetime/remote identity。
 
-### 1.1 并发一致性原则：无显式跨表锁
+### 1.1 通用并发原则（AI/view不适用本节旧无序短写）
+
+本节只约束未被专项取代的通用/简单类型。AI/view必须执行各自专项冻结的规范CAS层级、owner-first或settlement线性化事务；不得引用下文“无跨表锁链”跳过这些current事务合同。
 
 当前合同不使用 `SELECT ... FOR UPDATE`、全局 Task/账号锁、跨表锁链、中央 Window/Reservation 或“先锁资源再执行”的调度方式。并发一致性只依赖：
 
@@ -41,18 +45,18 @@ PostgreSQL 对单行写入产生的数据库内部瞬时行锁不可消除，但
 current_required_account_count =
   count(latest_state in {eligible, recovering, completed})
 
-planned_daily_target =
-  max(configured_daily_message_target,
-      current_required_account_count)
+base_planned_target = configured_daily_message_target
+effective_planned_target = max(base_planned_target, current_required_account_count)
 
-effective_daily_target = planned_daily_target
+planned_daily_target = effective_planned_target  # compatibility projection
+effective_daily_target = effective_planned_target
 
 target_reduction_overage_count =
   count(confirmed/gateway-started fact legal under an earlier target revision
         but above the later reduced current target)
 ```
 
-每次 `planned_daily_target` 因任务内账号事实变化而改变，必须递增 `planned_target_revision` 并记录 before/after/reason/effective_at。不再分配或持久化 `completion_ordinal`；稳定数量义务就是唯一执行身份。Planner 只按当前目标幂等补齐或取消未进 Gateway 的稳定义务；Gateway 前仅对当前义务执行 `action_bound -> gateway_started` 单行 CAS 并冻结当时 target revision/target，不更新或锁定任务日总账。数量不靠预扣控制，而由“目标对应的稳定主义务总数 + 每义务最多一次远端 mutation”控制。
+base配置变化推进base+effective revision；账号事实变化只推进effective revision并记录before/after/reason/effective_at。AI current数量义务同时使用稳定UUID与target-local monotonic `quantity_ordinal`，但数量到期与物化只认`effective_due_rank/due_rank_state`形成的ActiveDueRankSet；protected overage不抵扣active rank。Planner按当前ActiveDueRankSet幂等补齐或取消未进Gateway的稳定义务；Gateway前仅对当前义务执行带route/lifecycle/deadline/intent/version的单行CAS。数量不靠预扣，而由stable due unit、bound fact与每request最多一次远端mutation控制，具体锁序与settlement只认AI专项。
 
 明确 `remote_mutation_started=false|pre_accept_rejected` 时，同一义务从 `gateway_started` 释放回 `open`，不新增义务、不烧掉名额；unknown 保留该义务占位。账号后来被权威放弃使目标下调时，旧版本内合法开始的事实写入 `target_reduction_overage_count`，不算 scheduler oversend。目标下调先以账本 version CAS 发布新 target revision，再由幂等收敛器按“额外数量优先、最新创建优先”取消足量未进 Gateway 义务；各义务独立 CAS，已进入 Gateway 的旧版本事实只对账，不建立中央预算锁。
 
@@ -234,19 +238,7 @@ C2 分成两层，禁止把远端事实锁死在某个 Task：
 
 配置频道必须来自 Task 表字段，不能只放通用 JSON、缓存或群级规则。Task 创建/编辑时校验稳定 OperationTarget ID、去重且最多 3 个；空数组表示没有运营预关注要求。
 
-`fact_first_v3` 的 AI 正文生成前置门禁只能调用 `TaskGroupBotAdmission + AccountGroupAdmissionFact` 新链路；禁止继续读取旧 `GroupBotAdmission/group_bot_global_rules` 或把旧 `group_bot_admission_state` payload 当作当前 Task 准入结论。未 ready 时本轮只能创建/推进当前 Task+账号 observation 并立即释放 GenerationJob/Action claim，禁止加载 Provider 凭据或调用 Provider；ready 后把 `task_group_bot_admission_id + version` 固化到 Action，再允许正文生成。`TgAccountAuthorization` 缺行只是本地投影缺口，不能当成 Telegram 不可发送事实；存在账号 Session 时仍以 `account_id + session identity hash` 建立 30 秒 viewer surface。只有 Session 缺失/失效、需重登、账号停用、目标群解散/不可访问或 Telegram 明确拒绝等权威结果才只放弃当前 Task 内该账号并释放未进 Gateway 义务，不得形成跨 Task 封禁。
-
-Planner 在为 `fact_first_v3` 账号物化首个空正文/发送 Action 前，必须先幂等创建同一 `Task + account + target_group` 的 `TaskGroupBotAdmission` observation 行；该行只记录 Task-scoped observation surface 和当前 version，不读取旧 `GroupBotAdmission` ready 投影。这样，已经完成的 Task 级准入事实可以在 AI generation claim 前写入同一行，避免“准入已完成但 observation 尚未建行”导致正文 Action 无期限停在 `c2_observation_started`。首次 observation 仍由后续 worker 按 30 秒 surface/cursor 合同闭合，旧 Action 不被复活。
-
-Task 准入必须有独立物化入口，不能依赖已经 ready 的 coverage 或既有正文 Action 偶然触发：`pending_admission` coverage 在 `fact_first_v3` 中可物化当前账号的空正文 Action，由 AI generation lane 先推进 C2、释放 claim，ready 后再生成。历史因 `current_authorization_missing` 误放弃的 Task admission/coverage 必须在同一 Task 内自动重开 observation；对应 `replan_required` 数量槽可释放重建，不能继续把 691 个 missing admission 留在等待态。
-
-`fact_first_v3` 的正式发送物化直接走 `coverage obligation -> Action -> Generation/Attempt`：不创建、不读取、不等待旧 `TaskGroupDailyMessageSlot`、`ContentMixCycleSlot` 或 legacy Planner/CAS。ContentMix 仅可作为异步内容投影，不能成为 Action 的准入条件；已存在的 legacy 槽位只允许被回收审计，不得阻断新 Action。
-
-存量 legacy Task 的 `replan_required|unmaterialized` CycleSlot 选择必须与本轮可推进账号精确相交：先按 `ready -> 已到 30 秒的 observing/requirements_pending -> observing -> admission missing` 选择账号，再只重建这些账号各自冻结的主数量槽。禁止先按旧 cycle 顺序截取固定批次、随后才过滤账号；否则批次前部的 abandoned admission 会持续遮挡后部账号。`fact_first_v3` 不得把 admission=`abandoned` 的 waiting 账号回填为 Planner 候选；未建 admission 的账号仍可物化空正文 Action，已到期 observing 必须由该 Action 在 AI generation lane 优先复查并闭合 30 秒观察。
-
-Legacy Planner 每轮必须先接管存量 `pending` CycleSlot：仅当 `current_action_id` 指向 `failed|retryable_failed|skipped` 且该 Action 不存在 `gateway_call_started_at` 时，以 `slot_state=pending + current_action_id=旧 Action` 单行 CAS 改为 `replan_required`，清空当前 Action，释放同一 coverage reservation，并把冻结的主数量槽恢复为 `open`。Gateway 已开始、unknown 或成功事实一律不得接管。重建 payload 必须继续使用原 `CycleSlot.primary_quantity_slot_id`，并从该数量槽读取唯一 coverage/account/task-day 身份；不能借用本轮新生成 payload 的其他数量槽或 coverage。
-
-C2 空正文 Action 物化时，`pending_admission` coverage 必须直接以同一 Action 的唯一业务身份进入 `reserved`，与 `ready` coverage 使用同一 reservation token/Action 唯一绑定；这只是防止同一覆盖义务重复建单，不是容量、速率或预算预扣。不得先要求 coverage=ready 才允许建 Action，否则 C2 永远没有执行载体并持续制造 `unmaterialized` 槽。Action 等待观察期间保留该绑定；准入 ready 后原 Action 继续生成和发送，权威不可发送终态或 pre-Gateway 失败则按原 coverage 身份释放/放弃，禁止另建替代义务。
+current`fact_first_v3`的AI正文准入只调用`TaskGroupBotAdmission + AccountGroupAdmissionFact`，但未ready时同一stable obligation/FOP进入typed admission waiting并订阅revision，Action=0、GenerationJob=0且不加载Provider。Planner可独立幂等创建Task-scoped observation；ready后才冻结`task_group_bot_admission_id/version`到assignment/intent并转`generation_pending`，Generation创建/claim唯一job，accepted variation+memory后才创建ready Action。authorization本地缺行不是Telegram终态；只有权威Session/target/can-send事实按scope revision取消安全pre-call owner。误弃只唤醒同一obligation，不释放/重建CycleSlot、coverage reservation或旧Action。全部legacy CycleSlot/primary quantity slot/空正文Action路径只由AI final takeover manifest分类为alias、safe pre-Gateway终结或Gateway hold/fact，current Planner不得接管或原地retry。
 
 配置频道全部成功且已确认在群后，从数据库时间记录 `observation_started_at`、当前 viewer cursor、`observation_version` 和不可变 observation surface identity，建立连续 30 秒的账号视角观察。v1 只允许：
 
@@ -330,9 +322,7 @@ cancelled_by_task_lifecycle | blocked | shortfall | remote_reconcile_only
 
 数据库唯一约束统一为：`FulfillmentObligationProjection` 对 `(obligation_type, obligation_id)` 唯一；ContentMix 投影对 `(obligation_type, obligation_id, materialization_version)` 唯一；Action 对同一义务只允许一条非终态记录的 partial unique index。应用层先查再写不能代替这三条约束，唯一冲突必须回读现有记录继续同一物化过程。
 
-绑定 `ContentMixCycleSlot/primary_quantity_slot_id` 的 legacy AI Action 到达失败或跳过终态后，禁止通用 retry 把原 Action 原地改回 `pending`；下一次执行只能在上述原槽接管成功后创建递增 `slot_attempt` 的替代 Action。`fact_first_v3` 直接绑定 coverage obligation，不绑定旧槽；其 pre-Gateway 终态由 recovery 释放 coverage/variation intent 后重新物化新的 Action。这样旧 Action 先保持终态、替代 Action 才取得同一 coverage 义务的唯一非终态身份；并发冲突继续由单行 CAS 与 partial unique 收敛，不增加锁。
-
-Legacy 物化允许分为多个短事务：义务 CAS `open -> materializing`，按义务/version 幂等创建 ContentMix 投影，再幂等创建并绑定 Action。`fact_first_v3` 省略 ContentMix/旧槽位步骤，按 coverage obligation 直接幂等创建 Action。每步提交后都可恢复；任一步失败只释放 materialization lease 并从缺失步骤继续，不确认、复制或丢失主义务。所有步骤均为单行 CAS 或唯一键插入，不使用显式行锁。
+绑定旧`ContentMixCycleSlot/primary_quantity_slot_id`的legacy AI Action只由final takeover manifest分类，generic retry永不回pending。current链固定为stable obligation/FOP→aggregate allocation/assignment→immutable intent→GenerationJob/variation/memory→ready Action；mask-missing与check-in handoff是Planner的两条显式ready Action例外。normal pre-Gateway失败保持同一obligation并按typed wake/adoption重评估，禁止释放legacy coverage/variation后直接新建Action。事务与唯一锁序以AI专项§7.5为准，不适用本文件旧“无跨表锁序”或Action-first短写。
 
 `visible_confirmed/target_click_observed/typed_remote_fact` 使用“事实先行、投影收敛”，不做跨表原子事务：
 
@@ -442,18 +432,18 @@ Listener policy 必须配置 `heartbeat_stale_after/cursor_stale_after/success_p
 运行合同只计算当前事实，不计算或持久化预扣、目标速率、静默权重、搜索 Window、任务份额或预计完成时间：
 
 ```text
-remaining_target = max(0, planned_daily_target - confirmed_count - gateway_started_count - unknown_hold_count)
+remaining_target = cardinality(CurrentDueSet - mutually_exclusive(bound_fact, gateway_started, unknown_hold, valid_pre_call_owner))
 generation_free = max(0, healthy_generation_slots - generating_count)
 interaction_free = max(0, healthy_interaction_slots - executing_interaction_count)
 search_free = max(0, healthy_search_slots - executing_search_count)
 ocr_free = max(0, healthy_ocr_slots - running_ocr_count)
 ```
 
-- 所有开放义务立即可执行。Planner、Generation、search solver、OCR worker 和 Dispatcher 都由“新义务/事实变化/终态/资源空闲”唤醒，并以数据库轮询兜底；每一阶段只按自己的真实空闲槽 JIT 补满，不等待时间窗。
-- 每轮先从每个 running Task 领取至多一个 ready 义务，再按 `opened_at, task_id, obligation_id` 填满该阶段剩余槽位；这是无持久份额、无预扣的简单轮转，不存在任务抢账号，也不创建或恢复 `DispatchReservation/TaskAllocation`。
+- 只有按任务类型合同已经到期且处于 `ready/open` 的义务立即可执行。AI 活群、频道评论、频道点赞和频道浏览先按 `task-fulfillment-classified-recovery-prd.md` §4.5 计算 `due_by_now`；future义务/Action继续由`scheduled_at`保护，不能提前领取。Planner、Generation、search solver、OCR worker 和 Dispatcher 由“新到期义务/事实变化/终态/资源空闲”唤醒，并以数据库轮询兜底；每一阶段只按自己的真实空闲槽 JIT 补满。频道浏览不得把其他 distinct 账号的最晚 future Action 当成 Task 尾部容量，专项见 `channel-view-planner-starvation-remediation-prd.md`。
+- 每轮先给每个running Task一次有界Planner调用再轮转；AI单次build_plan最多20条，浏览按真实空闲slot的有界匹配批次，评论/点赞按各专项。后续worker按`opened_at,task_id,obligation_id`填真实空闲槽；不建立持久份额、预扣或`DispatchReservation/TaskAllocation`，也不能把公平单位误写成每Task固定只建1条。
 - Provider token、worker lease 和 Telegram/OCR 实际执行槽都是当前阶段的真实运行事实，不是为未来工作预留的 Task 配额。上游不得以“下游可能繁忙”为由预扣；下游槽空闲时才 JIT 物化下一批。
 - `4000+5000+800+800=10600` 是四个独立 Task 的总欠额；四个 Task 同时推进。页面只展示当前欠额、open/generating/executing/unknown/confirmed 数和实际并发，不显示 required rate、静默权重、获配份额或 ETA。
-- 完整 AI 任务日 E4 必须满足：`confirmed_count >= planned_daily_target`、`scheduler_oversend_count=0`、达标后新 Gateway 为 0、当前必达账号全部 `completed|abandoned_for_day` 且 abandoned 有类型化原因、open/generating/executing/unknown_hold 为 0、重复远端为 0。
+- 完整AI任务日E4必须满足immutable settlement=`met`、`bound_on_time DueSet=settled DueSet`、scheduler oversend=0、达标后新Gateway为0、当前coverage全部on-time completed或有typed shortfall、open/generating/executing/unknown/late/unproven/unbound conflict为0；只用`confirmed>=planned`不得判绿。
 - 搜索 E4 必须满足单目标 `target_click_observed_count == daily_click_target`，且每条确认均能沿 `Task -> obligation -> assignment -> Action -> ExecutionAttempt -> target_click_observed` 回溯；评论、点赞、浏览使用各自 typed remote fact 等式。
 - 已删除旧 Task 必须满足主记录和所有可重建 runtime/config 均为 0；只允许最小 delete operation 与远端 mutation/unknown 防重 tombstone 存在，且它们不能重新产生运行行为。
 - 不在 canary 或运行前计算“能否完成”、预计速率、预计确认数或容量折损。新 Task 直接按真实结果执行；实际资源不足只在运行中暴露 typed blocker/shortfall，不能改小目标、伪造成功或恢复串行调度。P95/P99 仅用于发现数据库实现退化，不参与业务放量计算。
@@ -466,7 +456,7 @@ ocr_free = max(0, healthy_ocr_slots - running_ocr_count)
 | --- | --- |
 | `tasks` | `task_lifecycle_epoch BIGINT NOT NULL, fulfillment_contract_version, group_ai_prejoin_channel_ids UUID[] NOT NULL DEFAULT '{}'`；数组去重且最多 3 个；新建 epoch 从 1 开始；删除后物理行不存在 |
 | `tg_account_authorizations`（复用） | 增加 `fact_version,last_authoritative_error_code,last_authoritative_observed_at`；同一授权槽权威事实变更递增 version，Task 只引用该版本并独立物化当日状态，不新增全局冻结表 |
-| 任务日目标账本 | `planned_target_revision, planned_daily_target, confirmed_count, gateway_started_count, unknown_hold_count, changed_at, change_reason`；计数均由远端事实异步投影，不在 Gateway 前锁账本、预扣或分配 completion ordinal |
+| 任务日目标账本 | `base/effective target+revision,next_quantity_ordinal,bound confirmed/on_time/late/unproven,raw/unbound observed,settlement status/counts/hash,changed_at/reason`；计数由fact binding/projector收敛，Gateway前不预扣整账；quantity ordinal是current stable due identity |
 | `task_delete_operations` | `id,original_task_id,expected_lifecycle_epoch,state,resume_stage,stage_version,tombstone_set_hash,delete_set_hash,counts,tombstone_checkpoint,delete_checkpoint,last_error,created_by,committed_at`；状态只前进；同一 task/epoch 唯一 |
 | `task_delete_operation_items` | `operation_id,item_kind,business_identity,source_version,item_hash,tombstone_state,delete_state`；operation/kind/identity 唯一；恢复只消费冻结 item，不重新扫描扩大集合 |
 | `remote_mutation_tombstones` | `tenant_id,mutation_kind,remote_mutation_key_hash,gateway_request_hash,remote_started,terminal_state,remote_fact_identity_hash,reconcile_state,observed_at`；只保留 unknown/已开始/已确认远端副作用的最小防重身份，不保存 Task 配置、内容正文或完整运行投影 |
@@ -545,7 +535,9 @@ claim batch 不计算业务速率、未来容量或预扣，只读取当前实�
 
 Release Gate 的数据库标准固定为：以发布时生产高水位至少 2 倍的数据做 PostgreSQL `EXPLAIN (ANALYZE, BUFFERS)`；上述 claim 查询必须命中目标 partial index且不得对热表 Seq Scan，`claim_query_p95 <= 100ms`、单行 claim CAS `p99 <= 250ms`、projector 单事实收敛 `p99 <= 500ms`，并发测试 deadlock 为 0。阈值仅判实现是否退化，不改变业务执行数量或节奏。
 
-### 12.3 先新建、切换，再删除旧 Task
+### 12.3 historical_do_not_implement for AI/view：先新建、切换，再删除旧 Task
+
+本节prepared新Task从0仅保留为其他未被专项取代类型的历史release方案。AI/view不得实现下列步骤；二者使用原Task FleetPolicy/inventory、preparing quiescence、final immutable manifest、chunk apply/readback与class-specific activation，物理删除只在各自tombstone/remote identity守恒后执行。
 
 1. 运营先按当前确认配置直接创建全新的 Task ID，状态为 `prepared`；这不是旧状态迁移，不复制旧账本、账号范围、Action、ContentMix、准入或完成量。创建请求自身保存 `new_config_hash`，同日新 Task 明确确认 `same_day_recreate_resets_progress=true`。
 2. activation preview 绑定精确 `old_task_ids + expected old lifecycle/version + prepared new_task_ids + new_config_set_hash + route_epoch`。只校验新 Task 配置完整、目标/账号引用有效和 writer schema 匹配，不计算容量、速率、预计完成数或迁移差异。
@@ -554,7 +546,7 @@ Release Gate 的数据库标准固定为：以发布时生产高水位至少 2 �
 5. 删除 preview/apply 仍要求 `ops.manage + approval_ref + expected_manifest_hash`；manifest 是不可变删除集，漂移项失败并重新审批，operation 只从原 checkpoint 恢复，不扩张集合。
 6. 新 Task 的 confirmed/gateway_started/unknown 全部从 0 开始，旧成功不抵扣新目标。旧 tombstone 只阻止旧 remote mutation identity 重放，不参与新 Task 目标、账号资格、C2 ready 或搜索 assignment 计算。
 
-### 12.4 新合同激活与回滚
+### 12.4 historical_do_not_implement for AI/view：旧新Task route激活与回滚
 
 激活顺序固定为：部署 inactive-by-default 新 writer → 运营直接创建 `prepared` 新 Task 集合 → 用其中一个真实新 Task ID 做 allowlist canary，按正常义务直接执行并取得至少一条完整 `Task -> obligation -> Action/assignment -> Attempt -> typed remote fact` 链 → 审批 activation manifest → CAS 唯一 route epoch，使全部 prepared 新 Task 运行且全部旧 Task 同时失去 Gateway 权限 → 异步写旧 mutation tombstone并物理删除旧 Task/runtime → 验证旧 Task/runtime 为 0。新 Task 在 route 切换前已经存在，切换后无需等待运营再次重建。
 
@@ -573,7 +565,7 @@ QA 必须至少覆盖：
 - 目标上调/下调与多个 Gateway 并发时，不锁任务日账本；稳定主义务数量、单义务 Gateway CAS和唯一远端事实保证不重复发送，目标下调只取消未进 Gateway 的多余义务，旧 revision 已开始事实仅计 `target_reduction_overage`；
 - generation/interaction/search/OCR 四类真实槽位分别计算并在释放后补满；不存在 rate、quiet、Window、份额、预扣、`DispatchReservation/TaskAllocation` 或 completion ordinal；
 - pause/delete 与 Gateway 并发，旧 epoch 新远端 mutation 为 0；删除阶段逐点崩溃恢复，tombstone 不含配置/正文，Task/runtime 删除后不能复活；
-- prepared 新 Task 先创建，route epoch 切换后立即从 0 执行，旧 Task 同时失去 Gateway 权限并异步物理删除；旧成功不抵扣且旧 remote mutation identity 不重放；
+- historical_do_not_implement for AI/view：prepared新Task从0与旧Task删除仅验收仍明确采用旧release-train的其他类型；AI/view验收原TaskFleetPolicy/inventory、final manifest、class-specific activation、旧成功/hold/fact守恒与legacy writer零增量；
 - C2 Task 字段 0/1/3/4 个配置频道校验；配置频道并发关注；Task 无关四类远端事实被多个 Task 安全引用且各 Task 独立计算 ready；连续 30 秒必须绑定同一 target-group control surface、viewer authorization、listener epoch 和连续 cursor，29 秒不通过，surface/cursor/listener 变化重开观察；展示名+要求链接绑定、重名拒绝、多可信 action、callback unknown 和 ready CAS；
 - C3 三条数据库唯一约束在并发物化、worker 崩溃和恢复时不产生双 projection、双 ContentMix 或双非终态 Action；
 - 单目标搜索 Task 拒绝零目标、多目标和目标数组；多个独立 Task 可并行；assignment 落库即成为数据库持久工作，通知丢失/worker 重启可从 lease 与 phase 接管；`hot_list_page -> group_category -> result_page` 均落库，无 Window/二次容量确认，binding 变化取消，Gateway unknown 不换路重发；
