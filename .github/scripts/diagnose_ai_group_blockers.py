@@ -60,11 +60,11 @@ def _task_scope_rows(session, task_id: str) -> list[dict]:
     return _rows(
         session,
         """
-        SELECT phase, state, COUNT(*) AS item_count
+        SELECT phase, failure_type, manual_required, COUNT(*) AS item_count
         FROM task_membership_admission_items
         WHERE task_id = :task_id
-        GROUP BY phase, state
-        ORDER BY phase, state
+        GROUP BY phase, failure_type, manual_required
+        ORDER BY phase, failure_type, manual_required
         """,
         task_id=task_id,
     )
