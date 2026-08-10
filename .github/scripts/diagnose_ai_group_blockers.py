@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import bindparam, text
@@ -17,6 +17,7 @@ DEFAULT_TASK_NAMES = (
     "郑州学生会",
 )
 LOCAL_TIMEZONE = ZoneInfo("Asia/Shanghai")
+RECENT_TASK_LOOKBACK = timedelta(hours=24)
 
 
 def _rows(session, statement: str, **params) -> list[dict]:
@@ -26,21 +27,32 @@ def _rows(session, statement: str, **params) -> list[dict]:
     ]
 
 
-def _tasks(session, names: tuple[str, ...]) -> list[dict]:
+def _tasks(
+    session,
+    names: tuple[str, ...],
+    *,
+    recent_since: datetime,
+) -> list[dict]:
     statement = text(
         """
         SELECT id, tenant_id, name, type, status, timezone, next_run_at,
-               hard_hourly_next_check_at, last_error, updated_at
+               hard_hourly_next_check_at, last_error, created_at, updated_at
         FROM tasks
         WHERE deleted_at IS NULL
           AND type = 'group_ai_chat'
-          AND name IN :names
-        ORDER BY name
+          AND (
+              name IN :names
+              OR (status = 'running' AND created_at >= :recent_since)
+          )
+        ORDER BY created_at DESC, name
         """
     ).bindparams(bindparam("names", expanding=True))
     return [
         dict(row)
-        for row in session.execute(statement, {"names": names}).mappings()
+        for row in session.execute(
+            statement,
+            {"names": names, "recent_since": recent_since},
+        ).mappings()
     ]
 
 
@@ -461,7 +473,11 @@ def _task_snapshot(session, task: dict, local_date) -> dict:
 def diagnose(names: tuple[str, ...]) -> dict:
     captured_at = datetime.now(LOCAL_TIMEZONE)
     with SessionLocal() as session:
-        tasks = _tasks(session, names)
+        tasks = _tasks(
+            session,
+            names,
+            recent_since=captured_at - RECENT_TASK_LOOKBACK,
+        )
         return {
             "captured_at": captured_at.isoformat(timespec="seconds"),
             "local_date": captured_at.date(),
