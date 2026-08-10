@@ -17,7 +17,11 @@ from app.models import (
     ViewRemoteFact,
 )
 
-from .pacing import cumulative_pacing_due, task_pacing_anchor
+from .pacing import (
+    cumulative_pacing_due,
+    fixed_interval_is_immediate,
+    task_pacing_anchor,
+)
 
 
 def ensure_channel_view_targets(
@@ -133,6 +137,9 @@ def channel_view_target_due(
     quantity = int(target.effective_target_snapshot or 0)
     if quantity <= 0:
         return 0
+    immediate = fixed_interval_is_immediate(pacing_config)
+    if (pacing_config.get("mode") or "template") == "fixed" and immediate:
+        return quantity
     deadline = _same_timezone(target.active_until, now)
     as_of = min(now, deadline) if deadline is not None else now
     period_end = _same_timezone(ledger.deadline_at, now)

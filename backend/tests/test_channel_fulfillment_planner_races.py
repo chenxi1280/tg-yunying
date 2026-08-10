@@ -161,7 +161,10 @@ def test_view_planner_does_not_append_after_latest_future_action(
     ]
     assert len(created) == 2
     deadline = next_local_day_deadline(now_value, task.timezone)
-    assert all(action.scheduled_at < deadline for action in created)
+    assert all(
+        action.scheduled_at.timestamp() < deadline.timestamp()
+        for action in created
+    )
 
 
 def _scope(

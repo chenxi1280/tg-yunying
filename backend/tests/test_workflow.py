@@ -5053,13 +5053,13 @@ def test_task_center_reset_channel_view_rebuilds_from_latest_messages(monkeypatc
 
         drain_task_center(SessionLocal, 10)
         detail = task_detail_after_metrics(client, headers, task_id)
-        assert views == [4301]
+        assert views == [4301, 4302]
         actions = task_detail_actions(client, headers, task_id)
         assert len(actions) == 2
         assert all(action["action_type"] == "view_message" for action in actions)
         replacement = next(action for action in actions if action["payload"]["message_id"] == 4302)
-        assert replacement["status"] == "pending"
-        assert detail["task"]["stats"]["success_count"] == 1
+        assert replacement["status"] == "success"
+        assert detail["task"]["stats"]["success_count"] == 2
 
 
 def test_task_center_reset_channel_comment_rebuilds_auto_plan(monkeypatch):

@@ -198,7 +198,7 @@ def _duration_and_interval(config: dict, total: int) -> tuple[int, int, int, int
 def minimum_schedule_gap_seconds(config: dict) -> int:
     effective = _effective_fulfillment_config(config or {})
     _duration, interval_min, _interval_max, _jitter = _duration_and_interval(effective, 1)
-    if (effective.get("mode") or "template") == "fixed" and _fixed_interval_is_immediate(effective):
+    if (effective.get("mode") or "template") == "fixed" and fixed_interval_is_immediate(effective):
         interval_min = 0
     hourly_cap = int(effective.get("max_actions_per_hour") or 0)
     hourly_gap = math.ceil(3600 / hourly_cap) if hourly_cap > 0 else 0
@@ -323,7 +323,7 @@ def schedule_times(
 
 def _initial_schedule_times(total_actions: int, config: dict, now: datetime) -> list[datetime]:
     mode = config.get("mode") or "template"
-    if mode == "fixed" and _fixed_interval_is_immediate(config):
+    if mode == "fixed" and fixed_interval_is_immediate(config):
         return [now for _ in range(total_actions)]
     curve_times = [] if mode == "fixed" else _curve_schedule_times(total_actions, config, now)
     if curve_times:
@@ -443,7 +443,7 @@ def next_local_day_deadline(
     return _from_task_local_datetime(local_deadline, value, timezone_name)
 
 
-def _fixed_interval_is_immediate(config: dict) -> bool:
+def fixed_interval_is_immediate(config: dict) -> bool:
     if config.get("interval_seconds_min") is None and config.get("interval_seconds_max") is None:
         return False
     return int(config.get("interval_seconds_min") or 0) <= 0 and int(config.get("interval_seconds_max") or 0) <= 0
