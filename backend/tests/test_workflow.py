@@ -4488,7 +4488,7 @@ def test_task_center_channel_like_and_view_cap_per_message_by_unique_accounts(mo
         lambda target, *_args, **_kwargs: target,
     )
     monkeypatch.setattr(
-        "app.services.task_center.executors.channel_view.cumulative_pacing_due",
+        "app.services.task_center.channel_view_targets.cumulative_pacing_due",
         lambda target, *_args, **_kwargs: target,
     )
     monkeypatch.setattr(

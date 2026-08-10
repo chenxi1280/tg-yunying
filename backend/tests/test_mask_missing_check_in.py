@@ -13,6 +13,7 @@ from app.services.task_center.daily_coverage import release_voice_profile_covera
 from app.services.task_center.direct_check_in import (
     DUE_CATCH_UP_CHECK_IN_SOURCE,
     MASK_MISSING_CHECK_IN_SOURCE,
+    _coverage_check_in_exists,
     due_catch_up_check_in_memory_is_valid,
     reserve_due_catch_up_check_in_memory,
     requires_direct_check_in,
@@ -160,6 +161,53 @@ def test_due_catch_up_check_in_rejects_incomplete_contract() -> None:
     from app.services.task_center.direct_check_in import is_due_catch_up_check_in
 
     assert is_due_catch_up_check_in(data) is False
+
+
+def test_mask_missing_check_in_dedupe_is_scoped_to_coverage() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    with Session(engine) as session:
+        task = Task(id="task-scope", tenant_id=1, name="AI", type="group_ai_chat")
+        action = Action(
+            id="action-new",
+            tenant_id=1,
+            task_id=task.id,
+            task_type="group_ai_chat",
+            action_type="send_message",
+            account_id=101,
+            status="executing",
+            scheduled_at=now_value,
+            payload={},
+        )
+        coverage = TaskAccountDailyCoverage(
+            id="coverage-new",
+            tenant_id=1,
+            task_id=task.id,
+            group_id=21,
+            account_id=101,
+            coverage_date=now_value.date(),
+            state="reserved",
+            reserved_action_id=action.id,
+        )
+        prior = AiGroupMessageMemory(
+            tenant_id=1,
+            group_id=21,
+            task_id=task.id,
+            action_id="action-old",
+            account_id=101,
+            raw_text="签到",
+            reservation_key="mask-missing-check-in:coverage-old:action-old",
+            status="success",
+            planned_at=now_value,
+        )
+        session.add_all([task, action, coverage, prior])
+        session.flush()
+
+        assert _coverage_check_in_exists(session, action, coverage) is False
+        prior.reservation_key = "mask-missing-check-in:coverage-new:action-old"
+        session.flush()
+        assert _coverage_check_in_exists(session, action, coverage) is True
 
 
 def _due_catch_up_data() -> dict:

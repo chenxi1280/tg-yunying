@@ -1437,27 +1437,45 @@ def _build_slot_snapshot(slot: SlotBuildInput) -> SlotSnapshot:
         ),
     )
     _apply_mask_content_contract(payload_data, slot)
-    payload = _with_content_variation_key(SendMessagePayload(**payload_data), slot)
     return SlotSnapshot(
         account_id=slot.account.id,
         planned_at=slot.planned_at,
-        payload=payload,
+        payload=SendMessagePayload(**payload_data),
     )
 
 
-def _with_content_variation_key(payload: SendMessagePayload, slot: SlotBuildInput) -> SendMessagePayload:
+def _with_content_variation_key(snapshot: SlotSnapshot) -> SlotSnapshot:
+    payload = snapshot.payload
     if not payload.coverage_ledger_id:
-        return payload
+        return snapshot
+    variation_key, context_version = _content_variation_identity(
+        payload,
+        account_id=snapshot.account_id,
+    )
+    updated = payload.model_copy(update={
+        "content_variation_key": variation_key,
+        "content_context_version": context_version,
+    })
+    return SlotSnapshot(snapshot.account_id, snapshot.planned_at, updated)
+
+
+def _content_variation_identity(
+    payload: SendMessagePayload,
+    *,
+    account_id: int,
+) -> tuple[str, str]:
     source = {
         "coverage_ledger_id": payload.coverage_ledger_id,
         "target_reference_revision": payload.target_reference_revision,
         "coverage_window_date": payload.coverage_window_date,
-        "account_id": slot.account.id,
-        "cycle_id": payload.cycle_id,
-        "slot_id": payload.slot_id,
+        "account_id": account_id,
+        "primary_quantity_slot_id": payload.primary_quantity_slot_id,
+        "fallback_obligation_key": payload.fallback_obligation_key,
         "topic_direction": payload.topic_direction,
         "teacher_target": payload.teacher_target,
         "act_type": payload.act_type,
+        "relation_kind": payload.relation_kind,
+        "material_intent": payload.material_intent,
         "reply_to_message_id": payload.reply_to_message_id,
         "context_message_ids": payload.context_message_ids,
     }
@@ -1465,10 +1483,7 @@ def _with_content_variation_key(payload: SendMessagePayload, slot: SlotBuildInpu
     context_version = hashlib.sha256(
         json.dumps(payload.context_message_ids, ensure_ascii=False).encode("utf-8")
     ).hexdigest()[:24]
-    return payload.model_copy(update={
-        "content_variation_key": hashlib.sha256(encoded).hexdigest(),
-        "content_context_version": context_version,
-    })
+    return hashlib.sha256(encoded).hexdigest(), context_version
 
 
 def _slot_identity_payload(slot: SlotBuildInput) -> dict[str, Any]:
@@ -1992,6 +2007,7 @@ def _prepare_action_slots(
         )
         if frozen_mix is not None:
             snapshot = _with_frozen_content_mix(snapshot, item, frozen_mix)
+        snapshot = _with_content_variation_key(snapshot)
         slots.append(snapshot)
         _increment_coverage_count(
             blueprint.turn.round_config,
@@ -2575,7 +2591,9 @@ def _replan_slot_snapshot(
         previous.payload if previous is not None else {},
         cycle_slot,
     )
-    return SlotSnapshot(account.id, planned_at, payload)
+    return _with_content_variation_key(
+        SlotSnapshot(account.id, planned_at, payload)
+    )
 
 
 def _replan_slot_payload(

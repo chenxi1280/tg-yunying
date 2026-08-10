@@ -24,6 +24,7 @@ from .channel_fulfillment_queries import (
     view_account_ids_for_messages,
     view_confirmed_counts,
     view_daily_counts,
+    view_materialized_account_ids_for_messages,
     view_source_held_by_other_action,
 )
 from .daily_ledgers import ensure_task_day_ledger
@@ -397,4 +398,5 @@ __all__ = [
     "view_account_ids_for_messages",
     "view_confirmed_counts",
     "view_daily_counts",
+    "view_materialized_account_ids_for_messages",
 ]

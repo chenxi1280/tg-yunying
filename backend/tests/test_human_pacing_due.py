@@ -4,7 +4,8 @@ from types import SimpleNamespace
 import pytest
 
 from app.models import ChannelMessage, Task
-from app.services.task_center.executors import channel_comment_budget, channel_like, channel_view
+from app.services.task_center import channel_view_targets
+from app.services.task_center.executors import channel_comment_budget, channel_like
 from app.services.task_center.executors.channel_comment_budget import MessageCommentPlanState
 from app.services.task_center.fulfillment_activation import CURRENT_CONTRACT_VERSION
 from app.services.task_center.pacing import cumulative_pacing_due
@@ -79,15 +80,26 @@ def test_view_late_source_only_materializes_natural_day_due_quantity() -> None:
         message_id=1,
         created_at=source_observed_at,
     )
-    inputs = SimpleNamespace(
-        ledger=SimpleNamespace(
-            period_start_at=day_start,
-            deadline_at=day_start + timedelta(days=1),
-        ),
+    ledger = SimpleNamespace(
+        period_start_at=day_start,
+        deadline_at=day_start + timedelta(days=1),
+    )
+    target = SimpleNamespace(
+        daily_target_snapshot=796,
+        total_target_snapshot=796,
+        effective_target_snapshot=796,
+        accrual_anchor_at=source_observed_at,
+        active_until=ledger.deadline_at,
+    )
+
+    due = channel_view_targets.channel_view_target_due(
+        target,
+        ledger,
+        task.pacing_config or {},
         now=source_observed_at + timedelta(minutes=30),
     )
 
-    assert channel_view._current_view_due(task, inputs, message, 796) == 16
+    assert due == 16
 
 
 def _current_task(task_type: str, *, started_at: datetime) -> Task:

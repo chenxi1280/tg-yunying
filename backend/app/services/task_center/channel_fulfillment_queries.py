@@ -108,6 +108,42 @@ def view_account_ids_for_messages(
     return result
 
 
+def view_materialized_account_ids_for_messages(
+    session: Session,
+    ledger: TaskDayLedger,
+    messages: list[ChannelMessage],
+) -> dict[int, set[int]]:
+    result = _empty_account_map(messages)
+    if not result:
+        return result
+    confirmed = session.execute(
+        select(
+            ViewFulfillmentObligation.channel_message_id,
+            ViewFulfillmentObligation.account_id,
+        )
+        .join(ViewRemoteFact, ViewRemoteFact.obligation_id == ViewFulfillmentObligation.id)
+        .where(ViewFulfillmentObligation.task_day_ledger_id == ledger.id)
+    )
+    pending = session.execute(
+        select(
+            ViewFulfillmentObligation.channel_message_id,
+            ViewFulfillmentObligation.account_id,
+        )
+        .join(Action, Action.id == ViewFulfillmentObligation.current_action_id)
+        .where(
+            ViewFulfillmentObligation.task_day_ledger_id == ledger.id,
+            _held_or_active(
+                ViewFulfillmentObligation.status,
+                Action.status,
+                Action.payload,
+                ViewFulfillmentObligation.id,
+            ),
+        )
+    )
+    _merge_account_rows(result, [*confirmed, *pending])
+    return result
+
+
 def reaction_source_held_by_other_action(
     session: Session,
     action: Action,

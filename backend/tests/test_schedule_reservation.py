@@ -7,7 +7,7 @@ from unittest.mock import Mock
 import pytest
 
 from app.models import Task
-from app.services.task_center.executors import group_ai_chat
+from app.services.task_center.executors import channel_view, group_ai_chat
 from app.services.task_center.pacing import minimum_schedule_gap_seconds, schedule_times
 from app.services.task_center.schedule_reservation import (
     continue_schedule_after,
@@ -66,6 +66,99 @@ def test_schedule_reservation_drops_rows_that_do_not_fit_deadline() -> None:
     )
 
     assert reserved == [start + timedelta(minutes=3)]
+
+
+def test_channel_view_schedule_does_not_anchor_after_latest_future_action() -> None:
+    now_value = datetime(2026, 8, 10, 10, 0)
+    deadline = datetime(2026, 8, 10, 23, 59, 59)
+    session = Mock()
+    task = SimpleNamespace(id="channel-view-gap-merge")
+
+    reserved = reserve_task_schedule_times(
+        session,
+        task,
+        "view_message",
+        [now_value, now_value + timedelta(seconds=30), deadline],
+        pacing_config={"mode": "template", "template": "moderate_6h"},
+        deadline_at=deadline,
+        enforce_task_spacing=False,
+    )
+
+    assert reserved == [now_value, now_value + timedelta(seconds=30)]
+    session.scalar.assert_not_called()
+
+
+def test_channel_view_curve_is_not_capped_by_task_level_template_gap() -> None:
+    start = datetime(2026, 8, 10, 10, 0)
+    deadline = start + timedelta(minutes=10)
+
+    planned = schedule_times(
+        100,
+        {"mode": "template", "template": "moderate_6h"},
+        start_at=start,
+        deadline_at=deadline,
+        preserve_minimum_spacing=False,
+    )
+
+    assert len(planned) == 100
+    assert min(planned) >= start
+    assert max(planned) < deadline
+
+
+def test_channel_view_skips_account_capacity_time_after_deadline(monkeypatch) -> None:
+    now_value = datetime(2026, 8, 10, 23, 50)
+    deadline = datetime(2026, 8, 10, 23, 59, 59)
+    task, message, context = _deadline_view_fixture(deadline)
+    monkeypatch.setattr(channel_view, "_now", lambda: now_value)
+    monkeypatch.setattr(channel_view, "schedule_times", lambda *_args, **_kwargs: [now_value])
+    monkeypatch.setattr(
+        channel_view,
+        "reserve_task_schedule_times",
+        lambda *_args, **_kwargs: [now_value],
+    )
+    monkeypatch.setattr(
+        channel_view,
+        "adjust_for_account_hour_limit",
+        lambda *_args, **_kwargs: deadline + timedelta(seconds=1),
+    )
+    ensure = Mock()
+    monkeypatch.setattr(channel_view, "ensure_view_obligation", ensure)
+
+    created = channel_view._create_view_actions(
+        Mock(),
+        task,
+        actions=[(message, 31)],
+        context=context,
+    )
+
+    assert created == 0
+    ensure.assert_not_called()
+    assert task.stats["channel_view_deadline_capacity_defer_count"] == 1
+    assert "未创建跨日 Action" in task.last_error
+
+
+def _deadline_view_fixture(deadline: datetime):
+    task = SimpleNamespace(
+        id="channel-view-deadline",
+        timezone="Asia/Shanghai",
+        pacing_config={},
+        stats={},
+        last_error="",
+    )
+    message = SimpleNamespace(id=901)
+    context = channel_view.ViewCreationContext(
+        channel=SimpleNamespace(),
+        config={},
+        execution_date="2026-08-10",
+        ledger=SimpleNamespace(id="ledger-view", deadline_at=deadline),
+        targets_by_message={
+            901: SimpleNamespace(
+                daily_target_snapshot=10,
+                total_target_snapshot=10,
+            ),
+        },
+    )
+    return task, message, context
 
 
 def test_minimum_schedule_gap_uses_task_pacing_contract() -> None:

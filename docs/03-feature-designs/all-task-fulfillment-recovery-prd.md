@@ -882,7 +882,13 @@ listener 处理可信群管提示时，禁止在已修改 `group_bot_admissions`
 3. dynamic_new 每轮按当日 active message 欠额重算；只有真实规划量触及 `1_000_000` 才显示 `task_gate_limit_reached`，不自动关闭已完成帖子，也不缩减新增消息义务。
 4. 每日消息只统计 distinct successful remote view facts；open/unknown/failed 分列。
 5. 当天未达标在日切写 `missed`；次日创建新 daily ledger，累计总目标继续保留真实欠额。
-6. 每消息每日浏览义务绑定 `task_day_ledger_id`，唯一键至少包含 `(task_day_ledger_id, channel_message_id)`；本地日期不作唯一身份。时区切换按 §4.2.1 创建连续 ledger，旧日成功数不搬到 transition ledger，累计总目标事实仍连续保留。
+6. 每消息每日浏览target及其due unit都绑定`task_day_ledger_id`；target唯一`(task_day_ledger_id,channel_message_id)`，due unit唯一`(daily_message_target_id,due_ordinal)`，本地日期不作唯一身份。时区切换按 §4.2.1 创建连续 ledger，旧日成功数不搬到 transition ledger，累计总目标事实仍连续保留。
+7. 浏览的target/due owner是`ChannelViewDailyMessageTarget(task_day_ledger_id,channel_message_id)`及稳定`due_ordinal`；`ViewFulfillmentObligation`绑定该due unit，账号只在物化时绑定。current唯一键为`(daily_message_target_id,due_ordinal)`，Action冻结materialization/source/target/lifecycle版本；远端事实仍按peer+message+account lifetime unique。
+8. initial source set在ledger首次规划冻结；`dynamic_new/listen_new_messages`只append。消息过`message_active_days`只停止后续due增长并冻结accrued due，不得让已到期分母或历史事实从latest/active查询中消失。
+9. anchor精确时due=0，之后按完整ledger曲线单调增加；required来自DueSet，不来自已物化obligation行数。fact、Gateway inflight、unknown、current pre-Gateway Action按证据优先级互斥构成MaterializedSet。
+10. `channel_view`的Task级curve只分布软时间，`task_pairwise_min_gap=0`；template最小间隔只作用于同Task账号级view链。新due逐账号扫描已有future Action前/中/后合法空隙，禁止以Task最晚future Action为floor或整体平移。
+11. due unit到unused lifetime-view账号及deadline前合法账号时隙的最大匹配决定reachable capacity；unmatched分列`view_unique_account_shortfall|account_time_slot_shortfall|source_window_expired_shortfall|explicit_task_policy_shortfall`，不缩小target/due。
+12. 来源状态使用带Task/ledger/policy/listener revision与selected/active set hash的持久投影，闭集`source_ready|waiting_for_source|listener_stalled|source_unresolved|source_window_expired_shortfall|source_completed`。E4按TargetSet/DueSet/MaterializedSet/typed fact验收，专项完整合同见`channel-view-planner-starvation-remediation-prd.md`。
 
 ### 6.5 搜索点击
 

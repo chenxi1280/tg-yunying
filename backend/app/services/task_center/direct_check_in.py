@@ -291,17 +291,25 @@ def _validate_missing_mask_fallback(
         or payload.fallback_obligation_key != expected_key
     ):
         raise AiGenerationUnavailable("mask_missing_check_in_ineligible")
-    if _recent_check_in_exists(session, action):
-        raise AiGenerationUnavailable("direct_check_in_10d_duplicate")
+    if _coverage_check_in_exists(session, action, coverage):
+        raise AiGenerationUnavailable("check_in_scope_occupied")
 
 
-def _recent_check_in_exists(session: Session, action: Action) -> bool:
+def _coverage_check_in_exists(
+    session: Session,
+    action: Action,
+    coverage: TaskAccountDailyCoverage,
+) -> bool:
     cutoff = _now() - DIRECT_CHECK_IN_DEDUPE_WINDOW
+    reservation_prefix = f"mask-missing-check-in:{coverage.id}:"
     return bool(session.scalar(select(AiGroupMessageMemory.id).where(
         AiGroupMessageMemory.tenant_id == action.tenant_id,
+        AiGroupMessageMemory.task_id == action.task_id,
+        AiGroupMessageMemory.group_id == coverage.group_id,
         AiGroupMessageMemory.account_id == action.account_id,
         AiGroupMessageMemory.action_id != action.id,
         AiGroupMessageMemory.raw_text == DIRECT_CHECK_IN_TEXT,
+        AiGroupMessageMemory.reservation_key.like(f"{reservation_prefix}%"),
         AiGroupMessageMemory.planned_at >= cutoff,
         AiGroupMessageMemory.status.in_([
             "reserved",

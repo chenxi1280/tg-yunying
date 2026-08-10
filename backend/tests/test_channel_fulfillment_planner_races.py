@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from datetime import timedelta
 
 import pytest
 from sqlalchemy import create_engine
@@ -9,8 +10,9 @@ from sqlalchemy.orm import Session
 from app.database import Base
 from app.models import Action, ChannelMessage, OperationTarget, Task, Tenant, TgAccount
 from app.services._common import _now
-from app.services.task_center import channel_fulfillment
+from app.services.task_center import channel_fulfillment, channel_view_targets
 from app.services.task_center.executors import channel_like, channel_view
+from app.services.task_center.pacing import next_local_day_deadline
 
 
 @pytest.fixture
@@ -113,6 +115,53 @@ def test_like_planner_skips_source_confirmed_after_candidate_snapshot(
     actions = _main_actions(session, task.id, "like_message")
     assert [action.account_id for action in actions] == [32]
     assert actions[0].payload["channel_message_id"] == message.id
+
+
+def test_view_planner_does_not_append_after_latest_future_action(
+    session: Session,
+    monkeypatch,
+) -> None:
+    task, _channel, _message = _scope(
+        session,
+        task_id="view-future-tail-task",
+        task_type="channel_view",
+        type_config={
+            "target_channel_id": 901,
+            "message_scope": "specific",
+            "message_ids": [902],
+            "per_message_daily_view_target": 2,
+            "per_message_total_view_target": 2,
+            "view_count_jitter": 0,
+        },
+    )
+    now_value = _now()
+    task.pacing_config = {"mode": "template", "template": "moderate_6h"}
+    session.add(Action(
+        id="future-tail-action",
+        tenant_id=1,
+        task_id=task.id,
+        task_type=task.type,
+        action_type="view_message",
+        account_id=31,
+        status="pending",
+        scheduled_at=next_local_day_deadline(now_value, task.timezone) - timedelta(minutes=1),
+        payload={"channel_message_id": 999999},
+    ))
+    session.commit()
+    monkeypatch.setattr(
+        channel_view_targets,
+        "cumulative_pacing_due",
+        lambda target, *_args, **_kwargs: target,
+    )
+
+    assert channel_view.build_plan(session, task) == 2
+    created = [
+        action for action in _main_actions(session, task.id, "view_message")
+        if action.id != "future-tail-action"
+    ]
+    assert len(created) == 2
+    deadline = next_local_day_deadline(now_value, task.timezone)
+    assert all(action.scheduled_at < deadline for action in created)
 
 
 def _scope(
