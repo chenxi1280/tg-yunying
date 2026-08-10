@@ -177,6 +177,33 @@ def test_initial_scope_snapshot_freezes_all_or_manually_selected_accounts(sessio
     ]
 
 
+def test_initial_scope_snapshot_uses_selected_account_group(session: Session) -> None:
+    _seed_scope_base(session)
+    task = _task("group-task", selection_mode="group")
+    task.account_config = {"selection_mode": "group", "account_group_id": 10}
+    session.add_all([
+        _account(1, 10),
+        _account(2, 10),
+        _account(3, 13),
+        task,
+    ])
+    session.commit()
+
+    result = initialize_all_account_task_scope(
+        session,
+        task,
+        now=datetime(2026, 7, 10, 10),
+    )
+
+    relations = list(session.scalars(
+        select(TaskMembershipAdmissionItem)
+        .where(TaskMembershipAdmissionItem.task_id == task.id)
+        .order_by(TaskMembershipAdmissionItem.account_id)
+    ))
+    assert result.eligible_accounts == 2
+    assert [item.account_id for item in relations] == [1, 2]
+
+
 def test_legacy_all_account_task_with_natural_mode_is_included(session: Session) -> None:
     _seed_scope_base(session)
     legacy_task = _task("legacy-all-task")
@@ -224,6 +251,39 @@ def test_planner_bootstraps_missing_legacy_all_account_scope_once(
     assert set(first.rows_by_account) == {1}
     assert set(second.rows_by_account) == {1}
     assert [item.account_id for item in relations] == [1]
+
+
+def test_planner_bootstraps_missing_group_selected_scope(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed_scope_base(session)
+    task = _task("group-planner-bootstrap", selection_mode="group")
+    task.account_config = {"selection_mode": "group", "account_group_id": 10}
+    session.add_all([
+        _account(1, 10),
+        _account(2, 10),
+        task,
+        TgGroupAccount(tenant_id=1, group_id=21, account_id=1, can_send=True),
+        TgGroupAccount(tenant_id=1, group_id=21, account_id=2, can_send=True),
+    ])
+    session.commit()
+    timestamp = datetime(2026, 7, 10, 10)
+    monkeypatch.setattr(group_ai_chat, "_now", lambda: timestamp)
+
+    state = group_ai_chat._coverage_plan_state(
+        session,
+        task,
+        session.get(TgGroup, 21),
+        config=task.type_config,
+        progress={},
+    )
+
+    assert set(state.rows_by_account) == {1, 2}
+    assert set(session.scalars(
+        select(TaskMembershipAdmissionItem.account_id)
+        .where(TaskMembershipAdmissionItem.task_id == task.id)
+    )) == {1, 2}
 
 
 def test_daily_scope_rows_declare_task_delete_cascade() -> None:

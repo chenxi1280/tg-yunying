@@ -251,7 +251,7 @@ Task 输入
 
 > **DF-182 严格点击目标可执行小时加权（2026-07-28 resync）**：`hourly_stats._remaining_daily_curve_weight` 仅生成软节奏的 `due_click_target_count`；任务时区、`scheduled_end` 和剩余时间参与 catch-up 预测。当前小时曲线为 `0`、处于 quiet-hours 或存量任务小时 cap 为 0 时，只能改为最低非零权重，不能在真实 remaining 未清零时禁止 source；预测无法按软节奏完成时提高 due 并按系统硬安全容量追赶。该逻辑不改写历史 Action 或确认事实，也不放宽账号/关键词安全额度、授权槽位、代理、协议、Gateway、deadline 和 unknown 防重。回归入口：`test_search_join_group_executor.py`。
 
-> **DF-180 AI 活群存量账号范围首次迁移（2026-07-23）**：`group_ai_chat` 首次识别到 `all_accounts_daily` 但尚无 `TaskMembershipAdmissionItem` 时，Planner 只执行一次持久化 bootstrap：补齐任务要求的默认已发布规则绑定，由目标群关联/恢复 `OperationTarget`，建立任务账号关系和当日 `TaskAccountDailyCoverage`；scope 已存在后的常规 Planner 只读账本，不回退为每轮全量账号扫描。回归入口：`test_task_account_scope_sync.py`、`test_ai_group_daily_coverage_planner.py`。
+> **DF-180 AI 活群存量账号范围首次迁移（2026-07-23，2026-08-11 账号组补正）**：`group_ai_chat` 首次识别到 `all_accounts_daily` 但尚无 `TaskMembershipAdmissionItem` 时，Planner 只执行一次持久化 bootstrap：补齐任务要求的默认已发布规则绑定，由目标群关联/恢复 `OperationTarget`，建立任务账号关系和当日 `TaskAccountDailyCoverage`；`selection_mode=all` 取全部合格账号，`selection_mode=group` 必须按 `account_group_id -> TgAccount.pool_id` 取该组内合格账号，`selection_mode=manual` 只取 `account_ids`，三者不得互相回退或把账号组误当空手工列表。scope 已存在后的常规 Planner 只读账本，不回退为每轮全量账号扫描。回归入口：`test_task_account_scope_sync.py`、`test_ai_group_daily_coverage_planner.py`。
 
 ### AI 活群与搜索点击每日履约历史实现（2026-07-26，2026-07-28 已 supersede）
 

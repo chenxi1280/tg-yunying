@@ -4538,7 +4538,7 @@ AI 活跃群的默认策略是“接话为主、低频暖场为辅”：
 - 详情页必须展示系统本批请求 Turn 数、AI 返回候选数、清洗过滤数、质量过滤数、签到兜底数、最终 Action 数和等待/减少原因。
 - 准入子任务通过的新账号必须按新scope revision动态加入后续aggregate allocation/assignment选择池；准入失败、待验证、人工处理账号不得进入主互动。旧ContentMix/natural conversation Cycle不是current owner。
 - `全账号日覆盖模式` 属于 `group_ai_chat` 的配置模式，不是新的任务类型。任务账号范围选择“全部可用账号”时必须默认启用该模式，旧 all 账号任务即使存量配置仍为 `natural`，运行和统计也按全账号日覆盖有效口径处理；指定账号分组和手动账号任务不得被强制扩大为全平台范围。
-- 全部账号任务在首次启动时建立任务内账号范围关系；任务日 ledger 只冻结时间边界和配置目标，不冻结账号分母。当日账号录入、Session/身份、membership、can-send 和准入事实变化必须增量刷新该 Task 范围；Telegram 权威 `session_invalid|need_relogin|cannot_send` 当日放弃，目标解散终结目标，均不写账号全局冻结。常规 Planner 读取持久化范围与欠账索引，低频 reconciliation 只补偿事件丢失，不能高频全表扫描或复活已放弃旧任务日义务。
+- AI 日覆盖任务在首次启动时建立任务内账号范围关系；任务日 ledger 只冻结时间边界和配置目标，不冻结账号分母。范围投影必须忠实保留创建选择：全部账号取全部合格账号，账号组按 `account_group_id` 取该组内合格账号，手工选择只取 `account_ids`；账号组不得因没有 `account_ids` 被投影为空，也不得扩大成全租户。当日账号录入、Session/身份、membership、can-send 和准入事实变化必须增量刷新该 Task 范围；Telegram 权威 `session_invalid|need_relogin|cannot_send` 当日放弃，目标解散终结目标，均不写账号全局冻结。常规 Planner 读取持久化范围与欠账索引，低频 reconciliation 只补偿事件丢失，不能高频全表扫描或复活已放弃旧任务日义务。
 - Planner对完整候选账号池批量读取在线、Session、授权、membership/admission、Telegram FloodWait/SlowMode及current owner事实并在本轮复用；已退役的账号冷却、任务小时/日上限和`max_concurrent`不得作为current截断，也不得通过逐账号`min/max/count`查询或隐藏上限重新引入。查询复杂度必须随扫描页有界。
 - Planner 读取目标群最近上下文必须同时按 `tenant_id + group_id` 过滤，并由 `(tenant_id, group_id, sent_at DESC, id DESC)` 或等价索引直接取得有界最新记录；不得先按全租户/全表时间排序再过滤目标群，也不得因上下文历史增长让单轮 Planner 超过 60 秒。
 - 每个任务时区自然日 00:00 只建立不可变的时间/时区账本和配置数量义务；“任务 × 群 × 账号”覆盖范围随本任务账号登录/授权/代理/membership/can_send/admission 事实动态刷新。当日新增合格账号立即加入；暂时不可用但存在合法恢复路径时进入 `recovering`，没有合法恢复路径时当日 `abandoned_for_day` 并释放未进 Gateway 义务。已成功事实不撤销，也不得倒灌给其他账号或任务。数量义务与 coverage 分账，一条真实消息可同时完成本任务总量 1 和该账号 coverage 1。

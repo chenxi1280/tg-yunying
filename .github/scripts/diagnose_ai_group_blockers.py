@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import argparse
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import bindparam, text
 
 from app.database import SessionLocal
+from app.services.task_center.account_scope import eligible_account_ids
 
 
 DEFAULT_TASK_NAMES = (
@@ -17,6 +18,17 @@ DEFAULT_TASK_NAMES = (
     "郑州学生会",
 )
 LOCAL_TIMEZONE = ZoneInfo("Asia/Shanghai")
+RECENT_TASK_LOOKBACK = timedelta(days=7)
+ERROR_CLASSIFIERS = (
+    ("没有匹配账号", "membership_no_candidates"),
+    ("没有账号成功准备目标", "membership_no_ready_account"),
+    ("正在执行目标准入前置阶段", "membership_running"),
+    ("operation target not found", "operation_target_missing"),
+    ("目标群", "target_group_error"),
+    ("account", "account_error"),
+    ("coverage", "coverage_error"),
+    ("duplicate key", "integrity_conflict"),
+)
 
 
 def _rows(session, statement: str, **params) -> list[dict]:
@@ -26,22 +38,87 @@ def _rows(session, statement: str, **params) -> list[dict]:
     ]
 
 
-def _tasks(session, names: tuple[str, ...]) -> list[dict]:
+def _tasks(
+    session,
+    names: tuple[str, ...],
+    *,
+    recent_since: datetime,
+) -> list[dict]:
     statement = text(
         """
-        SELECT id, tenant_id, name, type, status, timezone, next_run_at,
-               hard_hourly_next_check_at, last_error, updated_at
+        SELECT id,
+               encode(convert_to(id, 'UTF8'), 'base64') AS task_id_b64,
+               tenant_id, name, type, status, timezone, next_run_at,
+               hard_hourly_next_check_at, last_error,
+               COALESCE(account_config ->> 'selection_mode', 'all')
+                   AS account_selection_mode,
+               CASE
+                   WHEN json_typeof(account_config -> 'account_ids') = 'array'
+                   THEN json_array_length(account_config -> 'account_ids')
+                   ELSE 0
+               END AS configured_account_count,
+               COALESCE(type_config ->> 'account_coverage_mode', '')
+                   AS account_coverage_mode,
+               COALESCE(type_config ->> 'target_group_id', '')
+                   AS target_group_id,
+               COALESCE(type_config ->> 'target_operation_target_id', '')
+                   AS target_operation_target_id,
+               fulfillment_contract_version,
+               COALESCE(stats -> 'planner_runtime_error' ->> 'error_type', '')
+                   AS planner_error_type,
+               COALESCE(stats -> 'planner_runtime_error' ->> 'message', '')
+                   AS planner_error_message,
+               COALESCE(stats -> 'planner_runtime_error' ->> 'recorded_at', '')
+                   AS planner_error_recorded_at,
+               created_at, updated_at
         FROM tasks
         WHERE deleted_at IS NULL
           AND type = 'group_ai_chat'
-          AND name IN :names
-        ORDER BY name
+          AND (
+              name IN :names
+              OR created_at >= :recent_since
+          )
+        ORDER BY created_at DESC, name
         """
     ).bindparams(bindparam("names", expanding=True))
     return [
         dict(row)
-        for row in session.execute(statement, {"names": names}).mappings()
+        for row in session.execute(
+            statement,
+            {"names": names, "recent_since": recent_since},
+        ).mappings()
     ]
+
+
+def _error_class(value: object) -> str:
+    message = str(value or "").lower()
+    for marker, classification in ERROR_CLASSIFIERS:
+        if marker.lower() in message:
+            return classification
+    return "other" if message else ""
+
+
+def _safe_task(task: dict) -> dict:
+    safe = dict(task)
+    safe["last_error_class"] = _error_class(safe.pop("last_error", ""))
+    safe["planner_error_class"] = _error_class(
+        safe.pop("planner_error_message", "")
+    )
+    return safe
+
+
+def _scope_rows(session, task_id: str) -> list[dict]:
+    return _rows(
+        session,
+        """
+        SELECT phase, failure_type, manual_required, COUNT(*) AS item_count
+        FROM task_membership_admission_items
+        WHERE task_id = :task_id
+        GROUP BY phase, failure_type, manual_required
+        ORDER BY phase, failure_type, manual_required
+        """,
+        task_id=task_id,
+    )
 
 
 def _ledger_rows(session, task_id: str, local_date) -> list[dict]:
@@ -414,7 +491,11 @@ def _task_snapshot(session, task: dict, local_date) -> dict:
     ledger = ledgers[0] if ledgers else None
     targets = _target_rows(session, task["id"], local_date)
     snapshot = {
-        "task": task,
+        "task": _safe_task(task),
+        "tenant_eligible_account_count": len(
+            eligible_account_ids(session, int(task["tenant_id"]))
+        ),
+        "account_scope": _scope_rows(session, task["id"]),
         "target": targets,
         "coverage": _coverage_rows(session, task["id"], local_date),
         "admissions": _admission_rows(session, task["id"], local_date),
@@ -461,7 +542,11 @@ def _task_snapshot(session, task: dict, local_date) -> dict:
 def diagnose(names: tuple[str, ...]) -> dict:
     captured_at = datetime.now(LOCAL_TIMEZONE)
     with SessionLocal() as session:
-        tasks = _tasks(session, names)
+        tasks = _tasks(
+            session,
+            names,
+            recent_since=captured_at - RECENT_TASK_LOOKBACK,
+        )
         return {
             "captured_at": captured_at.isoformat(timespec="seconds"),
             "local_date": captured_at.date(),
