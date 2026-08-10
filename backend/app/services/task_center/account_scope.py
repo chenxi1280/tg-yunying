@@ -38,10 +38,10 @@ SCOPE_EVENT_RETRY_DELAY = timedelta(minutes=5)
 
 def is_all_accounts_task(task: Task) -> bool:
     selection_mode = str((task.account_config or {}).get("selection_mode") or "all")
-    return selection_mode == "all" and _is_daily_coverage_task(task)
+    return selection_mode == "all" and is_daily_coverage_task(task)
 
 
-def _is_daily_coverage_task(task: Task) -> bool:
+def is_daily_coverage_task(task: Task) -> bool:
     effective_config = apply_group_ai_account_coverage_defaults(
         task.type,
         task.type_config or {},
@@ -77,10 +77,9 @@ def initialize_all_account_task_scope(
     *,
     now: datetime | None = None,
 ) -> ScopeSyncResult:
-    if not _is_daily_coverage_task(task):
+    if not is_daily_coverage_task(task):
         return ScopeSyncResult()
-    if is_all_accounts_task(task):
-        _normalize_all_account_config(task)
+    _normalize_daily_coverage_config(task)
     account_ids = _scope_account_ids(session, task)
     created = _sync_task_relations(session, task, account_ids)
     _ensure_daily_coverage(session, task, account_ids, now=now, incremental=False)
@@ -93,13 +92,22 @@ def bootstrap_missing_all_account_task_scope(
     *,
     now: datetime | None = None,
 ) -> ScopeSyncResult:
-    if not _is_daily_coverage_task(task) or _scope_exists(session, task):
+    if not is_daily_coverage_task(task) or _scope_exists(session, task):
         return ScopeSyncResult()
     return initialize_all_account_task_scope(session, task, now=now)
 
 
-def _scope_account_ids(session: Session, task: Task) -> list[int]:
-    eligible_ids = eligible_account_ids(session, task.tenant_id)
+def _scope_account_ids(
+    session: Session,
+    task: Task,
+    *,
+    eligible_ids: list[int] | None = None,
+) -> list[int]:
+    eligible_ids = (
+        eligible_account_ids(session, task.tenant_id)
+        if eligible_ids is None
+        else eligible_ids
+    )
     selection_mode = str((task.account_config or {}).get("selection_mode") or "all")
     if selection_mode == "all":
         return eligible_ids
@@ -253,10 +261,19 @@ def sync_account_to_all_tasks(session: Session, account_id: int, *, now: datetim
     account = session.get(TgAccount, account_id)
     if account is None:
         raise ValueError("account not found")
-    tasks = _all_account_tasks(session, account.tenant_id)
-    eligible = account_id in eligible_account_ids_for_accounts(session, account.tenant_id, [account_id])
+    tasks = _daily_coverage_tasks(session, account.tenant_id)
+    eligible_ids = eligible_account_ids_for_accounts(
+        session,
+        account.tenant_id,
+        [account_id],
+    )
     touched = 0
     for task in tasks:
+        eligible = account_id in _scope_account_ids(
+            session,
+            task,
+            eligible_ids=eligible_ids,
+        )
         existing = _relation(session, task.id, account_id)
         if eligible and existing is None:
             _sync_task_relations(session, task, [account_id])
@@ -285,15 +302,20 @@ def reconcile_tenant_all_account_scopes(
     now: datetime | None = None,
 ) -> ScopeSyncResult:
     account_ids = eligible_account_ids(session, tenant_id)
-    tasks = _all_account_tasks(session, tenant_id)
+    tasks = _daily_coverage_tasks(session, tenant_id)
     created = 0
     for task in tasks:
-        created += _sync_task_relations(session, task, account_ids)
-        _ensure_daily_coverage(session, task, account_ids, now=now, incremental=True)
+        scoped_ids = _scope_account_ids(
+            session,
+            task,
+            eligible_ids=account_ids,
+        )
+        created += _sync_task_relations(session, task, scoped_ids)
+        _ensure_daily_coverage(session, task, scoped_ids, now=now, incremental=True)
     return ScopeSyncResult(task_count=len(tasks), created_relations=created, eligible_accounts=len(account_ids))
 
 
-def _all_account_tasks(session: Session, tenant_id: int) -> list[Task]:
+def _daily_coverage_tasks(session: Session, tenant_id: int) -> list[Task]:
     tasks = session.scalars(
         select(Task).where(
             Task.tenant_id == tenant_id,
@@ -302,13 +324,13 @@ def _all_account_tasks(session: Session, tenant_id: int) -> list[Task]:
             Task.status.in_(("draft", "pending", "running", "paused")),
         )
     )
-    selected = [task for task in tasks if is_all_accounts_task(task)]
+    selected = [task for task in tasks if is_daily_coverage_task(task)]
     for task in selected:
-        _normalize_all_account_config(task)
+        _normalize_daily_coverage_config(task)
     return selected
 
 
-def _normalize_all_account_config(task: Task) -> None:
+def _normalize_daily_coverage_config(task: Task) -> None:
     task.type_config = apply_group_ai_account_coverage_defaults(
         task.type,
         task.type_config or {},
@@ -435,6 +457,7 @@ __all__ = [
     "emit_account_eligibility_event",
     "initialize_all_account_task_scope",
     "is_all_accounts_task",
+    "is_daily_coverage_task",
     "process_account_eligibility_events",
     "reconcile_all_account_scopes_if_due",
     "scoped_account_ids",

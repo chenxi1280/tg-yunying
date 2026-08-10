@@ -47,7 +47,7 @@ from app.services.verification import create_verification_task
 from app.timezone import as_beijing
 
 from .account_pool import account_matches_current_shard, current_account_shard, select_task_accounts
-from .account_scope import is_all_accounts_task
+from .account_scope import is_daily_coverage_task
 from .account_stance_memory import invalidate_unknown_group_stance_memory
 from .account_voice_profiles import upsert_group_stance_memory
 from .account_voice_profile_cache import VOICE_PROFILE_CONTRACT_VERSION, voice_profile_snapshot_hash
@@ -10314,7 +10314,7 @@ def _sync_all_account_membership_state(session: Session, action: Action) -> None
 
 
 def _membership_coverage_tasks(session: Session, task: Task, action: Action) -> list[Task]:
-    if is_all_accounts_task(task):
+    if is_daily_coverage_task(task):
         return [task]
     if task.type != TARGET_ADMISSION_RETRY_TASK_TYPE or action.status not in TARGET_ADMISSION_RETRY_TERMINAL_STATUSES:
         return []
@@ -10343,7 +10343,7 @@ def _all_account_tasks_for_operation_target(session: Session, tenant_id: int, ta
             Task.type_config["target_group_id"].as_integer() == group.id,
         )
     )
-    return [candidate for candidate in tasks if is_all_accounts_task(candidate)]
+    return [candidate for candidate in tasks if is_daily_coverage_task(candidate)]
 
 
 def _sync_membership_state_for_task(session: Session, action: Action, task: Task) -> None:

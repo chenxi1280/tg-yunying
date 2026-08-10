@@ -286,6 +286,36 @@ def test_planner_bootstraps_missing_group_selected_scope(
     )) == {1, 2}
 
 
+def test_planner_bootstraps_group_scope_before_membership_gate(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed_scope_base(session)
+    task = _task("group-before-membership", selection_mode="group")
+    task.account_config = {"selection_mode": "group", "account_group_id": 10}
+    session.add_all([_account(1, 10), task])
+    session.commit()
+
+    def blocked_gate(current_session, current_task, *_args, **_kwargs):
+        scoped_ids = set(current_session.scalars(
+            select(TaskMembershipAdmissionItem.account_id)
+            .where(TaskMembershipAdmissionItem.task_id == current_task.id)
+        ))
+        assert scoped_ids == {1}
+        return SimpleNamespace(ready=False, created=0, blocker_reason="pending")
+
+    monkeypatch.setattr(group_ai_chat, "gate_channel_membership", blocked_gate)
+
+    result = group_ai_chat._target_membership_abort(
+        session,
+        task,
+        session.get(OperationTarget, 31),
+        progress={},
+    )
+
+    assert isinstance(result, group_ai_chat.PlanAbort)
+
+
 def test_daily_scope_rows_declare_task_delete_cascade() -> None:
     for model in (
         TaskMembershipAdmissionItem,
@@ -347,6 +377,29 @@ def test_account_event_incrementally_syncs_only_changed_account(session: Session
     event = session.scalar(select(AccountEligibilityEvent))
     assert [item.account_id for item in relations] == [1, 2]
     assert event is not None and event.processed_at is not None and event.processing_error == ""
+
+
+def test_account_event_syncs_only_matching_group_scope(session: Session) -> None:
+    _seed_scope_base(session)
+    task = _task("group-event-task", selection_mode="group")
+    task.account_config = {"selection_mode": "group", "account_group_id": 10}
+    session.add_all([task, _account(1, 10), _account(2, 13)])
+    session.flush()
+    emit_account_eligibility_event(session, 1, "login_ready")
+    emit_account_eligibility_event(session, 2, "login_ready")
+    session.commit()
+
+    assert process_account_eligibility_events(
+        session,
+        limit=10,
+        now=datetime(2026, 7, 10, 11),
+    ) == 2
+
+    account_ids = list(session.scalars(
+        select(TaskMembershipAdmissionItem.account_id)
+        .where(TaskMembershipAdmissionItem.task_id == task.id)
+    ))
+    assert account_ids == [1]
 
 
 def _seed_new_account_e2e(session: Session) -> Task:
