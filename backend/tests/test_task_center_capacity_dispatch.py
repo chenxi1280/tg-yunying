@@ -5931,7 +5931,7 @@ def test_group_ai_context_bound_limit_does_not_cap_hard_hourly(monkeypatch):
 
 
 @pytest.mark.no_postgres
-def test_group_ai_context_bound_limit_caps_deferred_daily_coverage(monkeypatch):
+def test_group_ai_context_bound_limit_does_not_cap_deferred_daily_coverage(monkeypatch):
     now_value = datetime(2026, 6, 29, 20, 0)
     monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
     task = Task(id="task-deferred-coverage-context", tenant_id=1, name="覆盖延期生成", type="group_ai_chat", stats={})
@@ -5943,6 +5943,28 @@ def test_group_ai_context_bound_limit_caps_deferred_daily_coverage(monkeypatch):
         has_context=True,
         progress={},
         deferred_generation=True,
+        turn_count=30,
+        planned_times=planned_times,
+    )
+
+    assert turn_count == 30
+    assert limited_times == planned_times
+    assert "context_bound_requested_turns" not in (task.stats or {})
+
+
+@pytest.mark.no_postgres
+def test_group_ai_context_bound_limit_still_caps_non_deferred_reply_plan(monkeypatch):
+    now_value = datetime(2026, 6, 29, 20, 0)
+    monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
+    task = Task(id="task-reply-context", tenant_id=1, name="引用回复", type="group_ai_chat", stats={})
+    planned_times = [now_value + timedelta(minutes=index * 2) for index in range(30)]
+
+    turn_count, limited_times = group_ai_chat._limit_context_bound_turns(
+        task,
+        {"context_expire_after_messages": 1},
+        has_context=True,
+        progress={},
+        deferred_generation=False,
         turn_count=30,
         planned_times=planned_times,
     )
@@ -6042,6 +6064,61 @@ def _add_ready_daily_coverage(
         )
         for account_id in account_ids
     ])
+
+
+@pytest.mark.no_postgres
+def test_fact_first_high_coverage_debt_materializes_bounded_multi_action_batch(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 7, 13, 23, 59)
+    monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
+    _forbid_planner_ai_generation(monkeypatch)
+
+    with Session(engine) as session:
+        task = seed_ai_planner_scope(
+            session,
+            now_value,
+            AiPlannerScenario(
+                task_id="task-fact-first-high-debt",
+                task_name="高欠量公平批次",
+                profile_summaries=tuple(f"账号{index}短句" for index in range(20)),
+                messages_per_round=1,
+                max_concurrent=1,
+            ),
+        )
+        task.fulfillment_contract_version = "fact_first_v3"
+        task.scheduled_start = datetime(2026, 7, 13, 0, 0)
+        task.type_config = {
+            **task.type_config,
+            "account_coverage_mode": "all_accounts_daily",
+            "daily_message_target": 21,
+            "context_expire_after_messages": 1,
+        }
+        session.add(GroupContextMessage(
+            tenant_id=1, group_id=7, listener_account_id=11, sender_name="真人",
+            content="今晚继续聊", message_type="text", remote_message_id="high-debt-context",
+            sent_at=now_value - timedelta(minutes=1),
+        ))
+        group_ai_chat.ensure_task_group_daily_target(
+            session,
+            task,
+            session.get(TgGroup, 7),
+            now_value.date(),
+            now=datetime(2026, 7, 13, 0, 0),
+        )
+        _add_ready_daily_coverage(session, task, list(range(11, 31)), coverage_date=now_value.date())
+        session.info["daily_coverage_plan_limit"] = 20
+        session.commit()
+
+        created = group_ai_chat.build_plan(session, task)
+        actions = list(session.scalars(select(Action).where(
+            Action.task_id == task.id,
+            Action.action_type == "send_message",
+        )))
+
+    assert created == 20, (task.last_error, task.stats)
+    assert len(actions) == 20
+    assert len({action.account_id for action in actions}) == 20
 
 
 @pytest.mark.no_postgres

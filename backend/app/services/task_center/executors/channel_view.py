@@ -58,6 +58,8 @@ def build_plan(session: Session, task: Task) -> int:
     )
     prepared = _view_plan_inputs(session, task, scope, config=config)
     if prepared is None:
+        if selected_messages and all(_message_expired(message, config) for message in selected_messages):
+            task.last_error = ""
         return 0
     inputs, completed_counts, total_target = prepared
     actions = _view_actions_for_messages(task, config, inputs)
