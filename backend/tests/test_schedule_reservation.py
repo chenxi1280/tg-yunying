@@ -8,7 +8,12 @@ import pytest
 
 from app.models import Task
 from app.services.task_center.executors import channel_view, group_ai_chat
-from app.services.task_center.pacing import minimum_schedule_gap_seconds, schedule_times
+from app.services.task_center.fulfillment_activation import CURRENT_CONTRACT_VERSION
+from app.services.task_center.pacing import (
+    minimum_schedule_gap_seconds,
+    schedule_due_times,
+    schedule_times,
+)
 from app.services.task_center.schedule_reservation import (
     continue_schedule_after,
     reserve_task_schedule_times,
@@ -103,6 +108,87 @@ def test_channel_view_curve_is_not_capped_by_task_level_template_gap() -> None:
     assert len(planned) == 100
     assert min(planned) >= start
     assert max(planned) < deadline
+
+
+def test_current_due_schedule_is_earliest_safe_without_template_spread() -> None:
+    start = datetime(2026, 8, 11, 12, 0)
+    deadline = datetime(2026, 8, 12, 0, 0)
+
+    planned = schedule_due_times(
+        100,
+        {"mode": "template", "template": "moderate_6h", "max_actions_per_hour": 1},
+        start_at=start,
+        deadline_at=deadline,
+        timezone_name="Asia/Shanghai",
+    )
+
+    assert planned == [start] * 100
+
+
+def test_current_ai_and_view_use_due_schedule_instead_of_second_pacing(
+    monkeypatch,
+) -> None:
+    start = datetime(2026, 8, 11, 12, 0)
+    deadline = datetime(2026, 8, 12, 0, 0)
+    monkeypatch.setattr(group_ai_chat, "_now", lambda: start)
+    monkeypatch.setattr(channel_view, "_now", lambda: start)
+    task = SimpleNamespace(
+        id="current-due",
+        fulfillment_contract_version=CURRENT_CONTRACT_VERSION,
+        pacing_config={"mode": "template", "template": "moderate_6h"},
+        timezone="Asia/Shanghai",
+    )
+    session = Mock()
+
+    ai_times = group_ai_chat._schedule_times_for_plan(
+        session,
+        task,
+        {},
+        3,
+        mode="正常期",
+        deadline_at=deadline,
+    )
+    view_times = channel_view._view_schedule_times(
+        session,
+        task,
+        3,
+        deadline_at=deadline,
+    )
+
+    assert ai_times == [start] * 3
+    assert view_times == [start] * 3
+    session.scalar.assert_not_called()
+
+
+def test_due_schedule_drops_quiet_hour_shift_at_half_open_deadline() -> None:
+    start = datetime(2026, 8, 11, 23, 30)
+    deadline = datetime(2026, 8, 12, 0, 0)
+
+    planned = schedule_due_times(
+        2,
+        {"quiet_hours": {"start": "23:00", "end": "08:00"}},
+        start_at=start,
+        deadline_at=deadline,
+        timezone_name="Asia/Shanghai",
+    )
+
+    assert planned == []
+
+
+def test_due_schedule_compares_naive_utc_ledger_deadline_as_beijing_wall_time() -> None:
+    start = datetime(2026, 7, 13, 23, 59)
+    stored_utc_deadline = datetime(2026, 7, 13, 16, 0)
+
+    planned = schedule_due_times(
+        2,
+        {},
+        start_at=start,
+        deadline_at=stored_utc_deadline,
+        timezone_name="Asia/Shanghai",
+        deadline_is_utc=True,
+    )
+
+    assert planned == [start, start]
 
 
 def test_channel_view_skips_account_capacity_time_after_deadline(monkeypatch) -> None:

@@ -1032,6 +1032,8 @@ def _action_pre_dispatch_handled(
         return True
     if not _fact_first_action(session, action) and _skip_search_click_action_during_quiet_hours(session, action):
         return True
+    if _skip_expired_ai_task_day_action(session, action):
+        return True
     if _skip_expired_hard_hourly_action(session, action):
         return True
     if action.action_type == "invite_group_bot" and not _migrate_deprecated_group_rescue_action(session, action):
@@ -1045,6 +1047,38 @@ def _action_pre_dispatch_handled(
     if not _ensure_comment_fulfillment_contract(session, action):
         return True
     return not _ensure_ai_content_mix_binding(session, action)
+
+
+def _skip_expired_ai_task_day_action(
+    session: Session,
+    action: Action,
+) -> bool:
+    if action.task_type != "group_ai_chat" or action.action_type != "send_message":
+        return False
+    quantity_slot_id = str(action.primary_quantity_slot_id or "")
+    quantity_slot = session.get(TaskGroupDailyMessageSlot, quantity_slot_id)
+    if quantity_slot is None:
+        return False
+    ledger = session.get(TaskDayLedger, quantity_slot.task_day_ledger_id)
+    if ledger is None or not is_after_or_equal(_now(), ledger.deadline_at):
+        return False
+    if _gateway_call_started(session, action):
+        _mark_unknown_after_send(
+            session,
+            action,
+            "AI 任务日已截止，但历史 Attempt 已进入 Gateway，转远端对账且禁止重发",
+        )
+        _sync_action_coverage_state(session, action)
+        _sync_action_content_mix_state(session, action)
+        return True
+    _skip(
+        action,
+        "ai_task_day_deadline_expired",
+        "AI 任务日已截止，未进入 Gateway 的跨日 Action 已终结且不再补发",
+    )
+    _sync_action_coverage_state(session, action)
+    _sync_action_content_mix_state(session, action)
+    return True
 
 
 def _dispatch_account(session: Session, action: Action) -> TgAccount | None:
@@ -10144,6 +10178,7 @@ def _terminal_pre_gateway_content_mix_failure(action: Action) -> bool:
     result = action.result if isinstance(action.result, dict) else {}
     return str(result.get("error_code") or "") in {
         "ai_generation_deadline_budget_exhausted",
+        "ai_task_day_deadline_expired",
     }
 
 
