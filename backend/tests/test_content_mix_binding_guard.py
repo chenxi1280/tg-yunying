@@ -122,12 +122,13 @@ def test_expired_ai_task_day_is_skipped_before_gateway_and_not_replanned(
     monkeypatch,
 ) -> None:
     action, session = _valid_binding()
-    deadline = datetime(2026, 8, 11, 0, 0)
+    stored_utc_deadline = datetime(2026, 8, 10, 16, 0)
+    beijing_deadline = datetime(2026, 8, 11, 0, 0)
     session.rows[(TaskDayLedger, "ledger-1")] = SimpleNamespace(
         id="ledger-1",
-        deadline_at=deadline,
+        deadline_at=stored_utc_deadline,
     )
-    monkeypatch.setattr(dispatcher, "_now", lambda: deadline)
+    monkeypatch.setattr(dispatcher, "_now", lambda: beijing_deadline)
     monkeypatch.setattr(
         dispatcher,
         "_shortfall_action_content_obligations",
