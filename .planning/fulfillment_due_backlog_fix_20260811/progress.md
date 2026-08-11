@@ -52,6 +52,8 @@
   - 审查发现 fact-first pre-dispatch skip 不经过 derived projection；截止守卫改为原地同步 coverage/content-mix，避免 Action 已跳过但 owner 未终结。
   - Python 编译、YAML 解析与 `git diff --check` 通过；新增函数均满足 50 行限制。
   - 本地无 `TEST_DATABASE_URL/DATABASE_URL`，PostgreSQL 分区 fail-closed 留给 CI；完整 no_postgres 在 60 秒硬门禁运行至 45%，未用放宽超时或 SQLite 替代 PostgreSQL。
+  - 首次 Deploy Production run `31458406995` 被 CI 正确阻断：4 个 SQLite idle-continuation 用例和 1 个 pending-dedup 用例只冻结 Planner/Generation 时钟，Dispatcher 仍读取真实 2026-08-11，新增截止守卫因此把 2026-05 Action 按设计跳过。
+  - 测试 helper 统一冻结 Dispatcher 时钟；4 个显式内存 SQLite 用例补 `no_postgres` 标记。原 5 个失败用例定向回归全部通过，生产截止守卫未放宽。
 - Files created/modified:
   - Phase 2 所列实现与测试文件
 
@@ -66,6 +68,8 @@
 | 完整 no_postgres | 60 秒硬门禁 | 运行至 45% 后 timeout | blocked locally / CI gate |
 | PostgreSQL 分区 | 真实 PostgreSQL | 本地无测试库配置 | blocked locally / CI gate |
 | 静态与格式 | compile/YAML/diff | 全部通过 | pass |
+| 首次发布 CI | run 31458406995 | 5 个模拟时钟夹具失败，build/deploy skipped | failed safely |
+| CI 失败定向回归 | 原 5 个失败用例 | 5 passed | pass |
 
 ## Error Log
 
@@ -75,6 +79,7 @@
 | 2026-08-11 12:35 | `timeout: command not found` | 1 | 使用 Python subprocess 60 秒硬超时与主 checkout venv |
 | 2026-08-11 13:25 | 北京 23:59 被 UTC-naive deadline 误判过期 | 1 | 明确 ledger deadline 为 UTC storage 并转换为北京 wall-clock 后比较，相关 155 项通过 |
 | 2026-08-11 13:40 | 完整 no_postgres 超过 60 秒 | 1 | 在 45% 强制终止，保留聚焦 276 项证据，完整分区由 CI 执行 |
+| 2026-08-11 14:31 | CI run 31458406995 两个后端分区失败 | 1 | 统一测试 helper 的 Planner/Generation/Dispatcher 模拟时钟，并将 4 个内存 SQLite 用例归入 no_postgres；5 项定向回归通过 |
 
 ## 5-Question Reboot Check
 
