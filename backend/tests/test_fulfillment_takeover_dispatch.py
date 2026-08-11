@@ -10,6 +10,8 @@ from app.models import (
     ChannelMessage,
     CommentFulfillmentObligation,
     ExecutionAttempt,
+    FailureType,
+    GatewayRequestEvidenceJournal,
     OperationTarget,
     Task,
     TaskDayLedger,
@@ -34,6 +36,9 @@ from app.services.task_center.fulfillment_takeover import (
 )
 from app.services.task_center.fulfillment_takeover_actions import (
     restore_terminal_search_attempts,
+)
+from app.services.task_center.fulfillment_remote_facts import (
+    ensure_action_obligation,
 )
 from app.services.task_center.stats import retry_failed_actions
 
@@ -542,6 +547,173 @@ def test_dispatch_finalizer_marks_view_obligation_unknown(
 
     assert obligation.status == "unknown"
     assert obligation.current_action_id == action.id
+
+
+def test_peer_invalid_abandons_only_current_account_and_reopens_safe_view(
+    session: Session,
+) -> None:
+    task, account, obligation = _view_failure_scope(session, "peer-invalid")
+    failed = _view_action(task, account, obligation, "peer-invalid-failed")
+    same_account = _view_action(
+        task,
+        account,
+        None,
+        "peer-invalid-same-account",
+        status="pending",
+    )
+    other_account = TgAccount(
+        id=account.id + 1,
+        tenant_id=1,
+        display_name="可用浏览账号",
+        phone_masked="104",
+    )
+    other_action = _view_action(
+        task,
+        other_account,
+        None,
+        "peer-invalid-other-account",
+        status="pending",
+    )
+    session.add_all([failed, same_account, other_account, other_action])
+    obligation.current_action_id = failed.id
+    session.flush()
+    assert ensure_action_obligation(session, failed)
+    attempt = dispatcher._begin_execution_attempt(session, failed, account)
+    dispatcher._mark_gateway_call_started(session, attempt, commit=False)
+
+    dispatcher._apply_operation_result(
+        failed,
+        account,
+        False,
+        failure_type=FailureType.PEER_INVALID.value,
+        detail="Could not find the input entity",
+        attempt=attempt,
+        remote_mutation_started=False,
+    )
+    dispatcher._finalize_fact_first_dispatch(session, failed)
+
+    assert task.status == "running"
+    assert failed.result["target_resolution_status"] == "target_resolution_unverified"
+    assert same_account.status == "skipped"
+    assert other_action.status == "pending"
+    assert obligation.status == "open"
+    assert obligation.current_action_id is None
+    journal = session.query(GatewayRequestEvidenceJournal).one()
+    assert journal.remote_mutation_state == "false"
+
+
+def test_fact_first_pre_gateway_failure_projects_unbound_view_owner(
+    session: Session,
+) -> None:
+    task, account, obligation = _view_failure_scope(session, "pre-gateway")
+    action = _view_action(task, account, obligation, "pre-gateway-failed")
+    action.status = "failed"
+    session.add(action)
+    obligation.current_action_id = action.id
+    session.flush()
+
+    dispatcher._finalize_fact_first_dispatch(session, action)
+
+    assert obligation.status == "open"
+    assert obligation.current_action_id is None
+
+
+def test_gateway_unknown_failure_keeps_view_owner_bound(
+    session: Session,
+) -> None:
+    task, account, obligation = _view_failure_scope(session, "unknown-gateway")
+    action = _view_action(task, account, obligation, "unknown-gateway-failed")
+    session.add(action)
+    obligation.current_action_id = action.id
+    session.flush()
+    assert ensure_action_obligation(session, action)
+    attempt = dispatcher._begin_execution_attempt(session, action, account)
+    dispatcher._mark_gateway_call_started(session, attempt, commit=False)
+    dispatcher._apply_operation_result(
+        action,
+        account,
+        False,
+        failure_type=FailureType.UNKNOWN.value,
+        detail="connection lost after request",
+        attempt=attempt,
+        remote_mutation_started=None,
+    )
+
+    dispatcher._finalize_fact_first_dispatch(session, action)
+
+    assert action.status == "unknown_after_send"
+    assert obligation.status == "unknown"
+    assert obligation.current_action_id == action.id
+
+
+def _view_failure_scope(
+    session: Session,
+    suffix: str,
+) -> tuple[Task, TgAccount, ViewFulfillmentObligation]:
+    channel = OperationTarget(
+        tenant_id=1,
+        target_type="channel",
+        tg_peer_id=f"-100-{suffix}",
+        title=f"频道-{suffix}",
+    )
+    account = TgAccount(
+        tenant_id=1,
+        display_name=f"浏览账号-{suffix}",
+        phone_masked=suffix,
+    )
+    task = Task(
+        id=f"view-task-{suffix}",
+        tenant_id=1,
+        name=f"浏览任务-{suffix}",
+        type="channel_view",
+        status="running",
+        fulfillment_contract_version="fact_first_v3",
+    )
+    session.add_all([channel, account, task])
+    session.flush()
+    message = ChannelMessage(
+        tenant_id=1,
+        channel_target_id=channel.id,
+        message_id=903,
+    )
+    session.add(message)
+    session.flush()
+    takeover_task(session, task, now=_now())
+    ledger = session.query(TaskDayLedger).filter_by(task_id=task.id).one()
+    obligation = ViewFulfillmentObligation(
+        tenant_id=1,
+        task_day_ledger_id=ledger.id,
+        channel_message_id=message.id,
+        account_id=account.id,
+        status="pending",
+    )
+    session.add(obligation)
+    session.flush()
+    return task, account, obligation
+
+
+def _view_action(
+    task: Task,
+    account: TgAccount,
+    obligation: ViewFulfillmentObligation | None,
+    action_id: str,
+    *,
+    status: str = "executing",
+) -> Action:
+    payload = {}
+    if obligation is not None:
+        payload["view_fulfillment_obligation_id"] = obligation.id
+        payload["task_day_ledger_id"] = obligation.task_day_ledger_id
+    return Action(
+        id=action_id,
+        tenant_id=1,
+        task_id=task.id,
+        task_type=task.type,
+        action_type="view_message",
+        account_id=account.id,
+        status=status,
+        payload=payload,
+    )
 
 
 def _dispatch(session: Session, action: Action) -> bool:

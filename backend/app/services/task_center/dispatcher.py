@@ -591,14 +591,14 @@ def _finalize_fact_first_dispatch(session: Session, action: Action) -> None:
         _open_fact_first_remote_case(session, action)
     session.commit()
     _release_runtime_resources(action)
-    if not fact_id:
-        return
-    fact = session.get(FulfillmentRemoteFact, fact_id)
-    if fact is None:
-        raise RuntimeError("remote_fact_missing_after_commit")
-    project_remote_fact(session, fact)
+    if fact_id:
+        fact = session.get(FulfillmentRemoteFact, fact_id)
+        if fact is None:
+            raise RuntimeError("remote_fact_missing_after_commit")
+        project_remote_fact(session, fact)
     _project_fact_first_derived_reads(session, action)
-    complete_derived_projections(session, fact_id)
+    if fact_id:
+        complete_derived_projections(session, fact_id)
     session.commit()
 
 
@@ -731,12 +731,28 @@ def _sync_channel_fulfillment_state(
         return
     if action.status == "unknown_after_send":
         obligation.status = "unknown"
-    if (
-        action.status in {"failed", "skipped", "cancelled"}
-        and obligation.status != "unavailable"
-    ):
-        obligation.status = "open"
-        obligation.current_action_id = None
+        return
+    if action.status not in {"failed", "skipped", "cancelled"}:
+        return
+    if obligation.status == "unavailable":
+        return
+    if _channel_action_remote_mutation_state(session, action) != "false":
+        obligation.status = "unknown"
+        return
+    obligation.status = "open"
+    obligation.current_action_id = None
+
+
+def _channel_action_remote_mutation_state(
+    session: Session,
+    action: Action,
+) -> str:
+    attempt = _latest_execution_attempt(session, action.id)
+    if attempt is None or attempt.gateway_call_started_at is None:
+        return "false"
+    from .fulfillment_remote_facts import remote_mutation_state
+
+    return remote_mutation_state(action, attempt)
 
 
 def _confirm_channel_remote_fact(session: Session, action: Action) -> bool:
@@ -6557,11 +6573,18 @@ def _abandon_unusable_fact_first_account(
     if session is None or not _fact_first_action(session, action):
         return False
     if failure_type == FailureType.PEER_INVALID.value:
-        _terminalize_fact_first_target(
+        action.result = {
+            **dict(action.result or {}),
+            "account_task_disposition": "abandoned",
+            "account_task_disposition_reason": detail or failure_type,
+            "target_resolution_status": "target_resolution_unverified",
+        }
+        _abandon_fact_first_account_for_task(
             session,
             action,
-            detail or failure_type,
+            reason="target_resolution_unverified",
         )
+        _abandon_task_group_admission(session, action)
         return True
     unrecoverable = bool(
         failure_type == FailureType.GROUP_PERMISSION_DENIED.value
@@ -6623,8 +6646,7 @@ def _abandon_pending_account_actions(session: Session, failed_action: Action) ->
             "account_task_abandoned",
             "该账号在当前任务内已确认无法完成 Telegram 远端操作",
         )
-        _sync_action_coverage_state(session, action)
-        _sync_action_content_mix_state(session, action)
+        _project_fact_first_derived_reads(session, action)
 
 
 def _abandon_task_group_admission(session: Session, action: Action) -> None:
@@ -8369,11 +8391,10 @@ def _abandon_fact_first_account_for_task(
     if action.account_id is None:
         return
     _abandon_pending_account_actions(session, action)
-    blocker_code = (
-        "target_entity_unresolvable"
-        if reason == "target_entity_unresolvable"
-        else "account_task_abandoned"
-    )
+    blocker_code = {
+        "target_entity_unresolvable": "target_entity_unresolvable",
+        "target_resolution_unverified": "target_resolution_unverified",
+    }.get(reason, "account_task_abandoned")
     rows = session.scalars(select(TaskAccountDailyCoverage).where(
         TaskAccountDailyCoverage.task_id == action.task_id,
         TaskAccountDailyCoverage.account_id == action.account_id,
@@ -8385,8 +8406,11 @@ def _abandon_fact_first_account_for_task(
         row.blocker_code = blocker_code
         row.blocker_stage = "admission"
         row.blocker_detail = (
-            "当前授权无法解析目标群实体，当前任务日放弃"
-            if blocker_code == "target_entity_unresolvable"
+            "当前授权无法解析目标实体，当前任务日放弃"
+            if blocker_code in {
+                "target_entity_unresolvable",
+                "target_resolution_unverified",
+            }
             else "该账号在当前任务与目标内无法发送，当前任务日放弃"
         )
         row.recovery_path = "next_task_day_recheck"

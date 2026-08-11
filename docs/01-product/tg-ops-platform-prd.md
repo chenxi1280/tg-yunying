@@ -2655,6 +2655,7 @@ AI 活群当前唯一数量合同是“单群自然日配置总发送量 + 本�
 - 开启持续监听后，只把任务启动后监听到的新帖加入该任务；新帖按相同的每条帖子每日浏览量和累计目标浏览量执行。
 - 每个`target_peer_id + channel_message_id`在每个`TaskDayLedger`拥有唯一`ChannelViewDailyMessageTarget`，冻结target operation、peer、source/target revision、`effective_target_count=min(daily_view_target,lifetime_remaining_at_attach)`、pacing anchor、active window、累计due和next due ordinal；`completed_view_count`只由typed `ViewRemoteFact`投影，message ID不得跨peer互斥。
 - 当累计浏览达到目标总额时不再建立新日target。帖子超过有效期只停止该target继续增加due并冻结`accrued_due_count`；已经累计到期的due unit、Gateway hold、unknown和shortfall都不得消失。目标不可访问、任务停止和deadline结算走各自typed终态，不能删除目标行或伪造完成。
+- 频道实体解析失败是账号视角事实：`PEER_INVALID` 或 input entity 缺失只能令当前 Task/账号执行路径进入 `target_resolution_unverified`/当日放弃，不能直接失败整个频道浏览 Task。同一目标存在其他账号成功 typed remote fact 时必须保持目标 active。只有独立权威目标生命周期事实才能终止整条 Task；失败浏览 obligation 也只有在 Gateway journal 明确 `remote_mutation_state=false` 时才可释放，`true|unknown` 必须保留为 unknown。
 - 当多个帖子同时需要补量时，Planner先用完整24小时曲线计算每个message的`DueSet`，再对`DueSet - MaterializedSet`与未使用lifetime identity×deadline前账号时隙做最大匹配。固定`1_000_000`系统门禁只拦截异常无界输入，不参与due或匹配。
 - 当天未完成的Action不滚入次日；本日target在deadline写immutable settlement。次日根据单帖剩余lifetime目标建立新target，不得把前日missed伪装成次日success，也不能用任务级软上限截断单帖欠额。
 - 同一Telegram消息与账号的`ViewRemoteFact`是lifetime unique，第二天也不能再次把该账号用于同一帖子；账号只是due unit的当前物化绑定，明确pre-Gateway失败可释放原unit并换另一个未使用账号。
