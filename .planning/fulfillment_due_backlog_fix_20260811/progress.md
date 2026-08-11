@@ -109,6 +109,8 @@
   - fact-first finalizer 无 remote fact 时仍执行 derived owner 投影；频道失败只在 journal=`false` 或未进 Gateway 时释放 obligation，`true|unknown` 保持 unknown/绑定。
   - 新增 exact Task + deployed SHA + preview hash + actor/approval + CAS/audit/readback 的浏览误终态恢复脚本与受保护 workflow；apply 只恢复 Task 新 epoch，不复活旧 Action、不改写事实。
   - 85 个浏览/fact-first/gateway/schedule/E4 聚焦回归通过，3 deselected；Python 编译、YAML 解析和 diff check 通过。完整 no_postgres 仍受 60 秒硬门禁约束，由 CI 全量执行。
+  - 首次 Release A CI `31485029553` 的 PostgreSQL 分区在北京时间 19:07 暴露 4 个浏览 Planner 时间相关失败：aware UTC deadline 被错误附着到 naive 北京时间，16:00 后误判越过次日 00:00；这不是本次 PEER 分类回归，但会阻断晚间 Planner。
+  - 修复 PostgreSQL aware UTC deadline 到北京时间 wall-clock 的显式转换，并新增 19:00 北京/16:00 UTC deadline 红测；4 项 Release A 定向回归通过，准备重新发布。
 
 ## 5-Question Reboot Check
 

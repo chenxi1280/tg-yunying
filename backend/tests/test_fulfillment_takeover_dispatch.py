@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -25,6 +27,7 @@ from app.services.task_center.channel_fulfillment import (
     view_daily_counts,
 )
 from app.services.task_center import dispatcher, service
+from app.services.task_center.executors import channel_view
 from app.services.task_center.comment_fulfillment_takeover import (
     ensure_comment_action_contract,
 )
@@ -44,6 +47,32 @@ from app.services.task_center.stats import retry_failed_actions
 
 
 pytestmark = pytest.mark.no_postgres
+
+
+def test_channel_view_uses_beijing_wall_time_for_aware_utc_ledger_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task = Task(
+        tenant_id=1,
+        name="aware deadline",
+        type="channel_view",
+        fulfillment_contract_version="fact_first_v3",
+        pacing_config={"mode": "fixed", "interval_seconds_min": 0},
+    )
+    now_value = datetime(2026, 8, 11, 19, 0)
+    deadline = datetime(2026, 8, 11, 16, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(channel_view, "_now", lambda: now_value)
+
+    assert channel_view._view_schedule_times(
+        object(),
+        task,
+        2,
+        deadline_at=deadline,
+    ) == [now_value, now_value]
+    assert channel_view._ledger_deadline_for_planned_at(
+        deadline,
+        now_value,
+    ) == datetime(2026, 8, 12, 0, 0)
 
 
 @pytest.mark.parametrize(

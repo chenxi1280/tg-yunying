@@ -84,6 +84,7 @@
 - 第二个 owner 闭合缺口是 fact-first finalizer 在无 typed remote fact 时提前返回，pre-Gateway 失败/跳过可能留下派生 obligation 绑定；修复后所有结果都会投影 derived owner。
 - 频道 obligation 的释放不能只看 Action terminal：无 Attempt/未进 Gateway 视为安全未执行；已进 Gateway 必须读取 `GatewayRequestEvidenceJournal`，仅 `false` 释放，`true|unknown` 保持 unknown。
 - 生产恢复不修改历史 Action/Attempt/ViewRemoteFact。preview 必须证明短窗口 PEER_INVALID journal 全为 false、Task false-terminal shape 成立、terminal 后存在 ViewRemoteFact；apply 只恢复 Task running、再增 lifecycle epoch、清理错误 terminal 投影并写 AuditLog，由正常 Planner 释放旧 terminal binding 和创建新 Action。
+- 首次 Release A CI 在北京时间 19 点证明了一个 PostgreSQL-only 时间边界：aware UTC ledger deadline 与 naive 北京 `_now()` 对齐时，旧 `_matching_datetime` 把 19:00 直接标为 UTC，错误地判定晚于 16:00 UTC。SQLite 会丢 timezone 因而此前聚焦测试未暴露；修复必须把 storage UTC 明确转成北京时间 wall clock，不能给 naive 值猜 tzinfo。
 
 ## 计划复核发现
 
