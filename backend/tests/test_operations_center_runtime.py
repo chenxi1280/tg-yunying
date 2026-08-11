@@ -179,6 +179,7 @@ def _dispatch_deferred_ai_actions(
         actions = _pending_ai_actions(session)
     generation_now = _generation_reference_now(session, actions)
     monkeypatch.setattr(ai_generation_pipeline, "_now", lambda: generation_now)
+    monkeypatch.setattr(dispatcher, "_now", lambda: generation_now)
     _enable_group_listeners(session, actions)
     dependencies = _configure_ai_dispatch_fakes(
         monkeypatch,
@@ -5321,6 +5322,7 @@ def _seed_group_ai_context_task(
     )
 
 
+@pytest.mark.no_postgres
 def test_group_ai_chat_idle_continuation_waits_until_interval(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -5375,6 +5377,7 @@ def test_group_ai_chat_idle_continuation_waits_until_interval(monkeypatch):
     assert task.stats["skip_reason"] == "daily_target_pacing"
 
 
+@pytest.mark.no_postgres
 def test_group_ai_chat_idle_continuation_generates_after_interval(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -5545,6 +5548,7 @@ def test_group_ai_chat_manual_round_spreads_messages_across_accounts(monkeypatch
     assert [action.account_id for action in actions] == list(range(101, 111))
 
 
+@pytest.mark.no_postgres
 def test_group_ai_chat_blocks_unanchored_idle_experience_claims(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -5782,6 +5786,7 @@ def test_group_ai_chat_accepts_mask_profile_message_with_theme_anchor():
     assert decision["score"] == 100
 
 
+@pytest.mark.no_postgres
 def test_group_ai_chat_idle_continuation_can_be_disabled(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

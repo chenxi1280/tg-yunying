@@ -47,6 +47,7 @@
 | Issue | Resolution |
 |---|---|
 | GitHub HTTPS fetch TLS 握手失败 | 不重复同一失败；先完成本地设计/实现，发布阶段改用可用认证/Actions 路径并再次刷新 refs |
+| 首次发布 CI 的 5 个历史时间测试被截止守卫跳过 | 测试 helper 原先只冻结 Planner/Generation 时钟；同步冻结 Dispatcher，并将明确使用 SQLite 的 4 项归入 no_postgres，生产逻辑不降级 |
 
 ## Resources
 
