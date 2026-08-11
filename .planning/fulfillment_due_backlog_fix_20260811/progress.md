@@ -80,6 +80,35 @@
 | 2026-08-11 13:25 | 北京 23:59 被 UTC-naive deadline 误判过期 | 1 | 明确 ledger deadline 为 UTC storage 并转换为北京 wall-clock 后比较，相关 155 项通过 |
 | 2026-08-11 13:40 | 完整 no_postgres 超过 60 秒 | 1 | 在 45% 强制终止，保留聚焦 276 项证据，完整分区由 CI 执行 |
 | 2026-08-11 14:31 | CI run 31458406995 两个后端分区失败 | 1 | 统一测试 helper 的 Planner/Generation/Dispatcher 模拟时钟，并将 4 个内存 SQLite 用例归入 no_postgres；5 项定向回归通过 |
+| 2026-08-11 18:39 | monitor E4 step exit 1 | 1 | 日志证明脚本已输出全部任务事实，exit 1 来自真实 blocker summary；不误判为采集失败 |
+| 2026-08-11 18:39 | 输入的历史浏览 Task ID 返回 task_missing | 1 | 标记为无效输入，后续必须从生产权威 Task 列表按目标解析，不复用猜测 ID |
+
+### Phase 6: 剩余履约缺口诊断与计划
+
+- **Status:** diagnosis_and_plan_complete
+- **Started:** 2026-08-11 18:30 Asia/Shanghai
+- Actions taken:
+  - 触发只读 Production Task Monitor run `31483093633`，未 drain、重启或修改生产数据。
+  - 刷新五个 AI 任务及两个浏览任务的 Task/ledger/Action/Attempt/typed fact。
+  - 确认 AI 发送链路持续工作，但高目标任务存在 generation 查询 I/O、公平 claim 与内容漏斗吞吐缺口。
+  - 确认 `4fc393df...` 被单账号 `PEER_INVALID` 错误升级为整 Task failed；source 与 typed facts 证明目标并非权威终结。
+  - 将剩余问题拆为四个独立修复批次，定义红测、数据安全边界、发布门禁与 E4 验收。
+  - 复核原计划后修正七项缺口：生产个案证据强度、Task 恢复 manifest、obligation/binding 守恒、AI 首断点分流、自然日验收、账号/unknown 所有权、浏览 read model 真相源。
+  - 增加 Gate 0、Release A/B/C/D 顺序与明确 stop conditions；计划复核状态为 complete。
+
+### Phase 7: 实现与生产闭环
+
+- **Status:** in_progress
+- **Started:** 2026-08-11 19:00 Asia/Shanghai
+- Actions taken:
+  - 用户明确授权坏/过期账号与义务按合同放弃、代码修复、发布和生产受保护恢复。
+  - 刷新 origin/master=`fcccda4a`、origin/release=`15651647`；当前隔离 worktree 基于最新 master，主 checkout 用户修改未触碰。
+  - Gate 0 由同一 Task 同秒证据闭合：账号 947/949 `PEER_INVALID`，账号 946/948 成功浏览同一频道消息，证明目标仍可用而账号级解析失败被误升为 Task terminal。
+  - Product resync 完成：坏账号/过期执行只放弃 Task×账号局部路径；目标全局终态只接受独立 lifecycle 权威事实；unknown 不释放。
+  - 删除 `PEER_INVALID -> _terminalize_fact_first_target()` 隐式升级，改为 `target_resolution_unverified` + 当前账号同 Task 局部放弃；其他账号保持可执行。
+  - fact-first finalizer 无 remote fact 时仍执行 derived owner 投影；频道失败只在 journal=`false` 或未进 Gateway 时释放 obligation，`true|unknown` 保持 unknown/绑定。
+  - 新增 exact Task + deployed SHA + preview hash + actor/approval + CAS/audit/readback 的浏览误终态恢复脚本与受保护 workflow；apply 只恢复 Task 新 epoch，不复活旧 Action、不改写事实。
+  - 85 个浏览/fact-first/gateway/schedule/E4 聚焦回归通过，3 deselected；Python 编译、YAML 解析和 diff check 通过。完整 no_postgres 仍受 60 秒硬门禁约束，由 CI 全量执行。
 
 ## 5-Question Reboot Check
 

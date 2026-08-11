@@ -64,3 +64,33 @@
 - production `generation_pending` 中 overdue/lookahead/future 的精确拆分尚未刷新成功。
 - 需要发布后新的两轮 typed remote facts 才能声明 `production_fixed`。
 - 完整 no_postgres 与 PostgreSQL 分区尚待 CI：本地完整套件触发 60 秒硬超时，本地无真实测试库配置。
+
+## 2026-08-11 18:38 生产剩余缺口刷新
+
+- 生产仍为 `1565164718f9adf40971f6be9e64956af7be1551`，release 与六个核心容器健康。
+- AI 不发送故障已恢复：五个任务发布后分别存在数百到上千条 successful Attempt + 非空 remote_message_id。
+- 低目标任务接近 current due：郑州楼凤 due/confirmed=`613/604`，郑州师范=`615/606`；剩余主要是 admission、FloodWait、权限、session 与 unknown 账号级结果。
+- 高目标任务无法在本自然日追平：郑州大学=`2752/1300`，西安天上人间=`3306/1141`，郑州学生会=`3306/1590`。它们仍持续发送，但 current gap 分别为 1452、2165、1716。
+- AI generation 现场有 21 条 claim，集中在郑州大学；Action 查询出现 32–53 秒 active、约 66 秒 transaction age、DataFileRead/BufferIO，但 blocking edge=0。首个剩余技术断点是 generation 候选查询/公平 claim/内容漏斗吞吐，不是数据库锁或 Gateway 全局故障。
+- `4fc393df...` 已被置为 failed，last_error 为目标实体无法解析；但 source 仍 active，且已有 `post_release_remote_fact_count=5915`、`remote_fact_gap=0`。代码 `_abandon_unusable_fact_first_account()` 会把任意账号 `PEER_INVALID` 直接升级为 Task terminal，已确认违反现有合同；该生产个案是否确属误终结仍待同 peer 的失败后成功 fact 或权威 reprobe。
+- `4fc393df...` 当前 required/materialized/confirmed=`9516/6567/6566`，Task 停止后 materialization gap=2949。
+- `fa75ca69...` 仍 running，required/materialized/confirmed=`1384/1378/1136`，post-release ViewRemoteFact=1127，remote_fact_gap=0；当前物化只差 6，但最终 lifetime 目标仍超过 distinct 账号容量。
+- 本次 monitor run `31483093633` 因真实 blocker 返回 failure；它已完整输出逐任务 E4 summary。一个历史浏览 Task ID 输入已不存在，需从权威 Task 列表重新解析，不能猜 ID。
+
+## 2026-08-11 Release A Gate 0 与实现结论
+
+- `4fc393df...` 同一秒内账号 947/949 返回目标实体无法解析，而账号 946/948 对同一 Task/频道消息产生成功浏览；这已闭合“目标仍可用”的生产反证，允许进入误终态修复，不需要破坏性 reprobe。
+- 根因不是 Telegram 频道全局失效，而是 dispatcher 将任意 fact-first `PEER_INVALID` 直接调用 `_terminalize_fact_first_target()`，把账号 cache/session 视角失败错误升级为 Task terminal。
+- 第二个 owner 闭合缺口是 fact-first finalizer 在无 typed remote fact 时提前返回，pre-Gateway 失败/跳过可能留下派生 obligation 绑定；修复后所有结果都会投影 derived owner。
+- 频道 obligation 的释放不能只看 Action terminal：无 Attempt/未进 Gateway 视为安全未执行；已进 Gateway 必须读取 `GatewayRequestEvidenceJournal`，仅 `false` 释放，`true|unknown` 保持 unknown。
+- 生产恢复不修改历史 Action/Attempt/ViewRemoteFact。preview 必须证明短窗口 PEER_INVALID journal 全为 false、Task false-terminal shape 成立、terminal 后存在 ViewRemoteFact；apply 只恢复 Task running、再增 lifecycle epoch、清理错误 terminal 投影并写 AuditLog，由正常 Planner 释放旧 terminal binding 和创建新 Action。
+
+## 计划复核发现
+
+- 原计划把 `4fc...` 的生产根因写得过强：代码违反既有 PEER_INVALID 合同是已证实事实，但该生产个案是否确为误终结仍需同 peer 的失败后成功 fact 或权威 reprobe。
+- 原恢复计划只有 Task epoch/state hash，缺少失败 Action/Attempt、target lifecycle/source revision、Gateway/unknown 集合与 obligation binding 守恒；直接恢复可能留下旧 epoch writer 或重复物化。
+- 原 AI 验收“每 5 分钟 confirmed_delta >= due_delta”对自然抖动过严，又不能证明历史 debt 可在 deadline 前完成；应改为 15 分钟趋势窗口、catch-up ETA，以及下一完整自然日 settlement。
+- 21 个 generation claim 集中单 Task 是风险而非公平性根因证明；慢查询、claim 公平、内容质量漏斗必须先定首断点后分支实现。
+- 当前自然日的大 gap 含发布前 outage debt，不能用突发补发、跨日搬债或放宽质量门禁追平。
+- Batch C 混合了账号运维事实、remote reconcile 和 slot mapping 代码缺陷，必须拆开所有权与发布路径。
+- 浏览详情已有容量字段，但仍以 Action 行数推导，不符合 current TargetSet/DueSet/MaterializedSet/ViewRemoteFact 合同；Batch D 的重点应是 read model 真相源，而不是单纯增加 UI。

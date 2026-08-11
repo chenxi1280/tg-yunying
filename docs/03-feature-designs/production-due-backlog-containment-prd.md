@@ -83,6 +83,14 @@ AI 与浏览已经先计算 `due_by_now`，但当前批次再次调用 6 小时�
 
 不增加 worker、不放宽同群 pipeline、不跳过质量/准入。Generation 只会因新 Action 不再排到数小时后而及时看见当前 due；Dispatcher/Gateway 继续执行现有 claim、账号安全和 typed remote fact 合同。
 
+### 4.5 坏账号、过期执行与频道实体解析失败
+
+- `PEER_INVALID`、`Could not find the input entity` 等账号视角的实体解析失败，只能固化为当前 Task/账号执行路径的 `target_resolution_unverified`；它不得直接把 Task、频道或消息投影为全局终态。
+- 同一 Task/目标在相邻时间由其他账号成功产生 typed remote fact，是目标仍可用的反证。此时失败账号当日执行路径标记 `abandoned`，其尚未进入 Gateway 的 pending Action 显式跳过并释放履约绑定，其他账号、成功事实和 unknown 均保持不变。
+- Session 失效、账号无权限等已确认账号级终态沿用同一局部放弃边界。历史任务日越过 ledger deadline 且未进入 Gateway 的执行按既有过期合同终结；不得把过期执行延后到新任务日重放。
+- 只有独立权威目标生命周期事实（例如运营审核后的目标删除/解散，或精确 username 不存在且没有其他账号可用反证）才能终止整条 Task，并通过 lifecycle epoch 隔离旧执行。
+- `GatewayRequestEvidenceJournal.remote_mutation_state=false` 才允许失败 Action 释放当前浏览 obligation；`true|unknown` 必须投影为 `unknown` 并保留原绑定等待 reconcile，不能因 Action 表面状态为 failed/skipped 而重试。
+
 ## 5. 数据一致性、并发和失败路径
 
 - 两个 Planner 并发仍依赖现有 open obligation/slot 唯一约束；计数修复不是唯一性的替代品。
@@ -91,6 +99,7 @@ AI 与浏览已经先计算 `due_by_now`，但当前批次再次调用 6 小时�
 - quiet-hours 跨 deadline 时不压缩到 deadline 前，不创建违规 Action，写明确 shortfall。
 - 账号容量调整跨 deadline 时维持现有 fail-closed。
 - Gateway unknown 永久排除 cleanup 和自动 retry；远端结果必须由 reconcile/typed fact 收口。
+- fact-first Action 即使没有生成 typed remote fact，也必须完成 coverage/content-mix/comment/view 等派生 owner 投影；收尾流程不能在 `fact_id` 为空时提前跳过状态释放或 unknown 保留。
 - 部署回滚只回应用代码；一旦生产 recovery apply 已提交，旧版本可能再次重复物化，因此 apply 后禁止回滚到修复前 writer。需要回退时先停在 release/runtime 层并保留新代码 writer。
 
 ## 6. QA 验收
@@ -110,6 +119,8 @@ AI 与浏览已经先计算 `due_by_now`，但当前批次再次调用 6 小时�
 2. quiet-hours、account-hour 调整和 deadline 依次生效。
 3. 重复 Planner 不为同 peer/message/account 建第二条 obligation/Action。
 4. 目标 1000、eligible 797 时 confirmed 不超过 typed facts，shortfall=203 明确可见。
+5. 某账号 `PEER_INVALID + remote_mutation=false` 时 Task 保持 running，当前 obligation 回到 open，只有该账号同 Task 的未开始执行被放弃；其他账号仍可成功并生成 `ViewRemoteFact`。
+6. `remote_mutation=true|unknown` 的失败/未知浏览保留 obligation 绑定并显示 unknown，不允许重新物化；独立权威目标终态仍会 fence 全 Task。
 
 ### Recovery
 
@@ -140,4 +151,4 @@ AI 与浏览已经先计算 `due_by_now`，但当前批次再次调用 6 小时�
 | QA/发布/E4 | 有本地、CI、部署、persistence 与 typed remote fact 分层验收 |
 | 迁移/回滚 | 无 schema 迁移；apply 后禁止回滚旧 writer，明确前向修复边界 |
 
-结论：`product_design_complete`。可以交给 dev 实现本次生产止血；完整长期专项仍保持独立未完成状态，不能被本次 E4 误报为全部架构接管完成。
+结论：`product_design_complete`。2026-08-11 已 resync 坏账号/过期执行与频道实体解析失败边界，可以交给 dev 实现本次生产止血；完整长期专项仍保持独立未完成状态，不能被本次 E4 误报为全部架构接管完成。
