@@ -111,6 +111,8 @@
   - 85 个浏览/fact-first/gateway/schedule/E4 聚焦回归通过，3 deselected；Python 编译、YAML 解析和 diff check 通过。完整 no_postgres 仍受 60 秒硬门禁约束，由 CI 全量执行。
   - 首次 Release A CI `31485029553` 的 PostgreSQL 分区在北京时间 19:07 暴露 4 个浏览 Planner 时间相关失败：aware UTC deadline 被错误附着到 naive 北京时间，16:00 后误判越过次日 00:00；这不是本次 PEER 分类回归，但会阻断晚间 Planner。
   - 修复 PostgreSQL aware UTC deadline 到北京时间 wall-clock 的显式转换，并新增 19:00 北京/16:00 UTC deadline 红测；4 项 Release A 定向回归通过，准备重新发布。
+  - 第二次 CI `31485715495` 证明转换必须覆盖 legacy reservation 与 AI Gateway 前截止守卫：PostgreSQL 出现 naive/aware TypeError，no_postgres 晚间 AI 用例被同一 UTC-storage 误判跳过。
+  - 抽取 `utc_storage_as_beijing_wall`，统一 current/legacy 浏览 schedule/reservation/capacity guard 与 AI dispatch deadline；修正测试 fixture 使用真实 UTC storage。原 7 个 no_postgres 失败、浏览动态规划及新时区红测共 9 项通过，扩展聚焦 20 项通过。
 
 ## 5-Question Reboot Check
 

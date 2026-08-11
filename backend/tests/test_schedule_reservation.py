@@ -193,8 +193,9 @@ def test_due_schedule_compares_naive_utc_ledger_deadline_as_beijing_wall_time() 
 
 def test_channel_view_skips_account_capacity_time_after_deadline(monkeypatch) -> None:
     now_value = datetime(2026, 8, 10, 23, 50)
-    deadline = datetime(2026, 8, 10, 23, 59, 59)
-    task, message, context = _deadline_view_fixture(deadline)
+    local_deadline = datetime(2026, 8, 10, 23, 59, 59)
+    stored_utc_deadline = datetime(2026, 8, 10, 15, 59, 59)
+    task, message, context = _deadline_view_fixture(stored_utc_deadline)
     monkeypatch.setattr(channel_view, "_now", lambda: now_value)
     monkeypatch.setattr(channel_view, "schedule_times", lambda *_args, **_kwargs: [now_value])
     monkeypatch.setattr(
@@ -205,7 +206,7 @@ def test_channel_view_skips_account_capacity_time_after_deadline(monkeypatch) ->
     monkeypatch.setattr(
         channel_view,
         "adjust_for_account_hour_limit",
-        lambda *_args, **_kwargs: deadline + timedelta(seconds=1),
+        lambda *_args, **_kwargs: local_deadline + timedelta(seconds=1),
     )
     ensure = Mock()
     monkeypatch.setattr(channel_view, "ensure_view_obligation", ensure)

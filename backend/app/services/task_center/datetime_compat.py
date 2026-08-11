@@ -27,6 +27,12 @@ def to_zone(value: datetime, zone: tzinfo | None = None) -> datetime:
     return ensure_aware(value, default_zone=target).astimezone(target)
 
 
+def utc_storage_as_beijing_wall(value: datetime) -> datetime:
+    """Convert a PostgreSQL/SQLite UTC storage timestamp to Beijing wall time."""
+    source = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    return source.astimezone(BEIJING_TZ).replace(tzinfo=None)
+
+
 def compare_datetimes(left: datetime, right: datetime, *, default_zone: ZoneInfo | None = None) -> int:
     """Return -1/0/1 for left < / == / > right using a common zone."""
     zone = default_zone or BEIJING_TZ
@@ -62,4 +68,5 @@ __all__ = [
     "is_before",
     "parse_zone",
     "to_zone",
+    "utc_storage_as_beijing_wall",
 ]

@@ -1076,7 +1076,11 @@ def _skip_expired_ai_task_day_action(
     if quantity_slot is None:
         return False
     ledger = session.get(TaskDayLedger, quantity_slot.task_day_ledger_id)
-    if ledger is None or not is_after_or_equal(_now(), ledger.deadline_at):
+    if ledger is None:
+        return False
+    from .datetime_compat import utc_storage_as_beijing_wall
+
+    if _now() < utc_storage_as_beijing_wall(ledger.deadline_at):
         return False
     if _gateway_call_started(session, action):
         _mark_unknown_after_send(

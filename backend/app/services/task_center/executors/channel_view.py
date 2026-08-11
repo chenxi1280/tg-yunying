@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from sqlalchemy.orm import Session
 
@@ -13,7 +13,6 @@ from app.models import (
     TaskDayLedger,
 )
 from app.services._common import _now
-from app.timezone import BEIJING_TZ
 
 from ..account_pool import select_task_accounts
 from ..channel_fulfillment import (
@@ -32,6 +31,7 @@ from ..channel_view_targets import (
     target_messages,
 )
 from ..daily_ledgers import ensure_task_day_ledger
+from ..datetime_compat import utc_storage_as_beijing_wall
 from ..fulfillment_activation import CURRENT_CONTRACT_VERSION
 from ..pacing import schedule_due_times, schedule_times
 from ..payloads import ViewMessagePayload, create_view_action
@@ -228,20 +228,20 @@ def _view_schedule_times(
     deadline_at: datetime,
 ) -> list[datetime]:
     now_value = _now()
+    local_deadline = _ledger_deadline_for_planned_at(deadline_at, now_value)
     if getattr(task, "fulfillment_contract_version", None) == CURRENT_CONTRACT_VERSION:
         return schedule_due_times(
             count,
             task.pacing_config or {},
             start_at=now_value,
-            deadline_at=deadline_at,
+            deadline_at=local_deadline,
             timezone_name=task.timezone,
-            deadline_is_utc=True,
         )
     times = schedule_times(
         count,
         task.pacing_config or {},
         start_at=now_value,
-        deadline_at=deadline_at,
+        deadline_at=local_deadline,
         preserve_minimum_spacing=False,
     )
     return reserve_task_schedule_times(
@@ -250,7 +250,7 @@ def _view_schedule_times(
         "view_message",
         times,
         pacing_config=task.pacing_config or {},
-        deadline_at=deadline_at,
+        deadline_at=local_deadline,
         enforce_task_spacing=False,
     )
 
@@ -331,14 +331,10 @@ def _ledger_deadline_for_planned_at(
     deadline_at: datetime,
     planned_at: datetime,
 ) -> datetime:
-    source = (
-        deadline_at
-        if deadline_at.tzinfo is not None
-        else deadline_at.replace(tzinfo=timezone.utc)
-    )
+    local_wall = utc_storage_as_beijing_wall(deadline_at)
     if planned_at.tzinfo is None:
-        return source.astimezone(BEIJING_TZ).replace(tzinfo=None)
-    return source.astimezone(planned_at.tzinfo)
+        return local_wall
+    return local_wall.replace(tzinfo=planned_at.tzinfo)
 
 
 @dataclass(frozen=True)
