@@ -1,0 +1,132 @@
+name: Production AI Cross-Deadline Recovery
+
+'on':
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Preview first; apply requires the exact preview state hash
+        required: true
+        type: choice
+        options:
+          - preview
+          - apply
+      task_ids:
+        description: Comma-separated exact AI task UUIDs
+        required: true
+        type: string
+      deployed_sha:
+        description: Full 40-character production release SHA
+        required: true
+        type: string
+      expected_state_hash:
+        description: Required for apply; exact SHA-256 from preview
+        required: false
+        default: ''
+        type: string
+      actor:
+        description: Audited operator identity
+        required: true
+        type: string
+      approval_ref:
+        description: Incident or approval reference
+        required: true
+        type: string
+
+concurrency:
+  group: production-ai-cross-deadline-recovery
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    environment: production-silicon-valley
+    steps:
+      - name: Validate exact recovery inputs
+        env:
+          OPERATION: ${{ inputs.operation }}
+          TASK_IDS: ${{ inputs.task_ids }}
+          DEPLOYED_SHA: ${{ inputs.deployed_sha }}
+          EXPECTED_STATE_HASH: ${{ inputs.expected_state_hash }}
+          ACTOR: ${{ inputs.actor }}
+          APPROVAL_REF: ${{ inputs.approval_ref }}
+        run: |
+          set -euo pipefail
+          [[ "${OPERATION}" == preview || "${OPERATION}" == apply ]]
+          [[ "${TASK_IDS}" =~ ^[0-9a-fA-F-]+(,[0-9a-fA-F-]+)*$ ]]
+          [[ "${DEPLOYED_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${ACTOR}" =~ ^[A-Za-z0-9._@-]+$ ]]
+          [[ "${APPROVAL_REF}" =~ ^[A-Za-z0-9._:/-]+$ ]]
+          if [[ "${OPERATION}" == apply ]]; then
+            [[ "${EXPECTED_STATE_HASH}" =~ ^[0-9a-f]{64}$ ]]
+          else
+            test -z "${EXPECTED_STATE_HASH}"
+          fi
+
+      - name: Configure production SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SILICON_VALLEY_PRODUCTION_SSH_PRIVATE_KEY }}
+          DEPLOY_HOST: ${{ secrets.SILICON_VALLEY_PRODUCTION_HOST }}
+          DEPLOY_USER: ${{ secrets.SILICON_VALLEY_PRODUCTION_USER }}
+          DEPLOY_PORT: ${{ secrets.SILICON_VALLEY_PRODUCTION_PORT }}
+          SSH_CONNECT_TIMEOUT: ${{ vars.SSH_CONNECT_TIMEOUT }}
+        run: |
+          set -euo pipefail
+          test -n "${SSH_PRIVATE_KEY}"
+          test -n "${DEPLOY_HOST}"
+          test -n "${DEPLOY_USER}"
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${SSH_PRIVATE_KEY}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<EOF
+          Host silicon-valley-production-server
+            HostName ${DEPLOY_HOST}
+            User ${DEPLOY_USER}
+            Port ${DEPLOY_PORT:-22}
+            IdentityFile ~/.ssh/id_ed25519
+            IdentitiesOnly yes
+            StrictHostKeyChecking accept-new
+            ConnectTimeout ${SSH_CONNECT_TIMEOUT:-60}
+            ConnectionAttempts 3
+            ServerAliveInterval 15
+            ServerAliveCountMax 8
+          EOF
+          chmod 600 ~/.ssh/config
+
+      - name: Verify deployed immutable release
+        env:
+          PRODUCTION_BASE_DIR: ${{ vars.SILICON_VALLEY_PRODUCTION_BASE_DIR }}
+          DEPLOYED_SHA: ${{ inputs.deployed_sha }}
+        run: |
+          set -euo pipefail
+          BASE_DIR="${PRODUCTION_BASE_DIR:-/data/tgyunying}"
+          CURRENT_RELEASE="$(ssh silicon-valley-production-server "readlink -f '${BASE_DIR}/current'")"
+          [[ "$(basename "${CURRENT_RELEASE}")" == *_"${DEPLOYED_SHA:0:8}" ]]
+          echo "AI_CROSS_DEADLINE_RELEASE=${CURRENT_RELEASE}"
+
+      - name: Run preview or guarded apply
+        env:
+          OPERATION: ${{ inputs.operation }}
+          TASK_IDS: ${{ inputs.task_ids }}
+          DEPLOYED_SHA: ${{ inputs.deployed_sha }}
+          EXPECTED_STATE_HASH: ${{ inputs.expected_state_hash }}
+          ACTOR: ${{ inputs.actor }}
+          APPROVAL_REF: ${{ inputs.approval_ref }}
+        run: |
+          set -euo pipefail
+          TASK_ARGS=""
+          IFS=',' read -ra IDS <<< "${TASK_IDS}"
+          for task_id in "${IDS[@]}"; do
+            TASK_ARGS+=" --task-id ${task_id}"
+          done
+          APPLY_ARGS=""
+          if [[ "${OPERATION}" == apply ]]; then
+            APPLY_ARGS="--apply --expected-state-hash ${EXPECTED_STATE_HASH}"
+          fi
+          ssh silicon-valley-production-server "timeout 300 docker exec tgyunying-backend \
+            python -m scripts.recover_ai_cross_deadline_actions \
+            ${TASK_ARGS} --deployed-sha ${DEPLOYED_SHA} ${APPLY_ARGS} \
+            --actor ${ACTOR} --approval-ref ${APPROVAL_REF}"

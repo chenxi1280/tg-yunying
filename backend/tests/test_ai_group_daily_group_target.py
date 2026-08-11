@@ -22,6 +22,7 @@ from app.models import (
     TaskAccountDailyCoverage,
     TaskDayLedger,
     TaskGroupDailyMessageSlot,
+    TaskGroupBotAdmission,
     TaskMembershipAdmissionItem,
     Tenant,
     TgAccount,
@@ -906,3 +907,75 @@ def test_open_volume_counts_only_group_bot_plannable_actions(session: Session) -
     session.flush()
 
     assert group_ai_chat._valid_open_daily_send_count(session, task) == 1
+
+
+def test_current_open_volume_uses_task_scoped_owner_not_legacy_admission(
+    session: Session,
+) -> None:
+    task, group = _seed(session, configured=3, account_count=3)
+    task.fulfillment_contract_version = "fact_first_v3"
+    ledger = ensure_task_day_ledger(session, task, now=datetime(2026, 7, 28, 12))
+    slots = session.query(TaskGroupDailyMessageSlot).filter_by(
+        task_day_ledger_id=ledger.id,
+    ).order_by(TaskGroupDailyMessageSlot.slot_ordinal).all()
+    for account_id, state in ((1, "observing"), (2, "requirements_pending"), (3, "ready")):
+        session.add(TaskGroupBotAdmission(
+            tenant_id=1,
+            task_id=task.id,
+            account_id=account_id,
+            target_group_id=group.id,
+            state=state,
+            no_prompt_pass_at=datetime(2026, 7, 28, 12, 1),
+            surface_identity_hash=f"surface-{account_id}",
+            surface_identity={},
+        ))
+        session.add(Action(
+            id=f"current-open-{account_id}",
+            tenant_id=1,
+            task_id=task.id,
+            task_type="group_ai_chat",
+            action_type="send_message",
+            account_id=account_id,
+            status="pending",
+            primary_quantity_slot_id=slots[account_id - 1].id,
+            payload={"group_id": group.id},
+        ))
+    session.flush()
+
+    assert session.query(GroupBotAdmission).count() == 0
+    assert group_ai_chat._valid_open_daily_send_count(session, task, ledger.id) == 3
+
+
+def test_current_due_state_does_not_recreate_already_open_quantity(
+    session: Session,
+) -> None:
+    task, group = _seed(session, configured=4, account_count=4)
+    task.fulfillment_contract_version = "fact_first_v3"
+    timestamp = datetime(2026, 7, 28, 12)
+    ledger = ensure_task_day_ledger(session, task, now=timestamp)
+    slots = session.query(TaskGroupDailyMessageSlot).filter_by(
+        task_day_ledger_id=ledger.id,
+    ).order_by(TaskGroupDailyMessageSlot.slot_ordinal).all()
+    for account_id in (1, 2):
+        session.add(Action(
+            id=f"held-current-{account_id}",
+            tenant_id=1,
+            task_id=task.id,
+            task_type="group_ai_chat",
+            action_type="send_message",
+            account_id=account_id,
+            status="pending",
+            primary_quantity_slot_id=slots[account_id - 1].id,
+            payload={"group_id": group.id},
+        ))
+    session.flush()
+
+    _target, due, volume_need = group_ai_chat._daily_group_due_state(
+        session,
+        task,
+        group,
+        timestamp=timestamp,
+    )
+
+    assert due == 2
+    assert volume_need == 0

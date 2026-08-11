@@ -337,7 +337,7 @@ def test_direct_claim_separates_search_lane_and_waits_for_ai_generation(
     assert session.get(Action, "lane-ai-pending").status == "pending"
 
 
-def test_fact_first_ai_slot_ignores_legacy_capacity_without_overwriting_schedule(
+def test_fact_first_ai_slot_uses_current_due_time_without_legacy_capacity(
     session: Session,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -373,7 +373,7 @@ def test_fact_first_ai_slot_ignores_legacy_capacity_without_overwriting_schedule
     schedule = group_ai_chat._schedule_times_for_plan(session, task, {}, 3, mode="正常期")
     assert schedule[0] == now_value
     assert schedule == sorted(schedule)
-    assert len(set(schedule)) == 3
+    assert schedule == [now_value] * 3
 
 
 @pytest.mark.parametrize(

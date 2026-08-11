@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 import random
-from datetime import datetime, time, timedelta
+from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from app.services._common import _now
@@ -321,6 +321,62 @@ def schedule_times(
     )
 
 
+def schedule_due_times(
+    total_actions: int,
+    config: dict,
+    *,
+    start_at: datetime | None = None,
+    deadline_at: datetime | None = None,
+    timezone_name: str | None = None,
+    deadline_is_utc: bool = False,
+) -> list[datetime]:
+    if total_actions <= 0:
+        return []
+    earliest = _next_active_time(
+        start_at or _now(),
+        config or {},
+        timezone_name=timezone_name,
+    )
+    deadline = _schedule_deadline(
+        deadline_at,
+        earliest,
+        deadline_is_utc=deadline_is_utc,
+    )
+    if not _before_half_open_deadline(earliest, deadline):
+        return []
+    return [earliest for _ in range(total_actions)]
+
+
+def _schedule_deadline(
+    deadline_at: datetime | None,
+    reference: datetime,
+    *,
+    deadline_is_utc: bool,
+) -> datetime | None:
+    if deadline_at is None or not deadline_is_utc:
+        return deadline_at
+    source = deadline_at if deadline_at.tzinfo else deadline_at.replace(tzinfo=timezone.utc)
+    if reference.tzinfo is None:
+        return source.astimezone(BEIJING_TZ).replace(tzinfo=None)
+    return source.astimezone(reference.tzinfo)
+
+
+def _before_half_open_deadline(
+    value: datetime,
+    deadline_at: datetime | None,
+) -> bool:
+    if deadline_at is None:
+        return True
+    deadline = deadline_at
+    if value.tzinfo is None and deadline.tzinfo is not None:
+        deadline = deadline.replace(tzinfo=None)
+    elif value.tzinfo is not None and deadline.tzinfo is None:
+        deadline = deadline.replace(tzinfo=value.tzinfo)
+    elif value.tzinfo is not None and deadline.tzinfo is not None:
+        deadline = deadline.astimezone(value.tzinfo)
+    return value < deadline
+
+
 def _initial_schedule_times(total_actions: int, config: dict, now: datetime) -> list[datetime]:
     mode = config.get("mode") or "template"
     if mode == "fixed" and fixed_interval_is_immediate(config):
@@ -484,6 +540,7 @@ __all__ = [
     "next_run_after",
     "operation_intensity",
     "quiet_hours_active",
+    "schedule_due_times",
     "schedule_times",
     "source_rolling_pacing_due",
     "task_pacing_anchor",

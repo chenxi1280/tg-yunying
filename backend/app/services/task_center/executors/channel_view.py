@@ -31,7 +31,8 @@ from ..channel_view_targets import (
     target_messages,
 )
 from ..daily_ledgers import ensure_task_day_ledger
-from ..pacing import schedule_times
+from ..fulfillment_activation import CURRENT_CONTRACT_VERSION
+from ..pacing import schedule_due_times, schedule_times
 from ..payloads import ViewMessagePayload, create_view_action
 from ..schedule_reservation import reserve_task_schedule_times
 from .common import adjust_for_account_hour_limit, channel_message_payload, channel_scope, quantity_jitter_bounds, record_channel_capacity_warning
@@ -226,6 +227,15 @@ def _view_schedule_times(
     deadline_at: datetime,
 ) -> list[datetime]:
     now_value = _matching_datetime(_now(), deadline_at)
+    if getattr(task, "fulfillment_contract_version", None) == CURRENT_CONTRACT_VERSION:
+        return schedule_due_times(
+            count,
+            task.pacing_config or {},
+            start_at=now_value,
+            deadline_at=deadline_at,
+            timezone_name=task.timezone,
+            deadline_is_utc=True,
+        )
     times = schedule_times(
         count,
         task.pacing_config or {},

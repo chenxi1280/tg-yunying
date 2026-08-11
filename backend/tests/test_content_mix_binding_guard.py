@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from datetime import datetime
 
 import pytest
 from sqlalchemy.dialects import postgresql
@@ -11,6 +12,7 @@ from app.models import (
     ContentMixCycle,
     ContentMixCycleSlot,
     TaskAccountDailyCoverage,
+    TaskDayLedger,
     TaskGroupDailyMessageSlot,
 )
 from app.services.task_center import dispatcher
@@ -114,6 +116,43 @@ def test_deadline_budget_exhaustion_terminates_slot_without_replan(
     assert cycle_slot.slot_state == "terminal"
     assert quantity.state == "terminal"
     assert effects == ["shortfall", "reconcile"]
+
+
+def test_expired_ai_task_day_is_skipped_before_gateway_and_not_replanned(
+    monkeypatch,
+) -> None:
+    action, session = _valid_binding()
+    deadline = datetime(2026, 8, 11, 0, 0)
+    session.rows[(TaskDayLedger, "ledger-1")] = SimpleNamespace(
+        id="ledger-1",
+        deadline_at=deadline,
+    )
+    monkeypatch.setattr(dispatcher, "_now", lambda: deadline)
+    monkeypatch.setattr(
+        dispatcher,
+        "_shortfall_action_content_obligations",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        dispatcher,
+        "_sync_action_coverage_state",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        dispatcher,
+        "_reconcile_content_mix_for_slot",
+        lambda *_args: None,
+    )
+
+    handled = dispatcher._skip_expired_ai_task_day_action(session, action)
+
+    cycle_slot = session.rows[(ContentMixCycleSlot, "cycle-slot-1")]
+    quantity = session.rows[(TaskGroupDailyMessageSlot, "quantity-1")]
+    assert handled is True
+    assert action.status == "skipped"
+    assert action.result["error_code"] == "ai_task_day_deadline_expired"
+    assert cycle_slot.slot_state == "terminal"
+    assert quantity.state == "terminal"
 
 
 def test_dispatch_finally_tolerates_missing_authoritative_quantity(

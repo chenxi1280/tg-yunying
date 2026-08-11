@@ -118,6 +118,7 @@ from ..legacy_anchor_rewrite import (
 from ..pacing import (
     current_hour_rounds,
     operation_intensity,
+    schedule_due_times,
     schedule_times,
     task_pacing_anchor,
 )
@@ -185,6 +186,7 @@ class CoveragePlanState:
     due_message_count: int = 0
     confirmed_message_count: int = 0
     volume_need_now: int = 0
+    deadline_at: datetime | None = None
 
 
 CHAT_MODE_REPLY = "reply"
@@ -1124,6 +1126,7 @@ def _load_turn_plan(
         facts.hard_progress,
         turn_count,
         mode=context.mode,
+        deadline_at=facts.coverage.deadline_at,
     )
     turn_count, _times = _limit_context_bound_turns(
         task,
@@ -1319,6 +1322,7 @@ def _finalize_generation_schedule(
         facts.hard_progress,
         len(quality_items),
         mode=context.mode,
+        deadline_at=facts.coverage.deadline_at,
     )
     quality_items, times = _limit_context_bound_quality_schedule(
         task,
@@ -3170,7 +3174,7 @@ def _coverage_plan_state(
         ensure_task_day_ledger(session, task, now=timestamp)
         return CoveragePlanState(rows=[], rows_by_account={}, due_debt=0)
     bootstrap_missing_all_account_task_scope(session, task, now=timestamp)
-    ensure_task_day_ledger(session, task, now=timestamp)
+    ledger = ensure_task_day_ledger(session, task, now=timestamp)
     ensure_task_daily_coverage(
         session,
         task,
@@ -3200,6 +3204,7 @@ def _coverage_plan_state(
         due_message_count=due_message_count,
         volume_need=volume_need,
         effective_due_debt=effective_due_debt,
+        deadline_at=ledger.deadline_at,
     )
 
 
@@ -3228,7 +3233,7 @@ def _daily_group_due_state(
         0,
         due_message_count
         - target.confirmed_message_count
-        - _valid_open_daily_send_count(session, task),
+        - _valid_open_daily_send_count(session, task, target.task_day_ledger_id),
     )
     record_daily_fulfillment_decision(
         session,
@@ -3263,6 +3268,7 @@ def _build_coverage_plan_state(
     due_message_count: int,
     volume_need: int,
     effective_due_debt: int,
+    deadline_at: datetime,
 ) -> CoveragePlanState:
     return CoveragePlanState(
         rows=rows,
@@ -3281,6 +3287,7 @@ def _build_coverage_plan_state(
         due_message_count=due_message_count,
         confirmed_message_count=target.confirmed_message_count,
         volume_need_now=volume_need,
+        deadline_at=deadline_at,
     )
 
 
@@ -3295,13 +3302,28 @@ def _effective_coverage_due_debt(
     return max(0, int(coverage_due_debt))
 
 
-def _valid_open_daily_send_count(session: Session, task: Task) -> int:
+def _valid_open_daily_send_count(
+    session: Session,
+    task: Task,
+    task_day_ledger_id: str | None = None,
+) -> int:
     statement = select(func.count(Action.id)).where(
         Action.tenant_id == task.tenant_id,
         Action.task_id == task.id,
         Action.action_type == "send_message",
         Action.status.in_(("pending", "claiming", "executing", "unknown_after_send")),
     )
+    if task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION:
+        if not task_day_ledger_id:
+            return 0
+        statement = statement.join(
+            TaskGroupDailyMessageSlot,
+            TaskGroupDailyMessageSlot.id == Action.primary_quantity_slot_id,
+        ).where(
+            TaskGroupDailyMessageSlot.task_day_ledger_id == task_day_ledger_id,
+            TaskGroupDailyMessageSlot.state.in_(("open", "unknown")),
+        )
+        return int(session.scalar(statement) or 0)
     config = task.type_config if isinstance(task.type_config, dict) else {}
     required = _group_bot_admission_requirement(config)
     group_id = int(config.get("target_group_id") or 0)
@@ -3359,7 +3381,9 @@ def requires_planning_with_open_actions(session: Session, task: Task) -> bool:
     )
     volume_need = max(
         0,
-        due - target.confirmed_message_count - _valid_open_daily_send_count(session, task),
+        due
+        - target.confirmed_message_count
+        - _valid_open_daily_send_count(session, task, target.task_day_ledger_id),
     )
     return summary.ready_to_plan_count > 0 or volume_need > 0
 
@@ -4080,7 +4104,17 @@ def _schedule_times_for_plan(
     total: int,
     *,
     mode: str,
+    deadline_at: datetime | None = None,
 ) -> list[datetime]:
+    if task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION:
+        return schedule_due_times(
+            total,
+            task.pacing_config or {},
+            start_at=_now(),
+            deadline_at=deadline_at,
+            timezone_name=task.timezone,
+            deadline_is_utc=True,
+        )
     hard_times = _hard_hourly_schedule(task, progress, total)
     if hard_times:
         return hard_times
