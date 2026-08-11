@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session
 
@@ -13,6 +13,7 @@ from app.models import (
     TaskDayLedger,
 )
 from app.services._common import _now
+from app.timezone import BEIJING_TZ
 
 from ..account_pool import select_task_accounts
 from ..channel_fulfillment import (
@@ -226,7 +227,7 @@ def _view_schedule_times(
     *,
     deadline_at: datetime,
 ) -> list[datetime]:
-    now_value = _matching_datetime(_now(), deadline_at)
+    now_value = _now()
     if getattr(task, "fulfillment_contract_version", None) == CURRENT_CONTRACT_VERSION:
         return schedule_due_times(
             count,
@@ -264,7 +265,10 @@ def _create_scheduled_view_action(session: Session, request: "ViewActionRequest"
         request.scheduled_at,
         context.config,
     )
-    deadline_at = _matching_datetime(context.ledger.deadline_at, planned_at)
+    deadline_at = _ledger_deadline_for_planned_at(
+        context.ledger.deadline_at,
+        planned_at,
+    )
     if planned_at >= deadline_at:
         _record_deadline_capacity_blocker(request.task, planned_at, deadline_at)
         return 0
@@ -323,12 +327,18 @@ def _record_deadline_capacity_blocker(
     task.last_error = "账号容量可用时刻已越过当前浏览任务日截止时间，未创建跨日 Action"
 
 
-def _matching_datetime(value: datetime, reference: datetime) -> datetime:
-    if reference.tzinfo is None:
-        return value.replace(tzinfo=None)
-    if value.tzinfo is None:
-        return value.replace(tzinfo=reference.tzinfo)
-    return value.astimezone(reference.tzinfo)
+def _ledger_deadline_for_planned_at(
+    deadline_at: datetime,
+    planned_at: datetime,
+) -> datetime:
+    source = (
+        deadline_at
+        if deadline_at.tzinfo is not None
+        else deadline_at.replace(tzinfo=timezone.utc)
+    )
+    if planned_at.tzinfo is None:
+        return source.astimezone(BEIJING_TZ).replace(tzinfo=None)
+    return source.astimezone(planned_at.tzinfo)
 
 
 @dataclass(frozen=True)
