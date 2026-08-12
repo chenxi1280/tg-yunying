@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -50,6 +50,17 @@ def restart_task_day_admission(
     )
 
 
+def restart_stale_confirmation_observation(
+    session: Session,
+    admission: TaskGroupBotAdmission,
+) -> bool:
+    return _restart_admission_observation(
+        session,
+        admission,
+        outcome="group_bot_confirmation_source_stale",
+    )
+
+
 def _restart_admission_observation(
     session: Session,
     admission: TaskGroupBotAdmission,
@@ -72,7 +83,19 @@ def _restart_admission_observation(
         end_cursor=cursor,
         observation_version=int(admission.observation_version or 1) + 1,
     )
-    _apply_restart(admission, identity=identity, now_value=now_value)
+    expected_version = int(admission.version or 1)
+    updated_id = session.scalar(
+        update(TaskGroupBotAdmission)
+        .where(
+            TaskGroupBotAdmission.id == admission.id,
+            TaskGroupBotAdmission.version == expected_version,
+        )
+        .values(**_restart_values(admission, identity=identity, now_value=now_value))
+        .returning(TaskGroupBotAdmission.id)
+    )
+    session.refresh(admission)
+    if updated_id is None:
+        return False
     record_fact(session, admission, "post_follow_visibility", outcome={
         "outcome": outcome,
         "surface_identity_hash": admission.surface_identity_hash,
@@ -122,17 +145,19 @@ def _account_can_be_observed(account: TgAccount | None) -> bool:
     )
 
 
-def _apply_restart(admission, *, identity: dict, now_value) -> None:
-    admission.state = "observing"
-    admission.observation_version = int(admission.observation_version or 1) + 1
-    admission.observation_started_at = now_value
-    admission.no_prompt_pass_at = now_value + timedelta(seconds=OBSERVATION_SECONDS)
-    admission.observation_gap = False
-    admission.surface_identity = identity
-    admission.surface_identity_hash = fact_hash(identity)
-    admission.terminal_reason = ""
-    admission.terminal_evidence = {}
-    admission.version = int(admission.version or 1) + 1
+def _restart_values(admission, *, identity: dict, now_value) -> dict[str, object]:
+    return {
+        "state": "observing",
+        "observation_version": int(admission.observation_version or 1) + 1,
+        "observation_started_at": now_value,
+        "no_prompt_pass_at": now_value + timedelta(seconds=OBSERVATION_SECONDS),
+        "observation_gap": False,
+        "surface_identity": identity,
+        "surface_identity_hash": fact_hash(identity),
+        "terminal_reason": "",
+        "terminal_evidence": {},
+        "version": int(admission.version or 1) + 1,
+    }
 
 
 def _reopen_coverages(
@@ -161,5 +186,6 @@ def _reopen_coverages(
 __all__ = [
     "reopen_unproven_task_coverages",
     "restart_task_day_admission",
+    "restart_stale_confirmation_observation",
     "restart_unproven_admission",
 ]

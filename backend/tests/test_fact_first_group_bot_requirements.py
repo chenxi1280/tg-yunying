@@ -421,6 +421,16 @@ def test_task_confirmation_waits_for_follow_then_uses_task_scope(
         ))
         monkeypatch.setattr(
             dispatcher.gateway,
+            "fetch_group_message",
+            lambda *_args, **_kwargs: message,
+        )
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "fetch_group_messages",
+            lambda *_args, **_kwargs: [message],
+        )
+        monkeypatch.setattr(
+            dispatcher.gateway,
             "click_group_bot_confirmation_button",
             lambda *_args, **_kwargs: OperationResult(
                 True,

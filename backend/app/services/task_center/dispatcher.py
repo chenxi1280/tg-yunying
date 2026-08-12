@@ -106,6 +106,7 @@ from .executors.channel_comment_budget import (
 )
 from .group_rescue import GROUP_RESCUE_FAILURE_THRESHOLD, infer_rescue_admin_rate_limit, permission_failure_count_for_send_action, refresh_group_rescue_action, trigger_group_rescue
 from .group_bot_confirmation_refresh import (
+    LiveConfirmationRecipientAmbiguousError,
     LiveConfirmationRefreshContext,
     LiveConfirmationSourceFetchError,
     refresh_live_confirmation_source,
@@ -9055,8 +9056,6 @@ def _refresh_group_bot_confirmation_payload(
     credentials,
     payload,
 ):
-    if isinstance(admission, TaskGroupBotAdmission):
-        return payload
     try:
         refreshed_payload = refresh_live_confirmation_source(
             session,
@@ -9070,11 +9069,15 @@ def _refresh_group_bot_confirmation_payload(
                 payload=payload,
             ),
         )
+    except LiveConfirmationRecipientAmbiguousError as exc:
+        _defer_group_bot_confirmation_source(action, "recipient_ambiguous", str(exc))
+        return None
     except LiveConfirmationSourceFetchError as exc:
         _defer_group_bot_confirmation_source(action, "group_bot_confirmation_live_fetch_failed", str(exc))
         return None
     if refreshed_payload is None:
         _retire_stale_group_bot_confirmation_source(
+            session,
             action,
             admission=admission,
             payload=payload,
@@ -9112,6 +9115,7 @@ def _click_refreshed_group_bot_confirmation(
     )
     if not result.ok and "group_bot_confirmation_button_mismatch" in (result.detail or ""):
         _retire_stale_group_bot_confirmation_source(
+            session,
             action,
             admission=admission,
             payload=payload,
@@ -9146,13 +9150,21 @@ def _defer_group_bot_confirmation_source(action: Action, code: str, detail: str)
     }
 
 
-def _retire_stale_group_bot_confirmation_source(action: Action, *, admission, payload, detail: str) -> None:
+def _retire_stale_group_bot_confirmation_source(
+    session: Session,
+    action: Action,
+    *,
+    admission,
+    payload,
+    detail: str,
+) -> None:
     stale_source = str(getattr(payload, "source_message_id", "") or "")
     if isinstance(admission, TaskGroupBotAdmission):
         identity = dict(admission.surface_identity or {})
         if identity.get("requirement_source_message_id") == stale_source:
-            identity["requirement_source_message_id"] = ""
-            admission.surface_identity = identity
+            from .task_group_bot_admission_recovery import restart_stale_confirmation_observation
+
+            restart_stale_confirmation_observation(session, admission)
     elif str(admission.source_message_id or "") == stale_source:
         admission.source_message_id = ""
     _skip(action, "group_bot_confirmation_superseded", detail)
