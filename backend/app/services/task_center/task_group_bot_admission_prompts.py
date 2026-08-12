@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from app.models import Task, TaskGroupBotAdmission, TgAccount
@@ -41,7 +42,7 @@ def record_control_facts(
         record_fact(session, admission, "dynamic_channel_follow", outcome={
             "remote_message_id": str(getattr(message, "remote_message_id", "")),
             "sender_peer_id": str(getattr(message, "sender_peer_id", "")),
-            "source_fingerprint": _source_fingerprint(message),
+            "source_fingerprint": source_fingerprint(message),
             "content_hash": hashlib.sha256(
                 str(getattr(message, "content", "")).encode()
             ).hexdigest(),
@@ -102,22 +103,20 @@ def _materialize_task_requirements(
 ) -> bool:
     refs = parse_channel_refs(content, controls)
     button = confirmation_button(controls)
-    source_fingerprint = _source_fingerprint_values(message_id, bot_peer_id, content, controls)
+    source_fingerprint_value = _source_fingerprint_values(message_id, bot_peer_id, content, controls)
     identity = dict(admission.surface_identity or {})
-    if identity.get("requirement_source_fingerprint") == source_fingerprint:
+    if identity.get("requirement_source_fingerprint") == source_fingerprint_value:
         return True
-    next_version = int(admission.version or 1) + 1
+    expected_version = int(admission.version or 1)
     identity.update({
         "requirement_source_message_id": message_id,
-        "requirement_source_fingerprint": source_fingerprint,
+        "requirement_source_fingerprint": source_fingerprint_value,
         "requirement_bot_peer_id": bot_peer_id,
         "requirement_channel_refs": refs,
     })
-    admission.surface_identity = identity
-    admission.surface_identity_hash = fact_hash(identity)
-    admission.requirement_set_version = int(admission.requirement_set_version or 1) + 1
-    admission.version = next_version
-    admission.state = "requirements_pending"
+    if not _cas_requirement_source(session, admission, expected_version=expected_version, identity=identity):
+        current_identity = admission.surface_identity if isinstance(admission.surface_identity, dict) else {}
+        return current_identity.get("requirement_source_fingerprint") == source_fingerprint_value
     for ref in refs:
         _create_task_follow_action(
             session,
@@ -126,7 +125,7 @@ def _materialize_task_requirements(
             channel_ref=ref,
             source_url=source_channel_url_for_ref(controls, ref, content),
             source_message_id=message_id,
-            source_fingerprint=source_fingerprint,
+            source_fingerprint=source_fingerprint_value,
         )
     if button is not None:
         _create_task_confirmation_action(
@@ -134,12 +133,38 @@ def _materialize_task_requirements(
             task=task,
             admission=admission,
             source_message_id=message_id,
-            source_fingerprint=source_fingerprint,
+            source_fingerprint=source_fingerprint_value,
             bot_peer_id=bot_peer_id,
             button=button,
         )
     session.flush()
     return True
+
+
+def _cas_requirement_source(
+    session: Session,
+    admission: TaskGroupBotAdmission,
+    *,
+    expected_version: int,
+    identity: dict,
+) -> bool:
+    updated_id = session.scalar(
+        update(TaskGroupBotAdmission)
+        .where(
+            TaskGroupBotAdmission.id == admission.id,
+            TaskGroupBotAdmission.version == expected_version,
+        )
+        .values(
+            surface_identity=identity,
+            surface_identity_hash=fact_hash(identity),
+            requirement_set_version=int(admission.requirement_set_version or 1) + 1,
+            version=expected_version + 1,
+            state="requirements_pending",
+        )
+        .returning(TaskGroupBotAdmission.id)
+    )
+    session.refresh(admission)
+    return updated_id is not None
 
 
 def _create_task_follow_action(
@@ -207,7 +232,7 @@ def _create_task_confirmation_action(
     )
 
 
-def _source_fingerprint(message) -> str:
+def source_fingerprint(message) -> str:
     return _source_fingerprint_values(
         str(getattr(message, "remote_message_id", "") or ""),
         str(getattr(message, "sender_peer_id", "") or ""),
@@ -227,4 +252,4 @@ def _source_fingerprint_values(
     ).hexdigest()
 
 
-__all__ = ["record_control_facts"]
+__all__ = ["record_control_facts", "source_fingerprint"]
