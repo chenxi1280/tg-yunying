@@ -7,7 +7,14 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Action, GroupBotAdmission, GroupContextMessage, TgAccount, TgGroup
+from app.models import (
+    Action,
+    GroupBotAdmission,
+    GroupContextMessage,
+    TaskGroupBotAdmission,
+    TgAccount,
+    TgGroup,
+)
 from app.services.group_context_messages import try_insert_context_message
 
 from .group_bot_admission import (
@@ -27,7 +34,7 @@ GROUP_BOT_CONFIRMATION_LIVE_FETCH_LIMIT = 300
 @dataclass(frozen=True)
 class LiveConfirmationRefreshContext:
     action: Action
-    admission: GroupBotAdmission
+    admission: GroupBotAdmission | TaskGroupBotAdmission
     group: TgGroup
     account: TgAccount
     credentials: object
@@ -39,11 +46,15 @@ class LiveConfirmationSourceFetchError(RuntimeError):
     pass
 
 
+class LiveConfirmationRecipientAmbiguousError(RuntimeError):
+    pass
+
+
 def refresh_live_confirmation_source(
     session: Session,
     context: LiveConfirmationRefreshContext,
 ) -> GroupBotConfirmationButtonPayload | None:
-    match = _latest_matching_snapshot(context)
+    match = _latest_matching_snapshot(session, context)
     if match is None:
         return None
     snapshot, lookup = match
@@ -52,14 +63,17 @@ def refresh_live_confirmation_source(
     if button is None:
         return None
     _record_live_snapshot(session, context, snapshot, controls)
-    return _apply_live_source(context, snapshot, button, lookup=lookup)
+    return _apply_live_source(session, context, snapshot, button, lookup=lookup)
 
 
-def _latest_matching_snapshot(context: LiveConfirmationRefreshContext) -> tuple[object, str] | None:
+def _latest_matching_snapshot(
+    session: Session,
+    context: LiveConfirmationRefreshContext,
+) -> tuple[object, str] | None:
     for snapshot, lookup in _fetch_live_snapshots(context):
         if (
             _matches_trusted_confirmation_prompt(context, snapshot)
-            and _snapshot_belongs_to_bound_account(context, snapshot, lookup)
+            and _snapshot_belongs_to_bound_account(session, context, snapshot, lookup)
         ):
             return snapshot, lookup
     return None
@@ -110,7 +124,9 @@ def _matches_trusted_confirmation_prompt(context: LiveConfirmationRefreshContext
         return False
     if not is_group_bot_control_prompt(str(getattr(snapshot, "content", "") or ""), controls):
         return False
-    expected_refs = {item.casefold() for item in current_required_channel_refs(context.admission)}
+    if isinstance(context.admission, TaskGroupBotAdmission):
+        return confirmation_button(controls) is not None
+    expected_refs = {item.casefold() for item in _required_channel_refs(context.admission)}
     observed_refs = {
         item.casefold()
         for item in parse_channel_refs(str(getattr(snapshot, "content", "") or ""), controls)
@@ -118,24 +134,55 @@ def _matches_trusted_confirmation_prompt(context: LiveConfirmationRefreshContext
     return expected_refs == observed_refs and confirmation_button(controls) is not None
 
 
+def _required_channel_refs(admission: GroupBotAdmission | TaskGroupBotAdmission) -> list[str]:
+    if isinstance(admission, TaskGroupBotAdmission):
+        identity = admission.surface_identity if isinstance(admission.surface_identity, dict) else {}
+        return [str(item) for item in identity.get("requirement_channel_refs", [])]
+    return current_required_channel_refs(admission)
+
+
 def _snapshot_belongs_to_bound_account(
+    session: Session,
     context: LiveConfirmationRefreshContext,
     snapshot: object,
     lookup: str,
 ) -> bool:
     source_message_id = str(getattr(snapshot, "remote_message_id", "") or "")
     if lookup == "exact_source" or source_message_id == str(context.payload.source_message_id or ""):
-        return True
+        if not isinstance(context.admission, TaskGroupBotAdmission):
+            return True
+    candidates = _candidate_accounts(session, context)
     account_id, attribution = attribute_prompt_to_account(
         text=str(getattr(snapshot, "content", "") or ""),
-        waiting_account_ids=[int(context.account.id)],
-        account_usernames={int(context.account.id): str(context.account.username or "")},
-        account_display_names={int(context.account.id): str(context.account.display_name or "")},
+        waiting_account_ids=[int(item.id) for item in candidates],
+        account_usernames={int(item.id): str(item.username or "") for item in candidates},
+        account_display_names={int(item.id): str(item.display_name or "") for item in candidates},
         account_peer_ids={
             int(context.account.id): str(getattr(snapshot, "viewer_peer_id", "") or "")
         },
     )
+    if attribution == "explicit_recipient_ambiguous":
+        raise LiveConfirmationRecipientAmbiguousError("group bot confirmation recipient is ambiguous")
     return account_id == int(context.account.id) and attribution == "explicit_recipient_match"
+
+
+def _candidate_accounts(
+    session: Session,
+    context: LiveConfirmationRefreshContext,
+) -> list[TgAccount]:
+    if not isinstance(context.admission, TaskGroupBotAdmission):
+        return [context.account]
+    candidates = list(session.scalars(
+        select(TgAccount)
+        .join(TaskGroupBotAdmission, TaskGroupBotAdmission.account_id == TgAccount.id)
+        .where(
+            TaskGroupBotAdmission.tenant_id == context.action.tenant_id,
+            TaskGroupBotAdmission.target_group_id == context.admission.target_group_id,
+            TaskGroupBotAdmission.state.in_(("observing", "requirements_pending")),
+        )
+        .distinct()
+    ))
+    return candidates or [context.account]
 
 
 def _record_live_snapshot(
@@ -197,12 +244,13 @@ def _serialized_control(button: object) -> dict[str, object]:
 
 
 def _apply_live_source(
+    session: Session,
     context: LiveConfirmationRefreshContext,
     snapshot: object,
     button: dict[str, object],
     *,
     lookup: str,
-) -> GroupBotConfirmationButtonPayload:
+) -> GroupBotConfirmationButtonPayload | None:
     source_message_id = str(getattr(snapshot, "remote_message_id", "") or "")
     refreshed_data = {
         **context.payload.model_dump(mode="json"),
@@ -212,6 +260,8 @@ def _apply_live_source(
         "button_text": str(button["text"]),
     }
     refreshed = GroupBotConfirmationButtonPayload.model_validate(refreshed_data)
+    if isinstance(context.admission, TaskGroupBotAdmission):
+        return _apply_task_live_source(session, context, snapshot, refreshed, lookup=lookup)
     changed = context.action.payload != refreshed_data
     context.action.payload = refreshed_data
     context.admission.source_message_id = source_message_id
@@ -233,8 +283,49 @@ def _apply_live_source(
     return refreshed
 
 
+def _apply_task_live_source(
+    session: Session,
+    context: LiveConfirmationRefreshContext,
+    snapshot: object,
+    refreshed: GroupBotConfirmationButtonPayload,
+    *,
+    lookup: str,
+) -> GroupBotConfirmationButtonPayload | None:
+    source_message_id = str(getattr(snapshot, "remote_message_id", "") or "")
+    context.action.result = {
+        **(context.action.result or {}),
+        "group_bot_confirmation_live_source": {
+            "lookup": lookup,
+            "source_message_id": source_message_id,
+        },
+    }
+    from .task_group_bot_admission_prompts import record_control_facts, source_fingerprint
+
+    identity = context.admission.surface_identity if isinstance(context.admission.surface_identity, dict) else {}
+    same_source = source_message_id == str(context.payload.source_message_id or "")
+    same_fingerprint = source_fingerprint(snapshot) == identity.get("requirement_source_fingerprint")
+    if same_source and same_fingerprint:
+        context.action.payload = refreshed.model_dump(mode="json")
+        return refreshed
+
+    end_cursor = _numeric_cursor(source_message_id, identity.get("observed_end_cursor"))
+    if record_control_facts(session, context.admission, [snapshot], end_cursor=end_cursor) != 1:
+        return None
+    return None
+
+
+def _numeric_cursor(message_id: str, fallback: object) -> int:
+    for value in (message_id, fallback):
+        try:
+            return int(str(value or "0"))
+        except ValueError:
+            continue
+    return 0
+
+
 __all__ = [
     "LiveConfirmationRefreshContext",
+    "LiveConfirmationRecipientAmbiguousError",
     "LiveConfirmationSourceFetchError",
     "refresh_live_confirmation_source",
 ]
