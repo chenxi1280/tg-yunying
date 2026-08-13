@@ -2377,12 +2377,14 @@ def test_account_center_quick_searches_login_problem_accounts():
     assert "account.latest_login_flow" in accounts_view
     assert "登录失败：{loginFlow.failure_detail}" in accounts_view
     assert "hasLoginIssue(account)" in accounts_view
-    assert "flow?.failure_type || flow?.failure_detail" in accounts_view
+    assert "Boolean(flow?.failure_type || flow?.failure_detail)" not in accounts_view
     assert "account.authorization_summary.primary_status !== 'active'" in accounts_view
     assert "accountTable.setQuery('登录有问题')" in accounts_view
     assert "latest_login_flow: AccountLatestLoginFlow | null" in account_types
     assert "export type AccountLatestLoginFlow" in account_auth_types
-    assert "最近登录流水存在失败类型 / 失败详情" in (PROJECT_ROOT / "docs/01-product/tg-ops-platform-prd.md").read_text()
+    prd = (PROJECT_ROOT / "docs/01-product/tg-ops-platform-prd.md").read_text()
+    assert "最近登录流水的失败类型 / 失败详情只用于原因展示和文本搜索" in prd
+    assert "历史失败不得继续计入“登录有问题”总数" in prd
 
 
 def test_account_center_prd_documents_login_problem_quick_search_scope():

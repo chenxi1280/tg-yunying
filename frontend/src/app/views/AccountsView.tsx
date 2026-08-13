@@ -20,8 +20,7 @@ function accountHealthScore(account: Account, availabilityByAccountId: Map<numbe
   return availabilityByAccountId.get(account.id)?.health_score ?? account.health_score;
 }
 function hasLoginIssue(account: Account) {
-  const flow = account.latest_login_flow;
-  return LOGIN_PROBLEM_STATUSES.has(account.status) || account.authorization_summary.primary_status !== 'active' || Boolean(flow?.failure_type || flow?.failure_detail);
+  return LOGIN_PROBLEM_STATUSES.has(account.status) || account.authorization_summary.primary_status !== 'active';
 }
 
 interface Props {
