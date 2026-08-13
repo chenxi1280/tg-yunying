@@ -209,6 +209,48 @@ def test_scope_validator_rejects_own_history_without_successful_attempt():
     assert violation.field == "reply_to_message_id"
 
 
+def test_scope_validator_only_accepts_latest_successful_remote_message_id():
+    session = _session()
+    _seed_scope(session)
+    prior = _successful_own_history_action(remote_message_id="3721281")
+    session.add(prior)
+    session.flush()
+    session.add_all([
+        ExecutionAttempt(
+            action_id=prior.id,
+            attempt_no=1,
+            status="success",
+            remote_message_id="3721281",
+        ),
+        ExecutionAttempt(
+            action_id=prior.id,
+            attempt_no=2,
+            status="success",
+            remote_message_id="3721282",
+        ),
+    ])
+    current = _action(_payload(reply_to_message_id=3721281), action_id="current-stale-reply")
+    session.add(current)
+    session.commit()
+
+    stale = validate_group_ai_content_scope(
+        session,
+        current,
+        payload=_payload(reply_to_message_id=3721281),
+        account_id=11,
+    )
+    latest = validate_group_ai_content_scope(
+        session,
+        current,
+        payload=_payload(reply_to_message_id=3721282),
+        account_id=11,
+    )
+
+    assert stale is not None
+    assert stale.field == "reply_to_message_id"
+    assert latest is None
+
+
 @pytest.mark.parametrize(("prior_task_id", "prior_group_id"), [
     ("other-task", 8),
     ("task-b", 7),

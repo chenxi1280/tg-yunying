@@ -271,6 +271,14 @@ class ExecutionAttempt(Base):
     __table_args__ = (
         UniqueConstraint("action_id", "attempt_no", name="uq_execution_attempts_action_attempt"),
         Index("ix_execution_attempts_unfinished", "status", "gateway_call_started_at"),
+        Index(
+            "ix_execution_attempts_success_remote",
+            "remote_message_id",
+            "action_id",
+            text("attempt_no DESC"),
+            sqlite_where=text("status = 'success' AND remote_message_id <> ''"),
+            postgresql_where=text("status = 'success' AND remote_message_id <> ''"),
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)

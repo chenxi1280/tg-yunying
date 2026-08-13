@@ -8,7 +8,50 @@
 | 不适用范围 | 普通 AI 活群发言、频道评论 / 回复、群管机器人控制消息 |
 | 设计状态 | `design_status=complete` |
 | 开发交接 | `dev_handoff_ready=true` |
-| 发布状态 | `release_gate=pending`，未发布、未取得 Telegram E4 |
+| 发布状态 | `release_gate=required`，2026-08-13 性能修复待发布、未取得发布后 E4 |
+
+## 0. 2026-08-13 生产查询压力事故补充
+
+### 0.1 Incident / 分级
+
+- `incident_id`: `incident-ai-own-history-query-pressure-20260813`
+- `level`: L3
+- `symptom`: AI 活群、浏览及新建任务吞吐下降，API/SSH 间歇超时；重启后再次出现高负载。
+- `first_broken_boundary`: 4 vCPU 生产主机上的 PostgreSQL/Planner CPU 饱和，而非 Telegram Gateway、AI Provider、OOM、磁盘满或数据库锁链。
+- `observed_query`: `successful_own_history_reply_facts()` 在一个已有 4,349 条成功 Action 的任务上，对候选 Action 重复执行最新成功 Attempt 相关子查询；Planner、Generation guard 与 Gateway scope guard 被多个 worker 并发放大。
+- `production_anchor`: `14bebb2b15d5d1391ac05d9ee3307a16e5e28a16`；所有数值均为 2026-08-13 重启后只读快照，发布后必须重查。
+
+### 0.2 不变的产品语义
+
+本次只修复查询边界，不改变引用来源、reply 数量、任务排期或失败语义。候选仍必须同时满足同 tenant、同 Task、同群、成功 Action、非空冻结正文、最新成功 Attempt 和非空远端消息 ID；跨 Task 在途占用仍须在 limit 前排除，Provider 前与 Gateway 前仍使用同一权威合同。禁止以 `Action.result`、Listener 上下文、缩小业务目标、减少 worker 可见任务或跳过引用校验换取性能。
+
+### 0.3 查询与并发合同
+
+1. Planner 选池必须先以 `tenant_id + task_id + group_id + success` 缩小 Action，再一次性关联每个候选的最新成功 Attempt；同一 Attempt 结果不能在 SELECT、过滤和占用排除中重复计算。
+2. Generation/Gateway 已持有冻结 `reply_to_message_id` 时，必须先由 `ExecutionAttempt.remote_message_id` 精确命中，再反查并验证所属 Action；禁止从任务全部成功 Action 开始扫描。
+3. `execution_attempts` 必须具有与精确事实查找一致的部分索引：`remote_message_id` 非空且 `status=success`，覆盖 `action_id/attempt_no`。迁移在 PostgreSQL 使用 concurrent + idempotent 创建，发布不可长时间锁写表。
+4. 批量候选查询最多返回配置 limit；精确 guard 最多读取一条权威 Action。数据库执行计划不得退化为全表 Action/Attempt 顺序扫描。
+5. 不新增缓存、静默降级或兜底成功；索引/查询异常必须显式失败并留日志。
+
+### 0.4 验收与发布闸门
+
+- E2：原 own-history 语义回归全部通过；新增 PostgreSQL 生产规模测试，证明精确 guard 使用 Attempt remote-id 索引、选池有界，且跨 Task/群/缺 Attempt/空正文/在途占用行为不变。
+- E3：正式 `master -> release -> GitHub Actions` 发布；生产 SHA、迁移 head、容器身份和健康检查一致；PostgreSQL/Planner 连续采样不再在无业务突发时压满 4 核，同 SQL 不再批量长驻。
+- E4：发布锚点后，受影响 AI 任务出现新的成功 Attempt 与 canonical send remote fact/quantity binding；频道浏览分别检查 `ViewRemoteFact` 和 `remote_fact_gap`。任何一个任务没有类型化远端事实时只能写 `production_unproven/failed`，不能以负载回落代替。
+- rollback：迁移只新增索引，可前向保留；应用可回到上一不可变 release，但若回退会恢复高压查询，只能作为短时故障隔离，不能作为最终修复。不得删除 Action/Attempt/远端事实。
+
+### 0.5 Product Design Complete 补充自检
+
+| 检查项 | 结论 |
+|---|---|
+| 原始症状与根因 | 已覆盖重启后复发、AI/浏览共同变慢及第一故障边界 |
+| 产品语义 | 明确完全不改变 own-history、reply、排期和 unknown 合同 |
+| 后端/Worker/数据流 | 明确 Planner 批量查询、Generation/Gateway 精确 guard 与索引 |
+| 并发/幂等/失败 | 多 worker 放大、concurrent migration、显式失败均已定义 |
+| 安全与权限 | tenant/Task/group 硬隔离不放宽，不打印消息正文或凭据 |
+| QA/发布/回滚 | E2/E3/E4、资源门、正式发布和不可伪造完成均已定义 |
+
+补充结论：`design_status=complete`、`dev_handoff_ready=true`、`release_gate=required`。
 
 ## 1. Intake Card
 
@@ -81,8 +124,8 @@ Listener 消息不得进入 AI 活群 reply pool，也不得仅因同群存在 `
 
 ### 4.2 数据模型与迁移
 
-- 不新增表、字段、索引或 API schema。
-- 复用 `Action`、`ExecutionAttempt`、`reply_to_message_id` 和 `reply_target_source`。
+- 不新增表、字段或 API schema；新增 `ExecutionAttempt(remote_message_id, action_id, attempt_no DESC)` 成功非空部分索引，支撑精确远端事实反查。
+- 复用 `Action`、`ExecutionAttempt`、`reply_to_message_id` 和 `reply_target_source`；迁移采用 PostgreSQL concurrent + idempotent 创建，避免阻塞出站写入。
 - `GroupContextMessage` 继续保存上下文，但不再证明 AI 活群 reply 归属。
 
 ### 4.3 并发与幂等
