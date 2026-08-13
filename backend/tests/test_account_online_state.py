@@ -375,6 +375,12 @@ def test_planning_ready_requires_traceable_online_state():
 
 def test_probe_due_online_states_marks_healthy_account_online(monkeypatch):
     now = _now()
+    credential_options = []
+
+    def _credentials(*_args, **kwargs):
+        credential_options.append(kwargs)
+        return object()
+
     with _session() as session:
         _account(session)
         state = TgAccountOnlineState(
@@ -388,7 +394,7 @@ def test_probe_due_online_states_marks_healthy_account_online(monkeypatch):
         session.add(state)
         session.commit()
 
-        monkeypatch.setattr("app.services.account_online_probe.credentials_for_account", lambda *_args, **_kwargs: object())
+        monkeypatch.setattr("app.services.account_online_probe.credentials_for_account", _credentials)
         monkeypatch.setattr(
             "app.services.account_online_probe.gateway.check_account_health",
             lambda _session_ciphertext, _credentials: AccountHealth(status=AccountStatus.ACTIVE.value, health_score=96, detail="账号 session 可用"),
@@ -402,6 +408,7 @@ def test_probe_due_online_states_marks_healthy_account_online(monkeypatch):
         assert state.last_seen_at == now
         assert state.next_probe_at > now
         assert is_account_online_ready(session, tenant_id=1, account_id=101, now=now) is True
+        assert credential_options == [{"use_proxy": True}]
 
 
 def test_online_probe_releases_daily_offline_blocker_for_sendable_group(monkeypatch):
@@ -473,6 +480,37 @@ def test_probe_due_online_states_marks_session_failure_login_required(monkeypatc
         assert state.failure_type == "account_unavailable"
         assert state.failure_detail == "session 已失效"
         assert state.next_probe_at > now
+
+
+def test_probe_due_online_states_retries_due_login_required_state(monkeypatch):
+    now = _now()
+    with _session() as session:
+        account = _account(session)
+        account.status = AccountStatus.SESSION_EXPIRED.value
+        state = TgAccountOnlineState(
+            tenant_id=1,
+            account_id=101,
+            desired_online=True,
+            desired_sources=[{"source_type": "task", "source_id": "ai-running"}],
+            online_status="login_required",
+            next_probe_at=now - timedelta(seconds=1),
+        )
+        session.add(state)
+        session.commit()
+
+        monkeypatch.setattr("app.services.account_online_probe.credentials_for_account", lambda *_args, **_kwargs: object())
+        monkeypatch.setattr(
+            "app.services.account_online_probe.gateway.check_account_health",
+            lambda *_args: AccountHealth(status=AccountStatus.ACTIVE.value, health_score=96, detail="账号 session 可用"),
+        )
+
+        assert probe_due_online_states(session, limit=10, now=now) == 1
+        session.commit()
+
+        assert account.status == AccountStatus.ACTIVE.value
+        assert state.online_status == "online"
+        assert state.failure_type == ""
+        assert state.last_seen_at == now
 
 
 def test_probe_due_online_states_continues_after_auth_key_duplicate(monkeypatch):
