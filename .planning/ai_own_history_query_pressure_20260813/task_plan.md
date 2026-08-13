@@ -21,8 +21,8 @@
 | 2. Product Design Complete / Release Gate | complete | PRD、数据流与结构索引覆盖性能合同和验收 |
 | 3. 开发实现与红绿测试 | complete | 定向测试、PostgreSQL plan test、compile、diff check |
 | 4. QA 与产品验收 | complete | 回归证据和原始需求逐条接受 |
-| 5. master/release 正式发布 | in_progress | GitHub Actions 成功，生产 SHA/运行时回读 |
-| 6. 生产 E4 与资源复核 | pending | CPU/PG 查询、AI send fact、ViewRemoteFact |
+| 5. master/release 正式发布 | complete | GitHub Actions 成功，生产 SHA/运行时回读 |
+| 6. 生产 E4 与资源复核 | complete | AI send fact 与有源 ViewRemoteFact 通过；无源浏览任务保持 unproven |
 
 ## Guardrails
 

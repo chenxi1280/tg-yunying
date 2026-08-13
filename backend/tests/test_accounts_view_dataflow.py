@@ -1,8 +1,14 @@
 from pathlib import Path
 
+import pytest
+
+
+pytestmark = pytest.mark.no_postgres
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ACCOUNTS_VIEW = PROJECT_ROOT / "frontend/src/app/views/AccountsView.tsx"
+ACCOUNT_LAZY_AVATAR = PROJECT_ROOT / "frontend/src/app/components/AccountLazyAvatar.tsx"
 
 
 def _source() -> str:
@@ -68,3 +74,29 @@ def test_accounts_view_availability_refreshes_ignore_stale_responses():
     refresh_error_guard = "if (!isActiveAvailabilityRequest(requestSeq)) return;"
     assert refresh_error_guard in refresh_data
     assert refresh_data.index(refresh_error_guard) < refresh_data.index("setError(`账号中心数据刷新失败：")
+
+
+def test_accounts_view_loads_known_avatars_only_after_they_become_visible():
+    accounts_source = _source()
+    avatar_source = ACCOUNT_LAZY_AVATAR.read_text()
+
+    assert "<AccountIdentityCell" in accounts_source
+    assert "hasAvatar={Boolean(account.avatar_object_key)}" in accounts_source
+    assert "previewUrl={account.avatar_preview_url}" in accounts_source
+    assert "new IntersectionObserver" in avatar_source
+    assert "if (!entry.isIntersecting) return;" in avatar_source
+    assert "setLoadState('loading');" in avatar_source
+    assert "src={imageUrl}" in avatar_source
+
+
+def test_account_lazy_avatar_exposes_waiting_loading_success_and_failure_states():
+    source = ACCOUNT_LAZY_AVATAR.read_text()
+
+    assert "if (state === 'waiting') return '有头像';" in source
+    assert "if (state === 'loading') return '加载中';" in source
+    assert "if (state === 'loaded') return '头像已加载';" in source
+    assert "return '加载失败';" in source
+    assert "onLoad={() => setLoadState('loaded')}" in source
+    assert "onError={() => setLoadState('failed')}" in source
+    assert "if (!hasAvatar)" in source
+    assert "<Avatar>{displayName.slice(0, 1)}</Avatar>" in source
