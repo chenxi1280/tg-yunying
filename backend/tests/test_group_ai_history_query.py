@@ -87,4 +87,6 @@ def test_own_history_query_is_correlated_to_the_task_actions() -> None:
     assert result_rows == [("history-action", "9002")]
     assert unused_rows == []
     assert "GROUP BY execution_attempts.action_id" not in query
-    assert "execution_attempts.action_id = actions.id" in query
+    assert "FROM execution_attempts JOIN" in query
+    assert "action_id = actions.id" in query
+    assert "row_number() OVER" in query
