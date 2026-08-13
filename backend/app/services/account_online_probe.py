@@ -70,7 +70,7 @@ def probe_due_online_states(
                 continue
             accounts[account.id] = account
             try:
-                credentials = credentials_for_account(session, account, use_proxy=False)
+                credentials = credentials_for_account(session, account, use_proxy=True)
             except ValueError as exc:
                 _mark_probe_blocked(state, current_time, "developer_app_unavailable", str(exc))
                 schedules.append(_probe_schedule(state))
@@ -191,7 +191,7 @@ def _due_probe_states(session: Session, *, limit: int, now: datetime) -> list[Tg
             select(TgAccountOnlineState)
             .where(
                 TgAccountOnlineState.desired_online.is_(True),
-                TgAccountOnlineState.online_status.in_(["warming", "offline", "recovering", "online", "blocked"]),
+                TgAccountOnlineState.online_status.in_(["warming", "offline", "recovering", "online", "blocked", "login_required"]),
                 (TgAccountOnlineState.next_probe_at.is_(None) | (TgAccountOnlineState.next_probe_at <= now)),
             )
             .order_by(TgAccountOnlineState.next_probe_at.asc().nullsfirst(), TgAccountOnlineState.updated_at.asc())
