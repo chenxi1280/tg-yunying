@@ -1,6 +1,9 @@
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
+
+from app.api.routers.accounts import _parse_account_ids
 
 
 pytestmark = pytest.mark.no_postgres
@@ -9,6 +12,8 @@ pytestmark = pytest.mark.no_postgres
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ACCOUNTS_VIEW = PROJECT_ROOT / "frontend/src/app/views/AccountsView.tsx"
 ACCOUNT_LAZY_AVATAR = PROJECT_ROOT / "frontend/src/app/components/AccountLazyAvatar.tsx"
+ACCOUNT_PAGE_HOOK = PROJECT_ROOT / "frontend/src/app/hooks/useAccountsServerPage.tsx"
+REFRESH_SOURCE = PROJECT_ROOT / "frontend/src/app/context/refresh.ts"
 
 
 def _source() -> str:
@@ -100,3 +105,48 @@ def test_account_lazy_avatar_exposes_waiting_loading_success_and_failure_states(
     assert "onError={() => setLoadState('failed')}" in source
     assert "if (!hasAvatar)" in source
     assert "<Avatar>{displayName.slice(0, 1)}</Avatar>" in source
+
+
+def test_account_center_uses_server_side_twenty_row_pages():
+    refresh = REFRESH_SOURCE.read_text()
+    hook = ACCOUNT_PAGE_HOOK.read_text()
+    accounts = _source()
+
+    assert "const ACCOUNT_LIST_PAGE_SIZE = 20;" in refresh
+    assert "loadFirstAccountPage(context.selectedPoolId)" in refresh
+    accounts_loader = refresh[refresh.index("async function loadAccountsPage"):refresh.index("function messageTaskPath")]
+    assert "loadAccountList(context.selectedPoolId)" not in accounts_loader
+    assert "const ACCOUNT_PAGE_SIZE = 20;" in hook
+    assert "page_size: String(ACCOUNT_PAGE_SIZE)" in hook
+    assert "X-Total-Count" in hook
+    assert "showSizeChanger: false" in hook
+    assert "dataSource={accountTable.rows}" in accounts
+    assert "loading={accountTable.loading}" in accounts
+
+
+def test_account_center_limits_availability_to_current_page():
+    source = _source()
+
+    assert "availability/summary?account_ids=${accountIds}" in source
+    assert "当前页账号级受限" in source
+    assert "当前页登录有问题" in source
+    assert "setAvailabilityByAccountId(new Map())" in source
+    assert "setSelectedAccountIds([])" in source
+
+
+def test_account_summary_shortcuts_run_server_search_even_when_current_page_count_is_zero():
+    source = _source()
+
+    for query in ["账号级受限", "登录有问题", "健康分偏低", "代理异常", "session_missing", "资料待初始化"]:
+        assert f"onClick={{() => accountTable.setQuery('{query}')}}" in source
+    assert "disabled={!restrictedAccounts.length}" not in source
+
+
+def test_account_availability_filter_accepts_only_one_to_twenty_positive_unique_ids():
+    assert _parse_account_ids(None) is None
+    assert _parse_account_ids("3,2,3") == (3, 2)
+
+    for value in ["", "0", "abc", ",".join(str(item) for item in range(1, 22))]:
+        with pytest.raises(HTTPException) as exc_info:
+            _parse_account_ids(value)
+        assert exc_info.value.status_code == 422

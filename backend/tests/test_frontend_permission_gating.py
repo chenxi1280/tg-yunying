@@ -1851,7 +1851,8 @@ def test_account_availability_summary_is_account_page_scoped():
     accounts_view = (PROJECT_ROOT / "frontend/src/app/views/AccountsView.tsx").read_text()
     refresh = (PROJECT_ROOT / "frontend/src/app/context/refresh.ts").read_text()
 
-    assert "if (!accounts.length) return;" in accounts_view
+    assert "if (!accounts.length) {" in accounts_view
+    assert "setAvailabilityByAccountId(new Map());" in accounts_view
     assert "const accountIds = accounts.map((account) => account.id).join(',');" in accounts_view
     assert "}, [accountIds]);" in accounts_view
     assert "'/tg-accounts/availability/summary'" not in refresh
@@ -2020,8 +2021,8 @@ def test_app_refresh_does_not_replace_accounts_with_empty_fallback_on_account_ap
     source = (PROJECT_ROOT / "frontend/src/app/context/refresh.ts").read_text()
     accounts_loader = source[source.index("async function loadAccountsPage"):source.index("function messageTaskPath")]
 
-    assert "loadAccountList(context.selectedPoolId)" in accounts_loader
-    assert "loadAccountList(context.selectedPoolId).catch(() => [])" not in accounts_loader
+    assert "loadFirstAccountPage(context.selectedPoolId)" in accounts_loader
+    assert "loadFirstAccountPage(context.selectedPoolId).catch(() => [])" not in accounts_loader
     assert "accounts: settledValue(" not in accounts_loader
 
 
@@ -2176,6 +2177,15 @@ def test_frontend_static_publish_preserves_previous_hashed_assets():
     assert "find \"$releases_dir\" -mindepth 2 -maxdepth 2 -type d -name assets" in source
     assert "cp -a \"${asset_dir}/.\" \"${tmp_dir}/assets/\"" in source
     assert "preserve_frontend_assets \"$releases_dir\" \"$tmp_dir\"" in source
+
+
+def test_frontend_release_check_rejects_nginx_static_pointer_drift():
+    source = (PROJECT_ROOT / "deploy/check-web.sh").read_text()
+
+    assert "check_frontend_release" in source
+    assert "BAD frontend release mismatch" in source
+    assert 'actual_path" == "$expected_path' in source
+    assert 'check_frontend_release "https://${TGYUNYING_WEB_HOST}"' in source
 
 
 def test_group_verification_challenge_context_empty_is_rendered():
@@ -2337,10 +2347,10 @@ def test_account_center_exposes_standby_session_batch_entry_and_filters():
     assert "补齐备用 session" in accounts_view
     assert "setSecurityDrawerMode('standby_session')" in accounts_view
     assert "canManageAuthorizations" in accounts_view
-    assert "standby_1 session 缺失" in accounts_view
-    assert "standby_2 session 缺失" in accounts_view
-    assert "可从备用 session 激活恢复" in accounts_view
-    assert "未做过登录设备清理" in accounts_view
+    account_search = (PROJECT_ROOT / "backend/app/services/account_search.py").read_text()
+    assert 'f"{role} session 缺失"' in account_search
+    assert "可从备用 session 激活恢复" in account_search
+    assert "未做过登录设备清理" in account_search
     assert "standby_session: {" in drawer
     assert "provision_standby_session" in drawer
     assert "self_heal_session" in drawer
@@ -2361,7 +2371,9 @@ def test_account_center_quick_searches_login_problem_accounts():
     assert "'Session失效'" in accounts_view
     assert "session完全失效" in accounts_view
     assert "登录验证码没收到" in accounts_view
-    assert "latestLoginText(account)" in accounts_view
+    assert "latestLoginText(account)" not in accounts_view
+    account_search = (PROJECT_ROOT / "backend/app/services/account_search.py").read_text()
+    assert "latest_flow.failure_detail" in account_search
     assert "account.latest_login_flow" in accounts_view
     assert "登录失败：{loginFlow.failure_detail}" in accounts_view
     assert "hasLoginIssue(account)" in accounts_view
