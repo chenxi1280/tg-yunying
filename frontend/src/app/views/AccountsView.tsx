@@ -1,11 +1,12 @@
 import React from 'react';
-import { Alert, Avatar, Button, Card, Progress, Segmented, Space, Table, Typography, message } from 'antd';
+import { Alert, Button, Card, Progress, Segmented, Space, Table, Typography, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { Activity, Database, LockKeyhole, ShieldAlert } from 'lucide-react';
 import { api } from '../../shared/api/client';
 import type { Account, AccountAvailabilitySummary, AccountPool } from '../types';
 import type { RuntimeConfig } from '../types';
 import { StatusBadge, useAntdTableControls } from '../components/shared';
+import { AccountIdentityCell } from '../components/AccountLazyAvatar';
 import { AccountSecurityBatchDrawer } from './AccountSecurityBatchDrawer';
 import { formatBeijingDateTime } from '../time';
 
@@ -15,9 +16,7 @@ const ACCOUNT_RESTRICTED_STATUSES = new Set(['受限', '疑似封禁', '已封�
 const LOGIN_PROBLEM_SEARCH_TEXT = '登录有问题 没有登录上平台 待登录 等待验证码 等待扫码 等待2FA 需重新登录 异常 Session失效 Session 失效 session完全失效 session 完全失效 主授权不可用 主授权缺失 登录失败 验证码没收到 登录验证码没收到';
 const accountPhone = (account: Account) => account.phone_number || account.phone_masked;
 const authorizationStatusLabel = (status: string) => status === 'active' ? '主授权可用' : status === 'missing' ? '主授权缺失' : status;
-function accountHealthScore(account: Account, availabilityByAccountId: Map<number, AccountAvailabilitySummary>) {
-  return availabilityByAccountId.get(account.id)?.health_score ?? account.health_score;
-}
+const accountHealthScore = (account: Account, availabilityByAccountId: Map<number, AccountAvailabilitySummary>) => availabilityByAccountId.get(account.id)?.health_score ?? account.health_score;
 function latestLoginText(account: Account) {
   const flow = account.latest_login_flow;
   if (!flow) return '';
@@ -256,19 +255,7 @@ export default function AccountsView({
       key: 'account',
       width: 360,
       fixed: 'left',
-      render: (_, account) => (
-        <Space>
-          <Avatar src={account.avatar_preview_url ? avatarUrl(account.avatar_preview_url) : undefined}>
-            {account.display_name.slice(0, 1)}
-          </Avatar>
-          <Space orientation="vertical" size={0}>
-            <Typography.Text strong>{account.display_name}</Typography.Text>
-            <Typography.Text type="secondary">username：@{account.username ?? '未设置'} / {accountPhone(account)}</Typography.Text>
-            <Typography.Text type="secondary">账号分组：{account.pool_name}</Typography.Text>
-            <Typography.Text type="secondary">昵称：{[account.tg_first_name, account.tg_last_name].filter(Boolean).join(' ') || '未设置'}</Typography.Text>
-          </Space>
-        </Space>
-      ),
+      render: (_, account) => <AccountIdentityCell displayName={account.display_name} phone={accountPhone(account)} poolName={account.pool_name} username={account.username} tgFirstName={account.tg_first_name} tgLastName={account.tg_last_name} hasAvatar={Boolean(account.avatar_object_key)} previewUrl={account.avatar_preview_url} resolveUrl={avatarUrl} />,
     },
     {
       title: '状态',
