@@ -657,10 +657,11 @@ def test_backend_account_search_matches_capacity_and_device_summary_terms() -> N
 
 def test_frontend_account_list_exposes_capacity_and_state_search_terms() -> None:
     view = (PROJECT_ROOT.parent / "frontend/src/app/views/AccountsView.tsx").read_text()
+    search = (PROJECT_ROOT / "app/services/account_search.py").read_text()
 
     assert "capacity_explanation" in view
-    assert "account_cooldown" in view
-    assert "容量 ${availability.remaining_capacity}" in view
+    assert "account_cooldown" in search
+    assert "容量 {availability.remaining_capacity}" in view
     assert "安全待刷新" in view
     assert "非平台设备" in view
 

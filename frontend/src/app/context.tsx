@@ -83,6 +83,7 @@ export function AppProvider({ children }: AppProviderProps) {
   const [accountPools, setAccountPools] = useState<AccountPool[]>([]);
   const [selectedPoolId, setSelectedPoolId] = useState<number | ''>('');
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const [accountTotal, setAccountTotal] = useState(0);
   const [developerApps, setDeveloperApps] = useState<DeveloperApp[]>([]);
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [adminUsers, setAdminUsers] = useState<AdminUser[]>([]);
@@ -234,6 +235,7 @@ export function AppProvider({ children }: AppProviderProps) {
       if (!isSystemConfigSnapshot) {
         setAccountPools(snapshot.accountPools);
         setAccounts(snapshot.accounts);
+        setAccountTotal(snapshot.accountTotal);
       }
       setDeveloperApps(snapshot.developerApps);
       setTenants(snapshot.tenants);
@@ -711,6 +713,8 @@ export function AppProvider({ children }: AppProviderProps) {
     setSelectedPoolId,
     accounts,
     setAccounts,
+    accountTotal,
+    setAccountTotal,
 
     // Developer apps
     developerApps,

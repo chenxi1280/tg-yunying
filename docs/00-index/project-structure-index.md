@@ -450,6 +450,8 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 
 ### 账号安全服务
 
+账号页列表分页由 `frontend/src/app/hooks/useAccountsServerPage.tsx` 管理，固定 20 条并使用 API 分页头；`AccountsView.tsx` 只渲染当前页，并按当前页账号 ID 读取可用性汇总。
+
 | 文件 | 行数 | 主要处理业务 | 主要方法/类/导出 |
 | --- | ---: | --- | --- |
 | `backend/app/services/account_security/__init__.py` | 4 | 账号安全专项服务，处理安全快照、远端授权设备、2FA、资料初始化、批次预检、批次执行和状态回写。 | 无显式主方法/仅导入导出或常量 |

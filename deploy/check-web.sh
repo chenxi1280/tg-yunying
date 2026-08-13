@@ -81,6 +81,21 @@ check_frontend_gzip() {
   return 1
 }
 
+check_frontend_release() {
+  local origin="$1"
+  local resolve_arg="$2"
+  local expected_path actual_html actual_path
+  expected_path="$(grep -oE "$JS_ASSET_PATTERN" "${STATIC_DIR}/index.html" | head -1 | cut -d '"' -f 2)"
+  actual_html="$(curl -k -L -sS --max-time 10 --resolve "$resolve_arg" "${origin}/" || true)"
+  actual_path="$(printf '%s' "$actual_html" | grep -oE "$JS_ASSET_PATTERN" | head -1 | cut -d '"' -f 2)"
+  if [[ -n "$expected_path" && "$actual_path" == "$expected_path" ]]; then
+    echo "OK frontend release: ${origin}${actual_path}"
+    return 0
+  fi
+  echo "BAD frontend release mismatch: expected=${expected_path:-missing} actual=${actual_path:-missing}" >&2
+  return 1
+}
+
 wait_for_worker_ready() {
   local container_name="$1"
   local started_at status health elapsed
@@ -191,6 +206,7 @@ case "${TGYUNYING_CHECK_HOST_NGINX:-true}" in
       echo "TGYUNYING_WEB_HOST is empty; skip host Nginx checks"
     else
       check_url "host nginx api health" "https://${TGYUNYING_WEB_HOST}/api/health" "${TGYUNYING_WEB_HOST}:443:127.0.0.1"
+      check_frontend_release "https://${TGYUNYING_WEB_HOST}" "${TGYUNYING_WEB_HOST}:443:127.0.0.1"
       check_frontend_gzip "https://${TGYUNYING_WEB_HOST}" "${TGYUNYING_WEB_HOST}:443:127.0.0.1"
     fi
     ;;
