@@ -11,3 +11,6 @@
 - 2026-08-13T11:14+08:00 PostgreSQL 全迁移链和 5,000 条历史数据回归通过，执行计划采用 `ix_execution_attempts_success_remote`；1 passed in 44.45s。
 - 2026-08-13T11:16+08:00 AI generation、worker、scope、migration、merge-integrity 回归 75 passed；历史回复/dispatch/limits 回归 26 passed；compile 与 diff check 通过。
 - 2026-08-13T11:22+08:00 完成 QA 与产品复核：原始业务语义不变，性能查询合同、concurrent migration、E3/E4 和回滚口径齐备；进入正式发布。
+- 2026-08-13T11:40+08:00 Deploy Production 31663929691 成功发布 release 321cf61c；生产迁移 head、索引 valid/ready 与容器一致。
+- 2026-08-13T11:51+08:00 发布后 AI 成功远端事实分别新增 12/5；有源浏览新增 64 条 ViewRemoteFact 且 remote_fact_gap=0；无源浏览 required=0，保持 waiting_for_source/unproven。
+- 2026-08-13T11:52+08:00 负载由重启后约 9 降至 2.84，CPU idle 54%–71%，Planner 退出高占用榜；生产查询压力修复收口。
