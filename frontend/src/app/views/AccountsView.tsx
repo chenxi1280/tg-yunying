@@ -5,49 +5,29 @@ import { Activity, Database, LockKeyhole, ShieldAlert } from 'lucide-react';
 import { api } from '../../shared/api/client';
 import type { Account, AccountAvailabilitySummary, AccountPool } from '../types';
 import type { RuntimeConfig } from '../types';
-import { StatusBadge, useAntdTableControls } from '../components/shared';
+import { StatusBadge } from '../components/shared';
 import { AccountIdentityCell } from '../components/AccountLazyAvatar';
+import { useAccountsServerPage } from '../hooks/useAccountsServerPage';
 import { AccountSecurityBatchDrawer } from './AccountSecurityBatchDrawer';
 import { formatBeijingDateTime } from '../time';
 const LOGIN_REQUIRED_STATUSES = new Set(['待登录', '等待验证码', '等待扫码', '等待2FA', '需重新登录', '异常']);
 const LOGIN_PROBLEM_STATUSES = new Set([...LOGIN_REQUIRED_STATUSES, 'Session失效']);
 const ACCOUNT_RESTRICTED_STATUSES = new Set(['受限', '疑似封禁', '已封禁', 'Session失效']);
-const LOGIN_PROBLEM_SEARCH_TEXT = '登录有问题 没有登录上平台 待登录 等待验证码 等待扫码 等待2FA 需重新登录 异常 Session失效 Session 失效 session完全失效 session 完全失效 主授权不可用 主授权缺失 登录失败 验证码没收到 登录验证码没收到';
+const LOGIN_PROBLEM_SEARCH_TEXT = '登录有问题 没有登录上平台 Session失效 session完全失效 登录验证码没收到';
 const accountPhone = (account: Account) => account.phone_number || account.phone_masked;
 const authorizationStatusLabel = (status: string) => status === 'active' ? '主授权可用' : status === 'missing' ? '主授权缺失' : status;
 function accountHealthScore(account: Account, availabilityByAccountId: Map<number, AccountAvailabilitySummary>) {
   return availabilityByAccountId.get(account.id)?.health_score ?? account.health_score;
 }
-function latestLoginText(account: Account) {
-  const flow = account.latest_login_flow;
-  if (!flow) return '';
-  return [flow.method, flow.status, flow.failure_type, flow.failure_detail, flow.trace_id].filter(Boolean).join(' ');
-}
 function hasLoginIssue(account: Account) {
   const flow = account.latest_login_flow;
   return LOGIN_PROBLEM_STATUSES.has(account.status) || account.authorization_summary.primary_status !== 'active' || Boolean(flow?.failure_type || flow?.failure_detail);
 }
-function availabilitySearchText(availability: AccountAvailabilitySummary | undefined) {
-  if (!availability) return '安全待刷新 待刷新 等待汇总';
-  const externalDeviceCount = Number(availability.failure_trend?.external_authorization_count || 0);
-  const values = [
-    availability.unavailable_reason,
-    availability.capacity_explanation,
-    `容量 ${availability.remaining_capacity}`,
-    `容量 ${availability.remaining_capacity} / ${availability.capacity_limit}`,
-    `容量已用 ${availability.capacity_used}`,
-    availability.next_retry_at ? 'account_cooldown 账号冷却 冷却中 待重试' : '',
-    externalDeviceCount > 0 ? `非平台设备 外部设备 ${externalDeviceCount}` : '',
-    availability.send_available ? '可发送' : '发送不可用',
-    availability.risk_level,
-    ...availability.score_reasons,
-    ...availability.non_score_reasons,
-  ];
-  return values.filter(Boolean).join(' ');
-}
 
 interface Props {
   accounts: Account[];
+  accountTotal: number;
+  onAccountsPageLoaded: (rows: Account[], total: number) => void;
   accountPools: AccountPool[];
   selectedPoolId: number | '';
   setSelectedPoolId: (id: number | '') => void;
@@ -81,6 +61,8 @@ interface Props {
 
 export default function AccountsView({
   accounts,
+  accountTotal,
+  onAccountsPageLoaded,
   accountPools,
   selectedPoolId,
   setSelectedPoolId,
@@ -118,47 +100,7 @@ export default function AccountsView({
   const [error, setError] = React.useState('');
   const [availabilityByAccountId, setAvailabilityByAccountId] = React.useState<Map<number, AccountAvailabilitySummary>>(new Map());
   const availabilityRequestSeq = React.useRef(0);
-  const accountTable = useAntdTableControls<Account>({
-    rows: accounts,
-    placeholder: '搜索账号 / 登录有问题 / username / 手机号 / 分组 / 状态 / 代理',
-    pageSize: 100,
-    pageSizeOptions: [50, 100, 200],
-    search: [
-      (account) => [
-        account.id,
-        account.display_name,
-        account.username,
-        accountPhone(account),
-        account.pool_name,
-        account.status,
-        account.profile_sync_status,
-        latestLoginText(account),
-        account.developer_app_name,
-        account.authorization_summary.primary_status,
-        account.authorization_summary.risk_hint,
-        account.authorization_summary.has_standby ? '已有备用授权' : '未配置备用授权 无缝切换风险',
-        account.authorization_summary.standby_count < account.authorization_summary.target_standby_count ? '备用 session 缺口 健康备用 session 不足 2 个 standby_1 session 缺失 standby_2 session 缺失 备用 session 未登录' : '健康备用 session 已补齐',
-        account.authorization_summary.primary_status !== 'active' && account.authorization_summary.standby_count > 0 ? '可从备用 session 激活恢复' : '',
-        account.authorization_summary.risk_hint.includes('设备') ? '未做过登录设备清理 外部设备未清理 最近设备清理失败' : '',
-        canSecurityRead ? account.developer_app_health_status : '',
-        account.proxy_name,
-        canSecurityRead ? account.proxy_local_address : '',
-        canSecurityRead ? account.proxy_status : '',
-        canSecurityRead ? account.proxy_alert_status : '',
-        availabilitySearchText(availabilityByAccountId.get(account.id)),
-        account.tg_first_name,
-        account.tg_last_name,
-        !account.avatar_object_key ? '无头像 资料待初始化 资料不完整' : '',
-        !account.username ? '无 username 资料待初始化 资料不完整' : '',
-        !account.tg_first_name ? '昵称为空 资料待初始化 资料不完整' : '',
-        ACCOUNT_RESTRICTED_STATUSES.has(account.status) ? '账号级受限 受限 系统探测恢复' : '',
-        LOGIN_REQUIRED_STATUSES.has(account.status) ? '待完成登录 等待 登录' : '',
-        hasLoginIssue(account) ? LOGIN_PROBLEM_SEARCH_TEXT : '',
-        canSecurityRead && accountHealthScore(account, availabilityByAccountId) < 60 ? '健康分偏低 健康' : '',
-        canSecurityRead && account.proxy_status && account.proxy_status !== 'healthy' && account.proxy_status !== '健康' ? '代理异常 代理' : '',
-      ],
-    ],
-  });
+  const accountTable = useAccountsServerPage({ accounts, total: accountTotal, selectedPoolId, onPageLoaded: onAccountsPageLoaded });
   const restrictedAccounts = accounts.filter((account) => ACCOUNT_RESTRICTED_STATUSES.has(account.status));
   const loginRequiredAccounts = accounts.filter((account) => LOGIN_REQUIRED_STATUSES.has(account.status));
   const loginProblemAccounts = accounts.filter((account) => hasLoginIssue(account));
@@ -170,7 +112,13 @@ export default function AccountsView({
   const accountIds = accounts.map((account) => account.id).join(',');
 
   React.useEffect(() => {
-    if (!accounts.length) return;
+    setSelectedAccountIds([]);
+    if (!accounts.length) {
+      beginAvailabilityRequest();
+      setAvailabilityByAccountId(new Map());
+      setAvailabilityLoading(false);
+      return;
+    }
     void loadAvailability();
   }, [accountIds]);
 
@@ -184,7 +132,7 @@ export default function AccountsView({
   }
 
   async function fetchAvailabilitySummary(requestSeq: number) {
-    const rows = await api<AccountAvailabilitySummary[]>('/tg-accounts/availability/summary');
+    const rows = await api<AccountAvailabilitySummary[]>(`/tg-accounts/availability/summary?account_ids=${accountIds}`);
     if (!isActiveAvailabilityRequest(requestSeq)) return false;
     setAvailabilityByAccountId(new Map(rows.map((item) => [item.account_id, item])));
     return true;
@@ -415,6 +363,7 @@ export default function AccountsView({
         />
       )}
       {error && <Alert className="sub-panel compact-panel" type="error" showIcon message={error} />}
+      {accountTable.error && <Alert className="sub-panel compact-panel" type="error" showIcon message={accountTable.error} />}
       <Space className="pool-filter-strip" wrap>
         <Segmented
           value={selectedPoolId === '' ? 'all' : String(selectedPoolId)}
@@ -439,47 +388,48 @@ export default function AccountsView({
       </Space>
       <div className="summary-grid">
         <Card className="summary-card" size="small">
-          <span>账号级受限</span>
+          <span>当前页账号级受限</span>
           <strong>{restrictedAccounts.length}</strong>
           <p>系统每小时探测恢复；仅在 session 失效或凭证不可用时重新登录。</p>
-          <Button size="small" disabled={!restrictedAccounts.length} onClick={() => accountTable.setQuery('账号级受限')}>查看账号</Button>
+          <Button size="small" onClick={() => accountTable.setQuery('账号级受限')}>查看账号</Button>
         </Card>
         <Card className="summary-card" size="small">
-          <span>登录有问题</span>
+          <span>当前页登录有问题</span>
           <strong>{loginProblemAccounts.length}</strong>
           <p>待完成登录 {loginRequiredAccounts.length} 个；验证码没收到、登录失败、Session 完全失效或主授权不可用也会命中。</p>
-          <Button size="small" disabled={!loginProblemAccounts.length} onClick={() => accountTable.setQuery('登录有问题')}>查看问题账号</Button>
+          <Button size="small" onClick={() => accountTable.setQuery('登录有问题')}>查看问题账号</Button>
         </Card>
         <Card className="summary-card" size="small">
-          <span>健康分偏低</span>
+          <span>当前页健康分偏低</span>
           <strong>{lowHealthAccounts.length}</strong>
           <p>先做健康检查和同步，不直接要求重新登录。</p>
-          <Button size="small" disabled={!lowHealthAccounts.length} onClick={() => accountTable.setQuery('健康分偏低')}>查看健康</Button>
+          <Button size="small" onClick={() => accountTable.setQuery('健康分偏低')}>查看健康</Button>
         </Card>
         <Card className="summary-card" size="small">
-          <span>代理异常</span>
+          <span>当前页代理异常</span>
           <strong>{proxyBlockedAccounts.length}</strong>
           <p>本地代理异常会影响高频发送，处理入口在风控中心。</p>
-          <Button size="small" disabled={!proxyBlockedAccounts.length} onClick={() => accountTable.setQuery('代理异常')}>查看代理</Button>
+          <Button size="small" onClick={() => accountTable.setQuery('代理异常')}>查看代理</Button>
         </Card>
         <Card className="summary-card" size="small">
-          <span>汇总不可用</span>
+          <span>当前页汇总不可用</span>
           <strong>{unavailableBySummary.length}</strong>
           <p>来自账号可用性读模型；汇总可能有延迟，必要时重算。</p>
-          <Button size="small" disabled={!unavailableBySummary.length} onClick={() => accountTable.setQuery('session_missing')}>查看汇总</Button>
+          <Button size="small" onClick={() => accountTable.setQuery('session_missing')}>查看汇总</Button>
         </Card>
         <Card className="summary-card" size="small">
-          <span>资料待初始化</span>
+          <span>当前页资料待初始化</span>
           <strong>{incompleteProfiles.length}</strong>
           <p>头像、昵称或 username 缺失时，可批量 AI 随机生成并预览后执行。</p>
-          <Button size="small" disabled={!incompleteProfiles.length} onClick={() => accountTable.setQuery('资料待初始化')}>查看资料</Button>
+          <Button size="small" onClick={() => accountTable.setQuery('资料待初始化')}>查看资料</Button>
         </Card>
       </div>
       <Table<Account>
         className="tg-table"
         rowKey="id"
         columns={columns}
-        dataSource={accountTable.filteredRows}
+        dataSource={accountTable.rows}
+        loading={accountTable.loading}
         rowSelection={{
           selectedRowKeys: selectedAccountIds,
           onChange: (keys) => setSelectedAccountIds(keys.map(Number)),

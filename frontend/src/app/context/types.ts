@@ -59,6 +59,8 @@ export interface AppState {
   setSelectedPoolId: (id: number | '') => void;
   accounts: Account[];
   setAccounts: (accounts: Account[]) => void;
+  accountTotal: number;
+  setAccountTotal: (total: number) => void;
 
   // Developer apps
   developerApps: DeveloperApp[];

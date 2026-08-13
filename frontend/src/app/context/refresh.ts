@@ -1,4 +1,4 @@
-import { api } from '../../shared/api/client';
+import { api, apiWithMeta } from '../../shared/api/client';
 import { hasPermission } from '../utils';
 import type {
   Account,
@@ -36,7 +36,10 @@ function auditQuery(auditFilters: AuditFilters) {
 }
 
 const ACCOUNT_SNAPSHOT_PAGE_SIZE = 200;
+const ACCOUNT_LIST_PAGE_SIZE = 20;
 const FIRST_ACCOUNT_PAGE = 1;
+
+type AccountPage = Readonly<{ rows: Account[]; total: number }>;
 
 type ContentResourceSnapshot = {
   materials: Material[];
@@ -54,10 +57,10 @@ type LoaderContext = {
   auditFilters: AuditFilters;
 };
 
-function accountListPath(selectedPoolId: number | '', page: number): string {
+function accountListPath(selectedPoolId: number | '', page: number, pageSize: number): string {
   const params = new URLSearchParams({
     page: String(page),
-    page_size: String(ACCOUNT_SNAPSHOT_PAGE_SIZE),
+    page_size: String(pageSize),
   });
   if (selectedPoolId) params.set('pool_id', String(selectedPoolId));
   return `/tg-accounts?${params.toString()}`;
@@ -66,10 +69,18 @@ function accountListPath(selectedPoolId: number | '', page: number): string {
 async function loadAccountList(selectedPoolId: number | ''): Promise<Account[]> {
   const accounts: Account[] = [];
   for (let page = FIRST_ACCOUNT_PAGE; ; page += 1) {
-    const rows = await api<Account[]>(accountListPath(selectedPoolId, page));
+    const rows = await api<Account[]>(accountListPath(selectedPoolId, page, ACCOUNT_SNAPSHOT_PAGE_SIZE));
     accounts.push(...rows);
     if (rows.length < ACCOUNT_SNAPSHOT_PAGE_SIZE) return accounts;
   }
+}
+
+async function loadFirstAccountPage(selectedPoolId: number | ''): Promise<AccountPage> {
+  const response = await apiWithMeta<Account[]>(accountListPath(selectedPoolId, FIRST_ACCOUNT_PAGE, ACCOUNT_LIST_PAGE_SIZE));
+  return {
+    rows: response.data,
+    total: Number(response.headers.get('X-Total-Count') || response.data.length),
+  };
 }
 
 export type AppSnapshot = {
@@ -78,6 +89,7 @@ export type AppSnapshot = {
   overview: Overview;
   accountPools: AccountPool[];
   accounts: Account[];
+  accountTotal: number;
   developerApps: DeveloperApp[];
   tenants: Tenant[];
   adminUsers: AdminUser[];
@@ -100,6 +112,7 @@ function emptySnapshot(me: CurrentUser, runtime: RuntimeConfig): AppSnapshot {
     overview: {} as Overview,
     accountPools: [],
     accounts: [],
+    accountTotal: 0,
     developerApps: [],
     tenants: [],
     adminUsers: [],
@@ -134,11 +147,11 @@ export async function loadContentResources(): Promise<ContentResourceSnapshot> {
 }
 
 async function loadAccountsPage(context: LoaderContext): Promise<SnapshotPatch> {
-  const [accountPools, accounts] = await Promise.all([
+  const [accountPools, accountPage] = await Promise.all([
     api<AccountPool[]>('/account-pools'),
-    loadAccountList(context.selectedPoolId),
+    loadFirstAccountPage(context.selectedPoolId),
   ]);
-  return { accountPools, accounts };
+  return { accountPools, accounts: accountPage.rows, accountTotal: accountPage.total };
 }
 
 function messageTaskPath(taskStatusFilter: string): string {

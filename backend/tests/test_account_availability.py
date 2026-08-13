@@ -49,3 +49,18 @@ def test_account_availability_rebuild_uses_summary_rows_not_live_detail_scan() -
         assert rows[12].send_available is False
         assert rows[12].unavailable_reason == "session_missing"
         assert missing_session.id == rows[12].id
+
+
+def test_account_availability_summary_can_be_limited_to_current_page_ids() -> None:
+    with _sqlite_session() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add_all([
+            TgAccount(id=21, tenant_id=1, display_name="第一页", phone_masked="21", status=AccountStatus.ACTIVE.value, session_ciphertext="session", health_score=90),
+            TgAccount(id=22, tenant_id=1, display_name="第二页", phone_masked="22", status=AccountStatus.ACTIVE.value, session_ciphertext="session", health_score=90),
+        ])
+        session.commit()
+        rebuild_runtime_summaries(session, 1, scope="accounts")
+
+        rows = list_account_runtime_summaries(session, 1, (22,))
+
+        assert [row.account_id for row in rows] == [22]

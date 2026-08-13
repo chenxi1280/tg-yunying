@@ -79,6 +79,10 @@ def _account_search_values(
         account.proxy_name,
         account.proxy_status,
         account.proxy_alert_status,
+        "资料待初始化" if not account.avatar_object_key or not account.username or not account.tg_first_name else "资料完整",
+        "账号级受限" if account.status in {AccountStatus.LIMITED.value, AccountStatus.SUSPECTED_BANNED.value, AccountStatus.BANNED.value, AccountStatus.SESSION_EXPIRED.value} else "",
+        "代理异常" if account.proxy_status and account.proxy_status not in {"healthy", "健康"} else "",
+        "健康分偏低" if float(account.health_score or 0) < 60 else "",
     ]
     values.extend(_latest_login_search_values(latest_flow))
     values.extend(_authorization_search_values(account, authorization_summary))
@@ -111,6 +115,8 @@ def _authorization_search_values(account: TgAccount, summary: dict[str, Any] | N
         values.append(STANDBY_GAP_SEARCH_TEXT)
     if summary.get("can_rescue"):
         values.append(AUTHORIZATION_RESCUE_SEARCH_TEXT)
+    if "设备" in str(summary.get("risk_hint") or ""):
+        values.append("未做过登录设备清理 外部设备未清理 最近设备清理失败")
     if _has_login_issue(account, summary):
         values.append(LOGIN_PROBLEM_SEARCH_TEXT)
     return values
@@ -123,6 +129,7 @@ def _runtime_summary_search_values(summary: AccountRuntimeSummary | None) -> lis
         summary.unavailable_reason,
         f"容量 {int(summary.remaining_capacity or 0)}/100",
         f"剩余容量 {int(summary.remaining_capacity or 0)}",
+        "account_cooldown 账号冷却 冷却中 待重试" if summary.next_retry_at else "",
     ]
     trend = summary.failure_trend if isinstance(summary.failure_trend, dict) else {}
     values.extend(_runtime_trend_search_values(trend))

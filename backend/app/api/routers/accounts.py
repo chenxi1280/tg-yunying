@@ -119,11 +119,25 @@ def post_account(
 @router.get("/api/tg-accounts/availability/summary", response_model=list[AccountRuntimeSummaryOut])
 def get_accounts_availability_summary(
     tenant_id: int | None = None,
+    account_ids: str | None = None,
     session: Session = Depends(get_session),
     current_user: CurrentUser = Depends(get_current_user),
 ):
-    rows = list_account_runtime_summaries(session, resolve_tenant_id(current_user, tenant_id))
+    selected_ids = _parse_account_ids(account_ids)
+    rows = list_account_runtime_summaries(session, resolve_tenant_id(current_user, tenant_id), selected_ids)
     return [account_availability_out_for_user(row, current_user) for row in rows]
+
+
+def _parse_account_ids(value: str | None) -> tuple[int, ...] | None:
+    if value is None:
+        return None
+    try:
+        account_ids = tuple(dict.fromkeys(int(item) for item in value.split(",") if item))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="account_ids must contain integers") from exc
+    if not account_ids or len(account_ids) > 20 or any(account_id < 1 for account_id in account_ids):
+        raise HTTPException(status_code=422, detail="account_ids must contain 1 to 20 positive integers")
+    return account_ids
 
 
 @router.get("/api/tg-accounts/{account_id}/availability", response_model=AccountRuntimeSummaryOut)
