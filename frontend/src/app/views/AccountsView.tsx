@@ -9,14 +9,15 @@ import { StatusBadge, useAntdTableControls } from '../components/shared';
 import { AccountIdentityCell } from '../components/AccountLazyAvatar';
 import { AccountSecurityBatchDrawer } from './AccountSecurityBatchDrawer';
 import { formatBeijingDateTime } from '../time';
-
 const LOGIN_REQUIRED_STATUSES = new Set(['待登录', '等待验证码', '等待扫码', '等待2FA', '需重新登录', '异常']);
 const LOGIN_PROBLEM_STATUSES = new Set([...LOGIN_REQUIRED_STATUSES, 'Session失效']);
 const ACCOUNT_RESTRICTED_STATUSES = new Set(['受限', '疑似封禁', '已封禁', 'Session失效']);
 const LOGIN_PROBLEM_SEARCH_TEXT = '登录有问题 没有登录上平台 待登录 等待验证码 等待扫码 等待2FA 需重新登录 异常 Session失效 Session 失效 session完全失效 session 完全失效 主授权不可用 主授权缺失 登录失败 验证码没收到 登录验证码没收到';
 const accountPhone = (account: Account) => account.phone_number || account.phone_masked;
 const authorizationStatusLabel = (status: string) => status === 'active' ? '主授权可用' : status === 'missing' ? '主授权缺失' : status;
-const accountHealthScore = (account: Account, availabilityByAccountId: Map<number, AccountAvailabilitySummary>) => availabilityByAccountId.get(account.id)?.health_score ?? account.health_score;
+function accountHealthScore(account: Account, availabilityByAccountId: Map<number, AccountAvailabilitySummary>) {
+  return availabilityByAccountId.get(account.id)?.health_score ?? account.health_score;
+}
 function latestLoginText(account: Account) {
   const flow = account.latest_login_flow;
   if (!flow) return '';
