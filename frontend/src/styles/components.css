@@ -554,6 +554,31 @@
   background: var(--surface-hover);
 }
 
+.account-lazy-avatar {
+  align-items: center;
+  display: flex;
+  flex: 0 0 48px;
+  height: 40px;
+  justify-content: center;
+  width: 48px;
+}
+
+.account-lazy-avatar-status {
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.account-lazy-avatar-image {
+  border-radius: 50%;
+  height: 32px;
+  object-fit: cover;
+  width: 32px;
+}
+
+.account-lazy-avatar-image.is-loading {
+  display: none;
+}
+
 .tabs-row.ant-tabs {
   margin: 16px 0;
 }
