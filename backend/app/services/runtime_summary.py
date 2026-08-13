@@ -577,8 +577,15 @@ def rebuild_runtime_summaries(session: Session, tenant_id: int, scope: str = "al
     return result
 
 
-def list_account_runtime_summaries(session: Session, tenant_id: int) -> list[AccountRuntimeSummary]:
-    return list(session.scalars(select(AccountRuntimeSummary).where(AccountRuntimeSummary.tenant_id == tenant_id).order_by(AccountRuntimeSummary.updated_at.desc())))
+def list_account_runtime_summaries(
+    session: Session,
+    tenant_id: int,
+    account_ids: tuple[int, ...] | None = None,
+) -> list[AccountRuntimeSummary]:
+    statement = select(AccountRuntimeSummary).where(AccountRuntimeSummary.tenant_id == tenant_id)
+    if account_ids is not None:
+        statement = statement.where(AccountRuntimeSummary.account_id.in_(account_ids))
+    return list(session.scalars(statement.order_by(AccountRuntimeSummary.updated_at.desc())))
 
 
 def list_target_runtime_summaries(
