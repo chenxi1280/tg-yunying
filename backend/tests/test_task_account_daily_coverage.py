@@ -33,6 +33,7 @@ from app.services.task_center.daily_coverage import (
     release_coverage_reservation,
     reserve_coverage_for_action,
 )
+from app.services.task_center.daily_ledgers import ensure_task_day_ledger
 from app.services.task_center.daily_coverage_readiness import _row_needs_refresh
 from app.services.task_center import daily_coverage
 
@@ -123,6 +124,31 @@ def test_daily_coverage_resolves_group_from_operation_target_without_group_id(
     row = session.scalar(select(TaskAccountDailyCoverage))
     assert row is not None
     assert row.group_id == 21
+
+
+def test_day_ledger_resolves_group_from_operation_target_without_group_id(
+    session: Session,
+) -> None:
+    task = _seed(session)
+    task.type_config = {
+        key: value
+        for key, value in task.type_config.items()
+        if key != "target_group_id"
+    }
+    session.add(_account(1))
+    session.add(TgGroupAccount(
+        tenant_id=1,
+        group_id=21,
+        account_id=1,
+        can_send=True,
+    ))
+    session.commit()
+    timestamp = datetime(2026, 7, 10, 10)
+
+    initialize_all_account_task_scope(session, task, now=timestamp)
+    ledger = ensure_task_day_ledger(session, task, now=timestamp)
+
+    assert ledger.task_id == task.id
 
 
 def test_daily_ledger_keeps_group_bot_waiting_account_out_of_send_pool(
