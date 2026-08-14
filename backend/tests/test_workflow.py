@@ -1507,7 +1507,6 @@ def test_login_code_platform_window_defaults_to_five_minutes(monkeypatch):
     assert Settings().login_code_ttl_seconds == 300
 
 
-@pytest.mark.no_postgres
 def test_login_start_resumes_open_code_flow_without_resending(monkeypatch):
     calls = 0
     original_start = __import__("app.services.accounts", fromlist=["gateway"]).gateway.start_login
@@ -1536,7 +1535,6 @@ def test_login_start_resumes_open_code_flow_without_resending(monkeypatch):
     assert calls == 1
 
 
-@pytest.mark.no_postgres
 def test_login_resend_supersedes_old_flow_before_telegram_verify(monkeypatch):
     finish_calls = 0
 

@@ -403,8 +403,10 @@ def _apply_standby_login_challenge(flow: TgLoginFlow, challenge: LoginChallenge)
     flow.code_preview = challenge.code_preview
     flow.code_expires_at = challenge.code_expires_at
     flow.challenge_sent_at = _now()
-    flow.temporary_session_ciphertext = encrypt_secret(challenge.temporary_session) if challenge.temporary_session else None
-    flow.phone_code_hash_ciphertext = encrypt_secret(challenge.phone_code_hash) if challenge.phone_code_hash else None
+    temporary_session = getattr(challenge, "temporary_session", None)
+    phone_code_hash = getattr(challenge, "phone_code_hash", None)
+    flow.temporary_session_ciphertext = encrypt_secret(temporary_session) if temporary_session else None
+    flow.phone_code_hash_ciphertext = encrypt_secret(phone_code_hash) if phone_code_hash else None
 
 
 def _record_login_code_if_present(session: Session, account: TgAccount, challenge: LoginChallenge) -> None:
