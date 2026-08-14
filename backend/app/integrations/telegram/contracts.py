@@ -10,6 +10,8 @@ class LoginChallenge:
     code_preview: str | None = None
     code_expires_at: datetime | None = None
     qr_payload: str | None = None
+    temporary_session: str | None = None
+    phone_code_hash: str | None = None
 
 
 @dataclass(frozen=True)

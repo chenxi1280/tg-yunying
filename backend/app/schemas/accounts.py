@@ -76,6 +76,12 @@ class LoginStartRequest(BaseModel):
     force: bool = False
 
 
+class LoginResendRequest(BaseModel):
+    flow_id: int
+    flow_version: int
+    request_seq: int | None = None
+
+
 class LoginVerifyRequest(BaseModel):
     flow_id: int
     flow_version: int
@@ -326,6 +332,7 @@ class LoginFlowOut(ApiModel):
     proxy_id: int | None = None
     failure_type: str = ""
     failure_detail: str = ""
+    remote_error_type: str = ""
     trace_id: str = ""
     created_at: datetime
 
@@ -511,7 +518,7 @@ __all__ = [
     "TgAccountCreate", "AccountPoolCreate", "RankDeboostAccountPoolCreate", "AccountPoolUpdate",
     "MoveAccountPoolRequest", "AccountIdentityUpdate", "TgAccountProfileUpdate",
     "AccountCreationCapabilityOut",
-    "LoginStartRequest", "LoginVerifyRequest", "LoginQrCheckRequest", "SensitiveActionReasonRequest", "AccountClonePlanCreate",
+    "LoginStartRequest", "LoginResendRequest", "LoginVerifyRequest", "LoginQrCheckRequest", "SensitiveActionReasonRequest", "AccountClonePlanCreate",
     "AccountAuthorizationLoginStartRequest", "AccountAuthorizationLoginVerifyRequest",
     "AccountAuthorizationOut", "AccountAuthorizationQrCheckRequest", "AccountAuthorizationSwitchRequest",
     "AvatarUploadOut",

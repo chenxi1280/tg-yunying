@@ -450,7 +450,6 @@ class TelethonTelegramGateway(TelegramGateway):
         self._lifecycle = TelethonClientLifecycle(self.settings)
         self._pending_clients: dict[int, Any] = {}
         self._pending_qr: dict[int, Any] = {}
-        self._pending_credentials: dict[int, DeveloperAppCredentials] = {}
 
     @classmethod
     def _get_or_create_loop(cls) -> asyncio.AbstractEventLoop:
@@ -492,7 +491,7 @@ class TelethonTelegramGateway(TelegramGateway):
 
     async def _start_login_async(
         self,
-        account_id: int,
+        flow_id: int,
         method: str,
         phone: str | None,
         credentials: DeveloperAppCredentials,
@@ -501,80 +500,146 @@ class TelethonTelegramGateway(TelegramGateway):
         await client.connect()
         if method == "qr":
             qr_login = await client.qr_login()
-            self._pending_clients[account_id] = client
-            self._pending_qr[account_id] = qr_login
-            self._pending_credentials[account_id] = credentials
+            self._pending_clients[flow_id] = client
+            self._pending_qr[flow_id] = qr_login
             return LoginChallenge(status="等待扫码", qr_payload=qr_login.url)
-
-        await client.send_code_request(self._usable_phone(phone))
-        self._pending_clients[account_id] = client
-        self._pending_credentials[account_id] = credentials
-        return LoginChallenge(
-            status="等待验证码",
-            code_preview=None,
-            code_expires_at=datetime.now(BEIJING_TZ) + timedelta(seconds=self.settings.login_code_ttl_seconds),
-        )
+        try:
+            sent_code = await client.send_code_request(self._usable_phone(phone))
+            phone_code_hash = str(getattr(sent_code, "phone_code_hash", "") or "")
+            if not phone_code_hash:
+                raise RuntimeError("telegram login challenge missing phone_code_hash")
+            return LoginChallenge(
+                status="等待验证码",
+                code_expires_at=datetime.now(BEIJING_TZ) + timedelta(seconds=self.settings.login_code_ttl_seconds),
+                temporary_session=client.session.save(),
+                phone_code_hash=phone_code_hash,
+            )
+        finally:
+            await client.disconnect()
 
     def start_login(
         self,
         method: str,
+        flow_id: int | None = None,
         account_id: int | None = None,
         phone: str | None = None,
         credentials: DeveloperAppCredentials | None = None,
     ) -> LoginChallenge:
-        if account_id is None:
-            raise RuntimeError("Telethon login requires account_id")
-        return self._run(self._start_login_async(account_id, method, phone, self._usable_credentials(credentials)))
+        if account_id is None or flow_id is None:
+            raise RuntimeError("Telethon login requires account_id and flow_id")
+        return self._run(self._start_login_async(flow_id, method, phone, self._usable_credentials(credentials)))
 
     async def _finish_login_async(
         self,
-        account_id: int,
+        flow_id: int,
         code: str | None,
         password_2fa: str | None,
         phone: str | None,
+        credentials: DeveloperAppCredentials,
+        temporary_session: str | None,
+        phone_code_hash: str | None,
+    ) -> tuple[str, str]:
+        if flow_id in self._pending_qr:
+            return await self._finish_qr_login_async(flow_id, password_2fa)
+        if not temporary_session:
+            raise RuntimeError("login flow not resumable: temporary session missing")
+        return await self._finish_code_login_async(
+            code,
+            password_2fa,
+            phone,
+            credentials,
+            temporary_session,
+            phone_code_hash,
+        )
+
+    async def _finish_code_login_async(
+        self,
+        code: str | None,
+        password_2fa: str | None,
+        phone: str | None,
+        credentials: DeveloperAppCredentials,
+        temporary_session: str,
+        phone_code_hash: str | None,
     ) -> tuple[str, str]:
         from telethon.errors import SessionPasswordNeededError
 
-        client = self._pending_clients.get(account_id)
-        if client is None:
+        client = self._new_client(credentials, temporary_session)
+        await client.connect()
+        raw_session = ""
+        try:
+            if password_2fa:
+                await client.sign_in(password=password_2fa)
+            else:
+                if not phone_code_hash:
+                    raise RuntimeError("login flow not resumable: phone_code_hash missing")
+                await client.sign_in(
+                    phone=self._usable_phone(phone),
+                    code=code,
+                    phone_code_hash=phone_code_hash,
+                )
+            raw_session = client.session.save()
+        except SessionPasswordNeededError:
+            return "等待2FA", client.session.save()
+        finally:
+            await client.disconnect()
+        return "在线", raw_session
+
+    async def _finish_qr_login_async(self, flow_id: int, password_2fa: str | None) -> tuple[str, str]:
+        from telethon.errors import SessionPasswordNeededError
+
+        client = self._pending_clients.get(flow_id)
+        qr_login = self._pending_qr.get(flow_id)
+        if client is None or qr_login is None:
             raise RuntimeError("login flow not started or has expired in this process")
         try:
-            if account_id in self._pending_qr:
-                qr_login = self._pending_qr[account_id]
+            if password_2fa:
+                await client.sign_in(password=password_2fa)
+            else:
                 try:
-                    # Wait up to 5s per poll; frontend should poll every ~3-5s
                     await asyncio.wait_for(qr_login.wait(), timeout=5)
                 except TimeoutError:
                     return "等待扫码", ""
-            elif password_2fa:
-                await client.sign_in(password=password_2fa)
-            else:
-                await client.sign_in(phone=self._usable_phone(phone), code=code)
         except SessionPasswordNeededError:
             return "等待2FA", ""
-
         raw_session = client.session.save()
-        # Cache the now-logged-in client under its final session string
-        credentials = self._pending_credentials.pop(account_id, None)
-        if credentials is not None:
-            await self._lifecycle.remember_connected_client(credentials, raw_session, client)
-        else:
-            await client.disconnect()
-        self._pending_clients.pop(account_id, None)
-        self._pending_qr.pop(account_id, None)
+        self._pending_clients.pop(flow_id, None)
+        self._pending_qr.pop(flow_id, None)
+        await client.disconnect()
         return "在线", raw_session
+
+    async def _cancel_login_async(self, flow_id: int) -> None:
+        client = self._pending_clients.pop(flow_id, None)
+        self._pending_qr.pop(flow_id, None)
+        if client is not None:
+            await client.disconnect()
+
+    def cancel_login(self, flow_id: int) -> None:
+        self._run(self._cancel_login_async(flow_id))
 
     def finish_login(
         self,
         code: str | None,
         password_2fa: str | None,
+        flow_id: int | None = None,
         account_id: int | None = None,
         phone: str | None = None,
         credentials: DeveloperAppCredentials | None = None,
+        temporary_session: str | None = None,
+        phone_code_hash: str | None = None,
     ) -> tuple[str, str]:
-        if account_id is None:
-            raise RuntimeError("Telethon login verification requires account_id")
-        return self._run(self._finish_login_async(account_id, code, password_2fa, phone))
+        if account_id is None or flow_id is None:
+            raise RuntimeError("Telethon login verification requires account_id and flow_id")
+        return self._run(
+            self._finish_login_async(
+                flow_id,
+                code,
+                password_2fa,
+                phone,
+                self._usable_credentials(credentials),
+                temporary_session,
+                phone_code_hash,
+            )
+        )
 
     async def _health_async(
         self,

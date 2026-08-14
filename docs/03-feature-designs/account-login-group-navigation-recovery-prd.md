@@ -5,15 +5,15 @@
 | 项 | 值 |
 | --- | --- |
 | 日期 | 2026-08-14 |
-| 版本 | v1.2 release-code-resync |
+| 版本 | v1.3 code-challenge-resync |
 | 需求级别 | L2 / 账号登录主路径与账号中心可达性缺陷 |
 | 设计状态 | `product_design_complete` |
-| 当前实现状态 | `partial_implemented_on_release` |
+| 当前实现状态 | `code_challenge_fix_local_implemented / qa_pass / release_pending` |
 | 生产状态 | `unproven` |
-| 关联问题 | 验证码提交只显示 Internal Server Error；新增/重登选择目标分组后已有账号仍保留原分组但页面未说明；分组标签显示不全且不可横向访问 |
+| 关联问题 | 验证码提交只显示 Internal Server Error；平台窗口配置为 3 分钟而非 5 分钟；重复发送后旧 code 与新 challenge 串线；新增/重登分组语义与分组导航缺陷 |
 | 非目标 | 本文不实现代码、不发布生产、不绕过 Telegram 官方登录安全限制 |
 
-本文补齐当前 `release` 代码已发生但 PRD 未同步的合同，也明确剩余未实现缺口。`existing-account-reauthorization-routing-prd.md` 只保留“已有账号不重复创建、不静默改组”的窄合同；登录 flow 持久化、post-login 结果拆分和分组导航以本文为准。
+本文补齐当前 `release` 代码已发生但 PRD 未同步的合同，也明确剩余未实现缺口。2026-08-15 生产证据确认主账号验证码登录存在 180 秒本地窗口和同账号重复 `send_code_request`；后续 code 提交发生在本地截止时间之前仍被 Telegram 拒绝。本地修复已完成 300 秒平台窗口、显式 resend、flow 级临时 Session/hash 持久绑定、旧 flow fence、invalid/expired 分型和 2FA flow 恢复；未发布前生产状态仍为 `unproven`。`existing-account-reauthorization-routing-prd.md` 只保留“已有账号不重复创建、不静默改组”的窄合同；登录 flow 持久化、post-login 结果拆分和分组导航以本文为准。
 
 ## 1. 当前代码事实与缺口
 
@@ -24,10 +24,14 @@
 - 重复提交同一登录验证码、且账号已经因前一次提交变为在线时，会返回当前在线账号，避免第二次命中进程内 pending client 缺失后误报失败。
 - 登录初始化失败已写失败 flow、trace 和审计，并返回结构化错误；这只覆盖 start 阶段，不覆盖 verify 阶段和 post-login 同步阶段。
 
-### 1.2 仍未被当前实现闭合的缺口
+### 1.2 2026-08-15 修复前缺口与本地闭合结果
 
-- 主登录验证码 / QR flow 仍依赖 `TelegramGateway._pending_clients[account_id]`、`_pending_qr[account_id]` 这类进程内状态；`TgLoginFlow.code_expires_at` 未过期不等于该进程还能提交验证码。
-- 主登录 verify / QR check 仍按 `account_id` 查“latest flow”，没有要求前端携带精确 `flow_id + flow_version + request_seq`，会串扰重发、多标签页、主/备授权和不同登录方式。
+- **已在本地闭合：** code flow 不再依赖账号级 pending client。start 保存该 flow 的加密临时 StringSession 和 `phone_code_hash` 后断开；verify 按同一 flow 解密重建 client 并显式传入同一 hash。QR 内存态也已从 `account_id` 改为 `flow_id` 隔离，但跨实例 owner permit 仍属于后续韧性阶段。
+- **已在本地闭合：** `flow_version` 已成为数据库列；resend 在锁内 supersede 旧 flow、递增旧版本并建立新 flow。旧 flow/version 在进入 Gateway 前返回 `login_flow_superseded`。
+- **已在本地闭合：** 默认、生产示例和 compose 合同均为 `LOGIN_CODE_TTL_SECONDS=300`。该时间只命名为“平台提交截止时间”，Telegram 提前拒绝仍以类型化远端错误为准。
+- **已在本地闭合：** 前端重发只调用独立 `POST /login/resend` 并携带旧 `flow_id + flow_version + request_seq`；普通 start 恢复现有 waiting-code / waiting-2FA / expired flow，不会静默再次发送 code。
+- **已在本地闭合：** `PhoneCodeInvalidError` 保留当前 flow 可重试，`PhoneCodeExpiredError` 或平台超时进入 expired 并清除 challenge；进入 2FA 时只更新 flow 的临时 Session，不把未完成授权写为正式账号 Session。
+- **本次未扩展：** owner permit / UID readback / durable outbox / 登录后分组迁移 CAS 仍是后续完整 v2 韧性目标，不得用本次 challenge 修复声明已经完成。
 - `verify_login` 在主授权成功提交后同步执行资料 / 群 / 联系人等后置同步；后置同步异常仍可能让 HTTP 响应变成 500，用户只看到登录失败，但远端授权和数据库 session 可能已经成功。
 - QR payload、开发模式 code preview 和原始异常 detail 仍可能进入 API 响应或详情展示；目标合同必须禁止生产主登录列表 / 日志暴露二维码原文、验证码、phone_code_hash、Session、2FA 或代理凭据。
 - 新账号弹窗在 `selectedPoolId` 或分组列表缺失时仍会回退默认 / 首个分组；选中分组被删除、禁用或加载失败时，提交可能与用户看到的目标不一致。
@@ -42,6 +46,8 @@
 3. 已有账号命中新建入口时默认保留原分组；如果运营想把账号移动到本次选择的分组，必须在登录成功后走显式迁移确认和 CAS。
 4. 新账号创建必须严格使用提交时可验证的目标分组；分组加载失败、选择失效或目标组不可用时禁止提交，不能 fallback 到默认组。
 5. 账号分组导航必须让全部分组可见、可选、可键盘访问，并且不破坏账号页 20 条服务端分页。
+6. 验证码平台操作窗口固定为 5 分钟；继续登录或重新打开弹窗必须恢复现有可用 flow，只有显式“重新发送”才能请求新 challenge。
+7. 每个 code challenge 必须与唯一 `flow_id` 的临时 Session 和 `phone_code_hash` 精确绑定；新 challenge 成功或结果不确定后，旧 flow 不得再进入 Telegram。
 
 ## 3. 登录 flow v2 合同
 
@@ -55,12 +61,16 @@
 | `flow_scope` | `primary`、`standby_1`、`standby_2` 等授权槽位；唯一键和查询必须包含 scope |
 | `method` | `code` 或 `qr`；切换方式必须 supersede 旧 flow |
 | `flow_version` | 每次 resend、cancel、method switch 或 remote challenge 更新时递增 |
+| `superseded_by_flow_id` | 新 challenge 替代旧 challenge 时记录新 flow；旧 flow 所有 verify 请求返回 `login_flow_superseded` |
 | `owner_epoch` / `owner_lease_until` | 临时 Telegram Session 的唯一执行 owner；连接、RPC、序列化、断开都必须校验 owner permit |
 | `developer_app_id` / `proxy_id` / `device_fingerprint_version` | challenge 到授权确认期间冻结，不允许中途漂移 |
 | `authorization_status` | `intent_persisted / challenge_sent / waiting_code / waiting_qr / waiting_2fa / authorized / remote_unknown / failed / superseded / cancelled / expired` |
 | `post_login_sync_status` | `not_started / queued / running / succeeded / failed / retryable` |
 | `pool_transition_status` | `not_requested / queued / moved / no_op / failed / source_changed` |
 | `security_post_login_status` | `not_requested / queued / succeeded / failed`；托管 2FA 和设备清理不得混在 verify 请求里 |
+| `temporary_session_ciphertext` | code challenge 使用的未授权 Telethon StringSession，加密保存，只能由同 flow verify 解密使用 |
+| `phone_code_hash_ciphertext` | Telegram 返回的 `phone_code_hash`，加密保存，只能与同 flow 的临时 Session 配对 |
+| `remote_error_type` | 只保存 allowlist 异常类名，例如 `PhoneCodeInvalidError` / `PhoneCodeExpiredError`，不保存验证码或远端敏感载荷 |
 
 验证码、phone_code_hash、QR token、临时 Session、2FA 输入、AuthKey 和代理凭据必须加密或只在内存短时存在；列表、详情、审计和错误 detail 只能返回 allowlist 类型化字段和 trace。
 
@@ -85,13 +95,26 @@ persist intent
 - 登录成功必须以同一临时 Session 执行 `get_me` 并核对稳定 Telegram UID。UID mismatch 时隔离候选 Session，不得激活。
 - 同账号同 scope 的旧 owner 未断开或 Attempt 仍为 unknown 时，新 owner 不得连接同一临时 Session，避免 `AuthKeyDuplicated`。
 
-### 3.3 错误字典
+### 3.3 验证码窗口与重发合同
+
+- `LOGIN_CODE_TTL_SECONDS` 默认和生产合同固定为 `300` 秒。`code_expires_at = challenge_sent_at + 300 秒`，表示平台停止接受该 flow 新提交的时间；Telegram 提前拒绝时以远端类型化结果为准。
+- initial start 必须先查同账号、同 scope、同 method 的 open flow；仍在 5 分钟窗口内时直接返回该 flow，不调用 Telegram。
+- resend 使用独立 `POST /login/resend`，请求必须携带当前 `flow_id + flow_version + request_seq`。普通 `/login/start` 不承担 resend 语义。
+- resend 在数据库事务内锁定当前 flow，校验仍为 open 后将其置为 `superseded`，再创建新的 intent；并发或迟到 resend 只能有一个获胜。
+- 每个远端 challenge 使用新的 `flow_id`。`flow_version` 是该行的并发版本，不用相同 flow 覆盖历史 challenge；新 flow 从版本 1 开始。
+- code start 成功后必须把临时 StringSession 与 `phone_code_hash` 加密落到该 flow 并断开临时 client；verify 重新建立同一临时 Session，并显式传入同一 hash。进程重启、负载均衡或重复打开弹窗不得改变配对。
+- 新 challenge 远端调用失败或结果不确定时，旧 flow 保持 superseded；因为无法证明 Telegram 没有接受新请求，禁止回退继续提交旧 code。
+- resend 成功后前端必须清空验证码输入，展示新 flow 的发送时间和平台截止时间；旧请求迟到只能返回 `login_flow_superseded`。
+
+### 3.4 错误字典
 
 | code | 展示 / 处置 |
 | --- | --- |
 | `login_flow_not_resumable` | 当前验证码流程无法跨进程继续，请重新发送验证码 |
 | `login_flow_superseded` | 已有新的登录流程，当前输入已失效 |
-| `login_code_invalid` | 验证码错误或已失效，可重新输入或重发 |
+| `login_code_invalid` | 当前 flow 的验证码错误；flow 仍在窗口内时允许重新输入，不自动重发 |
+| `login_code_expired` | 当前 flow 已超过平台窗口或 Telegram 返回 `PhoneCodeExpiredError`；只能显式重发 |
+| `login_rate_limited` | Telegram 返回 FloodWait；展示可重试时间，不自动重发 |
 | `login_2fa_required` | 需要输入二步密码 |
 | `login_2fa_invalid` | 二步密码错误；不得保存或轮换该输入 |
 | `login_remote_unknown` | 远端授权状态不确定，等待系统核验，不得重发 |
@@ -156,9 +179,9 @@ authorization_status=authorized
 
 | 层 | 要求 |
 | --- | --- |
-| API | 主登录 start / verify / qr-check / resend / cancel 均以 `flow_id` 为中心；verify 返回账号授权、post-login sync、pool transition 的正交投影 |
+| API | 主登录 start / verify / qr-check / resend / cancel 均以 `flow_id` 为中心；resend 是携带旧 flow 身份的独立端点；verify 返回账号授权、post-login sync、pool transition 的正交投影 |
 | 后端服务 | 登录后资料同步、授权安全动作和分组迁移全部进入 durable outbox；verify 请求内只完成授权提交和必要 UID readback |
-| Gateway | 临时登录 client 不再按 `account_id` 缓存；按 `flow_id + owner_epoch` 持有，并遵守 Runtime Authority / owner permit |
+| Gateway | code 登录不依赖进程内 pending client：使用 flow 持久化的临时 Session + hash；QR 临时 client 不再按 `account_id` 缓存，必须按 `flow_id + owner_epoch` 持有 |
 | 前端 | 登录弹窗只接受当前 `flow_id + flow_version + request_seq` 的响应；关闭弹窗清空验证码和 2FA 输入 |
 | 账号创建 | 目标分组选择失效时禁止提交；已有账号 409 显示保留原组 / 登录后迁移两种明确选择 |
 | 样式 | 分组导航独立 CSS，不依赖父级 `Space wrap`；必须覆盖桌面、窄屏和大量分组 |
@@ -171,6 +194,10 @@ authorization_status=authorized
 - verify 阶段：进程内 pending client 缺失返回 `login_flow_not_resumable`，不出现 500。
 - post-login 同步失败：接口返回 `authorization_status=authorized` 且 `post_login_sync_status=failed`，账号 session 已持久化，可单独重试同步。
 - 重发验证码：新 flow version supersede 旧输入；旧响应、旧 code 和多标签页迟到响应被拒绝。
+- 5 分钟窗口：默认配置、API 截止时间和前端展示均为 300 秒；超过平台窗口不进入 Telegram。
+- 重开弹窗：同一 open flow 被恢复，Gateway `send_code_request` 调用数不增加。
+- challenge 配对：两个账号可并行、同账号先后两个 flow 不串 client/hash；verify 只接收本 flow 加密保存的临时 Session 与 hash。
+- 错误分类：`PhoneCodeInvalidError` 保持当前 flow 可重试，`PhoneCodeExpiredError` 进入 expired，二者不再合并成同一数据库失败类型。
 - QR 登录：列表 / 详情不暴露 raw QR payload；只在当前启动响应短时展示二维码。
 - 2FA：用户为本次登录输入的密码不被隐式保存、托管或轮换。
 - UID mismatch：不激活授权，临时 Session 隔离并写类型化错误。
@@ -195,6 +222,7 @@ authorization_status=authorized
 3. post-login 同步失败注入不再让 verify 接口返回 500。
 4. 已有账号从新增入口重新登录后，默认原分组不变；显式迁移成功 / CAS 失败均有审计。
 5. 账号中心分组数量超过一屏时，真实浏览器可访问首尾分组且账号分页仍为 20 条服务端页。
+6. 真实 code 登录在不重发情况下于 5 分钟平台窗口内完成；重发 canary 明确证明旧 flow 被本地拒绝、新 flow 使用新 code 成功。
 
 ## 8. 发布与回滚
 
@@ -202,3 +230,16 @@ authorization_status=authorized
 - mixed-version 期间旧实例不得处理 v2 durable flow；回滚时 v2 flow 标记为 `maintenance_blocked`，用户需重新发起登录，不能交给旧进程内 client。
 - 数据迁移必须保留旧 `TgLoginFlow` 只读审计；不得把历史 code_preview / qr_payload 迁成可继续提交的有效 flow。
 - 任何发布成功、容器 healthy、SSH 可连都不等于登录业务恢复；必须按 §7.3 取证。
+
+## 9. Product Design Complete 自检（v1.3）
+
+- 原始问题：覆盖 3 分钟配置、重复 send、旧 code/new hash 串线、错误文案合并。
+- 前端状态：覆盖首次、恢复、显式重发、迟到响应、输入清空、5 分钟展示和多标签页。
+- 后端/API：覆盖独立 resend、flow/version CAS、旧 flow supersede、平台截止检查和类型化错误。
+- Gateway/持久化：覆盖临时 Session/hash 加密、进程重启、同账号多 flow 与 QR 隔离边界。
+- 并发/幂等：同账号同 scope 仅一个 open flow；并发 resend 仅一个获胜；重复 verify 已授权时幂等返回。
+- 安全：API、列表、审计、日志不输出 code、hash、临时 Session、手机号或凭据。
+- 发布/迁移/回滚：新增字段和 open-flow 唯一约束先迁移；mixed-version 必须 fence；回滚不尝试恢复 v2 challenge。
+- QA/E4：自动化与真实 Telegram canary 分层；本地测试、CI、部署和 health 均不能替代真实 code 登录事实。
+
+`design_status=product_design_complete`。进入开发后若上述字段、API 或 challenge 生命周期变化，必须标记 resync 并重新完成本节自检。

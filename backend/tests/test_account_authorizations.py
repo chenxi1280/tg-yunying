@@ -798,6 +798,7 @@ def test_task_dispatch_failure_switches_standby_for_auth_failure() -> None:
         assert action.claim_token == ""
 
 
+@pytest.mark.no_postgres
 def test_standby_authorization_login_creates_flow_without_overwriting_primary_status(monkeypatch) -> None:
     monkeypatch.setattr(authorization_service, "gateway", TelegramGateway())
     with _sqlite_session() as session:
@@ -1017,11 +1018,12 @@ def test_credentials_for_task_account_uses_direct_account_credentials(task_type:
         assert credentials.proxy_id == expected_proxy_id
 
 
+@pytest.mark.no_postgres
 def test_standby_authorization_login_uses_selected_proxy_credentials(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
     class RecordingGateway(TelegramGateway):
-        def start_login(self, method, account_id=None, phone=None, credentials=None):
+        def start_login(self, method, flow_id=None, account_id=None, phone=None, credentials=None):
             captured["proxy_id"] = credentials.proxy_id if credentials else None
             captured["proxy_host"] = credentials.proxy_host if credentials else ""
             return LoginChallenge(status=AccountStatus.WAITING_CODE.value, code_preview="12345")
@@ -1065,6 +1067,7 @@ def test_standby_authorization_login_uses_selected_proxy_credentials(monkeypatch
         assert captured == {"proxy_id": 42, "proxy_host": "10.0.0.42"}
 
 
+@pytest.mark.no_postgres
 def test_verify_standby_authorization_login_saves_asset_without_overwriting_primary_session(monkeypatch) -> None:
     monkeypatch.setattr(authorization_service, "gateway", TelegramGateway())
     with _sqlite_session() as session:

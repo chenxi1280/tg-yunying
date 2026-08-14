@@ -1864,6 +1864,8 @@ TG账号
 
 账号登录、已有账号重登和登录后的可选分组迁移必须按 `docs/03-feature-designs/account-login-group-navigation-recovery-prd.md` 执行。主登录和备用授权 flow 都必须以精确 `flow_id + flow_scope + flow_version + request_seq` 推进；不得只按 `account_id` 查最新 flow，也不得把数据库中未过期验证码记录等同于当前进程可提交。验证码、QR、2FA、重发、取消和迟到响应必须由持久 flow 版本 fence 收口，失败返回类型化错误和 trace，不允许裸 `Internal Server Error`。
 
+验证码登录的平台提交窗口固定为 300 秒，该窗口不是 Telegram 官方绝对过期承诺。普通 start 只能恢复当前 waiting-code / waiting-2FA / expired flow；只有用户显式触发的 resend 才能携带旧 flow/version、supersede 旧 challenge 并请求新 code。每个 code challenge 的临时 StringSession 与 `phone_code_hash` 必须加密绑定到唯一 flow；verify 只能使用该 flow 的同一配对。`PhoneCodeInvalidError` 保持当前 flow 可重试，`PhoneCodeExpiredError` 或平台超时进入 expired，二者不得合并成“验证码错误或已失效”。
+
 登录成功结果必须拆为正交投影：`authorization_status` 表示 Telegram 授权是否已持久化，`post_login_sync_status` 表示资料 / 群 / 联系人同步，`pool_transition_status` 表示登录成功后的显式分组迁移。Telegram 授权成功后，后置同步或分组迁移失败不能把登录响应改写成失败或 500；用户为本次登录输入的 2FA 密码不得被隐式托管、保存或轮换。
 
 备用授权登录流程与主授权相同，但入口在账号详情“授权资产”Tab。新增备用授权时必须先选择或自动分配一个健康开发者应用和可用代理；登录成功后只写入授权资产，不覆盖当前主授权，除非管理员明确点击“切为主授权”并完成二次确认。

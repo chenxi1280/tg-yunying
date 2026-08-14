@@ -193,7 +193,7 @@ class Settings:
     admin_bootstrap_username: str = os.getenv("ADMIN_USERNAME", os.getenv("ADMIN_BOOTSTRAP_USERNAME", "admin")).strip() or "admin"
     admin_bootstrap_email: str | None = os.getenv("ADMIN_BOOTSTRAP_EMAIL")
     admin_bootstrap_password: str = os.getenv("ADMIN_PASSWORD", os.getenv("ADMIN_BOOTSTRAP_PASSWORD", DEFAULT_BOOTSTRAP_ADMIN_PASSWORD))
-    login_code_ttl_seconds: int = int(os.getenv("LOGIN_CODE_TTL_SECONDS", "180"))
+    login_code_ttl_seconds: int = int(os.getenv("LOGIN_CODE_TTL_SECONDS", "300"))
     enable_sync_dispatch_fallback: bool = _bool_env("ENABLE_SYNC_DISPATCH_FALLBACK", True)
     enable_embedded_worker: bool = _bool_env("ENABLE_EMBEDDED_WORKER", os.getenv("APP_ENV", "development") == "development")
     enable_legacy_campaign_worker: bool = _bool_env("ENABLE_LEGACY_CAMPAIGN_WORKER", False)

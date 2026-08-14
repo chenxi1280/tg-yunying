@@ -39,7 +39,7 @@ from app.schemas import (
     AccountDetailOut, AccountExecutionRecordOut, AccountGroupOut, AccountOut,
     AccountPendingExecutionRecheckOut, AccountSyncRecordOut,
     AvatarUploadOut, ContactOut, DirectMessageTaskCreate, GroupOut,
-    LoginFlowOut, LoginQrCheckRequest, LoginStartRequest, LoginVerifyRequest, MessageTaskOut,
+    LoginFlowOut, LoginQrCheckRequest, LoginResendRequest, LoginStartRequest, LoginVerifyRequest, MessageTaskOut,
     ManualOperationRecordOut, ManualSendRequest, MoveAccountPoolRequest,
     OperationTargetOut, ProfileSyncRecordOut, SensitiveActionReasonRequest, TgAccountCreate,
     TgAccountProfileUpdate, VerificationCodeOut, VerificationTaskOut, AccountRuntimeSummaryOut,
@@ -59,7 +59,7 @@ from app.services import (
     list_verification_tasks, move_account_pool, recheck_account_pending_execution, set_account_identity,
     poll_account_verification_codes, queue_account_sync_now,
     retry_account_clone_item, retry_account_profile_sync,
-    soft_delete_account, start_login, sync_account_contacts, sync_groups,
+    resend_login_code, soft_delete_account, start_login, sync_account_contacts, sync_groups,
     update_account_profile, upload_account_avatar, verify_login,
     manual_send, sync_account_targets,
 )
@@ -280,6 +280,31 @@ def post_login_verify(
     except ValueError as exc:
         if "2FA 登录成功" in str(exc):
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise not_found(str(exc)) from exc
+
+
+@router.post("/api/tg-accounts/{account_id}/login/resend", response_model=LoginFlowOut)
+def post_login_resend(
+    account_id: int,
+    payload: LoginResendRequest,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    require_core_feature_access(current_user)
+    try:
+        require_resource_tenant(session, current_user, TgAccount, account_id)
+        return resend_login_code(
+            session,
+            account_id,
+            payload.flow_id,
+            payload.flow_version,
+            current_user.name,
+        )
+    except LoginStartFailure as exc:
+        raise HTTPException(status_code=400, detail=exc.detail) from exc
+    except LoginFlowFailure as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    except ValueError as exc:
         raise not_found(str(exc)) from exc
 
 

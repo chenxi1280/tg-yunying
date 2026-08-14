@@ -22,6 +22,10 @@ export type LoginFlow = {
   authorization_id: number | null;
   developer_app_id: number | null;
   proxy_id: number | null;
+  failure_type: string;
+  failure_detail: string;
+  remote_error_type: string;
+  trace_id: string;
   created_at: string;
 };
 

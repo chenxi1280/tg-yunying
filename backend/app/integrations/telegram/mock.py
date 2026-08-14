@@ -50,6 +50,7 @@ class TelegramGateway:
     def start_login(
         self,
         method: str,
+        flow_id: int | None = None,
         account_id: int | None = None,
         phone: str | None = None,
         credentials: DeveloperAppCredentials | None = None,
@@ -69,9 +70,12 @@ class TelegramGateway:
         self,
         code: str | None,
         password_2fa: str | None,
+        flow_id: int | None = None,
         account_id: int | None = None,
         phone: str | None = None,
         credentials: DeveloperAppCredentials | None = None,
+        temporary_session: str | None = None,
+        phone_code_hash: str | None = None,
     ) -> tuple[str, str]:
         if password_2fa:
             return "在线", f"encrypted-session:{uuid4().hex}"
@@ -80,6 +84,9 @@ class TelegramGateway:
         if code and len(code) >= 4:
             return "在线", f"encrypted-session:{uuid4().hex}"
         return "异常", ""
+
+    def cancel_login(self, flow_id: int) -> None:
+        return None
 
     def search_rank_deboost_candidates(
         self,

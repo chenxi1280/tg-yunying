@@ -473,7 +473,7 @@ export function AppModals() {
             <div><dt>账号</dt><dd>{accountPhone(accountLoginForm.account)}</dd></div>
             <div><dt>当前状态</dt><dd><StatusBadge status={accountLoginForm.account.status} /></dd></div>
             <div><dt>登录方式</dt><dd>{accountLoginForm.step === 'method' ? '待选择' : accountLoginForm.method === 'qr' ? '二维码扫码' : '手机号验证码'}</dd></div>
-            {accountLoginForm.flow?.code_expires_at && <div><dt>验证码有效期</dt><dd>{formatBeijingDateTime(accountLoginForm.flow.code_expires_at)}</dd></div>}
+            {accountLoginForm.flow?.code_expires_at && <div><dt>平台提交截止时间</dt><dd>{formatBeijingDateTime(accountLoginForm.flow.code_expires_at)}</dd></div>}
           </div>
           {accountLoginForm.step === 'method' && (
             <>
@@ -514,6 +514,7 @@ export function AppModals() {
                 </label>
               </div>
               {accountLoginForm.flow?.code_preview && <p className="muted-line">开发模式验证码：{accountLoginForm.flow.code_preview}</p>}
+              <p className="muted-line">平台提交窗口为 5 分钟；重新发送会使上一条验证码失效，请只输入最新收到的一条。</p>
               {accountLoginForm.error && <p className="danger-text">{accountLoginForm.error}</p>}
               <Space className="modal-actions">
                 <Button onClick={() => setAccountLoginForm((current) => ({ ...current, step: 'method', error: '' }))} disabled={Boolean(busy)}>重新选择登录方式</Button>

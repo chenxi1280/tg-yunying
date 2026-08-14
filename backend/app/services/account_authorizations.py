@@ -5,6 +5,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.integrations.telegram import LoginChallenge
 from app.models import (
     AccountProxy,
     AccountProxyBinding,
@@ -16,7 +17,7 @@ from app.models import (
     TgLoginFlow,
     TgVerificationCode,
 )
-from app.security import encrypt_secret, encrypt_session
+from app.security import decrypt_secret, encrypt_secret, encrypt_session
 
 from ._common import _is_expired, _now, audit, gateway, get_account_phone
 from .account_authorization_constants import (
@@ -57,9 +58,18 @@ def start_standby_authorization_login(
     account = _require_account(session, account_id)
     app, proxy = _require_login_resources(session, account.tenant_id, role, developer_app_id, proxy_id)
     credentials = credentials_for_developer_app(app, proxy)
-    challenge = gateway.start_login(method, account_id=account.id, phone=get_account_phone(account), credentials=credentials)
-    flow = _standby_login_flow(account, challenge, method=method, role=role, developer_app_id=app.id, proxy_id=proxy.id)
+    flow = _standby_login_intent(account, method=method, role=role, developer_app_id=app.id, proxy_id=proxy.id)
     session.add(flow)
+    session.commit()
+    session.refresh(flow)
+    challenge = gateway.start_login(
+        method,
+        flow_id=flow.id,
+        account_id=account.id,
+        phone=get_account_phone(account),
+        credentials=credentials,
+    )
+    _apply_standby_login_challenge(flow, challenge)
     _record_login_code_if_present(session, account, challenge)
     audit(
         session,
@@ -95,9 +105,12 @@ def verify_standby_authorization_login(
     status, raw_session = gateway.finish_login(
         code,
         password_2fa,
+        flow_id=flow.id,
         account_id=account.id,
         phone=get_account_phone(account),
         credentials=credentials,
+        temporary_session=decrypt_secret(flow.temporary_session_ciphertext),
+        phone_code_hash=decrypt_secret(flow.phone_code_hash_ciphertext),
     )
     asset = _finish_standby_login(session, account, flow, status, raw_session, actor)
     if password_2fa:
@@ -130,6 +143,7 @@ def check_standby_authorization_qr_login(
     status, raw_session = gateway.finish_login(
         "qr-confirmed",
         None,
+        flow_id=flow.id,
         account_id=account.id,
         phone=get_account_phone(account),
         credentials=credentials_for_developer_app(app, proxy),
@@ -364,9 +378,8 @@ def _require_proxy(session: Session, tenant_id: int, proxy_id: int | None) -> Ac
     return proxy
 
 
-def _standby_login_flow(
+def _standby_login_intent(
     account: TgAccount,
-    challenge: Any,
     *,
     method: str,
     role: str,
@@ -377,9 +390,7 @@ def _standby_login_flow(
         tenant_id=account.tenant_id,
         account_id=account.id,
         method=method,
-        status=challenge.status,
-        code_preview=challenge.code_preview,
-        code_expires_at=challenge.code_expires_at,
+        status="intent_persisted",
         qr_payload=None,
         authorization_role=role,
         developer_app_id=developer_app_id,
@@ -387,7 +398,16 @@ def _standby_login_flow(
     )
 
 
-def _record_login_code_if_present(session: Session, account: TgAccount, challenge: Any) -> None:
+def _apply_standby_login_challenge(flow: TgLoginFlow, challenge: LoginChallenge) -> None:
+    flow.status = challenge.status
+    flow.code_preview = challenge.code_preview
+    flow.code_expires_at = challenge.code_expires_at
+    flow.challenge_sent_at = _now()
+    flow.temporary_session_ciphertext = encrypt_secret(challenge.temporary_session) if challenge.temporary_session else None
+    flow.phone_code_hash_ciphertext = encrypt_secret(challenge.phone_code_hash) if challenge.phone_code_hash else None
+
+
+def _record_login_code_if_present(session: Session, account: TgAccount, challenge: LoginChallenge) -> None:
     if not challenge.code_preview:
         return
     session.add(
@@ -418,9 +438,11 @@ def _expire_flow_if_needed(
     actor: str,
     password_2fa: str | None,
 ) -> None:
-    if not flow.code_preview or not _is_expired(flow.code_expires_at) or password_2fa:
+    if flow.status != AccountStatus.WAITING_CODE.value or not _is_expired(flow.code_expires_at) or password_2fa:
         return
     flow.code_preview = None
+    flow.temporary_session_ciphertext = None
+    flow.phone_code_hash_ciphertext = None
     flow.status = "已过期"
     audit(
         session,
@@ -445,6 +467,8 @@ def _finish_standby_login(
 ) -> TgAccountAuthorization:
     flow.status = status
     flow.code_preview = None
+    if status == AccountStatus.WAITING_2FA.value and raw_session:
+        flow.temporary_session_ciphertext = encrypt_secret(raw_session)
     if status != AccountStatus.ACTIVE.value or not raw_session:
         session.commit()
         raise ValueError(f"备用授权登录未完成：{status}")
@@ -470,6 +494,8 @@ def _finish_standby_login(
     session.add(asset)
     session.flush()
     flow.authorization_id = asset.id
+    flow.temporary_session_ciphertext = None
+    flow.phone_code_hash_ciphertext = None
     audit(
         session,
         tenant_id=account.tenant_id,

@@ -5,7 +5,7 @@ from uuid import uuid4
 from zipfile import ZipFile
 
 from app.ai_gateway import AiDraftCandidate, AiGenerationResult, AiUsage, mock_candidates
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.auth import get_challenge_target
 from app.database import SessionLocal
 from app.main import app
@@ -1500,6 +1500,84 @@ def test_login_flow_masks_verification_state():
         assert detail["stats"]["pending_verification_tasks"] >= 0
 
 
+@pytest.mark.no_postgres
+def test_login_code_platform_window_defaults_to_five_minutes(monkeypatch):
+    monkeypatch.delenv("LOGIN_CODE_TTL_SECONDS", raising=False)
+
+    assert Settings().login_code_ttl_seconds == 300
+
+
+@pytest.mark.no_postgres
+def test_login_start_resumes_open_code_flow_without_resending(monkeypatch):
+    calls = 0
+    original_start = __import__("app.services.accounts", fromlist=["gateway"]).gateway.start_login
+
+    def counted_start(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original_start(*args, **kwargs)
+
+    monkeypatch.setattr("app.services.accounts.gateway.start_login", counted_start)
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        ensure_developer_app(client, headers)
+        account = client.post(
+            "/api/tg-accounts",
+            headers=headers,
+            json={"tenant_id": 1, "display_name": "恢复现有验证码流程", "phone_number": _next_test_phone()},
+        ).json()
+
+        first = client.post(f"/api/tg-accounts/{account['id']}/login/start", headers=headers, json={"method": "code"})
+        resumed = client.post(f"/api/tg-accounts/{account['id']}/login/start", headers=headers, json={"method": "code"})
+
+    assert first.status_code == 200, first.text
+    assert resumed.status_code == 200, resumed.text
+    assert resumed.json()["flow_id"] == first.json()["flow_id"]
+    assert calls == 1
+
+
+@pytest.mark.no_postgres
+def test_login_resend_supersedes_old_flow_before_telegram_verify(monkeypatch):
+    finish_calls = 0
+
+    def counted_finish(*_args, **_kwargs):
+        nonlocal finish_calls
+        finish_calls += 1
+        return AccountStatus.ACTIVE.value, f"session:{uuid4().hex}"
+
+    monkeypatch.setattr("app.services.accounts.gateway.finish_login", counted_finish)
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        ensure_developer_app(client, headers)
+        account = client.post(
+            "/api/tg-accounts",
+            headers=headers,
+            json={"tenant_id": 1, "display_name": "重发作废旧流程", "phone_number": _next_test_phone()},
+        ).json()
+        first = client.post(f"/api/tg-accounts/{account['id']}/login/start", headers=headers, json={"method": "code"}).json()
+
+        resent = client.post(
+            f"/api/tg-accounts/{account['id']}/login/resend",
+            headers=headers,
+            json={"flow_id": first["flow_id"], "flow_version": first["flow_version"], "request_seq": 2},
+        )
+        stale = client.post(
+            f"/api/tg-accounts/{account['id']}/login/verify",
+            headers=headers,
+            json={"flow_id": first["flow_id"], "flow_version": first["flow_version"], "code": first["code_preview"]},
+        )
+
+    assert resent.status_code == 200, resent.text
+    assert resent.json()["flow_id"] != first["flow_id"]
+    assert stale.status_code == 409, stale.text
+    assert stale.json()["detail"]["code"] == "login_flow_superseded"
+    assert finish_calls == 0
+    with SessionLocal() as session:
+        old_flow = session.get(TgLoginFlow, first["flow_id"])
+        assert old_flow.status == "superseded"
+        assert old_flow.superseded_by_flow_id == resent.json()["flow_id"]
+
+
 def test_login_start_failure_records_flow_audit_and_structured_error(monkeypatch):
     def fail_login(*_args, **_kwargs):
         raise RuntimeError("telegram connect failed")
@@ -1699,6 +1777,41 @@ def test_login_verify_pending_client_loss_returns_typed_error(monkeypatch):
         assert db_flow.failure_detail == detail["message"]
 
 
+@pytest.mark.no_postgres
+def test_login_invalid_code_keeps_flow_retryable_and_persists_remote_type(monkeypatch):
+    class PhoneCodeInvalidError(Exception):
+        pass
+
+    def reject_code(*_args, **_kwargs):
+        raise PhoneCodeInvalidError("invalid code")
+
+    monkeypatch.setattr("app.services.accounts.gateway.finish_login", reject_code)
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        ensure_developer_app(client, headers)
+        account = client.post(
+            "/api/tg-accounts",
+            headers=headers,
+            json={"tenant_id": 1, "display_name": "错误验证码可重试", "phone_number": _next_test_phone()},
+        ).json()
+        flow = client.post(f"/api/tg-accounts/{account['id']}/login/start", headers=headers, json={"method": "code"}).json()
+
+        response = client.post(
+            f"/api/tg-accounts/{account['id']}/login/verify",
+            headers=headers,
+            json={"flow_id": flow["flow_id"], "flow_version": flow["flow_version"], "code": "00000"},
+        )
+
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"]["code"] == "login_code_invalid"
+    with SessionLocal() as session:
+        db_flow = session.get(TgLoginFlow, flow["flow_id"])
+        db_account = session.get(TgAccount, account["id"])
+        assert db_flow.status == AccountStatus.WAITING_CODE.value
+        assert db_account.status == AccountStatus.WAITING_CODE.value
+        assert db_flow.remote_error_type == "PhoneCodeInvalidError"
+
+
 def test_login_verify_post_sync_failure_preserves_authorized_account(monkeypatch):
     def fail_post_login_sync(*_args, **_kwargs):
         raise RuntimeError("profile sync boom")
@@ -1850,7 +1963,16 @@ def test_account_soft_delete_cascades_runtime_state():
         assert blocked_sync.status_code == 400
 
 
-def test_expired_code_flow_does_not_block_submitted_code():
+@pytest.mark.no_postgres
+def test_expired_code_flow_is_rejected_before_gateway(monkeypatch):
+    finish_calls = 0
+
+    def counted_finish(*_args, **_kwargs):
+        nonlocal finish_calls
+        finish_calls += 1
+        return AccountStatus.ACTIVE.value, f"session:{uuid4().hex}"
+
+    monkeypatch.setattr("app.services.accounts.gateway.finish_login", counted_finish)
     with TestClient(app) as client:
         headers = auth_headers(client)
         ensure_developer_app(client, headers)
@@ -1865,16 +1987,15 @@ def test_expired_code_flow_does_not_block_submitted_code():
             db_flow.code_expires_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=1)
             session.commit()
 
-        verified = client.post(
+        expired = client.post(
             f"/api/tg-accounts/{account['id']}/login/verify",
             headers=headers,
             json={"flow_id": flow["id"], "flow_version": flow["flow_version"], "code": flow["code_preview"]},
         )
-        assert verified.status_code == 200, verified.text
-        assert verified.json()["status"] == AccountStatus.ACTIVE.value
-        sync_records = client.get(f"/api/tg-accounts/{account['id']}/sync-records", headers=headers).json()
-        assert sync_records
-        assert all(record["status"] != "排队中" for record in sync_records if record["sync_type"] in {"profile_pull", "health", "groups", "contacts", "codes"})
+
+    assert expired.status_code == 409, expired.text
+    assert expired.json()["detail"]["code"] == "login_code_expired"
+    assert finish_calls == 0
 
 
 def test_runtime_login_flows_health_and_group_authorize():

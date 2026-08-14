@@ -116,6 +116,7 @@ def test_account_login_actions_bind_account_action_and_request_sequence():
     complete_body = source[source.index("async function completeAccountLogin"):source.index("\n\n  async function createAccount")]
     code_body = source[source.index("async function submitAccountLoginCode"):source.index("\n\n  async function submitAccountLoginPassword")]
     password_body = source[source.index("async function submitAccountLoginPassword"):source.index("\n\n  async function resendAccountLoginCode")]
+    resend_body = source[source.index("async function resendAccountLoginCode"):source.index("\n\n  async function checkAccountQrLogin")]
     qr_body = source[source.index("async function checkAccountQrLogin"):source.index("\n\n  async function healthCheck")]
 
     assert "const accountLoginRequestRef = React.useRef({ seq: 0, accountId: null as number | null, action: '' });" in context
@@ -127,8 +128,12 @@ def test_account_login_actions_bind_account_action_and_request_sequence():
     assert "function isCurrentAccountLoginRequest(requestSeq: number)" in source
     assert "function isActiveAccountLoginRequest(request: AccountLoginRequest)" in source
 
+    assert "const action = method;" in start_body
+    assert "const requestSeq = beginAccountLoginRequest(accountId, action);" in start_body
+    assert "const request = { accountId, action, requestSeq };" in start_body
+    assert "if (!isActiveAccountLoginRequest(request)) return;" in start_body
+
     for body, action in [
-        (start_body, "${resend ? 'resend' : method}"),
         (code_body, "code-submit"),
         (password_body, "password-submit"),
         (qr_body, "qr-check"),
@@ -147,6 +152,12 @@ def test_account_login_actions_bind_account_action_and_request_sequence():
     assert "JSON.stringify({ flow_id: flowId, flow_version: flowVersion, code, request_seq: requestSeq })" in code_body
     assert "JSON.stringify({ flow_id: flowId, flow_version: flowVersion, password_2fa, request_seq: requestSeq })" in password_body
     assert "JSON.stringify({ flow_id: flowId, flow_version: flowVersion, request_seq: requestSeq })" in qr_body
+    assert "`/tg-accounts/${accountId}/login/resend`" in resend_body
+    assert "JSON.stringify({ flow_id: flowId, flow_version: flowVersion, request_seq: requestSeq })" in resend_body
+    assert "await startOrResumeAccountLogin(params.accountLoginForm.account, 'code', true);" not in resend_body
+    assert "code: ''" in resend_body
+    assert "latestUsableLoginFlow(detail, method)" in start_body
+    assert "['等待验证码', '等待2FA'].includes(account.status)" in start_body
     assert "setAccountLoginErrorIfActive(request, error);" in start_body
     assert "setAccountLoginErrorIfActive(request, error);" in code_body
     assert "setAccountLoginErrorIfActive(request, error);" in password_body
@@ -173,7 +184,7 @@ def test_existing_account_create_conflict_routes_to_original_account_login():
     assert "await api<AccountDetail>(`/tg-accounts/${accountId}/detail`);" in reauthorize_body
     assert "原账号分组" in reauthorize_body
     assert "不会自动覆盖" in reauthorize_body
-    assert "await startOrResumeAccountLogin(detail.account, method, false);" in reauthorize_body
+    assert "await startOrResumeAccountLogin(detail.account, method);" in reauthorize_body
 
 
 def test_account_create_does_not_fallback_to_default_or_first_pool():

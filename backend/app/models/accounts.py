@@ -236,15 +236,21 @@ class TgLoginFlow(Base):
     account_id: Mapped[int] = mapped_column(ForeignKey("tg_accounts.id"))
     method: Mapped[str] = mapped_column(String(24))
     status: Mapped[str] = mapped_column(String(30))
+    flow_version: Mapped[int] = mapped_column(Integer, default=1)
     code_preview: Mapped[str | None] = mapped_column(String(16), nullable=True)
     code_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    challenge_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    temporary_session_ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)
+    phone_code_hash_ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)
     qr_payload: Mapped[str | None] = mapped_column(Text, nullable=True)
     authorization_role: Mapped[str] = mapped_column(String(24), default="primary")
     authorization_id: Mapped[int | None] = mapped_column(ForeignKey("tg_account_authorizations.id"), nullable=True)
     developer_app_id: Mapped[int | None] = mapped_column(ForeignKey("telegram_developer_apps.id"), nullable=True)
     proxy_id: Mapped[int | None] = mapped_column(ForeignKey("account_proxies.id"), nullable=True)
+    superseded_by_flow_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     failure_type: Mapped[str] = mapped_column(String(60), default="")
     failure_detail: Mapped[str] = mapped_column(Text, default="")
+    remote_error_type: Mapped[str] = mapped_column(String(80), default="")
     trace_id: Mapped[str] = mapped_column(String(64), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
@@ -255,10 +261,6 @@ class TgLoginFlow(Base):
     @property
     def flow_scope(self) -> str:
         return self.authorization_role or "primary"
-
-    @property
-    def flow_version(self) -> int:
-        return 1
 
     @property
     def authorization_status(self) -> str:
@@ -272,6 +274,8 @@ class TgLoginFlow(Base):
             return "waiting_2fa"
         if self.status == "已过期":
             return "expired"
+        if self.status == "superseded":
+            return "superseded"
         if self.status == AccountStatus.ERROR.value and self.failure_type == "login_remote_unknown":
             return "remote_unknown"
         if self.status == AccountStatus.ERROR.value:

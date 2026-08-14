@@ -449,22 +449,27 @@ export function createAccountActions(params: AccountActionParams) {
     }
   }
 
-  function latestUsableCodeFlow(detail: AccountDetail) {
+  function latestUsableLoginFlow(detail: AccountDetail, method: 'code' | 'qr') {
     return detail.login_flows.find((flow) => (
-      flow.method === 'code'
-      && flow.status === '等待验证码'
-      && (!flow.code_expires_at || new Date(flow.code_expires_at).getTime() > Date.now())
+      flow.method === method
+      && (
+        flow.status === '等待2FA'
+        || (
+          flow.status === '等待验证码'
+          && (!flow.code_expires_at || new Date(flow.code_expires_at).getTime() > Date.now())
+        )
+      )
     )) ?? null;
   }
 
-  async function startOrResumeAccountLogin(account: Account, method: 'code' | 'qr' = 'code', resend = false) {
+  async function startOrResumeAccountLogin(account: Account, method: 'code' | 'qr' = 'code') {
     const accountId = account.id;
-    const action = `${resend ? 'resend' : method}`;
+    const action = method;
     const requestSeq = beginAccountLoginRequest(accountId, action);
     const request = { accountId, action, requestSeq };
     const isQr = method === 'qr';
-    const actionKey = resend ? `account-login:${accountId}:resend` : `account-login:${accountId}:${method}`;
-    const busyLabel = isQr ? '启动扫码登录' : resend ? '重新发送验证码' : '启动登录';
+    const actionKey = `account-login:${accountId}:${method}`;
+    const busyLabel = isQr ? '启动扫码登录' : '启动登录';
     return params.runWithLoading(actionKey, busyLabel, async () => {
       params.setModal({ type: 'accountLogin' });
       params.setAccountLoginForm({
@@ -474,15 +479,15 @@ export function createAccountActions(params: AccountActionParams) {
         step: account.status === '等待2FA' ? 'password' : isQr || account.status === '等待扫码' ? 'qr' : 'code',
       });
       let flow: LoginFlow | null = null;
-      if (!resend && account.status === '等待验证码' && method === 'code') {
+      if (['等待验证码', '等待2FA'].includes(account.status)) {
         const detail = await api<AccountDetail>(`/tg-accounts/${accountId}/detail`);
         if (!isActiveAccountLoginRequest(request)) return;
-        flow = latestUsableCodeFlow(detail);
+        flow = latestUsableLoginFlow(detail, method);
         if (params.accountDetail?.account.id === accountId) {
           params.setAccountDetail(detail);
         }
       }
-      if (!flow && account.status !== '等待2FA') {
+      if (!flow) {
         flow = await api<LoginFlow>(`/tg-accounts/${accountId}/login/start`, {
           method: 'POST',
           body: JSON.stringify({ method }),
@@ -499,8 +504,11 @@ export function createAccountActions(params: AccountActionParams) {
         error: '',
       }));
       if (!isActiveAccountLoginRequest(request)) return;
-      params.setNotice(isQr ? '请使用 Telegram 扫码确认登录。' : resend ? '已重新发送登录验证码。' : '请完成验证码登录。');
-      await refreshAccountCenterDataAfterAction(resend ? '重新发送验证码' : isQr ? '扫码登录启动' : '验证码登录启动', [
+      const notice = flow?.status === '已过期'
+        ? '当前验证码流程已过期，请点击“重新发送验证码”后输入最新收到的一条。'
+        : isQr ? '请使用 Telegram 扫码确认登录。' : '请完成验证码登录。';
+      params.setNotice(notice);
+      await refreshAccountCenterDataAfterAction(isQr ? '扫码登录启动' : '验证码登录启动', [
         refreshAccountListForAction,
         ...(params.accountDetail?.account.id === accountId ? [refreshActionAccountDetail] : []),
       ], () => isActiveAccountLoginRequest(request));
@@ -549,7 +557,7 @@ export function createAccountActions(params: AccountActionParams) {
     const currentPoolText = detail.account.pool_name ? `原账号分组：${detail.account.pool_name}。` : '';
     const targetPoolText = requestedPool ? `本次选择的“${requestedPool.name}”不会自动覆盖，登录完成后请用移动分组单独确认。` : '';
     params.setNotice(`${detail.account.display_name} 已存在，正在进入原账号重新登录。${currentPoolText}${targetPoolText}`);
-    await startOrResumeAccountLogin(detail.account, method, false);
+    await startOrResumeAccountLogin(detail.account, method);
   }
 
   async function createAccount() {
@@ -577,7 +585,7 @@ export function createAccountActions(params: AccountActionParams) {
       });
       params.setAccountCreateForm(defaultAccountCreateForm());
       await refreshAccountCenterDataAfterAction('账号新增', [refreshAccountListForAction]);
-      await startOrResumeAccountLogin(created, loginMethod, loginMethod === 'code');
+      await startOrResumeAccountLogin(created, loginMethod);
     } catch (error) {
       const existingAccountId = existingAccountIdFromError(error);
       if (existingAccountId) {
@@ -1015,10 +1023,15 @@ export function createAccountActions(params: AccountActionParams) {
   }
 
   async function runLogin(account: Account, method: 'code' | 'qr') {
-    await startOrResumeAccountLogin(account, method, method === 'code');
+    await startOrResumeAccountLogin(account, method);
   }
 
   async function verifyAccount(account: Account) {
+    if (account.status === '等待2FA') {
+      const method = account.latest_login_flow?.method === 'qr' ? 'qr' : 'code';
+      await startOrResumeAccountLogin(account, method);
+      return;
+    }
     beginAccountLoginRequest(account.id, 'open');
     params.setModal({ type: 'accountLogin' });
     params.setAccountLoginForm({
@@ -1031,7 +1044,7 @@ export function createAccountActions(params: AccountActionParams) {
 
   async function chooseAccountLoginMethod(method: 'code' | 'qr') {
     if (!params.accountLoginForm.account) return;
-    await startOrResumeAccountLogin(params.accountLoginForm.account, method, false);
+    await startOrResumeAccountLogin(params.accountLoginForm.account, method);
   }
 
   async function submitAccountLoginCode() {
@@ -1090,7 +1103,38 @@ export function createAccountActions(params: AccountActionParams) {
 
   async function resendAccountLoginCode() {
     if (!params.accountLoginForm.account) return;
-    await startOrResumeAccountLogin(params.accountLoginForm.account, 'code', true);
+    const account = params.accountLoginForm.account;
+    const accountId = account.id;
+    const flow = params.accountLoginForm.flow;
+    const flowId = flow?.id;
+    const flowVersion = flow?.flow_version;
+    if (!flowId || typeof flowVersion !== 'number') {
+      await startOrResumeAccountLogin(account, 'code');
+      return;
+    }
+    const action = 'resend';
+    const requestSeq = beginAccountLoginRequest(accountId, action);
+    const request = { accountId, action, requestSeq };
+    await params.runWithLoading(`account-login:${accountId}:resend`, '重新发送验证码', async () => {
+      const resent = await api<LoginFlow>(`/tg-accounts/${accountId}/login/resend`, {
+        method: 'POST',
+        body: JSON.stringify({ flow_id: flowId, flow_version: flowVersion, request_seq: requestSeq }),
+      });
+      if (!isActiveAccountLoginRequest(request)) return;
+      updateAccountLoginFormIfActive(request, (current) => ({
+        ...current,
+        account: { ...account, status: resent.status },
+        method: 'code',
+        step: 'code',
+        flow: resent,
+        code: '',
+        error: '',
+      }));
+      params.setNotice('已重新发送验证码；上一条验证码已失效，请只输入最新收到的一条。');
+      await refreshAccountCenterDataAfterAction('重新发送验证码', [refreshAccountListForAction], () => isActiveAccountLoginRequest(request));
+    }).catch((error) => {
+      setAccountLoginErrorIfActive(request, error);
+    });
   }
 
   async function checkAccountQrLogin() {
