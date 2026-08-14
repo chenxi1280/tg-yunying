@@ -1,5 +1,5 @@
 from __future__ import annotations
-from ._common import get_runtime_config  # noqa: F401 — used by system.py runtime config endpoint
+from ._common import get_runtime_config, healthy_developer_app_count  # noqa: F401 — runtime capability projections
 from .account_pools import *  # noqa: F401,F403
 from .accounts import *  # noqa: F401,F403
 from .account_online_state import *  # noqa: F401,F403

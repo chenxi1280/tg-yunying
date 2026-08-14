@@ -28,6 +28,10 @@ export type AccountLoginForm = {
   error: string;
 };
 
+export type AccountCreationCapability = {
+  can_create_tg_account: boolean;
+};
+
 export type Account = {
   id: number;
   pool_id: number | null;

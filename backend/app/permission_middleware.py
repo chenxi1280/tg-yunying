@@ -23,6 +23,7 @@ def _compile(method: str, pattern: str, permission: str | PermissionSet) -> Perm
 PERMISSION_RULES: list[PermissionRule] = [
     _compile("GET", r"^/api/overview$", "overview.view"),
     _compile("GET", r"^/api/config/runtime$", "system.view"),
+    _compile("GET", r"^/api/tg-accounts/creation-capability$", "accounts.create"),
     _compile("GET", r"^/api/tg-accounts/\d+/verification-codes$", "accounts.codes.read"),
     _compile("POST", r"^/api/tg-accounts/\d+/verification-codes/poll$", "accounts.codes.read"),
     _compile("GET", r"^/api/tg-accounts/security/summary$", "accounts.security.read"),

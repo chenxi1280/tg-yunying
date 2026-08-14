@@ -2039,6 +2039,15 @@ def test_admin_users_permission_lifecycle_and_legacy_subscription_endpoints_remo
         assert visible_account["phone_number"]
         assert visible_account["phone_masked"]
 
+        creation_capability = client.get("/api/tg-accounts/creation-capability", headers=creator_headers)
+        assert creation_capability.status_code == 200, creation_capability.text
+        assert set(creation_capability.json()) == {"can_create_tg_account"}
+        assert isinstance(creation_capability.json()["can_create_tg_account"], bool)
+
+        denied_runtime = client.get("/api/config/runtime", headers=creator_headers)
+        assert denied_runtime.status_code == 403
+        assert denied_runtime.json()["permission"] == "system.view"
+
         denied_tasks = client.get("/api/tasks", headers=creator_headers)
         assert denied_tasks.status_code == 403
         assert denied_tasks.json()["permission"] == "tasks.view"

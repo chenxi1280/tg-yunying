@@ -5,6 +5,7 @@ import {
   defaultAccountCreateForm,
   defaultAccountPoolForm,
 } from './defaults';
+import { hasPermission } from '../utils';
 import type {
   Account,
   AccountCloneItem,
@@ -22,7 +23,6 @@ import type {
   LoginFlow,
   ModalState,
   ProfileSyncRecord,
-  RuntimeConfig,
   VerificationChallengeContext,
   VerificationCode,
   VerificationTask,
@@ -71,7 +71,7 @@ interface AccountActionParams {
   groupDetailRequestRef: { current: { groupId: number | null; seq: number } };
   poolDirectAccountId: number | '';
   profileForm: { display_name: string; tg_first_name: string; tg_last_name: string; tg_bio: string; avatar_object_key: string };
-  runtime: RuntimeConfig | null;
+  accountCreationCapability: boolean | null;
   selectedPoolId: number | '';
   choosePoolSendAccount: (detail: AccountPoolDetail) => Account | undefined;
   closeModal: () => void;
@@ -322,9 +322,15 @@ export function createAccountActions(params: AccountActionParams) {
   }
 
   function openAccountCreate(loginNow = false) {
-    if (!params.runtime?.can_create_tg_account) {
-      params.goToView('systemConfig');
-      params.showResult('请先配置开发者应用', '新增 TG 账号前，需要先在开发者应用中配置可用的 Telegram api_id/api_hash。');
+    if (params.accountCreationCapability !== true) {
+      const canConfigureDeveloperApps = hasPermission(params.currentUser, 'system.view');
+      if (canConfigureDeveloperApps) params.goToView('systemConfig');
+      params.showResult(
+        '请先配置开发者应用',
+        canConfigureDeveloperApps
+          ? '新增 TG 账号前，需要先在开发者应用中配置可用的 Telegram api_id/api_hash。'
+          : '当前没有可用的 Telegram 开发者应用，请联系有系统设置权限的管理员配置。',
+      );
       return;
     }
     params.setLoginAfterCreate(loginNow);

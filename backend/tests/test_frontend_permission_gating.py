@@ -1847,6 +1847,28 @@ def test_app_snapshot_loads_only_current_view_resources():
     assert "}, [token, activeView, taskStatusFilter, selectedPoolId]);" in context
 
 
+def test_login_snapshot_gates_runtime_and_projects_account_creation_capability():
+    refresh = _required_frontend_source("frontend/src/app/context/refresh.ts")
+    context = _required_frontend_source("frontend/src/app/context.tsx")
+    context_types = _required_frontend_source("frontend/src/app/context/types.ts")
+    account_actions = _required_frontend_source("frontend/src/app/context/accountActions.ts")
+    accounts_view = _required_frontend_source("frontend/src/app/views/AccountsView.tsx")
+    app_shell = _required_frontend_source("frontend/src/app/AppShell.tsx")
+
+    assert "hasPermission(me, 'system.view') ? api<RuntimeConfig>('/config/runtime') : null" in refresh
+    assert "hasPermission(me, 'accounts.create') ? api<AccountCreationCapability>('/tg-accounts/creation-capability') : null" in refresh
+    assert "creationCapability?.can_create_tg_account ?? null" in refresh
+    assert "accountCreationCapability: boolean | null;" in context_types
+    assert "setAccountCreationCapability(snapshot.accountCreationCapability);" in context
+    assert "accountCreationCapability: boolean | null;" in account_actions
+    assert "hasPermission(params.currentUser, 'system.view')" in account_actions
+    assert "accountCreationCapability: boolean | null;" in accounts_view
+    assert "accountCreationCapability === false" in accounts_view
+    assert "runtime?.can_create_tg_account" not in accounts_view
+    assert "accountCreationCapability={accountCreationCapability}" in app_shell
+    assert "canConfigureDeveloperApps={hasPermission(currentUser, 'system.view')}" in app_shell
+
+
 def test_account_availability_summary_is_account_page_scoped():
     accounts_view = (PROJECT_ROOT / "frontend/src/app/views/AccountsView.tsx").read_text()
     refresh = (PROJECT_ROOT / "frontend/src/app/context/refresh.ts").read_text()
