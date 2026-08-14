@@ -18,7 +18,11 @@ from app.services.task_center import dispatcher
 from app.services.task_center import membership_admission
 from app.services.task_center.account_pool import select_task_accounts
 from app.services.task_center.dispatcher import dispatch_action
-from app.services.task_center.group_rescue import permission_failure_count_for_send_action
+from app.services.task_center.group_rescue import (
+    permission_failure_count_for_send_action,
+    refresh_group_rescue_action,
+    trigger_group_rescue,
+)
 from app.services.task_center.membership_admission import lock_membership_admission_snapshot, sync_membership_admission_items
 from app.services.task_center.membership_admission import retry_membership_admission_rescue
 from app.services.tenants import group_rescue_settings_payload, update_group_rescue_settings
@@ -985,6 +989,81 @@ def test_group_ai_membership_permission_denied_creates_rescue_action(monkeypatch
         assert rescue_actions[0].payload["target_account_id"] == 11
         assert rescue_actions[0].payload["target_account_ref"] == "@normal_user"
         assert rescue_actions[0].payload["trigger_reason"] == "群无权限或账号不可发言"
+
+
+@pytest.mark.no_postgres
+def test_group_ai_rescue_uses_configured_group_for_matching_operation_target() -> None:
+    with _session() as session:
+        _seed_rescue_target(session)
+        session.add(TgGroup(id=8, tenant_id=1, tg_peer_id="-10008", title="同名旧群"))
+        task = Task(
+            id="task-ai-canonical-rescue",
+            tenant_id=1,
+            name="AI 群聊",
+            type="group_ai_chat",
+            status="running",
+            type_config={"target_group_id": 7, "target_operation_target_id": 21},
+        )
+        session.add(task)
+        session.commit()
+
+        result = trigger_group_rescue(
+            session,
+            task,
+            session.get(TgGroup, 8),
+            trigger_account_id=11,
+            trigger_reason="群无权限",
+            operation_target_id=21,
+        )
+
+        assert result.status == "pending"
+        assert result.action is not None
+        assert result.action.payload["group_id"] == 7
+        assert result.action.payload["group_peer_id"] == "-10021"
+        assert result.action.payload["operation_target_id"] == 21
+
+
+@pytest.mark.no_postgres
+def test_group_ai_rescue_refresh_uses_configured_group_for_matching_operation_target() -> None:
+    with _session() as session:
+        _seed_rescue_target(session)
+        session.add(TgGroup(id=8, tenant_id=1, tg_peer_id="-10008", title="同名旧群"))
+        task = Task(
+            id="task-ai-canonical-refresh",
+            tenant_id=1,
+            name="AI 群聊",
+            type="group_ai_chat",
+            status="running",
+            type_config={"target_group_id": 7, "target_operation_target_id": 21},
+        )
+        action = Action(
+            id="old-wrong-route-rescue",
+            tenant_id=1,
+            task_id=task.id,
+            task_type=task.type,
+            action_type="invite_group_account",
+            account_id=99,
+            scheduled_at=NOW,
+            status="failed",
+            payload={"group_id": 8, "operation_target_id": 21, "group_peer_id": "-10008"},
+        )
+        session.add_all([task, action])
+        session.commit()
+
+        result = refresh_group_rescue_action(
+            session,
+            task,
+            session.get(TgGroup, 8),
+            action,
+            trigger_account_id=11,
+            trigger_reason="群无权限",
+            operation_target_id=21,
+        )
+
+        assert result.status == "pending"
+        assert action.payload["group_id"] == 7
+        assert action.payload["group_peer_id"] == "-10021"
+        assert action.payload["operation_target_id"] == 21
 
 
 def test_group_ai_membership_permission_denied_refreshes_stale_failed_rescue_action(monkeypatch) -> None:
