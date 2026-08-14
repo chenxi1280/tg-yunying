@@ -4,11 +4,10 @@ import hashlib
 import json
 from datetime import datetime
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import (
-    Action,
     AuditLog,
     OperationTarget,
     Task,
@@ -20,6 +19,11 @@ from app.models import (
     TgGroup,
 )
 from app.services._common import _now
+
+from .ledger_route_repair_actions import (
+    cancel_pending_route_actions,
+    current_route_action_disposition,
+)
 
 
 PUBLIC_LINK_PREFIXES = (
@@ -49,7 +53,7 @@ def preview_group_ai_ledger_route_repair(
     )
     current_group, current_operation_target = _current_task_route(session, task)
     orphan_target = _orphan_target(session, task, ledger, current_group.id)
-    _assert_repairable(
+    action_disposition = _assert_repairable(
         session,
         task,
         ledger,
@@ -70,6 +74,7 @@ def preview_group_ai_ledger_route_repair(
         current_group,
         current_operation_target,
         orphan_target,
+        action_disposition,
     )
 
 
@@ -89,6 +94,30 @@ def apply_group_ai_ledger_route_repair(
 ) -> dict:
     if not approval_ref.strip():
         raise ValueError("approval_ref_required")
+    preview, manifest_hash = _verified_repair_preview(
+        session, task_id, ledger_id, expected_manifest_hash,
+    )
+    task = _repair_task(session, task_id)
+    route = preview["ledger_route"]
+    cancelled_action_ids = cancel_pending_route_actions(
+        session,
+        preview["current_route_action_disposition"],
+        approval_ref,
+    )
+    _restore_task_route(task, route)
+    _record_route_repair_audit(
+        session, task, ledger_id, manifest_hash, preview, approval_ref, actor, cancelled_action_ids,
+    )
+    session.flush()
+    return _repair_result(task, ledger_id, manifest_hash, route, cancelled_action_ids)
+
+
+def _verified_repair_preview(
+    session: Session,
+    task_id: str,
+    ledger_id: str,
+    expected_manifest_hash: str,
+) -> tuple[dict, str]:
     preview = preview_group_ai_ledger_route_repair(
         session,
         task_id=task_id,
@@ -97,8 +126,10 @@ def apply_group_ai_ledger_route_repair(
     actual_hash = group_ai_ledger_route_repair_hash(preview)
     if actual_hash != expected_manifest_hash:
         raise ValueError("repair_manifest_hash_mismatch")
-    task = _repair_task(session, task_id)
-    route = preview["ledger_route"]
+    return preview, actual_hash
+
+
+def _restore_task_route(task: Task, route: dict) -> None:
     task.type_config = {
         **(task.type_config or {}),
         "target_group_id": route["group_id"],
@@ -110,6 +141,19 @@ def apply_group_ai_ledger_route_repair(
         task.last_error = ""
         task.next_run_at = _now()
     task.updated_at = _now()
+
+
+def _record_route_repair_audit(
+    session: Session,
+    task: Task,
+    ledger_id: str,
+    manifest_hash: str,
+    preview: dict,
+    approval_ref: str,
+    actor: str,
+    cancelled_action_ids: list[str],
+) -> None:
+    route = preview["ledger_route"]
     session.add(AuditLog(
         tenant_id=task.tenant_id,
         actor=actor,
@@ -119,18 +163,31 @@ def apply_group_ai_ledger_route_repair(
         detail=json.dumps({
             "approval_ref": approval_ref,
             "ledger_id": ledger_id,
-            "manifest_hash": actual_hash,
+            "manifest_hash": manifest_hash,
             "restored_group_id": route["group_id"],
             "restored_operation_target_id": route["operation_target_id"],
+            "safe_terminal_action_count": len(
+                preview["current_route_action_disposition"]["safe_terminal_actions"]
+            ),
+            "cancelled_pending_action_ids": cancelled_action_ids,
         }, ensure_ascii=True, sort_keys=True),
     ))
-    session.flush()
+
+
+def _repair_result(
+    task: Task,
+    ledger_id: str,
+    manifest_hash: str,
+    route: dict,
+    cancelled_action_ids: list[str],
+) -> dict:
     return {
-        "manifest_hash": actual_hash,
+        "manifest_hash": manifest_hash,
         "task_id": task.id,
         "ledger_id": ledger_id,
         "restored_group_id": route["group_id"],
         "restored_operation_target_id": route["operation_target_id"],
+        "cancelled_pending_action_ids": cancelled_action_ids,
         "readback_route": {
             "target_group_id": task.type_config["target_group_id"],
             "target_operation_target_id": task.type_config["target_operation_target_id"],
@@ -228,7 +285,7 @@ def _assert_repairable(
     current_group: TgGroup,
     current_operation_target: OperationTarget,
     orphan_target: TaskGroupDailyTarget,
-) -> None:
+) -> dict:
     if task.status != "running" or task.config_revision != ledger.timezone_revision:
         raise ValueError("task_revision_or_status_drift")
     if ledger_target.target_date != ledger.obligation_local_date:
@@ -237,10 +294,15 @@ def _assert_repairable(
         raise ValueError("task_route_already_matches_ledger")
     if not _same_public_identity(ledger_operation_target, current_operation_target):
         raise ValueError("ledger_and_current_route_alias_unproven")
-    if _new_route_action_count(session, task, orphan_target, current_group, current_operation_target):
-        raise ValueError("current_route_has_actions")
     if _new_route_admission_count(session, task, current_group):
         raise ValueError("current_route_has_admissions")
+    return current_route_action_disposition(
+        session,
+        task,
+        orphan_target,
+        current_group,
+        current_operation_target,
+    )
 
 
 def _same_public_identity(ledger_target: OperationTarget, current_target: OperationTarget) -> bool:
@@ -261,24 +323,6 @@ def _public_username(value: str | None) -> str:
     return raw.lower() if raw and "/" not in raw else ""
 
 
-def _new_route_action_count(
-    session: Session,
-    task: Task,
-    orphan_target: TaskGroupDailyTarget,
-    group: TgGroup,
-    target: OperationTarget,
-) -> int:
-    return int(session.scalar(select(func.count(Action.id)).where(
-        Action.task_id == task.id,
-        Action.created_at >= orphan_target.created_at,
-        or_(
-            Action.payload["daily_group_target_id"].as_string() == orphan_target.id,
-            Action.payload["group_id"].as_integer() == group.id,
-            Action.payload["target_operation_target_id"].as_integer() == target.id,
-        ),
-    )) or 0)
-
-
 def _new_route_admission_count(session: Session, task: Task, group: TgGroup) -> int:
     return int(session.scalar(select(func.count(TaskGroupBotAdmission.id)).where(
         TaskGroupBotAdmission.task_id == task.id,
@@ -296,6 +340,7 @@ def _preview_manifest(
     current_group: TgGroup,
     current_operation_target: OperationTarget,
     orphan_target: TaskGroupDailyTarget,
+    action_disposition: dict,
 ) -> dict:
     coverage_count = int(session.scalar(select(func.count(TaskAccountDailyCoverage.id)).where(
         TaskAccountDailyCoverage.task_id == task.id,
@@ -312,6 +357,7 @@ def _preview_manifest(
         "current_route": _route_manifest(current_group, current_operation_target, orphan_target.id),
         "task_config_revision": int(task.config_revision),
         "ledger_timezone_revision": int(ledger.timezone_revision),
+        "current_route_action_disposition": action_disposition,
         "unlinked_current_coverage_count": coverage_count,
         "orphan_target_created_at": _timestamp(orphan_target.created_at),
     }

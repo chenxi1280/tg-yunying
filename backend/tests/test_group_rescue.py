@@ -1284,6 +1284,7 @@ def test_retry_membership_rescue_uses_latest_global_config() -> None:
         assert action.payload["trigger_account_id"] == 11
 
 
+@pytest.mark.no_postgres
 def test_invite_account_to_group_reports_unresolvable_account(monkeypatch) -> None:
     gateway = TelethonTelegramGateway()
 
@@ -1318,6 +1319,7 @@ def test_invite_account_to_group_reports_unresolvable_account(monkeypatch) -> No
 
     assert result.ok is False
     assert result.detail == "被救援账号无法解析或目标群不可访问"
+    assert result.remote_mutation_started is False
 
 
 def test_export_group_invite_link_creates_rescue_titled_link(monkeypatch) -> None:
