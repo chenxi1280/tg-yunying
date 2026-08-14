@@ -108,6 +108,34 @@ def _seed_scope_base(session: Session) -> None:
     _seed_target(session)
 
 
+def _seed_operation_target_only_task(session: Session) -> tuple[Task, OperationTarget]:
+    session.add_all([
+        Tenant(id=1, name="租户"),
+        AccountPool(id=10, tenant_id=1, name="普通", pool_purpose="normal", is_enabled=True),
+        OperationTarget(
+            id=31,
+            tenant_id=1,
+            target_type="group",
+            tg_peer_id="-10031",
+            title="待加入目标群",
+            auth_status="未确认",
+            can_send=False,
+        ),
+        _account(1, 10),
+    ])
+    task = _task("membership-before-coverage", selection_mode="manual")
+    task.type_config = {
+        key: value
+        for key, value in task.type_config.items()
+        if key != "target_group_id"
+    }
+    session.add(task)
+    session.flush()
+    target = session.get(OperationTarget, 31)
+    assert target is not None
+    return task, target
+
+
 def test_eligible_account_ids_enforces_session_usage_and_rescue_boundaries(session: Session) -> None:
     _seed_scope_base(session)
     session.add_all([
@@ -527,3 +555,40 @@ def test_group_ai_task_creation_initializes_persistent_account_scope(session: Se
     )
     assert relation is not None
     assert relation.account_id == 1
+
+
+def test_group_ai_scope_bootstrap_defers_coverage_until_target_group_exists(
+    session: Session,
+    monkeypatch,
+) -> None:
+    task, target = _seed_operation_target_only_task(session)
+    monkeypatch.setattr(
+        group_ai_chat,
+        "_plan_outbound_target_abort",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def blocked_gate(current_session, current_task, *_args, **_kwargs):
+        scoped_ids = set(current_session.scalars(
+            select(TaskMembershipAdmissionItem.account_id).where(
+                TaskMembershipAdmissionItem.task_id == current_task.id,
+            )
+        ))
+        assert scoped_ids == {1}
+        return SimpleNamespace(
+            ready=False,
+            created=1,
+            blocker_reason="target_membership_pending",
+        )
+
+    monkeypatch.setattr(
+        group_ai_chat,
+        "gate_channel_membership",
+        blocked_gate,
+    )
+
+    result = group_ai_chat._target_membership_abort(session, task, target, progress={})
+
+    assert result is not None
+    assert result.created == 1
+    assert session.scalar(select(TaskAccountDailyCoverage)) is None
