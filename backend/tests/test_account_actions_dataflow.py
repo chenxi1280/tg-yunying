@@ -150,3 +150,20 @@ def test_account_login_actions_bind_account_action_and_request_sequence():
     assert "params.setAccountLoginForm((current) => ({ ...current, error: params.errorMessage(error) }));" not in code_body
     assert "params.setAccountLoginForm((current) => ({ ...current, error: params.errorMessage(error) }));" not in password_body
     assert "params.setAccountLoginForm((current) => ({ ...current, error: params.errorMessage(error) }));" not in qr_body
+
+
+def test_existing_account_create_conflict_routes_to_original_account_login():
+    source = (PROJECT_ROOT / "frontend/src/app/context/accountActions.ts").read_text()
+    create_body = source[source.index("async function createAccount"):source.index("\n\n  async function deleteAccount")]
+    reauthorize_body = source[source.index("async function reauthorizeExistingAccount"):source.index("\n\n  async function createAccount")]
+
+    assert "import { API_ORIGIN, ApiError, api }" in source
+    assert "const EXISTING_ACCOUNT_RELOGIN_CODE = 'existing_account_requires_relogin';" in source
+    assert "'Session失效'," in source
+    assert "error instanceof ApiError" in source
+    assert "error.status !== 409" in source
+    assert "payload.detail?.code !== EXISTING_ACCOUNT_RELOGIN_CODE" in source
+    assert "const existingAccountId = existingAccountIdFromError(error);" in create_body
+    assert "await reauthorizeExistingAccount(existingAccountId, loginMethod);" in create_body
+    assert "await api<AccountDetail>(`/tg-accounts/${accountId}/detail`);" in reauthorize_body
+    assert "await startOrResumeAccountLogin(detail.account, method, false);" in reauthorize_body
