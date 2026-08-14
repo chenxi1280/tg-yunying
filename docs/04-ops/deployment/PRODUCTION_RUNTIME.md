@@ -117,7 +117,9 @@ account-online 主线程冻结本批账号和凭证后必须先提交并结束�
 
 Dispatcher 若一次 claim 包含共享 `ai_generation_claim_token` 的 normal pending `send_message`，该 worker 会按领取顺序串行推进这一个 claim 批次，避免多个线程同时加载并更新重叠 Action 集合。生产验收必须检查 PostgreSQL 日志在发布后不再新增 `UPDATE actions ... deadlock detected`，并同时确认覆盖继续增长；该串行边界不是 action、账号或任务总量限制。
 
-### Dispatcher/OCR 内存治理（代码已实现，生产未启用）
+### Dispatcher/OCR 内存治理
+
+2026-08-14 事故复核确认生产 `ab1418cb` 的 OCR worker 仍在 partial timeout 时以退出码 70 终止 generation，且 Compose 仅以 `/health` 判活；累计重启超过 190 次并与 load 620、SSH banner 抖动及一次 global OOM 同窗。修复发布必须同时满足：partial completed source 被保留、timeout source 显式化、generation 进入 draining 并拒绝新请求、启动阶段预热 RapidOCR/ddddOCR、Docker 使用带内部 token 的 `/internal/v1/image-verification/ready`。只看容器 healthy 或公网 API 200 不得关闭事故；两路均超时仍按 unknown native state fail closed。
 
 2026-08-01 硅谷生产 OOM 专项已按 `docs/03-feature-designs/dispatcher-ocr-memory-isolation-and-graceful-recycle-prd.md` 启用 Stage B；运维仍不得直接给 Dispatcher 加定时重启或手工循环重启。P0 删除每个验证码 challenge 的三路并发/假取消，RapidOCR/ddddOCR 各使用一个进程级固定槽；槽等待、OCR、最多一个模型的首请求/reasoning retry 共用同一 remaining budget，不建设 OCR 业务队列。late result、旧 fingerprint 或过期 challenge 禁止点击。Dispatcher 达到经 Release Gate 计算的资源阈值或收到 SIGTERM 后停止下一轮 claim，只有当前 futures、owned Action、open Gateway 与 Telethon client 全部收口才正常退出；运行时自动回收通过不参与 Action/session 的最小 rolling lease 保证单 shard，并由重启后的同 shard 首个成功 heartbeat compare-and-release 前任 lease。Stage B canary 已证明两个不同账号在 45 秒 contract 内由两路本地 OCR 同票并真实搜索成功；完整自然日、1287 次图片、模型 tail 和 3 次回收周期仍为 E4 `unproven`。
 

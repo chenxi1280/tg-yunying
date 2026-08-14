@@ -4,6 +4,7 @@ import base64
 import subprocess
 import sys
 from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
 from threading import Event, Lock
@@ -19,8 +20,8 @@ from app.image_verification_worker import (
     OcrRequest,
     WorkerRequestError,
     _run_source,
-    create_app,
 )
+from app.image_verification_worker_app import create_app
 from app import image_verification_worker
 from app.image_verification_worker_config import WorkerConfig
 from app import image_verification_ocr
@@ -148,6 +149,28 @@ def test_worker_functional_readiness_requires_token_and_initializes_engines(
         "status": "ready",
         "engines": ["rapidocr", "ddddocr"],
     }
+    assert calls == ["ready"]
+
+
+@pytest.mark.no_postgres
+def test_production_app_warms_engines_before_accepting_requests(monkeypatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(
+        image_verification_ocr,
+        "verify_engines_ready",
+        lambda: calls.append("ready") or ("rapidocr", "ddddocr"),
+    )
+    app = create_app(
+        ImageVerificationWorkerService(
+            _config(),
+            abnormal_terminate=lambda: None,
+        ),
+        warmup_engines=True,
+    )
+
+    with TestClient(app):
+        pass
+
     assert calls == ["ready"]
 
 
@@ -406,3 +429,87 @@ def test_worker_source_marks_result_completed_after_deadline_as_late() -> None:
 
     assert result.status == "complete"
     assert result.late is True
+
+
+@pytest.mark.no_postgres
+def test_worker_returns_completed_source_and_drains_on_partial_timeout(
+    monkeypatch,
+) -> None:
+    entered = Event()
+    release = Event()
+
+    def slow_rapidocr(_image):
+        entered.set()
+        release.wait(timeout=2)
+        return (("10", 0.9),)
+
+    monkeypatch.setattr(
+        image_verification_ocr,
+        "recognize_rapidocr_variants",
+        slow_rapidocr,
+    )
+    monkeypatch.setattr(
+        image_verification_ocr,
+        "recognize_ddddocr_variants",
+        lambda _image: (("10", 0.9),),
+    )
+    service = ImageVerificationWorkerService(
+        replace(_config(), max_budget_seconds=0.05),
+        abnormal_terminate=lambda: None,
+        rss_reader=lambda: 0,
+    )
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        running = executor.submit(service.execute, _request())
+        assert entered.wait(timeout=1)
+        payload, recycle = running.result(timeout=1)
+        assert payload["status"] == "completed"
+        sources = {item["source"]: item for item in payload["sources"]}
+        assert sources["ddddocr"]["status"] == "complete"
+        assert sources["rapidocr"]["status"] == "failed"
+        assert sources["rapidocr"]["detail"] == (
+            "verification_local_ocr_timeout"
+        )
+        assert recycle is True
+        assert service.health()["request_status"] == "draining"
+        release.set()
+        with pytest.raises(WorkerRequestError) as raised:
+            service.execute(_request("e" * 64))
+
+    assert raised.value.code == "verification_local_ocr_draining"
+
+
+@pytest.mark.no_postgres
+def test_worker_keeps_generation_unknown_when_both_sources_timeout(
+    monkeypatch,
+) -> None:
+    release = Event()
+
+    def slow_ocr(_image):
+        release.wait(timeout=2)
+        return (("10", 0.9),)
+
+    monkeypatch.setattr(
+        image_verification_ocr,
+        "recognize_rapidocr_variants",
+        slow_ocr,
+    )
+    monkeypatch.setattr(
+        image_verification_ocr,
+        "recognize_ddddocr_variants",
+        slow_ocr,
+    )
+    termination_calls: list[str] = []
+    service = ImageVerificationWorkerService(
+        replace(_config(), max_budget_seconds=0.05),
+        abnormal_terminate=lambda: termination_calls.append("exit"),
+        rss_reader=lambda: 0,
+    )
+
+    with pytest.raises(WorkerRequestError) as raised:
+        service.execute(_request())
+    release.set()
+
+    assert raised.value.code == "verification_local_ocr_timeout"
+    assert termination_calls == ["exit"]
+    assert service.health()["request_status"] == "running"

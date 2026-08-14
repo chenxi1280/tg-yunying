@@ -179,3 +179,54 @@ def test_remote_ocr_is_harvested_after_hedged_model_finishes_first(monkeypatch) 
     assert decision.answer == "10"
     assert decision.consensus_source == "model_ocr"
     assert model_calls == [1]
+
+
+@pytest.mark.no_postgres
+def test_remote_partial_ocr_vote_can_form_strict_model_consensus(monkeypatch) -> None:
+    model_calls = _install_sources(monkeypatch, model_answer="10")
+    partial = RemoteOcrResult(
+        request_id="a" * 64,
+        input_hash="d" * 64,
+        worker_generation="generation-1",
+        sources=(
+            RemoteOcrSource(
+                source="rapidocr",
+                status="failed",
+                candidates=(),
+                started_at="start",
+                completed_at="end",
+                duration_ms=0,
+                late=True,
+                detail="verification_local_ocr_timeout",
+            ),
+            RemoteOcrSource(
+                source="ddddocr",
+                status="complete",
+                candidates=(("10", 0.9),),
+                started_at="start",
+                completed_at="end",
+                duration_ms=100,
+                late=False,
+                detail="",
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        "app.services.search_join_image_solver.ImageVerificationWorkerClient.recognize",
+        lambda *_args, **_kwargs: partial,
+    )
+
+    solver = membership_challenges.build_search_join_image_verification_solver(
+        object(),
+        action_id="action-1",
+        policy=_remote_policy(),
+        runtime=ImageVerificationRuntime(model_concurrency=1),
+    )
+
+    decision = solver(_remote_request())
+
+    assert decision.answer == "10"
+    assert decision.consensus_source == "model_ocr"
+    assert decision.votes[1].status == "failed"
+    assert decision.votes[2].status == "accepted"
+    assert model_calls == [1]
