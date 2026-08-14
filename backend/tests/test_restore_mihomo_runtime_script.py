@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -96,3 +97,24 @@ def test_public_preview_omits_proxy_consumer_counts() -> None:
     result = script.public_preview({"proxy_count": 1, "proxy_records": [{"direct_accounts": 1}]})
 
     assert result == {"proxy_count": 1}
+
+
+def test_mark_unconfigured_proxies_serializes_health_check_timestamps(monkeypatch: pytest.MonkeyPatch) -> None:
+    script = _load_script()
+    captured: dict[str, object] = {}
+
+    def fake_run_command(command, **_kwargs):
+        captured["command"] = command
+        return SimpleNamespace(stdout='[{"status":"unhealthy"}]')
+
+    monkeypatch.setattr(script, "run_command", fake_run_command)
+
+    result = script.mark_unconfigured_proxies_unhealthy(
+        "backend",
+        [{"id": 64, "name": "tgyunying-mihomo-064"}],
+        ["tgyunying-mihomo-064"],
+        "INC-1",
+    )
+
+    assert result == ["tgyunying-mihomo-064"]
+    assert "default=str" in captured["command"][-1]
