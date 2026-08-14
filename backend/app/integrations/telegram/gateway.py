@@ -1914,6 +1914,17 @@ class TelethonTelegramGateway(TelegramGateway):
 
             target = await resolve_telethon_target(client, group_peer_id, group_id=0)
             user = await client.get_entity(target_account_ref.strip().lstrip("@"))
+        except Exception as exc:
+            mapped = self._map_send_error(exc)
+            detail = _invite_account_error_detail(mapped.detail or str(exc))
+            return OperationResult(
+                False,
+                "失败",
+                mapped.failure_type or FailureType.UNKNOWN.value,
+                detail,
+                remote_mutation_started=False,
+            )
+        try:
             await client(functions.channels.InviteToChannelRequest(channel=target, users=[user]))
             return OperationResult(True, "已处理", detail="account_invited")
         except Exception as exc:
@@ -1921,7 +1932,15 @@ class TelethonTelegramGateway(TelegramGateway):
                 return OperationResult(True, "已处理", detail="account_already_present")
             mapped = self._map_send_error(exc)
             detail = _invite_account_error_detail(mapped.detail or str(exc))
-            return OperationResult(False, "失败", mapped.failure_type or FailureType.UNKNOWN.value, detail)
+            return OperationResult(
+                False,
+                "失败",
+                mapped.failure_type or FailureType.UNKNOWN.value,
+                detail,
+                remote_mutation_started=(
+                    False if mapped.failure_type == FailureType.PEER_INVALID.value else None
+                ),
+            )
 
     def invite_account_to_group(
         self,
