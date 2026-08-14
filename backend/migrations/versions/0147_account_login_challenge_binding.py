@@ -1,6 +1,6 @@
 """Bind account login challenges to durable flow state.
 
-Revision ID: 0147_account_login_challenge_binding
+Revision ID: 0147_login_challenge_binding
 Revises: 0146_ai_reply_remote_fact_index
 """
 
@@ -10,7 +10,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0147_account_login_challenge_binding"
+revision = "0147_login_challenge_binding"
 down_revision = "0146_ai_reply_remote_fact_index"
 branch_labels = None
 depends_on = None

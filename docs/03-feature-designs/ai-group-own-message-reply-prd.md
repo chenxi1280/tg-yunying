@@ -56,7 +56,7 @@
 ### 0.6 2026-08-13 发布与生产验收
 
 - `master`: `d52884be6e628771c939f7d1aa0f698cc6233f71`；`release/production`: `321cf61cbba68cb29bc031c26dd7109f67c206e5`；Deploy Production `31663929691` 成功。
-- 生产迁移 head 为 `0146_ai_reply_remote_fact_index`，索引 `ix_execution_attempts_success_remote` 的 `indisvalid/indisready` 均为 true。
+- 生产迁移包含 `0146_ai_reply_remote_fact_index`；当前 head 为 `0147_login_challenge_binding`，索引 `ix_execution_attempts_success_remote` 的 `indisvalid/indisready` 均为 true。
 - 发布后 AI 任务 `f2832260-c7ef-4ec2-8055-8ff5262b4734`、`7162e305-fb51-4a67-92ea-d0caffd2bbb3` 分别产生 12、5 条成功非空远端消息 ID；发送主链 `production_fixed`，当日目标缺口仍按业务履约单独保留。
 - 有源频道浏览任务 `4fc393df-a258-4e1f-a3d1-e916d2c59361` 产生 64 条发布后 `ViewRemoteFact` 且 `remote_fact_gap=0`，执行链 `production_fixed`；目标 1000 高于当时约 947 个可参与账号，仍有结构性容量/当日物化缺口。
 - `fa75ca69-2377-4282-80c1-20f66ebbd086` 当日 `source_message_count=0`、`required=materialized=confirmed=0`，没有发布后 typed fact；只能记 `production_unproven/waiting_for_source`，不能据此判定 worker 故障或修复完成。
