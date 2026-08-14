@@ -45,6 +45,7 @@ from .account_two_fa import record_managed_two_fa_password, rotate_managed_two_f
 from .developer_apps import credentials_for_account, first_assignable_developer_app
 from .dedicated_account_pools import validate_account_pool_admission
 from .tenants import ensure_account_quota_available
+from .telegram_group_identity import resolve_group_snapshot_identity
 from .verification import list_verification_tasks, create_verification_task
 from .account_pools import account_pool_snapshot, ensure_default_account_pool, seed_account_pools
 
@@ -1001,13 +1002,12 @@ def sync_groups(session: Session, account_id: int, actor: str = "普通用户") 
     snapshots = gateway.list_groups(account.id, account.session_ciphertext, credentials)
     groups: list[TgGroup] = []
     for snapshot in snapshots:
-        group = session.scalar(
-            select(TgGroup).where(TgGroup.tenant_id == account.tenant_id, TgGroup.tg_peer_id == snapshot.tg_peer_id)
-        )
+        identity = resolve_group_snapshot_identity(session, account.tenant_id, snapshot)
+        group = identity.group
         if not group:
             group = TgGroup(
                 tenant_id=account.tenant_id,
-                tg_peer_id=snapshot.tg_peer_id,
+                tg_peer_id=identity.peer_id,
                 title=snapshot.title,
                 group_type=snapshot.group_type,
                 member_count=snapshot.member_count,
