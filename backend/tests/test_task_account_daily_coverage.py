@@ -126,6 +126,45 @@ def test_daily_coverage_resolves_group_from_operation_target_without_group_id(
     assert row.group_id == 21
 
 
+def test_daily_coverage_creates_current_group_row_when_stale_group_row_exists(
+    session: Session,
+) -> None:
+    task = _seed(session)
+    session.add_all([
+        _account(1),
+        TgGroup(id=22, tenant_id=1, tg_peer_id="-10022", title="旧群"),
+        TgGroupAccount(tenant_id=1, group_id=21, account_id=1, can_send=True),
+        TaskMembershipAdmissionItem(tenant_id=1, task_id=task.id, account_id=1, target_id=31, phase="joining"),
+    ])
+    session.flush()
+    session.add(TaskAccountDailyCoverage(
+        tenant_id=1,
+        task_id=task.id,
+        group_id=22,
+        account_id=1,
+        coverage_date=date(2026, 7, 10),
+        state="abandoned_for_day",
+        blocker_code="ledger_route_superseded",
+    ))
+    session.commit()
+
+    result = ensure_task_daily_coverage(
+        session,
+        task,
+        now=datetime(2026, 7, 10, 10),
+        account_ids=[1],
+    )
+
+    rows = list(session.scalars(
+        select(TaskAccountDailyCoverage).order_by(TaskAccountDailyCoverage.group_id)
+    ))
+    assert result.created == 1
+    assert [(row.group_id, row.state) for row in rows] == [
+        (21, "ready"),
+        (22, "abandoned_for_day"),
+    ]
+
+
 def test_day_ledger_resolves_group_from_operation_target_without_group_id(
     session: Session,
 ) -> None:
