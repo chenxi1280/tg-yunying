@@ -4950,7 +4950,7 @@ def test_membership_prefers_stable_peer_before_username_for_send_required_join(m
         assert session.get(Action, "action-membership").status == "success"
 
 
-def test_group_ai_build_plan_canonicalizes_duplicate_username_target_before_membership_gate(monkeypatch):
+def test_group_ai_build_plan_preserves_duplicate_username_target_before_membership_gate(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = _now()
@@ -4977,10 +4977,10 @@ def test_group_ai_build_plan_canonicalizes_duplicate_username_target_before_memb
         assert group_ai_chat.build_plan(session, task) == 1
         action = session.scalar(select(Action).where(Action.task_id == task.id, Action.action_type == "ensure_target_membership"))
 
-    assert task.type_config["target_operation_target_id"] == 485
-    assert task.type_config["target_group_name"] == "天津"
-    assert action.payload["channel_target_id"] == 485
-    assert action.payload["channel_id"] == "-1003583171851"
+    assert task.type_config["target_operation_target_id"] == 1251
+    assert "target_group_id" not in task.type_config
+    assert action.payload["channel_target_id"] == 1251
+    assert action.payload["channel_id"] == "zzjinli"
     assert action.payload["target_username"] == "zzjinli"
 
 

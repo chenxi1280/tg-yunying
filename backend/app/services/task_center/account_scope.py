@@ -22,6 +22,7 @@ from app.services._common import _now
 from app.services.account_usage_policy import apply_operational_account_filters
 
 from .config_normalization import apply_group_ai_account_coverage_defaults
+from .targets import group_from_reference
 
 
 @dataclass(frozen=True)
@@ -428,12 +429,25 @@ def _ensure_daily_coverage(
 ) -> None:
     from .daily_coverage import ensure_task_daily_coverage
 
+    config = task.type_config or {}
+    group_id = int(config.get("target_group_id") or 0)
+    target_group = session.get(TgGroup, group_id) if group_id else None
+    if target_group is None or target_group.tenant_id != task.tenant_id:
+        target_group = group_from_reference(
+            session,
+            task.tenant_id,
+            operation_target_id=int(config.get("target_operation_target_id") or 0) or None,
+            require_authorized=False,
+        )
+    if target_group is None:
+        return
     ensure_task_daily_coverage(
         session,
         task,
         now=now,
         account_ids=account_ids,
         incremental=incremental,
+        target_group=target_group,
     )
 
 
