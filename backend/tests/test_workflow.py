@@ -1775,7 +1775,6 @@ def test_login_verify_pending_client_loss_returns_typed_error(monkeypatch):
         assert db_flow.failure_detail == detail["message"]
 
 
-@pytest.mark.no_postgres
 def test_login_invalid_code_keeps_flow_retryable_and_persists_remote_type(monkeypatch):
     class PhoneCodeInvalidError(Exception):
         pass
@@ -1961,7 +1960,6 @@ def test_account_soft_delete_cascades_runtime_state():
         assert blocked_sync.status_code == 400
 
 
-@pytest.mark.no_postgres
 def test_expired_code_flow_is_rejected_before_gateway(monkeypatch):
     finish_calls = 0
 
