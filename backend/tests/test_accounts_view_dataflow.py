@@ -116,8 +116,8 @@ def test_account_center_uses_server_side_twenty_row_pages():
     assert "loadFirstAccountPage(context.selectedPoolId)" in refresh
     accounts_loader = refresh[refresh.index("async function loadAccountsPage"):refresh.index("function messageTaskPath")]
     assert "loadAccountList(context.selectedPoolId)" not in accounts_loader
-    assert "Promise.allSettled" in accounts_loader
-    assert "if (pageResult.status === 'rejected') throw pageResult.reason;" in accounts_loader
+    assert "Promise.allSettled" not in accounts_loader
+    assert "const [accountPools, accountPage] = await Promise.all" in accounts_loader
     assert "const ACCOUNT_PAGE_SIZE = 20;" in hook
     assert "page_size: String(ACCOUNT_PAGE_SIZE)" in hook
     assert "X-Total-Count" in hook

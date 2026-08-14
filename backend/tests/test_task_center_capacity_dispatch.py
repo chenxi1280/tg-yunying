@@ -66,6 +66,9 @@ from tests.capacity_ai_dispatch_test_support import (
     seed_pending_generation_scope,
 )
 
+def _ai_generation_dispatch_test_now() -> datetime:
+    return _now().replace(hour=0, minute=20, second=0, microsecond=0)
+
 
 @pytest.fixture(autouse=True)
 def clear_dispatcher_runtime_state():
@@ -214,14 +217,19 @@ def _dispatch_planned_ai_actions(
     actions: list[Action],
     *,
     normal_generator,
+    dispatch_now: datetime | None = None,
 ) -> list[Action]:
+    now_value = dispatch_now or _now()
+    monkeypatch.setattr(dispatcher, "_now", lambda: now_value)
+    monkeypatch.setattr("app.services.task_center.ai_generation_dispatch._now", lambda: now_value)
+    monkeypatch.setattr("app.services.task_center.ai_generation_pipeline._now", lambda: now_value)
     dependencies = _configure_capacity_ai_dispatch(
         monkeypatch,
         action_count=len(actions),
         normal_generator=normal_generator,
     )
     for action in actions:
-        action.scheduled_at = _now()
+        action.scheduled_at = now_value
     session.commit()
     bind = session.get_bind()
     for _round in range(max(1, len(actions) + 1)):
@@ -5277,7 +5285,7 @@ def test_group_ai_build_plan_keeps_fixed_pending_slot_accounts(monkeypatch):
 def test_group_ai_planner_defers_quality_retry_to_dispatcher(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
-    now_value = _now()
+    now_value = _ai_generation_dispatch_test_now()
     monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
     generated_configs: list[dict] = []
     rounds = iter([["😀😀"], ["花花老师价格大概多少"], ["主任最近约新妹子了吗"]])
@@ -5308,7 +5316,7 @@ def test_group_ai_planner_defers_quality_retry_to_dispatcher(monkeypatch):
             Action.status == "pending",
         ).order_by(Action.payload["turn_index"])))
         assert [action.payload["ai_generation_status"] for action in actions] == ["pending", "pending"]
-        _dispatch_planned_ai_actions(session, monkeypatch, actions, normal_generator=fake_generate)
+        _dispatch_planned_ai_actions(session, monkeypatch, actions, normal_generator=fake_generate, dispatch_now=now_value)
         action_states = [
             (action.account_id, action.status, dict(action.payload or {}), dict(action.result or {}))
             for action in actions
@@ -5320,7 +5328,7 @@ def test_group_ai_planner_defers_quality_retry_to_dispatcher(monkeypatch):
 def test_group_ai_build_plan_uses_check_in_for_missing_voice_profile(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
-    now_value = _now()
+    now_value = _ai_generation_dispatch_test_now()
     monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
 
     _forbid_planner_ai_generation(monkeypatch)
@@ -5363,6 +5371,7 @@ def test_group_ai_build_plan_uses_check_in_for_missing_voice_profile(monkeypatch
             normal_generator=lambda *_args, **_kwargs: pytest.fail(
                 "direct check-in must bypass AI generation"
             ),
+            dispatch_now=now_value,
         )
         session.refresh(task)
 
@@ -5522,7 +5531,7 @@ def test_all_accounts_daily_does_not_skip_earlier_account_without_mask(monkeypat
 def test_group_ai_planner_defers_voice_profile_match_to_dispatcher(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
-    now_value = _now()
+    now_value = _ai_generation_dispatch_test_now()
     monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
 
     def fake_generate(_session, _tenant_id, config, **_kwargs):  # noqa: ANN001
@@ -5550,6 +5559,7 @@ def test_group_ai_planner_defers_voice_profile_match_to_dispatcher(monkeypatch):
             monkeypatch,
             actions,
             normal_generator=fake_generate,
+            dispatch_now=now_value,
         )
         session.refresh(task)
 
@@ -5563,7 +5573,7 @@ def test_group_ai_planner_defers_voice_profile_match_to_dispatcher(monkeypatch):
 def test_group_ai_planner_defers_stance_check_to_dispatcher(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
-    now_value = _now()
+    now_value = _ai_generation_dispatch_test_now()
     monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
 
     def fake_generate(_session, _tenant_id, config, **_kwargs):  # noqa: ANN001
@@ -5590,6 +5600,7 @@ def test_group_ai_planner_defers_stance_check_to_dispatcher(monkeypatch):
             monkeypatch,
             actions,
             normal_generator=fake_generate,
+            dispatch_now=now_value,
         )
         session.refresh(task)
 
@@ -5706,7 +5717,7 @@ def test_group_ai_build_plan_deprioritizes_recent_topic_and_teacher(monkeypatch)
 def test_group_ai_planner_defers_memory_duplicate_check_to_dispatcher(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
-    now_value = _now()
+    now_value = _ai_generation_dispatch_test_now()
     monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
 
     def fake_generate(_session, _tenant_id, config, **_kwargs):  # noqa: ANN001
@@ -5737,6 +5748,7 @@ def test_group_ai_planner_defers_memory_duplicate_check_to_dispatcher(monkeypatc
             monkeypatch,
             [action],
             normal_generator=fake_generate,
+            dispatch_now=now_value,
         )
 
     assert action is not None
