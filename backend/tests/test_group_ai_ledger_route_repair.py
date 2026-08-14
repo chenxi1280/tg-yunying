@@ -8,7 +8,9 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.models import (
+    Action,
     AuditLog,
+    ExecutionAttempt,
     OperationTarget,
     Task,
     TaskDayLedger,
@@ -17,6 +19,7 @@ from app.models import (
     Tenant,
     TgGroup,
 )
+from app.models.enums import FailureType
 from app.services.task_center.ledger_route_repair import (
     apply_group_ai_ledger_route_repair,
     group_ai_ledger_route_repair_hash,
@@ -64,6 +67,80 @@ def test_group_ai_ledger_route_repair_restores_only_ledger_route() -> None:
         assert task.type_config["target_group_id"] == 21
         assert task.type_config["target_operation_target_id"] == 31
         assert session.scalar(select(AuditLog.action)) == "repair_group_ai_ledger_route"
+
+
+def test_group_ai_ledger_route_repair_cancels_only_unclaimed_wrong_route_actions() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        _seed_route_drift(session)
+        _seed_safe_route_actions(session)
+        preview = preview_group_ai_ledger_route_repair(
+            session,
+            task_id="route-repair-task",
+            ledger_id="route-repair-ledger",
+        )
+        assert preview["current_route_action_disposition"] == {
+            "safe_terminal_actions": [
+                {"id": "peer-invalid-route-action", "action_version": 1},
+                {"id": "skipped-route-action", "action_version": 1},
+            ],
+            "pending_cancellation_actions": [
+                {"id": "pending-route-action", "action_version": 1},
+            ],
+        }
+        manifest_hash = group_ai_ledger_route_repair_hash(preview)
+
+        result = apply_group_ai_ledger_route_repair(
+            session,
+            task_id="route-repair-task",
+            ledger_id="route-repair-ledger",
+            expected_manifest_hash=manifest_hash,
+            approval_ref="INC-2",
+            actor="test",
+        )
+
+        terminal = session.get(Action, "peer-invalid-route-action")
+        skipped = session.get(Action, "skipped-route-action")
+        pending = session.get(Action, "pending-route-action")
+        assert result["cancelled_pending_action_ids"] == ["pending-route-action"]
+        assert terminal.status == "closed_unknown"
+        assert skipped.status == "skipped"
+        assert pending.status == "cancelled"
+        assert pending.action_version == 2
+        assert pending.result["route_repair_disposition"] == "cancelled_before_ledger_route_restore"
+
+
+def test_group_ai_ledger_route_repair_rejects_actions_without_no_mutation_proof() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        _seed_route_drift(session)
+        pending = _route_action("unsafe-pending-route-action", status="pending")
+        unknown = _route_action(
+            "unsafe-unknown-route-action",
+            status="closed_unknown",
+            result={"error_code": FailureType.UNKNOWN.value},
+        )
+        session.add_all([
+            pending,
+            unknown,
+            ExecutionAttempt(
+                id="unsafe-pending-attempt",
+                tenant_id=1,
+                action_id=pending.id,
+                attempt_no=1,
+                status="before_call",
+            ),
+        ])
+        session.commit()
+
+        with pytest.raises(ValueError, match="current_route_actions_unsafe"):
+            preview_group_ai_ledger_route_repair(
+                session,
+                task_id="route-repair-task",
+                ledger_id="route-repair-ledger",
+            )
 
 
 def _seed_route_drift(session: Session) -> None:
@@ -125,6 +202,46 @@ def _seed_route_drift(session: Session) -> None:
     session.commit()
 
 
+def _seed_safe_route_actions(session: Session) -> None:
+    now = datetime(2026, 8, 14, 12, 1)
+    peer_invalid = _route_action(
+        "peer-invalid-route-action",
+        status="closed_unknown",
+        result={"error_code": FailureType.PEER_INVALID.value},
+    )
+    session.add_all([
+        peer_invalid,
+        _route_action("skipped-route-action", status="skipped"),
+        _route_action("pending-route-action", status="pending"),
+        ExecutionAttempt(
+            id="peer-invalid-route-attempt",
+            tenant_id=1,
+            action_id=peer_invalid.id,
+            attempt_no=1,
+            status="failed",
+            gateway_call_started_at=now,
+            after_call_at=now,
+            failure_type=FailureType.PEER_INVALID.value,
+        ),
+    ])
+    session.commit()
+
+
+def _route_action(action_id: str, *, status: str, result: dict | None = None) -> Action:
+    return Action(
+        id=action_id,
+        tenant_id=1,
+        task_id="route-repair-task",
+        task_type="group_ai_chat",
+        action_type="invite_group_account",
+        scheduled_at=datetime(2026, 8, 14, 12, 1),
+        created_at=datetime(2026, 8, 14, 12, 1),
+        status=status,
+        payload={"group_id": 22, "target_operation_target_id": 32},
+        result=result or {},
+    )
+
+
 def _target(
     target_id: str,
     group_id: int,
@@ -145,4 +262,5 @@ def _target(
         daily_fulfillment_phase="full_day",
         scope_frozen_at=now,
         full_day_committed_at=now,
+        created_at=now,
     )
