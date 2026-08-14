@@ -1648,6 +1648,56 @@ def test_repeated_login_verify_after_success_returns_online_account(monkeypatch)
         assert calls == 1
 
 
+def test_existing_session_expired_account_routes_to_relogin_without_pool_change():
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        ensure_developer_app(client, headers)
+        phone = _next_test_phone("+8613900")
+        created = client.post(
+            "/api/tg-accounts",
+            headers=headers,
+            json={"tenant_id": 1, "display_name": "失效会话账号", "phone_number": phone},
+        )
+        assert created.status_code == 200, created.text
+        account = created.json()
+
+        with SessionLocal() as session:
+            db_account = session.get(TgAccount, account["id"])
+            assert db_account is not None
+            db_account.status = AccountStatus.SESSION_EXPIRED.value
+            original_pool_id = db_account.pool_id
+            original_phone_masked = db_account.phone_masked
+            session.commit()
+
+        duplicate = client.post(
+            "/api/tg-accounts",
+            headers=headers,
+            json={
+                "tenant_id": 1,
+                "display_name": "不应新建账号",
+                "phone_number": phone,
+                "pool_id": 999999999,
+            },
+        )
+        assert duplicate.status_code == 409, duplicate.text
+        assert duplicate.json()["detail"] == {
+            "code": "existing_account_requires_relogin",
+            "message": "该账号已存在，正在进入重新登录",
+            "account_id": account["id"],
+        }
+
+        with SessionLocal() as session:
+            rows = session.query(TgAccount).filter_by(tenant_id=1, phone_masked=original_phone_masked).all()
+            assert len(rows) == 1
+            assert rows[0].id == account["id"]
+            assert rows[0].pool_id == original_pool_id
+            assert rows[0].status == AccountStatus.SESSION_EXPIRED.value
+
+        login = client.post(f"/api/tg-accounts/{account['id']}/login/start", headers=headers, json={"method": "code"})
+        assert login.status_code == 200, login.text
+        assert login.json()["status"] == AccountStatus.WAITING_CODE.value
+
+
 def test_unfinished_account_soft_delete_allows_phone_reuse():
     with TestClient(app) as client:
         headers = auth_headers(client)

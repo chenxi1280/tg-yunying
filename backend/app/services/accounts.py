@@ -66,6 +66,7 @@ ACCOUNT_AUTO_SYNC_SKIP_STATUSES = {
     AccountStatus.DISABLED.value,
 }
 LOGIN_START_FAILURE_MESSAGE = "登录初始化失败，请查看登录流水或联系管理员处理"
+EXISTING_ACCOUNT_RELOGIN_MESSAGE = "该账号已存在，正在进入重新登录"
 ASCII_LETTER_RE = re.compile(r"[A-Za-z]")
 CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 
@@ -76,6 +77,12 @@ class LoginStartFailure(ValueError):
     def __init__(self, detail: dict[str, object]) -> None:
         super().__init__(LOGIN_START_FAILURE_MESSAGE)
         self.detail = detail
+
+
+class ExistingAccountRequiresRelogin(ValueError):
+    def __init__(self, account_id: int) -> None:
+        super().__init__(EXISTING_ACCOUNT_RELOGIN_MESSAGE)
+        self.account_id = account_id
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -110,6 +117,7 @@ __all__ = [
     "list_profile_sync_records",
     "list_verification_codes",
     "LoginStartFailure",
+    "ExistingAccountRequiresRelogin",
     "poll_account_verification_codes",
     "process_account_sync_record",
     "process_profile_sync_record",
@@ -131,28 +139,16 @@ __all__ = [
 
 def create_account(session: Session, payload: TgAccountCreate, actor: str = "普通用户") -> TgAccount:
     require_tenant(session, payload.tenant_id)
+    data, phone_number = _account_creation_data(payload)
+    existing = _existing_account_for_create(session, payload.tenant_id, data["phone_masked"])
+    if existing:
+        raise ExistingAccountRequiresRelogin(existing.id)
     ensure_account_quota_available(session, payload.tenant_id)
     if not first_assignable_developer_app(session):
         raise ValueError("请先在开发者应用中配置可用的 Telegram api_id/api_hash，再新增 TG 账号")
-    data = payload.model_dump(exclude={"phone_number"})
     pool = _account_creation_pool(session, payload.tenant_id, data.get("pool_id"))
     data["pool_id"] = pool.id
     data["account_identity"] = pool.pool_purpose
-    phone_number = (payload.phone_number or "").strip()
-    if phone_number:
-        data["phone_ciphertext"] = encrypt_secret(phone_number)
-        data["phone_masked"] = mask_phone(phone_number)
-    elif not data.get("phone_masked"):
-        raise ValueError("phone_number or phone_masked is required")
-    existing = session.scalar(
-        select(TgAccount).where(
-            TgAccount.tenant_id == payload.tenant_id,
-            TgAccount.phone_masked == data["phone_masked"],
-            TgAccount.deleted_at.is_(None),
-        )
-    )
-    if existing:
-        raise ValueError("同租户下该手机号已存在可用账号，请先移除旧账号或更换手机号")
     data["display_name"] = _account_display_name(session, payload.tenant_id, data.get("display_name") or "", phone_number or data.get("phone_masked") or "")
     _sync_account_id_sequence(session)
     account = TgAccount(**data)
@@ -168,6 +164,27 @@ def create_account(session: Session, payload: TgAccountCreate, actor: str = "普
     session.commit()
     session.refresh(account)
     return account
+
+
+def _account_creation_data(payload: TgAccountCreate) -> tuple[dict[str, object], str]:
+    data = payload.model_dump(exclude={"phone_number"})
+    phone_number = (payload.phone_number or "").strip()
+    if phone_number:
+        data["phone_ciphertext"] = encrypt_secret(phone_number)
+        data["phone_masked"] = mask_phone(phone_number)
+    elif not data.get("phone_masked"):
+        raise ValueError("phone_number or phone_masked is required")
+    return data, phone_number
+
+
+def _existing_account_for_create(session: Session, tenant_id: int, phone_masked: object) -> TgAccount | None:
+    return session.scalar(
+        select(TgAccount).where(
+            TgAccount.tenant_id == tenant_id,
+            TgAccount.phone_masked == str(phone_masked),
+            TgAccount.deleted_at.is_(None),
+        )
+    )
 
 
 def _account_creation_pool(session: Session, tenant_id: int, pool_id: int | None) -> AccountPool:
