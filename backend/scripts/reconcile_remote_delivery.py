@@ -14,6 +14,10 @@ from app.services.task_center.remote_reconciliation import (
 )
 from app.services.task_center.remote_reconcile_conflict_resolution import (
     resolve_remote_reconcile_conflict,
+    resolve_remote_reconcile_conflict_with_fresh_evidence,
+)
+from app.services.task_center.remote_membership_evidence import (
+    preview_membership_probe_evidence,
 )
 from app.services.task_center.runtime_state_hash import (
     execution_attempt_state_hash,
@@ -54,8 +58,10 @@ def apply_case(
     approval_ref: str,
     evidence_source: str = "journal",
     resolve_conflict: bool = False,
+    accept_fresh_conflict_evidence: bool = False,
     expected_action_state_hash: str = "",
     expected_attempt_state_hash: str = "",
+    expected_conflict_evidence_hash: str = "",
 ) -> dict:
     _require_approval(actor, approval_ref)
     with SessionLocal() as session:
@@ -67,9 +73,12 @@ def apply_case(
             case_id,
             evidence,
             actor=actor,
+            approval_ref=approval_ref,
             resolve_conflict=resolve_conflict,
+            accept_fresh_conflict_evidence=accept_fresh_conflict_evidence,
             expected_action_state_hash=expected_action_state_hash,
             expected_attempt_state_hash=expected_attempt_state_hash,
+            expected_conflict_evidence_hash=expected_conflict_evidence_hash,
         )
         case = session.get(RemoteReconcileCase, case_id)
         _write_approval_audit(session, case, actor, approval_ref, outcome.state)
@@ -90,13 +99,27 @@ def _apply_evidence(
     evidence,
     *,
     actor: str,
+    approval_ref: str,
     resolve_conflict: bool,
+    accept_fresh_conflict_evidence: bool,
     expected_action_state_hash: str,
     expected_attempt_state_hash: str,
+    expected_conflict_evidence_hash: str,
 ):
     if not resolve_conflict:
         return apply_remote_reconcile_evidence(
             session, case_id, evidence, actor=actor,
+        )
+    if accept_fresh_conflict_evidence:
+        return resolve_remote_reconcile_conflict_with_fresh_evidence(
+            session,
+            case_id,
+            evidence,
+            expected_action_state_hash=expected_action_state_hash,
+            expected_attempt_state_hash=expected_attempt_state_hash,
+            expected_conflict_evidence_hash=expected_conflict_evidence_hash,
+            actor=actor,
+            approval_ref=approval_ref,
         )
     return resolve_remote_reconcile_conflict(
         session,
@@ -113,6 +136,13 @@ def _case_evidence(session, case_id: str, evidence_source: str):
         return evidence_from_gateway_journal(session, case_id)
     if evidence_source == "telegram-history":
         return preview_remote_history_evidence(
+            session,
+            case_id,
+            gateway_client=gateway,
+            credentials_resolver=credentials_for_account,
+        )
+    if evidence_source == "membership-probe":
+        return preview_membership_probe_evidence(
             session,
             case_id,
             gateway_client=gateway,
@@ -162,7 +192,7 @@ def main() -> int:
     preview.add_argument("--case-id", required=True)
     preview.add_argument(
         "--evidence-source",
-        choices=("journal", "telegram-history"),
+        choices=("journal", "telegram-history", "membership-probe"),
         default="journal",
     )
     apply = subparsers.add_parser("apply")
@@ -171,11 +201,13 @@ def main() -> int:
     apply.add_argument("--actor", required=True)
     apply.add_argument("--approval-ref", required=True)
     apply.add_argument("--resolve-conflict", action="store_true")
+    apply.add_argument("--accept-fresh-conflict-evidence", action="store_true")
     apply.add_argument("--expected-action-state-hash", default="")
     apply.add_argument("--expected-attempt-state-hash", default="")
+    apply.add_argument("--expected-conflict-evidence-hash", default="")
     apply.add_argument(
         "--evidence-source",
-        choices=("journal", "telegram-history"),
+        choices=("journal", "telegram-history", "membership-probe"),
         default="journal",
     )
     args = parser.parse_args()
@@ -189,8 +221,10 @@ def main() -> int:
             approval_ref=args.approval_ref,
             evidence_source=args.evidence_source,
             resolve_conflict=args.resolve_conflict,
+            accept_fresh_conflict_evidence=args.accept_fresh_conflict_evidence,
             expected_action_state_hash=args.expected_action_state_hash,
             expected_attempt_state_hash=args.expected_attempt_state_hash,
+            expected_conflict_evidence_hash=args.expected_conflict_evidence_hash,
         )
     )
     print(json.dumps(result, ensure_ascii=False, sort_keys=True, default=str))
