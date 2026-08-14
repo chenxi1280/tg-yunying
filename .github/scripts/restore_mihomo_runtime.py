@@ -315,7 +315,7 @@ with SessionLocal() as session:
         if proxy is None or proxy.name != item['name']:
             raise RuntimeError('proxy_record_drift')
         result.append(check_account_proxy(session, 1, proxy.id, check_type='quick', reason=f'unconfigured_mihomo_runtime; approval_ref={{approval_ref}}', actor='production-mihomo-restore'))
-print(json.dumps(result, ensure_ascii=True, sort_keys=True))
+print(json.dumps(result, ensure_ascii=True, sort_keys=True, default=str))
 """
     result = run_command(["docker", "exec", backend_container, "python", "-c", code], capture_output=True)
     try:
