@@ -147,3 +147,13 @@ def test_actions_release_persists_verification_runtime_contract() -> None:
         assert name in release
         assert f"{name}:" in workflow
     assert "secrets.TGYUNYING_IMAGE_VERIFICATION_WORKER_TOKEN" in workflow
+
+
+def test_image_worker_uses_functional_readiness_app_entrypoint() -> None:
+    compose = (PROJECT_ROOT / "docker-compose.image-verification.yml").read_text()
+    dockerfile = (PROJECT_ROOT / "Dockerfile.image-verification-worker").read_text()
+
+    assert "app.image_verification_worker_app:app" in compose
+    assert "app.image_verification_worker_app:app" in dockerfile
+    assert "/internal/v1/image-verification/ready" in compose
+    assert "IMAGE_VERIFICATION_WORKER_TOKEN" in compose
