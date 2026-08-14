@@ -100,6 +100,31 @@ def test_daily_ledger_keeps_ready_pending_and_blocked_accounts_in_denominator(se
     assert all(row.coverage_date == date(2026, 7, 10) for row in rows)
 
 
+def test_daily_coverage_resolves_group_from_operation_target_without_group_id(
+    session: Session,
+) -> None:
+    task = _seed(session)
+    task.type_config = {
+        key: value
+        for key, value in task.type_config.items()
+        if key != "target_group_id"
+    }
+    session.add(_account(1))
+    session.add(TgGroupAccount(
+        tenant_id=1,
+        group_id=21,
+        account_id=1,
+        can_send=True,
+    ))
+    session.commit()
+
+    initialize_all_account_task_scope(session, task, now=datetime(2026, 7, 10, 10))
+
+    row = session.scalar(select(TaskAccountDailyCoverage))
+    assert row is not None
+    assert row.group_id == 21
+
+
 def test_daily_ledger_keeps_group_bot_waiting_account_out_of_send_pool(
     session: Session,
 ) -> None:
