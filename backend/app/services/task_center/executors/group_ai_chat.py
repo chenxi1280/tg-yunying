@@ -55,10 +55,7 @@ from ..ai_reply_allocation import reply_requirement_for_plan
 from ..account_voice_profile_generation_jobs import enqueue_voice_profile_generation
 from ..account_voice_profiles import group_stance_summaries, voice_profile_prompt_details
 from ..channel_membership import gate_channel_membership
-from ..config_normalization import (
-    apply_group_ai_account_coverage_defaults,
-    normalize_operation_target_references,
-)
+from ..config_normalization import apply_group_ai_account_coverage_defaults
 from ..content_mix_cycles import (
     ContentMixCycleSpec,
     ContentMixSlotSpec,
@@ -2736,14 +2733,19 @@ def _backfill_open_action_admission_snapshots(
 
 
 def _canonicalized_task_config(session: Session, task: Task, config: dict) -> dict:
+    """Apply legacy coverage defaults without changing a live target route."""
+    del session
     source_config = {
         key: value
         for key, value in config.items()
         if key != "_daily_coverage_enforced"
     }
     daily_coverage_enforced = source_config.get("account_coverage_mode") == "all_accounts_daily"
-    normalized = normalize_operation_target_references(session, task.tenant_id, task.type, source_config)
-    normalized = apply_group_ai_account_coverage_defaults(task.type, normalized, task.account_config or {})
+    normalized = apply_group_ai_account_coverage_defaults(
+        task.type,
+        source_config,
+        task.account_config or {},
+    )
     if normalized != source_config:
         task.type_config = {key: value for key, value in normalized.items() if key != "pacing_config"}
     return {**normalized, "_daily_coverage_enforced": daily_coverage_enforced}
