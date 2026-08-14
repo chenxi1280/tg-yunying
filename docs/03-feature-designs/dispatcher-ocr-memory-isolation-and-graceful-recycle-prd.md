@@ -27,6 +27,13 @@
 
 > P0/P1 已按 `master -> release -> GitHub Actions` 发布到硅谷 Stage B，并取得两个不同账号的真实本地 OCR 共识与后续搜索成功证据。完整自然日、1287 次真实图片验证、OCR+模型 tail 及 3 次安全回收周期仍未满足，因此事故仍不得写 `production_fixed`。
 
+### 0.5 2026-08-14 partial-timeout 发布回归
+
+- 生产 `ab1418cb` 仍保留旧逻辑：任一 native OCR source 超过 25 秒 budget 时，丢弃已经完成的 source 并以退出码 70 终止 generation；Docker `unless-stopped` 反复冷启动模型，线上累计重启超过 190 次。
+- 普通 `/health` 在两套 OCR 引擎未初始化时也会返回 healthy，违反本 PRD 的 functional readiness 合同。现行修复必须恢复 partial source + explicit timeout source、`draining` 拒绝新请求、启动预热和带 token `/ready` healthcheck；两路均超时继续 fail closed。
+- 本次事故同时触发 7.3 GiB、无 swap ECS 的 global OOM。扩容、swap 或降低业务并发仍只能作为容量治理，不能替代上述代码根因修复。
+- 发布前状态为 `implementation_recovered / qa_pending / production_failed`；只有候选 SHA 部署、重启计数稳定和 post-release 业务事实满足后才能更新生产结论。
+
 ### 0.2 2026-08-01 生产发布与 canary 证据
 
 - Stage A 根治版 `1ff176fa` 由 Actions run `30666436804` 发布；14 分钟真实流量内新建搜索 epoch 正常 finalized，搜索成功 50 次，AI 成功 7 次，PostgreSQL/Action 新死锁均为 0，历史损坏 epoch 只保留一个 active quarantine 且不再循环重试。

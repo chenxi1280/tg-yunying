@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
-import hmac
 import os
 import signal
 import threading
@@ -14,7 +13,6 @@ from time import monotonic
 from typing import Any, Callable
 from uuid import uuid4
 
-from fastapi import FastAPI, Header, HTTPException
 from PIL import Image
 
 from app import image_verification_ocr
@@ -32,6 +30,7 @@ from app.image_verification_worker_config import (
 ALLOWED_MIME_TYPES = frozenset({"image/png", "image/jpeg", "image/webp"})
 BASE64_EXPANSION_RATIO = 4 / 3
 TERMINATION_DELAY_SECONDS = 0.1
+OCR_SOURCE_NAMES = ("rapidocr", "ddddocr")
 ABNORMAL_TERMINATION_EXIT_CODE = 70
 ABNORMAL_TERMINATION_MESSAGE = (
     b"image verification worker exiting: native OCR state unknown\n"
@@ -52,6 +51,7 @@ class ImageVerificationWorkerService:
         self._lock = threading.Lock()
         self._records: dict[str, RequestRecord] = {}
         self._active_request_id = ""
+        self._draining = False
         self._completed_requests = 0
         self._busy_rejections = 0
         self._rapidocr = ThreadPoolExecutor(
@@ -124,10 +124,23 @@ class ImageVerificationWorkerService:
             timeout=max(0.0, deadline_monotonic - monotonic()),
         )
         if pending:
-            raise WorkerRequestError(
-                504,
-                "verification_local_ocr_timeout",
-                "native OCR exceeded request deadline; generation will exit",
+            completed = {
+                source: future.result()
+                for source, future in zip(OCR_SOURCE_NAMES, futures)
+                if future not in pending
+            }
+            if not any(
+                source.status == "complete" for source in completed.values()
+            ):
+                raise WorkerRequestError(
+                    504,
+                    "verification_local_ocr_timeout",
+                    "native OCR exceeded request deadline; generation will exit",
+                )
+            self._mark_draining()
+            return tuple(
+                completed.get(source) or _timed_out_source(source)
+                for source, _future in zip(OCR_SOURCE_NAMES, futures)
             )
         return tuple(future.result() for future in futures)
 
@@ -177,6 +190,12 @@ class ImageVerificationWorkerService:
                         "request_id was reused with different input",
                     )
                 return existing
+            if self._draining:
+                raise WorkerRequestError(
+                    503,
+                    "verification_local_ocr_draining",
+                    "image verification worker generation is draining",
+                )
             if self._active_request_id:
                 self._busy_rejections += 1
                 raise WorkerRequestError(
@@ -261,6 +280,8 @@ class ImageVerificationWorkerService:
         with self._lock:
             if self._active_request_id:
                 return False
+            if self._draining:
+                return True
             request_limit_reached = (
                 self._completed_requests >= self.config.recycle_request_limit
             )
@@ -272,6 +293,7 @@ class ImageVerificationWorkerService:
     def health(self) -> dict[str, Any]:
         with self._lock:
             active_request_id = self._active_request_id
+            draining = self._draining
             completed_requests = self._completed_requests
             busy_rejections = self._busy_rejections
         return {
@@ -280,11 +302,22 @@ class ImageVerificationWorkerService:
             "worker_generation": self.generation,
             "contract_version": self.config.contract_version,
             "active_request_id": active_request_id,
-            "request_status": "running" if active_request_id else "idle",
+            "request_status": (
+                "running"
+                if active_request_id
+                else "draining"
+                if draining
+                else "idle"
+            ),
+            "draining": draining,
             "completed_requests": completed_requests,
             "busy_rejections": busy_rejections,
             "rss_bytes": self._rss_reader(),
         }
+
+    def _mark_draining(self) -> None:
+        with self._lock:
+            self._draining = True
 
 
 def _run_source(
@@ -318,6 +351,20 @@ def _run_source(
         duration_ms=max(0, int((completed - started) * 1000)),
         late=completed >= deadline_monotonic,
         detail=detail,
+    )
+
+
+def _timed_out_source(source: str) -> SourceResult:
+    observed_at = datetime.now(UTC).isoformat()
+    return SourceResult(
+        source=source,
+        status="failed",
+        candidates=(),
+        started_at=observed_at,
+        completed_at=observed_at,
+        duration_ms=0,
+        late=True,
+        detail="verification_local_ocr_timeout",
     )
 
 
@@ -443,72 +490,3 @@ def _schedule_graceful_recycle() -> None:
         TERMINATION_DELAY_SECONDS,
         lambda: os.kill(os.getpid(), signal.SIGTERM),
     ).start()
-
-
-def _authorize_service(
-    service: ImageVerificationWorkerService,
-    token: str | None,
-) -> ImageVerificationWorkerService:
-    if token is None or not hmac.compare_digest(token, service.config.token):
-        raise HTTPException(status_code=401, detail={"code": "unauthorized"})
-    return service
-
-
-def create_app(
-    service: ImageVerificationWorkerService | None = None,
-    *,
-    recycle_scheduler: Callable[[], None] = _schedule_graceful_recycle,
-) -> FastAPI:
-    app = FastAPI(title="TG Image Verification Worker")
-    service_lock = threading.Lock()
-    selected_service = service
-
-    def current_service() -> ImageVerificationWorkerService:
-        nonlocal selected_service
-        with service_lock:
-            if selected_service is None:
-                selected_service = ImageVerificationWorkerService(
-                    WorkerConfig.from_env()
-                )
-            return selected_service
-
-    @app.get("/health")
-    def health() -> dict[str, Any]:
-        return current_service().health()
-
-    @app.get("/internal/v1/image-verification/ready")
-    def ready(x_internal_token: str | None = Header(default=None)) -> dict[str, Any]:
-        _authorize_service(current_service(), x_internal_token)
-        engines = image_verification_ocr.verify_engines_ready()
-        return {"status": "ready", "engines": engines}
-
-    @app.post("/internal/v1/image-verification/ocr")
-    def execute(
-        request: OcrRequest,
-        x_internal_token: str | None = Header(default=None),
-    ) -> dict[str, Any]:
-        worker = _authorize_service(current_service(), x_internal_token)
-        try:
-            payload, recycle = worker.execute(request)
-        except WorkerRequestError as exc:
-            raise HTTPException(
-                status_code=exc.status_code,
-                detail={"code": exc.code, "detail": str(exc)},
-            ) from exc
-        if recycle:
-            recycle_scheduler()
-        return payload
-
-    @app.get("/internal/v1/image-verification/ocr/{request_id}")
-    def status(
-        request_id: str,
-        x_internal_token: str | None = Header(default=None),
-    ) -> dict[str, Any]:
-        return _authorize_service(
-            current_service(), x_internal_token
-        ).status(request_id)
-
-    return app
-
-
-app = create_app()

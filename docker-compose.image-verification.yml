@@ -5,7 +5,7 @@ services:
     restart: unless-stopped
     command:
       - uvicorn
-      - app.image_verification_worker:app
+      - app.image_verification_worker_app:app
       - --host
       - 0.0.0.0
       - --port
@@ -39,9 +39,9 @@ services:
         - CMD
         - python
         - -c
-        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8091/health', timeout=3)"
+        - "import os, urllib.request; request = urllib.request.Request('http://127.0.0.1:8091/internal/v1/image-verification/ready', headers={'X-Internal-Token': os.environ['IMAGE_VERIFICATION_WORKER_TOKEN']}); response = urllib.request.urlopen(request, timeout=120); assert response.status == 200"
       interval: 15s
-      timeout: 5s
+      timeout: 125s
       start_period: 60s
       retries: 6
     networks:
