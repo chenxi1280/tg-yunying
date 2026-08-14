@@ -50,6 +50,7 @@ from app.services import (
     check_qr_login, confirm_account_clone_plan, create_account,
     create_account_clone_plan, create_direct_message_task,
     count_accounts, filter_accounts_page, health_check_account,
+    ExistingAccountRequiresRelogin,
     list_account_sync_records,
     list_login_flows, list_profile_sync_records, list_verification_codes,
     LoginStartFailure,
@@ -112,6 +113,15 @@ def post_account(
             create_account(session, payload.model_copy(update={"tenant_id": tenant_id}), current_user.name),
             current_user,
         )
+    except ExistingAccountRequiresRelogin as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "existing_account_requires_relogin",
+                "message": str(exc),
+                "account_id": exc.account_id,
+            },
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

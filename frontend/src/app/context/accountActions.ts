@@ -1,5 +1,5 @@
 import type { Dispatch, SetStateAction } from 'react';
-import { API_ORIGIN, api } from '../../shared/api/client';
+import { API_ORIGIN, ApiError, api } from '../../shared/api/client';
 import {
   EMPTY_ACCOUNT_LOGIN_FORM,
   defaultAccountCreateForm,
@@ -29,6 +29,28 @@ import type {
 } from '../types';
 
 const GROUP_RESTRICTION_BATCH_TIMEOUT_MS = 300_000;
+const EXISTING_ACCOUNT_RELOGIN_CODE = 'existing_account_requires_relogin';
+const EXISTING_ACCOUNT_RELOGIN_STATUSES = new Set([
+  '待登录',
+  '等待验证码',
+  '等待扫码',
+  '等待2FA',
+  '需重新登录',
+  'Session失效',
+  '异常',
+]);
+
+function existingAccountIdFromError(error: unknown): number | null {
+  if (!(error instanceof ApiError) || error.status !== 409) return null;
+  try {
+    const payload = JSON.parse(error.body) as { detail?: { code?: unknown; account_id?: unknown } };
+    if (payload.detail?.code !== EXISTING_ACCOUNT_RELOGIN_CODE) return null;
+    const accountId = payload.detail.account_id;
+    return typeof accountId === 'number' && Number.isInteger(accountId) && accountId > 0 ? accountId : null;
+  } catch {
+    return null;
+  }
+}
 
 interface AccountActionParams {
   accountCreateForm: ReturnType<typeof defaultAccountCreateForm>;
@@ -501,8 +523,23 @@ export function createAccountActions(params: AccountActionParams) {
     params.setNotice(`${updated.display_name} 已完成登录，并已同步资料、健康、群聊、联系人和验证码。`);
   }
 
+  async function reauthorizeExistingAccount(accountId: number, method: 'code' | 'qr') {
+    const detail = await api<AccountDetail>(`/tg-accounts/${accountId}/detail`);
+    params.setAccountCreateForm(defaultAccountCreateForm());
+    if (!EXISTING_ACCOUNT_RELOGIN_STATUSES.has(detail.account.status)) {
+      params.setAccountDetail(detail);
+      params.setAccountDetailTab('资料');
+      params.setModal({ type: 'accountDetail' });
+      params.setNotice(`${detail.account.display_name} 已存在且当前状态为“${detail.account.status}”，未重复创建账号。`);
+      return;
+    }
+    params.setNotice(`${detail.account.display_name} 已存在，正在进入原账号重新登录。`);
+    await startOrResumeAccountLogin(detail.account, method, false);
+  }
+
   async function createAccount() {
     params.setBusy('添加账号');
+    const loginMethod = params.accountCreateForm.login_method;
     try {
       const created = await api<Account>('/tg-accounts', {
         method: 'POST',
@@ -514,10 +551,19 @@ export function createAccountActions(params: AccountActionParams) {
           phone_number: params.accountCreateForm.phone_number,
         }),
       });
-      params.setAccountCreateForm({ display_name: '', username: '', phone_number: '', pool_id: '', login_method: 'code' });
+      params.setAccountCreateForm(defaultAccountCreateForm());
       await refreshAccountCenterDataAfterAction('账号新增', [refreshAccountListForAction]);
-      await startOrResumeAccountLogin(created, params.accountCreateForm.login_method, params.accountCreateForm.login_method === 'code');
+      await startOrResumeAccountLogin(created, loginMethod, loginMethod === 'code');
     } catch (error) {
+      const existingAccountId = existingAccountIdFromError(error);
+      if (existingAccountId) {
+        try {
+          await reauthorizeExistingAccount(existingAccountId, loginMethod);
+        } catch (reauthorizationError) {
+          params.handleActionError(reauthorizationError);
+        }
+        return;
+      }
       params.handleActionError(error);
     } finally {
       params.setBusy('');

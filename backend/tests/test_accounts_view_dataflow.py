@@ -150,3 +150,13 @@ def test_account_availability_filter_accepts_only_one_to_twenty_positive_unique_
         with pytest.raises(HTTPException) as exc_info:
             _parse_account_ids(value)
         assert exc_info.value.status_code == 422
+
+
+def test_session_expired_account_exposes_existing_login_action():
+    source = _source()
+    login_statuses = source[source.index("const LOGIN_REQUIRED_STATUSES"):source.index("const LOGIN_PROBLEM_STATUSES")]
+    actions = source[source.index("title: '操作'"):]
+
+    assert "'Session失效'" in login_statuses
+    assert "LOGIN_REQUIRED_STATUSES.has(account.status)" in actions
+    assert "onClick={() => onVerifyAccount(account)}" in actions
