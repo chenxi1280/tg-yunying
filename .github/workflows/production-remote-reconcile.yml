@@ -24,6 +24,7 @@ name: Production Remote Reconcile
         options:
           - journal
           - telegram-history
+          - membership-probe
       expected_evidence_fingerprint:
         description: Exact preview fingerprint; required for apply
         required: false
@@ -34,6 +35,11 @@ name: Production Remote Reconcile
         required: true
         default: false
         type: boolean
+      accept_fresh_conflict_evidence:
+        description: Accept fresh approved evidence after a conflict state
+        required: true
+        default: false
+        type: boolean
       expected_action_state_hash:
         description: Current action state hash; required for conflict resolution
         required: false
@@ -41,6 +47,11 @@ name: Production Remote Reconcile
         type: string
       expected_attempt_state_hash:
         description: Current attempt state hash; required for conflict resolution
+        required: false
+        default: ''
+        type: string
+      expected_conflict_evidence_hash:
+        description: Existing conflict evidence hash; required for fresh conflict evidence
         required: false
         default: ''
         type: string
@@ -79,8 +90,10 @@ jobs:
           EVIDENCE_SOURCE: ${{ inputs.evidence_source }}
           EXPECTED_FINGERPRINT: ${{ inputs.expected_evidence_fingerprint }}
           RESOLVE_CONFLICT: ${{ inputs.resolve_conflict }}
+          ACCEPT_FRESH_CONFLICT_EVIDENCE: ${{ inputs.accept_fresh_conflict_evidence }}
           EXPECTED_ACTION_HASH: ${{ inputs.expected_action_state_hash }}
           EXPECTED_ATTEMPT_HASH: ${{ inputs.expected_attempt_state_hash }}
+          EXPECTED_CONFLICT_EVIDENCE_HASH: ${{ inputs.expected_conflict_evidence_hash }}
           ACTOR: ${{ inputs.actor }}
           APPROVAL_REF: ${{ inputs.approval_ref }}
         run: |
@@ -92,7 +105,7 @@ jobs:
           [[ "${CASE_ID}" =~ ^[0-9a-fA-F-]{36}$ ]]
           [[ "${ACTOR}" =~ ^[A-Za-z0-9._@+-]{1,100}$ ]]
           [[ "${APPROVAL_REF}" =~ ^[A-Za-z0-9._:/#-]{1,160}$ ]]
-          [[ "${EVIDENCE_SOURCE}" == journal || "${EVIDENCE_SOURCE}" == telegram-history ]]
+          [[ "${EVIDENCE_SOURCE}" == journal || "${EVIDENCE_SOURCE}" == telegram-history || "${EVIDENCE_SOURCE}" == membership-probe ]]
           if [[ "${APPLY}" == true ]]; then
             [[ "${EXPECTED_FINGERPRINT}" =~ ^[0-9a-f]{64}$ ]]
           else
@@ -102,6 +115,11 @@ jobs:
             [[ "${APPLY}" == true ]]
             [[ "${EXPECTED_ACTION_HASH}" =~ ^[0-9a-f]{64}$ ]]
             [[ "${EXPECTED_ATTEMPT_HASH}" =~ ^[0-9a-f]{64}$ ]]
+          fi
+          if [[ "${ACCEPT_FRESH_CONFLICT_EVIDENCE}" == true ]]; then
+            [[ "${RESOLVE_CONFLICT}" == true ]]
+            [[ "${APPLY}" == true ]]
+            [[ "${EXPECTED_CONFLICT_EVIDENCE_HASH}" =~ ^[0-9a-f]{64}$ ]]
           fi
 
       - name: Configure SSH
@@ -166,14 +184,18 @@ jobs:
           EVIDENCE_SOURCE: ${{ inputs.evidence_source }}
           EXPECTED_FINGERPRINT: ${{ inputs.expected_evidence_fingerprint }}
           RESOLVE_CONFLICT: ${{ inputs.resolve_conflict }}
+          ACCEPT_FRESH_CONFLICT_EVIDENCE: ${{ inputs.accept_fresh_conflict_evidence }}
           EXPECTED_ACTION_HASH: ${{ inputs.expected_action_state_hash }}
           EXPECTED_ATTEMPT_HASH: ${{ inputs.expected_attempt_state_hash }}
+          EXPECTED_CONFLICT_EVIDENCE_HASH: ${{ inputs.expected_conflict_evidence_hash }}
           ACTOR: ${{ inputs.actor }}
           APPROVAL_REF: ${{ inputs.approval_ref }}
         run: |
           set -euo pipefail
           if [[ "${APPLY}" == true ]]; then
-            if [[ "${RESOLVE_CONFLICT}" == true ]]; then
+            if [[ "${RESOLVE_CONFLICT}" == true && "${ACCEPT_FRESH_CONFLICT_EVIDENCE}" == true ]]; then
+              RESULT="$(ssh silicon-valley-production-server "timeout 180 docker exec -i tgyunying-backend python -m scripts.reconcile_remote_delivery apply --case-id '${CASE_ID}' --evidence-source '${EVIDENCE_SOURCE}' --expected-evidence-fingerprint '${EXPECTED_FINGERPRINT}' --actor '${ACTOR}' --approval-ref '${APPROVAL_REF}' --resolve-conflict --accept-fresh-conflict-evidence --expected-action-state-hash '${EXPECTED_ACTION_HASH}' --expected-attempt-state-hash '${EXPECTED_ATTEMPT_HASH}' --expected-conflict-evidence-hash '${EXPECTED_CONFLICT_EVIDENCE_HASH}'")"
+            elif [[ "${RESOLVE_CONFLICT}" == true ]]; then
               RESULT="$(ssh silicon-valley-production-server "timeout 180 docker exec -i tgyunying-backend python -m scripts.reconcile_remote_delivery apply --case-id '${CASE_ID}' --evidence-source '${EVIDENCE_SOURCE}' --expected-evidence-fingerprint '${EXPECTED_FINGERPRINT}' --actor '${ACTOR}' --approval-ref '${APPROVAL_REF}' --resolve-conflict --expected-action-state-hash '${EXPECTED_ACTION_HASH}' --expected-attempt-state-hash '${EXPECTED_ATTEMPT_HASH}'")"
             else
               RESULT="$(ssh silicon-valley-production-server "timeout 180 docker exec -i tgyunying-backend python -m scripts.reconcile_remote_delivery apply --case-id '${CASE_ID}' --evidence-source '${EVIDENCE_SOURCE}' --expected-evidence-fingerprint '${EXPECTED_FINGERPRINT}' --actor '${ACTOR}' --approval-ref '${APPROVAL_REF}'")"

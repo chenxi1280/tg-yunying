@@ -22,9 +22,11 @@ from app.services.task_center.remote_reconciliation import (
     RemoteReconcileEvidence,
     apply_remote_reconcile_evidence,
     ensure_remote_reconcile_case,
+    remote_reconcile_evidence_hash,
 )
 from app.services.task_center.remote_reconcile_conflict_resolution import (
     resolve_remote_reconcile_conflict,
+    resolve_remote_reconcile_conflict_with_fresh_evidence,
 )
 from app.services.task_center.runtime_state_hash import (
     execution_attempt_state_hash,
@@ -219,6 +221,43 @@ def test_approved_conflict_resolution_requires_current_state_hashes() -> None:
         assert outcome.state == "remote_confirmed"
         assert action.status == "success"
         assert attempt.remote_message_id == "remote-conflict-1"
+
+
+def test_approved_fresh_evidence_resolves_conflict_with_expected_prior_hash() -> None:
+    engine = _engine()
+    with Session(engine) as session:
+        action, attempt, case = _seed_case(session)
+        action.result = {**dict(action.result or {}), "error_code": "old_state"}
+        prior = RemoteReconcileEvidence(
+            result="remote_confirmed",
+            source="telegram_history_read_only",
+            evidence_fingerprint=EVIDENCE_FINGERPRINT,
+            remote_message_id="remote-old",
+            exact_match_count=1,
+        )
+        apply_remote_reconcile_evidence(session, case.id, prior, actor="qa")
+        current = RemoteReconcileEvidence(
+            result="remote_confirmed",
+            source="membership_reprobe_read_only",
+            evidence_fingerprint="b" * 64,
+            remote_message_id="remote-new",
+            exact_match_count=1,
+        )
+
+        outcome = resolve_remote_reconcile_conflict_with_fresh_evidence(
+            session,
+            case.id,
+            current,
+            expected_action_state_hash=remote_reconcile_action_state_hash(action),
+            expected_attempt_state_hash=execution_attempt_state_hash(attempt),
+            expected_conflict_evidence_hash=remote_reconcile_evidence_hash(prior),
+            actor="incident-operator",
+            approval_ref="incident-20260814",
+        )
+
+        assert outcome.state == "remote_confirmed"
+        assert action.status == "success"
+        assert attempt.remote_message_id == "remote-new"
 
 
 def _engine():

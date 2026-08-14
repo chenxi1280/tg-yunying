@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import json
+import re
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -32,6 +33,75 @@ def resolve_remote_reconcile_conflict(
     actor: str,
     checked_at: datetime | None = None,
 ) -> RemoteReconcileOutcome:
+    return _resolve_conflict(
+        session,
+        case_id,
+        evidence,
+        expected_action_state_hash=expected_action_state_hash,
+        expected_attempt_state_hash=expected_attempt_state_hash,
+        expected_conflict_evidence_hash=remote_reconcile_evidence_hash(evidence),
+        actor=actor,
+        approval_ref="",
+        resolution_kind="same_evidence",
+        checked_at=checked_at,
+    )
+
+
+def resolve_remote_reconcile_conflict_with_fresh_evidence(
+    session: Session,
+    case_id: str,
+    evidence: RemoteReconcileEvidence,
+    *,
+    expected_action_state_hash: str,
+    expected_attempt_state_hash: str,
+    expected_conflict_evidence_hash: str,
+    actor: str,
+    approval_ref: str,
+    checked_at: datetime | None = None,
+) -> RemoteReconcileOutcome:
+    _require_fresh_evidence_approval(
+        actor,
+        approval_ref,
+        expected_conflict_evidence_hash,
+    )
+    return _resolve_conflict(
+        session,
+        case_id,
+        evidence,
+        expected_action_state_hash=expected_action_state_hash,
+        expected_attempt_state_hash=expected_attempt_state_hash,
+        expected_conflict_evidence_hash=expected_conflict_evidence_hash,
+        actor=actor,
+        approval_ref=approval_ref,
+        resolution_kind="fresh_evidence",
+        checked_at=checked_at,
+    )
+
+
+def _require_fresh_evidence_approval(
+    actor: str,
+    approval_ref: str,
+    expected_conflict_evidence_hash: str,
+) -> None:
+    if not actor.strip() or not approval_ref.strip():
+        raise ValueError("remote_reconcile_conflict_approval_required")
+    if not re.fullmatch(r"[0-9a-f]{64}", expected_conflict_evidence_hash):
+        raise ValueError("remote_reconcile_conflict_evidence_hash_invalid")
+
+
+def _resolve_conflict(
+    session: Session,
+    case_id: str,
+    evidence: RemoteReconcileEvidence,
+    *,
+    expected_action_state_hash: str,
+    expected_attempt_state_hash: str,
+    expected_conflict_evidence_hash: str,
+    actor: str,
+    approval_ref: str,
+    resolution_kind: str,
+    checked_at: datetime | None,
+) -> RemoteReconcileOutcome:
     if evidence.result not in {"remote_confirmed", "remote_absence_proven"}:
         raise ValueError("remote_reconcile_conflict_terminal_evidence_required")
     case, action, attempt = _locked_case_facts(session, case_id)
@@ -41,7 +111,7 @@ def resolve_remote_reconcile_conflict(
     current_attempt_hash = execution_attempt_state_hash(attempt)
     _validate_resolution(
         case,
-        evidence_hash=remote_reconcile_evidence_hash(evidence),
+        expected_conflict_evidence_hash=expected_conflict_evidence_hash,
         expected_action_hash=expected_action_state_hash,
         expected_attempt_hash=expected_attempt_state_hash,
         current_action_hash=current_action_hash,
@@ -54,6 +124,9 @@ def resolve_remote_reconcile_conflict(
         actor=actor,
         action_hash=current_action_hash,
         attempt_hash=current_attempt_hash,
+        approval_ref=approval_ref,
+        resolution_kind=resolution_kind,
+        accepted_evidence_hash=remote_reconcile_evidence_hash(evidence),
     )
     case.state = "pending"
     case.expected_action_state_hash = current_action_hash
@@ -85,7 +158,7 @@ def _locked_case_facts(
 def _validate_resolution(
     case: RemoteReconcileCase,
     *,
-    evidence_hash: str,
+    expected_conflict_evidence_hash: str,
     expected_action_hash: str,
     expected_attempt_hash: str,
     current_action_hash: str,
@@ -93,7 +166,7 @@ def _validate_resolution(
 ) -> None:
     if case.state != "conflict":
         raise ValueError("remote_reconcile_case_not_conflict")
-    if case.evidence_hash != evidence_hash:
+    if case.evidence_hash != expected_conflict_evidence_hash:
         raise ValueError("remote_reconcile_conflict_evidence_mismatch")
     if expected_action_hash != current_action_hash:
         raise ValueError("remote_reconcile_current_action_hash_mismatch")
@@ -109,6 +182,9 @@ def _write_resolution_audit(
     actor: str,
     action_hash: str,
     attempt_hash: str,
+    approval_ref: str,
+    resolution_kind: str,
+    accepted_evidence_hash: str,
 ) -> None:
     session.add(AuditLog(
         tenant_id=action.tenant_id,
@@ -119,8 +195,12 @@ def _write_resolution_audit(
         detail=json.dumps({
             "previous_expected_action_state_hash": case.expected_action_state_hash,
             "previous_expected_attempt_state_hash": case.expected_attempt_state_hash,
+            "previous_evidence_hash": case.evidence_hash,
             "accepted_action_state_hash": action_hash,
             "accepted_attempt_state_hash": attempt_hash,
+            "accepted_evidence_hash": accepted_evidence_hash,
+            "approval_ref": approval_ref,
+            "resolution_kind": resolution_kind,
         }, ensure_ascii=False, sort_keys=True),
     ))
 
@@ -129,4 +209,7 @@ def _locked(session: Session, model, row_id: str):
     return session.scalar(for_update(session, select(model).where(model.id == row_id)))
 
 
-__all__ = ["resolve_remote_reconcile_conflict"]
+__all__ = [
+    "resolve_remote_reconcile_conflict",
+    "resolve_remote_reconcile_conflict_with_fresh_evidence",
+]
