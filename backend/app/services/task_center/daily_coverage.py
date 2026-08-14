@@ -74,7 +74,7 @@ def ensure_task_daily_coverage(
     if group.tenant_id != task.tenant_id:
         raise ValueError("all-account coverage task target group tenant mismatch")
     coverage_date = _target_date(group, timestamp, incremental=incremental)
-    existing = _existing_rows(session, task, coverage_date, [item.account_id for item in items])
+    existing = _existing_rows(session, task, group.id, coverage_date, [item.account_id for item in items])
     created = 0
     rows_and_items: list[tuple[TaskAccountDailyCoverage, TaskMembershipAdmissionItem]] = []
     for item in items:
@@ -841,6 +841,7 @@ def _scope_items(session: Session, task: Task, account_ids: list[int] | None) ->
 def _existing_rows(
     session: Session,
     task: Task,
+    group_id: int,
     coverage_date: date,
     account_ids: list[int],
 ) -> dict[int, TaskAccountDailyCoverage]:
@@ -849,6 +850,7 @@ def _existing_rows(
     rows = session.scalars(
         select(TaskAccountDailyCoverage).where(
             TaskAccountDailyCoverage.task_id == task.id,
+            TaskAccountDailyCoverage.group_id == group_id,
             TaskAccountDailyCoverage.coverage_date == coverage_date,
             TaskAccountDailyCoverage.account_id.in_(account_ids),
         )
