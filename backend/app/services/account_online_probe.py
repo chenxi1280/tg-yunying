@@ -70,7 +70,7 @@ def probe_due_online_states(
                 continue
             accounts[account.id] = account
             try:
-                credentials = credentials_for_account(session, account, use_proxy=True)
+                credentials = credentials_for_account(session, account, use_proxy=False)
             except ValueError as exc:
                 _mark_probe_blocked(state, current_time, "developer_app_unavailable", str(exc))
                 schedules.append(_probe_schedule(state))
