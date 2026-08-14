@@ -25,6 +25,7 @@ from .daily_group_target import ensure_task_group_daily_target
 from .pacing import task_pacing_anchor
 from .search_click_revisions import apply_pending_search_click_revision
 from .search_click_target_progress import _active_click_quarantine_count
+from .targets import group_from_reference
 
 
 def ensure_task_day_ledger(
@@ -217,9 +218,17 @@ def _materialize_search_click_obligations(
 
 
 def _task_group(session: Session, task: Task) -> TgGroup:
-    group_id = int((task.type_config or {}).get("target_group_id") or 0)
+    config = task.type_config or {}
+    group_id = int(config.get("target_group_id") or 0)
     group = session.get(TgGroup, group_id) if group_id else None
     if group is None or group.tenant_id != task.tenant_id:
+        group = group_from_reference(
+            session,
+            task.tenant_id,
+            operation_target_id=int(config.get("target_operation_target_id") or 0) or None,
+            require_authorized=False,
+        )
+    if group is None:
         raise ValueError("group_ai_chat target group not found")
     return group
 
