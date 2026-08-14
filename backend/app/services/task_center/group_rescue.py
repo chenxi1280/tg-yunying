@@ -6,7 +6,7 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import AccountStatus, Action, FailureType, Task, Tenant, TgAccount, TgGroup
+from app.models import AccountStatus, Action, FailureType, OperationTarget, Task, Tenant, TgAccount, TgGroup
 from app.services._common import _now
 from app.services.task_center.payloads import InviteGroupAccountPayload
 from app.timezone import as_beijing
@@ -69,6 +69,9 @@ def trigger_group_rescue(
     config_error = _rescue_config_error(session, tenant)
     if config_error:
         return GroupRescueResult(RESCUE_STATUS_UNCONFIGURED, config_error)
+    group, route_error = _canonical_rescue_group(session, task, group, operation_target_id)
+    if route_error:
+        return GroupRescueResult(RESCUE_STATUS_UNCONFIGURED, route_error)
     existing = _existing_rescue_action(session, task, group, trigger_account_id)
     if existing:
         if _rescue_action_needs_refresh(session, tenant, existing, trigger_account_id):
@@ -133,6 +136,9 @@ def refresh_group_rescue_action(
     config_error = _rescue_config_error(session, tenant)
     if config_error:
         return GroupRescueResult(RESCUE_STATUS_UNCONFIGURED, config_error)
+    group, route_error = _canonical_rescue_group(session, task, group, operation_target_id)
+    if route_error:
+        return GroupRescueResult(RESCUE_STATUS_UNCONFIGURED, route_error)
     try:
         payload = _rescue_payload(session, tenant, task, group, trigger_account_id, trigger_reason, operation_target_id)
     except ValueError as exc:
@@ -267,6 +273,30 @@ def _rescue_config_error(session: Session, tenant: Tenant | None) -> str:
     if account.status != AccountStatus.ACTIVE.value or not account.session_ciphertext:
         return "救援配置缺失：救援管理员账号不可用"
     return ""
+
+
+def _canonical_rescue_group(
+    session: Session,
+    task: Task,
+    group: TgGroup,
+    operation_target_id: int | None,
+) -> tuple[TgGroup, str]:
+    if task.type != "group_ai_chat":
+        return group, ""
+    config = task.type_config if isinstance(task.type_config, dict) else {}
+    configured_target_id = _payload_int(config, "target_operation_target_id")
+    if not configured_target_id or operation_target_id != configured_target_id:
+        return group, ""
+    configured_group_id = _payload_int(config, "target_group_id")
+    configured_group = session.get(TgGroup, configured_group_id) if configured_group_id else None
+    target = session.get(OperationTarget, configured_target_id)
+    if not configured_group or configured_group.tenant_id != task.tenant_id:
+        return group, "救援配置缺失：任务权威目标群不存在"
+    if not target or target.tenant_id != task.tenant_id or target.target_type != "group":
+        return group, "救援配置缺失：任务权威运营目标不存在"
+    if str(configured_group.tg_peer_id) != str(target.tg_peer_id):
+        return group, "救援配置错误：任务目标群与运营目标不一致"
+    return configured_group, ""
 
 
 def _target_account_invite_ref(session: Session, tenant: Tenant, account_id: int) -> str:
