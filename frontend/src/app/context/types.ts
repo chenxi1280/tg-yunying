@@ -49,6 +49,8 @@ export interface AppState {
   // Runtime & Overview
   runtime: RuntimeConfig | null;
   setRuntime: (config: RuntimeConfig | null) => void;
+  accountCreationCapability: boolean | null;
+  setAccountCreationCapability: (capability: boolean | null) => void;
   overview: Overview | null;
   setOverview: (overview: Overview | null) => void;
 

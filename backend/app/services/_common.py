@@ -155,6 +155,18 @@ def get_account_phone(account: TgAccount) -> str | None:
     return account.phone_masked
 
 
+def healthy_developer_app_count(session: Session) -> int:
+    return (
+        session.scalar(
+            select(func.count(TelegramDeveloperApp.id)).where(
+                TelegramDeveloperApp.is_active.is_(True),
+                TelegramDeveloperApp.health_status == DeveloperAppHealthStatus.HEALTHY.value,
+            )
+        )
+        or 0
+    )
+
+
 def get_runtime_config(session: Session | None = None) -> dict:
     settings = get_settings()
     app_count = 0
@@ -164,15 +176,7 @@ def get_runtime_config(session: Session | None = None) -> dict:
     mock_fallback_enabled = False
     if session is not None:
         app_count = session.scalar(select(func.count(TelegramDeveloperApp.id))) or 0
-        healthy_count = (
-            session.scalar(
-                select(func.count(TelegramDeveloperApp.id)).where(
-                    TelegramDeveloperApp.is_active.is_(True),
-                    TelegramDeveloperApp.health_status == DeveloperAppHealthStatus.HEALTHY.value,
-                )
-            )
-            or 0
-        )
+        healthy_count = healthy_developer_app_count(session)
         ai_count = session.scalar(select(func.count(AiProvider.id))) or 0
         healthy_ai_count = (
             session.scalar(

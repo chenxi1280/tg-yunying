@@ -79,6 +79,7 @@ export function AppProvider({ children }: AppProviderProps) {
   const [captchaLoading, setCaptchaLoading] = useState(false);
   const [activeView, setActiveView] = useState(() => viewFromPath(location.pathname));
   const [runtime, setRuntime] = useState<RuntimeConfig | null>(null);
+  const [accountCreationCapability, setAccountCreationCapability] = useState<boolean | null>(null);
   const [overview, setOverview] = useState<Overview | null>(null);
   const [accountPools, setAccountPools] = useState<AccountPool[]>([]);
   const [selectedPoolId, setSelectedPoolId] = useState<number | ''>('');
@@ -231,6 +232,7 @@ export function AppProvider({ children }: AppProviderProps) {
       const isSystemConfigSnapshot = refreshContext.activeView === 'systemConfig';
       setCurrentUser(snapshot.me);
       setRuntime(snapshot.runtime);
+      setAccountCreationCapability(snapshot.accountCreationCapability);
       setOverview(snapshot.overview);
       if (!isSystemConfigSnapshot) {
         setAccountPools(snapshot.accountPools);
@@ -387,7 +389,7 @@ export function AppProvider({ children }: AppProviderProps) {
     groupDetail,
     poolDirectAccountId,
     profileForm,
-    runtime,
+    accountCreationCapability,
     selectedPoolId,
     choosePoolSendAccount,
     closeModal,
@@ -703,6 +705,8 @@ export function AppProvider({ children }: AppProviderProps) {
     // Runtime & Overview
     runtime,
     setRuntime,
+    accountCreationCapability,
+    setAccountCreationCapability,
     overview,
     setOverview,
 

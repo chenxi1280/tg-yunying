@@ -124,6 +124,10 @@ class AccountClonePlanCreate(BaseModel):
 
 # ── Output schemas ──
 
+class AccountCreationCapabilityOut(ApiModel):
+    can_create_tg_account: bool
+
+
 class AccountAuthorizationSummaryOut(ApiModel):
     primary_status: str = "missing"
     primary_source: str = "legacy_account"
@@ -481,6 +485,7 @@ class AccountPoolDetailOut(BaseModel):
 __all__ = [
     "TgAccountCreate", "AccountPoolCreate", "RankDeboostAccountPoolCreate", "AccountPoolUpdate",
     "MoveAccountPoolRequest", "AccountIdentityUpdate", "TgAccountProfileUpdate",
+    "AccountCreationCapabilityOut",
     "LoginStartRequest", "LoginVerifyRequest", "SensitiveActionReasonRequest", "AccountClonePlanCreate",
     "AccountAuthorizationLoginStartRequest", "AccountAuthorizationLoginVerifyRequest",
     "AccountAuthorizationOut", "AccountAuthorizationQrCheckRequest", "AccountAuthorizationSwitchRequest",

@@ -2,6 +2,7 @@ import { api, apiWithMeta } from '../../shared/api/client';
 import { hasPermission } from '../utils';
 import type {
   Account,
+  AccountCreationCapability,
   AccountPool,
   AdminUser,
   AiProvider,
@@ -49,7 +50,7 @@ type ContentResourceSnapshot = {
   contentKeywordRules: ContentKeywordRule[];
 };
 
-type SnapshotPatch = Partial<Omit<AppSnapshot, 'me' | 'runtime'>>;
+type SnapshotPatch = Partial<Omit<AppSnapshot, 'me' | 'runtime' | 'accountCreationCapability'>>;
 type LoaderContext = {
   me: CurrentUser;
   selectedPoolId: number | '';
@@ -85,7 +86,8 @@ async function loadFirstAccountPage(selectedPoolId: number | ''): Promise<Accoun
 
 export type AppSnapshot = {
   me: CurrentUser;
-  runtime: RuntimeConfig;
+  runtime: RuntimeConfig | null;
+  accountCreationCapability: boolean | null;
   overview: Overview;
   accountPools: AccountPool[];
   accounts: Account[];
@@ -105,10 +107,15 @@ export type AppSnapshot = {
   audits: AuditLog[];
 };
 
-function emptySnapshot(me: CurrentUser, runtime: RuntimeConfig): AppSnapshot {
+function emptySnapshot(
+  me: CurrentUser,
+  runtime: RuntimeConfig | null,
+  accountCreationCapability: boolean | null,
+): AppSnapshot {
   return {
     me,
     runtime,
+    accountCreationCapability,
     overview: {} as Overview,
     accountPools: [],
     accounts: [],
@@ -227,8 +234,11 @@ export async function loadAppSnapshot({
   auditFilters: AuditFilters;
 }): Promise<AppSnapshot> {
   const me = await api<CurrentUser>('/auth/me');
-  const runtime = await api<RuntimeConfig>('/config/runtime');
+  const [runtime, creationCapability] = await Promise.all([
+    hasPermission(me, 'system.view') ? api<RuntimeConfig>('/config/runtime') : null,
+    hasPermission(me, 'accounts.create') ? api<AccountCreationCapability>('/tg-accounts/creation-capability') : null,
+  ]);
   const loader = VIEW_RESOURCE_LOADERS[activeView];
   const patch = loader ? await loader({ me, selectedPoolId, taskStatusFilter, auditFilters }) : {};
-  return { ...emptySnapshot(me, runtime), ...patch };
+  return { ...emptySnapshot(me, runtime, creationCapability?.can_create_tg_account ?? null), ...patch };
 }

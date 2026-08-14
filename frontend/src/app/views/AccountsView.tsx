@@ -4,7 +4,6 @@ import type { ColumnsType } from 'antd/es/table';
 import { Activity, Database, LockKeyhole, ShieldAlert } from 'lucide-react';
 import { api } from '../../shared/api/client';
 import type { Account, AccountAvailabilitySummary, AccountPool } from '../types';
-import type { RuntimeConfig } from '../types';
 import { StatusBadge } from '../components/shared';
 import { AccountIdentityCell } from '../components/AccountLazyAvatar';
 import { useAccountsServerPage } from '../hooks/useAccountsServerPage';
@@ -32,7 +31,8 @@ interface Props {
   setSelectedPoolId: (id: number | '') => void;
   selectedPool: AccountPool | undefined;
   avatarUrl: (value: string) => string;
-  runtime: RuntimeConfig | null;
+  accountCreationCapability: boolean | null;
+  canConfigureDeveloperApps?: boolean;
   onConfigureDeveloperApps: () => void;
   onCreatePoolClick: () => void;
   onCreateAccount: (login: boolean) => void;
@@ -67,7 +67,8 @@ export default function AccountsView({
   setSelectedPoolId,
   selectedPool,
   avatarUrl,
-  runtime,
+  accountCreationCapability,
+  canConfigureDeveloperApps = false,
   onConfigureDeveloperApps,
   onCreatePoolClick,
   onCreateAccount,
@@ -346,19 +347,23 @@ export default function AccountsView({
       extra={(
         <Space wrap>
           {canMovePool && <Button onClick={onCreatePoolClick}>新增账号分组</Button>}
-          {canCreateAccount && <Button disabled={!runtime?.can_create_tg_account} onClick={() => onCreateAccount(false)}>新增账号</Button>}
+          {canCreateAccount && <Button disabled={accountCreationCapability !== true} onClick={() => onCreateAccount(false)}>新增账号</Button>}
         </Space>
       )}
     >
       <Typography.Text type="secondary">按账号分组管理；账号级受限由系统探测恢复，群管理机器拦截在账号详情内解除并重查。</Typography.Text>
-      {!runtime?.can_create_tg_account && (
+      {canCreateAccount && accountCreationCapability === false && (
         <Alert
           className="sub-panel compact-panel"
           type="warning"
           showIcon
           title="请先配置开发者应用"
-          description="新增 TG 账号需要可用的 Telegram api_id/api_hash。配置完成并保持健康后，账号新增和登录入口会自动启用。"
-          action={<Button type="primary" size="small" onClick={onConfigureDeveloperApps}>去配置开发者应用</Button>}
+          description={canConfigureDeveloperApps
+            ? '新增 TG 账号需要可用的 Telegram api_id/api_hash。配置完成并保持健康后，账号新增和登录入口会自动启用。'
+            : '当前没有可用的 Telegram 开发者应用，请联系有系统设置权限的管理员配置。'}
+          action={canConfigureDeveloperApps
+            ? <Button type="primary" size="small" onClick={onConfigureDeveloperApps}>去配置开发者应用</Button>
+            : undefined}
         />
       )}
       {error && <Alert className="sub-panel compact-panel" type="error" showIcon message={error} />}

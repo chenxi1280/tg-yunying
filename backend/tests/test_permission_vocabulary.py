@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from app.api.routers import accounts as accounts_router
 from app.auth import ROLE_TEMPLATE_PERMISSIONS, all_permissions, normalize_permissions
 from app.permission_middleware import permission_check_result, required_permission
 
@@ -63,6 +64,7 @@ def test_operation_issue_read_routes_are_view_only_and_status_actions_require_ma
 
 def test_sensitive_read_routes_have_explicit_least_privilege_rules():
     assert required_permission("GET", "/api/config/runtime") == ("system.view",)
+    assert required_permission("GET", "/api/tg-accounts/creation-capability") == ("accounts.create",)
     assert required_permission("GET", "/api/proxy-airport-subscription") == ("system.view",)
     assert required_permission("GET", "/api/proxy-airport-subscriptions") == ("system.view",)
     assert required_permission("GET", "/api/account-environment-bindings") == ("account_masks.view",)
@@ -79,6 +81,18 @@ def test_sensitive_read_routes_have_explicit_least_privilege_rules():
     assert required_permission("GET", "/api/rules/relay-attribution/report") == ("rules.view",)
     assert required_permission("PATCH", "/api/tg-accounts/12/identity") == ("accounts.pool_manage",)
     assert required_permission("POST", "/api/tg-accounts/12/pending-execution/recheck") == ("accounts.sync",)
+
+
+def test_account_creation_capability_projects_only_creation_boolean(monkeypatch):
+    for healthy_count, expected in ((0, False), (1, True)):
+        monkeypatch.setattr(
+            accounts_router,
+            "healthy_developer_app_count",
+            lambda _session, count=healthy_count: count,
+        )
+        assert accounts_router.get_account_creation_capability(object(), object()) == {
+            "can_create_tg_account": expected,
+        }
 
 
 def test_auth_change_password_route_exists_for_frontend_self_service_flow():

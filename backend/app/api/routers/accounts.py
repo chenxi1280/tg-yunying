@@ -34,6 +34,7 @@ from app.schemas import (
     AccountIdentityUpdate,
     AccountAuthorizationQrCheckRequest,
     AccountAuthorizationOut, AccountAuthorizationRefreshOut, AccountAuthorizationSelfHealOut, AccountAuthorizationSwitchRequest,
+    AccountCreationCapabilityOut,
     AccountCloneItemOut, AccountClonePlanCreate, AccountClonePlanOut,
     AccountDetailOut, AccountExecutionRecordOut, AccountGroupOut, AccountOut,
     AccountPendingExecutionRecheckOut, AccountSyncRecordOut,
@@ -51,6 +52,7 @@ from app.services import (
     create_account_clone_plan, create_direct_message_task,
     count_accounts, filter_accounts_page, health_check_account,
     ExistingAccountRequiresRelogin,
+    healthy_developer_app_count,
     list_account_sync_records,
     list_login_flows, list_profile_sync_records, list_verification_codes,
     LoginStartFailure,
@@ -67,6 +69,14 @@ router = APIRouter()
 
 
 # ── Account listing / CRUD ──
+
+@router.get("/api/tg-accounts/creation-capability", response_model=AccountCreationCapabilityOut)
+def get_account_creation_capability(
+    session: Session = Depends(get_session),
+    _: CurrentUser = Depends(get_current_user),
+) -> dict[str, bool]:
+    return {"can_create_tg_account": healthy_developer_app_count(session) > 0}
+
 
 @router.get("/api/tg-accounts", response_model=list[AccountOut])
 def list_accounts(
