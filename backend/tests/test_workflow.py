@@ -894,8 +894,12 @@ def ensure_test_workspace(client: TestClient, headers: dict[str, str]) -> tuple[
     account = response.json()
 
     if account["status"] != AccountStatus.ACTIVE.value:
-        client.post(f"/api/tg-accounts/{account['id']}/login/start", headers=headers, json={"method": "qr"})
-        account = client.post(f"/api/tg-accounts/{account['id']}/login/qr/check", headers=headers).json()
+        flow = client.post(f"/api/tg-accounts/{account['id']}/login/start", headers=headers, json={"method": "qr"}).json()
+        account = client.post(
+            f"/api/tg-accounts/{account['id']}/login/qr/check",
+            headers=headers,
+            json={"flow_id": flow["id"], "flow_version": flow["flow_version"]},
+        ).json()
 
     groups = client.post(f"/api/tg-accounts/{account['id']}/sync-groups", headers=headers).json()
     with SessionLocal() as session:
@@ -1475,7 +1479,11 @@ def test_login_flow_masks_verification_state():
         assert flow["status"] == "等待验证码"
         assert flow["code_preview"]
 
-        account = client.post(f"/api/tg-accounts/{account['id']}/login/verify", headers=headers, json={"code": flow["code_preview"]}).json()
+        account = client.post(
+            f"/api/tg-accounts/{account['id']}/login/verify",
+            headers=headers,
+            json={"flow_id": flow["id"], "flow_version": flow["flow_version"], "code": flow["code_preview"]},
+        ).json()
         assert account["status"] == "在线"
         sync_records = client.get(f"/api/tg-accounts/{account['id']}/sync-records", headers=headers).json()
         required_syncs = {"profile_pull", "health", "groups", "contacts", "codes"}
@@ -1638,14 +1646,89 @@ def test_repeated_login_verify_after_success_returns_online_account(monkeypatch)
         monkeypatch.setattr("app.services.accounts.gateway.finish_login", finish_once_then_expired)
         flow = client.post(f"/api/tg-accounts/{account['id']}/login/start", headers=headers, json={"method": "code", "force": True}).json()
 
-        verified = client.post(f"/api/tg-accounts/{account['id']}/login/verify", headers=headers, json={"code": flow["code_preview"]})
+        verified = client.post(
+            f"/api/tg-accounts/{account['id']}/login/verify",
+            headers=headers,
+            json={"flow_id": flow["id"], "flow_version": flow["flow_version"], "code": flow["code_preview"]},
+        )
         assert verified.status_code == 200, verified.text
         assert verified.json()["status"] == AccountStatus.ACTIVE.value
 
-        repeated = client.post(f"/api/tg-accounts/{account['id']}/login/verify", headers=headers, json={"code": flow["code_preview"]})
+        repeated = client.post(
+            f"/api/tg-accounts/{account['id']}/login/verify",
+            headers=headers,
+            json={"flow_id": flow["id"], "flow_version": flow["flow_version"], "code": flow["code_preview"]},
+        )
         assert repeated.status_code == 200, repeated.text
         assert repeated.json()["status"] == AccountStatus.ACTIVE.value
         assert calls == 1
+
+
+def test_login_verify_pending_client_loss_returns_typed_error(monkeypatch):
+    def finish_with_missing_client(*_args, **_kwargs):
+        raise RuntimeError("login flow not started or has expired in this process")
+
+    monkeypatch.setattr("app.services.accounts.gateway.finish_login", finish_with_missing_client)
+
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        ensure_developer_app(client, headers)
+        account = client.post(
+            "/api/tg-accounts",
+            headers=headers,
+            json={"tenant_id": 1, "display_name": "登录流程丢失账号", "phone_number": _next_test_phone()},
+        ).json()
+        flow = client.post(f"/api/tg-accounts/{account['id']}/login/start", headers=headers, json={"method": "code"}).json()
+
+        response = client.post(
+            f"/api/tg-accounts/{account['id']}/login/verify",
+            headers=headers,
+            json={"flow_id": flow["id"], "flow_version": flow["flow_version"], "code": flow["code_preview"]},
+        )
+
+    assert response.status_code == 409, response.text
+    detail = response.json()["detail"]
+    assert detail["code"] == "login_flow_not_resumable"
+    assert detail["message"] == "当前登录流程无法继续，请重新发送验证码"
+    assert detail["flow_id"] == flow["id"]
+    assert detail["trace_id"]
+    with SessionLocal() as session:
+        db_flow = session.get(TgLoginFlow, flow["id"])
+        assert db_flow.status == AccountStatus.ERROR.value
+        assert db_flow.failure_type == "login_flow_not_resumable"
+        assert db_flow.failure_detail == detail["message"]
+
+
+def test_login_verify_post_sync_failure_preserves_authorized_account(monkeypatch):
+    def fail_post_login_sync(*_args, **_kwargs):
+        raise RuntimeError("profile sync boom")
+
+    monkeypatch.setattr("app.services.accounts.run_account_sync_now", fail_post_login_sync)
+
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        ensure_developer_app(client, headers)
+        account = client.post(
+            "/api/tg-accounts",
+            headers=headers,
+            json={"tenant_id": 1, "display_name": "同步失败仍授权账号", "phone_number": _next_test_phone()},
+        ).json()
+        flow = client.post(f"/api/tg-accounts/{account['id']}/login/start", headers=headers, json={"method": "code"}).json()
+
+        verified = client.post(
+            f"/api/tg-accounts/{account['id']}/login/verify",
+            headers=headers,
+            json={"flow_id": flow["id"], "flow_version": flow["flow_version"], "code": flow["code_preview"]},
+        )
+
+    assert verified.status_code == 200, verified.text
+    body = verified.json()
+    assert body["status"] == AccountStatus.ACTIVE.value
+    latest_flow = body["latest_login_flow"]
+    assert latest_flow["status"] == AccountStatus.ACTIVE.value
+    assert latest_flow["authorization_status"] == "authorized"
+    assert latest_flow["post_login_sync_status"] == "failed"
+    assert latest_flow["failure_type"] == "post_login_sync_failed"
 
 
 def test_existing_session_expired_account_routes_to_relogin_without_pool_change():
@@ -1782,7 +1865,11 @@ def test_expired_code_flow_does_not_block_submitted_code():
             db_flow.code_expires_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=1)
             session.commit()
 
-        verified = client.post(f"/api/tg-accounts/{account['id']}/login/verify", headers=headers, json={"code": flow["code_preview"]})
+        verified = client.post(
+            f"/api/tg-accounts/{account['id']}/login/verify",
+            headers=headers,
+            json={"flow_id": flow["id"], "flow_version": flow["flow_version"], "code": flow["code_preview"]},
+        )
         assert verified.status_code == 200, verified.text
         assert verified.json()["status"] == AccountStatus.ACTIVE.value
         sync_records = client.get(f"/api/tg-accounts/{account['id']}/sync-records", headers=headers).json()
@@ -1802,7 +1889,12 @@ def test_runtime_login_flows_health_and_group_authorize():
         client.post(f"/api/tg-accounts/{account['id']}/login/start", headers=headers, json={"method": "qr", "force": True})
         flows = client.get(f"/api/tg-accounts/{account['id']}/login-flows", headers=headers).json()
         assert flows
-        qr_account = client.post(f"/api/tg-accounts/{account['id']}/login/qr/check", headers=headers).json()
+        qr_flow = flows[0]
+        qr_account = client.post(
+            f"/api/tg-accounts/{account['id']}/login/qr/check",
+            headers=headers,
+            json={"flow_id": qr_flow["id"], "flow_version": qr_flow["flow_version"]},
+        ).json()
         assert qr_account["status"] == "在线"
         sync_now = client.post(f"/api/tg-accounts/{account['id']}/sync-now", headers=headers)
         assert sync_now.status_code == 200, sync_now.text

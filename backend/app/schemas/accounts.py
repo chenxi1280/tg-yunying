@@ -77,8 +77,17 @@ class LoginStartRequest(BaseModel):
 
 
 class LoginVerifyRequest(BaseModel):
+    flow_id: int
+    flow_version: int
     code: str | None = None
     password_2fa: str | None = None
+    request_seq: int | None = None
+
+
+class LoginQrCheckRequest(BaseModel):
+    flow_id: int
+    flow_version: int
+    request_seq: int | None = None
 
 
 class SensitiveActionReasonRequest(BaseModel):
@@ -143,8 +152,13 @@ class AccountAuthorizationSummaryOut(ApiModel):
 
 
 class AccountLatestLoginFlowOut(ApiModel):
+    id: int | None = None
     method: str = ""
     status: str = ""
+    authorization_status: str = "not_started"
+    post_login_sync_status: str = "not_started"
+    pool_transition_status: str = "not_requested"
+    security_post_login_status: str = "not_requested"
     failure_type: str = ""
     failure_detail: str = ""
     trace_id: str = ""
@@ -184,12 +198,16 @@ class AccountAuthorizationLoginStartRequest(BaseModel):
 
 class AccountAuthorizationLoginVerifyRequest(BaseModel):
     flow_id: int
+    flow_version: int
     code: str | None = None
     password_2fa: str | None = None
+    request_seq: int | None = None
 
 
 class AccountAuthorizationQrCheckRequest(BaseModel):
     flow_id: int
+    flow_version: int
+    request_seq: int | None = None
 
 
 class AvatarUploadOut(BaseModel):
@@ -289,9 +307,16 @@ class AccountPendingExecutionRecheckOut(ApiModel):
 
 class LoginFlowOut(ApiModel):
     id: int
+    flow_id: int | None = None
+    flow_scope: str = "primary"
+    flow_version: int = 1
     account_id: int
     method: str
     status: str
+    authorization_status: str = "not_started"
+    post_login_sync_status: str = "not_started"
+    pool_transition_status: str = "not_requested"
+    security_post_login_status: str = "not_requested"
     code_preview: str | None
     code_expires_at: datetime | None
     qr_payload: str | None
@@ -486,7 +511,7 @@ __all__ = [
     "TgAccountCreate", "AccountPoolCreate", "RankDeboostAccountPoolCreate", "AccountPoolUpdate",
     "MoveAccountPoolRequest", "AccountIdentityUpdate", "TgAccountProfileUpdate",
     "AccountCreationCapabilityOut",
-    "LoginStartRequest", "LoginVerifyRequest", "SensitiveActionReasonRequest", "AccountClonePlanCreate",
+    "LoginStartRequest", "LoginVerifyRequest", "LoginQrCheckRequest", "SensitiveActionReasonRequest", "AccountClonePlanCreate",
     "AccountAuthorizationLoginStartRequest", "AccountAuthorizationLoginVerifyRequest",
     "AccountAuthorizationOut", "AccountAuthorizationQrCheckRequest", "AccountAuthorizationSwitchRequest",
     "AvatarUploadOut",

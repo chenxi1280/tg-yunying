@@ -757,7 +757,42 @@ body {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+  align-items: center;
   margin: 14px 0;
+}
+
+.pool-navigation {
+  flex: 1 1 420px;
+  min-width: 0;
+}
+
+.pool-tablist {
+  display: flex;
+  gap: 6px;
+  max-width: 100%;
+  overflow-x: auto;
+  padding: 2px 4px 8px;
+  scrollbar-gutter: stable;
+}
+
+.pool-tab {
+  flex: 0 0 auto;
+  max-width: 220px;
+}
+
+.pool-tab-label {
+  display: inline-block;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  white-space: nowrap;
+}
+
+.qr-login-preview {
+  display: flex;
+  justify-content: center;
+  margin: 16px 0;
 }
 
 .pool-filter-strip small {

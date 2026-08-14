@@ -248,6 +248,54 @@ class TgLoginFlow(Base):
     trace_id: Mapped[str] = mapped_column(String(64), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
+    @property
+    def flow_id(self) -> int:
+        return self.id
+
+    @property
+    def flow_scope(self) -> str:
+        return self.authorization_role or "primary"
+
+    @property
+    def flow_version(self) -> int:
+        return 1
+
+    @property
+    def authorization_status(self) -> str:
+        if self.status == AccountStatus.ACTIVE.value:
+            return "authorized"
+        if self.status == AccountStatus.WAITING_CODE.value:
+            return "waiting_code"
+        if self.status == AccountStatus.WAITING_QR.value:
+            return "waiting_qr"
+        if self.status == AccountStatus.WAITING_2FA.value:
+            return "waiting_2fa"
+        if self.status == "已过期":
+            return "expired"
+        if self.status == AccountStatus.ERROR.value and self.failure_type == "login_remote_unknown":
+            return "remote_unknown"
+        if self.status == AccountStatus.ERROR.value:
+            return "failed"
+        if self.status in {"intent_persisted", "challenge_sent"}:
+            return self.status
+        return "not_started"
+
+    @property
+    def post_login_sync_status(self) -> str:
+        if self.failure_type == "post_login_sync_failed":
+            return "failed"
+        if self.status == AccountStatus.ACTIVE.value:
+            return "succeeded"
+        return "not_started"
+
+    @property
+    def pool_transition_status(self) -> str:
+        return "not_requested"
+
+    @property
+    def security_post_login_status(self) -> str:
+        return "not_requested"
+
 
 class TgVerificationCode(Base):
     __tablename__ = "tg_verification_codes"

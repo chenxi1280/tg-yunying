@@ -128,6 +128,8 @@ P1 已实现 Docker 私网单实例 `image-verification-worker`：使用独立 `
 
 验证码 contract 的生产参数由 GitHub Actions repository variables 管理，私网 token 由 repository secret `TGYUNYING_IMAGE_VERIFICATION_WORKER_TOKEN` 管理；`Deploy Production` 将本次不可变配置与镜像 SHA 一起写入 release 私有 `.image.env`，不在服务器手工补代码或漂移共享 `.env`。首次发布必须保持 `IMAGE_VERIFICATION_CONTRACT_ENABLED=false`，先证明新代码、迁移、镜像与既有任务运行正常；完成上述 callback canary 后才把该变量切为 `true` 并重新 workflow-dispatch 同一 release。启用 run 若 readiness、参数关系、worker memory、Dispatcher drain 或 post-deploy checks 任一失败，Actions 必须失败并保留上一稳定 release 作为回滚锚点。
 
+2026-08-14 release 合同回写：`314c6d9d` 的 Deploy Production run `31809489025` 已执行到 `deploy/release.sh` live release 阶段，但 workflow 后续重复运行全量 `scripts.takeover_all_task_fulfillment` 并超时。该失败不是 OCR worker 代码合同失败，而是发布顺序偏差。全量 takeover 只能由 `deploy/compose-up.sh` 在 Stage B 零业务 writer 窗口内执行；`deploy/release.sh` 返回后，workflow 只能保留有界只读 `verify-active`、OCR functional `/ready`、容器与公网健康检查。出现类似“release live 后 gate 失败”时，先标记 `release_gate_failed / production_fixed_unproven`，再按失败 gate 修复；不得二次手工跑全量 takeover 来冒充发布验证。
+
 Recovery 必须依次提交前序 Action 修复、连续 Task 状态修复，再进入 stale Action claim，确保任一提交都不会同时刷新 dirty Task 与 Action。线上若 `worker drain failed` 同时出现 `UPDATE tasks` / `UPDATE actions ... deadlock detected`，应检查这三个事务边界；不得靠扩大连接池、降低 worker 数量或限制账号总量掩盖。
 
 ## 共享调度与 AI 履约恢复发布合同（2026-08-01）
@@ -139,6 +141,8 @@ Recovery 必须依次提交前序 Action 修复、连续 Task 状态修复，再
 1. Stage A：停止全部旧worker，在stop完成后记录纳秒UTC边界，只启动backend执行0134迁移；先用`python -m scripts.manage_shared_dispatch_contract retire-stopped-writers --actor <actor> --approval-ref <ref> --stopped-before <cutoff>`只退役该边界前仍为active的fenced writer heartbeat并写审计，再用`stage`建立preparing候选。随后启动新worker进入fenced readiness，两个Dispatcher heartbeat都就绪后执行`verify-ready`。不得靠等待120秒自然过期、删除heartbeat或忽略fresh旧writer通过闸门。
 2. Stage B：在全部业务writer仍为零写的前提下执行`reconcile-ledger`，再执行全任务takeover；AI scope必须先`takeover_ai_content_scope preview`取得`batch_id`、`classification_hash`和完整`classification_counts`，apply时原样提交这三项及actor/approval。中途退出后继续同一batch的pending item；出现drift/conflict不得激活。
 3. Stage C：只有整个takeover batch chain completed、账本守恒且无旧writer时，才执行`activate --takeover-head-batch-id <id>`。事务提交后必须立刻执行只读`verify-active`，再次证明active/candidate版本一致、两个shard live、configured/live capacity均为26且账本守恒；只看容器healthy、`status`或`verify-ready`均不构成激活成功。
+
+`Deploy Production` workflow 不再拥有独立的 all-task takeover 步骤；它只能调用 `deploy/release.sh`，并在该脚本完成后执行只读、短时、有边界的运行验证。若未来需要改变 takeover 范围或重跑策略，必须先更新本节 Stage B/C 合同和对应 PRD，再改 workflow；禁止把长耗时数据接管脚本放在 release live 后的 post-deploy health check 中。
 
 远端不确定结果通过受保护的`Production Remote Reconcile` workflow处理：preview 固定生产 release 与 case 后只读取证，默认来源为脱敏 Gateway journal，并同时输出 case expected 与当前 Action/Attempt hash；需要 Telegram 历史时显式选择`telegram-history`。普通 apply 必须提交 preview 返回的完整`evidence_fingerprint`以及 actor/approval ref，workflow 再次核对同一 production symlink 后才执行。若 case 已因持久表示规范化漂移进入 conflict，只有 evidence fingerprint 未变且审批者同时提交 preview 的当前 Action/Attempt hash 时才可勾选`resolve_conflict`；workflow 会写冲突复核审计并在同一事务执行统一 CAS，输出 conflict/inconclusive 必须失败。禁止绕过 workflow 在生产直接 apply，禁止把发送型 unknown 交给 worker 自动重发。journal 不保存消息正文、Prompt、peer 凭证或授权资料，只保存冻结请求/目标 hash、远端 mutation 边界和类型化 fact：send/comment 使用新`remote_message_id`，view/reaction 没有新消息 ID，使用冻结源消息`remote_fact_id`重建唯一`ViewRemoteFact`/`ReactionRemoteFact`；membership 权威 reprobe 按冻结`require_send`确认已加入可访问或可发言并写 joined，群管 follow/callback 重放对应 admission 事实。存量 membership unknown 无 Attempt 时先持久建立 read-only recovery Attempt/Case 再 probe；所有类型完整 canonical Action payload 均进入 request hash，账号、目标、claim、reaction、源消息或准入版本漂移一律 conflict。
 

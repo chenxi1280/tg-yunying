@@ -72,6 +72,7 @@ def start_standby_authorization_login(
     )
     session.commit()
     session.refresh(flow)
+    setattr(flow, "_transient_qr_payload", challenge.qr_payload)
     return flow
 
 
@@ -79,13 +80,14 @@ def verify_standby_authorization_login(
     session: Session,
     account_id: int,
     flow_id: int,
+    flow_version: int,
     *,
     code: str | None,
     password_2fa: str | None,
     actor: str,
 ) -> TgAccountAuthorization:
     account = _require_account(session, account_id)
-    flow = _require_standby_login_flow(session, account, flow_id)
+    flow = _require_standby_login_flow(session, account, flow_id, flow_version)
     _expire_flow_if_needed(session, account, flow, actor, password_2fa)
     app = _require_developer_app(session, flow.developer_app_id)
     proxy = _require_proxy(session, account.tenant_id, flow.proxy_id)
@@ -113,9 +115,16 @@ def verify_standby_authorization_login(
     return asset
 
 
-def check_standby_authorization_qr_login(session: Session, account_id: int, flow_id: int, *, actor: str) -> TgAccountAuthorization:
+def check_standby_authorization_qr_login(
+    session: Session,
+    account_id: int,
+    flow_id: int,
+    flow_version: int,
+    *,
+    actor: str,
+) -> TgAccountAuthorization:
     account = _require_account(session, account_id)
-    flow = _require_standby_login_flow(session, account, flow_id)
+    flow = _require_standby_login_flow(session, account, flow_id, flow_version)
     app = _require_developer_app(session, flow.developer_app_id)
     proxy = _require_proxy(session, account.tenant_id, flow.proxy_id)
     status, raw_session = gateway.finish_login(
@@ -371,7 +380,7 @@ def _standby_login_flow(
         status=challenge.status,
         code_preview=challenge.code_preview,
         code_expires_at=challenge.code_expires_at,
-        qr_payload=challenge.qr_payload,
+        qr_payload=None,
         authorization_role=role,
         developer_app_id=developer_app_id,
         proxy_id=proxy_id,
@@ -393,10 +402,12 @@ def _record_login_code_if_present(session: Session, account: TgAccount, challeng
     )
 
 
-def _require_standby_login_flow(session: Session, account: TgAccount, flow_id: int) -> TgLoginFlow:
+def _require_standby_login_flow(session: Session, account: TgAccount, flow_id: int, flow_version: int) -> TgLoginFlow:
     flow = session.get(TgLoginFlow, flow_id)
     if not flow or flow.account_id != account.id or flow.authorization_role not in STANDBY_ROLES:
         raise ValueError("备用授权登录流水不存在")
+    if flow.flow_version != flow_version:
+        raise ValueError("备用授权登录流程已被新的流程替换")
     return flow
 
 

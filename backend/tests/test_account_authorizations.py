@@ -1094,7 +1094,15 @@ def test_verify_standby_authorization_login_saves_asset_without_overwriting_prim
             actor="admin",
         )
 
-        asset = verify_standby_authorization_login(session, account.id, flow.id, code="12345", password_2fa=None, actor="admin")
+        asset = verify_standby_authorization_login(
+            session,
+            account.id,
+            flow.id,
+            flow.flow_version,
+            code="12345",
+            password_2fa=None,
+            actor="admin",
+        )
         session.refresh(account)
 
         assert account.session_ciphertext == "primary-session"

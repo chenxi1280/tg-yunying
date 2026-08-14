@@ -102,8 +102,13 @@ def _latest_login_flows_for_loaded_accounts(accounts: list[Any]) -> dict[int, An
 
 def _login_flow_summary(flow: Any) -> dict[str, Any]:
     return {
+        "id": flow.id,
         "method": flow.method,
         "status": flow.status,
+        "authorization_status": flow.authorization_status,
+        "post_login_sync_status": flow.post_login_sync_status,
+        "pool_transition_status": flow.pool_transition_status,
+        "security_post_login_status": flow.security_post_login_status,
         "failure_type": flow.failure_type,
         "failure_detail": flow.failure_detail,
         "trace_id": flow.trace_id,

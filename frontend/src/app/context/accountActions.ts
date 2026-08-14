@@ -333,12 +333,14 @@ export function createAccountActions(params: AccountActionParams) {
       );
       return;
     }
+    const selectedPoolExists = typeof params.selectedPoolId === 'number'
+      && params.accountPools.some((pool) => pool.id === params.selectedPoolId);
     params.setLoginAfterCreate(loginNow);
     params.setAccountCreateForm({
       display_name: '',
       username: '',
       phone_number: '',
-      pool_id: params.selectedPoolId || params.accountPools.find((pool) => pool.is_default)?.id || params.accountPools[0]?.id || '',
+      pool_id: selectedPoolExists ? params.selectedPoolId : '',
       login_method: 'code',
     });
     params.setModal({ type: 'accountCreate' });
@@ -526,11 +528,16 @@ export function createAccountActions(params: AccountActionParams) {
     }
     params.setAccountLoginForm((current) => current.account?.id === request.accountId ? EMPTY_ACCOUNT_LOGIN_FORM : current);
     params.closeModal();
+    if (updated.latest_login_flow?.post_login_sync_status === 'failed') {
+      params.setNotice(`${updated.display_name} 已完成登录；登录后资料/群/联系人同步失败，可稍后单独重试。`);
+      return;
+    }
     params.setNotice(`${updated.display_name} 已完成登录，并已同步资料、健康、群聊、联系人和验证码。`);
   }
 
   async function reauthorizeExistingAccount(accountId: number, method: 'code' | 'qr') {
     const detail = await api<AccountDetail>(`/tg-accounts/${accountId}/detail`);
+    const requestedPool = params.accountPools.find((pool) => pool.id === params.accountCreateForm.pool_id);
     params.setAccountCreateForm(defaultAccountCreateForm());
     if (!EXISTING_ACCOUNT_RELOGIN_STATUSES.has(detail.account.status)) {
       params.setAccountDetail(detail);
@@ -539,7 +546,9 @@ export function createAccountActions(params: AccountActionParams) {
       params.setNotice(`${detail.account.display_name} 已存在且当前状态为“${detail.account.status}”，未重复创建账号。`);
       return;
     }
-    params.setNotice(`${detail.account.display_name} 已存在，正在进入原账号重新登录。`);
+    const currentPoolText = detail.account.pool_name ? `原账号分组：${detail.account.pool_name}。` : '';
+    const targetPoolText = requestedPool ? `本次选择的“${requestedPool.name}”不会自动覆盖，登录完成后请用移动分组单独确认。` : '';
+    params.setNotice(`${detail.account.display_name} 已存在，正在进入原账号重新登录。${currentPoolText}${targetPoolText}`);
     await startOrResumeAccountLogin(detail.account, method, false);
   }
 
@@ -547,11 +556,20 @@ export function createAccountActions(params: AccountActionParams) {
     params.setBusy('添加账号');
     const loginMethod = params.accountCreateForm.login_method;
     try {
+      if (!params.accountPools.length) {
+        params.showResult('账号分组未加载', '账号分组列表尚未加载完成，不能创建账号以免落入错误分组。');
+        return;
+      }
+      const poolId = params.accountCreateForm.pool_id;
+      if (poolId !== '' && !params.accountPools.some((pool) => pool.id === poolId)) {
+        params.showResult('目标分组不可用', '所选账号分组已删除或不可用，请重新选择后再创建账号。');
+        return;
+      }
       const created = await api<Account>('/tg-accounts', {
         method: 'POST',
         body: JSON.stringify({
           tenant_id: params.currentUser?.tenant_id ?? 1,
-          pool_id: params.accountCreateForm.pool_id || null,
+          pool_id: poolId === '' ? null : poolId,
           display_name: params.accountCreateForm.display_name,
           username: params.accountCreateForm.username || null,
           phone_number: params.accountCreateForm.phone_number,
@@ -1020,6 +1038,13 @@ export function createAccountActions(params: AccountActionParams) {
     if (!params.accountLoginForm.account || !params.accountLoginForm.code.trim()) return;
     const account = params.accountLoginForm.account;
     const accountId = account.id;
+    const flow = params.accountLoginForm.flow;
+    const flowId = flow?.id;
+    const flowVersion = flow?.flow_version;
+    if (!flowId || typeof flowVersion !== 'number') {
+      params.setAccountLoginForm((current) => ({ ...current, error: '登录流程缺失，请重新发送验证码。' }));
+      return;
+    }
     const action = 'code-submit';
     const requestSeq = beginAccountLoginRequest(accountId, action);
     const request = { accountId, action, requestSeq };
@@ -1027,7 +1052,7 @@ export function createAccountActions(params: AccountActionParams) {
     await params.runWithLoading(`account-login:${accountId}:code`, '验证登录', async () => {
       const updated = await api<Account>(`/tg-accounts/${accountId}/login/verify`, {
         method: 'POST',
-        body: JSON.stringify({ code }),
+        body: JSON.stringify({ flow_id: flowId, flow_version: flowVersion, code, request_seq: requestSeq }),
       });
       if (!isActiveAccountLoginRequest(request)) return;
       await completeAccountLogin(updated, request);
@@ -1040,6 +1065,13 @@ export function createAccountActions(params: AccountActionParams) {
     if (!params.accountLoginForm.account || !params.accountLoginForm.password_2fa) return;
     const account = params.accountLoginForm.account;
     const accountId = account.id;
+    const flow = params.accountLoginForm.flow;
+    const flowId = flow?.id;
+    const flowVersion = flow?.flow_version;
+    if (!flowId || typeof flowVersion !== 'number') {
+      params.setAccountLoginForm((current) => ({ ...current, error: '登录流程缺失，请重新选择登录方式。' }));
+      return;
+    }
     const action = 'password-submit';
     const requestSeq = beginAccountLoginRequest(accountId, action);
     const request = { accountId, action, requestSeq };
@@ -1047,7 +1079,7 @@ export function createAccountActions(params: AccountActionParams) {
     await params.runWithLoading(`account-login:${accountId}:password`, '验证二步密码', async () => {
       const updated = await api<Account>(`/tg-accounts/${accountId}/login/verify`, {
         method: 'POST',
-        body: JSON.stringify({ password_2fa }),
+        body: JSON.stringify({ flow_id: flowId, flow_version: flowVersion, password_2fa, request_seq: requestSeq }),
       });
       if (!isActiveAccountLoginRequest(request)) return;
       await completeAccountLogin(updated, request);
@@ -1063,13 +1095,23 @@ export function createAccountActions(params: AccountActionParams) {
 
   async function checkAccountQrLogin() {
     if (!params.accountLoginForm.account) return;
+    const flow = params.accountLoginForm.flow;
+    const flowId = flow?.id;
+    const flowVersion = flow?.flow_version;
+    if (!flowId || typeof flowVersion !== 'number') {
+      params.setAccountLoginForm((current) => ({ ...current, error: '扫码登录流程缺失，请重新选择登录方式。' }));
+      return;
+    }
     const accountId = params.accountLoginForm.account.id;
     const action = 'qr-check';
     const requestSeq = beginAccountLoginRequest(accountId, action);
     const request = { accountId, action, requestSeq };
     params.setBusy('检查扫码结果');
     try {
-      const updated = await api<Account>(`/tg-accounts/${accountId}/login/qr/check`, { method: 'POST' });
+      const updated = await api<Account>(`/tg-accounts/${accountId}/login/qr/check`, {
+        method: 'POST',
+        body: JSON.stringify({ flow_id: flowId, flow_version: flowVersion, request_seq: requestSeq }),
+      });
       if (!isActiveAccountLoginRequest(request)) return;
       await completeAccountLogin(updated, request);
     } catch (error) {

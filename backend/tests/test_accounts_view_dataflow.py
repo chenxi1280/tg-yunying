@@ -116,6 +116,8 @@ def test_account_center_uses_server_side_twenty_row_pages():
     assert "loadFirstAccountPage(context.selectedPoolId)" in refresh
     accounts_loader = refresh[refresh.index("async function loadAccountsPage"):refresh.index("function messageTaskPath")]
     assert "loadAccountList(context.selectedPoolId)" not in accounts_loader
+    assert "Promise.allSettled" in accounts_loader
+    assert "if (pageResult.status === 'rejected') throw pageResult.reason;" in accounts_loader
     assert "const ACCOUNT_PAGE_SIZE = 20;" in hook
     assert "page_size: String(ACCOUNT_PAGE_SIZE)" in hook
     assert "X-Total-Count" in hook
@@ -160,3 +162,19 @@ def test_session_expired_account_exposes_existing_login_action():
     assert "'Session失效'" in login_statuses
     assert "LOGIN_REQUIRED_STATUSES.has(account.status)" in actions
     assert "onClick={() => onVerifyAccount(account)}" in actions
+
+
+def test_account_pool_navigation_is_horizontally_reachable_without_fallback():
+    source = _source()
+    context = (PROJECT_ROOT / "frontend/src/app/context.tsx").read_text()
+    styles = (PROJECT_ROOT / "frontend/src/styles/_legacy.css").read_text()
+
+    assert "Segmented" not in source
+    assert "role=\"tablist\"" in source
+    assert "role=\"tab\"" in source
+    assert "ArrowLeft" in source and "ArrowRight" in source
+    assert "选中分组已删除或不可用" in source
+    assert "setSelectedPoolId('')" in source
+    assert "overflow-x: auto;" in styles
+    assert "accountPools.find((pool) => pool.id === selectedPoolId) ?? null" in context
+    assert "accountPools.find((pool) => pool.is_default)" not in context

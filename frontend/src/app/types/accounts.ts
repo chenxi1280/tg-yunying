@@ -5,9 +5,16 @@ import type { OperationTarget, OperationTaskAttempt } from './operations';
 
 export type LoginFlow = {
   id: number;
+  flow_id: number | null;
+  flow_scope: string;
+  flow_version: number;
   account_id: number;
   method: string;
   status: string;
+  authorization_status: string;
+  post_login_sync_status: string;
+  pool_transition_status: string;
+  security_post_login_status: string;
   code_preview: string | null;
   code_expires_at: string | null;
   qr_payload: string | null;

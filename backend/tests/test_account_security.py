@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.database import Base
 from app.integrations.telegram.contracts import AccountAuthorizationSnapshot as RemoteAuthorizationSnapshot
 from app.integrations.telegram.contracts import RemoteProfile
-from app.models import AccountPool, AiProvider, AccountProxy, AccountStatus, AuditLog, Material, TelegramDeveloperApp, Tenant, TenantAiSetting, TgAccount, TgAccountAuthorization, TgAccountAuthorizationSnapshot, TgAccountSecurityBatch, TgAccountSecurityBatchItem, TgAccountSecuritySnapshot, TgVerificationCode
+from app.models import AccountPool, AiProvider, AccountProxy, AccountStatus, AuditLog, Material, TelegramDeveloperApp, Tenant, TenantAiSetting, TgAccount, TgAccountAuthorization, TgAccountAuthorizationSnapshot, TgAccountSecurityBatch, TgAccountSecurityBatchItem, TgAccountSecuritySnapshot, TgLoginFlow, TgVerificationCode
 from app.schemas import TgAccountCreate
 from app.schemas.account_security import AccountSecurityBatchCreate, AccountSecurityPrecheckRequest, AccountSecurityProfileOverride, AvatarStrategy, ManagedTwoFaRequest, ProfileGenerationStrategy
 from app.security import decrypt_secret, encrypt_secret, encrypt_session
@@ -81,6 +81,13 @@ def _seed_account(session: Session, *, status: str = AccountStatus.ACTIVE.value,
     session.add_all([app, account])
     session.commit()
     return account
+
+
+def _seed_login_flow(session: Session, account: TgAccount) -> TgLoginFlow:
+    flow = TgLoginFlow(tenant_id=account.tenant_id, account_id=account.id, method="code", status=account.status)
+    session.add(flow)
+    session.commit()
+    return flow
 
 
 def _seed_usage_pool(session: Session, pool_id: int, purpose: str) -> None:
@@ -1172,8 +1179,9 @@ def test_primary_login_with_2fa_records_current_password_without_auto_rotation(m
 
         monkeypatch.setattr(accounts_service.gateway, "finish_login", finish_login)
         monkeypatch.setattr(accounts_service.gateway, "set_two_fa_password", set_two_fa)
+        flow = _seed_login_flow(session, account)
 
-        verified = verify_login(session, account.id, None, "old-2fa-password", actor="tester")
+        verified = verify_login(session, account.id, flow.id, flow.flow_version, None, "old-2fa-password", actor="tester")
         snapshot = session.scalar(select(TgAccountSecuritySnapshot).where(TgAccountSecuritySnapshot.account_id == account.id))
 
         assert verified.status == AccountStatus.ACTIVE.value
@@ -1202,8 +1210,9 @@ def test_code_receiver_primary_login_with_2fa_keeps_existing_password(monkeypatc
             "set_two_fa_password",
             lambda *_args, **_kwargs: rotations.append("called"),
         )
+        flow = _seed_login_flow(session, account)
 
-        verified = verify_login(session, account.id, None, "receiver-2fa-password", actor="tester")
+        verified = verify_login(session, account.id, flow.id, flow.flow_version, None, "receiver-2fa-password", actor="tester")
         snapshot = session.scalar(select(TgAccountSecuritySnapshot).where(TgAccountSecuritySnapshot.account_id == account.id))
 
         assert verified.status == AccountStatus.ACTIVE.value

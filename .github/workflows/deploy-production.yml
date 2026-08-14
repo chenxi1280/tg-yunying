@@ -399,15 +399,6 @@ jobs:
             --base-dir "${BASE_DIR}" \
             --branch-list "${BRANCHES}"
 
-      - name: Verify all-task fulfillment takeover
-        run: |
-          set -euo pipefail
-          ssh silicon-valley-production-server '
-            set -euo pipefail
-            timeout 300 docker exec -i tgyunying-backend \
-              python -m scripts.takeover_all_task_fulfillment
-          '
-
       - name: Verify active shared dispatch contract
         run: |
           set -euo pipefail

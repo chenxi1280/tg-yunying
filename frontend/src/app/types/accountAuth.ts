@@ -13,8 +13,13 @@ export type AccountAuthorizationSummary = {
 };
 
 export type AccountLatestLoginFlow = {
+  id: number | null;
   method: string;
   status: string;
+  authorization_status: string;
+  post_login_sync_status: string;
+  pool_transition_status: string;
+  security_post_login_status: string;
   failure_type: string;
   failure_detail: string;
   trace_id: string;

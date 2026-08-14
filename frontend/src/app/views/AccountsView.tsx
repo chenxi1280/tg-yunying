@@ -1,5 +1,5 @@
 import React from 'react';
-import { Alert, Button, Card, Progress, Segmented, Space, Table, Typography, message } from 'antd';
+import { Alert, Button, Card, Progress, Space, Table, Typography, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { Activity, Database, LockKeyhole, ShieldAlert } from 'lucide-react';
 import { api } from '../../shared/api/client';
@@ -110,6 +110,26 @@ export default function AccountsView({
   const incompleteProfiles = accounts.filter((account) => !account.avatar_object_key || !account.username || !account.tg_first_name);
   const unavailableBySummary = Array.from(availabilityByAccountId.values()).filter((item) => !item.send_available);
   const accountIds = accounts.map((account) => account.id).join(',');
+  const selectedPoolMissing = selectedPoolId !== '' && !selectedPool;
+  const poolTabs = React.useMemo(() => [
+    { value: '' as const, label: '全部账号分组', count: accountTotal },
+    ...accountPools.map((pool) => ({ value: pool.id, label: pool.name, count: pool.account_count })),
+  ], [accountPools, accountTotal]);
+
+  function handlePoolTabKeyDown(event: React.KeyboardEvent<HTMLElement>, index: number) {
+    const targetIndex = event.key === 'Home'
+      ? 0
+      : event.key === 'End'
+        ? poolTabs.length - 1
+        : event.key === 'ArrowLeft'
+          ? Math.max(0, index - 1)
+          : event.key === 'ArrowRight'
+            ? Math.min(poolTabs.length - 1, index + 1)
+            : index;
+    if (targetIndex === index) return;
+    event.preventDefault();
+    setSelectedPoolId(poolTabs[targetIndex].value);
+  }
 
   React.useEffect(() => {
     setSelectedAccountIds([]);
@@ -368,19 +388,44 @@ export default function AccountsView({
       )}
       {error && <Alert className="sub-panel compact-panel" type="error" showIcon message={error} />}
       {accountTable.error && <Alert className="sub-panel compact-panel" type="error" showIcon message={accountTable.error} />}
-      <Space className="pool-filter-strip" wrap>
-        <Segmented
-          value={selectedPoolId === '' ? 'all' : String(selectedPoolId)}
-          onChange={(value) => setSelectedPoolId(value === 'all' ? '' : Number(value))}
-          options={[
-            { label: '全部账号分组', value: 'all' },
-            ...accountPools.map((pool) => ({ label: `${pool.name} ${pool.account_count}`, value: String(pool.id) })),
-          ]}
+      {selectedPoolMissing && (
+        <Alert
+          className="sub-panel compact-panel"
+          type="warning"
+          showIcon
+          message="选中分组已删除或不可用"
+          description="请返回全部账号后重新选择分组，系统不会自动打开默认分组。"
+          action={<Button size="small" onClick={() => setSelectedPoolId('')}>回到全部账号</Button>}
         />
+      )}
+      <div className="pool-filter-strip">
+        <div className="pool-navigation">
+          <div className="pool-tablist" role="tablist" aria-label="账号分组">
+            {poolTabs.map((tab, index) => {
+              const selected = tab.value === selectedPoolId;
+              return (
+                <Button
+                  key={tab.value === '' ? 'all' : tab.value}
+                  className="pool-tab"
+                  type={selected ? 'primary' : 'default'}
+                  role="tab"
+                  aria-selected={selected}
+                  title={`${tab.label} ${tab.count}`}
+                  onClick={() => setSelectedPoolId(tab.value)}
+                  onKeyDown={(event) => handlePoolTabKeyDown(event, index)}
+                >
+                  <span className="pool-tab-label">{tab.label}</span>
+                  <small>{tab.count}</small>
+                </Button>
+              );
+            })}
+          </div>
+        </div>
         {selectedPool && <Button type="primary" loading={isActionPending(`account-pool:${selectedPool.id}:detail`)} onClick={() => onOpenPoolDetail(selectedPool)}>进入账号分组</Button>}
+        {selectedPoolMissing && <Button disabled>进入账号分组</Button>}
         {accountTable.searchInput}
         {canSyncAccount && <Button loading={availabilityLoading} onClick={rebuildAvailability}>重算可用性</Button>}
-      </Space>
+      </div>
       <Space className="pool-filter-strip" wrap>
         <Typography.Text type="secondary">已选择 {selectedAccounts.length} 个账号</Typography.Text>
         {canProfileBatchUpdate && <Button icon={<Activity size={16} />} onClick={() => setSecurityDrawerMode('profile')}>资料初始化</Button>}

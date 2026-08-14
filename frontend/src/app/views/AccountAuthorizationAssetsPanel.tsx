@@ -1,5 +1,5 @@
 import React from 'react';
-import { Alert, Button, Card, Empty, Input, Modal, Select, Space, Table, Tag, Typography, message } from 'antd';
+import { Alert, Button, Card, Empty, Input, Modal, QRCode, Select, Space, Table, Tag, Typography, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type {
   AccountAuthorizationAsset,
@@ -222,8 +222,10 @@ export function AccountAuthorizationAssetsPanel({
         method: 'POST',
         body: JSON.stringify({
           flow_id: loginFlow.id,
+          flow_version: loginFlow.flow_version,
           code: loginForm.code.trim() || null,
           password_2fa: loginForm.password_2fa.trim() || null,
+          request_seq: loginSeq,
         }),
       });
       if (!isActiveLoginSession(targetAccountId, loginSeq)) return;
@@ -246,7 +248,7 @@ export function AccountAuthorizationAssetsPanel({
     try {
       await api(`/tg-accounts/${targetAccountId}/authorizations/login/qr/check`, {
         method: 'POST',
-        body: JSON.stringify({ flow_id: loginFlow.id }),
+        body: JSON.stringify({ flow_id: loginFlow.id, flow_version: loginFlow.flow_version, request_seq: loginSeq }),
       });
       if (!isActiveLoginSession(targetAccountId, loginSeq)) return;
       await completeLoginModal(targetAccountId, loginSeq);
@@ -570,7 +572,12 @@ export function AccountAuthorizationAssetsPanel({
           )}
           {loginFlow && loginForm.method === 'qr' && (
             <>
-              <Typography.Paragraph copyable>{loginFlow.qr_payload || '等待二维码 payload'}</Typography.Paragraph>
+              {loginFlow.qr_payload && (
+                <div className="qr-login-preview">
+                  <QRCode value={loginFlow.qr_payload} />
+                </div>
+              )}
+              <Typography.Text type="secondary">二维码仅用于当前备用授权确认，不展示原始扫码内容。</Typography.Text>
               <Button type="primary" loading={loginLoading} onClick={checkQrLogin}>我已扫码，检查登录</Button>
             </>
           )}

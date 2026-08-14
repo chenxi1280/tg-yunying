@@ -30,8 +30,12 @@ def _active_account(client: TestClient, headers: dict[str, str], display_name: s
     assert response.status_code == 200, response.text
     account = response.json()
     if account["status"] != AccountStatus.ACTIVE.value:
-        client.post(f"/api/tg-accounts/{account['id']}/login/start", headers=headers, json={"method": "qr"})
-        account = client.post(f"/api/tg-accounts/{account['id']}/login/qr/check", headers=headers).json()
+        flow = client.post(f"/api/tg-accounts/{account['id']}/login/start", headers=headers, json={"method": "qr"}).json()
+        account = client.post(
+            f"/api/tg-accounts/{account['id']}/login/qr/check",
+            headers=headers,
+            json={"flow_id": flow["id"], "flow_version": flow["flow_version"]},
+        ).json()
     client.post(f"/api/tg-accounts/{account['id']}/sync-groups", headers=headers)
     return account
 

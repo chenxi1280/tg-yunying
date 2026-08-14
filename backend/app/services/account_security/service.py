@@ -1286,6 +1286,7 @@ def _auto_provision_standby_role(
             session,
             account.id,
             flow.id,
+            flow.flow_version,
             code=code,
             password_2fa=password_2fa,
             actor="account-security-worker",

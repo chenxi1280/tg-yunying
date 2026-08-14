@@ -172,7 +172,10 @@ export function AppProvider({ children }: AppProviderProps) {
     }) ?? null,
     [directMessageContacts, directMessageForm.target_peer_id],
   );
-  const selectedPool = useMemo(() => accountPools.find((pool) => pool.id === selectedPoolId) ?? accountPools.find((pool) => pool.is_default) ?? accountPools[0] ?? null, [accountPools, selectedPoolId]);
+  const selectedPool = useMemo(
+    () => (selectedPoolId === '' ? null : accountPools.find((pool) => pool.id === selectedPoolId) ?? null),
+    [accountPools, selectedPoolId],
+  );
   const selectedGroup = useMemo(() => groups.find((group) => group.id === selectedGroupId) ?? groups[0], [groups, selectedGroupId]);
   const choosePoolSendAccount = (detail: AccountPoolDetail) => (
     detail.accounts.find((account) => account.status === '在线' && detail.contacts.some((contact) => contact.account_id === account.id))

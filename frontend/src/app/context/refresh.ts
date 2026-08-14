@@ -154,10 +154,13 @@ export async function loadContentResources(): Promise<ContentResourceSnapshot> {
 }
 
 async function loadAccountsPage(context: LoaderContext): Promise<SnapshotPatch> {
-  const [accountPools, accountPage] = await Promise.all([
+  const [poolResult, pageResult] = await Promise.allSettled([
     api<AccountPool[]>('/account-pools'),
     loadFirstAccountPage(context.selectedPoolId),
   ]);
+  if (pageResult.status === 'rejected') throw pageResult.reason;
+  const accountPools = poolResult.status === 'fulfilled' ? poolResult.value : [];
+  const accountPage = pageResult.value;
   return { accountPools, accounts: accountPage.rows, accountTotal: accountPage.total };
 }
 

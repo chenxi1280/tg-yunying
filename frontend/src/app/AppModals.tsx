@@ -1,5 +1,5 @@
 import { useAppContext } from './context';
-import { Button, Checkbox, Descriptions, Input, InputNumber, Modal, QRCode, Select, Space, Table, Typography } from 'antd';
+import { Alert, Button, Checkbox, Descriptions, Input, InputNumber, Modal, QRCode, Select, Space, Table, Typography } from 'antd';
 import { useLocation } from 'react-router-dom';
 import { FormActions, StatusBadge } from './components/shared';
 import { AccountDetailModal, AccountPoolDetailModal } from './views/AccountModals';
@@ -131,7 +131,10 @@ export function AppModals() {
     openAccountCreate, openAccountDetail, openConfirm, accountContacts, accountName, groupName, busy, isActionPending, currentUser,
   } = ctx;
   const selectedAiProvider = aiProviders.find((provider) => provider.id === selectedAiProviderId);
-  const accountCreateDisabled = !accountCreateForm.phone_number.trim();
+  const selectedCreatePoolMissing = accountCreateForm.pool_id !== ''
+    && !accountPools.some((pool) => pool.id === accountCreateForm.pool_id);
+  const accountCreatePoolBlocked = !accountPools.length || selectedCreatePoolMissing;
+  const accountCreateDisabled = !accountCreateForm.phone_number.trim() || accountCreatePoolBlocked;
 
   function submitAccountCreate() {
     if (!accountCreateDisabled) createAccount();
@@ -449,6 +452,14 @@ export function AppModals() {
             <label>TG 用户名<Input value={accountCreateForm.username} onChange={(event) => setAccountCreateForm({ ...accountCreateForm, username: event.target.value })} placeholder="可选，不含 @" /></label>
             <label className="wide-field">手机号<Input value={accountCreateForm.phone_number} onChange={(event) => setAccountCreateForm({ ...accountCreateForm, phone_number: event.target.value })} onPressEnter={submitAccountCreate} placeholder="+8613800000000" /></label>
           </div>
+          {accountCreatePoolBlocked && (
+            <Alert
+              className="compact-panel"
+              type="warning"
+              showIcon
+              message={selectedCreatePoolMissing ? '所选账号分组已删除或不可用，请重新选择。' : '账号分组列表尚未加载完成，暂不能创建账号。'}
+            />
+          )}
           <p className="muted-line">创建后会进入所选登录方式；验证码和扫码是同级二选一流程。</p>
           <FormActions submitLabel="创建账号" onCancel={closeModal} onSubmit={createAccount} loading={isActionPending('modal:account:create')} disabled={accountCreateDisabled} />
           </div>
@@ -481,11 +492,7 @@ export function AppModals() {
                   <QRCode value={accountLoginForm.flow.qr_payload} />
                 </div>
               )}
-              <div className="policy-grid">
-                <label className="wide-field">扫码 payload
-                  <Input.TextArea value={accountLoginForm.flow?.qr_payload ?? ''} readOnly autoSize={{ minRows: 4, maxRows: 8 }} placeholder="二维码 payload 将在启动扫码登录后展示" />
-                </label>
-              </div>
+              <p className="muted-line">二维码仅用于当前登录确认，不展示原始扫码内容。</p>
               {accountLoginForm.error && <p className="danger-text">{accountLoginForm.error}</p>}
               <Space className="modal-actions">
                 <Button onClick={() => setAccountLoginForm((current) => ({ ...current, step: 'method', error: '' }))} disabled={Boolean(busy)}>重新选择登录方式</Button>

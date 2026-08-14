@@ -6,9 +6,9 @@
 | --- | --- |
 | 日期 | 2026-08-14 |
 | 需求级别 | L2 / 账号恢复主路径缺陷 |
-| 设计状态 | `product_design_complete` |
+| 设计状态 | `product_design_complete / superseded_by_login_group_navigation_v1.2_for_flow_and_ui` |
 | 范围 | 账号列表登录入口、账号新增入口、账号创建 API、既有登录 API |
-| 非目标 | 新建 Session Vault、Runtime Authority、主备自动切换、数据库迁移 |
+| 非目标 | 新建 Session Vault、Runtime Authority、主备自动切换、数据库迁移；登录 flow 持久化、post-login 三结果拆分和分组导航以 `account-login-group-navigation-recovery-prd.md` 为准 |
 
 ## 1. 问题与目标
 
@@ -21,6 +21,8 @@
 3. 保留原账号 ID、分组、用途、任务/群关系、授权和审计历史；只推进登录流并在成功时更新授权材料。
 
 临时代理、网络或同步失败不是 Session 失效证据，不能被本功能自动改写为重新登录。三授权槽都掉线且没有冷备时，仍只能人工验证码/扫码重新登录，不能伪造自动恢复。
+
+> 2026-08-14 v1.2 resync：本文只保留“已有账号新增冲突不重复创建、不静默移动分组、按原账号重新登录”的窄合同。验证码提交 500、主/备授权 flow scope、`flow_id` 精确提交、post-login sync / pool transition 正交结果、QR/2FA 敏感材料和分组横向导航，统一以 `account-login-group-navigation-recovery-prd.md` 为当前设计真相源。
 
 ## 2. 命令与状态合同
 

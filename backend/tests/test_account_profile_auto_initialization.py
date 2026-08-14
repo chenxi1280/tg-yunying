@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -17,6 +18,28 @@ import app.services.account_security.service as account_security_service
 from app.services.account_security import precheck_account_security_batch
 
 pytestmark = pytest.mark.no_postgres
+
+
+def test_login_flow_response_sanitizes_history_qr_payload_and_expired_code():
+    flow = TgLoginFlow(
+        tenant_id=1,
+        account_id=11,
+        method="qr",
+        status=AccountStatus.WAITING_CODE.value,
+        code_preview="12345",
+        code_expires_at=datetime.now(UTC).replace(tzinfo=None) - timedelta(minutes=1),
+        qr_payload="tg://login?token=stored-secret",
+        created_at=datetime.now(UTC).replace(tzinfo=None),
+    )
+
+    response = accounts_service.login_flow_response(flow)
+    transient_response = accounts_service.login_flow_response(flow, qr_payload="tg://login?token=transient")
+
+    assert response["qr_payload"] is None
+    assert response["code_preview"] is None
+    assert response["status"] == "已过期"
+    assert response["authorization_status"] == "expired"
+    assert transient_response["qr_payload"] == "tg://login?token=transient"
 
 
 def _session() -> Session:
@@ -82,12 +105,18 @@ def _stub_successful_login(monkeypatch) -> None:
     monkeypatch.setattr(accounts_service, "run_account_sync_now", lambda *_args, **_kwargs: [])
 
 
+def _verify_login(session: Session, account: TgAccount, code: str | None, password_2fa: str | None):
+    flow = session.scalar(select(TgLoginFlow).where(TgLoginFlow.account_id == account.id))
+    assert flow is not None
+    return accounts_service.verify_login(session, account.id, flow.id, flow.flow_version, code, password_2fa, actor="tester")
+
+
 def test_verify_login_queues_chinese_profile_initialization_for_english_account(monkeypatch):
     with _session() as session:
         account = _seed_login_account(session)
         _stub_successful_login(monkeypatch)
 
-        accounts_service.verify_login(session, account.id, "12345", None, actor="tester")
+        _verify_login(session, account, "12345", None)
 
         batch = session.scalar(select(TgAccountSecurityBatch))
         item = session.scalar(select(TgAccountSecurityBatchItem))
@@ -115,7 +144,7 @@ def test_verify_login_queues_missing_ai_voice_profile_generation(monkeypatch):
         account = _seed_login_account(session)
         _stub_successful_login(monkeypatch)
 
-        accounts_service.verify_login(session, account.id, "12345", None, actor="tester")
+        _verify_login(session, account, "12345", None)
 
         voice_profile = session.scalar(select(AiAccountVoiceProfile))
         generation_item = session.scalar(select(AiAccountVoiceProfileGenerationItem))
@@ -137,7 +166,7 @@ def test_verify_login_queues_durable_voice_profile_generation(monkeypatch):
 
         monkeypatch.setattr(account_profile_auto_init, "_enqueue_voice_profile_generation", fake_enqueue, raising=False)
 
-        accounts_service.verify_login(session, account.id, "12345", None, actor="tester")
+        _verify_login(session, account, "12345", None)
 
         assert queued == [(1, (account.id,), "login_auto", "tester")]
 
@@ -153,7 +182,7 @@ def test_verify_login_rolls_back_when_voice_profile_queue_cannot_persist(monkeyp
         monkeypatch.setattr(account_profile_auto_init, "_enqueue_voice_profile_generation", fail_enqueue)
 
         with pytest.raises(RuntimeError, match="queue write failed"):
-            accounts_service.verify_login(session, account.id, "12345", None, actor="tester")
+            _verify_login(session, account, "12345", None)
 
         session.rollback()
         persisted = session.get(TgAccount, account.id)
@@ -176,7 +205,7 @@ def test_login_skips_profile_and_voice_initialization_for_code_receiver(monkeypa
 
         monkeypatch.setattr(account_profile_auto_init, "_enqueue_voice_profile_generation", fail_voice_profile_init)
 
-        accounts_service.verify_login(session, account.id, "12345", None, actor="tester")
+        _verify_login(session, account, "12345", None)
 
         assert session.scalar(select(TgAccountSecurityBatch)) is None
         assert session.scalar(select(AiAccountVoiceProfile)) is None
@@ -197,7 +226,7 @@ def test_login_skips_profile_and_voice_initialization_for_non_normal_usage(monke
 
         monkeypatch.setattr(account_profile_auto_init, "_enqueue_voice_profile_generation", fail_voice_profile_init)
 
-        accounts_service.verify_login(session, account.id, "12345", None, actor="tester")
+        _verify_login(session, account, "12345", None)
 
         assert session.scalar(select(TgAccountSecurityBatch)) is None
         assert session.scalar(select(AiAccountVoiceProfile)) is None
@@ -211,7 +240,9 @@ def test_qr_login_queues_profile_initialization_after_success(monkeypatch):
         session.commit()
         _stub_successful_login(monkeypatch)
 
-        accounts_service.check_qr_login(session, account.id, actor="tester")
+        flow = session.scalar(select(TgLoginFlow).where(TgLoginFlow.account_id == account.id))
+        assert flow is not None
+        accounts_service.check_qr_login(session, account.id, flow.id, flow.flow_version, actor="tester")
 
         batch_count = session.scalar(select(func.count(TgAccountSecurityBatch.id)))
         assert batch_count == 1
@@ -225,7 +256,7 @@ def test_login_does_not_queue_profile_initialization_when_profile_is_ready(monke
         session.commit()
         _stub_successful_login(monkeypatch)
 
-        accounts_service.verify_login(session, account.id, "12345", None, actor="tester")
+        _verify_login(session, account, "12345", None)
 
         batch = session.scalar(select(TgAccountSecurityBatch))
         assert batch is None

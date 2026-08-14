@@ -39,7 +39,7 @@ from app.schemas import (
     AccountDetailOut, AccountExecutionRecordOut, AccountGroupOut, AccountOut,
     AccountPendingExecutionRecheckOut, AccountSyncRecordOut,
     AvatarUploadOut, ContactOut, DirectMessageTaskCreate, GroupOut,
-    LoginFlowOut, LoginStartRequest, LoginVerifyRequest, MessageTaskOut,
+    LoginFlowOut, LoginQrCheckRequest, LoginStartRequest, LoginVerifyRequest, MessageTaskOut,
     ManualOperationRecordOut, ManualSendRequest, MoveAccountPoolRequest,
     OperationTargetOut, ProfileSyncRecordOut, SensitiveActionReasonRequest, TgAccountCreate,
     TgAccountProfileUpdate, VerificationCodeOut, VerificationTaskOut, AccountRuntimeSummaryOut,
@@ -54,8 +54,8 @@ from app.services import (
     ExistingAccountRequiresRelogin,
     healthy_developer_app_count,
     list_account_sync_records,
-    list_login_flows, list_profile_sync_records, list_verification_codes,
-    LoginStartFailure,
+    list_login_flows, list_profile_sync_records, list_verification_codes, login_flow_response,
+    LoginStartFailure, LoginFlowFailure,
     list_verification_tasks, move_account_pool, recheck_account_pending_execution, set_account_identity,
     poll_account_verification_codes, queue_account_sync_now,
     retry_account_clone_item, retry_account_profile_sync,
@@ -265,7 +265,18 @@ def post_login_verify(
     require_core_feature_access(current_user)
     try:
         require_resource_tenant(session, current_user, TgAccount, account_id)
-        return account_out_for_user(verify_login(session, account_id, payload.code, payload.password_2fa), current_user)
+        account = verify_login(
+            session,
+            account_id,
+            payload.flow_id,
+            payload.flow_version,
+            payload.code,
+            payload.password_2fa,
+            current_user.name,
+        )
+        return account_out_for_user(account, current_user)
+    except LoginFlowFailure as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     except ValueError as exc:
         if "2FA 登录成功" in str(exc):
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -275,13 +286,17 @@ def post_login_verify(
 @router.post("/api/tg-accounts/{account_id}/login/qr/check", response_model=AccountOut)
 def post_qr_check(
     account_id: int,
+    payload: LoginQrCheckRequest,
     session: Session = Depends(get_session),
     current_user: CurrentUser = Depends(get_current_user),
 ):
     require_core_feature_access(current_user)
     try:
         require_resource_tenant(session, current_user, TgAccount, account_id)
-        return account_out_for_user(check_qr_login(session, account_id), current_user)
+        account = check_qr_login(session, account_id, payload.flow_id, payload.flow_version, current_user.name)
+        return account_out_for_user(account, current_user)
+    except LoginFlowFailure as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     except ValueError as exc:
         raise not_found(str(exc)) from exc
 
@@ -294,7 +309,7 @@ def get_login_flows(
 ):
     try:
         require_resource_tenant(session, current_user, TgAccount, account_id)
-        return list_login_flows(session, account_id)
+        return [login_flow_response(flow) for flow in list_login_flows(session, account_id)]
     except ValueError as exc:
         raise not_found(str(exc)) from exc
 
@@ -325,7 +340,7 @@ def post_authorization_login_start(
     ensure_permission(current_user, "accounts.authorizations.manage")
     try:
         require_resource_tenant(session, current_user, TgAccount, account_id)
-        return start_standby_authorization_login(
+        flow = start_standby_authorization_login(
             session,
             account_id,
             method=payload.method,
@@ -334,6 +349,7 @@ def post_authorization_login_start(
             proxy_id=payload.proxy_id,
             actor=current_user.name,
         )
+        return login_flow_response(flow, qr_payload=getattr(flow, "_transient_qr_payload", None))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -353,6 +369,7 @@ def post_authorization_login_verify(
             session,
             account_id,
             payload.flow_id,
+            payload.flow_version,
             code=payload.code,
             password_2fa=payload.password_2fa,
             actor=current_user.name,
@@ -373,7 +390,13 @@ def post_authorization_login_qr_check(
     ensure_permission(current_user, "accounts.authorizations.manage")
     try:
         require_resource_tenant(session, current_user, TgAccount, account_id)
-        asset = check_standby_authorization_qr_login(session, account_id, payload.flow_id, actor=current_user.name)
+        asset = check_standby_authorization_qr_login(
+            session,
+            account_id,
+            payload.flow_id,
+            payload.flow_version,
+            actor=current_user.name,
+        )
         return _authorization_out(session, account_id, asset.id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

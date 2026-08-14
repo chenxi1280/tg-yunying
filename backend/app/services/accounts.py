@@ -68,6 +68,12 @@ ACCOUNT_AUTO_SYNC_SKIP_STATUSES = {
 }
 LOGIN_START_FAILURE_MESSAGE = "登录初始化失败，请查看登录流水或联系管理员处理"
 EXISTING_ACCOUNT_RELOGIN_MESSAGE = "该账号已存在，正在进入重新登录"
+LOGIN_FLOW_NOT_RESUMABLE_MESSAGE = "当前登录流程无法继续，请重新发送验证码"
+LOGIN_FLOW_SUPERSEDED_MESSAGE = "已有新的登录流程，当前输入已失效"
+LOGIN_REMOTE_UNKNOWN_MESSAGE = "远端授权状态不确定，等待系统核验"
+LOGIN_CODE_INVALID_MESSAGE = "验证码错误或已失效"
+LOGIN_2FA_INVALID_MESSAGE = "二步密码错误"
+POST_LOGIN_SYNC_FAILED_MESSAGE = "授权已成功，登录后同步失败，可稍后单独重试"
 ASCII_LETTER_RE = re.compile(r"[A-Za-z]")
 CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 
@@ -78,6 +84,13 @@ class LoginStartFailure(ValueError):
     def __init__(self, detail: dict[str, object]) -> None:
         super().__init__(LOGIN_START_FAILURE_MESSAGE)
         self.detail = detail
+
+
+class LoginFlowFailure(ValueError):
+    def __init__(self, detail: dict[str, object], status_code: int = 400) -> None:
+        super().__init__(str(detail.get("message") or "登录流程失败"))
+        self.detail = detail
+        self.status_code = status_code
 
 
 class ExistingAccountRequiresRelogin(ValueError):
@@ -117,7 +130,9 @@ __all__ = [
     "list_login_flows",
     "list_profile_sync_records",
     "list_verification_codes",
+    "login_flow_response",
     "LoginStartFailure",
+    "LoginFlowFailure",
     "ExistingAccountRequiresRelogin",
     "poll_account_verification_codes",
     "process_account_sync_record",
@@ -717,30 +732,26 @@ def drain_account_sync_records(session_factory, limit: int = 20) -> int:
     return count
 
 
-def start_login(session: Session, account_id: int, method: str, actor: str = "普通用户", force: bool = False) -> TgLoginFlow:
+def start_login(session: Session, account_id: int, method: str, actor: str = "普通用户", force: bool = False) -> dict:
     account = _ensure_account_available(session.get(TgAccount, account_id))
     if account.status == AccountStatus.ACTIVE.value and not force:
         raise ValueError("account already online; use force to restart login")
+    credentials = credentials_for_account(session, account, assign_if_missing=True)
+    flow = _create_login_intent(session, account, method, actor)
     try:
-        credentials = credentials_for_account(session, account, assign_if_missing=True)
         phone = get_account_phone(account)
         challenge = gateway.start_login(method, account_id=account.id, phone=phone, credentials=credentials)
     except Exception as exc:
         detail = _login_start_failure_detail(account, method, exc)
-        _record_login_start_failure(session, account, method=method, actor=actor, detail=detail)
+        _record_login_start_failure(session, account, flow=flow, actor=actor, detail=detail)
         logger.exception("tg login start failed account_id=%s trace_id=%s", account.id, detail["trace_id"])
         raise LoginStartFailure(detail) from exc
     account.status = challenge.status
-    flow = TgLoginFlow(
-        tenant_id=account.tenant_id,
-        account_id=account.id,
-        method=method,
-        status=challenge.status,
-        code_preview=challenge.code_preview,
-        code_expires_at=challenge.code_expires_at,
-        qr_payload=challenge.qr_payload,
-    )
-    session.add(flow)
+    flow.status = challenge.status
+    flow.code_preview = challenge.code_preview
+    flow.code_expires_at = challenge.code_expires_at
+    flow.developer_app_id = account.developer_app_id
+    flow.proxy_id = account.proxy_id
     if challenge.code_preview:
         session.add(
             TgVerificationCode(
@@ -755,7 +766,69 @@ def start_login(session: Session, account_id: int, method: str, actor: str = "�
     audit(session, tenant_id=account.tenant_id, actor=actor, action="开始TG登录", target_type="tg_account", target_id=str(account.id), detail=f"method={method}; developer_app_id={account.developer_app_id}")
     session.commit()
     session.refresh(flow)
+    return _login_flow_response(flow, qr_payload=challenge.qr_payload)
+
+
+def _create_login_intent(session: Session, account: TgAccount, method: str, actor: str) -> TgLoginFlow:
+    account.status = "intent_persisted"
+    flow = TgLoginFlow(
+        tenant_id=account.tenant_id,
+        account_id=account.id,
+        method=method,
+        status="intent_persisted",
+        authorization_role="primary",
+        developer_app_id=account.developer_app_id,
+        proxy_id=account.proxy_id,
+    )
+    session.add(flow)
+    audit(
+        session,
+        tenant_id=account.tenant_id,
+        actor=actor,
+        action="创建TG登录意图",
+        target_type="tg_account",
+        target_id=str(account.id),
+        detail=f"method={method}",
+    )
+    session.flush()
     return flow
+
+
+def _login_flow_response(flow: TgLoginFlow, *, qr_payload: str | None = None) -> dict[str, object]:
+    code_preview = flow.code_preview
+    status = flow.status
+    if code_preview and _is_expired(flow.code_expires_at):
+        code_preview = None
+        status = "已过期"
+    authorization_status = "expired" if status == "已过期" else flow.authorization_status
+    return {
+        "id": flow.id,
+        "flow_id": flow.id,
+        "flow_scope": flow.flow_scope,
+        "flow_version": flow.flow_version,
+        "account_id": flow.account_id,
+        "method": flow.method,
+        "status": status,
+        "authorization_status": authorization_status,
+        "post_login_sync_status": flow.post_login_sync_status,
+        "pool_transition_status": flow.pool_transition_status,
+        "security_post_login_status": flow.security_post_login_status,
+        "code_preview": code_preview,
+        "code_expires_at": flow.code_expires_at,
+        "qr_payload": qr_payload,
+        "authorization_role": flow.authorization_role,
+        "authorization_id": flow.authorization_id,
+        "developer_app_id": flow.developer_app_id,
+        "proxy_id": flow.proxy_id,
+        "failure_type": flow.failure_type,
+        "failure_detail": flow.failure_detail,
+        "trace_id": flow.trace_id,
+        "created_at": flow.created_at,
+    }
+
+
+def login_flow_response(flow: TgLoginFlow, *, qr_payload: str | None = None) -> dict[str, object]:
+    return _login_flow_response(flow, qr_payload=qr_payload)
 
 
 def _login_start_failure_detail(account: TgAccount, method: str, exc: Exception) -> dict[str, object]:
@@ -773,21 +846,15 @@ def _record_login_start_failure(
     session: Session,
     account: TgAccount,
     *,
-    method: str,
+    flow: TgLoginFlow,
     actor: str,
     detail: dict[str, object],
 ) -> None:
     account.status = AccountStatus.ERROR.value
-    flow = TgLoginFlow(
-        tenant_id=account.tenant_id,
-        account_id=account.id,
-        method=method,
-        status=AccountStatus.ERROR.value,
-        failure_type=str(detail["failure_type"]),
-        failure_detail=str(detail["failure_detail"]),
-        trace_id=str(detail["trace_id"]),
-    )
-    session.add(flow)
+    flow.status = AccountStatus.ERROR.value
+    flow.failure_type = str(detail["failure_type"])
+    flow.failure_detail = str(detail["failure_detail"])
+    flow.trace_id = str(detail["trace_id"])
     audit(
         session,
         tenant_id=account.tenant_id,
@@ -795,77 +862,188 @@ def _record_login_start_failure(
         action="TG登录初始化失败",
         target_type="tg_account",
         target_id=str(account.id),
-        detail=f"method={method}; trace_id={detail['trace_id']}; failure_type={detail['failure_type']}",
+        detail=f"method={flow.method}; trace_id={detail['trace_id']}; failure_type={detail['failure_type']}",
     )
     session.commit()
 
 
 def list_login_flows(session: Session, account_id: int) -> list[TgLoginFlow]:
     account = _ensure_account_available(session.get(TgAccount, account_id))
-    flows = list(
+    return list(
         session.scalars(
             select(TgLoginFlow)
             .where(TgLoginFlow.account_id == account_id, TgLoginFlow.tenant_id == account.tenant_id)
             .order_by(TgLoginFlow.id.desc())
         )
     )
-    changed = False
-    for flow in flows:
-        if flow.code_preview and _is_expired(flow.code_expires_at):
-            flow.code_preview = None
-            flow.status = "已过期"
-            changed = True
-    if changed:
-        audit(session, tenant_id=account.tenant_id, actor="system", action="隐藏过期验证码", target_type="tg_account", target_id=str(account.id))
-        session.commit()
-    return flows
 
 
-def verify_login(session: Session, account_id: int, code: str | None, password_2fa: str | None, actor: str = "普通用户") -> TgAccount:
+def _require_login_flow(session: Session, account: TgAccount, flow_id: int, flow_version: int, *, method: str) -> TgLoginFlow:
+    flow = session.scalar(
+        select(TgLoginFlow).where(
+            TgLoginFlow.id == flow_id,
+            TgLoginFlow.account_id == account.id,
+            TgLoginFlow.tenant_id == account.tenant_id,
+            TgLoginFlow.method == method,
+            TgLoginFlow.authorization_role == "primary",
+        )
+    )
+    if not flow:
+        detail = _login_failure_detail(account, None, "login_flow_superseded", LOGIN_FLOW_SUPERSEDED_MESSAGE)
+        raise LoginFlowFailure(detail, status_code=409)
+    if flow.flow_version != flow_version:
+        detail = _login_failure_detail(account, flow, "login_flow_superseded", LOGIN_FLOW_SUPERSEDED_MESSAGE)
+        raise LoginFlowFailure(detail, status_code=409)
+    return flow
+
+
+def _finish_login_or_fail(
+    session: Session,
+    account: TgAccount,
+    flow: TgLoginFlow,
+    code: str | None,
+    password_2fa: str | None,
+    credentials: object,
+    actor: str,
+) -> tuple[str, str]:
+    try:
+        return gateway.finish_login(code, password_2fa, account_id=account.id, phone=get_account_phone(account), credentials=credentials)
+    except Exception as exc:
+        error_code, message, status_code = _login_error_from_exception(exc)
+        logger.exception("tg login verify failed account_id=%s flow_id=%s", account.id, flow.id)
+        raise _login_flow_failure(session, account, flow, error_code, message, actor, exc, status_code) from exc
+
+
+def _login_error_from_exception(exc: Exception) -> tuple[str, str, int]:
+    text_value = str(exc).lower()
+    if "not started" in text_value or "expired in this process" in text_value:
+        return "login_flow_not_resumable", LOGIN_FLOW_NOT_RESUMABLE_MESSAGE, 409
+    if "password" in text_value and ("invalid" in text_value or "wrong" in text_value):
+        return "login_2fa_invalid", LOGIN_2FA_INVALID_MESSAGE, 400
+    if "code" in text_value and ("invalid" in text_value or "expired" in text_value):
+        return "login_code_invalid", LOGIN_CODE_INVALID_MESSAGE, 400
+    return "login_remote_unknown", LOGIN_REMOTE_UNKNOWN_MESSAGE, 409
+
+
+def _login_flow_failure(
+    session: Session,
+    account: TgAccount,
+    flow: TgLoginFlow,
+    code: str,
+    message: str,
+    actor: str = "普通用户",
+    exc: Exception | None = None,
+    status_code: int = 400,
+) -> LoginFlowFailure:
+    detail = _login_failure_detail(account, flow, code, message, exc)
+    account.status = AccountStatus.ERROR.value
+    flow.status = AccountStatus.ERROR.value
+    flow.failure_type = code
+    flow.failure_detail = message
+    flow.trace_id = str(detail["trace_id"])
+    audit(session, tenant_id=account.tenant_id, actor=actor, action="验证TG登录失败", target_type="tg_account", target_id=str(account.id), detail=f"code={code}; trace_id={flow.trace_id}")
+    session.commit()
+    return LoginFlowFailure(detail, status_code=status_code)
+
+
+def _login_failure_detail(
+    account: TgAccount,
+    flow: TgLoginFlow | None,
+    code: str,
+    message: str,
+    exc: Exception | None = None,
+) -> dict[str, object]:
+    return {
+        "code": code,
+        "message": message,
+        "account_id": account.id,
+        "flow_id": flow.id if flow else None,
+        "failure_type": code,
+        "failure_detail": message,
+        "exception_type": exc.__class__.__name__ if exc else "",
+        "trace_id": uuid4().hex,
+    }
+
+
+def _record_post_login_two_fa(session: Session, account: TgAccount, password_2fa: str | None, credentials: object) -> None:
+    if not password_2fa:
+        return
+    if account.account_identity == "code_receiver":
+        record_managed_two_fa_password(session, account, password_2fa)
+        return
+    rotate_managed_two_fa_after_login(
+        session,
+        account,
+        session_ciphertext=account.session_ciphertext,
+        current_password=password_2fa,
+        credentials=credentials,
+        telegram_gateway=gateway,
+        marker=f"login-{account.id}",
+    )
+
+
+def _run_post_login_sync(session: Session, account_id: int, flow_id: int, actor: str) -> None:
+    try:
+        records = run_account_sync_now(session, account_id, actor, trigger_source="login")
+    except Exception as exc:
+        session.rollback()
+        _mark_post_login_sync_failed(session, flow_id, str(exc) or POST_LOGIN_SYNC_FAILED_MESSAGE)
+        logger.exception("post login sync failed account_id=%s flow_id=%s", account_id, flow_id)
+        return
+    failed = next((record for record in records if record.status == "失败"), None)
+    if failed:
+        _mark_post_login_sync_failed(session, flow_id, failed.failure_detail or POST_LOGIN_SYNC_FAILED_MESSAGE)
+
+
+def _mark_post_login_sync_failed(session: Session, flow_id: int, detail: str) -> None:
+    flow = session.get(TgLoginFlow, flow_id)
+    if not flow:
+        return
+    flow.failure_type = "post_login_sync_failed"
+    flow.failure_detail = detail or POST_LOGIN_SYNC_FAILED_MESSAGE
+    flow.trace_id = flow.trace_id or uuid4().hex
+    session.commit()
+
+
+def verify_login(
+    session: Session,
+    account_id: int,
+    flow_id: int,
+    flow_version: int,
+    code: str | None,
+    password_2fa: str | None,
+    actor: str = "普通用户",
+) -> TgAccount:
     account = _ensure_account_available(session.get(TgAccount, account_id))
+
+    flow = _require_login_flow(session, account, flow_id, flow_version, method="code")
     if account.status == AccountStatus.ACTIVE.value and account.session_ciphertext:
+        if flow.status != AccountStatus.ACTIVE.value:
+            detail = _login_failure_detail(account, flow, "login_flow_superseded", LOGIN_FLOW_SUPERSEDED_MESSAGE)
+            raise LoginFlowFailure(detail, status_code=409)
         return account
 
-    latest_flow = session.scalar(
-        select(TgLoginFlow)
-        .where(TgLoginFlow.account_id == account_id)
-        .order_by(TgLoginFlow.id.desc())
-        .limit(1)
-    )
-    if latest_flow and latest_flow.code_preview and _is_expired(latest_flow.code_expires_at) and not password_2fa:
-        latest_flow.code_preview = None
-        latest_flow.status = "已过期"
+    if flow.code_preview and _is_expired(flow.code_expires_at) and not password_2fa:
+        flow.code_preview = None
+        flow.status = "已过期"
         if not code:
             account.status = AccountStatus.ERROR.value
             audit(session, tenant_id=account.tenant_id, actor=actor, action="验证TG登录失败", target_type="tg_account", target_id=str(account.id), detail="code expired")
             session.commit()
-            session.refresh(account)
-            return account
+            raise _login_flow_failure(session, account, flow, "login_code_invalid", LOGIN_CODE_INVALID_MESSAGE)
 
     credentials = credentials_for_account(session, account)
-    status, raw_session = gateway.finish_login(code, password_2fa, account_id=account.id, phone=get_account_phone(account), credentials=credentials)
+    status, raw_session = _finish_login_or_fail(session, account, flow, code, password_2fa, credentials, actor)
     account.status = status
     should_sync = False
     if raw_session:
         account.session_ciphertext = encrypt_session(raw_session)
         account.last_active_at = _now()
         account.health_score = max(account.health_score, 90)
-        if latest_flow:
-            latest_flow.code_preview = None
-            latest_flow.status = status
+        flow.code_preview = None
+        flow.status = status
         if status == AccountStatus.ACTIVE.value:
-            if password_2fa and account.account_identity == "code_receiver":
-                record_managed_two_fa_password(session, account, password_2fa)
-            elif password_2fa:
-                rotate_managed_two_fa_after_login(
-                    session,
-                    account,
-                    session_ciphertext=account.session_ciphertext,
-                    current_password=password_2fa,
-                    credentials=credentials,
-                    telegram_gateway=gateway,
-                    marker=f"login-{account.id}",
-                )
+            _record_post_login_two_fa(session, account, password_2fa, credentials)
             should_sync = True
 
     if should_sync:
@@ -874,25 +1052,21 @@ def verify_login(session: Session, account_id: int, code: str | None, password_2
     _emit_account_eligibility_event(session, account.id, "login_status_changed")
     session.commit()
     if should_sync:
-        run_account_sync_now(session, account.id, actor, trigger_source="login")
+        _run_post_login_sync(session, account.id, flow.id, actor)
     session.refresh(account)
     return account
 
 
-def check_qr_login(session: Session, account_id: int, actor: str = "普通用户") -> TgAccount:
+def check_qr_login(session: Session, account_id: int, flow_id: int, flow_version: int, actor: str = "普通用户") -> TgAccount:
     account = _ensure_account_available(session.get(TgAccount, account_id))
-    latest_flow = session.scalar(
-        select(TgLoginFlow)
-        .where(TgLoginFlow.account_id == account_id, TgLoginFlow.method == "qr")
-        .order_by(TgLoginFlow.id.desc())
-        .limit(1)
-    )
-    if not latest_flow:
-        raise ValueError("qr login flow not found")
-    if latest_flow.status == AccountStatus.ACTIVE.value:
+    flow = _require_login_flow(session, account, flow_id, flow_version, method="qr")
+    if account.status == AccountStatus.ACTIVE.value and account.session_ciphertext:
+        if flow.status != AccountStatus.ACTIVE.value:
+            detail = _login_failure_detail(account, flow, "login_flow_superseded", LOGIN_FLOW_SUPERSEDED_MESSAGE)
+            raise LoginFlowFailure(detail, status_code=409)
         return account
     credentials = credentials_for_account(session, account)
-    status, raw_session = gateway.finish_login("qr-confirmed", None, account_id=account.id, phone=get_account_phone(account), credentials=credentials)
+    status, raw_session = _finish_login_or_fail(session, account, flow, "qr-confirmed", None, credentials, actor)
     account.status = status
     should_sync = False
     if raw_session:
@@ -901,14 +1075,14 @@ def check_qr_login(session: Session, account_id: int, actor: str = "普通用户
         account.health_score = max(account.health_score, 90)
         if status == AccountStatus.ACTIVE.value:
             should_sync = True
-    latest_flow.status = status
+    flow.status = status
     if should_sync:
         queue_login_profile_initialization(session, account.id, actor)
     audit(session, tenant_id=account.tenant_id, actor=actor, action="检查QR登录", target_type="tg_account", target_id=str(account.id), detail=f"status={status}")
     _emit_account_eligibility_event(session, account.id, "login_status_changed")
     session.commit()
     if should_sync:
-        run_account_sync_now(session, account.id, actor, trigger_source="login")
+        _run_post_login_sync(session, account.id, flow.id, actor)
     session.refresh(account)
     return account
 
@@ -1614,7 +1788,7 @@ def account_detail(session: Session, account_id: int, actor: str, *, include_ver
     if stale_profile_count or stale_sync_count:
         session.commit()
         session.refresh(account)
-    login_flows = list_login_flows(session, account_id)[:10]
+    login_flows = [login_flow_response(flow) for flow in list_login_flows(session, account_id)[:10]]
     codes = list_verification_codes(session, account_id, actor) if include_verification_codes else []
     profile_records = list_profile_sync_records(session, account_id)
     sync_records = list_account_sync_records(session, account_id)

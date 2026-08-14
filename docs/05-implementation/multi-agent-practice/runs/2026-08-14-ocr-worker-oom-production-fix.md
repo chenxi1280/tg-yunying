@@ -77,14 +77,15 @@
 
 - `release_mode`: `github_actions`
 - `release_path`: `master -> release -> Deploy Production`
-- `status`: `pending`
+- `status`: `workflow_resync_required`
 - `worker_impact`: 替换单实例 OCR worker；Dispatcher 由依赖健康条件等待 functional readiness。
 - `migration_impact`: none
 - `external_platform_impact`: no direct Telegram mutation during deploy verification
 - `observe_window`: restart count、exit code 70、load/memory、容器健康和公网健康；业务 E4 单独验证。
+- `2026-08-14_resync`: 候选 `314c6d9d` 的 Deploy Production run `31809489025` 已执行到 `deploy/release.sh` live release，但 workflow 后续重复运行全量 `scripts.takeover_all_task_fulfillment` 并 300 秒超时。全量 takeover 已由 `deploy/compose-up.sh` Stage B 的零业务 writer 窗口执行，workflow post-deploy 只能做有界只读 gate；本次修复同步 PRD、运行合同、索引并移除 workflow 的重复 takeover 步骤。
 
 ## Production Verification
 
-- `runtime_status`: `pending`
+- `runtime_status`: `release_gate_failed_after_live_script`
 - `business_status`: `unproven`
 - `production_fixed`: `false`

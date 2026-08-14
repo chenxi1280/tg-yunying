@@ -142,6 +142,11 @@ def test_account_login_actions_bind_account_action_and_request_sequence():
     assert "completeAccountLogin(updated, request)" in code_body
     assert "completeAccountLogin(updated, request)" in password_body
     assert "completeAccountLogin(updated, request)" in qr_body
+    assert "const flow = params.accountLoginForm.flow;" in code_body
+    assert "const flowVersion = flow?.flow_version;" in code_body
+    assert "JSON.stringify({ flow_id: flowId, flow_version: flowVersion, code, request_seq: requestSeq })" in code_body
+    assert "JSON.stringify({ flow_id: flowId, flow_version: flowVersion, password_2fa, request_seq: requestSeq })" in password_body
+    assert "JSON.stringify({ flow_id: flowId, flow_version: flowVersion, request_seq: requestSeq })" in qr_body
     assert "setAccountLoginErrorIfActive(request, error);" in start_body
     assert "setAccountLoginErrorIfActive(request, error);" in code_body
     assert "setAccountLoginErrorIfActive(request, error);" in password_body
@@ -166,4 +171,36 @@ def test_existing_account_create_conflict_routes_to_original_account_login():
     assert "const existingAccountId = existingAccountIdFromError(error);" in create_body
     assert "await reauthorizeExistingAccount(existingAccountId, loginMethod);" in create_body
     assert "await api<AccountDetail>(`/tg-accounts/${accountId}/detail`);" in reauthorize_body
+    assert "原账号分组" in reauthorize_body
+    assert "不会自动覆盖" in reauthorize_body
     assert "await startOrResumeAccountLogin(detail.account, method, false);" in reauthorize_body
+
+
+def test_account_create_does_not_fallback_to_default_or_first_pool():
+    source = (PROJECT_ROOT / "frontend/src/app/context/accountActions.ts").read_text()
+    modals = (PROJECT_ROOT / "frontend/src/app/AppModals.tsx").read_text()
+    authorization_panel = (PROJECT_ROOT / "frontend/src/app/views/AccountAuthorizationAssetsPanel.tsx").read_text()
+    authorization_service = (PROJECT_ROOT / "backend/app/services/account_authorizations.py").read_text()
+    account_router = (PROJECT_ROOT / "backend/app/api/routers/accounts.py").read_text()
+    open_body = source[source.index("function openAccountCreate"):source.index("\n\n  async function openAccountDetail")]
+    create_body = source[source.index("async function createAccount"):source.index("\n\n  async function deleteAccount")]
+
+    assert "selectedPoolExists" in open_body
+    assert "pool_id: selectedPoolExists ? params.selectedPoolId : ''" in open_body
+    assert "accountPools.find((pool) => pool.is_default)?.id" not in open_body
+    assert "params.accountPools[0]?.id" not in open_body
+    assert "账号分组列表尚未加载完成" in create_body
+    assert "所选账号分组已删除或不可用" in create_body
+    assert "pool_id: poolId === '' ? null : poolId" in create_body
+    assert "accountCreatePoolBlocked" in modals
+    assert "账号分组列表尚未加载完成" in modals
+    assert "扫码 payload" not in modals
+    assert "不展示原始扫码内容" in modals
+    assert "copyable>{loginFlow.qr_payload" not in authorization_panel
+    assert "不展示原始扫码内容" in authorization_panel
+    assert "flow_version: loginFlow.flow_version" in authorization_panel
+    assert "request_seq: loginSeq" in authorization_panel
+    assert 'setattr(flow, "_transient_qr_payload", challenge.qr_payload)' in authorization_service
+    assert "qr_payload=None" in authorization_service
+    assert "qr_payload=challenge.qr_payload" not in authorization_service
+    assert 'login_flow_response(flow, qr_payload=getattr(flow, "_transient_qr_payload", None))' in account_router

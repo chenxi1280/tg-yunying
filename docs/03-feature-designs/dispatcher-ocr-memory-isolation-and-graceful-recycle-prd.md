@@ -14,11 +14,11 @@
 - `scope_revision`: `minimal_p0_p1_2026-07-31`
 - `evidence_level`: `E4 incident / E3 production canary / E4 observing`
 - `handoff_delivery_status`: `dev_implemented_qa_targeted_pass`
-- `implementation_status`: `released_stage_b`
-- `production_status`: `observing_unproven`
+- `implementation_status`: `released_stage_b / 2026-08-14 release_contract_resync`
+- `production_status`: `observing_unproven / latest_actions_gate_failed`
 - `captcha_latency_validation`: `45s_contract / two_account_local_ocr_consensus_accepted / model_tail_unproven`
 - `created_at`: `2026-07-31`
-- `last_updated_at`: `2026-08-01`
+- `last_updated_at`: `2026-08-14`
 - `truth_sources`:
   - `docs/01-product/tg-ops-platform-prd.md` §2.19、§2.20、§5.3
   - `docs/03-feature-designs/search-click-daily-fulfillment-remediation-prd.md`
@@ -33,6 +33,7 @@
 - 普通 `/health` 在两套 OCR 引擎未初始化时也会返回 healthy，违反本 PRD 的 functional readiness 合同。现行修复必须恢复 partial source + explicit timeout source、`draining` 拒绝新请求、启动预热和带 token `/ready` healthcheck；两路均超时继续 fail closed。
 - 本次事故同时触发 7.3 GiB、无 swap ECS 的 global OOM。扩容、swap 或降低业务并发仍只能作为容量治理，不能替代上述代码根因修复。
 - 发布前状态为 `implementation_recovered / qa_pending / production_failed`；只有候选 SHA 部署、重启计数稳定和 post-release 业务事实满足后才能更新生产结论。
+- 2026-08-14 候选 `314c6d9d` 已进入 `release` 并由 Deploy Production run `31809489025` 执行到 `deploy/release.sh` 的 live release 阶段；失败发生在 workflow 外层额外重复执行全量 `scripts.takeover_all_task_fulfillment` 并 300 秒超时。全量 takeover 的唯一自动 owner 是 `deploy/compose-up.sh` 的 Stage B 零业务 writer 窗口；GitHub Actions 在 `deploy/release.sh` 返回后不得再次运行全量 takeover，只允许执行有界只读 `verify-active`、worker functional readiness 和公网健康探针。该 run 只能记为 `release_gate_failed / production_fixed_unproven`，不能写成 OCR 代码未部署，也不能写 `production_fixed`。
 
 ### 0.2 2026-08-01 生产发布与 canary 证据
 
@@ -291,6 +292,7 @@ soft_recycle_threshold
 ### 6.1 部署与隔离
 
 - 新增独立容器/进程角色 `image-verification-worker`，只接入 Docker 私网，不映射宿主端口。
+- `image_verification_worker.py` 只承载 OCR generation、request 状态、source 收集和回收判定；`image_verification_worker_app.py` 承载 FastAPI/lifespan 装配、启动预热、认证路由和健康端点。Worker app 启动时必须在接收业务 OCR 请求前初始化 RapidOCR/ddddOCR；普通 `/health` 只表示进程存活，`/internal/v1/image-verification/ready` 才是 production functional readiness。
 - 仅加载 RapidOCR 与 ddddOCR；同时处理的 challenge 请求数固定为 1。请求处理期间两个引擎各占一个服务级固定槽并可在单题内有界重叠。worker 不建立等待队列、持久队列、优先级队列或 EDF；已有 request running 时，新请求立即返回 `verification_local_ocr_busy`。
 - 不挂载 Telegram session，不注入 AI Provider、数据库业务账号或租户密钥，不执行 callback。
 - 容器必须有 soft recycle threshold、hard memory limit、请求计数和当前 request 状态；正常回收只在当前 request 进入终态后发生。native 调用超过 deadline 仍未返回时，整个 OCR worker generation 可以异常退出并由 Docker 重建，但必须向 Dispatcher 暴露 generation changed/unknown，不能伪造 completed。
@@ -340,6 +342,8 @@ soft_recycle_threshold
 | `dispatcher_recycle_drain_blocked` | worker 保持 draining 并告警，不硬退出 | 不适用 |
 
 只有既有 `jisou_image_verification_failed` 明确条件成立时才触发 12 小时排除；基础设施、传输、回收或一次无共识不得伪装成业务最终失败。
+
+2026-08-14 partial-timeout 实现口径：若 RapidOCR/ddddOCR 中一路已形成完整 source，另一路在本题 budget 内超时，worker 必须返回包含 completed source 与 explicit timeout source 的 terminal response，并把当前 generation 标记为 `draining`，后续请求以 `verification_local_ocr_draining` 或等价显式 blocker 拒绝，直到 Docker 在当前响应收口后重建。只有两路均未能形成可信 terminal source、或 source submit/wait/result 遭遇未知 native 状态时，才按固定非零退出码异常终止 generation；不得丢弃已完成 source，也不得在 timeout 后清空 active request 继续接新请求。
 
 ## 7. 最小审计、幂等与恢复
 
@@ -414,6 +418,12 @@ P0 不新增 `SearchJoinImageVerificationAttempt`、source event 或 lifecycle �
 - 任一回滚保留既有 Action lease、账号 inflight、fingerprint 复核、callback unknown/CAS，不得清空后重试。
 - swap 只能作为单独经批准的主机缓冲措施，并记录容量与磁盘风险；它不改变本 PRD 完成口径。
 
+### 10.4 Deploy Production workflow 边界
+
+- `deploy/compose-up.sh` 是全任务 takeover 的唯一自动执行入口。它必须在 Stage B、全部业务 writer 仍被 fenced 且仅 backend 可写的窗口内执行 `scripts.takeover_all_task_fulfillment` preview/apply，并在 Stage C `activate` 后立即执行只读 `manage_shared_dispatch_contract verify-active`。
+- `.github/workflows/deploy-production.yml` 只负责触发 `deploy/release.sh` 并在 release 脚本返回后做有界只读检查；不得在 release live 后再次执行全量 `scripts.takeover_all_task_fulfillment`。重复执行会脱离零 writer 窗口，且把长耗时数据修复误当作 post-deploy health check。
+- 若 `deploy/release.sh` 已输出 live release，但 workflow 后续只读检查失败，该状态记为 `release_gate_failed`：需要按失败检查的真实边界修复 workflow、配置或运行事实；不得直接假设当前生产未切到新 release，也不得把 release gate failure 写成业务 E4 恢复。
+
 ## 11. QA 与验收
 
 ### 11.1 单元测试
@@ -464,6 +474,7 @@ P0 不新增 `SearchJoinImageVerificationAttempt`、source event 或 lifecycle �
 - 必须用受控测试账号完成多个等待档位的真实正确 callback canary，固化 `verified_callback_acceptance_seconds`、`callback_submit_headroom_seconds`、`model_tail_budget_seconds` 及证据版本；只有页面仍可见或 OCR/model benchmark 通过不能放行新 contract。
 - P0 必须证明两个 Dispatcher 的固定 OCR 槽、模型 active registry、hard memory limit、stop grace 与单 shard 自动回收；P1 必须证明 OCR 私网、deterministic request 状态、generation unknown、无本地 fallback 与独立 memory limit。
 - 发布必须走 `master -> release -> GitHub Actions Deploy Production`；不得在线上手改代码。
+- Deploy Production workflow 必须与 §10.4 对齐：全量 takeover 只在 `deploy/compose-up.sh` Stage B 执行一次；release 脚本之后仅允许 `verify-active`、functional readiness、容器和公网健康等有界只读检查。
 - 回滚 owner、预算计算、观察窗口、生产探针和异常停止条件必须在发布前填写。
 - Stage A 与 Stage B 独立过 Gate；Stage A 通过不代表 P1 根治完成。
 
