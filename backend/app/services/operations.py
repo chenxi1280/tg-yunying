@@ -51,6 +51,7 @@ from .operation_target_peer_merge import (
     require_fresh_peer_merge_session,
 )
 from .operation_target_list import OperationTargetListQuery, list_operation_targets_page
+from .telegram_group_identity import resolve_group_snapshot_identity
 from .tenant_learning_samples import GROUP_CHAT_SCENE, record_channel_comment_sample
 from .task_center.payloads import EnsureChannelMembershipPayload, create_membership_action
 
@@ -450,16 +451,12 @@ def _target_type_from_group_type(group_type: str) -> str:
 
 def _upsert_group_target_from_snapshot(session: Session, account: TgAccount, snapshot) -> OperationTarget:
     now_value = _now()
-    group = session.scalar(
-        select(TgGroup).where(
-            TgGroup.tenant_id == account.tenant_id,
-            TgGroup.tg_peer_id == snapshot.tg_peer_id,
-        )
-    )
+    identity = resolve_group_snapshot_identity(session, account.tenant_id, snapshot)
+    group = identity.group
     if group is None:
         group = TgGroup(
             tenant_id=account.tenant_id,
-            tg_peer_id=snapshot.tg_peer_id,
+            tg_peer_id=identity.peer_id,
             title=snapshot.title,
             group_type=snapshot.group_type,
             member_count=snapshot.member_count,
@@ -501,16 +498,11 @@ def _upsert_group_target_from_snapshot(session: Session, account: TgAccount, sna
     elif group.auth_status == GroupAuthStatus.AUTHORIZED.value:
         group.auth_status = GroupAuthStatus.READONLY.value
 
-    target = session.scalar(
-        select(OperationTarget).where(
-            OperationTarget.tenant_id == account.tenant_id,
-            OperationTarget.tg_peer_id == snapshot.tg_peer_id,
-        )
-    )
+    target = identity.target
     if target is None:
         target = OperationTarget(
             tenant_id=account.tenant_id,
-            tg_peer_id=snapshot.tg_peer_id,
+            tg_peer_id=identity.peer_id,
         )
         session.add(target)
     target.target_type = _target_type_from_group_type(snapshot.group_type)

@@ -633,6 +633,56 @@ def test_planner_normalizes_legacy_all_account_coverage_config(session: Session)
     assert task.type_config["account_coverage_mode"] == "all_accounts_daily"
     assert round_config["allow_account_repeat"] is True
 
+
+def test_planner_does_not_rewrite_live_target_route(session: Session) -> None:
+    task, _group = _seed(session)
+    legacy_group = TgGroup(
+        id=22,
+        tenant_id=1,
+        tg_peer_id="https://t.me/route_alias",
+        title="路由群",
+    )
+    numeric_group = TgGroup(
+        id=23,
+        tenant_id=1,
+        tg_peer_id="-1002300",
+        title="路由群",
+    )
+    legacy_target = OperationTarget(
+        id=61,
+        tenant_id=1,
+        target_type="group",
+        tg_peer_id=legacy_group.tg_peer_id,
+        title=legacy_group.title,
+        can_send=True,
+        auth_status="已授权运营",
+    )
+    numeric_target = OperationTarget(
+        id=62,
+        tenant_id=1,
+        target_type="group",
+        tg_peer_id=numeric_group.tg_peer_id,
+        title=numeric_group.title,
+        username="route_alias",
+        can_send=True,
+        auth_status="已授权运营",
+    )
+    session.add_all([legacy_group, numeric_group, legacy_target, numeric_target])
+    task.type_config = {
+        **task.type_config,
+        "target_group_id": legacy_group.id,
+        "target_operation_target_id": legacy_target.id,
+    }
+    session.flush()
+
+    config = _canonicalized_task_config(session, task, dict(task.type_config))
+
+    assert config["target_group_id"] == legacy_group.id
+    assert config["target_operation_target_id"] == legacy_target.id
+    assert task.type_config["target_group_id"] == legacy_group.id
+    assert task.type_config["target_operation_target_id"] == legacy_target.id
+
+
 def test_daily_coverage_replan_skips_legacy_hard_hourly_open_actions(session: Session) -> None:
     task, _group = _seed(session)
     legacy = Action(

@@ -49,6 +49,7 @@ Repository variables:
 - `reconcile_account_profiles`: 检查并补齐账号资料初始化，同时补齐缺失的 AI 活群账号表达卡；表达卡按小批次调用真实 AI 供应商生成，生成协议使用紧凑 JSONL 并保留旧 pipe 行解析兼容，按提交批次独立落库。批量结构化输出格式错误时，系统会拆成单账号继续请求同一个真实 AI 供应商；单账号仍格式错误、或真实 AI 供应商返回 429 / quota exhausted 时，脚本必须输出 `ACCOUNT_PROFILE_RECONCILE_PROGRESS` / `ACCOUNT_PROFILE_RECONCILE` 结构化进度并让 release gate 失败，下次额度恢复或协议修复后从剩余缺失账号继续跑，不能伪造成功或静默生成通用表达卡。
 - `update_account_masks_direction`: 在生产容器内执行 `.github/scripts/update_account_masks_direction.py`，把所有 active 账号写入新的成年男性日常社交方向 active 面具版本；脚本不得写入敏感交易措辞。旧 active 面具置为 `superseded`，新版本写 `AuditLog` 并刷新 Redis 面具缓存。脚本输出 `ACCOUNT_MASK_DIRECTION_UPDATE`，其中 `target_account_count` 必须等于 `verified_active_count` 才算成功；找不到 active 账号或写入后校验不一致时直接失败。
 - `configure_clash_search_join_live`: 配置生产 Mihomo / Clash 节点并创建搜索加群 smoke task。`clash_search_join_apply=false` 时只做订阅解析和节点出口预检，不写 DB；`clash_search_join_apply=true` 才会写入代理绑定和搜索加群测试任务。`clash_skip_cert_verify` 默认为 `false`，只有遇到订阅节点证书链异常且确认要放宽 Mihomo TLS 校验时才显式设为 `true`。
+- `restore_mihomo_runtime.py`: 仅用于已保存配置存在、但同名 `tgyunying-mihomo-*` 容器缺失的基础设施恢复。先以固定镜像 digest 执行 preview，记录 config / DB proxy / target 三个 manifest SHA-256；apply 必须提供这三个 hash、当前部署 SHA 和 approval ref，只创建 config 与 DB 名称的精确交集并从 backend 通过 SOCKS5H 做真实出口验证。任一出口失败只删除本次创建的容器并失败，不重绑账号、授权或环境，不创建 smoke task；无配置且零消费者的 DB proxy 只有显式开关才可通过既有审计健康检查标记为 unhealthy。
 - `run_tianjin_diagnostics` / `run_tianjin_blocked_account_diagnostics`: 天津目标群准入和阻塞账号专项诊断。
 
 账号身份专项生产操作使用独立的 `Production Account Profile Identity Operations` workflow，避免部署 workflow 超过 GitHub `workflow_dispatch` 顶层输入上限：

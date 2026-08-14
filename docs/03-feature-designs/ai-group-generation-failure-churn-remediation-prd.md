@@ -481,6 +481,8 @@ remote-fact Tx C、fact projector、coverage transition、check-in claim和legac
 missing enrollment 仅在 fleet policy=`sealed+allowed`、对应 inventory item=`open` 且 frozen epochs 匹配、原 TaskContractRoute 合法时返回 `legacy_control_allowed`，继续既有 legacy 管理命令；item 缺失/非 open、inventory building、policy=`preparing|disabled` 时 fail-closed。enrollment 已存在且当前 ledger 已提交但 route 缺失时，`start/resume/PATCH/ledger_route_bootstrap` 不能补建或激活 route；`pause/stop/delete` 仍可用 enrollment+Task 的 expected versions 收口，route 只能由受审计 recovery 补同一 ledger identity。
 - Planner、Generation、Dispatcher/Gateway、wake、provider reconcile、remote-fact projector、deadline/recovery 与 generic Task lifecycle service 必须调用同一 helper；Action/Attempt 使用结构化列冻结 dispatch-scope version/fingerprint、task activation route epoch、task-day route epoch、lifecycle epoch 与 manifest hash，不只塞 payload JSON。缺行、epoch 漂移或 manifest 不一致 fail-closed 并按registry写 typed contract blocker。
 
+**2026-08-14 legacy route hardening：** 兼容归一只能补齐 account coverage 等非路由字段；Planner、stats、open-action gate 或任何运行时读取不得把解析到的 `OperationTarget` 写回 running Task 的 `target_group_id` / `target_operation_target_id`，更不得绕过 config revision 和 AuditLog。账号 dialog 同步收到 numeric peer ID 时，只有公开 username/link 与既有 legacy target 唯一匹配才可复用其 group/target；无匹配可新建，多个匹配必须显式失败，不能静默选一个重复目标。若历史运行时写已使当前 Task 路由偏离 open ledger，恢复只能在同一事务 preview 中证明：单一 ledger target 与 slot route、同一公开身份、未在新 route 创建 Action/Task-scoped admission、以及精确未挂 ledger 的当日残留；apply 必须比较 manifest hash、只还原 Task 配置到 ledger route 并写审计。不得把残留 target 重新挂到 ledger、删除历史事实或把 current route 当作下一日变更。
+
 ## 5. 义务状态机
 
 | 当前状态 | 含义 | 允许的下一状态 |
