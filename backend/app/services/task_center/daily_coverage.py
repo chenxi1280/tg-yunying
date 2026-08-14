@@ -22,6 +22,7 @@ from app.services._common import _now
 from .daily_coverage_schedule import daily_coverage_due_debt
 from .daily_coverage_readiness import refresh_rows
 from .daily_coverage_planning import advance_coverage_plan_cursor, ready_coverage_plan_batch
+from .targets import group_from_reference
 
 
 TERMINAL_PRECONFIRMATION_STATUSES = frozenset({"failed", "skipped", "retryable_failed"})
@@ -815,9 +816,17 @@ def _ready_coverage_stmt(task: Task, timestamp: datetime):
 
 
 def _task_group(session: Session, task: Task) -> TgGroup:
-    group_id = int((task.type_config or {}).get("target_group_id") or 0)
+    config = task.type_config or {}
+    group_id = int(config.get("target_group_id") or 0)
     group = session.get(TgGroup, group_id) if group_id else None
     if group is None or group.tenant_id != task.tenant_id:
+        group = group_from_reference(
+            session,
+            task.tenant_id,
+            operation_target_id=int(config.get("target_operation_target_id") or 0) or None,
+            require_authorized=False,
+        )
+    if group is None:
         raise ValueError("all-account coverage task target group not found")
     return group
 
