@@ -58,6 +58,7 @@ def batch_login_capability(session: Session) -> dict[str, object]:
     return {
         "mode": settings.account_batch_login_mode,
         "max_lines": settings.account_batch_login_max_lines,
+        "worker_concurrency": settings.account_batch_login_worker_concurrency,
         "item_deadline_seconds": settings.account_batch_login_item_deadline_seconds,
         "code_wait_seconds": settings.account_batch_login_code_wait_seconds,
         "poll_interval_seconds": settings.account_batch_login_poll_interval_seconds,

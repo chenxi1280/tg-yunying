@@ -3,7 +3,7 @@
 > 日期口径：2026-08-15（Asia/Shanghai）
 > 适用范围：TG 账号管理、账号分组（AccountPool）、登录 flow、后台 worker、审计。
 > 定位：**当前**专项合同。与 [account-login-group-navigation-recovery-prd.md](account-login-group-navigation-recovery-prd.md)（单账号登录 flow 合同）、[existing-account-reauthorization-routing-prd.md](existing-account-reauthorization-routing-prd.md)（已有账号重登语义）、[account-standby-auto-authorization-prd.md](account-standby-auto-authorization-prd.md)（备用授权自动补齐）互补，不改变既有单账号登录语义。
-> 设计状态：`product_design_complete`；实现状态：`local_implemented`；定向 QA：`passed`；发布状态：`not_released`；生产状态：`unproven`。本文仍不得把 PRD、POC、本地测试或分支合并当作批量能力已上线。
+> 基础批量登录状态：`production_fixed`（2026-08-15 已完成两条真实 E4）；本次“任务中心 + 并行登录”增量：`design_status=product_design_complete`、`implementation_status=local_implemented`、`qa_status=targeted_passed`、`release_status=not_released`、`production_status=unproven`。
 
 ## 1. 背景与原始需求
 
@@ -38,7 +38,7 @@
 ## 2. 目标
 
 1. 账号列表页新增「批量登录」入口：弹窗内选择目标分组 + 粘贴多行 `号码|接码链接`，一次提交。
-2. 系统创建登号批次，由 worker **按行顺序串行**执行：建号（或复用已存在账号）→ 发送验证码 → 轮询接码链接刷新出最新验证码 → 提交验证码 → 需要时提交链接内的 2FA 密码 → 登录完成，账号进入所选分组。
+2. 系统创建登号批次，由 worker 在显式并发槽位内同时推进多个账号行：建号（或复用已存在账号）→ 发送验证码 → 轮询接码链接刷新出最新验证码 → 提交验证码 → 需要时提交链接内的 2FA 密码 → 登录完成，账号进入所选分组；每行仍是独立状态机，远端调用继续受 host / Developer App 持久 rate bucket 限制。
 3. **跳过语义（本节为核心合同）**：确定失败或等待超时立即落 `failed` 并跳下一行；单行 300s 总预算耗尽为 `item_deadline_exceeded`，验证码 120s 窗口耗尽为 `code_timeout`。远程结果不可确定时落 `unresolved` 也继续下一行，不伪造 failed/succeeded；后台持续对账并以更正提醒收口。
 4. 批次进度、每行结果、失败原因在批次详情中按行可见；失败项可一键重试；未执行项可取消。
 5. **完成提醒**：操作员必须收到明确提醒，分别看到 failed、unresolved 和已授权但后置 warning 的行号/掩码手机号/原因。迟到权威结果改变未解状态时必须再发更正提醒，不允许静默结束或误报。
@@ -46,6 +46,7 @@
 7. 全流程审计；手机号与接码链接加密存储，验证码与 2FA 密码只在 worker 内存中短暂使用、永不落库，日志、追踪与审计全部脱敏。
 8. Telegram 调用开始后结果未知时进入 `reconciling/unresolved`，禁止自动重发或重验；只有权威 flow/readback 收口，或操作员通过独立风险确认后才能开始新 generation。
 9. 每行 UUID 必须持久绑定到最终 `account_id`：账号列表/详情显示独立「接码备注」以识别映射，账号改名或资料初始化不得覆盖；完整 UUID 加密保存并可由有权人员显式查看。
+10. 账号页必须持续提供「登录任务」入口：关闭详情或刷新页面后仍可恢复正在执行与最近批次，显示运行中数量，并可逐个重新打开详情；创建新批次不能覆盖旧批次的查看入口。
 
 ## 3. 非目标
 
@@ -65,7 +66,7 @@
 优点：后端几乎零改动。
 缺点：浏览器关掉即中断；验证码轮询、2FA 提交逻辑被迫放在前端；无批次审计；违背「依次完成」的可靠性要求。**否决。**
 
-### 方案 B：后端批次 + worker 串行执行（推荐）
+### 方案 B：后端批次 + 有界并行 worker（推荐）
 
 复用既有批次样式，但不复制其 item-id 顺序 drain：使用批次/行项/执行尝试/提醒业务表，fingerprint alias 与持久限速辅助表，再加 precheck/confirm、公平的 phase drain、flow 归属和 CAS/lease。
 
@@ -86,7 +87,7 @@
 | --- | --- |
 | 平台管理员 / 账号添加专员 | 创建批量登号批次、查看进度、刷新凭据、重试失败/未解项、取消批次 |
 | 运营主管 | 查看批次进度与失败原因 |
-| 只读观察员 | 不可见批量登录入口 |
+| 只读观察员 | 不可创建批次；可通过「登录任务」查看租户内批次脱敏进度 |
 
 权限点：
 
@@ -119,6 +120,7 @@
 ### 7.1 账号列表页入口
 
 - `AccountsView` 顶部操作区新增「批量登录」按钮（权限 `accounts.batch_login`），与现有「新增账号」「安全批次」并列。
+- 同一区域常驻「登录任务」按钮（权限 `accounts.view`），Badge 显示服务端返回的 `queued/running/cancelling` 批次数；无运行中任务时仍可进入最近任务列表。
 - 按钮点击打开 `accountBatchLogin` Modal（新增，antd `Modal`，`className="tg-modal"`，宽 640，模式对齐 `AppModals.tsx` 既有弹窗）。
 
 ### 7.2 批量登录弹窗（对应用户描述的交互）
@@ -141,7 +143,11 @@
 
 确认请求必须重传原始输入和分组选项，并携带后端返回的 `preview_token + preview_fingerprint` 与前端生成的 `idempotency_key`；提交成功后关闭弹窗、打开批次详情 Drawer，并提示「批次已创建，正在按行执行」。
 
-### 7.3 批次详情 Drawer
+### 7.3 登录任务中心与批次详情 Drawer
+
+- 任务中心使用 `GET /login-batches` 恢复服务端事实，运行中任务优先、最近任务按 ID 倒序；显示批次 ID、状态、目标分组、创建人、总数与六类计数、创建/完成时间及「查看详情」。
+- 账号页打开期间每 5 秒刷新任务列表；关闭任务中心、关闭详情或刷新浏览器都不改变批次执行。新建批次后立即加入任务中心并打开该批次详情，既有任务不被覆盖。
+- 可以连续创建多个批次；同批多行及跨批次都由 worker 并行推进，任务中心分别展示，不把多个批次合并成一个状态。详情 Drawer 一次查看一个批次，关闭后随时从任务中心重开。
 
 复用 `AccountSecurityBatchDrawer` 的 Drawer + 状态映射模式：
 
@@ -212,9 +218,9 @@
 
 其他约束：批内 line/phone fingerprint/UUID fingerprint 唯一；软删除 phone alias 或 UUID binding 命中均显式冲突。新号 `display_name=待初始化账号-{phone_masked}`；正常建号只在接码 baseline 验证后发生。
 
-### 8.2 行项执行状态机（worker 串行）
+### 8.2 行项执行状态机（worker 有界并行）
 
-单批内按 `line_no` 严格串行；上一行到达 succeeded/failed/unresolved/skipped 后才进下一行。worker 每次只执行一个可恢复 phase，轮询/FloodWait 写 `next_retry_at` 后释放槽位，使其他批次可推进。
+单个 item 内按 phase 严格串行；同批不同 item 可并行。worker 每个 slot 一次只执行一个可恢复 phase，优先按租户/批次各取一行，再按 `line_no` 补充空闲 slot；轮询/FloodWait 写 `next_retry_at` 后释放槽位，使同批后续行与其他批次继续推进。
 
 **跳过/对账合同**：确定失败立即 failed 并推进；远端 started 后结果未知在 300s 单行预算内只读 reconcile，到期改为 `unresolved` 并推进，不改写为确定 failed。独立 reconciler 在默认 24h 自动窗口内继续读精确 flow/session；权威成功/未执行证据更正 succeeded/failed，到期仍不明保留 `unresolved(manual_review_required)`。
 
@@ -284,11 +290,13 @@ phase 以 `(attempt_id, generation, state_version, lease_token)` CAS，网络调
 
 `ACCOUNT_BATCH_LOGIN_MODE` 只接受 `off/reconcile_only/enabled`：off/reconcile_only 下 precheck/create/retry/refresh-credential 返回 503 `account_batch_login_disabled`；cancel、notification ack 和只读语义的 UUID reveal 仍可写审计，列表/详情/提醒仍可读。off 不启动 account-login/reconciler 角色，且只能在 unresolved=0、远端 started=0、outbox 待投递=0 后使用；reconcile_only 只运行 remote reconciler 和 notification outbox，不 claim 新 phase；enabled 才允许创建与 claim。mode 在 health/capability 显式返回，无效/缺失配置启动失败。
 
+`ACCOUNT_BATCH_LOGIN_WORKER_CONCURRENCY` 是正整数并行槽位，默认 4，由 capability 与 worker heartbeat 暴露。slot 只限制同一进程同时执行的 item phase；host 与 Developer App 的数据库持久 rate bucket 仍是远端并发/间隔真相源。单批可占用多个 slot，但调度按租户、批次轮转后再给同批追加 slot，避免大批次饿死其他批次。
+
 审计：预检确认、创建、取消、重试、unknown/reconcile、每行终态与提醒 dead-letter 均写 actor/reason/trace；detail 只含批次/行 ID、generation、掩码手机号、failure_type，不落完整 URL、验证码、2FA 或请求体。
 
 ### 8.6 Worker 挂载
 
-- `drain_account_login_batches` 以 tenant `last_served_at`、batch `last_claimed_at`、line/phase 排序，每轮每批最多领一个 phase；不按 item id 把大批次排空。每个短事务独立 session，网络期间无 DB 连接/锁/事务。
+- `drain_account_login_batches` 以 tenant、batch `last_claimed_at`、line/phase 公平 claim：先让每个可运行批次获得一个 slot，再轮转追加，最多领取 `min(limit, worker_concurrency)` 个不同 item phase；同一 item 已有有效 lease、未来 `next_retry_at` 或正在对账时跳过而不阻塞同批后续行。每个 claim 使用独立 session，网络期间无 DB 连接/锁/事务，并由线程池并行执行。
 - 已有账号权威探测使用主 session 和主登录 direct 路径；探测网络异常不得降级成 relogin。create 只在 baseline 通过后执行，并将 account/item/aliases 同事务绑定。
 - 独立 `drain_account_login_reconciliation` 只处理 started/unknown/unresolved，权威收口时 CAS 更新行/批次计数/resolution version 并写 correction outbox。
 - `worker.py` 与 `worker_health.py` 同步新增 `account-login`；本地 `legacy/all` 可包含，生产必须以独立 `--role account-login` 容器运行。Compose、发布脚本和 post-deploy health 必须同时检查该角色心跳。
@@ -308,7 +316,7 @@ phase 以 `(attempt_id, generation, state_version, lease_token)` CAS，网络调
 前端 Modal(目标分组+多行)
   → POST precheck → create/existing 候选 + 迁池清单 + 排队/ETA + preview fingerprint
   → 用户确认(reason + idempotency_key) → CAS 建批次/行项/当前状态快照
-  → fair phase drain（批内仍串行）：
+  → fair parallel phase drain（同批多行/跨批次有界并行）：
       prepare: alias 匹配；已有账号做新鲜权威探测决定 already_authorized/relogin
       baseline: code_source_client → 内存 raw + DB keyed HMAC；通过后 create 才建号+绑 alias/item
       acquire/send: 绑定 item-owned flow；远端 started→confirmed，unknown→reconcile
@@ -363,13 +371,16 @@ phase 以 `(attempt_id, generation, state_version, lease_token)` CAS，网络调
 | 账号改名、资料初始化或 item URL 到期 | 独立接码备注及 UUID binding 保持不变；只有显式替换或账号硬删除可以改变 |
 | 明确重试未解行 | 必须提交 `confirm_remote_unknown=true + expected_attempt_id + expected_attempt_version + expected_resolution_version`；任一值过期则 409 |
 | 系统处于 `off/reconcile_only` | 两者都拒绝创建/重试/换凭据；取消、提醒确认和读接口保持可用；`reconcile_only` 继续 reconciler/outbox，`off` 仅允许在无未解/started/待投递事件后进入 |
-| 同时存在多租户/多批次 | 每轮每批最多推进一个 phase，按租户/批次公平轮转；持久 rate bucket 在所有 worker 间限制 host/开发者应用速率 |
+| 同时存在多租户/多批次 | 每轮先为各批次分配一个 phase，再按租户/批次公平顺序补充剩余 slot；持久 rate bucket 在所有 worker 间限制 host/开发者应用速率 |
+| 同一批次某行等待验证码或持有 lease | 该行不重复 claim；其他未终态且到期可执行的行继续占用空闲 slot，不再被首行阻塞 |
+| 关闭任务中心/详情或刷新页面 | 不取消、不暂停批次；重新调用列表/详情 API 恢复运行中数量和状态 |
 | fingerprint 密钥轮换并发创建 | 对所有 accepted version 的 alias 按固定顺序加 advisory lock；账号、行项及 aliases 同事务创建，冲突返回类型化 409 |
 | 批次进入 sequence-terminal | unresolved 为 `completed_with_unresolved`；终态、六类计数和 initial 提醒同事务写入，后续修正另发 correction |
 
 ## 12. 并发与幂等
 
-- 批次内严格按 `line_no` 串行，但一次 claim 只推进一个 phase 后让出；调度按租户再按批次公平轮转，长批次不能饿死短批次。
+- 单个 item 仍按 phase 串行并由 lease/generation fence 保护；同一批次不同 item 与不同批次可并行。调度先按租户/批次各取一个，再按相同顺序补充 slot，长批次不能饿死短批次。
+- worker slot 默认 4 且显式配置；配置为 1 可恢复单线程执行。它不替代或扩大 host/Developer App 持久 rate bucket。
 - 跨批次、人工登录与单号重登按 `tenant_id + accepted-version phone alias/account_id` 互斥；所有 alias 采用固定版本顺序加锁，避免密钥轮换期间重复建号。
 - 创建使用 `tenant_id + actor_id + idempotency_key`、`preview_token + preview_fingerprint`；行使用 `batch_id + line_no`，不以 `phone_masked` 判定身份。
 - claim/完成/取消使用 `state_version + execution_generation + lease_owner`。网络调用期间不持有账号锁或 DB 事务。
@@ -397,6 +408,7 @@ phase 以 `(attempt_id, generation, state_version, lease_token)` CAS，网络调
 12. 安全/2FA：item URL 按期清除但账号 UUID 加密 binding 保留；账号改名/资料初始化不丢映射，显式替换后旧值不可从普通投影读取；API/log/trace/audit/outbox 不出现完整 URL、UUID、code、2FA 或未掩码手机号；批量路径始终 `do_not_store`。
 13. 提醒：initial/correction 与事实原子写且分别幂等 ack；正文分列 failed/unresolved/warning；TG Bot dead-letter 不影响平台事实并在平台暴露。
 14. 启动/运行：worker、reconciler、outbox、heartbeat、mode、DNS/HTTPS、密钥、alias 回填、rate bucket 与部署 readiness 缺一即 fail closed。
+15. 任务中心/并行：关闭详情、关闭中心、刷新页面后仍能恢复运行中任务；连续创建多批不覆盖；同批至少两个阻塞 fake phase 和跨批次 phase 确认同时进入执行，首行未来重试/有效 lease 不阻塞后续行；并发异常必须显式失败。
 
 真实 E4（预发/生产，少量专用号码，Release Gate 后）：
 
@@ -413,7 +425,7 @@ phase 以 `(attempt_id, generation, state_version, lease_token)` CAS，网络调
 ## 15. 发布与回滚
 
 - 发布路径：`master -> release -> GitHub Actions Deploy Production`；本需求为 L2（新表、新 worker 角色、真实 Telegram 授权），必须有 Release Gate。
-- 发布顺序：migration + accepted-version phone alias 回填/零冲突报告 + code-source binding 字段/唯一索引 + rate bucket → 后端以 `reconcile_only` 上线 → worker/reconciler/outbox readiness → 前端 → 仅给受控操作员权限并切 `enabled` 做单号 E4/故障注入 → 灰度授权。
+- 本增量无新表；发布前显式配置 `ACCOUNT_BATCH_LOGIN_WORKER_CONCURRENCY`，验证 DB pool 容量、worker heartbeat/capability 回读、同批/跨批并行和 rate bucket 未超额，再开放任务中心入口。
 - Release Gate 同时核对部署 SHA、migration、mode、新权限注册、UUID 加密/reveal 审计、worker/reconciler heartbeat、生产 DNS/peer IP、alias/binding 冲突、rate bucket、outbox/correction drain、精确 flow/session、权威授权和 online readback；任一缺失都不得声称上线完成。
 - 回滚先切 `reconcile_only`，停止新阶段但继续未知结果对账、提醒投递和凭据到期清除；不得只隐藏 UI 或强杀远程已 started 行。全部未解/started 收口且 outbox 清空后才可切 `off`。保留已建账号、session、attempt、批次和提醒审计，不回滚真实授权。
 
@@ -424,7 +436,7 @@ phase 以 `(attempt_id, generation, state_version, lease_token)` CAS，网络调
 - 每行 UUID 到最终账号的接码备注、加密 binding、冲突替换、权限查看和改名后保留已有唯一合同。
 - 公平调度、全局限速、fingerprint 轮换去重、并发/幂等、flow 归属、mode gate、事务边界、数据保留、发布/回滚和 E4 均有验证口径。
 - 唯一外部约束是供应页无号码字段，已以明示风险确认处置，不阻塞开发。
-- 结论：`design_status=product_design_complete`；`implementation_status=local_implemented`；`qa_status=targeted_passed`；`release_status=not_released`；`production_status=unproven`。本结论不代表生产 migration、灰度启用或真实 Telegram E4 完成。
+- 本次增量结论：`design_status=product_design_complete`；`implementation_status=local_implemented`；`qa_status=targeted_passed`；`release_status=not_released`；`production_status=unproven`。任务中心源码合同、TypeScript/Vite 构建、同批/跨批并行、lease/retry 跳过、权限及 runtime config 定向回归已通过；基础批量登录的既有生产状态与本增量是否上线必须分开记录。
 
 ## 17. 备注
 
@@ -436,7 +448,9 @@ phase 以 `(attempt_id, generation, state_version, lease_token)` CAS，网络调
 
 ## 18. 本地实现与验证记录（2026-08-15）
 
-- 已在隔离分支实现并合并回本地 `release`：0148 migration、批次/行项/attempt/持久提醒/手机号 alias/rate bucket、严格接码 URL 与 HTML 解析、按 phase 串行 worker、远程未知对账、更正提醒、权限/mode/readiness、前端预检与进度 Drawer、账号独立接码备注及受控 UUID reveal。
+- 本次增量在隔离分支增加常驻「登录任务」入口、运行中 Badge、服务端最近批次恢复、独立详情重开和 `ACCOUNT_BATCH_LOGIN_WORKER_CONCURRENCY`（默认 4）；worker 先按租户/批次公平分槽，再允许同批后续 item 补槽，首行未来 retry/有效 lease/reconciling 不再阻塞后续行。
+- 本次增量本地证据：批量登录完整非 PostgreSQL 定向集合 `41 passed`，前端权限回归 `155 passed`，前端 `tsc + vite build` 通过；本增量尚未合并、发布或执行新的生产 E4。
+- 已在隔离分支实现并合并回本地 `release`：0148 migration、批次/行项/attempt/持久提醒/手机号 alias/rate bucket、严格接码 URL 与 HTML 解析、单 item 内 phase 串行状态机、远程未知对账、更正提醒、权限/mode/readiness、前端预检与进度 Drawer、账号独立接码备注及受控 UUID reveal。
 - 行级异常合同已落为自动化用例：验证码/行总预算超时后进入失败并继续下一行；远程调用结果未知进入 `unresolved` 后让出顺序；未决重试必须完成探测并 supersede 旧 attempt；取消跳过未开始行；完成提醒分列失败、未解、警告；Bot outbox 在 worker 崩溃后可按持久租约重新认领。
 - 本地证据：相关后端集合 `84 passed`；前端 `tsc + vite build` 通过；Alembic 批量登录表由 `0148_account_batch_login` 创建，`0149_batch_login_principal` 允许内置系统管理员作为批次/提醒主体；PostgreSQL 空库 migration、Compose YAML、部署脚本语法、Python 编译与差异检查均纳入发布闸门。
 - 敏感值边界：真实手机号和 UUID 不写入代码、测试、日志或本文；账号保存加密 UUID 并仅显示 `平台 · 前6位…后4位`，完整值需要双权限、操作原因、binding version 与 no-store 响应。

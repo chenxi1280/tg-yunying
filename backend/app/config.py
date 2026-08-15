@@ -143,6 +143,8 @@ def _validate_account_batch_login_settings(settings: object) -> None:
         raise ValueError("ACCOUNT_BATCH_LOGIN_CREDENTIAL_TTL_SECONDS must cover the item deadline")
     if settings.account_batch_login_reconcile_seconds < settings.account_batch_login_item_deadline_seconds:
         raise ValueError("ACCOUNT_BATCH_LOGIN_RECONCILE_SECONDS must cover the item deadline")
+    if settings.account_batch_login_worker_concurrency < 1:
+        raise ValueError("ACCOUNT_BATCH_LOGIN_WORKER_CONCURRENCY must be positive")
     versions = [value.strip() for value in settings.account_batch_phone_fingerprint_versions.split(",")]
     if not versions or any(not value.isdigit() or int(value) < 1 for value in versions):
         raise ValueError("ACCOUNT_BATCH_PHONE_FINGERPRINT_VERSIONS must contain positive integers")
@@ -257,6 +259,7 @@ class Settings:
     account_batch_login_poll_interval_seconds: int = int(os.getenv("ACCOUNT_BATCH_LOGIN_POLL_INTERVAL_SECONDS", "3"))
     account_batch_login_credential_ttl_seconds: int = int(os.getenv("ACCOUNT_BATCH_LOGIN_CREDENTIAL_TTL_SECONDS", "86400"))
     account_batch_login_reconcile_seconds: int = int(os.getenv("ACCOUNT_BATCH_LOGIN_RECONCILE_SECONDS", "86400"))
+    account_batch_login_worker_concurrency: int = int(os.getenv("ACCOUNT_BATCH_LOGIN_WORKER_CONCURRENCY", "4"))
     account_batch_login_host_concurrency: int = int(os.getenv("ACCOUNT_BATCH_LOGIN_HOST_CONCURRENCY", "0"))
     account_batch_login_host_min_interval_seconds: float = float(os.getenv("ACCOUNT_BATCH_LOGIN_HOST_MIN_INTERVAL_SECONDS", "0"))
     account_batch_login_developer_app_concurrency: int = int(os.getenv("ACCOUNT_BATCH_LOGIN_DEVELOPER_APP_CONCURRENCY", "0"))

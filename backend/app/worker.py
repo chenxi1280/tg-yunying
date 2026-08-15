@@ -299,6 +299,7 @@ def _worker_heartbeat_metadata(settings, limit: int) -> dict[str, object]:
     return {
         "limit": limit,
         "source": "worker_loop",
+        "account_batch_login_worker_concurrency": settings.account_batch_login_worker_concurrency,
         "dispatch_contract_version": str(
             getattr(settings, "dispatch_rebuild_contract_version", "") or ""
         ),

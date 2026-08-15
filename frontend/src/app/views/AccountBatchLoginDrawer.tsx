@@ -4,8 +4,7 @@ import type { ColumnsType } from 'antd/es/table';
 import { api } from '../../shared/api/client';
 import type { Account, AccountBatchLogin, AccountBatchLoginItem, AccountDetail, AccountPool } from '../types';
 import { formatBeijingDateTime } from '../time';
-
-const TERMINAL_BATCH = new Set(['completed', 'completed_with_unresolved', 'cancelled']);
+import { loginStatusColor, loginStatusLabel, TERMINAL_LOGIN_BATCH_STATUSES } from './accountBatchLoginPresentation';
 
 interface Props {
   batchId: number | null;
@@ -33,7 +32,7 @@ export function AccountBatchLoginDrawer({ batchId, pools, onClose, onOpenAccount
         if (disposed) return;
         setBatch(detail);
         setError('');
-        if (!TERMINAL_BATCH.has(detail.status)) timer = window.setTimeout(load, 5000);
+        if (!TERMINAL_LOGIN_BATCH_STATUSES.has(detail.status)) timer = window.setTimeout(load, 5000);
       } catch (requestError) {
         if (!disposed) setError(requestError instanceof Error ? requestError.message : '读取批次失败');
       }
@@ -145,7 +144,7 @@ export function AccountBatchLoginDrawer({ batchId, pools, onClose, onOpenAccount
     { title: '阶段', dataIndex: 'phase', width: 145 },
     { title: '代次/重试', width: 100, render: (_, item) => `${item.execution_generation} / ${item.retry_count}` },
     { title: '下次执行', width: 170, render: (_, item) => item.next_retry_at ? formatBeijingDateTime(item.next_retry_at) : '—' },
-    { title: '状态', width: 145, render: (_, item) => <Tag color={statusColor(item.status)}>{statusLabel(item.status)}</Tag> },
+    { title: '状态', width: 145, render: (_, item) => <Tag color={loginStatusColor(item.status)}>{loginStatusLabel(item.status)}</Tag> },
     { title: '结果', width: 260, render: (_, item) => item.failure_detail || item.warning_detail || '—' },
     {
       title: '操作',
@@ -168,7 +167,7 @@ export function AccountBatchLoginDrawer({ batchId, pools, onClose, onOpenAccount
         {batch && (
           <>
             <Descriptions size="small" column={4} bordered items={[
-              { key: 'status', label: '状态', children: statusLabel(batch.status) },
+              { key: 'status', label: '状态', children: loginStatusLabel(batch.status) },
               { key: 'pool', label: '目标分组', children: targetPool?.name || `#${batch.pool_id}` },
               { key: 'counts', label: '结果', children: `成功 ${batch.success_count} / 失败 ${batch.failed_count} / 未解 ${batch.unresolved_count} / 警告 ${batch.warning_count} / 跳过 ${batch.skipped_count}` },
               { key: 'created', label: '创建时间', children: formatBeijingDateTime(batch.created_at) },
@@ -176,7 +175,7 @@ export function AccountBatchLoginDrawer({ batchId, pools, onClose, onOpenAccount
             {batch.unresolved_count > 0 && <Alert showIcon type="warning" title="存在远程结果未解行" description="这些行已经让出批内顺序，后台会持续对账；权威结果变化时会发送更正提醒。" />}
             <Space style={{ margin: '16px 0' }}>
               <Button loading={loading} onClick={() => void reload()}>刷新</Button>
-              {!TERMINAL_BATCH.has(batch.status) && <Button danger loading={loading} onClick={() => void cancelBatch()}>取消批次</Button>}
+              {!TERMINAL_LOGIN_BATCH_STATUSES.has(batch.status) && <Button danger loading={loading} onClick={() => void cancelBatch()}>取消批次</Button>}
             </Space>
             <Table rowKey="id" columns={columns} dataSource={batch.items || []} pagination={false} scroll={{ x: 1600 }} />
           </>
@@ -190,18 +189,6 @@ export function AccountBatchLoginDrawer({ batchId, pools, onClose, onOpenAccount
       </Modal>
     </>
   );
-}
-
-function statusLabel(status: string) {
-  const labels: Record<string, string> = { queued: '排队中', running: '执行中', waiting: '等待中', reconciling: '确认中', unresolved: '需持续对账', cancelling: '取消中', completed: '已完成', completed_with_unresolved: '完成但有未解', cancelled: '已取消', succeeded: '成功', succeeded_with_warning: '成功但有警告', failed: '失败', skipped: '已跳过', pending: '待执行' };
-  return labels[status] || status;
-}
-
-function statusColor(status: string) {
-  if (status === 'failed') return 'red';
-  if (status === 'unresolved' || status === 'reconciling' || status === 'succeeded_with_warning') return 'orange';
-  if (status === 'succeeded') return 'green';
-  return 'blue';
 }
 
 function canRetry(item: AccountBatchLoginItem) {

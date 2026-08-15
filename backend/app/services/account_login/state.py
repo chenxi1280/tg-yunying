@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -40,13 +40,14 @@ def claim_batch_phase(session: Session, batch_id: int) -> PhaseClaim | None:
         return None
     if batch.status == "cancelling":
         skip_cancellable_items(session, batch.id)
-    item = _next_sequence_item(session, batch.id)
+    item = _next_claimable_item(session, batch.id, now)
     if not item:
-        finalize_batch_if_terminal(session, batch.id)
-        session.commit()
+        if not _has_nonterminal_item(session, batch.id):
+            finalize_batch_if_terminal(session, batch.id)
+            session.commit()
         return None
-    if item.status == "reconciling" or (item.next_retry_at and item.next_retry_at > now):
-        return None
+    if item.current_attempt_id is None:
+        raise RuntimeError("batch login item current attempt is inconsistent")
     attempt = session.get(TgAccountLoginBatchAttempt, item.current_attempt_id)
     if not attempt or attempt.execution_generation != item.execution_generation:
         raise RuntimeError("batch login item current attempt is inconsistent")
@@ -73,11 +74,28 @@ def claim_batch_phase(session: Session, batch_id: int) -> PhaseClaim | None:
     return PhaseClaim(batch.id, item.id, attempt.id, item.tenant_id, item.execution_generation, attempt.phase, token)
 
 
-def _next_sequence_item(session: Session, batch_id: int) -> TgAccountLoginBatchItem | None:
-    return session.scalar(select(TgAccountLoginBatchItem).where(
+def _next_claimable_item(session: Session, batch_id: int, now) -> TgAccountLoginBatchItem | None:
+    return session.scalar(select(TgAccountLoginBatchItem).outerjoin(
+        TgAccountLoginBatchAttempt,
+        TgAccountLoginBatchAttempt.id == TgAccountLoginBatchItem.current_attempt_id,
+    ).where(
         TgAccountLoginBatchItem.batch_id == batch_id,
         TgAccountLoginBatchItem.status.not_in(TERMINAL_ITEM_STATUSES),
-    ).order_by(TgAccountLoginBatchItem.line_no).limit(1).with_for_update())
+        TgAccountLoginBatchItem.status != "reconciling",
+        or_(TgAccountLoginBatchItem.next_retry_at.is_(None), TgAccountLoginBatchItem.next_retry_at <= now),
+        or_(
+            TgAccountLoginBatchAttempt.id.is_(None),
+            TgAccountLoginBatchAttempt.lease_expires_at.is_(None),
+            TgAccountLoginBatchAttempt.lease_expires_at <= now,
+        ),
+    ).order_by(TgAccountLoginBatchItem.line_no).limit(1).with_for_update(of=TgAccountLoginBatchItem))
+
+
+def _has_nonterminal_item(session: Session, batch_id: int) -> bool:
+    return session.scalar(select(TgAccountLoginBatchItem.id).where(
+        TgAccountLoginBatchItem.batch_id == batch_id,
+        TgAccountLoginBatchItem.status.not_in(TERMINAL_ITEM_STATUSES),
+    ).limit(1)) is not None
 
 
 def _remote_call_started(attempt: TgAccountLoginBatchAttempt) -> bool:

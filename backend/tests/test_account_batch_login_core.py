@@ -39,6 +39,7 @@ def _settings():
         account_batch_login_poll_interval_seconds=3,
         account_batch_login_credential_ttl_seconds=86400,
         account_batch_login_reconcile_seconds=86400,
+        account_batch_login_worker_concurrency=4,
         account_batch_login_host_concurrency=1,
         account_batch_login_host_min_interval_seconds=3,
         account_batch_login_developer_app_concurrency=1,
