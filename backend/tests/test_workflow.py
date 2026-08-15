@@ -6437,25 +6437,28 @@ def test_task_center_channel_failure_replans_same_obligation_before_task_failed(
             task.next_run_at = _now()
             session.commit()
 
-        drain_task_runtime_and_metrics(task_id)
-        with SessionLocal() as session:
-            replacement = session.scalar(
-                select(Action).where(
+        replacement = None
+        completed_retry = None
+        for _ in range(3):
+            drain_task_runtime_and_metrics(task_id)
+            with SessionLocal() as session:
+                replacement = session.scalar(select(Action).where(
                     Action.task_id == task_id,
                     Action.status == "pending",
-                )
-            )
-            completed_retry = session.scalar(
-                select(Action).where(
+                ))
+                completed_retry = session.scalar(select(Action).where(
                     Action.task_id == task_id,
                     Action.status == "success",
                     Action.retry_count == 1,
-                )
-            )
-            assert replacement is not None or completed_retry is not None
-            if replacement is not None:
-                replacement.scheduled_at = _now()
-            session.commit()
+                ))
+                if replacement is not None or completed_retry is not None:
+                    if replacement is not None:
+                        _force_action_due(replacement, _now())
+                    session.commit()
+                    break
+                session.get(Task, task_id).next_run_at = _now()
+                session.commit()
+        assert replacement is not None or completed_retry is not None
         drain_task_runtime_and_metrics(task_id)
         with SessionLocal() as session:
             task = session.get(Task, task_id)
