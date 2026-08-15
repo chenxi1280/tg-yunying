@@ -4,6 +4,7 @@ import importlib.util
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import pytest
 from alembic.migration import MigrationContext
@@ -30,6 +31,7 @@ from app.services.task_center.account_pacing_guard import (
 )
 from app.services.task_center.ai_generation_parallel import _generation_job
 from app.services.task_center.ai_pacing import _align_quantity_slots, _available_quantity_slots
+from app.services.task_center.pacing_persistence import freeze_pacing_owner
 from pacing_contract_test_support import pacing_engine
 
 
@@ -137,6 +139,31 @@ def test_account_pacing_pages_without_truncating_dense_conflicts(monkeypatch) ->
         )
 
     assert reservation.effective_claim_at == due + timedelta(seconds=20 * 130)
+
+
+def test_frozen_pacing_owner_accepts_same_beijing_wall_time_from_postgres() -> None:
+    due = datetime(2026, 8, 16, 10, 0)
+    release = due + timedelta(minutes=5)
+    timezone = ZoneInfo("Asia/Shanghai")
+    owner = SimpleNamespace(
+        pacing_contract_version="deterministic_stratified_v1",
+        pacing_plan_hash="plan-hash",
+        pacing_slot_ordinal=0,
+        pacing_plan_total=1,
+        pacing_due_at=due.replace(tzinfo=timezone),
+        release_not_before_at=release.replace(tzinfo=timezone),
+    )
+
+    frozen_release = freeze_pacing_owner(
+        owner,
+        plan_hash="plan-hash",
+        slot_ordinal=0,
+        plan_total=1,
+        due_at=due,
+        release_not_before_at=release,
+    )
+
+    assert frozen_release == release.replace(tzinfo=timezone)
 
 
 def test_ai_slot_alignment_is_linear_in_available_slots() -> None:
