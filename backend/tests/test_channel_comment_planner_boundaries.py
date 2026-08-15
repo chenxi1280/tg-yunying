@@ -414,7 +414,9 @@ def test_future_comment_replacement_is_accelerated_before_planning(monkeypatch):
         )
 
     assert accelerated == 1
-    assert action.scheduled_at == now_value
+    # deterministic_stratified_v1：禁止 future→now rewrite，scheduled_at 保持原值，
+    # 只 wake 任务进入重规划（由 obligation 新 intent revision 在原 pacing 约束内重建）
+    assert action.scheduled_at == datetime(2026, 8, 2, 12, 0, 0)
     assert task.next_run_at == now_value
 
 

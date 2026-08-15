@@ -21,6 +21,15 @@ TYPE_LABEL.account_2fa_setup = '设置二步密码批次';
 TYPE_LABEL.account_standby_session_provision = '备用 session 补齐批次';
 TYPE_LABEL.search_join_group = '历史搜索点击加入任务';
 
+export function aiModelIdentity(value: unknown): string {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '-')
+    .replace(/^xiaomi-/, '')
+    .replace(/^mino(?=-|$)/, 'mimo');
+}
+
 export const CREATE_ENDPOINT: Record<TaskCenterTaskType, string> = {
   group_ai_chat: '/tasks/group-ai-chat',
   group_relay: '/tasks/group-relay',
@@ -514,6 +523,8 @@ export function typeInitialValues(type: TaskCenterTaskType, setting?: Scheduling
       slang_prompt_template_id: null,
       tone: 'auto',
       language: 'zh-CN',
+      ai_two_stage_enabled: false,
+      ai_semantic_reviewer_model: '',
     };
   }
   if (type === 'group_relay') {
@@ -583,6 +594,8 @@ export function typeInitialValues(type: TaskCenterTaskType, setting?: Scheduling
     reply_min_per_message: 1,
     language: 'zh-CN',
     comment_style: 'mixed',
+    ai_two_stage_enabled: false,
+    ai_semantic_reviewer_model: '',
   };
 }
 
@@ -729,6 +742,8 @@ export function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: stri
       'idle_continuation_enabled',
       'idle_continuation_seconds',
       'context_expire_after_messages',
+      'ai_two_stage_enabled',
+      'ai_semantic_reviewer_model',
     ];
   }
   if (taskType === 'group_relay') {
@@ -766,7 +781,7 @@ export function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: stri
   if (taskType === 'channel_like') {
     return [...baseFields, ...channelScopeFields(messageScope), 'target_likes_per_message', 'like_count_jitter', 'reaction_type', 'allowed_reactions'];
   }
-  return [...baseFields, ...channelScopeFields(messageScope), 'target_comments_per_message', 'max_total_comments', 'max_total_comments_jitter', 'reply_min_per_message', 'rule_set_id', 'rule_set_version_id', 'comment_style', 'topic_hint'];
+  return [...baseFields, ...channelScopeFields(messageScope), 'target_comments_per_message', 'max_total_comments', 'max_total_comments_jitter', 'reply_min_per_message', 'rule_set_id', 'rule_set_version_id', 'comment_style', 'topic_hint', 'ai_two_stage_enabled', 'ai_semantic_reviewer_model'];
 }
 
 export function editFieldsForSubmit(taskType: TaskCenterTaskType, accountMode: string, pacingMode: string): string[] {
@@ -810,6 +825,8 @@ export function editFieldsForSubmit(taskType: TaskCenterTaskType, accountMode: s
       'idle_continuation_enabled',
       'idle_continuation_seconds',
       'context_expire_after_messages',
+      'ai_two_stage_enabled',
+      'ai_semantic_reviewer_model',
     ];
   }
   if (taskType === 'group_relay') {
@@ -821,5 +838,5 @@ export function editFieldsForSubmit(taskType: TaskCenterTaskType, accountMode: s
   if (taskType === 'channel_like') {
     return [...baseFields, 'target_likes_per_message', 'like_count_jitter', 'reaction_type', 'allowed_reactions', 'max_likes_per_account_per_hour'];
   }
-  return [...baseFields, 'target_comments_per_message', 'max_total_comments', 'max_total_comments_jitter', 'reply_min_per_message', 'rule_set_id', 'rule_set_version_id', 'ai_model', 'comment_style', 'topic_hint', 'system_prompt_override', 'language', 'max_comment_length', 'max_comments_per_account_per_hour'];
+  return [...baseFields, 'target_comments_per_message', 'max_total_comments', 'max_total_comments_jitter', 'reply_min_per_message', 'rule_set_id', 'rule_set_version_id', 'ai_model', 'comment_style', 'topic_hint', 'system_prompt_override', 'language', 'max_comment_length', 'max_comments_per_account_per_hour', 'ai_two_stage_enabled', 'ai_semantic_reviewer_model'];
 }

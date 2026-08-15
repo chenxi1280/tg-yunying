@@ -45,6 +45,12 @@ def accelerate_future_replacements(
     *,
     now_value: datetime,
 ) -> int:
+    """wake 存在 replacement 的任务，但禁止把 future Action 改写为 now。
+
+    deterministic_stratified_v1 合同：replacement 由 obligation 的新 intent
+    revision 在原 pacing release 约束内重建；本函数只提前唤醒任务进入重规划，
+    不做通用 future→now rewrite（scheduled_at 保持原值）。
+    """
     actions = session.scalars(
         select(Action).where(
             Action.task_id == task.id,
@@ -54,8 +60,6 @@ def accelerate_future_replacements(
         )
     )
     replacements = [action for action in actions if _attempt_no(action) > 1]
-    for action in replacements:
-        action.scheduled_at = now_value
     if replacements:
         _wake_task(task, now_value)
     return len(replacements)

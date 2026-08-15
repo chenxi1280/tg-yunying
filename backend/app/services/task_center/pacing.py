@@ -9,6 +9,7 @@ from app.services._common import _now
 from app.timezone import BEIJING_TZ
 
 from .pacing_curve_schedule import curve_schedule_times
+from .pacing_stratified import stable_slot_due_times
 
 
 TEMPLATES = {
@@ -34,101 +35,6 @@ def _operation_curve(config: dict) -> list[int]:
         except (TypeError, ValueError):
             curve.append(0)
     return curve
-
-
-def cumulative_pacing_due(
-    total_target: int,
-    config: dict,
-    *,
-    anchor_at: datetime,
-    period_start_at: datetime,
-    period_end_at: datetime,
-    now: datetime,
-) -> int:
-    target = max(0, int(total_target or 0))
-    period_start = _wall_time(period_start_at)
-    period_end = _wall_time(period_end_at)
-    anchor = max(period_start, _wall_time(anchor_at))
-    timestamp = min(_wall_time(now), period_end)
-    if target <= 0 or period_end <= period_start or timestamp <= anchor:
-        return 0
-    curve = _positive_hourly_curve(config)
-    elapsed_weight = _weighted_seconds(anchor, timestamp, curve)
-    period_weight = _weighted_seconds(period_start, period_end, curve)
-    due = math.floor(target * elapsed_weight / max(1.0, period_weight))
-    return max(1, min(target, due))
-
-
-def task_pacing_anchor(task) -> datetime | None:
-    stats = task.stats if isinstance(task.stats, dict) else {}
-    runtime_candidates = [
-        _parse_datetime(stats.get("pacing_anchor_at")),
-        _parse_datetime(stats.get("started_at")),
-    ]
-    runtime_values = [
-        _wall_time(value)
-        for value in runtime_candidates
-        if value is not None
-    ]
-    runtime_start = max(runtime_values) if runtime_values else None
-    scheduled_start = _wall_time(task.scheduled_start) if task.scheduled_start else None
-    if runtime_start and scheduled_start:
-        return max(runtime_start, scheduled_start)
-    return runtime_start or scheduled_start or _wall_time(task.created_at)
-
-
-def source_rolling_pacing_due(
-    total_target: int,
-    config: dict,
-    *,
-    task,
-    source_observed_at: datetime,
-    now: datetime,
-) -> int:
-    source_anchor = _wall_time(source_observed_at)
-    task_anchor = task_pacing_anchor(task)
-    anchor = max(source_anchor, task_anchor) if task_anchor else source_anchor
-    return cumulative_pacing_due(
-        total_target,
-        config,
-        anchor_at=anchor,
-        period_start_at=anchor,
-        period_end_at=anchor + timedelta(days=1),
-        now=now,
-    )
-
-
-def _parse_datetime(value) -> datetime | None:
-    if isinstance(value, datetime):
-        return value
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(str(value))
-    except ValueError as exc:
-        raise ValueError("task_pacing_anchor_invalid") from exc
-
-
-def _wall_time(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value
-    return value.astimezone(BEIJING_TZ).replace(tzinfo=None)
-
-
-def _positive_hourly_curve(config: dict) -> list[int]:
-    curve = _operation_curve(_effective_fulfillment_config(config))
-    return [max(1, value) for value in curve] if curve else [1] * 24
-
-
-def _weighted_seconds(start: datetime, end: datetime, curve: list[int]) -> float:
-    cursor = start
-    total = 0.0
-    while cursor < end:
-        next_hour = cursor.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
-        boundary = min(end, next_hour)
-        total += curve[cursor.hour] * (boundary - cursor).total_seconds()
-        cursor = boundary
-    return total
 
 
 def current_hour_rounds(config: dict, value: datetime | None = None) -> int:
@@ -321,6 +227,9 @@ def schedule_times(
     )
 
 
+PACING_CONTRACT_VERSION = "deterministic_stratified_v1"
+
+
 def schedule_due_times(
     total_actions: int,
     config: dict,
@@ -329,12 +238,19 @@ def schedule_due_times(
     deadline_at: datetime | None = None,
     timezone_name: str | None = None,
     deadline_is_utc: bool = False,
+    seed_id: str = "",
+    slot_keys: list[str] | None = None,
+    period_start_at: datetime | None = None,
+    plan_total: int | None = None,
+    slot_ordinals: list[int] | None = None,
 ) -> list[datetime]:
+    """按冻结计划 identity 生成确定性分层随机 due 时间。"""
     if total_actions <= 0:
         return []
+    config = _effective_fulfillment_config(config or {})
     earliest = _next_active_time(
-        start_at or _now(),
-        config or {},
+        period_start_at or start_at or _now(),
+        config,
         timezone_name=timezone_name,
     )
     deadline = _schedule_deadline(
@@ -342,9 +258,23 @@ def schedule_due_times(
         earliest,
         deadline_is_utc=deadline_is_utc,
     )
+    if deadline is None:
+        # 无显式 deadline 时按 period 日窗口分桶（调用方 current 合同应始终
+        # 传 ledger/滚动 deadline；此缺省仅保证函数有界）
+        deadline = earliest + timedelta(hours=24)
     if not _before_half_open_deadline(earliest, deadline):
         return []
-    return [earliest for _ in range(total_actions)]
+    keys = list(slot_keys or [f"{seed_id}#{index}" for index in range(total_actions)])
+    ordinals = list(slot_ordinals or range(total_actions))
+    return stable_slot_due_times(
+        plan_total=int(plan_total or total_actions),
+        slot_keys=keys,
+        slot_ordinals=ordinals,
+        period_start_at=earliest,
+        deadline_at=deadline,
+        hourly_curve=_operation_curve(config),
+        seed_id=seed_id,
+    )
 
 
 def _schedule_deadline(
@@ -353,9 +283,14 @@ def _schedule_deadline(
     *,
     deadline_is_utc: bool,
 ) -> datetime | None:
-    if deadline_at is None or not deadline_is_utc:
-        return deadline_at
-    source = deadline_at if deadline_at.tzinfo else deadline_at.replace(tzinfo=timezone.utc)
+    if deadline_at is None:
+        return None
+    if deadline_at.tzinfo is None:
+        if not deadline_is_utc:
+            return deadline_at
+        source = deadline_at.replace(tzinfo=timezone.utc)
+    else:
+        source = deadline_at
     if reference.tzinfo is None:
         return source.astimezone(BEIJING_TZ).replace(tzinfo=None)
     return source.astimezone(reference.tzinfo)
@@ -528,6 +463,13 @@ def ai_next_run_after(config: dict, value: datetime | None = None) -> datetime:
         current + timedelta(seconds=interval_seconds),
         effective,
     )
+
+
+from .pacing_progress import (  # noqa: E402
+    cumulative_pacing_due,
+    source_rolling_pacing_due,
+    task_pacing_anchor,
+)
 
 
 __all__ = [

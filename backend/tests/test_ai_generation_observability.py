@@ -63,6 +63,11 @@ def test_phase_c_generation_attempt_does_not_update_task_stats_hot_row() -> None
                     sequence_index=1,
                 ),
                 voice_profile_anchor_rewritten=True,
+                evaluator_evidence={
+                    "semantic_grounding": {
+                        "decision_code": "semantic_anchor_supported",
+                    },
+                },
             )],
             tokens=7,
         )
@@ -72,6 +77,8 @@ def test_phase_c_generation_attempt_does_not_update_task_stats_hot_row() -> None
         assert action.payload["voice_profile_contract_version"] == "style_only_v2"
         assert action.result["voice_profile_contract_version"] == "style_only_v2"
         assert action.result["voice_profile_anchor_rewritten"] is True
+        assert len(action.candidate_hash) == 64
+        assert action.result["evaluator_evidence"]["semantic_grounding"]["decision_code"] == "semantic_anchor_supported"
         assert task.stats == {}
         assert not any(statement.startswith("update tasks ") for statement in statements)
 

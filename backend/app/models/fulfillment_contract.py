@@ -88,6 +88,11 @@ class TaskGroupDailyMessageSlot(Base):
     )
     slot_kind: Mapped[str] = mapped_column(String(24))
     slot_ordinal: Mapped[int] = mapped_column(Integer)
+    pacing_contract_version: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    pacing_plan_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    pacing_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    release_not_before_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    pacing_plan_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
     state: Mapped[str] = mapped_column(String(32), default="open")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 

@@ -54,5 +54,5 @@ def test_account_batch_login_schema_migrates_from_blank_postgres() -> None:
     )
     with engine.connect() as connection:
         assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
-            "0148_account_batch_login"
+            "0149_pacing_slot_fields"
         )

@@ -63,12 +63,17 @@ def test_channel_view_uses_beijing_wall_time_for_aware_utc_ledger_deadline(
     deadline = datetime(2026, 8, 11, 16, 0, tzinfo=timezone.utc)
     monkeypatch.setattr(channel_view, "_now", lambda: now_value)
 
-    assert channel_view._view_schedule_times(
+    planned = channel_view._view_schedule_times(
         object(),
         task,
         2,
         deadline_at=deadline,
-    ) == [now_value, now_value]
+    )
+    # deterministic_stratified_v1：分层随机分布，不再是同刻 earliest；
+    # 北京墙钟 deadline（次日 0 点）语义保持
+    assert len(planned) == 2
+    assert all(now_value <= value < datetime(2026, 8, 12, 0, 0) for value in planned)
+    assert len(set(planned)) == 2
     assert channel_view._ledger_deadline_for_planned_at(
         deadline,
         now_value,

@@ -275,6 +275,7 @@ class Settings:
     ai_provider_cooldown_default_seconds: int = int(os.getenv("AI_PROVIDER_COOLDOWN_DEFAULT_SECONDS", "30"))
     ai_provider_cooldown_max_seconds: int = int(os.getenv("AI_PROVIDER_COOLDOWN_MAX_SECONDS", "3600"))
     ai_provider_probe_ttl_seconds: int = int(os.getenv("AI_PROVIDER_PROBE_TTL_SECONDS", "60"))
+    account_soft_pacing_min_gap_seconds: int = int(os.getenv("ACCOUNT_SOFT_PACING_MIN_GAP_SECONDS", "20"))
     action_claim_limit: int = int(os.getenv("ACTION_CLAIM_LIMIT", "100"))
     action_claim_seconds: int = int(os.getenv("ACTION_CLAIM_SECONDS", "60"))
     dispatcher_claim_scope: str = os.getenv("DISPATCHER_CLAIM_SCOPE", "task_center_dispatch")

@@ -279,6 +279,10 @@ export type TaskCenterAction = {
   account_username?: string | null;
   scheduled_at: string;
   executed_at: string | null;
+  pacing_due_at: string | null;
+  release_not_before_at: string | null;
+  effective_claim_at: string | null;
+  pacing_slot_key: string;
   status: string;
   payload: Record<string, any>;
   result: Record<string, any>;
@@ -438,10 +442,32 @@ export type TaskMembershipAdmissionItem = {
   updated_at: string;
 };
 
+export type TaskPacingSummary = {
+  pacing_contract_version?: string;
+  slot_count?: number;
+  future?: number;
+  due?: number;
+  late?: number;
+  confirmed?: number;
+  remote_unknown?: number;
+  missed?: number;
+  earliest_due_at?: string | null;
+  latest_due_at?: string | null;
+  same_second_count?: number;
+  due_at_unique_ratio?: number;
+  five_minute_peak?: { count?: number; upper_bound?: number; window_seconds?: number };
+  account_min_executed_gap_seconds?: number | null;
+  account_executed_gap_p50_seconds?: number | null;
+  account_executed_gap_p95_seconds?: number | null;
+  future_to_now_rewrite_count?: number;
+  sampled?: boolean;
+};
+
 export type TaskCenterDetail = {
   task: TaskCenterTask;
   actions: TaskCenterAction[];
   stats: TaskCenterStats;
+  pacing_summary?: TaskPacingSummary;
   rank_deboost_exempt_group?: SearchRankDeboostExemptGroup | null;
   task_runtime_summary?: TaskRuntimeSummary | null;
   operation_plan_links?: Array<{ id: number; plan_id: number; target_id: number | null; task_id: string; relation: string; status: string; created_at: string }>;

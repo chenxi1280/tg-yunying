@@ -1116,6 +1116,8 @@ export default function TaskCenterView({
       rule_set_id: values.rule_set_id ?? null,
       rule_set_version_id: values.rule_set_version_id ?? null,
       ai_model: values.ai_model ?? '',
+      ai_two_stage_enabled: Boolean(values.ai_two_stage_enabled),
+      ai_semantic_reviewer_model: values.ai_semantic_reviewer_model?.trim() ?? '',
       comment_style: values.comment_style ?? 'mixed',
       topic_hint: values['topic_hint'] ?? '',
       system_prompt_override: values.system_prompt_override ?? '',
@@ -1294,6 +1296,8 @@ export default function TaskCenterView({
         teacher_targets: parseChatTargetLines(values.teacher_targets),
         chat_history_depth: values.chat_history_depth ?? 50,
         ai_model: values.ai_model ?? '',
+        ai_two_stage_enabled: Boolean(values.ai_two_stage_enabled),
+        ai_semantic_reviewer_model: values.ai_semantic_reviewer_model?.trim() ?? '',
         system_prompt_override: values.system_prompt_override ?? '',
         slang_prompt_template_id: values.slang_prompt_template_id ?? null,
         slang_terms: parseKeyValueMap(values.slang_terms),
@@ -1377,6 +1381,8 @@ export default function TaskCenterView({
         teacher_targets: parseChatTargetLines(values.teacher_targets, existingTypeConfig.teacher_targets),
         chat_history_depth: values.chat_history_depth ?? 50,
         ai_model: values.ai_model ?? '',
+        ai_two_stage_enabled: Boolean(values.ai_two_stage_enabled),
+        ai_semantic_reviewer_model: values.ai_semantic_reviewer_model?.trim() ?? '',
         system_prompt_override: values.system_prompt_override ?? '',
         slang_prompt_template_id: values.slang_prompt_template_id ?? null,
         slang_terms: parseKeyValueMap(values.slang_terms),
@@ -1860,7 +1866,9 @@ export default function TaskCenterView({
   }
 
   const planColumns: ColumnsType<TaskCenterAction> = [
-    { title: '计划执行时间', dataIndex: 'scheduled_at', width: 190, render: (value) => formatDateTime(value) },
+    { title: '原始节奏时间', key: 'due', width: 190, render: (_, action) => formatDateTime(action.pacing_due_at) },
+    { title: '有效执行时间', key: 'effective', width: 190, render: (_, action) => formatDateTime(action.effective_claim_at || action.scheduled_at) },
+    { title: '节奏槽位', dataIndex: 'pacing_slot_key', width: 150, ellipsis: true, render: (value) => value || '-' },
     { title: '动作', dataIndex: 'action_type', width: 120, render: (value) => actionLabel(value) },
     { title: '账号', key: 'account', width: 170, render: (_, action) => actionAccountDisplay(action) },
     { title: '状态', dataIndex: 'status', width: 110, render: (value) => <ActionStatusBadge status={value} /> },
@@ -1871,7 +1879,8 @@ export default function TaskCenterView({
 
   const recordColumns: ColumnsType<TaskCenterAction> = [
     { title: '动作', dataIndex: 'action_type', width: 120, render: (value) => actionLabel(value) },
-    { title: '计划执行时间', dataIndex: 'scheduled_at', width: 190, render: (value) => formatDateTime(value) },
+    { title: '原始节奏时间', key: 'due', width: 190, render: (_, action) => formatDateTime(action.pacing_due_at) },
+    { title: '有效执行时间', key: 'effective', width: 190, render: (_, action) => formatDateTime(action.effective_claim_at || action.scheduled_at) },
     { title: '实际执行时间', dataIndex: 'executed_at', width: 190, render: (value) => formatDateTime(value) },
     { title: '账号', key: 'account', width: 170, render: (_, action) => actionAccountDisplay(action) },
     { title: '状态', dataIndex: 'status', width: 110, render: (value) => <ActionStatusBadge status={value} /> },

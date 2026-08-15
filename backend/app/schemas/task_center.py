@@ -6,6 +6,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.ai_gateway import canonical_ai_model_identity
 from app.search_keywords import normalized_keyword_hash, strict_keyword_materials
 from app.security import encrypt_secret
 
@@ -316,6 +317,8 @@ class GroupAIChatConfig(BaseModel):
     fact_anchor_required: bool = True
     semantic_repeat_window: int = Field(default=10, ge=1, le=100)
     low_confidence_silence_enabled: bool = True
+    ai_two_stage_enabled: bool = False
+    ai_semantic_reviewer_model: str = ""
 
     @field_validator("topic_directions", mode="before")
     @classmethod
@@ -335,6 +338,7 @@ class GroupAIChatConfig(BaseModel):
             raise ValueError("reply_min_per_round 不能大于 messages_per_round")
         if not self.group_bot_admission_required:
             raise ValueError("AI 活跃群必须启用群管机器人准入")
+        _validate_semantic_reviewer(self)
         return self
 
 
@@ -470,6 +474,8 @@ class ChannelCommentConfig(ChannelMessageScopeConfig):
     max_comment_length: int | None = Field(default=None, ge=1)
     max_comments_per_account_per_hour: int = Field(default=1_000_000, ge=1, le=1_000_000)
     require_review: bool = False
+    ai_two_stage_enabled: bool = False
+    ai_semantic_reviewer_model: str = ""
 
     @model_validator(mode="after")
     def disable_manual_review(self) -> "ChannelCommentConfig":
@@ -477,8 +483,26 @@ class ChannelCommentConfig(ChannelMessageScopeConfig):
             raise ValueError("comment_mode=reply 时 reply_to_message_ids 必填")
         if self.reply_min_per_message > self.target_comments_per_message:
             raise ValueError("reply_min_per_message 不能大于 target_comments_per_message")
+        _validate_semantic_reviewer(self)
         self.require_review = False
         return self
+
+
+def _validate_semantic_reviewer(config: GroupAIChatConfig | ChannelCommentConfig) -> None:
+    if not config.ai_two_stage_enabled:
+        return
+    generator_model = config.ai_model.strip()
+    reviewer_model = config.ai_semantic_reviewer_model.strip()
+    if not generator_model:
+        raise ValueError("启用两阶段生成时必须显式配置生成模型")
+    if not reviewer_model:
+        raise ValueError("启用两阶段生成时必须配置独立语义评审模型")
+    if _ai_model_identity(reviewer_model) == _ai_model_identity(generator_model):
+        raise ValueError("语义评审模型必须与生成模型不同")
+
+
+def _ai_model_identity(model_name: str) -> str:
+    return canonical_ai_model_identity(model_name)
 
 
 class GroupMembershipAdmissionPacingConfig(BaseModel):
@@ -1295,6 +1319,10 @@ class ActionOut(ApiModel):
     account_username: str | None = ""
     scheduled_at: datetime
     executed_at: datetime | None
+    pacing_due_at: datetime | None = None
+    release_not_before_at: datetime | None = None
+    effective_claim_at: datetime | None = None
+    pacing_slot_key: str = ""
     status: str
     payload: dict[str, Any]
     result: dict[str, Any]
@@ -1308,6 +1336,12 @@ class ActionOut(ApiModel):
     operation_issue_status: str = ""
     operation_issue_rolled_up: bool = False
     created_at: datetime
+
+    @field_validator("pacing_slot_key", mode="before")
+    @classmethod
+    def _none_pacing_slot_key_to_empty(cls, value: Any) -> Any:
+        # legacy / 未冻结节奏槽位的 Action 该列为 NULL；读模型统一投影为空串。
+        return "" if value is None else value
 
 
 class ExecutionAttemptOut(ApiModel):
@@ -1517,6 +1551,7 @@ class TaskDetailOut(BaseModel):
     task: TaskOut
     actions: list[ActionOut]
     stats: dict[str, Any]
+    pacing_summary: dict[str, Any] = Field(default_factory=dict)
     rank_deboost_exempt_group: SearchRankDeboostExemptGroupResponse | None = None
     task_runtime_summary: TaskRuntimeSummaryOut | None = None
     operation_plan_links: list[OperationPlanTaskLinkOut] = Field(default_factory=list)

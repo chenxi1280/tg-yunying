@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+from dataclasses import dataclass
 from datetime import datetime
 
 from sqlalchemy.orm import Session
@@ -8,7 +9,12 @@ from sqlalchemy.orm import Session
 from app.models import ChannelMessage, OperationTarget, Task
 from app.services._common import _now
 
-from ..account_pool import daily_uncovered_account_count, select_task_accounts
+from ..account_pacing_guard import (
+    AccountPacingDeadlineExceeded,
+    bind_account_pacing_reservation,
+    reserve_account_pacing,
+)
+from ..account_pool import select_task_accounts
 from ..channel_fulfillment import (
     bind_obligation_action,
     ensure_reaction_obligation,
@@ -18,14 +24,32 @@ from ..channel_fulfillment import (
 from ..channel_membership import channel_member_accounts, gate_channel_membership
 from ..fulfillment_activation import CURRENT_CONTRACT_VERSION
 from ..pacing import next_local_day_deadline, schedule_times, source_rolling_pacing_due
+from ..pacing_persistence import freeze_action_pacing, freeze_pacing_owner
+from ..pacing_quantity import deterministic_quantity_with_jitter, deterministic_rank
 from ..payloads import LikeMessagePayload, create_like_action
 from ..schedule_reservation import reserve_task_schedule_times
-from .common import adjust_for_account_hour_limit, channel_message_payload, channel_scope, quantity_jitter_bounds, quantity_with_jitter, record_channel_capacity_warning
+from ..source_pacing import (
+    SourcePacingSlot,
+    rolling_source_window,
+    schedule_source_pacing_points,
+    source_pacing_plan_hash,
+    wall_datetime,
+)
+from .common import adjust_for_account_hour_limit, channel_message_payload, channel_scope, quantity_jitter_bounds, record_channel_capacity_warning
 
 PRIMARY_REACTION_RATIO = 0.7
 EXTRA_REACTION_RATIO = 0.1
 MIN_EXTRA_REACTION_QUANTITY = 10
 DEFAULT_EXTRA_REACTIONS = ("👏", "🎉", "😁", "🤩", "👌", "🙏", "💯", "⚡")
+
+
+@dataclass(frozen=True)
+class LikePlanItem:
+    message: ChannelMessage
+    account_id: int
+    reaction: str
+    slot_ordinal: int
+    plan_total: int
 
 
 def build_plan(session: Session, task: Task) -> int:
@@ -42,21 +66,8 @@ def build_plan(session: Session, task: Task) -> int:
         return 0
     reactions = config.get("allowed_reactions") or ["👍"]
     target_per_message = int(config.get("target_likes_per_message") or 1)
-    _lower, max_target_per_message = quantity_jitter_bounds(target_per_message, float(config.get("like_count_jitter") or 0))
-    account_scan_limit = max(max_target_per_message, int((task.account_config or {}).get("max_concurrent") or max_target_per_message))
-    accounts = channel_member_accounts(
-        session,
-        task,
-        channel,
-        select_task_accounts(
-            session,
-            task.tenant_id,
-            task.account_config or {},
-            limit=account_scan_limit,
-            enforce_max_concurrent=False,
-            daily_coverage_task_id=task.id,
-            daily_coverage_action_types=("like_message",),
-        ),
+    accounts = _like_accounts(
+        session, task, channel=channel, config=config, target=target_per_message,
     )
     if not accounts:
         task.last_error = "没有可用账号，等待账号恢复后继续执行"
@@ -90,57 +101,195 @@ def build_plan(session: Session, task: Task) -> int:
     )
 
 
+def _like_accounts(
+    session: Session,
+    task: Task,
+    *,
+    channel: OperationTarget,
+    config: dict,
+    target: int,
+) -> list:
+    _lower, maximum = quantity_jitter_bounds(
+        target,
+        float(config.get("like_count_jitter") or 0),
+    )
+    configured = int((task.account_config or {}).get("max_concurrent") or maximum)
+    candidates = select_task_accounts(
+        session,
+        task.tenant_id,
+        task.account_config or {},
+        limit=max(maximum, configured),
+        enforce_max_concurrent=False,
+        daily_coverage_task_id=task.id,
+        daily_coverage_action_types=("like_message",),
+    )
+    return channel_member_accounts(session, task, channel, candidates)
+
+
 def _create_like_actions(
     session: Session,
     task: Task,
     *,
     channel: OperationTarget,
     config: dict,
-    actions: list[tuple[ChannelMessage, int, str]],
+    actions: list[LikePlanItem],
 ) -> int:
     now_value = _now()
-    deadline_at = (
-        None
-        if task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION
-        else next_local_day_deadline(now_value, task.timezone)
-    )
-    times = schedule_times(
-        len(actions),
-        task.pacing_config or {},
-        start_at=now_value,
-        deadline_at=deadline_at,
-        preserve_minimum_spacing=True,
-    )
-    times = reserve_task_schedule_times(
-        session,
-        task,
-        "like_message",
-        times,
-        pacing_config=task.pacing_config or {},
-        deadline_at=deadline_at,
+    owners = {
+        _like_slot_key(task, item): ensure_reaction_obligation(
+            session, task, item.message, item.account_id,
+        )
+        for item in actions
+    }
+    points_by_slot = _like_due_by_slot(
+        session, task, actions=actions, owners=owners, now_at=now_value,
     )
     created = 0
-    for (message, account_id, reaction), planned_at in zip(actions, times, strict=False):
-        planned_at = adjust_for_account_hour_limit(session, task, account_id, "like_message", planned_at, config)
-        obligation = ensure_reaction_obligation(session, task, message, account_id)
-        if not obligation_accepts_new_action(obligation):
+    if task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION and len(points_by_slot) < len(actions):
+        _record_like_shortfall(task, len(actions), len(points_by_slot))
+    for item in actions:
+        slot_key = _like_slot_key(task, item)
+        point = points_by_slot.get(slot_key)
+        if point is None:
             continue
-        payload = LikeMessagePayload(
-            **channel_message_payload(channel, message),
-            reaction_emoji=reaction,
-            reaction_contract_version=obligation.reaction_contract_version,
-            reaction_fulfillment_obligation_id=obligation.id,
+        due_at = point.due_at if hasattr(point, "due_at") else point
+        release_at = (
+            point.release_not_before_at if hasattr(point, "release_not_before_at")
+            else due_at
         )
-        action = create_like_action(
-            session,
-            task,
-            account_id,
-            planned_at,
-            payload,
+        created += _create_one_like_action(
+            session, task, channel=channel, config=config, item=item,
+            obligation=owners[slot_key], due_at=due_at, release_at=release_at,
         )
-        bind_obligation_action(obligation, action)
-        created += 1
     return created
+
+
+def _like_due_by_slot(
+    session: Session,
+    task: Task,
+    *,
+    actions: list[LikePlanItem],
+    owners: dict[str, object],
+    now_at,
+) -> dict[str, object]:
+    if task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION:
+        return schedule_source_pacing_points(
+            [
+                _like_source_slot(
+                    task,
+                    item,
+                    release_not_before_at=owners[
+                        _like_slot_key(task, item)
+                    ].release_not_before_at,
+                )
+                for item in actions
+            ],
+            task.pacing_config or {},
+            now_at=wall_datetime(now_at),
+            timezone_name=task.timezone,
+            seed_id=f"like:{task.id}",
+        )
+    deadline = next_local_day_deadline(now_at, task.timezone)
+    times = schedule_times(
+        len(actions), task.pacing_config or {}, start_at=now_at,
+        deadline_at=deadline, preserve_minimum_spacing=True,
+    )
+    times = reserve_task_schedule_times(
+        session, task, "like_message", times,
+        pacing_config=task.pacing_config or {}, deadline_at=deadline,
+    )
+    return {
+        _like_slot_key(task, item): due_at
+        for item, due_at in zip(actions, times, strict=False)
+    }
+
+
+def _create_one_like_action(
+    session: Session,
+    task: Task,
+    *,
+    channel: OperationTarget,
+    config: dict,
+    item: LikePlanItem,
+    obligation,
+    due_at,
+    release_at,
+) -> int:
+    if not obligation_accepts_new_action(obligation):
+        return 0
+    planned_at = adjust_for_account_hour_limit(
+        session, task, item.account_id, "like_message", due_at, config,
+    )
+    schedule = _like_account_schedule(
+        session, task, item=item, obligation=obligation,
+        due_at=due_at, release_at=release_at, planned_at=planned_at,
+    )
+    if schedule is None:
+        return 0
+    planned_at, reservation = schedule
+    payload = LikeMessagePayload(
+        **channel_message_payload(channel, item.message),
+        reaction_emoji=item.reaction,
+        reaction_contract_version=obligation.reaction_contract_version,
+        reaction_fulfillment_obligation_id=obligation.id,
+    )
+    action = create_like_action(session, task, item.account_id, planned_at, payload)
+    if task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION:
+        freeze_action_pacing(action, obligation, slot_key=_like_slot_key(task, item))
+        bind_account_pacing_reservation(reservation, action)
+    bind_obligation_action(obligation, action)
+    return 1
+
+
+def _like_account_schedule(
+    session: Session,
+    task: Task,
+    *,
+    item: LikePlanItem,
+    obligation,
+    due_at,
+    release_at,
+    planned_at,
+):
+    if task.fulfillment_contract_version != CURRENT_CONTRACT_VERSION:
+        return planned_at, None
+    source = _like_source_slot(task, item)
+    freeze_pacing_owner(
+        obligation,
+        plan_hash=source_pacing_plan_hash(
+            source, task.pacing_config or {}, seed_id=f"like:{task.id}",
+        ),
+        slot_ordinal=item.slot_ordinal,
+        plan_total=item.plan_total,
+        due_at=due_at,
+        release_not_before_at=release_at,
+    )
+    try:
+        reservation = reserve_account_pacing(
+            session, tenant_id=task.tenant_id, task_id=task.id,
+            account_id=item.account_id, slot_key=_like_slot_key(task, item),
+            due_at=due_at,
+            release_not_before_at=max(release_at, planned_at),
+            deadline_at=source.deadline_at,
+        )
+    except AccountPacingDeadlineExceeded:
+        _record_like_shortfall(task, 1, 0)
+        return None
+    return reservation.effective_claim_at, reservation
+
+
+def _record_like_shortfall(task: Task, requested: int, scheduled: int) -> None:
+    """来源滚动窗口内无合法节奏窗口时守恒可见：不压缩追量，记录 typed shortfall。"""
+    stats = dict(task.stats or {})
+    stats["pacing_schedule_shortfall_count"] = int(stats.get("pacing_schedule_shortfall_count") or 0) + (requested - scheduled)
+    stats["pacing_schedule_shortfall"] = {
+        "reason_code": "pacing_capacity_shortfall",
+        "requested": requested,
+        "scheduled": scheduled,
+    }
+    task.stats = stats
+    if scheduled == 0:
+        task.last_error = "来源滚动窗口内无合法节奏窗口可安排点赞义务，形成 pacing shortfall"
 
 
 def _like_actions_for_messages(
@@ -154,20 +303,59 @@ def _like_actions_for_messages(
     account_ids_by_message: dict[int, set[int]],
     *,
     now: datetime,
-) -> list[tuple[ChannelMessage, int, str]]:
-    coverage_remaining = daily_uncovered_account_count(session, task.id, ("like_message",), accounts)
-    actions: list[tuple[ChannelMessage, int, str]] = []
+) -> list[LikePlanItem]:
+    actions: list[LikePlanItem] = []
     for message in messages:
         used_accounts = account_ids_by_message[message.id]
-        available_accounts = [account for account in accounts if account.id not in used_accounts]
-        base_desired = quantity_with_jitter(target_per_message, float(config.get("like_count_jitter") or 0))
-        desired = _paced_like_target(task, message, base_desired, now=now)
-        target_deficit = max(0, desired - len(used_accounts))
-        quantity = min(target_deficit, len(available_accounts))
-        message_reactions = _reaction_plan(reactions, quantity, str(config.get("reaction_type") or "random"))
-        actions.extend((message, available_accounts[index].id, message_reactions[index]) for index in range(quantity))
-        coverage_remaining = max(0, coverage_remaining - quantity)
+        seed_id = f"like:{task.id}:{message.id}"
+        plan_total = deterministic_quantity_with_jitter(
+            target_per_message,
+            float(config.get("like_count_jitter") or 0),
+            seed_id=seed_id,
+        )
+        ranked = sorted(accounts, key=lambda account: deterministic_rank(seed_id, str(account.id)))
+        selected = ranked[: min(plan_total, len(ranked))]
+        plan_total = len(selected)
+        desired = min(plan_total, _paced_like_target(task, message, plan_total, now=now))
+        message_reactions = _reaction_plan(
+            reactions,
+            plan_total,
+            str(config.get("reaction_type") or "random"),
+            seed_id=seed_id,
+        )
+        for ordinal, account in enumerate(selected[:desired]):
+            if account.id in used_accounts:
+                continue
+            actions.append(LikePlanItem(
+                message,
+                account.id,
+                message_reactions[ordinal],
+                ordinal,
+                plan_total,
+            ))
     return actions
+
+
+def _like_slot_key(task: Task, item: LikePlanItem) -> str:
+    return f"like:{task.id}:{item.message.id}:{item.account_id}"
+
+
+def _like_source_slot(
+    task: Task,
+    item: LikePlanItem,
+    *,
+    release_not_before_at=None,
+) -> SourcePacingSlot:
+    period_start, deadline = rolling_source_window(task, item.message.created_at)
+    return SourcePacingSlot(
+        source_key=str(item.message.id),
+        slot_key=_like_slot_key(task, item),
+        slot_ordinal=item.slot_ordinal,
+        plan_total=item.plan_total,
+        period_start_at=period_start,
+        deadline_at=deadline,
+        release_not_before_at=release_not_before_at,
+    )
 
 
 def _paced_like_target(
@@ -219,7 +407,13 @@ def _all_like_targets_reached(
     return all(len(account_ids_by_message[message.id]) >= target for message in messages)
 
 
-def _reaction_plan(reactions: list[str], quantity: int, reaction_type: str = "random") -> list[str]:
+def _reaction_plan(
+    reactions: list[str],
+    quantity: int,
+    reaction_type: str = "random",
+    *,
+    seed_id: str = "",
+) -> list[str]:
     normalized = _normalize_reactions(reactions)
     if quantity <= 0:
         return []
@@ -229,9 +423,10 @@ def _reaction_plan(reactions: list[str], quantity: int, reaction_type: str = "ra
     extra_count = _extra_reaction_count(normalized, quantity, primary_count)
     secondary_count = max(0, quantity - primary_count - extra_count)
     plan = [normalized[0]] * primary_count
-    plan.extend(_secondary_reactions(normalized[1:], secondary_count))
-    plan.extend(_extra_reactions(normalized, extra_count))
-    random.shuffle(plan)
+    rng = random.Random(deterministic_rank(seed_id, "reaction-plan"))
+    plan.extend(_secondary_reactions(normalized[1:], secondary_count, rng=rng))
+    plan.extend(_extra_reactions(normalized, extra_count, rng=rng))
+    rng.shuffle(plan)
     return plan
 
 
@@ -259,19 +454,24 @@ def _extra_reaction_count(reactions: list[str], quantity: int, primary_count: in
     return min(extra_room, len(extra_pool), max(1, round(quantity * EXTRA_REACTION_RATIO)))
 
 
-def _secondary_reactions(reactions: list[str], quantity: int) -> list[str]:
+def _secondary_reactions(reactions: list[str], quantity: int, *, rng: random.Random) -> list[str]:
     if quantity <= 0 or not reactions:
         return []
     guaranteed = list(reactions[: min(quantity, len(reactions))])
     remaining = quantity - len(guaranteed)
-    selected = guaranteed + random.choices(reactions, k=remaining)
-    random.shuffle(selected)
+    selected = guaranteed + rng.choices(reactions, k=remaining)
+    rng.shuffle(selected)
     return selected
 
 
-def _extra_reactions(configured_reactions: list[str], quantity: int) -> list[str]:
+def _extra_reactions(
+    configured_reactions: list[str],
+    quantity: int,
+    *,
+    rng: random.Random,
+) -> list[str]:
     extra_pool = [reaction for reaction in DEFAULT_EXTRA_REACTIONS if reaction not in configured_reactions]
-    return random.sample(extra_pool, k=min(quantity, len(extra_pool)))
+    return rng.sample(extra_pool, k=min(quantity, len(extra_pool)))
 
 
 __all__ = ["build_plan"]

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from uuid import uuid4
@@ -88,6 +90,12 @@ def finish_generation_job(
         if job is None or job.generation_owner_id != claim.owner:
             raise RuntimeError("parallel_generation_job_claim_lost")
         job.state = state
+        action = session.get(Action, claim.action_id)
+        if action is not None:
+            job.candidate_hash = str(action.candidate_hash or "")
+            job.evaluator_evidence = dict(
+                (action.result or {}).get("evaluator_evidence") or {},
+            )
         job.generation_owner_id = ""
         job.lease_expires_at = None
         job.job_version = int(job.job_version or 1) + 1
@@ -162,6 +170,18 @@ def _generation_job(session: Session, action: Action) -> GenerationJob:
         "obligation_id": action.obligation_id,
         "generation_sequence": int(action.materialization_version or 1),
         "context_snapshot_version": _context_version(action),
+        "generation_not_before_at": (
+            action.effective_claim_at
+            or action.release_not_before_at
+            or action.scheduled_at
+        ),
+        "context_snapshot_hash": _context_hash(action),
+        "assignment_revision": int(action.assignment_revision or 1),
+        "intent_revision": int(action.intent_revision or 1),
+        "candidate_hash": str(action.candidate_hash or ""),
+        "evaluator_evidence": dict(
+            (action.result or {}).get("evaluator_evidence") or {},
+        ),
     }
     table = GenerationJob.__table__
     statement = pg_insert(table) if session.get_bind().dialect.name == "postgresql" else sqlite_insert(table)
@@ -254,6 +274,22 @@ def _job_available(job: GenerationJob, now_value: datetime) -> bool:
 def _context_version(action: Action) -> int:
     payload = dict(action.payload or {})
     return int(payload.get("context_snapshot_version") or 1)
+
+
+def _context_hash(action: Action) -> str:
+    payload = dict(action.payload or {})
+    snapshot = {
+        "context_message_ids": payload.get("context_message_ids") or [],
+        "reply_to_message_id": payload.get("reply_to_message_id"),
+        "context_snapshot_version": _context_version(action),
+    }
+    encoded = json.dumps(
+        snapshot,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 __all__ = [

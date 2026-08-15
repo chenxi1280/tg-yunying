@@ -51,6 +51,7 @@ class PostCommentPayload(ViewMessagePayload):
     ai_generation_request_id: str = ""
     ai_generation_claim_owner: str = ""
     ai_generation_claim_token: str = ""
+    generation_job_id: str = ""
     ai_generation_attempt_history: list[dict[str, Any]] = Field(default_factory=list)
     comment_generation_attempts: list[dict[str, Any]] = Field(default_factory=list)
     ai_generation_result_cache: dict[str, Any] = Field(default_factory=dict)

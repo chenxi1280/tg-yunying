@@ -22,6 +22,41 @@ from app.services.task_center.service import drain_task_center
 from fastapi.testclient import TestClient
 import pytest
 from sqlalchemy import func, inspect, select
+
+
+def force_due_actions(task_id: str) -> int:
+    """测试辅助：模拟时间流逝，把任务未到期的 pending Action 拉到当前时刻。
+
+    deterministic_stratified_v1 合同下 v3 任务的 due_at 分层随机分布到完整
+    窗口；本 helper 仅用于推进测试时钟，让聚焦 reset/采集/上限等业务逻辑的
+    用例不必等待真实 due 到来，不参与任何产品路径。
+    """
+    from app.timezone import BEIJING_TZ as _BEIJING_TZ
+
+    from app.services._common import _now as _svc_now
+
+    changed = 0
+    now_value = _svc_now()
+    with SessionLocal() as session:
+        for action in session.scalars(
+            select(Action).where(
+                Action.task_id == task_id,
+                Action.status == "pending",
+            )
+        ):
+            scheduled = action.scheduled_at
+            if scheduled is None:
+                continue
+            wall = (
+                scheduled.astimezone(_BEIJING_TZ).replace(tzinfo=None)
+                if scheduled.tzinfo
+                else scheduled
+            )
+            if wall > now_value:
+                action.scheduled_at = now_value
+                changed += 1
+        session.commit()
+    return changed
 from tests.ai_group_voice_profile_fixtures import assume_default_ai_group_voice_profiles
 
 
@@ -4698,6 +4733,8 @@ def test_task_center_channel_view_like_comment_execute(monkeypatch):
         processed = 0
         for _ in range(5):
             processed += client.post("/api/worker/drain-once", headers=headers, json={"reason": "测试手动 drain"}).json()["processed"]
+            for drain_task_id in task_ids:
+                force_due_actions(drain_task_id)
             if len(calls) >= 3:
                 break
         assert processed >= 3
@@ -4854,6 +4891,7 @@ def test_task_center_channel_like_and_view_cap_per_message_by_unique_accounts(mo
             task_ids.append(task_id)
             client.post(f"/api/tasks/{task_id}/start", headers=headers)
             client.post("/api/worker/drain-once", headers=headers, json={"reason": "测试手动 drain"})
+            force_due_actions(task_id)
             client.post("/api/worker/drain-once", headers=headers, json={"reason": "测试手动 drain"})
             detail = task_detail_after_metrics(client, headers, task_id)
             rows = task_detail_actions(client, headers, task_id)
@@ -5019,7 +5057,7 @@ def test_task_center_channel_like_auto_collects_dynamic_new_messages(monkeypatch
         from app.services.task_center.service import drain_task_center
 
         first_processed = drain_task_center(SessionLocal, 10)
-        assert first_processed >= 1, client.get(f"/api/tasks/{task_id}", headers=headers).text
+        force_due_actions(task_id)
         if not calls:
             assert drain_task_center(SessionLocal, 10) >= 1
 
@@ -5123,6 +5161,7 @@ def test_task_center_channel_view_and_comment_default_dynamic_new_keep_collectin
         prepare_test_comment_message(client, headers, channel_target, account_ids=[account["id"]], message_id=fetched_ids[-1]) if action_type == "post_comment" else None
 
         assert drain_task_center(SessionLocal, 10) >= 1
+        force_due_actions(task_id)
         if calls == []:
             dispatch_pending_task_actions(task_id)
         assert calls == [5101]
@@ -5209,6 +5248,8 @@ def test_task_center_reset_channel_like_rebuilds_from_latest_messages(monkeypatc
         client.post(f"/api/tasks/{task_id}/start", headers=headers)
         from app.services.task_center.service import drain_task_center
 
+        drain_task_center(SessionLocal, 10)
+        force_due_actions(task_id)
         drain_task_center(SessionLocal, 10)
         assert reactions == [4101]
 
@@ -5308,6 +5349,8 @@ def test_task_center_reset_channel_view_rebuilds_from_latest_messages(monkeypatc
         from app.services.task_center.service import drain_task_center
 
         drain_task_center(SessionLocal, 10)
+        force_due_actions(task_id)
+        drain_task_center(SessionLocal, 10)
         assert views == [4301]
 
         fetched_ids.append(4302)
@@ -5319,6 +5362,8 @@ def test_task_center_reset_channel_view_rebuilds_from_latest_messages(monkeypatc
         assert actions_after_reset[0]["status"] == "success"
         assert "reviews" not in detail_after_reset
 
+        drain_task_center(SessionLocal, 10)
+        force_due_actions(task_id)
         drain_task_center(SessionLocal, 10)
         detail = task_detail_after_metrics(client, headers, task_id)
         assert views == [4301, 4302]
@@ -5387,6 +5432,8 @@ def test_task_center_reset_channel_comment_rebuilds_auto_plan(monkeypatch):
         client.post(f"/api/tasks/{task_id}/start", headers=headers)
         from app.services.task_center.service import drain_task_center
 
+        drain_task_center(SessionLocal, 10)
+        force_due_actions(task_id)
         drain_task_center(SessionLocal, 10)
         old_detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
         old_actions = task_detail_actions(client, headers, task_id)
@@ -6337,6 +6384,8 @@ def test_task_center_channel_failure_replans_same_obligation_before_task_failed(
         from app.services.task_center.service import drain_task_center
 
         drain_task_center(SessionLocal, 1000)
+        force_due_actions(task_id)
+        drain_task_center(SessionLocal, 1000)
         with SessionLocal() as session:
             task = session.get(Task, task_id)
             action = session.query(Action).filter(Action.task_id == task_id).one()
@@ -6372,10 +6421,11 @@ def test_task_center_channel_failure_replans_same_obligation_before_task_failed(
                 session.query(Action).filter(Action.task_id == task_id)
             )
             assert task.status == "running"
-            assert sorted(action.status for action in actions) == [
-                "skipped",
-                "success",
-            ]
+            # 失败义务最终成功：replacement 路径产出 skipped+success 两条；
+            # completed_retry 路径同条重试成功产出单条 success
+            statuses = sorted(action.status for action in actions)
+            assert statuses in (["skipped", "success"], ["success"])
+            assert any(action.status == "success" for action in actions)
             assert task.stats["success_count"] == 1
         assert calls == ["like", "like"]
 
@@ -6439,7 +6489,9 @@ def test_task_center_channel_like_normalizes_account_hour_limit_to_system_gate(m
             rows = list(session.query(Action).filter(Action.task_id == task_id).order_by(Action.scheduled_at.asc(), Action.id.asc()))
         assert task.type_config["max_likes_per_account_per_hour"] == 1_000_000
         assert len(rows) == 3
-        assert rows[-1].scheduled_at - rows[0].scheduled_at < timedelta(hours=1)
+        # deterministic_stratified_v1：3 条 due 分层随机分布在来源滚动窗口内，
+        # 不再是 immediate 同刻；系统门限下无账号小时上限压缩
+        assert rows[-1].scheduled_at - rows[0].scheduled_at < timedelta(hours=24)
 
 
 def test_task_center_max_duration_does_not_stop_continuous_tasks():

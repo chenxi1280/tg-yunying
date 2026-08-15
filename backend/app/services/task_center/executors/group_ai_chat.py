@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, time, timedelta
 from difflib import SequenceMatcher
 import re
@@ -46,7 +46,13 @@ from app.services.target_learning_audit import audit_learning_profile_use
 from app.services.tenant_target_profile import tenant_learning_profile_preview
 from app.services.rule_engine import bound_rule_version, evaluate_input_filter
 
+from ..account_pacing_guard import (
+    AccountPacingDeadlineExceeded,
+    bind_account_pacing_reservation,
+    reserve_account_pacing,
+)
 from ..account_pool import DAILY_COVERAGE_SUCCESS_STATUSES, daily_uncovered_account_count, select_task_accounts
+from ..ai_pacing import AiPacingAssignment, assign_ai_pacing_slots
 from ..account_scope import bootstrap_missing_all_account_task_scope
 from ..ai_act_types import canonical_ai_group_act_type
 from ..ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE
@@ -119,8 +125,14 @@ from ..pacing import (
     schedule_times,
     task_pacing_anchor,
 )
+from ..pacing_persistence import freeze_action_pacing, freeze_pacing_owner
 from ..payloads import SendMessagePayload, create_send_action
 from ..schedule_reservation import reserve_task_schedule_times
+from ..source_pacing import (
+    schedule_source_pacing_points,
+    source_pacing_plan_hash,
+    wall_datetime,
+)
 from ..targets import group_from_reference
 from .common import stats_inc
 
@@ -330,6 +342,9 @@ class SlotSnapshot:
     account_id: int
     planned_at: datetime
     payload: SendMessagePayload
+    pacing_owner: TaskGroupDailyMessageSlot | None = None
+    pacing_slot_key: str = ""
+    pacing_reservation: Any | None = None
 
 
 @dataclass(frozen=True)
@@ -1091,7 +1106,48 @@ def _load_turn_plan(
         _hard_hourly_round_config(facts.config, facts.hard_progress),
         facts.hard_progress,
     )
-    selected, turn_count = _select_cycle_accounts(
+    selected, turn_count = _select_turn_accounts(
+        session,
+        task,
+        facts,
+        accounts=accounts,
+        context=context,
+        cycle_index=cycle_index,
+        round_config=round_config,
+        bounded_daily_coverage_batch=bounded_daily_coverage_batch,
+    )
+    if not selected or turn_count <= 0:
+        _mark_daily_target_pacing(task)
+        return PlanAbort()
+    turn_count = _limited_turn_count(
+        session,
+        task,
+        facts,
+        context=context,
+        cycle_index=cycle_index,
+        turn_count=turn_count,
+        bounded_daily_coverage_batch=bounded_daily_coverage_batch,
+    )
+    if turn_count <= 0:
+        task.last_error = "已有待执行消息占满上下文有效窗口，等待现有消息执行后继续规划"
+        return PlanAbort()
+    selected = selected[: min(len(selected), turn_count)]
+    history = _context_plan_history(facts, context)
+    return TurnPlanState(cycle_index, round_config, selected, turn_count, history)
+
+
+def _select_turn_accounts(
+    session: Session,
+    task: Task,
+    facts: PlanFacts,
+    *,
+    accounts: list[Any],
+    context: ContextPlanState,
+    cycle_index: int,
+    round_config: dict,
+    bounded_daily_coverage_batch: bool,
+) -> tuple[list[Any], int]:
+    return _select_cycle_accounts(
         accounts,
         round_config,
         context.mode,
@@ -1104,9 +1160,18 @@ def _load_turn_plan(
         ),
         bounded_daily_coverage_batch=bounded_daily_coverage_batch,
     )
-    if not selected or turn_count <= 0:
-        _mark_daily_target_pacing(task)
-        return PlanAbort()
+
+
+def _limited_turn_count(
+    session: Session,
+    task: Task,
+    facts: PlanFacts,
+    *,
+    context: ContextPlanState,
+    cycle_index: int,
+    turn_count: int,
+    bounded_daily_coverage_batch: bool,
+) -> int:
     deferred = _daily_coverage_generation_is_deferred(
         session,
         task,
@@ -1124,8 +1189,9 @@ def _load_turn_plan(
         turn_count,
         mode=context.mode,
         deadline_at=facts.coverage.deadline_at,
+        slot_keys=_turn_slot_keys(task, cycle_index, turn_count),
     )
-    turn_count, _times = _limit_context_bound_turns(
+    limited, _times = _limit_context_bound_turns(
         task,
         facts.config,
         has_context=bool(context.usable_rows),
@@ -1137,12 +1203,7 @@ def _load_turn_plan(
         turn_count=turn_count,
         planned_times=times,
     )
-    if turn_count <= 0:
-        task.last_error = "已有待执行消息占满上下文有效窗口，等待现有消息执行后继续规划"
-        return PlanAbort()
-    selected = selected[: min(len(selected), turn_count)]
-    history = _context_plan_history(facts, context)
-    return TurnPlanState(cycle_index, round_config, selected, turn_count, history)
+    return limited
 
 
 def _mark_daily_target_pacing(task: Task) -> None:
@@ -1313,14 +1374,22 @@ def _finalize_generation_schedule(
     *,
     quality_items: list[dict],
 ) -> tuple[list[dict], list[datetime]] | None:
-    times = _schedule_times_for_plan(
-        session,
-        task,
-        facts.hard_progress,
-        len(quality_items),
-        mode=context.mode,
-        deadline_at=facts.coverage.deadline_at,
-    )
+    requested_count = len(quality_items)
+    if task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION:
+        scheduled = _current_ai_pacing_schedule(session, task, facts, quality_items)
+        quality_items, times = scheduled
+    else:
+        times = _schedule_times_for_plan(
+            session,
+            task,
+            facts.hard_progress,
+            len(quality_items),
+            mode=context.mode,
+            deadline_at=facts.coverage.deadline_at,
+        )
+    if task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION and len(times) < requested_count:
+        _record_ai_pacing_shortfall(task, requested_count, len(times))
+        return None
     quality_items, times = _limit_context_bound_quality_schedule(
         task,
         facts.config,
@@ -1339,6 +1408,70 @@ def _finalize_generation_schedule(
     task.last_error = "上下文绑定计划超出有效发送窗口，等待新上下文后继续执行"
     stats_inc(task, "skipped_count")
     return None
+
+
+def _current_ai_pacing_schedule(
+    session: Session,
+    task: Task,
+    facts: PlanFacts,
+    quality_items: list[dict],
+) -> tuple[list[dict], list[datetime]]:
+    assignments = assign_ai_pacing_slots(
+        session,
+        task,
+        daily_group_target_id=facts.coverage.daily_group_target_id,
+        effective_plan_total=facts.coverage.effective_daily_target,
+        coverage_by_account=facts.coverage.rows_by_account,
+        item_account_ids=[_quality_slot_account_id(item) for item in quality_items],
+    )
+    points_by_slot = schedule_source_pacing_points(
+        [item.source_slot for item in assignments],
+        task.pacing_config or {},
+        seed_id=f"ai:{task.id}",
+        now_at=wall_datetime(_now()),
+        timezone_name=task.timezone,
+    )
+    enriched: list[dict] = []
+    due_times: list[datetime] = []
+    for assignment in assignments:
+        point = points_by_slot.get(assignment.source_slot.slot_key)
+        if point is None:
+            continue
+        _freeze_ai_pacing_assignment(
+            task,
+            assignment,
+            point.due_at,
+            point.release_not_before_at,
+        )
+        enriched.append({
+            **quality_items[assignment.item_index],
+            "pacing_quantity_slot_id": assignment.owner.id,
+            "pacing_slot_key": assignment.source_slot.slot_key,
+            "pacing_deadline_at": assignment.source_slot.deadline_at,
+        })
+        due_times.append(point.release_not_before_at)
+    return enriched, due_times
+
+
+def _freeze_ai_pacing_assignment(
+    task: Task,
+    assignment: AiPacingAssignment,
+    due_at: datetime,
+    release_not_before_at: datetime,
+) -> None:
+    source = assignment.source_slot
+    freeze_pacing_owner(
+        assignment.owner,
+        plan_hash=source_pacing_plan_hash(
+            source,
+            task.pacing_config or {},
+            seed_id=f"ai:{task.id}",
+        ),
+        slot_ordinal=source.slot_ordinal,
+        plan_total=source.plan_total,
+        due_at=due_at,
+        release_not_before_at=release_not_before_at,
+    )
 
 
 def _immutable_generation_slots(
@@ -1473,7 +1606,7 @@ def _with_content_variation_key(snapshot: SlotSnapshot) -> SlotSnapshot:
         "content_variation_key": variation_key,
         "content_context_version": context_version,
     })
-    return SlotSnapshot(snapshot.account_id, snapshot.planned_at, updated)
+    return replace(snapshot, payload=updated)
 
 
 def _content_variation_identity(
@@ -1524,6 +1657,7 @@ def _slot_identity_payload(slot: SlotBuildInput) -> dict[str, Any]:
         "target_reference_revision": target_revision,
         "target_reference_snapshot": target_snapshot,
         "task_config_revision": facts.task_config_revision,
+        "primary_quantity_slot_id": str(item.get("pacing_quantity_slot_id") or ""),
         "target_display": facts.target_label,
         "content_scope_contract_version": "group_content_scope_v1",
         "content_scope_tenant_id": facts.group.tenant_id,
@@ -1989,7 +2123,6 @@ def _prepare_action_slots(
 ) -> PreparedActionPlan:
     generation = blueprint.generation
     progress = blueprint.facts.hard_progress
-    allow_repeat = bool(blueprint.turn.round_config.get("allow_account_repeat", True))
     used_ids: set[int] = set()
     blockers: dict[str, int] = {}
     slots: list[SlotSnapshot] = []
@@ -1997,44 +2130,170 @@ def _prepare_action_slots(
     capacity_cache = AccountCapacityCache()
     burst_account = None
     for index, item in enumerate(generation.quality_items):
-        candidates = _slot_candidate_accounts(
-            blueprint, item, index, burst_account=burst_account,
-        )
-        account, planned_at = _choose_capacity_slot(
+        account, planned_at = _choose_action_slot_account(
             session,
             task,
-            selected=candidates,
-            planned_at=generation.times[index],
+            blueprint,
+            item=item,
             index=index,
+            burst_account=burst_account,
             used_account_ids=used_ids,
-            allow_repeat=allow_repeat,
-            progress=progress,
             reservations=reservations,
             capacity_cache=capacity_cache,
         )
         if not account:
-            _hard_blocker_inc(blockers, "account_capacity", progress)
-            stats_inc(task, "skipped_count")
+            _record_action_slot_blocker(task, blockers, progress, kind="account_capacity")
             continue
+        prepared = _paced_slot_snapshot(
+            session,
+            task,
+            blueprint,
+            item=item,
+            index=index,
+            account=account,
+            planned_at=planned_at,
+            frozen_mix=frozen_mix,
+        )
+        if prepared is None:
+            _record_action_slot_blocker(task, blockers, progress, kind="account_timeline")
+            continue
+        snapshot, planned_at = prepared
         if generation.burst_plan and index == min(generation.burst_plan):
             burst_account = account
-        used_ids.add(account.id)
-        snapshot = _build_slot_snapshot(
-            SlotBuildInput(blueprint, account, index, item, planned_at),
-        )
-        if frozen_mix is not None:
-            snapshot = _with_frozen_content_mix(snapshot, item, frozen_mix)
-        snapshot = _with_content_variation_key(snapshot)
-        slots.append(snapshot)
-        _increment_coverage_count(
-            blueprint.turn.round_config,
-            account.id,
-            blueprint.profile.coverage_counts,
-        )
-        reservations.append(
-            AccountCapacityReservation(account_id=account.id, scheduled_at=planned_at),
+        _record_prepared_action_slot(
+            blueprint, account, snapshot, planned_at=planned_at,
+            used_ids=used_ids, slots=slots, reservations=reservations,
         )
     return PreparedActionPlan(slots, blockers)
+
+
+def _record_action_slot_blocker(
+    task: Task,
+    blockers: dict[str, int],
+    progress: dict[str, Any],
+    *,
+    kind: str,
+) -> None:
+    _hard_blocker_inc(blockers, kind, progress)
+    stats_inc(task, "skipped_count")
+
+
+def _record_prepared_action_slot(
+    blueprint: PlanBlueprint,
+    account,
+    snapshot: SlotSnapshot,
+    *,
+    planned_at: datetime,
+    used_ids: set[int],
+    slots: list[SlotSnapshot],
+    reservations: list[AccountCapacityReservation],
+) -> None:
+    used_ids.add(account.id)
+    slots.append(snapshot)
+    _increment_coverage_count(
+        blueprint.turn.round_config,
+        account.id,
+        blueprint.profile.coverage_counts,
+    )
+    reservations.append(
+        AccountCapacityReservation(account_id=account.id, scheduled_at=planned_at),
+    )
+
+
+def _choose_action_slot_account(
+    session: Session,
+    task: Task,
+    blueprint: PlanBlueprint,
+    *,
+    item: dict,
+    index: int,
+    burst_account,
+    used_account_ids: set[int],
+    reservations: list[AccountCapacityReservation],
+    capacity_cache: AccountCapacityCache,
+):
+    candidates = _slot_candidate_accounts(
+        blueprint, item, index, burst_account=burst_account,
+    )
+    return _choose_capacity_slot(
+        session,
+        task,
+        selected=candidates,
+        planned_at=blueprint.generation.times[index],
+        index=index,
+        used_account_ids=used_account_ids,
+        allow_repeat=bool(blueprint.turn.round_config.get("allow_account_repeat", True)),
+        progress=blueprint.facts.hard_progress,
+        reservations=reservations,
+        capacity_cache=capacity_cache,
+    )
+
+
+def _paced_slot_snapshot(
+    session: Session,
+    task: Task,
+    blueprint: PlanBlueprint,
+    *,
+    item: dict,
+    index: int,
+    account,
+    planned_at: datetime,
+    frozen_mix: FrozenContentMix | None,
+) -> tuple[SlotSnapshot, datetime] | None:
+    pacing = _reserve_ai_action_pacing(
+        session, task, account_id=account.id, item=item, planned_at=planned_at,
+    )
+    if pacing is None:
+        return None
+    planned_at, pacing_owner, pacing_slot_key, pacing_reservation = pacing
+    snapshot = _build_slot_snapshot(
+        SlotBuildInput(blueprint, account, index, item, planned_at),
+    )
+    if frozen_mix is not None:
+        snapshot = _with_frozen_content_mix(snapshot, item, frozen_mix)
+    snapshot = _with_content_variation_key(snapshot)
+    return replace(
+        snapshot,
+        pacing_owner=pacing_owner,
+        pacing_slot_key=pacing_slot_key,
+        pacing_reservation=pacing_reservation,
+    ), planned_at
+
+
+def _reserve_ai_action_pacing(
+    session: Session,
+    task: Task,
+    *,
+    account_id: int,
+    item: dict,
+    planned_at: datetime,
+) -> tuple[datetime, TaskGroupDailyMessageSlot | None, str, Any | None] | None:
+    if task.fulfillment_contract_version != CURRENT_CONTRACT_VERSION:
+        return planned_at, None, "", None
+    owner_id = str(item.get("pacing_quantity_slot_id") or "")
+    owner = session.get(TaskGroupDailyMessageSlot, owner_id)
+    if owner is None or owner.pacing_due_at is None:
+        raise ValueError("ai_pacing_owner_missing")
+    slot_key = str(item.get("pacing_slot_key") or f"ai:{owner.id}")
+    deadline_at = item.get("pacing_deadline_at")
+    try:
+        reservation = reserve_account_pacing(
+            session,
+            tenant_id=task.tenant_id,
+            task_id=task.id,
+            account_id=account_id,
+            slot_key=slot_key,
+            due_at=owner.pacing_due_at,
+            release_not_before_at=max(
+                owner.release_not_before_at or owner.pacing_due_at,
+                planned_at,
+            ),
+            deadline_at=deadline_at,
+        )
+    except AccountPacingDeadlineExceeded:
+        _record_ai_pacing_shortfall(task, 1, 0)
+        return None
+    return reservation.effective_claim_at, owner, slot_key, reservation
 
 
 def _with_frozen_content_mix(
@@ -2052,7 +2311,7 @@ def _with_frozen_content_mix(
         "relation_kind": cycle_slot.relation_kind,
         "slot_attempt": max(1, cycle_slot.slot_attempt or 1),
     })
-    return SlotSnapshot(snapshot.account_id, snapshot.planned_at, payload)
+    return replace(snapshot, payload=payload)
 
 
 def _slot_candidate_accounts(
@@ -2132,6 +2391,7 @@ def _create_reserved_action(session: Session, task: Task, slot: SlotSnapshot) ->
             slot.planned_at,
             payload,
         )
+        _bind_ai_action_pacing(action, slot)
         if task.fulfillment_contract_version != CURRENT_CONTRACT_VERSION:
             _bind_content_mix_action(session, action, payload)
         return action
@@ -2155,6 +2415,7 @@ def _create_reserved_action(session: Session, task: Task, slot: SlotSnapshot) ->
         intent.outcome = "action_deduplicated"
         _release_variation_conflict(session, coverage_id, reservation_token)
         return None
+    _bind_ai_action_pacing(action, slot)
     intent.action_id = action.id
     if not bind_coverage_reservation(session, coverage_id, reservation_token, action.id):
         raise RuntimeError("daily coverage reservation lost before action binding")
@@ -2162,6 +2423,20 @@ def _create_reserved_action(session: Session, task: Task, slot: SlotSnapshot) ->
         _bind_content_mix_action(session, action, payload)
     session.flush()
     return action
+
+
+def _bind_ai_action_pacing(action: Action, slot: SlotSnapshot) -> None:
+    if slot.pacing_owner is None:
+        return
+    if slot.pacing_reservation is None or not slot.pacing_slot_key:
+        raise ValueError("ai_pacing_reservation_missing")
+    action.primary_quantity_slot_id = slot.pacing_owner.id
+    freeze_action_pacing(
+        action,
+        slot.pacing_owner,
+        slot_key=slot.pacing_slot_key,
+    )
+    bind_account_pacing_reservation(slot.pacing_reservation, action)
 
 
 def _with_group_bot_admission_snapshot(
@@ -4099,6 +4374,26 @@ def _choose_turn_account(available: list, selected: list, index: int, used_accou
     return candidates[index % len(candidates)] if candidates else None
 
 
+def _record_ai_pacing_shortfall(task: Task, requested: int, scheduled: int) -> None:
+    """窗口内无合法节奏窗口时守恒可见：不压缩追量，记录 typed shortfall。"""
+    stats = dict(task.stats or {})
+    stats["pacing_schedule_shortfall_count"] = int(stats.get("pacing_schedule_shortfall_count") or 0) + (requested - scheduled)
+    stats["pacing_schedule_shortfall"] = {
+        "reason_code": "pacing_capacity_shortfall",
+        "requested": requested,
+        "scheduled": scheduled,
+    }
+    task.stats = stats
+    task.last_error = "当前日截止前无合法节奏窗口可安排本轮 AI 义务，形成 pacing shortfall"
+
+
+def _turn_slot_keys(task: Task, cycle_index: int, turn_count: int) -> list[str]:
+    return [
+        f"ai:{task.id}:cycle:{cycle_index}:turn:{ordinal + 1}"
+        for ordinal in range(turn_count)
+    ]
+
+
 def _schedule_times_for_plan(
     session: Session,
     task: Task,
@@ -4107,8 +4402,14 @@ def _schedule_times_for_plan(
     *,
     mode: str,
     deadline_at: datetime | None = None,
+    slot_keys: list[str] | None = None,
 ) -> list[datetime]:
     if task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION:
+        # stable slot：cycle 内 turn 序号（effective_due_rank 等价物）作确定性
+        # seed 输入；同一 cycle 重规划得到相同 due_at。
+        keys = list(slot_keys or [])
+        if len(keys) != total:
+            keys = [f"ai:{task.id}:#{index}" for index in range(total)]
         return schedule_due_times(
             total,
             task.pacing_config or {},
@@ -4116,6 +4417,8 @@ def _schedule_times_for_plan(
             deadline_at=deadline_at,
             timezone_name=task.timezone,
             deadline_is_utc=True,
+            seed_id=f"ai:{task.id}",
+            slot_keys=keys,
         )
     hard_times = _hard_hourly_schedule(task, progress, total)
     if hard_times:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+
 from sqlalchemy.orm import Session
 
 from app.services._common import _now
@@ -43,57 +45,119 @@ def persist_generation_results(
     duplicate_batch = DuplicateMemoryBatch(now=_now())
     with session.no_autoflush:
         for index, ((action, payload), result) in enumerate(zip(batch, results, strict=True)):
-            if result.rejection_code:
-                fail_generation_action(
-                    action,
-                    result.rejection_code,
-                    result.rejection_detail,
-                    stage="ai_generation_quality",
-                )
-                commit_generation_action(session, request, action)
-                continue
-            data = apply_generated_content_metadata(payload.model_dump(mode="json"), result.content)
-            data["message_text"] = str(result.content).strip()
-            data["ai_generation_status"] = "ready"
-            data["ai_generation_tokens"] = int(tokens or 0) if index == 0 else 0
-            data["ai_generation_result_cache"] = {}
-            data["voice_profile_contract_version"] = VOICE_PROFILE_CONTRACT_VERSION
-            quality_fallback = result.quality_fallback or str(
-                getattr(result.content, "quality_fallback", "") or ""
+            _persist_generation_result(
+                session,
+                request,
+                action=action,
+                payload=payload,
+                result=result,
+                tokens=int(tokens or 0) if index == 0 else 0,
+                duplicate_batch=duplicate_batch,
             )
-            if quality_fallback:
-                is_check_in = (
-                    quality_fallback == "check_in_fallback"
-                    or str(result.content).strip() == "签到"
-                )
-                data.update({
-                    "act_type": "check_in" if is_check_in else quality_fallback,
-                    "human_quality_decision": "check_in_fallback" if is_check_in else "explicit_static_quality_fallback",
-                    "quality_fallback": "check_in_fallback" if is_check_in else quality_fallback,
-                    "content_source": (
-                        DUE_CATCH_UP_CHECK_IN_SOURCE
-                        if result.fallback_reason == DUE_CATCH_UP_CHECK_IN_REASON
-                        else "check_in_fallback"
-                    ) if is_check_in else data.get("content_source", ""),
-                    "generation_source": "static_safe_fallback" if is_check_in else data.get("generation_source", ""),
-                    "fallback_reason": result.fallback_reason or data.get("fallback_reason", ""),
-                })
-            mark_attempt_outcome(data, request.attempt_id, "ready", timestamp=_now())
-            if not store_generation_quality(
-                session, action, payload, data=data, duplicate_batch=duplicate_batch,
-            ):
-                commit_generation_action(session, request, action)
-                continue
-            action.payload = data
-            action.result = {
-                **(action.result or {}),
-                "generation_stage": "generation_ready",
-                "generation_outcome": "ready",
-                "ai_generation_attempt_id": request.attempt_id,
-                "voice_profile_anchor_rewritten": result.voice_profile_anchor_rewritten,
-                "voice_profile_contract_version": VOICE_PROFILE_CONTRACT_VERSION,
-            }
-            commit_generation_action(session, request, action)
+
+
+def _persist_generation_result(
+    session: Session,
+    request,
+    *,
+    action,
+    payload,
+    result: SlotGenerationResult,
+    tokens: int,
+    duplicate_batch: DuplicateMemoryBatch,
+) -> None:
+    if result.rejection_code:
+        _persist_generation_rejection(session, request, action=action, result=result)
+        return
+    data = _generated_payload(payload, result, tokens=tokens)
+    mark_attempt_outcome(data, request.attempt_id, "ready", timestamp=_now())
+    if not store_generation_quality(
+        session, action, payload, data=data, duplicate_batch=duplicate_batch,
+    ):
+        commit_generation_action(session, request, action)
+        return
+    action.payload = data
+    action.candidate_hash = hashlib.sha256(data["message_text"].encode("utf-8")).hexdigest()
+    action.result = {
+        **(action.result or {}),
+        "generation_stage": "generation_ready",
+        "generation_outcome": "ready",
+        "ai_generation_attempt_id": request.attempt_id,
+        "voice_profile_anchor_rewritten": result.voice_profile_anchor_rewritten,
+        "voice_profile_contract_version": VOICE_PROFILE_CONTRACT_VERSION,
+        "evaluator_evidence": dict(result.evaluator_evidence),
+    }
+    commit_generation_action(session, request, action)
+
+
+def _persist_generation_rejection(
+    session: Session,
+    request,
+    *,
+    action,
+    result: SlotGenerationResult,
+) -> None:
+    fail_generation_action(
+        action,
+        result.rejection_code,
+        result.rejection_detail,
+        stage="ai_generation_quality",
+    )
+    evidence = dict(result.evaluator_evidence)
+    action.candidate_hash = str(evidence.get("candidate_hash") or "")
+    action.result = {**(action.result or {}), "evaluator_evidence": evidence}
+    commit_generation_action(session, request, action)
+
+
+def _generated_payload(payload, result: SlotGenerationResult, *, tokens: int) -> dict:
+    data = apply_generated_content_metadata(payload.model_dump(mode="json"), result.content)
+    data.update({
+        "message_text": str(result.content).strip(),
+        "ai_generation_status": "ready",
+        "ai_generation_tokens": tokens,
+        "ai_generation_result_cache": {},
+        "voice_profile_contract_version": VOICE_PROFILE_CONTRACT_VERSION,
+    })
+    quality_fallback = result.quality_fallback or str(
+        getattr(result.content, "quality_fallback", "") or "",
+    )
+    if quality_fallback:
+        _apply_quality_fallback(data, result, quality_fallback=quality_fallback)
+    return data
+
+
+def _apply_quality_fallback(
+    data: dict,
+    result: SlotGenerationResult,
+    *,
+    quality_fallback: str,
+) -> None:
+    is_check_in = quality_fallback == "check_in_fallback" or str(result.content).strip() == "签到"
+    data.update({
+        "act_type": "check_in" if is_check_in else quality_fallback,
+        "human_quality_decision": (
+            "check_in_fallback" if is_check_in else "explicit_static_quality_fallback"
+        ),
+        "quality_fallback": "check_in_fallback" if is_check_in else quality_fallback,
+        "content_source": _fallback_content_source(data, result, is_check_in=is_check_in),
+        "generation_source": (
+            "static_safe_fallback" if is_check_in else data.get("generation_source", "")
+        ),
+        "fallback_reason": result.fallback_reason or data.get("fallback_reason", ""),
+    })
+
+
+def _fallback_content_source(
+    data: dict,
+    result: SlotGenerationResult,
+    *,
+    is_check_in: bool,
+) -> str:
+    if not is_check_in:
+        return str(data.get("content_source") or "")
+    if result.fallback_reason == DUE_CATCH_UP_CHECK_IN_REASON:
+        return DUE_CATCH_UP_CHECK_IN_SOURCE
+    return "check_in_fallback"
 
 
 __all__ = ["persist_generation_results"]

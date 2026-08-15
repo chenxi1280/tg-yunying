@@ -2,7 +2,7 @@ import React from 'react';
 import { Alert, Checkbox, Collapse, Descriptions, Form, Input, InputNumber, Select, Space, Typography } from 'antd';
 import type { Account, AccountPool, ChannelMessageComment, OperationTarget, PromptTemplate, RuleSet, TaskCenterTaskType } from '../types';
 import { ChannelCommentTypeConfig, ChannelLikeTypeConfig, ChannelViewTypeConfig } from './TaskCenterChannelConfigSections';
-import { TASK_TYPES, TYPE_LABEL, OPERATION_PROFILE_TEMPLATES, type OperationProfileTemplateId, accountPrecheck, curveNumbers, curveText, currentOperationProfile, formatDateTime, operationProfileSummary, operationTemplate, ruleSummary, targetName, words } from './taskCenterViewModel';
+import { TASK_TYPES, TYPE_LABEL, OPERATION_PROFILE_TEMPLATES, type OperationProfileTemplateId, accountPrecheck, aiModelIdentity, curveNumbers, curveText, currentOperationProfile, formatDateTime, operationProfileSummary, operationTemplate, ruleSummary, targetName, words } from './taskCenterViewModel';
 
 const targetSelectProps = {
   showSearch: true,
@@ -373,6 +373,46 @@ export function WizardTypeConfig({
                   <Form.Item name="system_prompt_override" label="System Prompt 覆盖">
                     <Input.TextArea rows={3} placeholder="为空则使用系统默认提示词" />
                   </Form.Item>
+                  <Form.Item
+                    name="ai_model"
+                    label="生成模型"
+                    dependencies={['ai_two_stage_enabled']}
+                    extra="启用两阶段生成时必须显式配置，以保证与评审模型不同。"
+                    rules={[
+                      ({ getFieldValue }: any) => ({
+                        validator(_: unknown, value?: string) {
+                          if (!getFieldValue('ai_two_stage_enabled') || String(value || '').trim()) return Promise.resolve();
+                          return Promise.reject(new Error('请显式配置生成模型'));
+                        },
+                      }),
+                    ]}
+                  >
+                    <Input placeholder="留空使用租户默认生成模型" />
+                  </Form.Item>
+                  <Form.Item name="ai_two_stage_enabled" label="两阶段生成" valuePropName="checked">
+                    <Checkbox>启用意图规划、独立表达与语义质量评审</Checkbox>
+                  </Form.Item>
+                  <Form.Item
+                    name="ai_semantic_reviewer_model"
+                    label="独立语义评审模型"
+                    dependencies={['ai_two_stage_enabled', 'ai_model']}
+                    extra="启用两阶段生成时必填，且不能与生成模型相同。"
+                    rules={[
+                      ({ getFieldValue }: any) => ({
+                        validator(_: unknown, value?: string) {
+                          if (!getFieldValue('ai_two_stage_enabled')) return Promise.resolve();
+                          const reviewer = String(value || '').trim();
+                          if (!reviewer) return Promise.reject(new Error('请配置独立语义评审模型'));
+                          if (aiModelIdentity(reviewer) === aiModelIdentity(getFieldValue('ai_model'))) {
+                            return Promise.reject(new Error('语义评审模型不能与生成模型相同'));
+                          }
+                          return Promise.resolve();
+                        },
+                      }),
+                    ]}
+                  >
+                    <Input placeholder="例如与生成模型不同的已配置模型 ID" />
+                  </Form.Item>
                 </div>
               ),
             },
@@ -544,7 +584,7 @@ export function WizardOperationProfile({ form, values, taskType }: { form: any; 
         showIcon
         message={
           isAiGroup
-            ? `AI 活跃群曲线表示每小时启动轮数：当前 ${String(currentHour).padStart(2, '0')}:00 为 ${currentRounds} 轮/小时；每轮上限和小时硬上限共同决定发送量。`
+            ? `AI 活跃群小时计划由系统按日目标与活跃曲线只读派生（当前 ${String(currentHour).padStart(2, '0')}:00 权重 ${currentRounds}）；实际发送时间由确定性分层随机节奏分布到整个小时，不是手工小时债务。`
             : `预计运行摘要：${operationProfileSummary(values)}。频道类任务会按曲线、账号容量和风控分配动作预算。`
         }
       />
@@ -552,7 +592,7 @@ export function WizardOperationProfile({ form, values, taskType }: { form: any; 
         <Alert
           type="info"
           showIcon
-          message={`本小时理论最大发送：${hourlyLimit && messagesPerRound ? Math.min(currentRounds * messagesPerRound, hourlyLimit) : currentRounds * Math.max(1, messagesPerRound || 1)} 条；曲线不再压低参与账号比例。`}
+          message={`每轮上限（${messagesPerRound || '自动'}）与小时上限（${hourlyLimit || '未设置'}）仍约束瞬时密度；小时计划数只是派生结果，任务详情的节奏摘要展示实际分布。`}
         />
       )}
       <div className="form-grid">
@@ -578,10 +618,23 @@ export function WizardOperationProfile({ form, values, taskType }: { form: any; 
         items={[
           {
             key: 'curve',
-            label: '手动微调曲线',
-            children: (
+            label: isAiGroup ? '系统派生小时计划（只读）' : '手动微调曲线',
+            children: isAiGroup ? (
               <div className="form-grid">
-                <Form.Item name="hourly_activity_curve" label={isAiGroup ? '每小时轮数' : '小时预算权重'}>
+                <Form.Item label="系统派生小时计划（只读）">
+                  <Input.TextArea
+                    rows={3}
+                    readOnly
+                    value={curve.map((value, hour) => `${String(hour).padStart(2, '0')}: ${value}`).join('\n')}
+                  />
+                </Form.Item>
+                <Form.Item label="说明">
+                  <Input readOnly value="小时计划数 = 日目标 × 曲线权重归一，由确定性分层随机节奏落到具体秒级时间点；此处不可手工编辑。" />
+                </Form.Item>
+              </div>
+            ) : (
+              <div className="form-grid">
+                <Form.Item name="hourly_activity_curve" label="小时预算权重（软权重，非硬目标）">
                   <Input.TextArea
                     rows={3}
                     onChange={() => form.setFieldsValue({ operation_profile_manual_override: true })}

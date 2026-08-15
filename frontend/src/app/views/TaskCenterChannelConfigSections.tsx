@@ -1,6 +1,7 @@
 import React from 'react';
 import { Alert, Checkbox, Collapse, Form, Input, InputNumber, Select, Space } from 'antd';
 import type { Rule } from 'antd/es/form';
+import { aiModelIdentity } from './taskCenterViewModel';
 
 type ChannelCommentTypeConfigProps = {
   replyMinPerMessageRules: Rule[];
@@ -92,6 +93,46 @@ function ChannelCommentAdvancedFields() {
       <Form.Item name="max_total_comments_jitter" label="任务门禁抖动（固定）"><InputNumber min={0} max={0} disabled /></Form.Item>
       <Form.Item name="system_prompt_override" label="System Prompt 覆盖"><Input.TextArea rows={3} /></Form.Item>
       <Form.Item name="max_comment_length" label="最大评论长度"><InputNumber min={1} /></Form.Item>
+      <Form.Item
+        name="ai_model"
+        label="生成模型"
+        dependencies={['ai_two_stage_enabled']}
+        extra="启用两阶段生成时必须显式配置，以保证与评审模型不同。"
+        rules={[
+          ({ getFieldValue }: any) => ({
+            validator(_: unknown, value?: string) {
+              if (!getFieldValue('ai_two_stage_enabled') || String(value || '').trim()) return Promise.resolve();
+              return Promise.reject(new Error('请显式配置生成模型'));
+            },
+          }),
+        ]}
+      >
+        <Input placeholder="留空使用租户默认生成模型" />
+      </Form.Item>
+      <Form.Item name="ai_two_stage_enabled" label="两阶段生成" valuePropName="checked">
+        <Checkbox>启用意图规划、独立表达与语义质量评审</Checkbox>
+      </Form.Item>
+      <Form.Item
+        name="ai_semantic_reviewer_model"
+        label="独立语义评审模型"
+        dependencies={['ai_two_stage_enabled', 'ai_model']}
+        extra="启用两阶段生成时必填，且不能与生成模型相同。"
+        rules={[
+          ({ getFieldValue }: any) => ({
+            validator(_: unknown, value?: string) {
+              if (!getFieldValue('ai_two_stage_enabled')) return Promise.resolve();
+              const reviewer = String(value || '').trim();
+              if (!reviewer) return Promise.reject(new Error('请配置独立语义评审模型'));
+              if (aiModelIdentity(reviewer) === aiModelIdentity(getFieldValue('ai_model'))) {
+                return Promise.reject(new Error('语义评审模型不能与生成模型相同'));
+              }
+              return Promise.resolve();
+            },
+          }),
+        ]}
+      >
+        <Input placeholder="例如与生成模型不同的已配置模型 ID" />
+      </Form.Item>
     </div>
   );
 }

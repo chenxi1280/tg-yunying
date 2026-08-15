@@ -23,6 +23,12 @@ from .comment_generation_quality import (
     evaluate_comment_fallback_quality,
     evaluate_comment_generation_quality,
 )
+from .comment_two_stage_generation import (
+    CommentGenerationBlocked,
+    TwoStageCommentHooks,
+    generate_two_stage_comment,
+)
+from .two_stage_generation import QUALITY_WAIT, two_stage_enabled
 
 
 COMMENT_GENERATION_ATTEMPTS_PER_MODEL = 3
@@ -47,6 +53,10 @@ class CommentGenerationDependencies:
     direct_generator: Callable = generate_channel_comments
     reply_generator: Callable = generate_channel_reply_comments
     phase_c_commit: Callable[[Session], None] = _commit_session
+    # 两阶段生成（PRD §5.4）注入点；None 时使用 two_stage_generation 默认通道。
+    brief_planner: Callable | None = None
+    brief_realizer: Callable | None = None
+    semantic_reviewer: Callable | None = None
 
 
 @dataclass(frozen=True)
@@ -78,13 +88,6 @@ class GeneratedCommentResult:
     quality_audit: dict | None = None
 
 
-class CommentGenerationBlocked(RuntimeError):
-    def __init__(self, code: str, detail: str):
-        super().__init__(detail)
-        self.code = code
-        self.detail = detail
-
-
 def generate_comment_result(
     session: Session,
     request: CommentGenerationRequest,
@@ -94,7 +97,14 @@ def generate_comment_result(
 ) -> GeneratedCommentResult:
     mask_reason = _comment_mask_fallback_reason(session, request)
     session.rollback()
+    two_stage = two_stage_enabled(request.config)
     if mask_reason:
+        if two_stage:
+            # 两阶段合同（PRD §5.4）：面具不就绪不降级 emoji，进入 quality_wait。
+            raise CommentGenerationBlocked(
+                QUALITY_WAIT,
+                f"mask_not_ready:{mask_reason}",
+            )
         return _emoji_fallback_result(
             session,
             request,
@@ -106,6 +116,13 @@ def generate_comment_result(
         return _cached_result(request)
     if session.in_transaction():
         raise RuntimeError("comment generation transaction boundary is open")
+    if two_stage:
+        return _run_two_stage_comment(
+            session,
+            request,
+            dependencies,
+            action_loader=action_loader,
+        )
     return _run_generation_stages(
         session,
         request,
@@ -126,10 +143,7 @@ def _run_generation_stages(
     for stage in _comment_generation_stages():
         try:
             contents, tokens = _call_generator(
-                session,
-                request,
-                dependencies,
-                stage=stage,
+                session, request, dependencies, stage=stage,
             )
         except GenerationAttemptStale:
             raise
@@ -170,6 +184,33 @@ def _run_generation_stages(
 def _close_failed_stage_transaction(session: Session) -> None:
     if session.in_transaction():
         session.rollback()
+
+
+def _run_two_stage_comment(
+    session: Session,
+    request: CommentGenerationRequest,
+    dependencies: CommentGenerationDependencies,
+    *,
+    action_loader: Callable,
+) -> GeneratedCommentResult:
+    """评论两阶段生成（PRD §5.4）：Brief → Realizer → 既有质量闸。
+
+    Stage 2 失败按 rejection code 定向重生成一次；耗尽进入 quality_wait，
+    不发送 Stage 1 草稿，也不降级 emoji。
+    """
+    hooks = TwoStageCommentHooks(
+        brief_planner=dependencies.brief_planner,
+        brief_realizer=dependencies.brief_realizer,
+        semantic_reviewer=dependencies.semantic_reviewer,
+        evaluate_candidate=_evaluate_candidate,
+        action_loader=action_loader,
+        structural_failure_codes=STRUCTURAL_COMMENT_FAILURES,
+    )
+    result = generate_two_stage_comment(session, request, hooks)
+    return GeneratedCommentResult(
+        result.content, result.tokens,
+        attempts=result.attempts, quality_audit=result.quality_audit,
+    )
 
 
 def _comment_mask_fallback_reason(

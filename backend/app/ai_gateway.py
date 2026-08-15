@@ -162,6 +162,11 @@ def normalize_ai_model_name(model_name: str) -> str:
     return MODEL_ALIASES.get(normalized, model_name.strip())
 
 
+def canonical_ai_model_identity(model_name: str) -> str:
+    normalized = normalize_ai_model_name(model_name)
+    return " ".join(normalized.split()).casefold()
+
+
 def parse_draft_candidates(raw: str, *, count: int, persona_set: list[str]) -> list[AiDraftCandidate]:
     return AiGateway()._parse_candidates(raw, count, persona_set, None)
 
@@ -314,6 +319,40 @@ class AiGateway:
             timeout=timeout,
         )
         return AiGenerationResult(candidates=candidates, usage=usage)
+
+    def generate_structured(
+        self,
+        credentials: AiProviderCredentials,
+        prompt: str,
+        *,
+        temperature: float,
+        max_tokens: int,
+        system_prompt: str,
+        timeout: int = DEFAULT_AI_REQUEST_TIMEOUT_SECONDS,
+    ) -> tuple[Any, AiUsage]:
+        """两阶段生成（PRD §5.4）的结构化 provider 调用。
+
+        与 generate_drafts 复用同一 HTTP/重试通道，但返回解析后的原始 JSON
+        载荷（dict/list），不映射为 drafts；解析失败按结构性错误抛出，
+        不静默降级为行文本。载荷合法性由调用方按 MessageBrief 契约校验。
+        """
+        if credentials.provider_type != "openai_compatible":
+            raise RuntimeError(f"unsupported ai provider type: {credentials.provider_type}")
+        raw, usage = self._post_openai_compatible(
+            credentials,
+            prompt,
+            temperature,
+            max_tokens,
+            system_prompt=system_prompt,
+            response_format_json=True,
+            reasoning_retry_max_tokens=self._generation_retry_max_tokens(credentials, max_tokens, 1),
+            timeout=timeout,
+        )
+        clean = _extract_json_payload(raw)
+        try:
+            return json.loads(clean), usage
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("AI provider returned malformed structured JSON") from exc
 
     def _parse_candidates_with_retry(
         self,

@@ -896,6 +896,9 @@ def _ai_content_mix_binding_error(
     action: Action,
 ) -> tuple[str, str] | None:
     payload = action.payload if isinstance(action.payload, dict) else {}
+    task = session.get(Task, action.task_id)
+    if _uses_fact_first_quantity_binding(task, action, payload):
+        return _fact_first_quantity_binding_error(session, action, payload)
     binding_ids = _content_mix_binding_ids(action, payload)
     if not any(binding_ids):
         return None
@@ -906,6 +909,31 @@ def _ai_content_mix_binding_error(
     if rows is None or _content_mix_binding_ownership_invalid(action, rows):
         return "content_mix_binding_invalid", invalid_message
     _, quantity, _ = rows
+    return _content_mix_coverage_binding_error(session, action, quantity)
+
+
+def _uses_fact_first_quantity_binding(
+    task: Task | None,
+    action: Action,
+    payload: dict,
+) -> bool:
+    if task is None or task.fulfillment_contract_version != "fact_first_v3":
+        return False
+    return not action.content_mix_cycle_slot_id and not payload.get("content_mix_cycle_slot_id")
+
+
+def _fact_first_quantity_binding_error(
+    session: Session,
+    action: Action,
+    payload: dict,
+) -> tuple[str, str] | None:
+    action_slot_id = str(action.primary_quantity_slot_id or "")
+    payload_slot_id = str(payload.get("primary_quantity_slot_id") or "")
+    if not action_slot_id or action_slot_id != payload_slot_id:
+        return "quantity_binding_invalid", "Action 与 payload 的数量槽绑定不一致"
+    quantity = session.get(TaskGroupDailyMessageSlot, action_slot_id)
+    if quantity is None or quantity.task_id != action.task_id or quantity.tenant_id != action.tenant_id:
+        return "quantity_binding_invalid", "数量槽不属于当前任务或租户"
     return _content_mix_coverage_binding_error(session, action, quantity)
 
 
@@ -1241,6 +1269,7 @@ def _account_bound_channel_fulfillment(
     binding_keys = {
         "view_message": "view_fulfillment_obligation_id",
         "like_message": "reaction_fulfillment_obligation_id",
+        "post_comment": "comment_fulfillment_obligation_id",
     }
     binding_key = binding_keys.get(action.action_type)
     return bool(binding_key and payload.get(binding_key))
@@ -6112,61 +6141,149 @@ def _channel_comment_speaker_rotation_gate_pass(
     )
 
     key = conversation_key_for_discussion(discussion_group_id=int(discussion.id))
-    candidate_ids = [account_id]
-    links = session.scalars(
-        select(TgGroupAccount.account_id).where(
-            TgGroupAccount.group_id == int(discussion.id),
-            TgGroupAccount.can_send.is_(True),
-        )
-    ).all()
-    for item in links:
-        value = int(item or 0)
-        if value and value not in candidate_ids:
-            candidate_ids.append(value)
+    data = action.payload if isinstance(action.payload, dict) else {}
+    coverage_bound = bool(action.pacing_slot_key) or _account_bound_channel_fulfillment(
+        action, data,
+    )
+    candidate_ids = _comment_speaker_candidate_ids(
+        session,
+        discussion_id=int(discussion.id),
+        account_id=account_id,
+        coverage_bound=coverage_bound,
+    )
     decision = reserve_speaker_turn(
         session,
         action=action,
         surface="channel_comment",
         conversation_key=key,
         candidate_account_ids=candidate_ids,
-        coverage_bound=False,
+        coverage_bound=coverage_bound,
     )
-    data = action.payload if isinstance(action.payload, dict) else {}
+    return _apply_comment_speaker_decision(
+        session,
+        action,
+        payload,
+        decision=decision,
+        account_id=account_id,
+        coverage_bound=coverage_bound,
+        data=data,
+        conversation_key=key,
+    )
+
+
+def _apply_comment_speaker_decision(
+    session: Session,
+    action: Action,
+    payload,
+    *,
+    decision,
+    account_id: int,
+    coverage_bound: bool,
+    data: dict,
+    conversation_key: str,
+) -> bool:
     if decision.allowed:
         if decision.account_id and int(decision.account_id) != int(account_id):
-            action.account_id = int(decision.account_id)
-            data = {
-                **data,
-                "account_id": int(decision.account_id),
-                "speaker_selection_reason": decision.reason,
-                "previous_speaker_account_id": account_id,
-                "conversation_surface": "channel_comment",
-                "conversation_key": key,
-            }
-            data.pop("comment_text", None)
-            data["ai_generation_status"] = "pending"
-            action.payload = data
+            if coverage_bound:
+                raise RuntimeError("bound_comment_speaker_mismatch")
+            _requeue_comment_speaker_rebind(
+                session,
+                action,
+                payload,
+                previous_account_id=account_id,
+                next_account_id=int(decision.account_id),
+                reason=decision.reason,
+                conversation_key=conversation_key,
+            )
+            return False
         else:
             action.payload = {
                 **data,
                 "conversation_surface": "channel_comment",
-                "conversation_key": key,
+                "conversation_key": conversation_key,
                 "speaker_selection_reason": decision.reason,
             }
         return True
     if decision.code == "speaker_rotation_wait":
-        action.status = "pending"
-        action.result = {
-            **(action.result or {}),
-            "error_code": "speaker_rotation_wait",
-            "speaker_rotation_reason": decision.reason,
-        }
-        action.scheduled_at = _now() + timedelta(seconds=45)
-        action.executed_at = None
-        _clear_action_lease(action)
-        _release_runtime_resources(action)
+        _defer_comment_for_speaker_rotation(action, decision.reason)
         return False
     return True
+
+
+def _comment_speaker_candidate_ids(
+    session: Session,
+    *,
+    discussion_id: int,
+    account_id: int,
+    coverage_bound: bool,
+) -> list[int]:
+    if coverage_bound:
+        return [account_id]
+    links = session.scalars(
+        select(TgGroupAccount.account_id).where(
+            TgGroupAccount.group_id == discussion_id,
+            TgGroupAccount.can_send.is_(True),
+        )
+    ).all()
+    return list(dict.fromkeys(
+        value
+        for item in [account_id, *links]
+        if (value := int(item or 0))
+    ))
+
+
+def _defer_comment_for_speaker_rotation(action: Action, reason: str) -> None:
+    action.status = "pending"
+    action.result = {
+        **(action.result or {}),
+        "error_code": "speaker_rotation_wait",
+        "speaker_rotation_reason": reason,
+    }
+    action.scheduled_at = _now() + timedelta(seconds=45)
+    action.effective_claim_at = action.scheduled_at
+    action.executed_at = None
+    _clear_action_lease(action)
+    _release_runtime_resources(action)
+
+
+def _requeue_comment_speaker_rebind(
+    session: Session,
+    action: Action,
+    payload,
+    *,
+    previous_account_id: int,
+    next_account_id: int,
+    reason: str,
+    conversation_key: str,
+) -> None:
+    from .comment_generation_job import invalidate_comment_generation_jobs
+
+    invalidate_comment_generation_jobs(
+        session, action, payload, reason="speaker_account_rebound",
+    )
+    data = dict(action.payload or {})
+    data.pop("comment_text", None)
+    action.account_id = next_account_id
+    action.assignment_revision = int(action.assignment_revision or 1) + 1
+    action.intent_revision = int(action.intent_revision or 1) + 1
+    action.candidate_hash = ""
+    action.payload = {
+        **data,
+        "account_id": next_account_id,
+        "ai_generation_status": "pending",
+        "speaker_selection_reason": reason,
+        "previous_speaker_account_id": previous_account_id,
+        "conversation_surface": "channel_comment",
+        "conversation_key": conversation_key,
+    }
+    action.result = {
+        **(action.result or {}),
+        "error_code": "speaker_account_rebound",
+    }
+    action.status = "pending"
+    action.executed_at = None
+    _clear_action_lease(action)
+    _release_runtime_resources(action)
 
 
 def _comment_total_limit_reached(session: Session, action: Action) -> bool:

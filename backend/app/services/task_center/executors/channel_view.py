@@ -36,6 +36,14 @@ from ..fulfillment_activation import CURRENT_CONTRACT_VERSION
 from ..pacing import schedule_due_times, schedule_times
 from ..payloads import ViewMessagePayload, create_view_action
 from ..schedule_reservation import reserve_task_schedule_times
+from .channel_view_pacing import (
+    ViewActionRequest,
+    ViewCreationContext,
+    bind_view_action_pacing,
+    create_current_view_actions,
+    record_view_deadline_capacity_blocker as _record_deadline_capacity_blocker,
+    reserve_view_action_pacing,
+)
 from .common import adjust_for_account_hour_limit, channel_message_payload, channel_scope, quantity_jitter_bounds, record_channel_capacity_warning
 
 
@@ -207,15 +215,24 @@ def _create_view_actions(
     actions: list[tuple[ChannelMessage, int]],
     context: "ViewCreationContext",
 ) -> int:
-    times = _view_schedule_times(
-        session,
-        task,
-        len(actions),
-        deadline_at=context.ledger.deadline_at,
-    )
+    if getattr(task, "fulfillment_contract_version", "") == CURRENT_CONTRACT_VERSION:
+        return create_current_view_actions(
+            session,
+            task,
+            actions=actions,
+            context=context,
+            action_creator=_create_scheduled_view_action,
+        )
+    times = _view_schedule_times(session, task, len(actions), deadline_at=context.ledger.deadline_at)
     created = 0
-    for (message, account_id), scheduled_at in zip(actions, times, strict=False):
-        request = ViewActionRequest(task, message, account_id, scheduled_at, context)
+    for (message, account_id), due_at in zip(actions, times, strict=False):
+        request = ViewActionRequest(
+            task,
+            message,
+            account_id,
+            due_at,
+            context,
+        )
         created += _create_scheduled_view_action(session, request)
     return created
 
@@ -229,13 +246,15 @@ def _view_schedule_times(
 ) -> list[datetime]:
     now_value = _now()
     local_deadline = _ledger_deadline_for_planned_at(deadline_at, now_value)
-    if getattr(task, "fulfillment_contract_version", None) == CURRENT_CONTRACT_VERSION:
+    if getattr(task, "fulfillment_contract_version", "") == CURRENT_CONTRACT_VERSION:
         return schedule_due_times(
             count,
             task.pacing_config or {},
             start_at=now_value,
             deadline_at=local_deadline,
             timezone_name=task.timezone,
+            seed_id=f"view:{task.id}",
+            plan_total=count,
         )
     times = schedule_times(
         count,
@@ -265,16 +284,21 @@ def _create_scheduled_view_action(session: Session, request: "ViewActionRequest"
         request.scheduled_at,
         context.config,
     )
-    deadline_at = _ledger_deadline_for_planned_at(
-        context.ledger.deadline_at,
-        planned_at,
-    )
+    deadline_at = request.deadline_at or _ledger_deadline_for_planned_at(context.ledger.deadline_at, planned_at)
     if planned_at >= deadline_at:
         _record_deadline_capacity_blocker(request.task, planned_at, deadline_at)
         return 0
-    obligation = ensure_view_obligation(session, context.ledger, request.message, request.account_id)
+    obligation = request.obligation or ensure_view_obligation(
+        session, context.ledger, request.message, request.account_id,
+    )
     if not obligation_accepts_new_action(obligation):
         return 0
+    schedule = reserve_view_action_pacing(
+        session, request, planned_at=planned_at, deadline_at=deadline_at,
+    )
+    if schedule is None:
+        return 0
+    planned_at, reservation = schedule
     target = context.targets_by_message[request.message.id]
     payload = _view_action_payload(
         context,
@@ -289,6 +313,7 @@ def _create_scheduled_view_action(session: Session, request: "ViewActionRequest"
         planned_at,
         ViewMessagePayload(**payload),
     )
+    bind_view_action_pacing(action, request, obligation, reservation)
     bind_obligation_action(obligation, action)
     return 1
 
@@ -310,23 +335,6 @@ def _view_action_payload(
     }
 
 
-def _record_deadline_capacity_blocker(
-    task: Task,
-    planned_at: datetime,
-    deadline_at: datetime,
-) -> None:
-    stats = dict(task.stats or {})
-    key = "channel_view_deadline_capacity_defer_count"
-    stats[key] = int(stats.get(key) or 0) + 1
-    stats["channel_view_deadline_capacity_defer"] = {
-        "planned_at": planned_at.isoformat(),
-        "deadline_at": deadline_at.isoformat(),
-        "reason_code": "account_capacity_after_ledger_deadline",
-    }
-    task.stats = stats
-    task.last_error = "账号容量可用时刻已越过当前浏览任务日截止时间，未创建跨日 Action"
-
-
 def _ledger_deadline_for_planned_at(
     deadline_at: datetime,
     planned_at: datetime,
@@ -344,24 +352,6 @@ class ViewTargetScope:
     messages: list[ChannelMessage]
     targets_by_message: dict[int, ChannelViewDailyMessageTarget]
     now: datetime
-
-
-@dataclass(frozen=True)
-class ViewCreationContext:
-    channel: OperationTarget
-    config: dict
-    execution_date: str
-    ledger: TaskDayLedger
-    targets_by_message: dict[int, ChannelViewDailyMessageTarget]
-
-
-@dataclass(frozen=True)
-class ViewActionRequest:
-    task: Task
-    message: ChannelMessage
-    account_id: int
-    scheduled_at: datetime
-    context: ViewCreationContext
 
 
 def _view_actions_for_messages(

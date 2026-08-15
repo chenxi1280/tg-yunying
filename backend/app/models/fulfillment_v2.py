@@ -57,6 +57,31 @@ class FulfillmentRemoteFact(Base):
             name="uq_fulfillment_remote_fact_identity",
         ),
         Index("ix_fulfillment_remote_fact_obligation", "obligation_type", "obligation_id"),
+        Index(
+            "ix_fulfillment_remote_fact_account_timeline",
+            "tenant_id",
+            "observed_at",
+            "action_id",
+            postgresql_where=text(
+                "fact_kind IN ('remote_message_observed','view_observed','reaction_observed')"
+            ),
+            sqlite_where=text(
+                "fact_kind IN ('remote_message_observed','view_observed','reaction_observed')"
+            ),
+        ),
+        Index(
+            "ix_fulfillment_remote_fact_action_typed",
+            "tenant_id",
+            "action_id",
+            "fact_kind",
+            "observed_at",
+            postgresql_where=text(
+                "fact_kind IN ('remote_message_observed','view_observed','reaction_observed')"
+            ),
+            sqlite_where=text(
+                "fact_kind IN ('remote_message_observed','view_observed','reaction_observed')"
+            ),
+        ),
     )
 
     fact_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
@@ -185,6 +210,12 @@ class GenerationJob(Base):
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     policy_version: Mapped[int] = mapped_column(Integer, default=1)
     job_version: Mapped[int] = mapped_column(Integer, default=1)
+    generation_not_before_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    context_snapshot_hash: Mapped[str] = mapped_column(String(64), default="")
+    assignment_revision: Mapped[int] = mapped_column(Integer, default=1)
+    intent_revision: Mapped[int] = mapped_column(Integer, default=1)
+    candidate_hash: Mapped[str] = mapped_column(String(64), default="")
+    evaluator_evidence: Mapped[dict] = mapped_column(JSON, default=dict)
     state: Mapped[str] = mapped_column(String(24), default="pending")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 

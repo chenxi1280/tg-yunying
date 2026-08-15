@@ -16,7 +16,8 @@
 | [ai-group-daily-fulfillment-remediation-prd.md](ai-group-daily-fulfillment-remediation-prd.md) | `historical_do_not_implement`：旧冻结分母日履约修复，仅保留历史取证 |
 | [ai-group-daily-group-target-redesign-prd.md](ai-group-daily-group-target-redesign-prd.md) | **当前 AI 群日专项**：每日总量、任务内动态必达账号、资源空闲即执行、账号任务日唯一签到、面具与内容合同 |
 | [production-due-backlog-containment-prd.md](production-due-backlog-containment-prd.md) | **2026-08-11 生产止血交接**：修复 current AI open owner 错计、AI/浏览当前 due 二次排期与跨日 pre-Gateway 积压；不替代长期 stable obligation/due-unit 接管 |
-| [production-stability-and-fulfillment-remediation-prd.md](production-stability-and-fulfillment-remediation-prd.md) | **2026-08-15 当前生产修复**：宿主内存临界、Planner 超前物化与 Dispatcher N+1、单 Provider 容量/重复碰撞、OCR/代理搜索阻塞、channel_like 跨月排期、channel_view 实体失效、登录存量 flow、Worker 日志/Telethon 缓存、Gateway/retry 安全闭集及 Release E4 闸门；不改履约合同语义 |
+| [hourly-random-pacing-and-ai-humanization-prd.md](hourly-random-pacing-and-ai-humanization-prd.md) | **本地实现完成、定向 QA 通过、默认 flag 关闭、生产未证明**：四类互动 stable due slot/确定性分层随机节奏，以及 AI 活群/频道评论 MessageBrief、独立语义 reviewer、账号声线 v3、质量闸和盲评合同；AI 节奏局部适配沿用现有 `TaskGroupDailyMessageSlot`，不外推为 current-owner 总迁移完成 |
+| [production-stability-and-fulfillment-remediation-prd.md](production-stability-and-fulfillment-remediation-prd.md) | **2026-08-16 当前生产 CPU/内存完整修复**：多根因资源归因、精确搜索停流量与 OCR 安全停启、per-source adaptive OCR、Planner/Dispatcher 查询与物化治理、宿主资源 SLO，以及 Provider、点赞/浏览、登录、日志/Telethon、Gateway/retry 和 Release E4；不改 typed remote fact 与履约合同语义 |
 | [ai-group-hard-hourly-target-prd.md](ai-group-hard-hourly-target-prd.md) | `retired/historical_do_not_implement`：旧每小时硬目标 |
 | [ai-group-provider-fallback-and-safe-prompt-design.md](ai-group-provider-fallback-and-safe-prompt-design.md) | **部分当前**：仅输入安全、统一输出和 Provider adapter；运行时为单 active key、多模型独立并发、统一签到 |
 | [ai-account-mask-initialization-reliability-prd.md](ai-account-mask-initialization-reliability-prd.md) | **部分当前**：仅账号面具初始化/恢复状态机；任务发送和签到以当前群日合同为准 |

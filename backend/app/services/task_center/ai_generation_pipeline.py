@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 
 from sqlalchemy.orm import Session
@@ -15,11 +15,22 @@ from .ai_generator import (
     _copy_generated_content_metadata,
 )
 from .ai_generation_state import validate_output_sequences, validate_output_slot_ids
+from .ai_generation_stage_config import (
+    fallback_stages as _fallback_stages,
+    stage_config as _stage_config,
+    two_stage_plan_slots as _two_stage_plan_slots,
+)
+from .message_brief import BATCH_FINGERPRINT_LIMIT, structural_fingerprint
+from .two_stage_generation import (
+    QUALITY_WAIT,
+    TWO_STAGE_REALIZE_ATTEMPTS,
+    TwoStageRealizeError,
+    plan_message_briefs,
+    realize_message_content,
+    two_stage_enabled,
+)
 
-AI_GROUP_GENERATION_ATTEMPTS_PER_MODEL = 3
 AI_GENERATION_DEADLINE_BUDGET_EXHAUSTED = "ai_generation_deadline_budget_exhausted"
-
-
 @dataclass(frozen=True)
 class SlotGenerationResult:
     content: str
@@ -28,8 +39,15 @@ class SlotGenerationResult:
     voice_profile_anchor_rewritten: bool = False
     quality_fallback: str = ""
     fallback_reason: str = ""
-
-
+    evaluator_evidence: dict = field(default_factory=dict)
+@dataclass
+class _TwoStageRuntime:
+    session: Session
+    request: object
+    dependencies: GenerationDependencies
+    history_lines: list[str]
+    baseline: list[str]
+    fingerprint_counts: dict[str, int]
 def generate_quality_results(
     session: Session,
     request,
@@ -39,9 +57,10 @@ def generate_quality_results(
         return _cached_quality_results(session, request), request.cached_tokens
     if catch_up := _due_catch_up_results(request):
         return catch_up, 0
+    if two_stage_enabled(getattr(request, "config", {})):
+        return _generate_two_stage_results(session, request, dependencies)
     pending = list(range(len(request.batch_ids)))
-    accepted: dict[int, SlotGenerationResult] = {}
-    last_rejections: dict[int, SlotGenerationResult] = {}
+    accepted, last_rejections = {}, {}
     total_tokens = 0
     last_error: AiGenerationUnavailable | None = None
     for stage in _fallback_stages(request.config):
@@ -194,6 +213,9 @@ def _apply_static_quantity_fallback(
 
 def _static_fallback_enabled(request) -> bool:
     config = getattr(request, "config", {}) or {}
+    # Two-stage 合同（PRD §5.4）：质量耗尽进入 quality_wait，禁止签到兜底补量。
+    if two_stage_enabled(config):
+        return False
     # Explicit single-model requests keep quality rejections visible; they do not
     # enter the multi-stage default static fallback chain.
     if str(config.get("ai_model") or "").strip():
@@ -202,6 +224,132 @@ def _static_fallback_enabled(request) -> bool:
         return False
     slots = list(config.get("generation_slots") or [])
     return any(_has_fallback_quantity_slot(slot) for slot in slots)
+
+
+def _generate_two_stage_results(
+    session: Session,
+    request,
+    dependencies: GenerationDependencies,
+) -> tuple[list[SlotGenerationResult], int]:
+    history_lines = str(request.history or "").splitlines()
+    plans, brief_tokens = plan_message_briefs(
+        session,
+        request.tenant_id,
+        request.config,
+        history_lines=history_lines,
+        slots=_two_stage_plan_slots(request),
+        planner=dependencies.brief_planner,
+    )
+    accepted: dict[int, SlotGenerationResult] = {}
+    rejected: dict[int, SlotGenerationResult] = {}
+    runtime = _TwoStageRuntime(
+        session,
+        request,
+        dependencies,
+        history_lines,
+        list(request.duplicate_baseline_messages),
+        {},
+    )
+    total_tokens = brief_tokens
+    for index, plan in enumerate(plans):
+        result, spent = _realize_two_stage_plan(runtime, plan, index)
+        total_tokens += spent
+        (rejected if result.rejection_code else accepted)[index] = result
+    return _ordered_results(request, accepted, rejected), total_tokens
+
+
+def _realize_two_stage_plan(
+    runtime: _TwoStageRuntime,
+    plan,
+    index: int,
+) -> tuple[SlotGenerationResult, int]:
+    if plan.rejection_code:
+        return _two_stage_rejected(plan.rejection_code, plan.rejection_detail, index), 0
+    if plan.brief is None or plan.brief.speech_act == "silence":
+        detail = "brief_silence：上下文不支持安全发言，宁可沉默不造句"
+        return _two_stage_rejected(QUALITY_WAIT, detail, index), 0
+    feedback = ""
+    spent_tokens = 0
+    for _attempt in range(TWO_STAGE_REALIZE_ATTEMPTS):
+        result, spent = _realize_two_stage_attempt(
+            runtime,
+            plan,
+            index,
+            feedback=feedback,
+        )
+        spent_tokens += spent
+        if not result.rejection_code:
+            runtime.baseline.append(str(result.content))
+            return result, spent_tokens
+        feedback = f"{result.rejection_code}:{result.rejection_detail}"
+    detail = f"realize 预算耗尽，最后拒绝码={result.rejection_code or 'unknown'}"
+    rejected = _two_stage_rejected(
+        QUALITY_WAIT, detail, index, evaluator_evidence=result.evaluator_evidence,
+    )
+    return rejected, spent_tokens
+
+
+def _realize_two_stage_attempt(
+    runtime: _TwoStageRuntime,
+    plan,
+    index: int,
+    *,
+    feedback: str,
+) -> tuple[SlotGenerationResult, int]:
+    _require_provider_attempt_budget(runtime.request)
+    try:
+        content, meta, spent = realize_message_content(
+            runtime.session, runtime.request.tenant_id, runtime.request.config, plan,
+            history_lines=runtime.history_lines,
+            rejection_feedback=feedback,
+            realizer=runtime.dependencies.brief_realizer,
+            reviewer=runtime.dependencies.semantic_reviewer,
+        )
+    except TwoStageRealizeError as exc:
+        return SlotGenerationResult(
+            "", exc.code, exc.code,
+            evaluator_evidence=exc.evidence,
+        ), exc.tokens
+    mapped = GeneratedContent(content, slot_id=plan.slot_id, sequence_index=index + 1)
+    gate = _filter_slot(runtime.request, index, mapped, baseline=runtime.baseline)
+    gate = replace(gate, evaluator_evidence=dict(meta))
+    return _two_stage_structural_gate(runtime, plan, gate), spent
+
+
+def _two_stage_structural_gate(
+    runtime: _TwoStageRuntime,
+    plan,
+    gate: SlotGenerationResult,
+) -> SlotGenerationResult:
+    if gate.rejection_code:
+        return gate
+    fingerprint = structural_fingerprint(plan.brief, str(gate.content))
+    count = runtime.fingerprint_counts.get(fingerprint, 0)
+    if count >= BATCH_FINGERPRINT_LIMIT:
+        return replace(
+            gate,
+            rejection_code="structural_duplicate",
+            rejection_detail=f"同批结构指纹已出现 {BATCH_FINGERPRINT_LIMIT} 次",
+        )
+    runtime.fingerprint_counts[fingerprint] = count + 1
+    return gate
+
+
+def _two_stage_rejected(
+    code: str, detail: str, index: int, *, evaluator_evidence: dict | None = None,
+) -> SlotGenerationResult:
+    """被拒 slot 的映射守恒占位：内容仅用于数量映射校验与审计，不进入发送。
+
+    persist_generation_results 对 rejection_code 非空的结果走 fail 分支，
+    message_text 永不写入该占位。
+    """
+    marker = GeneratedContent(
+        f"[{code}:{index + 1}]", generation_source="two_stage_quality_wait",
+        sequence_index=index + 1,
+    )
+    return SlotGenerationResult(
+        marker, code, detail, evaluator_evidence=dict(evaluator_evidence or {}),
+    )
 
 
 def _has_fallback_quantity_slot(slot: dict) -> bool:
@@ -284,35 +432,6 @@ def _generate_stage(
     validate_output_sequences(contents, len(indexes), is_reply=request.is_reply)
     validate_output_slot_ids(contents, config["generation_slots"])
     return contents, tokens
-
-
-def _stage_config(config: dict, indexes: list[int], stage: str) -> dict:
-    slots = []
-    source_slots = list(config.get("generation_slots") or [])
-    for sequence, index in enumerate(indexes, 1):
-        slot = dict(source_slots[index])
-        slot["sequence_index"] = sequence
-        slot["reply_to_sequence_index"] = sequence if slot.get("reply_to_message_id") else None
-        slots.append(slot)
-    result = {**config, "generation_slots": slots}
-    if stage.startswith("direct_"):
-        result.pop("_ai_fallback_stage", None)
-    else:
-        result["_ai_fallback_stage"] = stage
-    return result
-
-
-def _fallback_stages(config: dict) -> tuple[str, ...]:
-    if bool(config.get("require_mimo_draft")):
-        return ("direct_mimo",)
-    if str(config.get("ai_model") or "").strip():
-        return ("direct_configured_model",)
-    stages = ["primary_default"] * AI_GROUP_GENERATION_ATTEMPTS_PER_MODEL
-    if bool(config.get("_ai_group_model_fallback_enabled", True)):
-        stages.extend(
-            ["fallback_m25"] * AI_GROUP_GENERATION_ATTEMPTS_PER_MODEL
-        )
-    return tuple(stages)
 
 
 def _filter_stage_contents(

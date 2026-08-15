@@ -279,6 +279,10 @@ def _fact_worthy(action: Action, attempt: ExecutionAttempt) -> bool:
     return bool(
         attempt.gateway_call_started_at
         or action.status in {"success", "unknown_after_send"}
+        or (
+            action.status == "skipped"
+            and _remote_mutation_state(action, attempt) == "false"
+        )
     )
 
 

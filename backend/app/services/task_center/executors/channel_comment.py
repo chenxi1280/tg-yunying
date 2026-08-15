@@ -39,7 +39,10 @@ from .channel_comment_schedule import (
     reply_minimum_for_mode as _reply_minimum_for_mode,
     wake_deferred_comment_replacements,  # noqa: F401
 )
-from .channel_comment_preparation import prepare_comment_actions
+from .channel_comment_preparation import (
+    bind_prepared_comment_pacing,
+    prepare_comment_actions,
+)
 from .common import (
     channel_messages,
     channel_message_payload,
@@ -139,6 +142,9 @@ def _create_prepared_actions(
             account_id,
             planned_at,
             payload,
+        )
+        bind_prepared_comment_pacing(
+            session, task, action, obligation=obligation, account_id=account_id,
         )
         bind_comment_obligation(session, obligation, action)
     count_after = _total_comment_action_count(session, task)

@@ -371,9 +371,10 @@ def test_fact_first_ai_slot_uses_current_due_time_without_legacy_capacity(
     assert account in accounts
     assert planned_at == datetime(2026, 8, 4, 13, 0)
     schedule = group_ai_chat._schedule_times_for_plan(session, task, {}, 3, mode="正常期")
-    assert schedule[0] == now_value
-    assert schedule == sorted(schedule)
-    assert schedule == [now_value] * 3
+    # deterministic_stratified_v1：守恒 3 条、分层随机分布、无 legacy 二次排期
+    assert len(schedule) == 3
+    assert all(value >= now_value for value in schedule)
+    assert len(set(schedule)) == 3
 
 
 @pytest.mark.parametrize(

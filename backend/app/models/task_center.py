@@ -113,6 +113,20 @@ class Action(Base):
         Index("ix_actions_executed_at_status", "executed_at", "status"),
         Index("ix_actions_created_at", "created_at"),
         Index("ix_actions_account_occupied_at", "tenant_id", "account_id", "status", text("(coalesce(executed_at, scheduled_at))")),
+        Index(
+            "ix_actions_account_pacing_timeline",
+            "tenant_id",
+            "account_id",
+            "scheduled_at",
+            sqlite_where=text(
+                "status IN ('pending','claiming','executing','retryable_failed','unknown_after_send') "
+                "AND scheduled_at IS NOT NULL"
+            ),
+            postgresql_where=text(
+                "status IN ('pending','claiming','executing','retryable_failed','unknown_after_send') "
+                "AND scheduled_at IS NOT NULL"
+            ),
+        ),
         Index("ix_actions_task_schedule_page", "tenant_id", "task_id", "scheduled_at", "created_at"),
         Index("ix_actions_task_status_schedule_page", "tenant_id", "task_id", "status", "scheduled_at", "created_at"),
         Index("ix_actions_task_type_schedule_page", "tenant_id", "task_id", "action_type", "scheduled_at", "created_at"),
@@ -213,6 +227,16 @@ class Action(Base):
     account_id: Mapped[int | None] = mapped_column(ForeignKey("tg_accounts.id"), nullable=True)
     scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     executed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    pacing_slot_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    pacing_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    pacing_contract_version: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    pacing_plan_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    pacing_slot_ordinal: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    release_not_before_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    effective_claim_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    assignment_revision: Mapped[int] = mapped_column(Integer, default=1)
+    intent_revision: Mapped[int] = mapped_column(Integer, default=1)
+    candidate_hash: Mapped[str] = mapped_column(String(64), default="")
     status: Mapped[str] = mapped_column(String(20), default="pending")
     lease_owner: Mapped[str] = mapped_column(String(120), default="")
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -278,6 +302,14 @@ class ExecutionAttempt(Base):
             text("attempt_no DESC"),
             sqlite_where=text("status = 'success' AND remote_message_id <> ''"),
             postgresql_where=text("status = 'success' AND remote_message_id <> ''"),
+        ),
+        Index(
+            "ix_execution_attempts_account_pacing_timeline",
+            "tenant_id",
+            "account_id",
+            "after_call_at",
+            sqlite_where=text("status = 'success' AND after_call_at IS NOT NULL"),
+            postgresql_where=text("status = 'success' AND after_call_at IS NOT NULL"),
         ),
     )
 

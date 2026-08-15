@@ -149,6 +149,7 @@ from .details import (
 from .fingerprints import content_fingerprint
 from .heartbeat import record_worker_heartbeat
 from .listener_runtime import drain_listener_runtime, invalidate_listener_collect
+from .pacing_summary import task_pacing_summary
 from .membership_admission import (
     list_membership_admission_items_page,
     mark_membership_admission_manual_handled,
@@ -764,6 +765,7 @@ def _task_summary_detail(session: Session, tenant_id: int, task: Task) -> dict[s
         "task": task_payload,
         "actions": [],
         "stats": stats,
+        "pacing_summary": task_pacing_summary(session, task),
         "rank_deboost_exempt_group": _rank_deboost_exempt_group_payload(session, task),
         "task_runtime_summary": task_summary,
         "operation_plan_links": operation_plan_links,
@@ -5648,6 +5650,10 @@ def _action_payload(action: Action, issue: OperationIssue | None = None, account
         "account_username": account.username if account else "",
         "scheduled_at": action.scheduled_at,
         "executed_at": action.executed_at,
+        "pacing_due_at": action.pacing_due_at,
+        "release_not_before_at": action.release_not_before_at,
+        "effective_claim_at": action.effective_claim_at,
+        "pacing_slot_key": str(action.pacing_slot_key or ""),
         "status": action.status,
         "payload": _observable_action_payload(action),
         "result": result,

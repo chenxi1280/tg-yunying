@@ -110,7 +110,7 @@ def test_channel_view_curve_is_not_capped_by_task_level_template_gap() -> None:
     assert max(planned) < deadline
 
 
-def test_current_due_schedule_is_earliest_safe_without_template_spread() -> None:
+def test_current_due_schedule_randomizes_within_hour_buckets() -> None:
     start = datetime(2026, 8, 11, 12, 0)
     deadline = datetime(2026, 8, 12, 0, 0)
 
@@ -122,7 +122,16 @@ def test_current_due_schedule_is_earliest_safe_without_template_spread() -> None
         timezone_name="Asia/Shanghai",
     )
 
-    assert planned == [start] * 100
+    assert len(planned) == 100
+    assert min(planned) >= start
+    assert max(planned) < deadline
+    # 小时桶随机分布：不再是同一时刻，也不等距
+    ordered = sorted(planned)
+    gaps = {
+        (later - earlier).total_seconds()
+        for earlier, later in zip(ordered, ordered[1:])
+    }
+    assert len(gaps) > 1
 
 
 def test_current_ai_and_view_use_due_schedule_instead_of_second_pacing(
@@ -155,8 +164,10 @@ def test_current_ai_and_view_use_due_schedule_instead_of_second_pacing(
         deadline_at=deadline,
     )
 
-    assert ai_times == [start] * 3
-    assert view_times == [start] * 3
+    for times in (ai_times, view_times):
+        assert len(times) == 3
+        assert min(times) >= start
+        assert max(times) < deadline
     session.scalar.assert_not_called()
 
 
@@ -188,7 +199,9 @@ def test_due_schedule_compares_naive_utc_ledger_deadline_as_beijing_wall_time() 
         deadline_is_utc=True,
     )
 
-    assert planned == [start, start]
+    assert len(planned) == 2
+    assert min(planned) >= start
+    assert max(planned) < datetime(2026, 7, 14, 0, 0)
 
 
 def test_channel_view_skips_account_capacity_time_after_deadline(monkeypatch) -> None:

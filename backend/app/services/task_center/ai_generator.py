@@ -38,8 +38,11 @@ GROUP_CHAT_PURPOSE = "群活跃续聊"
 GROUP_CHAT_REPLY_PURPOSE = "群引用回复"
 CHANNEL_COMMENT_PURPOSE = "频道评论"
 CHANNEL_COMMENT_REPLY_PURPOSE = "频道引用回复"
+TWO_STAGE_BRIEF_PURPOSE = "两阶段意图规划"
+TWO_STAGE_REALIZE_PURPOSE = "两阶段声线实现"
+TWO_STAGE_REVIEW_PURPOSE = "两阶段语义审核"
 AI_CONTENT_REQUEST_TIMEOUT_SECONDS = 120
-LONG_RUNNING_AI_PURPOSES = frozenset({GROUP_CHAT_PURPOSE, GROUP_CHAT_REPLY_PURPOSE, CHANNEL_COMMENT_PURPOSE, CHANNEL_COMMENT_REPLY_PURPOSE})
+LONG_RUNNING_AI_PURPOSES = frozenset({GROUP_CHAT_PURPOSE, GROUP_CHAT_REPLY_PURPOSE, CHANNEL_COMMENT_PURPOSE, CHANNEL_COMMENT_REPLY_PURPOSE, TWO_STAGE_BRIEF_PURPOSE, TWO_STAGE_REALIZE_PURPOSE, TWO_STAGE_REVIEW_PURPOSE})
 SENSITIVE_CONTEXT_GUIDANCE = (
     "敏感场景描述只能作为既有上下文理解和引用，但回复只能围绕原文已有事实做自然短评或追问；"
     "不要新增联系线索、成本细节、邀约或促成信息，不要编造亲身经历。"
@@ -90,6 +93,18 @@ class _ProviderCandidatePolicy:
     allow_quota_rotation: bool
     purpose: str
     close_transaction_before_external: bool
+
+
+@dataclass(frozen=True)
+class _StructuredProviderRequest:
+    system_prompt: str
+    user_prompt: str
+    config: dict
+    setting: TenantAiSetting
+    count: int
+    purpose: str
+    model_name: str
+    stage: str
 
 
 CHANNEL_COMMENT_MAX_REDESCRIPTION_ATTEMPTS = 3
@@ -718,7 +733,7 @@ def _content_max_tokens(setting_max_tokens: int, count: int, purpose: str) -> in
     base = max(int(setting_max_tokens or 0), 1024)
     if purpose not in LONG_RUNNING_AI_PURPOSES:
         return base
-    per_candidate = 96 if purpose in {GROUP_CHAT_PURPOSE, GROUP_CHAT_REPLY_PURPOSE} else 512
+    per_candidate = 96 if purpose in {GROUP_CHAT_PURPOSE, GROUP_CHAT_REPLY_PURPOSE, TWO_STAGE_REALIZE_PURPOSE} else 512
     return max(base, max(1, int(count or 1)) * per_candidate)
 
 
@@ -1019,6 +1034,127 @@ def generate_group_messages(session: Session, tenant_id: int, config: dict, *, c
         purpose=GROUP_CHAT_PURPOSE,
     )
     return _trim(contents, config.get("max_message_length")), tokens
+
+
+def generate_structured_payloads(
+    session: Session,
+    tenant_id: int,
+    config: dict,
+    *,
+    system_prompt: str,
+    user_prompt: str,
+    purpose: str,
+    count: int = 1,
+) -> tuple[object, int]:
+    """两阶段生成（PRD §5.4）的结构化 provider 调用通道。
+
+    复用既有 provider 选择、准入（begin/settle/cooldown）与配额轮换机制，
+    但走 gateway.generate_structured 返回原始 JSON 载荷，由调用方按
+    MessageBrief/realizer 契约校验；不映射 drafts，也不做静态兜底。
+    """
+    model_name = _group_chat_model(config)
+    stage = str(config.get("_ai_fallback_stage") or "").strip()
+    setting = session.scalar(select(TenantAiSetting).where(TenantAiSetting.tenant_id == tenant_id))
+    provider, setting = _resolve_group_generation_provider(
+        session,
+        tenant_id,
+        config,
+        setting=setting,
+        model_name=model_name,
+        stage=stage,
+    )
+    provider, setting = _require_group_generation_provider(provider, setting, config)
+    model_name = _resolved_group_model_name(provider, model_name, stage)
+    payload, tokens = _generate_structured_with_candidates(
+        session,
+        provider,
+        _StructuredProviderRequest(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            config=config,
+            setting=setting,
+            count=count,
+            purpose=purpose,
+            model_name=model_name,
+            stage=stage,
+        ),
+    )
+    return payload, tokens
+
+
+def _generate_structured_with_candidates(
+    session: Session,
+    provider: AiProvider,
+    request: _StructuredProviderRequest,
+) -> tuple[object, int]:
+    providers = _provider_candidates(
+        session,
+        provider,
+        required_model_family=_group_chat_required_model_family(request.config),
+        allow_quota_rotation=(
+            not request.config.get("ai_provider_id")
+            and request.stage in {"", "primary_default"}
+        ),
+    )
+    provider_calls = _provider_calls(
+        session,
+        providers,
+        request.model_name,
+        bool(request.config.get("_close_db_transaction_before_ai")),
+    )
+    last_exc: Exception | None = None
+    blocked_exc: ProviderAdmissionBlocked | None = None
+    for candidate, credentials in provider_calls:
+        try:
+            lease = begin_provider_call(candidate)
+        except ProviderAdmissionBlocked as exc:
+            blocked_exc = exc
+            continue
+        try:
+            return _call_structured_provider(lease, credentials, request)
+        except ProviderAdmissionBlocked as exc:
+            blocked_exc = exc
+            last_exc = exc
+            break
+        except Exception as exc:
+            last_exc = exc
+            if not _is_ai_provider_quota_exhausted(exc):
+                break
+            _mark_provider_quota_exhausted(candidate, exc)
+            if bool(request.config.get("_close_db_transaction_before_ai")):
+                session.add(candidate)
+                session.commit()
+            if candidate == providers[-1]:
+                break
+            continue
+    if blocked_exc is not None and (last_exc is None or last_exc is blocked_exc):
+        raise blocked_exc
+    _raise_provider_generation_failure(last_exc, request.purpose)
+
+
+def _call_structured_provider(
+    lease: ProviderProbeLease,
+    credentials: AiProviderCredentials,
+    request: _StructuredProviderRequest,
+) -> tuple[object, int]:
+    try:
+        payload, usage = ai_gateway.generate_structured(
+            credentials,
+            request.user_prompt,
+            temperature=float(request.setting.temperature or 0.7),
+            max_tokens=_content_max_tokens(
+                request.setting.max_tokens, request.count, request.purpose,
+            ),
+            system_prompt=request.system_prompt,
+            timeout=AI_CONTENT_REQUEST_TIMEOUT_SECONDS,
+        )
+    except ProviderAdmissionBlocked:
+        raise
+    except Exception:
+        release_provider_probe(lease)
+        raise
+    settle_provider_success(lease)
+    return payload, int(getattr(usage, "total_tokens", 0) or 0)
 
 
 def generate_group_reply_messages(

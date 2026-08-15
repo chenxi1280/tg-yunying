@@ -1,7 +1,7 @@
 import React from 'react';
 import { Alert, Button, Descriptions, Input, Select, Space, Table, Tabs, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import type { SearchRankDeboostExemptGroup, TaskAccountCoverageItem, TaskCenterAction, TaskCenterDetail, TaskCenterTask, TenantBotSettings } from '../types';
+import type { SearchRankDeboostExemptGroup, TaskAccountCoverageItem, TaskCenterAction, TaskCenterDetail, TaskCenterTask, TaskPacingSummary, TenantBotSettings } from '../types';
 import { DetailModal, StatusBadge } from '../components/shared';
 import { parseBeijingDate } from '../time';
 import { API_ORIGIN, api } from '../../shared/api/client';
@@ -307,6 +307,42 @@ function DailyGroupTargetPanel({ detail }: { detail: TaskCenterDetail }) {
       { key: 'covered', label: '已覆盖账号', children: stats.daily_group_covered_account_count ?? 0 },
       { key: 'due', label: '当前应完成量', children: stats.daily_group_due_message_count ?? 0 },
     ]} />
+  );
+}
+
+const formatGapSeconds = (value: number | null | undefined) => (value == null ? '-' : `${Math.round(value)} 秒`);
+
+function TaskPacingSummaryPanel({ summary }: { summary: TaskPacingSummary }) {
+  const peak = summary.five_minute_peak || {};
+  const sameSecondCount = Number(summary.same_second_count ?? 0);
+  const rewriteCount = Number(summary.future_to_now_rewrite_count ?? 0);
+  const uniqueRatio = Number(summary.due_at_unique_ratio ?? 0);
+  return (
+    <Descriptions
+      bordered
+      size="small"
+      column={4}
+      title="执行节奏摘要"
+      items={[
+        { key: 'pacing-contract', label: '节奏契约', children: summary.pacing_contract_version || '-' },
+        { key: 'pacing-slot-count', label: '计划槽位', children: Number(summary.slot_count ?? 0) },
+        { key: 'pacing-future', label: '未来计划', children: Number(summary.future ?? 0) },
+        { key: 'pacing-due', label: '当前到期', children: Number(summary.due ?? 0) },
+        { key: 'pacing-late', label: '已逾期', children: Number(summary.late ?? 0) },
+        { key: 'pacing-confirmed', label: '已确认', children: Number(summary.confirmed ?? 0) },
+        { key: 'pacing-remote-unknown', label: '远端未证实', children: Number(summary.remote_unknown ?? 0) },
+        { key: 'pacing-missed', label: '已错过', children: Number(summary.missed ?? 0) },
+        { key: 'pacing-peak', label: '5 分钟峰值', children: `${Number(peak.count ?? 0)} / 上界 ${Number(peak.upper_bound ?? 0)}` },
+        { key: 'pacing-same-second', label: '同秒重复', children: sameSecondCount > 0 ? <Tag color="red">{sameSecondCount}</Tag> : sameSecondCount },
+        { key: 'pacing-unique-ratio', label: '秒级唯一比', children: `${(uniqueRatio * 100).toFixed(2)}%` },
+        { key: 'pacing-rewrite', label: '提前执行违约', children: rewriteCount > 0 ? <Tag color="red">{rewriteCount}</Tag> : rewriteCount },
+        { key: 'pacing-sampled', label: '统计口径', children: summary.sampled ? '抽样（前 5000 条）' : '全量' },
+        { key: 'pacing-account-gap-min', label: '账号最小间隔', children: formatGapSeconds(summary.account_min_executed_gap_seconds) },
+        { key: 'pacing-account-gap-p50', label: '账号间隔 P50', children: formatGapSeconds(summary.account_executed_gap_p50_seconds) },
+        { key: 'pacing-account-gap-p95', label: '账号间隔 P95', children: formatGapSeconds(summary.account_executed_gap_p95_seconds) },
+        { key: 'pacing-window', label: '计划窗口', span: 2, children: `${formatDateTime(summary.earliest_due_at)} ~ ${formatDateTime(summary.latest_due_at)}` },
+      ]}
+    />
   );
 }
 
@@ -1054,7 +1090,7 @@ export function TaskCenterDetailModal({
     {
       key: 'plan',
       label: `执行计划 (${plannedActionPagination.total})`,
-      children: <Table<TaskCenterAction> rowKey="id" columns={planColumns} dataSource={plannedActions} loading={plannedActionLoading} pagination={{ ...plannedActionPagination, showSizeChanger: true, onChange: onPlannedActionPageChange }} scroll={{ x: 980 }} locale={{ emptyText: detail.task.last_error ? `暂未生成执行计划：${detail.task.last_error}` : `暂未生成执行计划，下次运行：${formatDateTime(detail.task.next_run_at)}` }} />,
+      children: <Table<TaskCenterAction> rowKey="id" columns={planColumns} dataSource={plannedActions} loading={plannedActionLoading} pagination={{ ...plannedActionPagination, showSizeChanger: true, onChange: onPlannedActionPageChange }} scroll={{ x: 1130 }} locale={{ emptyText: detail.task.last_error ? `暂未生成执行计划：${detail.task.last_error}` : `暂未生成执行计划，下次运行：${formatDateTime(detail.task.next_run_at)}` }} />,
     },
     {
       key: 'records',
@@ -1120,6 +1156,9 @@ export function TaskCenterDetailModal({
                 { key: 'error', label: '错误', span: 3, children: detail.task.last_error || '无' },
               ]}
             />
+            {detail.pacing_summary && Number(detail.pacing_summary.slot_count ?? 0) > 0 && (
+              <TaskPacingSummaryPanel summary={detail.pacing_summary} />
+            )}
             <DailyGroupTargetPanel detail={detail} />
             <Tabs className="tabs-row" items={detailTabs} />
           </Space>
