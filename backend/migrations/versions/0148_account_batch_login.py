@@ -135,7 +135,11 @@ def _create_attempts() -> None:
     op.create_table(
         "tg_account_login_batch_attempts",
         sa.Column("id", sa.Integer(), primary_key=True),
-        sa.Column("item_id", sa.Integer(), sa.ForeignKey("tg_account_login_batch_items.id"), nullable=False),
+        sa.Column(
+            "item_id", sa.Integer(),
+            sa.ForeignKey("tg_account_login_batch_items.id", name="fk_login_attempt_item"),
+            nullable=False,
+        ),
         sa.Column("batch_id", sa.Integer(), sa.ForeignKey("tg_account_login_batches.id"), nullable=False),
         sa.Column("tenant_id", sa.Integer(), sa.ForeignKey("tenants.id"), nullable=False),
         sa.Column("execution_generation", sa.Integer(), nullable=False),
@@ -145,7 +149,11 @@ def _create_attempts() -> None:
         sa.Column("lease_expires_at", sa.DateTime(), nullable=True),
         sa.Column("deadline_at", sa.DateTime(), nullable=True),
         sa.Column("code_wait_until_at", sa.DateTime(), nullable=True),
-        sa.Column("flow_id", sa.Integer(), sa.ForeignKey("tg_login_flows.id"), nullable=True),
+        sa.Column(
+            "flow_id", sa.Integer(),
+            sa.ForeignKey("tg_login_flows.id", name="fk_login_attempt_flow"),
+            nullable=True,
+        ),
         sa.Column("flow_version", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("baseline_code_hmac", sa.String(64), nullable=False, server_default=""),
         sa.Column("baseline_login_time_hmac", sa.String(64), nullable=False, server_default=""),

@@ -74,7 +74,9 @@ class TgAccountLoginBatchItem(Base):
     failure_type: Mapped[str] = mapped_column(String(80), default="")
     failure_detail: Mapped[str] = mapped_column(Text, default="")
     warning_detail: Mapped[str] = mapped_column(Text, default="")
-    current_attempt_id: Mapped[int | None] = mapped_column(ForeignKey("tg_account_login_batch_attempts.id"), nullable=True)
+    current_attempt_id: Mapped[int | None] = mapped_column(
+        ForeignKey("tg_account_login_batch_attempts.id", name="fk_login_batch_item_current_attempt"), nullable=True
+    )
     execution_generation: Mapped[int] = mapped_column(Integer, default=1)
     retry_count: Mapped[int] = mapped_column(Integer, default=0)
     state_version: Mapped[int] = mapped_column(Integer, default=1)
@@ -123,7 +125,9 @@ class TgAccountLoginBatchAttempt(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    item_id: Mapped[int] = mapped_column(ForeignKey("tg_account_login_batch_items.id"))
+    item_id: Mapped[int] = mapped_column(
+        ForeignKey("tg_account_login_batch_items.id", name="fk_login_attempt_item")
+    )
     batch_id: Mapped[int] = mapped_column(ForeignKey("tg_account_login_batches.id"))
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
     execution_generation: Mapped[int] = mapped_column(Integer)
@@ -133,7 +137,9 @@ class TgAccountLoginBatchAttempt(Base):
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     deadline_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     code_wait_until_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    flow_id: Mapped[int | None] = mapped_column(ForeignKey("tg_login_flows.id"), nullable=True)
+    flow_id: Mapped[int | None] = mapped_column(
+        ForeignKey("tg_login_flows.id", name="fk_login_attempt_flow"), nullable=True
+    )
     flow_version: Mapped[int] = mapped_column(Integer, default=0)
     baseline_code_hmac: Mapped[str] = mapped_column(String(64), default="")
     baseline_login_time_hmac: Mapped[str] = mapped_column(String(64), default="")

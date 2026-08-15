@@ -172,6 +172,7 @@ def test_rule_material_policy_selects_ready_material_for_preview_and_ai_action(m
         session.commit()
 
         assert build_ai_chat_plan(session, task) == 1
+        session.commit()
         assert drain_ai_generation(
             lambda: Session(engine),
             limit=1,
@@ -228,6 +229,7 @@ def test_pre_gateway_failure_rebuilds_same_content_mix_slot(monkeypatch):
         session.commit()
 
         assert build_ai_chat_plan(session, task) == 1
+        session.commit()
         assert drain_ai_generation(
             lambda: Session(engine),
             limit=1,

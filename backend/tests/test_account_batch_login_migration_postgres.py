@@ -15,6 +15,13 @@ EXPECTED_TABLES = {
 }
 
 
+def _foreign_key_names(inspector, table_name: str) -> dict[tuple[str, ...], str | None]:
+    return {
+        tuple(foreign_key["constrained_columns"]): foreign_key["name"]
+        for foreign_key in inspector.get_foreign_keys(table_name)
+    }
+
+
 def test_account_batch_login_schema_migrates_from_blank_postgres() -> None:
     inspector = inspect(engine)
 
@@ -29,6 +36,15 @@ def test_account_batch_login_schema_migrates_from_blank_postgres() -> None:
     } <= account_columns
     flow_columns = {column["name"] for column in inspector.get_columns("tg_login_flows")}
     assert {"batch_login_attempt_id", "batch_login_generation"} <= flow_columns
+    assert _foreign_key_names(inspector, "tg_account_login_batch_items")[("current_attempt_id",)] == (
+        "fk_login_batch_item_current_attempt"
+    )
+    attempt_foreign_keys = _foreign_key_names(inspector, "tg_account_login_batch_attempts")
+    assert attempt_foreign_keys[("item_id",)] == "fk_login_attempt_item"
+    assert attempt_foreign_keys[("flow_id",)] == "fk_login_attempt_flow"
+    assert _foreign_key_names(inspector, "tg_login_flows")[("batch_login_attempt_id",)] == (
+        "fk_login_flow_batch_attempt"
+    )
     usage_columns = {column["name"]: column for column in inspector.get_columns("ai_usage_ledgers")}
     assert usage_columns["user_id"]["nullable"] is False
     assert any(

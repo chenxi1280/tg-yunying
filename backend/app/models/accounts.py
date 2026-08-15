@@ -271,7 +271,9 @@ class TgLoginFlow(Base):
     developer_app_id: Mapped[int | None] = mapped_column(ForeignKey("telegram_developer_apps.id"), nullable=True)
     proxy_id: Mapped[int | None] = mapped_column(ForeignKey("account_proxies.id"), nullable=True)
     superseded_by_flow_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    batch_login_attempt_id: Mapped[int | None] = mapped_column(ForeignKey("tg_account_login_batch_attempts.id"), nullable=True)
+    batch_login_attempt_id: Mapped[int | None] = mapped_column(
+        ForeignKey("tg_account_login_batch_attempts.id", name="fk_login_flow_batch_attempt"), nullable=True
+    )
     batch_login_generation: Mapped[int] = mapped_column(Integer, default=0)
     failure_type: Mapped[str] = mapped_column(String(60), default="")
     failure_detail: Mapped[str] = mapped_column(Text, default="")

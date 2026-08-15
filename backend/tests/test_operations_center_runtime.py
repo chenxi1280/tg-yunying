@@ -7560,7 +7560,15 @@ def test_task_stop_and_delete_keep_distinct_terminal_statuses():
 def test_worker_keeps_legacy_campaign_and_operation_drains_opt_in(monkeypatch):
     from app import worker
 
-    monkeypatch.setattr(worker, "get_settings", lambda: SimpleNamespace(enable_legacy_campaign_worker=False, enable_legacy_operation_task_worker=False))
+    monkeypatch.setattr(
+        worker,
+        "get_settings",
+        lambda: SimpleNamespace(
+            enable_legacy_campaign_worker=False,
+            enable_legacy_operation_task_worker=False,
+            account_batch_login_mode="off",
+        ),
+    )
     monkeypatch.setattr(worker, "drain_profile_sync_records", lambda *args, **kwargs: 0)
     monkeypatch.setattr(worker, "drain_account_sync_records", lambda *args, **kwargs: 0)
     monkeypatch.setattr(worker, "drain_account_security_batches", lambda *args, **kwargs: 0)
