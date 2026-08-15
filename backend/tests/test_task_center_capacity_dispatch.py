@@ -1122,9 +1122,9 @@ def test_dispatch_context_requeue_releases_reserved_account_runtime_resource(mon
         monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
         monkeypatch.setattr(dispatcher, "reject_legacy_anchor_rewrite_before_send", lambda *_args: False)
         monkeypatch.setattr(dispatcher.gateway, "send_message", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("context expired action must not call TG")))
-        forbidden = lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("Dispatcher must not call AI Provider"),
-        )
+        def forbidden(*_args, **_kwargs):
+            raise AssertionError("Dispatcher must not call AI Provider")
+
         dependencies = GenerationDependencies(
             normal_generator=forbidden,
             reply_generator=forbidden,
@@ -6114,7 +6114,7 @@ def _add_ready_daily_coverage(
 
 @pytest.mark.no_postgres
 @pytest.mark.parametrize("with_reply_history", [False, True])
-def test_fact_first_high_coverage_debt_materializes_bounded_multi_action_batch(
+def test_fact_first_high_coverage_debt_near_deadline_records_pacing_shortfall(
     monkeypatch,
     with_reply_history,
 ):
@@ -6188,13 +6188,15 @@ def test_fact_first_high_coverage_debt_materializes_bounded_multi_action_batch(
             Action.status == "pending",
         )))
 
-    assert created == 20, (task.last_error, task.stats)
-    assert len(actions) == 20
-    assert len({action.account_id for action in actions}) == 20
-    reply_actions = [action for action in actions if action.payload.get("reply_to_message_id")]
-    assert len(reply_actions) == (1 if with_reply_history else 0)
-    if reply_actions:
-        assert reply_actions[0].scheduled_at <= now_value + timedelta(minutes=5)
+    assert created == 0
+    assert actions == []
+    assert task.last_error == "当前日截止前无合法节奏窗口可安排本轮 AI 义务，形成 pacing shortfall"
+    assert task.stats["pacing_schedule_shortfall"] == {
+        "reason_code": "pacing_capacity_shortfall",
+        "requested": 20,
+        "scheduled": 0,
+    }
+    assert task.stats["daily_coverage_next_check_at"] == "2026-07-14T00:01:00"
 
 
 @pytest.mark.no_postgres

@@ -4341,7 +4341,7 @@ def test_task_center_group_ai_chat_creates_and_dispatches_actions(monkeypatch):
         detail = task_detail_after_metrics(client, headers, task["id"])
         assert detail["task"]["stats"]["total_actions"] >= 1
         assert detail["task"]["stats"]["success_count"] >= 1
-        actions = task_detail_actions(client, headers, task["id"] if isinstance(task, dict) else task_id)
+        actions = task_detail_actions(client, headers, task["id"])
         assert actions[0]["action_type"] == "send_message"
         client.post(f"/api/tasks/{task['id']}/stop", headers=headers, json={"reason": "测试停止任务"})
 
