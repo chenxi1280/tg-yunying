@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass
 
 from sqlalchemy import and_, or_, select, text
@@ -28,6 +29,12 @@ from .identity import parse_code_source_url, phone_fingerprints
 class AccountBindingResult:
     account: TgAccount
     created: bool
+
+
+@dataclass(frozen=True)
+class PhoneAliasCandidate:
+    account: TgAccount
+    fingerprints: dict[int, str]
 
 
 def bind_or_create_account(
@@ -195,28 +202,95 @@ def reveal_account_code_source(
     return {"account_id": account.id, "host": account.code_source_host, "uuid": uuid_value, "binding_version": account.code_source_binding_version}
 
 
-def backfill_phone_aliases(session: Session, tenant_id: int, *, apply: bool) -> dict[str, int]:
+def backfill_phone_aliases(
+    session: Session,
+    tenant_id: int,
+    *,
+    apply: bool,
+    actor: str = "",
+    approval_ref: str = "",
+) -> dict[str, int]:
+    if apply and (not actor.strip() or not approval_ref.strip()):
+        raise ValueError("apply requires actor and approval_ref")
     accounts = list(session.scalars(select(TgAccount).where(TgAccount.tenant_id == tenant_id).order_by(TgAccount.id)))
-    result = {"scanned": len(accounts), "created": 0, "conflicts": 0, "missing_phone": 0}
-    for account in accounts:
-        phone = decrypt_secret(account.phone_ciphertext)
-        if not phone:
-            result["missing_phone"] += 1
-            continue
-        fingerprints = phone_fingerprints(tenant_id, phone, _accepted_versions())
-        if _alias_conflicts(session, account, fingerprints):
+    candidates, missing_phone = _phone_alias_candidates(accounts, tenant_id)
+    selected, duplicate_conflicts, shadowed_deleted = _select_phone_alias_owners(candidates)
+    plans: list[tuple[TgAccount, dict[int, str]]] = []
+    result = {
+        "scanned": len(accounts),
+        "created": 0,
+        "conflicts": duplicate_conflicts,
+        "missing_phone": missing_phone,
+        "shadowed_deleted": shadowed_deleted,
+    }
+    for candidate in selected:
+        if _alias_conflicts(session, candidate.account, candidate.fingerprints):
             result["conflicts"] += 1
             continue
-        missing = _missing_aliases(session, account, fingerprints)
+        missing = _missing_aliases(session, candidate.account, candidate.fingerprints)
         result["created"] += len(missing)
-        if apply:
-            _insert_aliases(session, account, missing)
+        plans.append((candidate.account, missing))
     if apply and result["conflicts"]:
         session.rollback()
         raise BatchLoginError("code_source_binding_conflict", "手机号别名回填存在冲突，未应用")
     if apply:
+        for account, missing in plans:
+            _insert_aliases(session, account, missing)
+        audit(
+            session,
+            tenant_id=tenant_id,
+            actor=actor.strip()[:100],
+            action="回填账号手机号别名",
+            target_type="tenant",
+            target_id=str(tenant_id),
+            detail=json.dumps({"approval_ref": approval_ref.strip(), **result}, ensure_ascii=False),
+        )
         session.commit()
     return result
+
+
+def _phone_alias_candidates(accounts: list[TgAccount], tenant_id: int) -> tuple[list[PhoneAliasCandidate], int]:
+    candidates: list[PhoneAliasCandidate] = []
+    missing_phone = 0
+    for account in accounts:
+        phone = decrypt_secret(account.phone_ciphertext)
+        if not phone:
+            missing_phone += 1
+            continue
+        candidates.append(PhoneAliasCandidate(
+            account,
+            phone_fingerprints(tenant_id, phone, _accepted_versions()),
+        ))
+    return candidates, missing_phone
+
+
+def _select_phone_alias_owners(
+    candidates: list[PhoneAliasCandidate],
+) -> tuple[list[PhoneAliasCandidate], int, int]:
+    claims: dict[tuple[int, str], TgAccount] = {}
+    selected: list[PhoneAliasCandidate] = []
+    conflicts = 0
+    shadowed_deleted = 0
+    ordered = sorted(
+        candidates,
+        key=lambda candidate: (candidate.account.deleted_at is not None, candidate.account.id),
+    )
+    for candidate in ordered:
+        owners = [
+            claims[(version, fingerprint)]
+            for version, fingerprint in candidate.fingerprints.items()
+            if (version, fingerprint) in claims
+        ]
+        if owners:
+            if candidate.account.deleted_at is not None and all(owner.deleted_at is None for owner in owners):
+                shadowed_deleted += 1
+            else:
+                conflicts += 1
+            continue
+        for version, fingerprint in candidate.fingerprints.items():
+            claims[(version, fingerprint)] = candidate.account
+        selected.append(candidate)
+    return selected, conflicts, shadowed_deleted
 
 
 def _alias_conflicts(session: Session, account: TgAccount, fingerprints: dict[int, str]) -> bool:

@@ -354,6 +354,7 @@ phase 以 `(attempt_id, generation, state_version, lease_token)` CAS，网络调
 | 授权已持久化，资料同步/online readback 失败 | 行 `succeeded_with_warning`，保留独立授权与后置投影 |
 | 授权已持久化但目标分组 CAS 失败 | 行 `failed(pool_transition_failed)`，authorization 投影仍为已授权；不计 success，重试只补目标分组，不重复登录 |
 | 手机号命中软删除账号 | precheck 409 `soft_deleted_account_conflict`，不自动新建/复活 |
+| 历史数据中同手机号同时存在唯一有效账号与软删除旧账号 | alias 回填由有效账号持有唯一 alias，软删除旧账号计 `shadowed_deleted` 且不阻塞；若存在两个有效账号或无法唯一选出有效账号则按 conflict 整批阻断 |
 | worker 在远程调用前崩溃 | 租约到期后同 generation 可重领；调用已 started 则转 `reconciling` |
 | cancel 与远程返回竞态 | 以 `state_version + execution_generation` CAS；远程开始后先对账，禁止写回旧 generation |
 | 失败/未解行 URL 失效或超期 | 密文清除，重试返回 `credential_expired`；操作员通过 refresh-credential 提交新地址，新地址本身不触发 Telegram 调用 |
