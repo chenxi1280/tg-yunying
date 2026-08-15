@@ -90,10 +90,10 @@ prune_static_releases() {
 prune_docker_pull_cache() {
   echo "==> Docker disk usage before image pull"
   docker system df || true
-  echo "==> Pruning stopped containers and unused image cache before image pull"
+  echo "==> Pruning stopped containers, build cache, and dangling images before image pull"
   docker container prune -f
   docker builder prune -af
-  docker image prune -af
+  docker image prune -f
   echo "==> Docker disk usage after image cache prune"
   docker system df || true
 }

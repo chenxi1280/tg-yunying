@@ -6,6 +6,7 @@ import yaml
 
 pytestmark = pytest.mark.no_postgres
 WORKFLOW = Path(__file__).resolve().parents[2] / ".github/workflows/deploy-production.yml"
+COMPOSE_UP = Path(__file__).resolve().parents[2] / "deploy/compose-up.sh"
 
 
 def test_production_checks_run_complete_backend_partitions_and_frontend_in_parallel() -> None:
@@ -17,6 +18,13 @@ def test_production_checks_run_complete_backend_partitions_and_frontend_in_paral
     assert 'pytest -q -m "${{ matrix.pytest_marker }}"' in _combined_run_script(backend)
     assert "frontend-checks" in jobs
     assert set(jobs["build-images"]["needs"]) == {"backend-checks", "frontend-checks"}
+
+
+def test_deploy_prunes_only_dangling_images_before_pull() -> None:
+    script = COMPOSE_UP.read_text()
+
+    assert "docker image prune -f" in script
+    assert "docker image prune -af" not in script
 
 
 def _combined_run_script(job: dict) -> str:
