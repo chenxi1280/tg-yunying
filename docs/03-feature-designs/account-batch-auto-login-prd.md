@@ -355,6 +355,7 @@ phase 以 `(attempt_id, generation, state_version, lease_token)` CAS，网络调
 | 授权已持久化但目标分组 CAS 失败 | 行 `failed(pool_transition_failed)`，authorization 投影仍为已授权；不计 success，重试只补目标分组，不重复登录 |
 | 手机号命中软删除账号 | precheck 409 `soft_deleted_account_conflict`，不自动新建/复活 |
 | 历史数据中同手机号同时存在唯一有效账号与软删除旧账号 | alias 回填由有效账号持有唯一 alias，软删除旧账号计 `shadowed_deleted` 且不阻塞；若存在两个有效账号或无法唯一选出有效账号则按 conflict 整批阻断 |
+| 内置系统管理员创建批次 | 内置管理员 principal id=0 不存在于 `app_users`；batch/notification 的 `recipient_user_id` 是认证主体 ID 而非 `app_users` 外键，仍以 `tenant_id + recipient_user_id` 隔离列表、提醒和幂等键 |
 | worker 在远程调用前崩溃 | 租约到期后同 generation 可重领；调用已 started 则转 `reconciling` |
 | cancel 与远程返回竞态 | 以 `state_version + execution_generation` CAS；远程开始后先对账，禁止写回旧 generation |
 | 失败/未解行 URL 失效或超期 | 密文清除，重试返回 `credential_expired`；操作员通过 refresh-credential 提交新地址，新地址本身不触发 Telegram 调用 |
@@ -437,7 +438,7 @@ phase 以 `(attempt_id, generation, state_version, lease_token)` CAS，网络调
 
 - 已在隔离分支实现并合并回本地 `release`：0148 migration、批次/行项/attempt/持久提醒/手机号 alias/rate bucket、严格接码 URL 与 HTML 解析、按 phase 串行 worker、远程未知对账、更正提醒、权限/mode/readiness、前端预检与进度 Drawer、账号独立接码备注及受控 UUID reveal。
 - 行级异常合同已落为自动化用例：验证码/行总预算超时后进入失败并继续下一行；远程调用结果未知进入 `unresolved` 后让出顺序；未决重试必须完成探测并 supersede 旧 attempt；取消跳过未开始行；完成提醒分列失败、未解、警告；Bot outbox 在 worker 崩溃后可按持久租约重新认领。
-- 本地证据：相关后端集合 `84 passed`；前端 `tsc + vite build` 通过；Alembic 唯一 head 为 `0148_account_batch_login`，PostgreSQL 离线 SQL、Compose YAML、部署脚本语法、Python 编译与差异检查通过。
+- 本地证据：相关后端集合 `84 passed`；前端 `tsc + vite build` 通过；Alembic 批量登录表由 `0148_account_batch_login` 创建，`0149_batch_login_principal` 允许内置系统管理员作为批次/提醒主体；PostgreSQL 空库 migration、Compose YAML、部署脚本语法、Python 编译与差异检查均纳入发布闸门。
 - 敏感值边界：真实手机号和 UUID 不写入代码、测试、日志或本文；账号保存加密 UUID 并仅显示 `平台 · 前6位…后4位`，完整值需要双权限、操作原因、binding version 与 no-store 响应。
 - 未执行：生产 migration、手机号 alias 回填、`reconcile_only/enabled` 切换、生产 worker 启动、真实 Telegram 批量授权与 E4 故障注入。因此当前只能写本地实现/定向 QA 通过，不能写已上线或生产修复。
 

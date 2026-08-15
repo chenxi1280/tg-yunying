@@ -84,8 +84,14 @@ def _lines(count: int = 1) -> str:
     return "\n".join(rows)
 
 
-def _create_payload(session: Session, lines_text: str, *, key: str = "batch-key-0001") -> LoginBatchCreateRequest:
-    preview = precheck_login_batch(session, 1, 20, lines_text, 10)
+def _create_payload(
+    session: Session,
+    lines_text: str,
+    *,
+    key: str = "batch-key-0001",
+    user_id: int = 20,
+) -> LoginBatchCreateRequest:
+    preview = precheck_login_batch(session, 1, user_id, lines_text, 10)
     return LoginBatchCreateRequest(
         pool_id=10,
         lines_text=lines_text,
@@ -108,6 +114,29 @@ def test_precheck_create_and_idempotent_replay(session_factory) -> None:
     assert item.phone_ciphertext != "+12025550100"
     assert "00000000000000000000000000000001" not in item.code_url_ciphertext
     assert item.code_source_uuid_hint == "000000…0001"
+
+
+def test_builtin_admin_can_create_batch_and_receive_notification(session_factory) -> None:
+    from app.auth import admin_user_payload
+
+    admin_id = int(admin_user_payload()["id"])
+    with session_factory() as session:
+        payload = _create_payload(session, _lines(), key="admin-batch-key-0001", user_id=admin_id)
+        batch = create_login_batch(session, 1, admin_id, "系统管理员", payload)
+        item = session.scalar(select(TgAccountLoginBatchItem).where(
+            TgAccountLoginBatchItem.batch_id == batch.id,
+        ))
+        item.status = "failed"
+        item.failure_type = "code_timeout"
+        assert finalize_batch_if_terminal(session, batch.id)
+        session.commit()
+        notifications = list(session.scalars(select(TgAccountLoginBatchNotification).where(
+            TgAccountLoginBatchNotification.batch_id == batch.id,
+        )))
+
+    assert batch.recipient_user_id == admin_id
+    assert {row.channel for row in notifications} == {"platform", "tg_bot"}
+    assert {row.recipient_user_id for row in notifications} == {admin_id}
 
 
 def test_idempotency_key_rejects_changed_request(session_factory) -> None:

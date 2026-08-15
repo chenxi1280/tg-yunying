@@ -45,6 +45,10 @@ def test_account_batch_login_schema_migrates_from_blank_postgres() -> None:
     assert _foreign_key_names(inspector, "tg_login_flows")[("batch_login_attempt_id",)] == (
         "fk_login_flow_batch_attempt"
     )
+    assert ("recipient_user_id",) not in _foreign_key_names(inspector, "tg_account_login_batches")
+    assert ("recipient_user_id",) not in _foreign_key_names(
+        inspector, "tg_account_login_batch_notifications"
+    )
     usage_columns = {column["name"]: column for column in inspector.get_columns("ai_usage_ledgers")}
     assert usage_columns["user_id"]["nullable"] is False
     assert any(
@@ -54,5 +58,5 @@ def test_account_batch_login_schema_migrates_from_blank_postgres() -> None:
     )
     with engine.connect() as connection:
         assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
-            "0148_account_batch_login"
+            "0149_batch_login_principal"
         )
