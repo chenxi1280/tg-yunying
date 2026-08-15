@@ -31,6 +31,12 @@ x-backend-env: &backend-env
   WORKER_ROLE: ${WORKER_ROLE:-all}
   WORKER_DRAIN_LIMIT: ${WORKER_DRAIN_LIMIT:-100}
   WORKER_INTERVAL_SECONDS: ${WORKER_INTERVAL_SECONDS:-2.0}
+  ACCOUNT_BATCH_LOGIN_MODE: ${ACCOUNT_BATCH_LOGIN_MODE:-off}
+  ACCOUNT_BATCH_LOGIN_HOST_CONCURRENCY: ${ACCOUNT_BATCH_LOGIN_HOST_CONCURRENCY:-0}
+  ACCOUNT_BATCH_LOGIN_HOST_MIN_INTERVAL_SECONDS: ${ACCOUNT_BATCH_LOGIN_HOST_MIN_INTERVAL_SECONDS:-0}
+  ACCOUNT_BATCH_LOGIN_DEVELOPER_APP_CONCURRENCY: ${ACCOUNT_BATCH_LOGIN_DEVELOPER_APP_CONCURRENCY:-0}
+  ACCOUNT_BATCH_PHONE_FINGERPRINT_VERSION: ${ACCOUNT_BATCH_PHONE_FINGERPRINT_VERSION:-1}
+  ACCOUNT_BATCH_PHONE_FINGERPRINT_VERSIONS: ${ACCOUNT_BATCH_PHONE_FINGERPRINT_VERSIONS:-1}
   VOICE_PROFILE_RECONCILE_INTERVAL_SECONDS: ${VOICE_PROFILE_RECONCILE_INTERVAL_SECONDS:-120}
   VOICE_PROFILE_RECONCILE_BATCH_LIMIT: ${VOICE_PROFILE_RECONCILE_BATCH_LIMIT:-100}
   VOICE_PROFILE_PROVIDER_RATE_PER_MINUTE: ${VOICE_PROFILE_PROVIDER_RATE_PER_MINUTE:-30}
@@ -298,6 +304,23 @@ services:
     environment:
       <<: *backend-env
       WORKER_ROLE: account-security
+    volumes:
+      - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck: *worker-healthcheck
+    networks:
+      - infra_default
+
+  worker-account-login:
+    image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
+    container_name: tgyunying-worker-account-login
+    restart: unless-stopped
+    command: ["python", "-m", "app.worker", "--role", "account-login", "--limit", "${ACCOUNT_LOGIN_WORKER_DRAIN_LIMIT:-20}", "--interval", "${ACCOUNT_LOGIN_WORKER_INTERVAL_SECONDS:-2.0}"]
+    environment:
+      <<: *backend-env
+      WORKER_ROLE: account-login
     volumes:
       - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
     depends_on:

@@ -87,7 +87,7 @@ class WorkerDrainRequest(BaseModel):
 
 @router.get("/api/health")
 def health() -> dict[str, str]:
-    return {"status": "ok"}
+    return {"status": "ok", "account_batch_login_mode": get_settings().account_batch_login_mode}
 
 
 @router.get("/api/config/runtime", response_model=RuntimeConfigOut)

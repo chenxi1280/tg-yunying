@@ -38,6 +38,7 @@ import type {
 } from './types';
 import { api, ApiError } from '../shared/api/client';
 import { canView, hasPermission } from './utils';
+import { AccountBatchLoginNotifications } from './components/AccountBatchLoginNotifications';
 
 const { Header, Sider, Content } = Layout;
 const SYSTEM_CONFIG_ACCOUNT_OPTION_LIMIT = 100;
@@ -620,6 +621,7 @@ function AppShell() {
         </Header>
 
         <Content className="app-content">
+        <AccountBatchLoginNotifications enabled={hasPermission(currentUser, 'accounts.view')} />
         {runtime && hasPermission(currentUser, 'system.view') && activeView === 'systemConfig' && (
           <Alert
             className="runtime-strip"
@@ -732,7 +734,7 @@ function AppShell() {
           )}
           {activeView === 'usageReports' && <UsageReportsView usageLedgers={usageLedgers} usageSummary={usageSummary} currentUser={currentUser} />}
           {activeView === 'accounts' && (
-            <AccountsView accounts={accounts} accountTotal={accountTotal} onAccountsPageLoaded={(rows, total) => { setAccounts(rows); setAccountTotal(total); }} accountPools={accountPools} selectedPoolId={selectedPoolId} setSelectedPoolId={setSelectedPoolId} selectedPool={selectedPool ?? undefined} avatarUrl={avatarUrl} accountCreationCapability={accountCreationCapability} canConfigureDeveloperApps={hasPermission(currentUser, 'system.view')} onConfigureDeveloperApps={() => openSystemConfig('developer-apps')} onCreatePoolClick={() => setModal({ type: 'accountPoolCreate' })} onCreateAccount={openAccountCreate} onOpenPoolDetail={openAccountPoolDetail} onOpenAccountDetail={openAccountDetail} onExtractCodes={openAccountVerificationCodes} onMovePool={openAccountMovePool} onRunLogin={runLogin} onVerifyAccount={verifyAccount} onDeleteAccount={(account) => openConfirm({ title: '移除账号', message: `确认移除 ${account.display_name}？历史任务、群归档和审计记录会保留，手机号可以重新新增。`, confirmLabel: '移除账号', tone: 'danger', onConfirm: () => deleteAccount(account) })} onHealthCheck={healthCheck} onSyncGroups={syncAccountGroups} isActionPending={isActionPending} canCreateAccount={hasPermission(currentUser, 'accounts.create')} canLoginAccount={hasPermission(currentUser, 'accounts.login')} canSyncAccount={hasPermission(currentUser, 'accounts.sync')} canViewCodes={hasPermission(currentUser, 'accounts.codes.read')} canSecurityRead={hasPermission(currentUser, 'accounts.security.read')} canSecurityBatch={hasPermission(currentUser, 'accounts.security.batch')} canManageAuthorizations={hasPermission(currentUser, 'accounts.security.session_manage') || hasPermission(currentUser, 'accounts.authorizations.manage')} canProfileBatchUpdate={hasPermission(currentUser, 'accounts.profile.batch_update')} canMovePool={hasPermission(currentUser, 'accounts.pool_manage')} canDeleteAccount={hasPermission(currentUser, 'accounts.delete')} />
+            <AccountsView accounts={accounts} accountTotal={accountTotal} onAccountsPageLoaded={(rows, total) => { setAccounts(rows); setAccountTotal(total); }} accountPools={accountPools} selectedPoolId={selectedPoolId} setSelectedPoolId={setSelectedPoolId} selectedPool={selectedPool ?? undefined} avatarUrl={avatarUrl} accountCreationCapability={accountCreationCapability} canConfigureDeveloperApps={hasPermission(currentUser, 'system.view')} onConfigureDeveloperApps={() => openSystemConfig('developer-apps')} onCreatePoolClick={() => setModal({ type: 'accountPoolCreate' })} onCreateAccount={openAccountCreate} onOpenPoolDetail={openAccountPoolDetail} onOpenAccountDetail={openAccountDetail} onExtractCodes={openAccountVerificationCodes} onMovePool={openAccountMovePool} onRunLogin={runLogin} onVerifyAccount={verifyAccount} onDeleteAccount={(account) => openConfirm({ title: '移除账号', message: `确认移除 ${account.display_name}？历史任务、群归档和审计记录会保留，手机号可以重新新增。`, confirmLabel: '移除账号', tone: 'danger', onConfirm: () => deleteAccount(account) })} onHealthCheck={healthCheck} onSyncGroups={syncAccountGroups} isActionPending={isActionPending} canCreateAccount={hasPermission(currentUser, 'accounts.create')} canBatchLogin={hasPermission(currentUser, 'accounts.batch_login') && hasPermission(currentUser, 'accounts.login')} canLoginAccount={hasPermission(currentUser, 'accounts.login')} canSyncAccount={hasPermission(currentUser, 'accounts.sync')} canViewCodes={hasPermission(currentUser, 'accounts.codes.read')} canSecurityRead={hasPermission(currentUser, 'accounts.security.read')} canSecurityBatch={hasPermission(currentUser, 'accounts.security.batch')} canManageAuthorizations={hasPermission(currentUser, 'accounts.security.session_manage') || hasPermission(currentUser, 'accounts.authorizations.manage')} canProfileBatchUpdate={hasPermission(currentUser, 'accounts.profile.batch_update')} canMovePool={hasPermission(currentUser, 'accounts.pool_manage')} canDeleteAccount={hasPermission(currentUser, 'accounts.delete')} />
           )}
           {activeView === 'targetManagement' && (
             <OperationTargetsView

@@ -8,6 +8,7 @@ import { StatusBadge } from '../components/shared';
 import { AccountIdentityCell } from '../components/AccountLazyAvatar';
 import { useAccountsServerPage } from '../hooks/useAccountsServerPage';
 import { AccountSecurityBatchDrawer } from './AccountSecurityBatchDrawer';
+import { AccountBatchLoginControl } from './AccountBatchLoginControl';
 import { formatBeijingDateTime } from '../time';
 const LOGIN_REQUIRED_STATUSES = new Set(['待登录', '等待验证码', '等待扫码', '等待2FA', '需重新登录', 'Session失效', '异常']);
 const LOGIN_PROBLEM_STATUSES = new Set(LOGIN_REQUIRED_STATUSES);
@@ -47,6 +48,7 @@ interface Props {
   onSyncGroups: (account: Account) => void;
   isActionPending: (key: string) => boolean;
   canCreateAccount?: boolean;
+  canBatchLogin?: boolean;
   canLoginAccount?: boolean;
   canSyncAccount?: boolean;
   canViewCodes?: boolean;
@@ -83,6 +85,7 @@ export default function AccountsView({
   onSyncGroups,
   isActionPending,
   canCreateAccount = true,
+  canBatchLogin = false,
   canLoginAccount = true,
   canSyncAccount = true,
   canViewCodes = true,
@@ -227,6 +230,12 @@ export default function AccountsView({
       render: (_, account) => <AccountIdentityCell displayName={account.display_name} phone={accountPhone(account)} poolName={account.pool_name} username={account.username} tgFirstName={account.tg_first_name} tgLastName={account.tg_last_name} hasAvatar={Boolean(account.avatar_object_key)} previewUrl={account.avatar_preview_url} resolveUrl={avatarUrl} />,
     },
     {
+      title: '接码备注',
+      key: 'code_source_note',
+      width: 210,
+      render: (_, account) => account.code_source_note || <Typography.Text type="secondary">未绑定</Typography.Text>,
+    },
+    {
       title: '状态',
       key: 'status',
       width: 150,
@@ -368,6 +377,7 @@ export default function AccountsView({
         <Space wrap>
           {canMovePool && <Button onClick={onCreatePoolClick}>新增账号分组</Button>}
           {canCreateAccount && <Button disabled={accountCreationCapability !== true} onClick={() => onCreateAccount(false)}>新增账号</Button>}
+          {canBatchLogin && <AccountBatchLoginControl pools={accountPools} selectedPoolId={selectedPoolId} disabled={accountCreationCapability !== true} onOpenAccountDetail={onOpenAccountDetail} />}
         </Space>
       )}
     >
@@ -484,7 +494,7 @@ export default function AccountsView({
           onChange: (keys) => setSelectedAccountIds(keys.map(Number)),
         }}
         pagination={accountTable.pagination}
-        scroll={{ x: 1510 }}
+        scroll={{ x: 1720 }}
         locale={{ emptyText: '暂无 TG 账号。配置开发者应用后，可以通过手机号新增账号并启动真实 TG 登录。' }}
       />
       <AccountSecurityBatchDrawer

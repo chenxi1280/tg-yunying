@@ -128,6 +128,38 @@ def _validate_dispatch_runtime_settings(settings: object) -> None:
         )
 
 
+def _validate_account_batch_login_settings(settings: object) -> None:
+    if settings.account_batch_login_mode not in {"off", "reconcile_only", "enabled"}:
+        raise ValueError("ACCOUNT_BATCH_LOGIN_MODE must be off, reconcile_only, or enabled")
+    if settings.account_batch_login_max_lines < 1 or settings.account_batch_login_max_lines > 100:
+        raise ValueError("ACCOUNT_BATCH_LOGIN_MAX_LINES must be between 1 and 100")
+    if settings.account_batch_login_item_deadline_seconds < 1:
+        raise ValueError("ACCOUNT_BATCH_LOGIN_ITEM_DEADLINE_SECONDS must be positive")
+    if not 1 <= settings.account_batch_login_code_wait_seconds <= settings.account_batch_login_item_deadline_seconds:
+        raise ValueError("ACCOUNT_BATCH_LOGIN_CODE_WAIT_SECONDS must fit within the item deadline")
+    if settings.account_batch_login_poll_interval_seconds < 1:
+        raise ValueError("ACCOUNT_BATCH_LOGIN_POLL_INTERVAL_SECONDS must be positive")
+    if settings.account_batch_login_credential_ttl_seconds < settings.account_batch_login_item_deadline_seconds:
+        raise ValueError("ACCOUNT_BATCH_LOGIN_CREDENTIAL_TTL_SECONDS must cover the item deadline")
+    if settings.account_batch_login_reconcile_seconds < settings.account_batch_login_item_deadline_seconds:
+        raise ValueError("ACCOUNT_BATCH_LOGIN_RECONCILE_SECONDS must cover the item deadline")
+    versions = [value.strip() for value in settings.account_batch_phone_fingerprint_versions.split(",")]
+    if not versions or any(not value.isdigit() or int(value) < 1 for value in versions):
+        raise ValueError("ACCOUNT_BATCH_PHONE_FINGERPRINT_VERSIONS must contain positive integers")
+    if settings.account_batch_phone_fingerprint_version not in {int(value) for value in versions}:
+        raise ValueError("current phone fingerprint version must be accepted")
+    if settings.account_batch_login_mode == "off":
+        return
+    if settings.account_batch_login_developer_app_concurrency < 1:
+        raise ValueError("batch login reconciliation requires ACCOUNT_BATCH_LOGIN_DEVELOPER_APP_CONCURRENCY")
+    if settings.account_batch_login_mode != "enabled":
+        return
+    if settings.account_batch_login_host_concurrency < 1:
+        raise ValueError("enabled batch login requires ACCOUNT_BATCH_LOGIN_HOST_CONCURRENCY")
+    if settings.account_batch_login_host_min_interval_seconds <= 0:
+        raise ValueError("enabled batch login requires ACCOUNT_BATCH_LOGIN_HOST_MIN_INTERVAL_SECONDS")
+
+
 @dataclass(frozen=True)
 class Settings:
     app_env: str = os.getenv("APP_ENV", "development")
@@ -187,6 +219,7 @@ class Settings:
         _validate_dispatcher_recycle_settings(self)
         _validate_production_ocr_isolation(self)
         _validate_dispatch_runtime_settings(self)
+        _validate_account_batch_login_settings(self)
     tg_api_id: str | None = os.getenv("TG_API_ID")
     tg_api_hash: str | None = os.getenv("TG_API_HASH")
     tg_gateway_mode: str = os.getenv("TG_GATEWAY_MODE", "mock" if os.getenv("APP_ENV") == "test" else "telethon")
@@ -211,6 +244,18 @@ class Settings:
     embedded_worker_interval_seconds: float = float(os.getenv("EMBEDDED_WORKER_INTERVAL_SECONDS", "2.0"))
     embedded_worker_limit: int = int(os.getenv("EMBEDDED_WORKER_LIMIT", "100"))
     worker_role: str = os.getenv("WORKER_ROLE", "all")
+    account_batch_login_mode: str = os.getenv("ACCOUNT_BATCH_LOGIN_MODE", "off").strip().lower()
+    account_batch_login_max_lines: int = int(os.getenv("ACCOUNT_BATCH_LOGIN_MAX_LINES", "100"))
+    account_batch_login_item_deadline_seconds: int = int(os.getenv("ACCOUNT_BATCH_LOGIN_ITEM_DEADLINE_SECONDS", "300"))
+    account_batch_login_code_wait_seconds: int = int(os.getenv("ACCOUNT_BATCH_LOGIN_CODE_WAIT_SECONDS", "120"))
+    account_batch_login_poll_interval_seconds: int = int(os.getenv("ACCOUNT_BATCH_LOGIN_POLL_INTERVAL_SECONDS", "3"))
+    account_batch_login_credential_ttl_seconds: int = int(os.getenv("ACCOUNT_BATCH_LOGIN_CREDENTIAL_TTL_SECONDS", "86400"))
+    account_batch_login_reconcile_seconds: int = int(os.getenv("ACCOUNT_BATCH_LOGIN_RECONCILE_SECONDS", "86400"))
+    account_batch_login_host_concurrency: int = int(os.getenv("ACCOUNT_BATCH_LOGIN_HOST_CONCURRENCY", "0"))
+    account_batch_login_host_min_interval_seconds: float = float(os.getenv("ACCOUNT_BATCH_LOGIN_HOST_MIN_INTERVAL_SECONDS", "0"))
+    account_batch_login_developer_app_concurrency: int = int(os.getenv("ACCOUNT_BATCH_LOGIN_DEVELOPER_APP_CONCURRENCY", "0"))
+    account_batch_phone_fingerprint_version: int = int(os.getenv("ACCOUNT_BATCH_PHONE_FINGERPRINT_VERSION", "1"))
+    account_batch_phone_fingerprint_versions: str = os.getenv("ACCOUNT_BATCH_PHONE_FINGERPRINT_VERSIONS", "1")
     voice_profile_reconcile_interval_seconds: float = float(os.getenv("VOICE_PROFILE_RECONCILE_INTERVAL_SECONDS", "120"))
     voice_profile_reconcile_batch_limit: int = int(os.getenv("VOICE_PROFILE_RECONCILE_BATCH_LIMIT", "100"))
     voice_profile_provider_rate_per_minute: int = int(os.getenv("VOICE_PROFILE_PROVIDER_RATE_PER_MINUTE", "30"))

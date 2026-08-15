@@ -241,6 +241,9 @@ class AccountOut(ApiModel):
     profile_synced_at: datetime | None = None
     phone_masked: str
     phone_number: str | None = None
+    code_source_note: str = ""
+    code_source_binding_status: str = "unbound"
+    code_source_binding_version: int = 0
     status: str
     health_score: float
     last_active_at: datetime | None

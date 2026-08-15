@@ -29,6 +29,8 @@ PERMISSION_RULES: list[PermissionRule] = [
     _compile("GET", r"^/api/tg-accounts/security/summary$", "accounts.security.read"),
     _compile("GET", r"^/api/tg-accounts/\d+/security$", "accounts.security.read"),
     _compile("GET", r"^/api/tg-accounts/security-batches(?:/.*)?$", "accounts.security.read"),
+    _compile("GET", r"^/api/tg-accounts/login-batch-notifications(?:/.*)?$", "accounts.view"),
+    _compile("GET", r"^/api/tg-accounts/login-batches(?:/.*)?$", "accounts.view"),
     _compile("GET", r"^/api/tg-accounts/\d+/verification-tasks$", "accounts.sync"),
     _compile("GET", r"^/api/tg-accounts(?:/.*)?$", "accounts.view"),
     _compile("GET", r"^/api/account-pools(?:/.*)?$", "accounts.view"),
@@ -79,6 +81,9 @@ PERMISSION_RULES: list[PermissionRule] = [
 
     _compile("POST", r"^/api/tg-accounts$", "accounts.create"),
     _compile("POST", r"^/api/tg-accounts/availability/rebuild$", "accounts.sync"),
+    _compile("POST", r"^/api/tg-accounts/login-batches(?:/.*)?$", ("accounts.batch_login", "accounts.login")),
+    _compile("POST", r"^/api/tg-accounts/login-batch-notifications/\d+/ack$", "accounts.view"),
+    _compile("POST", r"^/api/tg-accounts/\d+/code-source-binding/reveal$", ("accounts.view", "accounts.code_source_credentials.read")),
     _compile("POST", r"^/api/tg-accounts/\d+/login(?:/.*)?$", "accounts.login"),
     _compile("POST", r"^/api/tg-accounts/\d+/authorizations(?:/.*)?$", "accounts.authorizations.manage"),
     _compile("POST", r"^/api/tg-accounts/\d+/(?:sync-groups|sync-now|sync-targets|contacts/sync|health-check|profile-sync/retry)$", "accounts.sync"),
@@ -205,7 +210,8 @@ def permission_check_result(permissions: PermissionSet, granted_permissions: set
 
 
 def _requires_all(permissions: PermissionSet) -> bool:
-    return any(permission.startswith("tasks.create.") for permission in permissions)
+    account_all = {"accounts.batch_login", "accounts.code_source_credentials.read"}
+    return bool(account_all.intersection(permissions)) or any(permission.startswith("tasks.create.") for permission in permissions)
 
 
 def _audit_permission_denied(

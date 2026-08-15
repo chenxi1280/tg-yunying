@@ -35,6 +35,9 @@ from .task_queue import get_task_queue
 from .services import (
     drain_account_sync_records,
     drain_account_online_keepalive,
+    drain_account_login_batches,
+    drain_account_login_reconciliation,
+    drain_notification_outbox,
     drain_account_security_batches,
     drain_ai_message_memory_maintenance,
     drain_archives,
@@ -73,6 +76,7 @@ VALID_WORKER_ROLES = {
     "recovery",
     "account-online",
     "account-security",
+    "account-login",
     "ai-generation",
     "ai-memory",
     "voice-profile",
@@ -117,6 +121,8 @@ def drain_once(limit: int = 100, *, role: str | None = None) -> int:
         return drain_account_online_keepalive(SessionLocal, limit)
     if selected_role == "account-security":
         return _drain_account_security_once(limit)
+    if selected_role == "account-login":
+        return _drain_account_login_once(limit)
     if selected_role == "ai-memory":
         return drain_ai_message_memory_maintenance(SessionLocal, limit)
     if selected_role == "ai-generation":
@@ -175,6 +181,8 @@ def _drain_legacy_once(limit: int = 100) -> int:
     remaining = max(0, remaining - material_cache_count)
     account_security_count = drain_account_security_batches(SessionLocal, max(1, remaining))
     remaining = max(0, remaining - account_security_count)
+    account_login_count = _drain_account_login_once(max(1, remaining))
+    remaining = max(0, remaining - account_login_count)
     continuous_count = 0
     if settings.enable_legacy_campaign_worker:
         continuous_count = drain_continuous_campaigns(SessionLocal, max(1, remaining))
@@ -185,11 +193,23 @@ def _drain_legacy_once(limit: int = 100) -> int:
     remaining = max(0, remaining - operation_count)
     archive_count = drain_archives(SessionLocal, max(1, remaining))
     _safe_optional_drain("temp_files", cleanup_temp_files)
-    return count + profile_count + account_count + account_security_count + listener_count + source_media_count + material_cache_count + continuous_count + operation_count + archive_count
+    return count + profile_count + account_count + account_security_count + account_login_count + listener_count + source_media_count + material_cache_count + continuous_count + operation_count + archive_count
 
 
 def _drain_account_security_once(limit: int) -> int:
     return drain_account_security_batches(SessionLocal, max(1, limit))
+
+
+def _drain_account_login_once(limit: int) -> int:
+    settings = get_settings()
+    if settings.account_batch_login_mode == "off":
+        return 0
+    reconcile_count = drain_account_login_reconciliation(SessionLocal, max(1, limit))
+    notification_count = drain_notification_outbox(SessionLocal, max(1, limit))
+    if settings.account_batch_login_mode == "reconcile_only":
+        return reconcile_count + notification_count
+    batch_count = drain_account_login_batches(SessionLocal, max(1, limit))
+    return batch_count + reconcile_count + notification_count
 
 
 def _safe_optional_drain(name: str, func, *args, **kwargs) -> int:
@@ -231,6 +251,7 @@ def _health_process_types(role: str) -> set[str]:
             "recovery",
             "account-online",
             "account-security",
+            "account-login",
             "ai-generation",
             "ai-memory",
             "voice-profile",

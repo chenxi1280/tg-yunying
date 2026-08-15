@@ -60,6 +60,9 @@ export type Account = {
   profile_synced_at: string | null;
   phone_masked: string;
   phone_number: string | null;
+  code_source_note: string;
+  code_source_binding_status: string;
+  code_source_binding_version: number;
   status: string;
   health_score: number;
   last_active_at: string | null;

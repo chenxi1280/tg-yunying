@@ -95,6 +95,14 @@ class TgAccount(Base):
     profile_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     phone_masked: Mapped[str] = mapped_column(String(60))
     phone_ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)
+    code_source_host: Mapped[str] = mapped_column(String(120), default="")
+    code_source_uuid_ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)
+    code_source_uuid_fingerprint: Mapped[str] = mapped_column(String(64), default="")
+    code_source_uuid_hint: Mapped[str] = mapped_column(String(40), default="")
+    code_source_binding_status: Mapped[str] = mapped_column(String(40), default="unbound")
+    code_source_binding_version: Mapped[int] = mapped_column(Integer, default=0)
+    code_source_bound_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    code_source_bound_by: Mapped[str] = mapped_column(String(100), default="")
     developer_app_id: Mapped[int | None] = mapped_column(ForeignKey("telegram_developer_apps.id"), nullable=True)
     proxy_id: Mapped[int | None] = mapped_column(ForeignKey("account_proxies.id"), nullable=True)
     developer_app_version: Mapped[int] = mapped_column(Integer, default=1)
@@ -153,6 +161,12 @@ class TgAccount(Base):
         return decrypt_secret(self.phone_ciphertext) if self.phone_ciphertext else self.phone_masked
 
     @property
+    def code_source_note(self) -> str:
+        if not self.code_source_host or not self.code_source_uuid_hint:
+            return ""
+        return f"{self.code_source_host} · {self.code_source_uuid_hint}"
+
+    @property
     def pool_name(self) -> str:
         return self.pool.name if self.pool else "默认账号池"
 
@@ -164,6 +178,15 @@ Index(
     unique=True,
     postgresql_where=TgAccount.deleted_at.is_(None),
     sqlite_where=TgAccount.deleted_at.is_(None),
+)
+Index(
+    "ux_tg_accounts_tenant_code_source_active",
+    TgAccount.tenant_id,
+    TgAccount.code_source_host,
+    TgAccount.code_source_uuid_fingerprint,
+    unique=True,
+    postgresql_where=(TgAccount.deleted_at.is_(None) & (TgAccount.code_source_uuid_fingerprint != "")),
+    sqlite_where=(TgAccount.deleted_at.is_(None) & (TgAccount.code_source_uuid_fingerprint != "")),
 )
 
 
@@ -248,6 +271,8 @@ class TgLoginFlow(Base):
     developer_app_id: Mapped[int | None] = mapped_column(ForeignKey("telegram_developer_apps.id"), nullable=True)
     proxy_id: Mapped[int | None] = mapped_column(ForeignKey("account_proxies.id"), nullable=True)
     superseded_by_flow_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    batch_login_attempt_id: Mapped[int | None] = mapped_column(ForeignKey("tg_account_login_batch_attempts.id"), nullable=True)
+    batch_login_generation: Mapped[int] = mapped_column(Integer, default=0)
     failure_type: Mapped[str] = mapped_column(String(60), default="")
     failure_detail: Mapped[str] = mapped_column(Text, default="")
     remote_error_type: Mapped[str] = mapped_column(String(80), default="")

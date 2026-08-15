@@ -13,6 +13,7 @@ import { formatBeijingDateTime, parseBeijingDate } from '../time';
 import { AccountAuthorizationAssetsPanel } from './AccountAuthorizationAssetsPanel';
 import { AccountExecutionRecordsPanel } from './AccountExecutionRecordsPanel';
 import { AccountManaged2FaSettingsPanel } from './AccountManaged2FaSettingsPanel';
+import { AccountCodeSourceBinding } from '../components/AccountCodeSourceBinding';
 
 const accountPhone = (account: Account) => account.phone_number || account.phone_masked;
 const contactPhone = (contact: Contact) => contact.phone_number || contact.phone_masked || '';
@@ -214,6 +215,7 @@ interface AccountDetailModalProps {
   canProfileBatchUpdate?: boolean;
   canMovePool?: boolean;
   canClone?: boolean;
+  canRevealCodeSource?: boolean;
 }
 
 export function AccountDetailModal({
@@ -231,7 +233,7 @@ export function AccountDetailModal({
   onOpenConfirm, onSetReturnAfterVerification, onSetModal,
   onSetCloneForm, onReturnToRiskControl, accountName, isActionPending,
   canSyncAccount = true, canViewCodes = true, canSecurityRead = true, canSecurityBatch = true, canManageAuthorizations = true, canManageCredentials = true, canProfileBatchUpdate = true,
-  canMovePool = true, canClone = true,
+  canMovePool = true, canClone = true, canRevealCodeSource = false,
 }: AccountDetailModalProps) {
   const [manualTargetId, setManualTargetId] = React.useState<number | null>(null);
   const [manualContent, setManualContent] = React.useState('');
@@ -639,6 +641,7 @@ export function AccountDetailModal({
       <div className="account-detail-summary">
         <div><span>账号状态</span><strong><StatusBadge status={accountDetail.account.status} /></strong></div>
         <div><span>手机号</span><strong>{accountPhone(accountDetail.account)}</strong></div>
+        <div><span>接码备注</span><strong><AccountCodeSourceBinding account={accountDetail.account} canReveal={canRevealCodeSource} /></strong></div>
         <div><span>所属账号分组</span><strong>{accountDetail.account.pool_name}</strong></div>
         <div><span>资料同步</span><strong><StatusBadge status={accountDetail.account.profile_sync_status} /></strong></div>
         <div><span>加入群聊</span><strong>{accountDetail.stats.joined_groups ?? 0} 个</strong></div>

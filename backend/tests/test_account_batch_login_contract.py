@@ -1,0 +1,150 @@
+from __future__ import annotations
+
+import pytest
+
+from app.auth import ROLE_TEMPLATE_PERMISSIONS, all_permissions
+from app.models import TgAccount
+from app.permission_middleware import permission_check_result, required_permission
+from app.services.account_login.contracts import BatchLoginError
+from app.services.account_login.identity import parse_code_source_url, parse_login_lines
+from app.services.code_source_client import HttpResult, parse_login_materials_html, parse_login_materials_response
+
+
+pytestmark = pytest.mark.no_postgres
+
+
+VALID_UUID = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+VALID_URL = f"https://tgbotchecker.com/GetHTML?uuid={VALID_UUID}"
+
+
+def test_parse_login_lines_preserves_phone_uuid_mapping() -> None:
+    lines = parse_login_lines(f"+12025550123|{VALID_URL}", max_lines=100)
+
+    assert len(lines) == 1
+    assert lines[0].phone == "+12025550123"
+    assert lines[0].source.uuid == VALID_UUID
+    assert lines[0].source.uuid_hint == "a1b2c3…8f90"
+    assert VALID_UUID not in lines[0].phone_masked
+
+
+def test_parse_login_lines_accepts_paired_markdown_backticks() -> None:
+    lines = parse_login_lines(f"+12025550123|`{VALID_URL}`", max_lines=100)
+
+    assert lines[0].source.url == VALID_URL
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        f"http://tgbotchecker.com/GetHTML?uuid={VALID_UUID}",
+        f"https://user@tgbotchecker.com/GetHTML?uuid={VALID_UUID}",
+        f"https://tgbotchecker.com:444/GetHTML?uuid={VALID_UUID}",
+        f"https://tgbotchecker.com/GetHTML?uuid={VALID_UUID}&extra=1",
+        f"https://tgbotchecker.com/GetHTML?uuid=%61{VALID_UUID[1:]}",
+        f"https://tgbotchecker.com/GetHTML?uuid={VALID_UUID}#fragment",
+    ],
+)
+def test_code_source_url_rejects_non_exact_urls(url: str) -> None:
+    with pytest.raises(BatchLoginError) as error:
+        parse_code_source_url(url)
+
+    assert error.value.code == "url_domain_not_allowed"
+    assert VALID_UUID not in str(error.value)
+
+
+def test_parse_login_lines_rejects_uuid_reuse_for_other_phone() -> None:
+    text = f"+12025550123|{VALID_URL}\n+12025550124|{VALID_URL}"
+
+    with pytest.raises(BatchLoginError) as error:
+        parse_login_lines(text, max_lines=100)
+
+    assert error.value.code == "code_source_binding_conflict"
+    assert error.value.line_no == 2
+
+
+def test_material_parser_uses_input_ids_not_attribute_order() -> None:
+    html = """
+    <html><head><title>Telegram 登录接码工具</title></head><body>
+      <input value="12345" class="field" id="code">
+      <input value="safe-temporary-password" id="pass2fa" type="text">
+      <input id="login_time" value="页面登录时间原文">
+      <input value="页面刷新时间原文" id="last_fetch_time">
+    </body></html>
+    """
+
+    materials = parse_login_materials_html(html)
+
+    assert materials.code == "12345"
+    assert materials.password_2fa == "safe-temporary-password"
+    assert materials.login_time == "页面登录时间原文"
+    assert materials.last_fetch_time == "页面刷新时间原文"
+
+
+def test_material_parser_rejects_http_200_error_page() -> None:
+    result = HttpResult(
+        status=200,
+        content_type="text/html; charset=utf-8",
+        content_encoding="",
+        body="<title>错误 - Telegram 登录接码工具</title><p>此号不存在</p>".encode(),
+    )
+
+    with pytest.raises(BatchLoginError) as error:
+        parse_login_materials_response(result)
+
+    assert error.value.code == "url_error"
+
+
+def test_material_parser_rejects_missing_code_field() -> None:
+    with pytest.raises(BatchLoginError) as error:
+        parse_login_materials_html("<html><title>Telegram 登录接码工具</title></html>")
+
+    assert error.value.code == "url_parse_failed"
+
+
+def test_material_parser_reads_display_time_labels() -> None:
+    html = """
+    <title>Telegram 登录接码工具</title>
+    <input id="code" value="12345"><input id="pass2fa" value="">
+    <span>登录时间：</span><strong>页面登录时间</strong>
+    <span>上次获取时间</span><strong>页面获取时间</strong>
+    """
+
+    materials = parse_login_materials_html(html)
+
+    assert materials.login_time == "页面登录时间"
+    assert materials.last_fetch_time == "页面获取时间"
+
+
+def test_account_code_source_note_is_independent_from_display_name() -> None:
+    account = TgAccount(
+        tenant_id=1,
+        display_name="可修改昵称",
+        phone_masked="+120****0123",
+        code_source_host="tgbotchecker",
+        code_source_uuid_hint="a1b2c3…8f90",
+    )
+
+    assert account.code_source_note == "tgbotchecker · a1b2c3…8f90"
+    account.display_name = "初始化后的昵称"
+    assert account.code_source_note == "tgbotchecker · a1b2c3…8f90"
+
+
+def test_batch_login_permissions_require_both_write_capabilities() -> None:
+    permissions = all_permissions()
+    specialist = ROLE_TEMPLATE_PERMISSIONS["账号添加专员"]
+    required = required_permission("POST", "/api/tg-accounts/login-batches/precheck")
+
+    assert "accounts.batch_login" in permissions
+    assert "accounts.code_source_credentials.read" in permissions
+    assert {"accounts.batch_login", "accounts.login", "accounts.code_source_credentials.read"} <= set(specialist)
+    assert required == ("accounts.batch_login", "accounts.login")
+    assert permission_check_result(required, {"accounts.batch_login"}) == ["accounts.login"]
+    assert required_permission("GET", "/api/tg-accounts/login-batches/1") == ("accounts.view",)
+    assert required_permission("POST", "/api/tg-accounts/1/code-source-binding/reveal") == (
+        "accounts.view",
+        "accounts.code_source_credentials.read",
+    )
+    assert permission_check_result(
+        ("accounts.view", "accounts.code_source_credentials.read"),
+        {"accounts.view"},
+    ) == ["accounts.code_source_credentials.read"]

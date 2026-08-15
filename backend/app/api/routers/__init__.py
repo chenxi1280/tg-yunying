@@ -5,6 +5,7 @@ from app.config import get_settings
 
 from .accounts import router as accounts_router
 from .account_security import router as account_security_router
+from .account_login_batches import router as account_login_batches_router
 from .account_pools import router as account_pools_router
 from .ai_config import router as ai_config_router
 from .voice_profile_generation import router as voice_profile_generation_router
@@ -33,6 +34,7 @@ for sub_router in (
     voice_profile_generation_router,
     account_pools_router,
     accounts_router,
+    account_login_batches_router,
     account_security_router,
     target_profile_router,
     operations_router,

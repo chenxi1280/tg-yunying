@@ -160,6 +160,8 @@ ALL_PERMISSIONS = [
     "accounts.view",
     "accounts.create",
     "accounts.login",
+    "accounts.batch_login",
+    "accounts.code_source_credentials.read",
     "accounts.sync",
     "accounts.codes.read",
     "accounts.security.read",
@@ -316,7 +318,7 @@ ROLE_TEMPLATE_PERMISSIONS = {
         "audits.view",
         "audit.export",
     ],
-    "账号添加专员": ["overview.view", "accounts.view", "accounts.create", "accounts.login", "accounts.sync", "accounts.authorizations.manage"],
+    "账号添加专员": ["overview.view", "accounts.view", "accounts.create", "accounts.login", "accounts.batch_login", "accounts.code_source_credentials.read", "accounts.sync", "accounts.authorizations.manage"],
     "只读观察员": ["overview.view", "targets.view", "target_profile.view", "listeners.view", "usage.view", "manual.view", "audits.view"],
 }
 

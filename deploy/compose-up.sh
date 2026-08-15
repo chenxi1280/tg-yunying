@@ -184,6 +184,10 @@ WORKER_SERVICES=(
   worker-metrics
 )
 
+if [[ "${ACCOUNT_BATCH_LOGIN_MODE:-off}" != "off" ]]; then
+  WORKER_SERVICES+=(worker-account-login)
+fi
+
 if verification_remote_enabled; then
   WORKER_SERVICES=(image-verification-worker "${WORKER_SERVICES[@]}")
 fi

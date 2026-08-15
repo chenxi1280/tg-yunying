@@ -140,6 +140,7 @@ __all__ = [
     "list_profile_sync_records",
     "list_verification_codes",
     "login_flow_response",
+    "login_error_from_exception",
     "LoginStartFailure",
     "LoginFlowFailure",
     "ExistingAccountRequiresRelogin",
@@ -1081,7 +1082,7 @@ def _finish_login_or_fail(
         raise _login_flow_failure(session, account, flow, error_code, message, actor, exc, status_code) from exc
 
 
-def _login_error_from_exception(exc: Exception) -> tuple[str, str, int]:
+def login_error_from_exception(exc: Exception) -> tuple[str, str, int]:
     exception_type = exc.__class__.__name__
     text_value = str(exc).lower()
     if exception_type in {"PhoneCodeInvalidError", "PhoneCodeEmptyError"}:
@@ -1101,6 +1102,9 @@ def _login_error_from_exception(exc: Exception) -> tuple[str, str, int]:
     if "code" in text_value and "invalid" in text_value:
         return "login_code_invalid", LOGIN_CODE_INVALID_MESSAGE, 400
     return "login_remote_unknown", LOGIN_REMOTE_UNKNOWN_MESSAGE, 409
+
+
+_login_error_from_exception = login_error_from_exception
 
 
 def _login_flow_failure(
@@ -1154,9 +1158,20 @@ def _login_failure_detail(
     }
 
 
-def _record_post_login_two_fa(session: Session, account: TgAccount, password_2fa: str | None, credentials: object) -> None:
+def _record_post_login_two_fa(
+    session: Session,
+    account: TgAccount,
+    password_2fa: str | None,
+    credentials: object,
+    *,
+    policy: str = "managed",
+) -> None:
     if not password_2fa:
         return
+    if policy == "do_not_store":
+        return
+    if policy != "managed":
+        raise ValueError("unsupported two_fa policy")
     if account.account_identity == "code_receiver":
         record_managed_two_fa_password(session, account, password_2fa)
         return
@@ -1226,6 +1241,7 @@ def _apply_verified_login_result(
     password_2fa: str | None,
     credentials: object,
     actor: str,
+    two_fa_policy: str = "managed",
 ) -> bool:
     account.status = status
     should_sync = False
@@ -1240,7 +1256,7 @@ def _apply_verified_login_result(
         flow.status = status
         if status == AccountStatus.ACTIVE.value:
             _clear_login_challenge(flow)
-            _record_post_login_two_fa(session, account, password_2fa, credentials)
+            _record_post_login_two_fa(session, account, password_2fa, credentials, policy=two_fa_policy)
             should_sync = True
     if should_sync:
         queue_login_profile_initialization(session, account.id, actor)
@@ -1258,6 +1274,8 @@ def verify_login(
     code: str | None,
     password_2fa: str | None,
     actor: str = "普通用户",
+    *,
+    two_fa_policy: str = "managed",
 ) -> TgAccount:
     account = _ensure_account_available(session.get(TgAccount, account_id))
 
@@ -1286,6 +1304,7 @@ def verify_login(
         password_2fa=password_2fa,
         credentials=credentials,
         actor=actor,
+        two_fa_policy=two_fa_policy,
     )
     if should_sync:
         _run_post_login_sync(session, account.id, flow.id, actor)
