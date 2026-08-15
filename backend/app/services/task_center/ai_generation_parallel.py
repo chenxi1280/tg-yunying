@@ -16,6 +16,12 @@ from .ai_generation_timing import GENERATION_LEASE, GENERATION_LOOKAHEAD
 from .datetime_compat import is_after_or_equal
 from .fulfillment_activation import CURRENT_CONTRACT_VERSION
 from .fulfillment_remote_facts import ensure_action_obligation
+from .ai_quality_stats import record_provider_admission_unavailable
+from .provider_admission import (
+    ProviderAdmissionBlocked,
+    ProviderAdmissionUnavailable,
+    ensure_claim_admission,
+)
 
 
 GENERATABLE_STATUSES = ("pending", "ai_result_persist_unknown")
@@ -42,6 +48,8 @@ def claim_parallel_generation(
 ) -> tuple[ParallelGenerationClaim, ...]:
     with session_factory() as session:
         candidates = list(session.scalars(_candidate_statement(limit)))
+        if not candidates or not _batch_claim_admitted(session, candidates[0]):
+            return ()
         claims: list[ParallelGenerationClaim] = []
         for action in candidates:
             if len(claims) >= limit:
@@ -55,6 +63,18 @@ def claim_parallel_generation(
                 continue
         session.commit()
         return tuple(claims)
+
+
+def _batch_claim_admitted(session: Session, action: Action) -> bool:
+    try:
+        ensure_claim_admission(session)
+    except ProviderAdmissionBlocked:
+        return False
+    except ProviderAdmissionUnavailable:
+        record_provider_admission_unavailable(session, action)
+        session.commit()
+        raise
+    return True
 
 
 def finish_generation_job(

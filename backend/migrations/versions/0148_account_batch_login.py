@@ -16,6 +16,36 @@ branch_labels = None
 depends_on = None
 
 
+def _inspector():
+    return sa.inspect(op.get_bind())
+
+
+def _table_exists(table: str) -> bool:
+    return _inspector().has_table(table)
+
+
+def _column_names(table: str) -> set[str]:
+    if not _table_exists(table):
+        return set()
+    return {str(column["name"]) for column in _inspector().get_columns(table)}
+
+
+def _index_exists(table: str, index_name: str) -> bool:
+    if not _table_exists(table):
+        return False
+    return index_name in {str(index["name"]) for index in _inspector().get_indexes(table)}
+
+
+def _foreign_key_exists(table: str, columns: tuple[str, ...], referred_table: str) -> bool:
+    if not _table_exists(table):
+        return False
+    return any(
+        tuple(foreign_key.get("constrained_columns") or ()) == columns
+        and foreign_key.get("referred_table") == referred_table
+        for foreign_key in _inspector().get_foreign_keys(table)
+    )
+
+
 def _timestamps() -> tuple[sa.Column, ...]:
     return (
         sa.Column("created_at", sa.DateTime(), nullable=False),
@@ -173,7 +203,7 @@ def _create_notifications() -> None:
     )
 
 
-def _create_aliases_and_buckets() -> None:
+def _create_aliases() -> None:
     op.create_table(
         "tg_account_phone_fingerprint_aliases",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -188,6 +218,9 @@ def _create_aliases_and_buckets() -> None:
     op.create_index(
         "ix_account_phone_alias_account", "tg_account_phone_fingerprint_aliases", ["tenant_id", "account_id"]
     )
+
+
+def _create_rate_buckets() -> None:
     op.create_table(
         "tg_account_login_rate_buckets",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -215,39 +248,57 @@ def _add_account_binding() -> None:
         sa.Column("code_source_bound_at", sa.DateTime(), nullable=True),
         sa.Column("code_source_bound_by", sa.String(100), nullable=False, server_default=""),
     )
+    account_columns = _column_names("tg_accounts")
     for column in columns:
-        op.add_column("tg_accounts", column)
-    op.create_index(
-        "ux_tg_accounts_tenant_code_source_active",
-        "tg_accounts",
-        ["tenant_id", "code_source_host", "code_source_uuid_fingerprint"],
-        unique=True,
-        postgresql_where=sa.text("deleted_at IS NULL AND code_source_uuid_fingerprint <> ''"),
-    )
-    op.add_column("tg_login_flows", sa.Column("batch_login_attempt_id", sa.Integer(), nullable=True))
-    op.add_column(
-        "tg_login_flows",
-        sa.Column("batch_login_generation", sa.Integer(), nullable=False, server_default="0"),
-    )
+        if column.name not in account_columns:
+            op.add_column("tg_accounts", column)
+    if not _index_exists("tg_accounts", "ux_tg_accounts_tenant_code_source_active"):
+        op.create_index(
+            "ux_tg_accounts_tenant_code_source_active",
+            "tg_accounts",
+            ["tenant_id", "code_source_host", "code_source_uuid_fingerprint"],
+            unique=True,
+            postgresql_where=sa.text("deleted_at IS NULL AND code_source_uuid_fingerprint <> ''"),
+        )
+    flow_columns = _column_names("tg_login_flows")
+    if "batch_login_attempt_id" not in flow_columns:
+        op.add_column("tg_login_flows", sa.Column("batch_login_attempt_id", sa.Integer(), nullable=True))
+    if "batch_login_generation" not in flow_columns:
+        op.add_column(
+            "tg_login_flows",
+            sa.Column("batch_login_generation", sa.Integer(), nullable=False, server_default="0"),
+        )
 
 
 def upgrade() -> None:
-    _create_batches()
-    _create_items()
-    _create_attempts()
-    _create_notifications()
-    _create_aliases_and_buckets()
+    creators = (
+        ("tg_account_login_batches", _create_batches),
+        ("tg_account_login_batch_items", _create_items),
+        ("tg_account_login_batch_attempts", _create_attempts),
+        ("tg_account_login_batch_notifications", _create_notifications),
+    )
+    for table, creator in creators:
+        if not _table_exists(table):
+            creator()
+    if not _table_exists("tg_account_phone_fingerprint_aliases"):
+        _create_aliases()
+    if not _table_exists("tg_account_login_rate_buckets"):
+        _create_rate_buckets()
     _add_account_binding()
-    op.create_foreign_key(
-        "fk_login_batch_item_current_attempt",
-        "tg_account_login_batch_items", "tg_account_login_batch_attempts",
-        ["current_attempt_id"], ["id"],
-    )
-    op.create_foreign_key(
-        "fk_login_flow_batch_attempt",
-        "tg_login_flows", "tg_account_login_batch_attempts",
-        ["batch_login_attempt_id"], ["id"],
-    )
+    if not _foreign_key_exists(
+        "tg_account_login_batch_items", ("current_attempt_id",), "tg_account_login_batch_attempts"
+    ):
+        op.create_foreign_key(
+            "fk_login_batch_item_current_attempt",
+            "tg_account_login_batch_items", "tg_account_login_batch_attempts",
+            ["current_attempt_id"], ["id"],
+        )
+    if not _foreign_key_exists("tg_login_flows", ("batch_login_attempt_id",), "tg_account_login_batch_attempts"):
+        op.create_foreign_key(
+            "fk_login_flow_batch_attempt",
+            "tg_login_flows", "tg_account_login_batch_attempts",
+            ["batch_login_attempt_id"], ["id"],
+        )
 
 
 def downgrade() -> None:

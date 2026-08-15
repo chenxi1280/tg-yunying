@@ -335,7 +335,13 @@ def _observed_exit_ip(result: dict) -> str:
 
 def _failure_without_click(session: Session, action: Action, code: str, detail: str) -> dict:
     release_reserved_reservation(session, action.id)
-    return {"success": False, "error_code": code, "error_message": detail, "validation_stage": "search_rank_deboost"}
+    return {
+        "success": False,
+        "error_code": code,
+        "error_message": detail,
+        "validation_stage": "search_rank_deboost",
+        "remote_mutation_started": False,
+    }
 
 
 def _failure_after_gateway(session: Session, action: Action, code: str, detail: str) -> dict:

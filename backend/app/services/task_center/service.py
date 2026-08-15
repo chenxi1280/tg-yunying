@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session, object_session
 from app.config import get_settings
 from app.integrations.telegram import OperationResult
 from app.models import AccountPool, AccountStatus, Action, AiCoverageVariationIntent, ChannelMessage, ExecutionAttempt, FailureType, MessageFingerprint, OperationIssue, OperationPlanTaskLink, OperationTarget, ReviewQueue, RuleSet, RuleSetVersion, SearchClickOpportunityAssignment, SearchJoinPacingDecision, Task, TaskAccountDailyCoverage, TaskDayLedger, TaskMembershipAdmissionItem, TaskRuntimeSummary, TgAccount, TgGroup, WorkerHeartbeat
-from app.models.shared_dispatch_recovery import AiContentScopeTakeoverItem
+from app.models.shared_dispatch_recovery import AiContentScopeTakeoverItem, GatewayRequestEvidenceJournal
 from app.models.search_rank_deboost import AccountGroupProxyBinding, SearchRankDeboostClickReservation, SearchRankDeboostExemptGroup
 from app.search_keywords import normalized_keyword_hash, repair_legacy_keyword_materials
 from app.schemas.task_center import (
@@ -2442,6 +2442,10 @@ def delete_task(session: Session, tenant_id: int, task_id: str, actor: str, reas
     session.commit()
 
 
+SAFE_RETRY_ACTION_STATUSES = ("failed", "skipped", "cancelled")
+MAX_AUDIT_REJECTED_IDS = 20
+
+
 def retry_task(session: Session, tenant_id: int, task_id: str, payload: TaskRetryRequest, actor: str) -> Task:
     task = _get_task(session, tenant_id, task_id)
     retry_slots: int | None = None
@@ -2456,15 +2460,57 @@ def retry_task(session: Session, tenant_id: int, task_id: str, payload: TaskRetr
             session.refresh(task)
             return task
         retry_slots = target_progress.remaining_slot_count
-    stmt = select(Action).where(Action.task_id == task.id)
-    if payload.failed_only or retry_slots is not None:
-        stmt = stmt.where(Action.status.in_(["failed", "unknown_after_send", "skipped"]))
     now = _now()
-    retried_action_count = 0
+    retried_count, rejected_ids = _retry_safe_actions(
+        session,
+        task,
+        payload,
+        retry_slots=retry_slots,
+        now=now,
+    )
+    rejected_ids.extend(_mark_unknown_retry_blockers(session, task))
+    _audit_task_retry(
+        session,
+        task,
+        actor,
+        retried_count=retried_count,
+        rejected_ids=rejected_ids,
+    )
+    if not retried_count:
+        session.commit()
+        session.refresh(task)
+        return task
+    task.status = "running"
+    task.next_run_at = now
+    task.last_error = ""
+    session.commit()
+    session.refresh(task)
+    return task
+
+
+def _retry_safe_actions(
+    session: Session,
+    task: Task,
+    payload: TaskRetryRequest,
+    *,
+    retry_slots: int | None,
+    now: datetime,
+) -> tuple[int, list[str]]:
+    stmt = select(Action).where(
+        Action.task_id == task.id,
+        Action.status.in_(SAFE_RETRY_ACTION_STATUSES),
+    ).with_for_update()
+    retried_count = 0
+    rejected_ids: list[str] = []
     for action in session.scalars(stmt):
         if retry_slots is not None and retry_slots <= 0:
             break
         if payload.failed_only and not _action_should_retry(session, task, action):
+            continue
+        retry_safe, retry_reason = _action_retry_remote_evidence(session, action)
+        if not retry_safe:
+            _set_retry_blocker(action, retry_reason)
+            rejected_ids.append(action.id)
             continue
         if not _prepare_action_retry(session, task, action, now):
             continue
@@ -2473,25 +2519,113 @@ def retry_task(session: Session, tenant_id: int, task_id: str, payload: TaskRetr
         action.scheduled_at = now
         action.executed_at = None
         action.result = {}
-        retried_action_count += 1
+        retried_count += 1
         if retry_slots is not None:
             retry_slots -= 1
-    if retry_slots is not None and not retried_action_count:
-        session.commit()
-        session.refresh(task)
-        return task
-    task.status = "running"
-    task.next_run_at = now
-    task.last_error = ""
-    audit(session, tenant_id=tenant_id, actor=actor, action="重试任务中心任务", target_type="task", target_id=task.id)
-    session.commit()
-    session.refresh(task)
-    return task
+    return retried_count, rejected_ids
+
+
+def _mark_unknown_retry_blockers(session: Session, task: Task) -> list[str]:
+    reason = (
+        "rank_deboost_gateway_outcome_unknown"
+        if task.type == "search_rank_deboost"
+        else "unsafe_retry_gateway_outcome_unknown"
+    )
+    stmt = select(Action).where(
+        Action.task_id == task.id,
+        Action.status == "unknown_after_send",
+    ).with_for_update()
+    rejected_ids: list[str] = []
+    for action in session.scalars(stmt):
+        if (action.result or {}).get("retry_skipped_reason") != reason:
+            _set_retry_blocker(action, reason)
+        rejected_ids.append(action.id)
+    return rejected_ids
+
+
+def _audit_task_retry(
+    session: Session,
+    task: Task,
+    actor: str,
+    *,
+    retried_count: int,
+    rejected_ids: list[str],
+) -> None:
+    visible_ids = rejected_ids[:MAX_AUDIT_REJECTED_IDS]
+    audit(
+        session,
+        tenant_id=task.tenant_id,
+        actor=actor,
+        action="重试任务中心任务",
+        target_type="task",
+        target_id=task.id,
+        detail=(
+            f"retried={retried_count} rejected={len(rejected_ids)}"
+            + (f" rejected_ids={','.join(visible_ids)}" if visible_ids else "")
+        ),
+    )
+
+
+def _action_retry_remote_evidence(session: Session, action: Action) -> tuple[bool, str]:
+    """RC-10 通用 retry 安全谓词：eligibility 先于任何字段清空。
+
+    只允许未进入 Gateway 且 typed 证据明确 remote_mutation=false/pre_accept_rejected 的
+    Action 重开；Gateway-started、远端 identity 或 evidence gap 一律拒绝。
+    """
+    result = action.result or {}
+    attempt = session.scalar(
+        select(ExecutionAttempt)
+        .where(ExecutionAttempt.action_id == action.id)
+        .order_by(ExecutionAttempt.attempt_no.desc())
+        .limit(1)
+    )
+    remote_identity = str(
+        (attempt.remote_message_id if attempt is not None else "")
+        or result.get("remote_message_id")
+        or result.get("telegram_msg_id")
+        or ""
+    )
+    if remote_identity:
+        return False, "unsafe_retry_remote_identity_present"
+    typed_flag = result.get("remote_mutation_started")
+    journal = _latest_attempt_gateway_journal(session, action, attempt)
+    journal_state = str(journal.remote_mutation_state) if journal is not None else ""
+    if journal is not None and journal.state == "conflict":
+        return False, "unsafe_retry_evidence_conflict"
+    if typed_flag is True or journal_state == "true":
+        return False, "unsafe_retry_remote_mutation_started"
+    gateway_started = attempt is not None and attempt.gateway_call_started_at is not None
+    if gateway_started:
+        return False, "unsafe_retry_gateway_outcome_unknown"
+    if journal_state == "false" or typed_flag is False or result.get("error_code") == "pre_accept_rejected":
+        return True, ""
+    return False, "unsafe_retry_evidence_missing"
+
+
+def _latest_attempt_gateway_journal(
+    session: Session,
+    action: Action,
+    attempt: ExecutionAttempt | None,
+) -> GatewayRequestEvidenceJournal | None:
+    if attempt is None:
+        return None
+    return session.scalar(
+        select(GatewayRequestEvidenceJournal)
+        .where(
+            GatewayRequestEvidenceJournal.action_id == action.id,
+            GatewayRequestEvidenceJournal.execution_attempt_id == attempt.id,
+        )
+        .order_by(
+            GatewayRequestEvidenceJournal.observed_at.desc(),
+            GatewayRequestEvidenceJournal.id.desc(),
+        )
+        .limit(1)
+    )
 
 
 def _action_should_retry(session: Session, task: Task, action: Action) -> bool:
     if task.type == "search_rank_deboost" and action.status == "unknown_after_send":
-        _set_rank_deboost_retry_blocker(action, "rank_deboost_gateway_outcome_unknown")
+        _set_retry_blocker(action, "rank_deboost_gateway_outcome_unknown")
         return False
     if action.status in {"failed", "unknown_after_send"}:
         return True
@@ -2515,13 +2649,13 @@ def _prepare_action_retry(session: Session, task: Task, action: Action, now: dat
     if task.type != "search_rank_deboost":
         return True
     if action.status == "unknown_after_send":
-        _set_rank_deboost_retry_blocker(action, "rank_deboost_gateway_outcome_unknown")
+        _set_retry_blocker(action, "rank_deboost_gateway_outcome_unknown")
         return False
     reservation = reservation_for_action(session, action.id)
     if reservation is not None and reservation.status == "reserved":
         return True
     if reservation is not None and reservation.status != "released":
-        _set_rank_deboost_retry_blocker(action, f"rank_deboost_reservation_{reservation.status}")
+        _set_retry_blocker(action, f"rank_deboost_reservation_{reservation.status}")
         return False
     return _reopen_rank_deboost_retry_reservation(
         session,
@@ -2543,11 +2677,11 @@ def _reopen_rank_deboost_retry_reservation(
     try:
         payload = SearchRankDeboostPayload.model_validate(action.payload or {})
     except ValueError:
-        _set_rank_deboost_retry_blocker(action, "rank_deboost_retry_payload_invalid")
+        _set_retry_blocker(action, "rank_deboost_retry_payload_invalid")
         return False
     account = session.get(TgAccount, action.account_id) if action.account_id else None
     if account is None:
-        _set_rank_deboost_retry_blocker(action, "rank_deboost_retry_account_missing")
+        _set_retry_blocker(action, "rank_deboost_retry_account_missing")
         return False
     window = deboost_pacing_window(task, now)
     allowed = account_click_allowed(
@@ -2560,7 +2694,7 @@ def _reopen_rank_deboost_retry_reservation(
         DeboostPacingStats(),
     )
     if not allowed:
-        _set_rank_deboost_retry_blocker(action, "rank_deboost_retry_quota_exhausted")
+        _set_retry_blocker(action, "rank_deboost_retry_quota_exhausted")
         return False
     if reservation is None:
         reserve_click(
@@ -2577,7 +2711,7 @@ def _reopen_rank_deboost_retry_reservation(
     return True
 
 
-def _set_rank_deboost_retry_blocker(action: Action, reason: str) -> None:
+def _set_retry_blocker(action: Action, reason: str) -> None:
     action.result = {**(action.result or {}), "retry_skipped_reason": reason}
 
 

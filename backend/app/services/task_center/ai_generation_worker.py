@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import logging
 import socket
-from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from uuid import uuid4
 
 from sqlalchemy import and_, func, or_, select
@@ -14,15 +16,28 @@ from app.services.developer_apps import credentials_for_account
 
 from .ai_generation_composition import PRODUCTION_GENERATION_DEPENDENCIES
 from .ai_generation_admission_gate import defer_generation_for_group_bot_admission
+from .ai_generation_claim_lifecycle import (
+    mark_generation_claim,
+    owns_generation_claim,
+    persisted_generation_failure,
+    release_prepared_batch,
+    release_unprepared_batch,
+)
 from .ai_generation_dependencies import GenerationDependencies
 from .ai_generation_dispatch import ensure_send_message_content
 from .ai_generator import AiGenerationUnavailable
+from .provider_admission import (
+    ProviderAdmissionBlocked,
+    ProviderAdmissionUnavailable,
+    ensure_claim_admission,
+)
 from .ai_generation_runtime_config import (
     _content_obligation_fallback_ready,
     _due_catch_up_required,
     tenant_fallback_flags,
 )
-from .ai_generation_timing import GENERATION_LEASE, GENERATION_LOOKAHEAD
+from .ai_quality_stats import record_provider_admission_unavailable
+from .ai_generation_timing import GENERATION_LOOKAHEAD
 from .direct_check_in import is_due_catch_up_check_in
 from .payloads import SendMessagePayload
 
@@ -31,9 +46,19 @@ GENERATABLE_STATUSES = ("pending", "ai_result_persist_unknown")
 DUE_CATCH_UP_MAX_PIPELINE_DEPTH = 4
 GenerateAction = Callable[[Session, Action, TgAccount], None]
 
+logger = logging.getLogger(__name__)
+
 
 class GenerationAdmissionDeferred(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class _SequentialClaim:
+    action_id: str
+    owner: str
+    token: str
+    claimed_count: int
 
 
 def drain_ai_generation(
@@ -45,51 +70,80 @@ def drain_ai_generation(
 ) -> int:
     processor = generate_action or _production_generate_action(dependencies)
     owner = f"ai-generation:{socket.gethostname()}:{uuid4()}"
-    processed = _drain_parallel_generation(
-        session_factory, owner, max(1, int(limit)), processor
-    )
+    processed = 0
+    try:
+        processed = _drain_parallel_generation(
+            session_factory, owner, max(1, int(limit)), processor
+        )
+    except ProviderAdmissionUnavailable as exc:
+        logger.warning("ai generation claim stopped: %s", exc)
+        return processed
     visited_action_ids: set[str] = set()
     while processed < max(1, int(limit)):
-        claim = _claim_generation_batch(
-            session_factory,
-            owner,
-            excluded_action_ids=visited_action_ids,
-        )
+        try:
+            claim = _claim_generation_batch(
+                session_factory,
+                owner,
+                excluded_action_ids=visited_action_ids,
+            )
+        except ProviderAdmissionUnavailable as exc:
+            logger.warning("ai generation claim stopped: %s", exc)
+            return processed
         if claim is None:
             break
-        action_id, token, claimed_count = claim
-        visited_action_ids.add(action_id)
-        generation_failure: AiGenerationUnavailable | None = None
-        admission_deferred = False
-        with session_factory() as session:
-            action = session.get(Action, action_id)
-            if not _owns_generation_claim(action, owner, token):
-                raise RuntimeError(f"AI generation claim lost for action {action_id}")
-            account = session.get(TgAccount, action.account_id)
-            if account is None:
-                raise RuntimeError(f"AI generation action {action.id} has no account")
-            try:
-                processor(session, action, account)
-            except GenerationAdmissionDeferred:
-                session.rollback()
-                admission_deferred = True
-            except AiGenerationUnavailable as exc:
-                session.rollback()
-                generation_failure = exc
-        if admission_deferred:
-            _release_unprepared_batch(session_factory, owner, token)
-            processed += claimed_count
-            continue
-        if generation_failure is not None:
-            if not _persisted_generation_failure(
-                session_factory, action_id,
-            ):
-                raise generation_failure
-            _release_unprepared_batch(session_factory, owner, token)
-            processed += claimed_count
-            continue
-        processed += _release_prepared_batch(session_factory, owner, token)
+        visited_action_ids.add(claim.action_id)
+        released = _process_sequential_claim(session_factory, processor, claim)
+        if released is None:
+            return processed
+        processed += released
     return processed
+
+
+def _process_sequential_claim(
+    session_factory,
+    processor: GenerateAction,
+    claim: _SequentialClaim,
+) -> int | None:
+    generation_failure: AiGenerationUnavailable | None = None
+    admission_deferred = False
+    with session_factory() as session:
+        action = session.get(Action, claim.action_id)
+        if not owns_generation_claim(action, claim.owner, claim.token):
+            raise RuntimeError(f"AI generation claim lost for action {claim.action_id}")
+        account = session.get(TgAccount, action.account_id)
+        if account is None:
+            raise RuntimeError(f"AI generation action {action.id} has no account")
+        try:
+            processor(session, action, account)
+        except GenerationAdmissionDeferred:
+            session.rollback()
+            admission_deferred = True
+        except ProviderAdmissionBlocked as exc:
+            session.rollback()
+            admission_deferred = True
+            logger.info("ai generation deferred by provider admission: %s", exc)
+        except ProviderAdmissionUnavailable as exc:
+            session.rollback()
+            release_unprepared_batch(
+                session_factory,
+                claim.owner,
+                claim.token,
+                provider_admission_unavailable=True,
+            )
+            logger.warning("ai generation claim stopped: %s", exc)
+            return None
+        except AiGenerationUnavailable as exc:
+            session.rollback()
+            generation_failure = exc
+    if admission_deferred:
+        release_unprepared_batch(session_factory, claim.owner, claim.token)
+        return claim.claimed_count
+    if generation_failure is not None:
+        if not persisted_generation_failure(session_factory, claim.action_id):
+            raise generation_failure
+        release_unprepared_batch(session_factory, claim.owner, claim.token)
+        return claim.claimed_count
+    return release_prepared_batch(session_factory, claim.owner, claim.token)
 
 
 def _drain_parallel_generation(
@@ -124,7 +178,7 @@ def _process_parallel_claim(session_factory, processor, claim) -> int:
     deferred = False
     with session_factory() as session:
         action = session.get(Action, claim.action_id)
-        if not _owns_generation_claim(action, claim.owner, claim.token):
+        if not owns_generation_claim(action, claim.owner, claim.token):
             raise RuntimeError(f"AI generation claim lost for action {claim.action_id}")
         if not _generation_action_lifecycle_current(session, action):
             _cancel_stale_generation_action(session, action)
@@ -138,20 +192,34 @@ def _process_parallel_claim(session_factory, processor, claim) -> int:
         except GenerationAdmissionDeferred:
             session.rollback()
             deferred = True
+        except ProviderAdmissionBlocked as exc:
+            session.rollback()
+            deferred = True
+            logger.info("ai generation deferred by provider admission: %s", exc)
         except AiGenerationUnavailable as exc:
             session.rollback()
             failure = exc
+        except ProviderAdmissionUnavailable as exc:
+            session.rollback()
+            release_unprepared_batch(
+                session_factory,
+                claim.owner,
+                claim.token,
+                provider_admission_unavailable=True,
+            )
+            finish_generation_job(session_factory, claim, state="pending")
+            raise
     if deferred:
-        _release_unprepared_batch(session_factory, claim.owner, claim.token)
+        release_unprepared_batch(session_factory, claim.owner, claim.token)
         finish_generation_job(session_factory, claim, state="pending")
         return 1
     if failure is not None:
-        if not _persisted_generation_failure(session_factory, claim.action_id):
+        if not persisted_generation_failure(session_factory, claim.action_id):
             raise failure
-        _release_unprepared_batch(session_factory, claim.owner, claim.token)
+        release_unprepared_batch(session_factory, claim.owner, claim.token)
         finish_generation_job(session_factory, claim, state="failed")
         return 1
-    released = _release_prepared_batch(session_factory, claim.owner, claim.token)
+    released = release_prepared_batch(session_factory, claim.owner, claim.token)
     finish_generation_job(session_factory, claim, state="ready")
     return released
 
@@ -190,7 +258,7 @@ def _claim_generation_batch(
     owner: str,
     *,
     excluded_action_ids: set[str],
-) -> tuple[str, str, int] | None:
+) -> _SequentialClaim | None:
     with session_factory() as session:
         blocked_group_ids: set[int] = set()
         while True:
@@ -203,12 +271,21 @@ def _claim_generation_batch(
             ).limit(1))
             if first is None:
                 return None
+            try:
+                ensure_claim_admission(session)
+            except ProviderAdmissionBlocked:
+                session.rollback()
+                return None
+            except ProviderAdmissionUnavailable:
+                record_provider_admission_unavailable(session, first)
+                session.commit()
+                raise
             _lock_generation_group(session, first)
             if _generation_group_has_capacity(session, first):
                 token = str(uuid4())
-                _mark_generation_claim(first, owner, token)
+                mark_generation_claim(first, owner, token)
                 session.commit()
-                return first.id, token, 1
+                return _SequentialClaim(first.id, owner, token, 1)
             blocked_group_ids.add(_action_group_id(first))
             session.rollback()
 
@@ -338,111 +415,6 @@ def _generation_filters(
             Action.payload["group_id"].as_integer().not_in(excluded_group_ids),
         )
     return filters
-
-
-def _mark_generation_claim(action: Action, owner: str, token: str) -> None:
-    payload = dict(action.payload) if isinstance(action.payload, dict) else {}
-    payload["ai_generation_status"] = "generating"
-    payload["ai_generation_claim_owner"] = owner
-    payload["ai_generation_claim_token"] = token
-    action.payload = payload
-    action.status = "executing"
-    action.claim_owner = owner
-    action.claim_token = token
-    action.lease_owner = owner
-    action.lease_expires_at = _now() + GENERATION_LEASE
-
-
-def _owns_generation_claim(
-    action: Action | None,
-    owner: str,
-    token: str,
-) -> bool:
-    return bool(
-        action
-        and action.status == "executing"
-        and action.claim_owner == owner
-        and action.claim_token == token
-    )
-
-
-def _release_prepared_batch(session_factory, owner: str, token: str) -> int:
-    with session_factory() as session:
-        actions = list(session.scalars(select(Action).where(
-            Action.status == "executing",
-            Action.claim_owner == owner,
-            Action.claim_token == token,
-        )))
-        for action in actions:
-            payload = action.payload if isinstance(action.payload, dict) else {}
-            if not str(payload.get("message_text") or "").strip():
-                raise RuntimeError(f"AI generation action {action.id} completed without content")
-            _release_generation_claim(action, payload)
-        session.commit()
-        return len(actions)
-
-
-def _release_unprepared_batch(
-    session_factory,
-    owner: str,
-    token: str,
-) -> None:
-    with session_factory() as session:
-        actions = list(session.scalars(select(Action).where(
-            Action.status == "executing",
-            Action.claim_owner == owner,
-            Action.claim_token == token,
-        )))
-        for action in actions:
-            _release_generation_claim(action, dict(action.payload or {}))
-        session.commit()
-
-
-def _persisted_generation_failure(
-    session_factory,
-    action_id: str,
-) -> bool:
-    with session_factory() as session:
-        action = session.get(Action, action_id)
-        result = action.result if action and isinstance(action.result, dict) else {}
-        persisted = bool(
-            action
-            and str(result.get("error_code") or "")
-            and (
-                action.status in {"failed", "skipped"}
-                or (
-                    action.status == "pending"
-                    and result.get("error_code") == "context_freshness_unproven"
-                )
-            )
-        )
-        if persisted and action.status in {"failed", "skipped"}:
-            from . import dispatcher
-            from .conversation_speaker_rotation import release_group_ai_speaker_reservation
-
-            release_group_ai_speaker_reservation(session, action)
-            dispatcher._sync_action_content_mix_state(session, action)
-            session.commit()
-        return persisted
-
-
-def _release_generation_claim(action: Action, payload: dict) -> None:
-    payload = dict(payload)
-    if (
-        payload.get("ai_generation_status") == "generating"
-        and not str(payload.get("message_text") or "").strip()
-    ):
-        payload["ai_generation_status"] = "pending"
-    payload["ai_generation_claim_owner"] = ""
-    payload["ai_generation_claim_token"] = ""
-    action.payload = payload
-    action.status = "pending"
-    action.claim_owner = ""
-    action.claim_token = ""
-    action.claim_expires_at = None
-    action.lease_owner = ""
-    action.lease_expires_at = None
-    action.executed_at = None
 
 
 def _production_generate_action(

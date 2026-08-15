@@ -53,18 +53,30 @@ def _drop_index_if_exists(table: str, index_name: str) -> None:
         op.drop_index(index_name, table_name=table)
 
 
+def _current_schema_requires_app_users() -> bool:
+    """0001 create_all may already include current tables during a blank-DB upgrade."""
+    return any(
+        _table_exists(table)
+        for table in (
+            "tg_account_login_batches",
+            "tg_account_login_batch_notifications",
+        )
+    )
+
+
 def upgrade() -> None:
-    _drop_fks_to("ai_usage_ledgers", "app_users")
-    _drop_fks_to("tasks", "app_users")
-    _drop_fks_to("task_start_operations", "app_users")
-    if _table_exists("ai_usage_ledgers") and _column_exists("ai_usage_ledgers", "user_id"):
-        try:
+    preserve_app_users = _current_schema_requires_app_users()
+    if not preserve_app_users:
+        _drop_fks_to("ai_usage_ledgers", "app_users")
+        _drop_fks_to("tasks", "app_users")
+        _drop_fks_to("task_start_operations", "app_users")
+        if _table_exists("ai_usage_ledgers") and _column_exists("ai_usage_ledgers", "user_id"):
             op.alter_column("ai_usage_ledgers", "user_id", existing_type=sa.Integer(), nullable=True)
-        except Exception:
-            pass
-    _drop_index_if_exists("ai_usage_ledgers", "ix_ai_usage_ledgers_user_created_at")
+        _drop_index_if_exists("ai_usage_ledgers", "ix_ai_usage_ledgers_user_created_at")
 
     for table in ("user_token_ledgers", "activation_codes", "subscription_plans", "app_users"):
+        if table == "app_users" and preserve_app_users:
+            continue
         if _table_exists(table):
             op.drop_table(table)
 

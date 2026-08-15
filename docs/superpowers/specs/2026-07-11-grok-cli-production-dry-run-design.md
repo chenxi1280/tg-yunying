@@ -15,7 +15,7 @@ MiniMax-M2.5 对部分 Telegram 群现场接话请求会保守拒答，Grok 网�
 
 ### 包含
 
-- 目标主机：硅谷生产服务器 `47.251.126.134`，本机 SSH 别名 `codex_usa01_server`。
+- 目标主机：硅谷生产服务器 `47.77.184.233`，本机 SSH 别名 `codex_usa01_server`。
 - 在部署用户自己的目录下安装 Grok CLI，不覆盖系统 Node、Python 或应用镜像。
 - 使用 Grok 官方设备授权流程完成 CLI 鉴权。
 - 从生产数据库只读筛选一个现有测试群和一个可用测试账号；筛选结果必须在执行日志中记录租户 ID、群 ID、账号 ID 和选择依据，不记录 session、手机号、API Key 或 OAuth token。

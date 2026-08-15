@@ -3,24 +3,26 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import re
 import signal
+import sys
 import tempfile
 import threading
 import time
 import traceback
-from datetime import timedelta
 from pathlib import Path
 
-from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
+
 from .config import get_settings
 from .database import SessionLocal
 from .dispatcher_lifecycle import (
     DispatcherLifecycle,
     create_dispatcher_lifecycle,
 )
-from .models import MessageTask, TaskStatus, WorkerHeartbeat
+from .models import MessageTask, TaskStatus
 from .services._common import _as_utc, _now
+from .worker_health import VALID_WORKER_ROLES
 from .services.task_center.heartbeat import (
     record_worker_heartbeat,
     retire_worker_heartbeat,
@@ -66,25 +68,73 @@ from .services.image_verification_runtime import (
 from .telethon_lifecycle import shutdown_telethon_lifecycle_strict
 
 logger = logging.getLogger(__name__)
-VALID_WORKER_ROLES = {
-    "all",
-    "legacy",
-    "planner",
-    "dispatcher",
-    "search-dispatcher",
-    "listener",
-    "recovery",
-    "account-online",
-    "account-security",
-    "account-login",
-    "ai-generation",
-    "ai-memory",
-    "voice-profile",
-    "material-cache",
-    "metrics",
-}
-WORKER_HEALTH_STALE_AFTER = timedelta(minutes=2)
 LOCAL_HEALTHCHECK_FILE = "/tmp/tgyunying-worker-heartbeat"
+
+# RC-6.2 日志脱敏（硬约束）：session/密码/2FA/验证码/token/手机号不得明文输出。
+_SENSITIVE_KEY_VALUE_PATTERN = re.compile(
+    r"(?i)\b((?:raw_)?(?:session|token|password|api_hash|secret|verification_code|"
+    r"two_fa|two_fa_password|webhook_secret))\s*([=：:])\s*[^\s,;，；)）]+"
+)
+_PHONE_NUMBER_PATTERN = re.compile(r"\+\d{7,15}")
+_IDLE_HEARTBEAT_TICKS = 60
+
+
+def _redact_text(value: str) -> str:
+    value = _SENSITIVE_KEY_VALUE_PATTERN.sub(r"\1\2***", value)
+    return _PHONE_NUMBER_PATTERN.sub("+***", value)
+
+
+class SensitiveDataRedactionFilter(logging.Filter):
+    """在 handler 边界统一脱敏：先完成 %-格式化再整体脱敏，避免破坏占位符。"""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            message = record.getMessage()
+        except Exception:  # noqa: BLE001 - 格式化失败时退回分别脱敏。
+            record.msg = _redact_text(str(record.msg))
+            if record.args:
+                args = record.args if isinstance(record.args, tuple) else (record.args,)
+                record.args = tuple(
+                    _redact_text(arg) if isinstance(arg, str) else arg for arg in args
+                )
+            return True
+        record.msg = _redact_text(message)
+        record.args = None
+        return True
+
+
+class SensitiveDataFormatter(logging.Formatter):
+    """对最终日志文本再次脱敏，覆盖 formatter 追加的异常 traceback。"""
+
+    def format(self, record: logging.LogRecord) -> str:
+        return _redact_text(super().format(record))
+
+
+def _configure_worker_logging() -> None:
+    """RC-6.1：worker 统一 stdout 结构化日志；级别由 WORKER_LOG_LEVEL 控制，默认 INFO。
+
+    没有该初始化时 root logger 默认 WARNING，全部 INFO drain 日志静默丢失
+    （生产表现为 docker logs 0 字节）。
+    """
+    root = logging.getLogger()
+    if any(
+        isinstance(handler, logging.StreamHandler) and getattr(handler, "_tgyunying_worker", False)
+        for handler in root.handlers
+    ):
+        return
+    level_name = (os.getenv("WORKER_LOG_LEVEL") or "INFO").strip().upper()
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(
+        SensitiveDataFormatter(
+            "%(asctime)s %(levelname)s [%(name)s] %(message)s",
+            datefmt="%Y-%m-%dT%H:%M:%S%z",
+        )
+    )
+    handler.addFilter(SensitiveDataRedactionFilter())
+    handler.set_name("tgyunying-worker")
+    handler._tgyunying_worker = True  # noqa: SLF001 - 幂等标记
+    root.addHandler(handler)
+    root.setLevel(getattr(logging, level_name, logging.INFO))
 
 
 def _task_due(task_id: int) -> bool:
@@ -221,46 +271,10 @@ def _safe_optional_drain(name: str, func, *args, **kwargs) -> int:
 
 
 def check_worker_health(*, role: str | None = None) -> bool:
-    selected_role = _normalize_role(role)
-    cutoff = _now() - WORKER_HEALTH_STALE_AFTER
-    process_types = _health_process_types(selected_role)
-    try:
-        with SessionLocal() as session:
-            fresh = set(
-                session.scalars(
-                    select(WorkerHeartbeat.process_type).where(
-                        WorkerHeartbeat.process_type.in_(process_types),
-                        WorkerHeartbeat.status == "active",
-                        WorkerHeartbeat.last_seen_at >= cutoff,
-                    )
-                )
-            )
-        return bool(fresh) if selected_role == "all" else process_types <= fresh
-    except SQLAlchemyError:
-        logger.warning("worker healthcheck failed role=%s:\n%s", selected_role, traceback.format_exc())
-        return False
+    # RC-6.6：健康判定统一走 worker_health 单一实现（freshness + all=全部必需 role）。
+    from .worker_health import check_worker_health as _check
 
-
-def _health_process_types(role: str) -> set[str]:
-    if role == "all":
-        return {
-            "task_center",
-            "planner",
-            "dispatcher",
-            "listener",
-            "recovery",
-            "account-online",
-            "account-security",
-            "account-login",
-            "ai-generation",
-            "ai-memory",
-            "voice-profile",
-            "material-cache",
-            "metrics",
-        }
-    if role == "legacy":
-        return {"legacy"}
-    return {role}
+    return _check(role=_normalize_role(role), session_factory=SessionLocal)
 
 
 def _record_loop_heartbeat(role: str, limit: int) -> None:
@@ -442,15 +456,25 @@ def _drain_worker_iteration(
         _write_local_healthcheck_heartbeat()
         if lifecycle is not None:
             lifecycle.acknowledge_successor()
+        started = time.monotonic()
         processed = drain_once(limit, role=role)
+        took_ms = int((time.monotonic() - started) * 1000)
         if processed:
-            logger.info("worker drained role=%s processed=%d", role, processed)
+            _drain_worker_iteration.idle_ticks = 0  # type: ignore[attr-defined]
+            logger.info("worker drained role=%s processed=%d took_ms=%d", role, processed, took_ms)
+        else:
+            ticks = getattr(_drain_worker_iteration, "idle_ticks", 0) + 1
+            _drain_worker_iteration.idle_ticks = ticks  # type: ignore[attr-defined]
+            if ticks % _IDLE_HEARTBEAT_TICKS == 1:
+                logger.info("worker idle role=%s ticks=%d took_ms=%d", role, ticks, took_ms)
+            else:
+                logger.debug("worker idle role=%s took_ms=%d", role, took_ms)
         if lifecycle is None:
             return True
         lifecycle.observe_after_batch()
         return lifecycle.state == "active"
     except Exception:
-        logger.error("worker drain failed:\n%s", traceback.format_exc())
+        logger.error("worker drain failed role=%s:\n%s", role, traceback.format_exc())
         return True
 
 
@@ -587,6 +611,7 @@ def _restore_signal_handlers(previous: dict[int, object]) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _configure_worker_logging()
     parser = argparse.ArgumentParser(description="TG operations background worker")
     parser.add_argument("--once", action="store_true", help="drain once and exit")
     parser.add_argument("--limit", type=int, default=100, help="max items to drain per iteration")

@@ -320,6 +320,7 @@ def test_worker_health_module_accepts_ai_memory_role(monkeypatch):
 
 def test_worker_main_healthcheck_fails_for_stale_role(monkeypatch):
     from app import worker
+    from app import worker_health
 
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -329,7 +330,7 @@ def test_worker_main_healthcheck_fails_for_stale_role(monkeypatch):
                 worker_id="pytest-stale",
                 process_type="listener",
                 status="active",
-                last_seen_at=worker._now() - worker.WORKER_HEALTH_STALE_AFTER - timedelta(seconds=1),
+                last_seen_at=worker._now() - worker_health.WORKER_HEALTH_STALE_AFTER - timedelta(seconds=1),
             )
         )
         session.commit()

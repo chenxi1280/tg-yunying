@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import re
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
 
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from app.ai_gateway import DEFAULT_AI_REQUEST_TIMEOUT_SECONDS, normalize_ai_model_name
+from app.ai_gateway import (
+    DEFAULT_AI_REQUEST_TIMEOUT_SECONDS,
+    AiGenerationResult,
+    AiProviderCredentials,
+    AiProviderRateLimited,
+    normalize_ai_model_name,
+)
 from app.models import AiProvider, AiProviderHealthStatus, PromptTemplate, TenantAiSetting
 from app.services._common import _now, ai_gateway
 from app.services.ai_config import ai_provider_credentials
@@ -16,6 +22,15 @@ from app.services.content_filters import looks_like_ai_meta_content, looks_like_
 from app.services.task_center.ai_act_types import canonical_ai_group_act_type
 from app.services.task_center.ai_group_prompt import GroupPromptBundle, build_group_prompt, contains_disallowed_group_content
 from app.services.grok_cli_bridge import GrokCliBridge, GrokCliUnavailable
+from app.services.task_center.provider_admission import (
+    ProviderAdmissionBlocked,
+    ProviderProbeLease,
+    begin_provider_call,
+    extend_provider_cooldown,
+    provider_admission_key,
+    release_provider_probe,
+    settle_provider_success,
+)
 
 
 AI_GENERATION_UNAVAILABLE_MESSAGE = "AI 生成不可用，等待恢复后继续执行"
@@ -53,6 +68,30 @@ AI_PROVIDER_QUOTA_EXHAUSTED_MARKERS = (
     "配额不足",
     "配额耗尽",
 )
+
+
+@dataclass(frozen=True)
+class _ProviderDraftRequest:
+    prompt: str
+    count: int
+    topic: str
+    tone: str
+    persona_set: tuple[str, ...]
+    temperature: float
+    max_tokens: int
+    system_prompt: str | None
+    timeout: int
+
+
+@dataclass(frozen=True)
+class _ProviderCandidatePolicy:
+    model_name: str
+    required_model_family: str
+    allow_quota_rotation: bool
+    purpose: str
+    close_transaction_before_external: bool
+
+
 CHANNEL_COMMENT_MAX_REDESCRIPTION_ATTEMPTS = 3
 MINIMAX_NEW_SENSITIVE_ERROR = "input new_sensitive (1026)"
 
@@ -248,25 +287,45 @@ def generate_contents(
         requirements=requirements,
     )
     prompt = _sanitize_sensitive_context(prompt)
-    result = _generate_with_provider_candidates(
-        session,
-        provider,
+    request = _content_provider_request(
         prompt,
         count=count,
         topic=topic or requirements,
         tone=tone,
         persona_set=persona_set,
-        temperature=max(float(setting.temperature or 0.7), 0.75) if purpose in LONG_RUNNING_AI_PURPOSES else setting.temperature,
-        max_tokens=_content_max_tokens(setting.max_tokens, count, purpose),
-        system_prompt=system_prompt,
-        timeout=AI_CONTENT_REQUEST_TIMEOUT_SECONDS if purpose in LONG_RUNNING_AI_PURPOSES else DEFAULT_AI_REQUEST_TIMEOUT_SECONDS,
-        model_name=model_name,
-        required_model_family=required_model_family,
-        allow_quota_rotation=not provider_id,
+        setting=setting,
         purpose=purpose,
-        close_transaction_before_external=close_transaction_before_external,
+        system_prompt=system_prompt,
+    )
+    policy = _ProviderCandidatePolicy(
+        model_name, required_model_family, not provider_id,
+        purpose, close_transaction_before_external,
+    )
+    result = _generate_with_provider_candidates(
+        session, provider, request, policy=policy,
     )
     return _generated_contents_result(result, provider, purpose=purpose, count=count)
+
+
+def _content_provider_request(
+    prompt: str,
+    *,
+    count: int,
+    topic: str,
+    tone: str,
+    persona_set: list[str],
+    setting: TenantAiSetting,
+    purpose: str,
+    system_prompt: str | None,
+) -> _ProviderDraftRequest:
+    long_running = purpose in LONG_RUNNING_AI_PURPOSES
+    temperature = max(float(setting.temperature or 0.7), 0.75) if long_running else setting.temperature
+    timeout = AI_CONTENT_REQUEST_TIMEOUT_SECONDS if long_running else DEFAULT_AI_REQUEST_TIMEOUT_SECONDS
+    return _ProviderDraftRequest(
+        prompt, count, topic, tone, tuple(persona_set),
+        temperature, _content_max_tokens(setting.max_tokens, count, purpose),
+        system_prompt, timeout,
+    )
 
 
 def _generated_contents_result(
@@ -292,53 +351,98 @@ def _generated_contents_result(
 def _generate_with_provider_candidates(
     session: Session,
     provider: AiProvider,
-    prompt: str,
+    request: _ProviderDraftRequest,
     *,
-    count: int,
-    topic: str,
-    tone: str,
-    persona_set: list[str],
-    temperature: float,
-    max_tokens: int,
-    system_prompt: str | None,
-    timeout: int,
-    model_name: str,
-    required_model_family: str,
-    allow_quota_rotation: bool,
-    purpose: str,
-    close_transaction_before_external: bool,
+    policy: _ProviderCandidatePolicy,
 ):
     providers = _provider_candidates(
-        session, provider, required_model_family=required_model_family,
-        allow_quota_rotation=allow_quota_rotation,
+        session,
+        provider,
+        required_model_family=policy.required_model_family,
+        allow_quota_rotation=policy.allow_quota_rotation,
     )
-    provider_calls = _provider_calls(session, providers, model_name, close_transaction_before_external)
+    provider_calls = _provider_calls(
+        session, providers, policy.model_name, policy.close_transaction_before_external,
+    )
     last_exc: Exception | None = None
+    blocked_exc: ProviderAdmissionBlocked | None = None
     for candidate, credentials in provider_calls:
         try:
-            return ai_gateway.generate_drafts(
+            lease = begin_provider_call(candidate)
+        except ProviderAdmissionBlocked as exc:
+            blocked_exc = exc
+            continue
+        try:
+            return _generate_provider_drafts(
+                candidate,
                 credentials,
-                prompt,
-                count=count,
-                topic=topic,
-                tone=tone,
-                persona_set=persona_set,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                system_prompt=system_prompt,
-                timeout=timeout,
+                request,
+                lease=lease,
             )
+        except ProviderAdmissionBlocked as exc:
+            blocked_exc = exc
+            last_exc = exc
+            break
         except Exception as exc:
             last_exc = exc
             if not _is_ai_provider_quota_exhausted(exc):
                 break
             _mark_provider_quota_exhausted(candidate, exc)
-            if close_transaction_before_external:
+            if policy.close_transaction_before_external:
                 session.add(candidate)
                 session.commit()
             if candidate == providers[-1]:
                 break
-    _raise_provider_generation_failure(last_exc, purpose)
+    if blocked_exc is not None and (last_exc is None or last_exc is blocked_exc):
+        raise blocked_exc
+    _raise_provider_generation_failure(last_exc, policy.purpose)
+
+
+def _generate_provider_drafts(
+    provider: AiProvider,
+    credentials: AiProviderCredentials,
+    request: _ProviderDraftRequest,
+    *,
+    lease: ProviderProbeLease | None,
+) -> AiGenerationResult:
+    try:
+        result = ai_gateway.generate_drafts(
+            credentials,
+            request.prompt,
+            count=request.count,
+            topic=request.topic,
+            tone=request.tone,
+            persona_set=list(request.persona_set),
+            temperature=request.temperature,
+            max_tokens=request.max_tokens,
+            system_prompt=request.system_prompt,
+            timeout=request.timeout,
+        )
+    except AiProviderRateLimited as exc:
+        _defer_rate_limited_provider(provider, lease, exc)
+    except Exception:
+        release_provider_probe(lease)
+        raise
+    settle_provider_success(lease)
+    return result
+
+
+def _defer_rate_limited_provider(
+    provider: AiProvider,
+    lease: ProviderProbeLease | None,
+    error: AiProviderRateLimited,
+) -> None:
+    extend_provider_cooldown(
+        provider,
+        error.retry_after_seconds,
+        reason=f"http_429:{error.detail[:120]}",
+    )
+    release_provider_probe(lease)
+    raise ProviderAdmissionBlocked(
+        provider_admission_key(provider),
+        error.retry_after_seconds or 0,
+        reason="provider_rate_limited",
+    ) from error
 
 
 def _provider_candidates(
@@ -1013,23 +1117,27 @@ def _request_group_provider_candidates(
     result = _generate_with_provider_candidates(
         session,
         provider,
-        bundle.user_prompt,
-        count=count,
-        topic=" ".join(bundle.sanitized_context),
-        tone="natural Chinese group chat",
-        persona_set=["普通群友"],
-        temperature=max(float(setting.temperature or 0.7), 0.75),
-        max_tokens=_content_max_tokens(setting.max_tokens, count, purpose),
-        system_prompt=bundle.system_prompt,
-        timeout=AI_CONTENT_REQUEST_TIMEOUT_SECONDS,
-        model_name=model_name,
-        required_model_family=_group_chat_required_model_family(config),
-        allow_quota_rotation=(
-            not config.get("ai_provider_id")
-            and stage in {"", "primary_default"}
+        _ProviderDraftRequest(
+            bundle.user_prompt,
+            count,
+            " ".join(bundle.sanitized_context),
+            "natural Chinese group chat",
+            ("普通群友",),
+            max(float(setting.temperature or 0.7), 0.75),
+            _content_max_tokens(setting.max_tokens, count, purpose),
+            bundle.system_prompt,
+            AI_CONTENT_REQUEST_TIMEOUT_SECONDS,
         ),
-        purpose=purpose,
-        close_transaction_before_external=bool(config.get("_close_db_transaction_before_ai")),
+        policy=_ProviderCandidatePolicy(
+            model_name,
+            _group_chat_required_model_family(config),
+            (
+                not config.get("ai_provider_id")
+                and stage in {"", "primary_default"}
+            ),
+            purpose,
+            bool(config.get("_close_db_transaction_before_ai")),
+        ),
     )
     return result, started_at
 

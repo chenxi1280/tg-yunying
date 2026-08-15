@@ -63,5 +63,9 @@ def test_compose_and_release_script_mount_dedicated_account_login_worker() -> No
     assert "worker-account-login:" in compose
     assert '"--role", "account-login"' in compose
     assert "WORKER_ROLE: account-login" in compose
+    account_login_service = compose.split("worker-account-login:", 1)[1].split(
+        "worker-material-cache:", 1
+    )[0]
+    assert "logging: *default-logging" in account_login_service
     assert 'if [[ "${ACCOUNT_BATCH_LOGIN_MODE:-off}" != "off" ]]; then' in release_script
     assert "WORKER_SERVICES+=(worker-account-login)" in release_script

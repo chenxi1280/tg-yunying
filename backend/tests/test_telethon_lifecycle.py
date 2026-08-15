@@ -239,6 +239,48 @@ def test_telethon_lifecycle_cache_key_includes_client_metadata(monkeypatch):
     assert [client.name for client in clients] == ["same-session:one", "same-session:two"]
 
 
+def test_telethon_lifecycle_invalidate_removes_all_metadata_variants(monkeypatch):
+    """RC-6.4：invalidate 必须清掉同 session 的全部 metadata 变体，且不误删其他 session。"""
+    reset_lifecycle_state()
+    settings = Settings(
+        telethon_client_cache_size=10,
+        telethon_client_idle_seconds=3600,
+        telethon_client_connect_timeout_seconds=1,
+        telethon_operation_timeout_seconds=1,
+    )
+    lifecycle = TelethonClientLifecycle(settings)
+    credentials = DeveloperAppCredentials(app_id=1, api_id=123, api_hash="hash", credentials_version=1)
+    other_credentials = DeveloperAppCredentials(app_id=1, api_id=456, api_hash="hash", credentials_version=1)
+    created: dict[str, FakeTelethonClient] = {}
+
+    def fake_new_client(_credentials, raw_session, client_metadata=None):
+        identity = (client_metadata or {}).get("client_identity_key") or "plain"
+        client = FakeTelethonClient(f"{raw_session}:{identity}")
+        created[f"{raw_session}:{int(_credentials.api_id)}:{identity}"] = client
+        return client
+
+    monkeypatch.setattr(lifecycle, "new_client", fake_new_client)
+
+    async def scenario():
+        await lifecycle.get_or_create_client(credentials, "session-a", {"client_identity_key": "one"})
+        await lifecycle.get_or_create_client(credentials, "session-a", {"client_identity_key": "two"})
+        await lifecycle.get_or_create_client(credentials, "session-a")
+        await lifecycle.get_or_create_client(other_credentials, "session-b", {"client_identity_key": "one"})
+        removed = await lifecycle.invalidate_client(credentials, "session-a")
+        return removed
+
+    removed = asyncio.run(scenario())
+
+    assert removed == 3
+    remaining_keys = list(TelethonClientLifecycle._cache)
+    assert len(remaining_keys) == 1
+    remaining_entry = TelethonClientLifecycle._cache[remaining_keys[0]]
+    assert remaining_entry.client.name == "session-b:one"
+    for key in ("session-a:123:one", "session-a:123:two", "session-a:123:plain"):
+        assert created[key].disconnect_count >= 1
+    assert created["session-b:456:one"].disconnect_count == 0
+
+
 def test_telethon_lifecycle_rejects_unknown_proxy_protocol(monkeypatch):
     reset_lifecycle_state()
     settings = Settings(telethon_operation_timeout_seconds=1)

@@ -325,6 +325,7 @@ def test_retry_rebinds_search_membership_child_to_source_account(session: Sessio
     )
     child.status = "failed"
     child.account_id = 102
+    child.result = {**dict(child.result or {}), "remote_mutation_started": False}
     session.commit()
 
     assert dispatcher._action_can_reassign(child) is False

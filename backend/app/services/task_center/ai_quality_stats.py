@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from sqlalchemy import inspect, select
-from sqlalchemy.orm import object_session
+from sqlalchemy.orm import Session, object_session
 
 from app.models import Action, Task
+
+
+PROVIDER_ADMISSION_UNAVAILABLE = "provider_admission_unavailable"
 
 
 def record_quality_event(
@@ -38,6 +41,29 @@ def clear_quality_blocker(task: Task, action: Action) -> None:
         stats.pop("conversation_quality_active_blockers", None)
         stats.pop("conversation_quality_active_blocker", None)
     current.stats = stats
+
+
+def record_provider_admission_unavailable(
+    session: Session,
+    action: Action,
+) -> None:
+    task = session.get(Task, action.task_id)
+    if task is None:
+        raise RuntimeError("provider_admission_task_missing")
+    action.result = {
+        **dict(action.result or {}),
+        "success": False,
+        "error_code": PROVIDER_ADMISSION_UNAVAILABLE,
+        "error_message": "AI Provider 共享准入状态不可用，已停止生成调用",
+        "generation_stage": "provider_admission",
+        "generation_outcome": "pending",
+    }
+    record_quality_event(
+        task,
+        action,
+        "provider_admission_unavailable_count",
+        blocker=PROVIDER_ADMISSION_UNAVAILABLE,
+    )
 
 
 def quality_scope_key(action: Action) -> str:
@@ -91,4 +117,10 @@ def _project_blocker(blockers: dict[str, str]) -> str:
     return durable[-1] if durable else list(blockers.values())[-1]
 
 
-__all__ = ["clear_quality_blocker", "quality_scope_key", "record_quality_event"]
+__all__ = [
+    "PROVIDER_ADMISSION_UNAVAILABLE",
+    "clear_quality_blocker",
+    "quality_scope_key",
+    "record_provider_admission_unavailable",
+    "record_quality_event",
+]

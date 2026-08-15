@@ -216,6 +216,12 @@ class Settings:
             raise ValueError("VOICE_PROFILE_PROVIDER_CONCURRENCY must be positive")
         if self.voice_profile_provider_lease_seconds < 30:
             raise ValueError("VOICE_PROFILE_PROVIDER_LEASE_SECONDS must be at least 30")
+        if self.ai_provider_cooldown_default_seconds < 1:
+            raise ValueError("AI_PROVIDER_COOLDOWN_DEFAULT_SECONDS must be positive")
+        if self.ai_provider_cooldown_max_seconds < self.ai_provider_cooldown_default_seconds:
+            raise ValueError("AI_PROVIDER_COOLDOWN_MAX_SECONDS must be >= AI_PROVIDER_COOLDOWN_DEFAULT_SECONDS")
+        if self.ai_provider_probe_ttl_seconds < 10:
+            raise ValueError("AI_PROVIDER_PROBE_TTL_SECONDS must be at least 10")
         _validate_dispatcher_recycle_settings(self)
         _validate_production_ocr_isolation(self)
         _validate_dispatch_runtime_settings(self)
@@ -261,6 +267,14 @@ class Settings:
     voice_profile_provider_rate_per_minute: int = int(os.getenv("VOICE_PROFILE_PROVIDER_RATE_PER_MINUTE", "30"))
     voice_profile_provider_concurrency: int = int(os.getenv("VOICE_PROFILE_PROVIDER_CONCURRENCY", "2"))
     voice_profile_provider_lease_seconds: int = int(os.getenv("VOICE_PROFILE_PROVIDER_LEASE_SECONDS", "120"))
+    ai_provider_admission_enabled: bool = _bool_env(
+        "AI_PROVIDER_ADMISSION_ENABLED",
+        os.getenv("APP_ENV", "development") != "test",
+    )
+    ai_provider_admission_config_version: str = os.getenv("AI_PROVIDER_ADMISSION_CONFIG_VERSION", "v1")
+    ai_provider_cooldown_default_seconds: int = int(os.getenv("AI_PROVIDER_COOLDOWN_DEFAULT_SECONDS", "30"))
+    ai_provider_cooldown_max_seconds: int = int(os.getenv("AI_PROVIDER_COOLDOWN_MAX_SECONDS", "3600"))
+    ai_provider_probe_ttl_seconds: int = int(os.getenv("AI_PROVIDER_PROBE_TTL_SECONDS", "60"))
     action_claim_limit: int = int(os.getenv("ACTION_CLAIM_LIMIT", "100"))
     action_claim_seconds: int = int(os.getenv("ACTION_CLAIM_SECONDS", "60"))
     dispatcher_claim_scope: str = os.getenv("DISPATCHER_CLAIM_SCOPE", "task_center_dispatch")

@@ -42,6 +42,11 @@ x-backend-env: &backend-env
   VOICE_PROFILE_PROVIDER_RATE_PER_MINUTE: ${VOICE_PROFILE_PROVIDER_RATE_PER_MINUTE:-30}
   VOICE_PROFILE_PROVIDER_CONCURRENCY: ${VOICE_PROFILE_PROVIDER_CONCURRENCY:-2}
   VOICE_PROFILE_PROVIDER_LEASE_SECONDS: ${VOICE_PROFILE_PROVIDER_LEASE_SECONDS:-120}
+  AI_PROVIDER_ADMISSION_ENABLED: ${AI_PROVIDER_ADMISSION_ENABLED:-true}
+  AI_PROVIDER_ADMISSION_CONFIG_VERSION: ${AI_PROVIDER_ADMISSION_CONFIG_VERSION:-v1}
+  AI_PROVIDER_COOLDOWN_DEFAULT_SECONDS: ${AI_PROVIDER_COOLDOWN_DEFAULT_SECONDS:-30}
+  AI_PROVIDER_COOLDOWN_MAX_SECONDS: ${AI_PROVIDER_COOLDOWN_MAX_SECONDS:-3600}
+  AI_PROVIDER_PROBE_TTL_SECONDS: ${AI_PROVIDER_PROBE_TTL_SECONDS:-60}
   DISPATCHER_CONCURRENCY: ${DISPATCHER_CONCURRENCY:-20}
   DISPATCHER_SCOPE_CAPACITY: ${DISPATCHER_SCOPE_CAPACITY:-26}
   DISPATCH_RUNTIME_SHARD_TOTAL: ${DISPATCH_RUNTIME_SHARD_TOTAL:-2}
@@ -103,10 +108,18 @@ x-worker-healthcheck: &worker-healthcheck
   start_period: 45s
   retries: 6
 
+# RC-6.3：全服务 json-file 日志上限，防止 /var/lib/docker 无界增长
+x-default-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "3"
+
 services:
   backend:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
     container_name: tgyunying-backend
+    logging: *default-logging
     restart: unless-stopped
     environment:
       <<: *backend-env
@@ -127,6 +140,7 @@ services:
   worker-planner:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
     container_name: tgyunying-worker-planner
+    logging: *default-logging
     restart: unless-stopped
     command: ["python", "-m", "app.worker", "--role", "planner", "--limit", "${WORKER_DRAIN_LIMIT:-100}", "--interval", "${WORKER_INTERVAL_SECONDS:-2.0}"]
     environment:
@@ -146,6 +160,7 @@ services:
   worker-ai-generation:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
     container_name: tgyunying-worker-ai-generation
+    logging: *default-logging
     restart: unless-stopped
     command: ["python", "-m", "app.worker", "--role", "ai-generation", "--limit", "${AI_GENERATION_WORKER_DRAIN_LIMIT:-20}", "--interval", "${AI_GENERATION_WORKER_INTERVAL_SECONDS:-2.0}"]
     environment:
@@ -165,6 +180,7 @@ services:
   worker-ai-generation-2:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
     container_name: tgyunying-worker-ai-generation-2
+    logging: *default-logging
     restart: unless-stopped
     command: ["python", "-m", "app.worker", "--role", "ai-generation", "--limit", "${AI_GENERATION_WORKER_DRAIN_LIMIT:-20}", "--interval", "${AI_GENERATION_WORKER_INTERVAL_SECONDS:-2.0}"]
     environment:
@@ -184,6 +200,7 @@ services:
   worker-ai-generation-3:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
     container_name: tgyunying-worker-ai-generation-3
+    logging: *default-logging
     restart: unless-stopped
     command: ["python", "-m", "app.worker", "--role", "ai-generation", "--limit", "${AI_GENERATION_WORKER_DRAIN_LIMIT:-20}", "--interval", "${AI_GENERATION_WORKER_INTERVAL_SECONDS:-2.0}"]
     environment:
@@ -203,6 +220,7 @@ services:
   worker-dispatcher-1:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
     container_name: tgyunying-worker-dispatcher-1
+    logging: *default-logging
     restart: unless-stopped
     command: ["python", "-m", "app.worker", "--role", "dispatcher", "--limit", "${WORKER_DRAIN_LIMIT:-100}", "--interval", "${WORKER_INTERVAL_SECONDS:-2.0}"]
     environment:
@@ -224,6 +242,7 @@ services:
   worker-dispatcher-2:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
     container_name: tgyunying-worker-dispatcher-2
+    logging: *default-logging
     restart: unless-stopped
     command: ["python", "-m", "app.worker", "--role", "dispatcher", "--limit", "${WORKER_DRAIN_LIMIT:-100}", "--interval", "${WORKER_INTERVAL_SECONDS:-2.0}"]
     environment:
@@ -245,6 +264,7 @@ services:
   worker-search-dispatcher:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
     container_name: tgyunying-worker-search-dispatcher
+    logging: *default-logging
     restart: unless-stopped
     command: ["python", "-m", "app.worker", "--role", "search-dispatcher", "--limit", "${SEARCH_WORKER_DRAIN_LIMIT:-100}", "--interval", "${SEARCH_WORKER_INTERVAL_SECONDS:-2.0}"]
     environment:
@@ -264,6 +284,7 @@ services:
   worker-listener:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
     container_name: tgyunying-worker-listener
+    logging: *default-logging
     restart: unless-stopped
     command: ["python", "-m", "app.worker", "--role", "listener", "--limit", "${WORKER_DRAIN_LIMIT:-100}", "--interval", "${WORKER_INTERVAL_SECONDS:-2.0}"]
     environment:
@@ -281,6 +302,7 @@ services:
   worker-recovery:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
     container_name: tgyunying-worker-recovery
+    logging: *default-logging
     restart: unless-stopped
     command: ["python", "-m", "app.worker", "--role", "recovery", "--limit", "${WORKER_DRAIN_LIMIT:-100}", "--interval", "${WORKER_INTERVAL_SECONDS:-2.0}"]
     environment:
@@ -299,6 +321,7 @@ services:
   worker-account-security:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
     container_name: tgyunying-worker-account-security
+    logging: *default-logging
     restart: unless-stopped
     command: ["python", "-m", "app.worker", "--role", "account-security", "--limit", "${ACCOUNT_SECURITY_WORKER_DRAIN_LIMIT:-20}", "--interval", "${ACCOUNT_SECURITY_WORKER_INTERVAL_SECONDS:-2.0}"]
     environment:
@@ -316,6 +339,7 @@ services:
   worker-account-login:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
     container_name: tgyunying-worker-account-login
+    logging: *default-logging
     restart: unless-stopped
     command: ["python", "-m", "app.worker", "--role", "account-login", "--limit", "${ACCOUNT_LOGIN_WORKER_DRAIN_LIMIT:-20}", "--interval", "${ACCOUNT_LOGIN_WORKER_INTERVAL_SECONDS:-2.0}"]
     environment:
@@ -333,6 +357,7 @@ services:
   worker-material-cache:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
     container_name: tgyunying-worker-material-cache
+    logging: *default-logging
     restart: unless-stopped
     command: ["python", "-m", "app.worker", "--role", "material-cache", "--limit", "${MATERIAL_CACHE_WORKER_DRAIN_LIMIT:-20}", "--interval", "${MATERIAL_CACHE_WORKER_INTERVAL_SECONDS:-2.0}"]
     environment:
@@ -350,6 +375,7 @@ services:
   worker-voice-profile:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
     container_name: tgyunying-worker-voice-profile
+    logging: *default-logging
     restart: unless-stopped
     command: ["python", "-m", "app.worker", "--role", "voice-profile", "--limit", "${VOICE_PROFILE_WORKER_DRAIN_LIMIT:-20}", "--interval", "${VOICE_PROFILE_WORKER_INTERVAL_SECONDS:-2.0}"]
     environment:
@@ -371,6 +397,7 @@ services:
   worker-account-online:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
     container_name: tgyunying-worker-account-online
+    logging: *default-logging
     restart: unless-stopped
     command: ["python", "-m", "app.worker", "--role", "account-online", "--limit", "${ACCOUNT_ONLINE_WORKER_DRAIN_LIMIT:-1000}", "--interval", "${ACCOUNT_ONLINE_WORKER_INTERVAL_SECONDS:-5.0}"]
     environment:
@@ -390,6 +417,7 @@ services:
   worker-ai-memory:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
     container_name: tgyunying-worker-ai-memory
+    logging: *default-logging
     restart: unless-stopped
     command: ["python", "-m", "app.worker", "--role", "ai-memory", "--limit", "${AI_MEMORY_WORKER_DRAIN_LIMIT:-100}", "--interval", "${AI_MEMORY_WORKER_INTERVAL_SECONDS:-60.0}"]
     environment:
@@ -409,6 +437,7 @@ services:
   worker-metrics:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
     container_name: tgyunying-worker-metrics
+    logging: *default-logging
     restart: unless-stopped
     command: ["python", "-m", "app.worker", "--role", "metrics", "--limit", "${WORKER_DRAIN_LIMIT:-100}", "--interval", "${METRICS_WORKER_INTERVAL_SECONDS:-10.0}"]
     environment:

@@ -207,6 +207,7 @@ docker pull "$TGYUNYING_FRONTEND_IMAGE"
 
 publish_frontend_static "$TGYUNYING_FRONTEND_IMAGE"
 
+# ===== Stage A: fence business writers — stop old workers, apply migrations, retire heartbeats, stage dispatch contract =====
 echo "==> Fencing old workers before migration and contract-version switch"
 compose stop "${WORKER_SERVICES[@]}"
 workers_stopped_before="$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)"
@@ -246,6 +247,7 @@ wait_for_container_ready \
 docker exec -i tgyunying-backend \
   python -m scripts.manage_shared_dispatch_contract verify-ready
 
+# ===== Stage B: zero-business-writer window — contract staged but NOT active; recover claims, then all-task fulfillment takeover (sole automatic owner) and AI content scope takeover must complete here =====
 echo "==> Recovering fenced claims and reconciling dispatch ledgers"
 docker exec -i tgyunying-backend \
   python -m scripts.manage_shared_dispatch_contract reconcile-ledger \
@@ -277,6 +279,7 @@ docker exec -i tgyunying-backend \
   --actor "$release_actor" \
   --approval-ref "$approval_ref"
 
+# ===== Stage C: activate dispatch contract and verify — business writers resume; post-release jobs may only run read-only verify-active =====
 echo "==> Activating shared dispatch contract after takeover closure"
 docker exec -i tgyunying-backend \
   python -m scripts.manage_shared_dispatch_contract activate \

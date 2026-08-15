@@ -1100,7 +1100,7 @@ def test_retry_task_does_not_requeue_consumed_rank_reservation() -> None:
         session.refresh(action)
         session.refresh(reservation)
         assert action.status == "success"
-        assert action.result["retry_skipped_reason"] == "rank_deboost_reservation_consumed"
+        assert action.result == {"success": True}
         assert reservation.status == "consumed"
 
 
@@ -1114,7 +1114,11 @@ def test_retry_task_reopens_released_rank_reservation() -> None:
         payload = _make_payload(task, account_id=account.id, binding_id=binding.id)
         action = _make_action(session, task, account, payload)
         action.status = "skipped"
-        action.result = {"success": False, "error_code": "rank_observation_gateway_unavailable"}
+        action.result = {
+            "success": False,
+            "error_code": "rank_observation_gateway_unavailable",
+            "remote_mutation_started": False,
+        }
         reservation = _make_reservation(session, task, action, account, status="released")
         session.commit()
 
@@ -1138,6 +1142,11 @@ def test_retry_task_does_not_reopen_released_rank_reservation_after_quota_is_con
         payload = _make_payload(task, account_id=account.id, binding_id=binding.id)
         released_action = _make_action(session, task, account, payload)
         released_action.status = "skipped"
+        released_action.result = {
+            "success": False,
+            "error_code": "rank_observation_gateway_unavailable",
+            "remote_mutation_started": False,
+        }
         released_reservation = _make_reservation(session, task, released_action, account, status="released")
         consumed_action = _make_action(session, task, account, payload)
         consumed_action.status = "success"

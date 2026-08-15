@@ -166,6 +166,8 @@ TG 运营管理平台面向 Telegram 运营团队，用一个后台统一管理�
 | `targets.manage` | 同步目标、修改目标能力、处理准入失败、带目标创建任务或发送消息 | 能力调整和准入重试必须写原因和审计 |
 | `target_profile.manage` | 配置全站唯一 AI 画像、学习来源、监听账号、样本质量规则、历史拉取、样本采纳 / 降权 / 剔除、候选重算、重建和回滚 | 学习来源变更、质量规则变更、画像清空、版本回滚和样本状态调整必须写原因和审计 |
 | `accounts.view` | 账号列表、账号详情基础信息 | 手机号按完整字段展示，缺失时才使用历史兼容字段 |
+| `accounts.batch_login` | 创建、取消、刷新凭据及重试批量登号批次 | 同时要求 `accounts.login`；创建/取消/刷新/重试均写原因、版本与审计 |
+| `accounts.code_source_credentials.read` | 查看账号接码备注对应的完整第三方 UUID | 同时要求 `accounts.view`；每次 reveal 二次确认、填写原因、no-store 并写账号/操作者/trace_id 审计 |
 | `accounts.security.read` | 查看安全快照、2FA 状态、登录设备 | 查看敏感状态写审计 |
 | `accounts.security.batch` | 设置二步密码、清理外部设备、备用 session 补齐、重试 / 取消安全批次 | 危险动作二次确认并写批次审计 |
 | `accounts.security.session_manage` | 手动补齐、切换、停用和自愈账号授权 session | 主备切换、备用登录、自愈恢复和停用授权必须写审计 |
@@ -1867,6 +1869,8 @@ TG账号
 验证码登录的平台提交窗口固定为 300 秒，该窗口不是 Telegram 官方绝对过期承诺。普通 start 只能恢复当前、具备 durable challenge binding 的 waiting-code / waiting-2FA / expired flow；迁移前 `waiting-code` 且 `challenge_sent_at` 为空的旧 flow 不可恢复，用户点击“发送验证码”时必须 supersede 它并建立新 challenge。其余 expired flow 仍只有用户显式触发 resend 才能携带旧 flow/version、supersede 旧 challenge 并请求新 code。每个 code challenge 的临时 StringSession 与 `phone_code_hash` 必须加密绑定到唯一 flow；verify 只能使用该 flow 的同一配对。主登录当前默认直连，账号绑定的代理不自动成为主登录 egress；只有备用授权和其他显式选择代理的路径才使用绑定代理。`PhoneCodeInvalidError` 保持当前 flow 可重试，`PhoneCodeExpiredError` 或平台超时进入 expired，二者不得合并成“验证码错误或已失效”。
 
 登录成功结果必须拆为正交投影：`authorization_status` 表示 Telegram 授权是否已持久化，`post_login_sync_status` 表示资料 / 群 / 联系人同步，`pool_transition_status` 表示登录成功后的显式分组迁移。Telegram 授权成功后，后置同步或分组迁移失败不能把登录响应改写成失败或 500；用户为本次登录输入的 2FA 密码不得被隐式托管、保存或轮换。
+
+批量自动登号的当前合同以 `docs/03-feature-designs/account-batch-auto-login-prd.md` 为准：必须 precheck 后显式确认，worker 对已有账号执行新鲜、直连、权威授权探测，不能以数据库 ACTIVE/session 推断在线；新账号先完成接码 baseline 再创建。每行输入的接码 UUID 必须与最终 `account_id` 建立持久绑定：账号列表/详情显示独立、不会被资料初始化覆盖的脱敏接码备注，完整 UUID 加密保存且只允许同租户有 `accounts.code_source_credentials.read` 权限的用户填写原因后显式查看；同一 UUID 对应多账号或替换既有绑定必须阻断并二次确认，禁止把完整值放进 `display_name`、普通列表、导出、日志或提醒。批内按行串行但每轮只推进一个 phase，单行失败或 300 秒仍无法判定时跳至下一行；远程未知记为 unresolved，由独立 reconciler 在 24 小时内收口并通过 correction 提醒修正结果，禁止自动重发/重验。所有成功或已授权账号最终进入所选目标分组；失败/未解行可刷新接码地址后按版本 fence 重试。实现必须具备版本化 fingerprint alias 去重、跨租户/批次公平调度、全 worker 持久限速、`off/reconcile_only/enabled` 后端 mode gate、精确 flow owner/version 和 generation CAS。code/2FA 明文只在 worker 内存短暂使用且禁止进入托管路径；批次事实与 initial/correction 持久提醒原子写入。当前状态为 `product_design_complete / local_implemented / targeted_qa_passed / not_released / production_unproven`，默认 mode=`off`；不得以本地测试、CI、分支合并、部署或 worker health 代替批量登录 E4。
 
 备用授权登录流程与主授权相同，但入口在账号详情“授权资产”Tab。新增备用授权时必须先选择或自动分配一个健康开发者应用和可用代理；登录成功后只写入授权资产，不覆盖当前主授权，除非管理员明确点击“切为主授权”并完成二次确认。
 
@@ -3874,7 +3878,7 @@ AI 与提示词 Tab 维护 AI 底座，不承载素材日常管理。
 
 | 表 | 关键字段 | 说明 |
 | --- | --- | --- |
-| `tg_accounts` | `tenant_id`、`pool_id`、`display_name`、`username`、`phone_number`、`phone_masked`、`account_identity`、`status`、`session_ciphertext`、`developer_app_id`、`proxy_id`、`health_score`、`deleted_at` | TG 账号主表；`account_identity=normal/code_receiver/rank_deboost/account_purpose_mismatch` 是与当前 `AccountPool.pool_purpose` 同步的执行期用途投影，生产写路径必须原子维护 `pool_id + account_identity`；不一致时按最严格用途阻断外部动作。`session_ciphertext`、`developer_app_id` 是迁移期主授权兼容字段，账号级 `proxy_id` 不作为普通任务或降权任务的默认连接参数。 |
+| `tg_accounts` | `tenant_id`、`pool_id`、`display_name`、`username`、`phone_number`、`phone_masked`、`account_identity`、`status`、`session_ciphertext`、`developer_app_id`、`proxy_id`、`health_score`、`code_source_host`、`code_source_uuid_ciphertext/fingerprint/hint`、`code_source_binding_status/version`、`deleted_at` | TG 账号主表；`account_identity=normal/code_receiver/rank_deboost/account_purpose_mismatch` 是与当前 `AccountPool.pool_purpose` 同步的执行期用途投影，生产写路径必须原子维护 `pool_id + account_identity`；不一致时按最严格用途阻断外部动作。`session_ciphertext`、`developer_app_id` 是迁移期主授权兼容字段，账号级 `proxy_id` 不作为普通任务或降权任务的默认连接参数。批量登号的 UUID 以加密 binding 持久关联账号，接码备注由 host+hint 派生并独立于 `display_name`；完整值仅经受控 reveal 读取。 |
 | `tg_account_authorizations` | `tenant_id`、`account_id`、`role`、`developer_app_id`、`developer_app_api_id_snapshot`、`proxy_id`、`session_ciphertext`、`status`、`health_status`、`derived_status`、`fact_version`、`last_authoritative_error_code`、`last_authoritative_observed_at`、`is_current`、`last_health_check_at`、`last_success_at`、`last_switched_at`、`failure_reason`、`disabled_at`、`created_by` | 账号授权资产表；承载 primary、standby_1、standby_2 的真实登录成功状态、健康、切换、停用和审计关联。Session/需重登等权威事实按授权槽递增 `fact_version`，使用同一失效槽位的各 Task 分别引用该版本并独立物化当日 abandon，不新增全局冻结表；另一有效授权槽不被连带判废。远端授权会话通过 `api_id` 对比 `developer_app_api_id_snapshot` 绑定三槽位；三槽位全部不可用时只能进入人工重新登录 / 扫码 / 手动验证码 |
 | `tg_verification_codes` | `tenant_id`、`account_id`、`authorization_id`、`source_peer`、`source_message_id`、`code_ciphertext`、`code_masked`、`received_at`、`expires_at`、`status`、`failure_type`、`failure_detail` | Telegram 官方验证码事实；只记录真实读取到的官方服务 code 或明确失败原因，展示时受 `accounts.codes.read` 权限和审计控制 |
 | `account_pools` | `tenant_id`、`name`、`is_default`、`pool_purpose`、`is_system`、`system_key`、`is_enabled`、`disabled_at`、`disabled_by`、`disable_reason` | 账号分组与用途真相源；`pool_purpose=code_receiver` 且 `system_key=code_receiver` 表示系统接码专用分组。`pool_purpose=rank_deboost` 表示降权任务专用分组，同租户可存在一个系统默认组和多个自定义组；专用组不可删除或改用途，只能显式禁用。禁用不改变组内账号用途，必须显式迁移账号后才能进入普通任务。 |

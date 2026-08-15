@@ -251,6 +251,8 @@ def test_retry_search_click_task_reopens_only_available_target_slots(session: Se
     session.flush()
     first_failed_action = _action(task, "search_join", "failed")
     second_failed_action = _action(task, "search_join", "failed")
+    first_failed_action.result = {"remote_mutation_started": False}
+    second_failed_action.result = {"remote_mutation_started": False}
     session.add_all([first_failed_action, second_failed_action])
     session.commit()
 

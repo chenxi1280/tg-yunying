@@ -9,6 +9,9 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
+from math import ceil
 from typing import Any
 
 @dataclass(frozen=True)
@@ -61,6 +64,43 @@ class AiEmptyFinalContentError(RuntimeError):
 
 class AiRequestDeadlineExceeded(RuntimeError):
     pass
+
+
+class AiProviderRateLimited(RuntimeError):
+    def __init__(self, status_code: int, detail: str, retry_after_seconds: int | None) -> None:
+        self.status_code = int(status_code)
+        self.detail = str(detail)
+        self.retry_after_seconds = (
+            int(retry_after_seconds) if retry_after_seconds is not None else None
+        )
+        super().__init__(f"AI provider HTTP {status_code}: {detail[:300]}")
+
+
+def _retry_after_seconds(headers) -> int | None:  # noqa: ANN001
+    if headers is None:
+        return None
+    raw = headers.get("Retry-After") if hasattr(headers, "get") else None
+    if raw is None and hasattr(headers, "get"):
+        raw = headers.get("retry-after")
+    if raw is None:
+        return None
+    raw_text = str(raw).strip()
+    try:
+        value = int(raw_text)
+    except ValueError:
+        return _retry_after_http_date_seconds(raw_text)
+    return value if value > 0 else None
+
+
+def _retry_after_http_date_seconds(raw: str) -> int | None:
+    try:
+        retry_at = parsedate_to_datetime(raw)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if retry_at.tzinfo is None:
+        retry_at = retry_at.replace(tzinfo=UTC)
+    seconds = ceil((retry_at.astimezone(UTC) - datetime.now(UTC)).total_seconds())
+    return seconds if seconds > 0 else None
 
 MODEL_ALIASES = {
     "deepseek v4 flash": "deepseek-v4-flash",
@@ -423,6 +463,10 @@ class AiGateway:
                     data = json.loads(response.read().decode("utf-8"))
             except urllib.error.HTTPError as exc:
                 detail = exc.read().decode("utf-8", errors="ignore")
+                if exc.code == 429:
+                    raise AiProviderRateLimited(
+                        exc.code, detail, _retry_after_seconds(exc.headers)
+                    ) from exc
                 raise RuntimeError(f"AI provider HTTP {exc.code}: {detail[:300]}") from exc
             content = self._extract_message_content(data)
             if content:

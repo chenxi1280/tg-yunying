@@ -137,12 +137,22 @@ class TelethonClientLifecycle:
         with self._lock:
             self._cache[cache_key] = _ClientCacheEntry(client=client, created_at=now, last_used_at=now)
 
-    async def invalidate_client(self, credentials: DeveloperAppCredentialsLike, raw_session: str) -> None:
-        cache_key = self._cache_key(credentials, raw_session)
+    async def invalidate_client(self, credentials: DeveloperAppCredentialsLike, raw_session: str) -> int:
+        """按 (api_id, raw_session, proxy fingerprint) 失效该 session 的全部 metadata 变体缓存条目。
+
+        缓存 key 包含 client metadata fingerprint；只按单一 key pop 会漏掉带 metadata 创建的
+        条目，导致 stale session 客户端继续被复用。不同 session/api_id/proxy 的客户端不受影响。
+        """
+        prefix = (int(credentials.api_id), raw_session, self._proxy_fingerprint(credentials))
         with self._lock:
-            entry = self._cache.pop(cache_key, None)
-        if entry is not None:
+            entries = [
+                self._cache.pop(key)
+                for key in list(self._cache)
+                if key[:3] == prefix
+            ]
+        for entry in entries:
             await self._disconnect_quietly(entry.client)
+        return len(entries)
 
     async def prune_idle_clients(self) -> int:
         idle_seconds = self.settings.telethon_client_idle_seconds

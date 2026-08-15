@@ -6401,7 +6401,8 @@ def test_group_ai_all_account_coverage_defers_voice_profile_candidates(monkeypat
     assert refreshed.last_error == ""
 
 
-def test_retry_failed_only_requeues_unknown_after_send_actions():
+@pytest.mark.no_postgres
+def test_retry_failed_only_requeues_safe_actions_only():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = _now()
@@ -6413,8 +6414,8 @@ def test_retry_failed_only_requeues_unknown_after_send_actions():
             [
                 Action(id="action-success", tenant_id=1, task_id="task-retry", task_type="target_admission_retry", action_type="ensure_target_membership", status="success", scheduled_at=now_value),
                 Action(id="action-unknown", tenant_id=1, task_id="task-retry", task_type="target_admission_retry", action_type="ensure_target_membership", status="unknown_after_send", scheduled_at=now_value, result={"error_code": "unknown_after_send"}),
-                Action(id="action-failed", tenant_id=1, task_id="task-retry", task_type="target_admission_retry", action_type="ensure_target_membership", status="failed", scheduled_at=now_value, result={"error_code": "failed"}),
-                Action(id="action-membership-denied", tenant_id=1, task_id="task-retry", task_type="target_admission_retry", action_type="ensure_target_membership", status="skipped", scheduled_at=now_value, result={"error_code": "membership_permission_denied", "membership_status": "permission_denied"}),
+                Action(id="action-failed", tenant_id=1, task_id="task-retry", task_type="target_admission_retry", action_type="ensure_target_membership", status="failed", scheduled_at=now_value, result={"error_code": "failed", "remote_mutation_started": False}),
+                Action(id="action-membership-denied", tenant_id=1, task_id="task-retry", task_type="target_admission_retry", action_type="ensure_target_membership", status="skipped", scheduled_at=now_value, result={"error_code": "membership_permission_denied", "membership_status": "permission_denied", "remote_mutation_started": False}),
                 Action(id="action-skipped", tenant_id=1, task_id="task-retry", task_type="target_admission_retry", action_type="ensure_target_membership", status="skipped", scheduled_at=now_value, result={"error_code": "already_joined"}),
             ]
         )
@@ -6423,7 +6424,9 @@ def test_retry_failed_only_requeues_unknown_after_send_actions():
         retry_task(session, 1, "task-retry", TaskRetryRequest(failed_only=True), "tester")
 
         assert session.get(Action, "action-success").status == "success"
-        assert session.get(Action, "action-unknown").status == "pending"
+        unknown_action = session.get(Action, "action-unknown")
+        assert unknown_action.status == "unknown_after_send"
+        assert unknown_action.result["retry_skipped_reason"] == "unsafe_retry_gateway_outcome_unknown"
         assert session.get(Action, "action-failed").status == "pending"
         assert session.get(Action, "action-membership-denied").status == "pending"
         assert session.get(Action, "action-skipped").status == "skipped"
