@@ -29,7 +29,11 @@ from app.services.task_center.account_voice_profile_cache import (
     VOICE_PROFILE_CONTRACT_VERSION,
     voice_profile_snapshot_hash,
 )
-from app.services.task_center import comment_generation_dispatch, dispatcher
+from app.services.task_center import (
+    comment_generation_dispatch,
+    comment_generation_persistence,
+    dispatcher,
+)
 from app.services.task_center.comment_generation_dispatch import (
     CommentGenerationDependencies,
     GenerationAttemptStale,
@@ -110,7 +114,7 @@ def test_postgres_comment_generation_cas_rejects_worker_losing_token_after_quali
             )
 
             original_evaluator = (
-                comment_generation_dispatch.evaluate_legacy_generated_comment
+                comment_generation_persistence.evaluate_legacy_generated_comment
             )
 
             def lose_token(*args, **kwargs):
@@ -124,7 +128,7 @@ def test_postgres_comment_generation_cas_rejects_worker_losing_token_after_quali
                 return original_evaluator(*args, **kwargs)
 
             monkeypatch.setattr(
-                comment_generation_dispatch,
+                comment_generation_persistence,
                 "evaluate_legacy_generated_comment",
                 lose_token,
             )

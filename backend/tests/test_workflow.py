@@ -24,6 +24,15 @@ import pytest
 from sqlalchemy import func, inspect, select
 
 
+def _force_action_due(action: Action, now_value) -> None:
+    action.scheduled_at = now_value
+    if not action.pacing_slot_key:
+        return
+    action.pacing_due_at = now_value
+    action.release_not_before_at = now_value
+    action.effective_claim_at = now_value
+
+
 def force_due_actions(task_id: str) -> int:
     """测试辅助：模拟时间流逝，把任务未到期的 pending Action 拉到当前时刻。
 
@@ -53,7 +62,7 @@ def force_due_actions(task_id: str) -> int:
                 else scheduled
             )
             if wall > now_value:
-                action.scheduled_at = now_value
+                _force_action_due(action, now_value)
                 changed += 1
         session.commit()
     return changed
@@ -336,7 +345,7 @@ def dispatch_pending_task_actions(task_id: str, limit: int = 10) -> int:
     with SessionLocal() as session:
         actions = list(session.scalars(select(Action).where(Action.task_id == task_id, Action.status == "pending")))
         for action in actions:
-            action.scheduled_at = _now()
+            _force_action_due(action, _now())
         session.commit()
     drain_ai_generation(SessionLocal, limit)
     with SessionLocal() as session:
@@ -473,7 +482,7 @@ def make_task_send_actions_due(task_id: str) -> int:
             )
         )
         for action in actions:
-            action.scheduled_at = now
+            _force_action_due(action, now)
         task = session.get(Task, task_id)
         if task is not None:
             task.next_run_at = now
@@ -4319,7 +4328,11 @@ def test_task_center_group_ai_chat_creates_and_dispatches_actions(monkeypatch):
             )))
         assert replanned["processed"] >= 0
         assert len(send_actions) == 1
-        assert send_actions[0].primary_quantity_slot_id is None
+        assert send_actions[0].primary_quantity_slot_id
+        assert (
+            send_actions[0].payload["primary_quantity_slot_id"]
+            == send_actions[0].primary_quantity_slot_id
+        )
         assert send_actions[0].content_mix_cycle_slot_id is None
         assert send_actions[0].payload["coverage_ledger_id"]
         assert make_task_send_actions_due(task["id"]) >= 1

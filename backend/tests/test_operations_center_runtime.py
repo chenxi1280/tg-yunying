@@ -3946,14 +3946,20 @@ def test_channel_like_jitter_uses_available_accounts_without_false_capacity(monk
         session.add_all([*accounts, channel, message, lower_message, upper_task, lower_task])
         session.commit()
 
-        monkeypatch.setattr("app.services.task_center.executors.common.random.randint", lambda _lower, upper: upper)
+        monkeypatch.setattr(
+            "app.services.task_center.executors.channel_like.deterministic_quantity_with_jitter",
+            lambda *_args, **_kwargs: 4,
+        )
 
         assert build_channel_like_plan(session, upper_task) == 4
         upper_detail = get_task_detail(session, 1, upper_task.id)
         upper_actions, _upper_action_total = list_actions_page(session, 1, upper_task.id, page=1, page_size=20)
         upper_groups, _upper_group_total = list_message_groups_page(session, 1, upper_task.id, page=1, page_size=20)
 
-        monkeypatch.setattr("app.services.task_center.executors.common.random.randint", lambda lower, _upper: lower)
+        monkeypatch.setattr(
+            "app.services.task_center.executors.channel_like.deterministic_quantity_with_jitter",
+            lambda *_args, **_kwargs: 2,
+        )
 
         assert build_channel_like_plan(session, lower_task) == 2
         lower_detail = get_task_detail(session, 1, lower_task.id)
