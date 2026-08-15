@@ -63,7 +63,7 @@
 | `flow_version` | 每次 resend、cancel、method switch 或 remote challenge 更新时递增 |
 | `superseded_by_flow_id` | 新 challenge 替代旧 challenge 时记录新 flow；旧 flow 所有 verify 请求返回 `login_flow_superseded` |
 | `owner_epoch` / `owner_lease_until` | 临时 Telegram Session 的唯一执行 owner；连接、RPC、序列化、断开都必须校验 owner permit |
-| `developer_app_id` / `proxy_id` / `device_fingerprint_version` | challenge 到授权确认期间冻结，不允许中途漂移 |
+| `developer_app_id` / `proxy_id` / `device_fingerprint_version` | challenge 到授权确认期间的配置快照，不允许中途漂移；当前主登录默认直连，`proxy_id` 不是主登录实际 egress 证明，备用授权才显式绑定并使用代理 |
 | `authorization_status` | `intent_persisted / challenge_sent / waiting_code / waiting_qr / waiting_2fa / authorized / remote_unknown / failed / superseded / cancelled / expired` |
 | `post_login_sync_status` | `not_started / queued / running / succeeded / failed / retryable` |
 | `pool_transition_status` | `not_requested / queued / moved / no_op / failed / source_changed` |
@@ -98,7 +98,7 @@ persist intent
 ### 3.3 验证码窗口与重发合同
 
 - `LOGIN_CODE_TTL_SECONDS` 默认和生产合同固定为 `300` 秒。`code_expires_at = challenge_sent_at + 300 秒`，表示平台停止接受该 flow 新提交的时间；Telegram 提前拒绝时以远端类型化结果为准。
-- initial start 必须先查同账号、同 scope、同 method 的 open flow；仍在 5 分钟窗口内时直接返回该 flow，不调用 Telegram。
+- initial start 必须先查同账号、同 scope、同 method 的可恢复 open flow；仍在 5 分钟窗口内时直接返回该 flow，不调用 Telegram。迁移前 `waiting-code` 且 `challenge_sent_at` 为空的旧 flow 没有 durable challenge binding，不得作为可恢复 flow 返回；用户点击“发送验证码”即 supersede 它并创建一个新 challenge。
 - resend 使用独立 `POST /login/resend`，请求必须携带当前 `flow_id + flow_version + request_seq`。普通 `/login/start` 不承担 resend 语义。
 - resend 在数据库事务内锁定当前 flow，校验仍为 open 后将其置为 `superseded`，再创建新的 intent；并发或迟到 resend 只能有一个获胜。
 - 每个远端 challenge 使用新的 `flow_id`。`flow_version` 是该行的并发版本，不用相同 flow 覆盖历史 challenge；新 flow 从版本 1 开始。

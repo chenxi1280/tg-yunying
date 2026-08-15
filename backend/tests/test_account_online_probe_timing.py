@@ -77,6 +77,38 @@ def test_probe_due_online_states_keeps_stale_window_after_next_probe(monkeypatch
         assert state.stale_after_at >= now + MIN_ACTIVE_STALE_WINDOW
 
 
+def test_probe_due_online_states_uses_bound_proxy_credentials(monkeypatch):
+    now = _now()
+    credential_proxy_flags: list[bool] = []
+
+    def credentials(*_args, use_proxy: bool = False, **_kwargs):
+        credential_proxy_flags.append(use_proxy)
+        return object()
+
+    with _session() as session:
+        _account(session)
+        session.add(
+            TgAccountOnlineState(
+                tenant_id=1,
+                account_id=101,
+                desired_online=True,
+                desired_sources=[{"source_type": "task", "source_id": "ai-running"}],
+                online_status="warming",
+                next_probe_at=now - timedelta(seconds=1),
+            )
+        )
+        session.commit()
+        monkeypatch.setattr("app.services.account_online_probe.credentials_for_account", credentials)
+        monkeypatch.setattr(
+            "app.services.account_online_probe.gateway.check_account_health",
+            lambda _session_ciphertext, _credentials: AccountHealth(status=AccountStatus.ACTIVE.value, health_score=96, detail="账号 session 可用"),
+        )
+
+        assert probe_due_online_states(session, limit=10, now=now) == 1
+
+    assert credential_proxy_flags == [True]
+
+
 def test_probe_due_online_states_schedules_from_probe_completion(monkeypatch):
     started_at = _now()
     completed_at = started_at + timedelta(minutes=8)

@@ -747,19 +747,15 @@ def start_login(session: Session, account_id: int, method: str, actor: str = "�
     if account.status == AccountStatus.ACTIVE.value and not force:
         raise ValueError("account already online; use force to restart login")
     current = _current_open_login_flow(session, account, method)
-    if current is not None and not force and (
-        method == "code" or current.status == AccountStatus.WAITING_2FA.value
-    ):
-        return _login_flow_response(current)
+    if current is not None and not force:
+        if method == "code" and _is_legacy_unresumable_code_flow(current):
+            return _start_new_login_challenge(session, account, method, actor)
+        if method == "code" or current.status == AccountStatus.WAITING_2FA.value:
+            return _login_flow_response(current)
     expired = _latest_expired_code_flow(session, account, method)
     if expired is not None and not force:
         return _login_flow_response(expired)
-    credentials = credentials_for_account(session, account, assign_if_missing=True)
-    replaced = _supersede_open_login_flows(session, account)
-    flow = _create_login_intent(session, account, method, actor)
-    _link_superseded_flows(replaced, flow.id)
-    session.commit()
-    return _start_persisted_login(session, account, flow, credentials, replaced, actor)
+    return _start_new_login_challenge(session, account, method, actor)
 
 
 def resend_login_code(
@@ -773,12 +769,7 @@ def resend_login_code(
     previous = _require_login_flow(session, account, flow_id, flow_version, method="code")
     if previous.status not in OPEN_LOGIN_FLOW_STATUSES | {"已过期"}:
         raise _superseded_login_failure(account, previous)
-    credentials = credentials_for_account(session, account, assign_if_missing=True)
-    replaced = _supersede_open_login_flows(session, account, include_flow=previous)
-    flow = _create_login_intent(session, account, "code", actor)
-    _link_superseded_flows(replaced, flow.id)
-    session.commit()
-    return _start_persisted_login(session, account, flow, credentials, replaced, actor)
+    return _start_new_login_challenge(session, account, "code", actor, include_flow=previous)
 
 
 def _lock_login_account(session: Session, account_id: int) -> TgAccount:
@@ -817,6 +808,29 @@ def _latest_expired_code_flow(session: Session, account: TgAccount, method: str)
         .limit(1)
     )
     return flow if flow is not None and flow.status == "已过期" else None
+
+
+def _is_legacy_unresumable_code_flow(flow: TgLoginFlow) -> bool:
+    return (
+        flow.status == AccountStatus.WAITING_CODE.value
+        and flow.challenge_sent_at is None
+    )
+
+
+def _start_new_login_challenge(
+    session: Session,
+    account: TgAccount,
+    method: str,
+    actor: str,
+    *,
+    include_flow: TgLoginFlow | None = None,
+) -> dict:
+    credentials = credentials_for_account(session, account, assign_if_missing=True)
+    replaced = _supersede_open_login_flows(session, account, include_flow=include_flow)
+    flow = _create_login_intent(session, account, method, actor)
+    _link_superseded_flows(replaced, flow.id)
+    session.commit()
+    return _start_persisted_login(session, account, flow, credentials, replaced, actor)
 
 
 def _supersede_open_login_flows(

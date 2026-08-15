@@ -92,6 +92,66 @@ def test_start_resumes_same_open_code_challenge(monkeypatch) -> None:
         assert decrypt_secret(flow.phone_code_hash_ciphertext) == f"phone-code-hash:{flow.id}"
 
 
+def test_start_replaces_legacy_open_code_flow_without_challenge_binding(monkeypatch) -> None:
+    gateway = RecordingLoginGateway()
+    monkeypatch.setattr(account_service, "gateway", gateway)
+    with _session() as session:
+        account = _account_fixture(session)
+        legacy = TgLoginFlow(
+            tenant_id=account.tenant_id,
+            account_id=account.id,
+            method="code",
+            status=AccountStatus.WAITING_CODE.value,
+            authorization_role="primary",
+            code_expires_at=_now() - timedelta(seconds=1),
+        )
+        session.add(legacy)
+        session.commit()
+
+        started = start_login(session, account.id, "code")
+
+        old_flow = session.get(TgLoginFlow, legacy.id)
+        assert started["flow_id"] != legacy.id
+        assert old_flow.status == "superseded"
+        assert old_flow.superseded_by_flow_id == started["flow_id"]
+        assert old_flow.flow_version == 2
+        assert gateway.started_flow_ids == [started["flow_id"]]
+
+
+def test_start_keeps_bound_expired_code_flow_for_explicit_resend(monkeypatch) -> None:
+    gateway = RecordingLoginGateway()
+    monkeypatch.setattr(account_service, "gateway", gateway)
+    with _session() as session:
+        account = _account_fixture(session)
+        started = start_login(session, account.id, "code")
+        flow = session.get(TgLoginFlow, started["flow_id"])
+        flow.code_expires_at = _now() - timedelta(seconds=1)
+        session.commit()
+
+        resumed = start_login(session, account.id, "code")
+
+        assert resumed["flow_id"] == started["flow_id"]
+        assert resumed["status"] == "已过期"
+        assert gateway.started_flow_ids == [started["flow_id"]]
+
+
+def test_primary_code_login_keeps_direct_credentials(monkeypatch) -> None:
+    gateway = RecordingLoginGateway()
+    credential_calls: list[tuple[bool, bool]] = []
+
+    def credentials(*_args, assign_if_missing: bool = False, use_proxy: bool = False):
+        credential_calls.append((assign_if_missing, use_proxy))
+        return object()
+
+    monkeypatch.setattr(account_service, "gateway", gateway)
+    monkeypatch.setattr(account_service, "credentials_for_account", credentials)
+    with _session() as session:
+        account = _account_fixture(session)
+        start_login(session, account.id, "code")
+
+    assert credential_calls == [(True, False)]
+
+
 def test_resend_supersedes_old_flow_and_invalidates_old_version(monkeypatch) -> None:
     gateway = RecordingLoginGateway()
     monkeypatch.setattr(account_service, "gateway", gateway)
