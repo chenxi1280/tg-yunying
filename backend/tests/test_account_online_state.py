@@ -408,7 +408,7 @@ def test_probe_due_online_states_marks_healthy_account_online(monkeypatch):
         assert state.last_seen_at == now
         assert state.next_probe_at > now
         assert is_account_online_ready(session, tenant_id=1, account_id=101, now=now) is True
-        assert credential_options == [{"use_proxy": False}]
+        assert credential_options == [{"use_proxy": True}]
 
 
 def test_online_probe_releases_daily_offline_blocker_for_sendable_group(monkeypatch):
