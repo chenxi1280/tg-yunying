@@ -6,6 +6,7 @@ import { AccountDetailModal, AccountPoolDetailModal } from './views/AccountModal
 import { formatBeijingDateTime } from './time';
 import { hasPermission } from './utils';
 import type { AiProvider } from './types/content';
+import { accountSpecialistPermissions } from './context/defaults';
 
 const DEFAULT_AI_MAX_TOKENS_LIMIT = 100000;
 const MINIMAX_AI_MAX_TOKENS_LIMIT = 250000;
@@ -222,7 +223,7 @@ export function AppModals() {
             <label>角色模板<Select value={adminUserForm.role_template} onChange={(value) => {
               const templatePermissions: Record<string, string[]> = {
                 '运营管理员': ['overview.view', 'operation_plans.manage', 'operation_issues.manage', 'accounts.view', 'accounts.sync', 'accounts.codes.read', 'accounts.security.read', 'accounts.security.batch', 'accounts.profile.batch_update', 'targets.view', 'targets.manage', 'target_profile.view', 'target_profile.manage', 'message_sending.view', 'message_sending.manage', 'materials.view', 'materials.upload', 'materials.manage', 'account_masks.view', 'ai_voice_profiles.manage', 'account_environment.manage', 'tasks.view', 'tasks.manage', 'tasks.create.search_click', 'listeners.view', 'listeners.manage', 'rules.view', 'rules.publish', 'risk.view', 'risk.manage', 'proxies.manage', 'archives.view', 'archives.manage', 'usage.view', 'usage.export', 'system.view', 'manual.view', 'audits.view', 'audit.export'],
-                '账号添加专员': ['overview.view', 'accounts.view', 'accounts.create', 'accounts.login', 'accounts.sync'],
+                '账号添加专员': accountSpecialistPermissions(),
                 '只读观察员': ['overview.view', 'targets.view', 'target_profile.view', 'listeners.view', 'usage.view', 'manual.view', 'audits.view'],
               };
               setAdminUserForm((current) => ({ ...current, role_template: value, permissions: templatePermissions[value] ?? current.permissions, menu_permissions: templatePermissions[value] ?? current.menu_permissions }));
