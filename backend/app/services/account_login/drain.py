@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 
 from sqlalchemy import select
 
@@ -11,30 +12,60 @@ from app.services.code_source_client import CodeSourceClient
 
 from .local_phases import execute_local_phase
 from .remote_phases import execute_remote_phase
-from .state import EXTERNAL_PHASES, claim_batch_phase
+from .state import EXTERNAL_PHASES, PhaseClaim, claim_batch_phase
 
 
 ACTIVE_BATCH_STATUSES = ("queued", "running", "cancelling")
 
 
 def drain_account_login_batches(session_factory, limit: int, *, code_client: CodeSourceClient | None = None) -> int:
-    if get_settings().account_batch_login_mode != "enabled":
+    settings = get_settings()
+    if settings.account_batch_login_mode != "enabled":
         return 0
     client = code_client or CodeSourceClient()
-    processed = 0
-    for batch_id in _fair_batch_ids(session_factory, limit):
-        with session_factory() as session:
-            claim = claim_batch_phase(session, batch_id)
-        if not claim:
-            continue
-        if claim.phase in EXTERNAL_PHASES:
-            execute_remote_phase(session_factory, claim, client)
-        else:
-            with session_factory() as session:
-                execute_local_phase(session, claim)
-        processed += 1
+    slot_count = min(max(1, limit), settings.account_batch_login_worker_concurrency)
+    claims = _claim_fair_phases(session_factory, slot_count)
+    _execute_claims(session_factory, claims, client)
     _clear_expired_credentials(session_factory)
-    return processed
+    return len(claims)
+
+
+def _claim_fair_phases(session_factory, limit: int) -> list[PhaseClaim]:
+    claims: list[PhaseClaim] = []
+    while len(claims) < limit:
+        candidate_limit = max(1, limit - len(claims)) * 8
+        claimed_this_round = 0
+        for batch_id in _fair_batch_ids(session_factory, candidate_limit):
+            if len(claims) >= limit:
+                break
+            with session_factory() as session:
+                claim = claim_batch_phase(session, batch_id)
+            if claim:
+                claims.append(claim)
+                claimed_this_round += 1
+        if not claimed_this_round:
+            break
+    return claims
+
+
+def _execute_claims(session_factory, claims: list[PhaseClaim], client: CodeSourceClient) -> None:
+    if not claims:
+        return
+    if len(claims) == 1:
+        _execute_claim(session_factory, claims[0], client)
+        return
+    with ThreadPoolExecutor(max_workers=len(claims), thread_name_prefix="account-login") as executor:
+        futures = [executor.submit(_execute_claim, session_factory, claim, client) for claim in claims]
+        for future in futures:
+            future.result()
+
+
+def _execute_claim(session_factory, claim: PhaseClaim, client: CodeSourceClient) -> None:
+    if claim.phase in EXTERNAL_PHASES:
+        execute_remote_phase(session_factory, claim, client)
+        return
+    with session_factory() as session:
+        execute_local_phase(session, claim)
 
 
 def _fair_batch_ids(session_factory, limit: int) -> list[int]:

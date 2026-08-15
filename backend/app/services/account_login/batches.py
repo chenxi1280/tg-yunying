@@ -5,7 +5,7 @@ import json
 from datetime import timedelta
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import case, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -32,6 +32,7 @@ from .preview import PreviewBuild, build_preview, require_batch_login_enabled, v
 
 
 TERMINAL_ITEM_STATUSES = {"unresolved", "succeeded", "succeeded_with_warning", "failed", "skipped"}
+ACTIVE_BATCH_STATUSES = ("queued", "running", "cancelling")
 MAX_MANUAL_RETRIES = 3
 
 
@@ -200,7 +201,10 @@ def _new_attempt(item: TgAccountLoginBatchItem, generation: int, phase: str) -> 
 def list_login_batches(session: Session, tenant_id: int, *, limit: int, offset: int) -> list[TgAccountLoginBatch]:
     return list(session.scalars(select(TgAccountLoginBatch).where(
         TgAccountLoginBatch.tenant_id == tenant_id,
-    ).order_by(TgAccountLoginBatch.id.desc()).offset(offset).limit(limit)))
+    ).order_by(
+        case((TgAccountLoginBatch.status.in_(ACTIVE_BATCH_STATUSES), 0), else_=1),
+        TgAccountLoginBatch.id.desc(),
+    ).offset(offset).limit(limit)))
 
 
 def get_login_batch(session: Session, tenant_id: int, batch_id: int) -> TgAccountLoginBatch:

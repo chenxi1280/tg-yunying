@@ -106,6 +106,7 @@ def get_login_batches(
     session: Session = Depends(get_session),
     current_user: CurrentUser = Depends(get_current_user),
 ):
+    ensure_permission(current_user, "accounts.view")
     return list_login_batches(session, _tenant_id(current_user), limit=limit, offset=offset)
 
 
@@ -117,6 +118,7 @@ def get_login_batch_detail(
     session: Session = Depends(get_session),
     current_user: CurrentUser = Depends(get_current_user),
 ):
+    ensure_permission(current_user, "accounts.view")
     try:
         tenant_id = _tenant_id(current_user)
         batch = LoginBatchOut.model_validate(get_login_batch(session, tenant_id, batch_id)).model_dump()
@@ -178,6 +180,7 @@ def get_login_batch_notifications(
     session: Session = Depends(get_session),
     current_user: CurrentUser = Depends(get_current_user),
 ):
+    ensure_permission(current_user, "accounts.view")
     return list_platform_notifications(session, _tenant_id(current_user), current_user.id, unacknowledged=unacknowledged)
 
 

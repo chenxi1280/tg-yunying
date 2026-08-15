@@ -155,6 +155,7 @@ class LoginBatchCancelRequest(_ReasonRequest):
 class LoginBatchCapabilityOut(BaseModel):
     mode: str
     max_lines: int
+    worker_concurrency: int
     item_deadline_seconds: int
     code_wait_seconds: int
     poll_interval_seconds: int

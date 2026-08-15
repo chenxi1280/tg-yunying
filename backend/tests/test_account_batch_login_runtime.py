@@ -10,7 +10,13 @@ pytestmark = pytest.mark.no_postgres
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
-def _runtime_settings(mode: str, *, host_concurrency: int = 1, developer_concurrency: int = 1):
+def _runtime_settings(
+    mode: str,
+    *,
+    host_concurrency: int = 1,
+    developer_concurrency: int = 1,
+    worker_concurrency: int = 4,
+):
     return SimpleNamespace(
         account_batch_login_mode=mode,
         account_batch_login_max_lines=100,
@@ -19,6 +25,7 @@ def _runtime_settings(mode: str, *, host_concurrency: int = 1, developer_concurr
         account_batch_login_poll_interval_seconds=3,
         account_batch_login_credential_ttl_seconds=86400,
         account_batch_login_reconcile_seconds=86400,
+        account_batch_login_worker_concurrency=worker_concurrency,
         account_batch_login_host_concurrency=host_concurrency,
         account_batch_login_host_min_interval_seconds=3,
         account_batch_login_developer_app_concurrency=developer_concurrency,
@@ -33,6 +40,8 @@ def test_batch_login_runtime_configuration_fails_closed() -> None:
         _validate_account_batch_login_settings(_runtime_settings("reconcile_only", developer_concurrency=0))
     with pytest.raises(ValueError, match="HOST_CONCURRENCY"):
         _validate_account_batch_login_settings(_runtime_settings("enabled", host_concurrency=0))
+    with pytest.raises(ValueError, match="WORKER_CONCURRENCY"):
+        _validate_account_batch_login_settings(_runtime_settings("enabled", worker_concurrency=0))
 
 
 @pytest.mark.parametrize(
@@ -63,6 +72,7 @@ def test_compose_and_release_script_mount_dedicated_account_login_worker() -> No
     assert "worker-account-login:" in compose
     assert '"--role", "account-login"' in compose
     assert "WORKER_ROLE: account-login" in compose
+    assert "ACCOUNT_BATCH_LOGIN_WORKER_CONCURRENCY" in compose
     account_login_service = compose.split("worker-account-login:", 1)[1].split(
         "worker-material-cache:", 1
     )[0]

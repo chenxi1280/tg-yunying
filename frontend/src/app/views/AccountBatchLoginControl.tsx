@@ -1,18 +1,20 @@
 import React from 'react';
-import { Alert, Button, Checkbox, Descriptions, Input, Modal, Select, Space, Table, Typography, message } from 'antd';
+import { Alert, Badge, Button, Checkbox, Descriptions, Input, Modal, Select, Space, Table, Typography, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { api } from '../../shared/api/client';
 import type { Account, AccountBatchLogin, AccountBatchLoginCapability, AccountBatchLoginPreview, AccountBatchLoginPreviewItem, AccountPool } from '../types';
 import { AccountBatchLoginDrawer } from './AccountBatchLoginDrawer';
+import { AccountBatchLoginTaskCenter } from './AccountBatchLoginTaskCenter';
 
 interface Props {
   pools: AccountPool[];
   selectedPoolId: number | '';
+  canCreateBatch: boolean;
   disabled?: boolean;
   onOpenAccountDetail: (account: Account) => void;
 }
 
-export function AccountBatchLoginControl({ pools, selectedPoolId, disabled = false, onOpenAccountDetail }: Props) {
+export function AccountBatchLoginControl({ pools, selectedPoolId, canCreateBatch, disabled = false, onOpenAccountDetail }: Props) {
   const [open, setOpen] = React.useState(false);
   const [poolId, setPoolId] = React.useState<number | ''>('');
   const [linesText, setLinesText] = React.useState('');
@@ -23,6 +25,9 @@ export function AccountBatchLoginControl({ pools, selectedPoolId, disabled = fal
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState('');
   const [batchId, setBatchId] = React.useState<number | null>(null);
+  const [taskCenterOpen, setTaskCenterOpen] = React.useState(false);
+  const [activeBatchCount, setActiveBatchCount] = React.useState(0);
+  const [taskRefreshToken, setTaskRefreshToken] = React.useState(0);
   const [idempotencyKey, setIdempotencyKey] = React.useState('');
   const enabledPools = pools.filter((pool) => pool.is_enabled);
   const local = localLineStats(linesText);
@@ -83,6 +88,7 @@ export function AccountBatchLoginControl({ pools, selectedPoolId, disabled = fal
       });
       setOpen(false);
       setBatchId(batch.id);
+      setTaskRefreshToken((current) => current + 1);
       setLinesText('');
       setReason('');
       setPreview(null);
@@ -112,7 +118,12 @@ export function AccountBatchLoginControl({ pools, selectedPoolId, disabled = fal
 
   return (
     <>
-      <Button type="primary" disabled={disabled} onClick={() => void showModal()}>批量登录</Button>
+      <Space>
+        {canCreateBatch && <Button type="primary" disabled={disabled} onClick={() => void showModal()}>批量登录</Button>}
+        <Badge count={activeBatchCount} overflowCount={99}>
+          <Button onClick={() => setTaskCenterOpen(true)}>登录任务</Button>
+        </Badge>
+      </Space>
       <Modal title="批量登录账号" open={open} width={920} footer={null} destroyOnHidden onCancel={() => setOpen(false)}>
         {error && <Alert type="error" showIcon message={error} />}
         {capability && (!capability.readiness || capability.mode !== 'enabled') && <Alert type="warning" showIcon title="批量登录当前不可用" description={`模式：${capability.mode}；阻塞：${capability.blockers.join('、') || '无'}`} />}
@@ -125,9 +136,10 @@ export function AccountBatchLoginControl({ pools, selectedPoolId, disabled = fal
           </Space>
         ) : (
           <Space orientation="vertical" size={12} style={{ width: '100%' }}>
-            <Descriptions bordered size="small" column={3} items={[
+            <Descriptions bordered size="small" column={4} items={[
               { key: 'route', label: '路由候选', children: `新建 ${preview.create_count} / 已有待探测 ${preview.existing_probe_required_count}` },
               { key: 'queue', label: '排队位置', children: `第 ${preview.queue_position} 位` },
+              { key: 'workers', label: '并行槽位', children: capability?.worker_concurrency ?? '—' },
               { key: 'time', label: '最坏耗时', children: formatDuration(preview.worst_case_seconds) },
             ]} />
             <Alert type="info" showIcon title="预检不会访问 Telegram 或接码站" description="供应页不提供手机号，无法验证地址与号码是否对应，请确认粘贴映射正确。已有账号会由 worker 做新鲜权威探测；单行失败、120 秒验证码超时或 300 秒未解不会阻塞下一行。" />
@@ -137,6 +149,14 @@ export function AccountBatchLoginControl({ pools, selectedPoolId, disabled = fal
           </Space>
         )}
       </Modal>
+      <AccountBatchLoginTaskCenter
+        open={taskCenterOpen}
+        pools={pools}
+        refreshToken={taskRefreshToken}
+        onClose={() => setTaskCenterOpen(false)}
+        onOpenBatch={(selectedBatchId) => { setTaskCenterOpen(false); setBatchId(selectedBatchId); }}
+        onActiveCountChange={setActiveBatchCount}
+      />
       <AccountBatchLoginDrawer batchId={batchId} pools={pools} onOpenAccountDetail={onOpenAccountDetail} onClose={() => setBatchId(null)} />
     </>
   );

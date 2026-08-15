@@ -4,6 +4,7 @@ export type AccountBatchLoginCapability = {
   item_deadline_seconds: number;
   code_wait_seconds: number;
   poll_interval_seconds: number;
+  worker_concurrency: number;
   readiness: boolean;
   blockers: string[];
 };

@@ -377,7 +377,7 @@ export default function AccountsView({
         <Space wrap>
           {canMovePool && <Button onClick={onCreatePoolClick}>新增账号分组</Button>}
           {canCreateAccount && <Button disabled={accountCreationCapability !== true} onClick={() => onCreateAccount(false)}>新增账号</Button>}
-          {canBatchLogin && <AccountBatchLoginControl pools={accountPools} selectedPoolId={selectedPoolId} disabled={accountCreationCapability !== true} onOpenAccountDetail={onOpenAccountDetail} />}
+          <AccountBatchLoginControl pools={accountPools} selectedPoolId={selectedPoolId} canCreateBatch={canBatchLogin} disabled={accountCreationCapability !== true} onOpenAccountDetail={onOpenAccountDetail} />
         </Space>
       )}
     >
