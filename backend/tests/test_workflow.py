@@ -79,6 +79,14 @@ def assume_group_ai_voice_profiles_for_workflow_tests(monkeypatch):
     assume_default_ai_group_voice_profiles(monkeypatch)
 
 
+@pytest.fixture
+def immediate_account_pacing(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.task_center.account_pacing_guard.account_policy_not_before",
+        lambda *_args, **_kwargs: None,
+    )
+
+
 @pytest.fixture(autouse=True)
 def attach_task_creation_idempotency_keys(monkeypatch):
     creation_routes = {
@@ -4415,7 +4423,10 @@ def test_task_center_group_ai_chat_runs_from_worker_loop(monkeypatch):
         assert actions[0]["action_type"] == "send_message"
 
 
-def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(monkeypatch):
+def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(
+    monkeypatch,
+    immediate_account_pacing,
+):
     context_suffix = uuid4().hex[:8]
     context_message_id = 2
     second_context_marker = f"second-cycle-{context_suffix}"
@@ -4664,7 +4675,10 @@ def test_relay_filter_only_with_media_blocks_text_messages():
     assert passes_relay_filters("带图消息", "user-1", "photo", {"only_with_media": True})
 
 
-def test_task_center_channel_view_like_comment_execute(monkeypatch):
+def test_task_center_channel_view_like_comment_execute(
+    monkeypatch,
+    immediate_account_pacing,
+):
     calls: list[str] = []
 
     monkeypatch.setattr(
@@ -5123,7 +5137,15 @@ def test_task_center_channel_like_auto_collects_dynamic_new_messages(monkeypatch
         ),
     ],
 )
-def test_task_center_channel_view_and_comment_default_dynamic_new_keep_collecting(monkeypatch, endpoint, action_type, payload_extra, gateway_attr, result_factory):
+def test_task_center_channel_view_and_comment_default_dynamic_new_keep_collecting(
+    monkeypatch,
+    immediate_account_pacing,
+    endpoint,
+    action_type,
+    payload_extra,
+    gateway_attr,
+    result_factory,
+):
     fetched_ids = [5101]
     calls: list[int] = []
 
@@ -5193,6 +5215,7 @@ def test_task_center_channel_view_and_comment_default_dynamic_new_keep_collectin
         reset_listener_runtime_cache()
         assert drain_task_center(SessionLocal, 10) >= 1
         if calls == [5101]:
+            force_due_actions(task_id)
             dispatch_pending_task_actions(task_id)
         assert calls == [5101, 5102]
 
@@ -5305,7 +5328,10 @@ def test_task_center_reset_channel_like_rebuilds_from_latest_messages(monkeypatc
         assert detail["task"]["stats"]["success_count"] == 0
 
 
-def test_task_center_reset_channel_view_rebuilds_from_latest_messages(monkeypatch):
+def test_task_center_reset_channel_view_rebuilds_from_latest_messages(
+    monkeypatch,
+    immediate_account_pacing,
+):
     fetched_ids = [4301]
     views: list[int] = []
 
@@ -6328,7 +6354,10 @@ def test_task_center_group_send_policy_ignores_legacy_message_cooldown():
             assert (failure_type, failure_detail) == (None, None)
 
 
-def test_task_center_channel_failure_replans_same_obligation_before_task_failed(monkeypatch):
+def test_task_center_channel_failure_replans_same_obligation_before_task_failed(
+    monkeypatch,
+    immediate_account_pacing,
+):
     calls: list[str] = []
 
     def flaky_like(*args, **kwargs):
