@@ -36,16 +36,16 @@ from pacing_contract_test_support import pacing_engine
 pytestmark = pytest.mark.no_postgres
 
 
-def _load_migration_0149() -> ModuleType:
-    migration_path = Path(__file__).parents[1] / "migrations/versions/0149_pacing_slot_fields.py"
-    spec = importlib.util.spec_from_file_location("migration_0149", migration_path)
+def _load_migration_0150() -> ModuleType:
+    migration_path = Path(__file__).parents[1] / "migrations/versions/0150_pacing_slot_fields.py"
+    spec = importlib.util.spec_from_file_location("migration_0150", migration_path)
     assert spec and spec.loader
     migration = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(migration)
     return migration
 
 
-def _create_0149_prerequisites(connection: Connection) -> None:
+def _create_0150_prerequisites(connection: Connection) -> None:
     statements = (
         "CREATE TABLE actions (id VARCHAR(36) PRIMARY KEY, tenant_id INTEGER, "
         "account_id INTEGER, status VARCHAR(40), scheduled_at DATETIME)",
@@ -309,12 +309,12 @@ def test_remote_fact_model_has_action_lookup_index() -> None:
     )
 
 
-def test_0149_upgrade_and_downgrade_execute_with_real_alembic_operations() -> None:
+def test_0150_upgrade_and_downgrade_execute_with_real_alembic_operations() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
-    migration = _load_migration_0149()
+    migration = _load_migration_0150()
 
     with engine.begin() as connection:
-        _create_0149_prerequisites(connection)
+        _create_0150_prerequisites(connection)
         context = MigrationContext.configure(connection)
         migration.op = Operations(context)
         assert "CREATE INDEX CONCURRENTLY" in migration._timeline_create_sql(

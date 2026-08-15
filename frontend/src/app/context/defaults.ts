@@ -1,5 +1,18 @@
 import type { AccountLoginForm, AdminUserForm, AuditFilters } from '../types';
 
+export function accountSpecialistPermissions(): string[] {
+  return [
+    'overview.view',
+    'accounts.view',
+    'accounts.create',
+    'accounts.login',
+    'accounts.batch_login',
+    'accounts.code_source_credentials.read',
+    'accounts.sync',
+    'accounts.authorizations.manage',
+  ];
+}
+
 export const EMPTY_ACCOUNT_LOGIN_FORM: AccountLoginForm = {
   account: null,
   step: 'method',
@@ -11,6 +24,7 @@ export const EMPTY_ACCOUNT_LOGIN_FORM: AccountLoginForm = {
 };
 
 export function defaultAdminUserForm(): AdminUserForm {
+  const permissions = accountSpecialistPermissions();
   return {
     id: null,
     name: '',
@@ -18,8 +32,8 @@ export function defaultAdminUserForm(): AdminUserForm {
     role: '普通用户',
     role_template: '账号添加专员',
     subscription_status: 'pending_activation',
-    menu_permissions: ['overview.view', 'accounts.view', 'accounts.create', 'accounts.login', 'accounts.sync'],
-    permissions: ['overview.view', 'accounts.view', 'accounts.create', 'accounts.login', 'accounts.sync'],
+    menu_permissions: [...permissions],
+    permissions,
     is_active: true,
   };
 }

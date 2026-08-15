@@ -457,7 +457,7 @@ speech_act + length_band + opening_function_pattern + punctuation_profile + synt
 
 - pacing：稳定 slot/due、四类 planner 接入、持久账号时间线、移除本次链路的 future→now、详情投影；due-slot 算法已按职责拆分，`pacing.py` 保持 500 行以内；
 - quality：MessageBrief、voice contract v3、两阶段生成、独立语义 reviewer、分层 gates、evaluator evidence、position-swap 与聚类 bootstrap 评测工具；
-- migration：`0149_pacing_slot_fields.py` 追加字段与 `account_pacing_reservations`，本地真实 Alembic upgrade/downgrade 回归通过；
+- migration：`0150_pacing_slot_fields.py` 依赖 `0149_batch_login_principal`，追加字段与 `account_pacing_reservations`，本地真实 Alembic upgrade/downgrade 回归通过；
 - UI/API：任务详情显示原始节奏时间/有效执行时间，创建编辑页可配置两阶段生成和独立 reviewer；
 - docs：专项 README、数据流转索引和项目结构索引同步本地实现事实。
 

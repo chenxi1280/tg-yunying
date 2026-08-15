@@ -98,6 +98,7 @@ def _missing_current_alias_count(session: Session) -> int:
     ).exists()
     return int(session.scalar(select(func.count(TgAccount.id)).where(
         TgAccount.phone_ciphertext.is_not(None),
+        TgAccount.deleted_at.is_(None),
         ~alias_exists,
     )) or 0)
 

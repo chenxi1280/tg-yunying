@@ -14,6 +14,7 @@ import type {
   TokenLedger,
 } from '../types';
 import type { TenantForm } from './types';
+import { accountSpecialistPermissions } from './defaults';
 
 type GroupRescueSettingsPayload = {
   group_rescue_enabled: boolean;
@@ -476,7 +477,7 @@ export function createSystemActions(params: SystemActionParams) {
     const requestSeq = params.userTokenLedgerRequestRef.current.seq + 1;
     params.userTokenLedgerRequestRef.current = { userId: null, seq: requestSeq };
     params.setSelectedUserTokenLedgers([]);
-    const permissions = ['overview.view', 'accounts.view', 'accounts.create', 'accounts.login', 'accounts.sync'];
+    const permissions = accountSpecialistPermissions();
     params.setAdminUserForm({
       id: null,
       name: '',

@@ -2,9 +2,9 @@
 
 ## 账号批量自动登录发布闸门（默认关闭）
 
-批量登录新增 migration `0148_account_batch_login` 和独立 `worker-account-login`。共享环境必须显式配置 `ACCOUNT_BATCH_LOGIN_MODE=off|reconcile_only|enabled`、`ACCOUNT_BATCH_LOGIN_DEVELOPER_APP_CONCURRENCY`；切到 `enabled` 时还必须配置正数 `ACCOUNT_BATCH_LOGIN_HOST_CONCURRENCY` 与 `ACCOUNT_BATCH_LOGIN_HOST_MIN_INTERVAL_SECONDS`。其余可调参数为单行上限/300 秒总预算/120 秒验证码窗口/轮询间隔/凭据保留/24 小时对账窗口以及 phone fingerprint 当前与 accepted versions。缺失或非法值启动失败，不允许以隐藏前端入口代替后端 mode gate。
+批量登录新增 migration `0148_account_batch_login`、内置管理员主体兼容 migration `0149_batch_login_principal` 和独立 `worker-account-login`。共享环境必须显式配置 `ACCOUNT_BATCH_LOGIN_MODE=off|reconcile_only|enabled`、`ACCOUNT_BATCH_LOGIN_DEVELOPER_APP_CONCURRENCY`；切到 `enabled` 时还必须配置正数 `ACCOUNT_BATCH_LOGIN_HOST_CONCURRENCY` 与 `ACCOUNT_BATCH_LOGIN_HOST_MIN_INTERVAL_SECONDS`。其余可调参数为单行上限/300 秒总预算/120 秒验证码窗口/轮询间隔/凭据保留/24 小时对账窗口以及 phone fingerprint 当前与 accepted versions。缺失或非法值启动失败，不允许以隐藏前端入口代替后端 mode gate。
 
-发布顺序固定为：migration → 对每个租户运行 `backend/scripts/backfill_account_phone_aliases.py --tenant-id <id>` preview，确认零冲突后 apply/readback → 以 `reconcile_only` 启动 backend 与 `worker-account-login` → 核对 worker heartbeat、DNS/TLS/peer IP、开发者应用并发桶和提醒 outbox → 前端与受控权限 → 切 `enabled` 做单号真实 E4。回滚先切 `reconcile_only`，继续未解对账和提醒投递；只有 unresolved、远端 started 和待投递 outbox 全部清零后才可切 `off`。迁移/worker healthy、自动化测试或部署 SHA 都不等于 Telegram 授权成功，E4 仍须核对 batch/item/flow、权威授权、目标分组、UUID binding/备注和 initial/correction 提醒。
+发布顺序固定为：migration → 对每个租户运行 `backend/scripts/backfill_account_phone_aliases.py --tenant-id <id>` preview，确认零冲突后以 `--apply --actor <执行人> --approval-ref <审批引用>` apply/readback → 以 `reconcile_only` 启动 backend 与 `worker-account-login` → 核对 worker heartbeat、DNS/TLS/peer IP、开发者应用并发桶和提醒 outbox → 前端与受控权限 → 切 `enabled` 做单号真实 E4。回滚先切 `reconcile_only`，继续未解对账和提醒投递；只有 unresolved、远端 started 和待投递 outbox 全部清零后才可切 `off`。迁移/worker healthy、自动化测试或部署 SHA 都不等于 Telegram 授权成功，E4 仍须核对 batch/item/flow、权威授权、目标分组、UUID binding/备注和 initial/correction 提醒。
 
 本项目生产部署沿用现有几个 TG 项目的发布模型：GitHub Actions 构建镜像，SSH 到服务器安装 release，服务器保留共享环境文件和运行数据。
 

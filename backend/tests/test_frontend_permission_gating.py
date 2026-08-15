@@ -389,6 +389,30 @@ def test_frontend_operator_template_can_open_and_manage_ai_voice_profiles():
     assert "'account_environment.manage'" in operator_template
 
 
+def test_account_specialist_frontend_templates_include_batch_login_permissions():
+    defaults = _required_frontend_source("frontend/src/app/context/defaults.ts")
+    actions = _required_frontend_source("frontend/src/app/context/systemActions.ts")
+    modals = _required_frontend_source("frontend/src/app/AppModals.tsx")
+
+    permission_function = defaults[
+        defaults.index("export function accountSpecialistPermissions"):
+        defaults.index("\n}\n", defaults.index("export function accountSpecialistPermissions"))
+    ]
+    for permission in (
+        "accounts.view",
+        "accounts.create",
+        "accounts.login",
+        "accounts.batch_login",
+        "accounts.code_source_credentials.read",
+        "accounts.sync",
+        "accounts.authorizations.manage",
+    ):
+        assert f"'{permission}'" in permission_function
+    assert "const permissions = accountSpecialistPermissions();" in defaults
+    assert "const permissions = accountSpecialistPermissions();" in actions
+    assert "'账号添加专员': accountSpecialistPermissions()," in modals
+
+
 def test_account_masks_is_first_level_menu_and_system_config_has_clash_only():
     routes = (PROJECT_ROOT / "frontend/src/app/routes.ts").read_text()
     utils = (PROJECT_ROOT / "frontend/src/app/utils.ts").read_text()

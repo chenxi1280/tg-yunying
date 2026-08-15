@@ -1,7 +1,7 @@
 """Add durable deterministic pacing and generation audit fields.
 
-Revision ID: 0149_pacing_slot_fields
-Revises: 0148_account_batch_login
+Revision ID: 0150_pacing_slot_fields
+Revises: 0149_batch_login_principal
 """
 
 from __future__ import annotations
@@ -12,8 +12,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0149_pacing_slot_fields"
-down_revision = "0148_account_batch_login"
+revision = "0150_pacing_slot_fields"
+down_revision = "0149_batch_login_principal"
 branch_labels = None
 depends_on = None
 ColumnFactory = Callable[[], sa.Column]
