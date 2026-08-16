@@ -433,6 +433,69 @@ def test_group_ai_send_pacing_task_lock_busy_defers_claim(monkeypatch) -> None:
     assert decision.reason_code == "task_pacing_lock_busy"
 
 
+def _final_gate_setup(monkeypatch, engine_factory, recent: datetime, now: datetime):
+    from sqlalchemy.orm import sessionmaker
+    from app.services.task_center import dispatcher as task_dispatcher
+
+    monkeypatch.setattr(
+        account_pacing_guard,
+        "get_settings",
+        lambda: SimpleNamespace(
+            account_soft_pacing_min_gap_seconds=20,
+            ai_group_send_pacing_min_gap_seconds=20,
+        ),
+    )
+    monkeypatch.setattr(
+        task_dispatcher,
+        "get_settings",
+        lambda: SimpleNamespace(ai_group_send_pacing_min_gap_seconds=20),
+    )
+    engine = engine_factory()
+    _group_send_pacing_fixture(engine, recent_at=recent, now=now)
+    sleeps: list[float] = []
+    monkeypatch.setattr(task_dispatcher.time, "sleep", lambda s: sleeps.append(s))
+    monkeypatch.setattr(task_dispatcher, "SessionLocal", sessionmaker(bind=engine, future=True))
+    monkeypatch.setattr(task_dispatcher, "_now", lambda: now)
+    return task_dispatcher, engine, sleeps
+
+
+def test_group_send_final_gate_anchors_send_time_after_recent_point(monkeypatch) -> None:
+    """发送前 final gate：另一账号 5 秒前刚占位（open 点），本条发送时刻必须
+    被推进到群最小间隔之后并等待，消除 AI 生成耗时抖动造成的发送挤近。"""
+    task_dispatcher, engine, sleeps = _final_gate_setup(
+        monkeypatch, pacing_engine,
+        recent=datetime(2026, 8, 17, 10, 0) - timedelta(seconds=5),
+        now=datetime(2026, 8, 17, 10, 0),
+    )
+    with Session(engine) as session:
+        mine = session.get(Action, "action-mine")
+        task_dispatcher._enforce_group_send_final_gate(mine)
+        session.expire_all()
+        anchored = session.get(Action, "action-mine")
+
+    assert anchored.scheduled_at is not None
+    assert anchored.scheduled_at >= datetime(2026, 8, 17, 10, 0) - timedelta(seconds=5) + timedelta(seconds=20)
+    assert sleeps and sleeps[0] > 0
+
+
+def test_group_send_final_gate_no_wait_when_timeline_clear(monkeypatch) -> None:
+    """群间隔已满足（上一占位 60 秒前）时 final gate 直接放行：不推进不等待。"""
+    task_dispatcher, engine, sleeps = _final_gate_setup(
+        monkeypatch, pacing_engine,
+        recent=datetime(2026, 8, 17, 10, 0) - timedelta(seconds=60),
+        now=datetime(2026, 8, 17, 10, 0),
+    )
+    with Session(engine) as session:
+        mine = session.get(Action, "action-mine")
+        original_at = mine.scheduled_at
+        task_dispatcher._enforce_group_send_final_gate(mine)
+
+    assert sleeps == []
+    with Session(engine) as session:
+        reloaded = session.get(Action, "action-mine")
+        assert reloaded.scheduled_at == original_at
+
+
 def test_group_message_pacing_ordinal_survives_reload_for_action_binding() -> None:
     engine = pacing_engine()
     with Session(engine) as session:

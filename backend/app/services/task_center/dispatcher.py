@@ -8,11 +8,12 @@ import logging
 import os
 import re
 import socket
+import time
 from dataclasses import dataclass
 from uuid import uuid4
 from datetime import date, datetime, timedelta
 
-from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, aliased, object_session
 from pydantic import ValidationError
@@ -20,6 +21,7 @@ from pydantic import ValidationError
 from app.admin_chats import send_admin_chat_broadcast
 from app.integrations.telegram import DeveloperAppCredentials, OperationResult, OutboundSegment
 from app.config import get_settings
+from app.database import SessionLocal
 from app.models import AccountStatus, Action, AiAccountVoiceProfile, AiGroupMessageMemory, ChannelMessage, CommentFulfillmentObligation, ConsistencyQuarantine, ContentMixCycle, ContentMixCycleSlot, ContentMixObligation, DispatchClaimReservation, DispatchClaimShardAllocation, DispatchClaimWindow, ExecutionAttempt, FailureType, GroupAuthStatus, GroupContextMessage, OperationTarget, ReviewQueue, SearchClickAssignment, SearchClickFulfillmentObligation, SearchClickOpportunityAssignment, SearchProtocolSession, Task, TaskAccountDailyCoverage, TaskDayLedger, TaskGroupBotAdmission, TaskGroupDailyMessageSlot, TaskMembershipAdmissionItem, Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
 from app.models import AccountEnvironmentBinding, AccountProxy, AccountProxyBinding, TelegramDeveloperApp, TgAccountAuthorization
 from app.search_keywords import normalized_keyword_hash
@@ -47,6 +49,7 @@ from app.services.verification import create_verification_task
 from app.timezone import as_beijing
 
 from .account_pool import account_matches_current_shard, current_account_shard, select_task_accounts
+from . import account_pacing_guard as _account_pacing_guard
 from .account_scope import is_daily_coverage_task
 from .account_stance_memory import invalidate_unknown_group_stance_memory
 from .account_voice_profiles import upsert_group_stance_memory
@@ -3217,6 +3220,56 @@ def _fail_offline_group_send(
     )
 
 
+def _enforce_group_send_final_gate(action: Action) -> None:
+    """发送前群级 final gate：把实际发送时刻锚定到群 timeline。
+
+    claim 时刻的群级门禁受 AI 生成耗时抖动影响（claim 间隔 8s，但生成快慢
+    差会把实际发送挤近，2026-08-17 线上实测 min gap 1.7s）。本 gate 在真正
+    调用网关前，以 task 行锁串行化：重查群 timeline（含其他账号刚占位的
+    open 点与发送事实），把本 action 的发送时刻推进到最近点+群间隔并提交
+    占位，必要时短暂等待，保证相邻实际发送间隔 ≥ 群最小间隔。
+    """
+    if str(action.task_type or "") != "group_ai_chat" or not action.task_id:
+        return
+    if not action.pacing_slot_key:
+        return
+    gap_seconds = max(1, int(get_settings().ai_group_send_pacing_min_gap_seconds))
+    gap = timedelta(seconds=gap_seconds)
+    for _attempt in range(2):
+        with SessionLocal() as gate_session:
+            try:
+                _account_pacing_guard.lock_task_pacing(gate_session, str(action.task_id))
+            except _account_pacing_guard.AccountPacingLockUnavailable:
+                time.sleep(min(1.0, gap_seconds / 4))
+                continue
+            desired_at = _account_pacing_guard._wall(_now())
+            if desired_at is None:
+                gate_session.rollback()
+                return
+            not_before = _account_pacing_guard.task_policy_not_before(
+                gate_session,
+                str(action.task_id),
+                tenant_id=action.tenant_id,
+                desired_at=desired_at,
+                gap=gap,
+                exclude_action_id=action.id,
+                exclude_slot_key=str(action.pacing_slot_key),
+            )
+            if not_before is not None and not_before > desired_at:
+                gate_session.execute(
+                    update(Action)
+                    .where(Action.id == action.id)
+                    .values(scheduled_at=not_before)
+                )
+                gate_session.commit()
+                wait_seconds = (not_before - desired_at).total_seconds()
+                if wait_seconds > 0:
+                    time.sleep(min(wait_seconds, gap_seconds + 1.0))
+            else:
+                gate_session.rollback()
+            return
+
+
 def _send_group_message_via_gateway(
     session: Session,
     action: Action,
@@ -3240,6 +3293,7 @@ def _send_group_message_via_gateway(
         if gateway_request.reply_to_message_id
         else {}
     )
+    _enforce_group_send_final_gate(action)
     result = gateway.send_message(
         gateway_request.account_id,
         gateway_request.group_id,
