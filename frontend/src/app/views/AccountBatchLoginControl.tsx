@@ -24,7 +24,7 @@ export function AccountBatchLoginControl({ pools, selectedPoolId, canCreateBatch
   const [replaceLines, setReplaceLines] = React.useState<number[]>([]);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState('');
-  const [batchId, setBatchId] = React.useState<number | null>(null);
+  const [openBatchIds, setOpenBatchIds] = React.useState<number[]>([]);
   const [taskCenterOpen, setTaskCenterOpen] = React.useState(false);
   const [activeBatchCount, setActiveBatchCount] = React.useState(0);
   const [taskRefreshToken, setTaskRefreshToken] = React.useState(0);
@@ -89,7 +89,7 @@ export function AccountBatchLoginControl({ pools, selectedPoolId, canCreateBatch
         }),
       });
       setOpen(false);
-      setBatchId(batch.id);
+      openBatchDrawer(batch.id);
       setTaskRefreshToken((current) => current + 1);
       setLinesText('');
       setReason('');
@@ -157,12 +157,28 @@ export function AccountBatchLoginControl({ pools, selectedPoolId, canCreateBatch
         pools={pools}
         refreshToken={taskRefreshToken}
         onClose={() => setTaskCenterOpen(false)}
-        onOpenBatch={(selectedBatchId) => { setTaskCenterOpen(false); setBatchId(selectedBatchId); }}
+        onOpenBatch={(selectedBatchId) => { setTaskCenterOpen(false); openBatchDrawer(selectedBatchId); }}
         onActiveCountChange={setActiveBatchCount}
       />
-      <AccountBatchLoginDrawer batchId={batchId} pools={pools} onOpenAccountDetail={onOpenAccountDetail} onClose={() => setBatchId(null)} />
+      {openBatchIds.map((openBatchId) => (
+        <AccountBatchLoginDrawer
+          key={openBatchId}
+          batchId={openBatchId}
+          pools={pools}
+          onOpenAccountDetail={onOpenAccountDetail}
+          onClose={() => closeBatchDrawer(openBatchId)}
+        />
+      ))}
     </>
   );
+
+  function openBatchDrawer(nextBatchId: number) {
+    setOpenBatchIds((current) => [nextBatchId, ...current.filter((value) => value !== nextBatchId)]);
+  }
+
+  function closeBatchDrawer(closedBatchId: number) {
+    setOpenBatchIds((current) => current.filter((value) => value !== closedBatchId));
+  }
 }
 
 function localLineStats(linesText: string) {
