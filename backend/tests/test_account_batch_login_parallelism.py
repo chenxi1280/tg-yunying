@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from datetime import timedelta
 from types import SimpleNamespace
 
@@ -17,7 +18,7 @@ from app.models import (
     TgAccountLoginBatchItem,
 )
 from app.services._common import _now
-from app.services.account_login.state import claim_batch_phase
+from app.services.account_login.state import PhaseClaim, claim_batch_phase
 from app.services.account_login.batches import list_login_batches
 
 
@@ -150,6 +151,30 @@ def test_parallel_drain_runs_two_item_phases_at_once(session_factory, monkeypatc
 
     assert processed == 2
     assert len(set(started)) == 2
+
+
+def test_stalled_remote_phase_does_not_block_drain_loop(monkeypatch) -> None:
+    from app.services.account_login import drain
+
+    claims = [
+        PhaseClaim(1, 2, 3, 1, 1, "send_code", "lease-token-a"),
+        PhaseClaim(1, 4, 5, 1, 1, "send_code", "lease-token-b"),
+    ]
+    released = threading.Event()
+
+    def stalled_remote_phase(_session_factory, _claim, _client) -> None:
+        if _claim.item_id == 2:
+            released.wait(timeout=0.2)
+
+    monkeypatch.setattr(drain, "PHASE_JOIN_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(drain, "execute_remote_phase", stalled_remote_phase)
+
+    started_at = time.monotonic()
+    drain._execute_claims(lambda: None, claims, object())
+    elapsed = time.monotonic() - started_at
+    released.set()
+
+    assert elapsed < 0.15
 
 
 def test_claims_are_fair_before_reusing_same_batch(session_factory) -> None:

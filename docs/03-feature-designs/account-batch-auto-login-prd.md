@@ -3,9 +3,10 @@
 > 日期口径：2026-08-15（Asia/Shanghai）
 > 适用范围：TG 账号管理、账号分组（AccountPool）、登录 flow、后台 worker、审计。
 > 定位：**当前**专项合同。与 [account-login-group-navigation-recovery-prd.md](account-login-group-navigation-recovery-prd.md)（单账号登录 flow 合同）、[existing-account-reauthorization-routing-prd.md](existing-account-reauthorization-routing-prd.md)（已有账号重登语义）、[account-standby-auto-authorization-prd.md](account-standby-auto-authorization-prd.md)（备用授权自动补齐）互补，不改变既有单账号登录语义。
-> 基础批量登录状态：`production_fixed`（2026-08-15 已完成两条真实 E4）；本次“任务中心 + 并行登录 + 200 行详情/超时归因修正”增量：`design_status=product_design_complete`、`implementation_status=local_implemented`、`qa_status=targeted_passed`、`release_status=not_released`、`production_status=unproven`。
+> 基础批量登录状态：`production_fixed`（2026-08-15 已完成两条真实 E4）；本次“任务中心 + 并行登录 + 200 行详情/超时归因修正 + 远端阶段卡死隔离”增量：`design_status=product_design_complete`、`implementation_status=local_implemented`、`qa_status=targeted_passed`、`release_status=not_released`、`production_status=unproven`。
 
 > 2026-08-16 线上复盘补充：批次 #4 的 200 行生产批次只读核验显示 174 成功、26 失败，失败行均为新建账号路径，`send_code=confirmed`，但 `code_verify/twofa=none`；接码页当前可读且 code/2FA 字段存在。因此这些失败发生在等待新验证码阶段，不是 Telegram 明确拒绝。重试前置状态全部满足，但未在本次只读核验中触发生产重试。详情 Drawer/API 必须默认支持 200 行；等待验证码窗口到期应优先展示 `code_timeout`，只有总单行预算先耗尽才展示 `item_deadline_exceeded`。
+> 2026-08-16 重试复盘补充：批次 #4 的失败行重试后出现 account-login worker 健康为 healthy 但 drain 日志停止、DB 中到期等待行和过期 running lease 未被继续处理的现象。根因边界是同轮并行 claim 中单个 Telegram 远端阶段可阻塞 `future.result()`，导致其它到期行饥饿。worker 并行执行必须在 lease 窗口后让主循环继续；未完成远端调用由既有 started/lease/reconcile fence 回收，不能因单行卡死拖死整批。
 
 ## 1. 背景与原始需求
 
@@ -300,6 +301,7 @@ phase 以 `(attempt_id, generation, state_version, lease_token)` CAS，网络调
 ### 8.6 Worker 挂载
 
 - `drain_account_login_batches` 以 tenant、batch `last_claimed_at`、line/phase 公平 claim：先让每个可运行批次获得一个 slot，再轮转追加，最多领取 `min(limit, worker_concurrency)` 个不同 item phase；同一 item 已有有效 lease、未来 `next_retry_at` 或正在对账时跳过而不阻塞同批后续行。每个 claim 使用独立 session，网络期间无 DB 连接/锁/事务，并由线程池并行执行。
+- 同轮多个 claim 并行执行时，线程池等待时间不得超过 lease 窗口加小幅收尾宽限；未返回的远端调用继续受 attempt lease、started call state、generation/version fence 约束，主 worker 循环必须继续处理其它到期行。
 - 已有账号权威探测使用主 session 和主登录 direct 路径；探测网络异常不得降级成 relogin。create 只在 baseline 通过后执行，并将 account/item/aliases 同事务绑定。
 - 独立 `drain_account_login_reconciliation` 只处理 started/unknown/unresolved，权威收口时 CAS 更新行/批次计数/resolution version 并写 correction outbox。
 - `worker.py` 与 `worker_health.py` 同步新增 `account-login`；本地 `legacy/all` 可包含，生产必须以独立 `--role account-login` 容器运行。Compose、发布脚本和 post-deploy health 必须同时检查该角色心跳。

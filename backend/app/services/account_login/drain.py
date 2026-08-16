@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 
 from sqlalchemy import select
 
@@ -12,10 +13,13 @@ from app.services.code_source_client import CodeSourceClient
 
 from .local_phases import execute_local_phase
 from .remote_phases import execute_remote_phase
-from .state import EXTERNAL_PHASES, PhaseClaim, claim_batch_phase
+from .state import EXTERNAL_PHASES, LEASE_SECONDS, PhaseClaim, claim_batch_phase
 
 
 ACTIVE_BATCH_STATUSES = ("queued", "running", "cancelling")
+PHASE_JOIN_GRACE_SECONDS = 5
+PHASE_JOIN_TIMEOUT_SECONDS = LEASE_SECONDS + PHASE_JOIN_GRACE_SECONDS
+logger = logging.getLogger(__name__)
 
 
 def drain_account_login_batches(session_factory, limit: int, *, code_client: CodeSourceClient | None = None) -> int:
@@ -54,10 +58,16 @@ def _execute_claims(session_factory, claims: list[PhaseClaim], client: CodeSourc
     if len(claims) == 1:
         _execute_claim(session_factory, claims[0], client)
         return
-    with ThreadPoolExecutor(max_workers=len(claims), thread_name_prefix="account-login") as executor:
+    executor = ThreadPoolExecutor(max_workers=len(claims), thread_name_prefix="account-login")
+    try:
         futures = [executor.submit(_execute_claim, session_factory, claim, client) for claim in claims]
-        for future in futures:
+        done, pending = wait(futures, timeout=PHASE_JOIN_TIMEOUT_SECONDS)
+        for future in done:
             future.result()
+        if pending:
+            logger.warning("account login remote phases exceeded lease window pending=%d", len(pending))
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 
 
 def _execute_claim(session_factory, claim: PhaseClaim, client: CodeSourceClient) -> None:
