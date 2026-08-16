@@ -25,6 +25,10 @@ class AccountPacingDeadlineExceeded(RuntimeError):
     pass
 
 
+class AccountPacingLockUnavailable(RuntimeError):
+    pass
+
+
 @dataclass(frozen=True)
 class PacingClaimDecision:
     allowed: bool
@@ -40,10 +44,15 @@ def _wall(value: datetime | None) -> datetime | None:
 
 def lock_account_pacing(session: Session, account_id: int) -> None:
     statement = select(TgAccount.id).where(TgAccount.id == account_id)
-    if session.get_bind().dialect.name != "sqlite":
-        statement = statement.with_for_update()
+    if session.get_bind().dialect.name == "sqlite":
+        if session.scalar(statement) is None:
+            raise ValueError("account_pacing_account_not_found")
+        return
+    if session.scalar(statement.with_for_update(skip_locked=True)) is not None:
+        return
     if session.scalar(statement) is None:
         raise ValueError("account_pacing_account_not_found")
+    raise AccountPacingLockUnavailable("account_pacing_lock_busy")
 
 
 def account_policy_not_before(
@@ -164,7 +173,14 @@ def revalidate_action_pacing_before_claim(
 ) -> PacingClaimDecision:
     if not action.pacing_slot_key or not action.account_id:
         return PacingClaimDecision(True, action.scheduled_at)
-    lock_account_pacing(session, int(action.account_id))
+    try:
+        lock_account_pacing(session, int(action.account_id))
+    except AccountPacingLockUnavailable:
+        return PacingClaimDecision(
+            False,
+            action.scheduled_at,
+            "account_pacing_lock_busy",
+        )
     desired_at = max(
         value
         for value in (
@@ -372,6 +388,7 @@ def _before_deadline(value: datetime, deadline: datetime) -> bool:
 __all__ = [
     "ACCOUNT_SOFT_PACING_POLICY_VERSION",
     "AccountPacingDeadlineExceeded",
+    "AccountPacingLockUnavailable",
     "PacingClaimDecision",
     "account_policy_not_before",
     "bind_account_pacing_reservation",

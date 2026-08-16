@@ -65,6 +65,7 @@ from app.services.developer_apps import credentials_for_account
 from app.timezone import as_beijing
 
 from .account_pool import select_task_accounts
+from .account_pacing_guard import AccountPacingLockUnavailable
 from .account_scope import initialize_all_account_task_scope, process_account_eligibility_events, reconcile_all_account_scopes_if_due
 from .ai_act_types import canonical_ai_group_act_type
 from .ai_generator import AiGenerationUnavailable, generate_channel_comments, generate_group_messages
@@ -3394,6 +3395,10 @@ def _drain_task_planner(session_factory, *, limit: int, process_type: str | None
                 limit=limit,
                 global_pending=global_pending,
             )
+        except AccountPacingLockUnavailable:
+            logger.info("planner_pacing_lock_busy task_id=%s", task_id)
+            _record_planner_pacing_retry(session_factory, task_id)
+            continue
         except Exception as exc:
             logger.exception("planner_task_failed task_id=%s", task_id)
             _record_planner_runtime_error(session_factory, task_id, exc)
@@ -3402,6 +3407,22 @@ def _drain_task_planner(session_factory, *, limit: int, process_type: str | None
         if future_open:
             future_open_action_task_ids.add(task_id)
     return processed, future_open_action_task_ids
+
+
+def _record_planner_pacing_retry(session_factory, task_id: str) -> None:
+    with session_factory() as session:
+        task = session.get(Task, task_id)
+        if task is None or task.status != "running":
+            return
+        stats = dict(task.stats or {})
+        stats["planner_pacing_lock_busy"] = {
+            "recorded_at": _now().isoformat(),
+        }
+        task.stats = stats
+        task.next_run_at = _now() + timedelta(
+            seconds=PLANNER_RUNTIME_ERROR_RETRY_SECONDS,
+        )
+        session.commit()
 
 
 def _record_planner_runtime_error(

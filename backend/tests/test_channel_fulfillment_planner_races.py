@@ -4,13 +4,17 @@ import os
 from datetime import timedelta
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.models import Action, ChannelMessage, OperationTarget, Task, Tenant, TgAccount
 from app.services._common import _now
 from app.services.task_center import channel_fulfillment, channel_view_targets
+from app.services.task_center.account_pacing_guard import (
+    AccountPacingLockUnavailable,
+    reserve_account_pacing,
+)
 from app.services.task_center.executors import channel_like, channel_view
 from app.services.task_center.pacing import next_local_day_deadline
 
@@ -66,6 +70,45 @@ def test_view_planner_skips_source_confirmed_after_candidate_snapshot(
     actions = _main_actions(session, task.id, "view_message")
     assert [action.account_id for action in actions] == [32]
     assert actions[0].payload["channel_message_id"] == message.id
+
+
+def test_account_pacing_contention_is_retryable_without_deadlock(
+    session: Session,
+) -> None:
+    account = TgAccount(
+        id=41,
+        tenant_id=1,
+        display_name="节奏锁账号",
+        phone_masked="41",
+        status="在线",
+    )
+    task = Task(
+        id="pacing-lock-task",
+        tenant_id=1,
+        name="节奏锁测试",
+        type="channel_view",
+        status="running",
+        next_run_at=_now(),
+    )
+    session.add_all([account, task])
+    session.commit()
+    session.execute(
+        select(TgAccount.id)
+        .where(TgAccount.id == account.id)
+        .with_for_update()
+    )
+
+    with Session(session.get_bind()) as contender:
+        with pytest.raises(AccountPacingLockUnavailable):
+            reserve_account_pacing(
+                contender,
+                tenant_id=1,
+                task_id=task.id,
+                account_id=account.id,
+                slot_key="busy-lock-slot",
+                due_at=_now(),
+                deadline_at=_now() + timedelta(hours=1),
+            )
 
 
 def test_like_planner_skips_source_confirmed_after_candidate_snapshot(
