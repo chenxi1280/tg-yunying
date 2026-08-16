@@ -158,6 +158,16 @@ SSH banner 交换持续超时与发布脚本 `Connection timed out during banner
 
 **QA**：红→绿 `test_group_ai_send_pacing_defers_cross_account_burst`（另一账号 5 秒前 open 点 → 拒绝并推迟到 ≥recent+gap，reason=`group_send_pacing_conflict`）、`test_group_ai_send_pacing_allows_claim_after_group_gap`（60 秒前 → 放行不误伤）；pacing/claim/dispatch 相关 488 项回归通过。生产验收口径：部署后 30 分钟窗口内任一 group_ai_chat 任务同秒成功发送数 ≤2、任务内相邻发送间隔 min ≥8 秒、当日 DueSet 达成率不因门禁回退（对照部署前同时段）。
 
+#### 2.5.1 部署与线上验证记录（2026-08-17，三层递进）
+
+第一版门禁部署后线上验证不达标，按数据驱动递进修复为三层：
+
+1. **15d38069 群级 claim 门禁**（§2.5 主体）：claim 复核加 `task_policy_not_before`。测试基建 `immediate_account_pacing` fixture 需同步 mock `task_policy_not_before`（同秒连续两轮 dispatch 的 workflow 测试会被 8 秒门禁推迟导致 CI 失败）。
+2. **2d3d402f 任务行锁 `lock_task_pacing`**：两个 Dispatcher 事务并行 claim 不同账号时互相看不到对方未提交的 `claiming` 状态，群级 timeline 同时"干净"双双放行（线上实测同秒仍可达 3 条）。以 `skip_locked` 任务行锁（与 `lock_account_pacing` 同构，锁忙 defer 到下轮，reason=`task_pacing_lock_busy`）串行化同任务 claim 校验。部署后同秒多发清零，但任务内 min gap 实测 1.7s——claim 间隔 8s 被 AI 生成耗时抖动（快慢差约 6s）压缩。
+3. **b18834ed 发送前 final gate `_enforce_group_send_final_gate`**：网关调用前以任务行锁重查群 timeline，把本条 `scheduled_at` 推进到最近点+群间隔并提交占位，必要时等待（上限 gap+1s）。实现约束：gate 必须使用 dispatcher 主 session、早退分支收尾隐式事务——attempt 预留 commit 后访问已 expire 的 ORM 属性会触发 refresh 隐式开事务，违反"外部调用前无打开事务"模式（phase boundary 测试以 `unknown_after_send` 拦截）；gate 失败仅告警不阻塞发送。
+
+**线上终验（b18834ed 部署后 26 分钟窗口，6 个 running 任务）**：任务内相邻发送间隔 min=14.4s（全部 ≥8s ✓）；同秒多发组 0（修复前基线：同秒最多 6 条、min gap 2ms）✓；吞吐 85 条/小时符合凌晨低谷曲线，无 DueSet 压制 ✓。
+
 ## 3. 根因分组与修复规则
 
 ### RC-0：精确搜索停流量与 OCR 安全停服/恢复（P0 临时止血）
