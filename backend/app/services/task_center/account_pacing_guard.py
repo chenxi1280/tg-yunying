@@ -8,7 +8,7 @@ from sqlalchemy import select, union_all
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.models import AccountPacingReservation, Action, FulfillmentRemoteFact, TgAccount
+from app.models import AccountPacingReservation, Action, FulfillmentRemoteFact, Task, TgAccount
 from app.services._common import _now
 from app.timezone import BEIJING_TZ
 
@@ -53,6 +53,25 @@ def lock_account_pacing(session: Session, account_id: int) -> None:
     if session.scalar(statement) is None:
         raise ValueError("account_pacing_account_not_found")
     raise AccountPacingLockUnavailable("account_pacing_lock_busy")
+
+
+def lock_task_pacing(session: Session, task_id: str) -> None:
+    """群级（任务级）节奏锁：串行化同任务的 claim 校验。
+
+    2026-08-17 线上验证发现跨账号并行 claim 时，两个事务互相看不到对方
+    未提交的 claiming 状态，群级 timeline 同时"干净"导致同秒突发；本锁
+    保证同任务同一时刻只有一个事务在执行群级校验+claim。
+    """
+    statement = select(Task.id).where(Task.id == task_id)
+    if session.get_bind().dialect.name == "sqlite":
+        if session.scalar(statement) is None:
+            raise ValueError("task_pacing_task_not_found")
+        return
+    if session.scalar(statement.with_for_update(skip_locked=True)) is not None:
+        return
+    if session.scalar(statement) is None:
+        raise ValueError("task_pacing_task_not_found")
+    raise AccountPacingLockUnavailable("task_pacing_lock_busy")
 
 
 def account_policy_not_before(
@@ -240,6 +259,14 @@ def revalidate_action_pacing_before_claim(
     )
     group_conflict = False
     if str(action.task_type or "") == "group_ai_chat":
+        try:
+            lock_task_pacing(session, str(action.task_id))
+        except AccountPacingLockUnavailable:
+            return PacingClaimDecision(
+                False,
+                action.scheduled_at,
+                "task_pacing_lock_busy",
+            )
         group_gap = timedelta(seconds=max(1, int(get_settings().ai_group_send_pacing_min_gap_seconds)))
         group_not_before = task_policy_not_before(
             session,

@@ -403,6 +403,36 @@ def test_group_ai_send_pacing_allows_claim_after_group_gap(monkeypatch) -> None:
     assert decision.allowed is True
 
 
+def test_group_ai_send_pacing_task_lock_busy_defers_claim(monkeypatch) -> None:
+    """群级节奏锁被同任务其他 claim 持有时（skip_locked 拿不到），本 claim
+    必须 defer 到下轮，而不是并行放行形成同秒突发。"""
+    monkeypatch.setattr(
+        account_pacing_guard,
+        "get_settings",
+        lambda: SimpleNamespace(
+            account_soft_pacing_min_gap_seconds=20,
+            ai_group_send_pacing_min_gap_seconds=20,
+        ),
+    )
+
+    def _busy(_session, _task_id):
+        raise account_pacing_guard.AccountPacingLockUnavailable("task_pacing_lock_busy")
+
+    monkeypatch.setattr(account_pacing_guard, "lock_task_pacing", _busy)
+    engine = pacing_engine()
+    now = datetime(2026, 8, 17, 10, 0)
+    _group_send_pacing_fixture(engine, recent_at=now - timedelta(seconds=60), now=now)
+
+    with Session(engine) as session:
+        mine = session.get(Action, "action-mine")
+        decision = revalidate_action_pacing_before_claim(
+            session, mine, now_value=now,
+        )
+
+    assert decision.allowed is False
+    assert decision.reason_code == "task_pacing_lock_busy"
+
+
 def test_group_message_pacing_ordinal_survives_reload_for_action_binding() -> None:
     engine = pacing_engine()
     with Session(engine) as session:
