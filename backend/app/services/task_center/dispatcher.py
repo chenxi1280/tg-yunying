@@ -21,7 +21,6 @@ from pydantic import ValidationError
 from app.admin_chats import send_admin_chat_broadcast
 from app.integrations.telegram import DeveloperAppCredentials, OperationResult, OutboundSegment
 from app.config import get_settings
-from app.database import SessionLocal
 from app.models import AccountStatus, Action, AiAccountVoiceProfile, AiGroupMessageMemory, ChannelMessage, CommentFulfillmentObligation, ConsistencyQuarantine, ContentMixCycle, ContentMixCycleSlot, ContentMixObligation, DispatchClaimReservation, DispatchClaimShardAllocation, DispatchClaimWindow, ExecutionAttempt, FailureType, GroupAuthStatus, GroupContextMessage, OperationTarget, ReviewQueue, SearchClickAssignment, SearchClickFulfillmentObligation, SearchClickOpportunityAssignment, SearchProtocolSession, Task, TaskAccountDailyCoverage, TaskDayLedger, TaskGroupBotAdmission, TaskGroupDailyMessageSlot, TaskMembershipAdmissionItem, Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
 from app.models import AccountEnvironmentBinding, AccountProxy, AccountProxyBinding, TelegramDeveloperApp, TgAccountAuthorization
 from app.search_keywords import normalized_keyword_hash
@@ -3220,34 +3219,43 @@ def _fail_offline_group_send(
     )
 
 
-def _enforce_group_send_final_gate(action: Action) -> None:
+def _enforce_group_send_final_gate(session: Session, action: Action) -> None:
     """发送前群级 final gate：把实际发送时刻锚定到群 timeline。
 
     claim 时刻的群级门禁受 AI 生成耗时抖动影响（claim 间隔 8s，但生成快慢
     差会把实际发送挤近，2026-08-17 线上实测 min gap 1.7s）。本 gate 在真正
-    调用网关前，以 task 行锁串行化：重查群 timeline（含其他账号刚占位的
-    open 点与发送事实），把本 action 的发送时刻推进到最近点+群间隔并提交
-    占位，必要时短暂等待，保证相邻实际发送间隔 ≥ 群最小间隔。
+    调用网关前（此时 attempt 预留已提交、主事务干净），以 task 行锁串行化：
+    重查群 timeline（含其他账号刚占位的 open 点与发送事实），把本 action
+    的发送时刻推进到最近点+群间隔并提交占位，必要时短暂等待，保证相邻
+    实际发送间隔 ≥ 群最小间隔。gate 失败只记录告警、不阻塞发送主流程
+    （发送结果照常按网关真实返回落账，不做任何兜底伪装）。
     """
-    if str(action.task_type or "") != "group_ai_chat" or not action.task_id:
+    # 属性访问可能在 attempt 预留 commit（对象已 expire）后触发 refresh，
+    # 隐式开启新事务；外部调用前必须保持"无打开事务"，早退前先收尾。
+    task_type = str(action.task_type or "")
+    if task_type != "group_ai_chat":
         return
-    if not action.pacing_slot_key:
+    task_id = str(action.task_id or "")
+    slot_key = str(action.pacing_slot_key or "")
+    if not task_id or not slot_key:
+        if session.in_transaction():
+            session.rollback()
         return
     gap_seconds = max(1, int(get_settings().ai_group_send_pacing_min_gap_seconds))
     gap = timedelta(seconds=gap_seconds)
-    for _attempt in range(2):
-        with SessionLocal() as gate_session:
+    try:
+        for _attempt in range(2):
             try:
-                _account_pacing_guard.lock_task_pacing(gate_session, str(action.task_id))
+                _account_pacing_guard.lock_task_pacing(session, str(action.task_id))
             except _account_pacing_guard.AccountPacingLockUnavailable:
                 time.sleep(min(1.0, gap_seconds / 4))
                 continue
             desired_at = _account_pacing_guard._wall(_now())
             if desired_at is None:
-                gate_session.rollback()
+                session.rollback()
                 return
             not_before = _account_pacing_guard.task_policy_not_before(
-                gate_session,
+                session,
                 str(action.task_id),
                 tenant_id=action.tenant_id,
                 desired_at=desired_at,
@@ -3256,18 +3264,24 @@ def _enforce_group_send_final_gate(action: Action) -> None:
                 exclude_slot_key=str(action.pacing_slot_key),
             )
             if not_before is not None and not_before > desired_at:
-                gate_session.execute(
+                session.execute(
                     update(Action)
                     .where(Action.id == action.id)
                     .values(scheduled_at=not_before)
                 )
-                gate_session.commit()
+                session.commit()
                 wait_seconds = (not_before - desired_at).total_seconds()
                 if wait_seconds > 0:
                     time.sleep(min(wait_seconds, gap_seconds + 1.0))
             else:
-                gate_session.rollback()
+                session.rollback()
             return
+    except (SQLAlchemyError, ValueError) as exc:
+        logger.warning(
+            "group_send_final_gate_failed action=%s task=%s error=%s",
+            action.id, action.task_id, exc,
+        )
+        session.rollback()
 
 
 def _send_group_message_via_gateway(
@@ -3293,7 +3307,7 @@ def _send_group_message_via_gateway(
         if gateway_request.reply_to_message_id
         else {}
     )
-    _enforce_group_send_final_gate(action)
+    _enforce_group_send_final_gate(session, action)
     result = gateway.send_message(
         gateway_request.account_id,
         gateway_request.group_id,

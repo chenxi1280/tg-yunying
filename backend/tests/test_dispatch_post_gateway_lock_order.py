@@ -12,7 +12,7 @@ def test_group_send_locks_dispatch_prefix_before_business_finalize(
     monkeypatch,
 ) -> None:
     events: list[str] = []
-    action = SimpleNamespace(id="action-1")
+    action = SimpleNamespace(id="action-1", task_type="check_in")
     attempt = SimpleNamespace(id="attempt-1")
     payload = SimpleNamespace(
         message_text="hello",

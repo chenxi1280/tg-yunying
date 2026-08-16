@@ -434,7 +434,6 @@ def test_group_ai_send_pacing_task_lock_busy_defers_claim(monkeypatch) -> None:
 
 
 def _final_gate_setup(monkeypatch, engine_factory, recent: datetime, now: datetime):
-    from sqlalchemy.orm import sessionmaker
     from app.services.task_center import dispatcher as task_dispatcher
 
     monkeypatch.setattr(
@@ -454,7 +453,6 @@ def _final_gate_setup(monkeypatch, engine_factory, recent: datetime, now: dateti
     _group_send_pacing_fixture(engine, recent_at=recent, now=now)
     sleeps: list[float] = []
     monkeypatch.setattr(task_dispatcher.time, "sleep", lambda s: sleeps.append(s))
-    monkeypatch.setattr(task_dispatcher, "SessionLocal", sessionmaker(bind=engine, future=True))
     monkeypatch.setattr(task_dispatcher, "_now", lambda: now)
     return task_dispatcher, engine, sleeps
 
@@ -469,7 +467,7 @@ def test_group_send_final_gate_anchors_send_time_after_recent_point(monkeypatch)
     )
     with Session(engine) as session:
         mine = session.get(Action, "action-mine")
-        task_dispatcher._enforce_group_send_final_gate(mine)
+        task_dispatcher._enforce_group_send_final_gate(session, mine)
         session.expire_all()
         anchored = session.get(Action, "action-mine")
 
@@ -488,7 +486,7 @@ def test_group_send_final_gate_no_wait_when_timeline_clear(monkeypatch) -> None:
     with Session(engine) as session:
         mine = session.get(Action, "action-mine")
         original_at = mine.scheduled_at
-        task_dispatcher._enforce_group_send_final_gate(mine)
+        task_dispatcher._enforce_group_send_final_gate(session, mine)
 
     assert sleeps == []
     with Session(engine) as session:
