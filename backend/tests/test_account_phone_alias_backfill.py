@@ -8,12 +8,15 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 from app.database import Base
-from app.models import AccountPool, AuditLog, Tenant, TgAccount, TgAccountPhoneFingerprintAlias
+from app.models import AccountPool, AuditLog, TelegramDeveloperApp, Tenant, TgAccount, TgAccountPhoneFingerprintAlias
+from app.schemas.accounts import TgAccountCreate
 from app.security import encrypt_secret
 from app.services._common import _now
+from app.services import account_phone_aliases
 from app.services.account_login import binding
 from app.services.account_login.contracts import BatchLoginError
 from app.services.account_login.preview import _missing_current_alias_count
+from app.services.accounts import create_account, soft_delete_account
 
 
 pytestmark = pytest.mark.no_postgres
@@ -22,13 +25,20 @@ pytestmark = pytest.mark.no_postgres
 @pytest.fixture()
 def session_factory(monkeypatch):
     settings = SimpleNamespace(account_batch_phone_fingerprint_versions="1")
-    monkeypatch.setattr(binding, "get_settings", lambda: settings)
+    monkeypatch.setattr(account_phone_aliases, "get_settings", lambda: settings)
     engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine, expire_on_commit=False, future=True)
     with factory() as session:
         session.add(Tenant(id=1, name="手机号别名回填测试租户"))
         session.add(AccountPool(id=10, tenant_id=1, name="目标分组", pool_purpose="normal"))
+        session.add(TelegramDeveloperApp(
+            id=20,
+            app_name="手机号别名测试应用",
+            api_id=10020,
+            api_hash_ciphertext=encrypt_secret("phone-alias-api-hash"),
+            credentials_version=1,
+        ))
         session.commit()
     yield factory
     engine.dispose()
@@ -91,3 +101,40 @@ def test_backfill_blocks_duplicate_live_accounts(session_factory) -> None:
     assert preview["conflicts"] == 1
     assert aliases == []
     assert audit_log is None
+
+
+def test_create_account_writes_phone_alias(session_factory) -> None:
+    with session_factory() as session:
+        account = create_account(
+            session,
+            TgAccountCreate(tenant_id=1, pool_id=10, display_name="新增账号", phone_number="+12025550123"),
+            "tester",
+        )
+        aliases = list(session.scalars(select(TgAccountPhoneFingerprintAlias)))
+        missing_live_aliases = _missing_current_alias_count(session)
+
+    assert len(aliases) == 1
+    assert aliases[0].account_id == account.id
+    assert missing_live_aliases == 0
+
+
+def test_soft_delete_deactivates_phone_alias_for_reuse(session_factory) -> None:
+    with session_factory() as session:
+        first = create_account(
+            session,
+            TgAccountCreate(tenant_id=1, pool_id=10, display_name="待删除账号", phone_number="+12025550124"),
+            "tester",
+        )
+        soft_delete_account(session, first.id, "tester", "测试复用手机号")
+        second = create_account(
+            session,
+            TgAccountCreate(tenant_id=1, pool_id=10, display_name="重建账号", phone_number="+12025550124"),
+            "tester",
+        )
+        alias = session.scalar(select(TgAccountPhoneFingerprintAlias))
+        missing_live_aliases = _missing_current_alias_count(session)
+
+    assert alias is not None
+    assert alias.is_active is True
+    assert alias.account_id == second.id
+    assert missing_live_aliases == 0

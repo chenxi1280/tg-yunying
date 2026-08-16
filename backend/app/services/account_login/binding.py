@@ -1,19 +1,26 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from dataclasses import dataclass
 
-from sqlalchemy import and_, or_, select, text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.config import get_settings
 from app.models import (
     AccountPool,
     TgAccount,
     TgAccountLoginBatchItem,
     TgAccountPhoneFingerprintAlias,
+)
+from app.services.account_phone_aliases import (
+    PhoneAliasConflict,
+    accepted_phone_fingerprint_versions,
+    account_for_phone_fingerprints,
+    ensure_phone_aliases_for_account,
+    insert_phone_aliases,
+    lock_phone_fingerprints,
+    missing_phone_aliases,
+    phone_fingerprints,
 )
 from app.security import decrypt_secret, encrypt_secret
 from app.services._common import _now, audit
@@ -22,7 +29,7 @@ from app.services.developer_apps import first_assignable_developer_app
 from app.services.tenants import ensure_account_quota_available
 
 from .contracts import BatchLoginError
-from .identity import parse_code_source_url, phone_fingerprints
+from .identity import parse_code_source_url
 
 
 @dataclass(frozen=True)
@@ -46,14 +53,14 @@ def bind_or_create_account(
     phone = decrypt_secret(item.phone_ciphertext)
     if not phone:
         raise BatchLoginError("account_create_failed", "手机号凭据不可用", line_no=item.line_no)
-    fingerprints = phone_fingerprints(item.tenant_id, phone, _accepted_versions())
-    _lock_phone_fingerprints(session, item.tenant_id, fingerprints)
-    existing = _account_for_fingerprints(session, item.tenant_id, fingerprints)
+    fingerprints = phone_fingerprints(item.tenant_id, phone, accepted_phone_fingerprint_versions())
+    lock_phone_fingerprints(session, item.tenant_id, fingerprints)
+    existing = _batch_account_for_fingerprints(session, item.tenant_id, fingerprints)
     if existing:
         item.account_id = existing.id
         return AccountBindingResult(existing, False)
     account = _create_account(session, item, pool_id, phone, actor)
-    _insert_aliases(session, account, fingerprints)
+    _batch_insert_aliases(session, account, fingerprints)
     item.account_id = account.id
     return AccountBindingResult(account, True)
 
@@ -89,53 +96,22 @@ def _create_account(
     return account
 
 
-def _account_for_fingerprints(
+def _batch_account_for_fingerprints(
     session: Session,
     tenant_id: int,
     fingerprints: dict[int, str],
 ) -> TgAccount | None:
-    aliases = list(session.scalars(select(TgAccountPhoneFingerprintAlias).where(
-        TgAccountPhoneFingerprintAlias.tenant_id == tenant_id,
-        TgAccountPhoneFingerprintAlias.is_active.is_(True),
-        or_(*[
-            and_(TgAccountPhoneFingerprintAlias.key_version == version, TgAccountPhoneFingerprintAlias.fingerprint == value)
-            for version, value in fingerprints.items()
-        ]),
-    ).with_for_update()))
-    account_ids = {alias.account_id for alias in aliases}
-    if len(account_ids) > 1:
-        raise BatchLoginError("code_source_binding_conflict", "手机号身份别名冲突")
-    if not account_ids:
-        return None
-    account = session.get(TgAccount, account_ids.pop())
-    if not account:
-        raise BatchLoginError("code_source_binding_conflict", "手机号关联到已删除账号")
-    if account.deleted_at is not None:
-        raise BatchLoginError("soft_deleted_account_conflict", "手机号关联到已删除账号")
-    return account
-
-
-def _lock_phone_fingerprints(session: Session, tenant_id: int, fingerprints: dict[int, str]) -> None:
-    if not session.bind or session.bind.dialect.name != "postgresql":
-        return
-    for version, fingerprint in sorted(fingerprints.items()):
-        digest = hashlib.sha256(f"{tenant_id}:{version}:{fingerprint}".encode()).digest()
-        lock_key = int.from_bytes(digest[:8], "big", signed=True)
-        session.execute(text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": lock_key})
-
-
-def _insert_aliases(session: Session, account: TgAccount, fingerprints: dict[int, str]) -> None:
     try:
-        for version, fingerprint in sorted(fingerprints.items()):
-            session.add(TgAccountPhoneFingerprintAlias(
-                tenant_id=account.tenant_id,
-                account_id=account.id,
-                key_version=version,
-                fingerprint=fingerprint,
-            ))
-        session.flush()
-    except IntegrityError as exc:
-        raise BatchLoginError("code_source_binding_conflict", "手机号身份别名并发冲突") from exc
+        return account_for_phone_fingerprints(session, tenant_id, fingerprints)
+    except PhoneAliasConflict as exc:
+        raise BatchLoginError(exc.code, str(exc)) from exc
+
+
+def _batch_insert_aliases(session: Session, account: TgAccount, fingerprints: dict[int, str]) -> None:
+    try:
+        insert_phone_aliases(session, account, fingerprints)
+    except PhoneAliasConflict as exc:
+        raise BatchLoginError(exc.code, str(exc)) from exc
 
 
 def bind_account_code_source(
@@ -227,7 +203,7 @@ def backfill_phone_aliases(
         if _alias_conflicts(session, candidate.account, candidate.fingerprints):
             result["conflicts"] += 1
             continue
-        missing = _missing_aliases(session, candidate.account, candidate.fingerprints)
+        missing = missing_phone_aliases(session, candidate.account, candidate.fingerprints)
         result["created"] += len(missing)
         plans.append((candidate.account, missing))
     if apply and result["conflicts"]:
@@ -235,7 +211,7 @@ def backfill_phone_aliases(
         raise BatchLoginError("code_source_binding_conflict", "手机号别名回填存在冲突，未应用")
     if apply:
         for account, missing in plans:
-            _insert_aliases(session, account, missing)
+            _batch_insert_aliases(session, account, missing)
         audit(
             session,
             tenant_id=tenant_id,
@@ -259,7 +235,7 @@ def _phone_alias_candidates(accounts: list[TgAccount], tenant_id: int) -> tuple[
             continue
         candidates.append(PhoneAliasCandidate(
             account,
-            phone_fingerprints(tenant_id, phone, _accepted_versions()),
+            phone_fingerprints(tenant_id, phone, accepted_phone_fingerprint_versions()),
         ))
     return candidates, missing_phone
 
@@ -305,24 +281,11 @@ def _alias_conflicts(session: Session, account: TgAccount, fingerprints: dict[in
     return False
 
 
-def _missing_aliases(session: Session, account: TgAccount, fingerprints: dict[int, str]) -> dict[int, str]:
-    existing = set(session.scalars(select(TgAccountPhoneFingerprintAlias.key_version).where(
-        TgAccountPhoneFingerprintAlias.tenant_id == account.tenant_id,
-        TgAccountPhoneFingerprintAlias.account_id == account.id,
-        TgAccountPhoneFingerprintAlias.key_version.in_(fingerprints),
-    )))
-    return {version: value for version, value in fingerprints.items() if version not in existing}
-
-
-def _accepted_versions() -> tuple[int, ...]:
-    raw = get_settings().account_batch_phone_fingerprint_versions
-    return tuple(sorted({int(value.strip()) for value in raw.split(",") if value.strip()}))
-
-
 __all__ = [
     "AccountBindingResult",
     "backfill_phone_aliases",
     "bind_account_code_source",
     "bind_or_create_account",
+    "ensure_phone_aliases_for_account",
     "reveal_account_code_source",
 ]

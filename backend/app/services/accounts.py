@@ -38,6 +38,7 @@ from app.storage import object_path, preview_url, save_avatar_bytes
 
 from ._common import _is_expired, _now, audit, gateway, get_account_phone, mask_phone, require_tenant
 from .account_authorizations import attempt_primary_proxy_recovery, attempt_standby_authorization_recovery, is_proxy_recovery_signal
+from .account_phone_aliases import PhoneAliasConflict, deactivate_account_phone_aliases, ensure_phone_aliases_for_account
 from .account_profile_auto_init import queue_login_profile_initialization
 from .account_profile_identity import DisplayNameConflict, NameClaimRequest, claim_profile_names
 from .account_search import filter_accounts_by_search
@@ -181,6 +182,11 @@ def create_account(session: Session, payload: TgAccountCreate, actor: str = "普
     account = TgAccount(**data)
     session.add(account)
     session.flush()
+    if phone_number:
+        try:
+            ensure_phone_aliases_for_account(session, account, phone_number)
+        except PhoneAliasConflict as exc:
+            raise ValueError(str(exc)) from exc
     if account.account_identity == "normal":
         claim_profile_names(
             session,
@@ -267,6 +273,7 @@ def soft_delete_account(session: Session, account_id: int, actor: str = "普通�
         account.deleted_by = actor
         account.delete_reason = reason
         account.status = AccountStatus.DISABLED.value
+        deactivate_account_phone_aliases(session, account)
         audit(
             session,
             tenant_id=account.tenant_id,

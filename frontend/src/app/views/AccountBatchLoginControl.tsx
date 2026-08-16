@@ -31,6 +31,8 @@ export function AccountBatchLoginControl({ pools, selectedPoolId, canCreateBatch
   const [idempotencyKey, setIdempotencyKey] = React.useState('');
   const enabledPools = pools.filter((pool) => pool.is_enabled);
   const local = localLineStats(linesText);
+  const lineLimit = capability?.max_lines ?? 200;
+  const lineLimitExceeded = local.total > lineLimit;
 
   async function showModal() {
     setOpen(true);
@@ -127,12 +129,13 @@ export function AccountBatchLoginControl({ pools, selectedPoolId, canCreateBatch
       <Modal title="批量登录账号" open={open} width={920} footer={null} destroyOnHidden onCancel={() => setOpen(false)}>
         {error && <Alert type="error" showIcon message={error} />}
         {capability && (!capability.readiness || capability.mode !== 'enabled') && <Alert type="warning" showIcon title="批量登录当前不可用" description={`模式：${capability.mode}；阻塞：${capability.blockers.join('、') || '无'}`} />}
+        {lineLimitExceeded && <Alert type="error" showIcon message={`当前 ${local.total} 行，单批次最多 ${lineLimit} 行`} />}
         {!preview ? (
           <Space orientation="vertical" size={12} style={{ width: '100%' }}>
             <label>目标分组<Select style={{ width: '100%' }} value={poolId} onChange={setPoolId} options={enabledPools.map((pool) => ({ value: pool.id, label: pool.name }))} /></label>
             <label>账号与接码地址<Input.TextArea rows={10} value={linesText} onChange={(event) => setLinesText(event.target.value)} placeholder={'+12025550123|https://tgbotchecker.com/GetHTML?uuid=<32位uuid>'} /></label>
-            <Typography.Text type="secondary">共 {local.total} 行 / 格式有效 {local.valid} 行 / 手机号重复 {local.phoneDuplicates} 行 / UUID 重复 {local.uuidDuplicates} 行</Typography.Text>
-            <Space><Button onClick={() => setOpen(false)}>取消</Button><Button type="primary" loading={loading} disabled={!poolId || !linesText.trim() || capability?.readiness !== true || capability.mode !== 'enabled'} onClick={() => void precheck()}>预检并确认</Button></Space>
+            <Typography.Text type="secondary">共 {local.total} 行 / 上限 {lineLimit} 行 / 格式有效 {local.valid} 行 / 手机号重复 {local.phoneDuplicates} 行 / UUID 重复 {local.uuidDuplicates} 行</Typography.Text>
+            <Space><Button onClick={() => setOpen(false)}>取消</Button><Button type="primary" loading={loading} disabled={!poolId || !linesText.trim() || lineLimitExceeded || capability?.readiness !== true || capability.mode !== 'enabled'} onClick={() => void precheck()}>预检并确认</Button></Space>
           </Space>
         ) : (
           <Space orientation="vertical" size={12} style={{ width: '100%' }}>

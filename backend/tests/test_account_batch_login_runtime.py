@@ -44,6 +44,15 @@ def test_batch_login_runtime_configuration_fails_closed() -> None:
         _validate_account_batch_login_settings(_runtime_settings("enabled", worker_concurrency=0))
 
 
+def test_batch_login_runtime_allows_200_line_batches() -> None:
+    settings = _runtime_settings("enabled")
+    settings.account_batch_login_max_lines = 200
+    _validate_account_batch_login_settings(settings)
+    settings.account_batch_login_max_lines = 201
+    with pytest.raises(ValueError, match="between 1 and 200"):
+        _validate_account_batch_login_settings(settings)
+
+
 @pytest.mark.parametrize(
     ("mode", "expected", "batch_calls"),
     [("off", 0, 0), ("reconcile_only", 5, 0), ("enabled", 12, 1)],

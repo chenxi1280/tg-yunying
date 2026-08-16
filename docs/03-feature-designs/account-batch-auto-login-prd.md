@@ -136,10 +136,10 @@
    ```
 
    - 前端本地显示「共 N 行 / 格式有效 M 行 / 手机号重复 K 行 / UUID 重复 U 行」；同一 UUID 不能对应批内多个号码。后端预检只给出 `create/existing_probe_required`，不在未访问 Telegram 时伪造 relogin/already-authorized。
-   - 行格式：`phone|url`，竖线分隔，允许行内出现成对反引号包裹 URL（用户粘贴示例含 Markdown 反引号，解析时剥离）；空行忽略；单批次上限 **100 行**（对齐 `BATCH_SELECTION_LIMIT`）。
+   - 行格式：`phone|url`，竖线分隔，允许行内出现成对反引号包裹 URL（用户粘贴示例含 Markdown 反引号，解析时剥离）；空行忽略；单批次上限 **200 行**，由后端 capability 返回并由前端同步展示/拦截。
    - phone 规范：`+` 开头 E.164；url 必须为 `https://` 且主机在接码平台白名单（默认 `tgbotchecker.com`，后端配置项，见 8.4）。
 3. **操作原因**：`Input.TextArea rows=2 maxLength=255 showCount`，必填。所选分组是每个成功/已授权行的目标终态，不再提供默认不迁移的歧义选项。
-4. 操作按钮：「取消」「预检并确认」。预检展示 create/existing 候选数、将迁移的既有账号清单、UUID 接码备注预览、当前排队位置、估算/最坏完成时间与凭据失效时间；100 行全部耗尽 300s 时最坏约 8h20m（另加排队/行间隔），必须显示而非隐藏。既有账号已绑定不同 UUID 时逐行显示旧/新脱敏提示，必须显式勾选「替换接码绑定」并提交旧 binding version，不能静默覆盖。
+4. 操作按钮：「取消」「预检并确认」。预检展示 create/existing 候选数、将迁移的既有账号清单、UUID 接码备注预览、当前排队位置、估算/最坏完成时间与凭据失效时间；200 行全部耗尽 300s 时最坏约 16h40m（另加排队/行间隔），必须显示而非隐藏。既有账号已绑定不同 UUID 时逐行显示旧/新脱敏提示，必须显式勾选「替换接码绑定」并提交旧 binding version，不能静默覆盖。
 
 确认请求必须重传原始输入和分组选项，并携带后端返回的 `preview_token + preview_fingerprint` 与前端生成的 `idempotency_key`；提交成功后关闭弹窗、打开批次详情 Drawer，并提示「批次已创建，正在按行执行」。
 
@@ -395,7 +395,7 @@ phase 以 `(attempt_id, generation, state_version, lease_token)` CAS，网络调
 自动化（`backend/.venv`，缩短时钟，fake HTTP/Gateway 只模拟故障不伪造业务成功）：
 
 1. 解析/SSRF：E.164、精确 host/path/query、userinfo/fragment/重复 query、redirect、超 256 KiB、DNS rebind、peer IP、IPv4/IPv6 私网/保留/fake-IP 全部定向覆盖。
-2. precheck/确认：只给 create/existing 候选、UUID 备注/冲突、迁池清单、队列位置、ETA 与约 8 小时 20 分的 100 行纯等待上界；覆盖手机号/UUID 批内重复、跨账号 binding 冲突、显式替换、preview 漂移、幂等冲突和软删除。
+2. precheck/确认：只给 create/existing 候选、UUID 备注/冲突、迁池清单、队列位置、ETA 与约 16 小时 40 分的 200 行纯等待上界；覆盖手机号/UUID 批内重复、跨账号 binding 冲突、显式替换、preview 漂移、幂等冲突和软删除。
 3. 授权探测：ACTIVE/session 不得直接判在线；fresh direct probe 的 true/false/error 分别进入 already-authorized/relogin/typed failure，probe error 不发 code。
 4. 建号顺序：新号必须 baseline 成功后才建账号；非法/错误/不可达地址不得遗留账号、行 alias 或半成品事务。
 5. 状态机：flow owner、code HMAC/login-time HMAC 变化、code+2FA、FloodWait、单行错误继续下一行；仅已进入目标分组的行计 success，分组 CAS 失败只补分组且不重复登录，资料同步/online readback 失败为 warning。

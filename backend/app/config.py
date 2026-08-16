@@ -131,8 +131,8 @@ def _validate_dispatch_runtime_settings(settings: object) -> None:
 def _validate_account_batch_login_settings(settings: object) -> None:
     if settings.account_batch_login_mode not in {"off", "reconcile_only", "enabled"}:
         raise ValueError("ACCOUNT_BATCH_LOGIN_MODE must be off, reconcile_only, or enabled")
-    if settings.account_batch_login_max_lines < 1 or settings.account_batch_login_max_lines > 100:
-        raise ValueError("ACCOUNT_BATCH_LOGIN_MAX_LINES must be between 1 and 100")
+    if settings.account_batch_login_max_lines < 1 or settings.account_batch_login_max_lines > 200:
+        raise ValueError("ACCOUNT_BATCH_LOGIN_MAX_LINES must be between 1 and 200")
     if settings.account_batch_login_item_deadline_seconds < 1:
         raise ValueError("ACCOUNT_BATCH_LOGIN_ITEM_DEADLINE_SECONDS must be positive")
     if not 1 <= settings.account_batch_login_code_wait_seconds <= settings.account_batch_login_item_deadline_seconds:
@@ -253,7 +253,7 @@ class Settings:
     embedded_worker_limit: int = int(os.getenv("EMBEDDED_WORKER_LIMIT", "100"))
     worker_role: str = os.getenv("WORKER_ROLE", "all")
     account_batch_login_mode: str = os.getenv("ACCOUNT_BATCH_LOGIN_MODE", "off").strip().lower()
-    account_batch_login_max_lines: int = int(os.getenv("ACCOUNT_BATCH_LOGIN_MAX_LINES", "100"))
+    account_batch_login_max_lines: int = int(os.getenv("ACCOUNT_BATCH_LOGIN_MAX_LINES", "200"))
     account_batch_login_item_deadline_seconds: int = int(os.getenv("ACCOUNT_BATCH_LOGIN_ITEM_DEADLINE_SECONDS", "300"))
     account_batch_login_code_wait_seconds: int = int(os.getenv("ACCOUNT_BATCH_LOGIN_CODE_WAIT_SECONDS", "120"))
     account_batch_login_poll_interval_seconds: int = int(os.getenv("ACCOUNT_BATCH_LOGIN_POLL_INTERVAL_SECONDS", "3"))

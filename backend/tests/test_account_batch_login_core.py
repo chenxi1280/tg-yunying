@@ -372,7 +372,8 @@ class _SuccessfulTwoFaGateway:
 
 
 def test_full_new_account_two_fa_flow_persists_binding_without_password(session_factory, monkeypatch) -> None:
-    from app.services.account_login import binding, drain, local_phases, remote_phases
+    from app.services import account_phone_aliases
+    from app.services.account_login import drain, local_phases, remote_phases
 
     with session_factory() as session:
         batch = create_login_batch(
@@ -384,7 +385,7 @@ def test_full_new_account_two_fa_flow_persists_binding_without_password(session_
         )
     settings = _settings()
     settings.account_batch_login_host_min_interval_seconds = 0
-    for module in (binding, drain, local_phases, remote_phases):
+    for module in (account_phone_aliases, drain, local_phases, remote_phases):
         monkeypatch.setattr(module, "get_settings", lambda: settings)
     login_gateway = _SuccessfulTwoFaGateway()
     monkeypatch.setattr(remote_phases, "gateway", login_gateway)
