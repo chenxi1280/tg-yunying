@@ -3,10 +3,12 @@
 > 日期口径：2026-08-15（Asia/Shanghai）
 > 适用范围：TG 账号管理、账号分组（AccountPool）、登录 flow、后台 worker、审计。
 > 定位：**当前**专项合同。与 [account-login-group-navigation-recovery-prd.md](account-login-group-navigation-recovery-prd.md)（单账号登录 flow 合同）、[existing-account-reauthorization-routing-prd.md](existing-account-reauthorization-routing-prd.md)（已有账号重登语义）、[account-standby-auto-authorization-prd.md](account-standby-auto-authorization-prd.md)（备用授权自动补齐）互补，不改变既有单账号登录语义。
-> 基础批量登录状态：`production_fixed`（2026-08-15 已完成两条真实 E4）；本次“任务中心 + 并行登录 + 200 行详情/超时归因修正 + 远端阶段卡死隔离”增量：`design_status=product_design_complete`、`implementation_status=local_implemented`、`qa_status=targeted_passed`、`release_status=not_released`、`production_status=unproven`。
+> 基础批量登录状态：`production_fixed`（2026-08-15 已完成两条真实 E4）；本次“任务中心 + 并行登录 + 200 行详情/超时归因修正 + 远端阶段卡死隔离”增量：上一轮已部署到 `7587716c` 并生产读回；本轮“提醒去重 + 任务中心 200 + 多抽屉错位”补充为 `implementation_status=local_implemented`、`release_status=pending_current_release`、`production_status=pending_readback`。2026-08-16 生产 #4 重试后 191/200 成功，仍有 8 failed + 1 unresolved，后续修复继续以生产读回为准。
 
 > 2026-08-16 线上复盘补充：批次 #4 的 200 行生产批次只读核验显示 174 成功、26 失败，失败行均为新建账号路径，`send_code=confirmed`，但 `code_verify/twofa=none`；接码页当前可读且 code/2FA 字段存在。因此这些失败发生在等待新验证码阶段，不是 Telegram 明确拒绝。重试前置状态全部满足，但未在本次只读核验中触发生产重试。详情 Drawer/API 必须默认支持 200 行；等待验证码窗口到期应优先展示 `code_timeout`，只有总单行预算先耗尽才展示 `item_deadline_exceeded`。
 > 2026-08-16 重试复盘补充：批次 #4 的失败行重试后出现 account-login worker 健康为 healthy 但 drain 日志停止、DB 中到期等待行和过期 running lease 未被继续处理的现象。根因边界是同轮并行 claim 中单个 Telegram 远端阶段可阻塞 `future.result()`，导致其它到期行饥饿。worker 并行执行必须在 lease 窗口后让主循环继续；未完成远端调用由既有 started/lease/reconcile fence 回收，不能因单行卡死拖死整批。
+> 2026-08-16 提醒与任务入口复盘补充：同一批次重试后可能产生多个 `initial` 平台提醒；全局提醒列表必须只展示每个批次最新 initial，避免旧的 174/26 结果与新的 191/8/1 结果同时误导。登录任务中心必须恢复最近 200 个批次；详情 Drawer 支持多个批次同时打开时用错位堆叠展示，而不是完全覆盖。
+> 2026-08-16 重试操作补充：详情顶部提供「重试失败行」，只批量重试 retry_count 未超限的 `failed` 行；`unresolved` 因远端结果未知，仍必须逐行确认对账状态后重试，禁止一键批量重发 unknown。
 
 ## 1. 背景与原始需求
 
@@ -150,7 +152,7 @@
 
 - 任务中心使用 `GET /login-batches` 恢复服务端事实，运行中任务优先、最近任务按 ID 倒序；显示批次 ID、状态、目标分组、创建人、总数与六类计数、创建/完成时间及「查看详情」。
 - 账号页打开期间每 5 秒刷新任务列表；关闭任务中心、关闭详情或刷新浏览器都不改变批次执行。新建批次后立即加入任务中心并打开该批次详情，既有任务不被覆盖。
-- 可以连续创建多个批次；同批多行及跨批次都由 worker 并行推进，任务中心分别展示，不把多个批次合并成一个状态。详情 Drawer 一次查看一个批次，关闭后随时从任务中心重开。
+- 可以连续创建多个批次；同批多行及跨批次都由 worker 并行推进，任务中心分别展示，不把多个批次合并成一个状态。任务中心最近恢复上限与单批上限一致为 200；详情 Drawer 支持多个批次同时打开，前端按打开顺序错位堆叠，关闭后随时从任务中心重开。
 - 详情 Drawer 打开批次时必须请求并展示单批上限内的全部行（当前 200 行），后端详情 API 的 `item_limit` 默认值和上限必须与单批上限一致，不能因默认分页只显示前 100 行。
 
 复用 `AccountSecurityBatchDrawer` 的 Drawer + 状态映射模式：
@@ -158,12 +160,12 @@
 - 顶部：`queued/running/completed/completed_with_unresolved/cancelled`、目标分组、总数/成功/失败/未解/警告/跳过、排队位置和预计时间。
 - 行项表格：行号、掩码手机号、路由候选/实际路由、generation、phase、status、失败/未解/警告原因、重试次数与时间。`reconciling/unresolved` 分别显示「确认中/需持续对账」，不伪装成失败。
 - 详情打开期间前端每 5s 轮询刷新（对齐项目既有轮询模式）；单行失败/超时被跳过时表格即时可见该行 `failed` 且下一行进入执行（跳过语义见 8.2）。
-- 操作：批次「取消」；failed/unresolved 行「重试」；凭据过期行先「更新接码链接」。unresolved 重试必须弹出独立重复调用风险确认。
+- 操作：批次「取消」；顶部「重试失败行」批量重试 failed 行；failed/unresolved 行仍保留单行「重试」；凭据过期行先「更新接码链接」。unresolved 重试必须独立确认远程未知风险，不能被批量按钮覆盖。
 - 「查看账号」链接：行项已有 account_id 时跳账号详情。
 - 账号列表与详情增加只读「接码备注」：默认只显示 host 与 UUID 脱敏提示；有权用户可点「查看完整 UUID」，必须填写原因并产生审计。普通列表、批次提醒和导出不返回完整值。
 - **批次完成提醒**：全局应用壳轮询持久提醒事件（不限账号页/Drawer 是否打开）；Drawer 只负责详情展示：
   - Alert 显示「成功 X / 失败 Y / 未解 U / 警告 W / 跳过 Z」，失败与未解分列；未解不进入“已确定失败”清单。
-  - 平台按 `batch_id + execution_generation + resolution_version` 消费提醒；迟到对账改变结果后产生 correction 事件，正文显示哪些行从 unresolved 改为 succeeded/failed。
+  - 平台按 `batch_id + execution_generation + resolution_version` 持久保存提醒；列表消费时同一批次只展示最新 initial，correction 单独展示并 ack，避免同批重试后旧 initial 与新 initial 同时误导。迟到对账改变结果后产生 correction 事件，正文显示哪些行从 unresolved 改为 succeeded/failed。
   - 用户离线后再次登录仍能读取未确认提醒；用户确认后写 `acknowledged_at`，不能依赖瞬时状态变化。
 
 ### 7.4 前端不做的事
@@ -441,7 +443,7 @@ phase 以 `(attempt_id, generation, state_version, lease_token)` CAS，网络调
 - 每行 UUID 到最终账号的接码备注、加密 binding、冲突替换、权限查看和改名后保留已有唯一合同。
 - 公平调度、全局限速、fingerprint 轮换去重、并发/幂等、flow 归属、mode gate、事务边界、数据保留、发布/回滚和 E4 均有验证口径。
 - 唯一外部约束是供应页无号码字段，已以明示风险确认处置，不阻塞开发。
-- 本次增量结论：`design_status=product_design_complete`；`implementation_status=local_implemented`；`qa_status=targeted_passed`；`release_status=not_released`；`production_status=unproven`。任务中心源码合同、TypeScript/Vite 构建、同批/跨批并行、lease/retry 跳过、权限及 runtime config 定向回归已通过；基础批量登录的既有生产状态与本增量是否上线必须分开记录。
+- 本次增量结论：上一轮 `7587716c` 已生产读回；本轮提醒/任务中心补充当前为 `design_status=product_design_complete`；`implementation_status=local_implemented`；`qa_status=pending_current_gate`；`release_status=pending_current_release`；`production_status=pending_readback`。任务中心源码合同、TypeScript/Vite 构建、同批/跨批并行、lease/retry 跳过、权限及 runtime config 定向回归已通过；生产 #4 已证实 17 个失败行重试成功，仍有 8 failed + 1 unresolved，不能写全量 `production_fixed`。
 
 ## 17. 备注
 
@@ -454,12 +456,12 @@ phase 以 `(attempt_id, generation, state_version, lease_token)` CAS，网络调
 ## 18. 本地实现与验证记录（2026-08-15）
 
 - 本次增量在隔离分支增加常驻「登录任务」入口、运行中 Badge、服务端最近批次恢复、独立详情重开和 `ACCOUNT_BATCH_LOGIN_WORKER_CONCURRENCY`（默认 4）；worker 先按租户/批次公平分槽，再允许同批后续 item 补槽，首行未来 retry/有效 lease/reconciling 不再阻塞后续行。
-- 本次增量本地证据：批量登录完整非 PostgreSQL 定向集合 `41 passed`，前端权限回归 `155 passed`，前端 `tsc + vite build` 通过；本增量尚未合并、发布或执行新的生产 E4。
+- 本次增量已合并并部署到 `release`/生产，生产当前部署曾读回 `7587716c`；本地证据包括批量登录完整非 PostgreSQL 定向集合、前端权限回归、前端 `tsc + vite build`，生产 E4 以批次 #4 的当前只读读回为准。
 - 已在隔离分支实现并合并回本地 `release`：0148 migration、批次/行项/attempt/持久提醒/手机号 alias/rate bucket、严格接码 URL 与 HTML 解析、单 item 内 phase 串行状态机、远程未知对账、更正提醒、权限/mode/readiness、前端预检与进度 Drawer、账号独立接码备注及受控 UUID reveal。
 - 行级异常合同已落为自动化用例：验证码/行总预算超时后进入失败并继续下一行；远程调用结果未知进入 `unresolved` 后让出顺序；未决重试必须完成探测并 supersede 旧 attempt；取消跳过未开始行；完成提醒分列失败、未解、警告；Bot outbox 在 worker 崩溃后可按持久租约重新认领。
 - 本地证据：相关后端集合 `84 passed`；前端 `tsc + vite build` 通过；Alembic 批量登录表由 `0148_account_batch_login` 创建，`0149_batch_login_principal` 允许内置系统管理员作为批次/提醒主体；PostgreSQL 空库 migration、Compose YAML、部署脚本语法、Python 编译与差异检查均纳入发布闸门。
 - 敏感值边界：真实手机号和 UUID 不写入代码、测试、日志或本文；账号保存加密 UUID 并仅显示 `平台 · 前6位…后4位`，完整值需要双权限、操作原因、binding version 与 no-store 响应。
-- 未执行：生产 migration、手机号 alias 回填、`reconcile_only/enabled` 切换、生产 worker 启动、真实 Telegram 批量授权与 E4 故障注入。因此当前只能写本地实现/定向 QA 通过，不能写已上线或生产修复。
+- 后续验证边界：生产 migration、手机号 alias 回填、`enabled` mode、worker、真实 Telegram 批量授权均已执行过线上读回；但 #4 当前仍有 8 failed + 1 unresolved，必须继续按行级事实处理，不能把发布成功写成全量登录成功。
 
 ## 附录 A：接码链接实测记录（2026-08-15）
 

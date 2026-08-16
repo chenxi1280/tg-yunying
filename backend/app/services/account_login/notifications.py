@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Callable
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.admin_chats import send_admin_chat_broadcast
@@ -182,10 +182,20 @@ def list_platform_notifications(
     *,
     unacknowledged: bool,
 ) -> list[dict[str, object]]:
+    latest_initial_ids = select(func.max(TgAccountLoginBatchNotification.id)).where(
+        TgAccountLoginBatchNotification.tenant_id == tenant_id,
+        TgAccountLoginBatchNotification.recipient_user_id == user_id,
+        TgAccountLoginBatchNotification.channel == "platform",
+        TgAccountLoginBatchNotification.event_type == "initial",
+    ).group_by(TgAccountLoginBatchNotification.batch_id)
     query = select(TgAccountLoginBatchNotification).where(
         TgAccountLoginBatchNotification.tenant_id == tenant_id,
         TgAccountLoginBatchNotification.recipient_user_id == user_id,
         TgAccountLoginBatchNotification.channel == "platform",
+        or_(
+            TgAccountLoginBatchNotification.event_type != "initial",
+            TgAccountLoginBatchNotification.id.in_(latest_initial_ids),
+        ),
     )
     if unacknowledged:
         query = query.where(TgAccountLoginBatchNotification.acknowledged_at.is_(None))

@@ -7,7 +7,7 @@ import { formatBeijingDateTime } from '../time';
 import { isActiveLoginBatch, loginStatusColor, loginStatusLabel } from './accountBatchLoginPresentation';
 
 const TASK_LIST_POLL_MS = 5_000;
-const TASK_LIST_LIMIT = 100;
+const TASK_LIST_LIMIT = 200;
 
 interface Props {
   open: boolean;

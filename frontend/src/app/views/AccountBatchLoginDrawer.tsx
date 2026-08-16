@@ -7,15 +7,17 @@ import { formatBeijingDateTime } from '../time';
 import { loginStatusColor, loginStatusLabel, TERMINAL_LOGIN_BATCH_STATUSES } from './accountBatchLoginPresentation';
 
 const LOGIN_BATCH_DETAIL_ITEM_LIMIT = 200;
+const DRAWER_STACK_OFFSET_PX = 36;
 
 interface Props {
   batchId: number | null;
   pools: AccountPool[];
+  stackIndex: number;
   onClose: () => void;
   onOpenAccountDetail: (account: Account) => void;
 }
 
-export function AccountBatchLoginDrawer({ batchId, pools, onClose, onOpenAccountDetail }: Props) {
+export function AccountBatchLoginDrawer({ batchId, pools, stackIndex, onClose, onOpenAccountDetail }: Props) {
   const [batch, setBatch] = React.useState<AccountBatchLogin | null>(null);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState('');
@@ -79,6 +81,29 @@ export function AccountBatchLoginDrawer({ batchId, pools, onClose, onOpenAccount
       await reload();
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : '重试失败');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function retryFailedItems() {
+    if (!batch) return;
+    const retryableItems = (batch.items || []).filter(canBulkRetryFailed);
+    if (!retryableItems.length) return;
+    setLoading(true);
+    try {
+      await api(`/tg-accounts/login-batches/${batch.id}/retry`, {
+        method: 'POST',
+        body: JSON.stringify({
+          item_ids: retryableItems.map((item) => item.id),
+          expected_state_version: batch.state_version,
+          reason: '操作员从批次详情批量重试失败行',
+        }),
+      });
+      void message.success(`${retryableItems.length} 行失败项已重新排队`);
+      await reload();
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : '批量重试失败');
     } finally {
       setLoading(false);
     }
@@ -162,9 +187,18 @@ export function AccountBatchLoginDrawer({ batchId, pools, onClose, onOpenAccount
   ];
 
   const targetPool = pools.find((pool) => pool.id === batch?.pool_id);
+  const offset = stackIndex * DRAWER_STACK_OFFSET_PX;
   return (
     <>
-      <Drawer title={batch ? `批量登录 #${batch.id}` : '批量登录'} open={batchId !== null} width={1120} onClose={onClose}>
+      <Drawer
+        title={batch ? `批量登录 #${batch.id}` : '批量登录'}
+        open={batchId !== null}
+        width={1120}
+        zIndex={1000 + stackIndex}
+        mask={stackIndex === 0}
+        style={offset ? { transform: `translateX(-${offset}px)` } : undefined}
+        onClose={onClose}
+      >
         {error && <Alert type="error" showIcon message={error} />}
         {batch && (
           <>
@@ -177,6 +211,7 @@ export function AccountBatchLoginDrawer({ batchId, pools, onClose, onOpenAccount
             {batch.unresolved_count > 0 && <Alert showIcon type="warning" title="存在远程结果未解行" description="这些行已经让出批内顺序，后台会持续对账；权威结果变化时会发送更正提醒。" />}
             <Space style={{ margin: '16px 0' }}>
               <Button loading={loading} onClick={() => void reload()}>刷新</Button>
+              <Button loading={loading} disabled={!batch.items?.some(canBulkRetryFailed)} onClick={() => void retryFailedItems()}>重试失败行</Button>
               {!TERMINAL_LOGIN_BATCH_STATUSES.has(batch.status) && <Button danger loading={loading} onClick={() => void cancelBatch()}>取消批次</Button>}
             </Space>
             <Table rowKey="id" columns={columns} dataSource={batch.items || []} pagination={false} scroll={{ x: 1600 }} />
@@ -197,6 +232,10 @@ function canRetry(item: AccountBatchLoginItem) {
   if (item.retry_count >= 3) return false;
   if (item.status === 'failed') return true;
   return item.status === 'unresolved' && item.reconcile_attempted && ['pending', 'exhausted', 'manual_review_required'].includes(item.reconcile_status);
+}
+
+function canBulkRetryFailed(item: AccountBatchLoginItem) {
+  return item.status === 'failed' && item.retry_count < 3;
 }
 
 function routeLabel(route: string) {

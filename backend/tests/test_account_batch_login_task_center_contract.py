@@ -26,6 +26,7 @@ def test_login_task_center_recovers_server_batches_and_polls_active_count():
     source = _source("frontend/src/app/views/AccountBatchLoginTaskCenter.tsx")
     presentation = _source("frontend/src/app/views/accountBatchLoginPresentation.ts")
 
+    assert "TASK_LIST_LIMIT = 200" in source
     assert "/tg-accounts/login-batches?limit=${TASK_LIST_LIMIT}&offset=0" in source
     assert "TASK_LIST_POLL_MS = 5_000" in source
     assert "window.setInterval" in source
@@ -38,10 +39,15 @@ def test_login_task_center_recovers_server_batches_and_polls_active_count():
 
 def test_login_batch_detail_drawer_requests_200_items_and_api_allows_them():
     drawer = _source("frontend/src/app/views/AccountBatchLoginDrawer.tsx")
+    control = _source("frontend/src/app/views/AccountBatchLoginControl.tsx")
     router = _source("backend/app/api/routers/account_login_batches.py")
 
     assert "LOGIN_BATCH_DETAIL_ITEM_LIMIT = 200" in drawer
     assert "item_limit=${LOGIN_BATCH_DETAIL_ITEM_LIMIT}" in drawer
+    assert "DRAWER_STACK_OFFSET_PX" in drawer
+    assert "stackIndex={index}" in control
+    assert "重试失败行" in drawer
+    assert "canBulkRetryFailed" in drawer
     assert "LOGIN_BATCH_DETAIL_ITEM_LIMIT = 200" in router
     assert "le=LOGIN_BATCH_DETAIL_ITEM_LIMIT" in router
 

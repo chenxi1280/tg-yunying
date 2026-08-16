@@ -160,11 +160,12 @@ export function AccountBatchLoginControl({ pools, selectedPoolId, canCreateBatch
         onOpenBatch={(selectedBatchId) => { setTaskCenterOpen(false); openBatchDrawer(selectedBatchId); }}
         onActiveCountChange={setActiveBatchCount}
       />
-      {openBatchIds.map((openBatchId) => (
+      {openBatchIds.map((openBatchId, index) => (
         <AccountBatchLoginDrawer
           key={openBatchId}
           batchId={openBatchId}
           pools={pools}
+          stackIndex={index}
           onOpenAccountDetail={onOpenAccountDetail}
           onClose={() => closeBatchDrawer(openBatchId)}
         />

@@ -23,7 +23,7 @@ from app.schemas.account_login import LoginBatchCreateRequest, LoginBatchItemOut
 from app.security import decrypt_session, encrypt_secret
 from app.services.account_login.batches import cancel_login_batch, create_login_batch, retry_login_batch_items
 from app.services.account_login.contracts import BatchLoginError, LoginMaterials
-from app.services.account_login.notifications import finalize_batch_if_terminal
+from app.services.account_login.notifications import finalize_batch_if_terminal, list_platform_notifications
 from app.services.account_login.preview import precheck_login_batch
 
 
@@ -178,6 +178,32 @@ def test_terminal_batch_notification_separates_failure_unknown_and_warning(sessi
     assert summary["unresolved"][0]["reason"] == "login_remote_unknown"
     assert summary["warning"][0]["phone_masked"].endswith("0102")
     assert "00000000000000000000000000000003" not in notifications[0].summary_json
+
+
+def test_platform_notifications_show_latest_initial_after_retry(session_factory) -> None:
+    with session_factory() as session:
+        batch = create_login_batch(session, 1, 20, "测试操作员", _create_payload(session, _lines(), key="batch-key-notify-latest"))
+        item = session.scalar(select(TgAccountLoginBatchItem).where(
+            TgAccountLoginBatchItem.batch_id == batch.id,
+        ))
+        item.status = "failed"
+        item.failure_type = "item_deadline_exceeded"
+        assert finalize_batch_if_terminal(session, batch.id)
+        batch.execution_generation = 2
+        item.status = "succeeded"
+        item.failure_type = ""
+        assert finalize_batch_if_terminal(session, batch.id)
+        session.commit()
+        visible = list_platform_notifications(session, 1, 20, unacknowledged=True)
+        stored = list(session.scalars(select(TgAccountLoginBatchNotification).where(
+            TgAccountLoginBatchNotification.batch_id == batch.id,
+            TgAccountLoginBatchNotification.channel == "platform",
+        )))
+
+    assert len(stored) == 2
+    assert len(visible) == 1
+    assert visible[0]["execution_generation"] == 2
+    assert visible[0]["summary"]["counts"]["success"] == 1
 
 
 def test_expired_bot_delivery_claim_is_recovered_after_worker_crash(session_factory) -> None:
