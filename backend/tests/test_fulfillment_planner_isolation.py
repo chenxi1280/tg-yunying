@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -21,6 +22,7 @@ from app.models import (
 from app.services._common import _now
 from app.services.task_center import dispatcher, service
 from app.services.task_center.channel_fulfillment import ensure_view_obligation
+from app.services.task_center.pacing_persistence import PacingOwnerImmutableConflict
 from app.services.task_center.channel_fulfillment_queries import (
     reaction_account_ids_for_messages,
     view_account_ids_for_messages,
@@ -259,6 +261,58 @@ def test_planner_records_one_task_error_and_continues_other_tasks(
         error = broken.stats["planner_runtime_error"]
         assert error["error_type"] == "ValueError"
         assert error["message"] == "fulfillment_obligation_already_bound"
+
+
+def test_planner_pacing_conflict_uses_typed_blocker_and_long_backoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P0-A：pacing 冻结冲突走 typed blocker + 1 小时退避，不得进入 30 秒通用重试循环。"""
+    session_factory = _session_factory()
+    monkeypatch.setattr(
+        service,
+        "_normal_planner_task_ids",
+        lambda *_args, **_kwargs: ["task-planner-broken", "task-planner-ready"],
+    )
+    monkeypatch.setattr(service, "planner_global_pending", lambda *_args: 0)
+
+    def fake_plan(_factory, task_id, *_args, **kwargs):
+        if task_id == "task-planner-broken":
+            raise PacingOwnerImmutableConflict("pacing_owner_immutable_conflict")
+        return 2, False, int(kwargs.get("global_pending") or 0)
+
+    monkeypatch.setattr(service, "_plan_due_task", fake_plan)
+    _add_planner_tasks(session_factory)
+
+    processed, _ = service._drain_task_planner(
+        session_factory,
+        limit=5,
+        process_type=None,
+    )
+
+    assert processed == 2
+    with session_factory() as current:
+        broken = current.get(Task, "task-planner-broken")
+        conflict = broken.stats["planner_pacing_target_conflict"]
+        assert conflict["error_type"] == "PacingOwnerImmutableConflict"
+        assert conflict["message"] == "pacing_owner_immutable_conflict"
+        assert "planner_runtime_error" not in (broken.stats or {})
+        assert broken.next_run_at is not None
+        assert broken.next_run_at - _now() >= timedelta(minutes=55)
+
+
+def test_planner_clears_pacing_conflict_blocker_after_success() -> None:
+    """规划成功路径（_commit_planned_task → _clear_planner_runtime_error）必须同时
+    清除 pacing 冲突 typed blocker，不得残留过期状态。"""
+    task = Task(id="task-clear", tenant_id=1, name="task-clear", type="channel_view")
+    task.stats = {
+        "planner_runtime_error": {"error_type": "ValueError"},
+        "planner_pacing_target_conflict": {"error_type": "PacingOwnerImmutableConflict"},
+    }
+
+    service._clear_planner_runtime_error(task)
+
+    assert "planner_runtime_error" not in task.stats
+    assert "planner_pacing_target_conflict" not in task.stats
 
 
 def test_content_mix_replan_reads_metadata_from_failed_empty_action(

@@ -31,7 +31,11 @@ from app.services.task_center.account_pacing_guard import (
 )
 from app.services.task_center.ai_generation_parallel import _generation_job
 from app.services.task_center.ai_pacing import _align_quantity_slots, _available_quantity_slots
-from app.services.task_center.pacing_persistence import freeze_action_pacing, freeze_pacing_owner
+from app.services.task_center.pacing_persistence import (
+    PacingOwnerImmutableConflict,
+    freeze_action_pacing,
+    freeze_pacing_owner,
+)
 from pacing_contract_test_support import pacing_engine
 
 
@@ -164,6 +168,92 @@ def test_frozen_pacing_owner_accepts_same_beijing_wall_time_from_postgres() -> N
     )
 
     assert frozen_release == release.replace(tzinfo=timezone)
+
+
+def _frozen_owner_with_total(plan_total: int) -> SimpleNamespace:
+    due = datetime(2026, 8, 16, 10, 0)
+    timezone = ZoneInfo("Asia/Shanghai")
+    return SimpleNamespace(
+        pacing_contract_version="deterministic_stratified_v1",
+        pacing_plan_hash="plan-hash",
+        pacing_slot_ordinal=41,
+        pacing_plan_total=plan_total,
+        pacing_due_at=due.replace(tzinfo=timezone),
+        release_not_before_at=due.replace(tzinfo=timezone),
+    )
+
+
+def test_freeze_pacing_owner_allows_monotonic_target_increase() -> None:
+    """目标上调迁移：identity 一致且 plan_total 单调上调时允许升级冻结的 total/due/release。"""
+    owner = _frozen_owner_with_total(877)
+    new_due = datetime(2026, 8, 16, 12, 0)
+    new_release = new_due + timedelta(minutes=5)
+
+    frozen_release = freeze_pacing_owner(
+        owner,
+        plan_hash="plan-hash",
+        slot_ordinal=41,
+        plan_total=1064,
+        due_at=new_due,
+        release_not_before_at=new_release,
+    )
+
+    assert owner.pacing_plan_total == 1064
+    assert owner.pacing_due_at == new_due
+    assert frozen_release == new_release
+    assert owner.release_not_before_at == new_release
+
+
+def test_freeze_pacing_owner_rejects_identity_regression() -> None:
+    """plan_hash/slot_ordinal 漂移、plan_total 下调、total 不变的 due 漂移仍必须拒绝。"""
+    with pytest.raises(PacingOwnerImmutableConflict):
+        freeze_pacing_owner(
+            _frozen_owner_with_total(877),
+            plan_hash="other-hash",
+            slot_ordinal=41,
+            plan_total=1064,
+            due_at=datetime(2026, 8, 16, 12, 0),
+        )
+    with pytest.raises(PacingOwnerImmutableConflict):
+        freeze_pacing_owner(
+            _frozen_owner_with_total(1064),
+            plan_hash="plan-hash",
+            slot_ordinal=41,
+            plan_total=877,
+            due_at=datetime(2026, 8, 16, 12, 0),
+        )
+    drift_owner = _frozen_owner_with_total(877)
+    drift_owner.pacing_due_at = drift_owner.pacing_due_at + timedelta(hours=3)
+    with pytest.raises(PacingOwnerImmutableConflict):
+        freeze_pacing_owner(
+            drift_owner,
+            plan_hash="plan-hash",
+            slot_ordinal=41,
+            plan_total=877,
+            due_at=datetime(2026, 8, 16, 10, 0),
+        )
+
+
+def test_freeze_pacing_owner_tolerates_owner_without_plan_total_field() -> None:
+    """旧语义兼容：owner 无 pacing_plan_total 属性时不得因 total 校验误报冲突。"""
+    due = datetime(2026, 8, 16, 10, 0)
+    owner = SimpleNamespace(
+        pacing_contract_version="deterministic_stratified_v1",
+        pacing_plan_hash="plan-hash",
+        pacing_slot_ordinal=3,
+        pacing_due_at=due.replace(tzinfo=ZoneInfo("Asia/Shanghai")),
+        release_not_before_at=due.replace(tzinfo=ZoneInfo("Asia/Shanghai")),
+    )
+
+    frozen_release = freeze_pacing_owner(
+        owner,
+        plan_hash="plan-hash",
+        slot_ordinal=3,
+        plan_total=500,
+        due_at=due,
+    )
+
+    assert frozen_release is not None
 
 
 def test_ai_slot_alignment_is_linear_in_available_slots() -> None:

@@ -131,6 +131,23 @@ SSH banner 交换持续超时与发布脚本 `Connection timed out during banner
 
 **C0b 恢复边界重申**：like/comment 共 8 个 Task 保持 paused，未部署 T2 前不得 resume；group_ai_chat 全程未动。
 
+### 2.4 2026-08-16 晚间增量：group_ai_chat 目标上调触发 pacing 冻结冲突死循环（已止血，修复归属 AI 专项）
+
+**现象（`observed`，release `20260816111917_0b85b83e`）**：郑州师范（`7162e305-fb51-4a67-92ea-d0caffd2bbb3`）与郑州楼凤（`2d8af940-69d8-45ab-ab0c-0a1715843d3f`）于 18:23:53 同一秒因 `current_required_account_count_changed` 把 planned_daily_target 提升至 1064/1063（revision 5/3），但当日已冻结 `TaskGroupDailyMessageSlot` 的 `pacing_plan_total` 停在 877/876、open slot 仅 800/876。planner 90 分钟日志 32 次 `pacing_owner_immutable_conflict`，两 Task 每 30 秒重试一轮全量规划并整体回滚，自 18:23 起零新 Action（隐性停摆 4.5 小时）；其余 4 个大目标任务（3333/4800/4000/4800，revision=1）slot plan_total 与 target 一致、零冲突，反证仅“目标上调”路径触发。
+
+**机制（代码证实）**：`daily_group_target.py::_apply_current_target` 目标变化只写 target 行与 revision，无已冻结 slot 迁移路径；`ai_pacing.py` 的 `plan_total=max(effective_plan_total, 旧冻结值)` 在目标上调时取新值；`pacing_persistence.py::_assert_frozen_identity` 对 `current_total != plan_total` 一律 `ValueError`（immutable 语义拒绝合法上调，max() 只保护下调）；`service.py::_record_planner_runtime_error` 把该确定性冲突当通用运行时异常按 30 秒退避重试，形成不可自愈循环。
+
+**止血（22:54:20，用户批准 `user-approved-pacing-conflict-pause-20260816`）**：两 Task 经 `pause_task` 服务受控暂停（actor=`prod-ai-pacing-conflict-mitigation`，epoch 1→2，AuditLog 2 条，Action/在途未动）。验证：pause 后 5 分钟窗口 0 次新冲突、0 次 planner_task_failed，load 0.89，MemAvailable 回升至 619MiB。planner RSS ~730MiB 为长活进程历史峰值驻留（匿名页不归还 OS），非活跃负载，恢复基线需进程重建并观察。
+
+**修复归属（AI 专项，不在本文另建合同）**：P0-A——`pacing_owner_immutable_conflict` 必须从通用 runtime error 分离为 typed blocker（如 `ai_pacing_target_revision_conflict`），确定性冲突不得 30 秒重试；P0-B——目标上调时未绑定 active Action 的 open slot 迁移路径（retire+新 revision 重建，或 plan_total 单调上调），必须按 `ai-group-generation-failure-churn-remediation-prd.md` 的 immutable settlement/quantity ordinal 合同设计。两 Task 的 resume 以 P0-A/P0-B 部署且单 Task canary 通过为前置；P1 planner 批量规划内存上限治理仍属 RC-1/T2。
+
+**P0-A/P0-B 实现（2026-08-16 深夜，本地完成、待发布）**：
+
+- P0-B 选择"`plan_total` 单调上调"迁移路径（§2.4 允许的两路径之一）：`pacing_persistence.py::_assert_frozen_identity` 在 identity（`pacing_plan_hash/pacing_slot_ordinal`）一致且新 `plan_total` 严格大于已冻结值时返回迁移信号，`freeze_pacing_owner` 据此升级 `pacing_plan_total/pacing_due_at/release_not_before_at`。走到 freeze 的 owner 恒为"无绑定 active Action 的 open slot"（`ai_pacing._available_quantity_slots` 的 `~bound_action` 过滤），因此迁移不触碰 `quantity_ordinal`、`due_unit_key`、immutable settlement 与已绑定 Action 的冻结身份；plan_total 下调、plan_hash/ordinal 漂移、total 不变的 due 漂移仍 raise。存量冲突数据无需回填：部署后下一轮 planner drain 即按新路径升级（郑州师范 877→1064、郑州楼凤 876→1063 惰性迁移）。
+- P0-A：新增 `PacingOwnerImmutableConflict(ValueError)` 类型；`service.py::_drain_task_planner` 在通用 `Exception` 之前专捕该类型，经 `_record_planner_pacing_conflict` 写入 `stats["planner_pacing_target_conflict"]` typed blocker（error_type/message/recorded_at）并以 `PLANNER_PACING_CONFLICT_RETRY_SECONDS=3600` 退避（原通用路径 30 秒）；`_clear_planner_runtime_error` 在规划成功时同时清除该 blocker。冲突自愈出口：单调上调迁移（部署后）、次日新账本/slot 重建、或运营显式处理；blocker 经既有 stats 通道对前端可见，无 silent fallback。
+- QA（红→绿，`backend/.venv`，`-m no_postgres`）：`test_freeze_pacing_owner_allows_monotonic_target_increase`、`test_freeze_pacing_owner_rejects_identity_regression`（hash 漂移/下调/due 单独漂移三类仍拒绝）、`test_planner_pacing_conflict_uses_typed_blocker_and_long_backoff`（含 55 分钟下界退避断言与 `planner_runtime_error` 不落断言）、`test_planner_clears_pacing_conflict_blocker_after_success`；回归 345 项 planner/AI/pacing 相关测试全绿。发布仍须走完整 `no_postgres` + PostgreSQL 两分区与 Release Gate。
+- 生效后动作：郑州师范/郑州楼凤按受控流程 resume（preview→逐 Task→readback），canary 观察冲突 blocker 清除、slot `pacing_plan_total` 升级至 1064/1063、恢复产出 Action；P1 planner 单轮内存上限治理仍属 T2。
+
 ## 3. 根因分组与修复规则
 
 ### RC-0：精确搜索停流量与 OCR 安全停服/恢复（P0 临时止血）

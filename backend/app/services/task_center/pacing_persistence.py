@@ -8,6 +8,14 @@ from app.timezone import BEIJING_TZ
 from .pacing import PACING_CONTRACT_VERSION
 
 
+class PacingOwnerImmutableConflict(ValueError):
+    """pacing 冻结身份发生不可逆变化且不满足单调上调迁移条件。
+
+    2026-08-16 生产事故（PRD §2.4）：目标上调后旧冻结 slot 的 plan_total 与新计划
+    不一致，该确定性冲突必须由 planner 按 typed blocker 处理，不得进入通用 30 秒重试。
+    """
+
+
 def freeze_pacing_owner(
     owner,
     *,
@@ -19,7 +27,15 @@ def freeze_pacing_owner(
 ) -> datetime:
     existing = getattr(owner, "pacing_due_at", None)
     if existing is not None:
-        _assert_frozen_identity(owner, plan_hash, slot_ordinal, plan_total, due_at)
+        if _assert_frozen_identity(owner, plan_hash, slot_ordinal, plan_total, due_at):
+            # 目标上调迁移：identity 不变、仅 plan_total 单调上调时，允许未绑定
+            # active Action 的 owner 升级冻结的 total/due/release（quantity_ordinal、
+            # due_unit_key 与 immutable settlement 合同不受影响）。
+            if hasattr(owner, "pacing_plan_total"):
+                owner.pacing_plan_total = plan_total
+            owner.pacing_due_at = due_at
+            owner.release_not_before_at = release_not_before_at or due_at
+            return owner.release_not_before_at
         return _freeze_owner_release(owner, due_at, release_not_before_at)
     owner.pacing_contract_version = PACING_CONTRACT_VERSION
     owner.pacing_plan_hash = plan_hash
@@ -63,16 +79,29 @@ def _assert_frozen_identity(
     slot_ordinal: int,
     plan_total: int,
     due_at: datetime,
-) -> None:
-    current_total = getattr(owner, "pacing_plan_total", plan_total)
-    values = (
+) -> bool:
+    """校验已冻结 owner 与新计划一致；返回 True 表示允许目标单调上调迁移。"""
+    current_total = (
+        owner.pacing_plan_total if hasattr(owner, "pacing_plan_total") else plan_total
+    )
+    identity_match = (
         owner.pacing_plan_hash == plan_hash,
         owner.pacing_slot_ordinal == slot_ordinal,
+    )
+    if (
+        all(identity_match)
+        and current_total is not None
+        and plan_total > int(current_total)
+    ):
+        return True
+    values = (
+        *identity_match,
         current_total == plan_total,
         _same_wall_time(owner.pacing_due_at, due_at),
     )
     if not all(values):
-        raise ValueError("pacing_owner_immutable_conflict")
+        raise PacingOwnerImmutableConflict("pacing_owner_immutable_conflict")
+    return False
 
 
 def _same_wall_time(left: datetime, right: datetime) -> bool:
@@ -85,4 +114,4 @@ def _beijing_wall_time(value: datetime) -> datetime:
     return value.astimezone(BEIJING_TZ).replace(tzinfo=None)
 
 
-__all__ = ["freeze_action_pacing", "freeze_pacing_owner"]
+__all__ = ["PacingOwnerImmutableConflict", "freeze_action_pacing", "freeze_pacing_owner"]

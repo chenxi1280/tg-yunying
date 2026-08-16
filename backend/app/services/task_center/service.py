@@ -150,6 +150,7 @@ from .details import (
 from .fingerprints import content_fingerprint
 from .heartbeat import record_worker_heartbeat
 from .listener_runtime import drain_listener_runtime, invalidate_listener_collect
+from .pacing_persistence import PacingOwnerImmutableConflict
 from .pacing_summary import task_pacing_summary
 from .membership_admission import (
     list_membership_admission_items_page,
@@ -187,6 +188,9 @@ _next_run_after_task = next_run_after_task
 _retry_failed_actions = retry_failed_actions
 logger = logging.getLogger(__name__)
 PLANNER_RUNTIME_ERROR_RETRY_SECONDS = 30
+# pacing 冻结冲突是确定性 blocker（PRD §2.4）：30 秒重试只会反复全量规划并回滚，
+# 退避到 1 小时；目标单调上调迁移（pacing_persistence）或次日新账本可自然解除。
+PLANNER_PACING_CONFLICT_RETRY_SECONDS = 3600
 FACT_FIRST_PLANNER_POLL_SECONDS = 2
 HUMAN_PACED_FACT_FIRST_TASK_TYPES = frozenset({
     "channel_comment",
@@ -3399,6 +3403,10 @@ def _drain_task_planner(session_factory, *, limit: int, process_type: str | None
             logger.info("planner_pacing_lock_busy task_id=%s", task_id)
             _record_planner_pacing_retry(session_factory, task_id)
             continue
+        except PacingOwnerImmutableConflict as exc:
+            logger.error("planner_task_pacing_conflict task_id=%s", task_id)
+            _record_planner_pacing_conflict(session_factory, task_id, exc)
+            continue
         except Exception as exc:
             logger.exception("planner_task_failed task_id=%s", task_id)
             _record_planner_runtime_error(session_factory, task_id, exc)
@@ -3422,6 +3430,29 @@ def _record_planner_pacing_retry(session_factory, task_id: str) -> None:
         task.next_run_at = _now() + timedelta(
             seconds=PLANNER_RUNTIME_ERROR_RETRY_SECONDS,
         )
+        session.commit()
+
+
+def _record_planner_pacing_conflict(
+    session_factory,
+    task_id: str,
+    exc: Exception,
+) -> None:
+    with session_factory() as session:
+        task = session.get(Task, task_id)
+        if task is None:
+            return
+        stats = dict(task.stats or {})
+        stats["planner_pacing_target_conflict"] = {
+            "error_type": type(exc).__name__,
+            "message": str(exc)[:500],
+            "recorded_at": _now().isoformat(),
+        }
+        task.stats = stats
+        if task.status == "running":
+            task.next_run_at = _now() + timedelta(
+                seconds=PLANNER_PACING_CONFLICT_RETRY_SECONDS,
+            )
         session.commit()
 
 
@@ -3450,9 +3481,10 @@ def _record_planner_runtime_error(
 
 def _clear_planner_runtime_error(task: Task) -> None:
     stats = dict(task.stats or {})
-    if "planner_runtime_error" not in stats:
+    if "planner_runtime_error" not in stats and "planner_pacing_target_conflict" not in stats:
         return
-    stats.pop("planner_runtime_error")
+    stats.pop("planner_runtime_error", None)
+    stats.pop("planner_pacing_target_conflict", None)
     task.stats = stats
 
 
