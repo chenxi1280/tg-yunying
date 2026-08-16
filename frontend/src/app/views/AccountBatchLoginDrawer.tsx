@@ -6,6 +6,8 @@ import type { Account, AccountBatchLogin, AccountBatchLoginItem, AccountDetail, 
 import { formatBeijingDateTime } from '../time';
 import { loginStatusColor, loginStatusLabel, TERMINAL_LOGIN_BATCH_STATUSES } from './accountBatchLoginPresentation';
 
+const LOGIN_BATCH_DETAIL_ITEM_LIMIT = 200;
+
 interface Props {
   batchId: number | null;
   pools: AccountPool[];
@@ -28,7 +30,7 @@ export function AccountBatchLoginDrawer({ batchId, pools, onClose, onOpenAccount
     let timer: number | undefined;
     const load = async () => {
       try {
-        const detail = await api<AccountBatchLogin>(`/tg-accounts/login-batches/${batchId}`);
+        const detail = await api<AccountBatchLogin>(detailPath(batchId));
         if (disposed) return;
         setBatch(detail);
         setError('');
@@ -48,7 +50,7 @@ export function AccountBatchLoginDrawer({ batchId, pools, onClose, onOpenAccount
     if (!batchId) return;
     setLoading(true);
     try {
-      setBatch(await api<AccountBatchLogin>(`/tg-accounts/login-batches/${batchId}`));
+      setBatch(await api<AccountBatchLogin>(detailPath(batchId)));
       setError('');
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : '读取批次失败');
@@ -205,4 +207,8 @@ function routeLabel(route: string) {
     already_authorized: '已有账号已授权',
   };
   return labels[route] || route || '—';
+}
+
+function detailPath(batchId: number) {
+  return `/tg-accounts/login-batches/${batchId}?item_limit=${LOGIN_BATCH_DETAIL_ITEM_LIMIT}&item_offset=0`;
 }

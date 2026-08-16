@@ -208,7 +208,7 @@ def _persist_challenge(session_factory, claim: PhaseClaim, challenge) -> None:
         flow.phone_code_hash_ciphertext = encrypt_secret(challenge.phone_code_hash) if challenge.phone_code_hash else None
         attempt.send_call_state = "confirmed"
         wait_until = now + timedelta(seconds=get_settings().account_batch_login_code_wait_seconds)
-        attempt.code_wait_until_at = min(wait_until, attempt.deadline_at) if attempt.deadline_at else wait_until
+        attempt.code_wait_until_at = wait_until
         advance_claim(session, claim, "wait_code", status="waiting", next_retry_at=now)
         commit_claim(session)
 
@@ -314,10 +314,12 @@ def _wait_or_timeout(session_factory, claim: PhaseClaim) -> None:
     with session_factory() as session:
         _, attempt = load_claim(session, claim)
         now = _now()
-        if attempt.deadline_at and now >= attempt.deadline_at:
-            fail_claim(session, claim, "item_deadline_exceeded", "单行登录等待超过 300 秒")
-        elif attempt.code_wait_until_at and now >= attempt.code_wait_until_at:
+        code_wait_due = attempt.code_wait_until_at and now >= attempt.code_wait_until_at
+        deadline_due = attempt.deadline_at and now >= attempt.deadline_at
+        if code_wait_due and (not deadline_due or attempt.code_wait_until_at <= attempt.deadline_at):
             fail_claim(session, claim, "code_timeout", "等待新验证码超过 120 秒")
+        elif deadline_due:
+            fail_claim(session, claim, "item_deadline_exceeded", "单行登录等待超过 300 秒")
         else:
             retry_at = now + timedelta(seconds=get_settings().account_batch_login_poll_interval_seconds)
             advance_claim(session, claim, "wait_code", status="waiting", next_retry_at=retry_at)

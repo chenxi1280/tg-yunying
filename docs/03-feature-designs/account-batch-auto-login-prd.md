@@ -3,7 +3,9 @@
 > 日期口径：2026-08-15（Asia/Shanghai）
 > 适用范围：TG 账号管理、账号分组（AccountPool）、登录 flow、后台 worker、审计。
 > 定位：**当前**专项合同。与 [account-login-group-navigation-recovery-prd.md](account-login-group-navigation-recovery-prd.md)（单账号登录 flow 合同）、[existing-account-reauthorization-routing-prd.md](existing-account-reauthorization-routing-prd.md)（已有账号重登语义）、[account-standby-auto-authorization-prd.md](account-standby-auto-authorization-prd.md)（备用授权自动补齐）互补，不改变既有单账号登录语义。
-> 基础批量登录状态：`production_fixed`（2026-08-15 已完成两条真实 E4）；本次“任务中心 + 并行登录”增量：`design_status=product_design_complete`、`implementation_status=local_implemented`、`qa_status=targeted_passed`、`release_status=not_released`、`production_status=unproven`。
+> 基础批量登录状态：`production_fixed`（2026-08-15 已完成两条真实 E4）；本次“任务中心 + 并行登录 + 200 行详情/超时归因修正”增量：`design_status=product_design_complete`、`implementation_status=local_implemented`、`qa_status=targeted_passed`、`release_status=not_released`、`production_status=unproven`。
+
+> 2026-08-16 线上复盘补充：批次 #4 的 200 行生产批次只读核验显示 174 成功、26 失败，失败行均为新建账号路径，`send_code=confirmed`，但 `code_verify/twofa=none`；接码页当前可读且 code/2FA 字段存在。因此这些失败发生在等待新验证码阶段，不是 Telegram 明确拒绝。重试前置状态全部满足，但未在本次只读核验中触发生产重试。详情 Drawer/API 必须默认支持 200 行；等待验证码窗口到期应优先展示 `code_timeout`，只有总单行预算先耗尽才展示 `item_deadline_exceeded`。
 
 ## 1. 背景与原始需求
 
@@ -148,6 +150,7 @@
 - 任务中心使用 `GET /login-batches` 恢复服务端事实，运行中任务优先、最近任务按 ID 倒序；显示批次 ID、状态、目标分组、创建人、总数与六类计数、创建/完成时间及「查看详情」。
 - 账号页打开期间每 5 秒刷新任务列表；关闭任务中心、关闭详情或刷新浏览器都不改变批次执行。新建批次后立即加入任务中心并打开该批次详情，既有任务不被覆盖。
 - 可以连续创建多个批次；同批多行及跨批次都由 worker 并行推进，任务中心分别展示，不把多个批次合并成一个状态。详情 Drawer 一次查看一个批次，关闭后随时从任务中心重开。
+- 详情 Drawer 打开批次时必须请求并展示单批上限内的全部行（当前 200 行），后端详情 API 的 `item_limit` 默认值和上限必须与单批上限一致，不能因默认分页只显示前 100 行。
 
 复用 `AccountSecurityBatchDrawer` 的 Drawer + 状态映射模式：
 

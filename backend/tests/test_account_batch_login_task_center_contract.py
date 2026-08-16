@@ -36,6 +36,16 @@ def test_login_task_center_recovers_server_batches_and_polls_active_count():
     assert "localStorage" not in source
 
 
+def test_login_batch_detail_drawer_requests_200_items_and_api_allows_them():
+    drawer = _source("frontend/src/app/views/AccountBatchLoginDrawer.tsx")
+    router = _source("backend/app/api/routers/account_login_batches.py")
+
+    assert "LOGIN_BATCH_DETAIL_ITEM_LIMIT = 200" in drawer
+    assert "item_limit=${LOGIN_BATCH_DETAIL_ITEM_LIMIT}" in drawer
+    assert "LOGIN_BATCH_DETAIL_ITEM_LIMIT = 200" in router
+    assert "le=LOGIN_BATCH_DETAIL_ITEM_LIMIT" in router
+
+
 def test_batch_login_capability_exposes_parallel_worker_slots():
     frontend_type = _source("frontend/src/app/types/accountLogin.ts")
     compose = _source("docker-compose.server.yml")

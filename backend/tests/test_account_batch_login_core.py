@@ -235,7 +235,7 @@ def test_item_deadline_failure_does_not_block_next_line(session_factory) -> None
         first.phase = "wait_code"
         attempt.phase = "wait_code"
         attempt.deadline_at = _now() - timedelta(seconds=1)
-        attempt.code_wait_until_at = _now() - timedelta(seconds=1)
+        attempt.code_wait_until_at = _now() + timedelta(seconds=30)
         session.commit()
 
     with session_factory() as session:
@@ -249,6 +249,39 @@ def test_item_deadline_failure_does_not_block_next_line(session_factory) -> None
     assert failed.status == "failed"
     assert failed.failure_type == "item_deadline_exceeded"
     assert next_claim is not None and next_claim.item_id != first.id
+
+
+def test_code_wait_timeout_is_reported_before_equal_item_deadline(session_factory) -> None:
+    from datetime import timedelta
+
+    from app.services._common import _now
+    from app.services.account_login.remote_phases import _wait_or_timeout
+    from app.services.account_login.state import claim_batch_phase
+    from app.models import TgAccountLoginBatchAttempt
+
+    with session_factory() as session:
+        batch = create_login_batch(session, 1, 20, "测试操作员", _create_payload(session, _lines(1), key="batch-key-code-timeout"))
+        item = session.scalar(select(TgAccountLoginBatchItem).where(
+            TgAccountLoginBatchItem.batch_id == batch.id,
+        ))
+        attempt = session.get(TgAccountLoginBatchAttempt, item.current_attempt_id)
+        due_at = _now() - timedelta(seconds=1)
+        item.status = "waiting"
+        item.phase = "wait_code"
+        attempt.phase = "wait_code"
+        attempt.deadline_at = due_at
+        attempt.code_wait_until_at = due_at
+        session.commit()
+
+    with session_factory() as session:
+        claim = claim_batch_phase(session, batch.id)
+    assert claim is not None and claim.item_id == item.id
+    _wait_or_timeout(session_factory, claim)
+
+    with session_factory() as session:
+        failed = session.get(TgAccountLoginBatchItem, item.id)
+    assert failed.status == "failed"
+    assert failed.failure_type == "code_timeout"
 
 
 def test_cancel_skips_unstarted_lines_and_clears_credentials(session_factory) -> None:
