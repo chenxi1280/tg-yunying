@@ -3,9 +3,12 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_PATH = PROJECT_ROOT / ".github/scripts/recent_group_ai_task_diagnostics.py"
+pytestmark = pytest.mark.no_postgres
 
 
 def _module():
