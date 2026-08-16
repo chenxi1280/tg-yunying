@@ -141,12 +141,12 @@ SSH banner 交换持续超时与发布脚本 `Connection timed out during banner
 
 **修复归属（AI 专项，不在本文另建合同）**：P0-A——`pacing_owner_immutable_conflict` 必须从通用 runtime error 分离为 typed blocker（如 `ai_pacing_target_revision_conflict`），确定性冲突不得 30 秒重试；P0-B——目标上调时未绑定 active Action 的 open slot 迁移路径（retire+新 revision 重建，或 plan_total 单调上调），必须按 `ai-group-generation-failure-churn-remediation-prd.md` 的 immutable settlement/quantity ordinal 合同设计。两 Task 的 resume 以 P0-A/P0-B 部署且单 Task canary 通过为前置；P1 planner 批量规划内存上限治理仍属 RC-1/T2。
 
-**P0-A/P0-B 实现（2026-08-16 深夜，本地完成、待发布）**：
+**P0-A/P0-B 实现（2026-08-17 00:27 已发布上线，release `f60256a0`，Deploy Production run `31958097254` 全绿）**：
 
 - P0-B 选择"`plan_total` 单调上调"迁移路径（§2.4 允许的两路径之一）：`pacing_persistence.py::_assert_frozen_identity` 在 identity（`pacing_plan_hash/pacing_slot_ordinal`）一致且新 `plan_total` 严格大于已冻结值时返回迁移信号，`freeze_pacing_owner` 据此升级 `pacing_plan_total/pacing_due_at/release_not_before_at`。走到 freeze 的 owner 恒为"无绑定 active Action 的 open slot"（`ai_pacing._available_quantity_slots` 的 `~bound_action` 过滤），因此迁移不触碰 `quantity_ordinal`、`due_unit_key`、immutable settlement 与已绑定 Action 的冻结身份；plan_total 下调、plan_hash/ordinal 漂移、total 不变的 due 漂移仍 raise。存量冲突数据无需回填：部署后下一轮 planner drain 即按新路径升级（郑州师范 877→1064、郑州楼凤 876→1063 惰性迁移）。
 - P0-A：新增 `PacingOwnerImmutableConflict(ValueError)` 类型；`service.py::_drain_task_planner` 在通用 `Exception` 之前专捕该类型，经 `_record_planner_pacing_conflict` 写入 `stats["planner_pacing_target_conflict"]` typed blocker（error_type/message/recorded_at）并以 `PLANNER_PACING_CONFLICT_RETRY_SECONDS=3600` 退避（原通用路径 30 秒）；`_clear_planner_runtime_error` 在规划成功时同时清除该 blocker。冲突自愈出口：单调上调迁移（部署后）、次日新账本/slot 重建、或运营显式处理；blocker 经既有 stats 通道对前端可见，无 silent fallback。
 - QA（红→绿，`backend/.venv`，`-m no_postgres`）：`test_freeze_pacing_owner_allows_monotonic_target_increase`、`test_freeze_pacing_owner_rejects_identity_regression`（hash 漂移/下调/due 单独漂移三类仍拒绝）、`test_planner_pacing_conflict_uses_typed_blocker_and_long_backoff`（含 55 分钟下界退避断言与 `planner_runtime_error` 不落断言）、`test_planner_clears_pacing_conflict_blocker_after_success`；回归 345 项 planner/AI/pacing 相关测试全绿。发布仍须走完整 `no_postgres` + PostgreSQL 两分区与 Release Gate。
-- 生效后动作：郑州师范/郑州楼凤按受控流程 resume（preview→逐 Task→readback），canary 观察冲突 blocker 清除、slot `pacing_plan_total` 升级至 1064/1063、恢复产出 Action；P1 planner 单轮内存上限治理仍属 T2。
+- 生效后动作（2026-08-17 00:33 已执行）：郑州师范/郑州楼凤经 `resume_task` 受控恢复（epoch 2→3，approval ref `fix-deployed-f60256a0-resume`）。**生产验证（00:33–00:38，`observed`）**：resume 后连续多轮采样 `pacing_owner_immutable_conflict=0`、`planner_task_failed=0`；恰逢跨日，08-17 新账本按新目标自洽重建——郑州楼凤 1051 个 open slot 与 `planned_daily_target=1051` 一致、郑州师范 830/830 一致（新日 `current_required_account_count_changed` revision 2 正常重算），跨日重建作为冲突自愈出口被真实证明；两 Task 恢复产出（师范 433 条、楼凤 207+ 条新 Action，持续新增）；`planner_pacing_target_conflict`/`planner_runtime_error` blocker 均已清除；宿主 load 2.5、MemAvailable 1398MiB、planner 452MiB。08-16 旧账本 slot 保持 876/877 冻结历史由次日 settlement 收口，不在本次迁移范围。P1 planner 单轮内存上限治理仍属 T2。
 
 ## 3. 根因分组与修复规则
 
