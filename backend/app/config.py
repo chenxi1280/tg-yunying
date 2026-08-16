@@ -279,6 +279,10 @@ class Settings:
     ai_provider_cooldown_max_seconds: int = int(os.getenv("AI_PROVIDER_COOLDOWN_MAX_SECONDS", "3600"))
     ai_provider_probe_ttl_seconds: int = int(os.getenv("AI_PROVIDER_PROBE_TTL_SECONDS", "60"))
     account_soft_pacing_min_gap_seconds: int = int(os.getenv("ACCOUNT_SOFT_PACING_MIN_GAP_SECONDS", "20"))
+    # 群级发送最小间隔：只做突发下界（消除跨账号同秒并发），不得低于最大任务
+    # 高峰曲线密度（4800 目标 × 峰值权重 10/110 ≈ 436 条/小时 ≈ 8.3 秒/条），
+    # 否则会系统性压制 DueSet 合法吞吐。
+    ai_group_send_pacing_min_gap_seconds: int = int(os.getenv("AI_GROUP_SEND_PACING_MIN_GAP_SECONDS", "8"))
     action_claim_limit: int = int(os.getenv("ACTION_CLAIM_LIMIT", "100"))
     action_claim_seconds: int = int(os.getenv("ACTION_CLAIM_SECONDS", "60"))
     dispatcher_claim_scope: str = os.getenv("DISPATCHER_CLAIM_SCOPE", "task_center_dispatch")

@@ -148,6 +148,16 @@ SSH banner 交换持续超时与发布脚本 `Connection timed out during banner
 - QA（红→绿，`backend/.venv`，`-m no_postgres`）：`test_freeze_pacing_owner_allows_monotonic_target_increase`、`test_freeze_pacing_owner_rejects_identity_regression`（hash 漂移/下调/due 单独漂移三类仍拒绝）、`test_planner_pacing_conflict_uses_typed_blocker_and_long_backoff`（含 55 分钟下界退避断言与 `planner_runtime_error` 不落断言）、`test_planner_clears_pacing_conflict_blocker_after_success`；回归 345 项 planner/AI/pacing 相关测试全绿。发布仍须走完整 `no_postgres` + PostgreSQL 两分区与 Release Gate。
 - 生效后动作（2026-08-17 00:33 已执行）：郑州师范/郑州楼凤经 `resume_task` 受控恢复（epoch 2→3，approval ref `fix-deployed-f60256a0-resume`）。**生产验证（00:33–00:38，`observed`）**：resume 后连续多轮采样 `pacing_owner_immutable_conflict=0`、`planner_task_failed=0`；恰逢跨日，08-17 新账本按新目标自洽重建——郑州楼凤 1051 个 open slot 与 `planned_daily_target=1051` 一致、郑州师范 830/830 一致（新日 `current_required_account_count_changed` revision 2 正常重算），跨日重建作为冲突自愈出口被真实证明；两 Task 恢复产出（师范 433 条、楼凤 207+ 条新 Action，持续新增）；`planner_pacing_target_conflict`/`planner_runtime_error` blocker 均已清除；宿主 load 2.5、MemAvailable 1398MiB、planner 452MiB。08-16 旧账本 slot 保持 876/877 冻结历史由次日 settlement 收口，不在本次迁移范围。P1 planner 单轮内存上限治理仍属 T2。
 
+### 2.5 2026-08-17 AI 活群发送节奏治理：群级最小间隔门禁（RC-1 节奏分项）
+
+**现象（01:00–01:20 实测，`observed`）**：pacing 冲突修复后总量已恢复曲线形态（同时段 3509→365 条，降 90%），但节奏仍有机器特征：任务内相邻发送 `scheduled_at` p50 间隔仅 20–37 秒、min=0 秒；**同秒最多 11 条**发送完成（两个 Dispatcher shard × 并发 13 对已到期 Action 并行执行）；账号 pacing（20s）只约束单账号，跨账号无群级间隔，表现为“同秒多条 + 连号账号”，与 RC-6 伪人审计目标冲突。
+
+**机制**：排期层（stratified slots + `_source_recovery_points`）已按曲线分层；claim 复核 `revalidate_action_pacing_before_claim` 的时间线（open Action/remote fact/reservation 三源 union）**只按 account_id 聚合**——不同账号的到期 Action 在同一 claim 周期内全部放行并被并行执行。
+
+**修复（P0-Rhythm）**：`account_pacing_guard.py` 新增 `task_policy_not_before`（时间线 union 支持 `task_id` 作用域）；`revalidate_action_pacing_before_claim` 对 `group_ai_chat` 的 send Action 额外应用任务级时间线，与账号级 not-before 取 max；冲突时以 `group_send_pacing_conflict` typed reason 推迟 claim（复用 `_defer_action_claim`，推迟确定性收敛不漂移）。间隔配置 `AI_GROUP_SEND_PACING_MIN_GAP_SECONDS`（Settings，默认 8 秒）：只做突发下界，默认值不得低于最大任务高峰曲线密度（4800×10/110≈436 条/小时≈8.3 秒/条），否则压制 DueSet 合法吞吐——调小需先重算峰值密度，调大需 product resync 确认可牺牲吞吐。夜间总量仍由物化侧曲线控制（本门禁只加下界不加量）；catch-up 积压按 8 秒串行排空，不再同秒倾泻。like/comment/view 不受影响（仅 group_ai_chat 生效）。
+
+**QA**：红→绿 `test_group_ai_send_pacing_defers_cross_account_burst`（另一账号 5 秒前 open 点 → 拒绝并推迟到 ≥recent+gap，reason=`group_send_pacing_conflict`）、`test_group_ai_send_pacing_allows_claim_after_group_gap`（60 秒前 → 放行不误伤）；pacing/claim/dispatch 相关 488 项回归通过。生产验收口径：部署后 30 分钟窗口内任一 group_ai_chat 任务同秒成功发送数 ≤2、任务内相邻发送间隔 min ≥8 秒、当日 DueSet 达成率不因门禁回退（对照部署前同时段）。
+
 ## 3. 根因分组与修复规则
 
 ### RC-0：精确搜索停流量与 OCR 安全停服/恢复（P0 临时止血）

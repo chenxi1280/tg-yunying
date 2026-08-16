@@ -22,11 +22,13 @@ from app.models import (
     Task,
     TaskGroupDailyMessageSlot,
     Tenant,
+    TgAccount,
 )
 from app.schemas.task_center import ChannelCommentConfig, GroupAIChatConfig
 from app.services.task_center import account_pacing_guard
 from app.services.task_center.account_pacing_guard import (
     _earliest_available_time,
+    revalidate_action_pacing_before_claim,
     reserve_account_pacing,
 )
 from app.services.task_center.ai_generation_parallel import _generation_job
@@ -312,6 +314,93 @@ def test_ai_slot_query_fetches_only_current_batch_owners() -> None:
         )
 
     assert [row.id for row in rows] == ["specific", "unassigned-1"]
+
+
+def _group_send_pacing_fixture(engine, recent_at: datetime, now: datetime) -> None:
+    """同任务两个账号：501 在 recent_at 有 open 发送点，502 待 claim。"""
+    with Session(engine) as session:
+        session.add_all([
+            TgAccount(id=5501, tenant_id=1, display_name="acct-a", phone_masked="5501"),
+            TgAccount(id=5502, tenant_id=1, display_name="acct-b", phone_masked="5502"),
+            Task(id="group-task", tenant_id=1, name="活群", type="group_ai_chat"),
+            AccountPacingReservation(
+                tenant_id=1, task_id="group-task", account_id=5501,
+                pacing_slot_key="ai:recent", policy_version="account_soft_pacing_v1",
+                due_at=recent_at, release_not_before_at=recent_at,
+                effective_claim_at=recent_at,
+            ),
+            Action(
+                id="action-recent", tenant_id=1, task_id="group-task",
+                task_type="group_ai_chat", action_type="send_message",
+                account_id=5501, status="claiming", scheduled_at=recent_at,
+            ),
+            AccountPacingReservation(
+                tenant_id=1, task_id="group-task", account_id=5502,
+                pacing_slot_key="ai:mine", policy_version="account_soft_pacing_v1",
+                due_at=now, release_not_before_at=now,
+                effective_claim_at=now,
+            ),
+            Action(
+                id="action-mine", tenant_id=1, task_id="group-task",
+                task_type="group_ai_chat", action_type="send_message",
+                account_id=5502, status="pending", scheduled_at=now,
+                pacing_slot_key="ai:mine",
+                pacing_due_at=now, release_not_before_at=now,
+            ),
+        ])
+        session.commit()
+
+
+def test_group_ai_send_pacing_defers_cross_account_burst(monkeypatch) -> None:
+    """群级发送节奏门禁：另一账号 5 秒前刚发（open 点），本账号不得同窗 claim，
+    必须推迟到群最小间隔之后——消除同任务跨账号同秒并发突发。"""
+    monkeypatch.setattr(
+        account_pacing_guard,
+        "get_settings",
+        lambda: SimpleNamespace(
+            account_soft_pacing_min_gap_seconds=20,
+            ai_group_send_pacing_min_gap_seconds=20,
+        ),
+    )
+    engine = pacing_engine()
+    now = datetime(2026, 8, 17, 10, 0)
+    recent = now - timedelta(seconds=5)
+    _group_send_pacing_fixture(engine, recent_at=recent, now=now)
+
+    with Session(engine) as session:
+        mine = session.get(Action, "action-mine")
+        decision = revalidate_action_pacing_before_claim(
+            session, mine, now_value=now,
+        )
+
+    assert decision.allowed is False
+    assert decision.reason_code == "group_send_pacing_conflict"
+    assert decision.effective_claim_at is not None
+    assert decision.effective_claim_at >= recent + timedelta(seconds=20)
+
+
+def test_group_ai_send_pacing_allows_claim_after_group_gap(monkeypatch) -> None:
+    """群间隔已满足（上一发送 60 秒前）时不得误伤，claim 正常放行。"""
+    monkeypatch.setattr(
+        account_pacing_guard,
+        "get_settings",
+        lambda: SimpleNamespace(
+            account_soft_pacing_min_gap_seconds=20,
+            ai_group_send_pacing_min_gap_seconds=20,
+        ),
+    )
+    engine = pacing_engine()
+    now = datetime(2026, 8, 17, 10, 0)
+    recent = now - timedelta(seconds=60)
+    _group_send_pacing_fixture(engine, recent_at=recent, now=now)
+
+    with Session(engine) as session:
+        mine = session.get(Action, "action-mine")
+        decision = revalidate_action_pacing_before_claim(
+            session, mine, now_value=now,
+        )
+
+    assert decision.allowed is True
 
 
 def test_group_message_pacing_ordinal_survives_reload_for_action_binding() -> None:

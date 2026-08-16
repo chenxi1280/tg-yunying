@@ -82,6 +82,37 @@ def account_policy_not_before(
     return _earliest_available_time(desired_at, points, gap)
 
 
+def task_policy_not_before(
+    session: Session,
+    task_id: str,
+    *,
+    tenant_id: int,
+    desired_at: datetime,
+    gap: timedelta,
+    deadline_at: datetime | None = None,
+    exclude_action_id: str | None = None,
+    exclude_slot_key: str | None = None,
+) -> datetime | None:
+    """任务级（≈群级）发送时间线：同一 Task 内所有账号共享的最小间隔。
+
+    2026-08-17 生产节奏诊断：账号级 pacing 只约束单账号，跨账号在同一个
+    claim 周期并行发送形成同秒 5-19 条突发；本门禁在 claim 时把同任务
+    最近的 open 发送点也纳入时间线。
+    """
+    points = _account_timeline_points(
+        session,
+        tenant_id,
+        None,
+        desired_at=desired_at,
+        gap=gap,
+        deadline_at=deadline_at,
+        exclude_action_id=exclude_action_id,
+        exclude_slot_key=exclude_slot_key,
+        task_id=task_id,
+    )
+    return _earliest_available_time(desired_at, points, gap)
+
+
 def reserve_account_pacing(
     session: Session,
     *,
@@ -207,6 +238,22 @@ def revalidate_action_pacing_before_claim(
         exclude_action_id=action.id,
         exclude_slot_key=str(action.pacing_slot_key),
     )
+    group_conflict = False
+    if str(action.task_type or "") == "group_ai_chat":
+        group_gap = timedelta(seconds=max(1, int(get_settings().ai_group_send_pacing_min_gap_seconds)))
+        group_not_before = task_policy_not_before(
+            session,
+            str(action.task_id),
+            tenant_id=action.tenant_id,
+            desired_at=desired_at,
+            gap=group_gap,
+            deadline_at=reservation.source_deadline_at,
+            exclude_action_id=action.id,
+            exclude_slot_key=str(action.pacing_slot_key),
+        )
+        if group_not_before is not None and (not_before is None or group_not_before > not_before):
+            not_before = group_not_before
+            group_conflict = True
     effective_at = effective_claim_at(desired_at, not_before)
     if reservation.source_deadline_at and not _before_deadline(
         effective_at, reservation.source_deadline_at,
@@ -215,14 +262,17 @@ def revalidate_action_pacing_before_claim(
     if effective_at <= _wall(now_value):
         _sync_claim_time(action, reservation, effective_at)
         return PacingClaimDecision(True, effective_at)
-    _defer_action_claim(action, reservation, effective_at)
-    return PacingClaimDecision(False, effective_at, "account_timeline_conflict")
+    reason = "group_send_pacing_conflict" if group_conflict else "account_timeline_conflict"
+    _defer_action_claim(action, reservation, effective_at, reason_code=reason)
+    return PacingClaimDecision(False, effective_at, reason)
 
 
 def _defer_action_claim(
     action: Action,
     reservation: AccountPacingReservation,
     effective_at: datetime,
+    *,
+    reason_code: str = "account_timeline_conflict",
 ) -> None:
     action.scheduled_at = effective_at
     action.effective_claim_at = effective_at
@@ -230,7 +280,7 @@ def _defer_action_claim(
     action.result = {
         **(action.result or {}),
         "claim_pacing_deferred": {
-            "reason_code": "account_timeline_conflict",
+            "reason_code": reason_code,
             "effective_claim_at": effective_at.isoformat(),
         },
     }
@@ -280,22 +330,31 @@ def _reservation_for_any_slot(
 def _timeline_union(
     *,
     tenant_id: int,
-    account_id: int,
+    account_id: int | None,
     start_at: datetime,
     end_at: datetime | None,
     exclude_action_id: str | None,
     exclude_slot_key: str | None,
+    task_id: str | None = None,
 ):
+    action_scope = (
+        Action.task_id == task_id if task_id is not None else Action.account_id == account_id
+    )
+    reservation_scope = (
+        AccountPacingReservation.task_id == task_id
+        if task_id is not None
+        else AccountPacingReservation.account_id == account_id
+    )
     action_filters = [
         Action.tenant_id == tenant_id,
-        Action.account_id == account_id,
+        action_scope,
         Action.status.in_(_OPEN_GUARD_STATUSES),
         Action.scheduled_at.is_not(None),
         Action.scheduled_at >= start_at,
     ]
     fact_filters = [
         FulfillmentRemoteFact.tenant_id == tenant_id,
-        Action.account_id == account_id,
+        action_scope,
         FulfillmentRemoteFact.fact_kind.in_((
             "remote_message_observed",
             "view_observed",
@@ -305,7 +364,7 @@ def _timeline_union(
     ]
     reservation_filters = [
         AccountPacingReservation.tenant_id == tenant_id,
-        AccountPacingReservation.account_id == account_id,
+        reservation_scope,
         AccountPacingReservation.state.in_(_OPEN_RESERVATION_STATES),
         AccountPacingReservation.effective_claim_at >= start_at,
     ]
@@ -332,13 +391,14 @@ def _timeline_union(
 def _account_timeline_points(
     session: Session,
     tenant_id: int,
-    account_id: int,
+    account_id: int | None,
     *,
     desired_at: datetime,
     gap: timedelta,
     deadline_at: datetime | None,
     exclude_action_id: str | None,
     exclude_slot_key: str | None,
+    task_id: str | None = None,
 ) -> Iterator[datetime]:
     normalized_deadline = _wall(deadline_at)
     timeline = _timeline_union(
@@ -348,6 +408,7 @@ def _account_timeline_points(
         end_at=normalized_deadline + gap if normalized_deadline else None,
         exclude_action_id=exclude_action_id,
         exclude_slot_key=exclude_slot_key,
+        task_id=task_id,
     )
     cursor: datetime | None = None
     while True:
