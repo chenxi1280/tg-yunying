@@ -120,6 +120,81 @@ RUNTIME_SCOPE_QUERY = text("""
     LIMIT 10
 """)
 
+TASK_BACKLOG_QUERY = text("""
+    SELECT task.id AS task_id, task.name AS task_name,
+           COUNT(action.id) FILTER (
+             WHERE action.status = 'pending'
+               AND COALESCE(action.payload ->> 'ai_generation_status', '')
+                   IN ('pending', 'ai_result_persist_unknown')
+               AND COALESCE(action.payload ->> 'message_text', '') = ''
+           ) AS generation_pending_total,
+           COUNT(action.id) FILTER (
+             WHERE action.status = 'pending'
+               AND COALESCE(action.payload ->> 'ai_generation_status', '')
+                   IN ('pending', 'ai_result_persist_unknown')
+               AND COALESCE(action.payload ->> 'message_text', '') = ''
+               AND action.scheduled_at <= NOW()
+           ) AS generation_overdue_now,
+           COUNT(action.id) FILTER (
+             WHERE action.status = 'pending'
+               AND COALESCE(action.payload ->> 'ai_generation_status', '')
+                   IN ('pending', 'ai_result_persist_unknown')
+               AND COALESCE(action.payload ->> 'message_text', '') = ''
+               AND action.scheduled_at <= NOW() + INTERVAL '30 minutes'
+           ) AS generation_eligible_lookahead,
+           COUNT(action.id) FILTER (
+             WHERE action.status = 'pending'
+               AND COALESCE(action.payload ->> 'ai_generation_status', '')
+                   IN ('pending', 'ai_result_persist_unknown')
+               AND COALESCE(action.payload ->> 'message_text', '') = ''
+               AND action.scheduled_at > NOW() + INTERVAL '30 minutes'
+           ) AS generation_future_after_lookahead,
+           COUNT(action.id) FILTER (
+             WHERE action.status = 'pending'
+               AND action.payload ->> 'ai_generation_status' = 'ready'
+               AND COALESCE(action.payload ->> 'message_text', '') <> ''
+           ) AS ready_pending_total,
+           COUNT(action.id) FILTER (
+             WHERE action.status = 'pending'
+               AND action.payload ->> 'ai_generation_status' = 'ready'
+               AND COALESCE(action.payload ->> 'message_text', '') <> ''
+               AND action.scheduled_at <= NOW()
+           ) AS ready_overdue_now,
+           COUNT(action.id) FILTER (
+             WHERE action.status = 'executing'
+               AND action.payload ->> 'ai_generation_status' = 'generating'
+           ) AS generation_executing,
+           MIN(action.scheduled_at) FILTER (
+             WHERE action.status = 'pending'
+               AND COALESCE(action.payload ->> 'ai_generation_status', '')
+                   IN ('pending', 'ai_result_persist_unknown')
+           ) AS oldest_generation_pending_at,
+           MIN(action.scheduled_at) FILTER (
+             WHERE action.status = 'pending'
+               AND action.payload ->> 'ai_generation_status' = 'ready'
+           ) AS oldest_ready_pending_at
+    FROM tasks AS task
+    LEFT JOIN actions AS action
+      ON action.task_id = task.id
+     AND action.action_type = 'send_message'
+     AND action.task_type = 'group_ai_chat'
+    WHERE task.type = 'group_ai_chat'
+      AND task.status = 'running'
+      AND task.deleted_at IS NULL
+    GROUP BY task.id, task.name
+    ORDER BY task.name, task.id
+""")
+
+GENERATION_JOB_QUERY = text("""
+    SELECT state, COUNT(*) AS job_count,
+           MIN(created_at) AS oldest_created_at,
+           MIN(lease_expires_at) FILTER (WHERE state = 'generating')
+               AS oldest_generating_lease_expires_at
+    FROM generation_jobs
+    GROUP BY state
+    ORDER BY state
+""")
+
 
 def _json_value(value):
     if isinstance(value, datetime):
@@ -151,11 +226,15 @@ def main() -> None:
         blocking_edges = _rows(session, BLOCKING_EDGE_QUERY)
         blocking_locks = _rows(session, BLOCKING_LOCK_QUERY)
         scopes = _rows(session, RUNTIME_SCOPE_QUERY)
+        task_backlogs = _rows(session, TASK_BACKLOG_QUERY)
+        generation_jobs = _rows(session, GENERATION_JOB_QUERY)
     _print_rows("AI_GENERATION_GLOBAL_CLAIM", claims)
     _print_rows("AI_GENERATION_DATABASE_ACTIVITY", activities)
     _print_rows("AI_GENERATION_DATABASE_BLOCKING_EDGE", blocking_edges)
     _print_rows("AI_GENERATION_DATABASE_BLOCKING_LOCK", blocking_locks)
     _print_rows("AI_GENERATION_RUNTIME_SCOPE", scopes)
+    _print_rows("AI_GENERATION_TASK_BACKLOG", task_backlogs)
+    _print_rows("AI_GENERATION_JOB", generation_jobs)
 
 
 if __name__ == "__main__":
