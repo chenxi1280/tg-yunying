@@ -53,6 +53,7 @@ def test_runtime_env_rejects_old_52_capacity_contract() -> None:
 def test_production_env_template_matches_shared_dispatch_contract() -> None:
     template = (ROOT / ".env.production.example").read_text()
     assert "DISPATCHER_CONCURRENCY=20" in template
+    assert "SEARCH_DISPATCHER_CONCURRENCY=20" in template
     assert "DISPATCHER_SCOPE_CAPACITY=26" in template
     assert "DISPATCH_RUNTIME_SHARD_TOTAL=2" in template
     assert "DB_POOL_CONTROL_RESERVE=2" in template
