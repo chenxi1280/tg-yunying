@@ -31,7 +31,7 @@ from app.services.task_center.account_pacing_guard import (
 )
 from app.services.task_center.ai_generation_parallel import _generation_job
 from app.services.task_center.ai_pacing import _align_quantity_slots, _available_quantity_slots
-from app.services.task_center.pacing_persistence import freeze_pacing_owner
+from app.services.task_center.pacing_persistence import freeze_action_pacing, freeze_pacing_owner
 from pacing_contract_test_support import pacing_engine
 
 
@@ -222,6 +222,36 @@ def test_ai_slot_query_fetches_only_current_batch_owners() -> None:
         )
 
     assert [row.id for row in rows] == ["specific", "unassigned-1"]
+
+
+def test_group_message_pacing_ordinal_survives_reload_for_action_binding() -> None:
+    engine = pacing_engine()
+    with Session(engine) as session:
+        owner = TaskGroupDailyMessageSlot(
+            id="durable-pacing-owner",
+            tenant_id=1,
+            task_id="pacing-task",
+            task_day_ledger_id="ledger-1",
+            target_operation_target_id=1,
+            slot_kind="quantity",
+            slot_ordinal=4,
+            pacing_slot_ordinal=4,
+        )
+        session.add(owner)
+        session.commit()
+        session.expire_all()
+
+        reloaded = session.get(TaskGroupDailyMessageSlot, owner.id)
+        action = Action(
+            id="durable-pacing-action",
+            tenant_id=1,
+            task_id="pacing-task",
+            task_type="group_ai_chat",
+            action_type="send_message",
+        )
+        freeze_action_pacing(action, reloaded, slot_key="ai:durable-pacing-owner")
+
+    assert action.pacing_slot_ordinal == 4
 
 
 def test_account_pacing_finds_gap_before_unrelated_future_reservation() -> None:
