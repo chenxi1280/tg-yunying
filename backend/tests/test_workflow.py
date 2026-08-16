@@ -85,6 +85,10 @@ def immediate_account_pacing(monkeypatch):
         "app.services.task_center.account_pacing_guard.account_policy_not_before",
         lambda *_args, **_kwargs: None,
     )
+    monkeypatch.setattr(
+        "app.services.task_center.account_pacing_guard.task_policy_not_before",
+        lambda *_args, **_kwargs: None,
+    )
 
 
 @pytest.fixture(autouse=True)
