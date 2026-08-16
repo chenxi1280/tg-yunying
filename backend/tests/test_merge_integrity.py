@@ -35,7 +35,7 @@ def test_alembic_versions_have_single_head():
 
     assert all(len(revision) <= 32 for revision in revisions)
     heads = sorted(set(revisions) - referenced)
-    assert heads == ["0150_pacing_slot_fields"]
+    assert heads == ["0151_group_slot_pacing_due"]
 
 
 def test_backend_test_names_are_unique_per_file():
