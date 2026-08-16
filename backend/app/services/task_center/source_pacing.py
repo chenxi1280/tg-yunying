@@ -41,6 +41,10 @@ def wall_datetime(value: datetime) -> datetime:
     return value.astimezone(BEIJING_TZ).replace(tzinfo=None)
 
 
+def latest_wall_datetime(*values: datetime) -> datetime:
+    return max(wall_datetime(value) for value in values)
+
+
 def schedule_source_pacing_slots(
     slots: list[SourcePacingSlot],
     config: dict,
@@ -49,6 +53,7 @@ def schedule_source_pacing_slots(
     now_at: datetime,
     timezone_name: str | None = None,
 ) -> dict[str, datetime]:
+    now_at = wall_datetime(now_at)
     grouped: dict[str, list[SourcePacingSlot]] = defaultdict(list)
     for slot in slots:
         grouped[slot.source_key].append(slot)
@@ -56,13 +61,15 @@ def schedule_source_pacing_slots(
     for source_key, source_slots in grouped.items():
         first = source_slots[0]
         _validate_source_group(source_slots, first)
-        if first.deadline_at <= now_at:
+        period_start_at = wall_datetime(first.period_start_at)
+        deadline_at = wall_datetime(first.deadline_at)
+        if deadline_at <= now_at:
             continue
         due_times = schedule_due_times(
             len(source_slots),
             config,
-            period_start_at=first.period_start_at,
-            deadline_at=first.deadline_at,
+            period_start_at=period_start_at,
+            deadline_at=deadline_at,
             timezone_name=timezone_name,
             seed_id=f"{seed_id}:{source_key}",
             slot_keys=[slot.slot_key for slot in source_slots],
@@ -110,12 +117,17 @@ def _source_recovery_points(
     now_at: datetime,
     seed_id: str,
 ) -> dict[str, SourcePacingPoint]:
+    now_at = wall_datetime(now_at)
     result: dict[str, SourcePacingPoint] = {}
     overdue: list[SourcePacingSlot] = []
     frozen_releases: list[datetime] = []
     for slot in slots:
-        due_at = due_by_slot[slot.slot_key]
-        frozen = slot.release_not_before_at
+        due_at = wall_datetime(due_by_slot[slot.slot_key])
+        frozen = (
+            wall_datetime(slot.release_not_before_at)
+            if slot.release_not_before_at is not None
+            else None
+        )
         if due_at >= now_at:
             result[slot.slot_key] = SourcePacingPoint(due_at, due_at)
         elif frozen is not None and frozen > due_at:
@@ -127,9 +139,11 @@ def _source_recovery_points(
     if not overdue:
         return result
     first = slots[0]
+    period_start_at = wall_datetime(first.period_start_at)
+    deadline_at = wall_datetime(first.deadline_at)
     gap_seconds = max(
         1.0,
-        (first.deadline_at - first.period_start_at).total_seconds() / first.plan_total,
+        (deadline_at - period_start_at).total_seconds() / first.plan_total,
     )
     cursor = _recovery_cursor(
         frozen_releases, now_at=now_at, gap_seconds=gap_seconds,
@@ -140,10 +154,10 @@ def _source_recovery_points(
         cursor += timedelta(seconds=gap_seconds + _recovery_jitter(
             seed_id, slot.slot_key, gap_seconds,
         ))
-        if cursor >= first.deadline_at:
+        if cursor >= deadline_at:
             break
         result[slot.slot_key] = SourcePacingPoint(
-            due_by_slot[slot.slot_key], cursor,
+            wall_datetime(due_by_slot[slot.slot_key]), cursor,
         )
     return result
 
@@ -197,6 +211,7 @@ def _validate_source_group(slots: list[SourcePacingSlot], expected: SourcePacing
 __all__ = [
     "SourcePacingSlot",
     "SourcePacingPoint",
+    "latest_wall_datetime",
     "rolling_source_window",
     "schedule_source_pacing_slots",
     "schedule_source_pacing_points",

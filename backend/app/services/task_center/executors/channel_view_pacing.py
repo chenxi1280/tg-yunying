@@ -28,6 +28,7 @@ from ..channel_fulfillment import ensure_view_obligation
 from ..pacing_persistence import freeze_action_pacing, freeze_pacing_owner
 from ..source_pacing import (
     SourcePacingSlot,
+    latest_wall_datetime,
     schedule_source_pacing_points,
     source_pacing_plan_hash,
     wall_datetime,
@@ -121,7 +122,7 @@ def reserve_view_action_pacing(
             account_id=request.account_id,
             slot_key=request.pacing_slot_key,
             due_at=request.pacing_due_at or request.scheduled_at,
-            release_not_before_at=max(
+            release_not_before_at=latest_wall_datetime(
                 request.release_not_before_at or request.scheduled_at,
                 planned_at,
             ),

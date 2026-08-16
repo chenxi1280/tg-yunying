@@ -12,6 +12,8 @@ from app.models import AccountPacingReservation, Action, FulfillmentRemoteFact, 
 from app.services._common import _now
 from app.timezone import BEIJING_TZ
 
+from .source_pacing import latest_wall_datetime, wall_datetime
+
 
 ACCOUNT_SOFT_PACING_POLICY_VERSION = "account_soft_pacing_v1"
 TIMELINE_PAGE_SIZE = 128
@@ -82,6 +84,13 @@ def reserve_account_pacing(
     deadline_at: datetime | None,
     release_not_before_at: datetime | None = None,
 ) -> AccountPacingReservation:
+    due_at = wall_datetime(due_at)
+    deadline_at = wall_datetime(deadline_at) if deadline_at is not None else None
+    release_not_before_at = (
+        wall_datetime(release_not_before_at)
+        if release_not_before_at is not None
+        else due_at
+    )
     lock_account_pacing(session, account_id)
     existing = _reservation_for_any_slot(session, tenant_id, account_id, slot_key)
     if existing is not None:
@@ -90,7 +99,7 @@ def reserve_account_pacing(
         if existing.state == "missed":
             raise AccountPacingDeadlineExceeded("pacing_slot_already_missed")
         raise ValueError("account_pacing_reservation_state_invalid")
-    release_at = max(due_at, release_not_before_at or due_at)
+    release_at = latest_wall_datetime(due_at, release_not_before_at)
     not_before = account_policy_not_before(
         session,
         account_id,

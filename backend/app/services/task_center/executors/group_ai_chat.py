@@ -129,6 +129,7 @@ from ..pacing_persistence import freeze_action_pacing, freeze_pacing_owner
 from ..payloads import SendMessagePayload, create_send_action
 from ..schedule_reservation import reserve_task_schedule_times
 from ..source_pacing import (
+    latest_wall_datetime,
     schedule_source_pacing_points,
     source_pacing_plan_hash,
     wall_datetime,
@@ -2284,7 +2285,7 @@ def _reserve_ai_action_pacing(
             account_id=account_id,
             slot_key=slot_key,
             due_at=owner.pacing_due_at,
-            release_not_before_at=max(
+            release_not_before_at=latest_wall_datetime(
                 owner.release_not_before_at or owner.pacing_due_at,
                 planned_at,
             ),

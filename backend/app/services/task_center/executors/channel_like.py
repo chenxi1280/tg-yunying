@@ -30,6 +30,7 @@ from ..payloads import LikeMessagePayload, create_like_action
 from ..schedule_reservation import reserve_task_schedule_times
 from ..source_pacing import (
     SourcePacingSlot,
+    latest_wall_datetime,
     rolling_source_window,
     schedule_source_pacing_points,
     source_pacing_plan_hash,
@@ -269,7 +270,7 @@ def _like_account_schedule(
             session, tenant_id=task.tenant_id, task_id=task.id,
             account_id=item.account_id, slot_key=_like_slot_key(task, item),
             due_at=due_at,
-            release_not_before_at=max(release_at, planned_at),
+            release_not_before_at=latest_wall_datetime(release_at, planned_at),
             deadline_at=source.deadline_at,
         )
     except AccountPacingDeadlineExceeded:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy import select
@@ -25,6 +26,7 @@ from app.services.task_center import account_pacing_guard
 from app.services.task_center import dispatcher
 from app.services.task_center.source_pacing import (
     SourcePacingSlot,
+    latest_wall_datetime,
     schedule_source_pacing_points,
     schedule_source_pacing_slots,
 )
@@ -233,7 +235,9 @@ def test_overdue_recovery_release_is_frozen_on_rerun() -> None:
             slot.plan_total,
             slot.period_start_at,
             slot.deadline_at,
-            first[slot.slot_key].release_not_before_at,
+            first[slot.slot_key].release_not_before_at.replace(
+                tzinfo=ZoneInfo("Asia/Shanghai"),
+            ),
         )
         for slot in slots
     ]
@@ -246,6 +250,37 @@ def test_overdue_recovery_release_is_frozen_on_rerun() -> None:
     )
 
     assert second == first
+
+
+def test_latest_wall_datetime_accepts_postgres_aware_and_planner_naive_values() -> None:
+    aware = datetime(2026, 8, 16, 11, 5, tzinfo=ZoneInfo("Asia/Shanghai"))
+    naive = datetime(2026, 8, 16, 11, 10)
+
+    assert latest_wall_datetime(aware, naive) == naive
+
+
+def test_account_pacing_normalizes_mixed_postgres_and_planner_times(monkeypatch) -> None:
+    monkeypatch.setattr(
+        account_pacing_guard,
+        "get_settings",
+        lambda: SimpleNamespace(account_soft_pacing_min_gap_seconds=20),
+    )
+    due = datetime(2026, 8, 16, 11, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+    release = datetime(2026, 8, 16, 11, 5)
+    with Session(_pacing_engine()) as session:
+        reservation = reserve_account_pacing(
+            session,
+            tenant_id=1,
+            task_id="pacing-task",
+            account_id=9101,
+            slot_key="mixed-timezone",
+            due_at=due,
+            release_not_before_at=release,
+            deadline_at=due + timedelta(hours=1),
+        )
+
+    assert reservation.due_at == datetime(2026, 8, 16, 11, 0)
+    assert reservation.release_not_before_at == release
 
 
 def test_quantity_jitter_is_stable_for_task_and_source() -> None:

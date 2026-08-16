@@ -21,6 +21,7 @@ from ..payloads import PostCommentPayload
 from ..schedule_reservation import reserve_task_schedule_times
 from ..source_pacing import (
     SourcePacingSlot,
+    latest_wall_datetime,
     rolling_source_window,
     schedule_source_pacing_points,
     source_pacing_plan_hash,
@@ -291,7 +292,7 @@ def _comment_effective_time(
         reservation = reserve_account_pacing(
             session, tenant_id=task.tenant_id, task_id=task.id,
             account_id=account_id, slot_key=_comment_slot_key(slot), due_at=due_at,
-            release_not_before_at=max(
+            release_not_before_at=latest_wall_datetime(
                 slot.obligation.release_not_before_at or due_at,
                 adjusted_at,
             ),
