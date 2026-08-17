@@ -59,6 +59,12 @@ def assume_group_ai_accounts_ready_for_limit_tests(monkeypatch):
         "app.services.task_center.executors.channel_comment_preparation._now",
         lambda: NOW,
     )
+    # own-history 近因窗口以 group_ai_scope._now 为时钟基准：固定到测试时钟，
+    # 否则窗口（默认 7 天）会把固定 NOW（2026-05-30）种子的历史发送全部过滤掉。
+    monkeypatch.setattr(
+        "app.services.task_center.group_ai_scope._now",
+        lambda: NOW,
+    )
     monkeypatch.setattr(
         "app.services.task_center.executors.group_ai_chat.online_ready_account_ids_for_planning",
         lambda _session, *, tenant_id, accounts, now=None: {account.id for account in accounts},
