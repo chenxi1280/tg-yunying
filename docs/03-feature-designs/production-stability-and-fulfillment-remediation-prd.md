@@ -168,6 +168,22 @@ SSH banner 交换持续超时与发布脚本 `Connection timed out during banner
 
 **线上终验（b18834ed 部署后 26 分钟窗口，6 个 running 任务）**：任务内相邻发送间隔 min=14.4s（全部 ≥8s ✓）；同秒多发组 0（修复前基线：同秒最多 6 条、min gap 2ms）✓；吞吐 85 条/小时符合凌晨低谷曲线，无 DueSet 压制 ✓。
 
+#### 2.5.2 2026-08-17 AI 活群发送坍塌（节奏治理后次日）：own-history 无界扫描锁 convoy
+
+**现象**：节奏门禁全部达标的次日 09:00 起，AI 活群发送从 ~400/h 坍塌至 4-11/h；planner 单轮 25.3 分钟（processed=201）；1973+ 到期 pending action 不被 claim；dispatcher 每 ~100 秒仅处理 1 条。
+
+**根因链（pg_stat_activity + py-spy + EXPLAIN ANALYZE 实证）**：
+1. `successful_own_history_reply_facts`（回复目标池）对任务**全部历史**成功发送做窗口函数排序：郑州大学 13 天累积 7523 行 + 逐行 attempts 索引探测，单次调用分钟级；历史随运行天数单调增长。
+2. 该查询运行在 planner 每任务 batch 事务内；事务早期对 task 行的 ORM 写（stats 簿记 autoflush）使 **tasks 行锁被持有至事务提交**（= 慢查询全程）。
+3. dispatcher 的 action 终态要 UPDATE tasks stats → 在 6 个 AI 任务上轮流排队（实测 UPDATE tasks 等锁 3.5-6 分钟）→ 有效吞吐 ~1 条/100 秒。
+4. 附带发现：pause/resume 使 task epoch 递增后，旧 epoch 的 1313 个空正文 pending action 永久不可 claim（僵尸积压，非本次直接根因，列为后续清理项）。
+
+**修复（91dbc51a）**：`_own_history_action_filters` 加近因窗口 `executed_at ≥ now - AI_REPLY_TARGET_HISTORY_WINDOW_DAYS`（默认 7 天；目标池上限 20 条，生产任务日产量百级，7 天充足）；`_candidate_own_history_statement` scoped 子查询按 `executed_at DESC LIMIT max(200, limit*10)` 先截断再做窗口函数（top-K 语义不变）。EXPLAIN ANALYZE：7523 行全量排序 → 200 行，单次调用回到秒内；planner 事务与 task 行锁持有时间等比缩短。exact 查找（按 remote_message_id 校验"是否我方已发"）保留窗口内全量语义，与池同窗一致。
+
+**测试**：`test_own_history_query_excludes_targets_older_than_window` 红→绿（窗口外陈旧成功不进池）；两处种子无 executed_at 的测试补近因时间（success 必有执行时间，NULL 为非真实数据形态）。
+
+**验收口径**：部署后 planner 单轮 < 60s；pg_stat_activity 无 >30s 的 UPDATE tasks 等锁；AI 活群发送量回到对照日同时段 50% 以上且随曲线爬升。
+
 ## 3. 根因分组与修复规则
 
 ### RC-0：精确搜索停流量与 OCR 安全停服/恢复（P0 临时止血）
