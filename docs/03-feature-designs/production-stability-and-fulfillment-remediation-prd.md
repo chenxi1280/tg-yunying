@@ -200,6 +200,8 @@ SSH banner 交换持续超时与发布脚本 `Connection timed out during banner
 
 **二次残缺点（7292fbbe 上线后实测）**：违例从多数降到 209 对中 9 例（min gap 0.26s，吞吐维持 88-96/5min）。final gate 两处缺口：1) 任务锁竞争 2 次重试耗尽后**静默 return 无门禁**——双 dispatcher 并发发送同任务时必然发生（违例样本 cur executed_at 甚至早于其被 defer 的 scheduled_at）；2) defer 等待 `sleep(min(wait, gap+1))` 被 cap，wait > gap+1 时提前发送。修复：锁重试提到 4 次，耗尽后记录 `group_send_final_gate_lock_busy` 告警并保守 `sleep(gap)` 错开（不静默放行）；defer 等待改为完整 `sleep(wait)`（≤2×gap 有界）。回归测试：`test_group_send_final_gate_lock_busy_sleeps_gap_instead_of_silent_pass`。
 
+**2.5.3 终验结论（281a352e 部署后 18:25-18:40 北京时间窗口）**：吞吐恢复且稳定（5 分钟桶 75/84/39 条，~500/h，6 任务并发）；任务内相邻发送（完成时刻口径）208 对中 <8s 共 26 例，其中 ~20 例为 7.7-8.0s 边界（claim/gate 8s 阶梯 defer 生效、发起已错开满 8s，完成时刻差=两次网关调用延迟差，实测网关延迟 p50=2.4s/p90=33.5s）；真正突发违例 4-6 例（1.4-5.7s，dispatch 链路耗时抖动 + 网关延迟差叠加），同秒（<1s）0 例；lock_busy 告警 3 次/40min（兜底 sleep 生效）。对照事故基线（同秒最多 6 条、min gap 2ms、互锁期 1-2 条/小时）：**"短时间集中完成"问题解除**。剩余 1-6s 完成间隔偏差属网关延迟抖动范围，不构成集中突发；如需进一步收紧，后续可在网关调用发起处以任务锁占位（现 attempt 预留阶段写入的 gateway_call_started_at 不可作为发起时刻口径，实测存在预留同刻/负间隔）。
+
 ## 3. 根因分组与修复规则
 
 ### RC-0：精确搜索停流量与 OCR 安全停服/恢复（P0 临时止血）
