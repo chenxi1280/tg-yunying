@@ -25,6 +25,7 @@ from app.services.task_center.executors import common as executor_common
 from app.services.task_center.channel_listener_runtime import (
     channel_snapshot_state,
     drain_channel_listener_runtime,
+    request_channel_snapshot_refresh,
 )
 
 
@@ -109,6 +110,58 @@ def test_fresh_empty_snapshot_hides_messages_from_previous_revision(monkeypatch)
         assert item_count == 0
         assert channel is None
         assert messages == []
+
+
+def test_listener_marks_subscription_unavailable_without_collect_account() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    _seed_listener_task(
+        engine,
+        task_id="missing-account-task",
+        task_type="channel_like",
+        channel_id=51,
+        account_id=301,
+    )
+    with Session(engine) as session:
+        session.get(TgAccount, 301).status = AccountStatus.NEED_RELOGIN.value
+        session.commit()
+
+    result = drain_channel_listener_runtime(lambda: Session(engine), limit=10)
+
+    assert result.source_count == 0
+    with Session(engine) as session:
+        task = session.get(Task, "missing-account-task")
+        channel = session.get(OperationTarget, 51)
+        subscription = session.scalar(select(TaskSourceSubscription))
+        assert subscription is not None and subscription.state == "unavailable"
+        assert channel_snapshot_state(session, task, channel, now_value=NOW) == (
+            "unavailable",
+            None,
+        )
+        assert task.last_error == "channel_source_snapshot_unavailable"
+
+
+def test_reset_refresh_requires_and_schedules_next_snapshot(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    _seed_dynamic_channel_task(engine)
+    _stub_listener_fetch(monkeypatch, [])
+    drain_channel_listener_runtime(lambda: Session(engine), limit=10)
+
+    with Session(engine) as session:
+        task = session.get(Task, "empty-snapshot-task")
+        channel = session.get(OperationTarget, 41)
+        request_channel_snapshot_refresh(session, task)
+        session.commit()
+        subscription = session.scalar(select(TaskSourceSubscription))
+        state = session.scalar(select(ListenerSourceState))
+        assert subscription.required_snapshot_revision == 2
+        assert subscription.state == "pending"
+        assert state.next_probe_at == NOW
+        assert channel_snapshot_state(session, task, channel, now_value=NOW) == (
+            "pending",
+            NOW,
+        )
 
 
 def _seed_dynamic_channel_task(engine) -> None:

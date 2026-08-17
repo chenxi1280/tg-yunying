@@ -31,6 +31,51 @@ def _force_action_due(action: Action, now_value) -> None:
     action.pacing_due_at = now_value
     action.release_not_before_at = now_value
     action.effective_claim_at = now_value
+    _force_source_pacing_due(action, now_value)
+
+
+def _force_source_pacing_due(action: Action, now_value) -> None:
+    from sqlalchemy.orm import object_session
+
+    from app.models import (
+        CommentFulfillmentObligation,
+        ReactionFulfillmentObligation,
+        SourcePacingAdmission,
+        SourcePacingState,
+        TaskGroupDailyMessageSlot,
+        ViewFulfillmentObligation,
+    )
+
+    session = object_session(action)
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    owner_specs = {
+        "send_message": (TaskGroupDailyMessageSlot, action.primary_quantity_slot_id, "ai_send"),
+        "view_message": (ViewFulfillmentObligation, payload.get("view_fulfillment_obligation_id"), "view"),
+        "like_message": (ReactionFulfillmentObligation, payload.get("reaction_fulfillment_obligation_id"), "reaction"),
+        "post_comment": (CommentFulfillmentObligation, payload.get("comment_fulfillment_obligation_id"), "comment"),
+    }
+    if session is None or action.action_type not in owner_specs:
+        return
+    owner_model, owner_id, domain = owner_specs[action.action_type]
+    owner = session.get(owner_model, str(owner_id or action.obligation_id or ""))
+    if owner is None:
+        return
+    owner.release_not_before_at = now_value
+    source_hash = str(owner.pacing_source_key_hash or "")
+    state = session.scalar(select(SourcePacingState).where(
+        SourcePacingState.tenant_id == action.tenant_id,
+        SourcePacingState.pacing_domain == domain,
+        SourcePacingState.source_key_hash == source_hash,
+    )) if source_hash else None
+    if state is not None:
+        state.next_call_not_before_at = now_value
+        state.last_call_started_at = None
+        state.last_source_gap_seconds = 0
+    for admission in session.scalars(select(SourcePacingAdmission).where(
+        SourcePacingAdmission.action_id == action.id,
+        SourcePacingAdmission.state == "reserved",
+    )):
+        admission.call_not_before_at = now_value
 
 
 def force_due_actions(task_id: str) -> int:
@@ -66,6 +111,21 @@ def force_due_actions(task_id: str) -> int:
                 changed += 1
         session.commit()
     return changed
+
+
+def force_channel_listener_due(task_id: str) -> None:
+    from app.models import TaskSourceSubscription
+
+    with SessionLocal() as session:
+        subscription = session.scalar(select(TaskSourceSubscription).where(
+            TaskSourceSubscription.task_id == task_id,
+        ))
+        if subscription is None or not subscription.listener_source_state_id:
+            return
+        state = session.get(ListenerSourceState, subscription.listener_source_state_id)
+        if state is not None:
+            state.next_probe_at = _now()
+        session.commit()
 from tests.ai_group_voice_profile_fixtures import assume_default_ai_group_voice_profiles
 
 
@@ -482,6 +542,8 @@ def wait_for_new_success_actions(
 
 
 def make_task_send_actions_due(task_id: str) -> int:
+    from app.services.task_center.planner_wake import wake_task_planner
+
     now = _now()
     with SessionLocal() as session:
         actions = list(
@@ -498,6 +560,12 @@ def make_task_send_actions_due(task_id: str) -> int:
         task = session.get(Task, task_id)
         if task is not None:
             task.next_run_at = now
+            wake_task_planner(
+                session,
+                task,
+                reason_code="pytest_force_due",
+                not_before_at=now,
+            )
         session.commit()
     return len(actions)
 
@@ -5110,6 +5178,7 @@ def test_task_center_channel_like_auto_collects_dynamic_new_messages(monkeypatch
             task = session.get(Task, task_id)
             task.next_run_at = _now() - timedelta(seconds=1)
             session.commit()
+        force_channel_listener_due(task_id)
         assert drain_task_center(SessionLocal, 10) >= 1
         assert calls == [4101]
         actions = task_detail_actions(client, headers, task_id, action_type="like_message")
@@ -5217,6 +5286,7 @@ def test_task_center_channel_view_and_comment_default_dynamic_new_keep_collectin
 
         fetched_ids.append(prepare_test_comment_message(client, headers, channel_target, account_ids=[account["id"]], message_id=5102) if action_type == "post_comment" else 5102)
         reset_listener_runtime_cache()
+        force_channel_listener_due(task_id)
         assert drain_task_center(SessionLocal, 10) >= 1
         if calls == [5101]:
             force_due_actions(task_id)
@@ -5699,7 +5769,7 @@ def test_task_center_channel_task_reports_no_collect_account():
 
         detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()["task"]
         assert detail["status"] == "running"
-        assert detail["last_error"] == "没有可用于采集频道消息的账号"
+        assert detail["last_error"] == "channel_source_snapshot_unavailable"
 
 
 def _clear_relay_source_context(session, group_id: int) -> None:
@@ -6653,7 +6723,7 @@ def test_task_center_no_available_accounts_warns_without_failing():
         with SessionLocal() as session:
             task = session.get(Task, task_id)
             assert task.status == "running"
-            assert "没有可用账号" in task.last_error
+            assert task.last_error == "channel_source_snapshot_unavailable"
 
 
 def test_task_center_settings_updates_config_and_rebuilds_unfinished_plan():

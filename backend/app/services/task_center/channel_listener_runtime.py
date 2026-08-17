@@ -122,6 +122,8 @@ def channel_snapshot_binding(
         else None
     )
     if state is None:
+        if subscription.state in {"error", "unavailable"}:
+            return subscription.state, None, None, 0
         return "pending", None, None, 0
     timestamp = _wall(now_value or _now())
     if state.snapshot_status != "ready":
@@ -131,6 +133,25 @@ def channel_snapshot_binding(
     if int(state.snapshot_revision or 0) < int(subscription.required_snapshot_revision or 0):
         return "pending", state.next_probe_at, state.id, int(state.snapshot_revision or 0)
     return "ready", state.next_probe_at, state.id, int(state.snapshot_revision or 0)
+
+
+def request_channel_snapshot_refresh(session: Session, task: Task) -> None:
+    channel = _channel_for_task(session, task)
+    if channel is None:
+        return
+    subscription = ensure_channel_subscription(session, task, channel)
+    state = (
+        session.get(ListenerSourceState, subscription.listener_source_state_id)
+        if subscription.listener_source_state_id
+        else None
+    )
+    if state is not None:
+        subscription.required_snapshot_revision = max(
+            int(subscription.required_snapshot_revision or 0),
+            int(state.snapshot_revision or 0) + 1,
+        )
+        state.next_probe_at = _now()
+    subscription.state = "pending"
 
 
 def _channel_sources(
@@ -151,8 +172,12 @@ def _channel_sources(
     )
     sources: dict[tuple[int, int], ChannelListenerSource] = {}
     for task in tasks:
-        source = _source_for_task(session, task)
+        channel = _channel_for_task(session, task)
+        if channel is None:
+            continue
+        source = _source_for_task(session, task, channel)
         if source is None:
+            _mark_subscription_unavailable(session, task, channel)
             continue
         key = (source.tenant_id, source.channel_target_id)
         current = sources.setdefault(key, source)
@@ -164,12 +189,21 @@ def _channel_sources(
     return list(sources.values())
 
 
-def _source_for_task(session: Session, task: Task) -> ChannelListenerSource | None:
+def _channel_for_task(session: Session, task: Task) -> OperationTarget | None:
     config = task.type_config if isinstance(task.type_config, dict) else {}
     target_id = int(config.get("target_channel_id") or config.get("target_operation_target_id") or 0)
     channel = session.get(OperationTarget, target_id) if target_id else None
     if channel is None or channel.tenant_id != task.tenant_id or channel.target_type != "channel":
         return None
+    return channel
+
+
+def _source_for_task(
+    session: Session,
+    task: Task,
+    channel: OperationTarget,
+) -> ChannelListenerSource | None:
+    config = task.type_config if isinstance(task.type_config, dict) else {}
     accounts = select_task_accounts(
         session,
         task.tenant_id,
@@ -189,6 +223,25 @@ def _source_for_task(session: Session, task: Task) -> ChannelListenerSource | No
         fetch_limit=_fetch_limit(config),
         task_ids=[task.id],
     )
+
+
+def _mark_subscription_unavailable(
+    session: Session,
+    task: Task,
+    channel: OperationTarget,
+) -> None:
+    subscription = ensure_channel_subscription(session, task, channel)
+    changed = subscription.state != "unavailable" or subscription.listener_source_state_id is not None
+    subscription.listener_source_state_id = None
+    subscription.state = "unavailable"
+    task.last_error = "channel_source_snapshot_unavailable"
+    if changed:
+        wake_task_planner(
+            session,
+            task,
+            reason_code="channel_source_snapshot_unavailable",
+            not_before_at=_now(),
+        )
 
 
 def _bind_subscription(
@@ -441,4 +494,5 @@ __all__ = [
     "channel_snapshot_state",
     "drain_channel_listener_runtime",
     "ensure_channel_subscription",
+    "request_channel_snapshot_refresh",
 ]

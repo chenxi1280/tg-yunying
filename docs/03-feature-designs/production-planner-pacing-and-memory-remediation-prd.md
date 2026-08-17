@@ -166,6 +166,8 @@ tenant + task + lifecycle + blocker_domain + scope_key_hash
 4. fresh + ready + 0 条消息是权威空快照；pending、stale、unavailable、error 必须区分。
 5. Planner 只读 snapshot。无新鲜快照时写 channel_source_snapshot_pending/stale/unavailable，并排到 next_probe_at；不得调用 Gateway 或复用过期结果伪装成功。
 6. Planner 角色触达 Gateway/Telethon 入口必须 fail-fast 为 planner_remote_io_forbidden，并记录调用模块和阶段，不记录敏感参数。
+7. 动态频道任务重置时必须把 required_snapshot_revision 推进到当前 revision + 1，并把 next_probe_at 推到当前时刻；新 revision 就绪前 Planner 不得复用重置前快照。
+8. Listener 找不到可用采集账号时必须把 subscription 写成 unavailable 并 durable wake Planner；不得因缺少 account_id 而永久停留在 pending。
 
 ### 4.5 四类 pacing owner 身份
 

@@ -74,6 +74,7 @@ from .channel_membership import (
     LEGACY_ACTION_TYPE as LEGACY_MEMBERSHIP_ACTION_TYPE,
     channel_membership_summary,
 )
+from .channel_listener_runtime import request_channel_snapshot_refresh
 from .dispatcher import (
     _sync_action_coverage_state,
     claim_actions,
@@ -2739,6 +2740,8 @@ def reset_task(session: Session, tenant_id: int, task_id: str, actor: str, reaso
     _clear_unfinished_plan(session, task)
     _clear_group_ai_context_fingerprints(session, task)
     _invalidate_task_listener_cache(task)
+    if task.type in {"channel_view", "channel_like", "channel_comment"}:
+        request_channel_snapshot_refresh(session, task)
     if task.type == "search_rank_deboost":
         preselect_exempt_group(
             session,
