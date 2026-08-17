@@ -3244,7 +3244,7 @@ def _enforce_group_send_final_gate(session: Session, action: Action) -> None:
     gap_seconds = max(1, int(get_settings().ai_group_send_pacing_min_gap_seconds))
     gap = timedelta(seconds=gap_seconds)
     try:
-        for _attempt in range(2):
+        for _attempt in range(4):
             try:
                 _account_pacing_guard.lock_task_pacing(session, str(action.task_id))
             except _account_pacing_guard.AccountPacingLockUnavailable:
@@ -3273,7 +3273,9 @@ def _enforce_group_send_final_gate(session: Session, action: Action) -> None:
                 session.commit()
                 wait_seconds = (not_before - desired_at).total_seconds()
                 if wait_seconds > 0:
-                    time.sleep(min(wait_seconds, gap_seconds + 1.0))
+                    # 等待完整 wait（≤2×gap 有界）：cap 到 gap+1 会提前发送，
+                    # 使实际间隔 < 群最小间隔（2026-08-17 实测 1-2s 违例）。
+                    time.sleep(wait_seconds)
             else:
                 # 时间线干净也必须占位：本条即将发送，占位让并发 gate/claim
                 # 在窗口内看到本条在途（claiming + scheduled_at=发送时刻）。
@@ -3285,6 +3287,16 @@ def _enforce_group_send_final_gate(session: Session, action: Action) -> None:
                 )
                 session.commit()
             return
+        # 任务锁持续被占（并发 gate/claim）：不得无门禁静默放行。保守错开
+        # 一个群间隔再发送并记录告警（2026-08-17 实测：锁忙 2 次重试耗尽
+        # 直接 return，双 dispatcher 并发时同任务 1-2s 内挤发）。
+        logger.warning(
+            "group_send_final_gate_lock_busy action=%s task=%s",
+            action.id, action.task_id,
+        )
+        if session.in_transaction():
+            session.rollback()
+        time.sleep(gap_seconds)
     except (SQLAlchemyError, ValueError) as exc:
         logger.warning(
             "group_send_final_gate_failed action=%s task=%s error=%s",

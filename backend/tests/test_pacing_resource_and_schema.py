@@ -555,6 +555,27 @@ def test_group_send_final_gate_no_wait_when_timeline_clear(monkeypatch) -> None:
         assert reloaded.scheduled_at == original_at
 
 
+def test_group_send_final_gate_lock_busy_sleeps_gap_instead_of_silent_pass(monkeypatch) -> None:
+    """任务锁持续被占（并发 gate/claim）时，final gate 不得无门禁静默放行：
+    保守错开一个群间隔再发送（2026-08-17 实测：锁忙重试耗尽直接 return，
+    双 dispatcher 并发时同任务 1-2s 内挤发）。"""
+    task_dispatcher, engine, sleeps = _final_gate_setup(
+        monkeypatch, pacing_engine,
+        recent=datetime(2026, 8, 17, 10, 0) - timedelta(seconds=60),
+        now=datetime(2026, 8, 17, 10, 0),
+    )
+
+    def _busy(_session, _task_id):
+        raise account_pacing_guard.AccountPacingLockUnavailable("task_pacing_lock_busy")
+
+    monkeypatch.setattr(account_pacing_guard, "lock_task_pacing", _busy)
+    with Session(engine) as session:
+        mine = session.get(Action, "action-mine")
+        task_dispatcher._enforce_group_send_final_gate(session, mine)
+
+    assert sleeps and sleeps[-1] == 20
+
+
 def test_group_send_claim_anchors_inflight_and_defers_same_batch_peer(monkeypatch) -> None:
     """同批 claim 防挤发：第一条 claim 放行时必须把 scheduled_at 锚定到 claim
     时刻（否则过期计划值落在时间线窗口 now-gap 之外，同批/并发后续 claim

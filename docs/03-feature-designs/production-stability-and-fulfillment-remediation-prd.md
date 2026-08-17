@@ -198,6 +198,8 @@ SSH banner 交换持续超时与发布脚本 `Connection timed out during banner
 
 **部署后残缺点（675c844c 上线后实测，同日修复）**：吞吐恢复（5 分钟桶 54→69 条）但节奏约束失效——任务内相邻发送 min gap 0.002s、<8s 违例占多数。两个占位缺口：1）`_claim_rows` 放行 claim 只改 status 不刷新 `scheduled_at`，claiming 在途点保留密集队列时代的过期计划值，落在时间线窗口（`start_at=now-gap`）之外 → 同批后续 claim 与并发事务互不可见 → 批量挤发（实测 5 条 0.12s 内，scheduled_at 呈整齐 8s 间隔而 executed_at 挤在同刻）；2）final gate 时间线干净路径只 rollback 不占位，并行发送互不可见。修复：`_sync_claim_time` 在 claim 放行时把 `action.scheduled_at` 锚定到 claim 时刻（进入时间线窗口）；final gate 干净路径同样写 `scheduled_at=desired_at` 占位并提交，且 gate 的 timeline 检查改为 `include_planned=False`（只认在途/事实，与 claim 层语义一致）。回归测试：`test_group_send_claim_anchors_inflight_and_defers_same_batch_peer`（同批第二条被锚定后的 claiming 点挡住，推迟 ≥ 群 gap）。
 
+**二次残缺点（7292fbbe 上线后实测）**：违例从多数降到 209 对中 9 例（min gap 0.26s，吞吐维持 88-96/5min）。final gate 两处缺口：1) 任务锁竞争 2 次重试耗尽后**静默 return 无门禁**——双 dispatcher 并发发送同任务时必然发生（违例样本 cur executed_at 甚至早于其被 defer 的 scheduled_at）；2) defer 等待 `sleep(min(wait, gap+1))` 被 cap，wait > gap+1 时提前发送。修复：锁重试提到 4 次，耗尽后记录 `group_send_final_gate_lock_busy` 告警并保守 `sleep(gap)` 错开（不静默放行）；defer 等待改为完整 `sleep(wait)`（≤2×gap 有界）。回归测试：`test_group_send_final_gate_lock_busy_sleeps_gap_instead_of_silent_pass`。
+
 ## 3. 根因分组与修复规则
 
 ### RC-0：精确搜索停流量与 OCR 安全停服/恢复（P0 临时止血）
