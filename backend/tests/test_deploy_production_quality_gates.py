@@ -27,5 +27,20 @@ def test_deploy_prunes_only_dangling_images_before_pull() -> None:
     assert "docker image prune -af" not in script
 
 
+def test_deploy_pulls_large_runtime_images_sequentially() -> None:
+    script = COMPOSE_UP.read_text()
+
+    backend_pull = 'compose pull "${BACKEND_SERVICES[@]}"'
+    verification_pull = "compose pull image-verification-worker"
+    frontend_pull = 'docker pull "$TGYUNYING_FRONTEND_IMAGE"'
+
+    assert backend_pull in script
+    assert verification_pull in script
+    assert frontend_pull in script
+    assert script.index(backend_pull) < script.index(verification_pull)
+    assert script.index(verification_pull) < script.index(frontend_pull)
+    assert 'compose pull "${RUNTIME_SERVICES[@]}"' not in script
+
+
 def _combined_run_script(job: dict) -> str:
     return "\n".join(str(step.get("run") or "") for step in job["steps"])

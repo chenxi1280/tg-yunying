@@ -192,15 +192,15 @@ if verification_remote_enabled; then
   WORKER_SERVICES=(image-verification-worker "${WORKER_SERVICES[@]}")
 fi
 
-RUNTIME_SERVICES=(
-  "${BACKEND_SERVICES[@]}"
-  "${WORKER_SERVICES[@]}"
-)
-
 prune_docker_pull_cache
 
-echo "==> Pulling backend image"
-compose pull "${RUNTIME_SERVICES[@]}"
+echo "==> Pulling shared backend runtime image"
+compose pull "${BACKEND_SERVICES[@]}"
+
+if verification_remote_enabled; then
+  echo "==> Pulling image verification worker image"
+  compose pull image-verification-worker
+fi
 
 echo "==> Pulling frontend static image"
 docker pull "$TGYUNYING_FRONTEND_IMAGE"

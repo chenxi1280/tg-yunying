@@ -2255,7 +2255,7 @@ def test_deploy_scripts_timeout_planner_smoke_and_remote_install():
     release = (PROJECT_ROOT / "deploy/release.sh").read_text()
     check_web = (PROJECT_ROOT / "deploy/check-web.sh").read_text()
 
-    assert 'REMOTE_INSTALL_TIMEOUT_SECONDS="${REMOTE_INSTALL_TIMEOUT_SECONDS:-900}"' in release
+    assert 'REMOTE_INSTALL_TIMEOUT_SECONDS="${REMOTE_INSTALL_TIMEOUT_SECONDS:-2400}"' in release
     assert 'require_positive_integer REMOTE_INSTALL_TIMEOUT_SECONDS "$REMOTE_INSTALL_TIMEOUT_SECONDS"' in release
     assert 'timeout "$REMOTE_INSTALL_TIMEOUT_SECONDS" ssh "${SSH_OPTS[@]}"' in release
     assert 'local timeout_seconds="${TGYUNYING_PLANNER_SMOKE_TIMEOUT_SECONDS:-120}"' in check_web
