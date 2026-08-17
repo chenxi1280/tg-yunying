@@ -47,6 +47,38 @@ export type RuntimeConfig = {
   show_advanced_debug: boolean;
 };
 
+export type PlannerPressure = {
+  version: 'planner_pressure_v1';
+  state: 'fresh' | 'stale' | 'unavailable' | 'degraded';
+  captured_at?: string;
+  sample_interval_seconds?: number;
+  release_sha?: string;
+  worker_id_hash?: string;
+  memory_kib?: {
+    rss: number;
+    pss: number;
+    private_dirty: number;
+    anonymous: number;
+    anon_huge_pages: number;
+  };
+  cgroup?: {
+    version: number;
+    current_bytes: number;
+    peak_bytes: number;
+    limit_bytes: number;
+    event_count: number;
+  };
+  cpu_percent?: number;
+  thread_count?: number;
+  telethon_client_count?: number;
+  drain?: {
+    p50_ms: number;
+    p95_ms: number;
+    latest_processed_count: number;
+    sample_count: number;
+  };
+};
+
 export type CurrentUser = {
   id: number;
   tenant_id: number | null;

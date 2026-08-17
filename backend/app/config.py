@@ -385,6 +385,9 @@ class Settings:
         os.getenv("DISPATCHER_GATEWAY_SHUTDOWN_TIMEOUT_SECONDS", "0")
     )
     daily_coverage_plan_batch_limit: int = int(os.getenv("DAILY_COVERAGE_PLAN_BATCH_LIMIT", "20"))
+    planner_resource_sample_interval_seconds: int = int(
+        os.getenv("PLANNER_RESOURCE_SAMPLE_INTERVAL_SECONDS", "10")
+    )
     account_shard_total: int = int(os.getenv("ACCOUNT_SHARD_TOTAL", "1"))
     account_shard_index: int = int(os.getenv("ACCOUNT_SHARD_INDEX", "0"))
     enable_redis_account_inflight: bool = _bool_env("ENABLE_REDIS_ACCOUNT_INFLIGHT", False)
@@ -425,6 +428,8 @@ class Settings:
     runtime_detail_retention_batch_size: int = int(os.getenv("RUNTIME_DETAIL_RETENTION_BATCH_SIZE", "2000"))
     runtime_detail_cleanup_interval_seconds: int = int(os.getenv("RUNTIME_DETAIL_CLEANUP_INTERVAL_SECONDS", "60"))
     runtime_metric_retention_days: int = int(os.getenv("RUNTIME_METRIC_RETENTION_DAYS", "3"))
+    runtime_resource_raw_retention_hours: int = int(os.getenv("RUNTIME_RESOURCE_RAW_RETENTION_HOURS", "24"))
+    runtime_resource_rollup_retention_days: int = int(os.getenv("RUNTIME_RESOURCE_ROLLUP_RETENTION_DAYS", "7"))
     runtime_metric_retention_batch_size: int = int(os.getenv("RUNTIME_METRIC_RETENTION_BATCH_SIZE", "20000"))
     runtime_metric_cleanup_interval_seconds: int = int(os.getenv("RUNTIME_METRIC_CLEANUP_INTERVAL_SECONDS", "300"))
     auto_migrate_on_start: bool = _bool_env("AUTO_MIGRATE_ON_START", False)

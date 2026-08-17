@@ -12,9 +12,11 @@ from app.models import (
     TaskDayLedger,
     TaskGroupDailyMessageSlot,
     TaskGroupDailyTarget,
+    TgGroup,
 )
 
 from .source_pacing import SourcePacingSlot, wall_datetime
+from .source_owner_cursor import attach_owner_history, pacing_source_key_hash
 
 
 ACTIVE_QUANTITY_ACTION_STATUSES = (
@@ -60,11 +62,52 @@ def assign_ai_pacing_slots(
         effective_plan_total,
         max((row.pacing_plan_total or row.slot_ordinal for row in owners), default=0),
     )
+    assignments = _assignments_for_owners(
+        session,
+        task,
+        target=target,
+        ledger=ledger,
+        owners=owners,
+        plan_total=plan_total,
+    )
+    enriched = attach_owner_history(
+        session,
+        task,
+        [item.source_slot for item in assignments],
+        owner_model=TaskGroupDailyMessageSlot,
+        config=task.pacing_config or {},
+        seed_id=f"ai:{task.id}",
+    )
+    return [
+        AiPacingAssignment(item.item_index, item.owner, enriched[index])
+        for index, item in enumerate(assignments)
+    ]
+
+
+def _assignments_for_owners(
+    session: Session,
+    task: Task,
+    *,
+    target: TaskGroupDailyTarget,
+    ledger: TaskDayLedger,
+    owners: list[TaskGroupDailyMessageSlot],
+    plan_total: int,
+) -> list[AiPacingAssignment]:
+    group = session.get(TgGroup, target.group_id)
+    if group is None:
+        return []
+    source_hash = pacing_source_key_hash(group.tg_peer_id)
     return [
         AiPacingAssignment(
-            item_index=index,
-            owner=owner,
-            source_slot=_source_slot(ledger, owner, plan_total),
+            index,
+            owner,
+            _source_slot(
+                task,
+                ledger,
+                owner,
+                plan_total=plan_total,
+                source_hash=source_hash,
+            ),
         )
         for index, owner in enumerate(owners)
     ]
@@ -158,9 +201,12 @@ def _incomplete_coverage_id(coverage: TaskAccountDailyCoverage | None) -> str:
 
 
 def _source_slot(
+    task: Task,
     ledger: TaskDayLedger,
     owner: TaskGroupDailyMessageSlot,
+    *,
     plan_total: int,
+    source_hash: str,
 ) -> SourcePacingSlot:
     period_start = max(
         wall_datetime(ledger.period_start_at),
@@ -174,6 +220,10 @@ def _source_slot(
         period_start_at=period_start,
         deadline_at=wall_datetime(ledger.deadline_at),
         release_not_before_at=owner.release_not_before_at,
+        owner_id=owner.id,
+        task_lifecycle_epoch=int(task.task_lifecycle_epoch or 1),
+        pacing_period_key=str(ledger.id),
+        pacing_source_key_hash=source_hash,
     )
 
 

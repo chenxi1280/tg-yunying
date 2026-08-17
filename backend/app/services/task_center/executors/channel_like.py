@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import random
 from dataclasses import dataclass
 from datetime import datetime
 
 from sqlalchemy.orm import Session
 
-from app.models import ChannelMessage, OperationTarget, Task
+from app.models import ChannelMessage, OperationTarget, ReactionFulfillmentObligation, Task
 from app.services._common import _now
 
 from ..account_pacing_guard import (
@@ -36,13 +35,9 @@ from ..source_pacing import (
     source_pacing_plan_hash,
     wall_datetime,
 )
+from ..source_owner_cursor import attach_owner_history, pacing_source_key_hash
+from .channel_like_reactions import reaction_plan as _reaction_plan
 from .common import adjust_for_account_hour_limit, channel_message_payload, channel_scope, quantity_jitter_bounds, record_channel_capacity_warning
-
-PRIMARY_REACTION_RATIO = 0.7
-EXTRA_REACTION_RATIO = 0.1
-MIN_EXTRA_REACTION_QUANTITY = 10
-DEFAULT_EXTRA_REACTIONS = ("👏", "🎉", "😁", "🤩", "👌", "🙏", "💯", "⚡")
-
 
 @dataclass(frozen=True)
 class LikePlanItem:
@@ -143,7 +138,12 @@ def _create_like_actions(
         for item in actions
     }
     points_by_slot = _like_due_by_slot(
-        session, task, actions=actions, owners=owners, now_at=now_value,
+        session,
+        task,
+        channel=channel,
+        actions=actions,
+        owners=owners,
+        now_at=now_value,
     )
     created = 0
     if task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION and len(points_by_slot) < len(actions):
@@ -169,22 +169,32 @@ def _like_due_by_slot(
     session: Session,
     task: Task,
     *,
+    channel: OperationTarget,
     actions: list[LikePlanItem],
     owners: dict[str, object],
     now_at,
 ) -> dict[str, object]:
     if task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION:
+        source_hash = pacing_source_key_hash(channel.tg_peer_id)
+        slots = [
+            _like_source_slot(
+                task,
+                item,
+                owner=owners[_like_slot_key(task, item)],
+                source_hash=source_hash,
+            )
+            for item in actions
+        ]
+        slots = attach_owner_history(
+            session,
+            task,
+            slots,
+            owner_model=ReactionFulfillmentObligation,
+            config=task.pacing_config or {},
+            seed_id=f"like:{task.id}",
+        )
         return schedule_source_pacing_points(
-            [
-                _like_source_slot(
-                    task,
-                    item,
-                    release_not_before_at=owners[
-                        _like_slot_key(task, item)
-                    ].release_not_before_at,
-                )
-                for item in actions
-            ],
+            slots,
             task.pacing_config or {},
             now_at=wall_datetime(now_at),
             timezone_name=task.timezone,
@@ -222,7 +232,7 @@ def _create_one_like_action(
         session, task, item.account_id, "like_message", due_at, config,
     )
     schedule = _like_account_schedule(
-        session, task, item=item, obligation=obligation,
+        session, task, channel=channel, item=item, obligation=obligation,
         due_at=due_at, release_at=release_at, planned_at=planned_at,
     )
     if schedule is None:
@@ -246,6 +256,7 @@ def _like_account_schedule(
     session: Session,
     task: Task,
     *,
+    channel: OperationTarget,
     item: LikePlanItem,
     obligation,
     due_at,
@@ -254,7 +265,12 @@ def _like_account_schedule(
 ):
     if task.fulfillment_contract_version != CURRENT_CONTRACT_VERSION:
         return planned_at, None
-    source = _like_source_slot(task, item)
+    source = _like_source_slot(
+        task,
+        item,
+        owner=obligation,
+        source_hash=pacing_source_key_hash(channel.tg_peer_id),
+    )
     freeze_pacing_owner(
         obligation,
         plan_hash=source_pacing_plan_hash(
@@ -264,6 +280,7 @@ def _like_account_schedule(
         plan_total=item.plan_total,
         due_at=due_at,
         release_not_before_at=release_at,
+        source_identity=source.owner_identity,
     )
     try:
         reservation = reserve_account_pacing(
@@ -345,7 +362,8 @@ def _like_source_slot(
     task: Task,
     item: LikePlanItem,
     *,
-    release_not_before_at=None,
+    owner: ReactionFulfillmentObligation,
+    source_hash: str,
 ) -> SourcePacingSlot:
     period_start, deadline = rolling_source_window(task, item.message.created_at)
     return SourcePacingSlot(
@@ -355,7 +373,11 @@ def _like_source_slot(
         plan_total=item.plan_total,
         period_start_at=period_start,
         deadline_at=deadline,
-        release_not_before_at=release_not_before_at,
+        release_not_before_at=owner.release_not_before_at,
+        owner_id=owner.id,
+        task_lifecycle_epoch=int(task.task_lifecycle_epoch or 1),
+        pacing_period_key=f"message:{item.message.id}",
+        pacing_source_key_hash=source_hash,
     )
 
 
@@ -406,73 +428,6 @@ def _all_like_targets_reached(
     if not messages:
         return False
     return all(len(account_ids_by_message[message.id]) >= target for message in messages)
-
-
-def _reaction_plan(
-    reactions: list[str],
-    quantity: int,
-    reaction_type: str = "random",
-    *,
-    seed_id: str = "",
-) -> list[str]:
-    normalized = _normalize_reactions(reactions)
-    if quantity <= 0:
-        return []
-    if reaction_type == "specific" or len(normalized) == 1:
-        return [normalized[0]] * quantity
-    primary_count = _primary_reaction_count(quantity)
-    extra_count = _extra_reaction_count(normalized, quantity, primary_count)
-    secondary_count = max(0, quantity - primary_count - extra_count)
-    plan = [normalized[0]] * primary_count
-    rng = random.Random(deterministic_rank(seed_id, "reaction-plan"))
-    plan.extend(_secondary_reactions(normalized[1:], secondary_count, rng=rng))
-    plan.extend(_extra_reactions(normalized, extra_count, rng=rng))
-    rng.shuffle(plan)
-    return plan
-
-
-def _normalize_reactions(reactions: list[str]) -> list[str]:
-    normalized: list[str] = []
-    for reaction in reactions or []:
-        value = str(reaction).strip()
-        if value and value not in normalized:
-            normalized.append(value)
-    return normalized or ["👍"]
-
-
-def _primary_reaction_count(quantity: int) -> int:
-    if quantity <= 1:
-        return quantity
-    return min(quantity, max(1, round(quantity * PRIMARY_REACTION_RATIO)))
-
-
-def _extra_reaction_count(reactions: list[str], quantity: int, primary_count: int) -> int:
-    extra_pool = [reaction for reaction in DEFAULT_EXTRA_REACTIONS if reaction not in reactions]
-    if quantity < MIN_EXTRA_REACTION_QUANTITY or not extra_pool:
-        return 0
-    secondary_minimum = min(len(reactions) - 1, max(0, quantity - primary_count))
-    extra_room = max(0, quantity - primary_count - secondary_minimum)
-    return min(extra_room, len(extra_pool), max(1, round(quantity * EXTRA_REACTION_RATIO)))
-
-
-def _secondary_reactions(reactions: list[str], quantity: int, *, rng: random.Random) -> list[str]:
-    if quantity <= 0 or not reactions:
-        return []
-    guaranteed = list(reactions[: min(quantity, len(reactions))])
-    remaining = quantity - len(guaranteed)
-    selected = guaranteed + rng.choices(reactions, k=remaining)
-    rng.shuffle(selected)
-    return selected
-
-
-def _extra_reactions(
-    configured_reactions: list[str],
-    quantity: int,
-    *,
-    rng: random.Random,
-) -> list[str]:
-    extra_pool = [reaction for reaction in DEFAULT_EXTRA_REACTIONS if reaction not in configured_reactions]
-    return rng.sample(extra_pool, k=min(quantity, len(extra_pool)))
 
 
 __all__ = ["build_plan"]

@@ -4,12 +4,12 @@ import time
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.ai_gateway import AiProviderRateLimited
 from app.database import Base
-from app.models import GenerationJob
+from app.models import GenerationJob, TaskRuntimeActiveBlocker
 from app.services.task_center.ai_generator import GROUP_CHAT_PURPOSE
 from app.services.task_center.provider_admission import (
     ProviderAdmissionBlocked,
@@ -279,7 +279,7 @@ def test_claim_parallel_generation_projects_unavailable_blocker(monkeypatch):
         ]
         assert len(marked) == 1
         assert marked[0].status == "pending"
-        assert task.stats["conversation_quality_active_blocker"] == "provider_admission_unavailable"
+        _assert_provider_blocker(session, task.id)
 
 
 def test_claim_parallel_generation_checks_admission_once_before_batch(monkeypatch):
@@ -391,4 +391,12 @@ def test_drain_stops_and_releases_on_provider_admission_unavailable():
         assert actions[0].claim_owner == ""
         assert actions[0].result["error_code"] == "provider_admission_unavailable"
         task = session.get(Task, actions[0].task_id)
-        assert task.stats["conversation_quality_active_blocker"] == "provider_admission_unavailable"
+        _assert_provider_blocker(session, task.id)
+
+
+def _assert_provider_blocker(session: Session, task_id: str) -> None:
+    blocker = session.scalar(select(TaskRuntimeActiveBlocker).where(
+        TaskRuntimeActiveBlocker.task_id == task_id,
+        TaskRuntimeActiveBlocker.blocker_domain == "conversation_quality",
+    ))
+    assert blocker.blocker_code == "provider_admission_unavailable"

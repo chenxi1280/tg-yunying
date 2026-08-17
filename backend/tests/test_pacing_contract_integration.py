@@ -194,6 +194,65 @@ def test_overdue_source_slots_get_cross_account_recovery_releases() -> None:
     )
 
 
+def test_new_batch_continues_after_historical_owner_cursor() -> None:
+    now = datetime(2026, 8, 16, 11, 0)
+    period_start = now - timedelta(hours=2)
+    deadline = now + timedelta(hours=2)
+    historical = now + timedelta(minutes=15)
+    slots = [
+        SourcePacingSlot(
+            "message-1",
+            f"batch-2:{index}",
+            index,
+            8,
+            period_start,
+            deadline,
+            owner_id=f"owner-{index}",
+            pacing_period_key="message:1",
+            pacing_source_key_hash="a" * 64,
+            historical_cursor_at=historical,
+            historical_max_ordinal=4,
+        )
+        for index in (5, 6)
+    ]
+
+    points = schedule_source_pacing_points(
+        slots,
+        _curve(),
+        seed_id="cross-batch",
+        now_at=now,
+    )
+    releases = sorted(point.release_not_before_at for point in points.values())
+
+    assert releases[0] > historical
+    assert releases[1] - releases[0] >= timedelta(minutes=30)
+
+
+def test_new_owner_ordinal_cannot_rewind_historical_cursor() -> None:
+    now = datetime(2026, 8, 16, 11, 0)
+    slot = SourcePacingSlot(
+        "message-1",
+        "rewound-owner",
+        3,
+        8,
+        now - timedelta(hours=2),
+        now + timedelta(hours=2),
+        owner_id="owner-new",
+        pacing_period_key="message:1",
+        pacing_source_key_hash="a" * 64,
+        historical_cursor_at=now,
+        historical_max_ordinal=4,
+    )
+
+    with pytest.raises(ValueError, match="pacing_source_cursor_conflict"):
+        schedule_source_pacing_points(
+            [slot],
+            _curve(),
+            seed_id="rewind",
+            now_at=now,
+        )
+
+
 def test_twenty_minute_worker_pause_does_not_drain_overdue_within_one_minute() -> None:
     period_start = datetime(2026, 8, 16, 10, 0)
     now = period_start + timedelta(minutes=20)

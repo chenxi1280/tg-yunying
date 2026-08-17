@@ -4,7 +4,7 @@ from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
@@ -38,6 +38,7 @@ from app.services.task_center.account_scope import (
     SCOPE_RECONCILE_METRIC,
 )
 from app.services.task_center.channel_membership import _account_can_attempt_membership
+from app.services.task_center.channel_membership import _task_membership_candidates
 from app.services import accounts as accounts_service
 from app.services.account_online_state import probe_due_online_states, reconcile_runtime_online_sources
 from app.services.task_center.executors import group_ai_chat
@@ -152,6 +153,23 @@ def test_eligible_account_ids_enforces_session_usage_and_rescue_boundaries(sessi
     assert eligible_account_ids(session, 1) == [1]
 
 
+def test_eligible_account_ids_does_not_materialize_encrypted_sessions(session: Session) -> None:
+    _seed_scope_base(session)
+    session.add(_account(1, 10))
+    session.commit()
+    statements: list[str] = []
+    event.listen(
+        session.get_bind(),
+        "before_cursor_execute",
+        lambda _conn, _cursor, statement, _params, _context, _many: statements.append(statement),
+    )
+
+    assert eligible_account_ids(session, 1) == [1]
+
+    selected = next(statement.lower() for statement in statements if "from tg_accounts" in statement.lower())
+    assert "session_ciphertext" not in selected.split("from tg_accounts", 1)[0]
+
+
 def test_membership_gate_rejects_unreadable_session_ciphertext() -> None:
     account = TgAccount(
         id=999,
@@ -163,6 +181,34 @@ def test_membership_gate_rejects_unreadable_session_ciphertext() -> None:
     )
 
     assert _account_can_attempt_membership(account) is False
+
+
+def test_persisted_membership_candidates_page_fairly_in_bounded_batches(
+    session: Session,
+) -> None:
+    _seed_scope_base(session)
+    task = _task("bounded-membership")
+    session.add(task)
+    for account_id in range(1, 86):
+        session.add(_account(account_id, 10))
+        session.add(TaskMembershipAdmissionItem(
+            tenant_id=1,
+            task_id=task.id,
+            account_id=account_id,
+            target_id=31,
+            phase="pending",
+        ))
+    session.commit()
+
+    first = _task_membership_candidates(session, task)
+    session.flush()
+    second = _task_membership_candidates(session, task)
+
+    assert len(first) == 40
+    assert len(second) == 40
+    assert {account.id for account in first}.isdisjoint(
+        {account.id for account in second}
+    )
 
 
 def test_unchanged_health_check_does_not_emit_scope_event(session: Session, monkeypatch) -> None:

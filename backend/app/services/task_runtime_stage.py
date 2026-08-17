@@ -120,7 +120,9 @@ def _membership_stage(task: Task, membership_phase: Mapping[str, Any] | None) ->
 
 def _membership_phase_from_stats(task: Task) -> dict[str, Any]:
     stats = task.stats if isinstance(task.stats, dict) else {}
-    summary = stats.get("membership_summary") if isinstance(stats.get("membership_summary"), dict) else {}
+    current = stats.get("membership_summary_v2")
+    legacy = stats.get("membership_summary")
+    summary = current if isinstance(current, dict) else legacy if isinstance(legacy, dict) else {}
     return {
         "status": stats.get("membership_stage") or summary.get("status") or "",
         "pending_account_count": stats.get("membership_need_join_count") or summary.get("pending_account_count") or summary.get("need_join_account_count") or 0,

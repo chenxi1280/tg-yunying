@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
@@ -15,6 +15,8 @@ from app.models import (
     Task,
     TaskDayLedger,
     TaskGroupDailyMessageSlot,
+    TaskRuntimeActiveBlocker,
+    TaskRuntimeSummary,
     Tenant,
 )
 from app.services import group_listener_admission, group_listeners
@@ -197,8 +199,16 @@ def test_quality_stats_refresh_stale_task_before_merge(tmp_path) -> None:
         stats = verify.get(Task, "task-1").stats
         assert stats["base"] == 1
         assert stats["other_action_count"] == 1
-        assert stats["current_action_count"] == 1
-        assert stats["conversation_quality_active_blockers"]["action-1"] == "rule_binding_missing"
+        assert "current_action_count" not in stats
+        assert "conversation_quality_active_blockers" not in stats
+        summary = verify.scalar(select(TaskRuntimeSummary).where(
+            TaskRuntimeSummary.task_id == "task-1"
+        ))
+        blocker = verify.scalar(select(TaskRuntimeActiveBlocker).where(
+            TaskRuntimeActiveBlocker.task_id == "task-1"
+        ))
+        assert summary.summary["quality_event_counts"]["current_action_count"] == 1
+        assert blocker.blocker_code == "rule_binding_missing"
 
 
 def test_quality_stats_merge_keeps_local_and_concurrent_changes(tmp_path) -> None:
@@ -213,7 +223,6 @@ def test_quality_stats_merge_keeps_local_and_concurrent_changes(tmp_path) -> Non
         current = second.get(Task, "task-1")
         current.stats = {**current.stats, "concurrent_count": 1}
         second.commit()
-    stale.stats = {**stale.stats, "local_before_quality": 1}
     action = Action(id="action-1", tenant_id=1, task_id="task-1", task_type="group_ai_chat", action_type="send_message")
 
     ai_generation_dispatch._record_quality_event(stale, action, "current_action_count")
@@ -224,8 +233,11 @@ def test_quality_stats_merge_keeps_local_and_concurrent_changes(tmp_path) -> Non
         stats = verify.get(Task, "task-1").stats
         assert stats["base"] == 1
         assert stats["concurrent_count"] == 1
-        assert stats["local_before_quality"] == 1
-        assert stats["current_action_count"] == 1
+        assert "current_action_count" not in stats
+        summary = verify.scalar(select(TaskRuntimeSummary).where(
+            TaskRuntimeSummary.task_id == "task-1"
+        ))
+        assert summary.summary["quality_event_counts"]["current_action_count"] == 1
 
 
 def test_ai_acceptance_combines_authoritative_daily_dimensions() -> None:

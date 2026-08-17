@@ -6,13 +6,20 @@ from datetime import datetime, timedelta
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from app.models import Action, ChannelMessage, OperationTarget, Task, TgAccount
-from app.services._common import _now, gateway
+from app.models import (
+    Action,
+    ChannelMessage,
+    ListenerChannelSnapshotItem,
+    OperationTarget,
+    Task,
+    TgAccount,
+)
+from app.services._common import _now
 from app.services.account_capacity import account_capacity_decision
-from app.services.developer_apps import credentials_for_task_account
-
-from ..account_pool import select_task_accounts
-from ..listener_runtime import should_collect_listener
+from ..channel_listener_runtime import (
+    channel_snapshot_binding,
+    ensure_channel_subscription,
+)
 
 
 def quantity_with_jitter(quantity: int, jitter_ratio: float | int = 0.15) -> int:
@@ -56,8 +63,32 @@ def channel_scope(session: Session, task: Task, config: dict, *, comment_availab
             existing_messages = channel_messages(session, task.tenant_id, config, comment_available_only=comment_available_only)
             if existing_messages:
                 return channel, existing_messages
-        collect_channel_messages(session, task, channel, config)
-    messages = channel_messages(session, task.tenant_id, config, comment_available_only=comment_available_only)
+        ensure_channel_subscription(session, task, channel)
+        snapshot_status, next_probe_at, state_id, snapshot_revision = channel_snapshot_binding(
+            session,
+            task,
+            channel,
+        )
+        if snapshot_status != "ready":
+            task.last_error = f"channel_source_snapshot_{snapshot_status}"
+            if next_probe_at is not None:
+                task.next_run_at = normalize_datetime(next_probe_at)
+            return None, []
+        messages = channel_messages(
+            session,
+            task.tenant_id,
+            config,
+            comment_available_only=comment_available_only,
+            listener_state_id=state_id,
+            snapshot_revision=snapshot_revision,
+        )
+    else:
+        messages = channel_messages(
+            session,
+            task.tenant_id,
+            config,
+            comment_available_only=comment_available_only,
+        )
     if not messages:
         task.last_error = task.last_error or "未找到频道消息，等待下一轮采集"
         return None, []
@@ -65,60 +96,9 @@ def channel_scope(session: Session, task: Task, config: dict, *, comment_availab
 
 
 def collect_channel_messages(session: Session, task: Task, channel: OperationTarget, config: dict) -> int:
-    if not should_collect_listener("channel", channel.id, window_seconds=int(config.get("listener_interval_seconds") or 30)):
-        return 0
-    limit = channel_fetch_limit(config)
-    accounts = select_task_accounts(session, task.tenant_id, task.account_config or {}, limit=1)
-    if not accounts:
-        task.last_error = "没有可用于采集频道消息的账号"
-        return 0
-    account = accounts[0]
-    try:
-        snapshots = gateway.fetch_channel_messages(
-            account.id,
-            channel.tg_peer_id,
-            account.session_ciphertext,
-            credentials_for_task_account(session, account, task.type),
-            limit=limit,
-        )
-    except Exception as exc:  # noqa: BLE001 - keep task observable and let existing rows still run.
-        task.last_error = f"采集频道消息失败: {exc}"
-        return 0
-    created = 0
-    for snapshot in snapshots:
-        if snapshot.message_id <= 0:
-            continue
-        existing = session.scalar(
-            select(ChannelMessage).where(
-                ChannelMessage.tenant_id == task.tenant_id,
-                ChannelMessage.channel_target_id == channel.id,
-                ChannelMessage.message_id == snapshot.message_id,
-            )
-        )
-        published_at = normalize_datetime(snapshot.published_at)
-        if existing:
-            existing.content_preview = snapshot.content_preview or existing.content_preview
-            existing.message_url = snapshot.message_url or existing.message_url or channel_message_url(channel, snapshot.message_id)
-            existing.comment_available = bool(snapshot.comment_available)
-            existing.published_at = published_at or existing.published_at
-            continue
-        session.add(
-            ChannelMessage(
-                tenant_id=task.tenant_id,
-                channel_target_id=channel.id,
-                message_id=snapshot.message_id,
-                message_url=snapshot.message_url or channel_message_url(channel, snapshot.message_id),
-                content_preview=snapshot.content_preview,
-                comment_available=bool(snapshot.comment_available),
-                published_at=published_at,
-            )
-        )
-        created += 1
-    if created:
-        session.flush()
-    if snapshots:
-        task.last_error = ""
-    return created
+    del config
+    ensure_channel_subscription(session, task, channel)
+    return 0
 
 
 def channel_fetch_limit(config: dict) -> int:
@@ -261,8 +241,24 @@ def record_channel_capacity_warning(task: Task, action_label: str, target_per_me
         task.last_error = ""
 
 
-def channel_messages(session: Session, tenant_id: int, config: dict, *, comment_available_only: bool = False) -> list[ChannelMessage]:
+def channel_messages(
+    session: Session,
+    tenant_id: int,
+    config: dict,
+    *,
+    comment_available_only: bool = False,
+    listener_state_id: str | None = None,
+    snapshot_revision: int = 0,
+) -> list[ChannelMessage]:
     stmt = select(ChannelMessage).where(ChannelMessage.tenant_id == tenant_id, ChannelMessage.channel_target_id == int(config.get("target_channel_id") or 0))
+    if listener_state_id is not None:
+        stmt = stmt.join(
+            ListenerChannelSnapshotItem,
+            ListenerChannelSnapshotItem.channel_message_id == ChannelMessage.id,
+        ).where(
+            ListenerChannelSnapshotItem.listener_source_state_id == listener_state_id,
+            ListenerChannelSnapshotItem.snapshot_revision == snapshot_revision,
+        )
     if comment_available_only:
         stmt = stmt.where(ChannelMessage.comment_available.is_(True))
     scope = _channel_scope_name(config)

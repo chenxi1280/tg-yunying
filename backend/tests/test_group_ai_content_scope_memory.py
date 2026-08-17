@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from app.models import Action, AiGroupMessageMemory, ExecutionAttempt, GroupContextMessage, Task, TgAccount
+from app.models import Action, AiGroupMessageMemory, ExecutionAttempt, GroupContextMessage, Task, TaskRuntimeActiveBlocker, TgAccount
 from app.services.task_center import dispatcher
 from app.services.task_center.ai_generation_dependencies import GenerationDependencies
 from app.services.task_center.ai_generation_dispatch import ensure_send_message_content
@@ -211,9 +211,9 @@ def test_success_only_clears_quality_blocker_for_same_scope():
     )
     dispatcher._clear_conversation_quality_blocker(session, succeeded)
 
-    assert task.stats["conversation_quality_active_blocker"] == "cross_group_content_scope_mismatch"
+    assert session.query(TaskRuntimeActiveBlocker).filter_by(task_id=task.id).count() == 1
     dispatcher._clear_conversation_quality_blocker(session, failed)
-    assert "conversation_quality_active_blocker" not in task.stats
+    assert session.query(TaskRuntimeActiveBlocker).filter_by(task_id=task.id).count() == 0
 
 
 def test_success_does_not_clear_legacy_unscoped_quality_blocker():

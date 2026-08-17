@@ -24,7 +24,10 @@ def freeze_pacing_owner(
     plan_total: int,
     due_at: datetime,
     release_not_before_at: datetime | None = None,
+    source_identity: tuple[int, str, str] | None = None,
 ) -> datetime:
+    if source_identity is not None:
+        _freeze_source_identity(owner, source_identity)
     existing = getattr(owner, "pacing_due_at", None)
     if existing is not None:
         if _assert_frozen_identity(owner, plan_hash, slot_ordinal, plan_total, due_at):
@@ -45,6 +48,22 @@ def freeze_pacing_owner(
     owner.pacing_due_at = due_at
     owner.release_not_before_at = release_not_before_at or due_at
     return owner.release_not_before_at
+
+
+def _freeze_source_identity(
+    owner,
+    identity: tuple[int, str, str],
+) -> None:
+    attributes = (
+        "task_lifecycle_epoch",
+        "pacing_period_key",
+        "pacing_source_key_hash",
+    )
+    current = tuple(getattr(owner, name, None) for name in attributes)
+    if any(value not in {None, identity[index]} for index, value in enumerate(current)):
+        raise PacingOwnerImmutableConflict("pacing_source_identity_conflict")
+    for name, value in zip(attributes, identity, strict=True):
+        setattr(owner, name, value)
 
 
 def _freeze_owner_release(

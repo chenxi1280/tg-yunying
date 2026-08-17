@@ -48,6 +48,8 @@ class TaskRuntimeSummary(Base):
     pending_count: Mapped[int] = mapped_column(Integer, default=0)
     oldest_pending_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     latest_failure_type: Mapped[str] = mapped_column(String(80), default="")
+    lifecycle_epoch: Mapped[int] = mapped_column(Integer, default=1)
+    blocker_revision: Mapped[int] = mapped_column(Integer, default=0)
     summary: Mapped[dict] = mapped_column(JSON, default=dict)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 

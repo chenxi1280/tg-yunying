@@ -158,6 +158,10 @@ from .search_rank_deboost_reservations import (
     mark_reserved_reservation_unknown,
     release_reserved_reservation,
 )
+from .source_pacing_admission import (
+    admit_source_paced_attempt,
+    settle_source_pacing_admission,
+)
 from . import runtime_resources as _runtime_resources
 from .runtime_state_hash import (
     execution_attempt_state_hash,
@@ -3219,92 +3223,6 @@ def _fail_offline_group_send(
     )
 
 
-def _enforce_group_send_final_gate(session: Session, action: Action) -> None:
-    """发送前群级 final gate：把实际发送时刻锚定到群 timeline。
-
-    claim 时刻的群级门禁受 AI 生成耗时抖动影响（claim 间隔 8s，但生成快慢
-    差会把实际发送挤近，2026-08-17 线上实测 min gap 1.7s）。本 gate 在真正
-    调用网关前（此时 attempt 预留已提交、主事务干净），以 task 行锁串行化：
-    重查群 timeline（含其他账号刚占位的 open 点与发送事实），把本 action
-    的发送时刻推进到最近点+群间隔并提交占位，必要时短暂等待，保证相邻
-    实际发送间隔 ≥ 群最小间隔。gate 失败只记录告警、不阻塞发送主流程
-    （发送结果照常按网关真实返回落账，不做任何兜底伪装）。
-    """
-    # 属性访问可能在 attempt 预留 commit（对象已 expire）后触发 refresh，
-    # 隐式开启新事务；外部调用前必须保持"无打开事务"，早退前先收尾。
-    task_type = str(action.task_type or "")
-    if task_type != "group_ai_chat":
-        return
-    task_id = str(action.task_id or "")
-    slot_key = str(action.pacing_slot_key or "")
-    if not task_id or not slot_key:
-        if session.in_transaction():
-            session.rollback()
-        return
-    gap_seconds = max(1, int(get_settings().ai_group_send_pacing_min_gap_seconds))
-    gap = timedelta(seconds=gap_seconds)
-    try:
-        for _attempt in range(4):
-            try:
-                _account_pacing_guard.lock_task_pacing(session, str(action.task_id))
-            except _account_pacing_guard.AccountPacingLockUnavailable:
-                time.sleep(min(1.0, gap_seconds / 4))
-                continue
-            desired_at = _account_pacing_guard._wall(_now())
-            if desired_at is None:
-                session.rollback()
-                return
-            not_before = _account_pacing_guard.task_policy_not_before(
-                session,
-                str(action.task_id),
-                tenant_id=action.tenant_id,
-                desired_at=desired_at,
-                gap=gap,
-                exclude_action_id=action.id,
-                exclude_slot_key=str(action.pacing_slot_key),
-                include_planned=False,
-            )
-            if not_before is not None and not_before > desired_at:
-                session.execute(
-                    update(Action)
-                    .where(Action.id == action.id)
-                    .values(scheduled_at=not_before)
-                )
-                session.commit()
-                wait_seconds = (not_before - desired_at).total_seconds()
-                if wait_seconds > 0:
-                    # 等待完整 wait（≤2×gap 有界）：cap 到 gap+1 会提前发送，
-                    # 使实际间隔 < 群最小间隔（2026-08-17 实测 1-2s 违例）。
-                    time.sleep(wait_seconds)
-            else:
-                # 时间线干净也必须占位：本条即将发送，占位让并发 gate/claim
-                # 在窗口内看到本条在途（claiming + scheduled_at=发送时刻）。
-                # 不占位时并行发送互不可见 → 同秒挤发（2026-08-17 实测 0.12s）。
-                session.execute(
-                    update(Action)
-                    .where(Action.id == action.id)
-                    .values(scheduled_at=desired_at)
-                )
-                session.commit()
-            return
-        # 任务锁持续被占（并发 gate/claim）：不得无门禁静默放行。保守错开
-        # 一个群间隔再发送并记录告警（2026-08-17 实测：锁忙 2 次重试耗尽
-        # 直接 return，双 dispatcher 并发时同任务 1-2s 内挤发）。
-        logger.warning(
-            "group_send_final_gate_lock_busy action=%s task=%s",
-            action.id, action.task_id,
-        )
-        if session.in_transaction():
-            session.rollback()
-        time.sleep(gap_seconds)
-    except (SQLAlchemyError, ValueError) as exc:
-        logger.warning(
-            "group_send_final_gate_failed action=%s task=%s error=%s",
-            action.id, action.task_id, exc,
-        )
-        session.rollback()
-
-
 def _send_group_message_via_gateway(
     session: Session,
     action: Action,
@@ -3328,7 +3246,6 @@ def _send_group_message_via_gateway(
         if gateway_request.reply_to_message_id
         else {}
     )
-    _enforce_group_send_final_gate(session, action)
     result = gateway.send_message(
         gateway_request.account_id,
         gateway_request.group_id,
@@ -3422,6 +3339,9 @@ def _reserve_group_send_attempt(
         }
     attempt = _begin_execution_attempt(session, action, context.account)
     _mark_executing(action)
+    if not admit_source_paced_attempt(session, action, attempt):
+        session.commit()
+        return None
     _mark_gateway_call_started(session, attempt, commit=False)
     session.commit()
     return attempt
@@ -3477,6 +3397,9 @@ def _reserve_channel_action_attempt(
         return None
     attempt = _begin_execution_attempt(session, action, account)
     _mark_executing(action)
+    if not admit_source_paced_attempt(session, action, attempt):
+        session.commit()
+        return None
     _mark_gateway_call_started(session, attempt, commit=False)
     session.commit()
     return attempt
@@ -10104,6 +10027,7 @@ def _finish_execution_attempt(
                 remote_mutation_started=remote_mutation_started,
             ),
         )
+    settle_source_pacing_admission(action, attempt)
 
 
 def _merge_attempt_result_snapshot(

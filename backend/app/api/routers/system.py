@@ -67,6 +67,7 @@ from app.services.proxy_airport_subscription import (
     update_proxy_airport_subscription,
 )
 from app.services._common import audit
+from app.services.task_center.planner_pressure import planner_pressure_payload
 from app.worker import drain_once
 
 router = APIRouter()
@@ -93,6 +94,16 @@ def health() -> dict[str, str]:
 @router.get("/api/config/runtime", response_model=RuntimeConfigOut)
 def runtime_config(session: Session = Depends(get_session)) -> dict:
     return get_runtime_config(session)
+
+
+@router.get("/api/system/runtime/planner-pressure")
+def planner_pressure(
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    if not current_user.has_permission("system.view"):
+        raise forbidden("system.view required")
+    return planner_pressure_payload(session)
 
 
 @router.get("/api/proxy-airport-subscription", response_model=ProxyAirportSubscriptionOut)

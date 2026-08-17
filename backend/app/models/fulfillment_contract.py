@@ -94,6 +94,9 @@ class TaskGroupDailyMessageSlot(Base):
     pacing_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     release_not_before_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     pacing_plan_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    task_lifecycle_epoch: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    pacing_period_key: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    pacing_source_key_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     state: Mapped[str] = mapped_column(String(32), default="open")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 

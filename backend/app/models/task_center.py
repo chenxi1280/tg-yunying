@@ -453,6 +453,13 @@ class TaskMembershipAdmissionItem(Base):
         Index("ix_membership_admission_test_message_action", "test_message_action_id"),
         Index("ix_membership_admission_delete_action", "delete_action_id"),
         Index("ix_membership_admission_rescue_action", "rescue_action_id"),
+        Index(
+            "ix_membership_admission_planner_selection",
+            "task_id",
+            "eligibility_rank",
+            "planner_last_selected_at",
+            "id",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -487,6 +494,12 @@ class TaskMembershipAdmissionItem(Base):
     )
     rescue_status: Mapped[str] = mapped_column(String(40), default="")
     rescue_failure_detail: Mapped[str] = mapped_column(Text, default="")
+    eligibility_rank: Mapped[int] = mapped_column(Integer, default=100)
+    eligibility_revision: Mapped[int] = mapped_column(Integer, default=1)
+    planner_last_selected_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
@@ -512,6 +525,12 @@ class ListenerSourceState(Base):
     backfill_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     collect_window_seconds: Mapped[int] = mapped_column(Integer, default=30)
     last_error: Mapped[str] = mapped_column(Text, default="")
+    snapshot_revision: Mapped[int] = mapped_column(Integer, default=0)
+    snapshot_status: Mapped[str] = mapped_column(String(32), default="pending")
+    observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    fresh_until_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_probe_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error_code: Mapped[str] = mapped_column(String(80), default="")
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 

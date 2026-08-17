@@ -33,6 +33,7 @@ from ..source_pacing import (
     source_pacing_plan_hash,
     wall_datetime,
 )
+from ..source_owner_cursor import attach_owner_history, pacing_source_key_hash
 
 
 @dataclass(frozen=True)
@@ -75,6 +76,7 @@ def create_current_view_actions(
     action_creator: Callable[[Session, ViewActionRequest], int],
 ) -> int:
     items = _freeze_view_plan_items(session, task, actions=actions, context=context)
+    items = _attach_view_owner_history(session, task, items)
     points_by_slot = schedule_source_pacing_points(
         [item.source_slot for item in items],
         task.pacing_config or {},
@@ -183,7 +185,27 @@ def _freeze_view_pacing_owner(
         plan_total=source.plan_total,
         due_at=due_at,
         release_not_before_at=release_not_before_at,
+        source_identity=source.owner_identity,
     )
+
+
+def _attach_view_owner_history(
+    session: Session,
+    task: Task,
+    items: list[ViewPlanItem],
+) -> list[ViewPlanItem]:
+    slots = attach_owner_history(
+        session,
+        task,
+        [item.source_slot for item in items],
+        owner_model=ViewFulfillmentObligation,
+        config=task.pacing_config or {},
+        seed_id=f"view:{task.id}",
+    )
+    return [
+        ViewPlanItem(item.message, item.account_id, item.obligation, slots[index])
+        for index, item in enumerate(items)
+    ]
 
 
 def _record_stratified_shortfall(task: Task, requested: int, scheduled: int) -> None:
@@ -264,6 +286,10 @@ def _view_plan_item(
         period_start_at=period_start,
         deadline_at=deadline,
         release_not_before_at=obligation.release_not_before_at,
+        owner_id=obligation.id,
+        task_lifecycle_epoch=int(task.task_lifecycle_epoch or 1),
+        pacing_period_key=str(context.ledger.id),
+        pacing_source_key_hash=pacing_source_key_hash(context.channel.tg_peer_id),
     )
     return ViewPlanItem(message, account_id, obligation, slot)
 

@@ -5044,7 +5044,7 @@ def test_task_center_channel_like_auto_collects_dynamic_new_messages(monkeypatch
             )
         ]
 
-    monkeypatch.setattr("app.services.task_center.executors.common.gateway.fetch_channel_messages", fake_fetch_channel_messages)
+    monkeypatch.setattr("app.services.task_center.channel_listener_runtime.gateway.fetch_channel_messages", fake_fetch_channel_messages)
     monkeypatch.setattr(
         "app.services.task_center.dispatcher.gateway.send_channel_reaction",
         lambda *args, **kwargs: calls.append(args[2]) or OperationResult(True, detail="liked"),
@@ -5095,7 +5095,7 @@ def test_task_center_channel_like_auto_collects_dynamic_new_messages(monkeypatch
         assert calls == [4101]
         fetched_ids = [4102]
         monkeypatch.setattr(
-            "app.services.task_center.executors.common.gateway.fetch_channel_messages",
+            "app.services.task_center.channel_listener_runtime.gateway.fetch_channel_messages",
             lambda *args, **kwargs: [
                 ChannelMessageSnapshot(
                     message_id=fetched_ids[-1],
@@ -5163,7 +5163,7 @@ def test_task_center_channel_view_and_comment_default_dynamic_new_keep_collectin
             )
         ]
 
-    monkeypatch.setattr("app.services.task_center.executors.common.gateway.fetch_channel_messages", fake_fetch_channel_messages)
+    monkeypatch.setattr("app.services.task_center.channel_listener_runtime.gateway.fetch_channel_messages", fake_fetch_channel_messages)
     monkeypatch.setattr(f"app.services.task_center.dispatcher.gateway.{gateway_attr}", result_factory(calls))
     with TestClient(app) as client:
         headers = auth_headers(client)
@@ -5244,7 +5244,7 @@ def test_task_center_reset_channel_like_rebuilds_from_latest_messages(monkeypatc
             )
         ]
 
-    monkeypatch.setattr("app.services.task_center.executors.common.gateway.fetch_channel_messages", fake_fetch_channel_messages)
+    monkeypatch.setattr("app.services.task_center.channel_listener_runtime.gateway.fetch_channel_messages", fake_fetch_channel_messages)
     monkeypatch.setattr(
         "app.services.task_center.dispatcher.gateway.send_channel_reaction",
         lambda *args, **kwargs: reactions.append(args[2]) or OperationResult(
@@ -5349,7 +5349,7 @@ def test_task_center_reset_channel_view_rebuilds_from_latest_messages(
             )
         ]
 
-    monkeypatch.setattr("app.services.task_center.executors.common.gateway.fetch_channel_messages", fake_fetch_channel_messages)
+    monkeypatch.setattr("app.services.task_center.channel_listener_runtime.gateway.fetch_channel_messages", fake_fetch_channel_messages)
     monkeypatch.setattr(
         "app.services.task_center.dispatcher.gateway.view_channel_message",
         lambda *args, **kwargs: views.append(args[2]) or OperationResult(
@@ -5432,7 +5432,7 @@ def test_task_center_reset_channel_comment_rebuilds_auto_plan(monkeypatch):
             )
         ]
 
-    monkeypatch.setattr("app.services.task_center.executors.common.gateway.fetch_channel_messages", fake_fetch_channel_messages)
+    monkeypatch.setattr("app.services.task_center.channel_listener_runtime.gateway.fetch_channel_messages", fake_fetch_channel_messages)
     monkeypatch.setattr(
         "app.services.task_center.dispatcher.gateway.reply_channel_message",
         lambda *args, **kwargs: comments.append((args[2], args[3])) or SendResult(True, remote_message_id=f"comment-{len(comments)}"),

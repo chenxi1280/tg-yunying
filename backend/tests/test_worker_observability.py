@@ -111,6 +111,7 @@ def test_drain_iteration_logs_processed_count(monkeypatch, caplog) -> None:
     monkeypatch.setattr(worker_module, "_record_loop_heartbeat", lambda *args, **kwargs: None)
     monkeypatch.setattr(worker_module, "_write_local_healthcheck_heartbeat", lambda: None)
     monkeypatch.setattr(worker_module, "drain_once", lambda limit, role=None: 5)
+    monkeypatch.setattr(worker_module, "_record_resource_sample", lambda *args: None)
 
     with caplog.at_level(logging.INFO):
         assert worker_module._drain_worker_iteration("planner", 10, None) is True

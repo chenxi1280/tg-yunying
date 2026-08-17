@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { Alert, Button, Card, Descriptions, Space, Table, Tabs, Tag, Typography } from 'antd';
 import type {
   AdminUser,
@@ -16,7 +17,9 @@ import type {
   TenantFixedTwoFaSettings,
   CurrentUser,
   RuntimeConfig,
+  PlannerPressure,
 } from '../types';
+import { api } from '../../shared/api/client';
 import AISettingsView from './AISettingsView';
 import DeveloperAppsView from './DeveloperAppsView';
 import GroupRescueSettingsView from './GroupRescueSettingsView';
@@ -133,6 +136,31 @@ export default function SystemConfigView({
   onOpenConfirm,
   isActionPending,
 }: Props) {
+  const [plannerPressure, setPlannerPressure] = useState<PlannerPressure | null>(null);
+  const [plannerPressureError, setPlannerPressureError] = useState('');
+
+  useEffect(() => {
+    if (activeTab !== 'runtime' || !hasPermission(currentUser, 'system.view')) return;
+    let active = true;
+    const load = async () => {
+      try {
+        const payload = await api<PlannerPressure>('/system/runtime/planner-pressure');
+        if (active) {
+          setPlannerPressure(payload);
+          setPlannerPressureError('');
+        }
+      } catch (error) {
+        if (active) setPlannerPressureError(error instanceof Error ? error.message : String(error));
+      }
+    };
+    load();
+    const timer = window.setInterval(load, 30_000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [activeTab, currentUser]);
+
   return (
     <Tabs
       className="config-tabs"
@@ -339,6 +367,7 @@ export default function SystemConfigView({
           key: 'runtime',
           label: '运行配置',
           children: (
+            <Space direction="vertical" size={16} style={{ width: '100%' }}>
             <Card className="panel" title="运行配置" extra={<Typography.Text type="secondary">只读底座状态</Typography.Text>}>
               {!runtime && <Alert type="warning" showIcon message="运行配置暂未加载" />}
               {runtime && (
@@ -362,9 +391,41 @@ export default function SystemConfigView({
                 />
               )}
             </Card>
+            <Card className="panel" title="Planner 资源压力" extra={<Typography.Text type="secondary">每 30 秒刷新</Typography.Text>}>
+              {plannerPressureError && <Alert type="error" showIcon message="Planner 压力读取失败" description={plannerPressureError} />}
+              {!plannerPressureError && (!plannerPressure || plannerPressure.state === 'unavailable') && (
+                <Alert type="warning" showIcon message="Planner 采样暂不可用" />
+              )}
+              {plannerPressure?.memory_kib && (
+                <Descriptions
+                  bordered
+                  size="small"
+                  column={3}
+                  items={[
+                    { key: 'state', label: '采样状态', children: <Tag color={plannerPressure.state === 'fresh' ? 'green' : 'orange'}>{plannerPressure.state}</Tag> },
+                    { key: 'captured', label: '采样时间', children: plannerPressure.captured_at?.replace('T', ' ').slice(0, 19) || '-' },
+                    { key: 'sha', label: '版本', children: plannerPressure.release_sha?.slice(0, 12) || '-' },
+                    { key: 'pss', label: 'PSS', children: formatMiB(plannerPressure.memory_kib.pss) },
+                    { key: 'private', label: 'Private Dirty', children: formatMiB(plannerPressure.memory_kib.private_dirty) },
+                    { key: 'anonymous', label: 'Anonymous', children: formatMiB(plannerPressure.memory_kib.anonymous) },
+                    { key: 'cpu', label: 'CPU', children: `${plannerPressure.cpu_percent ?? 0}%` },
+                    { key: 'drain', label: 'Drain P50 / P95', children: `${plannerPressure.drain?.p50_ms ?? 0} / ${plannerPressure.drain?.p95_ms ?? 0} ms` },
+                    { key: 'processed', label: '最近处理量', children: plannerPressure.drain?.latest_processed_count ?? 0 },
+                    { key: 'cgroup', label: 'cgroup', children: `v${plannerPressure.cgroup?.version ?? 0}` },
+                    { key: 'events', label: '内存事件', children: plannerPressure.cgroup?.event_count ?? 0 },
+                    { key: 'telethon', label: 'Planner Telethon 客户端', children: plannerPressure.telethon_client_count ?? 0 },
+                  ]}
+                />
+              )}
+            </Card>
+            </Space>
           ),
         },
       ]}
     />
   );
+}
+
+function formatMiB(kib: number): string {
+  return `${(Number(kib || 0) / 1024).toFixed(1)} MiB`;
 }

@@ -26,6 +26,7 @@ from app.models import (
     SchedulingSetting,
     Task,
     TaskAccountDailyCoverage,
+    TaskRuntimeSummary,
     Tenant,
     TenantAiSetting,
     TenantLearningProfile,
@@ -1719,7 +1720,11 @@ def test_context_expired_requeues_same_action_without_touching_siblings():
         assert stale_due.result["generation_stage"] == "context_superseded_requeue"
         assert stale_future.status == "pending"
         assert fresh_future.status == "pending"
-        assert task.stats["context_superseded_requeue_count"] == 1
+        assert stale_due.result["context_superseded_requeue_count"] == 1
+        summary = session.scalar(select(TaskRuntimeSummary).where(
+            TaskRuntimeSummary.task_id == task.id,
+        ))
+        assert summary.summary["quality_event_counts"]["context_superseded_requeue_count"] == 1
 
 
 @pytest.mark.no_postgres

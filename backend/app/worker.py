@@ -62,10 +62,18 @@ from .services.temp_files import cleanup_temp_files
 from .services.task_center.dispatcher import (
     dispatcher_runtime_reservation_count,
 )
+from .services.task_center.planner_resource_sampler import (
+    record_planner_resource_sample_if_due,
+)
 from .services.image_verification_runtime import (
     get_image_verification_runtime,
 )
 from .telethon_lifecycle import shutdown_telethon_lifecycle_strict
+from .telethon_lifecycle import TelethonClientLifecycle
+from .worker_periodic_heartbeat import (
+    PeriodicHeartbeatThreads,
+    start_periodic_heartbeats,
+)
 
 logger = logging.getLogger(__name__)
 LOCAL_HEALTHCHECK_FILE = "/tmp/tgyunying-worker-heartbeat"
@@ -155,6 +163,7 @@ def _normalize_role(role: str | None = None) -> str:
 
 def drain_once(limit: int = 100, *, role: str | None = None) -> int:
     selected_role = _normalize_role(role)
+    TelethonClientLifecycle.set_runtime_role(selected_role)
     if not _dispatch_write_allowed(selected_role):
         return 0
     if selected_role == "planner":
@@ -284,7 +293,7 @@ def _record_loop_heartbeat(role: str, limit: int) -> None:
         heartbeat = record_worker_heartbeat(
             session,
             process_type=process_type,
-            metadata=_worker_heartbeat_metadata(settings, limit),
+            metadata=_worker_heartbeat_metadata(settings, limit, role=role),
         )
         if role == "dispatcher":
             record_dispatcher_shard_heartbeat(
@@ -295,8 +304,13 @@ def _record_loop_heartbeat(role: str, limit: int) -> None:
         session.commit()
 
 
-def _worker_heartbeat_metadata(settings, limit: int) -> dict[str, object]:
-    return {
+def _worker_heartbeat_metadata(
+    settings,
+    limit: int,
+    *,
+    role: str,
+) -> dict[str, object]:
+    metadata: dict[str, object] = {
         "limit": limit,
         "source": "worker_loop",
         "account_batch_login_worker_concurrency": settings.account_batch_login_worker_concurrency,
@@ -304,6 +318,16 @@ def _worker_heartbeat_metadata(settings, limit: int) -> dict[str, object]:
             getattr(settings, "dispatch_rebuild_contract_version", "") or ""
         ),
     }
+    if role == "planner":
+        metadata.update({
+            "planner_projection_contract": "v2",
+            "planner_resource_sample_contract": "v1",
+        })
+    if role == "listener":
+        metadata["listener_snapshot_contract"] = "v1"
+    if role == "dispatcher":
+        metadata["source_pacing_admission_contract"] = "v1"
+    return metadata
 
 
 def _retire_loop_heartbeat(role: str, limit: int) -> None:
@@ -354,16 +378,21 @@ def _write_local_healthcheck_heartbeat() -> None:
             tmp_path.unlink(missing_ok=True)
 
 
-def _start_periodic_heartbeat(role: str, limit: int) -> tuple[threading.Event, threading.Thread]:
-    stop_event = threading.Event()
-    thread = threading.Thread(
-        target=_periodic_heartbeat_loop,
-        args=(role, limit, stop_event),
-        name=f"{role}-heartbeat",
-        daemon=True,
+def _start_periodic_heartbeat(
+    role: str,
+    limit: int,
+) -> tuple[threading.Event, PeriodicHeartbeatThreads]:
+    return start_periodic_heartbeats(
+        database_refresh=lambda: _record_loop_heartbeat(role, limit),
+        local_refresh=_write_local_healthcheck_heartbeat,
+        database_failure=lambda _exc: logger.warning(
+            "worker database heartbeat refresh failed role=%s", role, exc_info=True
+        ),
+        local_failure=lambda _exc: logger.warning(
+            "worker local heartbeat refresh failed role=%s", role, exc_info=True
+        ),
+        thread_name_prefix=role,
     )
-    thread.start()
-    return stop_event, thread
 
 
 def _periodic_heartbeat_loop(role: str, limit: int, stop_event: threading.Event) -> None:
@@ -460,6 +489,7 @@ def _drain_worker_iteration(
         started = time.monotonic()
         processed = drain_once(limit, role=role)
         took_ms = int((time.monotonic() - started) * 1000)
+        _record_resource_sample(role, processed, took_ms)
         if processed:
             _drain_worker_iteration.idle_ticks = 0  # type: ignore[attr-defined]
             logger.info("worker drained role=%s processed=%d took_ms=%d", role, processed, took_ms)
@@ -477,6 +507,19 @@ def _drain_worker_iteration(
     except Exception:
         logger.error("worker drain failed role=%s:\n%s", role, traceback.format_exc())
         return True
+
+
+def _record_resource_sample(role: str, processed: int, took_ms: int) -> None:
+    if role != "planner":
+        return
+    with SessionLocal() as session:
+        created = record_planner_resource_sample_if_due(
+            session,
+            process_type=role,
+            drain_metrics={"processed_count": processed, "took_ms": took_ms},
+        )
+        if created:
+            session.commit()
 
 
 def _wait_for_worker_iteration(
@@ -570,7 +613,7 @@ def _record_lifecycle_heartbeat(
             session,
             process_type=role,
             metadata={
-                **_worker_heartbeat_metadata(settings, limit),
+                **_worker_heartbeat_metadata(settings, limit, role=role),
                 **metadata,
             },
         )
@@ -629,6 +672,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"role={role} processed={processed}")
         return 0
     selected_role = _normalize_role(args.role)
+    TelethonClientLifecycle.set_runtime_role(selected_role)
     stop_event = threading.Event()
     lifecycle = _dispatcher_lifecycle(selected_role)
     previous_handlers = _install_dispatcher_signal_handlers(

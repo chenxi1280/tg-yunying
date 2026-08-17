@@ -27,6 +27,7 @@ from ..source_pacing import (
     source_pacing_plan_hash,
     wall_datetime,
 )
+from ..source_owner_cursor import attach_owner_history, pacing_source_key_hash
 from .channel_comment_schedule import materialized_reply_slots
 from .common import (
     adjust_for_account_hour_limit,
@@ -75,7 +76,7 @@ def prepare_comment_actions(
     now_value = _now()
     requested_count = len(slots)
     slots, planned_times, due_by_slot, release_by_slot, source_slots = _comment_schedule(
-        session, task, slots=slots, config=context.config, now_at=now_value,
+        session, task, slots=slots, context=context, now_at=now_value,
     )
     if task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION and len(planned_times) < requested_count:
         _record_comment_shortfall(task, requested_count, len(planned_times))
@@ -114,28 +115,16 @@ def _comment_schedule(
     task: Task,
     *,
     slots: list,
-    config: dict,
+    context: Any,
     now_at,
 ) -> tuple[list, list, dict[str, object], dict[str, object], list[SourcePacingSlot]]:
     if task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION:
-        sources = _comment_source_slots(session, task, slots, config)
-        points_by_slot = schedule_source_pacing_points(
-            sources, task.pacing_config or {}, now_at=wall_datetime(now_at),
-            timezone_name=task.timezone, seed_id=f"comment:{task.id}",
-        )
-        scheduled = [slot for slot in slots if _comment_slot_key(slot) in points_by_slot]
-        due_by_slot = {
-            key: point.due_at for key, point in points_by_slot.items()
-        }
-        release_by_slot = {
-            key: point.release_not_before_at for key, point in points_by_slot.items()
-        }
-        return (
-            scheduled,
-            [release_by_slot[_comment_slot_key(slot)] for slot in scheduled],
-            due_by_slot,
-            release_by_slot,
-            sources,
+        return _current_comment_schedule(
+            session,
+            task,
+            slots=slots,
+            context=context,
+            now_at=now_at,
         )
     deadline = next_local_day_deadline(now_at, task.timezone)
     times = schedule_times(
@@ -151,6 +140,40 @@ def _comment_schedule(
         for slot, due_at in zip(slots, reserved, strict=False)
     }
     return slots, reserved, due_by_slot, dict(due_by_slot), []
+
+
+def _current_comment_schedule(
+    session: Session,
+    task: Task,
+    *,
+    slots: list,
+    context: Any,
+    now_at,
+) -> tuple[list, list, dict[str, object], dict[str, object], list[SourcePacingSlot]]:
+    sources = _comment_source_slots(
+        session,
+            task,
+            slots,
+            config=context.config,
+            source_hash=pacing_source_key_hash(context.channel.tg_peer_id),
+    )
+    sources = attach_owner_history(
+        session,
+        task,
+        sources,
+        owner_model=CommentFulfillmentObligation,
+        config=task.pacing_config or {},
+        seed_id=f"comment:{task.id}",
+    )
+    points = schedule_source_pacing_points(
+        sources, task.pacing_config or {}, now_at=wall_datetime(now_at),
+        timezone_name=task.timezone, seed_id=f"comment:{task.id}",
+    )
+    scheduled = [slot for slot in slots if _comment_slot_key(slot) in points]
+    due = {key: point.due_at for key, point in points.items()}
+    releases = {key: point.release_not_before_at for key, point in points.items()}
+    times = [releases[_comment_slot_key(slot)] for slot in scheduled]
+    return scheduled, times, due, releases, sources
 
 
 def _freeze_comment_pacing(
@@ -173,6 +196,7 @@ def _freeze_comment_pacing(
         plan_total=source.plan_total,
         due_at=due_at,
         release_not_before_at=release_not_before_at,
+        source_identity=source.owner_identity,
     )
 
 
@@ -194,7 +218,9 @@ def _comment_source_slots(
     session: Session,
     task: Task,
     slots: list,
+    *,
     config: dict,
+    source_hash: str,
 ) -> list[SourcePacingSlot]:
     target = int(config.get("target_comments_per_message") or 1)
     jitter = float(config.get("comment_count_jitter") or 0)
@@ -218,6 +244,10 @@ def _comment_source_slots(
             period_start_at=period_start,
             deadline_at=deadline,
             release_not_before_at=slot.obligation.release_not_before_at,
+            owner_id=slot.obligation.id,
+            task_lifecycle_epoch=int(task.task_lifecycle_epoch or 1),
+            pacing_period_key=f"message:{message_id}",
+            pacing_source_key_hash=source_hash,
         ))
     return result
 

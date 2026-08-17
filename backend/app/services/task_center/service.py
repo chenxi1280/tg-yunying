@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session, object_session
 
 from app.config import get_settings
 from app.integrations.telegram import OperationResult
-from app.models import AccountPool, AccountStatus, Action, AiCoverageVariationIntent, ChannelMessage, ExecutionAttempt, FailureType, MessageFingerprint, OperationIssue, OperationPlanTaskLink, OperationTarget, ReviewQueue, RuleSet, RuleSetVersion, SearchClickOpportunityAssignment, SearchJoinPacingDecision, Task, TaskAccountDailyCoverage, TaskDayLedger, TaskMembershipAdmissionItem, TaskRuntimeSummary, TgAccount, TgGroup, WorkerHeartbeat
+from app.models import AccountPool, AccountStatus, Action, AiCoverageVariationIntent, ChannelMessage, ExecutionAttempt, FailureType, MessageFingerprint, OperationIssue, OperationPlanTaskLink, OperationTarget, ReviewQueue, RuleSet, RuleSetVersion, SearchClickOpportunityAssignment, SearchJoinPacingDecision, Task, TaskAccountDailyCoverage, TaskDayLedger, TaskMembershipAdmissionItem, TaskPlannerWakeState, TaskRuntimeSummary, TgAccount, TgGroup, WorkerHeartbeat
 from app.models.shared_dispatch_recovery import AiContentScopeTakeoverItem, GatewayRequestEvidenceJournal
 from app.models.search_rank_deboost import AccountGroupProxyBinding, SearchRankDeboostClickReservation, SearchRankDeboostExemptGroup
 from app.search_keywords import normalized_keyword_hash, repair_legacy_keyword_materials
@@ -168,6 +168,11 @@ from .profile_batch_projection import delete_profile_batch_task, get_profile_bat
 from app.services.task_runtime_stage import derive_task_runtime_stage
 from .metrics_runtime import drain_task_metrics
 from .planner_backlog import planner_global_pending
+from .planner_wake import (
+    complete_task_planner_wake,
+    mark_task_planner_started,
+    wake_task_planner,
+)
 from .ai_generation_recovery import recover_stale_pre_gateway_generation
 from .recovery_claims import (
     RecoveryClaim,
@@ -3360,6 +3365,8 @@ def _drain_task_recovery(session_factory, *, limit: int, process_type: str | Non
             processed += cleanup_runtime_metric_snapshots_if_due(
                 session,
                 retention_days=settings.runtime_metric_retention_days,
+                resource_raw_hours=settings.runtime_resource_raw_retention_hours,
+                resource_rollup_days=settings.runtime_resource_rollup_retention_days,
                 batch_size=settings.runtime_metric_retention_batch_size,
                 interval_seconds=settings.runtime_metric_cleanup_interval_seconds,
             )
@@ -3430,6 +3437,7 @@ def _record_planner_pacing_retry(session_factory, task_id: str) -> None:
         task.next_run_at = _now() + timedelta(
             seconds=PLANNER_RUNTIME_ERROR_RETRY_SECONDS,
         )
+        complete_task_planner_wake(session, task, next_run_at=task.next_run_at)
         session.commit()
 
 
@@ -3453,6 +3461,7 @@ def _record_planner_pacing_conflict(
             task.next_run_at = _now() + timedelta(
                 seconds=PLANNER_PACING_CONFLICT_RETRY_SECONDS,
             )
+            complete_task_planner_wake(session, task, next_run_at=task.next_run_at)
         session.commit()
 
 
@@ -3476,6 +3485,7 @@ def _record_planner_runtime_error(
             task.next_run_at = _now() + timedelta(
                 seconds=PLANNER_RUNTIME_ERROR_RETRY_SECONDS,
             )
+            complete_task_planner_wake(session, task, next_run_at=task.next_run_at)
         session.commit()
 
 
@@ -3533,6 +3543,7 @@ def _plan_due_task_batch(
         task = session.get(Task, task_id)
         if not task or task.status != "running":
             return 0, 0, False, current_global_pending
+        mark_task_planner_started(session, task)
         if _check_stop_conditions(session, task):
             session.commit()
             return 0, 0, False, current_global_pending
@@ -3552,11 +3563,13 @@ def _plan_due_task_batch(
             return processed, 0, False, current_global_pending
         open_actions_allow_planning = has_open_actions and requires_planning_with_open_actions(session, task)
         if _skip_open_ai_plan(session, task, has_open_actions, allow_planning=open_actions_allow_planning):
+            complete_task_planner_wake(session, task, next_run_at=task.next_run_at)
             session.commit()
             return processed, 0, open_actions_are_future, current_global_pending
         session.info[PLANNER_GLOBAL_PENDING_SESSION_KEY] = current_global_pending
         if _planning_backlog_blocked(session, task):
             _record_planner_backlog_daily_fulfillment(session, task)
+            complete_task_planner_wake(session, task, next_run_at=task.next_run_at)
             session.commit()
             return processed, 0, False, current_global_pending
         planned = build_task_plan(session, task)
@@ -3571,6 +3584,11 @@ def _commit_planned_task(session: Session, task: Task) -> None:
     _clear_planner_runtime_error(task)
     if task.status == "running":
         task.next_run_at = _next_planner_run_at(task)
+        complete_task_planner_wake(
+            session,
+            task,
+            next_run_at=task.next_run_at,
+        )
     session.commit()
 
 
@@ -5248,26 +5266,49 @@ def _activate_pending_tasks(session: Session) -> None:
     for task in session.scalars(select(Task).where(Task.status == "pending", (Task.scheduled_start.is_(None)) | (Task.scheduled_start <= _now()))):
         task.status = "running"
         task.next_run_at = _now()
+        wake_task_planner(
+            session,
+            task,
+            reason_code="task_activated",
+            not_before_at=task.next_run_at,
+        )
 
 
 def _normal_planner_task_ids(session: Session, *, limit: int, now: datetime) -> list[str]:
     target_count = max(1, limit)
-    task_ids: list[str] = []
+    wake_due = or_(
+        TaskPlannerWakeState.not_before_at.is_(None),
+        TaskPlannerWakeState.not_before_at <= now,
+    )
+    legacy_due = or_(Task.next_run_at.is_(None), Task.next_run_at <= now)
     query = (
-        select(Task)
-        .where(Task.status == "running", (Task.next_run_at.is_(None)) | (Task.next_run_at <= now))
+        select(Task.id)
+        .outerjoin(
+            TaskPlannerWakeState,
+            and_(
+                TaskPlannerWakeState.tenant_id == Task.tenant_id,
+                TaskPlannerWakeState.task_id == Task.id,
+            ),
+        )
+        .where(
+            Task.status == "running",
+            or_(
+                and_(TaskPlannerWakeState.id.is_not(None), wake_due),
+                and_(TaskPlannerWakeState.id.is_(None), legacy_due),
+            ),
+        )
         .order_by(
             (Task.type != "channel_comment").asc(),
             Task.priority.asc(),
-            Task.next_run_at.asc().nullsfirst(),
+            func.coalesce(
+                TaskPlannerWakeState.not_before_at,
+                Task.next_run_at,
+            ).asc().nullsfirst(),
             Task.created_at.asc(),
         )
+        .limit(target_count)
     )
-    for task in session.scalars(query).yield_per(target_count):
-        task_ids.append(task.id)
-        if len(task_ids) >= target_count:
-            break
-    return task_ids
+    return list(session.scalars(query))
 
 
 def _check_stop_conditions(session: Session, task: Task) -> bool:

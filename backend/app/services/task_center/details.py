@@ -402,7 +402,7 @@ def _membership_phase(task: Task, actions: list[Action] | None = None) -> dict[s
         return {}
     legacy = {
         "stage": stats.get("membership_stage") or "",
-        "summary": stats.get("membership_summary") or {},
+        "summary": _membership_summary(stats),
         "joined_count": int(stats.get("membership_joined_count") or 0),
         "need_join_count": int(stats.get("membership_need_join_count") or 0),
         "failed_count": int(stats.get("membership_failed_count") or 0),
@@ -413,7 +413,7 @@ def _membership_phase(task: Task, actions: list[Action] | None = None) -> dict[s
 def _deduped_membership_phase(actions: list[Action] | None, stats: dict[str, Any]) -> dict[str, Any]:
     legacy = {
         "stage": stats.get("membership_stage") or "",
-        "summary": stats.get("membership_summary") or {},
+        "summary": _membership_summary(stats),
         "joined_count": int(stats.get("membership_joined_count") or 0),
         "need_join_count": int(stats.get("membership_need_join_count") or 0),
         "failed_count": int(stats.get("membership_failed_count") or 0),
@@ -430,6 +430,7 @@ def _has_membership_stats(stats: dict[str, Any]) -> bool:
         key in stats
         for key in (
             "membership_summary",
+            "membership_summary_v2",
             "membership_joined_count",
             "membership_need_join_count",
             "membership_failed_count",
@@ -480,7 +481,7 @@ def _membership_phase_from_actions(rows: list[Action]) -> dict[str, Any]:
 
 
 def _membership_phase_from_stats(stats: dict[str, Any]) -> dict[str, Any]:
-    summary = stats.get("membership_summary") if isinstance(stats.get("membership_summary"), dict) else {}
+    summary = _membership_summary(stats)
     success = int(stats.get("membership_joined_count") or summary.get("success_account_count") or 0)
     pending = int(stats.get("membership_need_join_count") or summary.get("pending_account_count") or 0)
     failed = int(stats.get("membership_failed_count") or summary.get("failed_account_count") or 0)
@@ -503,6 +504,14 @@ def _membership_phase_from_stats(stats: dict[str, Any]) -> dict[str, Any]:
         "schedule_window_hours": int(stats.get("membership_schedule_window_hours") or summary.get("schedule_window_hours") or 0),
         "estimated_finish_at": summary.get("estimated_finish_at"),
     }
+
+
+def _membership_summary(stats: dict[str, Any]) -> dict[str, Any]:
+    current = stats.get("membership_summary_v2")
+    if isinstance(current, dict):
+        return current
+    legacy = stats.get("membership_summary")
+    return legacy if isinstance(legacy, dict) else {}
 
 
 def _membership_action_ready_before_task(action: Action) -> bool:

@@ -61,6 +61,22 @@ def reset_lifecycle_state() -> None:
     TelethonClientLifecycle._cache.clear()
     TelethonClientLifecycle._loop = None
     TelethonClientLifecycle._loop_thread = None
+    TelethonClientLifecycle.set_runtime_role("all")
+
+
+def test_planner_role_cannot_create_telethon_runtime() -> None:
+    reset_lifecycle_state()
+    lifecycle = TelethonClientLifecycle(Settings())
+    TelethonClientLifecycle.set_runtime_role("planner")
+
+    async def remote_operation():
+        return "unexpected"
+
+    with pytest.raises(RuntimeError, match="planner_remote_io_forbidden"):
+        lifecycle.run(remote_operation())
+
+    assert TelethonClientLifecycle._loop is None
+    TelethonClientLifecycle.set_runtime_role("all")
 
 
 def test_telethon_lifecycle_enforces_cache_limit(monkeypatch):

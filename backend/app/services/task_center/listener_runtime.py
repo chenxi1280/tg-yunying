@@ -15,6 +15,7 @@ from app.services.account_usage_policy import apply_operational_account_filters
 from app.services.group_listeners import collect_group_context
 
 from .account_pool import select_task_accounts
+from .channel_listener_runtime import drain_channel_listener_runtime
 from .hard_hourly import enabled as hard_hourly_enabled
 from .targets import group_from_reference
 
@@ -76,6 +77,14 @@ def drain_listener_runtime(session_factory, *, tenant_id: int | None = None, lim
     for source in sources:
         with session_factory() as session:
             _drain_listener_source(session, source, result)
+    channel_result = drain_channel_listener_runtime(
+        session_factory,
+        tenant_id=tenant_id,
+        limit=limit,
+    )
+    result.source_count += channel_result.source_count
+    result.collected_count += channel_result.processed_count
+    result.error_count += channel_result.error_count
     return result
 
 

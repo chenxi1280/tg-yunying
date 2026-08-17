@@ -22,6 +22,7 @@ from app.models import (
 from app.services import group_listeners
 from app.services.grok_cli_bridge import GrokCliBridge
 from app.services.task_center import ai_generator
+from app.services.task_center import channel_listener_runtime
 from app.services.task_center.executors import channel_comment
 from app.services.task_center.executors import channel_comment_budget
 from app.services.task_center.executors import channel_comment_preparation
@@ -192,7 +193,7 @@ def forbid_planner_external_boundaries(monkeypatch) -> None:
     monkeypatch.setattr(ai_generator.ai_gateway, "generate_drafts", fail)
     monkeypatch.setattr(GrokCliBridge, "generate", fail)
     monkeypatch.setattr(executor_common, "collect_channel_messages", fail)
-    monkeypatch.setattr(executor_common.gateway, "fetch_channel_messages", fail)
+    monkeypatch.setattr(channel_listener_runtime.gateway, "fetch_channel_messages", fail)
     monkeypatch.setattr(group_listeners, "collect_group_context", fail)
     monkeypatch.setattr(group_listeners.gateway, "fetch_group_messages", fail)
 

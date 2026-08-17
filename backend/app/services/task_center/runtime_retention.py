@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta
+import math
+from uuid import uuid4
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -19,12 +21,15 @@ from app.models import (
     TaskAccountDailyCoverage,
     TaskHardHourlyDeliveryCredit,
     TaskMembershipAdmissionItem,
+    WorkerRuntimeResourceRollup,
+    WorkerRuntimeResourceSample,
 )
 from app.services._common import _now
 
 RUNTIME_DETAIL_CLEANUP_KIND = "runtime_details"
 RUNTIME_METRIC_CLEANUP_KIND = "runtime_metric_snapshots"
 TERMINAL_ACTION_STATUSES = ("success", "failed", "skipped")
+RESOURCE_ROLLUP_SECONDS = 300
 
 
 def cleanup_runtime_details(
@@ -179,29 +184,164 @@ def cleanup_runtime_metric_snapshots(
     session: Session,
     *,
     retention_days: int = 7,
+    resource_raw_hours: int = 24,
+    resource_rollup_days: int = 7,
     today: date | None = None,
     batch_size: int = 10000,
+    now_value: datetime | None = None,
 ) -> int:
     retention_days = max(1, int(retention_days or 7))
     batch_size = max(1, int(batch_size or 10000))
-    today = today or _now().date()
+    now_value = now_value or _now()
+    today = today or now_value.date()
     cutoff_date = today - timedelta(days=retention_days)
     cutoff_dt = datetime.combine(cutoff_date, datetime.min.time())
+    deleted = _delete_expired_batch(
+        session,
+        model=RuntimeMetricSnapshot,
+        time_field=RuntimeMetricSnapshot.captured_at,
+        cutoff=cutoff_dt,
+        batch_size=batch_size,
+    )
+    deleted += _delete_expired_batch(
+        session,
+        model=WorkerRuntimeResourceSample,
+        time_field=WorkerRuntimeResourceSample.captured_at,
+        cutoff=now_value - timedelta(hours=max(1, int(resource_raw_hours or 24))),
+        batch_size=batch_size,
+    )
+    deleted += _delete_expired_batch(
+        session,
+        model=WorkerRuntimeResourceRollup,
+        time_field=WorkerRuntimeResourceRollup.bucket_at,
+        cutoff=now_value - timedelta(days=max(1, int(resource_rollup_days or 7))),
+        batch_size=batch_size,
+    )
+    return deleted
+
+
+def _delete_expired_batch(
+    session: Session,
+    *,
+    model,
+    time_field,
+    cutoff: datetime,
+    batch_size: int,
+) -> int:
     ids = (
-        select(RuntimeMetricSnapshot.id)
-        .where(RuntimeMetricSnapshot.captured_at < cutoff_dt)
-        .order_by(RuntimeMetricSnapshot.captured_at.asc(), RuntimeMetricSnapshot.id.asc())
+        select(model.id)
+        .where(time_field < cutoff)
+        .order_by(time_field.asc(), model.id.asc())
         .limit(batch_size)
         .subquery()
     )
-    result = session.execute(delete(RuntimeMetricSnapshot).where(RuntimeMetricSnapshot.id.in_(select(ids.c.id))))
+    result = session.execute(delete(model).where(model.id.in_(select(ids.c.id))))
     return int(result.rowcount or 0)
+
+
+def rollup_worker_runtime_resources(
+    session: Session,
+    *,
+    now_value: datetime | None = None,
+) -> int:
+    timestamp = now_value or _now()
+    bucket_end = _resource_bucket_start(timestamp)
+    bucket_start = bucket_end - timedelta(seconds=RESOURCE_ROLLUP_SECONDS)
+    rows = list(session.scalars(select(WorkerRuntimeResourceSample).where(
+        WorkerRuntimeResourceSample.captured_at >= bucket_start,
+        WorkerRuntimeResourceSample.captured_at < bucket_end,
+    )))
+    groups = defaultdict(list)
+    for row in rows:
+        key = (row.worker_id_hash, row.process_type, row.release_sha or "")
+        groups[key].append(row)
+    for key, samples in groups.items():
+        _upsert_resource_rollup(
+            session,
+            key=key,
+            samples=samples,
+            bucket_at=bucket_start,
+            timestamp=timestamp,
+        )
+    return len(groups)
+
+
+def _upsert_resource_rollup(
+    session: Session,
+    *,
+    key: tuple[str, str, str],
+    samples: list[WorkerRuntimeResourceSample],
+    bucket_at: datetime,
+    timestamp: datetime,
+) -> None:
+    worker_id_hash, process_type, release_sha = key
+    values = {
+        "id": str(uuid4()),
+        "worker_id_hash": worker_id_hash,
+        "process_type": process_type,
+        "release_sha": release_sha,
+        "bucket_at": bucket_at,
+        "sample_count": len(samples),
+        **_resource_rollup_values(samples),
+        "created_at": timestamp,
+        "updated_at": timestamp,
+    }
+    insert = _resource_rollup_insert(session).values(**values)
+    update_values = {
+        key: value
+        for key, value in values.items()
+        if key not in {"id", "worker_id_hash", "process_type", "release_sha", "bucket_at", "created_at"}
+    }
+    session.execute(insert.on_conflict_do_update(
+        index_elements=["worker_id_hash", "process_type", "release_sha", "bucket_at"],
+        set_=update_values,
+    ))
+
+
+def _resource_rollup_values(samples: list[WorkerRuntimeResourceSample]) -> dict:
+    return {
+        "pss_kib_p95": _p95(samples, "pss_kib"),
+        "pss_kib_max": _maximum(samples, "pss_kib"),
+        "private_dirty_kib_p95": _p95(samples, "private_dirty_kib"),
+        "anonymous_kib_p95": _p95(samples, "anonymous_kib"),
+        "cgroup_current_bytes_p95": _p95(samples, "cgroup_current_bytes"),
+        "cgroup_current_bytes_max": _maximum(samples, "cgroup_current_bytes"),
+        "cgroup_event_count_max": _maximum(samples, "cgroup_event_count"),
+        "cpu_percent_p95": _p95(samples, "cpu_percent"),
+        "thread_count_max": _maximum(samples, "thread_count"),
+        "telethon_client_count_max": _maximum(samples, "telethon_client_count"),
+    }
+
+
+def _p95(samples: list[WorkerRuntimeResourceSample], field: str):
+    values = sorted(getattr(sample, field) or 0 for sample in samples)
+    index = max(0, math.ceil(len(values) * 0.95) - 1)
+    return values[index] if values else 0
+
+
+def _maximum(samples: list[WorkerRuntimeResourceSample], field: str):
+    return max((getattr(sample, field) or 0 for sample in samples), default=0)
+
+
+def _resource_bucket_start(value: datetime) -> datetime:
+    minute = value.minute - value.minute % (RESOURCE_ROLLUP_SECONDS // 60)
+    return value.replace(minute=minute, second=0, microsecond=0)
+
+
+def _resource_rollup_insert(session: Session):
+    if session.get_bind().dialect.name == "postgresql":
+        return pg_insert(WorkerRuntimeResourceRollup)
+    if session.get_bind().dialect.name == "sqlite":
+        return sqlite_insert(WorkerRuntimeResourceRollup)
+    raise RuntimeError("unsupported resource rollup dialect")
 
 
 def cleanup_runtime_metric_snapshots_if_due(
     session: Session,
     *,
     retention_days: int = 3,
+    resource_raw_hours: int = 24,
+    resource_rollup_days: int = 7,
     batch_size: int = 20000,
     interval_seconds: int = 300,
     now_value: datetime | None = None,
@@ -210,11 +350,15 @@ def cleanup_runtime_metric_snapshots_if_due(
     latest = _latest_runtime_cleanup_at(session, RUNTIME_METRIC_CLEANUP_KIND)
     if latest is not None and _elapsed_seconds(latest, now_value) < max(1, int(interval_seconds or 300)):
         return 0
+    rollup_count = rollup_worker_runtime_resources(session, now_value=now_value)
     deleted = cleanup_runtime_metric_snapshots(
         session,
         retention_days=retention_days,
+        resource_raw_hours=resource_raw_hours,
+        resource_rollup_days=resource_rollup_days,
         today=now_value.date(),
         batch_size=batch_size,
+        now_value=now_value,
     )
     session.add(
         RuntimeCleanupAudit(
@@ -226,6 +370,7 @@ def cleanup_runtime_metric_snapshots_if_due(
                 "retention_days": max(1, int(retention_days or 3)),
                 "batch_size": max(1, int(batch_size or 20000)),
                 "interval_seconds": max(1, int(interval_seconds or 300)),
+                "resource_rollup_count": rollup_count,
             },
             created_at=now_value,
         )

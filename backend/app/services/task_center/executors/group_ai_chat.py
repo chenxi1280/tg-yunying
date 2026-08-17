@@ -1472,6 +1472,7 @@ def _freeze_ai_pacing_assignment(
         plan_total=source.plan_total,
         due_at=due_at,
         release_not_before_at=release_not_before_at,
+        source_identity=source.owner_identity,
     )
 
 

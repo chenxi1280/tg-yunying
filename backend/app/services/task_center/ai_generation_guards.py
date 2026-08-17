@@ -12,7 +12,7 @@ from .ai_generation_quality import fail_generation_action
 from .ai_generation_timing import GENERATION_LOOKAHEAD
 from .ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE, AiGenerationUnavailable
 from .ai_message_memory import mark_group_ai_message_result
-from .ai_quality_stats import clear_quality_blocker, quality_scope_key, record_quality_event
+from .ai_quality_stats import clear_quality_blocker, record_quality_event
 from .direct_check_in import (
     is_due_catch_up_check_in,
     prepare_direct_check_in,
@@ -146,11 +146,11 @@ def _clear_claim(action: Action) -> None:
 
 def _clear_context_freshness_blocker(task: Task, action: Action) -> None:
     result = dict(action.result or {})
-    if result.get("error_code") == "context_freshness_unproven":
+    was_blocked = result.get("error_code") == "context_freshness_unproven"
+    if was_blocked:
         result.pop("error_code", None)
         action.result = result
-    blockers = dict((task.stats or {}).get("conversation_quality_active_blockers") or {})
-    if blockers.get(quality_scope_key(action)) == "context_freshness_unproven":
+    if was_blocked:
         clear_quality_blocker(task, action)
 
 

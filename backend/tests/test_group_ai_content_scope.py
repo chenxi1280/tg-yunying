@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
@@ -14,6 +14,8 @@ from app.models import (
     GroupContextMessage,
     OperationTarget,
     Task,
+    TaskRuntimeActiveBlocker,
+    TaskRuntimeSummary,
     Tenant,
     TgAccount,
     TgGroup,
@@ -446,9 +448,11 @@ def test_scope_mismatch_stops_before_provider_and_never_falls_back():
     assert action.result["error_code"] == "cross_group_content_scope_mismatch"
     assert action.payload["ai_generation_status"] == "cross_group_content_scope_mismatch"
     assert action.payload.get("message_text") != "签到"
-    task = session.get(Task, "task-b")
-    assert task.stats["pre_provider_scope_reject_count"] == 1
-    assert task.stats["conversation_quality_active_blocker"] == "cross_group_content_scope_mismatch"
+    assert _quality_counts(session)["pre_provider_scope_reject_count"] == 1
+    blocker = session.scalar(select(TaskRuntimeActiveBlocker).where(
+        TaskRuntimeActiveBlocker.task_id == "task-b",
+    ))
+    assert blocker.blocker_code == "cross_group_content_scope_mismatch"
 
 
 def test_pending_duplicate_baseline_reads_only_same_group_and_account():
@@ -516,8 +520,7 @@ def test_normal_generation_waits_when_listener_watermark_is_unproven():
     assert calls == {"provider": 0}
     assert action.status == "pending"
     assert action.result["error_code"] == "context_freshness_unproven"
-    task = session.get(Task, "task-b")
-    assert task.stats["context_freshness_unproven_count"] == 1
+    assert _quality_counts(session)["context_freshness_unproven_count"] == 1
 
 
 def test_normal_generation_accepts_fresh_listener_watermark():
@@ -619,7 +622,7 @@ def test_question_floor_shadow_waits_until_new_human_message():
     assert current.result["should_speak_shadow_reason"] == "awaiting_human_response"
     assert current.result["should_speak_shadow_observed_watermark"]
     assert current.result["should_speak_shadow_next_eligible_at"] is None
-    assert task.stats["question_floor_shadow_violation_count"] == 1
+    assert _quality_counts(session)["question_floor_shadow_violation_count"] == 1
 
     human.sent_at = now_value + timedelta(seconds=10)
     session.commit()
@@ -628,3 +631,10 @@ def test_question_floor_shadow_waits_until_new_human_message():
     assert current.result["should_speak_shadow_decision"] == "send"
     assert current.result["awaiting_human_response_shadow"] is False
     assert current.result["should_speak_shadow_next_eligible_at"]
+
+
+def _quality_counts(session: Session) -> dict:
+    summary = session.scalar(select(TaskRuntimeSummary).where(
+        TaskRuntimeSummary.task_id == "task-b",
+    ))
+    return dict((summary.summary or {}).get("quality_event_counts") or {})

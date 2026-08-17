@@ -17,6 +17,7 @@ from app.services.account_usage_policy import apply_operational_account_filters
 from .account_pool import select_task_accounts
 from .datetime_compat import parse_zone, to_zone
 from .membership_recovery import AUTO_RETRY_BUCKET, VERIFICATION_BUCKET, classify_membership_recovery
+from .membership_projection import persisted_membership_summary
 from .pacing import schedule_times
 from .payloads import EnsureChannelMembershipPayload, create_membership_action
 from .targets import group_from_reference
@@ -46,6 +47,7 @@ DAILY_PERMISSION_RECHECK_REASONS = {
     "hard_hourly_daily_permission_recheck",
     "membership_recovery_daily_permission_recheck",
 }
+MEMBERSHIP_PLANNER_CANDIDATE_LIMIT = 40
 
 
 @dataclass(frozen=True)
@@ -202,6 +204,14 @@ def channel_membership_summary(
     task_id: str | None = None,
     require_send: bool = False,
 ) -> dict[str, Any]:
+    persisted_task = session.get(Task, task_id) if task_id else None
+    if persisted_task is not None and _uses_persisted_all_account_scope(persisted_task):
+        return persisted_membership_summary(
+            session,
+            persisted_task,
+            channel,
+            require_send=require_send,
+        )
     candidate_rows = candidates if candidates is not None else candidate_accounts_for_config(session, tenant_id, account_config)
     candidate_ids = [account.id for account in candidate_rows]
     group = linked_channel_group(session, channel, create=False, prefer_send_ready=require_send)
@@ -275,17 +285,26 @@ def candidate_accounts_for_config(session: Session, tenant_id: int, account_conf
 def _task_membership_candidates(session: Session, task: Task) -> list[TgAccount]:
     if not _uses_persisted_all_account_scope(task):
         return candidate_accounts_for_config(session, task.tenant_id, task.account_config or {})
-    return list(
-        session.scalars(
-            select(TgAccount)
+    rows = list(
+        session.execute(
+            select(TgAccount, TaskMembershipAdmissionItem)
             .join(TaskMembershipAdmissionItem, TaskMembershipAdmissionItem.account_id == TgAccount.id)
             .where(
                 TaskMembershipAdmissionItem.task_id == task.id,
                 TgAccount.tenant_id == task.tenant_id,
             )
-            .order_by(TgAccount.id.asc())
+            .order_by(
+                TaskMembershipAdmissionItem.eligibility_rank.asc(),
+                TaskMembershipAdmissionItem.planner_last_selected_at.asc().nullsfirst(),
+                TaskMembershipAdmissionItem.id.asc(),
+            )
+            .limit(MEMBERSHIP_PLANNER_CANDIDATE_LIMIT)
         )
     )
+    selected_at = _now()
+    for _account, item in rows:
+        item.planner_last_selected_at = selected_at
+    return [account for account, _item in rows]
 
 
 def _rescue_admin_account_id(session: Session, tenant_id: int) -> int:
@@ -1072,7 +1091,22 @@ def _open_membership_action_count(session: Session, task: Task) -> int:
 
 def _merge_membership_stats(task: Task, summary: dict[str, Any]) -> dict[str, Any]:
     stats = dict(task.stats or {})
-    stats["membership_summary"] = summary
+    stats.pop("membership_summary", None)
+    stats["membership_summary_version"] = 2
+    stats["membership_summary_v2"] = {
+        key: summary.get(key)
+        for key in (
+            "candidate_account_count",
+            "joined_account_count",
+            "need_join_account_count",
+            "failed_account_count",
+            "unknown_after_send_count",
+            "blocked_account_count",
+            "estimated_membership_actions",
+            "projection_revision",
+            "captured_at",
+        )
+    }
     stats["membership_candidate_count"] = summary["candidate_account_count"]
     stats["membership_joined_count"] = summary["joined_account_count"]
     stats["membership_need_join_count"] = summary["need_join_account_count"]

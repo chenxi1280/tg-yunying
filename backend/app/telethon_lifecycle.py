@@ -37,9 +37,24 @@ class TelethonClientLifecycle:
     _loop_thread: threading.Thread | None = None
     _cache: dict[tuple[int, str, str], _ClientCacheEntry] = {}
     _lock: threading.Lock = threading.Lock()
+    _runtime_role: str = "all"
 
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
+
+    @classmethod
+    def connected_client_count(cls) -> int:
+        with cls._lock:
+            return len(cls._cache)
+
+    @classmethod
+    def set_runtime_role(cls, role: str) -> None:
+        cls._runtime_role = str(role or "all").strip().lower()
+
+    @classmethod
+    def _assert_remote_io_allowed(cls) -> None:
+        if cls._runtime_role == "planner":
+            raise RuntimeError("planner_remote_io_forbidden")
 
     @classmethod
     def get_or_create_loop(cls) -> asyncio.AbstractEventLoop:
@@ -55,6 +70,12 @@ class TelethonClientLifecycle:
             return cls._loop
 
     def run(self, coro, *, timeout_seconds: float | None = None):
+        try:
+            self._assert_remote_io_allowed()
+        except RuntimeError:
+            if inspect.iscoroutine(coro):
+                coro.close()
+            raise
         loop = self.get_or_create_loop()
         future = asyncio.run_coroutine_threadsafe(coro, loop)
         timeout = self.settings.telethon_operation_timeout_seconds if timeout_seconds is None else timeout_seconds
@@ -70,6 +91,7 @@ class TelethonClientLifecycle:
         raw_session: str | None = None,
         client_metadata: Mapping[str, str] | None = None,
     ) -> Any:
+        self._assert_remote_io_allowed()
         try:
             from telethon import TelegramClient
         except ImportError as exc:
@@ -90,6 +112,7 @@ class TelethonClientLifecycle:
         raw_session: str,
         client_metadata: Mapping[str, str] | None = None,
     ) -> Any:
+        self._assert_remote_io_allowed()
         await self.prune_idle_clients()
         cache_key = self._cache_key(credentials, raw_session, client_metadata)
         now = time.monotonic()

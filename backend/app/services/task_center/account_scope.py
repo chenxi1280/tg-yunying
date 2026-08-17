@@ -17,7 +17,6 @@ from app.models import (
     TgAccount,
     TgGroup,
 )
-from app.security import decrypt_session
 from app.services._common import _now
 from app.services.account_usage_policy import apply_operational_account_filters
 
@@ -53,12 +52,17 @@ def is_daily_coverage_task(task: Task) -> bool:
 
 
 def eligible_account_ids(session: Session, tenant_id: int) -> list[int]:
-    accounts = session.scalars(_eligible_account_stmt(session, tenant_id).order_by(TgAccount.id.asc()))
-    return [account.id for account in accounts if _session_is_readable(account)]
+    statement = _eligible_account_stmt(session, tenant_id, columns=(TgAccount.id,))
+    return list(session.scalars(statement.order_by(TgAccount.id.asc())))
 
 
-def _eligible_account_stmt(session: Session, tenant_id: int):
-    stmt = select(TgAccount).where(
+def _eligible_account_stmt(
+    session: Session,
+    tenant_id: int,
+    *,
+    columns: tuple | None = None,
+):
+    stmt = select(*(columns or (TgAccount,))).where(
         TgAccount.tenant_id == tenant_id,
         TgAccount.deleted_at.is_(None),
         TgAccount.status == AccountStatus.ACTIVE.value,
@@ -289,10 +293,13 @@ def sync_account_to_all_tasks(session: Session, account_id: int, *, now: datetim
 def eligible_account_ids_for_accounts(session: Session, tenant_id: int, account_ids: list[int]) -> list[int]:
     if not account_ids:
         return []
-    accounts = session.scalars(
-        _eligible_account_stmt(session, tenant_id).where(TgAccount.id.in_(account_ids))
-    )
-    eligible = {account.id for account in accounts if _session_is_readable(account)}
+    eligible = set(session.scalars(
+        _eligible_account_stmt(
+            session,
+            tenant_id,
+            columns=(TgAccount.id,),
+        ).where(TgAccount.id.in_(account_ids))
+    ))
     return [account_id for account_id in account_ids if account_id in eligible]
 
 
@@ -449,13 +456,6 @@ def _ensure_daily_coverage(
         incremental=incremental,
         target_group=target_group,
     )
-
-
-def _session_is_readable(account: TgAccount) -> bool:
-    try:
-        return bool(decrypt_session(account.session_ciphertext))
-    except Exception:
-        return False
 
 
 def _rescue_admin_account_id(session: Session, tenant_id: int) -> int:

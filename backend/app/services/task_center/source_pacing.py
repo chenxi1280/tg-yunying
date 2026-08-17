@@ -20,6 +20,20 @@ class SourcePacingSlot:
     period_start_at: datetime
     deadline_at: datetime
     release_not_before_at: datetime | None = None
+    owner_id: str = ""
+    task_lifecycle_epoch: int = 1
+    pacing_period_key: str = ""
+    pacing_source_key_hash: str = ""
+    historical_cursor_at: datetime | None = None
+    historical_max_ordinal: int | None = None
+
+    @property
+    def owner_identity(self) -> tuple[int, str, str]:
+        return (
+            self.task_lifecycle_epoch,
+            self.pacing_period_key,
+            self.pacing_source_key_hash,
+        )
 
 
 @dataclass(frozen=True)
@@ -118,6 +132,34 @@ def _source_recovery_points(
     seed_id: str,
 ) -> dict[str, SourcePacingPoint]:
     now_at = wall_datetime(now_at)
+    history = [
+        wall_datetime(slot.historical_cursor_at)
+        for slot in slots
+        if slot.historical_cursor_at is not None
+    ]
+    if history:
+        return _points_after_historical_cursor(
+            slots,
+            due_by_slot,
+            cursor=max(history),
+            now_at=now_at,
+            seed_id=seed_id,
+        )
+    return _legacy_source_recovery_points(
+        slots,
+        due_by_slot,
+        now_at=now_at,
+        seed_id=seed_id,
+    )
+
+
+def _legacy_source_recovery_points(
+    slots: list[SourcePacingSlot],
+    due_by_slot: dict[str, datetime],
+    *,
+    now_at: datetime,
+    seed_id: str,
+) -> dict[str, SourcePacingPoint]:
     result: dict[str, SourcePacingPoint] = {}
     overdue: list[SourcePacingSlot] = []
     frozen_releases: list[datetime] = []
@@ -159,6 +201,43 @@ def _source_recovery_points(
         result[slot.slot_key] = SourcePacingPoint(
             wall_datetime(due_by_slot[slot.slot_key]), cursor,
         )
+    return result
+
+
+def _points_after_historical_cursor(
+    slots: list[SourcePacingSlot],
+    due_by_slot: dict[str, datetime],
+    *,
+    cursor: datetime,
+    now_at: datetime,
+    seed_id: str,
+) -> dict[str, SourcePacingPoint]:
+    first = slots[0]
+    gap_seconds = max(
+        1.0,
+        (wall_datetime(first.deadline_at) - wall_datetime(first.period_start_at)).total_seconds()
+        / first.plan_total,
+    )
+    deadline = wall_datetime(first.deadline_at)
+    result: dict[str, SourcePacingPoint] = {}
+    ordered = sorted(slots, key=lambda item: (
+        due_by_slot[item.slot_key], item.slot_ordinal, item.slot_key,
+    ))
+    for slot in ordered:
+        due_at = wall_datetime(due_by_slot[slot.slot_key])
+        frozen = wall_datetime(slot.release_not_before_at) if slot.release_not_before_at else None
+        if frozen is not None and frozen > due_at:
+            release_at = frozen
+        elif due_at >= now_at and due_at >= cursor + timedelta(seconds=gap_seconds):
+            release_at = due_at
+        else:
+            release_at = cursor + timedelta(
+                seconds=gap_seconds + _recovery_jitter(seed_id, slot.slot_key, gap_seconds)
+            )
+        if release_at >= deadline:
+            break
+        result[slot.slot_key] = SourcePacingPoint(due_at, release_at)
+        cursor = max(cursor, release_at)
     return result
 
 
@@ -206,6 +285,12 @@ def _validate_source_group(slots: list[SourcePacingSlot], expected: SourcePacing
             or slot.deadline_at != expected.deadline_at
         ):
             raise ValueError("source_pacing_plan_identity_mismatch")
+        if (
+            slot.release_not_before_at is None
+            and slot.historical_max_ordinal is not None
+            and slot.slot_ordinal <= slot.historical_max_ordinal
+        ):
+            raise ValueError("pacing_source_cursor_conflict")
 
 
 __all__ = [
