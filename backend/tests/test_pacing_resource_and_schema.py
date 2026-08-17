@@ -433,6 +433,67 @@ def test_group_ai_send_pacing_task_lock_busy_defers_claim(monkeypatch) -> None:
     assert decision.reason_code == "task_pacing_lock_busy"
 
 
+def test_group_send_pacing_ignores_dense_pending_queue(monkeypatch) -> None:
+    """事故复现（2026-08-17 发送坍塌）：同任务海量 ready pending（含各自 bound
+    reservation 预约点）排成每秒 1 条的密集计划队列，pending 计划互相把 claim
+    推到队尾形成互锁。claim 层时间线只认在途/事实（claiming/executing/facts），
+    pending 计划与预约不得阻塞 claim——实际间隔由任务行锁 + claiming 在途点保证。"""
+    monkeypatch.setattr(
+        account_pacing_guard,
+        "get_settings",
+        lambda: SimpleNamespace(
+            account_soft_pacing_min_gap_seconds=20,
+            ai_group_send_pacing_min_gap_seconds=20,
+        ),
+    )
+    engine = pacing_engine()
+    now = datetime(2026, 8, 17, 10, 0)
+    with Session(engine) as session:
+        session.add_all([
+            TgAccount(id=5502, tenant_id=1, display_name="acct-b", phone_masked="5502"),
+            Task(id="group-task", tenant_id=1, name="活群", type="group_ai_chat"),
+            AccountPacingReservation(
+                tenant_id=1, task_id="group-task", account_id=5502,
+                pacing_slot_key="ai:mine", policy_version="account_soft_pacing_v1",
+                due_at=now, release_not_before_at=now,
+                effective_claim_at=now,
+            ),
+            Action(
+                id="action-mine", tenant_id=1, task_id="group-task",
+                task_type="group_ai_chat", action_type="send_message",
+                account_id=5502, status="pending", scheduled_at=now,
+                pacing_slot_key="ai:mine",
+                pacing_due_at=now, release_not_before_at=now,
+            ),
+        ])
+        for index in range(6):
+            offset = timedelta(seconds=index - 3)
+            account_id = 5601 + index
+            session.add_all([
+                TgAccount(id=account_id, tenant_id=1, display_name=f"acct-{index}", phone_masked=str(account_id)),
+                AccountPacingReservation(
+                    tenant_id=1, task_id="group-task", account_id=account_id,
+                    pacing_slot_key=f"ai:queued-{index}", policy_version="account_soft_pacing_v1",
+                    due_at=now + offset, release_not_before_at=now + offset,
+                    effective_claim_at=now + offset,
+                ),
+                Action(
+                    id=f"action-queued-{index}", tenant_id=1, task_id="group-task",
+                    task_type="group_ai_chat", action_type="send_message",
+                    account_id=account_id, status="pending", scheduled_at=now + offset,
+                ),
+            ])
+        session.commit()
+
+    with Session(engine) as session:
+        mine = session.get(Action, "action-mine")
+        decision = revalidate_action_pacing_before_claim(
+            session, mine, now_value=now,
+        )
+
+    assert decision.allowed is True
+
+
 def _final_gate_setup(monkeypatch, engine_factory, recent: datetime, now: datetime):
     from app.services.task_center import dispatcher as task_dispatcher
 

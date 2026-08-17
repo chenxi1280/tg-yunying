@@ -184,6 +184,18 @@ SSH banner 交换持续超时与发布脚本 `Connection timed out during banner
 
 **验收口径**：部署后 planner 单轮 < 60s；pg_stat_activity 无 >30s 的 UPDATE tasks 等锁；AI 活群发送量回到对照日同时段 50% 以上且随曲线爬升。
 
+#### 2.5.3 2026-08-17 发送坍塌第二根因（lock convoy 修复部署后）：pacing 时间线把 pending 计划当已占点 → 密集队列互锁
+
+**现象**：91dbc51a 部署后 planner 单轮恢复毫秒级、无锁等待、slot 物化吞吐恢复（ready pending 从 143 涨至 ~1775），但 AI 活群 success 仍 1-2 条/小时；dispatcher 每 1-2 分钟仅 claim 1 条；ready pending 队列头已 overdue 数分钟无人认领。附带干扰：部署窗口积压生成波峰触发 Provider Token Plan 429 限流（外部配额，admission 自动退避，13:15-14:00 自愈），以及 duplicate_message 占比升高（当日 43% vs 平日 16-26%，同账号 10 天模板壳查重正确拦截）。
+
+**根因（数据实证）**：`_timeline_union` 把 `pending` action 的 `scheduled_at` 与 open reservation 的 `effective_claim_at` 都计入群/账号时间线。积压恢复期 1775 条 ready pending（含各自 bound 预约）被排成每秒 1 条的密集计划队列（scheduled_at=now, now+1s, ...）；每条 claim 的 `_earliest_available_time` 沿密集点逐点 +gap 后移，被推到队尾之外 → defer 又把 scheduled_at 写得更远 → 队列更密 → 互锁。计划与事实混于同一时间线是语义错误：门禁要保证的是**实际发送**间隔 ≥ gap，pending 只是计划。
+
+**修复**：`account_pacing_guard` 时间线新增 `include_planned` 语义——claim 层（`revalidate_action_pacing_before_claim` 的账号级与群级检查）`include_planned=False`：action 只认在途（`claiming/executing/retryable_failed/unknown_after_send`），不含 pending；不含 reservation 预约分支。planner 物化层（`reserve_account_pacing`）保持 `include_planned=True`（slot 预留语义不变）。并发安全不变：账号行锁 + 任务行锁（skip_locked，拿不到即 defer）保证同任务/同账号 claim 串行，claim 成功即在时间线产生 claiming 在途点，后续 claim 被推 gap（8s）——吞吐回到 450/h/任务设计值，且密集计划队列不再互锁。
+
+**测试**：`test_group_send_pacing_ignores_dense_pending_queue` 红→绿（密集 pending + 密集预约队列不阻塞 claim）；`test_pacing_contract_integration` 两个 claim 用例的冲突种子由 pending 改为 executing（合同本质不变：时间线在途冲突仍 defer/记 shortfall）；planner 预留语义测试（future reservation 挡路）不受影响。
+
+**验收口径**：部署后 ready pending 队列被持续消费（overdue 不再堆积）；AI 活群发送恢复到对照日同时段 50% 以上且随曲线爬升；任务内相邻实际发送间隔仍全部 ≥8s、同秒多发为 0。
+
 ## 3. 根因分组与修复规则
 
 ### RC-0：精确搜索停流量与 OCR 安全停服/恢复（P0 临时止血）

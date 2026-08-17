@@ -87,7 +87,7 @@ def _prepare_claim_case(
         task_type="channel_like",
         action_type="like_message",
         account_id=9101,
-        status="pending",
+        status="executing",
         scheduled_at=now,
     ))
     session.commit()

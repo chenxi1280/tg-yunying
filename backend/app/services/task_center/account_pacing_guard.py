@@ -18,6 +18,10 @@ from .source_pacing import latest_wall_datetime, wall_datetime
 ACCOUNT_SOFT_PACING_POLICY_VERSION = "account_soft_pacing_v1"
 TIMELINE_PAGE_SIZE = 128
 _OPEN_GUARD_STATUSES = ("pending", "claiming", "executing", "retryable_failed", "unknown_after_send")
+# claim 层只认在途/事实：pending 计划与预约不算已占发送点。2026-08-17 生产事故：
+# 积压 ready pending（含各自预约）排成每秒 1 条的密集计划队列，pending 互相把
+# claim 推到队尾形成互锁，发送坍塌；实际间隔由任务行锁 + claiming 在途点保证。
+_INFLIGHT_GUARD_STATUSES = ("claiming", "executing", "retryable_failed", "unknown_after_send")
 _OPEN_RESERVATION_STATES = ("reserved", "bound")
 
 
@@ -83,6 +87,7 @@ def account_policy_not_before(
     deadline_at: datetime | None = None,
     exclude_action_id: str | None = None,
     exclude_slot_key: str | None = None,
+    include_planned: bool = True,
 ) -> datetime | None:
     desired_at = _wall(now_value or _now())
     if desired_at is None:
@@ -97,6 +102,7 @@ def account_policy_not_before(
         deadline_at=deadline_at,
         exclude_action_id=exclude_action_id,
         exclude_slot_key=exclude_slot_key,
+        include_planned=include_planned,
     )
     return _earliest_available_time(desired_at, points, gap)
 
@@ -111,6 +117,7 @@ def task_policy_not_before(
     deadline_at: datetime | None = None,
     exclude_action_id: str | None = None,
     exclude_slot_key: str | None = None,
+    include_planned: bool = True,
 ) -> datetime | None:
     """任务级（≈群级）发送时间线：同一 Task 内所有账号共享的最小间隔。
 
@@ -128,6 +135,7 @@ def task_policy_not_before(
         exclude_action_id=exclude_action_id,
         exclude_slot_key=exclude_slot_key,
         task_id=task_id,
+        include_planned=include_planned,
     )
     return _earliest_available_time(desired_at, points, gap)
 
@@ -256,6 +264,7 @@ def revalidate_action_pacing_before_claim(
         deadline_at=reservation.source_deadline_at,
         exclude_action_id=action.id,
         exclude_slot_key=str(action.pacing_slot_key),
+        include_planned=False,
     )
     group_conflict = False
     if str(action.task_type or "") == "group_ai_chat":
@@ -277,6 +286,7 @@ def revalidate_action_pacing_before_claim(
             deadline_at=reservation.source_deadline_at,
             exclude_action_id=action.id,
             exclude_slot_key=str(action.pacing_slot_key),
+            include_planned=False,
         )
         if group_not_before is not None and (not_before is None or group_not_before > not_before):
             not_before = group_not_before
@@ -363,6 +373,7 @@ def _timeline_union(
     exclude_action_id: str | None,
     exclude_slot_key: str | None,
     task_id: str | None = None,
+    include_planned: bool = True,
 ):
     action_scope = (
         Action.task_id == task_id if task_id is not None else Action.account_id == account_id
@@ -375,7 +386,7 @@ def _timeline_union(
     action_filters = [
         Action.tenant_id == tenant_id,
         action_scope,
-        Action.status.in_(_OPEN_GUARD_STATUSES),
+        Action.status.in_(_OPEN_GUARD_STATUSES if include_planned else _INFLIGHT_GUARD_STATUSES),
         Action.scheduled_at.is_not(None),
         Action.scheduled_at >= start_at,
     ]
@@ -406,13 +417,18 @@ def _timeline_union(
         action_filters.append(Action.scheduled_at < end_at)
         fact_filters.append(FulfillmentRemoteFact.observed_at < end_at)
         reservation_filters.append(AccountPacingReservation.effective_claim_at < end_at)
-    return union_all(
+    branches = [
         select(Action.scheduled_at.label("timeline_at")).where(*action_filters),
         select(FulfillmentRemoteFact.observed_at.label("timeline_at"))
         .join(Action, Action.id == FulfillmentRemoteFact.action_id)
         .where(*fact_filters),
-        select(AccountPacingReservation.effective_claim_at.label("timeline_at")).where(*reservation_filters),
-    ).subquery()
+    ]
+    if include_planned:
+        branches.append(
+            select(AccountPacingReservation.effective_claim_at.label("timeline_at"))
+            .where(*reservation_filters)
+        )
+    return union_all(*branches).subquery()
 
 
 def _account_timeline_points(
@@ -426,6 +442,7 @@ def _account_timeline_points(
     exclude_action_id: str | None,
     exclude_slot_key: str | None,
     task_id: str | None = None,
+    include_planned: bool = True,
 ) -> Iterator[datetime]:
     normalized_deadline = _wall(deadline_at)
     timeline = _timeline_union(
@@ -436,6 +453,7 @@ def _account_timeline_points(
         exclude_action_id=exclude_action_id,
         exclude_slot_key=exclude_slot_key,
         task_id=task_id,
+        include_planned=include_planned,
     )
     cursor: datetime | None = None
     while True:
