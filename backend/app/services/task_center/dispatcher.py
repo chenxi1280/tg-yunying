@@ -3262,6 +3262,7 @@ def _enforce_group_send_final_gate(session: Session, action: Action) -> None:
                 gap=gap,
                 exclude_action_id=action.id,
                 exclude_slot_key=str(action.pacing_slot_key),
+                include_planned=False,
             )
             if not_before is not None and not_before > desired_at:
                 session.execute(
@@ -3274,7 +3275,15 @@ def _enforce_group_send_final_gate(session: Session, action: Action) -> None:
                 if wait_seconds > 0:
                     time.sleep(min(wait_seconds, gap_seconds + 1.0))
             else:
-                session.rollback()
+                # 时间线干净也必须占位：本条即将发送，占位让并发 gate/claim
+                # 在窗口内看到本条在途（claiming + scheduled_at=发送时刻）。
+                # 不占位时并行发送互不可见 → 同秒挤发（2026-08-17 实测 0.12s）。
+                session.execute(
+                    update(Action)
+                    .where(Action.id == action.id)
+                    .values(scheduled_at=desired_at)
+                )
+                session.commit()
             return
     except (SQLAlchemyError, ValueError) as exc:
         logger.warning(

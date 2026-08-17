@@ -555,6 +555,68 @@ def test_group_send_final_gate_no_wait_when_timeline_clear(monkeypatch) -> None:
         assert reloaded.scheduled_at == original_at
 
 
+def test_group_send_claim_anchors_inflight_and_defers_same_batch_peer(monkeypatch) -> None:
+    """同批 claim 防挤发：第一条 claim 放行时必须把 scheduled_at 锚定到 claim
+    时刻（否则过期计划值落在时间线窗口 now-gap 之外，同批/并发后续 claim
+    互不可见 → 0.12s 内批量挤发，2026-08-17 部署后线上实测）；第二条同批
+    claim 被锚定后的 claiming 在途点挡住，推迟群最小间隔。"""
+    monkeypatch.setattr(
+        account_pacing_guard,
+        "get_settings",
+        lambda: SimpleNamespace(
+            account_soft_pacing_min_gap_seconds=20,
+            ai_group_send_pacing_min_gap_seconds=20,
+        ),
+    )
+    engine = pacing_engine()
+    now = datetime(2026, 8, 17, 10, 0)
+    stale = now - timedelta(minutes=5)
+    with Session(engine) as session:
+        session.add_all([
+            TgAccount(id=5501, tenant_id=1, display_name="acct-a", phone_masked="5501"),
+            TgAccount(id=5502, tenant_id=1, display_name="acct-b", phone_masked="5502"),
+            Task(id="group-task", tenant_id=1, name="活群", type="group_ai_chat"),
+        ])
+        for action_id, account_id in (("action-first", 5501), ("action-second", 5502)):
+            session.add_all([
+                AccountPacingReservation(
+                    tenant_id=1, task_id="group-task", account_id=account_id,
+                    pacing_slot_key=f"ai:{action_id}", policy_version="account_soft_pacing_v1",
+                    due_at=stale, release_not_before_at=stale,
+                    effective_claim_at=stale,
+                ),
+                Action(
+                    id=action_id, tenant_id=1, task_id="group-task",
+                    task_type="group_ai_chat", action_type="send_message",
+                    account_id=account_id, status="pending", scheduled_at=stale,
+                    pacing_slot_key=f"ai:{action_id}",
+                    pacing_due_at=stale, release_not_before_at=stale,
+                ),
+            ])
+        session.commit()
+
+    with Session(engine) as session:
+        first = session.get(Action, "action-first")
+        second = session.get(Action, "action-second")
+        first_decision = revalidate_action_pacing_before_claim(
+            session, first, now_value=now,
+        )
+        # 复现 _claim_rows 批量顺序：放行后立即落 claiming 状态（同事务），
+        # 再校验同批下一条。
+        first.status = "claiming"
+        session.flush()
+        second_decision = revalidate_action_pacing_before_claim(
+            session, second, now_value=now,
+        )
+
+    assert first_decision.allowed is True
+    assert first.scheduled_at == now
+    assert second_decision.allowed is False
+    assert second_decision.reason_code == "group_send_pacing_conflict"
+    assert second_decision.effective_claim_at is not None
+    assert second_decision.effective_claim_at >= now + timedelta(seconds=20)
+
+
 def test_group_message_pacing_ordinal_survives_reload_for_action_binding() -> None:
     engine = pacing_engine()
     with Session(engine) as session:

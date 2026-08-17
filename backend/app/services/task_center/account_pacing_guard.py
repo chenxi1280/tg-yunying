@@ -330,6 +330,11 @@ def _sync_claim_time(
     reservation: AccountPacingReservation,
     effective_at: datetime,
 ) -> None:
+    # claim 放行即占位：scheduled_at 锚定到 claim 时刻，使 claiming 在途点
+    # 进入时间线窗口（start_at = now - gap）。不更新会保留过期老值，同批
+    # 后续 claim 与并发 final gate 都看不见本条在途 → 同秒批量挤发
+    # （2026-08-17 部署后线上实测 min gap 0.12s）。
+    action.scheduled_at = effective_at
     action.effective_claim_at = effective_at
     if reservation.effective_claim_at == effective_at:
         return

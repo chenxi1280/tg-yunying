@@ -196,6 +196,8 @@ SSH banner 交换持续超时与发布脚本 `Connection timed out during banner
 
 **验收口径**：部署后 ready pending 队列被持续消费（overdue 不再堆积）；AI 活群发送恢复到对照日同时段 50% 以上且随曲线爬升；任务内相邻实际发送间隔仍全部 ≥8s、同秒多发为 0。
 
+**部署后残缺点（675c844c 上线后实测，同日修复）**：吞吐恢复（5 分钟桶 54→69 条）但节奏约束失效——任务内相邻发送 min gap 0.002s、<8s 违例占多数。两个占位缺口：1）`_claim_rows` 放行 claim 只改 status 不刷新 `scheduled_at`，claiming 在途点保留密集队列时代的过期计划值，落在时间线窗口（`start_at=now-gap`）之外 → 同批后续 claim 与并发事务互不可见 → 批量挤发（实测 5 条 0.12s 内，scheduled_at 呈整齐 8s 间隔而 executed_at 挤在同刻）；2）final gate 时间线干净路径只 rollback 不占位，并行发送互不可见。修复：`_sync_claim_time` 在 claim 放行时把 `action.scheduled_at` 锚定到 claim 时刻（进入时间线窗口）；final gate 干净路径同样写 `scheduled_at=desired_at` 占位并提交，且 gate 的 timeline 检查改为 `include_planned=False`（只认在途/事实，与 claim 层语义一致）。回归测试：`test_group_send_claim_anchors_inflight_and_defers_same_batch_peer`（同批第二条被锚定后的 claiming 点挡住，推迟 ≥ 群 gap）。
+
 ## 3. 根因分组与修复规则
 
 ### RC-0：精确搜索停流量与 OCR 安全停服/恢复（P0 临时止血）
