@@ -67,6 +67,53 @@ def test_owner_history_is_read_across_planner_batches_and_identity_is_frozen() -
         assert new_owner.pacing_source_key_hash == "a" * 64
 
 
+def test_new_owner_gets_next_source_ordinal_after_out_of_order_history() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        task, ledger, old_owner, new_owner = _seed_owners(session)
+        slot = _source_slot(task, ledger, new_owner)
+        plan_hash = source_pacing_plan_hash(slot, {}, seed_id=f"ai:{task.id}")
+        _freeze_historical_owner(old_owner, slot, plan_hash)
+        old_owner.pacing_slot_ordinal = 2
+        session.flush()
+
+        enriched = attach_owner_history(
+            session,
+            task,
+            [slot],
+            owner_model=TaskGroupDailyMessageSlot,
+            config={},
+            seed_id=f"ai:{task.id}",
+        )[0]
+
+        assert slot.slot_ordinal == 1
+        assert enriched.slot_ordinal == 3
+        assert enriched.historical_max_ordinal == 2
+
+
+def test_new_owner_fails_when_frozen_source_plan_has_no_ordinal_capacity() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        task, ledger, old_owner, new_owner = _seed_owners(session)
+        slot = _source_slot(task, ledger, new_owner)
+        plan_hash = source_pacing_plan_hash(slot, {}, seed_id=f"ai:{task.id}")
+        _freeze_historical_owner(old_owner, slot, plan_hash)
+        old_owner.pacing_slot_ordinal = slot.plan_total - 1
+        session.flush()
+
+        with pytest.raises(ValueError, match="pacing_source_plan_exhausted"):
+            attach_owner_history(
+                session,
+                task,
+                [slot],
+                owner_model=TaskGroupDailyMessageSlot,
+                config={},
+                seed_id=f"ai:{task.id}",
+            )
+
+
 def _seed_owners(session: Session):
     session.add(Tenant(id=1, name="tenant"))
     session.add(OperationTarget(

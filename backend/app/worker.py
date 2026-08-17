@@ -31,45 +31,41 @@ from .services.task_center.dispatch_runtime_control import (
     dispatch_writer_allowed,
     record_dispatcher_shard_heartbeat,
 )
-from .services.task_center.account_voice_profile_generation_worker import drain_voice_profile_generation
-from .services.task_center.ai_generation_worker import drain_ai_generation
-from .task_queue import get_task_queue
-from .services import (
-    drain_account_sync_records,
-    drain_account_online_keepalive,
+from .services.task_center.planner_resource_sampler import (
+    record_planner_resource_sample_if_due,
+)
+from .telethon_lifecycle import shutdown_telethon_lifecycle_strict
+from .telethon_lifecycle import TelethonClientLifecycle
+from .worker_role_loaders import (
+    cleanup_temp_files,
+    dispatch_task,
+    dispatcher_runtime_reservation_count,
     drain_account_login_batches,
     drain_account_login_reconciliation,
-    drain_notification_outbox,
+    drain_account_online_keepalive,
     drain_account_security_batches,
+    drain_account_sync_records,
+    drain_ai_generation,
     drain_ai_message_memory_maintenance,
     drain_archives,
     drain_continuous_campaigns,
     drain_group_listeners,
+    drain_material_cache,
+    drain_notification_outbox,
     drain_operation_tasks,
     drain_profile_sync_records,
+    drain_search_dispatcher,
+    drain_source_media_cache,
     drain_task_center,
     drain_task_dispatcher,
-    drain_search_dispatcher,
     drain_task_listener,
     drain_task_metrics,
     drain_task_planner,
     drain_task_recovery,
-    dispatch_task,
-)
-from .services.source_media import drain_source_media_cache
-from .services.material_cache import drain_material_cache
-from .services.temp_files import cleanup_temp_files
-from .services.task_center.dispatcher import (
-    dispatcher_runtime_reservation_count,
-)
-from .services.task_center.planner_resource_sampler import (
-    record_planner_resource_sample_if_due,
-)
-from .services.image_verification_runtime import (
+    drain_voice_profile_generation,
     get_image_verification_runtime,
+    get_task_queue,
 )
-from .telethon_lifecycle import shutdown_telethon_lifecycle_strict
-from .telethon_lifecycle import TelethonClientLifecycle
 from .worker_periodic_heartbeat import (
     PeriodicHeartbeatThreads,
     start_periodic_heartbeats,

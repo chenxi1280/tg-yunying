@@ -18,6 +18,7 @@ from app.models import (
 )
 
 from .source_pacing import SourcePacingSlot, source_pacing_plan_hash, wall_datetime
+from .pacing_persistence import PacingOwnerImmutableConflict
 
 
 PACING_OWNER_MODELS = {
@@ -86,13 +87,46 @@ def attach_owner_history(
             plan_hash=key[3],
             excluded_owner_ids=[slot.owner_id for slot in group],
         )
-        for slot in group:
+        cursor, ordinal = _include_frozen_group_history(group, cursor, ordinal)
+        allocated = _allocate_new_ordinals(group, ordinal)
+        for slot in allocated:
             enriched[slot.slot_key] = replace(
                 slot,
                 historical_cursor_at=cursor,
                 historical_max_ordinal=ordinal,
             )
     return [enriched[slot.slot_key] for slot in slots]
+
+
+def _include_frozen_group_history(
+    slots: list[SourcePacingSlot],
+    cursor: datetime | None,
+    ordinal: int | None,
+) -> tuple[datetime | None, int | None]:
+    frozen = [slot for slot in slots if slot.release_not_before_at is not None]
+    releases = [wall_datetime(slot.release_not_before_at) for slot in frozen]
+    ordinals = [slot.slot_ordinal for slot in frozen]
+    next_cursor = max([wall_datetime(cursor), *releases]) if cursor is not None else max(releases, default=None)
+    next_ordinal = max([ordinal, *ordinals]) if ordinal is not None else max(ordinals, default=None)
+    return next_cursor, next_ordinal
+
+
+def _allocate_new_ordinals(
+    slots: list[SourcePacingSlot],
+    historical_max_ordinal: int | None,
+) -> list[SourcePacingSlot]:
+    pending = sorted(
+        (slot for slot in slots if slot.release_not_before_at is None),
+        key=lambda slot: (slot.slot_ordinal, slot.slot_key),
+    )
+    next_ordinal = 0 if historical_max_ordinal is None else historical_max_ordinal + 1
+    replacements: dict[str, SourcePacingSlot] = {}
+    for slot in pending:
+        if next_ordinal >= slot.plan_total:
+            raise PacingOwnerImmutableConflict("pacing_source_plan_exhausted")
+        replacements[slot.slot_key] = replace(slot, slot_ordinal=next_ordinal)
+        next_ordinal += 1
+    return [replacements.get(slot.slot_key, slot) for slot in slots]
 
 
 def _owner_history(

@@ -1,38 +1,48 @@
 from __future__ import annotations
-from ._common import get_runtime_config, healthy_developer_app_count  # noqa: F401 — runtime capability projections
-from .account_pools import *  # noqa: F401,F403
-from .accounts import *  # noqa: F401,F403
-from .account_online_state import *  # noqa: F401,F403
-from .account_login import *  # noqa: F401,F403
-from .account_security import *  # noqa: F401,F403
-from .ai_config import *  # noqa: F401,F403
-from .archives import *  # noqa: F401,F403
-from .audit import *  # noqa: F401,F403
-from .campaigns import *  # noqa: F401,F403
-from .campaign_runs import *  # noqa: F401,F403
-from .cloning import *  # noqa: F401,F403
-from .content_filters import *  # noqa: F401,F403
-from .developer_apps import *  # noqa: F401,F403
-from .groups import *  # noqa: F401,F403
-from .group_listeners import *  # noqa: F401,F403
-from .material_cache import *  # noqa: F401,F403
-from .material_ingestion import *  # noqa: F401,F403
-from .material_rules import *  # noqa: F401,F403
-from .material_versions import *  # noqa: F401,F403
-from .messages import *  # noqa: F401,F403
-from .notifications import *  # noqa: F401,F403
-from .operation_target_list import *  # noqa: F401,F403
-from .operations import *  # noqa: F401,F403
-from .operation_plans import *  # noqa: F401,F403
-from .operations_center import *  # noqa: F401,F403
-from .risk_control import *  # noqa: F401,F403
-from .runtime_summary import *  # noqa: F401,F403
-from .reports import *  # noqa: F401,F403
-from .source_media import *  # noqa: F401,F403
-from .temp_files import *  # noqa: F401,F403
-from .tenants import *  # noqa: F401,F403
-from .tenant_two_fa_settings import *  # noqa: F401,F403
-from .task_center import *  # noqa: F401,F403
-from .task_center.ai_message_memory_maintenance import *  # noqa: F401,F403
-from .verification import *  # noqa: F401,F403
-from .auth import *  # noqa: F401,F403
+
+import os
+
+
+DEDICATED_WORKER_PROCESS = (os.getenv("WORKER_ROLE") or "").strip().lower() not in {
+    "",
+    "all",
+}
+
+if not DEDICATED_WORKER_PROCESS:
+    from ._common import get_runtime_config, healthy_developer_app_count  # noqa: F401
+    from .account_pools import *  # noqa: F401,F403
+    from .accounts import *  # noqa: F401,F403
+    from .account_online_state import *  # noqa: F401,F403
+    from .account_login import *  # noqa: F401,F403
+    from .account_security import *  # noqa: F401,F403
+    from .ai_config import *  # noqa: F401,F403
+    from .archives import *  # noqa: F401,F403
+    from .audit import *  # noqa: F401,F403
+    from .campaigns import *  # noqa: F401,F403
+    from .campaign_runs import *  # noqa: F401,F403
+    from .cloning import *  # noqa: F401,F403
+    from .content_filters import *  # noqa: F401,F403
+    from .developer_apps import *  # noqa: F401,F403
+    from .groups import *  # noqa: F401,F403
+    from .group_listeners import *  # noqa: F401,F403
+    from .material_cache import *  # noqa: F401,F403
+    from .material_ingestion import *  # noqa: F401,F403
+    from .material_rules import *  # noqa: F401,F403
+    from .material_versions import *  # noqa: F401,F403
+    from .messages import *  # noqa: F401,F403
+    from .notifications import *  # noqa: F401,F403
+    from .operation_target_list import *  # noqa: F401,F403
+    from .operations import *  # noqa: F401,F403
+    from .operation_plans import *  # noqa: F401,F403
+    from .operations_center import *  # noqa: F401,F403
+    from .risk_control import *  # noqa: F401,F403
+    from .runtime_summary import *  # noqa: F401,F403
+    from .reports import *  # noqa: F401,F403
+    from .source_media import *  # noqa: F401,F403
+    from .temp_files import *  # noqa: F401,F403
+    from .tenants import *  # noqa: F401,F403
+    from .tenant_two_fa_settings import *  # noqa: F401,F403
+    from .task_center import *  # noqa: F401,F403
+    from .task_center.ai_message_memory_maintenance import *  # noqa: F401,F403
+    from .verification import *  # noqa: F401,F403
+    from .auth import *  # noqa: F401,F403

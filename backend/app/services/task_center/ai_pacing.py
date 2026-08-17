@@ -212,10 +212,15 @@ def _source_slot(
         wall_datetime(ledger.period_start_at),
         wall_datetime(ledger.planning_anchor_at),
     )
+    pacing_ordinal = (
+        int(owner.pacing_slot_ordinal)
+        if owner.pacing_slot_ordinal is not None
+        else max(0, int(owner.slot_ordinal) - 1)
+    )
     return SourcePacingSlot(
         source_key=str(ledger.id),
         slot_key=f"ai:{owner.id}",
-        slot_ordinal=max(0, int(owner.slot_ordinal) - 1),
+        slot_ordinal=pacing_ordinal,
         plan_total=plan_total,
         period_start_at=period_start,
         deadline_at=wall_datetime(ledger.deadline_at),

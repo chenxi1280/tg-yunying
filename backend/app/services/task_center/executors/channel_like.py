@@ -366,10 +366,15 @@ def _like_source_slot(
     source_hash: str,
 ) -> SourcePacingSlot:
     period_start, deadline = rolling_source_window(task, item.message.created_at)
+    pacing_ordinal = (
+        int(owner.pacing_slot_ordinal)
+        if owner.pacing_slot_ordinal is not None
+        else item.slot_ordinal
+    )
     return SourcePacingSlot(
         source_key=str(item.message.id),
         slot_key=_like_slot_key(task, item),
-        slot_ordinal=item.slot_ordinal,
+        slot_ordinal=pacing_ordinal,
         plan_total=item.plan_total,
         period_start_at=period_start,
         deadline_at=deadline,

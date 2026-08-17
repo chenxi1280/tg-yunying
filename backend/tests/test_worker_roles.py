@@ -3,7 +3,10 @@ from __future__ import annotations
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
+import os
 from pathlib import Path
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -151,6 +154,50 @@ def test_server_compose_metrics_worker_uses_dedicated_interval():
 
     assert "METRICS_WORKER_INTERVAL_SECONDS" in metrics_block
     assert "${WORKER_INTERVAL_SECONDS:-10.0}" not in metrics_block
+
+
+def test_dedicated_worker_import_defers_role_implementations():
+    backend_root = Path(__file__).resolve().parents[1]
+    env = {**os.environ, "WORKER_ROLE": "metrics", "PYTHONPATH": str(backend_root)}
+    code = """
+import sys
+from app import worker
+assert 'app.services.task_center.service' not in sys.modules
+assert 'app.services.accounts' not in sys.modules
+assert 'app.services.archives' not in sys.modules
+assert 'app.services.verification' not in sys.modules
+assert worker.drain_task_metrics.target_module == 'app.services.task_center.metrics_runtime'
+from app import worker_role_loaders
+loaders = [
+    value
+    for value in vars(worker_role_loaders).values()
+    if callable(value) and getattr(value, 'target_module', '')
+]
+for loader in loaders:
+    module = __import__(loader.target_module, fromlist=[loader.target_function])
+    assert callable(getattr(module, loader.target_function))
+"""
+    subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=backend_root,
+        env=env,
+        check=True,
+        timeout=30,
+    )
+
+
+def test_worker_role_loader_targets_exist():
+    from app import worker_role_loaders
+
+    loaders = [
+        value
+        for value in vars(worker_role_loaders).values()
+        if callable(value) and getattr(value, "target_module", "")
+    ]
+    assert len(loaders) == 28
+    for loader in loaders:
+        module = __import__(loader.target_module, fromlist=[loader.target_function])
+        assert callable(getattr(module, loader.target_function))
 
 
 def test_server_compose_starts_online_and_ai_memory_workers():

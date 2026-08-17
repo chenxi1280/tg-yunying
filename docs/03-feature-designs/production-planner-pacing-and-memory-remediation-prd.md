@@ -7,9 +7,9 @@
 | Intake ID | intake-2026-08-17-planner-pacing-memory-001 |
 | 分级 | L3 / P0 资源风险 + P0 来源突发 + P1 拟人节奏，必须走标准生产事故流与 Release Gate |
 | 设计状态 | product_design_complete / dev_handoff_ready=true / resynced_2026-08-18 |
-| 实现状态 | implementation_complete_local / PostgreSQL QA passed；等待 Release Gate 与生产分层验收 |
-| 生产状态 | diagnosed / release_not_started / production_fixed=unproven |
-| 当前生产基线 | 2026-08-17 22:09 北京时间；release 3ba2f9dd |
+| 实现状态 | production_repair_candidate / 本地定向 QA passed；等待 Release Gate 与生产分层验收 |
+| 生产状态 | partial：5f9125f6 已完成主合同发布，但 AI source ordinal 回绕造成 `pacing_source_cursor_conflict` 重试；production_fixed=unproven |
+| 当前生产基线 | 2026-08-18 02:27 北京时间；release 5f9125f6；Planner 单轮 14～44 秒并重复 source cursor conflict |
 | 权威关系 | 本文规范性取代生产稳定性 PRD 中 Planner 资源和旧 AI fail-open gate 口径，并补正拟人节奏 PRD 的跨批恢复；不改变各任务 stable owner、typed remote fact、unknown 与数量结算合同 |
 | 操作边界 | 用户已授权实现、发布与生产验证；精确 stats cleanup 仍须独立 preview/hash/apply/readback，禁止把发布授权扩张为批量重试或未知外发 |
 
@@ -87,6 +87,7 @@ Planner 容器也实际建立 Telegram TCP 并持续记录 Telethon update。结
 | RC-R3 | 多角色直接写 next_run_at，固定轮询覆盖事件，Task 行继续变热 | 独立 TaskPlannerWakeState + capability 激活 |
 | RC-R4 | Planner 直接调用频道 Gateway 并持有 Telethon | Listener subscription/snapshot 唯一远程 owner |
 | RC-R5 | processed 无阶段、SQL、ORM、PSS/cgroup 解释力 | Planner 自采样和阶段指标 |
+| RC-R6 | 统一 worker 入口在每个专用角色启动时 eager import 全部服务实现 | 专用 role 最小包初始化 + 显式 lazy implementation loader；缺失入口直接失败 |
 | RC-P1 | recovery cursor 是 batch-local | 四类 stable owner 的 source-wide cursor |
 | RC-P2 | AI 最终 gate sleep 且 fail-open，其他三类缺 gate | SourcePacingState + SourcePacingAdmission |
 | RC-M1 | 旧 backlog 缺 source/period/lifecycle/plan 分类 | preview manifest + 分 Task 激活 |
@@ -188,7 +189,7 @@ tenant + task + lifecycle + blocker_domain + scope_key_hash
 
 open、claimed、Gateway-started、unknown、confirmed、terminal owner 只要属于同一冻结身份，都占用原 release slot；状态终结不释放历史时间身份。不同 lifecycle、period、plan，或 retired/superseded 身份不进入当前 cursor。
 
-在稳定排序取得 source advisory lock 后，从全部匹配 owner 读取 max release 和 max ordinal；新 freeze 与 cursor 前进同事务。只有当前 source/plan 从无 frozen release 时才可用首次 recovery anchor。冲突写 pacing_source_cursor_conflict 并停止该 source 新物化，不回退 batch-local 算法。
+在稳定排序取得 source advisory lock 后，从全部匹配 owner 读取 max release 和 max pacing ordinal；新 owner 的 `pacing_slot_ordinal` 必须从 `max ordinal + 1` 连续分配，与数量 owner 自身的 `slot_ordinal/target_ordinal` 解耦，已有 frozen owner 则必须复用其 pacing ordinal。新 freeze 与 cursor 前进同事务。只有当前 source/plan 从无 frozen release 时才可用首次 recovery anchor。剩余 plan ordinal 容量不足或冻结身份冲突时写 typed pacing conflict、停止该 source 新物化并进入确定性退避，不回退 batch-local 算法或 30 秒通用重试。
 
 ### 4.6 SourcePacingState 与 SourcePacingAdmission
 
@@ -226,6 +227,8 @@ Task writer
 → 短事务冻结 owner、Action 与 planned revision
 
 无 dirty revision 且无时间 due 时不进入业务规划。2 秒 worker heartbeat 可保留为进程活性，不触发全 Task 重算。
+
+专用 worker 只在对应 role 首次 drain 时导入该实现模块；backend/API 的完整 service export 保持不变。loader 不得吞掉 import/attribute 错误，也不得在未知 role 下回退加载其他实现。
 
 ### 5.2 来源远程观察
 
@@ -360,7 +363,7 @@ T2 按 Task/source 灰度，不要求暂停的 comment/like 为 AI/view 让路�
 4. 13 类 wake writer 覆盖规划中事件、旧 epoch、重复事件、回滚、暂停恢复和 mixed-version；无丢 wake、无热循环、v2 后无直接 next_run_at 写。
 5. Planner 调用任何 Gateway/Telethon API 必须失败为 planner_remote_io_forbidden；soak 中 Telethon client/thread 增量为 0。
 6. Listener 覆盖 fresh empty、stale、error、revision 竞态和 outbox 重放；Planner 不远程 fallback。
-7. 四类各做 20 batches × 20 owners、双 Planner、回滚/重启：release cursor 单调，索引命中，不全表扫。
+7. 四类各做 20 batches × 20 owners、双 Planner、回滚/重启和数量 owner 乱序选择：pacing ordinal 从 source cursor 连续分配、release cursor 单调、已有 frozen ordinal 不改，索引命中且不全表扫；plan ordinal 耗尽显式失败。
 8. Gateway gate 注入 DB/lock/version 失败：四类均无远程调用；future admission defer 后 worker slot 释放，无 sleep。
 9. 同来源多账号、多 Task 并发：共享 source timeline，实际 call_started 相邻间隔不小于相邻两次冻结 gap 的较大值；unknown 不重发。
 10. migration 覆盖 concurrent index 失败/invalid 恢复、checkpoint resume、stop line 和 mixed SHA。

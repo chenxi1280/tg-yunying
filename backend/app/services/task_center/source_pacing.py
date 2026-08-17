@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from app.timezone import BEIJING_TZ
 
 from .pacing import fulfillment_pacing_config, schedule_due_times, task_pacing_anchor
+from .pacing_persistence import PacingOwnerImmutableConflict
 from .pacing_stratified import pacing_plan_hash
 
 
@@ -284,13 +285,13 @@ def _validate_source_group(slots: list[SourcePacingSlot], expected: SourcePacing
             or slot.period_start_at != expected.period_start_at
             or slot.deadline_at != expected.deadline_at
         ):
-            raise ValueError("source_pacing_plan_identity_mismatch")
+            raise PacingOwnerImmutableConflict("source_pacing_plan_identity_mismatch")
         if (
             slot.release_not_before_at is None
             and slot.historical_max_ordinal is not None
             and slot.slot_ordinal <= slot.historical_max_ordinal
         ):
-            raise ValueError("pacing_source_cursor_conflict")
+            raise PacingOwnerImmutableConflict("pacing_source_cursor_conflict")
 
 
 __all__ = [

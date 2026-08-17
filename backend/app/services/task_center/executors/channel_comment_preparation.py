@@ -236,10 +236,15 @@ def _comment_source_slots(
             )) or 0
             totals[message_id] = max(max_target, int(frozen_max))
         period_start, deadline = rolling_source_window(task, slot.message.created_at)
+        pacing_ordinal = (
+            int(slot.obligation.pacing_slot_ordinal)
+            if slot.obligation.pacing_slot_ordinal is not None
+            else int(slot.obligation.target_ordinal) - 1
+        )
         result.append(SourcePacingSlot(
             source_key=str(message_id),
             slot_key=_comment_slot_key(slot),
-            slot_ordinal=int(slot.obligation.target_ordinal) - 1,
+            slot_ordinal=pacing_ordinal,
             plan_total=totals[message_id],
             period_start_at=period_start,
             deadline_at=deadline,
