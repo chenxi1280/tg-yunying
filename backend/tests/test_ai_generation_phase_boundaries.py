@@ -176,6 +176,7 @@ def _seed_own_history_reply_action(session: Session) -> Action:
         action_type="send_message",
         account_id=11,
         status="success",
+        executed_at=_now() - timedelta(minutes=2),
         payload={"group_id": 7, "message_text": "前一条已发消息"},
     )
     session.add(prior)

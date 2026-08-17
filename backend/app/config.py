@@ -283,6 +283,10 @@ class Settings:
     # 高峰曲线密度（4800 目标 × 峰值权重 10/110 ≈ 436 条/小时 ≈ 8.3 秒/条），
     # 否则会系统性压制 DueSet 合法吞吐。
     ai_group_send_pacing_min_gap_seconds: int = int(os.getenv("AI_GROUP_SEND_PACING_MIN_GAP_SECONDS", "8"))
+    # 回复目标历史近因窗口：回复目标池只取最近 N 天成功发送（目标池上限 20 条，
+    # 生产任务日产量百级，7 天充足）。无界扫描会在历史积累后拖慢 planner 事务
+    # 并长时间持有 task 行锁（2026-08-17 线上事故：25 分钟/轮、发送坍塌）。
+    ai_reply_target_history_window_days: int = int(os.getenv("AI_REPLY_TARGET_HISTORY_WINDOW_DAYS", "7"))
     action_claim_limit: int = int(os.getenv("ACTION_CLAIM_LIMIT", "100"))
     action_claim_seconds: int = int(os.getenv("ACTION_CLAIM_SECONDS", "60"))
     dispatcher_claim_scope: str = os.getenv("DISPATCHER_CLAIM_SCOPE", "task_center_dispatch")

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
 import pytest
 
 from app.models import Action, AiGroupMessageMemory, ExecutionAttempt, GroupContextMessage, Task, TgAccount
@@ -101,6 +103,7 @@ def test_provider_rebuilds_prompt_inputs_from_target_group_only():
             action_type="send_message",
             account_id=11,
             status="success",
+            executed_at=datetime.now() - timedelta(minutes=1),
             payload={"group_id": 8, "message_text": "B群本地表达", "account_role": "群友"},
         ),
     ])

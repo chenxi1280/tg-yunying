@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
 
 from sqlalchemy import String, and_, cast, exists, func, or_, select
 from sqlalchemy.orm import Session, aliased
 
+from app.config import get_settings
 from app.models import (
     Action,
     AiGroupMessageMemory,
@@ -15,6 +17,7 @@ from app.models import (
     TgGroup,
     TgGroupAccount,
 )
+from app.services._common import _now
 
 from .payloads import SendMessagePayload
 
@@ -210,7 +213,7 @@ def successful_own_history_reply_facts(
     statement = (
         _exact_own_history_statement(filters, remote_message_id)
         if remote_message_id
-        else _candidate_own_history_statement(filters)
+        else _candidate_own_history_statement(filters, limit=limit)
     )
     if exclude_used_statuses:
         remote_id = statement.selected_columns.remote_message_id
@@ -246,8 +249,18 @@ def _exact_own_history_statement(filters: list, remote_message_id: str):
     )
 
 
-def _candidate_own_history_statement(filters: list):
-    scoped_actions = select(Action.id.label("action_id")).where(*filters).subquery()
+def _candidate_own_history_statement(filters: list, *, limit: int):
+    """候选回复目标只需最近的 top-K：scoped 子查询先按发送时间截断，
+    避免窗口函数对全量历史排序（2026-08-17 生产事故：13 天 7523 行
+    全量窗口排序 + 逐行 attempts 索引探测，单次调用分钟级）。"""
+    candidate_cap = max(200, int(limit) * 10)
+    scoped_actions = (
+        select(Action.id.label("action_id"))
+        .where(*filters)
+        .order_by(Action.executed_at.desc().nullslast(), Action.created_at.desc())
+        .limit(candidate_cap)
+        .subquery()
+    )
     rank = func.row_number().over(
         partition_by=ExecutionAttempt.action_id,
         order_by=ExecutionAttempt.attempt_no.desc(),
@@ -317,12 +330,15 @@ def _own_history_action_filters(
     group_id: int,
     exclude_action_id: str,
 ) -> list:
+    window_days = max(1, int(get_settings().ai_reply_target_history_window_days))
     filters = [
         Action.tenant_id == tenant_id,
         Action.task_id == task_id,
         Action.task_type == "group_ai_chat",
         Action.action_type == "send_message",
         Action.status == "success",
+        Action.executed_at.is_not(None),
+        Action.executed_at >= _now() - timedelta(days=window_days),
         Action.payload["group_id"].as_integer() == group_id,
         func.trim(func.coalesce(Action.payload["message_text"].as_string(), "")) != "",
     ]
