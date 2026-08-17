@@ -7,6 +7,8 @@ import yaml
 pytestmark = pytest.mark.no_postgres
 WORKFLOW = Path(__file__).resolve().parents[2] / ".github/workflows/deploy-production.yml"
 COMPOSE_UP = Path(__file__).resolve().parents[2] / "deploy/compose-up.sh"
+COMPOSE = Path(__file__).resolve().parents[2] / "docker-compose.server.yml"
+RELEASE = Path(__file__).resolve().parents[2] / "deploy/release.sh"
 
 
 def test_production_checks_run_complete_backend_partitions_and_frontend_in_parallel() -> None:
@@ -40,6 +42,14 @@ def test_deploy_pulls_large_runtime_images_sequentially() -> None:
     assert script.index(backend_pull) < script.index(verification_pull)
     assert script.index(verification_pull) < script.index(frontend_pull)
     assert 'compose pull "${RUNTIME_SERVICES[@]}"' not in script
+
+
+def test_release_sha_is_injected_into_backend_runtime() -> None:
+    release = RELEASE.read_text()
+    compose = COMPOSE.read_text()
+
+    assert "RELEASE_SHA=${full_sha}" in release
+    assert "RELEASE_SHA: ${RELEASE_SHA:?RELEASE_SHA is required}" in compose
 
 
 def _combined_run_script(job: dict) -> str:

@@ -2,6 +2,7 @@ name: tgyunying
 
 x-backend-env: &backend-env
   APP_ENV: ${APP_ENV:-production}
+  RELEASE_SHA: ${RELEASE_SHA:?RELEASE_SHA is required}
   TZ: ${TZ:-Asia/Shanghai}
   DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
   REDIS_URL: ${REDIS_URL:?REDIS_URL is required}
