@@ -18,6 +18,8 @@ from app.models import (
     ChannelMessage,
     FulfillmentRemoteFact,
     OperationTarget,
+    SourcePacingAdmission,
+    SourcePacingState,
     Task,
     TaskDayLedger,
     Tenant,
@@ -36,6 +38,8 @@ SCRIPT = (
 )
 pytestmark = pytest.mark.no_postgres
 EXECUTION_DATE = date(2026, 8, 18)
+SOURCE_LAST_CALL_AT = datetime(2026, 8, 18, 17, 0)
+SOURCE_GAP_SECONDS = 20
 DEPLOYED_SHA = "a" * 40
 
 
@@ -111,11 +115,20 @@ def test_apply_chunk_writes_safe_fact_and_releases_owner(session: Session) -> No
     fact = session.scalar(select(FulfillmentRemoteFact).where(
         FulfillmentRemoteFact.action_id == action.id,
     ))
+    source_state = session.get(SourcePacingState, "stale-view-source-state")
+    source_admission = session.get(
+        SourcePacingAdmission,
+        "stale-view-source-admission",
+    )
     audit = session.scalar(select(AuditLog))
     assert action.result["error_code"] == "stale_channel_daily_action"
     assert fact is not None and fact.fact_kind == "safely_not_executed"
     assert owner.status == "open" and owner.current_action_id is None
     assert reservation.state == "missed"
+    assert source_admission.state == "cancelled_pre_gateway"
+    assert source_state.next_call_not_before_at == (
+        SOURCE_LAST_CALL_AT + timedelta(seconds=SOURCE_GAP_SECONDS)
+    )
     assert audit is not None and options.approval_ref in audit.detail
 
 
@@ -190,7 +203,32 @@ def _seed(session: Session) -> None:
     action = _action(task, ledger, owner)
     session.add_all([owner, action])
     session.flush()
-    session.add(_reservation(task, action, ledger.deadline_at))
+    state = SourcePacingState(
+        id="stale-view-source-state",
+        tenant_id=1,
+        pacing_domain="view",
+        source_key_hash="b" * 64,
+        next_call_not_before_at=ledger.deadline_at + timedelta(days=2),
+        last_call_started_at=SOURCE_LAST_CALL_AT,
+        last_source_gap_seconds=SOURCE_GAP_SECONDS,
+    )
+    admission = SourcePacingAdmission(
+        id="stale-view-source-admission",
+        admission_key="stale-view-source-key",
+        tenant_id=1,
+        task_id=task.id,
+        source_pacing_state_id=state.id,
+        owner_type=owner.__tablename__,
+        owner_id=owner.id,
+        action_id=action.id,
+        pacing_period_key=ledger.id,
+        pacing_plan_hash="a" * 64,
+        planned_release_at=ledger.period_start_at,
+        call_not_before_at=ledger.deadline_at + timedelta(days=2),
+        source_gap_seconds=87,
+        state="reserved",
+    )
+    session.add_all([_reservation(task, action, ledger.deadline_at), state, admission])
     session.commit()
 
 

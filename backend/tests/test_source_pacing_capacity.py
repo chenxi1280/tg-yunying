@@ -25,8 +25,10 @@ from app.models import (
 )
 from app.services.task_center.direct_action_claims import (
     claim_fact_first_candidates,
+    reconcile_source_pacing_states,
     settle_fact_first_action_before_gateway,
 )
+from app.services.task_center import dispatcher
 from app.services.task_center.pacing import PACING_CONTRACT_VERSION
 from app.services.task_center.source_pacing_admission import admit_source_paced_attempt
 
@@ -141,6 +143,68 @@ def test_stale_skipped_action_can_be_reconciled_without_gateway(session: Session
     assert reservation.state == "missed"
     assert admission.state == "cancelled_pre_gateway"
     assert owner.status == "open" and owner.current_action_id is None
+
+
+def test_reconciled_cursor_includes_remaining_reserved_gap(session: Session) -> None:
+    task, ledger, messages = _seed_view_period(session)
+    task.fulfillment_contract_version = "fact_first_v3"
+    future = DEADLINE + timedelta(days=2)
+    owner = _view_owner(ledger, messages[0], plan_total=600)
+    action = _view_action(task, owner, release_at=future)
+    owner.current_action_id = action.id
+    owner.status = "pending"
+    reservation = _account_reservation(task, action, deadline=DEADLINE, future=future)
+    state, admission = _future_source_reservation(task, owner, action, future=future)
+    remaining = _remaining_source_reservation(task, state, future=future)
+    session.add_all([owner, action, reservation, state, admission, remaining])
+    session.flush()
+
+    state_ids = settle_fact_first_action_before_gateway(
+        session,
+        action,
+        now=DEADLINE + timedelta(minutes=1),
+        reason_code="stale_channel_daily_action",
+        detail="安全结案并保留剩余来源槽位",
+    )
+    reconcile_source_pacing_states(session, state_ids)
+
+    assert admission.state == "cancelled_pre_gateway"
+    assert state.next_call_not_before_at == (
+        remaining.call_not_before_at
+        + timedelta(seconds=remaining.source_gap_seconds)
+    )
+
+
+def test_account_abandonment_safely_settles_pending_view_sibling(
+    session: Session,
+) -> None:
+    task, ledger, messages = _seed_view_period(session)
+    task.fulfillment_contract_version = "fact_first_v3"
+    future = DEADLINE + timedelta(days=2)
+    owner = _view_owner(ledger, messages[0], plan_total=600)
+    sibling = _view_action(task, owner, release_at=future)
+    owner.current_action_id = sibling.id
+    owner.status = "pending"
+    reservation = _account_reservation(task, sibling, deadline=DEADLINE, future=future)
+    state, admission = _future_source_reservation(task, owner, sibling, future=future)
+    failed = _view_action(task, owner, release_at=NOW)
+    failed.id = "view-capacity-failed-action"
+    failed.status = "failed"
+    session.add_all([owner, sibling, reservation, state, admission, failed])
+    session.flush()
+
+    dispatcher._abandon_pending_account_actions(session, failed)
+
+    fact = session.scalar(select(FulfillmentRemoteFact).where(
+        FulfillmentRemoteFact.action_id == sibling.id,
+    ))
+    assert sibling.status == "skipped"
+    assert sibling.result["error_code"] == "account_task_abandoned"
+    assert fact is not None and fact.fact_kind == "safely_not_executed"
+    assert reservation.state == "missed"
+    assert admission.state == "cancelled_pre_gateway"
+    assert owner.status == "open" and owner.current_action_id is None
+    assert state.next_call_not_before_at == NOW - timedelta(seconds=25)
 
 
 def _seed_base(session: Session) -> None:
@@ -340,3 +404,27 @@ def _future_source_reservation(
         state="reserved",
     )
     return state, admission
+
+
+def _remaining_source_reservation(
+    task: Task,
+    state: SourcePacingState,
+    *,
+    future: datetime,
+) -> SourcePacingAdmission:
+    return SourcePacingAdmission(
+        id="view-capacity-remaining-admission",
+        admission_key="view-capacity-remaining-key",
+        tenant_id=1,
+        task_id=task.id,
+        source_pacing_state_id=state.id,
+        owner_type="view_fulfillment_obligations",
+        owner_id="remaining-owner",
+        action_id=None,
+        pacing_period_key="remaining-period",
+        pacing_plan_hash="c" * 64,
+        planned_release_at=NOW,
+        call_not_before_at=future + timedelta(hours=1),
+        source_gap_seconds=20,
+        state="reserved",
+    )

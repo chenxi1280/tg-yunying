@@ -23,6 +23,7 @@ from app.models import (
 )
 from app.services._common import _now
 from app.services.task_center.direct_action_claims import (
+    reconcile_source_pacing_states,
     settle_fact_first_action_before_gateway,
 )
 from app.services.task_center.fulfillment_activation import CURRENT_CONTRACT_VERSION
@@ -134,15 +135,17 @@ def _apply_chunk(
     if current["candidates"] != expected_items:
         raise RuntimeError("stale fact-first channel reconciliation batch drifted")
     now_value = _now()
+    state_ids: set[str] = set()
     for item in expected_items:
         action = session.get(Action, item["action_id"])
-        settle_fact_first_action_before_gateway(
+        state_ids.update(settle_fact_first_action_before_gateway(
             session,
             action,
             now=now_value,
             reason_code=REASON_CODE,
             detail="旧日浏览 Action 在 Gateway 前被 legacy sweep 误终结，补齐安全事实链",
-        )
+        ))
+    reconcile_source_pacing_states(session, state_ids)
     _write_audits(
         session,
         options,

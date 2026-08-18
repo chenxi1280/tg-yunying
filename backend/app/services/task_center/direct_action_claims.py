@@ -185,7 +185,7 @@ def _claim_rows(
         ).rowcount
         if changed == 1:
             claimed.append(action_id)
-    _reconcile_cancelled_source_states(session, cancelled_state_ids)
+    reconcile_source_pacing_states(session, cancelled_state_ids)
     return claimed
 
 
@@ -250,14 +250,33 @@ def settle_fact_first_action_before_gateway(
         detail=detail,
     )
     session.add(attempt)
-    _mark_pacing_reservation_missed(session, action.id)
-    state_ids = _cancel_pre_gateway_source_admissions(session, action.id)
     session.flush()
     fact = persist_remote_fact(session, action)
     if fact is None or fact.fact_kind != "safely_not_executed":
         observed = fact.fact_kind if fact is not None else "missing"
         raise RuntimeError(f"pre_gateway_safe_settlement_fact_missing:{observed}")
     project_remote_fact(session, fact)
+    return release_fact_first_action_reservations(
+        session,
+        action,
+        fact_kind=fact.fact_kind,
+    )
+
+
+def release_fact_first_action_reservations(
+    session: Session,
+    action: Action,
+    *,
+    fact_kind: str,
+) -> set[str]:
+    if fact_kind != "safely_not_executed":
+        return set()
+    if action.action_type not in {"view_message", "like_message"}:
+        return set()
+    if not action.pacing_slot_key:
+        return set()
+    _mark_pacing_reservation_missed(session, action.id)
+    state_ids = _cancel_pre_gateway_source_admissions(session, action.id)
     release_channel_action_before_gateway(session, action)
     return state_ids
 
@@ -321,7 +340,7 @@ def _cancel_pre_gateway_source_admissions(
     return cancelled
 
 
-def _reconcile_cancelled_source_states(
+def reconcile_source_pacing_states(
     session: Session,
     state_ids: set[str],
 ) -> None:
@@ -334,20 +353,7 @@ def _reconcile_cancelled_source_states(
         .with_for_update()
     ))
     session.flush()
-    reserved = {
-        state_id: value
-        for state_id, value in session.execute(
-            select(
-                SourcePacingAdmission.source_pacing_state_id,
-                func.max(SourcePacingAdmission.call_not_before_at),
-            )
-            .where(
-                SourcePacingAdmission.source_pacing_state_id.in_(state_ids),
-                SourcePacingAdmission.state == "reserved",
-            )
-            .group_by(SourcePacingAdmission.source_pacing_state_id)
-        )
-    }
+    reserved = _reserved_source_tails(session, state_ids)
     for state in states:
         candidates = [wall_datetime(reserved[state.id])] if state.id in reserved else []
         if state.last_call_started_at is not None:
@@ -357,6 +363,27 @@ def _reconcile_cancelled_source_states(
             )
         state.next_call_not_before_at = max(candidates) if candidates else None
         state.version = int(state.version or 1) + 1
+
+
+def _reserved_source_tails(
+    session: Session,
+    state_ids: set[str],
+) -> dict[str, datetime]:
+    tails: dict[str, datetime] = {}
+    rows = session.execute(select(
+        SourcePacingAdmission.source_pacing_state_id,
+        SourcePacingAdmission.call_not_before_at,
+        SourcePacingAdmission.source_gap_seconds,
+    ).where(
+        SourcePacingAdmission.source_pacing_state_id.in_(state_ids),
+        SourcePacingAdmission.state == "reserved",
+    ))
+    for state_id, not_before, gap_seconds in rows:
+        tail = wall_datetime(not_before) + timedelta(
+            seconds=max(0, int(gap_seconds or 0)),
+        )
+        tails[state_id] = max(tails.get(state_id, tail), tail)
+    return tails
 
 
 def _safe_shortfall_attempt(
@@ -388,10 +415,15 @@ def _safe_shortfall_attempt(
 def _mark_pacing_reservation_missed(session: Session, action_id: str) -> None:
     reservation = session.scalar(select(AccountPacingReservation).where(
         AccountPacingReservation.action_id == action_id,
-        AccountPacingReservation.state.in_(("reserved", "bound")),
     ))
     if reservation is None:
         raise RuntimeError("pacing_claim_reservation_missing")
+    if reservation.state == "missed":
+        return
+    if reservation.state not in {"reserved", "bound"}:
+        raise RuntimeError(
+            f"pacing_claim_reservation_state_invalid:{reservation.state}"
+        )
     reservation.state = "missed"
     reservation.version = int(reservation.version or 1) + 1
 
@@ -399,5 +431,7 @@ def _mark_pacing_reservation_missed(session: Session, action_id: str) -> None:
 __all__ = [
     "DirectClaimBatch",
     "claim_fact_first_candidates",
+    "reconcile_source_pacing_states",
+    "release_fact_first_action_reservations",
     "settle_fact_first_action_before_gateway",
 ]

@@ -91,6 +91,11 @@ from .direct_check_in import (
     due_catch_up_check_in_memory_is_valid,
     is_due_catch_up_check_in,
 )
+from .direct_action_claims import (
+    reconcile_source_pacing_states,
+    release_fact_first_action_reservations,
+    settle_fact_first_action_before_gateway,
+)
 from .dispatch_reservations import (
     DispatchClaimBinding,
     confirm_dispatch_claim,
@@ -593,6 +598,12 @@ def _finalize_fact_first_dispatch(session: Session, action: Action) -> None:
             action,
             fact.fact_kind,
         )
+        state_ids = release_fact_first_action_reservations(
+            session,
+            action,
+            fact_kind=fact.fact_kind,
+        )
+        reconcile_source_pacing_states(session, state_ids)
     fact_id = fact.fact_id if fact is not None else ""
     if action.status == "unknown_after_send":
         _ensure_unknown_remote_case(session, action)
@@ -6759,33 +6770,55 @@ def _terminalize_fact_first_target(
         "target_terminal_reason": reason[:160],
         "target_terminal_at": _now().isoformat(),
     }
-    siblings = session.scalars(select(Action).where(
+    siblings = list(session.scalars(select(Action).where(
         Action.task_id == task.id,
         Action.id != failed_action.id,
-        Action.status.in_(("pending", "claiming")),
-    ))
-    for sibling in siblings:
-        _skip(
-            sibling,
-            "target_terminal",
-            "目标已解散、删除或引用失效，当前 Task 已终结",
-        )
+        Action.status == "pending",
+    )))
+    _settle_pending_fact_first_channel_actions(
+        session,
+        siblings,
+        reason_code="target_terminal",
+        detail="目标已解散、删除或引用失效，当前 Task 已终结",
+    )
 
 
 def _abandon_pending_account_actions(session: Session, failed_action: Action) -> None:
-    rows = session.scalars(select(Action).where(
+    rows = list(session.scalars(select(Action).where(
         Action.task_id == failed_action.task_id,
         Action.account_id == failed_action.account_id,
         Action.status == "pending",
         Action.id != failed_action.id,
-    ))
-    for action in rows:
-        _skip(
-            action,
-            "account_task_abandoned",
-            "该账号在当前任务内已确认无法完成 Telegram 远端操作",
-        )
+    )))
+    _settle_pending_fact_first_channel_actions(
+        session,
+        rows,
+        reason_code="account_task_abandoned",
+        detail="该账号在当前任务内已确认无法完成 Telegram 远端操作",
+    )
+
+
+def _settle_pending_fact_first_channel_actions(
+    session: Session,
+    actions: list[Action],
+    *,
+    reason_code: str,
+    detail: str,
+) -> None:
+    state_ids: set[str] = set()
+    for action in actions:
+        if action.action_type in {"view_message", "like_message"}:
+            state_ids.update(settle_fact_first_action_before_gateway(
+                session,
+                action,
+                now=_now(),
+                reason_code=reason_code,
+                detail=detail,
+            ))
+        else:
+            _skip(action, reason_code, detail)
         _project_fact_first_derived_reads(session, action)
+    reconcile_source_pacing_states(session, state_ids)
 
 
 def _abandon_task_group_admission(session: Session, action: Action) -> None:
