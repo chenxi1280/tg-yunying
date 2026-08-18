@@ -7,9 +7,9 @@
 | Intake ID | intake-2026-08-17-planner-pacing-memory-001 |
 | 分级 | L3 / P0 资源风险 + P0 来源突发 + P1 拟人节奏，必须走标准生产事故流与 Release Gate |
 | 设计状态 | product_design_complete / dev_handoff_ready=true / resynced_2026-08-18-14 |
-| 实现状态 | `e5c6e61d` 已发布 source Gateway marker 同事务对齐；最终 SHA 的 CAS conflict/drain error/alignment error 均为 0。宿主聚合内存仍未达标，进入零消费者 Mihomo runtime 受审计退役修订 |
-| 生产状态 | partial：`e5c6e61d` 后 AI/view 权威 Gateway gap 最小 22.098449/88.221923 秒且违例均为 0，AI/view 自然 typed fact 为 16/7，ledger/admission/CAS 读回通过；Planner PSS/CPU 短窗通过，但宿主 MemAvailable 最低约 1.43 GiB，production_fixed=false |
-| 当前生产基线 | 2026-08-18 21:30 北京时间；release `e5c6e61d`；current/SHA/migration/health/restart/OOM、OCR authenticated ready 与 Docker/containerd 单实例读回通过。Planner PSS 约 199 MiB、30 秒 CPU 16.76%～29.62%；24 个运行且全消费者为 0 的 Mihomo 容器合计 PSS 241533 KiB，为当前可精确回收边界，6/24 小时长窗未闭合 |
+| 实现状态 | `133eee7a` 已发布；source Gateway marker、materialization CAS 败方收敛与 Python 3.6 受审计代理退役工具均在生产生效。24 个零消费者 Mihomo runtime 已按 manifest apply/readback 完成 |
+| 生产状态 | partial：`133eee7a` 后 AI/view 权威 Gateway gap 最小 22.212558/87.351226 秒且违例均为 0，AI/view 自然 typed fact 至少 30/15，ledger/admission/CAS 读回通过；20 点 warm MemAvailable 最低 1925148 KiB、Planner PSS/CPU 通过，但宿主 swap 仍约 664 MiB，6/24 小时长窗未闭合，production_fixed=false |
+| 当前生产基线 | 2026-08-18 22:38 北京时间；release `133eee7a`；current/SHA/migration/health/restart/OOM、OCR authenticated ready 与 Docker/containerd 单实例读回通过。24 个退役 target 为 disabled+stopped+restart=no，AuditLog=24，37 个有消费者 runtime 均 healthy/running 且 manifest 未变；Planner PSS 约 208 MiB，15 秒 CPU 最大 40.38% |
 | 权威关系 | 本文规范性取代生产稳定性 PRD 中 Planner 资源和旧 AI fail-open gate 口径，并补正拟人节奏 PRD 的跨批恢复；不改变各任务 stable owner、typed remote fact、unknown 与数量结算合同 |
 | 操作边界 | 用户已授权实现、发布与生产验证；精确 stats cleanup 仍须独立 preview/hash/apply/readback，禁止把发布授权扩张为批量重试或未知外发 |
 
@@ -452,16 +452,16 @@ due
 
 | 验收层 | 证据 | 结论 |
 | --- | --- | --- |
-| 发布与运行 | Deploy Production `32116072791` 成功；current、backend/Planner/OCR 镜像与 `RELEASE_SHA` 均为 977a1642；migration 0153 head；关键容器 healthy、restart=0、OOM=false | pass |
-| Planner 资源短窗 E3 | 最终固定读回 87 样本 PSS p95=191449 KiB，CPU p95=25.80%，Telethon client 与 cgroup event 最大值均为 0；17 个 processed 样本 drain p95=12146 ms，早期冷启动 max=35044 ms | pass；6/24 小时斜率仍 unproven |
-| OCR 资源与功能 | OCR 当前 PSS/RSS=232704/243164 KiB；20 请求压力后无 busy/restart/OOM；当前版本 12 个真实 challenge 均取得 RapidOCR/ddddOCR accepted 与 local consensus | pass |
-| 聚合宿主 | MemAvailable=1380276 KiB，低于 1.5 GiB 合同阈值 1572864 KiB；SwapFree=3295544/4194300 KiB，读回窗口无持续 swap-in/out | resource_capacity_degraded |
-| 排期 release E3 | running source admissions：AI 最小同源 gap=18 秒、view=87 秒，planned gap violation 均为 0 | pass |
-| Gateway 前准入 E3 | 977a1642 后 AI/view 分别 464/43 个 Attempt 均为 `skipped_before_gateway/pacing_source_not_before`；early Gateway=0；浏览自然 due 后下一槽按 87 秒推进 | pass：排除短时直接完成 |
-| AI 存量预留修复 | preview/apply/readback 精确修复 21 条旧 active reservation；active orphan=0、AuditLog=21、清理后 `check_in_scope_occupied`=0 | pass |
-| 请求范围任务 E4 | AI/view 自然观察窗均为 0 Gateway、0 typed remote fact；AI 当前候选为真实历史 duplicate，view 继续按冻结排期等待；comment/like 对应任务暂停 | blocked/unproven，不得声明 Telegram 履约完成 |
+| 发布与运行 | Deploy Production `32146740168` 成功；current、backend/Planner/OCR 镜像与 `RELEASE_SHA` 均为 133eee7a；migration 0153 head；关键容器 healthy、restart=0、OOM=false | pass |
+| Planner 资源短窗 E3 | 76 个最终 SHA 自采样 PSS p95=208929 KiB、CPU p95=45.66%，Telethon/cgroup event=0；8 个 processed drain 线性 p95 约 27.0s，冷启动 37.7s 后为 3.9～7.1s | pass；6/24 小时斜率仍 unproven |
+| OCR 资源与功能 | OCR warm PSS 230748～231192 KiB；Docker current id 与 `/proc+cgroup` 唯一 runtime id 完全相等，ready/restart/OOM 读回通过 | pass |
+| 聚合宿主 | 24 个零消费者 runtime 回收 241533 KiB PSS；20 点 warm MemAvailable 最低 1925148 KiB，swap-out=0、swap-in 合计 59 页；但 SwapUsed 约 664 MiB 仍高于事故合同 512 MiB 线 | MemAvailable pass / resource_capacity_degraded |
+| 排期 release E3 | `133eee7a` 后 AI/view 权威 Gateway call 分别至少 32/16，相邻 pair 31/14，最小 gap 22.212558/87.351226 秒，违例均为 0；3 个 source state 与最新 marker drift=0 | pass：排除短时直接完成 |
+| Gateway/CAS 准入 E3 | 最终 SHA 日志 `materialization_conflict/drain_failed/alignment_error/Traceback/ERROR` 均为 0；46 个 typed-fact Action 最大 1 条 admission，multi/stranded=0 | pass |
+| 零消费者代理退役 | manifest `1b431e...1e12` 两次校验后 24 个 target disabled+stopped+restart=no、AuditLog=24；37 个有消费者 proxy healthy/running，非 target manifest 不变 | pass |
+| 请求范围任务 E4 | 最终 SHA 已观察 AI `remote_message_observed`至少 30、view `view_observed`至少 15；AI ledger null/mismatch=0；comment/like 任务仍暂停 | AI/view 短窗 pass；自然日与暂停类 unproven/blocked |
 
-因此本轮确定性代码、数据修复、短窗资源 E3 和排期 E3 已完成；全宿主容量、最终 SHA 的 6/24 小时曲线及请求范围任务 E4 尚未同时满足，`production_fixed=unproven`。
+因此本轮确定性代码、受审计资源修复、AI/view 短窗 E4 和排期 E3 已完成；宿主存量 swap 高于 512 MiB、最终 SHA 的 6/24 小时曲线及暂停 comment/like E4 尚未同时满足，`production_fixed=unproven`。
 
 ## 11. Product Design Complete 自检
 
@@ -477,4 +477,4 @@ due
 | 失败/回滚 | stale snapshot、legacy identity、DB/lock、cursor conflict、触限均显式失败 |
 | QA/E4 | 本地、PostgreSQL、性能、6/24h、四类排期和 typed fact 分层完整 |
 
-结论：product_design_complete / implementation_deployed_977a1642 / PostgreSQL_QA_passed / short_window_resource_E3_pass / pacing_E3_pass / production_fixed=unproven。全宿主 1.5 GiB 容量门、最终 SHA 的 6/24 小时曲线和请求范围任务 E4 尚未全部通过；固定 limit、重启、强制 GC、扩大 swap、缩目标、固定 8 秒 gate、Action success 或健康检查均不能单独作为完成。
+结论：product_design_complete / implementation_deployed_133eee7a / PostgreSQL_QA_passed / warm_MemAvailable_and_Planner_E3_pass / pacing_E3_pass / AI_view_short_E4_pass / production_fixed=unproven。存量 swap 512 MiB 合同、最终 SHA 的 6/24 小时曲线和暂停类 E4 尚未全部通过；固定 limit、重启、强制 GC、swapoff/扩 swap、缩目标、Action success 或健康检查均不能单独作为完成。
