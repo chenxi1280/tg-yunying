@@ -10,7 +10,7 @@ import re
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import and_, case, func, or_, select, update
+from sqlalchemy import and_, case, func, or_, select, union, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -180,6 +180,7 @@ FACT_FIRST_REBUILD_ACTION_STATUSES = frozenset({
     "retryable_failed",
     "skipped",
 })
+FACT_FIRST_STALE_RECOVERY_BATCH_LIMIT = MAX_DAILY_COVERAGE_PLAN_BATCH
 
 
 @dataclass(frozen=True)
@@ -2684,19 +2685,7 @@ def build_plan(session: Session, task: Task) -> int:
 
 
 def _recover_stale_fact_first_actions(session: Session, task: Task) -> int:
-    gateway_started = select(ExecutionAttempt.id).where(
-        ExecutionAttempt.action_id == Action.id,
-        ExecutionAttempt.gateway_call_started_at.is_not(None),
-    ).exists()
-    actions = session.scalars(
-        select(Action).where(
-            Action.task_id == task.id,
-            Action.task_type == "group_ai_chat",
-            Action.action_type == "send_message",
-            Action.status.in_(FACT_FIRST_REBUILD_ACTION_STATUSES),
-            ~gateway_started,
-        )
-    )
+    actions = _recoverable_fact_first_actions(session, task)
     recovered = 0
     for action in actions:
         payload = action.payload if isinstance(action.payload, dict) else {}
@@ -2711,17 +2700,65 @@ def _recover_stale_fact_first_actions(session: Session, task: Task) -> int:
             blocker_code=str(result.get("error_code") or action.status),
             blocker_detail=str(result.get("error_message") or ""),
         )
-        session.execute(
-            update(AiCoverageVariationIntent)
-            .where(AiCoverageVariationIntent.action_id == action.id)
-            .values(
-                action_id=None,
-                outcome="cancelled_pre_gateway_rebuild",
-                updated_at=_now(),
-            )
-        )
+        _cancel_fact_first_variation_intent(session, action.id)
         recovered += int(released)
     return recovered
+
+
+def _recoverable_fact_first_actions(session: Session, task: Task):
+    gateway_started = select(ExecutionAttempt.id).where(
+        ExecutionAttempt.action_id == Action.id,
+        ExecutionAttempt.gateway_call_started_at.is_not(None),
+    ).exists()
+    candidate_ids = _fact_first_recovery_action_ids(task).subquery()
+    return session.scalars(
+        select(Action).join(
+            candidate_ids,
+            candidate_ids.c.action_id == Action.id,
+        ).where(
+            Action.task_id == task.id,
+            Action.task_type == "group_ai_chat",
+            Action.action_type == "send_message",
+            Action.status.in_(FACT_FIRST_REBUILD_ACTION_STATUSES),
+            ~gateway_started,
+        )
+        .order_by(Action.created_at, Action.id)
+        .limit(FACT_FIRST_STALE_RECOVERY_BATCH_LIMIT)
+    )
+
+
+def _fact_first_recovery_action_ids(task: Task):
+    coverage_actions = select(
+        TaskAccountDailyCoverage.reserved_action_id.label("action_id"),
+    ).where(
+        TaskAccountDailyCoverage.task_id == task.id,
+        TaskAccountDailyCoverage.reserved_action_id.is_not(None),
+    )
+    intent_actions = (
+        select(AiCoverageVariationIntent.action_id.label("action_id"))
+        .join(
+            TaskAccountDailyCoverage,
+            TaskAccountDailyCoverage.id
+            == AiCoverageVariationIntent.coverage_ledger_id,
+        )
+        .where(
+            TaskAccountDailyCoverage.task_id == task.id,
+            AiCoverageVariationIntent.action_id.is_not(None),
+        )
+    )
+    return union(coverage_actions, intent_actions)
+
+
+def _cancel_fact_first_variation_intent(session: Session, action_id: str) -> None:
+    session.execute(
+        update(AiCoverageVariationIntent)
+        .where(AiCoverageVariationIntent.action_id == action_id)
+        .values(
+            action_id=None,
+            outcome="cancelled_pre_gateway_rebuild",
+            updated_at=_now(),
+        )
+    )
 
 
 def _record_quantity_slot_alignment_failure(

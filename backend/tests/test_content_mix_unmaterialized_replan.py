@@ -720,6 +720,96 @@ def test_fact_first_recovery_releases_old_binding_without_touching_slot(
     assert intent.action_id is None
 
 
+def test_fact_first_recovery_skips_terminal_actions_without_live_links(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    facts = _unmaterialized_reply_facts(session)
+    facts.task.fulfillment_contract_version = "fact_first_v3"
+    linked = _bound_terminal_action(facts)
+    orphan = Action(
+        id="orphan-terminal-action",
+        tenant_id=1,
+        task_id=facts.task.id,
+        task_type=facts.task.type,
+        action_type="send_message",
+        account_id=facts.account.id,
+        status="failed",
+        payload={"coverage_ledger_id": facts.coverage.id},
+    )
+    intent = AiCoverageVariationIntent(
+        tenant_id=1,
+        coverage_ledger_id=facts.coverage.id,
+        action_id=linked.id,
+        content_variation_key="linked-variation",
+    )
+    session.add_all([linked, orphan, intent])
+    session.flush()
+    released_action_ids: list[str] = []
+
+    def record_release(_session, _coverage_id, action_id, **_kwargs):
+        released_action_ids.append(action_id)
+        return False
+
+    monkeypatch.setattr(
+        group_ai_chat,
+        "release_coverage_reservation",
+        record_release,
+    )
+
+    group_ai_chat._recover_stale_fact_first_actions(session, facts.task)
+
+    session.refresh(intent)
+    assert released_action_ids == [linked.id]
+    assert intent.action_id is None
+
+
+def test_fact_first_recovery_limits_each_live_relation_batch(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    facts = _unmaterialized_reply_facts(session)
+    facts.task.fulfillment_contract_version = "fact_first_v3"
+    intents = []
+    for index in range(group_ai_chat.FACT_FIRST_STALE_RECOVERY_BATCH_LIMIT + 1):
+        action = Action(
+            id=f"linked-terminal-{index:02d}",
+            tenant_id=1,
+            task_id=facts.task.id,
+            task_type=facts.task.type,
+            action_type="send_message",
+            account_id=facts.account.id,
+            status="failed",
+            payload={"coverage_ledger_id": facts.coverage.id},
+        )
+        intents.append(AiCoverageVariationIntent(
+            tenant_id=1,
+            coverage_ledger_id=facts.coverage.id,
+            action_id=action.id,
+            content_variation_key=f"linked-variation-{index:02d}",
+        ))
+        session.add_all([action, intents[-1]])
+    session.flush()
+    released_action_ids: list[str] = []
+
+    def record_release(_session, _coverage_id, action_id, **_kwargs):
+        released_action_ids.append(action_id)
+        return False
+
+    monkeypatch.setattr(
+        group_ai_chat,
+        "release_coverage_reservation",
+        record_release,
+    )
+
+    group_ai_chat._recover_stale_fact_first_actions(session, facts.task)
+
+    for intent in intents:
+        session.refresh(intent)
+    assert len(released_action_ids) == group_ai_chat.FACT_FIRST_STALE_RECOVERY_BATCH_LIMIT
+    assert sum(intent.action_id is not None for intent in intents) == 1
+
+
 def _bound_terminal_action(facts: _UnmaterializedFacts) -> Action:
     return Action(
         id=f"bound-terminal-{facts.task.id}",
