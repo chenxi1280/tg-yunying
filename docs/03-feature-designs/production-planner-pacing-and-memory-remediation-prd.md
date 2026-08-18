@@ -7,9 +7,9 @@
 | Intake ID | intake-2026-08-17-planner-pacing-memory-001 |
 | 分级 | L3 / P0 资源风险 + P0 来源突发 + P1 拟人节奏，必须走标准生产事故流与 Release Gate |
 | 设计状态 | product_design_complete / dev_handoff_ready=true / resynced_2026-08-18 |
-| 实现状态 | production_repair_resync_7 / 977a1642 已发布：Planner 有界扫描、跨批来源排期、Gateway 前来源准入、RapidOCR recognizer-only，以及 scope takeover 同事务失效旧消息预留均已落地；关联 QA 与 Release Gate 通过 |
-| 生产状态 | partial：977a1642 Planner 87 样本 PSS p95 187 MiB、CPU p95 25.80%、17 个 processed 样本 drain p95 12.1 秒；OCR PSS 约 227 MiB，restart=0、OOM=false。AI/view 分别观测 464/43 次 `pacing_source_not_before`，0 early Gateway；旧预留精确修复 21 条后 active orphan=0、`check_in_scope_occupied` 未复发。共享宿主 MemAvailable 约 1.32 GiB，且请求范围内仍无自然 Gateway/typed remote fact，production_fixed=unproven |
-| 当前生产基线 | 2026-08-18 16:53 北京时间；release 977a1642；backend/Planner/OCR 精确 SHA、health、migration、restart/OOM 读回通过；生产精确修复 reference=`prod-planner-pacing-memory-20260818` |
+| 实现状态 | production_repair_resync_8 / PostgreSQL admission conflict 已改用 `RETURNING id` 判定真实新建；既有 reservation 保留冻结槽位。SQLite 12 项及 PostgreSQL/真实 workflow 27 项回归通过，等待 Release Gate |
+| 生产状态 | failed：977a1642 Planner 短窗资源 E3 保持通过，但发布后 AI/view 已分别出现 711/57 个 `pacing_source_not_before` 且 0 Gateway/0 typed remote fact；同一浏览 Action 最多13次 Attempt、仍只有同一 admission，其 planned release 保持凌晨而 call-not-before 被错误推到次日。共享宿主 MemAvailable 约1.22 GiB，production_fixed=false |
+| 当前生产基线 | 2026-08-18 17:09 北京时间；release 977a1642；runtime healthy 不改变 pacing starvation 与宿主容量失败结论 |
 | 权威关系 | 本文规范性取代生产稳定性 PRD 中 Planner 资源和旧 AI fail-open gate 口径，并补正拟人节奏 PRD 的跨批恢复；不改变各任务 stable owner、typed remote fact、unknown 与数量结算合同 |
 | 操作边界 | 用户已授权实现、发布与生产验证；精确 stats cleanup 仍须独立 preview/hash/apply/readback，禁止把发布授权扩张为批量重试或未知外发 |
 
@@ -65,6 +65,7 @@ Planner 短样本没有证明单调增长，所以“泄漏”仍为 unproven。
 - d75c6bbd 发布后进一步读回：图片 worker 在 10 个请求后空闲 PSS/RSS 约 444/454 MiB，宿主 MemAvailable 约 1.17 GiB。隔离基准证明完整 `RapidOCR()` 为整图验证码额外加载 det/cls/rec 三套模型；改成 recognizer-only 并保留 ddddOCR 后，同镜像合成图 RSS 从约 451 MiB 降至 222 MiB、耗时从 2.04 秒降至 0.30 秒，RapidOCR 输出不变。该修订不改变双源、deadline 或 typed fact，仅移除不参与验证码合同的 det/cls runtime。
 - 8c8178be 发布后 OCR worker 在 20 个请求后 PSS 约 228 MiB、busy=0，当前版本 12 个去重真实 challenge 均为 RapidOCR/ddddOCR accepted 且 local consensus，证明 recognizer-only 语义成立。AI 冻结 release 最小同源 gap 18 秒且 0 planned violation，但自然 due 后连续 0 Gateway；首个后置破损边界不是 pacing，而是 21 条已由 `content_contract_replan_required` 终结的旧 Action 仍保留 active 消息预留，使新 Action 触发 `duplicate_message` / `check_in_scope_occupied`。
 - 977a1642 已把 takeover 终结 Action 与其 pre-Gateway 消息预留失效放入同一事务。生产存量按精确谓词 preview 得到 21 条、classification hash `f238c54c52c328c938099e7ce7502067fee666a3324c83946465e8bd99ce3961`；apply 在同一事务锁行并重算 count/hash，仅把这 21 条改为 `expired_before_send`，写入 21 条 AuditLog。独立 readback 为 active orphan=0、repair=21、audit=21，且清理后 `check_in_scope_occupied`=0；后续 `duplicate_message` 均指向已有 success 记忆，属于真实历史去重而不是孤儿占位。
+- 第二轮遗漏审计证明“全部 pre-Gateway defer”不是通过证据：PostgreSQL `INSERT ... ON CONFLICT DO NOTHING` 的 `rowcount` 被当作 inserted boolean，冲突命中已有 admission 时仍进入 created 分支，使用已被未来 reservation 推进的 source next cursor 覆盖原 `call_not_before_at`。同一浏览 Action 的单条 admission 因而从原 planned release 反复后移到次日/数日后，永远追不上队尾。新建判定必须以 `RETURNING admission.id` 是否返回值为唯一依据；conflict 必须复用原 admission 时间，禁止改写 source/owner cursor。
 
 首个资源破损边界是 Planner 的无界读取与 Task 热行写入；宿主总预算是并行平台风险。不能先把结论写成单一内存泄漏。
 
@@ -100,6 +101,7 @@ Planner 容器也实际建立 Telegram TCP 并持续记录 Telethon update。结
 | RC-P1 | recovery cursor 是 batch-local | 四类 stable owner 的 source-wide cursor |
 | RC-P2 | AI 最终 gate sleep 且 fail-open，其他三类缺 gate | SourcePacingState + SourcePacingAdmission |
 | RC-P3 | scope takeover 终结旧 AI Action 时未失效消息预留，替代 Action 被旧 duplicate/check-in scope 占位阻断 | takeover 同事务失效 `AiGroupMessageMemory` + 既有孤儿精确审计清理 |
+| RC-P4 | PostgreSQL admission upsert conflict 用不可靠 `rowcount` 判断 created，既有 reservation 到点时被重新排到来源队尾 | `ON CONFLICT DO NOTHING RETURNING id` 判定真实插入；冲突复用冻结 admission，不推进 cursor |
 | RC-M1 | 旧 backlog 缺 source/period/lifecycle/plan 分类 | preview manifest + 分 Task 激活 |
 | RC-H1 | 多容器共同挤压宿主 | cgroup 预算公式 + 分 train 隔离 |
 | RC-L1 | 独立 leak | unproven；确定性修复后重测 |
@@ -228,6 +230,7 @@ SourcePacingAdmission 每个真实远程尝试一行：
 4. DB、锁、版本或身份失败写 pacing_source_admission_unavailable/conflict，保持 pre-Gateway，禁止远程调用。旧 AI warning 后继续发送的 fail-open 行为被本文废止。
 5. remote_unknown 保留 owner/admission/Attempt，不自动重发；reconcile 仍按任务 typed fact 合同处理。
 6. source gap 从冻结 pacing plan 的最大合法来源速率计算，不使用固定 8 秒魔数；period 内配置编辑不改变已冻结 plan。
+7. admission upsert 是否新建只认 `RETURNING id`；不得读取 dialect/driver 不稳定的 `rowcount`。冲突命中既有 reserved admission 时必须复用其 `call_not_before_at`，不得再次推进 `SourcePacingState.next_call_not_before_at` 或 stable owner release。
 
 release density 和 Gateway call-start density都必须满足冻结 source gap；typed remote fact density是 E4 观察结果，受 Telegram 完成时间影响，不写成可由本地强制的绝对定律。
 
@@ -383,6 +386,7 @@ T2 按 Task/source 灰度，不要求暂停的 comment/like 为 AI/view 让路�
 8. Gateway gate 注入 DB/lock/version 失败：四类均无远程调用；future admission defer 后 worker slot 释放，无 sleep。
 9. 同来源多账号、多 Task 并发：共享 source timeline，实际 call_started 相邻间隔不小于相邻两次冻结 gap 的较大值；unknown 不重发。
 10. migration 覆盖 concurrent index 失败/invalid 恢复、checkpoint resume、stop line 和 mixed SHA。
+11. PostgreSQL conflict 回归：同一 Action/admission 重试至少3次，upsert conflict 均返回 created=false；即使 source next cursor 已被后续 reservation 推进，原 admission 到点也必须进入 call-start，不能再次 defer。
 
 ### 10.2 性能与资源
 

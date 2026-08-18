@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
+from sqlalchemy.dialects import postgresql
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
@@ -21,6 +23,8 @@ from app.models import (
 )
 from app.services.task_center.pacing import PACING_CONTRACT_VERSION
 from app.services.task_center.source_pacing_admission import (
+    SourceAdmissionSpec,
+    _lock_or_create_admission,
     admit_source_paced_attempt,
     settle_source_pacing_admission,
 )
@@ -191,6 +195,113 @@ def test_same_source_across_tasks_uses_one_cursor_and_defers_without_sleep(
     assert third.scheduled_at == NOW + timedelta(seconds=1728)
     assert session.scalar(select(func.count(SourcePacingState.id))) == 1
     assert session.scalar(select(func.count(SourcePacingAdmission.id))) == 3
+
+
+def test_existing_reservation_keeps_its_slot_after_later_reservations(
+    session: Session,
+) -> None:
+    first, first_attempt = _paced_action(
+        session,
+        task_id="reserved-task-a",
+        slot_id="reserved-slot-a",
+        action_id="reserved-action-a",
+    )
+    first_due = NOW + timedelta(seconds=864)
+    first.release_not_before_at = first_due
+    first.effective_claim_at = first_due
+    session.get(TaskGroupDailyMessageSlot, "reserved-slot-a").release_not_before_at = first_due
+    assert not admit_source_paced_attempt(session, first, first_attempt, now_value=NOW)
+
+    second, second_attempt = _paced_action(
+        session,
+        task_id="reserved-task-b",
+        slot_id="reserved-slot-b",
+        action_id="reserved-action-b",
+    )
+    assert not admit_source_paced_attempt(session, second, second_attempt, now_value=NOW)
+    first_admission = session.scalar(select(SourcePacingAdmission).where(
+        SourcePacingAdmission.action_id == first.id,
+    ))
+    assert first_admission.call_not_before_at == first_due
+
+    retry = ExecutionAttempt(
+        tenant_id=1,
+        action_id=first.id,
+        account_id=1,
+        attempt_no=2,
+        status="before_call",
+    )
+    session.add(retry)
+    session.flush()
+    assert admit_source_paced_attempt(session, first, retry, now_value=first_due)
+    assert first_admission.call_not_before_at == first_due
+
+
+def test_postgres_conflict_detection_uses_returning_not_rowcount() -> None:
+    action = _paced_action_record(
+        task_id="conflict-task",
+        slot_id="conflict-slot",
+        action_id="conflict-action",
+    )
+    attempt = ExecutionAttempt(id="conflict-attempt", action_id=action.id)
+    state = SourcePacingState(id="conflict-state", tenant_id=1)
+    admission = SourcePacingAdmission(
+        id="existing-admission",
+        admission_key="existing-key",
+        tenant_id=1,
+        task_id=action.task_id,
+        source_pacing_state_id=state.id,
+        owner_type="task_group_daily_message_slots",
+        owner_id="conflict-slot",
+        pacing_period_key="period",
+        pacing_plan_hash="a" * 64,
+        planned_release_at=NOW,
+        call_not_before_at=NOW,
+        source_gap_seconds=864,
+        state="reserved",
+    )
+    session = _ConflictSession(admission)
+    spec = SourceAdmissionSpec(
+        pacing_domain="ai_send",
+        source_key_hash="b" * 64,
+        owner_type="task_group_daily_message_slots",
+        owner_id="conflict-slot",
+        lifecycle_epoch=1,
+        period_key="period",
+        plan_hash="a" * 64,
+        release_at=NOW,
+        source_gap_seconds=864,
+    )
+
+    returned, created = _lock_or_create_admission(
+        session,
+        action,
+        attempt=attempt,
+        state=state,
+        spec=spec,
+    )
+
+    assert returned is admission
+    assert created is False
+    assert session.saw_returning
+
+
+class _ConflictSession:
+    def __init__(self, admission: SourcePacingAdmission) -> None:
+        self.admission = admission
+        self.saw_returning = False
+
+    def get_bind(self):
+        return SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
+
+    def scalar(self, statement):
+        sql = str(statement.compile(dialect=postgresql.dialect()))
+        if "count(" in sql.lower():
+            return 0
+        if "insert into source_pacing_admissions" in sql.lower():
+            self.saw_returning = "RETURNING source_pacing_admissions.id" in sql
+            return None
+        return self.admission
 
 
 def test_missing_stable_owner_fails_closed_before_gateway(session: Session) -> None:

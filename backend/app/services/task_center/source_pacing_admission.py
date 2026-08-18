@@ -325,10 +325,10 @@ def _lock_or_create_admission(
     }
     dialect = session.get_bind().dialect.name
     insert = pg_insert(SourcePacingAdmission) if dialect == "postgresql" else sqlite_insert(SourcePacingAdmission)
-    result = session.execute(
+    inserted_id = session.scalar(
         insert.values(**values).on_conflict_do_nothing(
             index_elements=["admission_key"]
-        )
+        ).returning(SourcePacingAdmission.id)
     )
     admission = session.scalar(
         select(SourcePacingAdmission)
@@ -343,7 +343,7 @@ def _lock_or_create_admission(
     if recycled:
         admission.state = "reserved"
         admission.attempt_id = attempt.id
-    return admission, bool(result.rowcount or recycled)
+    return admission, inserted_id is not None or recycled
 
 
 def _admission_key(session: Session, action: Action) -> str:
