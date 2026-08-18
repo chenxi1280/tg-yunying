@@ -25,6 +25,7 @@ from app.services.task_center.pacing import PACING_CONTRACT_VERSION
 from app.services.task_center.source_pacing_admission import (
     SourceAdmissionSpec,
     admit_source_paced_attempt,
+    align_source_gateway_call_started,
     settle_source_pacing_admission,
 )
 from app.services.task_center.source_pacing_reservation import lock_or_create_admission
@@ -195,6 +196,41 @@ def test_same_source_across_tasks_uses_one_cursor_and_defers_without_sleep(
     assert third.scheduled_at == NOW + timedelta(seconds=1728)
     assert session.scalar(select(func.count(SourcePacingState.id))) == 1
     assert session.scalar(select(func.count(SourcePacingAdmission.id))) == 3
+
+
+def test_gateway_marker_advances_next_source_gate_without_subsecond_leak(
+    session: Session,
+) -> None:
+    first, first_attempt = _paced_action(
+        session,
+        task_id="marker-task-a",
+        slot_id="marker-slot-a",
+        action_id="marker-action-a",
+    )
+    assert admit_source_paced_attempt(session, first, first_attempt, now_value=NOW)
+    marker_at = NOW + timedelta(milliseconds=250)
+    first_attempt.gateway_call_started_at = marker_at
+    align_source_gateway_call_started(session, first_attempt)
+    session.commit()
+
+    second, second_attempt = _paced_action(
+        session,
+        task_id="marker-task-b",
+        slot_id="marker-slot-b",
+        action_id="marker-action-b",
+    )
+    allowed = admit_source_paced_attempt(
+        session,
+        second,
+        second_attempt,
+        now_value=NOW + timedelta(seconds=864),
+    )
+
+    assert allowed is False
+    assert second.scheduled_at == marker_at + timedelta(seconds=864)
+    state = session.scalar(select(SourcePacingState))
+    assert state.last_call_started_at == marker_at
+    assert state.next_call_not_before_at == marker_at + timedelta(seconds=1728)
 
 
 def test_existing_reservation_keeps_its_slot_after_later_reservations(

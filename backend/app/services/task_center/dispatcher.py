@@ -134,7 +134,7 @@ from .payloads import (
     payload_error_message,
     validate_action_payload,
 )
-from .pacing import quiet_hours_active
+from .pacing import PACING_CONTRACT_VERSION, quiet_hours_active
 from .policies import validate_group_send_policy
 from .review import has_pending_review
 from .datetime_compat import is_after_or_equal, is_before
@@ -160,6 +160,7 @@ from .search_rank_deboost_reservations import (
 )
 from .source_pacing_admission import (
     admit_source_paced_attempt,
+    align_source_gateway_call_started,
     settle_source_pacing_admission,
 )
 from . import runtime_resources as _runtime_resources
@@ -3343,6 +3344,8 @@ def _reserve_group_send_attempt(
         session.commit()
         return None
     _mark_gateway_call_started(session, attempt, commit=False)
+    if action.pacing_contract_version == PACING_CONTRACT_VERSION:
+        align_source_gateway_call_started(session, attempt)
     session.commit()
     return attempt
 
@@ -3401,6 +3404,8 @@ def _reserve_channel_action_attempt(
         session.commit()
         return None
     _mark_gateway_call_started(session, attempt, commit=False)
+    if action.pacing_contract_version == PACING_CONTRACT_VERSION:
+        align_source_gateway_call_started(session, attempt)
     session.commit()
     return attempt
 

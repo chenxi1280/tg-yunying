@@ -283,6 +283,45 @@ def _lock_or_create_source_state(
     return state
 
 
+def align_source_gateway_call_started(
+    session: Session,
+    attempt: ExecutionAttempt,
+) -> None:
+    if attempt.gateway_call_started_at is None:
+        raise ValueError("pacing_source_gateway_marker_missing")
+    admission = session.scalar(
+        select(SourcePacingAdmission)
+        .where(
+            SourcePacingAdmission.action_id == attempt.action_id,
+            SourcePacingAdmission.attempt_id == attempt.id,
+            SourcePacingAdmission.state == "call_started",
+        )
+        .with_for_update()
+        .limit(1)
+    )
+    if admission is None:
+        raise LookupError("pacing_source_gateway_admission_missing")
+    state = session.scalar(
+        select(SourcePacingState)
+        .where(SourcePacingState.id == admission.source_pacing_state_id)
+        .with_for_update()
+    )
+    if state is None:
+        raise LookupError("pacing_source_state_unavailable")
+    marker_at = wall_datetime(attempt.gateway_call_started_at)
+    current_last = wall_datetime(state.last_call_started_at)
+    if marker_at < current_last:
+        raise ValueError("pacing_source_gateway_marker_regressed")
+    source_gap_seconds = int(admission.source_gap_seconds or 0)
+    next_after_marker = marker_at + timedelta(seconds=source_gap_seconds)
+    state.last_call_started_at = marker_at
+    state.last_source_gap_seconds = source_gap_seconds
+    state.next_call_not_before_at = max(
+        wall_datetime(state.next_call_not_before_at),
+        next_after_marker,
+    )
+
+
 def _call_not_before(
     action: Action,
     state: SourcePacingState,
@@ -432,5 +471,6 @@ def _mark_prior_call_unknown(
 __all__ = [
     "SourceAdmissionSpec",
     "admit_source_paced_attempt",
+    "align_source_gateway_call_started",
     "settle_source_pacing_admission",
 ]

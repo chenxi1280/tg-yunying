@@ -6,10 +6,10 @@
 | --- | --- |
 | Intake ID | intake-2026-08-17-planner-pacing-memory-001 |
 | 分级 | L3 / P0 资源风险 + P0 来源突发 + P1 拟人节奏，必须走标准生产事故流与 Release Gate |
-| 设计状态 | product_design_complete / dev_handoff_ready=true / resynced_2026-08-18-11 |
-| 实现状态 | production_repair_resync_12 / `6c66e047` 已实现同 Action admission pinning、AI typed fact ledger、OCR 发布 fencing 与单实例闸门；最终 SHA 复核确认 AI 多 worker materialization CAS loser 仍抛整轮 drain error，进入显式竞争收敛修订 |
-| 生产状态 | partial：`6c66e047` 发布后 AI/view 自然 typed fact 持续增长，既有来源间隔、ledger、同 Action admission 与 stranded reservation 短窗通过；OCR 发布闸门读回单实例，20 个 30 秒资源样本全部满足 MemAvailable≥1.5 GiB。但 20:02:08 北京时间 AI generation worker 仍出现 materialization CAS loser typed conflict，当前修订尚未发布，production_fixed=false |
-| 当前生产基线 | 2026-08-18 20:12 北京时间；release `6c66e047`；current/SHA/migration/health/restart/OOM、OCR authenticated ready、Docker/containerd 单实例读回通过。20 个资源样本 MemAvailable 最低 1661776 KiB，Planner PSS 197995-198813 KiB，OCR PSS 224339-224402 KiB；6/24 小时长窗未闭合 |
+| 设计状态 | product_design_complete / dev_handoff_ready=true / resynced_2026-08-18-13 |
+| 实现状态 | production_repair_resync_13 / `19838c59` 已发布 materialization CAS 败方权威读回；最终 SHA 的 AI generation conflict/drain error 短窗为 0。生产 E4 新暴露 source state 的 pre-Gateway timestamp 与 Attempt Gateway marker 存在毫秒级漂移，进入权威 marker 对齐修订 |
+| 生产状态 | partial：`19838c59` 后 AI/view 自然 typed fact 为 8/6，AI E4 ledger null/mismatch=0，14 个 fact Action 最大 1 条 admission 且无 stranded，OCR 单实例与 MemAvailable 短窗通过；但 view 同来源 4 个相邻 Gateway pair 中 2 个低于冻结 87 秒，最小 86.968958 秒，production_fixed=false |
+| 当前生产基线 | 2026-08-18 20:42 北京时间；release `19838c59`；current/SHA/migration/health/restart/OOM、OCR authenticated ready、Docker/containerd 单实例读回通过。MemAvailable 1856848 KiB，Planner/OCR PSS 196352/229647 KiB；AI materialization 冲突短窗为 0，浏览毫秒级 gap 漂移未修复，6/24 小时长窗未闭合 |
 | 权威关系 | 本文规范性取代生产稳定性 PRD 中 Planner 资源和旧 AI fail-open gate 口径，并补正拟人节奏 PRD 的跨批恢复；不改变各任务 stable owner、typed remote fact、unknown 与数量结算合同 |
 | 操作边界 | 用户已授权实现、发布与生产验证；精确 stats cleanup 仍须独立 preview/hash/apply/readback，禁止把发布授权扩张为批量重试或未知外发 |
 
@@ -109,6 +109,7 @@ Planner 容器也实际建立 Telegram TCP 并持续记录 Telethon update。结
 | RC-P5 | admission 绑定 Action；pre-Gateway 旧 Action 被替代后，同一 stable owner 的新 Action另建队尾 reservation | 按 owner/type/lifecycle/period/plan/source 精确锁取最早 pre-Gateway reservation，并原子转绑 replacement Action/Attempt |
 | RC-P6 | 过期 reservation 恢复只看冻结时间，多条 backlog 可在同一秒进入 Gateway | reused admission 最终时间取冻结时间与最近真实 call-start + 最大相邻 gap 的较大值 |
 | RC-P7 | 同一 Action 的 gap 重试重新遍历 owner 历史 reservation，单个成功 Action 绑定多条 reserved admission | owner 查询先按 `action_id == current` 排序，再按冻结时间；首次 replacement 接管后，后续重试固定同一 admission id |
+| RC-P8 | Source state 在 final gate 入口记录 pre-Gateway 时间，ExecutionAttempt 在后续语句记录 Gateway marker；两段可变开销使下一次按 state 放行后，权威 Attempt 相邻间隔比冻结 gap 短数十毫秒 | 在同一 source-state 行锁事务内写入 Attempt Gateway marker 后，按当前 admission 精确绑定把 state last/next cursor 前移到该 marker，再提交放行；不得扫描历史、整数截断、增加任意安全垫或放宽验收阈值 |
 | RC-E1 | AI projection/fact 只读 payload ledger，但 AI quantity 合同把 ledger 固化在 primary quantity owner | payload ledger 缺失时按 `Action.primary_quantity_slot_id -> TaskGroupDailyMessageSlot.task_day_ledger_id` 解析并持久化 |
 | RC-E2 | 多 AI generation worker 同时为同一 obligation 绑定 replacement Action，CAS loser 把 winner 已提交的新 projection version 误报为业务身份冲突并中断整轮 drain | CAS 失败后重新读取权威 projection；winner 为当前 Action 则幂等成功，winner 为另一 open Action 则当前 Action 显式 `duplicate_open_obligation` 终结，projection 已关闭则显式 `obligation_not_open`；只有无法解释的身份/状态才继续抛 conflict |
 | RC-M1 | 旧 backlog 缺 source/period/lifecycle/plan 分类 | preview manifest + 分 Task 激活 |
@@ -409,6 +410,7 @@ T2 按 Task/source 灰度，不要求暂停的 comment/like 为 AI/view 让路�
 15. AI E4 ledger 回归：payload 无 ledger 但 Action 绑定 primary quantity owner时，obligation projection 与 `remote_message_observed` 均持久化 owner ledger；payload/owner ledger 冲突显式失败，缺失两条来源不得写 confirmed fact。
 16. 发布自回收竞态回归：旧 OCR 容器 restart policy fencing 必须发生在 `compose stop` 之前，停止确认后恢复；新 OCR ready 后断言真实 runtime 只有 current container id。额外旧 runtime、无法解析 cgroup id 或旧容器仍 running 均使 Release Gate 失败。
 17. PostgreSQL materialization CAS 竞争：双 session 同时读到同一 open projection 的旧 version 并绑定不同 replacement Action；winner 提交后 loser 必须重读 winner。winner 为 open Action 时 loser 以 `duplicate_open_obligation` 终结且不得覆盖 projection；同 Action 重入幂等成功；projection 同时关闭时 loser 以 `obligation_not_open` 终结。任何其他漂移仍抛 `fulfillment_obligation_materialization_conflict`，禁止 catch-all 吞错。
+18. Gateway marker 精度回归：前一 admission 的 state timestamp 为 T、权威 Attempt Gateway marker 为 T+250ms；下一 Action 在 T+gap 到达时必须 defer 到 T+250ms+gap，且随后写入的任意相邻 Attempt Gateway marker 差值严格不小于相邻冻结 gap 的较大值。禁止通过秒级取整、epsilon 容差或额外 sleep 伪造通过。
 
 ### 10.2 性能与资源
 
