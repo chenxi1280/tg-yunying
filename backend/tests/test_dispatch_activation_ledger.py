@@ -78,6 +78,84 @@ def test_fenced_gateway_claim_becomes_one_remote_case() -> None:
         ) == 0
 
 
+def test_fenced_dedicated_search_pre_gateway_returns_to_same_action() -> None:
+    engine = _engine()
+    with Session(engine) as session:
+        action = _seed_dedicated_search_action(
+            session,
+            "search-pre-gateway",
+            gateway_started=False,
+        )
+
+        assert recover_fenced_dispatch_actions(
+            session,
+            actor="release-owner",
+        ) == 1
+        session.commit()
+
+        assert action.status == "pending"
+        assert action.lease_owner == ""
+        assert session.query(RemoteReconcileCase).count() == 0
+
+
+def test_fenced_dedicated_search_gateway_becomes_one_remote_case() -> None:
+    engine = _engine()
+    with Session(engine) as session:
+        action = _seed_dedicated_search_action(
+            session,
+            "search-gateway",
+            gateway_started=True,
+        )
+
+        assert recover_fenced_dispatch_actions(
+            session,
+            actor="release-owner",
+        ) == 1
+        session.commit()
+
+        attempt = session.query(ExecutionAttempt).one()
+        case = session.query(RemoteReconcileCase).one()
+        assert action.status == "unknown_after_send"
+        assert attempt.status == "result_unknown"
+        assert case.action_id == action.id
+        assert recover_fenced_dispatch_actions(
+            session,
+            actor="release-owner",
+        ) == 0
+
+
+def test_fenced_non_search_action_without_shared_claim_is_untouched() -> None:
+    engine = _engine()
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="tenant"))
+        session.add(Task(
+            id="task",
+            tenant_id=1,
+            name="not-shared",
+            type="group_ai_chat",
+            status="running",
+        ))
+        action = Action(
+            id="unclaimed-action",
+            tenant_id=1,
+            task_id="task",
+            task_type="group_ai_chat",
+            action_type="send_message",
+            status="executing",
+            scheduled_at=_now(),
+            payload={},
+            result={},
+        )
+        session.add(action)
+        session.flush()
+
+        assert recover_fenced_dispatch_actions(
+            session,
+            actor="release-owner",
+        ) == 0
+        assert action.status == "executing"
+
+
 def test_activation_reconcile_releases_stale_unclaimed_contract() -> None:
     engine = _engine()
     with Session(engine) as session:
@@ -242,6 +320,52 @@ def _seed_active_claim(
         },
     )
     session.add_all([scope, window, allocation, reservation, action])
+    if gateway_started:
+        session.add(ExecutionAttempt(
+            id=f"attempt-{suffix}",
+            tenant_id=1,
+            action_id=action.id,
+            attempt_no=1,
+            status="gateway_call_started",
+            before_call_at=now - timedelta(seconds=2),
+            gateway_call_started_at=now - timedelta(seconds=1),
+            result_snapshot={
+                "gateway_request_identity": f"request-{suffix}",
+            },
+        ))
+    session.flush()
+    return action
+
+
+def _seed_dedicated_search_action(
+    session: Session,
+    suffix: str,
+    *,
+    gateway_started: bool,
+) -> Action:
+    now = _now()
+    session.add(Tenant(id=1, name="tenant"))
+    session.add(Task(
+        id="search-task",
+        tenant_id=1,
+        name="search",
+        type="search_click",
+        status="running",
+    ))
+    action = Action(
+        id=f"action-{suffix}",
+        tenant_id=1,
+        task_id="search-task",
+        task_type="search_click",
+        action_type="search_join",
+        status="executing",
+        scheduled_at=now - timedelta(minutes=1),
+        lease_owner="old-search-worker",
+        lease_expires_at=now + timedelta(minutes=30),
+        payload={},
+        result={"gateway_request_identity": f"request-{suffix}"},
+    )
+    session.add(action)
     if gateway_started:
         session.add(ExecutionAttempt(
             id=f"attempt-{suffix}",

@@ -23,6 +23,9 @@ from app.models import (
     TgAccountAuthorization,
 )
 from app.services.task_center.executors.search_click_direct import _open_units
+from app.services.task_center.dispatch_activation_ledger import (
+    recover_fenced_dispatch_actions,
+)
 from app.services.task_center.unknown_deadline_closure import (
     close_unknown_after_deadline,
 )
@@ -129,6 +132,66 @@ def test_unknown_assignment_does_not_starve_later_open_obligation(session: Sessi
     units = _open_units(session, datetime(2026, 8, 4, 8, 5), 1)
 
     assert [unit.obligation_id for unit in units] == [obligations[1].id]
+
+
+def test_release_fence_preserves_search_target_and_closes_assignment_lifecycle(
+    session: Session,
+) -> None:
+    task, ledger, obligations = _runtime(session)
+    obligation = obligations[0]
+    assignment = _unknown_assignment(session, task, ledger, obligation)
+    assignment.state = "executing"
+    projection = FulfillmentObligationProjection(
+        tenant_id=1,
+        task_id=task.id,
+        task_day_ledger_id=ledger.id,
+        obligation_type="search_click",
+        obligation_id=obligation.id,
+        work_lane="search",
+        state="action_bound",
+        active_action_id="action-fenced",
+    )
+    action = Action(
+        id="action-fenced",
+        tenant_id=1,
+        task_id=task.id,
+        task_type=task.type,
+        action_type="search_join",
+        account_id=1,
+        status="executing",
+        obligation_type="search_click",
+        obligation_id=obligation.id,
+        lease_owner="old-search-worker",
+        lease_expires_at=datetime(2026, 8, 4, 8, 30),
+        payload={
+            "search_click_assignment_id": assignment.id,
+            "search_click_obligation_id": obligation.id,
+            "task_day_ledger_id": ledger.id,
+        },
+    )
+    attempt = ExecutionAttempt(
+        id="attempt-fenced",
+        tenant_id=1,
+        action_id=action.id,
+        account_id=1,
+        status="gateway_call_started",
+        gateway_call_started_at=datetime(2026, 8, 4, 8, 1),
+    )
+    original_target_id = obligation.target_id
+    obligation.source_action_id = action.id
+    assignment.action_id = action.id
+    session.add_all([projection, action, attempt])
+    session.flush()
+
+    assert recover_fenced_dispatch_actions(session, actor="release-owner") == 1
+    session.expire_all()
+
+    assert session.get(Action, action.id).status == "unknown_after_send"
+    assert session.get(SearchClickAssignment, assignment.id).state == "gateway_unknown"
+    current = session.get(SearchClickFulfillmentObligation, obligation.id)
+    assert current.status == "unknown_after_send"
+    assert current.target_id == original_target_id
+    assert current.source_action_id == action.id
 
 
 def test_deadline_closure_uses_short_terminal_and_appends_decision_fact(session: Session) -> None:

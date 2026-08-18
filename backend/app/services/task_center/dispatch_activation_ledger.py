@@ -44,7 +44,13 @@ def recover_fenced_dispatch_actions(
 ) -> int:
     actions = list(session.scalars(for_update(session, select(Action).where(
         Action.status == "executing",
-        Action.result["dispatch_claim_active"].as_boolean().is_(True),
+        or_(
+            Action.result["dispatch_claim_active"].as_boolean().is_(True),
+            and_(
+                Action.task_type == "search_click",
+                Action.action_type == "search_join",
+            ),
+        ),
     ).order_by(Action.id.asc()).limit(max(1, limit)))))
     for action in actions:
         _recover_fenced_action(session, action, actor)
@@ -172,7 +178,11 @@ def _recover_fenced_action(
     action: Action,
     actor: str,
 ) -> None:
-    from .dispatcher import _finalize_dispatch_action, _mark_unknown_after_send
+    from .dispatcher import (
+        _finalize_dispatch_action,
+        _mark_unknown_after_send,
+        _settle_pure_search_click_obligation,
+    )
 
     attempt = _latest_attempt(session, action.id)
     gateway_started = bool(attempt and attempt.gateway_call_started_at)
@@ -182,6 +192,17 @@ def _recover_fenced_action(
             action,
             "发布fence接管已进入Gateway边界的遗留Action",
         )
+        payload = dict(action.payload or {})
+        has_direct_binding = bool(
+            payload.get("search_click_assignment_id")
+            and payload.get("search_click_obligation_id")
+        )
+        if (
+            action.task_type == "search_click"
+            and action.action_type == "search_join"
+            and has_direct_binding
+        ):
+            _settle_pure_search_click_obligation(session, action, attempt)
     else:
         _restore_pre_gateway_action(action, attempt)
     _finalize_dispatch_action(
