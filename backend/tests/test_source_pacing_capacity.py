@@ -23,7 +23,10 @@ from app.models import (
     TgAccount,
     ViewFulfillmentObligation,
 )
-from app.services.task_center.direct_action_claims import claim_fact_first_candidates
+from app.services.task_center.direct_action_claims import (
+    claim_fact_first_candidates,
+    settle_fact_first_action_before_gateway,
+)
 from app.services.task_center.pacing import PACING_CONTRACT_VERSION
 from app.services.task_center.source_pacing_admission import admit_source_paced_attempt
 
@@ -96,6 +99,48 @@ def test_future_action_past_deadline_is_safely_closed_now(session: Session) -> N
     assert owner.status == "open" and owner.current_action_id is None
     assert fact is not None and fact.fact_kind == "safely_not_executed"
     assert state.next_call_not_before_at == NOW - timedelta(seconds=25)
+
+
+def test_stale_skipped_action_can_be_reconciled_without_gateway(session: Session) -> None:
+    task, ledger, messages = _seed_view_period(session)
+    task.fulfillment_contract_version = "fact_first_v3"
+    future = DEADLINE + timedelta(days=2)
+    owner = _view_owner(ledger, messages[0], plan_total=600)
+    action = _view_action(task, owner, release_at=future)
+    action.status = "skipped"
+    action.executed_at = DEADLINE
+    action.result = {"error_code": "stale_channel_daily_action"}
+    owner.current_action_id = action.id
+    owner.status = "pending"
+    reservation = _account_reservation(task, action, deadline=DEADLINE, future=future)
+    state, admission = _future_source_reservation(task, owner, action, future=future)
+    session.add_all([owner, action, reservation, state, admission])
+    session.commit()
+
+    settle_fact_first_action_before_gateway(
+        session,
+        action,
+        now=DEADLINE + timedelta(minutes=1),
+        reason_code="stale_channel_daily_action",
+        detail="旧日浏览 Action 在 Gateway 前误终结，补齐安全事实",
+    )
+    session.commit()
+    fact = session.scalar(select(FulfillmentRemoteFact).where(
+        FulfillmentRemoteFact.action_id == action.id,
+    ))
+    attempt = session.scalar(select(ExecutionAttempt).where(
+        ExecutionAttempt.action_id == action.id,
+    ))
+
+    assert action.status == "skipped"
+    assert action.result["pre_gateway_safe_settlement"]["reason_code"] == (
+        "stale_channel_daily_action"
+    )
+    assert attempt is not None and attempt.gateway_call_started_at is None
+    assert fact is not None and fact.fact_kind == "safely_not_executed"
+    assert reservation.state == "missed"
+    assert admission.state == "cancelled_pre_gateway"
+    assert owner.status == "open" and owner.current_action_id is None
 
 
 def _seed_base(session: Session) -> None:

@@ -1892,7 +1892,7 @@ def _confirm_action_claim_candidate(
     action = session.get(Action, action_id)
     if not _action_claim_matches(action, batch):
         return False
-    if _skip_stale_channel_daily_action(action):
+    if not _fact_first_action(session, action) and _skip_stale_channel_daily_action(action):
         session.commit()
         return False
     if _skip_search_click_action_after_deadline(session, action):
@@ -8225,9 +8225,10 @@ def _release_prebound_search_claim(
 
 def _skip_stale_channel_daily_actions(session: Session, *, today: date) -> int:
     stale_actions = session.scalars(
-        select(Action).where(
+        select(Action).join(Task, Task.id == Action.task_id).where(
             Action.status == "pending",
             Action.action_type.in_(CHANNEL_DAILY_ACTION_TYPES),
+            Task.fulfillment_contract_version != "fact_first_v3",
         )
     )
     return sum(_skip_stale_channel_daily_action(action, today=today) for action in stale_actions)

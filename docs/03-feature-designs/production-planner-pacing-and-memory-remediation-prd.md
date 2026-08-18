@@ -6,14 +6,14 @@
 | --- | --- |
 | Intake ID | intake-2026-08-17-planner-pacing-memory-001 |
 | 分级 | L3 / P0 资源风险 + P0 来源突发 + P1 拟人节奏，必须走标准生产事故流与 Release Gate |
-| 设计状态 | product_design_complete / dev_handoff_ready=true / resynced_2026-08-18-15 |
-| 实现状态 | `133eee7a` 已发布；source Gateway marker、materialization CAS 败方收敛与 Python 3.6 受审计代理退役工具均在生产生效。24 个零消费者 Mihomo runtime 已按 manifest apply/readback 完成 |
-| 生产状态 | partial：`133eee7a` 后 AI/view 权威 Gateway gap 无突发，但线上 E4 复核发现浏览最终闸门错误使用单消息 plan total 计算整个频道 gap，两个任务已有 3510 条 pre-Gateway Action 排到当日截止后；该容量组合遗漏进入 RC-P9/P10，production_fixed=false |
-| 当前生产基线 | 2026-08-18 22:38 北京时间；release `133eee7a`；current/SHA/migration/health/restart/OOM、OCR authenticated ready 与 Docker/containerd 单实例读回通过。24 个退役 target 为 disabled+stopped+restart=no，AuditLog=24，37 个有消费者 runtime 均 healthy/running 且 manifest 未变；Planner PSS 约 208 MiB，15 秒 CPU 最大 40.38% |
+| 设计状态 | product_design_complete / dev_handoff_ready=true / resynced_2026-08-19-16 |
+| 实现状态 | `ca01040c` 已发布；RC-P9 聚合来源容量和 RC-P10 future deadline-exhausted direct claim 已在生产生效。午夜读回又暴露 RC-P11：legacy stale-day sweep 在 direct fact-first claim 之前批量把旧日浏览 Action 标为 skipped，绕过 typed fact、reservation/admission 和 owner 同事务收口 |
+| 生产状态 | partial：新 SHA/migration/index/health 与 RC-P10 的少量 `pacing_claim_deadline_exceeded -> safely_not_executed` 已通过，但 8 月 19 日 00:00 legacy sweep 将数千条旧日 Action 写成 `stale_channel_daily_action`；Action 数归零不能替代 typed fact 与 owner readback，production_fixed=false |
+| 当前生产基线 | 2026-08-19 00:02 北京时间；release `ca01040c`、migration 0154、两个新索引和关键容器 healthy；MemAvailable 约 2.01 GiB、Planner PSS p95 约 217 MiB、当前 swap-in/out=0，但 SwapUsed 约 666 MiB。两个目标 Task 已观察 68 条 deadline safe settlement 中至少 26 条新 typed fact；同期数千条 stale skipped 未取得等量 typed fact，进入 RC-P11 |
 | 权威关系 | 本文规范性取代生产稳定性 PRD 中 Planner 资源和旧 AI fail-open gate 口径，并补正拟人节奏 PRD 的跨批恢复；不改变各任务 stable owner、typed remote fact、unknown 与数量结算合同 |
 | 操作边界 | 用户已授权实现、发布与生产验证；精确 stats cleanup 仍须独立 preview/hash/apply/readback，禁止把发布授权扩张为批量重试或未知外发 |
 
-“拟人化排期仍有明显拥挤”包含两种相反但同源的容量错误：一是 overdue 技术批次在 now 附近重新起算造成突发，二是把单消息 plan total 的 gap 套到共享频道时间线，导致多消息任务被过度串行并排到业务周期以后。二者都不等于“任务全部瞬间完成”。真实 Gateway 必须按来源聚合 plan 平滑，且任何 pre-Gateway Action 不得跨越数量 owner 的 period deadline；Telegram 完成仍只认 typed remote fact，不能用 Action.executed_at 代替。
+“拟人化排期仍有明显拥挤”包含两种相反但同源的容量错误：一是 overdue 技术批次在 now 附近重新起算造成突发，二是把单消息 plan total 的 gap 套到共享频道时间线，导致多消息任务被过度串行并排到业务周期以后。二者都不等于“任务全部瞬间完成”。真实 Gateway 必须按来源聚合 plan 平滑，且任何 pre-Gateway Action 不得跨越数量 owner 的 period deadline；Telegram 完成仍只认 typed remote fact，不能用 Action.executed_at 或午夜 legacy skipped 代替。
 
 ## 1. 原始需求、范围与成功条件
 
@@ -113,6 +113,7 @@ Planner 容器也实际建立 Telegram TCP 并持续记录 Telethon update。结
 | RC-P8 | Source state 在 final gate 入口记录 pre-Gateway 时间，ExecutionAttempt 在后续语句记录 Gateway marker；两段可变开销使下一次按 state 放行后，权威 Attempt 相邻间隔比冻结 gap 短数十毫秒 | 在同一 source-state 行锁事务内写入 Attempt Gateway marker 后，按当前 admission 精确绑定把 state last/next cursor 前移到该 marker，再提交放行；不得扫描历史、整数截断、增加任意安全垫或放宽验收阈值 |
 | RC-P9 | 浏览 owner 的 `pacing_plan_total` 是单消息目标，但最终 `SourcePacingState` 是整频道共享；直接用单消息 total 计算共享 gap，使 21 条消息的并行计划被错误串成一条 87 秒时间线 | 浏览 Gateway gap 使用同一 TaskDayLedger 全部 active message target 的冻结 `due_count` 聚合总量；单消息 quantity owner、release、fact 和 plan hash 不变，聚合只用于共享来源最终闸门 |
 | RC-P10 | 来源 defer 可把 `Action.release_not_before_at/scheduled_at` 推到 owner deadline 以后；普通 due-claim 只扫描 `scheduled_at <= now`，导致确定不可能执行的 pre-Gateway Action 在未来数日占用 current obligation 和 source cursor | defer 计算超过 deadline 时最多排到 deadline；direct claim 额外扫描“release 已越过 account reservation source deadline”的有界候选，立即写 `safely_not_executed`、missed reservation、cancelled pre-Gateway admission，并按剩余 reserved admission 与真实 last marker 重算 source next cursor |
+| RC-P11 | Dispatcher 每次 claim 先对所有昨日 `view_message` 执行 legacy stale sweep；该步骤早于 fact-first direct claim，午夜会把跨截止期 Action 批量写为 `stale_channel_daily_action/skipped`，却不建立 no-Gateway Attempt/typed fact、不释放 owner，也不取消账号/source reservation | legacy stale sweep 必须在 SQL 与单行确认两处排除 `fact_first_v3`；current contract 只走 RC-P10 的事务化 safe settlement。已被错误终结的精确集合使用 deployed SHA + task/date + no-fact + no-Gateway + action/version/owner/reservation/admission hash 做 preview/apply，分批锁行后补 `safely_not_executed`、missed/cancelled、owner release、source cursor 重算与 AuditLog；已有 Gateway/unknown/fact 一律排除 |
 | RC-E1 | AI projection/fact 只读 payload ledger，但 AI quantity 合同把 ledger 固化在 primary quantity owner | payload ledger 缺失时按 `Action.primary_quantity_slot_id -> TaskGroupDailyMessageSlot.task_day_ledger_id` 解析并持久化 |
 | RC-E2 | 多 AI generation worker 同时为同一 obligation 绑定 replacement Action，CAS loser 把 winner 已提交的新 projection version 误报为业务身份冲突并中断整轮 drain | CAS 失败后重新读取权威 projection；winner 为当前 Action 则幂等成功，winner 为另一 open Action 则当前 Action 显式 `duplicate_open_obligation` 终结，projection 已关闭则显式 `obligation_not_open`；只有无法解释的身份/状态才继续抛 conflict |
 | RC-M1 | 旧 backlog 缺 source/period/lifecycle/plan 分类 | preview manifest + 分 Task 激活 |
@@ -249,6 +250,7 @@ SourcePacingAdmission 每个真实远程尝试一行：
 10. 同一 Action 已经绑定安全 admission 后，后续 pre-Gateway 重试必须优先锁定并复用该 admission id，不得因其他 owner 历史 reservation 的冻结时间更早而轮换槽位。只有当前 Action 无安全绑定时，replacement 才接管 owner 最早 reservation。
 11. 任一 final not-before 不得晚于 owner period deadline。计算值达到或越过 deadline 时，Action 最多唤醒到 deadline；claim 必须在 Gateway 前写 `pacing_claim_deadline_exceeded` 的 `safely_not_executed` fact，释放 quantity owner 当前 Action、把账号 reservation 标为 missed、把 source admission 标为 `cancelled_pre_gateway`。候选扫描有界且使用 `account_pacing_reservations(action_id,state)` 索引，不得等待跨日 scheduled_at 才收敛。
 12. 取消 pre-Gateway admission 后，在相同 source state 行锁下按“真实 last Gateway marker + last gap”和剩余 reserved admission 最大 not-before 重算 next cursor；不得由已取消、已过期 period 或未调用 Gateway 的历史队尾继续占用新 period。
+13. legacy `stale_channel_daily_action` sweep 只适用于非 current contract。`fact_first_v3` 的昨日/跨截止期浏览 Action 必须继续进入 direct fact-first 候选，并在 Gateway 前按第 11～12 条收口。历史误终结修复只接受 `status=skipped + error_code=stale_channel_daily_action + typed fact missing + Gateway marker missing` 的精确行；preview/apply 之间任一 action/version/owner/reservation/admission 漂移均拒绝整批。
 
 AI obligation projection 与 typed remote fact 的 `task_day_ledger_id` 取值顺序为：显式 payload ledger → `Action.primary_quantity_slot_id` 对应 quantity owner ledger。两者同时存在但不一致时必须显式失败；current AI 成功事实不得以 null ledger 落库。
 
@@ -423,6 +425,7 @@ T2 按 Task/source 灰度，不要求暂停的 comment/like 为 AI/view 让路�
 19. 代理运行时退役回归：target/manifest/release/actor/approval 缺失、任一消费者非零、DB 版本漂移、container id/config hash 漂移或 stop 失败均显式失败；成功仅改显式 target 为 disabled 并 stopped/restart=no，AuditLog 数与 target 数一致，非 target 不变。
 20. 多消息浏览来源容量回归：同一 ledger 至少 3 条 active message target，单消息 plan total 不同；每条 owner 的 quantity 身份不变，admission 的共享 source gap 只能由 `sum(due_count)` 计算。聚合总量 15877/日时不能继续得到单消息 87 秒 gap；相邻真实 Gateway 仍不得小于冻结聚合 gap。
 21. 跨日 pre-Gateway 收敛：Action 的 release/scheduled 已被历史 source cursor 推到 ledger deadline 以后时，即使 `scheduled_at > now` 也必须进入有界 direct claim；Gateway marker 保持 null，Action/账号 reservation/source admission/obligation/fact/source next cursor 一次事务读回一致。非过期 future Action 不得被提前 claim。
+22. 午夜 stale sweep 竞争：同批放入 legacy 浏览与 `fact_first_v3` 浏览昨日 Action。sweep 只跳过 legacy 行；current 行必须由 direct claim 写 `safely_not_executed`，并读回 fact、missed account reservation、cancelled source admission、open owner 与重算 source next。历史 repair 的 preview/hash 漂移、已有 Gateway/unknown/fact、owner confirmed 或缺 reservation 均 fail closed；重复 preview 为零待修复，apply 对零候选显式拒绝。
 
 ### 10.2 性能与资源
 

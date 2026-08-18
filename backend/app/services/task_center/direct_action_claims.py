@@ -211,18 +211,44 @@ def _mark_claim_deadline_missed(
     now: datetime,
     effective_at: datetime | None,
 ) -> set[str]:
-    ensure_action_obligation(session, action)
+    return settle_fact_first_action_before_gateway(
+        session,
+        action,
+        now=now,
+        reason_code="pacing_claim_deadline_exceeded",
+        detail="账号时间线冲突已越过来源截止时间，未调用 Gateway",
+        effective_at=effective_at,
+    )
+
+
+def settle_fact_first_action_before_gateway(
+    session: Session,
+    action: Action,
+    *,
+    now: datetime,
+    reason_code: str,
+    detail: str,
+    effective_at: datetime | None = None,
+) -> set[str]:
+    if action.status not in {"pending", "skipped"}:
+        raise RuntimeError(f"pre_gateway_safe_settlement_status_invalid:{action.status}")
+    if not ensure_action_obligation(session, action):
+        raise RuntimeError("pre_gateway_safe_settlement_obligation_unavailable")
     action.status = "skipped"
-    action.executed_at = now
+    action.executed_at = action.executed_at or now
     action.action_version = int(action.action_version or 1) + 1
-    action.result = {
-        **(action.result or {}),
-        "error_code": "pacing_claim_deadline_exceeded",
-        "pacing_claim_deadline_exceeded": {
-            "effective_claim_at": effective_at.isoformat() if effective_at else None,
-        },
-    }
-    attempt = _safe_shortfall_attempt(session, action, now)
+    action.result = _safe_settlement_result(
+        action,
+        reason_code=reason_code,
+        effective_at=effective_at,
+    )
+    attempt = _safe_shortfall_attempt(
+        session,
+        action,
+        now,
+        reason_code=reason_code,
+        detail=detail,
+    )
     session.add(attempt)
     _mark_pacing_reservation_missed(session, action.id)
     state_ids = _cancel_pre_gateway_source_admissions(session, action.id)
@@ -230,10 +256,28 @@ def _mark_claim_deadline_missed(
     fact = persist_remote_fact(session, action)
     if fact is None or fact.fact_kind != "safely_not_executed":
         observed = fact.fact_kind if fact is not None else "missing"
-        raise RuntimeError(f"pacing_claim_safe_settlement_missing:{observed}")
+        raise RuntimeError(f"pre_gateway_safe_settlement_fact_missing:{observed}")
     project_remote_fact(session, fact)
     release_channel_action_before_gateway(session, action)
     return state_ids
+
+
+def _safe_settlement_result(
+    action: Action,
+    *,
+    reason_code: str,
+    effective_at: datetime | None,
+) -> dict:
+    result = {
+        **(action.result or {}),
+        "error_code": reason_code,
+        "pre_gateway_safe_settlement": {"reason_code": reason_code},
+    }
+    if reason_code == "pacing_claim_deadline_exceeded":
+        result[reason_code] = {
+            "effective_claim_at": effective_at.isoformat() if effective_at else None,
+        }
+    return result
 
 
 def _cancel_pre_gateway_source_admissions(
@@ -319,6 +363,9 @@ def _safe_shortfall_attempt(
     session: Session,
     action: Action,
     now: datetime,
+    *,
+    reason_code: str,
+    detail: str,
 ) -> ExecutionAttempt:
     attempt_no = session.scalar(select(func.max(ExecutionAttempt.attempt_no)).where(
         ExecutionAttempt.action_id == action.id,
@@ -332,8 +379,8 @@ def _safe_shortfall_attempt(
         status="failed",
         before_call_at=now,
         after_call_at=now,
-        failure_type="pacing_claim_deadline_exceeded",
-        failure_detail="账号时间线冲突已越过来源截止时间，未调用 Gateway",
+        failure_type=reason_code,
+        failure_detail=detail,
         result_snapshot={"remote_mutation_started": False},
     )
 
@@ -349,4 +396,8 @@ def _mark_pacing_reservation_missed(session: Session, action_id: str) -> None:
     reservation.version = int(reservation.version or 1) + 1
 
 
-__all__ = ["DirectClaimBatch", "claim_fact_first_candidates"]
+__all__ = [
+    "DirectClaimBatch",
+    "claim_fact_first_candidates",
+    "settle_fact_first_action_before_gateway",
+]
