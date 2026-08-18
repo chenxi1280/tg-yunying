@@ -52,5 +52,22 @@ def test_release_sha_is_injected_into_backend_runtime() -> None:
     assert "RELEASE_SHA: ${RELEASE_SHA:?RELEASE_SHA is required}" in compose
 
 
+def test_deploy_fences_self_recycling_ocr_worker_and_verifies_runtime_identity() -> None:
+    script = COMPOSE_UP.read_text()
+    fence = "fence_image_verification_restart"
+    stop = 'compose stop "${WORKER_SERVICES[@]}"'
+    restore = "restore_image_verification_restart"
+    ready = "wait_for_container_ready \\\n    tgyunying-image-verification-worker"
+    inventory = "assert_single_image_verification_runtime"
+
+    assert 'docker update --restart=no "$container_id"' in script
+    assert 'docker update --restart=unless-stopped "$VERIFICATION_FENCED_CONTAINER_ID"' in script
+    assert "assert_fenced_image_verification_stopped" in script
+    assert "grep -oE 'docker[-/][0-9a-f]{64}'" in script
+    assert script.index(fence, script.index("# ===== Stage A")) < script.index(stop)
+    assert script.index(stop) < script.index(restore, script.index(stop))
+    assert script.index(ready) < script.index(inventory, script.index(ready))
+
+
 def _combined_run_script(job: dict) -> str:
     return "\n".join(str(step.get("run") or "") for step in job["steps"])

@@ -6,10 +6,10 @@
 | --- | --- |
 | Intake ID | intake-2026-08-17-planner-pacing-memory-001 |
 | 分级 | L3 / P0 资源风险 + P0 来源突发 + P1 拟人节奏，必须走标准生产事故流与 Release Gate |
-| 设计状态 | product_design_complete / dev_handoff_ready=true / resynced_2026-08-18 |
-| 实现状态 | production_repair_resync_10 / `009fcde8` 已实现 stable owner pre-Gateway reservation 转绑与真实 last-call gap final gate；生产遗漏审计发现同 Action 重试未固定 admission、AI typed fact 未落 task-day ledger，进入第三次修订 |
-| 生产状态 | partial：`009fcde8` 发布后自然复用发布前 reservation，已连续产生 AI `remote_message_observed` 与浏览 `view_observed`；AI 最小实际来源间隔 22.64 秒（要求≥22）、浏览 89.92 秒（要求≥87），违例/同秒突发均为 0。但 17 个已成功 AI Action 残留 30 条 pre-Gateway reserved admission，且抽查 37 条 AI typed fact 虽均可由 quantity owner 解析 ledger，落库 ledger 全为空，production_fixed=false |
-| 当前生产基线 | 2026-08-18 18:34 北京时间；release `009fcde8`；current/SHA/migration/health/restart/OOM 读回通过，Planner 28 个短窗样本 PSS p95 约 187 MiB；宿主瞬时 MemAvailable 1,529,684 KiB；资源长窗和新增遗漏未通过 |
+| 设计状态 | product_design_complete / dev_handoff_ready=true / resynced_2026-08-18-11 |
+| 实现状态 | production_repair_resync_11 / `0b899786` 已实现同 Action admission pinning、AI typed fact ledger 绑定与兼容无 projection 的 legacy fact；生产资源复核新增发布期自回收容器 restart race 的 fencing 与单实例运行时闸门 |
+| 生产状态 | partial：`0b899786` 发布后 AI/view 自然 typed fact 持续增长，AI 最小实际来源间隔 22.38 秒（要求≥22）、浏览 87.78 秒（要求≥87），违例/同秒突发均为 0；AI fact、quantity owner 与 projection ledger 抽查均无 null/mismatch，同 Action 最大一条 admission、成功 Action 无 stranded reservation。宿主仍需在清理旧 OCR containerd task 后完成资源观察窗，production_fixed=false |
+| 当前生产基线 | 2026-08-18 19:34 北京时间；release `0b899786`；current/SHA/migration/health/restart/OOM 读回通过，Planner 47 个短窗样本 PSS p95 约 192 MiB；发现并精确清理一个 Docker 已不可见但 containerd 仍运行、占用 167215104 bytes 的旧 OCR task，MemAvailable 从约 1.49 GiB 回升到约 1.69 GiB；6/24 小时长窗未闭合 |
 | 权威关系 | 本文规范性取代生产稳定性 PRD 中 Planner 资源和旧 AI fail-open gate 口径，并补正拟人节奏 PRD 的跨批恢复；不改变各任务 stable owner、typed remote fact、unknown 与数量结算合同 |
 | 操作边界 | 用户已授权实现、发布与生产验证；精确 stats cleanup 仍须独立 preview/hash/apply/readback，禁止把发布授权扩张为批量重试或未知外发 |
 
@@ -101,6 +101,7 @@ Planner 容器也实际建立 Telegram TCP 并持续记录 Telethon update。结
 | RC-R4 | Planner 直接调用频道 Gateway 并持有 Telethon | Listener subscription/snapshot 唯一远程 owner |
 | RC-R5 | processed 无阶段、SQL、ORM、PSS/cgroup 解释力 | Planner 自采样和阶段指标 |
 | RC-R6 | 统一 worker 入口在每个专用角色启动时 eager import 全部服务实现 | 专用 role 最小包初始化 + 显式 lazy implementation loader；缺失入口直接失败 |
+| RC-R7 | OCR worker 自回收与发布 `compose stop/remove` 竞态，Docker 元数据先删除但 restart manager 在 containerd 再拉起旧 task | 发布停 worker 前暂时关闭精确旧 OCR 容器 restart policy，确认停止后恢复；新 worker ready 后核对主机只存在一个且 cgroup container id 等于 Docker current id |
 | RC-P1 | recovery cursor 是 batch-local | 四类 stable owner 的 source-wide cursor |
 | RC-P2 | AI 最终 gate sleep 且 fail-open，其他三类缺 gate | SourcePacingState + SourcePacingAdmission |
 | RC-P3 | scope takeover 终结旧 AI Action 时未失效消息预留，替代 Action 被旧 duplicate/check-in scope 占位阻断 | takeover 同事务失效 `AiGroupMessageMemory` + 既有孤儿精确审计清理 |
@@ -383,6 +384,8 @@ T2 按 Task/source 灰度，不要求暂停的 comment/like 为 AI/view 让路�
 - 激活后 next_run_at 只做只读兼容镜像；禁止静默回退旧 writer、全量轮询或 Planner 远程 fetch。
 - 若 T1/T2 失败，停止新 materialization/call，保留 additive schema、owner、admission、Attempt、unknown 和 fact，前向修复后恢复。
 - T4 可回滚资源配置，但不得批量重启或把连续触限当回收策略。
+- remote OCR 开启时，Stage A 必须先读取精确旧 OCR container id，将其 restart policy 临时改为 `no`，再执行 `compose stop`；只有旧容器已确认非 running 后才恢复 `unless-stopped`。任一步失败都必须恢复 policy 并使发布失败，不能继续 remove/recreate。
+- 新 OCR worker ready 后，Release Gate 必须从 `/proc/*/cmdline + /proc/*/cgroup` 枚举真实 `image_verification_worker_app` runtime；必须恰好一条 container id 且等于 Docker current id。Docker 不可见、containerd/cgroup 仍存活的旧 task 视为 `resource_capacity_degraded`，不得只看 `docker ps` 放行，也不得在发布脚本中模糊 kill。
 
 ## 10. QA、性能与生产 E4
 
@@ -403,6 +406,7 @@ T2 按 Task/source 灰度，不要求暂停的 comment/like 为 AI/view 让路�
 13. overdue backlog 回归：同一来源至少2条过期 reservation 同时到达 final gate，首条 call-start 后其余必须按真实 gap 释放，任意相邻 Gateway call-start 不得同秒突发。
 14. 同 Action retry pinning 回归：owner 存在至少2条 pre-Gateway 历史 reservation，replacement 首次接管后连续3次未到 final gate；每次只更新同一 admission id，其他历史 admission 的 action/attempt/state 不变。
 15. AI E4 ledger 回归：payload 无 ledger 但 Action 绑定 primary quantity owner时，obligation projection 与 `remote_message_observed` 均持久化 owner ledger；payload/owner ledger 冲突显式失败，缺失两条来源不得写 confirmed fact。
+16. 发布自回收竞态回归：旧 OCR 容器 restart policy fencing 必须发生在 `compose stop` 之前，停止确认后恢复；新 OCR ready 后断言真实 runtime 只有 current container id。额外旧 runtime、无法解析 cgroup id 或旧容器仍 running 均使 Release Gate 失败。
 
 ### 10.2 性能与资源
 

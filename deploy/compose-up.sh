@@ -12,6 +12,8 @@ echo "==> Release directory: $APP_DIR"
 echo "==> Compose file: $COMPOSE_FILE"
 echo "==> Env file: $ENV_FILE"
 
+VERIFICATION_FENCED_CONTAINER_ID=""
+
 docker_login_ghcr() {
   if [[ "$TGYUNYING_BACKEND_IMAGE" != ghcr.io/* \
     && "$TGYUNYING_FRONTEND_IMAGE" != ghcr.io/* \
@@ -59,6 +61,75 @@ wait_for_container_ready() {
 
     sleep 5
   done
+}
+
+fence_image_verification_restart() {
+  if ! verification_remote_enabled; then
+    return 0
+  fi
+
+  local container_id
+  container_id="$(compose ps -q image-verification-worker)"
+  if [[ -z "$container_id" ]]; then
+    return 0
+  fi
+
+  docker inspect "$container_id" >/dev/null
+  docker update --restart=no "$container_id" >/dev/null
+  VERIFICATION_FENCED_CONTAINER_ID="$container_id"
+  echo "Fenced image verification restart policy: ${container_id}"
+}
+
+restore_image_verification_restart() {
+  if [[ -z "$VERIFICATION_FENCED_CONTAINER_ID" ]]; then
+    return 0
+  fi
+
+  docker inspect "$VERIFICATION_FENCED_CONTAINER_ID" >/dev/null
+  docker update --restart=unless-stopped "$VERIFICATION_FENCED_CONTAINER_ID" >/dev/null
+  echo "Restored image verification restart policy: ${VERIFICATION_FENCED_CONTAINER_ID}"
+  VERIFICATION_FENCED_CONTAINER_ID=""
+}
+
+assert_fenced_image_verification_stopped() {
+  if [[ -z "$VERIFICATION_FENCED_CONTAINER_ID" ]]; then
+    return 0
+  fi
+
+  local status
+  status="$(docker inspect "$VERIFICATION_FENCED_CONTAINER_ID" --format '{{.State.Status}}')"
+  if [[ "$status" == "running" || "$status" == "restarting" ]]; then
+    echo "Image verification worker remained active after fencing: ${VERIFICATION_FENCED_CONTAINER_ID} status=$status" >&2
+    return 1
+  fi
+}
+
+assert_single_image_verification_runtime() {
+  local current_id cmdline_path cmdline cgroup runtime_id existing seen
+  local runtime_ids=()
+  current_id="$(docker inspect tgyunying-image-verification-worker --format '{{.Id}}')"
+
+  for cmdline_path in /proc/[0-9]*/cmdline; do
+    cmdline="$(tr '\0' ' ' < "$cmdline_path" 2>/dev/null || true)"
+    [[ "$cmdline" == *"app.image_verification_worker_app:app"* ]] || continue
+    cgroup="$(cat "${cmdline_path%/cmdline}/cgroup" 2>/dev/null || true)"
+    runtime_id="$(grep -oE 'docker[-/][0-9a-f]{64}' <<< "$cgroup" | head -n 1 | cut -c 8- || true)"
+    if [[ -z "$runtime_id" ]]; then
+      echo "Image verification runtime has no Docker cgroup identity: ${cmdline_path}" >&2
+      return 1
+    fi
+    seen=false
+    for existing in "${runtime_ids[@]}"; do
+      [[ "$existing" == "$runtime_id" ]] && seen=true
+    done
+    [[ "$seen" == true ]] || runtime_ids+=("$runtime_id")
+  done
+
+  if (( ${#runtime_ids[@]} != 1 )) || [[ "${runtime_ids[0]:-}" != "$current_id" ]]; then
+    echo "Image verification runtime inventory mismatch: current=$current_id runtimes=${runtime_ids[*]:-none}" >&2
+    return 1
+  fi
+  echo "Image verification runtime inventory verified: current=$current_id count=1"
 }
 
 prune_static_releases() {
@@ -209,7 +280,12 @@ publish_frontend_static "$TGYUNYING_FRONTEND_IMAGE"
 
 # ===== Stage A: fence business writers — stop old workers, apply migrations, retire heartbeats, stage dispatch contract =====
 echo "==> Fencing old workers before migration and contract-version switch"
+fence_image_verification_restart
+trap restore_image_verification_restart EXIT
 compose stop "${WORKER_SERVICES[@]}"
+assert_fenced_image_verification_stopped
+restore_image_verification_restart
+trap - EXIT
 workers_stopped_before="$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)"
 
 echo "==> Starting backend and applying migrations"
@@ -295,6 +371,7 @@ if verification_remote_enabled; then
   wait_for_container_ready \
     tgyunying-image-verification-worker \
     "${IMAGE_VERIFICATION_WORKER_READY_TIMEOUT_SECONDS:-180}"
+  assert_single_image_verification_runtime
 fi
 
 echo "==> Container status"
