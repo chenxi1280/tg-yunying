@@ -297,6 +297,41 @@ def test_group_style_requires_one_hundred_anonymous_samples():
             build_group_style_evidence(session, 1, (11,))
 
 
+def test_group_style_continues_sampling_after_duplicate_names():
+    with _session() as session:
+        accounts = _seed_login_batch(session, 1)
+        session.add(TgGroup(id=11, tenant_id=1, tg_peer_id="peer-11", title="群11", listener_enabled=True))
+        session.add_all([
+            GroupContextMessage(
+                tenant_id=1,
+                group_id=11,
+                listener_account_id=accounts[0].id,
+                sender_peer_id=f"duplicate-sender-{index}",
+                sender_name="重复昵称",
+                content="测试消息",
+                remote_message_id=f"duplicate-message-{index}",
+            )
+            for index in range(20)
+        ])
+        session.add_all([
+            GroupContextMessage(
+                tenant_id=1,
+                group_id=11,
+                listener_account_id=accounts[0].id,
+                sender_peer_id=f"unique-sender-{index}",
+                sender_name=f"唯一昵称{index}",
+                content="测试消息",
+                remote_message_id=f"unique-message-{index}",
+            )
+            for index in range(99)
+        ])
+        session.commit()
+
+        evidence = build_group_style_evidence(session, 1, (11,))
+
+    assert evidence.summary["sample_count"] == 100
+
+
 def test_style_and_avatar_manifest_stays_stable_when_new_sources_arrive():
     with _session() as session:
         accounts = _seed_login_batch(session, 300)

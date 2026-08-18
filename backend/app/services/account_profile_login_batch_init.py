@@ -229,32 +229,39 @@ def _stable_group_candidates(
     session: Session,
     tenant_id: int,
     group_id: int,
-) -> list[tuple[int, str, str]]:
+) -> list[tuple[int, str, str, str]]:
     seen: set[str] = set()
-    result: list[tuple[int, str, str]] = []
+    result: list[tuple[int, str, str, str]] = []
     for row in _stable_group_rows(session, tenant_id, group_id):
         key = normalize_display_name(row.sender_name)
         identity = str(row.sender_peer_id or key)
         if not key or key == normalize_display_name("真人用户") or identity in seen:
             continue
         seen.add(identity)
-        result.append((group_id, row.sender_name.strip(), key))
+        result.append((group_id, row.sender_name.strip(), key, identity))
     return result
 
 
 def _round_robin_samples(
-    candidates: dict[int, list[tuple[int, str, str]]],
+    candidates: dict[int, list[tuple[int, str, str, str]]],
     count: int,
 ) -> list[tuple[int, str, str]]:
     selected: list[tuple[int, str, str]] = []
+    seen_names: set[str] = set()
+    seen_identities: set[str] = set()
     index = 0
     while len(selected) < count:
         added = False
         for group_id in candidates:
             if index >= len(candidates[group_id]):
                 continue
-            selected.append(candidates[group_id][index])
             added = True
+            candidate_group_id, name, key, identity = candidates[group_id][index]
+            if key in seen_names or identity in seen_identities:
+                continue
+            selected.append((candidate_group_id, name, key))
+            seen_names.add(key)
+            seen_identities.add(identity)
             if len(selected) == count:
                 return selected
         if not added:
