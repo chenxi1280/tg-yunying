@@ -5,7 +5,7 @@ from datetime import datetime
 import hashlib
 from uuid import uuid4
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session, aliased
@@ -110,6 +110,10 @@ def _lock_reusable_owner_admission(
             safe_attempt,
         )
         .order_by(
+            case(
+                (SourcePacingAdmission.action_id == action.id, 0),
+                else_=1,
+            ),
             SourcePacingAdmission.call_not_before_at.asc(),
             SourcePacingAdmission.created_at.asc(),
             SourcePacingAdmission.id.asc(),

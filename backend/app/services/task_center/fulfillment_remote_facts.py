@@ -14,6 +14,8 @@ from app.models import (
     FulfillmentObligationProjection,
     FulfillmentRemoteFact,
     GatewayRequestEvidenceJournal,
+    Task,
+    TaskGroupDailyMessageSlot,
 )
 from app.services._common import _now
 from .fact_first_insert import insert_do_nothing as _insert_do_nothing
@@ -39,8 +41,9 @@ def ensure_action_obligation(session: Session, action: Action) -> bool:
         )
         return False
     _bind_action_identity(action, obligation_type, obligation_id)
-    _insert_obligation_projection(session, action)
+    ledger_id = _insert_obligation_projection(session, action)
     projection = _obligation_projection(session, obligation_type, obligation_id)
+    _bind_projection_ledger(projection, ledger_id)
     if projection.state != "open":
         _skip_obligation_action(
             action,
@@ -87,11 +90,15 @@ def _bind_action_identity(
     action.execution_lane = _execution_lane(action)
 
 
-def _insert_obligation_projection(session: Session, action: Action) -> None:
+def _insert_obligation_projection(
+    session: Session,
+    action: Action,
+) -> str | None:
+    ledger_id = _task_day_ledger_id(session, action)
     values = {
         "tenant_id": action.tenant_id,
         "task_id": action.task_id,
-        "task_day_ledger_id": _payload(action).get("task_day_ledger_id"),
+        "task_day_ledger_id": ledger_id,
         "task_lifecycle_epoch": int(action.task_lifecycle_epoch or 1),
         "obligation_type": action.obligation_type,
         "obligation_id": action.obligation_id,
@@ -109,6 +116,7 @@ def _insert_obligation_projection(session: Session, action: Action) -> None:
         values,
         columns=("obligation_type", "obligation_id"),
     )
+    return ledger_id
 
 
 def _obligation_projection(
@@ -168,7 +176,13 @@ def persist_remote_fact(session: Session, action: Action) -> FulfillmentRemoteFa
     attempt = _latest_attempt(session, action.id)
     if attempt is None or not _fact_worthy(action, attempt):
         return None
-    values = _fact_values(action, attempt)
+    values = _fact_values(session, action, attempt)
+    projection = _obligation_projection(
+        session,
+        values["obligation_type"],
+        values["obligation_id"],
+    )
+    _bind_projection_ledger(projection, values["task_day_ledger_id"])
     _insert_do_nothing(
         session,
         FulfillmentRemoteFact,
@@ -219,7 +233,11 @@ def complete_derived_projections(session: Session, fact_id: str) -> None:
     _complete_projection_state(session, fact_id, "task_read_model")
 
 
-def _fact_values(action: Action, attempt: ExecutionAttempt) -> dict:
+def _fact_values(
+    session: Session,
+    action: Action,
+    attempt: ExecutionAttempt,
+) -> dict:
     fact_kind = _fact_kind(action, attempt)
     request_hash = _hash(_request_identity(action, attempt))
     mutation_hash = _hash(_mutation_identity(action))
@@ -228,7 +246,11 @@ def _fact_values(action: Action, attempt: ExecutionAttempt) -> dict:
         "tenant_id": action.tenant_id,
         "task_type": action.task_type,
         "task_id": action.task_id,
-        "task_day_ledger_id": _payload(action).get("task_day_ledger_id"),
+        "task_day_ledger_id": _task_day_ledger_id(
+            session,
+            action,
+            require_current_ai_send=True,
+        ),
         "obligation_type": str(action.obligation_type or _obligation_identity(action)[0]),
         "obligation_id": str(action.obligation_id or _obligation_identity(action)[1]),
         "action_id": action.id,
@@ -429,6 +451,46 @@ def _latest_attempt(session: Session, action_id: str) -> ExecutionAttempt | None
 
 def _payload(action: Action) -> dict:
     return dict(action.payload or {})
+
+
+def _task_day_ledger_id(
+    session: Session,
+    action: Action,
+    *,
+    require_current_ai_send: bool = False,
+) -> str | None:
+    payload_ledger = str(_payload(action).get("task_day_ledger_id") or "")
+    quantity_id = str(action.primary_quantity_slot_id or "")
+    if not quantity_id:
+        task = session.get(Task, action.task_id)
+        current_ai_send = bool(
+            task
+            and task.fulfillment_contract_version == "fact_first_v3"
+            and action.task_type == "group_ai_chat"
+            and action.action_type == "send_message"
+        )
+        if require_current_ai_send and current_ai_send and not payload_ledger:
+            raise ValueError("fulfillment_ai_ledger_missing")
+        return payload_ledger or None
+    quantity = session.get(TaskGroupDailyMessageSlot, quantity_id)
+    if quantity is None or not quantity.task_day_ledger_id:
+        raise ValueError("fulfillment_quantity_ledger_missing")
+    owner_ledger = str(quantity.task_day_ledger_id)
+    if payload_ledger and payload_ledger != owner_ledger:
+        raise ValueError("fulfillment_ledger_identity_conflict")
+    return payload_ledger or owner_ledger
+
+
+def _bind_projection_ledger(
+    projection: FulfillmentObligationProjection,
+    ledger_id: str | None,
+) -> None:
+    if not ledger_id:
+        return
+    current = str(projection.task_day_ledger_id or "")
+    if current and current != ledger_id:
+        raise ValueError("fulfillment_projection_ledger_conflict")
+    projection.task_day_ledger_id = ledger_id
 
 
 def _hash(value: str) -> str:

@@ -12,6 +12,7 @@ from app.models import (
     ExecutionAttempt,
     OperationTarget,
     SourcePacingAdmission,
+    SourcePacingState,
     Task,
     TaskDayLedger,
     TaskGroupDailyMessageSlot,
@@ -115,6 +116,36 @@ def test_overdue_reservations_still_apply_actual_source_gap(
     assert second_admission.call_not_before_at == expected
 
 
+@pytest.mark.no_postgres
+def test_replacement_retry_stays_pinned_to_first_owner_admission(
+    session: Session,
+) -> None:
+    original, duplicate, state = _seed_duplicate_owner_admissions(session)
+    original.status = "failed"
+    duplicate.status = "failed"
+    replacement = _action("pinned-replacement", original.task_id, original.primary_quantity_slot_id, NOW)
+    session.add(replacement)
+    session.flush()
+
+    first_attempt = _attempt(replacement, 1, NOW + timedelta(seconds=1))
+    session.add(first_attempt)
+    session.flush()
+    assert not admit_source_paced_attempt(session, replacement, first_attempt, now_value=first_attempt.before_call_at)
+    pinned = session.scalar(select(SourcePacingAdmission).where(
+        SourcePacingAdmission.action_id == replacement.id,
+    ))
+
+    retry = _attempt(replacement, 2, NOW + timedelta(seconds=2))
+    session.add(retry)
+    session.flush()
+    assert not admit_source_paced_attempt(session, replacement, retry, now_value=retry.before_call_at)
+    assert pinned.attempt_id == retry.id
+    assert session.scalar(select(func.count(SourcePacingAdmission.id)).where(
+        SourcePacingAdmission.action_id == replacement.id,
+    )) == 1
+    assert state.last_call_started_at == NOW
+
+
 def test_postgres_owner_reuse_executes_with_targeted_row_lock() -> None:
     from app.database import SessionLocal
 
@@ -181,6 +212,43 @@ def _add_paced_action(
     session.add(attempt)
     session.flush()
     return action, attempt
+
+
+def _seed_duplicate_owner_admissions(
+    session: Session,
+) -> tuple[Action, Action, SourcePacingState]:
+    original, original_attempt = _add_paced_action(
+        session,
+        "pin-task",
+        "pin-slot",
+        "pin-original",
+    )
+    assert not admit_source_paced_attempt(
+        session,
+        original,
+        original_attempt,
+        now_value=original_attempt.before_call_at,
+    )
+    original.status = "success"
+    duplicate = _action("pin-duplicate", original.task_id, original.primary_quantity_slot_id, NOW)
+    session.add(duplicate)
+    session.flush()
+    attempt = _attempt(duplicate, 1, NOW - timedelta(seconds=1))
+    session.add(attempt)
+    session.flush()
+    assert not admit_source_paced_attempt(session, duplicate, attempt, now_value=attempt.before_call_at)
+    admissions = list(session.scalars(select(SourcePacingAdmission).order_by(
+        SourcePacingAdmission.created_at,
+        SourcePacingAdmission.id,
+    )))
+    assert len(admissions) == 2
+    admissions[1].call_not_before_at = NOW + timedelta(seconds=1)
+    state = session.get(SourcePacingState, admissions[0].source_pacing_state_id)
+    assert state is not None
+    state.last_call_started_at = NOW
+    state.last_source_gap_seconds = SOURCE_GAP_SECONDS
+    session.flush()
+    return original, duplicate, state
 
 
 def _owner_entities(
