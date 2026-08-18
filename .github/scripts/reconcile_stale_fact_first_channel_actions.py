@@ -26,10 +26,16 @@ from app.services.task_center.direct_action_claims import (
     settle_fact_first_action_before_gateway,
 )
 from app.services.task_center.fulfillment_activation import CURRENT_CONTRACT_VERSION
+from app.services.task_center.stale_fact_first_reconciliation import (
+    STALE_REASON_CODE,
+    StaleFactFirstScope,
+    count_stale_scope,
+    stale_scope_predicates,
+)
 
 
 CONTRACT = "stale_fact_first_channel_reconcile_v1"
-REASON_CODE = "stale_channel_daily_action"
+REASON_CODE = STALE_REASON_CODE
 DEFAULT_BATCH_SIZE = 100
 MAX_BATCH_SIZE = 200
 
@@ -263,42 +269,15 @@ def _source_admission_snapshots(
 
 
 def _scope_counts(session, options: ReconcileOptions) -> dict[str, int]:
-    stale = _stale_scope(options)
-    fact_exists = _fact_exists()
-    gateway_exists = _gateway_exists()
-    owner_safe = _owner_safe_exists()
-    reservation_safe = _reservation_safe_exists()
-    row = session.execute(select(
-        func.count(Action.id),
-        func.count(Action.id).filter(fact_exists),
-        func.count(Action.id).filter(gateway_exists),
-        func.count(Action.id).filter(~fact_exists, ~gateway_exists),
-        func.count(Action.id).filter(
-            ~fact_exists,
-            ~gateway_exists,
-            or_(~owner_safe, ~reservation_safe),
-        ),
-    ).select_from(Action).join(Task, Task.id == Action.task_id).where(*stale)).one()
-    return {
-        "stale_count": int(row[0]),
-        "existing_fact_count": int(row[1]),
-        "gateway_started_count": int(row[2]),
-        "no_fact_no_gateway_count": int(row[3]),
-        "blocked_no_fact_no_gateway_count": int(row[4]),
-    }
+    return count_stale_scope(session, _scope_config(options))
 
 
 def _stale_scope(options: ReconcileOptions) -> tuple:
-    return (
-        Action.task_id.in_(options.task_ids),
-        Action.task_type == "channel_view",
-        Action.action_type == "view_message",
-        Action.status == "skipped",
-        Action.result["error_code"].as_string() == REASON_CODE,
-        Action.payload["execution_date"].as_string()
-        == options.execution_date.isoformat(),
-        Task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION,
-    )
+    return stale_scope_predicates(_scope_config(options))
+
+
+def _scope_config(options: ReconcileOptions) -> StaleFactFirstScope:
+    return StaleFactFirstScope(options.task_ids, options.execution_date)
 
 
 def _fact_exists():
@@ -311,25 +290,6 @@ def _gateway_exists():
     return select(ExecutionAttempt.id).where(
         ExecutionAttempt.action_id == Action.id,
         ExecutionAttempt.gateway_call_started_at.is_not(None),
-    ).exists()
-
-
-def _owner_safe_exists():
-    return select(ViewFulfillmentObligation.id).where(
-        ViewFulfillmentObligation.id
-        == Action.payload["view_fulfillment_obligation_id"].as_string(),
-        ViewFulfillmentObligation.status != "confirmed",
-        or_(
-            ViewFulfillmentObligation.current_action_id.is_(None),
-            ViewFulfillmentObligation.current_action_id == Action.id,
-        ),
-    ).exists()
-
-
-def _reservation_safe_exists():
-    return select(AccountPacingReservation.id).where(
-        AccountPacingReservation.action_id == Action.id,
-        AccountPacingReservation.state.in_(("reserved", "bound")),
     ).exists()
 
 

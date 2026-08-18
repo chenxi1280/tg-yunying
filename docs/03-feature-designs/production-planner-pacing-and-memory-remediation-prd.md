@@ -6,10 +6,10 @@
 | --- | --- |
 | Intake ID | intake-2026-08-17-planner-pacing-memory-001 |
 | 分级 | L3 / P0 资源风险 + P0 来源突发 + P1 拟人节奏，必须走标准生产事故流与 Release Gate |
-| 设计状态 | product_design_complete / dev_handoff_ready=true / resynced_2026-08-19-16 |
-| 实现状态 | `ca01040c` 已发布；RC-P9 聚合来源容量和 RC-P10 future deadline-exhausted direct claim 已在生产生效。午夜读回又暴露 RC-P11：legacy stale-day sweep 在 direct fact-first claim 之前批量把旧日浏览 Action 标为 skipped，绕过 typed fact、reservation/admission 和 owner 同事务收口 |
-| 生产状态 | partial：新 SHA/migration/index/health 与 RC-P10 的少量 `pacing_claim_deadline_exceeded -> safely_not_executed` 已通过，但 8 月 19 日 00:00 legacy sweep 将数千条旧日 Action 写成 `stale_channel_daily_action`；Action 数归零不能替代 typed fact 与 owner readback，production_fixed=false |
-| 当前生产基线 | 2026-08-19 00:02 北京时间；release `ca01040c`、migration 0154、两个新索引和关键容器 healthy；MemAvailable 约 2.01 GiB、Planner PSS p95 约 217 MiB、当前 swap-in/out=0，但 SwapUsed 约 666 MiB。两个目标 Task 已观察 68 条 deadline safe settlement 中至少 26 条新 typed fact；同期数千条 stale skipped 未取得等量 typed fact，进入 RC-P11 |
+| 设计状态 | product_design_complete / dev_handoff_ready=true / resynced_2026-08-19-17 |
+| 实现状态 | `94b6b4a0` 已发布，RC-P11 已在 legacy 批量 SQL 与单行 claim 两处排除 current contract；恢复工具第一次生产 preview 又暴露 RC-P12：scope 计数把同一 Action 上的 fact/Gateway/owner/reservation 相关子查询重复展开，单 Task 超过 60 秒、残留查询累计 280 秒。已取消精确只读 backend PID 并改为集合 CTE 聚合，待下一 Release Gate |
+| 生产状态 | partial：新 SHA、全量 CI、release、关键 worker health 已通过，发布后的 current Action 不再进入 legacy stale sweep；8 月 18 日误终结集合尚未 apply，typed fact 与 owner/reservation/admission 仍未闭环，production_fixed=false |
+| 当前生产基线 | 2026-08-19 00:47 北京时间；release `94b6b4a0`、migration 0154、关键容器 healthy；发布前 MemAvailable 约 1.96 GiB、SwapUsed 约 668 MiB。第一次联合和单 Task preview 均因 RC-P12 主动中止，两个精确 PostgreSQL backend PID 已 `pg_cancel_backend=true`，未发生生产数据写入 |
 | 权威关系 | 本文规范性取代生产稳定性 PRD 中 Planner 资源和旧 AI fail-open gate 口径，并补正拟人节奏 PRD 的跨批恢复；不改变各任务 stable owner、typed remote fact、unknown 与数量结算合同 |
 | 操作边界 | 用户已授权实现、发布与生产验证；精确 stats cleanup 仍须独立 preview/hash/apply/readback，禁止把发布授权扩张为批量重试或未知外发 |
 
@@ -114,6 +114,7 @@ Planner 容器也实际建立 Telegram TCP 并持续记录 Telethon update。结
 | RC-P9 | 浏览 owner 的 `pacing_plan_total` 是单消息目标，但最终 `SourcePacingState` 是整频道共享；直接用单消息 total 计算共享 gap，使 21 条消息的并行计划被错误串成一条 87 秒时间线 | 浏览 Gateway gap 使用同一 TaskDayLedger 全部 active message target 的冻结 `due_count` 聚合总量；单消息 quantity owner、release、fact 和 plan hash 不变，聚合只用于共享来源最终闸门 |
 | RC-P10 | 来源 defer 可把 `Action.release_not_before_at/scheduled_at` 推到 owner deadline 以后；普通 due-claim 只扫描 `scheduled_at <= now`，导致确定不可能执行的 pre-Gateway Action 在未来数日占用 current obligation 和 source cursor | defer 计算超过 deadline 时最多排到 deadline；direct claim 额外扫描“release 已越过 account reservation source deadline”的有界候选，立即写 `safely_not_executed`、missed reservation、cancelled pre-Gateway admission，并按剩余 reserved admission 与真实 last marker 重算 source next cursor |
 | RC-P11 | Dispatcher 每次 claim 先对所有昨日 `view_message` 执行 legacy stale sweep；该步骤早于 fact-first direct claim，午夜会把跨截止期 Action 批量写为 `stale_channel_daily_action/skipped`，却不建立 no-Gateway Attempt/typed fact、不释放 owner，也不取消账号/source reservation | legacy stale sweep 必须在 SQL 与单行确认两处排除 `fact_first_v3`；current contract 只走 RC-P10 的事务化 safe settlement。已被错误终结的精确集合使用 deployed SHA + task/date + no-fact + no-Gateway + action/version/owner/reservation/admission hash 做 preview/apply，分批锁行后补 `safely_not_executed`、missed/cancelled、owner release、source cursor 重算与 AuditLog；已有 Gateway/unknown/fact 一律排除 |
+| RC-P12 | 历史修复 scope 把 fact/Gateway/owner/reservation 的相关 `EXISTS` 在 5 个聚合列中重复展开；生产单 Task preview 超过 60 秒，断开 SSH 后数据库查询仍继续到 280 秒 | 先以 Task/date/current contract 构造 `stale_actions` CTE，再把 fact、Gateway、safe owner、safe reservation 各自按 action_id 去重成集合 CTE，一次 outer join 聚合 5 个计数；生成 SQL 禁止相关 `EXISTS`，preview 仍须输出与候选 manifest 相同的 blocked 语义 |
 | RC-E1 | AI projection/fact 只读 payload ledger，但 AI quantity 合同把 ledger 固化在 primary quantity owner | payload ledger 缺失时按 `Action.primary_quantity_slot_id -> TaskGroupDailyMessageSlot.task_day_ledger_id` 解析并持久化 |
 | RC-E2 | 多 AI generation worker 同时为同一 obligation 绑定 replacement Action，CAS loser 把 winner 已提交的新 projection version 误报为业务身份冲突并中断整轮 drain | CAS 失败后重新读取权威 projection；winner 为当前 Action 则幂等成功，winner 为另一 open Action 则当前 Action 显式 `duplicate_open_obligation` 终结，projection 已关闭则显式 `obligation_not_open`；只有无法解释的身份/状态才继续抛 conflict |
 | RC-M1 | 旧 backlog 缺 source/period/lifecycle/plan 分类 | preview manifest + 分 Task 激活 |
@@ -426,6 +427,7 @@ T2 按 Task/source 灰度，不要求暂停的 comment/like 为 AI/view 让路�
 20. 多消息浏览来源容量回归：同一 ledger 至少 3 条 active message target，单消息 plan total 不同；每条 owner 的 quantity 身份不变，admission 的共享 source gap 只能由 `sum(due_count)` 计算。聚合总量 15877/日时不能继续得到单消息 87 秒 gap；相邻真实 Gateway 仍不得小于冻结聚合 gap。
 21. 跨日 pre-Gateway 收敛：Action 的 release/scheduled 已被历史 source cursor 推到 ledger deadline 以后时，即使 `scheduled_at > now` 也必须进入有界 direct claim；Gateway marker 保持 null，Action/账号 reservation/source admission/obligation/fact/source next cursor 一次事务读回一致。非过期 future Action 不得被提前 claim。
 22. 午夜 stale sweep 竞争：同批放入 legacy 浏览与 `fact_first_v3` 浏览昨日 Action。sweep 只跳过 legacy 行；current 行必须由 direct claim 写 `safely_not_executed`，并读回 fact、missed account reservation、cancelled source admission、open owner 与重算 source next。历史 repair 的 preview/hash 漂移、已有 Gateway/unknown/fact、owner confirmed 或缺 reservation 均 fail closed；重复 preview 为零待修复，apply 对零候选显式拒绝。
+23. 历史 scope 性能回归：PostgreSQL 编译 SQL 必须以 stale/fact/Gateway/owner/reservation 集合 CTE 聚合且不含相关 `EXISTS`；生产等价单 Task preview 必须在 5 秒目标内完成，联合 preview 必须在 30 秒目标内完成，超时不能遗留活动数据库查询。
 
 ### 10.2 性能与资源
 

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine, select
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Session
 
 from app.database import Base
@@ -22,6 +23,10 @@ from app.models import (
     Tenant,
     TgAccount,
     ViewFulfillmentObligation,
+)
+from app.services.task_center.stale_fact_first_reconciliation import (
+    StaleFactFirstScope,
+    build_stale_scope_statement,
 )
 
 
@@ -112,6 +117,19 @@ def test_apply_chunk_writes_safe_fact_and_releases_owner(session: Session) -> No
     assert owner.status == "open" and owner.current_action_id is None
     assert reservation.state == "missed"
     assert audit is not None and options.approval_ref in audit.detail
+
+
+def test_scope_statement_avoids_repeated_correlated_exists() -> None:
+    compiled = str(
+        build_stale_scope_statement(
+            StaleFactFirstScope(("stale-view-task",), EXECUTION_DATE)
+        ).compile(
+            dialect=postgresql.dialect(),
+        )
+    )
+
+    assert "WITH stale_actions AS" in compiled
+    assert "EXISTS" not in compiled
 
 
 def _options(script):
