@@ -11,6 +11,7 @@ from app.database import Base
 from app.models import (
     AccountPool,
     AccountStatus,
+    AuditLog,
     GroupContextMessage,
     Material,
     Tenant,
@@ -52,6 +53,7 @@ def _seed_login_batch(
     failed_count: int = 0,
     unresolved_count: int = 0,
     status: str = "completed",
+    created_count: int | None = None,
 ) -> list[TgAccount]:
     accounts = [
         TgAccount(
@@ -76,7 +78,11 @@ def _seed_login_batch(
     )
     session.add(batch)
     session.flush()
-    session.add_all([_login_item(batch_id, account.id, line_no) for line_no, account in enumerate(accounts, 1)])
+    success_items = [_login_item(batch_id, account.id, line_no) for line_no, account in enumerate(accounts, 1)]
+    session.add_all(success_items)
+    session.flush()
+    audited_count = count if created_count is None else created_count
+    session.add_all(_creation_audit(item) for item in success_items[:audited_count])
     session.add_all(
         _login_item(batch_id, None, count + offset, status="failed")
         for offset in range(1, failed_count + 1)
@@ -113,6 +119,17 @@ def _login_batch(
         reason="测试批次",
         trace_id=f"trace-{batch_id}",
         finished_at=datetime(2026, 8, 18, 12, 0),
+    )
+
+
+def _creation_audit(item: TgAccountLoginBatchItem) -> AuditLog:
+    return AuditLog(
+        tenant_id=1,
+        actor="tester",
+        action="批量登录创建TG账号",
+        target_type="tg_account",
+        target_id=str(item.account_id),
+        detail=f"batch_item_id={item.id}",
     )
 
 
@@ -265,11 +282,12 @@ def test_discovers_unique_terminal_batch_set_with_three_hundred_success_accounts
         first = _seed_login_batch(session, 200, batch_id=91, failed_count=1)
         _seed_login_batch(
             session,
-            100,
+            104,
             batch_id=92,
             start_id=201,
             unresolved_count=1,
             status="completed_with_unresolved",
+            created_count=100,
         )
         _seed_style_and_avatars(session, first[0].id)
         spec = LoginBatchInitializationSpec(
@@ -286,3 +304,4 @@ def test_discovers_unique_terminal_batch_set_with_three_hundred_success_accounts
     assert manifest["login_batch_ids"] == [91, 92]
     assert len(manifest["targets"]) == 300
     assert {target["login_batch_id"] for target in manifest["targets"]} == {91, 92}
+    assert max(target["account_id"] for target in manifest["targets"]) == 300

@@ -29,6 +29,7 @@ from app.services.account_profile_identity import normalize_display_name
 from app.services.account_profile_login_batch_init import (
     LoginBatchInitializationSpec,
     build_login_batch_initialization_manifest,
+    load_login_batch_targets,
     manifest_sha256,
     target_matches_manifest,
 )
@@ -267,10 +268,7 @@ def _readback_rows(session) -> list[tuple[Any, TgAccountSecurityBatchItem, TgAcc
 
 
 def _assert_readback_target_identity(session, rows) -> None:
-    expected_ids = set(session.scalars(select(TgAccountLoginBatchItem.account_id).where(
-        TgAccountLoginBatchItem.batch_id.in_(LOGIN_BATCH_IDS),
-        TgAccountLoginBatchItem.status.in_(["succeeded", "succeeded_with_warning"]),
-    )))
+    expected_ids = {int(account.id) for account in load_login_batch_targets(session, _spec()).accounts}
     actual_ids = {int(item.account_id) for _, item, _ in rows}
     if actual_ids != expected_ids or len(actual_ids) != EXPECTED_TARGET_COUNT:
         raise RuntimeError("readback target set does not match the approved login batch")

@@ -3,7 +3,7 @@
 - `intake_id`: `intake-2026-08-18-account-profile-group-style-300`
 - `level`: `L2`
 - `design_status`: `complete`
-- `implementation_status`: `implemented_multi_batch_fix_pending_release`
+- `implementation_status`: `implemented_new_account_audit_fix_pending_release`
 - `production_status`: `unproven`
 - `owner_flow`: `product -> dev -> qa -> product -> release -> prod-diagnosis`
 - `supersedes`: 仅补正 `account-profile-identity-uniqueness-prd.md` 的名字多样性和生产精确初始化入口；名称 claim、头像许可治理和账号用途边界继续沿用原合同。
@@ -50,13 +50,13 @@
 目标必须由一组明确 `login_batch_ids` 冻结；当前批量登录单批最多 200 行，因此 300 个新登录账号允许来自多个终态批次：
 
 1. 每个 `TgAccountLoginBatch.tenant_id` 等于 workflow 输入租户，batch ID 不重复。
-2. 批次状态为 `completed`、`completed_with_unresolved` 或 `cancelled`；只纳入其中 `succeeded/succeeded_with_warning` 的已完成 item，failed/unresolved/skipped 行不进入目标。
+2. 批次状态为 `completed`、`completed_with_unresolved` 或 `cancelled`；只纳入其中 `succeeded/succeeded_with_warning` 且存在同事务 `批量登录创建TG账号 + batch_item_id` 审计的本批新建账号，已有账号重登/已授权成功以及 failed/unresolved/skipped 行不进入目标。
 3. 成功 item 状态只能是 `succeeded` 或 `succeeded_with_warning`。
 4. 每个 item 必须有唯一 `account_id`，账号为 active、有 session、未删除、普通运营用途，pool 与 `account_identity=normal` 一致。
-5. 所选全部批次的成功 item 账号并集不得跨批重复，`expected_target_count` 必须等于并集账号数；本次固定为 300。
+5. 所选全部批次的“本批新建且登录成功”账号并集不得跨批重复，`expected_target_count` 必须等于并集账号数；本次固定为 300。批次 `success_count` 可因已有账号重登成功而大于本次目标数。
 6. manifest 冻结每个 batch 的 `state_version/execution_generation/resolution_version/finished_at` 和每个 item/account 旧状态。
 
-preview 未提供 batch IDs 时，可在最近 7 天最多 20 个终态批次中发现成功账号并集恰好 300 的组合；零个或多个组合时必须输出脱敏候选 batch ID、状态和计数并失败，不得自行选最近账号或扩大到全租户。
+preview 未提供 batch IDs 时，可在最近 7 天最多 20 个终态批次中发现“本批新建且登录成功”账号并集恰好 300 的组合；零个或多个组合时必须输出脱敏候选 batch ID、状态、全部成功数和新建成功数并失败，不得自行从成功账号中删减或扩大到全租户。
 
 ## 4. 功能设计
 
@@ -120,7 +120,7 @@ workflow 校验完整 40 位 release SHA、当前生产 symlink、输入格式�
 canonical manifest 包含：
 
 - `tenant_id/login_batch_ids/expected_target_count/deployed_sha/seed`
-- 每个登录批次的版本、状态、成功/失败/未解计数和完成时间
+- 每个登录批次的版本、状态、成功/失败/未解计数和完成时间；目标 item 另由账号创建审计绑定
 - 匿名群风格摘要与 source fingerprint
 - ready 头像池摘要
 - 每个 target 的 account/item ID、旧展示名/TG 名/头像有无/资料状态、账号用途、账号状态、生成的新名、冻结 avatar source、no-op 原因
@@ -190,7 +190,7 @@ selected TgAccountLoginBatches + succeeded BatchItems
 1. 300/500/1000 个名字唯一、可复现、无 ID/序号尾巴，并满足类别/长度/前后缀集中度。
 2. 来源完整名字即使恰好由模板生成也会排除；manifest 不包含原始 sender name/username/peer ID。
 3. 群越租户、群不存在、样本不足、机器人/默认名只样本明确失败。
-4. login batch 非终态、成功账号并集非 expected、跨批重复账号、item 无 account、用途不一致均零写入；批次中 failed/unresolved/skipped 行不进入目标。
+4. login batch 非终态、新建成功账号并集非 expected、跨批重复账号、创建审计缺失、item 无 account、用途不一致均零写入；已有账号重登/已授权成功及 failed/unresolved/skipped 行不进入目标。
 5. preview 零写入；apply 缺 SHA/ref 或任何版本/旧值漂移零写入。
 6. 同 manifest 重复 apply 幂等；冲突 manifest/open item 明确失败。
 7. 头像分配只用 ready 素材，模拟 least-used 分布满足阈值；不读取群成员头像。

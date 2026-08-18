@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.models import (
     AccountPool,
     AccountStatus,
+    AuditLog,
     TgAccount,
     TgAccountLoginBatch,
     TgAccountLoginBatchItem,
@@ -45,6 +46,7 @@ class LoginBatchCandidate:
     batch: TgAccountLoginBatch
     items: tuple[TgAccountLoginBatchItem, ...]
     account_ids: frozenset[int]
+    success_count: int
 
 
 def load_login_batch_targets(
@@ -120,18 +122,50 @@ def _recent_candidates(
 def _candidate(session: Session, batch: TgAccountLoginBatch) -> LoginBatchCandidate:
     if batch.status not in TERMINAL_LOGIN_BATCH_STATUSES:
         raise RuntimeError(f"login_batch_not_terminal: batch_id={batch.id};status={batch.status}")
-    items = tuple(session.scalars(
+    success_items = tuple(session.scalars(
         select(TgAccountLoginBatchItem).where(
             TgAccountLoginBatchItem.batch_id == batch.id,
             TgAccountLoginBatchItem.status.in_(SUCCESS_LOGIN_ITEM_STATUSES),
         ).order_by(TgAccountLoginBatchItem.line_no.asc())
     ))
-    account_ids = [int(item.account_id) for item in items if item.account_id is not None]
-    if len(account_ids) != len(items) or len(set(account_ids)) != len(account_ids):
+    success_account_ids = [int(item.account_id) for item in success_items if item.account_id is not None]
+    if len(success_account_ids) != len(success_items) or len(set(success_account_ids)) != len(success_account_ids):
         raise RuntimeError(f"login_batch_success_binding_invalid: batch_id={batch.id}")
-    if len(items) != int(batch.success_count):
+    if len(success_items) != int(batch.success_count):
         raise RuntimeError(f"login_batch_success_count_drift: batch_id={batch.id}")
-    return LoginBatchCandidate(batch=batch, items=items, account_ids=frozenset(account_ids))
+    created_item_ids = _created_item_ids(session, batch.tenant_id, success_items)
+    items = tuple(item for item in success_items if int(item.id) in created_item_ids)
+    account_ids = frozenset(int(item.account_id) for item in items if item.account_id is not None)
+    return LoginBatchCandidate(
+        batch=batch,
+        items=items,
+        account_ids=account_ids,
+        success_count=len(success_items),
+    )
+
+
+def _created_item_ids(
+    session: Session,
+    tenant_id: int,
+    items: tuple[TgAccountLoginBatchItem, ...],
+) -> frozenset[int]:
+    expected = {
+        (str(item.account_id), f"batch_item_id={item.id}"): int(item.id)
+        for item in items
+    }
+    if not expected:
+        return frozenset()
+    rows = session.execute(select(AuditLog.target_id, AuditLog.detail).where(
+        AuditLog.tenant_id == tenant_id,
+        AuditLog.action == "批量登录创建TG账号",
+        AuditLog.target_type == "tg_account",
+        AuditLog.target_id.in_({target_id for target_id, _detail in expected}),
+    ))
+    return frozenset(
+        expected[(target_id, detail)]
+        for target_id, detail in rows
+        if (target_id, detail) in expected
+    )
 
 
 def _matching_candidate_sets(
@@ -172,7 +206,8 @@ def _validate_candidate_set(candidates: tuple[LoginBatchCandidate, ...], expecte
 def _candidate_summary(candidate: LoginBatchCandidate) -> str:
     batch = candidate.batch
     return (
-        f"{batch.id}:{batch.status}:total={batch.total_count}:success={len(candidate.items)}:"
+        f"{batch.id}:{batch.status}:total={batch.total_count}:success={candidate.success_count}:"
+        f"new={len(candidate.items)}:"
         f"failed={batch.failed_count}:unresolved={batch.unresolved_count}"
     )
 
