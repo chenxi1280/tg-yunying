@@ -7,9 +7,9 @@
 | Intake ID | intake-2026-08-17-planner-pacing-memory-001 |
 | 分级 | L3 / P0 资源风险 + P0 来源突发 + P1 拟人节奏，必须走标准生产事故流与 Release Gate |
 | 设计状态 | product_design_complete / dev_handoff_ready=true / resynced_2026-08-18 |
-| 实现状态 | production_repair_resync_3 / 5ac00b69 已消除无 live 关系终态恢复扫描；通用自动重试查询的 current AI send 排除已完成定向 QA，等待最终 Release Gate 与生产分层验收 |
-| 生产状态 | partial：5ac00b69 前 30 个样本 PSS p95 188 MiB、CPU p95 23.67%、drain p95 8.4 秒，短窗资源 E3 通过；6/24h 与最终 retry-query 修订仍待证明，production_fixed=unproven |
-| 当前生产基线 | 2026-08-18 11:28 北京时间；release 5ac00b69；Planner steady drain 约 0.05～9.1 秒，启动首轮 48.3 秒 |
+| 实现状态 | production_repair_resync_4 / 2b0790ad 已在 SQL 层排除 current AI send 自动重试；own-history 已将逐候选相关 `NOT EXISTS` 改为一次 used-target 去重投影与 anti-join，完成定向 QA，等待最终 Release Gate 与生产分层验收 |
+| 生产状态 | partial：2b0790ad 两小时窗口 PSS p95 209 MiB、CPU p95 21%、均通过；drain p95 35.4 秒未达 30 秒，慢查询读回定位到 own-history used-target 相关扫描。6/24h 与 anti-join 修订仍待证明，production_fixed=unproven |
+| 当前生产基线 | 2026-08-18 13:47 北京时间；release 2b0790ad；Planner warm PSS 约 209 MiB、RestartCount=0，后半段 steady drain 约 28～63 秒 |
 | 权威关系 | 本文规范性取代生产稳定性 PRD 中 Planner 资源和旧 AI fail-open gate 口径，并补正拟人节奏 PRD 的跨批恢复；不改变各任务 stable owner、typed remote fact、unknown 与数量结算合同 |
 | 操作边界 | 用户已授权实现、发布与生产验证；精确 stats cleanup 仍须独立 preview/hash/apply/readback，禁止把发布授权扩张为批量重试或未知外发 |
 
@@ -60,6 +60,8 @@ Planner 短样本没有证明单调增长，所以“泄漏”仍为 unproven。
 - extra-volume 路径每个 Task 先扫描租户完整账号 ORM，再与仅 17～116 个 confirmed coverage 账号求交；current 日覆盖维护还会无界读取全部 ready coverage 后再载入账号，虽然 current contract 后续不会使用该结果。
 - 708d7250 发布后 82 个 Planner 样本显示 PSS p50/p95 为 495/533 MiB、CPU p50/p95 为 58.30%/68.26%、drain p50/p95 为 46.7/78.9 秒。残余首个破损边界是 `_recover_stale_fact_first_actions`：每个 Task 无界加载 3,555～8,597 个 `failed/retryable_failed/skipped` Action，单 Task payload 约 19～52 MiB；六个 Task 真正仍绑定 coverage/variation 的 Action 合计仅 9 个，其余历史孤儿在每轮处理后状态和关系均不再变化，却永久重复进入 ORM。
 - 5ac00b69 发布后的短窗已把 PSS p50/p95 降至 153/188 MiB、CPU p50/p95 降至 1.16%/23.67%、drain p50/p95 降至 55 ms/8.4 秒，且 Telethon/cgroup event 为 0。继续遗漏审计发现通用 `retry_failed_actions` 仍先读取最多 100 个 fact-first `send_message` 失败 Action，再由 Python 对每一行恒定拒绝重试；这些行还能占满 limit，使同 Task 其他可安全重试的非发送 Action 饥饿。
+- 2b0790ad 发布后 383 个资源样本显示 Planner PSS p95 209 MiB、CPU p95 21%，但 265 个 processed drain 的 p95 为 35.4 秒，且 15 分钟 drain p95 从 11.3 秒逐步升至 52.8 秒。`strace` 显示 12 秒内约 2,650 次数据库 send；生产慢查询捕获 own-history Action/Attempt ORM 查询最长约 8.4 秒。根因是 reply pool 在 limit 前对候选 Action 使用相关 `NOT EXISTS` 逐行判断目标是否已被占用，放大数据库往返/扫描。修订为一次性投影当前 tenant/group/状态下 distinct used target，再以 anti-join 在 limit 前排除；生产代表性 `EXPLAIN ANALYZE` 从观测慢查询的秒级放大降为约 0.44 秒，且保留“先排除已用目标、再取候选”的无饥饿语义。
+- 当前宿主的另一独立内存 owner 是图片核验 worker：同时预热 RapidOCR/ddddOCR 后空闲 RSS 约 416 MiB，近三小时两次重启均为退出码 0、OOMKilled=false 的优雅换代；该 worker 按 640 MiB soft RSS 或 100 个完成请求回收。它解释聚合宿主压力，但不解释 Planner drain 慢查询，不能用其换代结果代替 Planner 修复验收。
 
 首个资源破损边界是 Planner 的无界读取与 Task 热行写入；宿主总预算是并行平台风险。不能先把结论写成单一内存泄漏。
 
@@ -367,7 +369,7 @@ T2 按 Task/source 灰度，不要求暂停的 comment/like 为 AI/view 让路�
 
 ### 10.1 正确性与并发
 
-1. 1,210 scope、20k Action/Task、6 AI Task fixture：gate 只返回 count/revision，候选 ORM ≤20；current steady-state 无 live 恢复关系时历史 Action ORM=0，有 live coverage/variation 关系的终态恢复 ORM≤20，legacy maintenance 只加载数据库谓词真实命中的有界批次且每轮≤100。
+1. 1,210 scope、20k Action/Task、6 AI Task fixture：gate 只返回 count/revision，候选 ORM ≤20；current steady-state 无 live 恢复关系时历史 Action ORM=0，有 live coverage/variation 关系的终态恢复 ORM≤20，legacy maintenance 只加载数据库谓词真实命中的有界批次且每轮≤100；reply used-target 必须以一次 distinct 投影 + anti-join 在 limit 前排除，禁止恢复逐候选相关 `NOT EXISTS`。
 2. 候选公平性：连续有界轮转后 1,210 个同优先级 item 均被访问；新高优先级可抢占，但低优先级有 starvation 观测和上界。
 3. 1,534 个旧 quality blockers，其中仅 3 个 active：投影为 3，旧 map cleanup 后 summary ≤2 KiB，源事实 hash 不变。
 4. 13 类 wake writer 覆盖规划中事件、旧 epoch、重复事件、回滚、暂停恢复和 mixed-version；无丢 wake、无热循环、v2 后无直接 next_run_at 写。

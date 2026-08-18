@@ -92,17 +92,70 @@ def test_own_history_query_is_correlated_to_the_task_actions() -> None:
         )
         result_rows = [(row.id, remote_id) for row, remote_id in rows]
 
-    query = next(
+    history_queries = [
         statement
         for statement in statements
         if statement.lstrip().upper().startswith("SELECT") and "execution_attempts" in statement
-    )
+    ]
+    query = history_queries[0]
+    unused_query = history_queries[-1]
     assert result_rows == [("history-action", "9002")]
     assert unused_rows == []
     assert "GROUP BY execution_attempts.action_id" not in query
     assert "FROM execution_attempts JOIN" in query
     assert "action_id = actions.id" in query
     assert "row_number() OVER" in query
+    assert "LEFT OUTER JOIN" in unused_query
+    assert "SELECT DISTINCT" in unused_query
+    assert "NOT (EXISTS" not in unused_query
+
+
+def test_used_recent_targets_do_not_starve_later_candidate() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        for ordinal in range(21):
+            remote_id = str(8_000 + ordinal)
+            session.add(Action(
+                id=f"history-{ordinal}",
+                tenant_id=1,
+                task_id="history-task",
+                task_type="group_ai_chat",
+                action_type="send_message",
+                status="success",
+                executed_at=NOW - timedelta(minutes=ordinal),
+                payload={"group_id": 7, "message_text": f"历史消息 {ordinal}"},
+            ))
+            session.add(ExecutionAttempt(
+                action_id=f"history-{ordinal}",
+                attempt_no=1,
+                status="success",
+                remote_message_id=remote_id,
+            ))
+            if ordinal < 20:
+                session.add(Action(
+                    id=f"pending-{ordinal}",
+                    tenant_id=1,
+                    task_id="other-task",
+                    task_type="group_ai_chat",
+                    action_type="send_message",
+                    status="pending",
+                    payload={"group_id": 7, "reply_to_message_id": int(remote_id)},
+                ))
+        session.commit()
+
+        rows = successful_own_history_reply_facts(
+            session,
+            tenant_id=1,
+            task_id="history-task",
+            group_id=7,
+            exclude_used_statuses=("pending",),
+            limit=1,
+        )
+
+    assert [(action.id, remote_id) for action, remote_id in rows] == [
+        ("history-20", "8020"),
+    ]
 
 
 def test_own_history_query_excludes_targets_older_than_window() -> None:

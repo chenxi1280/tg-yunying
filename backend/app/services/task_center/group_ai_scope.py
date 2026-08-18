@@ -216,13 +216,12 @@ def successful_own_history_reply_facts(
         else _candidate_own_history_statement(filters, limit=limit)
     )
     if exclude_used_statuses:
-        remote_id = statement.selected_columns.remote_message_id
-        statement = statement.where(_unused_reply_target_filter(
+        statement = _exclude_used_reply_target_statement(
+            statement,
             tenant_id=tenant_id,
             group_id=group_id,
             statuses=exclude_used_statuses,
-            remote_message_id=remote_id,
-        ))
+        )
     rows = session.execute(statement.limit(max(1, int(limit))))
     return [(action, str(remote_id)) for action, remote_id in rows]
 
@@ -347,23 +346,35 @@ def _own_history_action_filters(
     return filters
 
 
-def _unused_reply_target_filter(
+def _exclude_used_reply_target_statement(
+    statement,
     *,
     tenant_id: int,
     group_id: int,
     statuses: tuple[str, ...],
-    remote_message_id,
 ):
     used_action = aliased(Action)
-    return ~exists(select(used_action.id).where(
-        used_action.tenant_id == tenant_id,
-        used_action.task_type == "group_ai_chat",
-        used_action.action_type == "send_message",
-        used_action.status.in_(statuses),
-        used_action.payload["group_id"].as_integer() == group_id,
-        cast(used_action.payload["reply_to_message_id"].as_integer(), String)
-        == remote_message_id,
-    ))
+    used_remote_id = cast(
+        used_action.payload["reply_to_message_id"].as_integer(),
+        String,
+    ).label("used_remote_message_id")
+    used_targets = (
+        select(used_remote_id)
+        .where(
+            used_action.tenant_id == tenant_id,
+            used_action.task_type == "group_ai_chat",
+            used_action.action_type == "send_message",
+            used_action.status.in_(statuses),
+            used_action.payload["group_id"].as_integer() == group_id,
+        )
+        .distinct()
+        .subquery()
+    )
+    remote_id = statement.selected_columns.remote_message_id
+    return statement.outerjoin(
+        used_targets,
+        used_targets.c.used_remote_message_id == remote_id,
+    ).where(used_targets.c.used_remote_message_id.is_(None))
 
 
 def _memory_violation(
