@@ -7,13 +7,13 @@
 | Intake ID | intake-2026-08-17-planner-pacing-memory-001 |
 | 分级 | L3 / P0 资源风险 + P0 来源突发 + P1 拟人节奏，必须走标准生产事故流与 Release Gate |
 | 设计状态 | product_design_complete / dev_handoff_ready=true / resynced_2026-08-18 |
-| 实现状态 | production_repair_resync_6 / 8c8178be recognizer-only 已发布并取得 Planner/OCR 短窗 E3；生产遗漏审计发现 scope takeover 未失效旧消息预留，修订已完成本地 QA，等待第三次 Release Gate |
-| 生产状态 | partial：8c8178be Planner 64 样本 PSS p95 190 MiB、CPU p95 28.74%、processed drain p95 22.7 秒；OCR 20 请求后 PSS 约 228 MiB且 12 个真实 challenge 双源 accepted。共享宿主 warm MemAvailable 约 1.27 GiB，AI 首批自然 due 被遗留消息预留触发的 duplicate/check-in scope blocker 阻断，production_fixed=unproven |
-| 当前生产基线 | 2026-08-18 16:20 北京时间；release 8c8178be；Planner/OCR restart=0、OOM=false；旧 scope takeover Action 仍关联 21 条 active `AiGroupMessageMemory` 预留 |
+| 实现状态 | production_repair_resync_7 / 977a1642 已发布：Planner 有界扫描、跨批来源排期、Gateway 前来源准入、RapidOCR recognizer-only，以及 scope takeover 同事务失效旧消息预留均已落地；关联 QA 与 Release Gate 通过 |
+| 生产状态 | partial：977a1642 Planner 55 样本 PSS p95 187 MiB、CPU p95 27.82%、9 个 processed 样本 drain p95 23.6 秒；OCR PSS 约 227 MiB，restart=0、OOM=false。AI/view 分别观测 362/39 次 `pacing_source_not_before`，0 early Gateway；旧预留精确修复 21 条后 active orphan=0、`check_in_scope_occupied` 未复发。共享宿主 MemAvailable 约 1.39 GiB，且请求范围内仍无自然 Gateway/typed remote fact，production_fixed=unproven |
+| 当前生产基线 | 2026-08-18 16:49 北京时间；release 977a1642；backend/Planner/OCR 精确 SHA、health、migration、restart/OOM 读回通过；生产精确修复 reference=`prod-planner-pacing-memory-20260818` |
 | 权威关系 | 本文规范性取代生产稳定性 PRD 中 Planner 资源和旧 AI fail-open gate 口径，并补正拟人节奏 PRD 的跨批恢复；不改变各任务 stable owner、typed remote fact、unknown 与数量结算合同 |
 | 操作边界 | 用户已授权实现、发布与生产验证；精确 stats cleanup 仍须独立 preview/hash/apply/readback，禁止把发布授权扩张为批量重试或未知外发 |
 
-“拟人化排期仍有明显拥挤”精确定义为：业务 due 已分散，但 overdue 技术批次会在 now 附近重复起算 release；同时现有最终闸门只覆盖 AI，且数据库异常可 fail-open，导致多个账号的真实 Gateway 调用仍在少数分钟或同秒重叠。它不等于“任务全部瞬间完成”。当前只能证明密度仍高，不能把 Action.executed_at 当成 Telegram 完成事实。
+“拟人化排期仍有明显拥挤”精确定义为：修复前业务 due 虽已分散，但 overdue 技术批次会在 now 附近重复起算 release，且最终闸门覆盖不全或异常时 fail-open，导致真实 Gateway 调用可能集中在少数分钟或同秒。它不等于“任务全部瞬间完成”。977a1642 后已证明 AI/view 的 release gap 无冲突、自然 due 在 Gateway 前按来源 gap 继续让路且 early call=0；Telegram 完成仍只认 typed remote fact，不能用 Action.executed_at 代替。
 
 ## 1. 原始需求、范围与成功条件
 
@@ -63,7 +63,8 @@ Planner 短样本没有证明单调增长，所以“泄漏”仍为 unproven。
 - 2b0790ad 发布后 383 个资源样本显示 Planner PSS p95 209 MiB、CPU p95 21%，但 265 个 processed drain 的 p95 为 35.4 秒，且 15 分钟 drain p95 从 11.3 秒逐步升至 52.8 秒。`strace` 显示 12 秒内约 2,650 次数据库 send；生产慢查询捕获 own-history Action/Attempt ORM 查询最长约 8.4 秒。根因是 reply pool 在 limit 前对候选 Action 使用相关 `NOT EXISTS` 逐行判断目标是否已被占用，放大数据库往返/扫描。修订为一次性投影当前 tenant/group/状态下 distinct used target，再以 anti-join 在 limit 前排除；生产代表性 `EXPLAIN ANALYZE` 从观测慢查询的秒级放大降为约 0.44 秒，且保留“先排除已用目标、再取候选”的无饥饿语义。
 - 当前宿主的另一独立内存 owner 是图片核验 worker：同时预热 RapidOCR/ddddOCR 后空闲 RSS 约 416 MiB，近三小时两次重启均为退出码 0、OOMKilled=false 的优雅换代；该 worker 按 640 MiB soft RSS 或 100 个完成请求回收。它解释聚合宿主压力，但不解释 Planner drain 慢查询，不能用其换代结果代替 Planner 修复验收。
 - d75c6bbd 发布后进一步读回：图片 worker 在 10 个请求后空闲 PSS/RSS 约 444/454 MiB，宿主 MemAvailable 约 1.17 GiB。隔离基准证明完整 `RapidOCR()` 为整图验证码额外加载 det/cls/rec 三套模型；改成 recognizer-only 并保留 ddddOCR 后，同镜像合成图 RSS 从约 451 MiB 降至 222 MiB、耗时从 2.04 秒降至 0.30 秒，RapidOCR 输出不变。该修订不改变双源、deadline 或 typed fact，仅移除不参与验证码合同的 det/cls runtime。
-- 8c8178be 发布后 OCR worker 在 20 个请求后 PSS 约 228 MiB、busy=0，当前版本 12 个去重真实 challenge 均为 RapidOCR/ddddOCR accepted 且 local consensus，证明 recognizer-only 语义成立。AI 冻结 release 最小同源 gap 18 秒且 0 planned violation，但自然 due 后连续 0 Gateway；首个后置破损边界不是 pacing，而是 21 条已由 `content_contract_replan_required` 终结的旧 Action 仍保留 active 消息预留，使新 Action 触发 `duplicate_message` / `check_in_scope_occupied`。takeover 终结 Action 时必须在同一事务把其消息预留标为 `expired_before_send`；既有孤儿仅允许经精确 preview/hash/apply/readback 清理。
+- 8c8178be 发布后 OCR worker 在 20 个请求后 PSS 约 228 MiB、busy=0，当前版本 12 个去重真实 challenge 均为 RapidOCR/ddddOCR accepted 且 local consensus，证明 recognizer-only 语义成立。AI 冻结 release 最小同源 gap 18 秒且 0 planned violation，但自然 due 后连续 0 Gateway；首个后置破损边界不是 pacing，而是 21 条已由 `content_contract_replan_required` 终结的旧 Action 仍保留 active 消息预留，使新 Action 触发 `duplicate_message` / `check_in_scope_occupied`。
+- 977a1642 已把 takeover 终结 Action 与其 pre-Gateway 消息预留失效放入同一事务。生产存量按精确谓词 preview 得到 21 条、classification hash `f238c54c52c328c938099e7ce7502067fee666a3324c83946465e8bd99ce3961`；apply 在同一事务锁行并重算 count/hash，仅把这 21 条改为 `expired_before_send`，写入 21 条 AuditLog。独立 readback 为 active orphan=0、repair=21、audit=21，且清理后 `check_in_scope_occupied`=0；后续 `duplicate_message` 均指向已有 success 记忆，属于真实历史去重而不是孤儿占位。
 
 首个资源破损边界是 Planner 的无界读取与 Task 热行写入；宿主总预算是并行平台风险。不能先把结论写成单一内存泄漏。
 
@@ -413,6 +414,21 @@ due
 
 只有资源 E3、四类适用的 pacing E3 和请求范围内的任务 E4 全部通过，才允许 production_fixed。
 
+### 10.4 2026-08-18 最终生产读回
+
+| 验收层 | 证据 | 结论 |
+| --- | --- | --- |
+| 发布与运行 | Deploy Production `32116072791` 成功；current、backend/Planner/OCR 镜像与 `RELEASE_SHA` 均为 977a1642；migration 0153 head；关键容器 healthy、restart=0、OOM=false | pass |
+| Planner 资源短窗 E3 | 55 样本 PSS p95/max=191391/191392 KiB，CPU p95=27.82%，Telethon client 与 cgroup event 最大值均为 0；9 个 processed 样本 drain p95=23595 ms，冷启动 max=35044 ms | pass；6/24 小时斜率仍 unproven |
+| OCR 资源与功能 | OCR 当前 PSS/RSS=232704/243164 KiB；20 请求压力后无 busy/restart/OOM；当前版本 12 个真实 challenge 均取得 RapidOCR/ddddOCR accepted 与 local consensus | pass |
+| 聚合宿主 | MemAvailable=1456452 KiB，低于 1.5 GiB 合同阈值 1572864 KiB；SwapFree=3295032/4194300 KiB，读回窗口无持续 swap-in/out | resource_capacity_degraded |
+| 排期 release E3 | running source admissions：AI 最小同源 gap=18 秒、view=87 秒，planned gap violation 均为 0 | pass |
+| Gateway 前准入 E3 | 977a1642 后 AI/view 分别 362/39 个 Attempt 均为 `skipped_before_gateway/pacing_source_not_before`；early Gateway=0；浏览自然 due 后下一槽按 87 秒推进 | pass：排除短时直接完成 |
+| AI 存量预留修复 | preview/apply/readback 精确修复 21 条旧 active reservation；active orphan=0、AuditLog=21、清理后 `check_in_scope_occupied`=0 | pass |
+| 请求范围任务 E4 | AI/view 自然观察窗均为 0 Gateway、0 typed remote fact；AI 当前候选为真实历史 duplicate，view 继续按冻结排期等待；comment/like 对应任务暂停 | blocked/unproven，不得声明 Telegram 履约完成 |
+
+因此本轮确定性代码、数据修复、短窗资源 E3 和排期 E3 已完成；全宿主容量、最终 SHA 的 6/24 小时曲线及请求范围任务 E4 尚未同时满足，`production_fixed=unproven`。
+
 ## 11. Product Design Complete 自检
 
 | 检查项 | 结论 |
@@ -427,4 +443,4 @@ due
 | 失败/回滚 | stale snapshot、legacy identity、DB/lock、cursor conflict、触限均显式失败 |
 | QA/E4 | 本地、PostgreSQL、性能、6/24h、四类排期和 typed fact 分层完整 |
 
-结论：product_design_complete / implementation_complete_local / PostgreSQL_QA_passed / production_fixed=unproven。发布后仍必须分别取得资源 E3、四类适用排期 E3 与请求范围任务 E4；固定 limit、重启、强制 GC、扩大 swap、缩目标、固定 8 秒 gate、Action success 或健康检查均不能单独作为完成。
+结论：product_design_complete / implementation_deployed_977a1642 / PostgreSQL_QA_passed / short_window_resource_E3_pass / pacing_E3_pass / production_fixed=unproven。全宿主 1.5 GiB 容量门、最终 SHA 的 6/24 小时曲线和请求范围任务 E4 尚未全部通过；固定 limit、重启、强制 GC、扩大 swap、缩目标、固定 8 秒 gate、Action success 或健康检查均不能单独作为完成。
