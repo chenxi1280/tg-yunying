@@ -7,9 +7,9 @@
 | Intake ID | intake-2026-08-17-planner-pacing-memory-001 |
 | 分级 | L3 / P0 资源风险 + P0 来源突发 + P1 拟人节奏，必须走标准生产事故流与 Release Gate |
 | 设计状态 | product_design_complete / dev_handoff_ready=true / resynced_2026-08-18 |
-| 实现状态 | production_repair_resync_2 / 708d7250 首轮发布验证暴露残余历史恢复扫描；关系驱动有界修复已完成定向 QA，等待 Release Gate 与生产分层验收 |
-| 生产状态 | failed：708d7250 已消除上一轮 open Action / 账号池无效维护，但 Planner drain p95 仍为 78.9 秒、PSS p95 约 533 MiB、CPU p95 68.26%；production_fixed=unproven |
-| 当前生产基线 | 2026-08-18 10:57 北京时间；release 708d7250；6 个 current AI Task 每次规划仍重复读取无 live 恢复关系的历史终态 Action |
+| 实现状态 | production_repair_resync_3 / 5ac00b69 已消除无 live 关系终态恢复扫描；通用自动重试查询的 current AI send 排除已完成定向 QA，等待最终 Release Gate 与生产分层验收 |
+| 生产状态 | partial：5ac00b69 前 30 个样本 PSS p95 188 MiB、CPU p95 23.67%、drain p95 8.4 秒，短窗资源 E3 通过；6/24h 与最终 retry-query 修订仍待证明，production_fixed=unproven |
+| 当前生产基线 | 2026-08-18 11:28 北京时间；release 5ac00b69；Planner steady drain 约 0.05～9.1 秒，启动首轮 48.3 秒 |
 | 权威关系 | 本文规范性取代生产稳定性 PRD 中 Planner 资源和旧 AI fail-open gate 口径，并补正拟人节奏 PRD 的跨批恢复；不改变各任务 stable owner、typed remote fact、unknown 与数量结算合同 |
 | 操作边界 | 用户已授权实现、发布与生产验证；精确 stats cleanup 仍须独立 preview/hash/apply/readback，禁止把发布授权扩张为批量重试或未知外发 |
 
@@ -59,6 +59,7 @@ Planner 短样本没有证明单调增长，所以“泄漏”仍为 unproven。
 - 5dc5f345 复核中，6 个 current AI Task 共 2,164 条 pending/retryable Action、payload 约 12.5 MiB；旧数量槽收口、面具合同检查、hard-hourly 检查和旧 admission snapshot 回填会在每次 task 规划前重复加载这些完整 Action，而实际 legacy-anchor/hard-hourly 命中均为 0。
 - extra-volume 路径每个 Task 先扫描租户完整账号 ORM，再与仅 17～116 个 confirmed coverage 账号求交；current 日覆盖维护还会无界读取全部 ready coverage 后再载入账号，虽然 current contract 后续不会使用该结果。
 - 708d7250 发布后 82 个 Planner 样本显示 PSS p50/p95 为 495/533 MiB、CPU p50/p95 为 58.30%/68.26%、drain p50/p95 为 46.7/78.9 秒。残余首个破损边界是 `_recover_stale_fact_first_actions`：每个 Task 无界加载 3,555～8,597 个 `failed/retryable_failed/skipped` Action，单 Task payload 约 19～52 MiB；六个 Task 真正仍绑定 coverage/variation 的 Action 合计仅 9 个，其余历史孤儿在每轮处理后状态和关系均不再变化，却永久重复进入 ORM。
+- 5ac00b69 发布后的短窗已把 PSS p50/p95 降至 153/188 MiB、CPU p50/p95 降至 1.16%/23.67%、drain p50/p95 降至 55 ms/8.4 秒，且 Telethon/cgroup event 为 0。继续遗漏审计发现通用 `retry_failed_actions` 仍先读取最多 100 个 fact-first `send_message` 失败 Action，再由 Python 对每一行恒定拒绝重试；这些行还能占满 limit，使同 Task 其他可安全重试的非发送 Action 饥饿。
 
 首个资源破损边界是 Planner 的无界读取与 Task 热行写入；宿主总预算是并行平台风险。不能先把结论写成单一内存泄漏。
 
@@ -137,6 +138,8 @@ eligibility_rank
 current AI extra-volume 只能从同一 TaskDayLedger 已 confirmed coverage 中按“eligibility_rank、planner_last_selected_at、当日成功数、item id”读取最多 20 个 ID，随后才加载对应账号；扫描过的 item 同事务推进 planner_last_selected_at，下一轮继续公平轮转。current 全账号日覆盖的规划前维护不得再次物化 ready coverage 或账号池；fact-first 明确不适用的旧数量槽/admission snapshot 扫描直接跳过，仍适用的 legacy 清理必须把 JSON 合同谓词下推数据库且每轮最多处理 100 个真实命中 Action。
 
 fact-first 终态 Action 恢复不得从 Action 历史状态反向全扫。候选只能由当前 `TaskAccountDailyCoverage.reserved_action_id` 与 `AiCoverageVariationIntent.action_id` 的 live 关系并集驱动，再关联 Action 核对 task/type/status 和 pre-Gateway 事实；单轮最多读取 20 个 Action。释放 reservation 并清空 variation action 关系后，该 Action 必须自然退出下一轮候选。没有 live 关系时历史 Action ORM 必须为 0，不能靠清理、重启或缩短留存达到该结果。
+
+通用自动重试对 current fact-first AI 必须在 SQL 中排除 `send_message`；这些 Action 由 coverage/variation 重建合同负责，不能先加载再逐行拒绝，也不能占满 retry limit 阻塞同 Task 的 membership 等其他显式可重试动作。其他任务类型与非发送 Action 的既有 retry policy、backoff 和安全闭集不变。
 
 Task.stats.membership_summary_v2 只含 counts、stage、revision、captured_at 和最多 10 个脱敏样本引用，大小不超过 2 KiB。详情明细继续走分页 items API。
 

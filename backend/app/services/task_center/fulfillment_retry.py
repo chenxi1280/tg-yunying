@@ -67,10 +67,20 @@ def _retry_query(task: Task, max_retries: int, limit: int):
             Action.task_id == task.id,
             Action.status.in_(_auto_retry_statuses(task)),
             Action.retry_count < max_retries,
+            *_retryable_action_type_predicates(task),
         )
         .order_by(Action.scheduled_at.asc(), Action.id.asc())
         .limit(max(1, int(limit)))
     )
+
+
+def _retryable_action_type_predicates(task: Task) -> tuple[Any, ...]:
+    if (
+        task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION
+        and task.type == "group_ai_chat"
+    ):
+        return (Action.action_type != "send_message",)
+    return ()
 
 
 def _action_retry_is_blocked(task: Task, action: Action) -> bool:

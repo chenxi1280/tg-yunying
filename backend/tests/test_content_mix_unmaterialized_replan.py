@@ -604,6 +604,49 @@ def test_fact_first_bound_ai_failure_is_rebuilt_not_retried(
     assert action.retry_count == 0
 
 
+def test_fact_first_send_failures_do_not_starve_other_retryable_actions(
+    session: Session,
+) -> None:
+    facts = _unmaterialized_reply_facts(session)
+    facts.task.fulfillment_contract_version = "fact_first_v3"
+    facts.task.failure_policy = {"max_retries": 1}
+    for index in range(101):
+        session.add(Action(
+            id=f"terminal-send-{index:03d}",
+            tenant_id=1,
+            task_id=facts.task.id,
+            task_type=facts.task.type,
+            action_type="send_message",
+            account_id=facts.account.id,
+            status="failed",
+            scheduled_at=facts.planned_at,
+        ))
+    retryable = Action(
+        id="retryable-membership-action",
+        tenant_id=1,
+        task_id=facts.task.id,
+        task_type=facts.task.type,
+        action_type="ensure_target_membership",
+        account_id=facts.account.id,
+        status="failed",
+        scheduled_at=facts.planned_at,
+    )
+    session.add(retryable)
+    session.flush()
+
+    retried = retry_failed_actions(
+        session,
+        facts.task,
+        limit=100,
+        now_value=facts.planned_at,
+    )
+
+    assert retried == 1
+    assert retryable.status == "pending"
+    assert retryable.retry_count == 1
+    assert session.get(Action, "terminal-send-000").status == "failed"
+
+
 def test_fact_first_build_plan_skips_legacy_content_mix_pipeline(
     session: Session,
     monkeypatch: pytest.MonkeyPatch,
