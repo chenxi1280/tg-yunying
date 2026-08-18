@@ -23,7 +23,7 @@ dependencies = [
 
 [project.optional-dependencies]
 image-verification-worker = [
-  "rapidocr>=3.9.2,<4",
+  "rapidocr==3.9.2",
   "ddddocr>=1.5.6,<2",
   "onnxruntime>=1.18.0,<2",
 ]

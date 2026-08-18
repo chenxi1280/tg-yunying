@@ -144,7 +144,51 @@ check_image_verification_readiness() {
   echo "==> Checking image verification engines"
   timeout "$timeout_seconds" docker exec tgyunying-image-verification-worker \
     python -c "import json, os, urllib.request; request = urllib.request.Request('http://127.0.0.1:8091/internal/v1/image-verification/ready', headers={'X-Internal-Token': os.environ['IMAGE_VERIFICATION_WORKER_TOKEN']}); payload = json.load(urllib.request.urlopen(request, timeout=120)); assert payload.get('status') == 'ready'; assert set(payload.get('engines') or ()) == {'rapidocr', 'ddddocr'}"
-  echo "OK image verification engines: rapidocr, ddddocr"
+  timeout "$timeout_seconds" docker exec -i \
+    tgyunying-image-verification-worker python - <<'PY'
+import base64
+import hashlib
+import io
+import json
+import os
+import secrets
+import urllib.request
+from datetime import UTC, datetime, timedelta
+
+from PIL import Image, ImageDraw
+
+image = Image.new("RGB", (180, 60), "white")
+ImageDraw.Draw(image).text((20, 18), "12+7", fill="black")
+buffer = io.BytesIO()
+image.save(buffer, format="PNG")
+image_bytes = buffer.getvalue()
+payload = {
+    "request_id": secrets.token_hex(32),
+    "action_id": "release-functional-probe",
+    "challenge_fingerprint_hash": hashlib.sha256(b"release-probe").hexdigest(),
+    "image_base64": base64.b64encode(image_bytes).decode("ascii"),
+    "mime_type": "image/png",
+    "verification_kind": "alphanumeric",
+    "candidate_hash": hashlib.sha256(image_bytes).hexdigest(),
+    "deadline_at": (datetime.now(UTC) + timedelta(seconds=120)).isoformat(),
+    "remaining_budget_ms": 120_000,
+    "contract_version": os.environ["IMAGE_VERIFICATION_CONTRACT_VERSION"],
+}
+request = urllib.request.Request(
+    "http://127.0.0.1:8091/internal/v1/image-verification/ocr",
+    data=json.dumps(payload).encode("utf-8"),
+    headers={
+        "Content-Type": "application/json",
+        "X-Internal-Token": os.environ["IMAGE_VERIFICATION_WORKER_TOKEN"],
+    },
+)
+response = json.load(urllib.request.urlopen(request, timeout=120))
+sources = response.get("sources") or ()
+assert response.get("status") == "completed"
+assert {source.get("source") for source in sources} == {"rapidocr", "ddddocr"}
+assert all(source.get("status") == "complete" for source in sources)
+PY
+  echo "OK image verification engines and inference: rapidocr, ddddocr"
 }
 
 backend_status="$(docker inspect tgyunying-backend --format '{{.State.Status}}' 2>/dev/null || true)"

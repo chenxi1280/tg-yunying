@@ -14,11 +14,11 @@
 - `scope_revision`: `minimal_p0_p1_2026-07-31`
 - `evidence_level`: `E4 incident / E3 production canary / E4 observing`
 - `handoff_delivery_status`: `dev_implemented_qa_targeted_pass`
-- `implementation_status`: `released_stage_b / 2026-08-14 release_contract_resync`
-- `production_status`: `observing_unproven / latest_actions_gate_failed`
+- `implementation_status`: `released_stage_b / 2026-08-18 recognizer_only_resync_local_qa`
+- `production_status`: `resource_capacity_degraded / recognizer_only_release_pending`
 - `captcha_latency_validation`: `45s_contract / two_account_local_ocr_consensus_accepted / model_tail_unproven`
 - `created_at`: `2026-07-31`
-- `last_updated_at`: `2026-08-14`
+- `last_updated_at`: `2026-08-18`
 - `truth_sources`:
   - `docs/01-product/tg-ops-platform-prd.md` §2.19、§2.20、§5.3
   - `docs/03-feature-designs/search-click-daily-fulfillment-remediation-prd.md`
@@ -26,6 +26,14 @@
   - `docs/04-ops/deployment/PRODUCTION_RUNTIME.md`
 
 > P0/P1 已按 `master -> release -> GitHub Actions` 发布到硅谷 Stage B，并取得两个不同账号的真实本地 OCR 共识与后续搜索成功证据。完整自然日、1287 次真实图片验证、OCR+模型 tail 及 3 次安全回收周期仍未满足，因此事故仍不得写 `production_fixed`。
+
+### 0.6 2026-08-18 RapidOCR 额外模型常驻修订
+
+- d75c6bbd 生产读回显示图片核验 worker 在 10 个请求后空闲 PSS/RSS 约 444/454 MiB，宿主 MemAvailable 约 1.17 GiB；worker 无 busy rejection、OOM 或异常退出，但聚合资源目标仍失败。
+- 当前验证码路径调用完整 `RapidOCR()`，启动时同时常驻文本检测、方向分类和文本识别三套 ONNX 模型；验证码已经是单张整图，并额外生成蓝色掩码/裁剪变体，不需要先检测文本框或判断方向。该额外模型常驻是已证明的资源放大，不属于双源共识合同。
+- 同一 d75c6bbd amd64 正式镜像的隔离基准：完整 RapidOCR + ddddOCR 对合成 `12+7` 的推理后 RSS 约 451 MiB、耗时 2.04 秒；只构造 RapidOCR `TextRecognizer` 并保留 ddddOCR 时约 222 MiB、0.30 秒，RapidOCR 输出均为 `12+7`。该基准证明可移除 det/cls runtime，不能替代真实验证码 E4。
+- 修订合同：`rapidocr` source 名称、四个 RapidOCR 变体、confidence、ddddOCR、双源状态/共识、deadline、unknown 与回收语义不变；仅 RapidOCR runtime 改为整图 recognizer-only。依赖固定为已验证的 `rapidocr==3.9.2`，内部识别组件缺失必须启动失败，不得回退完整三模型或单源伪成功。
+- Release Gate 必须重新取得 authenticated `/ready`、合成图 functional probe、worker RSS/PSS、真实 challenge 双源结果和 callback/搜索 typed fact；发布或健康检查不能替代这些证据。
 
 ### 0.5 2026-08-14 partial-timeout 发布回归
 
@@ -292,7 +300,7 @@ soft_recycle_threshold
 ### 6.1 部署与隔离
 
 - 新增独立容器/进程角色 `image-verification-worker`，只接入 Docker 私网，不映射宿主端口。
-- `image_verification_worker.py` 只承载 OCR generation、request 状态、source 收集和回收判定；`image_verification_worker_app.py` 承载 FastAPI/lifespan 装配、启动预热、认证路由和健康端点。Worker app 启动时必须在接收业务 OCR 请求前初始化 RapidOCR/ddddOCR；普通 `/health` 只表示进程存活，`/internal/v1/image-verification/ready` 才是 production functional readiness。
+- `image_verification_worker.py` 只承载 OCR generation、request 状态、source 收集和回收判定；`image_verification_worker_app.py` 承载 FastAPI/lifespan 装配、启动预热、认证路由和健康端点。Worker app 启动时必须在接收业务 OCR 请求前初始化 RapidOCR recognizer-only 与 ddddOCR；不得为整图验证码加载 RapidOCR det/cls 模型。普通 `/health` 只表示进程存活，`/internal/v1/image-verification/ready` 才是 production functional readiness。
 - 仅加载 RapidOCR 与 ddddOCR；同时处理的 challenge 请求数固定为 1。请求处理期间两个引擎各占一个服务级固定槽并可在单题内有界重叠。worker 不建立等待队列、持久队列、优先级队列或 EDF；已有 request running 时，新请求立即返回 `verification_local_ocr_busy`。
 - 不挂载 Telegram session，不注入 AI Provider、数据库业务账号或租户密钥，不执行 callback。
 - 容器必须有 soft recycle threshold、hard memory limit、请求计数和当前 request 状态；正常回收只在当前 request 进入终态后发生。native 调用超过 deadline 仍未返回时，整个 OCR worker generation 可以异常退出并由 Docker 重建，但必须向 Dispatcher 暴露 generation changed/unknown，不能伪造 completed。

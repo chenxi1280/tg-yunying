@@ -508,8 +508,11 @@ def test_image_verification_release_check_initializes_both_engines():
     script = (repo_root / "deploy/check-web.sh").read_text(encoding="utf-8")
 
     assert "/internal/v1/image-verification/ready" in script
+    assert "/internal/v1/image-verification/ocr" in script
     assert "IMAGE_VERIFICATION_WORKER_TOKEN" in script
     assert "{'rapidocr', 'ddddocr'}" in script
+    assert 'response.get("status") == "completed"' in script
+    assert 'source.get("status") == "complete"' in script
 
 
 def test_explicit_worker_id_is_scoped_by_process_type(monkeypatch):

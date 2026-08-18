@@ -7,9 +7,9 @@
 | Intake ID | intake-2026-08-17-planner-pacing-memory-001 |
 | 分级 | L3 / P0 资源风险 + P0 来源突发 + P1 拟人节奏，必须走标准生产事故流与 Release Gate |
 | 设计状态 | product_design_complete / dev_handoff_ready=true / resynced_2026-08-18 |
-| 实现状态 | production_repair_resync_4 / 2b0790ad 已在 SQL 层排除 current AI send 自动重试；own-history 已将逐候选相关 `NOT EXISTS` 改为一次 used-target 去重投影与 anti-join，完成定向 QA，等待最终 Release Gate 与生产分层验收 |
-| 生产状态 | partial：2b0790ad 两小时窗口 PSS p95 209 MiB、CPU p95 21%、均通过；drain p95 35.4 秒未达 30 秒，慢查询读回定位到 own-history used-target 相关扫描。6/24h 与 anti-join 修订仍待证明，production_fixed=unproven |
-| 当前生产基线 | 2026-08-18 13:47 北京时间；release 2b0790ad；Planner warm PSS 约 209 MiB、RestartCount=0，后半段 steady drain 约 28～63 秒 |
+| 实现状态 | production_repair_resync_5 / d75c6bbd own-history anti-join 已发布且 Planner 短窗资源通过；聚合宿主的 OCR 残余已完成 recognizer-only 本地修订与 45 项定向 QA，等待第二次 Release Gate |
+| 生产状态 | partial：d75c6bbd Planner 前 29 样本 PSS p95 189 MiB、CPU p95 26.52%，后续 steady drain 3.9/0.9 秒；首轮 35.3 秒。宿主受完整 RapidOCR 三模型常驻影响仅约 1.17 GiB 可用，resource_capacity_degraded，production_fixed=unproven |
+| 当前生产基线 | 2026-08-18 14:45 北京时间；release d75c6bbd；Planner warm PSS 约 189 MiB、RestartCount=0；图片核验 worker 空闲 PSS 约 444 MiB |
 | 权威关系 | 本文规范性取代生产稳定性 PRD 中 Planner 资源和旧 AI fail-open gate 口径，并补正拟人节奏 PRD 的跨批恢复；不改变各任务 stable owner、typed remote fact、unknown 与数量结算合同 |
 | 操作边界 | 用户已授权实现、发布与生产验证；精确 stats cleanup 仍须独立 preview/hash/apply/readback，禁止把发布授权扩张为批量重试或未知外发 |
 
@@ -62,6 +62,7 @@ Planner 短样本没有证明单调增长，所以“泄漏”仍为 unproven。
 - 5ac00b69 发布后的短窗已把 PSS p50/p95 降至 153/188 MiB、CPU p50/p95 降至 1.16%/23.67%、drain p50/p95 降至 55 ms/8.4 秒，且 Telethon/cgroup event 为 0。继续遗漏审计发现通用 `retry_failed_actions` 仍先读取最多 100 个 fact-first `send_message` 失败 Action，再由 Python 对每一行恒定拒绝重试；这些行还能占满 limit，使同 Task 其他可安全重试的非发送 Action 饥饿。
 - 2b0790ad 发布后 383 个资源样本显示 Planner PSS p95 209 MiB、CPU p95 21%，但 265 个 processed drain 的 p95 为 35.4 秒，且 15 分钟 drain p95 从 11.3 秒逐步升至 52.8 秒。`strace` 显示 12 秒内约 2,650 次数据库 send；生产慢查询捕获 own-history Action/Attempt ORM 查询最长约 8.4 秒。根因是 reply pool 在 limit 前对候选 Action 使用相关 `NOT EXISTS` 逐行判断目标是否已被占用，放大数据库往返/扫描。修订为一次性投影当前 tenant/group/状态下 distinct used target，再以 anti-join 在 limit 前排除；生产代表性 `EXPLAIN ANALYZE` 从观测慢查询的秒级放大降为约 0.44 秒，且保留“先排除已用目标、再取候选”的无饥饿语义。
 - 当前宿主的另一独立内存 owner 是图片核验 worker：同时预热 RapidOCR/ddddOCR 后空闲 RSS 约 416 MiB，近三小时两次重启均为退出码 0、OOMKilled=false 的优雅换代；该 worker 按 640 MiB soft RSS 或 100 个完成请求回收。它解释聚合宿主压力，但不解释 Planner drain 慢查询，不能用其换代结果代替 Planner 修复验收。
+- d75c6bbd 发布后进一步读回：图片 worker 在 10 个请求后空闲 PSS/RSS 约 444/454 MiB，宿主 MemAvailable 约 1.17 GiB。隔离基准证明完整 `RapidOCR()` 为整图验证码额外加载 det/cls/rec 三套模型；改成 recognizer-only 并保留 ddddOCR 后，同镜像合成图 RSS 从约 451 MiB 降至 222 MiB、耗时从 2.04 秒降至 0.30 秒，RapidOCR 输出不变。该修订不改变双源、deadline 或 typed fact，仅移除不参与验证码合同的 det/cls runtime。
 
 首个资源破损边界是 Planner 的无界读取与 Task 热行写入；宿主总预算是并行平台风险。不能先把结论写成单一内存泄漏。
 
