@@ -69,6 +69,7 @@ def build_login_batch_initialization_manifest(
     manifest = {
         "tenant_id": spec.tenant_id,
         "login_batch_ids": [int(batch.id) for batch in targets.batches],
+        "created_only_batch_ids": list(spec.created_only_batch_ids),
         "expected_target_count": spec.expected_target_count,
         "deployed_sha": spec.deployed_sha,
         "seed": spec.seed,

@@ -45,6 +45,11 @@ LOGIN_BATCH_IDS = tuple(
     for value in os.getenv("ACCOUNT_LOGIN_BATCH_PROFILE_INIT_LOGIN_BATCH_IDS", "").split(",")
     if value.strip()
 )
+CREATED_ONLY_BATCH_IDS = tuple(
+    int(value.strip())
+    for value in os.getenv("ACCOUNT_LOGIN_BATCH_PROFILE_INIT_CREATED_ONLY_BATCH_IDS", "").split(",")
+    if value.strip()
+)
 EXPECTED_TARGET_COUNT = int(os.getenv("ACCOUNT_LOGIN_BATCH_PROFILE_INIT_EXPECTED_TARGET_COUNT", "300"))
 STYLE_GROUP_IDS = tuple(
     int(value.strip())
@@ -77,6 +82,7 @@ def main() -> int:
         "mode": MODE,
         "manifest_sha256": actual_sha,
         "login_batch_ids": manifest["login_batch_ids"],
+        "created_only_batch_ids": manifest["created_only_batch_ids"],
         "expected_target_count": manifest["expected_target_count"],
         "style": manifest["style"],
         "name_quality": manifest["name_quality"],
@@ -97,6 +103,7 @@ def _spec() -> LoginBatchInitializationSpec:
         style_group_ids=STYLE_GROUP_IDS,
         seed=SEED,
         deployed_sha=DEPLOYED_SHA,
+        created_only_batch_ids=CREATED_ONLY_BATCH_IDS,
     )
 
 
@@ -107,6 +114,10 @@ def _validate_inputs() -> None:
         raise ValueError("seed, deployed_sha, and a positive expected_target_count are required")
     if len(DEPLOYED_SHA) != 40 or any(char not in "0123456789abcdef" for char in DEPLOYED_SHA):
         raise ValueError("deployed_sha must be the exact 40-character lowercase release SHA")
+    if len(set(CREATED_ONLY_BATCH_IDS)) != len(CREATED_ONLY_BATCH_IDS):
+        raise ValueError("created_only_batch_ids must be unique")
+    if CREATED_ONLY_BATCH_IDS and not set(CREATED_ONLY_BATCH_IDS).issubset(LOGIN_BATCH_IDS):
+        raise ValueError("created_only_batch_ids must be a subset of explicit login_batch_ids")
     if MODE == "preview":
         return
     if not LOGIN_BATCH_IDS or not STYLE_GROUP_IDS:

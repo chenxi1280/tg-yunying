@@ -11,6 +11,7 @@ from app.database import Base
 from app.models import (
     AccountPool,
     AccountStatus,
+    AuditLog,
     GroupContextMessage,
     Material,
     Tenant,
@@ -52,6 +53,7 @@ def _seed_login_batch(
     failed_count: int = 0,
     unresolved_count: int = 0,
     status: str = "completed",
+    created_count: int | None = None,
 ) -> list[TgAccount]:
     accounts = [
         TgAccount(
@@ -79,6 +81,8 @@ def _seed_login_batch(
     success_items = [_login_item(batch_id, account.id, line_no) for line_no, account in enumerate(accounts, 1)]
     session.add_all(success_items)
     session.flush()
+    audited_count = count if created_count is None else created_count
+    session.add_all(_creation_audit(item) for item in success_items[:audited_count])
     session.add_all(
         _login_item(batch_id, None, count + offset, status="failed")
         for offset in range(1, failed_count + 1)
@@ -140,6 +144,17 @@ def _login_item(
         account_id=account_id,
         status=status,
         phase=status,
+    )
+
+
+def _creation_audit(item: TgAccountLoginBatchItem) -> AuditLog:
+    return AuditLog(
+        tenant_id=1,
+        actor="tester",
+        action="批量登录创建TG账号",
+        target_type="tg_account",
+        target_id=str(item.account_id),
+        detail=f"batch_item_id={item.id}",
     )
 
 
@@ -298,4 +313,28 @@ def test_discovers_unique_terminal_batch_set_with_three_hundred_success_accounts
     assert len(manifest["targets"]) == 300
     assert {target["login_batch_id"] for target in manifest["targets"]} == {91, 92, 93}
     assert sum(batch_id == 93 for batch_id in (target["login_batch_id"] for target in manifest["targets"])) == 4
+    assert max(target["account_id"] for target in manifest["targets"]) == 300
+
+
+def test_explicit_mixed_scope_freezes_three_hundred_accounts():
+    with _session() as session:
+        first = _seed_login_batch(session, 191, batch_id=91)
+        _seed_login_batch(session, 96, batch_id=92, start_id=192)
+        _seed_login_batch(session, 15, batch_id=93, start_id=288, created_count=13)
+        _seed_style_and_avatars(session, first[0].id)
+        spec = LoginBatchInitializationSpec(
+            tenant_id=1,
+            login_batch_ids=(91, 92, 93),
+            expected_target_count=300,
+            style_group_ids=(11, 12),
+            seed="mixed-scope-300",
+            deployed_sha="c" * 40,
+            created_only_batch_ids=(93,),
+        )
+
+        manifest = build_login_batch_initialization_manifest(session, spec)
+
+    assert manifest["created_only_batch_ids"] == [93]
+    assert len(manifest["targets"]) == 300
+    assert sum(target["login_batch_id"] == 93 for target in manifest["targets"]) == 13
     assert max(target["account_id"] for target in manifest["targets"]) == 300

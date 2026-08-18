@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.models import (
     AccountPool,
     AccountStatus,
+    AuditLog,
     TgAccount,
     TgAccountLoginBatch,
     TgAccountLoginBatchItem,
@@ -30,6 +31,7 @@ class LoginBatchInitializationSpec:
     style_group_ids: tuple[int, ...]
     seed: str
     deployed_sha: str
+    created_only_batch_ids: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -70,6 +72,7 @@ def resolve_login_batches(
     session: Session,
     spec: LoginBatchInitializationSpec,
 ) -> tuple[LoginBatchCandidate, ...]:
+    _validate_selection_scope(spec)
     candidates = _explicit_candidates(session, spec) if spec.login_batch_ids else _recent_candidates(session, spec)
     if spec.login_batch_ids:
         _validate_candidate_set(candidates, spec.expected_target_count)
@@ -93,7 +96,11 @@ def _explicit_candidates(
     batches = [session.get(TgAccountLoginBatch, batch_id) for batch_id in spec.login_batch_ids]
     if any(batch is None or batch.tenant_id != spec.tenant_id for batch in batches):
         raise RuntimeError("login_batch_not_found_for_tenant")
-    return tuple(_candidate(session, batch) for batch in batches if batch is not None)
+    return tuple(
+        _candidate(session, batch, int(batch.id) in spec.created_only_batch_ids)
+        for batch in batches
+        if batch is not None
+    )
 
 
 def _recent_candidates(
@@ -109,10 +116,14 @@ def _recent_candidates(
             TgAccountLoginBatch.finished_at >= cutoff,
         ).order_by(TgAccountLoginBatch.finished_at.desc(), TgAccountLoginBatch.id.desc()).limit(DISCOVERY_BATCH_LIMIT)
     ))
-    return tuple(_candidate(session, batch) for batch in batches)
+    return tuple(_candidate(session, batch, False) for batch in batches)
 
 
-def _candidate(session: Session, batch: TgAccountLoginBatch) -> LoginBatchCandidate:
+def _candidate(
+    session: Session,
+    batch: TgAccountLoginBatch,
+    created_only: bool,
+) -> LoginBatchCandidate:
     if batch.status not in TERMINAL_LOGIN_BATCH_STATUSES:
         raise RuntimeError(f"login_batch_not_terminal: batch_id={batch.id};status={batch.status}")
     success_items = tuple(session.scalars(
@@ -126,12 +137,48 @@ def _candidate(session: Session, batch: TgAccountLoginBatch) -> LoginBatchCandid
         raise RuntimeError(f"login_batch_success_binding_invalid: batch_id={batch.id}")
     if len(success_items) != int(batch.success_count):
         raise RuntimeError(f"login_batch_success_count_drift: batch_id={batch.id}")
-    account_ids = frozenset(success_account_ids)
+    selected_items = success_items
+    if created_only:
+        created_item_ids = _created_item_ids(session, batch.tenant_id, success_items)
+        selected_items = tuple(item for item in success_items if int(item.id) in created_item_ids)
+    account_ids = frozenset(int(item.account_id) for item in selected_items)
     return LoginBatchCandidate(
         batch=batch,
-        items=success_items,
+        items=selected_items,
         account_ids=account_ids,
         success_count=len(success_items),
+    )
+
+
+def _validate_selection_scope(spec: LoginBatchInitializationSpec) -> None:
+    selected = set(spec.created_only_batch_ids)
+    if len(selected) != len(spec.created_only_batch_ids):
+        raise RuntimeError("created_only_batch_ids_must_be_unique")
+    if selected and (not spec.login_batch_ids or not selected.issubset(spec.login_batch_ids)):
+        raise RuntimeError("created_only_batch_ids_must_be_subset_of_explicit_login_batches")
+
+
+def _created_item_ids(
+    session: Session,
+    tenant_id: int,
+    items: tuple[TgAccountLoginBatchItem, ...],
+) -> frozenset[int]:
+    expected = {
+        (str(item.account_id), f"batch_item_id={item.id}"): int(item.id)
+        for item in items
+    }
+    if not expected:
+        return frozenset()
+    rows = session.execute(select(AuditLog.target_id, AuditLog.detail).where(
+        AuditLog.tenant_id == tenant_id,
+        AuditLog.action == "批量登录创建TG账号",
+        AuditLog.target_type == "tg_account",
+        AuditLog.target_id.in_({target_id for target_id, _detail in expected}),
+    ))
+    return frozenset(
+        expected[(target_id, detail)]
+        for target_id, detail in rows
+        if (target_id, detail) in expected
     )
 
 
@@ -164,6 +211,7 @@ def _candidate_summary(candidate: LoginBatchCandidate) -> str:
     batch = candidate.batch
     return (
         f"{batch.id}:{batch.status}:total={batch.total_count}:success={candidate.success_count}:"
+        f"selected={len(candidate.items)}:"
         f"failed={batch.failed_count}:unresolved={batch.unresolved_count}"
     )
 

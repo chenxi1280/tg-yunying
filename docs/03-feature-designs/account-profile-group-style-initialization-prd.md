@@ -54,7 +54,8 @@
 3. 成功 item 状态只能是 `succeeded` 或 `succeeded_with_warning`。
 4. 每个 item 必须有唯一 `account_id`，账号为 active、有 session、未删除、普通运营用途，pool 与 `account_identity=normal` 一致。
 5. 所选全部批次的成功登录账号按 `account_id` 去重，`expected_target_count` 必须等于并集账号数；本次固定为 300。账号跨批重复登录时，manifest 使用最大 login item ID 对应的最新成功快照，成功 item 总数可以大于目标账号数。
-6. manifest 冻结每个 batch 的 `state_version/execution_generation/resolution_version/finished_at` 和每个 item/account 旧状态。
+6. 若前置批次混有测试用的已有账号重登，必须通过显式 `created_only_batch_ids` 把该批次收窄到有同事务 `批量登录创建TG账号 + batch_item_id` 审计的成功项；该列表必须是显式 `login_batch_ids` 的子集并进入 manifest/hash，禁止按数量随意截断。
+7. manifest 冻结每个 batch 的 `state_version/execution_generation/resolution_version/finished_at` 和每个 item/account 旧状态。
 
 preview 未提供 batch IDs 时，最近 7 天最多 20 个终态批次的全部成功登录账号并集必须恰好为 300；否则输出脱敏候选 batch ID、状态和成功数并失败，不得自行从成功账号中删减或扩大到全租户。
 
@@ -106,6 +107,7 @@ preview 未提供 batch IDs 时，最近 7 天最多 20 个终态批次的全部
 - `operation=login_batch_initialize`
 - `mode=preview|apply|readback`
 - `login_batch_ids`（逗号分隔；preview 可留空做唯一组合发现）
+- `created_only_batch_ids`（逗号分隔；仅用于明确混有前置重登测试账号的批次，必须是 login batch 子集）
 - `expected_target_count`（本次 300）
 - `style_group_ids`（逗号分隔的精确群 ID）
 - `seed`
