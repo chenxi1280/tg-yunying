@@ -24,9 +24,9 @@ from app.services.task_center.source_pacing_admission import admit_source_paced_
 
 NOW = datetime(2026, 8, 18, 10, 0)
 SOURCE_GAP_SECONDS = 864
-TENANT_ID = 990_001
-ACCOUNT_ID = 990_001
-TARGET_ID = 990_010
+TENANT_ID = 990_002
+ACCOUNT_ID = 990_002
+TARGET_ID = 990_020
 
 
 @pytest.fixture
