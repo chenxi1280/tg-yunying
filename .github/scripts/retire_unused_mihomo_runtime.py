@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 
-from __future__ import annotations
-
 import argparse
 import hashlib
 import json
@@ -71,7 +69,7 @@ print(json.dumps(result, ensure_ascii=True, sort_keys=True))
 """
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv=None):
     args = parse_args(argv)
     try:
         preview = build_preview(args)
@@ -92,7 +90,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
 
-def parse_args(argv: list[str] | None) -> argparse.Namespace:
+def parse_args(argv):
     parser = argparse.ArgumentParser(
         description="Disable and stop exact zero-consumer Mihomo runtimes."
     )
@@ -108,7 +106,7 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def build_preview(args: argparse.Namespace) -> dict[str, object]:
+def build_preview(args):
     targets = validate_targets(args.target)
     deployed_release = str(Path(args.current_release_link).resolve())
     db_records = query_db_records(args.backend_container, targets)
@@ -129,15 +127,15 @@ def build_preview(args: argparse.Namespace) -> dict[str, object]:
 
 
 def apply_retirement(
-    args: argparse.Namespace,
-    preview: dict[str, object],
-) -> dict[str, object]:
+    args,
+    preview,
+):
     validate_apply_inputs(args, preview)
     current = build_preview(args)
     validate_apply_inputs(args, current)
     validate_zero_consumers(current)
     audit_path = write_audit(args, current, status="started")
-    stopped: list[str] = []
+    stopped = []
     try:
         apply_db_retirement(args, current)
         for record in current["targets"]:
@@ -170,7 +168,7 @@ def apply_retirement(
     }
 
 
-def validate_targets(raw_targets: list[str]) -> tuple[str, ...]:
+def validate_targets(raw_targets):
     targets = tuple(sorted(set(raw_targets)))
     if not targets:
         raise RuntimeError("proxy_runtime_targets_required")
@@ -181,9 +179,9 @@ def validate_targets(raw_targets: list[str]) -> tuple[str, ...]:
 
 
 def validate_apply_inputs(
-    args: argparse.Namespace,
-    preview: dict[str, object],
-) -> None:
+    args,
+    preview,
+):
     required = {
         "expected_deployed_sha": args.expected_deployed_sha,
         "expected_manifest_hash": args.expected_manifest_hash,
@@ -200,7 +198,7 @@ def validate_apply_inputs(
         raise RuntimeError("proxy_runtime_manifest_hash_mismatch")
 
 
-def validate_zero_consumers(preview: dict[str, object]) -> None:
+def validate_zero_consumers(preview):
     for record in preview["targets"]:
         consumers = record["db"]["payload"]["consumers"]
         if any(int(value) for value in consumers.values()):
@@ -213,9 +211,9 @@ def validate_zero_consumers(preview: dict[str, object]) -> None:
 
 
 def query_db_records(
-    backend_container: str,
-    targets: tuple[str, ...],
-) -> tuple[dict[str, object], ...]:
+    backend_container,
+    targets,
+):
     result = run_command(
         [
             "docker",
@@ -239,9 +237,9 @@ def query_db_records(
 
 
 def apply_db_retirement(
-    args: argparse.Namespace,
-    preview: dict[str, object],
-) -> None:
+    args,
+    preview,
+):
     expected = {
         record["name"]: record["db"]["state_hash"]
         for record in preview["targets"]
@@ -264,7 +262,7 @@ def apply_db_retirement(
     )
 
 
-def inspect_runtime(name: str) -> dict[str, object]:
+def inspect_runtime(name):
     result = run_command(["docker", "inspect", name], capture_output=True)
     try:
         payload = json.loads(result.stdout)[0]
@@ -282,7 +280,7 @@ def inspect_runtime(name: str) -> dict[str, object]:
     }
 
 
-def config_mount(payload: dict[str, object], name: str) -> dict[str, object]:
+def config_mount(payload, name):
     mounts = [
         mount
         for mount in payload.get("Mounts", [])
@@ -297,9 +295,9 @@ def config_mount(payload: dict[str, object], name: str) -> dict[str, object]:
 
 
 def combine_records(
-    db_records: tuple[dict[str, object], ...],
-    runtime_records: tuple[dict[str, object], ...],
-) -> list[dict[str, object]]:
+    db_records,
+    runtime_records,
+):
     db_by_name = {record["payload"]["name"]: record for record in db_records}
     combined = []
     for runtime in runtime_records:
@@ -310,7 +308,7 @@ def combine_records(
     return combined
 
 
-def non_target_runtime_manifest_hash(targets: set[str]) -> str:
+def non_target_runtime_manifest_hash(targets):
     result = run_command(
         ["docker", "ps", "-a", "--format", "{{.Names}}"], capture_output=True
     )
@@ -323,7 +321,7 @@ def non_target_runtime_manifest_hash(targets: set[str]) -> str:
     return manifest_hash({"version": 1, "runtimes": records})
 
 
-def stop_runtime(record: dict[str, object]) -> None:
+def stop_runtime(record):
     name = record["name"]
     current = inspect_runtime(name)
     if current != record["runtime"]:
@@ -333,9 +331,9 @@ def stop_runtime(record: dict[str, object]) -> None:
 
 
 def verify_readback(
-    args: argparse.Namespace,
-    before: dict[str, object],
-) -> dict[str, object]:
+    args,
+    before,
+):
     targets = tuple(record["name"] for record in before["targets"])
     db_records = query_db_records(args.backend_container, targets)
     by_name = {record["payload"]["name"]: record for record in db_records}
@@ -357,9 +355,9 @@ def verify_readback(
 
 
 def query_audit_counts(
-    args: argparse.Namespace,
-    preview: dict[str, object],
-) -> dict[str, int]:
+    args,
+    preview,
+):
     targets = {
         record["name"]: record["db"]["payload"]["id"]
         for record in preview["targets"]
@@ -388,7 +386,7 @@ def query_audit_counts(
     return {str(name): int(count) for name, count in counts.items()}
 
 
-def verify_db_readback(record: dict[str, object], name: str, approval_ref: str) -> None:
+def verify_db_readback(record, name, approval_ref):
     payload = record["payload"]
     if payload["status"] != "disabled" or payload["alert_status"] != "disabled":
         raise RuntimeError(f"proxy_runtime_db_readback_failed:{name}")
@@ -398,21 +396,21 @@ def verify_db_readback(record: dict[str, object], name: str, approval_ref: str) 
         raise RuntimeError(f"proxy_runtime_consumer_readback_failed:{name}")
 
 
-def verify_runtime_readback(record: dict[str, object], name: str) -> None:
+def verify_runtime_readback(record, name):
     if record["running"] or record["restart_policy"] != "no":
         raise RuntimeError(f"proxy_runtime_stop_readback_failed:{name}")
 
 
 def write_audit(
-    args: argparse.Namespace,
-    preview: dict[str, object],
+    args,
+    preview,
     *,
-    status: str,
-    path: Path | None = None,
-    stopped: list[str] | None = None,
-    error: str = "",
-    readback: dict[str, object] | None = None,
-) -> Path:
+    status,
+    path=None,
+    stopped=None,
+    error="",
+    readback=None,
+):
     audit_dir = Path(args.audit_dir)
     audit_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     path = path or audit_dir / retirement_audit_name()
@@ -430,12 +428,12 @@ def write_audit(
     return path
 
 
-def retirement_audit_name() -> str:
+def retirement_audit_name():
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     return f"{timestamp}_{uuid.uuid4().hex}.json"
 
 
-def write_json_atomic(path: Path, payload: dict[str, object]) -> None:
+def write_json_atomic(path, payload):
     with tempfile.NamedTemporaryFile(
         "w", dir=path.parent, encoding="utf-8", delete=False
     ) as handle:
@@ -446,14 +444,14 @@ def write_json_atomic(path: Path, payload: dict[str, object]) -> None:
     os.replace(temporary, path)
 
 
-def manifest_hash(payload: dict[str, object]) -> str:
+def manifest_hash(payload):
     encoded = json.dumps(
         payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True
     )
     return hashlib.sha256(encoded.encode()).hexdigest()
 
 
-def file_sha256(path: Path) -> str:
+def file_sha256(path):
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
@@ -462,16 +460,14 @@ def file_sha256(path: Path) -> str:
 
 
 def run_command(
-    command: list[str],
+    command,
     *,
-    capture_output: bool = False,
-) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(
-        command,
-        check=False,
-        capture_output=capture_output,
-        text=True,
-    )
+    capture_output=False,
+):
+    options = {"check": False, "universal_newlines": True}
+    if capture_output:
+        options.update({"stdout": subprocess.PIPE, "stderr": subprocess.PIPE})
+    result = subprocess.run(command, **options)
     if result.returncode:
         detail = (result.stderr or result.stdout or "").strip().splitlines()
         suffix = f":{detail[-1]}" if detail else ""
@@ -479,7 +475,7 @@ def run_command(
     return result
 
 
-def print_json(payload: dict[str, object]) -> None:
+def print_json(payload):
     print(json.dumps(payload, ensure_ascii=True, sort_keys=True))
 
 
