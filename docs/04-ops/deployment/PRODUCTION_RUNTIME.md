@@ -340,3 +340,15 @@ Action 与最近真实远端成功事实。监控同时输出未完成 Action �
 Task/当日被放弃；目标解散或引用失效终结该 Task；旧 Task 与其 Action/Attempt 已不存在，
 仅保留 manifest、删除操作审计与必要远端防重 tombstone。以上任一项未证明，状态保持
 `production_unproven`，修复后重新发布并从当前可恢复阶段继续。
+
+## 2026-08-19 群监听事件唤醒与发送目标守恒
+
+群监听采集写入新 `GroupContextMessage` 后，必须同时出现
+`TaskPlannerWakeState.reason_code=group_context_inserted`，且 `not_before_at` 不晚于监听采集时间。
+只看到 `Task.next_run_at` 提前不算通过；0153 后 Planner 以持久 wake 为调度真相源。空采集不得
+增加 wake revision。该 wake 只触发重新规划，relay 的来源、目标 operation target、目标 peer、
+内容过滤、fingerprint 去重和 Dispatcher 发送路径保持不变。
+
+发布验证必须只读比较新增事件前后的 wake revision、Action 的目标 ID/peer 与远端结果；
+`unknown_after_send` 不得重试。没有部署后真实新增来源消息时，事件到目标的 E4 仍标记
+`unproven`，不得用容器健康或本地测试替代。

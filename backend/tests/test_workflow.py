@@ -5978,12 +5978,14 @@ def test_group_relay_waits_for_source_media_cache_and_preserves_album_order(monk
 
 def test_task_center_group_relay_continues_for_new_source_messages(monkeypatch):
     sends: list[str] = []
+    send_targets: list[tuple[int, str]] = []
     target_group_id: int | None = None
     _disable_relay_context_collection(monkeypatch)
 
     def fake_send_message(account_id, group_id, content, outbound_segments, account_session, peer_id=None, developer_credentials=None):
         if target_group_id is not None and int(group_id) == target_group_id:
             sends.append(content)
+            send_targets.append((int(group_id), str(peer_id)))
         return SendResult(True, remote_message_id=f"relay-continuous-{len(sends)}")
 
     monkeypatch.setattr("app.services.task_center.dispatcher.gateway.send_message", fake_send_message)
@@ -6046,12 +6048,21 @@ def test_task_center_group_relay_continues_for_new_source_messages(monkeypatch):
             task = session.get(Task, task_id)
             assert task is not None
             task.next_run_at = _now()
+            from app.services.task_center.planner_wake import wake_task_planner
+
+            wake_task_planner(
+                session,
+                task,
+                reason_code="group_context_inserted",
+                not_before_at=task.next_run_at,
+            )
             session.commit()
         reset_listener_runtime_cache()
         drain_task_center(SessionLocal, 1000)
         drain_task_center(SessionLocal, 1000)
         detail = task_detail_after_metrics(client, headers, task_id)
         assert sends == ["第一条转发监听消息", "第二条转发监听消息"]
+        assert send_targets == [(target_group_id, str(group["tg_peer_id"]))] * 2
         assert detail["task"]["status"] == "running"
         assert detail["task"]["stats"]["success_count"] == 2
 

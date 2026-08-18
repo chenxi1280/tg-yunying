@@ -2511,6 +2511,8 @@ def test_worker_heartbeat_stale_check_accepts_aware_and_naive_datetimes():
 
 @pytest.mark.no_postgres
 def test_listener_runtime_collects_shared_sources_once_and_recovers_listener(monkeypatch):
+    from app.models import TaskPlannerWakeState
+
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     SessionFactory = sessionmaker(bind=engine, future=True)
@@ -2583,6 +2585,20 @@ def test_listener_runtime_collects_shared_sources_once_and_recovers_listener(mon
                 ),
             ]
         )
+        session.flush()
+        session.add_all(
+            [
+                TaskPlannerWakeState(
+                    tenant_id=1,
+                    task_id=task_id,
+                    wake_revision=1,
+                    planned_revision=1,
+                    not_before_at=future_run,
+                    reason_code="humanized_window",
+                )
+                for task_id in ("runtime-relay", "runtime-ai")
+            ]
+        )
         session.commit()
 
     monkeypatch.setattr("app.services.task_center.listener_runtime.collect_group_context", fake_collect)
@@ -2594,6 +2610,11 @@ def test_listener_runtime_collects_shared_sources_once_and_recovers_listener(mon
         group = session.get(TgGroup, 7)
         relay_task = session.get(Task, "runtime-relay")
         ai_task = session.get(Task, "runtime-ai")
+        wake_states = list(
+            session.scalars(
+                select(TaskPlannerWakeState).order_by(TaskPlannerWakeState.task_id)
+            )
+        )
         context_count = session.scalar(select(func.count(GroupContextMessage.id)))
         audit_count = session.scalar(select(func.count(AuditLog.id)).where(AuditLog.action == "自动恢复监听账号"))
 
@@ -2612,6 +2633,28 @@ def test_listener_runtime_collects_shared_sources_once_and_recovers_listener(mon
     assert "listener_runtime_last_error" not in ai_task.stats
     assert relay_task.next_run_at < future_run
     assert ai_task.next_run_at < future_run
+    assert [wake.task_id for wake in wake_states] == ["runtime-ai", "runtime-relay"]
+    assert all(wake.wake_revision == 2 for wake in wake_states)
+    assert all(wake.reason_code == "group_context_inserted" for wake in wake_states)
+    assert all(wake.not_before_at <= relay_task.next_run_at for wake in wake_states)
+
+
+@pytest.mark.no_postgres
+def test_listener_runtime_empty_collect_does_not_wake_planner():
+    from app.models import TaskPlannerWakeState
+    from app.services.task_center.listener_runtime import _mark_listener_runtime_success
+
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    SessionFactory = sessionmaker(bind=engine, future=True)
+    with SessionFactory() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(Task(id="empty-listener", tenant_id=1, name="空采集", type="group_relay", status="running"))
+        session.commit()
+        task = session.get(Task, "empty-listener")
+        _mark_listener_runtime_success(session, [task.id], 7, 0, _now())
+        session.commit()
+        assert session.scalar(select(func.count(TaskPlannerWakeState.id))) == 0
 
 
 @pytest.mark.no_postgres

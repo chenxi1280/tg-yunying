@@ -17,6 +17,7 @@ from app.services.group_listeners import collect_group_context
 from .account_pool import select_task_accounts
 from .channel_listener_runtime import drain_channel_listener_runtime
 from .hard_hourly import enabled as hard_hourly_enabled
+from .planner_wake import wake_task_planner
 from .targets import group_from_reference
 
 
@@ -339,6 +340,13 @@ def _mark_listener_runtime_success(session: Session, task_ids: list[str], group_
         if inserted > 0 and (next_run_at is None or next_run_at > occurred_at):
             task.next_run_at = occurred_at
             task.updated_at = occurred_at
+        if inserted > 0:
+            wake_task_planner(
+                session,
+                task,
+                reason_code="group_context_inserted",
+                not_before_at=occurred_at,
+            )
         if task.last_error and ("监听" in task.last_error or "上下文" in task.last_error):
             task.last_error = ""
 
