@@ -107,6 +107,10 @@ from ..group_ai_scope import (
     successful_own_history_reply_facts,
 )
 from ..group_bot_admission import plannable_admission_account_ids
+from .group_ai_extra_candidates import (
+    DailyGroupExtraCandidateSpec,
+    daily_group_extra_candidate_ids,
+)
 from ..hard_hourly import (
     current_progress,
     enabled as hard_hourly_enabled,
@@ -812,13 +816,19 @@ def _daily_group_extra_accounts(
     )
     if remaining <= 0:
         return []
+    candidate_ids = _daily_group_extra_candidate_ids(
+        session, task, facts, selected,
+    )
+    if not candidate_ids:
+        return []
     candidates = select_task_accounts(
         session,
         task.tenant_id,
         task.account_config or {},
         target_group_id=facts.group.id,
+        limit=len(candidate_ids),
         enforce_max_concurrent=False,
-        scan_all_candidates=True,
+        candidate_account_ids=candidate_ids,
     )
     selected_ids = {account.id for account in selected}
     candidates = [account for account in candidates if account.id not in selected_ids]
@@ -837,6 +847,29 @@ def _daily_group_extra_accounts(
         candidates,
         key=lambda account: (counts.get(account.id, 0), account.id),
     )[:remaining]
+
+
+def _daily_group_extra_candidate_ids(
+    session: Session,
+    task: Task,
+    facts: PlanFacts,
+    selected: list,
+) -> list[int]:
+    target_id = str(facts.coverage.daily_group_target_id or "")
+    target = session.get(TaskGroupDailyTarget, target_id) if target_id else None
+    if target is None or not target.task_day_ledger_id:
+        return []
+    return daily_group_extra_candidate_ids(
+        session,
+        DailyGroupExtraCandidateSpec(
+            tenant_id=task.tenant_id,
+            task_id=task.id,
+            group_id=facts.group.id,
+            task_day_ledger_id=target.task_day_ledger_id,
+            coverage_date=target.target_date,
+            excluded_account_ids=frozenset(account.id for account in selected),
+        ),
+    )
 
 
 def _eligible_daily_group_extra_accounts(
@@ -860,6 +893,9 @@ def _eligible_daily_group_extra_accounts(
             TaskAccountDailyCoverage.state == "confirmed",
             TaskAccountDailyCoverage.confirmed_count
             >= TaskAccountDailyCoverage.target_count,
+            TaskAccountDailyCoverage.account_id.in_(
+                [int(account.id) for account in accounts]
+            ),
         )
     ))
     covered_accounts = [
@@ -2943,6 +2979,11 @@ def prepare_open_actions_for_planning(session: Session, task: Task) -> int:
     if _daily_coverage_enforced(config):
         legacy_replanned += expire_incomplete_daily_contract_actions(session, task)
     legacy_replanned += _skip_legacy_hard_hourly_open_actions_for_daily_coverage_replan(session, task, config)
+    if (
+        task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION
+        and _all_accounts_daily_coverage(config)
+    ):
+        return legacy_replanned
     group = group_from_reference(
         session,
         task.tenant_id,
@@ -2982,6 +3023,8 @@ def _backfill_open_action_admission_snapshots(
     session: Session,
     task: Task,
 ) -> int:
+    if task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION:
+        return 0
     actions = list(session.scalars(select(Action).where(
         Action.task_id == task.id,
         Action.action_type == "send_message",
@@ -5312,11 +5355,16 @@ def _open_hard_hourly_actions_for_distribution_replan(session: Session, task: Ta
             Action.task_type == "group_ai_chat",
             Action.action_type == "send_message",
             Action.status.in_(VOICE_PROFILE_REPLAN_OPEN_STATUSES),
+            func.coalesce(
+                Action.payload["hard_hourly_target"].as_boolean(), False,
+            ).is_(True),
+            Action.account_id.is_not(None),
+            Action.account_id > 0,
         )
         .order_by(Action.scheduled_at.asc().nullslast(), Action.id.asc())
         .with_for_update(skip_locked=True, of=Action)
     )
-    return [action for action in rows if _action_is_hard_hourly_target(action)]
+    return list(rows)
 
 
 def _action_is_hard_hourly_target(action: Action) -> bool:

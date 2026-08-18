@@ -106,6 +106,12 @@ def _retire_unbound_legacy_actions(
     statuses: frozenset[str],
     skip_locked: bool,
 ) -> int:
+    if (
+        task.type == "group_ai_chat"
+        and getattr(task, "fulfillment_contract_version", None)
+        == CURRENT_CONTRACT_VERSION
+    ):
+        return 0
     action_type = {
         "group_ai_chat": "send_message",
         "search_click": "search_join",

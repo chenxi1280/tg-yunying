@@ -8,8 +8,8 @@
 | 分级 | L3 / P0 资源风险 + P0 来源突发 + P1 拟人节奏，必须走标准生产事故流与 Release Gate |
 | 设计状态 | product_design_complete / dev_handoff_ready=true / resynced_2026-08-18 |
 | 实现状态 | production_repair_candidate / 本地定向 QA passed；等待 Release Gate 与生产分层验收 |
-| 生产状态 | partial：5f9125f6 已完成主合同发布，但 AI source ordinal 回绕造成 `pacing_source_cursor_conflict` 重试；production_fixed=unproven |
-| 当前生产基线 | 2026-08-18 02:27 北京时间；release 5f9125f6；Planner 单轮 14～44 秒并重复 source cursor conflict |
+| 生产状态 | partial：5dc5f345 已消除 AI source cursor conflict；Planner 仍有 15～68 秒热批次且宿主资源未达标；production_fixed=unproven |
+| 当前生产基线 | 2026-08-18 08:17 北京时间；release 5dc5f345；6 个 current AI Task 持续触发 open Action / 全账号维护扫描 |
 | 权威关系 | 本文规范性取代生产稳定性 PRD 中 Planner 资源和旧 AI fail-open gate 口径，并补正拟人节奏 PRD 的跨批恢复；不改变各任务 stable owner、typed remote fact、unknown 与数量结算合同 |
 | 操作边界 | 用户已授权实现、发布与生产验证；精确 stats cleanup 仍须独立 preview/hash/apply/readback，禁止把发布授权扩张为批量重试或未知外发 |
 
@@ -56,6 +56,8 @@ Planner 短样本没有证明单调增长，所以“泄漏”仍为 unproven。
 - Task.stats 为 47～118 KiB；membership_summary 写入数百个账号 ID。
 - conversation_quality_active_blockers 单 Task 可达 588～1,534 个 key，只有 0～3 个对应当前 open Action；大量终态和失配 key 仍被整图重写。
 - 一轮 processed=3353 耗时 244 秒；processed 混合扫描、复用、重写和新建，不能解释真实工作。
+- 5dc5f345 复核中，6 个 current AI Task 共 2,164 条 pending/retryable Action、payload 约 12.5 MiB；旧数量槽收口、面具合同检查、hard-hourly 检查和旧 admission snapshot 回填会在每次 task 规划前重复加载这些完整 Action，而实际 legacy-anchor/hard-hourly 命中均为 0。
+- extra-volume 路径每个 Task 先扫描租户完整账号 ORM，再与仅 17～116 个 confirmed coverage 账号求交；current 日覆盖维护还会无界读取全部 ready coverage 后再载入账号，虽然 current contract 后续不会使用该结果。
 
 首个资源破损边界是 Planner 的无界读取与 Task 热行写入；宿主总预算是并行平台风险。不能先把结论写成单一内存泄漏。
 
@@ -130,6 +132,8 @@ eligibility_rank
 → item id
 
 做 keyset 查询，一次最多 plan_limit + recovery_sample。选中行在同一短事务更新 planner_last_selected_at，保证 1,210 个候选不会永远只选前 20 个。不得先把全部 ID 拉入 Python；低频 reconciliation 使用 updated_at/id checkpoint 修复漏事件，不替代正常增量 writer。
+
+current AI extra-volume 只能从同一 TaskDayLedger 已 confirmed coverage 中按“eligibility_rank、planner_last_selected_at、当日成功数、item id”读取最多 20 个 ID，随后才加载对应账号；扫描过的 item 同事务推进 planner_last_selected_at，下一轮继续公平轮转。current 全账号日覆盖的规划前维护不得再次物化 ready coverage 或账号池；fact-first 明确不适用的旧数量槽/admission snapshot 扫描直接跳过，仍适用的 legacy 清理必须把 JSON 合同谓词下推数据库且每轮最多处理 100 个真实命中 Action。
 
 Task.stats.membership_summary_v2 只含 counts、stage、revision、captured_at 和最多 10 个脱敏样本引用，大小不超过 2 KiB。详情明细继续走分页 items API。
 
@@ -357,7 +361,7 @@ T2 按 Task/source 灰度，不要求暂停的 comment/like 为 AI/view 让路�
 
 ### 10.1 正确性与并发
 
-1. 1,210 scope、20k Action/Task、6 AI Task fixture：gate 只返回 count/revision，候选 ORM ≤20，历史 Action ORM=0。
+1. 1,210 scope、20k Action/Task、6 AI Task fixture：gate 只返回 count/revision，候选 ORM ≤20；current steady-state 历史 Action ORM=0，legacy maintenance 只加载数据库谓词真实命中的有界批次且每轮≤100。
 2. 候选公平性：连续有界轮转后 1,210 个同优先级 item 均被访问；新高优先级可抢占，但低优先级有 starvation 观测和上界。
 3. 1,534 个旧 quality blockers，其中仅 3 个 active：投影为 3，旧 map cleanup 后 summary ≤2 KiB，源事实 hash 不变。
 4. 13 类 wake writer 覆盖规划中事件、旧 epoch、重复事件、回滚、暂停恢复和 mixed-version；无丢 wake、无热循环、v2 后无直接 next_run_at 写。
@@ -371,7 +375,7 @@ T2 按 Task/source 灰度，不要求暂停的 comment/like 为 AI/view 让路�
 ### 10.2 性能与资源
 
 - 生产等价全轮 p95 ≤30 秒；单 Task p95 ≤5 秒；无 dirty/due 的业务轮 p95 ≤2 秒。
-- 单 Task ORM rows ≤200，其中账号候选 ≤20；SQL 数固定，不随历史 Action 总量线性增长。
+- 单 Task ORM rows ≤200，其中账号候选 ≤20；current steady-state open Action ORM=0，legacy maintenance 匹配 ORM≤100；SQL 数固定，不随历史 Action 总量线性增长。
 - membership summary ≤2 KiB，quality blocker summary ≤2 KiB；Task.stats 不含账号全集或 blocker 全图。
 - Planner warm PSS p95 ≤450 MiB；6 小时首尾小时差≤64 MiB且≤10%；CPU正常负载 p95≤50%单核，无 due 时 5 分钟平均≤10%单核。
 - 24 小时 cgroup 无 oom/oom_kill、无 limit restart；宿主 MemAvailable≥1.5 GiB且无持续 swap-in/out。未达保持 resource_capacity_degraded。

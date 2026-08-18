@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import Action, AiGroupMessageMemory, Task
@@ -8,7 +8,12 @@ from app.services._common import _now
 
 from .ai_message_memory import mark_group_ai_message_result
 from .daily_coverage import release_coverage_reservation
-from .direct_check_in import is_due_catch_up_check_in
+from .direct_check_in import (
+    DIRECT_CHECK_IN_TEXT,
+    DUE_CATCH_UP_CHECK_IN_REASON,
+    DUE_CATCH_UP_CHECK_IN_SOURCE,
+    is_due_catch_up_check_in,
+)
 
 
 LEGACY_ANCHOR_REPLAN_CODE = "voice_profile_anchor_replan"
@@ -19,21 +24,30 @@ DAILY_CONTENT_CONTRACT_REPLAN_CODE = "daily_content_contract_replan"
 DAILY_CONTENT_CONTRACT_REPLAN_MESSAGE = (
     "日覆盖旧规划缺少当前账号面具或签到兜底证据，等待重新生成"
 )
-DIRECT_CHECK_IN_GENERATION_SOURCES = frozenset({
-    "direct_check_in",
-    "mask_missing_check_in",
-})
+ACTION_MAINTENANCE_BATCH_LIMIT = 100
+DUE_CATCH_UP_GENERATION_SOURCE = "static_safe_fallback"
+DUE_CATCH_UP_QUALITY_FALLBACK = "check_in_fallback"
+DIRECT_CHECK_IN_GENERATION_SOURCES = frozenset(
+    {
+        "direct_check_in",
+        "mask_missing_check_in",
+    }
+)
 
 
 def expire_legacy_anchor_rewritten_actions(session: Session, task: Task) -> int:
     actions = session.scalars(
-        select(Action).where(
+        select(Action)
+        .where(
             Action.tenant_id == task.tenant_id,
             Action.task_id == task.id,
             Action.task_type == "group_ai_chat",
             Action.action_type == "send_message",
             Action.status.in_(LEGACY_ANCHOR_OPEN_STATUSES),
-        ).with_for_update(skip_locked=True, of=Action)
+            _requires_contract_replan_expression(),
+        )
+        .limit(ACTION_MAINTENANCE_BATCH_LIMIT)
+        .with_for_update(skip_locked=True, of=Action)
     )
     expired = 0
     for action in actions:
@@ -51,13 +65,17 @@ def expire_legacy_anchor_rewritten_actions(session: Session, task: Task) -> int:
 
 def expire_incomplete_daily_contract_actions(session: Session, task: Task) -> int:
     actions = session.scalars(
-        select(Action).where(
+        select(Action)
+        .where(
             Action.tenant_id == task.tenant_id,
             Action.task_id == task.id,
             Action.task_type == "group_ai_chat",
             Action.action_type == "send_message",
             Action.status.in_(LEGACY_ANCHOR_OPEN_STATUSES),
-        ).with_for_update(skip_locked=True, of=Action)
+            _incomplete_daily_contract_expression(),
+        )
+        .limit(ACTION_MAINTENANCE_BATCH_LIMIT)
+        .with_for_update(skip_locked=True, of=Action)
     )
     expired = 0
     for action in actions:
@@ -101,6 +119,66 @@ def _has_current_daily_content_contract(action: Action) -> bool:
         and str(payload.get("fallback_obligation_key") or "").strip()
         and payload.get("mask_status") == "missing"
     )
+
+
+def _requires_contract_replan_expression():
+    payload = Action.payload
+    result = Action.result
+    rewritten = func.coalesce(
+        result["voice_profile_anchor_rewritten"].as_boolean(), False,
+    ).is_(True)
+    generated_without_contract = and_(
+        payload["ai_generation_status"].as_string() == "ready",
+        func.coalesce(payload["message_text"].as_string(), "") != "",
+        func.coalesce(payload["generation_source"].as_string(), "").not_in(
+            DIRECT_CHECK_IN_GENERATION_SOURCES,
+        ),
+        func.coalesce(payload["voice_profile_contract_version"].as_string(), "")
+        != VOICE_PROFILE_CONTRACT_VERSION,
+    )
+    return or_(rewritten, generated_without_contract)
+
+
+def _incomplete_daily_contract_expression():
+    payload = Action.payload
+    has_coverage = _json_text(payload, "coverage_ledger_id") != ""
+    has_target = _json_text(payload, "daily_group_target_id") != ""
+    current_mask = and_(
+        _json_text(payload, "content_source") == "account_mask",
+        _json_text(payload, "account_mask_id") != "",
+        func.coalesce(payload["account_mask_version"].as_integer(), 0) > 0,
+        _json_text(payload, "account_mask_snapshot_hash") != "",
+        _json_text(payload, "mask_status") == "active",
+    )
+    mask_missing = and_(
+        _json_text(payload, "content_source") == "mask_missing_check_in",
+        _json_text(payload, "fallback_obligation_key") != "",
+        _json_text(payload, "mask_status") == "missing",
+    )
+    valid_contract = and_(
+        has_target,
+        or_(current_mask, mask_missing, _due_catch_up_expression()),
+    )
+    return and_(has_coverage, ~valid_contract)
+
+
+def _due_catch_up_expression():
+    payload = Action.payload
+    return and_(
+        _json_text(payload, "message_text") == DIRECT_CHECK_IN_TEXT,
+        _json_text(payload, "content_source") == DUE_CATCH_UP_CHECK_IN_SOURCE,
+        _json_text(payload, "generation_source") == DUE_CATCH_UP_GENERATION_SOURCE,
+        _json_text(payload, "quality_fallback") == DUE_CATCH_UP_QUALITY_FALLBACK,
+        _json_text(payload, "fallback_reason") == DUE_CATCH_UP_CHECK_IN_REASON,
+        _json_text(payload, "primary_quantity_slot_id") != "",
+        _json_text(payload, "reply_to_message_id") == "",
+        _json_text(payload, "material_intent") == "",
+        _json_text(payload, "ai_message_memory_id") != "",
+    )
+
+
+def _json_text(column, key: str):
+    return func.coalesce(column[key].as_string(), "")
 
 
 def reject_legacy_anchor_rewrite_before_send(

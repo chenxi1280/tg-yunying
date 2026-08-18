@@ -694,7 +694,9 @@ def test_group_volume_candidates_require_current_coverage_and_active_mask(
         account_limit=2,
     )
 
-    assert captured["scan_all_candidates"] is True
+    assert "scan_all_candidates" not in captured
+    assert captured["candidate_account_ids"] == [1, 2, 4]
+    assert captured["limit"] == 3
     assert [account.id for account in selected] == [2, 4]
 
 
