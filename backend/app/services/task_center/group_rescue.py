@@ -327,7 +327,8 @@ def _payload_int(payload: dict | None, key: str) -> int:
 
 
 def _action_sort_key(action: Action) -> tuple[datetime, str]:
-    return (action.executed_at or action.scheduled_at or _now(), action.id or "")
+    observed_at = action.executed_at or action.scheduled_at or _now()
+    return (as_beijing(observed_at) or _now(), action.id or "")
 
 
 def _action_rescue_status(action: Action) -> str:

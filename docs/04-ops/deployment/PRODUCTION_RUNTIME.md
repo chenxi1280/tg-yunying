@@ -83,6 +83,7 @@ Repository variables:
 - 全账号每日覆盖验收必须逐条核对 `TaskAccountDailyCoverage.account_id = Action.account_id = ExecutionAttempt.account_id`，且 Attempt 为 success、`remote_message_id` 非空；只比较 confirmed 总数会漏掉运行时换号造成的误确认。
 - 发送型 `unknown_after_send` 不得直接重发；远端按账号 peer、目标群、调用前后时间窗和原文确认消息不存在后，才可将 Action / Attempt 记为 `remote_message_absent_confirmed`，并释放处于 `unknown` 的原账号覆盖预约重新规划。
 - `orphaned_source_pacing_reconcile_v2` 只允许修正 pre-Gateway 时钟与失效占用。preview manifest 必须冻结 task/ledger/quantity owner/account、OperationTarget peer+revision、ChannelMessage 本地+远端 ID、payload 与 daily/total/effective/due 数量目标；apply 在同一事务行锁重算并在写后复核，任一发送目标或数量漂移整批零写入失败。`safely_not_executed` 只重开原 owner，不能冲抵 due 或更换接收目标；replacement 继续继承相同 owner/目标快照。
+- 群发送权限救援的连续失败排序必须先用 `as_beijing` 统一 executed/scheduled/fallback 时间；PostgreSQL aware 时间、legacy naive 时间或缺失时间混排不得让 Dispatcher 抛异常。若异常发生在 Gateway call-start 后，Action/Attempt 必须保持 `unknown_after_send/result_unknown` 与 `remote_outcome_unknown`，禁止因热修发布直接重发或释放 quantity owner。
 - 若 pending Action 持续出现 `account_inflight_conflict`，必须交叉核对同账号是否仍有数据库 `claiming/executing` Action；数据库无占用但冲突持续说明 Dispatcher 进程内 reservation 泄漏，生产版本必须由 `dispatch_action finally` 统一释放，不能等待 30 分钟 Redis TTL 或把账号误判为离线。
 - Bridge 固定使用 `--no-memory --no-subagents --disable-web-search --permission-mode dontAsk --verbatim`；只保存有界错误码、模型阶段和耗时，不保存 Prompt、推理过程、授权资料或密钥。
 - 生产验收必须分层：CLI / 模型预检通过不等于任务恢复；还需在受控测试任务中观察 `fallback_stage`、`actual_model`、`generation_attempts` 和最终 Action，且测试前不得触发真实 Telegram 发送。

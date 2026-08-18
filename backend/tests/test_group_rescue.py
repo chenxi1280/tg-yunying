@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -1264,6 +1264,27 @@ def test_group_ai_permission_failure_count_uses_latest_consecutive_streak() -> N
         )
         session.add(current)
         session.commit()
+
+        assert permission_failure_count_for_send_action(session, current) == 1
+
+
+@pytest.mark.no_postgres
+def test_group_ai_permission_streak_normalizes_mixed_datetime_awareness() -> None:
+    with _session() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(Task(id="task-ai-time", tenant_id=1, name="ai rescue", type="group_ai_chat", status="running"))
+        session.add(TgAccount(id=11, tenant_id=1, display_name="普通账号", phone_masked="11", status=AccountStatus.ACTIVE.value, session_ciphertext="session-11"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="目标群"))
+        missing_time = _permission_denied_send_action("missing-time", "task-ai-time", NOW)
+        missing_time.scheduled_at = None
+        missing_time.executed_at = None
+        current = _permission_denied_send_action(
+            "current-aware",
+            "task-ai-time",
+            NOW.replace(tzinfo=timezone(timedelta(hours=8))),
+        )
+        session.add_all([missing_time, current])
+        session.flush()
 
         assert permission_failure_count_for_send_action(session, current) == 1
 
