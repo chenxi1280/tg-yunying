@@ -6,10 +6,10 @@
 | --- | --- |
 | Intake ID | intake-2026-08-17-planner-pacing-memory-001 |
 | 分级 | L3 / P0 资源风险 + P0 来源突发 + P1 拟人节奏，必须走标准生产事故流与 Release Gate |
-| 设计状态 | product_design_complete / dev_handoff_ready=true / resynced_2026-08-18-13 |
-| 实现状态 | production_repair_resync_13 / `19838c59` 已发布 materialization CAS 败方权威读回；最终 SHA 的 AI generation conflict/drain error 短窗为 0。生产 E4 新暴露 source state 的 pre-Gateway timestamp 与 Attempt Gateway marker 存在毫秒级漂移，进入权威 marker 对齐修订 |
-| 生产状态 | partial：`19838c59` 后 AI/view 自然 typed fact 为 8/6，AI E4 ledger null/mismatch=0，14 个 fact Action 最大 1 条 admission 且无 stranded，OCR 单实例与 MemAvailable 短窗通过；但 view 同来源 4 个相邻 Gateway pair 中 2 个低于冻结 87 秒，最小 86.968958 秒，production_fixed=false |
-| 当前生产基线 | 2026-08-18 20:42 北京时间；release `19838c59`；current/SHA/migration/health/restart/OOM、OCR authenticated ready、Docker/containerd 单实例读回通过。MemAvailable 1856848 KiB，Planner/OCR PSS 196352/229647 KiB；AI materialization 冲突短窗为 0，浏览毫秒级 gap 漂移未修复，6/24 小时长窗未闭合 |
+| 设计状态 | product_design_complete / dev_handoff_ready=true / resynced_2026-08-18-14 |
+| 实现状态 | `e5c6e61d` 已发布 source Gateway marker 同事务对齐；最终 SHA 的 CAS conflict/drain error/alignment error 均为 0。宿主聚合内存仍未达标，进入零消费者 Mihomo runtime 受审计退役修订 |
+| 生产状态 | partial：`e5c6e61d` 后 AI/view 权威 Gateway gap 最小 22.098449/88.221923 秒且违例均为 0，AI/view 自然 typed fact 为 16/7，ledger/admission/CAS 读回通过；Planner PSS/CPU 短窗通过，但宿主 MemAvailable 最低约 1.43 GiB，production_fixed=false |
+| 当前生产基线 | 2026-08-18 21:30 北京时间；release `e5c6e61d`；current/SHA/migration/health/restart/OOM、OCR authenticated ready 与 Docker/containerd 单实例读回通过。Planner PSS 约 199 MiB、30 秒 CPU 16.76%～29.62%；24 个运行且全消费者为 0 的 Mihomo 容器合计 PSS 241533 KiB，为当前可精确回收边界，6/24 小时长窗未闭合 |
 | 权威关系 | 本文规范性取代生产稳定性 PRD 中 Planner 资源和旧 AI fail-open gate 口径，并补正拟人节奏 PRD 的跨批恢复；不改变各任务 stable owner、typed remote fact、unknown 与数量结算合同 |
 | 操作边界 | 用户已授权实现、发布与生产验证；精确 stats cleanup 仍须独立 preview/hash/apply/readback，禁止把发布授权扩张为批量重试或未知外发 |
 
@@ -102,6 +102,7 @@ Planner 容器也实际建立 Telegram TCP 并持续记录 Telethon update。结
 | RC-R5 | processed 无阶段、SQL、ORM、PSS/cgroup 解释力 | Planner 自采样和阶段指标 |
 | RC-R6 | 统一 worker 入口在每个专用角色启动时 eager import 全部服务实现 | 专用 role 最小包初始化 + 显式 lazy implementation loader；缺失入口直接失败 |
 | RC-R7 | OCR worker 自回收与发布 `compose stop/remove` 竞态，Docker 元数据先删除但 restart manager 在 containerd 再拉起旧 task | 发布停 worker 前暂时关闭精确旧 OCR 容器 restart policy，确认停止后恢复；新 worker ready 后核对主机只存在一个且 cgroup container id 等于 Docker current id |
+| RC-R8 | 63 条 Mihomo 资源中 26 条连续 44 天无账号、授权、活动绑定、环境、分组、在线保活或未完成登录消费者，其中 24 个容器仍常驻 241533 KiB PSS | 显式 target + 当前 release + DB/容器/配置 manifest hash 两次核对；同事务锁代理记录并重算全消费者为 0 后写 disabled/audit，再对精确容器设 `restart=no` 并 stop；保留容器、volume 和 config，任一漂移或停止失败显式中止 |
 | RC-P1 | recovery cursor 是 batch-local | 四类 stable owner 的 source-wide cursor |
 | RC-P2 | AI 最终 gate sleep 且 fail-open，其他三类缺 gate | SourcePacingState + SourcePacingAdmission |
 | RC-P3 | scope takeover 终结旧 AI Action 时未失效消息预留，替代 Action 被旧 duplicate/check-in scope 占位阻断 | takeover 同事务失效 `AiGroupMessageMemory` + 既有孤儿精确审计清理 |
@@ -369,6 +370,10 @@ T2 按 Task/source 灰度，不要求暂停的 comment/like 为 AI/view 让路�
 
 每个 Task 固定 tenant/task/lifecycle、旧 stats hash、expected SHA、actor/approval。apply 前重算 active projection/count；漂移则逐 Task 拒绝。Action、Attempt、GenerationJob、variation、owner、unknown 和 typed fact 不删除、不改写。T3 与 schema/index train、资源 limit train 分窗。
 
+### 8.4 零消费者代理运行时退役
+
+退役只接受显式 Mihomo target；preview 必须固定 release SHA、AccountProxy 状态/版本、全部消费者计数、container id/image/restart/running 和只读 config SHA-256。apply 必须提供完整 manifest hash、actor 和 approval-ref，并在锁行事务内重算账号、授权、active proxy/environment/group binding、desired-online 及 open login flow 全为 0；任一非零或漂移都不改数据。通过后写 `disabled` 和 AuditLog，只对已锁定 container 设 `restart=no` 并 stop，不删容器/卷/配置。读回必须同时证明 target 已 stopped+disabled、非 target 有消费者 runtime 仍 running、业务容器健康和 MemAvailable 达标；Telegram 业务 E4 仍独立验收。
+
 ## 9. 滚动发布与回滚
 
 | Train | 内容 | 激活条件 |
@@ -411,6 +416,7 @@ T2 按 Task/source 灰度，不要求暂停的 comment/like 为 AI/view 让路�
 16. 发布自回收竞态回归：旧 OCR 容器 restart policy fencing 必须发生在 `compose stop` 之前，停止确认后恢复；新 OCR ready 后断言真实 runtime 只有 current container id。额外旧 runtime、无法解析 cgroup id 或旧容器仍 running 均使 Release Gate 失败。
 17. PostgreSQL materialization CAS 竞争：双 session 同时读到同一 open projection 的旧 version 并绑定不同 replacement Action；winner 提交后 loser 必须重读 winner。winner 为 open Action 时 loser 以 `duplicate_open_obligation` 终结且不得覆盖 projection；同 Action 重入幂等成功；projection 同时关闭时 loser 以 `obligation_not_open` 终结。任何其他漂移仍抛 `fulfillment_obligation_materialization_conflict`，禁止 catch-all 吞错。
 18. Gateway marker 精度回归：前一 admission 的 state timestamp 为 T、权威 Attempt Gateway marker 为 T+250ms；下一 Action 在 T+gap 到达时必须 defer 到 T+250ms+gap，且随后写入的任意相邻 Attempt Gateway marker 差值严格不小于相邻冻结 gap 的较大值。禁止通过秒级取整、epsilon 容差或额外 sleep 伪造通过。
+19. 代理运行时退役回归：target/manifest/release/actor/approval 缺失、任一消费者非零、DB 版本漂移、container id/config hash 漂移或 stop 失败均显式失败；成功仅改显式 target 为 disabled 并 stopped/restart=no，AuditLog 数与 target 数一致，非 target 不变。
 
 ### 10.2 性能与资源
 
