@@ -590,7 +590,9 @@ def _finalize_fact_first_dispatch(session: Session, action: Action) -> None:
     from .search_click_safe_settlement import (
         settle_search_click_assignment_from_remote_fact,
     )
+    from .search_click_unknown_projection import project_search_click_unknown
 
+    project_search_click_unknown(session, action)
     fact = persist_remote_fact(session, action)
     if fact is not None:
         settle_search_click_assignment_from_remote_fact(

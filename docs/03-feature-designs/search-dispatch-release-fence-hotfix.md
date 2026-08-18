@@ -7,6 +7,7 @@
 - 现象：一条 `search_click/search_join` Action 在发布前已经写入 `ExecutionAttempt.gateway_call_started_at`，随后 Stage A 停止旧 `worker-search-dispatcher`；发布完成后该 Action 仍保持 `executing/gateway_call_started`，只能等待 30 分钟 lease 到期。
 - 根因：Stage B 的 `recover_fenced_dispatch_actions` 只选择带 `dispatch_claim_active=true` 的共享 Dispatcher Action；专用搜索 Dispatcher 的 current Action 不写该共享 claim 标记，因此没有进入发布 fence 分类。
 - 影响：远端结果仍未知且不得重发，但搜索义务、账号与 assignment 在 lease 窗口内被额外占用；发布后的业务恢复被延迟。
+- 首次发布后遗漏审计：Stage B 已真实收口 2 条搜索 Action，但普通 stale-worker / lease-expiry Recovery 仍通过通用 finalizer 生成 `remote_outcome_unknown`，未把 direct assignment 从 `executing` 投影到 `gateway_unknown`。生产历史共有 306 条这类状态债，其中 305 条 Action/obligation 已终态且不占当前 Action worker 槽，禁止借本热修无 preview 批量改写；1 条当日 unknown 需由兼容 deadline 链路自然收口。
 
 ## 2. 产品合同
 
@@ -16,6 +17,8 @@
 4. 选择范围只增加 `task_type=search_click AND action_type=search_join`。其他未声明共享 claim 的 Action 不允许被顺带接管。
 5. Stage B 仍按现有 100 行有界循环处理并逐 Action 写 AuditLog；循环读回 0 后才允许进入 takeover/activate。
 6. 发布后验收必须分别读取 deployed SHA、遗留 executing 搜索数、unknown 防重状态和新 `target_click_observed`；健康检查或发布成功不能代替搜索业务事实。
+7. 所有 fact-first `search_click/search_join` 的 `unknown_after_send` 必须在统一 finalizer 中幂等投影 assignment/obligation：只有精确 action/obligation 绑定、Gateway-started Attempt、允许的旧状态才能进入 `gateway_unknown/unknown_after_send`；重复 finalizer 不增加 assignment version。deadline closure 对受同一 Action 绑定的历史 `executing` assignment 兼容收口为 `closed_unknown`。
+8. 本修复不自动清理 305 条既有终态历史 assignment；它们没有 pending/claiming/executing Action、没有 open obligation，也不计当前 `_free_search_slots`。任何历史批量修正必须另走完整 preview/hash/apply/readback，不能顺带执行。
 
 ## 3. 数据流与锁序
 
@@ -29,8 +32,16 @@
 
 - 单元回归：无共享 claim 标记的 current search pre-Gateway Action 被恢复为同一 pending Action；Gateway-started Action 只产生一个 unknown remote case，direct assignment 进入 `gateway_unknown`；重复运行返回 0。
 - 目标守恒回归：Action、assignment、obligation、`target_id` 与 `source_action_id` 全部保持原绑定；发布 fence 不创建替代目标或替代 Action。
+- 通用 Recovery 回归：统一 unknown 投影重复执行幂等；deadline 对 `gateway_unknown` 与同 Action 绑定的 legacy `executing` 均收口，不能把点击 unknown 计为完成。
 - 范围回归：无共享 claim 标记的非搜索 Action不被选择。
 - 既有共享 Dispatcher pre-Gateway/Gateway-started、ledger reconcile 与 Release Gate 测试保持通过。
 - 生产：发布前遗留搜索 Action必须在 Stage B 收口；发布后遗留 executing 数为 0、无同 Action新增 Attempt、目标身份不变，且后续自然搜索继续产生 `target_click_observed`。
 
-`design_status=complete / implementation_status=complete / qa_status=passed_26 / release_status=pending / production_fixed=unproven`
+## 5. 首次生产发布证据
+
+- `034216e4` / Actions run `32189957474` 完整成功，Stage B 输出 `recovered_fenced_action_count=2`。
+- 两条真实搜索 Action 均为同一 Action、单 Attempt、单 reconcile case，状态为 `unknown_after_send/result_unknown + gateway_unknown`，`target_click_observed=0`。
+- 发布后自然产生 4 条新 `target_click_observed`；同时 7 条新群发 typed fact 的 Action/Attempt、群、OperationTarget、冻结 snapshot、content scope、quantity slot、daily target 与 Task config mismatch 全为 0。
+- 首次 fence 边界可判 `production_fixed`；通用 stale Recovery 投影遗漏仍需第二次发布验证。
+
+`design_status=complete_resynced / implementation_status=complete / qa_status=passed_27 / first_release=034216e4_fence_pass / recovery_projection_release=pending / production_fixed=unproven`

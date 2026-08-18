@@ -26,6 +26,9 @@ from app.services.task_center.executors.search_click_direct import _open_units
 from app.services.task_center.dispatch_activation_ledger import (
     recover_fenced_dispatch_actions,
 )
+from app.services.task_center.search_click_unknown_projection import (
+    project_search_click_unknown,
+)
 from app.services.task_center.unknown_deadline_closure import (
     close_unknown_after_deadline,
 )
@@ -178,6 +181,7 @@ def test_release_fence_preserves_search_target_and_closes_assignment_lifecycle(
         gateway_call_started_at=datetime(2026, 8, 4, 8, 1),
     )
     original_target_id = obligation.target_id
+    obligation.status = "action_bound"
     obligation.source_action_id = action.id
     assignment.action_id = action.id
     session.add_all([projection, action, attempt])
@@ -186,18 +190,28 @@ def test_release_fence_preserves_search_target_and_closes_assignment_lifecycle(
     assert recover_fenced_dispatch_actions(session, actor="release-owner") == 1
     session.expire_all()
 
-    assert session.get(Action, action.id).status == "unknown_after_send"
-    assert session.get(SearchClickAssignment, assignment.id).state == "gateway_unknown"
+    current_action = session.get(Action, action.id)
+    current_assignment = session.get(SearchClickAssignment, assignment.id)
+    assert current_action.status == "unknown_after_send"
+    assert current_assignment.state == "gateway_unknown"
+    projected_version = current_assignment.version
+    assert project_search_click_unknown(session, current_action) is False
+    assert current_assignment.version == projected_version
     current = session.get(SearchClickFulfillmentObligation, obligation.id)
     assert current.status == "unknown_after_send"
     assert current.target_id == original_target_id
     assert current.source_action_id == action.id
 
 
-def test_deadline_closure_uses_short_terminal_and_appends_decision_fact(session: Session) -> None:
+@pytest.mark.parametrize("assignment_state", ["gateway_unknown", "executing"])
+def test_deadline_closure_uses_short_terminal_and_appends_decision_fact(
+    session: Session,
+    assignment_state: str,
+) -> None:
     task, ledger, obligations = _runtime(session)
     obligation = obligations[0]
     assignment = _unknown_assignment(session, task, ledger, obligation)
+    assignment.state = assignment_state
     action = Action(
         id="action-unknown",
         tenant_id=1,

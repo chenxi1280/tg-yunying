@@ -193,7 +193,11 @@ def _close_business_unknown(session: Session, action: Action) -> None:
     obligation_id = str(payload.get("search_click_obligation_id") or "")
     assignment = session.get(SearchClickAssignment, assignment_id) if assignment_id else None
     obligation = session.get(SearchClickFulfillmentObligation, obligation_id) if obligation_id else None
-    if assignment is not None and assignment.state == "gateway_unknown":
+    if (
+        assignment is not None
+        and assignment.action_id == action.id
+        and assignment.state in {"executing", "gateway_unknown"}
+    ):
         assignment.state = "closed_unknown"
         assignment.version = int(assignment.version or 1) + 1
     if (
