@@ -26,6 +26,7 @@ from app.models import (
 from app.services.task_center.direct_action_claims import (
     claim_fact_first_candidates,
     reconcile_source_pacing_states,
+    release_fact_first_action_reservations,
     settle_fact_first_action_before_gateway,
 )
 from app.services.task_center import dispatcher
@@ -205,6 +206,30 @@ def test_account_abandonment_safely_settles_pending_view_sibling(
     assert admission.state == "cancelled_pre_gateway"
     assert owner.status == "open" and owner.current_action_id is None
     assert state.next_call_not_before_at == NOW - timedelta(seconds=25)
+
+
+def test_replannable_failure_keeps_stable_owner_reservations(session: Session) -> None:
+    task, ledger, messages = _seed_view_period(session)
+    owner = _view_owner(ledger, messages[0], plan_total=600)
+    action = _view_action(task, owner, release_at=NOW)
+    action.status = "failed"
+    owner.current_action_id = action.id
+    owner.status = "pending"
+    reservation = _account_reservation(task, action, deadline=DEADLINE, future=NOW)
+    state, admission = _future_source_reservation(task, owner, action, future=NOW)
+    session.add_all([owner, action, reservation, state, admission])
+    session.flush()
+
+    state_ids = release_fact_first_action_reservations(
+        session,
+        action,
+        fact_kind="safely_not_executed",
+    )
+
+    assert state_ids == set()
+    assert reservation.state == "bound"
+    assert admission.state == "reserved"
+    assert owner.current_action_id == action.id
 
 
 def _seed_base(session: Session) -> None:

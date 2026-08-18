@@ -275,6 +275,13 @@ def release_fact_first_action_reservations(
         return set()
     if not action.pacing_slot_key:
         return set()
+    result = dict(action.result or {})
+    terminal = (
+        action.status == "skipped"
+        or result.get("account_task_disposition") == "abandoned"
+    )
+    if not terminal:
+        return set()
     _mark_pacing_reservation_missed(session, action.id)
     state_ids = _cancel_pre_gateway_source_admissions(session, action.id)
     release_channel_action_before_gateway(session, action)
