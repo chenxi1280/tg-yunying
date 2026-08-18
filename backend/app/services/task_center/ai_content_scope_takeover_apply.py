@@ -11,6 +11,7 @@ from app.models import (
     Action,
     AiContentScopeTakeoverBatch,
     AiContentScopeTakeoverItem,
+    AiGroupMessageMemory,
     AuditLog,
     ContentMixCycleSlot,
     ExecutionAttempt,
@@ -237,12 +238,37 @@ def _apply_replan(session: Session, action: Action) -> None:
         "error_code": "content_contract_replan_required",
         "error_message": "历史内容 scope 证据不足，原业务义务等待重规划",
     }
+    _expire_pre_gateway_message_memory(session, action)
     _finalize_dispatch_action(
         session,
         action,
         project_task_stats=False,
     )
     _release_content_mix_binding(session, action)
+
+
+def _expire_pre_gateway_message_memory(
+    session: Session,
+    action: Action,
+) -> None:
+    from .ai_message_memory import mark_group_ai_message_result
+
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    memory_id = str(payload.get("ai_message_memory_id") or "").strip()
+    if not memory_id:
+        return
+    if session.get(AiGroupMessageMemory, memory_id) is None:
+        return
+    mark_group_ai_message_result(
+        session,
+        memory_id,
+        status="expired_before_send",
+        action_id=action.id,
+        result={
+            "error_code": "content_contract_replan_required",
+            "action_id": action.id,
+        },
+    )
 
 
 def _release_content_mix_binding(session: Session, action: Action) -> None:

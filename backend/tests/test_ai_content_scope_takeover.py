@@ -8,6 +8,7 @@ from app.models import (
     Action,
     AiContentScopeTakeoverBatch,
     AiContentScopeTakeoverItem,
+    AiGroupMessageMemory,
     ContentMixCycleSlot,
     RemoteReconcileCase,
     Task,
@@ -245,6 +246,50 @@ def test_missing_context_replans_the_same_quantity_and_content_slot() -> None:
         assert cycle_slot.current_action_id is None
         assert cycle_slot.slot_state == "replan_required"
         assert quantity.state == "open"
+
+
+def test_replan_expires_pre_gateway_message_memory() -> None:
+    sessions = _sessions()
+    with sessions() as session:
+        _seed_scope(session)
+        action = _seed_bound_legacy_action(
+            session,
+            "a-replan-memory",
+            context_message_ids=[999],
+        )
+        memory = AiGroupMessageMemory(
+            id="memory-replan",
+            tenant_id=1,
+            group_id=8,
+            task_id=action.task_id,
+            action_id=action.id,
+            account_id=action.account_id,
+            raw_text="legacy body",
+            normalized_text="legacy body",
+            text_fingerprint="f" * 64,
+            status="reserved",
+        )
+        session.add(memory)
+        action.payload = {
+            **dict(action.payload or {}),
+            "ai_message_memory_id": memory.id,
+        }
+        batch = _preview(session)
+        batch_id = batch.id
+        batch_hash = batch.classification_hash
+        counts = dict(batch.classification_counts)
+        session.commit()
+
+    _finish_takeover(
+        sessions,
+        batch_id=batch_id,
+        expected_hash=batch_hash,
+        expected_counts=counts,
+    )
+    with sessions() as session:
+        memory = session.get(AiGroupMessageMemory, "memory-replan")
+        assert memory.status == "expired_before_send"
+        assert memory.result["error_code"] == "content_contract_replan_required"
 
 
 def test_invalid_pre_gateway_payload_replans_instead_of_quarantine() -> None:

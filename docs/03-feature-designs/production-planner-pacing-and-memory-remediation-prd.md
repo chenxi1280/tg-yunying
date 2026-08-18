@@ -7,9 +7,9 @@
 | Intake ID | intake-2026-08-17-planner-pacing-memory-001 |
 | 分级 | L3 / P0 资源风险 + P0 来源突发 + P1 拟人节奏，必须走标准生产事故流与 Release Gate |
 | 设计状态 | product_design_complete / dev_handoff_ready=true / resynced_2026-08-18 |
-| 实现状态 | production_repair_resync_5 / d75c6bbd own-history anti-join 已发布且 Planner 短窗资源通过；聚合宿主的 OCR 残余已完成 recognizer-only 本地修订与 45 项定向 QA，等待第二次 Release Gate |
-| 生产状态 | partial：d75c6bbd Planner 前 29 样本 PSS p95 189 MiB、CPU p95 26.52%，后续 steady drain 3.9/0.9 秒；首轮 35.3 秒。宿主受完整 RapidOCR 三模型常驻影响仅约 1.17 GiB 可用，resource_capacity_degraded，production_fixed=unproven |
-| 当前生产基线 | 2026-08-18 14:45 北京时间；release d75c6bbd；Planner warm PSS 约 189 MiB、RestartCount=0；图片核验 worker 空闲 PSS 约 444 MiB |
+| 实现状态 | production_repair_resync_6 / 8c8178be recognizer-only 已发布并取得 Planner/OCR 短窗 E3；生产遗漏审计发现 scope takeover 未失效旧消息预留，修订已完成本地 QA，等待第三次 Release Gate |
+| 生产状态 | partial：8c8178be Planner 64 样本 PSS p95 190 MiB、CPU p95 28.74%、processed drain p95 22.7 秒；OCR 20 请求后 PSS 约 228 MiB且 12 个真实 challenge 双源 accepted。共享宿主 warm MemAvailable 约 1.27 GiB，AI 首批自然 due 被遗留消息预留触发的 duplicate/check-in scope blocker 阻断，production_fixed=unproven |
+| 当前生产基线 | 2026-08-18 16:20 北京时间；release 8c8178be；Planner/OCR restart=0、OOM=false；旧 scope takeover Action 仍关联 21 条 active `AiGroupMessageMemory` 预留 |
 | 权威关系 | 本文规范性取代生产稳定性 PRD 中 Planner 资源和旧 AI fail-open gate 口径，并补正拟人节奏 PRD 的跨批恢复；不改变各任务 stable owner、typed remote fact、unknown 与数量结算合同 |
 | 操作边界 | 用户已授权实现、发布与生产验证；精确 stats cleanup 仍须独立 preview/hash/apply/readback，禁止把发布授权扩张为批量重试或未知外发 |
 
@@ -63,6 +63,7 @@ Planner 短样本没有证明单调增长，所以“泄漏”仍为 unproven。
 - 2b0790ad 发布后 383 个资源样本显示 Planner PSS p95 209 MiB、CPU p95 21%，但 265 个 processed drain 的 p95 为 35.4 秒，且 15 分钟 drain p95 从 11.3 秒逐步升至 52.8 秒。`strace` 显示 12 秒内约 2,650 次数据库 send；生产慢查询捕获 own-history Action/Attempt ORM 查询最长约 8.4 秒。根因是 reply pool 在 limit 前对候选 Action 使用相关 `NOT EXISTS` 逐行判断目标是否已被占用，放大数据库往返/扫描。修订为一次性投影当前 tenant/group/状态下 distinct used target，再以 anti-join 在 limit 前排除；生产代表性 `EXPLAIN ANALYZE` 从观测慢查询的秒级放大降为约 0.44 秒，且保留“先排除已用目标、再取候选”的无饥饿语义。
 - 当前宿主的另一独立内存 owner 是图片核验 worker：同时预热 RapidOCR/ddddOCR 后空闲 RSS 约 416 MiB，近三小时两次重启均为退出码 0、OOMKilled=false 的优雅换代；该 worker 按 640 MiB soft RSS 或 100 个完成请求回收。它解释聚合宿主压力，但不解释 Planner drain 慢查询，不能用其换代结果代替 Planner 修复验收。
 - d75c6bbd 发布后进一步读回：图片 worker 在 10 个请求后空闲 PSS/RSS 约 444/454 MiB，宿主 MemAvailable 约 1.17 GiB。隔离基准证明完整 `RapidOCR()` 为整图验证码额外加载 det/cls/rec 三套模型；改成 recognizer-only 并保留 ddddOCR 后，同镜像合成图 RSS 从约 451 MiB 降至 222 MiB、耗时从 2.04 秒降至 0.30 秒，RapidOCR 输出不变。该修订不改变双源、deadline 或 typed fact，仅移除不参与验证码合同的 det/cls runtime。
+- 8c8178be 发布后 OCR worker 在 20 个请求后 PSS 约 228 MiB、busy=0，当前版本 12 个去重真实 challenge 均为 RapidOCR/ddddOCR accepted 且 local consensus，证明 recognizer-only 语义成立。AI 冻结 release 最小同源 gap 18 秒且 0 planned violation，但自然 due 后连续 0 Gateway；首个后置破损边界不是 pacing，而是 21 条已由 `content_contract_replan_required` 终结的旧 Action 仍保留 active 消息预留，使新 Action 触发 `duplicate_message` / `check_in_scope_occupied`。takeover 终结 Action 时必须在同一事务把其消息预留标为 `expired_before_send`；既有孤儿仅允许经精确 preview/hash/apply/readback 清理。
 
 首个资源破损边界是 Planner 的无界读取与 Task 热行写入；宿主总预算是并行平台风险。不能先把结论写成单一内存泄漏。
 
@@ -97,6 +98,7 @@ Planner 容器也实际建立 Telegram TCP 并持续记录 Telethon update。结
 | RC-R6 | 统一 worker 入口在每个专用角色启动时 eager import 全部服务实现 | 专用 role 最小包初始化 + 显式 lazy implementation loader；缺失入口直接失败 |
 | RC-P1 | recovery cursor 是 batch-local | 四类 stable owner 的 source-wide cursor |
 | RC-P2 | AI 最终 gate sleep 且 fail-open，其他三类缺 gate | SourcePacingState + SourcePacingAdmission |
+| RC-P3 | scope takeover 终结旧 AI Action 时未失效消息预留，替代 Action 被旧 duplicate/check-in scope 占位阻断 | takeover 同事务失效 `AiGroupMessageMemory` + 既有孤儿精确审计清理 |
 | RC-M1 | 旧 backlog 缺 source/period/lifecycle/plan 分类 | preview manifest + 分 Task 激活 |
 | RC-H1 | 多容器共同挤压宿主 | cgroup 预算公式 + 分 train 隔离 |
 | RC-L1 | 独立 leak | unproven；确定性修复后重测 |
