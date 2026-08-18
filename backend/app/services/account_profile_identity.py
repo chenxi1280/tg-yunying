@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import random
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -12,19 +11,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import TgAccount, TgAccountProfileNameClaim
+from app.services.account_profile_name_generation import generate_unique_display_names
 
 
 SPACE_RE = re.compile(r"\s+")
 ZERO_WIDTH_CHARACTERS = frozenset({"\u200b", "\u200c", "\u200d", "\ufeff"})
-NAME_GENERATION_MAX_ATTEMPTS = 10_000
 GENERIC_DISPLAY_NAMES = frozenset({"", "托管账号", "新托管账号", "未命名账号"})
-
-NAME_PREFIXES = ("薄荷", "海盐", "青柠", "云朵", "晚风", "橘子", "山茶", "木槿", "星河", "松露", "青团", "麦芽", "栗子", "小葵", "南星", "半夏")
-NAME_OBJECTS = ("日记", "信箱", "书签", "汽水", "糖罐", "窗台", "耳机", "胶片", "风铃", "茶杯", "纸飞机", "便利店", "小卖部", "备忘录", "收音机", "口袋")
-NAME_ACTIONS = ("散步中", "等风来", "看晚霞", "听小雨", "晒太阳", "慢慢走", "在发呆", "先收藏", "不熬夜", "去兜风", "等天晴", "喝热茶", "翻一页", "看云去", "吹晚风", "捡星光")
-NAME_MOODS = ("慢半拍", "有点甜", "刚刚好", "很松弛", "不着急", "轻轻的", "小透明", "微微困", "心情晴", "今天闲", "偶尔冒泡", "随便看看")
-NAME_SCENES = ("凌晨路灯", "周末阳台", "雨后街角", "黄昏车站", "夏夜窗口", "清晨厨房", "海边长椅", "楼下花店", "巷口咖啡", "树下长椅", "午后书店", "夜班便利店")
-NAME_SHORTS = ("阿柚", "小葵", "山风", "七七", "橘白", "南星", "一栗", "鹿鹿", "木子", "小满", "青团", "半夏", "小禾", "初九", "一朵", "麦麦")
 
 
 class DisplayNameConflict(ValueError):
@@ -133,47 +125,6 @@ def assert_profile_name_claimed(session: Session, tenant_id: int, account_id: in
     )
     if claim is None or claim.account_id != account_id:
         raise DisplayNameConflict("display_name_claim_missing")
-
-
-def generate_unique_display_names(
-    count: int,
-    unavailable_keys: set[str],
-    seed: str,
-    *,
-    forbidden_words: set[str] | None = None,
-) -> list[str]:
-    if count < 0:
-        raise ValueError("count must not be negative")
-    generator = random.Random(seed)
-    template_offset = generator.randrange(9)
-    names: list[str] = []
-    used = set(unavailable_keys)
-    forbidden = {word.strip() for word in (forbidden_words or set()) if word.strip()}
-    for attempt in range(NAME_GENERATION_MAX_ATTEMPTS):
-        candidate = _random_display_name(generator, attempt + template_offset)
-        key = normalize_display_name(candidate)
-        if key in used or any(word in candidate for word in forbidden):
-            continue
-        names.append(candidate)
-        used.add(key)
-        if len(names) == count:
-            return names
-    raise RuntimeError("name_pool_exhausted")
-
-
-def _random_display_name(generator: random.Random, slot: int) -> str:
-    templates = (
-        lambda: generator.choice(NAME_SHORTS),
-        lambda: f"{generator.choice(NAME_PREFIXES)}{generator.choice(NAME_OBJECTS)}",
-        lambda: f"{generator.choice(NAME_PREFIXES)}{generator.choice(NAME_ACTIONS)}",
-        lambda: f"{generator.choice(NAME_SCENES)}{generator.choice(NAME_MOODS)}",
-        lambda: f"{generator.choice(NAME_OBJECTS)}旁边{generator.choice(NAME_ACTIONS)}",
-        lambda: f"{generator.choice(NAME_PREFIXES)}今天{generator.choice(NAME_MOODS)}",
-        lambda: f"在{generator.choice(NAME_SCENES)}{generator.choice(NAME_ACTIONS)}",
-        lambda: f"{generator.choice(NAME_MOODS)}的{generator.choice(NAME_OBJECTS)}",
-        lambda: f"{generator.choice(NAME_PREFIXES)}和{generator.choice(NAME_OBJECTS)}",
-    )
-    return templates[slot % len(templates)]()
 
 
 def duplicate_name_groups(accounts: Iterable[TgAccount]) -> list[DuplicateNameGroup]:

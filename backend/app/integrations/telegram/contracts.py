@@ -119,6 +119,13 @@ class RemoteProfile:
 
 
 @dataclass(frozen=True)
+class RemoteAvatarFingerprint:
+    sha256: str
+    size_bytes: int
+    remote_photo_id: str
+
+
+@dataclass(frozen=True)
 class AccountAuthorizationSnapshot:
     authorization_hash: str
     is_current: bool

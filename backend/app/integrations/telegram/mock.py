@@ -27,6 +27,7 @@ from .contracts import (
     OperationResult,
     OutboundSegment,
     ProfileUpdateResult,
+    RemoteAvatarFingerprint,
     RemoteProfile,
     SendResult,
     VerificationCodeSnapshot,
@@ -587,6 +588,17 @@ class TelegramGateway:
         credentials: DeveloperAppCredentials | None = None,
     ) -> RemoteProfile:
         return RemoteProfile(first_name=f"账号{account_id}", last_name="Mock", bio="mock profile", username=f"mock_{account_id}")
+
+    def pull_profile_avatar_fingerprint(
+        self,
+        account_id: int,
+        *,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> RemoteAvatarFingerprint | None:
+        """Mock gateway has no remote avatar store; tests must inject an explicit readback fact."""
+        del account_id, session_ciphertext, credentials
+        return None
 
     def list_authorizations(
         self,

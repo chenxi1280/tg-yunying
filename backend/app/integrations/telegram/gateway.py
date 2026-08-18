@@ -31,6 +31,7 @@ from .contracts import (
     OperationResult,
     OutboundSegment,
     ProfileUpdateResult,
+    RemoteAvatarFingerprint,
     RemoteProfile,
     SendResult,
     VerificationCodeSnapshot,
@@ -2609,6 +2610,50 @@ class TelethonTelegramGateway(TelegramGateway):
         credentials: DeveloperAppCredentials | None = None,
     ) -> RemoteProfile:
         return self._run(self._pull_profile_async(session_ciphertext, self._usable_credentials(credentials)))
+
+    async def _pull_profile_avatar_fingerprint_async(
+        self,
+        session_ciphertext: str | None,
+        credentials: DeveloperAppCredentials,
+    ) -> RemoteAvatarFingerprint | None:
+        client = await self._authorized_client(
+            session_ciphertext,
+            credentials,
+            error_message="账号没有可用 session",
+        )
+        me = await client.get_me()
+        photo = getattr(me, "photo", None)
+        if photo is None:
+            return None
+        data = await client.download_profile_photo(me, file=bytes)
+        if not data:
+            raise RuntimeError("remote avatar exists but download returned empty bytes")
+        return RemoteAvatarFingerprint(
+            sha256=hashlib.sha256(data).hexdigest(),
+            size_bytes=len(data),
+            remote_photo_id=str(getattr(photo, "photo_id", "") or ""),
+        )
+
+    def pull_profile_avatar_fingerprint(
+        self,
+        account_id: int,
+        *,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> RemoteAvatarFingerprint | None:
+        """Read the current Telegram profile-photo bytes and return their SHA-256 fingerprint.
+
+        Use only for independent readback after a profile-photo mutation. Returns None when
+        Telegram reports no profile photo. Authorization or download failures raise with an
+        actionable message and must not be interpreted as a missing avatar or successful match.
+        """
+        del account_id
+        return self._run(
+            self._pull_profile_avatar_fingerprint_async(
+                session_ciphertext,
+                self._usable_credentials(credentials),
+            )
+        )
 
     async def _clone_async(
         self,

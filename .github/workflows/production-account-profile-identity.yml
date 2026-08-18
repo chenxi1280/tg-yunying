@@ -10,6 +10,7 @@ name: Production Account Profile Identity Operations
         options:
           - profile_dedupe
           - avatar_import
+          - login_batch_initialize
       mode:
         description: Read-only preview/readback or guarded apply
         required: true
@@ -21,6 +22,21 @@ name: Production Account Profile Identity Operations
           - readback
       seed:
         description: Stable profile-name seed; required for profile_dedupe
+        required: false
+        default: ''
+        type: string
+      login_batch_id:
+        description: Exact completed login batch ID; preview may use 0 for unique seven-day discovery
+        required: false
+        default: '0'
+        type: string
+      expected_target_count:
+        description: Exact successful account count expected from the login batch
+        required: false
+        default: '300'
+        type: string
+      style_group_ids:
+        description: Comma-separated same-tenant group IDs; preview may leave empty for listener-group discovery
         required: false
         default: ''
         type: string
@@ -61,6 +77,9 @@ jobs:
           OPERATION: ${{ inputs.operation }}
           MODE: ${{ inputs.mode }}
           SEED: ${{ inputs.seed }}
+          LOGIN_BATCH_ID: ${{ inputs.login_batch_id }}
+          EXPECTED_TARGET_COUNT: ${{ inputs.expected_target_count }}
+          STYLE_GROUP_IDS: ${{ inputs.style_group_ids }}
           EXPECTED_SHA: ${{ inputs.deployed_sha }}
           MANIFEST_SHA: ${{ inputs.expected_manifest_sha256 }}
           APPROVAL_REF: ${{ inputs.approval_ref }}
@@ -69,7 +88,7 @@ jobs:
           test -n "${SSH_PRIVATE_KEY}"
           test -n "${DEPLOY_HOST}"
           test -n "${DEPLOY_USER}"
-          [[ "${OPERATION}" =~ ^(profile_dedupe|avatar_import)$ ]]
+          [[ "${OPERATION}" =~ ^(profile_dedupe|avatar_import|login_batch_initialize)$ ]]
           [[ "${MODE}" =~ ^(preview|apply|readback)$ ]]
           [[ "${EXPECTED_SHA}" =~ ^[0-9a-f]{40}$ ]]
           [[ "${GITHUB_SHA}" == "${EXPECTED_SHA}" ]]
@@ -78,6 +97,17 @@ jobs:
           [[ -z "${APPROVAL_REF}" || "${APPROVAL_REF}" =~ ^[A-Za-z0-9._:/#-]{1,160}$ ]]
           if [[ "${OPERATION}" == profile_dedupe ]]; then
             test -n "${SEED}"
+          fi
+          if [[ "${OPERATION}" == login_batch_initialize ]]; then
+            [[ "${LOGIN_BATCH_ID}" =~ ^[0-9]+$ ]]
+            [[ "${EXPECTED_TARGET_COUNT}" =~ ^[1-9][0-9]*$ ]]
+            [[ -z "${STYLE_GROUP_IDS}" || "${STYLE_GROUP_IDS}" =~ ^[0-9]+(,[0-9]+)*$ ]]
+            [[ -z "${APPROVAL_REF}" || ${#APPROVAL_REF} -le 80 ]]
+            test -n "${SEED}"
+            if [[ "${MODE}" =~ ^(apply|readback)$ ]]; then
+              [[ "${LOGIN_BATCH_ID}" =~ ^[1-9][0-9]*$ ]]
+              test -n "${STYLE_GROUP_IDS}"
+            fi
           fi
           if [[ "${MODE}" =~ ^(apply|readback)$ ]]; then
             test -n "${MANIFEST_SHA}"
@@ -136,11 +166,28 @@ jobs:
           OPERATION: ${{ inputs.operation }}
           MODE: ${{ inputs.mode }}
           SEED: ${{ inputs.seed }}
+          LOGIN_BATCH_ID: ${{ inputs.login_batch_id }}
+          EXPECTED_TARGET_COUNT: ${{ inputs.expected_target_count }}
+          STYLE_GROUP_IDS: ${{ inputs.style_group_ids }}
           EXPECTED_SHA: ${{ inputs.deployed_sha }}
           MANIFEST_SHA: ${{ inputs.expected_manifest_sha256 }}
           APPROVAL_REF: ${{ inputs.approval_ref }}
         run: |
           set -euo pipefail
+          if [[ "${OPERATION}" == login_batch_initialize ]]; then
+            ssh production "timeout 1800 docker exec -i \
+              -e ACCOUNT_LOGIN_BATCH_PROFILE_INIT_MODE='${MODE}' \
+              -e ACCOUNT_LOGIN_BATCH_PROFILE_INIT_LOGIN_BATCH_ID='${LOGIN_BATCH_ID}' \
+              -e ACCOUNT_LOGIN_BATCH_PROFILE_INIT_EXPECTED_TARGET_COUNT='${EXPECTED_TARGET_COUNT}' \
+              -e ACCOUNT_LOGIN_BATCH_PROFILE_INIT_STYLE_GROUP_IDS='${STYLE_GROUP_IDS}' \
+              -e ACCOUNT_LOGIN_BATCH_PROFILE_INIT_SEED='${SEED}' \
+              -e ACCOUNT_LOGIN_BATCH_PROFILE_INIT_DEPLOYED_SHA='${EXPECTED_SHA}' \
+              -e ACCOUNT_LOGIN_BATCH_PROFILE_INIT_EXPECTED_SHA256='${MANIFEST_SHA}' \
+              -e ACCOUNT_LOGIN_BATCH_PROFILE_INIT_APPROVAL_REF='${APPROVAL_REF}' \
+              tgyunying-backend python -" \
+              < .github/scripts/account_login_batch_profile_initialize.py
+            exit 0
+          fi
           if [[ "${OPERATION}" == profile_dedupe ]]; then
             ssh production "timeout 1800 docker exec -i \
               -e ACCOUNT_PROFILE_DEDUPE_MODE='${MODE}' \

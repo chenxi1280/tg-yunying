@@ -1,5 +1,7 @@
 # 账号昵称唯一性、存量去重与头像素材治理 PRD
 
+> **2026-08-18 多样性补正：** 租户级 claim、历史名字保留与许可头像治理继续以本文为准；精确 completed 登录 batch、匿名群风格分布、10 类名字生成、ready 头像冻结分配和名字+头像独立 readback 以 `account-profile-group-style-initialization-prd.md` 为准。不得用本文旧的宽泛全租户 reconcile apply 处理“新登录 300 个账号”。
+
 - `intake_id`: `intake-2026-08-09-account-profile-identity-uniqueness`
 - `level`: `L3`
 - `design_status`: `complete`

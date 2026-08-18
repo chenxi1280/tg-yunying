@@ -1,0 +1,71 @@
+from __future__ import annotations
+
+import asyncio
+import hashlib
+from types import SimpleNamespace
+
+import pytest
+
+from app.config import Settings
+from app.integrations.telegram.contracts import DeveloperAppCredentials
+from app.integrations.telegram.gateway import TelethonTelegramGateway
+
+
+pytestmark = pytest.mark.no_postgres
+
+
+class _AvatarClient:
+    def __init__(self, data: bytes | None) -> None:
+        self.data = data
+
+    async def get_me(self):
+        photo = SimpleNamespace(photo_id=991) if self.data is not None else None
+        return SimpleNamespace(photo=photo)
+
+    async def download_profile_photo(self, _me, *, file):
+        assert file is bytes
+        return self.data
+
+
+def _credentials() -> DeveloperAppCredentials:
+    return DeveloperAppCredentials(app_id=1, api_id=12345, api_hash="hash", credentials_version=1)
+
+
+def test_pull_profile_avatar_fingerprint_hashes_remote_bytes(monkeypatch):
+    gateway = TelethonTelegramGateway(Settings())
+    client = _AvatarClient(b"remote-avatar-bytes")
+
+    async def authorized(*_args, **_kwargs):
+        return client
+
+    monkeypatch.setattr(gateway, "_authorized_client", authorized)
+    result = asyncio.run(gateway._pull_profile_avatar_fingerprint_async("session", _credentials()))
+
+    assert result is not None
+    assert result.sha256 == hashlib.sha256(b"remote-avatar-bytes").hexdigest()
+    assert result.size_bytes == len(b"remote-avatar-bytes")
+    assert result.remote_photo_id == "991"
+
+
+def test_pull_profile_avatar_fingerprint_returns_none_when_remote_has_no_photo(monkeypatch):
+    gateway = TelethonTelegramGateway(Settings())
+
+    async def authorized(*_args, **_kwargs):
+        return _AvatarClient(None)
+
+    monkeypatch.setattr(gateway, "_authorized_client", authorized)
+    result = asyncio.run(gateway._pull_profile_avatar_fingerprint_async("session", _credentials()))
+
+    assert result is None
+
+
+def test_pull_profile_avatar_fingerprint_exposes_empty_download(monkeypatch):
+    gateway = TelethonTelegramGateway(Settings())
+
+    async def authorized(*_args, **_kwargs):
+        return _AvatarClient(b"")
+
+    monkeypatch.setattr(gateway, "_authorized_client", authorized)
+
+    with pytest.raises(RuntimeError, match="download returned empty bytes"):
+        asyncio.run(gateway._pull_profile_avatar_fingerprint_async("session", _credentials()))

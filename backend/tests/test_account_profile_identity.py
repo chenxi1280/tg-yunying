@@ -22,6 +22,11 @@ from app.services.account_profile_identity import (
     normalize_display_name,
     unavailable_name_keys,
 )
+from app.services.account_profile_name_generation import (
+    generate_display_name_candidates,
+    name_diversity_metrics,
+    style_profile_from_names,
+)
 
 
 pytestmark = pytest.mark.no_postgres
@@ -99,6 +104,43 @@ def test_local_generation_excludes_forbidden_words():
     )
 
     assert all(forbidden not in name for name in names for forbidden in {"海盐", "便利店", "慢半拍"})
+
+
+def test_group_style_generation_diversifies_three_hundred_names_without_copying_sources():
+    source_names = ["王小明", "阿柚", "锅巴少糖", "周末清单留到明天", "胶片新手", "橘猫打盹"]
+    profile = style_profile_from_names(source_names)
+    source_keys = {normalize_display_name(name) for name in source_names}
+
+    items = generate_display_name_candidates(
+        300,
+        set(),
+        "group-style-300",
+        style_weights=profile.weight_map(),
+        source_name_keys=source_keys,
+    )
+    metrics = name_diversity_metrics(items)
+    names = [item.display_name for item in items]
+
+    assert len(set(names)) == 300
+    assert source_keys.isdisjoint({normalize_display_name(name) for name in names})
+    assert len(metrics["category_counts"]) >= 8
+    assert max(metrics["category_counts"].values()) <= 75
+    assert set(metrics["length_counts"]) == {"short_2_3", "medium_4_6", "long_7_12"}
+    assert metrics["max_prefix_count"] <= 15
+    assert metrics["max_suffix_count"] <= 15
+    assert all(not any(char.isdigit() for char in name) for name in names)
+
+
+def test_style_profile_is_aggregate_only_and_reproducible():
+    source_names = ["王小明", "阿柚", "锅巴少糖", "橘猫打盹"]
+    profile = style_profile_from_names(source_names)
+
+    first = generate_display_name_candidates(100, set(), "same-seed", style_weights=profile.weight_map())
+    second = generate_display_name_candidates(100, set(), "same-seed", style_weights=profile.weight_map())
+
+    assert first == second
+    assert profile.sample_count == 4
+    assert all(name not in repr(profile) for name in source_names)
 
 
 def test_duplicate_groups_select_only_non_keeper_accounts():
