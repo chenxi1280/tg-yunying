@@ -7,9 +7,9 @@
 | Intake ID | intake-2026-08-17-planner-pacing-memory-001 |
 | 分级 | L3 / P0 资源风险 + P0 来源突发 + P1 拟人节奏，必须走标准生产事故流与 Release Gate |
 | 设计状态 | product_design_complete / dev_handoff_ready=true / resynced_2026-08-18-11 |
-| 实现状态 | production_repair_resync_11 / `0b899786` 已实现同 Action admission pinning、AI typed fact ledger 绑定与兼容无 projection 的 legacy fact；生产资源复核新增发布期自回收容器 restart race 的 fencing 与单实例运行时闸门 |
-| 生产状态 | partial：`0b899786` 发布后 AI/view 自然 typed fact 持续增长，AI 最小实际来源间隔 22.38 秒（要求≥22）、浏览 87.78 秒（要求≥87），违例/同秒突发均为 0；AI fact、quantity owner 与 projection ledger 抽查均无 null/mismatch，同 Action 最大一条 admission、成功 Action 无 stranded reservation。宿主仍需在清理旧 OCR containerd task 后完成资源观察窗，production_fixed=false |
-| 当前生产基线 | 2026-08-18 19:34 北京时间；release `0b899786`；current/SHA/migration/health/restart/OOM 读回通过，Planner 47 个短窗样本 PSS p95 约 192 MiB；发现并精确清理一个 Docker 已不可见但 containerd 仍运行、占用 167215104 bytes 的旧 OCR task，MemAvailable 从约 1.49 GiB 回升到约 1.69 GiB；6/24 小时长窗未闭合 |
+| 实现状态 | production_repair_resync_12 / `6c66e047` 已实现同 Action admission pinning、AI typed fact ledger、OCR 发布 fencing 与单实例闸门；最终 SHA 复核确认 AI 多 worker materialization CAS loser 仍抛整轮 drain error，进入显式竞争收敛修订 |
+| 生产状态 | partial：`6c66e047` 发布后 AI/view 自然 typed fact 持续增长，既有来源间隔、ledger、同 Action admission 与 stranded reservation 短窗通过；OCR 发布闸门读回单实例，20 个 30 秒资源样本全部满足 MemAvailable≥1.5 GiB。但 20:02:08 北京时间 AI generation worker 仍出现 materialization CAS loser typed conflict，当前修订尚未发布，production_fixed=false |
+| 当前生产基线 | 2026-08-18 20:12 北京时间；release `6c66e047`；current/SHA/migration/health/restart/OOM、OCR authenticated ready、Docker/containerd 单实例读回通过。20 个资源样本 MemAvailable 最低 1661776 KiB，Planner PSS 197995-198813 KiB，OCR PSS 224339-224402 KiB；6/24 小时长窗未闭合 |
 | 权威关系 | 本文规范性取代生产稳定性 PRD 中 Planner 资源和旧 AI fail-open gate 口径，并补正拟人节奏 PRD 的跨批恢复；不改变各任务 stable owner、typed remote fact、unknown 与数量结算合同 |
 | 操作边界 | 用户已授权实现、发布与生产验证；精确 stats cleanup 仍须独立 preview/hash/apply/readback，禁止把发布授权扩张为批量重试或未知外发 |
 
@@ -110,6 +110,7 @@ Planner 容器也实际建立 Telegram TCP 并持续记录 Telethon update。结
 | RC-P6 | 过期 reservation 恢复只看冻结时间，多条 backlog 可在同一秒进入 Gateway | reused admission 最终时间取冻结时间与最近真实 call-start + 最大相邻 gap 的较大值 |
 | RC-P7 | 同一 Action 的 gap 重试重新遍历 owner 历史 reservation，单个成功 Action 绑定多条 reserved admission | owner 查询先按 `action_id == current` 排序，再按冻结时间；首次 replacement 接管后，后续重试固定同一 admission id |
 | RC-E1 | AI projection/fact 只读 payload ledger，但 AI quantity 合同把 ledger 固化在 primary quantity owner | payload ledger 缺失时按 `Action.primary_quantity_slot_id -> TaskGroupDailyMessageSlot.task_day_ledger_id` 解析并持久化 |
+| RC-E2 | 多 AI generation worker 同时为同一 obligation 绑定 replacement Action，CAS loser 把 winner 已提交的新 projection version 误报为业务身份冲突并中断整轮 drain | CAS 失败后重新读取权威 projection；winner 为当前 Action 则幂等成功，winner 为另一 open Action 则当前 Action 显式 `duplicate_open_obligation` 终结，projection 已关闭则显式 `obligation_not_open`；只有无法解释的身份/状态才继续抛 conflict |
 | RC-M1 | 旧 backlog 缺 source/period/lifecycle/plan 分类 | preview manifest + 分 Task 激活 |
 | RC-H1 | 多容器共同挤压宿主 | cgroup 预算公式 + 分 train 隔离 |
 | RC-L1 | 独立 leak | unproven；确定性修复后重测 |
@@ -407,6 +408,7 @@ T2 按 Task/source 灰度，不要求暂停的 comment/like 为 AI/view 让路�
 14. 同 Action retry pinning 回归：owner 存在至少2条 pre-Gateway 历史 reservation，replacement 首次接管后连续3次未到 final gate；每次只更新同一 admission id，其他历史 admission 的 action/attempt/state 不变。
 15. AI E4 ledger 回归：payload 无 ledger 但 Action 绑定 primary quantity owner时，obligation projection 与 `remote_message_observed` 均持久化 owner ledger；payload/owner ledger 冲突显式失败，缺失两条来源不得写 confirmed fact。
 16. 发布自回收竞态回归：旧 OCR 容器 restart policy fencing 必须发生在 `compose stop` 之前，停止确认后恢复；新 OCR ready 后断言真实 runtime 只有 current container id。额外旧 runtime、无法解析 cgroup id 或旧容器仍 running 均使 Release Gate 失败。
+17. PostgreSQL materialization CAS 竞争：双 session 同时读到同一 open projection 的旧 version 并绑定不同 replacement Action；winner 提交后 loser 必须重读 winner。winner 为 open Action 时 loser 以 `duplicate_open_obligation` 终结且不得覆盖 projection；同 Action 重入幂等成功；projection 同时关闭时 loser 以 `obligation_not_open` 终结。任何其他漂移仍抛 `fulfillment_obligation_materialization_conflict`，禁止 catch-all 吞错。
 
 ### 10.2 性能与资源
 

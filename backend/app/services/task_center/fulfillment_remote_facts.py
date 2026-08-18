@@ -19,6 +19,10 @@ from app.models import (
 )
 from app.services._common import _now
 from .fact_first_insert import insert_do_nothing as _insert_do_nothing
+from .fulfillment_obligation_materialization import (
+    rebind_projection as _rebind_projection,
+    skip_obligation_action as _skip_obligation_action,
+)
 
 
 PROJECTION_KINDS = ("obligation", "action", "task_read_model")
@@ -51,7 +55,8 @@ def ensure_action_obligation(session: Session, action: Action) -> bool:
             obligation_state=projection.state,
         )
         return False
-    _rebind_projection(session, action, projection)
+    if not _rebind_projection(session, action, projection):
+        return False
     session.flush()
     return True
 
@@ -131,45 +136,6 @@ def _obligation_projection(
     if projection is None:
         raise RuntimeError("fulfillment_obligation_projection_missing")
     return projection
-
-
-def _rebind_projection(
-    session: Session,
-    action: Action,
-    projection: FulfillmentObligationProjection,
-) -> None:
-    if projection.active_action_id == action.id:
-        return
-    version = int(projection.version or 1)
-    materialization_version = int(projection.materialization_version or 1) + 1
-    changed = session.execute(
-        update(FulfillmentObligationProjection)
-        .where(
-            FulfillmentObligationProjection.id == projection.id,
-            FulfillmentObligationProjection.state == "open",
-            FulfillmentObligationProjection.version == version,
-        )
-        .values(
-            active_action_id=action.id,
-            materialization_version=materialization_version,
-            version=version + 1,
-        )
-    ).rowcount
-    if changed != 1:
-        raise ValueError("fulfillment_obligation_materialization_conflict")
-    action.materialization_version = materialization_version
-    session.expire(projection)
-
-
-def _skip_obligation_action(action: Action, code: str, **detail) -> None:
-    action.status = "skipped"
-    action.executed_at = _now()
-    action.result = {
-        **dict(action.result or {}),
-        "success": False,
-        "error_code": code,
-        **detail,
-    }
 
 
 def persist_remote_fact(session: Session, action: Action) -> FulfillmentRemoteFact | None:
