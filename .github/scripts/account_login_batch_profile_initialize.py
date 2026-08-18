@@ -89,7 +89,6 @@ def main() -> int:
         "avatar_pool": manifest["avatar_pool"],
         "target_state_sha256": manifest["target_state_sha256"],
         "batch_ids": batch_ids,
-        "manifest": manifest,
     }
     _print_payload("ACCOUNT_LOGIN_BATCH_PROFILE_INIT", payload)
     return 0

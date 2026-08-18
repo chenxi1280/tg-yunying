@@ -30,6 +30,7 @@
 
 - 只统计名字长度段、结构类别、是否含常见昵称前缀/后缀、是否含轻量标点或 emoji 等聚合特征。
 - 不把完整 `sender_name`、`sender_username`、`sender_peer_id` 写入 manifest、日志、审计、新账号资料或新表。
+- workflow 日志不输出逐账号 manifest，只输出 canonical manifest hash、target-state hash 和聚合质量摘要；apply/readback 在生产内按相同输入重算 manifest 并校验 hash。
 - 生成候选必须来自平台扩展后的审核词片/模板；任何候选若等于来源样本的规范化完整名字，必须排除。
 - 群成员头像不读取、不下载、不复制；头像继续来自许可明确、已审核且 TG cache ready 的非真人素材池。
 - 样本不足或群风格不可用时必须显式输出 `style_sample_insufficient`；不得静默声称“已按群风格生成”。允许用户基于预览批准使用扩展本地多样性分布。
