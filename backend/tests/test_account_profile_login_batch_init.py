@@ -225,7 +225,7 @@ def test_manifest_freezes_exact_three_hundred_targets_without_raw_group_names():
     assert first == second
     assert len(first["targets"]) == 300
     assert first["login_batch_ids"] == [91, 92]
-    assert first["style"]["sample_count"] == 120
+    assert first["style"]["sample_count"] == 100
     assert first["avatar_pool"]["unique_avatar_material_count"] == 12
     assert first["avatar_pool"]["max_material_assignment_count"] <= 30
     assert all(f"群友昵称{index}" not in encoded for index in range(120))
@@ -275,6 +275,73 @@ def test_group_style_requires_one_hundred_anonymous_samples():
 
         with pytest.raises(RuntimeError, match="style_sample_insufficient"):
             build_group_style_evidence(session, 1, (11,))
+
+
+def test_style_and_avatar_manifest_stays_stable_when_new_sources_arrive():
+    with _session() as session:
+        accounts = _seed_login_batch(session, 300)
+        _seed_style_and_avatars(session, accounts[0].id)
+        _seed_stable_avatar_prefix(session, accounts[0].id)
+        session.commit()
+        spec = _spec()
+        first = build_login_batch_initialization_manifest(session, spec)
+        _append_later_sources(session, accounts[0].id)
+        session.commit()
+
+        second = build_login_batch_initialization_manifest(session, spec)
+
+    assert second == first
+
+
+def _seed_stable_avatar_prefix(session: Session, listener_account_id: int) -> None:
+    session.add_all([
+        Material(
+            id=material_id,
+            tenant_id=1,
+            title=f"稳定非真人头像 {material_id}",
+            material_type="图片",
+            content="",
+            tags="avatar 头像",
+            review_status="已审核",
+            source_kind="upload",
+            cache_ready_status="ready",
+            tg_cache_account_id=listener_account_id,
+            tg_cache_peer_id="cache-peer",
+            tg_cache_message_id=f"stable-cache-{material_id}",
+            mime_type="image/png",
+        )
+        for material_id in range(13, 313)
+    ])
+
+
+def _append_later_sources(session: Session, listener_account_id: int) -> None:
+    session.add_all([
+        GroupContextMessage(
+            tenant_id=1,
+            group_id=11 + index % 2,
+            listener_account_id=listener_account_id,
+            sender_peer_id=f"later-sender-{index}",
+            sender_name=f"后来昵称{index}",
+            content="后续消息",
+            remote_message_id=f"later-message-{index}",
+        )
+        for index in range(20)
+    ])
+    session.add(Material(
+        id=999,
+        tenant_id=1,
+        title="后续非真人头像",
+        material_type="图片",
+        content="",
+        tags="avatar 头像",
+        review_status="已审核",
+        source_kind="upload",
+        cache_ready_status="ready",
+        tg_cache_account_id=listener_account_id,
+        tg_cache_peer_id="cache-peer",
+        tg_cache_message_id="cache-later",
+        mime_type="image/png",
+    ))
 
 
 def test_discovers_unique_terminal_batch_set_with_three_hundred_success_accounts():

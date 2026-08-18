@@ -85,6 +85,7 @@ preview 未提供 batch IDs 时，最近 7 天最多 20 个终态批次的全部
 
 - 限同租户、指定群、`is_bot=false`、非空且非默认 `真人用户` 名称。
 - 先按规范化完整名字去重，再按 sender identity 去重，避免高频发言者放大权重。
+- 在最近 30 天内按 `created_at/id` 最早稳定顺序取样，并在群之间 round-robin 选取精确 100 个匿名 sender；新到群消息不改变已审批样本，样本过期或被删除则必须重新 preview。
 - 只在内存中保留原始名字完成分类；输出仅包含群 ID、合格样本数、类别计数、长度段计数、拒绝原因计数和 `source_fingerprint`。
 - `source_fingerprint` 由已排序的匿名分类记录计算，不允许反推出原始姓名。
 - 少于 100 个合格去重样本时标记不足并阻断群风格 apply。
@@ -93,7 +94,7 @@ preview 未提供 batch IDs 时，最近 7 天最多 20 个终态批次的全部
 
 - 只选择 `review_status=已审核`、图片 MIME 合法、`cache_ready_status=ready` 且 TG cache 三元组完整的 upload 素材。
 - 只使用头像候选标签或现有 avatar 优先集合，不读取群成员头像。
-- preview 冻结每个账号的 `material:<id>`；按 `usage_count` 最低层优先并在同层 seed 随机，逐次增加 manifest 内模拟使用计数，避免一次预览集中到少数图片。
+- preview 冻结每个账号的 `material:<id>`；按稳定 material ID 取最多目标数个素材，再用 seed 排序并 round-robin 分配。新导入的更大 ID 不改变已审批清单，300 个目标在素材充足时使用 300 个不同头像。
 - 本次允许多账号共享同一素材，但输出 `unique_avatar_material_count/max_material_assignment_count`；若 ready 素材少于 12 个或单素材分配超过目标数的 10%，阻断 apply。
 - 本次是对精确新登录批次集合的显式资料升级，允许覆盖这些 target 的旧自动初始化名字/头像；manifest 冻结旧值，preview 后人工变更会触发 CAS 漂移并零写入。批次外账号绝不覆盖。
 

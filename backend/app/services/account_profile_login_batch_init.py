@@ -75,7 +75,7 @@ def build_login_batch_initialization_manifest(
         "seed": spec.seed,
         "login_batches": [_login_batch_snapshot(batch) for batch in targets.batches],
         "style": style.summary,
-        "avatar_pool": _avatar_pool_summary(materials, avatars),
+        "avatar_pool": _avatar_pool_summary(avatars),
         "name_quality": name_diversity_metrics(generated),
         "targets": target_rows,
     }
@@ -134,7 +134,7 @@ def ready_avatar_materials(session: Session, tenant_id: int) -> list[Material]:
             Material.tg_cache_account_id.is_not(None),
             Material.tg_cache_peer_id != "",
             Material.tg_cache_message_id != "",
-        ).order_by(Material.usage_count.asc(), Material.id.asc())
+        ).order_by(Material.id.asc())
     ))
     preferred = [row for row in rows if "头像" in f"{row.title} {row.tags}" or "avatar" in f"{row.title} {row.tags}".lower()]
     if len(preferred) < MIN_READY_AVATAR_COUNT:
@@ -145,18 +145,13 @@ def ready_avatar_materials(session: Session, tenant_id: int) -> list[Material]:
 
 
 def allocate_avatar_sources(materials: list[Material], count: int, seed: str) -> list[str]:
-    simulated = {int(material.id): int(material.usage_count or 0) for material in materials}
-    tie_breakers = {
-        int(material.id): hashlib.sha256(f"{seed}:{material.id}".encode()).hexdigest()
-        for material in materials
-    }
-    sources: list[str] = []
-    for _index in range(count):
-        material = min(materials, key=lambda row: (simulated[int(row.id)], tie_breakers[int(row.id)], int(row.id)))
-        material_id = int(material.id)
-        sources.append(f"material:{material_id}")
-        simulated[material_id] += 1
-    return sources
+    pool_size = min(len(materials), count)
+    pool = materials[:pool_size]
+    ordered = sorted(
+        pool,
+        key=lambda row: (hashlib.sha256(f"{seed}:{row.id}".encode()).hexdigest(), int(row.id)),
+    )
+    return [f"material:{ordered[index % pool_size].id}" for index in range(count)]
 
 
 def manifest_sha256(manifest: dict[str, Any]) -> str:
@@ -209,28 +204,59 @@ def _style_records(
     names: list[str] = []
     source_keys: set[str] = set()
     per_group: Counter[int] = Counter()
-    seen: set[tuple[int, str]] = set()
-    for group_id in group_ids:
-        rows = _recent_group_rows(session, tenant_id, group_id)
-        for row in rows:
-            key = normalize_display_name(row.sender_name)
-            identity = str(row.sender_peer_id or key)
-            if not key or key == normalize_display_name("真人用户") or (group_id, identity) in seen:
-                continue
-            seen.add((group_id, identity))
-            profile = style_profile_from_names([row.sender_name])
-            category = profile.category_counts[0][0]
-            length_bucket = profile.length_counts[0][0]
-            records.append((group_id, category, length_bucket))
-            names.append(row.sender_name.strip())
-            source_keys.add(key)
-            per_group[group_id] += 1
+    candidates = {
+        group_id: _stable_group_candidates(session, tenant_id, group_id)
+        for group_id in group_ids
+    }
+    for group_id, name, key in _round_robin_samples(candidates, MIN_STYLE_SAMPLE_COUNT):
+        profile = style_profile_from_names([name])
+        records.append((group_id, profile.category_counts[0][0], profile.length_counts[0][0]))
+        names.append(name)
+        source_keys.add(key)
+        per_group[group_id] += 1
     return records, names, source_keys, per_group
 
 
-def _recent_group_rows(session: Session, tenant_id: int, group_id: int) -> list[GroupContextMessage]:
+def _stable_group_candidates(
+    session: Session,
+    tenant_id: int,
+    group_id: int,
+) -> list[tuple[int, str, str]]:
+    seen: set[str] = set()
+    result: list[tuple[int, str, str]] = []
+    for row in _stable_group_rows(session, tenant_id, group_id):
+        key = normalize_display_name(row.sender_name)
+        identity = str(row.sender_peer_id or key)
+        if not key or key == normalize_display_name("真人用户") or identity in seen:
+            continue
+        seen.add(identity)
+        result.append((group_id, row.sender_name.strip(), key))
+    return result
+
+
+def _round_robin_samples(
+    candidates: dict[int, list[tuple[int, str, str]]],
+    count: int,
+) -> list[tuple[int, str, str]]:
+    selected: list[tuple[int, str, str]] = []
+    index = 0
+    while len(selected) < count:
+        added = False
+        for group_id in candidates:
+            if index >= len(candidates[group_id]):
+                continue
+            selected.append(candidates[group_id][index])
+            added = True
+            if len(selected) == count:
+                return selected
+        if not added:
+            return selected
+        index += 1
+    return selected
+
+
+def _stable_group_rows(session: Session, tenant_id: int, group_id: int) -> list[GroupContextMessage]:
     cutoff = _now() - timedelta(days=STYLE_SAMPLE_DAYS)
-    observed_at = GroupContextMessage.sent_at
     return list(session.scalars(
         select(GroupContextMessage).where(
             GroupContextMessage.tenant_id == tenant_id,
@@ -238,7 +264,7 @@ def _recent_group_rows(session: Session, tenant_id: int, group_id: int) -> list[
             GroupContextMessage.is_bot.is_(False),
             GroupContextMessage.sender_name != "",
             GroupContextMessage.created_at >= cutoff,
-        ).order_by(observed_at.desc().nullslast(), GroupContextMessage.id.desc()).limit(STYLE_GROUP_MESSAGE_LIMIT)
+        ).order_by(GroupContextMessage.created_at.asc(), GroupContextMessage.id.asc()).limit(STYLE_GROUP_MESSAGE_LIMIT)
     ))
 
 
@@ -305,11 +331,12 @@ def _login_batch_snapshot(batch: TgAccountLoginBatch) -> dict[str, Any]:
     }
 
 
-def _avatar_pool_summary(materials: list[Material], sources: list[str]) -> dict[str, Any]:
+def _avatar_pool_summary(sources: list[str]) -> dict[str, Any]:
     counts = Counter(sources)
+    material_ids = sorted(int(source.removeprefix("material:")) for source in counts)
     return {
-        "ready_material_count": len(materials),
-        "material_ids": [int(material.id) for material in materials],
+        "ready_material_count": len(material_ids),
+        "material_ids": material_ids,
         "assignment_counts": dict(sorted(counts.items())),
         "unique_avatar_material_count": len(counts),
         "max_material_assignment_count": max(counts.values(), default=0),
