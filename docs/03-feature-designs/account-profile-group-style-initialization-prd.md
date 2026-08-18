@@ -50,13 +50,13 @@
 目标必须由一组明确 `login_batch_ids` 冻结；当前批量登录单批最多 200 行，因此 300 个新登录账号允许来自多个终态批次：
 
 1. 每个 `TgAccountLoginBatch.tenant_id` 等于 workflow 输入租户，batch ID 不重复。
-2. 批次状态为 `completed`、`completed_with_unresolved` 或 `cancelled`；只纳入其中 `succeeded/succeeded_with_warning` 且存在同事务 `批量登录创建TG账号 + batch_item_id` 审计的本批新建账号，已有账号重登/已授权成功以及 failed/unresolved/skipped 行不进入目标。
+2. 批次状态为 `completed`、`completed_with_unresolved` 或 `cancelled`；只纳入其中 `succeeded/succeeded_with_warning` 的成功登录账号，failed/unresolved/skipped 行不进入目标。这里的“新登录”以本轮成功登录事实为准，允许已有账号重新登录，不等同于“新建数据库账号”。
 3. 成功 item 状态只能是 `succeeded` 或 `succeeded_with_warning`。
 4. 每个 item 必须有唯一 `account_id`，账号为 active、有 session、未删除、普通运营用途，pool 与 `account_identity=normal` 一致。
-5. 所选全部批次的“本批新建且登录成功”账号并集不得跨批重复，`expected_target_count` 必须等于并集账号数；本次固定为 300。批次 `success_count` 可因已有账号重登成功而大于本次目标数。
+5. 所选全部批次的成功登录账号按 `account_id` 去重，`expected_target_count` 必须等于并集账号数；本次固定为 300。账号跨批重复登录时，manifest 使用最大 login item ID 对应的最新成功快照，成功 item 总数可以大于目标账号数。
 6. manifest 冻结每个 batch 的 `state_version/execution_generation/resolution_version/finished_at` 和每个 item/account 旧状态。
 
-preview 未提供 batch IDs 时，可在最近 7 天最多 20 个终态批次中发现“本批新建且登录成功”账号并集恰好 300 的组合；零个或多个组合时必须输出脱敏候选 batch ID、状态、全部成功数和新建成功数并失败，不得自行从成功账号中删减或扩大到全租户。
+preview 未提供 batch IDs 时，最近 7 天最多 20 个终态批次的全部成功登录账号并集必须恰好为 300；否则输出脱敏候选 batch ID、状态和成功数并失败，不得自行从成功账号中删减或扩大到全租户。
 
 ## 4. 功能设计
 

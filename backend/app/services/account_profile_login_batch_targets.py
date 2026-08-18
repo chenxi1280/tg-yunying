@@ -9,7 +9,6 @@ from sqlalchemy.orm import Session
 from app.models import (
     AccountPool,
     AccountStatus,
-    AuditLog,
     TgAccount,
     TgAccountLoginBatch,
     TgAccountLoginBatchItem,
@@ -21,7 +20,6 @@ SUCCESS_LOGIN_ITEM_STATUSES = frozenset({"succeeded", "succeeded_with_warning"})
 TERMINAL_LOGIN_BATCH_STATUSES = frozenset({"completed", "completed_with_unresolved", "cancelled"})
 DISCOVERY_DAYS = 7
 DISCOVERY_BATCH_LIMIT = 20
-DISCOVERY_MATCH_LIMIT = 3
 
 
 @dataclass(frozen=True)
@@ -54,11 +52,7 @@ def load_login_batch_targets(
     spec: LoginBatchInitializationSpec,
 ) -> LoginBatchTargets:
     candidates = resolve_login_batches(session, spec)
-    items = tuple(
-        item
-        for candidate in candidates
-        for item in candidate.items
-    )
+    items = _latest_success_items(candidates)
     account_ids = [int(item.account_id) for item in items if item.account_id is not None]
     if len(account_ids) != spec.expected_target_count or len(set(account_ids)) != len(account_ids):
         raise RuntimeError("login_batch_target_count_or_identity_mismatch")
@@ -80,15 +74,14 @@ def resolve_login_batches(
     if spec.login_batch_ids:
         _validate_candidate_set(candidates, spec.expected_target_count)
         return candidates
-    matches = _matching_candidate_sets(candidates, spec.expected_target_count)
-    if len(matches) != 1:
+    actual_count = len(_combined_account_ids(candidates))
+    if not candidates or actual_count != spec.expected_target_count:
         detail = "|".join(_candidate_summary(candidate) for candidate in candidates)
-        match_ids = "|".join(",".join(str(item.batch.id) for item in match) for match in matches)
         raise RuntimeError(
-            "login_batch_set_discovery_requires_one_match: "
-            f"matched={len(matches)};match_ids={match_ids};candidates={detail}"
+            "login_batch_set_discovery_target_mismatch: "
+            f"expected={spec.expected_target_count};actual={actual_count};candidates={detail}"
         )
-    return matches[0]
+    return candidates
 
 
 def _explicit_candidates(
@@ -133,70 +126,34 @@ def _candidate(session: Session, batch: TgAccountLoginBatch) -> LoginBatchCandid
         raise RuntimeError(f"login_batch_success_binding_invalid: batch_id={batch.id}")
     if len(success_items) != int(batch.success_count):
         raise RuntimeError(f"login_batch_success_count_drift: batch_id={batch.id}")
-    created_item_ids = _created_item_ids(session, batch.tenant_id, success_items)
-    items = tuple(item for item in success_items if int(item.id) in created_item_ids)
-    account_ids = frozenset(int(item.account_id) for item in items if item.account_id is not None)
+    account_ids = frozenset(success_account_ids)
     return LoginBatchCandidate(
         batch=batch,
-        items=items,
+        items=success_items,
         account_ids=account_ids,
         success_count=len(success_items),
     )
 
 
-def _created_item_ids(
-    session: Session,
-    tenant_id: int,
-    items: tuple[TgAccountLoginBatchItem, ...],
-) -> frozenset[int]:
-    expected = {
-        (str(item.account_id), f"batch_item_id={item.id}"): int(item.id)
-        for item in items
-    }
-    if not expected:
-        return frozenset()
-    rows = session.execute(select(AuditLog.target_id, AuditLog.detail).where(
-        AuditLog.tenant_id == tenant_id,
-        AuditLog.action == "批量登录创建TG账号",
-        AuditLog.target_type == "tg_account",
-        AuditLog.target_id.in_({target_id for target_id, _detail in expected}),
-    ))
-    return frozenset(
-        expected[(target_id, detail)]
-        for target_id, detail in rows
-        if (target_id, detail) in expected
-    )
-
-
-def _matching_candidate_sets(
+def _latest_success_items(
     candidates: tuple[LoginBatchCandidate, ...],
-    expected_count: int,
-) -> tuple[tuple[LoginBatchCandidate, ...], ...]:
-    matches: list[tuple[LoginBatchCandidate, ...]] = []
+) -> tuple[TgAccountLoginBatchItem, ...]:
+    by_account_id: dict[int, TgAccountLoginBatchItem] = {}
+    for candidate in candidates:
+        for item in candidate.items:
+            account_id = int(item.account_id)
+            current = by_account_id.get(account_id)
+            if current is None or int(item.id) > int(current.id):
+                by_account_id[account_id] = item
+    return tuple(by_account_id[account_id] for account_id in sorted(by_account_id))
 
-    def visit(index: int, selected: tuple[LoginBatchCandidate, ...], account_ids: frozenset[int]) -> None:
-        if len(matches) >= DISCOVERY_MATCH_LIMIT or len(account_ids) > expected_count:
-            return
-        if len(account_ids) == expected_count:
-            matches.append(tuple(sorted(selected, key=lambda item: int(item.batch.id))))
-            return
-        if index >= len(candidates):
-            return
-        candidate = candidates[index]
-        if account_ids.isdisjoint(candidate.account_ids):
-            visit(index + 1, selected + (candidate,), account_ids | candidate.account_ids)
-        visit(index + 1, selected, account_ids)
 
-    visit(0, (), frozenset())
-    return tuple(matches)
+def _combined_account_ids(candidates: tuple[LoginBatchCandidate, ...]) -> frozenset[int]:
+    return frozenset(account_id for candidate in candidates for account_id in candidate.account_ids)
 
 
 def _validate_candidate_set(candidates: tuple[LoginBatchCandidate, ...], expected_count: int) -> None:
-    combined: set[int] = set()
-    for candidate in candidates:
-        if not combined.isdisjoint(candidate.account_ids):
-            raise RuntimeError("login_batch_set_contains_duplicate_account")
-        combined.update(candidate.account_ids)
+    combined = _combined_account_ids(candidates)
     if len(combined) != expected_count:
         raise RuntimeError(
             f"login_batch_set_target_count_mismatch: expected={expected_count};actual={len(combined)}"
@@ -207,7 +164,6 @@ def _candidate_summary(candidate: LoginBatchCandidate) -> str:
     batch = candidate.batch
     return (
         f"{batch.id}:{batch.status}:total={batch.total_count}:success={candidate.success_count}:"
-        f"new={len(candidate.items)}:"
         f"failed={batch.failed_count}:unresolved={batch.unresolved_count}"
     )
 
