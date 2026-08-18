@@ -39,7 +39,11 @@ from app.storage import object_path
 
 MODE = os.getenv("ACCOUNT_LOGIN_BATCH_PROFILE_INIT_MODE", "preview").strip().lower()
 TENANT_ID = int(os.getenv("ACCOUNT_LOGIN_BATCH_PROFILE_INIT_TENANT_ID", "1"))
-LOGIN_BATCH_ID = int(os.getenv("ACCOUNT_LOGIN_BATCH_PROFILE_INIT_LOGIN_BATCH_ID", "0"))
+LOGIN_BATCH_IDS = tuple(
+    int(value.strip())
+    for value in os.getenv("ACCOUNT_LOGIN_BATCH_PROFILE_INIT_LOGIN_BATCH_IDS", "").split(",")
+    if value.strip()
+)
 EXPECTED_TARGET_COUNT = int(os.getenv("ACCOUNT_LOGIN_BATCH_PROFILE_INIT_EXPECTED_TARGET_COUNT", "300"))
 STYLE_GROUP_IDS = tuple(
     int(value.strip())
@@ -71,7 +75,7 @@ def main() -> int:
     payload = {
         "mode": MODE,
         "manifest_sha256": actual_sha,
-        "login_batch_id": manifest["login_batch_id"],
+        "login_batch_ids": manifest["login_batch_ids"],
         "expected_target_count": manifest["expected_target_count"],
         "style": manifest["style"],
         "name_quality": manifest["name_quality"],
@@ -87,7 +91,7 @@ def main() -> int:
 def _spec() -> LoginBatchInitializationSpec:
     return LoginBatchInitializationSpec(
         tenant_id=TENANT_ID,
-        login_batch_id=LOGIN_BATCH_ID,
+        login_batch_ids=LOGIN_BATCH_IDS,
         expected_target_count=EXPECTED_TARGET_COUNT,
         style_group_ids=STYLE_GROUP_IDS,
         seed=SEED,
@@ -104,8 +108,8 @@ def _validate_inputs() -> None:
         raise ValueError("deployed_sha must be the exact 40-character lowercase release SHA")
     if MODE == "preview":
         return
-    if not LOGIN_BATCH_ID or not STYLE_GROUP_IDS:
-        raise ValueError("apply/readback require explicit login_batch_id and style_group_ids from preview")
+    if not LOGIN_BATCH_IDS or not STYLE_GROUP_IDS:
+        raise ValueError("apply/readback require explicit login_batch_ids and style_group_ids from preview")
     if len(EXPECTED_SHA256) != 64:
         raise ValueError("apply/readback require the exact 64-character preview manifest SHA-256")
     if MODE == "apply" and not APPROVAL_REF:
@@ -235,7 +239,7 @@ def remote_readback() -> dict[str, Any]:
     return {
         "mode": MODE,
         "manifest_sha256": EXPECTED_SHA256,
-        "login_batch_id": LOGIN_BATCH_ID,
+        "login_batch_ids": list(LOGIN_BATCH_IDS),
         "expected_target_count": expected,
         "target_count": len(rows),
         "remote_matched_count": matched,
@@ -264,7 +268,7 @@ def _readback_rows(session) -> list[tuple[Any, TgAccountSecurityBatchItem, TgAcc
 
 def _assert_readback_target_identity(session, rows) -> None:
     expected_ids = set(session.scalars(select(TgAccountLoginBatchItem.account_id).where(
-        TgAccountLoginBatchItem.batch_id == LOGIN_BATCH_ID,
+        TgAccountLoginBatchItem.batch_id.in_(LOGIN_BATCH_IDS),
         TgAccountLoginBatchItem.status.in_(["succeeded", "succeeded_with_warning"]),
     )))
     actual_ids = {int(item.account_id) for _, item, _ in rows}
@@ -367,8 +371,9 @@ def _readback_expected_count(rows) -> int:
 
 
 def _reason_prefix(manifest_sha: str) -> str:
+    batch_ids = ",".join(str(batch_id) for batch_id in LOGIN_BATCH_IDS)
     return (
-        f"登录批次资料初始化 manifest={manifest_sha} login_batch_id={LOGIN_BATCH_ID} "
+        f"登录批次资料初始化 manifest={manifest_sha} login_batch_ids={batch_ids} "
         f"target_count={EXPECTED_TARGET_COUNT} approval="
     )
 

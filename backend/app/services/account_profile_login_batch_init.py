@@ -11,8 +11,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import (
-    AccountPool,
-    AccountStatus,
     GroupContextMessage,
     Material,
     TgAccount,
@@ -22,6 +20,12 @@ from app.models import (
 )
 from app.services._common import _now
 from app.services.account_profile_identity import normalize_display_name, unavailable_name_keys
+from app.services.account_profile_login_batch_targets import (
+    LoginBatchInitializationSpec,
+    LoginBatchTargets,
+    load_login_batch_targets,
+    resolve_login_batches,
+)
 from app.services.account_profile_name_generation import (
     GeneratedDisplayName,
     generate_display_name_candidates,
@@ -30,29 +34,11 @@ from app.services.account_profile_name_generation import (
 )
 
 
-SUCCESS_LOGIN_ITEM_STATUSES = frozenset({"succeeded", "succeeded_with_warning"})
 STYLE_SAMPLE_DAYS = 30
 STYLE_GROUP_MESSAGE_LIMIT = 2_000
 MIN_STYLE_SAMPLE_COUNT = 100
 MIN_READY_AVATAR_COUNT = 12
 MAX_AVATAR_ASSIGNMENT_RATIO = 0.10
-
-
-@dataclass(frozen=True)
-class LoginBatchInitializationSpec:
-    tenant_id: int
-    login_batch_id: int
-    expected_target_count: int
-    style_group_ids: tuple[int, ...]
-    seed: str
-    deployed_sha: str
-
-
-@dataclass(frozen=True)
-class LoginBatchTargets:
-    batch: TgAccountLoginBatch
-    items: tuple[TgAccountLoginBatchItem, ...]
-    accounts: tuple[TgAccount, ...]
 
 
 @dataclass(frozen=True)
@@ -82,11 +68,11 @@ def build_login_batch_initialization_manifest(
     target_rows = _target_rows(targets, generated, avatars)
     manifest = {
         "tenant_id": spec.tenant_id,
-        "login_batch_id": int(targets.batch.id),
+        "login_batch_ids": [int(batch.id) for batch in targets.batches],
         "expected_target_count": spec.expected_target_count,
         "deployed_sha": spec.deployed_sha,
         "seed": spec.seed,
-        "login_batch": _login_batch_snapshot(targets.batch),
+        "login_batches": [_login_batch_snapshot(batch) for batch in targets.batches],
         "style": style.summary,
         "avatar_pool": _avatar_pool_summary(materials, avatars),
         "name_quality": name_diversity_metrics(generated),
@@ -95,52 +81,6 @@ def build_login_batch_initialization_manifest(
     manifest["target_state_sha256"] = _target_state_sha256(target_rows)
     _validate_manifest_quality(manifest)
     return manifest
-
-
-def load_login_batch_targets(
-    session: Session,
-    spec: LoginBatchInitializationSpec,
-) -> LoginBatchTargets:
-    batch = resolve_login_batch(session, spec)
-    items = tuple(session.scalars(
-        select(TgAccountLoginBatchItem)
-        .where(
-            TgAccountLoginBatchItem.batch_id == batch.id,
-            TgAccountLoginBatchItem.status.in_(SUCCESS_LOGIN_ITEM_STATUSES),
-        )
-        .order_by(TgAccountLoginBatchItem.line_no.asc())
-    ))
-    account_ids = [int(item.account_id) for item in items if item.account_id is not None]
-    if len(account_ids) != spec.expected_target_count or len(set(account_ids)) != len(account_ids):
-        raise RuntimeError("login_batch_target_count_or_identity_mismatch")
-    accounts_by_id = _accounts_by_id(session, spec.tenant_id, account_ids)
-    accounts = tuple(accounts_by_id[account_id] for account_id in account_ids)
-    _validate_target_accounts(session, accounts)
-    return LoginBatchTargets(batch=batch, items=items, accounts=accounts)
-
-
-def resolve_login_batch(session: Session, spec: LoginBatchInitializationSpec) -> TgAccountLoginBatch:
-    if spec.login_batch_id:
-        batch = session.get(TgAccountLoginBatch, spec.login_batch_id)
-        if not batch or batch.tenant_id != spec.tenant_id:
-            raise RuntimeError("login_batch_not_found_for_tenant")
-        _validate_login_batch(batch, spec.expected_target_count)
-        return batch
-    cutoff = _now() - timedelta(days=7)
-    candidates = list(session.scalars(
-        select(TgAccountLoginBatch).where(
-            TgAccountLoginBatch.tenant_id == spec.tenant_id,
-            TgAccountLoginBatch.status == "completed",
-            TgAccountLoginBatch.total_count == spec.expected_target_count,
-            TgAccountLoginBatch.success_count == spec.expected_target_count,
-            TgAccountLoginBatch.unresolved_count == 0,
-            TgAccountLoginBatch.finished_at >= cutoff,
-        ).order_by(TgAccountLoginBatch.finished_at.desc(), TgAccountLoginBatch.id.desc())
-    ))
-    if len(candidates) != 1:
-        ids = ",".join(str(batch.id) for batch in candidates[:20])
-        raise RuntimeError(f"login_batch_discovery_requires_one_match: matched={len(candidates)};ids={ids}")
-    return candidates[0]
 
 
 def build_group_style_evidence(
@@ -239,43 +179,6 @@ def target_matches_manifest(account: TgAccount, item: TgAccountLoginBatchItem, t
     )
 
 
-def _validate_login_batch(batch: TgAccountLoginBatch, expected_count: int) -> None:
-    valid = (
-        batch.status == "completed"
-        and batch.total_count == expected_count
-        and batch.success_count == expected_count
-        and batch.unresolved_count == 0
-    )
-    if not valid:
-        raise RuntimeError("login_batch_not_completed_with_exact_success_count")
-
-
-def _accounts_by_id(session: Session, tenant_id: int, account_ids: list[int]) -> dict[int, TgAccount]:
-    accounts = list(session.scalars(select(TgAccount).where(
-        TgAccount.tenant_id == tenant_id,
-        TgAccount.id.in_(account_ids),
-    )))
-    result = {int(account.id): account for account in accounts}
-    if set(result) != set(account_ids):
-        raise RuntimeError("login_batch_account_binding_missing")
-    return result
-
-
-def _validate_target_accounts(session: Session, accounts: tuple[TgAccount, ...]) -> None:
-    for account in accounts:
-        pool = session.get(AccountPool, account.pool_id) if account.pool_id else None
-        valid = (
-            account.deleted_at is None
-            and account.status == AccountStatus.ACTIVE.value
-            and bool(account.session_ciphertext)
-            and account.account_identity == "normal"
-            and pool is not None
-            and pool.pool_purpose == "normal"
-        )
-        if not valid:
-            raise RuntimeError(f"login_batch_account_not_operational_normal: account_id={account.id}")
-
-
 def _discover_style_group_ids(session: Session, tenant_id: int) -> tuple[int, ...]:
     return tuple(session.scalars(
         select(TgGroup.id).where(
@@ -369,6 +272,7 @@ def _target_row(
 ) -> dict[str, Any]:
     return {
         "account_id": int(account.id),
+        "login_batch_id": int(item.batch_id),
         "login_item_id": int(item.id),
         "login_item_state_version": int(item.state_version),
         "login_item_status": item.status,
@@ -446,6 +350,6 @@ __all__ = [
     "load_login_batch_targets",
     "manifest_sha256",
     "ready_avatar_materials",
-    "resolve_login_batch",
+    "resolve_login_batches",
     "target_matches_manifest",
 ]

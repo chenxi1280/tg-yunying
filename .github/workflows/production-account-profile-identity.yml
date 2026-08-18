@@ -25,10 +25,10 @@ name: Production Account Profile Identity Operations
         required: false
         default: ''
         type: string
-      login_batch_id:
-        description: Exact completed login batch ID; preview may use 0 for unique seven-day discovery
+      login_batch_ids:
+        description: Comma-separated terminal login batch IDs; preview may leave empty for unique seven-day set discovery
         required: false
-        default: '0'
+        default: ''
         type: string
       expected_target_count:
         description: Exact successful account count expected from the login batch
@@ -77,7 +77,7 @@ jobs:
           OPERATION: ${{ inputs.operation }}
           MODE: ${{ inputs.mode }}
           SEED: ${{ inputs.seed }}
-          LOGIN_BATCH_ID: ${{ inputs.login_batch_id }}
+          LOGIN_BATCH_IDS: ${{ inputs.login_batch_ids }}
           EXPECTED_TARGET_COUNT: ${{ inputs.expected_target_count }}
           STYLE_GROUP_IDS: ${{ inputs.style_group_ids }}
           EXPECTED_SHA: ${{ inputs.deployed_sha }}
@@ -99,13 +99,13 @@ jobs:
             test -n "${SEED}"
           fi
           if [[ "${OPERATION}" == login_batch_initialize ]]; then
-            [[ "${LOGIN_BATCH_ID}" =~ ^[0-9]+$ ]]
+            [[ -z "${LOGIN_BATCH_IDS}" || "${LOGIN_BATCH_IDS}" =~ ^[1-9][0-9]*(,[1-9][0-9]*)*$ ]]
             [[ "${EXPECTED_TARGET_COUNT}" =~ ^[1-9][0-9]*$ ]]
             [[ -z "${STYLE_GROUP_IDS}" || "${STYLE_GROUP_IDS}" =~ ^[0-9]+(,[0-9]+)*$ ]]
             [[ -z "${APPROVAL_REF}" || ${#APPROVAL_REF} -le 80 ]]
             test -n "${SEED}"
             if [[ "${MODE}" =~ ^(apply|readback)$ ]]; then
-              [[ "${LOGIN_BATCH_ID}" =~ ^[1-9][0-9]*$ ]]
+              test -n "${LOGIN_BATCH_IDS}"
               test -n "${STYLE_GROUP_IDS}"
             fi
           fi
@@ -166,7 +166,7 @@ jobs:
           OPERATION: ${{ inputs.operation }}
           MODE: ${{ inputs.mode }}
           SEED: ${{ inputs.seed }}
-          LOGIN_BATCH_ID: ${{ inputs.login_batch_id }}
+          LOGIN_BATCH_IDS: ${{ inputs.login_batch_ids }}
           EXPECTED_TARGET_COUNT: ${{ inputs.expected_target_count }}
           STYLE_GROUP_IDS: ${{ inputs.style_group_ids }}
           EXPECTED_SHA: ${{ inputs.deployed_sha }}
@@ -177,7 +177,7 @@ jobs:
           if [[ "${OPERATION}" == login_batch_initialize ]]; then
             ssh production "timeout 1800 docker exec -i \
               -e ACCOUNT_LOGIN_BATCH_PROFILE_INIT_MODE='${MODE}' \
-              -e ACCOUNT_LOGIN_BATCH_PROFILE_INIT_LOGIN_BATCH_ID='${LOGIN_BATCH_ID}' \
+              -e ACCOUNT_LOGIN_BATCH_PROFILE_INIT_LOGIN_BATCH_IDS='${LOGIN_BATCH_IDS}' \
               -e ACCOUNT_LOGIN_BATCH_PROFILE_INIT_EXPECTED_TARGET_COUNT='${EXPECTED_TARGET_COUNT}' \
               -e ACCOUNT_LOGIN_BATCH_PROFILE_INIT_STYLE_GROUP_IDS='${STYLE_GROUP_IDS}' \
               -e ACCOUNT_LOGIN_BATCH_PROFILE_INIT_SEED='${SEED}' \

@@ -65,7 +65,7 @@ def _account(account_id: int = 1) -> TgAccount:
 def test_batch_payload_changes_only_name_profile_and_avatar():
     script = _load_script()
     script.APPROVAL_REF = "user-request-20260818"
-    script.LOGIN_BATCH_ID = 91
+    script.LOGIN_BATCH_IDS = (91,)
     script.EXPECTED_TARGET_COUNT = 1
     target = {
         "account_id": 1,
@@ -87,7 +87,7 @@ def test_batch_payload_changes_only_name_profile_and_avatar():
 def test_existing_manifest_batch_requires_exact_name_and_avatar_source():
     script = _load_script()
     script.TENANT_ID = 1
-    script.LOGIN_BATCH_ID = 91
+    script.LOGIN_BATCH_IDS = (91,)
     script.EXPECTED_TARGET_COUNT = 1
     script.EXPECTED_SHA256 = "a" * 64
     with _session() as session:

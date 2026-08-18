@@ -43,7 +43,16 @@ def _session() -> Session:
     return session
 
 
-def _seed_login_batch(session: Session, count: int, batch_id: int = 91) -> list[TgAccount]:
+def _seed_login_batch(
+    session: Session,
+    count: int,
+    batch_id: int = 91,
+    *,
+    start_id: int = 1,
+    failed_count: int = 0,
+    unresolved_count: int = 0,
+    status: str = "completed",
+) -> list[TgAccount]:
     accounts = [
         TgAccount(
             id=index,
@@ -55,10 +64,40 @@ def _seed_login_batch(session: Session, count: int, batch_id: int = 91) -> list[
             status=AccountStatus.ACTIVE.value,
             session_ciphertext=encrypt_session(f"session-{index}"),
         )
-        for index in range(1, count + 1)
+        for index in range(start_id, start_id + count)
     ]
     session.add_all(accounts)
-    batch = TgAccountLoginBatch(
+    batch = _login_batch(
+        batch_id,
+        success_count=count,
+        failed_count=failed_count,
+        unresolved_count=unresolved_count,
+        status=status,
+    )
+    session.add(batch)
+    session.flush()
+    session.add_all([_login_item(batch_id, account.id, line_no) for line_no, account in enumerate(accounts, 1)])
+    session.add_all(
+        _login_item(batch_id, None, count + offset, status="failed")
+        for offset in range(1, failed_count + 1)
+    )
+    session.add_all(
+        _login_item(batch_id, None, count + failed_count + offset, status="unresolved")
+        for offset in range(1, unresolved_count + 1)
+    )
+    session.commit()
+    return accounts
+
+
+def _login_batch(
+    batch_id: int,
+    *,
+    success_count: int,
+    failed_count: int,
+    unresolved_count: int,
+    status: str,
+) -> TgAccountLoginBatch:
+    return TgAccountLoginBatch(
         id=batch_id,
         tenant_id=1,
         pool_id=1,
@@ -66,21 +105,24 @@ def _seed_login_batch(session: Session, count: int, batch_id: int = 91) -> list[
         recipient_user_id=1,
         idempotency_key=f"batch-{batch_id}",
         request_fingerprint=f"fingerprint-{batch_id}",
-        status="completed",
-        total_count=count,
-        success_count=count,
+        status=status,
+        total_count=success_count + failed_count + unresolved_count,
+        success_count=success_count,
+        failed_count=failed_count,
+        unresolved_count=unresolved_count,
         reason="测试批次",
         trace_id=f"trace-{batch_id}",
         finished_at=datetime(2026, 8, 18, 12, 0),
     )
-    session.add(batch)
-    session.flush()
-    session.add_all([_login_item(batch_id, account.id, line_no) for line_no, account in enumerate(accounts, 1)])
-    session.commit()
-    return accounts
 
 
-def _login_item(batch_id: int, account_id: int, line_no: int) -> TgAccountLoginBatchItem:
+def _login_item(
+    batch_id: int,
+    account_id: int | None,
+    line_no: int,
+    *,
+    status: str = "succeeded",
+) -> TgAccountLoginBatchItem:
     return TgAccountLoginBatchItem(
         batch_id=batch_id,
         tenant_id=1,
@@ -94,8 +136,8 @@ def _login_item(batch_id: int, account_id: int, line_no: int) -> TgAccountLoginB
         code_source_uuid_hint=f"hint-{line_no}",
         route_hint="default",
         account_id=account_id,
-        status="succeeded",
-        phase="succeeded",
+        status=status,
+        phase=status,
     )
 
 
@@ -139,10 +181,10 @@ def _seed_style_and_avatars(session: Session, listener_account_id: int) -> None:
     session.commit()
 
 
-def _spec(count: int = 300, batch_id: int = 91) -> LoginBatchInitializationSpec:
+def _spec(count: int = 300, batch_ids: tuple[int, ...] = (91,)) -> LoginBatchInitializationSpec:
     return LoginBatchInitializationSpec(
         tenant_id=1,
-        login_batch_id=batch_id,
+        login_batch_ids=batch_ids,
         expected_target_count=count,
         style_group_ids=(11, 12),
         seed="profile-300-seed",
@@ -152,23 +194,26 @@ def _spec(count: int = 300, batch_id: int = 91) -> LoginBatchInitializationSpec:
 
 def test_manifest_freezes_exact_three_hundred_targets_without_raw_group_names():
     with _session() as session:
-        accounts = _seed_login_batch(session, 300)
+        accounts = _seed_login_batch(session, 200)
+        accounts += _seed_login_batch(session, 100, batch_id=92, start_id=201)
         _seed_style_and_avatars(session, accounts[0].id)
         before_batches = session.scalar(select(func.count(TgAccountLoginBatch.id)))
 
-        first = build_login_batch_initialization_manifest(session, _spec())
-        second = build_login_batch_initialization_manifest(session, _spec())
+        spec = _spec(batch_ids=(91, 92))
+        first = build_login_batch_initialization_manifest(session, spec)
+        second = build_login_batch_initialization_manifest(session, spec)
         after_batches = session.scalar(select(func.count(TgAccountLoginBatch.id)))
 
     encoded = json.dumps(first, ensure_ascii=False, sort_keys=True)
     assert first == second
     assert len(first["targets"]) == 300
+    assert first["login_batch_ids"] == [91, 92]
     assert first["style"]["sample_count"] == 120
     assert first["avatar_pool"]["unique_avatar_material_count"] == 12
     assert first["avatar_pool"]["max_material_assignment_count"] <= 30
     assert all(f"群友昵称{index}" not in encoded for index in range(120))
     assert manifest_sha256(first) == manifest_sha256(second)
-    assert before_batches == after_batches == 1
+    assert before_batches == after_batches == 2
 
 
 def test_target_guard_rejects_login_item_or_account_drift():
@@ -213,3 +258,31 @@ def test_group_style_requires_one_hundred_anonymous_samples():
 
         with pytest.raises(RuntimeError, match="style_sample_insufficient"):
             build_group_style_evidence(session, 1, (11,))
+
+
+def test_discovers_unique_terminal_batch_set_with_three_hundred_success_accounts():
+    with _session() as session:
+        first = _seed_login_batch(session, 200, batch_id=91, failed_count=1)
+        _seed_login_batch(
+            session,
+            100,
+            batch_id=92,
+            start_id=201,
+            unresolved_count=1,
+            status="completed_with_unresolved",
+        )
+        _seed_style_and_avatars(session, first[0].id)
+        spec = LoginBatchInitializationSpec(
+            tenant_id=1,
+            login_batch_ids=(),
+            expected_target_count=300,
+            style_group_ids=(11, 12),
+            seed="multi-batch-300",
+            deployed_sha="b" * 40,
+        )
+
+        manifest = build_login_batch_initialization_manifest(session, spec)
+
+    assert manifest["login_batch_ids"] == [91, 92]
+    assert len(manifest["targets"]) == 300
+    assert {target["login_batch_id"] for target in manifest["targets"]} == {91, 92}

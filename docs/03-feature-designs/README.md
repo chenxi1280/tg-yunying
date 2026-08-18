@@ -5,7 +5,7 @@
 | 文件 | 定位 |
 | --- | --- |
 | [account-security-hardening-design.md](account-security-hardening-design.md) | 账号安全、设备清理、托管 2FA、资料初始化 |
-| [account-profile-group-style-initialization-prd.md](account-profile-group-style-initialization-prd.md) | **2026-08-18 Product Design Complete、待实现**：按精确批量登录 batch 初始化名字+头像，群样本仅形成匿名风格分布、不复制真实身份或头像，protected preview/apply/readback + 300 账号 E4 |
+| [account-profile-group-style-initialization-prd.md](account-profile-group-style-initialization-prd.md) | **2026-08-19 多批次修正已实现、待发布/生产验证**：按精确批量登录 batch 集合的成功账号并集初始化名字+头像，群样本仅形成匿名风格分布、不复制真实身份或头像，protected preview/apply/readback + 300 账号 E4 |
 | [account-standby-auto-authorization-prd.md](account-standby-auto-authorization-prd.md) | 备用授权自动补齐专项 PRD |
 | [account-login-group-navigation-recovery-prd.md](account-login-group-navigation-recovery-prd.md) | **当前**：账号验证码 / QR / 2FA 登录 flow、已有账号重登分组语义、账号分组导航与服务端分页修复合同 |
 | [account-batch-auto-login-prd.md](account-batch-auto-login-prd.md) | **本地已实现、定向 QA 通过、默认 mode=off、未发布/生产未证明**：批量自动登号专项（失败/超时/远端未解跳行，账号 UUID 接码备注映射，独立对账与 initial/correction 提醒，地址刷新和目标分组归一合同） |

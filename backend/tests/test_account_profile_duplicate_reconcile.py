@@ -53,7 +53,7 @@ def test_identity_operations_use_separate_bounded_workflow():
         "operation",
         "mode",
         "seed",
-        "login_batch_id",
+        "login_batch_ids",
         "expected_target_count",
         "style_group_ids",
         "deployed_sha",

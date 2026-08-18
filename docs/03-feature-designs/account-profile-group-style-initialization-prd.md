@@ -3,7 +3,7 @@
 - `intake_id`: `intake-2026-08-18-account-profile-group-style-300`
 - `level`: `L2`
 - `design_status`: `complete`
-- `implementation_status`: `pending`
+- `implementation_status`: `implemented_multi_batch_fix_pending_release`
 - `production_status`: `unproven`
 - `owner_flow`: `product -> dev -> qa -> product -> release -> prod-diagnosis`
 - `supersedes`: 仅补正 `account-profile-identity-uniqueness-prd.md` 的名字多样性和生产精确初始化入口；名称 claim、头像许可治理和账号用途边界继续沿用原合同。
@@ -47,16 +47,16 @@
 
 ### 3.3 目标身份
 
-目标必须由一个明确 `login_batch_id` 冻结：
+目标必须由一组明确 `login_batch_ids` 冻结；当前批量登录单批最多 200 行，因此 300 个新登录账号允许来自多个终态批次：
 
-1. `TgAccountLoginBatch.tenant_id` 等于 workflow 输入租户。
-2. 批次状态为 `completed`，且 `unresolved_count=0`。
+1. 每个 `TgAccountLoginBatch.tenant_id` 等于 workflow 输入租户，batch ID 不重复。
+2. 批次状态为 `completed`、`completed_with_unresolved` 或 `cancelled`；只纳入其中 `succeeded/succeeded_with_warning` 的已完成 item，failed/unresolved/skipped 行不进入目标。
 3. 成功 item 状态只能是 `succeeded` 或 `succeeded_with_warning`。
 4. 每个 item 必须有唯一 `account_id`，账号为 active、有 session、未删除、普通运营用途，pool 与 `account_identity=normal` 一致。
-5. `expected_target_count` 必须等于成功 item 去重后的账号数；本次固定为 300。
-6. manifest 冻结 batch `state_version/execution_generation/resolution_version/finished_at` 和每个 item/account 旧状态。
+5. 所选全部批次的成功 item 账号并集不得跨批重复，`expected_target_count` 必须等于并集账号数；本次固定为 300。
+6. manifest 冻结每个 batch 的 `state_version/execution_generation/resolution_version/finished_at` 和每个 item/account 旧状态。
 
-若最新生产中存在多个可能的 300 成功批次，preview 必须列出候选 batch 元数据并以 `ambiguous_login_batch` 失败；不得自行选择。
+preview 未提供 batch IDs 时，可在最近 7 天最多 20 个终态批次中发现成功账号并集恰好 300 的组合；零个或多个组合时必须输出脱敏候选 batch ID、状态和计数并失败，不得自行选最近账号或扩大到全租户。
 
 ## 4. 功能设计
 
@@ -93,7 +93,7 @@
 - 只使用头像候选标签或现有 avatar 优先集合，不读取群成员头像。
 - preview 冻结每个账号的 `material:<id>`；按 `usage_count` 最低层优先并在同层 seed 随机，逐次增加 manifest 内模拟使用计数，避免一次预览集中到少数图片。
 - 本次允许多账号共享同一素材，但输出 `unique_avatar_material_count/max_material_assignment_count`；若 ready 素材少于 12 个或单素材分配超过目标数的 10%，阻断 apply。
-- 已有头像且已完成资料的目标默认为 no-op；本次只对 login batch 中仍未完成资料的账号初始化，不覆盖人工已设置头像。
+- 本次是对精确新登录批次集合的显式资料升级，允许覆盖这些 target 的旧自动初始化名字/头像；manifest 冻结旧值，preview 后人工变更会触发 CAS 漂移并零写入。批次外账号绝不覆盖。
 
 ### 4.4 用户名边界
 
@@ -105,7 +105,7 @@
 
 - `operation=login_batch_initialize`
 - `mode=preview|apply|readback`
-- `login_batch_id`
+- `login_batch_ids`（逗号分隔；preview 可留空做唯一组合发现）
 - `expected_target_count`（本次 300）
 - `style_group_ids`（逗号分隔的精确群 ID）
 - `seed`
@@ -119,8 +119,8 @@ workflow 校验完整 40 位 release SHA、当前生产 symlink、输入格式�
 
 canonical manifest 包含：
 
-- `tenant_id/login_batch_id/expected_target_count/deployed_sha/seed`
-- 登录批次版本、状态、成功计数和完成时间
+- `tenant_id/login_batch_ids/expected_target_count/deployed_sha/seed`
+- 每个登录批次的版本、状态、成功/失败/未解计数和完成时间
 - 匿名群风格摘要与 source fingerprint
 - ready 头像池摘要
 - 每个 target 的 account/item ID、旧展示名/TG 名/头像有无/资料状态、账号用途、账号状态、生成的新名、冻结 avatar source、no-op 原因
@@ -131,7 +131,7 @@ preview 只读，禁止写 claim、batch、item、audit、头像 usage_count 或
 
 ### 5.2 Apply
 
-apply 必须提供同一 seed、login batch、style groups、deployed SHA、manifest SHA 和 approval ref：
+apply 必须提供同一 seed、login batch IDs、style groups、deployed SHA、manifest SHA 和 approval ref：
 
 1. 重新构建 manifest，SHA 不一致即失败。
 2. 锁定登录 batch/items 和精确 accounts，验证所有版本与旧值。
@@ -170,7 +170,7 @@ readback 使用 manifest SHA 找到精确批次与 items：
 ## 8. 数据流转
 
 ```text
-TgAccountLoginBatch + succeeded BatchItems
+selected TgAccountLoginBatches + succeeded BatchItems
   -> exact account set + old-state/version snapshot
   -> selected GroupContextMessage sender names (memory-only)
   -> anonymous NameStyleSummary + source_fingerprint
@@ -190,7 +190,7 @@ TgAccountLoginBatch + succeeded BatchItems
 1. 300/500/1000 个名字唯一、可复现、无 ID/序号尾巴，并满足类别/长度/前后缀集中度。
 2. 来源完整名字即使恰好由模板生成也会排除；manifest 不包含原始 sender name/username/peer ID。
 3. 群越租户、群不存在、样本不足、机器人/默认名只样本明确失败。
-4. login batch 非 completed、有 unresolved、目标数非 expected、item 无 account、用途不一致均零写入。
+4. login batch 非终态、成功账号并集非 expected、跨批重复账号、item 无 account、用途不一致均零写入；批次中 failed/unresolved/skipped 行不进入目标。
 5. preview 零写入；apply 缺 SHA/ref 或任何版本/旧值漂移零写入。
 6. 同 manifest 重复 apply 幂等；冲突 manifest/open item 明确失败。
 7. 头像分配只用 ready 素材，模拟 least-used 分布满足阈值；不读取群成员头像。
@@ -225,12 +225,12 @@ TgAccountLoginBatch + succeeded BatchItems
 - [x] 定义 preview/apply/readback、审计、发布、回滚和 E2/E4。
 - [x] 无 silent fallback、mock success 或健康即完成声明。
 
-`design_status=complete`。可以进入 dev，但生产 apply 仍必须取得精确 `login_batch_id`、`style_group_ids`、preview manifest SHA 和 approval reference。
+`design_status=complete`。生产 apply 仍必须取得精确 `login_batch_ids`、`style_group_ids`、preview manifest SHA 和 approval reference。
 
 ## 12. Product Handoff
 
 - `message_id`: `product-account-profile-group-style-300-20260818`
-- `dev_scope`: 扩展名称生成器；新增匿名群风格摘要；新增精确 login batch 初始化脚本与 protected workflow operation；补定向测试和索引。
+- `dev_scope`: 扩展名称生成器；新增匿名群风格摘要；新增精确 login batch 集合初始化脚本与 protected workflow operation；补定向测试和索引。
 - `locked_paths`: `account_profile_identity.py`、新增 group-style/profile-init 模块、生产 identity workflow/script、对应 tests、本 PRD、项目结构/数据流索引。
 - `qa_gate`: 先写失败测试覆盖 300 分布、隐私、target/CAS/preview/idempotency/readback，再实现；后端测试单次 60 秒硬超时。
 - `release_gate`: 不在开发分支运行生产 apply；合并 release 并部署成功后，才用当前部署 SHA 运行 protected preview。
