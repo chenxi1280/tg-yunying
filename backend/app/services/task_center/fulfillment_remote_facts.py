@@ -177,12 +177,12 @@ def persist_remote_fact(session: Session, action: Action) -> FulfillmentRemoteFa
     if attempt is None or not _fact_worthy(action, attempt):
         return None
     values = _fact_values(session, action, attempt)
-    projection = _obligation_projection(
+    _bind_existing_projection_ledger(
         session,
         values["obligation_type"],
         values["obligation_id"],
+        ledger_id=values["task_day_ledger_id"],
     )
-    _bind_projection_ledger(projection, values["task_day_ledger_id"])
     _insert_do_nothing(
         session,
         FulfillmentRemoteFact,
@@ -491,6 +491,23 @@ def _bind_projection_ledger(
     if current and current != ledger_id:
         raise ValueError("fulfillment_projection_ledger_conflict")
     projection.task_day_ledger_id = ledger_id
+
+
+def _bind_existing_projection_ledger(
+    session: Session,
+    obligation_type: str,
+    obligation_id: str,
+    *,
+    ledger_id: str | None,
+) -> None:
+    if not ledger_id:
+        return
+    projection = session.scalar(select(FulfillmentObligationProjection).where(
+        FulfillmentObligationProjection.obligation_type == obligation_type,
+        FulfillmentObligationProjection.obligation_id == obligation_id,
+    ))
+    if projection is not None:
+        _bind_projection_ledger(projection, ledger_id)
 
 
 def _hash(value: str) -> str:
