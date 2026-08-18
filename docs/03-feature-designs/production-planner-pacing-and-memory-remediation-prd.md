@@ -6,8 +6,8 @@
 | --- | --- |
 | Intake ID | intake-2026-08-17-planner-pacing-memory-001 |
 | 分级 | L3 / P0 资源风险 + P0 来源突发 + P1 拟人节奏，必须走标准生产事故流与 Release Gate |
-| 设计状态 | product_design_complete / dev_handoff_ready=true / resynced_2026-08-19-19 |
-| 实现状态 | RC-P13/P14 已在 `e750fd96` 闭环：游标重算保留 remaining admission 的冻结 gap，账号放弃收口 fact/reservation/admission/owner，恢复工具以 deployed SHA + 精确清单 + state hash + 行锁进行 preview/apply/readback；当前生产 `0c59a019` 以该修复为祖先 |
+| 设计状态 | product_design_complete / dev_handoff_ready=true / resynced_2026-08-19-20（补充发送目标守恒硬闸门） |
+| 实现状态 | RC-P13/P14 已在 `e750fd96` 闭环；`orphaned_source_pacing_reconcile_v2` 已实现发送目标/数量指纹、同行锁 CAS 与写后守恒复核，相关 15 项回归通过，待按 master→release 发布；当前生产 `0c59a019` 仍为 v1 基线 |
 | 生产状态 | partial：271 条历史孤儿预约已安全收口，43 条 current admission 已稳定重排，最终状态哈希 E4 有 4 条 `view_observed`、最小实际 gap 167.955s/`0` 违例；Planner 短窗资源通过。SwapUsed 约 656 MiB 仍高于 512 MiB 事故线，6/24 小时曲线与暂停 comment/like E4 未闭环，production_fixed=unproven |
 | 当前生产基线 | 2026-08-19 03:06 北京时间；release `0c59a019`、migration 0154 head，关键容器 healthy/restart=0/OOM=false；Planner 25 点 PSS p95=190869 KiB、CPU p95=21.584%、Telethon/cgroup event=0，MemAvailable=2089512 KiB；当前业务 Python 容器 SwapPss=0 |
 | 权威关系 | 本文规范性取代生产稳定性 PRD 中 Planner 资源和旧 AI fail-open gate 口径，并补正拟人节奏 PRD 的跨批恢复；不改变各任务 stable owner、typed remote fact、unknown 与数量结算合同 |
@@ -24,7 +24,7 @@
 1. Planner 单轮工作量只与 dirty/due Task 和本轮有界候选相关，不随历史 Action、全账号 scope 或旧 blocker 总量线性增长。
 2. Planner 不持有 Telegram client、session 或 update loop；频道消息只能由 Listener 观察并持久化，Planner 只读新鲜快照。
 3. AI、浏览、评论、点赞都使用一致的 source/period/plan/lifecycle 身份；跨批 release cursor 单调，真实 Gateway call-start 也受来源级最终闸门约束。
-4. 不用重启、强制 GC、缩业务目标、丢任务、降低 typed fact 标准、静默 fallback 或单纯加内存上限伪装修复。
+4. 修复只能改执行时钟与无效占用；不得改变接收 peer、远端消息、目标数量、ledger/quantity owner 归属或最终缺口，也不用重启、强制 GC、缩业务目标、丢任务、降低 typed fact 标准、静默 fallback 或单纯加内存上限伪装修复。
 5. 迁移、旧 backlog、滚动发布、API 版本、数据清理和资源限额均有显式停止线。
 6. 资源 E3、排期 E3 和任务 E4 分开验收；三者全部通过后才能写 production_fixed。
 
@@ -253,7 +253,7 @@ SourcePacingAdmission 每个真实远程尝试一行：
 10. 同一 Action 已经绑定安全 admission 后，后续 pre-Gateway 重试必须优先锁定并复用该 admission id，不得因其他 owner 历史 reservation 的冻结时间更早而轮换槽位。只有当前 Action 无安全绑定时，replacement 才接管 owner 最早 reservation。
 11. 任一 final not-before 不得晚于 owner period deadline。计算值达到或越过 deadline 时，Action 最多唤醒到 deadline；claim 必须在 Gateway 前写 `pacing_claim_deadline_exceeded` 的 `safely_not_executed` fact，释放 quantity owner 当前 Action、把账号 reservation 标为 missed、把 source admission 标为 `cancelled_pre_gateway`。候选扫描有界且使用 `account_pacing_reservations(action_id,state)` 索引，不得等待跨日 scheduled_at 才收敛。
 12. 取消 pre-Gateway admission 后，在相同 source state 行锁下按“真实 last Gateway marker + last gap”和剩余 reserved admission 最大 not-before 重算 next cursor；不得由已取消、已过期 period 或未调用 Gateway 的历史队尾继续占用新 period。
-13. legacy `stale_channel_daily_action` sweep 只适用于非 current contract。`fact_first_v3` 的昨日/跨截止期浏览 Action 必须继续进入 direct fact-first 候选，并在 Gateway 前按第 11～12 条收口。历史误终结修复只接受 `status=skipped + error_code=stale_channel_daily_action + typed fact missing + Gateway marker missing` 的精确行；preview/apply 之间任一 action/version/owner/reservation/admission 漂移均拒绝整批。
+13. legacy `stale_channel_daily_action` sweep 只适用于非 current contract。`fact_first_v3` 的昨日/跨截止期浏览 Action 必须继续进入 direct fact-first 候选，并在 Gateway 前按第 11～12 条收口。历史误终结修复只接受 `status=skipped + error_code=stale_channel_daily_action + typed fact missing + Gateway marker missing` 的精确行；manifest 还必须冻结 task/ledger/quantity owner/账号、OperationTarget peer+revision、ChannelMessage 本地+远端 ID、daily/total/effective/due target 与 payload 快照，preview/apply 间任一身份、数量或版本漂移均在同行锁事务中拒绝整批。安全收口只能把 owner 重开，`safely_not_executed` 永不冲抵 due；replacement 必须继承同一 owner 和目标快照。
 
 AI obligation projection 与 typed remote fact 的 `task_day_ledger_id` 取值顺序为：显式 payload ledger → `Action.primary_quantity_slot_id` 对应 quantity owner ledger。两者同时存在但不一致时必须显式失败；current AI 成功事实不得以 null ledger 落库。
 
@@ -430,6 +430,7 @@ T2 按 Task/source 灰度，不要求暂停的 comment/like 为 AI/view 让路�
 21. 跨日 pre-Gateway 收敛：Action 的 release/scheduled 已被历史 source cursor 推到 ledger deadline 以后时，即使 `scheduled_at > now` 也必须进入有界 direct claim；Gateway marker 保持 null，Action/账号 reservation/source admission/obligation/fact/source next cursor 一次事务读回一致。非过期 future Action 不得被提前 claim。
 22. 午夜 stale sweep 竞争：同批放入 legacy 浏览与 `fact_first_v3` 浏览昨日 Action。sweep 只跳过 legacy 行；current 行必须由 direct claim 写 `safely_not_executed`，并读回 fact、missed account reservation、cancelled source admission、open owner 与重算 source next。历史 repair 的 preview/hash 漂移、已有 Gateway/unknown/fact、owner confirmed 或缺 reservation 均 fail closed；重复 preview 为零待修复，apply 对零候选显式拒绝。
 23. 历史 scope 性能回归：PostgreSQL 编译 SQL 必须以 stale/fact/Gateway/owner/reservation 集合 CTE 聚合且不含相关 `EXISTS`；生产等价单 Task preview 必须在 5 秒目标内完成，联合 preview 必须在 30 秒目标内完成，超时不能遗留活动数据库查询。
+24. 发送目标守恒：分别篡改 preview 后的 ledger、owner account、OperationTarget peer/revision、ChannelMessage/remote message、payload target、daily/total/effective/due 任一字段，apply 必须零写入失败；正常 apply 前后目标指纹相同，terminal owner 为 open 且非 confirmed，重排只允许时间/version/audit 字段变化。
 
 ### 10.2 性能与资源
 
@@ -468,6 +469,7 @@ due
 | 发布与运行 | `32170671559` 发布 `e750fd96` 成功；后续 `32173029101` 的 `0c59a019` 继承该修复并再次通过全门禁。current/backend/Planner/Dispatcher/Listener/OCR 均为最终 SHA，migration 0154 head、healthy/restart=0/OOM=false，关键日志错误匹配 0 | pass |
 | 精确存量修复 | preview 精确命中 terminal=271/current=43/state=2，blocked=false、unclassified=0，state hash `2cef1b47...776f1`；apply 回读 remaining=0、AuditLog=2 | pass |
 | 事实与预约读回 | 242 条 account abandonment 全部为 no-Gateway `safely_not_executed`，29 条 stale 保留已有安全事实；精确集合 reserved admission/live account reservation 均为 0。43 条重排时钟/归属 mismatch=0 | pass |
+| 发送目标守恒 | 271 terminal + 43 rebased 的 task/ledger/owner/account/peer/message/daily/total 逐行 mismatch=0、目标指纹 `2e73a932...a040b`；terminal confirmed owner=0；最新 ledger 的 target rows/due 保持郑州 10/4177、成都 1/517 | 当前存量 pass；preview/apply 并发漂移硬闸门待本修订发布 |
 | 浏览排期 E3/E4 | 重排链路 4 次 Gateway 均有 `view_observed`，最小实际 gap=167.955098s，冻结 gap=167s，违例 0；最终 SHA 后郑州/成都 Gateway=4/2、最小 gap=22.137635/168.590996s，违例均 0，发布延迟后的 overdue Action 依旧以真实 call-start+gap 延后 | 短窗 pass；自然日仍 unproven |
 | Planner 资源短窗 E3 | 最终 SHA 25 个自采样 PSS p95=190869 KiB、CPU p95=21.584%、Telethon/cgroup event=0；主机实测 Planner PSS=190828 KiB，当前业务 Python 容器合计 PSS=3201312 KiB、SwapPss=0 | pass；6/24 小时斜率仍 unproven |
 | 聚合宿主 | MemAvailable=2089512 KiB；4 个实时 vmstat 区间 swap-out=0、仅 1 页 swap-in，不是持续换页。SwapUsed=672040 KiB 仍高于 512 MiB；tg-yunying 存量 SwapPss 约 129748 KiB 均在有消费者代理，宿主另有 tg-reporter/tg-v-chat 等独立 owner | MemAvailable pass / resource_capacity_degraded |
@@ -482,7 +484,7 @@ due
 | 用户原话 | 已覆盖线上短时完成、内存高、具体原因、PRD 修复和遗漏复核 |
 | 前端/API | v2 summary、分页、运行状态 IA、freshness、权限和 v1 cutoff 已冻结 |
 | 后端/worker | Listener 边界、wake/admission/blocker 投影、有界候选、四类 Gateway gate 完整 |
-| 数据边界 | stable owner/fact/unknown 不变；新增对象均为可重建投影或调用准入 |
+| 数据边界 | stable owner/fact/unknown 与接收 peer、消息、数量目标、ledger 归属不变；新增对象均为可重建投影或调用准入 |
 | 并发/幂等 | revision/CAS、source lock、mixed-version capability、outbox、checkpoint 完整 |
 | 迁移/清理 | concurrent index、资源停止线、旧 backlog 分类、hash preview/apply 完整 |
 | 资源 | PSS 与 cgroup 口径分离；v1/v2 自动识别、limit 公式、freshness、retention 和宿主预算完整 |

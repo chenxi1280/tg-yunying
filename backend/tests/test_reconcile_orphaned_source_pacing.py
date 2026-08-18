@@ -15,6 +15,7 @@ from app.models import (
     Action,
     AuditLog,
     ChannelMessage,
+    ChannelViewDailyMessageTarget,
     FulfillmentRemoteFact,
     OperationTarget,
     SourcePacingAdmission,
@@ -70,6 +71,7 @@ def test_manifest_classifies_terminal_and_rebases_current(session: Session) -> N
     assert manifest["terminal"][0]["mode"] == "safe_settlement"
     assert manifest["current_count"] == 1
     assert manifest["current"][0]["rebased_not_before_at"] == ANCHOR.isoformat()
+    assert manifest["current"][0]["target_guard"]["mismatches"] == []
     assert manifest["unclassified_reserved_admission_ids"] == []
 
 
@@ -110,6 +112,14 @@ def test_apply_closes_orphan_and_rebases_current_timeline(session: Session) -> N
     fact = session.scalar(select(FulfillmentRemoteFact).where(
         FulfillmentRemoteFact.action_id == terminal.id,
     ))
+    post_guards = script.target_guard.attach_target_guards(
+        session,
+        [{"action_id": item["action_id"]} for item in [
+            *manifest["terminal"],
+            *manifest["current"],
+        ]],
+        lock=False,
+    )
 
     assert fact is not None and fact.fact_kind == "safely_not_executed"
     assert terminal_reservation.state == "missed"
@@ -120,6 +130,64 @@ def test_apply_closes_orphan_and_rebases_current_timeline(session: Session) -> N
     assert current_admission.call_not_before_at == ANCHOR
     assert state.next_call_not_before_at == ANCHOR + timedelta(seconds=20)
     assert session.scalar(select(AuditLog)) is not None
+    assert [item["target_guard"] for item in post_guards] == [
+        item["target_guard"] for item in [*manifest["terminal"], *manifest["current"]]
+    ]
+
+
+def test_apply_rejects_send_target_and_quantity_drift(session: Session) -> None:
+    script = _load_script()
+    options = _options(script)
+    manifest = script.build_manifest(session, options)
+    target = session.scalar(select(ChannelViewDailyMessageTarget).where(
+        ChannelViewDailyMessageTarget.task_day_ledger_id == "current-ledger",
+    ))
+    operation_target = session.get(OperationTarget, 10)
+    message = session.get(ChannelMessage, 102)
+    owner = session.get(ViewFulfillmentObligation, "current-owner")
+    mutations = (
+        (target, "due_count", 51),
+        (target, "effective_target_snapshot", 101),
+        (target, "daily_target_snapshot", 101),
+        (target, "total_target_snapshot", 301),
+        (target, "target_revision", 2),
+        (target, "source_state", "expired"),
+        (operation_target, "tg_peer_id", "-100999"),
+        (operation_target, "reference_revision", 2),
+        (message, "message_id", 9999),
+        (owner, "account_id", 2),
+    )
+    for model, field, changed in mutations:
+        original = getattr(model, field)
+        setattr(model, field, changed)
+        session.flush()
+        _assert_apply_drift(script, session, options, manifest)
+        setattr(model, field, original)
+        session.flush()
+
+    assert session.get(Action, "current-action").scheduled_at == DEADLINE + timedelta(hours=5)
+
+
+def _assert_apply_drift(script, session, options, manifest) -> None:
+    with pytest.raises(RuntimeError, match="reconciliation drifted"):
+        script._apply_locked_manifest(
+            session,
+            options,
+            manifest,
+            state_hash=script.manifest_hash(manifest),
+        )
+
+
+def test_manifest_blocks_payload_send_target_mismatch(session: Session) -> None:
+    action = session.get(Action, "current-action")
+    action.payload = {**action.payload, "channel_id": "-100999"}
+    session.flush()
+    script = _load_script()
+
+    manifest = script.build_manifest(session, _options(script))
+
+    assert manifest["blocked"] is True
+    assert manifest["current"][0]["target_guard"]["mismatches"] == ["target_peer"]
 
 
 def _options(script):
@@ -168,6 +236,10 @@ def _seed(session: Session) -> None:
     )
     session.add_all([old_ledger, current_ledger, *messages])
     session.flush()
+    session.add_all([
+        _target_row("old-target", task, old_ledger, messages[0]),
+        _target_row("current-target", task, current_ledger, messages[1]),
+    ])
     state = SourcePacingState(
         id="shared-source-state",
         tenant_id=1,
@@ -255,6 +327,25 @@ def _owner(owner_id, ledger, message, *, current_action_id):
     )
 
 
+def _target_row(target_id, task, ledger, message):
+    return ChannelViewDailyMessageTarget(
+        id=target_id,
+        tenant_id=1,
+        task_id=task.id,
+        task_day_ledger_id=ledger.id,
+        target_peer_id="-10010",
+        channel_message_id=message.id,
+        target_revision=1,
+        daily_target_snapshot=100,
+        total_target_snapshot=300,
+        effective_target_snapshot=100,
+        accrual_anchor_at=ledger.period_start_at,
+        active_until=ledger.deadline_at,
+        due_count=50,
+        source_state="active",
+    )
+
+
 def _action(action_id, task, owner, *, execution_date, status, scheduled_at, result):
     return Action(
         id=action_id,
@@ -278,6 +369,12 @@ def _action(action_id, task, owner, *, execution_date, status, scheduled_at, res
             "view_fulfillment_obligation_id": owner.id,
             "channel_message_id": owner.channel_message_id,
             "channel_id": "-10010",
+            "channel_target_id": 10,
+            "target_reference_revision": 1,
+            "target_reference_snapshot": {"tg_peer_id": "-10010"},
+            "message_id": 900 + owner.channel_message_id,
+            "daily_view_target": 100,
+            "total_view_target": 300,
         },
     )
 

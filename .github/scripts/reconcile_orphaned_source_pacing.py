@@ -27,13 +27,13 @@ from app.services.task_center.direct_action_claims import (
     settle_fact_first_action_before_gateway,
 )
 from app.services.task_center.fulfillment_activation import CURRENT_CONTRACT_VERSION
+from app.services.task_center import orphaned_pacing_target_guard as target_guard
 from app.services.task_center.source_pacing import wall_datetime
 
 
-CONTRACT = "orphaned_source_pacing_reconcile_v1"
+CONTRACT = "orphaned_source_pacing_reconcile_v2"
 TERMINAL_REASONS = ("account_task_abandoned", "stale_channel_daily_action")
 SAFE_FACT_KIND = "safely_not_executed"
-
 
 @dataclass(frozen=True)
 class ReconcileOptions:
@@ -58,6 +58,7 @@ def build_manifest(session, options: ReconcileOptions, *, lock: bool = False) ->
     classified_ids = _classified_admission_ids(terminal, current)
     unclassified = _unclassified_reserved_ids(session, state_ids, classified_ids)
     blockers = [item for item in terminal if item["mode"] == "blocked"]
+    blockers.extend(target_guard.target_guard_blockers(terminal, planned))
     return {
         "contract": CONTRACT,
         "deployed_sha": options.deployed_sha,
@@ -109,6 +110,7 @@ def _apply_locked_manifest(
     for item in expected["current"]:
         _apply_current_item(session, item, state_hash=state_hash)
     reconcile_source_pacing_states(session, affected_state_ids)
+    target_guard.assert_target_guards_unchanged(session, [*expected["terminal"], *expected["current"]])
     _write_audits(session, options, expected, state_hash=state_hash)
 
 
@@ -167,7 +169,7 @@ def _terminal_items(session, options: ReconcileOptions, *, lock: bool) -> list[d
         for action, owner, reservation in rows
     ]
     _assert_unique(items, "action_id")
-    return items
+    return target_guard.attach_target_guards(session, items, lock=lock)
 
 
 def _terminal_statement(options: ReconcileOptions):
@@ -231,7 +233,7 @@ def _current_items(session, options: ReconcileOptions, *, lock: bool) -> list[di
         statement = statement.with_for_update(of=(Action, SourcePacingAdmission, ViewFulfillmentObligation, AccountPacingReservation))
     items = [_current_item(*row) for row in session.execute(statement)]
     _assert_unique(items, "action_id")
-    return items
+    return target_guard.attach_target_guards(session, items, lock=lock)
 
 
 def _current_statement(options: ReconcileOptions):
@@ -475,7 +477,6 @@ def _validate_runtime_sha(deployed_sha: str) -> None:
     if len(deployed_sha) != 40 or deployed_sha != runtime_sha:
         raise RuntimeError("orphaned source pacing deployed SHA mismatch")
 
-
 def _assert_unique(items, key: str) -> None:
     values = [item[key] for item in items]
     if len(values) != len(set(values)):
@@ -484,7 +485,6 @@ def _assert_unique(items, key: str) -> None:
 
 def _iso(value) -> str:
     return wall_datetime(value).isoformat() if value is not None else ""
-
 
 def _optional_datetime(value: str) -> datetime | None:
     return datetime.fromisoformat(value) if value else None
