@@ -21,6 +21,7 @@ from app.models import (
     TgAccountSecurityBatchItem,
 )
 from app.security import encrypt_session
+from app.services.account_security import activate_account_security_batches
 
 
 pytestmark = pytest.mark.no_postgres
@@ -54,11 +55,11 @@ def _account(account_id: int = 1) -> TgAccount:
         account_identity="normal",
         display_name="旧名字",
         tg_first_name="旧名字",
-        phone_masked="138****0001",
+        phone_masked=f"138****{account_id:04d}",
         status=AccountStatus.ACTIVE.value,
         session_ciphertext=encrypt_session("session"),
         profile_sync_status="已同步",
-        avatar_object_key="avatars/1/1/current.png",
+        avatar_object_key=f"avatars/1/{account_id}/current.png",
     )
 
 
@@ -77,6 +78,7 @@ def test_batch_payload_changes_only_name_profile_and_avatar():
     payload = script._batch_payload([target], "a" * 64)
 
     assert payload.action_types == ["update_profile", "update_avatar"]
+    assert payload.confirm_text == ""
     assert payload.profile_strategy.username_enabled is False
     assert payload.profile_strategy.overwrite_existing is True
     assert payload.preview_overrides[0].generated_display_name == "橘猫收工"
@@ -169,15 +171,153 @@ def test_remote_result_requires_name_claim_and_remote_avatar_fingerprint(monkeyp
             lambda *_args, **_kwargs: SimpleNamespace(
                 sha256=hashlib.sha256(b"remote").hexdigest(),
                 size_bytes=6,
+                remote_photo_id="991",
+                perceptual_hash="0f0f0f0f0f0f0f0f",
             ),
         )
-        monkeypatch.setattr(script, "_local_avatar_sha256", lambda _key: hashlib.sha256(b"local").hexdigest())
+        monkeypatch.setattr(script, "_local_avatar_fingerprint", lambda _key: {
+            "sha256": hashlib.sha256(b"local").hexdigest(),
+            "perceptual_hash": "0f0f0f0f0f0f0f0f",
+        })
 
         result = script._read_remote_result(session, item, account)
 
     assert result["status"] == "matched"
     assert result["remote_avatar_sha256"] == hashlib.sha256(b"remote").hexdigest()
     assert result["local_avatar_sha256"] == hashlib.sha256(b"local").hexdigest()
+    assert result["avatar_perceptual_distance"] == 0
+
+
+def test_remote_result_rejects_different_avatar_content(monkeypatch):
+    script = _load_script()
+    with _session() as session:
+        account = _account()
+        account.display_name = account.tg_first_name = "橘猫收工"
+        session.add(account)
+        session.add(TgAccountProfileNameClaim(
+            tenant_id=1,
+            account_id=1,
+            display_name="橘猫收工",
+            name_key="橘猫收工",
+            source="group_style_v2",
+            created_by="tester",
+        ))
+        session.commit()
+        item = TgAccountSecurityBatchItem(
+            account_id=1,
+            status="succeeded",
+            profile_status="succeeded",
+            avatar_status="succeeded",
+            generated_display_name="橘猫收工",
+        )
+        monkeypatch.setattr(script, "credentials_for_account", lambda *_args: object())
+        monkeypatch.setattr(script.gateway, "pull_profile", lambda *_args: SimpleNamespace(first_name="橘猫收工", last_name=""))
+        monkeypatch.setattr(script.gateway, "pull_profile_avatar_fingerprint", lambda *_args, **_kwargs: SimpleNamespace(
+            sha256="a" * 64,
+            size_bytes=100,
+            remote_photo_id="992",
+            perceptual_hash="ffffffffffffffff",
+        ))
+        monkeypatch.setattr(script, "_local_avatar_fingerprint", lambda _key: {
+            "sha256": "b" * 64,
+            "perceptual_hash": "0000000000000000",
+        })
+
+        result = script._read_remote_result(session, item, account)
+
+    assert result["status"] == "mismatched"
+    assert result["avatar_perceptual_distance"] == 64
+
+
+def test_staged_batches_activate_together_and_claim_names():
+    with _session() as session:
+        session.add_all([_account(1), _account(2)])
+        batches = [TgAccountSecurityBatch(tenant_id=1, status="ready") for _ in range(2)]
+        session.add_all(batches)
+        session.flush()
+        session.add_all([
+            TgAccountSecurityBatchItem(
+                batch_id=batch.id,
+                tenant_id=1,
+                account_id=index,
+                status="executable",
+                generated_display_name=f"新名字{index}",
+                trace_id=f"trace-{index}",
+            )
+            for index, batch in enumerate(batches, 1)
+        ])
+        session.commit()
+
+        activate_account_security_batches(
+            session,
+            1,
+            [int(batch.id) for batch in batches],
+            actor="tester",
+            confirm_text="确认",
+        )
+
+        assert {session.get(TgAccountSecurityBatch, batch.id).status for batch in batches} == {"running"}
+        assert set(session.scalars(select(TgAccountSecurityBatchItem.status))) == {"pending"}
+        assert set(session.scalars(select(TgAccountProfileNameClaim.name_key))) == {"新名字1", "新名字2"}
+
+
+def test_cancelled_staged_batch_cannot_be_activated():
+    with _session() as session:
+        batch = TgAccountSecurityBatch(tenant_id=1, status="cancelled")
+        session.add(batch)
+        session.commit()
+
+        with pytest.raises(ValueError, match="cannot be activated"):
+            activate_account_security_batches(
+                session,
+                1,
+                [int(batch.id)],
+                actor="tester",
+                confirm_text="确认",
+            )
+
+
+def test_apply_stages_every_chunk_before_activation(monkeypatch):
+    script = _load_script()
+    script.EXPECTED_SHA256 = "a" * 64
+    script.EXPECTED_TARGET_COUNT = 2
+    script.BATCH_SIZE = 1
+    events: list[tuple[str, object]] = []
+
+    class _Context:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(script, "SessionLocal", _Context)
+    monkeypatch.setattr(script, "_existing_manifest_state", lambda *_args: ([], set()))
+    monkeypatch.setattr(script, "_assert_no_conflicting_open_items", lambda *_args: None)
+    monkeypatch.setattr(script, "_assert_targets_unchanged", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(script, "_ensure_neighbor_scope_audit", lambda *_args: events.append(("audit", None)))
+
+    def create_batch(_session, _tenant_id, payload, _actor):
+        events.append(("create", payload.confirm_text))
+        return SimpleNamespace(id=len([event for event in events if event[0] == "create"]))
+
+    def activate(_session, _tenant_id, batch_ids, **_kwargs):
+        events.append(("activate", tuple(batch_ids)))
+
+    monkeypatch.setattr(script, "create_account_security_batch", create_batch)
+    monkeypatch.setattr(script, "activate_account_security_batches", activate)
+    target = {
+        "account_id": 1,
+        "new_display_name": "名字",
+        "old_tg_bio": "",
+        "avatar_source": "material:7",
+    }
+    manifest = {"targets": [target, {**target, "account_id": 2}], "neighbor_scope": {}}
+
+    result = script._apply(manifest, "a" * 64)
+
+    assert result == [1, 2]
+    assert events == [("create", ""), ("create", ""), ("audit", None), ("activate", (1, 2))]
 
 
 def test_target_guard_uses_login_item_snapshot():

@@ -123,6 +123,7 @@ class RemoteAvatarFingerprint:
     sha256: str
     size_bytes: int
     remote_photo_id: str
+    perceptual_hash: str
 
 
 @dataclass(frozen=True)

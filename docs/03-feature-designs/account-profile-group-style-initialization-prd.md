@@ -3,7 +3,7 @@
 - `intake_id`: `intake-2026-08-18-account-profile-group-style-300`
 - `level`: `L2`
 - `design_status`: `complete`
-- `implementation_status`: `implemented_new_account_audit_fix_pending_release`
+- `implementation_status`: `unified_merge_gap_fix_in_progress`
 - `production_status`: `unproven`
 - `owner_flow`: `product -> dev -> qa -> product -> release -> prod-diagnosis`
 - `supersedes`: 仅补正 `account-profile-identity-uniqueness-prd.md` 的名字多样性和生产精确初始化入口；名称 claim、头像许可治理和账号用途边界继续沿用原合同。
@@ -141,17 +141,19 @@ apply 必须提供同一 seed、login batch IDs、style groups、deployed SHA、
 2. 锁定登录 batch/items 和精确 accounts，验证所有版本与旧值。
 3. 检查同 manifest 已创建批次；一致则复用，漂移或重复账号即失败。
 4. 对缺失 target 按最多 50 个一批调用公开 `create_account_security_batch`。
-5. 使用 `preview_overrides` 冻结名字与 avatar source，动作仅 `update_profile/update_avatar`，`overwrite_existing=true` 只适用于 manifest 明确判定的占位/未就绪目标。
-6. claim、账号安全 batch/items 与 AuditLog 在正式服务事务中创建；不得直接 SQL 改资料。
-7. active/open 旧资料初始化项若属于同一 target，必须先分类：已成功为 no-op；同目标同值开放项复用；值不同或远端状态未知则 `existing_profile_operation_conflict`，禁止双批并发。
+5. 所有 chunk 先以未确认、不可执行状态创建；完整 target 集合、邻居旧状态 hash 与审计全部落库后，才在一个数据库事务中 claim 名称并激活全部 chunk。任何 staging 中断均不得触发 Telegram 调用，重复 apply 只补缺失 chunk。
+6. 使用 `preview_overrides` 冻结名字与 avatar source，动作仅 `update_profile/update_avatar`，`overwrite_existing=true` 只适用于 manifest 明确判定的占位/未就绪目标。
+7. claim、账号安全 batch/items 与 AuditLog 在正式服务事务中创建；不得直接 SQL 改资料。
+8. active/open 旧资料初始化项若属于同一 target，必须先分类：已成功为 no-op；同目标同值开放项复用；值不同或远端状态未知则 `existing_profile_operation_conflict`，禁止双批并发。
 
 ### 5.3 Readback
 
 readback 使用 manifest SHA 找到精确批次与 items：
 
 - 持久化：account display/TG name/avatar object key、name claim、batch/item 状态、audit cardinality 与 target count 匹配。
-- Telegram 远端：逐账号 `pull_profile` 验证 first name 等于 manifest 新名、last name 为空，并验证头像远端状态由 item `avatar_status=succeeded` 与独立 profile/avatar readback 共同证明。
-- 邻居不变：同登录 batch 的 no-op 行和非目标账号旧 snapshot hash 不变。
+- Telegram 远端：逐账号 `pull_profile` 验证 first name 等于 manifest 新名、last name 为空；头像必须由 item `avatar_status=succeeded`、本地冻结对象和 Telegram 下载头像的感知指纹共同证明。Telegram 重编码会改变原始字节 SHA，禁止用“远端存在任意头像”或原始字节相等伪装具体头像匹配。
+- 邻居不变：apply 激活前把同登录 batch 的 no-op 行和非目标账号旧 profile snapshot hash 写入 manifest 专项审计；readback 重算并要求 count/hash 相同。该结果必须进入 `complete` 闸门。
+- 发送目标守恒：本操作不得写 `Task/Action/ExecutionAttempt/TaskDayLedger/coverage`；发布及 apply 前后对已有发送目标、冻结 action 和远端发送事实做只读对比，数量减少或绑定改变即验收失败。
 - 输出失败类型、等待缓存、FloodWait、pull_failed、mismatched 和 unknown；任何非 matched 均不能报告完成。
 
 ## 6. 并发、幂等与失败路径
@@ -200,7 +202,9 @@ selected TgAccountLoginBatches + succeeded BatchItems
 7. 头像分配只用 ready 素材，模拟 least-used 分布满足阈值；不读取群成员头像。
 8. 50 个 chunk 边界下 300 个目标恰好创建 6 个或复用等价批次，不丢不重。
 9. 名字成功、头像 waiting/failed 必须保持 partial/incomplete；不能报告整项成功。
-10. readback 必须检查远端 first/last name 和头像状态，pull failure/unknown 不计 matched。
+10. staging 完成前 worker 不可领取任何 item；staging 中断后同 manifest 可补齐并一次激活。
+11. readback 必须检查远端 first/last name、头像感知指纹和邻居 snapshot audit，pull failure/unknown/头像内容不符/邻居漂移均不计 complete。
+12. 账号初始化 apply 不改变任何发送 Task/Action/ExecutionAttempt/ledger/coverage 目标绑定。
 
 ### 9.2 E4 生产验收
 

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from io import BytesIO
 from types import SimpleNamespace
 
 import pytest
+from PIL import Image
 
 from app.config import Settings
 from app.integrations.telegram.contracts import DeveloperAppCredentials
@@ -31,9 +33,16 @@ def _credentials() -> DeveloperAppCredentials:
     return DeveloperAppCredentials(app_id=1, api_id=12345, api_hash="hash", credentials_version=1)
 
 
+def _image_bytes() -> bytes:
+    output = BytesIO()
+    Image.new("RGB", (32, 32), color=(10, 120, 220)).save(output, format="PNG")
+    return output.getvalue()
+
+
 def test_pull_profile_avatar_fingerprint_hashes_remote_bytes(monkeypatch):
     gateway = TelethonTelegramGateway(Settings())
-    client = _AvatarClient(b"remote-avatar-bytes")
+    data = _image_bytes()
+    client = _AvatarClient(data)
 
     async def authorized(*_args, **_kwargs):
         return client
@@ -42,9 +51,10 @@ def test_pull_profile_avatar_fingerprint_hashes_remote_bytes(monkeypatch):
     result = asyncio.run(gateway._pull_profile_avatar_fingerprint_async("session", _credentials()))
 
     assert result is not None
-    assert result.sha256 == hashlib.sha256(b"remote-avatar-bytes").hexdigest()
-    assert result.size_bytes == len(b"remote-avatar-bytes")
+    assert result.sha256 == hashlib.sha256(data).hexdigest()
+    assert result.size_bytes == len(data)
     assert result.remote_photo_id == "991"
+    assert len(result.perceptual_hash) == 16
 
 
 def test_pull_profile_avatar_fingerprint_returns_none_when_remote_has_no_photo(monkeypatch):

@@ -9,12 +9,12 @@ from PIL import Image, UnidentifiedImageError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.image_fingerprint import image_perceptual_hash, perceptual_hash_distance
 from app.models import AvatarMaterialSource
 
 ALLOWED_COMMONS_HOSTS = frozenset({"commons.wikimedia.org", "upload.wikimedia.org"})
 ALLOWED_LICENSE_CODES = frozenset({"CC0", "PDM", "CC BY 2.0", "CC BY 2.5", "CC BY 3.0", "CC BY 4.0", "CC BY-SA 3.0", "CC BY-SA 4.0"})
 AVATAR_MIN_EDGE = 256
-PERCEPTUAL_HASH_SIZE = 8
 NEAR_DUPLICATE_DISTANCE = 5
 IMAGE_FORMAT_MIMES = {"JPEG": "image/jpeg", "PNG": "image/png", "WEBP": "image/webp", "GIF": "image/gif"}
 
@@ -150,13 +150,9 @@ def _inspect_image(data: bytes) -> tuple[int, int, str, str]:
                 raise ValueError("头像素材图片格式不受支持")
             if min(width, height) < AVATAR_MIN_EDGE:
                 raise ValueError(f"头像素材短边不得小于 {AVATAR_MIN_EDGE} 像素")
-            grayscale = image.convert("L").resize((PERCEPTUAL_HASH_SIZE, PERCEPTUAL_HASH_SIZE))
-            pixels = list(grayscale.get_flattened_data())
     except (UnidentifiedImageError, OSError) as exc:
         raise ValueError("头像素材不是有效图片") from exc
-    average = sum(pixels) / len(pixels)
-    bits = "".join("1" if pixel >= average else "0" for pixel in pixels)
-    return width, height, f"{int(bits, 2):016x}", detected_mime_type
+    return width, height, image_perceptual_hash(data), detected_mime_type
 
 
 def _assert_not_duplicate(
@@ -181,4 +177,4 @@ def _assert_fingerprints_unique(
 
 
 def _hash_distance(left: str, right: str) -> int:
-    return (int(left, 16) ^ int(right, 16)).bit_count()
+    return perceptual_hash_distance(left, right)

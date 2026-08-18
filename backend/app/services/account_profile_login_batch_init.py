@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import (
+    AvatarMaterialSource,
     GroupContextMessage,
     Material,
     TgAccount,
@@ -66,6 +67,7 @@ def build_login_batch_initialization_manifest(
     )
     avatars = allocate_avatar_sources(materials, len(targets.accounts), spec.seed)
     target_rows = _target_rows(targets, generated, avatars)
+    neighbor_scope = login_batch_neighbor_scope(session, targets)
     manifest = {
         "tenant_id": spec.tenant_id,
         "login_batch_ids": [int(batch.id) for batch in targets.batches],
@@ -75,7 +77,8 @@ def build_login_batch_initialization_manifest(
         "seed": spec.seed,
         "login_batches": [_login_batch_snapshot(batch) for batch in targets.batches],
         "style": style.summary,
-        "avatar_pool": _avatar_pool_summary(avatars),
+        "avatar_pool": _avatar_pool_summary(avatars, materials),
+        "neighbor_scope": neighbor_scope,
         "name_quality": name_diversity_metrics(generated),
         "targets": target_rows,
     }
@@ -124,8 +127,13 @@ def build_group_style_evidence(
 
 def ready_avatar_materials(session: Session, tenant_id: int) -> list[Material]:
     rows = list(session.scalars(
-        select(Material).where(
+        select(Material).join(
+            AvatarMaterialSource,
+            AvatarMaterialSource.material_id == Material.id,
+        ).where(
             Material.tenant_id == tenant_id,
+            AvatarMaterialSource.tenant_id == tenant_id,
+            AvatarMaterialSource.contains_person.is_(False),
             Material.material_type == "图片",
             Material.review_status == "已审核",
             Material.source_kind == "upload",
@@ -331,16 +339,68 @@ def _login_batch_snapshot(batch: TgAccountLoginBatch) -> dict[str, Any]:
     }
 
 
-def _avatar_pool_summary(sources: list[str]) -> dict[str, Any]:
+def _avatar_pool_summary(sources: list[str], materials: list[Material]) -> dict[str, Any]:
     counts = Counter(sources)
     material_ids = sorted(int(source.removeprefix("material:")) for source in counts)
+    material_by_id = {int(material.id): material for material in materials}
+    pool_state = [
+        _avatar_material_state(material_by_id[material_id])
+        for material_id in material_ids
+    ]
     return {
         "ready_material_count": len(material_ids),
         "material_ids": material_ids,
         "assignment_counts": dict(sorted(counts.items())),
         "unique_avatar_material_count": len(counts),
         "max_material_assignment_count": max(counts.values(), default=0),
+        "pool_state_sha256": _canonical_sha256(pool_state),
     }
+
+
+def _avatar_material_state(material: Material) -> dict[str, Any]:
+    return {
+        "material_id": int(material.id),
+        "asset_version_id": int(material.asset_version_id),
+        "tg_ref_version_id": int(material.tg_ref_version_id),
+        "asset_fingerprint": material.asset_fingerprint,
+        "tg_cache_account_id": material.tg_cache_account_id,
+        "tg_cache_peer_id": material.tg_cache_peer_id,
+        "tg_cache_message_id": material.tg_cache_message_id,
+    }
+
+
+def login_batch_neighbor_scope(session: Session, targets: LoginBatchTargets) -> dict[str, Any]:
+    target_ids = {int(account.id) for account in targets.accounts}
+    batch_ids = [int(batch.id) for batch in targets.batches]
+    account_ids = set(session.scalars(select(TgAccountLoginBatchItem.account_id).where(
+        TgAccountLoginBatchItem.batch_id.in_(batch_ids),
+        TgAccountLoginBatchItem.account_id.is_not(None),
+    ))) - target_ids
+    accounts = {
+        int(account.id): account
+        for account in session.scalars(select(TgAccount).where(TgAccount.id.in_(account_ids)))
+    }
+    rows = [_neighbor_state(account_id, accounts.get(account_id)) for account_id in sorted(account_ids)]
+    return {"account_count": len(rows), "state_sha256": _canonical_sha256(rows)}
+
+
+def _neighbor_state(account_id: int, account: TgAccount | None) -> dict[str, Any]:
+    if account is None:
+        return {"account_id": account_id, "missing": True}
+    return {
+        "account_id": account_id,
+        "display_name": account.display_name,
+        "tg_first_name": account.tg_first_name,
+        "tg_last_name": account.tg_last_name,
+        "tg_bio": account.tg_bio,
+        "avatar_object_key_sha256": _avatar_key_sha256(account.avatar_object_key),
+        "username": account.username,
+    }
+
+
+def _canonical_sha256(value: Any) -> str:
+    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _validate_manifest_quality(manifest: dict[str, Any]) -> None:
@@ -376,6 +436,7 @@ __all__ = [
     "build_group_style_evidence",
     "build_login_batch_initialization_manifest",
     "load_login_batch_targets",
+    "login_batch_neighbor_scope",
     "manifest_sha256",
     "ready_avatar_materials",
     "resolve_login_batches",

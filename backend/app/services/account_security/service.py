@@ -951,6 +951,70 @@ def create_account_security_batch(session: Session, tenant_id: int, payload: Acc
     return account_security_batch_detail(session, tenant_id, batch.id)
 
 
+def activate_account_security_batches(
+    session: Session,
+    tenant_id: int,
+    batch_ids: list[int],
+    *,
+    actor: str,
+    confirm_text: str,
+) -> list[AccountSecurityBatchOut]:
+    if not batch_ids or not _is_batch_confirmed(confirm_text):
+        raise ValueError("exact batch_ids and confirmation are required")
+    batches = list(session.scalars(
+        select(TgAccountSecurityBatch).where(
+            TgAccountSecurityBatch.tenant_id == tenant_id,
+            TgAccountSecurityBatch.id.in_(batch_ids),
+        ).with_for_update()
+    ))
+    if {int(batch.id) for batch in batches} != set(batch_ids):
+        raise ValueError("account security batch not found")
+    allowed_statuses = {"ready", "running", "succeeded", "partial_success", "failed", "manual_required"}
+    if any(batch.status not in allowed_statuses for batch in batches):
+        raise ValueError("account security batch cannot be activated from its current status")
+    staged = [batch for batch in batches if batch.status == "ready"]
+    _activate_staged_batches(session, staged, actor=actor, confirm_text=confirm_text)
+    session.commit()
+    return [account_security_batch_detail(session, tenant_id, batch_id) for batch_id in sorted(batch_ids)]
+
+
+def _activate_staged_batches(
+    session: Session,
+    batches: list[TgAccountSecurityBatch],
+    *,
+    actor: str,
+    confirm_text: str,
+) -> None:
+    items = list(session.scalars(select(TgAccountSecurityBatchItem).where(
+        TgAccountSecurityBatchItem.batch_id.in_([batch.id for batch in batches]),
+    ).with_for_update())) if batches else []
+    if batches and (not items or any(item.status != "executable" for item in items)):
+        raise ValueError("staged account security batch has non-executable items")
+    claim_profile_names(session, [_activation_claim(item, actor) for item in items])
+    now_value = _now()
+    for batch in batches:
+        batch.status = "running"
+        batch.confirmed_by = actor
+        batch.confirm_text = confirm_text
+        batch.started_at = now_value
+        audit(session, tenant_id=batch.tenant_id, actor=actor, action="激活账号安全加固批次", target_type="account_security_batch", target_id=str(batch.id))
+    for item in items:
+        item.status = "pending"
+
+
+def _activation_claim(item: TgAccountSecurityBatchItem, actor: str) -> NameClaimRequest:
+    return NameClaimRequest(
+        tenant_id=item.tenant_id,
+        account_id=item.account_id,
+        display_name=item.generated_display_name,
+        source="group_style_v2",
+        actor=actor,
+        batch_id=item.batch_id,
+        batch_item_id=item.id,
+        trace_id=item.trace_id,
+    )
+
+
 def _claim_preview_profile_names(
     session: Session,
     *,
@@ -2146,6 +2210,7 @@ def _material_has_usable_avatar_source(material: Material) -> bool:
 
 __all__ = [
     "account_security_batch_detail",
+    "activate_account_security_batches",
     "account_security_detail",
     "account_security_summary",
     "cancel_account_security_batch",

@@ -12,6 +12,7 @@ from app.models import (
     AccountPool,
     AccountStatus,
     AuditLog,
+    AvatarMaterialSource,
     GroupContextMessage,
     Material,
     Tenant,
@@ -26,6 +27,7 @@ from app.services.account_profile_login_batch_init import (
     build_group_style_evidence,
     build_login_batch_initialization_manifest,
     load_login_batch_targets,
+    login_batch_neighbor_scope,
     manifest_sha256,
     target_matches_manifest,
 )
@@ -195,7 +197,25 @@ def _seed_style_and_avatars(session: Session, listener_account_id: int) -> None:
         )
         for material_id in range(1, 13)
     ])
+    session.add_all(_avatar_source(material_id) for material_id in range(1, 13))
     session.commit()
+
+
+def _avatar_source(material_id: int) -> AvatarMaterialSource:
+    return AvatarMaterialSource(
+        tenant_id=1,
+        material_id=material_id,
+        source_page_id=f"avatar-{material_id}",
+        source_page_url=f"https://commons.wikimedia.org/wiki/File:avatar-{material_id}",
+        source_file_url=f"https://upload.wikimedia.org/avatar-{material_id}.png",
+        license_code="CC0",
+        license_url="https://creativecommons.org/publicdomain/zero/1.0/",
+        attribution_text="CC0",
+        content_sha256=f"{material_id:064x}",
+        perceptual_hash=f"{material_id:016x}",
+        contains_person=False,
+        imported_by="tester",
+    )
 
 
 def _spec(count: int = 300, batch_ids: tuple[int, ...] = (91,)) -> LoginBatchInitializationSpec:
@@ -312,6 +332,7 @@ def _seed_stable_avatar_prefix(session: Session, listener_account_id: int) -> No
         )
         for material_id in range(13, 313)
     ])
+    session.add_all(_avatar_source(material_id) for material_id in range(13, 313))
 
 
 def _append_later_sources(session: Session, listener_account_id: int) -> None:
@@ -342,6 +363,7 @@ def _append_later_sources(session: Session, listener_account_id: int) -> None:
         tg_cache_message_id="cache-later",
         mime_type="image/png",
     ))
+    session.add(_avatar_source(999))
 
 
 def test_discovers_unique_terminal_batch_set_with_three_hundred_success_accounts():
@@ -400,8 +422,14 @@ def test_explicit_mixed_scope_freezes_three_hundred_accounts():
         )
 
         manifest = build_login_batch_initialization_manifest(session, spec)
+        targets = load_login_batch_targets(session, spec)
+        first_neighbor_scope = login_batch_neighbor_scope(session, targets)
+        session.get(TgAccount, 301).display_name = "非目标账号人工变更"
+        second_neighbor_scope = login_batch_neighbor_scope(session, targets)
 
     assert manifest["created_only_batch_ids"] == [93]
     assert len(manifest["targets"]) == 300
     assert sum(target["login_batch_id"] == 93 for target in manifest["targets"]) == 13
     assert max(target["account_id"] for target in manifest["targets"]) == 300
+    assert manifest["neighbor_scope"]["account_count"] == 2
+    assert first_neighbor_scope["state_sha256"] != second_neighbor_scope["state_sha256"]

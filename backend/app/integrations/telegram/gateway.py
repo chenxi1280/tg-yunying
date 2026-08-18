@@ -10,6 +10,7 @@ from urllib.parse import quote
 from uuid import uuid4
 
 from app.config import Settings, get_settings
+from app.image_fingerprint import image_perceptual_hash
 from . import telethon_content
 from .mock import TelegramGateway
 from .contracts import (
@@ -2632,6 +2633,7 @@ class TelethonTelegramGateway(TelegramGateway):
             sha256=hashlib.sha256(data).hexdigest(),
             size_bytes=len(data),
             remote_photo_id=str(getattr(photo, "photo_id", "") or ""),
+            perceptual_hash=image_perceptual_hash(data),
         )
 
     def pull_profile_avatar_fingerprint(

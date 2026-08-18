@@ -4,12 +4,12 @@ import hashlib
 import json
 import os
 from collections import Counter
-from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
 
 from app.database import SessionLocal
+from app.image_fingerprint import image_perceptual_hash, perceptual_hash_distance
 from app.models import (
     AuditLog,
     TgAccount,
@@ -30,10 +30,11 @@ from app.services.account_profile_login_batch_init import (
     LoginBatchInitializationSpec,
     build_login_batch_initialization_manifest,
     load_login_batch_targets,
+    login_batch_neighbor_scope,
     manifest_sha256,
     target_matches_manifest,
 )
-from app.services.account_security import create_account_security_batch
+from app.services.account_security import activate_account_security_batches, create_account_security_batch
 from app.services.developer_apps import credentials_for_account
 from app.storage import object_path
 
@@ -64,6 +65,9 @@ ACTOR = "github-actions-login-batch-profile-init"
 BATCH_SIZE = 50
 VALID_MODES = {"preview", "apply", "readback"}
 OPEN_ITEM_STATUSES = {"pending", "running", "waiting"}
+MAX_AVATAR_PERCEPTUAL_DISTANCE = 5
+NEIGHBOR_AUDIT_ACTION = "记录账号资料初始化邻居快照"
+NEIGHBOR_AUDIT_TARGET_TYPE = "account_profile_init_manifest"
 
 
 def main() -> int:
@@ -148,6 +152,17 @@ def _apply(manifest: dict[str, Any], actual_sha: str) -> list[int]:
                 ACTOR,
             )
             batch_ids.append(int(batch.id))
+    with SessionLocal() as session:
+        _assert_targets_unchanged(session, targets, lock=True)
+        _assert_no_conflicting_open_items(session, targets, set(batch_ids))
+        _ensure_neighbor_scope_audit(session, manifest, actual_sha)
+        activate_account_security_batches(
+            session,
+            TENANT_ID,
+            sorted(batch_ids),
+            actor=ACTOR,
+            confirm_text="确认",
+        )
     return sorted(batch_ids)
 
 
@@ -198,10 +213,15 @@ def _assert_no_conflicting_open_items(
         )
 
 
-def _assert_targets_unchanged(session, targets: list[dict[str, Any]]) -> None:
+def _assert_targets_unchanged(session, targets: list[dict[str, Any]], *, lock: bool = False) -> None:
     for target in targets:
-        account = session.get(TgAccount, int(target["account_id"]))
-        item = session.get(TgAccountLoginBatchItem, int(target["login_item_id"]))
+        account_stmt = select(TgAccount).where(TgAccount.id == int(target["account_id"]))
+        item_stmt = select(TgAccountLoginBatchItem).where(TgAccountLoginBatchItem.id == int(target["login_item_id"]))
+        if lock:
+            account_stmt = account_stmt.with_for_update()
+            item_stmt = item_stmt.with_for_update()
+        account = session.scalar(account_stmt)
+        item = session.scalar(item_stmt)
         if account is None or item is None or not target_matches_manifest(account, item, target):
             raise RuntimeError(f"target state drift: account_id={target['account_id']}")
 
@@ -218,7 +238,7 @@ def _batch_payload(targets: list[dict[str, Any]], manifest_sha: str) -> AccountS
     return AccountSecurityBatchCreate(
         account_ids=[int(target["account_id"]) for target in targets],
         action_types=["update_profile", "update_avatar"],
-        confirm_text="确认",
+        confirm_text="",
         reason=_batch_reason(manifest_sha),
         profile_strategy=strategy,
         avatar_strategy=AvatarStrategy(mode="none"),
@@ -243,6 +263,7 @@ def remote_readback() -> dict[str, Any]:
         _assert_readback_target_identity(session, rows)
         results = [_read_remote_result(session, item, account) for _, item, account in rows]
         audit_count = _audit_count(session, rows)
+        neighbor_scope = _neighbor_scope_readback(session)
     expected = _readback_expected_count(rows)
     status_counts = _status_counts(rows)
     matched = sum(result["status"] == "matched" for result in results)
@@ -256,10 +277,14 @@ def remote_readback() -> dict[str, Any]:
         "remote_matched_count": matched,
         "batch_ids": sorted({int(batch.id) for batch, _, _ in rows}),
         "audit_count": audit_count,
-        "neighbor_scope_unchanged": len({int(item.account_id) for _, item, _ in rows}) == len(rows),
+        "neighbor_scope": neighbor_scope,
         "results": results,
         **status_counts,
-        "complete": complete and audit_count == len({int(batch.id) for batch, _, _ in rows}),
+        "complete": (
+            complete
+            and audit_count == len({int(batch.id) for batch, _, _ in rows})
+            and neighbor_scope["unchanged"]
+        ),
     }
 
 
@@ -301,6 +326,9 @@ def _read_remote_result(
         }
     if not _claim_matches(session, account, item.generated_display_name) or account.display_name != item.generated_display_name:
         return {**base, "status": "persistence_mismatched"}
+    local_fingerprint = _local_avatar_fingerprint(account.avatar_object_key)
+    if local_fingerprint is None:
+        return {**base, "status": "persistence_mismatched", "avatar_object_missing": True}
     try:
         credentials = credentials_for_account(session, account)
         profile = gateway.pull_profile(account.id, account.session_ciphertext, credentials)
@@ -309,18 +337,38 @@ def _read_remote_result(
             session_ciphertext=account.session_ciphertext,
             credentials=credentials,
         )
-        local_sha = _local_avatar_sha256(account.avatar_object_key)
     except Exception as exc:  # noqa: BLE001 - readback reports typed failure without leaking details.
         return {**base, "status": "pull_failed", "error_type": type(exc).__name__}
     name_matches = profile.first_name == item.generated_display_name and not profile.last_name
-    if not name_matches or avatar is None or not local_sha:
+    return _avatar_readback_result(base, name_matches, avatar, local_fingerprint)
+
+
+def _avatar_readback_result(
+    base: dict[str, Any],
+    name_matches: bool,
+    avatar: Any,
+    local_fingerprint: dict[str, str],
+) -> dict[str, Any]:
+    if not name_matches or avatar is None:
         return {**base, "status": "mismatched", "remote_avatar_present": avatar is not None}
+    distance = perceptual_hash_distance(local_fingerprint["perceptual_hash"], avatar.perceptual_hash)
+    if not avatar.remote_photo_id or distance > MAX_AVATAR_PERCEPTUAL_DISTANCE:
+        return {
+            **base,
+            "status": "mismatched",
+            "remote_avatar_present": True,
+            "avatar_perceptual_distance": distance,
+        }
     return {
         **base,
         "status": "matched",
         "remote_avatar_sha256": avatar.sha256,
         "remote_avatar_size_bytes": avatar.size_bytes,
-        "local_avatar_sha256": local_sha,
+        "remote_photo_id": avatar.remote_photo_id,
+        "remote_avatar_perceptual_hash": avatar.perceptual_hash,
+        "local_avatar_sha256": local_fingerprint["sha256"],
+        "local_avatar_perceptual_hash": local_fingerprint["perceptual_hash"],
+        "avatar_perceptual_distance": distance,
     }
 
 
@@ -332,19 +380,54 @@ def _claim_matches(session, account: TgAccount, display_name: str) -> bool:
     return bool(claim and claim.account_id == account.id)
 
 
-def _local_avatar_sha256(object_key: str) -> str:
+def _local_avatar_fingerprint(object_key: str) -> dict[str, str] | None:
     if not object_key:
-        return ""
+        return None
     path = object_path(object_key)
-    return _file_sha256(path) if path.exists() and path.is_file() else ""
+    if not path.exists() or not path.is_file():
+        return None
+    data = path.read_bytes()
+    return {"sha256": hashlib.sha256(data).hexdigest(), "perceptual_hash": image_perceptual_hash(data)}
 
 
-def _file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+def _ensure_neighbor_scope_audit(session, manifest: dict[str, Any], manifest_sha: str) -> None:
+    detail = json.dumps(manifest["neighbor_scope"], ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    audits = list(session.scalars(select(AuditLog).where(
+        AuditLog.tenant_id == TENANT_ID,
+        AuditLog.action == NEIGHBOR_AUDIT_ACTION,
+        AuditLog.target_type == NEIGHBOR_AUDIT_TARGET_TYPE,
+        AuditLog.target_id == manifest_sha,
+    )))
+    if len(audits) > 1 or (audits and audits[0].detail != detail):
+        raise RuntimeError("neighbor scope audit drift")
+    if not audits:
+        session.add(AuditLog(
+            tenant_id=TENANT_ID,
+            actor=ACTOR,
+            action=NEIGHBOR_AUDIT_ACTION,
+            target_type=NEIGHBOR_AUDIT_TARGET_TYPE,
+            target_id=manifest_sha,
+            detail=detail,
+        ))
+
+
+def _neighbor_scope_readback(session) -> dict[str, Any]:
+    targets = load_login_batch_targets(session, _spec())
+    current = login_batch_neighbor_scope(session, targets)
+    audits = list(session.scalars(select(AuditLog).where(
+        AuditLog.tenant_id == TENANT_ID,
+        AuditLog.action == NEIGHBOR_AUDIT_ACTION,
+        AuditLog.target_type == NEIGHBOR_AUDIT_TARGET_TYPE,
+        AuditLog.target_id == EXPECTED_SHA256,
+    )))
+    expected = json.loads(audits[0].detail) if len(audits) == 1 else None
+    return {
+        "expected_account_count": expected.get("account_count") if expected else None,
+        "actual_account_count": current["account_count"],
+        "expected_state_sha256": expected.get("state_sha256") if expected else "",
+        "actual_state_sha256": current["state_sha256"],
+        "unchanged": expected == current,
+    }
 
 
 def _audit_count(session, rows) -> int:
