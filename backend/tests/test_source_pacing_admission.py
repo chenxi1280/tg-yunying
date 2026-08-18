@@ -24,10 +24,10 @@ from app.models import (
 from app.services.task_center.pacing import PACING_CONTRACT_VERSION
 from app.services.task_center.source_pacing_admission import (
     SourceAdmissionSpec,
-    _lock_or_create_admission,
     admit_source_paced_attempt,
     settle_source_pacing_admission,
 )
+from app.services.task_center.source_pacing_reservation import lock_or_create_admission
 
 
 pytestmark = pytest.mark.no_postgres
@@ -273,7 +273,7 @@ def test_postgres_conflict_detection_uses_returning_not_rowcount() -> None:
         source_gap_seconds=864,
     )
 
-    returned, created = _lock_or_create_admission(
+    returned, created = lock_or_create_admission(
         session,
         action,
         attempt=attempt,
@@ -283,12 +283,14 @@ def test_postgres_conflict_detection_uses_returning_not_rowcount() -> None:
 
     assert returned is admission
     assert created is False
+    assert session.saw_owner_lock
     assert session.saw_returning
 
 
 class _ConflictSession:
     def __init__(self, admission: SourcePacingAdmission) -> None:
         self.admission = admission
+        self.saw_owner_lock = False
         self.saw_returning = False
 
     def get_bind(self):
@@ -298,6 +300,9 @@ class _ConflictSession:
         sql = str(statement.compile(dialect=postgresql.dialect()))
         if "count(" in sql.lower():
             return 0
+        if "join actions as" in sql.lower():
+            self.saw_owner_lock = "FOR UPDATE OF source_pacing_admissions" in sql
+            return None
         if "insert into source_pacing_admissions" in sql.lower():
             self.saw_returning = "RETURNING source_pacing_admissions.id" in sql
             return None

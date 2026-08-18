@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime, timedelta
 import hashlib
 import math
 from uuid import uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
@@ -28,27 +27,14 @@ from app.services._common import _now
 from .pacing import PACING_CONTRACT_VERSION
 from .source_owner_cursor import advance_owner_release
 from .source_pacing_admission_settlement import (
-    finished_before_gateway,
     settle_source_pacing_admission,
     unsettled_prior_admission,
 )
+from .source_pacing_reservation import SourceAdmissionSpec, lock_or_create_admission
 from .source_pacing import wall_datetime
 
 
 IDENTITY_RETRY_SECONDS = 60
-
-
-@dataclass(frozen=True)
-class SourceAdmissionSpec:
-    pacing_domain: str
-    source_key_hash: str
-    owner_type: str
-    owner_id: str
-    lifecycle_epoch: int
-    period_key: str
-    plan_hash: str
-    release_at: datetime
-    source_gap_seconds: int
 
 
 def admit_source_paced_attempt(
@@ -125,7 +111,7 @@ def _reserve_source_admission(
     try:
         spec = _source_admission_spec(session, action)
         state = _lock_or_create_source_state(session, action.tenant_id, spec)
-        admission, created = _lock_or_create_admission(
+        admission, created = lock_or_create_admission(
             session,
             action,
             attempt=attempt,
@@ -151,10 +137,10 @@ def _admission_not_before(
     spec: SourceAdmissionSpec,
     created: bool,
 ) -> datetime:
-    not_before = (
-        _call_not_before(action, state, spec)
-        if created
-        else wall_datetime(admission.call_not_before_at)
+    not_before = _call_not_before(action, state, spec) if created else _reused_not_before(
+        state,
+        admission=admission,
+        spec=spec,
     )
     admission.call_not_before_at = not_before
     if created:
@@ -297,69 +283,6 @@ def _lock_or_create_source_state(
     return state
 
 
-def _lock_or_create_admission(
-    session: Session,
-    action: Action,
-    *,
-    attempt: ExecutionAttempt,
-    state: SourcePacingState,
-    spec: SourceAdmissionSpec,
-) -> tuple[SourcePacingAdmission, bool]:
-    key = _admission_key(session, action)
-    values = {
-        "id": str(uuid4()),
-        "admission_key": key,
-        "tenant_id": action.tenant_id,
-        "task_id": action.task_id,
-        "lifecycle_epoch": spec.lifecycle_epoch,
-        "source_pacing_state_id": state.id,
-        "owner_type": spec.owner_type,
-        "owner_id": spec.owner_id,
-        "action_id": action.id,
-        "attempt_id": attempt.id,
-        "pacing_period_key": spec.period_key,
-        "pacing_plan_hash": spec.plan_hash,
-        "planned_release_at": spec.release_at,
-        "call_not_before_at": spec.release_at,
-        "source_gap_seconds": spec.source_gap_seconds,
-    }
-    dialect = session.get_bind().dialect.name
-    insert = pg_insert(SourcePacingAdmission) if dialect == "postgresql" else sqlite_insert(SourcePacingAdmission)
-    inserted_id = session.scalar(
-        insert.values(**values).on_conflict_do_nothing(
-            index_elements=["admission_key"]
-        ).returning(SourcePacingAdmission.id)
-    )
-    admission = session.scalar(
-        select(SourcePacingAdmission)
-        .where(SourcePacingAdmission.admission_key == key)
-        .with_for_update()
-    )
-    if admission is None:
-        raise LookupError("pacing_source_admission_unavailable")
-    if admission.source_pacing_state_id != state.id:
-        raise ValueError("pacing_source_admission_conflict")
-    recycled = finished_before_gateway(session, admission)
-    if recycled:
-        admission.state = "reserved"
-        admission.attempt_id = attempt.id
-    return admission, inserted_id is not None or recycled
-
-
-def _admission_key(session: Session, action: Action) -> str:
-    gateway_call_count = session.scalar(select(func.count(ExecutionAttempt.id)).where(
-        ExecutionAttempt.action_id == action.id,
-        ExecutionAttempt.gateway_call_started_at.is_not(None),
-    )) or 0
-    value = ":".join((
-        action.id,
-        str(int(action.assignment_revision or 1)),
-        str(int(action.intent_revision or 1)),
-        str(int(gateway_call_count)),
-    ))
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
-
-
 def _call_not_before(
     action: Action,
     state: SourcePacingState,
@@ -370,6 +293,19 @@ def _call_not_before(
         candidates.append(wall_datetime(action.effective_claim_at))
     if state.next_call_not_before_at is not None:
         candidates.append(wall_datetime(state.next_call_not_before_at))
+    if state.last_call_started_at is not None:
+        gap = max(int(state.last_source_gap_seconds or 0), spec.source_gap_seconds)
+        candidates.append(wall_datetime(state.last_call_started_at) + timedelta(seconds=gap))
+    return max(candidates)
+
+
+def _reused_not_before(
+    state: SourcePacingState,
+    *,
+    admission: SourcePacingAdmission,
+    spec: SourceAdmissionSpec,
+) -> datetime:
+    candidates = [wall_datetime(admission.call_not_before_at)]
     if state.last_call_started_at is not None:
         gap = max(int(state.last_source_gap_seconds or 0), spec.source_gap_seconds)
         candidates.append(wall_datetime(state.last_call_started_at) + timedelta(seconds=gap))

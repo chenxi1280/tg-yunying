@@ -7,9 +7,9 @@
 | Intake ID | intake-2026-08-17-planner-pacing-memory-001 |
 | 分级 | L3 / P0 资源风险 + P0 来源突发 + P1 拟人节奏，必须走标准生产事故流与 Release Gate |
 | 设计状态 | product_design_complete / dev_handoff_ready=true / resynced_2026-08-18 |
-| 实现状态 | production_repair_resync_8 / PostgreSQL admission conflict 已改用 `RETURNING id` 判定真实新建；既有 reservation 保留冻结槽位。SQLite 12 项及 PostgreSQL/真实 workflow 27 项回归通过，等待 Release Gate |
-| 生产状态 | failed：977a1642 Planner 短窗资源 E3 保持通过，但发布后 AI/view 已分别出现 711/57 个 `pacing_source_not_before` 且 0 Gateway/0 typed remote fact；同一浏览 Action 最多13次 Attempt、仍只有同一 admission，其 planned release 保持凌晨而 call-not-before 被错误推到次日。共享宿主 MemAvailable 约1.22 GiB，production_fixed=false |
-| 当前生产基线 | 2026-08-18 17:09 北京时间；release 977a1642；runtime healthy 不改变 pacing starvation 与宿主容量失败结论 |
+| 实现状态 | production_repair_resync_9 / stable owner pre-Gateway reservation 转绑与真实 last-call gap final gate 已实现；32 项关联回归、真实 PostgreSQL targeted row-lock probe、compile/diff check 通过，等待第二次 Release Gate |
+| 生产状态 | partial：`49142ff1` 复用 8 条旧浏览 admission，5 次成功并写入 5 条 `view_observed`；但首次恢复时同来源多个过期 reservation 出现同秒 Gateway，违反来源 gap。AI 发布后 123 次仍为 `pacing_source_not_before`、0 Gateway/0 typed remote fact；217 个 pending AI Action 中 59 个没有自身 admission、但 stable owner 存在已到期 pre-Gateway admission，production_fixed=false |
+| 当前生产基线 | 2026-08-18 17:40 北京时间；release `49142ff1`；current/SHA/migration/health/restart/OOM 读回通过，宿主瞬时 MemAvailable 1,548,652 KiB；资源长窗和 AI E4 未通过 |
 | 权威关系 | 本文规范性取代生产稳定性 PRD 中 Planner 资源和旧 AI fail-open gate 口径，并补正拟人节奏 PRD 的跨批恢复；不改变各任务 stable owner、typed remote fact、unknown 与数量结算合同 |
 | 操作边界 | 用户已授权实现、发布与生产验证；精确 stats cleanup 仍须独立 preview/hash/apply/readback，禁止把发布授权扩张为批量重试或未知外发 |
 
@@ -66,6 +66,7 @@ Planner 短样本没有证明单调增长，所以“泄漏”仍为 unproven。
 - 8c8178be 发布后 OCR worker 在 20 个请求后 PSS 约 228 MiB、busy=0，当前版本 12 个去重真实 challenge 均为 RapidOCR/ddddOCR accepted 且 local consensus，证明 recognizer-only 语义成立。AI 冻结 release 最小同源 gap 18 秒且 0 planned violation，但自然 due 后连续 0 Gateway；首个后置破损边界不是 pacing，而是 21 条已由 `content_contract_replan_required` 终结的旧 Action 仍保留 active 消息预留，使新 Action 触发 `duplicate_message` / `check_in_scope_occupied`。
 - 977a1642 已把 takeover 终结 Action 与其 pre-Gateway 消息预留失效放入同一事务。生产存量按精确谓词 preview 得到 21 条、classification hash `f238c54c52c328c938099e7ce7502067fee666a3324c83946465e8bd99ce3961`；apply 在同一事务锁行并重算 count/hash，仅把这 21 条改为 `expired_before_send`，写入 21 条 AuditLog。独立 readback 为 active orphan=0、repair=21、audit=21，且清理后 `check_in_scope_occupied`=0；后续 `duplicate_message` 均指向已有 success 记忆，属于真实历史去重而不是孤儿占位。
 - 第二轮遗漏审计证明“全部 pre-Gateway defer”不是通过证据：PostgreSQL `INSERT ... ON CONFLICT DO NOTHING` 的 `rowcount` 被当作 inserted boolean，冲突命中已有 admission 时仍进入 created 分支，使用已被未来 reservation 推进的 source next cursor 覆盖原 `call_not_before_at`。同一浏览 Action 的单条 admission 因而从原 planned release 反复后移到次日/数日后，永远追不上队尾。新建判定必须以 `RETURNING admission.id` 是否返回值为唯一依据；conflict 必须复用原 admission 时间，禁止改写 source/owner cursor。
+- `49142ff1` 生产读回证明 conflict 修复有效，但暴露两个后继边界。其一，admission key 仍绑定 Action；旧 Action 在 Gateway 前终结并生成 replacement 后，新 Action 不会接管同一 stable owner 的旧 reservation，而是按已污染的 source next cursor 新建到队尾。其二，多个已过期 reservation 恢复时只看各自冻结时间，没有再次应用最近真实 call-start + gap，导致同来源 backlog 可同秒进入 Gateway。正确合同是 stable owner 精确复用最早的 pre-Gateway reservation，并以 `max(frozen admission time, last real call-start + adjacent gap)` 作为最终门；禁止读取 future reservation cursor，也禁止过期 backlog 突发补发。
 
 首个资源破损边界是 Planner 的无界读取与 Task 热行写入；宿主总预算是并行平台风险。不能先把结论写成单一内存泄漏。
 
@@ -102,6 +103,8 @@ Planner 容器也实际建立 Telegram TCP 并持续记录 Telethon update。结
 | RC-P2 | AI 最终 gate sleep 且 fail-open，其他三类缺 gate | SourcePacingState + SourcePacingAdmission |
 | RC-P3 | scope takeover 终结旧 AI Action 时未失效消息预留，替代 Action 被旧 duplicate/check-in scope 占位阻断 | takeover 同事务失效 `AiGroupMessageMemory` + 既有孤儿精确审计清理 |
 | RC-P4 | PostgreSQL admission upsert conflict 用不可靠 `rowcount` 判断 created，既有 reservation 到点时被重新排到来源队尾 | `ON CONFLICT DO NOTHING RETURNING id` 判定真实插入；冲突复用冻结 admission，不推进 cursor |
+| RC-P5 | admission 绑定 Action；pre-Gateway 旧 Action 被替代后，同一 stable owner 的新 Action另建队尾 reservation | 按 owner/type/lifecycle/period/plan/source 精确锁取最早 pre-Gateway reservation，并原子转绑 replacement Action/Attempt |
+| RC-P6 | 过期 reservation 恢复只看冻结时间，多条 backlog 可在同一秒进入 Gateway | reused admission 最终时间取冻结时间与最近真实 call-start + 最大相邻 gap 的较大值 |
 | RC-M1 | 旧 backlog 缺 source/period/lifecycle/plan 分类 | preview manifest + 分 Task 激活 |
 | RC-H1 | 多容器共同挤压宿主 | cgroup 预算公式 + 分 train 隔离 |
 | RC-L1 | 独立 leak | unproven；确定性修复后重测 |
@@ -231,6 +234,8 @@ SourcePacingAdmission 每个真实远程尝试一行：
 5. remote_unknown 保留 owner/admission/Attempt，不自动重发；reconcile 仍按任务 typed fact 合同处理。
 6. source gap 从冻结 pacing plan 的最大合法来源速率计算，不使用固定 8 秒魔数；period 内配置编辑不改变已冻结 plan。
 7. admission upsert 是否新建只认 `RETURNING id`；不得读取 dialect/driver 不稳定的 `rowcount`。冲突命中既有 reserved admission 时必须复用其 `call_not_before_at`，不得再次推进 `SourcePacingState.next_call_not_before_at` 或 stable owner release。
+8. replacement Action 必须先按 stable owner、source state、lifecycle、period、plan 精确锁取最早的 `reserved` 或已知 pre-Gateway `finished` admission；只允许转绑 `gateway_call_started_at IS NULL` 的槽位。`call_started`、`remote_unknown`、已有 Gateway 的 admission 永不转绑。
+9. reused admission 不读取 future reservation cursor，但仍必须应用实际来源时间线：最终 `not_before=max(admission.call_not_before_at, last_call_started_at + max(last_gap,current_gap))`。多个过期槽位不得突发补发。
 
 release density 和 Gateway call-start density都必须满足冻结 source gap；typed remote fact density是 E4 观察结果，受 Telegram 完成时间影响，不写成可由本地强制的绝对定律。
 
@@ -387,6 +392,8 @@ T2 按 Task/source 灰度，不要求暂停的 comment/like 为 AI/view 让路�
 9. 同来源多账号、多 Task 并发：共享 source timeline，实际 call_started 相邻间隔不小于相邻两次冻结 gap 的较大值；unknown 不重发。
 10. migration 覆盖 concurrent index 失败/invalid 恢复、checkpoint resume、stop line 和 mixed SHA。
 11. PostgreSQL conflict 回归：同一 Action/admission 重试至少3次，upsert conflict 均返回 created=false；即使 source next cursor 已被后续 reservation 推进，原 admission 到点也必须进入 call-start，不能再次 defer。
+12. stable owner replacement 回归：旧 Action 在 Gateway 前终结后，新 Action复用同一 admission id，不新建来源队尾槽位；已有 Gateway/unknown 不得转绑。
+13. overdue backlog 回归：同一来源至少2条过期 reservation 同时到达 final gate，首条 call-start 后其余必须按真实 gap 释放，任意相邻 Gateway call-start 不得同秒突发。
 
 ### 10.2 性能与资源
 
