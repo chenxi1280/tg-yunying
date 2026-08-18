@@ -55,6 +55,7 @@ def _seed_future_deadline_action(session) -> None:
         release_not_before_at=NOW + timedelta(days=3),
     )
     session.add(Tenant(id=tenant_id, name="deadline candidate"))
+    session.flush()
     session.add(TgAccount(
         id=tenant_id,
         tenant_id=tenant_id,
@@ -63,6 +64,7 @@ def _seed_future_deadline_action(session) -> None:
         status="在线",
     ))
     session.add(task)
+    session.flush()
     session.add(action)
     session.flush()
     session.add(AccountPacingReservation(
