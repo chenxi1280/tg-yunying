@@ -3611,6 +3611,7 @@ def _prepare_task_planning_transaction(
     reloaded = session.get(Task, task_id, populate_existing=True)
     if reloaded is None or reloaded.status != "running":
         return None, prepared, False, False
+    mark_task_planner_started(session, reloaded)
     has_open_actions, open_actions_are_future = _open_actions_state(session, reloaded)
     return reloaded, prepared, has_open_actions, open_actions_are_future
 

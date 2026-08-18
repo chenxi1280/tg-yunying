@@ -4,7 +4,9 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from threading import Barrier, Event
 
+import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 
 from app.database import SessionLocal
 from app.models import (
@@ -16,7 +18,11 @@ from app.models import (
     Tenant,
 )
 from app.services.task_center.pacing_persistence import freeze_pacing_owner
-from app.services.task_center.planner_wake import wake_task_planner
+from app.services.task_center.planner_wake import (
+    mark_task_planner_started,
+    wake_task_planner,
+)
+from app.services.task_center.service import _prepare_task_planning_transaction
 from app.services.task_center.source_owner_cursor import attach_owner_history
 from app.services.task_center.source_pacing import (
     SourcePacingSlot,
@@ -48,6 +54,26 @@ def test_concurrent_first_wakes_merge_into_one_revisioned_row() -> None:
         )))
         assert len(rows) == 1
         assert rows[0].wake_revision == 2
+
+
+def test_group_ai_planner_reacquires_wake_lock_after_commit_boundary() -> None:
+    task_id = "listener-planner-lock-order"
+    _seed_task(task_id, task_type="group_ai_chat")
+    with SessionLocal() as session:
+        task = session.get(Task, task_id)
+        wake_task_planner(session, task, reason_code="seed", not_before_at=NOW)
+        session.commit()
+        task = session.get(Task, task_id)
+        mark_task_planner_started(session, task)
+        task, _, _, _ = _prepare_task_planning_transaction(session, task)
+        assert task is not None
+        with SessionLocal() as contender:
+            with pytest.raises(OperationalError):
+                contender.scalar(
+                    select(TaskPlannerWakeState)
+                    .where(TaskPlannerWakeState.task_id == task_id)
+                    .with_for_update(nowait=True)
+                )
 
 
 def test_source_advisory_lock_makes_second_batch_continue_first_release() -> None:
@@ -102,12 +128,18 @@ def test_source_advisory_lock_makes_second_batch_continue_first_release() -> Non
     assert second_release > first_release
 
 
-def _seed_task(task_id: str) -> None:
+def _seed_task(task_id: str, *, task_type: str = "channel_view") -> None:
     with SessionLocal() as session:
         if session.get(Tenant, 1) is None:
             session.add(Tenant(id=1, name="tenant"))
             session.flush()
-        session.add(Task(id=task_id, tenant_id=1, name=task_id, type="channel_view"))
+        session.add(Task(
+            id=task_id,
+            tenant_id=1,
+            name=task_id,
+            type=task_type,
+            status="running",
+        ))
         session.commit()
 
 

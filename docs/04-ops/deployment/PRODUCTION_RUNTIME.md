@@ -352,3 +352,7 @@ Task/当日被放弃；目标解散或引用失效终结该 Task；旧 Task 与�
 发布验证必须只读比较新增事件前后的 wake revision、Action 的目标 ID/peer 与远端结果；
 `unknown_after_send` 不得重试。没有部署后真实新增来源消息时，事件到目标的 E4 仍标记
 `unproven`，不得用容器健康或本地测试替代。
+
+Listener 新增 wake 后，生产日志还必须验证 Planner/Listener 在 `task_planner_wake_states`
+和 `tasks` 上 deadlock=0。group-ai Planner 的中间提交会释放首个 wake 行锁，因此重载 Task 后
+必须先再次 `mark_task_planner_started`，再进入 build/flush；只在异常捕获后重试不能替代锁序修复。
