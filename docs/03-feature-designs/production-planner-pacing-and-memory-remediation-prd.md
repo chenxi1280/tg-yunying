@@ -8,8 +8,8 @@
 | 分级 | L3 / P0 资源风险 + P0 来源突发 + P1 拟人节奏，必须走标准生产事故流与 Release Gate |
 | 设计状态 | product_design_complete / dev_handoff_ready=true / resynced_2026-08-18 |
 | 实现状态 | production_repair_resync_7 / 977a1642 已发布：Planner 有界扫描、跨批来源排期、Gateway 前来源准入、RapidOCR recognizer-only，以及 scope takeover 同事务失效旧消息预留均已落地；关联 QA 与 Release Gate 通过 |
-| 生产状态 | partial：977a1642 Planner 55 样本 PSS p95 187 MiB、CPU p95 27.82%、9 个 processed 样本 drain p95 23.6 秒；OCR PSS 约 227 MiB，restart=0、OOM=false。AI/view 分别观测 362/39 次 `pacing_source_not_before`，0 early Gateway；旧预留精确修复 21 条后 active orphan=0、`check_in_scope_occupied` 未复发。共享宿主 MemAvailable 约 1.39 GiB，且请求范围内仍无自然 Gateway/typed remote fact，production_fixed=unproven |
-| 当前生产基线 | 2026-08-18 16:49 北京时间；release 977a1642；backend/Planner/OCR 精确 SHA、health、migration、restart/OOM 读回通过；生产精确修复 reference=`prod-planner-pacing-memory-20260818` |
+| 生产状态 | partial：977a1642 Planner 87 样本 PSS p95 187 MiB、CPU p95 25.80%、17 个 processed 样本 drain p95 12.1 秒；OCR PSS 约 227 MiB，restart=0、OOM=false。AI/view 分别观测 464/43 次 `pacing_source_not_before`，0 early Gateway；旧预留精确修复 21 条后 active orphan=0、`check_in_scope_occupied` 未复发。共享宿主 MemAvailable 约 1.32 GiB，且请求范围内仍无自然 Gateway/typed remote fact，production_fixed=unproven |
+| 当前生产基线 | 2026-08-18 16:53 北京时间；release 977a1642；backend/Planner/OCR 精确 SHA、health、migration、restart/OOM 读回通过；生产精确修复 reference=`prod-planner-pacing-memory-20260818` |
 | 权威关系 | 本文规范性取代生产稳定性 PRD 中 Planner 资源和旧 AI fail-open gate 口径，并补正拟人节奏 PRD 的跨批恢复；不改变各任务 stable owner、typed remote fact、unknown 与数量结算合同 |
 | 操作边界 | 用户已授权实现、发布与生产验证；精确 stats cleanup 仍须独立 preview/hash/apply/readback，禁止把发布授权扩张为批量重试或未知外发 |
 
@@ -419,11 +419,11 @@ due
 | 验收层 | 证据 | 结论 |
 | --- | --- | --- |
 | 发布与运行 | Deploy Production `32116072791` 成功；current、backend/Planner/OCR 镜像与 `RELEASE_SHA` 均为 977a1642；migration 0153 head；关键容器 healthy、restart=0、OOM=false | pass |
-| Planner 资源短窗 E3 | 55 样本 PSS p95/max=191391/191392 KiB，CPU p95=27.82%，Telethon client 与 cgroup event 最大值均为 0；9 个 processed 样本 drain p95=23595 ms，冷启动 max=35044 ms | pass；6/24 小时斜率仍 unproven |
+| Planner 资源短窗 E3 | 最终固定读回 87 样本 PSS p95=191449 KiB，CPU p95=25.80%，Telethon client 与 cgroup event 最大值均为 0；17 个 processed 样本 drain p95=12146 ms，早期冷启动 max=35044 ms | pass；6/24 小时斜率仍 unproven |
 | OCR 资源与功能 | OCR 当前 PSS/RSS=232704/243164 KiB；20 请求压力后无 busy/restart/OOM；当前版本 12 个真实 challenge 均取得 RapidOCR/ddddOCR accepted 与 local consensus | pass |
-| 聚合宿主 | MemAvailable=1456452 KiB，低于 1.5 GiB 合同阈值 1572864 KiB；SwapFree=3295032/4194300 KiB，读回窗口无持续 swap-in/out | resource_capacity_degraded |
+| 聚合宿主 | MemAvailable=1380276 KiB，低于 1.5 GiB 合同阈值 1572864 KiB；SwapFree=3295544/4194300 KiB，读回窗口无持续 swap-in/out | resource_capacity_degraded |
 | 排期 release E3 | running source admissions：AI 最小同源 gap=18 秒、view=87 秒，planned gap violation 均为 0 | pass |
-| Gateway 前准入 E3 | 977a1642 后 AI/view 分别 362/39 个 Attempt 均为 `skipped_before_gateway/pacing_source_not_before`；early Gateway=0；浏览自然 due 后下一槽按 87 秒推进 | pass：排除短时直接完成 |
+| Gateway 前准入 E3 | 977a1642 后 AI/view 分别 464/43 个 Attempt 均为 `skipped_before_gateway/pacing_source_not_before`；early Gateway=0；浏览自然 due 后下一槽按 87 秒推进 | pass：排除短时直接完成 |
 | AI 存量预留修复 | preview/apply/readback 精确修复 21 条旧 active reservation；active orphan=0、AuditLog=21、清理后 `check_in_scope_occupied`=0 | pass |
 | 请求范围任务 E4 | AI/view 自然观察窗均为 0 Gateway、0 typed remote fact；AI 当前候选为真实历史 duplicate，view 继续按冻结排期等待；comment/like 对应任务暂停 | blocked/unproven，不得声明 Telegram 履约完成 |
 
