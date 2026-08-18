@@ -8,8 +8,8 @@
 | 分级 | L3 / P0 资源风险 + P0 来源突发 + P1 拟人节奏，必须走标准生产事故流与 Release Gate |
 | 设计状态 | product_design_complete / dev_handoff_ready=true / resynced_2026-08-19-21（发送目标守恒与 Listener/Planner 锁序闭环） |
 | 实现状态 | RC-P13/P14、`orphaned_source_pacing_reconcile_v2` 发送目标/数量指纹硬闸、群消息事件唤醒及 Planner commit 边界后的 Wake→Task 重新加锁均已发布；PostgreSQL 定向并发/连续 relay 与完整 Release Gate 通过 |
-| 生产状态 | partial：最终 release `f49353fd` 下 6 次真实 `group_context_inserted` wake、33 条群发送 typed fact，目标合同 mismatch=0；Planner/Listener/Dispatcher 错误与死锁匹配 0，旧 unknown Action 未重发。资源短窗通过；SwapUsed 约 662 MiB 仍高于历史 512 MiB 事故线，最终行为完整自然日与暂停 comment/like E4 未闭环，production_fixed=unproven |
-| 当前生产基线 | 2026-08-19 05:25 北京时间；release `f49353fd`、migration 0154 head，关键容器 healthy/restart=0/OOM=false；Planner 50 点 PSS p95=197112 KiB、CPU p95=24.08%、Telethon/cgroup event=0，MemAvailable=2160816 KiB；无持续 swap-in/out |
+| 生产状态 | partial：最终 release `70523382` 已补齐搜索发布 Fence 与统一 unknown 投影；最终 SHA 后群发送、搜索点击与浏览均持续产生 typed fact，目标合同 mismatch=0，SourcePacing 提前调用=0。Planner 6 小时资源窗通过；SwapUsed 约 665 MiB 仍高于历史 512 MiB 事故线，最终行为完整自然日、普通搜索 stale 自然 E4 与暂停 comment/like E4 未闭环，production_fixed=unproven |
+| 当前生产基线 | 2026-08-19 06:43 北京时间；release `70523382`、migration 0154 head，关键容器 healthy/restart=0/OOM=false；Planner 1850 点/6 小时 PSS p95=200659 KiB、max=201079 KiB、CPU p95=21.98%、Telethon/cgroup event=0，MemAvailable 约 2.03 GiB；5 秒 vmstat 无 swap-in/out |
 | 权威关系 | 本文规范性取代生产稳定性 PRD 中 Planner 资源和旧 AI fail-open gate 口径，并补正拟人节奏 PRD 的跨批恢复；不改变各任务 stable owner、typed remote fact、unknown 与数量结算合同 |
 | 操作边界 | 用户已授权实现、发布与生产验证；精确 stats cleanup 仍须独立 preview/hash/apply/readback，禁止把发布授权扩张为批量重试或未知外发 |
 
@@ -474,6 +474,8 @@ due
 | Planner 资源短窗 E3 | 最终 SHA 50 个自采样 PSS p95=197112 KiB、max=197132 KiB、CPU p95=24.08%、Telethon/cgroup event=0；主机实测约 190.5 MiB | pass；最终行为 24 小时窗仍 unproven |
 | 聚合宿主 | MemAvailable=2160816 KiB；连续 vmstat 无 swap-out，仅单点 4 KiB swap-in，不是持续换页。SwapUsed=677816 KiB 仍高于历史 512 MiB；当前压力 owner 与独立宿主 owner 已分解，未用重启、swapoff 或缩业务目标掩盖 | MemAvailable pass / historical absolute swap gate degraded |
 | OCR 与退役资源 | OCR Docker current id 与 `/proc+cgroup` 唯一 runtime id 一致；24 个零消费者 Mihomo 保持 disabled+stopped，37 个有消费者 runtime 保留 | pass |
+| 搜索发布 Fence 与发送目标 | `034216e4` 首次 Stage B 真实捕获 2 条搜索 Gateway-started Action：单 Attempt、单 unknown fact、assignment=`gateway_unknown`、点击 fact=0、无重试；`70523382` 再次发布时回收 2 条群发送在途 Action，均保持目标绑定、单 Attempt、仅 `remote_outcome_unknown`，无成功发送 fact 和重试。最终 SHA 后至少 15 条群发送和 7 条搜索点击 typed fact，群发九类与搜索六类目标合同 mismatch=0 | 搜索 release fence production_fixed；普通搜索 stale 自然 E4 unproven；发送目标 pass |
+| 最终 SHA 排期与资源复核 | AI 21 次、view 11 次 SourcePacing 准入均未早于 `call_not_before_at`；发布后业务事实分布跨约 5 分钟而非同秒排空。Planner 6 小时 1850 点 PSS p95=200659 KiB、max=201079 KiB、CPU p95=21.98%、Telethon/cgroup event=0；宿主 5 秒 vmstat `si/so=0/0` | 短窗 pass；24 小时/自然日仍 unproven |
 
 因此 RC-P9～P14、精确存量修复、发送目标守恒、群事件唤醒、锁序、最终 SHA 短窗业务 E4 和 Planner 短窗资源均已通过；宿主存量 swap、最终行为 24 小时曲线、自然日以及暂停 comment/like E4 尚未同时满足，`production_fixed=unproven`。
 
@@ -491,4 +493,4 @@ due
 | 失败/回滚 | stale snapshot、legacy identity、DB/lock、cursor conflict、触限均显式失败 |
 | QA/E4 | 本地、PostgreSQL、性能、6/24h、四类排期和 typed fact 分层完整 |
 
-结论：product_design_complete / implementation_deployed_f49353fd / RC-P9-P14_pass / target_conservation_pass / listener_wake_and_lock_order_pass / exact_reconciliation_pass / short_window_business_E4_pass / warm_MemAvailable_and_Planner_E3_pass / resource_capacity_degraded / production_fixed=unproven。存量 swap 512 MiB 历史事故线、最终行为 24 小时曲线、自然日和暂停类 E4 尚未全部通过；固定 limit、重启、强制 GC、swapoff/扩 swap、缩目标、Action success 或健康检查均不能单独作为完成。
+结论：product_design_complete / implementation_deployed_70523382 / RC-P9-P14_pass / search_release_fence_production_fixed / generic_search_stale_projection_e4_unproven / target_conservation_pass / listener_wake_and_lock_order_pass / exact_reconciliation_pass / short_window_business_E4_pass / warm_MemAvailable_and_Planner_E3_pass / resource_capacity_degraded / production_fixed=unproven。存量 swap 512 MiB 历史事故线、最终行为 24 小时曲线、自然日和暂停类 E4 尚未全部通过；固定 limit、重启、强制 GC、swapoff/扩 swap、缩目标、Action success 或健康检查均不能单独作为完成。

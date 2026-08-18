@@ -44,4 +44,13 @@
 - 发布后自然产生 4 条新 `target_click_observed`；同时 7 条新群发 typed fact 的 Action/Attempt、群、OperationTarget、冻结 snapshot、content scope、quantity slot、daily target 与 Task config mismatch 全为 0。
 - 首次 fence 边界可判 `production_fixed`；通用 stale Recovery 投影遗漏仍需第二次发布验证。
 
-`design_status=complete_resynced / implementation_status=complete / qa_status=passed_27 / first_release=034216e4_fence_pass / recovery_projection_release=pending / production_fixed=unproven`
+## 6. 统一投影生产发布与终验
+
+- `70523382` / Actions run `32192010188` 完整成功，前端、两组后端、镜像和生产部署全部通过；生产 current 指向 `20260818223317_70523382`，migration 为 `0154_account_pacing_action_state (head)`。
+- Stage B 再次真实回收 2 条 Gateway-started 群发送 Action；两条均保持单 Attempt、目标绑定不变，仅写 `remote_outcome_unknown`，没有 `remote_message_observed`、没有重试，证明统一 finalizer 未破坏非搜索发送合同。
+- 激活后两 shard 均为 live、capacity=26、`verification_state=active_verified`；Planner、双 Dispatcher、Search Dispatcher、Recovery、Listener 和 AI generation 均运行同一 SHA，healthy/restart=0/OOM=false。
+- 最终 SHA 后自然产生 15 条以上群发送 fact 和 7 条以上搜索点击 fact。群发送的 Action/Attempt、TgGroup、OperationTarget、冻结引用、Task config、content scope、quantity slot、daily target 九类 mismatch=0；搜索 Action/Attempt、assignment、OperationTarget peer、Task config 与结果目标 mismatch=0。
+- 最终发布没有自然发生新的搜索 stale-worker/lease-expiry 事件，因此统一普通 Recovery 投影只有回归与已部署代码证据，不能伪造生产异常补 E4；该子边界保持 `unproven`。首次发布捕获的搜索 Fence E4 继续成立。
+- 生产仍有 306 条历史 `Action=closed_unknown / Assignment=executing` 投影债务；它们没有 open Action/obligation、没有新增 Attempt，不占 current worker slot。未执行无 preview 的批量生产改写。
+
+`design_status=complete_resynced / implementation_status=deployed_70523382 / qa_status=passed_27 / release_fence=production_fixed / generic_stale_projection=production_deployed_e4_unproven / target_conservation=pass`
