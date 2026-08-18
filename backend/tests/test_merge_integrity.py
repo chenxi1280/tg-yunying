@@ -35,7 +35,7 @@ def test_alembic_versions_have_single_head():
 
     assert all(len(revision) <= 32 for revision in revisions)
     heads = sorted(set(revisions) - referenced)
-    assert heads == ["0153_planner_snapshot_rollup"]
+    assert heads == ["0154_account_pacing_action_state"]
 
 
 def test_backend_test_names_are_unique_per_file():

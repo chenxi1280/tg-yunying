@@ -64,6 +64,7 @@ def _seed_future_deadline_action(session) -> None:
     ))
     session.add(task)
     session.add(action)
+    session.flush()
     session.add(AccountPacingReservation(
         tenant_id=tenant_id,
         task_id=task.id,
