@@ -6,14 +6,14 @@
 | --- | --- |
 | Intake ID | intake-2026-08-17-planner-pacing-memory-001 |
 | 分级 | L3 / P0 资源风险 + P0 来源突发 + P1 拟人节奏，必须走标准生产事故流与 Release Gate |
-| 设计状态 | product_design_complete / dev_handoff_ready=true / resynced_2026-08-18-14 |
+| 设计状态 | product_design_complete / dev_handoff_ready=true / resynced_2026-08-18-15 |
 | 实现状态 | `133eee7a` 已发布；source Gateway marker、materialization CAS 败方收敛与 Python 3.6 受审计代理退役工具均在生产生效。24 个零消费者 Mihomo runtime 已按 manifest apply/readback 完成 |
-| 生产状态 | partial：`133eee7a` 后 AI/view 权威 Gateway gap 最小 22.212558/87.351226 秒且违例均为 0，AI/view 自然 typed fact 至少 30/15，ledger/admission/CAS 读回通过；20 点 warm MemAvailable 最低 1925148 KiB、Planner PSS/CPU 通过，但宿主 swap 仍约 664 MiB，6/24 小时长窗未闭合，production_fixed=false |
+| 生产状态 | partial：`133eee7a` 后 AI/view 权威 Gateway gap 无突发，但线上 E4 复核发现浏览最终闸门错误使用单消息 plan total 计算整个频道 gap，两个任务已有 3510 条 pre-Gateway Action 排到当日截止后；该容量组合遗漏进入 RC-P9/P10，production_fixed=false |
 | 当前生产基线 | 2026-08-18 22:38 北京时间；release `133eee7a`；current/SHA/migration/health/restart/OOM、OCR authenticated ready 与 Docker/containerd 单实例读回通过。24 个退役 target 为 disabled+stopped+restart=no，AuditLog=24，37 个有消费者 runtime 均 healthy/running 且 manifest 未变；Planner PSS 约 208 MiB，15 秒 CPU 最大 40.38% |
 | 权威关系 | 本文规范性取代生产稳定性 PRD 中 Planner 资源和旧 AI fail-open gate 口径，并补正拟人节奏 PRD 的跨批恢复；不改变各任务 stable owner、typed remote fact、unknown 与数量结算合同 |
 | 操作边界 | 用户已授权实现、发布与生产验证；精确 stats cleanup 仍须独立 preview/hash/apply/readback，禁止把发布授权扩张为批量重试或未知外发 |
 
-“拟人化排期仍有明显拥挤”精确定义为：修复前业务 due 虽已分散，但 overdue 技术批次会在 now 附近重复起算 release，且最终闸门覆盖不全或异常时 fail-open，导致真实 Gateway 调用可能集中在少数分钟或同秒。它不等于“任务全部瞬间完成”。977a1642 后已证明 AI/view 的 release gap 无冲突、自然 due 在 Gateway 前按来源 gap 继续让路且 early call=0；Telegram 完成仍只认 typed remote fact，不能用 Action.executed_at 代替。
+“拟人化排期仍有明显拥挤”包含两种相反但同源的容量错误：一是 overdue 技术批次在 now 附近重新起算造成突发，二是把单消息 plan total 的 gap 套到共享频道时间线，导致多消息任务被过度串行并排到业务周期以后。二者都不等于“任务全部瞬间完成”。真实 Gateway 必须按来源聚合 plan 平滑，且任何 pre-Gateway Action 不得跨越数量 owner 的 period deadline；Telegram 完成仍只认 typed remote fact，不能用 Action.executed_at 代替。
 
 ## 1. 原始需求、范围与成功条件
 
@@ -111,6 +111,8 @@ Planner 容器也实际建立 Telegram TCP 并持续记录 Telethon update。结
 | RC-P6 | 过期 reservation 恢复只看冻结时间，多条 backlog 可在同一秒进入 Gateway | reused admission 最终时间取冻结时间与最近真实 call-start + 最大相邻 gap 的较大值 |
 | RC-P7 | 同一 Action 的 gap 重试重新遍历 owner 历史 reservation，单个成功 Action 绑定多条 reserved admission | owner 查询先按 `action_id == current` 排序，再按冻结时间；首次 replacement 接管后，后续重试固定同一 admission id |
 | RC-P8 | Source state 在 final gate 入口记录 pre-Gateway 时间，ExecutionAttempt 在后续语句记录 Gateway marker；两段可变开销使下一次按 state 放行后，权威 Attempt 相邻间隔比冻结 gap 短数十毫秒 | 在同一 source-state 行锁事务内写入 Attempt Gateway marker 后，按当前 admission 精确绑定把 state last/next cursor 前移到该 marker，再提交放行；不得扫描历史、整数截断、增加任意安全垫或放宽验收阈值 |
+| RC-P9 | 浏览 owner 的 `pacing_plan_total` 是单消息目标，但最终 `SourcePacingState` 是整频道共享；直接用单消息 total 计算共享 gap，使 21 条消息的并行计划被错误串成一条 87 秒时间线 | 浏览 Gateway gap 使用同一 TaskDayLedger 全部 active message target 的冻结 `due_count` 聚合总量；单消息 quantity owner、release、fact 和 plan hash 不变，聚合只用于共享来源最终闸门 |
+| RC-P10 | 来源 defer 可把 `Action.release_not_before_at/scheduled_at` 推到 owner deadline 以后；普通 due-claim 只扫描 `scheduled_at <= now`，导致确定不可能执行的 pre-Gateway Action 在未来数日占用 current obligation 和 source cursor | defer 计算超过 deadline 时最多排到 deadline；direct claim 额外扫描“release 已越过 account reservation source deadline”的有界候选，立即写 `safely_not_executed`、missed reservation、cancelled pre-Gateway admission，并按剩余 reserved admission 与真实 last marker 重算 source next cursor |
 | RC-E1 | AI projection/fact 只读 payload ledger，但 AI quantity 合同把 ledger 固化在 primary quantity owner | payload ledger 缺失时按 `Action.primary_quantity_slot_id -> TaskGroupDailyMessageSlot.task_day_ledger_id` 解析并持久化 |
 | RC-E2 | 多 AI generation worker 同时为同一 obligation 绑定 replacement Action，CAS loser 把 winner 已提交的新 projection version 误报为业务身份冲突并中断整轮 drain | CAS 失败后重新读取权威 projection；winner 为当前 Action 则幂等成功，winner 为另一 open Action 则当前 Action 显式 `duplicate_open_obligation` 终结，projection 已关闭则显式 `obligation_not_open`；只有无法解释的身份/状态才继续抛 conflict |
 | RC-M1 | 旧 backlog 缺 source/period/lifecycle/plan 分类 | preview manifest + 分 Task 激活 |
@@ -240,11 +242,13 @@ SourcePacingAdmission 每个真实远程尝试一行：
 3. 尚未到时只 defer，不调用远端；已到时 CAS admission 为 call_started，并在同一短事务更新 last_call_started_at，提交后才允许 Gateway call。
 4. DB、锁、版本或身份失败写 pacing_source_admission_unavailable/conflict，保持 pre-Gateway，禁止远程调用。旧 AI warning 后继续发送的 fail-open 行为被本文废止。
 5. remote_unknown 保留 owner/admission/Attempt，不自动重发；reconcile 仍按任务 typed fact 合同处理。
-6. source gap 从冻结 pacing plan 的最大合法来源速率计算，不使用固定 8 秒魔数；period 内配置编辑不改变已冻结 plan。
+6. source gap 从冻结 pacing plan 的最大合法来源速率计算，不使用固定 8 秒魔数。AI 单群 owner 继续使用其 source plan total；浏览必须使用同一 TaskDayLedger 全部 `source_state=active` message target 的 `sum(due_count)` 作为共享频道 source plan total，不能把任一单消息 target 当成整频道总量。gap 使用不超过平均容量的整数下界，owner release/profile 继续负责非均匀拟人分布；period 内配置编辑不改变已冻结 quantity owner。
 7. admission upsert 是否新建只认 `RETURNING id`；不得读取 dialect/driver 不稳定的 `rowcount`。冲突命中既有 reserved admission 时必须复用其 `call_not_before_at`，不得再次推进 `SourcePacingState.next_call_not_before_at` 或 stable owner release。
 8. replacement Action 必须先按 stable owner、source state、lifecycle、period、plan 精确锁取最早的 `reserved` 或已知 pre-Gateway `finished` admission；只允许转绑 `gateway_call_started_at IS NULL` 的槽位。`call_started`、`remote_unknown`、已有 Gateway 的 admission 永不转绑。
 9. reused admission 不读取 future reservation cursor，但仍必须应用实际来源时间线：最终 `not_before=max(admission.call_not_before_at, last_call_started_at + max(last_gap,current_gap))`。多个过期槽位不得突发补发。
 10. 同一 Action 已经绑定安全 admission 后，后续 pre-Gateway 重试必须优先锁定并复用该 admission id，不得因其他 owner 历史 reservation 的冻结时间更早而轮换槽位。只有当前 Action 无安全绑定时，replacement 才接管 owner 最早 reservation。
+11. 任一 final not-before 不得晚于 owner period deadline。计算值达到或越过 deadline 时，Action 最多唤醒到 deadline；claim 必须在 Gateway 前写 `pacing_claim_deadline_exceeded` 的 `safely_not_executed` fact，释放 quantity owner 当前 Action、把账号 reservation 标为 missed、把 source admission 标为 `cancelled_pre_gateway`。候选扫描有界且使用 `account_pacing_reservations(action_id,state)` 索引，不得等待跨日 scheduled_at 才收敛。
+12. 取消 pre-Gateway admission 后，在相同 source state 行锁下按“真实 last Gateway marker + last gap”和剩余 reserved admission 最大 not-before 重算 next cursor；不得由已取消、已过期 period 或未调用 Gateway 的历史队尾继续占用新 period。
 
 AI obligation projection 与 typed remote fact 的 `task_day_ledger_id` 取值顺序为：显式 payload ledger → `Action.primary_quantity_slot_id` 对应 quantity owner ledger。两者同时存在但不一致时必须显式失败；current AI 成功事实不得以 null ledger 落库。
 
@@ -417,6 +421,8 @@ T2 按 Task/source 灰度，不要求暂停的 comment/like 为 AI/view 让路�
 17. PostgreSQL materialization CAS 竞争：双 session 同时读到同一 open projection 的旧 version 并绑定不同 replacement Action；winner 提交后 loser 必须重读 winner。winner 为 open Action 时 loser 以 `duplicate_open_obligation` 终结且不得覆盖 projection；同 Action 重入幂等成功；projection 同时关闭时 loser 以 `obligation_not_open` 终结。任何其他漂移仍抛 `fulfillment_obligation_materialization_conflict`，禁止 catch-all 吞错。
 18. Gateway marker 精度回归：前一 admission 的 state timestamp 为 T、权威 Attempt Gateway marker 为 T+250ms；下一 Action 在 T+gap 到达时必须 defer 到 T+250ms+gap，且随后写入的任意相邻 Attempt Gateway marker 差值严格不小于相邻冻结 gap 的较大值。禁止通过秒级取整、epsilon 容差或额外 sleep 伪造通过。
 19. 代理运行时退役回归：target/manifest/release/actor/approval 缺失、任一消费者非零、DB 版本漂移、container id/config hash 漂移或 stop 失败均显式失败；成功仅改显式 target 为 disabled 并 stopped/restart=no，AuditLog 数与 target 数一致，非 target 不变。
+20. 多消息浏览来源容量回归：同一 ledger 至少 3 条 active message target，单消息 plan total 不同；每条 owner 的 quantity 身份不变，admission 的共享 source gap 只能由 `sum(due_count)` 计算。聚合总量 15877/日时不能继续得到单消息 87 秒 gap；相邻真实 Gateway 仍不得小于冻结聚合 gap。
+21. 跨日 pre-Gateway 收敛：Action 的 release/scheduled 已被历史 source cursor 推到 ledger deadline 以后时，即使 `scheduled_at > now` 也必须进入有界 direct claim；Gateway marker 保持 null，Action/账号 reservation/source admission/obligation/fact/source next cursor 一次事务读回一致。非过期 future Action 不得被提前 claim。
 
 ### 10.2 性能与资源
 
@@ -456,12 +462,12 @@ due
 | Planner 资源短窗 E3 | 76 个最终 SHA 自采样 PSS p95=208929 KiB、CPU p95=45.66%，Telethon/cgroup event=0；8 个 processed drain 线性 p95 约 27.0s，冷启动 37.7s 后为 3.9～7.1s | pass；6/24 小时斜率仍 unproven |
 | OCR 资源与功能 | OCR warm PSS 230748～231192 KiB；Docker current id 与 `/proc+cgroup` 唯一 runtime id 完全相等，ready/restart/OOM 读回通过 | pass |
 | 聚合宿主 | 24 个零消费者 runtime 回收 241533 KiB PSS；20 点 warm MemAvailable 最低 1925148 KiB，swap-out=0、swap-in 合计 59 页；但 SwapUsed 约 664 MiB 仍高于事故合同 512 MiB 线 | MemAvailable pass / resource_capacity_degraded |
-| 排期 release E3 | `133eee7a` 后 AI/view 权威 Gateway call 分别至少 32/16，相邻 pair 31/14，最小 gap 22.212558/87.351226 秒，违例均为 0；3 个 source state 与最新 marker drift=0 | pass：排除短时直接完成 |
+| 排期 release E3 | `133eee7a` 后 AI/view 权威 Gateway call 分别至少 32/16，相邻 pair 31/14，最小 gap 22.212558/87.351226 秒，违例均为 0；但最终 E4 发现 view 的 87 秒来自单消息 total 错套共享频道，两个任务 3510 条 Action 跨 deadline | burst gate pass / aggregate capacity failed，进入 RC-P9/P10 |
 | Gateway/CAS 准入 E3 | 最终 SHA 日志 `materialization_conflict/drain_failed/alignment_error/Traceback/ERROR` 均为 0；46 个 typed-fact Action 最大 1 条 admission，multi/stranded=0 | pass |
 | 零消费者代理退役 | manifest `1b431e...1e12` 两次校验后 24 个 target disabled+stopped+restart=no、AuditLog=24；37 个有消费者 proxy healthy/running，非 target manifest 不变 | pass |
 | 请求范围任务 E4 | 最终 SHA 已观察 AI `remote_message_observed`至少 30、view `view_observed`至少 15；AI ledger null/mismatch=0；comment/like 任务仍暂停 | AI/view 短窗 pass；自然日与暂停类 unproven/blocked |
 
-因此本轮确定性代码、受审计资源修复、AI/view 短窗 E4 和排期 E3 已完成；宿主存量 swap 高于 512 MiB、最终 SHA 的 6/24 小时曲线及暂停 comment/like E4 尚未同时满足，`production_fixed=unproven`。
+因此资源与防突发修复已通过短窗，但共享来源聚合容量和跨日 pre-Gateway 收敛仍 failed；完成 RC-P9/P10 的代码、发布、存量读回和新 SHA 自然 E4 之前不得把 AI/view 短窗写成整体排期通过。宿主存量 swap、6/24 小时曲线及暂停 comment/like E4 也尚未同时满足，`production_fixed=unproven`。
 
 ## 11. Product Design Complete 自检
 
@@ -477,4 +483,4 @@ due
 | 失败/回滚 | stale snapshot、legacy identity、DB/lock、cursor conflict、触限均显式失败 |
 | QA/E4 | 本地、PostgreSQL、性能、6/24h、四类排期和 typed fact 分层完整 |
 
-结论：product_design_complete / implementation_deployed_133eee7a / PostgreSQL_QA_passed / warm_MemAvailable_and_Planner_E3_pass / pacing_E3_pass / AI_view_short_E4_pass / production_fixed=unproven。存量 swap 512 MiB 合同、最终 SHA 的 6/24 小时曲线和暂停类 E4 尚未全部通过；固定 limit、重启、强制 GC、swapoff/扩 swap、缩目标、Action success 或健康检查均不能单独作为完成。
+结论：product_design_complete / implementation_deployed_133eee7a / warm_MemAvailable_and_Planner_E3_pass / burst_pacing_E3_pass / aggregate_source_capacity_failed / cross_deadline_pre_gateway_failed / production_fixed=unproven。RC-P9/P10、存量 swap 512 MiB 合同、最终 SHA 的 6/24 小时曲线和暂停类 E4 尚未全部通过；固定 limit、重启、强制 GC、swapoff/扩 swap、缩目标、Action success 或健康检查均不能单独作为完成。

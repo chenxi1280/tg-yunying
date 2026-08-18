@@ -27,6 +27,11 @@ class AccountPacingReservation(Base):
             "state",
             "effective_claim_at",
         ),
+        Index(
+            "ix_account_pacing_reservation_action_state",
+            "action_id",
+            "state",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))

@@ -306,6 +306,7 @@ def test_postgres_conflict_detection_uses_returning_not_rowcount() -> None:
         period_key="period",
         plan_hash="a" * 64,
         release_at=NOW,
+        deadline_at=NOW + timedelta(days=1),
         source_gap_seconds=864,
     )
 

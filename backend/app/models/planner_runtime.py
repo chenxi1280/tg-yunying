@@ -204,6 +204,12 @@ class SourcePacingAdmission(Base):
             "state",
             "call_not_before_at",
         ),
+        Index(
+            "ix_source_pacing_admission_state_due",
+            "source_pacing_state_id",
+            "state",
+            "call_not_before_at",
+        ),
         Index("ix_source_pacing_admission_action", "action_id", "attempt_id"),
     )
 

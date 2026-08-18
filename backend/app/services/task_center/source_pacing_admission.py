@@ -30,6 +30,7 @@ from .source_pacing_admission_settlement import (
     settle_source_pacing_admission,
     unsettled_prior_admission,
 )
+from .source_pacing_capacity import source_plan_total
 from .source_pacing_reservation import SourceAdmissionSpec, lock_or_create_admission
 from .source_pacing import wall_datetime
 
@@ -154,14 +155,20 @@ def _source_admission_spec(session: Session, action: Action) -> SourceAdmissionS
     owner, domain = _source_owner(session, action)
     release_at = getattr(owner, "release_not_before_at", None) or action.release_not_before_at
     plan_hash = str(getattr(owner, "pacing_plan_hash", None) or action.pacing_plan_hash or "")
-    plan_total = int(getattr(owner, "pacing_plan_total", 0) or 0)
-    if release_at is None or not plan_hash or plan_total <= 0:
+    owner_plan_total = int(getattr(owner, "pacing_plan_total", 0) or 0)
+    if release_at is None or not plan_hash or owner_plan_total <= 0:
         raise ValueError("pacing_source_identity_incomplete")
     period_start, deadline, period_key = _source_period(session, owner, domain)
     peer = _source_peer(action)
     if not peer or deadline <= period_start:
         raise ValueError("pacing_source_period_invalid")
     source_hash = _source_key_hash(peer)
+    plan_total = source_plan_total(
+        session,
+        owner,
+        domain=domain,
+        fallback=owner_plan_total,
+    )
     _freeze_owner_source_identity(
         action,
         owner,
@@ -177,9 +184,10 @@ def _source_admission_spec(session: Session, action: Action) -> SourceAdmissionS
         period_key=period_key,
         plan_hash=plan_hash,
         release_at=wall_datetime(release_at),
+        deadline_at=deadline,
         source_gap_seconds=max(
             1,
-            math.ceil((deadline - period_start).total_seconds() / plan_total),
+            math.floor((deadline - period_start).total_seconds() / plan_total),
         ),
     )
 
@@ -384,19 +392,24 @@ def _defer_until(
     spec: SourceAdmissionSpec,
     not_before: datetime,
 ) -> None:
+    effective_not_before = min(not_before, spec.deadline_at)
     admission.state = "reserved"
     admission.version = int(admission.version or 1) + 1
     advance_owner_release(
         session,
         owner_type=spec.owner_type,
         owner_id=spec.owner_id,
-        not_before=not_before,
+        not_before=effective_not_before,
     )
     _defer_action(
         action,
         attempt,
-        code="pacing_source_not_before",
-        not_before=not_before,
+        code=(
+            "pacing_source_period_exhausted"
+            if not_before >= spec.deadline_at
+            else "pacing_source_not_before"
+        ),
+        not_before=effective_not_before,
     )
 
 

@@ -296,6 +296,33 @@ def confirm_view_action(
     )
 
 
+def release_channel_action_before_gateway(
+    session: Session,
+    action: Action,
+) -> None:
+    contract = {
+        "like_message": (
+            ReactionFulfillmentObligation,
+            "reaction_fulfillment_obligation_id",
+        ),
+        "view_message": (
+            ViewFulfillmentObligation,
+            "view_fulfillment_obligation_id",
+        ),
+    }.get(action.action_type)
+    if contract is None:
+        return
+    model, payload_key = contract
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    obligation = session.get(model, str(payload.get(payload_key) or ""))
+    if obligation is None or obligation.current_action_id != action.id:
+        return
+    if obligation.status == "confirmed":
+        raise RuntimeError("confirmed_channel_obligation_cannot_reopen")
+    obligation.current_action_id = None
+    obligation.status = "open"
+
+
 def _release_terminal_action(
     session: Session,
     obligation: ReactionFulfillmentObligation | ViewFulfillmentObligation,
@@ -393,6 +420,7 @@ __all__ = [
     "ensure_view_action_contract",
     "ensure_view_obligation",
     "obligation_accepts_new_action",
+    "release_channel_action_before_gateway",
     "RemoteFactAlreadyFulfilled",
     "reaction_account_ids_for_messages",
     "view_account_ids_for_messages",

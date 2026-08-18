@@ -40,6 +40,7 @@ class SourceAdmissionSpec:
     period_key: str
     plan_hash: str
     release_at: datetime
+    deadline_at: datetime
     source_gap_seconds: int
 
 

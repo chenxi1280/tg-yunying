@@ -4,18 +4,27 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from uuid import uuid4
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.orm import Session
 
-from app.models import AccountPacingReservation, Action, ExecutionAttempt, Task
+from app.models import (
+    AccountPacingReservation,
+    Action,
+    ExecutionAttempt,
+    SourcePacingAdmission,
+    SourcePacingState,
+    Task,
+)
 
 from .fulfillment_activation import CURRENT_CONTRACT_VERSION
 from .account_pacing_guard import revalidate_action_pacing_before_claim
+from .channel_fulfillment import release_channel_action_before_gateway
 from .fulfillment_remote_facts import (
     ensure_action_obligation,
     persist_remote_fact,
     project_remote_fact,
 )
+from .source_pacing import wall_datetime
 
 
 @dataclass(frozen=True)
@@ -71,13 +80,13 @@ def _candidate_rows(
             Action.scheduled_at.label("scheduled_at"),
             func.row_number().over(
                 partition_by=Action.task_id,
-                order_by=(Action.scheduled_at, Action.id),
+                order_by=_candidate_order(),
             ).label("task_rank"),
         )
         .join(Task, Task.id == Action.task_id)
         .where(
             Action.status == "pending",
-            Action.scheduled_at <= now,
+            or_(Action.scheduled_at <= now, _deadline_exhausted_action()),
             Task.status == "running",
             Task.deleted_at.is_(None),
             Task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION,
@@ -104,6 +113,24 @@ def _candidate_rows(
     return list(session.execute(statement))
 
 
+def _deadline_exhausted_action():
+    return select(AccountPacingReservation.id).where(
+        AccountPacingReservation.action_id == Action.id,
+        AccountPacingReservation.state.in_(("reserved", "bound")),
+        AccountPacingReservation.source_deadline_at.is_not(None),
+        Action.release_not_before_at.is_not(None),
+        AccountPacingReservation.source_deadline_at <= Action.release_not_before_at,
+    ).exists()
+
+
+def _candidate_order():
+    return (
+        case((_deadline_exhausted_action(), 0), else_=1),
+        Action.scheduled_at,
+        Action.id,
+    )
+
+
 def _filter_execution_lane(statement, execution_lane: str | None):
     if execution_lane == "search":
         return statement.where(Action.execution_lane == "search")
@@ -125,19 +152,20 @@ def _claim_rows(
     lease_seconds: int,
 ) -> list[str]:
     claimed: list[str] = []
+    cancelled_state_ids: set[str] = set()
     expires_at = now + timedelta(seconds=max(5, lease_seconds))
     for action_id, _, version in rows:
-        action = session.get(Action, action_id)
-        if action is None or int(action.action_version or 1) != int(version):
+        action = _lock_candidate_action(session, action_id, version)
+        if action is None:
             continue
         pacing = revalidate_action_pacing_before_claim(
             session, action, now_value=now,
         )
         if not pacing.allowed:
             if pacing.reason_code == "pacing_claim_deadline_exceeded":
-                _mark_claim_deadline_missed(
+                cancelled_state_ids.update(_mark_claim_deadline_missed(
                     session, action, now, pacing.effective_claim_at,
-                )
+                ))
             session.flush()
             continue
         changed = session.execute(
@@ -157,7 +185,24 @@ def _claim_rows(
         ).rowcount
         if changed == 1:
             claimed.append(action_id)
+    _reconcile_cancelled_source_states(session, cancelled_state_ids)
     return claimed
+
+
+def _lock_candidate_action(
+    session: Session,
+    action_id: str,
+    version: int,
+) -> Action | None:
+    return session.scalar(
+        select(Action)
+        .where(
+            Action.id == action_id,
+            Action.status == "pending",
+            Action.action_version == version,
+        )
+        .with_for_update(skip_locked=True)
+    )
 
 
 def _mark_claim_deadline_missed(
@@ -165,7 +210,7 @@ def _mark_claim_deadline_missed(
     action: Action,
     now: datetime,
     effective_at: datetime | None,
-) -> None:
+) -> set[str]:
     ensure_action_obligation(session, action)
     action.status = "skipped"
     action.executed_at = now
@@ -177,14 +222,97 @@ def _mark_claim_deadline_missed(
             "effective_claim_at": effective_at.isoformat() if effective_at else None,
         },
     }
-    session.add(_safe_shortfall_attempt(session, action, now))
+    attempt = _safe_shortfall_attempt(session, action, now)
+    session.add(attempt)
     _mark_pacing_reservation_missed(session, action.id)
+    state_ids = _cancel_pre_gateway_source_admissions(session, action.id)
     session.flush()
     fact = persist_remote_fact(session, action)
     if fact is None or fact.fact_kind != "safely_not_executed":
         observed = fact.fact_kind if fact is not None else "missing"
         raise RuntimeError(f"pacing_claim_safe_settlement_missing:{observed}")
     project_remote_fact(session, fact)
+    release_channel_action_before_gateway(session, action)
+    return state_ids
+
+
+def _cancel_pre_gateway_source_admissions(
+    session: Session,
+    action_id: str,
+) -> set[str]:
+    state_ids = set(session.scalars(
+        select(SourcePacingAdmission.source_pacing_state_id)
+        .where(
+            SourcePacingAdmission.action_id == action_id,
+            SourcePacingAdmission.state.in_(("reserved", "finished")),
+        )
+        .distinct()
+    ))
+    if not state_ids:
+        return set()
+    list(session.scalars(
+        select(SourcePacingState)
+        .where(SourcePacingState.id.in_(state_ids))
+        .order_by(SourcePacingState.id)
+        .with_for_update()
+    ))
+    rows = session.scalars(
+        select(SourcePacingAdmission)
+        .outerjoin(ExecutionAttempt, ExecutionAttempt.id == SourcePacingAdmission.attempt_id)
+        .where(
+            SourcePacingAdmission.action_id == action_id,
+            SourcePacingAdmission.state.in_(("reserved", "finished")),
+            or_(
+                SourcePacingAdmission.attempt_id.is_(None),
+                ExecutionAttempt.gateway_call_started_at.is_(None),
+            ),
+        )
+        .with_for_update(of=SourcePacingAdmission)
+    )
+    cancelled: set[str] = set()
+    for admission in rows:
+        admission.state = "cancelled_pre_gateway"
+        admission.version = int(admission.version or 1) + 1
+        cancelled.add(admission.source_pacing_state_id)
+    return cancelled
+
+
+def _reconcile_cancelled_source_states(
+    session: Session,
+    state_ids: set[str],
+) -> None:
+    if not state_ids:
+        return
+    states = list(session.scalars(
+        select(SourcePacingState)
+        .where(SourcePacingState.id.in_(state_ids))
+        .order_by(SourcePacingState.id)
+        .with_for_update()
+    ))
+    session.flush()
+    reserved = {
+        state_id: value
+        for state_id, value in session.execute(
+            select(
+                SourcePacingAdmission.source_pacing_state_id,
+                func.max(SourcePacingAdmission.call_not_before_at),
+            )
+            .where(
+                SourcePacingAdmission.source_pacing_state_id.in_(state_ids),
+                SourcePacingAdmission.state == "reserved",
+            )
+            .group_by(SourcePacingAdmission.source_pacing_state_id)
+        )
+    }
+    for state in states:
+        candidates = [wall_datetime(reserved[state.id])] if state.id in reserved else []
+        if state.last_call_started_at is not None:
+            candidates.append(
+                wall_datetime(state.last_call_started_at)
+                + timedelta(seconds=max(0, int(state.last_source_gap_seconds or 0)))
+            )
+        state.next_call_not_before_at = max(candidates) if candidates else None
+        state.version = int(state.version or 1) + 1
 
 
 def _safe_shortfall_attempt(
