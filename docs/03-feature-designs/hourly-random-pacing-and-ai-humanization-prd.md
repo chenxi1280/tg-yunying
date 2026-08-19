@@ -156,6 +156,8 @@ Action.scheduled_at = effective_claim_at
 
 `due_at` 永不因迟到、换账号或重试改写；两者差值就是可解释 lateness。
 
+fact-first 浏览/点赞 Action 一旦已由远端事实投影并关闭账号节奏 reservation，旧 Action 不得再进入 legacy 原地重试。direct claim 只选择无账号节奏槽，或仍持有 `reserved|bound` reservation 的 Action；单条历史错态不得抛异常中止整个 Dispatcher 批次。义务仍由 open projection 生成 replacement Action，禁止复用已经结算的 Action/Gateway 身份。
+
 类型映射：
 
 | 类型 | period / anchor | 稳定义务 | `due_at` owner |

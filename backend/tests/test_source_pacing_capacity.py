@@ -29,6 +29,7 @@ from app.services.task_center.direct_action_claims import (
     release_fact_first_action_reservations,
     settle_fact_first_action_before_gateway,
 )
+from app.services.task_center.fulfillment_retry import retry_failed_actions
 from app.services.task_center import dispatcher
 from app.services.task_center.pacing import PACING_CONTRACT_VERSION
 from app.services.task_center.source_pacing_admission import admit_source_paced_attempt
@@ -230,6 +231,49 @@ def test_replannable_failure_keeps_stable_owner_reservations(session: Session) -
     assert reservation.state == "bound"
     assert admission.state == "reserved"
     assert owner.current_action_id == action.id
+
+
+def test_closed_reservation_does_not_block_fact_first_claim_batch(
+    session: Session,
+) -> None:
+    task, ledger, messages = _seed_view_period(session)
+    task.fulfillment_contract_version = "fact_first_v3"
+    owner = _view_owner(ledger, messages[0], plan_total=600)
+    action = _view_action(task, owner, release_at=NOW)
+    reservation = _account_reservation(task, action, deadline=DEADLINE, future=NOW)
+    reservation.state = "missed"
+    session.add_all([owner, action, reservation])
+    session.commit()
+
+    batch = claim_fact_first_candidates(
+        session,
+        owner="test-worker",
+        limit=10,
+        now=NOW,
+        lease_seconds=30,
+    )
+
+    assert batch.action_ids == ()
+    assert action.status == "pending"
+
+
+def test_fact_first_channel_failure_is_rebuilt_instead_of_legacy_retry(
+    session: Session,
+) -> None:
+    task, ledger, messages = _seed_view_period(session)
+    task.fulfillment_contract_version = "fact_first_v3"
+    task.failure_policy = {"max_retries": 3}
+    owner = _view_owner(ledger, messages[0], plan_total=600)
+    action = _view_action(task, owner, release_at=NOW)
+    action.status = "failed"
+    session.add_all([owner, action])
+    session.commit()
+
+    retried = retry_failed_actions(session, task, now_value=NOW)
+
+    assert retried == 0
+    assert action.status == "failed"
+    assert action.retry_count == 0
 
 
 def _seed_base(session: Session) -> None:

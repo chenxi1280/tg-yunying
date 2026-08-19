@@ -88,6 +88,8 @@ def _action_retry_is_blocked(task: Task, action: Action) -> bool:
         return True
     if _is_bound_fact_first_group_ai_action(task, action):
         return True
+    if _is_bound_fact_first_channel_action(task, action):
+        return True
     if _is_bound_comment_action(task, action):
         return True
     if _is_bound_search_click_action(task, action):
@@ -103,6 +105,16 @@ def _is_bound_fact_first_group_ai_action(task: Task, action: Action) -> bool:
         task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION
         and task.type == "group_ai_chat"
         and action.action_type == "send_message"
+    )
+
+
+def _is_bound_fact_first_channel_action(task: Task, action: Action) -> bool:
+    return bool(
+        task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION
+        and (
+            (task.type == "channel_view" and action.action_type == "view_message")
+            or (task.type == "channel_like" and action.action_type == "like_message")
+        )
     )
 
 

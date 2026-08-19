@@ -87,6 +87,7 @@ def _candidate_rows(
         .where(
             Action.status == "pending",
             or_(Action.scheduled_at <= now, _deadline_exhausted_action()),
+            _has_claimable_account_reservation(),
             Task.status == "running",
             Task.deleted_at.is_(None),
             Task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION,
@@ -121,6 +122,21 @@ def _deadline_exhausted_action():
         Action.release_not_before_at.is_not(None),
         AccountPacingReservation.source_deadline_at <= Action.release_not_before_at,
     ).exists()
+
+
+def _has_claimable_account_reservation():
+    open_reservation = select(AccountPacingReservation.id).where(
+        AccountPacingReservation.tenant_id == Action.tenant_id,
+        AccountPacingReservation.account_id == Action.account_id,
+        AccountPacingReservation.pacing_slot_key == Action.pacing_slot_key,
+        AccountPacingReservation.state.in_(("reserved", "bound")),
+    ).exists()
+    return or_(
+        Action.pacing_slot_key.is_(None),
+        Action.pacing_slot_key == "",
+        Action.account_id.is_(None),
+        open_reservation,
+    )
 
 
 def _candidate_order():
