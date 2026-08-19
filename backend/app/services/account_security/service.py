@@ -1873,6 +1873,10 @@ def _refresh_batch_counts(session: Session, batch: TgAccountSecurityBatch) -> No
     batch.success_count = sum(1 for item in items if item.status == "succeeded")
     batch.failed_count = sum(1 for item in items if item.status in {"failed", "partial_success"})
     batch.skipped_count = sum(1 for item in items if item.status in {"skipped", "manual_required"})
+    if any(item.status == "executable" for item in items):
+        batch.status = "ready"
+        batch.finished_at = None
+        return
     unfinished = [item for item in items if item.status in {"pending", "running", "waiting"}]
     if unfinished:
         batch.status = "running"

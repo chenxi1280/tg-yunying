@@ -142,7 +142,7 @@ apply 必须提供同一 seed、login batch IDs、style groups、deployed SHA、
 2. 锁定登录 batch/items 和精确 accounts，验证所有版本与旧值。
 3. 检查同 manifest 已创建批次；一致则复用，漂移或重复账号即失败。
 4. 对缺失 target 按最多 50 个一批调用公开 `create_account_security_batch`。
-5. 所有 chunk 先以未确认、不可执行状态创建；完整 target 集合、邻居旧状态 hash 与审计全部落库后，才在一个数据库事务中 claim 名称并激活全部 chunk。任何 staging 中断均不得触发 Telegram 调用，重复 apply 只补缺失 chunk。
+5. 所有 chunk 先以 batch=`ready`、item=`executable` 的未确认 staging 状态创建；通用计数刷新必须保持该 batch 为 `ready`、`finished_at=null`，禁止把零成功的 staging batch 误标为 `succeeded`。完整 target 集合、邻居旧状态 hash 与审计全部落库后，才在一个数据库事务中 claim 名称并把全部 chunk 激活为 batch=`running`、item=`pending`。任何 staging 中断均不得触发 Telegram 调用，重复 apply 只补缺失 chunk。
 6. 使用 `preview_overrides` 冻结名字与 avatar source，动作仅 `update_profile/update_avatar`，`overwrite_existing=true` 只适用于 manifest 明确判定的占位/未就绪目标。
 7. claim、账号安全 batch/items 与 AuditLog 在正式服务事务中创建；不得直接 SQL 改资料。
 8. active/open 旧资料初始化项若属于同一 target，必须先分类：已成功为 no-op；同目标同值开放项复用；值不同或远端状态未知则 `existing_profile_operation_conflict`，禁止双批并发。

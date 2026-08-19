@@ -23,6 +23,7 @@ import app.services.account_security.service as account_security_service
 from app.services._common import _now
 from app.services.account_security import (
     account_security_batch_detail,
+    activate_account_security_batches,
     create_account_security_batch,
     drain_account_security_batches,
     precheck_account_security_batch,
@@ -652,6 +653,40 @@ def test_created_batch_stays_running_with_no_autoflush_session():
         assert batch.items[0].status == "pending"
 
     assert drain_account_security_batches(session_factory, limit=10) == 1
+
+
+@pytest.mark.no_postgres
+def test_unconfirmed_executable_batch_stays_ready_for_later_activation():
+    session_factory = _session_factory_no_autoflush()
+    with session_factory() as session:
+        account = _seed_account(session)
+        batch = create_account_security_batch(
+            session,
+            1,
+            AccountSecurityBatchCreate(
+                account_ids=[account.id],
+                action_types=["update_profile"],
+                confirm_text="",
+                profile_strategy=ProfileGenerationStrategy(generation_mode="template"),
+                reason="测试分段创建后统一激活",
+            ),
+            "tester",
+        )
+
+        assert batch.status == "ready"
+        assert batch.finished_at is None
+        assert batch.items[0].status == "executable"
+
+        activated = activate_account_security_batches(
+            session,
+            1,
+            [batch.id],
+            actor="tester",
+            confirm_text="确认",
+        )[0]
+
+        assert activated.status == "running"
+        assert activated.items[0].status == "pending"
 
 
 def test_profile_batch_is_visible_as_readonly_task_center_projection():
