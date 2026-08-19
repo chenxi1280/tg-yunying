@@ -118,6 +118,7 @@ def _comment_slot(request) -> dict:
         "account_id": int(request.account_id or 0),
         "reply_to_message_id": str(request.payload.reply_to_message_id or ""),
         "reply_preview": str(request.payload.reply_target_preview or ""),
+        **dict(request.config.get("_ai_content_contract") or {}),
     }
 
 

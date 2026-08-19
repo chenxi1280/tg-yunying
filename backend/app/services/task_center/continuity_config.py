@@ -15,6 +15,12 @@ EPOCH_CONFIG_FIELDS = frozenset(
         "daily_message_target",
     }
 )
+AI_CONTENT_REVISION_FIELDS = frozenset({
+    "ai_content_route_v2_enabled",
+    "ai_content_policy_version_id",
+    "ai_content_allowed_routes",
+    "ai_content_attestation_ids",
+})
 
 
 def increment_revision_for_continuity_change(
@@ -24,14 +30,20 @@ def increment_revision_for_continuity_change(
     previous_timezone: str,
 ) -> bool:
     """Advance only when an AI daily obligation definition changed."""
-    if task.type != "group_ai_chat":
-        return False
     current_config = task.type_config or {}
+    ai_content_changed = any(
+        previous_config.get(field) != current_config.get(field)
+        for field in AI_CONTENT_REVISION_FIELDS
+    )
+    if task.type != "group_ai_chat" and not ai_content_changed:
+        return False
     config_changed = any(
         previous_config.get(field) != current_config.get(field)
         for field in EPOCH_CONFIG_FIELDS
     )
-    if not config_changed and str(previous_timezone or "") == str(task.timezone or ""):
+    if not config_changed and not ai_content_changed and (
+        str(previous_timezone or "") == str(task.timezone or "")
+    ):
         return False
     task.config_revision = max(1, int(task.config_revision or 1)) + 1
     return True

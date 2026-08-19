@@ -115,9 +115,15 @@ class PacingConfig(BaseModel):
     max_actions_per_hour: int | None = Field(default=None, ge=1)
     max_actions_per_day: int | None = Field(default=None, ge=1)
     quiet_hours: QuietHours | None = None
+    source_capacity_v2_enabled: bool = False
+    source_capacity_policy_version_id: str = ""
 
     @model_validator(mode="after")
     def normalize_fixed(self) -> "PacingConfig":
+        if self.source_capacity_v2_enabled and not self.source_capacity_policy_version_id:
+            raise ValueError("启用来源容量 v2 时必须绑定策略版本")
+        if not self.source_capacity_v2_enabled and self.source_capacity_policy_version_id:
+            raise ValueError("来源容量策略版本只能在 v2 启用时配置")
         if self.mode == "fixed":
             self.interval_seconds_min = 60 if self.interval_seconds_min is None else self.interval_seconds_min
             self.interval_seconds_max = self.interval_seconds_min if self.interval_seconds_max is None else self.interval_seconds_max
@@ -319,6 +325,10 @@ class GroupAIChatConfig(BaseModel):
     low_confidence_silence_enabled: bool = True
     ai_two_stage_enabled: bool = False
     ai_semantic_reviewer_model: str = ""
+    ai_content_route_v2_enabled: bool = False
+    ai_content_policy_version_id: str = ""
+    ai_content_allowed_routes: list[str] = Field(default_factory=list)
+    ai_content_attestation_ids: list[str] = Field(default_factory=list)
 
     @field_validator("topic_directions", mode="before")
     @classmethod
@@ -339,6 +349,7 @@ class GroupAIChatConfig(BaseModel):
         if not self.group_bot_admission_required:
             raise ValueError("AI 活跃群必须启用群管机器人准入")
         _validate_semantic_reviewer(self)
+        _validate_ai_content_route_config(self)
         return self
 
 
@@ -476,6 +487,10 @@ class ChannelCommentConfig(ChannelMessageScopeConfig):
     require_review: bool = False
     ai_two_stage_enabled: bool = False
     ai_semantic_reviewer_model: str = ""
+    ai_content_route_v2_enabled: bool = False
+    ai_content_policy_version_id: str = ""
+    ai_content_allowed_routes: list[str] = Field(default_factory=list)
+    ai_content_attestation_ids: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def disable_manual_review(self) -> "ChannelCommentConfig":
@@ -484,6 +499,7 @@ class ChannelCommentConfig(ChannelMessageScopeConfig):
         if self.reply_min_per_message > self.target_comments_per_message:
             raise ValueError("reply_min_per_message 不能大于 target_comments_per_message")
         _validate_semantic_reviewer(self)
+        _validate_ai_content_route_config(self)
         self.require_review = False
         return self
 
@@ -499,6 +515,36 @@ def _validate_semantic_reviewer(config: GroupAIChatConfig | ChannelCommentConfig
         raise ValueError("启用两阶段生成时必须配置独立语义评审模型")
     if _ai_model_identity(reviewer_model) == _ai_model_identity(generator_model):
         raise ValueError("语义评审模型必须与生成模型不同")
+
+
+def _validate_ai_content_route_config(
+    config: GroupAIChatConfig | ChannelCommentConfig,
+) -> None:
+    valid_routes = {
+        "general",
+        "adult_visual",
+        "adult_product",
+        "adult_service_inquiry",
+        "adult_service_sensory",
+    }
+    enabled = config.ai_content_route_v2_enabled
+    configured = bool(
+        config.ai_content_policy_version_id
+        or config.ai_content_allowed_routes
+        or config.ai_content_attestation_ids
+    )
+    if not enabled and configured:
+        raise ValueError("AI 内容路由配置只能在 v2 启用时提交")
+    if not enabled:
+        return
+    if not config.ai_two_stage_enabled:
+        raise ValueError("AI 内容路由 v2 必须启用两阶段生成")
+    if not config.ai_content_policy_version_id:
+        raise ValueError("AI 内容路由 v2 必须绑定已激活策略版本")
+    if not config.ai_content_allowed_routes:
+        raise ValueError("AI 内容路由 v2 至少配置一个允许路由")
+    if not set(config.ai_content_allowed_routes) <= valid_routes:
+        raise ValueError("AI 内容路由 v2 包含未知路由")
 
 
 def _ai_model_identity(model_name: str) -> str:
@@ -1145,6 +1191,12 @@ class TaskSettingsUpdate(TaskUpdate):
     fact_anchor_required: bool | None = None
     semantic_repeat_window: int | None = Field(default=None, ge=1, le=100)
     low_confidence_silence_enabled: bool | None = None
+    ai_two_stage_enabled: bool | None = None
+    ai_semantic_reviewer_model: str | None = None
+    ai_content_route_v2_enabled: bool | None = None
+    ai_content_policy_version_id: str | None = None
+    ai_content_allowed_routes: list[str] | None = None
+    ai_content_attestation_ids: list[str] | None = None
     rule_set_id: int | None = None
     rule_set_version_id: int | None = None
 

@@ -229,6 +229,8 @@ def _source_slot(
         task_lifecycle_epoch=int(task.task_lifecycle_epoch or 1),
         pacing_period_key=str(ledger.id),
         pacing_source_key_hash=source_hash,
+        source_capacity_plan_hash=owner.source_capacity_plan_hash,
+        source_capacity_slot_ordinal=owner.source_capacity_slot_ordinal,
     )
 
 

@@ -20,6 +20,12 @@ from app.services._common import _now
 from app.timezone import BEIJING_TZ
 
 from .ai_generator import AI_CONTENT_REQUEST_TIMEOUT_SECONDS
+from .ai_content_job_binding import (
+    bind_group_generation_contracts,
+    enrich_group_generation_slots,
+    generation_jobs_for_batch,
+)
+from .ai_provider_routes import bind_generation_job_routes
 from .payloads import SendMessagePayload
 
 
@@ -35,10 +41,18 @@ def build_runtime_config(
 ) -> dict:
     config = dict(task.type_config or {})
     _bind_fact_first_provider(session, task, config)
+    jobs = generation_jobs_for_batch(session, batch) if config.get("ai_content_route_v2_enabled") else ()
+    config = bind_group_generation_contracts(session, task, batch, config=config, jobs=jobs)
+    config = bind_generation_job_routes(
+        session,
+        jobs,
+        config,
+        scope_type="group",
+    )
     config["account_personas"] = payload_map(batch, "account_role")
     config["account_memories"] = payload_map(batch, "account_memory")
     config["account_profiles"] = payload_map(batch, "account_profile")
-    config["generation_slots"] = [
+    slots = [
         generation_slot_builder(
             action,
             payload,
@@ -47,6 +61,7 @@ def build_runtime_config(
         )
         for index, (action, payload) in enumerate(batch, 1)
     ]
+    config["generation_slots"] = enrich_group_generation_slots(config, batch, slots)
     deadline = _latest_safe_send_at(session, batch[0][0])
     if deadline:
         config["_ai_generation_latest_safe_send_at"] = deadline.isoformat()

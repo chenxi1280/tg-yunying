@@ -6,11 +6,11 @@
 |---|---|
 | Intake ID | `intake-2026-08-15-production-stability-remediation-001` |
 | 问题级别 | L3 / P0：宿主 CPU / 内存临界、Planner/Dispatcher 持续负载、OCR 常驻与请求突发、AI 活群与纯搜索履约未达目标、点赞链路半瘫、TG 登录代码缺陷、Worker 零日志 |
-| 设计状态 | `product_design_complete / resynced_2026-08-16（含 C0b planner 物化止血合同）` |
+| 设计状态 | `product_design_complete / resynced_2026-08-17（含 Planner、跨批排期与内存专项补正）` |
 | 适用范围 | 硅谷生产（47.77.184.233）宿主机、全部应用容器、planner/dispatcher/generation/OCR/登录链路 |
 | 明确排除 | API 安全层（webhook secret、/media、审计手机号等）另行立项；本产品单租户运行，多租户隔离类问题不进入本次范围 |
-| 关联文档 | [task-fulfillment-classified-recovery-prd.md](task-fulfillment-classified-recovery-prd.md)（评论/点赞来源义务与 `due_by_now`）、[ai-group-generation-failure-churn-remediation-prd.md](ai-group-generation-failure-churn-remediation-prd.md)（current AI 唯一合同）、[channel-view-planner-starvation-remediation-prd.md](channel-view-planner-starvation-remediation-prd.md)（current view 唯一合同）、[dispatcher-ocr-memory-isolation-and-graceful-recycle-prd.md](dispatcher-ocr-memory-isolation-and-graceful-recycle-prd.md)（OCR 隔离、takeover owner 与回收）、[account-login-group-navigation-recovery-prd.md](account-login-group-navigation-recovery-prd.md)（登录 flow 合同）、[ai-group-provider-fallback-and-safe-prompt-design.md](ai-group-provider-fallback-and-safe-prompt-design.md)（Provider adapter，运行时为单 active key） |
-| 证据状态 | `historical_production_readonly_verified / partially_refreshed_2026-08-16`：2026-08-15 资源、数据库、容器日志和发布代码为直接只读证据；2026-08-16 凌晨经 SSH ControlMaster 短窗完成宿主/容器/dmesg 只读复核与 C0b 止血（见 §2.2，`observed`）；OCR `/ready` 与完整资源 soak 复读仍 `blocked/production_unproven`；历史 TypeError 在当前发布后的复现仍为 `unproven` |
+| 关联文档 | [production-planner-pacing-and-memory-remediation-prd.md](production-planner-pacing-and-memory-remediation-prd.md)（2026-08-17 Planner/跨批排期/内存规范性补正；其 §4.6 覆盖本文旧 AI-only、fixed-8s、sleep 与 fail-open gate）、[task-fulfillment-classified-recovery-prd.md](task-fulfillment-classified-recovery-prd.md)（评论/点赞来源义务与 `due_by_now`）、[ai-group-generation-failure-churn-remediation-prd.md](ai-group-generation-failure-churn-remediation-prd.md)（current AI 唯一合同）、[channel-view-planner-starvation-remediation-prd.md](channel-view-planner-starvation-remediation-prd.md)（current view 唯一合同）、[dispatcher-ocr-memory-isolation-and-graceful-recycle-prd.md](dispatcher-ocr-memory-isolation-and-graceful-recycle-prd.md)（OCR 隔离、takeover owner 与回收）、[account-login-group-navigation-recovery-prd.md](account-login-group-navigation-recovery-prd.md)（登录 flow 合同）、[ai-group-provider-fallback-and-safe-prompt-design.md](ai-group-provider-fallback-and-safe-prompt-design.md)（Provider adapter，运行时为单 active key） |
+| 证据状态 | `production_readonly_refreshed_2026-08-17 / production_fixed=unproven`：22:09 当前 release `3ba2f9dd` 的 Planner PSS 约 660 MiB、宿主 MemAvailable 约 640 MiB；已观察全 scope/历史 Action ORM、超大 membership/quality-blocker stats 回写和 Planner 通过 channel scope 触发 Telethon。泄漏趋势、修复后 6/24 小时资源与任务 E4 均未证明；完整事实与修复合同见 Planner 专项。 |
 | 本次目标 | 先用精确搜索停流量与 OCR 安全排空解除整机风险，再根治 Planner/Dispatcher 查询与物化放大、OCR 4+3 变体计算和重启不可解释问题；同时恢复 AI/搜索/点赞/浏览执行链路、收口登录存量 flow、修复 Telethon 与 Worker 可观测性、补齐发布 E4 闸门；不改变 fact_first_v3 履约合同、typed remote fact 语义与唯一 active Provider 运行时约束 |
 | 2026-08-16 新增原始需求 | “线上不只是内存，CPU 也很高；确认是否同一问题、是否本服务导致；近期 OCR 调用少，能否先停或降负载；整理全部问题并形成完整修复 PRD” |
 
@@ -148,7 +148,7 @@ SSH banner 交换持续超时与发布脚本 `Connection timed out during banner
 - QA（红→绿，`backend/.venv`，`-m no_postgres`）：`test_freeze_pacing_owner_allows_monotonic_target_increase`、`test_freeze_pacing_owner_rejects_identity_regression`（hash 漂移/下调/due 单独漂移三类仍拒绝）、`test_planner_pacing_conflict_uses_typed_blocker_and_long_backoff`（含 55 分钟下界退避断言与 `planner_runtime_error` 不落断言）、`test_planner_clears_pacing_conflict_blocker_after_success`；回归 345 项 planner/AI/pacing 相关测试全绿。发布仍须走完整 `no_postgres` + PostgreSQL 两分区与 Release Gate。
 - 生效后动作（2026-08-17 00:33 已执行）：郑州师范/郑州楼凤经 `resume_task` 受控恢复（epoch 2→3，approval ref `fix-deployed-f60256a0-resume`）。**生产验证（00:33–00:38，`observed`）**：resume 后连续多轮采样 `pacing_owner_immutable_conflict=0`、`planner_task_failed=0`；恰逢跨日，08-17 新账本按新目标自洽重建——郑州楼凤 1051 个 open slot 与 `planned_daily_target=1051` 一致、郑州师范 830/830 一致（新日 `current_required_account_count_changed` revision 2 正常重算），跨日重建作为冲突自愈出口被真实证明；两 Task 恢复产出（师范 433 条、楼凤 207+ 条新 Action，持续新增）；`planner_pacing_target_conflict`/`planner_runtime_error` blocker 均已清除；宿主 load 2.5、MemAvailable 1398MiB、planner 452MiB。08-16 旧账本 slot 保持 876/877 冻结历史由次日 settlement 收口，不在本次迁移范围。P1 planner 单轮内存上限治理仍属 T2。
 
-### 2.5 2026-08-17 AI 活群发送节奏治理：群级最小间隔门禁（RC-1 节奏分项）
+### 2.5 2026-08-17 AI 活群发送节奏治理：群级最小间隔门禁（历史实现证据，当前规范见 Planner 专项）
 
 **现象（01:00–01:20 实测，`observed`）**：pacing 冲突修复后总量已恢复曲线形态（同时段 3509→365 条，降 90%），但节奏仍有机器特征：任务内相邻发送 `scheduled_at` p50 间隔仅 20–37 秒、min=0 秒；**同秒最多 11 条**发送完成（两个 Dispatcher shard × 并发 13 对已到期 Action 并行执行）；账号 pacing（20s）只约束单账号，跨账号无群级间隔，表现为“同秒多条 + 连号账号”，与 RC-6 伪人审计目标冲突。
 
@@ -164,7 +164,7 @@ SSH banner 交换持续超时与发布脚本 `Connection timed out during banner
 
 1. **15d38069 群级 claim 门禁**（§2.5 主体）：claim 复核加 `task_policy_not_before`。测试基建 `immediate_account_pacing` fixture 需同步 mock `task_policy_not_before`（同秒连续两轮 dispatch 的 workflow 测试会被 8 秒门禁推迟导致 CI 失败）。
 2. **2d3d402f 任务行锁 `lock_task_pacing`**：两个 Dispatcher 事务并行 claim 不同账号时互相看不到对方未提交的 `claiming` 状态，群级 timeline 同时"干净"双双放行（线上实测同秒仍可达 3 条）。以 `skip_locked` 任务行锁（与 `lock_account_pacing` 同构，锁忙 defer 到下轮，reason=`task_pacing_lock_busy`）串行化同任务 claim 校验。部署后同秒多发清零，但任务内 min gap 实测 1.7s——claim 间隔 8s 被 AI 生成耗时抖动（快慢差约 6s）压缩。
-3. **b18834ed 发送前 final gate `_enforce_group_send_final_gate`**：网关调用前以任务行锁重查群 timeline，把本条 `scheduled_at` 推进到最近点+群间隔并提交占位，必要时等待（上限 gap+1s）。实现约束：gate 必须使用 dispatcher 主 session、早退分支收尾隐式事务——attempt 预留 commit 后访问已 expire 的 ORM 属性会触发 refresh 隐式开事务，违反"外部调用前无打开事务"模式（phase boundary 测试以 `unknown_after_send` 拦截）；gate 失败仅告警不阻塞发送。
+3. **b18834ed 发送前 final gate `_enforce_group_send_final_gate`（历史缺陷证据，当前禁止复用）**：网关调用前以任务行锁重查群 timeline，把本条 `scheduled_at` 推进到最近点+群间隔并提交占位，必要时等待（上限 gap+1s）。实现约束：gate 必须使用 dispatcher 主 session、早退分支收尾隐式事务——attempt 预留 commit 后访问已 expire 的 ORM 属性会触发 refresh 隐式开事务，违反"外部调用前无打开事务"模式（phase boundary 测试以 `unknown_after_send` 拦截）；旧 gate 失败仅告警不阻塞发送，已由 Planner 专项的 fail-closed source admission 废止。
 
 **线上终验（b18834ed 部署后 26 分钟窗口，6 个 running 任务）**：任务内相邻发送间隔 min=14.4s（全部 ≥8s ✓）；同秒多发组 0（修复前基线：同秒最多 6 条、min gap 2ms）✓；吞吐 85 条/小时符合凌晨低谷曲线，无 DueSet 压制 ✓。
 

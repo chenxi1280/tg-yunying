@@ -413,6 +413,18 @@ export function WizardTypeConfig({
                   >
                     <Input placeholder="例如与生成模型不同的已配置模型 ID" />
                   </Form.Item>
+                  <Form.Item name="ai_content_route_v2_enabled" label="内容路由 v2" valuePropName="checked">
+                    <Checkbox>绑定已审批策略、Provider 顺序与成人主题证明</Checkbox>
+                  </Form.Item>
+                  <Form.Item name="ai_content_policy_version_id" label="内容策略版本 ID" dependencies={['ai_content_route_v2_enabled']} rules={[({ getFieldValue }: any) => ({ required: Boolean(getFieldValue('ai_content_route_v2_enabled')), message: '请填写已激活策略版本 ID' })]}>
+                    <Input />
+                  </Form.Item>
+                  <Form.Item name="ai_content_allowed_routes" label="允许内容路由" dependencies={['ai_content_route_v2_enabled']}>
+                    <Select mode="multiple" options={['general', 'adult_visual', 'adult_product', 'adult_service_inquiry', 'adult_service_sensory'].map((value) => ({ value, label: value }))} />
+                  </Form.Item>
+                  <Form.Item name="ai_content_attestation_ids" label="成人主题证明 ID">
+                    <Select mode="tags" tokenSeparators={[',', '，']} placeholder="仅成人路由需要" />
+                  </Form.Item>
                 </div>
               ),
             },
@@ -577,6 +589,7 @@ export function WizardOperationProfile({ form, values, taskType }: { form: any; 
   const currentRounds = curve[currentHour] ?? 0;
   const messagesPerRound = Number(values.messages_per_round || 0);
   const hourlyLimit = Number(values.max_actions_per_hour || 0);
+  const supportsSourceCapacity = ['group_ai_chat', 'channel_comment', 'channel_like', 'channel_view'].includes(taskType);
   return (
     <Space direction="vertical" style={{ width: '100%' }}>
       <Alert
@@ -648,6 +661,14 @@ export function WizardOperationProfile({ form, values, taskType }: { form: any; 
           },
         ]}
       />
+      {supportsSourceCapacity && <div className="form-grid">
+        <Form.Item name="source_capacity_v2_enabled" label="来源容量 v2" valuePropName="checked">
+          <Checkbox>启用跨任务来源容量错峰</Checkbox>
+        </Form.Item>
+        <Form.Item name="source_capacity_policy_version_id" label="容量策略版本 ID" dependencies={['source_capacity_v2_enabled']} rules={[({ getFieldValue }: any) => ({ required: Boolean(getFieldValue('source_capacity_v2_enabled')), message: '请填写已激活容量策略版本 ID' })]}>
+          <Input />
+        </Form.Item>
+      </div>}
     </Space>
   );
 }

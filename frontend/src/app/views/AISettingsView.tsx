@@ -183,9 +183,11 @@ export default function AISettingsView({
             </Empty>
           )}
           {aiProviders.map((provider) => (
-            <Card className={`developer-card ${statusAccent(provider.is_active ? provider.health_status : '禁用')}`} key={provider.id} size="small" title={provider.provider_name}>
+            <Card className={`developer-card ${statusAccent(provider.credential_enabled ? provider.health_status : '禁用')}`} key={provider.id} size="small" title={provider.provider_name}>
               <Space wrap>
-                <StatusBadge status={provider.is_active ? provider.health_status : '禁用'} />
+                <StatusBadge status={provider.credential_enabled ? provider.health_status : '禁用'} />
+                <Badge tone={provider.credential_enabled ? 'positive' : 'muted'}>{provider.credential_enabled ? '凭证可用' : '凭证禁用'}</Badge>
+                {provider.is_active && <Badge tone="info">默认模型</Badge>}
                 <Badge tone="neutral">{provider.provider_type}</Badge>
               </Space>
               <Typography.Paragraph>{provider.model_name}</Typography.Paragraph>
@@ -194,7 +196,7 @@ export default function AISettingsView({
               <Space wrap>
                 {canManageAi && <Button size="small" onClick={() => onEditProvider(provider)}>编辑</Button>}
                 {canManageAi && <Button size="small" loading={isActionPending(`ai-provider:${provider.id}:check`)} onClick={() => onCheckProvider(provider)}>检查</Button>}
-                {canManageAi && <Button size="small" danger={provider.is_active} loading={isActionPending(`ai-provider:${provider.id}:toggle`)} onClick={() => onToggleProvider(provider)}>{provider.is_active ? '禁用' : '启用'}</Button>}
+                {canManageAi && !provider.is_active && <Button size="small" loading={isActionPending(`ai-provider:${provider.id}:toggle`)} onClick={() => onToggleProvider(provider)}>设为默认</Button>}
               </Space>
             </Card>
           ))}

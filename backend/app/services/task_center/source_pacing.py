@@ -27,6 +27,8 @@ class SourcePacingSlot:
     pacing_source_key_hash: str = ""
     historical_cursor_at: datetime | None = None
     historical_max_ordinal: int | None = None
+    source_capacity_plan_hash: str | None = None
+    source_capacity_slot_ordinal: int | None = None
 
     @property
     def owner_identity(self) -> tuple[int, str, str]:

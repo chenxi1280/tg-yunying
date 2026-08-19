@@ -9,6 +9,7 @@ export type AiProvider = {
   output_price_per_1k: number;
   currency: string;
   is_billable: boolean;
+  credential_enabled: boolean;
   is_active: boolean;
   health_status: string;
   last_check_at: string | null;

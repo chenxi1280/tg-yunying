@@ -133,11 +133,13 @@ from ..pacing_persistence import freeze_action_pacing, freeze_pacing_owner
 from ..payloads import SendMessagePayload, create_send_action
 from ..schedule_reservation import reserve_task_schedule_times
 from ..source_pacing import (
+    SourcePacingSlot,
     latest_wall_datetime,
     schedule_source_pacing_points,
     source_pacing_plan_hash,
     wall_datetime,
 )
+from ..source_capacity_plans import apply_source_capacity_plan
 from ..targets import group_from_reference
 from .common import stats_inc
 
@@ -1469,6 +1471,14 @@ def _current_ai_pacing_schedule(
         now_at=wall_datetime(_now()),
         timezone_name=task.timezone,
     )
+    points_by_slot, capacity_slots = apply_source_capacity_plan(
+        session,
+        task,
+        [item.source_slot for item in assignments],
+        points=points_by_slot,
+        pacing_domain="ai_send",
+    )
+    capacity_by_key = {slot.slot_key: slot for slot in capacity_slots}
     enriched: list[dict] = []
     due_times: list[datetime] = []
     for assignment in assignments:
@@ -1480,6 +1490,7 @@ def _current_ai_pacing_schedule(
             assignment,
             point.due_at,
             point.release_not_before_at,
+            capacity_slot=capacity_by_key.get(assignment.source_slot.slot_key),
         )
         enriched.append({
             **quality_items[assignment.item_index],
@@ -1496,6 +1507,8 @@ def _freeze_ai_pacing_assignment(
     assignment: AiPacingAssignment,
     due_at: datetime,
     release_not_before_at: datetime,
+    *,
+    capacity_slot: SourcePacingSlot | None = None,
 ) -> None:
     source = assignment.source_slot
     freeze_pacing_owner(
@@ -1511,6 +1524,9 @@ def _freeze_ai_pacing_assignment(
         release_not_before_at=release_not_before_at,
         source_identity=source.owner_identity,
     )
+    if capacity_slot and capacity_slot.source_capacity_plan_hash:
+        assignment.owner.source_capacity_plan_hash = capacity_slot.source_capacity_plan_hash
+        assignment.owner.source_capacity_slot_ordinal = capacity_slot.source_capacity_slot_ordinal
 
 
 def _immutable_generation_slots(

@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable
-from dataclasses import dataclass
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -11,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.ai_gateway import canonical_ai_model_identity
 from app.models import AiAccountVoiceProfile
 
+from .ai_provider_routes import route_v2_enabled
 from .ai_generator import (
     TWO_STAGE_BRIEF_PURPOSE,
     TWO_STAGE_REALIZE_PURPOSE,
@@ -18,17 +18,15 @@ from .ai_generator import (
     generate_structured_payloads,
 )
 from .message_brief import (
-    BRIEF_PLANNER_SYSTEM_PROMPT,
     VOICE_REALIZER_SYSTEM_PROMPT,
     MessageBrief,
-    batch_style_collapse_reason,
-    build_brief_planner_user_prompt,
     build_realizer_user_prompt,
     fact_id_map,
-    parse_brief_item,
     parse_realizer_response,
     voice_contract_v3,
 )
+from .message_brief_v2 import MessageBriefV2, v2_realizer_system_prompt
+from .two_stage_planning import TwoStagePlan, plan_message_briefs_with
 from .semantic_grounding import lexical_grounding_evidence
 
 
@@ -60,16 +58,6 @@ class TwoStageRealizeError(RuntimeError):
         self.tokens = max(0, int(tokens or 0))
 
 
-@dataclass(frozen=True)
-class TwoStagePlan:
-    slot_id: str
-    account_id: int = 0
-    brief: MessageBrief | None = None
-    rejection_code: str = ""
-    rejection_detail: str = ""
-    reply_preview: str = ""
-
-
 def _default_planner(session, tenant_id, config, *, system_prompt, user_prompt, count):
     return generate_structured_payloads(
         session,
@@ -95,6 +83,16 @@ def _default_realizer(session, tenant_id, config, *, system_prompt, user_prompt,
 
 
 def _default_reviewer(session, tenant_id, config, *, system_prompt, user_prompt, count=1):
+    if route_v2_enabled(config):
+        return generate_structured_payloads(
+            session,
+            tenant_id,
+            config,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            purpose=TWO_STAGE_REVIEW_PURPOSE,
+            count=1,
+        )
     reviewer_model = _validate_default_reviewer_config(config)
     reviewer_config = {**config, "ai_model": reviewer_model}
     return generate_structured_payloads(
@@ -124,18 +122,6 @@ def _model_identity(model_name: str) -> str:
     return canonical_ai_model_identity(model_name)
 
 
-def _brief_items(payload: object) -> list[object]:
-    if isinstance(payload, dict):
-        for key in ("briefs", "items", "data", "results"):
-            value = payload.get(key)
-            if isinstance(value, list):
-                return value
-        return [payload]
-    if isinstance(payload, list):
-        return payload
-    return []
-
-
 def plan_message_briefs(
     session: Session,
     tenant_id: int,
@@ -145,113 +131,15 @@ def plan_message_briefs(
     slots: list[dict],
     planner: BriefPlanner | None = None,
 ) -> tuple[list[TwoStagePlan], int]:
-    """为每个 slot 冻结 brief；批次塌缩时只重规划一次。"""
-    planner = planner or _default_planner
     facts = fact_id_map(history_lines)
-    fact_entries = [{"fact_id": fact_id, "text": text} for fact_id, text in facts.items()]
-    slot_infos = _brief_slot_infos(slots)
-    total_tokens = 0
-    recent: list[dict] = []
-    plans: list[TwoStagePlan] = []
-    feedback = ""
-    for attempt in range(2):
-        user_prompt = build_brief_planner_user_prompt(
-            slot_infos=slot_infos,
-            allowed_facts=fact_entries,
-            recent_briefs=recent,
-        )
-        # planner 回调约定：可注入 (session, tenant_id, config, *, system_prompt, user_prompt, count)
-        payload, tokens = planner(
-            session,
-            tenant_id,
-            config,
-            system_prompt=BRIEF_PLANNER_SYSTEM_PROMPT,
-            user_prompt=user_prompt,
-            count=len(slot_infos),
-        )
-        total_tokens += int(tokens or 0)
-        plans = _parse_plans(payload, slot_infos=slot_infos, fact_ids=tuple(facts.keys()))
-        briefs = [plan.brief for plan in plans if plan.brief is not None]
-        feedback = batch_style_collapse_reason(briefs)
-        if not feedback:
-            return plans, total_tokens
-        recent = [
-            {
-                "slot_id": brief.slot_id,
-                "speech_act": brief.speech_act,
-                "length_band": brief.length_band,
-                "punctuation_profile": brief.punctuation_profile,
-            }
-            for brief in briefs
-        ]
-    # 重规划后仍塌缩：塌缩组合里的 slot 全部 typed 拒绝，不再静默照发。
-    return _mark_collapsed(plans), total_tokens
-
-
-def _brief_slot_infos(slots: list[dict]) -> list[dict]:
-    return [
-        {
-            "slot_id": str(slot.get("slot_id") or ""),
-            "account_id": int(slot.get("account_id") or 0),
-            "reply_to_message_id": str(slot.get("reply_to_message_id") or ""),
-            "reply_preview": str(slot.get("reply_preview") or "")[:120],
-        }
-        for slot in slots
-    ]
-
-
-def _parse_plans(
-    payload: object,
-    *,
-    slot_infos: list[dict],
-    fact_ids: tuple[str, ...],
-) -> list[TwoStagePlan]:
-    items = _brief_items(payload)
-    plans: list[TwoStagePlan] = []
-    for index, info in enumerate(slot_infos):
-        item = items[index] if index < len(items) else None
-        brief = parse_brief_item(item, slot_id=str(info["slot_id"]), valid_fact_ids=fact_ids)
-        if brief is None:
-            plans.append(TwoStagePlan(
-                slot_id=str(info["slot_id"]),
-                account_id=int(info["account_id"]),
-                rejection_code="brief_schema_invalid",
-                rejection_detail="brief 枚举值或锚点引用非法",
-                reply_preview=str(info.get("reply_preview") or ""),
-            ))
-            continue
-        if brief.reply_to_message_id != str(info.get("reply_to_message_id") or ""):
-            plans.append(TwoStagePlan(
-                slot_id=str(info["slot_id"]),
-                account_id=int(info["account_id"]),
-                rejection_code="brief_reply_target_mismatch",
-                rejection_detail="brief reply_to_message_id 与 slot 不一致",
-                reply_preview=str(info.get("reply_preview") or ""),
-            ))
-            continue
-        plans.append(TwoStagePlan(
-            slot_id=str(info["slot_id"]),
-            account_id=int(info["account_id"]),
-            brief=brief,
-            reply_preview=str(info.get("reply_preview") or ""),
-        ))
-    return plans
-
-
-def _mark_collapsed(plans: list[TwoStagePlan]) -> list[TwoStagePlan]:
-    marked: list[TwoStagePlan] = []
-    for plan in plans:
-        if plan.brief is not None:
-            marked.append(TwoStagePlan(
-                slot_id=plan.slot_id,
-                account_id=plan.account_id,
-                rejection_code="batch_style_collapse",
-                rejection_detail="重规划后同批 speech_act/长度/标点仍全部相同",
-                reply_preview=plan.reply_preview,
-            ))
-        else:
-            marked.append(plan)
-    return marked
+    return plan_message_briefs_with(
+        session,
+        tenant_id,
+        config,
+        history_facts=facts,
+        slots=slots,
+        planner=planner or _default_planner,
+    )
 
 
 def load_voice_profile(session: Session, tenant_id: int, account_id: int) -> dict:
@@ -284,7 +172,7 @@ def realize_message_content(
 ) -> tuple[str, dict, int]:
     if plan.brief is None:
         raise TwoStageRealizeError("brief_missing")
-    if reviewer is None:
+    if reviewer is None and not route_v2_enabled(config):
         _validate_default_reviewer_config(config)
     content, meta, tokens, voice, facts = _realize_draft(
         session, tenant_id, config, plan=plan, history_lines=history_lines,
@@ -319,6 +207,12 @@ def _validate_lexical_grounding(
         anchor_texts=facts,
         reply_preview=plan.reply_preview,
     )
+    if evidence.get("failure_code"):
+        raise TwoStageRealizeError(
+            str(evidence["failure_code"]),
+            evidence={"lexical_grounding": evidence},
+            tokens=int(tokens or 0),
+        )
     if evidence.get("unsupported_claim_marker"):
         raise TwoStageRealizeError(
             "unsupported_claim",
@@ -372,9 +266,15 @@ def _realize_draft(
         reply_preview=plan.reply_preview,
         rejection_feedback=rejection_feedback,
     )
+    realizer_config = _realizer_config(config, plan.brief)
+    system_prompt = (
+        v2_realizer_system_prompt(plan.brief)
+        if isinstance(plan.brief, MessageBriefV2)
+        else VOICE_REALIZER_SYSTEM_PROMPT
+    )
     payload, tokens = realizer(
-        session, tenant_id, config,
-        system_prompt=VOICE_REALIZER_SYSTEM_PROMPT, user_prompt=user_prompt,
+        session, tenant_id, realizer_config,
+        system_prompt=system_prompt, user_prompt=user_prompt,
     )
     item = payload[0] if isinstance(payload, list) and payload else payload
     try:
@@ -382,6 +282,13 @@ def _realize_draft(
     except ValueError as exc:
         raise TwoStageRealizeError(str(exc)) from exc
     return content, meta, int(tokens or 0), voice, facts
+
+
+def _realizer_config(config: dict, brief: MessageBrief) -> dict:
+    content_mode = str(getattr(brief, "content_mode", "") or "general")
+    return {**config, "_ai_content_mode": content_mode}
+
+
 
 
 def _run_semantic_review(

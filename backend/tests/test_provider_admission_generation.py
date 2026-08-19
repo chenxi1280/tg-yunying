@@ -35,19 +35,19 @@ pytestmark = pytest.mark.no_postgres
 
 
 def _provider_draft_request(ai_generator):  # noqa: ANN001
-    return ai_generator._ProviderDraftRequest(
+    return ai_generator.ProviderDraftRequest(
         "prompt", 1, "t", "t", ("p",), 0.8, 128, None, 30,
     )
 
 
 def _provider_candidate_policy(ai_generator):  # noqa: ANN001
-    return ai_generator._ProviderCandidatePolicy(
+    return ai_generator.ProviderCandidatePolicy(
         "", "", False, GROUP_CHAT_PURPOSE, False,
     )
 
 
 def test_generate_candidates_on_429_extends_cooldown_and_defers(monkeypatch):
-    from app.services.task_center import ai_generator
+    from app.services.task_center import ai_provider_candidate_runtime as ai_generator
 
     fake = FakeAdmissionRedis()
     _enable_admission(monkeypatch, fake)
@@ -68,7 +68,7 @@ def test_generate_candidates_on_429_extends_cooldown_and_defers(monkeypatch):
         calls["count"] += 1
         raise AiProviderRateLimited(429, "rate limited by provider", 5)
 
-    monkeypatch.setattr(ai_generator, "ai_provider_credentials", lambda _p: SimpleNamespace())
+    monkeypatch.setattr(ai_generator, "ai_provider_credentials", lambda _p, **_kwargs: SimpleNamespace())
     monkeypatch.setattr(ai_generator.ai_gateway, "generate_drafts", _rate_limited)
     monkeypatch.setattr(ai_generator, "extend_provider_cooldown", _extend)
     monkeypatch.setattr(ai_generator, "release_provider_probe", _release)
@@ -79,7 +79,7 @@ def test_generate_candidates_on_429_extends_cooldown_and_defers(monkeypatch):
         session.commit()
 
         with pytest.raises(ProviderAdmissionBlocked) as exc_info:
-            ai_generator._generate_with_provider_candidates(
+            ai_generator.generate_with_provider_candidates(
                 session,
                 provider,
                 _provider_draft_request(ai_generator),
@@ -99,12 +99,12 @@ def test_generate_candidates_on_429_extends_cooldown_and_defers(monkeypatch):
 
 
 def test_generate_candidates_success_settles_open_marker(monkeypatch):
-    from app.services.task_center import ai_generator
+    from app.services.task_center import ai_provider_candidate_runtime as ai_generator
 
     fake = FakeAdmissionRedis()
     _enable_admission(monkeypatch, fake)
     provider = _provider()
-    monkeypatch.setattr(ai_generator, "ai_provider_credentials", lambda _p: SimpleNamespace())
+    monkeypatch.setattr(ai_generator, "ai_provider_credentials", lambda _p, **_kwargs: SimpleNamespace())
     monkeypatch.setattr(
         ai_generator.ai_gateway,
         "generate_drafts",
@@ -119,7 +119,7 @@ def test_generate_candidates_success_settles_open_marker(monkeypatch):
         session.add(provider)
         session.commit()
 
-        result = ai_generator._generate_with_provider_candidates(
+        result = ai_generator.generate_with_provider_candidates(
             session,
             provider,
             _provider_draft_request(ai_generator),

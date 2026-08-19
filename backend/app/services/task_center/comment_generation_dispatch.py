@@ -9,12 +9,15 @@ from app.models import (
     Action,
     ChannelMessage,
     ChannelMessageComment,
+    GenerationJob,
     Task,
 )
 from app.services._common import _now
 
-from .ai_generator import AiGenerationUnavailable
+from .ai_generator import AiGenerationUnavailable, ProviderRouteDeferred
 from .ai_generation_state import GenerationAttemptStale
+from .ai_content_job_binding import bind_comment_generation_contract
+from .ai_provider_routes import bind_generation_job_routes
 from .channel_payloads import PostCommentPayload
 from .comment_generation_job import (
     CommentGenerationJobConflict,
@@ -29,6 +32,7 @@ from .comment_generation_pipeline import (
 )
 from .comment_generation_persistence import (
     fail_generation_context as _fail_generation_context,
+    defer_generation_provider as _defer_generation_provider,
     load_attempt_action as _load_attempt_action,
     mark_provider_call_started as _mark_provider_call_started,
     persist_comment_generation_result,
@@ -87,6 +91,14 @@ def _generate_comment(
         )
     except GenerationAttemptStale:
         session.rollback()
+        raise
+    except ProviderRouteDeferred as exc:
+        session.rollback()
+        _defer_generation_provider(
+            session,
+            request,
+            retry_after_seconds=exc.retry_after_seconds,
+        )
         raise
     except CommentGenerationBlocked as exc:
         session.rollback()
@@ -153,7 +165,7 @@ def prepare_comment_generation_request(
         task_id=action.task_id,
         account_id=int(action.account_id or 0),
         payload=PostCommentPayload.model_validate(data),
-        config=_generation_config(task, payload),
+        config=_generation_config(session, task, action, payload, job=job),
         attempt_id=attempt_id,
         request_id=request_id,
         claim_owner=str(data.get("ai_generation_claim_owner") or ""),
@@ -170,7 +182,14 @@ def prepare_comment_generation_request(
     return request
 
 
-def _generation_config(task: Task, payload: PostCommentPayload) -> dict:
+def _generation_config(
+    session: Session,
+    task: Task,
+    action: Action,
+    payload: PostCommentPayload,
+    *,
+    job: GenerationJob,
+) -> dict:
     config = dict(task.type_config or {})
     config.pop("target_comment_profile", None)
     summary = str(payload.profile_hit_summary or "").strip()
@@ -179,7 +198,20 @@ def _generation_config(task: Task, payload: PostCommentPayload) -> dict:
     if payload.account_mask_summary:
         config["account_mask_summary"] = payload.account_mask_summary
     config["_close_db_transaction_before_ai"] = True
-    return config
+    config = bind_comment_generation_contract(
+        session,
+        task,
+        action=action,
+        payload=payload,
+        config=config,
+        job=job,
+    )
+    return bind_generation_job_routes(
+        session,
+        (job,),
+        config,
+        scope_type="comment",
+    )
 
 
 def _validate_generation_claim(action: Action, payload: PostCommentPayload) -> None:

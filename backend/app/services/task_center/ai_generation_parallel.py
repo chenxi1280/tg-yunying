@@ -14,10 +14,12 @@ from sqlalchemy.orm import Session
 from app.models import Action, GenerationJob, Task
 from app.services._common import _now
 
+from .ai_generation_claim_lifecycle import owns_generation_claim
 from .ai_generation_timing import GENERATION_LEASE, GENERATION_LOOKAHEAD
 from .datetime_compat import is_after_or_equal
 from .fulfillment_activation import CURRENT_CONTRACT_VERSION
 from .fulfillment_remote_facts import ensure_action_obligation
+from .generation_wait import GenerationWaitSpec, defer_generation_wait, latest_safe_send_at
 from .ai_quality_stats import record_provider_admission_unavailable
 from .provider_admission import (
     ProviderAdmissionBlocked,
@@ -84,12 +86,16 @@ def finish_generation_job(
     claim: ParallelGenerationClaim,
     *,
     state: str,
+    generation_stage: str | None = None,
 ) -> None:
     with session_factory() as session:
         job = session.get(GenerationJob, claim.job_id)
         if job is None or job.generation_owner_id != claim.owner:
             raise RuntimeError("parallel_generation_job_claim_lost")
         job.state = state
+        if generation_stage is not None:
+            job.generation_stage = generation_stage
+        job.next_retry_at = None
         action = session.get(Action, claim.action_id)
         if action is not None:
             job.candidate_hash = str(action.candidate_hash or "")
@@ -99,6 +105,39 @@ def finish_generation_job(
         job.generation_owner_id = ""
         job.lease_expires_at = None
         job.job_version = int(job.job_version or 1) + 1
+        session.commit()
+
+
+def defer_parallel_generation(
+    session_factory,
+    claim: ParallelGenerationClaim,
+    *,
+    next_retry_at: datetime,
+) -> None:
+    with session_factory() as session:
+        job = session.get(GenerationJob, claim.job_id)
+        action = session.get(Action, claim.action_id)
+        if job is None or job.generation_owner_id != claim.owner:
+            raise RuntimeError("parallel_generation_job_claim_lost")
+        if not owns_generation_claim(action, claim.owner, claim.token):
+            raise RuntimeError("parallel_generation_action_claim_lost")
+        task = session.get(Task, action.task_id)
+        if task is None:
+            raise RuntimeError("parallel_generation_task_missing")
+        defer_generation_wait(
+            session,
+            task,
+            action,
+            job,
+            GenerationWaitSpec(
+                stage="waiting_provider",
+                error_code="provider_route_deferred",
+                error_detail="provider route temporarily unavailable",
+                shortfall_kind="provider_capacity",
+                evaluator_evidence={},
+                next_retry_at=next_retry_at,
+            ),
+        )
         session.commit()
 
 
@@ -175,6 +214,7 @@ def _generation_job(session: Session, action: Action) -> GenerationJob:
             or action.release_not_before_at
             or action.scheduled_at
         ),
+        "latest_safe_send_at": latest_safe_send_at(session, action),
         "context_snapshot_hash": _context_hash(action),
         "assignment_revision": int(action.assignment_revision or 1),
         "intent_revision": int(action.intent_revision or 1),
@@ -262,7 +302,13 @@ def _claim_action(
 
 def _job_available(job: GenerationJob, now_value: datetime) -> bool:
     return bool(
-        job.state == "pending"
+        (
+            job.state == "pending"
+            and (
+                job.next_retry_at is None
+                or is_after_or_equal(now_value, job.next_retry_at)
+            )
+        )
         or (
             job.state == "generating"
             and job.lease_expires_at is not None
@@ -295,5 +341,6 @@ def _context_hash(action: Action) -> str:
 __all__ = [
     "ParallelGenerationClaim",
     "claim_parallel_generation",
+    "defer_parallel_generation",
     "finish_generation_job",
 ]

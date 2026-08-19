@@ -69,6 +69,8 @@ from .account_pacing_guard import AccountPacingLockUnavailable
 from .account_scope import initialize_all_account_task_scope, process_account_eligibility_events, reconcile_all_account_scopes_if_due
 from .ai_act_types import canonical_ai_group_act_type
 from .ai_generator import AiGenerationUnavailable, generate_channel_comments, generate_group_messages
+from .task_ai_content_activation import activate_task_ai_content_config
+from .source_capacity_activation import validate_source_capacity_config
 from .channel_membership import (
     ACTION_TYPE as TARGET_MEMBERSHIP_ACTION_TYPE,
     LEGACY_ACTION_TYPE as LEGACY_MEMBERSHIP_ACTION_TYPE,
@@ -413,6 +415,12 @@ def _new_task(session: Session, tenant_id: int, task_type: str, payload) -> Task
         task_type,
         pacing_config_payload(payload.pacing_config),
     )
+    validate_source_capacity_config(
+        session,
+        tenant_id,
+        task_type,
+        pacing_config,
+    )
     if task_type == LEGACY_SEARCH_CLICK_TASK and type_config.get("strict_daily_target"):
         pacing_config["skip_probability_per_action"] = DAILY_TARGET_ACTION_SKIP_PROBABILITY
     if task_type == LEGACY_SEARCH_CLICK_TASK:
@@ -461,6 +469,7 @@ def _new_task(session: Session, tenant_id: int, task_type: str, payload) -> Task
     )
     session.add(task)
     session.flush()
+    activate_task_ai_content_config(session, task)
     initialize_all_account_task_scope(session, task)
     return task
 
@@ -911,6 +920,12 @@ def update_task(session: Session, tenant_id: int, task_id: str, payload: TaskUpd
     for field in ["account_config", "pacing_config", "failure_policy"]:
         if field in data and data[field] is not None:
             setattr(task, field, _pacing_payload_for_task(task, raw_data[field]) if field == "pacing_config" else data[field])
+    validate_source_capacity_config(
+        session,
+        tenant_id,
+        task.type,
+        dict(task.pacing_config or {}),
+    )
     if task.type == "group_ai_chat" and "account_config" in data:
         task.type_config = apply_group_ai_account_coverage_defaults(task.type, task.type_config or {}, task.account_config or {})
         initialize_all_account_task_scope(session, task)
@@ -921,6 +936,7 @@ def update_task(session: Session, tenant_id: int, task_id: str, payload: TaskUpd
         previous_config=previous_config,
         previous_timezone=previous_timezone,
     )
+    activate_task_ai_content_config(session, task)
     task.updated_at = _now()
     audit(session, tenant_id=tenant_id, actor=actor, action="更新任务中心任务", target_type="task", target_id=task.id)
     session.commit()
@@ -958,6 +974,12 @@ def update_task_settings(session: Session, tenant_id: int, task_id: str, payload
     for field in ["account_config", "pacing_config", "failure_policy"]:
         if field in data and data[field] is not None:
             setattr(task, field, _pacing_payload_for_task(task, raw_data[field]) if field == "pacing_config" else data[field])
+    validate_source_capacity_config(
+        session,
+        tenant_id,
+        task.type,
+        dict(task.pacing_config or {}),
+    )
     if task.type == "group_ai_chat" and {"account_config", "pacing_config"} & set(data) and not type_updates:
         next_config = dict(task.type_config or {})
         for field in GROUP_AI_LEGACY_RUNTIME_FIELDS:
@@ -979,6 +1001,7 @@ def update_task_settings(session: Session, tenant_id: int, task_id: str, payload
         previous_config=previous_config,
         previous_timezone=previous_timezone,
     )
+    activate_task_ai_content_config(session, task)
     initialize_all_account_task_scope(session, task)
     _clear_unfinished_plan(session, task)
     if task.status not in {"completed", "failed"}:
@@ -5436,6 +5459,7 @@ def _apply_type_config_data(
         previous_config=previous_config,
         previous_timezone=previous_timezone,
     )
+    activate_task_ai_content_config(session, task)
     _clear_unfinished_plan(session, task)
     if task.status not in {"completed", "failed"}:
         now = _now()

@@ -133,6 +133,18 @@ function ChannelCommentAdvancedFields() {
       >
         <Input placeholder="例如与生成模型不同的已配置模型 ID" />
       </Form.Item>
+      <Form.Item name="ai_content_route_v2_enabled" label="内容路由 v2" valuePropName="checked">
+        <Checkbox>绑定已审批策略、Provider 顺序与成人主题证明</Checkbox>
+      </Form.Item>
+      <Form.Item name="ai_content_policy_version_id" label="内容策略版本 ID" dependencies={['ai_content_route_v2_enabled']} rules={[({ getFieldValue }: any) => ({ required: Boolean(getFieldValue('ai_content_route_v2_enabled')), message: '请填写已激活策略版本 ID' })]}>
+        <Input />
+      </Form.Item>
+      <Form.Item name="ai_content_allowed_routes" label="允许内容路由" dependencies={['ai_content_route_v2_enabled']}>
+        <Select mode="multiple" options={['general', 'adult_visual', 'adult_product', 'adult_service_inquiry', 'adult_service_sensory'].map((value) => ({ value, label: value }))} />
+      </Form.Item>
+      <Form.Item name="ai_content_attestation_ids" label="成人主题证明 ID">
+        <Select mode="tags" tokenSeparators={[',', '，']} placeholder="仅成人路由需要" />
+      </Form.Item>
     </div>
   );
 }

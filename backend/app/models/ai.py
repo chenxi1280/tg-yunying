@@ -33,6 +33,7 @@ class AiProvider(Base):
     output_price_per_1k: Mapped[float] = mapped_column(Float, default=0.0)
     currency: Mapped[str] = mapped_column(String(16), default="CNY")
     is_billable: Mapped[bool] = mapped_column(Boolean, default=True)
+    credential_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     health_status: Mapped[str] = mapped_column(String(30), default=AiProviderHealthStatus.HEALTHY.value)
     last_check_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

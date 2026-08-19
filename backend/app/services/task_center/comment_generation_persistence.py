@@ -1,22 +1,27 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import timedelta
 
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session, attributes
 
-from app.models import Action
+from app.models import Action, GenerationJob, Task
 from app.services._common import _now
 
 from .ai_generation_state import GenerationAttemptStale, mark_attempt_outcome
 from .ai_generator import AiGenerationUnavailable
-from .comment_generation_job import finish_comment_generation_job
+from .comment_generation_job import (
+    finish_comment_generation_job,
+)
 from .comment_generation_pipeline import CommentGenerationRequest, GeneratedCommentResult
 from .comment_generation_result import (
     evaluate_legacy_generated_comment,
     generated_comment_decision,
 )
 from .runtime_resources import _release_runtime_resources
+from .generation_wait import GenerationWaitSpec, defer_generation_wait
+from .two_stage_generation import QUALITY_WAIT
 
 
 def fail_generation_context(
@@ -52,6 +57,45 @@ def mark_provider_call_started(
     session.commit()
 
 
+def defer_generation_provider(
+    session: Session,
+    request: CommentGenerationRequest,
+    *,
+    retry_after_seconds: int,
+) -> None:
+    action = load_attempt_action(session, request)
+    next_retry_at = _now() + timedelta(seconds=max(1, retry_after_seconds))
+    task = session.get(Task, action.task_id)
+    job = session.get(GenerationJob, request.payload.generation_job_id)
+    if task is None or job is None:
+        raise RuntimeError("provider_wait_generation_contract_missing")
+    defer_generation_wait(
+        session,
+        task,
+        action,
+        job,
+        GenerationWaitSpec(
+            stage="waiting_provider",
+            error_code="provider_route_deferred",
+            error_detail="provider route temporarily unavailable",
+            shortfall_kind="provider_capacity",
+            evaluator_evidence={},
+            next_retry_at=next_retry_at,
+        ),
+    )
+    data = dict(action.payload or {})
+    mark_attempt_outcome(
+        data,
+        request.attempt_id,
+        str(action.result.get("generation_outcome") or "waiting_provider"),
+        timestamp=_now(),
+    )
+    action.payload = data
+    _cas_write_action(session, request, action)
+    session.commit()
+    _release_runtime_resources(action)
+
+
 def persist_comment_generation_result(
     session: Session,
     request: CommentGenerationRequest,
@@ -73,6 +117,16 @@ def persist_comment_generation_result(
     )
     decision = generated_comment_decision(result)
     if not decision.allowed:
+        if decision.code == QUALITY_WAIT:
+            _defer_comment_quality_wait(
+                session,
+                request,
+                action,
+                detail=decision.detail,
+                evidence=decision.audit or {},
+            )
+            _cas_write_action(session, request, action)
+            return
         finish_comment_generation_job(
             session, action, request.payload, state="failed", owner=request.claim_owner,
         )
@@ -143,6 +197,18 @@ def persist_generation_failure(
     data = dict(action.payload or {})
     data["ai_generation_tokens"] = max(0, int(tokens or 0))
     action.payload = data
+    if code == QUALITY_WAIT:
+        _defer_comment_quality_wait(
+            session,
+            request,
+            action,
+            detail=detail,
+            evidence=evidence,
+        )
+        _cas_write_action(session, request, action)
+        session.commit()
+        _release_runtime_resources(action)
+        return
     finish_comment_generation_job(
         session, action, request.payload, state="failed", owner=request.claim_owner,
     )
@@ -150,6 +216,34 @@ def persist_generation_failure(
     _cas_write_action(session, request, action)
     session.commit()
     _release_runtime_resources(action)
+
+
+def _defer_comment_quality_wait(
+    session: Session,
+    request: CommentGenerationRequest,
+    action: Action,
+    *,
+    detail: str,
+    evidence: dict,
+) -> None:
+    task = session.get(Task, action.task_id)
+    job = session.get(GenerationJob, request.payload.generation_job_id)
+    if task is None or job is None:
+        raise RuntimeError("quality_wait_generation_contract_missing")
+    action.candidate_hash = str(evidence.get("candidate_hash") or "")
+    defer_generation_wait(
+        session,
+        task,
+        action,
+        job,
+        GenerationWaitSpec(
+            stage=QUALITY_WAIT,
+            error_code=QUALITY_WAIT,
+            error_detail=detail,
+            shortfall_kind="quality",
+            evaluator_evidence=evidence,
+        ),
+    )
 
 
 def persist_generation_unknown(
@@ -276,6 +370,7 @@ def _action_values(action: Action) -> dict:
         "payload": action.payload,
         "result": action.result,
         "status": action.status,
+        "scheduled_at": action.scheduled_at,
         "executed_at": action.executed_at,
         "claim_owner": action.claim_owner,
         "claim_token": action.claim_token,
@@ -287,6 +382,7 @@ def _action_values(action: Action) -> dict:
 
 __all__ = [
     "fail_generation_context",
+    "defer_generation_provider",
     "load_attempt_action",
     "mark_provider_call_started",
     "persist_comment_generation_result",

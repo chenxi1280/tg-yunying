@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from sqlalchemy import select
 
 from app.models import Action
@@ -67,24 +69,50 @@ def release_unprepared_batch(
         session.commit()
 
 
-def persisted_generation_failure(session_factory, action_id: str) -> bool:
+def defer_unprepared_batch(
+    session_factory,
+    owner: str,
+    token: str,
+    *,
+    next_retry_at: datetime,
+) -> None:
+    with session_factory() as session:
+        actions = list(session.scalars(select(Action).where(
+            Action.status == "executing",
+            Action.claim_owner == owner,
+            Action.claim_token == token,
+        )))
+        for action in actions:
+            payload = dict(action.payload or {})
+            release_generation_claim(action, payload)
+            action.scheduled_at = next_retry_at
+            action.result = {
+                **dict(action.result or {}),
+                "success": False,
+                "error_code": "provider_route_deferred",
+                "generation_stage": "waiting_provider",
+                "generation_outcome": "pending",
+                "next_retry_at": next_retry_at.isoformat(),
+            }
+        session.commit()
+
+
+def persisted_generation_outcome(session_factory, action_id: str) -> str:
     with session_factory() as session:
         action = session.get(Action, action_id)
         result = action.result if action and isinstance(action.result, dict) else {}
-        persisted = bool(
-            action
-            and str(result.get("error_code") or "")
-            and (
-                action.status in {"failed", "skipped"}
-                or (
-                    action.status == "pending"
-                    and result.get("error_code") == "context_freshness_unproven"
-                )
-            )
-        )
-        if persisted and action.status in {"failed", "skipped"}:
+        if not action or not str(result.get("error_code") or ""):
+            return ""
+        if action.status in {"failed", "skipped"}:
             _release_failed_action_reservations(session, action)
-        return persisted
+            return "failed"
+        if action.status == "pending" and result.get("generation_outcome") == "pending":
+            return "deferred"
+        return ""
+
+
+def persisted_generation_failure(session_factory, action_id: str) -> bool:
+    return bool(persisted_generation_outcome(session_factory, action_id))
 
 
 def release_generation_claim(action: Action, payload: dict) -> None:
@@ -119,6 +147,8 @@ __all__ = [
     "mark_generation_claim",
     "owns_generation_claim",
     "persisted_generation_failure",
+    "persisted_generation_outcome",
+    "defer_unprepared_batch",
     "release_prepared_batch",
     "release_unprepared_batch",
 ]

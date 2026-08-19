@@ -23,6 +23,7 @@ class AiProviderCreate(BaseModel):
     output_price_per_1k: float = Field(default=0, ge=0)
     currency: str = "CNY"
     is_billable: bool = True
+    credential_enabled: bool = True
     is_active: bool = True
     notes: str = ""
 
@@ -38,6 +39,7 @@ class AiProviderUpdate(BaseModel):
     output_price_per_1k: float | None = Field(default=None, ge=0)
     currency: str | None = None
     is_billable: bool | None = None
+    credential_enabled: bool | None = None
     is_active: bool | None = None
     notes: str | None = None
 
@@ -53,6 +55,7 @@ class AiProviderOut(ApiModel):
     output_price_per_1k: float
     currency: str
     is_billable: bool
+    credential_enabled: bool
     is_active: bool
     health_status: str
     last_check_at: datetime | None

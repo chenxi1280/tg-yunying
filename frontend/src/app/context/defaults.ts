@@ -128,6 +128,7 @@ export function defaultAiProviderForm() {
     api_key: '',
     api_key_header: 'Authorization',
     notes: '',
+    credential_enabled: true,
     is_active: true,
   };
 }

@@ -38,6 +38,7 @@ from app.services.task_center.ai_generator import (
     generate_contents,
     generate_channel_comments,
     generate_group_messages,
+    generate_structured_payloads,
 )
 
 
@@ -106,6 +107,37 @@ def _add_ai_provider(session: Session) -> None:
     )
     session.add(TenantAiSetting(tenant_id=1, default_provider_id=1, ai_enabled=True, max_tokens=1024))
     session.commit()
+
+
+@pytest.mark.no_postgres
+def test_structured_generation_closes_transaction_before_external_call(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    observed: list[bool] = []
+
+    with Session(engine) as session:
+        _add_ai_provider(session)
+
+        def fake_generate_structured(*_args, **_kwargs):
+            observed.append(session.in_transaction())
+            return {"ok": True}, SimpleNamespace(total_tokens=7)
+
+        monkeypatch.setattr(
+            "app.services.task_center.ai_generator.ai_gateway.generate_structured",
+            fake_generate_structured,
+        )
+        payload, tokens = generate_structured_payloads(
+            session,
+            1,
+            {"_close_db_transaction_before_ai": True},
+            system_prompt="system",
+            user_prompt="user",
+            purpose="两阶段意图规划",
+        )
+
+    assert payload == {"ok": True}
+    assert tokens == 7
+    assert observed == [False]
 
 
 def test_mock_channel_comment_candidates_survive_quality_filter():

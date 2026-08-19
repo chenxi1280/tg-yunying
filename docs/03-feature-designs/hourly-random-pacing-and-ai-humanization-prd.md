@@ -6,12 +6,14 @@
 | --- | --- |
 | Intake ID | `intake-2026-08-15-pacing-quality-001` |
 | 问题级别 | L2 / P1，生产相关，必须走 Release Gate |
-| 文档版本 | v6 local implementation review |
-| 设计状态 | `product_design_complete / product_acceptance_pending` |
-| 实现状态 | 本地整改完成，529 条去重后的定向 no-PostgreSQL 自动化与前端 build 通过；PostgreSQL 集成、发布、灰度和线上恢复未证明 |
+| 文档版本 | v8 capacity-and-quality resync |
+| 设计状态 | `product_design_complete / implementation_resynced_2026-08-19` |
+| 实现状态 | `local_first_phase_complete / targeted_qa_pass`；stable due/source admission、跨 Task capacity 确定性抖动/late-tail、curve-aware pairwise gap/headroom、AI 批量绑定、逐 owner typed shortfall 已实现；PostgreSQL 压力、shadow/canary 与 E4 待证明 |
 | 适用范围 | `group_ai_chat`、`channel_view`、`channel_comment`、`channel_like` |
 | 证据状态 | 仅有本地代码、迁移、定向测试与前端构建证据；任务级 Action/Attempt/Telegram E4 保持 `unproven` |
 | 真相源边界 | 本文记录本次局部实现；不把本地 QA、部署健康或 Action success 当成生产 typed remote fact，也不覆盖更大范围的 AI current-owner 收敛合同 |
+
+AI 内容专项补正以 `ai-content-routing-and-quality-upgrade-prd.md` v1.2 及其运行、评测附录为准；本文继续负责数量 owner、跨 Task 来源容量、节奏和 Telegram E4。专项当前仅设计完成，未实现或发布。
 
 本版取代 v5 讨论稿，记录已落地实现、验收边界和仍需发布阶段证明的事项：
 
@@ -102,6 +104,12 @@
 4. 评论/群聊失败后仍可能使用 emoji、`签到` 或其他 fallback 补数量；低质内容与真实履约被混在一起。
 5. 没有冻结评测集、版本化 rubric 和 baseline/candidate 成对盲评，无法知道改 Prompt 是变好还是换了一种 AI 腔。
 
+### 2.4 2026-08-17 生产 resync
+
+当前生产已不再表现为“整批几秒完成”，但 AI 单来源 release 仍可达 10～12/min、实际执行 11～15/min，明显高于计划密度。已证明的缺口是 overdue recovery cursor 只读取当前技术批次的 frozen releases；下一批为空时又从 `now - 0.8 × gap` 起步，导致多个批次在同一组分钟重叠。
+
+本节不改变 stable slot、`due_at` 或数量 owner。修复必须在来源级事务锁内，从当前 task/lifecycle/period/source/plan 的全部已冻结 owner 读取最大 release/ordinal，作为下一批 cursor；首次无 owner 才允许使用 recovery 起点。排期分散还不等于调用分散：AI/浏览/评论/点赞在真实 Gateway 调用前都必须经过来源级 admission，未来时间只 defer 并释放 worker，DB/锁/身份失败时禁止远程调用。完整 owner 映射、最终闸门、在线迁移、shadow/canary 与 E4 合同见 [production-planner-pacing-and-memory-remediation-prd.md](production-planner-pacing-and-memory-remediation-prd.md) §4.5～§4.6、§8～§10。v6 本地通过不能再外推为生产节奏已闭合。
+
 ---
 
 ## 3. 已实现的产品默认（待最终产品验收）
@@ -109,14 +117,14 @@
 | 决策 | 推荐默认 | 理由 |
 | --- | --- | --- |
 | “每小时 N 条”是什么 | AI/浏览以日目标、评论/点赞以来源滚动目标，经 system soft curve 派生只读小时计划数；不是小时债务 | 当前总合同已退役 AI 硬小时；system `natural_full_day` 也不开放 AI 小时权重手工编辑 |
-| 故障后优先追量还是优先不爆发 | 优先不爆发；在剩余合法时隙内有界追赶，周期截止后 shortfall | 两者在停机/容量不足时不可同时保证，压缩追量会重现问题 |
+| 达量与不爆发如何同时处理 | start/新 period 前聚合同来源总需求并预留 replacement headroom；运行时只用冻结余量，截止后 typed shortfall | 可预见容量不足应提前阻断，不能先接受任务再靠突发追量或必然欠量收尾 |
 | 账号跨任务如何错峰 | 使用版本化账号软节奏策略和原子 guard；不先写死全局 45 秒 | 同账号跨任务需统一审计，但 Telegram/任务密度不同，单一魔法值不可证明合理 |
 | 低质候选是否允许降级发送 | 默认不发送；进入 `quality_wait`，截止后 `quality_shortfall` | 发送 Stage 1/emoji/签到会用低质量伪装履约 |
 | 质量重生成预算 | canary 默认初次生成后最多 1 次按 rejection code 定向重生成；策略版本化、可关闭，扩容前由评测复核 | 明确成本/延迟边界且不静默 fallback |
 | 对标图如何使用 | 只抽取结构特征，建立人工批准的脱敏样例库 | 原图含不适合直接模仿的内容，也不能把他人消息原样喂给模型复制 |
 | 模型参数如何确定 | 通过离线 A/B + 盲评选版本，不写死 temperature | 当前质量问题不是单参数问题，且 Provider 参数支持度不同 |
 
-本地实现按以上七项默认展开；是否启用任务 flag、是否进入 shadow/canary 仍须走产品验收与 Release Gate。
+以上为 v8 设计默认；现有代码是否满足必须按实现、PostgreSQL、shadow/canary 与 Telegram E4 分层验收。
 
 ---
 
@@ -166,7 +174,7 @@ Action.scheduled_at = effective_claim_at
 5. 因为每层最多一个点，结果既不等距，也不会像独立均匀采样那样偶然挤成一团。
 6. Planner 重跑、worker 重启、并发 worker 和 pre-Gateway retry 必须得到相同 `due_at`；禁止每次调用 `random` 重新洗牌。
 
-当前 `nonzero_v1` 先把 0 权重按总合同归一后再分桶；权重非零不代表目标小于 24 时每小时必然至少一条。评论/点赞始终使用来源首次采集后的半开滚动 24h，不得偷换为本地自然日。
+v8 中 curve 权重 0 表示该小时不分配业务 due 或 source release；低活跃必须显式使用正权重，禁止 0→1 静默改写。评论/点赞始终使用来源首次采集后的半开滚动 24h，不得偷换为本地自然日。
 
 20 条/小时的验收示意不是固定模板，而是类似：
 
@@ -189,8 +197,8 @@ Action.scheduled_at = effective_claim_at
 
 ### 4.4 JIT 物化与领取
 
-- future slot 只在进入 lookahead 后推进；lookahead 由冻结的 planner interval、generation/interaction P95 与安全余量策略算出，缺少可用 telemetry 时 start/preflight 显式失败，不能静默套分钟数。
-- AI/评论在 `generation_not_before_at = max(period_anchor, due_at - generation_lead)` 后才冻结账号、上下文、brief 与 voice snapshot；只有 candidate 通过质量闸后才创建 sendable Action，`scheduled_at=effective_claim_at`。
+- future slot 只在进入 lookahead 后推进；lookahead 由冻结 telemetry/policy 计算，缺少 telemetry 和 approved canary policy 时 start/preflight 显式失败。
+- AI/评论的 `GenerationJob.generation_not_before_at=max(period_anchor,due_at-generation_lead)` 是生成 claim 唯一时间权威；claim/candidate/Gateway 前重读 context revision/hash/age。只有 candidate 通过质量闸后才创建 sendable Action。
 - 评论 reply target 只在 context-bound window 内临近选择；失效时同义务新 intent revision 重建并继续受 pacing release 约束，不把 replacement 批量改成 `now`。
 - Dispatcher 只领取 `scheduled_at <= now`，且 claim 前重读 PacingGuard、assignment/intent/context/reply version。
 - 禁止通用 `future -> now` rewrite，包括 AI/view 到期批次、评论 replacement 和 Recovery 唤醒。
@@ -203,9 +211,10 @@ Action.scheduled_at = effective_claim_at
 | Planner/worker 恢复后已有 overdue | 冻结本次 `recovery_release_plan`，按原 period 最大正常密度为 overdue ordinal 生成 `release_not_before_at`；保留原 `due_at`，不得同秒排空 |
 | pre-Gateway 明确未调用远端 | 原 obligation 继续，但仍受原 slot 和当前密度约束；不得整批改 `now` |
 | Gateway started / unknown | 保留原身份，只读 reconcile，禁止重发 |
-| 当前 period 剩余容量不足 | 只在剩余合法密度内释放；放不下的保持 late，截止后 shortfall，不压缩已有 slot |
+| start/新 period 可预见容量不足 | 聚合同 tenant/domain/真实 source 的重叠窗口总需求；保留既有 frozen release，新任务以 `source_capacity_unavailable` 阻断，不缩目标 |
+| 运行期不可预见延迟 | 逐 owner 使用冻结 replacement headroom；不得取消同批其他合法 slot，放不下的截止后唯一 typed shortfall |
 | period deadline 到达 | 未完成 slot 写 typed `pacing_capacity_shortfall`、`quality_shortfall` 或专项 blocker |
-| quiet hours / 低活跃小时 | current 合同继续解释为低非零权重，不把多个点平移到静默结束同一秒 |
+| curve 0 / 低活跃小时 | 0 权重不分配新 release；低活跃用显式正权重，不把多个点平移到下一小时同一秒 |
 | 运行中编辑配置 | 当前 period 的 plan/hash 不变；新配置只生成下一 period snapshot |
 
 ### 4.6 数据与迁移
@@ -215,6 +224,7 @@ Action.scheduled_at = effective_claim_at
 - 在当前实际数量 owner 上增加 `pacing_contract_version/pacing_plan_hash/pacing_slot_ordinal/pacing_due_at/release_not_before_at`：本次 AI 适配落在 `TaskGroupDailyMessageSlot`，评论/reaction 映射现有 obligation，浏览映射 peer-message due ordinal。该局部适配不等于完成总合同中的 `AiGroupMessageObligation` current-owner 迁移。
 - `MessageBrief` 映射 current immutable content intent；candidate、rejection 与 evaluator evidence 进入同 obligation 的 `GenerationJob/variation history`。评论接入通用 GenerationJob，不再把 Action 内缓存当唯一生成审计。
 - 新增账号时间状态/claim 只服务跨任务原子错峰，至少持有 tenant/account/policy version、next eligible、绑定 obligation/Action、effective time、state/version；它不是 quantity owner、DispatchReservation 或完成事实。
+- 新增 `SourcePacingCapacityPlan` 聚合同一真实 source 的跨 Task 占用和 headroom；owner 冻结 capacity plan hash/ordinal，Admission 使用相邻 capacity slots 的 pairwise gap，禁止单 Task 平均 gap。
 - Action 冻结 `pacing_slot_key/pacing_due_at/effective_claim_at/assignment_revision/intent_revision/candidate_hash`，便于 Gateway 前 CAS 与 E4 关联。
 - 已 success、Gateway-started、unknown 的历史 Action 永不改写。
 - 未进入 Gateway 的存量 pending/future Action 先由受控 workflow 做 preview：固定 Task/Action 集合、旧值、目标 plan hash、deployed SHA 和 candidate hash；用户之后明确授权才可 apply/readback。
@@ -225,7 +235,9 @@ Action.scheduled_at = effective_claim_at
 
 - current AI 创建/编辑页删除“每小时轮数”和手工小时曲线编辑，改为只读“系统派生小时计划”；其他类型如保留 soft curve，必须明确其是权重而非硬目标。
 - AI 活群与频道评论高级设置提供 `ai_two_stage_enabled`、显式 `ai_model` 和独立 `ai_semantic_reviewer_model`；开启时保存前校验两个模型均必填且必须不同，避免自动选型后实际落到同一模型。
-- 创建预览显示：每日/每来源目标、各小时整数计划数、随机时间跨度、账号可绑定数、预计 shortfall；不展示虚假的 100% 保证。
+- AI 活群与频道评论高级设置同时提供内容路由 v2 的 policy version、allowed routes 与 attestation IDs；保存事务必须生成当前 task revision binding，并验证所有 Provider purpose route 已激活。成人 route 只能由 current evidence 逐条命中，不能因任务仅允许一个成人 route 就全局强转。
+- 四类履约任务的节奏页提供 `source_capacity_v2_enabled` 与 `source_capacity_policy_version_id`；启用时保存前必须验证同 tenant、同 pacing domain 的 active policy，Planner 后续只能读取被冻结的显式 policy ID，不再按“当前 active”漂移。
+- 创建预览显示：总目标、跨 Task source required/occupied/headroom/available/deficit、configured/effective curve、随机跨度、账号可绑定数和 last safe release；preview/start hash 漂移必须失败。
 - 任务详情新增 `pacing_summary`：future/due/late/remote_unknown/confirmed/missed、最早/最晚计划点、同秒碰撞数、5 分钟峰值、账号最小实际间隔；`confirmed` 只认 Action 对应 typed remote fact。
 - 单条执行详情同时显示 `due_at/scheduled_at/claimed_at/executed_at` 与 typed blocker；不得只显示 completed。
 - API 的 plan preview 与正式 start 必须绑定相同配置 revision/hash，防止预览后配置漂移。
@@ -237,7 +249,7 @@ Action.scheduled_at = effective_claim_at
 - 只在当前函数参数内检查账号间隔，或写死全局 45 秒而不查跨任务历史与 future owner。
 - 把评论/点赞来源滚动 24h 改为任务本地自然日，或让 replacement 绕过原 pacing identity。
 - 生成后过滤超 deadline 时间点却不创建 typed shortfall；任何数量变化都必须守恒可见。
-- soft `nonzero_v1/quiet-hours` 不得还原成 0 权重硬禁发，也不得把多点重采样到 quiet end。
+- 不得把 curve 0 静默改为 1，或把该小时的点重采样到下一小时/quiet end；低活跃只能使用显式正权重。
 - 账号间隔放不进 deadline 时不得保留原过近时间；必须形成 late/typed shortfall。调用链必须真实传递账号 identity，不能只测未被调用的 helper。
 - 测试只证明“不是同一时间/不是等距/总数没少”不够；若未覆盖 stable slot、密度上界、跨批重放和来源 rolling deadline，不得作为验收。
 
@@ -273,6 +285,8 @@ Action.scheduled_at = effective_claim_at
   "reply_to_message_id": null
 }
 ```
+
+上例是 legacy/general 基线，不得解释为 v2 对所有 route 永久禁止 location/transaction 语义。MessageBrief v2 的 `forbidden_claims` 由 route-aware grounding 确定：`adult_service_inquiry` 可在 matching evidence 支持时生成价格、区域、空闲、服务、时长、本人、预约类**问题**，但不得生成对应断言、精确金额/地址/联系方式或任何无 evidence 的细节；general 和未授权 adult route 仍保持禁止。具体 `allowed_claim_categories/forbidden_claim_categories/speech_act/evidence_ids` 合同以 AI 内容专项 4.5 为准，任何 route 都不得绕过全局安全投影。
 
 同批 brief 先做意图与结构差异校验：不能所有账号都选 agreement、都以“确实”开头、都写“陈述 + 感受”；但多样性服从事实与上下文，不为凑比例强造意图。
 
@@ -393,6 +407,7 @@ speech_act + length_band + opening_function_pattern + punctuation_profile + synt
 - per-account `executed_gap_p05/p50/p95`；
 - `due_to_claim_lag`、`due_to_remote_fact_lag`；
 - `recovery_release_plan_count`、`assignment_intent_invalidation_count`；
+- `source_capacity_required/occupied/headroom/available/deficit`、capacity plan hash、pairwise gap 与 headroom 使用率；
 - `future_to_now_rewrite_count` 必须为 0。
 
 ### 6.2 内容指标
@@ -411,9 +426,9 @@ speech_act + length_band + opening_function_pattern + punctuation_profile + synt
 
 ### 7.1 Train A：节奏
 
-1. 纯函数属性测试：目标守恒、按小数余数分桶、分层唯一、canonical SHA seed 可复现、不同 period 不复用图样、时区/DST、partial start、source rolling deadline。
+1. 纯函数属性测试：目标守恒、分层唯一、curve 0、canonical seed、时区/DST、partial start、rolling deadline，以及 due/source capacity 小时直方图一致。
 2. 四类 planner 测试：相同义务重复规划不新增，future→now 为 0；跨任务账号 guard 原子错峰，换绑后旧 intent/candidate 不可发送。
-3. 故障注入：worker 停 20 分钟后恢复，overdue 产生 recovery release plan 且不能一分钟排空；Gateway unknown 不重发。
+3. 同来源多 Task 总需求必须完整分配或 start 前返回精确 deficit；故障注入验证 headroom 逐 slot 替代、同批合法 slot 继续、恢复不在一分钟排空、unknown 不重发。
 4. shadow 只生成 PacingPlan，不创建 Action；与旧计划比较 24h 直方图和 shortfall。
 5. 每类各 1 个真实 canary，至少覆盖一个完整自然日/来源滚动 24h。
 6. E4 分别核对 send remote message fact、ViewRemoteFact、Comment remote fact、ReactionRemoteFact。
@@ -426,7 +441,7 @@ speech_act + length_band + opening_function_pattern + punctuation_profile + synt
 2. 新 brief/prompt/voice gate 做分层规则回归、语义 reviewer 校准和 position-swap 盲评；发布前冻结功效分析与 95% CI 算法。
 3. shadow 生成但不发送，核对 scope、事实、风格、重复和 Provider 成本/延迟。
 4. 1 个 AI 群 + 1 个频道评论任务灰度 3 天；每天按 rubric 盲抽，不用运营主观挑好样本。
-5. 质量失败只产生 `quality_wait/shortfall`，不得观察到 Stage 1/emoji/签到隐式替代。
+5. 质量失败逐 quantity owner 进入 `quality_wait`，deadline 后写唯一 typed shortfall fact；current v2 的 Stage 1/emoji/固定“签到” typed sent fact 必须为 0。
 6. 通过后按任务级 feature flag 分批扩容，不热改全租户 Prompt。
 
 ### 7.3 回滚
@@ -453,9 +468,11 @@ speech_act + length_band + opening_function_pattern + punctuation_profile + synt
 
 上述修复与既有 CPU/内存保护的合并回归已通过 529 条去重后的定向 no-PostgreSQL 用例、Python 编译检查和前端生产 build。账号时间线改为 tenant-scoped 分页 `UNION ALL`，AI slot 对齐保持线性复杂度；pacing summary 的 Action→typed remote fact 回查补充专用部分索引，避免详情查询形成逐 Action 全表扫描。由于本机 PostgreSQL 测试库认证失败，真实 PostgreSQL 行锁/并发建索引集成仍为 `unproven`，不能进入 Release Gate。
 
+2026-08-19 二次回归修复补充：source capacity 小时槽改为 source/policy/hour 可重放的分层确定性抖动，并在不改变小时 quota 的前提下把候选贴合 owner 的合法 late-tail 区间；同 logical scope 的不同计划以不可变 revision 保存，后续 Task 复用上一 revision 的冻结槽和 aggregate headroom，避免 `scope_conflict` 或重复占用同一时段。AI group 批次只加载一次 GenerationJob、policy binding 和 purpose route snapshot，structured Provider 调用前把 temperature/max tokens 复制为标量，关闭事务后不再因 ORM setting 过期加载重开长事务。Listener 只有在目标群存在 `pending/running/paused` 且显式启用 v2 的 AI 活群 Task 时才维护 context revision，相关 upsert 使用单条 `RETURNING`。186 条定向 no-PostgreSQL 用例通过；不同起止边界的 overlap 聚合、PostgreSQL 并发、shadow/canary 与 Telegram E4 仍为 `unproven`。
+
 ### 8.2 已实现但待本轮复核的范围
 
-- pacing：稳定 slot/due、四类 planner 接入、持久账号时间线、移除本次链路的 future→now、详情投影；due-slot 算法已按职责拆分，`pacing.py` 保持 500 行以内；
+- pacing：稳定 slot/due、四类 planner 接入、持久账号时间线、移除本次链路的 future→now、详情投影；capacity 候选拆到 `source_capacity_slots.py`，`source_capacity_plans.py` 保持 500 行以内；
 - quality：MessageBrief、voice contract v3、两阶段生成、独立语义 reviewer、分层 gates、evaluator evidence、position-swap 与聚类 bootstrap 评测工具；
 - migration：`0150_pacing_slot_fields.py` 依赖 `0149_batch_login_principal`，追加字段与 `account_pacing_reservations`，本地真实 Alembic upgrade/downgrade 回归通过；
 - UI/API：任务详情显示原始节奏时间/有效执行时间，创建编辑页可配置两阶段生成和独立 reviewer；
@@ -463,7 +480,7 @@ speech_act + length_band + opening_function_pattern + punctuation_profile + synt
 
 ### 8.3 未完成与禁止外推
 
-- `ai_two_stage_enabled` 默认关闭；尚未完成冻结真实评测集、shadow、人工盲评、canary 与任务级 Telegram E4。
+- 当前 schema two-stage 默认关闭且 legacy static fallback 默认开启；v8 要求 current v2 忽略这些 legacy fallback flags，迁移/readback、真实评测、canary 与任务级 Telegram E4 均未完成。
 - 本次沿用现有 `TaskGroupDailyMessageSlot` 作为 AI 节奏物理 owner；未宣称完成总合同中更大范围的 `AiGroupMessageObligation -> GenerationJob -> Action` current-owner 迁移。
 - 未执行生产存量 pending/future Action 的 preview/apply/readback，也未修改生产配置或数据。
 
@@ -474,10 +491,10 @@ speech_act + length_band + opening_function_pattern + punctuation_profile + synt
 | 用户原话与四类范围 | 已覆盖 |
 | 现状、根因与线上证据强度 | 已区分；任务级 E4 `blocked/unproven` |
 | 前端/API/worker | 已覆盖 |
-| 数据、迁移、并发、幂等 | 已覆盖 |
+| 数据、迁移、跨 Task source capacity、并发、幂等 | 已覆盖 |
 | 权限、安全、Prompt injection、敏感数据 | 已覆盖 |
 | 失败、unknown、deadline、回滚 | 已覆盖 |
 | QA、盲评、灰度、E4 | 已覆盖 |
 | 待产品决策 | 默认合同已落地；任务 flag 启用、shadow/canary 和生产扩容待产品验收 |
 
-当前结论：`product_design_complete / local_implementation_complete / focused_no_postgres_qa_pass / postgres_integration_unproven`。尚未达到 `product_accepted`、`released` 或 `production_fixed`；在完成 PostgreSQL 集成、shadow、canary、Release Gate 与 typed remote fact E4 前，不得声明线上问题已修复。
+当前结论：`product_design_complete_v8 / local_first_phase_complete / targeted_qa_pass / production_fixed=unproven`。本地 pacing QA 不能证明生产跨 Task 总容量、curve-aware Gateway gap、headroom、逐 slot AI 守恒或 current v2 无静态补量；在 PostgreSQL 压力、shadow/canary、数量守恒和 typed remote fact E4 前不得声明生产修复。

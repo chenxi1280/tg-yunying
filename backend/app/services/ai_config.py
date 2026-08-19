@@ -96,6 +96,8 @@ MATERIAL_CACHE_STATUSES = {"not_cached", "ready", "refreshing", "flood_wait", "u
 MATERIAL_DELIVERY_MODES = {"download_reupload"}
 CUSTOM_EMOJI_PATTERN = re.compile(r"^custom_emoji:(?P<document_id>\d+):(?P<alt>.+)$")
 ZIP_IMAGE_MAX_BYTES = 500 * 1024
+AI_PROVIDER_RECHECK_REQUIRED = "供应商配置已变更，必须重新检查"
+AI_PROVIDER_IDENTITY_FIELDS = frozenset({"base_url", "model_name", "api_key", "api_key_header"})
 
 
 def _material_fingerprint(payload: MaterialCreate | MaterialUpdate, existing: Material | None = None) -> str:
@@ -319,10 +321,17 @@ def seed_ai_configuration(session: Session) -> None:
     session.flush()
 
 
-def ai_provider_credentials(provider: AiProvider) -> AiProviderCredentials:
-    if not provider.is_active:
+def ai_provider_credentials(
+    provider: AiProvider,
+    *,
+    route_bound: bool = False,
+    require_healthy: bool = True,
+) -> AiProviderCredentials:
+    if route_bound and not provider.credential_enabled:
+        raise ValueError("AI provider credential disabled")
+    if not route_bound and not provider.is_active:
         raise ValueError("AI provider disabled")
-    if provider.health_status != AiProviderHealthStatus.HEALTHY.value:
+    if require_healthy and provider.health_status != AiProviderHealthStatus.HEALTHY.value:
         raise ValueError(f"AI provider unhealthy: {provider.health_status}")
     api_key = decrypt_secret(provider.api_key_ciphertext)
     if not api_key:
@@ -342,6 +351,8 @@ def list_ai_providers(session: Session) -> list[AiProvider]:
 
 
 def create_ai_provider(session: Session, payload: AiProviderCreate, actor: str) -> AiProvider:
+    if payload.is_active and not payload.credential_enabled:
+        raise ValueError("active provider requires enabled credentials")
     if payload.is_active:
         _disable_other_active_providers(session)
     provider = AiProvider(
@@ -355,8 +366,14 @@ def create_ai_provider(session: Session, payload: AiProviderCreate, actor: str) 
         output_price_per_1k=payload.output_price_per_1k,
         currency=payload.currency,
         is_billable=payload.is_billable,
+        credential_enabled=payload.credential_enabled,
         is_active=payload.is_active,
-        health_status=AiProviderHealthStatus.HEALTHY.value if payload.is_active else AiProviderHealthStatus.DISABLED.value,
+        health_status=(
+            AiProviderHealthStatus.UNHEALTHY.value
+            if payload.credential_enabled
+            else AiProviderHealthStatus.DISABLED.value
+        ),
+        last_error=AI_PROVIDER_RECHECK_REQUIRED if payload.credential_enabled else "",
         notes=payload.notes,
     )
     session.add(provider)
@@ -384,11 +401,27 @@ def update_ai_provider(session: Session, provider_id: int, payload: AiProviderUp
             setattr(provider, field, data[field])
     if data.get("api_key"):
         provider.api_key_ciphertext = encrypt_secret(data["api_key"])
+    next_credential_enabled = bool(data.get("credential_enabled", provider.credential_enabled))
+    next_active = bool(data.get("is_active", provider.is_active))
+    if next_active and not next_credential_enabled:
+        raise ValueError("active provider requires enabled credentials")
+    if provider.is_active and data.get("is_active") is False:
+        raise ValueError("default provider cannot be unset; activate another provider instead")
+    if data.get("credential_enabled") is not None:
+        provider.credential_enabled = next_credential_enabled
+        if not next_credential_enabled:
+            provider.health_status = AiProviderHealthStatus.DISABLED.value
+            provider.last_error = ""
+    requires_recheck = bool(AI_PROVIDER_IDENTITY_FIELDS.intersection(data)) or (
+        data.get("credential_enabled") is True
+    )
+    if next_credential_enabled and requires_recheck:
+        provider.health_status = AiProviderHealthStatus.UNHEALTHY.value
+        provider.last_error = AI_PROVIDER_RECHECK_REQUIRED
     if data.get("is_active") is not None:
         if data["is_active"]:
             _disable_other_active_providers(session, keep_id=provider.id)
         provider.is_active = data["is_active"]
-        provider.health_status = AiProviderHealthStatus.HEALTHY.value if provider.is_active else AiProviderHealthStatus.DISABLED.value
         if provider.is_active:
             _set_tenant_default_provider(session, provider.id)
     provider.updated_at = _now()
@@ -404,7 +437,6 @@ def _disable_other_active_providers(session: Session, *, keep_id: int | None = N
         statement = statement.where(AiProvider.id != keep_id)
     session.execute(statement.values(
         is_active=False,
-        health_status=AiProviderHealthStatus.DISABLED.value,
         updated_at=_now(),
     ))
 
@@ -418,10 +450,14 @@ def check_ai_provider(session: Session, provider_id: int, actor: str) -> AiProvi
     if not provider:
         raise ValueError("ai provider not found")
     provider.last_check_at = _now()
-    if not provider.is_active:
-        return _save_ai_provider_check_result(session, provider, actor, AiProviderHealthStatus.DISABLED.value, "AI供应商已禁用")
+    if not provider.credential_enabled:
+        return _save_ai_provider_check_result(session, provider, actor, AiProviderHealthStatus.DISABLED.value, "AI供应商凭证已禁用")
     try:
-        credentials = ai_provider_credentials(provider)
+        credentials = ai_provider_credentials(
+            provider,
+            route_bound=True,
+            require_healthy=False,
+        )
     except Exception as exc:  # noqa: BLE001 - shown to operator.
         return _save_ai_provider_check_result(session, provider, actor, AiProviderHealthStatus.UNHEALTHY.value, str(exc))
     session.rollback()

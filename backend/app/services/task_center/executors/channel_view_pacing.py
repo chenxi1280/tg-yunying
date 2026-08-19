@@ -33,6 +33,7 @@ from ..source_pacing import (
     source_pacing_plan_hash,
     wall_datetime,
 )
+from ..source_capacity_plans import apply_source_capacity_plan
 from ..source_owner_cursor import attach_owner_history, pacing_source_key_hash
 
 
@@ -84,6 +85,23 @@ def create_current_view_actions(
         timezone_name=task.timezone,
         seed_id=f"view:{task.id}",
     )
+    points_by_slot, capacity_slots = apply_source_capacity_plan(
+        session,
+        task,
+        [item.source_slot for item in items],
+        points=points_by_slot,
+        pacing_domain="view",
+    )
+    capacity_by_key = {slot.slot_key: slot for slot in capacity_slots}
+    items = [
+        ViewPlanItem(
+            item.message,
+            item.account_id,
+            item.obligation,
+            capacity_by_key.get(item.source_slot.slot_key, item.source_slot),
+        )
+        for item in items
+    ]
     if len(points_by_slot) < len(items):
         _record_stratified_shortfall(task, len(items), len(points_by_slot))
     created = 0
@@ -187,6 +205,9 @@ def _freeze_view_pacing_owner(
         release_not_before_at=release_not_before_at,
         source_identity=source.owner_identity,
     )
+    if source.source_capacity_plan_hash:
+        item.obligation.source_capacity_plan_hash = source.source_capacity_plan_hash
+        item.obligation.source_capacity_slot_ordinal = source.source_capacity_slot_ordinal
 
 
 def _attach_view_owner_history(
@@ -290,6 +311,8 @@ def _view_plan_item(
         task_lifecycle_epoch=int(task.task_lifecycle_epoch or 1),
         pacing_period_key=str(context.ledger.id),
         pacing_source_key_hash=pacing_source_key_hash(context.channel.tg_peer_id),
+        source_capacity_plan_hash=obligation.source_capacity_plan_hash,
+        source_capacity_slot_ordinal=obligation.source_capacity_slot_ordinal,
     )
     return ViewPlanItem(message, account_id, obligation, slot)
 

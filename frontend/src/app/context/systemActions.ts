@@ -27,7 +27,7 @@ function errorText(error: unknown) {
 
 interface SystemActionParams {
   adminUserForm: AdminUserForm;
-  aiProviderForm: { id: number | null; provider_name: string; base_url: string; model_name: string; api_key: string; api_key_header: string; notes: string; is_active: boolean };
+  aiProviderForm: { id: number | null; provider_name: string; base_url: string; model_name: string; api_key: string; api_key_header: string; notes: string; credential_enabled: boolean; is_active: boolean };
   currentUser: CurrentUser | null;
   developerAppForm: { id: number | null; app_name: string; api_id: string; api_hash: string; max_accounts: number; notes: string; is_active: boolean };
   promptTemplateForm: { id: number | null; name: string; template_type: string; content: string; is_active: boolean };
@@ -625,7 +625,7 @@ export function createSystemActions(params: SystemActionParams) {
       if (!isActiveAiProviderSaveRequest(providerId, requestSeq, signature)) return;
       params.closeModal();
       params.showResult(editing ? 'AI 供应商已保存' : 'AI 供应商已新增', `${saved.provider_name} 当前状态：${saved.health_status}`);
-      params.setAiProviderForm({ id: null, provider_name: 'DeepSeek', base_url: 'https://api.deepseek.com', model_name: 'deepseek-v4-flash', api_key: '', api_key_header: 'Authorization', notes: '', is_active: true });
+      params.setAiProviderForm({ id: null, provider_name: 'DeepSeek', base_url: 'https://api.deepseek.com', model_name: 'deepseek-v4-flash', api_key: '', api_key_header: 'Authorization', notes: '', credential_enabled: true, is_active: true });
       await refreshSystemSettingsAfterAction(editing ? 'AI 供应商保存' : 'AI 供应商新增');
     } catch (error) {
       if (!isActiveAiProviderSaveRequest(providerId, requestSeq, signature)) return;
@@ -644,22 +644,23 @@ export function createSystemActions(params: SystemActionParams) {
       api_key: '',
       api_key_header: provider.api_key_header,
       notes: provider.notes,
+      credential_enabled: provider.credential_enabled,
       is_active: provider.is_active,
     });
     params.setModal({ type: 'aiProviderEdit' });
   }
 
   async function toggleAiProvider(provider: AiProvider) {
-    const action = provider.is_active ? 'disable' : 'enable';
+    const action = 'enable';
     const requestSeq = beginAiProviderActionRequest(provider.id, action);
-    params.setBusy(provider.is_active ? '禁用 AI 供应商' : '启用 AI 供应商');
+    params.setBusy('设置默认 AI 供应商');
     try {
       const updated = await api<AiProvider>(`/ai-providers/${provider.id}`, {
         method: 'PATCH',
-        body: JSON.stringify({ is_active: action === 'enable' }),
+        body: JSON.stringify({ is_active: true }),
       });
       if (!isActiveAiProviderActionRequest(provider.id, action, requestSeq)) return;
-      params.showResult('AI 供应商状态已更新', `${updated.provider_name} 已${updated.is_active ? '启用' : '禁用'}`);
+      params.showResult('默认 AI 供应商已更新', `${updated.provider_name} 已设为默认模型`);
       await refreshSystemSettingsAfterAction('AI 供应商状态更新');
     } catch (error) {
       if (!isActiveAiProviderActionRequest(provider.id, action, requestSeq)) return;

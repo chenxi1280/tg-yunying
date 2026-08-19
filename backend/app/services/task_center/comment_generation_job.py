@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime
 
 from sqlalchemy import func, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -14,6 +15,8 @@ from app.services._common import _now
 from .ai_generation_parallel import OPEN_GENERATION_JOB_PREDICATE
 from .ai_generation_timing import GENERATION_LEASE
 from .datetime_compat import is_after_or_equal
+from .ai_content_runtime import defer_generation_job
+from .generation_wait import latest_safe_send_at
 
 
 COMMENT_GENERATION_OBLIGATION_TYPE = "post_comment"
@@ -42,6 +45,7 @@ def claim_comment_generation_job(
     _upsert_generation_job(
         session,
         _generation_job_values(
+            session,
             action,
             payload,
             obligation_id=obligation_id,
@@ -57,6 +61,7 @@ def claim_comment_generation_job(
 
 
 def _generation_job_values(
+    session: Session,
     action: Action,
     payload,
     *,
@@ -76,6 +81,7 @@ def _generation_job_values(
             or action.release_not_before_at
             or action.scheduled_at
         ),
+        "latest_safe_send_at": latest_safe_send_at(session, action),
         "context_snapshot_hash": _context_hash(payload),
         "assignment_revision": int(action.assignment_revision or 1),
         "intent_revision": int(action.intent_revision or 1),
@@ -184,6 +190,30 @@ def finish_comment_generation_job(
         raise CommentGenerationJobConflict(obligation_id)
 
 
+def defer_comment_generation_job(
+    session: Session,
+    action: Action,
+    payload,
+    *,
+    owner: str,
+    next_retry_at: datetime,
+) -> None:
+    obligation_id = comment_generation_obligation_id(action, payload)
+    job = session.scalar(select(GenerationJob).where(
+        GenerationJob.obligation_type == COMMENT_GENERATION_OBLIGATION_TYPE,
+        GenerationJob.obligation_id == obligation_id,
+        GenerationJob.state == "generating",
+        GenerationJob.generation_owner_id == owner,
+    ))
+    if job is None:
+        raise CommentGenerationJobConflict(obligation_id)
+    defer_generation_job(
+        job,
+        stage="waiting_provider",
+        next_retry_at=next_retry_at,
+    )
+
+
 def invalidate_comment_generation_jobs(
     session: Session,
     action: Action,
@@ -251,6 +281,7 @@ __all__ = [
     "CommentGenerationJobConflict",
     "claim_comment_generation_job",
     "comment_generation_obligation_id",
+    "defer_comment_generation_job",
     "finish_comment_generation_job",
     "invalidate_comment_generation_jobs",
 ]

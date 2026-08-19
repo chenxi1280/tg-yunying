@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Action, GenerationJob
+from app.models import (
+    Action,
+    CommentFulfillmentObligation,
+    FulfillmentShortfallFact,
+    GenerationJob,
+)
+from app.services._common import _now
 from app.services.task_center.comment_generation_dispatch import (
     _persist_generation_failure,
     prepare_comment_generation_request,
@@ -16,6 +24,7 @@ from app.services.task_center.comment_generation_job import (
     claim_comment_generation_job,
     finish_comment_generation_job,
 )
+from app.services.task_center.comment_generation_persistence import defer_generation_provider
 from channel_comment_dispatch_test_support import comment_dispatch_session, seed_dispatch_scope
 
 
@@ -104,9 +113,64 @@ def test_comment_semantic_failure_persists_evaluator_evidence() -> None:
         assert refreshed_action.candidate_hash == "a" * 64
         assert refreshed_action.result["evaluator_evidence"] == evidence
         assert refreshed_action.payload["ai_generation_tokens"] == 8
-        assert job.state == "failed"
+        assert refreshed_action.status == "pending"
+        assert refreshed_action.result["generation_outcome"] == "pending"
+        assert refreshed_action.scheduled_at is not None
+        assert job.state == "pending"
+        assert job.generation_stage == "quality_wait"
+        assert job.next_retry_at is not None
         assert job.candidate_hash == "a" * 64
         assert job.evaluator_evidence == evidence
+
+
+def test_comment_provider_transport_returns_job_and_action_to_pending() -> None:
+    with comment_dispatch_session() as session:
+        action = seed_dispatch_scope(session)
+        request = prepare_comment_generation_request(
+            session,
+            action,
+            _get_task(session, action),
+        )
+
+        defer_generation_provider(session, request, retry_after_seconds=45)
+
+        refreshed = session.get(Action, action.id)
+        job = _open_jobs(session, "comment-obligation-1")[0]
+        assert refreshed.status == "pending"
+        assert refreshed.payload["ai_generation_status"] == "pending"
+        assert refreshed.result["generation_stage"] == "waiting_provider"
+        assert refreshed.result["error_code"] == "provider_route_deferred"
+        assert job.state == "pending"
+        assert job.generation_stage == "waiting_provider"
+        assert job.next_retry_at is not None
+
+
+def test_comment_provider_wait_settles_shortfall_at_latest_safe_send() -> None:
+    with comment_dispatch_session() as session:
+        action = seed_dispatch_scope(session)
+        request = prepare_comment_generation_request(
+            session,
+            action,
+            _get_task(session, action),
+        )
+        job = _open_jobs(session, "comment-obligation-1")[0]
+        job.latest_safe_send_at = _now() + timedelta(seconds=10)
+        session.commit()
+
+        defer_generation_provider(session, request, retry_after_seconds=45)
+
+        refreshed = session.get(Action, action.id)
+        fact = session.scalar(select(FulfillmentShortfallFact))
+        obligation = session.get(CommentFulfillmentObligation, "comment-obligation-1")
+        assert refreshed.status == "failed"
+        assert refreshed.result["generation_outcome"] == "shortfall"
+        assert job.state == "failed"
+        assert job.generation_stage == "waiting_provider_shortfall"
+        assert fact is not None
+        assert fact.kind == "provider_capacity"
+        assert job.generation_owner_id == ""
+        assert obligation.status == "terminal_shortfall"
+        assert obligation.current_action_id == action.id
 
 
 def _get_task(session: Session, action: Action):

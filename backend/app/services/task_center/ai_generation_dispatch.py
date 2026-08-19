@@ -21,7 +21,11 @@ from .ai_generation_recovery import persist_generation_unknown
 from .ai_generation_pipeline import SlotGenerationResult, generate_quality_results
 from .ai_generation_slots import generation_slot as _generation_slot
 from .ai_generation_slots import reply_targets as _reply_targets
-from .ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE, AiGenerationUnavailable
+from .ai_generator import (
+    AI_GENERATION_UNAVAILABLE_MESSAGE,
+    AiGenerationUnavailable,
+    ProviderRouteDeferred,
+)
 from .ai_generation_quality import fail_generation_action, fail_generation_batch
 from .group_ai_prompt_scope import rebuild_group_prompt_inputs
 from .group_ai_scope import REMOTE_REPLY_TARGET_OBSERVATION
@@ -344,6 +348,9 @@ def _generate_without_transaction(
         _mark_provider_call_started(session, request)
     try:
         return generate_quality_results(session, request, dependencies)
+    except ProviderRouteDeferred:
+        session.rollback()
+        raise
     except AiGenerationUnavailable as exc:
         code = str(exc) or AI_GENERATION_UNAVAILABLE_MESSAGE
         fail_generation_batch(

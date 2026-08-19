@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 import time
-from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
 
 from sqlalchemy import or_, select
@@ -10,39 +9,43 @@ from sqlalchemy.orm import Session
 
 from app.ai_gateway import (
     DEFAULT_AI_REQUEST_TIMEOUT_SECONDS,
-    AiGenerationResult,
-    AiProviderCredentials,
-    AiProviderRateLimited,
+    AiEmptyFinalContentError,
     normalize_ai_model_name,
 )
 from app.models import AiProvider, AiProviderHealthStatus, PromptTemplate, TenantAiSetting
 from app.services._common import _now, ai_gateway
-from app.services.ai_config import ai_provider_credentials
 from app.services.content_filters import looks_like_ai_meta_content, looks_like_generated_template_noise, looks_like_operator_ui_content
 from app.services.task_center.ai_act_types import canonical_ai_group_act_type
+from app.services.task_center.ai_provider_routes import (
+    ProviderRouteUnavailable,
+    resolve_request_route,
+    route_config,
+)
+from app.services.task_center.ai_generation_contract import (
+    AI_GENERATION_UNAVAILABLE_MESSAGE,
+    CHANNEL_COMMENT_PURPOSE,
+    CHANNEL_COMMENT_REPLY_PURPOSE,
+    GROUP_CHAT_PURPOSE,
+    GROUP_CHAT_REPLY_PURPOSE,
+    LONG_RUNNING_AI_PURPOSES,
+    TWO_STAGE_BRIEF_PURPOSE,
+    TWO_STAGE_REALIZE_PURPOSE,
+    TWO_STAGE_REVIEW_PURPOSE,
+    AiGenerationUnavailable,
+    ProviderRouteDeferred,
+)
+from app.services.task_center.ai_provider_candidate_runtime import (
+    ProviderCandidatePolicy as _ProviderCandidatePolicy,
+    ProviderDraftRequest as _ProviderDraftRequest,
+    generate_with_provider_candidates as _generate_with_provider_candidates,
+)
+from app.services.task_center.ai_structured_provider_runtime import (
+    StructuredProviderRequest as _StructuredProviderRequest,
+    generate_structured_with_candidates as _generate_structured_with_candidates,
+)
 from app.services.task_center.ai_group_prompt import GroupPromptBundle, build_group_prompt, contains_disallowed_group_content
 from app.services.grok_cli_bridge import GrokCliBridge, GrokCliUnavailable
-from app.services.task_center.provider_admission import (
-    ProviderAdmissionBlocked,
-    ProviderProbeLease,
-    begin_provider_call,
-    extend_provider_cooldown,
-    provider_admission_key,
-    release_provider_probe,
-    settle_provider_success,
-)
-
-
-AI_GENERATION_UNAVAILABLE_MESSAGE = "AI 生成不可用，等待恢复后继续执行"
-GROUP_CHAT_PURPOSE = "群活跃续聊"
-GROUP_CHAT_REPLY_PURPOSE = "群引用回复"
-CHANNEL_COMMENT_PURPOSE = "频道评论"
-CHANNEL_COMMENT_REPLY_PURPOSE = "频道引用回复"
-TWO_STAGE_BRIEF_PURPOSE = "两阶段意图规划"
-TWO_STAGE_REALIZE_PURPOSE = "两阶段声线实现"
-TWO_STAGE_REVIEW_PURPOSE = "两阶段语义审核"
 AI_CONTENT_REQUEST_TIMEOUT_SECONDS = 120
-LONG_RUNNING_AI_PURPOSES = frozenset({GROUP_CHAT_PURPOSE, GROUP_CHAT_REPLY_PURPOSE, CHANNEL_COMMENT_PURPOSE, CHANNEL_COMMENT_REPLY_PURPOSE, TWO_STAGE_BRIEF_PURPOSE, TWO_STAGE_REALIZE_PURPOSE, TWO_STAGE_REVIEW_PURPOSE})
 SENSITIVE_CONTEXT_GUIDANCE = (
     "敏感场景描述只能作为既有上下文理解和引用，但回复只能围绕原文已有事实做自然短评或追问；"
     "不要新增联系线索、成本细节、邀约或促成信息，不要编造亲身经历。"
@@ -63,56 +66,8 @@ AI_PROVIDER_REFUSAL_MARKERS = (
     "安全策略",
     "无法协助",
 )
-AI_PROVIDER_QUOTA_EXHAUSTED_MARKERS = (
-    "quota exhausted",
-    "insufficient quota",
-    "quota_exhausted",
-    "余额不足",
-    "配额不足",
-    "配额耗尽",
-)
-
-
-@dataclass(frozen=True)
-class _ProviderDraftRequest:
-    prompt: str
-    count: int
-    topic: str
-    tone: str
-    persona_set: tuple[str, ...]
-    temperature: float
-    max_tokens: int
-    system_prompt: str | None
-    timeout: int
-
-
-@dataclass(frozen=True)
-class _ProviderCandidatePolicy:
-    model_name: str
-    required_model_family: str
-    allow_quota_rotation: bool
-    purpose: str
-    close_transaction_before_external: bool
-
-
-@dataclass(frozen=True)
-class _StructuredProviderRequest:
-    system_prompt: str
-    user_prompt: str
-    config: dict
-    setting: TenantAiSetting
-    count: int
-    purpose: str
-    model_name: str
-    stage: str
-
-
 CHANNEL_COMMENT_MAX_REDESCRIPTION_ATTEMPTS = 3
 MINIMAX_NEW_SENSITIVE_ERROR = "input new_sensitive (1026)"
-
-
-class AiGenerationUnavailable(RuntimeError):
-    pass
 
 
 def _metadata_text(value: object) -> str:
@@ -363,162 +318,6 @@ def _generated_contents_result(
     return contents[:count], tokens
 
 
-def _generate_with_provider_candidates(
-    session: Session,
-    provider: AiProvider,
-    request: _ProviderDraftRequest,
-    *,
-    policy: _ProviderCandidatePolicy,
-):
-    providers = _provider_candidates(
-        session,
-        provider,
-        required_model_family=policy.required_model_family,
-        allow_quota_rotation=policy.allow_quota_rotation,
-    )
-    provider_calls = _provider_calls(
-        session, providers, policy.model_name, policy.close_transaction_before_external,
-    )
-    last_exc: Exception | None = None
-    blocked_exc: ProviderAdmissionBlocked | None = None
-    for candidate, credentials in provider_calls:
-        try:
-            lease = begin_provider_call(candidate)
-        except ProviderAdmissionBlocked as exc:
-            blocked_exc = exc
-            continue
-        try:
-            return _generate_provider_drafts(
-                candidate,
-                credentials,
-                request,
-                lease=lease,
-            )
-        except ProviderAdmissionBlocked as exc:
-            blocked_exc = exc
-            last_exc = exc
-            break
-        except Exception as exc:
-            last_exc = exc
-            if not _is_ai_provider_quota_exhausted(exc):
-                break
-            _mark_provider_quota_exhausted(candidate, exc)
-            if policy.close_transaction_before_external:
-                session.add(candidate)
-                session.commit()
-            if candidate == providers[-1]:
-                break
-    if blocked_exc is not None and (last_exc is None or last_exc is blocked_exc):
-        raise blocked_exc
-    _raise_provider_generation_failure(last_exc, policy.purpose)
-
-
-def _generate_provider_drafts(
-    provider: AiProvider,
-    credentials: AiProviderCredentials,
-    request: _ProviderDraftRequest,
-    *,
-    lease: ProviderProbeLease | None,
-) -> AiGenerationResult:
-    try:
-        result = ai_gateway.generate_drafts(
-            credentials,
-            request.prompt,
-            count=request.count,
-            topic=request.topic,
-            tone=request.tone,
-            persona_set=list(request.persona_set),
-            temperature=request.temperature,
-            max_tokens=request.max_tokens,
-            system_prompt=request.system_prompt,
-            timeout=request.timeout,
-        )
-    except AiProviderRateLimited as exc:
-        _defer_rate_limited_provider(provider, lease, exc)
-    except Exception:
-        release_provider_probe(lease)
-        raise
-    settle_provider_success(lease)
-    return result
-
-
-def _defer_rate_limited_provider(
-    provider: AiProvider,
-    lease: ProviderProbeLease | None,
-    error: AiProviderRateLimited,
-) -> None:
-    extend_provider_cooldown(
-        provider,
-        error.retry_after_seconds,
-        reason=f"http_429:{error.detail[:120]}",
-    )
-    release_provider_probe(lease)
-    raise ProviderAdmissionBlocked(
-        provider_admission_key(provider),
-        error.retry_after_seconds or 0,
-        reason="provider_rate_limited",
-    ) from error
-
-
-def _provider_candidates(
-    session: Session,
-    provider: AiProvider,
-    *,
-    required_model_family: str,
-    allow_quota_rotation: bool,
-) -> list[AiProvider]:
-    providers = [provider]
-    if allow_quota_rotation:
-        providers.extend(_quota_rotation_providers(session, provider, required_model_family))
-    return providers
-
-
-def _raise_provider_generation_failure(last_exc: Exception | None, purpose: str) -> None:
-    if purpose in LONG_RUNNING_AI_PURPOSES:
-        raise AiGenerationUnavailable(f"{AI_GENERATION_UNAVAILABLE_MESSAGE}：{last_exc}") from last_exc
-    if last_exc:
-        raise last_exc
-    raise RuntimeError("AI provider generation failed without detail")
-
-
-def _provider_calls(
-    session: Session,
-    providers: list[AiProvider],
-    model_name: str,
-    close_transaction_before_external: bool,
-) -> list[tuple[AiProvider, object]]:
-    calls = [(candidate, _ai_credentials(candidate, model_name)) for candidate in providers]
-    if not close_transaction_before_external:
-        return calls
-    for candidate in providers:
-        session.expunge(candidate)
-    session.commit()
-    return calls
-
-
-def _quota_rotation_providers(session: Session, provider: AiProvider, required_family: str) -> list[AiProvider]:
-    if required_family != "mimo":
-        return []
-    providers = session.scalars(
-        select(AiProvider)
-        .where(AiProvider.is_active.is_(True), AiProvider.health_status == AiProviderHealthStatus.HEALTHY.value)
-        .order_by(AiProvider.id.asc())
-    ).all()
-    return [candidate for candidate in providers if candidate.id != provider.id and _provider_matches_family(candidate, required_family)]
-
-
-def _is_ai_provider_quota_exhausted(exc: Exception) -> bool:
-    detail = str(exc).lower()
-    return any(marker in detail for marker in AI_PROVIDER_QUOTA_EXHAUSTED_MARKERS)
-
-
-def _mark_provider_quota_exhausted(provider: AiProvider, exc: Exception) -> None:
-    provider.health_status = AiProviderHealthStatus.UNHEALTHY.value
-    provider.last_check_at = _now()
-    provider.last_error = f"AI provider quota exhausted: {str(exc)[:300]}"
-    provider.updated_at = _now()
-
-
 def _generated_content_from_candidate(candidate) -> GeneratedContent:
     return GeneratedContent(
         str(getattr(candidate, "content", "") or "").strip(),
@@ -607,13 +406,6 @@ def _prompt_profile(
         persona_set = ["老用户", "新用户", "活跃成员", "路人"]
         tone = "自然、口语化、不同账号表达不重复"
     return prompt, persona_set, tone
-
-
-def _ai_credentials(provider: AiProvider, model_name: str):
-    credentials = ai_provider_credentials(provider)
-    if model_name.strip():
-        return replace(credentials, model_name=normalize_ai_model_name(model_name))
-    return credentials
 
 
 def _clean_generated_contents(contents: list[str], purpose: str, count: int, *, mock_provider: bool = False) -> list[str]:
@@ -1052,13 +844,15 @@ def generate_structured_payloads(
     但走 gateway.generate_structured 返回原始 JSON 载荷，由调用方按
     MessageBrief/realizer 契约校验；不映射 drafts，也不做静态兜底。
     """
+    config = dict(config)
     model_name = _group_chat_model(config)
     stage = str(config.get("_ai_fallback_stage") or "").strip()
     setting = session.scalar(select(TenantAiSetting).where(TenantAiSetting.tenant_id == tenant_id))
-    provider, setting = _resolve_group_generation_provider(
+    provider, setting, config, model_name = _structured_provider_binding(
         session,
         tenant_id,
         config,
+        purpose=purpose,
         setting=setting,
         model_name=model_name,
         stage=stage,
@@ -1072,89 +866,51 @@ def generate_structured_payloads(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             config=config,
-            setting=setting,
+            temperature=float(setting.temperature or 0.7),
+            max_tokens=_content_max_tokens(setting.max_tokens, count, purpose),
             count=count,
             purpose=purpose,
             model_name=model_name,
             stage=stage,
+            required_model_family=_group_chat_required_model_family(config),
         ),
     )
     return payload, tokens
 
 
-def _generate_structured_with_candidates(
+def _structured_provider_binding(
     session: Session,
-    provider: AiProvider,
-    request: _StructuredProviderRequest,
-) -> tuple[object, int]:
-    providers = _provider_candidates(
-        session,
-        provider,
-        required_model_family=_group_chat_required_model_family(request.config),
-        allow_quota_rotation=(
-            not request.config.get("ai_provider_id")
-            and request.stage in {"", "primary_default"}
-        ),
-    )
-    provider_calls = _provider_calls(
-        session,
-        providers,
-        request.model_name,
-        bool(request.config.get("_close_db_transaction_before_ai")),
-    )
-    last_exc: Exception | None = None
-    blocked_exc: ProviderAdmissionBlocked | None = None
-    for candidate, credentials in provider_calls:
-        try:
-            lease = begin_provider_call(candidate)
-        except ProviderAdmissionBlocked as exc:
-            blocked_exc = exc
-            continue
-        try:
-            return _call_structured_provider(lease, credentials, request)
-        except ProviderAdmissionBlocked as exc:
-            blocked_exc = exc
-            last_exc = exc
-            break
-        except Exception as exc:
-            last_exc = exc
-            if not _is_ai_provider_quota_exhausted(exc):
-                break
-            _mark_provider_quota_exhausted(candidate, exc)
-            if bool(request.config.get("_close_db_transaction_before_ai")):
-                session.add(candidate)
-                session.commit()
-            if candidate == providers[-1]:
-                break
-            continue
-    if blocked_exc is not None and (last_exc is None or last_exc is blocked_exc):
-        raise blocked_exc
-    _raise_provider_generation_failure(last_exc, request.purpose)
-
-
-def _call_structured_provider(
-    lease: ProviderProbeLease,
-    credentials: AiProviderCredentials,
-    request: _StructuredProviderRequest,
-) -> tuple[object, int]:
+    tenant_id: int,
+    config: dict,
+    *,
+    purpose: str,
+    setting: TenantAiSetting | None,
+    model_name: str,
+    stage: str,
+) -> tuple[AiProvider | None, TenantAiSetting | None, dict, str]:
     try:
-        payload, usage = ai_gateway.generate_structured(
-            credentials,
-            request.user_prompt,
-            temperature=float(request.setting.temperature or 0.7),
-            max_tokens=_content_max_tokens(
-                request.setting.max_tokens, request.count, request.purpose,
-            ),
-            system_prompt=request.system_prompt,
-            timeout=AI_CONTENT_REQUEST_TIMEOUT_SECONDS,
+        snapshot = resolve_request_route(
+            session,
+            tenant_id,
+            purpose,
+            config=config,
         )
-    except ProviderAdmissionBlocked:
-        raise
-    except Exception:
-        release_provider_probe(lease)
-        raise
-    settle_provider_success(lease)
-    return payload, int(getattr(usage, "total_tokens", 0) or 0)
+    except ProviderRouteUnavailable as exc:
+        raise AiGenerationUnavailable(f"{AI_GENERATION_UNAVAILABLE_MESSAGE}：{exc}") from exc
+    if snapshot is not None:
+        if setting is None or not setting.ai_enabled:
+            raise AiGenerationUnavailable(f"{AI_GENERATION_UNAVAILABLE_MESSAGE}：tenant_ai_disabled")
+        selected = snapshot.candidates[0]
+        return selected.provider, setting, route_config(config, snapshot), selected.model_name
+    provider, resolved_setting = _resolve_group_generation_provider(
+        session,
+        tenant_id,
+        config,
+        setting=setting,
+        model_name=model_name,
+        stage=stage,
+    )
+    return provider, resolved_setting, config, model_name
 
 
 def generate_group_reply_messages(
@@ -1273,6 +1029,15 @@ def _request_group_provider_candidates(
             ),
             purpose,
             bool(config.get("_close_db_transaction_before_ai")),
+            route_provider_ids=tuple(
+                config.get("_ai_provider_route_provider_ids") or ()
+            ),
+            route_models={
+                int(key): str(value)
+                for key, value in dict(
+                    config.get("_ai_provider_route_models") or {}
+                ).items()
+            },
         ),
     )
     return result, started_at
@@ -1724,6 +1489,7 @@ __all__ = [
     "AI_GENERATION_UNAVAILABLE_MESSAGE",
     "CHANNEL_COMMENT_MAX_REDESCRIPTION_ATTEMPTS",
     "AiGenerationUnavailable",
+    "ProviderRouteDeferred",
     "GeneratedContent",
     "clean_channel_comment_contents",
     "clean_group_chat_contents",

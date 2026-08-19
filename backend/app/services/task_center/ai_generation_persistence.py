@@ -4,6 +4,7 @@ import hashlib
 
 from sqlalchemy.orm import Session
 
+from app.models import GenerationJob, Task
 from app.services._common import _now
 
 from .ai_generation_commit import commit_generation_action, load_generation_batch
@@ -17,6 +18,8 @@ from .ai_generation_state import (
     validate_generation_mapping,
 )
 from .legacy_anchor_rewrite import VOICE_PROFILE_CONTRACT_VERSION
+from .generation_wait import GenerationWaitSpec, defer_generation_wait
+from .two_stage_generation import QUALITY_WAIT
 from .direct_check_in import (
     DUE_CATCH_UP_CHECK_IN_REASON,
     DUE_CATCH_UP_CHECK_IN_SOURCE,
@@ -97,6 +100,9 @@ def _persist_generation_rejection(
     action,
     result: SlotGenerationResult,
 ) -> None:
+    if result.rejection_code == QUALITY_WAIT:
+        _persist_quality_wait(session, request, action=action, result=result)
+        return
     fail_generation_action(
         action,
         result.rejection_code,
@@ -106,6 +112,30 @@ def _persist_generation_rejection(
     evidence = dict(result.evaluator_evidence)
     action.candidate_hash = str(evidence.get("candidate_hash") or "")
     action.result = {**(action.result or {}), "evaluator_evidence": evidence}
+    commit_generation_action(session, request, action)
+
+
+def _persist_quality_wait(session: Session, request, *, action, result) -> None:
+    task = session.get(Task, action.task_id)
+    job_id = str(dict(action.payload or {}).get("generation_job_id") or "")
+    job = session.get(GenerationJob, job_id) if job_id else None
+    if task is None or job is None:
+        raise RuntimeError("quality_wait_generation_contract_missing")
+    evidence = dict(result.evaluator_evidence)
+    action.candidate_hash = str(evidence.get("candidate_hash") or "")
+    defer_generation_wait(
+        session,
+        task,
+        action,
+        job,
+        GenerationWaitSpec(
+            stage=QUALITY_WAIT,
+            error_code=QUALITY_WAIT,
+            error_detail=result.rejection_detail,
+            shortfall_kind="quality",
+            evaluator_evidence=evidence,
+        ),
+    )
     commit_generation_action(session, request, action)
 
 

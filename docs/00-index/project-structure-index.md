@@ -1,5 +1,9 @@
 # 项目结构索引
 
+> **2026-08-19 AI 内容质量升级 v2 第一阶段（本地实现，未接管生产）：** `models/ai_content_policy.py`、`ai_content_runtime.py`、`source_capacity.py` 与 migrations `0155`/`0156` 增加 policy/成人证明/task binding/context revision、window/slot、purpose route-set、Provider attempt、typed shortfall 与 source capacity 合同。`task_ai_content_activation.py` 与 `source_capacity_activation.py` 在任务保存事务校验显式 policy ID、purpose route 和 scope attestation；创建/编辑 UI 已提供对应高级字段。`ai_context_revision_binding.py` 使 current revision 失效并重建 pre-Gateway window，`generation_wait.py` 统一 quality/provider 等待、latest-safe deadline 与 typed shortfall，`generation_shortfall_projection.py` 同事务终结 FOP、评论义务或 AI content-mix/quantity owner，避免截止后再次物化。`ai_content_job_binding.py` 对 group 批次一次加载 GenerationJob/policy/scope，且成人 route 即使是唯一 allowed route 仍必须由 current evidence 命中。`source_capacity_slots.py` 负责可重放的非等距分层抖动与 gap-aware late-tail fitting，`source_capacity_plans.py` 只读取任务冻结的 active policy ID；业务 due 不变，capacity 只推进 release 并以不可变 revision 冻结真实 owner hash/ordinal。legacy 默认路径不变；shadow/canary、生产发布、任务量与 Telegram E4 仍未证明。
+
+> **2026-08-19 Provider 执行职责拆分：** `ai_generation_contract.py`、`ai_provider_candidate_runtime.py`、`ai_structured_provider_runtime.py` 分别承接稳定异常/用途合同、按优先级的普通候选 Provider 执行、两阶段结构化执行与 attempt 审计；`ai_generator.py` 保留内容语义和对外生成入口。route-set 仅对 typed transport/quota 故障按序换下一候选，全部暂时不可用时保留 `ProviderRouteDeferred`。
+
 > **2026-08-19 Telegram 资料更新响应一致性：** `backend/app/integrations/telegram/gateway.py::_update_profile_async` 在同一次 `UpdateProfileRequest` 响应中核对实际 first/last name，服务端规范化导致不一致时返回 `profile_remote_mismatch`；`account_profile_name_generation.py` 的审核符号池排除生产已证实会被丢弃的 `⭐`，避免账号安全 worker 把远端不同名持久化为成功。回归入口为 `test_profile_avatar_fingerprint_gateway.py`。
 
 > **2026-08-19 搜索发布 fence 热修入口：** `backend/app/services/task_center/dispatch_activation_ledger.py::recover_fenced_dispatch_actions` 在 Stage B 行锁收口共享 dispatch claim，并额外精确选择 current `search_click/search_join` executing Action；`backend/scripts/manage_shared_dispatch_contract.py::_reconcile_activation_ledger` 继续以 100 行循环直至 0。`search_click_unknown_projection.py::project_search_click_unknown` 由 fact-first finalizer 统一幂等投影普通 Recovery/DB error/release fence 的 unknown assignment/obligation，`unknown_deadline_closure.py::_close_business_unknown` 兼容同 Action 绑定的 legacy executing 状态。选择/幂等回归位于 `test_dispatch_activation_ledger.py`，current direct assignment、obligation、deadline 与目标守恒回归位于 `test_unknown_deadline_search_progress.py`。完整合同见 `search-dispatch-release-fence-hotfix.md`。
@@ -298,7 +302,7 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 | `backend/app/schemas/task_center.py` | 1182 |
 | `backend/app/services/task_center/details.py` | 1440 |
 | `backend/app/services/campaigns.py` | 980 |
-| `backend/app/services/task_center/ai_generator.py` | 1735 |
+| `backend/app/services/task_center/ai_generator.py` | 1501 |
 | `frontend/src/app/context.tsx` | 954 |
 | `backend/app/services/task_center/executors/group_relay.py` | 903 |
 | `backend/app/services/verification.py` | 936 |

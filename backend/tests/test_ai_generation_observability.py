@@ -8,7 +8,7 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import Action, Task, Tenant, TgGroup
+from app.models import Action, GenerationJob, Task, Tenant, TgGroup
 from app.services._common import _now
 from app.services.task_center import ai_generation_dispatch
 from app.services.task_center.ai_generation_pipeline import SlotGenerationResult
@@ -114,6 +114,48 @@ def test_phase_c_persists_explicit_static_fallback_audit_fields() -> None:
         assert action.payload["generation_source"] == "static_safe_fallback"
         assert action.payload["fallback_stage"] == "static_safe_fallback"
         assert action.payload["fallback_reason"] == "duplicate_message"
+
+
+def test_phase_c_quality_wait_requeues_obligation_instead_of_failing() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        task, action = _seed_phase_c_action(session)
+        job = GenerationJob(
+            id="quality-job",
+            tenant_id=1,
+            task_id=task.id,
+            obligation_type="group_ai_chat",
+            obligation_id=action.id,
+            generation_sequence=1,
+            context_snapshot_version=1,
+            state="generating",
+            generation_owner_id="worker-a",
+        )
+        session.add(job)
+        action.payload = {**action.payload, "generation_job_id": job.id}
+        session.commit()
+
+        ai_generation_dispatch._persist_generation_results(
+            session,
+            _phase_c_request(task, action),
+            [SlotGenerationResult(
+                GeneratedContent(
+                    "[quality_wait:1]",
+                    slot_id="generation-observable:turn:1",
+                    sequence_index=1,
+                ),
+                rejection_code="quality_wait",
+                rejection_detail="semantic quality budget exhausted",
+                evaluator_evidence={"decision": "fail"},
+            )],
+            tokens=0,
+        )
+
+        assert action.status == "pending"
+        assert action.result["generation_outcome"] == "pending"
+        assert job.state == "pending"
+        assert job.generation_stage == "quality_wait"
 
 
 def test_metrics_refresh_idempotently_separates_generation_and_gateway_unknown() -> None:

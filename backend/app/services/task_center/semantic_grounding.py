@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 
 from .message_brief import MessageBrief, normalize_text
+from .message_brief_v2 import MessageBriefV2, v2_candidate_failure
 
 
 _COMPACT_TEXT = re.compile(r"[^0-9A-Za-z\u4e00-\u9fff]+")
@@ -29,13 +30,23 @@ def lexical_grounding_evidence(
     ]
     if reply_preview.strip():
         evidence_texts.append(normalize_text(reply_preview))
-    unsupported = _unsupported_claim(content, evidence_texts, brief.forbidden_claims)
+    v2_failure = (
+        v2_candidate_failure(content, brief, tuple(evidence_texts))
+        if isinstance(brief, MessageBriefV2)
+        else ""
+    )
+    unsupported = "" if isinstance(brief, MessageBriefV2) else _unsupported_claim(
+        content,
+        evidence_texts,
+        brief.forbidden_claims,
+    )
     matches = _matching_units(content, evidence_texts)
     return {
         "collector_version": "lexical_grounding_v1",
         "used_anchor_ids": list(used_anchor_ids),
         "matched_units": matches,
         "unsupported_claim_marker": unsupported,
+        "failure_code": v2_failure,
     }
 
 

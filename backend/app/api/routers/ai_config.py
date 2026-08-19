@@ -115,7 +115,10 @@ def post_ai_provider(
 ):
     if not current_user.is_platform_admin:
         raise forbidden("platform admin required")
-    return create_ai_provider(session, payload, current_user.name)
+    try:
+        return create_ai_provider(session, payload, current_user.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.patch("/api/ai-providers/{provider_id}", response_model=AiProviderOut)
@@ -130,7 +133,9 @@ def patch_ai_provider(
     try:
         return update_ai_provider(session, provider_id, payload, current_user.name)
     except ValueError as exc:
-        raise not_found(str(exc)) from exc
+        if str(exc) == "ai provider not found":
+            raise not_found(str(exc)) from exc
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.post("/api/ai-providers/{provider_id}/check", response_model=AiProviderOut)

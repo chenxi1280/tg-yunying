@@ -23,7 +23,10 @@ def insert_context_snapshots(
     create_source_media: bool,
     learning_scene: str | None,
 ) -> int:
+    from .group_listener_ai_context import ai_context_tracking_enabled, record_ai_context_message
+
     _lock_group_speaker_state(session, group)
+    track_ai_context = ai_context_tracking_enabled(session, group)
     inserted = 0
     for snapshot in snapshots:
         # Control-event path runs before context dedupe / ignore / learning filters.
@@ -58,6 +61,8 @@ def insert_context_snapshots(
             )
         if create_source_media and message.message_type != "text":
             _ensure_source_media(session, group, account, snapshot, message)
+        if track_ai_context:
+            record_ai_context_message(session, group, message)
         inserted += 1
     return inserted
 

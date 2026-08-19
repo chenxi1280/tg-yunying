@@ -1,0 +1,296 @@
+from __future__ import annotations
+
+from datetime import datetime
+from types import SimpleNamespace
+
+import pytest
+from sqlalchemy import create_engine, event, select
+from sqlalchemy.orm import Session
+
+from app.database import Base
+from app.models import (
+    Action,
+    AdultSubjectAttestation,
+    AiContentPolicyVersion,
+    AiContentWindowPlanSlot,
+    ContextScopeRevision,
+    GenerationJob,
+    Task,
+    TaskAiContentPolicyBinding,
+)
+from app.services.task_center.ai_content_job_binding import (
+    AiContentJobBindingError,
+    bind_group_generation_contracts,
+    enrich_group_generation_slots,
+)
+
+
+pytestmark = pytest.mark.no_postgres
+
+
+def _engine():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    return engine
+
+
+def test_group_v2_binds_policy_window_and_generation_slot() -> None:
+    with Session(_engine()) as session:
+        task, action, job = _seed(session, routes=["general"])
+        payload = _payload(job.id)
+
+        config = bind_group_generation_contracts(
+            session,
+            task,
+            [(action, payload)],
+            config={"ai_content_route_v2_enabled": True},
+        )
+        slots = enrich_group_generation_slots(
+            config,
+            [(action, payload)],
+            [{"slot_id": "slot-1"}],
+        )
+        session.flush()
+        window_slot = session.scalar(select(AiContentWindowPlanSlot))
+
+        assert window_slot is not None
+        assert window_slot.claimed_by_job_id == job.id
+        assert job.window_slot_id == window_slot.id
+        assert job.task_direction_snapshot_hash == "b" * 64
+        assert slots[0]["context_route"] == "general"
+        assert slots[0]["route_evidence_ids"] == ["f1"]
+
+
+def test_group_v2_rejects_ambiguous_route_without_router_decision() -> None:
+    with Session(_engine()) as session:
+        task, action, job = _seed(
+            session,
+            routes=["general", "adult_service_sensory"],
+        )
+
+        with pytest.raises(AiContentJobBindingError, match="context_route_unproven"):
+            bind_group_generation_contracts(
+                session,
+                task,
+                [(action, _payload(job.id, history="甲: 老师今晚在吗"))],
+                config={"ai_content_route_v2_enabled": True},
+            )
+
+
+def test_group_v2_single_adult_route_still_requires_current_evidence() -> None:
+    with Session(_engine()) as session:
+        task, action, job = _seed(
+            session,
+            routes=["adult_service_sensory"],
+        )
+
+        with pytest.raises(AiContentJobBindingError, match="context_route_unproven"):
+            bind_group_generation_contracts(
+                session,
+                task,
+                [(action, _payload(job.id, history="甲: 今天天气不错"))],
+                config={"ai_content_route_v2_enabled": True},
+            )
+
+
+def test_group_v2_routes_current_sensory_evidence_without_global_adult_mode() -> None:
+    with Session(_engine()) as session:
+        task, action, job = _seed(
+            session,
+            routes=["general", "adult_service_sensory"],
+        )
+        config = bind_group_generation_contracts(
+            session,
+            task,
+            [(action, _payload(job.id, history="甲: 水滋滋，看着好润"))],
+            config={"ai_content_route_v2_enabled": True},
+        )
+
+        assert config["_ai_content_contracts"][job.id]["content_mode"] == (
+            "adult_service_sensory"
+        )
+
+
+def test_group_v2_rebinds_pre_gateway_slot_to_current_context_revision() -> None:
+    with Session(_engine()) as session:
+        task, action, job = _seed(session, routes=["general"])
+        first = bind_group_generation_contracts(
+            session,
+            task,
+            [(action, _payload(job.id))],
+            config={"ai_content_route_v2_enabled": True},
+        )
+        old_slot_id = job.window_slot_id
+        session.add(ContextScopeRevision(
+            tenant_id=1,
+            scope_type="group",
+            scope_id="7",
+            context_scope_revision=5,
+            context_snapshot_hash="d" * 64,
+        ))
+        session.flush()
+
+        second = bind_group_generation_contracts(
+            session,
+            task,
+            [(action, _payload(job.id, history="乙: 今天群里挺热闹"))],
+            config={"ai_content_route_v2_enabled": True},
+        )
+
+        assert session.get(AiContentWindowPlanSlot, old_slot_id).state == "invalidated"
+        assert job.window_slot_id != old_slot_id
+        assert job.context_snapshot_version == 5
+        assert first["_ai_content_contracts"][job.id]["window_plan_hash"] != (
+            second["_ai_content_contracts"][job.id]["window_plan_hash"]
+        )
+
+def test_group_v2_batch_loads_job_and_policy_snapshots_once() -> None:
+    engine = _engine()
+    with Session(engine) as session:
+        _task, _first_action, _first_job = _seed(session, routes=["general"])
+        for index in range(2, 6):
+            _add_group_item(session, index)
+        session.commit()
+        session.expunge_all()
+        task = session.get(Task, "task-1")
+        actions = session.scalars(select(Action).order_by(Action.id)).all()
+        batch = [
+            (action, _payload(f"job-{index}"))
+            for index, action in enumerate(actions, 1)
+        ]
+        counts = {"binding": 0, "jobs": 0}
+
+        def count_snapshot_reads(_connection, _cursor, statement, _params, _context, _many):
+            normalized = statement.lower()
+            if "from task_ai_content_policy_bindings" in normalized:
+                counts["binding"] += 1
+            if "from generation_jobs" in normalized:
+                counts["jobs"] += 1
+
+        event.listen(engine, "before_cursor_execute", count_snapshot_reads)
+        try:
+            bind_group_generation_contracts(
+                session,
+                task,
+                batch,
+                config={"ai_content_route_v2_enabled": True},
+            )
+        finally:
+            event.remove(engine, "before_cursor_execute", count_snapshot_reads)
+
+        assert counts == {"binding": 1, "jobs": 1}
+
+
+def _seed(session: Session, *, routes: list[str]):
+    task = Task(
+        id="task-1",
+        tenant_id=1,
+        name="group-ai",
+        type="group_ai_chat",
+        config_revision=3,
+        task_lifecycle_epoch=2,
+    )
+    policy = AiContentPolicyVersion(
+        id="policy-1",
+        tenant_id=1,
+        version=1,
+        status="active",
+        route_rules={"allowed_routes": routes},
+        prompt_registry={route: {"version": f"{route}_v1"} for route in routes},
+        gate_config={"forbidden_claim_categories": ["price"]},
+        example_set={"version": "examples-v1"},
+        policy_hash="p" * 64,
+    )
+    adult = AdultSubjectAttestation(
+        id="attestation-1",
+        tenant_id=1,
+        scope_type="task_group",
+        scope_id="7",
+        subject_class="adult_service",
+        evidence_codes=["adult_service_subject_verified"],
+        permission_snapshot={"adult_content_attest": True},
+        expires_at=datetime(2027, 8, 19),
+        task_config_revision=3,
+        policy_version=1,
+        status="active",
+        evidence_hash="e" * 64,
+    )
+    attestation_ids = [adult.id] if "adult_service_sensory" in routes else []
+    binding = TaskAiContentPolicyBinding(
+        tenant_id=1,
+        task_id=task.id,
+        task_lifecycle_epoch=2,
+        task_config_revision=3,
+        policy_version_id=policy.id,
+        allowed_routes=routes,
+        attestation_ids=attestation_ids,
+        evidence_hash="b" * 64,
+        approved_by="reviewer",
+    )
+    action = Action(
+        id="action-1",
+        tenant_id=1,
+        task_id=task.id,
+        task_type="group_ai_chat",
+        action_type="send_message",
+        account_id=9,
+        scheduled_at=datetime(2026, 8, 19, 10, 20),
+        pacing_due_at=datetime(2026, 8, 19, 10, 20),
+        pacing_plan_hash="a" * 64,
+        pacing_slot_ordinal=2,
+        obligation_type="group_ai_chat",
+        obligation_id="owner-1",
+    )
+    job = GenerationJob(
+        id="job-1",
+        tenant_id=1,
+        task_id=task.id,
+        task_lifecycle_epoch=2,
+        obligation_type="group_ai_chat",
+        obligation_id="owner-1",
+        generation_sequence=1,
+        context_snapshot_version=4,
+        context_snapshot_hash="c" * 64,
+        state="generating",
+    )
+    session.add_all((task, policy, adult, binding, action, job))
+    session.flush()
+    return task, action, job
+
+
+def _payload(job_id: str, *, history: str = "甲: 今天群里挺热闹"):
+    return SimpleNamespace(
+        generation_job_id=job_id,
+        group_id=7,
+        ai_generation_history=history,
+    )
+
+
+def _add_group_item(session: Session, index: int) -> None:
+    action = Action(
+        id=f"action-{index}",
+        tenant_id=1,
+        task_id="task-1",
+        task_type="group_ai_chat",
+        action_type="send_message",
+        account_id=index + 8,
+        scheduled_at=datetime(2026, 8, 19, 10, 20 + index),
+        pacing_due_at=datetime(2026, 8, 19, 10, 20 + index),
+        pacing_plan_hash="a" * 64,
+        pacing_slot_ordinal=index,
+        obligation_type="group_ai_chat",
+        obligation_id=f"owner-{index}",
+    )
+    job = GenerationJob(
+        id=f"job-{index}",
+        tenant_id=1,
+        task_id="task-1",
+        task_lifecycle_epoch=2,
+        obligation_type="group_ai_chat",
+        obligation_id=f"owner-{index}",
+        generation_sequence=1,
+        context_snapshot_version=4,
+        context_snapshot_hash="c" * 64,
+        state="generating",
+    )
+    session.add_all((action, job))

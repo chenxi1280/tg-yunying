@@ -24,7 +24,12 @@ from app.models import (
     Tenant,
     TgAccount,
 )
-from app.schemas.task_center import ChannelCommentConfig, GroupAIChatConfig
+from app.schemas.task_center import (
+    ChannelCommentConfig,
+    GroupAIChatConfig,
+    PacingConfig,
+    TaskSettingsUpdate,
+)
 from app.services.task_center import account_pacing_guard
 from app.services.task_center.account_pacing_guard import (
     _earliest_available_time,
@@ -615,6 +620,37 @@ def test_two_stage_flag_is_supported_by_strict_task_schemas() -> None:
     assert comment.ai_two_stage_enabled is True
     assert group.ai_semantic_reviewer_model == "reviewer-v1"
     assert comment.ai_semantic_reviewer_model == "reviewer-v1"
+
+
+def test_v2_routes_require_explicit_policy_bindings() -> None:
+    with pytest.raises(ValidationError, match="必须绑定已激活策略版本"):
+        GroupAIChatConfig(
+            target_input="@group",
+            ai_two_stage_enabled=True,
+            ai_model="generator-v1",
+            ai_semantic_reviewer_model="reviewer-v1",
+            ai_content_route_v2_enabled=True,
+            ai_content_allowed_routes=["general"],
+        )
+    pacing = PacingConfig(
+        source_capacity_v2_enabled=True,
+        source_capacity_policy_version_id="capacity-policy-v1",
+    )
+
+    assert pacing.source_capacity_v2_enabled is True
+
+
+def test_task_settings_accepts_complete_v2_route_patch() -> None:
+    patch = TaskSettingsUpdate(
+        ai_two_stage_enabled=True,
+        ai_semantic_reviewer_model="reviewer-v1",
+        ai_content_route_v2_enabled=True,
+        ai_content_policy_version_id="policy-v1",
+        ai_content_allowed_routes=["general"],
+        ai_content_attestation_ids=[],
+    )
+
+    assert patch.ai_content_policy_version_id == "policy-v1"
 
 
 @pytest.mark.parametrize("config_type,target", [

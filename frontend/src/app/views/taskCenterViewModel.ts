@@ -298,6 +298,11 @@ export function csvNumbers(value?: Array<number | string> | string | null): numb
   return [];
 }
 
+export function csvStrings(value?: string[] | string | null): string[] {
+  const raw = Array.isArray(value) ? value : String(value ?? '').split(/[,，\n\s]+/);
+  return [...new Set(raw.map((item) => String(item).trim()).filter(Boolean))];
+}
+
 export function curveNumbers(value?: Array<number | string> | string | null): number[] {
   const raw = Array.isArray(value) ? value : String(value ?? '').split(/[,，\n\s]+/);
   const curve = raw
@@ -525,6 +530,10 @@ export function typeInitialValues(type: TaskCenterTaskType, setting?: Scheduling
       language: 'zh-CN',
       ai_two_stage_enabled: false,
       ai_semantic_reviewer_model: '',
+      ai_content_route_v2_enabled: false,
+      ai_content_policy_version_id: '',
+      ai_content_allowed_routes: ['general'],
+      ai_content_attestation_ids: [],
     };
   }
   if (type === 'group_relay') {
@@ -596,6 +605,10 @@ export function typeInitialValues(type: TaskCenterTaskType, setting?: Scheduling
     comment_style: 'mixed',
     ai_two_stage_enabled: false,
     ai_semantic_reviewer_model: '',
+    ai_content_route_v2_enabled: false,
+    ai_content_policy_version_id: '',
+    ai_content_allowed_routes: ['general'],
+    ai_content_attestation_ids: [],
   };
 }
 
@@ -713,7 +726,8 @@ export function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: stri
   if (isSimpleSearchClickTask(taskType)) return ['target_title', 'target_link', 'keywords', ...simpleSearchTargetFields(taskType), ...simpleSearchExecutionFields(taskType)];
   const commonFields = ['name', 'scheduled_end', 'operation_template_id', 'hourly_activity_curve', 'quiet_threshold', 'peak_threshold'];
   const hourlyFields = ['group_relay', 'group_membership_admission'].includes(taskType) ? ['max_actions_per_hour'] : [];
-  const baseFields = [...commonFields, ...accountSelectionFields(accountMode), 'max_concurrent', 'cooldown_per_account_minutes', 'ban_policy', ...hourlyFields, 'max_retries'];
+  const capacityFields = ['group_ai_chat', 'channel_comment', 'channel_like', 'channel_view'].includes(taskType) ? ['source_capacity_v2_enabled', 'source_capacity_policy_version_id'] : [];
+  const baseFields = [...commonFields, ...accountSelectionFields(accountMode), 'max_concurrent', 'cooldown_per_account_minutes', 'ban_policy', ...hourlyFields, ...capacityFields, 'max_retries'];
   if (taskType === 'group_ai_chat') {
     return [
       ...baseFields,
@@ -744,6 +758,10 @@ export function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: stri
       'context_expire_after_messages',
       'ai_two_stage_enabled',
       'ai_semantic_reviewer_model',
+      'ai_content_route_v2_enabled',
+      'ai_content_policy_version_id',
+      'ai_content_allowed_routes',
+      'ai_content_attestation_ids',
     ];
   }
   if (taskType === 'group_relay') {
@@ -781,14 +799,15 @@ export function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: stri
   if (taskType === 'channel_like') {
     return [...baseFields, ...channelScopeFields(messageScope), 'target_likes_per_message', 'like_count_jitter', 'reaction_type', 'allowed_reactions'];
   }
-  return [...baseFields, ...channelScopeFields(messageScope), 'target_comments_per_message', 'max_total_comments', 'max_total_comments_jitter', 'reply_min_per_message', 'rule_set_id', 'rule_set_version_id', 'comment_style', 'topic_hint', 'ai_two_stage_enabled', 'ai_semantic_reviewer_model'];
+  return [...baseFields, ...channelScopeFields(messageScope), 'target_comments_per_message', 'max_total_comments', 'max_total_comments_jitter', 'reply_min_per_message', 'rule_set_id', 'rule_set_version_id', 'comment_style', 'topic_hint', 'ai_two_stage_enabled', 'ai_semantic_reviewer_model', 'ai_content_route_v2_enabled', 'ai_content_policy_version_id', 'ai_content_allowed_routes', 'ai_content_attestation_ids'];
 }
 
 export function editFieldsForSubmit(taskType: TaskCenterTaskType, accountMode: string, pacingMode: string): string[] {
   void pacingMode;
   if (isSimpleSearchClickTask(taskType)) return ['target_title', 'target_link', 'keywords', ...simpleSearchTargetFields(taskType), ...simpleSearchExecutionFields(taskType, true)];
   const hourlyFields = ['group_relay', 'group_membership_admission'].includes(taskType) ? ['max_actions_per_hour'] : [];
-  const baseFields = ['name', 'scheduled_end', 'operation_template_id', 'hourly_activity_curve', 'quiet_threshold', 'peak_threshold', ...accountFields(accountMode), ...hourlyFields, 'max_retries'];
+  const capacityFields = ['group_ai_chat', 'channel_comment', 'channel_like', 'channel_view'].includes(taskType) ? ['source_capacity_v2_enabled', 'source_capacity_policy_version_id'] : [];
+  const baseFields = ['name', 'scheduled_end', 'operation_template_id', 'hourly_activity_curve', 'quiet_threshold', 'peak_threshold', ...accountFields(accountMode), ...hourlyFields, ...capacityFields, 'max_retries'];
   if (taskType === 'group_ai_chat') {
     return [
       ...baseFields,
@@ -827,6 +846,10 @@ export function editFieldsForSubmit(taskType: TaskCenterTaskType, accountMode: s
       'context_expire_after_messages',
       'ai_two_stage_enabled',
       'ai_semantic_reviewer_model',
+      'ai_content_route_v2_enabled',
+      'ai_content_policy_version_id',
+      'ai_content_allowed_routes',
+      'ai_content_attestation_ids',
     ];
   }
   if (taskType === 'group_relay') {
@@ -838,5 +861,5 @@ export function editFieldsForSubmit(taskType: TaskCenterTaskType, accountMode: s
   if (taskType === 'channel_like') {
     return [...baseFields, 'target_likes_per_message', 'like_count_jitter', 'reaction_type', 'allowed_reactions', 'max_likes_per_account_per_hour'];
   }
-  return [...baseFields, 'target_comments_per_message', 'max_total_comments', 'max_total_comments_jitter', 'reply_min_per_message', 'rule_set_id', 'rule_set_version_id', 'ai_model', 'comment_style', 'topic_hint', 'system_prompt_override', 'language', 'max_comment_length', 'max_comments_per_account_per_hour', 'ai_two_stage_enabled', 'ai_semantic_reviewer_model'];
+  return [...baseFields, 'target_comments_per_message', 'max_total_comments', 'max_total_comments_jitter', 'reply_min_per_message', 'rule_set_id', 'rule_set_version_id', 'ai_model', 'comment_style', 'topic_hint', 'system_prompt_override', 'language', 'max_comment_length', 'max_comments_per_account_per_hour', 'ai_two_stage_enabled', 'ai_semantic_reviewer_model', 'ai_content_route_v2_enabled', 'ai_content_policy_version_id', 'ai_content_allowed_routes', 'ai_content_attestation_ids'];
 }

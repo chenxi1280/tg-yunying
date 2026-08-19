@@ -8,6 +8,8 @@ from .operations import *  # noqa: F401,F403
 from .operation_plans import *  # noqa: F401,F403
 from .proxy_airport import *  # noqa: F401,F403
 from .ai import *  # noqa: F401,F403
+from .ai_content_policy import *  # noqa: F401,F403
+from .ai_content_runtime import *  # noqa: F401,F403
 from .archives import *  # noqa: F401,F403
 from .campaigns import *  # noqa: F401,F403
 from .cloning import *  # noqa: F401,F403
@@ -37,5 +39,6 @@ from .fulfillment_facts import *  # noqa: F401,F403
 from .search_click_assignment import *  # noqa: F401,F403
 from .fulfillment_v2 import *  # noqa: F401,F403
 from .pacing import *  # noqa: F401,F403
+from .source_capacity import *  # noqa: F401,F403
 from .planner_runtime import *  # noqa: F401,F403
 from .task_contract_activation import *  # noqa: F401,F403

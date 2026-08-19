@@ -35,6 +35,7 @@ from ..source_pacing import (
     source_pacing_plan_hash,
     wall_datetime,
 )
+from ..source_capacity_plans import apply_source_capacity_plan
 from ..source_owner_cursor import attach_owner_history, pacing_source_key_hash
 from .channel_like_reactions import reaction_plan as _reaction_plan
 from .common import adjust_for_account_hour_limit, channel_message_payload, channel_scope, quantity_jitter_bounds, record_channel_capacity_warning
@@ -193,13 +194,25 @@ def _like_due_by_slot(
             config=task.pacing_config or {},
             seed_id=f"like:{task.id}",
         )
-        return schedule_source_pacing_points(
+        points = schedule_source_pacing_points(
             slots,
             task.pacing_config or {},
             now_at=wall_datetime(now_at),
             timezone_name=task.timezone,
             seed_id=f"like:{task.id}",
         )
+        points, slots = apply_source_capacity_plan(
+            session,
+            task,
+            slots,
+            points=points,
+            pacing_domain="reaction",
+        )
+        for slot in slots:
+            owner = owners[slot.slot_key]
+            owner.source_capacity_plan_hash = slot.source_capacity_plan_hash
+            owner.source_capacity_slot_ordinal = slot.source_capacity_slot_ordinal
+        return points
     deadline = next_local_day_deadline(now_at, task.timezone)
     times = schedule_times(
         len(actions), task.pacing_config or {}, start_at=now_at,
@@ -383,6 +396,8 @@ def _like_source_slot(
         task_lifecycle_epoch=int(task.task_lifecycle_epoch or 1),
         pacing_period_key=f"message:{item.message.id}",
         pacing_source_key_hash=source_hash,
+        source_capacity_plan_hash=owner.source_capacity_plan_hash,
+        source_capacity_slot_ordinal=owner.source_capacity_slot_ordinal,
     )
 
 

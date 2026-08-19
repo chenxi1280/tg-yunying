@@ -66,6 +66,7 @@ def _generation_action_values(action: Action) -> dict:
         "payload": action.payload,
         "result": action.result,
         "status": action.status,
+        "scheduled_at": action.scheduled_at,
         "executed_at": action.executed_at,
         "claim_owner": action.claim_owner,
         "claim_token": action.claim_token,

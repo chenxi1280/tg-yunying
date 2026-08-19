@@ -27,6 +27,7 @@ from ..source_pacing import (
     source_pacing_plan_hash,
     wall_datetime,
 )
+from ..source_capacity_plans import apply_source_capacity_plan
 from ..source_owner_cursor import attach_owner_history, pacing_source_key_hash
 from .channel_comment_schedule import materialized_reply_slots
 from .common import (
@@ -169,6 +170,13 @@ def _current_comment_schedule(
         sources, task.pacing_config or {}, now_at=wall_datetime(now_at),
         timezone_name=task.timezone, seed_id=f"comment:{task.id}",
     )
+    points, sources = apply_source_capacity_plan(
+        session,
+        task,
+        sources,
+        points=points,
+        pacing_domain="comment",
+    )
     scheduled = [slot for slot in slots if _comment_slot_key(slot) in points]
     due = {key: point.due_at for key, point in points.items()}
     releases = {key: point.release_not_before_at for key, point in points.items()}
@@ -198,6 +206,9 @@ def _freeze_comment_pacing(
         release_not_before_at=release_not_before_at,
         source_identity=source.owner_identity,
     )
+    if source.source_capacity_plan_hash:
+        slot.obligation.source_capacity_plan_hash = source.source_capacity_plan_hash
+        slot.obligation.source_capacity_slot_ordinal = source.source_capacity_slot_ordinal
 
 
 def _record_comment_shortfall(task: Task, requested: int, scheduled: int) -> None:
@@ -253,6 +264,8 @@ def _comment_source_slots(
             task_lifecycle_epoch=int(task.task_lifecycle_epoch or 1),
             pacing_period_key=f"message:{message_id}",
             pacing_source_key_hash=source_hash,
+            source_capacity_plan_hash=slot.obligation.source_capacity_plan_hash,
+            source_capacity_slot_ordinal=slot.obligation.source_capacity_slot_ordinal,
         ))
     return result
 

@@ -7,9 +7,13 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import Action, Task, Tenant, TgAccount, TgGroup
+from app.models import Action, GenerationJob, Task, Tenant, TgAccount, TgGroup
 from app.services._common import _now
-from app.services.task_center.ai_generator import AiGenerationUnavailable, GeneratedContent
+from app.services.task_center.ai_generator import (
+    AiGenerationUnavailable,
+    GeneratedContent,
+    ProviderRouteDeferred,
+)
 from app.services.task_center.ai_generation_quality import fail_generation_action
 from app.services.task_center.ai_generation_worker import (
     GenerationAdmissionDeferred,
@@ -475,6 +479,40 @@ def test_generation_worker_exposes_unpersisted_generation_failure() -> None:
                 _raise_generation_unavailable("provider_transport")
             ),
         )
+
+
+def test_generation_worker_defers_route_transport_without_failing_action(tmp_path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'provider-deferred.db'}", future=True)
+    Base.metadata.create_all(engine)
+    _seed_actions(engine)
+    with Session(engine) as session:
+        task = session.get(Task, "ai-task")
+        task.fulfillment_contract_version = "fact_first_v3"
+        session.commit()
+
+    def defer_route(*_args) -> None:
+        raise ProviderRouteDeferred("all providers timed out", retry_after_seconds=45)
+
+    assert drain_ai_generation(
+        lambda: Session(engine),
+        limit=1,
+        generate_action=defer_route,
+    ) == 1
+
+    with Session(engine) as session:
+        action = session.get(Action, "pending-generation")
+        job = session.scalar(select(GenerationJob).where(
+            GenerationJob.obligation_id == action.obligation_id,
+        ))
+        assert action.status == "pending"
+        assert action.payload["ai_generation_status"] == "pending"
+        assert action.result["generation_stage"] == "waiting_provider"
+        assert action.result["error_code"] == "provider_route_deferred"
+        assert job is not None
+        assert job.state == "pending"
+        assert job.generation_stage == "waiting_provider"
+        assert job.next_retry_at is not None
+        assert job.generation_owner_id == ""
 
 
 def _raise_generation_unavailable(code: str) -> None:
