@@ -4604,6 +4604,12 @@ def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(
                 "api_key_header": "Authorization",
             },
         ).json()
+        checked = client.post(
+            f"/api/ai-providers/{provider['id']}/check",
+            headers=headers,
+        )
+        assert checked.status_code == 200, checked.text
+        assert checked.json()["health_status"] == "健康"
         client.patch(
             "/api/tenant-ai-settings?tenant_id=1",
             headers=headers,
