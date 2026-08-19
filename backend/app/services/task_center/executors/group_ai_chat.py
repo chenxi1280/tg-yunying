@@ -1511,22 +1511,44 @@ def _freeze_ai_pacing_assignment(
     capacity_slot: SourcePacingSlot | None = None,
 ) -> None:
     source = assignment.source_slot
+    config = task.pacing_config or {}
+    seed_id = f"ai:{task.id}"
     freeze_pacing_owner(
         assignment.owner,
         plan_hash=source_pacing_plan_hash(
             source,
-            task.pacing_config or {},
-            seed_id=f"ai:{task.id}",
+            config,
+            seed_id=seed_id,
         ),
         slot_ordinal=source.slot_ordinal,
         plan_total=source.plan_total,
         due_at=due_at,
         release_not_before_at=release_not_before_at,
         source_identity=source.owner_identity,
+        previous_plan_hash=_previous_ai_plan_hash(
+            assignment,
+            source,
+            config=config,
+            seed_id=seed_id,
+        ),
     )
     if capacity_slot and capacity_slot.source_capacity_plan_hash:
         assignment.owner.source_capacity_plan_hash = capacity_slot.source_capacity_plan_hash
         assignment.owner.source_capacity_slot_ordinal = capacity_slot.source_capacity_slot_ordinal
+
+
+def _previous_ai_plan_hash(
+    assignment: AiPacingAssignment,
+    source: SourcePacingSlot,
+    *,
+    config: dict,
+    seed_id: str,
+) -> str | None:
+    previous_total = int(assignment.owner.pacing_plan_total or 0)
+    if previous_total <= 0 or previous_total >= source.plan_total:
+        return None
+    previous_source = replace(source, plan_total=previous_total)
+    return source_pacing_plan_hash(previous_source, config, seed_id=seed_id)
 
 
 def _immutable_generation_slots(

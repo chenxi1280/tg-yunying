@@ -257,7 +257,7 @@ def test_closed_reservation_does_not_block_fact_first_claim_batch(
     assert action.status == "pending"
 
 
-def test_fact_first_channel_failure_is_rebuilt_instead_of_legacy_retry(
+def test_closed_fact_first_channel_failure_is_not_legacy_retried(
     session: Session,
 ) -> None:
     task, ledger, messages = _seed_view_period(session)
@@ -266,7 +266,9 @@ def test_fact_first_channel_failure_is_rebuilt_instead_of_legacy_retry(
     owner = _view_owner(ledger, messages[0], plan_total=600)
     action = _view_action(task, owner, release_at=NOW)
     action.status = "failed"
-    session.add_all([owner, action])
+    reservation = _account_reservation(task, action, deadline=DEADLINE, future=NOW)
+    reservation.state = "missed"
+    session.add_all([owner, action, reservation])
     session.commit()
 
     retried = retry_failed_actions(session, task, now_value=NOW)

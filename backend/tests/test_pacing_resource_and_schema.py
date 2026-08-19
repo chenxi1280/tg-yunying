@@ -211,6 +211,23 @@ def test_freeze_pacing_owner_allows_monotonic_target_increase() -> None:
     assert owner.release_not_before_at == new_release
 
 
+def test_freeze_pacing_owner_allows_verified_plan_hash_change_on_increase() -> None:
+    owner = _frozen_owner_with_total(826)
+    owner.pacing_plan_hash = "old-plan-hash"
+
+    freeze_pacing_owner(
+        owner,
+        plan_hash="new-plan-hash",
+        slot_ordinal=41,
+        plan_total=828,
+        due_at=datetime(2026, 8, 16, 12, 0),
+        previous_plan_hash="old-plan-hash",
+    )
+
+    assert owner.pacing_plan_total == 828
+    assert owner.pacing_plan_hash == "new-plan-hash"
+
+
 def test_freeze_pacing_owner_rejects_identity_regression() -> None:
     """plan_hash/slot_ordinal 漂移、plan_total 下调、total 不变的 due 漂移仍必须拒绝。"""
     with pytest.raises(PacingOwnerImmutableConflict):

@@ -172,15 +172,43 @@ def v2_realizer_system_prompt(brief: MessageBriefV2) -> str:
         "general": "只接普通事实；像群友随手说，不总结、不精致点评、不强转成人。",
         "adult_visual": "只接成年视觉事实；短、直、粗粝，可参考真美、好润、水滋滋，禁止甜宠审美腔。",
         "adult_product": "只接一个成人用品点；像买家短问，禁止空泛夸赞或编使用经历。",
-        "adult_service_inquiry": "只问价格、区域、空闲、项目、时长、本人或预约中的一个，不作断言。",
-        "adult_service_sensory": "只写2到6字；优先好润、水多不？这类直接感官短句，不修饰衣物。",
+        "adult_service_inquiry": "只问 brief claim 指定的一类服务信息，不作断言，不加称呼或寒暄。",
+        "adult_service_sensory": _sensory_realizer_rule(brief),
     }
+    claim_rule = _service_claim_realizer_rule(brief)
+    length_rule = {
+        "micro": "正文1到8字",
+        "short": "正文9到24字",
+        "medium": "正文至少25字",
+    }[brief.length_band]
     return (
         "把已审核 brief 写成一条自然中文 Telegram 消息。"
-        f"{mode_rules[brief.content_mode]}只用 evidence，保持 brief 的 speech_act；"
+        f"{mode_rules[brief.content_mode]}{claim_rule}{length_rule}；只用 evidence，保持 brief 的 speech_act；"
         "禁止软软的、水灵灵的、好心动、挺好看的、这状态真不错；"
+        "禁止老板、老师、早上好、上午好、晚上好等称呼寒暄；"
         "输出 content、used_anchor_ids、speech_act、voice_profile_version JSON。"
     )
+
+
+def _sensory_realizer_rule(brief: MessageBriefV2) -> str:
+    if brief.speech_act == "question":
+        return "只写2到6字问句，像水多不？润不润？必须以问号结尾。"
+    return "只写2到6字陈述短句，像好润、水滋滋；禁止问号和发生过性行为的猜测。"
+
+
+def _service_claim_realizer_rule(brief: MessageBriefV2) -> str:
+    if brief.content_mode != "adult_service_inquiry" or not brief.claims:
+        return ""
+    rules = {
+        "price_question": "只问价格；",
+        "region_question": "只问区域；",
+        "availability_question": "只问现在或今天是否有空；",
+        "service_question": "只问有什么项目或都做什么；",
+        "duration_question": "只问时长；",
+        "identity_question": "只问是否本人；",
+        "booking_question": "只问怎么预约；",
+    }
+    return rules.get(brief.claims[0].category, "")
 
 
 def v2_candidate_failure(

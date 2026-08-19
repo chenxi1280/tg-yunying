@@ -25,17 +25,26 @@ def freeze_pacing_owner(
     due_at: datetime,
     release_not_before_at: datetime | None = None,
     source_identity: tuple[int, str, str] | None = None,
+    previous_plan_hash: str | None = None,
 ) -> datetime:
     if source_identity is not None:
         _freeze_source_identity(owner, source_identity)
     existing = getattr(owner, "pacing_due_at", None)
     if existing is not None:
-        if _assert_frozen_identity(owner, plan_hash, slot_ordinal, plan_total, due_at):
+        if _assert_frozen_identity(
+            owner,
+            plan_hash,
+            slot_ordinal,
+            plan_total,
+            due_at,
+            previous_plan_hash=previous_plan_hash,
+        ):
             # 目标上调迁移：identity 不变、仅 plan_total 单调上调时，允许未绑定
             # active Action 的 owner 升级冻结的 total/due/release（quantity_ordinal、
             # due_unit_key 与 immutable settlement 合同不受影响）。
             if hasattr(owner, "pacing_plan_total"):
                 owner.pacing_plan_total = plan_total
+            owner.pacing_plan_hash = plan_hash
             owner.pacing_due_at = due_at
             owner.release_not_before_at = release_not_before_at or due_at
             return owner.release_not_before_at
@@ -98,6 +107,8 @@ def _assert_frozen_identity(
     slot_ordinal: int,
     plan_total: int,
     due_at: datetime,
+    *,
+    previous_plan_hash: str | None,
 ) -> bool:
     """校验已冻结 owner 与新计划一致；返回 True 表示允许目标单调上调迁移。"""
     current_total = (
@@ -107,8 +118,12 @@ def _assert_frozen_identity(
         owner.pacing_plan_hash == plan_hash,
         owner.pacing_slot_ordinal == slot_ordinal,
     )
+    monotonic_hashes = {plan_hash}
+    if previous_plan_hash:
+        monotonic_hashes.add(previous_plan_hash)
     if (
-        all(identity_match)
+        owner.pacing_plan_hash in monotonic_hashes
+        and owner.pacing_slot_ordinal == slot_ordinal
         and current_total is not None
         and plan_total > int(current_total)
     ):

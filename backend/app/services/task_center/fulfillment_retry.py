@@ -4,9 +4,9 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 
-from app.models import Action, Task
+from app.models import AccountPacingReservation, Action, Task
 from .fulfillment_activation import CURRENT_CONTRACT_VERSION
 from .fulfillment_takeover import FULFILLMENT_CONTRACT_VERSION
 
@@ -88,7 +88,7 @@ def _action_retry_is_blocked(task: Task, action: Action) -> bool:
         return True
     if _is_bound_fact_first_group_ai_action(task, action):
         return True
-    if _is_bound_fact_first_channel_action(task, action):
+    if _is_closed_fact_first_channel_action(task, action):
         return True
     if _is_bound_comment_action(task, action):
         return True
@@ -108,14 +108,21 @@ def _is_bound_fact_first_group_ai_action(task: Task, action: Action) -> bool:
     )
 
 
-def _is_bound_fact_first_channel_action(task: Task, action: Action) -> bool:
-    return bool(
+def _is_closed_fact_first_channel_action(task: Task, action: Action) -> bool:
+    current_channel_action = (
         task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION
         and (
             (task.type == "channel_view" and action.action_type == "view_message")
             or (task.type == "channel_like" and action.action_type == "like_message")
         )
     )
+    session = object_session(action)
+    if not current_channel_action or session is None:
+        return False
+    state = session.scalar(select(AccountPacingReservation.state).where(
+        AccountPacingReservation.action_id == action.id,
+    ))
+    return state is not None and state not in {"reserved", "bound"}
 
 
 def _is_bound_comment_action(task: Task, action: Action) -> bool:

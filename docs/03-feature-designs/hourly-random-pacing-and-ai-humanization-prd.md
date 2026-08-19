@@ -474,6 +474,8 @@ speech_act + length_band + opening_function_pattern + punctuation_profile + synt
 
 2026-08-19 生产发布后发现存量逾期 Action 仍存在独立缺口：已绑定 Action 不会重新进入 planner recovery，且其来源状态在首次准入或已追平旧 cursor 时会直接按过期 `release_not_before_at` 放行，多个来源因此可在同一 claim 周期同步发送。当前实现增加 `source_pacing_recovery.late_admission_not_before`：仅对超过正常调度容差、尚未进入本次 Gateway 的新 admission 冻结由 Action 身份确定的恢复点，范围为原来源 gap 的 `0.8..1.8` 倍；正常秒级 lag 和显式远端失败 retry 不改写。该修复已通过定向本地回归，生产跨 Task 错峰和 typed remote fact E4 仍须重新发布后验证，不能据此提前写 `production_fixed`。
 
+同日生产还发现 AI 日目标变化留下多组 `pacing_plan_total` 时，Planner 会持续报 `pacing_owner_immutable_conflict`：`pacing_plan_hash` 包含 total，旧实现却要求上调前后 hash 相同。修订后的 AI owner 迁移先按 owner 旧 total 重算并核对旧 hash，再同时升级 total/hash/due/release；缺少旧 hash 证明、目标下调、slot 漂移或其他配置漂移仍明确阻断，不能以宽松覆盖消除冲突。
+
 ### 8.2 已实现但待本轮复核的范围
 
 - pacing：稳定 slot/due、四类 planner 接入、持久账号时间线、移除本次链路的 future→now、详情投影；capacity 候选拆到 `source_capacity_slots.py`，`source_capacity_plans.py` 保持 500 行以内；

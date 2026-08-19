@@ -118,6 +118,9 @@ def test_inquiry_candidate_must_match_frozen_claim_category() -> None:
     )
 
     assert brief is not None
+    prompt = v2_realizer_system_prompt(brief)
+    assert "只问价格" in prompt
+    assert "不加称呼或寒暄" in prompt
     assert v2_candidate_failure("价格多少？", brief) == ""
     assert v2_candidate_failure("上海还能约吗？", brief) == "claim_category_mismatch"
 
