@@ -220,7 +220,12 @@ def _group_contract_request(
         job=job,
         scope_id=str(getattr(payload, "group_id", "") or ""),
         evidence_lines=evidence,
-        route=_context_route(config, binding, evidence),
+        route=_context_route(
+            config,
+            binding,
+            evidence,
+            selector=int(action.pacing_slot_ordinal or job.generation_sequence or 0),
+        ),
     )
 
 
@@ -261,6 +266,8 @@ def _context_route(
     config: dict,
     binding: TaskAiContentPolicyBinding,
     evidence_lines: tuple[str, ...],
+    *,
+    selector: int = 0,
 ) -> str:
     explicit = str(config.get("ai_content_context_route") or "").strip()
     allowed = tuple(str(item) for item in (binding.allowed_routes or ()))
@@ -271,6 +278,13 @@ def _context_route(
         route for route, markers in _ROUTE_MARKERS.items()
         if route in allowed and any(marker in evidence for marker in markers)
     )
+    service_modes = {
+        "adult_service_inquiry",
+        "adult_service_sensory",
+    }
+    if service_modes <= set(matched):
+        ordered = tuple(route for route in matched if route in service_modes)
+        return ordered[selector % len(ordered)]
     if len(matched) == 1:
         return matched[0]
     if not matched and "general" in allowed and not any(

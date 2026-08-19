@@ -38,6 +38,8 @@ SEMANTIC_REVIEW_CONFIDENCE_THRESHOLD = 0.8
 SEMANTIC_REVIEW_SYSTEM_PROMPT = """你是独立内容审核模型，不改写文案。
 先逐项核对事实支持、上下文承接和账号声线，再给结论；不得因文案更长或位置靠前而偏好。
 只依据输入的 allowed_facts、brief、voice_profile 与 candidate，不使用外部知识。
+普通话题不得强转成人；成人服务询问只能单点提问；成人服务感官短句中“好润”“水多不？”应视为自然，
+“软软的”“水灵灵的”“好心动”“挺好看的”“这状态真不错”属于甜宠或精致 AI 腔，必须失败。
 输出 JSON：decision(pass/fail/uncertain)、confidence(0-1)、codes、evidence、prompt_version。"""
 
 BriefPlanner = Callable[..., tuple[object, int]]

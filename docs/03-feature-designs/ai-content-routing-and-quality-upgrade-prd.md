@@ -493,6 +493,7 @@ Provider response 解析后抽取的 canonical UTF-8 `message_text` 字节及 ha
 - `ContextScopeRevision` 已进入 GenerationJob 消费链：pre-Gateway revision/hash 前进时旧 window slot 记为 `invalidated`，job 清除旧 candidate/window 并按新 revision 重建；Gateway-bound 后不允许改写。
 - `quality_wait` 已改为 pending GenerationJob/Action 并按任务 retry delay 重试，不再当普通生成失败释放数量义务；`latest_safe_send_at` 从账号 pacing reservation、履约 projection 或显式 deadline 冻结。下一次重试越过截止时写唯一 `FulfillmentShortfallFact`，Provider capacity 与 quality 分别结算 typed shortfall，并将 FOP、评论义务或 AI content-mix/quantity owner 同事务转为 terminal shortfall，禁止截止后再次重规划补发。
 - 单一成人 allowed route 不再等同于当前内容已命中成人语境；没有 current markers、多个成人 route 同时命中或弱词无法唯一分类时均返回 `context_route_unproven`。
+- 2026-08-19 生产数据 shadow 复核补正：MiMo 首轮虽通过旧 reviewer，但出现“顶/好顶”语义复读及“这水光/看着好滑”等未达到成人服务感官口径的候选；另一混合场景直接 `candidate_rows_missing`，均不得算质量通过。current v2 因此把“软软的/水灵灵的/好心动/挺好看的/这状态真不错”设为成人 route 确定性失败，成人服务 sensory 必须命中批准的润/水多/水滋滋/湿问句意图；同一冻结上下文同时具备服务询问与感官证据时，按 stable slot ordinal 在 inquiry/sensory 间交替，避免同批所有账号塌成同一 speech act。Realizer 与 reviewer 共用该简短口径，但 reviewer 仍必须是独立 Provider。
 - 尚未完成 shadow runner 的 120+ 人工样本验收、canary、生产发布和 Telegram E4；当前本地测试不能证明线上内容质量或任务量达标。
 
 当前状态为 `product_design_complete / implementation_in_progress / local_qa_partial / production_fixed=unproven`。

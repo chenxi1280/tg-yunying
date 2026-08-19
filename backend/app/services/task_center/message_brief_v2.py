@@ -36,6 +36,14 @@ _EXACT_PRICE = re.compile(rf"(?:¥|￥)?{_NUMBER}(?:元|块钱|块)")
 _CONTACT = re.compile(r"(?:微信|vx|v信|电话|手机号|TG|Telegram)[:：]?\s*[A-Za-z0-9_+-]{5,}", re.I)
 _WRONG_SENSORY_OBJECT = re.compile(r"(?:衣服|裙子|裤子|布料).{0,4}(?:润|湿|水多)")
 _ADULT_MARKERS = ("好润", "水多", "湿不湿", "多少钱", "包夜", "上门")
+_ADULT_CUTESY_MARKERS = (
+    "软软的",
+    "水灵灵",
+    "好心动",
+    "挺好看的",
+    "真不错",
+)
+_SENSORY_INTENT_MARKERS = ("润", "水多", "水滋滋", "湿不湿", "润不润")
 _UNSUPPORTED_ASSERTIONS = {
     "experience": ("我去过", "我用过", "我试过", "亲自体验", "上次去"),
     "transaction": ("我下单", "我付款", "已经买", "刚买", "成交了"),
@@ -161,15 +169,16 @@ def v2_planner_system_prompt() -> str:
 
 def v2_realizer_system_prompt(brief: MessageBriefV2) -> str:
     mode_rules = {
-        "general": "只接普通事实，不强转成人话题。",
-        "adult_visual": "只接成年视觉事实，不虚构服务交易。",
-        "adult_product": "只接一个成人用品事实。",
-        "adult_service_inquiry": "只问一个已证实类别，不作价格地点服务断言。",
-        "adult_service_sensory": "输出2到6字的感官反应或问题，不套模板。",
+        "general": "只接普通事实；像群友随手说，不总结、不精致点评、不强转成人。",
+        "adult_visual": "只接成年视觉事实；短、直、粗粝，可参考真美、好润、水滋滋，禁止甜宠审美腔。",
+        "adult_product": "只接一个成人用品点；像买家短问，禁止空泛夸赞或编使用经历。",
+        "adult_service_inquiry": "只问价格、区域、空闲、项目、时长、本人或预约中的一个，不作断言。",
+        "adult_service_sensory": "只写2到6字；优先好润、水多不？这类直接感官短句，不修饰衣物。",
     }
     return (
         "把已审核 brief 写成一条自然中文 Telegram 消息。"
         f"{mode_rules[brief.content_mode]}只用 evidence，保持 brief 的 speech_act；"
+        "禁止软软的、水灵灵的、好心动、挺好看的、这状态真不错；"
         "输出 content、used_anchor_ids、speech_act、voice_profile_version JSON。"
     )
 
@@ -187,8 +196,16 @@ def v2_candidate_failure(
         return "unsupported_claim"
     if brief.content_mode == "general" and any(marker in content for marker in _ADULT_MARKERS):
         return "general_forced_adult"
+    if brief.content_mode in ADULT_MODES and any(
+        marker in content for marker in _ADULT_CUTESY_MARKERS
+    ):
+        return "adult_cutesy_tone"
     if brief.content_mode == "adult_service_sensory" and _WRONG_SENSORY_OBJECT.search(content):
         return "sensory_object_wrong"
+    if brief.content_mode == "adult_service_sensory" and not any(
+        marker in content for marker in _SENSORY_INTENT_MARKERS
+    ):
+        return "sensory_intent_missing"
     if any(claim.category in QUESTION_ONLY_CLAIMS for claim in brief.claims):
         if brief.speech_act != "question":
             return "claim_category_mismatch"

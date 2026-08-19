@@ -111,6 +111,32 @@ def test_group_v2_routes_current_sensory_evidence_without_global_adult_mode() ->
         )
 
 
+def test_group_v2_alternates_inquiry_and_sensory_when_both_are_grounded() -> None:
+    with Session(_engine()) as session:
+        task, first_action, first_job = _seed(
+            session,
+            routes=["adult_service_inquiry", "adult_service_sensory"],
+        )
+        second_action, second_job = _add_group_item(session, 3)
+        history = "甲: 老师今晚能约吗，看着好润"
+
+        config = bind_group_generation_contracts(
+            session,
+            task,
+            [
+                (first_action, _payload(first_job.id, history=history)),
+                (second_action, _payload(second_job.id, history=history)),
+            ],
+            config={"ai_content_route_v2_enabled": True},
+        )
+
+        modes = {
+            item["content_mode"]
+            for item in config["_ai_content_contracts"].values()
+        }
+        assert modes == {"adult_service_inquiry", "adult_service_sensory"}
+
+
 def test_group_v2_rebinds_pre_gateway_slot_to_current_context_revision() -> None:
     with Session(_engine()) as session:
         task, action, job = _seed(session, routes=["general"])
@@ -266,7 +292,7 @@ def _payload(job_id: str, *, history: str = "甲: 今天群里挺热闹"):
     )
 
 
-def _add_group_item(session: Session, index: int) -> None:
+def _add_group_item(session: Session, index: int):
     action = Action(
         id=f"action-{index}",
         tenant_id=1,
@@ -294,3 +320,5 @@ def _add_group_item(session: Session, index: int) -> None:
         state="generating",
     )
     session.add_all((action, job))
+    session.flush()
+    return action, job

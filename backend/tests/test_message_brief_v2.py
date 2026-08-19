@@ -76,6 +76,10 @@ def test_v2_rejects_wrong_object_exact_price_and_general_forced_adult() -> None:
     )
     assert sensory is not None
     assert v2_candidate_failure("裙子好润", sensory) == "sensory_object_wrong"
+    assert v2_candidate_failure("嘴唇软软的", sensory) == "adult_cutesy_tone"
+    assert v2_candidate_failure("水灵灵的", sensory) == "adult_cutesy_tone"
+    assert v2_candidate_failure("好心动", sensory) == "adult_cutesy_tone"
+    assert v2_candidate_failure("看着好滑", sensory) == "sensory_intent_missing"
     assert v2_candidate_failure("300元？", sensory) == "unsupported_claim"
     assert v2_candidate_failure("9元？", sensory) == "unsupported_claim"
     assert v2_candidate_failure("九元？", sensory) == "unsupported_claim"
