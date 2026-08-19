@@ -10,7 +10,7 @@ from typing import Any
 from sqlalchemy import select
 
 from app.database import SessionLocal
-from app.image_fingerprint import image_perceptual_hash, perceptual_hash_distance
+from app.image_fingerprint import image_avatar_perceptual_hash, perceptual_hash_distance
 from app.models import (
     AuditLog,
     TgAccount,
@@ -396,7 +396,7 @@ def _local_avatar_fingerprint(object_key: str) -> dict[str, str] | None:
     if not path.exists() or not path.is_file():
         return None
     data = path.read_bytes()
-    return {"sha256": hashlib.sha256(data).hexdigest(), "perceptual_hash": image_perceptual_hash(data)}
+    return {"sha256": hashlib.sha256(data).hexdigest(), "perceptual_hash": image_avatar_perceptual_hash(data)}
 
 
 def _ensure_neighbor_scope_audit(session, manifest: dict[str, Any], manifest_sha: str) -> None:

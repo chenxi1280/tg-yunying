@@ -152,7 +152,7 @@ apply 必须提供同一 seed、login batch IDs、style groups、deployed SHA、
 readback 使用 manifest SHA 找到精确批次与 items：
 
 - 持久化：account display/TG name/avatar object key、name claim、batch/item 状态、audit cardinality 与 target count 匹配。
-- Telegram 远端：逐账号 `pull_profile` 验证 first name 等于 manifest 新名、last name 为空；头像必须由 item `avatar_status=succeeded`、本地冻结对象和 Telegram 下载头像的感知指纹共同证明。Telegram 重编码会改变原始字节 SHA，禁止用“远端存在任意头像”或原始字节相等伪装具体头像匹配。
+- Telegram 远端：逐账号 `pull_profile` 验证 first name 等于 manifest 新名、last name 为空；头像必须由 item `avatar_status=succeeded`、本地冻结对象和 Telegram 下载头像的感知指纹共同证明。头像指纹按 Telegram 的居中正方形裁切语义生成，再用 LANCZOS 缩放抵抗服务端重编码；禁止把非正方形原图整幅拉伸后比较。Telegram 重编码会改变原始字节 SHA，禁止用“远端存在任意头像”或原始字节相等伪装具体头像匹配。
 - 邻居不变：apply 激活前把同登录 batch 的 no-op 行和非目标账号旧 profile snapshot hash 写入 manifest 专项审计；readback 重算并要求 count/hash 相同。该结果必须进入 `complete` 闸门。
 - 发送目标守恒：本操作不得写 `Task/Action/ExecutionAttempt/TaskDayLedger/coverage`；发布及 apply 前后对已有发送目标、冻结 action 和远端发送事实做只读对比，数量减少或绑定改变即验收失败。
 - 输出失败类型、等待缓存、FloodWait、pull_failed、mismatched 和 unknown；任何非 matched 均不能报告完成。
