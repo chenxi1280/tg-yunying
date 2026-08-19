@@ -470,6 +470,8 @@ speech_act + length_band + opening_function_pattern + punctuation_profile + synt
 
 2026-08-19 二次回归修复补充：source capacity 小时槽改为 source/policy/hour 可重放的分层确定性抖动，并在不改变小时 quota 的前提下把候选贴合 owner 的合法 late-tail 区间；同 logical scope 的不同计划以不可变 revision 保存，后续 Task 复用上一 revision 的冻结槽和 aggregate headroom，避免 `scope_conflict` 或重复占用同一时段。AI group 批次只加载一次 GenerationJob、policy binding 和 purpose route snapshot，structured Provider 调用前把 temperature/max tokens 复制为标量，关闭事务后不再因 ORM setting 过期加载重开长事务。Listener 只有在目标群存在 `pending/running/paused` 且显式启用 v2 的 AI 活群 Task 时才维护 context revision，相关 upsert 使用单条 `RETURNING`。186 条定向 no-PostgreSQL 用例通过；不同起止边界的 overlap 聚合、PostgreSQL 并发、shadow/canary 与 Telegram E4 仍为 `unproven`。
 
+2026-08-19 生产发布后发现存量逾期 Action 仍存在独立缺口：已绑定 Action 不会重新进入 planner recovery，且其来源状态在首次准入或已追平旧 cursor 时会直接按过期 `release_not_before_at` 放行，多个来源因此可在同一 claim 周期同步发送。当前实现增加 `source_pacing_recovery.late_admission_not_before`：仅对超过正常调度容差、尚未进入本次 Gateway 的新 admission 冻结由 Action 身份确定的恢复点，范围为原来源 gap 的 `0.8..1.8` 倍；正常秒级 lag 和显式远端失败 retry 不改写。该修复已通过定向本地回归，生产跨 Task 错峰和 typed remote fact E4 仍须重新发布后验证，不能据此提前写 `production_fixed`。
+
 ### 8.2 已实现但待本轮复核的范围
 
 - pacing：稳定 slot/due、四类 planner 接入、持久账号时间线、移除本次链路的 future→now、详情投影；capacity 候选拆到 `source_capacity_slots.py`，`source_capacity_plans.py` 保持 500 行以内；

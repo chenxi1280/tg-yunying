@@ -33,6 +33,7 @@ from .source_pacing_admission_settlement import (
 from .source_pacing_capacity import source_plan_total
 from .source_pacing_reservation import SourceAdmissionSpec, lock_or_create_admission
 from .source_pacing import wall_datetime
+from .source_pacing_recovery import late_admission_not_before
 
 
 IDENTITY_RETRY_SECONDS = 60
@@ -68,6 +69,7 @@ def admit_source_paced_attempt(
         admission=admission,
         spec=spec,
         created=created,
+        timestamp=timestamp,
     )
     admission.attempt_id = attempt.id
     if timestamp < not_before:
@@ -137,12 +139,25 @@ def _admission_not_before(
     admission: SourcePacingAdmission,
     spec: SourceAdmissionSpec,
     created: bool,
+    timestamp: datetime,
 ) -> datetime:
     not_before = _call_not_before(action, state, spec) if created else _reused_not_before(
         state,
         admission=admission,
         spec=spec,
     )
+    if created and not_before <= timestamp and action.status not in {
+        "failed",
+        "retryable_failed",
+    }:
+        recovery_at = late_admission_not_before(
+            action_id=action.id,
+            release_at=spec.release_at,
+            now_at=timestamp,
+            gap_seconds=spec.source_gap_seconds,
+            deadline_at=spec.deadline_at,
+        )
+        not_before = max(not_before, recovery_at)
     admission.call_not_before_at = not_before
     if created:
         state.next_call_not_before_at = not_before + timedelta(
