@@ -360,6 +360,9 @@ def _view_snapshot(
         "source_state": due["source_state"],
         "source_message_count": due["source_message_count"],
         "capacity_warning": str(task_stats.get("capacity_warning") or ""),
+        "unique_account_capacity_shortfall": dict(
+            task_stats.get("channel_view_unique_account_capacity_shortfall") or {}
+        ),
         "target_per_message": int(task_stats.get("target_per_message") or 0),
         "max_effective_per_message": int(
             task_stats.get("max_effective_per_message") or 0
@@ -667,7 +670,11 @@ def _view_blockers(snapshot: dict[str, Any]) -> list[str]:
         blockers.append("channel_view_source_empty_terminal")
     elif required <= 0:
         blockers.append("channel_view_not_due")
-    if str(view.get("capacity_warning") or ""):
+    unique_capacity = dict(view.get("unique_account_capacity_shortfall") or {})
+    if (
+        str(view.get("capacity_warning") or "")
+        or int(unique_capacity.get("deficit_count") or 0) > 0
+    ):
         blockers.append("channel_view_structural_capacity_shortfall")
     if materialized_gap > 0:
         blockers.append("channel_view_due_unmaterialized")

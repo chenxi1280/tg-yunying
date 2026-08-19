@@ -174,6 +174,44 @@ def test_account_scan_limit_includes_lifetime_exclusions(monkeypatch) -> None:
     assert captured["limit"] == 20
 
 
+def test_unique_account_capacity_shortfall_is_persisted_without_reusing_identity() -> None:
+    now_value = datetime(2026, 8, 11, 0, 0)
+    task, _channel, message, ledger = _scope(now_value)
+    target = SimpleNamespace(
+        effective_target_snapshot=2,
+        accrual_anchor_at=now_value,
+        active_until=ledger.deadline_at,
+        ledger_confirmed_at_attach=0,
+    )
+    inputs = SimpleNamespace(
+        messages=[message],
+        accounts=[SimpleNamespace(id=11), SimpleNamespace(id=12)],
+        daily_counts_by_account={},
+        ledger=ledger,
+        targets_by_message={message.id: target},
+        lifetime_ids_by_message={message.id: {11, 12}},
+        materialized_ids_by_message={message.id: set()},
+        now=ledger.deadline_at,
+    )
+
+    assert channel_view._record_unique_capacity(task, inputs, config={}) is True
+    assert task.stats["channel_view_unique_account_capacity_shortfall"] == {
+        "source_count": 1,
+        "required_count": 2,
+        "available_count": 0,
+        "deficit_count": 2,
+    }
+    task.last_error = "channel_view_unique_account_capacity_shortfall"
+
+    assert channel_view._record_unique_capacity(
+        task,
+        SimpleNamespace(**{**inputs.__dict__, "lifetime_ids_by_message": {message.id: set()}}),
+        config={},
+    ) is False
+    assert task.last_error == ""
+    assert "channel_view_unique_account_capacity_shortfall" not in task.stats
+
+
 def _scope(
     now_value: datetime,
 ) -> tuple[Task, OperationTarget, ChannelMessage, TaskDayLedger]:

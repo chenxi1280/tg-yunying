@@ -19,6 +19,7 @@ from app.models import (
     TgAccount,
 )
 from app.services._common import _now, gateway
+from app.services.channel_target_reference import channel_read_reference
 from app.services.developer_apps import credentials_for_task_account
 
 from .account_pool import select_task_accounts
@@ -348,7 +349,7 @@ def _fetch_context(session: Session, source: ChannelListenerSource):
     if channel is None or account is None or task is None or not account.session_ciphertext:
         return None
     credentials = credentials_for_task_account(session, account, task.type)
-    return channel.tg_peer_id, account.session_ciphertext, credentials
+    return channel_read_reference(channel), account.session_ciphertext, credentials
 
 
 def _persist_snapshot(

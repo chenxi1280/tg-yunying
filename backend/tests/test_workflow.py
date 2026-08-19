@@ -4216,6 +4216,7 @@ def test_operation_target_admission_retry_endpoint_queues_actions_and_audit(monk
 
 def test_operation_target_sync_messages_collects_channel_messages(monkeypatch):
     def fake_fetch_channel_messages(*args, **kwargs):
+        assert args[1] == "@pytest_target_detail"
         return [
             ChannelMessageSnapshot(
                 message_id=5101,
@@ -4261,6 +4262,7 @@ def test_operation_target_sync_messages_collects_channel_messages(monkeypatch):
 
 def test_channel_message_sync_comments_collects_reply_targets(monkeypatch):
     def fake_fetch_channel_messages(*args, **kwargs):
+        assert args[1] == "@pytest_comment_tree"
         return [
             ChannelMessageSnapshot(
                 message_id=6101,
@@ -4271,6 +4273,7 @@ def test_channel_message_sync_comments_collects_reply_targets(monkeypatch):
         ]
 
     def fake_fetch_channel_comments(*args, **kwargs):
+        assert args[1] == "@pytest_comment_tree"
         return [
             ChannelCommentSnapshot(
                 comment_message_id=9001,

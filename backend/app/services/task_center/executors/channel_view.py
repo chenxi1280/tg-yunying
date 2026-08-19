@@ -25,6 +25,7 @@ from ..channel_fulfillment import (
     view_materialized_account_ids_for_messages,
 )
 from ..channel_membership import channel_member_accounts, gate_channel_membership
+from ..channel_view_capacity import record_unique_account_capacity
 from ..channel_view_targets import (
     channel_view_target_due,
     ensure_channel_view_targets,
@@ -73,13 +74,18 @@ def build_plan(session: Session, task: Task) -> int:
         return 0
     inputs, completed_counts, total_target = prepared
     actions = _view_actions_for_messages(task, config, inputs)
+    unique_capacity_shortfall = _record_unique_capacity(task, inputs, config=config)
     if not actions:
-        task.last_error = _empty_view_plan_message(
-            task,
-            scope.messages,
-            completed_counts,
-            config=config,
-            total_target=total_target,
+        task.last_error = (
+            "channel_view_unique_account_capacity_shortfall"
+            if unique_capacity_shortfall
+            else _empty_view_plan_message(
+                task,
+                scope.messages,
+                completed_counts,
+                config=config,
+                total_target=total_target,
+            )
         )
         return 0
     context = ViewCreationContext(
@@ -129,6 +135,7 @@ def _view_plan_inputs(
 ) -> tuple["ViewPlanInputs", dict[int, int], int] | None:
     daily_target = int(config.get("per_message_daily_view_target") or config.get("target_views_per_message") or 1)
     total_target = max(daily_target, int(config.get("per_message_total_view_target") or config.get("target_views_per_message") or daily_target))
+    record_unique_account_capacity(task, ())
     if not scope.messages:
         return None
     task_daily_cap = int(config.get("task_daily_view_safety_cap") or 0)
@@ -381,6 +388,21 @@ def _view_actions_for_messages(
         if task_remaining_today <= 0:
             break
     return actions
+
+
+def _record_unique_capacity(task: Task, inputs: "ViewPlanInputs", *, config: dict) -> bool:
+    source_capacities: list[tuple[int, int]] = []
+    for message in inputs.messages:
+        required = _view_quantity_for_message(task, inputs, message, config=config)
+        if required <= 0:
+            continue
+        available = sum(
+            account.id not in inputs.lifetime_ids_by_message[message.id]
+            and _account_has_view_daily_capacity(account.id, config, inputs.daily_counts_by_account)
+            for account in inputs.accounts
+        )
+        source_capacities.append((required, available))
+    return record_unique_account_capacity(task, source_capacities)
 
 
 @dataclass(frozen=True)

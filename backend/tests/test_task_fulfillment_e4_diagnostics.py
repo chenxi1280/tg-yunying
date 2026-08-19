@@ -153,6 +153,32 @@ def test_view_structural_capacity_shortfall_is_explicit() -> None:
     ]
 
 
+def test_view_unique_account_capacity_shortfall_is_structural() -> None:
+    module = load_module()
+    snapshot = {
+        "task_type": "channel_view",
+        "task_status": "running",
+        "ledger_id": "ledger-view",
+        "planner_runtime_error": None,
+        "channel_view": {
+            "required_count": 517,
+            "materialized_count": 0,
+            "source_state": "active",
+            "unique_account_capacity_shortfall": {"deficit_count": 517},
+            "confirmed_count": 0,
+            "remote_fact_count": 0,
+            "post_release_remote_fact_count": 0,
+        },
+    }
+
+    assert module.e4_blockers(snapshot) == [
+        "channel_view_structural_capacity_shortfall",
+        "channel_view_due_unmaterialized",
+        "channel_view_unmet",
+        "channel_view_post_release_fact_missing",
+    ]
+
+
 def test_view_source_overage_cannot_hide_another_source_deficit() -> None:
     module = load_module()
     snapshot = {

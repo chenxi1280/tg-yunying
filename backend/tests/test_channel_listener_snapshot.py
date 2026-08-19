@@ -20,13 +20,14 @@ from app.models import (
     Tenant,
     TgAccount,
 )
+from app.services.channel_target_reference import channel_read_reference
 from app.services.task_center import channel_listener_runtime
-from app.services.task_center.executors import common as executor_common
 from app.services.task_center.channel_listener_runtime import (
     channel_snapshot_state,
     drain_channel_listener_runtime,
     request_channel_snapshot_refresh,
 )
+from app.services.task_center.executors import common as executor_common
 
 
 pytestmark = pytest.mark.no_postgres
@@ -53,6 +54,7 @@ def test_listener_owns_channel_fetch_and_publishes_fresh_snapshot(monkeypatch) -
     assert result.source_count == 1
     assert result.processed_count == 1
     assert len(calls) == 1
+    assert calls[0][0][1] == "@channel_test"
     with Session(engine) as session:
         task = session.get(Task, "channel-like-task")
         channel = session.get(OperationTarget, 31)
@@ -139,6 +141,18 @@ def test_listener_marks_subscription_unavailable_without_collect_account() -> No
             None,
         )
         assert task.last_error == "channel_source_snapshot_unavailable"
+
+
+def test_channel_read_reference_uses_numeric_peer_without_username() -> None:
+    channel = SimpleNamespace(username="", tg_peer_id="-10051")
+
+    assert channel_read_reference(channel) == "-10051"
+
+
+def test_channel_read_reference_keeps_numeric_peer_for_private_invite() -> None:
+    channel = SimpleNamespace(username="https://t.me/+private", tg_peer_id="-10052")
+
+    assert channel_read_reference(channel) == "-10052"
 
 
 def test_reset_refresh_requires_and_schedules_next_snapshot(monkeypatch) -> None:

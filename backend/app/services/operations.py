@@ -42,6 +42,7 @@ from app.schemas import (
 
 from ._common import _now, ai_gateway, audit, gateway
 from .ai_config import ai_provider_credentials, get_tenant_ai_setting
+from .channel_target_reference import channel_read_reference
 from .developer_apps import credentials_for_account
 from .group_listeners import collect_group_context, recent_context_messages
 from .notifications import notify_ai_failure
@@ -1445,7 +1446,7 @@ def _sync_channel_target_messages(session: Session, target: OperationTarget, *, 
         raise ValueError("没有可用于采集频道消息的在线账号")
     snapshots = gateway.fetch_channel_messages(
         account.id,
-        target.tg_peer_id,
+        channel_read_reference(target),
         account.session_ciphertext,
         credentials_for_account(session, account),
         limit=limit,
@@ -1496,7 +1497,7 @@ def _sync_channel_message_comments(session: Session, message: ChannelMessage, *,
         raise ValueError("没有可用于采集频道评论的在线账号")
     snapshots = gateway.fetch_channel_comments(
         account.id,
-        target.tg_peer_id,
+        channel_read_reference(target),
         message.message_id,
         account.session_ciphertext,
         credentials_for_account(session, account),

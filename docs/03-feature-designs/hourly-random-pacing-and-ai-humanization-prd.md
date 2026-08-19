@@ -6,11 +6,11 @@
 | --- | --- |
 | Intake ID | `intake-2026-08-15-pacing-quality-001` |
 | 问题级别 | L2 / P1，生产相关，必须走 Release Gate |
-| 文档版本 | v8 capacity-and-quality resync |
+| 文档版本 | v9 production fulfillment audit |
 | 设计状态 | `product_design_complete / implementation_resynced_2026-08-19` |
-| 实现状态 | `local_first_phase_complete / targeted_qa_pass`；stable due/source admission、跨 Task capacity 确定性抖动/late-tail、curve-aware pairwise gap/headroom、AI 批量绑定、逐 owner typed shortfall 已实现；PostgreSQL 压力、shadow/canary 与 E4 待证明 |
+| 实现状态 | `production_audit_complete / targeted_fix_in_progress`；生产节奏与资源基线已回读，频道读取引用和唯一账号容量投影进入本轮修复；AI v2 激活、paused reaction lane 恢复仍受各自 Gate 约束 |
 | 适用范围 | `group_ai_chat`、`channel_view`、`channel_comment`、`channel_like` |
-| 证据状态 | 仅有本地代码、迁移、定向测试与前端构建证据；任务级 Action/Attempt/Telegram E4 保持 `unproven` |
+| 证据状态 | 2026-08-20 生产只读证据证明当前 AI/view/search 无短时巨量执行；频道来源解析、唯一账号容量、AI v2 激活及 paused like/comment 分别为 `failed/blocked/unproven`，修复发布后仍须任务级 Telegram E4 |
 | 真相源边界 | 本文记录本次局部实现；不把本地 QA、部署健康或 Action success 当成生产 typed remote fact，也不覆盖更大范围的 AI current-owner 收敛合同 |
 
 AI 内容专项补正以 `ai-content-routing-and-quality-upgrade-prd.md` v1.2 及其运行、评测附录为准；本文继续负责数量 owner、跨 Task 来源容量、节奏和 Telegram E4。专项当前仅设计完成，未实现或发布。
@@ -489,6 +489,8 @@ speech_act + length_band + opening_function_pattern + punctuation_profile + synt
 - 当前 schema two-stage 默认关闭且 legacy static fallback 默认开启；v8 要求 current v2 忽略这些 legacy fallback flags，迁移/readback、真实评测、canary 与任务级 Telegram E4 均未完成。
 - 本次沿用现有 `TaskGroupDailyMessageSlot` 作为 AI 节奏物理 owner；未宣称完成总合同中更大范围的 `AiGroupMessageObligation -> GenerationJob -> Action` current-owner 迁移。
 - 未执行生产存量 pending/future Action 的 preview/apply/readback，也未修改生产配置或数据。
+
+2026-08-20 全任务生产审计补充以下硬边界：频道 Listener 和手工同步读取 public channel 时优先使用已保存 public username；username 缺失或字段实际为 private invite 时使用 numeric peer，不能把 invite hash 当作实体引用；底层仍必须显式解析实体，不能依赖所选账号的偶然 entity cache。浏览 due 已形成但该消息全部合格账号都存在 lifetime typed fact 时，Planner 不得重复账号或缩小 DueSet，必须投影 `channel_view_unique_account_capacity_shortfall` 及 required/available 聚合证据。无新来源的 `dynamic_new` 点赞/评论不得伪造义务；历史 paused reaction Task 只有在 T2 writer fence、future 回收 preview/apply/readback 和 canary 均通过后才能逐 Task 恢复。生产 AI two-stage/content route v2 未激活时，数量与节奏通过不能外推为内容质量通过。
 
 ### 8.4 Product Design Complete 自检
 
