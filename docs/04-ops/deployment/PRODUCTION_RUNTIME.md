@@ -66,6 +66,7 @@ Repository variables:
 - 风格证据在最近 30 天内按 `created_at/id` 最早稳定顺序读取，并在群之间 round-robin 冻结精确 100 个匿名 sender；新消息不能改变已审批 manifest。头像从稳定 ID 前缀中取最多目标数个 ready 素材，再按 seed 排序并 round-robin；不依赖运行中 `usage_count`。样本过期、素材失效、目标或 claim 漂移仍必须显式重新 preview。
 - `operation=avatar_import`：运行 `.github/scripts/account_avatar_material_import.py`。固定 17 个 Wikimedia Commons 非真人候选，preview 会下载 Commons 返回的受控缩略图并校验许可、署名、MIME、尺寸、SHA-256 和感知哈希；manifest 不含会随导入改变的状态字段，`apply` 必须提供 preview SHA 和 approval ref，部分执行后可用同一 SHA 续跑；apply 不把整批图片常驻内存，而是每张素材启动一个全新外部 Python 进程，重新下载、复核内容/感知哈希和尺寸、提交事务并关闭 Session 后显式退出，主进程逐张校验 exit code，确保 Pillow/native 内存由操作系统回收且来源漂移显式失败。已导入 source page 若已 ready 或本地文件仍存在则幂等跳过；若未 ready 且本地临时文件已被 TTL 清理，则仅在来源元数据和全部指纹与数据库及本次 manifest 完全一致时恢复原 Material 文件并写审计，不创建重复素材。未知许可、来源漂移、重定向、超限、精确重复和近似重复均显式失败。`readback` 必须确认 17/17 来源已审核，且 material-cache 已写入 TG cache peer、message 和 account，才可报告可作为头像来源；未 ready 项同时输出内容路径/文件存在性和最近缓存错误用于定位队头阻塞。
 - 每次操作必须填写当前已部署的完整 40 位 release SHA；workflow 自身 checkout SHA 和生产 `current` symlink 任一不一致即失败。`apply` 必须填写 preview 输出的 manifest SHA-256 与 approval ref，`readback` 必须填写同一 manifest SHA-256。
+- `login_batch_initialize` preview 还会冻结带时区的 `style_sample_cutoff_at`；apply/readback 必须原样回传。样本只读取该截止时间之前的近期消息，避免活跃群新消息及滚动保留改变已审批 manifest。
 
 生产任务通道约定：`search_join_group` / `search_join` 是唯一强制使用 Clash 代理的任务链路；`group_ai_chat`、`channel_view`、`channel_like`、`channel_comment` 的账号健康探测和实际互动调用走账号直连凭证，不因 Clash 节点不可用而阻塞活群、浏览、点赞或评论任务。搜索加群仍通过授权环境绑定和健康代理节点 fail closed。
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -32,6 +32,7 @@ class LoginBatchInitializationSpec:
     seed: str
     deployed_sha: str
     created_only_batch_ids: tuple[int, ...] = ()
+    style_sample_cutoff_at: datetime | None = None
 
 
 @dataclass(frozen=True)

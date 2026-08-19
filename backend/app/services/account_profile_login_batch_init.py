@@ -4,7 +4,7 @@ import hashlib
 import json
 from collections import Counter
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -33,6 +33,7 @@ from app.services.account_profile_name_generation import (
     name_diversity_metrics,
     style_profile_from_names,
 )
+from app.timezone import as_beijing_aware
 
 
 STYLE_SAMPLE_DAYS = 30
@@ -56,7 +57,13 @@ def build_login_batch_initialization_manifest(
     spec: LoginBatchInitializationSpec,
 ) -> dict[str, Any]:
     targets = load_login_batch_targets(session, spec)
-    style = build_group_style_evidence(session, spec.tenant_id, spec.style_group_ids)
+    sample_cutoff_at = spec.style_sample_cutoff_at or as_beijing_aware(_now())
+    style = build_group_style_evidence(
+        session,
+        spec.tenant_id,
+        spec.style_group_ids,
+        sample_cutoff_at=sample_cutoff_at,
+    )
     materials = ready_avatar_materials(session, spec.tenant_id)
     generated = generate_display_name_candidates(
         len(targets.accounts),
@@ -91,10 +98,18 @@ def build_group_style_evidence(
     session: Session,
     tenant_id: int,
     requested_group_ids: tuple[int, ...],
+    *,
+    sample_cutoff_at: datetime | None = None,
 ) -> GroupStyleEvidence:
+    cutoff_at = sample_cutoff_at or as_beijing_aware(_now())
     group_ids = requested_group_ids or _discover_style_group_ids(session, tenant_id)
     _validate_style_groups(session, tenant_id, group_ids)
-    records, names, source_keys, per_group = _style_records(session, tenant_id, group_ids)
+    records, names, source_keys, per_group = _style_records(
+        session,
+        tenant_id,
+        group_ids,
+        cutoff_at,
+    )
     profile = style_profile_from_names(names)
     if profile.sample_count < MIN_STYLE_SAMPLE_COUNT:
         group_value = ",".join(str(group_id) for group_id in group_ids)
@@ -110,6 +125,7 @@ def build_group_style_evidence(
     encoded = json.dumps(sorted(records), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     summary = {
         "group_ids": list(group_ids),
+        "sample_cutoff_at": cutoff_at.isoformat(),
         "sample_count": profile.sample_count,
         "per_group_sample_count": dict(sorted(per_group.items())),
         "category_counts": dict(profile.category_counts),
@@ -207,13 +223,14 @@ def _style_records(
     session: Session,
     tenant_id: int,
     group_ids: tuple[int, ...],
+    sample_cutoff_at: datetime,
 ) -> tuple[list[tuple[int, str, str]], list[str], set[str], Counter[int]]:
     records: list[tuple[int, str, str]] = []
     names: list[str] = []
     source_keys: set[str] = set()
     per_group: Counter[int] = Counter()
     candidates = {
-        group_id: _stable_group_candidates(session, tenant_id, group_id)
+        group_id: _stable_group_candidates(session, tenant_id, group_id, sample_cutoff_at)
         for group_id in group_ids
     }
     for group_id, name, key in _round_robin_samples(candidates, MIN_STYLE_SAMPLE_COUNT):
@@ -229,10 +246,11 @@ def _stable_group_candidates(
     session: Session,
     tenant_id: int,
     group_id: int,
+    sample_cutoff_at: datetime,
 ) -> list[tuple[int, str, str, str]]:
     seen: set[str] = set()
     result: list[tuple[int, str, str, str]] = []
-    for row in _stable_group_rows(session, tenant_id, group_id):
+    for row in _stable_group_rows(session, tenant_id, group_id, sample_cutoff_at):
         key = normalize_display_name(row.sender_name)
         identity = str(row.sender_peer_id or key)
         if not key or key == normalize_display_name("真人用户") or identity in seen:
@@ -270,8 +288,13 @@ def _round_robin_samples(
     return selected
 
 
-def _stable_group_rows(session: Session, tenant_id: int, group_id: int) -> list[GroupContextMessage]:
-    cutoff = _now() - timedelta(days=STYLE_SAMPLE_DAYS)
+def _stable_group_rows(
+    session: Session,
+    tenant_id: int,
+    group_id: int,
+    sample_cutoff_at: datetime,
+) -> list[GroupContextMessage]:
+    cutoff = sample_cutoff_at - timedelta(days=STYLE_SAMPLE_DAYS)
     return list(session.scalars(
         select(GroupContextMessage).where(
             GroupContextMessage.tenant_id == tenant_id,
@@ -279,7 +302,8 @@ def _stable_group_rows(session: Session, tenant_id: int, group_id: int) -> list[
             GroupContextMessage.is_bot.is_(False),
             GroupContextMessage.sender_name != "",
             GroupContextMessage.created_at >= cutoff,
-        ).order_by(GroupContextMessage.created_at.asc(), GroupContextMessage.id.asc()).limit(STYLE_GROUP_MESSAGE_LIMIT)
+            GroupContextMessage.created_at <= sample_cutoff_at,
+        ).order_by(GroupContextMessage.created_at.desc(), GroupContextMessage.id.desc()).limit(STYLE_GROUP_MESSAGE_LIMIT)
     ))
 
 

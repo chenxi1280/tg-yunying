@@ -86,6 +86,21 @@ def test_batch_payload_changes_only_name_profile_and_avatar():
     assert payload.preview_overrides[0].avatar_source == "material:7"
 
 
+def test_apply_requires_preview_style_sample_cutoff():
+    script = _load_script()
+    script.MODE = "apply"
+    script.SEED = "profile-300-seed"
+    script.DEPLOYED_SHA = "a" * 40
+    script.LOGIN_BATCH_IDS = (91,)
+    script.STYLE_GROUP_IDS = (11,)
+    script.STYLE_SAMPLE_CUTOFF_INPUT = ""
+    script.EXPECTED_SHA256 = "b" * 64
+    script.APPROVAL_REF = "user-request-20260819"
+
+    with pytest.raises(ValueError, match="style_sample_cutoff_at from preview"):
+        script._validate_inputs()
+
+
 def test_existing_manifest_batch_requires_exact_name_and_avatar_source():
     script = _load_script()
     script.TENANT_ID = 1

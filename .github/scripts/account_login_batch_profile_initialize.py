@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from collections import Counter
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -24,7 +25,7 @@ from app.schemas.account_security import (
     AvatarStrategy,
     ProfileGenerationStrategy,
 )
-from app.services._common import gateway
+from app.services._common import _now, gateway
 from app.services.account_profile_identity import normalize_display_name
 from app.services.account_profile_login_batch_init import (
     LoginBatchInitializationSpec,
@@ -37,6 +38,7 @@ from app.services.account_profile_login_batch_init import (
 from app.services.account_security import activate_account_security_batches, create_account_security_batch
 from app.services.developer_apps import credentials_for_account
 from app.storage import object_path
+from app.timezone import as_beijing_aware
 
 
 MODE = os.getenv("ACCOUNT_LOGIN_BATCH_PROFILE_INIT_MODE", "preview").strip().lower()
@@ -57,6 +59,8 @@ STYLE_GROUP_IDS = tuple(
     for value in os.getenv("ACCOUNT_LOGIN_BATCH_PROFILE_INIT_STYLE_GROUP_IDS", "").split(",")
     if value.strip()
 )
+STYLE_SAMPLE_CUTOFF_INPUT = os.getenv("ACCOUNT_LOGIN_BATCH_PROFILE_INIT_STYLE_SAMPLE_CUTOFF_AT", "").strip()
+STYLE_SAMPLE_CUTOFF_AT = datetime.fromisoformat(STYLE_SAMPLE_CUTOFF_INPUT) if STYLE_SAMPLE_CUTOFF_INPUT else as_beijing_aware(_now())
 SEED = os.getenv("ACCOUNT_LOGIN_BATCH_PROFILE_INIT_SEED", "").strip()
 DEPLOYED_SHA = os.getenv("ACCOUNT_LOGIN_BATCH_PROFILE_INIT_DEPLOYED_SHA", "").strip().lower()
 EXPECTED_SHA256 = os.getenv("ACCOUNT_LOGIN_BATCH_PROFILE_INIT_EXPECTED_SHA256", "").strip().lower()
@@ -107,6 +111,7 @@ def _spec() -> LoginBatchInitializationSpec:
         seed=SEED,
         deployed_sha=DEPLOYED_SHA,
         created_only_batch_ids=CREATED_ONLY_BATCH_IDS,
+        style_sample_cutoff_at=STYLE_SAMPLE_CUTOFF_AT,
     )
 
 
@@ -119,10 +124,14 @@ def _validate_inputs() -> None:
         raise ValueError("deployed_sha must be the exact 40-character lowercase release SHA")
     if len(set(CREATED_ONLY_BATCH_IDS)) != len(CREATED_ONLY_BATCH_IDS):
         raise ValueError("created_only_batch_ids must be unique")
+    if STYLE_SAMPLE_CUTOFF_AT.tzinfo is None:
+        raise ValueError("style_sample_cutoff_at must include an explicit timezone")
     if CREATED_ONLY_BATCH_IDS and not set(CREATED_ONLY_BATCH_IDS).issubset(LOGIN_BATCH_IDS):
         raise ValueError("created_only_batch_ids must be a subset of explicit login_batch_ids")
     if MODE == "preview":
         return
+    if not STYLE_SAMPLE_CUTOFF_INPUT:
+        raise ValueError("apply/readback require style_sample_cutoff_at from preview")
     if not LOGIN_BATCH_IDS or not STYLE_GROUP_IDS:
         raise ValueError("apply/readback require explicit login_batch_ids and style_group_ids from preview")
     if len(EXPECTED_SHA256) != 64:

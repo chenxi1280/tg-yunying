@@ -85,7 +85,7 @@ preview 未提供 batch IDs 时，最近 7 天最多 20 个终态批次的全部
 
 - 限同租户、指定群、`is_bot=false`、非空且非默认 `真人用户` 名称。
 - 先在全部候选中按规范化完整名字和 sender identity 做全局去重，再继续 round-robin 取样直到得到 100 条；禁止先截 100 条再去重，避免重名把有效样本错误压缩，也避免高频发言者放大权重。
-- 在最近 30 天内按 `created_at/id` 最早稳定顺序取样，并在群之间 round-robin 选取精确 100 个匿名 sender；新到群消息不改变已审批样本，样本过期或被删除则必须重新 preview。
+- preview 冻结带时区的 `style_sample_cutoff_at`；在截止时间之前的最近 30 天内按 `created_at/id` 倒序，并在群之间 round-robin 选取精确 100 个匿名 sender。apply/readback 必须回传同一截止时间，新到群消息不改变已审批样本；近期样本若被删除则必须重新 preview。
 - 只在内存中保留原始名字完成分类；输出仅包含群 ID、合格样本数、类别计数、长度段计数、拒绝原因计数和 `source_fingerprint`。
 - `source_fingerprint` 由已排序的匿名分类记录计算，不允许反推出原始姓名。
 - 少于 100 个合格去重样本时标记不足并阻断群风格 apply。
@@ -112,6 +112,7 @@ preview 未提供 batch IDs 时，最近 7 天最多 20 个终态批次的全部
 - `created_only_batch_ids`（逗号分隔；仅用于明确混有前置重登测试账号的批次，必须是 login batch 子集）
 - `expected_target_count`（本次 300）
 - `style_group_ids`（逗号分隔的精确群 ID）
+- `style_sample_cutoff_at`（preview 输出的带时区精确截止时间；apply/readback 必须原样回传）
 - `seed`
 - `deployed_sha`
 - `expected_manifest_sha256`

@@ -226,6 +226,7 @@ def _spec(count: int = 300, batch_ids: tuple[int, ...] = (91,)) -> LoginBatchIni
         style_group_ids=(11, 12),
         seed="profile-300-seed",
         deployed_sha="a" * 40,
+        style_sample_cutoff_at=datetime.now().astimezone(),
     )
 
 
@@ -246,6 +247,7 @@ def test_manifest_freezes_exact_three_hundred_targets_without_raw_group_names():
     assert len(first["targets"]) == 300
     assert first["login_batch_ids"] == [91, 92]
     assert first["style"]["sample_count"] == 100
+    assert first["style"]["sample_cutoff_at"] == spec.style_sample_cutoff_at.isoformat()
     assert first["avatar_pool"]["unique_avatar_material_count"] == 12
     assert first["avatar_pool"]["max_material_assignment_count"] <= 30
     assert all(f"群友昵称{index}" not in encoded for index in range(120))
@@ -429,6 +431,7 @@ def test_discovers_unique_terminal_batch_set_with_three_hundred_success_accounts
             style_group_ids=(11, 12),
             seed="multi-batch-300",
             deployed_sha="b" * 40,
+            style_sample_cutoff_at=datetime.now().astimezone(),
         )
 
         manifest = build_login_batch_initialization_manifest(session, spec)
@@ -454,6 +457,7 @@ def test_explicit_mixed_scope_freezes_three_hundred_accounts():
             seed="mixed-scope-300",
             deployed_sha="c" * 40,
             created_only_batch_ids=(93,),
+            style_sample_cutoff_at=datetime.now().astimezone(),
         )
 
         manifest = build_login_batch_initialization_manifest(session, spec)
