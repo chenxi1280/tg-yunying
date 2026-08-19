@@ -57,6 +57,7 @@ def test_identity_operations_use_separate_bounded_workflow():
             "created_only_batch_ids",
             "expected_target_count",
         "style_group_ids",
+        "style_sample_cutoff_at",
         "deployed_sha",
         "expected_manifest_sha256",
         "approval_ref",

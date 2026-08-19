@@ -31,6 +31,7 @@ from app.services.account_profile_login_batch_init import (
     manifest_sha256,
     target_matches_manifest,
 )
+from app.timezone import as_beijing_aware
 
 
 pytestmark = pytest.mark.no_postgres
@@ -247,7 +248,7 @@ def test_manifest_freezes_exact_three_hundred_targets_without_raw_group_names():
     assert len(first["targets"]) == 300
     assert first["login_batch_ids"] == [91, 92]
     assert first["style"]["sample_count"] == 100
-    assert first["style"]["sample_cutoff_at"] == spec.style_sample_cutoff_at.isoformat()
+    assert first["style"]["sample_cutoff_at"] == as_beijing_aware(spec.style_sample_cutoff_at).isoformat()
     assert first["avatar_pool"]["unique_avatar_material_count"] == 12
     assert first["avatar_pool"]["max_material_assignment_count"] <= 30
     assert all(f"群友昵称{index}" not in encoded for index in range(120))

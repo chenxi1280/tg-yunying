@@ -101,7 +101,7 @@ def build_group_style_evidence(
     *,
     sample_cutoff_at: datetime | None = None,
 ) -> GroupStyleEvidence:
-    cutoff_at = sample_cutoff_at or as_beijing_aware(_now())
+    cutoff_at = as_beijing_aware(sample_cutoff_at or _now())
     group_ids = requested_group_ids or _discover_style_group_ids(session, tenant_id)
     _validate_style_groups(session, tenant_id, group_ids)
     records, names, source_keys, per_group = _style_records(
