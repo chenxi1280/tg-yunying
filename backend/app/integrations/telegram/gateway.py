@@ -61,12 +61,20 @@ VERIFICATION_CONFIRM_BUTTON_MARKERS = ("我已加入", "我已关注", "已关�
 PUBLIC_CHANNEL_URL_RE = re.compile(r"^https?://t\.me/([A-Za-z][A-Za-z0-9_]{3,})/?$", re.I)
 ACCOUNT_HEALTH_DISCONNECT_TIMEOUT_SECONDS = 5.0
 ACCOUNT_HEALTH_RUN_GRACE_SECONDS = 1.0
+PROFILE_REMOTE_MISMATCH = "profile_remote_mismatch"
 logger = logging.getLogger(__name__)
 
 
 def _exception_detail(exc: Exception) -> str:
     detail = str(exc).strip()
     return detail or type(exc).__name__
+
+
+def _profile_name_matches(profile: Any, first_name: str, last_name: str) -> bool:
+    return bool(
+        (getattr(profile, "first_name", "") or "") == first_name
+        and (getattr(profile, "last_name", "") or "") == last_name
+    )
 
 
 def _failed_send_result(
@@ -2514,13 +2522,19 @@ class TelethonTelegramGateway(TelegramGateway):
         try:
             from telethon import functions
 
-            await client(
+            updated = await client(
                 functions.account.UpdateProfileRequest(
                     first_name=first_name or None,
                     last_name=last_name,
                     about=bio,
                 )
             )
+            if not _profile_name_matches(updated, first_name, last_name):
+                return ProfileUpdateResult(
+                    False,
+                    "Telegram 资料更新响应与请求姓名不一致",
+                    PROFILE_REMOTE_MISMATCH,
+                )
             if avatar_path:
                 uploaded = await client.upload_file(avatar_path)
                 await client(functions.photos.UploadProfilePhotoRequest(file=uploaded))

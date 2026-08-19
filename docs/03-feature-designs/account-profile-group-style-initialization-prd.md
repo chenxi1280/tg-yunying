@@ -151,6 +151,8 @@ apply 必须提供同一 seed、login batch IDs、style groups、deployed SHA、
 
 readback 使用 manifest SHA 找到精确批次与 items：
 
+Telegram `UpdateProfileRequest` 返回成功时，Gateway 必须在同一响应中核对实际 first/last name 与请求值完全一致；服务端丢弃符号或规范化姓名时返回 `profile_remote_mismatch`，worker 不得持久化伪成功。生产已证实 `⭐` 会被 Telegram 从名字中丢弃，因此审核符号池排除该符号。
+
 - 持久化：account display/TG name/avatar object key、name claim、batch/item 状态、audit cardinality 与 target count 匹配。
 - Telegram 远端：逐账号 `pull_profile` 验证 first name 等于 manifest 新名、last name 为空；头像必须由 item `avatar_status=succeeded`、本地冻结对象和 Telegram 下载头像的感知指纹共同证明。头像指纹按 Telegram 的居中正方形裁切语义生成，再用 LANCZOS 缩放抵抗服务端重编码；禁止把非正方形原图整幅拉伸后比较。Telegram 重编码会改变原始字节 SHA，禁止用“远端存在任意头像”或原始字节相等伪装具体头像匹配。
 - 邻居不变：apply 激活前把同登录 batch 的 no-op 行和非目标账号旧 profile snapshot hash 写入 manifest 专项审计；readback 重算并要求 count/hash 相同。该结果必须进入 `complete` 闸门。
