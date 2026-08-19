@@ -239,7 +239,7 @@ def _source_period(session: Session, owner, domain: str) -> tuple[datetime, date
         return (
             wall_datetime(ledger.period_start_at),
             wall_datetime(ledger.deadline_at),
-            str(ledger.id),
+            str(getattr(owner, "pacing_period_key", None) or ledger.id),
         )
     message = session.get(ChannelMessage, int(owner.channel_message_id or 0))
     if message is None:
