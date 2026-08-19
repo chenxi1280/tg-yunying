@@ -44,6 +44,8 @@ _ADULT_CUTESY_MARKERS = (
     "真不错",
 )
 _SENSORY_INTENT_MARKERS = ("润", "水多", "水滋滋", "湿不湿", "润不润")
+_SENSORY_REACTIONS = frozenset({"好润", "真润", "够润", "水滋滋"})
+_SENSORY_QUESTIONS = frozenset({"水多不？", "润不润？", "湿不湿？"})
 _UNSUPPORTED_ASSERTIONS = {
     "experience": ("我去过", "我用过", "我试过", "亲自体验", "上次去"),
     "transaction": ("我下单", "我付款", "已经买", "刚买", "成交了"),
@@ -192,8 +194,8 @@ def v2_realizer_system_prompt(brief: MessageBriefV2) -> str:
 
 def _sensory_realizer_rule(brief: MessageBriefV2) -> str:
     if brief.speech_act == "question":
-        return "只写2到6字问句，像水多不？润不润？必须以问号结尾。"
-    return "只写2到6字陈述短句，像好润、水滋滋；禁止问号和发生过性行为的猜测。"
+        return "正文只能从水多不？、润不润？、湿不湿？中选一句。"
+    return "正文只能从好润、真润、够润、水滋滋中选一句。"
 
 
 def _service_claim_realizer_rule(brief: MessageBriefV2) -> str:
@@ -208,7 +210,8 @@ def _service_claim_realizer_rule(brief: MessageBriefV2) -> str:
         "identity_question": "只问是否本人；",
         "booking_question": "只问怎么预约；",
     }
-    return rules.get(brief.claims[0].category, "")
+    rule = rules.get(brief.claims[0].category, "")
+    return f"{rule}必须以问号结尾；" if rule else ""
 
 
 def v2_candidate_failure(
@@ -234,6 +237,10 @@ def v2_candidate_failure(
         marker in content for marker in _SENSORY_INTENT_MARKERS
     ):
         return "sensory_intent_missing"
+    if brief.content_mode == "adult_service_sensory":
+        approved = _SENSORY_QUESTIONS if brief.speech_act == "question" else _SENSORY_REACTIONS
+        if content not in approved:
+            return "sensory_expression_unapproved"
     if any(claim.category in QUESTION_ONLY_CLAIMS for claim in brief.claims):
         if brief.speech_act != "question":
             return "claim_category_mismatch"

@@ -64,7 +64,7 @@ def test_adult_sensory_question_is_grounded_without_becoming_template() -> None:
     )
     assert isinstance(brief, MessageBriefV2)
     assert v2_candidate_failure("水多不？", brief) == ""
-    assert "2到6字" in v2_realizer_system_prompt(brief)
+    assert "水多不？、润不润？、湿不湿？" in v2_realizer_system_prompt(brief)
 
 
 def test_v2_rejects_wrong_object_exact_price_and_general_forced_adult() -> None:
@@ -76,6 +76,7 @@ def test_v2_rejects_wrong_object_exact_price_and_general_forced_adult() -> None:
     )
     assert sensory is not None
     assert v2_candidate_failure("裙子好润", sensory) == "sensory_object_wrong"
+    assert v2_candidate_failure("水润感", sensory) == "sensory_expression_unapproved"
     assert v2_candidate_failure("嘴唇软软的", sensory) == "adult_cutesy_tone"
     assert v2_candidate_failure("水灵灵的", sensory) == "adult_cutesy_tone"
     assert v2_candidate_failure("好心动", sensory) == "adult_cutesy_tone"
@@ -121,6 +122,7 @@ def test_inquiry_candidate_must_match_frozen_claim_category() -> None:
     prompt = v2_realizer_system_prompt(brief)
     assert "只问价格" in prompt
     assert "不加称呼或寒暄" in prompt
+    assert "必须以问号结尾" in prompt
     assert v2_candidate_failure("价格多少？", brief) == ""
     assert v2_candidate_failure("上海还能约吗？", brief) == "claim_category_mismatch"
 
