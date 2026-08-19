@@ -27,7 +27,7 @@ def test_listener_locks_speaker_before_processing_admission_events(monkeypatch) 
 
     writer.insert_context_snapshots(
         SimpleNamespace(scalar=lambda _statement: None),
-        SimpleNamespace(id=7, tenant_id=1),
+        SimpleNamespace(id=7, tenant_id=1, tg_peer_id="-1007"),
         SimpleNamespace(),
         [SimpleNamespace()],
         ignored_sender=lambda _snapshot: False,

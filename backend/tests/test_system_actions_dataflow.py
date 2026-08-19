@@ -304,9 +304,9 @@ def test_system_ai_provider_actions_bind_provider_action_and_request_sequence():
     assert "function isCurrentAiProviderActionRequest(requestSeq: number)" in source
     assert "function isActiveAiProviderActionRequest(providerId: number, action: string, requestSeq: number)" in source
 
-    assert "const action = provider.is_active ? 'disable' : 'enable';" in toggle_body
+    assert "const action = 'enable';" in toggle_body
     assert "const requestSeq = beginAiProviderActionRequest(provider.id, action);" in toggle_body
-    assert "body: JSON.stringify({ is_active: action === 'enable' })," in toggle_body
+    assert "body: JSON.stringify({ is_active: true })," in toggle_body
     assert "if (!isActiveAiProviderActionRequest(provider.id, action, requestSeq)) return;" in toggle_body
     assert toggle_body.index("if (!isActiveAiProviderActionRequest(provider.id, action, requestSeq)) return;") < toggle_body.index("params.showResult(")
     assert toggle_body.index("if (!isActiveAiProviderActionRequest(provider.id, action, requestSeq)) return;", toggle_body.index("catch")) < toggle_body.index("params.handleActionError(error);")

@@ -145,7 +145,7 @@ def test_generation_job_claim_cas_does_not_run_python_datetime_evaluator(
     assert changed == 1
 
 
-def test_activating_provider_replaces_active_key_and_reuses_family_model(
+def test_selecting_default_provider_preserves_health_gate_before_family_reuse(
     session: Session,
 ) -> None:
     replacement = AiProvider(
@@ -170,6 +170,10 @@ def test_activating_provider_replaces_active_key_and_reuses_family_model(
     assert not session.get(AiProvider, 1).is_active
     assert session.get(AiProvider, 2).is_active
     assert session.get(TenantAiSetting, 1).default_provider_id == 2
+    assert _provider_for_exact_model(session, "MiniMax-M2.5") is None
+
+    replacement.health_status = "健康"
+    session.commit()
     assert _provider_for_exact_model(session, "MiniMax-M2.5").id == 2
 
 
