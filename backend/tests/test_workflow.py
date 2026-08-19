@@ -799,6 +799,12 @@ def enable_mock_ai_provider(client: TestClient, headers: dict[str, str], name: s
             "api_key_header": "Authorization",
         },
     ).json()
+    checked = client.post(
+        f"/api/ai-providers/{provider['id']}/check",
+        headers=headers,
+    )
+    assert checked.status_code == 200, checked.text
+    assert checked.json()["health_status"] == "健康"
     client.patch(
         "/api/tenant-ai-settings?tenant_id=1",
         headers=headers,
@@ -3203,6 +3209,12 @@ def test_ai_real_provider_records_campaign_usage_without_user_token_balance(monk
                 "api_key": "real_token_test_key",
             },
         ).json()
+        checked = client.post(
+            f"/api/ai-providers/{provider['id']}/check",
+            headers=headers,
+        )
+        assert checked.status_code == 200, checked.text
+        assert checked.json()["health_status"] == "健康"
         client.patch(
             "/api/tenant-ai-settings?tenant_id=1",
             headers=headers,

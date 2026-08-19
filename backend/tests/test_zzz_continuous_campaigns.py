@@ -15,7 +15,7 @@ from app.services.campaign_runs import build_participation_plan, light_rewrite_m
 from app.services.content_filters import filter_outbound_content
 from app.models.enums import now
 from sqlalchemy import select
-from tests.test_workflow import auth_headers, ensure_test_workspace
+from tests.test_workflow import auth_headers, enable_mock_ai_provider, ensure_test_workspace
 
 
 def _future_iso(minutes: int = 60) -> str:
@@ -41,6 +41,7 @@ def test_ai_activity_campaign_auto_approves_and_queues_tasks():
     with TestClient(app) as client:
         headers = auth_headers(client)
         account, group = ensure_test_workspace(client, headers)
+        enable_mock_ai_provider(client, headers, "pytest 持续 AI 活跃")
 
         campaign = client.post(
             "/api/campaigns",
@@ -249,6 +250,7 @@ def test_mirror_forward_ai_rewrite_failure_blocks_queueing(monkeypatch):
     with TestClient(app) as client:
         headers = auth_headers(client)
         account, _ = ensure_test_workspace(client, headers)
+        enable_mock_ai_provider(client, headers, "pytest 镜像润色")
         groups = client.get("/api/groups", headers=headers).json()
         source_groups = groups[:1]
         target_groups = groups[1:3]
