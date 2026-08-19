@@ -299,6 +299,11 @@ def _view_plan_item(
         wall_datetime(context.ledger.deadline_at),
         wall_datetime(target.active_until),
     )
+    period_key = (
+        str(obligation.pacing_period_key)
+        if obligation.pacing_due_at is not None and obligation.pacing_period_key
+        else f"{context.ledger.id}:message:{message.id}"
+    )
     slot = SourcePacingSlot(
         source_key=f"{context.ledger.id}:{message.id}",
         slot_key=f"view:{task.id}:{context.ledger.id}:{message.id}:{account_id}",
@@ -314,7 +319,7 @@ def _view_plan_item(
         frozen_due_at=obligation.pacing_due_at,
         owner_id=obligation.id,
         task_lifecycle_epoch=int(task.task_lifecycle_epoch or 1),
-        pacing_period_key=str(context.ledger.id),
+        pacing_period_key=period_key,
         pacing_source_key_hash=pacing_source_key_hash(context.channel.tg_peer_id),
         source_capacity_plan_hash=obligation.source_capacity_plan_hash,
         source_capacity_slot_ordinal=obligation.source_capacity_slot_ordinal,

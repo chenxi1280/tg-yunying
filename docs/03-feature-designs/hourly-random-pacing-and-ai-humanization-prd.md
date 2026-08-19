@@ -163,7 +163,7 @@ fact-first 浏览/点赞 Action 一旦已由远端事实投影并关闭账号节
 | 类型 | period / anchor | 稳定义务 | `due_at` owner |
 | --- | --- | --- | --- |
 | AI 活群 | Task 自然日；`max(period_start, planning_anchor_at)` | 本次局部实现复用现有 `TaskGroupDailyMessageSlot(slot_ordinal)`；更大范围的 current-owner 收敛不在本次假定完成 | 群日数量 slot |
-| 浏览 | Task 自然日；ledger target accrual anchor | peer-message due unit | 浏览 due unit；账号在 pre-Gateway 前可替换 |
+| 浏览 | Task 自然日；ledger target accrual anchor；source period key 包含 message ID | peer-message due unit | 浏览 due unit；账号在 pre-Gateway 前可替换 |
 | 评论 | 来源首次采集后的滚动 24h | `CommentFulfillmentObligation(target_ordinal)` | 评论 obligation |
 | 点赞 | 来源首次采集后的滚动 24h | `ReactionFulfillmentObligation` | reaction obligation |
 
