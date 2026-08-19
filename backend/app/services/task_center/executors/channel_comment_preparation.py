@@ -256,10 +256,16 @@ def _comment_source_slots(
             source_key=str(message_id),
             slot_key=_comment_slot_key(slot),
             slot_ordinal=pacing_ordinal,
-            plan_total=totals[message_id],
+            plan_total=(
+                int(slot.obligation.pacing_plan_total)
+                if slot.obligation.pacing_due_at is not None
+                and slot.obligation.pacing_plan_total
+                else totals[message_id]
+            ),
             period_start_at=period_start,
             deadline_at=deadline,
             release_not_before_at=slot.obligation.release_not_before_at,
+            frozen_due_at=slot.obligation.pacing_due_at,
             owner_id=slot.obligation.id,
             task_lifecycle_epoch=int(task.task_lifecycle_epoch or 1),
             pacing_period_key=f"message:{message_id}",

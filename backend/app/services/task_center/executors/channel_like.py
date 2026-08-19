@@ -289,8 +289,8 @@ def _like_account_schedule(
         plan_hash=source_pacing_plan_hash(
             source, task.pacing_config or {}, seed_id=f"like:{task.id}",
         ),
-        slot_ordinal=item.slot_ordinal,
-        plan_total=item.plan_total,
+        slot_ordinal=source.slot_ordinal,
+        plan_total=source.plan_total,
         due_at=due_at,
         release_not_before_at=release_at,
         source_identity=source.owner_identity,
@@ -392,6 +392,7 @@ def _like_source_slot(
         period_start_at=period_start,
         deadline_at=deadline,
         release_not_before_at=owner.release_not_before_at,
+        frozen_due_at=owner.pacing_due_at,
         owner_id=owner.id,
         task_lifecycle_epoch=int(task.task_lifecycle_epoch or 1),
         pacing_period_key=f"message:{item.message.id}",

@@ -17,7 +17,7 @@ from app.models import (
     ViewFulfillmentObligation,
 )
 
-from .source_pacing import SourcePacingSlot, source_pacing_plan_hash, wall_datetime
+from .source_pacing import SourcePacingSlot, wall_datetime
 from .pacing_persistence import PacingOwnerImmutableConflict
 
 
@@ -70,8 +70,7 @@ def attach_owner_history(
 ) -> list[SourcePacingSlot]:
     grouped: dict[tuple, list[SourcePacingSlot]] = defaultdict(list)
     for slot in slots:
-        plan_hash = source_pacing_plan_hash(slot, config, seed_id=seed_id)
-        key = (*slot.owner_identity, plan_hash)
+        key = slot.owner_identity
         if not slot.owner_id or not all(slot.owner_identity[1:]):
             raise ValueError("pacing_source_identity_incomplete")
         grouped[key].append(slot)
@@ -84,7 +83,6 @@ def attach_owner_history(
             lifecycle_epoch=key[0],
             period_key=key[1],
             source_hash=key[2],
-            plan_hash=key[3],
             excluded_owner_ids=[slot.owner_id for slot in group],
         )
         cursor, ordinal = _include_frozen_group_history(group, cursor, ordinal)
@@ -137,7 +135,6 @@ def _owner_history(
     lifecycle_epoch: int,
     period_key: str,
     source_hash: str,
-    plan_hash: str,
     excluded_owner_ids: list[str],
 ):
     _lock_source_cursor(
@@ -156,7 +153,6 @@ def _owner_history(
         owner_model.task_lifecycle_epoch == lifecycle_epoch,
         owner_model.pacing_period_key == period_key,
         owner_model.pacing_source_key_hash == source_hash,
-        owner_model.pacing_plan_hash == plan_hash,
         owner_model.release_not_before_at.is_not(None),
         owner_model.id.not_in(excluded_owner_ids),
     ]

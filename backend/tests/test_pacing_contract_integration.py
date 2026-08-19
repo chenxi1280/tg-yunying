@@ -168,6 +168,27 @@ def test_source_schedule_remaining_subset_reuses_frozen_period_slots() -> None:
     assert subset == {key: full[key] for key in ("slot:2", "slot:3")}
 
 
+def test_source_schedule_keeps_frozen_due_across_plan_total_versions() -> None:
+    start = datetime(2026, 8, 16, 10, 0)
+    deadline = start + timedelta(hours=4)
+    frozen_due = start + timedelta(minutes=20)
+    slots = [
+        SourcePacingSlot(
+            "message-1", "old", 0, 4, start, deadline,
+            release_not_before_at=frozen_due,
+            frozen_due_at=frozen_due,
+        ),
+        SourcePacingSlot("message-1", "new", 1, 6, start, deadline),
+    ]
+
+    planned = schedule_source_pacing_slots(
+        slots, _curve(), seed_id="mixed-plan", now_at=start,
+    )
+
+    assert planned["old"] == frozen_due
+    assert planned["new"] > start
+
+
 def test_overdue_source_slots_get_cross_account_recovery_releases() -> None:
     now = datetime(2026, 8, 16, 11, 0)
     period_start = now - timedelta(hours=2)

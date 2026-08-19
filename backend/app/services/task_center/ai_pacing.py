@@ -217,14 +217,16 @@ def _source_slot(
         if owner.pacing_slot_ordinal is not None
         else max(0, int(owner.slot_ordinal) - 1)
     )
+    frozen_total = int(owner.pacing_plan_total or 0)
     return SourcePacingSlot(
         source_key=str(ledger.id),
         slot_key=f"ai:{owner.id}",
         slot_ordinal=pacing_ordinal,
-        plan_total=plan_total,
+        plan_total=frozen_total if owner.pacing_due_at is not None else plan_total,
         period_start_at=period_start,
         deadline_at=wall_datetime(ledger.deadline_at),
         release_not_before_at=owner.release_not_before_at,
+        frozen_due_at=owner.pacing_due_at,
         owner_id=owner.id,
         task_lifecycle_epoch=int(task.task_lifecycle_epoch or 1),
         pacing_period_key=str(ledger.id),

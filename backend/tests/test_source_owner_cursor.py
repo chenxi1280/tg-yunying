@@ -92,6 +92,31 @@ def test_new_owner_gets_next_source_ordinal_after_out_of_order_history() -> None
         assert enriched.historical_max_ordinal == 2
 
 
+def test_new_owner_continues_cursor_across_plan_hash_versions() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        task, ledger, old_owner, new_owner = _seed_owners(session)
+        slot = _source_slot(task, ledger, new_owner)
+        old_hash = source_pacing_plan_hash(slot, {}, seed_id=f"ai:{task.id}")
+        _freeze_historical_owner(old_owner, slot, old_hash)
+        old_owner.pacing_plan_hash = "b" * 64
+        old_owner.pacing_slot_ordinal = 2
+        session.flush()
+
+        enriched = attach_owner_history(
+            session,
+            task,
+            [slot],
+            owner_model=TaskGroupDailyMessageSlot,
+            config={},
+            seed_id=f"ai:{task.id}",
+        )[0]
+
+        assert enriched.slot_ordinal == 3
+        assert enriched.historical_max_ordinal == 2
+
+
 def test_new_owner_fails_when_frozen_source_plan_has_no_ordinal_capacity() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

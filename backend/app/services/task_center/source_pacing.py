@@ -21,6 +21,7 @@ class SourcePacingSlot:
     period_start_at: datetime
     deadline_at: datetime
     release_not_before_at: datetime | None = None
+    frozen_due_at: datetime | None = None
     owner_id: str = ""
     task_lifecycle_epoch: int = 1
     pacing_period_key: str = ""
@@ -76,24 +77,32 @@ def schedule_source_pacing_slots(
         grouped[slot.source_key].append(slot)
     planned: dict[str, datetime] = {}
     for source_key, source_slots in grouped.items():
-        first = source_slots[0]
-        _validate_source_group(source_slots, first)
+        frozen_slots = [slot for slot in source_slots if slot.frozen_due_at is not None]
+        planned.update({
+            slot.slot_key: wall_datetime(slot.frozen_due_at)
+            for slot in frozen_slots
+        })
+        fresh_slots = [slot for slot in source_slots if slot.frozen_due_at is None]
+        if not fresh_slots:
+            continue
+        first = fresh_slots[0]
+        _validate_source_group(fresh_slots, first)
         period_start_at = wall_datetime(first.period_start_at)
         deadline_at = wall_datetime(first.deadline_at)
         if deadline_at <= now_at:
             continue
         due_times = schedule_due_times(
-            len(source_slots),
+            len(fresh_slots),
             config,
             period_start_at=period_start_at,
             deadline_at=deadline_at,
             timezone_name=timezone_name,
             seed_id=f"{seed_id}:{source_key}",
-            slot_keys=[slot.slot_key for slot in source_slots],
+            slot_keys=[slot.slot_key for slot in fresh_slots],
             plan_total=first.plan_total,
-            slot_ordinals=[slot.slot_ordinal for slot in source_slots],
+            slot_ordinals=[slot.slot_ordinal for slot in fresh_slots],
         )
-        planned.update(zip((slot.slot_key for slot in source_slots), due_times, strict=True))
+        planned.update(zip((slot.slot_key for slot in fresh_slots), due_times, strict=True))
     return planned
 
 

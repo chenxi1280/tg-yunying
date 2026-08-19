@@ -303,10 +303,15 @@ def _view_plan_item(
         source_key=f"{context.ledger.id}:{message.id}",
         slot_key=f"view:{task.id}:{context.ledger.id}:{message.id}:{account_id}",
         slot_ordinal=ordinal,
-        plan_total=max(int(target.effective_target_snapshot), ordinal + 1),
+        plan_total=(
+            int(obligation.pacing_plan_total)
+            if obligation.pacing_due_at is not None and obligation.pacing_plan_total
+            else max(int(target.effective_target_snapshot), ordinal + 1)
+        ),
         period_start_at=period_start,
         deadline_at=deadline,
         release_not_before_at=obligation.release_not_before_at,
+        frozen_due_at=obligation.pacing_due_at,
         owner_id=obligation.id,
         task_lifecycle_epoch=int(task.task_lifecycle_epoch or 1),
         pacing_period_key=str(context.ledger.id),
