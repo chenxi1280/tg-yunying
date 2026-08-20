@@ -95,3 +95,4 @@
 
 | Error | Attempt | Resolution |
 | --- | --- | --- |
+| Deploy Production PostgreSQL gate failed because test setup had already created the current model schema and migration `0157` attempted to create `authorization_dr_runtime_contracts` again. | 1 | `0157` now detects the complete target schema and returns idempotently; added a metadata-create-all regression test and reran 270 related no-PostgreSQL tests. |
