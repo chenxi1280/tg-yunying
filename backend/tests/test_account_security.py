@@ -18,6 +18,7 @@ from app.schemas import TgAccountCreate
 from app.schemas.account_security import AccountSecurityBatchCreate, AccountSecurityPrecheckRequest, AccountSecurityProfileOverride, AvatarStrategy, ManagedTwoFaRequest, ProfileGenerationStrategy
 from app.security import decrypt_secret, encrypt_secret, encrypt_session
 from app.storage import save_avatar_bytes
+from app.timezone import as_beijing_aware
 from app.services import accounts as accounts_service
 import app.services.account_security.service as account_security_service
 from app.services._common import _now
@@ -191,7 +192,7 @@ def _seed_cleanup_executor(session: Session, account: TgAccount) -> TgAccountAut
         developer_app_id=account.developer_app_id,
         developer_app_api_id_snapshot=12345,
         session_ciphertext=account.session_ciphertext,
-        telegram_login_at=_now() - timedelta(hours=49),
+        telegram_login_at=as_beijing_aware(_now()) - timedelta(hours=49),
         telegram_authorization_hash_ciphertext=encrypt_secret("primary"),
         remote_authorization_state="active",
         protected_from_cleanup=True,
@@ -1094,6 +1095,7 @@ def test_standby_session_batch_polls_primary_session_code_when_challenge_has_no_
         assert refreshed.items[0].status == "succeeded"
         assert asset is not None
         assert asset.session_ciphertext
+        assert asset.telegram_login_at is not None
         assert code is not None
         assert code.code_preview == "67890"
         assert poll_attempts["count"] == 2

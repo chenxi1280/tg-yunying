@@ -34,3 +34,9 @@
 - Release SHA `c1deef70591440bcecf0e3236ebc82adda99367a` reached Deploy Production run `32345671294`; frontend passed and both backend matrices completed, but image build and deployment remained skipped.
 - PostgreSQL migration execution passed. Remaining failures were stale assertions that the migration head was still `0156`, plus legacy account-security tests that omitted the v2 cleanup executor/login age/idempotency contract or still expected SV to create `standby_2`.
 - The current product contract is explicit: device cleanup is standalone and keeps only recorded protected platform authorization hashes; every other active authorization, including an unrecorded official client anchor, is a cleanup target. `standby_2` creation is exclusive to the MY DR migration flow.
+
+## 2026-08-20 Third Release Gate Finding
+
+- Release SHA `a25d64c62f065e29d80ed0668b8794c39bb206f2` reached run `32347088271`; frontend and all 3330 no-PostgreSQL tests passed. The PostgreSQL matrix had only four failures, all showing zero drainable cleanup items.
+- Under PostgreSQL UTC, a naive Beijing timestamp written to `TIMESTAMP WITH TIME ZONE` was interpreted as UTC and read back eight hours later. A 49-hour test login therefore appeared only 41 hours old and was correctly skipped by the 48-hour business rule for the wrong timestamp reason.
+- New SV and MY authorization creation now writes an explicitly timezone-aware Beijing login instant. This keeps eligibility conservative and stable regardless of the PostgreSQL session timezone.
