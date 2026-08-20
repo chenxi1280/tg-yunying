@@ -17,6 +17,7 @@ from app.models import (
     Tenant,
     TgAccount,
     TgAccountAuthorization,
+    TgAuthorizationDrBatch,
     TgAuthorizationDrBatchItem,
     TgAuthorizationWakeBundleCopy,
 )
@@ -462,6 +463,27 @@ def test_remote_unknown_is_not_retried_and_next_account_can_continue(session: Se
     next_claim = claim_migration_operation(session, "my-node-1")
     assert next_claim is not None
     assert next_claim.account_id == 102
+
+
+def test_batch_becomes_manual_required_when_all_items_are_remote_unknown(session: Session) -> None:
+    first = _start_claim(session)
+    mark_login_remote_unknown(
+        session,
+        first.operation_id,
+        node_id=first.owner_node_id,
+        owner_epoch=first.owner_epoch,
+    )
+    second = claim_migration_operation(session, "my-node-1")
+    mark_login_remote_unknown(
+        session,
+        second.operation_id,
+        node_id=second.owner_node_id,
+        owner_epoch=second.owner_epoch,
+    )
+    batch = session.scalar(select(TgAuthorizationDrBatch))
+
+    assert batch.status == "manual_required"
+    assert batch.finished_at is not None
 
 
 def test_forward_rollback_uses_higher_decision_and_keeps_my_candidate(session: Session) -> None:
