@@ -11,6 +11,7 @@ from app.models import (
     TgAuthorizationWakeInventoryEntry,
 )
 from app.services._common import _now
+from app.timezone import as_beijing_aware
 
 from .contracts import AuthorizationDrError, RestoreProbeReceipt, WakeBundleReceipt
 
@@ -183,6 +184,7 @@ def _create_candidate_authorization(session, operation, receipt):
         dr_state="bundle_copies_verified",
         remote_authorization_state="active",
         protected_from_cleanup=True,
+        telegram_login_at=as_beijing_aware(_now()),
         telegram_authorization_hash_ciphertext=receipt.remote_authorization_hash_ciphertext,
         auth_key_fingerprint_digest=receipt.auth_key_fingerprint_digest,
         telegram_user_id_digest=receipt.telegram_user_id_digest,

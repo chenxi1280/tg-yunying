@@ -12,3 +12,5 @@
 - 已补充 `0157` 完整目标 schema 幂等识别和对应回归；定向迁移测试 13 passed，完整相关 no-PostgreSQL 回归 270 passed。真实 PostgreSQL CI 复验、部署和 Telegram E4 尚未完成。
 - 第二轮流水线 `32345671294` 已越过重复建表，确认 `0157` 实际执行问题已修复；随后暴露两处旧 migration-head 断言和 8 个旧账号安全合同用例，构建/部署仍被 gate 阻止，生产未变化。
 - 已将旧用例同步到设备清理 v2 合同，并把硅谷普通安全批次请求 `standby_2` 改为明确 `manual_required`，避免无 MY 耐久化事实时假成功；同时修复零目标成功时误报 `partial_failed`。原失败场景 9 passed，完整相关 no-PostgreSQL 回归 273 passed。
+- 第三轮流水线 `32347088271` 的 no-PostgreSQL 全量矩阵通过；PostgreSQL 仅剩 4 个清理执行用例被错误跳过。根因是带时区登录时间列写入无时区北京时间，在 UTC PostgreSQL 中读回偏移 8 小时。
+- 已让 SV standby_1 与 MY standby_2 创建时都持久化显式北京时区 `telegram_login_at`，并补充两条新授权登录时间断言；本地相关 273 项和原失败 9 项继续通过，待真实 PostgreSQL 复验。

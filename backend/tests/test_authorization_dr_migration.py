@@ -426,6 +426,7 @@ def test_cutover_preserves_old_sv_session_and_enables_next_account(session: Sess
     assert source.migration_recovery_gate_status == "passed"
     assert candidate.session_ciphertext is None
     assert candidate.credential_storage_scope == "malaysia_wake_bundle"
+    assert candidate.telegram_login_at is not None
     assert candidate.is_slot_current is True
     assert candidate.dr_state == "dormant_ready"
     assert bundle.is_active is True
