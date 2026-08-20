@@ -18,7 +18,10 @@ from app.models import (
 )
 from app.services._common import _now, audit, gateway, get_account_phone
 from app.services.account_two_fa import managed_two_fa_password
-from app.services.developer_apps import credentials_for_account, credentials_for_developer_app
+from app.services.developer_apps import (
+    credentials_for_authorization,
+    credentials_for_developer_app,
+)
 
 from .contracts import AuthorizationDrError, OperationClaim
 from .readiness import require_migration_readiness
@@ -239,13 +242,13 @@ def poll_migration_login_code(
     )
     if operation.remote_call_state != "started":
         raise AuthorizationDrError("login_code_challenge_mismatch", "Login challenge has not started")
-    account = session.get(TgAccount, operation.account_id)
-    if not account or not account.session_ciphertext:
-        raise AuthorizationDrError("login_code_not_found", "Current SV code source is unavailable")
+    source = session.get(TgAccountAuthorization, operation.source_authorization_id)
+    if not source or not source.session_ciphertext:
+        raise AuthorizationDrError("login_code_not_found", "Frozen SV code source is unavailable")
     snapshots = gateway.poll_verification_codes(
-        account.id,
-        session_ciphertext=account.session_ciphertext,
-        credentials=credentials_for_account(session, account),
+        operation.account_id,
+        session_ciphertext=source.session_ciphertext,
+        credentials=credentials_for_authorization(session, source),
     )
     return snapshots[0].code if snapshots else ""
 
