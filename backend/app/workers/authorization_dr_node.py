@@ -15,8 +15,8 @@ import time
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 import httpx
 
-from app.integrations.telegram import DeveloperAppCredentials, create_gateway
-from app.workers.authorization_dr_kms import DekProtector
+from app.integrations.telegram import AuthorizationIdentity, DeveloperAppCredentials, create_gateway
+from app.workers.authorization_dr_kms import DekProtector, WrappedDek
 from app.workers.authorization_dr_storage import ObjectSnapshotStore, load_storage_config
 
 
@@ -41,6 +41,15 @@ class NodeConfig:
     dek_protector: DekProtector
     client_cert: tuple[str, str] | None
     snapshot_copy_kind: str = "remote_ssh_snapshot"
+
+
+@dataclass(frozen=True)
+class RestoreProbeInput:
+    config: NodeConfig
+    claim: dict
+    material: dict
+    object_key: str
+    expected: AuthorizationIdentity
 
 
 class DrNodeClient:
@@ -117,15 +126,13 @@ def _process_claim(client: DrNodeClient, gateway, claim: dict) -> None:
         receipt, object_key = _persist_bundle(client.config, claim, raw_session, identity)
         _post_bundle_receipt(client, operation_id, {**owner, **receipt})
         bundle_committed = True
-        probe = _restore_probe(
-            gateway,
-            client.config,
-            claim,
-            material,
-            object_key,
-            receipt["wrapped_dek_ciphertext"],
-            identity,
-        )
+        probe = _restore_probe(gateway, RestoreProbeInput(
+            config=client.config,
+            claim=claim,
+            material=material,
+            object_key=object_key,
+            expected=identity,
+        ))
         client.post(
             f"/internal/v1/authorization-dr/operations/{operation_id}/wake-bundle/restore-probe",
             {**owner, **probe},
@@ -207,9 +214,9 @@ def _persist_bundle(config: NodeConfig, claim: dict, raw_session: str, identity)
     generation = int(claim["target_generation"])
     account_id = int(claim["account_id"])
     dek = AESGCM.generate_key(bit_length=256)
-    envelope = _encrypt_session(raw_session, dek)
-    ciphertext_digest = hashlib.sha256(envelope).hexdigest()
     wrapped_dek = config.dek_protector.wrap(dek)
+    envelope = _encrypt_session(raw_session, dek, wrapped_dek=wrapped_dek)
+    ciphertext_digest = hashlib.sha256(envelope).hexdigest()
     relative = Path(str(account_id)) / f"g{generation}.bundle"
     local_path = config.local_dir / relative
     object_key = f"{config.object_prefix.strip('/')}/{relative.as_posix()}".lstrip("/")
@@ -248,13 +255,15 @@ def _persist_bundle(config: NodeConfig, claim: dict, raw_session: str, identity)
     return receipt, object_key
 
 
-def _encrypt_session(raw_session: str, dek: bytes) -> bytes:
+def _encrypt_session(raw_session: str, dek: bytes, *, wrapped_dek: WrappedDek) -> bytes:
     nonce = secrets.token_bytes(12)
     ciphertext = AESGCM(dek).encrypt(nonce, raw_session.encode(), b"tg-authorization-wake-bundle-v1")
     return json.dumps({
-        "v": 1,
+        "v": 2,
         "nonce": base64.b64encode(nonce).decode(),
         "ciphertext": base64.b64encode(ciphertext).decode(),
+        "wrapped_dek_ciphertext": wrapped_dek.ciphertext,
+        "kms_key_version": wrapped_dek.key_version,
     }, sort_keys=True, separators=(",", ":")).encode()
 
 
@@ -264,6 +273,14 @@ def _decrypt_session(envelope: bytes, dek: bytes) -> str:
     ciphertext = base64.b64decode(payload["ciphertext"])
     raw = AESGCM(dek).decrypt(nonce, ciphertext, b"tg-authorization-wake-bundle-v1")
     return raw.decode()
+
+
+def _wrapped_dek_ciphertext(envelope: bytes) -> str:
+    payload = json.loads(envelope)
+    wrapped_dek = str(payload.get("wrapped_dek_ciphertext") or "")
+    if int(payload.get("v") or 0) < 2 or not wrapped_dek or not payload.get("kms_key_version"):
+        raise RuntimeError("wake bundle does not contain durable recovery metadata")
+    return wrapped_dek
 
 
 def _write_copy(path: Path, envelope: bytes, copy_kind: str, dek: bytes) -> dict:
@@ -351,14 +368,18 @@ def _write_inventory(config: NodeConfig, claim: dict, object_key: str, digest: s
     return hashlib.sha256(payload).hexdigest()
 
 
-def _restore_probe(gateway, config, claim, material, object_key: str, wrapped_dek: str, expected) -> dict:
-    envelope = config.object_store.read(object_key)
-    dek = config.dek_protector.unwrap(wrapped_dek)
+def _restore_probe(gateway, probe_input: RestoreProbeInput) -> dict:
+    config = probe_input.config
+    envelope = config.object_store.read(probe_input.object_key)
+    dek = config.dek_protector.unwrap(_wrapped_dek_ciphertext(envelope))
     raw_session = _decrypt_session(envelope, dek)
-    observed = gateway.authorization_identity(raw_session, _credentials(claim, material))
-    matched = observed == expected
+    observed = gateway.authorization_identity(
+        raw_session,
+        _credentials(probe_input.claim, probe_input.material),
+    )
+    matched = observed == probe_input.expected
     return {
-        "probe_generation": claim["target_generation"],
+        "probe_generation": probe_input.claim["target_generation"],
         "source_copy_kind": config.snapshot_copy_kind,
         "status": "passed" if matched else "failed",
         "session_parse_status": "passed",
