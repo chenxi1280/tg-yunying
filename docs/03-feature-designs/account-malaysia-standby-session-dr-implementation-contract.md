@@ -1,9 +1,9 @@
 # 马来西亚异地备用 TG Session 实施与验收合同
 
-> 版本：v2.16
+> 版本：v2.17
 > 日期口径：2026-08-20（Asia/Shanghai）
 > 规范关系：本文是 [马来西亚异地备用 TG Session 灾备 PRD](account-malaysia-standby-session-dr-prd.md) 的强制组成部分；冲突时两份文档必须同步修订，不允许实现自行择一。
-> 当前状态：`design_status=complete`、`dev_handoff_ready=true`、`implementation_started=true`、`implementation_scope=two_account_canary_core`、`qa_pass=false`、`deployed=false`、`production_fixed=false`
+> 当前状态：`design_status=complete`、`implementation_started=true`、`implementation_scope=two_account_canary_core`、`core_deployed=true`、`ssh_mirror_change_in_progress=true`、`two_account_canary=0/2`、`production_fixed=false`
 
 > 生产结构纠偏：A/B/C 是环境级三套 App 注册和新账号默认角色，不是历史切换后每个账号不可变化的角色标签。单账号验收以三 App ID 两两不同为准；App C/SV `standby_2` 是本次迁移源。历史 App A `standby_repair` 必须经双 Session Telegram UID/AuthKey 探测和 CAS 转正为 SV `standby_1` 后，账号才能进入迁移。
 
@@ -27,16 +27,16 @@
 | `POST /api/system/authorization-dr-backfills/{id}/cancel` | 仅 `apply_started_at` 为空时按 expected batch version 取消；已开始 apply 必须完成逐项 readback |
 | `GET /api/system/authorization-dr-backfills/{id}` | 返回逐类 apply/readback 计数、resolver shadow diff、冲突与 writer-cutover blocker |
 | `GET /api/system/authorization-dr-backfills` | 按 tenant/status/fingerprint/created_at/cursor 分页返回迁移批次及状态计数 |
-| `POST /api/system/authorization-contract-cutovers/preview` | 冻结目标 mode/epoch、最低 capability、非 stale runtime、活跃 client、Telegram egress ACL，以及 KMS policy version/digest、期望解密身份集合 digest 和 decrypt-denied 探测计划 |
-| `GET /api/system/authorization-contract-cutovers` | 按 status/target_mode/created_at/cursor 分页返回 cutover、实例/KMS/ACL blocker 与状态计数 |
-| `POST /api/system/authorization-contract-cutovers/{id}/approve` | 异人批准/拒绝冻结的 cutover fingerprint、expected contract version 和 runtime/KMS/ACL 条件 |
-| `POST /api/system/authorization-contract-cutovers/{id}/apply` | 复核实例/旧 client/KMS grantee 与真实 decrypt-denied/ACL 后 CAS 提升 contract epoch/mode；漂移进入 failed_hold，不部分提交 |
+| `POST /api/system/authorization-contract-cutovers/preview` | 冻结目标 mode/epoch、最低 capability、非 stale runtime、活跃 client、Telegram egress ACL，以及 恢复密钥策略 version/digest、期望解密身份集合 digest 和 decrypt-denied 探测计划 |
+| `GET /api/system/authorization-contract-cutovers` | 按 status/target_mode/created_at/cursor 分页返回 cutover、实例/恢复密钥/ACL blocker 与状态计数 |
+| `POST /api/system/authorization-contract-cutovers/{id}/approve` | 异人批准/拒绝冻结的 cutover fingerprint、expected contract version 和 runtime/恢复密钥/ACL 条件 |
+| `POST /api/system/authorization-contract-cutovers/{id}/apply` | 复核实例/旧 client/恢复密钥授权身份 与真实 decrypt-denied/ACL 后 CAS 提升 contract epoch/mode；漂移进入 failed_hold，不部分提交 |
 | `POST /api/system/authorization-contract-cutovers/{id}/cancel` | 仅 `apply_started_at` 为空时按 expected version 取消；epoch 已提交只能新建更高 epoch 的降级 operation |
-| `GET /api/system/authorization-contract-cutovers/{id}` | 返回 contract、runtime capability、client drain、DB mutation gate、KMS policy/grantee/decrypt-denied fact 与 egress ACL 脱敏 readback |
+| `GET /api/system/authorization-contract-cutovers/{id}` | 返回 contract、runtime capability、client drain、DB mutation gate、恢复密钥策略/grantee/decrypt-denied fact 与 egress ACL 脱敏 readback |
 | `POST /api/tg-accounts/security-batches/precheck` | 只供补齐/迁移及其他既有动作使用；`action_types` 含 `cleanup_devices` 时返回 422 `cleanup_precheck_not_supported`，前端不得为设备清理调用本接口 |
 | `POST /api/tg-accounts/security-batches` | 用户确认后直接调用。补齐/迁移仍按既有 fingerprint 创建。`action_types=[cleanup_devices]` 时不连接 Telegram，只在同一事务中按已落库 current SV authorization 的 `telegram_login_at` 去重、分类并持久化：eligible 写执行项，其他写 skipped 结果但不入 worker 队列；返回 `requested_count/eligible_count/skipped_count/skipped_reason_counts/batch_id`，满足 requested=eligible+skipped 与 skipped=各原因之和，没有 waiting/next_retry_at/自动到期任务 |
 | `GET /api/tg-accounts/security-batches/{id}` | DR 批次继续返回 `N/target_set_fingerprint/dr_outcome_counts/coverage_numerator/next_retry_at`。设备清理批次返回 `requested_count/eligible_count/skipped_count/skipped_reason_counts/executing/succeeded/failed/reconcile_unknown` 和账号级唯一结果；单项超时不阻断列表或其他项执行 |
-| `GET /api/tg-accounts/{id}/authorizations` | 返回不可变 logical slot、代次、Developer App/api_id 快照、远端授权存在状态、MY bundle receipt/coverage、`recoverable_copy_count`、本地/对象副本最后校验、KMS 恢复状态、MY inventory sequence、最后 restore probe、迁移恢复闸门/rollback window、health/qualification blocker、保护、脱敏异常、`business_runtime_status/sv_redundancy_status/authorization_recovery_status/current authorization/fact/connection generation` 与可否辅助重建 primary 的原因 |
+| `GET /api/tg-accounts/{id}/authorizations` | 返回不可变 logical slot、代次、Developer App/api_id 快照、远端授权存在状态、MY bundle receipt/coverage、`recoverable_copy_count`、MY 本地/硅谷 SSH 镜像最后校验、恢复密钥 readback 状态、MY inventory sequence、最后 restore probe、迁移恢复闸门/rollback window、health/qualification blocker、保护、脱敏异常、`business_runtime_status/sv_redundancy_status/authorization_recovery_status/current authorization/fact/connection generation` 与可否辅助重建 primary 的原因 |
 | `GET /api/tg-accounts/{id}/authorization-devices` | 按最新 observation 分页返回四类设备、匹配槽位/授权/代次、Developer App、Telegram `date_created` 与脱敏元数据，以及 `remote_active_total/platform_current/platform_retained/external/unresolved/as_of/stale/current_sv_login_at/login_age_hours/cleanup_button_enabled/cleanup_disabled_reason`；新账号登录后立即可读，不返回 hash、完整 IP、倒计时或资格 precheck 状态 |
 | `POST /api/tg-accounts/{id}/authorization-devices/refresh` | 显式刷新该账号设备列表，保存 observation 并返回分类计数；只服务单账号详情，不参与批量清理资格判断，不校验 48 小时，MY standby_2 休眠不影响其远端 active 分类 |
 | `POST /api/tg-accounts/{id}/authorization-devices/cleanup` | 接受 `reason + Idempotency-Key`，按与批量接口相同的本地 48 小时规则直接创建一个账号的 cleanup batch；不接收 hash、preview/precheck ID。响应返回 `requested_count=1/eligible_count/skipped_count/skipped_reason_counts/batch_id`；被跳过时仍持久化单个 skipped 结果并返回 batch_id，但不写 worker 队列项 |
@@ -69,8 +69,8 @@
 | `POST /internal/v1/authorization-dr/operations/{id}/sv-path-failures` | 受信控制面只在已存在 `emergency_reauthorize_primary` intent 下为 `primary` 与 `standby_1` 写 typed failure fact；两条 fact 必须同 generation、当前且均失败 |
 | `POST /internal/v1/authorization-runtime/accounts/{id}/local-activate` | 权威 primary failure 后自动创建/重放 `local_activate`；执行 standby_1 probe、领取冻结、Gateway drain、current/account projection CAS、旧代次 lease 失效和模块重建，不唤起 MY |
 | `POST /internal/v1/authorization-runtime/accounts/{id}/restore-sv-pair` | 在 standby_1 承载业务期间为 logical primary 创建更高 generation，验证后受控切回并恢复 standby_1 ready；失败保持业务 degraded，不伪装三槽健康 |
-| `POST/GET /internal/v1/authorization-dr/operations/{id}/wake-bundle` | MY 在 provision/migrate 时提交不可变 bundle generation、两份 copy manifest/digest/readback receipt、wrapped DEK/KMS key version、隔离恢复 fact 和不可被 SV 解密的密文副本或引用；GET 只返回 manifest/readback，不返回可解密 Session |
-| `POST /internal/v1/authorization-dr/operations/{id}/wake-bundle/restore-probe` | 仅在原登录 client 已断连后，由同一 MY owner 从对象快照解封到内存或 operation 临时态并隔离恢复；禁止 SDK 打开/回写最终 bundle 路径。校验 KMS decrypt、Session 解析、`is_user_authorized/get_me/AuthKey fingerprint`，随后断连、擦除临时态并返回不可变 probe/zeroize receipt |
+| `POST/GET /internal/v1/authorization-dr/operations/{id}/wake-bundle` | MY 在 provision/migrate 时提交不可变 bundle generation、两份 copy manifest/digest/readback receipt、wrapped DEK/恢复密钥版本、隔离恢复 fact 和不可被 SV 解密的密文副本或引用；GET 只返回 manifest/readback，不返回可解密 Session |
+| `POST /internal/v1/authorization-dr/operations/{id}/wake-bundle/restore-probe` | 仅在原登录 client 已断连后，由同一 MY owner 从 SSH 镜像解封到内存或 operation 临时态并隔离恢复；禁止 SDK 打开/回写最终 bundle 路径。校验 恢复密钥解封、Session 解析、`is_user_authorized/get_me/AuthKey fingerprint`，随后断连、擦除临时态并返回不可变 probe/zeroize receipt |
 | `GET /internal/v1/authorization-dr/wake-inventory` | 仅供恢复协调器按 account/sequence 分页读取 MY 对象存储中的追加 inventory 和对象 manifest 摘要；中心库落后时进入 restore hold，只允许补写较高代次，并按 `slot_decision_id/expected old/new/version` 幂等前滚 prepared 决策；不提供 Session 或删除接口 |
 | `POST /internal/v1/authorization-dr/operations/{id}/wake-permit/fetch` | 仅当前 MY owner 可单次领取 `drill_wake_probe|emergency_code_source` permit；绑定 bundle generation/owner/fence/TTL，只允许 MY 本地解封 |
 | `POST /internal/v1/authorization-dr/operations/{id}/facts` | 按 owner epoch、step、fact version 写不可变远端事实，不接受状态跳级 |
@@ -120,9 +120,9 @@ decommission、remote-device revoke 和 authorization-device cleanup 都由账�
 
 紧急重建 primary、decommission、存量 backfill/cutover apply、App failure-domain assertion、出口变更和会扩大我方 protected manifest 的归属修复要求发起人与审批人分离。普通一键清理已精确分类的 external 设备只要求有权限管理员的一次确认和操作原因，不要求逐设备或双人审批。单人 break-glass 只豁免紧急重建的审批人分离，不豁免双 SV 失败、SV 登录运行时就绪、Telegram 渠道判定、RPC fence、MY 断连、CAS 和 readback。
 
-审计至少记录 operation/idempotency/trace、账号、logical slot/目标代次、Developer App/api_id/slot assignment 快照、旧新授权版本、`requested/eligible/skipped` 计数与 reason、冻结 executor authorization/fact version/`telegram_login_at`、worker 设备 observation/snapshot digest/protected manifest/target hash digests、设备读取时长/失败、逐目标撤销结果、contract epoch/runtime capability/DB gate、egress ACL、wake bundle/permit/code grant 的 generation/digest/receipt、双副本 readback、KMS key/decrypt fact、MY inventory sequence、隔离 restore probe、UID/AuthKey/设备结果、双 SV failure fact、MY wake/断连、SV new-primary commit/CAS/probe、审批和最终 readback。审计不保存原始 IP、远端 hash 明文、Session、QR payload、登录码、2FA、API Hash、AuthKey、出口凭据或完整手机号。
+审计至少记录 operation/idempotency/trace、账号、logical slot/目标代次、Developer App/api_id/slot assignment 快照、旧新授权版本、`requested/eligible/skipped` 计数与 reason、冻结 executor authorization/fact version/`telegram_login_at`、worker 设备 observation/snapshot digest/protected manifest/target hash digests、设备读取时长/失败、逐目标撤销结果、contract epoch/runtime capability/DB gate、egress ACL、wake bundle/permit/code grant 的 generation/digest/receipt、双副本 readback、恢复密钥 key/decrypt fact、MY inventory sequence、隔离 restore probe、UID/AuthKey/设备结果、双 SV failure fact、MY wake/断连、SV new-primary commit/CAS/probe、审批和最终 readback。审计不保存原始 IP、远端 hash 明文、Session、QR payload、登录码、2FA、API Hash、AuthKey、出口凭据或完整手机号。
 
-SV primary/standby_1 Session 使用中心 Session keyring；MY standby_2 每个 bundle 使用独立 DEK 密封，DEK 只以 wrapped 形式保存，解包 KEK 位于独立于 MY 计算主机/数据盘的托管 MY KMS 或等价可恢复密钥服务，不依赖 SV `SESSION_SECRET_KEY`。本地持久卷与独立 MY 对象快照各保存一份不可变密文，中心只保存 SV 业务身份不可解密的密文副本或引用与 receipt。上线前必须用替换 MY 主机/数据盘的演练证明 KMS 和对象快照仍可恢复；仅把 key 放在单台主机时返回 `my_kms_recovery_unproven`。wake permit 和 login-code grant 默认 60 秒、严格单次消费；SV 只能消费登录码，不能解密或读取 MY Session。明文 Session、登录码和 2FA 只存在各自批准运行时的内存窗口，不进入数据库、队列、日志、argv 或环境变量。MY 没有业务 permit，ACL 只允许 provision/drill/emergency-code-source 的限定 RPC。
+SV primary/standby_1 Session 使用中心 Session keyring；MY standby_2 每个 bundle 使用独立 DEK 密封，DEK 只以 wrapped 形式保存，并由双机备份的专用恢复密钥包装，不依赖 SV `SESSION_SECRET_KEY`。MY 本地持久卷与硅谷 SSH 镜像各保存一份不可变密文；恢复密钥以 root-only 文件存在两机运维目录，硅谷 backend、worker 和业务身份不挂载。上线前必须通过替换 MY 主机/数据盘的演练证明恢复密钥和 SSH 镜像仍可恢复；仅把 key 放在单台主机时返回 `my_recovery_key_unproven`。wake permit 和 login-code grant 默认 60 秒、严格单次消费；SV 业务运行时只能消费登录码，不能读取 MY Session。明文 Session、登录码和 2FA 只存在各自批准运行时的内存窗口，不进入数据库、队列、日志、argv 或环境变量。MY 没有业务 permit，ACL 只允许 provision/drill/emergency-code-source 的限定 RPC。
 
 QR payload 只由当前 MY owner 生成，经 mTLS broker 在 challenge TTL 内一次性或短时读取；持久层仅保存 operation/flow/owner/inventory/target generation、QR generation、payload digest、expiry 和状态。刷新时先 CAS 提升 generation，再销毁旧 broker payload；扫码回调、2FA 和 candidate commit 均必须匹配新 generation。
 
@@ -130,7 +130,7 @@ login-code grant 在返回前原子标记 consumed；响应丢失不得重取。
 
 ## 3. 数据保留、备份与清理
 
-- 通用任务清理、Action/Attempt 归档、临时文件清理、登录 flow TTL、账号软删除、数据库压缩、SV 备份轮换和 MY 快照轮换不得删除当前/protected 授权及其 MY wake bundle、两份可恢复密文副本、MY inventory、wrapped DEK、receipt、仍被引用的 KMS key version、logical slot/generation、probe/qualification/failure fact、operation、activity review 和 protected-device ref；轮换后 `recoverable_copy_count` 不得低于 2。
+- 通用任务清理、Action/Attempt 归档、临时文件清理、登录 flow TTL、账号软删除、数据库压缩、SV 备份轮换和 MY 快照轮换不得删除当前/protected 授权及其 MY wake bundle、两份可恢复密文副本、MY inventory、wrapped DEK、receipt、仍被引用的 恢复密钥版本、logical slot/generation、probe/qualification/failure fact、operation、activity review 和 protected-device ref；轮换后 `recoverable_copy_count` 不得低于 2。
 - 软删除必须先写 `business_deleted_authorizations_retained`，并使所有业务候选查询、Action claim、listener claim、online probe 和同步 claim 排除该账号；未进 Gateway 的 claim 释放，已进 Gateway 的 Attempt 按冻结代次收口。删除后禁止 provision/migrate/drill/emergency reauthorize，只允许授权 readback/reconcile/decommission。
 - 已删除账号在 `GET /api/tg-accounts?include_deleted=true` 中保留到 `authorization_retired`。每个我方授权的 decommission readback 和 MY erase receipt 全部完成前，不允许物理删除账号、授权、设备观察或退役 blocker。
 - probe fact 每个授权最新一条，以及 unknown/reconcile、活动异常、切换审计相关的派生 fact 永久保留；其余超过 180 天可由显式归档批处理聚合后删除。归档器不得命中永久集合。
@@ -139,8 +139,8 @@ login-code grant 在返回前原子标记 consumed；响应丢失不得重取。
 - 幂等键在 operation 终态超过 90 天后允许清理；非终态 operation 的幂等键永不清理。
 - 登录 flow 临时 Session、QR broker payload、登录码 envelope 和 2FA 材料按 TTL 清除；challenge/message digest、grant 消费/清零收据、已提交授权密文和 operation 审计不是临时数据。
 - login-input grant 的节点公钥、版本和消费审计按 operation 保留；未消费 grant 到期即不可领取，服务端不保存明文 bundle，节点必须在 Session commit、owner 丢失或 operation 终止时清零内存材料。
-- 只有双人审批 decommission、无冲突 lease/operation、Telegram 撤销 readback 和保留期均完成，才允许分别擦除 MY 本地包、对象快照、中心密文副本和 wrapped DEK；每一步写独立 erase receipt，全部完成前保持 `erase_pending`，任一步 unknown 保持 `retirement_reconcile_unknown`。共享 KMS key version 只在没有任何 active/retained bundle 引用时退役。已删除账号退役时由 SV peer 逐 hash 撤销其他平台设备，最后一个 SV revoker 使用当前授权退出接口；最后退出或任一撤销 unknown 时保持 `retirement_reconcile_unknown`。MY 不为退役唤起，只在 peer 已证明其远端授权撤销后离线擦除包。
-- 中心数据库备份必须包含 wake bundle/copy manifest、receipt、digest、wrapped DEK/KMS key version、最后已知 MY inventory sequence 与 operation/grant/probe/protection 元数据，但不能声称它可代替 MY 本地包、对象快照或独立 MY inventory。禁止备份明文敏感值。
+- 只有双人审批 decommission、无冲突 lease/operation、Telegram 撤销 readback 和保留期均完成，才允许分别擦除 MY 本地包、SSH 镜像、中心密文副本和 wrapped DEK；每一步写独立 erase receipt，全部完成前保持 `erase_pending`，任一步 unknown 保持 `retirement_reconcile_unknown`。共享 恢复密钥版本 只在没有任何 active/retained bundle 引用时退役。已删除账号退役时由 SV peer 逐 hash 撤销其他平台设备，最后一个 SV revoker 使用当前授权退出接口；最后退出或任一撤销 unknown 时保持 `retirement_reconcile_unknown`。MY 不为退役唤起，只在 peer 已证明其远端授权撤销后离线擦除包。
+- 中心数据库备份必须包含 wake bundle/copy manifest、receipt、digest、wrapped DEK/恢复密钥版本、最后已知 MY inventory sequence 与 operation/grant/probe/protection 元数据，但不能声称它可代替 MY 本地包、SSH 镜像或独立 MY inventory。禁止备份明文敏感值。
 - 中心库从旧备份恢复时，先隔离旧运行面、提升 `cluster_incarnation/contract_epoch` 并进入 `central_restore_reconcile_required`，禁止 provision/migrate/decommission/erase 和授权设备清理。恢复协调器按 UID、AuthKey blind index、slot/bundle generation、copy manifest、ciphertext digest、MY receipt 和 MY inventory 最大有效 sequence 对账；中心只能追加恢复较高代次或保留 unknown。仅有 `slot_commit_prepared` 时按同一 `slot_decision_id/expected old/new/version` 幂等重放：已是目标返回原结果，仍是 expected old 则前滚，其他值 conflict；不能用旧中心数据覆盖、降代、标孤儿或擦除 MY 更新包。全量 readback 通过后才解除 mutation hold。
 
 ## 4. 失败码与处置
@@ -192,15 +192,15 @@ login-code grant 在返回前原子标记 consumed；响应丢失不得重取。
 | `verification_code_unreadable` / `two_fa_not_managed` | 进入人工处理，2FA 只在 SV login runtime 使用，不交付 MY |
 | `telegram_limit` | 按 Telegram 权威 retry 时间等待 |
 | `runtime_fenced` | 当前实例不得连接或发 RPC |
-| `contract_epoch_mismatch` / `runtime_capability_unproven` / `session_kms_policy_unproven` / `kms_policy_version_conflict` / `telegram_egress_acl_unproven` | 拒绝关键 mutation 或 cutover；修复实例注册、旧 client drain、DB gate、KMS grantee/decrypt-denied fact 或 ACL readback |
+| `contract_epoch_mismatch` / `runtime_capability_unproven` / `session_recovery_key_policy_unproven` / `recovery_key_policy_version_conflict` / `telegram_egress_acl_unproven` | 拒绝关键 mutation 或 cutover；修复实例注册、旧 client drain、DB gate、恢复密钥授权身份/decrypt-denied fact 或 ACL readback |
 | `account_rpc_frozen` / `authorization_control_busy` / `cluster_incarnation_mismatch` | Gateway 前拒绝并按当前持久事实对账 |
 | `telegram_fresh_reset_rejected` / `FRESH_RESET_AUTHORISATION_FORBIDDEN` | 即使本地登录时间已超过 48 小时仍被 Telegram 拒绝时，当前项直接 failed，不 waiting、不自动重试；已有部分撤销时先 readback 并记 partial_failed |
 | `gateway_drain_unknown` | 保持冻结，不切换、不自动回滚 |
 | `malaysia_wake_unavailable` | MY 节点无法执行紧急唤起；保持 blocked，不允许在硅谷替代生成 MY wake fact |
 | `wake_bundle_missing` / `wake_bundle_generation_conflict` / `wake_bundle_decrypt_failed` | 不复制中心/SV Session 修复；保留旧包和授权保护，在 MY 重新登录生成新 generation |
-| `my_kms_recovery_unproven` / `wake_bundle_copy_count_insufficient` | 不提交槽位、不撤销旧 SV、不擦除任一副本；恢复独立 KMS decrypt 事实和两份可恢复副本，单主机本地 key 不算通过 |
+| `my_recovery_key_unproven` / `wake_bundle_copy_count_insufficient` | 不提交槽位、不撤销旧 SV、不擦除任一副本；恢复双机恢复密钥解封 事实和两份可恢复副本，单主机本地 key 不算通过 |
 | `wake_bundle_local_copy_unverified` / `wake_bundle_snapshot_copy_unverified` / `wake_bundle_immutable_conflict` | 保留现有对象和远端授权；从仍可解封副本写更高 bundle generation 并重新验证，禁止覆盖原路径或重新登录 Telegram |
-| `wake_bundle_restore_probe_failed` | 保持旧 SV current/retained+protected，MY candidate 不计 dormant_ready；从对象快照隔离恢复并完成 Telegram probe/断连前不得退役旧源 |
+| `wake_bundle_restore_probe_failed` | 保持旧 SV current/retained+protected，MY candidate 不计 dormant_ready；从 SSH 镜像隔离恢复并完成 Telegram probe/断连前不得退役旧源 |
 | `wake_bundle_inventory_ahead_of_central` / `central_restore_reconcile_required` | 冻结授权 mutation；按 MY 最大有效 inventory sequence 只增补回中心，禁止旧库降代、删除或释放保护 |
 | `slot_commit_decision_conflict` | 保持新旧授权和全部 bundle protected；核对同一 decision 的 expected old/new/version，不恢复旧库、不覆盖槽位、不创建新登录或退役 |
 | `malaysia_owner_fencing_unproven` / `login_code_grant_conflict` | 不重发登录码；先证明 MY lease/client/permit 已失效、grant 已清零且 SV 未产生远端授权 |
@@ -210,7 +210,7 @@ login-code grant 在返回前原子标记 consumed；响应丢失不得重取。
 | `migration_fingerprint_conflict` / `migration_conflict_unknown` | 不 apply、不切 resolver；重新 preview 或人工修复唯一映射 |
 | `migration_app_mapping_incomplete` / `migration_source_standby_not_unique` | 不启动 MY 登录；先将现有三套 App 唯一映射 A/B/C，并唯一识别 App C 的旧 SV standby_2 |
 | `migration_cutover_complete_retirement_skipped` | MY standby_2 已提交、旧 SV 源 retained+protected；当前 SV executor 未严格超过 48 小时、时间缺失或不可用，本次退役 skipped。三槽可用且业务不回滚，设备页显示 3 当前 + 1 历史，由运营后续重新发起退役 |
-| `migration_cutover_complete_recovery_blocked` | MY slot 已提交但双副本/KMS/inventory/隔离恢复闸门未通过；旧 SV 必须保持远端 active、retained+protected，不创建 decommission |
+| `migration_cutover_complete_recovery_blocked` | MY slot 已提交但双副本/恢复密钥/inventory/隔离恢复闸门未通过；旧 SV 必须保持远端 active、retained+protected，不创建 decommission |
 | `migration_retirement_reconcile_unknown` | 不删除旧 SV Session/保护或重复 reset；保护新旧授权并以 Telegram exact set 对账，MY 切换不自动回滚 |
 | `migration_rollback_window_closed` | 旧 SV 远端撤销已 readback，禁止把旧密文重新设为 current；修复 MY 可恢复副本或重新登录新授权 |
 | `wake_bundle_erase_partial_unknown` | 保持 `erase_pending` 和全部审计/保护引用；分别对账本地、对象、中心副本和 wrapped DEK，不把账号标为 authorization_retired |
@@ -220,10 +220,10 @@ login-code grant 在返回前原子标记 consumed；响应丢失不得重取。
 
 ## 5. 指标与告警
 
-- `dormant_malaysia_authorization_coverage`：当前非业务 standby_2 为 `dormant_ready|wake_probe_required`、qualification 完整、`recoverable_copy_count=2`、KMS/inventory/隔离恢复事实有效且 MY client/lease 为零的账号数 / frozen eligible denominator；展示过期只提示需演练，不触发自动连接。
-- `three_slot_independent_coverage`：三槽均为远端 active，Developer App、AuthKey 和非零 authorization hash 两两不同，且 standby_2 的双副本/KMS/inventory/restore probe/bundle receipt/qualification 完整的账号数 / 同一 frozen denominator；不设降级 tier 冒充完整三槽。
+- `dormant_malaysia_authorization_coverage`：当前非业务 standby_2 为 `dormant_ready|wake_probe_required`、qualification 完整、`recoverable_copy_count=2`、恢复密钥/inventory/隔离恢复事实有效且 MY client/lease 为零的账号数 / frozen eligible denominator；展示过期只提示需演练，不触发自动连接。
+- `three_slot_independent_coverage`：三槽均为远端 active，Developer App、AuthKey 和非零 authorization hash 两两不同，且 standby_2 的双副本/恢复密钥/inventory/restore probe/bundle receipt/qualification 完整的账号数 / 同一 frozen denominator；不设降级 tier 冒充完整三槽。
 - 设备指标必须分开展示 `remote_active_total/platform_current/platform_retained/external/unresolved/cleanup_requested/cleanup_eligible/cleanup_skipped/cleanup_skip_reasons/cleanup_failed/cleanup_unknown/device_list_read_timeout`，不把 MY client=0 计为 standby_2 已撤销，也不把同 `api_id` 的 external 计为我方设备。
-- 核心运行指标为 `business_runtime_status`、`authorization_recovery_status`、`sv_primary_available`、`sv_standby_1_ready`、`sv_local_redundancy_degraded_count`、`failure_detection_duration`、`local_activate_duration`、`restore_sv_pair_pending/failed`、`stale_generation_discarded`、`my_dormant_authorization_coverage`、`my_wake_bundle_receipt_coverage`、`my_recoverable_copy_count_0|1|2`、`my_local_copy_last_verified_at`、`my_snapshot_copy_last_verified_at`、`my_kms_recovery_unproven`、`my_restore_probe_last_result`、`my_inventory_ahead_of_central`、`migration_recovery_blocked`、`my_last_explicit_wake_at`、`my_active_client_count`、`waiting_sv_login_runtime`、`emergency_code_source_success`、`sv_new_primary_commit_success` 和 `superseded_by_sv_recovery`。无 provision/migrate/repair/drill/emergency-code-source operation 时 `my_active_client_count` 必须为 0。
+- 核心运行指标为 `business_runtime_status`、`authorization_recovery_status`、`sv_primary_available`、`sv_standby_1_ready`、`sv_local_redundancy_degraded_count`、`failure_detection_duration`、`local_activate_duration`、`restore_sv_pair_pending/failed`、`stale_generation_discarded`、`my_dormant_authorization_coverage`、`my_wake_bundle_receipt_coverage`、`my_recoverable_copy_count_0|1|2`、`my_local_copy_last_verified_at`、`my_snapshot_copy_last_verified_at`、`my_recovery_key_unproven`、`my_restore_probe_last_result`、`my_inventory_ahead_of_central`、`migration_recovery_blocked`、`my_last_explicit_wake_at`、`my_active_client_count`、`waiting_sv_login_runtime`、`emergency_code_source_success`、`sv_new_primary_commit_success` 和 `superseded_by_sv_recovery`。无 provision/migrate/repair/drill/emergency-code-source operation 时 `my_active_client_count` 必须为 0。
 - SV runtime/出口健康、standby_1 fresh ready 且无既有 Gateway unknown 的 canary 中，`primary_failure_confirmed_at -> unfreeze_new_business_claims_at` 必须不超过 120 秒；故障检测耗时单独展示，不能把检测阶段从端到端业务中断中隐藏。
 - Developer App 指标固定为 `slot_assignment_complete/assigned_distinct_accounts/pending_distinct_accounts/available_accounts/capacity_shortfall_accounts`，必须从 A/B/C 角色映射、授权资产与非终态登录 operation 计算，不从账号主投影计算；同账号 App C 新旧代并存只计一次。
 - 账号生命周期指标固定为 `business_deleted_authorizations_retained/authorization_retirement_pending/authorization_retired/retirement_unknown`；账号软删除成功不能减少未退役授权分母。
@@ -235,11 +235,11 @@ login-code grant 在返回前原子标记 consumed；响应丢失不得重取。
 
 1. `P0A additive schema`：新增 immutable logical slot/真实 provision region、Developer App A/B/C slot assignment 与 api_id 冻结快照、remote authorization state/hash blind index、设备 observation 的远端 `date_created`、当前 SV `telegram_login_at` 投影、cleanup requested/eligible/skipped/operation、App qualification fact、wake bundle/copy/inventory/restore fact/permit/login-code grant、QR challenge metadata、receipt、RPC fence/control lease、contract control/runtime registry、硅谷/MY 固定出口、protected ref、账号 current/runtime/lifecycle 投影、ExecutionAttempt 授权代次字段、online/listener/sync generation 与统一 resolver/Gateway permit；contract mode=`legacy_read`。
 2. `P0B guarded backfill`：preview -> 异人批准 -> apply -> readback。先把线上现有三套 App 唯一冻结为 A=`primary_sv`、B=`standby_1_sv`、C=`standby_2_my`，不创建第四套 App；再冻结 role 到 logical slot 的唯一映射和每槽 Developer App/api_id，由合格非目标 peer 读取远端设备集，只对唯一收敛的账号/authorization/before-after 差分回填非零 hash 与远端 `date_created/telegram_login_at`。只有 legacy primary 且自身 hash 为零时，固定执行“primary 观察创建 SV standby_1 -> standby_1 反查 primary -> SV peer 观察创建 MY standby_2”的交叉证明顺序；任一步不唯一即停止后续登录并保持 unknown。只有 App 命中或归属歧义时同样保持 unknown；无法证明登录区域或登录时间时保持 unknown。旧 standby_2 不伪造 qualification/usage/anomaly；mode=`shadow`，此阶段设备可立即查看，但不开启 cleanup apply。
-3. `P0C hard cutover`：shadow diff 为零后注册 runtime capability，验证旧 client drain、DB mutation gate、SV Session KMS 权限、独立 MY KMS decrypt/recovery 权限和分区 Telegram egress ACL；旧进程仍能解密 MY bundle、把 standby_2 交给 SV 或从 MY 运行业务时失败。
+3. `P0C hard cutover`：shadow diff 为零后注册 runtime capability，验证旧 client drain、DB mutation gate、双机恢复密钥文件/版本 readback 和分区 Telegram egress ACL；旧业务进程仍能读取 MY bundle、把 standby_2 交给 SV 或从 MY 运行业务时失败。
 4. `P0D DR enable`：再次 readback 非 stale 实例、DB gate、ACL 和兼容投影，提升新 epoch 到 `dr_enabled`；才允许 provision。回滚只能用更高 epoch 降 mode，不能恢复旧绕过路径。
-5. `P1 node canary`：1 个批准测试账号按 App A/SV primary、App B/SV standby_1、App C/MY standby_2 完成三次真实登录，无需等待设备清理门槛；每次登录后账号详情都能立即刷新设备。回读三个独立 AuthKey/非零 hash/活跃授权设备；MY 同时完成本地不可变副本 fsync、独立对象快照、两份写后读/摘要/KMS 解封、源 client 断连、从对象快照隔离恢复 Telegram probe、恢复 client 断连、中心 receipt/MY inventory、qualification 和保护。随后停用原 MY 主机/数据盘，在替代运行环境用 KMS+对象快照再次恢复同一 Session，并从该可恢复副本写出更高 bundle generation、重新形成两份副本和 receipt；不得重新登录 Telegram。断连后 MY client=0，但 standby_2 仍在 Telegram 设备集中为 active。当前 SV 登录未严格超过 48 小时时清理按钮置灰，不影响三槽完成。
+5. `P1 node canary`：1 个批准测试账号按 App A/SV primary、App B/SV standby_1、App C/MY standby_2 完成三次真实登录，无需等待设备清理门槛；每次登录后账号详情都能立即刷新设备。回读三个独立 AuthKey/非零 hash/活跃授权设备；MY 同时完成本地不可变副本 fsync、独立 SSH 镜像、两份写后读/摘要/恢复密钥解封、源 client 断连、从 SSH 镜像隔离恢复 Telegram probe、恢复 client 断连、中心 receipt/MY inventory、qualification 和保护。随后停用原 MY 主机/数据盘，在替代运行环境用 恢复密钥+SSH 镜像再次恢复同一 Session，并从该可恢复副本写出更高 bundle generation、重新形成两份副本和 receipt；不得重新登录 Telegram。断连后 MY client=0，但 standby_2 仍在 Telegram 设备集中为 active。当前 SV 登录未严格超过 48 小时时清理按钮置灰，不影响三槽完成。
 6. `P2 switch/wake canary`：10 个账号先演练 primary 权威失败后的自动 `local_activate`、任务族收口、online/listener 新代次重建、`sv_local_redundancy_degraded` 和 `restore_sv_pair`；全过程 MY 不连接。再完成 `drill_wake`，最后演练双 SV 授权失败下的 `waiting_sv_login_runtime` 零 MY client、app-session 登录码辅助、SV 新 primary commit/probe，以及 SMS/email/call/QR 进入人工处理。
-7. `P3/P4 full rollout`：沿用唯一 MY 节点、唯一 MY 固定 IP 和现有三套 App，按当次实际符合条件账号冻结动态 `N`，不设固定数量阶梯或总数上限。全部账号项持久化后，MY 节点使用 App C 逐个串行重新登录并按状态续跑；旧 SV standby_2 在 MY slot CAS 前保持 current，CAS 后保持 retained+protected。只有新 MY 双副本、独立 KMS、MY inventory 和隔离恢复闸门通过后才允许提交旧源退役；未通过保持 `migration_cutover_complete_recovery_blocked`。退役提交时 current SV 登录未严格超过 48 小时则该退役项直接 skipped 并返回原因，不增加第四套 App、不停止正常 SV 业务、不创建自动等待任务。
+7. `P3/P4 full rollout`：沿用唯一 MY 节点、唯一 MY 固定 IP 和现有三套 App，按当次实际符合条件账号冻结动态 `N`，不设固定数量阶梯或总数上限。全部账号项持久化后，MY 节点使用 App C 逐个串行重新登录并按状态续跑；旧 SV standby_2 在 MY slot CAS 前保持 current，CAS 后保持 retained+protected。只有新 MY 双副本、双机恢复密钥、MY inventory 和隔离恢复闸门通过后才允许提交旧源退役；未通过保持 `migration_cutover_complete_recovery_blocked`。退役提交时 current SV 登录未严格超过 48 小时则该退役项直接 skipped 并返回原因，不增加第四套 App、不停止正常 SV 业务、不创建自动等待任务。
 
 产品功能模式为 `off -> read_only -> provision -> emergency_reauthorize`，只能逐级开启。`drill_wake` 只能由管理员显式创建，不存在定时 MY probe。回滚只停止新 claim，不删除 Telegram 授权、MY 包、保护或 unknown。
 
@@ -249,7 +249,7 @@ login-code grant 在返回前原子标记 consumed；响应丢失不得重取。
 
 - 同账号同槽并发迁移只有一个 operation 成功；同账号 provision/migrate/drill_wake/emergency_reauthorize_primary/local_activate/restore_sv_pair/decommission/remote_device_revoke 执行阶段只有一个 control lease。
 - `logical_slot=standby_2` 在数据库 gate、resolver、API 和 Gateway 四层都无法成为 current，SV 无法获取其 Session。新 primary 使用更高 primary generation，不改写 standby_2 slot/bundle generation。
-- SV candidate secret commit 只写 `central_business` Session；MY wake bundle commit 只写不可被 SV 解密的不可变双副本/KMS/restore manifest 与 receipt，并按冻结 account/logical slot/generation/operation/authorization/MY egress version 同事务写 active assignment。两类提交重放返回原 receipt，不同 digest 或 copy manifest 永久冲突。
+- SV candidate secret commit 只写 `central_business` Session；MY wake bundle commit 只写不可被 SV 解密的不可变双副本/恢复密钥/restore manifest 与 receipt，并按冻结 account/logical slot/generation/operation/authorization/MY egress version 同事务写 active assignment。两类提交重放返回原 receipt，不同 digest 或 copy manifest 永久冲突。
 - 配置 readback 必须恰好得到一个硅谷 `primary_regular` 和一个 MY `standby_my` active 出口；primary 与 standby_1 都绑定前者，后者没有业务 permit。第三个 active 业务出口、轮换池或未知出口使 provision/emergency_reauthorize 模式不能开启。
 - 使用 `N > 50` 的代表性数据集（例如 200 个账号）验证：全部账号项冻结到同一 `target_set_fingerprint`，均可引用同一个 MY egress，不因 `N` 超过某个固定值拒绝创建。跨页查询和多次续跑不丢项、不重项，顶部 `dr_outcome_counts` 总和始终等于 `N`；节点同一时间只执行一个登录 operation，并发领取被 owner/CAS 拒绝，恢复时不重做已成功项。
 - 分页中途改变某项 status 不改变 item ID 顺序或 cursor 中的 target fingerprint；全量无筛选遍历覆盖恰好 `N` 条。低 item ID 的 waiting 项在 `next_retry_at` 到期后仍能被领取；两个同时运行的大 `N` 批次按 `last_claimed_at` 轮转，不存在单向 cursor 跳过或单批次长期饥饿。
@@ -260,18 +260,18 @@ login-code grant 在返回前原子标记 consumed；响应丢失不得重取。
 - Developer App 列表从授权资产与非终态登录 operation 统计不同账号占用；同账号 App C 的旧 SV standby_2、新 MY candidate 和 retained 旧代并存只计一次，standby_1/standby_2 必须计入。并发分配到最后一个名额只有一个成功，另一个返回 `developer_app_capacity_shortfall`。
 - current authorization、账号 Session/App/proxy 兼容投影、fact version 与 connection generation 必须同事务 CAS；制造任一漂移时 resolver 和 Gateway 都拒绝新调用。
 - 每个 Gateway-bound Attempt 在 RPC 前冻结 authorization/fact/connection/environment/proxy/fence；切换后旧 Attempt 字段不变，新 Attempt 只能使用新 current。固定授权 assignment 必须释放并创建新 assignment，不能原地改绑。
-- 本地 fsync、对象上传、两份读回、KMS 解封、源 client 断连、隔离恢复 probe、中心 receipt 请求前/中/响应丢失和 receipt 后崩溃均不二次登录；无 receipt 形成 orphan，有 matching receipt 或 MY inventory entry 时续跑。测试 Session SDK 的可写路径必须是 operation 临时态，最终本地/对象 bundle bytes 在 probe 前后 digest 完全一致。
+- 本地 fsync、SSH 镜像上传、两份读回、恢复密钥解封、源 client 断连、隔离恢复 probe、中心 receipt 请求前/中/响应丢失和 receipt 后崩溃均不二次登录；无 receipt 形成 orphan，有 matching receipt 或 MY inventory entry 时续跑。测试 Session SDK 的可写路径必须是 operation 临时态，最终本地/SSH 镜像 bundle bytes 在 probe 前后 digest 完全一致。
 - 同一 login-input grant 只能被绑定 node/owner/generation 消费一次；过期、重放、输入版本漂移和响应丢失均不返回第二份材料，只有无设备/receipt 的 readback 可提升 grant generation。
 - QR start/check 只能命中当前 provision/migrate operation 和 MY owner；刷新后旧 payload、旧扫码回调和旧 2FA 回调全部拒绝。主运行面旧 `/authorizations/login/start|qr/check` 无法生成 MY candidate，QR payload 不出现在数据库、队列、日志或审计正文。
 - 手机号/App 凭据与 owner-domain assertion/environment binding/client identity/node/egress/secret/policy 任一 version/digest 漂移都使 login-input 与 qualification 失败；`qualification_basis_fact_id` 只能指向包含完整比较版本的不可变 qualification fact，没有批准 App owner-domain assertion 不得判定 failure-domain 隔离。
 - primary/standby_1/QR/批量登录/清理、MY provision/drill/emergency wake 并发时只有一个 control lease；外部设备变化进入 unknown。
 - 存量 preview/apply 拒绝 fingerprint 或 expected old value 漂移；多主、角色冲突、零 hash、无历史 usage 分别进入明确 blocker，不伪造 generation、MY assignment、健康或 anomaly。
-- App C 旧 SV standby_2 迁移时，新登录必须发生在 MY 并产生不同 AuthKey/非零 hash/更高 generation；复制 Session、在 SV 重新登录或出现多个 after 差分均不得提交。slot CAS 前故障保持旧备份 current；CAS/receipt/inventory unknown 同时保护新旧且不二次登录。模拟本地盘损坏时必须能从对象快照+KMS恢复；模拟对象快照损坏时必须从本地副本写更高 bundle generation，不能覆盖旧对象或重新登录。
-- MY slot CAS 后旧 SV standby_2 投影为 `platform_retained`。双副本/KMS/inventory/隔离恢复任一未通过时为 `migration_cutover_complete_recovery_blocked`，退役 RPC 数量必须为 0。恢复闸门通过但 current SV executor 登录时间未严格超过 48 小时、时间缺失或不可用时状态为 `migration_cutover_complete_retirement_skipped`，设备计数为 3 个 current + 1 个 retained，不自动重试；最终只有运营后续退役使旧 hash 消失、三槽 current hash 完整、MY 双副本/KMS/inventory/restore probe 与 client=0 全部通过才写 `migration_succeeded + rollback_window_closed_at`。
+- App C 旧 SV standby_2 迁移时，新登录必须发生在 MY 并产生不同 AuthKey/非零 hash/更高 generation；复制 Session、在 SV 重新登录或出现多个 after 差分均不得提交。slot CAS 前故障保持旧备份 current；CAS/receipt/inventory unknown 同时保护新旧且不二次登录。模拟本地盘损坏时必须能从 SSH 镜像+恢复密钥 readback；模拟SSH 镜像损坏时必须从本地副本写更高 bundle generation，不能覆盖旧对象或重新登录。
+- MY slot CAS 后旧 SV standby_2 投影为 `platform_retained`。双副本/恢复密钥/inventory/隔离恢复任一未通过时为 `migration_cutover_complete_recovery_blocked`，退役 RPC 数量必须为 0。恢复闸门通过但 current SV executor 登录时间未严格超过 48 小时、时间缺失或不可用时状态为 `migration_cutover_complete_retirement_skipped`，设备计数为 3 个 current + 1 个 retained，不自动重试；最终只有运营后续退役使旧 hash 消失、三槽 current hash 完整、MY 双副本/恢复密钥/inventory/restore probe 与 client=0 全部通过才写 `migration_succeeded + rollback_window_closed_at`。
 - 旧 SV 撤销前注入 MY 恢复失败时，按更高 slot decision generation 前滚回仍 active 的旧 SV，不恢复旧数据库、不覆盖 MY 包；旧 SV 撤销 readback 后，同一回滚请求必须返回 `migration_rollback_window_closed`。
 - resolver 永不返回 candidate/retained/repair/invalid/unknown；账号兼容投影漂移时 fail closed。
 - resolver shadow diff 未归零、旧 role-first/账号 Session reader、直接 switch writer、SV 可读 standby_2 Session 或 MY 可读紧急 2FA 时，`provision/emergency_reauthorize` 模式不能开启。
-- 混合版本演练中，未携带当前 contract epoch/operation identity 的旧 writer 被 DB gate 拒绝；KMS policy version/grantee digest 漂移、旧角色 decrypt-denied 未证明、低 capability/stale 未处置实例、旧 client 非零或分区 egress ACL 未收口时 cutover apply 失败，旧进程不能绕过 Gateway 直连 Telegram。
+- 混合版本演练中，未携带当前 contract epoch/operation identity 的旧 writer 被 DB gate 拒绝；恢复密钥策略 version/grantee digest 漂移、旧角色 decrypt-denied 未证明、低 capability/stale 未处置实例、旧 client 非零或分区 egress ACL 未收口时 cutover apply 失败，旧进程不能绕过 Gateway 直连 Telegram。
 - provision/migrate 在首个 login/QR RPC、drill_wake 在首次 Session 连接、emergency_reauthorize_primary 在 fence CAS 与 SV `send_code_request`、撤销在 reset RPC 前分别持久化副作用字段；写入失败不得继续。已发码或 grant 已消费后只能 reconcile。
 
 ### 7.2 节点、出口与健康
@@ -291,7 +291,7 @@ login-code grant 在返回前原子标记 consumed；响应丢失不得重取。
 - 两个 SV 授权均失败但 SV login runtime/出口未就绪时必须停在 `waiting_sv_login_runtime`，MY client 仍为 0。MY ready 不能把 `business_runtime_status` 标成 available。
 - SV `send_code_request` 后只有 `SentCode.type=app-session` 才能唤起 MY。SMS/email/call/QR 进入 `manual_required`；旧消息、challenge 之前消息、多重匹配或错误 flow 不能生成 code grant。
 - code grant 只能被绑定 SV runtime 消费一次；MY 随后断连并清零。2FA 只在 SV 使用。新 primary AuthKey 必须与三个旧授权不同，其 commit/CAS/probe 完成前不解冻。standby_2 的 slot/current/bundle generation 全程不变。
-- 删除测试环境的 SV `SESSION_SECRET_KEY`、原 MY 主机和本地数据盘后，替代 MY 运行环境仍能通过独立 KMS 与对象快照恢复并唤起；恢复旧中心库后进入 mutation hold，能按 MY inventory 最大 sequence 补回 bundle/copy/slot 事实而不覆盖 MY 新代次。
+- 删除测试环境的 SV `SESSION_SECRET_KEY`、原 MY 主机和本地数据盘后，替代 MY 运行环境仍能通过双机恢复密钥 与 SSH 镜像恢复并唤起；恢复旧中心库后进入 mutation hold，能按 MY inventory 最大 sequence 补回 bundle/copy/slot 事实而不覆盖 MY 新代次。
 - `AuthKeyDuplicated`、单账号限制和多个账号相关出口失败分别进入不同失败码和停止范围。
 
 ### 7.3 活动观察、隐私与清理
@@ -312,7 +312,7 @@ login-code grant 在返回前原子标记 consumed；响应丢失不得重取。
 - primary、standby_1、MY standby_2、candidate、retained、repair、invalid、unknown 与可证为我方登录产生的 orphan 全部保留；任一我方 hash 缺失、保护漂移或 operation 未终态时清理失败。
 - 通用清理不能命中已提交 Session、receipt、assignment/usage、activity/review、probe 或 protected ref。
 - 备份恢复演练可读回 backfill/cutover、contract epoch、runtime capability、App assertion、qualification 与 grant 收据，并从 MY 追加 inventory 重建中心缺失的较高 bundle/copy/slot generation。旧实例先失去 egress permit，提升 incarnation/epoch 后所有旧 lease/permit 失效；全量对账前 provision/migrate/decommission/erase/设备清理均被拒绝，健康保持 stale。
-- 故障注入必须覆盖本地文件写后崩溃、父目录未 fsync、对象上传 ack 丢失、对象读回摘要不一致、KMS 暂时不可用、restore probe 失败、slot CAS ack 丢失、CAS 成功但 `slot_commit_observed` 未写、中心库回滚和擦除部分成功；prepared decision 恢复时必须幂等前滚，所有场景均证明旧可恢复代次未被覆盖、可恢复副本未被通用清理删除、unknown 不被写成 succeeded/retired。
+- 故障注入必须覆盖本地文件写后崩溃、父目录未 fsync、对象上传 ack 丢失、对象读回摘要不一致、恢复密钥 暂时不可用、restore probe 失败、slot CAS ack 丢失、CAS 成功但 `slot_commit_observed` 未写、中心库回滚和擦除部分成功；prepared decision 恢复时必须幂等前滚，所有场景均证明旧可恢复代次未被覆盖、可恢复副本未被通用清理删除、unknown 不被写成 succeeded/retired。
 
 ### 7.4 break-glass、切换与业务模块
 
@@ -334,16 +334,16 @@ login-code grant 在返回前原子标记 consumed；响应丢失不得重取。
 | 层级 | 证据 |
 | --- | --- |
 | 配置完成 | 唯一 MY 节点、硅谷/MY 两个固定出口、现有三套 App 的 A/B/C 唯一 slot assignment、App credentials/owner-domain assertion、environment/client metadata、权限、出口 registry/secret version、schema 和 HMAC key version可读；不存在第四个 active role |
-| 存量迁移完成 | logical slot/region 分类、preview fingerprint、apply/readback、resolver shadow diff、contract epoch、DB gate、KMS policy/grantee/decrypt-denied、旧 client drain 和分区 egress ACL 全部通过 |
-| 授权完成 | MY 不可变本地副本 fsync、独立对象快照、两份写后读/摘要/KMS 解封、对象快照隔离恢复 Telegram probe、MY inventory/中心 receipt、UID/AuthKey/hash、protection、assignment、源/恢复 client 断连收据全部通过 |
-| MY 槽位切换完成 | App C 在 MY 产生新 AuthKey/hash/generation，双副本/KMS/inventory/restore probe、bundle receipt/qualification/slot CAS 完成；旧 SV 授权 retained+protected。此时可处于等待退役，不等于最终迁移完成 |
-| 迁移最终完成 | `migration_recovery_gate_passed` 后，旧 SV standby_2 远端 hash 已由固定 current SV executor 撤销并 exact-set 回读消失，三个当前槽位仍完整，MY `recoverable_copy_count=2`、KMS/inventory/restore probe 有效且 client=0，assignment/usage 账一致，并写 `rollback_window_closed_at` |
+| 存量迁移完成 | logical slot/region 分类、preview fingerprint、apply/readback、resolver shadow diff、contract epoch、DB gate、恢复密钥策略/grantee/decrypt-denied、旧 client drain 和分区 egress ACL 全部通过 |
+| 授权完成 | MY 不可变本地副本 fsync、独立 SSH 镜像、两份写后读/摘要/恢复密钥解封、SSH 镜像隔离恢复 Telegram probe、MY inventory/中心 receipt、UID/AuthKey/hash、protection、assignment、源/恢复 client 断连收据全部通过 |
+| MY 槽位切换完成 | App C 在 MY 产生新 AuthKey/hash/generation，双副本/恢复密钥/inventory/restore probe、bundle receipt/qualification/slot CAS 完成；旧 SV 授权 retained+protected。此时可处于等待退役，不等于最终迁移完成 |
+| 迁移最终完成 | `migration_recovery_gate_passed` 后，旧 SV standby_2 远端 hash 已由固定 current SV executor 撤销并 exact-set 回读消失，三个当前槽位仍完整，MY `recoverable_copy_count=2`、恢复密钥/inventory/restore probe 有效且 client=0，assignment/usage 账一致，并写 `rollback_window_closed_at` |
 | SV 本地切换完成 | standby_1 即时 probe、业务冻结/Gateway drain、current/account projection CAS、旧代次失效、online/listener/runtime summary 新代次重建和任务解冻通过；状态仍为 redundancy degraded |
 | SV 1 主 1 备恢复 | logical primary 更高 generation 通过资格与 probe，受控切回完成，standby_1 再次 ready，所有业务模块绑定同一 current generation |
 | 紧急读码完成 | 双 SV 失败事实、SV login runtime ready、app-session delivery、MY wake、challenge-bound code grant 消费、MY 断连/fencing 和清零收据通过 |
 | 主授权重建完成 | SV 新 AuthKey/Session candidate、UID/AuthKey/设备证明、primary generation CAS、兼容投影、SV runtime lease 和即时 probe 成功；standby_2 不变 |
 | 账号业务删除完成 | 全部业务候选与 claim 已停止，已开始 Attempt 保留对账，账号显示 `business_deleted_authorizations_retained`；不代表授权退役 |
-| 账号授权退役完成 | 全部平台授权撤销 readback、本地/对象/中心密文与 wrapped DEK 分步 erase receipt、无 unknown，账号显示 `authorization_retired`；共享 KMS key 仍被其他 bundle 引用时保持 |
+| 账号授权退役完成 | 全部平台授权撤销 readback、MY 本地/硅谷 SSH 镜像/中心元数据与 wrapped DEK 分步 erase receipt、无 unknown，账号显示 `authorization_retired`；共享恢复密钥仍被其他 bundle 引用时保持 |
 | 发送恢复 | 另有任务类型权威远端事实；不由本 PRD 自动宣称 |
 
 CI、容器健康、Session 非空、数据库行、页面 `2/2`、授权 probe 或出口连通均不能替代发送恢复。
@@ -352,7 +352,7 @@ CI、容器健康、Session 非空、数据库行、页面 `2/2`、授权 probe 
 
 ### 8.1 当前实现差距（2026-08-20 只读对比）
 
-| 当前实现 | v2.16 差距与交接结论 |
+| 当前实现 | v2.17 差距与交接结论 |
 | --- | --- |
 | `backend/app/integrations/telegram/gateway.py` 已把 Telegram authorization 的 `date_created/date_active` 写入 snapshot | 复用该字段并为 current SV authorization 持久化 `telegram_login_at`；批量创建只读数据库，不再为资格连接 Telegram |
 | `backend/app/services/account_security/service.py::_fresh_session_wait_until` 已选择 `is_current_session=true`，但按 24 小时返回 wait，`date_created` 缺失时返回 `None` | 改为严格 `server_now > telegram_login_at + 48h`；不足或缺失直接 skipped，返回原因，不创建 wait；不动态挑 standby_1/MY |
@@ -360,15 +360,15 @@ CI、容器健康、Session 非空、数据库行、页面 `2/2`、授权 probe 
 | `frontend/src/app/types/accounts.ts` 已有 `date_created`，`frontend/src/app/views/AccountModals.tsx` 在“账号安全”内容中已有登录设备表 | 改为账号详情独立“登录设备”Tab，展示 current SV 登录时间/时长和置灰原因；不增加预检按钮、倒计时或 waiting 状态 |
 | `_auto_standby_developer_app` 当前从健康 App 中自动选择，未表达 A/B/C 固定 slot assignment | 先回填线上现有三套 App 的唯一角色映射；新账号与迁移冻结 assignment/version，App C 只在 MY 创建 standby_2，不申请第四套 App |
 | 当前测试未证明 App C 旧 SV standby_2 的 MY 新登录、slot CAS、3+1 retained 和到龄退役全链路 | 按 7.1、7.3 新增状态机与回归；代码、测试、部署和生产 Telegram readback 在完成前均保持未证明 |
-| 当前没有 MY wake bundle 双副本、独立 KMS 恢复、追加 inventory、隔离 restore probe 或分步 erase 模型 | 新增 bundle/copy/inventory/restore fact 与不可变代次实现；完成单主机/数据盘故障、中心库回滚和部分擦除故障注入前，不得声明 Session 零丢失或迁移最终完成 |
+| 当前没有 MY wake bundle 双副本、双机恢复密钥 readback、追加 inventory、隔离 restore probe 或分步 erase 模型 | 新增 bundle/copy/inventory/restore fact 与不可变代次实现；完成单主机/数据盘故障、中心库回滚和部分擦除故障注入前，不得声明 Session 零丢失或迁移最终完成 |
 
 ### 8.2 冻结设计与开发拆分
 
-v2.16 已冻结一期范围：硅谷是唯一业务面和唯一业务 IP，primary/standby_1 均在 SV；primary 权威失败且 standby_1 即时 probe 通过时自动本地切换，切换后恢复 logical primary 并重建 SV 1 主 1 备。MY 只有一个休眠计算节点和一个固定 IP，但 Session 持久化不得依赖该单机：standby_2 必须具备 MY 本地卷与独立对象快照两份不可变副本、独立 KMS 恢复能力、MY 追加 inventory 和对象快照隔离 restore probe，永不晋升、永不交付 Session、永不运行业务。线上现有且只使用三套 Developer App，固定为 App A/SV primary、App B/SV standby_1、App C/MY standby_2；存量 App C 旧 SV 备份通过 MY 全新登录迁移，不复制 Session、不新增第四套 App，恢复闸门通过前不得撤销旧 SV。新账号登录后可立即查看设备。设备清理没有资格 precheck/preview：只按已落库 current SV `telegram_login_at` 严格超过 48 小时分流，其他直接 skipped 并返回原因；单账号按钮置灰，批量创建不连接 Telegram，worker 再逐账号读取/清理，单项超时不阻塞整批。业务 runtime 与授权恢复、任务代次、Developer App 占用、账号软删除/授权退役、动态 `N`、无定时 MY probe、中心库恢复 hold 和 unknown 收口合同继续保留。
+v2.17 已冻结一期范围：硅谷是唯一业务面和唯一业务 IP，primary/standby_1 均在 SV；primary 权威失败且 standby_1 即时 probe 通过时自动本地切换，切换后恢复 logical primary 并重建 SV 1 主 1 备。MY 只有一个休眠计算节点和一个固定 IP，但 Session 持久化不得依赖该单机：standby_2 必须具备 MY 本地卷与独立 SSH 镜像两份不可变副本、双机恢复密钥 readback能力、MY 追加 inventory 和 SSH 镜像隔离 restore probe，永不晋升、永不交付 Session、永不运行业务。线上现有且只使用三套 Developer App，固定为 App A/SV primary、App B/SV standby_1、App C/MY standby_2；存量 App C 旧 SV 备份通过 MY 全新登录迁移，不复制 Session、不新增第四套 App，恢复闸门通过前不得撤销旧 SV。新账号登录后可立即查看设备。设备清理没有资格 precheck/preview：只按已落库 current SV `telegram_login_at` 严格超过 48 小时分流，其他直接 skipped 并返回原因；单账号按钮置灰，批量创建不连接 Telegram，worker 再逐账号读取/清理，单项超时不阻塞整批。业务 runtime 与授权恢复、任务代次、Developer App 占用、账号软删除/授权退役、动态 `N`、无定时 MY probe、中心库恢复 hold 和 unknown 收口合同继续保留。
 
 1. DEV-A：additive schema、logical slot/region、App A/B/C slot assignment/assertion/qualification/resource version、observation `date_created`、current SV `telegram_login_at`、cleanup requested/eligible/skipped/reason 与 executor 冻结字段、硅谷/MY 固定出口、wake bundle/copy/inventory/restore fact/permit/code grant、protected ref、授权代次/probe/failure/operation、receipt、RPC/control lease、current/runtime/lifecycle 原子投影、resolver 和兼容投影。
-2. DEV-B：backfill、runtime registry/contract cutover、KMS policy/grantee/decrypt readback、DB mutation gate、resolver shadow、旧 reader/writer/2FA 封禁和 Telegram egress ACL。
-3. DEV-C：MY mTLS claim、单登录 owner、无 operation 零连接、不可变密封包 fsync/双副本写后读/KMS 解封、MY 追加 inventory、对象快照隔离 restore probe、显式 drill/emergency-code-source、operation-scoped QR、固定 MY egress、orphan/revoke 和 exact-set reconciliation。
+2. DEV-B：backfill、runtime registry/contract cutover、恢复密钥策略/grantee/decrypt readback、DB mutation gate、resolver shadow、旧 reader/writer/2FA 封禁和 Telegram egress ACL。
+3. DEV-C：MY mTLS claim、单登录 owner、无 operation 零连接、不可变密封包 fsync/双副本写后读/恢复密钥解封、MY 追加 inventory、SSH 镜像隔离 restore probe、显式 drill/emergency-code-source、operation-scoped QR、固定 MY egress、orphan/revoke 和 exact-set reconciliation。
 4. DEV-D：账号详情“登录设备”读模型、立即可见与 loading/refreshing/置灰原因/执行状态、refresh/direct-cleanup/detail API、本地严格 48 小时分流、批量 requested/eligible/skipped/reason、worker 单账号读取超时隔离、四分类与 hash 归属校验、人工客户端退出提示、Developer App 授权占用、两阶段账号删除、operation/candidate CAS、逐 hash reset 和 exact-set 最终回读。
 5. DEV-E：自动 local activate、restore SV pair、ExecutionAttempt/Gateway 授权冻结、固定 assignment 重排、online/listener/sync/runtime summary generation fence、RPC fence/incarnation/runtime generation、Gateway drain、双 SV failure fact、`waiting_sv_login_runtime`、`SentCode.type` 分流、challenge-bound 读码/code grant、MY 断连、SV 新 primary commit/CAS/probe、unknown 对账和 break-glass。
 6. DEV-F：新账号三 App 登录与设备立即可见、47:59:59/48:00:00/严格大于 48 小时边界、缺失登录时间、无 Telegram 资格调用、单项读取超时继续批次、App C SV-to-MY 迁移及 recovery-blocked/3+1 retained/rollback-window 状态、本地切换任务族 canary、MY 主机/数据盘故障恢复、中心库旧备恢复、部分擦除故障注入、账号删除/退役、生产只读 readback 和任务类型 E4。

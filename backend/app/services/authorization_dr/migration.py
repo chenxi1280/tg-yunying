@@ -8,6 +8,7 @@ from uuid import uuid4
 from sqlalchemy import or_, select
 
 from app.models import (
+    AuthorizationDrRuntimeContract,
     TelegramDeveloperApp,
     TgAccount,
     TgAccountAuthorization,
@@ -109,6 +110,9 @@ def approve_migration_batch(
 
 
 def claim_migration_operation(session, node_id: str) -> OperationClaim | None:
+    contract = session.get(AuthorizationDrRuntimeContract, 1)
+    if not contract or contract.mode != "migrate":
+        return None
     readiness = require_migration_readiness(session)
     if readiness.node.id != node_id:
         raise AuthorizationDrError("execution_node_mismatch", "Operation can only be claimed by the ready MY node")

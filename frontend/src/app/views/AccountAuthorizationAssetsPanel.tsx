@@ -411,7 +411,7 @@ export function AccountAuthorizationAssetsPanel({
           {asset && <Typography.Text type="secondary">区域 / 代：{asset.provision_region_code.toUpperCase()} / G{asset.slot_generation}</Typography.Text>}
           {asset && malaysiaWakeAsset && (
             <Typography.Text type="secondary">
-              唤起包：{asset.recoverable_copy_count}/2 份；KMS {asset.kms_recovery_status}；恢复探测 {formatTime(asset.last_restore_probe_at)}
+              唤起包：{asset.recoverable_copy_count}/2 份；恢复密钥 {asset.kms_recovery_status}；恢复探测 {formatTime(asset.last_restore_probe_at)}
             </Typography.Text>
           )}
           <Typography.Text type={asset?.failure_reason ? 'danger' : 'secondary'}>{asset?.failure_reason || '验证码不可读取 / 2FA 未托管 / 代理异常等故障槽位原因会显示在这里'}</Typography.Text>

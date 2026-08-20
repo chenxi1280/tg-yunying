@@ -17,7 +17,7 @@ from app.models import (
 from app.services._common import _now, audit
 
 from .contracts import AuthorizationDrError
-from .wake_bundle import REQUIRED_COPY_KINDS, _operation_bundle, _owned_operation
+from .wake_bundle import _operation_bundle, _owned_operation, valid_copy_kinds
 
 
 def commit_migration_slot(
@@ -137,7 +137,7 @@ def _require_recovery_evidence(session, operation, bundle) -> None:
         TgAuthorizationWakeInventoryEntry.operation_id == operation.id,
     ).limit(1))
     copy_kinds = {copy.copy_kind for copy in copies}
-    if bundle.recoverable_copy_count != 2 or copy_kinds != REQUIRED_COPY_KINDS:
+    if bundle.recoverable_copy_count != 2 or not valid_copy_kinds(copy_kinds):
         raise AuthorizationDrError("wake_bundle_copy_count_insufficient", "Bundle copy readback is incomplete")
     if bundle.kms_decrypt_status != "verified" or not probes or not inventory:
         raise AuthorizationDrError("wake_bundle_restore_probe_failed", "Recovery evidence is incomplete")

@@ -6,8 +6,8 @@
 
 ## Scope
 
-- 文档真相源：v2.16 专项 PRD、实施合同、总 PRD、数据流索引。
-- 代码：授权模型、不可变 wake bundle 双副本、MY KMS/对象存储/inventory、operation 状态机、API/worker、账号详情读模型、迁移/恢复/擦除、指标和部署配置。
+- 文档真相源：v2.17 专项 PRD、实施合同、总 PRD、数据流索引。
+- 代码：授权模型、不可变 wake bundle 双副本、MY SSH 镜像/inventory、operation 状态机、API/worker、账号详情读模型、迁移/恢复/擦除、指标和部署配置。
 - 验证：单元/集成/迁移/并发/故障注入/前端构建，发布 SHA 与运行时 readback，2 账号 Telegram 真实 E4。
 - 生产变更：精确 target IDs、preview/fingerprint、actor/approval ref、CAS apply、独立 readback；canary 未通过时不创建全量批次。
 
@@ -26,7 +26,7 @@
 
 - 建立独立 codex worktree/branch，导入已完成的 v2.16 文档而不修改用户工作区。
 - 读取当前模型、服务、API、worker、迁移、Compose、workflow 和生产访问合同。
-- 核对远端 master/release、当前部署 SHA、MY 主机/KMS/对象存储/固定 IP 配置是否存在。
+- 核对远端 master/release、当前部署 SHA、MY 主机/SSH 镜像/固定 IP 配置是否存在。
 
 ### Phase 2: Schema And Durable Storage Core
 
@@ -66,10 +66,10 @@
 
 **Status:** in_progress
 
-- 读取生产部署 SHA、运行配置、A/B/C 映射、MY node/egress/KMS/object storage readiness。
+- 读取生产部署 SHA、运行配置、A/B/C 映射、MY node/egress/SSH mirror storage readiness。
 - 精确选择 2 个账号并冻结 ID/tenant/old state/fingerprint；必须不存在 open lease/operation/unknown。
-- 通过正式 audited operation 迁移，逐账号 readback 双副本/KMS/inventory/restore gate/slot/3+1 retained 和 Telegram exact set。
-- 硬闸门：生产必须先读回 App A/B/C 角色映射、MY 固定出口、持续新鲜 heartbeat、私有不可覆盖对象副本、独立可恢复 KEK/KMS 和运行中 authorization-dr worker。
+- 通过正式 audited operation 迁移，逐账号 readback 本地+SSH 镜像双副本、恢复密钥、inventory、restore gate、slot、3+1 retained 和 Telegram exact set。
+- 硬闸门：生产必须先读回 App A/B/C 角色映射、MY 固定出口、持续新鲜 heartbeat、create-only SSH 镜像、恢复密钥双机备份和运行中 authorization-dr worker。
 
 ### Phase 7: Canary Acceptance And Full Rollout
 
@@ -82,7 +82,7 @@
 ## Stop Conditions
 
 - 生产 2 个账号身份、tenant、actor 或 approval ref 无法精确解析。
-- MY KMS/对象存储/独立 inventory/固定出口任一未配置或不可读回。
+- MY SSH 镜像/独立 inventory/固定出口任一未配置或不可读回。
 - 当前部署 SHA 与候选合同不一致，或 migration/runtime gate 未通过。
 - canary 任一出现 unknown、AuthKeyDuplicated、保护 hash 缺失、双副本不足、restore probe 失败或 slot decision conflict。
 - Telegram 登录需要未授权的人工作用、验证码/2FA 无受控输入，或触发权威等待。
@@ -104,6 +104,6 @@
 | Fourth PostgreSQL gate executed cleanup but failed when final readback replaced authorization snapshots still referenced by durable cleanup targets. | 4 | Cleanup targets now retain their own encrypted hash/digest while their snapshot reference is nullable with `ON DELETE SET NULL`; readback explicitly detaches those references before replacing snapshots. |
 | Production shared `.env` contained the DR identity, but Compose did not pass it into the backend container. | 5 | Added both DR runtime variables to the shared backend environment anchor, added a regression test, and completed release run `32354502968`. |
 | Direct Mac-to-MY SSH reached TCP/22 but timed out before the server banner. | 6 | Verified both MY keys, then configured and tested `ProxyJump prod-silicon-root`; root and admin aliases now reach the MY host through the existing Silicon Valley key path. |
-| MY Docker credentials could not pull the private tg-yunying backend image. | 7 | Forwarded only the local SSH agent signing capability to Silicon Valley and streamed the verified image directly from Silicon Valley to MY over SSH; no private key or Session file was copied. |
+| MY Docker credentials could not pull the private tg-yunying backend image; the first uncompressed SSH pipe was disconnected before `docker load` completed. | 7 | Built a 154 MB gzip archive on Silicon Valley, recorded SHA-256, forwarded only an ephemeral SSH agent signing capability, and used resumable server-to-server rsync. MY SHA matched before `docker load`; no private key or Session file was copied. |
 | 本地 `test_workflow.py` Developer App API 用例需要 PostgreSQL，但当前 shell 未配置 `TEST_DATABASE_URL`。 | 8 | 未绕过数据库闸门；SQLite 定向合同、compileall 和前端构建在本地执行，真实 PostgreSQL 交给标准 GitHub Actions gate。 |
 | 首次 compileall 从仓库根目录扫描 `app/tests`，输出 `Can't list` 且未形成有效证明。 | 9 | 改到 `backend/` 目录重跑 `python -m compileall -q app tests`，成功且无输出。 |
