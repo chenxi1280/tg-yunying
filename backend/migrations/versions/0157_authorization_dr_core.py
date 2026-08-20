@@ -14,6 +14,59 @@ revision = "0157_authorization_dr_core"
 down_revision = "0156_ai_content_runtime"
 branch_labels = None
 depends_on = None
+REQUIRED_TABLES = frozenset({
+    "authorization_dr_runtime_contracts",
+    "authorization_dr_execution_nodes",
+    "telegram_egress_assignments",
+    "developer_app_slot_assignments",
+    "tg_authorization_dr_batches",
+    "tg_authorization_dr_batch_items",
+    "tg_authorization_dr_operations",
+    "tg_authorization_wake_bundles",
+    "tg_authorization_wake_bundle_copies",
+    "tg_authorization_restore_probe_facts",
+    "tg_authorization_wake_inventory_entries",
+    "tg_authorization_slot_decisions",
+    "tg_account_device_cleanup_targets",
+})
+REQUIRED_COLUMNS = {
+    "tg_account_authorizations": frozenset({
+        "logical_slot", "slot_generation", "is_slot_current", "provision_region_code",
+        "credential_storage_scope", "dr_state", "remote_authorization_state",
+        "protected_from_cleanup", "wake_bundle_id", "telegram_login_at",
+        "migration_recovery_gate_status", "rollback_window_closed_at",
+        "auth_key_fingerprint_digest", "telegram_user_id_digest",
+    }),
+    "tg_accounts": frozenset({
+        "current_authorization_id", "authorization_generation", "authorization_fact_generation",
+        "connection_generation", "authorization_contract_version", "business_runtime_status",
+        "sv_redundancy_status", "authorization_recovery_status", "account_lifecycle_status",
+    }),
+    "tg_account_security_batches": frozenset({
+        "requested_count", "eligible_count", "skipped_reason_counts", "idempotency_key",
+    }),
+    "tg_account_security_batch_items": frozenset({
+        "executor_authorization_id", "executor_fact_version", "executor_telegram_login_at",
+        "protected_manifest_digest", "target_set_digest", "remote_effect_started_at",
+        "final_readback_digest",
+    }),
+}
+
+
+def _has_table(name: str) -> bool:
+    return sa.inspect(op.get_bind()).has_table(name)
+
+
+def _columns(name: str) -> set[str]:
+    if not _has_table(name):
+        return set()
+    return {str(item["name"]) for item in sa.inspect(op.get_bind()).get_columns(name)}
+
+
+def _schema_complete() -> bool:
+    if any(not _has_table(table) for table in REQUIRED_TABLES):
+        return False
+    return all(columns <= _columns(table) for table, columns in REQUIRED_COLUMNS.items())
 
 
 def _timestamps() -> tuple[sa.Column, sa.Column]:
@@ -366,6 +419,8 @@ def _add_device_cleanup_v2() -> None:
 
 
 def upgrade() -> None:
+    if _schema_complete():
+        return
     _create_runtime_tables()
     _create_batch_tables()
     _create_bundle_tables()
