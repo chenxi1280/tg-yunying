@@ -95,15 +95,17 @@ def _peer_authorization_views(
     account: TgAccount,
     exclude_authorization_id: int | None,
 ) -> Iterator[list[AccountAuthorizationSnapshot]]:
-    if account.session_ciphertext:
-        yield gateway.list_authorizations(account.session_ciphertext, credentials_for_account(session, account))
-    for row in _peer_authorization_rows(session, account.id, exclude_authorization_id):
+    rows = _peer_authorization_rows(session, account.id, exclude_authorization_id)
+    for row in rows:
         app = session.get(TelegramDeveloperApp, row.developer_app_id) if row.developer_app_id else None
         if app is None:
             continue
         proxy = session.get(AccountProxy, row.proxy_id) if row.proxy_id else None
         credentials = credentials_for_developer_app(app, proxy)
         yield gateway.list_authorizations(row.session_ciphertext, credentials)
+    if not rows and account.session_ciphertext:
+        credentials = credentials_for_account(session, account, use_proxy=True)
+        yield gateway.list_authorizations(account.session_ciphertext, credentials)
 
 
 def _peer_authorization_rows(
@@ -115,6 +117,8 @@ def _peer_authorization_rows(
         TgAccountAuthorization.account_id == account_id,
         TgAccountAuthorization.disabled_at.is_(None),
         TgAccountAuthorization.status.in_(ACTIVE_PEER_STATUSES),
+        TgAccountAuthorization.health_status == "healthy",
+        TgAccountAuthorization.is_slot_current.is_(True),
         TgAccountAuthorization.session_ciphertext.is_not(None),
         TgAccountAuthorization.session_ciphertext != "",
     )
