@@ -16,6 +16,7 @@ from .mock import TelegramGateway
 from .contracts import (
     AccountAuthorizationSnapshot,
     AccountHealth,
+    AuthorizationIdentity,
     AccountSecurityOperationResult,
     ArchiveSnapshot,
     CachedMediaResult,
@@ -810,6 +811,45 @@ class TelethonTelegramGateway(TelegramGateway):
         credentials: DeveloperAppCredentials | None = None,
     ) -> list[AccountAuthorizationSnapshot]:
         return self._run(self._list_authorizations_async(session_ciphertext, self._usable_credentials(credentials)))
+
+    async def _authorization_identity_async(
+        self,
+        raw_session: str,
+        credentials: DeveloperAppCredentials,
+    ) -> AuthorizationIdentity:
+        from telethon import functions
+
+        client = self._new_client(credentials, raw_session)
+        await client.connect()
+        try:
+            if not await client.is_user_authorized():
+                raise RuntimeError("session is not authorized")
+            user = await client.get_me()
+            response = await client(functions.account.GetAuthorizationsRequest())
+            current = next(
+                (item for item in getattr(response, "authorizations", []) if getattr(item, "current", False)),
+                None,
+            )
+            authorization_hash = str(getattr(current, "hash", "") or "")
+            auth_key = bytes(client.session.auth_key.key)
+            if not authorization_hash or not auth_key or not getattr(user, "id", None):
+                raise RuntimeError("authorization identity is incomplete")
+            return AuthorizationIdentity(
+                authorization_hash=authorization_hash,
+                auth_key_fingerprint_digest=hashlib.sha256(auth_key).hexdigest(),
+                telegram_user_id_digest=hashlib.sha256(str(user.id).encode()).hexdigest(),
+            )
+        finally:
+            await client.disconnect()
+
+    def authorization_identity(
+        self,
+        raw_session: str,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> AuthorizationIdentity:
+        if not raw_session:
+            raise RuntimeError("authorization identity requires a raw session")
+        return self._run(self._authorization_identity_async(raw_session, self._usable_credentials(credentials)))
 
     async def _cleanup_authorization_async(
         self,

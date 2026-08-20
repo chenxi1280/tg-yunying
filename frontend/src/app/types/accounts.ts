@@ -87,6 +87,11 @@ export type AccountAuthorizationAsset = {
   id: number | null;
   account_id: number;
   role: string;
+  logical_slot: string;
+  slot_generation: number;
+  is_slot_current: boolean;
+  provision_region_code: string;
+  credential_storage_scope: string;
   developer_app_id: number | null;
   developer_app_api_id: number;
   proxy_id: number | null;
@@ -101,6 +106,23 @@ export type AccountAuthorizationAsset = {
   last_success_at: string | null;
   last_switched_at: string | null;
   disabled_at: string | null;
+  dr_state: string;
+  remote_authorization_state: string;
+  protected_from_cleanup: boolean;
+  telegram_login_at: string | null;
+  wake_bundle_id: string | null;
+  wake_bundle_generation: number;
+  recoverable_copy_count: number;
+  kms_recovery_status: string;
+  local_copy_last_verified_at: string | null;
+  object_copy_last_verified_at: string | null;
+  last_restore_probe_at: string | null;
+  my_inventory_sequence: number;
+  migration_recovery_gate_status: string;
+  rollback_window_closed_at: string | null;
+  business_runtime_status: string;
+  sv_redundancy_status: string;
+  authorization_recovery_status: string;
 };
 
 export type AccountAuthorizationRefreshResult = {
@@ -279,6 +301,13 @@ export type AccountSecurityBatchItem = {
   precheck_status: string;
   cleanup_status: string;
   device_cleanup_precheck_id: string;
+  executor_authorization_id: number | null;
+  executor_fact_version: number;
+  executor_telegram_login_at: string | null;
+  protected_manifest_digest: string;
+  target_set_digest: string;
+  remote_effect_started_at: string | null;
+  final_readback_digest: string;
   two_fa_status: string;
   profile_status: string;
   username_status: string;
@@ -311,6 +340,9 @@ export type AccountSecurityBatch = {
   success_count: number;
   skipped_count: number;
   failed_count: number;
+  requested_count: number;
+  eligible_count: number;
+  skipped_reason_counts: Record<string, number>;
   created_by: string;
   confirmed_by: string;
   confirm_text: string;
@@ -372,6 +404,8 @@ export type AccountSecuritySnapshot = {
 
 export type AccountSecurityDetail = {
   account_id: number;
+  device_cleanup_eligible: boolean;
+  device_cleanup_reason: string;
   snapshot: AccountSecuritySnapshot;
   authorizations: AccountAuthorizationSnapshot[];
   recent_batches: AccountSecurityBatch[];

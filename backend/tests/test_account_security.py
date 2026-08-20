@@ -1171,17 +1171,17 @@ def test_standby_session_batch_auto_provisions_both_missing_slots_without_manual
 
         assert refreshed.status == "succeeded"
         assert refreshed.items[0].status == "succeeded"
-        assert roles == {"standby_1", "standby_2"}
-        assert submitted_codes == ["11111", "22222"]
-        assert submitted_passwords == ["managed-password", "managed-password"]
+        assert roles == {"standby_1"}
+        assert submitted_codes == ["11111"]
+        assert submitted_passwords == ["managed-password"]
         assert rotations == []
-        assert codes == ["11111", "22222"]
+        assert codes == ["11111"]
         snapshot = session.scalar(select(TgAccountSecuritySnapshot).where(TgAccountSecuritySnapshot.account_id == account.id))
         assert snapshot is not None
         assert decrypt_secret(snapshot.two_fa_password_ciphertext) == "managed-password"
         detail = get_task_detail(session, 1, f"account_security_batch:{batch.id}")
         item = detail["account_security_batch"]["items"][0]
-        assert item["target_slot"] == "standby_1 / standby_2"
+        assert item["target_slot"] == "standby_1"
 
 
 @pytest.mark.no_postgres
@@ -1810,6 +1810,7 @@ def test_device_cleanup_scan_failure_is_not_marked_success(monkeypatch):
             1,
             AccountSecurityBatchCreate(account_ids=[account.id], action_types=["cleanup_devices"], confirm_text="确认"),
             "tester",
+            idempotency_key="scan-failure-test",
         )
 
         assert drain_account_security_batches(lambda: Session(session.bind), limit=10) == 0
@@ -1818,8 +1819,8 @@ def test_device_cleanup_scan_failure_is_not_marked_success(monkeypatch):
 
         assert refreshed.status == "manual_required"
         assert item.status == "skipped"
-        assert item.cleanup_status == "not_requested"
-        assert "安全状态刷新失败：scan failed" in item.skipped_reason
+        assert item.cleanup_status == "skipped"
+        assert item.skipped_reason == "current_sv_authorization_unavailable"
 
 
 @pytest.mark.no_postgres
@@ -2448,5 +2449,5 @@ def test_refresh_security_keeps_external_device_count_for_rank_deboost_readonly(
 
         snapshot = refresh_account_security(session, 1, account.id, "tester")
 
-        assert snapshot.external_authorization_count == 2
+        assert snapshot.external_authorization_count == 3
         assert cleanup_candidate_authorization_snapshots(session, account) == []

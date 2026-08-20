@@ -1091,7 +1091,7 @@ def test_verify_standby_authorization_login_saves_asset_without_overwriting_prim
             session,
             account.id,
             method="code",
-            role="standby_2",
+            role="standby_1",
             developer_app_id=32,
             proxy_id=42,
             actor="admin",
@@ -1109,12 +1109,27 @@ def test_verify_standby_authorization_login_saves_asset_without_overwriting_prim
         session.refresh(account)
 
         assert account.session_ciphertext == "primary-session"
-        assert asset.role == "standby_2"
+        assert asset.role == "standby_1"
         assert asset.status == "standby"
         assert asset.developer_app_id == 32
         assert asset.proxy_id == 42
         assert asset.is_current is False
         assert decrypt_session(asset.session_ciphertext).startswith("encrypted-session:")
+
+
+@pytest.mark.no_postgres
+def test_legacy_login_cannot_create_malaysia_standby_slot() -> None:
+    with _sqlite_session() as session:
+        with pytest.raises(ValueError, match="standby_2"):
+            start_standby_authorization_login(
+                session,
+                999,
+                method="code",
+                role="standby_2",
+                developer_app_id=32,
+                proxy_id=42,
+                actor="admin",
+            )
 
 
 def test_accounts_router_exposes_authorization_asset_routes() -> None:

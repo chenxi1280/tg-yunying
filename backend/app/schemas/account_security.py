@@ -60,7 +60,6 @@ class AccountSecurityRetryRequest(BaseModel):
 
 
 class DeviceCleanupConfirmRequest(BaseModel):
-    precheck_id: str
     reason: str = Field(min_length=1, max_length=255)
 
 
@@ -179,6 +178,13 @@ class AccountSecurityBatchItemOut(ApiModel):
     precheck_status: str
     cleanup_status: str
     device_cleanup_precheck_id: str = ""
+    executor_authorization_id: int | None = None
+    executor_fact_version: int = 0
+    executor_telegram_login_at: datetime | None = None
+    protected_manifest_digest: str = ""
+    target_set_digest: str = ""
+    remote_effect_started_at: datetime | None = None
+    final_readback_digest: str = ""
     two_fa_status: str
     standby_session_status: str = ""
     profile_status: str
@@ -212,6 +218,9 @@ class AccountSecurityBatchOut(ApiModel):
     success_count: int
     skipped_count: int
     failed_count: int
+    requested_count: int = 0
+    eligible_count: int = 0
+    skipped_reason_counts: dict[str, int] = {}
     created_by: str
     confirmed_by: str
     confirm_text: str
@@ -230,6 +239,8 @@ class AccountSecurityBatchOut(ApiModel):
 
 class AccountSecurityDetailOut(BaseModel):
     account_id: int
+    device_cleanup_eligible: bool = False
+    device_cleanup_reason: str = ""
     snapshot: AccountSecuritySnapshotOut
     authorizations: list[AccountAuthorizationSnapshotOut]
     recent_batches: list[AccountSecurityBatchOut]

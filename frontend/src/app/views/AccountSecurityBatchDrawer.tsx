@@ -64,7 +64,7 @@ const MODE_CONFIG: Record<Mode, { title: string; alertType: 'info' | 'warning'; 
   standby_session: {
     title: '批量补齐备用 session',
     alertType: 'warning',
-    description: '按账号授权槽位补齐 standby_1 / standby_2，使用验证码读取能力和平台托管 2FA；失败原因会进入任务中心。',
+    description: '此入口只补齐硅谷 standby_1。马来西亚 standby_2 通过异地备用授权迁移流程创建。',
     actions: ['provision_standby_session', 'self_heal_session'],
     reason: '批量补齐备用 session',
   },
@@ -186,6 +186,7 @@ export function AccountSecurityBatchDrawer({
   const forbiddenText = profileStrategy.forbidden_words.join('，');
   const modeConfig = MODE_CONFIG[mode];
   const isProfileMode = mode === 'profile';
+  const isCleanupMode = mode === 'cleanup_devices';
   const precheckButtonLabel = mode === 'standby_session' ? '预检备用 session 补齐' : isProfileMode ? '预检 / AI 生成预览' : '预检动作';
   const confirmButtonLabel = mode === 'standby_session' ? '确认补齐备用 session' : isProfileMode ? '确认执行资料初始化' : '确认创建批次';
   const batchResultTargetLabel = mode === 'standby_session' ? '备用 session 状态' : isProfileMode ? '资料变化' : '安全状态';
@@ -375,6 +376,14 @@ export function AccountSecurityBatchDrawer({
   }
 
   function openCreateConfirm() {
+    if (isCleanupMode) {
+      if (!draftAccountIds.length) {
+        void message.warning('请在当前批量动作中选择账号');
+        return;
+      }
+      setConfirmOpen(true);
+      return;
+    }
     if (!precheck) {
       void runPrecheck();
       return;
@@ -396,13 +405,14 @@ export function AccountSecurityBatchDrawer({
   }
 
   async function createBatch() {
-    if (!precheck) return;
+    if (!precheck && !isCleanupMode) return;
     const requestSignature = payloadSignature;
     const requestSeq = beginBatchDrawerRequest('create', requestSignature);
     setLoading(true);
     try {
       const result = await api<AccountSecurityBatch>('/tg-accounts/security-batches', {
         method: 'POST',
+        headers: isCleanupMode ? { 'Idempotency-Key': crypto.randomUUID() } : undefined,
         body: JSON.stringify({ ...payload, preview_overrides: previewOverrides, confirm_text: '确认' }),
       });
       if (!isActiveBatchDrawerRequest('create', requestSignature, requestSeq)) return;
@@ -707,7 +717,6 @@ export function AccountSecurityBatchDrawer({
                   options={[
                     { label: '自动补齐缺失槽位', value: 'auto_missing' },
                     { label: '仅 standby_1', value: 'standby_1' },
-                    { label: '仅 standby_2', value: 'standby_2' },
                   ]}
                   onChange={setStandbySlotStrategy}
                 />
@@ -716,8 +725,8 @@ export function AccountSecurityBatchDrawer({
               <Alert
                 type="warning"
                 showIcon
-                message="预检会检查平台托管 2FA、开发者应用健康、代理健康、目标槽位和新登录限制。"
-                description="执行时会读取 TG 官方验证码并写入登录流水；验证码不可读取、2FA 未托管、开发者应用异常、代理异常或 Telegram 限制都会进入失败原因，不会静默标记成功。"
+                message="预检会检查硅谷 standby_1 所需的托管 2FA、开发者应用和代理。"
+                description="standby_2 不会从这个旧入口在硅谷新建，也不会被当作普通业务 Session 切换。"
               />
             </Space>
           </>
@@ -726,8 +735,8 @@ export function AccountSecurityBatchDrawer({
           <Alert
             type="warning"
             showIcon
-            message="只保留当前 session、已确认 hash 的 primary / standby_1 / standby_2 和一个官方锚点设备"
-            description="预检必须列出保留设备、预计清理外部设备和待确认设备；无法确认任一平台 session 授权设备 hash 时，当前账号不能继续一键清理。"
+            message="按当前硅谷授权的登录时间直接判定"
+            description="只有登录超过 48 小时的账号才执行；其他账号直接跳过，批次结果会返回跳过数和原因。不会先对所有账号做远程预检。"
           />
         )}
         {mode === 'set_two_fa' && (
@@ -748,12 +757,12 @@ export function AccountSecurityBatchDrawer({
           />
         )}
         <Space wrap>
-          <Button icon={<RefreshCcw size={16} />} loading={loading} onClick={runPrecheck}>{precheckButtonLabel}</Button>
+          {!isCleanupMode && <Button icon={<RefreshCcw size={16} />} loading={loading} onClick={runPrecheck}>{precheckButtonLabel}</Button>}
           {isProfileMode && <Button icon={<Activity size={16} />} loading={loading} onClick={runPrecheck}>重抽全部</Button>}
           <Button
             type="primary"
             icon={<CheckCircle2 size={16} />}
-            disabled={!precheck || ((precheck.summary.executable ?? 0) < 1 && editedPreviewIds.size < 1)}
+            disabled={isCleanupMode ? !draftAccountIds.length : !precheck || ((precheck.summary.executable ?? 0) < 1 && editedPreviewIds.size < 1)}
             loading={loading}
             onClick={openCreateConfirm}
           >
@@ -775,7 +784,14 @@ export function AccountSecurityBatchDrawer({
         )}
         {batch && (
           <Space orientation="vertical" size={8} style={{ width: '100%' }}>
-            <Typography.Text strong>批次 #{batch.id}：{statusText(batch.status)}，成功 {batch.success_count}，失败 {batch.failed_count}，跳过 {batch.skipped_count}</Typography.Text>
+            <Typography.Text strong>
+              批次 #{batch.id}：{statusText(batch.status)}，请求 {batch.requested_count || batch.total_count}，可执行 {batch.eligible_count}，成功 {batch.success_count}，失败 {batch.failed_count}，跳过 {batch.skipped_count}
+            </Typography.Text>
+            {Object.keys(batch.skipped_reason_counts || {}).length > 0 && (
+              <Typography.Text type="secondary">
+                跳过原因：{Object.entries(batch.skipped_reason_counts).map(([reasonCode, count]) => `${reasonCode} ${count}`).join('；')}
+              </Typography.Text>
+            )}
             <Typography.Text type="secondary">trace_id：{batch.trace_id}</Typography.Text>
             <Table<AccountSecurityBatchItem>
               className="tg-table"
@@ -799,7 +815,11 @@ export function AccountSecurityBatchDrawer({
       >
         <Space orientation="vertical" size={8}>
           <Typography.Text>动作：{modeConfig.title}</Typography.Text>
-          <Typography.Text>账号：共 {precheck?.summary.total ?? 0} 个，可执行 {precheck?.summary.executable ?? 0} 个，需等待 {precheck?.summary.waiting ?? 0} 个，自动跳过 {autoSkippedCount} 个。</Typography.Text>
+          <Typography.Text>
+            {isCleanupMode
+              ? `账号：共 ${draftAccountIds.length} 个；提交后按 48 小时规则执行或跳过。`
+              : `账号：共 ${precheck?.summary.total ?? 0} 个，可执行 ${precheck?.summary.executable ?? 0} 个，需等待 ${precheck?.summary.waiting ?? 0} 个，自动跳过 ${autoSkippedCount} 个。`}
+          </Typography.Text>
           <Typography.Text>原因：{reason || modeConfig.reason}</Typography.Text>
         </Space>
       </Modal>
