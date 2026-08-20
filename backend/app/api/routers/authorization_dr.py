@@ -200,15 +200,13 @@ def post_dr_node_heartbeat(
 def post_dr_operation_claim(
     *,
     payload: DrClaimRequest,
-    response: Response,
     node_id: str = Depends(_internal_node_identity),
     session: Session = Depends(get_session),
 ):
     try:
         claim = claim_migration_operation(session, node_id)
         if claim is None:
-            response.status_code = 204
-            return None
+            return Response(status_code=204)
         return claim
     except AuthorizationDrError as exc:
         session.rollback()
