@@ -132,6 +132,10 @@ class DrOwnerRequest(DrStrictModel):
     lease_token: str = Field(min_length=1, max_length=80)
 
 
+class DrLoginFailureRequest(DrOwnerRequest):
+    blocker_code: str = Field(pattern="^phone_number_banned$")
+
+
 class DrCopyReceiptRequest(DrStrictModel):
     copy_kind: str = Field(pattern="^(local_persistent|remote_ssh_snapshot|object_snapshot)$")
     object_ref_digest: str = Field(min_length=64, max_length=64)
