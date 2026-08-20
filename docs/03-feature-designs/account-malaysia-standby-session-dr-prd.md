@@ -1,8 +1,8 @@
 # 马来西亚异地备用 TG Session 灾备 PRD
 
 > 版本：v2.17
-> 日期口径：2026-08-20（Asia/Shanghai）
-> 当前状态：`design_status=complete`、`implementation_started=true`、`implementation_scope=two_account_canary_core`、`core_deployed=true`、`ssh_mirror_change_in_progress=true`、`two_account_canary=0/2`、`production_fixed=false`
+> 日期口径：2026-08-21（Asia/Shanghai）
+> 当前状态：`design_status=complete`、`implementation_started=true`、`implementation_scope=two_account_canary_core`、`core_deployed=true`、`ssh_mirror_deployed=true`、`two_account_canary=0/2_reconcile_unknown`、`runtime_mode=off`、`production_fixed=false`
 > 适用范围：账号授权资产、三槽位远端设备归属、活跃授权设备查看/清理、备用登录、硅谷本地自动切换、跨模块运行代次、显式演练、紧急登录码辅助和硅谷主授权重建；不包含业务系统整体异地容灾。
 > 关联文档：[实施与验收合同](account-malaysia-standby-session-dr-implementation-contract.md)、[account-standby-auto-authorization-prd.md](account-standby-auto-authorization-prd.md)、[account-security-hardening-design.md](account-security-hardening-design.md)、[account-login-group-navigation-recovery-prd.md](account-login-group-navigation-recovery-prd.md)。
 
@@ -23,6 +23,13 @@
 - Session 非空、数据库 `active`、worker healthy 或页面 `2/2` 都不是当前 Telegram 授权可用证据。
 - Telegram 远端“活跃授权”只表示该设备尚未被撤销；MY client 断连休眠后，`standby_2` 仍应出现在 `account.getAuthorizations` 中，不得因“不在线”标为授权缺失。
 - 授权备份不等于消息、任务、数据库、Redis、素材和 Dispatcher 的异地容灾。
+
+### 1.2 2026-08-21 两账号 canary 事实
+
+- 账号 24/25 的迁移批次已按源授权 46/48 和目标 generation 2 冻结并审批；MY 固定出口、三套 App 槽位、SSH 双副本链路和节点心跳均先通过。
+- 两次 Telegram 登录都取得验证码并完成新设备登录，但 Telegram 对当前设备返回合法 `authorization hash=0`；旧实现把 `0` 当成缺失，在 Bundle 写入前将两项标记为 `provision_reconcile_unknown`。第二项在节点自动重启后被领取，发现后已停止节点、清空 lease，并把 runtime 切回 `off`。
+- 两账号原 App C/SV `standby_2` 仍为 current、Session 非空且受清理保护；没有 candidate、Bundle、slot commit 或旧 Session 清理。新产生但未封装的 MY 远端设备属于我方 orphan，保持 unknown，不自动重试或清理。
+- 修复口径不是把 `0` 直接存为我方设备 hash。MY 发送不含明文设备信息的当前设备指纹摘要；SV 用仍保留的 primary/standby peer Session 读取远端设备集，只有唯一指纹匹配得到非零 hash 时才能提交 Bundle。零匹配或多匹配继续进入 reconcile unknown。
 
 本方案把 `standby_2` 改造成在马来西亚真实登录生成、由 MY 本地独立密封保存的授权。它只承担授权保全、显式演练，以及在两个硅谷授权均不可用时读取 Telegram 官方登录码，辅助硅谷生成全新 `primary` Session。`standby_2` 永不交给硅谷、永不切为 `current`、永不发送业务消息。
 

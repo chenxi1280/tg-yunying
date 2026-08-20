@@ -239,6 +239,7 @@ def _persist_bundle(config: NodeConfig, claim: dict, raw_session: str, identity)
         "kms_key_version": wrapped_dek.key_version,
         "auth_key_fingerprint_digest": identity.auth_key_fingerprint_digest,
         "telegram_user_id_digest": identity.telegram_user_id_digest,
+        "authorization_fingerprint_digest": identity.authorization_fingerprint_digest,
         "remote_authorization_hash": identity.authorization_hash,
         "inventory_sequence": inventory_sequence,
         "inventory_manifest_digest": inventory_manifest_digest,

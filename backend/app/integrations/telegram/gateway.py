@@ -12,6 +12,7 @@ from uuid import uuid4
 from app.config import Settings, get_settings
 from app.image_fingerprint import image_avatar_perceptual_hash
 from . import telethon_content
+from .authorization_fingerprint import authorization_fingerprint_digest
 from .mock import TelegramGateway
 from .contracts import (
     AccountAuthorizationSnapshot,
@@ -830,14 +831,15 @@ class TelethonTelegramGateway(TelegramGateway):
                 (item for item in getattr(response, "authorizations", []) if getattr(item, "current", False)),
                 None,
             )
-            authorization_hash = str(getattr(current, "hash", "") or "")
+            authorization_hash = str(getattr(current, "hash", "")) if current is not None else ""
             auth_key = bytes(client.session.auth_key.key)
-            if not authorization_hash or not auth_key or not getattr(user, "id", None):
+            if current is None or not authorization_hash or not auth_key or not getattr(user, "id", None):
                 raise RuntimeError("authorization identity is incomplete")
             return AuthorizationIdentity(
                 authorization_hash=authorization_hash,
                 auth_key_fingerprint_digest=hashlib.sha256(auth_key).hexdigest(),
                 telegram_user_id_digest=hashlib.sha256(str(user.id).encode()).hexdigest(),
+                authorization_fingerprint_digest=authorization_fingerprint_digest(current),
             )
         finally:
             await client.disconnect()

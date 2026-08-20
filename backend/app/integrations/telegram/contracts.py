@@ -148,6 +148,7 @@ class AuthorizationIdentity:
     authorization_hash: str
     auth_key_fingerprint_digest: str
     telegram_user_id_digest: str
+    authorization_fingerprint_digest: str
 
 
 @dataclass(frozen=True)
