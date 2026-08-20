@@ -26,6 +26,7 @@ from .readiness import require_migration_readiness
 
 CLAIM_LEASE_SECONDS = 90
 CLAIMABLE_STATUSES = ("pending", "waiting_login")
+TERMINAL_ITEM_STATUSES = ("succeeded", "reconcile_unknown", "manual_required", "failed")
 
 
 def preview_migration_batch(
@@ -260,6 +261,7 @@ def mark_login_remote_unknown(session, operation_id: str, *, node_id: str, owner
     operation.lease_expires_at = None
     operation.operation_version += 1
     _mark_item(session, operation, "reconcile_unknown", blocker="provision_reconcile_unknown")
+    refresh_migration_batch(session, operation.batch_item_id)
     session.commit()
 
 
@@ -421,6 +423,32 @@ def _mark_item(session, operation, status: str, *, blocker: str = "") -> None:
         item.version += 1
 
 
+def refresh_migration_batch(session, batch_item_id: str) -> None:
+    item = session.get(TgAuthorizationDrBatchItem, batch_item_id)
+    if not item:
+        return
+    batch = session.get(TgAuthorizationDrBatch, item.batch_id)
+    statuses = list(session.scalars(select(TgAuthorizationDrBatchItem.status).where(
+        TgAuthorizationDrBatchItem.batch_id == item.batch_id,
+    )))
+    if any(status not in TERMINAL_ITEM_STATUSES for status in statuses):
+        batch.status = "running"
+        batch.finished_at = None
+    elif all(status == "succeeded" for status in statuses):
+        batch.status = "succeeded"
+        batch.finished_at = _now()
+    elif all(status in ("reconcile_unknown", "manual_required") for status in statuses):
+        batch.status = "manual_required"
+        batch.finished_at = _now()
+    elif any(status == "succeeded" for status in statuses):
+        batch.status = "partial_success"
+        batch.finished_at = _now()
+    else:
+        batch.status = "failed"
+        batch.finished_at = _now()
+    batch.version += 1
+
+
 def _claim_contract(operation) -> OperationClaim:
     return OperationClaim(
         operation.id,
@@ -464,5 +492,6 @@ __all__ = [
     "migration_login_material",
     "poll_migration_login_code",
     "preview_migration_batch",
+    "refresh_migration_batch",
     "renew_migration_lease",
 ]

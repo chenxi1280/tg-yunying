@@ -5,7 +5,6 @@ from sqlalchemy import func, select
 from app.models import (
     TgAccount,
     TgAccountAuthorization,
-    TgAuthorizationDrBatch,
     TgAuthorizationDrBatchItem,
     TgAuthorizationDrOperation,
     TgAuthorizationRestoreProbeFact,
@@ -17,6 +16,7 @@ from app.models import (
 from app.services._common import _now, audit
 
 from .contracts import AuthorizationDrError
+from .migration import refresh_migration_batch
 from .wake_bundle import _operation_bundle, _owned_operation, valid_copy_kinds
 
 
@@ -222,20 +222,7 @@ def _finish_operation(session, operation) -> None:
     item.outcome = "succeeded"
     item.finished_at = _now()
     item.version += 1
-    _refresh_batch(session, item.batch_id)
-
-
-def _refresh_batch(session, batch_id: str) -> None:
-    batch = session.get(TgAuthorizationDrBatch, batch_id)
-    statuses = list(session.scalars(select(TgAuthorizationDrBatchItem.status).where(
-        TgAuthorizationDrBatchItem.batch_id == batch_id,
-    )))
-    if statuses and all(status == "succeeded" for status in statuses):
-        batch.status = "succeeded"
-        batch.finished_at = _now()
-    elif any(status in ("running", "reconcile_unknown") for status in statuses):
-        batch.status = "running"
-    batch.version += 1
+    refresh_migration_batch(session, item.id)
 
 
 def _next_decision_generation(session, account_id: int) -> int:
