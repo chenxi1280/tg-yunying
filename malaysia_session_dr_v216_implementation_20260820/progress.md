@@ -14,3 +14,5 @@
 - 已将旧用例同步到设备清理 v2 合同，并把硅谷普通安全批次请求 `standby_2` 改为明确 `manual_required`，避免无 MY 耐久化事实时假成功；同时修复零目标成功时误报 `partial_failed`。原失败场景 9 passed，完整相关 no-PostgreSQL 回归 273 passed。
 - 第三轮流水线 `32347088271` 的 no-PostgreSQL 全量矩阵通过；PostgreSQL 仅剩 4 个清理执行用例被错误跳过。根因是带时区登录时间列写入无时区北京时间，在 UTC PostgreSQL 中读回偏移 8 小时。
 - 已让 SV standby_1 与 MY standby_2 创建时都持久化显式北京时区 `telegram_login_at`，并补充两条新授权登录时间断言；本地相关 273 项和原失败 9 项继续通过，待真实 PostgreSQL 复验。
+- 第四轮流水线 `32348177594` 再次通过 no-PostgreSQL 全量；PostgreSQL 证明 4 个清理用例已进入执行，但最终设备回读替换快照时被清理目标外键阻止。
+- 已把清理目标的快照外键改为可空 `ON DELETE SET NULL`，目标自身的加密 hash/digest 继续保留为审计事实；回读前显式解除引用。定向 5 passed，相关 273 passed，待真实 PostgreSQL 复验。
