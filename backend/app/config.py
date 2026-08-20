@@ -180,6 +180,8 @@ class Settings:
     )
     queue_backend: str = _default_queue_backend(app_env)
     redis_url: str = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+    authorization_dr_internal_token: str = os.getenv("AUTHORIZATION_DR_INTERNAL_TOKEN", "")
+    authorization_dr_require_mtls: bool = _bool_env("AUTHORIZATION_DR_REQUIRE_MTLS", True)
     session_secret_key: str = field(
         default_factory=lambda: os.getenv("SESSION_SECRET_KEY") or "dev-only-change-me"
     )

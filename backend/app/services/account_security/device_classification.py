@@ -131,10 +131,10 @@ def _classification(
 ) -> str:
     if not snapshot.api_id:
         return UNKNOWN_DEVICE
-    if snapshot.is_current_session or matched_roles or _has_protected_hash(snapshot, protected_hashes):
+    if snapshot.is_current_session or _has_protected_hash(snapshot, protected_hashes):
         return PLATFORM_APP
     if snapshot.id in official_anchor_ids:
-        return OFFICIAL_ANCHOR_DEVICE
+        return NON_PLATFORM_APP
     return NON_PLATFORM_APP
 
 
@@ -146,8 +146,6 @@ def _can_cleanup_snapshot(
     if snapshot.status != "active":
         return False
     if snapshot.is_current_session or _has_protected_hash(snapshot, protected_hashes):
-        return False
-    if snapshot.id in official_anchor_ids:
         return False
     return bool(snapshot.api_id)
 

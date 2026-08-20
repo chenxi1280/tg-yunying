@@ -2,6 +2,7 @@
 
 from .contracts import (
     AccountHealth,
+    AuthorizationIdentity,
     ArchiveSnapshot,
     ArchivedMemberSnapshot,
     ArchivedMessageSnapshot,
@@ -30,6 +31,7 @@ from .mock import TelegramGateway
 
 __all__ = [
     "AccountHealth",
+    "AuthorizationIdentity",
     "ArchiveSnapshot",
     "ArchivedMemberSnapshot",
     "ArchivedMessageSnapshot",

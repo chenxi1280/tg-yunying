@@ -55,6 +55,8 @@ def start_standby_authorization_login(
     proxy_id: int,
     actor: str,
 ) -> TgLoginFlow:
+    if role == "standby_2":
+        raise ValueError("standby_2 必须通过马来西亚备用授权迁移流程创建")
     account = _require_account(session, account_id)
     app, proxy = _require_login_resources(session, account.tenant_id, role, developer_app_id, proxy_id)
     credentials = credentials_for_developer_app(app, proxy)
@@ -276,6 +278,8 @@ def refresh_authorization_slot(
 ) -> dict[str, Any]:
     account = _require_account(session, account_id)
     target = _require_authorization(session, account, authorization_id)
+    if _is_malaysia_wake_authorization(target):
+        raise ValueError("马来西亚备用授权必须通过紧急唤起流程刷新")
     source = _first_healthy_authorization(session, account, exclude_id=target.id)
     if source is None:
         _mark_all_down_manual_required(session, account, reason)
@@ -482,6 +486,7 @@ def _finish_standby_login(
         tenant_id=account.tenant_id,
         account_id=account.id,
         role=flow.authorization_role,
+        logical_slot=flow.authorization_role,
         developer_app_id=flow.developer_app_id,
         developer_app_api_id_snapshot=app.api_id,
         proxy_id=flow.proxy_id,
@@ -569,6 +574,8 @@ def _require_authorization(session: Session, account: TgAccount, authorization_i
 
 
 def _ensure_switchable(authorization: TgAccountAuthorization) -> None:
+    if _is_malaysia_wake_authorization(authorization):
+        raise ValueError("马来西亚备用授权不能直接切换为业务主授权")
     if not authorization.session_ciphertext:
         raise ValueError("备用授权没有可用 session")
     if authorization.status not in ACTIVE_STATUSES:
@@ -578,7 +585,7 @@ def _ensure_switchable(authorization: TgAccountAuthorization) -> None:
 def _first_switchable_standby(session: Session, account: TgAccount) -> TgAccountAuthorization | None:
     rows = _authorization_rows(session, account)
     for row in rows:
-        if _is_healthy_standby(row):
+        if _is_healthy_standby(row) and not _is_malaysia_wake_authorization(row):
             return row
     return None
 
@@ -586,6 +593,8 @@ def _first_switchable_standby(session: Session, account: TgAccount) -> TgAccount
 def _first_healthy_authorization(session: Session, account: TgAccount, *, exclude_id: int) -> TgAccountAuthorization | None:
     for row in _authorization_rows(session, account):
         if row.id == exclude_id:
+            continue
+        if _is_malaysia_wake_authorization(row):
             continue
         if not row.session_ciphertext:
             continue
@@ -595,6 +604,13 @@ def _first_healthy_authorization(session: Session, account: TgAccount, *, exclud
             continue
         return row
     return None
+
+
+def _is_malaysia_wake_authorization(authorization: TgAccountAuthorization) -> bool:
+    return (
+        authorization.provision_region_code == "my"
+        or authorization.credential_storage_scope == "malaysia_wake_bundle"
+    )
 
 
 def _mark_all_down_manual_required(session: Session, account: TgAccount, reason: str) -> None:
@@ -639,6 +655,7 @@ def _preserve_legacy_primary_if_needed(session: Session, account: TgAccount, rea
             tenant_id=account.tenant_id,
             account_id=account.id,
             role=REPAIR_ROLE,
+            logical_slot=PRIMARY_ROLE,
             developer_app_id=account.developer_app_id,
             proxy_id=account.proxy_id,
             session_ciphertext=account.session_ciphertext,

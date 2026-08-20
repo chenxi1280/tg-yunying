@@ -643,6 +643,21 @@ class TelegramGateway:
             ),
         ]
 
+    def authorization_identity(
+        self,
+        raw_session: str,
+        credentials: DeveloperAppCredentials | None = None,
+    ):
+        from .contracts import AuthorizationIdentity
+
+        if not raw_session:
+            raise RuntimeError("authorization identity requires a raw session")
+        return AuthorizationIdentity(
+            authorization_hash="current-platform-session",
+            auth_key_fingerprint_digest=hashlib.sha256(raw_session.encode()).hexdigest(),
+            telegram_user_id_digest=hashlib.sha256(b"mock-user").hexdigest(),
+        )
+
     def cleanup_authorization(
         self,
         session_ciphertext: str | None,

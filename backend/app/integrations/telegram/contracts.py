@@ -144,6 +144,13 @@ class AccountAuthorizationSnapshot:
 
 
 @dataclass(frozen=True)
+class AuthorizationIdentity:
+    authorization_hash: str
+    auth_key_fingerprint_digest: str
+    telegram_user_id_digest: str
+
+
+@dataclass(frozen=True)
 class AccountSecurityOperationResult:
     ok: bool
     status: str = "已完成"

@@ -92,6 +92,9 @@ class TgAccountSecurityBatch(Base):
     success_count: Mapped[int] = mapped_column(Integer, default=0)
     skipped_count: Mapped[int] = mapped_column(Integer, default=0)
     failed_count: Mapped[int] = mapped_column(Integer, default=0)
+    requested_count: Mapped[int] = mapped_column(Integer, default=0)
+    eligible_count: Mapped[int] = mapped_column(Integer, default=0)
+    skipped_reason_counts: Mapped[str] = mapped_column(Text, default="{}")
     created_by: Mapped[str] = mapped_column(String(100), default="")
     confirmed_by: Mapped[str] = mapped_column(String(100), default="")
     confirm_text: Mapped[str] = mapped_column(String(120), default="")
@@ -103,6 +106,7 @@ class TgAccountSecurityBatch(Base):
     overwrite_existing_profile: Mapped[bool] = mapped_column(Boolean, default=False)
     reason: Mapped[str] = mapped_column(String(255), default="")
     trace_id: Mapped[str] = mapped_column(String(80), default="")
+    idempotency_key: Mapped[str] = mapped_column(String(100), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -119,6 +123,15 @@ class TgAccountSecurityBatchItem(Base):
     precheck_status: Mapped[str] = mapped_column(String(40), default="pending")
     cleanup_status: Mapped[str] = mapped_column(String(40), default="not_requested")
     device_cleanup_precheck_id: Mapped[str] = mapped_column(String(80), default="")
+    executor_authorization_id: Mapped[int | None] = mapped_column(
+        ForeignKey("tg_account_authorizations.id"), nullable=True
+    )
+    executor_fact_version: Mapped[int] = mapped_column(Integer, default=0)
+    executor_telegram_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    protected_manifest_digest: Mapped[str] = mapped_column(String(64), default="")
+    target_set_digest: Mapped[str] = mapped_column(String(64), default="")
+    remote_effect_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    final_readback_digest: Mapped[str] = mapped_column(String(64), default="")
     two_fa_status: Mapped[str] = mapped_column(String(40), default="not_requested")
     profile_status: Mapped[str] = mapped_column(String(40), default="not_requested")
     username_status: Mapped[str] = mapped_column(String(40), default="not_requested")
@@ -170,6 +183,26 @@ class TgAccountProfileBatchRule(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
+class TgAccountDeviceCleanupTarget(Base):
+    __tablename__ = "tg_account_device_cleanup_targets"
+    __table_args__ = (
+        UniqueConstraint("batch_item_id", "target_hash_digest", name="uq_device_cleanup_target_hash"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    batch_item_id: Mapped[int] = mapped_column(ForeignKey("tg_account_security_batch_items.id"))
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
+    account_id: Mapped[int] = mapped_column(ForeignKey("tg_accounts.id"))
+    snapshot_id: Mapped[int] = mapped_column(ForeignKey("tg_account_authorization_snapshots.id"))
+    target_hash_ciphertext: Mapped[str] = mapped_column(Text)
+    target_hash_digest: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(40), default="pending")
+    remote_effect_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    result_detail: Mapped[str] = mapped_column(Text, default="")
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
 class TgAccountProfileNameClaim(Base):
     __tablename__ = "tg_account_profile_name_claims"
     __table_args__ = (
@@ -193,6 +226,7 @@ class TgAccountProfileNameClaim(Base):
 __all__ = [
     "TgAccountAuthorizationSnapshot",
     "TgAccountDeviceCleanupPrecheck",
+    "TgAccountDeviceCleanupTarget",
     "TgAccountProfileBatchRule",
     "TgAccountProfileNameClaim",
     "TgAccountSecurityBatch",

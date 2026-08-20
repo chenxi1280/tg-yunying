@@ -1,0 +1,23 @@
+services:
+  authorization-dr-node:
+    image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
+    container_name: tgyunying-authorization-dr-node
+    command: ["python", "-m", "app.workers.authorization_dr_node"]
+    env_file:
+      - ${AUTHORIZATION_DR_ENV_FILE:-/opt/tgyunying-authorization-dr/node.env}
+    volumes:
+      - ${MY_WAKE_BUNDLE_LOCAL_HOST_DIR:?MY_WAKE_BUNDLE_LOCAL_HOST_DIR is required}:/var/lib/tgyunying/wake-local
+      - ${AUTHORIZATION_DR_CERT_HOST_DIR:-/opt/tgyunying-authorization-dr/certs}:/run/authorization-dr-certs:ro
+    restart: unless-stopped
+    init: true
+    healthcheck:
+      test: ["CMD-SHELL", "test -r /proc/1/cmdline && tr '\\0' ' ' </proc/1/cmdline | grep -q authorization_dr_node"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: 20m
+        max-file: "3"

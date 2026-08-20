@@ -463,9 +463,14 @@ export function AccountDetailModal({
     setSecurityLoading(true);
     setActionError('');
     try {
-      await api(`/tg-accounts/${accountId}/security/${securityReasonAction}`, {
+      const cleanup = securityReasonAction === 'cleanup-devices';
+      const endpoint = cleanup
+        ? `/tg-accounts/${accountId}/authorization-devices/cleanup`
+        : `/tg-accounts/${accountId}/security/${securityReasonAction}`;
+      await api(endpoint, {
         method: 'POST',
-        body: JSON.stringify({ reason, confirm_text: '确认' }),
+        headers: cleanup ? { 'Idempotency-Key': crypto.randomUUID() } : undefined,
+        body: JSON.stringify(cleanup ? { reason } : { reason, confirm_text: '确认' }),
       });
       if (!isActiveAccountDetail(accountId)) return;
       const detail = await api<AccountSecurityDetail>(`/tg-accounts/${accountId}/security`);
@@ -853,10 +858,23 @@ export function AccountDetailModal({
                   ]}
                 />
                 <Space wrap>
-                  {canSecurityBatch && <Button type="primary" size="small" loading={securityLoading} onClick={() => openSecurityReasonModal('cleanup-devices')}>清理外部设备</Button>}
+                  {canSecurityBatch && (
+                    <Button
+                      type="primary"
+                      size="small"
+                      loading={securityLoading}
+                      disabled={!securityDetail.device_cleanup_eligible}
+                      onClick={() => openSecurityReasonModal('cleanup-devices')}
+                    >清理外部设备</Button>
+                  )}
                   {canSecurityBatch && <Button size="small" loading={securityLoading} onClick={() => openSecurityReasonModal('set-2fa')}>设置二步验证</Button>}
                   {canProfileBatchUpdate && <Button size="small" loading={securityLoading} onClick={() => onSetModal({ type: 'accountProfileEdit' })}>设置资料</Button>}
                 </Space>
+                {!securityDetail.device_cleanup_eligible && (
+                  <Typography.Text type="secondary">
+                    设备清理已跳过：{securityDetail.device_cleanup_reason || '当前账号不符合执行条件'}
+                  </Typography.Text>
+                )}
                 {securityDetail.snapshot.last_error && <Alert type="warning" showIcon message="最近安全处理提示" description={securityDetail.snapshot.last_error} />}
               </Space>
             ) : (
