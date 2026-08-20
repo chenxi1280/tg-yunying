@@ -185,6 +185,39 @@ def test_device_cleanup_candidates_keep_current_session_and_one_official_anchor(
         assert [item.app_name for item in candidates] == ["平台应用副本", "Telegram Desktop", "Telegram Android", "Legacy Client"]
 
 
+def test_device_cleanup_keeps_explicitly_protected_repair_authorization() -> None:
+    with _session() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TelegramDeveloperApp(id=1, app_name="Repair", api_id=12345, api_hash_ciphertext="secret"))
+        account = TgAccount(id=7, tenant_id=1, display_name="修复授权账号", phone_masked="7", status=AccountStatus.ACTIVE.value)
+        session.add(account)
+        session.flush()
+        session.add(TgAccountAuthorization(
+            tenant_id=1,
+            account_id=account.id,
+            role="standby_repair",
+            developer_app_id=1,
+            telegram_authorization_hash_ciphertext=encrypt_secret("repair-hash"),
+            protected_from_cleanup=True,
+            session_ciphertext="repair-session",
+            status="needs_repair",
+        ))
+        session.add(TgAccountAuthorizationSnapshot(
+            tenant_id=1,
+            account_id=account.id,
+            api_id=12345,
+            app_name="Repair",
+            authorization_hash_ciphertext=encrypt_secret("repair-hash"),
+        ))
+        session.commit()
+
+        classified = classify_account_authorization_snapshots(session, account.id)
+
+        assert classified[0]["classification"] == "platform_app"
+        assert classified[0]["cleanup_eligible"] is False
+        assert cleanup_candidate_authorization_snapshots(session, account) == []
+
+
 def test_device_cleanup_confirm_consumes_precheck_snapshot_without_expanding(monkeypatch) -> None:
     with _session() as session:
         session.add(Tenant(id=1, name="默认运营空间"))
