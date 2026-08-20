@@ -157,7 +157,7 @@ def test_wake_bundle_has_two_readable_immutable_copies(tmp_path: Path) -> None:
         "target_generation": 5,
         "developer_app_id": 3,
     }
-    identity = AuthorizationIdentity("12345", "a" * 64, "b" * 64)
+    identity = AuthorizationIdentity("12345", "a" * 64, "b" * 64, "1" * 64)
 
     receipt, object_key = _persist_bundle(config, claim, "raw-session-value", identity)
 
@@ -200,7 +200,7 @@ def test_restore_probe_reads_snapshot_and_matches_authorization(tmp_path: Path) 
         "credentials_version": 1,
         "app_name": "App C",
     }
-    identity = AuthorizationIdentity("67890", "c" * 64, "d" * 64)
+    identity = AuthorizationIdentity("67890", "c" * 64, "d" * 64, "2" * 64)
     receipt, object_key = _persist_bundle(config, claim, "raw-session-value", identity)
 
     probe = _restore_probe(

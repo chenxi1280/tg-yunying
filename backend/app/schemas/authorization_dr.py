@@ -152,6 +152,7 @@ class DrWakeBundleRequest(DrOwnerRequest):
     kms_key_version: str = Field(min_length=1, max_length=80)
     auth_key_fingerprint_digest: str = Field(min_length=64, max_length=64)
     telegram_user_id_digest: str = Field(min_length=64, max_length=64)
+    authorization_fingerprint_digest: str = Field(min_length=64, max_length=64)
     remote_authorization_hash: str = Field(min_length=1)
     inventory_sequence: int = Field(ge=1)
     inventory_manifest_digest: str = Field(min_length=64, max_length=64)

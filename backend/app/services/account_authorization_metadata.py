@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
 from collections.abc import Iterator
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.integrations.telegram.authorization_fingerprint import authorization_fingerprint_digest
 from app.integrations.telegram.contracts import AccountAuthorizationSnapshot
 from app.models import AccountProxy, TelegramDeveloperApp, TgAccount, TgAccountAuthorization
 
@@ -59,15 +59,35 @@ def _peer_authorization_hash(
     current: AccountAuthorizationSnapshot,
     exclude_authorization_id: int | None,
 ) -> str:
+    return resolve_peer_authorization_hash(
+        session,
+        account.id,
+        authorization_fingerprint_digest(current),
+        exclude_authorization_id=exclude_authorization_id,
+    )
+
+
+def resolve_peer_authorization_hash(
+    session: Session,
+    account_id: int,
+    fingerprint_digest: str,
+    *,
+    exclude_authorization_id: int | None = None,
+) -> str:
+    account = session.get(TgAccount, account_id)
+    if account is None:
+        raise ValueError("authorization account not found")
+    usable_hashes: set[str] = set()
     for authorizations in _peer_authorization_views(session, account, exclude_authorization_id):
-        matches = [item for item in authorizations if _is_matching_peer_authorization(item, current)]
-        usable_hashes = {_usable_hash(item.authorization_hash) for item in matches}
-        usable_hashes.discard("")
-        if len(usable_hashes) == 1:
-            return usable_hashes.pop()
-        if len(usable_hashes) > 1:
-            raise ValueError("current authorization hash ambiguous")
-    return ""
+        usable_hashes.update(
+            _usable_hash(item.authorization_hash)
+            for item in authorizations
+            if not item.is_current and authorization_fingerprint_digest(item) == fingerprint_digest
+        )
+    usable_hashes.discard("")
+    if len(usable_hashes) > 1:
+        raise ValueError("current authorization hash ambiguous")
+    return next(iter(usable_hashes), "")
 
 
 def _peer_authorization_views(
@@ -103,38 +123,9 @@ def _peer_authorization_rows(
     return list(session.scalars(query.order_by(TgAccountAuthorization.id.asc())))
 
 
-def _is_matching_peer_authorization(
-    candidate: AccountAuthorizationSnapshot,
-    current: AccountAuthorizationSnapshot,
-) -> bool:
-    if candidate.is_current:
-        return False
-    return _fingerprint(candidate) == _fingerprint(current)
-
-
-def _fingerprint(item: AccountAuthorizationSnapshot) -> tuple[object, ...]:
-    return (
-        int(item.api_id or 0),
-        _text(item.app_name),
-        _text(item.device_model),
-        _text(item.platform),
-        _text(item.system_version),
-        _text(item.app_version),
-        _timestamp(item.date_created),
-    )
-
-
-def _text(value: str | None) -> str:
-    return str(value or "").strip()
-
-
-def _timestamp(value: datetime | None) -> datetime | None:
-    return value.replace(microsecond=0) if value else None
-
-
 def _usable_hash(value: str | int | None) -> str:
     raw = str(value or "").strip()
     return "" if raw in {"", "0"} else raw
 
 
-__all__ = ["AuthorizationMetadata", "read_authorization_metadata"]
+__all__ = ["AuthorizationMetadata", "read_authorization_metadata", "resolve_peer_authorization_hash"]

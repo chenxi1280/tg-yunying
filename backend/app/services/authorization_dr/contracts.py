@@ -32,6 +32,7 @@ class WakeBundleReceipt:
     kms_key_version: str
     auth_key_fingerprint_digest: str
     telegram_user_id_digest: str
+    authorization_fingerprint_digest: str
     remote_authorization_hash_ciphertext: str
     inventory_sequence: int
     inventory_manifest_digest: str
