@@ -104,10 +104,15 @@ def _apply_assignments(session, desired: dict, actor: str) -> None:
 def _apply_egress(session, desired: dict) -> None:
     row = session.get(TelegramEgressAssignment, desired["egress_id"])
     if not row:
+        row = session.scalar(select(TelegramEgressAssignment).where(
+            TelegramEgressAssignment.purpose == "standby_my",
+        ))
+    if not row:
         row = TelegramEgressAssignment(id=desired["egress_id"], purpose="standby_my", region_code="my")
         session.add(row)
-    elif row.observed_ip_hmac != desired["observed_ip_hmac"]:
+    elif row.id != desired["egress_id"] or row.observed_ip_hmac != desired["observed_ip_hmac"]:
         row.version += 1
+        row.id = desired["egress_id"]
     row.secret_ref_digest = desired["egress_secret_ref_digest"]
     row.observed_ip_hmac = desired["observed_ip_hmac"]
     row.status = "active"
