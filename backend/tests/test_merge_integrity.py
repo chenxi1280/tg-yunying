@@ -35,7 +35,7 @@ def test_alembic_versions_have_single_head():
 
     assert all(len(revision) <= 32 for revision in revisions)
     heads = sorted(set(revisions) - referenced)
-    assert heads == ["0156_ai_content_runtime"]
+    assert heads == ["0157_authorization_dr_core"]
 
 
 def test_backend_test_names_are_unique_per_file():
