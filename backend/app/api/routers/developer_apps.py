@@ -2,16 +2,21 @@
 from __future__ import annotations
 
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.auth import CurrentUser, ensure_permission, get_current_user
 from app.database import get_session
 from app.common.http import not_found
-from app.schemas import DeveloperAppCreate, DeveloperAppOut, DeveloperAppUpdate
+from app.schemas import (
+    DeveloperAppCreate,
+    DeveloperAppOut,
+    DeveloperAppSlotAssignmentsUpdate,
+    DeveloperAppUpdate,
+)
 from app.services import (
-    check_developer_app, create_developer_app, list_developer_apps,
-    set_developer_app_active, update_developer_app,
+    DeveloperAppAssignmentVersionConflict, check_developer_app, create_developer_app, list_developer_apps,
+    set_developer_app_active, update_developer_app, update_developer_app_slot_assignments,
 )
 
 router = APIRouter()
@@ -36,6 +41,21 @@ def post_developer_app(
         return create_developer_app(session, payload, current_user.name)
     except ValueError as exc:
         raise not_found(str(exc)) from exc
+
+
+@router.put("/api/developer-apps/slot-assignments", response_model=list[DeveloperAppOut])
+def put_developer_app_slot_assignments(
+    payload: DeveloperAppSlotAssignmentsUpdate,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> list[dict]:
+    ensure_permission(current_user, "developer_apps.manage")
+    try:
+        return update_developer_app_slot_assignments(session, payload, current_user.name)
+    except DeveloperAppAssignmentVersionConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.patch("/api/developer-apps/{app_id}", response_model=DeveloperAppOut)

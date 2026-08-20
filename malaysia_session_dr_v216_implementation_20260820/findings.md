@@ -55,3 +55,13 @@
 - Direct Mac-to-MY SSH stalls before the banner while Silicon Valley-to-MY returns `OpenSSH_8.0` immediately. Both MY local keys are valid. The local aliases now use `ProxyJump prod-silicon-root`, and both root and admin logins have been read back successfully.
 - The Silicon Valley backend now receives the DR identity at runtime and Nginx proxies the internal DR path. From MY, a heartbeat without the token returns 401; with the shared token it returns 200 and persists `my-node-1` as ready with zero active clients.
 - MY has the deployment scripts, persistent wake directory and verified backend image, but the worker remains intentionally stopped. The cloud account has only one Chengdu OSS bucket with versioning disabled, no MY OSS runtime credentials, and no instance RAM role. Creating the MY bucket and dedicated AccessKey is the remaining prerequisite before any Session migration batch may exist.
+
+## 2026-08-20 Full PRD Completion Audit
+
+- Production has three healthy Developer Apps, but runtime contract, App role assignments, MY egress assignments, migration batches, operations, wake bundles and copies are all zero.
+- MY `/opt/tgyunying-authorization-dr/node.env` does not exist and no authorization-dr worker container is running. The stored manual heartbeat is stale and cannot satisfy the 120-second readiness gate.
+- Developer App credentials remain centrally managed as intended, but the App C -> `standby_2_my` mapping is CLI-only and has not been applied. The Developer App API/UI does not expose role or distinct-account capacity, and new account assignment still uses legacy round-robin behavior.
+- The account-detail security view and direct no-precheck 48-hour cleanup path exist, but the dedicated authorization-device query/refresh contract and complete login-age display remain partial.
+- The worker now wraps each bundle DEK through Alibaba Cloud KMS and records the returned ciphertext blob/key version; restore probes decrypt through KMS with the same encryption context. Production still requires an independently readable Malaysia KMS key and dedicated credentials before this can become a runtime fact.
+- Current code migrates only existing healthy App C/SV `standby_2` sources. It does not provision missing MY standby authorization for the remainder of the 1335-account population.
+- Full `local_activate`, `restore_sv_pair`, `emergency_reauthorize_primary`, drill, decommission and generic send/listener/sync generation fencing are not implemented. Core canary migration release is not full-PRD completion.

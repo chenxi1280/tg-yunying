@@ -224,6 +224,14 @@ export type DeveloperApp = {
   health_status: string;
   max_accounts: number;
   assigned_accounts: number;
+  assigned_distinct_accounts: number;
+  pending_distinct_accounts: number;
+  used_distinct_accounts: number;
+  capacity_unlimited: boolean;
+  available_accounts: number | null;
+  slot_purpose: string;
+  assignment_status: string;
+  assignment_version: number;
   credentials_version: number;
   last_assigned_at: string | null;
   last_check_at: string | null;
