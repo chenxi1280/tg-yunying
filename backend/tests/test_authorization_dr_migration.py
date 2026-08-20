@@ -31,6 +31,7 @@ from app.services.authorization_dr import (
     claim_migration_operation,
     commit_migration_slot,
     commit_wake_bundle_receipt,
+    mark_login_remote_failed,
     mark_login_remote_started,
     mark_login_remote_unknown,
     migration_login_material,
@@ -468,6 +469,58 @@ def test_remote_unknown_is_not_retried_and_next_account_can_continue(session: Se
     next_claim = claim_migration_operation(session, "my-node-1")
     assert next_claim is not None
     assert next_claim.account_id == 102
+
+
+def test_phone_banned_is_terminal_and_next_account_can_continue(session: Session) -> None:
+    claim = _start_claim(session)
+
+    operation = mark_login_remote_failed(
+        session,
+        claim.operation_id,
+        node_id=claim.owner_node_id,
+        owner_epoch=claim.owner_epoch,
+        lease_token=claim.lease_token,
+        blocker_code="phone_number_banned",
+    )
+
+    item = session.get(TgAuthorizationDrBatchItem, operation.batch_item_id)
+    source = session.get(TgAccountAuthorization, operation.source_authorization_id)
+    next_claim = claim_migration_operation(session, "my-node-1")
+
+    assert operation.status == "failed"
+    assert operation.remote_call_state == "confirmed_no_effect"
+    assert operation.blocker_code == "phone_number_banned"
+    assert operation.finished_at is not None
+    assert item.status == "failed"
+    assert item.outcome == "phone_number_banned"
+    assert item.finished_at is not None
+    assert source.session_ciphertext == f"sv-standby-2-{claim.account_id}"
+    assert source.is_slot_current is True
+    assert next_claim is not None and next_claim.account_id == 102
+
+
+def test_remote_unknown_cannot_overwrite_confirmed_phone_banned(session: Session) -> None:
+    claim = _start_claim(session)
+    operation = mark_login_remote_failed(
+        session,
+        claim.operation_id,
+        node_id=claim.owner_node_id,
+        owner_epoch=claim.owner_epoch,
+        lease_token=claim.lease_token,
+        blocker_code="phone_number_banned",
+    )
+
+    mark_login_remote_unknown(
+        session,
+        claim.operation_id,
+        node_id=claim.owner_node_id,
+        owner_epoch=claim.owner_epoch,
+    )
+    session.refresh(operation)
+
+    assert operation.status == "failed"
+    assert operation.remote_call_state == "confirmed_no_effect"
+    assert operation.blocker_code == "phone_number_banned"
 
 
 def test_batch_becomes_manual_required_when_all_items_are_remote_unknown(session: Session) -> None:
