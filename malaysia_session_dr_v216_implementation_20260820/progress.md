@@ -34,3 +34,10 @@
 - MY 私有 GHCR pull 返回 `denied`。已在 SV 生成精确镜像压缩归档，经临时 SSH agent 转发和服务器直连 rsync 送到 MY；两端 SHA-256 一致后加载，MY image ID 与 SV 均为 `sha256:cce5824492a0bb144dce7e23a1d2b1695cb0ce6ad6230ad55e799a2ef61d3b67`。部署脚本/Compose/env example 的 SHA 与仓库一致，临时归档已删除。
 - MY 精确镜像内 KMS SDK 导入通过，公网固定出口仍为 `47.250.167.174`；MY 到硅谷 control plane 的无令牌 HTTPS heartbeat 探测返回预期 401。`tgmsg` 仍为 running/healthy，DR 容器仍不存在，`node.env` 仍未创建。
 - 生产 DR token 已配置且 `AUTHORIZATION_DR_REQUIRE_MTLS=false`，本期不需要客户端证书。未完成边界仍是：MY OSS/KMS/RAM 资源和凭据、worker 真实 heartbeat、runtime `migrate` gate、2 账号 canary、全量迁移，以及完整 PRD 的紧急恢复/业务 generation fence。
+
+## 2026-08-20 SSH Mirror Simplification
+
+- 用户再次明确要求按硅谷+马来西亚两台现有服务器、两个固定 IP 和 SSH 运维继续完成，不采用高成本 KMS/OSS 硬依赖；PRD/合同提升到 v2.17。
+- 新增显式 `ssh_mirror`：MY 本地不可变密文 + 硅谷 create-only SSH 镜像，专用恢复密钥 root-only 双机备份；`kms_oss` 仅保留为显式可选模式，不静默回退。
+- 修复 runtime `off` 时节点 claim 失败退出的循环依赖；节点可以先持续 heartbeat，随后再通过 fingerprint/CAS 把合同切到 `migrate`。
+- 本地 DR/设备/账号授权资产定向回归当前为 27 passed，前端生产构建通过；生产发布、两机 secret/identity、持续 heartbeat 和 2 账号 Telegram canary 仍待后续步骤形成真实证据。

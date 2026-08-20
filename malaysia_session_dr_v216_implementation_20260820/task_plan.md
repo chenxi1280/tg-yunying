@@ -6,8 +6,8 @@
 
 ## Scope
 
-- 文档真相源：v2.16 专项 PRD、实施合同、总 PRD、数据流索引。
-- 代码：授权模型、不可变 wake bundle 双副本、MY KMS/对象存储/inventory、operation 状态机、API/worker、账号详情读模型、迁移/恢复/擦除、指标和部署配置。
+- 文档真相源：v2.17 专项 PRD、实施合同、总 PRD、数据流索引。
+- 代码：授权模型、不可变 wake bundle 双副本、MY SSH 镜像/inventory、operation 状态机、API/worker、账号详情读模型、迁移/恢复/擦除、指标和部署配置。
 - 验证：单元/集成/迁移/并发/故障注入/前端构建，发布 SHA 与运行时 readback，2 账号 Telegram 真实 E4。
 - 生产变更：精确 target IDs、preview/fingerprint、actor/approval ref、CAS apply、独立 readback；canary 未通过时不创建全量批次。
 
@@ -26,7 +26,7 @@
 
 - 建立独立 codex worktree/branch，导入已完成的 v2.16 文档而不修改用户工作区。
 - 读取当前模型、服务、API、worker、迁移、Compose、workflow 和生产访问合同。
-- 核对远端 master/release、当前部署 SHA、MY 主机/KMS/对象存储/固定 IP 配置是否存在。
+- 核对远端 master/release、当前部署 SHA、MY 主机/SSH 镜像/固定 IP 配置是否存在。
 
 ### Phase 2: Schema And Durable Storage Core
 
@@ -66,10 +66,10 @@
 
 **Status:** in_progress
 
-- 读取生产部署 SHA、运行配置、A/B/C 映射、MY node/egress/KMS/object storage readiness。
+- 读取生产部署 SHA、运行配置、A/B/C 映射、MY node/egress/SSH mirror storage readiness。
 - 精确选择 2 个账号并冻结 ID/tenant/old state/fingerprint；必须不存在 open lease/operation/unknown。
-- 通过正式 audited operation 迁移，逐账号 readback 双副本/KMS/inventory/restore gate/slot/3+1 retained 和 Telegram exact set。
-- 硬闸门：生产必须先读回 App A/B/C 角色映射、MY 固定出口、持续新鲜 heartbeat、私有不可覆盖对象副本、独立可恢复 KEK/KMS 和运行中 authorization-dr worker。
+- 通过正式 audited operation 迁移，逐账号 readback 本地+SSH 镜像双副本、恢复密钥、inventory、restore gate、slot、3+1 retained 和 Telegram exact set。
+- 硬闸门：生产必须先读回 App A/B/C 角色映射、MY 固定出口、持续新鲜 heartbeat、create-only SSH 镜像、恢复密钥双机备份和运行中 authorization-dr worker。
 
 ### Phase 7: Canary Acceptance And Full Rollout
 
@@ -82,7 +82,7 @@
 ## Stop Conditions
 
 - 生产 2 个账号身份、tenant、actor 或 approval ref 无法精确解析。
-- MY KMS/对象存储/独立 inventory/固定出口任一未配置或不可读回。
+- MY SSH 镜像/独立 inventory/固定出口任一未配置或不可读回。
 - 当前部署 SHA 与候选合同不一致，或 migration/runtime gate 未通过。
 - canary 任一出现 unknown、AuthKeyDuplicated、保护 hash 缺失、双副本不足、restore probe 失败或 slot decision conflict。
 - Telegram 登录需要未授权的人工作用、验证码/2FA 无受控输入，或触发权威等待。
