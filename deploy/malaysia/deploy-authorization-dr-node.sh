@@ -81,6 +81,23 @@ if [[ "$storage_mode" == "ssh_mirror" ]]; then
       exit 1
     fi
   done
+  ssh_host="$(sed -n 's/^MY_WAKE_SSH_HOST=//p' "$ENV_FILE" | tail -n 1)"
+  ssh_port="$(sed -n 's/^MY_WAKE_SSH_PORT=//p' "$ENV_FILE" | tail -n 1)"
+  ssh_user="$(sed -n 's/^MY_WAKE_SSH_USER=//p' "$ENV_FILE" | tail -n 1)"
+  remote_dir="$(sed -n 's/^MY_WAKE_SSH_REMOTE_DIR=//p' "$ENV_FILE" | tail -n 1)"
+  printf -v remote_access_check \
+    'test -d -- %q && test -x -- %q && test -w -- %q' \
+    "$remote_dir" "$remote_dir" "$remote_dir"
+  ssh \
+    -o BatchMode=yes \
+    -o IdentitiesOnly=yes \
+    -o StrictHostKeyChecking=yes \
+    -o "UserKnownHostsFile=$secret_dir/known_hosts" \
+    -o ConnectTimeout=15 \
+    -i "$secret_dir/id_ed25519" \
+    -p "$ssh_port" \
+    "$ssh_user@$ssh_host" \
+    "$remote_access_check"
 fi
 mkdir -p "$MY_WAKE_BUNDLE_LOCAL_HOST_DIR"
 export AUTHORIZATION_DR_ENV_FILE="$ENV_FILE"
