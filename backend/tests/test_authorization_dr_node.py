@@ -10,10 +10,12 @@ import pytest
 from app.integrations.telegram import AuthorizationIdentity
 from app.workers.authorization_dr_node import (
     NodeConfig,
+    RestoreProbeInput,
     _decrypt_session,
     _persist_bundle,
     _restore_probe,
     _verify_expected_egress,
+    _wrapped_dek_ciphertext,
 )
 from app.workers.authorization_dr_kms import AlibabaKmsDekProtector, WrappedDek
 from app.workers.authorization_dr_ssh import FileDekProtector, SshMirrorObjectSnapshotStore
@@ -175,8 +177,10 @@ def test_wake_bundle_has_two_readable_immutable_copies(tmp_path: Path) -> None:
     receipt, object_key = _persist_bundle(config, claim, "raw-session-value", identity)
 
     assert {item["copy_kind"] for item in receipt["copies"]} == {"local_persistent", "remote_ssh_snapshot"}
-    dek = config.dek_protector.unwrap(receipt["wrapped_dek_ciphertext"])
-    assert _decrypt_session(object_store.read(object_key), dek) == "raw-session-value"
+    envelope = object_store.read(object_key)
+    assert _wrapped_dek_ciphertext(envelope) == receipt["wrapped_dek_ciphertext"]
+    dek = config.dek_protector.unwrap(_wrapped_dek_ciphertext(envelope))
+    assert _decrypt_session(envelope, dek) == "raw-session-value"
     with pytest.raises(FileExistsError):
         _persist_bundle(config, claim, "raw-session-value", identity)
 
@@ -216,15 +220,13 @@ def test_restore_probe_reads_snapshot_and_matches_authorization(tmp_path: Path) 
     identity = AuthorizationIdentity("67890", "c" * 64, "d" * 64, "2" * 64)
     receipt, object_key = _persist_bundle(config, claim, "raw-session-value", identity)
 
-    probe = _restore_probe(
-        IdentityGateway(identity),
-        config,
-        claim,
-        material,
-        object_key,
-        receipt["wrapped_dek_ciphertext"],
-        identity,
-    )
+    probe = _restore_probe(IdentityGateway(identity), RestoreProbeInput(
+        config=config,
+        claim=claim,
+        material=material,
+        object_key=object_key,
+        expected=identity,
+    ))
 
     assert probe["status"] == "passed"
     assert probe["source_copy_kind"] == "remote_ssh_snapshot"
