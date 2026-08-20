@@ -86,7 +86,7 @@ if [[ "$storage_mode" == "ssh_mirror" ]]; then
   ssh_user="$(sed -n 's/^MY_WAKE_SSH_USER=//p' "$ENV_FILE" | tail -n 1)"
   remote_dir="$(sed -n 's/^MY_WAKE_SSH_REMOTE_DIR=//p' "$ENV_FILE" | tail -n 1)"
   printf -v remote_access_check \
-    'test -d -- %q && test -x -- %q && test -w -- %q' \
+    'test -d %q && test -x %q && test -w %q' \
     "$remote_dir" "$remote_dir" "$remote_dir"
   ssh \
     -o BatchMode=yes \
