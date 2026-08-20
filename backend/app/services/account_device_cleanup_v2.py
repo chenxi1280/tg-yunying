@@ -201,9 +201,15 @@ def _frozen_executor(session, account, item):
 def _replace_remote_snapshots(session, account, executor) -> None:
     credentials = credentials_for_authorization(session, executor)
     remote = gateway.list_authorizations(executor.session_ciphertext, credentials)
+    snapshot_ids = select(TgAccountAuthorizationSnapshot.id).where(
+        TgAccountAuthorizationSnapshot.account_id == account.id
+    )
+    session.query(TgAccountDeviceCleanupTarget).filter(
+        TgAccountDeviceCleanupTarget.snapshot_id.in_(snapshot_ids)
+    ).update({TgAccountDeviceCleanupTarget.snapshot_id: None}, synchronize_session=False)
     session.query(TgAccountAuthorizationSnapshot).filter(
         TgAccountAuthorizationSnapshot.account_id == account.id
-    ).delete()
+    ).delete(synchronize_session=False)
     current = _now()
     for authorization in remote:
         session.add(TgAccountAuthorizationSnapshot(

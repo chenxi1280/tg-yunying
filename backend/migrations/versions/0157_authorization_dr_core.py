@@ -406,7 +406,12 @@ def _add_device_cleanup_v2() -> None:
         sa.Column("batch_item_id", sa.Integer(), sa.ForeignKey("tg_account_security_batch_items.id"), nullable=False),
         sa.Column("tenant_id", sa.Integer(), sa.ForeignKey("tenants.id"), nullable=False),
         sa.Column("account_id", sa.Integer(), sa.ForeignKey("tg_accounts.id"), nullable=False),
-        sa.Column("snapshot_id", sa.Integer(), sa.ForeignKey("tg_account_authorization_snapshots.id"), nullable=False),
+        sa.Column(
+            "snapshot_id",
+            sa.Integer(),
+            sa.ForeignKey("tg_account_authorization_snapshots.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
         sa.Column("target_hash_ciphertext", sa.Text(), nullable=False),
         sa.Column("target_hash_digest", sa.String(64), nullable=False),
         sa.Column("status", sa.String(40), nullable=False, server_default="pending"),

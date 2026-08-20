@@ -40,3 +40,9 @@
 - Release SHA `a25d64c62f065e29d80ed0668b8794c39bb206f2` reached run `32347088271`; frontend and all 3330 no-PostgreSQL tests passed. The PostgreSQL matrix had only four failures, all showing zero drainable cleanup items.
 - Under PostgreSQL UTC, a naive Beijing timestamp written to `TIMESTAMP WITH TIME ZONE` was interpreted as UTC and read back eight hours later. A 49-hour test login therefore appeared only 41 hours old and was correctly skipped by the 48-hour business rule for the wrong timestamp reason.
 - New SV and MY authorization creation now writes an explicitly timezone-aware Beijing login instant. This keeps eligibility conservative and stable regardless of the PostgreSQL session timezone.
+
+## 2026-08-20 Fourth Release Gate Finding
+
+- Release SHA `bd386ef95c22fc477166d6b4613c8a953b1b1d29` reached run `32348177594`; frontend and no-PostgreSQL passed again. PostgreSQL advanced all four cleanup tests into execution, confirming the login-time correction.
+- Final readback deletes and recreates remote authorization snapshots. Durable cleanup targets referenced the pre-effect snapshot with a non-null foreign key, so PostgreSQL rejected the delete while SQLite tests did not enforce the same boundary.
+- The target already stores its own encrypted authorization hash and digest. Its snapshot reference is now an optional provenance pointer: final readback clears the pointer, retains the target/result evidence, then replaces the live snapshot set.

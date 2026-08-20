@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.database import Base
 from app.integrations.telegram.contracts import AccountAuthorizationSnapshot as RemoteAuthorizationSnapshot
 from app.integrations.telegram.contracts import RemoteProfile
-from app.models import AccountPool, AiProvider, AccountProxy, AccountStatus, AuditLog, Material, TelegramDeveloperApp, Tenant, TenantAiSetting, TgAccount, TgAccountAuthorization, TgAccountAuthorizationSnapshot, TgAccountSecurityBatch, TgAccountSecurityBatchItem, TgAccountSecuritySnapshot, TgLoginFlow, TgVerificationCode
+from app.models import AccountPool, AiProvider, AccountProxy, AccountStatus, AuditLog, Material, TelegramDeveloperApp, Tenant, TenantAiSetting, TgAccount, TgAccountAuthorization, TgAccountAuthorizationSnapshot, TgAccountDeviceCleanupTarget, TgAccountSecurityBatch, TgAccountSecurityBatchItem, TgAccountSecuritySnapshot, TgLoginFlow, TgVerificationCode
 from app.schemas import TgAccountCreate
 from app.schemas.account_security import AccountSecurityBatchCreate, AccountSecurityPrecheckRequest, AccountSecurityProfileOverride, AvatarStrategy, ManagedTwoFaRequest, ProfileGenerationStrategy
 from app.security import decrypt_secret, encrypt_secret, encrypt_session
@@ -1707,6 +1707,8 @@ def test_device_cleanup_cleans_unprotected_platform_api_duplicates(monkeypatch):
         assert cleaned_hashes == ["platform-api", "external", "official-anchor"]
         assert refreshed.items[0].external_devices_before == 3
         assert refreshed.items[0].external_devices_after == 0
+        targets = list(session.scalars(select(TgAccountDeviceCleanupTarget)))
+        assert targets and all(target.snapshot_id is None for target in targets)
 
 
 def test_device_cleanup_preserves_recorded_primary_and_standby_authorization_hashes(monkeypatch):
