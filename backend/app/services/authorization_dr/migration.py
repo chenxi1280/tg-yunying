@@ -428,6 +428,7 @@ def refresh_migration_batch(session, batch_item_id: str) -> None:
     if not item:
         return
     batch = session.get(TgAuthorizationDrBatch, item.batch_id)
+    session.flush()
     statuses = list(session.scalars(select(TgAuthorizationDrBatchItem.status).where(
         TgAuthorizationDrBatchItem.batch_id == item.batch_id,
     )))

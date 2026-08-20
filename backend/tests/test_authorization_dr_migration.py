@@ -466,6 +466,7 @@ def test_remote_unknown_is_not_retried_and_next_account_can_continue(session: Se
 
 
 def test_batch_becomes_manual_required_when_all_items_are_remote_unknown(session: Session) -> None:
+    session.autoflush = False
     first = _start_claim(session)
     mark_login_remote_unknown(
         session,
@@ -483,6 +484,44 @@ def test_batch_becomes_manual_required_when_all_items_are_remote_unknown(session
     batch = session.scalar(select(TgAuthorizationDrBatch))
 
     assert batch.status == "manual_required"
+    assert batch.finished_at is not None
+
+
+def test_single_item_batch_succeeds_with_autoflush_disabled(session: Session) -> None:
+    session.autoflush = False
+    batch = preview_migration_batch(
+        session,
+        1,
+        [101],
+        idempotency_key="single-success",
+        actor="requester",
+    )
+    approve_migration_batch(
+        session,
+        batch.id,
+        expected_version=1,
+        approval_ref="ticket-single-success",
+        actor="approver",
+    )
+    claim = claim_migration_operation(session, "my-node-1")
+    mark_login_remote_started(
+        session,
+        claim.operation_id,
+        node_id=claim.owner_node_id,
+        owner_epoch=claim.owner_epoch,
+        lease_token=claim.lease_token,
+    )
+    _commit_bundle_and_probe(session, claim)
+    commit_migration_slot(
+        session,
+        claim.operation_id,
+        node_id=claim.owner_node_id,
+        owner_epoch=claim.owner_epoch,
+        lease_token=claim.lease_token,
+    )
+    session.refresh(batch)
+
+    assert batch.status == "succeeded"
     assert batch.finished_at is not None
 
 
