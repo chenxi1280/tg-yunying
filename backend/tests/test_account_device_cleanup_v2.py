@@ -17,6 +17,7 @@ from app.models import (
 from app.security import encrypt_secret
 from app.services._common import _now
 from app.services.account_device_cleanup_v2 import create_device_cleanup_batch
+from app.timezone import as_beijing_aware
 
 
 pytestmark = pytest.mark.no_postgres
@@ -69,7 +70,7 @@ def _seed_account(session: Session, account_id: int, *, login_age: timedelta | N
         developer_app_id=1,
         developer_app_api_id_snapshot=1001,
         session_ciphertext=f"primary-{account_id}",
-        telegram_login_at=_now() - login_age if login_age else None,
+        telegram_login_at=as_beijing_aware(_now()) - login_age if login_age else None,
         telegram_authorization_hash_ciphertext=encrypt_secret(f"hash-{account_id}"),
         remote_authorization_state="active",
         protected_from_cleanup=True,

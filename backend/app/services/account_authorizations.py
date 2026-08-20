@@ -18,6 +18,7 @@ from app.models import (
     TgVerificationCode,
 )
 from app.security import decrypt_secret, encrypt_secret, encrypt_session
+from app.timezone import as_beijing_aware
 
 from ._common import _is_expired, _now, audit, gateway, get_account_phone
 from .account_authorization_constants import (
@@ -495,6 +496,7 @@ def _finish_standby_login(
         status="standby",
         health_status="healthy",
         is_current=False,
+        telegram_login_at=as_beijing_aware(_now()),
         last_success_at=_now(),
         created_by=actor,
     )
