@@ -48,6 +48,11 @@ from app.storage import media_root, object_path, save_avatar_bytes
 
 from .._common import _now, ai_gateway, audit, gateway, require_tenant
 from ..account_authorizations import attempt_standby_authorization_recovery, start_standby_authorization_login, verify_standby_authorization_login
+from ..account_device_cleanup_v2 import (
+    create_device_cleanup_batch,
+    device_cleanup_eligibility_reason,
+    execute_device_cleanup_item,
+)
 from ..account_profile_identity import (
     NameClaimRequest,
     assert_profile_name_claimed,
@@ -227,6 +232,9 @@ def _batch_out(batch: TgAccountSecurityBatch, items: list[TgAccountSecurityBatch
         success_count=batch.success_count,
         skipped_count=batch.skipped_count,
         failed_count=batch.failed_count,
+        requested_count=batch.requested_count,
+        eligible_count=batch.eligible_count,
+        skipped_reason_counts=_json_dict(batch.skipped_reason_counts),
         created_by=batch.created_by,
         confirmed_by=batch.confirmed_by,
         confirm_text=batch.confirm_text,
@@ -254,6 +262,13 @@ def _item_out(item: TgAccountSecurityBatchItem):
         "precheck_status": item.precheck_status,
         "cleanup_status": item.cleanup_status,
         "device_cleanup_precheck_id": item.device_cleanup_precheck_id,
+        "executor_authorization_id": item.executor_authorization_id,
+        "executor_fact_version": item.executor_fact_version,
+        "executor_telegram_login_at": item.executor_telegram_login_at,
+        "protected_manifest_digest": item.protected_manifest_digest,
+        "target_set_digest": item.target_set_digest,
+        "remote_effect_started_at": item.remote_effect_started_at,
+        "final_readback_digest": item.final_readback_digest,
         "two_fa_status": item.two_fa_status,
         "standby_session_status": _standby_session_status(item),
         "profile_status": item.profile_status,
@@ -616,6 +631,8 @@ def account_security_detail(session: Session, tenant_id: int, account_id: int) -
     )
     return AccountSecurityDetailOut(
         account_id=account_id,
+        device_cleanup_eligible=not device_cleanup_eligibility_reason(session, tenant_id, account),
+        device_cleanup_reason=device_cleanup_eligibility_reason(session, tenant_id, account),
         snapshot=snapshot,
         authorizations=[_authorization_snapshot_out(row, classifications.get(row.id, {})) for row in authorization_rows],
         recent_batches=[_batch_out(batch) for batch in batches],
@@ -862,7 +879,27 @@ def precheck_account_security_batch(session: Session, tenant_id: int, payload: A
     return AccountSecurityPrecheckOut(batch_preview_id=f"preview_{trace_id[:10]}", summary=summary, items=items, action_types=action_types, trace_id=trace_id)
 
 
-def create_account_security_batch(session: Session, tenant_id: int, payload: AccountSecurityBatchCreate, actor: str) -> AccountSecurityBatchOut:
+def create_account_security_batch(
+    session: Session,
+    tenant_id: int,
+    payload: AccountSecurityBatchCreate,
+    actor: str,
+    *,
+    idempotency_key: str = "",
+) -> AccountSecurityBatchOut:
+    requested_actions = set(payload.action_types)
+    if "cleanup_devices" in requested_actions:
+        if requested_actions != {"cleanup_devices"}:
+            raise ValueError("cleanup_devices must be submitted as a standalone action")
+        batch = create_device_cleanup_batch(
+            session,
+            tenant_id,
+            payload.account_ids,
+            actor=actor,
+            reason=payload.reason,
+            idempotency_key=idempotency_key,
+        )
+        return account_security_batch_detail(session, tenant_id, batch.id)
     preview = precheck_account_security_batch(session, tenant_id, payload)
     confirmed = _is_batch_confirmed(payload.confirm_text)
     if confirmed and "update_profile" in preview.action_types:
@@ -1178,7 +1215,10 @@ def _execute_batch_item(session: Session, item_id: int) -> None:
     failures: list[str] = []
     try:
         credentials = None
-        needs_account_credentials = bool(action_types & (SECURITY_ACTIONS | PROFILE_ACTIONS))
+        needs_account_credentials = bool(action_types & (PROFILE_ACTIONS | {"set_two_fa"}))
+        needs_account_credentials = needs_account_credentials or (
+            "cleanup_devices" in action_types and not item.executor_authorization_id
+        )
         if needs_account_credentials:
             credentials = credentials_for_account(session, account)
         if "cleanup_devices" in action_types:
@@ -1247,7 +1287,7 @@ def _execute_batch_item(session: Session, item_id: int) -> None:
         snapshot.profile_status = _profile_status(account)
         snapshot.last_hardened_at = _now()
         snapshot.last_error = ";".join(failures)
-        if item.status != "manual_required":
+        if item.status not in {"manual_required", "reconcile_unknown"}:
             item.status = "waiting" if _item_should_wait(item, failures) else "partial_success" if failures and _item_has_success(item) else "failed" if failures else "succeeded"
         item.failure_type = _item_failure_type(item, failures)
         item.failure_detail = ";".join(failures)
@@ -1422,6 +1462,8 @@ def _poll_standby_login_code_once(session: Session, account: TgAccount, flow) ->
 
 
 def _execute_cleanup(session: Session, account: TgAccount, item: TgAccountSecurityBatchItem, credentials) -> list[str]:
+    if item.executor_authorization_id:
+        return execute_device_cleanup_item(session, account, item)
     usage_block = account_security_mutation_block(session, account, {"cleanup_devices"})
     if usage_block is not None:
         apply_usage_block_to_batch_item(item, usage_block, {"cleanup_devices"})
@@ -1447,10 +1489,9 @@ def _execute_cleanup(session: Session, account: TgAccount, item: TgAccountSecuri
             cleaned += 1
         else:
             if _is_fresh_reset_forbidden(result.detail or result.failure_type):
-                item.next_retry_at = _now() + timedelta(hours=24)
-                item.cleanup_status = "waiting"
-                item.status = "waiting"
-                waiting_for_fresh_reset = True
+                item.next_retry_at = None
+                item.cleanup_status = "failed"
+                item.failure_type = "telegram_fresh_reset_rejected"
             failures.append(result.detail or result.failure_type)
     item.external_devices_after = max(0, len(cleanup_hashes) - cleaned)
     if not waiting_for_fresh_reset or not failures:
@@ -1562,9 +1603,11 @@ def _target_standby_roles_for_strategy(session: Session, account: TgAccount, req
             )
         )
     )
-    if requested in {"standby_1", "standby_2"}:
+    if requested == "standby_2":
+        return []
+    if requested == "standby_1":
         return [] if requested in existing_roles else [requested]
-    return [role for role in ["standby_1", "standby_2"] if role not in existing_roles]
+    return ["standby_1"] if "standby_1" not in existing_roles else []
 
 
 def _standby_slot_strategy(session: Session, item: TgAccountSecurityBatchItem) -> str:
@@ -1586,7 +1629,10 @@ def _standby_precheck_status(session: Session, account: TgAccount, standby_slot_
     suggested: list[str] = []
     roles = _target_standby_roles_for_strategy(session, account, standby_slot_strategy)
     if not roles:
-        warnings.append("备用 session 已满足一主两从")
+        if standby_slot_strategy == "standby_2":
+            warnings.append("standby_2 必须通过马来西亚备用授权流程创建")
+        else:
+            warnings.append("硅谷 standby_1 已存在")
         return StandbyPrecheckStatus(blockers, warnings, suggested)
     if _auto_standby_developer_app(session, account) is None:
         blockers.append("没有可用的 TG 开发者应用用于备用 session 登录")
@@ -1871,7 +1917,7 @@ def _item_has_success(item: TgAccountSecurityBatchItem) -> bool:
 def _refresh_batch_counts(session: Session, batch: TgAccountSecurityBatch) -> None:
     items = list(session.scalars(select(TgAccountSecurityBatchItem).where(TgAccountSecurityBatchItem.batch_id == batch.id)))
     batch.success_count = sum(1 for item in items if item.status == "succeeded")
-    batch.failed_count = sum(1 for item in items if item.status in {"failed", "partial_success"})
+    batch.failed_count = sum(1 for item in items if item.status in {"failed", "partial_success", "reconcile_unknown"})
     batch.skipped_count = sum(1 for item in items if item.status in {"skipped", "manual_required"})
     if any(item.status == "executable" for item in items):
         batch.status = "ready"

@@ -39,6 +39,11 @@ class TgAccountAuthorization(Base):
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
     account_id: Mapped[int] = mapped_column(ForeignKey("tg_accounts.id"))
     role: Mapped[str] = mapped_column(String(24), default="primary")
+    logical_slot: Mapped[str] = mapped_column(String(24), default="primary")
+    slot_generation: Mapped[int] = mapped_column(Integer, default=1)
+    is_slot_current: Mapped[bool] = mapped_column(Boolean, default=True)
+    provision_region_code: Mapped[str] = mapped_column(String(24), default="sv")
+    credential_storage_scope: Mapped[str] = mapped_column(String(32), default="central_business")
     developer_app_id: Mapped[int | None] = mapped_column(ForeignKey("telegram_developer_apps.id"), nullable=True)
     developer_app_api_id_snapshot: Mapped[int] = mapped_column(Integer, default=0)
     proxy_id: Mapped[int | None] = mapped_column(ForeignKey("account_proxies.id"), nullable=True)
@@ -47,7 +52,23 @@ class TgAccountAuthorization(Base):
     health_status: Mapped[str] = mapped_column(String(30), default="unknown")
     derived_status: Mapped[str] = mapped_column(String(40), default="unknown")
     is_current: Mapped[bool] = mapped_column(Boolean, default=False)
+    dr_state: Mapped[str] = mapped_column(String(40), default="not_configured")
+    remote_authorization_state: Mapped[str] = mapped_column(String(32), default="unknown")
+    protected_from_cleanup: Mapped[bool] = mapped_column(Boolean, default=True)
+    wake_bundle_id: Mapped[str | None] = mapped_column(
+        ForeignKey(
+            "tg_authorization_wake_bundles.id",
+            use_alter=True,
+            name="fk_tg_authorization_wake_bundle",
+        ),
+        nullable=True,
+    )
+    telegram_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    migration_recovery_gate_status: Mapped[str] = mapped_column(String(40), default="not_required")
+    rollback_window_closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     telegram_authorization_hash_ciphertext: Mapped[str] = mapped_column(Text, default="")
+    auth_key_fingerprint_digest: Mapped[str] = mapped_column(String(64), default="")
+    telegram_user_id_digest: Mapped[str] = mapped_column(String(64), default="")
     last_health_check_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_success_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_switched_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -63,7 +84,7 @@ class TgAccountAuthorization(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
-    account: Mapped[TgAccount] = relationship(back_populates="authorizations")
+    account: Mapped[TgAccount] = relationship(back_populates="authorizations", foreign_keys=[account_id])
     developer_app: Mapped[TelegramDeveloperApp | None] = relationship()
     proxy: Mapped[AccountProxy | None] = relationship()
 
@@ -111,6 +132,18 @@ class TgAccount(Base):
     health_score: Mapped[float] = mapped_column(Float, default=100)
     last_active_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     session_ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)
+    current_authorization_id: Mapped[int | None] = mapped_column(
+        ForeignKey("tg_account_authorizations.id", use_alter=True, name="fk_tg_account_current_authorization"),
+        nullable=True,
+    )
+    authorization_generation: Mapped[int] = mapped_column(Integer, default=1)
+    authorization_fact_generation: Mapped[int] = mapped_column(Integer, default=1)
+    connection_generation: Mapped[int] = mapped_column(Integer, default=1)
+    authorization_contract_version: Mapped[int] = mapped_column(Integer, default=1)
+    business_runtime_status: Mapped[str] = mapped_column(String(40), default="unknown")
+    sv_redundancy_status: Mapped[str] = mapped_column(String(40), default="unknown")
+    authorization_recovery_status: Mapped[str] = mapped_column(String(40), default="not_configured")
+    account_lifecycle_status: Mapped[str] = mapped_column(String(40), default="business_active")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     deleted_by: Mapped[str] = mapped_column(String(100), default="")
@@ -122,7 +155,9 @@ class TgAccount(Base):
     developer_app: Mapped[TelegramDeveloperApp | None] = relationship(back_populates="accounts")
     proxy: Mapped[AccountProxy | None] = relationship(back_populates="accounts")
     pool: Mapped[AccountPool | None] = relationship(back_populates="accounts")
-    authorizations: Mapped[list[TgAccountAuthorization]] = relationship(back_populates="account")
+    authorizations: Mapped[list[TgAccountAuthorization]] = relationship(
+        back_populates="account", foreign_keys="TgAccountAuthorization.account_id"
+    )
 
     @property
     def developer_app_name(self) -> str | None:

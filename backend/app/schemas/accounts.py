@@ -175,6 +175,11 @@ class AccountAuthorizationOut(ApiModel):
     id: int | None
     account_id: int
     role: str
+    logical_slot: str = "primary"
+    slot_generation: int = 1
+    is_slot_current: bool = True
+    provision_region_code: str = "sv"
+    credential_storage_scope: str = "central_business"
     developer_app_id: int | None
     developer_app_api_id: int = 0
     proxy_id: int | None
@@ -189,6 +194,23 @@ class AccountAuthorizationOut(ApiModel):
     last_success_at: datetime | None = None
     last_switched_at: datetime | None = None
     disabled_at: datetime | None = None
+    dr_state: str = "not_configured"
+    remote_authorization_state: str = "unknown"
+    protected_from_cleanup: bool = True
+    telegram_login_at: datetime | None = None
+    wake_bundle_id: str | None = None
+    wake_bundle_generation: int = 0
+    recoverable_copy_count: int = 0
+    kms_recovery_status: str = "not_applicable"
+    local_copy_last_verified_at: datetime | None = None
+    object_copy_last_verified_at: datetime | None = None
+    last_restore_probe_at: datetime | None = None
+    my_inventory_sequence: int = 0
+    migration_recovery_gate_status: str = "not_required"
+    rollback_window_closed_at: datetime | None = None
+    business_runtime_status: str = "unknown"
+    sv_redundancy_status: str = "unknown"
+    authorization_recovery_status: str = "not_configured"
 
 
 class AccountAuthorizationSwitchRequest(BaseModel):

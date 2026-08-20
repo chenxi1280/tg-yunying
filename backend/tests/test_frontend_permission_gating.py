@@ -2403,7 +2403,8 @@ def test_account_center_exposes_standby_session_batch_entry_and_filters():
     assert "account_standby_session_provision" in drawer
     assert "自动补齐缺失槽位" in drawer
     assert "仅 standby_1" in drawer
-    assert "仅 standby_2" in drawer
+    assert "仅 standby_2" not in drawer
+    assert "马来西亚 standby_2 通过异地备用授权迁移流程创建" in drawer
     assert "standby_slot_strategy: standbySlotStrategy" in drawer
 
 
@@ -2519,8 +2520,9 @@ def test_security_drawers_show_cleanup_preservation_and_managed_2fa_policy():
     router = (PROJECT_ROOT / "backend/app/api/routers/account_security.py").read_text()
     auth = (PROJECT_ROOT / "backend/app/auth.py").read_text()
 
-    assert "只保留当前 session、已确认 hash 的 primary / standby_1 / standby_2 和一个官方锚点设备" in drawer
-    assert "预计清理外部设备" in drawer
+    assert "只有登录超过 48 小时的账号才执行" in drawer
+    assert "不会先对所有账号做远程预检" in drawer
+    assert "skipped_reason_counts" in drawer
     assert "平台托管 2FA" in drawer
     assert "已设置且平台托管旧密码" in drawer
     assert "旧密码未知" in drawer

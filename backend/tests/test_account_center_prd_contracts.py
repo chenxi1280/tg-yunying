@@ -130,9 +130,9 @@ def test_device_classification_uses_remote_api_id_against_three_slots() -> None:
 
         classified = classify_account_authorization_snapshots(session, account.id)
 
-        assert [item["classification"] for item in classified] == ["platform_app", "official_anchor", "unknown"]
+        assert [item["classification"] for item in classified] == ["non_platform_app", "non_platform_app", "unknown"]
         assert classified[0]["matched_roles"] == ["primary"]
-        assert classified[1]["cleanup_eligible"] is False
+        assert classified[1]["cleanup_eligible"] is True
         assert classified[2]["cleanup_eligible"] is False
 
 
@@ -182,7 +182,7 @@ def test_device_cleanup_candidates_keep_current_session_and_one_official_anchor(
 
         candidates = cleanup_candidate_authorization_snapshots(session, account)
 
-        assert [item.app_name for item in candidates] == ["平台应用副本", "Telegram Android", "Legacy Client"]
+        assert [item.app_name for item in candidates] == ["平台应用副本", "Telegram Desktop", "Telegram Android", "Legacy Client"]
 
 
 def test_device_cleanup_confirm_consumes_precheck_snapshot_without_expanding(monkeypatch) -> None:
@@ -313,10 +313,10 @@ def test_device_cleanup_precheck_returns_kept_cleanup_and_unknown_device_details
 
         precheck = create_device_cleanup_precheck(session, 1, 26, "tester")
 
-        assert [item["classification"] for item in precheck["kept_devices"]] == ["platform_app", "official_anchor"]
-        assert [item["classification"] for item in precheck["cleanup_devices"]] == ["non_platform_app"]
+        assert [item["classification"] for item in precheck["kept_devices"]] == ["platform_app"]
+        assert [item["classification"] for item in precheck["cleanup_devices"]] == ["non_platform_app", "non_platform_app"]
         assert [item["classification"] for item in precheck["unknown_devices"]] == ["unknown"]
-        assert precheck["cleanup_devices"][0]["app_name"] == "Legacy Client"
+        assert [item["app_name"] for item in precheck["cleanup_devices"]] == ["Telegram Desktop", "Legacy Client"]
 
 
 def test_device_cleanup_precheck_blocks_when_platform_slot_hash_unconfirmed() -> None:

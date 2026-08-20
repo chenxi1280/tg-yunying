@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy.orm import Session
 
 from app.auth import CurrentUser, get_current_user, require_core_feature_access, resolve_tenant_id
@@ -31,9 +31,7 @@ from app.services.account_security import (
     account_security_detail,
     account_security_summary,
     cancel_account_security_batch,
-    cleanup_devices_from_precheck,
     create_account_security_batch,
-    create_device_cleanup_precheck,
     list_account_security_batches,
     precheck_account_security_batch,
     refresh_account_security,
@@ -92,6 +90,29 @@ def _require_reason(reason: str) -> str:
     return reason
 
 
+def _create_cleanup_batch(
+    session: Session,
+    current_user: CurrentUser,
+    account_id: int,
+    reason: str,
+    idempotency_key: str,
+):
+    require_resource_tenant(session, current_user, TgAccount, account_id)
+    payload = AccountSecurityBatchCreate(
+        account_ids=[account_id],
+        action_types=["cleanup_devices"],
+        confirm_text="确认",
+        reason=_require_reason(reason),
+    )
+    return create_account_security_batch(
+        session,
+        current_user.tenant_id or 1,
+        payload,
+        current_user.name,
+        idempotency_key=idempotency_key,
+    )
+
+
 @router.get("/api/tg-accounts/security/summary", response_model=AccountSecuritySummaryOut)
 def get_account_security_summary(
     tenant_id: int | None = None,
@@ -132,18 +153,14 @@ def post_account_security_refresh(
 def post_account_security_cleanup_devices(
     account_id: int,
     payload: AccountSecurityBatchCreate,
+    idempotency_key: str = Header(alias="Idempotency-Key"),
     session: Session = Depends(get_session),
     current_user: CurrentUser = Depends(get_current_user),
 ):
     require_core_feature_access(current_user)
     _require_batch_action_permissions(current_user, ["cleanup_devices"])
     try:
-        require_resource_tenant(session, current_user, TgAccount, account_id)
-        payload.account_ids = [account_id]
-        payload.action_types = ["cleanup_devices"]
-        payload.confirm_text = payload.confirm_text or "确认"
-        payload.reason = _require_reason(payload.reason)
-        return create_account_security_batch(session, current_user.tenant_id or 1, payload, current_user.name)
+        return _create_cleanup_batch(session, current_user, account_id, payload.reason, idempotency_key)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -157,29 +174,34 @@ def post_account_devices_cleanup_precheck(
 ):
     require_core_feature_access(current_user)
     _require_batch_action_permissions(current_user, ["cleanup_devices"])
-    try:
-        require_resource_tenant(session, current_user, TgAccount, account_id)
-        _require_reason(payload.reason)
-        return create_device_cleanup_precheck(session, current_user.tenant_id or 1, account_id, current_user.name)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    raise HTTPException(status_code=422, detail="device cleanup does not use precheck; submit cleanup directly")
 
 
-@router.post("/api/tg-accounts/{account_id}/devices/cleanup", response_model=DeviceCleanupPrecheckOut)
+@router.post("/api/tg-accounts/{account_id}/authorization-devices/cleanup", response_model=AccountSecurityBatchOut)
 def post_account_devices_cleanup(
     account_id: int,
     payload: DeviceCleanupConfirmRequest,
+    idempotency_key: str = Header(alias="Idempotency-Key"),
     session: Session = Depends(get_session),
     current_user: CurrentUser = Depends(get_current_user),
 ):
     require_core_feature_access(current_user)
     _require_batch_action_permissions(current_user, ["cleanup_devices"])
     try:
-        require_resource_tenant(session, current_user, TgAccount, account_id)
-        _require_reason(payload.reason)
-        return cleanup_devices_from_precheck(session, current_user.tenant_id or 1, account_id, payload.precheck_id, current_user.name)
+        return _create_cleanup_batch(session, current_user, account_id, payload.reason, idempotency_key)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/tg-accounts/{account_id}/devices/cleanup", response_model=AccountSecurityBatchOut)
+def post_account_devices_cleanup_legacy(
+    account_id: int,
+    payload: DeviceCleanupConfirmRequest,
+    idempotency_key: str = Header(alias="Idempotency-Key"),
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    return post_account_devices_cleanup(account_id, payload, idempotency_key, session, current_user)
 
 
 @router.post("/api/tg-accounts/{account_id}/security/set-2fa", response_model=AccountSecurityBatchOut)
@@ -282,6 +304,8 @@ def post_account_security_batch_precheck(
 ):
     require_core_feature_access(current_user)
     _require_batch_action_permissions(current_user, payload.action_types)
+    if "cleanup_devices" in payload.action_types:
+        raise HTTPException(status_code=422, detail="device cleanup does not use batch precheck")
     try:
         return precheck_account_security_batch(session, resolve_tenant_id(current_user, tenant_id), payload)
     except ValueError as exc:
@@ -308,6 +332,7 @@ def post_account_security_profile_preview(
 def post_account_security_batch(
     payload: AccountSecurityBatchCreate,
     tenant_id: int | None = None,
+    idempotency_key: str = Header(default="", alias="Idempotency-Key"),
     session: Session = Depends(get_session),
     current_user: CurrentUser = Depends(get_current_user),
 ):
@@ -315,7 +340,13 @@ def post_account_security_batch(
     _require_batch_action_permissions(current_user, payload.action_types)
     payload.reason = _require_reason(payload.reason)
     try:
-        return create_account_security_batch(session, resolve_tenant_id(current_user, tenant_id), payload, current_user.name)
+        return create_account_security_batch(
+            session,
+            resolve_tenant_id(current_user, tenant_id),
+            payload,
+            current_user.name,
+            idempotency_key=idempotency_key,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

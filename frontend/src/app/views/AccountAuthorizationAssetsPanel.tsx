@@ -29,6 +29,9 @@ const SLOT_SESSION_LABEL: Record<'primary' | 'standby_1' | 'standby_2', string> 
 };
 
 const formatTime = (value: string | null | undefined) => value ? formatBeijingDateTime(value) : '暂无记录';
+const isMalaysiaWakeAsset = (asset: AccountAuthorizationAsset | undefined) => Boolean(
+  asset && (asset.provision_region_code === 'my' || asset.credential_storage_scope === 'malaysia_wake_bundle'),
+);
 
 export function AccountAuthorizationAssetsPanel({
   accountId,
@@ -391,7 +394,8 @@ export function AccountAuthorizationAssetsPanel({
   function slotCard(role: 'primary' | 'standby_1' | 'standby_2') {
     const asset = assetForRole(role);
     const isPrimary = role === 'primary';
-    const canRecover = !isPrimary && asset?.session_available && SWITCHABLE_STATUSES.has(asset.status);
+    const malaysiaWakeAsset = isMalaysiaWakeAsset(asset);
+    const canRecover = !isPrimary && !malaysiaWakeAsset && asset?.session_available && SWITCHABLE_STATUSES.has(asset.status);
     return (
       <Card key={role} size="small" className="summary-card">
         <Space direction="vertical" size={6}>
@@ -399,13 +403,20 @@ export function AccountAuthorizationAssetsPanel({
             <Typography.Text strong>{SLOT_SESSION_LABEL[role]}</Typography.Text>
             <StatusBadge status={asset?.health_status || asset?.status || '缺失'} />
             {asset?.is_current && <Tag color="green">当前主授权</Tag>}
+            {malaysiaWakeAsset && <Tag color="blue">马来西亚紧急唤起</Tag>}
           </Space>
           <Typography.Text type="secondary">开发者应用：{asset?.developer_app_id ? `App #${asset.developer_app_id} / api_id ${asset.developer_app_api_id || '未确认'}` : '未绑定'}</Typography.Text>
           <Typography.Text type="secondary">代理：{asset?.proxy_id ? `Proxy #${asset.proxy_id}` : '未绑定'}</Typography.Text>
           <Typography.Text type="secondary">最近健康检查：{formatTime(asset?.last_health_check_at)}</Typography.Text>
+          {asset && <Typography.Text type="secondary">区域 / 代：{asset.provision_region_code.toUpperCase()} / G{asset.slot_generation}</Typography.Text>}
+          {asset && malaysiaWakeAsset && (
+            <Typography.Text type="secondary">
+              唤起包：{asset.recoverable_copy_count}/2 份；KMS {asset.kms_recovery_status}；恢复探测 {formatTime(asset.last_restore_probe_at)}
+            </Typography.Text>
+          )}
           <Typography.Text type={asset?.failure_reason ? 'danger' : 'secondary'}>{asset?.failure_reason || '验证码不可读取 / 2FA 未托管 / 代理异常等故障槽位原因会显示在这里'}</Typography.Text>
           <Space wrap>
-            {!isPrimary && <Button size="small" disabled={!canManage} onClick={() => { setLoginForm((current) => ({ ...current, role })); void openLoginModal(); }}>补齐</Button>}
+            {!isPrimary && !malaysiaWakeAsset && role !== 'standby_2' && <Button size="small" disabled={!canManage} onClick={() => { setLoginForm((current) => ({ ...current, role })); void openLoginModal(); }}>补齐</Button>}
             {!isPrimary && <Button size="small" disabled={!canRecover} loading={switchingId === asset?.id} onClick={() => asset && confirmSwitch(asset)}>激活恢复</Button>}
             {asset?.id && <Button size="small" disabled={!canManage} loading={refreshingId === asset.id} onClick={() => confirmRefresh(asset)}>刷新槽位</Button>}
           </Space>
@@ -415,10 +426,17 @@ export function AccountAuthorizationAssetsPanel({
   }
 
   const healthyStandbyCount = assets.filter((asset) => asset.role.startsWith('standby_') && asset.session_available && SWITCHABLE_STATUSES.has(asset.status)).length;
+  const switchableSvStandbyCount = assets.filter((asset) => (
+    asset.logical_slot === 'standby_1'
+    && asset.provision_region_code === 'sv'
+    && asset.credential_storage_scope === 'central_business'
+    && asset.session_available
+    && SWITCHABLE_STATUSES.has(asset.status)
+  )).length;
   const primaryAsset = assetForRole('primary');
   const recoveryStatus = primaryAsset?.session_available
     ? healthyStandbyCount >= 2 ? '完整一主两备' : `健康备用 session ${healthyStandbyCount}/2`
-    : healthyStandbyCount > 0 ? '可从备用 session 激活恢复' : '主备均失效';
+    : switchableSvStandbyCount > 0 ? '可从硅谷 standby_1 激活恢复' : healthyStandbyCount > 0 ? '仅 MY 紧急唤起备份可用' : '主备均失效';
 
   const columns: ColumnsType<AccountAuthorizationAsset> = [
     {
@@ -439,6 +457,8 @@ export function AccountAuthorizationAssetsPanel({
       render: (_, asset) => <StatusBadge status={asset.status} label={asset.is_current ? '当前主授权' : asset.status} />,
     },
     { title: 'Session', key: 'session', width: 120, render: (_, asset) => <StatusBadge status={asset.session_available ? '可用' : '缺失'} /> },
+    { title: '区域 / 代', key: 'region', width: 120, render: (_, asset) => `${asset.provision_region_code.toUpperCase()} / G${asset.slot_generation}` },
+    { title: '恢复证据', key: 'recovery', width: 180, render: (_, asset) => isMalaysiaWakeAsset(asset) ? `${asset.recoverable_copy_count}/2 份 / ${asset.kms_recovery_status}` : asset.migration_recovery_gate_status },
     {
       title: '开发者应用',
       dataIndex: 'developer_app_id',
@@ -456,6 +476,7 @@ export function AccountAuthorizationAssetsPanel({
         const canSwitch = canManage
           && Boolean(asset.id)
           && asset.role !== 'primary'
+          && !isMalaysiaWakeAsset(asset)
           && asset.session_available
           && SWITCHABLE_STATUSES.has(asset.status);
         const canRefresh = canManage && Boolean(asset.id);
@@ -507,7 +528,7 @@ export function AccountAuthorizationAssetsPanel({
         dataSource={assets}
         pagination={false}
         loading={loading}
-        scroll={{ x: 1030 }}
+        scroll={{ x: 1280 }}
         locale={{ emptyText: <Empty description="暂无授权资产" /> }}
       />
       <Modal
@@ -523,7 +544,6 @@ export function AccountAuthorizationAssetsPanel({
             onChange={(role) => setLoginForm({ ...loginForm, role })}
             options={[
               { value: 'standby_1', label: '备用授权 1' },
-              { value: 'standby_2', label: '备用授权 2' },
             ]}
           />
           <Select

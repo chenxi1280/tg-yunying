@@ -94,6 +94,7 @@ PERMISSION_RULES: list[PermissionRule] = [
     _compile("POST", r"^/api/tg-accounts/\d+/avatar$", "accounts.profile.batch_update"),
     _compile("POST", r"^/api/tg-accounts/\d+/security/refresh$", "accounts.security.read"),
     _compile("POST", r"^/api/tg-accounts/\d+/security/(?:cleanup-devices|set-2fa)$", "accounts.security.batch"),
+    _compile("POST", r"^/api/tg-accounts/\d+/(?:authorization-devices|devices)/cleanup(?:/precheck)?$", "accounts.security.batch"),
     _compile("POST", r"^/api/tg-accounts/\d+/security/managed-2fa(?:/(?:rotate|reveal))?$", "accounts.security.credential_manage"),
     _compile("POST", r"^/api/tg-accounts/\d+/security/update-profile$", "accounts.profile.batch_update"),
     _compile("POST", r"^/api/tg-accounts/security-batches/profile-preview$", "accounts.profile.batch_update"),
