@@ -322,9 +322,10 @@ def _final_readback(session, account, executor, *, item, protected: set[str]) ->
             TgAccountAuthorizationSnapshot.account_id == account.id,
         ))
     }
-    targets = set(session.scalars(select(TgAccountDeviceCleanupTarget.target_hash_digest).where(
+    target_rows = list(session.scalars(select(TgAccountDeviceCleanupTarget).where(
         TgAccountDeviceCleanupTarget.batch_item_id == item.id,
     )))
+    targets = {target.target_hash_digest for target in target_rows}
     item.final_readback_digest = _set_digest(remote_hashes)
     item.external_devices_after = sum(1 for value in remote_hashes if _digest(value) in targets)
     if not protected.issubset(remote_hashes):
@@ -338,7 +339,8 @@ def _final_readback(session, account, executor, *, item, protected: set[str]) ->
         item.failure_type = "new_external_detected_after_apply"
         return ["new_external_detected_after_apply"]
     if item.external_devices_after:
-        item.cleanup_status = "partial_failed"
+        cleaned_any = any(target.status in {"succeeded", "already_absent"} for target in target_rows)
+        item.cleanup_status = "partial_failed" if cleaned_any else "failed"
         return ["device_cleanup_target_still_present"]
     item.cleanup_status = "succeeded"
     return []

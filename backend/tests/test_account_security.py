@@ -179,6 +179,31 @@ def _remote_cleanup_authorizations() -> list[RemoteAuthorizationSnapshot]:
     ]
 
 
+def _seed_cleanup_executor(session: Session, account: TgAccount) -> TgAccountAuthorization:
+    authorization = TgAccountAuthorization(
+        tenant_id=account.tenant_id,
+        account_id=account.id,
+        role="primary",
+        logical_slot="primary",
+        is_slot_current=True,
+        is_current=True,
+        provision_region_code="sv",
+        developer_app_id=account.developer_app_id,
+        developer_app_api_id_snapshot=12345,
+        session_ciphertext=account.session_ciphertext,
+        telegram_login_at=_now() - timedelta(hours=49),
+        telegram_authorization_hash_ciphertext=encrypt_secret("primary"),
+        remote_authorization_state="active",
+        protected_from_cleanup=True,
+        fact_version=4,
+    )
+    session.add(authorization)
+    session.flush()
+    account.current_authorization_id = authorization.id
+    session.commit()
+    return authorization
+
+
 def test_sync_remote_profile_cleans_chinese_first_english_last_for_storage(monkeypatch):
     with _session() as session:
         account = _seed_account(session)
@@ -207,7 +232,7 @@ def test_refresh_account_security_records_trusted_session_and_external_device():
 
         assert snapshot.trusted_session_status == "confirmed"
         assert snapshot.two_fa_status == "missing"
-        assert snapshot.external_authorization_count == 0
+        assert snapshot.external_authorization_count == 1
         assert snapshot.profile_status == "incomplete"
 
 
@@ -834,19 +859,19 @@ def test_account_security_batches_project_cleanup_2fa_and_standby_task_types():
         account = _seed_account(session)
         session.add(AccountProxy(id=1, tenant_id=1, name="备用代理", port=1080, status="healthy", alert_status="normal"))
         session.commit()
-        batches = [
-            create_account_security_batch(
+        batches = []
+        for action, reason in [
+            ("cleanup_devices", "清理登录设备"),
+            ("set_two_fa", "设置二步密码"),
+            ("provision_standby_session", "补齐备用 session"),
+        ]:
+            batches.append(create_account_security_batch(
                 session,
                 1,
                 AccountSecurityBatchCreate(account_ids=[account.id], action_types=[action], confirm_text="确认", reason=reason),
                 "tester",
-            )
-            for action, reason in [
-                ("cleanup_devices", "清理登录设备"),
-                ("set_two_fa", "设置二步密码"),
-                ("provision_standby_session", "补齐备用 session"),
-            ]
-        ]
+                idempotency_key="task-projection-cleanup" if action == "cleanup_devices" else "",
+            ))
 
         assert [row["type"] for row in list_tasks(session, 1, task_type="account_device_cleanup")] == ["account_device_cleanup"]
         assert [row["type"] for row in list_tasks(session, 1, task_type="account_2fa_setup")] == ["account_2fa_setup"]
@@ -973,7 +998,7 @@ def test_standby_session_batch_requires_managed_2fa_when_telegram_requests_passw
         assert item["two_fa_usage_status"] == "未托管 2FA"
 
 
-def test_standby_session_batch_auto_provisions_missing_standby_slot(monkeypatch):
+def test_sv_security_batch_blocks_standby_2_provision(monkeypatch):
     with _session() as session:
         account = _seed_account(session)
         session.add(AccountProxy(id=1, tenant_id=1, name="备用代理", port=1080, status="healthy", alert_status="normal"))
@@ -984,16 +1009,7 @@ def test_standby_session_batch_auto_provisions_missing_standby_slot(monkeypatch)
             ManagedTwoFaRequest(password="managed-password", reason="首次托管"),
             "tester",
         )
-        monkeypatch.setattr(
-            account_security_service.gateway,
-            "start_login",
-            lambda *_args, **_kwargs: SimpleNamespace(status="等待验证码", code_preview="12345", code_expires_at=_now() + timedelta(minutes=3), qr_payload=None),
-        )
-        monkeypatch.setattr(
-            account_security_service.gateway,
-            "finish_login",
-            lambda *_args, **_kwargs: (AccountStatus.ACTIVE.value, "standby-session-raw"),
-        )
+        monkeypatch.setattr(account_security_service.gateway, "start_login", lambda *_args, **_kwargs: pytest.fail("SV flow must not create standby_2"))
         batch = create_account_security_batch(
             session,
             1,
@@ -1007,21 +1023,18 @@ def test_standby_session_batch_auto_provisions_missing_standby_slot(monkeypatch)
             "tester",
         )
 
-        assert drain_account_security_batches(lambda: Session(session.bind), limit=10) == 1
+        assert drain_account_security_batches(lambda: Session(session.bind), limit=10) == 0
         refreshed = account_security_batch_detail(session, 1, batch.id)
         asset = session.scalar(select(TgAccountAuthorization).where(TgAccountAuthorization.account_id == account.id, TgAccountAuthorization.role == "standby_2"))
 
-        assert refreshed.status == "succeeded"
-        assert refreshed.items[0].status == "succeeded"
-        assert asset is not None
-        assert asset.session_ciphertext
+        assert refreshed.status == "manual_required"
+        assert refreshed.items[0].status == "manual_required"
+        assert "standby_2 必须通过马来西亚备用授权流程创建" in refreshed.items[0].skipped_reason
+        assert asset is None
         detail = get_task_detail(session, 1, f"account_security_batch:{batch.id}")
         item = detail["account_security_batch"]["items"][0]
         assert item["target_slot"] == "standby_2"
-        assert item["developer_app_label"] == "测试开发者应用"
-        assert item["proxy_label"] == "备用代理"
-        assert item["verification_code_status"] == "已读取"
-        assert item["two_fa_usage_status"] == "已使用托管 2FA"
+        assert item["standby_session_status"] == "manual_required"
 
 
 def test_standby_session_batch_polls_primary_session_code_when_challenge_has_no_preview(monkeypatch):
@@ -1526,43 +1539,18 @@ def test_unknown_account_security_action_is_rejected():
             )
 
 
-def test_confirmed_batch_drains_profile_username_and_device_cleanup_independently():
+def test_device_cleanup_must_be_submitted_separately_from_profile_actions():
     with _session() as session:
         account = _seed_account(session)
-        set_tenant_fixed_two_fa_password(
-            session,
-            tenant_id=1,
-            password="tenant-fixed-password",
-            reason="首次配置固定 2FA",
-            actor="tester",
-        )
-        avatar_object_key, _avatar_path = save_avatar_bytes(tenant_id=account.tenant_id, account_id=account.id, content_type="image/png", data=b"avatar")
         payload = AccountSecurityBatchCreate(
             account_ids=[account.id],
-            action_types=["cleanup_devices", "set_two_fa", "update_profile", "update_username", "update_avatar"],
+            action_types=["cleanup_devices", "update_profile"],
             confirm_text="确认加固",
-            profile_strategy=ProfileGenerationStrategy(generation_mode="template", username_prefix_hint="acct"),
-            avatar_strategy=AvatarStrategy(mode="sequential", avatar_sources=[f"avatar:{avatar_object_key}"]),
             reason="测试批量加固",
         )
-        batch = create_account_security_batch(session, 1, payload, "tester")
 
-        assert batch.status == "running"
-        processed = drain_account_security_batches(lambda: Session(session.bind), limit=10)
-        refreshed = account_security_batch_detail(session, 1, batch.id)
-
-        assert processed == 1
-        assert refreshed.status == "succeeded"
-        assert refreshed.items[0].cleanup_status == "succeeded"
-        assert refreshed.items[0].two_fa_status == "enabled"
-        assert refreshed.items[0].profile_status == "succeeded"
-        assert refreshed.items[0].username_status == "succeeded"
-        assert refreshed.items[0].avatar_status == "succeeded"
-        assert session.get(TgAccount, account.id).username.startswith("acct_")
-        assert session.get(TgAccount, account.id).avatar_object_key == avatar_object_key
-        snapshot = session.scalar(select(TgAccountSecuritySnapshot).where(TgAccountSecuritySnapshot.account_id == account.id))
-        assert snapshot.external_authorization_count == 0
-        assert decrypt_secret(snapshot.two_fa_password_ciphertext) == "tenant-fixed-password"
+        with pytest.raises(ValueError, match="cleanup_devices must be submitted as a standalone action"):
+            create_account_security_batch(session, 1, payload, "tester", idempotency_key="mixed-actions")
 
 
 @pytest.mark.no_postgres
@@ -1693,32 +1681,36 @@ def test_set_two_fa_precheck_blocks_security_refresh_failure(monkeypatch):
 def test_device_cleanup_cleans_unprotected_platform_api_duplicates(monkeypatch):
     with _session() as session:
         account = _seed_account(session)
+        _seed_cleanup_executor(session, account)
         cleaned_hashes: list[str] = []
+        remote = _remote_cleanup_authorizations()
 
         def record_cleanup(_session_ciphertext, authorization_hash, _credentials):
             cleaned_hashes.append(authorization_hash)
             return SimpleNamespace(ok=True, detail="cleaned", failure_type="")
 
-        monkeypatch.setattr(account_security_service.gateway, "list_authorizations", lambda *_args, **_kwargs: _remote_cleanup_authorizations())
+        monkeypatch.setattr(account_security_service.gateway, "list_authorizations", lambda *_args, **_kwargs: [row for row in remote if row.authorization_hash not in cleaned_hashes])
         monkeypatch.setattr(account_security_service.gateway, "cleanup_authorization", record_cleanup)
         batch = create_account_security_batch(
             session,
             1,
             AccountSecurityBatchCreate(account_ids=[account.id], action_types=["cleanup_devices"], confirm_text="确认"),
             "tester",
+            idempotency_key="cleanup-platform-duplicates",
         )
 
         assert drain_account_security_batches(lambda: Session(session.bind), limit=10) == 1
         refreshed = account_security_batch_detail(session, 1, batch.id)
 
-        assert cleaned_hashes == ["platform-api", "external"]
-        assert refreshed.items[0].external_devices_before == 2
+        assert cleaned_hashes == ["platform-api", "external", "official-anchor"]
+        assert refreshed.items[0].external_devices_before == 3
         assert refreshed.items[0].external_devices_after == 0
 
 
 def test_device_cleanup_preserves_recorded_primary_and_standby_authorization_hashes(monkeypatch):
     with _session() as session:
         account = _seed_account(session)
+        _seed_cleanup_executor(session, account)
         session.add_all(
             [
                 TgAccountAuthorization(
@@ -1733,6 +1725,12 @@ def test_device_cleanup_preserves_recorded_primary_and_standby_authorization_has
         )
         session.commit()
         cleaned_hashes: list[str] = []
+        remote = [
+            _remote_authorization("primary", is_current=True, device_model="平台主控", platform="Linux", app_name="TG运营平台"),
+            _remote_authorization("standby-hash", device_model="Standby", platform="Linux", api_id=12345, app_name="TG运营平台备用"),
+            _remote_authorization("external-hash", device_model="Unknown", platform="Unknown", app_name="Legacy Client"),
+            _remote_authorization("official-anchor", device_model="Telegram Desktop", platform="macOS", api_id=2040, app_name="Telegram Desktop"),
+        ]
 
         def record_cleanup(_session_ciphertext, authorization_hash, _credentials):
             cleaned_hashes.append(authorization_hash)
@@ -1741,12 +1739,7 @@ def test_device_cleanup_preserves_recorded_primary_and_standby_authorization_has
         monkeypatch.setattr(
             account_security_service.gateway,
             "list_authorizations",
-            lambda *_args, **_kwargs: [
-                _remote_authorization("primary", is_current=True, device_model="平台主控", platform="Linux", app_name="TG运营平台"),
-                _remote_authorization("standby-hash", device_model="Standby", platform="Linux", api_id=12345, app_name="TG运营平台备用"),
-                _remote_authorization("external-hash", device_model="Unknown", platform="Unknown", app_name="Legacy Client"),
-                _remote_authorization("official-anchor", device_model="Telegram Desktop", platform="macOS", api_id=2040, app_name="Telegram Desktop"),
-            ],
+            lambda *_args, **_kwargs: [row for row in remote if row.authorization_hash not in cleaned_hashes],
         )
         monkeypatch.setattr(account_security_service.gateway, "cleanup_authorization", record_cleanup)
         batch = create_account_security_batch(
@@ -1754,17 +1747,23 @@ def test_device_cleanup_preserves_recorded_primary_and_standby_authorization_has
             1,
             AccountSecurityBatchCreate(account_ids=[account.id], action_types=["cleanup_devices"], confirm_text="确认"),
             "tester",
+            idempotency_key="cleanup-preserve-platform",
         )
 
         assert drain_account_security_batches(lambda: Session(session.bind), limit=10) == 1
 
-        assert cleaned_hashes == ["external-hash"]
+        assert cleaned_hashes == ["external-hash", "official-anchor"]
 
 
 def test_device_cleanup_does_not_require_telegram_client_anchor_authorization(monkeypatch):
     with _session() as session:
         account = _seed_account(session)
+        _seed_cleanup_executor(session, account)
         cleaned_hashes: list[str] = []
+        remote = [
+            _remote_authorization("primary", is_current=True, device_model="平台主控", platform="Linux", app_name="TG运营平台"),
+            _remote_authorization("external-hash", device_model="Unknown", platform="Unknown", app_name="Legacy Client"),
+        ]
 
         def record_cleanup(_session_ciphertext, authorization_hash, _credentials):
             cleaned_hashes.append(authorization_hash)
@@ -1773,10 +1772,7 @@ def test_device_cleanup_does_not_require_telegram_client_anchor_authorization(mo
         monkeypatch.setattr(
             account_security_service.gateway,
             "list_authorizations",
-            lambda *_args, **_kwargs: [
-                _remote_authorization("primary", is_current=True, device_model="平台主控", platform="Linux", app_name="TG运营平台"),
-                _remote_authorization("external-hash", device_model="Unknown", platform="Unknown", app_name="Legacy Client"),
-            ],
+            lambda *_args, **_kwargs: [row for row in remote if row.authorization_hash not in cleaned_hashes],
         )
         monkeypatch.setattr(account_security_service.gateway, "cleanup_authorization", record_cleanup)
         batch = create_account_security_batch(
@@ -1784,6 +1780,7 @@ def test_device_cleanup_does_not_require_telegram_client_anchor_authorization(mo
             1,
             AccountSecurityBatchCreate(account_ids=[account.id], action_types=["cleanup_devices"], confirm_text="确认"),
             "tester",
+            idempotency_key="cleanup-without-anchor",
         )
 
         assert drain_account_security_batches(lambda: Session(session.bind), limit=10) == 1
@@ -2124,18 +2121,24 @@ def test_manual_required_or_missing_session_accounts_are_auto_skipped():
         assert batch.skipped_count == 1
 
 
-def test_waiting_account_security_item_is_retried_when_due(monkeypatch):
+def test_telegram_fresh_reset_rejection_is_not_retried(monkeypatch):
     with _session() as session:
         account = _seed_account(session)
+        _seed_cleanup_executor(session, account)
         calls = {"count": 0}
 
         def cleanup_once_then_succeed(*args, **kwargs):
             calls["count"] += 1
-            if calls["count"] == 1:
-                return SimpleNamespace(ok=False, detail="FRESH_RESET_AUTHORISATION_FORBIDDEN 24 SESSION", failure_type="等待限制")
-            return SimpleNamespace(ok=True, detail="cleaned", failure_type="")
+            return SimpleNamespace(ok=False, detail="FRESH_RESET_AUTHORISATION_FORBIDDEN 24 SESSION", failure_type="等待限制")
 
-        monkeypatch.setattr(account_security_service.gateway, "list_authorizations", lambda *_args, **_kwargs: _remote_cleanup_authorizations())
+        monkeypatch.setattr(
+            account_security_service.gateway,
+            "list_authorizations",
+            lambda *_args, **_kwargs: [
+                _remote_authorization("primary", is_current=True, device_model="平台主控", platform="Linux", app_name="TG运营平台"),
+                _remote_authorization("external", device_model="Unknown", platform="Unknown", app_name="Legacy Client"),
+            ],
+        )
         monkeypatch.setattr(account_security_service.gateway, "cleanup_authorization", cleanup_once_then_succeed)
         payload = AccountSecurityBatchCreate(
             account_ids=[account.id],
@@ -2143,19 +2146,15 @@ def test_waiting_account_security_item_is_retried_when_due(monkeypatch):
             confirm_text="确认加固",
             reason="测试等待重试",
         )
-        batch = create_account_security_batch(session, 1, payload, "tester")
+        batch = create_account_security_batch(session, 1, payload, "tester", idempotency_key="fresh-reset-rejection")
 
         assert drain_account_security_batches(lambda: Session(session.bind), limit=10) == 1
         item = session.scalar(select(TgAccountSecurityBatchItem).where(TgAccountSecurityBatchItem.batch_id == batch.id))
-        assert item.status == "waiting"
-        item.next_retry_at = _now() - timedelta(seconds=1)
-        session.commit()
-
-        assert drain_account_security_batches(lambda: Session(session.bind), limit=10) == 1
-        refreshed = account_security_batch_detail(session, 1, batch.id)
-        assert refreshed.status == "succeeded"
-        assert refreshed.items[0].cleanup_status == "succeeded"
-        assert calls["count"] == 4
+        assert item.status == "failed"
+        assert item.cleanup_status == "failed"
+        assert item.next_retry_at is None
+        assert drain_account_security_batches(lambda: Session(session.bind), limit=10) == 0
+        assert calls["count"] == 1
 
 
 def test_username_taken_creates_partial_success_without_rolling_back_profile():

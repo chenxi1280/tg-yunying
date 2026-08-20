@@ -1338,6 +1338,9 @@ def _auto_provision_standby_session(session: Session, account: TgAccount, item: 
     if not account.session_ciphertext:
         item.failure_type = "account_not_online"
         return "主 session 不可用，无法自动读取备用登录验证码"
+    if _standby_slot_strategy(session, item) == "standby_2":
+        item.failure_type = "standby_2_requires_my_dr"
+        return "standby_2 必须通过马来西亚备用授权流程创建"
     roles = _target_standby_roles(session, account, item)
     if not roles:
         item.failure_detail = "备用 session 已满足一主两从"
@@ -1630,7 +1633,8 @@ def _standby_precheck_status(session: Session, account: TgAccount, standby_slot_
     roles = _target_standby_roles_for_strategy(session, account, standby_slot_strategy)
     if not roles:
         if standby_slot_strategy == "standby_2":
-            warnings.append("standby_2 必须通过马来西亚备用授权流程创建")
+            blockers.append("standby_2 必须通过马来西亚备用授权流程创建")
+            suggested.append("请从授权灾备迁移批次创建马来西亚 standby_2")
         else:
             warnings.append("硅谷 standby_1 已存在")
         return StandbyPrecheckStatus(blockers, warnings, suggested)

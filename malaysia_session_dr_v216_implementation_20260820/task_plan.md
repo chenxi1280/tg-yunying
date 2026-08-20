@@ -96,3 +96,4 @@
 | Error | Attempt | Resolution |
 | --- | --- | --- |
 | Deploy Production PostgreSQL gate failed because test setup had already created the current model schema and migration `0157` attempted to create `authorization_dr_runtime_contracts` again. | 1 | `0157` now detects the complete target schema and returns idempotently; added a metadata-create-all regression test and reran 270 related no-PostgreSQL tests. |
+| Second Deploy Production gate passed migration execution but retained old `0156` head assertions and legacy device-cleanup/standby_2 test contracts. | 2 | Updated the Alembic head assertions, moved cleanup tests to the current SV executor + over-48h + idempotency contract, blocked SV `standby_2` with `manual_required`, and corrected all-failed cleanup outcome semantics. |
