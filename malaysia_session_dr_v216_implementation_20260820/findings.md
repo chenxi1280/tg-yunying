@@ -65,3 +65,12 @@
 - The worker now wraps each bundle DEK through Alibaba Cloud KMS and records the returned ciphertext blob/key version; restore probes decrypt through KMS with the same encryption context. Production still requires an independently readable Malaysia KMS key and dedicated credentials before this can become a runtime fact.
 - Current code migrates only existing healthy App C/SV `standby_2` sources. It does not provision missing MY standby authorization for the remainder of the 1335-account population.
 - Full `local_activate`, `restore_sv_pair`, `emergency_reauthorize_primary`, drill, decommission and generic send/listener/sync generation fencing are not implemented. Core canary migration release is not full-PRD completion.
+
+## 2026-08-20 Developer App Role And Exact MY Image Readback
+
+- Release run `32361582241` passed all CI/build/deploy jobs and production now runs exact release SHA `ab85ae2369f993d3bcfc602dc8bae49f75f850ef`; runtime OpenAPI includes `PUT /api/developer-apps/slot-assignments`.
+- A preview/fingerprint/CAS apply established the requested fixed topology: App 1 is Silicon Valley primary, App 2 is Silicon Valley standby_1, and App 3 is Malaysia standby_2. The runtime contract remains `off`, so this configuration cannot create migration operations yet.
+- Production readback after the role change still reports zero migration batches, operations, wake bundles and copies. No existing Session has been removed, replaced or migrated.
+- MY cannot pull the private GHCR image anonymously. The exact production image was archived on SV, hashed, transferred directly to MY with resumable rsync and ephemeral agent forwarding, verified again, then loaded. Existing tgmsg and other MY containers were not restarted or replaced.
+- MY-to-control-plane DNS/TLS/routing is proven by an unauthenticated heartbeat receiving 401. Production has the internal token and explicitly disables mTLS for this phase; `node.env` can therefore omit client certificate paths.
+- The remaining runtime blocker is not SSH connectivity. The Alibaba account currently has no Malaysia OSS bucket, no Malaysia KMS software instance/user key, no dedicated RAM credentials, and no instance role. The minimum observed KMS software instance purchase is about CNY 4,998 per month, so purchase requires explicit cost approval or an explicit PRD change to a non-KMS recovery-key design.

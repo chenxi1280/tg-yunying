@@ -24,15 +24,7 @@ required_env_file_names=(
   AUTHORIZATION_DR_CONTROL_PLANE_URL
   AUTHORIZATION_DR_INTERNAL_TOKEN
   AUTHORIZATION_DR_EXPECTED_EGRESS_IP
-  MY_WAKE_OSS_ENDPOINT
-  MY_WAKE_OSS_BUCKET
-  MY_WAKE_OSS_ACCESS_KEY_ID
-  MY_WAKE_OSS_ACCESS_KEY_SECRET
-  MY_WAKE_KMS_ENDPOINT
-  MY_WAKE_KMS_REGION_ID
-  MY_WAKE_KMS_ACCESS_KEY_ID
-  MY_WAKE_KMS_ACCESS_KEY_SECRET
-  MY_WAKE_KMS_KEY_ID
+  MY_WAKE_STORAGE_MODE
 )
 for name in "${required_env_file_names[@]}"; do
   value="$(sed -n "s/^${name}=//p" "$ENV_FILE" | tail -n 1)"
@@ -41,9 +33,73 @@ for name in "${required_env_file_names[@]}"; do
     exit 1
   fi
 done
+storage_mode="$(sed -n 's/^MY_WAKE_STORAGE_MODE=//p' "$ENV_FILE" | tail -n 1)"
+case "$storage_mode" in
+  ssh_mirror)
+    storage_names=(
+      MY_WAKE_SNAPSHOT_PREFIX
+      MY_WAKE_SSH_HOST
+      MY_WAKE_SSH_PORT
+      MY_WAKE_SSH_USER
+      MY_WAKE_SSH_IDENTITY_FILE
+      MY_WAKE_SSH_KNOWN_HOSTS_FILE
+      MY_WAKE_SSH_REMOTE_DIR
+      MY_WAKE_RECOVERY_KEY_FILE
+    )
+    ;;
+  kms_oss)
+    storage_names=(
+      MY_WAKE_OSS_ENDPOINT
+      MY_WAKE_OSS_BUCKET
+      MY_WAKE_OSS_ACCESS_KEY_ID
+      MY_WAKE_OSS_ACCESS_KEY_SECRET
+      MY_WAKE_OSS_PREFIX
+      MY_WAKE_KMS_ENDPOINT
+      MY_WAKE_KMS_REGION_ID
+      MY_WAKE_KMS_ACCESS_KEY_ID
+      MY_WAKE_KMS_ACCESS_KEY_SECRET
+      MY_WAKE_KMS_KEY_ID
+    )
+    ;;
+  *)
+    echo "MY_WAKE_STORAGE_MODE must be ssh_mirror or kms_oss" >&2
+    exit 1
+    ;;
+esac
+for name in "${storage_names[@]}"; do
+  value="$(sed -n "s/^${name}=//p" "$ENV_FILE" | tail -n 1)"
+  if [[ -z "$value" || "$value" == replace-with-* ]]; then
+    echo "$name must be configured in $ENV_FILE" >&2
+    exit 1
+  fi
+done
+if [[ "$storage_mode" == "ssh_mirror" ]]; then
+  secret_dir="${MY_WAKE_SECRET_HOST_DIR:-/opt/tgyunying-authorization-dr/secrets}"
+  for file in id_ed25519 known_hosts recovery.key; do
+    if [[ ! -s "$secret_dir/$file" ]]; then
+      echo "SSH mirror secret is missing: $secret_dir/$file" >&2
+      exit 1
+    fi
+  done
+fi
 mkdir -p "$MY_WAKE_BUNDLE_LOCAL_HOST_DIR"
 export AUTHORIZATION_DR_ENV_FILE="$ENV_FILE"
-docker compose -f "$COMPOSE_FILE" pull authorization-dr-node
+image_mode="${AUTHORIZATION_DR_IMAGE_MODE:-registry}"
+case "$image_mode" in
+  registry)
+    docker compose -f "$COMPOSE_FILE" pull authorization-dr-node
+    ;;
+  local)
+    if ! docker image inspect "$TGYUNYING_BACKEND_IMAGE" >/dev/null 2>&1; then
+      echo "Local authorization DR image is missing: $TGYUNYING_BACKEND_IMAGE" >&2
+      exit 1
+    fi
+    ;;
+  *)
+    echo "AUTHORIZATION_DR_IMAGE_MODE must be registry or local" >&2
+    exit 1
+    ;;
+esac
 docker compose -f "$COMPOSE_FILE" up -d --remove-orphans authorization-dr-node
 
 container_id="$(docker compose -f "$COMPOSE_FILE" ps -q authorization-dr-node)"

@@ -133,7 +133,7 @@ class DrOwnerRequest(DrStrictModel):
 
 
 class DrCopyReceiptRequest(DrStrictModel):
-    copy_kind: str = Field(pattern="^(local_persistent|object_snapshot)$")
+    copy_kind: str = Field(pattern="^(local_persistent|remote_ssh_snapshot|object_snapshot)$")
     object_ref_digest: str = Field(min_length=64, max_length=64)
     ciphertext_digest: str = Field(min_length=64, max_length=64)
     immutable_version: str = Field(min_length=1, max_length=120)
@@ -160,7 +160,7 @@ class DrWakeBundleRequest(DrOwnerRequest):
 
 class DrRestoreProbeRequest(DrOwnerRequest):
     probe_generation: int = Field(ge=1)
-    source_copy_kind: str = Field(pattern="^object_snapshot$")
+    source_copy_kind: str = Field(pattern="^(remote_ssh_snapshot|object_snapshot)$")
     status: str
     session_parse_status: str
     authorization_status: str

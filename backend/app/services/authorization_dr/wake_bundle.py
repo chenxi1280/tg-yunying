@@ -16,7 +16,10 @@ from app.timezone import as_beijing_aware
 from .contracts import AuthorizationDrError, RestoreProbeReceipt, WakeBundleReceipt
 
 
-REQUIRED_COPY_KINDS = frozenset({"local_persistent", "object_snapshot"})
+SUPPORTED_COPY_SETS = frozenset({
+    frozenset({"local_persistent", "remote_ssh_snapshot"}),
+    frozenset({"local_persistent", "object_snapshot"}),
+})
 SUCCESS_PROBE_STATES = frozenset({"passed", "authorized", "matched"})
 
 
@@ -136,7 +139,7 @@ def _validate_bundle_receipt(operation, receipt: WakeBundleReceipt) -> None:
     if not receipt.remote_authorization_hash_ciphertext:
         raise AuthorizationDrError("authorization_hash_missing_or_zero", "Remote authorization hash is missing")
     copy_kinds = {copy.copy_kind for copy in receipt.copies}
-    if len(receipt.copies) != 2 or copy_kinds != REQUIRED_COPY_KINDS:
+    if len(receipt.copies) != 2 or not valid_copy_kinds(copy_kinds):
         raise AuthorizationDrError("wake_bundle_copy_count_insufficient", "Two independent bundle copies are required")
     if any(copy.ciphertext_digest != receipt.ciphertext_digest for copy in receipt.copies):
         raise AuthorizationDrError("wake_bundle_immutable_conflict", "Bundle copy digest mismatch")
@@ -261,8 +264,10 @@ def _validate_probe(receipt: RestoreProbeReceipt) -> None:
         receipt.identity_match_status,
         receipt.auth_key_match_status,
     )
-    if receipt.source_copy_kind != "object_snapshot" or any(state not in SUCCESS_PROBE_STATES for state in states):
-        raise AuthorizationDrError("wake_bundle_restore_probe_failed", "Object snapshot restore probe did not pass")
+    if receipt.source_copy_kind not in {"remote_ssh_snapshot", "object_snapshot"}:
+        raise AuthorizationDrError("wake_bundle_restore_probe_failed", "Snapshot restore source is unsupported")
+    if any(state not in SUCCESS_PROBE_STATES for state in states):
+        raise AuthorizationDrError("wake_bundle_restore_probe_failed", "Snapshot restore probe did not pass")
     if not receipt.source_client_disconnected or not receipt.probe_client_disconnected:
         raise AuthorizationDrError("wake_bundle_restore_probe_failed", "Telegram clients were not disconnected")
     if not receipt.zeroize_receipt_digest:
@@ -276,6 +281,10 @@ def _operation_bundle(session, operation):
     if not bundle:
         raise AuthorizationDrError("wake_bundle_missing", "Wake bundle does not exist")
     return bundle
+
+
+def valid_copy_kinds(copy_kinds: set[str]) -> bool:
+    return frozenset(copy_kinds) in SUPPORTED_COPY_SETS
 
 
 def _verify_idempotent_bundle(session, bundle, receipt: WakeBundleReceipt) -> None:

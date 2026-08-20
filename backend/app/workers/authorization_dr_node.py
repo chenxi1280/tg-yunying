@@ -11,14 +11,13 @@ import os
 from pathlib import Path
 import secrets
 import time
-from typing import Protocol
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 import httpx
-import oss2
 
 from app.integrations.telegram import DeveloperAppCredentials, create_gateway
-from app.workers.authorization_dr_kms import AlibabaKmsDekProtector, DekProtector
+from app.workers.authorization_dr_kms import DekProtector
+from app.workers.authorization_dr_storage import ObjectSnapshotStore, load_storage_config
 
 
 LOGGER = logging.getLogger(__name__)
@@ -26,29 +25,6 @@ CODE_POLL_SECONDS = 2
 LEASE_RENEW_SECONDS = 30
 IDLE_POLL_SECONDS = 10
 RECEIPT_POST_ATTEMPTS = 3
-
-
-class ObjectSnapshotStore(Protocol):
-    def put_immutable(self, object_key: str, payload: bytes) -> str: ...
-
-    def read(self, object_key: str) -> bytes: ...
-
-
-class OssObjectSnapshotStore:
-    def __init__(self, endpoint: str, bucket_name: str, access_key_id: str, access_key_secret: str):
-        self.bucket_name = bucket_name
-        self.bucket = oss2.Bucket(oss2.Auth(access_key_id, access_key_secret), endpoint, bucket_name)
-
-    def put_immutable(self, object_key: str, payload: bytes) -> str:
-        result = self.bucket.put_object(
-            object_key,
-            payload,
-            headers={"x-oss-forbid-overwrite": "true"},
-        )
-        return str(result.headers.get("x-oss-version-id") or result.request_id)
-
-    def read(self, object_key: str) -> bytes:
-        return self.bucket.get_object(object_key).read()
 
 
 @dataclass(frozen=True)
@@ -64,6 +40,7 @@ class NodeConfig:
     object_store: ObjectSnapshotStore
     dek_protector: DekProtector
     client_cert: tuple[str, str] | None
+    snapshot_copy_kind: str = "remote_ssh_snapshot"
 
 
 class DrNodeClient:
@@ -238,7 +215,13 @@ def _persist_bundle(config: NodeConfig, claim: dict, raw_session: str, identity)
     object_key = f"{config.object_prefix.strip('/')}/{relative.as_posix()}".lstrip("/")
     copies = [
         _write_copy(local_path, envelope, "local_persistent", dek),
-        _write_object_copy(config.object_store, object_key, envelope, dek),
+        _write_object_copy(
+            config.object_store,
+            object_key,
+            envelope,
+            dek,
+            config.snapshot_copy_kind,
+        ),
     ]
     inventory_sequence = _next_inventory_sequence(config)
     inventory_manifest_digest = _write_inventory(
@@ -306,7 +289,13 @@ def _write_copy(path: Path, envelope: bytes, copy_kind: str, dek: bytes) -> dict
     }
 
 
-def _write_object_copy(store: ObjectSnapshotStore, object_key: str, envelope: bytes, dek: bytes) -> dict:
+def _write_object_copy(
+    store: ObjectSnapshotStore,
+    object_key: str,
+    envelope: bytes,
+    dek: bytes,
+    copy_kind: str,
+) -> dict:
     immutable_version = store.put_immutable(object_key, envelope)
     readback = store.read(object_key)
     if readback != envelope or not _decrypt_session(readback, dek):
@@ -314,7 +303,7 @@ def _write_object_copy(store: ObjectSnapshotStore, object_key: str, envelope: by
     now = datetime.now(timezone.utc).isoformat()
     digest = hashlib.sha256(envelope).hexdigest()
     return {
-        "copy_kind": "object_snapshot",
+        "copy_kind": copy_kind,
         "object_ref_digest": hashlib.sha256(object_key.encode()).hexdigest(),
         "ciphertext_digest": digest,
         "immutable_version": immutable_version,
@@ -369,7 +358,7 @@ def _restore_probe(gateway, config, claim, material, object_key: str, wrapped_de
     matched = observed == expected
     return {
         "probe_generation": claim["target_generation"],
-        "source_copy_kind": "object_snapshot",
+        "source_copy_kind": config.snapshot_copy_kind,
         "status": "passed" if matched else "failed",
         "session_parse_status": "passed",
         "authorization_status": "authorized",
@@ -417,12 +406,7 @@ def _post_bundle_receipt(client: DrNodeClient, operation_id: str, payload: dict)
 def load_config() -> NodeConfig:
     cert = os.environ.get("AUTHORIZATION_DR_CLIENT_CERT", "")
     key = os.environ.get("AUTHORIZATION_DR_CLIENT_KEY", "")
-    object_store = OssObjectSnapshotStore(
-        _required_env("MY_WAKE_OSS_ENDPOINT"),
-        _required_env("MY_WAKE_OSS_BUCKET"),
-        _required_env("MY_WAKE_OSS_ACCESS_KEY_ID"),
-        _required_env("MY_WAKE_OSS_ACCESS_KEY_SECRET"),
-    )
+    storage = load_storage_config(_required_env)
     return NodeConfig(
         control_plane_url=_required_env("AUTHORIZATION_DR_CONTROL_PLANE_URL"),
         internal_token=_required_env("AUTHORIZATION_DR_INTERNAL_TOKEN"),
@@ -431,16 +415,11 @@ def load_config() -> NodeConfig:
         expected_egress_ip=_required_env("AUTHORIZATION_DR_EXPECTED_EGRESS_IP"),
         egress_probe_url=os.environ.get("AUTHORIZATION_DR_EGRESS_PROBE_URL", "https://api.ipify.org").strip(),
         local_dir=Path(_required_env("MY_WAKE_BUNDLE_LOCAL_DIR")),
-        object_prefix=_required_env("MY_WAKE_OSS_PREFIX"),
-        object_store=object_store,
-        dek_protector=AlibabaKmsDekProtector(
-            endpoint=_required_env("MY_WAKE_KMS_ENDPOINT"),
-            region_id=_required_env("MY_WAKE_KMS_REGION_ID"),
-            access_key_id=_required_env("MY_WAKE_KMS_ACCESS_KEY_ID"),
-            access_key_secret=_required_env("MY_WAKE_KMS_ACCESS_KEY_SECRET"),
-            key_id=_required_env("MY_WAKE_KMS_KEY_ID"),
-        ),
+        object_prefix=storage.object_prefix,
+        object_store=storage.object_store,
+        dek_protector=storage.dek_protector,
         client_cert=(cert, key) if cert and key else None,
+        snapshot_copy_kind=storage.copy_kind,
     )
 
 

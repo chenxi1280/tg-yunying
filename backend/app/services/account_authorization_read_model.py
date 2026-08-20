@@ -349,7 +349,11 @@ def _bundle_snapshot(session: Session, row: TgAccountAuthorization) -> dict[str,
         "recoverable_copy_count": bundle.recoverable_copy_count,
         "kms_recovery_status": bundle.kms_decrypt_status,
         "local_copy_last_verified_at": getattr(by_kind.get("local_persistent"), "readback_verified_at", None),
-        "object_copy_last_verified_at": getattr(by_kind.get("object_snapshot"), "readback_verified_at", None),
+        "object_copy_last_verified_at": getattr(
+            by_kind.get("remote_ssh_snapshot") or by_kind.get("object_snapshot"),
+            "readback_verified_at",
+            None,
+        ),
         "last_restore_probe_at": probe_at,
         "my_inventory_sequence": int(inventory_sequence or 0),
     }

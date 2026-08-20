@@ -178,7 +178,7 @@ def _copy(kind: str, digest: str) -> CopyReceipt:
     )
 
 
-def _bundle_receipt(claim, *, copy_kinds=("local_persistent", "object_snapshot")) -> WakeBundleReceipt:
+def _bundle_receipt(claim, *, copy_kinds=("local_persistent", "remote_ssh_snapshot")) -> WakeBundleReceipt:
     digest = "e" * 64
     return WakeBundleReceipt(
         bundle_generation=claim.target_generation,
@@ -198,7 +198,7 @@ def _bundle_receipt(claim, *, copy_kinds=("local_persistent", "object_snapshot")
 def _probe_receipt() -> RestoreProbeReceipt:
     return RestoreProbeReceipt(
         probe_generation=1,
-        source_copy_kind="object_snapshot",
+        source_copy_kind="remote_ssh_snapshot",
         status="passed",
         session_parse_status="passed",
         authorization_status="authorized",
@@ -293,6 +293,14 @@ def test_global_my_owner_claims_only_one_canary_operation(session: Session) -> N
     assert first is not None
     assert second is None
     assert first.account_id == 101
+
+
+def test_node_can_heartbeat_without_claiming_while_runtime_is_off(session: Session) -> None:
+    contract = session.get(AuthorizationDrRuntimeContract, 1)
+    contract.mode = "off"
+    session.commit()
+
+    assert claim_migration_operation(session, "my-node-1") is None
 
 
 def test_claim_exposes_frozen_login_material_and_renews_lease(session: Session, monkeypatch) -> None:

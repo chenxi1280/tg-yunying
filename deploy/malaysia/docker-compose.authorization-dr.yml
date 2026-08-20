@@ -8,6 +8,7 @@ services:
     volumes:
       - ${MY_WAKE_BUNDLE_LOCAL_HOST_DIR:?MY_WAKE_BUNDLE_LOCAL_HOST_DIR is required}:/var/lib/tgyunying/wake-local
       - ${AUTHORIZATION_DR_CERT_HOST_DIR:-/opt/tgyunying-authorization-dr/certs}:/run/authorization-dr-certs:ro
+      - ${MY_WAKE_SECRET_HOST_DIR:-/opt/tgyunying-authorization-dr/secrets}:/run/authorization-dr-secrets:ro
     restart: unless-stopped
     init: true
     healthcheck:

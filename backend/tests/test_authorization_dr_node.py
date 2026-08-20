@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,6 +16,7 @@ from app.workers.authorization_dr_node import (
     _verify_expected_egress,
 )
 from app.workers.authorization_dr_kms import AlibabaKmsDekProtector, WrappedDek
+from app.workers.authorization_dr_ssh import FileDekProtector, SshMirrorObjectSnapshotStore
 
 
 pytestmark = pytest.mark.no_postgres
@@ -94,6 +96,46 @@ def test_alibaba_kms_protector_uses_key_version_and_matching_context() -> None:
     assert client.encrypt_request.encryption_context == client.decrypt_request.encryption_context
 
 
+def test_file_dek_protector_round_trip(tmp_path: Path) -> None:
+    key_file = tmp_path / "recovery.key"
+    key_file.write_text(base64.b64encode(b"k" * 32).decode())
+    protector = FileDekProtector(str(key_file))
+
+    wrapped = protector.wrap(b"d" * 32)
+
+    assert wrapped.key_version.startswith("ssh-key-")
+    assert protector.unwrap(wrapped.ciphertext) == b"d" * 32
+
+
+def test_ssh_mirror_writes_create_only_and_reads_back() -> None:
+    payload = b"encrypted-session-envelope"
+    calls = []
+
+    def runner(args, **kwargs):
+        calls.append((args, kwargs))
+        stdout = payload if "cat --" in args[-1] else hashlib.sha256(payload).hexdigest().encode()
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr=b"")
+
+    store = SshMirrorObjectSnapshotStore(
+        host="198.51.100.8",
+        port=22,
+        user="dr-mirror",
+        identity_file="/run/secrets/id_ed25519",
+        known_hosts_file="/run/secrets/known_hosts",
+        remote_dir="/srv/dr",
+        runner=runner,
+    )
+
+    version = store.put_immutable("bundle/101/g2.bundle", payload)
+
+    assert version == f"sha256-{hashlib.sha256(payload).hexdigest()}"
+    assert store.read("bundle/101/g2.bundle") == payload
+    assert calls[0][1]["input"] == payload
+    assert 'test ! -e "$target"' in calls[0][0][-1]
+    with pytest.raises(ValueError, match="normalized"):
+        store.read("../outside")
+
+
 def test_wake_bundle_has_two_readable_immutable_copies(tmp_path: Path) -> None:
     object_store = MemoryObjectStore()
     config = NodeConfig(
@@ -119,7 +161,7 @@ def test_wake_bundle_has_two_readable_immutable_copies(tmp_path: Path) -> None:
 
     receipt, object_key = _persist_bundle(config, claim, "raw-session-value", identity)
 
-    assert {item["copy_kind"] for item in receipt["copies"]} == {"local_persistent", "object_snapshot"}
+    assert {item["copy_kind"] for item in receipt["copies"]} == {"local_persistent", "remote_ssh_snapshot"}
     dek = config.dek_protector.unwrap(receipt["wrapped_dek_ciphertext"])
     assert _decrypt_session(object_store.read(object_key), dek) == "raw-session-value"
     with pytest.raises(FileExistsError):
@@ -172,7 +214,7 @@ def test_restore_probe_reads_snapshot_and_matches_authorization(tmp_path: Path) 
     )
 
     assert probe["status"] == "passed"
-    assert probe["source_copy_kind"] == "object_snapshot"
+    assert probe["source_copy_kind"] == "remote_ssh_snapshot"
     assert probe["source_client_disconnected"] is True
     assert probe["probe_client_disconnected"] is True
 
