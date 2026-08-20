@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+from pathlib import Path
 
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
@@ -62,3 +63,10 @@ def test_0157_upgrade_is_idempotent_after_metadata_create_all(monkeypatch) -> No
         migration.upgrade()
 
     assert "authorization_dr_runtime_contracts" in Base.metadata.tables
+
+
+def test_backend_compose_exposes_authorization_dr_runtime_contract() -> None:
+    compose = (Path(__file__).resolve().parents[2] / "docker-compose.server.yml").read_text()
+
+    assert "AUTHORIZATION_DR_INTERNAL_TOKEN: ${AUTHORIZATION_DR_INTERNAL_TOKEN:-}" in compose
+    assert "AUTHORIZATION_DR_REQUIRE_MTLS: ${AUTHORIZATION_DR_REQUIRE_MTLS:-true}" in compose
