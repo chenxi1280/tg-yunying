@@ -28,3 +28,9 @@
 - Feature PR #58 and release PR #59 merged; the candidate reached Deploy Production run `32345159607` at release SHA `3f194aecd72ed05ff5b859871dcf7ee66ee2c1a2`.
 - The PostgreSQL job failed before image build/deploy with `DuplicateTable` on `authorization_dr_runtime_contracts`; production therefore remained on `63b7c0071fe56201d3ed1ee9062c4d0c03115b89` and no migration state was created.
 - Root cause is the CI compatibility path: current `Base.metadata.create_all` already materializes the target schema before Alembic replays `0157`. The migration now treats an independently verified complete target schema as already applied, while a genuinely old production schema still executes the additive migration.
+
+## 2026-08-20 Second Release Gate Finding
+
+- Release SHA `c1deef70591440bcecf0e3236ebc82adda99367a` reached Deploy Production run `32345671294`; frontend passed and both backend matrices completed, but image build and deployment remained skipped.
+- PostgreSQL migration execution passed. Remaining failures were stale assertions that the migration head was still `0156`, plus legacy account-security tests that omitted the v2 cleanup executor/login age/idempotency contract or still expected SV to create `standby_2`.
+- The current product contract is explicit: device cleanup is standalone and keeps only recorded protected platform authorization hashes; every other active authorization, including an unrecorded official client anchor, is a cleanup target. `standby_2` creation is exclusive to the MY DR migration flow.

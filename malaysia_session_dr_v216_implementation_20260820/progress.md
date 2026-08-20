@@ -10,3 +10,5 @@
 - 新增正式生产脚本：DR runtime preview/apply、迁移 preview/approve/readback、SV redundancy repair preview/apply；不使用手工 SQL 迁移 Session。
 - 首次标准发布已进入真实 PostgreSQL gate，但 `0157` 在 CI 的“当前模型先建表、再执行全量 Alembic”路径重复建表而失败；流水线在构建和部署前停止，生产仍保持旧 SHA，未发生半发布。
 - 已补充 `0157` 完整目标 schema 幂等识别和对应回归；定向迁移测试 13 passed，完整相关 no-PostgreSQL 回归 270 passed。真实 PostgreSQL CI 复验、部署和 Telegram E4 尚未完成。
+- 第二轮流水线 `32345671294` 已越过重复建表，确认 `0157` 实际执行问题已修复；随后暴露两处旧 migration-head 断言和 8 个旧账号安全合同用例，构建/部署仍被 gate 阻止，生产未变化。
+- 已将旧用例同步到设备清理 v2 合同，并把硅谷普通安全批次请求 `standby_2` 改为明确 `manual_required`，避免无 MY 耐久化事实时假成功；同时修复零目标成功时误报 `partial_failed`。原失败场景 9 passed，完整相关 no-PostgreSQL 回归 273 passed。
