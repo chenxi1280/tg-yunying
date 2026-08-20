@@ -96,7 +96,7 @@ def _probe_candidate(session, frozen: SvRepairCandidate):
     proxy = session.get(AccountProxy, row.proxy_id) if row.proxy_id else None
     current = gateway.authorization_identity(
         _raw_session(account.session_ciphertext),
-        credentials_for_account(session, account),
+        credentials_for_account(session, account, use_proxy=True),
     )
     repair = gateway.authorization_identity(
         _raw_session(row.session_ciphertext),

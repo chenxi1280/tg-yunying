@@ -821,8 +821,8 @@ class TelethonTelegramGateway(TelegramGateway):
         from telethon import functions
 
         client = self._new_client(credentials, raw_session)
-        await client.connect()
         try:
+            await client.connect()
             if not await client.is_user_authorized():
                 raise RuntimeError("session is not authorized")
             user = await client.get_me()
