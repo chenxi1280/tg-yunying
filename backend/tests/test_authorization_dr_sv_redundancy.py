@@ -64,10 +64,15 @@ def _session() -> Session:
 def test_repair_promotes_only_after_matching_remote_identity(monkeypatch) -> None:
     with _session() as session:
         preview = preview_sv_redundancy_repair(session, 1, [11])
+        account_credential_calls: list[bool] = []
         identities = iter([
             SimpleNamespace(authorization_hash="primary", auth_key_fingerprint_digest="1" * 64, telegram_user_id_digest="3" * 64),
             SimpleNamespace(authorization_hash="repair", auth_key_fingerprint_digest="2" * 64, telegram_user_id_digest="3" * 64),
         ])
+        monkeypatch.setattr(
+            "app.services.authorization_dr.sv_redundancy.credentials_for_account",
+            lambda *_args, use_proxy=False, **_kwargs: account_credential_calls.append(use_proxy) or SimpleNamespace(),
+        )
         monkeypatch.setattr(
             "app.services.authorization_dr.sv_redundancy.gateway.authorization_identity",
             lambda *_args, **_kwargs: next(identities),
@@ -90,6 +95,7 @@ def test_repair_promotes_only_after_matching_remote_identity(monkeypatch) -> Non
         assert repaired.health_status == "healthy"
         assert repaired.auth_key_fingerprint_digest == "2" * 64
         assert repaired.fact_version == 5
+        assert account_credential_calls == [True]
 
 
 def test_repair_keeps_row_unchanged_when_remote_identity_differs(monkeypatch) -> None:
