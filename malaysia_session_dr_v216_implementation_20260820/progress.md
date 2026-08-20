@@ -16,3 +16,9 @@
 - 已让 SV standby_1 与 MY standby_2 创建时都持久化显式北京时区 `telegram_login_at`，并补充两条新授权登录时间断言；本地相关 273 项和原失败 9 项继续通过，待真实 PostgreSQL 复验。
 - 第四轮流水线 `32348177594` 再次通过 no-PostgreSQL 全量；PostgreSQL 证明 4 个清理用例已进入执行，但最终设备回读替换快照时被清理目标外键阻止。
 - 已把清理目标的快照外键改为可空 `ON DELETE SET NULL`，目标自身的加密 hash/digest 继续保留为审计事实；回读前显式解除引用。定向 5 passed，相关 273 passed，待真实 PostgreSQL 复验。
+- 第五轮流水线 `32349179289` 全部通过并部署 release SHA `e8cbfcfa2a545d047315d90d18a2a4863d5c9f33`；生产 migration head 为 `0157_authorization_dr_core`，5 张 DR 表和账号授权新列均已读回，仍未创建 runtime contract 或迁移批次。
+- 发现生产 Compose 未向 backend 传递 DR 内部身份变量；提交 `19ff8086`、PR #68/#69 已修复，定向 3 passed。第六轮流水线 `32354502968` 的前端、两个后端全量矩阵、镜像和部署全部成功，生产 release SHA 为 `3b81db2f2abc3ad492df5b503a011cff8391ae2a`。
+- 已核对 MY 是轻量应用服务器 `47.250.167.174`，Docker/Compose 可用，固定出口读回一致。Mac 直连在 banner 前超时，但 Silicon Valley 到 MY 正常；本机 MY root/admin Host 已配置 `ProxyJump prod-silicon-root` 并分别登录成功。
+- 已通过 SSH 安装 MY worker 部署文件和本地持久化目录，并从 Silicon Valley 直传已验证 backend 镜像；现有 tgmsg/抽奖/机器人/基础设施容器未被替换。
+- 已在 Silicon Valley 配置 DR 内部身份、关闭未部署的 mTLS 开关、发布 Compose 合同并启用 Nginx 内部路由。MY 无令牌心跳返回 401，正确令牌返回 200，`my-node-1` 以 ready/0 活跃客户端写入中心库。
+- 当前唯一外部依赖是 MY 私有 OSS Bucket、版本控制和专用 RAM AccessKey。未获得该云资源创建确认前不启动 worker、不应用 runtime contract、不创建 2 账号迁移批次。

@@ -54,7 +54,7 @@
 
 ### Phase 5: Automated QA And Release Gate
 
-**Status:** in_progress
+**Status:** completed
 
 - 定向与完整后端测试、前端构建、migration/Compose/workflow 检查。
 - 故障注入覆盖 fsync/object/KMS/restore/CAS/DB rollback/partial erase。
@@ -62,7 +62,7 @@
 
 ### Phase 6: Production Read-only Preview And Two-account Canary
 
-**Status:** pending
+**Status:** in_progress
 
 - 读取生产部署 SHA、运行配置、A/B/C 映射、MY node/egress/KMS/object storage readiness。
 - 精确选择 2 个账号并冻结 ID/tenant/old state/fingerprint；必须不存在 open lease/operation/unknown。
@@ -99,3 +99,6 @@
 | Second Deploy Production gate passed migration execution but retained old `0156` head assertions and legacy device-cleanup/standby_2 test contracts. | 2 | Updated the Alembic head assertions, moved cleanup tests to the current SV executor + over-48h + idempotency contract, blocked SV `standby_2` with `manual_required`, and corrected all-failed cleanup outcome semantics. |
 | Third PostgreSQL gate skipped all four updated cleanup executions even though their login age was 49 hours; SQLite did not reproduce it. | 3 | Found timezone-aware `telegram_login_at` receiving naive Beijing values under UTC PostgreSQL. SV and MY authorization creation now persist explicit Beijing-aware login timestamps; tests use the same cross-timezone contract. |
 | Fourth PostgreSQL gate executed cleanup but failed when final readback replaced authorization snapshots still referenced by durable cleanup targets. | 4 | Cleanup targets now retain their own encrypted hash/digest while their snapshot reference is nullable with `ON DELETE SET NULL`; readback explicitly detaches those references before replacing snapshots. |
+| Production shared `.env` contained the DR identity, but Compose did not pass it into the backend container. | 5 | Added both DR runtime variables to the shared backend environment anchor, added a regression test, and completed release run `32354502968`. |
+| Direct Mac-to-MY SSH reached TCP/22 but timed out before the server banner. | 6 | Verified both MY keys, then configured and tested `ProxyJump prod-silicon-root`; root and admin aliases now reach the MY host through the existing Silicon Valley key path. |
+| MY Docker credentials could not pull the private tg-yunying backend image. | 7 | Forwarded only the local SSH agent signing capability to Silicon Valley and streamed the verified image directly from Silicon Valley to MY over SSH; no private key or Session file was copied. |
