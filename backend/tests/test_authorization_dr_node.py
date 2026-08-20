@@ -136,6 +136,19 @@ def test_ssh_mirror_writes_create_only_and_reads_back() -> None:
         store.read("../outside")
 
 
+def test_malaysia_deploy_checks_ssh_mirror_access_before_start() -> None:
+    script_path = Path(__file__).parents[2] / "deploy/malaysia/deploy-authorization-dr-node.sh"
+    script = script_path.read_text()
+
+    access_check = script.index('printf -v remote_access_check')
+    ssh_check = script.index('"$remote_access_check"')
+    container_start = script.index('docker compose -f "$COMPOSE_FILE" up')
+
+    assert access_check < ssh_check < container_start
+    assert 'test -d -- %q && test -x -- %q && test -w -- %q' in script
+    assert "StrictHostKeyChecking=yes" in script
+
+
 def test_wake_bundle_has_two_readable_immutable_copies(tmp_path: Path) -> None:
     object_store = MemoryObjectStore()
     config = NodeConfig(
