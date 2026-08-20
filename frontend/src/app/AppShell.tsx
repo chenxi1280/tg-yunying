@@ -223,6 +223,25 @@ function AppShell() {
     setTenants(tenantRows);
   }, [activeView, setDeveloperApps, setTenants, systemConfigTab]);
 
+  async function saveDeveloperAppAssignments(payload: {
+    app_a_id: number;
+    app_b_id: number;
+    app_c_id: number;
+    expected_assignment_version: number;
+  }) {
+    setBusy('配置开发者应用角色');
+    try {
+      const apps = await api<DeveloperApp[]>('/developer-apps/slot-assignments', {
+        method: 'PUT',
+        body: JSON.stringify(payload),
+      });
+      setDeveloperApps(apps);
+      message.success('Developer App 三角色已保存');
+    } finally {
+      setBusy('');
+    }
+  }
+
   const loadTelegramBotConfig = React.useCallback(async (requestSeq: number) => {
     const tenantRows = await api<Tenant[]>('/tenants');
     const botRows = await Promise.all(tenantRows.map((tenant) => api<TenantBotSettings>(`/tenant-bot-settings?tenant_id=${tenant.id}`)));
@@ -671,6 +690,7 @@ function AppShell() {
               onEditDeveloperApp={openDeveloperAppEdit}
               onCheckDeveloperApp={checkDeveloperApp}
               onToggleDeveloperApp={toggleDeveloperApp}
+              onSaveDeveloperAppAssignments={saveDeveloperAppAssignments}
               onEditTenant={openTenantEdit}
               onSaveGroupRescueSettings={saveTenantGroupRescueSettings}
               onSaveTenantBotSettings={saveTenantBotSettings}

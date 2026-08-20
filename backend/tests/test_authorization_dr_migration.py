@@ -39,6 +39,11 @@ from app.services.authorization_dr import (
     renew_migration_lease,
     rollback_migration_slot,
 )
+from app.services.developer_apps import (
+    assign_developer_app_round_robin,
+    list_developer_apps,
+    update_developer_app_slot_assignments,
+)
 
 
 pytestmark = pytest.mark.no_postgres
@@ -501,3 +506,33 @@ def test_stale_my_node_blocks_approval_before_operations_are_created(session: Se
         )
 
     assert error.value.code == "malaysia_wake_unavailable"
+
+
+def test_developer_app_roles_are_versioned_and_drive_new_primary_assignment(session: Session) -> None:
+    payload = SimpleNamespace(
+        app_a_id=1,
+        app_b_id=2,
+        app_c_id=3,
+        expected_assignment_version=7,
+    )
+
+    apps = update_developer_app_slot_assignments(session, payload, "platform-admin")
+    account = TgAccount(tenant_id=1, display_name="new", phone_masked="new")
+    selected = assign_developer_app_round_robin(session, account)
+
+    assert selected.id == 1
+    assert account.developer_app_id == 1
+    assert {item["slot_purpose"] for item in apps} == {"primary_sv", "standby_1_sv", "standby_2_my"}
+    assert {item["assignment_version"] for item in apps} == {8}
+    app_c = next(item for item in list_developer_apps(session) if item["id"] == 3)
+    assert app_c["used_distinct_accounts"] == 2
+
+
+def test_developer_app_roles_reject_duplicate_apps_and_stale_version(session: Session) -> None:
+    duplicate = SimpleNamespace(app_a_id=1, app_b_id=1, app_c_id=3, expected_assignment_version=7)
+    stale = SimpleNamespace(app_a_id=1, app_b_id=2, app_c_id=3, expected_assignment_version=6)
+
+    with pytest.raises(ValueError, match="三个不同"):
+        update_developer_app_slot_assignments(session, duplicate, "platform-admin")
+    with pytest.raises(ValueError, match="版本已变化"):
+        update_developer_app_slot_assignments(session, stale, "platform-admin")

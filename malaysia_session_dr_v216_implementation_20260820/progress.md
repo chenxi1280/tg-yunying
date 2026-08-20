@@ -16,3 +16,16 @@
 - 已让 SV standby_1 与 MY standby_2 创建时都持久化显式北京时区 `telegram_login_at`，并补充两条新授权登录时间断言；本地相关 273 项和原失败 9 项继续通过，待真实 PostgreSQL 复验。
 - 第四轮流水线 `32348177594` 再次通过 no-PostgreSQL 全量；PostgreSQL 证明 4 个清理用例已进入执行，但最终设备回读替换快照时被清理目标外键阻止。
 - 已把清理目标的快照外键改为可空 `ON DELETE SET NULL`，目标自身的加密 hash/digest 继续保留为审计事实；回读前显式解除引用。定向 5 passed，相关 273 passed，待真实 PostgreSQL 复验。
+- 第五轮流水线 `32349179289` 全部通过并部署 release SHA `e8cbfcfa2a545d047315d90d18a2a4863d5c9f33`；生产 migration head 为 `0157_authorization_dr_core`，5 张 DR 表和账号授权新列均已读回，仍未创建 runtime contract 或迁移批次。
+- 发现生产 Compose 未向 backend 传递 DR 内部身份变量；提交 `19ff8086`、PR #68/#69 已修复，定向 3 passed。第六轮流水线 `32354502968` 的前端、两个后端全量矩阵、镜像和部署全部成功，生产 release SHA 为 `3b81db2f2abc3ad492df5b503a011cff8391ae2a`。
+- 已核对 MY 是轻量应用服务器 `47.250.167.174`，Docker/Compose 可用，固定出口读回一致。Mac 直连在 banner 前超时，但 Silicon Valley 到 MY 正常；本机 MY root/admin Host 已配置 `ProxyJump prod-silicon-root` 并分别登录成功。
+- 已通过 SSH 安装 MY worker 部署文件和本地持久化目录，并从 Silicon Valley 直传已验证 backend 镜像；现有 tgmsg/抽奖/机器人/基础设施容器未被替换。
+- 已在 Silicon Valley 配置 DR 内部身份、关闭未部署的 mTLS 开关、发布 Compose 合同并启用 Nginx 内部路由。MY 无令牌心跳返回 401，正确令牌返回 200，`my-node-1` 以 ready/0 活跃客户端写入中心库。
+- 当前唯一外部依赖是 MY 私有 OSS Bucket、版本控制和专用 RAM AccessKey。未获得该云资源创建确认前不启动 worker、不应用 runtime contract、不创建 2 账号迁移批次。
+- 用户要求继续完成并检查至必须完成。重新审计确认生产 App 角色映射、MY egress/runtime contract、node.env、worker、对象副本、独立密钥恢复、迁移批次和 bundle 仍全部未生效，2 账号 canary 为 0/2。
+- 已把 Phase 4 恢复为 in_progress；下一步先补 Developer App 固定角色 API/UI 与新账号默认角色，再补真实可恢复密钥和 MY runtime，之后才允许生产 canary。
+- 已实现 Developer App 三固定角色的版本化 API/UI：三套健康 App 必须一一映射为 `primary_sv/standby_1_sv/standby_2_my`，新账号在映射生效后固定使用 `primary_sv`，容量按去重账号统计；角色变更受活跃 DR operation 阻断。
+- 已移除 MY 主机本地 `MY_WAKE_KEK_BASE64` 包装方式，改为 Alibaba Cloud KMS Encrypt/Decrypt + 一致 encryption context，并为 worker 注入可测试的 DEK protector；相关后端定向测试 19 passed，前端生产构建通过。
+- Developer App 角色保存增加首次配置并发串行化，业务校验返回 400、assignment CAS 漂移返回 409；DR/设备定向回归扩大为 22 passed，前端/权限静态回归 169 passed，后端 compileall、shell syntax、diff check 和前端生产构建通过。需要 PostgreSQL 的 `test_workflow.py` 本地被真实数据库闸门阻止，未绕过，留给标准 CI。
+- 通过 SSH 读回 SV/MY 出口分别为 `47.77.184.233`/`47.250.167.174`；两机均无 aliyun/ossutil、无 RAM 实例角色，MY `node.env` 仍不存在。控制台读回 MY KMS 用户实例/用户主密钥均为 0，最低软件 KMS 配置页面为 ¥4,998/月；OSS 仅有成都 `test-001sdadad` 且未启用版本控制；GitHub Actions 无 OSS/KMS/MY 节点 Secret。
+- 全仓搜索确认 `local_activate`、`restore_sv_pair`、`emergency_reauthorize_primary` 仍只有 PRD 定义而无运行代码；两账号 canary 主链路可以先验收，但在这些状态机与业务 generation fence 完成前，完整 PRD 必须继续标记未完成。

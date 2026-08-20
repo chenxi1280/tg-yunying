@@ -46,15 +46,17 @@
 
 ### Phase 4: API, UI, Metrics And Cross-module Fences
 
-**Status:** completed
+**Status:** in_progress
 
 - 实现授权/设备/operation/API、账号详情登录设备和 recoverability 状态。
 - 实现 resolver/Gateway/current generation、在线/listener/sync stale-generation 屏障。
 - 实现指标、告警、部署配置和运行说明。
+- 2026-08-20 复核发现 Developer App 固定角色 API/UI、新账号默认角色、完整紧急唤起与跨模块 generation 屏障尚未完成；不得按完整 PRD 标记 completed。
+- Developer App 固定角色 API/UI、新账号默认 `primary_sv` 和真实 KMS DEK 包装已补齐；`local_activate/restore_sv_pair/emergency_reauthorize_primary` 及其业务 generation fence 仍是未实现硬缺口。
 
 ### Phase 5: Automated QA And Release Gate
 
-**Status:** in_progress
+**Status:** completed
 
 - 定向与完整后端测试、前端构建、migration/Compose/workflow 检查。
 - 故障注入覆盖 fsync/object/KMS/restore/CAS/DB rollback/partial erase。
@@ -62,11 +64,12 @@
 
 ### Phase 6: Production Read-only Preview And Two-account Canary
 
-**Status:** pending
+**Status:** in_progress
 
 - 读取生产部署 SHA、运行配置、A/B/C 映射、MY node/egress/KMS/object storage readiness。
 - 精确选择 2 个账号并冻结 ID/tenant/old state/fingerprint；必须不存在 open lease/operation/unknown。
 - 通过正式 audited operation 迁移，逐账号 readback 双副本/KMS/inventory/restore gate/slot/3+1 retained 和 Telegram exact set。
+- 硬闸门：生产必须先读回 App A/B/C 角色映射、MY 固定出口、持续新鲜 heartbeat、私有不可覆盖对象副本、独立可恢复 KEK/KMS 和运行中 authorization-dr worker。
 
 ### Phase 7: Canary Acceptance And Full Rollout
 
@@ -99,3 +102,8 @@
 | Second Deploy Production gate passed migration execution but retained old `0156` head assertions and legacy device-cleanup/standby_2 test contracts. | 2 | Updated the Alembic head assertions, moved cleanup tests to the current SV executor + over-48h + idempotency contract, blocked SV `standby_2` with `manual_required`, and corrected all-failed cleanup outcome semantics. |
 | Third PostgreSQL gate skipped all four updated cleanup executions even though their login age was 49 hours; SQLite did not reproduce it. | 3 | Found timezone-aware `telegram_login_at` receiving naive Beijing values under UTC PostgreSQL. SV and MY authorization creation now persist explicit Beijing-aware login timestamps; tests use the same cross-timezone contract. |
 | Fourth PostgreSQL gate executed cleanup but failed when final readback replaced authorization snapshots still referenced by durable cleanup targets. | 4 | Cleanup targets now retain their own encrypted hash/digest while their snapshot reference is nullable with `ON DELETE SET NULL`; readback explicitly detaches those references before replacing snapshots. |
+| Production shared `.env` contained the DR identity, but Compose did not pass it into the backend container. | 5 | Added both DR runtime variables to the shared backend environment anchor, added a regression test, and completed release run `32354502968`. |
+| Direct Mac-to-MY SSH reached TCP/22 but timed out before the server banner. | 6 | Verified both MY keys, then configured and tested `ProxyJump prod-silicon-root`; root and admin aliases now reach the MY host through the existing Silicon Valley key path. |
+| MY Docker credentials could not pull the private tg-yunying backend image. | 7 | Forwarded only the local SSH agent signing capability to Silicon Valley and streamed the verified image directly from Silicon Valley to MY over SSH; no private key or Session file was copied. |
+| 本地 `test_workflow.py` Developer App API 用例需要 PostgreSQL，但当前 shell 未配置 `TEST_DATABASE_URL`。 | 8 | 未绕过数据库闸门；SQLite 定向合同、compileall 和前端构建在本地执行，真实 PostgreSQL 交给标准 GitHub Actions gate。 |
+| 首次 compileall 从仓库根目录扫描 `app/tests`，输出 `Can't list` 且未形成有效证明。 | 9 | 改到 `backend/` 目录重跑 `python -m compileall -q app tests`，成功且无输出。 |

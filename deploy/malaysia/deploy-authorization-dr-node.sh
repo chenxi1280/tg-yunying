@@ -20,6 +20,27 @@ if [[ ! -f "$ENV_FILE" ]]; then
   echo "Authorization DR env file does not exist: $ENV_FILE" >&2
   exit 1
 fi
+required_env_file_names=(
+  AUTHORIZATION_DR_CONTROL_PLANE_URL
+  AUTHORIZATION_DR_INTERNAL_TOKEN
+  AUTHORIZATION_DR_EXPECTED_EGRESS_IP
+  MY_WAKE_OSS_ENDPOINT
+  MY_WAKE_OSS_BUCKET
+  MY_WAKE_OSS_ACCESS_KEY_ID
+  MY_WAKE_OSS_ACCESS_KEY_SECRET
+  MY_WAKE_KMS_ENDPOINT
+  MY_WAKE_KMS_REGION_ID
+  MY_WAKE_KMS_ACCESS_KEY_ID
+  MY_WAKE_KMS_ACCESS_KEY_SECRET
+  MY_WAKE_KMS_KEY_ID
+)
+for name in "${required_env_file_names[@]}"; do
+  value="$(sed -n "s/^${name}=//p" "$ENV_FILE" | tail -n 1)"
+  if [[ -z "$value" || "$value" == replace-with-* ]]; then
+    echo "$name must be configured in $ENV_FILE" >&2
+    exit 1
+  fi
+done
 mkdir -p "$MY_WAKE_BUNDLE_LOCAL_HOST_DIR"
 export AUTHORIZATION_DR_ENV_FILE="$ENV_FILE"
 docker compose -f "$COMPOSE_FILE" pull authorization-dr-node
