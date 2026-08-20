@@ -193,7 +193,9 @@ class TgAccountDeviceCleanupTarget(Base):
     batch_item_id: Mapped[int] = mapped_column(ForeignKey("tg_account_security_batch_items.id"))
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
     account_id: Mapped[int] = mapped_column(ForeignKey("tg_accounts.id"))
-    snapshot_id: Mapped[int] = mapped_column(ForeignKey("tg_account_authorization_snapshots.id"))
+    snapshot_id: Mapped[int | None] = mapped_column(
+        ForeignKey("tg_account_authorization_snapshots.id", ondelete="SET NULL"), nullable=True
+    )
     target_hash_ciphertext: Mapped[str] = mapped_column(Text)
     target_hash_digest: Mapped[str] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(40), default="pending")
