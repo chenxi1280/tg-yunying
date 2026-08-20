@@ -186,7 +186,7 @@ def _protected_authorization_hashes(session: Session, account: TgAccount | None)
     return {
         value
         for row in rows
-        if row.role in {"primary", "standby_1", "standby_2"} or row.is_current
+        if row.protected_from_cleanup or row.role in {"primary", "standby_1", "standby_2"} or row.is_current
         for value in [decrypt_secret(row.telegram_authorization_hash_ciphertext) or row.telegram_authorization_hash_ciphertext]
         if _usable_hash(value)
     }
