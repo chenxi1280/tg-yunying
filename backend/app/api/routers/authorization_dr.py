@@ -332,6 +332,7 @@ def post_dr_wake_bundle(
             kms_key_version=payload.kms_key_version,
             auth_key_fingerprint_digest=payload.auth_key_fingerprint_digest,
             telegram_user_id_digest=payload.telegram_user_id_digest,
+            authorization_fingerprint_digest=payload.authorization_fingerprint_digest,
             remote_authorization_hash_ciphertext=encrypt_secret(payload.remote_authorization_hash),
             inventory_sequence=payload.inventory_sequence,
             inventory_manifest_digest=payload.inventory_manifest_digest,

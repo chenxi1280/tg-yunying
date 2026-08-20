@@ -188,6 +188,7 @@ def _bundle_receipt(claim, *, copy_kinds=("local_persistent", "remote_ssh_snapsh
         kms_key_version="kms-key-v3",
         auth_key_fingerprint_digest=f"{claim.account_id:064x}",
         telegram_user_id_digest=f"{claim.account_id + 1000:064x}",
+        authorization_fingerprint_digest="2" * 64,
         remote_authorization_hash_ciphertext=f"encrypted-hash-{claim.account_id}",
         inventory_sequence=claim.account_id,
         inventory_manifest_digest="1" * 64,

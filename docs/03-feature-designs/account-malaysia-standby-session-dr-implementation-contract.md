@@ -1,11 +1,13 @@
 # 马来西亚异地备用 TG Session 实施与验收合同
 
 > 版本：v2.17
-> 日期口径：2026-08-20（Asia/Shanghai）
+> 日期口径：2026-08-21（Asia/Shanghai）
 > 规范关系：本文是 [马来西亚异地备用 TG Session 灾备 PRD](account-malaysia-standby-session-dr-prd.md) 的强制组成部分；冲突时两份文档必须同步修订，不允许实现自行择一。
-> 当前状态：`design_status=complete`、`implementation_started=true`、`implementation_scope=two_account_canary_core`、`core_deployed=true`、`ssh_mirror_change_in_progress=true`、`two_account_canary=0/2`、`production_fixed=false`
+> 当前状态：`design_status=complete`、`implementation_started=true`、`implementation_scope=two_account_canary_core`、`core_deployed=true`、`ssh_mirror_deployed=true`、`two_account_canary=0/2_reconcile_unknown`、`runtime_mode=off`、`production_fixed=false`
 
 > 生产结构纠偏：A/B/C 是环境级三套 App 注册和新账号默认角色，不是历史切换后每个账号不可变化的角色标签。单账号验收以三 App ID 两两不同为准；App C/SV `standby_2` 是本次迁移源。历史 App A `standby_repair` 必须经双 Session Telegram UID/AuthKey 探测和 CAS 转正为 SV `standby_1` 后，账号才能进入迁移。
+
+> 当前设备 hash 合同：Telegram 从当前 Session 读取设备时允许返回 `hash=0`，不得判定登录失败，也不得把 `0` 保存为受保护设备标识。MY 必须提交当前设备规范化指纹摘要；SV 只用保留的 peer Session 读取结果解析唯一非零 hash。唯一匹配前不得写 Bundle/slot commit；零匹配、多匹配或 peer 读取失败统一进入 `provision_reconcile_unknown`，且不得自动重登。
 
 ## 1. API 合同
 

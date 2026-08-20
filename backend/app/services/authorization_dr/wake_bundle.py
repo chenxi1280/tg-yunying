@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from sqlalchemy import select
 
 from app.models import (
@@ -11,6 +13,8 @@ from app.models import (
     TgAuthorizationWakeInventoryEntry,
 )
 from app.services._common import _now
+from app.security import decrypt_secret, encrypt_secret
+from app.services.account_authorization_metadata import resolve_peer_authorization_hash
 from app.timezone import as_beijing_aware
 
 from .contracts import AuthorizationDrError, RestoreProbeReceipt, WakeBundleReceipt
@@ -47,6 +51,7 @@ def commit_wake_bundle_receipt(
         _verify_idempotent_bundle(session, existing, receipt)
         return existing
     _require_remote_login_started(operation)
+    receipt = _resolve_remote_authorization_hash(session, operation, receipt)
     _validate_bundle_receipt(operation, receipt)
     _reject_auth_key_collision(session, receipt.auth_key_fingerprint_digest)
     candidate = _create_candidate_authorization(session, operation, receipt)
@@ -134,7 +139,12 @@ def _validate_bundle_receipt(operation, receipt: WakeBundleReceipt) -> None:
         raise AuthorizationDrError("wake_bundle_generation_conflict", "Bundle generation does not match operation")
     if not all((receipt.ciphertext_digest, receipt.wrapped_dek_ciphertext, receipt.kms_key_ref_digest)):
         raise AuthorizationDrError("my_kms_recovery_unproven", "Bundle KMS evidence is incomplete")
-    if not receipt.kms_key_version or not receipt.auth_key_fingerprint_digest or not receipt.telegram_user_id_digest:
+    if not all((
+        receipt.kms_key_version,
+        receipt.auth_key_fingerprint_digest,
+        receipt.telegram_user_id_digest,
+        receipt.authorization_fingerprint_digest,
+    )):
         raise AuthorizationDrError("my_kms_recovery_unproven", "Bundle identity evidence is incomplete")
     if not receipt.remote_authorization_hash_ciphertext:
         raise AuthorizationDrError("authorization_hash_missing_or_zero", "Remote authorization hash is missing")
@@ -147,6 +157,21 @@ def _validate_bundle_receipt(operation, receipt: WakeBundleReceipt) -> None:
         raise AuthorizationDrError("wake_bundle_copy_count_insufficient", "Bundle copy readback is incomplete")
     if receipt.inventory_sequence < 1 or not receipt.inventory_manifest_digest:
         raise AuthorizationDrError("wake_bundle_inventory_ahead_of_central", "MY inventory receipt is missing")
+
+
+def _resolve_remote_authorization_hash(session, operation, receipt: WakeBundleReceipt) -> WakeBundleReceipt:
+    raw_hash = decrypt_secret(receipt.remote_authorization_hash_ciphertext) or receipt.remote_authorization_hash_ciphertext
+    if str(raw_hash).strip() not in {"", "0"}:
+        return receipt
+    resolved = resolve_peer_authorization_hash(
+        session,
+        operation.account_id,
+        receipt.authorization_fingerprint_digest,
+        exclude_authorization_id=operation.source_authorization_id,
+    )
+    if not resolved:
+        raise AuthorizationDrError("authorization_hash_missing_or_zero", "Remote authorization hash is unresolved")
+    return replace(receipt, remote_authorization_hash_ciphertext=encrypt_secret(resolved))
 
 
 def _copy_receipt_complete(copy) -> bool:
