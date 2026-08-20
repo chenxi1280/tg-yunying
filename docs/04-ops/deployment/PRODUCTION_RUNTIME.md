@@ -2,11 +2,11 @@
 
 ## 马来西亚授权灾备节点
 
-MY 节点只运行 `authorization-dr-node`，不运行消息、listener、Planner、Dispatcher 或同步。部署入口为 `deploy/malaysia/deploy-authorization-dr-node.sh`，固定读取 `/opt/tgyunying-authorization-dr/node.env`。生产一期显式使用 `MY_WAKE_STORAGE_MODE=ssh_mirror`：worker 把一份不可变密文写入 MY 持久卷，再通过专用受限 SSH 身份把第二份 create-only 密文和 inventory 写入硅谷 `/data/tgyunying/shared/authorization-dr-snapshots`。专用恢复密钥以 root-only 文件保存在 MY，并备份到硅谷运维目录；普通 backend/worker 不挂载该密钥。脚本在启动前校验控制面、固定出口、SSH 目标、identity、known_hosts 和恢复密钥，空值或 placeholder 直接失败。`kms_oss` 仍是显式可选模式，不是生产一期硬依赖，也不会被自动选择。
+MY 节点只运行 `authorization-dr-node`，不运行消息、listener、Planner、Dispatcher 或同步。部署入口为 `deploy/malaysia/deploy-authorization-dr-node.sh`，固定读取 `/opt/tgyunying-authorization-dr/node.env`。生产一期显式使用 `MY_WAKE_STORAGE_MODE=ssh_mirror`：worker 把一份不可变密文写入 MY 持久卷，再通过专用受限 SSH 身份把第二份 create-only 密文和 inventory 写入硅谷 `/data/tgyunying/shared/authorization-dr-snapshots`。专用恢复密钥以 root-only 文件保存在 MY，并备份到硅谷运维目录；普通 backend/worker 不挂载该密钥。脚本在启动前校验控制面、固定出口、SSH 目标、identity、known_hosts、恢复密钥，以及专用身份对远端镜像目录的可达、可穿越和可写权限；任一项失败时不启动 worker。硅谷父目录保持原 owner/mode，只给 `tgyunying-dr` 添加 `--x` ACL，目标镜像目录保持该用户独占 `0700`，避免目标目录归属正确但父目录不可穿越。`kms_oss` 仍是显式可选模式，不是生产一期硬依赖，也不会被自动选择。
 
 MY 无 GHCR 拉取凭据时，精确 release 镜像先经 SSH 传输、摘要校验并 `docker load`，随后显式设置 `AUTHORIZATION_DR_IMAGE_MODE=local`；脚本只在本机已存在完整 `TGYUNYING_BACKEND_IMAGE` 时启动。`registry` 模式仍会真实 pull，二者不会自动互相回退。
 
-生产顺序固定为：发布候选 SHA -> 读回 App A=`primary_sv`、App B=`standby_1_sv`、App C=`standby_2_my` -> 在两机配置受限 SSH mirror 身份和恢复密钥双机备份 -> 通过 SSH 写入 root-only `node.env` 并启动 worker -> 读回固定出口和持续新鲜 heartbeat -> runtime preview/fingerprint/apply -> 精确两账号 canary。canary 未达到本地+SSH 镜像双副本、恢复密钥解封、inventory、restore probe、slot CAS、旧 SV retained/protected 和 Telegram exact-set 全部事实时，不创建全量批次。
+生产顺序固定为：发布候选 SHA -> 读回 App A=`primary_sv`、App B=`standby_1_sv`、App C=`standby_2_my` -> 在两机配置受限 SSH mirror 身份和恢复密钥双机备份 -> 为专用用户配置父目录 `--x` ACL，并从 MY 容器按正式 identity/known_hosts 执行远端目录访问检查 -> 通过 SSH 写入 root-only `node.env` 并启动 worker -> 读回固定出口和持续新鲜 heartbeat -> runtime preview/fingerprint/apply -> 两个互相独立的单账号 canary。第一个账号未完成全链路验收时不审批第二个；canary 未达到本地+SSH 镜像双副本、恢复密钥解封、inventory、restore probe、slot CAS、旧 SV retained/protected 和 Telegram exact-set 全部事实时，不创建全量批次。
 
 ## 账号批量自动登录发布闸门（默认关闭）
 
