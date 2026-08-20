@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 import pytest
 
 from app.database import Base
-from app.models import TelegramDeveloperApp
+from app.models import TelegramDeveloperApp, TelegramEgressAssignment
 from app.services.authorization_dr import apply_runtime_configuration, preview_runtime_configuration
 
 
@@ -34,6 +34,13 @@ def test_runtime_configuration_uses_exact_three_apps_and_shadow_first() -> None:
             TelegramDeveloperApp(id=1, app_name="A", api_id=101, api_hash_ciphertext="a"),
             TelegramDeveloperApp(id=2, app_name="B", api_id=102, api_hash_ciphertext="b"),
             TelegramDeveloperApp(id=3, app_name="C", api_id=103, api_hash_ciphertext="c"),
+            TelegramEgressAssignment(
+                id="my-node-1",
+                purpose="standby_my",
+                region_code="my",
+                secret_ref_digest="c" * 64,
+                observed_ip_hmac="d" * 64,
+            ),
         ])
         session.commit()
         preview = preview_runtime_configuration(session, desired)
@@ -51,6 +58,8 @@ def test_runtime_configuration_uses_exact_three_apps_and_shadow_first() -> None:
             ("standby_1_sv", 2),
             ("standby_2_my", 3),
         ]
+        assert result["egress"][0]["id"] == "my-egress-1"
+        assert result["egress"][0]["version"] == 2
         assert result["egress"][0]["connectivity"] == "verified"
 
 
