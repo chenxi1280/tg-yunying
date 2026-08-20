@@ -125,7 +125,11 @@ def test_backfills_standby_hash_from_primary_view_when_current_hash_is_zero(monk
             return [_peer_authorization(222, "real-standby-hash")]
 
         monkeypatch.setattr(account_authorization_metadata, "credentials_for_developer_app", lambda *_args: SimpleNamespace())
-        monkeypatch.setattr(account_authorization_metadata, "credentials_for_account", lambda *_args: SimpleNamespace())
+        monkeypatch.setattr(
+            account_authorization_metadata,
+            "credentials_for_account",
+            lambda *_args, **_kwargs: SimpleNamespace(),
+        )
         monkeypatch.setattr(account_authorization_metadata.gateway, "list_authorizations", list_authorizations)
 
         result = backfill_standby_authorization_metadata(session, tenant_id=1, apply=True, actor="tester")
