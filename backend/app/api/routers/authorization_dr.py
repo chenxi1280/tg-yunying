@@ -15,6 +15,7 @@ from app.schemas.authorization_dr import (
     DrClaimOut,
     DrClaimRequest,
     DrLoginCodeOut,
+    DrLoginFailureRequest,
     DrLoginMaterialOut,
     DrMigrationApprovalRequest,
     DrMigrationPreviewRequest,
@@ -35,6 +36,7 @@ from app.services.authorization_dr import (
     commit_migration_slot,
     commit_wake_bundle_receipt,
     list_execution_nodes,
+    mark_login_remote_failed,
     mark_login_remote_started,
     mark_login_remote_unknown,
     migration_login_material,
@@ -310,6 +312,28 @@ def post_dr_login_unknown(
 ):
     try:
         mark_login_remote_unknown(session, operation_id, node_id=node_id, owner_epoch=payload.owner_epoch)
+    except AuthorizationDrError as exc:
+        session.rollback()
+        raise _dr_http_error(exc) from exc
+
+
+@router.post("/internal/v1/authorization-dr/operations/{operation_id}/login-failed", status_code=204)
+def post_dr_login_failed(
+    *,
+    operation_id: str,
+    payload: DrLoginFailureRequest,
+    node_id: str = Depends(_internal_node_identity),
+    session: Session = Depends(get_session),
+):
+    try:
+        mark_login_remote_failed(
+            session,
+            operation_id,
+            node_id=node_id,
+            owner_epoch=payload.owner_epoch,
+            lease_token=payload.lease_token,
+            blocker_code=payload.blocker_code,
+        )
     except AuthorizationDrError as exc:
         session.rollback()
         raise _dr_http_error(exc) from exc

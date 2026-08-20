@@ -254,9 +254,14 @@ def poll_migration_login_code(
 
 
 def mark_login_remote_unknown(session, operation_id: str, *, node_id: str, owner_epoch: int) -> None:
-    operation = session.get(TgAuthorizationDrOperation, operation_id)
+    operation = session.scalar(select(TgAuthorizationDrOperation).where(
+        TgAuthorizationDrOperation.id == operation_id,
+    ).with_for_update())
     if not operation or operation.owner_node_id != node_id or operation.owner_epoch != owner_epoch:
         raise AuthorizationDrError("execution_node_mismatch", "Operation owner changed")
+    if operation.remote_call_state == "confirmed_no_effect" and operation.status == "failed":
+        session.commit()
+        return
     operation.remote_call_state = "unknown"
     operation.status = "provision_reconcile_unknown"
     operation.blocker_code = "provision_reconcile_unknown"
@@ -266,6 +271,46 @@ def mark_login_remote_unknown(session, operation_id: str, *, node_id: str, owner
     _mark_item(session, operation, "reconcile_unknown", blocker="provision_reconcile_unknown")
     refresh_migration_batch(session, operation.batch_item_id)
     session.commit()
+
+
+def mark_login_remote_failed(
+    session,
+    operation_id: str,
+    *,
+    node_id: str,
+    owner_epoch: int,
+    lease_token: str,
+    blocker_code: str,
+) -> TgAuthorizationDrOperation:
+    if blocker_code != "phone_number_banned":
+        raise AuthorizationDrError("login_failure_not_supported", "Login failure is not authoritative")
+    operation = _owned_operation(
+        session,
+        operation_id,
+        node_id=node_id,
+        owner_epoch=owner_epoch,
+        lease_token=lease_token,
+    )
+    if operation.remote_call_state != "started":
+        raise AuthorizationDrError("login_failure_state_mismatch", "Remote login has not started")
+    operation.remote_call_state = "confirmed_no_effect"
+    operation.status = "failed"
+    operation.blocker_code = blocker_code
+    operation.lease_token = ""
+    operation.lease_expires_at = None
+    operation.finished_at = _now()
+    operation.operation_version += 1
+    item = session.get(TgAuthorizationDrBatchItem, operation.batch_item_id)
+    if not item:
+        raise AuthorizationDrError("migration_batch_item_missing", "Migration batch item is unavailable")
+    item.status = "failed"
+    item.outcome = blocker_code
+    item.blocker_code = blocker_code
+    item.finished_at = _now()
+    item.version += 1
+    refresh_migration_batch(session, item.id)
+    session.commit()
+    return operation
 
 
 def _migration_source(session, tenant_id: int, account_id: int) -> TgAccountAuthorization:
@@ -491,6 +536,7 @@ def _operation_fingerprint(batch, item, readiness) -> str:
 __all__ = [
     "approve_migration_batch",
     "claim_migration_operation",
+    "mark_login_remote_failed",
     "mark_login_remote_started",
     "mark_login_remote_unknown",
     "migration_login_material",

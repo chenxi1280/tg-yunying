@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from telethon.errors import PhoneNumberBannedError
 
 from app.integrations.telegram import AuthorizationIdentity
 from app.workers.authorization_dr_node import (
@@ -13,6 +14,7 @@ from app.workers.authorization_dr_node import (
     RestoreProbeInput,
     _decrypt_session,
     _persist_bundle,
+    _process_claim,
     _restore_probe,
     _verify_expected_egress,
     _wrapped_dek_ciphertext,
@@ -78,6 +80,22 @@ class FakeKmsClient:
         return SimpleNamespace(body=body)
 
 
+class RecordingNodeClient:
+    def __init__(self):
+        self.config = SimpleNamespace()
+        self.posts = []
+        self.heartbeats = []
+
+    def post(self, path: str, payload: dict) -> dict:
+        self.posts.append((path, payload))
+        if path.endswith("/login-material"):
+            return {"phone": "+15550000101"}
+        return {}
+
+    def heartbeat(self, active_clients: int) -> None:
+        self.heartbeats.append(active_clients)
+
+
 def test_alibaba_kms_protector_uses_key_version_and_matching_context() -> None:
     client = FakeKmsClient()
     protector = AlibabaKmsDekProtector(
@@ -107,6 +125,31 @@ def test_file_dek_protector_round_trip(tmp_path: Path) -> None:
 
     assert wrapped.key_version.startswith("ssh-key-")
     assert protector.unwrap(wrapped.ciphertext) == b"d" * 32
+
+
+def test_phone_banned_is_acknowledged_without_remote_unknown(monkeypatch) -> None:
+    client = RecordingNodeClient()
+    claim = {
+        "operation_id": "operation-banned",
+        "account_id": 101,
+        "owner_epoch": 2,
+        "lease_token": "lease-token",
+    }
+    monkeypatch.setattr(
+        "app.workers.authorization_dr_node._complete_login",
+        lambda *_args: (_ for _ in ()).throw(PhoneNumberBannedError(request=None)),
+    )
+
+    _process_claim(client, object(), claim)
+
+    paths = [path for path, _payload in client.posts]
+    assert paths == [
+        "/internal/v1/authorization-dr/operations/operation-banned/login-material",
+        "/internal/v1/authorization-dr/operations/operation-banned/login-started",
+        "/internal/v1/authorization-dr/operations/operation-banned/login-failed",
+    ]
+    assert client.posts[-1][1]["blocker_code"] == "phone_number_banned"
+    assert client.heartbeats == [1, 0]
 
 
 def test_ssh_mirror_writes_create_only_and_reads_back() -> None:
