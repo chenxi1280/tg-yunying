@@ -145,7 +145,7 @@ def test_malaysia_deploy_checks_ssh_mirror_access_before_start() -> None:
     container_start = script.index('docker compose -f "$COMPOSE_FILE" up')
 
     assert access_check < ssh_check < container_start
-    assert 'test -d -- %q && test -x -- %q && test -w -- %q' in script
+    assert 'test -d %q && test -x %q && test -w %q' in script
     assert "StrictHostKeyChecking=yes" in script
 
 
