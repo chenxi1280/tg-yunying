@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from types import SimpleNamespace
 from typing import Any
@@ -50,6 +51,30 @@ def credentials() -> AiProviderCredentials:
         model_name="mimo-v2.5",
         api_key="test-key",
     )
+
+
+@pytest.mark.no_postgres
+def test_authorization_identity_disconnects_after_connect_failure(monkeypatch) -> None:
+    class ConnectFailureClient:
+        disconnect_count = 0
+
+        async def connect(self) -> None:
+            raise RuntimeError("connect failed")
+
+        async def disconnect(self) -> None:
+            self.disconnect_count += 1
+
+    client = ConnectFailureClient()
+    gateway = TelethonTelegramGateway()
+    monkeypatch.setattr(gateway, "_new_client", lambda *_args, **_kwargs: client)
+
+    with pytest.raises(RuntimeError, match="connect failed"):
+        asyncio.run(gateway._authorization_identity_async(
+            "raw-session",
+            DeveloperAppCredentials(app_id=1, api_id=123, api_hash="hash", credentials_version=1),
+        ))
+
+    assert client.disconnect_count == 1
 
 
 @pytest.mark.no_postgres
