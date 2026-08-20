@@ -22,3 +22,9 @@
 - Canary IDs 24 and 25 are online members of the 276-account double-SV-ready cohort. They are candidates only; no production migration batch has been created or approved yet.
 - MY host TCP/22 responds, but SSH stalls during banner exchange for both configured admin/root identities. No MY deployment or host mutation has been performed.
 - GitHub currently has no MY host, OSS, KMS/KEK or DR internal identity secrets. A Silicon-only release cannot establish MY durability by itself.
+
+## 2026-08-20 First Release Gate Finding
+
+- Feature PR #58 and release PR #59 merged; the candidate reached Deploy Production run `32345159607` at release SHA `3f194aecd72ed05ff5b859871dcf7ee66ee2c1a2`.
+- The PostgreSQL job failed before image build/deploy with `DuplicateTable` on `authorization_dr_runtime_contracts`; production therefore remained on `63b7c0071fe56201d3ed1ee9062c4d0c03115b89` and no migration state was created.
+- Root cause is the CI compatibility path: current `Base.metadata.create_all` already materializes the target schema before Alembic replays `0157`. The migration now treats an independently verified complete target schema as already applied, while a genuinely old production schema still executes the additive migration.

@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import importlib
+
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 import pytest
@@ -47,3 +51,14 @@ def test_runtime_configuration_uses_exact_three_apps_and_shadow_first() -> None:
             ("standby_2_my", 3),
         ]
         assert result["egress"][0]["connectivity"] == "verified"
+
+
+def test_0157_upgrade_is_idempotent_after_metadata_create_all(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    migration = importlib.import_module("migrations.versions.0157_authorization_dr_core")
+    with engine.begin() as connection:
+        monkeypatch.setattr(migration, "op", Operations(MigrationContext.configure(connection)))
+        migration.upgrade()
+
+    assert "authorization_dr_runtime_contracts" in Base.metadata.tables
