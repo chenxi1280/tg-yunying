@@ -51,6 +51,12 @@ interface Props {
   onEditDeveloperApp: (app: DeveloperApp) => void;
   onCheckDeveloperApp: (app: DeveloperApp) => void;
   onToggleDeveloperApp: (app: DeveloperApp) => void;
+  onSaveDeveloperAppAssignments: (payload: {
+    app_a_id: number;
+    app_b_id: number;
+    app_c_id: number;
+    expected_assignment_version: number;
+  }) => Promise<void>;
   onEditTenant: (tenant: Tenant) => void;
   onSaveGroupRescueSettings: (tenantId: number, payload: {
     group_rescue_enabled: boolean;
@@ -111,6 +117,7 @@ export default function SystemConfigView({
   onEditDeveloperApp,
   onCheckDeveloperApp,
   onToggleDeveloperApp,
+  onSaveDeveloperAppAssignments,
   onEditTenant,
   onSaveGroupRescueSettings,
   onSaveTenantBotSettings,
@@ -181,6 +188,7 @@ export default function SystemConfigView({
               onEdit={onEditDeveloperApp}
               onCheck={onCheckDeveloperApp}
               onToggle={onToggleDeveloperApp}
+              onSaveAssignments={onSaveDeveloperAppAssignments}
               onEditTenant={onEditTenant}
               onOpenConfirm={onOpenConfirm}
               isActionPending={isActionPending}

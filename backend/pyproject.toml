@@ -20,6 +20,7 @@ dependencies = [
   "cryptography>=42.0.0",
   "httpx>=0.27.0",
   "oss2>=2.19.0",
+  "alibabacloud-kms20160120>=2.2.0",
   "Pillow>=10.4.0",
 ]
 

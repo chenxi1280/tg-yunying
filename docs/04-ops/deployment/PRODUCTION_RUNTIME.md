@@ -1,5 +1,11 @@
 # TG 运营管理平台生产部署说明
 
+## 马来西亚授权灾备节点
+
+MY 节点只运行 `authorization-dr-node`，不运行消息、listener、Planner、Dispatcher 或同步。部署入口为 `deploy/malaysia/deploy-authorization-dr-node.sh`，固定读取 `/opt/tgyunying-authorization-dr/node.env`；脚本在拉起容器前校验控制面、固定出口、OSS 和 KMS 必需变量，placeholder 或空值直接失败。`MY_WAKE_OSS_BUCKET` 必须位于 `ap-southeast-3`、私有并启用版本控制，worker 仍以 `x-oss-forbid-overwrite=true` 写不可覆盖对象。`MY_WAKE_KMS_KEY_ID` 必须指向马来西亚可调用的对称 Encrypt/Decrypt 密钥，启动后以真实 KMS round-trip 和对象快照 restore probe 形成恢复事实；只存在本地 KEK、Bucket 或 healthy 容器均不允许把 runtime contract 切到 `migrate`。
+
+生产顺序固定为：发布候选 SHA -> 在系统配置保存 App A=`primary_sv`、App B=`standby_1_sv`、App C=`standby_2_my` 并读回 assignment version -> 配置 MY OSS/KMS/RAM 最小身份 -> 通过 SSH 写入 root-only `node.env` 并启动 worker -> 读回固定出口和持续新鲜 heartbeat -> runtime preview/fingerprint/apply -> 精确两账号 canary。canary 未达到双副本、KMS、inventory、restore probe、slot CAS、旧 SV retained/protected 和 Telegram exact-set 全部事实时，不创建全量批次。
+
 ## 账号批量自动登录发布闸门（默认关闭）
 
 批量登录新增 migration `0148_account_batch_login`、内置管理员主体兼容 migration `0149_batch_login_principal` 和独立 `worker-account-login`。共享环境必须显式配置 `ACCOUNT_BATCH_LOGIN_MODE=off|reconcile_only|enabled`、正数 `ACCOUNT_BATCH_LOGIN_WORKER_CONCURRENCY` 与 `ACCOUNT_BATCH_LOGIN_DEVELOPER_APP_CONCURRENCY`；切到 `enabled` 时还必须配置正数 `ACCOUNT_BATCH_LOGIN_HOST_CONCURRENCY` 与 `ACCOUNT_BATCH_LOGIN_HOST_MIN_INTERVAL_SECONDS`。worker concurrency 默认 4，只控制同批/跨批同时执行的 item phase，不能替代 host/Developer App 持久 rate bucket。其余可调参数为单行上限/300 秒总预算/120 秒验证码窗口/轮询间隔/凭据保留/24 小时对账窗口以及 phone fingerprint 当前与 accepted versions。缺失或非法值启动失败，不允许以隐藏前端入口代替后端 mode gate。

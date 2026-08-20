@@ -18,6 +18,7 @@ import httpx
 import oss2
 
 from app.integrations.telegram import DeveloperAppCredentials, create_gateway
+from app.workers.authorization_dr_kms import AlibabaKmsDekProtector, DekProtector
 
 
 LOGGER = logging.getLogger(__name__)
@@ -61,8 +62,7 @@ class NodeConfig:
     local_dir: Path
     object_prefix: str
     object_store: ObjectSnapshotStore
-    wake_kek: bytes
-    kms_key_version: str
+    dek_protector: DekProtector
     client_cert: tuple[str, str] | None
 
 
@@ -232,7 +232,7 @@ def _persist_bundle(config: NodeConfig, claim: dict, raw_session: str, identity)
     dek = AESGCM.generate_key(bit_length=256)
     envelope = _encrypt_session(raw_session, dek)
     ciphertext_digest = hashlib.sha256(envelope).hexdigest()
-    wrapped_dek = _wrap_dek(config.wake_kek, dek)
+    wrapped_dek = config.dek_protector.wrap(dek)
     relative = Path(str(account_id)) / f"g{generation}.bundle"
     local_path = config.local_dir / relative
     object_key = f"{config.object_prefix.strip('/')}/{relative.as_posix()}".lstrip("/")
@@ -251,9 +251,9 @@ def _persist_bundle(config: NodeConfig, claim: dict, raw_session: str, identity)
     receipt = {
         "bundle_generation": generation,
         "ciphertext_digest": ciphertext_digest,
-        "wrapped_dek_ciphertext": wrapped_dek,
-        "kms_key_ref_digest": hashlib.sha256(config.kms_key_version.encode()).hexdigest(),
-        "kms_key_version": config.kms_key_version,
+        "wrapped_dek_ciphertext": wrapped_dek.ciphertext,
+        "kms_key_ref_digest": hashlib.sha256(config.dek_protector.key_ref.encode()).hexdigest(),
+        "kms_key_version": wrapped_dek.key_version,
         "auth_key_fingerprint_digest": identity.auth_key_fingerprint_digest,
         "telegram_user_id_digest": identity.telegram_user_id_digest,
         "remote_authorization_hash": identity.authorization_hash,
@@ -280,12 +280,6 @@ def _decrypt_session(envelope: bytes, dek: bytes) -> str:
     ciphertext = base64.b64decode(payload["ciphertext"])
     raw = AESGCM(dek).decrypt(nonce, ciphertext, b"tg-authorization-wake-bundle-v1")
     return raw.decode()
-
-
-def _wrap_dek(kek: bytes, dek: bytes) -> str:
-    nonce = secrets.token_bytes(12)
-    wrapped = AESGCM(kek).encrypt(nonce, dek, b"tg-authorization-wake-dek-v1")
-    return base64.b64encode(nonce + wrapped).decode()
 
 
 def _write_copy(path: Path, envelope: bytes, copy_kind: str, dek: bytes) -> dict:
@@ -369,7 +363,7 @@ def _write_inventory(config: NodeConfig, claim: dict, object_key: str, digest: s
 
 def _restore_probe(gateway, config, claim, material, object_key: str, wrapped_dek: str, expected) -> dict:
     envelope = config.object_store.read(object_key)
-    dek = _unwrap_dek(config.wake_kek, wrapped_dek)
+    dek = config.dek_protector.unwrap(wrapped_dek)
     raw_session = _decrypt_session(envelope, dek)
     observed = gateway.authorization_identity(raw_session, _credentials(claim, material))
     matched = observed == expected
@@ -385,11 +379,6 @@ def _restore_probe(gateway, config, claim, material, object_key: str, wrapped_de
         "probe_client_disconnected": True,
         "zeroize_receipt_digest": hashlib.sha256(secrets.token_bytes(32)).hexdigest(),
     }
-
-
-def _unwrap_dek(kek: bytes, wrapped_value: str) -> bytes:
-    payload = base64.b64decode(wrapped_value)
-    return AESGCM(kek).decrypt(payload[:12], payload[12:], b"tg-authorization-wake-dek-v1")
 
 
 def _credentials(claim: dict, material: dict) -> DeveloperAppCredentials:
@@ -428,9 +417,6 @@ def _post_bundle_receipt(client: DrNodeClient, operation_id: str, payload: dict)
 def load_config() -> NodeConfig:
     cert = os.environ.get("AUTHORIZATION_DR_CLIENT_CERT", "")
     key = os.environ.get("AUTHORIZATION_DR_CLIENT_KEY", "")
-    wake_kek = base64.b64decode(_required_env("MY_WAKE_KEK_BASE64"))
-    if len(wake_kek) != 32:
-        raise ValueError("MY_WAKE_KEK_BASE64 must decode to exactly 32 bytes")
     object_store = OssObjectSnapshotStore(
         _required_env("MY_WAKE_OSS_ENDPOINT"),
         _required_env("MY_WAKE_OSS_BUCKET"),
@@ -447,8 +433,13 @@ def load_config() -> NodeConfig:
         local_dir=Path(_required_env("MY_WAKE_BUNDLE_LOCAL_DIR")),
         object_prefix=_required_env("MY_WAKE_OSS_PREFIX"),
         object_store=object_store,
-        wake_kek=wake_kek,
-        kms_key_version=_required_env("MY_WAKE_KMS_KEY_VERSION"),
+        dek_protector=AlibabaKmsDekProtector(
+            endpoint=_required_env("MY_WAKE_KMS_ENDPOINT"),
+            region_id=_required_env("MY_WAKE_KMS_REGION_ID"),
+            access_key_id=_required_env("MY_WAKE_KMS_ACCESS_KEY_ID"),
+            access_key_secret=_required_env("MY_WAKE_KMS_ACCESS_KEY_SECRET"),
+            key_id=_required_env("MY_WAKE_KMS_KEY_ID"),
+        ),
         client_cert=(cert, key) if cert and key else None,
     )
 

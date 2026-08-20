@@ -9,16 +9,34 @@ from app.config import get_settings
 from app.integrations.telegram import DeveloperAppCredentials
 from app.models import (
     AccountProxy,
+    DeveloperAppSlotAssignment,
     AccountStatus,
     DeveloperAppHealthStatus,
     TelegramDeveloperApp,
     TgAccount,
+    TgAccountAuthorization,
+    TgAuthorizationDrOperation,
 )
 from app.schemas import DeveloperAppCreate, DeveloperAppUpdate
 from app.security import decrypt_secret, encrypt_secret
 from app.timezone import BEIJING_TZ
 
 from ._common import _as_utc, _now, audit
+
+
+SLOT_PURPOSES = {
+    "primary_sv": "app_a_id",
+    "standby_1_sv": "app_b_id",
+    "standby_2_my": "app_c_id",
+}
+TERMINAL_DR_OPERATION_STATUSES = frozenset({
+    "succeeded", "failed", "cancelled", "expired", "migration_rolled_back_forward",
+})
+
+
+class DeveloperAppAssignmentVersionConflict(ValueError):
+    pass
+
 
 def seed_developer_apps(session: Session) -> None:
     if session.scalar(select(func.count(TelegramDeveloperApp.id))) > 0:
@@ -39,6 +57,11 @@ def seed_developer_apps(session: Session) -> None:
 
 
 def first_assignable_developer_app(session: Session) -> TelegramDeveloperApp | None:
+    assigned = _assigned_primary_app(session)
+    if assigned:
+        return assigned
+    if session.scalar(select(func.count(DeveloperAppSlotAssignment.slot_purpose))) > 0:
+        return None
     return session.scalar(
         select(TelegramDeveloperApp)
         .where(
@@ -62,6 +85,13 @@ def backfill_account_developer_apps(session: Session) -> None:
 
 def developer_app_snapshot(session: Session, app: TelegramDeveloperApp) -> dict:
     assigned = session.scalar(select(func.count(TgAccount.id)).where(TgAccount.developer_app_id == app.id, TgAccount.deleted_at.is_(None))) or 0
+    assigned_ids = _assigned_account_ids(session, app.id)
+    pending_ids = _pending_account_ids(session, app.id)
+    used = assigned_ids | pending_ids
+    assignment = session.scalar(select(DeveloperAppSlotAssignment).where(
+        DeveloperAppSlotAssignment.developer_app_id == app.id,
+    ))
+    available = None if app.max_accounts <= 0 else max(app.max_accounts - len(used), 0)
     return {
         "id": app.id,
         "app_name": app.app_name,
@@ -70,6 +100,14 @@ def developer_app_snapshot(session: Session, app: TelegramDeveloperApp) -> dict:
         "health_status": app.health_status,
         "max_accounts": app.max_accounts,
         "assigned_accounts": assigned,
+        "assigned_distinct_accounts": len(assigned_ids),
+        "pending_distinct_accounts": len(pending_ids - assigned_ids),
+        "used_distinct_accounts": len(used),
+        "capacity_unlimited": app.max_accounts <= 0,
+        "available_accounts": available,
+        "slot_purpose": assignment.slot_purpose if assignment else "",
+        "assignment_status": assignment.status if assignment else "unassigned",
+        "assignment_version": assignment.assignment_version if assignment else 0,
         "credentials_version": app.credentials_version,
         "last_assigned_at": app.last_assigned_at,
         "last_check_at": app.last_check_at,
@@ -83,6 +121,30 @@ def developer_app_snapshot(session: Session, app: TelegramDeveloperApp) -> dict:
 def list_developer_apps(session: Session) -> list[dict]:
     apps = session.scalars(select(TelegramDeveloperApp).order_by(TelegramDeveloperApp.id.asc())).all()
     return [developer_app_snapshot(session, app) for app in apps]
+
+
+def update_developer_app_slot_assignments(session: Session, payload, actor: str) -> list[dict]:
+    desired = {purpose: int(getattr(payload, key)) for purpose, key in SLOT_PURPOSES.items()}
+    if len(set(desired.values())) != len(SLOT_PURPOSES):
+        raise ValueError("三种角色必须使用三个不同的开发者应用")
+    apps = _require_assignable_apps(session, set(desired.values()))
+    rows = list(session.scalars(select(DeveloperAppSlotAssignment).with_for_update()))
+    current_version = max((row.assignment_version for row in rows), default=0)
+    if current_version != payload.expected_assignment_version:
+        raise DeveloperAppAssignmentVersionConflict("开发者应用角色映射版本已变化，请刷新后重试")
+    _require_no_active_dr_operations(session, desired, rows)
+    _replace_slot_assignments(session, desired, apps, current_version + 1, actor)
+    audit(
+        session,
+        tenant_id=None,
+        actor=actor,
+        action="配置开发者应用固定角色",
+        target_type="developer_app_slot_assignments",
+        target_id=str(current_version + 1),
+        detail="primary_sv/standby_1_sv/standby_2_my",
+    )
+    session.commit()
+    return list_developer_apps(session)
 
 
 def create_developer_app(session: Session, payload: DeveloperAppCreate, actor: str) -> dict:
@@ -162,6 +224,16 @@ def assign_developer_app_round_robin(session: Session, account: TgAccount) -> Te
         if app and app.is_active and app.health_status == DeveloperAppHealthStatus.HEALTHY.value:
             return app
 
+    fixed_primary = _assigned_primary_app(session)
+    if fixed_primary:
+        _require_app_capacity(session, fixed_primary)
+        account.developer_app_id = fixed_primary.id
+        account.developer_app_version = fixed_primary.credentials_version
+        fixed_primary.last_assigned_at = _now()
+        return fixed_primary
+    if session.scalar(select(func.count(DeveloperAppSlotAssignment.slot_purpose))) > 0:
+        raise ValueError("固定的硅谷主授权 Developer App 当前不可用")
+
     apps = session.scalars(
         select(TelegramDeveloperApp).where(
             TelegramDeveloperApp.is_active.is_(True),
@@ -186,6 +258,85 @@ def assign_developer_app_round_robin(session: Session, account: TgAccount) -> Te
     account.developer_app_version = app.credentials_version
     app.last_assigned_at = _now()
     return app
+
+
+def _assigned_primary_app(session: Session) -> TelegramDeveloperApp | None:
+    assignment = session.get(DeveloperAppSlotAssignment, "primary_sv")
+    if not assignment or assignment.status != "active":
+        return None
+    app = session.get(TelegramDeveloperApp, assignment.developer_app_id)
+    if not app or not app.is_active or app.health_status != DeveloperAppHealthStatus.HEALTHY.value:
+        return None
+    if app.credentials_version != assignment.credentials_version:
+        return None
+    return app
+
+
+def _assigned_account_ids(session: Session, app_id: int) -> set[int]:
+    account_ids = set(session.scalars(select(TgAccount.id).where(
+        TgAccount.developer_app_id == app_id,
+        TgAccount.deleted_at.is_(None),
+    )))
+    authorization_ids = set(session.scalars(select(TgAccountAuthorization.account_id).join(
+        TgAccount, TgAccount.id == TgAccountAuthorization.account_id,
+    ).where(
+        TgAccountAuthorization.developer_app_id == app_id,
+        TgAccountAuthorization.disabled_at.is_(None),
+        TgAccount.deleted_at.is_(None),
+    )))
+    return account_ids | authorization_ids
+
+
+def _pending_account_ids(session: Session, app_id: int) -> set[int]:
+    return set(session.scalars(select(TgAuthorizationDrOperation.account_id).where(
+        TgAuthorizationDrOperation.developer_app_id == app_id,
+        TgAuthorizationDrOperation.status.not_in(TERMINAL_DR_OPERATION_STATUSES),
+    )))
+
+
+def _require_assignable_apps(session: Session, app_ids: set[int]) -> dict[int, TelegramDeveloperApp]:
+    apps = list(session.scalars(select(TelegramDeveloperApp).where(
+        TelegramDeveloperApp.id.in_(sorted(app_ids)),
+    ).order_by(TelegramDeveloperApp.id).with_for_update()))
+    by_id = {app.id: app for app in apps}
+    for app_id in app_ids:
+        app = by_id.get(app_id)
+        if not app or not app.is_active or app.health_status != DeveloperAppHealthStatus.HEALTHY.value:
+            raise ValueError(f"开发者应用 {app_id} 不可用于角色映射")
+    return by_id
+
+
+def _require_app_capacity(session: Session, app: TelegramDeveloperApp) -> None:
+    if app.max_accounts > 0 and len(_assigned_account_ids(session, app.id)) >= app.max_accounts:
+        raise ValueError("硅谷主授权 Developer App 账号名额不足")
+
+
+def _require_no_active_dr_operations(session: Session, desired: dict, rows: list) -> None:
+    current = {row.slot_purpose: row.developer_app_id for row in rows if row.status == "active"}
+    if current == desired:
+        return
+    active = session.scalar(select(func.count(TgAuthorizationDrOperation.id)).where(
+        TgAuthorizationDrOperation.status.not_in(TERMINAL_DR_OPERATION_STATUSES),
+    ))
+    if active:
+        raise ValueError("存在进行中的授权灾备操作，不能修改开发者应用角色")
+
+
+def _replace_slot_assignments(session: Session, desired: dict, apps: dict, version: int, actor: str) -> None:
+    existing = list(session.scalars(select(DeveloperAppSlotAssignment).with_for_update()))
+    for row in existing:
+        session.delete(row)
+    session.flush()
+    for purpose, app_id in desired.items():
+        session.add(DeveloperAppSlotAssignment(
+            slot_purpose=purpose,
+            developer_app_id=app_id,
+            credentials_version=apps[app_id].credentials_version,
+            assignment_version=version,
+            status="active",
+            assigned_by=actor,
+            assigned_at=_now(),
+        ))
 
 
 def credentials_for_developer_app(app: TelegramDeveloperApp, proxy: AccountProxy | None = None) -> DeveloperAppCredentials:
@@ -255,6 +406,7 @@ def _proxy_credentials(proxy: AccountProxy | None) -> dict:
 
 
 __all__ = [
+    "DeveloperAppAssignmentVersionConflict",
     "assign_developer_app_round_robin",
     "backfill_account_developer_apps",
     "check_developer_app",
@@ -266,6 +418,7 @@ __all__ = [
     "developer_app_snapshot",
     "first_assignable_developer_app",
     "list_developer_apps",
+    "update_developer_app_slot_assignments",
     "seed_developer_apps",
     "set_developer_app_active",
     "update_developer_app",
