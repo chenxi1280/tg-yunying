@@ -308,6 +308,7 @@ def test_node_can_heartbeat_without_claiming_while_runtime_is_off(session: Sessi
 def test_claim_exposes_frozen_login_material_and_renews_lease(session: Session, monkeypatch) -> None:
     claim = _start_claim(session)
     before = claim.lease_expires_at
+    code_source_calls: list[tuple[int, str, int]] = []
     material = migration_login_material(
         session,
         claim.operation_id,
@@ -325,7 +326,10 @@ def test_claim_exposes_frozen_login_material_and_renews_lease(session: Session, 
 
     monkeypatch.setattr(
         "app.services.authorization_dr.migration.gateway.poll_verification_codes",
-        lambda *args, **kwargs: [SimpleNamespace(code="12345")],
+        lambda account_id, *, session_ciphertext, credentials: (
+            code_source_calls.append((account_id, session_ciphertext, credentials.app_id))
+            or [SimpleNamespace(code="12345")]
+        ),
     )
     code = poll_migration_login_code(
         session,
@@ -340,6 +344,7 @@ def test_claim_exposes_frozen_login_material_and_renews_lease(session: Session, 
     assert material["api_hash"]
     assert operation.lease_expires_at >= before
     assert code == "12345"
+    assert code_source_calls == [(claim.account_id, f"sv-standby-2-{claim.account_id}", 3)]
 
 
 def test_one_copy_cannot_commit_and_old_sv_session_is_preserved(session: Session) -> None:
