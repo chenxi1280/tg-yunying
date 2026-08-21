@@ -128,6 +128,29 @@ class DrLoginMaterialOut(DrStrictModel):
     credentials_version: int
 
 
+class DrArtifactClaimOut(ApiModel):
+    operation_id: str
+    account_id: int
+    owner_node_id: str
+    owner_epoch: int
+    lease_token: str
+    lease_expires_at: datetime
+    target_generation: int
+    developer_app_id: int
+    egress_id: str
+    egress_version: int
+    classification: str
+    expected_ciphertext_digest: str
+    expected_inventory_sequence: int
+
+
+class DrArtifactProbeMaterialOut(DrStrictModel):
+    api_id: int
+    api_hash: str
+    app_name: str
+    credentials_version: int
+
+
 class DrLoginCodeOut(DrStrictModel):
     code: str
 
@@ -139,6 +162,14 @@ class DrOwnerRequest(DrStrictModel):
 
 class DrLoginFailureRequest(DrOwnerRequest):
     blocker_code: str = Field(pattern="^(phone_number_banned|two_fa_invalid)$")
+
+
+class DrStageFactRequest(DrOwnerRequest):
+    stage: str = Field(pattern="^(remote_login_confirmed|local_copy_verified|snapshot_copy_verified|inventory_persisted)$")
+    manifest_digest: str = Field(pattern="^[0-9a-f]{64}$")
+    bundle_generation: int = Field(default=0, ge=0)
+    ciphertext_digest: str = ""
+    inventory_sequence: int = Field(default=0, ge=0)
 
 
 class DrCopyReceiptRequest(DrStrictModel):
@@ -192,13 +223,19 @@ class DrNodeHeartbeatRequest(DrStrictModel):
 
 
 class DrReconcileEvidence(DrStrictModel):
-    kind: str = Field(pattern="^historical_typed_login_failure$")
-    blocker_code: str = Field(pattern="^(phone_number_banned|two_fa_invalid)$")
-    event_digest: str = Field(pattern="^[0-9a-f]{64}$")
-    source_ref: str = Field(min_length=1, max_length=160)
-    runtime_image_sha: str = Field(pattern="^[0-9a-f]{40}([0-9a-f]{24})?$")
-    node_id: str = Field(min_length=1, max_length=80)
-    owner_epoch: int = Field(ge=1)
+    kind: str = Field(pattern="^(historical_typed_login_failure|remote_orphan_without_bundle|confirmed_no_remote_effect|remote_unproven|artifact_forward_recovery)$")
+    blocker_code: str = ""
+    event_digest: str = ""
+    source_ref: str = ""
+    runtime_image_sha: str = ""
+    node_id: str = ""
+    owner_epoch: int = 0
+    bundle_generation: int = 0
+    ciphertext_digest: str = ""
+    inventory_sequence: int = 0
+    remote_set_before_digest: str = ""
+    remote_set_after_digest: str = ""
+    new_device_count: int = -1
 
 
 class DrReconcilePreviewRequest(DrStrictModel):
@@ -231,6 +268,35 @@ class DrReconcileOut(ApiModel):
     evidence_fingerprint: str
     evidence_manifest: dict
     persisted_artifact_state: str
+    requested_by: str
+    applied_by: str
+    approval_ref: str
+    created_at: datetime
+    applied_at: datetime | None
+
+
+class DrLocalActivatePreviewRequest(DrStrictModel):
+    reason: str = Field(min_length=1, max_length=255)
+
+
+class DrLocalActivateApplyRequest(DrStrictModel):
+    fingerprint: str = Field(pattern="^[0-9a-f]{64}$")
+    approval_ref: str = Field(min_length=1, max_length=160)
+
+
+class DrLocalActivateOut(ApiModel):
+    id: str
+    tenant_id: int
+    account_id: int
+    target_authorization_id: int
+    expected_current_authorization_id: int | None
+    expected_authorization_generation: int
+    expected_fact_generation: int
+    expected_connection_generation: int
+    expected_target_fact_version: int
+    fingerprint: str
+    reason: str
+    status: str
     requested_by: str
     applied_by: str
     approval_ref: str

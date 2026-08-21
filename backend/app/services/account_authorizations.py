@@ -32,9 +32,9 @@ from .account_authorization_constants import (
     STANDBY_ROLES,
 )
 from .account_authorization_read_model import (
-    authorization_summaries_for_accounts,
-    authorization_summary_for_account,
-    list_account_authorizations,
+    authorization_summaries_for_accounts,  # noqa: F401 - compatibility re-export
+    authorization_summary_for_account,  # noqa: F401 - compatibility re-export
+    list_account_authorizations,  # noqa: F401 - compatibility re-export
 )
 from .account_authorization_metadata import read_authorization_metadata
 from .account_two_fa import rotate_managed_two_fa_after_login
@@ -215,11 +215,25 @@ def switch_primary_authorization(
     actor: str,
     reason: str,
 ) -> TgAccount:
-    account = _require_account(session, account_id)
-    target = _require_authorization(session, account, authorization_id)
+    account = _lock_account(session, account_id)
+    target = _lock_authorization(session, account, authorization_id)
+    apply_primary_authorization_switch(session, account, target, actor=actor, reason=reason)
+    session.commit()
+    session.refresh(account)
+    return account
+
+
+def apply_primary_authorization_switch(
+    session: Session,
+    account: TgAccount,
+    target: TgAccountAuthorization,
+    *,
+    actor: str,
+    reason: str,
+) -> None:
     _ensure_switchable(target)
     _preserve_legacy_primary_if_needed(session, account, reason)
-    _demote_current_authorizations(session, account, authorization_id, reason)
+    _demote_current_authorizations(session, account, target.id, reason)
     _promote_authorization(account, target)
     _reset_online_state_after_authorization_switch(session, account)
     audit(
@@ -229,11 +243,8 @@ def switch_primary_authorization(
         action="切换账号主授权",
         target_type="tg_account",
         target_id=str(account.id),
-        detail=f"authorization_id={authorization_id}; reason={reason}",
+        detail=f"authorization_id={target.id}; reason={reason}",
     )
-    session.commit()
-    session.refresh(account)
-    return account
 
 
 def _reset_online_state_after_authorization_switch(session: Session, account: TgAccount) -> None:
@@ -247,6 +258,9 @@ def _reset_online_state_after_authorization_switch(session: Session, account: Tg
         return
     timestamp = _now()
     state.online_status = "warming"
+    state.session_kind = "primary"
+    state.session_id = str(account.id)
+    state.proxy_id = account.proxy_id
     state.last_seen_at = None
     state.last_probe_at = None
     state.last_keepalive_at = None
@@ -568,8 +582,24 @@ def _require_account(session: Session, account_id: int) -> TgAccount:
     return account
 
 
+def _lock_account(session: Session, account_id: int) -> TgAccount:
+    account = session.scalar(select(TgAccount).where(TgAccount.id == account_id).with_for_update())
+    if not account or account.deleted_at is not None:
+        raise ValueError("account not found")
+    return account
+
+
 def _require_authorization(session: Session, account: TgAccount, authorization_id: int) -> TgAccountAuthorization:
     authorization = session.get(TgAccountAuthorization, authorization_id)
+    if not authorization or authorization.account_id != account.id or authorization.disabled_at is not None:
+        raise ValueError("authorization not found")
+    return authorization
+
+
+def _lock_authorization(session: Session, account: TgAccount, authorization_id: int) -> TgAccountAuthorization:
+    authorization = session.scalar(select(TgAccountAuthorization).where(
+        TgAccountAuthorization.id == authorization_id,
+    ).with_for_update())
     if not authorization or authorization.account_id != account.id or authorization.disabled_at is not None:
         raise ValueError("authorization not found")
     return authorization
@@ -678,6 +708,7 @@ def _demote_current_authorizations(session: Session, account: TgAccount, target_
         row.role = REPAIR_ROLE
         row.status = NEEDS_REPAIR_STATUS
         row.failure_reason = f"已切换到授权 {target_id}，原主授权待修复：{reason}"
+        row.fact_version += 1
 
 
 def _promote_authorization(account: TgAccount, target: TgAccountAuthorization) -> None:
@@ -687,12 +718,19 @@ def _promote_authorization(account: TgAccount, target: TgAccountAuthorization) -
     target.is_current = True
     target.last_switched_at = _now()
     target.last_success_at = _now()
+    target.fact_version += 1
     account.session_ciphertext = target.session_ciphertext
+    account.current_authorization_id = target.id
     account.developer_app_id = target.developer_app_id
     account.proxy_id = target.proxy_id
     account.status = AccountStatus.ACTIVE.value
     account.last_active_at = _now()
     account.health_score = max(account.health_score, 90)
+    account.authorization_generation += 1
+    account.authorization_fact_generation += 1
+    account.connection_generation += 1
+    account.business_runtime_status = "warming"
+    account.sv_redundancy_status = "degraded"
     app = session_app_version(target)
     if app is not None:
         account.developer_app_version = app.credentials_version

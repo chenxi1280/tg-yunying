@@ -2,7 +2,14 @@ from __future__ import annotations
 
 from sqlalchemy import select
 
-from app.models import TgAuthorizationDrBatch, TgAuthorizationDrBatchItem, TgAuthorizationDrOperation
+from app.models import (
+    AccountStatus,
+    TgAccount,
+    TgAccountOnlineState,
+    TgAuthorizationDrBatch,
+    TgAuthorizationDrBatchItem,
+    TgAuthorizationDrOperation,
+)
 from app.services._common import _now
 
 from .contracts import AuthorizationDrError
@@ -23,6 +30,9 @@ def mark_login_remote_unknown(session, operation_id: str, *, node_id: str, owner
     if not operation or operation.owner_node_id != node_id or operation.owner_epoch != owner_epoch:
         raise AuthorizationDrError("execution_node_mismatch", "Operation owner changed")
     if operation.remote_call_state == "confirmed_no_effect" and operation.status in LOGIN_FAILURE_STATUSES.values():
+        session.commit()
+        return
+    if operation.reconcile_status == "applied" and operation.finished_at is not None:
         session.commit()
         return
     operation.remote_call_state = "unknown"
@@ -75,6 +85,7 @@ def mark_login_remote_failed(
     item.blocker_code = blocker_code
     item.finished_at = _now()
     item.version += 1
+    _project_authoritative_login_failure(session, operation.account_id, blocker_code)
     refresh_migration_batch(session, item.id)
     session.commit()
     return operation
@@ -91,6 +102,38 @@ def refresh_migration_batch(session, batch_item_id: str) -> None:
     )))
     _project_batch_status(batch, statuses)
     batch.version += 1
+
+
+def project_authoritative_login_failure(session, account_id: int, blocker_code: str) -> None:
+    if blocker_code not in LOGIN_FAILURE_STATUSES:
+        raise AuthorizationDrError("login_failure_not_supported", "Login failure is not authoritative")
+    _project_authoritative_login_failure(session, account_id, blocker_code)
+
+
+def _project_authoritative_login_failure(session, account_id: int, blocker_code: str) -> None:
+    if blocker_code != "phone_number_banned":
+        return
+    account = session.get(TgAccount, account_id)
+    if not account:
+        raise AuthorizationDrError("account_not_found", "Migration account does not exist")
+    account.status = AccountStatus.BANNED.value
+    account.health_score = 0
+    state = session.scalar(select(TgAccountOnlineState).where(
+        TgAccountOnlineState.tenant_id == account.tenant_id,
+        TgAccountOnlineState.account_id == account.id,
+    ))
+    if not state:
+        return
+    state.online_status = "login_required"
+    state.desired_online = False
+    state.desired_sources = []
+    state.active_task_count = 0
+    state.failure_type = "phone_number_banned"
+    state.failure_detail = "Telegram confirmed that this phone number is banned"
+    state.last_seen_at = None
+    state.stale_after_at = None
+    state.next_probe_at = None
+    state.updated_at = _now()
 
 
 def _project_batch_status(batch, statuses: list[str]) -> None:
@@ -120,5 +163,6 @@ __all__ = [
     "LOGIN_FAILURE_STATUSES",
     "mark_login_remote_failed",
     "mark_login_remote_unknown",
+    "project_authoritative_login_failure",
     "refresh_migration_batch",
 ]

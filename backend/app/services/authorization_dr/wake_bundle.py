@@ -18,6 +18,7 @@ from app.services.account_authorization_metadata import resolve_peer_authorizati
 from app.timezone import as_beijing_aware
 
 from .contracts import AuthorizationDrError, RestoreProbeReceipt, WakeBundleReceipt
+from .stage_facts import append_stage_fact
 
 
 SUPPORTED_COPY_SETS = frozenset({
@@ -49,6 +50,8 @@ def commit_wake_bundle_receipt(
     ))
     if existing:
         _verify_idempotent_bundle(session, existing, receipt)
+        _restore_bundle_projection(session, operation, existing)
+        session.commit()
         return existing
     _require_remote_login_started(operation)
     receipt = _resolve_remote_authorization_hash(session, operation, receipt)
@@ -63,6 +66,17 @@ def commit_wake_bundle_receipt(
     operation.remote_call_state = "confirmed"
     operation.status = "bundle_copies_verified"
     operation.operation_version += 1
+    append_stage_fact(
+        session,
+        operation,
+        stage="central_receipt_committed",
+        manifest_digest=receipt.ciphertext_digest,
+        evidence_manifest={
+            "bundle_generation": receipt.bundle_generation,
+            "ciphertext_digest": receipt.ciphertext_digest,
+            "inventory_sequence": receipt.inventory_sequence,
+        },
+    )
     session.commit()
     return bundle
 
@@ -90,6 +104,8 @@ def record_restore_probe(
     ))
     if existing:
         _verify_idempotent_probe(existing, receipt)
+        _restore_probe_projection(session, operation, bundle)
+        session.commit()
         return existing
     _validate_probe(receipt)
     fact = TgAuthorizationRestoreProbeFact(
@@ -113,13 +129,23 @@ def record_restore_probe(
     candidate.health_status = "healthy"
     operation.status = "ready_for_slot_commit"
     operation.operation_version += 1
+    append_stage_fact(
+        session,
+        operation,
+        stage="restore_probe_passed",
+        manifest_digest=receipt.zeroize_receipt_digest,
+        evidence_manifest={"bundle_generation": receipt.probe_generation},
+    )
     session.commit()
     return fact
 
 
 def _require_remote_login_started(operation) -> None:
-    if operation.remote_call_state != "started" or operation.status != "login_remote_started":
-        raise AuthorizationDrError("provision_reconcile_unknown", "Remote login start boundary is missing")
+    normal = operation.remote_call_state == "started" and operation.status == "login_remote_started"
+    repair = operation.remote_call_state == "unknown" and operation.status == "reconcile_artifact_running"
+    repair = repair and operation.reconcile_status == "repair_running"
+    if not normal and not repair:
+        raise AuthorizationDrError("provision_reconcile_unknown", "Remote login or approved artifact boundary is missing")
 
 
 def _owned_operation(session, operation_id: str, *, node_id: str, owner_epoch: int, lease_token: str):
@@ -306,6 +332,36 @@ def _operation_bundle(session, operation):
     if not bundle:
         raise AuthorizationDrError("wake_bundle_missing", "Wake bundle does not exist")
     return bundle
+
+
+def _restore_bundle_projection(session, operation, bundle) -> None:
+    candidate = session.get(TgAccountAuthorization, bundle.authorization_id)
+    if not candidate or candidate.wake_bundle_id != bundle.id:
+        raise AuthorizationDrError("wake_bundle_immutable_conflict", "Bundle candidate projection changed")
+    projected = operation.candidate_authorization_id == candidate.id and operation.remote_call_state == "confirmed"
+    if operation.status != "reconcile_artifact_running":
+        if not projected or operation.status not in {"bundle_copies_verified", "ready_for_slot_commit", "slot_commit_prepared"}:
+            raise AuthorizationDrError("wake_bundle_immutable_conflict", "Bundle operation projection changed")
+        return
+    operation.candidate_authorization_id = candidate.id
+    operation.remote_call_state = "confirmed"
+    operation.status = "bundle_copies_verified"
+    operation.operation_version += 1
+
+
+def _restore_probe_projection(session, operation, bundle) -> None:
+    candidate = session.get(TgAccountAuthorization, operation.candidate_authorization_id)
+    if not candidate or candidate.wake_bundle_id != bundle.id:
+        raise AuthorizationDrError("wake_bundle_immutable_conflict", "Restore probe candidate projection changed")
+    if operation.status in {"ready_for_slot_commit", "slot_commit_prepared"}:
+        return
+    if operation.status not in {"reconcile_artifact_running", "bundle_copies_verified"}:
+        raise AuthorizationDrError("wake_bundle_immutable_conflict", "Restore probe operation projection changed")
+    bundle.receipt_status = "restore_probe_passed"
+    candidate.dr_state = "candidate_qualified"
+    candidate.health_status = "healthy"
+    operation.status = "ready_for_slot_commit"
+    operation.operation_version += 1
 
 
 def valid_copy_kinds(copy_kinds: set[str]) -> bool:

@@ -495,6 +495,16 @@ class TelethonTelegramGateway(TelegramGateway):
         """Create a fresh, unconnected Telethon client. Used for login flows where the session is not yet established."""
         return self._lifecycle.new_client(credentials, raw_session, client_metadata)
 
+    def invalidate_session_cache(
+        self,
+        session_ciphertext: str | None,
+        credentials: DeveloperAppCredentials,
+    ) -> int:
+        raw_session = decrypt_session(session_ciphertext)
+        if not raw_session:
+            return 0
+        return self._run(self._lifecycle.invalidate_client(credentials, raw_session))
+
     async def _get_or_create_client(
         self,
         credentials: DeveloperAppCredentials,

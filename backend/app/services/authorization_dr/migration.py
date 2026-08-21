@@ -31,6 +31,7 @@ from .migration_results import (
 )
 from .operation_state import mark_item as _mark_item, owned_operation as _owned_operation
 from .readiness import require_migration_readiness
+from .stage_facts import append_stage_fact
 
 
 CLAIM_LEASE_SECONDS = 90
@@ -175,6 +176,14 @@ def mark_login_remote_started(
     operation.remote_effect_started_at = operation.remote_effect_started_at or _now()
     operation.status = "login_remote_started"
     operation.operation_version += 1
+    digest = hashlib.sha256(f"{operation.id}:{operation.owner_epoch}:remote_login_started".encode()).hexdigest()
+    append_stage_fact(
+        session,
+        operation,
+        stage="remote_login_started",
+        manifest_digest=digest,
+        evidence_manifest={},
+    )
     session.commit()
     return operation
 
