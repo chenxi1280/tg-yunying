@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+from binascii import Error as BinasciiError
 from dataclasses import dataclass
 
+from cryptography.fernet import InvalidToken
 from sqlalchemy import select
 
 from app.models import TelegramDeveloperApp, TgAccount, TgAccountAuthorization
@@ -192,7 +194,7 @@ def _auth_key_digest(session_ciphertext: str | None) -> str:
         raw_session = decrypt_session(session_ciphertext)
         auth_key = StringSession(raw_session or "").auth_key
         return hashlib.sha256(auth_key.key).hexdigest() if auth_key else ""
-    except (TypeError, ValueError):
+    except (BinasciiError, InvalidToken, TypeError, UnicodeDecodeError, ValueError):
         return ""
 
 

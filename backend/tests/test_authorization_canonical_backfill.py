@@ -97,6 +97,16 @@ def test_apply_rejects_changed_preview_fingerprint(monkeypatch) -> None:
             )
 
 
+def test_preview_classifies_corrupt_encrypted_session() -> None:
+    with _session() as session:
+        session.add(_account(1, session_ciphertext="enc:v2:not-valid"))
+        session.commit()
+
+        preview = backfill.preview_canonical_authorization_backfill(session, 1)
+
+        assert preview["counts"] == {"session_unreadable": 1}
+
+
 def test_apply_requires_distinct_requester_and_approver(monkeypatch) -> None:
     with _session() as session:
         session.add(_account(1))
