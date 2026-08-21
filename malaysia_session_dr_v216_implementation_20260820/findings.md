@@ -1,5 +1,13 @@
 # Findings
 
+## 2026-08-21 Current Truth
+
+- 文档中的账号 24/25 `0/2_reconcile_unknown` 是早期失败 canary，不是当前两账号验收结果；后续账号 27/28 已达到 slot-level `2/2 pass`。
+- 当前数据库 operation 的 `succeeded` 发生在 recovery gate + slot CAS 后，语义是 `slot_cutover_succeeded`；旧 SV 远端授权未 decommission、最终 exact-set 未回读且 `rollback_window_closed_at` 未写时，不能解释为 `migration_succeeded`。
+- 最新扩量批次 271 项数量守恒，但 8 个 unknown 未收口；runtime `off` 是当前正确生产停止态。
+- 仓库没有正式 unknown/orphan reconcile coordinator，也没有完整 `local_activate`、`restore_sv_pair`、`emergency_reauthorize_primary`、中心恢复、decommission/erase 或跨业务 generation fence。
+- `.planning/malaysia_session_dr_v216_implementation_20260820` 是早期 ignored 快照；本目录为 tracked 规划真相源，旧快照不得用于当前完成度判断。
+
 ## Initial Baseline
 
 - 当前 checkout 为 `release@63b7c0071fe56201d3ed1ee9062c4d0c03115b89`，存在用户未提交的 PRD、索引、`.planning/.active_plan` 和四个 patch 文件。

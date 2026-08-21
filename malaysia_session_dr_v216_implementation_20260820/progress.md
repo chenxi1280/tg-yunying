@@ -1,5 +1,13 @@
 # Progress
 
+## 2026-08-21 Product Resync
+
+- 最新生产事实覆盖旧规划：账号 27/28 的 MY generation 2 槽位均为 current，双副本 2/2、restore probe passed，旧 SV App C Session retained+protected，`slot_canary_pass=2/2`。
+- 后续 271 项批次为 `241 succeeded / 22 failed / 8 reconcile_unknown`，另有账号 24/25/26 的早期独立 unknown；runtime 已切 `off`，没有授权恢复扩量许可。
+- `PasswordHashInvalidError` 已改为 `manual_required/two_fa_invalid/confirmed_no_effect`，69 项授权 DR 定向回归通过；release SHA `3301e3cc` 正在标准 Deploy Production 流水线。
+- PRD/实施合同已提升到 v2.18，并同步两账号 gate、slot success 与 migration final success 分层、当前批次守恒和完整 PRD 剩余范围。
+- 下一开发闸门固定为 unknown reconcile coordinator；完成并逐项收口 8 个生产 unknown 前，不实现全量扩量，不开启 runtime。
+
 ## 2026-08-20
 
 - 用户明确授权完成 v2.16 代码、测试、生产发布和迁移；发布后先迁移 2 个账号验收，再决定全量。
