@@ -123,3 +123,38 @@ def test_repair_keeps_row_unchanged_when_remote_identity_differs(monkeypatch) ->
         assert result["failed_count"] == 1
         assert repaired.role == "standby_repair"
         assert repaired.fact_version == 4
+
+
+def test_repair_atomically_retains_duplicate_app_standby_and_promotes_distinct_repair(monkeypatch) -> None:
+    with _session() as session:
+        duplicate = TgAccountAuthorization(
+            id=23, tenant_id=1, account_id=11, role="standby_1", logical_slot="standby_1",
+            developer_app_id=2, session_ciphertext="duplicate-app-session", status="standby",
+            health_status="healthy", is_slot_current=True, protected_from_cleanup=True, fact_version=2,
+        )
+        session.add(duplicate)
+        session.commit()
+        preview = preview_sv_redundancy_repair(session, 1, [11])
+        identities = iter([
+            SimpleNamespace(authorization_hash="primary", auth_key_fingerprint_digest="1" * 64, telegram_user_id_digest="3" * 64),
+            SimpleNamespace(authorization_hash="repair", auth_key_fingerprint_digest="2" * 64, telegram_user_id_digest="3" * 64),
+        ])
+        monkeypatch.setattr(
+            "app.services.authorization_dr.sv_redundancy.gateway.authorization_identity",
+            lambda *_args, **_kwargs: next(identities),
+        )
+
+        result = apply_sv_redundancy_repair(
+            session, 1, [11], expected_fingerprint=preview["target_set_fingerprint"],
+            actor="operator", approval_ref="OPS-DUPLICATE-APP-REPAIR",
+        )
+        repaired = session.get(TgAccountAuthorization, 21)
+        retained = session.get(TgAccountAuthorization, 23)
+
+        assert result["succeeded_count"] == 1
+        assert (repaired.role, repaired.logical_slot, repaired.developer_app_id) == ("standby_1", "standby_1", 1)
+        assert (retained.role, retained.logical_slot, retained.developer_app_id) == (
+            "standby_repair", "standby_repair", 2,
+        )
+        assert retained.status == "needs_repair"
+        assert retained.protected_from_cleanup is True

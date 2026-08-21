@@ -1203,3 +1203,5 @@ group_ai_chat / channel_comment 正文
 该数据流只写 B/C 资产和 DR operation；A 的 `current_authorization_id/session_ciphertext/developer_app_id/proxy_id/authorization_generation/authorization_fact_generation/connection_generation` 全部是冻结不变量。健康检查、Dispatcher、账号安全自愈和旧 activate 只可写 `fault_candidate`，不能进入主授权切换；任何 unknown 或 A 漂移停止账号和后续 canary。
 
 历史版本若在 code sign-in 前错误调用 managed 2FA，`AuthKeyUnregisteredError -> reconcile_unknown` 只能进入 `authorization_dr_reconcile --kind pre_code_submission_failure`：preview 从 operation/flow 自动生成不含 secret 的 flow-state digest，apply 复核 runtime off、所有 DR client=0、A source fact/current/protected、operation/flow version 和异人审批后，写 `confirmed_no_effect/failed` 并清空临时 Session/hash。该路径不调用 Telegram、不产生 candidate、不改变 A。
+
+历史 current A 使用 App B 时，ABC preview 在发送验证码前返回 `sv_repair_required`。`authorization_dr_sv_redundancy preview/apply` 冻结 App A repair 与可能存在的重复 App B standby；双探测成功后一个事务把 App A repair 提升为 current `standby_1`，把重复 App B standby 降为 retained/protected `standby_repair`。不调用新登录、不撤销设备、不修改 A。

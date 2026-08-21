@@ -111,6 +111,11 @@ def _preview_inputs(session, tenant_id: int, account_id: int, idempotency_key: s
     proxy = session.get(AccountProxy, account.proxy_id) if account.proxy_id else None
     if not assignment or assignment.status != "active" or not app or not app.is_active:
         raise AuthorizationDrError("developer_app_slot_assignment_conflict", "App B assignment is unavailable")
+    if primary.developer_app_id == app.id:
+        raise AuthorizationDrError(
+            "sv_repair_required",
+            "Current A already uses App B; restore the distinct standby_repair instead of creating another App B login",
+        )
     if not proxy or proxy.status not in {"healthy", "available", "normal", "active"}:
         raise AuthorizationDrError("proxy_unavailable", "A SV proxy is unavailable for B login")
     _require_no_healthy_b(session, account_id)

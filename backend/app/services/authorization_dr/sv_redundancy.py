@@ -22,6 +22,8 @@ class SvRepairCandidate:
     primary_app_id: int
     repair_app_id: int
     standby_2_app_id: int
+    conflicting_standby_id: int | None = None
+    conflicting_standby_fact_version: int = 0
 
 
 def preview_sv_redundancy_repair(session, tenant_id: int, account_ids: list[int]) -> dict:
@@ -64,7 +66,9 @@ def apply_sv_redundancy_repair(
 def _apply_candidate(session, frozen: SvRepairCandidate, actor: str, approval_ref: str) -> dict:
     try:
         identity = _probe_candidate(session, frozen)
-        row = _locked_candidate(session, frozen)
+        row, conflicting = _locked_candidate(session, frozen)
+        if conflicting:
+            _demote_conflicting_standby(conflicting)
         _promote_repair(row, identity)
         audit(
             session,
@@ -109,14 +113,30 @@ def _probe_candidate(session, frozen: SvRepairCandidate):
     return repair
 
 
-def _locked_candidate(session, frozen: SvRepairCandidate) -> TgAccountAuthorization:
+def _locked_candidate(session, frozen: SvRepairCandidate):
     row = session.scalar(select(TgAccountAuthorization).where(
         TgAccountAuthorization.id == frozen.authorization_id,
     ).with_for_update())
+    conflicting = None
+    if frozen.conflicting_standby_id:
+        conflicting = session.scalar(select(TgAccountAuthorization).where(
+            TgAccountAuthorization.id == frozen.conflicting_standby_id,
+        ).with_for_update())
     current = _repair_candidate(session, row.tenant_id if row else 0, frozen.account_id)
     if current != frozen:
         raise AuthorizationDrError("authorization_version_conflict", "Frozen SV repair input changed")
-    return row
+    return row, conflicting
+
+
+def _demote_conflicting_standby(row: TgAccountAuthorization) -> None:
+    row.role = "standby_repair"
+    row.logical_slot = "standby_repair"
+    row.status = "needs_repair"
+    row.health_status = "unknown"
+    row.derived_status = "needs_repair"
+    row.protected_from_cleanup = True
+    row.failure_reason = "Retained after duplicate-App standby slot repair"
+    row.fact_version += 1
 
 
 def _promote_repair(row: TgAccountAuthorization, identity) -> None:
@@ -145,14 +165,18 @@ def _repair_candidate(session, tenant_id: int, account_id: int) -> SvRepairCandi
         raise AuthorizationDrError("sv_redundancy_incomplete", f"Account {account_id} current SV Session is unavailable")
     repair = _unique_role(session, account_id, "standby_repair")
     standby_2 = _unique_role(session, account_id, "standby_2")
-    if _current_role_exists(session, account_id, "standby_1"):
-        raise AuthorizationDrError("sv_redundancy_already_ready", f"Account {account_id} already has standby_1")
+    conflicting = _conflicting_standby(session, account)
     if not _repair_row_usable(repair) or not _standby_2_row_usable(standby_2):
         raise AuthorizationDrError("sv_redundancy_incomplete", f"Account {account_id} repair inputs are incomplete")
     app_ids = {account.developer_app_id, repair.developer_app_id, standby_2.developer_app_id}
     if None in app_ids or len(app_ids) != 3:
         raise AuthorizationDrError("developer_app_slot_assignment_conflict", "Account repair slots must use three distinct apps")
-    return SvRepairCandidate(account_id, repair.id, repair.fact_version, account.developer_app_id, repair.developer_app_id, standby_2.developer_app_id)
+    return SvRepairCandidate(
+        account_id, repair.id, repair.fact_version, account.developer_app_id,
+        repair.developer_app_id, standby_2.developer_app_id,
+        conflicting.id if conflicting else None,
+        conflicting.fact_version if conflicting else 0,
+    )
 
 
 def _unique_role(session, account_id: int, role: str) -> TgAccountAuthorization:
@@ -166,13 +190,28 @@ def _unique_role(session, account_id: int, role: str) -> TgAccountAuthorization:
     return rows[0]
 
 
-def _current_role_exists(session, account_id: int, role: str) -> bool:
-    return bool(session.scalar(select(TgAccountAuthorization.id).where(
-        TgAccountAuthorization.account_id == account_id,
-        TgAccountAuthorization.logical_slot == role,
+def _conflicting_standby(session, account: TgAccount):
+    rows = list(session.scalars(select(TgAccountAuthorization).where(
+        TgAccountAuthorization.account_id == account.id,
+        TgAccountAuthorization.logical_slot == "standby_1",
         TgAccountAuthorization.is_slot_current.is_(True),
         TgAccountAuthorization.disabled_at.is_(None),
-    ).limit(1)))
+    )))
+    if not rows:
+        return None
+    if len(rows) != 1:
+        raise AuthorizationDrError("sv_redundancy_incomplete", f"Account {account.id} standby_1 is not unique")
+    row = rows[0]
+    valid_conflict = (
+        row.developer_app_id == account.developer_app_id
+        and row.session_ciphertext
+        and row.protected_from_cleanup
+        and row.status in {"active", "standby"}
+        and row.health_status == "healthy"
+    )
+    if not valid_conflict:
+        raise AuthorizationDrError("sv_redundancy_already_ready", f"Account {account.id} already has standby_1")
+    return row
 
 
 def _repair_row_usable(row: TgAccountAuthorization) -> bool:

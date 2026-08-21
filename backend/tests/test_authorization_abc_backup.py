@@ -25,7 +25,13 @@ from app.models import (
 )
 from app.integrations.telegram.contracts import AuthorizationIdentity, SendResult
 from app.services._common import _now
-from app.services.authorization_dr import apply_abc_backup, apply_abc_e4, preview_abc_backup, preview_abc_e4
+from app.services.authorization_dr import (
+    AuthorizationDrError,
+    apply_abc_backup,
+    apply_abc_e4,
+    preview_abc_backup,
+    preview_abc_e4,
+)
 
 
 pytestmark = pytest.mark.no_postgres
@@ -106,6 +112,19 @@ def test_preview_is_database_only_and_freezes_a(session: Session) -> None:
     assert result["primary_authorization_id"] == session.get(TgAccount, 101).current_authorization_id
     assert result["app_b_id"] == 2
     assert len(result["fingerprint"]) == 64
+    assert session.scalar(select(TgLoginFlow.id)) is None
+
+
+def test_preview_rejects_duplicate_app_b_when_historical_primary_uses_app_b(session: Session) -> None:
+    account = session.get(TgAccount, 101)
+    primary = session.get(TgAccountAuthorization, account.current_authorization_id)
+    account.developer_app_id = 2
+    primary.developer_app_id = 2
+    session.commit()
+
+    with pytest.raises(AuthorizationDrError, match="restore the distinct standby_repair"):
+        preview_abc_backup(session, 1, 101, idempotency_key="abc-duplicate-app")
+
     assert session.scalar(select(TgLoginFlow.id)) is None
 
 
