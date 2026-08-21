@@ -10,6 +10,8 @@ MY 无 GHCR 拉取凭据时，精确 release 镜像先经 SSH 传输、摘要校
 
 单账号 B/C 完成后使用 `deploy/authorization-abc-backup.sh --mode verify-preview` 冻结 E4 fingerprint，再以独立 idempotency key 和异人审批执行 `--mode verify-apply`。该入口先持久化 operation，再让 A 向 Saved Messages 只发送一次；成功后读回 A/B Telegram 身份、C 双副本/restore probe、runtime off 和 MY active client=0，并把 remote message ID 写入审计。发送结果不明进入 `reconcile_unknown`，相同 key 只能返回原 operation，禁止重发。
 
+B/C challenge 的 Telegram 服务消息时间按固定 3 秒 clock-skew/秒精度容差绑定；容差窗内必须恰好一条符合消息，否则 fail closed。旧 operation 因验证码过期终态失败后不得复用 idempotency key 或 flow；只有完成根因修复、重新 preview 并获得新批准，才可用新 key 发起一次新 challenge。
+
 生产顺序固定为：发布候选 SHA -> 读回 App A=`primary_sv`、App B=`standby_1_sv`、App C=`standby_2_my` -> 在两机配置受限 SSH mirror 身份和恢复密钥双机备份 -> 为专用用户配置父目录 `--x` ACL，并从 MY 容器按正式 identity/known_hosts 执行远端目录访问检查 -> 通过 SSH 写入 root-only `node.env` 并启动 worker -> 读回固定出口和持续新鲜 heartbeat -> runtime preview/fingerprint/apply -> 两个互相独立的单账号 canary。第一个账号未完成全链路验收时不审批第二个；canary 未达到本地+SSH 镜像双副本、恢复密钥解封、inventory、restore probe、slot CAS、旧 SV retained/protected 和 Telegram exact-set 全部事实时，不创建全量批次。
 
 ## 账号批量自动登录发布闸门（默认关闭）

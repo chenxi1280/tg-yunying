@@ -380,7 +380,7 @@ def test_claim_exposes_frozen_login_material_and_renews_lease(session: Session, 
     assert persisted.login_code_message_id == "777000:42"
 
 
-def test_login_code_rejects_pre_challenge_message(session: Session, monkeypatch) -> None:
+def test_login_code_rejects_message_before_clock_skew_window(session: Session, monkeypatch) -> None:
     claim = _start_claim(session)
     operation = session.get(TgAuthorizationDrOperation, claim.operation_id)
     monkeypatch.setattr(
@@ -388,7 +388,7 @@ def test_login_code_rejects_pre_challenge_message(session: Session, monkeypatch)
         lambda *_args, **_kwargs: [SimpleNamespace(
             code="12345",
             message_id="777000:old",
-            received_at=operation.login_challenge_sent_at - timedelta(seconds=1),
+            received_at=operation.login_challenge_sent_at - timedelta(seconds=4),
         )],
     )
 

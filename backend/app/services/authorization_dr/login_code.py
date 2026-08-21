@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from app.integrations.telegram import VerificationCodeSnapshot
 from app.timezone import as_beijing
 
 from .contracts import AuthorizationDrError
+
+
+LOGIN_CODE_CLOCK_SKEW_SECONDS = 3
 
 
 @dataclass(frozen=True)
@@ -22,7 +25,7 @@ def bind_login_code(
     challenge_sent_at: datetime,
     expected_message_id: str = "",
 ) -> BoundLoginCode | None:
-    cutoff = as_beijing(challenge_sent_at)
+    cutoff = as_beijing(challenge_sent_at) - timedelta(seconds=LOGIN_CODE_CLOCK_SKEW_SECONDS)
     eligible = [item for item in snapshots if _received_at(item) >= cutoff]
     if expected_message_id:
         matches = [item for item in eligible if item.message_id == expected_message_id]
