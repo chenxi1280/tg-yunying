@@ -1,17 +1,21 @@
 # 马来西亚异地备用 TG Session 实施与验收合同
 
-> 版本：v2.19
+> 版本：v2.20
 > 日期口径：2026-08-21（Asia/Shanghai）
 > 规范关系：本文是 [马来西亚异地备用 TG Session 灾备 PRD](account-malaysia-standby-session-dr-prd.md) 的强制组成部分；冲突时两份文档必须同步修订，不允许实现自行择一。
-> 当前状态：`design_status=complete`、`product_resync_status=complete`、`implementation_started=true`、`implementation_scope=standby_2_migration_core`、`core_deployed=true`、`ssh_mirror_deployed=true`、`slot_canary=2/2_pass`、`full_prd_implementation=partial`、`runtime_mode=off`、`production_fixed=false`
+> 当前状态：`design_status=complete`、`product_resync_status=complete`、`implementation_started=true`、`implementation_scope=standby_2_unknown_repair_and_sv_local_activate`、`core_deployed=true`、`ssh_mirror_deployed=true`、`slot_canary=2/2_pass`、`full_prd_implementation=partial`、`runtime_mode=off`、`production_fixed=false`
 
 > 生产结构纠偏：A/B/C 是环境级三套 App 注册和新账号默认角色，不是历史切换后每个账号不可变化的角色标签。单账号验收以三 App ID 两两不同为准；App C/SV `standby_2` 是本次迁移源。历史 App A `standby_repair` 必须经双 Session Telegram UID/AuthKey 探测和 CAS 转正为 SV `standby_1` 后，账号才能进入迁移。
 
 > 当前设备 hash 合同：Telegram 从当前 Session 读取设备时允许返回 `hash=0`，不得判定登录失败，也不得把 `0` 保存为受保护设备标识。MY 必须提交当前设备规范化指纹摘要；SV 只用保留的 peer Session 读取结果解析唯一非零 hash。唯一匹配前不得写 Bundle/slot commit；零匹配、多匹配或 peer 读取失败统一进入 `provision_reconcile_unknown`，且不得自动重登。
 
-> 生产实施读回：账号 27、28 的 MY generation 2 槽位均为 current，双副本为 `2/2`，隔离 restore probe passed，旧 SV App C Session 为 retained/protected，因此 `slot_canary=2/2_pass`。后续 271 项扩量批次为 `241 succeeded / 22 failed / 8 reconcile_unknown`，runtime 已切 `off`；扩量最终验收保持 blocked。迁移核心通过不代表 `local_activate`、`restore_sv_pair`、`drill_wake`、紧急主授权重建、中心恢复对账、decommission/erase 或跨运行代次 fence 已实现。
+> 生产实施读回：账号 27、28 的 MY generation 2 槽位均为 current，双副本为 `2/2`，隔离 restore probe passed，旧 SV App C Session 为 retained/protected，因此 `slot_canary=2/2_pass`。release SHA `e8cd88dc496a56c586a5bcc502d81a318b76d7a9`、Deploy Production run `32456712129` 与 Alembic head `0158_dr_reconcile` 已独立读回；SV/MY backend image ID 一致，MY 节点上报精确运行 SHA、ready、active client 0，runtime 保持 `off`。271 项扩量批次当前为 `241 succeeded / 22 failed / 5 manual_required / 3 reconcile_unknown`，全局剩余 unknown 为账号 24/25/26/67/87/111；扩量最终验收保持 blocked。本轮 release candidate 只增加 guarded operator `local_activate` 与 unknown 原字节前滚；自动故障触发、`restore_sv_pair`、`drill_wake`、紧急主授权重建、中心恢复对账、decommission/erase 和跨全部消费者的运行代次 fence 仍未实现。
 
-> unknown 对账事实：账号 24/25 无持久包；账号 26 已存在与原 operation、generation 2 精确绑定的 MY 本地密封包，但缺少 SV 镜像、中心 inventory/receipt。对账协调器只能复用原字节、原 operation 和原 generation 补齐证据；不得调用登录 RPC，不得生成新 Session，也不得把 local-only 推导成成功。
+> unknown 对账事实：24/25 是无包 remote orphan；26 是原 operation/generation 的 MY local-only 包；67 远端没有新设备但当前主 Session 已失效；87 是本地+SSH+inventory 领先中心且当前主 Session 已失效；111 的三条 SV Session 均不可授权，远端集合未证明。对账协调器只能复用原字节、原 operation 和原 generation；不得调用登录 RPC、生成新 Session 或把未证明状态推导成成功。
+
+> 本轮正式放行合同：unknown 恢复使用 secret-free stage manifest，阶段至少覆盖 `remote_login_started/remote_login_confirmed/local_copy_verified/snapshot_copy_verified/inventory_persisted/central_receipt_committed/restore_probe_passed/slot_committed`。MY 仅在中心签发 operation-scoped reconcile permit 后读取原路径；local-only 只允许 create-only 补第二副本与 inventory，inventory-ahead 只允许重放同 digest receipt。所有 apply 复核 runtime=`off`、MY active client=0、operation/item/source versions、node/image、owner epoch、bundle generation 和 digest。24/25/111 只 hold/manual，不存在恢复登录入口。
+
+> 封号投影合同：`PhoneNumberBannedError` 是账号手机号级 typed remote fact。新事实和历史对账 apply 都在同一事务把 `TgAccount.status` 投影为 `已封禁`、online state 投影为 `login_required/phone_number_banned` 并保留授权资产；统计必须分开“本迁移批次 22 个已确认账号”和“全平台已确认封禁账号”，禁止把 22 当作全平台手机号总量。
 
 ## 1. API 合同
 
@@ -65,6 +69,9 @@
 | `POST /api/tg-accounts/authorization-dr/operations/{id}/reconcile/preview` | 只为 `provision_reconcile_unknown` 建立或重读唯一 open reconcile case；服务端冻结 operation/item/source versions、owner epoch、运行镜像 SHA 和脱敏证据 manifest，返回 `evidence_fingerprint/classification/artifact_state/allowed_transition/blockers`，不接受目标终态 |
 | `POST /api/tg-accounts/authorization-dr/operations/{id}/reconcile` | 必须携带 `expected_operation_version/evidence_fingerprint/approval_ref/Idempotency-Key`；服务端重读冻结证据后自行推导终态并 CAS apply。不得强写 succeeded、恢复旧 owner、调用登录 RPC、生成新 Session 或跳过所需远端 readback；任一版本、证据或镜像 SHA 漂移均零写入 conflict |
 | `GET /api/tg-accounts/authorization-dr/operations/{id}/reconcile` | 返回脱敏 evidence manifest、classification、artifact coverage、recommended transition、apply/readback 和 blocker；不返回 Session、AuthKey、2FA、验证码、远端 hash 明文、设备明细或日志原文 |
+| `POST /internal/v1/authorization-dr/operations/{id}/reconcile-claim`、`reconcile-probe-material`、`stage-facts`，以及既有 `wake-bundle`/`restore-probe`/`slot-commit` | 仅 MY 节点按中心已批准的 reconcile case 领取原 operation/generation；probe material 只返回冻结 App C 凭据，不返回手机号、密码、验证码或 2FA。节点复用原 bundle 字节，上报 secret-free stage 和完整 receipt；服务端只接受 `local_only_bundle` 或 `inventory_ahead_of_central`，校验 digest/identity/copy/inventory 后前滚，重放幂等。 |
+| `POST /api/tg-accounts/{id}/authorizations/{aid}/local-activate/preview` | 在 SV 读取目标备用 Session 的即时 Telegram identity，冻结 account authorization/fact/connection generation、目标 fact version、UID/AuthKey 和 current 行；只返回 fingerprint/blocker，不改变 current。 |
+| `POST /api/tg-accounts/{id}/authorizations/{aid}/local-activate` | 异人批准并携带 expected fingerprint/Idempotency-Key；行锁重读后 CAS 切换，写 current authorization、legacy Session/App/proxy 投影并提升三类 generation，旧 current 保留为 repair/protected，online 进入 warming。任何 probe/version/identity 漂移均零写入。 |
 | `POST /api/tg-accounts/{id}/authorizations/{aid}/decommission` | 双人审批；冻结 target hash、固定 current SV executor 及其 authorization fact/version、`telegram_login_at`、expected versions；迁移源还必须冻结并验证 `migration_recovery_gate_passed`。严格超过 48 小时才创建远端执行项，否则返回 skipped 及原因，不创建等待重试；恢复闸门未通过直接 blocked，不能撤销旧 SV |
 | `DELETE /api/tg-accounts/{id}` | 同一事务写 `business_deleted_authorizations_retained` 并停止账号全部业务资格；不撤销或删除授权资产，不把删除结果声明为 Telegram 设备已退出 |
 | `GET /api/tg-accounts?include_deleted=true` | 已删除账号继续返回授权保留/退役状态、三槽和 unresolved blocker；`authorization_retired` 前不得从管理面完全消失 |

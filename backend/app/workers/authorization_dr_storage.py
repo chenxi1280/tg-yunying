@@ -14,6 +14,8 @@ class ObjectSnapshotStore(Protocol):
 
     def read(self, object_key: str) -> bytes: ...
 
+    def exists(self, object_key: str) -> bool: ...
+
 
 class OssObjectSnapshotStore:
     def __init__(self, endpoint: str, bucket_name: str, access_key_id: str, access_key_secret: str):
@@ -30,6 +32,9 @@ class OssObjectSnapshotStore:
 
     def read(self, object_key: str) -> bytes:
         return self.bucket.get_object(object_key).read()
+
+    def exists(self, object_key: str) -> bool:
+        return bool(self.bucket.object_exists(object_key))
 
 
 @dataclass(frozen=True)

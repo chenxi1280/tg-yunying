@@ -208,6 +208,52 @@ class TgAuthorizationDrReconcileCase(Base):
     applied_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
+class TgAuthorizationDrStageFact(Base):
+    __tablename__ = "tg_authorization_dr_stage_facts"
+    __table_args__ = (
+        UniqueConstraint("operation_id", "stage", name="uq_dr_operation_stage"),
+        Index("ix_dr_stage_operation", "operation_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    operation_id: Mapped[str] = mapped_column(ForeignKey("tg_authorization_dr_operations.id"))
+    node_id: Mapped[str] = mapped_column(String(80))
+    owner_epoch: Mapped[int] = mapped_column(Integer)
+    stage: Mapped[str] = mapped_column(String(48))
+    manifest_digest: Mapped[str] = mapped_column(String(64))
+    evidence_manifest: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
+class TgAuthorizationLocalActivateCase(Base):
+    __tablename__ = "tg_authorization_local_activate_cases"
+    __table_args__ = (
+        UniqueConstraint("fingerprint", name="uq_authorization_local_activate_fingerprint"),
+        UniqueConstraint("tenant_id", "apply_idempotency_key", name="uq_local_activate_apply_idempotency"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
+    account_id: Mapped[int] = mapped_column(ForeignKey("tg_accounts.id"))
+    target_authorization_id: Mapped[int] = mapped_column(ForeignKey("tg_account_authorizations.id"))
+    expected_current_authorization_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    expected_authorization_generation: Mapped[int] = mapped_column(Integer)
+    expected_fact_generation: Mapped[int] = mapped_column(Integer)
+    expected_connection_generation: Mapped[int] = mapped_column(Integer)
+    expected_target_fact_version: Mapped[int] = mapped_column(Integer)
+    telegram_user_id_digest: Mapped[str] = mapped_column(String(64))
+    auth_key_fingerprint_digest: Mapped[str] = mapped_column(String(64))
+    fingerprint: Mapped[str] = mapped_column(String(64))
+    reason: Mapped[str] = mapped_column(String(255))
+    status: Mapped[str] = mapped_column(String(32), default="decision_ready")
+    requested_by: Mapped[str] = mapped_column(String(100))
+    applied_by: Mapped[str] = mapped_column(String(100), default="")
+    approval_ref: Mapped[str] = mapped_column(String(160), default="")
+    apply_idempotency_key: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 class TgAuthorizationWakeBundle(Base):
     __tablename__ = "tg_authorization_wake_bundles"
     __table_args__ = (

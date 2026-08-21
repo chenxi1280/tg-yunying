@@ -202,7 +202,7 @@ def post_dr_reconcile_preview(
             operation_id,
             tenant_id=resolved_tenant_id,
             expected_operation_version=payload.expected_operation_version,
-            evidence=payload.evidence.model_dump(),
+            evidence=payload.evidence.model_dump(exclude_unset=True),
             actor=current_user.name,
         )
         return reconcile_case_out(session, case.operation_id, resolved_tenant_id)

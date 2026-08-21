@@ -89,6 +89,13 @@ class TelegramGateway:
     def cancel_login(self, flow_id: int) -> None:
         return None
 
+    def invalidate_session_cache(
+        self,
+        session_ciphertext: str | None,
+        credentials: DeveloperAppCredentials,
+    ) -> int:
+        return 0
+
     def search_rank_deboost_candidates(
         self,
         account_id: int,

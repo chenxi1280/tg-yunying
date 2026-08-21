@@ -1,10 +1,13 @@
 from .contracts import *  # noqa: F401,F403
 from .configuration import *  # noqa: F401,F403
+from .artifact_reconcile import *  # noqa: F401,F403
 from .migration import *  # noqa: F401,F403
+from .local_activate import *  # noqa: F401,F403
 from .migration_results import *  # noqa: F401,F403
 from .readiness import *  # noqa: F401,F403
 from .read_model import *  # noqa: F401,F403
 from .reconcile import *  # noqa: F401,F403
 from .slot import *  # noqa: F401,F403
+from .stage_facts import *  # noqa: F401,F403
 from .sv_redundancy import *  # noqa: F401,F403
 from .wake_bundle import *  # noqa: F401,F403

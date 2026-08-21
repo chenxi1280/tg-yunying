@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import json
 from pathlib import Path, PurePosixPath
 import re
 import secrets
@@ -84,6 +83,11 @@ class SshMirrorObjectSnapshotStore:
     def read(self, object_key: str) -> bytes:
         target = self._remote_path(object_key)
         return self._run(f"cat -- {shlex.quote(str(target))}", None).stdout
+
+    def exists(self, object_key: str) -> bool:
+        target = shlex.quote(str(self._remote_path(object_key)))
+        command = f"if test -f {target}; then printf 1; elif test -e {target}; then exit 2; else printf 0; fi"
+        return self._run(command, None).stdout == b"1"
 
     def _remote_path(self, object_key: str) -> PurePosixPath:
         if not OBJECT_KEY_PATTERN.fullmatch(object_key):

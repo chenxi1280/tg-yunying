@@ -5,8 +5,9 @@
 - 文档中的账号 24/25 `0/2_reconcile_unknown` 是早期失败 canary，不是当前两账号验收结果；后续账号 27/28 已达到 slot-level `2/2 pass`。
 - 当前数据库 operation 的 `succeeded` 发生在 recovery gate + slot CAS 后，语义是 `slot_cutover_succeeded`；旧 SV 远端授权未 decommission、最终 exact-set 未回读且 `rollback_window_closed_at` 未写时，不能解释为 `migration_succeeded`。
 - 账号 26 的 unknown operation 已有同 operation、generation 2 的 MY 本地密封包，但无 SV 镜像、中心 inventory/receipt；它是 `local_only`，不得再写成“无 Bundle”，也不得自动重登。
-- 最新扩量批次 271 项数量守恒，但 8 个 unknown 未收口；runtime `off` 是当前正确生产停止态。
-- 仓库没有正式 unknown/orphan reconcile coordinator，也没有完整 `local_activate`、`restore_sv_pair`、`emergency_reauthorize_primary`、中心恢复、decommission/erase 或跨业务 generation fence。
+- 最新扩量批次 271 项数量守恒为 `241 succeeded + 22 failed + 5 manual_required + 3 reconcile_unknown`；全局剩余 unknown 精确为账号 24/25/26/67/87/111，runtime `off` 是当前正确生产停止态。
+- typed historical failure 的正式 unknown coordinator 已发布并完成 5 项受控 apply/readback；local-only/dual-copy/orphan 续跑入口仍未实现。完整 `local_activate`、`restore_sv_pair`、`emergency_reauthorize_primary`、中心恢复、decommission/erase 和跨业务 generation fence 也仍缺失。
+- release SHA `e8cd88dc496a56c586a5bcc502d81a318b76d7a9`、run `32456712129`、Alembic `0158_dr_reconcile`、SV/MY 同 image ID 与 MY 精确运行 SHA 均已独立读回；这证明 P0A 已部署，不等于完整 PRD 或迁移最终完成。
 - `.planning/malaysia_session_dr_v216_implementation_20260820` 是早期 ignored 快照；本目录为 tracked 规划真相源，旧快照不得用于当前完成度判断。
 
 ## Initial Baseline

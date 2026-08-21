@@ -19,6 +19,7 @@ from telethon.errors import PasswordHashInvalidError, PhoneNumberBannedError
 from app.integrations.telegram import AuthorizationIdentity, DeveloperAppCredentials, create_gateway
 from app.workers.authorization_dr_kms import DekProtector, WrappedDek
 from app.workers.authorization_dr_storage import ObjectSnapshotStore, load_storage_config
+from app.workers.authorization_dr_stage_client import post_bundle_stages, post_stage
 
 
 LOGGER = logging.getLogger(__name__)
@@ -136,7 +137,9 @@ def _process_claim(client: DrNodeClient, gateway, claim: dict) -> None:
             LOGGER.warning("authorization DR login rejected (%s): %s", blocker_code, operation_id)
             return
         identity = gateway.authorization_identity(raw_session, _credentials(claim, material))
+        post_stage(client, operation_id, owner, "remote_login_confirmed", identity.authorization_fingerprint_digest)
         receipt, object_key = _persist_bundle(client.config, claim, raw_session, identity)
+        post_bundle_stages(client, operation_id, owner, receipt)
         _post_bundle_receipt(client, operation_id, {**owner, **receipt})
         bundle_committed = True
         probe = _restore_probe(gateway, RestoreProbeInput(
