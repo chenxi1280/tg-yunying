@@ -71,7 +71,7 @@ def _preview(session, args):
             "ciphertext_digest": args.ciphertext_digest,
             "inventory_sequence": args.inventory_sequence,
         })
-    elif args.kind != "remote_unproven":
+    elif args.kind not in {"remote_unproven", "pre_code_submission_failure"}:
         _required(args, "remote_set_before_digest", "remote_set_after_digest", "new_device_count")
         evidence.update({
             "remote_set_before_digest": args.remote_set_before_digest,

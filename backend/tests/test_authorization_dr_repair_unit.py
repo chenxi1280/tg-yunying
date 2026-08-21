@@ -45,6 +45,7 @@ from app.services.authorization_dr import (
 from app.workers.authorization_dr_artifact_recovery import _recover_receipt
 from app.workers.authorization_dr_kms import WrappedDek
 from app.workers.authorization_dr_node import _encrypt_session
+from scripts import authorization_dr_reconcile as reconcile_script
 from scripts.authorization_dr_phone_ban_projection import (
     apply_phone_ban_projection,
     preview_phone_ban_projection,
@@ -441,6 +442,27 @@ def test_pre_code_failure_reconcile_closes_b_unknown_without_changing_primary() 
             primary.is_slot_current,
             primary.fact_version,
         ) == primary_before
+
+
+def test_pre_code_failure_cli_does_not_require_remote_device_delta(monkeypatch) -> None:
+    args = SimpleNamespace(
+        mode="preview", tenant_id=1, operation_id="b-operation", expected_operation_version=5,
+        kind="pre_code_submission_failure", event_digest="e" * 64, source_ref="deploy-run",
+        runtime_image_sha="9" * 40, node_id=None, owner_epoch=None, blocker_code=None,
+        bundle_generation=None, ciphertext_digest=None, inventory_sequence=None,
+        remote_set_before_digest=None, remote_set_after_digest=None, new_device_count=None,
+        actor="requester",
+    )
+    evidence = {"kind": "pre_code_submission_failure"}
+    monkeypatch.setattr(reconcile_script, "build_pre_code_failure_evidence", lambda *_args, **_kwargs: evidence)
+    monkeypatch.setattr(
+        reconcile_script,
+        "preview_operation_reconcile",
+        lambda *_args, **_kwargs: SimpleNamespace(operation_id="b-operation"),
+    )
+    monkeypatch.setattr(reconcile_script, "reconcile_case_out", lambda *_args, **_kwargs: {"ok": True})
+
+    assert reconcile_script._preview(object(), args) == {"ok": True}
 
 
 def test_artifact_recovery_reuses_original_bytes_and_adds_missing_snapshot(tmp_path) -> None:
