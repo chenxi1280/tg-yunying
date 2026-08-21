@@ -140,7 +140,7 @@
 | --- | --- |
 | 账号选择 | 支持当前筛选、跨页选择、区间选择、一键选择缺口账号 |
 | 补齐槽位 | 自动补齐缺失槽位、仅 `standby_1`、仅 `standby_2` |
-| Developer App 策略 | 固定使用 App B 创建 SV standby_1、App C 创建 MY standby_2，并冻结 assignment/version 与 `developer_app_id + api_id` 快照；角色缺失、重复或不健康时阻断，不动态改选或增加第四套 App |
+| Developer App 策略 | App C 固定创建 MY standby_2；SV standby_1 从 `primary_sv`/`standby_1_sv` 两套现有 App 中选择与 current primary、App C 不同的一套，并冻结 assignment/version 与 `developer_app_id + api_id` 快照。新账号默认 App B，历史 A/B 互换账号允许选 App A；角色缺失、重复或不健康时阻断，不增加第四套 App |
 | 出口策略 | `primary + standby_1` 固定使用硅谷 `primary_regular`；`standby_2` 固定使用 MY `standby_my`，不得按槽位自动增加或轮换 IP |
 | 2FA 使用 | 使用平台托管 2FA；未托管时预警，执行时如 Telegram 要求 2FA 则进入人工 |
 | 操作原因 | 必填 |
@@ -184,7 +184,7 @@
 ```text
 管理员选择备用 session 缺口账号
   -> 预检账号在线状态、主 session、目标槽位
-  -> 校验并冻结目标槽位的 App B 或 App C assignment/version
+  -> SV standby_1 校验并冻结与 current A/App C 不同的现有 SV assignment；MY standby_2 冻结 App C assignment/version
   -> 分配健康代理
   -> 创建账号安全批次
   -> worker 按账号串行领取批次项

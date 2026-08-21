@@ -26,12 +26,12 @@ from app.models import (
 from app.integrations.telegram.contracts import AuthorizationIdentity, SendResult
 from app.services._common import _now
 from app.services.authorization_dr import (
-    AuthorizationDrError,
     apply_abc_backup,
     apply_abc_e4,
     preview_abc_backup,
     preview_abc_e4,
 )
+from app.services.authorization_dr.abc_backup import _retain_conflicting_b
 
 
 pytestmark = pytest.mark.no_postgres
@@ -115,17 +115,56 @@ def test_preview_is_database_only_and_freezes_a(session: Session) -> None:
     assert session.scalar(select(TgLoginFlow.id)) is None
 
 
-def test_preview_rejects_duplicate_app_b_when_historical_primary_uses_app_b(session: Session) -> None:
+def test_preview_selects_other_sv_app_when_historical_primary_uses_app_b(session: Session) -> None:
     account = session.get(TgAccount, 101)
     primary = session.get(TgAccountAuthorization, account.current_authorization_id)
+    session.add(DeveloperAppSlotAssignment(
+        slot_purpose="primary_sv",
+        developer_app_id=1,
+        assignment_version=9,
+        credentials_version=1,
+        assigned_by="admin",
+    ))
     account.developer_app_id = 2
     primary.developer_app_id = 2
     session.commit()
 
-    with pytest.raises(AuthorizationDrError, match="restore the distinct standby_repair"):
-        preview_abc_backup(session, 1, 101, idempotency_key="abc-duplicate-app")
+    result = preview_abc_backup(session, 1, 101, idempotency_key="abc-dynamic-sv-app")
 
+    assert result["app_b_id"] == 1
+    assert result["app_b_assignment_purpose"] == "primary_sv"
+    assert result["assignment_version"] == 9
     assert session.scalar(select(TgLoginFlow.id)) is None
+
+
+def test_new_dynamic_b_retains_same_app_historical_standby_without_changing_a(session: Session) -> None:
+    account = session.get(TgAccount, 101)
+    primary = session.get(TgAccountAuthorization, account.current_authorization_id)
+    account.developer_app_id = 2
+    primary.developer_app_id = 2
+    conflict = TgAccountAuthorization(
+        tenant_id=1, account_id=101, role="standby_1", logical_slot="standby_1",
+        developer_app_id=2, session_ciphertext="old-b", status="standby",
+        health_status="healthy", is_slot_current=True, protected_from_cleanup=True,
+    )
+    replacement = TgAccountAuthorization(
+        tenant_id=1, account_id=101, role="standby_1", logical_slot="standby_1",
+        developer_app_id=1, session_ciphertext="new-b", status="standby",
+        health_status="healthy", is_slot_current=True, protected_from_cleanup=True,
+    )
+    session.add_all([conflict, replacement])
+    session.commit()
+    before = _a_snapshot(session)
+
+    _retain_conflicting_b(session, replacement, primary)
+    session.commit()
+
+    assert _a_snapshot(session) == before
+    assert (conflict.role, conflict.logical_slot, conflict.status) == (
+        "standby_repair", "standby_repair", "needs_repair",
+    )
+    assert conflict.protected_from_cleanup is True
+    assert replacement.logical_slot == "standby_1"
 
 
 def test_apply_logs_in_b_without_changing_a(session: Session, monkeypatch) -> None:

@@ -46,6 +46,7 @@ class AbcBackupPreview:
     connection_generation: int
     app_b_id: int
     app_b_credentials_version: int
+    app_b_assignment_purpose: str
     assignment_version: int
     proxy_id: int
     idempotency_key: str
@@ -106,19 +107,11 @@ def _preview_inputs(session, tenant_id: int, account_id: int, idempotency_key: s
     if not account or account.tenant_id != tenant_id or account.deleted_at is not None:
         raise AuthorizationDrError("account_not_found", "ABC backup account is unavailable")
     primary = require_primary_code_source(account)
-    assignment = session.get(DeveloperAppSlotAssignment, "standby_1_sv")
-    app = session.get(TelegramDeveloperApp, assignment.developer_app_id) if assignment else None
+    assignment, app = _sv_backup_assignment(session, primary)
     proxy = session.get(AccountProxy, account.proxy_id) if account.proxy_id else None
-    if not assignment or assignment.status != "active" or not app or not app.is_active:
-        raise AuthorizationDrError("developer_app_slot_assignment_conflict", "App B assignment is unavailable")
-    if primary.developer_app_id == app.id:
-        raise AuthorizationDrError(
-            "sv_repair_required",
-            "Current A already uses App B; restore the distinct standby_repair instead of creating another App B login",
-        )
     if not proxy or proxy.status not in {"healthy", "available", "normal", "active"}:
         raise AuthorizationDrError("proxy_unavailable", "A SV proxy is unavailable for B login")
-    _require_no_healthy_b(session, account_id)
+    _require_no_healthy_b(session, account_id, primary.developer_app_id)
     _require_no_active_operation(session, account_id)
     return AbcBackupPreview(
         tenant_id=tenant_id,
@@ -130,6 +123,7 @@ def _preview_inputs(session, tenant_id: int, account_id: int, idempotency_key: s
         connection_generation=account.connection_generation,
         app_b_id=app.id,
         app_b_credentials_version=app.credentials_version,
+        app_b_assignment_purpose=assignment.slot_purpose,
         assignment_version=assignment.assignment_version,
         proxy_id=proxy.id,
         idempotency_key=idempotency_key.strip(),
@@ -287,6 +281,7 @@ def _finish_b_login(session, operation, source, flow, code: str) -> None:
             identity,
             exclude_authorization_id=asset.id,
         )
+        _retain_conflicting_b(session, asset, source)
         _qualify_b(asset, source, identity)
     except Exception as exc:
         _mark_manual(session, operation, exc)
@@ -361,16 +356,53 @@ def _proxy_id(operation) -> int:
     return int(operation.egress_id.split(":", 1)[1])
 
 
-def _require_no_healthy_b(session, account_id: int) -> None:
+def _sv_backup_assignment(session, primary):
+    c_assignment = session.get(DeveloperAppSlotAssignment, "standby_2_my")
+    excluded = {primary.developer_app_id, c_assignment.developer_app_id if c_assignment else None}
+    for purpose in ("standby_1_sv", "primary_sv"):
+        assignment = session.get(DeveloperAppSlotAssignment, purpose)
+        app = session.get(TelegramDeveloperApp, assignment.developer_app_id) if assignment else None
+        if assignment and assignment.status == "active" and app and app.is_active and app.id not in excluded:
+            return assignment, app
+    raise AuthorizationDrError(
+        "developer_app_slot_assignment_conflict",
+        "No active SV Developer App is distinct from current A and App C",
+    )
+
+
+def _require_no_healthy_b(session, account_id: int, primary_app_id: int) -> None:
     row = session.scalar(select(TgAccountAuthorization.id).where(
         TgAccountAuthorization.account_id == account_id,
         TgAccountAuthorization.logical_slot == "standby_1",
         TgAccountAuthorization.is_slot_current.is_(True),
+        TgAccountAuthorization.status.in_({"active", "standby"}),
         TgAccountAuthorization.health_status == "healthy",
+        TgAccountAuthorization.developer_app_id != primary_app_id,
         TgAccountAuthorization.disabled_at.is_(None),
     ).limit(1))
     if row:
         raise AuthorizationDrError("sv_redundancy_already_ready", "Account already has healthy B")
+
+
+def _retain_conflicting_b(session, asset, source) -> None:
+    rows = list(session.scalars(select(TgAccountAuthorization).where(
+        TgAccountAuthorization.account_id == asset.account_id,
+        TgAccountAuthorization.id != asset.id,
+        TgAccountAuthorization.logical_slot == "standby_1",
+        TgAccountAuthorization.is_slot_current.is_(True),
+        TgAccountAuthorization.disabled_at.is_(None),
+    )))
+    for row in rows:
+        if row.developer_app_id != source.developer_app_id:
+            raise AuthorizationDrError("sv_redundancy_already_ready", "Account already has a distinct standby_1")
+        row.role = "standby_repair"
+        row.logical_slot = "standby_repair"
+        row.status = "needs_repair"
+        row.health_status = "unknown"
+        row.derived_status = "needs_repair"
+        row.protected_from_cleanup = True
+        row.failure_reason = "Retained after dynamic SV standby replacement"
+        row.fact_version += 1
 
 
 def _require_no_active_operation(session, account_id: int) -> None:
