@@ -18,6 +18,7 @@ from .contracts import AuthorizationDrError
 
 REQUIRED_SLOT_PURPOSES = ("primary_sv", "standby_1_sv", "standby_2_my")
 MY_NODE_STALE_SECONDS = 120
+ABC_CAPABILITY_VERSION = "2.21-abc-a-source"
 
 
 @dataclass(frozen=True)
@@ -29,14 +30,14 @@ class MigrationReadiness:
     assignment_version: int
 
 
-def require_migration_readiness(session) -> MigrationReadiness:
+def require_migration_readiness(session, *, require_mode: bool = True) -> MigrationReadiness:
     contract = session.get(AuthorizationDrRuntimeContract, 1)
-    if not contract or contract.mode != "migrate":
+    if not contract or (require_mode and contract.mode != "migrate"):
         raise AuthorizationDrError("runtime_capability_unproven", "DR runtime is not in migrate mode")
     if contract.mutation_hold_reason:
         raise AuthorizationDrError(contract.mutation_hold_reason, "Authorization mutation is on hold")
     assignments = _require_slot_assignments(session)
-    node = _require_my_node(session)
+    node = _require_my_node(session, contract)
     egress = _require_my_egress(session, node.standby_egress_id)
     assignment = assignments["standby_2_my"]
     return MigrationReadiness(contract.contract_epoch, node, egress, assignment, assignment.assignment_version)
@@ -105,7 +106,7 @@ def _require_slot_assignments(session) -> dict[str, DeveloperAppSlotAssignment]:
     return mapping
 
 
-def _require_my_node(session) -> AuthorizationDrExecutionNode:
+def _require_my_node(session, contract: AuthorizationDrRuntimeContract) -> AuthorizationDrExecutionNode:
     rows = list(session.scalars(select(AuthorizationDrExecutionNode).where(
         AuthorizationDrExecutionNode.region_code == "my",
         AuthorizationDrExecutionNode.purpose == "standby_session_dr",
@@ -119,6 +120,14 @@ def _require_my_node(session) -> AuthorizationDrExecutionNode:
         raise AuthorizationDrError("malaysia_wake_unavailable", "MY execution node heartbeat is stale")
     if node.active_client_count != 0:
         raise AuthorizationDrError("malaysia_owner_fencing_unproven", "MY node has an active Telegram client")
+    if contract.required_node_capability_version and (
+        node.capability_version != contract.required_node_capability_version
+    ):
+        raise AuthorizationDrError("runtime_capability_unproven", "MY node capability does not match contract")
+    if contract.required_node_runtime_image_sha and (
+        node.runtime_image_sha != contract.required_node_runtime_image_sha
+    ):
+        raise AuthorizationDrError("runtime_image_mismatch", "MY node image does not match contract")
     return node
 
 
@@ -133,4 +142,9 @@ def _require_my_egress(session, egress_id: str) -> TelegramEgressAssignment:
     return egress
 
 
-__all__ = ["MigrationReadiness", "record_node_heartbeat", "require_migration_readiness"]
+__all__ = [
+    "ABC_CAPABILITY_VERSION",
+    "MigrationReadiness",
+    "record_node_heartbeat",
+    "require_migration_readiness",
+]

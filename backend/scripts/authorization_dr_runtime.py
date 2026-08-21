@@ -18,6 +18,9 @@ def main() -> None:
         "egress_id": args.egress_id,
         "egress_secret_ref_digest": hashlib.sha256(args.egress_secret_ref.encode()).hexdigest(),
         "observed_ip_hmac": hashlib.sha256(args.expected_egress_ip.encode()).hexdigest(),
+        "required_node_capability_version": args.required_node_capability_version,
+        "required_node_runtime_image_sha": args.required_node_runtime_image_sha,
+        "claim_scope_operation_id": args.claim_scope_operation_id,
     }
     with SessionLocal() as session:
         preview = preview_runtime_configuration(session, desired)
@@ -40,6 +43,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--egress-id", required=True)
     parser.add_argument("--egress-secret-ref", required=True)
     parser.add_argument("--expected-egress-ip", required=True)
+    parser.add_argument("--required-node-capability-version", default="")
+    parser.add_argument("--required-node-runtime-image-sha", default="")
+    parser.add_argument("--claim-scope-operation-id", default="")
     parser.add_argument("--expected-fingerprint", default="")
     parser.add_argument("--actor", default="")
     return parser

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 
 from sqlalchemy import select
 
@@ -11,11 +12,12 @@ from app.models import (
     DeveloperAppSlotAssignment,
     TelegramDeveloperApp,
     TelegramEgressAssignment,
+    TgAuthorizationDrOperation,
 )
 from app.services._common import _now, audit
 
 from .contracts import AuthorizationDrError
-from .readiness import require_migration_readiness
+from .readiness import ABC_CAPABILITY_VERSION, require_migration_readiness
 
 
 SLOT_APPS = (("primary_sv", "app_a_id"), ("standby_1_sv", "app_b_id"), ("standby_2_my", "app_c_id"))
@@ -23,6 +25,7 @@ SLOT_APPS = (("primary_sv", "app_a_id"), ("standby_1_sv", "app_b_id"), ("standby
 
 def preview_runtime_configuration(session, desired: dict) -> dict:
     normalized = _normalize_desired(desired)
+    _validate_claim_scope(session, normalized)
     apps = [_require_app(session, normalized[key]) for _, key in SLOT_APPS]
     if len({app.id for app in apps}) != 3:
         raise AuthorizationDrError("developer_app_slot_assignment_conflict", "Three distinct Developer Apps are required")
@@ -72,10 +75,33 @@ def _normalize_desired(desired: dict) -> dict:
         "egress_id": str(desired["egress_id"]).strip(),
         "egress_secret_ref_digest": str(desired["egress_secret_ref_digest"]).strip(),
         "observed_ip_hmac": str(desired["observed_ip_hmac"]).strip(),
+        "required_node_capability_version": str(
+            desired.get("required_node_capability_version") or ""
+        ).strip(),
+        "required_node_runtime_image_sha": str(
+            desired.get("required_node_runtime_image_sha") or ""
+        ).strip().lower(),
+        "claim_scope_operation_id": str(desired.get("claim_scope_operation_id") or "").strip(),
     }
     if not normalized["egress_id"] or any(len(normalized[key]) != 64 for key in ("egress_secret_ref_digest", "observed_ip_hmac")):
         raise AuthorizationDrError("malaysia_egress_unproven", "MY egress evidence is incomplete")
     return normalized
+
+
+def _validate_claim_scope(session, desired: dict) -> None:
+    if desired["mode"] != "migrate":
+        return
+    if desired["required_node_capability_version"] != ABC_CAPABILITY_VERSION:
+        raise AuthorizationDrError("runtime_capability_unproven", "ABC capability contract is required")
+    image_sha = desired["required_node_runtime_image_sha"]
+    if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", image_sha):
+        raise AuthorizationDrError("runtime_image_mismatch", "An exact release image SHA is required")
+    operation_id = desired["claim_scope_operation_id"]
+    operation = session.get(TgAuthorizationDrOperation, operation_id) if operation_id else None
+    if not operation or operation.operation_type != "migrate_standby_2":
+        raise AuthorizationDrError("claim_scope_invalid", "An exact standby_2 operation is required")
+    if operation.status not in {"pending", "waiting_login"}:
+        raise AuthorizationDrError("claim_scope_invalid", "Scoped operation is not claimable")
 
 
 def _require_app(session, app_id: int) -> TelegramDeveloperApp:
@@ -130,6 +156,11 @@ def _apply_contract(session, desired: dict, actor: str) -> None:
     row.mode = desired["mode"]
     row.cluster_incarnation = "my-node-1"
     row.mutation_hold_reason = ""
+    row.required_node_capability_version = desired["required_node_capability_version"]
+    row.required_node_runtime_image_sha = desired["required_node_runtime_image_sha"]
+    row.claim_scope_operation_id = (
+        desired["claim_scope_operation_id"] if desired["mode"] == "migrate" else ""
+    )
     row.version = (row.version or 0) + 1
     row.updated_by = actor
     row.updated_at = _now()
@@ -142,6 +173,11 @@ def _current_configuration(session) -> dict:
     return {
         "mode": contract.mode if contract else "missing",
         "contract_epoch": contract.contract_epoch if contract else 0,
+        "required_node_capability_version": (
+            contract.required_node_capability_version if contract else ""
+        ),
+        "required_node_runtime_image_sha": contract.required_node_runtime_image_sha if contract else "",
+        "claim_scope_operation_id": contract.claim_scope_operation_id if contract else "",
         "assignments": [
             {"purpose": row.slot_purpose, "app_id": row.developer_app_id, "version": row.assignment_version, "status": row.status}
             for row in assignments

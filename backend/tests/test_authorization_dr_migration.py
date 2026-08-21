@@ -108,15 +108,36 @@ def _seed_runtime(session: Session) -> None:
 
 
 def _seed_account(session: Session, account_id: int) -> None:
-    session.add(TgAccount(
+    account = TgAccount(
         id=account_id,
         tenant_id=1,
         display_name=f"account-{account_id}",
         phone_masked=str(account_id),
         session_ciphertext=f"primary-{account_id}",
         developer_app_id=1,
-    ))
+    )
+    session.add(account)
     session.flush()
+    primary = TgAccountAuthorization(
+        tenant_id=1,
+        account_id=account_id,
+        role="primary",
+        logical_slot="primary",
+        provision_region_code="sv",
+        developer_app_id=1,
+        developer_app_api_id_snapshot=1001,
+        session_ciphertext=f"primary-{account_id}",
+        status="active",
+        health_status="healthy",
+        remote_authorization_state="active",
+        is_current=True,
+        telegram_user_id_digest=f"{account_id + 1000:064x}",
+        auth_key_fingerprint_digest=f"{account_id + 2000:064x}",
+        fact_version=3,
+    )
+    session.add(primary)
+    session.flush()
+    account.current_authorization_id = primary.id
     session.add_all([
         TgAccountAuthorization(
             tenant_id=1,
@@ -333,7 +354,11 @@ def test_claim_exposes_frozen_login_material_and_renews_lease(session: Session, 
         "app.services.authorization_dr.migration.gateway.poll_verification_codes",
         lambda account_id, *, session_ciphertext, credentials: (
             code_source_calls.append((account_id, session_ciphertext, credentials.app_id))
-            or [SimpleNamespace(code="12345")]
+            or [SimpleNamespace(
+                code="12345",
+                message_id="777000:42",
+                received_at=_now() + timedelta(seconds=1),
+            )]
         ),
     )
     code = poll_migration_login_code(
@@ -349,7 +374,43 @@ def test_claim_exposes_frozen_login_material_and_renews_lease(session: Session, 
     assert material["api_hash"]
     assert operation.lease_expires_at >= before
     assert code == "12345"
-    assert code_source_calls == [(claim.account_id, f"sv-standby-2-{claim.account_id}", 3)]
+    assert code_source_calls == [(claim.account_id, f"primary-{claim.account_id}", 1)]
+    persisted = session.get(TgAuthorizationDrOperation, claim.operation_id)
+    assert persisted.code_source_authorization_id == persisted.expected_current_authorization_id
+    assert persisted.login_code_message_id == "777000:42"
+
+
+def test_login_code_rejects_pre_challenge_message(session: Session, monkeypatch) -> None:
+    claim = _start_claim(session)
+    operation = session.get(TgAuthorizationDrOperation, claim.operation_id)
+    monkeypatch.setattr(
+        "app.services.authorization_dr.migration.gateway.poll_verification_codes",
+        lambda *_args, **_kwargs: [SimpleNamespace(
+            code="12345",
+            message_id="777000:old",
+            received_at=operation.login_challenge_sent_at - timedelta(seconds=1),
+        )],
+    )
+
+    assert poll_migration_login_code(
+        session,
+        claim.operation_id,
+        node_id=claim.owner_node_id,
+        owner_epoch=claim.owner_epoch,
+        lease_token=claim.lease_token,
+    ) == ""
+
+
+def test_claim_rejects_frozen_a_generation_drift(session: Session) -> None:
+    _approved_batch(session)
+    account = session.get(TgAccount, 101)
+    account.connection_generation += 1
+    session.commit()
+
+    with pytest.raises(AuthorizationDrError, match="Frozen A authorization changed") as error:
+        claim_migration_operation(session, "my-node-1")
+
+    assert error.value.code == "code_source_changed"
 
 
 def test_one_copy_cannot_commit_and_old_sv_session_is_preserved(session: Session) -> None:

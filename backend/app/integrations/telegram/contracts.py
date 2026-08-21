@@ -97,6 +97,8 @@ class VerificationCodeSnapshot:
     code: str
     raw_hint: str
     expires_at: datetime | None
+    message_id: str = ""
+    received_at: datetime | None = None
 
 
 @dataclass(frozen=True)

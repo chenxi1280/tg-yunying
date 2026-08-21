@@ -37,6 +37,34 @@ def preview_local_activate(session, tenant_id: int, account_id: int, target_id: 
     return case
 
 
+def create_local_activate_candidate(session, account, target, *, actor: str, reason: str):
+    if account.status not in {AccountStatus.SESSION_EXPIRED.value, AccountStatus.NEED_RELOGIN.value}:
+        raise AuthorizationDrError("local_activate_primary_failure_unproven", "Primary failure is not typed")
+    _require_switchable_target(target)
+    payload = _fingerprint_payload(account, target, target, reason)
+    fingerprint = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    existing = session.scalar(select(TgAuthorizationLocalActivateCase).where(
+        TgAuthorizationLocalActivateCase.fingerprint == fingerprint,
+    ))
+    if existing:
+        return existing
+    case = _new_case(account, target, target, fingerprint, actor, reason)
+    case.status = "fault_candidate"
+    session.add(case)
+    session.flush()
+    audit(
+        session,
+        tenant_id=account.tenant_id,
+        actor=actor,
+        action="创建本地切主故障候选",
+        target_type="tg_authorization_local_activate_case",
+        target_id=case.id,
+        detail=f"account_id={account.id}; authorization_id={target.id}; no_switch=true",
+    )
+    session.commit()
+    return case
+
+
 def apply_local_activate(
     session,
     tenant_id: int,
@@ -65,7 +93,14 @@ def apply_local_activate(
         account.session_ciphertext,
         _current_credentials(session, account),
     )
-    apply_primary_authorization_switch(session, account, target, actor=actor, reason=case.reason)
+    apply_primary_authorization_switch(
+        session,
+        account,
+        target,
+        actor=actor,
+        reason=case.reason,
+        activation_case_id=case.id,
+    )
     _finish_case(case, actor, approval_ref, idempotency_key)
     audit(
         session,
@@ -236,4 +271,9 @@ def _idempotent_case(case, idempotency_key: str):
     return case
 
 
-__all__ = ["apply_local_activate", "local_activate_out", "preview_local_activate"]
+__all__ = [
+    "apply_local_activate",
+    "create_local_activate_candidate",
+    "local_activate_out",
+    "preview_local_activate",
+]

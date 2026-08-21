@@ -1,5 +1,15 @@
 # TG 运营管理平台 PRD
 
+> **2026-08-22 全部在线账号 A/B/C 补齐 v2.21 当前合同（优先于下方 v2.16 与历史对称三备口径）：** 批次创建事务先以 `selection_mode=all_online_accounts` 冻结当时全部在线账号为动态 `N`，再逐账号执行 A fresh probe；A 失败、封禁、人工处理、unknown 或冻结后删除都保留在 `N`。正常补齐固定 A/SV 为 B/C 两次独立 challenge 的登录码来源，单账号按 A -> B -> A fence readback -> C 推进；B/SV 健康或 C/MY 已具备完整 bundle/双副本/恢复密钥/inventory/restore probe 时只 readback，不重复登录。B 仅是 SV 本地备用；C 仅在 A/B 双失败事实同时成立时辅助 SV 重建 A，永不 current、永不发送。账号 outcome、B outcome、C outcome 三组各自守恒为 `N`。先完成同一 10 账号 10/10 ABC、零 unknown、MY client=0 与 24 小时无 correction 观察窗，再允许冻结全量；当前只完成产品设计，`complete_online_abc_implementation=not_started`，不得用既有 271 迁移批次或数据库 ready 投影替代。
+
+> **2026-08-19 四类拟人节奏与 AI 内容 current v2 补正（优先于下方 single-Task average gap、统一签到和单 active Provider 旧口径）：** AI/浏览/评论/点赞先按 stable due owner 规划，再以 `tenant+pacing_domain+真实 source+UTC 重叠窗口` 聚合所有 Task 已冻结占用、新需求和 replacement headroom；只有完整通过 source capacity feasibility 才可 start/生成新 period。source release 使用与 due 相同的小时 curve，0 权重不分配，Gateway admission 使用相邻 frozen capacity slots 的 pairwise gap，禁止按单 Task 全天平均值限速。current AI content v2 每 quantity slot 独立走 `GenerationJob.generation_not_before_at + monotonic context revision + route/window/brief + mode Realizer + independent reviewer`；一个 slot 失败不取消同批其他合法 slot，Stage 1/emoji/随机短句/固定“签到”均不得冲抵 current v2 数量。deadline 后每 owner 只能结算一次 typed shortfall，Task.stats 仅作投影。多 Provider 必须先迁完 legacy `is_active` selector，再启用 tenant+purpose route-set。完整合同见 hourly v8、AI 内容 v1.2 主文及两份附录、Planner capacity v2；这些新增合同均为设计完成/待实现，`production_fixed=unproven`。
+
+> **2026-08-17 Planner、拟人排期与内存压力当前合同：** 正式环境当前已不是“整批几秒完成”，但 overdue 技术批次会在 `now` 附近重复起步，且现有 AI final gate 会在 Dispatcher 内等待并可在数据库异常时 fail-open；浏览、评论、点赞缺少等价最终来源闸门。Planner 必须是纯数据库持久化决策角色，频道远程观察只由 Listener 形成带 revision/freshness 的持久快照；Planner 不得持有 TelegramClient/session/update loop。准入、wake 和 active quality blocker 使用独立增量投影，本轮只读 count/revision 与有界公平候选，禁止全账号/全历史 ORM 和 `Task.stats` 大数组/大 map 热行重写。AI/浏览/评论/点赞的 release cursor 按 task/lifecycle/period/source/plan 从 stable owner 跨批单调推进，真实 Gateway call-start 还必须经过无 sleep、失败关闭的 source admission；不新建平行数量 owner。资源限额根据 Planner 自采 cgroup 24 小时工作集公式决定，PSS 只用于归因和优化验收。资源回落、Action success 和容器健康均不能替代 typed remote fact E4。完整合同见 `docs/03-feature-designs/production-planner-pacing-and-memory-remediation-prd.md`；当前仅设计完成，`production_fixed=unproven`。
+
+> **2026-08-20 马来西亚异地备用授权 v2.16 基线（受上方 v2.21 补正）：** 线上现有三套 Developer App 固定为 App A/SV `primary`、App B/SV `standby_1`、App C/MY `standby_2`，分别真实登录三个独立设备，不新增第四套 App。新账号首次登录后即可在详情查看/刷新 Telegram 登录设备；设备清理不做资格预检或倒计时，提交时只读数据库，以 current SV 授权登录时间严格超过 48 小时为可执行条件，不足或缺失即跳过并返回数量和原因。App C 旧 SV 备份通过 MY 全新登录生成新 AuthKey/hash/generation；新 MY Session 必须完成本地卷与独立 SSH 镜像两份不可变副本、恢复密钥 readback、MY 追加 inventory、SSH 镜像隔离 restore probe 和中心 receipt，slot CAS 后旧 SV 仍 retained+protected，恢复闸门通过前不得远端退役。中心库旧备恢复先冻结授权 mutation，并按 MY inventory 最大有效代次只增补回中心。远端撤销、本地/SSH/中心副本和 wrapped DEK 擦除分别回读。其余口径以 v2.21 专项合同为规范真相源。
+
+> **2026-08-16 马来西亚异地备用授权 v2.0 历史基线（受上方 v2.21 当前合同补正）：** `standby_2` 一期固定为 MY 授权灾备资产，马来西亚节点不得领取运营 Task/Action、监听或发送消息。该基线中的 MY 授权激活/current 切换流和单 receipt 退役口径已被 v2.21 禁止，不得作为开发交接。存量迁移、unknown 对账、业务消息边界和通用清理保护仍保留，完整合同见 v2.21 专项及实施验收合同。
+
 > **2026-08-11 AI/浏览到期积压生产止血：** 在 AI stable obligation 与浏览 due-unit 完整原地接管上线前，当前兼容 writer 必须先切断两处线上根因：`fact_first_v3` 的 open `send_message` owner 不得因缺少 legacy `GroupBotAdmission` 被算成 0 并重复物化；AI/浏览已经由 `due_by_now` 释放的当前欠额不得再次套用 Task template、180 秒间隔、max-hour cap 或 future-tail 排期，只执行 quiet-hours、账号硬容量与 ledger 半开 deadline。legacy admission/pacing 语义保持不变。跨 deadline 的 AI pre-Gateway 历史项只能按 exact Task/ledger/Action manifest、SHA-256、actor/approval、compare-and-set、AuditLog 与独立 readback 前向收口；Gateway-started/unknown/typed fact 永不自动重发。完整止血交接及“不等于长期接管完成”边界见 `docs/03-feature-designs/production-due-backlog-containment-prd.md`。
 
 > **2026-08-10 频道浏览 Planner 饥饿补正：** `channel_view` 的required由冻结/append-only `ChannelViewDailyMessageTarget`与稳定due ordinal组成，不再用已选账号的obligation行数代替。route级append-only accrual segments只累计running业务时间，pause/stop不追债，source expire/deadline即使晚处理也按历史as-of冻结。Task级curve只分布软时间，distinct账号不受template 180秒全局串行；新due在各账号同日future Action前/中/后合法空隙绑定，禁止以Task最晚future Action为floor或整批平移。`ViewRemoteFact(peer,message,account)` lifetime unique且一个fact只完成一个Task due unit；其他Task只排除该identity，fact/binding不随owner Task删除。不可匹配unit形成typed structural shortfall，不缩小target。来源由tenant+channel逻辑owner、持久delta/subscription/fanout和target expiry owner推进；完整bootstrap、settlement、lifecycle、fleet/takeover均有crash-replay owner。E4按TargetSet/DueSet/MaterializedSet/Attempt/ViewRemoteFact及各owner backlog分层，obligation-as-required禁止。现有Task以additive schema、final manifest backfill与writer route CAS原地接管，preparing后只能前向修复。完整合同见`docs/03-feature-designs/channel-view-planner-starvation-remediation-prd.md`。
@@ -544,9 +554,9 @@ tenant_id + account_id + developer_app_id/api_id + authorization_id + session_ro
 - 开发者应用池定位为账号登录和授权容量分担能力，不再把单个 `api_id/api_hash` 作为全平台唯一入口。系统设置必须支持维护多个健康 TG Developer App，并用 `max_accounts`、健康状态和最近分配时间控制新账号分配。
 - 账号中心新增“授权资产”口径：核心账号目标态为 1 个主授权和 2 个备用授权，每个授权资产都由 `developer_app + proxy + session` 组成，并且必须提前真实登录成功。仅配置备用开发者应用但没有备用 session，不视为可切换备用。
 - 兼容当前实现：现有账号只有 `tg_accounts.developer_app_id + session_ciphertext` 时，系统将其映射为“主授权”。账号管理只提示“未配置备用授权”，不得因此阻塞账号现有任务、同步或登录恢复。
-- 登录设备清理口径调整为“只保留当前 session、primary session、standby_1 session、standby_2 session 对应的已确认授权 hash，以及 1 个官方锚点设备；普通运营账号一键清理其余登录设备”。Telegram 官方手机端、桌面端、网页版和未知 API 客户端默认属于待清理设备；接码专用账号禁止自动清理其他登录设备，只展示风险和明细。
+- 当前 v2.16 已把该历史清理口径收紧为：保留所有未撤销我方授权的非零 hash，一键清理其余可精确识别的远端设备；不强制保留官方锚点，不仅按 `api_id` 判断归属。新账号可立即查看设备，清理提交只按已持久化 current SV 登录时间严格超过 48 小时做本地分类，不调用 Telegram 资格预检；接码专用账号仍禁止自动清理其他登录设备，只展示风险和明细。
 - 接码专用账号保持“只接码”硬边界：登录时如 Telegram 要求 2FA，平台只能使用并托管当前输入密码以便后续查看 / 备用 session 使用，不得自动轮换为新密码；账号详情托管 2FA 面板只保留查看 / 复制入口，保存和轮换接口必须返回明确错误。
-- 主授权异常恢复顺序定为：先切换代理 / 线路复用当前 session，再用任一健康槽位读取 Telegram 官方 code 刷新掉线槽位，再切换健康备用授权；三槽位全部掉线时只能进入人工重新登录、扫码或手动验证码流程。2FA 只作为第二步校验补齐，不作为免验证码的独立登录入口。
+- 主授权异常恢复顺序定为：先通过批准的线路迁移复用当前 session，再用健康授权读取 Telegram 官方 code 刷新非当前故障槽位；需要切换健康备用授权时必须创建 requested operation，并经审批、账号 fence、Gateway drain、owner fencing、CAS 和 readback 后执行。三槽位全部掉线时只能进入人工重新登录、扫码或手动验证码流程。2FA 只作为第二步校验补齐，不作为免验证码的独立登录入口。
 
 ### 2.14 2026-06-04 更新记录
 
@@ -1527,7 +1537,7 @@ TG账号管理是账号资产与账号维护中心，不是运营中心、消息
 | 账号状态 | 正常、受限、疑似封禁、已封禁、异常、禁用 |
 | 可用性 | 可发送、不可发送、可监听、不可监听、可加入、不可加入、可评论、不可评论、可读验证码、不可读验证码、接码专用不可执行任务、降权专用不可参与其他任务 |
 | 容量 | 容量可用、账号冷却中、小时额度已满、日额度已满、当前有 pending/executing 占用、容量汇总待刷新 |
-| 登录设备 | 存在非我们的 TG 应用设备、非平台设备数量大于 0、非平台设备数量大于 N、可一键清理非平台设备、不允许一键清理设备、设备列表读取失败、新登录未满 24 小时暂不能清理 |
+| 登录设备 | 存在非我们的 TG 应用设备、非平台设备数量大于 0、非平台设备数量大于 N、可一键清理非平台设备、不允许一键清理设备、设备列表读取失败、current SV 登录时间未严格超过 48 小时或缺失 |
 | 安全状态 | 未做过登录设备清理、最近设备清理失败、未设置 2FA、安全待刷新、设备快照未刷新、授权资产未健康检查、账号可用性汇总过期、TG 远端读取失败 |
 | 资料状态 | 资料完整、资料待初始化、需重新资料初始化、资料不完整、无头像、无昵称、无简介、无 username、username 冲突、头像缓存失败、最近资料初始化失败 |
 | 同步状态 | 资料同步过期、联系人同步过期、群 / 频道同步过期、同步失败 |
@@ -1543,7 +1553,7 @@ TG账号管理是账号资产与账号维护中心，不是运营中心、消息
 | 基础资料 | 账号身份 | 昵称、username、完整手机号、头像、简介、账号分组、普通运营 / 接码专用身份、开发者应用、代理 | 编辑分组、同步资料、打开资料初始化 |
 | 登录 / 验证 | 授权资产 | 当前登录流、验证码、二维码、2FA、Session 状态、最近登录时间、全部掉线入口 | 完成登录、继续登录、重新登录、取消登录 |
 | 授权资产 | 授权资产 | primary、standby_1、standby_2 三张槽位卡；展示 Developer App、proxy、session 是否存在、健康状态、最近健康检查、可否读取官方 code、可否执行任务动作、失败原因 | 刷新槽位健康、用健康槽位刷新掉线槽位、激活恢复 primary、全部掉线时进入人工重新登录 / 扫码 / 手动验证码 |
-| 登录设备 | 登录设备 | Telegram 远端授权设备列表；标记我们的 TG 应用设备 / 非我们的 TG 应用设备、对应槽位、是否可清理和不可清理原因 | 刷新登录设备；普通运营账号可一键移除非平台设备；接码专用账号只读 |
+| 登录设备 | 登录设备 | Telegram 远端授权设备列表；标记我们的 TG 应用设备 / 非我们的 TG 应用设备、对应槽位、current SV 登录时间、是否严格超过 48 小时、是否可清理和不可清理原因 | 刷新登录设备；普通运营账号满足条件时可一键移除非平台设备，不满足时按钮置灰并展示原因；接码专用账号只读 |
 | 同步资产 | 记录与追溯 | 资料、联系人、群、频道同步结果；联系人只读展示，不提供发送入口 | 同步资产、跳转运营目标查看沉淀目标 |
 | 可用性与容量 | 可用性与容量 | 可发送、可监听、可加入、可评论、可读验证码、资料修改能力；小时 / 日剩余额度、冷却、当前占用和不可用原因 | 重算可用性、查看容量解释、跳转风控 / 代理 / 登录处理 |
 | TG 官方验证码 | 记录与追溯 | 登录验证码和 Telegram 官方服务 code 消息；展示 code、接收时间、有效期、读取槽位、原始消息摘要和失败原因 | 提取并展示官方验证码、复制验证码 |
@@ -1576,22 +1586,23 @@ TG账号
 
 授权资产规则：
 
-- “我们的 TG 应用”展示层仍按 Telegram 远端授权会话的 `api_id` 绑定识别槽位。远端会话的 `api_id` 等于平台保存的 `primary`、`standby_1` 或 `standby_2` 授权资产所关联 `telegram_developer_apps.api_id` 时，展示匹配槽位；清理保护层必须进一步校验当前 session 或平台保存的授权 hash。
-- 如果远端授权会话 `api_id` 不在账号三槽位授权资产的 `api_id` 集合内，一律算“非我们的 TG 应用设备”，包括 Telegram 官方手机端、桌面端、网页版、历史废弃平台授权和未知 API 客户端。
-- 如果远端授权会话 `api_id` 命中多个槽位使用的同一个 Developer App，槽位映射展示为“api_id 匹配多个槽位”；只有当前 session 或授权 hash 命中 `primary / standby_1 / standby_2` 记录的设备必须保留，同 `api_id` 的额外重复登录设备仍可进入清理。
-- 如果远端授权会话没有返回 `api_id` 或读取失败，不能把它自动判定为我们的 TG 应用设备；普通账号进入设备快照待刷新 / 人工确认，接码专用账号只展示风险。
-- 每个授权资产都必须通过验证码或 QR 完成真实 Telegram 登录，并保存加密 session 后才算“可用备用”。
+- 我方设备归属只以“同账号的未撤销我方授权资产保存的唯一非零 Telegram authorization hash”精确匹配。`api_id`、App/设备名、IP/地区、创建/活跃时间只用于展示与一致性校验，不能单独使设备受保护。
+- 一个账号的 primary/standby_1/standby_2 必须分别使用三套 Developer App 真实登录，并有三个不同 AuthKey 指纹和三个不同非零 remote authorization hash。SV 两槽可共用同一固定 IP，但仍是两个独立 Telegram 授权设备。
+- hash 匹配某条我方授权、但远端 `api_id` 与该授权冻结的 Developer App 快照不一致时，设备仍受保护，但必须产生资产异常 blocker；反之，`api_id` 命中但 hash 不命中时，必须分类为非我方设备。
+- 远端 hash 为零/缺失、一个 hash 匹配多条本地资产、我方授权缺失 hash，或设备集读取不完整时分类为“待识别”，禁止当次清理。
+- 每个授权资产都必须通过验证码或 QR 完成真实 Telegram 登录。SV 授权必须保存中心加密 Session；MY standby_2 必须保存不依赖 SV 密钥的 MY 密封唤起包和 receipt，才算“可用备用”。
 - 所有账号最终目标态都是 1 主 2 备；普通账号可以阶段性先达到 1 主 1 备，高价值账号优先补齐 1 主 2 备；迁移期允许只有主授权。
-- 主授权首次登录成功后，账号安全 worker 必须自动尝试补齐 `standby_1 session` 和 `standby_2 session`，不要求运营人员逐个手动进入备用登录。自动补齐使用可读取的 Telegram 官方验证码、已托管的 2FA 密码、备用开发者应用和备用代理完成真实登录；如果验证码不可读取、2FA 未托管、需要人工 QR 或 Telegram 限制触发，必须写入明确阻塞原因。
+- 主授权首次登录成功后，账号安全 worker 必须自动创建 `standby_1 session` 和 `standby_2 session` 补齐项。`primary + standby_1` 在唯一 SV 业务出口创建和使用；`standby_2` 必须走 v2.16 MY operation，登录后依次完成 MY 本地不可变副本 fsync、独立对象快照、两份写后读/摘要/KMS 解封、原 client 断连、对象快照隔离 restore probe/断连、MY inventory 和中心 receipt，再提交槽位并休眠。设备清理的 48 小时门槛不得阻塞三套 App 的真实登录与 MY 补齐。验证码不可读取、2FA 未托管、需要人工 QR 或 Telegram 限制触发时，必须写入明确 blocker。
 - 主授权验证码登录或扫码登录成功后，账号中心还必须自动检查资料完整度。展示名或 TG 姓名仍为英文 / 占位名、缺少 `username` 或缺少头像时，系统自动创建资料初始化批次；英文 / 占位名账号允许覆盖名称以保证中文资料落到平台展示名和 TG `first_name`，仅缺头像或 username 的中文账号不覆盖已有中文名称。
-- 账号列表必须能筛出备用 session 缺口，包括 standby_1 session 缺失、standby_2 session 缺失、备用 session 未登录、备用 session 不可解密、备用 session 健康检查失败和备用 session 不可激活。只选择备用开发者应用或备用代理，但没有真实登录成功并保存 session，不算可用备用。
-- “备用授权不足”不得只按备用开发者应用数量判断，必须按健康备用 session 数判断。只有已登录、可解密、健康检查通过或最近成功连接的 standby session 才计入备用授权数量。
-- 一主两备恢复口径：当 `primary`、`standby_1` 或 `standby_2` 任一槽位掉线时，只要三槽位中仍有任一健康槽位，账号中心必须能用健康槽位读取 Telegram 官方登录 code，并刷新掉线槽位的 session；如果故障槽位是 `primary`，也必须支持先激活健康 standby 保障当前可用，再把旧 primary 保留为待修复授权资产。
+- 账号列表必须能筛出备用授权缺口，包括 standby_1 Session 缺失/不可解密/健康失败，以及 standby_2 未登录、MY wake bundle/receipt 缺失、MY 本地不可解封或显式演练失败。只选择 Developer App 或出口，但没有真实登录和对应凭据收据，不算可用备用。
+- “备用授权不足”不得只按 Developer App 数量判断。standby_1 按 SV Session 授权与即时健康事实计数；standby_2 按 MY 密封包/receipt/qualification、最近显式事实和 MY client=0 计数，不要求 SV 解密其 Session。
+- Developer App `assigned_accounts` 必须按该 App 下未撤销平台授权或非终态登录 operation 的不同账号数统计，不能只数 `TgAccount.developer_app_id`；三槽分别占用 App A/B/C 的账号名额，达到 `max_accounts` 时显示具体 App 缺口。
+- 一主两备恢复口径：`primary` 有权威失败事实且 SV `standby_1` 即时 probe 通过时，自动执行冻结新业务领取、Gateway drain、current/account projection CAS 和 online/listener/sync/runtime summary 新代次重建，MY 保持休眠。业务解冻后仍是 SV 本地冗余降级，必须修复 logical primary 并受控切回，standby_1 再次 ready 后才恢复完整 1 主 1 备。只有 `primary + standby_1` 均不可用时，才能创建 v2.16 `emergency_reauthorize_primary`；SV login runtime 就绪后先发起新登录，MY 只交付 challenge-bound 官方登录码，最终由 SV 生成新 primary。
 - 全部掉线口径：当 `primary`、`standby_1`、`standby_2` 三个槽位全部掉线、不可解密或健康检查失败时，系统不得伪造自动恢复，也不得继续静默重试；历史登录过的账号必须标识为“曾登录账号全部掉线”。全部掉线账号只能进入人工重新登录、扫码登录或手动验证码流程。
-- 账号状态定时检查、同步安全状态和账号信息同步都必须执行 session 自愈：发现任一 session 掉线时，先用健康槽位保障账号继续可用，再为故障槽位重新发起登录刷新；不能等运营人员手工发现后逐个重登。定时检查默认每 1 小时执行一次，可后台配置；同一账号同一授权槽位不得并发创建重复补齐批次，失败后按 `next_retry_at` 等待；全部掉线时只记录明确状态和人工恢复入口。
-- 主备授权可以使用不同开发者应用、不同客户端元数据和不同代理节点；若同一授权槽位出现多个 active 代理或 observed exit IP 与绑定不一致，页面必须显示“授权槽位代理冲突”并阻断执行。
-- 任务执行默认使用主授权；主授权健康检查失败时，恢复顺序为：切换代理 / 线路复用主 session，用任一健康槽位读取 Telegram 官方 code 刷新掉线槽位，切换健康备用授权；三槽位全部掉线时只能人工重新登录、扫码或手动验证码。
-- 备用授权切换为主授权后，旧主授权保留为异常授权并进入待修复状态，不自动删除。
+- 账号状态定时检查可记录三槽状态，并在 primary 权威失败且 standby_1 即时 probe 通过时自动创建 `local_activate`；它可以把 MY `standby_2` 标记为 `wake_probe_required`，但绝不能自动创建 MY wake permit 或唤起 MY 连接。
+- 三槽必须使用不同 Developer App、AuthKey、客户端元数据组合和授权 hash，但一期出口绑定固定：`primary + standby_1 -> primary_regular(SV)`，`standby_2 -> standby_my(MY)`。不得以“槽位必须不同代理”为由新增 IP；若 observed exit IP 与对应固定出口不一致，页面显示“授权槽位出口冲突”并阻断执行。
+- 任务执行只使用 SV 当前业务授权。每个 Gateway-bound Attempt 必须冻结 authorization/fact/connection/environment/proxy/fence；固定授权 assignment 在 Gateway 前因切换而释放并重排，已进 Gateway 的旧 Attempt 保持原代次并按远端事实收口。online、listener、联系人/群组/资料同步和 runtime summary 的旧代次结果不得覆盖新 current。
+- standby_1 本地切换或新 primary 代次提交后，旧主授权保留为待修复资产，不自动删除；standby_2 不参与该 current 切换。账号软删除立即退出 Planner/Dispatcher/listener/online/sync 候选并禁止 MY 唤起，但授权资产继续可见，直到显式 decommission/erase readback 后进入 `authorization_retired`。
 - 当前代码只有 `tg_accounts.developer_app_id + session_ciphertext` 时，映射为主授权。列表和详情展示“未配置备用授权”提示，但不阻塞现有登录、同步、发送和任务执行。
 - 新增备用授权需要走完整登录流程；2FA 密码可以在第二步自动补齐，但不能替代 QR、验证码或 future auth token 等第一步授权。
 - 系统不得在没有健康授权槽位的情况下提示“已具备无缝切换能力”。
@@ -1603,28 +1614,31 @@ TG账号
 | 没有登录上平台或主授权不可用 | “登录有问题：请继续验证码 / 扫码 / 2FA、重新登录或修复主授权” | 是；进入“登录有问题”快捷搜索 |
 | 只有主授权，无备用授权 | “未配置备用授权，主 session 失效时需要扫码或验证码恢复” | 否 |
 | 备用 session 缺失或未登录 | “备用 session 未就绪，一主两备不完整” | 否；但进入备用 session 缺口筛选 |
-| primary 或一个 standby session 掉线，另一个 standby session 健康 | “可从健康备用 session 激活恢复” | 当前故障 session 不可用；允许从健康备用 session 恢复 |
-| 有备用授权但健康检查失败 | “备用授权异常，暂不可切换” | 不阻塞主授权；阻塞自动切换承诺 |
-| 主授权线路异常但 session 仍有效 | “可尝试切换线路复用当前 session” | 否 |
-| 主授权 session 失效且有健康备用 | “可切换备用授权恢复执行” | 阻塞当前主授权，允许切备用 |
+| primary 掉线、硅谷 standby_1 健康 | “正在硅谷自动切换备用 1 / 业务已恢复但本地冗余待修复” | MY 保持休眠；恢复 1 主 1 备前为 degraded |
+| primary 与 standby_1 均失败、MY standby_2 具备休眠资格 | “可由马来西亚辅助重新登录，在硅谷生成新主授权” | 阻塞业务，允许创建 emergency-reauthorize operation |
+| SV login runtime/出口未就绪 | “等待硅谷登录运行面恢复，马来西亚仍休眠” | 阻塞业务；MY 不连接 |
+| standby_2 单独异常或需演练 | “MY 备用授权需修复 / 建议显式演练” | 不阻塞健康 primary；不得自动唤起或切换 |
 | 三槽位全部掉线 | “曾登录账号全部掉线：只能人工重新登录 / 扫码 / 手动验证码” | 是 |
 
 ### 登录设备分类和清理边界
 
-登录设备列表只描述 Telegram 远端当前授权事实，不替代授权资产表。登录设备必须按“我们的 TG 应用设备 / 非我们的 TG 应用设备”分类：
+登录设备列表只描述 Telegram 远端当前授权事实，不替代授权资产表。“活跃授权”表示授权尚未被撤销，不表示 client 正在连接；因此休眠 MY standby_2 仍应在列表中。设备固定分为四类：
 
-- 我们的 TG 应用设备：远端授权会话 `api_id` 命中本账号 `primary / standby_1 / standby_2` 任一授权资产关联的 `telegram_developer_apps.api_id`。
-- 非我们的 TG 应用设备：远端授权会话 `api_id` 未命中三槽位 `api_id` 集合的所有授权会话，包括官方手机端、桌面端、网页版、历史废弃平台授权和未知 API 客户端。
-- 待确认设备：远端未返回 `api_id`、远端授权列表读取失败、或本地授权资产缺失 Developer App 映射导致无法比较的会话。
+- 我方当前设备：唯一非零 hash 精确匹配当前 primary/standby_1/standby_2 授权资产。
+- 我方历史设备：唯一非零 hash 精确匹配 candidate/retained/repair/invalid/unknown 且未有撤销 readback 的我方授权资产。
+- 非我方设备：hash 非零且不匹配任何未撤销我方授权资产；包括同 `api_id` 额外登录、官方手机/桌面/Web 和未知 API 客户端。
+- 待识别设备：hash 为零/缺失、匹配歧义、我方授权缺失非零 hash、或远端设备集读取不完整。
 
-普通运营账号的一键清理目标是移除全部“非我们的 TG 应用设备”：
+账号详情“活跃授权设备”视图必须展示四类设备、槽位/区域、Developer App、设备/App 元数据、创建/活跃时间、脱敏 IP/国家、归属原因和 observation 时间，不返回 hash 或完整 IP。顶部展示 `remote_active_total/platform_current/platform_retained/external/unresolved/as_of`，并提供“刷新设备”和“一键清理非我方设备”。
 
-- 必须保留 `primary`、`standby_1`、`standby_2` 对应授权设备。
-- 其他授权会话默认进入可清理列表；如 Telegram 限制、hash 无效、设备列表读取失败或新登录限制触发，必须展示明确原因。
-- 清理前必须展示预计移除设备数量、设备类型、每个设备的 `api_id` 对比结果和不可清理原因。
-- 清理后必须重新读取设备列表，展示剩余非平台设备数量。
-- 待确认设备不进入一键清理范围；当前账号项进入人工确认或待刷新状态。
-- 如果待确认设备数量大于 0，清理确认必须提示“存在待确认设备，本次不会处理这些设备”。
+普通运营账号的一键清理目标是冻结快照中的全部“非我方设备”：
+
+- 必须保留所有我方当前/历史设备；不强制保留官方手机、桌面或 Web 锚点。
+- 未登记为平台授权资产的官方手机、桌面、Web 和历史人工登录也属于非我方设备；一期不提供人工保留白名单，需要继续使用人工客户端的账号不得执行一键清理。
+- 创建批次只根据数据库中的 current SV 授权事实与 `telegram_login_at` 分类；严格 `server_now > telegram_login_at + 48h` 才进入 worker，不足、恰好 48 小时或缺失均直接 skipped。
+- worker 开始处理账号时使用固定 current SV executor 读取 exact set，并冻结 `snapshot_digest/protected_manifest_version/slot_generations/executor_fact_version/external target hash digests`。任一待识别设备、我方授权 hash 缺失/歧义、固定 executor 不可用或授权 mutation 正在执行时，仅当前账号失败并展示精确原因。
+- worker 逐个调用 `account.resetAuthorization(hash)`，不调用 reset-all。RPC 结果 unknown 时只读取 exact set 对账，不重复撤销同一 hash；设备列表读取超时或失败仅使当前账号失败，批次继续。
+- 清理成功的唯一口径是：冻结 targets 全部从新鲜 Telegram exact set 消失，所有 protected hashes 仍存在，且没有新增 external/unresolved。执行中新增 external 不自动加入本次目标，本次记部分失败并要求运营重新提交新批次；远端 RPC 返回成功不能单独结案。
 
 接码专用账号禁止一键清理非平台设备：
 
@@ -1633,17 +1647,15 @@ TG账号
 - 接码专用账号的设备异常只作为风险和诊断，不创建设备清理批次项。
 
 如果账号没有备用授权，账号中心只提示恢复风险，不阻塞当前账号继续使用。
-- 如果 Telegram 返回新 session 24 小时内不能退出其他设备，系统进入“需等待”状态并记录 `next_retry_at`，不得伪装为清理成功。
+- 如果已通过 48 小时本地门槛但 Telegram 仍返回 FRESH 拒绝，当前账号标记 `failed/telegram_fresh_reset_rejected`；不进入等待状态，不记录自动重试时间，不影响批次其他账号。
 
-一键清理非平台设备的确认弹窗必须展示：
+一键清理非我方设备的确认弹窗必须展示：
 
-- 本次账号数量、可执行账号数、跳过账号数和不可执行账号数。
-- 每个账号将保留的我们的 TG 应用设备数量，以及 `api_id` 对应到的 `primary / standby_1 / standby_2` 槽位。
-- 每个账号将移除的非我们的 TG 应用设备数量、设备类型、最近活跃时间和远端 `api_id`。
-- 待确认设备数量和不处理原因。
-- 接码专用账号跳过原因。
-- 新登录 24 小时限制、设备 hash 失效、远端读取失败等不可执行原因。
-- 操作原因输入框和二次确认按钮；确认后写审计，审计快照必须保留清理前后设备数量和 `api_id` 对比结果。
+- 确认前展示已选账号数、48 小时跳过规则和操作原因，不调用全量资格接口；确认后的创建响应与批次结果展示 `requested_count/eligible_count/skipped_count` 和 `skipped_reason_counts`。跳过原因至少覆盖登录时间未严格超过 48 小时、登录时间缺失、current SV 授权不可用和账号策略禁止清理。
+- 最近一次 observation 的我方当前/历史、非我方和待识别数量仅作为参考，并明确最终保护集与清理目标以 worker 执行开始时的 exact set 为准。
+- 固定提示“未登记的平台外手机、桌面、Web 与人工登录会在 worker 执行时作为非平台设备退出”。
+- 操作原因输入框和一次确认按钮；确认只为 eligible 账号创建异步执行项，不同步刷新所有账号设备。
+- 执行详情展示每个账号实际冻结的保护数量、目标数量、失败原因及 exact-set readback；审计保存前后设备计数、snapshot/protected manifest digest 和 target hash digests，不保存 hash 明文。
 
 ### 批量动作入口
 
@@ -1675,13 +1687,13 @@ TG账号
 - 如果从账号列表带入已勾选账号，抽屉内必须继续允许增删账号。
 - 抽屉标题和步骤条必须明确当前动作，例如“资料初始化 / 选择账号”“设置二步密码 / 选择账号”，避免运营人员不知道下一步。
 - 备用 session 补齐抽屉必须支持按槽位策略选择“自动补齐缺失槽位 / 仅 standby_1 / 仅 standby_2”，展示验证码读取能力、平台托管 2FA、开发者应用健康、代理健康和新登录限制；确认后创建 `account_standby_session_provision` 系统任务投影。
-- 清理登录设备抽屉的预检页必须展示将保留的 primary、standby_1、standby_2，以及预计移除的非我们的 TG 应用设备数量；如果任一平台 session 授权设备 hash 无法确认，不允许继续一键清理。接码专用账号必须在预检阶段直接标记为不可清理并展示原因。
+- 清理登录设备抽屉不设置预检页。确认前只展示已选账号数、48 小时跳过规则、最近 observation 的四类计数仅供参考和操作原因；用户确认后的创建事务返回 eligible/skipped 汇总。接码专用账号直接以 `account_cleanup_forbidden` 跳过；worker 执行时发现任一平台授权 hash 无法确认，仅将当前账号标记失败。
 - 设置二步密码抽屉必须区分未设置、已设置且平台知道旧密码、已设置但旧密码未知三种状态；旧密码未知的账号进入人工处理，不显示为自动可执行。
 - 平台托管 2FA 设置面板必须放在账号安全配置或账号详情安全区，密码设置 / 轮换不默认回显旧密码；需要人工登录时，具备 `accounts.security.credential_manage` 的人员可以按需查看并复制当前托管密码，查看、复制、导出和自动登录使用都写审计，但查看动作不要求填写原因。
 
 确认创建批次不再要求输入固定文案“确认加固”。改为二次确认弹窗：
 
-- 弹窗展示动作名称、账号总数、可执行数、跳过数、不可执行数和主要风险提示。
+- 资料初始化、2FA 和备用补齐弹窗按各自预检展示账号总数、可执行数、跳过数、不可执行数和主要风险提示。设备清理弹窗只展示已选账号数与跳过规则，实际 eligible/skipped 数量由确认后的创建响应展示。
 - 审计需要原因时，在弹窗中填写“操作原因”；不再输入固定确认短语。
 - 点击“确认创建批次”后才创建批次。
 
@@ -1703,14 +1715,13 @@ TG账号
 - 任务创建、消息发送、AI 活跃群、监听、目标准入、Planner、Dispatcher、Listener、Recovery 必须读取账号身份字段排除接码账号；分组关系只作为 UI 管理和批量筛选。
 - 接码专用账号禁止一键清理非平台设备，禁止进入清理批次，禁止被任务候选 API 返回。
 
-#### api_id 绑定契约
+#### 远端授权 hash 归属契约
 
-- 平台保存三槽位授权资产时，必须固化 `developer_app_id` 和对应 `api_id` 快照；后续系统设置修改应用名称不影响历史 `api_id` 绑定判断。
-- 读取 Telegram 远端授权会话后，逐条取远端 `api_id` 与本账号三槽位 `api_id` 集合比较。
-- `api_id` 命中：该远端授权会话分类为“我们的 TG 应用设备”，并绑定到命中的槽位；同一 `api_id` 命中多个槽位时，展示多槽位绑定并保留。
-- `api_id` 未命中：该远端授权会话分类为“非我们的 TG 应用设备”，普通账号可进入一键清理候选。
-- `api_id` 缺失、读取失败、本地槽位缺失 Developer App 或本地没有 `api_id` 快照：分类为“待确认设备”，不得进入一键清理。
-- 设备清理结果必须回写设备快照，保存每条远端授权的 `api_id`、分类、绑定槽位、是否清理、清理失败原因和读取时间。
+- 平台保存三槽位授权资产时，必须固化 `developer_app_id + api_id`、AuthKey blind index、唯一非零 `telegram_authorization_hash_ciphertext` 和槽位 generation；三个当前槽位的 App/AuthKey/hash 两两不同。
+- 读取 Telegram 远端授权后，逐条以非零 hash 精确匹配同账号的未撤销我方授权资产；匹配当前代次为“我方当前设备”，匹配候选/保留/修复/未知代次为“我方历史设备”。
+- hash 非零但未命中任何我方资产时为“非我方设备”，即使 `api_id` 命中三槽之一也不改变结论。
+- hash 为零/缺失、匹配歧义、我方资产 hash 不完整或远端读取失败时为“待识别设备”，整个账号不得进入当次一键清理。
+- 设备 observation 与清理结果必须保存每条远端授权的 hash 密文/指纹、`api_id`、分类、匹配授权/槽位/代次/事实版本、是否撤销、失败原因和读取时间；页面不返回 hash 明文。
 
 #### 三槽位状态推导公式
 
@@ -1720,13 +1731,14 @@ TG账号
 | --- | --- | --- | --- |
 | 1 | `disabled_at` 不为空或管理员冻结 | `disabled` | 已停用 |
 | 2 | 授权资产记录不存在 | `missing` | 槽位缺失 |
-| 3 | `session_ciphertext` 缺失或解密失败 | `manual_required` | 需人工重新登录 |
+| 3 | SV 槽位 `session_ciphertext` 缺失/不可解密，或 MY standby_2 的 wake bundle/receipt 缺失/本地不可解封 | `manual_required` | 需人工重新登录或修复 MY 包 |
 | 4 | 当前存在该槽位刷新任务且未结束 | `refreshing` | 正在刷新 |
 | 5 | 当前登录流等待 code | `waiting_code` | 等待验证码 |
-| 6 | 当前登录流等待 2FA | `waiting_2fa` | 等待二步密码 |
-| 7 | 最近健康检查成功且 session 可执行基础 Telegram 探测 | `healthy` | 健康 |
-| 8 | Telegram 返回授权失效、会话失效、账号被登出或连续健康检查失败 | `down` | 掉线 |
-| 9 | 代理失败、远端读取失败或健康检查超时但 session 未确认失效 | `unknown` | 待刷新 |
+| 6 | 当前登录流等待 operation-scoped QR | `waiting_qr` | 等待扫码 |
+| 7 | 当前登录流等待 2FA | `waiting_2fa` | 等待二步密码 |
+| 8 | 最近健康检查成功且 session 可执行基础 Telegram 探测 | `healthy` | 健康 |
+| 9 | Telegram 返回授权失效、会话失效、账号被登出或连续健康检查失败 | `down` | 掉线 |
+| 10 | 代理失败、远端读取失败或健康检查超时但 session 未确认失效 | `unknown` | 待刷新 |
 
 账号聚合状态按槽位集合推导：
 
@@ -1747,10 +1759,10 @@ TG账号
 
 ```text
 选择目标掉线槽位
-  -> 获取账号级救援锁 account_id + target_role
-  -> 选择一个 healthy 槽位作为 code_reader_role
+  -> 获取账号级授权控制 lease，冻结 account_id + target_logical_slot + target_generation
+  -> 选择一个 healthy authorization_id/fact_version 作为 code reader
   -> 启动目标槽位登录刷新 flow
-  -> 通过 code_reader_role 读取 Telegram 官方服务 code
+  -> 通过冻结的 code reader 读取 Telegram 官方服务 code
   -> 提交 code；如需 2FA，使用平台托管 2FA 或进入 waiting_2fa
   -> 保存目标槽位新 session
   -> 立即健康检查目标槽位
@@ -1872,14 +1884,14 @@ TG账号
 
 批量自动登号的当前合同以 `docs/03-feature-designs/account-batch-auto-login-prd.md` 为准：必须 precheck 后显式确认，worker 对已有账号执行新鲜、直连、权威授权探测，不能以数据库 ACTIVE/session 推断在线；新账号先完成接码 baseline 再创建。每行输入的接码 UUID 必须与最终 `account_id` 建立持久绑定：账号列表/详情显示独立、不会被资料初始化覆盖的脱敏接码备注，完整 UUID 加密保存且只允许同租户有 `accounts.code_source_credentials.read` 权限的用户填写原因后显式查看；同一 UUID 对应多账号或替换既有绑定必须阻断并二次确认，禁止把完整值放进 `display_name`、普通列表、导出、日志或提醒。批内按行串行但每轮只推进一个 phase，单行失败或 300 秒仍无法判定时跳至下一行；远程未知记为 unresolved，由独立 reconciler 在 24 小时内收口并通过 correction 提醒修正结果，禁止自动重发/重验。所有成功或已授权账号最终进入所选目标分组；失败/未解行可刷新接码地址后按版本 fence 重试。实现必须具备版本化 fingerprint alias 去重、跨租户/批次公平调度、全 worker 持久限速、`off/reconcile_only/enabled` 后端 mode gate、精确 flow owner/version 和 generation CAS。code/2FA 明文只在 worker 内存短暂使用且禁止进入托管路径；批次事实与 initial/correction 持久提醒原子写入。当前状态为 `product_design_complete / local_implemented / targeted_qa_passed / not_released / production_unproven`，默认 mode=`off`；不得以本地测试、CI、分支合并、部署或 worker health 代替批量登录 E4。
 
-备用授权登录流程与主授权相同，但入口在账号详情“授权资产”Tab。新增备用授权时必须先选择或自动分配一个健康开发者应用和可用代理；登录成功后只写入授权资产，不覆盖当前主授权，除非管理员明确点击“切为主授权”并完成二次确认。
+备用授权登录流程与主授权相同，但入口在账号详情“授权资产”Tab。新增备用授权时按 v2.21 固定使用 App B/SV standby_1 或 App C/MY standby_2；登录成功后只写入授权资产。普通人工切主仍要求明确操作和二次确认；v2.21 primary 权威失败后的自动 `local_activate` 是唯一例外，必须走冻结、Gateway drain、原子 CAS 和模块新代次重建状态机。
 
 主授权登录完成后，系统默认进入备用 session 自动补齐流程：
 
 ```text
 primary session 登录成功
   -> 读取或生成平台托管 2FA 密码策略
-  -> 自动分配 standby_1 / standby_2 的开发者应用与代理
+  -> 校验并冻结 App B/SV standby_1、App C/MY standby_2 的 assignment/version 与对应出口
   -> 通过账号官方验证码读取能力获取登录验证码
   -> 如 Telegram 要求 2FA，使用平台加密托管的 2FA 密码
   -> 写入 standby_1 session / standby_2 session
@@ -1971,20 +1983,21 @@ primary session 登录成功
   -> 选择账号：按账号组 / 筛选 / 搜索 / 跨页勾选 / 区间选择
   -> 抽屉动作范围只显示 清理外部设备
   -> 不展示 AI 命名、头像、username 或二步密码配置
-  -> precheck：读取 Telegram 远端授权会话，拿 remote api_id 对比三槽位 api_id
-  -> 接码专用账号直接标记为不可清理，仅展示设备风险和原因
-  -> 将设备分为：我们的 TG 应用设备、非我们的 TG 应用设备、待确认设备
-  -> 保留 api_id 命中 primary / standby_1 / standby_2 的我们的 TG 应用设备
-  -> 仅把 api_id 未命中的非我们的 TG 应用设备放入待清理列表
-  -> 待确认设备不清理，展示原因
-  -> 二次确认弹窗展示账号数量、保留设备、待清理设备、待确认设备、跳过原因和操作原因
-  -> 创建批次
-  -> worker 只按 precheck 快照逐账号清理确认范围内的非平台设备
-  -> 清理后重新读取远端授权会话并回写 api_id 对比结果
+  -> 一次确认弹窗只展示已选账号数、48 小时跳过规则、最近 observation 仅供参考和操作原因
+  -> 用户确认后调用创建接口；不先调用全量资格接口
+  -> 创建事务只读数据库 current SV authorization 与 telegram_login_at，不调用 Telegram
+  -> 严格 server_now > telegram_login_at + 48h 且账号策略允许时为 eligible
+  -> 其他账号直接 skipped；同一事务创建批次并保存账号级结果
+  -> 创建响应返回 requested/eligible/skipped 数量和 skipped_reason_counts；skipped 不进入 worker
+  -> worker 对每个 eligible 账号独立读取 Telegram exact set
+  -> 以我方未撤销授权资产的唯一非零 hash 分类并冻结保护集和全部非我方非零 hashes
+  -> 待识别、我方 hash 不完整、executor 不可用或读取超时仅使当前账号失败，其他账号继续
+  -> worker 只按执行开始时冻结的 hashes 逐个 resetAuthorization，不使用 reset-all
+  -> 清理后重新读取 exact set，确认目标全部消失且我方保护集完整
   -> 写入安全快照、批次项、失败原因和审计
 ```
 
-清理登录设备批次必须支持筛选“未做过登录设备清理”“外部设备未清理”“最近清理失败”“需等待新 session 24 小时限制”的账号，支持当前筛选全选和跨页累计选择。该批次和资料初始化批次一样投影到任务中心，展示账号总数、执行中、成功、跳过、失败、等待、最近失败原因和账号级结果。
+清理登录设备选择器必须支持筛选“未做过登录设备清理”“外部设备未清理”“最近清理失败”“current SV 登录时间未严格超过 48 小时或缺失”的账号，支持当前筛选全选和跨页累计选择。确认前不得为全部已选账号发起额外资格请求；批次创建事务直接完成本地分类，跳过账号不自动排期，也不创建等待项。必须满足 `requested_count = eligible_count + skipped_count` 且 `skipped_count = sum(skipped_reason_counts)`；运营后续重新提交时按当时数据库登录时间重新判断。已创建批次投影到任务中心，展示请求、可执行、跳过、执行中、成功、失败、unknown、跳过原因汇总、最近失败原因和账号级结果。
 
 ### 动作边界
 
@@ -2025,7 +2038,7 @@ primary session 登录成功
 | `verification_available` | 是否可读取 TG 官方验证码或处理验证问题 |
 | `capacity_remaining` | 当前小时 / 日剩余容量和冷却状态 |
 | `unavailable_reason` | 不可用原因：session、代理、风控、TG 限制、目标权限、容量、人工禁用 |
-| `next_retry_at` | FloodWait、SlowMode、新登录 24 小时限制、账号安全批次待重试或冷却结束时间 |
+| `next_retry_at` | FloodWait、SlowMode、允许重试的账号安全动作或冷却结束时间；设备清理的 48 小时跳过和执行时 FRESH 失败不得写入此字段 |
 | `summary_updated_at` | 汇总更新时间 |
 
 账号授权资产应进入可用性摘要：
@@ -3670,7 +3683,7 @@ AI 评论 / 回复配置：
 | 系统任务类型 | 详情重点 |
 | --- | --- |
 | `account_profile_init` | 资料、username、头像、头像缓存、AI 预览和重抽结果 |
-| `account_device_cleanup` | 保留的 primary / standby_1 / standby_2、清理的非我们的 TG 应用设备、接码专用账号阻断原因、24 小时等待限制和清理后非平台设备数量 |
+| `account_device_cleanup` | 请求/可执行/跳过数量与跳过原因、三槽与我方历史授权的 protected hash、worker 执行开始时冻结的非我方设备目标、待识别/读取失败/集合漂移、接码专用账号阻断原因，以及清理后目标消失且保护集仍完整的 exact-set 回读；不展示等待倒计时 |
 | `account_2fa_setup` | 平台托管 2FA 设置 / 替换、待邮箱确认、旧密码未知跳过和失败原因 |
 | `account_standby_session_provision` | 目标槽位、开发者应用、代理、验证码读取、2FA 使用、健康检查、激活恢复和失败原因 |
 
@@ -3879,10 +3892,10 @@ AI 与提示词 Tab 维护 AI 底座，不承载素材日常管理。
 | 表 | 关键字段 | 说明 |
 | --- | --- | --- |
 | `tg_accounts` | `tenant_id`、`pool_id`、`display_name`、`username`、`phone_number`、`phone_masked`、`account_identity`、`status`、`session_ciphertext`、`developer_app_id`、`proxy_id`、`health_score`、`code_source_host`、`code_source_uuid_ciphertext/fingerprint/hint`、`code_source_binding_status/version`、`deleted_at` | TG 账号主表；`account_identity=normal/code_receiver/rank_deboost/account_purpose_mismatch` 是与当前 `AccountPool.pool_purpose` 同步的执行期用途投影，生产写路径必须原子维护 `pool_id + account_identity`；不一致时按最严格用途阻断外部动作。`session_ciphertext`、`developer_app_id` 是迁移期主授权兼容字段，账号级 `proxy_id` 不作为普通任务或降权任务的默认连接参数。批量登号的 UUID 以加密 binding 持久关联账号，接码备注由 host+hint 派生并独立于 `display_name`；完整值仅经受控 reveal 读取。 |
-| `tg_account_authorizations` | `tenant_id`、`account_id`、`role`、`developer_app_id`、`developer_app_api_id_snapshot`、`proxy_id`、`session_ciphertext`、`status`、`health_status`、`derived_status`、`fact_version`、`last_authoritative_error_code`、`last_authoritative_observed_at`、`is_current`、`last_health_check_at`、`last_success_at`、`last_switched_at`、`failure_reason`、`disabled_at`、`created_by` | 账号授权资产表；承载 primary、standby_1、standby_2 的真实登录成功状态、健康、切换、停用和审计关联。Session/需重登等权威事实按授权槽递增 `fact_version`，使用同一失效槽位的各 Task 分别引用该版本并独立物化当日 abandon，不新增全局冻结表；另一有效授权槽不被连带判废。远端授权会话通过 `api_id` 对比 `developer_app_api_id_snapshot` 绑定三槽位；三槽位全部不可用时只能进入人工重新登录 / 扫码 / 手动验证码 |
+| `tg_account_authorizations` | `tenant_id`、`account_id`、`logical_slot`、`slot_generation`、`is_slot_current`、`developer_app_id`、`developer_app_api_id_snapshot`、`session_ciphertext/wake_bundle_id`、`credential_storage_scope`、`auth_key_fingerprint_hmac`、`telegram_authorization_hash_ciphertext/hash_fingerprint_hmac`、`remote_authorization_state`、`status`、`health_status`、`fact_version`、`is_current`、`failure_reason`、`disabled_at`、`created_by` | 账号授权资产表；三个当前槽位必须分别使用三套 Developer App、三个 AuthKey 和三个非零远端 hash。SV 槽位保存中心加密 Session，MY standby_2 保存 MY wake bundle/receipt 引用。远端设备归属以 hash 精确匹配为准，`api_id` 只作一致性校验；三槽位全部不可用时只能进入人工重新登录 / 扫码 / 手动验证码 |
 | `tg_verification_codes` | `tenant_id`、`account_id`、`authorization_id`、`source_peer`、`source_message_id`、`code_ciphertext`、`code_masked`、`received_at`、`expires_at`、`status`、`failure_type`、`failure_detail` | Telegram 官方验证码事实；只记录真实读取到的官方服务 code 或明确失败原因，展示时受 `accounts.codes.read` 权限和审计控制 |
 | `account_pools` | `tenant_id`、`name`、`is_default`、`pool_purpose`、`is_system`、`system_key`、`is_enabled`、`disabled_at`、`disabled_by`、`disable_reason` | 账号分组与用途真相源；`pool_purpose=code_receiver` 且 `system_key=code_receiver` 表示系统接码专用分组。`pool_purpose=rank_deboost` 表示降权任务专用分组，同租户可存在一个系统默认组和多个自定义组；专用组不可删除或改用途，只能显式禁用。禁用不改变组内账号用途，必须显式迁移账号后才能进入普通任务。 |
-| `tg_account_authorization_snapshots` | `tenant_id`、`account_id`、`snapshot_at`、`remote_authorization_id`、`remote_api_id`、`device_model`、`platform`、`app_name`、`last_active_at`、`classification`、`matched_roles`、`cleanup_eligible`、`cleanup_status`、`failure_reason` | Telegram 远端授权设备快照；按 `remote_api_id` 对比账号三槽位 `developer_app_api_id_snapshot` 分类为我们的 TG 应用设备、非我们的 TG 应用设备或待确认设备 |
+| `tg_account_authorization_snapshots` | `tenant_id`、`account_id`、`observation_id`、`snapshot_digest`、`snapshot_at`、`remote_authorization_hash_ciphertext/hash_fingerprint_hmac`、`remote_api_id`、`device_model/platform/app_name/app_version`、`date_created/last_active_at`、`ip_masked/country`、`classification=platform_current|platform_retained|external|unresolved`、`matched_authorization_id/logical_slot/slot_generation/fact_version`、`cleanup_status`、`failure_reason` | Telegram 远端授权设备追加快照；按未撤销我方授权的非零 hash 精确分类，不允许前端按 `api_id` 重算。一键清理引用快照/manifest 版本和 target hash digests，不返回 hash 明文 |
 | `proxy_airport_subscriptions` | `tenant_id`、`provider`、`name`、`clash_subscription_url_ciphertext`、`subscription_format`、`priority`、`enabled`、`status`、`failover_policy`、`auto_failback_enabled`、`failback_cooldown_minutes`、`last_sync_at`、`last_error`、`node_count`、`healthy_node_count`、`updated_by` | 系统设置里的 Clash 订阅源池；每租户允许多条 enabled 订阅，按 `priority` 主备容灾，优先级不能冲突；完整订阅 URL、token 和节点 URI 必须加密保存并禁止普通日志输出 |
 | `proxy_airport_nodes` | `subscription_id`、`node_key`、`name`、`protocol`、`host`、`port`、`country`、`region`、`asn`、`isp`、`status`、`observed_exit_ip`、`last_health_check_at`、`capacity_limit` | 由 Clash 订阅源同步出的标准节点池；节点入口 host 不等于真实出口 IP，必须通过健康检查观测出口事实后才能绑定授权槽位 |
 | `account_environment_bindings` | `tenant_id`、`account_id`、`authorization_id`、`session_role`、`developer_app_id`、`developer_app_api_id_snapshot`、`proxy_binding_id`、`device_model`、`system_version`、`app_version`、`platform`、`lang_code`、`system_lang_code`、`lang_pack`、`region_code`、`client_identity_key`、`fingerprint_locked`、`status` | 账号授权环境绑定；客户端元数据和代理绑定粒度都是账号 + TG 开发者应用 + 授权槽位。不同应用和不同槽位可以绑定不同客户端元数据和不同代理节点；search_join 等真实执行任务按本表取指纹和代理，缺失或冲突时 fail closed |
@@ -4066,7 +4079,7 @@ listener_source_state
 | Dispatcher | due ready actions | execution attempt/Gateway journal、canonical remote fact provenance、账号状态 | 不调用AI Provider、不生成或补写正文、不创建新业务义务/Action；Telegram外调不得持有DB事务 |
 | Listener | listener source、监听账号、源目标 | 上下文、监听水位、源媒体缓存、事件 | 不发送业务消息 |
 | Recovery | 超时 claim/lease、AI wake/deadline、Gateway reconcile、remote fact projection、worker 失联、unknown | typed state/FOP、target/coverage/wake 投影、任务错误摘要、审计、unknown membership 有界补偿复检 | 不能无上限调用 TG；不能自动重发业务消息；投影失败不能 resurrection Action |
-| Account Security | 账号资料初始化、设置二步密码、清理登录设备、备用 session 补齐 / 自愈批次 | 执行 `tg_account_security_batch_items` pending/waiting 项，回写 profile / username / avatar / 2FA / device / standby session 结果 | 调用 TG，必须独立运行；普通账号维护凭据默认直连，不读取账号级 `proxy_id` |
+| Account Security | 账号资料初始化、设置二步密码、清理登录设备、备用 session 补齐 / 自愈批次 | 执行 `tg_account_security_batch_items` pending/waiting 项；设备清理只领取 eligible pending 项，不创建 waiting 项；回写 profile / username / avatar / 2FA / device / standby session 结果 | 调用 TG，必须独立运行；普通账号维护凭据默认直连，不读取账号级 `proxy_id` |
 | Metrics | action、task、worker、账号、代理、Redis | runtime snapshots、daily stats | 不改变业务状态 |
 
 ### 5.2 Planner 规划要求
@@ -4175,7 +4188,7 @@ AI 活跃群 Planner 需要额外满足：
 
 - 只处理 `task_type=search_click + search_execution_mode=click_only` 的纯搜索点击任务，按账号授权槽位、搜索机器人、关键词、目标群匹配策略生成 source；现存物理 `action_type=search_join` 仅作内部兼容别名，业务/API/日志必须投影为 `search_click`。只有同一 Attempt 具备完整批准点击证据、`membership_side_effect=none` 且 `membership_mutating_rpc_invoked=false` 后才写 `target_click_observed`。inline keyboard 目标必须为 `target_open_only`；正文 `MessageEntityTextUrl` 目标必须同时保存消息 ID、实体序号、实体 URL 指纹、远端 `channels.GetFullChannelRequest`、精确 entity id/username 与 `target_open_only` effect，正文可见标题或 `get_entity` 本地缓存命中不能单独完成。键盘目标证据要求非负 row/col；正文实体目标没有伪造 row/col，改由实体序号和远端实体字段完成事实门。只有 `navigate_only` 不具备目标点击资格。旧 `join_candidate` 或成员副作用未知的协议样本默认不得进入 pure-click eligibility；仅历史解析器精确版本 `jisou-v2-2026-07-28` 可在发布接管中保留原行为样本为 inactive，并以审计化 replacement 把 Telegram 内部 URL 从误标的 `join_candidate` 重分类为 `target_open_only`、声明无成员副作用。其他版本、结构或 effect 不得自动升级。确认后 ordinal 结束，禁止创建 `search_join_membership` 或调用任何 join/request/follow/confirm/can-send 路径。
 - 创建 action 前必须实时校验真实协议样本、`execution_mode=mtproto_userbot`、授权槽位环境栈、授权槽位代理绑定、代理健康、observed exit IP、客户端元数据镜像绑定、关键词允许矩阵和 `(account_id, proxy_binding_id)` warmup 阶段。
-- 同账号 `primary / standby_1 / standby_2` 不得复用代理节点或客户端元数据组合；同一账号可在多个 Task/assignment 并发执行不同 remote mutation identity，响应必须按 rpc/request identity 回写各自 Attempt。缺授权槽位代理、同槽位多 active 代理、多出口 IP或指纹复用时对应路径不可执行；不建立账号级 claiming/executing 锁。
+- 马来西亚灾备账号的 `primary / standby_1` 按 v2.21 合同共用唯一硅谷业务出口，`standby_2` 固定到唯一 MY 出口且永不进入普通 Task source；三槽必须使用现有 App A/B/C、三个不同 AuthKey 和非零远端 authorization hash。MY client 休眠不改变 standby_2 在 Telegram 设备集中的 active 授权状态。同一账号可在多个 Task/assignment 并发执行不同 remote mutation identity，响应必须按 rpc/request identity 和冻结 authorization/fact/connection generation 回写各自 Attempt；切换时 Gateway 前 assignment 释放重排，Gateway 已开始的旧 Attempt 不改绑、不自动重发。当前业务授权出口漂移、同槽位多 active 绑定、三槽 App/AuthKey/hash 复用或指纹复用时对应路径不可执行；不建立账号级 claiming/executing 锁。
 - 授权环境绑定的权威粒度是 `account_id + developer_app_id/api_id + authorization_id/session_role`。同一账号在不同 TG 开发者应用 `api_id/api_hash`、不同 session key 和主 / 备用授权槽位下可以绑定不同客户端元数据和不同代理节点；Planner 创建 action 前和 Executor 派发前都必须验证 payload 授权槽位属于 action 的 `account_id` 且 role 一致。Executor 必须使用授权槽位登录时绑定的同一 TG 开发者应用、指纹配置和代理配置，不能用另一个应用的指纹或代理配置代替，也不能回退本机直连。
 - `airport_clash` 节点必须来自已成功拉取、完成 Base64 URI 列表 / Clash YAML / JSON 解析、过滤伪节点、通过健康检查并完成真实出口 IP 观测的启用订阅；随机分配后固定到授权槽位，不按 action 轮换；每个节点绑定授权槽位数不得超过默认容量或单节点覆盖；当前节点不通时优先按 `switch_to_next_healthy_node` 在同订阅内切换，同订阅无健康节点时按主备优先级切到备用订阅健康节点并重置 warmup。全部启用订阅不可用时，该运行 scope 写 `runtime_state=waiting/airport_all_subscriptions_unavailable`，Task 保持 running，禁止创建真实 Telegram 操作；恢复后自动继续。
 - 全部启用订阅不可用时必须复用租户 Telegram Bot 通知链路，向 `Tenant.admin_chat_id` 配置的全部管理员 Chat ID 推送脱敏告警；通知失败只记录 `admin_notification_failed` 和审计，不允许因此继续执行或回退直连。
@@ -4662,10 +4675,11 @@ Listener 采集源群消息
   -> 进入选择账号步骤，可按账号组、筛选、搜索、跨页勾选或区间选择
   -> 按入口固定 action_types，不在抽屉内混选其他动作
   -> 资料初始化走 profile-preview，一次 AI 请求生成整批资料
-  -> 设置二步密码和清理登录设备走安全预检
-  -> 二次确认弹窗展示数量、跳过原因、风险提示和操作原因
+  -> 设置二步密码走安全预检；清理登录设备不走预检
+  -> 设备清理确认弹窗只展示已选数量、48 小时跳过规则、风险提示和操作原因
   -> 创建 tg_account_security_batches
-  -> 创建 batch items
+  -> 设备清理在同一创建事务按 current SV telegram_login_at 严格超过 48 小时分类并创建 eligible/skipped 结果
+  -> 创建响应返回 requested/eligible/skipped 与 skipped_reason_counts
   -> 资料初始化批次投影到任务中心，作为系统执行任务展示状态
   -> drain_account_security_batches
   -> update_avatar 项先检查素材 TG 缓存 ready，只使用已缓存完成的头像素材
@@ -4796,10 +4810,10 @@ action / attempt 写入完成
 - `POST /api/tg-accounts/{account_id}/authorizations/{authorization_id}/activate`
 - `POST /api/tg-accounts/{account_id}/authorizations/standby/provision`
 - `POST /api/tg-accounts/{account_id}/authorizations/self-heal`
-- `GET /api/tg-accounts/{account_id}/devices`
-- `POST /api/tg-accounts/{account_id}/devices/refresh`
-- `POST /api/tg-accounts/{account_id}/devices/cleanup/precheck`
-- `POST /api/tg-accounts/{account_id}/devices/cleanup`
+- `GET /api/tg-accounts/{account_id}/authorization-devices`
+- `POST /api/tg-accounts/{account_id}/authorization-devices/refresh`
+- `POST /api/tg-accounts/{account_id}/authorization-devices/cleanup`
+- `GET /api/tg-accounts/{account_id}/authorization-device-cleanups/{operation_id}`
 - `GET /api/tg-accounts/availability/summary`
 - `GET /api/tg-accounts/{account_id}/availability`
 - `POST /api/tg-accounts/availability/rebuild`
@@ -4826,9 +4840,9 @@ action / attempt 写入完成
 账号中心补齐接口为目标契约。实现可以在保持既有路径兼容的前提下复用或映射到现有服务，但接口语义必须满足：
 
 - 接码专用分组和账号身份接口必须共同维护唯一系统 `AccountPool` 与 `account_identity=code_receiver`；写入后必须立即影响任务候选集合。
-- 授权资产接口必须返回三槽位状态、状态推导输入、聚合状态、可救援关系、`developer_app_api_id_snapshot` 和全部掉线标识。
-- 设备接口必须返回远端授权会话 `api_id`、与三槽位 `api_id` 的对比结果、“我们的 TG 应用设备 / 非我们的 TG 应用设备 / 待确认设备”分类、预计可清理数量、不可清理原因和接码专用账号阻断原因。
-- 设备清理必须先走 precheck；cleanup 只能基于未过期 precheck 快照执行，不能在确认后重新扩大清理范围。
+- 授权资产接口必须返回三槽位状态、冻结 Developer App/api_id、远端授权 active/revoked/unknown、聚合状态、可救援关系和全部掉线标识；不返回 Session/AuthKey/hash 明文。
+- 设备接口必须在新账号首次登录后立即返回 `platform_current/platform_retained/external/unresolved`、匹配授权/槽位/代次、Developer App、Telegram `date_created` 与脱敏设备元数据，以及 `remote_active_total/platform_current/platform_retained/external/unresolved/as_of/stale/current_sv_login_at/cleanup_button_enabled/cleanup_disabled_reason`。归属由服务端按非零 hash 精确计算，不由前端按 `api_id` 重算；不返回倒计时或资格预检 token。
+- 设备清理不得调用 `security-batches/precheck` 或单账号 preview。单账号和批量创建接口都只读数据库，以严格 `server_now > current_sv_login_at + 48h` 分类 eligible/skipped，并返回 `requested_count/eligible_count/skipped_count/skipped_reason_counts`；创建阶段零 Telegram 调用。worker 为 eligible 账号逐个读取并冻结执行开始时 exact set，保护事实不完整或读取超时只使当前账号失败；随后逐 hash reset 并 readback。FRESH 只使当前账号失败，不等待或自动重试；最终状态只能来自 Telegram exact-set readback。
 - 验证码接口必须读取 Telegram 官方服务消息并返回结构化成功或失败原因，不得返回假成功。
 - 待处理重查接口必须只重新评估并排队满足条件的 action，不能重复创建已存在 action。
 - 执行记录接口必须聚合旧版 `message_tasks` 和新版 `tasks/actions/execution_attempts`，按统一动作字典输出，避免账号记录显示为 0 条。
@@ -5400,7 +5414,7 @@ fulfillment.calculated_at
 | 降权专用分组与搜索排名观察 | 同租户多个启用/禁用 `rank_deboost` 分组、账号新增/迁移原子同步 `pool_id + account_identity`、用途不一致 fail closed、普通任务 all/group/manual 全部排除、降权任务 all 只选择全部启用降权组；分组持久代理绑定复用、SOCKS/HTTP 运行端点、同端点实时出口探测、真实 Telethon 搜索和每 action 最多一次 `navigate_only` 点击、confirmed/明确无点击原因/unknown_after_click 分态、逐点击 reservation、防并发越限、create_and_start 失败不留半创建任务；禁止旧消息、资料初始化、账号面具、2FA、设备清理、Listener 和其他任务使用降权账号。 |
 | 资料初始化 | AI 成功、AI 超时、无健康供应商、本地兜底、手工编辑、头像跳过、`custom_prompt` 命名风格、50 账号一次 AI 请求、100 账号快速选择、资料待初始化筛选、需重新资料初始化筛选、备用 session 缺口筛选、健康备用 session 不足 2 个筛选、可激活恢复筛选、整批差异控制、弹窗确认、任务中心状态投影、头像缓存等待、头像回显和失败提示 |
 | 设置二步密码 | 未设置账号成功托管、已设置账号跳过、离线账号阻断、失败审计 |
-| 清理登录设备 | 筛选未做过登录设备清理、按非我们的 TG 应用设备数量筛选、当前筛选全选、precheck 读取远端授权会话并按 remote `api_id` 对比三槽位 `api_id`、命中 api_id 的我们的 TG 应用设备保留、未命中 api_id 的非我们的 TG 应用设备进入确认清理、缺失 api_id / 读取失败进入待确认不清理、接码专用账号预检阻断、确认弹窗展示保留 / 清理 / 待确认设备、cleanup 只能按未过期 precheck 快照执行、新登录 24 小时等待、失败重试、任务中心系统任务投影 |
+| 清理登录设备 | 新账号首次登录后立即查看/刷新设备和四类计数；App A/B/C 三槽为独立 AuthKey/非零 hash，MY 休眠时远端仍 active；单账号详情展示 current SV 登录时间和不可执行原因并置灰按钮；创建阶段只读数据库，严格覆盖 0h/47:59:59/恰好 48h/超过 48h/登录时间缺失，结果依次为 skipped/skipped/skipped/eligible/skipped，前端时钟不参与；批量返回 requested/eligible/skipped 和逐原因汇总，且零 Telegram 调用；worker 逐账号读取并冻结执行开始时 exact set，单账号读取超时/失败不阻塞整批；一次确认逐 hash 撤销，FRESH 只使当前账号失败且不等待/自动重试；最终 exact-set 证明目标消失、我方保护集完整且无新增 external/unresolved；官方手机/桌面/Web 未匹配我方 hash 时进入清理，接码专用账号仍阻断 |
 | TG 官方验证码 | 点击提取后读取并识别 Telegram 官方服务 code 消息，直接展示 code、来源消息时间、有效期、读取授权槽位、原始消息摘要和失败原因；未找到官方消息、无健康 session、读取失败或 code 过期都必须显式展示 |
 | 频道任务 | 任务内粘贴新频道、已关注直接互动、未关注前置关注、全部失败阻断主互动、部分成功继续、运行时再次守卫关注状态、未关注点赞 / 评论不得调用 TG 主互动接口而必须先补准入 |
 | 频道浏览产量 | 最近 N 条初始范围只纳入 N 条、持续监听只纳入任务启动后新帖、单帖每日浏览量、单帖累计目标、帖子有效期、任务级每日安全上限、当天未完成不滚入次日、同日同账号同帖去重 |
@@ -5420,7 +5434,7 @@ fulfillment.calculated_at
 | 生产核心页面有界加载 | 运营目标分页头与组合过滤、旧无新增参数兼容、当前页 SQL 计数、runtime-summary target_ids、全部第一方消费者有界；任务 `/tasks/page` 跨普通 / 系统任务稳定分页、summary/groups、列表无完整四类 config、系统 batch items 无 N+1、60 秒当前查询轮询、任务编辑 2 秒内可操作；生产两个列表各自小于 2 秒且单页小于 100 KB，连续刷新零 502 |
 | 任务执行全链路 | 结构校验、直接创建、启动后运行评估、Planner、Dispatcher、Gateway、结果回写、Metrics 汇总、运营中心展示全链路闭环 |
 | 汇总读模型 | action / attempt 写入后增量更新目标、任务、账号和运营异常汇总；运营中心首页不触发执行明细全量扫描 |
-| 账号资产与可用性 | 账号列表读取账号基础资料、完整手机号、账号身份、分组、同步资产、资料 / 安全状态、授权资产、primary session、standby_1 session、standby_2 session、备用 session 缺口、api_id 绑定结果、可激活恢复状态、全部掉线状态和可用性汇总；汇总延迟展示 stale 标记；`account_cooldown` 展示为账号冷却中并说明恢复时间；容量展示小时 / 日剩余、pending/executing/unknown_after_send 占用来源和汇总时间；任务预检实时重算；账号详情分页下钻授权资产 / 登录设备 / 验证码 / 可用性与容量 / 待处理执行闭环 / 执行记录 |
+| 账号资产与可用性 | 账号列表读取账号基础资料、完整手机号、账号身份、分组、同步资产、资料 / 安全状态、授权资产、primary/standby_1/standby_2 独立 Developer App/AuthKey/远端设备证明、MY dormant 与 remote active 分层、备用授权缺口、活跃授权设备四类计数、可恢复状态、全部掉线状态和可用性汇总；汇总延迟展示 stale 标记；`account_cooldown` 展示为账号冷却中并说明恢复时间；容量展示小时 / 日剩余、pending/executing/unknown_after_send 占用来源和汇总时间；任务预检实时重算；账号详情分页下钻授权资产 / 活跃授权设备 / 验证码 / 可用性与容量 / 待处理执行闭环 / 执行记录 |
 | 待处理执行闭环 | 管理员已让账号入群且具备可发言权限后，重查目标权限必须按 revalidate_account / revalidate_target / resolve_blockers / rebuild_ready_pool / requeue_actions / report_remaining_blockers 执行；关闭已满足的验证 / 准入阻塞并将可继续 action 重新排队；重复点击不得重复创建 action 或扣容量；如果仍无法继续，必须展示账号状态、目标权限、容量冷却、AI 质量、规则、风控或 Dispatcher 未重排等具体原因 |
 | 账号执行记录 | 账号详情发送 / 执行记录必须按统一动作字典聚合旧手动发送 `message_tasks` 和新版 `tasks/actions` 中该账号的发言、评论、回复、频道互动、AI 活跃群发言、准入、资料维护、授权维护、设备清理、远端 message id、失败原因和状态；不能因为只读取旧手动发送事实源而显示 0 条 |
 | 按钮权限 | 操作员无权限时按钮隐藏或禁用，后端写接口拒绝越权，危险动作必须填写原因并写审计 |

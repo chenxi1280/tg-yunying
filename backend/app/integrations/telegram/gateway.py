@@ -1144,9 +1144,10 @@ class TelethonTelegramGateway(TelegramGateway):
                         code=match.group(1),
                         raw_hint="TG 官方服务消息验证码",
                         expires_at=datetime.now(BEIJING_TZ) + timedelta(seconds=self.settings.login_code_ttl_seconds),
+                        message_id=str(getattr(message, "id", "") or ""),
+                        received_at=getattr(message, "date", None),
                     )
                 )
-                break
         return snapshots
 
     def poll_verification_codes(

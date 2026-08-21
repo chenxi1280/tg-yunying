@@ -22,14 +22,17 @@ from app.services.developer_apps import (
     credentials_for_authorization,
     credentials_for_developer_app,
 )
+from app.timezone import as_beijing_aware
 
 from .contracts import AuthorizationDrError, OperationClaim
+from .login_code import bind_login_code
 from .migration_results import (
     mark_login_remote_failed,
     mark_login_remote_unknown,
     refresh_migration_batch,
 )
 from .operation_state import mark_item as _mark_item, owned_operation as _owned_operation
+from .primary_fence import require_primary_code_source, verified_code_source
 from .readiness import require_migration_readiness
 from .stage_facts import append_stage_fact
 
@@ -102,7 +105,7 @@ def approve_migration_batch(
         raise AuthorizationDrError("authorization_version_conflict", "Migration batch version changed")
     if not approval_ref.strip():
         raise AuthorizationDrError("approval_ref_required", "Approval reference is required")
-    readiness = require_migration_readiness(session)
+    readiness = require_migration_readiness(session, require_mode=False)
     _create_operations(
         session,
         batch,
@@ -134,13 +137,19 @@ def claim_migration_operation(session, node_id: str) -> OperationClaim | None:
     ).limit(1))
     if active:
         return None
-    operation = session.scalar(select(TgAuthorizationDrOperation).where(
+    filters = [
         TgAuthorizationDrOperation.status.in_(CLAIMABLE_STATUSES),
         or_(
             TgAuthorizationDrOperation.lease_expires_at.is_(None),
             TgAuthorizationDrOperation.lease_expires_at <= now,
         ),
-    ).order_by(TgAuthorizationDrOperation.created_at, TgAuthorizationDrOperation.id).limit(1).with_for_update(skip_locked=True))
+    ]
+    if contract.claim_scope_operation_id:
+        filters.append(TgAuthorizationDrOperation.id == contract.claim_scope_operation_id)
+    operation = session.scalar(select(TgAuthorizationDrOperation).where(*filters).order_by(
+        TgAuthorizationDrOperation.created_at,
+        TgAuthorizationDrOperation.id,
+    ).limit(1).with_for_update(skip_locked=True))
     if not operation:
         return None
     _verify_frozen_inputs(session, operation, readiness)
@@ -174,6 +183,7 @@ def mark_login_remote_started(
         raise AuthorizationDrError("provision_reconcile_unknown", "Remote login call requires reconciliation")
     operation.remote_call_state = "started"
     operation.remote_effect_started_at = operation.remote_effect_started_at or _now()
+    operation.login_challenge_sent_at = operation.login_challenge_sent_at or as_beijing_aware(_now())
     operation.status = "login_remote_started"
     operation.operation_version += 1
     digest = hashlib.sha256(f"{operation.id}:{operation.owner_epoch}:remote_login_started".encode()).hexdigest()
@@ -256,15 +266,25 @@ def poll_migration_login_code(
     )
     if operation.remote_call_state != "started":
         raise AuthorizationDrError("login_code_challenge_mismatch", "Login challenge has not started")
-    source = session.get(TgAccountAuthorization, operation.source_authorization_id)
-    if not source or not source.session_ciphertext:
-        raise AuthorizationDrError("login_code_not_found", "Frozen SV code source is unavailable")
+    source = verified_code_source(session, operation)
     snapshots = gateway.poll_verification_codes(
         operation.account_id,
         session_ciphertext=source.session_ciphertext,
         credentials=credentials_for_authorization(session, source),
     )
-    return snapshots[0].code if snapshots else ""
+    bound = bind_login_code(
+        snapshots,
+        challenge_sent_at=operation.login_challenge_sent_at,
+        expected_message_id=operation.login_code_message_id,
+    )
+    if not bound:
+        return ""
+    if not operation.login_code_message_id:
+        operation.login_code_message_id = bound.message_id
+        operation.login_code_received_at = as_beijing_aware(bound.received_at)
+        operation.operation_version += 1
+        session.commit()
+    return bound.code
 
 
 def _migration_source(session, tenant_id: int, account_id: int) -> TgAccountAuthorization:
@@ -342,6 +362,7 @@ def _create_operations(session, batch, *, readiness, approver: str, approval_ref
         operation = _new_operation(
             batch,
             item,
+            account=account,
             source=source,
             app=app,
             readiness=readiness,
@@ -355,8 +376,9 @@ def _create_operations(session, batch, *, readiness, approver: str, approval_ref
         item.version += 1
 
 
-def _new_operation(batch, item, *, source, app, readiness, approver: str, approval_ref: str):
-    fingerprint = _operation_fingerprint(batch, item, readiness)
+def _new_operation(batch, item, *, account, source, app, readiness, approver: str, approval_ref: str):
+    code_source = require_primary_code_source(account)
+    fingerprint = _operation_fingerprint(batch, item, readiness, account=account, code_source=code_source)
     return TgAuthorizationDrOperation(
         tenant_id=batch.tenant_id,
         account_id=item.account_id,
@@ -364,8 +386,16 @@ def _new_operation(batch, item, *, source, app, readiness, approver: str, approv
         operation_type="migrate_standby_2",
         logical_slot="standby_2",
         source_authorization_id=source.id,
+        code_source_authorization_id=code_source.id,
         source_generation=item.expected_source_generation,
         target_generation=item.target_generation,
+        expected_current_authorization_id=account.current_authorization_id,
+        expected_authorization_generation=account.authorization_generation,
+        expected_authorization_fact_generation=account.authorization_fact_generation,
+        expected_connection_generation=account.connection_generation,
+        expected_code_source_fact_version=code_source.fact_version,
+        expected_code_source_user_id_digest=code_source.telegram_user_id_digest,
+        expected_code_source_auth_key_digest=code_source.auth_key_fingerprint_digest,
         developer_app_id=app.id,
         developer_app_api_id_snapshot=app.api_id,
         developer_app_credentials_version=app.credentials_version,
@@ -385,6 +415,7 @@ def _verify_frozen_inputs(session, operation, readiness) -> None:
     source = session.get(TgAccountAuthorization, operation.source_authorization_id)
     item = session.get(TgAuthorizationDrBatchItem, operation.batch_item_id)
     _verify_source(item, source)
+    verified_code_source(session, operation)
     if operation.assignment_version != readiness.assignment_version:
         raise AuthorizationDrError("assignment_version_conflict", "Frozen App assignment changed")
     if operation.egress_id != readiness.egress.id or operation.egress_version != readiness.egress.version:
@@ -428,7 +459,7 @@ def _target_fingerprint(tenant_id: int, account_ids: list[int]) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
-def _operation_fingerprint(batch, item, readiness) -> str:
+def _operation_fingerprint(batch, item, readiness, *, account, code_source) -> str:
     payload = {
         "batch": batch.id,
         "account": item.account_id,
@@ -437,6 +468,18 @@ def _operation_fingerprint(batch, item, readiness) -> str:
         "target_generation": item.target_generation,
         "assignment": readiness.assignment_version,
         "egress": [readiness.egress.id, readiness.egress.version],
+        "current": [
+            account.current_authorization_id,
+            account.authorization_generation,
+            account.authorization_fact_generation,
+            account.connection_generation,
+        ],
+        "code_source": [
+            code_source.id,
+            code_source.fact_version,
+            code_source.telegram_user_id_digest,
+            code_source.auth_key_fingerprint_digest,
+        ],
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 

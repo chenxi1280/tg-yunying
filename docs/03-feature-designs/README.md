@@ -7,6 +7,8 @@
 | [account-security-hardening-design.md](account-security-hardening-design.md) | 账号安全、设备清理、托管 2FA、资料初始化 |
 | [account-profile-group-style-initialization-prd.md](account-profile-group-style-initialization-prd.md) | **2026-08-19 新账号审计修正已实现、待发布/生产验证**：按精确批量登录 batch 集合中“本批新建且登录成功”的账号并集初始化名字+头像，排除已有账号重登，群样本仅形成匿名风格分布、不复制真实身份或头像，protected preview/apply/readback + 300 账号 E4 |
 | [account-standby-auto-authorization-prd.md](account-standby-auto-authorization-prd.md) | 备用授权自动补齐专项 PRD |
+| [account-malaysia-standby-session-dr-prd.md](account-malaysia-standby-session-dr-prd.md) | **v2.21 当前产品合同，Product Design Complete**：固定 A/SV primary、B/SV standby_1、C/MY standby_2；新增全部在线账号动态 N、A 唯一码源、A -> B -> C 编排、账号+B/C 三重守恒、同一 10 账号与 24 小时观察窗。既有迁移核心已部署，`complete_online_abc` 尚未实现 |
+| [account-malaysia-standby-session-dr-implementation-contract.md](account-malaysia-standby-session-dr-implementation-contract.md) | **v2.21 规范性实施与验收合同**：冻结 API/schema、码源与 observer fence、B/C 资格边界、unknown stop、10 账号/全量 Release Gate；继续覆盖设备清理、SV-to-MY 迁移、双副本恢复、local activate/restore SV pair、任务代次、回滚和 DEV 交接 |
 | [account-login-group-navigation-recovery-prd.md](account-login-group-navigation-recovery-prd.md) | **当前**：账号验证码 / QR / 2FA 登录 flow、已有账号重登分组语义、账号分组导航与服务端分页修复合同 |
 | [account-batch-auto-login-prd.md](account-batch-auto-login-prd.md) | **本地已实现、定向 QA 通过、默认 mode=off、未发布/生产未证明**：批量自动登号专项（失败/超时/远端未解跳行，账号 UUID 接码备注映射，独立对账与 initial/correction 提醒，地址刷新和目标分组归一合同） |
 | [login-user-permission-gating-prd.md](login-user-permission-gating-prd.md) | **当前**：平台登录账号按权限加载首屏资源，系统运行时诊断仅限 `system.view` |

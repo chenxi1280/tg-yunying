@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 import pytest
 
@@ -9,7 +9,7 @@ from app.database import Base
 from app.integrations.telegram.gateway import TelethonTelegramGateway
 from app.integrations.telegram.mock import TelegramGateway
 from app.integrations.telegram.contracts import AccountHealth, LoginChallenge
-from app.models import Action, AccountProxy, AccountStatus, FailureType, Task, TelegramDeveloperApp, Tenant, TgAccount, TgAccountAuthorization, TgAccountOnlineState, TgLoginFlow
+from app.models import Action, AccountProxy, AccountStatus, FailureType, Task, TelegramDeveloperApp, Tenant, TgAccount, TgAccountAuthorization, TgAccountOnlineState, TgAuthorizationLocalActivateCase, TgLoginFlow
 from app.security import decrypt_session, encrypt_secret
 from app.services import account_authorizations as authorization_service
 from app.services import accounts as accounts_service
@@ -28,6 +28,9 @@ from app.services.account_authorizations import (
 )
 from app.services.accounts import health_check_account
 from app.services.developer_apps import credentials_for_account, credentials_for_task_account
+
+
+pytestmark = pytest.mark.no_postgres
 
 
 def _sqlite_session() -> Session:
@@ -273,7 +276,7 @@ def test_list_account_authorizations_projects_legacy_primary() -> None:
         ]
 
 
-def test_switch_primary_authorization_promotes_standby_and_preserves_legacy_primary() -> None:
+def test_legacy_direct_switch_is_blocked_and_preserves_primary() -> None:
     with _sqlite_session() as session:
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add_all(
@@ -312,20 +315,12 @@ def test_switch_primary_authorization_promotes_standby_and_preserves_legacy_prim
         session.add(standby)
         session.commit()
 
-        switched = switch_primary_authorization(session, account.id, standby.id, actor="admin", reason="主 session 失效")
-        rows = list(session.query(TgAccountAuthorization).filter_by(account_id=account.id).order_by(TgAccountAuthorization.id))
-        old_row = next(row for row in rows if row.session_ciphertext == "legacy-session")
-        new_row = next(row for row in rows if row.session_ciphertext == "standby-session")
+        with pytest.raises(ValueError, match="local_activate"):
+            switch_primary_authorization(session, account.id, standby.id, actor="admin", reason="主 session 失效")
 
-        assert switched.status == AccountStatus.ACTIVE.value
-        assert switched.session_ciphertext == "standby-session"
-        assert switched.developer_app_id == 32
-        assert switched.proxy_id == 42
-        assert old_row.role == "standby_repair"
-        assert old_row.status == "needs_repair"
-        assert new_row.role == "primary"
-        assert new_row.status == "active"
-        assert new_row.is_current is True
+        assert account.session_ciphertext == "legacy-session"
+        assert account.developer_app_id == 31
+        assert account.proxy_id == 41
 
 
 def test_switch_primary_authorization_rejects_standby_without_session() -> None:
@@ -354,7 +349,7 @@ def test_switch_primary_authorization_rejects_standby_without_session() -> None:
         try:
             switch_primary_authorization(session, account.id, standby.id, actor="admin", reason="主 session 失效")
         except ValueError as exc:
-            assert str(exc) == "备用授权没有可用 session"
+            assert "local_activate" in str(exc)
         else:
             raise AssertionError("switch should reject standby without session")
 
@@ -460,21 +455,20 @@ def test_self_heal_activates_healthy_standby_before_refreshing_primary() -> None
                 failure_detail="session 已失效",
             )
         )
-        standby = TgAccountAuthorization(id=1902, tenant_id=1, account_id=19, role="standby_1", developer_app_id=34, proxy_id=44, status="standby", health_status="healthy", session_ciphertext="standby-ok")
+        standby = TgAccountAuthorization(id=1902, tenant_id=1, account_id=19, role="standby_1", logical_slot="standby_1", is_slot_current=True, provision_region_code="sv", developer_app_id=34, proxy_id=44, status="standby", health_status="healthy", session_ciphertext="standby-ok")
         session.add(standby)
         session.commit()
 
         result = self_heal_authorizations(session, 19, actor="admin", reason="巡检发现 primary 掉线")
         account = session.get(TgAccount, 19)
 
-        assert result["status"] == "activated_standby"
-        assert result["activated_authorization_id"] == 1902
-        assert account.session_ciphertext == "standby-ok"
-        assert account.status == AccountStatus.ACTIVE.value
+        assert result["status"] == "activation_candidate"
+        assert result["activated_authorization_id"] is None
+        assert account.session_ciphertext == "primary-old"
+        assert account.status == AccountStatus.SESSION_EXPIRED.value
         online_state = session.query(TgAccountOnlineState).filter_by(account_id=19).one()
-        assert online_state.online_status == "warming"
-        assert online_state.failure_detail == ""
-        assert online_state.next_probe_at is not None
+        assert online_state.online_status == "login_required"
+        assert session.get(TgAuthorizationLocalActivateCase, result["activation_case_id"]).status == "fault_candidate"
 
 
 @pytest.mark.no_postgres
@@ -514,21 +508,24 @@ def test_attempt_standby_recovery_switches_first_healthy_standby() -> None:
             tenant_id=1,
             account_id=account.id,
             role="standby_1",
+            logical_slot="standby_1",
+            is_slot_current=True,
+            provision_region_code="sv",
             developer_app_id=32,
             proxy_id=42,
             session_ciphertext="standby-session",
             status="standby",
+            health_status="healthy",
         )
         session.add(standby)
         session.commit()
 
         recovered = attempt_standby_authorization_recovery(session, account, actor="system", reason="session 已失效")
 
-        assert recovered is not None
-        assert account.status == AccountStatus.ACTIVE.value
-        assert account.session_ciphertext == "standby-session"
-        assert account.developer_app_id == 32
-        assert account.proxy_id == 42
+        assert recovered is None
+        assert account.status == AccountStatus.SESSION_EXPIRED.value
+        assert account.session_ciphertext == "primary-session"
+        assert session.scalar(select(TgAuthorizationLocalActivateCase)).status == "fault_candidate"
 
 
 def test_health_check_switches_standby_when_primary_session_expired(monkeypatch) -> None:
@@ -563,18 +560,22 @@ def test_health_check_switches_standby_when_primary_session_expired(monkeypatch)
                 tenant_id=1,
                 account_id=account.id,
                 role="standby_1",
+                logical_slot="standby_1",
+                is_slot_current=True,
+                provision_region_code="sv",
                 developer_app_id=32,
                 session_ciphertext="standby-session",
                 status="standby",
+                health_status="healthy",
             )
         )
         session.commit()
 
         checked = health_check_account(session, account.id)
 
-        assert checked.status == AccountStatus.ACTIVE.value
-        assert checked.session_ciphertext == "standby-session"
-        assert checked.developer_app_id == 32
+        assert checked.status == AccountStatus.NEED_RELOGIN.value
+        assert checked.session_ciphertext == "primary-session"
+        assert session.scalar(select(TgAuthorizationLocalActivateCase)).status == "fault_candidate"
 
 
 def test_health_check_proxy_failure_switches_proxy_before_standby(monkeypatch) -> None:
@@ -765,9 +766,13 @@ def test_task_dispatch_failure_switches_standby_for_auth_failure() -> None:
                 tenant_id=1,
                 account_id=account.id,
                 role="standby_1",
+                logical_slot="standby_1",
+                is_slot_current=True,
+                provision_region_code="sv",
                 developer_app_id=32,
                 session_ciphertext="standby-session",
                 status="standby",
+                health_status="healthy",
             )
         )
         session.add(Task(id="task-auth-recover", tenant_id=1, name="认证恢复任务", type="group_ai_chat"))
@@ -788,14 +793,11 @@ def test_task_dispatch_failure_switches_standby_for_auth_failure() -> None:
 
         dispatcher._apply_send_result(action, account, False, failure_type=FailureType.ACCOUNT_UNAVAILABLE.value, detail="session 已失效")
 
-        assert account.status == AccountStatus.ACTIVE.value
-        assert account.session_ciphertext == "standby-session"
-        assert action.status == "pending"
-        assert action.result["account_recovered"] is True
-        assert action.result["recovered_authorization_id"]
-        assert action.lease_owner == ""
-        assert action.claim_owner == ""
-        assert action.claim_token == ""
+        assert account.status == AccountStatus.NEED_RELOGIN.value
+        assert account.session_ciphertext == "primary-session"
+        assert action.status == "failed"
+        assert "account_recovered" not in (action.result or {})
+        assert session.scalar(select(TgAuthorizationLocalActivateCase)).status == "fault_candidate"
 
 
 @pytest.mark.no_postgres

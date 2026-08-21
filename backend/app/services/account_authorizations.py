@@ -14,6 +14,7 @@ from app.models import (
     TgAccount,
     TgAccountAuthorization,
     TgAccountOnlineState,
+    TgAuthorizationDrOperation,
     TgLoginFlow,
     TgVerificationCode,
 )
@@ -55,6 +56,7 @@ def start_standby_authorization_login(
     developer_app_id: int,
     proxy_id: int,
     actor: str,
+    persist_code_preview: bool = True,
 ) -> TgLoginFlow:
     if role == "standby_2":
         raise ValueError("standby_2 必须通过马来西亚备用授权迁移流程创建")
@@ -72,8 +74,9 @@ def start_standby_authorization_login(
         phone=get_account_phone(account),
         credentials=credentials,
     )
-    _apply_standby_login_challenge(flow, challenge)
-    _record_login_code_if_present(session, account, challenge)
+    _apply_standby_login_challenge(flow, challenge, persist_code_preview=persist_code_preview)
+    if persist_code_preview:
+        _record_login_code_if_present(session, account, challenge)
     audit(
         session,
         tenant_id=account.tenant_id,
@@ -98,6 +101,7 @@ def verify_standby_authorization_login(
     code: str | None,
     password_2fa: str | None,
     actor: str,
+    rotate_two_fa: bool = True,
 ) -> TgAccountAuthorization:
     account = _require_account(session, account_id)
     flow = _require_standby_login_flow(session, account, flow_id, flow_version)
@@ -116,7 +120,7 @@ def verify_standby_authorization_login(
         phone_code_hash=decrypt_secret(flow.phone_code_hash_ciphertext),
     )
     asset = _finish_standby_login(session, account, flow, status, raw_session, actor)
-    if password_2fa:
+    if password_2fa and rotate_two_fa:
         rotate_managed_two_fa_after_login(
             session,
             account,
@@ -164,9 +168,12 @@ def attempt_standby_authorization_recovery(
     standby = _first_switchable_standby(session, account)
     if standby is None:
         return None
-    switch_primary_authorization(session, account.id, standby.id, actor=actor, reason=reason)
-    session.refresh(standby)
-    return standby
+    if account.status not in {AccountStatus.SESSION_EXPIRED.value, AccountStatus.NEED_RELOGIN.value}:
+        return None
+    from .authorization_dr.local_activate import create_local_activate_candidate
+
+    create_local_activate_candidate(session, account, standby, actor=actor, reason=reason)
+    return None
 
 
 def attempt_primary_proxy_recovery(
@@ -230,7 +237,11 @@ def apply_primary_authorization_switch(
     *,
     actor: str,
     reason: str,
+    activation_case_id: str = "",
 ) -> None:
+    if not activation_case_id.strip():
+        raise ValueError("旧直接切主入口已停用，必须通过 local_activate 审批流水")
+    _require_no_active_backup_operation(session, account.id)
     _ensure_switchable(target)
     _preserve_legacy_primary_if_needed(session, account, reason)
     _demote_current_authorizations(session, account, target.id, reason)
@@ -245,6 +256,18 @@ def apply_primary_authorization_switch(
         target_id=str(account.id),
         detail=f"authorization_id={target.id}; reason={reason}",
     )
+
+
+def _require_no_active_backup_operation(session: Session, account_id: int) -> None:
+    active = session.scalar(select(TgAuthorizationDrOperation.id).where(
+        TgAuthorizationDrOperation.account_id == account_id,
+        TgAuthorizationDrOperation.operation_type.in_(("provision_standby_1", "migrate_standby_2")),
+        TgAuthorizationDrOperation.status.not_in(
+            ("succeeded", "failed", "manual_required", "migration_rolled_back_forward")
+        ),
+    ).limit(1))
+    if active:
+        raise ValueError("账号存在进行中的备份 operation，禁止切主")
 
 
 def _reset_online_state_after_authorization_switch(session: Session, account: TgAccount) -> None:
@@ -340,14 +363,17 @@ def self_heal_authorizations(session: Session, account_id: int, *, actor: str, r
             "next_action": "manual_login_or_qr_or_code",
             "detail": "三槽位全部掉线，只能人工重新登录 / 扫码 / 手动验证码",
         }
-    switch_primary_authorization(session, account.id, standby.id, actor=actor, reason=reason)
+    from .authorization_dr.local_activate import create_local_activate_candidate
+
+    candidate = create_local_activate_candidate(session, account, standby, actor=actor, reason=reason)
     return {
         "account_id": account.id,
-        "status": "activated_standby",
-        "activated_authorization_id": standby.id,
+        "status": "activation_candidate",
+        "activated_authorization_id": None,
         "refresh_authorization_id": None,
-        "next_action": "refresh_previous_primary",
-        "detail": "已激活健康备用授权，原主授权保留为待修复资产",
+        "activation_case_id": candidate.id,
+        "next_action": "approve_local_activate",
+        "detail": "已创建故障候选，未切换主授权",
     }
 
 
@@ -417,9 +443,14 @@ def _standby_login_intent(
     )
 
 
-def _apply_standby_login_challenge(flow: TgLoginFlow, challenge: LoginChallenge) -> None:
+def _apply_standby_login_challenge(
+    flow: TgLoginFlow,
+    challenge: LoginChallenge,
+    *,
+    persist_code_preview: bool,
+) -> None:
     flow.status = challenge.status
-    flow.code_preview = challenge.code_preview
+    flow.code_preview = challenge.code_preview if persist_code_preview else None
     flow.code_expires_at = challenge.code_expires_at
     flow.challenge_sent_at = _now()
     temporary_session = getattr(challenge, "temporary_session", None)

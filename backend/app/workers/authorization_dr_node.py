@@ -28,6 +28,7 @@ LEASE_RENEW_SECONDS = 30
 IDLE_POLL_SECONDS = 10
 RECEIPT_POST_ATTEMPTS = 3
 SHA_LENGTHS = (40, 64)
+ABC_CAPABILITY_VERSION = "2.21-abc-a-source"
 
 
 @dataclass(frozen=True)
@@ -78,7 +79,7 @@ class DrNodeClient:
         self.post("/internal/v1/authorization-dr/nodes/heartbeat", {
             "region_code": "my",
             "purpose": "standby_session_dr",
-            "capability_version": "2.16",
+            "capability_version": ABC_CAPABILITY_VERSION,
             "runtime_image_sha": self.config.runtime_image_sha,
             "standby_egress_id": self.config.egress_id,
             "active_client_count": active_clients,

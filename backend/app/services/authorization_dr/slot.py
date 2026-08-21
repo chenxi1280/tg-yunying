@@ -17,6 +17,7 @@ from app.services._common import _now, audit
 
 from .contracts import AuthorizationDrError
 from .migration_results import refresh_migration_batch
+from .runtime_scope import disarm_scoped_runtime
 from .stage_facts import append_stage_fact
 from .wake_bundle import _operation_bundle, _owned_operation, valid_copy_kinds
 
@@ -237,6 +238,7 @@ def _finish_operation(session, operation) -> None:
     item.finished_at = _now()
     item.version += 1
     refresh_migration_batch(session, item.id)
+    disarm_scoped_runtime(session, operation, actor="authorization-dr-auto-disarm")
 
 
 def _finish_reconcile_case(session, operation) -> None:

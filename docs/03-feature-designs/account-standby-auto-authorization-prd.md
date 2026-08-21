@@ -2,6 +2,7 @@
 
 > 日期口径：2026-06-14（Asia/Shanghai）
 > 适用范围：TG账号管理、账号授权资产、账号安全批次、任务中心系统批次投影。
+> **2026-08-22 适用优先级：** 本文继续约束在硅谷创建并使用的 `standby_1` 和通用补齐界面；MY `standby_2` 与全部在线 A/B/C 补齐统一由两个 v2.21 马来西亚专项合同覆盖。线上现有三套 Developer App 固定为 App A/SV primary、App B/SV standby_1、App C/MY standby_2，并分别真实登录形成独立 AuthKey、非零授权 hash 和 Telegram 登录设备，不申请第四套 App。全量在线模式先冻结动态 N，A 是 B/C 唯一码源，单账号按 A -> B -> C 补齐；健康槽只 readback。App C 旧 SV 备份必须在 MY 全新登录迁移，新 MY Session 完成 MY 本地+SV SSH 镜像双副本、恢复密钥、MY inventory 和隔离恢复闸门前不得退役旧源。primary 权威失败且 standby_1 即时 probe 通过时自动在 SV 切换；MY 只在双 SV 授权失败后读取官方登录码，永不执行业务。
 
 ## 1. 背景
 
@@ -9,7 +10,7 @@
 
 现有能力分散在几处：
 
-- 系统设置可维护多个 TG Developer App，用于分担账号登录和授权容量。
+- 系统设置维护线上现有三套 TG Developer App 及其唯一角色：App A/SV primary、App B/SV standby_1、App C/MY standby_2；同一 App 可服务多个账号，但本方案不增加第四套 App。
 - 账号详情“授权资产”已支持单账号新增备用授权、提交验证码/2FA、切换主授权。
 - 账号安全批次已有“补齐备用 session”入口和任务中心类型 `account_standby_session_provision`。
 - 后端已有自动补齐雏形，会选择开发者应用、代理、读取验证码、使用托管 2FA，但产品验收口径仍不完整。
@@ -80,7 +81,7 @@
 | `accounts.authorizations.manage` | 创建备用授权登录、批量补齐、切换主授权 |
 | `accounts.security.batch` | 查看和管理账号安全批次 |
 | `accounts.security.credential_manage` | 保存、轮换和使用平台托管 2FA |
-| `developer_apps.manage` | 维护 TG Developer App 池 |
+| `developer_apps.manage` | 维护三套 TG Developer App 及 A/B/C 唯一槽位角色 |
 | `proxies.manage` | 维护账号代理池 |
 
 所有创建批次、读取验证码、使用托管 2FA、保存 session、切换主授权和失败重试都必须写审计。
@@ -89,7 +90,7 @@
 
 | 概念 | 定义 |
 | --- | --- |
-| Developer App 池 | 多个 `api_id/api_hash`，用于分担登录和授权容量 |
+| Developer App 配置 | 现有三个 `api_id/api_hash` 唯一映射为 App A/B/C；每个账号的三个当前槽位分别使用对应 App 真实登录，不能用 App 数量代替授权设备 |
 | 主授权 | 当前任务执行默认使用的 `developer_app + proxy + session` |
 | 备用授权 | 已完成真实登录、保存加密 session、可健康检查的 standby 授权 |
 | 备用缺口 | `standby_1` 或 `standby_2` 缺失、未登录、不可解密、健康检查失败或不可激活 |
@@ -139,8 +140,8 @@
 | --- | --- |
 | 账号选择 | 支持当前筛选、跨页选择、区间选择、一键选择缺口账号 |
 | 补齐槽位 | 自动补齐缺失槽位、仅 `standby_1`、仅 `standby_2` |
-| Developer App 策略 | 默认自动选择健康且容量未满的备用应用，可显示命中结果 |
-| 代理策略 | 默认自动选择健康代理，尽量避开当前主授权代理 |
+| Developer App 策略 | 固定使用 App B 创建 SV standby_1、App C 创建 MY standby_2，并冻结 assignment/version 与 `developer_app_id + api_id` 快照；角色缺失、重复或不健康时阻断，不动态改选或增加第四套 App |
+| 出口策略 | `primary + standby_1` 固定使用硅谷 `primary_regular`；`standby_2` 固定使用 MY `standby_my`，不得按槽位自动增加或轮换 IP |
 | 2FA 使用 | 使用平台托管 2FA；未托管时预警，执行时如 Telegram 要求 2FA 则进入人工 |
 | 操作原因 | 必填 |
 
@@ -166,14 +167,15 @@
 - `primary session`
 - `standby_1 session`
 - `standby_2 session`
-- 每个槽位的 Developer App、代理、session 是否存在、健康状态、最近健康检查、最近补齐批次、失败原因。
+- 每个槽位的 Developer App/api_id、凭据资产是否存在、远端授权 active/revoked/unknown、健康状态、最近观测、最近补齐批次和失败原因；不展示 Session 或授权 hash 明文。
 
 操作：
 
 | 操作 | 行为 |
 | --- | --- |
 | 补齐 | 打开备用 session 补齐抽屉，并锁定当前账号和槽位 |
-| 激活恢复 | 将健康 standby 切换为 primary，旧 primary 进入待修复 |
+| 硅谷本地恢复状态/重试 | primary 权威失败且 standby_1 即时探测通过时自动切换，MY 不连接；按钮只重试被阻断 operation，切换后修复 logical primary 并恢复 SV 1 主 1 备 |
+| MY 演练/紧急读码 | 演练只验证并断连；双 SV 授权均失败时按 v2.21 读取官方登录码，由 SV 生成新 primary |
 | 刷新授权资产 | 重新读取授权资产摘要 |
 | 查看批次 | 跳到最近补齐批次详情 |
 
@@ -182,7 +184,7 @@
 ```text
 管理员选择备用 session 缺口账号
   -> 预检账号在线状态、主 session、目标槽位
-  -> 分配健康 Developer App
+  -> 校验并冻结目标槽位的 App B 或 App C assignment/version
   -> 分配健康代理
   -> 创建账号安全批次
   -> worker 按账号串行领取批次项
@@ -192,7 +194,7 @@
   -> 如 Telegram 要求 2FA，读取平台托管 2FA 并提交
   -> 获取 raw session
   -> 加密保存为 TgAccountAuthorization
-  -> 执行健康检查
+  -> standby_1 在 SV 执行健康检查；standby_2 在 MY 完成创建证明后立即断连
   -> 更新账号授权摘要、批次项和审计
 ```
 
@@ -245,8 +247,8 @@
 
 | 失败类型 | 展示文案 | 处理建议 |
 | --- | --- | --- |
-| `account_not_online` | 主 session 不可用，无法自动读取备用登录验证码 | 先重新登录主授权或从健康 standby 激活 |
-| `developer_app_unavailable` | 没有可用 TG Developer App | 在系统设置补充或修复 Developer App |
+| `account_not_online` | 主 session 不可用，无法自动读取备用登录验证码 | standby_1 即时探测健康时自动走 SV 本地恢复；两条 SV 路径均失败时按 v2.21 由 MY 读码、SV 新建 primary，不能从 MY 发送 |
+| `developer_app_unavailable` | 目标 App B/C 角色缺失、重复或不健康 | 在系统设置修复现有三 App 的 assignment/凭据/健康，不选择第四套 App |
 | `proxy_unavailable` | 没有可用代理 | 修复或补充代理 |
 | `verification_code_unreadable` | 验证码不可读取，已记录备用授权登录流水 | 人工查看验证码或改用 QR |
 | `two_fa_not_managed` | Telegram 要求 2FA，但账号未托管 2FA | 进入托管 2FA 面板或人工输入 |
@@ -306,10 +308,10 @@
 - 健康备用 session 数以可解密、可连接、状态健康的 standby session 为准。
 - 主授权可用但缺少备用 session 时只提示恢复风险，不阻塞当前任务。
 - 同一账号同一槽位只允许一个运行中补齐项。
-- 备用授权登录成功后，不覆盖当前主授权，除非管理员执行“激活恢复”。
-- 激活恢复切换 primary session 后，已有 `TgAccountOnlineState` 必须重置为 `warming` 并立即进入真实健康探测；不得复用旧 primary 的 `online` 或 `login_required` 事实，只有新 primary 探测成功后才能重新参与任务。
+- 备用授权登录成功后不覆盖当前主授权。primary 故障时优先使用 SV standby_1；MY standby_2 在紧急 operation 中只能作为登录码来源，永不作为 current。
+- SV 本地恢复或用 MY 登录码生成新 primary 后，`TgAccountOnlineState` 重置为 `warming`，并在 `primary_regular` 出口完成真实健康探测；只有新 primary 探测成功后才能重新参与任务。
 - 旧故障授权不得自动删除，必须保留失败原因和审计。
-- Developer App 和代理选择应优先避开当前主授权资源；资源不足时允许使用同资源，但必须显示容量风险。
+- 三槽 Developer App、AuthKey、客户端元数据组合和非零授权 hash 必须分别独立；网络出口不按槽位自动分散，primary/standby_1 共用 SV 固定出口，standby_2 使用 MY 固定出口。
 
 ## 13. 验收标准
 
@@ -333,7 +335,9 @@
 - 验证码可读取时，系统自动提交验证码；验证码第一时间未出现在主 session 时，worker 在验证码有效期内自动轮询，不要求人工输入。
 - Telegram 要求 2FA 且平台已托管密码时，系统自动提交 2FA。
 - 两个备用槽位都缺失且选择自动补齐时，一次批次执行后应同时新增 `standby_1` 和 `standby_2` 授权资产。
-- 成功后 `tg_account_authorizations` 新增对应 `standby_1` 或 `standby_2`，且 `session_ciphertext` 非空。
+- 成功后 `tg_account_authorizations` 新增对应 `standby_1` 或 `standby_2`；standby_1 的中心 `session_ciphertext` 非空，standby_2 的 MY wake bundle/receipt 非空且 SV 不可解密。
+- 三个当前槽位的 Developer App/api_id、AuthKey 指纹和 Telegram 非零 authorization hash 两两不同；任一复用不计一主两备达标。
+- MY provision 完成并断连后，`standby_2` 在运行面为 dormant、active client=0，但在 Telegram `account.getAuthorizations` 中仍为我方 active 授权设备。
 - 成功后账号列表 `standby_count` 增加。
 - 单账号补齐不覆盖当前 primary session。
 

@@ -1,8 +1,8 @@
 # 马来西亚异地备用 TG Session 灾备 PRD
 
-> 版本：v2.20
-> 日期口径：2026-08-21（Asia/Shanghai）
-> 当前状态：`design_status=complete`、`product_resync_status=complete`、`implementation_started=true`、`implementation_scope=standby_2_unknown_repair_and_sv_local_activate`、`core_deployed=true`、`ssh_mirror_deployed=true`、`slot_canary=2/2_pass`、`full_prd_implementation=partial`、`runtime_mode=off`、`production_fixed=false`
+> 版本：v2.21
+> 日期口径：2026-08-22（Asia/Shanghai）
+> 当前状态：`design_status=complete`、`product_resync_status=complete`、`dev_handoff_ready=true`、`implemented_scope=abc_two_account_canary_core_local_qa`、`core_deployed=pending_release`、`ssh_mirror_deployed=true`、`slot_canary=2/2_historical_pass`、`full_online_abc_design=complete`、`full_online_abc_implementation=partial`、`full_prd_implementation=partial`、`runtime_mode=off`、`production_fixed=false`
 > 适用范围：账号授权资产、三槽位远端设备归属、活跃授权设备查看/清理、备用登录、硅谷本地自动切换、跨模块运行代次、显式演练、紧急登录码辅助和硅谷主授权重建；不包含业务系统整体异地容灾。
 > 关联文档：[实施与验收合同](account-malaysia-standby-session-dr-implementation-contract.md)、[account-standby-auto-authorization-prd.md](account-standby-auto-authorization-prd.md)、[account-security-hardening-design.md](account-security-hardening-design.md)、[account-login-group-navigation-recovery-prd.md](account-login-group-navigation-recovery-prd.md)。
 
@@ -26,19 +26,34 @@
 ### 1.2 2026-08-21 生产实施事实
 
 - 账号 27、28 已分别完成 App C/SV `standby_2` 到 MY generation 2 的槽位提交；两项均读回 MY current、双副本 `2/2`、恢复密钥解封与隔离 restore probe passed，旧 SV App C Session 保持 `retained + protected`。这只证明 `slot_canary=2/2_pass`，不等于旧 SV 远端授权已退役或完整 PRD 已完成。
-- 后续扩量批次 `target_count=271` 的当前守恒结果为 `241 succeeded + 22 failed + 5 manual_required + 3 reconcile_unknown = 271`，批次状态为 `reconcile_required`，业务 `finished_at` 保持空，运行合同保持 `off`。5 个 `PasswordHashInvalidError` 项已按 typed 历史证据收口为 `two_fa_invalid/confirmed_no_effect`；22 个 failed 已分类为 `phone_number_banned`。剩余 3 个 unknown 未完成逐项对账前，禁止继续扩量或把批次写成最终迁移完成。
-- 全局剩余 unknown 精确为账号 24、25、26、67、87、111。早期账号 24、25、26 不属于上述 271 批次成功分母；三者均无 candidate/中心 Bundle/slot commit，旧 SV `standby_2` Session 存在且 protected，禁止自动重登。账号 24/25 当前无持久包；账号 26 在 MY 已有同 operation、generation 2 的本地密封包，但无 SV 镜像、中心 inventory 或 receipt，只能在原字节身份校验和只读 Telegram probe 通过后续建，不得重新登录或生成新 Session。
-- P0A unknown coordinator 已由 release SHA `e8cd88dc496a56c586a5bcc502d81a318b76d7a9` 经 Deploy Production run `32456712129` 发布，生产 Alembic head 为 `0158_dr_reconcile`。账号 297、307、310、311、314 通过 preview/fingerprint、operation/item/source CAS、异人 apply 与独立 readback 收口；统一审计引用为 `INC-20260821-DR-TYPED-2FA-RECONCILE`，过程中未创建 candidate、Bundle 或登录副作用。
-- 已部署范围是 `standby_2` 迁移状态机、MY 专用节点、SSH 双副本、恢复探测、slot CAS、旧源保留保护、48 小时设备清理边界和相关读模型；本轮 release candidate 新增 guarded operator `local_activate` 与 unknown 原字节前滚，生产 E4 尚待发布后读回。自动故障触发的完整 `local_activate`、`restore_sv_pair`、`drill_wake`、双 SV 失效后的 `emergency_reauthorize_primary`、中心恢复对账、decommission/erase、跨 Action/Gateway/listener/online/sync generation fence 尚未完成。
+- 271 项扩量批次曾停在 `241 succeeded + 22 failed + 5 manual_required + 3 reconcile_unknown = 271`；经 typed no-effect、原字节前滚和不可恢复旧工件人工收口后，2026-08-21 已验证终态为 `241 succeeded + 23 failed + 7 manual_required + 0 reconcile_unknown = 271`。其中 22 个不同账号具有 `phone_number_banned` typed fact；22 不是全平台账号总数，也不是全平台永久封号总数。
+- 全局 unknown 曾涉及账号 24、25、26、67、87、111：24/25 为无包 remote orphan，26 为 MY local-only 包，67 无新远端设备，87 为 inventory ahead of central，111 三条 SV Session 均不可授权且远端未证明。最终收口只允许复用原字节/原 operation/generation 或转人工，不调用重登 RPC、不伪造新 Session；该历史分类继续作为回归用例，不再描述为当前 open unknown。
+- 当前已验证发布基线为 release SHA `8406a8125577de16da4227269a7f2046ba07425f`、Alembic head `0159_dr_repair`、runtime=`off`。已部署范围包括 `standby_2` 迁移状态机、MY 专用节点、SSH 双副本、恢复探测、slot CAS、旧源保护、unknown 原字节对账、typed phone-ban 投影和 guarded operator `local_activate`。
+- 自动故障触发的完整 `local_activate`、`restore_sv_pair`、`drill_wake`、双 SV 失效后的 `emergency_reauthorize_primary`、中心恢复对账、decommission/erase、跨 Action/Gateway/listener/online/sync generation fence 与 `complete_online_abc` 仍未完成；既有 unknown 收口或 batch success 不能替代这些验收。
 - 授权备份不等于消息、任务、数据库、Redis、素材和 Dispatcher 的异地容灾。
 
-### 1.2.1 本轮修复冻结事实与放行边界
+### 1.2.1 unknown 修复的冻结事实与放行边界
 
-- 六个全局 unknown 的当前分类冻结为：24/25=`remote_orphan_without_bundle`；26=`local_only_bundle`；67=`remote_no_new_device`；87=`inventory_ahead_of_central`；111=`remote_unproven_all_sv_sessions_invalid`。24/25/26/87 禁止重新登录；24/25 orphan 在唯一非零远端 hash、精确设备集与严格超过 48 小时均证明前继续 protected；111 只进入人工重新授权，不自动推导 no-effect。
+- 六个历史 unknown 在对账前冻结分类为：24/25=`remote_orphan_without_bundle`；26=`local_only_bundle`；67=`remote_no_new_device`；87=`inventory_ahead_of_central`；111=`remote_unproven_all_sv_sessions_invalid`。24/25/26/87 禁止重新登录；24/25 orphan 在唯一非零远端 hash、精确设备集与严格超过 48 小时均证明前继续 protected；111 只进入人工重新授权，不自动推导 no-effect。
 - 账号 26 只允许从 MY 原 operation/generation 的本地不可变字节补写 SSH 镜像、追加 inventory、提交中心 receipt、执行隔离 restore probe 与 slot CAS；账号 87 只允许从已一致的本地+SSH 镜像和 inventory 前滚中心 receipt/probe/slot。任何 digest、operation、generation、Telegram UID/AuthKey 或 App C 身份不一致均保持 unknown。
 - 账号 67/87 当前业务 primary 已由 Telegram 判定不可授权，但各自 SV `standby_1` 已完成真实授权/身份探测。`local_activate` 必须在账号与目标授权行锁内复核 expected generation/fact version，写 `current_authorization_id`，同步 legacy Session/App/proxy 投影，提升 authorization/fact/connection generation，清空旧 online Session 身份并重建为 warming；旧主授权保留为 repair/protected。切换后必须分别完成新 current 登录与 Saved Messages 发送读回，不能用数据库状态代替。
 - 本轮 22 个 `phone_number_banned` 是该 271 迁移批次内 22 个不同账号的 Telegram typed 事实，不代表全平台总封禁数。每条 typed fact 必须把对应账号投影为 `已封禁`，保留 Session 密文和审计，不删除账号；未具备同类权威事实的其他账号不得批量推导为封禁。
-- 下一批 10 个账号仅在 `global_reconcile_unknown=0`、上述逐账号结果已读回、迁移 runtime 仍为 `off`、22 个封号投影守恒、67/87 新 current 可登录且可发送、111 明确 manual_required 后才允许新建独立 preview；10 项仍需逐项 outcome 守恒，出现一个新 unknown 即停止。
+- 下一批 10 个账号仅在 `global_reconcile_unknown=0`、上述逐账号结果已读回、迁移 runtime 仍为 `off`、22 个封号投影守恒、67/87 新 current 可登录且可发送、111 明确 manual_required 后才允许新建独立 preview；这些前置事实已满足不等于可以直接复用旧迁移批次，仍必须先实现 v2.21 的 `complete_online_abc` 合同。10 项逐项 outcome 守恒，出现一个新 unknown 即停止。
+
+### 1.2.2 2026-08-22 产品 resync 结论
+
+- “所有在线账号都登录 A/B/C”固定解释为：批次创建时冻结的全部在线账号都必须具备可验证的 A/SV、B/SV、C/MY 三槽授权；已健康槽位只做新鲜 readback，不为满足动作标签强制重新登录。A 是正常补齐 B/C 时唯一允许选择的登录码来源；B 只承担 SV 本地故障切换，C 只在 A、B 两条权威失败事实同时成立时辅助重建 A。
+- 线上在线数量会变化，因此 1064/1065 只作为 2026-08-22 的只读时间点参考，不进入规范性目标。正式全量分母必须在批次创建事务中先冻结为动态 `N`，之后才逐项探测 A；A 探测失败、账号被封、需要人工、被冻结后删除或出现 unknown 都必须留在 `N` 中，禁止先探测后缩小分母。
+- 2026-08-22 最近一次只读本地投影为：在线 1064、A Session 投影 1064、B ready 245、C/MY ready 237、ABC ready 237、仅缺 C 8、同时缺 B/C 819。该投影只用于估算工作量，不是 Telegram E4，不得直接据此创建成功结果。
+- 本次新增的是 `complete_online_abc` 产品批次合同、10 账号 canary 和全量 Release Gate；既有生产代码尚未实现该合同。本地文档合并、代码测试、生产发布、Telegram 授权可用与消息发送必须分别验收。
+
+### 1.2.3 两账号修复 canary 的实施切片
+
+- 本切片只允许两个精确账号逐个执行，且只选择 canonical A 已显式建模、B 缺失、已有健康 App C/SV 迁移源的账号。它补齐 A 保护的 B 登录和 C 迁移编排，不冒充全量 `complete_online_abc`。
+- preview 只读数据库并冻结 A authorization、Session/App/proxy、authorization/fact/connection generation、App B assignment、SV proxy 和幂等键。apply 前异人审批；B/C 的验证码都只从冻结 A 读取，并绑定 challenge 时间与 Telegram service message ID，验证码不写 operation、argv、stdout 或审计。
+- 备份 operation 不具备切主能力。健康检查、Dispatcher、账号安全自愈和旧 activate 入口只能创建 `fault_candidate` 或保持失败，不能直接替换 A；正式切主只允许经 `local_activate` 独立 preview、双探测、代际 CAS 和异人 apply。
+- MY 节点只有 capability=`2.21-abc-a-source` 且 runtime image SHA 与合同完全一致时才可领取；runtime 每次只绑定一个 C operation，C slot 成功后自动回到 `off`。任一 A 漂移、验证码歧义、remote unknown、意外设备变化或 capability/SHA 不匹配立即停止。
+- 第一个账号必须完成 A 登录及 Saved Messages 发送读回、B/C 同 UID 且 AuthKey/hash 各自唯一、C 双副本/restore probe/slot commit、MY client=0 后，才允许对第二个账号重新 preview。第二个通过前不创建 10 账号批次。
 
 ### 1.3 2026-08-21 早期失败 canary 事实
 
@@ -129,13 +144,26 @@
 
 目标分母为安全批次创建事务中冻结的、未删除且命中本次选择范围的账号集合，记为 `N = frozen_eligible_count = tg_account_security_batch_items 行数`。`N` 是每个批次的动态事实，可以大于 50，业务合同不设账号总数上限。创建后新增账号进入后续新批次；已冻结账号后续失败、等待、需要人工或被删除，其批次项仍保留在 `N` 中，不允许通过过滤或分页缩小分母。
 
+全量在线三槽补齐使用 `selection_mode=all_online_accounts`。服务端必须在同一可重复读事务中按 `deleted_at IS NULL + status=online` 去重冻结账号 ID 全集、每个账号当时的 `account/current_authorization/fact/connection generation` 和 `target_set_fingerprint`，先写完全部账号项，再返回 preview。不得把前端当前页、数据库中存在 Session、A 新鲜探测成功、已有 B/C、账号用途或 worker 能否立即领取当作冻结分母的额外过滤器。批次创建后状态变化只改变该账号 outcome，不改变 `N`。
+
+`complete_online_abc` 每个账号项包含两个槽位子结果 `standby_1_result` 与 `standby_2_result`，以及独立的 `primary_probe_result`。B、C 子结果都必须各自覆盖恰好 `N` 条，状态集合固定为 `already_qualified|pending|waiting|manual_required|succeeded|failed|reconcile_unknown|skipped_after_freeze`；账号级 outcome 固定为 `already_qualified|succeeded|waiting|manual_required|failed|reconcile_unknown|skipped_after_freeze`。任何时刻必须同时满足：
+
+```text
+account_outcome_counts.total = N
+standby_1_outcome_counts.total = N
+standby_2_outcome_counts.total = N
+coverage_numerator = count(account outcome in already_qualified|succeeded)
+```
+
+账号级成功只能由同一新鲜证据快照中的 A 可用、B 合格、C 合格和零 open unknown 派生；不能由任一单槽成功手工写入。A 探测失败时 B/C 都不得发起登录，子结果进入同一明确 blocker，账号进入 `failed|manual_required|reconcile_unknown`；已经完成的健康槽位保持 `already_qualified`，不得回滚或重复登录。
+
 | 分类 | 处理 |
 | --- | --- |
 | primary 健康、手机号/接码绑定可用 | 自动补齐或迁移 |
 | primary 健康、但需人工验证码或 QR | `manual_required`，保留在分母 |
 | 三槽全部不可用 | `fully_offline`，只允许人工重新登录 |
 | Telegram 限制或新登录冷却 | `waiting`，按权威 retry 时间重试 |
-| 已有合格 MY `standby_2` | 仅在 v2.17 全套事实、双副本/恢复密钥 readback事实、隔离恢复探测与 MY 密封包 readback 一致时标记 `already_qualified`；缺项进入修复或迁移 |
+| 已有合格 MY `standby_2` | 仅在 v2.21 全套事实、双副本/恢复密钥 readback事实、隔离恢复探测与 MY 密封包 readback 一致时标记 `already_qualified`；缺项进入修复或迁移 |
 | 已删除账号 | 不进入新批次，不允许新业务、演练或紧急唤起；既有授权进入独立退役生命周期，不因软删除被静默删除 |
 
 批次创建必须在同一事务中按服务端选择条件去重写入全部 `N` 条批次项，同时保存 `target_set_fingerprint`；该指纹对 `tenant_id + 规范化选择条件 + 排序后 account_id 全集` 计算 SHA-256。禁止把前端当前页、某个 worker 领取页或分批执行数当成总目标。每个账号项必须且只能进入一个互斥 DR outcome bucket，任何时候均满足 `dr_outcome_counts 之和 = N`；覆盖分子只计 `succeeded + already_qualified`，`waiting/manual_required/failed/unknown/skipped_after_freeze` 全部单独展示且仍占分母。`already_qualified` 可投影为通用批次项 `status=skipped`，但必须保留 `standby_session_status=already_qualified`；`skipped_after_freeze` 使用 `status=skipped + reason=account_deleted_after_freeze`。重试或恢复只领取未成功项，不重做已成功授权。
@@ -389,6 +417,8 @@ activity review 只用于 `unresolved` 或“hash 匹配但 App/账号事实不�
 
 补齐/迁移抽屉固定提供：
 
+- 动作 `complete_online_abc`、范围 `all_online_accounts|manual`、冻结 `N`、A 新鲜探测计数、B/C 各自 outcome 守恒和 ABC 覆盖分子；全量模式必须明确提示“冻结后失败项仍计入 N”。
+- 正常补齐时登录码来源固定为 A，并展示冻结的 `code_source_authorization_id/fact_version/connection_generation`；禁止运行中静默改用 B 或 C。B/C 已健康时页面显示“已验证，无需重新登录”。
 - 策略 `malaysia_authorization_only`、目标槽位 `standby_2`。
 - 冻结账号范围及分类计数。
 - 唯一 MY 节点、固定 MY 出口/secret version、Developer App credentials/owner-domain assertion、environment/client metadata version、故障域、`N`、`target_set_fingerprint` 和各状态计数。
@@ -414,7 +444,7 @@ Developer App 页面必须把线上现有三套 App 显示为唯一 active 角�
 
 1. 账号兼容 Session 与唯一 `is_current`/active primary 一致时初始化 `logical_slot=primary/slot_generation=1/is_slot_current=true/dr_state=current_primary`。只有账号级 Session、尚无授权资产时，必须先证明可解密、`is_user_authorized/get_me` UID 一致及唯一非零当前设备 hash，才以 `source=legacy_account_projection` 创建 generation 1 primary；不一致、多主、无法唯一映射或远端证明不足时进入 `migration_conflict_unknown`，不切 resolver。生成区域无法由权威登录事实证明时写 `provision_region_code=unknown`。
 2. 每个角色唯一可用旧授权先映射并冻结 `logical_slot`，再初始化该槽 `generation=1`；当前 standby 初始化 `active_standby`，已停用但未证明 Telegram 撤销的授权初始化 `retained` 或 `repair` 并继续保护。角色冲突或无法唯一映射逻辑槽时进入 `migration_conflict_unknown`；只有撤销 readback 才可初始化 `revoked`。
-3. 旧 `standby_2` 不因角色名、Session 非空或旧 `healthy` 自动取得 MY 资格。缺少 MY 密封包时必须在 MY 重新登录生成更高 generation candidate；禁止把现有 SV/中心 Session 复制或重加密成 MY 包。`already_qualified` 只适用于已具备 v2.17 全套双副本、恢复密钥 readback、隔离恢复探测、MY inventory、wake bundle receipt、qualification fact、UID/AuthKey/hash、保护和断连收据的行。
+3. 旧 `standby_2` 不因角色名、Session 非空或旧 `healthy` 自动取得 MY 资格。缺少 MY 密封包时必须在 MY 重新登录生成更高 generation candidate；禁止把现有 SV/中心 Session 复制或重加密成 MY 包。`already_qualified` 只适用于已具备 v2.21 全套双副本、恢复密钥 readback、隔离恢复探测、MY inventory、wake bundle receipt、qualification fact、UID/AuthKey/hash、保护和断连收据的行。
 4. 对所有未撤销 Session 计算有效 key version 的 AuthKey blind index，并由一个不是被观测授权的合格 peer 读取远端设备集。只有账号 UID、本地授权资产、Developer App `api_id` 校验和 before/after 唯一差分同时收敛，才回填该授权的非零 hash 并建立 `platform_authorization` protected ref；无法解密、指纹冲突、hash 为零/歧义或只能按 `api_id` 猜测时进入 repair/unknown，禁止伪造值。
 5. 只有 legacy primary 且自身视角返回 `hash=0` 时，按固定顺序自举，不要求先伪造 primary hash：先由 primary 冻结 before set，在 SV 使用 Developer App B 创建 standby_1，由 primary 的唯一 after 差分确认 standby_1 非零 hash并提交；再由 standby_1 读取完整设备集，回填 primary 的非零 hash；两者受保护后，才允许在 MY 使用 Developer App C 创建 standby_2，并由 SV 合格 peer 的唯一差分确认其非零 hash。任一步出现多重差分、UID/App/AuthKey 冲突、读取不完整或远端结果未知都停止后续登录，保留已有授权并进入 reconcile，不覆盖旧 Session。已有两槽或三槽账号从最早可形成交叉观察的一对开始，复用同一规则补齐缺口。
 6. 历史 egress usage 不得倒推。只能在迁移时从当前运行配置和实时连接 readback 建立 `source=backfill_observed` 的开放 usage 区间；此前 observation 标记 `legacy_usage_unverifiable`，不自动升级异常。只有已有可验证 MY 节点/固定出口事实的授权才能回填 assignment；其余 standby_2 在新 wake bundle receipt 提交时创建 assignment。
@@ -462,6 +492,36 @@ Telegram 登录前必须先取得 `inventory_mutation` control lease，再提交
 `wake_bundle_receipt_readback` 只有在双副本 readback、恢复密钥解封和 SSH 镜像隔离恢复探测全部通过后，才是 MY 远端登录成功后的第一完整持久边界。receipt 响应丢失时只能按 operation/bundle generation/ciphertext digest/copy manifest 查询或重放同一 manifest 提交，禁止发起第二次登录；后续 slot CAS 失败从已密封候选续跑。SV 业务授权的等价边界仍为 `candidate_secret_committed`，两类 receipt 不得混用。
 
 本流程只使用现有托管 2FA 完成 Telegram 校验，不修改、轮换或回写 Telegram 2FA。需要轮换时必须创建独立 2FA 安全批次。
+
+### 10.2.1 全部在线账号 A/B/C 补齐编排
+
+`complete_online_abc` 复用既有授权候选、登录、探测、commit 和 unknown 对账内核，但不是把 B/C 两个普通动作无约束地同时提交。单账号固定按 A -> B -> C 顺序推进；不同账号可以由持久限速器公平交错，MY 登录仍保持全局单 owner。
+
+```text
+create preview with selection_mode=all_online_accounts
+  -> freeze all online account ids as N and target_set_fingerprint
+  -> approve exact manifest and create N account items + 2N slot results
+  -> for each account acquire account authorization control lease
+  -> fresh probe frozen A on SV primary_regular
+       -> A not authoritative: no B/C login, persist typed blocker inside N
+       -> A authoritative: freeze A as code source for this item
+  -> B decision
+       -> healthy B: fresh identity/AuthKey/hash/App/SV readback -> already_qualified
+       -> missing/broken B: A receives this challenge code -> SV/App B provision or repair -> commit/probe/disconnect
+  -> re-probe A and verify frozen code-source generations have not changed
+  -> C decision
+       -> healthy MY C: bundle/copy/recovery-key/inventory/restore/remote-active readback -> already_qualified
+       -> healthy legacy SV C: A receives this challenge code -> migrate on MY/App C
+       -> missing/broken MY C: A receives this challenge code -> provision or repair on MY/App C
+  -> verify C dormant, MY active client=0, B standby_ready, A current and no open unknown
+  -> derive one account outcome and release lease
+```
+
+A 的“登录码来源”和设备 hash 的“peer observer”是两个独立字段。`code_source_authorization_id` 固定为该账号 A；若 Telegram 当前设备自身视角返回 `hash=0`，允许由另一个合格 SV peer 读取 exact set 并解析唯一非零 hash，但这不把该 peer 变成登录码来源。A 在 B 或 C challenge 前失效、代次漂移或不再是冻结 current 时，写 `code_source_changed|primary_probe_failed` 并停止该账号后续登录，不静默切换到 B/C，不从 `N` 删除该项。
+
+B 的完整成功边界是 SV/App B 独立 AuthKey、唯一非零 hash、同 UID、固定 SV 出口、`standby_ready`、Session 可由 SV 专用 resolver 解密且 provision client 已断连。C 的完整成功边界是 MY/App C 独立 AuthKey、唯一非零 hash、同 UID、MY 本地和 SV SSH 镜像两份不可变副本、恢复密钥 readback、MY inventory、中心 receipt、隔离 restore probe、slot CAS、`dormant_ready` 且 MY active client=0；中心 `session_ciphertext` 为空不是 C 失败条件。
+
+10 账号 canary 是全量合同的强制前置批次，不能拆成“10 个 B 成功”和“另 10 个 C 成功”来拼接。必须冻结同一 10 个账号，逐账号完成 A 前后探测、B/C 槽位结果和账号 outcome；任一 `reconcile_unknown` 立即停 claim，runtime 回到 `off`。只有 10/10 账号结果均为 `already_qualified|succeeded`、B/C 各自 10/10、MY client=0、无保护漂移，并经过至少 24 小时观察窗且期间没有 correction/unknown/新封禁事实，才允许创建全量 `all_online_accounts` preview。观察窗内失败不改写原 canary 分母，修复后必须重新创建新的 10 账号 canary。
 
 新账号采用固定三 App 顺序完成真实登录：App A 在 SV 创建 primary，App B 在 SV 创建 standby_1，App C 在 MY 创建 standby_2；每一步仍按 before/after exact-set、AuthKey/hash 唯一和候选提交验收。设备清理的 48 小时业务门槛不构成后续槽位登录前置条件，因此无需在三次登录之间等待。三个授权创建后应立即出现在“登录设备”Tab；当前 SV 授权登录时间未严格超过 48 小时时只把清理按钮置灰，不阻塞账号日常业务、standby_1 可用性或 MY bundle 提交。接码专用账号仍按既有策略禁止一键清理。
 
@@ -627,6 +687,6 @@ MY 的 Action、ExecutionAttempt、listener、在线探测、同步记录和业�
 
 ## 14. 实施、验收与开发交接
 
-API、权限、敏感数据、保留清理、失败码、指标、发布、QA 和开发交接的规范性合同见 [account-malaysia-standby-session-dr-implementation-contract.md](account-malaysia-standby-session-dr-implementation-contract.md) v2.18。两份文档共同构成本 PRD；实现、QA 和发布不得只选择其中一份。
+API、权限、敏感数据、保留清理、失败码、指标、发布、QA 和开发交接的规范性合同见 [account-malaysia-standby-session-dr-implementation-contract.md](account-malaysia-standby-session-dr-implementation-contract.md) v2.21。两份文档共同构成本 PRD；实现、QA 和发布不得只选择其中一份。
 
-当前 `design_status=complete`、`product_resync_status=complete`、`dev_handoff_ready=true`。`standby_2` 迁移核心和两账号槽位 canary 已有代码、CI、两地部署及生产 Telegram 授权事实；完整 DR 仍按 DEV-E/DEV-F 与本节 1.2 的缺口继续实施，未完成部分不得以迁移核心成功替代。
+当前 `design_status=complete`、`product_resync_status=complete`、`dev_handoff_ready=true`。已部署的 `standby_2` 迁移核心、unknown 原字节对账、guarded `local_activate` 与两账号槽位 canary，和本次新增的全量在线 `complete_online_abc` 合同是不同完成层级；后者代码、QA、发布、10 账号 E4 和全量 E4 均未开始。开发必须先实现批次冻结/双槽守恒/A 码源 fence，再补齐 B provision/repair 与 C migrate/repair 编排，之后才进入 10 账号 canary；不得直接用既有 271 批次或数据库 ready 投影宣称全量三槽完成。

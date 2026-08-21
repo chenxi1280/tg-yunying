@@ -14,6 +14,7 @@ from app.services._common import _now
 
 from .contracts import AuthorizationDrError
 from .operation_state import mark_item, owned_operation
+from .runtime_scope import disarm_scoped_runtime
 
 
 EXECUTION_TERMINAL_ITEM_STATUSES = ("succeeded", "reconcile_unknown", "manual_required", "failed")
@@ -46,6 +47,7 @@ def mark_login_remote_unknown(session, operation_id: str, *, node_id: str, owner
     if item:
         item.outcome = "provision_reconcile_unknown"
     refresh_migration_batch(session, operation.batch_item_id)
+    disarm_scoped_runtime(session, operation, actor="authorization-dr-unknown-disarm")
     session.commit()
 
 
@@ -87,6 +89,7 @@ def mark_login_remote_failed(
     item.version += 1
     _project_authoritative_login_failure(session, operation.account_id, blocker_code)
     refresh_migration_batch(session, item.id)
+    disarm_scoped_runtime(session, operation, actor="authorization-dr-failure-disarm")
     session.commit()
     return operation
 

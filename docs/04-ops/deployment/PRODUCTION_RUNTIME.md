@@ -369,3 +369,15 @@ Task/当日被放弃；目标解散或引用失效终结该 Task；旧 Task 与�
 Listener 新增 wake 后，生产日志还必须验证 Planner/Listener 在 `task_planner_wake_states`
 和 `tasks` 上 deadlock=0。group-ai Planner 的中间提交会释放首个 wake 行锁，因此重载 Task 后
 必须先再次 `mark_task_planner_started`，再进入 build/flush；只在异常捕获后重试不能替代锁序修复。
+
+## 2026-08-22 A 保护的 ABC 两账号 canary
+
+生产执行始终从 runtime=`off` 开始，并且账号逐个执行。SSH 只调用当前 backend 容器中的正式脚本，不传任何 Telegram secret：
+
+```bash
+bash deploy/authorization-abc-backup.sh --mode preview --tenant-id <tenant> --account-id <account> --idempotency-key <unique-key>
+bash deploy/authorization-abc-backup.sh --mode apply --tenant-id <tenant> --account-id <account> --idempotency-key <unique-key> --expected-fingerprint <preview-fingerprint> --requested-by <requester> --approved-by <different-approver> --approval-ref <ticket> --runtime-image-sha <deployed-full-sha>
+bash deploy/authorization-abc-backup.sh --mode status --tenant-id <tenant> --account-id <account>
+```
+
+`apply` 先在 SV 创建 B，再为同一账号创建并只开放一个 C operation；C 成功后 runtime 自动回到 `off`。B/C 失败不得切换、覆盖或撤销 A。出现 `reconcile_unknown`、A generation/fact/connection 漂移、非预期远端设备、MY capability/SHA 不匹配或 runtime 未自动关闭时立即停止，不执行第二账号。第一个账号只有在 A/B/C 分别完成 Telegram 授权读回，A 完成 Saved Messages 发送读回，C 双副本和 restore probe 通过且 MY active client=0 后才算通过；两个账号通过前不得建立 10 账号批次。

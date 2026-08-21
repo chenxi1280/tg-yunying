@@ -6888,6 +6888,8 @@ def _recover_account_session_after_failure(action: Action, account: TgAccount, r
     session = object_session(account) or object_session(action)
     if session is None:
         return
+    account.status = AccountStatus.NEED_RELOGIN.value
+    account.health_score = min(account.health_score, 45)
     recovered = attempt_standby_authorization_recovery(session, account, actor="task-dispatcher", reason=reason)
     if recovered is None:
         account.status = AccountStatus.NEED_RELOGIN.value
