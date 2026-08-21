@@ -260,6 +260,45 @@ def test_remote_orphan_closes_unknown_but_remains_protected_from_late_callback()
         assert source.protected_from_cleanup is True
 
 
+def test_confirmed_no_remote_effect_closes_unknown_as_failed() -> None:
+    with _session() as session:
+        operation = _seed_unknown_operation(session)
+        evidence = {
+            "kind": "confirmed_no_remote_effect",
+            "event_digest": "e" * 64,
+            "source_ref": "production-readback:account-67",
+            "runtime_image_sha": "a" * 40,
+            "node_id": "my-node-1",
+            "owner_epoch": 4,
+            "remote_set_before_digest": "1" * 64,
+            "remote_set_after_digest": "1" * 64,
+            "new_device_count": 0,
+        }
+        case = preview_operation_reconcile(
+            session,
+            operation.id,
+            tenant_id=1,
+            expected_operation_version=1,
+            evidence=evidence,
+            actor="requester",
+        )
+
+        apply_operation_reconcile(
+            session,
+            operation.id,
+            tenant_id=1,
+            expected_operation_version=1,
+            evidence_fingerprint=case.evidence_fingerprint,
+            approval_ref="INC-NO-EFFECT",
+            idempotency_key="no-effect-67",
+            actor="approver",
+        )
+
+        assert operation.status == "failed"
+        assert operation.remote_call_state == "confirmed_no_effect"
+        assert operation.blocker_code == "provision_confirmed_no_effect"
+
+
 def test_artifact_recovery_reuses_original_bytes_and_adds_missing_snapshot(tmp_path) -> None:
     dek = AESGCM.generate_key(bit_length=256)
     envelope = _encrypt_session("original-session", dek, wrapped_dek=WrappedDek("wrapped", "key-v1"))
