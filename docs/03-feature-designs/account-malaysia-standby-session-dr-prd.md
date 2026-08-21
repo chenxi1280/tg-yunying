@@ -1,8 +1,8 @@
 # 马来西亚异地备用 TG Session 灾备 PRD
 
-> 版本：v2.19
+> 版本：v2.20
 > 日期口径：2026-08-21（Asia/Shanghai）
-> 当前状态：`design_status=complete`、`product_resync_status=complete`、`implementation_started=true`、`implementation_scope=standby_2_migration_core`、`core_deployed=true`、`ssh_mirror_deployed=true`、`slot_canary=2/2_pass`、`full_prd_implementation=partial`、`runtime_mode=off`、`production_fixed=false`
+> 当前状态：`design_status=complete`、`product_resync_status=complete`、`implementation_started=true`、`implementation_scope=standby_2_unknown_repair_and_sv_local_activate`、`core_deployed=true`、`ssh_mirror_deployed=true`、`slot_canary=2/2_pass`、`full_prd_implementation=partial`、`runtime_mode=off`、`production_fixed=false`
 > 适用范围：账号授权资产、三槽位远端设备归属、活跃授权设备查看/清理、备用登录、硅谷本地自动切换、跨模块运行代次、显式演练、紧急登录码辅助和硅谷主授权重建；不包含业务系统整体异地容灾。
 > 关联文档：[实施与验收合同](account-malaysia-standby-session-dr-implementation-contract.md)、[account-standby-auto-authorization-prd.md](account-standby-auto-authorization-prd.md)、[account-security-hardening-design.md](account-security-hardening-design.md)、[account-login-group-navigation-recovery-prd.md](account-login-group-navigation-recovery-prd.md)。
 
@@ -29,8 +29,16 @@
 - 后续扩量批次 `target_count=271` 的当前守恒结果为 `241 succeeded + 22 failed + 5 manual_required + 3 reconcile_unknown = 271`，批次状态为 `reconcile_required`，业务 `finished_at` 保持空，运行合同保持 `off`。5 个 `PasswordHashInvalidError` 项已按 typed 历史证据收口为 `two_fa_invalid/confirmed_no_effect`；22 个 failed 已分类为 `phone_number_banned`。剩余 3 个 unknown 未完成逐项对账前，禁止继续扩量或把批次写成最终迁移完成。
 - 全局剩余 unknown 精确为账号 24、25、26、67、87、111。早期账号 24、25、26 不属于上述 271 批次成功分母；三者均无 candidate/中心 Bundle/slot commit，旧 SV `standby_2` Session 存在且 protected，禁止自动重登。账号 24/25 当前无持久包；账号 26 在 MY 已有同 operation、generation 2 的本地密封包，但无 SV 镜像、中心 inventory 或 receipt，只能在原字节身份校验和只读 Telegram probe 通过后续建，不得重新登录或生成新 Session。
 - P0A unknown coordinator 已由 release SHA `e8cd88dc496a56c586a5bcc502d81a318b76d7a9` 经 Deploy Production run `32456712129` 发布，生产 Alembic head 为 `0158_dr_reconcile`。账号 297、307、310、311、314 通过 preview/fingerprint、operation/item/source CAS、异人 apply 与独立 readback 收口；统一审计引用为 `INC-20260821-DR-TYPED-2FA-RECONCILE`，过程中未创建 candidate、Bundle 或登录副作用。
-- 当前已交付的是 `standby_2` 迁移状态机、MY 专用节点、SSH 双副本、恢复探测、slot CAS、旧源保留保护、48 小时设备清理边界和相关读模型。`local_activate`、`restore_sv_pair`、`drill_wake`、双 SV 失效后的 `emergency_reauthorize_primary`、中心恢复对账、decommission/erase、跨 Action/Gateway/listener/online/sync generation fence 尚未完成。
+- 已部署范围是 `standby_2` 迁移状态机、MY 专用节点、SSH 双副本、恢复探测、slot CAS、旧源保留保护、48 小时设备清理边界和相关读模型；本轮 release candidate 新增 guarded operator `local_activate` 与 unknown 原字节前滚，生产 E4 尚待发布后读回。自动故障触发的完整 `local_activate`、`restore_sv_pair`、`drill_wake`、双 SV 失效后的 `emergency_reauthorize_primary`、中心恢复对账、decommission/erase、跨 Action/Gateway/listener/online/sync generation fence 尚未完成。
 - 授权备份不等于消息、任务、数据库、Redis、素材和 Dispatcher 的异地容灾。
+
+### 1.2.1 本轮修复冻结事实与放行边界
+
+- 六个全局 unknown 的当前分类冻结为：24/25=`remote_orphan_without_bundle`；26=`local_only_bundle`；67=`remote_no_new_device`；87=`inventory_ahead_of_central`；111=`remote_unproven_all_sv_sessions_invalid`。24/25/26/87 禁止重新登录；24/25 orphan 在唯一非零远端 hash、精确设备集与严格超过 48 小时均证明前继续 protected；111 只进入人工重新授权，不自动推导 no-effect。
+- 账号 26 只允许从 MY 原 operation/generation 的本地不可变字节补写 SSH 镜像、追加 inventory、提交中心 receipt、执行隔离 restore probe 与 slot CAS；账号 87 只允许从已一致的本地+SSH 镜像和 inventory 前滚中心 receipt/probe/slot。任何 digest、operation、generation、Telegram UID/AuthKey 或 App C 身份不一致均保持 unknown。
+- 账号 67/87 当前业务 primary 已由 Telegram 判定不可授权，但各自 SV `standby_1` 已完成真实授权/身份探测。`local_activate` 必须在账号与目标授权行锁内复核 expected generation/fact version，写 `current_authorization_id`，同步 legacy Session/App/proxy 投影，提升 authorization/fact/connection generation，清空旧 online Session 身份并重建为 warming；旧主授权保留为 repair/protected。切换后必须分别完成新 current 登录与 Saved Messages 发送读回，不能用数据库状态代替。
+- 本轮 22 个 `phone_number_banned` 是该 271 迁移批次内 22 个不同账号的 Telegram typed 事实，不代表全平台总封禁数。每条 typed fact 必须把对应账号投影为 `已封禁`，保留 Session 密文和审计，不删除账号；未具备同类权威事实的其他账号不得批量推导为封禁。
+- 下一批 10 个账号仅在 `global_reconcile_unknown=0`、上述逐账号结果已读回、迁移 runtime 仍为 `off`、22 个封号投影守恒、67/87 新 current 可登录且可发送、111 明确 manual_required 后才允许新建独立 preview；10 项仍需逐项 outcome 守恒，出现一个新 unknown 即停止。
 
 ### 1.3 2026-08-21 早期失败 canary 事实
 

@@ -7,9 +7,9 @@ from app.models import (
     TgAccountAuthorization,
     TgAuthorizationDrBatchItem,
     TgAuthorizationDrOperation,
+    TgAuthorizationDrReconcileCase,
     TgAuthorizationRestoreProbeFact,
     TgAuthorizationSlotDecision,
-    TgAuthorizationWakeBundle,
     TgAuthorizationWakeBundleCopy,
     TgAuthorizationWakeInventoryEntry,
 )
@@ -17,6 +17,7 @@ from app.services._common import _now, audit
 
 from .contracts import AuthorizationDrError
 from .migration_results import refresh_migration_batch
+from .stage_facts import append_stage_fact
 from .wake_bundle import _operation_bundle, _owned_operation, valid_copy_kinds
 
 
@@ -211,18 +212,43 @@ def _pass_recovery_gate(session, operation, *, source, candidate, bundle, decisi
 
 
 def _finish_operation(session, operation) -> None:
+    decision = session.scalar(select(TgAuthorizationSlotDecision).where(
+        TgAuthorizationSlotDecision.new_authorization_id == operation.candidate_authorization_id,
+    ).order_by(TgAuthorizationSlotDecision.decision_generation.desc()).limit(1))
+    if not decision:
+        raise AuthorizationDrError("slot_commit_decision_conflict", "Committed slot decision is missing")
+    append_stage_fact(
+        session,
+        operation,
+        stage="slot_committed",
+        manifest_digest=decision.manifest_digest,
+        evidence_manifest={"bundle_generation": operation.target_generation},
+    )
     operation.status = "succeeded"
     operation.blocker_code = ""
     operation.lease_token = ""
     operation.lease_expires_at = None
     operation.finished_at = _now()
     operation.operation_version += 1
+    _finish_reconcile_case(session, operation)
     item = session.get(TgAuthorizationDrBatchItem, operation.batch_item_id)
     item.status = "succeeded"
     item.outcome = "succeeded"
     item.finished_at = _now()
     item.version += 1
     refresh_migration_batch(session, item.id)
+
+
+def _finish_reconcile_case(session, operation) -> None:
+    if not operation.reconcile_case_id:
+        return
+    case = session.get(TgAuthorizationDrReconcileCase, operation.reconcile_case_id)
+    if not case or case.status != "repair_approved":
+        raise AuthorizationDrError("reconcile_case_conflict", "Artifact reconcile case changed")
+    case.status = "applied"
+    case.applied_at = _now()
+    operation.reconcile_status = "applied"
+    operation.reconciled_at = _now()
 
 
 def _next_decision_generation(session, account_id: int) -> int:

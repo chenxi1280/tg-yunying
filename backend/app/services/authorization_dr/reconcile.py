@@ -17,11 +17,16 @@ from app.models import (
 from app.services._common import _now, audit
 
 from .contracts import AuthorizationDrError
-from .migration_results import LOGIN_FAILURE_STATUSES, refresh_migration_batch
+from .migration_results import (
+    LOGIN_FAILURE_STATUSES,
+    project_authoritative_login_failure,
+    refresh_migration_batch,
+)
 
 
 UNKNOWN_STATUS = "provision_reconcile_unknown"
 EVIDENCE_KIND = "historical_typed_login_failure"
+ARTIFACT_EVIDENCE_KIND = "artifact_forward_recovery"
 
 
 def preview_operation_reconcile(
@@ -73,18 +78,18 @@ def apply_operation_reconcile(
     case = _case_for_operation(session, operation.id, lock=True)
     if not case:
         raise AuthorizationDrError("reconcile_case_not_found", "Reconcile preview does not exist")
-    if case.status == "applied":
+    if case.status in {"applied", "repair_approved"}:
         return _idempotent_applied(case, idempotency_key)
     _require_apply_contract(case, actor=actor, approval_ref=approval_ref, idempotency_key=idempotency_key)
     _require_stopped_runtime(session, operation.owner_node_id)
     _require_unknown(operation, expected_operation_version=expected_operation_version)
     _require_frozen_facts(case, operation=operation, item=item, source=source)
-    if _artifact_state(session, operation.id) != case.persisted_artifact_state:
+    if not _artifact_state_matches(session, operation.id, case.persisted_artifact_state):
         raise AuthorizationDrError("reconcile_artifact_conflict", "Persisted artifact state changed")
     if evidence_fingerprint != case.evidence_fingerprint:
         raise AuthorizationDrError("reconcile_evidence_conflict", "Reconcile evidence fingerprint changed")
     _require_apply_key_available(session, case, idempotency_key)
-    _apply_confirmed_no_effect(operation, item, case)
+    _apply_reconcile_transition(session, operation, item, case)
     session.flush()
     refresh_migration_batch(session, item.id)
     _finish_case(case, actor=actor, approval_ref=approval_ref, idempotency_key=idempotency_key)
@@ -156,6 +161,17 @@ def _require_unknown(operation, *, expected_operation_version: int) -> None:
 
 
 def _validated_evidence(operation, evidence: dict) -> dict:
+    kind = evidence.get("kind")
+    if kind == EVIDENCE_KIND:
+        return _validated_typed_failure(operation, evidence)
+    if kind == ARTIFACT_EVIDENCE_KIND:
+        return _validated_artifact_evidence(operation, evidence)
+    if kind in {"remote_orphan_without_bundle", "confirmed_no_remote_effect", "remote_unproven"}:
+        return _validated_remote_evidence(operation, evidence)
+    raise AuthorizationDrError("reconcile_evidence_invalid", "Reconcile evidence kind is unsupported")
+
+
+def _validated_typed_failure(operation, evidence: dict) -> dict:
     required = {
         "kind", "blocker_code", "event_digest", "source_ref", "runtime_image_sha", "node_id", "owner_epoch",
     }
@@ -177,11 +193,75 @@ def _validated_evidence(operation, evidence: dict) -> dict:
     return {key: evidence[key] for key in sorted(required)}
 
 
+def _validated_artifact_evidence(operation, evidence: dict) -> dict:
+    required = {
+        "kind", "event_digest", "source_ref", "runtime_image_sha", "node_id", "owner_epoch",
+        "bundle_generation", "ciphertext_digest", "inventory_sequence",
+    }
+    _require_exact_evidence_keys(evidence, required)
+    _require_common_evidence(operation, evidence)
+    generation = int(evidence["bundle_generation"])
+    inventory_sequence = int(evidence["inventory_sequence"])
+    if generation != operation.target_generation or inventory_sequence < 0:
+        raise AuthorizationDrError("reconcile_evidence_conflict", "Artifact generation evidence changed")
+    if not _is_lower_hex(str(evidence["ciphertext_digest"]), (64,)):
+        raise AuthorizationDrError("reconcile_evidence_invalid", "Artifact digest is invalid")
+    return {key: evidence[key] for key in sorted(required)}
+
+
+def _validated_remote_evidence(operation, evidence: dict) -> dict:
+    if evidence["kind"] == "remote_unproven":
+        required = {"kind", "event_digest", "source_ref", "runtime_image_sha", "node_id", "owner_epoch"}
+        _require_exact_evidence_keys(evidence, required)
+        _require_common_evidence(operation, evidence)
+        return {key: evidence[key] for key in sorted(required)}
+    required = {
+        "kind", "event_digest", "source_ref", "runtime_image_sha", "node_id", "owner_epoch",
+        "remote_set_before_digest", "remote_set_after_digest", "new_device_count",
+    }
+    _require_exact_evidence_keys(evidence, required)
+    _require_common_evidence(operation, evidence)
+    before = str(evidence["remote_set_before_digest"])
+    after = str(evidence["remote_set_after_digest"])
+    if not _is_lower_hex(before, (64,)) or not _is_lower_hex(after, (64,)):
+        raise AuthorizationDrError("reconcile_evidence_invalid", "Remote set digest is invalid")
+    count = int(evidence["new_device_count"])
+    expected = {"remote_orphan_without_bundle": 1, "confirmed_no_remote_effect": 0}
+    if evidence["kind"] in expected and count != expected[evidence["kind"]]:
+        raise AuthorizationDrError("reconcile_evidence_conflict", "Remote device delta does not match classification")
+    if evidence["kind"] == "confirmed_no_remote_effect" and before != after:
+        raise AuthorizationDrError("reconcile_evidence_conflict", "No-effect evidence has a remote set delta")
+    return {key: evidence[key] for key in sorted(required)}
+
+
+def _require_exact_evidence_keys(evidence: dict, required: set[str]) -> None:
+    if set(evidence) != required:
+        raise AuthorizationDrError("reconcile_evidence_invalid", "Reconcile evidence fields are invalid")
+
+
+def _require_common_evidence(operation, evidence: dict) -> None:
+    digest = str(evidence.get("event_digest", ""))
+    runtime_sha = str(evidence.get("runtime_image_sha", ""))
+    identity_matches = evidence.get("node_id") == operation.owner_node_id and evidence.get("owner_epoch") == operation.owner_epoch
+    source_ref_valid = 0 < len(str(evidence.get("source_ref", ""))) <= 160
+    if not identity_matches or not source_ref_valid:
+        raise AuthorizationDrError("reconcile_evidence_conflict", "Evidence does not match operation owner facts")
+    if not _is_lower_hex(digest, (64,)) or not _is_lower_hex(runtime_sha, (40, 64)):
+        raise AuthorizationDrError("reconcile_evidence_invalid", "Evidence digest or runtime SHA is invalid")
+
+
 def _artifact_state(session, operation_id: str) -> str:
     count = session.scalar(select(func.count()).select_from(TgAuthorizationWakeBundle).where(
         TgAuthorizationWakeBundle.operation_id == operation_id,
     ))
     return "central_bundle" if int(count or 0) else "none"
+
+
+def _artifact_state_matches(session, operation_id: str, expected: str) -> bool:
+    actual = _artifact_state(session, operation_id)
+    if expected in {"local_only_bundle", "inventory_ahead_of_central"}:
+        return actual == "none"
+    return actual == expected
 
 
 def _evidence_fingerprint(operation, item, source, manifest: dict, artifact_state: str) -> str:
@@ -197,15 +277,15 @@ def _evidence_fingerprint(operation, item, source, manifest: dict, artifact_stat
 
 
 def _new_case(operation, item, source, manifest, artifact_state, fingerprint: str, actor: str):
-    blocker = manifest["blocker_code"]
-    conflict = artifact_state != "none"
+    classification, transition, blocker, persisted = _classify_manifest(manifest, artifact_state)
+    conflict = classification == "conflict"
     return TgAuthorizationDrReconcileCase(
         tenant_id=operation.tenant_id,
         account_id=operation.account_id,
         operation_id=operation.id,
         status="conflict" if conflict else "decision_ready",
-        classification="conflict" if conflict else "confirmed_no_effect",
-        recommended_transition="hold" if conflict else LOGIN_FAILURE_STATUSES[blocker],
+        classification=classification,
+        recommended_transition=transition,
         blocker_code=blocker,
         expected_operation_version=operation.operation_version,
         expected_item_version=item.version,
@@ -215,9 +295,28 @@ def _new_case(operation, item, source, manifest, artifact_state, fingerprint: st
         expected_runtime_image_sha=manifest["runtime_image_sha"],
         evidence_fingerprint=fingerprint,
         evidence_manifest=manifest,
-        persisted_artifact_state=artifact_state,
+        persisted_artifact_state=persisted,
         requested_by=actor,
     )
+
+
+def _classify_manifest(manifest: dict, artifact_state: str) -> tuple[str, str, str, str]:
+    if artifact_state != "none":
+        return "conflict", "hold", "central_artifact_exists", artifact_state
+    kind = manifest["kind"]
+    if kind == EVIDENCE_KIND:
+        blocker = manifest["blocker_code"]
+        return "confirmed_no_effect", LOGIN_FAILURE_STATUSES[blocker], blocker, artifact_state
+    if kind == ARTIFACT_EVIDENCE_KIND:
+        classification = "inventory_ahead_of_central" if manifest["inventory_sequence"] else "local_only_bundle"
+        return classification, "reconcile_artifact_ready", classification, classification
+    transitions = {
+        "remote_orphan_without_bundle": ("manual_required", "orphan_remote_authorization_protected"),
+        "confirmed_no_remote_effect": ("failed", "provision_confirmed_no_effect"),
+        "remote_unproven": ("manual_required", "remote_authorization_unproven"),
+    }
+    transition, blocker = transitions[kind]
+    return kind, transition, blocker, artifact_state
 
 
 def _case_for_operation(session, operation_id: str, *, lock: bool = False):
@@ -259,11 +358,19 @@ def _require_frozen_facts(case, *, operation, item, source) -> None:
         raise AuthorizationDrError("reconcile_frozen_fact_conflict", "Frozen reconciliation facts changed")
 
 
-def _apply_confirmed_no_effect(operation, item, case) -> None:
-    if case.classification != "confirmed_no_effect" or case.persisted_artifact_state != "none":
-        raise AuthorizationDrError("reconcile_transition_blocked", "Evidence does not allow no-effect transition")
+def _apply_reconcile_transition(session, operation, item, case) -> None:
+    if case.recommended_transition == "reconcile_artifact_ready":
+        _approve_artifact_repair(operation, case)
+        return
+    _apply_terminal_reconcile(session, operation, item, case)
+
+
+def _apply_terminal_reconcile(session, operation, item, case) -> None:
+    allowed = {"confirmed_no_effect", "remote_orphan_without_bundle", "remote_unproven"}
+    if case.classification not in allowed or case.persisted_artifact_state != "none":
+        raise AuthorizationDrError("reconcile_transition_blocked", "Evidence does not allow terminal transition")
     operation.status = case.recommended_transition
-    operation.remote_call_state = "confirmed_no_effect"
+    operation.remote_call_state = "confirmed_no_effect" if case.classification == "confirmed_no_effect" else "reconciled_hold"
     operation.blocker_code = case.blocker_code
     operation.reconcile_case_id = case.id
     operation.reconcile_status = "applied"
@@ -275,14 +382,27 @@ def _apply_confirmed_no_effect(operation, item, case) -> None:
     item.blocker_code = case.blocker_code
     item.finished_at = _now()
     item.version += 1
+    if case.blocker_code in LOGIN_FAILURE_STATUSES:
+        project_authoritative_login_failure(session, operation.account_id, case.blocker_code)
+
+
+def _approve_artifact_repair(operation, case) -> None:
+    if case.classification not in {"local_only_bundle", "inventory_ahead_of_central"}:
+        raise AuthorizationDrError("reconcile_transition_blocked", "Evidence does not allow artifact recovery")
+    operation.status = "reconcile_artifact_ready"
+    operation.blocker_code = case.classification
+    operation.reconcile_case_id = case.id
+    operation.reconcile_status = "repair_approved"
+    operation.operation_version += 1
 
 
 def _finish_case(case, *, actor: str, approval_ref: str, idempotency_key: str) -> None:
-    case.status = "applied"
+    artifact_repair = case.recommended_transition == "reconcile_artifact_ready"
+    case.status = "repair_approved" if artifact_repair else "applied"
     case.applied_by = actor
     case.approval_ref = approval_ref.strip()
     case.apply_idempotency_key = idempotency_key.strip()
-    case.applied_at = _now()
+    case.applied_at = None if artifact_repair else _now()
 
 
 def _require_apply_key_available(session, case, idempotency_key: str) -> None:
