@@ -35,6 +35,7 @@ class AuthorizationDrExecutionNode(Base):
     region_code: Mapped[str] = mapped_column(String(24))
     purpose: Mapped[str] = mapped_column(String(40))
     capability_version: Mapped[str] = mapped_column(String(80))
+    runtime_image_sha: Mapped[str] = mapped_column(String(64), default="")
     standby_egress_id: Mapped[str] = mapped_column(String(80))
     status: Mapped[str] = mapped_column(String(24), default="offline")
     active_client_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -90,6 +91,7 @@ class TgAuthorizationDrBatch(Base):
     approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_claimed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    execution_finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
@@ -162,12 +164,48 @@ class TgAuthorizationDrOperation(Base):
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     remote_effect_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     remote_call_state: Mapped[str] = mapped_column(String(20), default="none")
+    reconcile_case_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    reconcile_status: Mapped[str] = mapped_column(String(32), default="none")
+    reconciled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     requested_by: Mapped[str] = mapped_column(String(100))
     approved_by: Mapped[str] = mapped_column(String(100))
     approval_ref: Mapped[str] = mapped_column(String(160))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class TgAuthorizationDrReconcileCase(Base):
+    __tablename__ = "tg_authorization_dr_reconcile_cases"
+    __table_args__ = (
+        UniqueConstraint("operation_id", name="uq_dr_reconcile_operation"),
+        UniqueConstraint("tenant_id", "apply_idempotency_key", name="uq_dr_reconcile_apply_idempotency"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
+    account_id: Mapped[int] = mapped_column(ForeignKey("tg_accounts.id"))
+    operation_id: Mapped[str] = mapped_column(ForeignKey("tg_authorization_dr_operations.id"))
+    reconcile_generation: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String(40), default="open")
+    classification: Mapped[str] = mapped_column(String(48))
+    recommended_transition: Mapped[str] = mapped_column(String(48))
+    blocker_code: Mapped[str] = mapped_column(String(100))
+    expected_operation_version: Mapped[int] = mapped_column(Integer)
+    expected_item_version: Mapped[int] = mapped_column(Integer)
+    expected_source_fact_version: Mapped[int] = mapped_column(Integer)
+    expected_owner_epoch: Mapped[int] = mapped_column(Integer)
+    expected_node_id: Mapped[str] = mapped_column(String(80))
+    expected_runtime_image_sha: Mapped[str] = mapped_column(String(64))
+    evidence_fingerprint: Mapped[str] = mapped_column(String(64))
+    evidence_manifest: Mapped[dict] = mapped_column(JSON, default=dict)
+    persisted_artifact_state: Mapped[str] = mapped_column(String(32), default="none")
+    requested_by: Mapped[str] = mapped_column(String(100))
+    applied_by: Mapped[str] = mapped_column(String(100), default="")
+    approval_ref: Mapped[str] = mapped_column(String(160), default="")
+    apply_idempotency_key: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class TgAuthorizationWakeBundle(Base):

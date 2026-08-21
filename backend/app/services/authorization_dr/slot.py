@@ -16,7 +16,7 @@ from app.models import (
 from app.services._common import _now, audit
 
 from .contracts import AuthorizationDrError
-from .migration import refresh_migration_batch
+from .migration_results import refresh_migration_batch
 from .wake_bundle import _operation_bundle, _owned_operation, valid_copy_kinds
 
 

@@ -1,6 +1,6 @@
 # 马来西亚异地备用 TG Session 实施与验收合同
 
-> 版本：v2.18
+> 版本：v2.19
 > 日期口径：2026-08-21（Asia/Shanghai）
 > 规范关系：本文是 [马来西亚异地备用 TG Session 灾备 PRD](account-malaysia-standby-session-dr-prd.md) 的强制组成部分；冲突时两份文档必须同步修订，不允许实现自行择一。
 > 当前状态：`design_status=complete`、`product_resync_status=complete`、`implementation_started=true`、`implementation_scope=standby_2_migration_core`、`core_deployed=true`、`ssh_mirror_deployed=true`、`slot_canary=2/2_pass`、`full_prd_implementation=partial`、`runtime_mode=off`、`production_fixed=false`
@@ -10,6 +10,8 @@
 > 当前设备 hash 合同：Telegram 从当前 Session 读取设备时允许返回 `hash=0`，不得判定登录失败，也不得把 `0` 保存为受保护设备标识。MY 必须提交当前设备规范化指纹摘要；SV 只用保留的 peer Session 读取结果解析唯一非零 hash。唯一匹配前不得写 Bundle/slot commit；零匹配、多匹配或 peer 读取失败统一进入 `provision_reconcile_unknown`，且不得自动重登。
 
 > 生产实施读回：账号 27、28 的 MY generation 2 槽位均为 current，双副本为 `2/2`，隔离 restore probe passed，旧 SV App C Session 为 retained/protected，因此 `slot_canary=2/2_pass`。后续 271 项扩量批次为 `241 succeeded / 22 failed / 8 reconcile_unknown`，runtime 已切 `off`；扩量最终验收保持 blocked。迁移核心通过不代表 `local_activate`、`restore_sv_pair`、`drill_wake`、紧急主授权重建、中心恢复对账、decommission/erase 或跨运行代次 fence 已实现。
+
+> unknown 对账事实：账号 24/25 无持久包；账号 26 已存在与原 operation、generation 2 精确绑定的 MY 本地密封包，但缺少 SV 镜像、中心 inventory/receipt。对账协调器只能复用原字节、原 operation 和原 generation 补齐证据；不得调用登录 RPC，不得生成新 Session，也不得把 local-only 推导成成功。
 
 ## 1. API 合同
 
@@ -60,7 +62,9 @@
 | `POST /api/tg-accounts/authorization-dr/activity-reviews/{id}/decide` | 仅对 unresolved 或归属事实冲突提交“匹配我方授权 / 确认 external / 确认资产异常 / 证据不足”决定和证据；不支持官方锚点或批准外部设备绕过一键清理 |
 | `POST /api/tg-accounts/authorization-dr/activity-reviews/{id}/approve` | 异人按 expected versions 批准“匹配我方授权”等会扩大 protected manifest 的归属修复；已精确分类 external 的常规一键清理不需要逐设备异人审批 |
 | `GET /api/tg-accounts/authorization-dr/activity-reviews` | 按 tenant/account/status/anomaly_scope/decision/cursor 分页返回脱敏调查及状态计数 |
-| `POST /api/tg-accounts/authorization-dr/operations/{id}/reconcile` | 显式对账 unknown，不允许强写 succeeded、恢复旧 owner 或跳过远端 readback |
+| `POST /api/tg-accounts/authorization-dr/operations/{id}/reconcile/preview` | 只为 `provision_reconcile_unknown` 建立或重读唯一 open reconcile case；服务端冻结 operation/item/source versions、owner epoch、运行镜像 SHA 和脱敏证据 manifest，返回 `evidence_fingerprint/classification/artifact_state/allowed_transition/blockers`，不接受目标终态 |
+| `POST /api/tg-accounts/authorization-dr/operations/{id}/reconcile` | 必须携带 `expected_operation_version/evidence_fingerprint/approval_ref/Idempotency-Key`；服务端重读冻结证据后自行推导终态并 CAS apply。不得强写 succeeded、恢复旧 owner、调用登录 RPC、生成新 Session 或跳过所需远端 readback；任一版本、证据或镜像 SHA 漂移均零写入 conflict |
+| `GET /api/tg-accounts/authorization-dr/operations/{id}/reconcile` | 返回脱敏 evidence manifest、classification、artifact coverage、recommended transition、apply/readback 和 blocker；不返回 Session、AuthKey、2FA、验证码、远端 hash 明文、设备明细或日志原文 |
 | `POST /api/tg-accounts/{id}/authorizations/{aid}/decommission` | 双人审批；冻结 target hash、固定 current SV executor 及其 authorization fact/version、`telegram_login_at`、expected versions；迁移源还必须冻结并验证 `migration_recovery_gate_passed`。严格超过 48 小时才创建远端执行项，否则返回 skipped 及原因，不创建等待重试；恢复闸门未通过直接 blocked，不能撤销旧 SV |
 | `DELETE /api/tg-accounts/{id}` | 同一事务写 `business_deleted_authorizations_retained` 并停止账号全部业务资格；不撤销或删除授权资产，不把删除结果声明为 Telegram 设备已退出 |
 | `GET /api/tg-accounts?include_deleted=true` | 已删除账号继续返回授权保留/退役状态、三槽和 unresolved blocker；`authorization_retired` 前不得从管理面完全消失 |

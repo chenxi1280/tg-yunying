@@ -41,7 +41,7 @@
 **Status:** partial
 
 - 实现 MY claim/login-input、真实登录、双副本、隔离 restore probe、slot CAS、recovery gate、retained/rollback window。
-- 已完成不重登的失败冻结语义；unknown/orphan coordinator、中心库 restore hold/reconcile、48 小时 decommission、最终 exact-set、rollback-window close 和分步 erase 尚未实现。
+- 已完成不重登的失败冻结语义和 typed historical failure P0A coordinator；local-only/dual-copy/orphan 续跑、中心库 restore hold/reconcile、48 小时 decommission、最终 exact-set、rollback-window close 和分步 erase 尚未实现。
 
 ### Phase 4: API, UI, Metrics And Cross-module Fences
 
@@ -73,10 +73,11 @@
 
 ### Phase 7: Expanded Migration Batch Reconciliation
 
-**Status:** blocked
+**Status:** in_progress
 
 - 历史扩量批次已形成 `241 succeeded + 22 failed + 8 reconcile_unknown = 271`，runtime 已切 `off`。
-- 在正式 unknown reconcile coordinator 完成并逐项收口 8 unknown 前不得恢复 claim 或继续扩量。
+- typed historical failure P0A coordinator 已完成本地实现；发布并 guarded apply 5 条后，最新批次预计为 `241 succeeded + 22 failed + 5 manual_required + 3 reconcile_unknown = 271`，系统总 unknown 预计从 11 降为 6。实际生产读回前不得采用预计值。
+- 账号 24/25/26/67/87/111 仍必须保持 unknown；local-only/dual-copy/orphan 对账续跑未实现前不得恢复 claim 或继续扩量。
 - 当前 `succeeded` 只表示 slot cutover succeeded；旧 SV decommission、最终 exact-set 与 rollback-window close 完成前不得写 migration final succeeded。
 
 ### Phase 8: Full PRD Runtime Recovery And Lifecycle

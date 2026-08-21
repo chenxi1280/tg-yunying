@@ -1,0 +1,17 @@
+{
+  "evidence_source": "codex-rollout:01a022f5-f6d5-7ac1-acd1-5d81cddb19c2:qa-readonly-log-capture",
+  "runtime_image_sha": "cb58880abeb31bced50fff94937d8607f6968a53",
+  "node_id": "my-node-1",
+  "owner_epoch": 1,
+  "login_started_status": 200,
+  "typed_exception": "PasswordHashInvalidError",
+  "login_unknown_status": 204,
+  "canonical_manifest_contract": "operation/account/node/owner_epoch/runtime_image_sha/login_started/typed_exception/login_unknown newline-delimited",
+  "items": [
+    {"account_id": 297, "operation_id": "23a2bb8b-37ff-40c0-9e3f-74ef80004108", "event_digest": "c907a45b1574c542af28e6952e9178774c1617cdae8b87af959cbffadc52a1f4"},
+    {"account_id": 307, "operation_id": "1cca2aad-e6b2-4d96-a493-890cf92a260a", "event_digest": "112a5419c9c9e5aeadbd59700f72fa75741561c564d7f11409f3a6a6a50d16fe"},
+    {"account_id": 310, "operation_id": "da66ed60-75ed-4aa1-8cb3-4d92ff5feb80", "event_digest": "f48168ea08bb3dd277fe1821496e7538c615120ae7ce7ba7653bc718ede8eb72"},
+    {"account_id": 311, "operation_id": "88fc40ae-17b7-4657-b633-fcdefa47e611", "event_digest": "2a89bb3dc8941f11c75690baf278665f12f28a4eb41f967fd84743146a59452b"},
+    {"account_id": 314, "operation_id": "7d765afa-3f12-42ff-9775-55c5afa7643f", "event_digest": "91d285d6d8ae95c4fbd05ba8c09bc236474e8f972e8c9425b7d809d7d1ddb5fd"}
+  ]
+}
