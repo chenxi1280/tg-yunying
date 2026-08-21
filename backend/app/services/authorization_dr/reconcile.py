@@ -22,6 +22,12 @@ from .migration_results import (
     project_authoritative_login_failure,
     refresh_migration_batch,
 )
+from .pre_code_reconcile import (
+    PRE_CODE_FAILURE_KIND,
+    build_pre_code_failure_evidence,
+    close_pre_code_flow,
+    validate_pre_code_failure,
+)
 
 
 UNKNOWN_STATUS = "provision_reconcile_unknown"
@@ -39,9 +45,9 @@ def preview_operation_reconcile(
     actor: str,
 ) -> TgAuthorizationDrReconcileCase:
     operation, item, source = _lock_inputs(session, operation_id, tenant_id=tenant_id)
-    _require_stopped_runtime(session, operation.owner_node_id)
+    _require_stopped_runtime(session, operation)
     _require_unknown(operation, expected_operation_version=expected_operation_version)
-    manifest = _validated_evidence(operation, evidence)
+    manifest = _validated_evidence(session, operation, evidence)
     artifact_state = _artifact_state(session, operation.id)
     fingerprint = _evidence_fingerprint(operation, item, source, manifest, artifact_state)
     existing = _case_for_operation(session, operation.id, lock=True)
@@ -81,9 +87,9 @@ def apply_operation_reconcile(
     if case.status in {"applied", "repair_approved"}:
         return _idempotent_applied(case, idempotency_key)
     _require_apply_contract(case, actor=actor, approval_ref=approval_ref, idempotency_key=idempotency_key)
-    _require_stopped_runtime(session, operation.owner_node_id)
+    _require_stopped_runtime(session, operation)
     _require_unknown(operation, expected_operation_version=expected_operation_version)
-    _require_frozen_facts(case, operation=operation, item=item, source=source)
+    _require_frozen_facts(session, case, operation=operation, item=item, source=source)
     if not _artifact_state_matches(session, operation.id, case.persisted_artifact_state):
         raise AuthorizationDrError("reconcile_artifact_conflict", "Persisted artifact state changed")
     if evidence_fingerprint != case.evidence_fingerprint:
@@ -91,7 +97,8 @@ def apply_operation_reconcile(
     _require_apply_key_available(session, case, idempotency_key)
     _apply_reconcile_transition(session, operation, item, case)
     session.flush()
-    refresh_migration_batch(session, item.id)
+    if item:
+        refresh_migration_batch(session, item.id)
     _finish_case(case, actor=actor, approval_ref=approval_ref, idempotency_key=idempotency_key)
     audit(
         session,
@@ -132,40 +139,54 @@ def _lock_inputs(session, operation_id: str, *, tenant_id: int):
     ).with_for_update())
     if not operation:
         raise AuthorizationDrError("migration_operation_not_found", "Migration operation does not exist")
-    item = session.scalar(select(TgAuthorizationDrBatchItem).where(
-        TgAuthorizationDrBatchItem.id == operation.batch_item_id,
-    ).with_for_update())
+    item = None
+    if operation.batch_item_id:
+        item = session.scalar(select(TgAuthorizationDrBatchItem).where(
+            TgAuthorizationDrBatchItem.id == operation.batch_item_id,
+        ).with_for_update())
     source = session.scalar(select(TgAccountAuthorization).where(
         TgAccountAuthorization.id == operation.source_authorization_id,
     ).with_for_update())
-    if not item or not source:
+    if operation.batch_item_id and not item:
+        raise AuthorizationDrError("reconcile_frozen_fact_missing", "Frozen batch item is missing")
+    if not source:
         raise AuthorizationDrError("reconcile_frozen_fact_missing", "Frozen reconciliation facts are missing")
     return operation, item, source
 
 
-def _require_stopped_runtime(session, node_id: str) -> None:
+def _require_stopped_runtime(session, operation) -> None:
     contract = session.get(AuthorizationDrRuntimeContract, 1)
-    node = session.get(AuthorizationDrExecutionNode, node_id)
     if not contract or contract.mode != "off":
         raise AuthorizationDrError("reconcile_runtime_conflict", "DR runtime must remain off")
-    if not node or node.active_client_count != 0:
+    if operation.owner_node_id:
+        node = session.get(AuthorizationDrExecutionNode, operation.owner_node_id)
+        if node and node.active_client_count == 0:
+            return
         raise AuthorizationDrError("reconcile_runtime_conflict", "MY node must have zero active clients")
+    active_clients = session.scalar(select(func.sum(AuthorizationDrExecutionNode.active_client_count)))
+    if int(active_clients or 0) != 0:
+        raise AuthorizationDrError("reconcile_runtime_conflict", "DR nodes must have zero active clients")
 
 
 def _require_unknown(operation, *, expected_operation_version: int) -> None:
-    valid = operation.status == UNKNOWN_STATUS and operation.remote_call_state == "unknown"
+    statuses = {UNKNOWN_STATUS}
+    if operation.operation_type == "provision_standby_1":
+        statuses.add("reconcile_unknown")
+    valid = operation.status in statuses and operation.remote_call_state == "unknown"
     if not valid or operation.operation_version != expected_operation_version:
         raise AuthorizationDrError("reconcile_operation_conflict", "Unknown operation version changed")
     if operation.lease_token or operation.lease_expires_at:
         raise AuthorizationDrError("reconcile_operation_conflict", "Unknown operation still has an owner lease")
 
 
-def _validated_evidence(operation, evidence: dict) -> dict:
+def _validated_evidence(session, operation, evidence: dict) -> dict:
     kind = evidence.get("kind")
     if kind == EVIDENCE_KIND:
         return _validated_typed_failure(operation, evidence)
     if kind == ARTIFACT_EVIDENCE_KIND:
         return _validated_artifact_evidence(operation, evidence)
+    if kind == PRE_CODE_FAILURE_KIND:
+        return validate_pre_code_failure(session, operation, evidence)
     if kind in {"remote_orphan_without_bundle", "confirmed_no_remote_effect", "remote_unproven"}:
         return _validated_remote_evidence(operation, evidence)
     raise AuthorizationDrError("reconcile_evidence_invalid", "Reconcile evidence kind is unsupported")
@@ -267,7 +288,7 @@ def _artifact_state_matches(session, operation_id: str, expected: str) -> bool:
 def _evidence_fingerprint(operation, item, source, manifest: dict, artifact_state: str) -> str:
     payload = {
         "operation": [operation.id, operation.operation_version, operation.owner_node_id, operation.owner_epoch],
-        "item": [item.id, item.version],
+        "item": [item.id, item.version] if item else [None, 0],
         "source": [source.id, source.fact_version, source.slot_generation, source.is_slot_current],
         "artifact_state": artifact_state,
         "evidence": manifest,
@@ -288,7 +309,7 @@ def _new_case(operation, item, source, manifest, artifact_state, fingerprint: st
         recommended_transition=transition,
         blocker_code=blocker,
         expected_operation_version=operation.operation_version,
-        expected_item_version=item.version,
+        expected_item_version=item.version if item else 0,
         expected_source_fact_version=source.fact_version,
         expected_owner_epoch=operation.owner_epoch,
         expected_node_id=operation.owner_node_id,
@@ -310,6 +331,8 @@ def _classify_manifest(manifest: dict, artifact_state: str) -> tuple[str, str, s
     if kind == ARTIFACT_EVIDENCE_KIND:
         classification = "inventory_ahead_of_central" if manifest["inventory_sequence"] else "local_only_bundle"
         return classification, "reconcile_artifact_ready", classification, classification
+    if kind == PRE_CODE_FAILURE_KIND:
+        return "confirmed_no_effect", "failed", PRE_CODE_FAILURE_KIND, artifact_state
     transitions = {
         "remote_orphan_without_bundle": ("manual_required", "orphan_remote_authorization_protected"),
         "confirmed_no_remote_effect": ("failed", "provision_confirmed_no_effect"),
@@ -341,10 +364,11 @@ def _require_apply_contract(case, *, actor: str, approval_ref: str, idempotency_
         raise AuthorizationDrError("reconcile_case_conflict", "Reconcile case is not ready")
 
 
-def _require_frozen_facts(case, *, operation, item, source) -> None:
+def _require_frozen_facts(session, case, *, operation, item, source) -> None:
+    item_version = item.version if item else 0
     matches = (
         case.expected_operation_version == operation.operation_version
-        and case.expected_item_version == item.version
+        and case.expected_item_version == item_version
         and case.expected_source_fact_version == source.fact_version
         and case.expected_owner_epoch == operation.owner_epoch
         and case.expected_node_id == operation.owner_node_id
@@ -356,6 +380,8 @@ def _require_frozen_facts(case, *, operation, item, source) -> None:
     )
     if not matches:
         raise AuthorizationDrError("reconcile_frozen_fact_conflict", "Frozen reconciliation facts changed")
+    if case.evidence_manifest.get("kind") == PRE_CODE_FAILURE_KIND:
+        validate_pre_code_failure(session, operation, case.evidence_manifest)
 
 
 def _apply_reconcile_transition(session, operation, item, case) -> None:
@@ -380,11 +406,14 @@ def _apply_terminal_reconcile(session, operation, item, case) -> None:
     operation.reconciled_at = _now()
     operation.finished_at = _now()
     operation.operation_version += 1
-    item.status = case.recommended_transition
-    item.outcome = case.blocker_code
-    item.blocker_code = case.blocker_code
-    item.finished_at = _now()
-    item.version += 1
+    if case.evidence_manifest.get("kind") == PRE_CODE_FAILURE_KIND:
+        close_pre_code_flow(session, operation)
+    if item:
+        item.status = case.recommended_transition
+        item.outcome = case.blocker_code
+        item.blocker_code = case.blocker_code
+        item.finished_at = _now()
+        item.version += 1
     if case.blocker_code in LOGIN_FAILURE_STATUSES:
         project_authoritative_login_failure(session, operation.account_id, case.blocker_code)
 
@@ -428,4 +457,9 @@ def _idempotent_applied(case, idempotency_key: str):
     return case
 
 
-__all__ = ["apply_operation_reconcile", "preview_operation_reconcile", "reconcile_case_out"]
+__all__ = [
+    "apply_operation_reconcile",
+    "build_pre_code_failure_evidence",
+    "preview_operation_reconcile",
+    "reconcile_case_out",
+]

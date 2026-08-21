@@ -604,19 +604,24 @@ class TelethonTelegramGateway(TelegramGateway):
         await client.connect()
         raw_session = ""
         try:
-            if password_2fa:
-                await client.sign_in(password=password_2fa)
-            else:
+            if code:
                 if not phone_code_hash:
                     raise RuntimeError("login flow not resumable: phone_code_hash missing")
-                await client.sign_in(
-                    phone=self._usable_phone(phone),
-                    code=code,
-                    phone_code_hash=phone_code_hash,
-                )
+                try:
+                    await client.sign_in(
+                        phone=self._usable_phone(phone),
+                        code=code,
+                        phone_code_hash=phone_code_hash,
+                    )
+                except SessionPasswordNeededError:
+                    if not password_2fa:
+                        return "等待2FA", client.session.save()
+                    await client.sign_in(password=password_2fa)
+            elif password_2fa:
+                await client.sign_in(password=password_2fa)
+            else:
+                raise RuntimeError("login flow not resumable: code or 2FA password missing")
             raw_session = client.session.save()
-        except SessionPasswordNeededError:
-            return "等待2FA", client.session.save()
         finally:
             await client.disconnect()
         return "在线", raw_session

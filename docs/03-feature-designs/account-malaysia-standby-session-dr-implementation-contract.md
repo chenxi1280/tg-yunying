@@ -7,6 +7,8 @@
 
 > 两账号执行合同：一个账号一个 preview/fingerprint/idempotency/approval。B 的 `provision_standby_1` 与 C 的 `migrate_standby_2` 均冻结 canonical A 为唯一 code source；B 完成后重新读回 A，才可创建 C operation。C runtime 必须绑定 exact operation + capability `2.21-abc-a-source` + exact release SHA，成功自动关回 `off`。备份失败只允许 `failed|manual_required|reconcile_unknown`，不得修改或撤销 A；第一个账号未完成 Telegram 登录与 Saved Messages 发送 E4 时禁止第二个，两个账号未全部通过时禁止 10 账号。
 
+> B 验证码/2FA 顺序合同：有托管 2FA 密码不代表可跳过验证码。首次 finish 必须先用冻结临时 Session、phone-code-hash 和本次 A-bound code 调用 code sign-in；仅在 Telegram 返回 `SessionPasswordNeeded` 后，于同一 client 提交 2FA。已有 post-code 临时 Session 的独立 2FA 请求才允许只提交密码。历史 `password_2fa_preceded_code_v1` 缺陷导致的 `AuthKeyUnregisteredError` 必须通过 operation-scoped reconcile case、异人审批和 flow-state fingerprint 收口为 confirmed-no-effect；不得直接改状态后重试。
+
 > 生产结构纠偏：A/B/C 是环境级三套 App 注册和新账号默认角色，不是历史切换后每个账号不可变化的角色标签。单账号验收以三 App ID 两两不同为准；App C/SV `standby_2` 是本次迁移源。历史 App A `standby_repair` 必须经双 Session Telegram UID/AuthKey 探测和 CAS 转正为 SV `standby_1` 后，账号才能进入迁移。
 
 > 当前设备 hash 合同：Telegram 从当前 Session 读取设备时允许返回 `hash=0`，不得判定登录失败，也不得把 `0` 保存为受保护设备标识。MY 必须提交当前设备规范化指纹摘要；SV 只用保留的 peer Session 读取结果解析唯一非零 hash。唯一匹配前不得写 Bundle/slot commit；零匹配、多匹配或 peer 读取失败统一进入 `provision_reconcile_unknown`，且不得自动重登。

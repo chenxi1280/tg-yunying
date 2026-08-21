@@ -6,6 +6,7 @@ import json
 from app.database import SessionLocal
 from app.services.authorization_dr import (
     apply_operation_reconcile,
+    build_pre_code_failure_evidence,
     preview_operation_reconcile,
     reconcile_case_out,
 )
@@ -20,7 +21,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--expected-operation-version", type=int)
     parser.add_argument("--kind", choices=(
         "historical_typed_login_failure", "remote_orphan_without_bundle", "confirmed_no_remote_effect",
-        "remote_unproven", "artifact_forward_recovery",
+        "remote_unproven", "artifact_forward_recovery", "pre_code_submission_failure",
     ), default="historical_typed_login_failure")
     parser.add_argument("--blocker-code", choices=("phone_number_banned", "two_fa_invalid"))
     parser.add_argument("--event-digest")
@@ -47,12 +48,19 @@ def _required(args, *names: str) -> None:
 
 
 def _preview(session, args):
-    _required(
-        args,
-        "expected_operation_version", "event_digest", "source_ref",
-        "runtime_image_sha", "node_id", "owner_epoch",
-    )
-    evidence = _common_evidence(args)
+    _required(args, "expected_operation_version", "event_digest", "source_ref", "runtime_image_sha")
+    if args.kind == "pre_code_submission_failure":
+        evidence = build_pre_code_failure_evidence(
+            session,
+            args.operation_id,
+            tenant_id=args.tenant_id,
+            event_digest=args.event_digest,
+            source_ref=args.source_ref,
+            runtime_image_sha=args.runtime_image_sha,
+        )
+    else:
+        _required(args, "node_id", "owner_epoch")
+        evidence = _common_evidence(args)
     if args.kind == "historical_typed_login_failure":
         _required(args, "blocker_code")
         evidence["blocker_code"] = args.blocker_code

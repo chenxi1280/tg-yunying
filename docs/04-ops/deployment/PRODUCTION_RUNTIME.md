@@ -387,3 +387,12 @@ bash deploy/authorization-abc-backup.sh --mode status --tenant-id <tenant> --acc
 ```
 
 `apply` 先在 SV 创建 B，再为同一账号创建并只开放一个 C operation；C 成功后 runtime 自动回到 `off`。B/C 失败不得切换、覆盖或撤销 A。出现 `reconcile_unknown`、A generation/fact/connection 漂移、非预期远端设备、MY capability/SHA 不匹配或 runtime 未自动关闭时立即停止，不执行第二账号。第一个账号只有在 A/B/C 分别完成 Telegram 授权读回，A 完成 Saved Messages 发送读回，C 双副本和 restore probe 通过且 MY active client=0 后才算通过；两个账号通过前不得建立 10 账号批次。
+
+B 登录必须先提交绑定 code，再在 Telegram 明确要求时提交 managed 2FA。若部署过 `password_2fa_preceded_code_v1` 的旧网关并留下 `AuthKeyUnregisteredError/reconcile_unknown`，先保存异常日志 digest 和部署 run 引用，再执行正式对账脚本；preview 自动从数据库冻结 flow-state digest，apply 不连接 Telegram：
+
+```bash
+docker compose -f docker-compose.server.yml exec -T backend python scripts/authorization_dr_reconcile.py --mode preview --tenant-id <tenant> --operation-id <operation> --expected-operation-version <version> --kind pre_code_submission_failure --event-digest <sha256> --source-ref <deploy-run-or-log-ref> --runtime-image-sha <defective-deployed-sha> --actor <requester>
+docker compose -f docker-compose.server.yml exec -T backend python scripts/authorization_dr_reconcile.py --mode apply --tenant-id <tenant> --operation-id <operation> --expected-operation-version <version> --evidence-fingerprint <preview-fingerprint> --approval-ref <ticket> --idempotency-key <unique-key> --actor <different-approver>
+```
+
+只有读回 `confirmed_no_effect/failed/pre_code_submission_failure`、临时 flow 密文已清除、A 全字段/代次不变、runtime off 且 DR active client=0 后，才可用新 idempotency key 对同一账号重新 preview。仍不得跳到第二账号。

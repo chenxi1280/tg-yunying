@@ -529,6 +529,45 @@ def test_code_login_persists_session_when_two_fa_is_required(monkeypatch):
     assert raw_session == "two-fa-temporary-session"
 
 
+def test_code_login_submits_code_before_available_two_fa_password(monkeypatch):
+    from telethon.errors import SessionPasswordNeededError
+
+    gateway = TelethonTelegramGateway(Settings(login_code_ttl_seconds=300))
+    credentials = DeveloperAppCredentials(app_id=1, api_id=123, api_hash="hash", credentials_version=1)
+    sign_in_calls: list[dict] = []
+
+    class FakeSession:
+        def save(self):
+            return "authorized-session"
+
+    class FakeClient:
+        session = FakeSession()
+
+        async def connect(self):
+            return None
+
+        async def disconnect(self):
+            return None
+
+        async def sign_in(self, **kwargs):
+            sign_in_calls.append(kwargs)
+            if "code" in kwargs:
+                raise SessionPasswordNeededError(None)
+
+    monkeypatch.setattr(gateway, "_new_client", lambda *_args, **_kwargs: FakeClient())
+
+    status, raw_session = asyncio.run(
+        gateway._finish_code_login_async("12345", "2fa", "+10000000000", credentials, "temporary", "hash")
+    )
+
+    assert sign_in_calls == [
+        {"phone": "+10000000000", "code": "12345", "phone_code_hash": "hash"},
+        {"password": "2fa"},
+    ]
+    assert status == "在线"
+    assert raw_session == "authorized-session"
+
+
 @pytest.mark.no_postgres
 def test_account_health_uses_dedicated_probe_timeout(monkeypatch):
     settings = Settings(account_online_probe_timeout_seconds=7)

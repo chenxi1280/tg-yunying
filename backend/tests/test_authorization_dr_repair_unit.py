@@ -25,6 +25,7 @@ from app.models import (
     TgAuthorizationDrBatch,
     TgAuthorizationDrBatchItem,
     TgAuthorizationDrOperation,
+    TgLoginFlow,
 )
 from app.security import encrypt_session
 from app.services._common import _now
@@ -33,6 +34,7 @@ from app.services.authorization_dr import (
     apply_artifact_abandon,
     apply_local_activate,
     apply_operation_reconcile,
+    build_pre_code_failure_evidence,
     claim_artifact_reconcile,
     mark_login_remote_unknown,
     preview_artifact_abandon,
@@ -388,6 +390,59 @@ def test_confirmed_no_remote_effect_closes_unknown_as_failed() -> None:
         assert operation.blocker_code == "provision_confirmed_no_effect"
 
 
+def test_pre_code_failure_reconcile_closes_b_unknown_without_changing_primary() -> None:
+    with _session() as session:
+        operation, primary, flow = _seed_b_pre_code_unknown(session)
+        primary_before = (
+            primary.session_ciphertext,
+            primary.is_current,
+            primary.is_slot_current,
+            primary.fact_version,
+        )
+        evidence = build_pre_code_failure_evidence(
+            session,
+            operation.id,
+            tenant_id=1,
+            event_digest="e" * 64,
+            source_ref="deploy-run:32523653620",
+            runtime_image_sha="9" * 40,
+        )
+        case = preview_operation_reconcile(
+            session,
+            operation.id,
+            tenant_id=1,
+            expected_operation_version=operation.operation_version,
+            evidence=evidence,
+            actor="requester",
+        )
+
+        apply_operation_reconcile(
+            session,
+            operation.id,
+            tenant_id=1,
+            expected_operation_version=operation.operation_version,
+            evidence_fingerprint=case.evidence_fingerprint,
+            approval_ref="INC-PRE-CODE",
+            idempotency_key="pre-code-account-2",
+            actor="approver",
+        )
+
+        assert operation.status == "failed"
+        assert operation.remote_call_state == "confirmed_no_effect"
+        assert operation.blocker_code == "pre_code_submission_failure"
+        assert operation.candidate_authorization_id is None
+        assert case.classification == "confirmed_no_effect"
+        assert flow.status == AccountStatus.ERROR.value
+        assert flow.temporary_session_ciphertext is None
+        assert flow.phone_code_hash_ciphertext is None
+        assert (
+            primary.session_ciphertext,
+            primary.is_current,
+            primary.is_slot_current,
+            primary.fact_version,
+        ) == primary_before
+
+
 def test_artifact_recovery_reuses_original_bytes_and_adds_missing_snapshot(tmp_path) -> None:
     dek = AESGCM.generate_key(bit_length=256)
     envelope = _encrypt_session("original-session", dek, wrapped_dek=WrappedDek("wrapped", "key-v1"))
@@ -525,6 +580,48 @@ def _seed_unknown_operation(session: Session):
     session.add_all([account, source, batch, operation, item])
     session.commit()
     return operation
+
+
+def _seed_b_pre_code_unknown(session: Session):
+    session.add(Tenant(id=1, name="tenant"))
+    session.add(AuthorizationDrRuntimeContract(id=1, mode="off"))
+    session.add(AuthorizationDrExecutionNode(
+        id="my-node-1", region_code="my", purpose="standby_session_dr", capability_version="2.21",
+        runtime_image_sha="9" * 40, standby_egress_id="my-egress", status="ready", active_client_count=0,
+        last_heartbeat_at=_now(),
+    ))
+    session.add(TelegramDeveloperApp(id=2, app_name="B", api_id=102, api_hash_ciphertext="b"))
+    account = TgAccount(
+        id=2, tenant_id=1, display_name="canary", phone_masked="2", current_authorization_id=1,
+        session_ciphertext=encrypt_session("primary"), authorization_generation=1,
+        authorization_fact_generation=2, connection_generation=1,
+    )
+    primary = TgAccountAuthorization(
+        id=1, tenant_id=1, account_id=2, role="primary", logical_slot="primary",
+        is_current=True, is_slot_current=True, protected_from_cleanup=True,
+        session_ciphertext=encrypt_session("primary"), status="active", health_status="healthy",
+        fact_version=2,
+    )
+    flow = TgLoginFlow(
+        id=22, tenant_id=1, account_id=2, method="code", status=AccountStatus.WAITING_CODE.value,
+        challenge_sent_at=_now(), temporary_session_ciphertext="encrypted-temp",
+        phone_code_hash_ciphertext="encrypted-hash", authorization_role="standby_1",
+        developer_app_id=2,
+    )
+    operation = TgAuthorizationDrOperation(
+        id="b-operation", tenant_id=1, account_id=2, operation_type="provision_standby_1",
+        logical_slot="standby_1", source_authorization_id=1, code_source_authorization_id=1,
+        source_generation=1, target_generation=1, developer_app_id=2,
+        developer_app_api_id_snapshot=102, developer_app_credentials_version=1, assignment_version=1,
+        egress_id="sv-proxy:1", egress_version=1, idempotency_key="b-operation",
+        request_fingerprint="e" * 64, status="reconcile_unknown", remote_call_state="unknown",
+        blocker_code="AuthKeyUnregisteredError", login_flow_id=22,
+        login_code_message_id="233", login_code_received_at=_now(),
+        requested_by="requester", approved_by="approver", approval_ref="canary",
+    )
+    session.add_all([account, primary, flow, operation])
+    session.commit()
+    return operation, primary, flow
 
 
 def _artifact_evidence(operation) -> dict:
