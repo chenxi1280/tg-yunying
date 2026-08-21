@@ -26,8 +26,9 @@
 ### 1.2 2026-08-21 生产实施事实
 
 - 账号 27、28 已分别完成 App C/SV `standby_2` 到 MY generation 2 的槽位提交；两项均读回 MY current、双副本 `2/2`、恢复密钥解封与隔离 restore probe passed，旧 SV App C Session 保持 `retained + protected`。这只证明 `slot_canary=2/2_pass`，不等于旧 SV 远端授权已退役或完整 PRD 已完成。
-- 后续扩量批次 `target_count=271` 的当前守恒结果为 `241 succeeded + 22 failed + 8 reconcile_unknown = 271`，运行合同已切回 `off`。在 8 个 unknown 完成逐项对账、22 个 failed 完成已知终态分类前，禁止继续扩量或把批次写成最终迁移完成。
-- 另有早期账号 24、25、26 的独立 `provision_reconcile_unknown` operation，不属于上述 271 批次成功分母；三者均无 candidate/中心 Bundle/slot commit，旧 SV `standby_2` 仍 current、Session 存在且 protected，禁止自动重登。账号 24/25 当前无持久包；账号 26 在 MY 已有同 operation、generation 2 的本地密封包，但无 SV 镜像、中心 inventory 或 receipt，只能在原字节身份校验和只读 Telegram probe 通过后续建，不得重新登录或生成新 Session。
+- 后续扩量批次 `target_count=271` 的当前守恒结果为 `241 succeeded + 22 failed + 5 manual_required + 3 reconcile_unknown = 271`，批次状态为 `reconcile_required`，业务 `finished_at` 保持空，运行合同保持 `off`。5 个 `PasswordHashInvalidError` 项已按 typed 历史证据收口为 `two_fa_invalid/confirmed_no_effect`；22 个 failed 已分类为 `phone_number_banned`。剩余 3 个 unknown 未完成逐项对账前，禁止继续扩量或把批次写成最终迁移完成。
+- 全局剩余 unknown 精确为账号 24、25、26、67、87、111。早期账号 24、25、26 不属于上述 271 批次成功分母；三者均无 candidate/中心 Bundle/slot commit，旧 SV `standby_2` Session 存在且 protected，禁止自动重登。账号 24/25 当前无持久包；账号 26 在 MY 已有同 operation、generation 2 的本地密封包，但无 SV 镜像、中心 inventory 或 receipt，只能在原字节身份校验和只读 Telegram probe 通过后续建，不得重新登录或生成新 Session。
+- P0A unknown coordinator 已由 release SHA `e8cd88dc496a56c586a5bcc502d81a318b76d7a9` 经 Deploy Production run `32456712129` 发布，生产 Alembic head 为 `0158_dr_reconcile`。账号 297、307、310、311、314 通过 preview/fingerprint、operation/item/source CAS、异人 apply 与独立 readback 收口；统一审计引用为 `INC-20260821-DR-TYPED-2FA-RECONCILE`，过程中未创建 candidate、Bundle 或登录副作用。
 - 当前已交付的是 `standby_2` 迁移状态机、MY 专用节点、SSH 双副本、恢复探测、slot CAS、旧源保留保护、48 小时设备清理边界和相关读模型。`local_activate`、`restore_sv_pair`、`drill_wake`、双 SV 失效后的 `emergency_reauthorize_primary`、中心恢复对账、decommission/erase、跨 Action/Gateway/listener/online/sync generation fence 尚未完成。
 - 授权备份不等于消息、任务、数据库、Redis、素材和 Dispatcher 的异地容灾。
 

@@ -9,7 +9,7 @@
 
 > 当前设备 hash 合同：Telegram 从当前 Session 读取设备时允许返回 `hash=0`，不得判定登录失败，也不得把 `0` 保存为受保护设备标识。MY 必须提交当前设备规范化指纹摘要；SV 只用保留的 peer Session 读取结果解析唯一非零 hash。唯一匹配前不得写 Bundle/slot commit；零匹配、多匹配或 peer 读取失败统一进入 `provision_reconcile_unknown`，且不得自动重登。
 
-> 生产实施读回：账号 27、28 的 MY generation 2 槽位均为 current，双副本为 `2/2`，隔离 restore probe passed，旧 SV App C Session 为 retained/protected，因此 `slot_canary=2/2_pass`。后续 271 项扩量批次为 `241 succeeded / 22 failed / 8 reconcile_unknown`，runtime 已切 `off`；扩量最终验收保持 blocked。迁移核心通过不代表 `local_activate`、`restore_sv_pair`、`drill_wake`、紧急主授权重建、中心恢复对账、decommission/erase 或跨运行代次 fence 已实现。
+> 生产实施读回：账号 27、28 的 MY generation 2 槽位均为 current，双副本为 `2/2`，隔离 restore probe passed，旧 SV App C Session 为 retained/protected，因此 `slot_canary=2/2_pass`。release SHA `e8cd88dc496a56c586a5bcc502d81a318b76d7a9`、Deploy Production run `32456712129` 与 Alembic head `0158_dr_reconcile` 已独立读回；SV/MY backend image ID 一致，MY 节点上报精确运行 SHA、ready、active client 0，runtime 保持 `off`。271 项扩量批次当前为 `241 succeeded / 22 failed / 5 manual_required / 3 reconcile_unknown`，全局剩余 unknown 为账号 24/25/26/67/87/111；扩量最终验收保持 blocked。迁移核心通过不代表 `local_activate`、`restore_sv_pair`、`drill_wake`、紧急主授权重建、中心恢复对账、decommission/erase 或跨运行代次 fence 已实现。
 
 > unknown 对账事实：账号 24/25 无持久包；账号 26 已存在与原 operation、generation 2 精确绑定的 MY 本地密封包，但缺少 SV 镜像、中心 inventory/receipt。对账协调器只能复用原字节、原 operation 和原 generation 补齐证据；不得调用登录 RPC，不得生成新 Session，也不得把 local-only 推导成成功。
 
