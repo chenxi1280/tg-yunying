@@ -14,7 +14,7 @@ import time
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 import httpx
-from telethon.errors import PhoneNumberBannedError
+from telethon.errors import PasswordHashInvalidError, PhoneNumberBannedError
 
 from app.integrations.telegram import AuthorizationIdentity, DeveloperAppCredentials, create_gateway
 from app.workers.authorization_dr_kms import DekProtector, WrappedDek
@@ -124,12 +124,13 @@ def _process_claim(client: DrNodeClient, gateway, claim: dict) -> None:
         login_started = True
         try:
             raw_session = _complete_login(client, gateway, claim, material)
-        except PhoneNumberBannedError:
+        except (PasswordHashInvalidError, PhoneNumberBannedError) as exc:
+            blocker_code = "two_fa_invalid" if isinstance(exc, PasswordHashInvalidError) else "phone_number_banned"
             client.post(
                 f"/internal/v1/authorization-dr/operations/{operation_id}/login-failed",
-                {**owner, "blocker_code": "phone_number_banned"},
+                {**owner, "blocker_code": blocker_code},
             )
-            LOGGER.warning("authorization DR phone number is banned: %s", operation_id)
+            LOGGER.warning("authorization DR login rejected (%s): %s", blocker_code, operation_id)
             return
         identity = gateway.authorization_identity(raw_session, _credentials(claim, material))
         receipt, object_key = _persist_bundle(client.config, claim, raw_session, identity)
