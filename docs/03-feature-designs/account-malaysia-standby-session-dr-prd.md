@@ -50,6 +50,7 @@
 ### 1.2.3 两账号修复 canary 的实施切片
 
 - 本切片只允许两个精确账号逐个执行，且只选择 canonical A 已显式建模、B 缺失、已有健康 App C/SV 迁移源的账号。它补齐 A 保护的 B 登录和 C 迁移编排，不冒充全量 `complete_online_abc`。
+- 两账号执行前先运行 DB-only canonical A backfill：preview 冻结全部未删除账号的 Session 密文摘要、App/proxy/current pointer 与三组 generation 并生成 fingerprint；apply 需要异人审批且只为已有可解析 Session 的账号创建与 legacy Session/App/proxy 完全一致的 `primary/SV/current` 授权行，不连接 Telegram、不改 Session 和 generation。缺失/不可解析 Session、已有 current 冲突必须逐类留在 readback，禁止伪造 A。两账号候选再逐个执行显式 A identity qualification，Telegram 探测前后 fingerprint 不变才只补 UID/AuthKey/device hash 事实；该探测不能切主或替换 A。
 - preview 只读数据库并冻结 A authorization、Session/App/proxy、authorization/fact/connection generation、App B assignment、SV proxy 和幂等键。apply 前异人审批；B/C 的验证码都只从冻结 A 读取，并绑定 challenge 时间与 Telegram service message ID，验证码不写 operation、argv、stdout 或审计。
 - 备份 operation 不具备切主能力。健康检查、Dispatcher、账号安全自愈和旧 activate 入口只能创建 `fault_candidate` 或保持失败，不能直接替换 A；正式切主只允许经 `local_activate` 独立 preview、双探测、代际 CAS 和异人 apply。
 - MY 节点只有 capability=`2.21-abc-a-source` 且 runtime image SHA 与合同完全一致时才可领取；runtime 每次只绑定一个 C operation，C slot 成功后自动回到 `off`。任一 A 漂移、验证码歧义、remote unknown、意外设备变化或 capability/SHA 不匹配立即停止。
