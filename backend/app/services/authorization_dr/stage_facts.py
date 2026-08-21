@@ -17,6 +17,7 @@ STAGES = frozenset({
     "central_receipt_committed",
     "restore_probe_passed",
     "slot_committed",
+    "artifact_recovery_abandoned",
 })
 
 

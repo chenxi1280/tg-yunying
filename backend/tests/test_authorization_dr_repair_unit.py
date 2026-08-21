@@ -30,10 +30,12 @@ from app.security import encrypt_session
 from app.services._common import _now
 from app.services.account_online_probe import OnlineProbeResult, _apply_probe_result
 from app.services.authorization_dr import (
+    apply_artifact_abandon,
     apply_local_activate,
     apply_operation_reconcile,
     claim_artifact_reconcile,
     mark_login_remote_unknown,
+    preview_artifact_abandon,
     preview_local_activate,
     preview_operation_reconcile,
     project_authoritative_login_failure,
@@ -269,6 +271,50 @@ def test_artifact_reconcile_can_resume_after_pre_bundle_lease_expiry() -> None:
 
         assert second["owner_epoch"] == first["owner_epoch"] + 1
         assert second["lease_token"] != first["lease_token"]
+
+
+def test_unrecoverable_legacy_artifact_closes_item_as_manual_required() -> None:
+    with _session() as session:
+        operation = _seed_unknown_operation(session)
+        case = preview_operation_reconcile(
+            session, operation.id, tenant_id=1, expected_operation_version=operation.operation_version,
+            evidence=_artifact_evidence(operation), actor="reconcile-requester",
+        )
+        apply_operation_reconcile(
+            session, operation.id, tenant_id=1, expected_operation_version=operation.operation_version,
+            evidence_fingerprint=case.evidence_fingerprint, approval_ref="INC-ARTIFACT",
+            idempotency_key="artifact-legacy", actor="reconcile-approver",
+        )
+        claim_artifact_reconcile(session, operation.id, "my-node-1")
+        operation.lease_expires_at = _now() - timedelta(seconds=1)
+        session.commit()
+        preview = preview_artifact_abandon(
+            session, operation.id, tenant_id=1, expected_operation_version=operation.operation_version,
+            observed_ciphertext_digest="d" * 64, requested_by="abandon-requester",
+        )
+
+        result = apply_artifact_abandon(
+            session, operation.id, tenant_id=1, expected_operation_version=operation.operation_version,
+            observed_ciphertext_digest="d" * 64, requested_by="abandon-requester",
+            evidence_fingerprint=preview["evidence_fingerprint"], actor="abandon-approver",
+            approval_ref="INC-LEGACY-V1", idempotency_key="abandon-legacy-26",
+        )
+        item = session.get(TgAuthorizationDrBatchItem, operation.batch_item_id)
+
+        assert result["operation_status"] == "manual_required"
+        assert result["blocker_code"] == "legacy_bundle_key_unrecoverable"
+        assert item.status == "manual_required"
+        assert item.outcome == "legacy_bundle_key_unrecoverable"
+        assert operation.remote_call_state == "reconciled_hold"
+        assert case.status == "applied"
+
+        repeated = apply_artifact_abandon(
+            session, operation.id, tenant_id=1, expected_operation_version=preview["operation_version"],
+            observed_ciphertext_digest="d" * 64, requested_by="abandon-requester",
+            evidence_fingerprint=preview["evidence_fingerprint"], actor="abandon-approver",
+            approval_ref="INC-LEGACY-V1", idempotency_key="abandon-legacy-26",
+        )
+        assert repeated == result
 
 
 def test_remote_orphan_closes_unknown_but_remains_protected_from_late_callback() -> None:
