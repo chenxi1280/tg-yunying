@@ -1272,7 +1272,8 @@ def test_code_receiver_primary_login_with_2fa_keeps_existing_password(monkeypatc
         assert decrypt_secret(snapshot.two_fa_password_ciphertext) == "receiver-2fa-password"
 
 
-def test_standby_session_self_heal_activates_existing_standby_when_primary_session_missing():
+@pytest.mark.no_postgres
+def test_standby_session_self_heal_does_not_directly_switch_primary():
     with _session() as session:
         account = _seed_account(session, status=AccountStatus.WAITING_CODE.value, session_value="")
         session.add(
@@ -1304,10 +1305,10 @@ def test_standby_session_self_heal_activates_existing_standby_when_primary_sessi
         refreshed = account_security_batch_detail(session, 1, batch.id)
         updated = session.get(TgAccount, account.id)
 
-        assert refreshed.status == "succeeded"
-        assert refreshed.items[0].status == "succeeded"
-        assert updated.status == AccountStatus.ACTIVE.value
-        assert updated.session_ciphertext
+        assert refreshed.status == "manual_required"
+        assert refreshed.items[0].status == "manual_required"
+        assert updated.status == AccountStatus.WAITING_CODE.value
+        assert not updated.session_ciphertext
 
 
 def test_profile_batch_avatar_waits_until_material_cache_ready(tmp_path, monkeypatch):
