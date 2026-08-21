@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 import pytest
 
 from app.database import Base
-from app.integrations.telegram.contracts import AccountAuthorizationSnapshot
+from app.integrations.telegram.contracts import AccountAuthorizationSnapshot, AuthorizationIdentity
 from app.models import AccountStatus, TelegramDeveloperApp, Tenant, TgAccount, TgAccountAuthorization
 from app.security import decrypt_secret
 from app.services import account_authorization_metadata
@@ -176,3 +176,27 @@ def test_backfill_marks_failed_standby_as_needs_repair(monkeypatch) -> None:
         assert asset.derived_status == "manual_required"
         assert asset.failure_reason == "备用授权元数据回填失败：current authorization hash missing"
         assert asset.telegram_authorization_hash_ciphertext in ("", None)
+
+
+def test_resolves_zero_identity_hash_from_peer_observer(monkeypatch) -> None:
+    identity = AuthorizationIdentity(
+        authorization_hash="0",
+        auth_key_fingerprint_digest="a" * 64,
+        telegram_user_id_digest="b" * 64,
+        authorization_fingerprint_digest="c" * 64,
+    )
+    monkeypatch.setattr(
+        account_authorization_metadata,
+        "resolve_peer_authorization_hash",
+        lambda *_args, **_kwargs: "123456",
+    )
+
+    resolved, source = account_authorization_metadata.resolve_authorization_identity_hash(
+        SimpleNamespace(),
+        7,
+        identity,
+        exclude_authorization_id=8,
+    )
+
+    assert resolved.authorization_hash == "123456"
+    assert source == "peer_observer"

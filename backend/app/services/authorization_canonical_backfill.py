@@ -11,6 +11,7 @@ from sqlalchemy import select
 from app.models import TelegramDeveloperApp, TgAccount, TgAccountAuthorization
 from app.security import decrypt_session, encrypt_secret
 from app.services._common import _now, audit, gateway
+from app.services.account_authorization_metadata import resolve_authorization_identity_hash
 from app.services.developer_apps import credentials_for_authorization
 
 
@@ -107,7 +108,14 @@ def qualify_primary_authorization(
         decrypt_session(current.session_ciphertext),
         credentials_for_authorization(session, current),
     )
+    identity, hash_source = resolve_authorization_identity_hash(
+        session,
+        account_id,
+        identity,
+        exclude_authorization_id=current.id,
+    )
     _validate_primary_identity(current, identity)
+    session.expire_all()
     account, locked = _primary_projection(session, tenant_id, account_id, for_update=True)
     locked_payload = _primary_qualification_payload(account, locked)
     locked_fingerprint = _digest(json.dumps(locked_payload, sort_keys=True, separators=(",", ":")))
@@ -122,7 +130,10 @@ def qualify_primary_authorization(
         action="验证 canonical A 授权身份",
         target_type="tg_account_authorizations",
         target_id=locked.id,
-        detail=f"account_id={account_id}; approval_ref={approval_ref}; authorization_hash_present=true",
+        detail=(
+            f"account_id={account_id}; approval_ref={approval_ref}; "
+            f"authorization_hash_present=true; hash_source={hash_source}"
+        ),
     )
     session.commit()
     return {
@@ -131,6 +142,7 @@ def qualify_primary_authorization(
         "primary_authorization_id": locked.id,
         "status": "qualified",
         "authorization_hash_present": True,
+        "authorization_hash_source": hash_source,
         "primary_unchanged": True,
     }
 
@@ -326,7 +338,24 @@ def _primary_qualification_payload(account, current) -> dict:
         "session_digest": _digest(current.session_ciphertext or ""),
         "auth_key_digest": current.auth_key_fingerprint_digest,
         "user_id_digest": current.telegram_user_id_digest,
+        "observer_snapshot": _observer_snapshot(account, current),
     }
+
+
+def _observer_snapshot(account, current) -> list[list]:
+    rows = [
+        row for row in account.authorizations
+        if row.id != current.id
+        and row.disabled_at is None
+        and row.status in {"active", "standby"}
+        and row.health_status == "healthy"
+        and row.is_slot_current
+        and row.session_ciphertext
+    ]
+    return [
+        [row.id, row.fact_version, row.logical_slot, row.developer_app_id, _digest(row.session_ciphertext)]
+        for row in sorted(rows, key=lambda value: value.id)
+    ]
 
 
 def _validate_primary_identity(current, identity) -> None:

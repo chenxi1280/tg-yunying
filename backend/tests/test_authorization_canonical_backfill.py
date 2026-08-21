@@ -186,10 +186,23 @@ def test_primary_qualification_updates_only_identity_facts(monkeypatch) -> None:
             backfill.gateway,
             "authorization_identity",
             lambda *args, **kwargs: AuthorizationIdentity(
-                authorization_hash="123",
+                authorization_hash="0",
                 auth_key_fingerprint_digest="a" * 64,
                 telegram_user_id_digest="b" * 64,
                 authorization_fingerprint_digest="c" * 64,
+            ),
+        )
+        monkeypatch.setattr(
+            backfill,
+            "resolve_authorization_identity_hash",
+            lambda _session, _account_id, identity, **_kwargs: (
+                AuthorizationIdentity(
+                    authorization_hash="123",
+                    auth_key_fingerprint_digest=identity.auth_key_fingerprint_digest,
+                    telegram_user_id_digest=identity.telegram_user_id_digest,
+                    authorization_fingerprint_digest=identity.authorization_fingerprint_digest,
+                ),
+                "peer_observer",
             ),
         )
 
@@ -205,6 +218,7 @@ def test_primary_qualification_updates_only_identity_facts(monkeypatch) -> None:
         account = session.get(TgAccount, 1)
         row = session.get(TgAccountAuthorization, account.current_authorization_id)
         assert result["primary_unchanged"] is True
+        assert result["authorization_hash_source"] == "peer_observer"
         assert account.session_ciphertext == "session"
         assert (account.authorization_generation, account.connection_generation) == (3, 5)
         assert account.authorization_fact_generation == 5

@@ -21,6 +21,7 @@ from app.services.account_authorizations import (
     start_standby_authorization_login,
     verify_standby_authorization_login,
 )
+from app.services.account_authorization_metadata import resolve_authorization_identity_hash
 from app.services.account_two_fa import managed_two_fa_password
 from app.services.developer_apps import credentials_for_authorization
 from app.timezone import as_beijing_aware
@@ -274,6 +275,12 @@ def _finish_b_login(session, operation, source, flow, code: str) -> None:
         identity = gateway.authorization_identity(
             decrypt_session(asset.session_ciphertext),
             credentials_for_authorization(session, asset),
+        )
+        identity, _hash_source = resolve_authorization_identity_hash(
+            session,
+            operation.account_id,
+            identity,
+            exclude_authorization_id=asset.id,
         )
         _qualify_b(asset, source, identity)
     except Exception as exc:

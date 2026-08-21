@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from collections.abc import Iterator
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.integrations.telegram.authorization_fingerprint import authorization_fingerprint_digest
-from app.integrations.telegram.contracts import AccountAuthorizationSnapshot
+from app.integrations.telegram.contracts import AccountAuthorizationSnapshot, AuthorizationIdentity
 from app.models import AccountProxy, TelegramDeveloperApp, TgAccount, TgAccountAuthorization
 
 from ._common import gateway
@@ -90,6 +90,27 @@ def resolve_peer_authorization_hash(
     return next(iter(usable_hashes), "")
 
 
+def resolve_authorization_identity_hash(
+    session: Session,
+    account_id: int,
+    identity: AuthorizationIdentity,
+    *,
+    exclude_authorization_id: int | None = None,
+) -> tuple[AuthorizationIdentity, str]:
+    direct = _usable_hash(identity.authorization_hash)
+    if direct:
+        return identity, "direct"
+    resolved = resolve_peer_authorization_hash(
+        session,
+        account_id,
+        identity.authorization_fingerprint_digest,
+        exclude_authorization_id=exclude_authorization_id,
+    )
+    if not resolved:
+        raise ValueError("current authorization hash missing")
+    return replace(identity, authorization_hash=resolved), "peer_observer"
+
+
 def _peer_authorization_views(
     session: Session,
     account: TgAccount,
@@ -132,4 +153,9 @@ def _usable_hash(value: str | int | None) -> str:
     return "" if raw in {"", "0"} else raw
 
 
-__all__ = ["AuthorizationMetadata", "read_authorization_metadata", "resolve_peer_authorization_hash"]
+__all__ = [
+    "AuthorizationMetadata",
+    "read_authorization_metadata",
+    "resolve_authorization_identity_hash",
+    "resolve_peer_authorization_hash",
+]

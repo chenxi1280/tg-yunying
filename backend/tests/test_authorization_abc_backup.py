@@ -165,7 +165,15 @@ def test_apply_logs_in_b_without_changing_a(session: Session, monkeypatch) -> No
         lambda *_args, **_kwargs: SimpleNamespace(
             telegram_user_id_digest="1" * 64,
             auth_key_fingerprint_digest="3" * 64,
-            authorization_hash="987654",
+            authorization_hash="0",
+            authorization_fingerprint_digest="4" * 64,
+        ),
+    )
+    monkeypatch.setattr(
+        "app.services.authorization_dr.abc_backup.resolve_authorization_identity_hash",
+        lambda _session, _account_id, identity, **_kwargs: (
+            SimpleNamespace(**{**identity.__dict__, "authorization_hash": "987654"}),
+            "peer_observer",
         ),
     )
 
