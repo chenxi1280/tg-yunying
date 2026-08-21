@@ -6,7 +6,7 @@ MY 节点只运行 `authorization-dr-node`，不运行消息、listener、Planne
 
 MY 无 GHCR 拉取凭据时，精确 release 镜像先经 SSH 传输、摘要校验并 `docker load`，随后显式设置 `AUTHORIZATION_DR_IMAGE_MODE=local`；脚本只在本机已存在完整 `TGYUNYING_BACKEND_IMAGE` 时启动。`registry` 模式仍会真实 pull，二者不会自动互相回退。
 
-两账号 ABC canary 前使用 `deploy/authorization-canonical-backfill.sh`。必须先 `--mode preview` 保存 fingerprint，再以不同 requester/approver 执行 `--mode apply --expected-fingerprint ...`；它只改数据库授权投影，不连接 Telegram。apply 后必须 `--mode status` 读回，`missing_session/session_unreadable/current_conflict` 不得计入 canonical 成功。仅对精确 canary 候选使用 `qualify-preview/qualify-apply`，后者会使用既有 A Session 做 Telegram identity probe，但不创建新登录、不替换 Session、不切主。
+两账号 ABC canary 前使用 `deploy/authorization-canonical-backfill.sh`。必须先 `--mode preview` 保存 fingerprint，再以不同 requester/approver 执行 `--mode apply --expected-fingerprint ...`；它只改数据库授权投影，不连接 Telegram。账号 pointer 缺失但存在唯一 `is_current primary/SV` 且 Session/App 精确一致时只链接已有行，禁止重复创建；其余才创建新 A 行。apply 后必须 `--mode status` 读回，`missing_session/session_unreadable/current_conflict` 不得计入 canonical 成功。仅对精确 canary 候选使用 `qualify-preview/qualify-apply`，后者会使用既有 A Session 做 Telegram identity probe，但不创建新登录、不替换 Session、不切主。
 
 单账号 B/C 完成后使用 `deploy/authorization-abc-backup.sh --mode verify-preview` 冻结 E4 fingerprint，再以独立 idempotency key 和异人审批执行 `--mode verify-apply`。该入口先持久化 operation，再让 A 向 Saved Messages 只发送一次；成功后读回 A/B Telegram 身份、C 双副本/restore probe、runtime off 和 MY active client=0，并把 remote message ID 写入审计。发送结果不明进入 `reconcile_unknown`，相同 key 只能返回原 operation，禁止重发。
 

@@ -24,6 +24,8 @@ class BackfillItem:
     session_digest: str
     auth_key_digest: str
     current_authorization_id: int | None
+    existing_current_authorization_id: int | None
+    existing_current_fact_version: int
     developer_app_id: int | None
     proxy_id: int | None
     authorization_generation: int
@@ -50,7 +52,7 @@ def apply_canonical_authorization_backfill(
     preview = _preview_result(tenant_id, items)
     if preview["fingerprint"] != expected_fingerprint:
         raise ValueError("canonical backfill fingerprint changed")
-    created_ids = _apply_eligible_items(session, tenant_id, items=items, actor=approved_by)
+    applied = _apply_items(session, tenant_id, items=items, actor=approved_by)
     audit(
         session,
         tenant_id=tenant_id,
@@ -60,12 +62,13 @@ def apply_canonical_authorization_backfill(
         target_id=str(tenant_id),
         detail=(
             f"approval_ref={approval_ref}; fingerprint={expected_fingerprint}; "
-            f"created={len(created_ids)}; missing_session={preview['counts'].get('missing_session', 0)}"
+            f"created={applied['created_count']}; linked={applied['linked_count']}; "
+            f"missing_session={preview['counts'].get('missing_session', 0)}"
         ),
     )
     session.commit()
     readback = canonical_authorization_backfill_status(session, tenant_id)
-    return {**preview, "mode": "apply", "created_count": len(created_ids), "readback": readback}
+    return {**preview, "mode": "apply", **applied, "readback": readback}
 
 
 def canonical_authorization_backfill_status(session, tenant_id: int) -> dict:
@@ -148,10 +151,15 @@ def _item_for_account(session, account: TgAccount) -> BackfillItem:
         if account.current_authorization_id
         else None
     )
-    outcome = _classify(account, current)
+    existing_current = session.scalar(select(TgAccountAuthorization).where(
+        TgAccountAuthorization.account_id == account.id,
+        TgAccountAuthorization.is_current.is_(True),
+    ))
+    outcome = _classify(account, current, existing_current)
     session_digest = _digest(account.session_ciphertext or "")
-    auth_key_digest = _auth_key_digest(account.session_ciphertext) if outcome == "eligible" else ""
-    if outcome == "eligible" and not auth_key_digest:
+    needs_session_parse = outcome in {"eligible", "link_existing"}
+    auth_key_digest = _auth_key_digest(account.session_ciphertext) if needs_session_parse else ""
+    if needs_session_parse and not auth_key_digest:
         outcome = "session_unreadable"
     return BackfillItem(
         account_id=account.id,
@@ -159,6 +167,8 @@ def _item_for_account(session, account: TgAccount) -> BackfillItem:
         session_digest=session_digest,
         auth_key_digest=auth_key_digest,
         current_authorization_id=account.current_authorization_id,
+        existing_current_authorization_id=existing_current.id if existing_current else None,
+        existing_current_fact_version=existing_current.fact_version if existing_current else 0,
         developer_app_id=account.developer_app_id,
         proxy_id=account.proxy_id,
         authorization_generation=account.authorization_generation,
@@ -167,7 +177,7 @@ def _item_for_account(session, account: TgAccount) -> BackfillItem:
     )
 
 
-def _classify(account: TgAccount, current: TgAccountAuthorization | None) -> str:
+def _classify(account: TgAccount, current, existing_current) -> str:
     if current:
         valid = (
             current.account_id == account.id
@@ -176,10 +186,21 @@ def _classify(account: TgAccount, current: TgAccountAuthorization | None) -> str
             and current.logical_slot == "primary"
             and current.session_ciphertext == account.session_ciphertext
             and current.developer_app_id == account.developer_app_id
+            and existing_current
+            and existing_current.id == current.id
         )
         return "already_canonical" if valid else "current_conflict"
     if account.current_authorization_id is not None:
         return "current_missing"
+    if existing_current:
+        valid = (
+            existing_current.logical_slot == "primary"
+            and existing_current.is_slot_current
+            and existing_current.provision_region_code == "sv"
+            and existing_current.session_ciphertext == account.session_ciphertext
+            and existing_current.developer_app_id == account.developer_app_id
+        )
+        return "link_existing" if valid else "current_conflict"
     if not account.session_ciphertext:
         return "missing_session"
     if account.developer_app_id is None:
@@ -215,9 +236,15 @@ def _preview_result(tenant_id: int, items: list[BackfillItem]) -> dict:
     }
 
 
-def _apply_eligible_items(session, tenant_id: int, *, items: list[BackfillItem], actor: str) -> list[int]:
-    created_ids: list[int] = []
+def _apply_items(session, tenant_id: int, *, items: list[BackfillItem], actor: str) -> dict:
+    created_count = 0
+    linked_count = 0
     for item in items:
+        if item.outcome == "link_existing":
+            account = session.get(TgAccount, item.account_id)
+            account.current_authorization_id = item.existing_current_authorization_id
+            linked_count += 1
+            continue
         if item.outcome != "eligible":
             continue
         account = session.get(TgAccount, item.account_id)
@@ -226,8 +253,8 @@ def _apply_eligible_items(session, tenant_id: int, *, items: list[BackfillItem],
         session.add(row)
         session.flush()
         account.current_authorization_id = row.id
-        created_ids.append(row.id)
-    return created_ids
+        created_count += 1
+    return {"created_count": created_count, "linked_count": linked_count}
 
 
 def _new_primary_authorization(tenant_id, account, *, app, item, actor) -> TgAccountAuthorization:

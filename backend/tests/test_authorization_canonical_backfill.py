@@ -107,6 +107,48 @@ def test_preview_classifies_corrupt_encrypted_session() -> None:
         assert preview["counts"] == {"session_unreadable": 1}
 
 
+def test_apply_links_matching_existing_current_without_creating_duplicate(monkeypatch) -> None:
+    with _session() as session:
+        account = _account(1)
+        session.add(account)
+        session.flush()
+        existing = TgAccountAuthorization(
+            tenant_id=1,
+            account_id=1,
+            role="primary",
+            logical_slot="primary",
+            is_slot_current=True,
+            provision_region_code="sv",
+            developer_app_id=10,
+            proxy_id=20,
+            session_ciphertext="session",
+            status="active",
+            health_status="healthy",
+            is_current=True,
+        )
+        session.add(existing)
+        session.commit()
+        monkeypatch.setattr(backfill, "_auth_key_digest", lambda value: "a" * 64)
+
+        preview = backfill.preview_canonical_authorization_backfill(session, 1)
+        result = backfill.apply_canonical_authorization_backfill(
+            session,
+            1,
+            expected_fingerprint=preview["fingerprint"],
+            requested_by="requester",
+            approved_by="approver",
+            approval_ref="link-approved",
+        )
+
+        account = session.get(TgAccount, 1)
+        assert preview["counts"] == {"link_existing": 1}
+        assert result["created_count"] == 0
+        assert result["linked_count"] == 1
+        assert account.current_authorization_id == existing.id
+        assert session.query(TgAccountAuthorization).count() == 1
+        assert (account.authorization_generation, account.connection_generation) == (3, 5)
+
+
 def test_apply_requires_distinct_requester_and_approver(monkeypatch) -> None:
     with _session() as session:
         session.add(_account(1))
