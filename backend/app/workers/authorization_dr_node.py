@@ -26,6 +26,7 @@ CODE_POLL_SECONDS = 2
 LEASE_RENEW_SECONDS = 30
 IDLE_POLL_SECONDS = 10
 RECEIPT_POST_ATTEMPTS = 3
+SHA_LENGTHS = (40, 64)
 
 
 @dataclass(frozen=True)
@@ -34,6 +35,7 @@ class NodeConfig:
     internal_token: str
     node_id: str
     egress_id: str
+    runtime_image_sha: str
     expected_egress_ip: str
     egress_probe_url: str
     local_dir: Path
@@ -76,6 +78,7 @@ class DrNodeClient:
             "region_code": "my",
             "purpose": "standby_session_dr",
             "capability_version": "2.16",
+            "runtime_image_sha": self.config.runtime_image_sha,
             "standby_egress_id": self.config.egress_id,
             "active_client_count": active_clients,
             "node_version": 1,
@@ -444,6 +447,7 @@ def load_config() -> NodeConfig:
         internal_token=_required_env("AUTHORIZATION_DR_INTERNAL_TOKEN"),
         node_id=_required_env("AUTHORIZATION_DR_NODE_ID"),
         egress_id=_required_env("AUTHORIZATION_DR_EGRESS_ID"),
+        runtime_image_sha=_runtime_image_sha(_required_env("AUTHORIZATION_DR_RUNTIME_IMAGE_SHA")),
         expected_egress_ip=_required_env("AUTHORIZATION_DR_EXPECTED_EGRESS_IP"),
         egress_probe_url=os.environ.get("AUTHORIZATION_DR_EGRESS_PROBE_URL", "https://api.ipify.org").strip(),
         local_dir=Path(_required_env("MY_WAKE_BUNDLE_LOCAL_DIR")),
@@ -459,6 +463,13 @@ def _required_env(name: str) -> str:
     value = os.environ.get(name, "").strip()
     if not value:
         raise ValueError(f"{name} is required")
+    return value
+
+
+def _runtime_image_sha(image_ref: str) -> str:
+    value = image_ref.rsplit(":", maxsplit=1)[-1]
+    if len(value) not in SHA_LENGTHS or any(char not in "0123456789abcdef" for char in value):
+        raise ValueError("AUTHORIZATION_DR_RUNTIME_IMAGE_SHA must end with an exact git SHA")
     return value
 
 

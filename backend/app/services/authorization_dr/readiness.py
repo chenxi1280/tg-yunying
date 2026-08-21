@@ -52,6 +52,7 @@ def record_node_heartbeat(
     standby_egress_id: str,
     active_client_count: int,
     node_version: int,
+    runtime_image_sha: str = "",
 ) -> AuthorizationDrExecutionNode:
     existing_ids = set(session.scalars(select(AuthorizationDrExecutionNode.id).where(
         AuthorizationDrExecutionNode.region_code == "my",
@@ -68,6 +69,7 @@ def record_node_heartbeat(
             region_code=region_code,
             purpose=purpose,
             capability_version=capability_version,
+            runtime_image_sha=runtime_image_sha,
             standby_egress_id=standby_egress_id,
             version=node_version,
         )
@@ -75,6 +77,7 @@ def record_node_heartbeat(
     node.region_code = region_code
     node.purpose = purpose
     node.capability_version = capability_version
+    node.runtime_image_sha = runtime_image_sha
     node.standby_egress_id = standby_egress_id
     node.active_client_count = active_client_count
     node.status = "ready" if active_client_count == 0 else "busy"

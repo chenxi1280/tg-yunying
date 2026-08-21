@@ -34,6 +34,7 @@ def migration_batch_out(session, batch_id: str, tenant_id: int) -> dict:
         "approved_by": batch.approved_by,
         "approved_at": batch.approved_at,
         "created_at": batch.created_at,
+        "execution_finished_at": batch.execution_finished_at,
         "finished_at": batch.finished_at,
         "status_counts": dict(Counter(item.status for item in items)),
         "items": [_batch_item_out(item) for item in items],
@@ -49,7 +50,8 @@ def operation_out(session, operation_id: str, tenant_id: int) -> dict:
         "source_authorization_id", "candidate_authorization_id", "source_generation", "target_generation",
         "developer_app_id", "developer_app_api_id_snapshot", "assignment_version", "egress_id", "egress_version",
         "status", "blocker_code", "operation_version", "execution_generation", "owner_node_id", "owner_epoch",
-        "remote_effect_started_at", "remote_call_state", "requested_by", "approved_by", "approval_ref",
+        "remote_effect_started_at", "remote_call_state", "reconcile_case_id", "reconcile_status",
+        "reconciled_at", "requested_by", "approved_by", "approval_ref",
         "created_at", "updated_at", "finished_at",
     )
     return {field: getattr(operation, field) for field in fields}

@@ -5,6 +5,8 @@ services:
     command: ["python", "-m", "app.workers.authorization_dr_node"]
     env_file:
       - ${AUTHORIZATION_DR_ENV_FILE:-/opt/tgyunying-authorization-dr/node.env}
+    environment:
+      AUTHORIZATION_DR_RUNTIME_IMAGE_SHA: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
     volumes:
       - ${MY_WAKE_BUNDLE_LOCAL_HOST_DIR:?MY_WAKE_BUNDLE_LOCAL_HOST_DIR is required}:/var/lib/tgyunying/wake-local
       - ${AUTHORIZATION_DR_CERT_HOST_DIR:-/opt/tgyunying-authorization-dr/certs}:/run/authorization-dr-certs:ro

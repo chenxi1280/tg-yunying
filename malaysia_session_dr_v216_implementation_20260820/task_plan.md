@@ -36,13 +36,12 @@
 - 实现不可变本地卷/对象副本、wrapped DEK/KMS adapter、digest/readback、MY inventory 和 prepared decision replay。
 - 验证 migration up、空库/存量库兼容、不可变和幂等约束。
 
-### Phase 3: Provision, Migration And Recovery State Machines
+### Phase 3: Provision And Standby_2 Migration State Machine
 
-**Status:** completed
+**Status:** partial
 
 - 实现 MY claim/login-input、真实登录、双副本、隔离 restore probe、slot CAS、recovery gate、retained/rollback window。
-- 实现中心库 restore hold/reconcile、单副本修复、不重登和分步 erase。
-- 实现 48 小时 decommission、unknown/orphan/exact-set 对账。
+- 已完成不重登的失败冻结语义和 typed historical failure P0A coordinator；local-only/dual-copy/orphan 续跑、中心库 restore hold/reconcile、48 小时 decommission、最终 exact-set、rollback-window close 和分步 erase 尚未实现。
 
 ### Phase 4: API, UI, Metrics And Cross-module Fences
 
@@ -54,7 +53,7 @@
 - 2026-08-20 复核发现 Developer App 固定角色 API/UI、新账号默认角色、完整紧急唤起与跨模块 generation 屏障尚未完成；不得按完整 PRD 标记 completed。
 - Developer App 固定角色 API/UI、新账号默认 `primary_sv` 和真实 KMS DEK 包装已补齐；`local_activate/restore_sv_pair/emergency_reauthorize_primary` 及其业务 generation fence 仍是未实现硬缺口。
 
-### Phase 5: Automated QA And Release Gate
+### Phase 5: Migration-core Automated QA And Release Gate
 
 **Status:** completed
 
@@ -62,22 +61,32 @@
 - 故障注入覆盖 fsync/object/KMS/restore/CAS/DB rollback/partial erase。
 - 形成 immutable candidate SHA 和 Release Gate，标准 `master -> release -> Deploy Production`。
 
-### Phase 6: Production Read-only Preview And Two-account Canary
+### Phase 6: Production Read-only Preview And Two-account Slot Canary
 
-**Status:** in_progress
+**Status:** completed
 
 - 读取生产部署 SHA、运行配置、A/B/C 映射、MY node/egress/SSH mirror storage readiness。
 - 精确选择 2 个账号并冻结 ID/tenant/old state/fingerprint；必须不存在 open lease/operation/unknown。
 - 通过正式 audited operation 迁移，逐账号 readback 本地+SSH 镜像双副本、恢复密钥、inventory、restore gate、slot、3+1 retained 和 Telegram exact set。
 - 硬闸门：生产必须先读回 App A/B/C 角色映射、MY 固定出口、持续新鲜 heartbeat、create-only SSH 镜像、恢复密钥双机备份和运行中 authorization-dr worker。
+- 生产账号 27/28 已读回 MY generation 2 current、双副本 2/2、restore probe passed、旧 SV retained+protected；`slot_canary_pass=2/2`。
 
-### Phase 7: Canary Acceptance And Full Rollout
+### Phase 7: Expanded Migration Batch Reconciliation
+
+**Status:** in_progress
+
+- 历史扩量批次已形成 `241 succeeded + 22 failed + 8 reconcile_unknown = 271`，runtime 已切 `off`。
+- typed historical failure P0A coordinator 已完成本地实现；发布并 guarded apply 5 条后，最新批次预计为 `241 succeeded + 22 failed + 5 manual_required + 3 reconcile_unknown = 271`，系统总 unknown 预计从 11 降为 6。实际生产读回前不得采用预计值。
+- 账号 24/25/26/67/87/111 仍必须保持 unknown；local-only/dual-copy/orphan 对账续跑未实现前不得恢复 claim 或继续扩量。
+- 当前 `succeeded` 只表示 slot cutover succeeded；旧 SV decommission、最终 exact-set 与 rollback-window close 完成前不得写 migration final succeeded。
+
+### Phase 8: Full PRD Runtime Recovery And Lifecycle
 
 **Status:** pending
 
-- canary 两个账号均 remote_effect_verified 且观察窗无 AuthKeyDuplicated/FloodWait/unknown/副本降级后，创建全量 preview。
-- 冻结动态 N/fingerprint，逐账号串行迁移；持续对账 outcome counts，不因失败缩分母。
-- 全量完成后独立 readback，区分 persisted、Telegram authorization 和业务 runtime。
+- 实现 `local_activate`、`restore_sv_pair`、`drill_wake`、`emergency_reauthorize_primary` 和跨 ExecutionAttempt/Gateway/online/listener/sync generation fence。
+- 实现中心库旧备恢复协调器、两阶段账号删除、授权 decommission、分步 erase 与 unknown receipt。
+- 完成 PostgreSQL、并发、故障注入、替代 MY 主机恢复、P2 10 账号运行恢复 canary 和任务类型 Telegram E4。
 
 ## Stop Conditions
 
@@ -90,8 +99,8 @@
 ## Success Criteria
 
 - 本地与 CI gates 全通过，生产运行 exact SHA readback。
-- 2/2 canary 账号：新 MY AuthKey/hash/generation 独立，recoverable_copy_count=2，KMS/inventory/restore gate 通过，旧 SV retained+protected，Telegram exact set 完整，无业务从 MY 执行。
-- 全量只有在 2/2 canary 通过后开始；最终 N 与 outcome counts 守恒，unknown 不伪装成功。
+- 2/2 slot canary 账号：新 MY AuthKey/hash/generation 独立，recoverable_copy_count=2，恢复密钥/inventory/restore gate 通过，旧 SV retained+protected，Telegram exact set 完整，无业务从 MY 执行。
+- 扩量批次 N 与 outcome counts 守恒，unknown 不伪装成功；slot cutover 与 migration final 使用不同终态。
 - 生产状态、Telegram 授权结果和业务发送结果分层报告。
 
 ## Errors Encountered

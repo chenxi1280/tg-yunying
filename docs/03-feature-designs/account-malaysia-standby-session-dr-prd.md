@@ -1,8 +1,8 @@
 # 马来西亚异地备用 TG Session 灾备 PRD
 
-> 版本：v2.17
+> 版本：v2.19
 > 日期口径：2026-08-21（Asia/Shanghai）
-> 当前状态：`design_status=complete`、`implementation_started=true`、`implementation_scope=two_account_canary_core`、`core_deployed=true`、`ssh_mirror_deployed=true`、`two_account_canary=0/2_reconcile_unknown`、`runtime_mode=off`、`production_fixed=false`
+> 当前状态：`design_status=complete`、`product_resync_status=complete`、`implementation_started=true`、`implementation_scope=standby_2_migration_core`、`core_deployed=true`、`ssh_mirror_deployed=true`、`slot_canary=2/2_pass`、`full_prd_implementation=partial`、`runtime_mode=off`、`production_fixed=false`
 > 适用范围：账号授权资产、三槽位远端设备归属、活跃授权设备查看/清理、备用登录、硅谷本地自动切换、跨模块运行代次、显式演练、紧急登录码辅助和硅谷主授权重建；不包含业务系统整体异地容灾。
 > 关联文档：[实施与验收合同](account-malaysia-standby-session-dr-implementation-contract.md)、[account-standby-auto-authorization-prd.md](account-standby-auto-authorization-prd.md)、[account-security-hardening-design.md](account-security-hardening-design.md)、[account-login-group-navigation-recovery-prd.md](account-login-group-navigation-recovery-prd.md)。
 
@@ -22,11 +22,18 @@
 - 复制 StringSession 不是新授权，会复用同一 AuthKey，并可能触发 `AuthKeyDuplicated`。
 - Session 非空、数据库 `active`、worker healthy 或页面 `2/2` 都不是当前 Telegram 授权可用证据。
 - Telegram 远端“活跃授权”只表示该设备尚未被撤销；MY client 断连休眠后，`standby_2` 仍应出现在 `account.getAuthorizations` 中，不得因“不在线”标为授权缺失。
+
+### 1.2 2026-08-21 生产实施事实
+
+- 账号 27、28 已分别完成 App C/SV `standby_2` 到 MY generation 2 的槽位提交；两项均读回 MY current、双副本 `2/2`、恢复密钥解封与隔离 restore probe passed，旧 SV App C Session 保持 `retained + protected`。这只证明 `slot_canary=2/2_pass`，不等于旧 SV 远端授权已退役或完整 PRD 已完成。
+- 后续扩量批次 `target_count=271` 的当前守恒结果为 `241 succeeded + 22 failed + 8 reconcile_unknown = 271`，运行合同已切回 `off`。在 8 个 unknown 完成逐项对账、22 个 failed 完成已知终态分类前，禁止继续扩量或把批次写成最终迁移完成。
+- 另有早期账号 24、25、26 的独立 `provision_reconcile_unknown` operation，不属于上述 271 批次成功分母；三者均无 candidate/中心 Bundle/slot commit，旧 SV `standby_2` 仍 current、Session 存在且 protected，禁止自动重登。账号 24/25 当前无持久包；账号 26 在 MY 已有同 operation、generation 2 的本地密封包，但无 SV 镜像、中心 inventory 或 receipt，只能在原字节身份校验和只读 Telegram probe 通过后续建，不得重新登录或生成新 Session。
+- 当前已交付的是 `standby_2` 迁移状态机、MY 专用节点、SSH 双副本、恢复探测、slot CAS、旧源保留保护、48 小时设备清理边界和相关读模型。`local_activate`、`restore_sv_pair`、`drill_wake`、双 SV 失效后的 `emergency_reauthorize_primary`、中心恢复对账、decommission/erase、跨 Action/Gateway/listener/online/sync generation fence 尚未完成。
 - 授权备份不等于消息、任务、数据库、Redis、素材和 Dispatcher 的异地容灾。
 
-### 1.2 2026-08-21 两账号 canary 事实
+### 1.3 2026-08-21 早期失败 canary 事实
 
-- 账号 24/25 的迁移批次已按源授权 46/48 和目标 generation 2 冻结并审批；MY 固定出口、三套 App 槽位、SSH 双副本链路和节点心跳均先通过。
+- 账号 24/25 的早期迁移批次已按源授权 46/48 和目标 generation 2 冻结并审批；MY 固定出口、三套 App 槽位、SSH 双副本链路和节点心跳均先通过。该批次是失败事实，不是当前 `2/2 pass` canary。
 - 两次 Telegram 登录都取得验证码并完成新设备登录，但 Telegram 对当前设备返回合法 `authorization hash=0`；旧实现把 `0` 当成缺失，在 Bundle 写入前将两项标记为 `provision_reconcile_unknown`。第二项在节点自动重启后被领取，发现后已停止节点、清空 lease，并把 runtime 切回 `off`。
 - 两账号原 App C/SV `standby_2` 仍为 current、Session 非空且受清理保护；没有 candidate、Bundle、slot commit 或旧 Session 清理。新产生但未封装的 MY 远端设备属于我方 orphan，保持 unknown，不自动重试或清理。
 - 修复口径不是把 `0` 直接存为我方设备 hash。MY 发送不含明文设备信息的当前设备指纹摘要；SV 用仍保留的 primary/standby peer Session 读取远端设备集，只有唯一指纹匹配得到非零 hash 时才能提交 Bundle。零匹配或多匹配继续进入 reconcile unknown。
@@ -467,6 +474,8 @@ Telegram 登录前必须先取得 `inventory_mutation` control lease，再提交
 
 ### 10.4 崩溃与孤儿对账
 
+对账使用独立 reconcile case，operation 在证据收集期间继续保持 `provision_reconcile_unknown`。case 固定流转为 `open -> collecting_persisted_evidence -> collecting_remote_readback（按需） -> decision_ready -> applied|inconclusive|conflict`。客户端不得提交目标终态；服务端只能由不可变 evidence manifest 推导 `confirmed_no_effect`、`sealed_artifact_recoverable`、`orphan_remote_authorization` 或 `inconclusive`。其中 `confirmed_no_effect` 只允许把有 operation/node/owner epoch/运行镜像 SHA 精确证据的 typed 登录失败归一为 `failed|manual_required + remote_call_state=confirmed_no_effect`；无 artifact 永远不能推导为无远端授权。apply 必须按 operation/item/source version 与 evidence fingerprint CAS，重复请求返回同一结果且不重复审计。
+
 - intent 后未产生新设备：允许原 operation 重试。
 - login input grant 已消费但 owner 丢失：进入 `login_runtime_lost`；只有无新设备、无 receipt 且旧 flow 已 superseded 的服务端 readback 才允许提升 grant generation 后重试。
 - 已存在 matching wake bundle receipt：从已密封 candidate 续跑，禁止重新登录。
@@ -609,6 +618,6 @@ MY 的 Action、ExecutionAttempt、listener、在线探测、同步记录和业�
 
 ## 14. 实施、验收与开发交接
 
-API、权限、敏感数据、保留清理、失败码、指标、发布、QA 和开发交接的规范性合同见 [account-malaysia-standby-session-dr-implementation-contract.md](account-malaysia-standby-session-dr-implementation-contract.md) v2.17。两份文档共同构成本 PRD；实现、QA 和发布不得只选择其中一份。
+API、权限、敏感数据、保留清理、失败码、指标、发布、QA 和开发交接的规范性合同见 [account-malaysia-standby-session-dr-implementation-contract.md](account-malaysia-standby-session-dr-implementation-contract.md) v2.18。两份文档共同构成本 PRD；实现、QA 和发布不得只选择其中一份。
 
-当前仅 `design_status=complete`、`dev_handoff_ready=true`；代码、QA、部署、生产 Telegram 授权恢复和任务类型发送 E4 均未证明。
+当前 `design_status=complete`、`product_resync_status=complete`、`dev_handoff_ready=true`。`standby_2` 迁移核心和两账号槽位 canary 已有代码、CI、两地部署及生产 Telegram 授权事实；完整 DR 仍按 DEV-E/DEV-F 与本节 1.2 的缺口继续实施，未完成部分不得以迁移核心成功替代。

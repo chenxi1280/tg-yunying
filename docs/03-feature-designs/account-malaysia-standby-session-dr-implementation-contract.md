@@ -1,13 +1,17 @@
 # 马来西亚异地备用 TG Session 实施与验收合同
 
-> 版本：v2.17
+> 版本：v2.19
 > 日期口径：2026-08-21（Asia/Shanghai）
 > 规范关系：本文是 [马来西亚异地备用 TG Session 灾备 PRD](account-malaysia-standby-session-dr-prd.md) 的强制组成部分；冲突时两份文档必须同步修订，不允许实现自行择一。
-> 当前状态：`design_status=complete`、`implementation_started=true`、`implementation_scope=two_account_canary_core`、`core_deployed=true`、`ssh_mirror_deployed=true`、`two_account_canary=0/2_reconcile_unknown`、`runtime_mode=off`、`production_fixed=false`
+> 当前状态：`design_status=complete`、`product_resync_status=complete`、`implementation_started=true`、`implementation_scope=standby_2_migration_core`、`core_deployed=true`、`ssh_mirror_deployed=true`、`slot_canary=2/2_pass`、`full_prd_implementation=partial`、`runtime_mode=off`、`production_fixed=false`
 
 > 生产结构纠偏：A/B/C 是环境级三套 App 注册和新账号默认角色，不是历史切换后每个账号不可变化的角色标签。单账号验收以三 App ID 两两不同为准；App C/SV `standby_2` 是本次迁移源。历史 App A `standby_repair` 必须经双 Session Telegram UID/AuthKey 探测和 CAS 转正为 SV `standby_1` 后，账号才能进入迁移。
 
 > 当前设备 hash 合同：Telegram 从当前 Session 读取设备时允许返回 `hash=0`，不得判定登录失败，也不得把 `0` 保存为受保护设备标识。MY 必须提交当前设备规范化指纹摘要；SV 只用保留的 peer Session 读取结果解析唯一非零 hash。唯一匹配前不得写 Bundle/slot commit；零匹配、多匹配或 peer 读取失败统一进入 `provision_reconcile_unknown`，且不得自动重登。
+
+> 生产实施读回：账号 27、28 的 MY generation 2 槽位均为 current，双副本为 `2/2`，隔离 restore probe passed，旧 SV App C Session 为 retained/protected，因此 `slot_canary=2/2_pass`。后续 271 项扩量批次为 `241 succeeded / 22 failed / 8 reconcile_unknown`，runtime 已切 `off`；扩量最终验收保持 blocked。迁移核心通过不代表 `local_activate`、`restore_sv_pair`、`drill_wake`、紧急主授权重建、中心恢复对账、decommission/erase 或跨运行代次 fence 已实现。
+
+> unknown 对账事实：账号 24/25 无持久包；账号 26 已存在与原 operation、generation 2 精确绑定的 MY 本地密封包，但缺少 SV 镜像、中心 inventory/receipt。对账协调器只能复用原字节、原 operation 和原 generation 补齐证据；不得调用登录 RPC，不得生成新 Session，也不得把 local-only 推导成成功。
 
 ## 1. API 合同
 
@@ -58,7 +62,9 @@
 | `POST /api/tg-accounts/authorization-dr/activity-reviews/{id}/decide` | 仅对 unresolved 或归属事实冲突提交“匹配我方授权 / 确认 external / 确认资产异常 / 证据不足”决定和证据；不支持官方锚点或批准外部设备绕过一键清理 |
 | `POST /api/tg-accounts/authorization-dr/activity-reviews/{id}/approve` | 异人按 expected versions 批准“匹配我方授权”等会扩大 protected manifest 的归属修复；已精确分类 external 的常规一键清理不需要逐设备异人审批 |
 | `GET /api/tg-accounts/authorization-dr/activity-reviews` | 按 tenant/account/status/anomaly_scope/decision/cursor 分页返回脱敏调查及状态计数 |
-| `POST /api/tg-accounts/authorization-dr/operations/{id}/reconcile` | 显式对账 unknown，不允许强写 succeeded、恢复旧 owner 或跳过远端 readback |
+| `POST /api/tg-accounts/authorization-dr/operations/{id}/reconcile/preview` | 只为 `provision_reconcile_unknown` 建立或重读唯一 open reconcile case；服务端冻结 operation/item/source versions、owner epoch、运行镜像 SHA 和脱敏证据 manifest，返回 `evidence_fingerprint/classification/artifact_state/allowed_transition/blockers`，不接受目标终态 |
+| `POST /api/tg-accounts/authorization-dr/operations/{id}/reconcile` | 必须携带 `expected_operation_version/evidence_fingerprint/approval_ref/Idempotency-Key`；服务端重读冻结证据后自行推导终态并 CAS apply。不得强写 succeeded、恢复旧 owner、调用登录 RPC、生成新 Session 或跳过所需远端 readback；任一版本、证据或镜像 SHA 漂移均零写入 conflict |
+| `GET /api/tg-accounts/authorization-dr/operations/{id}/reconcile` | 返回脱敏 evidence manifest、classification、artifact coverage、recommended transition、apply/readback 和 blocker；不返回 Session、AuthKey、2FA、验证码、远端 hash 明文、设备明细或日志原文 |
 | `POST /api/tg-accounts/{id}/authorizations/{aid}/decommission` | 双人审批；冻结 target hash、固定 current SV executor 及其 authorization fact/version、`telegram_login_at`、expected versions；迁移源还必须冻结并验证 `migration_recovery_gate_passed`。严格超过 48 小时才创建远端执行项，否则返回 skipped 及原因，不创建等待重试；恢复闸门未通过直接 blocked，不能撤销旧 SV |
 | `DELETE /api/tg-accounts/{id}` | 同一事务写 `business_deleted_authorizations_retained` 并停止账号全部业务资格；不撤销或删除授权资产，不把删除结果声明为 Telegram 设备已退出 |
 | `GET /api/tg-accounts?include_deleted=true` | 已删除账号继续返回授权保留/退役状态、三槽和 unresolved blocker；`authorization_retired` 前不得从管理面完全消失 |
@@ -239,7 +245,7 @@ login-code grant 在返回前原子标记 consumed；响应丢失不得重取。
 2. `P0B guarded backfill`：preview -> 异人批准 -> apply -> readback。先把线上现有三套 App 唯一冻结为 A=`primary_sv`、B=`standby_1_sv`、C=`standby_2_my`，不创建第四套 App；再冻结 role 到 logical slot 的唯一映射和每槽 Developer App/api_id，由合格非目标 peer 读取远端设备集，只对唯一收敛的账号/authorization/before-after 差分回填非零 hash 与远端 `date_created/telegram_login_at`。只有 legacy primary 且自身 hash 为零时，固定执行“primary 观察创建 SV standby_1 -> standby_1 反查 primary -> SV peer 观察创建 MY standby_2”的交叉证明顺序；任一步不唯一即停止后续登录并保持 unknown。只有 App 命中或归属歧义时同样保持 unknown；无法证明登录区域或登录时间时保持 unknown。旧 standby_2 不伪造 qualification/usage/anomaly；mode=`shadow`，此阶段设备可立即查看，但不开启 cleanup apply。
 3. `P0C hard cutover`：shadow diff 为零后注册 runtime capability，验证旧 client drain、DB mutation gate、双机恢复密钥文件/版本 readback 和分区 Telegram egress ACL；旧业务进程仍能读取 MY bundle、把 standby_2 交给 SV 或从 MY 运行业务时失败。
 4. `P0D DR enable`：再次 readback 非 stale 实例、DB gate、ACL 和兼容投影，提升新 epoch 到 `dr_enabled`；才允许 provision。回滚只能用更高 epoch 降 mode，不能恢复旧绕过路径。
-5. `P1 node canary`：1 个批准测试账号按 App A/SV primary、App B/SV standby_1、App C/MY standby_2 完成三次真实登录，无需等待设备清理门槛；每次登录后账号详情都能立即刷新设备。回读三个独立 AuthKey/非零 hash/活跃授权设备；MY 同时完成本地不可变副本 fsync、独立 SSH 镜像、两份写后读/摘要/恢复密钥解封、源 client 断连、从 SSH 镜像隔离恢复 Telegram probe、恢复 client 断连、中心 receipt/MY inventory、qualification 和保护。随后停用原 MY 主机/数据盘，在替代运行环境用 恢复密钥+SSH 镜像再次恢复同一 Session，并从该可恢复副本写出更高 bundle generation、重新形成两份副本和 receipt；不得重新登录 Telegram。断连后 MY client=0，但 standby_2 仍在 Telegram 设备集中为 active。当前 SV 登录未严格超过 48 小时时清理按钮置灰，不影响三槽完成。
+5. `P1 node canary`：建立两个互相独立的单账号批次，第一个账号完整通过后才批准第二个。每个账号分别满足 MY current、唯一非零远端 hash、本地+SSH 镜像双副本、恢复密钥解封、隔离 restore probe、中心 receipt/MY inventory、slot CAS、旧 SV retained/protected 和 Telegram exact-set readback；提交后取得两次相隔至少 60 秒的独立读回，且没有新增 unknown、worker restart 或 MY 业务 Action/Attempt。任一失败立即切 `off`，不得领取第二项。原 MY 主机/数据盘替代恢复和更高 bundle generation 仍作为后续独立故障演练，不得以两账号槽位 canary 替代。
 6. `P2 switch/wake canary`：10 个账号先演练 primary 权威失败后的自动 `local_activate`、任务族收口、online/listener 新代次重建、`sv_local_redundancy_degraded` 和 `restore_sv_pair`；全过程 MY 不连接。再完成 `drill_wake`，最后演练双 SV 授权失败下的 `waiting_sv_login_runtime` 零 MY client、app-session 登录码辅助、SV 新 primary commit/probe，以及 SMS/email/call/QR 进入人工处理。
 7. `P3/P4 full rollout`：沿用唯一 MY 节点、唯一 MY 固定 IP 和现有三套 App，按当次实际符合条件账号冻结动态 `N`，不设固定数量阶梯或总数上限。全部账号项持久化后，MY 节点使用 App C 逐个串行重新登录并按状态续跑；旧 SV standby_2 在 MY slot CAS 前保持 current，CAS 后保持 retained+protected。只有新 MY 双副本、双机恢复密钥、MY inventory 和隔离恢复闸门通过后才允许提交旧源退役；未通过保持 `migration_cutover_complete_recovery_blocked`。退役提交时 current SV 登录未严格超过 48 小时则该退役项直接 skipped 并返回原因，不增加第四套 App、不停止正常 SV 业务、不创建自动等待任务。
 

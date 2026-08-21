@@ -1,5 +1,15 @@
 # Progress
 
+## 2026-08-21 Product Resync
+
+- 最新生产事实覆盖旧规划：账号 27/28 的 MY generation 2 槽位均为 current，双副本 2/2、restore probe passed，旧 SV App C Session retained+protected，`slot_canary_pass=2/2`。
+- 后续 271 项批次为 `241 succeeded / 22 failed / 8 reconcile_unknown`，另有账号 24/25/26 的早期独立 unknown；runtime 已切 `off`，没有授权恢复扩量许可。
+- `PasswordHashInvalidError` 修复已由 release SHA `3301e3cc` 标准发布到 SV，并把完全相同的 image ID 同步到 MY；两地运行版本漂移已清零，runtime 仍为 `off`。
+- 账号 27/28 已完成第二次独立 DB/双副本/restore/slot/Telegram peer exact-set 读回，均满足 `slot_canary_pass=2/2`；旧 SV retained+protected，因此仍不是 migration final。
+- PRD/实施合同已提升到 v2.19；账号 26 更正为 MY `local_only` generation 2 密封包，禁止重登或生成新 Session。
+- P0A unknown coordinator 已完成本地实现：`0158` reconcile case、preview/apply/get、双人角色分离、evidence fingerprint、operation/item/source CAS、批次 `execution_finished_at` 与 business `finished_at` 分离，以及无登录入口的正式 CLI。67 项定向回归通过；PostgreSQL CI、发布与 5 条生产 guarded apply 尚未完成。
+- QA 保存的只读日志摘录精确绑定账号 297/307/310/311/314 的 operation、`PasswordHashInvalidError`、login-unknown 204、MY node/owner epoch 和旧运行 SHA；脱敏 canonical digest 已写入 `reconcile_evidence_20260821.json`。其余 6 条保持 unknown。
+
 ## 2026-08-20
 
 - 用户明确授权完成 v2.16 代码、测试、生产发布和迁移；发布后先迁移 2 个账号验收，再决定全量。

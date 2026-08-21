@@ -23,6 +23,9 @@ from app.schemas.authorization_dr import (
     DrNodeOut,
     DrOperationOut,
     DrOwnerRequest,
+    DrReconcileApplyRequest,
+    DrReconcileOut,
+    DrReconcilePreviewRequest,
     DrRestoreProbeRequest,
     DrWakeBundleRequest,
 )
@@ -32,6 +35,7 @@ from app.services.authorization_dr import (
     RestoreProbeReceipt,
     WakeBundleReceipt,
     approve_migration_batch,
+    apply_operation_reconcile,
     claim_migration_operation,
     commit_migration_slot,
     commit_wake_bundle_receipt,
@@ -42,10 +46,12 @@ from app.services.authorization_dr import (
     migration_login_material,
     migration_batch_out,
     operation_out,
+    preview_operation_reconcile,
     preview_migration_batch,
     poll_migration_login_code,
     record_node_heartbeat,
     record_restore_probe,
+    reconcile_case_out,
     renew_migration_lease,
 )
 
@@ -176,6 +182,86 @@ def get_dr_operation(
         raise _dr_http_error(exc) from exc
 
 
+@router.post(
+    "/api/tg-accounts/authorization-dr/operations/{operation_id}/reconcile/preview",
+    response_model=DrReconcileOut,
+)
+def post_dr_reconcile_preview(
+    *,
+    operation_id: str,
+    payload: DrReconcilePreviewRequest,
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    _require_manage(current_user)
+    resolved_tenant_id = resolve_tenant_id(current_user, tenant_id)
+    try:
+        case = preview_operation_reconcile(
+            session,
+            operation_id,
+            tenant_id=resolved_tenant_id,
+            expected_operation_version=payload.expected_operation_version,
+            evidence=payload.evidence.model_dump(),
+            actor=current_user.name,
+        )
+        return reconcile_case_out(session, case.operation_id, resolved_tenant_id)
+    except AuthorizationDrError as exc:
+        session.rollback()
+        raise _dr_http_error(exc) from exc
+
+
+@router.post(
+    "/api/tg-accounts/authorization-dr/operations/{operation_id}/reconcile",
+    response_model=DrReconcileOut,
+)
+def post_dr_reconcile_apply(
+    *,
+    operation_id: str,
+    payload: DrReconcileApplyRequest,
+    tenant_id: int | None = None,
+    idempotency_key: str = Header(alias="Idempotency-Key"),
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    _require_manage(current_user)
+    resolved_tenant_id = resolve_tenant_id(current_user, tenant_id)
+    try:
+        case = apply_operation_reconcile(
+            session,
+            operation_id,
+            tenant_id=resolved_tenant_id,
+            expected_operation_version=payload.expected_operation_version,
+            evidence_fingerprint=payload.evidence_fingerprint,
+            approval_ref=payload.approval_ref,
+            idempotency_key=idempotency_key,
+            actor=current_user.name,
+        )
+        return reconcile_case_out(session, case.operation_id, resolved_tenant_id)
+    except AuthorizationDrError as exc:
+        session.rollback()
+        raise _dr_http_error(exc) from exc
+
+
+@router.get(
+    "/api/tg-accounts/authorization-dr/operations/{operation_id}/reconcile",
+    response_model=DrReconcileOut,
+)
+def get_dr_reconcile(
+    *,
+    operation_id: str,
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    if not current_user.has_permission("system.view"):
+        raise forbidden("system.view required")
+    try:
+        return reconcile_case_out(session, operation_id, resolve_tenant_id(current_user, tenant_id))
+    except AuthorizationDrError as exc:
+        raise _dr_http_error(exc) from exc
+
+
 @router.post("/internal/v1/authorization-dr/nodes/heartbeat", response_model=DrNodeOut)
 def post_dr_node_heartbeat(
     payload: DrNodeHeartbeatRequest,
@@ -189,6 +275,7 @@ def post_dr_node_heartbeat(
             region_code=payload.region_code,
             purpose=payload.purpose,
             capability_version=payload.capability_version,
+            runtime_image_sha=payload.runtime_image_sha,
             standby_egress_id=payload.standby_egress_id,
             active_client_count=payload.active_client_count,
             node_version=payload.node_version,

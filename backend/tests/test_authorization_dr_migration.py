@@ -19,6 +19,8 @@ from app.models import (
     TgAccountAuthorization,
     TgAuthorizationDrBatch,
     TgAuthorizationDrBatchItem,
+    TgAuthorizationDrOperation,
+    TgAuthorizationDrReconcileCase,
     TgAuthorizationWakeBundleCopy,
 )
 from app.services._common import _now
@@ -28,6 +30,7 @@ from app.services.authorization_dr import (
     RestoreProbeReceipt,
     WakeBundleReceipt,
     approve_migration_batch,
+    apply_operation_reconcile,
     claim_migration_operation,
     commit_migration_slot,
     commit_wake_bundle_receipt,
@@ -37,6 +40,7 @@ from app.services.authorization_dr import (
     migration_login_material,
     poll_migration_login_code,
     preview_migration_batch,
+    preview_operation_reconcile,
     record_restore_probe,
     renew_migration_lease,
     rollback_migration_slot,
@@ -566,8 +570,141 @@ def test_batch_becomes_manual_required_when_all_items_are_remote_unknown(session
     )
     batch = session.scalar(select(TgAuthorizationDrBatch))
 
-    assert batch.status == "manual_required"
-    assert batch.finished_at is not None
+    assert batch.status == "reconcile_required"
+    assert batch.execution_finished_at is not None
+    assert batch.finished_at is None
+
+
+def test_guarded_reconcile_normalizes_typed_failure_without_login(session: Session) -> None:
+    first = _start_claim(session)
+    mark_login_remote_unknown(
+        session,
+        first.operation_id,
+        node_id=first.owner_node_id,
+        owner_epoch=first.owner_epoch,
+    )
+    second = claim_migration_operation(session, "my-node-1")
+    mark_login_remote_unknown(
+        session,
+        second.operation_id,
+        node_id=second.owner_node_id,
+        owner_epoch=second.owner_epoch,
+    )
+    contract = session.get(AuthorizationDrRuntimeContract, 1)
+    contract.mode = "off"
+    session.commit()
+    operation = session.get(TgAuthorizationDrOperation, first.operation_id)
+    source = session.get(TgAccountAuthorization, operation.source_authorization_id)
+    original_session = source.session_ciphertext
+    evidence = {
+        "kind": "historical_typed_login_failure",
+        "blocker_code": "two_fa_invalid",
+        "event_digest": "d" * 64,
+        "source_ref": "codex-rollout:test-evidence-one",
+        "runtime_image_sha": "a" * 40,
+        "node_id": first.owner_node_id,
+        "owner_epoch": first.owner_epoch,
+    }
+
+    case = preview_operation_reconcile(
+        session,
+        operation.id,
+        tenant_id=1,
+        expected_operation_version=operation.operation_version,
+        evidence=evidence,
+        actor="reconcile-requester",
+    )
+    applied = apply_operation_reconcile(
+        session,
+        operation.id,
+        tenant_id=1,
+        expected_operation_version=operation.operation_version,
+        evidence_fingerprint=case.evidence_fingerprint,
+        approval_ref="INC-DR-2FA-HISTORY",
+        idempotency_key="reconcile-first",
+        actor="reconcile-approver",
+    )
+    repeated = apply_operation_reconcile(
+        session,
+        operation.id,
+        tenant_id=1,
+        expected_operation_version=operation.operation_version,
+        evidence_fingerprint=case.evidence_fingerprint,
+        approval_ref="INC-DR-2FA-HISTORY",
+        idempotency_key="reconcile-first",
+        actor="reconcile-approver",
+    )
+    session.refresh(operation)
+    session.refresh(source)
+    item = session.get(TgAuthorizationDrBatchItem, operation.batch_item_id)
+    batch = session.get(TgAuthorizationDrBatch, item.batch_id)
+
+    assert applied.id == repeated.id
+    assert operation.status == "manual_required"
+    assert operation.remote_call_state == "confirmed_no_effect"
+    assert operation.reconcile_status == "applied"
+    assert item.status == "manual_required"
+    assert item.outcome == "two_fa_invalid"
+    assert source.session_ciphertext == original_session
+    assert source.is_slot_current is True
+    assert source.protected_from_cleanup is True
+    assert batch.status == "reconcile_required"
+    assert batch.finished_at is None
+
+    mark_login_remote_unknown(
+        session,
+        operation.id,
+        node_id=first.owner_node_id,
+        owner_epoch=first.owner_epoch,
+    )
+    session.refresh(operation)
+    assert operation.status == "manual_required"
+
+
+def test_reconcile_apply_rejects_frozen_source_drift(session: Session) -> None:
+    claim = _start_claim(session)
+    mark_login_remote_unknown(
+        session,
+        claim.operation_id,
+        node_id=claim.owner_node_id,
+        owner_epoch=claim.owner_epoch,
+    )
+    session.get(AuthorizationDrRuntimeContract, 1).mode = "off"
+    session.commit()
+    operation = session.get(TgAuthorizationDrOperation, claim.operation_id)
+    evidence = {
+        "kind": "historical_typed_login_failure",
+        "blocker_code": "two_fa_invalid",
+        "event_digest": "e" * 64,
+        "source_ref": "codex-rollout:test-evidence-drift",
+        "runtime_image_sha": "b" * 40,
+        "node_id": claim.owner_node_id,
+        "owner_epoch": claim.owner_epoch,
+    }
+    case = preview_operation_reconcile(
+        session,
+        operation.id,
+        tenant_id=1,
+        expected_operation_version=operation.operation_version,
+        evidence=evidence,
+        actor="reconcile-requester",
+    )
+    source = session.get(TgAccountAuthorization, operation.source_authorization_id)
+    source.fact_version += 1
+    session.commit()
+
+    with pytest.raises(AuthorizationDrError, match="Frozen reconciliation facts changed"):
+        apply_operation_reconcile(
+            session,
+            operation.id,
+            tenant_id=1,
+            expected_operation_version=operation.operation_version,
+            evidence_fingerprint=case.evidence_fingerprint,
+            approval_ref="INC-DR-DRIFT",
+            idempotency_key="reconcile-drift",
+            actor="reconcile-approver",
+        )
+    assert session.scalar(select(TgAuthorizationDrReconcileCase)).status == "decision_ready"
 
 
 def test_single_item_batch_succeeds_with_autoflush_disabled(session: Session) -> None:
