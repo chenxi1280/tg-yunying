@@ -28,6 +28,7 @@ from app.models import (
 )
 from app.security import encrypt_session
 from app.services._common import _now
+from app.services.account_online_probe import OnlineProbeResult, _apply_probe_result
 from app.services.authorization_dr import (
     apply_local_activate,
     apply_operation_reconcile,
@@ -129,6 +130,39 @@ def test_phone_ban_projects_account_and_online_truth_without_deleting_session() 
         assert account.status == AccountStatus.BANNED.value
         assert account.session_ciphertext == "preserved"
         assert state.online_status == "login_required"
+        assert state.failure_type == "phone_number_banned"
+
+
+def test_online_probe_cannot_overwrite_persisted_phone_ban_fact() -> None:
+    with _session() as session:
+        operation = _seed_unknown_operation(session)
+        operation.status = "failed"
+        operation.remote_call_state = "confirmed_no_effect"
+        operation.blocker_code = "phone_number_banned"
+        account = session.get(TgAccount, 26)
+        account.status = AccountStatus.SESSION_EXPIRED.value
+        state = TgAccountOnlineState(
+            tenant_id=1,
+            account_id=26,
+            desired_online=True,
+            online_status="login_required",
+        )
+        session.add(state)
+        session.commit()
+
+        health = SimpleNamespace(status=AccountStatus.ACTIVE.value, health_score=100, detail="authorized")
+        _apply_probe_result(
+            session,
+            account,
+            state,
+            _now(),
+            OnlineProbeResult(account_id=26, health=health),
+        )
+        session.commit()
+
+        assert account.status == AccountStatus.BANNED.value
+        assert account.health_score == 0
+        assert state.desired_online is False
         assert state.failure_type == "phone_number_banned"
 
 
