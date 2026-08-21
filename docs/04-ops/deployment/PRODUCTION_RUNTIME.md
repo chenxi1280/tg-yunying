@@ -398,3 +398,12 @@ docker compose -f docker-compose.server.yml exec -T backend python scripts/autho
 只有读回 `confirmed_no_effect/failed/pre_code_submission_failure`、临时 flow 密文已清除、A 全字段/代次不变、runtime off 且 DR active client=0 后，才可用新 idempotency key 对同一账号重新 preview。仍不得跳到第二账号。
 
 如果 preview 发现 current A 已使用 App B，必须停止新 B 登录并执行 `python scripts/authorization_dr_sv_redundancy.py --mode preview/apply`。若此前已生成同 App 的 B，repair apply 只允许把该行原子降为 retained/protected repair，并将已有 App A repair 提升为 B；禁止在 48 小时内清理该设备，也禁止通过切换 A 绕过三 App 唯一性。
+
+若 B 的 Telegram 登录已完成但 DB insert 返回 `ux_tg_authorization_current_slot` 冲突，operation 必须保持 `reconcile_unknown`、runtime off，且不得重发验证码。只有 flow 临时 Session 在原 App/代理上仍 authorized、与 A 同 UID/不同 AuthKey、A 远端列表中该 App exact-one，才允许：
+
+```bash
+docker exec tgyunying-backend python scripts/authorization_dr_sv_login_recovery.py --mode preview --tenant-id <tenant> --operation-id <operation> --runtime-image-sha <sv-full-sha> --requested-by <requester>
+docker exec tgyunying-backend python scripts/authorization_dr_sv_login_recovery.py --mode apply --tenant-id <tenant> --operation-id <operation> --runtime-image-sha <sv-full-sha> --requested-by <requester> --actor <different-approver> --approval-ref <ticket> --idempotency-key <unique-key> --expected-fingerprint <preview-fingerprint>
+```
+
+apply 只复用 flow 已持久的同一 AuthKey，先在单事务内释放旧 standby current-slot、将旧设备保留为 protected repair，再写入恢复 B、清空 flow 临时密文并收口 operation/case。任何 fingerprint、A generation/fact、flow version、旧 B fact 或远端集合漂移均拒绝；不得据此继续同轮第二账号。

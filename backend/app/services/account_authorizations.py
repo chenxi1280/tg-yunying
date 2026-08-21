@@ -569,6 +569,7 @@ def _mark_same_role_for_repair(session: Session, account: TgAccount, flow: TgLog
     for row in rows:
         if row.role != flow.authorization_role:
             continue
+        row.is_slot_current = False
         row.status = NEEDS_REPAIR_STATUS
         row.failure_reason = "同角色备用授权已重新登录，旧授权待确认后停用"
 

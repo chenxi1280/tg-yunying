@@ -389,12 +389,11 @@ def _retain_conflicting_b(session, asset, source) -> None:
         TgAccountAuthorization.account_id == asset.account_id,
         TgAccountAuthorization.id != asset.id,
         TgAccountAuthorization.logical_slot == "standby_1",
-        TgAccountAuthorization.is_slot_current.is_(True),
         TgAccountAuthorization.disabled_at.is_(None),
     )))
     for row in rows:
         if row.developer_app_id != source.developer_app_id:
-            raise AuthorizationDrError("sv_redundancy_already_ready", "Account already has a distinct standby_1")
+            continue
         row.role = "standby_repair"
         row.logical_slot = "standby_repair"
         row.status = "needs_repair"
