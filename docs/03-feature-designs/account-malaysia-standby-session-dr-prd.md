@@ -1,6 +1,6 @@
 # 马来西亚异地备用 TG Session 灾备 PRD
 
-> 版本：v2.18
+> 版本：v2.19
 > 日期口径：2026-08-21（Asia/Shanghai）
 > 当前状态：`design_status=complete`、`product_resync_status=complete`、`implementation_started=true`、`implementation_scope=standby_2_migration_core`、`core_deployed=true`、`ssh_mirror_deployed=true`、`slot_canary=2/2_pass`、`full_prd_implementation=partial`、`runtime_mode=off`、`production_fixed=false`
 > 适用范围：账号授权资产、三槽位远端设备归属、活跃授权设备查看/清理、备用登录、硅谷本地自动切换、跨模块运行代次、显式演练、紧急登录码辅助和硅谷主授权重建；不包含业务系统整体异地容灾。
@@ -27,7 +27,7 @@
 
 - 账号 27、28 已分别完成 App C/SV `standby_2` 到 MY generation 2 的槽位提交；两项均读回 MY current、双副本 `2/2`、恢复密钥解封与隔离 restore probe passed，旧 SV App C Session 保持 `retained + protected`。这只证明 `slot_canary=2/2_pass`，不等于旧 SV 远端授权已退役或完整 PRD 已完成。
 - 后续扩量批次 `target_count=271` 的当前守恒结果为 `241 succeeded + 22 failed + 8 reconcile_unknown = 271`，运行合同已切回 `off`。在 8 个 unknown 完成逐项对账、22 个 failed 完成已知终态分类前，禁止继续扩量或把批次写成最终迁移完成。
-- 另有早期账号 24、25、26 的独立 `provision_reconcile_unknown` operation，不属于上述 271 批次成功分母；均无 candidate/Bundle/slot commit，旧 SV `standby_2` 仍 current、Session 存在且 protected，禁止自动重登。
+- 另有早期账号 24、25、26 的独立 `provision_reconcile_unknown` operation，不属于上述 271 批次成功分母；三者均无 candidate/中心 Bundle/slot commit，旧 SV `standby_2` 仍 current、Session 存在且 protected，禁止自动重登。账号 24/25 当前无持久包；账号 26 在 MY 已有同 operation、generation 2 的本地密封包，但无 SV 镜像、中心 inventory 或 receipt，只能在原字节身份校验和只读 Telegram probe 通过后续建，不得重新登录或生成新 Session。
 - 当前已交付的是 `standby_2` 迁移状态机、MY 专用节点、SSH 双副本、恢复探测、slot CAS、旧源保留保护、48 小时设备清理边界和相关读模型。`local_activate`、`restore_sv_pair`、`drill_wake`、双 SV 失效后的 `emergency_reauthorize_primary`、中心恢复对账、decommission/erase、跨 Action/Gateway/listener/online/sync generation fence 尚未完成。
 - 授权备份不等于消息、任务、数据库、Redis、素材和 Dispatcher 的异地容灾。
 
@@ -473,6 +473,8 @@ Telegram 登录前必须先取得 `inventory_mutation` control lease，再提交
 批量迁移对冻结账号集合 `N` 逐账号串行执行上述流程，同一 App A/B/C 可跨账号复用并按 distinct account 统计。迁移不暂停正常 SV 业务，也不在 MY 创建任何业务 Action、ExecutionAttempt、listener 或同步工作。
 
 ### 10.4 崩溃与孤儿对账
+
+对账使用独立 reconcile case，operation 在证据收集期间继续保持 `provision_reconcile_unknown`。case 固定流转为 `open -> collecting_persisted_evidence -> collecting_remote_readback（按需） -> decision_ready -> applied|inconclusive|conflict`。客户端不得提交目标终态；服务端只能由不可变 evidence manifest 推导 `confirmed_no_effect`、`sealed_artifact_recoverable`、`orphan_remote_authorization` 或 `inconclusive`。其中 `confirmed_no_effect` 只允许把有 operation/node/owner epoch/运行镜像 SHA 精确证据的 typed 登录失败归一为 `failed|manual_required + remote_call_state=confirmed_no_effect`；无 artifact 永远不能推导为无远端授权。apply 必须按 operation/item/source version 与 evidence fingerprint CAS，重复请求返回同一结果且不重复审计。
 
 - intent 后未产生新设备：允许原 operation 重试。
 - login input grant 已消费但 owner 丢失：进入 `login_runtime_lost`；只有无新设备、无 receipt 且旧 flow 已 superseded 的服务端 readback 才允许提升 grant generation 后重试。

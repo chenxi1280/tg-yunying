@@ -47,6 +47,7 @@ class DrBatchOut(ApiModel):
     approved_by: str
     approved_at: datetime | None
     created_at: datetime
+    execution_finished_at: datetime | None
     finished_at: datetime | None
     status_counts: dict[str, int]
     items: list[DrBatchItemOut]
@@ -75,6 +76,9 @@ class DrOperationOut(ApiModel):
     owner_epoch: int
     remote_effect_started_at: datetime | None
     remote_call_state: str
+    reconcile_case_id: str | None
+    reconcile_status: str
+    reconciled_at: datetime | None
     requested_by: str
     approved_by: str
     approval_ref: str
@@ -88,6 +92,7 @@ class DrNodeOut(ApiModel):
     region_code: str
     purpose: str
     capability_version: str
+    runtime_image_sha: str
     standby_egress_id: str
     status: str
     active_client_count: int
@@ -180,9 +185,57 @@ class DrNodeHeartbeatRequest(DrStrictModel):
     region_code: str = Field(pattern="^my$")
     purpose: str = Field(pattern="^standby_session_dr$")
     capability_version: str = Field(min_length=1, max_length=80)
+    runtime_image_sha: str = Field(pattern="^[0-9a-f]{40}([0-9a-f]{24})?$")
     standby_egress_id: str = Field(min_length=1, max_length=80)
     active_client_count: int = Field(ge=0, le=1)
     node_version: int = Field(ge=1)
+
+
+class DrReconcileEvidence(DrStrictModel):
+    kind: str = Field(pattern="^historical_typed_login_failure$")
+    blocker_code: str = Field(pattern="^(phone_number_banned|two_fa_invalid)$")
+    event_digest: str = Field(pattern="^[0-9a-f]{64}$")
+    source_ref: str = Field(min_length=1, max_length=160)
+    runtime_image_sha: str = Field(pattern="^[0-9a-f]{40}([0-9a-f]{24})?$")
+    node_id: str = Field(min_length=1, max_length=80)
+    owner_epoch: int = Field(ge=1)
+
+
+class DrReconcilePreviewRequest(DrStrictModel):
+    expected_operation_version: int = Field(ge=1)
+    evidence: DrReconcileEvidence
+
+
+class DrReconcileApplyRequest(DrStrictModel):
+    expected_operation_version: int = Field(ge=1)
+    evidence_fingerprint: str = Field(pattern="^[0-9a-f]{64}$")
+    approval_ref: str = Field(min_length=1, max_length=160)
+
+
+class DrReconcileOut(ApiModel):
+    id: str
+    tenant_id: int
+    account_id: int
+    operation_id: str
+    reconcile_generation: int
+    status: str
+    classification: str
+    recommended_transition: str
+    blocker_code: str
+    expected_operation_version: int
+    expected_item_version: int
+    expected_source_fact_version: int
+    expected_owner_epoch: int
+    expected_node_id: str
+    expected_runtime_image_sha: str
+    evidence_fingerprint: str
+    evidence_manifest: dict
+    persisted_artifact_state: str
+    requested_by: str
+    applied_by: str
+    approval_ref: str
+    created_at: datetime
+    applied_at: datetime | None
 
 
 __all__ = [name for name in globals() if name.startswith("Dr")]
