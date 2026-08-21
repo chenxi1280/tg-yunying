@@ -48,7 +48,7 @@ def apply_canonical_authorization_backfill(
     preview = _preview_result(tenant_id, items)
     if preview["fingerprint"] != expected_fingerprint:
         raise ValueError("canonical backfill fingerprint changed")
-    created_ids = _apply_eligible_items(session, tenant_id, items, approved_by)
+    created_ids = _apply_eligible_items(session, tenant_id, items=items, actor=approved_by)
     audit(
         session,
         tenant_id=tenant_id,
@@ -213,14 +213,14 @@ def _preview_result(tenant_id: int, items: list[BackfillItem]) -> dict:
     }
 
 
-def _apply_eligible_items(session, tenant_id: int, items: list[BackfillItem], actor: str) -> list[int]:
+def _apply_eligible_items(session, tenant_id: int, *, items: list[BackfillItem], actor: str) -> list[int]:
     created_ids: list[int] = []
     for item in items:
         if item.outcome != "eligible":
             continue
         account = session.get(TgAccount, item.account_id)
         app = session.get(TelegramDeveloperApp, item.developer_app_id)
-        row = _new_primary_authorization(tenant_id, account, app, item, actor)
+        row = _new_primary_authorization(tenant_id, account, app=app, item=item, actor=actor)
         session.add(row)
         session.flush()
         account.current_authorization_id = row.id
@@ -228,7 +228,7 @@ def _apply_eligible_items(session, tenant_id: int, items: list[BackfillItem], ac
     return created_ids
 
 
-def _new_primary_authorization(tenant_id, account, app, item, actor) -> TgAccountAuthorization:
+def _new_primary_authorization(tenant_id, account, *, app, item, actor) -> TgAccountAuthorization:
     is_online = account.status == ONLINE_STATUS
     return TgAccountAuthorization(
         tenant_id=tenant_id,

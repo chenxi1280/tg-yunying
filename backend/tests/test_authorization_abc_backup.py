@@ -9,16 +9,23 @@ from sqlalchemy.orm import Session
 from app.database import Base
 from app.models import (
     AccountProxy,
+    AuthorizationDrExecutionNode,
+    AuthorizationDrRuntimeContract,
     DeveloperAppSlotAssignment,
     TelegramDeveloperApp,
+    TelegramEgressAssignment,
     Tenant,
     TgAccount,
     TgAccountAuthorization,
     TgLoginFlow,
     TgAuthorizationDrOperation,
+    TgAuthorizationRestoreProbeFact,
+    TgAuthorizationWakeBundle,
+    TgAuthorizationWakeBundleCopy,
 )
+from app.integrations.telegram.contracts import AuthorizationIdentity, SendResult
 from app.services._common import _now
-from app.services.authorization_dr import apply_abc_backup, preview_abc_backup
+from app.services.authorization_dr import apply_abc_backup, apply_abc_e4, preview_abc_backup, preview_abc_e4
 
 
 pytestmark = pytest.mark.no_postgres
@@ -205,6 +212,152 @@ def test_remote_start_failure_is_unknown_and_never_changes_a(session: Session, m
     operation = session.scalar(select(TgAuthorizationDrOperation))
     assert operation.status == "reconcile_unknown"
     assert operation.candidate_authorization_id is None
+
+
+def test_abc_e4_sends_once_and_preserves_a(session: Session, monkeypatch) -> None:
+    _seed_e4(session)
+    preview = preview_abc_e4(session, 1, 101, idempotency_key="abc-e4-101")
+    before = _a_snapshot(session)
+    monkeypatch.setattr(
+        "app.services.authorization_dr.abc_verify.gateway.send_message",
+        lambda *_args, **_kwargs: SendResult(True, remote_message_id="9001", remote_mutation_started=True),
+    )
+
+    def identity(raw_session, _credentials):
+        digest = "2" * 64 if raw_session == "primary-session" else "3" * 64
+        return AuthorizationIdentity("123", digest, "1" * 64, "4" * 64)
+
+    monkeypatch.setattr("app.services.authorization_dr.abc_verify.gateway.authorization_identity", identity)
+
+    result = apply_abc_e4(
+        session,
+        1,
+        101,
+        idempotency_key="abc-e4-101",
+        expected_fingerprint=preview["fingerprint"],
+        requested_by="requester",
+        approved_by="reviewer",
+        approval_ref="USER-ABC-E4-101",
+    )
+
+    assert result["status"] == "succeeded"
+    assert result["primary_saved_message_id"] == "9001"
+    assert _a_snapshot(session) == before
+
+
+def test_abc_e4_unknown_send_is_not_retried(session: Session, monkeypatch) -> None:
+    _seed_e4(session)
+    preview = preview_abc_e4(session, 1, 101, idempotency_key="abc-e4-unknown-101")
+    before = _a_snapshot(session)
+    calls = []
+
+    def unknown_send(*_args, **_kwargs):
+        calls.append("called")
+        return SendResult(False, failure_type="transport_lost", remote_mutation_started=None)
+
+    monkeypatch.setattr("app.services.authorization_dr.abc_verify.gateway.send_message", unknown_send)
+    values = dict(
+        idempotency_key="abc-e4-unknown-101",
+        expected_fingerprint=preview["fingerprint"],
+        requested_by="requester",
+        approved_by="reviewer",
+        approval_ref="USER-ABC-E4-UNKNOWN-101",
+    )
+
+    first = apply_abc_e4(session, 1, 101, **values)
+    second = apply_abc_e4(session, 1, 101, **values)
+
+    assert first["status"] == second["status"] == "reconcile_unknown"
+    assert calls == ["called"]
+    assert _a_snapshot(session) == before
+
+
+def _seed_e4(session: Session) -> None:
+    account = session.get(TgAccount, 101)
+    primary = session.get(TgAccountAuthorization, account.current_authorization_id)
+    standby = TgAccountAuthorization(
+        tenant_id=1, account_id=101, role="standby_1", logical_slot="standby_1",
+        provision_region_code="sv", developer_app_id=2, proxy_id=8,
+        session_ciphertext="b-session", status="active", health_status="healthy",
+        is_slot_current=True, telegram_user_id_digest="1" * 64,
+        auth_key_fingerprint_digest="3" * 64,
+    )
+    malaysia = TgAccountAuthorization(
+        tenant_id=1, account_id=101, role="standby_2", logical_slot="standby_2",
+        provision_region_code="my", developer_app_id=3, status="active", health_status="healthy",
+        is_slot_current=True, is_current=False, telegram_user_id_digest="1" * 64,
+        auth_key_fingerprint_digest="4" * 64,
+    )
+    session.add_all([standby, malaysia])
+    session.flush()
+    operation = _seed_migration_operation(session, primary, malaysia)
+    bundle = TgAuthorizationWakeBundle(
+        tenant_id=1, account_id=101, authorization_id=malaysia.id, operation_id=operation.id,
+        bundle_generation=1, ciphertext_digest="5" * 64, wrapped_dek_ciphertext="wrapped",
+        kms_key_ref_digest="6" * 64, kms_key_version="v1", kms_decrypt_status="passed",
+        auth_key_fingerprint_digest="4" * 64, telegram_user_id_digest="1" * 64,
+        recoverable_copy_count=2, receipt_status="active", is_active=True,
+    )
+    session.add(bundle)
+    session.flush()
+    malaysia.wake_bundle_id = bundle.id
+    _seed_bundle_evidence(session, bundle, operation)
+    session.add_all([
+        DeveloperAppSlotAssignment(
+            slot_purpose="primary_sv", developer_app_id=1, assignment_version=7,
+            credentials_version=1, assigned_by="admin",
+        ),
+        DeveloperAppSlotAssignment(
+            slot_purpose="standby_2_my", developer_app_id=3, assignment_version=7,
+            credentials_version=1, assigned_by="admin",
+        ),
+        TelegramEgressAssignment(
+            id="my-egress-1", purpose="standby_my", region_code="my",
+            secret_ref_digest="d" * 64, observed_ip_hmac="e" * 64,
+            status="active", connectivity_status="verified", version=1,
+            last_verified_at=_now(),
+        ),
+    ])
+    session.add(AuthorizationDrRuntimeContract(id=1, mode="off", claim_scope_operation_id=""))
+    session.add(AuthorizationDrExecutionNode(
+        id="my-node-1", region_code="my", purpose="standby_session_dr",
+        capability_version="2.21-abc-a-source", runtime_image_sha="7" * 40,
+        standby_egress_id="my-egress-1", status="ready", active_client_count=0,
+        last_heartbeat_at=_now(),
+    ))
+    session.commit()
+
+
+def _seed_migration_operation(session, primary, malaysia):
+    operation = TgAuthorizationDrOperation(
+        tenant_id=1, account_id=101, operation_type="migrate_standby_2", logical_slot="standby_2",
+        source_authorization_id=primary.id, code_source_authorization_id=primary.id,
+        candidate_authorization_id=malaysia.id, source_generation=1, target_generation=1,
+        developer_app_id=3, developer_app_api_id_snapshot=1003, developer_app_credentials_version=1,
+        assignment_version=1, egress_id="my-egress-1", egress_version=1,
+        idempotency_key="seed-c", request_fingerprint="8" * 64, status="succeeded",
+        requested_by="seed", approved_by="seed-reviewer", approval_ref="seed-approved",
+    )
+    session.add(operation)
+    session.flush()
+    return operation
+
+
+def _seed_bundle_evidence(session, bundle, operation) -> None:
+    for copy_kind in ("my_local_volume", "my_remote_ssh_snapshot"):
+        session.add(TgAuthorizationWakeBundleCopy(
+            bundle_id=bundle.id, copy_kind=copy_kind, object_ref_digest="9" * 64,
+            ciphertext_digest=bundle.ciphertext_digest, immutable_version="v1",
+            write_receipt_digest="a" * 64, readback_receipt_digest="b" * 64,
+            write_verified_at=_now(), readback_verified_at=_now(), decrypt_verified_at=_now(),
+        ))
+    session.add(TgAuthorizationRestoreProbeFact(
+        bundle_id=bundle.id, operation_id=operation.id, probe_generation=1,
+        source_copy_kind="my_remote_ssh_snapshot", status="passed", session_parse_status="passed",
+        authorization_status="passed", identity_match_status="passed", auth_key_match_status="passed",
+        source_client_disconnected=True, probe_client_disconnected=True,
+        zeroize_receipt_digest="c" * 64,
+    ))
 
 
 def _a_snapshot(session: Session) -> tuple:

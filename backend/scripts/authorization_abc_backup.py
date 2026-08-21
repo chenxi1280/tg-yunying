@@ -6,8 +6,10 @@ import json
 from app.database import SessionLocal
 from app.services.authorization_dr import (
     abc_canary_status,
+    apply_abc_e4,
     apply_abc_backup,
     prepare_scoped_c_migration,
+    preview_abc_e4,
     preview_abc_backup,
 )
 
@@ -22,6 +24,24 @@ def main() -> None:
 def _execute(session, args) -> dict:
     if args.mode == "status":
         return abc_canary_status(session, args.tenant_id, args.account_id)
+    if args.mode == "verify-preview":
+        return preview_abc_e4(
+            session,
+            args.tenant_id,
+            args.account_id,
+            idempotency_key=args.idempotency_key,
+        )
+    if args.mode == "verify-apply":
+        return apply_abc_e4(
+            session,
+            args.tenant_id,
+            args.account_id,
+            idempotency_key=args.idempotency_key,
+            expected_fingerprint=args.expected_fingerprint,
+            requested_by=args.requested_by,
+            approved_by=args.approved_by,
+            approval_ref=args.approval_ref,
+        )
     if args.mode == "preview":
         return preview_abc_backup(
             session,
@@ -56,7 +76,11 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Preview or execute one A-protected B/C backup operation; never switches A",
     )
-    parser.add_argument("--mode", choices=("preview", "apply", "status"), required=True)
+    parser.add_argument(
+        "--mode",
+        choices=("preview", "apply", "status", "verify-preview", "verify-apply"),
+        required=True,
+    )
     parser.add_argument("--tenant-id", type=int, required=True)
     parser.add_argument("--account-id", type=int, required=True)
     parser.add_argument("--idempotency-key", default="")
