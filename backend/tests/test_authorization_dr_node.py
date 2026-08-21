@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from telethon.errors import PhoneNumberBannedError
+from telethon.errors import PasswordHashInvalidError, PhoneNumberBannedError
 
 from app.integrations.telegram import AuthorizationIdentity
 from app.workers.authorization_dr_node import (
@@ -149,6 +149,27 @@ def test_phone_banned_is_acknowledged_without_remote_unknown(monkeypatch) -> Non
         "/internal/v1/authorization-dr/operations/operation-banned/login-failed",
     ]
     assert client.posts[-1][1]["blocker_code"] == "phone_number_banned"
+    assert client.heartbeats == [1, 0]
+
+
+def test_invalid_two_fa_is_acknowledged_without_worker_restart(monkeypatch) -> None:
+    client = RecordingNodeClient()
+    claim = {
+        "operation_id": "operation-two-fa-invalid",
+        "account_id": 102,
+        "owner_epoch": 2,
+        "lease_token": "lease-token",
+    }
+    monkeypatch.setattr(
+        "app.workers.authorization_dr_node._complete_login",
+        lambda *_args: (_ for _ in ()).throw(PasswordHashInvalidError(request=None)),
+    )
+
+    _process_claim(client, object(), claim)
+
+    paths = [path for path, _payload in client.posts]
+    assert paths[-1] == "/internal/v1/authorization-dr/operations/operation-two-fa-invalid/login-failed"
+    assert client.posts[-1][1]["blocker_code"] == "two_fa_invalid"
     assert client.heartbeats == [1, 0]
 
 

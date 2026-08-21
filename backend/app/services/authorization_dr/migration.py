@@ -30,6 +30,10 @@ from .readiness import require_migration_readiness
 CLAIM_LEASE_SECONDS = 90
 CLAIMABLE_STATUSES = ("pending", "waiting_login")
 TERMINAL_ITEM_STATUSES = ("succeeded", "reconcile_unknown", "manual_required", "failed")
+LOGIN_FAILURE_STATUSES = {
+    "phone_number_banned": "failed",
+    "two_fa_invalid": "manual_required",
+}
 
 
 def preview_migration_batch(
@@ -259,7 +263,7 @@ def mark_login_remote_unknown(session, operation_id: str, *, node_id: str, owner
     ).with_for_update())
     if not operation or operation.owner_node_id != node_id or operation.owner_epoch != owner_epoch:
         raise AuthorizationDrError("execution_node_mismatch", "Operation owner changed")
-    if operation.remote_call_state == "confirmed_no_effect" and operation.status == "failed":
+    if operation.remote_call_state == "confirmed_no_effect" and operation.status in LOGIN_FAILURE_STATUSES.values():
         session.commit()
         return
     operation.remote_call_state = "unknown"
@@ -282,7 +286,8 @@ def mark_login_remote_failed(
     lease_token: str,
     blocker_code: str,
 ) -> TgAuthorizationDrOperation:
-    if blocker_code != "phone_number_banned":
+    item_status = LOGIN_FAILURE_STATUSES.get(blocker_code)
+    if not item_status:
         raise AuthorizationDrError("login_failure_not_supported", "Login failure is not authoritative")
     operation = _owned_operation(
         session,
@@ -294,7 +299,7 @@ def mark_login_remote_failed(
     if operation.remote_call_state != "started":
         raise AuthorizationDrError("login_failure_state_mismatch", "Remote login has not started")
     operation.remote_call_state = "confirmed_no_effect"
-    operation.status = "failed"
+    operation.status = item_status
     operation.blocker_code = blocker_code
     operation.lease_token = ""
     operation.lease_expires_at = None
@@ -303,7 +308,7 @@ def mark_login_remote_failed(
     item = session.get(TgAuthorizationDrBatchItem, operation.batch_item_id)
     if not item:
         raise AuthorizationDrError("migration_batch_item_missing", "Migration batch item is unavailable")
-    item.status = "failed"
+    item.status = item_status
     item.outcome = blocker_code
     item.blocker_code = blocker_code
     item.finished_at = _now()
