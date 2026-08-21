@@ -3,12 +3,14 @@
 ## 2026-08-21 Product Resync
 
 - 最新生产事实覆盖旧规划：账号 27/28 的 MY generation 2 槽位均为 current，双副本 2/2、restore probe passed，旧 SV App C Session retained+protected，`slot_canary_pass=2/2`。
-- 后续 271 项批次为 `241 succeeded / 22 failed / 8 reconcile_unknown`，另有账号 24/25/26 的早期独立 unknown；runtime 已切 `off`，没有授权恢复扩量许可。
+- 后续 271 项批次已收口为 `241 succeeded / 22 failed / 5 manual_required / 3 reconcile_unknown`；全局剩余 unknown 为账号 24/25/26/67/87/111。runtime 保持 `off`，没有授权恢复扩量许可。
 - `PasswordHashInvalidError` 修复已由 release SHA `3301e3cc` 标准发布到 SV，并把完全相同的 image ID 同步到 MY；两地运行版本漂移已清零，runtime 仍为 `off`。
 - 账号 27/28 已完成第二次独立 DB/双副本/restore/slot/Telegram peer exact-set 读回，均满足 `slot_canary_pass=2/2`；旧 SV retained+protected，因此仍不是 migration final。
 - PRD/实施合同已提升到 v2.19；账号 26 更正为 MY `local_only` generation 2 密封包，禁止重登或生成新 Session。
-- P0A unknown coordinator 已完成本地实现：`0158` reconcile case、preview/apply/get、双人角色分离、evidence fingerprint、operation/item/source CAS、批次 `execution_finished_at` 与 business `finished_at` 分离，以及无登录入口的正式 CLI。67 项定向回归通过；PostgreSQL CI、发布与 5 条生产 guarded apply 尚未完成。
+- P0A unknown coordinator 已完成实现与生产发布：`0158` reconcile case、preview/apply/get、双人角色分离、evidence fingerprint、operation/item/source CAS、批次 `execution_finished_at` 与 business `finished_at` 分离，以及无登录入口的正式 CLI。定向回归 `71 passed`；release SHA `e8cd88dc496a56c586a5bcc502d81a318b76d7a9` 的 PostgreSQL/no-PostgreSQL CI、镜像构建和 Deploy Production run `32456712129` 全部通过，生产 Alembic head 为 `0158_dr_reconcile`。
 - QA 保存的只读日志摘录精确绑定账号 297/307/310/311/314 的 operation、`PasswordHashInvalidError`、login-unknown 204、MY node/owner epoch 和旧运行 SHA；脱敏 canonical digest 已写入 `reconcile_evidence_20260821.json`。其余 6 条保持 unknown。
+- 账号 297/307/310/311/314 已按 preview/fingerprint、不同 requester/approver、expected operation version 5 和审计引用 `INC-20260821-DR-TYPED-2FA-RECONCILE` 逐项 apply/readback；5 项均为 `manual_required/two_fa_invalid/confirmed_no_effect`，source current Session/protection/fact 未变，candidate/bundle 数仍为 0。
+- SV/MY 已运行同一 release backend image ID `sha256:d4eec3f398c83cbbcbf245aa670f21182766fc8af0a30baaf069c006b5d5ff00`。MY Compose/脚本 hash 与 release 一致，worker `running/healthy`、restart 0、heartbeat 200、claim 204；中心读回 `my-node-1` ready、active client 0、运行 SHA `e8cd88dc...`。临时镜像归档在双端校验和加载后删除。
 
 ## 2026-08-20
 
