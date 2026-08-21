@@ -108,6 +108,49 @@ def test_local_activate_probes_and_advances_all_current_generations(monkeypatch)
         assert invalidated == [old_session]
 
 
+def test_local_activate_bootstraps_missing_legacy_identity_after_two_probes(monkeypatch) -> None:
+    with _session() as session:
+        account, target = _seed_local_activate(session)
+        target.telegram_user_id_digest = ""
+        target.auth_key_fingerprint_digest = ""
+        session.commit()
+        probes = []
+        monkeypatch.setattr(
+            "app.services.authorization_dr.local_activate.credentials_for_developer_app",
+            lambda *_args: SimpleNamespace(),
+        )
+        monkeypatch.setattr(
+            "app.services.authorization_dr.local_activate.credentials_for_authorization",
+            lambda *_args, **_kwargs: SimpleNamespace(),
+        )
+        monkeypatch.setattr(
+            "app.services.authorization_dr.local_activate.gateway.authorization_identity",
+            lambda *_args: probes.append(1) or _identity(),
+        )
+        monkeypatch.setattr(
+            "app.services.authorization_dr.local_activate.gateway.invalidate_session_cache",
+            lambda *_args: 1,
+        )
+
+        case = preview_local_activate(session, 1, account.id, target.id, actor="requester", reason="legacy")
+        apply_local_activate(
+            session,
+            1,
+            account.id,
+            target.id,
+            fingerprint=case.fingerprint,
+            actor="approver",
+            approval_ref="INC-LOCAL-ACTIVATE",
+            idempotency_key="activate-legacy-67",
+        )
+
+        session.refresh(target)
+        assert probes == [1, 1]
+        assert target.telegram_user_id_digest == "b" * 64
+        assert target.auth_key_fingerprint_digest == "a" * 64
+        assert target.telegram_authorization_hash_ciphertext
+
+
 def test_phone_ban_projects_account_and_online_truth_without_deleting_session() -> None:
     with _session() as session:
         session.add(Tenant(id=1, name="tenant"))
