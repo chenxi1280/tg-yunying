@@ -168,6 +168,8 @@ def _apply_probe_result(
     now: datetime,
     result: OnlineProbeResult,
 ) -> None:
+    if _restore_authoritative_phone_ban(session, account, state):
+        return
     if isinstance(result.error, ValueError):
         _mark_probe_blocked(state, now, "developer_app_unavailable", str(result.error))
         return
@@ -183,6 +185,18 @@ def _apply_probe_result(
         release_online_coverage_blockers(session, tenant_id=account.tenant_id, account_id=account.id, now=now)
         return
     _mark_probe_unavailable(account, state, now, health.status, health.health_score, health.detail)
+
+
+def _restore_authoritative_phone_ban(session: Session, account: TgAccount, state: TgAccountOnlineState) -> bool:
+    from app.services.authorization_dr.migration_results import (
+        authoritative_phone_ban_exists,
+        project_authoritative_login_failure,
+    )
+
+    if not authoritative_phone_ban_exists(session, account.id):
+        return False
+    project_authoritative_login_failure(session, account.id, "phone_number_banned")
+    return True
 
 
 def _due_probe_states(session: Session, *, limit: int, now: datetime) -> list[TgAccountOnlineState]:

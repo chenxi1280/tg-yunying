@@ -110,6 +110,16 @@ def project_authoritative_login_failure(session, account_id: int, blocker_code: 
     _project_authoritative_login_failure(session, account_id, blocker_code)
 
 
+def authoritative_phone_ban_exists(session, account_id: int) -> bool:
+    operation_id = session.scalar(select(TgAuthorizationDrOperation.id).where(
+        TgAuthorizationDrOperation.account_id == account_id,
+        TgAuthorizationDrOperation.blocker_code == "phone_number_banned",
+        TgAuthorizationDrOperation.remote_call_state == "confirmed_no_effect",
+        TgAuthorizationDrOperation.status == "failed",
+    ).limit(1))
+    return operation_id is not None
+
+
 def _project_authoritative_login_failure(session, account_id: int, blocker_code: str) -> None:
     if blocker_code != "phone_number_banned":
         return
@@ -161,6 +171,7 @@ def _project_batch_status(batch, statuses: list[str]) -> None:
 
 __all__ = [
     "LOGIN_FAILURE_STATUSES",
+    "authoritative_phone_ban_exists",
     "mark_login_remote_failed",
     "mark_login_remote_unknown",
     "project_authoritative_login_failure",
