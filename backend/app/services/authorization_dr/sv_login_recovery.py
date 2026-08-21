@@ -306,7 +306,7 @@ def _require_approval(requested_by, actor, approval_ref, key):
 def _remote_set_digest(rows) -> str:
     payload = sorted([
         [row.authorization_hash, row.is_current, row.api_id, row.device_model, row.platform,
-         str(row.date_created), str(row.date_active)] for row in rows
+         str(row.date_created)] for row in rows
     ])
     return hashlib.sha256(json.dumps(payload, separators=(",", ":")).encode()).hexdigest()
 

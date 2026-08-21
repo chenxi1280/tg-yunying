@@ -24,6 +24,7 @@ from app.models import (
 from app.services._common import _now
 from app.services.account_authorizations import _mark_same_role_for_repair
 from app.services.authorization_dr.sv_login_recovery import (
+    _remote_set_digest,
     apply_sv_login_recovery,
     preview_sv_login_recovery,
 )
@@ -144,6 +145,21 @@ def test_same_role_relogin_frees_current_slot_before_insert() -> None:
         session.add(replacement)
         session.flush()
         assert conflict.is_slot_current is False
+
+
+def test_remote_set_digest_ignores_mutable_active_timestamp() -> None:
+    created = _now()
+    first = SimpleNamespace(
+        authorization_hash="123", is_current=False, api_id=1001,
+        device_model="device", platform="test", date_created=created,
+        date_active=created,
+    )
+    second = SimpleNamespace(**{
+        **vars(first),
+        "date_active": created.replace(microsecond=(created.microsecond + 1) % 1_000_000),
+    })
+
+    assert _remote_set_digest([first]) == _remote_set_digest([second])
 
 
 def test_recovery_commits_existing_authorized_session_without_changing_a(monkeypatch) -> None:
