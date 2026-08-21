@@ -499,6 +499,31 @@ def test_phone_banned_is_terminal_and_next_account_can_continue(session: Session
     assert next_claim is not None and next_claim.account_id == 102
 
 
+def test_invalid_two_fa_is_manual_required_and_next_account_can_continue(session: Session) -> None:
+    claim = _start_claim(session)
+
+    operation = mark_login_remote_failed(
+        session,
+        claim.operation_id,
+        node_id=claim.owner_node_id,
+        owner_epoch=claim.owner_epoch,
+        lease_token=claim.lease_token,
+        blocker_code="two_fa_invalid",
+    )
+
+    item = session.get(TgAuthorizationDrBatchItem, operation.batch_item_id)
+    source = session.get(TgAccountAuthorization, operation.source_authorization_id)
+    next_claim = claim_migration_operation(session, "my-node-1")
+
+    assert operation.status == "manual_required"
+    assert operation.remote_call_state == "confirmed_no_effect"
+    assert item.status == "manual_required"
+    assert item.outcome == "two_fa_invalid"
+    assert source.session_ciphertext == f"sv-standby-2-{claim.account_id}"
+    assert source.is_slot_current is True
+    assert next_claim is not None and next_claim.account_id == 102
+
+
 def test_remote_unknown_cannot_overwrite_confirmed_phone_banned(session: Session) -> None:
     claim = _start_claim(session)
     operation = mark_login_remote_failed(

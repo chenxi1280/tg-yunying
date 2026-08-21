@@ -133,7 +133,7 @@ class DrOwnerRequest(DrStrictModel):
 
 
 class DrLoginFailureRequest(DrOwnerRequest):
-    blocker_code: str = Field(pattern="^phone_number_banned$")
+    blocker_code: str = Field(pattern="^(phone_number_banned|two_fa_invalid)$")
 
 
 class DrCopyReceiptRequest(DrStrictModel):
