@@ -13,7 +13,7 @@ from app.models import (
     TgAccountAuthorization,
     TgAuthorizationLocalActivateCase,
 )
-from app.security import decrypt_session
+from app.security import decrypt_session, encrypt_secret
 from app.services._common import _now, audit, gateway
 from app.services.account_authorizations import apply_primary_authorization_switch
 from app.services.developer_apps import credentials_for_authorization, credentials_for_developer_app
@@ -60,6 +60,7 @@ def apply_local_activate(
     identity = _probe_target(session, *(_inputs(session, tenant_id, account_id, target_id)))
     account, target = _locked_inputs(session, tenant_id, account_id, target_id)
     _require_frozen(case, account, target, identity)
+    _apply_probed_identity(target, identity)
     gateway.invalidate_session_cache(
         account.session_ciphertext,
         _current_credentials(session, account),
@@ -117,7 +118,7 @@ def _probe_target(session, account, target):
     if not raw_session:
         raise AuthorizationDrError("local_activate_standby_probe_failed", "SV standby_1 material is unavailable")
     identity = gateway.authorization_identity(raw_session, credentials_for_authorization(session, target))
-    if identity.telegram_user_id_digest != target.telegram_user_id_digest:
+    if target.telegram_user_id_digest and identity.telegram_user_id_digest != target.telegram_user_id_digest:
         raise AuthorizationDrError("authorization_identity_mismatch", "SV standby_1 Telegram identity changed")
     if target.auth_key_fingerprint_digest and identity.auth_key_fingerprint_digest != target.auth_key_fingerprint_digest:
         raise AuthorizationDrError("authorization_identity_mismatch", "SV standby_1 AuthKey changed")
@@ -133,7 +134,6 @@ def _require_switchable_target(target) -> None:
         and target.health_status == "healthy"
         and target.session_ciphertext
         and target.developer_app_id
-        and target.telegram_user_id_digest
     )
     if not valid:
         raise AuthorizationDrError("local_activate_standby_probe_failed", "SV standby_1 is not switchable")
@@ -197,6 +197,12 @@ def _require_frozen(case, account, target, identity) -> None:
     )
     if observed != expected:
         raise AuthorizationDrError("authorization_version_conflict", "Local activate frozen facts changed")
+
+
+def _apply_probed_identity(target, identity) -> None:
+    target.telegram_user_id_digest = identity.telegram_user_id_digest
+    target.auth_key_fingerprint_digest = identity.auth_key_fingerprint_digest
+    target.telegram_authorization_hash_ciphertext = encrypt_secret(identity.authorization_hash)
 
 
 def _require_approval(case, actor: str, approval_ref: str, idempotency_key: str) -> None:
