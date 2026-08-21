@@ -366,11 +366,14 @@ def _apply_reconcile_transition(session, operation, item, case) -> None:
 
 
 def _apply_terminal_reconcile(session, operation, item, case) -> None:
-    allowed = {"confirmed_no_effect", "remote_orphan_without_bundle", "remote_unproven"}
+    confirmed_no_effect = {"confirmed_no_effect", "confirmed_no_remote_effect"}
+    allowed = confirmed_no_effect | {"remote_orphan_without_bundle", "remote_unproven"}
     if case.classification not in allowed or case.persisted_artifact_state != "none":
         raise AuthorizationDrError("reconcile_transition_blocked", "Evidence does not allow terminal transition")
     operation.status = case.recommended_transition
-    operation.remote_call_state = "confirmed_no_effect" if case.classification == "confirmed_no_effect" else "reconciled_hold"
+    operation.remote_call_state = (
+        "confirmed_no_effect" if case.classification in confirmed_no_effect else "reconciled_hold"
+    )
     operation.blocker_code = case.blocker_code
     operation.reconcile_case_id = case.id
     operation.reconcile_status = "applied"
