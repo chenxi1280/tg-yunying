@@ -51,6 +51,10 @@ def test_account_batch_login_schema_migrates_from_blank_postgres() -> None:
     )
     usage_columns = {column["name"]: column for column in inspector.get_columns("ai_usage_ledgers")}
     assert usage_columns["user_id"]["nullable"] is False
+    ai_setting_columns = {
+        column["name"] for column in inspector.get_columns("tenant_ai_settings")
+    }
+    assert "ai_provider_route_fallback_enabled" in ai_setting_columns
     assert any(
         foreign_key["constrained_columns"] == ["user_id"]
         and foreign_key["referred_table"] == "app_users"
@@ -58,5 +62,5 @@ def test_account_batch_login_schema_migrates_from_blank_postgres() -> None:
     )
     with engine.connect() as connection:
         assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
-            "0160_abc_canary"
+            "0161_provider_failover"
         )
