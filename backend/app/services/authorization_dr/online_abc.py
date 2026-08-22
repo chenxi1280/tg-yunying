@@ -23,6 +23,7 @@ from app.models import (
 from app.services._common import _now, audit
 
 from .contracts import AuthorizationDrError
+from .online_abc_operations import online_abc_item_operations, online_abc_operation_keys
 from .online_abc_read import render_online_abc_status
 
 
@@ -122,7 +123,7 @@ def sync_online_abc_batch(session, batch_id: str, *, actor: str, approval_ref: s
     item = _running_item(session, batch.id)
     if item is None:
         return online_abc_batch_status(session, batch.id)
-    operations = _item_operations(session, batch, item)
+    operations = online_abc_item_operations(session, batch, item)
     _sync_primary_probe(session, item)
     _sync_slot(session, item, "standby_1", operations["b"])
     _sync_slot(session, item, "standby_2", operations["c"])
@@ -319,27 +320,14 @@ def _terminal_outcome(operations: dict) -> str:
     return ""
 
 
-def _item_operations(session, batch, item) -> dict:
-    keys = _operation_keys(batch, item)
-    return {name: session.scalar(select(TgAuthorizationDrOperation).where(
-        TgAuthorizationDrOperation.tenant_id == batch.tenant_id,
-        TgAuthorizationDrOperation.idempotency_key == key,
-    )) for name, key in keys.items()}
-
-
 def _item_command(batch, item) -> dict:
-    keys = _operation_keys(batch, item)
+    keys = online_abc_operation_keys(batch, item)
     return {
         "batch_id": batch.id, "item_id": item.id, "ordinal": item.ordinal,
         "account_id": item.account_id, "b_idempotency_key": keys["b"],
         "c_idempotency_key": keys["c"], "e4_idempotency_key": keys["e4"],
         "primary_session_digest": item.primary_session_digest,
     }
-
-
-def _operation_keys(batch, item) -> dict[str, str]:
-    base = f"online-abc:{batch.id}:{item.ordinal}"
-    return {"b": f"{base}:b", "c": f"{base}:b:c", "e4": f"{base}:e4"}
 
 
 def _preview_body(tenant_id, key, release_sha, targets) -> dict:

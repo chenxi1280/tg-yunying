@@ -63,7 +63,7 @@
 
 - `TgAuthorizationOnlineAbcBatch/Item/SlotResult` 冻结同一组恰好 10 个唯一在线账号及其 A Session 摘要、三组 generation、App B assignment、代理和 App C/SV 迁移源；preview/apply 必须使用精确 release SHA、fingerprint 与异人审批。批次创建不连接 Telegram、不改变任何 Session。
 - `start` 在行锁、runtime=`off` 和全局 unknown=0 下只返回当前唯一账号及 B/C/E4 三个确定性幂等键；存在 running item 时重复调用只返回同一项。操作者随后复用 canonical A qualification、`authorization-abc-backup` 和 E4 verify 正式入口，不得新建平行登录实现。
-- `sync` 只读取上述正式 operation 与 A 资格探测事实，投影账号、B、C 三组结果；任一 `reconcile_unknown|failed|manual_required` 立即把 item 和 batch 停止，不允许领取下一账号。只有 A 指针/Session 摘要与 generation 未漂移、A 身份事实补齐且 B/C/E4 全部 succeeded，当前账号才成功。
+- `sync` 只读取上述正式 operation 与 A 资格探测事实，投影账号、B、C 三组结果；B/E4 按控制幂等键定位，C 通过其正式 migration batch idempotency key 与 batch item 的 operation pointer 定位，不假设底层 operation 复用批次 key。任一 `reconcile_unknown|failed|manual_required` 立即把 item 和 batch 停止，不允许领取下一账号。只有 A 指针/Session 摘要与 generation 未漂移、A 身份事实补齐且 B/C/E4 全部 succeeded，当前账号才成功。
 - 10 个账号全部成功后批次只进入 `observing`，观察窗固定至少 24 小时；期间仍须保持 runtime off、全局 unknown=0、A 无漂移、MY active client=0 且无 correction/新封禁。观察窗关闭前不得宣称 10 账号 canary 完成，更不得创建全量批次。
 
 ### 1.3 2026-08-21 早期失败 canary 事实
