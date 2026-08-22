@@ -5,7 +5,11 @@ import json
 import os
 
 from app.database import SessionLocal
-from app.services.authorization_dr import online_abc_runner_status, run_online_abc_batch
+from app.services.authorization_dr import (
+    online_abc_runner_status,
+    resume_online_abc_batch,
+    run_online_abc_batch,
+)
 from app.services.authorization_dr.contracts import AuthorizationDrError
 
 
@@ -27,6 +31,15 @@ def main() -> int:
 def _execute(session, args) -> dict:
     if args.mode == "status":
         return online_abc_runner_status(session, args.batch_id)
+    if args.mode == "resume":
+        resume_online_abc_batch(
+            session,
+            args.batch_id,
+            requested_by=args.requested_by,
+            approved_by=args.approved_by,
+            approval_ref=args.approval_ref,
+            runtime_release_sha=os.getenv("RELEASE_SHA", ""),
+        )
     return run_online_abc_batch(
         session,
         args.batch_id,
@@ -45,7 +58,7 @@ def _error_out(exc: Exception) -> dict:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run one approved online ABC batch without GitHub Actions")
-    parser.add_argument("--mode", choices=("status", "run"), required=True)
+    parser.add_argument("--mode", choices=("status", "run", "resume"), required=True)
     parser.add_argument("--batch-id", required=True)
     parser.add_argument("--requested-by", default="")
     parser.add_argument("--approved-by", default="")

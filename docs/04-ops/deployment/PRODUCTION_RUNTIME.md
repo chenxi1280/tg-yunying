@@ -460,4 +460,12 @@ bash deploy/authorization-online-abc-runner.sh --mode run --batch-id <approved-b
 
 `run` 会逐账号执行到 batch 进入 `observing`；C operation 执行期间命令保持等待。命令中断后使用完全相同的 batch ID 和审批参数重启，runner 从数据库 operation 阶段恢复，禁止换 idempotency key。`status` 即使读取 stopped batch 也返回退出码 0；`run` 遇到 stopped、unknown、manual、failed、A 漂移或 runtime 冲突返回非零。runner 不创建 batch；manifest 仍必须先经 `authorization-online-abc.sh preview/apply` 冻结精确目标和 release SHA。
 
+若旧 runner 仅因 C succeeded 后、E4 创建前的 `malaysia_wake_unavailable` 停止，先用 `status` 和独立读回确认 B/C succeeded、E4 不存在、runtime off、unknown=0、A 未漂移、MY heartbeat ready/client=0，再用原审批身份执行：
+
+```bash
+bash deploy/authorization-online-abc-runner.sh --mode resume --batch-id <same-batch-id> --requested-by <original-requester> --approved-by <original-approver> --approval-ref <original-ticket>
+```
+
+`resume` 只 CAS 恢复原 item/batch 后进入普通 runner；不得用于其他 blocker，不得修改、重建或重放 B/C。新 runner 遇到同一 post-C/pre-E4 heartbeat 刷新窗口会等待 readiness，不再先停止批次。
+
 2026-08-22 runner 生产读回：GitHub Actions run `32576826536` 已发布 release `a6481e0ae8bd851718e91eb1d6cafd1c6f74d154`；backend healthy、Alembic head=`0163_local_activate_verify`。`status` 已只读旧 stopped batch，返回 `next_action=stopped`、B/C `10/10` 和守恒有效；未调用 `run`。独立门槛读回为 runtime=`off`、claim scope 为空、global unknown=0、open ABC batch=0、MY node ready/active client=0。

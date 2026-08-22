@@ -12,6 +12,7 @@ from app.models import (
     AuthorizationDrRuntimeContract,
     TgAccount,
     TgAccountAuthorization,
+    TgAuthorizationDrOperation,
     TgAuthorizationOnlineAbcBatch,
     TgAuthorizationOnlineAbcItem,
 )
@@ -37,6 +38,8 @@ from .readiness import ready_migration_runtime_image_sha
 POLL_INTERVAL_SECONDS = 2.0
 SUCCESS_STATUS = "succeeded"
 TERMINAL_BATCH_STATUSES = {"observing", "stopped"}
+RESUMABLE_RUNNER_BLOCKERS = {"malaysia_wake_unavailable"}
+RETRYABLE_E4_READINESS_CODES = {"malaysia_wake_unavailable"}
 TERMINAL_OPERATION_STATUSES = {
     SUCCESS_STATUS,
     "failed",
@@ -100,6 +103,27 @@ def run_online_abc_batch(
         )
 
 
+def resume_online_abc_batch(
+    session,
+    batch_id: str,
+    *,
+    requested_by: str,
+    approved_by: str,
+    approval_ref: str,
+    runtime_release_sha: str,
+) -> dict:
+    approval = _approval(requested_by, approved_by, approval_ref)
+    batch = _locked_batch(session, batch_id)
+    _require_batch_contract(batch, approval, runtime_release_sha)
+    item = _resumable_item(session, batch)
+    operations = online_abc_item_operations(session, batch, item)
+    _require_resume_contract(session, item, operations)
+    ready_migration_runtime_image_sha(session)
+    _resume_item(session, batch, item, approval)
+    session.commit()
+    return online_abc_runner_status(session, batch_id)
+
+
 def _run_current_item(session, batch_id, command, approval, poll_seconds, sleeper) -> None:
     batch, item, operations = _context(session, batch_id)
     if item.id != command["item_id"] or item.account_id != command["account_id"]:
@@ -115,7 +139,7 @@ def _run_current_item(session, batch_id, command, approval, poll_seconds, sleepe
     batch, item, operations = _context(session, batch_id)
     _require_succeeded(operations["c"], "online_abc_runner_c_incomplete")
     if operations["e4"] is None:
-        _create_e4(session, batch, item, approval)
+        _create_e4(session, batch, item, approval, poll_seconds, sleeper)
     _require_succeeded(_context(session, batch_id)[2]["e4"], "online_abc_runner_e4_incomplete")
 
 
@@ -176,9 +200,9 @@ def _create_c(session, batch, item, approval: RunnerApproval) -> None:
     )
 
 
-def _create_e4(session, batch, item, approval: RunnerApproval) -> None:
+def _create_e4(session, batch, item, approval: RunnerApproval, poll_seconds: float, sleeper) -> None:
     key = online_abc_operation_keys(batch, item)["e4"]
-    preview = preview_abc_e4(session, batch.tenant_id, item.account_id, idempotency_key=key)
+    preview = _wait_for_e4_preview(session, batch, item, key, poll_seconds, sleeper)
     apply_abc_e4(
         session,
         batch.tenant_id,
@@ -189,6 +213,17 @@ def _create_e4(session, batch, item, approval: RunnerApproval) -> None:
         approved_by=approval.approved_by,
         approval_ref=approval.approval_ref,
     )
+
+
+def _wait_for_e4_preview(session, batch, item, key: str, poll_seconds: float, sleeper) -> dict:
+    while True:
+        try:
+            return preview_abc_e4(session, batch.tenant_id, item.account_id, idempotency_key=key)
+        except AuthorizationDrError as exc:
+            if exc.code not in RETRYABLE_E4_READINESS_CODES:
+                raise
+            sleeper(poll_seconds)
+            session.expire_all()
 
 
 def _wait_for_c(session, batch_id: str, poll_seconds: float, sleeper) -> None:
@@ -245,6 +280,56 @@ def _stop_running_item(session, batch_id: str, *, blocker_code: str, actor: str,
     session.commit()
 
 
+def _resumable_item(session, batch) -> TgAuthorizationOnlineAbcItem:
+    if batch.status != "stopped":
+        raise AuthorizationDrError("online_abc_resume_not_stopped", f"Batch is {batch.status}")
+    items = list(session.scalars(select(TgAuthorizationOnlineAbcItem).where(
+        TgAuthorizationOnlineAbcItem.batch_id == batch.id,
+        TgAuthorizationOnlineAbcItem.status == "stopped",
+        TgAuthorizationOnlineAbcItem.outcome == "runner_blocked",
+    ).with_for_update()))
+    if len(items) != 1:
+        raise AuthorizationDrError("online_abc_resume_ambiguous", "Exactly one runner-blocked item is required")
+    return items[0]
+
+
+def _require_resume_contract(session, item, operations: dict) -> None:
+    if item.blocker_code not in RESUMABLE_RUNNER_BLOCKERS:
+        raise AuthorizationDrError("online_abc_resume_blocker_forbidden", f"Blocker is {item.blocker_code}")
+    _require_succeeded(operations["b"], "online_abc_runner_b_incomplete")
+    _require_succeeded(operations["c"], "online_abc_runner_c_incomplete")
+    if operations["e4"] is not None:
+        raise AuthorizationDrError("online_abc_resume_remote_effect_started", "E4 operation already exists")
+    unknown = session.scalar(select(TgAuthorizationDrOperation.id).where(
+        TgAuthorizationDrOperation.status == "reconcile_unknown",
+    ).limit(1))
+    if unknown:
+        raise AuthorizationDrError("global_reconcile_unknown", "Global reconcile unknown must be zero")
+    account = session.get(TgAccount, item.account_id)
+    primary = session.get(TgAccountAuthorization, item.primary_authorization_id)
+    if _primary_state(account, primary, item) != "qualified":
+        raise AuthorizationDrError("online_abc_primary_drift", "A changed before runner resume")
+
+
+def _resume_item(session, batch, item, approval: RunnerApproval) -> None:
+    item.status = "running"
+    item.outcome = "running"
+    item.blocker_code = ""
+    item.finished_at = None
+    item.version += 1
+    batch.status = "running"
+    batch.version += 1
+    audit(
+        session,
+        tenant_id=batch.tenant_id,
+        actor=approval.approved_by,
+        action=f"恢复 ABC runner account={item.account_id}",
+        target_type="tg_authorization_online_abc_batches",
+        target_id=batch.id,
+        detail=f"approval_ref={approval.approval_ref}; checkpoint=post_c_pre_e4",
+    )
+
+
 def _context(session, batch_id: str):
     session.expire_all()
     batch = _batch(session, batch_id)
@@ -299,6 +384,15 @@ def _require_batch_contract(batch, approval: RunnerApproval, runtime_release_sha
 
 def _batch(session, batch_id: str):
     batch = session.get(TgAuthorizationOnlineAbcBatch, batch_id)
+    if not batch:
+        raise AuthorizationDrError("online_abc_batch_not_found", "Online ABC batch is unavailable")
+    return batch
+
+
+def _locked_batch(session, batch_id: str):
+    batch = session.scalar(select(TgAuthorizationOnlineAbcBatch).where(
+        TgAuthorizationOnlineAbcBatch.id == batch_id,
+    ).with_for_update())
     if not batch:
         raise AuthorizationDrError("online_abc_batch_not_found", "Online ABC batch is unavailable")
     return batch
@@ -379,4 +473,4 @@ def _empty_operations() -> dict:
     return {"b": None, "c": None, "e4": None}
 
 
-__all__ = ["online_abc_runner_status", "run_online_abc_batch"]
+__all__ = ["online_abc_runner_status", "resume_online_abc_batch", "run_online_abc_batch"]
