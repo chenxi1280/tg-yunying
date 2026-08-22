@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import importlib.util
+from pathlib import Path
+
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 import pytest
@@ -27,6 +32,7 @@ from app.services.authorization_dr.online_abc import (
 pytestmark = pytest.mark.no_postgres
 RELEASE_SHA = "a" * 40
 ACCOUNT_IDS = list(range(101, 111))
+MIGRATION_PATH = Path(__file__).resolve().parents[1] / "migrations/versions/0162_authorization_online_abc_canary.py"
 
 
 @pytest.fixture
@@ -103,6 +109,19 @@ def test_preview_requires_exactly_ten_unique_targets(session: Session) -> None:
             session, 1, ACCOUNT_IDS[:-1],
             idempotency_key="online-abc-10", deployed_release_sha=RELEASE_SHA,
         )
+
+
+def test_migration_accepts_metadata_precreated_tables() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    spec = importlib.util.spec_from_file_location("online_abc_0162", MIGRATION_PATH)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("migration_load_failed")
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    with engine.begin() as connection:
+        migration.op = Operations(MigrationContext.configure(connection))
+        migration.upgrade()
 
 
 def test_apply_freezes_manifest_and_preserves_three_way_conservation(session: Session) -> None:
