@@ -12,6 +12,9 @@ EXPECTED_TABLES = {
     "tg_account_login_batch_notifications",
     "tg_account_login_rate_buckets",
     "tg_account_phone_fingerprint_aliases",
+    "tg_authorization_online_abc_batches",
+    "tg_authorization_online_abc_items",
+    "tg_authorization_online_abc_slot_results",
 }
 
 
@@ -62,5 +65,5 @@ def test_account_batch_login_schema_migrates_from_blank_postgres() -> None:
     )
     with engine.connect() as connection:
         assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
-            "0161_provider_failover"
+            "0162_online_abc_canary"
         )
