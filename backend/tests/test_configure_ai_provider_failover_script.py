@@ -39,10 +39,19 @@ def test_guarded_provider_enable_and_route_activation(monkeypatch) -> None:
             provider.health_status = "健康"
         session.commit()
 
-    route_preview = script._route_operation(_options("route-preview", provider_ids))
+    switched_ids = (2, 5)
+    default_preview = script._default_operation(_options("default-preview", switched_ids))
+    default_applied = script._default_operation(_options(
+        "default-apply",
+        switched_ids,
+        fingerprint=default_preview["fingerprint"],
+    ))
+    assert default_applied["applied"] is True
+
+    route_preview = script._route_operation(_options("route-preview", switched_ids))
     route_applied = script._route_operation(_options(
         "route-apply",
-        provider_ids,
+        switched_ids,
         fingerprint=route_preview["fingerprint"],
     ))
 
@@ -56,7 +65,8 @@ def test_guarded_provider_enable_and_route_activation(monkeypatch) -> None:
             TenantAiProviderRouteItem.route_set_id == active.id,
         ).order_by(TenantAiProviderRouteItem.priority)).all()
         assert setting.ai_provider_route_fallback_enabled is True
-        assert [item.provider_id for item in items] == [5, 2]
+        assert setting.default_provider_id == 2
+        assert [item.provider_id for item in items] == [2, 5]
 
 
 def _options(operation: str, provider_ids: tuple[int, ...], *, fingerprint: str = ""):

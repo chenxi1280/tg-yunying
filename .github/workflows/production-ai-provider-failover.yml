@@ -11,6 +11,8 @@ name: Production AI Provider Failover
           - providers-preview
           - providers-apply
           - provider-check
+          - default-preview
+          - default-apply
           - route-preview
           - route-apply
           - readback
@@ -75,7 +77,7 @@ jobs:
           test -n "${SSH_PRIVATE_KEY}"
           test -n "${DEPLOY_HOST}"
           test -n "${DEPLOY_USER}"
-          [[ "${OPERATION}" =~ ^(providers-preview|providers-apply|provider-check|route-preview|route-apply|readback)$ ]]
+          [[ "${OPERATION}" =~ ^(providers-preview|providers-apply|provider-check|default-preview|default-apply|route-preview|route-apply|readback)$ ]]
           [[ "${EXPECTED_SHA}" =~ ^[0-9a-fA-F]{8,40}$ ]]
           [[ "${TENANT_ID}" =~ ^[1-9][0-9]*$ ]]
           [[ "${PROVIDER_IDS}" =~ ^[1-9][0-9]*(,[1-9][0-9]*)+$ ]]

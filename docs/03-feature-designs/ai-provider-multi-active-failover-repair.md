@@ -90,8 +90,9 @@ claim admission 必须读取所有 `is_active=true AND health=健康` 的供应�
 1. preview 精确列出 tenant、provider old state、active route revision/items、setting old state和目标 diff，并输出 SHA-256 fingerprint。
 2. apply 必须提交 deployed SHA、expected fingerprint、actor、approval reference；行锁后重算 fingerprint，漂移则零写入失败。
 3. 先多启用候选供应商并逐个执行真实 health check；未达到至少两个健康候选时不得开启租户降级开关。
-4. 以新 revision 创建 `group_realize_general` route-set，旧 active revision 改为 retired；同事务开启租户降级开关并写 AuditLog。
-5. 独立 readback 核对 provider 状态、route revision/hash/items 和 setting。
+4. 当前默认供应商不健康时，必须通过独立的 `default-preview/default-apply` 指纹/CAS 操作切到健康候选；不得在 route apply 中隐式改默认。
+5. 以新 revision 创建 `group_realize_general` route-set，旧 active revision 改为 retired；同事务开启租户降级开关并写 AuditLog。
+6. 独立 readback 核对 provider 状态、默认供应商、route revision/hash/items 和 setting。
 
 任何 Provider check 只证明接口可调用，不是业务 E4。
 

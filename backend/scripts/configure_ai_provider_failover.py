@@ -39,6 +39,8 @@ def main() -> None:
         result = _check_providers(options)
     elif options.operation.startswith("providers-"):
         result = _providers_operation(options)
+    elif options.operation.startswith("default-"):
+        result = _default_operation(options)
     else:
         result = _route_operation(options)
     print(json.dumps(result, ensure_ascii=False, sort_keys=True, default=str))
@@ -48,6 +50,7 @@ def _options() -> Options:
     parser = argparse.ArgumentParser()
     parser.add_argument("operation", choices=(
         "providers-preview", "providers-apply", "provider-check",
+        "default-preview", "default-apply",
         "route-preview", "route-apply", "readback",
     ))
     parser.add_argument("--tenant-id", type=int, required=True)
@@ -135,6 +138,64 @@ def _check_providers(options: Options) -> dict:
         "all_healthy": len(healthy) == len(options.provider_ids),
         "providers": results,
     }
+
+
+def _default_operation(options: Options) -> dict:
+    apply = options.operation == "default-apply"
+    with SessionLocal() as session:
+        snapshot = _default_snapshot(session, options, lock=apply)
+        if not apply:
+            return snapshot
+        _require_fingerprint(snapshot, options.expected_fingerprint)
+        _require_default_ready(snapshot)
+        setting = _setting(session, options.tenant_id, lock=True)
+        old_provider_id = setting.default_provider_id
+        setting.default_provider_id = snapshot["desired_default_provider_id"]
+        setting.updated_at = _now()
+        audit(
+            session,
+            tenant_id=options.tenant_id,
+            actor=options.actor,
+            action="切换默认AI供应商",
+            target_type="tenant_ai_setting",
+            target_id=str(setting.id),
+            detail=(
+                f"{options.approval_ref};old={old_provider_id};"
+                f"new={setting.default_provider_id}"
+            ),
+        )
+        session.commit()
+    return {"applied": True, "readback": _default_readback(options)}
+
+
+def _default_snapshot(session, options: Options, *, lock: bool) -> dict:  # noqa: ANN001
+    providers = _providers(session, options.provider_ids, lock=lock)
+    setting = _setting(session, options.tenant_id, lock=lock)
+    body = {
+        "version": SCRIPT_VERSION,
+        "operation": "default",
+        "tenant_id": options.tenant_id,
+        "providers": [_provider_row(provider) for provider in providers],
+        "setting": _setting_row(setting),
+        "desired_default_provider_id": providers[0].id,
+    }
+    return _with_fingerprint(body)
+
+
+def _default_readback(options: Options) -> dict:
+    with SessionLocal() as session:
+        snapshot = _default_snapshot(session, options, lock=False)
+    return {**snapshot, "operation": "readback"}
+
+
+def _require_default_ready(snapshot: dict) -> None:
+    provider = snapshot["providers"][0]
+    if (
+        not provider["credential_enabled"]
+        or not provider["is_active"]
+        or provider["health_status"] != "健康"
+    ):
+        raise RuntimeError(f"default_provider_not_ready:{provider['id']}")
 
 
 def _route_operation(options: Options) -> dict:
