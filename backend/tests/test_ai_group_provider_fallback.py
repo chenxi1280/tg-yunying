@@ -14,7 +14,11 @@ from app.services.ai_config import update_tenant_ai_setting
 from app.services.task_center.ai_generation_dependencies import GenerationDependencies
 from app.services.task_center.ai_generation_pipeline import generate_quality_results
 from app.services.task_center.ai_generation_state import apply_generated_content_metadata
-from app.services.task_center.ai_generator import AiGenerationUnavailable, GeneratedContent
+from app.services.task_center.ai_generator import (
+    AiGenerationUnavailable,
+    GeneratedContent,
+    ProviderRouteDeferred,
+)
 from app.services.task_center import ai_generation_pipeline
 from app.services.task_center import ai_generation_dispatch
 from app.services.task_center import ai_generator
@@ -191,6 +195,24 @@ def test_ai_group_fallback_continues_after_stage_error(monkeypatch):
     assert visited == ["primary_default"] * 3 + ["fallback_m25"]
     assert [item.content for item in items] == ["老师今天高跟鞋挺好看"]
     assert tokens == 7
+
+
+def test_ai_group_route_deferred_does_not_enter_model_fallback():
+    visited: list[str] = []
+
+    def fake_generate(_session, _tenant_id, config, *, count, target_label, history):
+        visited.append(config["_ai_fallback_stage"])
+        raise ProviderRouteDeferred("provider_rate_limited", retry_after_seconds=30)
+
+    with Session(create_engine("sqlite:///:memory:", future=True)) as session:
+        with pytest.raises(ProviderRouteDeferred, match="provider_rate_limited"):
+            generate_quality_results(
+                session,
+                _generation_request(),
+                _generation_dependencies(normal_generator=fake_generate),
+            )
+
+    assert visited == ["primary_default"]
 
 
 def test_ai_group_quality_rejection_is_visible_to_next_stage(monkeypatch):
