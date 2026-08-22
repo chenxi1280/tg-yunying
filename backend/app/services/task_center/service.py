@@ -404,6 +404,11 @@ def create_and_start_simple_search_join_group_task(
 
 def _new_task(session: Session, tenant_id: int, task_type: str, payload) -> Task:
     task_id = str(uuid4())
+    prejoin_channel_refs = (
+        list(payload.group_ai_prejoin_channel_ids)
+        if task_type == "group_ai_chat"
+        else []
+    )
     raw_type_config = payload.model_dump(mode="json", exclude=COMMON_CREATE_FIELDS, exclude_unset=True)
     raw_type_config = normalize_operation_target_references(session, tenant_id, task_type, raw_type_config)
     raw_type_config = apply_default_slang_config(session, tenant_id, task_type, raw_type_config)
@@ -453,11 +458,7 @@ def _new_task(session: Session, tenant_id: int, task_type: str, payload) -> Task
         fulfillment_contract_version=(
             CURRENT_CONTRACT_VERSION if task_type in FULFILLMENT_TASK_TYPES else "legacy_v1"
         ),
-        group_ai_prejoin_channel_ids=(
-            list(dict.fromkeys(type_config.get("required_channel_refs") or []))[:3]
-            if task_type == "group_ai_chat"
-            else []
-        ),
+        group_ai_prejoin_channel_ids=prejoin_channel_refs,
         stats={
             **empty_stats(),
             **(
@@ -958,6 +959,14 @@ def update_task_settings(session: Session, tenant_id: int, task_id: str, payload
     task = _get_task(session, tenant_id, task_id)
     previous_config = dict(task.type_config or {})
     previous_timezone = str(task.timezone or "")
+    previous_revision = int(task.config_revision or 1)
+    previous_prejoin_refs = list(task.group_ai_prejoin_channel_ids or [])
+    prejoin_field = "group_ai_prejoin_channel_ids"
+    prejoin_supplied = prejoin_field in payload.model_fields_set
+    if prejoin_supplied and task.type != "group_ai_chat":
+        raise ValueError("预关注频道仅支持 AI 活群任务")
+    if prejoin_supplied:
+        task.group_ai_prejoin_channel_ids = list(payload.group_ai_prejoin_channel_ids or [])
     raw_data = payload.model_dump(exclude_unset=True)
     _require_search_click_dedicated_update(task, raw_data)
     data = payload.model_dump(exclude_unset=True, mode="json")
@@ -996,11 +1005,14 @@ def update_task_settings(session: Session, tenant_id: int, task_id: str, payload
         next_config = normalize_operation_target_references(session, tenant_id, task.type, next_config)
         next_config = apply_group_ai_account_coverage_defaults(task.type, next_config, task.account_config or {})
         task.type_config = validated_type_config(task.type, next_config)
-    increment_revision_for_continuity_change(
+    incremented = increment_revision_for_continuity_change(
         task,
         previous_config=previous_config,
         previous_timezone=previous_timezone,
     )
+    prejoin_changed = previous_prejoin_refs != list(task.group_ai_prejoin_channel_ids or [])
+    if prejoin_changed and not incremented and task.config_revision == previous_revision:
+        task.config_revision += 1
     activate_task_ai_content_config(session, task)
     initialize_all_account_task_scope(session, task)
     _clear_unfinished_plan(session, task)
@@ -1078,7 +1090,27 @@ def _source_filter_override_detail(payload: TaskSourceFilterOverrideRequest) -> 
 
 
 def update_group_ai_chat_config(session: Session, tenant_id: int, task_id: str, payload: GroupAIChatTaskConfigUpdate, actor: str) -> Task:
-    return _update_type_config(session, tenant_id, task_id, "group_ai_chat", payload, actor)
+    field = "group_ai_prejoin_channel_ids"
+    update_data = payload.model_dump(mode="json", exclude_unset=True)
+    task = _get_task(session, tenant_id, task_id)
+    previous_refs = list(task.group_ai_prejoin_channel_ids or [])
+    previous_revision = int(task.config_revision or 1)
+    if field in payload.model_fields_set:
+        task.group_ai_prejoin_channel_ids = list(payload.group_ai_prejoin_channel_ids)
+    task = _apply_type_config_data(
+        session,
+        tenant_id,
+        task_id,
+        "group_ai_chat",
+        update_data,
+        actor,
+    )
+    refs_changed = previous_refs != list(task.group_ai_prejoin_channel_ids or [])
+    if refs_changed and task.config_revision == previous_revision:
+        task.config_revision += 1
+    session.commit()
+    session.refresh(task)
+    return task
 
 
 def update_group_relay_config(session: Session, tenant_id: int, task_id: str, payload: GroupRelayTaskConfigUpdate, actor: str) -> Task:

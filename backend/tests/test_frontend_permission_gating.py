@@ -2148,6 +2148,23 @@ def test_group_ai_plain_line_edit_preserves_existing_descriptions():
     assert "...existingChatTarget(name, existingItems)" in view_model
 
 
+def test_group_ai_prejoin_channels_are_wired_through_create_edit_and_readback():
+    source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
+    wizard = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()
+    view_model = (PROJECT_ROOT / "frontend/src/app/views/taskCenterViewModel.ts").read_text()
+    detail = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterDetailModal.tsx").read_text()
+    task_types = (PROJECT_ROOT / "frontend/src/app/types/taskCenter.ts").read_text()
+
+    assert 'name="group_ai_prejoin_channel_ids"' in wizard
+    assert 'label="需要关注的频道地址"' in wizard
+    assert "mode=\"tags\"" in wizard
+    assert "group_ai_prejoin_channel_ids: csvStrings(values.group_ai_prejoin_channel_ids)" in source
+    assert "group_ai_prejoin_channel_ids: task.group_ai_prejoin_channel_ids ?? []" in source
+    assert view_model.count("'group_ai_prejoin_channel_ids'") >= 2
+    assert "group_ai_prejoin_channel_ids: string[]" in task_types
+    assert "detail.task.group_ai_prejoin_channel_ids" in detail
+
+
 def test_group_ai_quality_funnel_labels_profile_low_match():
     source = (PROJECT_ROOT / "frontend/src/app/views/TaskAIQualityFunnelPanel.tsx").read_text()
     types = (PROJECT_ROOT / "frontend/src/app/types/taskCenter.ts").read_text()

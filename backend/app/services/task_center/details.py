@@ -85,6 +85,7 @@ def _task_payload(
         "pacing_config": task.pacing_config or {},
         "failure_policy": task.failure_policy or {},
         "type_config": task.type_config or {},
+        "group_ai_prejoin_channel_ids": list(task.group_ai_prejoin_channel_ids or []),
         "stats": stats,
         "runtime_stage": derive_task_runtime_stage(task, actions=actions),
         "target_summary": target_summary,

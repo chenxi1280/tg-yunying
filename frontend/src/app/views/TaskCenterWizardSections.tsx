@@ -2,7 +2,7 @@ import React from 'react';
 import { Alert, Checkbox, Collapse, Descriptions, Form, Input, InputNumber, Select, Space, Typography } from 'antd';
 import type { Account, AccountPool, ChannelMessageComment, OperationTarget, PromptTemplate, RuleSet, TaskCenterTaskType } from '../types';
 import { ChannelCommentTypeConfig, ChannelLikeTypeConfig, ChannelViewTypeConfig } from './TaskCenterChannelConfigSections';
-import { TASK_TYPES, TYPE_LABEL, OPERATION_PROFILE_TEMPLATES, type OperationProfileTemplateId, accountPrecheck, aiModelIdentity, curveNumbers, curveText, currentOperationProfile, formatDateTime, operationProfileSummary, operationTemplate, ruleSummary, targetName, words } from './taskCenterViewModel';
+import { TASK_TYPES, TYPE_LABEL, OPERATION_PROFILE_TEMPLATES, type OperationProfileTemplateId, accountPrecheck, aiModelIdentity, csvStrings, curveNumbers, curveText, currentOperationProfile, formatDateTime, operationProfileSummary, operationTemplate, ruleSummary, targetName, words } from './taskCenterViewModel';
 
 const targetSelectProps = {
   showSearch: true,
@@ -439,7 +439,20 @@ export function WizardTypeConfig({
               children: (
                 <div className="form-grid">
                   <Form.Item name="auto_join_target" label="自动入群"><Select options={[{ value: true, label: '开启' }, { value: false, label: '关闭' }]} /></Form.Item>
-
+                  <Form.Item
+                    name="group_ai_prejoin_channel_ids"
+                    label="需要关注的频道地址"
+                    extra="可直接粘贴公开 t.me 地址或 @username，最多 3 个；系统会先全部关注，再入群并处理机器人验证。"
+                    rules={[
+                      {
+                        validator: (_, value?: string[]) => (value?.length ?? 0) <= 3
+                          ? Promise.resolve()
+                          : Promise.reject(new Error('最多配置 3 个预关注频道')),
+                      },
+                    ]}
+                  >
+                    <Select mode="tags" tokenSeparators={[',', '，', '\n']} placeholder="例如 https://t.me/channel_name" />
+                  </Form.Item>
                   <Form.Item name="auto_resolve_verification" label="自动处理验证"><Select options={[{ value: true, label: '开启' }, { value: false, label: '关闭' }]} /></Form.Item>
                   <Form.Item name="ai_assisted_verification" label="AI 辅助验证"><Select options={[{ value: true, label: '开启' }, { value: false, label: '关闭' }]} /></Form.Item>
                   <Form.Item name="captcha_failure_policy" label="图形验证码失败处理"><Select options={[{ value: 'manual', label: '转人工处理' }]} /></Form.Item>
@@ -806,6 +819,7 @@ export function WizardReview({ taskType, values, accounts, accountPools, targets
       { key: 'targetResolution', label: '目标解析', children: values.target_input || values.source_target_input || targetSummary },
       { key: 'account', label: '账号摘要', children: `${account.label}，候选 ${account.total} 个，当前在线 ${account.online} 个，受限/离线 ${account.limited} 个` },
       { key: 'voice-profile', label: '账号面具覆盖', children: taskType === 'group_ai_chat' ? '启动后按冻结账号范围检查；缺面具按签到兜底' : '仅 AI 活群任务使用' },
+      { key: 'prejoin-channels', label: '预关注频道', children: taskType === 'group_ai_chat' ? csvStrings(values.group_ai_prejoin_channel_ids).join('、') || '未配置' : '不适用' },
       { key: 'membership', label: '准入前置', children: taskType === 'group_ai_chat' ? '启动后逐账号执行入群、群管机器人关注频道与 can_send 复检' : '启动后按目标实时复检' },
       { key: 'targetAbility', label: '目标能力', children: '创建阶段仅校验引用结构；能力在启动后复检' },
       { key: 'estimate', label: '预计动作量', children: '启动后按义务欠额生成，不以预测量阻止创建' },

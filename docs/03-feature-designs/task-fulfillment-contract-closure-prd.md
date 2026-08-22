@@ -233,10 +233,10 @@ subscription_parse_fact
 
 C2 分成两层，禁止把远端事实锁死在某个 Task：
 
-- Task 配置/投影层：`tasks.group_ai_prejoin_channel_ids UUID[] NOT NULL DEFAULT '{}'` 持久化 0～3 个运营配置频道；`TaskGroupBotAdmission` 仅保存该 Task、账号、目标群当前采用的 policy/version、所引用事实和 ready 状态。
+- Task 配置/投影层：`tasks.group_ai_prejoin_channel_ids` 独立 JSON 字段默认 `[]`，持久化 0～3 个归一化后的公开 Telegram username 引用；`TaskGroupBotAdmission` 仅保存该 Task、账号、目标群当前采用的 policy/version、所引用事实和 ready 状态。
 - Task 无关远端事实层：按账号自己的 Telegram 视角持久化 `configured_channel_follow`、`dynamic_channel_follow`、`requirement_confirmation`、`post_follow_visibility` 四类事实。事实业务键不得包含 `task_id`，但必须包含账号、目标 peer/频道、远端 mutation 或 observation identity、fact version；多个 Task 可引用同一仍新鲜事实，不能互相改写 Task 状态。
 
-配置频道必须来自 Task 表字段，不能只放通用 JSON、缓存或群级规则。Task 创建/编辑时校验稳定 OperationTarget ID、去重且最多 3 个；空数组表示没有运营预关注要求。
+配置频道必须来自 Task 表独立字段，不能只放 `type_config`、缓存或群级规则。Task 创建/编辑直接接收公开 `t.me` 地址、`@username` 或公开 username，服务端归一化、去重且限制最多 3 个；私密邀请链接、消息地址和非 Telegram 域名必须拒绝，空数组表示没有运营预关注要求。
 
 current`fact_first_v3`的AI正文准入只调用`TaskGroupBotAdmission + AccountGroupAdmissionFact`，但未ready时同一stable obligation/FOP进入typed admission waiting并订阅revision，Action=0、GenerationJob=0且不加载Provider。Planner可独立幂等创建Task-scoped observation；ready后才冻结`task_group_bot_admission_id/version`到assignment/intent并转`generation_pending`，Generation创建/claim唯一job，accepted variation+memory后才创建ready Action。authorization本地缺行不是Telegram终态；只有权威Session/target/can-send事实按scope revision取消安全pre-call owner。误弃只唤醒同一obligation，不释放/重建CycleSlot、coverage reservation或旧Action。全部legacy CycleSlot/primary quantity slot/空正文Action路径只由AI final takeover manifest分类为alias、safe pre-Gateway终结或Gateway hold/fact，current Planner不得接管或原地retry。
 
@@ -454,7 +454,7 @@ ocr_free = max(0, healthy_ocr_slots - running_ocr_count)
 
 | 表/模型 | 必填字段/约束 |
 | --- | --- |
-| `tasks` | `task_lifecycle_epoch BIGINT NOT NULL, fulfillment_contract_version, group_ai_prejoin_channel_ids UUID[] NOT NULL DEFAULT '{}'`；数组去重且最多 3 个；新建 epoch 从 1 开始；删除后物理行不存在 |
+| `tasks` | `task_lifecycle_epoch BIGINT NOT NULL, fulfillment_contract_version, group_ai_prejoin_channel_ids JSON NOT NULL DEFAULT '[]'`；公开 Telegram username 引用去重且最多 3 个；新建 epoch 从 1 开始；删除后物理行不存在 |
 | `tg_account_authorizations`（复用） | 增加 `fact_version,last_authoritative_error_code,last_authoritative_observed_at`；同一授权槽权威事实变更递增 version，Task 只引用该版本并独立物化当日状态，不新增全局冻结表 |
 | 任务日目标账本 | `base/effective target+revision,next_quantity_ordinal,bound confirmed/on_time/late/unproven,raw/unbound observed,settlement status/counts/hash,changed_at/reason`；计数由fact binding/projector收敛，Gateway前不预扣整账；quantity ordinal是current stable due identity |
 | `task_delete_operations` | `id,original_task_id,expected_lifecycle_epoch,state,resume_stage,stage_version,tombstone_set_hash,delete_set_hash,counts,tombstone_checkpoint,delete_checkpoint,last_error,created_by,committed_at`；状态只前进；同一 task/epoch 唯一 |

@@ -11,11 +11,11 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.models import OperationTarget, RuleSet, RuleSetVersion, Tenant
-from app.schemas.task_center import GroupAIChatTaskConfigUpdate, GroupAIChatTaskCreate
+from app.schemas.task_center import GroupAIChatTaskConfigUpdate, GroupAIChatTaskCreate, TaskSettingsUpdate
 from app.services.task_center.config_normalization import normalize_operation_target_references
 from app.services.task_center.config_normalization import normalize_ai_daily_target
 from app.services.task_center.payloads import SendMessagePayload
-from app.services.task_center.service import create_group_ai_chat_task, update_group_ai_chat_config
+from app.services.task_center.service import create_group_ai_chat_task, update_group_ai_chat_config, update_task_settings
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -37,6 +37,42 @@ def test_group_ai_config_uses_one_daily_group_target() -> None:
     assert "per_account_daily_max_messages" not in data
     assert "hard_hourly_target_enabled" not in data
     assert "hourly_min_messages" not in data
+
+
+@pytest.mark.no_postgres
+def test_group_ai_prejoin_channels_accept_public_addresses_and_normalize() -> None:
+    payload = GroupAIChatTaskCreate(
+        name="AI 活群",
+        target_group_id=7,
+        group_ai_prejoin_channel_ids=[
+            "https://t.me/channel_alpha/",
+            "@channel_beta",
+            "channel_alpha",
+        ],
+    )
+
+    assert payload.group_ai_prejoin_channel_ids == ["channel_alpha", "channel_beta"]
+    assert "group_ai_prejoin_channel_ids" not in payload.model_dump(mode="json")
+
+
+@pytest.mark.no_postgres
+@pytest.mark.parametrize(
+    "channel_refs",
+    [
+        ["https://t.me/+privateInvite"],
+        ["https://example.com/channel"],
+        ["one", "two", "three", "four"],
+    ],
+)
+def test_group_ai_prejoin_channels_reject_invalid_or_excess_refs(
+    channel_refs: list[str],
+) -> None:
+    with pytest.raises(ValidationError, match="预关注频道"):
+        GroupAIChatTaskCreate(
+            name="AI 活群",
+            target_group_id=7,
+            group_ai_prejoin_channel_ids=channel_refs,
+        )
 
 
 @pytest.mark.no_postgres
@@ -479,3 +515,72 @@ def test_group_ai_daily_target_change_increments_server_revision() -> None:
     assert initial_revision == 1
     assert updated.config_revision == 2
     assert updated.type_config["target_reference_revision"] == 2
+
+
+@pytest.mark.no_postgres
+def test_group_ai_prejoin_channels_persist_and_update_independent_task_field() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.commit()
+        task = create_group_ai_chat_task(
+            session,
+            1,
+            GroupAIChatTaskCreate(
+                name="预关注频道 AI 活群",
+                target_group_id=7,
+                group_ai_prejoin_channel_ids=["https://t.me/channel_alpha", "@channel_beta"],
+            ),
+            actor="tester",
+        )
+        initial_revision = task.config_revision
+
+        assert task.group_ai_prejoin_channel_ids == ["channel_alpha", "channel_beta"]
+        assert "group_ai_prejoin_channel_ids" not in task.type_config
+        assert "required_channel_refs" not in task.type_config
+
+        updated = update_group_ai_chat_config(
+            session,
+            1,
+            task.id,
+            GroupAIChatTaskConfigUpdate(
+                target_group_id=7,
+                group_ai_prejoin_channel_ids=["https://t.me/channel_gamma"],
+            ),
+            actor="tester",
+        )
+
+    assert updated.group_ai_prejoin_channel_ids == ["channel_gamma"]
+    assert updated.config_revision == initial_revision + 1
+
+
+@pytest.mark.no_postgres
+def test_group_ai_settings_endpoint_updates_prejoin_channels() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.commit()
+        task = create_group_ai_chat_task(
+            session,
+            1,
+            GroupAIChatTaskCreate(name="AI 活群", target_group_id=7),
+            actor="tester",
+        )
+        initial_revision = task.config_revision
+
+        updated = update_task_settings(
+            session,
+            1,
+            task.id,
+            TaskSettingsUpdate(
+                group_ai_prejoin_channel_ids=["https://t.me/channel_delta"]
+            ),
+            actor="tester",
+        )
+
+    assert updated.group_ai_prejoin_channel_ids == ["channel_delta"]
+    assert updated.config_revision == initial_revision + 1

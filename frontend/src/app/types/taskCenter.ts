@@ -215,6 +215,7 @@ export type TaskCenterTask = {
   pacing_config: Record<string, any>;
   failure_policy: Record<string, any>;
   type_config: Record<string, any> & Partial<GroupAIChatDailyTargetConfig>;
+  group_ai_prejoin_channel_ids: string[];
   stats: TaskCenterStats;
   runtime_stage?: Record<string, any>;
   target_summary?: string;

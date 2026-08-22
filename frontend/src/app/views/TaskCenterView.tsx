@@ -981,6 +981,7 @@ export default function TaskCenterView({
       account_personas: formatKeyValueMap(config.account_personas),
       topic_directions: formatTopicDirectionLines(config.topic_directions),
       teacher_targets: formatChatTargetLines(config.teacher_targets),
+      group_ai_prejoin_channel_ids: task.group_ai_prejoin_channel_ids ?? [],
       slang_terms: formatKeyValueMap(config.slang_terms),
       slang_prompt_template_id: task.type === 'group_ai_chat' ? (config.slang_prompt_template_id ?? defaultSlangTemplateId) : (config.slang_prompt_template_id ?? null),
       filter_bot_messages: task.type === 'group_relay' ? config.filter_bot_messages !== false : config.filter_bot_messages,
@@ -1300,6 +1301,7 @@ export default function TaskCenterView({
         target_type: 'group',
         target_input: values.target_input?.trim() || null,
         target_title: values.target_title?.trim() || '',
+        group_ai_prejoin_channel_ids: csvStrings(values.group_ai_prejoin_channel_ids),
         rule_set_id: values.rule_set_id ?? null,
         rule_set_version_id: values.rule_set_version_id ?? null,
         target_group_name: target?.title ?? '',
@@ -1389,6 +1391,7 @@ export default function TaskCenterView({
       return {
         ...base,
         target_operation_target_id: values.target_operation_target_id ?? null,
+        group_ai_prejoin_channel_ids: csvStrings(values.group_ai_prejoin_channel_ids),
         rule_set_id: values.rule_set_id ?? null,
         rule_set_version_id: values.rule_set_version_id ?? null,
         target_group_name: target?.title ?? '',

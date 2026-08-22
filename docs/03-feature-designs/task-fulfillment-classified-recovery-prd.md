@@ -208,7 +208,7 @@ eligible/recovering -> abandoned_for_day
 
 | 字段 | 规则 |
 | --- | --- |
-| `tasks.group_ai_prejoin_channel_ids` | 独立表字段，`UUID[] NOT NULL DEFAULT '{}'`；0–3 个去重后的 `OperationTarget` 频道 ID，保存时校验同租户、类型为频道并推进 Task 配置 revision；不得只藏在通用 JSON 配置中 |
+| `tasks.group_ai_prejoin_channel_ids` | 独立 JSON 字段，默认 `[]`；创建和编辑直接接收 0–3 个公开 Telegram 频道地址或 username，服务端归一化成去重后的 username 引用并推进 Task 配置 revision；拒绝私密邀请链接、消息地址和非 Telegram 域名，不得只藏在 `type_config` 中 |
 | `prejoin_follow_required` | 配置非空时固定为 true；不得由运行时静默关闭 |
 | `group_bot_admission_policy_id` | 目标群可信 bot/完成策略，继续复用既有 policy |
 
