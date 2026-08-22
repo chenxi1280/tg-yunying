@@ -102,6 +102,20 @@ def test_e4_waits_for_transient_my_readiness(db_session, monkeypatch) -> None:
     assert runner._context(db_session, batch_id)[2]["e4"].status == "succeeded"
 
 
+def test_c_wait_stops_on_provision_reconcile_unknown(db_session) -> None:
+    batch_id, _item, _operation_ids = _running_after_c(db_session)
+    operation = runner._context(db_session, batch_id)[2]["c"]
+    operation.status = "provision_reconcile_unknown"
+    db_session.commit()
+
+    runner._wait_for_c(
+        db_session,
+        batch_id,
+        0.01,
+        lambda _seconds: pytest.fail("terminal C unknown must not be polled"),
+    )
+
+
 def _stop_after_c(session, blocker_code: str):
     batch_id, item, operation_ids = _running_after_c(session)
     batch = session.get(TgAuthorizationOnlineAbcBatch, batch_id)
