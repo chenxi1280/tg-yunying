@@ -7,7 +7,7 @@ import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
-from app.ai_gateway import AiProviderRateLimited
+from app.ai_gateway import AiDraftCandidate, AiGenerationResult, AiProviderRateLimited, AiUsage
 from app.database import Base
 from app.models import GenerationJob, TaskRuntimeActiveBlocker
 from app.services.task_center.ai_generator import GROUP_CHAT_PURPOSE
@@ -108,9 +108,9 @@ def test_generate_candidates_success_settles_open_marker(monkeypatch):
     monkeypatch.setattr(
         ai_generator.ai_gateway,
         "generate_drafts",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            candidates=[SimpleNamespace(content="你好呀")],
-            usage=SimpleNamespace(total_tokens=3),
+        lambda *_args, **_kwargs: AiGenerationResult(
+            candidates=[AiDraftCandidate(persona="测试", content="你好呀")],
+            usage=AiUsage(total_tokens=3),
         ),
     )
     engine = create_engine("sqlite:///:memory:", future=True)

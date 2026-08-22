@@ -4,6 +4,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
+from app.database import Base
 from app.services.task_center import ai_generation_dispatch
 from app.services.task_center.payloads import SendMessagePayload
 
@@ -41,10 +42,11 @@ def test_dispatcher_runtime_config_preserves_deferred_generation_slots():
     ]
 
     engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
     with Session(engine) as session:
         config = ai_generation_dispatch._runtime_config(
             session,
-            SimpleNamespace(type_config={}),
+            SimpleNamespace(tenant_id=1, type_config={}),
             batch,
         )
 
@@ -72,10 +74,11 @@ def test_dispatcher_runtime_config_does_not_force_mimo_for_hard_hourly_without_m
     ), payload)]
 
     engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
     with Session(engine) as session:
         config = ai_generation_dispatch._runtime_config(
             session,
-            SimpleNamespace(type_config={}),
+            SimpleNamespace(tenant_id=1, type_config={}),
             batch,
         )
 
