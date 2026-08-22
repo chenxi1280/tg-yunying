@@ -26,7 +26,15 @@ def _recent_running_tasks(session, task_limit: int) -> list[dict]:
         session,
         """
         SELECT id, tenant_id, name, status, fulfillment_contract_version,
-               created_at, updated_at, next_run_at, last_error
+               created_at, updated_at, next_run_at, last_error,
+               jsonb_build_object(
+                   'ai_model', COALESCE(type_config ->> 'ai_model', ''),
+                   'ai_provider_id', COALESCE(type_config ->> 'ai_provider_id', ''),
+                   'ai_content_route_v2_enabled',
+                       COALESCE(type_config ->> 'ai_content_route_v2_enabled', ''),
+                   'require_mimo_draft',
+                       COALESCE(type_config ->> 'require_mimo_draft', '')
+               ) AS ai_config
         FROM tasks
         WHERE deleted_at IS NULL
           AND type = 'group_ai_chat'
@@ -117,6 +125,33 @@ def _generation_state(session, task_id: str, ledger: dict) -> list[dict]:
     )
 
 
+def _generation_failure_state(
+    session, task_id: str, release_live_at: datetime
+) -> list[dict]:
+    return _rows(
+        session,
+        """
+        SELECT COALESCE(result ->> 'error_code', '') AS error_code,
+               COALESCE(result ->> 'generation_stage', '') AS generation_stage,
+               LEFT(COALESCE(result ->> 'error_message', ''), 500) AS error_message,
+               COUNT(*) AS action_count,
+               MIN(created_at) AS first_created_at,
+               MAX(created_at) AS latest_created_at
+        FROM actions
+        WHERE task_id = :task_id
+          AND action_type = 'send_message'
+          AND status = 'failed'
+          AND payload ->> 'ai_generation_status' = 'ai_generation_failed'
+          AND created_at >= :release_live_at
+        GROUP BY error_code, generation_stage, error_message
+        ORDER BY action_count DESC, error_code, generation_stage, error_message
+        LIMIT 20
+        """,
+        task_id=task_id,
+        release_live_at=release_live_at,
+    )
+
+
 def _remote_state(
     session, task_id: str, ledger: dict, release_live_at: datetime
 ) -> dict:
@@ -177,13 +212,24 @@ def _snapshot(session, task: dict, release_live_at: datetime) -> dict:
     ledger = _ledger(session, task["id"])
     snapshot = {"task": task, "ledger": ledger}
     if ledger is None:
-        snapshot.update({"daily": {}, "actions": [], "generation_jobs": [], "remote": {}})
+        snapshot.update(
+            {
+                "daily": {},
+                "actions": [],
+                "generation_jobs": [],
+                "generation_failures": [],
+                "remote": {},
+            }
+        )
     else:
         snapshot.update(
             {
                 "daily": _daily_state(session, task["id"], ledger),
                 "actions": _action_state(session, task["id"], ledger, release_live_at),
                 "generation_jobs": _generation_state(session, task["id"], ledger),
+                "generation_failures": _generation_failure_state(
+                    session, task["id"], release_live_at
+                ),
                 "remote": _remote_state(session, task["id"], ledger, release_live_at),
             }
         )
