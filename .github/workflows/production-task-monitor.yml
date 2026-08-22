@@ -173,6 +173,14 @@ jobs:
             'timeout 60 docker exec -i tgyunying-backend python -' \
             < .github/scripts/ai_generation_runtime_diagnostics.py
 
+      - name: Read AI dispatch admission diagnostics
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          ssh silicon-valley-production-server \
+            'timeout 180 docker exec -i tgyunying-backend python -' \
+            < .github/scripts/ai_dispatch_admission_diagnostics.py
+
       - name: Read recent running AI group task chains
         if: ${{ always() }}
         env:

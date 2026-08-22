@@ -216,6 +216,40 @@ def test_direct_claim_first_round_covers_each_running_task(session: Session) -> 
     assert task_ids == {task.id for task in tasks}
 
 
+def test_direct_claim_only_takes_accounts_owned_by_worker_shard(
+    session: Session,
+) -> None:
+    now = datetime(2000, 1, 1)
+    task = _task("sharded-fact-first-task")
+    session.add(task)
+    session.add_all([
+        Action(
+            id=f"sharded-action-{account_id}",
+            tenant_id=1,
+            task_id=task.id,
+            task_type=task.type,
+            action_type="send_message",
+            account_id=account_id,
+            scheduled_at=now,
+        )
+        for account_id in (101, 102)
+    ])
+    session.commit()
+
+    batch = claim_fact_first_candidates(
+        session,
+        owner="shard-one-worker",
+        limit=10,
+        now=now,
+        lease_seconds=30,
+        shard_total=2,
+        shard_index=1,
+    )
+
+    assert batch.action_ids == ("sharded-action-101",)
+    assert session.get(Action, "sharded-action-102").status == "pending"
+
+
 def test_fact_first_stale_lifecycle_epoch_cannot_claim_or_reach_gateway(
     session: Session,
 ) -> None:
