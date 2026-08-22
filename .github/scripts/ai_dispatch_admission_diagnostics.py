@@ -116,6 +116,35 @@ ACTION_SAMPLE_QUERY = text("""
 """)
 
 
+ACTION_RUNTIME_REASON_QUERY = text("""
+    SELECT action.task_id, task.name AS task_name,
+           COALESCE(action.result ->> 'claim_released_reason', '')
+             AS claim_released_reason,
+           COALESCE(action.result #>> '{claim_pacing_deferred,reason_code}', '')
+             AS claim_pacing_deferred_reason,
+           COUNT(*) AS action_count,
+           MIN(action.scheduled_at) AS oldest_scheduled_at,
+           MAX(action.scheduled_at) AS latest_scheduled_at
+    FROM actions AS action
+    JOIN tasks AS task ON task.id = action.task_id
+    WHERE task.type = 'group_ai_chat'
+      AND task.status = 'running'
+      AND task.deleted_at IS NULL
+      AND task.fulfillment_contract_version = 'fact_first_v3'
+      AND action.task_type = 'group_ai_chat'
+      AND action.action_type = 'send_message'
+      AND action.status = 'pending'
+      AND action.payload ->> 'ai_generation_status' = 'ready'
+      AND (
+        action.result ->> 'claim_released_reason' <> ''
+        OR action.result #>> '{claim_pacing_deferred,reason_code}' <> ''
+      )
+    GROUP BY action.task_id, task.name, claim_released_reason,
+             claim_pacing_deferred_reason
+    ORDER BY task.name, claim_released_reason, claim_pacing_deferred_reason
+""")
+
+
 RECENT_ATTEMPT_QUERY = text("""
     SELECT attempt.id AS attempt_id, attempt.action_id, action.task_id,
            task.name AS task_name, attempt.status, attempt.failure_type,
@@ -174,10 +203,12 @@ def main() -> None:
     with SessionLocal() as session:
         classifications = _rows(session, ACTION_CLASSIFICATION_QUERY)
         samples = _rows(session, ACTION_SAMPLE_QUERY)
+        runtime_reasons = _rows(session, ACTION_RUNTIME_REASON_QUERY)
         attempts = _rows(session, RECENT_ATTEMPT_QUERY)
         shards = _rows(session, SHARD_QUERY)
     _print_rows("AI_DISPATCH_ACTION_CLASS", classifications)
     _print_rows("AI_DISPATCH_ACTION_SAMPLE", samples)
+    _print_rows("AI_DISPATCH_ACTION_RUNTIME_REASON", runtime_reasons)
     _print_rows("AI_DISPATCH_RECENT_ATTEMPT", attempts)
     _print_rows("AI_DISPATCH_SHARD", shards)
 
