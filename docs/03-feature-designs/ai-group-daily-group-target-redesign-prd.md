@@ -58,12 +58,12 @@
 
 ```text
 daily_message_target: int >= 1
-group_ai_prejoin_channel_ids: UUID[0..3]
+group_ai_prejoin_channel_ids: TelegramPublicChannelRef[0..3]
 ```
 
 含义：该任务的单个目标群在任务时区自然日内需要取得的真实成功消息总数。
 
-`group_ai_prejoin_channel_ids` 必须持久化到 `tasks` 独立字段 `UUID[] NOT NULL DEFAULT '{}'`，保存时按同租户稳定 OperationTarget ID 去重并校验频道类型；不得只存通用 JSON、缓存或群级规则。0～3 个频道无依赖时并发关注，全部成功后再进入 join/群管提示阶段。
+`group_ai_prejoin_channel_ids` 必须持久化到 `tasks` 独立 JSON 字段，默认 `[]`。创建和编辑页直接接收公开 `https://t.me/<username>`、`@username` 或公开 username；服务端统一归一化成 username 引用、去重并限制最多 3 个，拒绝私密邀请链接、消息地址和非 Telegram 域名。不得只存 `type_config`、缓存或群级规则。0～3 个频道无依赖时并发关注，全部成功后再进入 join/群管提示阶段。
 
 账号已经加入目标群时也不能跳过这一步：准入 Action 复用或被历史 `already_joined` 跳过后，第一次 fact-first 正文发送前仍必须执行配置频道检查。成功关注写入账号-目标 `configured_channel_follow` 事实，后续 Action 只复用该事实；未全部成功则当前正文保持 pending，不能进入 C2 观察或主互动。
 

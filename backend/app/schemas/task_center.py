@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from datetime import date, datetime
 from typing import Any, Literal
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -31,6 +32,43 @@ DEFAULT_SEARCH_JOIN_HOURLY_JITTER_PERCENT = 30
 DEFAULT_SEARCH_JOIN_DAILY_JITTER_PERCENT = 20
 DEFAULT_SEARCH_JOIN_CURVE = [1, 1, 0, 0, 0, 0, 1, 2, 2, 3, 3, 3, 2, 2, 3, 4, 4, 5, 5, 5, 4, 3, 2, 1]
 KEYWORD_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
+TELEGRAM_PUBLIC_USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{1,64}$")
+MAX_GROUP_AI_PREJOIN_CHANNELS = 3
+
+
+def _normalize_public_telegram_channel_ref(value: Any) -> str:
+    text = str(value or "").strip()
+    if text.startswith("@"):
+        text = text[1:]
+    elif "://" in text:
+        parsed = urlparse(text)
+        if parsed.scheme not in {"http", "https"} or parsed.netloc.lower() not in {
+            "t.me",
+            "www.t.me",
+            "telegram.me",
+            "www.telegram.me",
+        }:
+            raise ValueError("预关注频道必须填写公开 Telegram 频道地址或 username")
+        parts = [part for part in parsed.path.split("/") if part]
+        if len(parts) != 1:
+            raise ValueError("预关注频道只支持公开频道地址，不支持邀请链接或消息地址")
+        text = parts[0]
+    if not TELEGRAM_PUBLIC_USERNAME_RE.fullmatch(text) or text.startswith("+"):
+        raise ValueError("预关注频道必须填写公开 Telegram 频道地址或 username")
+    return text
+
+
+def _normalize_group_ai_prejoin_channels(value: Any) -> list[str]:
+    if value in (None, ""):
+        return []
+    if not isinstance(value, list):
+        raise ValueError("预关注频道必须是地址列表")
+    normalized = list(
+        dict.fromkeys(_normalize_public_telegram_channel_ref(item) for item in value)
+    )
+    if len(normalized) > MAX_GROUP_AI_PREJOIN_CHANNELS:
+        raise ValueError("预关注频道最多配置 3 个")
+    return normalized
 
 
 class QuietHours(BaseModel):
@@ -274,6 +312,7 @@ class GroupAIChatConfig(BaseModel):
     target_type: Literal["group"] = "group"
     target_input: str | None = None
     target_title: str | None = None
+    group_ai_prejoin_channel_ids: list[str] = Field(default_factory=list, exclude=True)
     rule_set_id: int | None = None
     rule_set_version_id: int | None = None
     target_group_name: str = ""
@@ -339,6 +378,11 @@ class GroupAIChatConfig(BaseModel):
     @classmethod
     def normalize_teacher_targets(cls, value: Any) -> Any:
         return _normalize_teacher_targets(value)
+
+    @field_validator("group_ai_prejoin_channel_ids", mode="before")
+    @classmethod
+    def normalize_prejoin_channels(cls, value: Any) -> list[str]:
+        return _normalize_group_ai_prejoin_channels(value)
 
     @model_validator(mode="after")
     def validate_target_reference(self) -> "GroupAIChatConfig":
@@ -1175,6 +1219,7 @@ class TaskSettingsUpdate(TaskUpdate):
     messages_per_round_mode: Literal["auto", "manual"] | None = None
     messages_per_round: int | None = Field(default=None, ge=1)
     reply_min_per_round: int | None = Field(default=None, ge=0)
+    group_ai_prejoin_channel_ids: list[str] | None = Field(default=None, exclude=True)
     account_coverage_mode: Literal["all_accounts_daily"] | None = None
     coverage_window_hours: Literal[24] | None = None
     history_fetch_account_id: int | None = None
@@ -1199,6 +1244,11 @@ class TaskSettingsUpdate(TaskUpdate):
     ai_content_attestation_ids: list[str] | None = None
     rule_set_id: int | None = None
     rule_set_version_id: int | None = None
+
+    @field_validator("group_ai_prejoin_channel_ids", mode="before")
+    @classmethod
+    def normalize_prejoin_channels(cls, value: Any) -> list[str]:
+        return _normalize_group_ai_prejoin_channels(value)
 
     source_groups: list[SourceGroup] | None = None
     target_group_id: int | None = None
@@ -1344,6 +1394,7 @@ class TaskOut(ApiModel):
     pacing_config: dict[str, Any]
     failure_policy: dict[str, Any]
     type_config: dict[str, Any]
+    group_ai_prejoin_channel_ids: list[str] = Field(default_factory=list)
     stats: dict[str, Any]
     runtime_stage: dict[str, Any] = Field(default_factory=dict)
     target_summary: str = ""

@@ -823,6 +823,7 @@ export function TaskCenterDetailModal({
               { key: 'teacher_targets', label: '讨论老师', children: teacherTargetTags(detail.task.type_config?.teacher_targets) },
               { key: 'speaker_rotation', label: '账号轮换', children: '必须' },
               { key: 'group_bot_admission', label: '群管准入', children: detail.task.type_config?.group_bot_admission_required === false ? '异常关闭' : '必须' },
+              { key: 'prejoin_channels', label: '预关注频道', children: detail.task.group_ai_prejoin_channel_ids?.length ? detail.task.group_ai_prejoin_channel_ids.map((item) => `@${item}`).join('、') : '未配置' },
               { key: 'reply_min_per_round', label: '每轮最少引用', children: detail.task.type_config?.reply_min_per_round ?? 1 },
               { key: 'coverage_mode', label: '全账号日覆盖', children: (accountCoverage?.mode ?? detail.task.type_config?.account_coverage_mode) === 'all_accounts_daily' ? '开启' : '关闭' },
               { key: 'daily_target', label: '该群每天发送总量', children: detail.task.type_config?.daily_message_target ?? '-' },
