@@ -29,6 +29,7 @@ def render_online_abc_status(session, batch_id: str) -> dict:
         "target_count": batch.target_count,
         "target_set_fingerprint": batch.target_set_fingerprint,
         "deployed_release_sha": batch.deployed_release_sha,
+        "execution_release_sha": batch.execution_release_sha or batch.deployed_release_sha,
         "account_outcome_counts": account_counts,
         "standby_1_outcome_counts": b_counts,
         "standby_2_outcome_counts": c_counts,

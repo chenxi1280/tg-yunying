@@ -137,6 +137,7 @@ class TgAuthorizationOnlineAbcBatch(Base):
     target_set_fingerprint: Mapped[str] = mapped_column(String(64))
     target_count: Mapped[int] = mapped_column(Integer)
     deployed_release_sha: Mapped[str] = mapped_column(String(64))
+    execution_release_sha: Mapped[str] = mapped_column(String(64), default="")
     status: Mapped[str] = mapped_column(String(32), default="previewed")
     version: Mapped[int] = mapped_column(Integer, default=1)
     requested_by: Mapped[str] = mapped_column(String(100))

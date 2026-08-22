@@ -114,12 +114,12 @@ def resume_online_abc_batch(
 ) -> dict:
     approval = _approval(requested_by, approved_by, approval_ref)
     batch = _locked_batch(session, batch_id)
-    _require_batch_contract(batch, approval, runtime_release_sha)
+    release_sha = _require_batch_approval(batch, approval, runtime_release_sha)
     item = _resumable_item(session, batch)
     operations = online_abc_item_operations(session, batch, item)
     _require_resume_contract(session, item, operations)
     ready_migration_runtime_image_sha(session)
-    _resume_item(session, batch, item, approval)
+    _resume_item(session, batch, item, approval, release_sha)
     session.commit()
     return online_abc_runner_status(session, batch_id)
 
@@ -311,13 +311,15 @@ def _require_resume_contract(session, item, operations: dict) -> None:
         raise AuthorizationDrError("online_abc_primary_drift", "A changed before runner resume")
 
 
-def _resume_item(session, batch, item, approval: RunnerApproval) -> None:
+def _resume_item(session, batch, item, approval: RunnerApproval, release_sha: str) -> None:
+    previous_release_sha = batch.execution_release_sha or batch.deployed_release_sha
     item.status = "running"
     item.outcome = "running"
     item.blocker_code = ""
     item.finished_at = None
     item.version += 1
     batch.status = "running"
+    batch.execution_release_sha = release_sha
     batch.version += 1
     audit(
         session,
@@ -326,7 +328,10 @@ def _resume_item(session, batch, item, approval: RunnerApproval) -> None:
         action=f"恢复 ABC runner account={item.account_id}",
         target_type="tg_authorization_online_abc_batches",
         target_id=batch.id,
-        detail=f"approval_ref={approval.approval_ref}; checkpoint=post_c_pre_e4",
+        detail=(
+            f"approval_ref={approval.approval_ref}; checkpoint=post_c_pre_e4; "
+            f"execution_release={previous_release_sha}->{release_sha}"
+        ),
     )
 
 
@@ -372,14 +377,21 @@ def _approval(requested_by: str, approved_by: str, approval_ref: str) -> RunnerA
 
 
 def _require_batch_contract(batch, approval: RunnerApproval, runtime_release_sha: str) -> None:
+    release_sha = _require_batch_approval(batch, approval, runtime_release_sha)
+    expected_release_sha = batch.execution_release_sha or batch.deployed_release_sha
+    if expected_release_sha != release_sha:
+        raise AuthorizationDrError("runtime_image_mismatch", "Batch release differs from current runtime")
+
+
+def _require_batch_approval(batch, approval: RunnerApproval, runtime_release_sha: str) -> str:
     expected_approval = (batch.requested_by, batch.approved_by, batch.approval_ref)
-    if expected_approval != (approval.requested_by, approval.approved_by, approval.approval_ref):
+    actual_approval = (approval.requested_by, approval.approved_by, approval.approval_ref)
+    if expected_approval != actual_approval:
         raise AuthorizationDrError("online_abc_runner_approval_mismatch", "Runner approval differs from batch")
     release_sha = runtime_release_sha.strip().lower()
     if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", release_sha):
         raise AuthorizationDrError("runtime_image_mismatch", "Current release SHA is unavailable")
-    if batch.deployed_release_sha != release_sha:
-        raise AuthorizationDrError("runtime_image_mismatch", "Batch release differs from current runtime")
+    return release_sha
 
 
 def _batch(session, batch_id: str):

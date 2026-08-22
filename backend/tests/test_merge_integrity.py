@@ -35,7 +35,7 @@ def test_alembic_versions_have_single_head():
 
     assert all(len(revision) <= 32 for revision in revisions)
     heads = sorted(set(revisions) - referenced)
-    assert heads == ["0163_local_activate_verify"]
+    assert heads == ["0164_online_abc_exec_sha"]
 
 
 def test_backend_test_names_are_unique_per_file():

@@ -28,6 +28,7 @@ def db_session():
 def test_resume_reopens_only_post_c_pre_e4_checkpoint(db_session, monkeypatch) -> None:
     batch_id, item, operation_ids = _stop_after_c(db_session, "malaysia_wake_unavailable")
     monkeypatch.setattr(runner, "ready_migration_runtime_image_sha", lambda _session: "d" * 40)
+    resumed_release_sha = "2" * 40
 
     result = runner.resume_online_abc_batch(
         db_session,
@@ -35,7 +36,7 @@ def test_resume_reopens_only_post_c_pre_e4_checkpoint(db_session, monkeypatch) -
         requested_by="requester",
         approved_by="approver",
         approval_ref="ABC-10",
-        runtime_release_sha=abc_tests.RELEASE_SHA,
+        runtime_release_sha=resumed_release_sha,
     )
 
     assert result["batch"]["status"] == "running"
@@ -43,6 +44,8 @@ def test_resume_reopens_only_post_c_pre_e4_checkpoint(db_session, monkeypatch) -
     assert result["current_item"]["status"] == "running"
     assert {value["id"] for value in result["operations"].values() if value} == operation_ids
     assert result["operations"]["e4"] is None
+    assert result["batch"]["deployed_release_sha"] == abc_tests.RELEASE_SHA
+    assert result["batch"]["execution_release_sha"] == resumed_release_sha
 
 
 def test_resume_rejects_non_allowlisted_blocker(db_session, monkeypatch) -> None:
