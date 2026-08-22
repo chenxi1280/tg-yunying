@@ -7,6 +7,8 @@
 
 > 两账号执行合同：一个账号一个 preview/fingerprint/idempotency/approval。B 的 `provision_standby_1` 与 C 的 `migrate_standby_2` 均冻结 canonical A 为唯一 code source；B 完成后重新读回 A，才可创建 C operation。C runtime 必须绑定 exact operation + capability `2.21-abc-a-source` + exact release SHA，成功自动关回 `off`。备份失败只允许 `failed|manual_required|reconcile_unknown`，不得修改或撤销 A；第一个账号未完成 Telegram 登录与 Saved Messages 发送 E4 时禁止第二个，两个账号未全部通过时禁止 10 账号。
 
+> 批次执行入口合同：GitHub Actions 仅发布代码，不执行账号登录。生产 current release 必须提供 `deploy/authorization-online-abc-runner.sh --mode status|run --batch-id ...`；`run` 只消费已审批的 `TgAuthorizationOnlineAbcBatch`，从 item 冻结事实和确定性 key 驱动既有 canonical qualification、`apply_abc_backup/prepare_scoped_c_migration`、`apply_abc_e4`、`sync_online_abc_batch`，不得复制登录业务逻辑。runner 单账号串行，C 未终态时只轮询原 operation；已成功阶段不重放。任何 A 漂移、runtime scope 冲突、`reconcile_unknown|manual_required|failed` 立即非零退出并保持原事实，禁止自动换账号。相同 batch ID 重启必须从数据库阶段恢复；不得依赖 GitHub Actions workflow_dispatch、操作者手抄 MY image SHA 或临时 Python/SQL。
+
 > B 验证码/2FA 顺序合同：有托管 2FA 密码不代表可跳过验证码。首次 finish 必须先用冻结临时 Session、phone-code-hash 和本次 A-bound code 调用 code sign-in；仅在 Telegram 返回 `SessionPasswordNeeded` 后，于同一 client 提交 2FA。已有 post-code 临时 Session 的独立 2FA 请求才允许只提交密码。历史 `password_2fa_preceded_code_v1` 缺陷导致的 `AuthKeyUnregisteredError` 必须通过 operation-scoped reconcile case、异人审批和 flow-state fingerprint 收口为 confirmed-no-effect；不得直接改状态后重试。
 
 > 生产结构纠偏：A/B/C 是环境级三套 App 注册和新账号默认角色，不是历史切换后每个账号不可变化的角色标签。单账号验收以三 App ID 两两不同为准；App C/SV `standby_2` 是本次迁移源。历史 App A `standby_repair` 必须经双 Session Telegram UID/AuthKey 探测和 CAS 转正为 SV `standby_1` 后，账号才能进入迁移。

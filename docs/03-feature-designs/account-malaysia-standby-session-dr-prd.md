@@ -62,6 +62,11 @@
 ### 1.2.4 10 账号 canary 控制切片
 
 - `TgAuthorizationOnlineAbcBatch/Item/SlotResult` 冻结同一组恰好 10 个唯一在线账号及其 A Session 摘要、三组 generation、App B assignment、代理和 App C/SV 迁移源；preview/apply 必须使用精确 release SHA、fingerprint 与异人审批。批次创建不连接 Telegram、不改变任何 Session。
+- GitHub Actions 只负责发布不可变代码，不得作为日常 B/C 登录执行器。正式运维入口必须是生产当前 release 内的 `deploy/authorization-online-abc-runner.sh`；它只接受已经完成 manifest preview/apply 和异人审批的 batch ID，不自行创建或扩大目标集合。
+- runner 的 `status` 完全只读；`run` 对当前唯一 running/pending item 执行持久阶段机：`A qualify -> B login -> C exact-operation arm/wait -> A Saved Messages E4 -> batch sync`。一个账号只有 E4 和 sync 均成功后才可领取下一个账号；runner 不并发处理账号。
+- runner 必须从当前 ready MY node 读取并冻结 exact runtime image SHA，不要求操作者手抄动态 SHA。每个子 operation 继续使用 batch item 派生的确定性 idempotency key 和原 batch 的 requester/approver/approval_ref；重复启动只能读取或继续同一 operation，不能重新发码、重新登录或重新发送 E4。
+- runner 被中断时允许以同一 batch ID 重启：已成功阶段跳过，C active 阶段只等待，B remote effect started 但未终态、任何 unknown/manual/failed、A generation/Session/fact 漂移、runtime scope 冲突均立即显式停止并输出 blocker。不得为了“自动继续”清除 lease、重建 operation、换账号或改写失败事实。
+- runner 的最终 JSON 必须包含 batch/item、A/B/C/E4 operation ID/status、runtime mode/scope、account outcome 守恒和 `next_action|terminal_reason`。退出码 `0` 只表示本次已到达 `observing` 或只读 status 成功；批次 stopped、unknown、人工处理或执行异常必须非零退出。
 - `start` 在行锁、runtime=`off` 和全局 unknown=0 下只返回当前唯一账号及 B/C/E4 三个确定性幂等键；存在 running item 时重复调用只返回同一项。操作者随后复用 canonical A qualification、`authorization-abc-backup` 和 E4 verify 正式入口，不得新建平行登录实现。
 - `sync` 只读取上述正式 operation 与 A 资格探测事实，投影账号、B、C 三组结果；B/E4 按控制幂等键定位，C 通过其正式 migration batch idempotency key 与 batch item 的 operation pointer 定位，不假设底层 operation 复用批次 key。任一 `reconcile_unknown|failed|manual_required` 立即把 item 和 batch 停止，不允许领取下一账号。只有 A 指针/Session 摘要与 generation 未漂移、A 身份事实补齐且 B/C/E4 全部 succeeded，当前账号才成功。
 - 10 个账号全部成功后批次只进入 `observing`，观察窗固定至少 24 小时；期间仍须保持 runtime off、全局 unknown=0、A 无漂移、MY active client=0 且无 correction/新封禁。观察窗关闭前不得宣称 10 账号 canary 完成，更不得创建全量批次。
