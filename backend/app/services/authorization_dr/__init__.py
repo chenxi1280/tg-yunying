@@ -8,6 +8,7 @@ from .migration import *  # noqa: F401,F403
 from .local_activate import *  # noqa: F401,F403
 from .login_code import *  # noqa: F401,F403
 from .migration_results import *  # noqa: F401,F403
+from .online_abc import *  # noqa: F401,F403
 from .readiness import *  # noqa: F401,F403
 from .runtime_scope import *  # noqa: F401,F403
 from .read_model import *  # noqa: F401,F403

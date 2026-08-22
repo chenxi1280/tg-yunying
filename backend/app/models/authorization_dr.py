@@ -125,6 +125,83 @@ class TgAuthorizationDrBatchItem(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
+class TgAuthorizationOnlineAbcBatch(Base):
+    __tablename__ = "tg_authorization_online_abc_batches"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "idempotency_key", name="uq_online_abc_batch_idempotency"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
+    idempotency_key: Mapped[str] = mapped_column(String(100))
+    target_set_fingerprint: Mapped[str] = mapped_column(String(64))
+    target_count: Mapped[int] = mapped_column(Integer)
+    deployed_release_sha: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(32), default="previewed")
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    requested_by: Mapped[str] = mapped_column(String(100))
+    approved_by: Mapped[str] = mapped_column(String(100), default="")
+    approval_ref: Mapped[str] = mapped_column(String(160), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    observation_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    observation_closes_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class TgAuthorizationOnlineAbcItem(Base):
+    __tablename__ = "tg_authorization_online_abc_items"
+    __table_args__ = (
+        UniqueConstraint("batch_id", "account_id", name="uq_online_abc_batch_account"),
+        UniqueConstraint("batch_id", "ordinal", name="uq_online_abc_batch_ordinal"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    batch_id: Mapped[str] = mapped_column(ForeignKey("tg_authorization_online_abc_batches.id"))
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
+    account_id: Mapped[int] = mapped_column(ForeignKey("tg_accounts.id"))
+    ordinal: Mapped[int] = mapped_column(Integer)
+    primary_authorization_id: Mapped[int] = mapped_column(ForeignKey("tg_account_authorizations.id"))
+    primary_fact_version: Mapped[int] = mapped_column(Integer)
+    authorization_generation: Mapped[int] = mapped_column(Integer)
+    authorization_fact_generation: Mapped[int] = mapped_column(Integer)
+    connection_generation: Mapped[int] = mapped_column(Integer)
+    primary_session_digest: Mapped[str] = mapped_column(String(64))
+    app_b_id: Mapped[int] = mapped_column(ForeignKey("telegram_developer_apps.id"))
+    app_b_credentials_version: Mapped[int] = mapped_column(Integer)
+    app_b_assignment_purpose: Mapped[str] = mapped_column(String(32))
+    app_b_assignment_version: Mapped[int] = mapped_column(Integer)
+    proxy_id: Mapped[int] = mapped_column(ForeignKey("account_proxies.id"))
+    source_c_authorization_id: Mapped[int] = mapped_column(ForeignKey("tg_account_authorizations.id"))
+    source_c_fact_version: Mapped[int] = mapped_column(Integer)
+    source_c_slot_generation: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(32), default="pending")
+    outcome: Mapped[str] = mapped_column(String(32), default="pending")
+    primary_probe_outcome: Mapped[str] = mapped_column(String(32), default="pending")
+    blocker_code: Mapped[str] = mapped_column(String(100), default="")
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class TgAuthorizationOnlineAbcSlotResult(Base):
+    __tablename__ = "tg_authorization_online_abc_slot_results"
+    __table_args__ = (
+        UniqueConstraint("item_id", "logical_slot", name="uq_online_abc_item_slot"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    batch_id: Mapped[str] = mapped_column(ForeignKey("tg_authorization_online_abc_batches.id"))
+    item_id: Mapped[str] = mapped_column(ForeignKey("tg_authorization_online_abc_items.id"))
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
+    account_id: Mapped[int] = mapped_column(ForeignKey("tg_accounts.id"))
+    logical_slot: Mapped[str] = mapped_column(String(24))
+    outcome: Mapped[str] = mapped_column(String(32), default="pending")
+    operation_id: Mapped[str | None] = mapped_column(ForeignKey("tg_authorization_dr_operations.id"), nullable=True)
+    blocker_code: Mapped[str] = mapped_column(String(100), default="")
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
+
+
 class TgAuthorizationDrOperation(Base):
     __tablename__ = "tg_authorization_dr_operations"
     __table_args__ = (
