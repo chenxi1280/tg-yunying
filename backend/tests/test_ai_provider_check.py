@@ -4,6 +4,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
+from app.ai_gateway import AiProviderRateLimited
 from app.database import Base
 from app.models import AiProvider, AiProviderHealthStatus
 from app.schemas.ai_config import AiProviderCreate, AiProviderUpdate
@@ -80,6 +81,37 @@ def test_check_route_credential_without_making_it_legacy_active(monkeypatch):
         assert checked.health_status == AiProviderHealthStatus.HEALTHY.value
         assert checked.is_active is False
         assert checked.credential_enabled is True
+
+
+def test_check_ai_provider_keeps_rate_limited_provider_healthy(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        provider = AiProvider(
+            provider_name="mimo",
+            base_url="https://example.test",
+            model_name="mimo-v2",
+            api_key_ciphertext="ciphertext",
+            credential_enabled=True,
+            is_active=True,
+            health_status=AiProviderHealthStatus.UNHEALTHY.value,
+        )
+        session.add(provider)
+        session.commit()
+        monkeypatch.setattr(
+            "app.services.ai_config.ai_provider_credentials",
+            lambda _provider, **_kwargs: object(),
+        )
+
+        def rate_limited(_credentials):
+            raise AiProviderRateLimited(429, "temporary capacity", 30)
+
+        monkeypatch.setattr("app.services.ai_config.ai_gateway.check", rate_limited)
+
+        checked = check_ai_provider(session, provider.id, "pytest")
+
+        assert checked.health_status == AiProviderHealthStatus.HEALTHY.value
+        assert "temporary capacity" in checked.last_error
 
 
 def test_provider_credential_state_is_independent_and_explicit(monkeypatch):

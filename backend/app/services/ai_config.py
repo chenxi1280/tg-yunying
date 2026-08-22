@@ -13,7 +13,12 @@ from uuid import uuid4
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
-from app.ai_gateway import AiProviderCredentials, AiUsage, normalize_ai_model_name
+from app.ai_gateway import (
+    AiProviderCredentials,
+    AiProviderRateLimited,
+    AiUsage,
+    normalize_ai_model_name,
+)
 from app.auth import CurrentUser
 from app.config import get_settings
 from app.models import (
@@ -455,6 +460,9 @@ def check_ai_provider(session: Session, provider_id: int, actor: str) -> AiProvi
         ok, detail = ai_gateway.check(credentials)
         health_status = AiProviderHealthStatus.HEALTHY.value if ok else AiProviderHealthStatus.UNHEALTHY.value
         last_error = "" if ok and "warning" not in detail.lower() else detail
+    except AiProviderRateLimited as exc:
+        health_status = AiProviderHealthStatus.HEALTHY.value
+        last_error = str(exc)
     except Exception as exc:  # noqa: BLE001 - shown to operator.
         health_status = AiProviderHealthStatus.UNHEALTHY.value
         last_error = str(exc)
