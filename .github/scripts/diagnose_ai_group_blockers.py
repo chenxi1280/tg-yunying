@@ -12,10 +12,12 @@ from app.services.task_center.account_scope import eligible_account_ids
 
 
 DEFAULT_TASK_NAMES = (
+    "三亚",
+    "天津一品楼",
     "郑州大学",
-    "郑州师范",
     "郑州楼凤",
     "郑州学生会",
+    "西安天上人间",
 )
 LOCAL_TIMEZONE = ZoneInfo("Asia/Shanghai")
 RECENT_TASK_LOOKBACK = timedelta(days=7)
