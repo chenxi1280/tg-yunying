@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+from datetime import timedelta
 from pathlib import Path
 
 from alembic.migration import MigrationContext
@@ -31,6 +32,12 @@ from app.services.authorization_dr.online_abc import (
     start_next_online_abc_item,
     sync_online_abc_batch,
 )
+from app.services.authorization_dr.online_abc_rollout import accept_online_abc_observation
+from app.services.authorization_dr.online_abc_manifest import (
+    apply_full_online_abc_batch,
+    preview_full_online_abc_batch,
+)
+from app.services._common import _now
 
 
 pytestmark = pytest.mark.no_postgres
@@ -259,6 +266,149 @@ def test_runner_executes_approved_batch_serially(session: Session, monkeypatch) 
     ]
 
 
+def test_runner_stops_cleanly_after_requested_chunk(session: Session, monkeypatch) -> None:
+    batch_id = _apply(session, _preview(session)["fingerprint"])["batch_id"]
+    calls: list[tuple[str, int]] = []
+    _mock_runner_success(monkeypatch, calls)
+
+    result = runner.run_online_abc_batch(
+        session,
+        batch_id,
+        requested_by="requester",
+        approved_by="approver",
+        approval_ref="ABC-10",
+        runtime_release_sha=RELEASE_SHA,
+        max_accounts=2,
+        sleeper=lambda _: None,
+    )
+
+    assert result["batch"]["status"] == "running"
+    assert result["chunk"] == {
+        "max_accounts": 2,
+        "processed_count": 2,
+        "account_ids": ACCOUNT_IDS[:2],
+    }
+    assert result["batch"]["account_outcome_counts"] == {"succeeded": 2, "pending": 8}
+
+
+def test_observation_acceptance_cannot_be_early_and_is_idempotent(
+    session: Session, monkeypatch,
+) -> None:
+    batch_id = _apply(session, _preview(session)["fingerprint"])["batch_id"]
+    _mock_runner_success(monkeypatch, [])
+    runner.run_online_abc_batch(
+        session,
+        batch_id,
+        requested_by="requester",
+        approved_by="approver",
+        approval_ref="ABC-10",
+        runtime_release_sha=RELEASE_SHA,
+        sleeper=lambda _: None,
+    )
+
+    with pytest.raises(AuthorizationDrError) as exc_info:
+        accept_online_abc_observation(session, batch_id, actor="approver", approval_ref="ABC-10")
+    assert exc_info.value.code == "online_abc_canary_observation_incomplete"
+
+    batch = session.get(TgAuthorizationOnlineAbcBatch, batch_id)
+    batch.observation_closes_at = _now() - timedelta(seconds=1)
+    session.commit()
+    accepted = accept_online_abc_observation(
+        session, batch_id, actor="approver", approval_ref="ABC-10",
+    )
+    repeated = accept_online_abc_observation(
+        session, batch_id, actor="approver", approval_ref="ABC-10",
+    )
+
+    assert accepted["status"] == "accepted"
+    assert repeated["status"] == "accepted"
+
+
+def test_full_preview_freezes_all_online_accounts_after_accepted_canary(session: Session) -> None:
+    _seed_accepted_canary(session)
+
+    preview = preview_full_online_abc_batch(
+        session,
+        1,
+        idempotency_key="online-abc-full",
+        deployed_release_sha=RELEASE_SHA,
+    )
+    applied = apply_full_online_abc_batch(
+        session,
+        1,
+        idempotency_key="online-abc-full",
+        deployed_release_sha=RELEASE_SHA,
+        expected_fingerprint=preview["fingerprint"],
+        requested_by="requester",
+        approved_by="approver",
+        approval_ref="ABC-FULL",
+    )
+
+    assert preview["selection_mode"] == "all_online_accounts"
+    assert preview["target_count"] == len(ACCOUNT_IDS)
+    assert preview["classification_counts"] == {"b:provision|c:migrate": len(ACCOUNT_IDS)}
+    assert applied["target_count"] == len(ACCOUNT_IDS)
+    assert applied["conservation"]["valid"] is True
+
+
+def test_full_preview_keeps_primary_unproven_account_in_frozen_n(session: Session) -> None:
+    _seed_accepted_canary(session)
+    account = session.get(TgAccount, ACCOUNT_IDS[0])
+    account.current_authorization_id = None
+    session.commit()
+
+    preview = preview_full_online_abc_batch(
+        session,
+        1,
+        idempotency_key="online-abc-full-primary-blocked",
+        deployed_release_sha=RELEASE_SHA,
+    )
+
+    target = next(value for value in preview["targets"] if value["account_id"] == ACCOUNT_IDS[0])
+    assert preview["target_count"] == len(ACCOUNT_IDS)
+    assert target["primary_authorization_id"] is None
+    assert target["standby_1_plan"] == "blocked"
+    assert target["standby_2_plan"] == "blocked"
+
+
+def test_full_rollout_finishes_same_frozen_batch_in_ten_bounded_chunks(
+    session: Session, monkeypatch,
+) -> None:
+    _seed_accepted_canary(session)
+    preview = preview_full_online_abc_batch(
+        session, 1, idempotency_key="online-abc-full-chunks", deployed_release_sha=RELEASE_SHA,
+    )
+    batch_id = apply_full_online_abc_batch(
+        session,
+        1,
+        idempotency_key="online-abc-full-chunks",
+        deployed_release_sha=RELEASE_SHA,
+        expected_fingerprint=preview["fingerprint"],
+        requested_by="requester",
+        approved_by="approver",
+        approval_ref="ABC-FULL",
+    )["batch_id"]
+    _mock_runner_success(monkeypatch, [])
+
+    results = [
+        runner.run_online_abc_batch(
+            session,
+            batch_id,
+            requested_by="requester",
+            approved_by="approver",
+            approval_ref="ABC-FULL",
+            runtime_release_sha=RELEASE_SHA,
+            max_accounts=2,
+            sleeper=lambda _: None,
+        )
+        for _ in range(5)
+    ]
+
+    assert [result["chunk"]["processed_count"] for result in results] == [2, 2, 2, 2, 2]
+    assert results[-1]["batch"]["status"] == "completed"
+    assert results[-1]["batch"]["account_outcome_counts"] == {"succeeded": 10}
+
+
 def test_runner_unknown_stops_before_second_account(session: Session, monkeypatch) -> None:
     batch_id = _apply(session, _preview(session)["fingerprint"])["batch_id"]
     monkeypatch.setattr(runner, "preview_primary_qualification", _qualification_preview)
@@ -380,6 +530,23 @@ def _preview(session: Session) -> dict:
         session, 1, ACCOUNT_IDS,
         idempotency_key="online-abc-10", deployed_release_sha=RELEASE_SHA,
     )
+
+
+def _seed_accepted_canary(session: Session) -> None:
+    session.add(TgAuthorizationOnlineAbcBatch(
+        tenant_id=1,
+        idempotency_key="accepted-canary",
+        target_set_fingerprint="9" * 64,
+        target_count=10,
+        deployed_release_sha=RELEASE_SHA,
+        execution_release_sha=RELEASE_SHA,
+        selection_mode="exact_ten_canary",
+        status="accepted",
+        requested_by="requester",
+        approved_by="approver",
+        approval_ref="ABC-ACCEPTED",
+    ))
+    session.commit()
 
 
 def _apply(session: Session, fingerprint: str) -> dict:

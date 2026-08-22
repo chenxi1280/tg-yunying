@@ -412,14 +412,45 @@ def _new_operation(batch, item, *, account, source, app, readiness, approver: st
 
 
 def _verify_frozen_inputs(session, operation, readiness) -> None:
-    source = session.get(TgAccountAuthorization, operation.source_authorization_id)
+    source = (
+        session.get(TgAccountAuthorization, operation.source_authorization_id)
+        if operation.source_authorization_id else None
+    )
     item = session.get(TgAuthorizationDrBatchItem, operation.batch_item_id)
-    _verify_source(item, source)
+    if operation.operation_type == "provision_standby_2":
+        _verify_provision_source(session, item, source)
+    else:
+        _verify_source(item, source)
     verified_code_source(session, operation)
     if operation.assignment_version != readiness.assignment_version:
         raise AuthorizationDrError("assignment_version_conflict", "Frozen App assignment changed")
     if operation.egress_id != readiness.egress.id or operation.egress_version != readiness.egress.version:
         raise AuthorizationDrError("fixed_egress_version_conflict", "Frozen MY egress changed")
+
+
+def _verify_provision_source(session, item, source) -> None:
+    if not item:
+        raise AuthorizationDrError("migration_source_standby_not_unique", "Frozen provision item is missing")
+    if item.expected_source_authorization_id is None:
+        current = session.scalar(select(TgAccountAuthorization.id).where(
+            TgAccountAuthorization.account_id == item.account_id,
+            TgAccountAuthorization.logical_slot == "standby_2",
+            TgAccountAuthorization.is_slot_current.is_(True),
+            TgAccountAuthorization.disabled_at.is_(None),
+        ).limit(1))
+        if current:
+            raise AuthorizationDrError("authorization_version_conflict", "C slot appeared after preview")
+        return
+    matches = (
+        source
+        and source.id == item.expected_source_authorization_id
+        and source.fact_version == item.expected_source_fact_version
+        and source.slot_generation == item.expected_source_generation
+        and source.logical_slot == "standby_2"
+        and source.is_slot_current
+    )
+    if not matches:
+        raise AuthorizationDrError("authorization_version_conflict", "Frozen C replacement source changed")
 
 
 def _verify_source(item, source) -> None:

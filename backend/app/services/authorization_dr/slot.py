@@ -42,7 +42,7 @@ def commit_migration_slot(
     source, candidate, bundle = _slot_inputs(session, operation)
     _require_recovery_evidence(session, operation, bundle)
     account = session.scalar(select(TgAccount).where(TgAccount.id == operation.account_id).with_for_update())
-    _verify_slot_cas(operation, source, candidate=candidate, account=account)
+    _verify_slot_cas(session, operation, source, candidate=candidate, account=account)
     decision = _find_or_prepare_decision(
         session,
         operation,
@@ -79,6 +79,8 @@ def rollback_migration_slot(
     if not operation:
         raise AuthorizationDrError("migration_operation_not_found", "Migration operation does not exist")
     source, candidate, bundle = _slot_inputs(session, operation)
+    if source is None:
+        raise AuthorizationDrError("rollback_window_closed", "Source-less provision has no SV rollback slot")
     if source.rollback_window_closed_at or source.remote_authorization_state == "revoked":
         raise AuthorizationDrError("rollback_window_closed", "Old SV authorization was already revoked")
     if not candidate.is_slot_current or source.remote_authorization_state != "active":
@@ -118,10 +120,14 @@ def rollback_migration_slot(
 
 
 def _slot_inputs(session, operation):
-    source = session.get(TgAccountAuthorization, operation.source_authorization_id)
+    source = (
+        session.get(TgAccountAuthorization, operation.source_authorization_id)
+        if operation.source_authorization_id else None
+    )
     candidate = session.get(TgAccountAuthorization, operation.candidate_authorization_id)
     bundle = _operation_bundle(session, operation)
-    if not source or not candidate or candidate.wake_bundle_id != bundle.id:
+    source_valid = source is not None or operation.operation_type == "provision_standby_2"
+    if not source_valid or not candidate or candidate.wake_bundle_id != bundle.id:
         raise AuthorizationDrError("wake_bundle_missing", "Migration slot inputs are incomplete")
     return source, candidate, bundle
 
@@ -145,14 +151,21 @@ def _require_recovery_evidence(session, operation, bundle) -> None:
         raise AuthorizationDrError("wake_bundle_restore_probe_failed", "Recovery evidence is incomplete")
 
 
-def _verify_slot_cas(operation, source, *, candidate, account) -> None:
-    valid = (
-        source.is_slot_current
-        and source.slot_generation == operation.source_generation
-        and candidate.slot_generation == operation.target_generation
-        and not candidate.is_slot_current
-        and account is not None
+def _verify_slot_cas(session, operation, source, *, candidate, account) -> None:
+    source_valid = source is None and operation.operation_type == "provision_standby_2"
+    if source_valid:
+        current = session.scalar(select(TgAccountAuthorization.id).where(
+            TgAccountAuthorization.account_id == operation.account_id,
+            TgAccountAuthorization.logical_slot == operation.logical_slot,
+            TgAccountAuthorization.is_slot_current.is_(True),
+            TgAccountAuthorization.disabled_at.is_(None),
+        ).limit(1))
+        source_valid = current is None
+    source_valid = source_valid or bool(
+        source and source.is_slot_current and source.slot_generation == operation.source_generation
     )
+    valid = source_valid and candidate.slot_generation == operation.target_generation
+    valid = valid and not candidate.is_slot_current and account is not None
     if not valid:
         raise AuthorizationDrError("slot_commit_decision_conflict", "Standby slot changed before commit")
 
@@ -173,9 +186,9 @@ def _find_or_prepare_decision(session, operation, *, source, candidate, bundle, 
         account_id=operation.account_id,
         logical_slot=operation.logical_slot,
         decision_generation=_next_decision_generation(session, operation.account_id),
-        expected_old_authorization_id=source.id,
+        expected_old_authorization_id=source.id if source else None,
         new_authorization_id=candidate.id,
-        expected_old_slot_generation=source.slot_generation,
+        expected_old_slot_generation=source.slot_generation if source else 0,
         new_slot_generation=candidate.slot_generation,
         expected_account_version=account.authorization_contract_version,
         inventory_sequence=inventory.inventory_sequence,
@@ -189,10 +202,11 @@ def _find_or_prepare_decision(session, operation, *, source, candidate, bundle, 
 
 
 def _apply_slot_decision(source, candidate, *, bundle, decision) -> None:
-    source.is_slot_current = False
-    source.status = "retained"
-    source.dr_state = "retained_protected"
-    source.protected_from_cleanup = True
+    if source:
+        source.is_slot_current = False
+        source.status = "retained"
+        source.dr_state = "retained_protected"
+        source.protected_from_cleanup = True
     candidate.is_slot_current = True
     candidate.status = "standby"
     candidate.dr_state = "dormant_ready"
@@ -205,7 +219,8 @@ def _apply_slot_decision(source, candidate, *, bundle, decision) -> None:
 
 def _pass_recovery_gate(session, operation, *, source, candidate, bundle, decision, account) -> None:
     _require_recovery_evidence(session, operation, bundle)
-    source.migration_recovery_gate_status = "passed"
+    if source:
+        source.migration_recovery_gate_status = "passed"
     candidate.migration_recovery_gate_status = "passed"
     decision.recovery_gate_status = "passed"
     account.authorization_recovery_status = "dormant_ready"

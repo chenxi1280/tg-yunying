@@ -25,7 +25,7 @@ from app.services._common import _now, audit
 from .contracts import AuthorizationDrError
 from .online_abc_operations import online_abc_item_operations, online_abc_operation_keys
 from .online_abc_primary import stop_completed_primary_drift
-from .online_abc_read import render_online_abc_status
+from .online_abc_read import item_operations_complete, operation_outcome, render_online_abc_status
 
 
 TEN_ACCOUNT_CANARY_SIZE = 10
@@ -53,6 +53,8 @@ class FrozenOnlineAbcTarget:
     source_c_authorization_id: int
     source_c_fact_version: int
     source_c_slot_generation: int
+    standby_1_plan: str
+    standby_2_plan: str
 
 
 def preview_online_abc_batch(
@@ -136,7 +138,7 @@ def sync_online_abc_batch(session, batch_id: str, *, actor: str, approval_ref: s
     terminal = _terminal_outcome(operations)
     if terminal:
         _stop_item(session, batch, item, terminal)
-    elif all(operation and operation.status == "succeeded" for operation in operations.values()):
+    elif item_operations_complete(session, item, operations):
         _complete_item(session, batch, item, actor, approval_ref)
     session.commit()
     return online_abc_batch_status(session, batch.id)
@@ -171,6 +173,8 @@ def _freeze_target(session, tenant_id: int, account_id: int) -> FrozenOnlineAbcT
         source_c_authorization_id=source_c.id,
         source_c_fact_version=source_c.fact_version,
         source_c_slot_generation=source_c.slot_generation,
+        standby_1_plan="provision",
+        standby_2_plan="migrate",
     )
 
 
@@ -228,6 +232,7 @@ def _create_batch(session, preview, requested_by, approved_by, approval_ref):
         target_set_fingerprint=preview["fingerprint"], target_count=preview["target_count"],
         deployed_release_sha=preview["deployed_release_sha"],
         execution_release_sha=preview["deployed_release_sha"], status="approved",
+        selection_mode=preview.get("selection_mode", "exact_ten_canary"),
         requested_by=requested_by, approved_by=approved_by, approval_ref=approval_ref,
         approved_at=_now(),
     )
@@ -245,9 +250,11 @@ def _create_items(session, batch, targets) -> None:
         session.add(item)
         session.flush()
         for logical_slot in ("standby_1", "standby_2"):
+            plan = target[f"{logical_slot}_plan"]
             session.add(TgAuthorizationOnlineAbcSlotResult(
                 batch_id=batch.id, item_id=item.id, tenant_id=batch.tenant_id,
-                account_id=item.account_id, logical_slot=logical_slot, outcome="pending",
+                account_id=item.account_id, logical_slot=logical_slot,
+                outcome="already_qualified" if plan == "already_qualified" else "pending",
             ))
 
 
@@ -286,7 +293,7 @@ def _sync_slot(session, item, logical_slot: str, operation) -> None:
     if operation is None:
         return
     slot.operation_id = operation.id
-    slot.outcome = _operation_outcome(operation.status)
+    slot.outcome = operation_outcome(operation.status)
     slot.blocker_code = operation.blocker_code
     slot.version += 1
 
@@ -301,9 +308,12 @@ def _complete_item(session, batch, item, actor, approval_ref) -> None:
     item.version += 1
     _audit_batch(session, batch, f"完成 ABC canary account={item.account_id}", actor, approval_ref)
     if all(value.outcome == "succeeded" for value in _items(session, batch.id)):
-        batch.status = "observing"
-        batch.observation_started_at = _now()
-        batch.observation_closes_at = batch.observation_started_at + timedelta(hours=OBSERVATION_HOURS)
+        if batch.selection_mode == "exact_ten_canary":
+            batch.status = "observing"
+            batch.observation_started_at = _now()
+            batch.observation_closes_at = batch.observation_started_at + timedelta(hours=OBSERVATION_HOURS)
+        else:
+            batch.status = "completed"
     batch.version += 1
 
 
@@ -347,7 +357,7 @@ def _preview_body(tenant_id, key, release_sha, targets) -> dict:
     return {
         "tenant_id": tenant_id, "idempotency_key": normalized_key,
         "target_count": len(targets), "deployed_release_sha": release,
-        "targets": [asdict(target) for target in targets],
+        "targets": [dict(target) if isinstance(target, dict) else asdict(target) for target in targets],
     }
 
 
@@ -451,16 +461,6 @@ def _next_pending_item(session, batch_id: str):
         TgAuthorizationOnlineAbcItem.batch_id == batch_id,
         TgAuthorizationOnlineAbcItem.status == "pending",
     ).order_by(TgAuthorizationOnlineAbcItem.ordinal).limit(1))
-
-
-def _operation_outcome(status: str) -> str:
-    if status == "succeeded":
-        return "succeeded"
-    if status in UNKNOWN_OPERATION_STATUSES:
-        return "reconcile_unknown"
-    if status in TERMINAL_FAILURES:
-        return status
-    return "running"
 
 
 def _audit_batch(session, batch, action: str, actor: str, approval_ref: str = "") -> None:

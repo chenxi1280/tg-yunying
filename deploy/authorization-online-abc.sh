@@ -5,7 +5,7 @@ set -euo pipefail
 CONTAINER_NAME="${TGYUNYING_BACKEND_CONTAINER:-tgyunying-backend}"
 
 if [[ $# -eq 0 ]]; then
-  echo "Usage: $0 --mode preview|apply|start|sync|status [options]" >&2
+  echo "Usage: $0 --mode preview|apply|preview-full|apply-full|start|sync|accept|status [options]" >&2
   exit 2
 fi
 

@@ -110,7 +110,9 @@ class TgAuthorizationDrBatchItem(Base):
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
     account_id: Mapped[int] = mapped_column(ForeignKey("tg_accounts.id"))
     ordinal: Mapped[int] = mapped_column(Integer)
-    expected_source_authorization_id: Mapped[int] = mapped_column(ForeignKey("tg_account_authorizations.id"))
+    expected_source_authorization_id: Mapped[int | None] = mapped_column(
+        ForeignKey("tg_account_authorizations.id"), nullable=True
+    )
     expected_source_fact_version: Mapped[int] = mapped_column(Integer)
     expected_source_generation: Mapped[int] = mapped_column(Integer)
     target_generation: Mapped[int] = mapped_column(Integer)
@@ -138,6 +140,7 @@ class TgAuthorizationOnlineAbcBatch(Base):
     target_count: Mapped[int] = mapped_column(Integer)
     deployed_release_sha: Mapped[str] = mapped_column(String(64))
     execution_release_sha: Mapped[str] = mapped_column(String(64), default="")
+    selection_mode: Mapped[str] = mapped_column(String(32), default="exact_ten_canary")
     status: Mapped[str] = mapped_column(String(32), default="previewed")
     version: Mapped[int] = mapped_column(Integer, default=1)
     requested_by: Mapped[str] = mapped_column(String(100))
@@ -161,20 +164,26 @@ class TgAuthorizationOnlineAbcItem(Base):
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
     account_id: Mapped[int] = mapped_column(ForeignKey("tg_accounts.id"))
     ordinal: Mapped[int] = mapped_column(Integer)
-    primary_authorization_id: Mapped[int] = mapped_column(ForeignKey("tg_account_authorizations.id"))
+    primary_authorization_id: Mapped[int | None] = mapped_column(
+        ForeignKey("tg_account_authorizations.id"), nullable=True
+    )
     primary_fact_version: Mapped[int] = mapped_column(Integer)
     authorization_generation: Mapped[int] = mapped_column(Integer)
     authorization_fact_generation: Mapped[int] = mapped_column(Integer)
     connection_generation: Mapped[int] = mapped_column(Integer)
     primary_session_digest: Mapped[str] = mapped_column(String(64))
-    app_b_id: Mapped[int] = mapped_column(ForeignKey("telegram_developer_apps.id"))
+    app_b_id: Mapped[int | None] = mapped_column(ForeignKey("telegram_developer_apps.id"), nullable=True)
     app_b_credentials_version: Mapped[int] = mapped_column(Integer)
     app_b_assignment_purpose: Mapped[str] = mapped_column(String(32))
     app_b_assignment_version: Mapped[int] = mapped_column(Integer)
-    proxy_id: Mapped[int] = mapped_column(ForeignKey("account_proxies.id"))
-    source_c_authorization_id: Mapped[int] = mapped_column(ForeignKey("tg_account_authorizations.id"))
+    proxy_id: Mapped[int | None] = mapped_column(ForeignKey("account_proxies.id"), nullable=True)
+    source_c_authorization_id: Mapped[int | None] = mapped_column(
+        ForeignKey("tg_account_authorizations.id"), nullable=True
+    )
     source_c_fact_version: Mapped[int] = mapped_column(Integer)
     source_c_slot_generation: Mapped[int] = mapped_column(Integer)
+    standby_1_plan: Mapped[str] = mapped_column(String(32), default="provision")
+    standby_2_plan: Mapped[str] = mapped_column(String(32), default="migrate")
     status: Mapped[str] = mapped_column(String(32), default="pending")
     outcome: Mapped[str] = mapped_column(String(32), default="pending")
     primary_probe_outcome: Mapped[str] = mapped_column(String(32), default="pending")
@@ -447,7 +456,9 @@ class TgAuthorizationSlotDecision(Base):
     account_id: Mapped[int] = mapped_column(ForeignKey("tg_accounts.id"))
     logical_slot: Mapped[str] = mapped_column(String(24))
     decision_generation: Mapped[int] = mapped_column(Integer)
-    expected_old_authorization_id: Mapped[int] = mapped_column(ForeignKey("tg_account_authorizations.id"))
+    expected_old_authorization_id: Mapped[int | None] = mapped_column(
+        ForeignKey("tg_account_authorizations.id"), nullable=True
+    )
     new_authorization_id: Mapped[int] = mapped_column(ForeignKey("tg_account_authorizations.id"))
     expected_old_slot_generation: Mapped[int] = mapped_column(Integer)
     new_slot_generation: Mapped[int] = mapped_column(Integer)

@@ -33,12 +33,14 @@ from .online_abc import (
     sync_online_abc_batch,
 )
 from .online_abc_operations import online_abc_item_operations, online_abc_operation_keys
+from .online_abc_chunk import MAX_CHUNK_ACCOUNTS, chunk_result, require_chunk_size, require_item_runnable, require_slot_ready
 from .readiness import ready_migration_runtime_image_sha
+from .standby_2_provision import prepare_scoped_c_provision
 
 
 POLL_INTERVAL_SECONDS = 2.0
 SUCCESS_STATUS = "succeeded"
-TERMINAL_BATCH_STATUSES = {"observing", "stopped"}
+TERMINAL_BATCH_STATUSES = {"accepted", "completed", "observing", "stopped"}
 RESUMABLE_RUNNER_BLOCKERS = {"malaysia_wake_unavailable"}
 RETRYABLE_E4_READINESS_CODES = {"malaysia_wake_unavailable"}
 TERMINAL_OPERATION_STATUSES = {
@@ -79,18 +81,21 @@ def run_online_abc_batch(
     approved_by: str,
     approval_ref: str,
     runtime_release_sha: str,
+    max_accounts: int = MAX_CHUNK_ACCOUNTS,
     poll_seconds: float = POLL_INTERVAL_SECONDS,
     sleeper: Callable[[float], None] = time.sleep,
 ) -> dict:
     approval = _approval(requested_by, approved_by, approval_ref)
     batch = _batch(session, batch_id)
     _require_batch_contract(batch, approval, runtime_release_sha)
+    require_chunk_size(max_accounts)
     if poll_seconds <= 0:
         raise AuthorizationDrError("poll_interval_invalid", "Runner poll interval must be positive")
+    processed_accounts: list[int] = []
     while True:
         view = online_abc_runner_status(session, batch_id)
         if view["batch"]["status"] in TERMINAL_BATCH_STATUSES:
-            return view
+            return chunk_result(view, processed_accounts, max_accounts)
         command = start_next_online_abc_item(
             session, batch_id, actor=approval.approved_by, approval_ref=approval.approval_ref,
         )
@@ -101,6 +106,10 @@ def run_online_abc_batch(
         sync_online_abc_batch(
             session, batch_id, actor=approval.approved_by, approval_ref=approval.approval_ref,
         )
+        processed_accounts.append(command["account_id"])
+        if len(processed_accounts) == max_accounts:
+            view = online_abc_runner_status(session, batch_id)
+            return chunk_result(view, processed_accounts, max_accounts)
 
 
 def resume_online_abc_batch(
@@ -128,16 +137,18 @@ def _run_current_item(session, batch_id, command, approval, poll_seconds, sleepe
     batch, item, operations = _context(session, batch_id)
     if item.id != command["item_id"] or item.account_id != command["account_id"]:
         raise AuthorizationDrError("online_abc_runner_item_drift", "Started ABC item changed")
-    if operations["b"] is None:
-        _ensure_primary_qualified(session, item, approval)
-        _create_b_and_c(session, batch, item, approval)
+    require_item_runnable(item)
+    _ensure_primary_qualified(session, item, approval)
+    if item.standby_1_plan != "already_qualified" and operations["b"] is None:
+        _create_b(session, batch, item, approval)
     batch, item, operations = _context(session, batch_id)
-    _require_succeeded(operations["b"], "online_abc_runner_b_incomplete")
-    if operations["c"] is None:
+    require_slot_ready(item.standby_1_plan, operations["b"], "online_abc_runner_b_incomplete")
+    if item.standby_2_plan != "already_qualified" and operations["c"] is None:
         _create_c(session, batch, item, approval)
-    _wait_for_c(session, batch_id, poll_seconds, sleeper)
+    if item.standby_2_plan != "already_qualified":
+        _wait_for_c(session, batch_id, poll_seconds, sleeper)
     batch, item, operations = _context(session, batch_id)
-    _require_succeeded(operations["c"], "online_abc_runner_c_incomplete")
+    require_slot_ready(item.standby_2_plan, operations["c"], "online_abc_runner_c_incomplete")
     if operations["e4"] is None:
         _create_e4(session, batch, item, approval, poll_seconds, sleeper)
     _require_succeeded(_context(session, batch_id)[2]["e4"], "online_abc_runner_e4_incomplete")
@@ -167,7 +178,7 @@ def _ensure_primary_qualified(session, item, approval: RunnerApproval) -> None:
         raise AuthorizationDrError("online_abc_primary_drift", "A qualification did not preserve frozen facts")
 
 
-def _create_b_and_c(session, batch, item, approval: RunnerApproval) -> None:
+def _create_b(session, batch, item, approval: RunnerApproval) -> None:
     keys = online_abc_operation_keys(batch, item)
     preview = preview_abc_backup(
         session, batch.tenant_id, item.account_id, idempotency_key=keys["b"],
@@ -182,13 +193,11 @@ def _create_b_and_c(session, batch, item, approval: RunnerApproval) -> None:
         approved_by=approval.approved_by,
         approval_ref=approval.approval_ref,
     )
-    _create_c(session, batch, item, approval)
-
-
 def _create_c(session, batch, item, approval: RunnerApproval) -> None:
     keys = online_abc_operation_keys(batch, item)
     runtime_sha = ready_migration_runtime_image_sha(session)
-    prepare_scoped_c_migration(
+    prepare = prepare_scoped_c_provision if item.standby_2_plan == "provision" else prepare_scoped_c_migration
+    prepare(
         session,
         batch.tenant_id,
         item.account_id,
@@ -432,7 +441,10 @@ def _next_action(batch_status: str, item, operations: dict) -> str:
         return batch_status
     if item is None:
         return "start_item"
+    plans = {"b": item.standby_1_plan, "c": item.standby_2_plan, "e4": "verify"}
     for name in ("b", "c", "e4"):
+        if plans[name] == "already_qualified":
+            continue
         operation = operations[name]
         if operation is None:
             return {"b": "qualify_a_and_create_b", "c": "create_c", "e4": "verify_e4"}[name]

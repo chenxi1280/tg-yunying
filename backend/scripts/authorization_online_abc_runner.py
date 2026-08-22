@@ -47,6 +47,7 @@ def _execute(session, args) -> dict:
         approved_by=args.approved_by,
         approval_ref=args.approval_ref,
         runtime_release_sha=os.getenv("RELEASE_SHA", ""),
+        max_accounts=args.max_accounts,
         poll_seconds=args.poll_seconds,
     )
 
@@ -64,6 +65,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--approved-by", default="")
     parser.add_argument("--approval-ref", default="")
     parser.add_argument("--poll-seconds", type=float, default=2.0)
+    parser.add_argument("--max-accounts", type=int, default=10)
     return parser
 
 

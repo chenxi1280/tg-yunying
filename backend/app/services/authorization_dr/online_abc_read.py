@@ -13,6 +13,10 @@ from app.models import (
 from .contracts import AuthorizationDrError
 
 
+UNKNOWN_OPERATION_STATUSES = {"provision_reconcile_unknown", "reconcile_unknown"}
+TERMINAL_FAILURES = {"failed", "manual_required", "migration_rolled_back_forward"}
+
+
 def render_online_abc_status(session, batch_id: str) -> dict:
     batch = session.get(TgAuthorizationOnlineAbcBatch, batch_id)
     if not batch:
@@ -81,4 +85,26 @@ def _iso(value) -> str:
     return value.isoformat() if value else ""
 
 
-__all__ = ["render_online_abc_status"]
+def item_operations_complete(session, item, operations: dict) -> bool:
+    slots = {slot.logical_slot: slot for slot in session.scalars(
+        select(TgAuthorizationOnlineAbcSlotResult).where(
+            TgAuthorizationOnlineAbcSlotResult.item_id == item.id,
+        )
+    )}
+    b_done = slots["standby_1"].outcome in {"already_qualified", "succeeded"}
+    c_done = slots["standby_2"].outcome in {"already_qualified", "succeeded"}
+    e4_done = operations["e4"] and operations["e4"].status == "succeeded"
+    return bool(b_done and c_done and e4_done)
+
+
+def operation_outcome(status: str) -> str:
+    if status == "succeeded":
+        return "succeeded"
+    if status in UNKNOWN_OPERATION_STATUSES:
+        return "reconcile_unknown"
+    if status in TERMINAL_FAILURES:
+        return status
+    return "running"
+
+
+__all__ = ["item_operations_complete", "operation_outcome", "render_online_abc_status"]
