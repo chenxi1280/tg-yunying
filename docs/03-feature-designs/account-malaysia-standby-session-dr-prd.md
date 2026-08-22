@@ -2,7 +2,7 @@
 
 > 版本：v2.21
 > 日期口径：2026-08-22（Asia/Shanghai）
-> 当前状态：`design_status=complete`、`product_resync_status=complete`、`dev_handoff_ready=true`、`implemented_scope=abc_two_account_canary_core_plus_ten_account_control_and_p0_local_recovery_production_verified`、`core_deployed=0ec48547fc5748f095724ac4d2da363b1d6364e5`、`ssh_mirror_deployed=true`、`slot_canary=2/2_historical_pass`、`ten_account_slot_result=10/10`、`ten_account_observation=failed_primary_authkey_duplicated`、`p0_local_recovery=2/2_verified`、`full_online_abc_design=complete`、`full_online_abc_implementation=partial`、`full_prd_implementation=partial`、`runtime_mode=off`、`production_fixed=false`
+> 当前状态：`design_status=complete`、`product_resync_status=complete`、`dev_handoff_ready=true`、`implemented_scope=abc_two_account_canary_core_plus_ten_account_control_p0_local_recovery_and_approved_batch_runner_production_verified`、`core_deployed=a6481e0ae8bd851718e91eb1d6cafd1c6f74d154`、`ssh_mirror_deployed=true`、`slot_canary=2/2_historical_pass`、`ten_account_slot_result=10/10`、`ten_account_observation=failed_primary_authkey_duplicated`、`p0_local_recovery=2/2_verified`、`approved_batch_runner=production_verified_status_only`、`full_online_abc_design=complete`、`full_online_abc_implementation=partial`、`full_prd_implementation=partial`、`runtime_mode=off`、`production_fixed=false`
 > 适用范围：账号授权资产、三槽位远端设备归属、活跃授权设备查看/清理、备用登录、硅谷本地自动切换、跨模块运行代次、显式演练、紧急登录码辅助和硅谷主授权重建；不包含业务系统整体异地容灾。
 > 关联文档：[实施与验收合同](account-malaysia-standby-session-dr-implementation-contract.md)、[account-standby-auto-authorization-prd.md](account-standby-auto-authorization-prd.md)、[account-security-hardening-design.md](account-security-hardening-design.md)、[account-login-group-navigation-recovery-prd.md](account-login-group-navigation-recovery-prd.md)。
 
@@ -29,6 +29,7 @@
 - 271 项扩量批次曾停在 `241 succeeded + 22 failed + 5 manual_required + 3 reconcile_unknown = 271`；经 typed no-effect、原字节前滚和不可恢复旧工件人工收口后，2026-08-21 已验证终态为 `241 succeeded + 23 failed + 7 manual_required + 0 reconcile_unknown = 271`。其中 22 个不同账号具有 `phone_number_banned` typed fact；22 不是全平台账号总数，也不是全平台永久封号总数。
 - 全局 unknown 曾涉及账号 24、25、26、67、87、111：24/25 为无包 remote orphan，26 为 MY local-only 包，67 无新远端设备，87 为 inventory ahead of central，111 三条 SV Session 均不可授权且远端未证明。最终收口只允许复用原字节/原 operation/generation 或转人工，不调用重登 RPC、不伪造新 Session；该历史分类继续作为回归用例，不再描述为当前 open unknown。
 - 10 账号初始执行时的发布基线为 release SHA `7abc46425304e8dae63a35e92d699fa1902d6006`、Alembic head `0162_online_abc_canary`。观察失败修复已通过 GitHub Actions run `32574528768` 发布为 release SHA `0ec48547fc5748f095724ac4d2da363b1d6364e5`，生产 Alembic head 为 `0163_local_activate_verify`、backend healthy、runtime=`off`、claim scope 为空、全局 unknown=0、MY active client=0。
+- 非 Actions 批次 runner 已通过 GitHub Actions run `32576826536` 发布为 release SHA `a6481e0ae8bd851718e91eb1d6cafd1c6f74d154`。生产只读 `status` 已验证脚本可执行、容器 CLI 存在、旧 stopped batch 守恒为 B/C `10/10`；未调用 `run`，未创建 batch，运行闸门仍为 runtime=`off`、claim scope 为空、global unknown=0、open ABC batch=0、MY active client=0。
 - 自动故障触发的完整 `local_activate`、`restore_sv_pair`、`drill_wake`、双 SV 失效后的 `emergency_reauthorize_primary`、中心恢复对账、decommission/erase、跨全部 Action/Gateway/listener/online/sync generation fence 与全量动态 `complete_online_abc` 仍未完成；既有 unknown 收口、初始 B/C/E4 `10/10` 或 P0 本地切换不能替代这些验收。
 - 授权备份不等于消息、任务、数据库、Redis、素材和 Dispatcher 的异地容灾。
 
@@ -65,6 +66,7 @@
 - GitHub Actions 只负责发布不可变代码，不得作为日常 B/C 登录执行器。正式运维入口必须是生产当前 release 内的 `deploy/authorization-online-abc-runner.sh`；它只接受已经完成 manifest preview/apply 和异人审批的 batch ID，不自行创建或扩大目标集合。
 - runner 的 `status` 完全只读；`run` 对当前唯一 running/pending item 执行持久阶段机：`A qualify -> B login -> C exact-operation arm/wait -> A Saved Messages E4 -> batch sync`。一个账号只有 E4 和 sync 均成功后才可领取下一个账号；runner 不并发处理账号。
 - runner 必须从当前 ready MY node 读取并冻结 exact runtime image SHA，不要求操作者手抄动态 SHA。每个子 operation 继续使用 batch item 派生的确定性 idempotency key 和原 batch 的 requester/approver/approval_ref；重复启动只能读取或继续同一 operation，不能重新发码、重新登录或重新发送 E4。
+- C 已 succeeded、runtime 已自动关闭但 MY ready heartbeat 尚在刷新窗口时，E4 preview 的 `malaysia_wake_unavailable` 属于“远端发送尚未开始”的可等待 readiness，不得立即把 item 永久停止；runner 只轮询 readiness，操作者中断后仍从同一 running item 恢复。已由旧版本停止的 item 只允许 `resume` 一个精确检查点：`runner_blocked + malaysia_wake_unavailable + B/C succeeded + E4 operation 不存在 + A 未漂移 + runtime off + unknown=0 + 同审批/同 release`，恢复不得重登 B/C。
 - runner 被中断时允许以同一 batch ID 重启：已成功阶段跳过，C active 阶段只等待，B remote effect started 但未终态、任何 unknown/manual/failed、A generation/Session/fact 漂移、runtime scope 冲突均立即显式停止并输出 blocker。不得为了“自动继续”清除 lease、重建 operation、换账号或改写失败事实。
 - runner 的最终 JSON 必须包含 batch/item、A/B/C/E4 operation ID/status、runtime mode/scope、account outcome 守恒和 `next_action|terminal_reason`。退出码 `0` 只表示本次已到达 `observing` 或只读 status 成功；批次 stopped、unknown、人工处理或执行异常必须非零退出。
 - `start` 在行锁、runtime=`off` 和全局 unknown=0 下只返回当前唯一账号及 B/C/E4 三个确定性幂等键；存在 running item 时重复调用只返回同一项。操作者随后复用 canonical A qualification、`authorization-abc-backup` 和 E4 verify 正式入口，不得新建平行登录实现。
