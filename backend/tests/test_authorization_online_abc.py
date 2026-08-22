@@ -44,6 +44,7 @@ pytestmark = pytest.mark.no_postgres
 RELEASE_SHA = "a" * 40
 ACCOUNT_IDS = list(range(101, 111))
 MIGRATION_PATH = Path(__file__).resolve().parents[1] / "migrations/versions/0162_authorization_online_abc_canary.py"
+FULL_MIGRATION_PATH = Path(__file__).resolve().parents[1] / "migrations/versions/0165_online_abc_full_rollout.py"
 
 
 @pytest.fixture
@@ -126,6 +127,19 @@ def test_migration_accepts_metadata_precreated_tables() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     spec = importlib.util.spec_from_file_location("online_abc_0162", MIGRATION_PATH)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("migration_load_failed")
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    with engine.begin() as connection:
+        migration.op = Operations(MigrationContext.configure(connection))
+        migration.upgrade()
+
+
+def test_full_rollout_migration_accepts_metadata_precreated_columns() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    spec = importlib.util.spec_from_file_location("online_abc_0165", FULL_MIGRATION_PATH)
     if spec is None or spec.loader is None:
         raise RuntimeError("migration_load_failed")
     migration = importlib.util.module_from_spec(spec)
