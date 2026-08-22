@@ -14,21 +14,27 @@ branch_labels = None
 depends_on = None
 
 
+def _has_column(table_name: str, column_name: str) -> bool:
+    columns = sa.inspect(op.get_bind()).get_columns(table_name)
+    return column_name in {str(column["name"]) for column in columns}
+
+
 def upgrade() -> None:
     op.drop_index(
         "uq_ai_provider_single_active",
         table_name="ai_providers",
         if_exists=True,
     )
-    op.add_column(
-        "tenant_ai_settings",
-        sa.Column(
-            "ai_provider_route_fallback_enabled",
-            sa.Boolean(),
-            nullable=False,
-            server_default=sa.false(),
-        ),
-    )
+    if not _has_column("tenant_ai_settings", "ai_provider_route_fallback_enabled"):
+        op.add_column(
+            "tenant_ai_settings",
+            sa.Column(
+                "ai_provider_route_fallback_enabled",
+                sa.Boolean(),
+                nullable=False,
+                server_default=sa.false(),
+            ),
+        )
 
 
 def downgrade() -> None:
