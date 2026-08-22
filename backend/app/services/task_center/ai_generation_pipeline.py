@@ -12,6 +12,7 @@ from .ai_generator import (
     AI_CONTENT_REQUEST_TIMEOUT_SECONDS,
     AiGenerationUnavailable,
     GeneratedContent,
+    ProviderRouteDeferred,
     _copy_generated_content_metadata,
 )
 from .ai_generation_state import validate_output_sequences, validate_output_slot_ids
@@ -75,6 +76,9 @@ def generate_quality_results(
                 stage=stage,
                 dependencies=dependencies,
             )
+        except ProviderRouteDeferred:
+            _close_failed_stage_transaction(session)
+            raise
         except AiGenerationUnavailable as exc:
             _close_failed_stage_transaction(session)
             last_error = exc
