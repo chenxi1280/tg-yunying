@@ -18,6 +18,8 @@ from app.models import (
     Tenant,
     TgAccount,
     TgAccountAuthorization,
+    TgAuthorizationDrBatch,
+    TgAuthorizationDrBatchItem,
     TgAuthorizationDrOperation,
 )
 from app.services.authorization_dr.contracts import AuthorizationDrError
@@ -218,20 +220,50 @@ def _qualify_primary(session: Session, account_id: int) -> None:
 
 
 def _add_operations(session: Session, command: dict, *, status: str) -> None:
-    for key in ("b_idempotency_key", "c_idempotency_key", "e4_idempotency_key"):
-        _add_operation(session, command["account_id"], command[key], status)
+    account_id = command["account_id"]
+    _add_operation(session, account_id, command["b_idempotency_key"], status)
+    c_operation = _add_operation(
+        session, account_id, f"migration-c-{account_id}", status,
+        operation_type="migrate_standby_2",
+    )
+    migration_batch = TgAuthorizationDrBatch(
+        tenant_id=1, idempotency_key=command["c_idempotency_key"],
+        target_set_fingerprint="c" * 64, target_count=1, status=status,
+        requested_by="requester", approved_by="approver", approval_ref="ABC-10",
+    )
+    session.add(migration_batch)
+    session.flush()
+    session.add(TgAuthorizationDrBatchItem(
+        batch_id=migration_batch.id, tenant_id=1, account_id=account_id, ordinal=1,
+        expected_source_authorization_id=2000 + account_id, expected_source_fact_version=1,
+        expected_source_generation=1, target_generation=2, status=status, outcome=status,
+        operation_id=c_operation.id,
+    ))
+    session.commit()
+    _add_operation(session, account_id, command["e4_idempotency_key"], status)
 
 
-def _add_operation(session: Session, account_id: int, key: str, status: str) -> None:
-    operation_type = "abc_e4_primary_send" if key.endswith(":e4") else "migrate_standby_2" if key.endswith(":c") else "provision_standby_1"
-    session.add(TgAuthorizationDrOperation(
-        tenant_id=1, account_id=account_id, operation_type=operation_type,
-        logical_slot="primary" if operation_type.startswith("abc_e4") else "standby_2" if operation_type.startswith("migrate") else "standby_1",
+def _add_operation(
+    session: Session,
+    account_id: int,
+    key: str,
+    status: str,
+    *,
+    operation_type: str = "",
+):
+    resolved_type = operation_type or (
+        "abc_e4_primary_send" if key.endswith(":e4") else "provision_standby_1"
+    )
+    operation = TgAuthorizationDrOperation(
+        tenant_id=1, account_id=account_id, operation_type=resolved_type,
+        logical_slot="primary" if resolved_type.startswith("abc_e4") else "standby_2" if resolved_type.startswith("migrate") else "standby_1",
         source_generation=1, target_generation=1, developer_app_id=1,
         developer_app_api_id_snapshot=1001, developer_app_credentials_version=1,
         assignment_version=1, egress_id="sv-proxy:1", egress_version=1,
         idempotency_key=key, request_fingerprint="f" * 64, status=status,
         remote_call_state="unknown" if status == "reconcile_unknown" else "succeeded",
         requested_by="requester", approved_by="approver", approval_ref="ABC-10",
-    ))
+    )
+    session.add(operation)
     session.commit()
+    return operation
