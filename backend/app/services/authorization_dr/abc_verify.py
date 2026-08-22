@@ -17,6 +17,7 @@ from app.models import (
 )
 from app.security import decrypt_session
 from app.services._common import _now, audit, gateway
+from app.services.account_authorization_metadata import resolve_authorization_identity_hash
 from app.services.developer_apps import credentials_for_authorization
 
 from .contracts import AuthorizationDrError
@@ -310,10 +311,17 @@ def _new_operation(account, primary, *, preview, approval: Approval):
 
 
 def _identity(session, authorization):
-    return gateway.authorization_identity(
+    identity = gateway.authorization_identity(
         decrypt_session(authorization.session_ciphertext),
         credentials_for_authorization(session, authorization),
     )
+    identity, _hash_source = resolve_authorization_identity_hash(
+        session,
+        authorization.account_id,
+        identity,
+        exclude_authorization_id=authorization.id,
+    )
+    return identity
 
 
 def _validate_remote_identities(primary, standby, *, primary_identity, standby_identity) -> None:
