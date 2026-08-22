@@ -72,7 +72,27 @@ def test_group_two_stage_accepts_realized_content() -> None:
     assert results[0].rejection_code == ""
     assert str(results[0].content) == "今天先聊聊这个天气"
     assert results[0].quality_fallback == ""
+    assert results[0].content.slot_id == "slot-1"
     assert tokens == 18
+
+
+def test_group_two_stage_plan_rejection_preserves_slot_mapping() -> None:
+    planner = planner_factory([[
+        {"slot_id": "slot-1", "speech_act": "unsupported"},
+    ]])
+
+    def fail_realizer(*_args, **_kwargs):
+        raise AssertionError("rejected plan must not realize")
+
+    with Session(_sqlite_engine()) as session:
+        results, _tokens = generate_quality_results(
+            session,
+            _two_stage_request(),
+            _two_stage_dependencies(planner, fail_realizer),
+        )
+
+    assert results[0].rejection_code == "brief_schema_invalid"
+    assert results[0].content.slot_id == "slot-1"
 
 
 def test_group_two_stage_quality_wait_without_check_in_fallback() -> None:
@@ -97,6 +117,7 @@ def test_group_two_stage_quality_wait_without_check_in_fallback() -> None:
     assert "template_shell_limited" in results[0].rejection_detail
     assert results[0].quality_fallback == ""
     assert str(results[0].content) != "签到"
+    assert results[0].content.slot_id == "slot-1"
     assert len(realizer.calls) == 2
     assert "template_shell_limited" in realizer.calls[1]["user_prompt"]
 
@@ -117,6 +138,7 @@ def test_group_two_stage_silence_brief_never_calls_realizer() -> None:
 
     assert results[0].rejection_code == QUALITY_WAIT
     assert "brief_silence" in results[0].rejection_detail
+    assert results[0].content.slot_id == "slot-1"
 
 
 def test_group_two_stage_provider_unavailable_propagates_without_static_fallback() -> None:

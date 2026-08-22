@@ -1463,6 +1463,7 @@ def _claim_fact_first_actions(
 ) -> list[Action]:
     from .direct_action_claims import claim_fact_first_candidates
 
+    shard_total, shard_index = current_account_shard()
     direct = claim_fact_first_candidates(
         session,
         owner=owner,
@@ -1471,6 +1472,8 @@ def _claim_fact_first_actions(
         lease_seconds=int(_setting(settings, "action_claim_seconds", 60) or 60),
         exclude_task_ids=exclude_task_ids,
         execution_lane=execution_lane,
+        shard_total=shard_total,
+        shard_index=shard_index,
     )
     batch = ActionClaimBatch(direct.action_ids, direct.owner, direct.token, {})
     return _confirm_claim_batch(session, batch, {})

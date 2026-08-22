@@ -264,10 +264,10 @@ def _realize_two_stage_plan(
     index: int,
 ) -> tuple[SlotGenerationResult, int]:
     if plan.rejection_code:
-        return _two_stage_rejected(plan.rejection_code, plan.rejection_detail, index), 0
+        return _two_stage_rejected(plan.rejection_code, plan.rejection_detail, plan.slot_id, index), 0
     if plan.brief is None or plan.brief.speech_act == "silence":
         detail = "brief_silence：上下文不支持安全发言，宁可沉默不造句"
-        return _two_stage_rejected(QUALITY_WAIT, detail, index), 0
+        return _two_stage_rejected(QUALITY_WAIT, detail, plan.slot_id, index), 0
     feedback = ""
     spent_tokens = 0
     for _attempt in range(TWO_STAGE_REALIZE_ATTEMPTS):
@@ -284,7 +284,8 @@ def _realize_two_stage_plan(
         feedback = f"{result.rejection_code}:{result.rejection_detail}"
     detail = f"realize 预算耗尽，最后拒绝码={result.rejection_code or 'unknown'}"
     rejected = _two_stage_rejected(
-        QUALITY_WAIT, detail, index, evaluator_evidence=result.evaluator_evidence,
+        QUALITY_WAIT, detail, plan.slot_id, index,
+        evaluator_evidence=result.evaluator_evidence,
     )
     return rejected, spent_tokens
 
@@ -336,7 +337,8 @@ def _two_stage_structural_gate(
 
 
 def _two_stage_rejected(
-    code: str, detail: str, index: int, *, evaluator_evidence: dict | None = None,
+    code: str, detail: str, slot_id: str, index: int, *,
+    evaluator_evidence: dict | None = None,
 ) -> SlotGenerationResult:
     """被拒 slot 的映射守恒占位：内容仅用于数量映射校验与审计，不进入发送。
 
@@ -345,6 +347,7 @@ def _two_stage_rejected(
     """
     marker = GeneratedContent(
         f"[{code}:{index + 1}]", generation_source="two_stage_quality_wait",
+        slot_id=slot_id,
         sequence_index=index + 1,
     )
     return SlotGenerationResult(
