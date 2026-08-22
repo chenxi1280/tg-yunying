@@ -2,7 +2,7 @@
 
 > 版本：v2.21
 > 日期口径：2026-08-22（Asia/Shanghai）
-> 当前状态：`design_status=complete`、`product_resync_status=complete`、`dev_handoff_ready=true`、`implemented_scope=abc_two_account_canary_core_local_qa`、`core_deployed=pending_release`、`ssh_mirror_deployed=true`、`slot_canary=2/2_historical_pass`、`full_online_abc_design=complete`、`full_online_abc_implementation=partial`、`full_prd_implementation=partial`、`runtime_mode=off`、`production_fixed=false`
+> 当前状态：`design_status=complete`、`product_resync_status=complete`、`dev_handoff_ready=true`、`implemented_scope=abc_two_account_canary_core_plus_ten_account_control_local_qa`、`core_deployed=pending_release`、`ssh_mirror_deployed=true`、`slot_canary=2/2_historical_pass`、`ten_account_canary=local_qa_pass_pending_release_and_e4`、`full_online_abc_design=complete`、`full_online_abc_implementation=partial`、`full_prd_implementation=partial`、`runtime_mode=off`、`production_fixed=false`
 > 适用范围：账号授权资产、三槽位远端设备归属、活跃授权设备查看/清理、备用登录、硅谷本地自动切换、跨模块运行代次、显式演练、紧急登录码辅助和硅谷主授权重建；不包含业务系统整体异地容灾。
 > 关联文档：[实施与验收合同](account-malaysia-standby-session-dr-implementation-contract.md)、[account-standby-auto-authorization-prd.md](account-standby-auto-authorization-prd.md)、[account-security-hardening-design.md](account-security-hardening-design.md)、[account-login-group-navigation-recovery-prd.md](account-login-group-navigation-recovery-prd.md)。
 
@@ -45,7 +45,7 @@
 - “所有在线账号都登录 A/B/C”固定解释为：批次创建时冻结的全部在线账号都必须具备可验证的 A/SV、B/SV、C/MY 三槽授权；已健康槽位只做新鲜 readback，不为满足动作标签强制重新登录。A 是正常补齐 B/C 时唯一允许选择的登录码来源；B 只承担 SV 本地故障切换，C 只在 A、B 两条权威失败事实同时成立时辅助重建 A。
 - 线上在线数量会变化，因此 1064/1065 只作为 2026-08-22 的只读时间点参考，不进入规范性目标。正式全量分母必须在批次创建事务中先冻结为动态 `N`，之后才逐项探测 A；A 探测失败、账号被封、需要人工、被冻结后删除或出现 unknown 都必须留在 `N` 中，禁止先探测后缩小分母。
 - 2026-08-22 最近一次只读本地投影为：在线 1064、A Session 投影 1064、B ready 245、C/MY ready 237、ABC ready 237、仅缺 C 8、同时缺 B/C 819。该投影只用于估算工作量，不是 Telegram E4，不得直接据此创建成功结果。
-- 本次新增的是 `complete_online_abc` 产品批次合同、10 账号 canary 和全量 Release Gate；既有生产代码尚未实现该合同。本地文档合并、代码测试、生产发布、Telegram 授权可用与消息发送必须分别验收。
+- 本次新增的是 `complete_online_abc` 产品批次合同、10 账号 canary 和全量 Release Gate。当前本地候选已实现 10 账号 canary 的精确 manifest、账号/B/C 三组持久结果、串行 `start`、结果 `sync`、unknown 整批停止和 24 小时观察窗；尚未发布和执行生产 E4，也未实现全量动态 `N` 的 API/UI/worker 编排。本地代码测试、生产发布、Telegram 授权可用与消息发送必须分别验收。
 
 ### 1.2.3 两账号修复 canary 的实施切片
 
@@ -58,6 +58,13 @@
 - 备份 operation 不具备切主能力。健康检查、Dispatcher、账号安全自愈和旧 activate 入口只能创建 `fault_candidate` 或保持失败，不能直接替换 A；正式切主只允许经 `local_activate` 独立 preview、双探测、代际 CAS 和异人 apply。
 - MY 节点只有 capability=`2.21-abc-a-source` 且 runtime image SHA 与合同完全一致时才可领取；runtime 每次只绑定一个 C operation，C slot 成功后自动回到 `off`。任一 A 漂移、验证码歧义、remote unknown、意外设备变化或 capability/SHA 不匹配立即停止。
 - 第一个账号必须完成 A 登录及 Saved Messages 发送读回、B/C 同 UID 且 AuthKey/hash 各自唯一、C 双副本/restore probe/slot commit、MY client=0 后，才允许对第二个账号重新 preview。第二个通过前不创建 10 账号批次。
+
+### 1.2.4 10 账号 canary 控制切片
+
+- `TgAuthorizationOnlineAbcBatch/Item/SlotResult` 冻结同一组恰好 10 个唯一在线账号及其 A Session 摘要、三组 generation、App B assignment、代理和 App C/SV 迁移源；preview/apply 必须使用精确 release SHA、fingerprint 与异人审批。批次创建不连接 Telegram、不改变任何 Session。
+- `start` 在行锁、runtime=`off` 和全局 unknown=0 下只返回当前唯一账号及 B/C/E4 三个确定性幂等键；存在 running item 时重复调用只返回同一项。操作者随后复用 canonical A qualification、`authorization-abc-backup` 和 E4 verify 正式入口，不得新建平行登录实现。
+- `sync` 只读取上述正式 operation 与 A 资格探测事实，投影账号、B、C 三组结果；任一 `reconcile_unknown|failed|manual_required` 立即把 item 和 batch 停止，不允许领取下一账号。只有 A 指针/Session 摘要与 generation 未漂移、A 身份事实补齐且 B/C/E4 全部 succeeded，当前账号才成功。
+- 10 个账号全部成功后批次只进入 `observing`，观察窗固定至少 24 小时；期间仍须保持 runtime off、全局 unknown=0、A 无漂移、MY active client=0 且无 correction/新封禁。观察窗关闭前不得宣称 10 账号 canary 完成，更不得创建全量批次。
 
 ### 1.3 2026-08-21 早期失败 canary 事实
 
@@ -693,4 +700,4 @@ MY 的 Action、ExecutionAttempt、listener、在线探测、同步记录和业�
 
 API、权限、敏感数据、保留清理、失败码、指标、发布、QA 和开发交接的规范性合同见 [account-malaysia-standby-session-dr-implementation-contract.md](account-malaysia-standby-session-dr-implementation-contract.md) v2.21。两份文档共同构成本 PRD；实现、QA 和发布不得只选择其中一份。
 
-当前 `design_status=complete`、`product_resync_status=complete`、`dev_handoff_ready=true`。已部署的 `standby_2` 迁移核心、unknown 原字节对账、guarded `local_activate` 与两账号槽位 canary，和本次新增的全量在线 `complete_online_abc` 合同是不同完成层级；后者代码、QA、发布、10 账号 E4 和全量 E4 均未开始。开发必须先实现批次冻结/双槽守恒/A 码源 fence，再补齐 B provision/repair 与 C migrate/repair 编排，之后才进入 10 账号 canary；不得直接用既有 271 批次或数据库 ready 投影宣称全量三槽完成。
+当前 `design_status=complete`、`product_resync_status=complete`、`dev_handoff_ready=true`。已部署的 `standby_2` 迁移核心、unknown 原字节对账、guarded `local_activate` 与两账号槽位 canary，10 账号 canary 控制切片，以及全量在线 `complete_online_abc` 合同是三个不同完成层级。10 账号控制切片已完成本地代码与 QA，尚待生产发布、10 账号逐项 E4 和 24 小时观察；全量动态 `N` 的 API/UI/worker 编排及全量 E4 仍未完成。不得用控制面发布、既有 271 批次或数据库 ready 投影宣称全量三槽完成。
