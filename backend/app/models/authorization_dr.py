@@ -344,8 +344,12 @@ class TgAuthorizationLocalActivateCase(Base):
     applied_by: Mapped[str] = mapped_column(String(100), default="")
     approval_ref: Mapped[str] = mapped_column(String(160), default="")
     apply_idempotency_key: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    verification_operation_id: Mapped[str] = mapped_column(String(36), default="")
+    verification_remote_message_id: Mapped[str] = mapped_column(String(64), default="")
+    verification_blocker_code: Mapped[str] = mapped_column(String(100), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     applied_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class TgAuthorizationWakeBundle(Base):

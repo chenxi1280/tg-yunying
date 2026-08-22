@@ -194,6 +194,24 @@ def test_reconcile_unknown_stops_entire_batch(session: Session) -> None:
         start_next_online_abc_item(session, batch_id, actor="approver", approval_ref="ABC-10")
 
 
+def test_completed_primary_drift_stops_batch_before_next_account(session: Session) -> None:
+    batch_id = _apply(session, _preview(session)["fingerprint"])["batch_id"]
+    command = start_next_online_abc_item(session, batch_id, actor="approver", approval_ref="ABC-10")
+    _qualify_primary(session, command["account_id"])
+    _add_operations(session, command, status="succeeded")
+    sync_online_abc_batch(session, batch_id, actor="approver", approval_ref="ABC-10")
+    account = session.get(TgAccount, command["account_id"])
+    account.status = "Session失效"
+    session.commit()
+
+    result = sync_online_abc_batch(session, batch_id, actor="approver", approval_ref="ABC-10")
+
+    assert result["status"] == "stopped"
+    assert result["account_outcome_counts"] == {"pending": 9, "primary_drift_after_success": 1}
+    assert result["standby_1_outcome_counts"] == {"pending": 9, "succeeded": 1}
+    assert result["standby_2_outcome_counts"] == {"pending": 9, "succeeded": 1}
+
+
 def _preview(session: Session) -> dict:
     return preview_online_abc_batch(
         session, 1, ACCOUNT_IDS,

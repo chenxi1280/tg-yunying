@@ -414,7 +414,7 @@ apply 只复用 flow 已持久的同一 AuthKey，先在单事务内释放旧 st
 
 ## 2026-08-22 ABC 10 账号 canary 控制面
 
-先确认生产已运行包含 migration `0162_online_abc_canary` 的精确 release SHA，runtime=`off`、全局 `reconcile_unknown=0`、MY active client=0。使用同一组恰好 10 个账号连续执行两次只读 preview；fingerprint 相同后才允许异人审批 apply。apply 只建控制记录，不连接 Telegram：
+先确认生产已运行包含 migration `0163_local_activate_verify` 的精确 release SHA，runtime=`off`、全局 `reconcile_unknown=0`、MY active client=0。使用同一组恰好 10 个账号连续执行两次只读 preview；fingerprint 相同后才允许异人审批 apply。apply 只建控制记录，不连接 Telegram：
 
 ```bash
 bash deploy/authorization-online-abc.sh --mode preview --tenant-id <tenant> --account-ids <id1,...,id10> --idempotency-key <batch-key> --deployed-release-sha <deployed-full-sha>
@@ -430,3 +430,21 @@ bash deploy/authorization-online-abc.sh --mode status --batch-id <batch-id>
 ```
 
 重复 `start` 只能返回同一 running item；`sync` 只读取既有正式 operation，不触发 Telegram 动作。出现任一 `reconcile_unknown|failed|manual_required`、A 指针/Session/generation 漂移、非预期设备或 runtime 非 off，批次立即 stopped，不允许领取下一项，也不自动重试。10/10 只进入 `observing`；满 24 小时且期间 unknown=0、A 无漂移、MY client=0、无 correction/新封禁后才可验收该 canary。观察窗未关闭前不得创建全量批次。
+
+生产 batch `03456532-1c1c-4446-bb80-dbc9e5bf9618` 虽取得 B/C/E4 初始 `10/10`，但账号 8、11 的旧 A 在观察期出现 `AuthKeyDuplicatedError`，必须以 `sync` 投影为 `primary_drift_after_success` 并停止批次。先对精确账号连续执行两次 DB-only typed-fact preview；fingerprint 相同后才 apply：
+
+```bash
+bash deploy/authorization-dr-authkey-duplicate.sh --mode preview --tenant-id <tenant> --account-ids <exact-ids>
+bash deploy/authorization-dr-authkey-duplicate.sh --mode apply --tenant-id <tenant> --account-ids <exact-ids> --expected-fingerprint <fingerprint> --actor <approved-operator> --approval-ref <incident>
+```
+
+随后逐账号恢复，前一个账号必须完成发送读回和新鲜 online probe 后才能处理后一个。`local_activate` preview 会真实探测 B，apply 需异人审批并执行 generation CAS；切换后 B 已是 current，但账号仍冻结。只有第二阶段 verification 的 Saved Messages message-id 成功读回，账号才恢复在线：
+
+```bash
+bash deploy/authorization-dr-local-activate.sh --mode preview --tenant-id <tenant> --account-id <id> --authorization-id <B-id> --actor <requester> --reason authorization_key_duplicated
+bash deploy/authorization-dr-local-activate.sh --mode apply --tenant-id <tenant> --account-id <id> --authorization-id <B-id> --fingerprint <fingerprint> --actor <different-approver> --approval-ref <incident> --idempotency-key <activate-key>
+bash deploy/authorization-dr-local-activate-verify.sh --mode preview --tenant-id <tenant> --account-id <id> --case-id <case-id> --idempotency-key <verify-key>
+bash deploy/authorization-dr-local-activate-verify.sh --mode apply --tenant-id <tenant> --account-id <id> --case-id <case-id> --idempotency-key <verify-key> --expected-fingerprint <fingerprint> --requested-by <requester> --approved-by <different-approver> --approval-ref <incident>
+```
+
+verification 失败或 unknown 时不得回切损坏 A、不得自动重发；B 保持 current，账号保持冻结/degraded 并进入对账。即使验证成功，`restore_sv_pair` 完成前仍是 SV 单授权承载，不能宣称三槽灾备健康，也不能重开本批观察窗或扩量。

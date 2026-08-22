@@ -13,7 +13,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.models import AccountStatus, TgAccount, TgAccountOnlineState
+from app.models import AccountStatus, TgAccount, TgAccountAuthorization, TgAccountOnlineState
 from app.services._common import _now, gateway
 from app.services.account_online_constants import (
     ONLINE_LOGIN_REQUIRED_RETRY_AFTER,
@@ -175,7 +175,7 @@ def _apply_probe_result(
         return
     if result.error is not None:
         logger.warning("account online probe failed for account_id=%s: %s", account.id, result.error)
-        _mark_probe_exception(account, state, now, result.error)
+        _mark_probe_exception(session, account, state, now, result.error)
         return
     health = result.health
     if health.status == AccountStatus.ACTIVE.value:
@@ -214,12 +214,43 @@ def _due_probe_states(session: Session, *, limit: int, now: datetime) -> list[Tg
     )
 
 
-def _mark_probe_exception(account: TgAccount, state: TgAccountOnlineState, now: datetime, exc: Exception) -> None:
+def _mark_probe_exception(
+    session: Session,
+    account: TgAccount,
+    state: TgAccountOnlineState,
+    now: datetime,
+    exc: Exception,
+) -> None:
     detail = _probe_exception_detail(exc)
     if _is_auth_key_duplicated(exc):
+        _project_auth_key_duplicated(session, account, now, detail)
         _mark_probe_unavailable(account, state, now, AccountStatus.SESSION_EXPIRED.value, 0, detail)
         return
     _mark_probe_blocked(state, now, "account_health_probe_failed", detail)
+
+
+def _project_auth_key_duplicated(
+    session: Session,
+    account: TgAccount,
+    now: datetime,
+    detail: str,
+) -> None:
+    authorization = session.get(TgAccountAuthorization, account.current_authorization_id)
+    if not authorization or authorization.account_id != account.id:
+        return
+    if (
+        authorization.health_status == "invalid"
+        and authorization.dr_state == "invalid"
+        and authorization.last_authoritative_error_code == "authorization_key_duplicated"
+    ):
+        return
+    authorization.health_status = "invalid"
+    authorization.dr_state = "invalid"
+    authorization.failure_reason = detail
+    authorization.last_authoritative_error_code = "authorization_key_duplicated"
+    authorization.last_authoritative_observed_at = now
+    authorization.fact_version += 1
+    account.authorization_fact_generation += 1
 
 
 def _probe_exception_detail(exc: Exception) -> str:
