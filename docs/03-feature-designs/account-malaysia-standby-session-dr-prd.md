@@ -1,8 +1,8 @@
 # 马来西亚异地备用 TG Session 灾备 PRD
 
-> 版本：v2.21
-> 日期口径：2026-08-22（Asia/Shanghai）
-> 当前状态：`design_status=complete`、`product_resync_status=complete`、`dev_handoff_ready=true`、`implemented_scope=abc_two_account_canary_core_plus_ten_account_control_p0_local_recovery_and_approved_batch_runner_production_verified`、`core_deployed=a6481e0ae8bd851718e91eb1d6cafd1c6f74d154`、`ssh_mirror_deployed=true`、`slot_canary=2/2_historical_pass`、`ten_account_slot_result=10/10`、`ten_account_observation=failed_primary_authkey_duplicated`、`p0_local_recovery=2/2_verified`、`approved_batch_runner=production_verified_status_only`、`full_online_abc_design=complete`、`full_online_abc_implementation=partial`、`full_prd_implementation=partial`、`runtime_mode=off`、`production_fixed=false`
+> 版本：v2.22
+> 日期口径：2026-08-23（Asia/Shanghai）
+> 当前状态：`design_status=complete`、`product_resync_status=complete`、`dev_handoff_ready=true`、`implemented_scope=abc_two_account_canary_core_plus_ten_account_control_p0_local_recovery_and_approved_batch_runner_production_verified`、`core_deployed=0002d373a44b5e0bf23dd5c294dc8afc7414b32d`、`ssh_mirror_deployed=true`、`slot_canary=2/2_historical_pass`、`ten_account_slot_result=10/10`、`ten_account_observation=observing_until_2026-08-24T01:31:37+08:00`、`p0_local_recovery=2/2_verified`、`approved_batch_runner=production_verified_status_only`、`full_online_abc_design=complete_with_rolling_ten_contract`、`full_online_abc_implementation=partial`、`full_prd_implementation=partial`、`runtime_mode=off`、`production_fixed=false`
 > 适用范围：账号授权资产、三槽位远端设备归属、活跃授权设备查看/清理、备用登录、硅谷本地自动切换、跨模块运行代次、显式演练、紧急登录码辅助和硅谷主授权重建；不包含业务系统整体异地容灾。
 > 关联文档：[实施与验收合同](account-malaysia-standby-session-dr-implementation-contract.md)、[account-standby-auto-authorization-prd.md](account-standby-auto-authorization-prd.md)、[account-security-hardening-design.md](account-security-hardening-design.md)、[account-login-group-navigation-recovery-prd.md](account-login-group-navigation-recovery-prd.md)。
 
@@ -82,6 +82,17 @@
 - `AuthKeyDuplicatedError` 必须同时投影到账号和当时 current authorization：授权写 `health_status=invalid`、`dr_state=invalid`、`last_authoritative_error_code=authorization_key_duplicated` 和 observed time；仅修改账号列表状态不算收口。
 - 本次 P0 恢复只处理“旧 A 已有权威 AuthKey duplicate、fresh B 从未作为业务 current”的窄场景。`local_activate` 在切换事务后必须保持新 B `warming + business claims frozen`，直到以冻结 current/generation 执行 Saved Messages 发送读回；成功才恢复 `在线`，失败或结果未知只保持 B current+degraded，绝不回切损坏 A。该切片不等于完整自动 `local_activate`、`restore_sv_pair` 或跨全部消费者的 generation fence 已完成。
 - 生产执行已由正式 `sync` 将账号 8、11 投影为 `primary_drift_after_success` 并把批次置为 `stopped`，B/C 既有 `10/10` 成功事实保持不变。随后两账号按顺序完成 typed-fact 双 preview/apply、`local_activate` 双 preview/异人 apply、generation-fenced 发送验证和独立 online probe：账号 8 current=`2814`、Saved Messages message ID=`86`；账号 11 current=`2818`、message ID=`396`；两者均读回 `在线`，旧 A 授权 `13/19` 均为 `invalid + needs_repair + protected`。该恢复只解决本次 A 故障，不恢复本批观察资格。
+
+### 1.2.6 2026-08-23 全量滚动 10 账号执行合同
+
+- 生产新 10 账号批次 `718657f1-6582-45e7-b0aa-40a4ea1bda3c` 已取得 A/B/C `10/10`、C 双副本与 restore probe、A Saved Messages 发送读回，当前仅处于 `observing`；观察窗在 `2026-08-24 01:31:37 Asia/Shanghai` 前不得人工提前关闭，不得创建全量批次或开始下一组账号。观察期间 runtime 必须保持 `off`、全局 unknown=0、MY active client=0，并持续复核十个 A 的 current、Session 摘要、generation 与权威健康事实。
+- 观察通过后只创建一个 `selection_mode=all_online_accounts` 全量批次，在单事务冻结当时全部在线账号为动态 `N`。SSH runner 每次调用最多领取并完成 10 个尚未终态账号，称为一个执行 chunk；chunk 不是新批次、不是新分母，不得换账号填补失败项，也不在 clean chunk 之间重复 24 小时观察。
+- 每个 chunk 开始前必须读回 current release/schema、runtime=`off`、global unknown=0、MY client=0、批准 fingerprint、剩余 outcome 守恒和上一 chunk 终态。非尾批必须恰好 10 个；仅当全量批次剩余未终态项小于 10 时允许 1–9 个尾批。runner 每个账号继续严格串行，任何时刻最多一个 Telegram 登录 operation。
+- 单账号顺序固定为 `A fresh qualify -> B readback/provision -> A generation/session/fact fence -> C readback/migrate/provision -> A send/readback -> disconnect/readback`。已完整合格的 B 或 C 只读回，不重复登录；已有健康 App C/SV 源走迁移，缺失或明确失效的 C 走 MY 新 provision，后者不得伪造旧 source。历史 A/B 角色互换按 logical current 选择码源和剩余 SV App，不按 App A/App B 名称硬编码。
+- A 是不可牺牲资产：B/C 的备份失败、远端明确失败、MY 本地或 SSH 副本失败，都只能使当前账号/chunk 停止或进入等待，不能写 A Session、current pointer、App/proxy、generation、远端设备或撤销 A。B/C 登录 RPC 前后均比较 A 的 authorization ID、Session digest、UID、AuthKey 指纹、fact/connection generation 和远端设备集；任何漂移立即停止且后续登录 RPC 数量为 0。
+- SSH 断连、RPC 已发而响应丢失、DB commit 结果不明或远端设备差分不唯一统一为 `reconcile_unknown`：停止全量批次，不领取第 11 个或下一 chunk，不重发验证码、不重新登录、不创建替代设备。只能在同 operation/generation、原临时 Session 或 MY 原字节、精确远端集合、fingerprint、异人审批和 CAS 下对账收口；收口成功后从原 item 检查点继续。
+- runner 的 `status|preview` 始终只读；`run --max-accounts 10` 只消费已批准的 frozen batch，输出本 chunk 精确 account/item/operation manifest、前后 A fingerprint、B/C/E4 结果、runtime/MY client/global unknown、三组 outcome 守恒和 `next_action|terminal_reason`。退出码 0 只表示本 chunk 全部达到合格终态或全量已完成，任何失败、unknown、manual、A 漂移、意外设备、runtime 冲突或执行异常必须非零。
+- 每个 clean chunk 完成后先把 runtime 关闭并证明 MY client=0，再允许下一次 SSH runner 调用。全量完成只在 frozen `N` 的账号/B/C 三组 outcome 各自守恒，所有账号均为 `already_qualified|succeeded`、global unknown=0、A 全部可登录且变更账号发送读回、C 双副本/恢复密钥/inventory/restore probe 全部通过时成立；failed/manual/skipped 留在 `N` 并阻断“全部完成”。冻结后新增在线账号进入下一次 reconciliation batch，不改写本批 `N`。
 
 ### 1.3 2026-08-21 早期失败 canary 事实
 

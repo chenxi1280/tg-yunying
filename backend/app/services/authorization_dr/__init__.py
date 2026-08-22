@@ -11,7 +11,10 @@ from .local_activate_verify import *  # noqa: F401,F403
 from .login_code import *  # noqa: F401,F403
 from .migration_results import *  # noqa: F401,F403
 from .online_abc import *  # noqa: F401,F403
+from .online_abc_manifest import *  # noqa: F401,F403
+from .online_abc_rollout import *  # noqa: F401,F403
 from .online_abc_runner import *  # noqa: F401,F403
+from .standby_2_provision import *  # noqa: F401,F403
 from .readiness import *  # noqa: F401,F403
 from .runtime_scope import *  # noqa: F401,F403
 from .read_model import *  # noqa: F401,F403

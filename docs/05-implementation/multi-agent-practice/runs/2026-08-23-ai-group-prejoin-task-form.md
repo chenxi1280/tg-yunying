@@ -43,5 +43,10 @@
 - worker_impact: `none`，复用既有 `ensure_prejoin_channels` 执行链。
 - release_mode: `github_actions`
 - rollback_plan: 回滚本次提交并按正常 `master -> release` 发布；已有任务字段和远端关注事实不删除。
-- status: `qa_pass_release_pending`
-- production_probe: `pending`
+- candidate_sha: `513e9937c7c3e6ef9d484f31eef138d18997641f`
+- release_sha: `b46497b9133289c158f7175bc133fcc82f9dba7e`
+- actions_run: `32587573326` 直接发布本次修复并完整成功；并发后续 release run `32588206626` 继承本次提交，frontend、两组 backend、三镜像 build、SSH deploy 与 active shared dispatch verify 也全部成功。
+- deployed_sha: `bfa4f2b9082db1373b492742827c19f2bf5b3e38`，包含本次 `b46497b9/513e9937`；生产 backend、workers 和 image verification worker 均以该镜像运行且 healthy，release current 指向 `202608***175452_bfa4f2b9`。
+- production_probe: 公网 `/api/health` 返回 `ok`；当前 `/task-center` 加载 `TaskCenterView-DZZdRfTV.js`，其中“需要关注的频道地址”1 次、`group_ai_prejoin_channel_ids` 13 次、“预关注频道”3 次；线上 OpenAPI 的 `GroupAIChatTaskCreate`、`TaskSettingsUpdate`、`TaskOut` 均包含该字段。
+- status: `production_surface_fixed`
+- unproven: 未新建真实生产任务，因而没有新增任务行持久化和 Telegram 实际关注频道证据；本次修复的“创建页字段缺失”已由生产 bundle 与 API 合同读回闭环。

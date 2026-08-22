@@ -50,6 +50,7 @@ from app.services.developer_apps import (
     list_developer_apps,
     update_developer_app_slot_assignments,
 )
+from app.services.authorization_dr.standby_2_provision import prepare_scoped_c_provision
 
 
 pytestmark = pytest.mark.no_postgres
@@ -236,6 +237,34 @@ def _probe_receipt() -> RestoreProbeReceipt:
         probe_client_disconnected=True,
         zeroize_receipt_digest="9" * 64,
     )
+
+
+def _start_source_less_c_provision(session: Session):
+    account = session.get(TgAccount, 101)
+    primary = session.get(TgAccountAuthorization, account.current_authorization_id)
+    old_c = session.scalar(select(TgAccountAuthorization).where(
+        TgAccountAuthorization.account_id == account.id,
+        TgAccountAuthorization.logical_slot == "standby_2",
+    ))
+    session.delete(old_c)
+    contract = session.get(AuthorizationDrRuntimeContract, 1)
+    contract.mode = "off"
+    node = session.get(AuthorizationDrExecutionNode, "my-node-1")
+    node.capability_version = "2.21-abc-a-source"
+    node.runtime_image_sha = "d" * 40
+    session.commit()
+    prepared = prepare_scoped_c_provision(
+        session, 1, 101, idempotency_key="source-less-c",
+        requested_by="requester", approved_by="reviewer",
+        approval_ref="ABC-C-PROVISION", runtime_image_sha="d" * 40,
+    )
+    operation = session.get(TgAuthorizationDrOperation, prepared["operation_id"])
+    claim = claim_migration_operation(session, "my-node-1")
+    mark_login_remote_started(
+        session, claim.operation_id, node_id=claim.owner_node_id,
+        owner_epoch=claim.owner_epoch, lease_token=claim.lease_token,
+    )
+    return account, primary, operation, claim
 
 
 def _start_claim(session: Session):
@@ -519,6 +548,45 @@ def test_cutover_preserves_old_sv_session_and_enables_next_account(session: Sess
     assert len(copies) == 2
     assert decision.recovery_gate_status == "passed"
     assert next_claim is not None and next_claim.account_id == 102
+
+
+def test_source_less_c_provision_commits_without_touching_primary(session: Session) -> None:
+    account, primary, operation, claim = _start_source_less_c_provision(session)
+    primary_digest = primary.session_ciphertext
+    _commit_bundle_and_probe(session, claim)
+    decision = commit_migration_slot(
+        session,
+        claim.operation_id,
+        node_id=claim.owner_node_id,
+        owner_epoch=claim.owner_epoch,
+        lease_token=claim.lease_token,
+    )
+    session.refresh(primary)
+
+    assert operation.operation_type == "provision_standby_2"
+    assert operation.source_authorization_id is None
+    assert decision.expected_old_authorization_id is None
+    assert primary.session_ciphertext == primary_digest
+    assert account.current_authorization_id == primary.id
+
+
+def test_source_less_c_provision_rejects_concurrent_current_slot(session: Session) -> None:
+    _account, _primary, _operation, claim = _start_source_less_c_provision(session)
+    _commit_bundle_and_probe(session, claim)
+    session.add(TgAccountAuthorization(
+        tenant_id=1, account_id=101, role="standby_2", logical_slot="standby_2",
+        slot_generation=9, is_slot_current=True, provision_region_code="my",
+        developer_app_id=3, status="standby", health_status="healthy",
+    ))
+    session.commit()
+
+    with pytest.raises(AuthorizationDrError) as error:
+        commit_migration_slot(
+            session, claim.operation_id, node_id=claim.owner_node_id,
+            owner_epoch=claim.owner_epoch, lease_token=claim.lease_token,
+        )
+
+    assert error.value.code == "slot_commit_decision_conflict"
 
 
 def test_remote_unknown_is_not_retried_and_next_account_can_continue(session: Session) -> None:
