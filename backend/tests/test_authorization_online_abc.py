@@ -21,8 +21,10 @@ from app.models import (
     TgAuthorizationDrBatch,
     TgAuthorizationDrBatchItem,
     TgAuthorizationDrOperation,
+    TgAuthorizationOnlineAbcBatch,
 )
 from app.services.authorization_dr.contracts import AuthorizationDrError
+import app.services.authorization_dr.online_abc_runner as runner
 from app.services.authorization_dr.online_abc import (
     apply_online_abc_batch,
     preview_online_abc_batch,
@@ -212,6 +214,157 @@ def test_completed_primary_drift_stops_batch_before_next_account(session: Sessio
     assert result["standby_2_outcome_counts"] == {"pending": 9, "succeeded": 1}
 
 
+def test_runner_status_is_read_only(session: Session) -> None:
+    batch_id = _apply(session, _preview(session)["fingerprint"])["batch_id"]
+
+    result = runner.online_abc_runner_status(session, batch_id)
+
+    assert result["batch"]["status"] == "approved"
+    assert result["current_item"]["account_id"] == ACCOUNT_IDS[0]
+    assert result["next_action"] == "qualify_a_and_create_b"
+    assert session.get(TgAuthorizationOnlineAbcBatch, batch_id).status == "approved"
+
+
+def test_runner_executes_approved_batch_serially(session: Session, monkeypatch) -> None:
+    batch_id = _apply(session, _preview(session)["fingerprint"])["batch_id"]
+    calls: list[tuple[str, int]] = []
+    _mock_runner_success(monkeypatch, calls)
+
+    result = runner.run_online_abc_batch(
+        session,
+        batch_id,
+        requested_by="requester",
+        approved_by="approver",
+        approval_ref="ABC-10",
+        runtime_release_sha=RELEASE_SHA,
+        sleeper=lambda _: None,
+    )
+
+    assert result["batch"]["status"] == "observing"
+    assert result["batch"]["account_outcome_counts"] == {"succeeded": 10}
+    assert calls == [
+        (stage, account_id)
+        for account_id in ACCOUNT_IDS
+        for stage in ("qualify", "b", "c", "e4")
+    ]
+
+
+def test_runner_unknown_stops_before_second_account(session: Session, monkeypatch) -> None:
+    batch_id = _apply(session, _preview(session)["fingerprint"])["batch_id"]
+    monkeypatch.setattr(runner, "preview_primary_qualification", _qualification_preview)
+    monkeypatch.setattr(runner, "qualify_primary_authorization", _qualify_from_runner)
+    monkeypatch.setattr(runner, "preview_abc_backup", lambda *_args, **_kwargs: {"fingerprint": "b" * 64})
+
+    def fail_b(db, _tenant_id, account_id, **kwargs):
+        _add_operation(db, account_id, kwargs["idempotency_key"], "reconcile_unknown")
+        raise AuthorizationDrError("b_remote_unknown", "B remote result is unknown")
+
+    monkeypatch.setattr(runner, "apply_abc_backup", fail_b)
+
+    result = runner.run_online_abc_batch(
+        session,
+        batch_id,
+        requested_by="requester",
+        approved_by="approver",
+        approval_ref="ABC-10",
+        runtime_release_sha=RELEASE_SHA,
+        sleeper=lambda _: None,
+    )
+
+    assert result["batch"]["status"] == "stopped"
+    assert result["batch"]["account_outcome_counts"] == {"pending": 9, "reconcile_unknown": 1}
+    assert result["batch"]["items"][1]["status"] == "pending"
+
+
+def test_runner_primary_drift_stops_without_login(session: Session, monkeypatch) -> None:
+    batch_id = _apply(session, _preview(session)["fingerprint"])["batch_id"]
+    account = session.get(TgAccount, ACCOUNT_IDS[0])
+    account.connection_generation += 1
+    session.commit()
+    login_called = False
+
+    def reject_login(*_args, **_kwargs):
+        nonlocal login_called
+        login_called = True
+
+    monkeypatch.setattr(runner, "apply_abc_backup", reject_login)
+
+    result = runner.run_online_abc_batch(
+        session,
+        batch_id,
+        requested_by="requester",
+        approved_by="approver",
+        approval_ref="ABC-10",
+        runtime_release_sha=RELEASE_SHA,
+        sleeper=lambda _: None,
+    )
+
+    assert result["batch"]["status"] == "stopped"
+    assert result["batch"]["items"][0]["blocker_code"] == "online_abc_primary_drift"
+    assert login_called is False
+
+
+def test_runner_resumes_existing_c_without_rearming(session: Session, monkeypatch) -> None:
+    batch_id = _apply(session, _preview(session)["fingerprint"])["batch_id"]
+    command = start_next_online_abc_item(session, batch_id, actor="approver", approval_ref="ABC-10")
+    _qualify_primary(session, command["account_id"])
+    _add_operation(session, command["account_id"], command["b_idempotency_key"], "succeeded")
+    c_result = _add_c_operation(session, command["account_id"], command["c_idempotency_key"], "running")
+    monkeypatch.setattr(
+        runner,
+        "prepare_scoped_c_migration",
+        lambda *_args, **_kwargs: pytest.fail("existing C must not be rearmed"),
+    )
+    monkeypatch.setattr(runner, "preview_abc_e4", lambda *_args, **_kwargs: {"fingerprint": "e" * 64})
+    monkeypatch.setattr(
+        runner,
+        "apply_abc_e4",
+        lambda db, _tenant_id, account_id, **kwargs: _add_operation(
+            db, account_id, kwargs["idempotency_key"], "succeeded",
+        ),
+    )
+
+    def finish_c(_seconds: float) -> None:
+        operation = session.get(TgAuthorizationDrOperation, c_result["operation_id"])
+        operation.status = "succeeded"
+        session.commit()
+
+    runner._run_current_item(
+        session,
+        batch_id,
+        command,
+        runner.RunnerApproval("requester", "approver", "ABC-10"),
+        0.01,
+        finish_c,
+    )
+
+    operations = runner._context(session, batch_id)[2]
+    assert operations["c"].id == c_result["operation_id"]
+    assert operations["e4"].status == "succeeded"
+
+
+@pytest.mark.parametrize(
+    ("approved_by", "release_sha", "error_code"),
+    [
+        ("different-approver", RELEASE_SHA, "online_abc_runner_approval_mismatch"),
+        ("approver", "f" * 40, "runtime_image_mismatch"),
+    ],
+)
+def test_runner_rejects_batch_contract_mismatch(
+    session: Session, approved_by: str, release_sha: str, error_code: str,
+) -> None:
+    batch_id = _apply(session, _preview(session)["fingerprint"])["batch_id"]
+
+    with pytest.raises(AuthorizationDrError) as exc_info:
+        runner.run_online_abc_batch(
+            session, batch_id, requested_by="requester", approved_by=approved_by,
+            approval_ref="ABC-10", runtime_release_sha=release_sha,
+        )
+
+    assert exc_info.value.code == error_code
+    assert session.get(TgAuthorizationOnlineAbcBatch, batch_id).status == "approved"
+
+
 def _preview(session: Session) -> dict:
     return preview_online_abc_batch(
         session, 1, ACCOUNT_IDS,
@@ -285,3 +438,62 @@ def _add_operation(
     session.add(operation)
     session.commit()
     return operation
+
+
+def _mock_runner_success(monkeypatch, calls: list[tuple[str, int]]) -> None:
+    monkeypatch.setattr(runner, "preview_primary_qualification", _qualification_preview)
+
+    def qualify(db, tenant_id, account_id, **kwargs):
+        calls.append(("qualify", account_id))
+        return _qualify_from_runner(db, tenant_id, account_id, **kwargs)
+
+    def apply_b(db, _tenant_id, account_id, **kwargs):
+        calls.append(("b", account_id))
+        return _add_operation(db, account_id, kwargs["idempotency_key"], "succeeded")
+
+    def prepare_c(db, _tenant_id, account_id, **kwargs):
+        calls.append(("c", account_id))
+        return _add_c_operation(db, account_id, kwargs["idempotency_key"], "succeeded")
+
+    def apply_e4(db, _tenant_id, account_id, **kwargs):
+        calls.append(("e4", account_id))
+        return _add_operation(db, account_id, kwargs["idempotency_key"], "succeeded")
+
+    monkeypatch.setattr(runner, "qualify_primary_authorization", qualify)
+    monkeypatch.setattr(runner, "preview_abc_backup", lambda *_args, **_kwargs: {"fingerprint": "b" * 64})
+    monkeypatch.setattr(runner, "apply_abc_backup", apply_b)
+    monkeypatch.setattr(runner, "ready_migration_runtime_image_sha", lambda _db: "d" * 40)
+    monkeypatch.setattr(runner, "prepare_scoped_c_migration", prepare_c)
+    monkeypatch.setattr(runner, "preview_abc_e4", lambda *_args, **_kwargs: {"fingerprint": "e" * 64})
+    monkeypatch.setattr(runner, "apply_abc_e4", apply_e4)
+
+
+def _qualification_preview(_session, tenant_id: int, account_id: int) -> dict:
+    return {"tenant_id": tenant_id, "account_id": account_id, "fingerprint": "a" * 64}
+
+
+def _qualify_from_runner(session, _tenant_id: int, account_id: int, **_kwargs) -> dict:
+    _qualify_primary(session, account_id)
+    return {"account_id": account_id, "status": "qualified"}
+
+
+def _add_c_operation(session: Session, account_id: int, key: str, status: str):
+    operation = _add_operation(
+        session, account_id, f"migration-c-{account_id}", status,
+        operation_type="migrate_standby_2",
+    )
+    batch = TgAuthorizationDrBatch(
+        tenant_id=1, idempotency_key=key, target_set_fingerprint="c" * 64,
+        target_count=1, status=status, requested_by="requester",
+        approved_by="approver", approval_ref="ABC-10",
+    )
+    session.add(batch)
+    session.flush()
+    session.add(TgAuthorizationDrBatchItem(
+        batch_id=batch.id, tenant_id=1, account_id=account_id, ordinal=1,
+        expected_source_authorization_id=2000 + account_id, expected_source_fact_version=1,
+        expected_source_generation=1, target_generation=2, status=status,
+        outcome=status, operation_id=operation.id,
+    ))
+    session.commit()
+    return {"operation_id": operation.id, "status": status}

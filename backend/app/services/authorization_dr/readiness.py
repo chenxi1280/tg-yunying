@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import timedelta
 
@@ -41,6 +42,20 @@ def require_migration_readiness(session, *, require_mode: bool = True) -> Migrat
     egress = _require_my_egress(session, node.standby_egress_id)
     assignment = assignments["standby_2_my"]
     return MigrationReadiness(contract.contract_epoch, node, egress, assignment, assignment.assignment_version)
+
+
+def ready_migration_runtime_image_sha(session) -> str:
+    contract = session.get(AuthorizationDrRuntimeContract, 1)
+    if not contract or contract.mode != "off" or contract.claim_scope_operation_id:
+        raise AuthorizationDrError("runtime_capability_unproven", "DR runtime is not safely off")
+    if contract.mutation_hold_reason:
+        raise AuthorizationDrError(contract.mutation_hold_reason, "Authorization mutation is on hold")
+    node = _single_ready_my_node(session)
+    if node.capability_version != ABC_CAPABILITY_VERSION:
+        raise AuthorizationDrError("runtime_capability_unproven", "MY node capability is not allowed")
+    if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", node.runtime_image_sha):
+        raise AuthorizationDrError("runtime_image_mismatch", "MY node exact runtime image SHA is unavailable")
+    return node.runtime_image_sha
 
 
 def record_node_heartbeat(
@@ -107,6 +122,19 @@ def _require_slot_assignments(session) -> dict[str, DeveloperAppSlotAssignment]:
 
 
 def _require_my_node(session, contract: AuthorizationDrRuntimeContract) -> AuthorizationDrExecutionNode:
+    node = _single_ready_my_node(session)
+    if contract.required_node_capability_version and (
+        node.capability_version != contract.required_node_capability_version
+    ):
+        raise AuthorizationDrError("runtime_capability_unproven", "MY node capability does not match contract")
+    if contract.required_node_runtime_image_sha and (
+        node.runtime_image_sha != contract.required_node_runtime_image_sha
+    ):
+        raise AuthorizationDrError("runtime_image_mismatch", "MY node image does not match contract")
+    return node
+
+
+def _single_ready_my_node(session) -> AuthorizationDrExecutionNode:
     rows = list(session.scalars(select(AuthorizationDrExecutionNode).where(
         AuthorizationDrExecutionNode.region_code == "my",
         AuthorizationDrExecutionNode.purpose == "standby_session_dr",
@@ -120,14 +148,6 @@ def _require_my_node(session, contract: AuthorizationDrRuntimeContract) -> Autho
         raise AuthorizationDrError("malaysia_wake_unavailable", "MY execution node heartbeat is stale")
     if node.active_client_count != 0:
         raise AuthorizationDrError("malaysia_owner_fencing_unproven", "MY node has an active Telegram client")
-    if contract.required_node_capability_version and (
-        node.capability_version != contract.required_node_capability_version
-    ):
-        raise AuthorizationDrError("runtime_capability_unproven", "MY node capability does not match contract")
-    if contract.required_node_runtime_image_sha and (
-        node.runtime_image_sha != contract.required_node_runtime_image_sha
-    ):
-        raise AuthorizationDrError("runtime_image_mismatch", "MY node image does not match contract")
     return node
 
 
@@ -146,5 +166,6 @@ __all__ = [
     "ABC_CAPABILITY_VERSION",
     "MigrationReadiness",
     "record_node_heartbeat",
+    "ready_migration_runtime_image_sha",
     "require_migration_readiness",
 ]

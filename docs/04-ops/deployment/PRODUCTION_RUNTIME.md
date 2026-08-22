@@ -448,3 +448,14 @@ bash deploy/authorization-dr-local-activate-verify.sh --mode apply --tenant-id <
 ```
 
 verification 失败或 unknown 时不得回切损坏 A、不得自动重发；B 保持 current，账号保持冻结/degraded 并进入对账。即使验证成功，`restore_sv_pair` 完成前仍是 SV 单授权承载，不能宣称三槽灾备健康，也不能重开本批观察窗或扩量。
+
+2026-08-22 生产读回：GitHub Actions run `32574528768` 已发布 release `0ec48547fc5748f095724ac4d2da363b1d6364e5`，Alembic head=`0163_local_activate_verify`。正式 `sync` 将账号 8、11 标为 `primary_drift_after_success` 并停止原批次；两账号逐个完成 typed-fact 投影、local activate、Saved Messages 发送和独立 online probe。账号 8 current=`2814`、message ID=`86`，账号 11 current=`2818`、message ID=`396`；旧 A `13/19` 均为 invalid/needs_repair/protected。最终 10 个账号全部在线，B/C 各 `10/10` healthy/remote active，C 均为双副本且 restore probe passed；runtime=`off`、claim scope 为空、global unknown=0、MY active client=0。该事实不改变 canary=`failed`，也不替代 `restore_sv_pair`。
+
+后续已审批 ABC batch 不再通过 GitHub Actions 或逐条临时命令执行。Actions 只发布代码；运维在生产 current release 使用 runner。先用 `status` 只读确认 batch、当前 item、B/C/E4 operation、runtime 和 `next_action`，再以原 batch 的异人审批身份执行 `run`：
+
+```bash
+bash deploy/authorization-online-abc-runner.sh --mode status --batch-id <approved-batch-id>
+bash deploy/authorization-online-abc-runner.sh --mode run --batch-id <approved-batch-id> --requested-by <requester> --approved-by <different-approver> --approval-ref <ticket>
+```
+
+`run` 会逐账号执行到 batch 进入 `observing`；C operation 执行期间命令保持等待。命令中断后使用完全相同的 batch ID 和审批参数重启，runner 从数据库 operation 阶段恢复，禁止换 idempotency key。`status` 即使读取 stopped batch 也返回退出码 0；`run` 遇到 stopped、unknown、manual、failed、A 漂移或 runtime 冲突返回非零。runner 不创建 batch；manifest 仍必须先经 `authorization-online-abc.sh preview/apply` 冻结精确目标和 release SHA。
