@@ -1,9 +1,9 @@
 # 马来西亚异地备用 TG Session 实施与验收合同
 
-> 版本：v2.21
-> 日期口径：2026-08-22（Asia/Shanghai）
+> 版本：v2.22
+> 日期口径：2026-08-23（Asia/Shanghai）
 > 规范关系：本文是 [马来西亚异地备用 TG Session 灾备 PRD](account-malaysia-standby-session-dr-prd.md) 的强制组成部分；冲突时两份文档必须同步修订，不允许实现自行择一。
-> 当前状态：`design_status=complete`、`product_resync_status=complete`、`dev_handoff_ready=true`、`implemented_scope=ten_account_slots_10_of_10_observation_failed_plus_p0_local_recovery_and_approved_batch_runner_verified`、`core_deployed=a6481e0ae8bd851718e91eb1d6cafd1c6f74d154`、`ssh_mirror_deployed=true`、`slot_canary=2/2_historical_pass`、`ten_account_observation=failed_primary_authkey_duplicated`、`p0_local_recovery=2/2_verified`、`approved_batch_runner=production_verified_status_only`、`full_online_abc_design=complete`、`full_online_abc_implementation=partial`、`full_prd_implementation=partial`、`runtime_mode=off`、`production_fixed=false`
+> 当前状态：`design_status=complete`、`product_resync_status=complete`、`dev_handoff_ready=true`、`implemented_scope=ten_account_canary_observing_plus_p0_local_recovery_and_full_online_abc_rolling_runner_deployed`、`core_deployed=cd06f75ca200552d621507f492629acd721a808f`、`ssh_mirror_deployed=true`、`slot_canary=2/2_historical_pass`、`ten_account_observation=observing_until_2026-08-24T01:31:37+08:00`、`p0_local_recovery=2/2_verified`、`approved_batch_runner=production_verified_run_and_status`、`full_online_abc_design=complete`、`full_online_abc_implementation=deployed_pending_canary_acceptance_and_full_batch_execution`、`full_prd_implementation=partial`、`runtime_mode=off`、`production_fixed=false`
 
 > 两账号执行合同：一个账号一个 preview/fingerprint/idempotency/approval。B 的 `provision_standby_1` 与 C 的 `migrate_standby_2` 均冻结 canonical A 为唯一 code source；B 完成后重新读回 A，才可创建 C operation。C runtime 必须绑定 exact operation + capability `2.21-abc-a-source` + exact release SHA，成功自动关回 `off`。备份失败只允许 `failed|manual_required|reconcile_unknown`，不得修改或撤销 A；第一个账号未完成 Telegram 登录与 Saved Messages 发送 E4 时禁止第二个，两个账号未全部通过时禁止 10 账号。
 
@@ -13,13 +13,15 @@
 
 > runner 生产读回：GitHub Actions run `32576826536` 已发布 release `a6481e0ae8bd851718e91eb1d6cafd1c6f74d154`；backend healthy、Alembic head=`0163_local_activate_verify`。对旧 stopped batch `03456532-1c1c-4446-bb80-dbc9e5bf9618` 仅执行 `status`，返回 `next_action=stopped`、B/C `10/10`、守恒有效；未执行 `run`。独立读回为 runtime=`off`、claim scope 为空、global unknown=0、open ABC batch=0、MY active client=0。
 
+> 全量滚动实现读回：release `cd06f75ca200552d621507f492629acd721a808f`、Alembic head=`0165_online_abc_full` 已部署 frozen-N manifest preview/apply、观察接受 gate、健康 B/C readback、旧 SV C migrate、source-less C/MY provision 和 `runner --max-accounts 10`。当前 batch `718657f1-6582-45e7-b0aa-40a4ea1bda3c` 为 B/C/E4 `10/10 observing`；逐账号 A 仍为原 current 且 active/healthy，10/10 Saved Messages 均有远端 ID，C 均为 MY current、双副本、KMS verified、restore probe passed/authorized。观察窗于 2026-08-24 01:31:37（Asia/Shanghai）关闭；此前禁止 accept、全量 preview/apply 和新登录。
+
 > B 验证码/2FA 顺序合同：有托管 2FA 密码不代表可跳过验证码。首次 finish 必须先用冻结临时 Session、phone-code-hash 和本次 A-bound code 调用 code sign-in；仅在 Telegram 返回 `SessionPasswordNeeded` 后，于同一 client 提交 2FA。已有 post-code 临时 Session 的独立 2FA 请求才允许只提交密码。历史 `password_2fa_preceded_code_v1` 缺陷导致的 `AuthKeyUnregisteredError` 必须通过 operation-scoped reconcile case、异人审批和 flow-state fingerprint 收口为 confirmed-no-effect；不得直接改状态后重试。
 
 > 生产结构纠偏：A/B/C 是环境级三套 App 注册和新账号默认角色，不是历史切换后每个账号不可变化的角色标签。单账号验收以三 App ID 两两不同为准；App C/SV `standby_2` 是本次迁移源。历史 App A `standby_repair` 必须经双 Session Telegram UID/AuthKey 探测和 CAS 转正为 SV `standby_1` 后，账号才能进入迁移。
 
 > 当前设备 hash 合同：Telegram 从当前 Session 读取设备时允许返回 `hash=0`，不得判定登录失败，也不得把 `0` 保存为受保护设备标识。MY 必须提交当前设备规范化指纹摘要；SV 只用保留的 peer Session 读取结果解析唯一非零 hash。唯一匹配前不得写 Bundle/slot commit；零匹配、多匹配或 peer 读取失败统一进入 `provision_reconcile_unknown`，且不得自动重登。
 
-> 生产实施读回：账号 27、28 的 MY generation 2 槽位均为 current，双副本为 `2/2`，隔离 restore probe passed，旧 SV App C Session 为 retained/protected，因此 `slot_canary=2/2_pass`。batch `03456532-1c1c-4446-bb80-dbc9e5bf9618` 初始 B/C/E4 为 `10/10`，随后因账号 8、11 的 A AuthKey duplicate 判观察失败；正式 `sync` 已把两项投影为 `primary_drift_after_success` 并停止批次。修复 release SHA `0ec48547fc5748f095724ac4d2da363b1d6364e5`、Alembic head `0163_local_activate_verify` 已生产读回；账号 8/11 分别切到 B 授权 2814/2818，并取得 Saved Messages message ID 86/396 和新鲜 online probe，旧 A 13/19 保持 invalid/needs_repair/protected。runtime=`off`、global unknown=0、MY active client=0。271 项历史批次已守恒为 `241 succeeded / 23 failed / 7 manual_required / 0 reconcile_unknown = 271`，其中 22 个不同账号有 `phone_number_banned` typed fact。自动故障触发、`restore_sv_pair`、`drill_wake`、紧急主授权重建、中心恢复对账、decommission/erase、跨全部消费者的运行代次 fence 和全量动态 `complete_online_abc` 仍未实现。
+> 生产实施读回：账号 27、28 的 MY generation 2 槽位均为 current，双副本为 `2/2`，隔离 restore probe passed，旧 SV App C Session 为 retained/protected，因此 `slot_canary=2/2_pass`。batch `03456532-1c1c-4446-bb80-dbc9e5bf9618` 初始 B/C/E4 为 `10/10`，随后因账号 8、11 的 A AuthKey duplicate 判观察失败；正式 `sync` 已把两项投影为 `primary_drift_after_success` 并停止批次。修复 release SHA `0ec48547fc5748f095724ac4d2da363b1d6364e5`、Alembic head `0163_local_activate_verify` 已生产读回；账号 8/11 分别切到 B 授权 2814/2818，并取得 Saved Messages message ID 86/396 和新鲜 online probe，旧 A 13/19 保持 invalid/needs_repair/protected。runtime=`off`、global unknown=0、MY active client=0。271 项历史批次已守恒为 `241 succeeded / 23 failed / 7 manual_required / 0 reconcile_unknown = 271`，其中 22 个不同账号有 `phone_number_banned` typed fact。全量动态 `complete_online_abc` 的 CLI/SSH frozen-N 滚动执行切片现已部署，但自动故障触发、`restore_sv_pair`、`drill_wake`、紧急主授权重建、中心恢复对账、decommission/erase、跨全部消费者的运行代次 fence、API/UI 与全量账号实际执行仍未完成。
 
 > unknown 历史回归事实：24/25 是无包 remote orphan；26 是原 operation/generation 的 MY local-only 包；67 远端没有新设备但当前主 Session 已失效；87 是本地+SSH+inventory 领先中心且当前主 Session 已失效；111 的三条 SV Session 均不可授权，远端集合未证明。上述 open unknown 已收口，但对账协调器合同不变：只能复用原字节、原 operation 和原 generation；不得调用登录 RPC、生成新 Session 或把未证明状态推导成成功。
 
