@@ -528,6 +528,10 @@ active_window AI skip/defer count = 0
 
 `target_reduction_overage_count` 必须逐条验证 Gateway 冻结的旧 target revision/target，但不作为失败条件；缺少该证据的超量归入 `scheduler_oversend_count`。
 
+E4 的账号覆盖必达分母必须与 `current_required_account_count` 同口径：`abandoned_for_day` 已由权威账号/Session/权限事实释放当日未进 Gateway 义务，不再计入 required，但仍必须在运行明细中按 blocker 原因展示；`ready/reserved/blocked/unknown/confirmed/pending_admission` 仍属于当前 scope，不能因未完成或程序错误从分母消失。
+
+生成合同程序错误修复部署后，存量 `blocked/generation_contract` 行不会自动假定安全。只允许显式 Task 集合、当前任务日、精确 blocker、旧 Action 已终态且零 Gateway marker 的 preview/hash/CAS/AuditLog 恢复；恢复只把 coverage 重新开放为 ready 并唤醒原 Task，历史 Action/Attempt 不删除、不原地重试，后续仍须新 Action 的真实远端事实完成 coverage。
+
 同时报告准入完成率、内容接受率和按账号拆分的 10 天重复拒绝。全部成立才能标记 `production_fixed`。
 
 ## 13. Product Handoff

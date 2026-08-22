@@ -191,7 +191,10 @@ def _group_daily_snapshot(session, ledger: TaskDayLedger) -> dict[str, int]:
         select(
             func.count(TaskAccountDailyCoverage.id),
             func.coalesce(func.sum(_coverage_confirmed_case()), 0),
-        ).where(TaskAccountDailyCoverage.task_day_ledger_id == ledger.id)
+        ).where(
+            TaskAccountDailyCoverage.task_day_ledger_id == ledger.id,
+            TaskAccountDailyCoverage.state != "abandoned_for_day",
+        )
     ).one()
     return {
         "target_row_count": int(target[0]),

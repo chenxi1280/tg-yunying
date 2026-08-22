@@ -357,6 +357,42 @@ def test_voice_profile_blocker_keeps_daily_obligation_and_wakes_task_after_recov
     assert task.next_run_at == timestamp + timedelta(minutes=2)
 
 
+def test_generation_contract_recovery_clears_blocker_identity(session: Session) -> None:
+    task = _seed(session)
+    session.add(_account(1))
+    row = TaskAccountDailyCoverage(
+        id="generation-contract-coverage",
+        tenant_id=1,
+        task_id=task.id,
+        group_id=21,
+        account_id=1,
+        coverage_date=date(2026, 8, 22),
+        state="blocked",
+        blocker_code="ai_generation_slot_mapping_mismatch",
+        blocker_stage="generation_contract",
+        blocker_detail="historical mapping mismatch",
+        recovery_path="generation_contract_repair",
+    )
+    session.add(row)
+    session.commit()
+
+    changed = daily_coverage.release_generation_contract_blocker(
+        session,
+        row.id,
+        approved_reason="deployed slot identity repair verified",
+        now=datetime(2026, 8, 22, 13, 0),
+    )
+    session.commit()
+    session.refresh(row)
+
+    assert changed is True
+    assert row.state == "ready"
+    assert row.blocker_code == ""
+    assert row.blocker_stage == ""
+    assert row.recovery_path == ""
+    assert row.next_decision_at == datetime(2026, 8, 22, 13, 0)
+
+
 def test_account_state_change_does_not_remove_existing_daily_obligation(session: Session) -> None:
     task = _seed(session)
     account = _account(1)
