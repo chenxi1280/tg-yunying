@@ -40,6 +40,7 @@ PROVIDER_ROUTE_RETRY_SECONDS = 30
 AI_PROVIDER_QUOTA_EXHAUSTED_MARKERS = (
     "quota exhausted",
     "insufficient quota",
+    "insufficient balance",
     "quota_exhausted",
     "余额不足",
     "配额不足",
@@ -217,15 +218,20 @@ def provider_draft_failure(
     policy: ProviderCandidatePolicy,
     has_more: bool,
 ) -> DraftAttemptOutcome:
+    if is_ai_provider_quota_exhausted(error):
+        mark_provider_quota_exhausted(candidate, error)
+        if policy.close_transaction_before_external:
+            session.add(candidate)
+            session.commit()
+        return DraftAttemptOutcome(
+            None,
+            error,
+            bool(policy.route_provider_ids),
+            has_more,
+        )
     if policy.route_provider_ids and route_transport_failure(error):
         return DraftAttemptOutcome(None, error, True, True)
-    if not is_ai_provider_quota_exhausted(error):
-        return DraftAttemptOutcome(None, error, False, False)
-    mark_provider_quota_exhausted(candidate, error)
-    if policy.close_transaction_before_external:
-        session.add(candidate)
-        session.commit()
-    return DraftAttemptOutcome(None, error, False, has_more)
+    return DraftAttemptOutcome(None, error, False, False)
 
 
 def generate_provider_drafts(

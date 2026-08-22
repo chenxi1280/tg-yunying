@@ -228,6 +228,66 @@ def test_route_fallback_only_accepts_typed_transport_failures() -> None:
     )) is False
 
 
+def test_route_insufficient_balance_marks_provider_and_uses_next_candidate(
+    monkeypatch,
+) -> None:
+    providers = [_provider(1, "deepseek-chat"), _provider(2, "mimo-v2")]
+    providers[1].is_active = True
+    credentials = [object(), object()]
+    calls: list[int] = []
+    monkeypatch.setattr(
+        ai_provider_candidate_runtime,
+        "draft_provider_calls",
+        lambda *_args, **_kwargs: (
+            providers,
+            iter(zip(providers, credentials, strict=True)),
+        ),
+    )
+    monkeypatch.setattr(
+        ai_provider_candidate_runtime,
+        "begin_provider_call",
+        lambda *_args: None,
+    )
+
+    def generate(candidate, *_args, **_kwargs):
+        calls.append(candidate.id)
+        if candidate.id == 1:
+            raise RuntimeError(
+                'AI provider HTTP 402: {"error":{"message":"Insufficient Balance"}}'
+            )
+        return AiGenerationResult(
+            candidates=[AiDraftCandidate("A", "备用供应商继续生成", "低")],
+            usage=AiUsage(total_tokens=12),
+        )
+
+    monkeypatch.setattr(
+        ai_provider_candidate_runtime,
+        "generate_provider_drafts",
+        generate,
+    )
+    request = ProviderDraftRequest(
+        "prompt", 1, "topic", "tone", (), 0.7, 64, None, 30
+    )
+    policy = ProviderCandidatePolicy(
+        "deepseek-chat",
+        "",
+        False,
+        "群活跃续聊",
+        False,
+        route_provider_ids=(1, 2),
+    )
+
+    with Session(_engine()) as session:
+        result = generate_with_provider_candidates(
+            session, providers[0], request, policy=policy
+        )
+
+    assert calls == [1, 2]
+    assert result.provider_id == 2
+    assert providers[0].health_status == "异常"
+    assert "Insufficient Balance" in providers[0].last_error
+
+
 def test_all_route_transport_failures_raise_typed_deferred(monkeypatch) -> None:
     providers = [_provider(1, "model-a"), _provider(2, "model-b")]
     monkeypatch.setattr(
