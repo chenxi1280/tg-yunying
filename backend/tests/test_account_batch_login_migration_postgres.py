@@ -65,5 +65,5 @@ def test_account_batch_login_schema_migrates_from_blank_postgres() -> None:
     )
     with engine.connect() as connection:
         assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
-            "0162_online_abc_canary"
+            "0163_local_activate_verify"
         )

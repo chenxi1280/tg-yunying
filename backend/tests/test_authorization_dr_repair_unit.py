@@ -100,15 +100,16 @@ def test_local_activate_probes_and_advances_all_current_generations(monkeypatch)
         session.refresh(account)
         state = session.query(TgAccountOnlineState).filter_by(account_id=account.id).one()
 
-        assert applied.status == "applied"
+        assert applied.status == "applied_pending_verification"
         assert account.current_authorization_id == target.id
         assert account.authorization_generation == 5
         assert account.authorization_fact_generation == 8
         assert account.connection_generation == 10
         assert account.business_runtime_status == "warming"
         assert account.sv_redundancy_status == "degraded"
+        assert account.status == AccountStatus.NEED_RELOGIN.value
         assert account.session_ciphertext == target.session_ciphertext
-        assert state.online_status == "warming"
+        assert state.online_status == "recovering"
         assert state.session_id == str(account.id)
         assert invalidated == [old_session]
 

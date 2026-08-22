@@ -9,7 +9,7 @@ def require_primary_code_source(account: TgAccount) -> TgAccountAuthorization:
     source = next((row for row in account.authorizations if row.id == account.current_authorization_id), None)
     valid = (
         source
-        and source.logical_slot == "primary"
+        and source.logical_slot in {"primary", "standby_1"}
         and source.is_current
         and source.provision_region_code == "sv"
         and source.session_ciphertext == account.session_ciphertext
@@ -41,7 +41,7 @@ def _matches_frozen_primary(account, source, operation) -> bool:
         and source.fact_version == operation.expected_code_source_fact_version
         and source.telegram_user_id_digest == operation.expected_code_source_user_id_digest
         and source.auth_key_fingerprint_digest == operation.expected_code_source_auth_key_digest
-        and source.logical_slot == "primary"
+        and source.logical_slot in {"primary", "standby_1"}
         and source.is_current
         and source.provision_region_code == "sv"
     )

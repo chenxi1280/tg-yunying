@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import timedelta
 
 from sqlalchemy import select
 
@@ -11,6 +12,7 @@ from app.models import (
     TelegramDeveloperApp,
     TgAccount,
     TgAccountAuthorization,
+    TgAccountOnlineState,
     TgAuthorizationLocalActivateCase,
 )
 from app.security import decrypt_session, encrypt_secret
@@ -19,6 +21,9 @@ from app.services.account_authorizations import apply_primary_authorization_swit
 from app.services.developer_apps import credentials_for_authorization, credentials_for_developer_app
 
 from .contracts import AuthorizationDrError
+
+
+LOCAL_ACTIVATE_VERIFY_HOLD = timedelta(minutes=10)
 
 
 def preview_local_activate(session, tenant_id: int, account_id: int, target_id: int, *, actor: str, reason: str):
@@ -81,7 +86,7 @@ def apply_local_activate(
     ).with_for_update())
     if not case or case.tenant_id != tenant_id or case.account_id != account_id or case.target_authorization_id != target_id:
         raise AuthorizationDrError("local_activate_case_not_found", "Local activate preview does not exist")
-    if case.status == "applied":
+    if case.status in {"applied_pending_verification", "applied"}:
         return _idempotent_case(case, idempotency_key)
     _require_approval(case, actor, approval_ref, idempotency_key)
     _require_apply_key_available(session, case, idempotency_key)
@@ -101,6 +106,7 @@ def apply_local_activate(
         reason=case.reason,
         activation_case_id=case.id,
     )
+    _hold_primary_for_verification(session, account)
     _finish_case(case, actor, approval_ref, idempotency_key)
     audit(
         session,
@@ -248,11 +254,29 @@ def _require_approval(case, actor: str, approval_ref: str, idempotency_key: str)
 
 
 def _finish_case(case, actor: str, approval_ref: str, idempotency_key: str) -> None:
-    case.status = "applied"
+    case.status = "applied_pending_verification"
     case.applied_by = actor
     case.approval_ref = approval_ref.strip()
     case.apply_idempotency_key = idempotency_key.strip()
     case.applied_at = _now()
+
+
+def _hold_primary_for_verification(session, account) -> None:
+    account.status = AccountStatus.NEED_RELOGIN.value
+    account.business_runtime_status = "warming"
+    state = session.scalar(select(TgAccountOnlineState).where(
+        TgAccountOnlineState.tenant_id == account.tenant_id,
+        TgAccountOnlineState.account_id == account.id,
+    ))
+    if not state:
+        return
+    timestamp = _now()
+    state.online_status = "recovering"
+    state.failure_type = "local_activate_verification_pending"
+    state.failure_detail = ""
+    state.recovery_status = "local_activate_verification_pending"
+    state.next_probe_at = timestamp + LOCAL_ACTIVATE_VERIFY_HOLD
+    state.updated_at = timestamp
 
 
 def _require_apply_key_available(session, case, idempotency_key: str) -> None:

@@ -4,8 +4,10 @@ from .abc_verify import *  # noqa: F401,F403
 from .contracts import *  # noqa: F401,F403
 from .configuration import *  # noqa: F401,F403
 from .artifact_reconcile import *  # noqa: F401,F403
+from .authkey_duplicate import *  # noqa: F401,F403
 from .migration import *  # noqa: F401,F403
 from .local_activate import *  # noqa: F401,F403
+from .local_activate_verify import *  # noqa: F401,F403
 from .login_code import *  # noqa: F401,F403
 from .migration_results import *  # noqa: F401,F403
 from .online_abc import *  # noqa: F401,F403

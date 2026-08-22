@@ -2,7 +2,7 @@
 
 > 版本：v2.21
 > 日期口径：2026-08-22（Asia/Shanghai）
-> 当前状态：`design_status=complete`、`product_resync_status=complete`、`dev_handoff_ready=true`、`implemented_scope=abc_two_account_canary_core_plus_ten_account_control_local_qa`、`core_deployed=pending_release`、`ssh_mirror_deployed=true`、`slot_canary=2/2_historical_pass`、`ten_account_canary=local_qa_pass_pending_release_and_e4`、`full_online_abc_design=complete`、`full_online_abc_implementation=partial`、`full_prd_implementation=partial`、`runtime_mode=off`、`production_fixed=false`
+> 当前状态：`design_status=complete`、`product_resync_status=complete`、`dev_handoff_ready=true`、`implemented_scope=abc_two_account_canary_core_plus_ten_account_control_production_observation_failed`、`core_deployed=7abc46425304e8dae63a35e92d699fa1902d6006`、`ssh_mirror_deployed=true`、`slot_canary=2/2_historical_pass`、`ten_account_slot_result=10/10`、`ten_account_observation=failed_primary_authkey_duplicated`、`full_online_abc_design=complete`、`full_online_abc_implementation=partial`、`full_prd_implementation=partial`、`runtime_mode=off`、`production_fixed=false`
 > 适用范围：账号授权资产、三槽位远端设备归属、活跃授权设备查看/清理、备用登录、硅谷本地自动切换、跨模块运行代次、显式演练、紧急登录码辅助和硅谷主授权重建；不包含业务系统整体异地容灾。
 > 关联文档：[实施与验收合同](account-malaysia-standby-session-dr-implementation-contract.md)、[account-standby-auto-authorization-prd.md](account-standby-auto-authorization-prd.md)、[account-security-hardening-design.md](account-security-hardening-design.md)、[account-login-group-navigation-recovery-prd.md](account-login-group-navigation-recovery-prd.md)。
 
@@ -28,8 +28,8 @@
 - 账号 27、28 已分别完成 App C/SV `standby_2` 到 MY generation 2 的槽位提交；两项均读回 MY current、双副本 `2/2`、恢复密钥解封与隔离 restore probe passed，旧 SV App C Session 保持 `retained + protected`。这只证明 `slot_canary=2/2_pass`，不等于旧 SV 远端授权已退役或完整 PRD 已完成。
 - 271 项扩量批次曾停在 `241 succeeded + 22 failed + 5 manual_required + 3 reconcile_unknown = 271`；经 typed no-effect、原字节前滚和不可恢复旧工件人工收口后，2026-08-21 已验证终态为 `241 succeeded + 23 failed + 7 manual_required + 0 reconcile_unknown = 271`。其中 22 个不同账号具有 `phone_number_banned` typed fact；22 不是全平台账号总数，也不是全平台永久封号总数。
 - 全局 unknown 曾涉及账号 24、25、26、67、87、111：24/25 为无包 remote orphan，26 为 MY local-only 包，67 无新远端设备，87 为 inventory ahead of central，111 三条 SV Session 均不可授权且远端未证明。最终收口只允许复用原字节/原 operation/generation 或转人工，不调用重登 RPC、不伪造新 Session；该历史分类继续作为回归用例，不再描述为当前 open unknown。
-- 当前已验证发布基线为 release SHA `8406a8125577de16da4227269a7f2046ba07425f`、Alembic head `0159_dr_repair`、runtime=`off`。已部署范围包括 `standby_2` 迁移状态机、MY 专用节点、SSH 双副本、恢复探测、slot CAS、旧源保护、unknown 原字节对账、typed phone-ban 投影和 guarded operator `local_activate`。
-- 自动故障触发的完整 `local_activate`、`restore_sv_pair`、`drill_wake`、双 SV 失效后的 `emergency_reauthorize_primary`、中心恢复对账、decommission/erase、跨 Action/Gateway/listener/online/sync generation fence 与 `complete_online_abc` 仍未完成；既有 unknown 收口或 batch success 不能替代这些验收。
+- 10 账号执行时的已验证发布基线为 release SHA `7abc46425304e8dae63a35e92d699fa1902d6006`、Alembic head `0162_online_abc_canary`、runtime=`off`。已部署范围包括 `standby_2` 迁移核心、unknown 原字节对账、typed phone-ban 投影、guarded operator `local_activate` 和 10 账号控制切片；本次观察失败修复对应 migration `0163_local_activate_verify`，发布与生产读回完成前不计已部署。
+- 自动故障触发的完整 `local_activate`、`restore_sv_pair`、`drill_wake`、双 SV 失效后的 `emergency_reauthorize_primary`、中心恢复对账、decommission/erase、跨全部 Action/Gateway/listener/online/sync generation fence 与全量动态 `complete_online_abc` 仍未完成；既有 unknown 收口、初始 B/C/E4 `10/10` 或 P0 本地切换不能替代这些验收。
 - 授权备份不等于消息、任务、数据库、Redis、素材和 Dispatcher 的异地容灾。
 
 ### 1.2.1 unknown 修复的冻结事实与放行边界
@@ -45,7 +45,7 @@
 - “所有在线账号都登录 A/B/C”固定解释为：批次创建时冻结的全部在线账号都必须具备可验证的 A/SV、B/SV、C/MY 三槽授权；已健康槽位只做新鲜 readback，不为满足动作标签强制重新登录。A 是正常补齐 B/C 时唯一允许选择的登录码来源；B 只承担 SV 本地故障切换，C 只在 A、B 两条权威失败事实同时成立时辅助重建 A。
 - 线上在线数量会变化，因此 1064/1065 只作为 2026-08-22 的只读时间点参考，不进入规范性目标。正式全量分母必须在批次创建事务中先冻结为动态 `N`，之后才逐项探测 A；A 探测失败、账号被封、需要人工、被冻结后删除或出现 unknown 都必须留在 `N` 中，禁止先探测后缩小分母。
 - 2026-08-22 最近一次只读本地投影为：在线 1064、A Session 投影 1064、B ready 245、C/MY ready 237、ABC ready 237、仅缺 C 8、同时缺 B/C 819。该投影只用于估算工作量，不是 Telegram E4，不得直接据此创建成功结果。
-- 本次新增的是 `complete_online_abc` 产品批次合同、10 账号 canary 和全量 Release Gate。当前本地候选已实现 10 账号 canary 的精确 manifest、账号/B/C 三组持久结果、串行 `start`、结果 `sync`、unknown 整批停止和 24 小时观察窗；尚未发布和执行生产 E4，也未实现全量动态 `N` 的 API/UI/worker 编排。本地代码测试、生产发布、Telegram 授权可用与消息发送必须分别验收。
+- 本次新增的是 `complete_online_abc` 产品批次合同、10 账号 canary 和全量 Release Gate。10 账号控制面已发布并取得初始 B/C/E4 `10/10`，但观察期因账号 8、11 的 A AuthKey duplicate 判失败；当前 P0 修复增加已完成 A 持续复核、授权事实投影及 B 切换后发送验证。全量动态 `N` 的 API/UI/worker 编排仍未实现。本地代码测试、生产发布、Telegram 授权可用与消息发送必须分别验收。
 
 ### 1.2.3 两账号修复 canary 的实施切片
 
@@ -65,6 +65,14 @@
 - `start` 在行锁、runtime=`off` 和全局 unknown=0 下只返回当前唯一账号及 B/C/E4 三个确定性幂等键；存在 running item 时重复调用只返回同一项。操作者随后复用 canonical A qualification、`authorization-abc-backup` 和 E4 verify 正式入口，不得新建平行登录实现。
 - `sync` 只读取上述正式 operation 与 A 资格探测事实，投影账号、B、C 三组结果；B/E4 按控制幂等键定位，C 通过其正式 migration batch idempotency key 与 batch item 的 operation pointer 定位，不假设底层 operation 复用批次 key。任一 `reconcile_unknown|failed|manual_required` 立即把 item 和 batch 停止，不允许领取下一账号。只有 A 指针/Session 摘要与 generation 未漂移、A 身份事实补齐且 B/C/E4 全部 succeeded，当前账号才成功。
 - 10 个账号全部成功后批次只进入 `observing`，观察窗固定至少 24 小时；期间仍须保持 runtime off、全局 unknown=0、A 无漂移、MY active client=0 且无 correction/新封禁。观察窗关闭前不得宣称 10 账号 canary 完成，更不得创建全量批次。
+
+### 1.2.5 2026-08-22 10 账号生产观察事故与 P0 修复边界
+
+- 批次 `03456532-1c1c-4446-bb80-dbc9e5bf9618` 的账号 5/6/7/8/9/11/13/14/15/16 均完成 B/SV、C/MY 登录、双副本 `2/2`、restore probe 和 A Saved Messages 发送读回；B/C/E4 各为 `10/10 succeeded`，runtime 回到 `off`、全局 unknown=0、MY active client=0。该事实只证明三槽补齐时点成功。
+- 24 小时观察期间，账号 8、11 的旧 A 分别在 20:13、20:32 被 online probe 读到权威 `AuthKeyDuplicatedError` 并投影为 `Session失效`；两者 current pointer 和 generation 未漂移，但 A AuthKey 已不可继续使用。批次因此必须判 `observation_failed`，不得因 B/C/E4 的初始 10/10 继续扩量；修复后必须新建 canary。
+- `start`、`sync` 和观察期同步必须持续复核所有已成功 item 的 A：账号仍在线、current authorization、Session 摘要、authorization/fact/connection generation、primary fact version、授权健康事实任一漂移，立即将账号记为 `primary_drift_after_success`、批次置 `stopped`，保留 B/C 槽位成功事实且不领取下一账号。
+- `AuthKeyDuplicatedError` 必须同时投影到账号和当时 current authorization：授权写 `health_status=invalid`、`dr_state=invalid`、`last_authoritative_error_code=authorization_key_duplicated` 和 observed time；仅修改账号列表状态不算收口。
+- 本次 P0 恢复只处理“旧 A 已有权威 AuthKey duplicate、fresh B 从未作为业务 current”的窄场景。`local_activate` 在切换事务后必须保持新 B `warming + business claims frozen`，直到以冻结 current/generation 执行 Saved Messages 发送读回；成功才恢复 `在线`，失败或结果未知只保持 B current+degraded，绝不回切损坏 A。该切片不等于完整自动 `local_activate`、`restore_sv_pair` 或跨全部消费者的 generation fence 已完成。
 
 ### 1.3 2026-08-21 早期失败 canary 事实
 
@@ -700,4 +708,4 @@ MY 的 Action、ExecutionAttempt、listener、在线探测、同步记录和业�
 
 API、权限、敏感数据、保留清理、失败码、指标、发布、QA 和开发交接的规范性合同见 [account-malaysia-standby-session-dr-implementation-contract.md](account-malaysia-standby-session-dr-implementation-contract.md) v2.21。两份文档共同构成本 PRD；实现、QA 和发布不得只选择其中一份。
 
-当前 `design_status=complete`、`product_resync_status=complete`、`dev_handoff_ready=true`。已部署的 `standby_2` 迁移核心、unknown 原字节对账、guarded `local_activate` 与两账号槽位 canary，10 账号 canary 控制切片，以及全量在线 `complete_online_abc` 合同是三个不同完成层级。10 账号控制切片已完成本地代码与 QA，尚待生产发布、10 账号逐项 E4 和 24 小时观察；全量动态 `N` 的 API/UI/worker 编排及全量 E4 仍未完成。不得用控制面发布、既有 271 批次或数据库 ready 投影宣称全量三槽完成。
+当前 `design_status=complete`、`product_resync_status=complete`、`dev_handoff_ready=true`。已部署的 `standby_2` 迁移核心、unknown 原字节对账、guarded `local_activate` 与两账号槽位 canary，10 账号 canary 控制切片，以及全量在线 `complete_online_abc` 合同是不同完成层级。10 账号已取得初始 B/C/E4 `10/10`，但观察期已明确失败；P0 恢复代码、发布、账号 8/11 新 current 发送读回和 fresh online probe 尚须逐层验收。全量动态 `N` 的 API/UI/worker 编排、`restore_sv_pair` 及完整 PRD E4 仍未完成。不得用初始 10/10、控制面发布、既有 271 批次或数据库 ready 投影宣称全量三槽完成。

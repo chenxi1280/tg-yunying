@@ -24,6 +24,7 @@ from app.services._common import _now, audit
 
 from .contracts import AuthorizationDrError
 from .online_abc_operations import online_abc_item_operations, online_abc_operation_keys
+from .online_abc_primary import stop_completed_primary_drift
 from .online_abc_read import render_online_abc_status
 
 
@@ -107,6 +108,8 @@ def start_next_online_abc_item(session, batch_id: str, *, actor: str, approval_r
         raise AuthorizationDrError("online_abc_batch_not_runnable", f"Batch is {batch.status}")
     _require_runtime_off(session)
     _stop_on_global_unknown(session, batch)
+    if stop_completed_primary_drift(session, batch, actor=actor, approval_ref=approval_ref):
+        raise AuthorizationDrError("online_abc_primary_drift", "A completed canary primary drifted")
     running = _running_item(session, batch.id)
     item = running or _next_pending_item(session, batch.id)
     if not item:
@@ -120,6 +123,8 @@ def start_next_online_abc_item(session, batch_id: str, *, actor: str, approval_r
 def sync_online_abc_batch(session, batch_id: str, *, actor: str, approval_ref: str) -> dict:
     _require_actor(actor, approval_ref)
     batch = _locked_batch(session, batch_id)
+    if stop_completed_primary_drift(session, batch, actor=actor, approval_ref=approval_ref):
+        return online_abc_batch_status(session, batch.id)
     item = _running_item(session, batch.id)
     if item is None:
         return online_abc_batch_status(session, batch.id)
