@@ -448,3 +448,5 @@ bash deploy/authorization-dr-local-activate-verify.sh --mode apply --tenant-id <
 ```
 
 verification 失败或 unknown 时不得回切损坏 A、不得自动重发；B 保持 current，账号保持冻结/degraded 并进入对账。即使验证成功，`restore_sv_pair` 完成前仍是 SV 单授权承载，不能宣称三槽灾备健康，也不能重开本批观察窗或扩量。
+
+2026-08-22 生产读回：GitHub Actions run `32574528768` 已发布 release `0ec48547fc5748f095724ac4d2da363b1d6364e5`，Alembic head=`0163_local_activate_verify`。正式 `sync` 将账号 8、11 标为 `primary_drift_after_success` 并停止原批次；两账号逐个完成 typed-fact 投影、local activate、Saved Messages 发送和独立 online probe。账号 8 current=`2814`、message ID=`86`，账号 11 current=`2818`、message ID=`396`；旧 A `13/19` 均为 invalid/needs_repair/protected。最终 10 个账号全部在线，B/C 各 `10/10` healthy/remote active，C 均为双副本且 restore probe passed；runtime=`off`、claim scope 为空、global unknown=0、MY active client=0。该事实不改变 canary=`failed`，也不替代 `restore_sv_pair`。
