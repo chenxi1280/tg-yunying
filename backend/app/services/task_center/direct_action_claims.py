@@ -43,6 +43,8 @@ def claim_fact_first_candidates(
     lease_seconds: int,
     exclude_task_ids: set[str] | None = None,
     execution_lane: str | None = None,
+    shard_total: int = 1,
+    shard_index: int = 0,
 ) -> DirectClaimBatch:
     token = str(uuid4())
     candidates = _candidate_rows(
@@ -51,6 +53,8 @@ def claim_fact_first_candidates(
         now=now,
         exclude_task_ids=exclude_task_ids,
         execution_lane=execution_lane,
+        shard_total=shard_total,
+        shard_index=shard_index,
     )
     claimed = _claim_rows(
         session,
@@ -71,6 +75,8 @@ def _candidate_rows(
     now: datetime,
     exclude_task_ids: set[str] | None,
     execution_lane: str | None,
+    shard_total: int = 1,
+    shard_index: int = 0,
 ) -> list[tuple[str, str, int]]:
     ranked = (
         select(
@@ -105,6 +111,7 @@ def _candidate_rows(
     if exclude_task_ids:
         ranked = ranked.where(Action.task_id.not_in(exclude_task_ids))
     ranked = _filter_execution_lane(ranked, execution_lane)
+    ranked = _filter_account_shard(ranked, shard_total, shard_index)
     rows = ranked.subquery()
     statement = (
         select(rows.c.action_id, rows.c.task_id, rows.c.action_version)
@@ -156,6 +163,17 @@ def _filter_execution_lane(statement, execution_lane: str | None):
             Action.execution_lane != "search",
         ))
     return statement
+
+
+def _filter_account_shard(statement, shard_total: int, shard_index: int):
+    total = max(1, int(shard_total or 1))
+    index = max(0, min(total - 1, int(shard_index or 0)))
+    if total == 1:
+        return statement
+    return statement.where(or_(
+        Action.account_id.is_(None),
+        (Action.account_id % total) == index,
+    ))
 
 
 def _claim_rows(
