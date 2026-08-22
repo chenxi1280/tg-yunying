@@ -264,9 +264,7 @@ def _realize_two_stage_plan(
     index: int,
 ) -> tuple[SlotGenerationResult, int]:
     if plan.rejection_code:
-        return _two_stage_rejected(
-            plan.rejection_code, plan.rejection_detail, plan.slot_id, index,
-        ), 0
+        return _two_stage_rejected(plan.rejection_code, plan.rejection_detail, plan.slot_id, index), 0
     if plan.brief is None or plan.brief.speech_act == "silence":
         detail = "brief_silence：上下文不支持安全发言，宁可沉默不造句"
         return _two_stage_rejected(QUALITY_WAIT, detail, plan.slot_id, index), 0
@@ -339,11 +337,7 @@ def _two_stage_structural_gate(
 
 
 def _two_stage_rejected(
-    code: str,
-    detail: str,
-    slot_id: str,
-    index: int,
-    *,
+    code: str, detail: str, slot_id: str, index: int, *,
     evaluator_evidence: dict | None = None,
 ) -> SlotGenerationResult:
     """被拒 slot 的映射守恒占位：内容仅用于数量映射校验与审计，不进入发送。
