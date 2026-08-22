@@ -45,6 +45,7 @@ TERMINAL_OPERATION_STATUSES = {
     "failed",
     "manual_required",
     "migration_rolled_back_forward",
+    "provision_reconcile_unknown",
     "reconcile_unknown",
 }
 
