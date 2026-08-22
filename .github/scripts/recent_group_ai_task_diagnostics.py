@@ -26,7 +26,15 @@ def _recent_running_tasks(session, task_limit: int) -> list[dict]:
         session,
         """
         SELECT id, tenant_id, name, status, fulfillment_contract_version,
-               created_at, updated_at, next_run_at, last_error
+               created_at, updated_at, next_run_at, last_error,
+               jsonb_build_object(
+                   'ai_model', COALESCE(type_config ->> 'ai_model', ''),
+                   'ai_provider_id', COALESCE(type_config ->> 'ai_provider_id', ''),
+                   'ai_content_route_v2_enabled',
+                       COALESCE(type_config ->> 'ai_content_route_v2_enabled', ''),
+                   'require_mimo_draft',
+                       COALESCE(type_config ->> 'require_mimo_draft', '')
+               ) AS ai_config
         FROM tasks
         WHERE deleted_at IS NULL
           AND type = 'group_ai_chat'
