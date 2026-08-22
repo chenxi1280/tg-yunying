@@ -284,6 +284,12 @@ def test_abc_e4_sends_once_and_preserves_a(session: Session, monkeypatch) -> Non
     _seed_e4(session)
     preview = preview_abc_e4(session, 1, 101, idempotency_key="abc-e4-101")
     before = _a_snapshot(session)
+    account = session.get(TgAccount, 101)
+    standby = session.scalar(select(TgAccountAuthorization).where(
+        TgAccountAuthorization.account_id == 101,
+        TgAccountAuthorization.logical_slot == "standby_1",
+    ))
+    resolved_ids = []
     monkeypatch.setattr(
         "app.services.authorization_dr.abc_verify.gateway.send_message",
         lambda *_args, **_kwargs: SendResult(True, remote_message_id="9001", remote_mutation_started=True),
@@ -291,9 +297,20 @@ def test_abc_e4_sends_once_and_preserves_a(session: Session, monkeypatch) -> Non
 
     def identity(raw_session, _credentials):
         digest = "2" * 64 if raw_session == "primary-session" else "3" * 64
-        return AuthorizationIdentity("123", digest, "1" * 64, "4" * 64)
+        return AuthorizationIdentity("0", digest, "1" * 64, "4" * 64)
+
+    def resolve_identity(_session, _account_id, value, *, exclude_authorization_id):
+        resolved_ids.append(exclude_authorization_id)
+        return AuthorizationIdentity(
+            "123", value.auth_key_fingerprint_digest,
+            value.telegram_user_id_digest, value.authorization_fingerprint_digest,
+        ), "peer_observer"
 
     monkeypatch.setattr("app.services.authorization_dr.abc_verify.gateway.authorization_identity", identity)
+    monkeypatch.setattr(
+        "app.services.authorization_dr.abc_verify.resolve_authorization_identity_hash",
+        resolve_identity,
+    )
 
     result = apply_abc_e4(
         session,
@@ -308,6 +325,7 @@ def test_abc_e4_sends_once_and_preserves_a(session: Session, monkeypatch) -> Non
 
     assert result["status"] == "succeeded"
     assert result["primary_saved_message_id"] == "9001"
+    assert resolved_ids == [account.current_authorization_id, standby.id]
     assert _a_snapshot(session) == before
 
 
