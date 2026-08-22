@@ -390,6 +390,8 @@ bash deploy/authorization-abc-backup.sh --mode status --tenant-id <tenant> --acc
 
 E4 发送后的 A/B Telegram 身份读回允许当前 Session 返回 `hash=0`，但必须由同账号健康 peer observer 对冻结设备指纹唯一解析非零 hash；零匹配、多匹配或 peer 读取失败均不得写 E4 success。该规则只补足远端身份读回，不改变 A、不重发 Saved Messages，也不授权切换验证码码源。
 
+E4 的 C 工件读回必须与正式写入端使用同一状态枚举：bundle `kms_decrypt_status=verified`，restore probe 为 `status/session_parse_status=passed`、`authorization_status=authorized`、`identity_match_status/auth_key_match_status=matched`，且 source/probe client 均已断开。不得用读模型自造的全 `passed` 状态误报双副本不完整。
+
 B 登录必须先提交绑定 code，再在 Telegram 明确要求时提交 managed 2FA。若部署过 `password_2fa_preceded_code_v1` 的旧网关并留下 `AuthKeyUnregisteredError/reconcile_unknown`，先保存异常日志 digest 和部署 run 引用，再执行正式对账脚本；preview 自动从数据库冻结 flow-state digest，apply 不连接 Telegram：
 
 ```bash

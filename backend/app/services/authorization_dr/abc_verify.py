@@ -208,7 +208,7 @@ def _standby_c(session, account, primary):
         bundle
         and bundle.is_active
         and bundle.receipt_status == "active"
-        and bundle.kms_decrypt_status == "passed"
+        and bundle.kms_decrypt_status == "verified"
         and bundle.protected_from_cleanup
         and bundle.recoverable_copy_count == 2
         and bundle.auth_key_fingerprint_digest == row.auth_key_fingerprint_digest
@@ -221,9 +221,9 @@ def _standby_c(session, account, primary):
         probe
         and probe.status == "passed"
         and probe.session_parse_status == "passed"
-        and probe.authorization_status == "passed"
-        and probe.identity_match_status == "passed"
-        and probe.auth_key_match_status == "passed"
+        and probe.authorization_status == "authorized"
+        and probe.identity_match_status == "matched"
+        and probe.auth_key_match_status == "matched"
         and probe.source_client_disconnected
         and probe.probe_client_disconnected
     )

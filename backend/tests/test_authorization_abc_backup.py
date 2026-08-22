@@ -378,7 +378,7 @@ def _seed_e4(session: Session) -> None:
     bundle = TgAuthorizationWakeBundle(
         tenant_id=1, account_id=101, authorization_id=malaysia.id, operation_id=operation.id,
         bundle_generation=1, ciphertext_digest="5" * 64, wrapped_dek_ciphertext="wrapped",
-        kms_key_ref_digest="6" * 64, kms_key_version="v1", kms_decrypt_status="passed",
+        kms_key_ref_digest="6" * 64, kms_key_version="v1", kms_decrypt_status="verified",
         auth_key_fingerprint_digest="4" * 64, telegram_user_id_digest="1" * 64,
         recoverable_copy_count=2, receipt_status="active", is_active=True,
     )
@@ -438,7 +438,7 @@ def _seed_bundle_evidence(session, bundle, operation) -> None:
     session.add(TgAuthorizationRestoreProbeFact(
         bundle_id=bundle.id, operation_id=operation.id, probe_generation=1,
         source_copy_kind="my_remote_ssh_snapshot", status="passed", session_parse_status="passed",
-        authorization_status="passed", identity_match_status="passed", auth_key_match_status="passed",
+        authorization_status="authorized", identity_match_status="matched", auth_key_match_status="matched",
         source_client_disconnected=True, probe_client_disconnected=True,
         zeroize_receipt_digest="c" * 64,
     ))
