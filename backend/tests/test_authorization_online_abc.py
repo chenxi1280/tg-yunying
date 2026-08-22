@@ -183,10 +183,11 @@ def test_sync_completes_one_item_only_after_a_b_c_and_e4(session: Session) -> No
     assert next_item["ordinal"] == 2
 
 
-def test_reconcile_unknown_stops_entire_batch(session: Session) -> None:
+@pytest.mark.parametrize("unknown_status", ["reconcile_unknown", "provision_reconcile_unknown"])
+def test_reconcile_unknown_stops_entire_batch(session: Session, unknown_status: str) -> None:
     batch_id = _apply(session, _preview(session)["fingerprint"])["batch_id"]
     command = start_next_online_abc_item(session, batch_id, actor="approver", approval_ref="ABC-10")
-    _add_operation(session, command["account_id"], command["b_idempotency_key"], "reconcile_unknown")
+    _add_operation(session, command["account_id"], command["b_idempotency_key"], unknown_status)
 
     result = sync_online_abc_batch(session, batch_id, actor="approver", approval_ref="ABC-10")
 
@@ -194,6 +195,15 @@ def test_reconcile_unknown_stops_entire_batch(session: Session) -> None:
     assert result["account_outcome_counts"] == {"pending": 9, "reconcile_unknown": 1}
     with pytest.raises(AuthorizationDrError, match="Batch is stopped"):
         start_next_online_abc_item(session, batch_id, actor="approver", approval_ref="ABC-10")
+
+
+def test_preview_rejects_global_provision_reconcile_unknown(session: Session) -> None:
+    _add_operation(session, ACCOUNT_IDS[0], "global-provision-unknown", "provision_reconcile_unknown")
+
+    with pytest.raises(AuthorizationDrError) as exc_info:
+        _preview(session)
+
+    assert exc_info.value.code == "global_reconcile_unknown"
 
 
 def test_completed_primary_drift_stops_batch_before_next_account(session: Session) -> None:

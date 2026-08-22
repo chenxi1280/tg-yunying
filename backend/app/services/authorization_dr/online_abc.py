@@ -31,6 +31,7 @@ from .online_abc_read import render_online_abc_status
 TEN_ACCOUNT_CANARY_SIZE = 10
 OBSERVATION_HOURS = 24
 TERMINAL_FAILURES = {"failed", "manual_required", "migration_rolled_back_forward"}
+UNKNOWN_OPERATION_STATUSES = {"provision_reconcile_unknown", "reconcile_unknown"}
 ACTIVE_BATCH_STATUSES = {"approved", "running"}
 OPEN_BATCH_STATUSES = ACTIVE_BATCH_STATUSES | {"observing"}
 
@@ -318,7 +319,7 @@ def _stop_item(session, batch, item, outcome: str) -> None:
 
 def _terminal_outcome(operations: dict) -> str:
     for operation in operations.values():
-        if operation and operation.status == "reconcile_unknown":
+        if operation and operation.status in UNKNOWN_OPERATION_STATUSES:
             return "reconcile_unknown"
     for operation in operations.values():
         if operation and operation.status in TERMINAL_FAILURES:
@@ -365,7 +366,7 @@ def _require_runtime_off(session) -> None:
 
 def _require_no_global_unknown(session) -> None:
     unknown = session.scalar(select(TgAuthorizationDrOperation.id).where(
-        TgAuthorizationDrOperation.status == "reconcile_unknown",
+        TgAuthorizationDrOperation.status.in_(UNKNOWN_OPERATION_STATUSES),
     ).limit(1))
     if unknown:
         raise AuthorizationDrError("global_reconcile_unknown", "Global reconcile unknown must be zero")
@@ -455,7 +456,7 @@ def _next_pending_item(session, batch_id: str):
 def _operation_outcome(status: str) -> str:
     if status == "succeeded":
         return "succeeded"
-    if status == "reconcile_unknown":
+    if status in UNKNOWN_OPERATION_STATUSES:
         return "reconcile_unknown"
     if status in TERMINAL_FAILURES:
         return status
