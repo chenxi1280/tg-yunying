@@ -466,6 +466,6 @@ bash deploy/authorization-online-abc-runner.sh --mode run --batch-id <approved-b
 bash deploy/authorization-online-abc-runner.sh --mode resume --batch-id <same-batch-id> --requested-by <original-requester> --approved-by <original-approver> --approval-ref <original-ticket>
 ```
 
-`resume` 只 CAS 恢复原 item/batch 后进入普通 runner；不得用于其他 blocker，不得修改、重建或重放 B/C。新 runner 遇到同一 post-C/pre-E4 heartbeat 刷新窗口会等待 readiness，不再先停止批次。
+`resume` 只 CAS 恢复原 item/batch 后进入普通 runner；不得用于其他 blocker，不得修改、重建或重放 B/C。`deployed_release_sha` 保留原 manifest SHA；修复发布造成 current release 变化时，resume 在同一事务审计更新独立 `execution_release_sha`，之后普通 run 继续强制 current execution release。新 runner 遇到同一 post-C/pre-E4 heartbeat 刷新窗口会等待 readiness，不再先停止批次。
 
 2026-08-22 runner 生产读回：GitHub Actions run `32576826536` 已发布 release `a6481e0ae8bd851718e91eb1d6cafd1c6f74d154`；backend healthy、Alembic head=`0163_local_activate_verify`。`status` 已只读旧 stopped batch，返回 `next_action=stopped`、B/C `10/10` 和守恒有效；未调用 `run`。独立门槛读回为 runtime=`off`、claim scope 为空、global unknown=0、open ABC batch=0、MY node ready/active client=0。

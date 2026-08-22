@@ -225,7 +225,8 @@ def _create_batch(session, preview, requested_by, approved_by, approval_ref):
     batch = TgAuthorizationOnlineAbcBatch(
         tenant_id=preview["tenant_id"], idempotency_key=preview["idempotency_key"],
         target_set_fingerprint=preview["fingerprint"], target_count=preview["target_count"],
-        deployed_release_sha=preview["deployed_release_sha"], status="approved",
+        deployed_release_sha=preview["deployed_release_sha"],
+        execution_release_sha=preview["deployed_release_sha"], status="approved",
         requested_by=requested_by, approved_by=approved_by, approval_ref=approval_ref,
         approved_at=_now(),
     )
