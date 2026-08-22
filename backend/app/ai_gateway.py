@@ -403,6 +403,8 @@ class AiGateway:
                 system_prompt="You are a health-check probe. Reply with exactly OK and no other text.",
             )
             warning = self._check_chat_capability(credentials)
+        except AiProviderRateLimited:
+            raise
         except Exception as exc:  # noqa: BLE001 - stored as operator-facing health detail.
             return False, str(exc)
         if warning:
