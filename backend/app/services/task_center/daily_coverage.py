@@ -665,6 +665,8 @@ def release_generation_contract_blocker(
         )
         .values(
             state="ready",
+            blocker_code="",
+            blocker_stage="",
             blocker_detail=approved_reason,
             recovery_path="",
             next_eligible_at=None,

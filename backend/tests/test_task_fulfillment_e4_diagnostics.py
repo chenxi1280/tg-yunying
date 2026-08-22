@@ -13,7 +13,9 @@ from app.models import (
     ChannelMessage,
     ChannelViewDailyMessageTarget,
     Task,
+    TaskAccountDailyCoverage,
     TaskDayLedger,
+    TaskGroupDailyTarget,
     ViewFulfillmentObligation,
 )
 
@@ -57,6 +59,93 @@ def test_group_daily_snapshot_requires_due_coverage_and_new_remote_fact():
         "ai_daily_due_unmet",
         "ai_post_release_remote_fact_missing",
     ]
+
+
+def test_group_daily_snapshot_excludes_released_abandoned_coverage() -> None:
+    module = load_module()
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    today = date(2026, 8, 22)
+    with Session(engine) as session:
+        task = Task(
+            id="ai-effective-scope-task",
+            tenant_id=1,
+            name="AI effective scope",
+            type="group_ai_chat",
+            status="running",
+        )
+        ledger = TaskDayLedger(
+            id="ai-effective-scope-ledger",
+            tenant_id=1,
+            task_id=task.id,
+            timezone_snapshot="Asia/Shanghai",
+            timezone_revision=1,
+            obligation_local_date=today,
+            period_start_at=datetime(2026, 8, 22),
+            deadline_at=datetime(2026, 8, 23),
+            day_phase="full_day",
+            planning_anchor_at=datetime(2026, 8, 22),
+        )
+        target = TaskGroupDailyTarget(
+            tenant_id=1,
+            task_id=task.id,
+            group_id=1,
+            target_date=today,
+            task_day_ledger_id=ledger.id,
+            configured_message_target=2,
+            frozen_account_count=2,
+            effective_message_target=2,
+            planned_daily_target=2,
+            daily_fulfillment_phase="full_day_committed",
+            scope_frozen_at=datetime(2026, 8, 22),
+            full_day_committed_at=datetime(2026, 8, 22),
+            due_message_count=1,
+            confirmed_message_count=1,
+        )
+        session.add_all([task, ledger, target])
+        session.add_all([
+            _coverage("coverage-confirmed", task.id, ledger.id, today, "confirmed", 1),
+            _coverage("coverage-ready", task.id, ledger.id, today, "ready", 0),
+            _coverage("coverage-abandoned", task.id, ledger.id, today, "abandoned_for_day", 0),
+        ])
+        session.flush()
+
+        snapshot = module._group_daily_snapshot(session, ledger)
+
+    assert snapshot == {
+        "target_row_count": 1,
+        "due_message_count": 1,
+        "confirmed_message_count": 1,
+        "coverage_required_count": 2,
+        "coverage_confirmed_count": 1,
+    }
+
+
+def _coverage(
+    coverage_id: str,
+    task_id: str,
+    ledger_id: str,
+    coverage_date: date,
+    state: str,
+    confirmed_count: int,
+) -> TaskAccountDailyCoverage:
+    return TaskAccountDailyCoverage(
+        id=coverage_id,
+        tenant_id=1,
+        task_id=task_id,
+        task_day_ledger_id=ledger_id,
+        group_id=1,
+        account_id={
+            "coverage-confirmed": 1,
+            "coverage-ready": 2,
+            "coverage-abandoned": 3,
+        }[coverage_id],
+        coverage_date=coverage_date,
+        target_count=1,
+        confirmed_count=confirmed_count,
+        state=state,
+        last_remote_message_id="1001" if state == "confirmed" else "",
+    )
 
 
 def test_search_and_view_snapshots_require_typed_remote_evidence():

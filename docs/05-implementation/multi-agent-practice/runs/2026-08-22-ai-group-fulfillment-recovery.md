@@ -54,3 +54,12 @@
 - [ ] 六个任务的 post-release Gateway/typed remote fact E4；无新 slot mapping mismatch、unknown retry 或 double admission。
 
 未满足最后三项前，状态只能是 `unproven`，不得写 `production_fixed`。
+
+## 13:05 生产复检补充 / Bug Batch Plan
+
+第二轮部署后只读证据确认六个 Task 均持续新增非空 `remote_message_id`，且未产生新的 slot mapping mismatch；同时定位两个不会靠等待自行闭合的验收缺陷：
+
+1. E4 直接 `count(TaskAccountDailyCoverage)`，把已经按当前合同 `abandoned_for_day` 并释放义务的行仍计入 required。西安运行有效分母为 1060、旧 E4 为 1211；楼凤有效分母为 854、旧 E4 为 1212。修复只调整 E4 required 聚合，运行明细继续展示 abandoned 原因，不改任何生产目标或 Coverage 行。
+2. 修复前形成的少量 `ai_generation_slot_mapping_mismatch` 行仍处于 `blocked/generation_contract`。代码修复只阻止新错行，不能把旧行隐式视作安全；必须新增 exact Task/current date/no-Gateway preview/hash/CAS/AuditLog/readback 路径，释放原 coverage 为 ready 后由 Planner 创建新 Action。
+
+Mini Bug Card：L3/P0；Root Cause Grouping 为“验收投影口径错误”和“前向代码修复缺少存量状态迁移”两组。验收要求：abandoned 不再进入 E4 required；其他未完成状态仍保留；恢复 workflow 对零匹配、hash 漂移、Gateway marker、非精确 blocker 和非 current Task 全部 fail closed；apply 后 blocker identity 清空、Task 被唤醒、AuditLog 和 fresh readback 存在，远端完成仍单独验收。
