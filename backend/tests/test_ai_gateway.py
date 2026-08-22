@@ -13,6 +13,7 @@ from app.ai_gateway import (
     AiDraftCandidate,
     AiGateway,
     AiGenerationResult,
+    AiProviderRateLimited,
     AiRequestDeadlineExceeded,
     AiProviderCredentials,
     AiUsage,
@@ -612,6 +613,17 @@ def test_check_accepts_ok_content_and_uses_larger_probe(monkeypatch):
     assert requests[0]["messages"][1]["content"] == "请直接回复 OK，不要解释，不要推理过程。"
     assert requests[1]["max_tokens"] == 512
     assert requests[1]["messages"][1]["content"] == '只输出这个 JSON，不要解释：{"drafts":[{"content":"OK"}]}'
+
+
+@pytest.mark.no_postgres
+def test_check_propagates_rate_limit_to_health_classifier(monkeypatch):
+    def rate_limited(*_args, **_kwargs):
+        raise AiProviderRateLimited(429, "temporary capacity", 30)
+
+    monkeypatch.setattr(AiGateway, "_post_openai_compatible", rate_limited)
+
+    with pytest.raises(AiProviderRateLimited, match="temporary capacity"):
+        AiGateway().check(credentials())
 
 
 def test_check_retries_reasoning_only_chat_probe(monkeypatch):
