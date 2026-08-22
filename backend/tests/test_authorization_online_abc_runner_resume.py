@@ -66,6 +66,29 @@ def test_resume_rejects_non_allowlisted_blocker(db_session, monkeypatch) -> None
     assert db_session.get(TgAuthorizationOnlineAbcBatch, batch_id).status == "stopped"
 
 
+def test_resume_rejects_global_provision_reconcile_unknown(db_session, monkeypatch) -> None:
+    batch_id, _item, _operation_ids = _stop_after_c(db_session, "malaysia_wake_unavailable")
+    abc_tests._add_operation(
+        db_session,
+        abc_tests.ACCOUNT_IDS[1],
+        "global-provision-unknown",
+        "provision_reconcile_unknown",
+    )
+    monkeypatch.setattr(runner, "ready_migration_runtime_image_sha", lambda _session: "d" * 40)
+
+    with pytest.raises(AuthorizationDrError) as exc_info:
+        runner.resume_online_abc_batch(
+            db_session,
+            batch_id,
+            requested_by="requester",
+            approved_by="approver",
+            approval_ref="ABC-10",
+            runtime_release_sha=abc_tests.RELEASE_SHA,
+        )
+
+    assert exc_info.value.code == "global_reconcile_unknown"
+
+
 def test_e4_waits_for_transient_my_readiness(db_session, monkeypatch) -> None:
     batch_id, item, _operation_ids = _running_after_c(db_session)
     batch = db_session.get(TgAuthorizationOnlineAbcBatch, batch_id)

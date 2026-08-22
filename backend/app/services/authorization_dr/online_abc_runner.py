@@ -27,6 +27,7 @@ from .abc_canary import prepare_scoped_c_migration
 from .abc_verify import apply_abc_e4, preview_abc_e4
 from .contracts import AuthorizationDrError
 from .online_abc import (
+    UNKNOWN_OPERATION_STATUSES,
     online_abc_batch_status,
     start_next_online_abc_item,
     sync_online_abc_batch,
@@ -45,9 +46,7 @@ TERMINAL_OPERATION_STATUSES = {
     "failed",
     "manual_required",
     "migration_rolled_back_forward",
-    "provision_reconcile_unknown",
-    "reconcile_unknown",
-}
+} | UNKNOWN_OPERATION_STATUSES
 
 
 @dataclass(frozen=True)
@@ -302,7 +301,7 @@ def _require_resume_contract(session, item, operations: dict) -> None:
     if operations["e4"] is not None:
         raise AuthorizationDrError("online_abc_resume_remote_effect_started", "E4 operation already exists")
     unknown = session.scalar(select(TgAuthorizationDrOperation.id).where(
-        TgAuthorizationDrOperation.status == "reconcile_unknown",
+        TgAuthorizationDrOperation.status.in_(UNKNOWN_OPERATION_STATUSES),
     ).limit(1))
     if unknown:
         raise AuthorizationDrError("global_reconcile_unknown", "Global reconcile unknown must be zero")
