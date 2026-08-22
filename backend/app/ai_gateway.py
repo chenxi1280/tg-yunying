@@ -49,6 +49,10 @@ class AiUsage:
 class AiGenerationResult:
     candidates: list[AiDraftCandidate]
     usage: AiUsage
+    provider_id: int | None = None
+    provider_name: str = ""
+    model_name: str = ""
+    provider_attempts: tuple[dict[str, Any], ...] = ()
 
 @dataclass(frozen=True)
 class AiImageVerificationResult:

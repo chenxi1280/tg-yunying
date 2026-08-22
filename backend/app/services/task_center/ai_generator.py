@@ -1088,11 +1088,17 @@ def _group_provider_result(
     count: int,
 ) -> tuple[list[str], int]:
     duration_ms = round((time.monotonic() - started_at) * 1000)
+    actual_model = str(getattr(result, "model_name", "") or model_name)
+    actual_provider_id = getattr(result, "provider_id", None)
     contents = [
         _content_with_provider_metadata(
             item,
             config,
             model_name=model_name,
+            actual_model=actual_model,
+            actual_provider_id=actual_provider_id,
+            requested_provider_id=provider.id,
+            provider_attempts=getattr(result, "provider_attempts", ()),
             stage=stage,
             duration_ms=duration_ms,
         )
@@ -1201,9 +1207,31 @@ def _content_with_provider_metadata(
     model_name: str,
     stage: str,
     duration_ms: int,
+    actual_model: str = "",
+    actual_provider_id: int | None = None,
+    requested_provider_id: int | None = None,
+    provider_attempts: tuple[dict, ...] = (),
 ) -> GeneratedContent:
     prior_attempts = [dict(item) for item in list(config.get("_ai_generation_attempts") or [])[-2:]]
-    attempts = [*prior_attempts, {"stage": stage or "direct", "model": model_name, "outcome": "success", "duration_ms": duration_ms}]
+    route_attempts = [
+        {**dict(item), "stage": stage or "direct"}
+        for item in provider_attempts
+    ]
+    if route_attempts:
+        route_attempts[-1] = {**route_attempts[-1], "duration_ms": duration_ms}
+    attempts = [*prior_attempts, *route_attempts] if route_attempts else [
+        *prior_attempts, {
+            "stage": stage or "direct",
+            "model": actual_model or model_name,
+            "outcome": "success",
+            "duration_ms": duration_ms,
+        },
+    ]
+    route_fallback = (
+        actual_provider_id is not None
+        and requested_provider_id is not None
+        and actual_provider_id != requested_provider_id
+    )
     return GeneratedContent(
         str(getattr(candidate, "content", "") or "").strip(),
         material_intent=getattr(candidate, "material_intent", ""),
@@ -1211,12 +1239,16 @@ def _content_with_provider_metadata(
         intent=getattr(candidate, "intent", ""),
         mood=getattr(candidate, "mood", ""),
         requested_model=model_name,
-        actual_model=model_name,
+        actual_model=actual_model or model_name,
         fallback_stage=stage or "direct",
         fallback_reason=(
-            "previous_stage_failed_or_rejected"
-            if stage not in {"", "primary_default", "primary_m3"}
-            else ""
+            "provider_route_fallback"
+            if route_fallback
+            else (
+                "previous_stage_failed_or_rejected"
+                if stage not in {"", "primary_default", "primary_m3"}
+                else ""
+            )
         ),
         provider_duration_ms=duration_ms,
         generation_attempts=attempts,

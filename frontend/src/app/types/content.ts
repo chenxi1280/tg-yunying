@@ -36,6 +36,7 @@ export type TenantAiSetting = {
   ai_enabled: boolean;
   fallback_to_mock: boolean;
   ai_group_model_fallback_enabled: boolean;
+  ai_provider_route_fallback_enabled: boolean;
   ai_group_grok_fallback_enabled: boolean;
   ai_group_static_fallback_enabled: boolean;
   temperature: number;

@@ -217,7 +217,7 @@ def patch_tenant_ai_settings(
     try:
         return update_tenant_ai_setting(session, resolve_tenant_id(current_user, tenant_id), payload, current_user.name)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 # ── AI Account Voice Profiles ──

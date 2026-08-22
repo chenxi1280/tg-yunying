@@ -19,13 +19,18 @@ from app.models import (
 from app.services._common import _now
 from app.timezone import BEIJING_TZ
 
-from .ai_generator import AI_CONTENT_REQUEST_TIMEOUT_SECONDS
+from .ai_generator import AI_CONTENT_REQUEST_TIMEOUT_SECONDS, AiGenerationUnavailable
 from .ai_content_job_binding import (
     bind_group_generation_contracts,
     enrich_group_generation_slots,
     generation_jobs_for_batch,
 )
-from .ai_provider_routes import bind_generation_job_routes
+from .ai_provider_routes import (
+    ProviderRouteUnavailable,
+    active_route_snapshot,
+    bind_generation_job_routes,
+    route_config,
+)
 from .payloads import SendMessagePayload
 
 
@@ -41,6 +46,7 @@ def build_runtime_config(
 ) -> dict:
     config = dict(task.type_config or {})
     _bind_fact_first_provider(session, task, config)
+    config = _bind_legacy_provider_failover(session, task, config)
     jobs = generation_jobs_for_batch(session, batch) if config.get("ai_content_route_v2_enabled") else ()
     config = bind_group_generation_contracts(session, task, batch, config=config, jobs=jobs)
     config = bind_generation_job_routes(
@@ -73,6 +79,31 @@ def build_runtime_config(
     if first.topic_plan:
         config["topic_plan"] = first.topic_plan
     return config
+
+
+def _bind_legacy_provider_failover(
+    session: Session,
+    task: Task,
+    config: dict,
+) -> dict:
+    if config.get("ai_content_route_v2_enabled"):
+        return config
+    setting = session.scalar(select(TenantAiSetting).where(
+        TenantAiSetting.tenant_id == task.tenant_id,
+    ))
+    if not setting or not setting.ai_provider_route_fallback_enabled:
+        return config
+    try:
+        snapshot = active_route_snapshot(session, task.tenant_id, "group_realize_general")
+        inactive_ids = [item.provider.id for item in snapshot.candidates if not item.provider.is_active]
+        if inactive_ids:
+            ids = ",".join(str(provider_id) for provider_id in inactive_ids)
+            raise ProviderRouteUnavailable(f"legacy_provider_route_inactive:{ids}")
+    except ProviderRouteUnavailable as exc:
+        raise AiGenerationUnavailable(f"AI 供应商优先级降级不可用：{exc}") from exc
+    bound = route_config(config, snapshot)
+    bound["provider_binding_policy"] = "explicit_provider_route"
+    return bound
 
 
 def _bind_fact_first_provider(

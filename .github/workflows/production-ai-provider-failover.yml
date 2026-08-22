@@ -1,0 +1,163 @@
+name: Production AI Provider Failover
+
+'on':
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Guarded provider or route operation
+        required: true
+        type: choice
+        options:
+          - providers-preview
+          - providers-apply
+          - provider-check
+          - route-preview
+          - route-apply
+          - readback
+      deployed_sha:
+        description: Expected production release SHA
+        required: true
+        type: string
+      tenant_id:
+        description: Exact tenant ID
+        required: true
+        default: '1'
+        type: string
+      provider_ids:
+        description: Ordered comma-separated provider IDs
+        required: true
+        type: string
+      expected_fingerprint:
+        description: Exact preview fingerprint for apply
+        required: false
+        default: ''
+        type: string
+      actor:
+        description: Approved operator identity
+        required: true
+        default: codex-production-remediation
+        type: string
+      approval_ref:
+        description: Approval or incident reference
+        required: false
+        default: ''
+        type: string
+
+concurrency:
+  group: production-ai-provider-failover
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  configure:
+    runs-on: ubuntu-latest
+    environment: production-silicon-valley
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate inputs and secrets
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SILICON_VALLEY_PRODUCTION_SSH_PRIVATE_KEY }}
+          DEPLOY_HOST: ${{ secrets.SILICON_VALLEY_PRODUCTION_HOST }}
+          DEPLOY_USER: ${{ secrets.SILICON_VALLEY_PRODUCTION_USER }}
+          OPERATION: ${{ inputs.operation }}
+          EXPECTED_SHA: ${{ inputs.deployed_sha }}
+          TENANT_ID: ${{ inputs.tenant_id }}
+          PROVIDER_IDS: ${{ inputs.provider_ids }}
+          EXPECTED_FINGERPRINT: ${{ inputs.expected_fingerprint }}
+          ACTOR: ${{ inputs.actor }}
+          APPROVAL_REF: ${{ inputs.approval_ref }}
+        run: |
+          set -euo pipefail
+          test -n "${SSH_PRIVATE_KEY}"
+          test -n "${DEPLOY_HOST}"
+          test -n "${DEPLOY_USER}"
+          [[ "${OPERATION}" =~ ^(providers-preview|providers-apply|provider-check|route-preview|route-apply|readback)$ ]]
+          [[ "${EXPECTED_SHA}" =~ ^[0-9a-fA-F]{8,40}$ ]]
+          [[ "${TENANT_ID}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${PROVIDER_IDS}" =~ ^[1-9][0-9]*(,[1-9][0-9]*)+$ ]]
+          [[ "${ACTOR}" =~ ^[A-Za-z0-9._@+-]{1,100}$ ]]
+          if [[ -n "${APPROVAL_REF}" ]]; then
+            [[ "${APPROVAL_REF}" =~ ^[A-Za-z0-9._:/#-]{1,160}$ ]]
+          fi
+          if [[ "${OPERATION}" == *-apply ]]; then
+            [[ "${EXPECTED_FINGERPRINT}" =~ ^[0-9a-f]{64}$ ]]
+            [[ "${APPROVAL_REF}" =~ ^[A-Za-z0-9._:/#-]{1,160}$ ]]
+          fi
+          if [[ "${OPERATION}" == provider-check ]]; then
+            [[ "${APPROVAL_REF}" =~ ^[A-Za-z0-9._:/#-]{1,160}$ ]]
+          fi
+
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SILICON_VALLEY_PRODUCTION_SSH_PRIVATE_KEY }}
+          DEPLOY_HOST: ${{ secrets.SILICON_VALLEY_PRODUCTION_HOST }}
+          DEPLOY_USER: ${{ secrets.SILICON_VALLEY_PRODUCTION_USER }}
+          DEPLOY_PORT: ${{ secrets.SILICON_VALLEY_PRODUCTION_PORT }}
+          SSH_CONNECT_TIMEOUT: ${{ vars.SSH_CONNECT_TIMEOUT }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${SSH_PRIVATE_KEY}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<EOF
+          Host production
+            HostName ${DEPLOY_HOST}
+            User ${DEPLOY_USER}
+            Port ${DEPLOY_PORT:-22}
+            IdentityFile ~/.ssh/id_ed25519
+            IdentitiesOnly yes
+            StrictHostKeyChecking accept-new
+            ConnectTimeout ${SSH_CONNECT_TIMEOUT:-60}
+            ConnectionAttempts 3
+            ServerAliveInterval 15
+            ServerAliveCountMax 8
+          EOF
+          chmod 600 ~/.ssh/config
+
+      - name: Verify release and containers
+        env:
+          BASE_DIR: ${{ vars.SILICON_VALLEY_PRODUCTION_BASE_DIR }}
+          EXPECTED_SHA: ${{ inputs.deployed_sha }}
+        run: |
+          set -euo pipefail
+          CURRENT="$(ssh production "readlink -f '${BASE_DIR:-/data/tgyunying}/current'")"
+          [[ "$(basename "${CURRENT}")" == *_"${EXPECTED_SHA:0:8}" ]]
+          ssh production 'set -euo pipefail
+            for name in tgyunying-backend tgyunying-worker-ai-generation
+            do
+              state="$(docker inspect --format "{{.State.Status}}/{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}" "${name}")"
+              echo "AI_PROVIDER_FAILOVER_CONTAINER=${name}:${state}"
+              [[ "${state}" == running/healthy ]]
+            done'
+
+      - name: Run guarded provider failover operation
+        env:
+          OPERATION: ${{ inputs.operation }}
+          TENANT_ID: ${{ inputs.tenant_id }}
+          PROVIDER_IDS: ${{ inputs.provider_ids }}
+          EXPECTED_FINGERPRINT: ${{ inputs.expected_fingerprint }}
+          ACTOR: ${{ inputs.actor }}
+          APPROVAL_REF: ${{ inputs.approval_ref }}
+        run: |
+          set -euo pipefail
+          provider_args=''
+          IFS=',' read -ra ids <<< "${PROVIDER_IDS}"
+          for id in "${ids[@]}"; do
+            provider_args="${provider_args} --provider-id ${id}"
+          done
+          apply_args=''
+          if [[ "${OPERATION}" == *-apply ]]; then
+            apply_args="--expected-fingerprint ${EXPECTED_FINGERPRINT}"
+          fi
+          approval_args=''
+          if [[ -n "${APPROVAL_REF}" ]]; then
+            approval_args="--approval-ref ${APPROVAL_REF}"
+          fi
+          ssh production "timeout 240 docker exec -i tgyunying-backend python -m scripts.configure_ai_provider_failover \
+            '${OPERATION}' --tenant-id '${TENANT_ID}' ${provider_args} ${apply_args} \
+            --actor '${ACTOR}' ${approval_args}"

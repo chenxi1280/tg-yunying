@@ -33,8 +33,8 @@ from app.services.task_center.daily_coverage_planning import ready_coverage_plan
 from app.services.task_center.ai_generation_worker import drain_ai_generation
 from app.services.task_center.ai_generation_parallel import _claim_job, _job_available
 from app.services.task_center.ai_generator import _provider_for_exact_model
-from app.services.ai_config import update_ai_provider
-from app.schemas import AiProviderUpdate
+from app.services.ai_config import update_ai_provider, update_tenant_ai_setting
+from app.schemas import AiProviderUpdate, TenantAiSettingUpdate
 from app.services.task_center.fulfillment_activation import (
     ActivationRequest,
     activate_manifest,
@@ -105,7 +105,7 @@ def test_v3_schema_removes_global_account_execution_unique_index(session: Sessio
     provider_indexes = {
         row["name"] for row in inspect(session.get_bind()).get_indexes("ai_providers")
     }
-    assert "uq_ai_provider_single_active" in provider_indexes
+    assert "uq_ai_provider_single_active" not in provider_indexes
 
 
 def test_generation_job_expired_lease_compares_naive_database_time_safely() -> None:
@@ -145,7 +145,7 @@ def test_generation_job_claim_cas_does_not_run_python_datetime_evaluator(
     assert changed == 1
 
 
-def test_selecting_default_provider_preserves_health_gate_before_family_reuse(
+def test_multiple_active_providers_preserve_explicit_tenant_default(
     session: Session,
 ) -> None:
     replacement = AiProvider(
@@ -167,14 +167,23 @@ def test_selecting_default_provider_preserves_health_gate_before_family_reuse(
         "test-actor",
     )
 
-    assert not session.get(AiProvider, 1).is_active
+    assert session.get(AiProvider, 1).is_active
     assert session.get(AiProvider, 2).is_active
-    assert session.get(TenantAiSetting, 1).default_provider_id == 2
+    assert session.get(TenantAiSetting, 1).default_provider_id == 1
     assert _provider_for_exact_model(session, "MiniMax-M2.5") is None
 
     replacement.health_status = "健康"
     session.commit()
     assert _provider_for_exact_model(session, "MiniMax-M2.5").id == 2
+
+    update_tenant_ai_setting(
+        session,
+        1,
+        TenantAiSettingUpdate(default_provider_id=2),
+        "test-actor",
+    )
+
+    assert session.get(TenantAiSetting, 1).default_provider_id == 2
 
 
 def test_direct_claim_first_round_covers_each_running_task(session: Session) -> None:

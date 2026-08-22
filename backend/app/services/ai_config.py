@@ -40,6 +40,8 @@ from app.models import (
     SourceMediaAsset,
     Tenant,
     TenantAiSetting,
+    TenantAiProviderRouteItem,
+    TenantAiProviderRouteSet,
     TgAccountSecurityBatchItem,
     TgAccount,
     TgGroup,
@@ -353,8 +355,6 @@ def list_ai_providers(session: Session) -> list[AiProvider]:
 def create_ai_provider(session: Session, payload: AiProviderCreate, actor: str) -> AiProvider:
     if payload.is_active and not payload.credential_enabled:
         raise ValueError("active provider requires enabled credentials")
-    if payload.is_active:
-        _disable_other_active_providers(session)
     provider = AiProvider(
         provider_name=payload.provider_name,
         provider_type=payload.provider_type,
@@ -378,8 +378,6 @@ def create_ai_provider(session: Session, payload: AiProviderCreate, actor: str) 
     )
     session.add(provider)
     session.flush()
-    if provider.is_active:
-        _set_tenant_default_provider(session, provider.id)
     audit(session, tenant_id=None, actor=actor, action="新增AI供应商", target_type="ai_provider", target_id=str(provider.id))
     session.commit()
     session.refresh(provider)
@@ -405,8 +403,8 @@ def update_ai_provider(session: Session, provider_id: int, payload: AiProviderUp
     next_active = bool(data.get("is_active", provider.is_active))
     if next_active and not next_credential_enabled:
         raise ValueError("active provider requires enabled credentials")
-    if provider.is_active and data.get("is_active") is False:
-        raise ValueError("default provider cannot be unset; activate another provider instead")
+    if data.get("is_active") is False or data.get("credential_enabled") is False:
+        _require_provider_not_default(session, provider.id)
     if data.get("credential_enabled") is not None:
         provider.credential_enabled = next_credential_enabled
         if not next_credential_enabled:
@@ -419,11 +417,7 @@ def update_ai_provider(session: Session, provider_id: int, payload: AiProviderUp
         provider.health_status = AiProviderHealthStatus.UNHEALTHY.value
         provider.last_error = AI_PROVIDER_RECHECK_REQUIRED
     if data.get("is_active") is not None:
-        if data["is_active"]:
-            _disable_other_active_providers(session, keep_id=provider.id)
         provider.is_active = data["is_active"]
-        if provider.is_active:
-            _set_tenant_default_provider(session, provider.id)
     provider.updated_at = _now()
     audit(session, tenant_id=None, actor=actor, action="更新AI供应商", target_type="ai_provider", target_id=str(provider.id))
     session.commit()
@@ -431,18 +425,14 @@ def update_ai_provider(session: Session, provider_id: int, payload: AiProviderUp
     return provider
 
 
-def _disable_other_active_providers(session: Session, *, keep_id: int | None = None) -> None:
-    statement = update(AiProvider).where(AiProvider.is_active.is_(True))
-    if keep_id is not None:
-        statement = statement.where(AiProvider.id != keep_id)
-    session.execute(statement.values(
-        is_active=False,
-        updated_at=_now(),
+def _require_provider_not_default(session: Session, provider_id: int) -> None:
+    tenant_id = session.scalar(select(TenantAiSetting.tenant_id).where(
+        TenantAiSetting.default_provider_id == provider_id,
     ))
-
-
-def _set_tenant_default_provider(session: Session, provider_id: int) -> None:
-    session.execute(update(TenantAiSetting).values(default_provider_id=provider_id))
+    if tenant_id is not None:
+        raise ValueError(
+            f"provider is tenant {tenant_id} default; switch the tenant default before disabling it"
+        )
 
 
 def check_ai_provider(session: Session, provider_id: int, actor: str) -> AiProvider:
@@ -541,12 +531,17 @@ def update_tenant_ai_setting(session: Session, tenant_id: int, payload: TenantAi
     setting = get_tenant_ai_setting(session, tenant_id)
     data = payload.model_dump(exclude_unset=True)
     provider_id = data.get("default_provider_id", setting.default_provider_id)
+    if "default_provider_id" in data and provider_id != setting.default_provider_id:
+        _validate_default_ai_provider(session, provider_id)
+    if data.get("ai_provider_route_fallback_enabled") is True:
+        _validate_provider_route_fallback(session, tenant_id)
     _validate_tenant_ai_token_limit(session, provider_id, data.get("max_tokens"))
     for field in [
         "default_provider_id",
         "ai_enabled",
         "fallback_to_mock",
         "ai_group_model_fallback_enabled",
+        "ai_provider_route_fallback_enabled",
         "ai_group_grok_fallback_enabled",
         "ai_group_static_fallback_enabled",
         "temperature",
@@ -559,6 +554,40 @@ def update_tenant_ai_setting(session: Session, tenant_id: int, payload: TenantAi
     session.commit()
     session.refresh(setting)
     return setting
+
+
+def _validate_default_ai_provider(session: Session, provider_id: int | None) -> None:
+    if provider_id is None:
+        return
+    provider = session.get(AiProvider, provider_id)
+    if provider is None:
+        raise ValueError("default AI provider not found")
+    if not provider.credential_enabled or not provider.is_active:
+        raise ValueError("default AI provider is disabled")
+    if provider.health_status != AiProviderHealthStatus.HEALTHY.value:
+        raise ValueError("default AI provider is unhealthy")
+
+
+def _validate_provider_route_fallback(session: Session, tenant_id: int) -> None:
+    provider_ids = list(session.scalars(
+        select(TenantAiProviderRouteItem.provider_id)
+        .join(
+            TenantAiProviderRouteSet,
+            TenantAiProviderRouteSet.id == TenantAiProviderRouteItem.route_set_id,
+        )
+        .join(AiProvider, AiProvider.id == TenantAiProviderRouteItem.provider_id)
+        .where(
+            TenantAiProviderRouteSet.tenant_id == tenant_id,
+            TenantAiProviderRouteSet.purpose == "group_realize_general",
+            TenantAiProviderRouteSet.status == "active",
+            TenantAiProviderRouteItem.enabled.is_(True),
+            AiProvider.credential_enabled.is_(True),
+            AiProvider.is_active.is_(True),
+            AiProvider.health_status == AiProviderHealthStatus.HEALTHY.value,
+        )
+    ))
+    if len(set(provider_ids)) < 2:
+        raise ValueError("provider route fallback requires at least two healthy active providers")
 
 
 def _validate_tenant_ai_token_limit(session: Session, provider_id: int | None, max_tokens: int | None) -> None:

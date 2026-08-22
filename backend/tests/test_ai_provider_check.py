@@ -110,7 +110,7 @@ def test_provider_credential_state_is_independent_and_explicit(monkeypatch):
             )
 
 
-def test_provider_identity_change_requires_new_health_check(monkeypatch):
+def test_provider_identity_change_requires_new_health_check_and_can_be_disabled(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     monkeypatch.setattr("app.services.ai_config.encrypt_secret", lambda value: value)
@@ -136,10 +136,11 @@ def test_provider_identity_change_requires_new_health_check(monkeypatch):
 
         assert updated.health_status == AiProviderHealthStatus.UNHEALTHY.value
         assert updated.last_error == "供应商配置已变更，必须重新检查"
-        with pytest.raises(ValueError, match="cannot be unset"):
-            update_ai_provider(
-                session,
-                provider.id,
-                AiProviderUpdate(is_active=False),
-                "pytest",
-            )
+        disabled = update_ai_provider(
+            session,
+            provider.id,
+            AiProviderUpdate(is_active=False),
+            "pytest",
+        )
+
+        assert disabled.is_active is False

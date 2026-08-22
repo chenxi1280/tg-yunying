@@ -88,6 +88,7 @@ def generate_with_provider_candidates(
 ) -> AiGenerationResult:
     providers, provider_calls = draft_provider_calls(session, provider, policy)
     failures = _CandidateFailures()
+    attempts: list[dict] = []
     for candidate, credentials in provider_calls:
         outcome = attempt_provider_draft(
             session,
@@ -97,13 +98,39 @@ def generate_with_provider_candidates(
             policy=policy,
             has_more=candidate != providers[-1],
         )
+        attempts.append(_candidate_attempt(candidate, credentials, outcome.error))
         if outcome.result is not None:
-            return outcome.result
+            return replace(
+                outcome.result,
+                provider_id=candidate.id,
+                provider_name=candidate.provider_name,
+                model_name=str(getattr(credentials, "model_name", candidate.model_name) or ""),
+                provider_attempts=tuple(attempts),
+            )
         failures = failures.add(outcome)
         if not outcome.continue_candidates:
             break
     failures.raise_final(policy, len(providers))
     raise RuntimeError("provider candidate resolution returned without a result")
+
+
+def _candidate_attempt(
+    provider: AiProvider,
+    credentials: AiProviderCredentials,
+    error: Exception | None,
+) -> dict:
+    return {
+        "provider_id": provider.id,
+        "model": str(getattr(credentials, "model_name", provider.model_name) or ""),
+        "outcome": "success" if error is None else "failed",
+        "error_code": _candidate_error_code(error),
+    }
+
+
+def _candidate_error_code(error: Exception | None) -> str:
+    if isinstance(error, ProviderAdmissionBlocked):
+        return error.reason
+    return type(error).__name__ if error is not None else ""
 
 
 @dataclass(frozen=True)

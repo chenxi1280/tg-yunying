@@ -359,6 +359,37 @@ def test_primary_default_metadata_records_selected_mimo_model() -> None:
     assert content.fallback_reason == ""
 
 
+def test_provider_route_fallback_metadata_records_actual_provider_model() -> None:
+    content = ai_generator._content_with_provider_metadata(
+        SimpleNamespace(
+            content="第二供应商成功",
+            material_intent="",
+            allow_material=False,
+            intent="",
+            mood="",
+            sequence_index=1,
+            reply_to_sequence_index=None,
+            slot_id="slot-1",
+        ),
+        {},
+        model_name="MiniMax-M3",
+        actual_model="deepseek-chat",
+        requested_provider_id=5,
+        actual_provider_id=2,
+        provider_attempts=(
+            {"provider_id": 5, "model": "MiniMax-M3", "outcome": "failed"},
+            {"provider_id": 2, "model": "deepseek-chat", "outcome": "success"},
+        ),
+        stage="primary_default",
+        duration_ms=25,
+    )
+
+    assert content.requested_model == "MiniMax-M3"
+    assert content.actual_model == "deepseek-chat"
+    assert content.fallback_reason == "provider_route_fallback"
+    assert [item["provider_id"] for item in content.generation_attempts] == [5, 2]
+
+
 def test_grok_stage_uses_cli_bridge_and_preserves_stage_metadata(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

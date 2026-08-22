@@ -11,6 +11,9 @@ from app.database import Base
 from app.models import (
     AiProvider,
     GenerationJob,
+    Task,
+    Tenant,
+    TenantAiSetting,
     TenantAiProviderRouteItem,
     TenantAiProviderRouteSet,
 )
@@ -26,9 +29,17 @@ from app.services.task_center.ai_content_runtime import (
     settle_shortfall,
 )
 from app.services import ai_config
-from app.ai_gateway import AiEmptyFinalContentError
+from app.schemas.ai_config import TenantAiSettingUpdate
+from app.ai_gateway import (
+    AiDraftCandidate,
+    AiEmptyFinalContentError,
+    AiGenerationResult,
+    AiProviderCredentials,
+    AiUsage,
+)
 from app.services.task_center import ai_provider_candidate_runtime
 from app.services.task_center.ai_generation_contract import ProviderRouteDeferred
+from app.services.task_center.provider_admission import ProviderAdmissionBlocked
 from app.services.task_center.ai_provider_candidate_runtime import (
     ProviderCandidatePolicy,
     ProviderDraftRequest,
@@ -40,6 +51,9 @@ from app.services.task_center.ai_provider_routes import (
     active_route_snapshot,
     bind_generation_job_routes,
     resolve_request_route,
+)
+from app.services.task_center.ai_generation_runtime_config import (
+    _bind_legacy_provider_failover,
 )
 
 
@@ -100,6 +114,70 @@ def test_provider_route_preserves_explicit_priority_across_enabled_credentials()
 
         assert snapshot.provider_ids == (2, 1)
         assert snapshot.provider_models == {2: "mimo-v2", 1: "deepseek-chat"}
+
+
+def test_legacy_provider_failover_binds_explicit_general_route() -> None:
+    with Session(_engine()) as session:
+        first = _provider(1, "deepseek-chat")
+        second = _provider(2, "mimo-v2")
+        second.is_active = True
+        session.add_all((first, second))
+        session.add(TenantAiSetting(
+            tenant_id=1,
+            ai_enabled=True,
+            ai_provider_route_fallback_enabled=True,
+        ))
+        task = Task(id="legacy-route", tenant_id=1, name="legacy", type="group_ai_chat")
+        session.add(task)
+        _route_set(
+            session,
+            "group_realize_general",
+            ((2, "mimo-v2"), (1, "deepseek-chat")),
+        )
+        session.commit()
+
+        config = _bind_legacy_provider_failover(session, task, {})
+
+        assert config["_ai_provider_route_provider_ids"] == [2, 1]
+        assert config["provider_binding_policy"] == "explicit_provider_route"
+
+
+def test_legacy_provider_failover_uses_remaining_healthy_candidate() -> None:
+    with Session(_engine()) as session:
+        session.add(Tenant(id=1, name="tenant"))
+        session.add(_provider(1, "deepseek-chat"))
+        session.add(TenantAiSetting(
+            tenant_id=1,
+            ai_enabled=True,
+            ai_provider_route_fallback_enabled=True,
+        ))
+        task = Task(id="legacy-route", tenant_id=1, name="legacy", type="group_ai_chat")
+        session.add(task)
+        _route_set(session, "group_realize_general", ((1, "deepseek-chat"),))
+        session.commit()
+
+        config = _bind_legacy_provider_failover(session, task, {})
+
+        assert config["_ai_provider_route_provider_ids"] == [1]
+
+
+def test_enabling_provider_route_fallback_requires_two_healthy_candidates() -> None:
+    with Session(_engine()) as session:
+        session.add(Tenant(id=1, name="tenant"))
+        session.add(_provider(1, "deepseek-chat"))
+        session.add(TenantAiSetting(tenant_id=1, ai_enabled=True))
+        _route_set(session, "group_realize_general", ((1, "deepseek-chat"),))
+        session.commit()
+
+        with pytest.raises(ValueError, match="at least two healthy active providers"):
+            ai_config.update_tenant_ai_setting(
+                session,
+                1,
+                TenantAiSettingUpdate(
+                    ai_provider_route_fallback_enabled=True,
+                ),
+                "pytest",
+            )
 
 
 def test_route_bound_credentials_do_not_reuse_legacy_active_selector(monkeypatch) -> None:
@@ -183,6 +261,45 @@ def test_all_route_transport_failures_raise_typed_deferred(monkeypatch) -> None:
         match="provider_route_deferred",
     ):
         generate_with_provider_candidates(session, providers[0], request, policy=policy)
+
+
+def test_route_cooldown_switches_to_next_provider_and_records_actual_model(monkeypatch) -> None:
+    providers = [_provider(1, "model-a"), _provider(2, "model-b")]
+    credentials = [
+        AiProviderCredentials("one", "openai_compatible", "mock://one", "model-a", "a"),
+        AiProviderCredentials("two", "openai_compatible", "mock://two", "model-b", "b"),
+    ]
+    monkeypatch.setattr(
+        ai_provider_candidate_runtime,
+        "draft_provider_calls",
+        lambda *_args, **_kwargs: (providers, iter(zip(providers, credentials, strict=True))),
+    )
+
+    def begin(provider):
+        if provider.id == 1:
+            raise ProviderAdmissionBlocked("provider-1", 30, reason="http_429")
+        return None
+
+    monkeypatch.setattr(ai_provider_candidate_runtime, "begin_provider_call", begin)
+    monkeypatch.setattr(
+        ai_provider_candidate_runtime,
+        "generate_provider_drafts",
+        lambda *_args, **_kwargs: AiGenerationResult(
+            [AiDraftCandidate("群友", "第二供应商成功")],
+            AiUsage(),
+        ),
+    )
+    policy = ProviderCandidatePolicy(
+        "model-a", "", False, "群活跃续聊", False, route_provider_ids=(1, 2),
+    )
+    request = ProviderDraftRequest("prompt", 1, "topic", "tone", (), 0.7, 64, None, 30)
+
+    with Session(_engine()) as session:
+        result = generate_with_provider_candidates(session, providers[0], request, policy=policy)
+
+    assert result.provider_id == 2
+    assert result.model_name == "model-b"
+    assert [item["outcome"] for item in result.provider_attempts] == ["failed", "success"]
 
 
 def test_reviewer_route_rejects_any_generator_identity_overlap() -> None:

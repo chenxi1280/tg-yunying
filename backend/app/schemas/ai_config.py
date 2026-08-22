@@ -101,6 +101,7 @@ class TenantAiSettingUpdate(BaseModel):
     ai_enabled: bool | None = None
     fallback_to_mock: bool | None = None
     ai_group_model_fallback_enabled: bool | None = None
+    ai_provider_route_fallback_enabled: bool | None = None
     ai_group_grok_fallback_enabled: bool | None = None
     ai_group_static_fallback_enabled: bool | None = None
     temperature: float | None = Field(default=None, ge=0, le=2)
@@ -114,6 +115,7 @@ class TenantAiSettingOut(ApiModel):
     ai_enabled: bool
     fallback_to_mock: bool
     ai_group_model_fallback_enabled: bool
+    ai_provider_route_fallback_enabled: bool
     ai_group_grok_fallback_enabled: bool
     ai_group_static_fallback_enabled: bool
     temperature: float

@@ -191,7 +191,7 @@ export function AppModals() {
             <label className="wide-field">API Key<Input.Password value={aiProviderForm.api_key} onChange={(event) => setAiProviderForm({ ...aiProviderForm, api_key: event.target.value })} placeholder={modal.type === 'aiProviderEdit' ? '不填写则保留原 Key' : ''} /></label>
             <label className="wide-field">备注<Input value={aiProviderForm.notes} onChange={(event) => setAiProviderForm({ ...aiProviderForm, notes: event.target.value })} /></label>
             <Checkbox checked={aiProviderForm.credential_enabled} onChange={(event) => setAiProviderForm({ ...aiProviderForm, credential_enabled: event.target.checked })}>凭证可用于路由与检测</Checkbox>
-            <Checkbox disabled={aiProviderForm.id !== null && aiProviderForm.is_active} checked={aiProviderForm.is_active} onChange={(event) => setAiProviderForm({ ...aiProviderForm, is_active: event.target.checked })}>设为默认模型</Checkbox>
+            <Checkbox checked={aiProviderForm.is_active} onChange={(event) => setAiProviderForm({ ...aiProviderForm, is_active: event.target.checked })}>启用供应商</Checkbox>
           </div>
           <FormActions submitLabel={modal.type === 'aiProviderEdit' ? '保存供应商' : '新增供应商'} onCancel={closeModal} onSubmit={createAiProvider} loading={isActionPending('ai-provider:save')} disabled={!aiProviderForm.provider_name.trim() || !aiProviderForm.base_url.trim() || !aiProviderForm.model_name.trim() || (modal.type === 'aiProviderCreate' && aiProviderForm.api_key.length < 4)} />
           </div>
@@ -304,12 +304,13 @@ export function AppModals() {
         <Modal className="tg-modal medium" title="编辑运营空间 AI 配置" open width={640} onCancel={closeModal} footer={null} destroyOnHidden centered>
       <div className="modal-body">
           <div className="policy-grid">
-            <label>默认模型<Select<number | ''> value={selectedAiProviderId || ''} disabled={!aiProviders.length} onChange={(value) => setSelectedAiProviderId(Number(value) || '')} options={aiProviders.length ? aiProviders.map((provider) => ({ value: provider.id, label: `${provider.provider_name} / ${provider.model_name}` })) : [{ value: '', label: '请先新增 AI 供应商' }]} /></label>
+            <label>默认模型<Select<number | ''> value={selectedAiProviderId || ''} disabled={!aiProviders.length} onChange={(value) => setSelectedAiProviderId(Number(value) || '')} options={aiProviders.filter((provider) => provider.credential_enabled && provider.is_active && provider.health_status === '健康').map((provider) => ({ value: provider.id, label: `${provider.provider_name} / ${provider.model_name}` }))} /></label>
             <label>温度<InputNumber min={0} max={2} step={0.1} value={tenantAiSetting.temperature} onChange={(value) => setTenantAiSetting({ ...tenantAiSetting, temperature: Number(value ?? 0) })} /></label>
             <label>最大 Token<InputNumber min={128} max={tenantAiMaxTokensLimit(selectedAiProvider)} value={tenantAiSetting.max_tokens} onChange={(value) => setTenantAiSetting({ ...tenantAiSetting, max_tokens: Number(value ?? 128) })} /></label>
             <Checkbox checked={tenantAiSetting.ai_enabled} onChange={(event) => setTenantAiSetting({ ...tenantAiSetting, ai_enabled: event.target.checked })}>启用 AI 内容生成</Checkbox>
             <Checkbox checked={tenantAiSetting.fallback_to_mock} onChange={(event) => setTenantAiSetting({ ...tenantAiSetting, fallback_to_mock: event.target.checked })}>失败回退模板</Checkbox>
             <Checkbox checked={tenantAiSetting.ai_group_model_fallback_enabled} onChange={(event) => setTenantAiSetting({ ...tenantAiSetting, ai_group_model_fallback_enabled: event.target.checked })}>AI 活群启用 M2.5 回退</Checkbox>
+            <Checkbox checked={tenantAiSetting.ai_provider_route_fallback_enabled} onChange={(event) => setTenantAiSetting({ ...tenantAiSetting, ai_provider_route_fallback_enabled: event.target.checked })}>启用供应商优先级降级（仅限流/超时等传输故障）</Checkbox>
             <Checkbox checked={tenantAiSetting.ai_group_grok_fallback_enabled} onChange={(event) => setTenantAiSetting({ ...tenantAiSetting, ai_group_grok_fallback_enabled: event.target.checked })}>AI 活群启用 Grok 回退</Checkbox>
             <Checkbox checked={tenantAiSetting.ai_group_static_fallback_enabled} onChange={(event) => setTenantAiSetting({ ...tenantAiSetting, ai_group_static_fallback_enabled: event.target.checked })}>AI 活群启用签到/表情兜底</Checkbox>
           </div>

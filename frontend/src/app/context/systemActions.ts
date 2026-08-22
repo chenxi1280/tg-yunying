@@ -309,6 +309,7 @@ export function createSystemActions(params: SystemActionParams) {
       ai_enabled: params.tenantAiSetting?.ai_enabled,
       fallback_to_mock: params.tenantAiSetting?.fallback_to_mock,
       ai_group_model_fallback_enabled: params.tenantAiSetting?.ai_group_model_fallback_enabled,
+      ai_provider_route_fallback_enabled: params.tenantAiSetting?.ai_provider_route_fallback_enabled,
       ai_group_grok_fallback_enabled: params.tenantAiSetting?.ai_group_grok_fallback_enabled,
       ai_group_static_fallback_enabled: params.tenantAiSetting?.ai_group_static_fallback_enabled,
       temperature: params.tenantAiSetting?.temperature,
@@ -651,16 +652,23 @@ export function createSystemActions(params: SystemActionParams) {
   }
 
   async function toggleAiProvider(provider: AiProvider) {
-    const action = 'enable';
+    const action = provider.is_active ? 'disable' : 'enable';
     const requestSeq = beginAiProviderActionRequest(provider.id, action);
-    params.setBusy('设置默认 AI 供应商');
+    params.setBusy(provider.is_active ? '停用 AI 供应商' : '启用 AI 供应商');
     try {
-      const updated = await api<AiProvider>(`/ai-providers/${provider.id}`, {
+      let updated = await api<AiProvider>(`/ai-providers/${provider.id}`, {
         method: 'PATCH',
-        body: JSON.stringify({ is_active: true }),
+        body: JSON.stringify(provider.is_active
+          ? { is_active: false }
+          : { credential_enabled: true, is_active: true }),
       });
       if (!isActiveAiProviderActionRequest(provider.id, action, requestSeq)) return;
-      params.showResult('默认 AI 供应商已更新', `${updated.provider_name} 已设为默认模型`);
+      if (updated.is_active && updated.health_status !== '健康') {
+        updated = await api<AiProvider>(`/ai-providers/${provider.id}/check`, { method: 'POST' });
+        if (!isActiveAiProviderActionRequest(provider.id, action, requestSeq)) return;
+      }
+      const health = updated.is_active ? `，健康状态：${updated.health_status}` : '';
+      params.showResult('AI 供应商状态已更新', `${updated.provider_name} 已${updated.is_active ? '启用' : '停用'}${health}`);
       await refreshSystemSettingsAfterAction('AI 供应商状态更新');
     } catch (error) {
       if (!isActiveAiProviderActionRequest(provider.id, action, requestSeq)) return;
