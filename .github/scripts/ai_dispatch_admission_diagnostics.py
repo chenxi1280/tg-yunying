@@ -219,6 +219,7 @@ RECENT_WORKER_QUERY = text("""
 
 DEADLINE_PROJECTION_CONFLICT_QUERY = text("""
     SELECT action.id AS action_id, action.task_id, task.name AS task_name,
+           task.type AS task_type, action.action_type,
            action.account_id, action.obligation_type, action.obligation_id,
            action.primary_quantity_slot_id,
            action.payload ->> 'coverage_ledger_id' AS payload_coverage_ledger_id,
@@ -251,6 +252,14 @@ DEADLINE_PROJECTION_CONFLICT_QUERY = text("""
            WHEN COALESCE(action.obligation_type, '') <> ''
              AND COALESCE(action.obligation_id, '') <> ''
              THEN action.obligation_type
+           WHEN COALESCE(action.payload ->> 'search_click_fulfillment_obligation_id', '') <> ''
+             THEN 'search_click'
+           WHEN COALESCE(action.payload ->> 'comment_fulfillment_obligation_id', '') <> ''
+             THEN 'comment'
+           WHEN COALESCE(action.payload ->> 'view_fulfillment_obligation_id', '') <> ''
+             THEN 'view'
+           WHEN COALESCE(action.payload ->> 'reaction_fulfillment_obligation_id', '') <> ''
+             THEN 'reaction'
            WHEN COALESCE(action.payload ->> 'coverage_ledger_id', '') <> ''
              THEN 'coverage'
            ELSE 'quantity_slot'
@@ -259,22 +268,85 @@ DEADLINE_PROJECTION_CONFLICT_QUERY = text("""
            WHEN COALESCE(action.obligation_type, '') <> ''
              AND COALESCE(action.obligation_id, '') <> ''
              THEN action.obligation_id
+           WHEN COALESCE(action.payload ->> 'search_click_fulfillment_obligation_id', '') <> ''
+             THEN action.payload ->> 'search_click_fulfillment_obligation_id'
+           WHEN COALESCE(action.payload ->> 'comment_fulfillment_obligation_id', '') <> ''
+             THEN action.payload ->> 'comment_fulfillment_obligation_id'
+           WHEN COALESCE(action.payload ->> 'view_fulfillment_obligation_id', '') <> ''
+             THEN action.payload ->> 'view_fulfillment_obligation_id'
+           WHEN COALESCE(action.payload ->> 'reaction_fulfillment_obligation_id', '') <> ''
+             THEN action.payload ->> 'reaction_fulfillment_obligation_id'
            WHEN COALESCE(action.payload ->> 'coverage_ledger_id', '') <> ''
              THEN action.payload ->> 'coverage_ledger_id'
            ELSE action.primary_quantity_slot_id
          END
-    WHERE task.type = 'group_ai_chat'
-      AND task.status = 'running'
+    WHERE task.status = 'running'
       AND task.fulfillment_contract_version = 'fact_first_v3'
-      AND action.action_type = 'send_message'
       AND action.status = 'pending'
       AND action.task_lifecycle_epoch = task.task_lifecycle_epoch
       AND MOD(action.account_id, 2) = 1
       AND projection.task_day_ledger_id IS NOT NULL
-      AND quantity.task_day_ledger_id IS NOT NULL
-      AND projection.task_day_ledger_id <> quantity.task_day_ledger_id
+      AND COALESCE(
+        NULLIF(action.payload ->> 'task_day_ledger_id', ''),
+        quantity.task_day_ledger_id
+      ) IS NOT NULL
+      AND projection.task_day_ledger_id <> COALESCE(
+        NULLIF(action.payload ->> 'task_day_ledger_id', ''),
+        quantity.task_day_ledger_id
+      )
     ORDER BY reservation.source_deadline_at, action.scheduled_at, action.id
     LIMIT 30
+""")
+
+
+BATCH_PROJECTION_CONFLICT_QUERY = text("""
+    WITH scoped AS (
+      SELECT action.id AS action_id, action.task_id, task.name AS task_name,
+             task.type AS task_type, action.action_type, action.account_id,
+             COALESCE(
+               NULLIF(action.obligation_type, ''),
+               CASE
+                 WHEN COALESCE(action.payload ->> 'view_fulfillment_obligation_id', '') <> '' THEN 'view'
+                 WHEN COALESCE(action.payload ->> 'coverage_ledger_id', '') <> '' THEN 'coverage'
+                 ELSE 'quantity_slot'
+               END
+             ) AS derived_obligation_type,
+             COALESCE(
+               NULLIF(action.obligation_id, ''),
+               NULLIF(action.payload ->> 'view_fulfillment_obligation_id', ''),
+               NULLIF(action.payload ->> 'coverage_ledger_id', ''),
+               action.primary_quantity_slot_id
+             ) AS derived_obligation_id,
+             COALESCE(
+               NULLIF(action.payload ->> 'task_day_ledger_id', ''),
+               quantity.task_day_ledger_id
+             ) AS owner_ledger_id,
+             action.scheduled_at
+      FROM actions AS action
+      JOIN tasks AS task ON task.id = action.task_id
+      LEFT JOIN task_group_daily_message_slots AS quantity
+        ON quantity.id = COALESCE(
+          action.primary_quantity_slot_id,
+          NULLIF(action.payload ->> 'primary_quantity_slot_id', '')
+        )
+      WHERE task.status = 'running'
+        AND task.fulfillment_contract_version = 'fact_first_v3'
+        AND action.status = 'pending'
+        AND action.task_lifecycle_epoch = task.task_lifecycle_epoch
+        AND MOD(action.account_id, 2) = 1
+    ), conflicting AS (
+      SELECT derived_obligation_type, derived_obligation_id
+      FROM scoped
+      WHERE derived_obligation_id IS NOT NULL AND owner_ledger_id IS NOT NULL
+      GROUP BY derived_obligation_type, derived_obligation_id
+      HAVING COUNT(DISTINCT owner_ledger_id) > 1
+    )
+    SELECT scoped.*
+    FROM scoped
+    JOIN conflicting USING (derived_obligation_type, derived_obligation_id)
+    ORDER BY scoped.derived_obligation_type, scoped.derived_obligation_id,
+             scoped.scheduled_at, scoped.action_id
+    LIMIT 50
 """)
 
 
@@ -310,6 +382,7 @@ def main() -> None:
         candidate_shards = _rows(session, CANDIDATE_SHARD_QUERY)
         recent_workers = _rows(session, RECENT_WORKER_QUERY)
         deadline_conflicts = _rows(session, DEADLINE_PROJECTION_CONFLICT_QUERY)
+        batch_conflicts = _rows(session, BATCH_PROJECTION_CONFLICT_QUERY)
     _print_rows("AI_DISPATCH_ACTION_CLASS", classifications)
     _print_rows("AI_DISPATCH_ACTION_SAMPLE", samples)
     _print_rows("AI_DISPATCH_ACTION_RUNTIME_REASON", runtime_reasons)
@@ -318,6 +391,7 @@ def main() -> None:
     _print_rows("AI_DISPATCH_CANDIDATE_SHARD", candidate_shards)
     _print_rows("AI_DISPATCH_RECENT_WORKER", recent_workers)
     _print_rows("AI_DISPATCH_DEADLINE_PROJECTION", deadline_conflicts)
+    _print_rows("AI_DISPATCH_BATCH_PROJECTION", batch_conflicts)
 
 
 if __name__ == "__main__":
