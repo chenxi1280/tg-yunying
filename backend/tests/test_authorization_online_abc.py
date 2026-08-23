@@ -279,6 +279,37 @@ def test_runner_executes_approved_batch_serially(session: Session, monkeypatch) 
     ]
 
 
+def test_runner_creates_b_before_qualifying_hashless_promoted_a(
+    session: Session, monkeypatch,
+) -> None:
+    batch_id = _apply(session, _preview(session)["fingerprint"])["batch_id"]
+    command = start_next_online_abc_item(session, batch_id, actor="approver", approval_ref="ABC-10")
+    account = session.get(TgAccount, command["account_id"])
+    primary = session.get(TgAccountAuthorization, account.current_authorization_id)
+    primary.logical_slot = "standby_1"
+    primary.telegram_user_id_digest = "1" * 64
+    primary.auth_key_fingerprint_digest = "2" * 64
+    session.commit()
+    calls: list[tuple[str, int]] = []
+    _mock_runner_success(monkeypatch, calls)
+
+    runner._run_current_item(
+        session,
+        batch_id,
+        command,
+        runner.RunnerApproval("requester", "approver", "ABC-10"),
+        0.01,
+        lambda _: None,
+    )
+
+    assert calls == [
+        ("b", command["account_id"]),
+        ("qualify", command["account_id"]),
+        ("c", command["account_id"]),
+        ("e4", command["account_id"]),
+    ]
+
+
 def test_runner_stops_cleanly_after_requested_chunk(session: Session, monkeypatch) -> None:
     batch_id = _apply(session, _preview(session)["fingerprint"])["batch_id"]
     calls: list[tuple[str, int]] = []
