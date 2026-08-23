@@ -124,7 +124,13 @@ def apply_recovery(
     _apply_timeline(scope, plan, expected_fingerprint)
     reconcile_source_pacing_states(session, {scope.admission.source_pacing_state_id})
     session.flush()
-    target_guard.assert_target_guards_unchanged(session, [manifest])
+    target_guard.assert_target_guards_unchanged(
+        session,
+        [{
+            "action_id": manifest["action"]["id"],
+            "target_guard": manifest["target_guard"],
+        }],
+    )
     _write_audit(session, request, manifest, actor=actor, approval_ref=approval_ref)
     session.flush()
     return _readback(session, request, expected_fingerprint)

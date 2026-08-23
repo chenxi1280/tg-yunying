@@ -48,10 +48,17 @@ def session(monkeypatch) -> Session:
             {**item, "target_guard": {"mismatches": []}} for item in items
         ],
     )
+
+    def assert_guard_shape(_session, items) -> None:
+        assert items == [{
+            "action_id": "view-action",
+            "target_guard": {"mismatches": []},
+        }]
+
     monkeypatch.setattr(
         recovery.target_guard,
         "assert_target_guards_unchanged",
-        lambda _session, _items: None,
+        assert_guard_shape,
     )
     yield current
     current.close()
