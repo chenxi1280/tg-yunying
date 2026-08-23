@@ -390,6 +390,7 @@ def _require_no_healthy_b(session, account_id: int, primary) -> None:
     row = session.scalar(select(TgAccountAuthorization.id).where(
         TgAccountAuthorization.account_id == account_id,
         TgAccountAuthorization.id != primary.id,
+        TgAccountAuthorization.logical_slot == _standby_target_slot(primary),
         TgAccountAuthorization.is_current.is_(False),
         TgAccountAuthorization.is_slot_current.is_(True),
         TgAccountAuthorization.provision_region_code == "sv",

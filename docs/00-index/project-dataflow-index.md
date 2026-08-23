@@ -1,5 +1,7 @@
 # 项目数据流转索引
 
+> **2026-08-23 DF-342 local_activate 后同 item 恢复：** `C orphan compensated -> old A typed duplicate -> local_activate B-as-current -> Saved Messages exact readback -> DB-only post_activate_rebase preview/fingerprint/dual approval -> same frozen item A baseline=new current + B plan=provision -> resume checkpoint -> complementary SV B -> current A qualification -> C retry next generation -> new A E4`。rebase 不连接 Telegram、不改 current A/旧 A/source C/compensated operation；任一 case、消息、代次、UID/AuthKey、route 或 unknown/runtime 事实漂移均拒绝。
+
 > **2026-08-23 DF-342 A 健康事实单调前进：** A qualification 后的后台成功 online probe 可令 account/current authorization fact 同幅单调前进；runner 以 current/Session/UID/AuthKey/authorization generation/connection generation/active+healthy/无权威错误联合判断无漂移，不再把健康事实 `+N` 当成 AuthKey 漂移。
 
 > **2026-08-23 DF-342 v2.26 create-only 冲突恢复：** `C remote_login_confirmed -> create-only generation collision -> runtime off/batch stopped/unknown -> A remote authorization exact-set preview -> unique App C + login-window orphan -> dual-approved exact hash revoke -> A readback hash absent -> old operation compensated -> retry key + max(authorization generation, historical operation generation, central bundle generation)+1 -> same item C/E4`。历史 bundle 原地保留，候选不唯一、A 漂移或撤销读回不确定时 unknown 不变且不得重试。

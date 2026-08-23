@@ -432,6 +432,7 @@ export function WizardTypeConfig({
         />
         <Collapse
           ghost
+          defaultActiveKey={['membership-strategy']}
           items={[
             {
               key: 'membership-strategy',
