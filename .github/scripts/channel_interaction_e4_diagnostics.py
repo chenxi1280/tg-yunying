@@ -261,8 +261,37 @@ def _attempt_snapshot(session, task: Task, since: datetime) -> dict[str, Any]:
     ) or 0)
     return {
         "post_release_status_counts": counts,
+        **_attempt_failure_snapshot(session, scope),
         "post_release_count": sum(counts.values()),
         "post_release_gateway_count": gateway,
+    }
+
+
+def _attempt_failure_snapshot(session, scope: tuple) -> dict[str, Any]:
+    failure_rows = session.execute(
+        select(ExecutionAttempt.failure_type, func.count(ExecutionAttempt.id))
+        .join(Action, Action.id == ExecutionAttempt.action_id)
+        .where(*scope, ExecutionAttempt.status == "failed")
+        .group_by(ExecutionAttempt.failure_type)
+    )
+    counts = {str(failure_type or ""): int(count) for failure_type, count in failure_rows}
+    samples = session.execute(
+        select(
+            ExecutionAttempt.id,
+            ExecutionAttempt.action_id,
+            Action.account_id,
+            ExecutionAttempt.failure_type,
+            ExecutionAttempt.gateway_call_started_at,
+            ExecutionAttempt.after_call_at,
+        )
+        .join(Action, Action.id == ExecutionAttempt.action_id)
+        .where(*scope, ExecutionAttempt.status == "failed")
+        .order_by(ExecutionAttempt.created_at.desc())
+        .limit(5)
+    ).mappings()
+    return {
+        "post_release_failure_type_counts": counts,
+        "post_release_failure_samples": [_json_row(row) for row in samples],
     }
 
 
