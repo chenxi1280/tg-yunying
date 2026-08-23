@@ -351,6 +351,8 @@ reconcile apply 先以 `case_id + expected_case_version + evidence_version` 单�
 
 **2026-08-04 搜索验证码 mutation 边界：** 图片验证码的识别、投票、deadline/preflight、图片下载和关键词刷新都发生在 callback 发送之前；这些路径必须在结果与 Gateway journal 中显式写 `remote_mutation_started=false`，即使 Gateway transport 已启动，也只能按 `safely_not_executed` 投影释放原 assignment。只有实际调用验证码 callback 后，后续等待回执、下一 challenge 或结果不明才允许写 `remote_mutation_started=true|unknown`；页面未变化、超时或“没有查到回执”不能反向推断 callback 未发送。`callback_mutation_started=true` 的 unknown 仍保持原义务占位，禁止盲目重试。
 
+2026-08-23 生产结算补充：已审批相位分类明确返回人机验证阻断，或图片验证码在候选按钮点击前识别失败，都属于类型化 pre-accept rejection，必须写 `remote_mutation_started=false`并释放同一点击义务。存量 `closed_unknown` 只能对精确 assignment 集合做 preview/apply：要求同 request 无 remote identity、无 `callback_mutation_started` / `target_click_observed`、原 unknown deadline fact 完整，追加带 contract version 的 pre-accept receipt 后才能重开原义务。普通超时、callback 结果不明和发布 fence 接管仍是 unknown，不得重开。
+
 存量验证码前置失败只能通过固定 Task/assignment 集合、核验 reason 白名单、无 callback/target-click/remote identity、保留原 journal 并追加带 contract version 的 adapter pre-accept receipt 后恢复；receipt 先写入 Attempt/Action，随后生成 `safely_not_executed` fact 并走同一 projector。第三条连接重置等 mutation state unknown 不属于该恢复范围。
 
 ### 7.2 永久 unknown 的运营终态
