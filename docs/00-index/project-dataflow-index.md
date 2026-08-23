@@ -1,5 +1,7 @@
 # 项目数据流转索引
 
+> **2026-08-23 DF-342 A 健康事实单调前进：** A qualification 后的后台成功 online probe 可令 account/current authorization fact 同幅单调前进；runner 以 current/Session/UID/AuthKey/authorization generation/connection generation/active+healthy/无权威错误联合判断无漂移，不再把健康事实 `+N` 当成 AuthKey 漂移。
+
 > **2026-08-23 DF-342 v2.26 create-only 冲突恢复：** `C remote_login_confirmed -> create-only generation collision -> runtime off/batch stopped/unknown -> A remote authorization exact-set preview -> unique App C + login-window orphan -> dual-approved exact hash revoke -> A readback hash absent -> old operation compensated -> retry key + max(authorization generation, historical operation generation, central bundle generation)+1 -> same item C/E4`。历史 bundle 原地保留，候选不唯一、A 漂移或撤销读回不确定时 unknown 不变且不得重试。
 
 > **2026-08-23 DF-342 历史 B identity 补齐分支 v2.25：** `frozen item(B=already_qualified) -> freeze A current/session/generations + B slot/session/fact -> B authorization_identity -> A peer list resolves B non-zero hash -> verify same UID/different AuthKey -> re-lock and compare frozen projection -> update B identity/health/fact only -> C/E4`；任何 probe/归属/CAS 失败均停当前 item，A 零写入。若历史版本已完成 C 才暴露 B 元数据缺失，resume 只从 `post_c_pre_existing_b_qualification` 继续，复用原 C operation/bundle/slot，禁止再登录 C。

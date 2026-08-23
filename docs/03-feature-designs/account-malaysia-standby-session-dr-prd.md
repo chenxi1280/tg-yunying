@@ -196,6 +196,8 @@
 
 MY 不可变 bundle generation 必须取同账号 `standby_2` 的 authorization、历史 operation 与中心 bundle 三者最大 generation 再加一，不能只看 current slot。若远端登录已确认但 create-only 路径与历史 bundle 冲突，必须保持 runtime off、停止批次并进入 unknown 对账；旧文件不得覆盖或删除。只有 A 读回唯一识别出本次 App C/时间窗内的新设备、精确撤销后再次读回该 hash 已消失，才可把原 operation 标为 compensated，并以新 idempotency key 和更高 generation 恢复同一 item。任一候选不唯一、撤销结果不明或 A 漂移都保持 unknown，禁止重试登录。
 
+A qualification 后允许后台成功 online probe 令账号与 current authorization 的 fact generation 同幅、单调前进；这不等于 A 漂移。容忍该前进必须同时满足 current 指针、Session digest、authorization generation、connection generation、UID/AuthKey、active/healthy 状态均不变且没有权威错误。两条 fact 不同幅、任一身份/Session/代际变化或失败事实仍立即停批。
+
 ```text
 account_outcome_counts.total = N
 standby_1_outcome_counts.total = N

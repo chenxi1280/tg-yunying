@@ -271,14 +271,17 @@ def _start_item(session, batch, item, actor, approval_ref) -> None:
 def _sync_primary_probe(session, item) -> None:
     account = session.get(TgAccount, item.account_id)
     primary = session.get(TgAccountAuthorization, item.primary_authorization_id)
+    account_delta = account.authorization_fact_generation - item.authorization_fact_generation if account else -1
+    primary_delta = primary.fact_version - item.primary_fact_version if primary else -1
     valid = (
         account and primary and account.current_authorization_id == primary.id
         and _digest(primary.session_ciphertext or "") == item.primary_session_digest
         and account.authorization_generation == item.authorization_generation
         and account.connection_generation == item.connection_generation
-        and account.authorization_fact_generation == item.authorization_fact_generation + 1
-        and primary.fact_version == item.primary_fact_version + 1
+        and account_delta == primary_delta and account_delta >= 1
         and primary.telegram_user_id_digest and primary.auth_key_fingerprint_digest
+        and primary.status == "active" and primary.health_status == "healthy"
+        and primary.last_authoritative_error_code == "" and primary.disabled_at is None
     )
     item.primary_probe_outcome = "succeeded" if valid else "pending"
 
