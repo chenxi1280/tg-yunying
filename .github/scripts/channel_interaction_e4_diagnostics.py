@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from app.database import SessionLocal
 from app.models import (
@@ -34,6 +34,40 @@ ACTION_TYPES = {
 OPEN_ACTION_STATUSES = frozenset({"pending", "claiming", "executing"})
 
 
+LIFECYCLE_MISMATCH_QUERY = text("""
+    SELECT action.id AS action_id, action.task_id, task.name AS task_name,
+           action.task_lifecycle_epoch AS action_epoch,
+           task.task_lifecycle_epoch AS task_epoch,
+           action.status AS action_status, action.scheduled_at,
+           obligation.id AS obligation_id,
+           obligation.status AS obligation_status,
+           obligation.current_action_id,
+           current_action.status AS current_action_status,
+           current_action.task_lifecycle_epoch AS current_action_epoch,
+           reservation.state AS reservation_state,
+           message.created_at AS source_observed_at,
+           message.published_at AS source_published_at
+    FROM actions AS action
+    JOIN tasks AS task ON task.id = action.task_id
+    JOIN reaction_fulfillment_obligations AS obligation
+      ON obligation.id = action.payload ->> 'reaction_fulfillment_obligation_id'
+    LEFT JOIN actions AS current_action
+      ON current_action.id = obligation.current_action_id
+    LEFT JOIN account_pacing_reservations AS reservation
+      ON reservation.action_id = action.id
+    LEFT JOIN channel_messages AS message
+      ON message.id = obligation.channel_message_id
+    WHERE task.type = 'channel_like'
+      AND task.status = 'running'
+      AND task.fulfillment_contract_version = 'fact_first_v3'
+      AND action.action_type = 'like_message'
+      AND action.status IN ('pending', 'claiming', 'executing')
+      AND action.task_lifecycle_epoch <> task.task_lifecycle_epoch
+    ORDER BY action.scheduled_at, action.id
+    LIMIT 30
+""")
+
+
 def _release_since() -> datetime:
     raw = os.environ[RELEASE_LIVE_AT_ENV].strip()
     value = datetime.fromisoformat(raw)
@@ -42,6 +76,13 @@ def _release_since() -> datetime:
 
 def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value else None
+
+
+def _json_row(row) -> dict[str, Any]:
+    return {
+        key: value.isoformat() if isinstance(value, datetime) else value
+        for key, value in row.items()
+    }
 
 
 def _status_counts(session, model, scope) -> dict[str, int]:
@@ -274,6 +315,13 @@ def main() -> None:
             print(
                 "CHANNEL_INTERACTION_E4="
                 + json.dumps(snapshot, ensure_ascii=False, sort_keys=True),
+                flush=True,
+            )
+        mismatch_rows = session.execute(LIFECYCLE_MISMATCH_QUERY).mappings()
+        for row in mismatch_rows:
+            print(
+                "CHANNEL_INTERACTION_LIFECYCLE_MISMATCH="
+                + json.dumps(_json_row(row), ensure_ascii=False, sort_keys=True),
                 flush=True,
             )
     if failed:

@@ -177,6 +177,46 @@ SHARD_QUERY = text("""
 """)
 
 
+CANDIDATE_SHARD_QUERY = text("""
+    SELECT action.task_id, task.name AS task_name,
+           MOD(action.account_id, 2) AS account_shard,
+           COUNT(*) AS action_count,
+           MIN(action.scheduled_at) AS oldest_scheduled_at
+    FROM actions AS action
+    JOIN tasks AS task ON task.id = action.task_id
+    WHERE task.type = 'group_ai_chat'
+      AND task.status = 'running'
+      AND task.deleted_at IS NULL
+      AND task.fulfillment_contract_version = 'fact_first_v3'
+      AND action.action_type = 'send_message'
+      AND action.status = 'pending'
+      AND action.scheduled_at <= NOW()
+      AND action.task_lifecycle_epoch = task.task_lifecycle_epoch
+      AND action.payload ->> 'ai_generation_status' = 'ready'
+      AND COALESCE(action.payload ->> 'message_text', '') <> ''
+    GROUP BY action.task_id, task.name, MOD(action.account_id, 2)
+    ORDER BY task.name, account_shard
+""")
+
+
+RECENT_WORKER_QUERY = text("""
+    SELECT attempt.worker_id, MOD(attempt.account_id, 2) AS account_shard,
+           action.task_id, task.name AS task_name,
+           attempt.status, COUNT(*) AS attempt_count,
+           MAX(attempt.created_at) AS latest_attempt_at
+    FROM execution_attempts AS attempt
+    JOIN actions AS action ON action.id = attempt.action_id
+    JOIN tasks AS task ON task.id = action.task_id
+    WHERE task.type = 'group_ai_chat'
+      AND task.status = 'running'
+      AND task.fulfillment_contract_version = 'fact_first_v3'
+      AND attempt.created_at >= NOW() - INTERVAL '30 minutes'
+    GROUP BY attempt.worker_id, MOD(attempt.account_id, 2),
+             action.task_id, task.name, attempt.status
+    ORDER BY attempt.worker_id, account_shard, task.name, attempt.status
+""")
+
+
 def _json_value(value):
     if isinstance(value, datetime):
         return value.isoformat()
@@ -206,11 +246,15 @@ def main() -> None:
         runtime_reasons = _rows(session, ACTION_RUNTIME_REASON_QUERY)
         attempts = _rows(session, RECENT_ATTEMPT_QUERY)
         shards = _rows(session, SHARD_QUERY)
+        candidate_shards = _rows(session, CANDIDATE_SHARD_QUERY)
+        recent_workers = _rows(session, RECENT_WORKER_QUERY)
     _print_rows("AI_DISPATCH_ACTION_CLASS", classifications)
     _print_rows("AI_DISPATCH_ACTION_SAMPLE", samples)
     _print_rows("AI_DISPATCH_ACTION_RUNTIME_REASON", runtime_reasons)
     _print_rows("AI_DISPATCH_RECENT_ATTEMPT", attempts)
     _print_rows("AI_DISPATCH_SHARD", shards)
+    _print_rows("AI_DISPATCH_CANDIDATE_SHARD", candidate_shards)
+    _print_rows("AI_DISPATCH_RECENT_WORKER", recent_workers)
 
 
 if __name__ == "__main__":
