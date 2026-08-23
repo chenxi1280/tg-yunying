@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import pytest
 
+import app.services.authorization_dr.online_abc_runner as runner
+import app.services.authorization_dr.standby_1_qualification as standby_qualification
+from app.integrations.telegram.contracts import AuthorizationIdentity
 from app.models import TgAccount, TgAccountAuthorization, TgAuthorizationOnlineAbcBatch
 from app.services.authorization_dr.contracts import AuthorizationDrError
-import app.services.authorization_dr.online_abc_runner as runner
 from app.services.authorization_dr.online_abc import start_next_online_abc_item
 from tests import test_authorization_online_abc as abc_tests
 
@@ -240,6 +242,74 @@ def test_resume_reopens_succeeded_b_before_c_without_replaying_b(db_session) -> 
     assert result["operations"]["e4"] is None
 
 
+def test_resume_reopens_post_c_existing_b_qualification_without_replaying_c(
+    db_session, monkeypatch,
+) -> None:
+    batch_id, item, standby, c_operation_id = _stopped_after_c_with_legacy_b(db_session)
+    monkeypatch.setattr(runner, "ready_migration_runtime_image_sha", lambda _session: "d" * 40)
+
+    result = runner.resume_online_abc_batch(
+        db_session,
+        batch_id,
+        requested_by="requester",
+        approved_by="approver",
+        approval_ref="ABC-10",
+        runtime_release_sha="2" * 40,
+    )
+
+    assert result["batch"]["status"] == "running"
+    assert result["current_item"]["id"] == item.id
+    assert result["operations"]["b"] is None
+    assert result["operations"]["c"]["id"] == c_operation_id
+    assert result["operations"]["e4"] is None
+    assert standby.telegram_user_id_digest == ""
+
+
+def test_existing_b_qualification_updates_only_b_identity(db_session, monkeypatch) -> None:
+    _batch_id, item, standby, _c_operation_id = _stopped_after_c_with_legacy_b(db_session)
+    account = db_session.get(TgAccount, item.account_id)
+    primary = db_session.get(TgAccountAuthorization, item.primary_authorization_id)
+    a_before = (
+        account.current_authorization_id,
+        account.session_ciphertext,
+        account.authorization_generation,
+        account.authorization_fact_generation,
+        account.connection_generation,
+        primary.fact_version,
+    )
+    identity = AuthorizationIdentity("0", "9" * 64, primary.telegram_user_id_digest, "f" * 64)
+    resolved = AuthorizationIdentity("12345", "9" * 64, primary.telegram_user_id_digest, "f" * 64)
+    monkeypatch.setattr(standby_qualification.gateway, "authorization_identity", lambda *_args: identity)
+    monkeypatch.setattr(
+        standby_qualification,
+        "resolve_authorization_identity_hash",
+        lambda *_args, **_kwargs: (resolved, "peer_observer"),
+    )
+
+    result = standby_qualification.qualify_existing_standby_1(
+        db_session,
+        item,
+        actor="approver",
+        approval_ref="ABC-10",
+    )
+
+    db_session.refresh(account)
+    db_session.refresh(primary)
+    db_session.refresh(standby)
+    assert result == {"authorization_id": standby.id, "status": "qualified"}
+    assert standby.telegram_user_id_digest == primary.telegram_user_id_digest
+    assert standby.auth_key_fingerprint_digest == "9" * 64
+    assert standby.fact_version == 2
+    assert a_before == (
+        account.current_authorization_id,
+        account.session_ciphertext,
+        account.authorization_generation,
+        account.authorization_fact_generation,
+        account.connection_generation,
+        primary.fact_version,
+    )
+
+
 def test_e4_waits_for_transient_my_readiness(db_session, monkeypatch) -> None:
     batch_id, item, _operation_ids = _running_after_c(db_session)
     batch = db_session.get(TgAuthorizationOnlineAbcBatch, batch_id)
@@ -331,3 +401,41 @@ def _running_after_c(session):
     )
     item = runner._context(session, batch_id)[1]
     return batch_id, item, {b.id, c["operation_id"]}
+
+
+def _stopped_after_c_with_legacy_b(session):
+    batch_id = abc_tests._apply(session, abc_tests._preview(session)["fingerprint"])["batch_id"]
+    command = start_next_online_abc_item(session, batch_id, actor="approver", approval_ref="ABC-10")
+    item = runner._context(session, batch_id)[1]
+    abc_tests._qualify_primary(session, command["account_id"])
+    standby = TgAccountAuthorization(
+        tenant_id=1,
+        account_id=item.account_id,
+        role="standby_1",
+        logical_slot="standby_1",
+        provision_region_code="sv",
+        developer_app_id=item.app_b_id,
+        proxy_id=item.proxy_id,
+        session_ciphertext="legacy-b",
+        telegram_authorization_hash_ciphertext="legacy-hash",
+        status="standby",
+        health_status="healthy",
+        is_current=False,
+        is_slot_current=True,
+        protected_from_cleanup=True,
+    )
+    session.add(standby)
+    item.standby_1_plan = "already_qualified"
+    c = abc_tests._add_c_operation(
+        session,
+        item.account_id,
+        command["c_idempotency_key"],
+        "succeeded",
+    )
+    batch = session.get(TgAuthorizationOnlineAbcBatch, batch_id)
+    item.status = "stopped"
+    item.outcome = "runner_blocked"
+    item.blocker_code = "sv_redundancy_incomplete"
+    batch.status = "stopped"
+    session.commit()
+    return batch_id, item, standby, c["operation_id"]

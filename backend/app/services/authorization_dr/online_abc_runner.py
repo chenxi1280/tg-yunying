@@ -36,6 +36,7 @@ from .online_abc import (
 from .online_abc_operations import online_abc_item_operations, online_abc_operation_keys
 from .online_abc_chunk import MAX_CHUNK_ACCOUNTS, chunk_result, require_chunk_size, require_item_runnable, require_slot_ready
 from .readiness import ready_migration_runtime_image_sha
+from .standby_1_qualification import qualify_existing_standby_1, require_existing_standby_1_candidate
 from .standby_2_provision import prepare_scoped_c_provision
 
 
@@ -131,7 +132,7 @@ def resume_online_abc_batch(
     item = _resumable_item(session, batch)
     operations = online_abc_item_operations(session, batch, item)
     checkpoint = _require_resume_contract(session, item, operations)
-    if checkpoint == "post_c_pre_e4":
+    if checkpoint in {"post_c_pre_e4", "post_c_pre_existing_b_qualification"}:
         ready_migration_runtime_image_sha(session)
     _resume_item(
         session,
@@ -190,6 +191,13 @@ def _prepare_primary_and_b(
         refreshed = _context(session, batch.id)[2]
         require_slot_ready(item.standby_1_plan, refreshed["b"], "online_abc_runner_b_incomplete")
         _ensure_primary_qualified(session, item, approval)
+    if item.standby_1_plan == "already_qualified":
+        qualify_existing_standby_1(
+            session,
+            item,
+            actor=approval.approved_by,
+            approval_ref=approval.approval_ref,
+        )
 
 
 def _ensure_primary_qualified(session, item, approval: RunnerApproval) -> None:
@@ -355,6 +363,9 @@ def _require_resume_contract(session, item, operations: dict) -> str:
         _require_post_c_resume(session, item, operations)
         return "post_c_pre_e4"
     if item.blocker_code == POST_B_PRE_C_RESUME_BLOCKER:
+        if _is_post_c_existing_b_checkpoint(item, operations):
+            _require_post_c_existing_b_resume(session, item, operations)
+            return "post_c_pre_existing_b_qualification"
         _require_post_b_pre_c_resume(session, item, operations)
         return "post_b_pre_c"
     if item.blocker_code == PRE_PRIMARY_RESUME_BLOCKER:
@@ -406,8 +417,8 @@ def _require_post_b_reconcile_resume(session, item, operations: dict) -> None:
 
 
 def _require_post_c_resume(session, item, operations: dict) -> None:
-    _require_succeeded(operations["b"], "online_abc_runner_b_incomplete")
-    _require_succeeded(operations["c"], "online_abc_runner_c_incomplete")
+    require_slot_ready(item.standby_1_plan, operations["b"], "online_abc_runner_b_incomplete")
+    require_slot_ready(item.standby_2_plan, operations["c"], "online_abc_runner_c_incomplete")
     if operations["e4"] is not None:
         raise AuthorizationDrError("online_abc_resume_remote_effect_started", "E4 operation already exists")
 
@@ -415,6 +426,25 @@ def _require_post_c_resume(session, item, operations: dict) -> None:
     primary = session.get(TgAccountAuthorization, item.primary_authorization_id)
     if _primary_state(account, primary, item) != "qualified":
         raise AuthorizationDrError("online_abc_primary_drift", "A changed before runner resume")
+
+
+def _is_post_c_existing_b_checkpoint(item, operations: dict) -> bool:
+    return bool(
+        item.standby_1_plan == "already_qualified"
+        and operations["b"] is None
+        and operations["c"] is not None
+        and operations["e4"] is None
+    )
+
+
+def _require_post_c_existing_b_resume(session, item, operations: dict) -> None:
+    if item.standby_2_plan == "already_qualified":
+        raise AuthorizationDrError(
+            "online_abc_resume_remote_effect_started",
+            "Existing B qualification resume requires an original C operation",
+        )
+    _require_succeeded(operations["c"], "online_abc_runner_c_incomplete")
+    require_existing_standby_1_candidate(session, item)
 
 
 def _require_post_b_pre_c_resume(session, item, operations: dict) -> None:
