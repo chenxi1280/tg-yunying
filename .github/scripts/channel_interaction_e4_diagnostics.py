@@ -138,9 +138,13 @@ def _reaction_obligations(session, task: Task, since: datetime, now: datetime) -
 
 def _view_obligations(session, task: Task, since: datetime, now: datetime) -> dict[str, Any]:
     model = ViewFulfillmentObligation
-    scope = model.task_day_ledger_id.in_(
-        select(TaskDayLedger.id).where(TaskDayLedger.task_id == task.id)
+    ledger_id = session.scalar(
+        select(TaskDayLedger.id)
+        .where(TaskDayLedger.task_id == task.id)
+        .order_by(TaskDayLedger.period_start_at.desc(), TaskDayLedger.id.desc())
+        .limit(1)
     )
+    scope = model.task_day_ledger_id == ledger_id
     post_release = int(session.scalar(
         select(func.count(ViewRemoteFact.id))
         .join(model, model.id == ViewRemoteFact.obligation_id)
@@ -155,7 +159,7 @@ def _view_obligations(session, task: Task, since: datetime, now: datetime) -> di
 
 def _action_snapshot(session, task: Task, since: datetime, now: datetime) -> dict[str, Any]:
     action_type = ACTION_TYPES[task.type]
-    scope = (Action.task_id == task.id, Action.action_type == action_type)
+    scope = _action_scope(session, task, action_type)
     rows = session.execute(
         select(Action.status, func.count(Action.id)).where(*scope).group_by(Action.status)
     )
@@ -182,6 +186,22 @@ def _action_snapshot(session, task: Task, since: datetime, now: datetime) -> dic
     }
 
 
+def _action_scope(session, task: Task, action_type: str) -> tuple:
+    scope = (Action.task_id == task.id, Action.action_type == action_type)
+    if task.type != "channel_view":
+        return scope
+    ledger_id = session.scalar(
+        select(TaskDayLedger.id)
+        .where(TaskDayLedger.task_id == task.id)
+        .order_by(TaskDayLedger.period_start_at.desc(), TaskDayLedger.id.desc())
+        .limit(1)
+    )
+    current_obligations = select(ViewFulfillmentObligation.id).where(
+        ViewFulfillmentObligation.task_day_ledger_id == ledger_id
+    )
+    return (*scope, Action.obligation_id.in_(current_obligations))
+
+
 def _claimability_snapshot(session, task: Task, action_type: str, now: datetime) -> dict[str, int]:
     reservation = select(AccountPacingReservation.id).where(
         AccountPacingReservation.tenant_id == Action.tenant_id,
@@ -190,8 +210,7 @@ def _claimability_snapshot(session, task: Task, action_type: str, now: datetime)
         AccountPacingReservation.state.in_(("reserved", "bound")),
     ).exists()
     scope = (
-        Action.task_id == task.id,
-        Action.action_type == action_type,
+        *_action_scope(session, task, action_type),
         Action.status.in_(OPEN_ACTION_STATUSES),
         Action.scheduled_at <= now,
         Action.task_lifecycle_epoch == task.task_lifecycle_epoch,
@@ -204,8 +223,7 @@ def _claimability_snapshot(session, task: Task, action_type: str, now: datetime)
         | reservation,
     )) or 0)
     lifecycle_mismatch = int(session.scalar(select(func.count(Action.id)).where(
-        Action.task_id == task.id,
-        Action.action_type == action_type,
+        *_action_scope(session, task, action_type),
         Action.status.in_(OPEN_ACTION_STATUSES),
         Action.scheduled_at <= now,
         Action.task_lifecycle_epoch != task.task_lifecycle_epoch,
@@ -262,13 +280,16 @@ def _blockers(task: Task, obligations: dict[str, Any], actions: dict[str, Any], 
         blockers.append("task_not_running")
     if sum(obligations["status_counts"].values()) == 0:
         blockers.append("interaction_obligation_missing")
-    if obligations["due_at_missing"]:
-        blockers.append("interaction_due_at_missing")
     if obligations["due_confirmed"] < obligations["due"]:
         blockers.append("interaction_due_unmet")
+    if actions["due_lifecycle_mismatch_count"]:
+        blockers.append("interaction_lifecycle_mismatch")
     if actions["due_open_count"] and not attempts["post_release_count"]:
         blockers.append("interaction_dispatch_stalled")
-    if obligations["due"] and not obligations["post_release_remote_fact_count"]:
+    if (
+        obligations["due_confirmed"] < obligations["due"]
+        and not obligations["post_release_remote_fact_count"]
+    ):
         blockers.append("interaction_post_release_remote_fact_missing")
     return blockers
 

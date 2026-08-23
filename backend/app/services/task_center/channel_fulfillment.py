@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.models import (
     Action,
     ChannelMessage,
+    ExecutionAttempt,
     ReactionFulfillmentObligation,
     ReactionRemoteFact,
     Task,
@@ -16,6 +17,7 @@ from app.models import (
     ViewFulfillmentObligation,
     ViewRemoteFact,
 )
+from app.services._common import _now
 
 from .channel_payloads import LikeMessagePayload, ViewMessagePayload
 from .channel_fulfillment_queries import (
@@ -31,6 +33,7 @@ from .daily_ledgers import ensure_task_day_ledger
 
 
 TERMINAL_REPLAN_STATUSES = frozenset({"failed", "skipped", "cancelled"})
+LIFECYCLE_ACTION_TYPES = frozenset({"like_message", "view_message"})
 class RemoteFactAlreadyFulfilled(ValueError):
     pass
 
@@ -321,6 +324,33 @@ def release_channel_action_before_gateway(
         raise RuntimeError("confirmed_channel_obligation_cannot_reopen")
     obligation.current_action_id = None
     obligation.status = "open"
+
+
+def cancel_superseded_channel_actions(session: Session, task: Task) -> int:
+    gateway_started = select(ExecutionAttempt.id).where(
+        ExecutionAttempt.action_id == Action.id,
+        ExecutionAttempt.gateway_call_started_at.is_not(None),
+    ).exists()
+    actions = list(session.scalars(
+        select(Action).where(
+            Action.task_id == task.id,
+            Action.action_type.in_(LIFECYCLE_ACTION_TYPES),
+            Action.status == "pending",
+            Action.task_lifecycle_epoch != task.task_lifecycle_epoch,
+            ~gateway_started,
+        )
+    ))
+    for action in actions:
+        release_channel_action_before_gateway(session, action)
+        action.status = "skipped"
+        action.executed_at = action.executed_at or _now()
+        action.action_version = int(action.action_version or 1) + 1
+        action.result = {
+            **dict(action.result or {}),
+            "error_code": "task_lifecycle_superseded_pre_gateway",
+            "remote_mutation_started": False,
+        }
+    return len(actions)
 
 
 def _release_terminal_action(
