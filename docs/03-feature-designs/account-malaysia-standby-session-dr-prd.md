@@ -198,6 +198,8 @@ MY 不可变 bundle generation 必须取同账号 `standby_2` 的 authorization�
 
 A qualification 后允许后台成功 online probe 令账号与 current authorization 的 fact generation 同幅、单调前进；这不等于 A 漂移。容忍该前进必须同时满足 current 指针、Session digest、authorization generation、connection generation、UID/AuthKey、active/healthy 状态均不变且没有权威错误。两条 fact 不同幅、任一身份/Session/代际变化或失败事实仍立即停批。
 
+若 C orphan 对账时 current A 已有 typed `authorization_key_duplicated`，不得用失效 A，也不得在 unknown 尚未清零时强行 local-activate。此时只允许同账号、同 UID、不同 AuthKey、SV healthy/current-slot 的 B 作为 Telegram 授权集合 observer 与精确撤销者；撤销/读回收口 unknown 后，再走原 local-activate preview/apply/send-readback 把 B 提升为新 A。
+
 ```text
 account_outcome_counts.total = N
 standby_1_outcome_counts.total = N

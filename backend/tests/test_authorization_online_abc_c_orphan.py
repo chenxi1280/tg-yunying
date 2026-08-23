@@ -86,6 +86,21 @@ def test_orphan_revoke_reopens_same_item_with_retry_key(db_session, monkeypatch)
     assert resumed["batch"]["status"] == "running"
 
 
+def test_typed_duplicate_primary_uses_independent_healthy_b() -> None:
+    primary = SimpleNamespace(
+        id=1, status="active", health_status="invalid",
+        last_authoritative_error_code="authorization_key_duplicated",
+        telegram_user_id_digest="u", auth_key_fingerprint_digest="a",
+        session_ciphertext="old",
+    )
+    standby = SimpleNamespace(
+        id=2, health_status="healthy", telegram_user_id_digest="u",
+        auth_key_fingerprint_digest="b", session_ciphertext="standby",
+    )
+
+    assert recovery._valid_revoker(primary, standby) is True
+
+
 def _stopped_unknown_item(session):
     batch_id = abc_tests._apply(session, abc_tests._preview(session)["fingerprint"])["batch_id"]
     command = start_next_online_abc_item(session, batch_id, actor="approver", approval_ref="ABC-10")
