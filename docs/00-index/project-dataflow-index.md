@@ -1,5 +1,7 @@
 # 项目数据流转索引
 
+> **DF-330A 搜索 pre-accept 终态恢复（2026-08-23）**：已审批人机验证相位和图片验证识别失败是 callback 前的类型化 negative fact，必须写 `remote_mutation_started=false`。存量 `closed_unknown` 只能在固定 Task/assignment 集合中核对 `unknown_deadline_closed` fact、Action/Attempt/journal、无 remote identity、无 callback/target click 和精确相位后，追加 adapter receipt 并通过同一 fact/projector 重开原义务。超时、连接重置、callback 结果不明和发布 fence unknown 仍保持终态短缺，不得重放。
+
 > **2026-08-23 DF-342 local_activate 后同 item 恢复：** `C orphan compensated -> old A typed duplicate -> local_activate B-as-current -> Saved Messages exact readback -> DB-only post_activate_rebase preview/fingerprint/dual approval -> same frozen item A baseline=new current + B plan=provision -> resume checkpoint -> complementary SV B -> current A qualification -> C retry next generation -> new A E4`。rebase 不连接 Telegram、不改 current A/旧 A/source C/compensated operation；任一 case、消息、代次、UID/AuthKey、route 或 unknown/runtime 事实漂移均拒绝。
 
 > **2026-08-23 DF-342 A 健康事实单调前进：** A qualification 后的后台成功 online probe 可令 account/current authorization fact 同幅单调前进；runner 以 current/Session/UID/AuthKey/authorization generation/connection generation/active+healthy/无权威错误联合判断无漂移，不再把健康事实 `+N` 当成 AuthKey 漂移。

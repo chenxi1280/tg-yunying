@@ -7,8 +7,16 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import Action, ExecutionAttempt
-from app.services.task_center.dispatcher import _settle_pure_search_click_obligation
+from app.models import (
+    Action,
+    ExecutionAttempt,
+    FulfillmentObligationProjection,
+    FulfillmentRemoteFact,
+)
+from app.services.task_center.dispatcher import (
+    _finalize_fact_first_dispatch,
+    _settle_pure_search_click_obligation,
+)
 from app.services.task_center.executors.search_click_direct import _open_units
 from app.services.task_center.search_click_safe_settlement import (
     SAFE_NOT_EXECUTED_FACT,
@@ -19,6 +27,11 @@ from app.services.task_center.gateway_evidence_journal import (
     GatewayResultEvidence,
     bind_gateway_request_identity,
     record_gateway_result_evidence,
+)
+from scripts.reconcile_search_click_pre_accept_absence import (
+    _load_row,
+    _rebase_closed_unknown,
+    _record_pre_accept_receipt,
 )
 
 from test_unknown_deadline_search_progress import _runtime, _unknown_assignment
@@ -161,3 +174,121 @@ def test_callback_unknown_cannot_be_downgraded_by_stale_false_snapshot(
 
     assert fact is not None
     assert fact.fact_kind == "remote_outcome_unknown"
+
+
+@pytest.mark.parametrize(
+    ("error_code", "event_type", "page_phase"),
+    (
+        (
+            "bot_human_verification_required",
+            "page_classified",
+            "verification_page",
+        ),
+        (
+            "jisou_image_verification_failed",
+            "image_verification_failed",
+            "verification_image_page",
+        ),
+    ),
+)
+def test_typed_pre_accept_receipt_reopens_closed_unknown_obligation(
+    session: Session,
+    error_code: str,
+    event_type: str,
+    page_phase: str,
+) -> None:
+    obligation, assignment, action = _closed_pre_accept_rows(
+        session,
+        error_code=error_code,
+        event_type=event_type,
+        page_phase=page_phase,
+    )
+    row = _load_row(session, action.task_id, assignment)
+    _rebase_closed_unknown(row)
+    _record_pre_accept_receipt(row)
+    _finalize_fact_first_dispatch(session, action)
+
+    assert assignment.state == SAFE_NOT_EXECUTED_FACT
+    assert obligation.status == "open"
+    assert obligation.source_action_id is None
+    assert action.result["pre_accept_rejection"]["remote_mutation_started"] is False
+
+
+def _closed_pre_accept_rows(
+    session: Session,
+    *,
+    error_code: str,
+    event_type: str,
+    page_phase: str,
+):
+    task, ledger, obligation, assignment, action, attempt = _failed_search_rows(session)
+    action.result = {
+        "success": False,
+        "error_code": error_code,
+        "protocol_event_type": event_type,
+        "jisou_page_phase": page_phase,
+    }
+    attempt.result_snapshot = {}
+    bind_gateway_request_identity(action, attempt)
+    record_gateway_result_evidence(
+        session,
+        action,
+        attempt,
+        GatewayResultEvidence(failure_code=error_code),
+    )
+    action.status = "closed_unknown"
+    action.obligation_type = "search_click"
+    action.obligation_id = obligation.id
+    assignment.state = "closed_unknown"
+    obligation.status = "closed_unknown"
+    _add_closed_fact_and_projection(
+        session,
+        error_code=error_code,
+        task=task,
+        ledger=ledger,
+        obligation=obligation,
+        action=action,
+        attempt=attempt,
+    )
+    session.flush()
+    return obligation, assignment, action
+
+
+def _add_closed_fact_and_projection(
+    session,
+    *,
+    error_code,
+    task,
+    ledger,
+    obligation,
+    action,
+    attempt,
+) -> None:
+    session.add(FulfillmentObligationProjection(
+        tenant_id=1,
+        task_id=task.id,
+        task_day_ledger_id=ledger.id,
+        obligation_type="search_click",
+        obligation_id=obligation.id,
+        work_lane="search",
+        deadline_at=ledger.deadline_at,
+        state="closed_with_unknown_shortfall",
+        active_action_id=action.id,
+    ))
+    session.add(FulfillmentRemoteFact(
+        fact_id=f"closed-{error_code}",
+        tenant_id=1,
+        task_type="search_click",
+        task_id=task.id,
+        task_day_ledger_id=ledger.id,
+        obligation_type="search_click",
+        obligation_id=obligation.id,
+        action_id=action.id,
+        attempt_id=attempt.id,
+        mutation_kind="search_join",
+        remote_mutation_key_hash=f"{error_code}:mutation",
+        gateway_request_hash=f"{error_code}:request",
+        fact_kind="unknown_deadline_closed",
+        fact_identity_hash=f"{error_code}:closed",
+        outcome={},
+    ))
