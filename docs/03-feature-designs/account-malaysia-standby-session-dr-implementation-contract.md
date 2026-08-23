@@ -1,9 +1,9 @@
 # 马来西亚异地备用 TG Session 实施与验收合同
 
-> 版本：v2.23
+> 版本：v2.24
 > 日期口径：2026-08-23（Asia/Shanghai）
 > 规范关系：本文是 [马来西亚异地备用 TG Session 灾备 PRD](account-malaysia-standby-session-dr-prd.md) 的强制组成部分；冲突时两份文档必须同步修订，不允许实现自行择一。
-> 当前状态：`design_status=complete`、`product_resync_status=complete`、`dev_handoff_ready=true`、`implemented_scope=ten_account_canary_ready_for_primary_send_acceptance_plus_p0_local_recovery_and_full_online_abc_rolling_runner_deployed`、`core_deployed=cd06f75ca200552d621507f492629acd721a808f`、`ssh_mirror_deployed=true`、`slot_canary=2/2_historical_pass`、`ten_account_acceptance_gate=primary_stable_plus_saved_message_remote_id`、`fixed_observation_duration=removed`、`p0_local_recovery=2/2_verified`、`approved_batch_runner=production_verified_run_and_status`、`full_online_abc_design=complete`、`full_online_abc_implementation=deployed_pending_canary_acceptance_and_full_batch_execution`、`full_prd_implementation=partial`、`runtime_mode=off`、`production_fixed=false`
+> 当前状态：`design_status=complete`、`product_resync_status=complete`、`dev_handoff_ready=true`、`implemented_scope=ten_account_canary_ready_for_primary_send_acceptance_plus_p0_local_recovery_and_full_online_abc_rolling_runner_deployed`、`core_deployed=50f657c03c6ad0ef60b75eced1bf1390516ce290`、`ssh_mirror_deployed=true`、`slot_canary=2/2_historical_pass`、`ten_account_acceptance_gate=primary_stable_plus_saved_message_remote_id`、`fixed_observation_duration=removed`、`p0_local_recovery=2/2_verified`、`approved_batch_runner=production_verified_run_and_status`、`full_online_abc_design=complete`、`full_online_abc_implementation=account_10_stopped_post_b_pre_c_pending_v2_24_release`、`full_prd_implementation=partial`、`runtime_mode=off`、`production_fixed=false`
 
 > 两账号执行合同：一个账号一个 preview/fingerprint/idempotency/approval。B 的 `provision_standby_1` 与 C 的 `migrate_standby_2` 均冻结 canonical A 为唯一 code source；B 完成后重新读回 A，才可创建 C operation。C runtime 必须绑定 exact operation + capability `2.21-abc-a-source` + exact release SHA，成功自动关回 `off`。备份失败只允许 `failed|manual_required|reconcile_unknown`，不得修改或撤销 A；第一个账号未完成 Telegram 登录与 Saved Messages 发送 E4 时禁止第二个，两个账号未全部通过时禁止 10 账号。
 
@@ -17,6 +17,7 @@
 
 > A/B 互补物理槽与登录前滚合同：current A 物理 `primary` 对应 B 物理 `standby_1`；current A 物理 `standby_1` 对应 B 物理 `primary`。B 始终保持业务 role=`standby_1`、non-current、SV、独立 App/AuthKey；所有 B resolver 使用 current A 之外的互补物理槽，不能只查 `logical_slot=standby_1`。新登录提交前只清除互补目标槽的非 current 历史行 `is_slot_current`，current A 命中任何冲突条件都必须失败而不是降级。历史 `IntegrityError` unknown 只允许 `sv_login_recovery` 复用已授权的原临时 Session，冻结 operation/flow/A/互补冲突行/远端集合/image SHA，以异人审批和 CAS 创建 generation+1 B；事务后 A 全字段不变，禁止重新登录。
 > B reconcile 后 runner 恢复合同：只接受原 item outcome=`reconcile_unknown`、同一 B operation 已由正式 case 前滚为 `succeeded/reconcile_status=applied`、candidate 是 current A 之外的互补 SV healthy/non-current 槽且 UID 相同/AuthKey 不同、C/E4 均不存在、A `_primary_state=frozen`、canonical preview 不漂移、runtime off/global unknown=0 和原审批一致。checkpoint 固定为 `post_b_reconciled_pre_primary`；恢复后复用同 B operation，禁止重放登录，并先完成 A qualification。
+> B succeeded 后、C 创建前的 App 轮换恢复合同：历史 A 若使用默认 App C，runner 不得改写 A 或重复 B。source-less C 从 `primary_sv|standby_1_sv|standby_2_my` 三条 active assignment 的三套 App 中排除冻结 A 与已成功 B，必须恰好剩余一套 active、credentials/version 一致的 App，并把其 purpose/App/version/credentials version 写入 operation fingerprint；MY claim 按 operation 的 App 反查同一 active assignment version，不再错误固定比较 `standby_2_my`。旧 runner 已以 `sv_redundancy_incomplete` 停在 B succeeded、C/E4 absent 时，`resume` 仅在 B candidate 仍为互补 SV healthy/non-current、同 UID/不同 AuthKey/不同 App，A 仅发生一次 qualification fact 增量且其他 generation/Session/current 不变、runtime off/global unknown=0、原审批一致时恢复同一 item，checkpoint=`post_b_pre_c`。任何 C/E4 已存在、B/A 漂移或剩余 App 不唯一均拒绝。
 
 > runner 生产读回：GitHub Actions run `32576826536` 已发布 release `a6481e0ae8bd851718e91eb1d6cafd1c6f74d154`；backend healthy、Alembic head=`0163_local_activate_verify`。对旧 stopped batch `03456532-1c1c-4446-bb80-dbc9e5bf9618` 仅执行 `status`，返回 `next_action=stopped`、B/C `10/10`、守恒有效；未执行 `run`。独立读回为 runtime=`off`、claim scope 为空、global unknown=0、open ABC batch=0、MY active client=0。
 
@@ -24,7 +25,7 @@
 
 > B 验证码/2FA 顺序合同：有托管 2FA 密码不代表可跳过验证码。首次 finish 必须先用冻结临时 Session、phone-code-hash 和本次 A-bound code 调用 code sign-in；仅在 Telegram 返回 `SessionPasswordNeeded` 后，于同一 client 提交 2FA。已有 post-code 临时 Session 的独立 2FA 请求才允许只提交密码。历史 `password_2fa_preceded_code_v1` 缺陷导致的 `AuthKeyUnregisteredError` 必须通过 operation-scoped reconcile case、异人审批和 flow-state fingerprint 收口为 confirmed-no-effect；不得直接改状态后重试。
 
-> 生产结构纠偏：A/B/C 是环境级三套 App 注册和新账号默认角色，不是历史切换后每个账号不可变化的角色标签。单账号验收以三 App ID 两两不同为准；App C/SV `standby_2` 是本次迁移源。历史 App A `standby_repair` 必须经双 Session Telegram UID/AuthKey 探测和 CAS 转正为 SV `standby_1` 后，账号才能进入迁移。
+> 生产结构纠偏：A/B/C 是环境级三套 App 注册和新账号默认角色，不是历史切换后每个账号不可变化的角色标签。单账号验收以三 App ID 两两不同为准；已有 SV `standby_2` 迁移冻结原 App，source-less C 则使用冻结 A/B 后唯一剩余 App。历史 App A `standby_repair` 必须经双 Session Telegram UID/AuthKey 探测和 CAS 转正为 SV `standby_1` 后，账号才能进入迁移。
 
 > 当前设备 hash 合同：Telegram 从当前 Session 读取设备时允许返回 `hash=0`，不得判定登录失败，也不得把 `0` 保存为受保护设备标识。MY 必须提交当前设备规范化指纹摘要；SV 只用保留的 peer Session 读取结果解析唯一非零 hash。唯一匹配前不得写 Bundle/slot commit；零匹配、多匹配或 peer 读取失败统一进入 `provision_reconcile_unknown`，且不得自动重登。
 

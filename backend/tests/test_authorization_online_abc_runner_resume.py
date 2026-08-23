@@ -200,6 +200,46 @@ def test_resume_reopens_reconciled_b_before_primary_qualification(db_session, mo
     assert result["operations"]["b"]["status"] == "succeeded"
 
 
+def test_resume_reopens_succeeded_b_before_c_without_replaying_b(db_session) -> None:
+    batch_id, item = _stopped_before_primary(db_session)
+    batch = db_session.get(TgAuthorizationOnlineAbcBatch, batch_id)
+    abc_tests._qualify_primary(db_session, item.account_id)
+    primary = db_session.get(TgAccountAuthorization, item.primary_authorization_id)
+    candidate = TgAccountAuthorization(
+        tenant_id=1, account_id=item.account_id, role="standby_1", logical_slot="primary",
+        provision_region_code="sv", developer_app_id=1, session_ciphertext="new-b",
+        status="standby", health_status="healthy", is_current=False, is_slot_current=True,
+        telegram_user_id_digest=primary.telegram_user_id_digest,
+        auth_key_fingerprint_digest="9" * 64,
+    )
+    db_session.add(candidate)
+    db_session.flush()
+    operation = abc_tests._add_operation(
+        db_session,
+        item.account_id,
+        runner.online_abc_operation_keys(batch, item)["b"],
+        "succeeded",
+    )
+    operation.candidate_authorization_id = candidate.id
+    item.blocker_code = "sv_redundancy_incomplete"
+    db_session.commit()
+
+    result = runner.resume_online_abc_batch(
+        db_session,
+        batch_id,
+        requested_by="requester",
+        approved_by="approver",
+        approval_ref="ABC-10",
+        runtime_release_sha="2" * 40,
+    )
+
+    assert result["batch"]["status"] == "running"
+    assert result["current_item"]["id"] == item.id
+    assert result["operations"]["b"]["id"] == operation.id
+    assert result["operations"]["c"] is None
+    assert result["operations"]["e4"] is None
+
+
 def test_e4_waits_for_transient_my_readiness(db_session, monkeypatch) -> None:
     batch_id, item, _operation_ids = _running_after_c(db_session)
     batch = db_session.get(TgAuthorizationOnlineAbcBatch, batch_id)

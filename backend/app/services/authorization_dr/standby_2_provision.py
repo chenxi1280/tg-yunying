@@ -18,7 +18,7 @@ from app.services._common import _now, audit
 from .abc_canary import _arm_exact_operation, _valid_image_sha
 from .contracts import AuthorizationDrError
 from .primary_fence import require_primary_code_source
-from .readiness import require_migration_readiness
+from .readiness import active_slot_assignments, require_migration_readiness
 
 
 def prepare_scoped_c_provision(
@@ -41,8 +41,7 @@ def prepare_scoped_c_provision(
         return _result(existing, operation, image_sha)
     readiness = require_migration_readiness(session, require_mode=False)
     account, code_source, source = _provision_inputs(session, tenant_id, account_id)
-    app = _standby_app(session, readiness.standby_assignment.developer_app_id)
-    _require_three_apps(session, account_id, code_source, app.id)
+    assignment, app = _provision_assignment(session, account_id, code_source)
     batch, item = _create_batch_item(
         session,
         account,
@@ -61,6 +60,7 @@ def prepare_scoped_c_provision(
         code_source=code_source,
         app=app,
         readiness=readiness,
+        assignment=assignment,
     )
     _audit(session, batch, operation, approved_by)
     session.commit()
@@ -90,14 +90,15 @@ def _qualified_my(row) -> bool:
     return bool(row.provision_region_code == "my" and row.health_status == "healthy")
 
 
-def _standby_app(session, app_id: int):
+def _standby_app(session, assignment):
+    app_id = assignment.developer_app_id
     app = session.get(TelegramDeveloperApp, app_id)
-    if not app or not app.is_active:
+    if not app or not app.is_active or app.credentials_version != assignment.credentials_version:
         raise AuthorizationDrError("developer_app_slot_assignment_conflict", "App C is unavailable")
     return app
 
 
-def _require_three_apps(session, account_id: int, primary, app_c_id: int) -> None:
+def _provision_assignment(session, account_id: int, primary):
     standby = session.scalar(select(TgAccountAuthorization).where(
         TgAccountAuthorization.account_id == account_id,
         TgAccountAuthorization.id != primary.id,
@@ -109,9 +110,15 @@ def _require_three_apps(session, account_id: int, primary, app_c_id: int) -> Non
         TgAccountAuthorization.health_status == "healthy",
         TgAccountAuthorization.disabled_at.is_(None),
     ))
-    app_ids = {primary.developer_app_id, standby.developer_app_id if standby else None, app_c_id}
-    if standby is None or None in app_ids or len(app_ids) != 3:
+    used_app_ids = {primary.developer_app_id, standby.developer_app_id if standby else None}
+    remaining = [
+        assignment for assignment in active_slot_assignments(session)
+        if assignment.developer_app_id not in used_app_ids
+    ]
+    if standby is None or None in used_app_ids or len(used_app_ids) != 2 or len(remaining) != 1:
         raise AuthorizationDrError("sv_redundancy_incomplete", "Healthy independent B is required before C")
+    assignment = remaining[0]
+    return assignment, _standby_app(session, assignment)
 
 
 def _create_batch_item(session, account, *, source, idempotency_key, requested_by, approved_by, approval_ref):
@@ -146,7 +153,7 @@ def _create_batch_item(session, account, *, source, idempotency_key, requested_b
     return batch, item
 
 
-def _create_operation(session, batch, item, *, account, source, code_source, app, readiness):
+def _create_operation(session, batch, item, *, account, source, code_source, app, readiness, assignment):
     operation = TgAuthorizationDrOperation(
         tenant_id=batch.tenant_id,
         account_id=item.account_id,
@@ -167,11 +174,11 @@ def _create_operation(session, batch, item, *, account, source, code_source, app
         developer_app_id=app.id,
         developer_app_api_id_snapshot=app.api_id,
         developer_app_credentials_version=app.credentials_version,
-        assignment_version=readiness.assignment_version,
+        assignment_version=assignment.assignment_version,
         egress_id=readiness.egress.id,
         egress_version=readiness.egress.version,
         idempotency_key=f"{batch.id}:{item.account_id}:{item.target_generation}",
-        request_fingerprint=_operation_fingerprint(item, account, code_source, readiness),
+        request_fingerprint=_operation_fingerprint(item, account, code_source, readiness, assignment),
         status="pending",
         requested_by=batch.requested_by,
         approved_by=batch.approved_by,
@@ -191,7 +198,7 @@ def _target_generation(session, account_id: int, source) -> int:
     return max(int(maximum or 0), int(source.slot_generation if source else 0)) + 1
 
 
-def _operation_fingerprint(item, account, code_source, readiness) -> str:
+def _operation_fingerprint(item, account, code_source, readiness, assignment) -> str:
     return _hash({
         "item": item.id,
         "source": item.expected_source_authorization_id,
@@ -199,7 +206,12 @@ def _operation_fingerprint(item, account, code_source, readiness) -> str:
         "current": [account.current_authorization_id, account.authorization_generation,
                     account.authorization_fact_generation, account.connection_generation],
         "code_source": [code_source.id, code_source.fact_version],
-        "assignment": readiness.assignment_version,
+        "assignment": [
+            assignment.slot_purpose,
+            assignment.developer_app_id,
+            assignment.assignment_version,
+            assignment.credentials_version,
+        ],
         "egress": [readiness.egress.id, readiness.egress.version],
     })
 

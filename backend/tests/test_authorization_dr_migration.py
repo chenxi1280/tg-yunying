@@ -570,6 +570,23 @@ def test_source_less_c_provision_commits_without_touching_primary(session: Sessi
     assert account.current_authorization_id == primary.id
 
 
+def test_source_less_c_uses_remaining_app_after_primary_rotation(session: Session) -> None:
+    account = session.get(TgAccount, 101)
+    primary = session.get(TgAccountAuthorization, account.current_authorization_id)
+    account.developer_app_id = 3
+    primary.developer_app_id = 3
+    primary.developer_app_api_id_snapshot = 1003
+    session.commit()
+
+    _account, frozen_primary, operation, _claim = _start_source_less_c_provision(session)
+
+    assert operation.developer_app_id == 1
+    assert operation.assignment_version == 7
+    assert frozen_primary.id == primary.id
+    assert frozen_primary.developer_app_id == 3
+    assert account.current_authorization_id == primary.id
+
+
 def test_source_less_c_provision_rejects_concurrent_current_slot(session: Session) -> None:
     _account, _primary, _operation, claim = _start_source_less_c_provision(session)
     _commit_bundle_and_probe(session, claim)
