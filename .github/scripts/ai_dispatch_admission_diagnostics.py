@@ -217,6 +217,47 @@ RECENT_WORKER_QUERY = text("""
 """)
 
 
+DEADLINE_PROJECTION_CONFLICT_QUERY = text("""
+    SELECT action.id AS action_id, action.task_id, task.name AS task_name,
+           action.account_id, action.obligation_type, action.obligation_id,
+           action.primary_quantity_slot_id,
+           action.payload ->> 'task_day_ledger_id' AS payload_ledger_id,
+           quantity.task_day_ledger_id AS quantity_ledger_id,
+           projection.id AS projection_id,
+           projection.state AS projection_state,
+           projection.task_day_ledger_id AS projection_ledger_id,
+           projection.active_action_id,
+           reservation.id AS reservation_id,
+           reservation.state AS reservation_state,
+           reservation.source_deadline_at,
+           reservation.effective_claim_at,
+           action.release_not_before_at, action.scheduled_at
+    FROM actions AS action
+    JOIN tasks AS task ON task.id = action.task_id
+    JOIN account_pacing_reservations AS reservation
+      ON reservation.action_id = action.id
+     AND reservation.state IN ('reserved', 'bound')
+    LEFT JOIN task_group_daily_message_slots AS quantity
+      ON quantity.id = action.primary_quantity_slot_id
+    LEFT JOIN fulfillment_obligation_projections AS projection
+      ON projection.obligation_type = action.obligation_type
+     AND projection.obligation_id = action.obligation_id
+    WHERE task.type = 'group_ai_chat'
+      AND task.status = 'running'
+      AND task.fulfillment_contract_version = 'fact_first_v3'
+      AND action.action_type = 'send_message'
+      AND action.status = 'pending'
+      AND action.task_lifecycle_epoch = task.task_lifecycle_epoch
+      AND MOD(action.account_id, 2) = 1
+      AND reservation.source_deadline_at IS NOT NULL
+      AND reservation.source_deadline_at <= GREATEST(
+        NOW(), action.release_not_before_at, reservation.effective_claim_at
+      )
+    ORDER BY reservation.source_deadline_at, action.scheduled_at, action.id
+    LIMIT 30
+""")
+
+
 def _json_value(value):
     if isinstance(value, datetime):
         return value.isoformat()
@@ -248,6 +289,7 @@ def main() -> None:
         shards = _rows(session, SHARD_QUERY)
         candidate_shards = _rows(session, CANDIDATE_SHARD_QUERY)
         recent_workers = _rows(session, RECENT_WORKER_QUERY)
+        deadline_conflicts = _rows(session, DEADLINE_PROJECTION_CONFLICT_QUERY)
     _print_rows("AI_DISPATCH_ACTION_CLASS", classifications)
     _print_rows("AI_DISPATCH_ACTION_SAMPLE", samples)
     _print_rows("AI_DISPATCH_ACTION_RUNTIME_REASON", runtime_reasons)
@@ -255,6 +297,7 @@ def main() -> None:
     _print_rows("AI_DISPATCH_SHARD", shards)
     _print_rows("AI_DISPATCH_CANDIDATE_SHARD", candidate_shards)
     _print_rows("AI_DISPATCH_RECENT_WORKER", recent_workers)
+    _print_rows("AI_DISPATCH_DEADLINE_PROJECTION", deadline_conflicts)
 
 
 if __name__ == "__main__":
