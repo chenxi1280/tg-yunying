@@ -28,6 +28,7 @@ from .abc_verify import apply_abc_e4, preview_abc_e4
 from .contracts import AuthorizationDrError
 from .online_abc import (
     UNKNOWN_OPERATION_STATUSES,
+    _require_runtime_off,
     online_abc_batch_status,
     start_next_online_abc_item,
     sync_online_abc_batch,
@@ -41,7 +42,8 @@ from .standby_2_provision import prepare_scoped_c_provision
 POLL_INTERVAL_SECONDS = 2.0
 SUCCESS_STATUS = "succeeded"
 TERMINAL_BATCH_STATUSES = {"accepted", "completed", "observing", "stopped"}
-RESUMABLE_RUNNER_BLOCKERS = {"malaysia_wake_unavailable"}
+POST_C_RESUME_BLOCKER = "malaysia_wake_unavailable"
+PRE_PRIMARY_RESUME_BLOCKER = "ValueError"
 RETRYABLE_E4_READINESS_CODES = {"malaysia_wake_unavailable"}
 TERMINAL_OPERATION_STATUSES = {
     SUCCESS_STATUS,
@@ -126,9 +128,17 @@ def resume_online_abc_batch(
     release_sha = _require_batch_approval(batch, approval, runtime_release_sha)
     item = _resumable_item(session, batch)
     operations = online_abc_item_operations(session, batch, item)
-    _require_resume_contract(session, item, operations)
-    ready_migration_runtime_image_sha(session)
-    _resume_item(session, batch, item, approval, release_sha)
+    checkpoint = _require_resume_contract(session, item, operations)
+    if checkpoint == "post_c_pre_e4":
+        ready_migration_runtime_image_sha(session)
+    _resume_item(
+        session,
+        batch,
+        item,
+        approval=approval,
+        release_sha=release_sha,
+        checkpoint=checkpoint,
+    )
     session.commit()
     return online_abc_runner_status(session, batch_id)
 
@@ -302,25 +312,62 @@ def _resumable_item(session, batch) -> TgAuthorizationOnlineAbcItem:
     return items[0]
 
 
-def _require_resume_contract(session, item, operations: dict) -> None:
-    if item.blocker_code not in RESUMABLE_RUNNER_BLOCKERS:
-        raise AuthorizationDrError("online_abc_resume_blocker_forbidden", f"Blocker is {item.blocker_code}")
+def _require_resume_contract(session, item, operations: dict) -> str:
+    _require_runtime_off(session)
+    _require_no_resume_unknown(session)
+    if item.blocker_code == POST_C_RESUME_BLOCKER:
+        _require_post_c_resume(session, item, operations)
+        return "post_c_pre_e4"
+    if item.blocker_code == PRE_PRIMARY_RESUME_BLOCKER:
+        _require_pre_primary_resume(session, item, operations)
+        return "pre_primary_no_remote_effect"
+    raise AuthorizationDrError("online_abc_resume_blocker_forbidden", f"Blocker is {item.blocker_code}")
+
+
+def _require_post_c_resume(session, item, operations: dict) -> None:
     _require_succeeded(operations["b"], "online_abc_runner_b_incomplete")
     _require_succeeded(operations["c"], "online_abc_runner_c_incomplete")
     if operations["e4"] is not None:
         raise AuthorizationDrError("online_abc_resume_remote_effect_started", "E4 operation already exists")
-    unknown = session.scalar(select(TgAuthorizationDrOperation.id).where(
-        TgAuthorizationDrOperation.status.in_(UNKNOWN_OPERATION_STATUSES),
-    ).limit(1))
-    if unknown:
-        raise AuthorizationDrError("global_reconcile_unknown", "Global reconcile unknown must be zero")
+
     account = session.get(TgAccount, item.account_id)
     primary = session.get(TgAccountAuthorization, item.primary_authorization_id)
     if _primary_state(account, primary, item) != "qualified":
         raise AuthorizationDrError("online_abc_primary_drift", "A changed before runner resume")
 
 
-def _resume_item(session, batch, item, approval: RunnerApproval, release_sha: str) -> None:
+def _require_pre_primary_resume(session, item, operations: dict) -> None:
+    if any(operations.values()):
+        raise AuthorizationDrError(
+            "online_abc_resume_remote_effect_started",
+            "Pre-primary resume requires zero B/C/E4 operations",
+        )
+    account = session.get(TgAccount, item.account_id)
+    primary = session.get(TgAccountAuthorization, item.primary_authorization_id)
+    if _primary_state(account, primary, item) != "frozen":
+        raise AuthorizationDrError("online_abc_primary_drift", "A changed before pre-primary resume")
+    preview = preview_primary_qualification(session, item.tenant_id, item.account_id)
+    if preview["primary_authorization_id"] != item.primary_authorization_id:
+        raise AuthorizationDrError("online_abc_primary_drift", "Canonical A changed before pre-primary resume")
+
+
+def _require_no_resume_unknown(session) -> None:
+    unknown = session.scalar(select(TgAuthorizationDrOperation.id).where(
+        TgAuthorizationDrOperation.status.in_(UNKNOWN_OPERATION_STATUSES),
+    ).limit(1))
+    if unknown:
+        raise AuthorizationDrError("global_reconcile_unknown", "Global reconcile unknown must be zero")
+
+
+def _resume_item(
+    session,
+    batch,
+    item,
+    *,
+    approval: RunnerApproval,
+    release_sha: str,
+    checkpoint: str,
+) -> None:
     previous_release_sha = batch.execution_release_sha or batch.deployed_release_sha
     item.status = "running"
     item.outcome = "running"
@@ -338,7 +385,7 @@ def _resume_item(session, batch, item, approval: RunnerApproval, release_sha: st
         target_type="tg_authorization_online_abc_batches",
         target_id=batch.id,
         detail=(
-            f"approval_ref={approval.approval_ref}; checkpoint=post_c_pre_e4; "
+            f"approval_ref={approval.approval_ref}; checkpoint={checkpoint}; "
             f"execution_release={previous_release_sha}->{release_sha}"
         ),
     )

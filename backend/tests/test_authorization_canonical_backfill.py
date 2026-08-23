@@ -181,6 +181,11 @@ def test_primary_qualification_updates_only_identity_facts(monkeypatch) -> None:
             approved_by="approver",
             approval_ref="backfill-approved",
         )
+        account = session.get(TgAccount, 1)
+        activated = session.get(TgAccountAuthorization, account.current_authorization_id)
+        activated.logical_slot = "standby_1"
+        activated.role = "standby_1"
+        session.commit()
         preview = backfill.preview_primary_qualification(session, 1, 1)
         monkeypatch.setattr(
             backfill.gateway,
@@ -224,3 +229,4 @@ def test_primary_qualification_updates_only_identity_facts(monkeypatch) -> None:
         assert account.authorization_fact_generation == 5
         assert row.telegram_user_id_digest == "b" * 64
         assert row.fact_version == 2
+        assert row.logical_slot == "standby_1"

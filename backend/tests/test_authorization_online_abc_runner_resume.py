@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.models import TgAuthorizationOnlineAbcBatch
+from app.models import TgAccount, TgAccountAuthorization, TgAuthorizationOnlineAbcBatch
 from app.services.authorization_dr.contracts import AuthorizationDrError
 import app.services.authorization_dr.online_abc_runner as runner
 from app.services.authorization_dr.online_abc import start_next_online_abc_item
@@ -63,6 +63,75 @@ def test_resume_rejects_non_allowlisted_blocker(db_session, monkeypatch) -> None
         )
 
     assert exc_info.value.code == "online_abc_resume_blocker_forbidden"
+    assert db_session.get(TgAuthorizationOnlineAbcBatch, batch_id).status == "stopped"
+
+
+def test_resume_reopens_pre_primary_value_error_without_operations(db_session, monkeypatch) -> None:
+    batch_id, item = _stopped_before_primary(db_session)
+    monkeypatch.setattr(
+        runner,
+        "ready_migration_runtime_image_sha",
+        lambda _session: pytest.fail("pre-primary resume must not require MY runtime"),
+    )
+    resumed_release_sha = "2" * 40
+
+    result = runner.resume_online_abc_batch(
+        db_session,
+        batch_id,
+        requested_by="requester",
+        approved_by="approver",
+        approval_ref="ABC-10",
+        runtime_release_sha=resumed_release_sha,
+    )
+
+    assert result["batch"]["status"] == "running"
+    assert result["current_item"] == {
+        "id": item.id,
+        "ordinal": item.ordinal,
+        "account_id": item.account_id,
+        "status": "running",
+    }
+    assert result["operations"] == {"b": None, "c": None, "e4": None}
+    assert result["batch"]["execution_release_sha"] == resumed_release_sha
+
+
+def test_resume_rejects_pre_primary_value_error_after_operation_created(db_session) -> None:
+    batch_id, item = _stopped_before_primary(db_session)
+    batch = db_session.get(TgAuthorizationOnlineAbcBatch, batch_id)
+    key = runner.online_abc_operation_keys(batch, item)["b"]
+    abc_tests._add_operation(db_session, item.account_id, key, "succeeded")
+
+    with pytest.raises(AuthorizationDrError) as exc_info:
+        runner.resume_online_abc_batch(
+            db_session,
+            batch_id,
+            requested_by="requester",
+            approved_by="approver",
+            approval_ref="ABC-10",
+            runtime_release_sha=abc_tests.RELEASE_SHA,
+        )
+
+    assert exc_info.value.code == "online_abc_resume_remote_effect_started"
+    assert db_session.get(TgAuthorizationOnlineAbcBatch, batch_id).status == "stopped"
+
+
+def test_resume_rejects_pre_primary_value_error_after_a_drift(db_session) -> None:
+    batch_id, item = _stopped_before_primary(db_session)
+    account = db_session.get(TgAccount, item.account_id)
+    account.authorization_generation += 1
+    db_session.commit()
+
+    with pytest.raises(AuthorizationDrError) as exc_info:
+        runner.resume_online_abc_batch(
+            db_session,
+            batch_id,
+            requested_by="requester",
+            approved_by="approver",
+            approval_ref="ABC-10",
+            runtime_release_sha=abc_tests.RELEASE_SHA,
+        )
+
+    assert exc_info.value.code == "online_abc_primary_drift"
     assert db_session.get(TgAuthorizationOnlineAbcBatch, batch_id).status == "stopped"
 
 
@@ -148,6 +217,24 @@ def _stop_after_c(session, blocker_code: str):
     batch.status = "stopped"
     session.commit()
     return batch_id, item, operation_ids
+
+
+def _stopped_before_primary(session):
+    batch_id = abc_tests._apply(session, abc_tests._preview(session)["fingerprint"])["batch_id"]
+    command = start_next_online_abc_item(session, batch_id, actor="approver", approval_ref="ABC-10")
+    item = runner._context(session, batch_id)[1]
+    assert item.id == command["item_id"]
+    account = session.get(TgAccount, item.account_id)
+    current = session.get(TgAccountAuthorization, account.current_authorization_id)
+    current.logical_slot = "standby_1"
+    current.role = "standby_1"
+    batch = session.get(TgAuthorizationOnlineAbcBatch, batch_id)
+    item.status = "stopped"
+    item.outcome = "runner_blocked"
+    item.blocker_code = "ValueError"
+    batch.status = "stopped"
+    session.commit()
+    return batch_id, item
 
 
 def _running_after_c(session):
