@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import (
+    AccountPacingReservation,
     Action,
     ChannelMessage,
     ExecutionAttempt,
@@ -340,6 +341,7 @@ def cancel_superseded_channel_actions(session: Session, task: Task) -> int:
             ~gateway_started,
         )
     ))
+    state_ids: set[str] = set()
     for action in actions:
         release_channel_action_before_gateway(session, action)
         action.status = "skipped"
@@ -350,7 +352,31 @@ def cancel_superseded_channel_actions(session: Session, task: Task) -> int:
             "error_code": "task_lifecycle_superseded_pre_gateway",
             "remote_mutation_started": False,
         }
+        state_ids.update(_release_superseded_reservations(session, action))
+    if state_ids:
+        from .direct_action_claims import reconcile_source_pacing_states
+
+        reconcile_source_pacing_states(session, state_ids)
     return len(actions)
+
+
+def _release_superseded_reservations(
+    session: Session,
+    action: Action,
+) -> set[str]:
+    reservation = session.scalar(select(AccountPacingReservation.id).where(
+        AccountPacingReservation.action_id == action.id,
+        AccountPacingReservation.state.in_(("reserved", "bound")),
+    ))
+    if reservation is None or not action.pacing_slot_key:
+        return set()
+    from .direct_action_claims import release_fact_first_action_reservations
+
+    return release_fact_first_action_reservations(
+        session,
+        action,
+        fact_kind="safely_not_executed",
+    )
 
 
 def _release_terminal_action(
