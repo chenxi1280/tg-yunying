@@ -253,10 +253,9 @@ DEADLINE_PROJECTION_CONFLICT_QUERY = text("""
       AND action.status = 'pending'
       AND action.task_lifecycle_epoch = task.task_lifecycle_epoch
       AND MOD(action.account_id, 2) = 1
-      AND reservation.source_deadline_at IS NOT NULL
-      AND reservation.source_deadline_at <= GREATEST(
-        NOW(), action.release_not_before_at, reservation.effective_claim_at
-      )
+      AND projection.task_day_ledger_id IS NOT NULL
+      AND quantity.task_day_ledger_id IS NOT NULL
+      AND projection.task_day_ledger_id <> quantity.task_day_ledger_id
     ORDER BY reservation.source_deadline_at, action.scheduled_at, action.id
     LIMIT 30
 """)
