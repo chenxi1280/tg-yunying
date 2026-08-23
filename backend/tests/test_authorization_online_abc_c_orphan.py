@@ -106,6 +106,12 @@ def _stopped_unknown_item(session):
     operation.developer_app_api_id_snapshot = 1003
     operation.remote_effect_started_at = _now()
     operation.login_code_received_at = _now()
+    primary = session.get(TgAccountAuthorization, item.primary_authorization_id)
+    operation.expected_code_source_user_id_digest = primary.telegram_user_id_digest
+    operation.expected_code_source_auth_key_digest = primary.auth_key_fingerprint_digest
+    account = session.get(TgAccount, item.account_id)
+    account.authorization_fact_generation += 1
+    primary.fact_version += 1
     session.add(TgAuthorizationDrStageFact(
         operation_id=operation.id, node_id="my-node-1", owner_epoch=1,
         stage="remote_login_confirmed", manifest_digest="a" * 64,

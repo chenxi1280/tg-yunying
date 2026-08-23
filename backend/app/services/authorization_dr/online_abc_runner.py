@@ -583,13 +583,30 @@ def _primary_state(account, primary, item) -> str:
 
 
 def _primary_dimensions(account, primary, item, *, fact_offset: int) -> bool:
+    facts_match = _fact_dimensions(account, primary, item, fact_offset)
     return (
         account.authorization_generation == item.authorization_generation
-        and account.authorization_fact_generation == item.authorization_fact_generation + fact_offset
         and account.connection_generation == item.connection_generation
-        and primary.fact_version == item.primary_fact_version + fact_offset
+        and facts_match
         and hashlib.sha256((primary.session_ciphertext or "").encode()).hexdigest() == item.primary_session_digest
         and primary.is_current
+        and _healthy_primary(primary)
+    )
+
+
+def _fact_dimensions(account, primary, item, fact_offset: int) -> bool:
+    account_delta = account.authorization_fact_generation - item.authorization_fact_generation
+    primary_delta = primary.fact_version - item.primary_fact_version
+    if fact_offset == 0:
+        return account_delta == primary_delta == 0
+    return account_delta == primary_delta and account_delta >= 1
+
+
+def _healthy_primary(primary) -> bool:
+    return bool(
+        primary.status == "active" and primary.health_status == "healthy"
+        and primary.last_authoritative_error_code == ""
+        and primary.disabled_at is None
     )
 
 

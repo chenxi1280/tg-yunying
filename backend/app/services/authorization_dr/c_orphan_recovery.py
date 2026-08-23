@@ -105,6 +105,8 @@ def _require_runtime_off(session) -> None:
 
 
 def _require_frozen(session, batch, item, slot, operation, account, primary) -> None:
+    account_delta = account.authorization_fact_generation - item.authorization_fact_generation if account else -1
+    primary_delta = primary.fact_version - item.primary_fact_version if primary else -1
     valid = batch and batch.status == "stopped" and item and slot and operation and account and primary
     valid = valid and item.status == "stopped" and item.outcome == "reconcile_unknown"
     valid = valid and slot.outcome == "reconcile_unknown"
@@ -114,8 +116,11 @@ def _require_frozen(session, batch, item, slot, operation, account, primary) -> 
     valid = valid and account.current_authorization_id == primary.id and primary.is_current
     valid = valid and account.authorization_generation == item.authorization_generation
     valid = valid and account.connection_generation == item.connection_generation
-    valid = valid and account.authorization_fact_generation == item.authorization_fact_generation + 1
-    valid = valid and primary.fact_version == item.primary_fact_version + 1
+    valid = valid and account_delta == primary_delta and account_delta >= 1
+    valid = valid and primary.status == "active" and primary.health_status == "healthy"
+    valid = valid and primary.last_authoritative_error_code == "" and primary.disabled_at is None
+    valid = valid and primary.telegram_user_id_digest == operation.expected_code_source_user_id_digest
+    valid = valid and primary.auth_key_fingerprint_digest == operation.expected_code_source_auth_key_digest
     if not valid:
         raise AuthorizationDrError("reconcile_frozen_fact_conflict", "C orphan recovery facts changed")
 
