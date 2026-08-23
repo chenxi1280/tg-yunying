@@ -1,5 +1,7 @@
 # 项目结构索引
 
+> **2026-08-23 ABC 切主后 frozen item 重基线：** `authorization_dr/online_abc_post_activate.py` 提供 DB-only preview/fingerprint/apply，`backend/scripts/authorization_online_abc_post_activate.py` 与 `deploy/authorization-online-abc-post-activate-rebase.sh` 是受限 SSH 入口；仅在 C orphan 已 compensated、local_activate case 已完成真实发送读回、旧 A typed duplicate 且受保护时，把同一 stopped item 重绑到新 current，并将 B 计划复位为互补 SV provision。`online_abc_runner.py` 只从 `post_local_activate_rebase` 精确检查点恢复，后续复用正式 B/C/E4 实现。
+
 > **2026-08-23 MY create-only generation 冲突恢复 v2.26：** `authorization_dr/c_orphan_recovery.py` 与受限 CLI 对 frozen A 做远端 exact-set preview/fingerprint，唯一识别本 operation App C/login 时间窗的新设备；apply 精确撤销并二次读回后把旧 operation 标为 compensated，重开同一 online item。`online_abc_operations.py` 选择最新 retry C operation，`online_abc_runner.py` 只从已审计 compensated checkpoint 恢复；migration/provision generation 同时扫描 authorization、历史 C operation 和中心 bundle，历史不可变文件不覆盖、不删除。
 
 > **2026-08-23 历史 B 身份补齐 v2.25：** `authorization_dr/standby_1_qualification.py` 对 manifest 已标记 `already_qualified` 但缺 UID/AuthKey/hash 的 SV B 执行 A/B 冻结、B 只读 identity probe、A peer hash 解析和 B-only CAS 事实补齐；`online_abc_runner.py` 在 C 之前调用该门禁，并为历史 C succeeded/E4 absent + `sv_redundancy_incomplete` 提供不重放 C 的精确 resume checkpoint。

@@ -38,6 +38,7 @@ from .online_abc_operations import (
     online_abc_item_operations,
     online_abc_operation_keys,
 )
+from .online_abc_post_activate import REBASE_BLOCKER, require_post_activate_rebase_resume
 from .online_abc_chunk import MAX_CHUNK_ACCOUNTS, chunk_result, require_chunk_size, require_item_runnable, require_slot_ready
 from .readiness import ready_migration_runtime_image_sha
 from .standby_1_qualification import qualify_existing_standby_1, require_existing_standby_1_candidate
@@ -383,6 +384,9 @@ def _require_resume_contract(session, item, operations: dict) -> str:
     if item.blocker_code == C_ORPHAN_RETRY_BLOCKER:
         _require_c_orphan_retry_resume(session, item, operations)
         return "post_c_orphan_compensated"
+    if item.blocker_code == REBASE_BLOCKER:
+        require_post_activate_rebase_resume(session, item, operations)
+        return "post_local_activate_rebase"
     raise AuthorizationDrError("online_abc_resume_blocker_forbidden", f"Blocker is {item.blocker_code}")
 
 
