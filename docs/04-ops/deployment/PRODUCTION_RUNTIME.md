@@ -315,6 +315,22 @@ claim 或数据库写入。`release_live_at` 必须显式传入原发布锚点�
 时间。监控失败表示仍有业务 blocker，不授权自动发布或重启；通过仍须同时满足五个 Task
 当前自然日账本的权威远端事实。
 
+频道浏览若因旧 release 在午夜把逐步累计的 `due_count=1` 冻结为 `86400s` source gap，
+必须先发布包含完整 active target 聚合修复的 release，再对精确 Task/date/Action 执行：
+
+```bash
+docker exec tgyunying-backend python -m scripts.reconcile_channel_view_source_gap --mode preview --task-id <task> --action-id <action> --local-date <YYYY-MM-DD> --rebase-anchor <Asia/Shanghai-ISO> --deployed-sha <full-sha>
+docker exec tgyunying-backend python -m scripts.reconcile_channel_view_source_gap --mode apply --task-id <task> --action-id <action> --local-date <YYYY-MM-DD> --rebase-anchor <same-anchor> --deployed-sha <full-sha> --expected-fingerprint <preview-fingerprint> --actor <operator> --approval-ref <incident>
+docker exec tgyunying-backend python -m scripts.reconcile_channel_view_source_gap --mode readback --task-id <task> --action-id <action> --local-date <YYYY-MM-DD> --rebase-anchor <same-anchor> --deployed-sha <full-sha> --expected-fingerprint <preview-fingerprint>
+```
+
+preview 必须恰好命中一个 pending current owner、一个 open account reservation 和一个
+reserved source admission，并证明 Gateway/通用 typed fact/ViewRemoteFact 都为零；共享 source
+还有其他 reserved admission、目标 guard/版本漂移、旧 gap 已非错误值或 rebase 越过 deadline
+时全部拒绝。apply 只修持久时钟与 gap，不调用 Telegram、不重放 unknown；readback 只证明
+`persisted_verified`，必须另看到新 Attempt 的 Gateway marker 和 `ViewRemoteFact` 才能写
+`remote_effect_verified` 或继续判断 `production_fixed`。
+
 ### 评论与 AI 活群引用比例线上校正
 
 运行中任务的引用比例校正使用

@@ -19,6 +19,12 @@
 
 根因不是 Dispatcher backlog：首个断点发生在 Planner 的 due 物化和来源解释边界。健康检查、容器启动、已有未来 Action 或普通 `last_error` 都不能证明浏览履约。
 
+### 1.1 2026-08-24 午夜源节奏回归
+
+新自然日首个浏览 due unit 已在 00:00 后合法产生，账号预约允许 00:05 执行，但最终 source Gateway gate 把当时仅累计的 `sum(due_count)=1` 当成全天计划总量，冻结出 `86400s` 间隔；该间隔与上一自然日 23:59:55 的真实 Gateway marker 组合后，把新日首个 Action 推到当日 23:59:55，其余 due unit 全部停在 Action 前。
+
+共享来源最小间隔必须以同一 ledger 全部 active message target 的 `sum(effective_target_snapshot)` 计算。当前允许执行的数量仍只由各 target 的 DueSet 和 Action `release_not_before_at` 控制；因此完整目标总量只决定相邻 Gateway 的最小安全间隔，不提前释放尚未到期义务。禁止用逐步增长的 `due_count` 作为全天 plan total，否则午夜第一条会被错误解释为“一天只允许一条”。已冻结错误间隔的存量 Action 只有在精确 Task/date/action、无 Gateway、无 typed remote fact、owner/current binding 未漂移及 preview hash 全部通过时，才可审计重算 admission gap 和 source cursor；不得重放 unknown 或已触达 Gateway 的 Action。
+
 ## 2. 产品合同优先级
 
 频道浏览按以下顺序解释，低层规则不得覆盖高层规则：

@@ -16,7 +16,10 @@ def source_plan_total(
     if domain != "view":
         return fallback
     total = session.scalar(
-        select(func.coalesce(func.sum(ChannelViewDailyMessageTarget.due_count), 0)).where(
+        select(func.coalesce(
+            func.sum(ChannelViewDailyMessageTarget.effective_target_snapshot),
+            0,
+        )).where(
             ChannelViewDailyMessageTarget.task_day_ledger_id
             == str(owner.task_day_ledger_id or ""),
             ChannelViewDailyMessageTarget.source_state == "active",
