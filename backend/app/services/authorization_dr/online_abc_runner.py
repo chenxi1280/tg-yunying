@@ -148,9 +148,7 @@ def _run_current_item(session, batch_id, command, approval, poll_seconds, sleepe
     if item.id != command["item_id"] or item.account_id != command["account_id"]:
         raise AuthorizationDrError("online_abc_runner_item_drift", "Started ABC item changed")
     require_item_runnable(item)
-    _ensure_primary_qualified(session, item, approval)
-    if item.standby_1_plan != "already_qualified" and operations["b"] is None:
-        _create_b(session, batch, item, approval)
+    _prepare_primary_and_b(session, batch, item, operations=operations, approval=approval)
     batch, item, operations = _context(session, batch_id)
     require_slot_ready(item.standby_1_plan, operations["b"], "online_abc_runner_b_incomplete")
     if item.standby_2_plan != "already_qualified" and operations["c"] is None:
@@ -162,6 +160,30 @@ def _run_current_item(session, batch_id, command, approval, poll_seconds, sleepe
     if operations["e4"] is None:
         _create_e4(session, batch, item, approval, poll_seconds, sleeper)
     _require_succeeded(_context(session, batch_id)[2]["e4"], "online_abc_runner_e4_incomplete")
+
+
+def _prepare_primary_and_b(
+    session, batch, item, *, operations, approval: RunnerApproval,
+) -> None:
+    account = session.get(TgAccount, item.account_id)
+    primary = session.get(TgAccountAuthorization, item.primary_authorization_id)
+    state = _primary_state(account, primary, item)
+    if state == "drifted":
+        raise AuthorizationDrError("online_abc_primary_drift", "Frozen A changed before B login")
+    needs_b = item.standby_1_plan != "already_qualified"
+    can_bootstrap_peer = bool(
+        state == "frozen"
+        and primary.telegram_user_id_digest
+        and primary.auth_key_fingerprint_digest
+    )
+    if not can_bootstrap_peer:
+        _ensure_primary_qualified(session, item, approval)
+    if needs_b and operations["b"] is None:
+        _create_b(session, batch, item, approval)
+    if can_bootstrap_peer:
+        refreshed = _context(session, batch.id)[2]
+        require_slot_ready(item.standby_1_plan, refreshed["b"], "online_abc_runner_b_incomplete")
+        _ensure_primary_qualified(session, item, approval)
 
 
 def _ensure_primary_qualified(session, item, approval: RunnerApproval) -> None:
