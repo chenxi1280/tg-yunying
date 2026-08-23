@@ -320,6 +320,17 @@ def _projection_state(fact_kind: str) -> str:
 
 
 def _obligation_identity(action: Action) -> tuple[str, str]:
+    quantity_id = str(
+        action.primary_quantity_slot_id
+        or _payload(action).get("primary_quantity_slot_id")
+        or ""
+    )
+    if (
+        action.task_type == "group_ai_chat"
+        and action.action_type == "send_message"
+        and quantity_id
+    ):
+        return "quantity_slot", quantity_id
     if action.obligation_type and action.obligation_id:
         return str(action.obligation_type), str(action.obligation_id)
     payload = _payload(action)
