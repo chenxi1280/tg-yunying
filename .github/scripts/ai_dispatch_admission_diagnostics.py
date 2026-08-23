@@ -244,8 +244,20 @@ DEADLINE_PROJECTION_CONFLICT_QUERY = text("""
     LEFT JOIN task_group_daily_message_slots AS quantity
       ON quantity.id = action.primary_quantity_slot_id
     LEFT JOIN fulfillment_obligation_projections AS projection
-      ON projection.obligation_type = action.obligation_type
-     AND projection.obligation_id = action.obligation_id
+      ON projection.obligation_type = CASE
+           WHEN action.obligation_type IS NOT NULL AND action.obligation_id IS NOT NULL
+             THEN action.obligation_type
+           WHEN COALESCE(action.payload ->> 'coverage_ledger_id', '') <> ''
+             THEN 'coverage'
+           ELSE 'quantity_slot'
+         END
+     AND projection.obligation_id = CASE
+           WHEN action.obligation_type IS NOT NULL AND action.obligation_id IS NOT NULL
+             THEN action.obligation_id
+           WHEN COALESCE(action.payload ->> 'coverage_ledger_id', '') <> ''
+             THEN action.payload ->> 'coverage_ledger_id'
+           ELSE action.primary_quantity_slot_id
+         END
     WHERE task.type = 'group_ai_chat'
       AND task.status = 'running'
       AND task.fulfillment_contract_version = 'fact_first_v3'
