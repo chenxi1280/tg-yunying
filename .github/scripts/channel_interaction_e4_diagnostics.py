@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 
 from app.database import SessionLocal
 from app.models import (
+    AccountPacingReservation,
     Action,
     CommentFulfillmentObligation,
     ExecutionAttempt,
@@ -136,7 +137,47 @@ def _action_snapshot(session, task: Task, since: datetime, now: datetime) -> dic
         "due_open_count": due_open,
         "post_release_created_count": post_release,
         "oldest_due_open_at": _iso(oldest_due),
+        **_claimability_snapshot(session, task, action_type, now),
     }
+
+
+def _claimability_snapshot(session, task: Task, action_type: str, now: datetime) -> dict[str, int]:
+    reservation = select(AccountPacingReservation.id).where(
+        AccountPacingReservation.tenant_id == Action.tenant_id,
+        AccountPacingReservation.account_id == Action.account_id,
+        AccountPacingReservation.pacing_slot_key == Action.pacing_slot_key,
+        AccountPacingReservation.state.in_(("reserved", "bound")),
+    ).exists()
+    scope = (
+        Action.task_id == task.id,
+        Action.action_type == action_type,
+        Action.status.in_(OPEN_ACTION_STATUSES),
+        Action.scheduled_at <= now,
+        Action.task_lifecycle_epoch == task.task_lifecycle_epoch,
+    )
+    claimable = int(session.scalar(select(func.count(Action.id)).where(
+        *scope,
+        (Action.pacing_slot_key.is_(None))
+        | (Action.pacing_slot_key == "")
+        | (Action.account_id.is_(None))
+        | reservation,
+    )) or 0)
+    lifecycle_mismatch = int(session.scalar(select(func.count(Action.id)).where(
+        Action.task_id == task.id,
+        Action.action_type == action_type,
+        Action.status.in_(OPEN_ACTION_STATUSES),
+        Action.scheduled_at <= now,
+        Action.task_lifecycle_epoch != task.task_lifecycle_epoch,
+    )) or 0)
+    return {
+        "due_direct_claimable_count": claimable,
+        "due_missing_reservation_count": max(0, _due_open_count(session, scope) - claimable),
+        "due_lifecycle_mismatch_count": lifecycle_mismatch,
+    }
+
+
+def _due_open_count(session, scope: tuple) -> int:
+    return int(session.scalar(select(func.count(Action.id)).where(*scope)) or 0)
 
 
 def _attempt_snapshot(session, task: Task, since: datetime) -> dict[str, Any]:
