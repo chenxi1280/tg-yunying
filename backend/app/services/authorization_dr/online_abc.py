@@ -4,7 +4,6 @@ import hashlib
 import json
 import re
 from dataclasses import asdict, dataclass
-from datetime import timedelta
 
 from sqlalchemy import select
 
@@ -29,7 +28,6 @@ from .online_abc_read import item_operations_complete, operation_outcome, render
 
 
 TEN_ACCOUNT_CANARY_SIZE = 10
-OBSERVATION_HOURS = 24
 TERMINAL_FAILURES = {"failed", "manual_required", "migration_rolled_back_forward"}
 UNKNOWN_OPERATION_STATUSES = {"provision_reconcile_unknown", "reconcile_unknown"}
 ACTIVE_BATCH_STATUSES = {"approved", "running"}
@@ -311,7 +309,7 @@ def _complete_item(session, batch, item, actor, approval_ref) -> None:
         if batch.selection_mode == "exact_ten_canary":
             batch.status = "observing"
             batch.observation_started_at = _now()
-            batch.observation_closes_at = batch.observation_started_at + timedelta(hours=OBSERVATION_HOURS)
+            batch.observation_closes_at = batch.observation_started_at
         else:
             batch.status = "completed"
     batch.version += 1

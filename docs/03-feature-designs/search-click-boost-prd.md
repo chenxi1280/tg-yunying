@@ -981,7 +981,7 @@ None raw_response: Message # 原始消息，供 fallback @dataclass class Search
 |---|---|
 |`backend/app/services/task_center/service.py`|任务的 CRUD、列表、详情、stats、reset、resume 等接口完全复用|
 |`backend/app/services/task_center/dispatcher.py`|Action 的 claim / execute / 回写 result / 重试 完全复用 dispatcher 现有逻辑|
-|`backend/app/services/task_center/precheck.py`|任务创建预检扩展 `search_join_precheck` 字段，其余预检复用|
+|`backend/app/services/task_center/precheck.py`|仅保留显式只读诊断；不得被搜索任务创建或创建并启动链路调用|
 |`backend/app/services/task_center/stats.py`|任务 stats 扩展 `search_join_stats` 字段（见 §13.3），其余统计复用|
 |`backend/app/services/task_center/config_normalization.py`|`search_join_group` 加入 `task_types` 白名单，自动绑默认规则集|
 |`backend/app/api/routers/task_center.py`|`POST /api/tasks` 等通用接口完全复用|

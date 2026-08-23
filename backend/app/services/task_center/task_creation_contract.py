@@ -71,7 +71,6 @@ def _task_builder(
                 tenant_id,
                 effective_payload,
                 actor,
-                defer_readiness=True,
                 commit=False,
             )
         task = service._new_task(session, tenant_id, task_type, effective_payload)

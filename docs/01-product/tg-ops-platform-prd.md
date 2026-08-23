@@ -1,6 +1,6 @@
 # TG 运营管理平台 PRD
 
-> **2026-08-23 全部在线账号 A/B/C 补齐 v2.22 当前合同（优先于下方 v2.16 与历史对称三备口径）：** 批次创建事务先以 `selection_mode=all_online_accounts` 冻结当时全部在线账号为动态 `N`，再逐账号执行 A fresh probe；A 失败、封禁、人工处理、unknown 或冻结后删除都保留在 `N`。A/B 是硅谷主备角色而不是固定 Developer App 名称：新账号默认 A=App A、B=App B，历史切主后 A/B 可交换；补 B 时必须从 `primary_sv`/`standby_1_sv` 两套现有 App 中选择与 current A、App C 都不同的一套并冻结 assignment/version，不增加第四套 App。正常补齐由 current A 作为 B/C 两次独立 challenge 的登录码来源，单账号按 A -> B -> A fence readback -> C 推进；B/SV 健康或 C/MY 已具备完整 bundle/双副本/恢复密钥/inventory/restore probe 时只 readback，不重复登录。B 仅是 SV 本地备用；C 仅在 A/B 双失败事实同时成立时辅助 SV 重建 A，永不 current、永不发送。账号 outcome、B outcome、C outcome 三组各自守恒为 `N`。新的 10 账号批次在 24 小时无 correction 观察窗通过后才允许冻结全量；全量只建一个 frozen batch，由生产 SSH runner 每次最多推进 10 项，非尾批恰好 10、尾批可 1–9，clean chunk 之间不重复 24 小时。任何 A 漂移、意外设备、failed/manual/unknown 或 SSH 不明结果停止整个 batch；B/C 失败必须保持 A 的 Session、current、代次、远端设备和发送资格完全不变。当前 `complete_online_abc_implementation=partial`，不得用既有 271 迁移批次或数据库 ready 投影替代。
+> **2026-08-23 全部在线账号 A/B/C 补齐 v2.23 当前合同（优先于 v2.22 固定 24 小时观察及下方历史口径）：** 批次创建事务先以 `selection_mode=all_online_accounts` 冻结当时全部在线账号为动态 `N`，再逐账号执行 A fresh probe；A 失败、封禁、人工处理、unknown 或冻结后删除都保留在 `N`。A/B 是硅谷主备角色而不是固定 Developer App 名称：新账号默认 A=App A、B=App B，历史切主后 A/B 可交换；补 B 时必须从 `primary_sv`/`standby_1_sv` 两套现有 App 中选择与 current A、App C 都不同的一套并冻结 assignment/version，不增加第四套 App。正常补齐由 current A 作为 B/C 两次独立 challenge 的登录码来源，单账号按 A -> B -> A fence readback -> C 推进；B/SV 健康或 C/MY 已具备完整 bundle/双副本/恢复密钥/inventory/restore probe 时只 readback，不重复登录。B 仅是 SV 本地备用；C 仅在 A/B 双失败事实同时成立时辅助 SV 重建 A，永不 current、永不发送。账号 outcome、B outcome、C outcome 三组各自守恒为 `N`。新的 10 账号批次完成 10/10 后不等待固定时长；`accept` 必须即时重算十个 A 均无漂移，并逐项读回成功 E4 operation 对应的非空 Saved Messages 远端消息 ID，同时要求 runtime off、global unknown=0、MY client=0 和 B/C 三组守恒。任一条件不满足不得冻结全量。通过后全量只建一个 frozen batch，由生产 SSH runner 每次最多推进 10 项，非尾批恰好 10、尾批可 1–9。任何 A 漂移、意外设备、failed/manual/unknown 或 SSH 不明结果停止整个 batch；B/C 失败必须保持 A 的 Session、current、代次、远端设备和发送资格完全不变。`complete_online_abc` frozen-N 控制面、source-less C/MY 补建和 `--max-accounts 10` SSH runner 已随 release `cd06f75ca200552d621507f492629acd721a808f` 部署；固定时长移除变更正在发布，未接受 canary、未冻结全量 `N` 前不得用既有 271 迁移批次或数据库 ready 投影替代。
 
 > **2026-08-22 B 登录落库冲突补正：** Telegram 已授权但 DB current-slot insert 冲突时立即停止账号序列并保持 runtime off；禁止重发码或创建第二个设备。只有原 flow 临时 Session 在原 App/代理仍 authorized、与 A 同 UID/不同 AuthKey、A 观察到该 App exact-one 时，才可通过 fingerprint、异人审批和 operation/A/flow/旧 B CAS 原样恢复为 B；旧 B 仅转 non-current protected repair，A、远端设备与账号 generation 不变。证据不唯一保持 unknown，且本次 stop 后不得继续第二账号。
 
@@ -5298,7 +5298,7 @@ fulfillment.calculated_at
 - 前端所有可见按钮必须有后端接口或明确的只读行为。
 - 按钮级权限矩阵必须覆盖所有主按钮、危险动作和敏感查看；前端隐藏按钮不能替代后端权限校验。
 - 接口清单必须标明当前兼容接口和目标扩展接口；前端重构不得调用文档未定义且后端不存在的隐式接口。
-- 任务创建不得以运行资源预检或风险确认作为前置；结构校验通过后直接创建成功，启动后再建立 ledger、冻结范围并持续展示运行 blocker。创建向导切换步骤和提交前不得调用 `/tasks/precheck`；该接口只允许保留为显式只读诊断或编辑页人工触发的数量建议，返回值不得阻止创建、覆盖用户已填值或改变提交 payload。
+- 所有任务类型的创建都不得以运行资源预检、远程能力探测、容量检查或风险确认作为前置；结构校验通过后必须先直接创建成功，启动后再建立 ledger、冻结范围并持续展示运行 blocker。创建向导切换步骤、提交前和后端 create builder 均不得调用 `/tasks/precheck` 或任务类型专属运行预检；该接口只允许保留为显式只读诊断或编辑页人工触发的数量建议，返回值不得阻止创建、覆盖用户已填值或改变提交 payload。
 - 任务创建向导必须按当前主任务类型动态展示字段，不能用一套泛化表单隐藏关键业务差异。
 - 任务创建必须支持选择已有目标，也支持直接粘贴群聊 / 频道入口并自动创建或复用运营目标。
 - 任务创建不能只允许选择已关注 / 已加入账号；必须允许选择账号范围。已满足、可准备、不可准备三类准入/容量只在创建并启动后的详情或可选只读诊断展示，不作为创建前置。

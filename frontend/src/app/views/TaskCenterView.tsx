@@ -1486,7 +1486,7 @@ export default function TaskCenterView({
     }
   }
 
-  async function createTask(options: { start?: boolean; skipCapacityCheck?: boolean } = {}) {
+  async function createTask(options: { start?: boolean } = {}) {
     const start = options.start ?? true;
     setActionError('');
     setActionWarning('');

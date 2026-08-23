@@ -64,7 +64,7 @@ def test_create_succeeds_without_runtime_capacity_precheck(
 ) -> None:
     monkeypatch.setattr(
         service,
-        "_assert_precheck_allows_start",
+        "precheck_task_creation",
         lambda *_args, **_kwargs: pytest.fail("创建阶段不得运行容量预检"),
     )
 
@@ -85,7 +85,7 @@ def test_create_and_start_commits_task_then_reports_runtime_waiting(
 ) -> None:
     monkeypatch.setattr(
         service,
-        "_assert_precheck_allows_start",
+        "precheck_task_creation",
         lambda *_args, **_kwargs: pytest.fail("启动不得被容量预检阻断"),
     )
 
@@ -126,7 +126,7 @@ def test_explicit_start_does_not_call_capacity_precheck(
     monkeypatch.setattr(service, "_now", lambda: datetime(2026, 7, 29, 1, 0))
     monkeypatch.setattr(
         service,
-        "_assert_precheck_allows_start",
+        "precheck_task_creation",
         lambda *_args, **_kwargs: pytest.fail("启动不得运行旧门禁预检"),
     )
 
