@@ -200,6 +200,8 @@ A qualification 后允许后台成功 online probe 令账号与 current authoriz
 
 若 C orphan 对账时 current A 已有 typed `authorization_key_duplicated`，不得用失效 A，也不得在 unknown 尚未清零时强行 local-activate。此时只允许同账号、同 UID、不同 AuthKey、SV healthy/current-slot 的 B 作为 Telegram 授权集合 observer 与精确撤销者；撤销/读回收口 unknown 后，再走原 local-activate preview/apply/send-readback 把 B 提升为新 A。
 
+local-activate 在 PostgreSQL 上必须先 flush 旧 current 的降级，再写目标 `is_current=true`，避免部分唯一索引因 ORM UPDATE 排序出现瞬时双 current；两步仍处于同一事务，任一步失败整体回滚。
+
 ```text
 account_outcome_counts.total = N
 standby_1_outcome_counts.total = N

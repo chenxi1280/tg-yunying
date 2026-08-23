@@ -245,6 +245,7 @@ def apply_primary_authorization_switch(
     _ensure_switchable(target)
     _preserve_legacy_primary_if_needed(session, account, reason)
     _demote_current_authorizations(session, account, target.id, reason)
+    session.flush()
     _promote_authorization(account, target)
     _reset_online_state_after_authorization_switch(session, account)
     audit(
