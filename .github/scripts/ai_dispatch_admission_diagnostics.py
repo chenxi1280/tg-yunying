@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import text
@@ -177,8 +177,197 @@ SHARD_QUERY = text("""
 """)
 
 
+CANDIDATE_SHARD_QUERY = text("""
+    SELECT action.task_id, task.name AS task_name,
+           MOD(action.account_id, 2) AS account_shard,
+           COUNT(*) AS action_count,
+           MIN(action.scheduled_at) AS oldest_scheduled_at
+    FROM actions AS action
+    JOIN tasks AS task ON task.id = action.task_id
+    WHERE task.type = 'group_ai_chat'
+      AND task.status = 'running'
+      AND task.deleted_at IS NULL
+      AND task.fulfillment_contract_version = 'fact_first_v3'
+      AND action.action_type = 'send_message'
+      AND action.status = 'pending'
+      AND action.scheduled_at <= NOW()
+      AND action.task_lifecycle_epoch = task.task_lifecycle_epoch
+      AND action.payload ->> 'ai_generation_status' = 'ready'
+      AND COALESCE(action.payload ->> 'message_text', '') <> ''
+    GROUP BY action.task_id, task.name, MOD(action.account_id, 2)
+    ORDER BY task.name, account_shard
+""")
+
+
+RECENT_WORKER_QUERY = text("""
+    SELECT attempt.worker_id, MOD(attempt.account_id, 2) AS account_shard,
+           action.task_id, task.name AS task_name,
+           attempt.status, COUNT(*) AS attempt_count,
+           MAX(attempt.created_at) AS latest_attempt_at
+    FROM execution_attempts AS attempt
+    JOIN actions AS action ON action.id = attempt.action_id
+    JOIN tasks AS task ON task.id = action.task_id
+    WHERE task.type = 'group_ai_chat'
+      AND task.status = 'running'
+      AND task.fulfillment_contract_version = 'fact_first_v3'
+      AND attempt.created_at >= NOW() - INTERVAL '30 minutes'
+    GROUP BY attempt.worker_id, MOD(attempt.account_id, 2),
+             action.task_id, task.name, attempt.status
+    ORDER BY attempt.worker_id, account_shard, task.name, attempt.status
+""")
+
+
+DEADLINE_PROJECTION_CONFLICT_QUERY = text("""
+    SELECT action.id AS action_id, action.task_id, task.name AS task_name,
+           task.type AS task_type, action.action_type,
+           action.account_id, action.obligation_type, action.obligation_id,
+           action.primary_quantity_slot_id,
+           action.payload ->> 'coverage_ledger_id' AS payload_coverage_ledger_id,
+           action.payload ->> 'primary_quantity_slot_id' AS payload_quantity_slot_id,
+           action.payload ->> 'task_day_ledger_id' AS payload_ledger_id,
+           quantity.task_day_ledger_id AS quantity_ledger_id,
+           projection.id AS projection_id,
+           projection.state AS projection_state,
+           projection.task_day_ledger_id AS projection_ledger_id,
+           projection.active_action_id,
+           view_owner.task_day_ledger_id AS view_owner_ledger_id,
+           payload_ledger.obligation_local_date AS payload_ledger_date,
+           projection_ledger.obligation_local_date AS projection_ledger_date,
+           view_ledger.obligation_local_date AS view_owner_ledger_date,
+           reservation.id AS reservation_id,
+           reservation.state AS reservation_state,
+           reservation.source_deadline_at,
+           reservation.effective_claim_at,
+           action.release_not_before_at, action.scheduled_at
+    FROM actions AS action
+    JOIN tasks AS task ON task.id = action.task_id
+    JOIN account_pacing_reservations AS reservation
+      ON reservation.tenant_id = action.tenant_id
+     AND reservation.account_id = action.account_id
+     AND reservation.pacing_slot_key = action.pacing_slot_key
+     AND reservation.state IN ('reserved', 'bound')
+    LEFT JOIN task_group_daily_message_slots AS quantity
+      ON quantity.id = COALESCE(
+        action.primary_quantity_slot_id,
+        NULLIF(action.payload ->> 'primary_quantity_slot_id', '')
+      )
+    LEFT JOIN fulfillment_obligation_projections AS projection
+      ON projection.obligation_type = CASE
+           WHEN COALESCE(action.obligation_type, '') <> ''
+             AND COALESCE(action.obligation_id, '') <> ''
+             THEN action.obligation_type
+           WHEN COALESCE(action.payload ->> 'search_click_fulfillment_obligation_id', '') <> ''
+             THEN 'search_click'
+           WHEN COALESCE(action.payload ->> 'comment_fulfillment_obligation_id', '') <> ''
+             THEN 'comment'
+           WHEN COALESCE(action.payload ->> 'view_fulfillment_obligation_id', '') <> ''
+             THEN 'view'
+           WHEN COALESCE(action.payload ->> 'reaction_fulfillment_obligation_id', '') <> ''
+             THEN 'reaction'
+           WHEN COALESCE(action.payload ->> 'coverage_ledger_id', '') <> ''
+             THEN 'coverage'
+           ELSE 'quantity_slot'
+         END
+     AND projection.obligation_id = CASE
+           WHEN COALESCE(action.obligation_type, '') <> ''
+             AND COALESCE(action.obligation_id, '') <> ''
+             THEN action.obligation_id
+           WHEN COALESCE(action.payload ->> 'search_click_fulfillment_obligation_id', '') <> ''
+             THEN action.payload ->> 'search_click_fulfillment_obligation_id'
+           WHEN COALESCE(action.payload ->> 'comment_fulfillment_obligation_id', '') <> ''
+             THEN action.payload ->> 'comment_fulfillment_obligation_id'
+           WHEN COALESCE(action.payload ->> 'view_fulfillment_obligation_id', '') <> ''
+             THEN action.payload ->> 'view_fulfillment_obligation_id'
+           WHEN COALESCE(action.payload ->> 'reaction_fulfillment_obligation_id', '') <> ''
+             THEN action.payload ->> 'reaction_fulfillment_obligation_id'
+           WHEN COALESCE(action.payload ->> 'coverage_ledger_id', '') <> ''
+             THEN action.payload ->> 'coverage_ledger_id'
+           ELSE action.primary_quantity_slot_id
+         END
+    LEFT JOIN view_fulfillment_obligations AS view_owner
+      ON view_owner.id = COALESCE(
+        NULLIF(action.obligation_id, ''),
+        NULLIF(action.payload ->> 'view_fulfillment_obligation_id', '')
+      )
+     AND action.action_type = 'view_message'
+    LEFT JOIN task_day_ledgers AS payload_ledger
+      ON payload_ledger.id = NULLIF(action.payload ->> 'task_day_ledger_id', '')
+    LEFT JOIN task_day_ledgers AS projection_ledger
+      ON projection_ledger.id = projection.task_day_ledger_id
+    LEFT JOIN task_day_ledgers AS view_ledger
+      ON view_ledger.id = view_owner.task_day_ledger_id
+    WHERE task.status = 'running'
+      AND task.fulfillment_contract_version = 'fact_first_v3'
+      AND action.status = 'pending'
+      AND action.task_lifecycle_epoch = task.task_lifecycle_epoch
+      AND MOD(action.account_id, 2) = 1
+      AND projection.task_day_ledger_id IS NOT NULL
+      AND COALESCE(
+        NULLIF(action.payload ->> 'task_day_ledger_id', ''),
+        quantity.task_day_ledger_id
+      ) IS NOT NULL
+      AND projection.task_day_ledger_id <> COALESCE(
+        NULLIF(action.payload ->> 'task_day_ledger_id', ''),
+        quantity.task_day_ledger_id
+      )
+    ORDER BY reservation.source_deadline_at, action.scheduled_at, action.id
+    LIMIT 30
+""")
+
+
+BATCH_PROJECTION_CONFLICT_QUERY = text("""
+    WITH scoped AS (
+      SELECT action.id AS action_id, action.task_id, task.name AS task_name,
+             task.type AS task_type, action.action_type, action.account_id,
+             COALESCE(
+               NULLIF(action.obligation_type, ''),
+               CASE
+                 WHEN COALESCE(action.payload ->> 'view_fulfillment_obligation_id', '') <> '' THEN 'view'
+                 WHEN COALESCE(action.payload ->> 'coverage_ledger_id', '') <> '' THEN 'coverage'
+                 ELSE 'quantity_slot'
+               END
+             ) AS derived_obligation_type,
+             COALESCE(
+               NULLIF(action.obligation_id, ''),
+               NULLIF(action.payload ->> 'view_fulfillment_obligation_id', ''),
+               NULLIF(action.payload ->> 'coverage_ledger_id', ''),
+               action.primary_quantity_slot_id
+             ) AS derived_obligation_id,
+             COALESCE(
+               NULLIF(action.payload ->> 'task_day_ledger_id', ''),
+               quantity.task_day_ledger_id
+             ) AS owner_ledger_id,
+             action.scheduled_at
+      FROM actions AS action
+      JOIN tasks AS task ON task.id = action.task_id
+      LEFT JOIN task_group_daily_message_slots AS quantity
+        ON quantity.id = COALESCE(
+          action.primary_quantity_slot_id,
+          NULLIF(action.payload ->> 'primary_quantity_slot_id', '')
+        )
+      WHERE task.status = 'running'
+        AND task.fulfillment_contract_version = 'fact_first_v3'
+        AND action.status = 'pending'
+        AND action.task_lifecycle_epoch = task.task_lifecycle_epoch
+        AND MOD(action.account_id, 2) = 1
+    ), conflicting AS (
+      SELECT derived_obligation_type, derived_obligation_id
+      FROM scoped
+      WHERE derived_obligation_id IS NOT NULL AND owner_ledger_id IS NOT NULL
+      GROUP BY derived_obligation_type, derived_obligation_id
+      HAVING COUNT(DISTINCT owner_ledger_id) > 1
+    )
+    SELECT scoped.*
+    FROM scoped
+    JOIN conflicting USING (derived_obligation_type, derived_obligation_id)
+    ORDER BY scoped.derived_obligation_type, scoped.derived_obligation_id,
+             scoped.scheduled_at, scoped.action_id
+    LIMIT 50
+""")
+
+
 def _json_value(value):
-    if isinstance(value, datetime):
+    if isinstance(value, (date, datetime)):
         return value.isoformat()
     if isinstance(value, Decimal):
         return float(value)
@@ -206,11 +395,19 @@ def main() -> None:
         runtime_reasons = _rows(session, ACTION_RUNTIME_REASON_QUERY)
         attempts = _rows(session, RECENT_ATTEMPT_QUERY)
         shards = _rows(session, SHARD_QUERY)
+        candidate_shards = _rows(session, CANDIDATE_SHARD_QUERY)
+        recent_workers = _rows(session, RECENT_WORKER_QUERY)
+        deadline_conflicts = _rows(session, DEADLINE_PROJECTION_CONFLICT_QUERY)
+        batch_conflicts = _rows(session, BATCH_PROJECTION_CONFLICT_QUERY)
     _print_rows("AI_DISPATCH_ACTION_CLASS", classifications)
     _print_rows("AI_DISPATCH_ACTION_SAMPLE", samples)
     _print_rows("AI_DISPATCH_ACTION_RUNTIME_REASON", runtime_reasons)
     _print_rows("AI_DISPATCH_RECENT_ATTEMPT", attempts)
     _print_rows("AI_DISPATCH_SHARD", shards)
+    _print_rows("AI_DISPATCH_CANDIDATE_SHARD", candidate_shards)
+    _print_rows("AI_DISPATCH_RECENT_WORKER", recent_workers)
+    _print_rows("AI_DISPATCH_DEADLINE_PROJECTION", deadline_conflicts)
+    _print_rows("AI_DISPATCH_BATCH_PROJECTION", batch_conflicts)
 
 
 if __name__ == "__main__":

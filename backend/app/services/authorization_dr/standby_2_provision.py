@@ -100,8 +100,12 @@ def _standby_app(session, app_id: int):
 def _require_three_apps(session, account_id: int, primary, app_c_id: int) -> None:
     standby = session.scalar(select(TgAccountAuthorization).where(
         TgAccountAuthorization.account_id == account_id,
-        TgAccountAuthorization.logical_slot == "standby_1",
+        TgAccountAuthorization.id != primary.id,
+        TgAccountAuthorization.logical_slot == (
+            "primary" if primary.logical_slot == "standby_1" else "standby_1"
+        ),
         TgAccountAuthorization.is_slot_current.is_(True),
+        TgAccountAuthorization.is_current.is_(False),
         TgAccountAuthorization.health_status == "healthy",
         TgAccountAuthorization.disabled_at.is_(None),
     ))

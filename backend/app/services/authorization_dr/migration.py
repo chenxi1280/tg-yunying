@@ -308,10 +308,17 @@ def _migration_source(session, tenant_id: int, account_id: int) -> TgAccountAuth
 def _require_sv_redundancy(session, account: TgAccount, source: TgAccountAuthorization) -> None:
     if not account.session_ciphertext or not account.developer_app_id:
         raise AuthorizationDrError("sv_redundancy_incomplete", f"Account {account.id} current SV Session is unavailable")
+    primary = session.get(TgAccountAuthorization, account.current_authorization_id)
+    if not primary:
+        raise AuthorizationDrError("sv_redundancy_incomplete", f"Account {account.id} current A is unavailable")
     rows = list(session.scalars(select(TgAccountAuthorization).where(
         TgAccountAuthorization.account_id == account.id,
-        TgAccountAuthorization.logical_slot == "standby_1",
+        TgAccountAuthorization.id != account.current_authorization_id,
+        TgAccountAuthorization.logical_slot == (
+            "primary" if primary.logical_slot == "standby_1" else "standby_1"
+        ),
         TgAccountAuthorization.is_slot_current.is_(True),
+        TgAccountAuthorization.is_current.is_(False),
         TgAccountAuthorization.disabled_at.is_(None),
     )))
     if len(rows) != 1 or not _is_healthy_sv_standby(rows[0]):

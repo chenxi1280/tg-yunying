@@ -11,8 +11,10 @@ from sqlalchemy.orm import Session
 from app.database import Base
 from app.models import (
     Action,
+    ChannelMessage,
     ExecutionAttempt,
     OperationTarget,
+    ReactionFulfillmentObligation,
     SourcePacingAdmission,
     SourcePacingState,
     Task,
@@ -24,6 +26,7 @@ from app.models import (
 from app.services.task_center.pacing import PACING_CONTRACT_VERSION
 from app.services.task_center.source_pacing_admission import (
     SourceAdmissionSpec,
+    _source_period,
     admit_source_paced_attempt,
     align_source_gateway_call_started,
     settle_source_pacing_admission,
@@ -196,6 +199,41 @@ def test_same_source_across_tasks_uses_one_cursor_and_defers_without_sleep(
     assert third.scheduled_at == NOW + timedelta(seconds=1728)
     assert session.scalar(select(func.count(SourcePacingState.id))) == 1
     assert session.scalar(select(func.count(SourcePacingAdmission.id))) == 3
+
+
+def test_reaction_source_period_uses_first_observed_time_not_publish_time(
+    session: Session,
+) -> None:
+    observed_at = NOW
+    message = ChannelMessage(
+        id=101,
+        tenant_id=1,
+        channel_target_id=10,
+        message_id=5001,
+        created_at=observed_at,
+        published_at=observed_at - timedelta(days=7),
+    )
+    owner = ReactionFulfillmentObligation(
+        id="reaction-observed-owner",
+        tenant_id=1,
+        task_id="reaction-observed-task",
+        channel_message_id=message.id,
+        account_id=1,
+        reaction_contract_version=1,
+        status="open",
+    )
+    session.add_all([message, owner])
+    session.flush()
+
+    period_start, deadline, period_key = _source_period(
+        session,
+        owner,
+        "reaction",
+    )
+
+    assert period_start == observed_at
+    assert deadline == observed_at + timedelta(days=1)
+    assert period_key == "message:101"
 
 
 def test_gateway_marker_advances_next_source_gate_without_subsecond_leak(

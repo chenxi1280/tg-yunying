@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.models import (
     AccountProxy,
@@ -91,11 +91,13 @@ def _local_inputs(session, operation_id, tenant_id, runtime_sha, requested_by):
     app = session.get(TelegramDeveloperApp, operation.developer_app_id)
     proxy_id = int(operation.egress_id.split(":", 1)[1])
     proxy = session.get(AccountProxy, proxy_id)
-    conflict = _conflicting_b(session, account, primary)
+    target_slot = _standby_target_slot(primary)
+    conflict = _conflicting_b(session, account, primary, target_slot)
     _require_recovery_state(session, operation, flow, app, proxy, runtime_sha, requested_by)
     return {
         "operation": operation, "account": account, "primary": primary, "flow": flow,
         "app": app, "proxy": proxy, "conflict": conflict,
+        "target_slot": target_slot,
         "runtime_image_sha": runtime_sha, "requested_by": requested_by.strip(),
     }
 
@@ -114,18 +116,22 @@ def _require_recovery_state(session, operation, flow, app, proxy, runtime_sha, r
         raise AuthorizationDrError("reconcile_transition_blocked", "SV login recovery state is not frozen")
 
 
-def _conflicting_b(session, account, primary):
+def _conflicting_b(session, account, primary, target_slot):
     rows = list(session.scalars(select(TgAccountAuthorization).where(
         TgAccountAuthorization.account_id == account.id,
-        TgAccountAuthorization.logical_slot == "standby_1",
+        TgAccountAuthorization.id != primary.id,
+        TgAccountAuthorization.logical_slot == target_slot,
         TgAccountAuthorization.is_slot_current.is_(True),
         TgAccountAuthorization.disabled_at.is_(None),
     )))
-    valid = len(rows) == 1 and rows[0].developer_app_id == primary.developer_app_id
-    valid = valid and rows[0].protected_from_cleanup and rows[0].status in {"active", "standby"}
+    valid = len(rows) == 1 and not rows[0].is_current and rows[0].protected_from_cleanup
     if not valid:
         raise AuthorizationDrError("reconcile_transition_blocked", "Conflicting historical B changed")
     return rows[0]
+
+
+def _standby_target_slot(primary) -> str:
+    return "primary" if primary.logical_slot == "standby_1" else "standby_1"
 
 
 def _remote_evidence(session, local):
@@ -160,6 +166,7 @@ def _evidence_payload(local, remote):
         "account_generations": [account.authorization_generation, account.authorization_fact_generation,
                                 account.connection_generation],
         "developer_app_id": local["app"].id, "proxy_id": local["proxy"].id,
+        "target_logical_slot": local["target_slot"],
         "conflicting_authorization_id": conflict.id, "conflicting_fact_version": conflict.fact_version,
         "recovery_session_digest": hashlib.sha256(flow.temporary_session_ciphertext.encode()).hexdigest(),
         "telegram_user_id_digest": identity.telegram_user_id_digest,
@@ -198,8 +205,9 @@ def _require_locked_state(locked, payload):
     valid = valid and account and account.current_authorization_id == primary.id == payload["primary_authorization_id"]
     valid = valid and flow and flow.status == AccountStatus.WAITING_CODE.value
     valid = valid and flow.temporary_session_ciphertext and flow.phone_code_hash_ciphertext
-    valid = valid and conflict and conflict.is_slot_current and conflict.logical_slot == "standby_1"
-    valid = valid and conflict.developer_app_id == primary.developer_app_id and conflict.protected_from_cleanup
+    valid = valid and conflict and not conflict.is_current and conflict.is_slot_current
+    valid = valid and conflict.logical_slot == payload["target_logical_slot"]
+    valid = valid and conflict.protected_from_cleanup
     if not valid:
         raise AuthorizationDrError("authorization_version_conflict", "SV login recovery state changed")
 
@@ -221,6 +229,8 @@ def _locked_payload(locked, local, payload):
 
 def _persist_recovered_b(session, locked, remote, actor):
     conflict, operation = locked["conflict"], locked["operation"]
+    target_slot = _standby_target_slot(locked["primary"])
+    slot_generation = _next_slot_generation(session, operation.account_id, target_slot)
     conflict.role = "standby_repair"
     conflict.logical_slot = "standby_repair"
     conflict.is_slot_current = False
@@ -233,7 +243,8 @@ def _persist_recovered_b(session, locked, remote, actor):
     identity = remote["identity"]
     asset = TgAccountAuthorization(
         tenant_id=operation.tenant_id, account_id=operation.account_id, role="standby_1",
-        logical_slot="standby_1", is_slot_current=True, provision_region_code="sv",
+        logical_slot=target_slot, slot_generation=slot_generation,
+        is_slot_current=True, provision_region_code="sv",
         developer_app_id=operation.developer_app_id, developer_app_api_id_snapshot=locked["app"].api_id,
         proxy_id=locked["proxy"].id, session_ciphertext=encrypt_session(remote["raw_session"]),
         status="standby", health_status="healthy", derived_status="healthy", is_current=False,
@@ -247,6 +258,14 @@ def _persist_recovered_b(session, locked, remote, actor):
     session.add(asset)
     session.flush()
     return asset
+
+
+def _next_slot_generation(session, account_id: int, logical_slot: str) -> int:
+    maximum = session.scalar(select(func.max(TgAccountAuthorization.slot_generation)).where(
+        TgAccountAuthorization.account_id == account_id,
+        TgAccountAuthorization.logical_slot == logical_slot,
+    ))
+    return int(maximum or 0) + 1
 
 
 def _close_recovery(session, locked, asset, payload, fingerprint, actor, approval_ref, key):
@@ -265,6 +284,7 @@ def _close_recovery(session, locked, asset, payload, fingerprint, actor, approva
     session.add(case)
     session.flush()
     operation.candidate_authorization_id = asset.id
+    operation.logical_slot = asset.logical_slot
     operation.status = "succeeded"
     operation.blocker_code = ""
     operation.remote_call_state = "succeeded"

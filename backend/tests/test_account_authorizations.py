@@ -416,6 +416,56 @@ def test_standby_login_persists_developer_app_api_id_snapshot() -> None:
 
 
 @pytest.mark.no_postgres
+def test_standby_login_uses_complementary_slot_after_local_activate(monkeypatch) -> None:
+    monkeypatch.setattr(
+        authorization_service,
+        "_current_authorization_hash_after_login",
+        lambda *_args, **_kwargs: "123",
+    )
+    with _sqlite_session() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TelegramDeveloperApp(
+            id=33, app_name="备用应用", api_id=33001, api_hash_ciphertext=encrypt_secret("hash"),
+        ))
+        account = TgAccount(
+            id=26, tenant_id=1, display_name="切换后账号", phone_masked="26",
+            status=AccountStatus.ACTIVE.value, session_ciphertext="promoted-a", developer_app_id=32,
+        )
+        session.add(account)
+        session.flush()
+        promoted_a = TgAccountAuthorization(
+            tenant_id=1, account_id=26, role="primary", logical_slot="standby_1",
+            slot_generation=1, is_current=True, is_slot_current=True,
+            session_ciphertext="promoted-a", developer_app_id=32,
+        )
+        old_primary = TgAccountAuthorization(
+            tenant_id=1, account_id=26, role="standby_repair", logical_slot="primary",
+            slot_generation=1, is_current=False, is_slot_current=True,
+            session_ciphertext="old-a", developer_app_id=33, protected_from_cleanup=True,
+        )
+        flow = TgLoginFlow(
+            tenant_id=1, account_id=26, method="code", status="等待验证码",
+            authorization_role="standby_1", developer_app_id=33, proxy_id=0,
+        )
+        session.add_all([promoted_a, old_primary, flow])
+        session.flush()
+        account.current_authorization_id = promoted_a.id
+        session.commit()
+
+        asset = authorization_service._finish_standby_login(
+            session, account, flow, AccountStatus.ACTIVE.value, "new-b", "tester",
+        )
+
+        session.refresh(promoted_a)
+        session.refresh(old_primary)
+        assert (asset.role, asset.logical_slot, asset.slot_generation) == ("standby_1", "primary", 2)
+        assert (promoted_a.is_current, promoted_a.is_slot_current, promoted_a.logical_slot) == (
+            True, True, "standby_1",
+        )
+        assert old_primary.is_slot_current is False
+
+
+@pytest.mark.no_postgres
 def test_authorization_refresh_rejects_all_down_auto_recovery() -> None:
     with _sqlite_session() as session:
         session.add(Tenant(id=1, name="默认运营空间"))

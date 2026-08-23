@@ -24,6 +24,7 @@ from .fulfillment_remote_facts import (
     persist_remote_fact,
     project_remote_fact,
 )
+from .fulfillment_ledger_owners import align_view_ledger_for_safe_settlement
 from .source_pacing import wall_datetime
 
 
@@ -266,6 +267,12 @@ def settle_fact_first_action_before_gateway(
 ) -> set[str]:
     if action.status not in {"pending", "skipped"}:
         raise RuntimeError(f"pre_gateway_safe_settlement_status_invalid:{action.status}")
+    ledger_alignment = align_view_ledger_for_safe_settlement(session, action)
+    if ledger_alignment:
+        action.result = {
+            **dict(action.result or {}),
+            "pre_gateway_view_ledger_alignment": ledger_alignment,
+        }
     if not ensure_action_obligation(session, action):
         raise RuntimeError("pre_gateway_safe_settlement_obligation_unavailable")
     action.status = "skipped"

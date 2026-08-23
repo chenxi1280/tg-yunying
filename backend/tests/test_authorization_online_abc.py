@@ -432,6 +432,29 @@ def test_full_preview_keeps_primary_unproven_account_in_frozen_n(session: Sessio
     assert target["standby_2_plan"] == "blocked"
 
 
+def test_full_preview_recognizes_complementary_b_after_local_activate(session: Session) -> None:
+    _seed_accepted_canary(session)
+    account = session.get(TgAccount, ACCOUNT_IDS[0])
+    primary = session.get(TgAccountAuthorization, account.current_authorization_id)
+    primary.logical_slot = "standby_1"
+    standby = TgAccountAuthorization(
+        tenant_id=1, account_id=account.id, role="standby_1", logical_slot="primary",
+        provision_region_code="sv", developer_app_id=1, proxy_id=account.proxy_id,
+        session_ciphertext="restored-b", status="standby", health_status="healthy",
+        is_current=False, is_slot_current=True, protected_from_cleanup=True,
+    )
+    session.add(standby)
+    session.commit()
+
+    preview = preview_full_online_abc_batch(
+        session, 1, idempotency_key="online-abc-full-promoted-a", deployed_release_sha=RELEASE_SHA,
+    )
+
+    target = next(value for value in preview["targets"] if value["account_id"] == account.id)
+    assert target["standby_1_plan"] == "already_qualified"
+    assert target["app_b_id"] == standby.developer_app_id
+
+
 def test_full_rollout_finishes_same_frozen_batch_in_ten_bounded_chunks(
     session: Session, monkeypatch,
 ) -> None:

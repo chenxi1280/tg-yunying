@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.models import (
+    AccountPacingReservation,
     AppUser,
     ChannelMessage,
     ContentMixContract,
@@ -16,6 +17,7 @@ from app.models import (
     ContentMixCycleSlot,
     CommentFulfillmentObligation,
     Action,
+    ExecutionAttempt,
     PendingVisibilityCredit,
     SearchClickFulfillmentObligation,
     ReactionFulfillmentObligation,
@@ -29,6 +31,7 @@ from app.models import (
     ViewRemoteFact,
 )
 from app.services.task_center.channel_fulfillment import (
+    cancel_superseded_channel_actions,
     confirm_reaction_obligation,
     confirm_view_obligation,
     ensure_reaction_action_contract,
@@ -258,6 +261,95 @@ def test_channel_task_soft_limits_are_system_owned_gates() -> None:
     assert like["max_likes_per_account_per_hour"] == UNIFIED_TASK_GATE_LIMIT
     assert comment["max_total_comments"] == UNIFIED_TASK_GATE_LIMIT
     assert comment["max_comments_per_account_per_hour"] == UNIFIED_TASK_GATE_LIMIT
+
+
+def test_superseded_reaction_action_is_released_before_replanning(
+    session: Session,
+) -> None:
+    task = _task(task_id="task-like-superseded", request_id="request-like-superseded")
+    task.type = "channel_like"
+    task.status = "running"
+    task.task_lifecycle_epoch = 4
+    action = Action(
+        id="like-action-superseded",
+        tenant_id=1,
+        task_id=task.id,
+        task_type="channel_like",
+        action_type="like_message",
+        account_id=101,
+        status="pending",
+        task_lifecycle_epoch=2,
+        pacing_slot_key="like:task-like-superseded:88:101",
+        payload={
+            "reaction_fulfillment_obligation_id": "reaction-superseded",
+        },
+    )
+    obligation = ReactionFulfillmentObligation(
+        id="reaction-superseded",
+        tenant_id=1,
+        task_id=task.id,
+        channel_message_id=88,
+        account_id=101,
+        reaction_contract_version=1,
+        current_action_id=action.id,
+        status="pending",
+    )
+    reservation = AccountPacingReservation(
+        id="reaction-superseded-reservation",
+        tenant_id=1,
+        task_id=task.id,
+        account_id=101,
+        pacing_slot_key=action.pacing_slot_key,
+        policy_version="test",
+        due_at=datetime.now(timezone.utc),
+        release_not_before_at=datetime.now(timezone.utc),
+        effective_claim_at=datetime.now(timezone.utc),
+        action_id=action.id,
+        state="bound",
+    )
+    session.add_all([task, action, obligation, reservation])
+    session.flush()
+
+    assert cancel_superseded_channel_actions(session, task) == 1
+    assert action.status == "skipped"
+    assert action.result["error_code"] == "task_lifecycle_superseded_pre_gateway"
+    assert obligation.status == "open"
+    assert obligation.current_action_id is None
+    assert reservation.state == "missed"
+
+
+def test_superseded_reaction_action_with_gateway_evidence_is_not_cancelled(
+    session: Session,
+) -> None:
+    task = _task(task_id="task-like-gateway", request_id="request-like-gateway")
+    task.type = "channel_like"
+    task.status = "running"
+    task.task_lifecycle_epoch = 4
+    action = Action(
+        id="like-action-gateway",
+        tenant_id=1,
+        task_id=task.id,
+        task_type="channel_like",
+        action_type="like_message",
+        account_id=101,
+        status="pending",
+        task_lifecycle_epoch=2,
+    )
+    session.add_all([
+        task,
+        action,
+        ExecutionAttempt(
+            tenant_id=1,
+            action_id=action.id,
+            attempt_no=1,
+            status="executing",
+            gateway_call_started_at=datetime.now(timezone.utc),
+        ),
+    ])
+    session.flush()
+
+    assert cancel_superseded_channel_actions(session, task) == 0
+    assert action.status == "pending"
 
 
 def test_reaction_and_view_remote_facts_confirm_once(
