@@ -242,17 +242,22 @@ DEADLINE_PROJECTION_CONFLICT_QUERY = text("""
      AND reservation.pacing_slot_key = action.pacing_slot_key
      AND reservation.state IN ('reserved', 'bound')
     LEFT JOIN task_group_daily_message_slots AS quantity
-      ON quantity.id = action.primary_quantity_slot_id
+      ON quantity.id = COALESCE(
+        action.primary_quantity_slot_id,
+        NULLIF(action.payload ->> 'primary_quantity_slot_id', '')
+      )
     LEFT JOIN fulfillment_obligation_projections AS projection
       ON projection.obligation_type = CASE
-           WHEN action.obligation_type IS NOT NULL AND action.obligation_id IS NOT NULL
+           WHEN COALESCE(action.obligation_type, '') <> ''
+             AND COALESCE(action.obligation_id, '') <> ''
              THEN action.obligation_type
            WHEN COALESCE(action.payload ->> 'coverage_ledger_id', '') <> ''
              THEN 'coverage'
            ELSE 'quantity_slot'
          END
      AND projection.obligation_id = CASE
-           WHEN action.obligation_type IS NOT NULL AND action.obligation_id IS NOT NULL
+           WHEN COALESCE(action.obligation_type, '') <> ''
+             AND COALESCE(action.obligation_id, '') <> ''
              THEN action.obligation_id
            WHEN COALESCE(action.payload ->> 'coverage_ledger_id', '') <> ''
              THEN action.payload ->> 'coverage_ledger_id'
@@ -265,9 +270,7 @@ DEADLINE_PROJECTION_CONFLICT_QUERY = text("""
       AND action.status = 'pending'
       AND action.task_lifecycle_epoch = task.task_lifecycle_epoch
       AND MOD(action.account_id, 2) = 1
-      AND projection.task_day_ledger_id IS NOT NULL
-      AND quantity.task_day_ledger_id IS NOT NULL
-      AND projection.task_day_ledger_id <> quantity.task_day_ledger_id
+      AND action.scheduled_at <= NOW()
     ORDER BY reservation.source_deadline_at, action.scheduled_at, action.id
     LIMIT 30
 """)
