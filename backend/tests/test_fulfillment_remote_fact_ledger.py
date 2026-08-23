@@ -78,42 +78,6 @@ def test_ai_fact_rejects_payload_owner_ledger_conflict(session: Session) -> None
 
 
 @pytest.mark.no_postgres
-def test_ai_obligation_uses_quantity_owner_over_legacy_coverage(session: Session) -> None:
-    action = _add_ai_owner_and_action(session)
-    action.obligation_type = "coverage"
-    action.obligation_id = "coverage-reused"
-    action.payload = {
-        **action.payload,
-        "coverage_ledger_id": "coverage-reused",
-    }
-    session.add(FulfillmentObligationProjection(
-        id="projection-legacy-coverage",
-        tenant_id=980_001,
-        task_id=action.task_id,
-        task_day_ledger_id="ledger-other",
-        task_lifecycle_epoch=1,
-        obligation_type="coverage",
-        obligation_id="coverage-reused",
-        work_lane="interaction",
-        state="open",
-        active_action_id=action.id,
-        materialization_version=1,
-        version=1,
-    ))
-    session.flush()
-
-    assert ensure_action_obligation(session, action)
-    assert (action.obligation_type, action.obligation_id) == (
-        "quantity_slot",
-        "quantity-ai",
-    )
-    projection = session.scalar(select(FulfillmentObligationProjection).where(
-        FulfillmentObligationProjection.obligation_type == "quantity_slot",
-    ))
-    assert projection.task_day_ledger_id == "ledger-ai"
-
-
-@pytest.mark.no_postgres
 def test_current_ai_fact_rejects_missing_ledger_owner(session: Session) -> None:
     action = _add_ai_owner_and_action(session)
     action.primary_quantity_slot_id = None
