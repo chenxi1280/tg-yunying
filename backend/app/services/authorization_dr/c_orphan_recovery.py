@@ -66,9 +66,9 @@ def apply_c_orphan_recovery(
         raise AuthorizationDrError("reconcile_evidence_conflict", "C orphan recovery preview changed")
     _persist_started(session, facts, preview, approved_by, approval_ref)
     result = gateway.cleanup_authorization(
-        facts["primary"].session_ciphertext,
+        facts["revoker"].session_ciphertext,
         candidate_hash,
-        credentials_for_authorization(session, facts["primary"]),
+        credentials_for_authorization(session, facts["revoker"]),
     )
     if not result.ok:
         raise AuthorizationDrError("reconcile_unknown", "C orphan revoke outcome is not confirmed")
@@ -92,9 +92,10 @@ def _facts(session, batch_id: str, account_id: int) -> dict:
     operation = session.get(TgAuthorizationDrOperation, slot.operation_id) if slot and slot.operation_id else None
     account = session.get(TgAccount, account_id)
     primary = session.get(TgAccountAuthorization, item.primary_authorization_id) if item else None
-    _require_frozen(session, batch, item, slot, operation, account, primary)
+    revoker = _revoker(session, account_id, primary)
+    _require_frozen(session, batch, item, slot, operation, account, primary, revoker)
     return {"session": session, "batch": batch, "item": item, "slot": slot, "operation": operation,
-            "account": account, "primary": primary}
+            "account": account, "primary": primary, "revoker": revoker}
 
 
 def _require_runtime_off(session) -> None:
@@ -104,7 +105,7 @@ def _require_runtime_off(session) -> None:
         raise AuthorizationDrError("reconcile_runtime_conflict", "DR runtime and clients must be stopped")
 
 
-def _require_frozen(session, batch, item, slot, operation, account, primary) -> None:
+def _require_frozen(session, batch, item, slot, operation, account, primary, revoker) -> None:
     account_delta = account.authorization_fact_generation - item.authorization_fact_generation if account else -1
     primary_delta = primary.fact_version - item.primary_fact_version if primary else -1
     valid = batch and batch.status == "stopped" and item and slot and operation and account and primary
@@ -117,12 +118,38 @@ def _require_frozen(session, batch, item, slot, operation, account, primary) -> 
     valid = valid and account.authorization_generation == item.authorization_generation
     valid = valid and account.connection_generation == item.connection_generation
     valid = valid and account_delta == primary_delta and account_delta >= 1
-    valid = valid and primary.status == "active" and primary.health_status == "healthy"
-    valid = valid and primary.last_authoritative_error_code == "" and primary.disabled_at is None
+    valid = valid and _valid_revoker(primary, revoker)
     valid = valid and primary.telegram_user_id_digest == operation.expected_code_source_user_id_digest
     valid = valid and primary.auth_key_fingerprint_digest == operation.expected_code_source_auth_key_digest
     if not valid:
         raise AuthorizationDrError("reconcile_frozen_fact_conflict", "C orphan recovery facts changed")
+
+
+def _revoker(session, account_id: int, primary):
+    if primary and primary.health_status == "healthy" and primary.last_authoritative_error_code == "":
+        return primary
+    return session.scalar(select(TgAccountAuthorization).where(
+        TgAccountAuthorization.account_id == account_id,
+        TgAccountAuthorization.logical_slot == "standby_1",
+        TgAccountAuthorization.is_slot_current.is_(True),
+        TgAccountAuthorization.is_current.is_(False),
+        TgAccountAuthorization.health_status == "healthy",
+        TgAccountAuthorization.disabled_at.is_(None),
+    ))
+
+
+def _valid_revoker(primary, revoker) -> bool:
+    if not primary or not revoker or not revoker.session_ciphertext:
+        return False
+    if revoker.id == primary.id:
+        return primary.status == "active" and primary.health_status == "healthy"
+    typed_duplicate = primary.last_authoritative_error_code == "authorization_key_duplicated"
+    independent = revoker.auth_key_fingerprint_digest != primary.auth_key_fingerprint_digest
+    return bool(
+        typed_duplicate and primary.health_status == "invalid"
+        and revoker.telegram_user_id_digest == primary.telegram_user_id_digest
+        and revoker.auth_key_fingerprint_digest and independent
+    )
 
 
 def _confirmed_stage(session, operation, item) -> bool:
@@ -134,7 +161,7 @@ def _confirmed_stage(session, operation, item) -> bool:
 
 
 def _remote_authorizations(session, facts):
-    primary = facts["primary"]
+    primary = facts["revoker"]
     return gateway.list_authorizations(
         primary.session_ciphertext, credentials_for_authorization(session, primary),
     )
