@@ -58,6 +58,24 @@ def ready_migration_runtime_image_sha(session) -> str:
     return node.runtime_image_sha
 
 
+def active_slot_assignments(session) -> tuple[DeveloperAppSlotAssignment, ...]:
+    mapping = _require_slot_assignments(session)
+    return tuple(mapping[purpose] for purpose in REQUIRED_SLOT_PURPOSES)
+
+
+def assignment_for_developer_app(session, developer_app_id: int) -> DeveloperAppSlotAssignment:
+    matches = [
+        assignment for assignment in active_slot_assignments(session)
+        if assignment.developer_app_id == developer_app_id
+    ]
+    if len(matches) != 1:
+        raise AuthorizationDrError(
+            "developer_app_slot_assignment_conflict",
+            "Frozen Developer App is not one of the three active assignments",
+        )
+    return matches[0]
+
+
 def record_node_heartbeat(
     session,
     node_id: str,
@@ -165,6 +183,8 @@ def _require_my_egress(session, egress_id: str) -> TelegramEgressAssignment:
 __all__ = [
     "ABC_CAPABILITY_VERSION",
     "MigrationReadiness",
+    "active_slot_assignments",
+    "assignment_for_developer_app",
     "record_node_heartbeat",
     "ready_migration_runtime_image_sha",
     "require_migration_readiness",

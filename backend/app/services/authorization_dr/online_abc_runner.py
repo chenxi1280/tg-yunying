@@ -44,6 +44,7 @@ SUCCESS_STATUS = "succeeded"
 TERMINAL_BATCH_STATUSES = {"accepted", "completed", "observing", "stopped"}
 POST_C_RESUME_BLOCKER = "malaysia_wake_unavailable"
 PRE_PRIMARY_RESUME_BLOCKER = "ValueError"
+POST_B_PRE_C_RESUME_BLOCKER = "sv_redundancy_incomplete"
 RECONCILED_B_RESUME_OUTCOME = "reconcile_unknown"
 RETRYABLE_E4_READINESS_CODES = {"malaysia_wake_unavailable"}
 TERMINAL_OPERATION_STATUSES = {
@@ -353,6 +354,9 @@ def _require_resume_contract(session, item, operations: dict) -> str:
     if item.blocker_code == POST_C_RESUME_BLOCKER:
         _require_post_c_resume(session, item, operations)
         return "post_c_pre_e4"
+    if item.blocker_code == POST_B_PRE_C_RESUME_BLOCKER:
+        _require_post_b_pre_c_resume(session, item, operations)
+        return "post_b_pre_c"
     if item.blocker_code == PRE_PRIMARY_RESUME_BLOCKER:
         _require_pre_primary_resume(session, item, operations)
         return "pre_primary_no_remote_effect"
@@ -411,6 +415,37 @@ def _require_post_c_resume(session, item, operations: dict) -> None:
     primary = session.get(TgAccountAuthorization, item.primary_authorization_id)
     if _primary_state(account, primary, item) != "qualified":
         raise AuthorizationDrError("online_abc_primary_drift", "A changed before runner resume")
+
+
+def _require_post_b_pre_c_resume(session, item, operations: dict) -> None:
+    operation = operations["b"]
+    valid_operation = operation and operation.status == SUCCESS_STATUS and operation.candidate_authorization_id
+    if not valid_operation or operations["c"] is not None or operations["e4"] is not None:
+        raise AuthorizationDrError(
+            "online_abc_resume_remote_effect_started",
+            "Post-B resume requires succeeded B and no C/E4 operation",
+        )
+    account = session.get(TgAccount, item.account_id)
+    primary = session.get(TgAccountAuthorization, item.primary_authorization_id)
+    candidate = session.get(TgAccountAuthorization, operation.candidate_authorization_id)
+    target_slot = "primary" if primary and primary.logical_slot == "standby_1" else "standby_1"
+    valid_candidate = (
+        candidate
+        and primary
+        and candidate.logical_slot == target_slot
+        and candidate.is_slot_current
+        and not candidate.is_current
+        and candidate.provision_region_code == "sv"
+        and candidate.status in {"active", "standby"}
+        and candidate.health_status == "healthy"
+        and candidate.session_ciphertext
+        and candidate.telegram_user_id_digest == primary.telegram_user_id_digest
+        and candidate.auth_key_fingerprint_digest
+        and candidate.auth_key_fingerprint_digest != primary.auth_key_fingerprint_digest
+        and candidate.developer_app_id != primary.developer_app_id
+    )
+    if _primary_state(account, primary, item) != "qualified" or not valid_candidate:
+        raise AuthorizationDrError("online_abc_primary_drift", "A or B changed before post-B resume")
 
 
 def _require_pre_primary_resume(session, item, operations: dict) -> None:

@@ -1,14 +1,14 @@
 # 马来西亚异地备用 TG Session 灾备 PRD
 
-> 版本：v2.23
+> 版本：v2.24
 > 日期口径：2026-08-23（Asia/Shanghai）
-> 当前状态：`design_status=complete`、`product_resync_status=complete`、`dev_handoff_ready=true`、`implemented_scope=abc_canaries_p0_local_recovery_and_full_online_abc_rolling_runner_deployed`、`core_deployed=cd06f75ca200552d621507f492629acd721a808f`、`ssh_mirror_deployed=true`、`slot_canary=2/2_historical_pass`、`ten_account_slot_result=10/10`、`ten_account_acceptance_gate=primary_stable_plus_saved_message_remote_id`、`fixed_observation_duration=removed`、`p0_local_recovery=2/2_verified`、`approved_batch_runner=production_verified_run_and_status`、`full_online_abc_design=complete_with_rolling_ten_contract`、`full_online_abc_implementation=deployed_pending_canary_acceptance_and_full_batch_execution`、`full_prd_implementation=partial`、`runtime_mode=off`、`production_fixed=false`
+> 当前状态：`design_status=complete`、`product_resync_status=complete`、`dev_handoff_ready=true`、`implemented_scope=abc_canaries_p0_local_recovery_and_full_online_abc_rolling_runner_deployed`、`core_deployed=50f657c03c6ad0ef60b75eced1bf1390516ce290`、`ssh_mirror_deployed=true`、`slot_canary=2/2_historical_pass`、`ten_account_slot_result=10/10`、`ten_account_acceptance_gate=primary_stable_plus_saved_message_remote_id`、`fixed_observation_duration=removed`、`p0_local_recovery=2/2_verified`、`approved_batch_runner=production_verified_run_and_status`、`full_online_abc_design=complete_with_rolling_ten_contract`、`full_online_abc_implementation=account_10_stopped_post_b_pre_c_pending_v2_24_release`、`full_prd_implementation=partial`、`runtime_mode=off`、`production_fixed=false`
 > 适用范围：账号授权资产、三槽位远端设备归属、活跃授权设备查看/清理、备用登录、硅谷本地自动切换、跨模块运行代次、显式演练、紧急登录码辅助和硅谷主授权重建；不包含业务系统整体异地容灾。
 > 关联文档：[实施与验收合同](account-malaysia-standby-session-dr-implementation-contract.md)、[account-standby-auto-authorization-prd.md](account-standby-auto-authorization-prd.md)、[account-security-hardening-design.md](account-security-hardening-design.md)、[account-login-group-navigation-recovery-prd.md](account-login-group-navigation-recovery-prd.md)。
 
 ## 1. 背景与问题
 
-当前账号已定义 `primary`、`standby_1`、`standby_2` 三类授权资产。核心运行关系固定为：硅谷是唯一日常业务运行面，`primary` 和 `standby_1` 都使用硅谷固定出口；`standby_1` 解决主授权自身失效后的本地快速恢复，不解决硅谷服务器或区域故障。`standby_2` 在马来西亚真实登录生成，平时不保持 Telegram 连接，只是异地紧急授权资产。线上现有且只使用三套 TG Developer App：App A、App B、App C 是新账号默认的 `primary`、`standby_1`、`standby_2` 分配，历史主备切换后同一账号的 A/B 可以互换角色；每个账号的三个当前槽位仍必须使用三个不同 App，存量迁移源必须是冻结的 App C `standby_2`。三个槽位都必须真实登录，对 Telegram 而言是三个独立授权设备，不是一个 App 配置或一份 Session 的三个标签；本次迁移不申请第四套 App。
+当前账号已定义 `primary`、`standby_1`、`standby_2` 三类授权资产。核心运行关系固定为：硅谷是唯一日常业务运行面，`primary` 和 `standby_1` 都使用硅谷固定出口；`standby_1` 解决主授权自身失效后的本地快速恢复，不解决硅谷服务器或区域故障。`standby_2` 在马来西亚真实登录生成，平时不保持 Telegram 连接，只是异地紧急授权资产。线上现有且只使用三套 TG Developer App：App A、App B、App C 是新账号默认的 `primary`、`standby_1`、`standby_2` 分配，但 App 名称不是历史切换后不可变化的业务角色。历史恢复可能使当前 A 使用三套 App 中任一套；此时不得为了恢复默认映射而改写或重登 A，B 使用与 A 不同的合格 SV App，source-less C 必须从三条 active assignment 中唯一选择 A/B 都未使用的剩余 App。已有 SV C 迁移仍冻结其原 App；每个账号的三个当前槽位始终必须使用三个不同 App，不申请第四套 App。三个槽位都必须真实登录，对 Telegram 而言是三个独立授权设备，不是一个 App 配置或一份 Session 的三个标签。
 
 ### 1.1 2026-08-20 生产只读基线
 

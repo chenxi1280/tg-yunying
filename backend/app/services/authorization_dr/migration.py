@@ -33,7 +33,7 @@ from .migration_results import (
 )
 from .operation_state import mark_item as _mark_item, owned_operation as _owned_operation
 from .primary_fence import require_primary_code_source, verified_code_source
-from .readiness import require_migration_readiness
+from .readiness import assignment_for_developer_app, require_migration_readiness
 from .stage_facts import append_stage_fact
 
 
@@ -429,7 +429,8 @@ def _verify_frozen_inputs(session, operation, readiness) -> None:
     else:
         _verify_source(item, source)
     verified_code_source(session, operation)
-    if operation.assignment_version != readiness.assignment_version:
+    assignment = assignment_for_developer_app(session, operation.developer_app_id)
+    if operation.assignment_version != assignment.assignment_version:
         raise AuthorizationDrError("assignment_version_conflict", "Frozen App assignment changed")
     if operation.egress_id != readiness.egress.id or operation.egress_version != readiness.egress.version:
         raise AuthorizationDrError("fixed_egress_version_conflict", "Frozen MY egress changed")
