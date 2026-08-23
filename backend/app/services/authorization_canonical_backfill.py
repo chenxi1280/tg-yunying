@@ -312,7 +312,7 @@ def _primary_projection(session, tenant_id: int, account_id: int, *, for_update:
         and current.account_id == account.id
         and current.is_current
         and current.is_slot_current
-        and current.logical_slot == "primary"
+        and current.logical_slot in {"primary", "standby_1"}
         and current.provision_region_code == "sv"
         and current.session_ciphertext == account.session_ciphertext
         and current.developer_app_id == account.developer_app_id
