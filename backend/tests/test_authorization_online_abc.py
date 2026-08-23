@@ -1,18 +1,18 @@
 from __future__ import annotations
 
 import importlib.util
-from datetime import timedelta
 from pathlib import Path
 
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 import pytest
 
 from app.database import Base
 from app.models import (
     AccountProxy,
+    AuditLog,
     AuthorizationDrRuntimeContract,
     DeveloperAppSlotAssignment,
     TelegramDeveloperApp,
@@ -37,7 +37,6 @@ from app.services.authorization_dr.online_abc_manifest import (
     apply_full_online_abc_batch,
     preview_full_online_abc_batch,
 )
-from app.services._common import _now
 
 
 pytestmark = pytest.mark.no_postgres
@@ -305,7 +304,7 @@ def test_runner_stops_cleanly_after_requested_chunk(session: Session, monkeypatc
     assert result["batch"]["account_outcome_counts"] == {"succeeded": 2, "pending": 8}
 
 
-def test_observation_acceptance_cannot_be_early_and_is_idempotent(
+def test_observation_acceptance_is_immediate_and_idempotent(
     session: Session, monkeypatch,
 ) -> None:
     batch_id = _apply(session, _preview(session)["fingerprint"])["batch_id"]
@@ -320,13 +319,8 @@ def test_observation_acceptance_cannot_be_early_and_is_idempotent(
         sleeper=lambda _: None,
     )
 
-    with pytest.raises(AuthorizationDrError) as exc_info:
-        accept_online_abc_observation(session, batch_id, actor="approver", approval_ref="ABC-10")
-    assert exc_info.value.code == "online_abc_canary_observation_incomplete"
-
     batch = session.get(TgAuthorizationOnlineAbcBatch, batch_id)
-    batch.observation_closes_at = _now() - timedelta(seconds=1)
-    session.commit()
+    assert batch.observation_closes_at == batch.observation_started_at
     accepted = accept_online_abc_observation(
         session, batch_id, actor="approver", approval_ref="ABC-10",
     )
@@ -336,6 +330,28 @@ def test_observation_acceptance_cannot_be_early_and_is_idempotent(
 
     assert accepted["status"] == "accepted"
     assert repeated["status"] == "accepted"
+
+
+def test_observation_acceptance_requires_primary_send_remote_fact(
+    session: Session, monkeypatch,
+) -> None:
+    batch_id = _apply(session, _preview(session)["fingerprint"])["batch_id"]
+    _mock_runner_success(monkeypatch, [])
+    runner.run_online_abc_batch(
+        session, batch_id, requested_by="requester", approved_by="approver",
+        approval_ref="ABC-10", runtime_release_sha=RELEASE_SHA, sleeper=lambda _: None,
+    )
+    audit = session.scalar(select(AuditLog).where(
+        AuditLog.action == "完成 ABC canary E4",
+    ).order_by(AuditLog.id).limit(1))
+    session.delete(audit)
+    session.commit()
+
+    with pytest.raises(AuthorizationDrError) as exc_info:
+        accept_online_abc_observation(session, batch_id, actor="approver", approval_ref="ABC-10")
+
+    assert exc_info.value.code == "online_abc_primary_send_unproven"
+    assert session.get(TgAuthorizationOnlineAbcBatch, batch_id).status == "observing"
 
 
 def test_full_preview_freezes_all_online_accounts_after_accepted_canary(session: Session) -> None:
@@ -627,6 +643,16 @@ def _add_operation(
         requested_by="requester", approved_by="approver", approval_ref="ABC-10",
     )
     session.add(operation)
+    session.flush()
+    if resolved_type == "abc_e4_primary_send" and status == "succeeded":
+        session.add(AuditLog(
+            tenant_id=1,
+            actor="approver",
+            action="完成 ABC canary E4",
+            target_type="tg_authorization_dr_operation",
+            target_id=operation.id,
+            detail=f"approval_ref=ABC-10; primary_saved_message_id=test-{account_id}",
+        ))
     session.commit()
     return operation
 

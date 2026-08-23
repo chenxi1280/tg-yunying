@@ -271,7 +271,7 @@ def _require_accepted_canary(session, tenant_id: int) -> None:
     if not accepted:
         raise AuthorizationDrError(
             "online_abc_canary_observation_incomplete",
-            "An accepted ten-account observation is required",
+            "An accepted ten-account A/send canary is required",
         )
 
 
