@@ -201,8 +201,19 @@ def _assert_no_sensitive(details: list[str]) -> None:
         assert SENSITIVE_NODE_PASSWORD not in detail, f"审计 detail 含节点密码: {detail!r}"
 
 
+def _create_runtime_binding(session: Session, actor: str = "test-setup") -> None:
+    create_group_proxy_binding(
+        session,
+        tenant_id=1,
+        account_pool_id=10,
+        proxy_airport_node_id=20,
+        operator=actor,
+    )
+
+
 def _create_ready_task(session: Session, monkeypatch, actor: str = "alice"):
     task = create_search_rank_deboost_task(session, 1, _build_payload(), actor)
+    _create_runtime_binding(session)
     exempt = session.query(SearchRankDeboostExemptGroup).filter_by(task_id=task.id).one()
     exempt.exempt_group_username = "real_exempt_group"
     exempt.exempt_group_peer_id = "-100999"
@@ -336,6 +347,7 @@ def test_reroll_writes_audit_with_old_new_operator_time(monkeypatch) -> None:
     with Session(engine) as session:
         _seed_base(session)
         task = create_search_rank_deboost_task(session, 1, _build_payload(), "alice")
+        _create_runtime_binding(session)
         _install_exempt_candidate_searcher(monkeypatch, ["real_exempt_a", "real_exempt_b"])
 
         # 第一次重选：建立初始豁免群记录
@@ -422,15 +434,14 @@ def test_failover_group_proxy_binding_writes_audit() -> None:
 def test_audit_details_exclude_sensitive_info(monkeypatch) -> None:
     """执行全部降权任务操作后，所有审计 detail 不得含订阅 URL/节点密码/token/关键词明文。
 
-    注：create_search_rank_deboost_task 内部已创建分组级代理绑定（pool 10 / node 20），
-    因此分组级代理绑定变更通过 failover + unbind 覆盖（create 路径由任务创建覆盖，
-    独立 create_group_proxy_binding 审计由专属测试覆盖）。
+    测试夹具在任务创建后显式建立运行期分组代理绑定（pool 10 / node 20），
+    再通过 failover + unbind 覆盖后续变更。
     """
     engine = _build_engine()
     with Session(engine) as session:
         _seed_base(session)
 
-        # 创建并启动（keywords 含敏感明文；任务创建内部绑定节点 20，其 config 含敏感密码）
+        # 创建并启动（keywords 含敏感明文；测试夹具显式绑定节点 20）
         task = _create_ready_task(session, monkeypatch)
         # 暂停 + 重试
         pause_task(session, 1, task.id, "alice")
