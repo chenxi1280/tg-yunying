@@ -221,6 +221,8 @@ DEADLINE_PROJECTION_CONFLICT_QUERY = text("""
     SELECT action.id AS action_id, action.task_id, task.name AS task_name,
            action.account_id, action.obligation_type, action.obligation_id,
            action.primary_quantity_slot_id,
+           action.payload ->> 'coverage_ledger_id' AS payload_coverage_ledger_id,
+           action.payload ->> 'primary_quantity_slot_id' AS payload_quantity_slot_id,
            action.payload ->> 'task_day_ledger_id' AS payload_ledger_id,
            quantity.task_day_ledger_id AS quantity_ledger_id,
            projection.id AS projection_id,
@@ -235,7 +237,9 @@ DEADLINE_PROJECTION_CONFLICT_QUERY = text("""
     FROM actions AS action
     JOIN tasks AS task ON task.id = action.task_id
     JOIN account_pacing_reservations AS reservation
-      ON reservation.action_id = action.id
+      ON reservation.tenant_id = action.tenant_id
+     AND reservation.account_id = action.account_id
+     AND reservation.pacing_slot_key = action.pacing_slot_key
      AND reservation.state IN ('reserved', 'bound')
     LEFT JOIN task_group_daily_message_slots AS quantity
       ON quantity.id = action.primary_quantity_slot_id
