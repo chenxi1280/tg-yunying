@@ -7,7 +7,6 @@ from datetime import timedelta
 from sqlalchemy import select
 
 from app.models import (
-    AccountProxy,
     AccountStatus,
     TelegramDeveloperApp,
     TgAccount,
@@ -182,10 +181,9 @@ def _require_switchable_target(target) -> None:
 
 def _current_credentials(session, account):
     app = session.get(TelegramDeveloperApp, account.developer_app_id) if account.developer_app_id else None
-    proxy = session.get(AccountProxy, account.proxy_id) if account.proxy_id else None
     if not app:
         raise AuthorizationDrError("local_activate_primary_failure_unproven", "Current Developer App is unavailable")
-    return credentials_for_developer_app(app, proxy)
+    return credentials_for_developer_app(app)
 
 
 def _fingerprint_payload(account, target, identity, reason: str) -> dict:

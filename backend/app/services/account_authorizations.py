@@ -54,7 +54,7 @@ def start_standby_authorization_login(
     method: str,
     role: str,
     developer_app_id: int,
-    proxy_id: int,
+    proxy_id: int | None,
     actor: str,
     persist_code_preview: bool = True,
 ) -> TgLoginFlow:
@@ -63,7 +63,13 @@ def start_standby_authorization_login(
     account = _require_account(session, account_id)
     app, proxy = _require_login_resources(session, account.tenant_id, role, developer_app_id, proxy_id)
     credentials = credentials_for_developer_app(app, proxy)
-    flow = _standby_login_intent(account, method=method, role=role, developer_app_id=app.id, proxy_id=proxy.id)
+    flow = _standby_login_intent(
+        account,
+        method=method,
+        role=role,
+        developer_app_id=app.id,
+        proxy_id=proxy.id if proxy else None,
+    )
     session.add(flow)
     session.commit()
     session.refresh(flow)
@@ -84,7 +90,10 @@ def start_standby_authorization_login(
         action="开始备用授权登录",
         target_type="tg_account",
         target_id=str(account.id),
-        detail=f"method={method}; role={role}; developer_app_id={app.id}; proxy_id={proxy.id}",
+        detail=(
+            f"method={method}; role={role}; developer_app_id={app.id}; "
+            f"proxy_id={proxy.id if proxy else 'direct'}"
+        ),
     )
     session.commit()
     session.refresh(flow)
@@ -107,7 +116,7 @@ def verify_standby_authorization_login(
     flow = _require_standby_login_flow(session, account, flow_id, flow_version)
     _expire_flow_if_needed(session, account, flow, actor, password_2fa)
     app = _require_developer_app(session, flow.developer_app_id)
-    proxy = _require_proxy(session, account.tenant_id, flow.proxy_id)
+    proxy = _optional_proxy(session, account.tenant_id, flow.proxy_id)
     credentials = credentials_for_developer_app(app, proxy)
     status, raw_session = gateway.finish_login(
         code,
@@ -146,7 +155,7 @@ def check_standby_authorization_qr_login(
     account = _require_account(session, account_id)
     flow = _require_standby_login_flow(session, account, flow_id, flow_version)
     app = _require_developer_app(session, flow.developer_app_id)
-    proxy = _require_proxy(session, account.tenant_id, flow.proxy_id)
+    proxy = _optional_proxy(session, account.tenant_id, flow.proxy_id)
     status, raw_session = gateway.finish_login(
         "qr-confirmed",
         None,
@@ -393,11 +402,13 @@ def _require_login_resources(
     tenant_id: int,
     role: str,
     developer_app_id: int,
-    proxy_id: int,
-) -> tuple[TelegramDeveloperApp, AccountProxy]:
+    proxy_id: int | None,
+) -> tuple[TelegramDeveloperApp, AccountProxy | None]:
     if role not in STANDBY_ROLES:
         raise ValueError("备用授权角色无效")
     app = _require_developer_app(session, developer_app_id)
+    if proxy_id is None:
+        return app, None
     proxy = session.get(AccountProxy, proxy_id)
     if not proxy or proxy.tenant_id != tenant_id:
         raise ValueError("备用授权代理不存在")
@@ -424,13 +435,17 @@ def _require_proxy(session: Session, tenant_id: int, proxy_id: int | None) -> Ac
     return proxy
 
 
+def _optional_proxy(session: Session, tenant_id: int, proxy_id: int | None) -> AccountProxy | None:
+    return _require_proxy(session, tenant_id, proxy_id) if proxy_id is not None else None
+
+
 def _standby_login_intent(
     account: TgAccount,
     *,
     method: str,
     role: str,
     developer_app_id: int,
-    proxy_id: int,
+    proxy_id: int | None,
 ) -> TgLoginFlow:
     return TgLoginFlow(
         tenant_id=account.tenant_id,

@@ -1,5 +1,7 @@
 # 马来西亚异地备用 TG Session 灾备 PRD
 
+> **2026-08-24 SV 唯一业务出口补正：** 生产 `primary_regular` 是硅谷 backend/worker 的固定直连出口，不是 `tg_accounts.proxy_id` 或 `tg_account_authorizations.proxy_id` 指向的历史账号代理。A、B 的登录、验证码读取、identity/device probe、online probe、local activate 和 Saved Messages E4 必须全部使用该直连出口；禁止同一 SV AuthKey 在直连与账号代理之间混用。新 SV operation 固定记录 `egress_id=primary_regular:direct`，历史 `sv-proxy:*` 只允许按原 operation 对账，不能用于新登录或新探测。C 继续只使用 MY 固定出口。该补正不改写既有 Session、current pointer、App、账号代理字段或授权代次；发布前批次必须 stopped/running item=0/global unknown=0，发布后先恢复已出现 typed `authorization_key_duplicated` 的账号，再以单账号 canary 验证 A 真实发送/读回和无漂移。
+
 > 版本：v2.24
 > 日期口径：2026-08-23（Asia/Shanghai）
 > 当前状态：`design_status=complete`、`product_resync_status=complete`、`dev_handoff_ready=true`、`implemented_scope=abc_canaries_p0_local_recovery_and_full_online_abc_rolling_runner_deployed`、`core_deployed=50f657c03c6ad0ef60b75eced1bf1390516ce290`、`ssh_mirror_deployed=true`、`slot_canary=2/2_historical_pass`、`ten_account_slot_result=10/10`、`ten_account_acceptance_gate=primary_stable_plus_saved_message_remote_id`、`fixed_observation_duration=removed`、`p0_local_recovery=2/2_verified`、`approved_batch_runner=production_verified_run_and_status`、`full_online_abc_design=complete_with_rolling_ten_contract`、`full_online_abc_implementation=account_10_stopped_post_b_pre_c_pending_v2_24_release`、`full_prd_implementation=partial`、`runtime_mode=off`、`production_fixed=false`

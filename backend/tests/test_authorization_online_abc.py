@@ -122,6 +122,16 @@ def test_preview_requires_exactly_ten_unique_targets(session: Session) -> None:
         )
 
 
+def test_preview_uses_direct_primary_regular_without_proxy_gate(session: Session) -> None:
+    account = session.get(TgAccount, ACCOUNT_IDS[0])
+    account.proxy_id = None
+    session.commit()
+
+    preview = _preview(session)
+
+    assert preview["targets"][0]["proxy_id"] is None
+
+
 def test_migration_accepts_metadata_precreated_tables() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

@@ -77,7 +77,7 @@ def test_peer_lookup_prefers_canonical_authorization_over_stale_account_session(
     monkeypatch.setattr(
         account_authorization_metadata,
         "credentials_for_developer_app",
-        lambda observed_app, observed_proxy: (observed_app.id, observed_proxy.id),
+        lambda observed_app: (observed_app.id, None),
     )
     monkeypatch.setattr(
         account_authorization_metadata,
@@ -94,4 +94,4 @@ def test_peer_lookup_prefers_canonical_authorization_over_stale_account_session(
     views = list(account_authorization_metadata._peer_authorization_views(FakeSession(), account, 162))
 
     assert views == [[]]
-    assert calls == [("current-standby-session", (2, 16))]
+    assert calls == [("current-standby-session", (2, None))]

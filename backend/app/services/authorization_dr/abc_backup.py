@@ -8,7 +8,6 @@ from dataclasses import asdict, dataclass
 from sqlalchemy import select
 
 from app.models import (
-    AccountProxy,
     DeveloperAppSlotAssignment,
     TelegramDeveloperApp,
     TgAccount,
@@ -26,7 +25,7 @@ from app.services.account_two_fa import managed_two_fa_password
 from app.services.developer_apps import credentials_for_authorization
 from app.timezone import as_beijing_aware
 
-from .contracts import AuthorizationDrError
+from .contracts import AuthorizationDrError, PRIMARY_REGULAR_EGRESS_ID, PRIMARY_REGULAR_EGRESS_VERSION
 from .login_code import bind_login_code
 from .primary_fence import verified_code_source
 
@@ -50,7 +49,7 @@ class AbcBackupPreview:
     app_b_credentials_version: int
     app_b_assignment_purpose: str
     assignment_version: int
-    proxy_id: int
+    proxy_id: int | None
     idempotency_key: str
     fingerprint: str = ""
 
@@ -122,9 +121,6 @@ def _preview_inputs(
         session, primary, bootstrap_missing=bootstrap_missing_primary_identity,
     )
     assignment, app = _sv_backup_assignment(session, primary)
-    proxy = session.get(AccountProxy, account.proxy_id) if account.proxy_id else None
-    if not proxy or proxy.status not in {"healthy", "available", "normal", "active"}:
-        raise AuthorizationDrError("proxy_unavailable", "A SV proxy is unavailable for B login")
     _require_no_healthy_b(session, account_id, primary)
     _require_no_active_operation(session, account_id)
     return AbcBackupPreview(
@@ -141,7 +137,7 @@ def _preview_inputs(
         app_b_credentials_version=app.credentials_version,
         app_b_assignment_purpose=assignment.slot_purpose,
         assignment_version=assignment.assignment_version,
-        proxy_id=proxy.id,
+        proxy_id=account.proxy_id,
         idempotency_key=idempotency_key.strip(),
     )
 
@@ -194,8 +190,8 @@ def _new_b_operation(preview, account, primary, requested_by, approved_by, appro
         developer_app_api_id_snapshot=0,
         developer_app_credentials_version=preview["app_b_credentials_version"],
         assignment_version=preview["assignment_version"],
-        egress_id=f"sv-proxy:{preview['proxy_id']}",
-        egress_version=1,
+        egress_id=PRIMARY_REGULAR_EGRESS_ID,
+        egress_version=PRIMARY_REGULAR_EGRESS_VERSION,
         idempotency_key=preview["idempotency_key"],
         request_fingerprint=preview["fingerprint"],
         status="approved",
@@ -219,7 +215,7 @@ def _execute_b_login(session, operation) -> None:
             method="code",
             role="standby_1",
             developer_app_id=operation.developer_app_id,
-            proxy_id=_proxy_id(operation),
+            proxy_id=None,
             actor=operation.approved_by,
             persist_code_preview=False,
         )
@@ -366,10 +362,6 @@ def _mark_manual(session, operation, exc: Exception) -> None:
     operation.finished_at = _now()
     operation.operation_version += 1
     session.commit()
-
-
-def _proxy_id(operation) -> int:
-    return int(operation.egress_id.split(":", 1)[1])
 
 
 def _sv_backup_assignment(session, primary):

@@ -16,7 +16,11 @@ from app.models import (
 from app.services._common import _now, audit, gateway
 from app.services.developer_apps import credentials_for_authorization
 
-from .contracts import AuthorizationDrError
+from .contracts import (
+    AuthorizationDrError,
+    PRIMARY_REGULAR_EGRESS_ID,
+    PRIMARY_REGULAR_EGRESS_VERSION,
+)
 from .primary_fence import verified_code_source
 
 
@@ -205,8 +209,8 @@ def _new_operation(account, primary, preview, requested_by, approved_by, approva
         developer_app_api_id_snapshot=primary.developer_app_api_id_snapshot,
         developer_app_credentials_version=primary.developer_app.credentials_version,
         assignment_version=1,
-        egress_id=f"sv-proxy:{primary.proxy_id or 0}",
-        egress_version=1,
+        egress_id=PRIMARY_REGULAR_EGRESS_ID,
+        egress_version=PRIMARY_REGULAR_EGRESS_VERSION,
         idempotency_key=preview["idempotency_key"],
         request_fingerprint=preview["fingerprint"],
         status="approved",
