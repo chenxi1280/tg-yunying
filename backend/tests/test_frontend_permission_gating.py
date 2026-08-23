@@ -2165,6 +2165,21 @@ def test_group_ai_prejoin_channels_are_wired_through_create_edit_and_readback():
     assert "detail.task.group_ai_prejoin_channel_ids" in detail
 
 
+def test_group_ai_prejoin_channels_are_visible_by_default_in_create_and_edit():
+    source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
+    wizard = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()
+    group_ai_config = wizard[
+        wizard.index("if (taskType === 'group_ai_chat')"):
+        wizard.index("if (taskType === 'group_membership_admission')")
+    ]
+
+    assert "defaultActiveKey={['membership-strategy']}" in group_ai_config
+    assert 'name="group_ai_prejoin_channel_ids"' in group_ai_config
+    assert 'label="需要关注的频道地址"' in group_ai_config
+    assert "{wizardStep === 2 && <WizardTypeConfig taskType={taskType}" in source
+    assert '<Typography.Title level={5}>类型参数</Typography.Title>\n          <WizardTypeConfig' in source
+
+
 def test_group_ai_quality_funnel_labels_profile_low_match():
     source = (PROJECT_ROOT / "frontend/src/app/views/TaskAIQualityFunnelPanel.tsx").read_text()
     types = (PROJECT_ROOT / "frontend/src/app/types/taskCenter.ts").read_text()
