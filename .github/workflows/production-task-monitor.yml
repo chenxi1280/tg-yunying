@@ -120,6 +120,17 @@ jobs:
             -i tgyunying-backend python -" \
             < .github/scripts/task_fulfillment_e4_diagnostics.py
 
+      - name: Read channel comment, like, and view E4 facts
+        if: ${{ always() }}
+        env:
+          RELEASE_LIVE_AT: ${{ inputs.release_live_at }}
+        run: |
+          set -euo pipefail
+          ssh silicon-valley-production-server "timeout 180 docker exec \
+            -e TASK_FULFILLMENT_RELEASE_LIVE_AT='${RELEASE_LIVE_AT}' \
+            -i tgyunying-backend python -" \
+            < .github/scripts/channel_interaction_e4_diagnostics.py
+
       - name: Read search click recent solver epochs
         if: ${{ always() }}
         env:
