@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import text
@@ -367,7 +367,7 @@ BATCH_PROJECTION_CONFLICT_QUERY = text("""
 
 
 def _json_value(value):
-    if isinstance(value, datetime):
+    if isinstance(value, (date, datetime)):
         return value.isoformat()
     if isinstance(value, Decimal):
         return float(value)
