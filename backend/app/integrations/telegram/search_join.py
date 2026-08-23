@@ -914,6 +914,7 @@ def _protocol_phase_error(
 ) -> dict[str, Any]:
     return {
         **_failed(code, detail),
+        "remote_mutation_started": False,
         "jisou_page_phase": classification.page_phase,
         "protocol_event_type": "page_classified",
         "search_protocol_trace": {
@@ -1421,6 +1422,7 @@ def _image_verification_failed_result(
     """PRD §2.19.2 第 5 步：识别失败、置信度不足、answer 不在矩阵、重试仍空都写 jisou_image_verification_failed。"""
     error = {
         **_failed("jisou_image_verification_failed", f"极搜图片算式验证码识别失败：{detail}"),
+        "remote_mutation_started": False,
         "jisou_page_phase": VERIFICATION_IMAGE_PAGE,
         "protocol_event_type": "image_verification_failed",
         "image_verification_answer": answer,
