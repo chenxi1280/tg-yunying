@@ -173,14 +173,14 @@ def _seed_base(
     return binding, accounts
 
 
-# ==================== 1. 任务创建 → 预检通过 ====================
+# ==================== 1. 任务直接创建 ====================
 
 
-def test_e2e_create_task_precheck_passes() -> None:
-    """创建降权任务：分组+账号+协议样本+代理绑定齐备 → 预检通过，task 落库。"""
+def test_e2e_create_task_does_not_prepare_runtime_binding() -> None:
+    """创建阶段只落草稿，不探测或写入运行时代理绑定。"""
     engine = _build_engine()
     with Session(engine) as session:
-        _seed_base(session, account_ids=[100], with_binding=False)  # service 会自建 binding
+        _seed_base(session, account_ids=[100], with_binding=False)
         session.commit()
 
         payload = SearchRankDeboostTaskCreate(
@@ -204,20 +204,18 @@ def test_e2e_create_task_precheck_passes() -> None:
         assert task.type_config["target_group_ids"] == [1001]
         assert task.type_config["account_pool_id"] == 10
         assert task.type_config["proxy_airport_node_id"] == 20
-        # 分组级代理绑定已创建（service 内部创建独立 binding 记录）
         bindings = session.query(AccountGroupProxyBinding).filter_by(
             tenant_id=1, account_pool_id=10, status="active",
         ).all()
-        assert len(bindings) >= 1
-        assert bindings[0].observed_exit_ip == "1.1.1.1"
+        assert bindings == []
         # 预选豁免群已写入（search_results=None 时占位）
         exempt = session.query(SearchRankDeboostExemptGroup).filter_by(task_id=task.id).one()
         assert exempt.exempt_group_username  # 占位或实际用户名
         assert exempt.selected_by == "tester"
 
 
-def test_e2e_create_task_uses_account_config_and_existing_group_bindings() -> None:
-    """新前端只提交 account_config；创建阶段按已绑定 rank 分组校验 readiness。"""
+def test_e2e_create_task_does_not_read_existing_group_bindings() -> None:
+    """新前端只提交 account_config；绑定在启动阶段解析。"""
     engine = _build_engine()
     with Session(engine) as session:
         _seed_base(session, account_ids=[100], with_binding=True)
@@ -234,13 +232,13 @@ def test_e2e_create_task_uses_account_config_and_existing_group_bindings() -> No
 
         assert task.status == "draft"
         assert task.account_config["selection_mode"] == "all"
-        assert task.type_config["account_pool_id"] == 10
-        assert task.type_config["proxy_airport_node_id"] == 20
+        assert task.type_config["account_pool_id"] == 0
+        assert task.type_config["proxy_airport_node_id"] == 0
         assert session.query(AccountGroupProxyBinding).filter_by(status="active").count() == 1
 
 
-def test_e2e_create_task_rejects_node_used_by_other_group_binding() -> None:
-    """创建降权任务必须复用分组代理绑定服务，拒绝复用其他分组 active 节点。"""
+def test_e2e_create_task_defers_conflicting_node_check_until_start() -> None:
+    """节点冲突属于运行条件，不阻止草稿创建。"""
     engine = _build_engine()
     with Session(engine) as session:
         _seed_base(session, account_ids=[100], with_binding=False)
@@ -264,15 +262,17 @@ def test_e2e_create_task_rejects_node_used_by_other_group_binding() -> None:
             account_pool_id=10,
             proxy_airport_node_id=20,
         )
-        with pytest.raises(ValueError, match="已被其他降权分组绑定"):
-            create_search_rank_deboost_task(session, 1, payload, operator="tester")
+        task = create_search_rank_deboost_task(session, 1, payload, operator="tester")
+
+        assert task.status == "draft"
+        assert session.query(Task).filter_by(name="节点复用任务").count() == 1
 
 
 def test_e2e_start_rejects_pending_real_search_exempt_group(monkeypatch) -> None:
     """草稿排名观察任务只有拿到真实豁免群后才能启动。"""
     engine = _build_engine()
     with Session(engine) as session:
-        _seed_base(session, account_ids=[100], with_binding=False)
+        _seed_base(session, account_ids=[100], with_binding=True)
         session.commit()
 
         from app.services import _common
@@ -394,7 +394,7 @@ def test_e2e_start_records_candidate_gateway_exception_as_readiness_blocker(monk
 def test_e2e_create_and_start_keeps_waiting_task_on_runtime_failure(monkeypatch) -> None:
     engine = _build_engine()
     with Session(engine) as session:
-        _seed_base(session, account_ids=[100], with_binding=False)
+        _seed_base(session, account_ids=[100], with_binding=True)
         session.commit()
 
         from app.services import _common
@@ -436,7 +436,7 @@ def test_e2e_reroll_rejects_when_real_search_provider_missing() -> None:
     """未接入真实搜索候选源时，重选不能继续写 pending_real_search 后返回成功。"""
     engine = _build_engine()
     with Session(engine) as session:
-        _seed_base(session, account_ids=[100], with_binding=False)
+        _seed_base(session, account_ids=[100], with_binding=True)
         session.commit()
 
         payload = SearchRankDeboostTaskCreate(
@@ -463,7 +463,7 @@ def test_e2e_start_rejects_when_rank_observation_gateway_missing() -> None:
     """真实执行 gateway 未接入时不能把排名观察任务启动成 running。"""
     engine = _build_engine()
     with Session(engine) as session:
-        _seed_base(session, account_ids=[100], with_binding=False)
+        _seed_base(session, account_ids=[100], with_binding=True)
         session.commit()
 
         payload = SearchRankDeboostTaskCreate(
@@ -513,8 +513,8 @@ def test_e2e_start_rejects_unresolvable_target_identity_before_gateway_check() -
 # ==================== 2. 样本采集门控 ====================
 
 
-def test_e2e_create_task_rejected_when_protocol_samples_missing() -> None:
-    """协议样本不足时创建降权任务被拒（ValueError 含协议样本缺口）。"""
+def test_e2e_create_task_succeeds_when_protocol_samples_missing() -> None:
+    """协议样本是启动条件，缺失时仍应直接创建草稿。"""
     engine = _build_engine()
     with Session(engine) as session:
         _seed_base(session, account_ids=[100], with_samples=False, with_binding=False)  # 不采集样本
@@ -528,10 +528,10 @@ def test_e2e_create_task_rejected_when_protocol_samples_missing() -> None:
             account_pool_id=10,
             proxy_airport_node_id=20,
         )
-        with pytest.raises(ValueError, match="协议样本"):
-            create_search_rank_deboost_task(session, 1, payload, operator="tester")
-        # 任务不应被创建
-        assert session.query(Task).filter_by(type="search_rank_deboost").count() == 0
+        task = create_search_rank_deboost_task(session, 1, payload, operator="tester")
+
+        assert task.status == "draft"
+        assert session.query(Task).filter_by(type="search_rank_deboost").count() == 1
 
 
 # ==================== 3. 真实执行（mock Gateway）→ 写 SearchRankDeboostActionStat ====================
@@ -681,7 +681,7 @@ def test_e2e_get_task_detail_returns_deboost_task_with_stats() -> None:
     """get_task_detail 返回降权任务的 detail，含 task.type、stats、hourly_execution。"""
     engine = _build_engine()
     with Session(engine) as session:
-        _seed_base(session, account_ids=[100], with_binding=False)  # service 会自建 binding
+        _seed_base(session, account_ids=[100], with_binding=True)
         session.commit()
 
         payload = SearchRankDeboostTaskCreate(

@@ -164,6 +164,18 @@ def test_task_center_creation_does_not_wait_for_precheck():
     assert "if (!requestSeq || isCurrentEditRecommendationRequest(requestSeq)) setEditRecommendationLoading(false);" in run_recommendation
 
 
+def test_all_task_creation_builders_defer_runtime_prechecks_until_start():
+    contract = (PROJECT_ROOT / "backend/app/services/task_center/task_creation_contract.py").read_text()
+    service = (PROJECT_ROOT / "backend/app/services/task_center/service.py").read_text()
+
+    contract_create = contract[contract.index("def _task_builder"):contract.index("def task_creation_response")]
+    rank_create = service[service.index("def create_search_rank_deboost_task"):service.index("def create_simple_search_rank_deboost_task")]
+    assert "precheck_task_creation" not in contract_create
+    assert "validate_rank_deboost_preconditions" not in rank_create
+    assert "validate_rank_deboost_protocol_samples" not in rank_create
+    assert "_rank_deboost_ready_bindings" not in rank_create
+
+
 def test_task_wizard_defers_voice_profile_coverage_until_start():
     types = (PROJECT_ROOT / "frontend/src/app/types/taskCenter.ts").read_text()
     wizard = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()

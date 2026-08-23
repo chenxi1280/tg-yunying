@@ -50,3 +50,19 @@
 - production_probe: 公网 `/api/health` 返回 `ok`；当前 `/task-center` 加载 `TaskCenterView-DZZdRfTV.js`，其中“需要关注的频道地址”1 次、`group_ai_prejoin_channel_ids` 13 次、“预关注频道”3 次；线上 OpenAPI 的 `GroupAIChatTaskCreate`、`TaskSettingsUpdate`、`TaskOut` 均包含该字段。
 - status: `production_surface_fixed`
 - unproven: 未新建真实生产任务，因而没有新增任务行持久化和 Telegram 实际关注频道证据；本次修复的“创建页字段缺失”已由生产 bundle 与 API 合同读回闭环。
+
+## 补充 Intake：所有任务统一直接创建
+
+- intake_id: `intake-2026-08-23-task-create-without-precheck`
+- level: `L1`
+- route: `quick_fix`
+- 原始需求：所有任务都不要在创建链路执行预检，结构校验通过后直接创建；远程、容量和运行能力预检容易超时。
+- 根因：通用任务创建合同已经直创建，但搜索排名观察的旧服务层 builder 仍在落库前执行协议样本、代理绑定和节点容量检查，形成任务类型例外；频道准入专项文档仍保留旧“创建前预检”口径。
+- 期望结果：所有 Task Center create builder 只做 schema、目标引用和本地持久化所需的结构处理；运行条件统一在启动/Planner/Dispatcher 阶段检查并展示 blocker。
+- 限定范围：不删除显式只读诊断或编辑页人工数量建议；不移除启动后、规划前和真实发送前的运行安全校验。
+- Product Design Complete: `complete`，主 PRD 已明确统一直创建合同，本轮补齐任务类型例外和专项文档冲突。
+- 快速验收：前端创建函数不引用 `/tasks/precheck`；所有后端 create builder 不调用任务运行预检；搜索排名观察在缺协议样本或代理绑定冲突时仍能保存 draft，启动后再记录 readiness blocker。
+- 升级条件：若改动进入真实 Telegram 执行、数据库迁移、权限或生产数据修正，则升级标准流程并补 Release Gate。
+- 开发结果：搜索排名观察旧 builder 已移除协议样本、代理绑定、节点健康/容量的创建前检查和绑定写入；通用创建合同及页面保持直接创建；旧 `_assert_precheck_allows_start` 死代码已删除。
+- QA：任务创建边界、幂等合同、搜索排名观察、前端数据流和权限合同共 `222 passed`；前端 `tsc --noEmit + vite build` 通过，3170 modules transformed；`compileall` 与 `git diff --check` 通过。
+- status: `qa_pass_local_not_released`

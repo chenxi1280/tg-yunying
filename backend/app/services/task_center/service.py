@@ -1794,43 +1794,10 @@ def create_search_rank_deboost_task(
     operator: str,
     *,
     commit: bool = True,
-    defer_readiness: bool = False,
 ) -> Task:
-    """创建搜索排名观察任务。
-
-    - 预检：分组级代理绑定、节点健康、节点容量、协议样本、灰度账号数（validate_rank_deboost_preconditions）
-    - 创建 task 记录（task_type='search_rank_deboost'）
-    - 创建 account_group_proxy_bindings 记录
-    - 预选随机豁免群
-
-    简单三字段创建传入 ``defer_readiness=True``，只创建草稿；真实执行准备在
-    ``start_task`` 中完成。
-    """
-    bot_username = _first_rank_deboost_bot(payload.search_bots)
-    legacy_binding_requested = payload.account_pool_id is not None and payload.proxy_airport_node_id is not None
-    if legacy_binding_requested:
-        validate_rank_deboost_preconditions(
-            session,
-            tenant_id=tenant_id,
-            account_pool_id=int(payload.account_pool_id or 0),
-            proxy_airport_node_id=int(payload.proxy_airport_node_id or 0),
-            target_group_ids=list(payload.target_group_ids),
-            bot_username=bot_username,
-        )
-        account_pool_id = int(payload.account_pool_id or 0)
-        proxy_airport_node_id = int(payload.proxy_airport_node_id or 0)
-    elif defer_readiness:
-        account_pool_id = 0
-        proxy_airport_node_id = 0
-    else:
-        validate_rank_deboost_protocol_samples(session, tenant_id, bot_username)
-        bindings = _rank_deboost_ready_bindings(
-            session,
-            tenant_id,
-            payload.account_config.model_dump(mode="json"),
-        )
-        account_pool_id = int(bindings[0].account_pool_id)
-        proxy_airport_node_id = int(bindings[0].proxy_airport_node_id)
+    """直接创建搜索排名观察草稿；运行条件统一在启动阶段检查。"""
+    account_pool_id = int(payload.account_pool_id or 0)
+    proxy_airport_node_id = int(payload.proxy_airport_node_id or 0)
 
     type_config = _build_rank_deboost_type_config(payload, account_pool_id, proxy_airport_node_id)
 
@@ -1850,17 +1817,6 @@ def create_search_rank_deboost_task(
     )
     session.add(task)
     session.flush()
-
-    if legacy_binding_requested:
-        from app.services.proxy_group_binding_service import create_group_proxy_binding
-
-        create_group_proxy_binding(
-            session,
-            tenant_id=tenant_id,
-            account_pool_id=account_pool_id,
-            proxy_airport_node_id=proxy_airport_node_id,
-            operator=operator,
-        )
 
     preselect_exempt_group(
         session,
@@ -1901,7 +1857,6 @@ def create_simple_search_rank_deboost_task(
         tenant_id,
         internal,
         operator,
-        defer_readiness=True,
     )
 
 
@@ -3190,15 +3145,6 @@ def precheck_task_creation(session: Session, tenant_id: int, payload: TaskPreche
         validated_type_config=validated_type_config,
         validate_rule_binding=validate_rule_binding,
     )
-
-
-def _assert_precheck_allows_start(session: Session, tenant_id: int, task_type: str, payload: dict[str, Any]) -> None:
-    result = precheck_task_creation(session, tenant_id, TaskPrecheckRequest(task_type=task_type, payload=payload))
-    if result.get("decision") == "block":
-        reasons = result.get("blockers") or result.get("risk_hits") or ["任务预检阻塞"]
-        if task_type in {"channel_view", "channel_like", "channel_comment"} and set(str(item) for item in reasons) <= {"没有匹配账号", "no_available_account"}:
-            return
-        raise ValueError("；".join(str(item) for item in reasons if item))
 
 
 def _assert_rank_deboost_allows_start(session: Session, tenant_id: int, task: Task, actor: str) -> None:

@@ -92,9 +92,8 @@ def test_simple_rank_create_maps_operator_controls_to_task_policy(monkeypatch) -
         session.commit()
         captured: dict = {}
 
-        def fake_create(_session, _tenant_id, payload, _operator, *, commit=True, defer_readiness=False):
+        def fake_create(_session, _tenant_id, payload, _operator, *, commit=True):
             captured["payload"] = payload
-            captured["defer_readiness"] = defer_readiness
             return SimpleNamespace(id="simple-rank", name=payload.name)
 
         monkeypatch.setattr(task_service, "create_search_rank_deboost_task", fake_create)
@@ -121,7 +120,6 @@ def test_simple_rank_create_maps_operator_controls_to_task_policy(monkeypatch) -
         "target_title": "我的目标群",
         "target_link": "https://t.me/my_target_group",
     }
-    assert captured["defer_readiness"] is True
 
 
 def test_generic_search_click_patch_returns_bad_request_for_contract_error(monkeypatch) -> None:
@@ -436,10 +434,10 @@ def test_post_search_rank_deboost_reroll_exempt_group(monkeypatch) -> None:
     assert result.exempt_group_username == "exempt_group_x"
 
 
-# --- 拒绝路径：真实 SQLite + 真实 service 校验，经路由触发 400 ---
+# --- 旧 payload 也必须先直接创建草稿 ---
 
 
-def test_legacy_rank_create_rejects_non_rank_deboost_pool() -> None:
+def test_legacy_rank_create_defers_pool_validation_until_start() -> None:
     engine = _build_engine()
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
@@ -449,11 +447,12 @@ def test_legacy_rank_create_rejects_non_rank_deboost_pool() -> None:
         payload = _build_payload(account_pool_id=10, proxy_airport_node_id=20)
         user = _make_user()
 
-        with pytest.raises(ValueError, match="rank_deboost"):
-            task_service.create_search_rank_deboost_task(session, 1, payload, user.name)
+        task = task_service.create_search_rank_deboost_task(session, 1, payload, user.name)
+
+        assert task.status == "draft"
 
 
-def test_legacy_rank_create_rejects_unhealthy_node() -> None:
+def test_legacy_rank_create_defers_node_health_until_start() -> None:
     engine = _build_engine()
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
@@ -464,11 +463,12 @@ def test_legacy_rank_create_rejects_unhealthy_node() -> None:
         payload = _build_payload(account_pool_id=10, proxy_airport_node_id=20)
         user = _make_user()
 
-        with pytest.raises(ValueError):
-            task_service.create_search_rank_deboost_task(session, 1, payload, user.name)
+        task = task_service.create_search_rank_deboost_task(session, 1, payload, user.name)
+
+        assert task.status == "draft"
 
 
-def test_legacy_rank_create_rejects_node_used_by_authorization_slot() -> None:
+def test_legacy_rank_create_defers_node_binding_conflict_until_start() -> None:
     engine = _build_engine()
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
@@ -488,8 +488,9 @@ def test_legacy_rank_create_rejects_node_used_by_authorization_slot() -> None:
         payload = _build_payload(account_pool_id=10, proxy_airport_node_id=20)
         user = _make_user()
 
-        with pytest.raises(ValueError, match="授权槽位级绑定"):
-            task_service.create_search_rank_deboost_task(session, 1, payload, user.name)
+        task = task_service.create_search_rank_deboost_task(session, 1, payload, user.name)
+
+        assert task.status == "draft"
 
 
 # --- 权限 403 闸门 ---
