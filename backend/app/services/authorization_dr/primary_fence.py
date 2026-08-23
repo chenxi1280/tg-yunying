@@ -22,16 +22,21 @@ def require_primary_code_source(account: TgAccount) -> TgAccountAuthorization:
     return source
 
 
-def verified_code_source(session, operation) -> TgAccountAuthorization:
+def verified_code_source(
+    session, operation, *, allow_unpersisted_identity: bool = False,
+) -> TgAccountAuthorization:
     account = session.get(TgAccount, operation.account_id)
     source = session.get(TgAccountAuthorization, operation.code_source_authorization_id)
-    if not account or not source or not _matches_frozen_primary(account, source, operation):
+    valid = account and source and _matches_frozen_primary(
+        account, source, operation, allow_unpersisted_identity=allow_unpersisted_identity,
+    )
+    if not valid:
         raise AuthorizationDrError("code_source_changed", "Frozen A authorization changed")
     return source
 
 
-def _matches_frozen_primary(account, source, operation) -> bool:
-    return (
+def _matches_frozen_primary(account, source, operation, *, allow_unpersisted_identity: bool) -> bool:
+    structural = (
         account.current_authorization_id == operation.expected_current_authorization_id == source.id
         and account.authorization_generation == operation.expected_authorization_generation
         and account.authorization_fact_generation == operation.expected_authorization_fact_generation
@@ -39,12 +44,20 @@ def _matches_frozen_primary(account, source, operation) -> bool:
         and account.session_ciphertext == source.session_ciphertext
         and account.developer_app_id == source.developer_app_id
         and source.fact_version == operation.expected_code_source_fact_version
-        and source.telegram_user_id_digest == operation.expected_code_source_user_id_digest
-        and source.auth_key_fingerprint_digest == operation.expected_code_source_auth_key_digest
         and source.logical_slot in {"primary", "standby_1"}
         and source.is_current
         and source.provision_region_code == "sv"
     )
+    if not structural:
+        return False
+    stored_identity = (source.telegram_user_id_digest, source.auth_key_fingerprint_digest)
+    expected_identity = (
+        operation.expected_code_source_user_id_digest,
+        operation.expected_code_source_auth_key_digest,
+    )
+    if stored_identity == expected_identity:
+        return True
+    return bool(allow_unpersisted_identity and not any(stored_identity) and all(expected_identity))
 
 
 __all__ = ["require_primary_code_source", "verified_code_source"]

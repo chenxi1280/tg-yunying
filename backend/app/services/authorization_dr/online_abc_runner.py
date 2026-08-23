@@ -174,13 +174,17 @@ def _prepare_primary_and_b(
     needs_b = item.standby_1_plan != "already_qualified"
     can_bootstrap_peer = bool(
         state == "frozen"
-        and primary.telegram_user_id_digest
-        and primary.auth_key_fingerprint_digest
+        and item.standby_1_plan != "already_qualified"
     )
     if not can_bootstrap_peer:
         _ensure_primary_qualified(session, item, approval)
     if needs_b and operations["b"] is None:
-        _create_b(session, batch, item, approval)
+        _create_b(
+            session, batch, item, approval,
+            bootstrap_missing_primary_identity=not bool(
+                primary.telegram_user_id_digest and primary.auth_key_fingerprint_digest
+            ),
+        )
     if can_bootstrap_peer:
         refreshed = _context(session, batch.id)[2]
         require_slot_ready(item.standby_1_plan, refreshed["b"], "online_abc_runner_b_incomplete")
@@ -211,10 +215,14 @@ def _ensure_primary_qualified(session, item, approval: RunnerApproval) -> None:
         raise AuthorizationDrError("online_abc_primary_drift", "A qualification did not preserve frozen facts")
 
 
-def _create_b(session, batch, item, approval: RunnerApproval) -> None:
+def _create_b(
+    session, batch, item, approval: RunnerApproval, *,
+    bootstrap_missing_primary_identity: bool = False,
+) -> None:
     keys = online_abc_operation_keys(batch, item)
     preview = preview_abc_backup(
         session, batch.tenant_id, item.account_id, idempotency_key=keys["b"],
+        bootstrap_missing_primary_identity=bootstrap_missing_primary_identity,
     )
     apply_abc_backup(
         session,
@@ -225,6 +233,7 @@ def _create_b(session, batch, item, approval: RunnerApproval) -> None:
         requested_by=approval.requested_by,
         approved_by=approval.approved_by,
         approval_ref=approval.approval_ref,
+        bootstrap_missing_primary_identity=bootstrap_missing_primary_identity,
     )
 def _create_c(session, batch, item, approval: RunnerApproval) -> None:
     keys = online_abc_operation_keys(batch, item)
