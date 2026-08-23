@@ -1,5 +1,7 @@
 # 项目结构索引
 
+> **2026-08-24 ABC SV 单出口补正：** `developer_apps.credentials_for_authorization`、online probe、授权 metadata、ABC B 登录/A 读码/B qualification、local activate 与 E4 统一使用固定直连 `primary_regular:direct`；账号/授权资产 `proxy_id` 只保留历史绑定与审计。MY C 路由不变，历史 `sv-proxy:*` 仅限原 operation reconcile。
+
 > **2026-08-23 ABC completed A 恢复与 pre-remote rearm：** `authorization_dr/online_abc_completed_recovery.py`、`backend/scripts/authorization_online_abc_completed_recovery.py`、`deploy/authorization-online-abc-completed-recovery.sh` 提供 DB-only completed rebase 和零远端副作用 rearm；`online_abc_operations.py` 选择 E4 retry，`online_abc_runner.py` 支持显式 account resume、先扫描 succeeded A、禁止并行 running，并只接受绑定新 current 的 E4。`online_abc_primary.py` 允许健康 fact 同幅单调前进，但 typed duplicate/Session/current/代次漂移继续停止。
 
 > **2026-08-23 搜索 pre-accept 终态恢复补充：** `integrations/telegram/search_join.py` 对已审批相位的人机验证拒绝和图片验证识别失败显式写 `remote_mutation_started=false`。`reconcile_search_click_pre_accept_absence.py` 只在同 Action/Attempt 的 `unknown_deadline_closed` fact 完整、无 remote identity、无 callback/target click 且错误码+相位精确命中时，将指定 `closed_unknown` assignment 短暂 rebase 到 projector 可接受状态，追加 pre-accept receipt 并重开原义务。普通超时、连接重置、callback unknown 和发布 fence unknown 不属于该恢复集合。

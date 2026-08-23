@@ -378,13 +378,15 @@ def credentials_for_account(
 def credentials_for_authorization(
     session: Session,
     authorization,
+    *,
+    use_proxy: bool = False,
 ) -> DeveloperAppCredentials:
     app = session.get(TelegramDeveloperApp, authorization.developer_app_id)
     if not app:
         raise ValueError("授权未绑定开发者应用")
     if authorization.developer_app_api_id_snapshot not in {0, app.api_id}:
         raise ValueError("授权的开发者应用已发生变化")
-    proxy = session.get(AccountProxy, authorization.proxy_id) if authorization.proxy_id else None
+    proxy = session.get(AccountProxy, authorization.proxy_id) if use_proxy and authorization.proxy_id else None
     return credentials_for_developer_app(app, proxy)
 
 

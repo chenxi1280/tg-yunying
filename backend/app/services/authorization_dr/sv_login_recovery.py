@@ -23,7 +23,7 @@ from app.services.account_authorization_metadata import resolve_authorization_id
 from app.services.developer_apps import credentials_for_authorization, credentials_for_developer_app
 from app.timezone import as_beijing_aware
 
-from .contracts import AuthorizationDrError
+from .contracts import AuthorizationDrError, PRIMARY_REGULAR_EGRESS_ID
 from .primary_fence import verified_code_source
 
 
@@ -89,8 +89,7 @@ def _local_inputs(session, operation_id, tenant_id, runtime_sha, requested_by):
     primary = verified_code_source(session, operation)
     flow = session.get(TgLoginFlow, operation.login_flow_id)
     app = session.get(TelegramDeveloperApp, operation.developer_app_id)
-    proxy_id = int(operation.egress_id.split(":", 1)[1])
-    proxy = session.get(AccountProxy, proxy_id)
+    proxy = _operation_proxy(session, operation)
     target_slot = _standby_target_slot(primary)
     conflict = _conflicting_b(session, account, primary, target_slot)
     _require_recovery_state(session, operation, flow, app, proxy, runtime_sha, requested_by)
@@ -110,10 +109,27 @@ def _require_recovery_state(session, operation, flow, app, proxy, runtime_sha, r
     valid = valid and operation.remote_call_state == "unknown" and operation.candidate_authorization_id is None
     valid = valid and flow and flow.status == AccountStatus.WAITING_CODE.value
     valid = valid and flow.temporary_session_ciphertext and flow.phone_code_hash_ciphertext
-    valid = valid and app and app.is_active and proxy and contract and contract.mode == "off"
+    valid = valid and app and app.is_active and _egress_matches_flow(operation, flow, proxy)
+    valid = valid and contract and contract.mode == "off"
     valid = valid and active_clients == 0 and runtime_sha and requested_by.strip()
     if not valid:
         raise AuthorizationDrError("reconcile_transition_blocked", "SV login recovery state is not frozen")
+
+
+def _operation_proxy(session, operation):
+    if operation.egress_id == PRIMARY_REGULAR_EGRESS_ID:
+        return None
+    if not operation.egress_id.startswith("sv-proxy:"):
+        raise AuthorizationDrError("reconcile_transition_blocked", "SV login egress is unsupported")
+    return session.get(AccountProxy, int(operation.egress_id.split(":", 1)[1]))
+
+
+def _egress_matches_flow(operation, flow, proxy) -> bool:
+    if not flow:
+        return False
+    if operation.egress_id == PRIMARY_REGULAR_EGRESS_ID:
+        return proxy is None and flow.proxy_id is None
+    return bool(proxy and flow.proxy_id == proxy.id)
 
 
 def _conflicting_b(session, account, primary, target_slot):
@@ -165,7 +181,8 @@ def _evidence_payload(local, remote):
         "primary_fact_version": primary.fact_version,
         "account_generations": [account.authorization_generation, account.authorization_fact_generation,
                                 account.connection_generation],
-        "developer_app_id": local["app"].id, "proxy_id": local["proxy"].id,
+        "developer_app_id": local["app"].id,
+        "proxy_id": local["proxy"].id if local["proxy"] else None,
         "target_logical_slot": local["target_slot"],
         "conflicting_authorization_id": conflict.id, "conflicting_fact_version": conflict.fact_version,
         "recovery_session_digest": hashlib.sha256(flow.temporary_session_ciphertext.encode()).hexdigest(),
@@ -246,7 +263,8 @@ def _persist_recovered_b(session, locked, remote, actor):
         logical_slot=target_slot, slot_generation=slot_generation,
         is_slot_current=True, provision_region_code="sv",
         developer_app_id=operation.developer_app_id, developer_app_api_id_snapshot=locked["app"].api_id,
-        proxy_id=locked["proxy"].id, session_ciphertext=encrypt_session(remote["raw_session"]),
+        proxy_id=locked["proxy"].id if locked["proxy"] else None,
+        session_ciphertext=encrypt_session(remote["raw_session"]),
         status="standby", health_status="healthy", derived_status="healthy", is_current=False,
         remote_authorization_state="active", protected_from_cleanup=True, dr_state="dormant_ready",
         telegram_authorization_hash_ciphertext=encrypt_secret(identity.authorization_hash),

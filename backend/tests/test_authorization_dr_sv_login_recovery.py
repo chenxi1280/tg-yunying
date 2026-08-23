@@ -39,7 +39,7 @@ def _session() -> Session:
     return Session(engine)
 
 
-def _seed(session: Session):
+def _seed(session: Session, *, direct: bool = False):
     session.add(Tenant(id=1, name="SV recovery"))
     session.add_all([
         TelegramDeveloperApp(id=1, app_name="App A", api_id=1001, api_hash_ciphertext="a"),
@@ -73,7 +73,7 @@ def _seed(session: Session):
     account.current_authorization_id = primary.id
     flow = TgLoginFlow(
         tenant_id=1, account_id=101, method="code", status=AccountStatus.WAITING_CODE.value,
-        authorization_role="standby_1", developer_app_id=1, proxy_id=8,
+        authorization_role="standby_1", developer_app_id=1, proxy_id=None if direct else 8,
         temporary_session_ciphertext="temp", phone_code_hash_ciphertext="phone-hash",
         challenge_sent_at=_now(),
     )
@@ -88,7 +88,9 @@ def _seed(session: Session):
         expected_code_source_fact_version=3, expected_code_source_user_id_digest="1" * 64,
         expected_code_source_auth_key_digest="2" * 64, developer_app_id=1,
         developer_app_api_id_snapshot=1001, developer_app_credentials_version=1,
-        assignment_version=1, egress_id="sv-proxy:8", egress_version=1,
+        assignment_version=1,
+        egress_id="primary_regular:direct" if direct else "sv-proxy:8",
+        egress_version=1,
         idempotency_key="abc-101", request_fingerprint="f" * 64,
         status="reconcile_unknown", blocker_code="IntegrityError", remote_call_state="unknown",
         login_flow_id=flow.id, requested_by="requester", approved_by="reviewer", approval_ref="approved",
@@ -198,6 +200,27 @@ def test_recovery_commits_existing_authorized_session_without_changing_a(monkeyp
         assert flow.temporary_session_ciphertext is None
         assert (operation.status, operation.candidate_authorization_id) == ("succeeded", asset.id)
         assert (case.status, case.classification) == ("applied", "sv_login_session_recovered")
+
+
+def test_recovery_preserves_new_direct_primary_regular_egress(monkeypatch) -> None:
+    with _session() as session:
+        _account, _primary, _conflict, _flow, operation = _seed(session, direct=True)
+        _mock_remote(monkeypatch)
+        preview = preview_sv_login_recovery(
+            session, operation.id, tenant_id=1, runtime_image_sha="a" * 40,
+            requested_by="requester",
+        )
+
+        result = apply_sv_login_recovery(
+            session, operation.id, tenant_id=1, runtime_image_sha="a" * 40,
+            requested_by="requester", actor="reviewer", approval_ref="USER-DIRECT-RECOVERY",
+            idempotency_key="recover-direct-101",
+            expected_fingerprint=preview["evidence_fingerprint"],
+        )
+
+        asset = session.get(TgAccountAuthorization, result["candidate_authorization_id"])
+        assert operation.egress_id == "primary_regular:direct"
+        assert asset.proxy_id is None
 
 
 def test_recovery_uses_primary_slot_without_demoting_promoted_current_a(monkeypatch) -> None:

@@ -1,5 +1,7 @@
 # 马来西亚异地备用 TG Session 实施与验收合同
 
+> **2026-08-24 primary_regular 路由补正：** 硅谷唯一业务出口在当前生产拓扑中是 backend/worker 固定直连出口。账号表和授权资产上的 `proxy_id` 仅为历史绑定/审计快照，不是 A/B 的运行路由。所有新 SV DR operation 使用 `primary_regular:direct`；A/B 登录、读码、探测、local activate、online probe 与 E4 不得携带账号代理。历史 `sv-proxy:*` operation 只按其冻结现场 reconcile，不能成为新 operation 的出口。测试必须证明 direct credentials 不含 proxy、ABC B flow 的 `proxy_id` 为空、A 读码/E4 与普通任务同出口，并证明失败不改 A。
+
 > 版本：v2.24
 > 日期口径：2026-08-23（Asia/Shanghai）
 > 规范关系：本文是 [马来西亚异地备用 TG Session 灾备 PRD](account-malaysia-standby-session-dr-prd.md) 的强制组成部分；冲突时两份文档必须同步修订，不允许实现自行择一。

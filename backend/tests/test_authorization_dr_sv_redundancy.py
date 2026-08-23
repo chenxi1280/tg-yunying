@@ -95,7 +95,7 @@ def test_repair_promotes_only_after_matching_remote_identity(monkeypatch) -> Non
         assert repaired.health_status == "healthy"
         assert repaired.auth_key_fingerprint_digest == "2" * 64
         assert repaired.fact_version == 5
-        assert account_credential_calls == [True]
+        assert account_credential_calls == [False]
 
 
 def test_repair_keeps_row_unchanged_when_remote_identity_differs(monkeypatch) -> None:

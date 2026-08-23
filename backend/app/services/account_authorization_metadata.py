@@ -121,11 +121,10 @@ def _peer_authorization_views(
         app = session.get(TelegramDeveloperApp, row.developer_app_id) if row.developer_app_id else None
         if app is None:
             continue
-        proxy = session.get(AccountProxy, row.proxy_id) if row.proxy_id else None
-        credentials = credentials_for_developer_app(app, proxy)
+        credentials = credentials_for_developer_app(app)
         yield gateway.list_authorizations(row.session_ciphertext, credentials)
     if not rows and account.session_ciphertext:
-        credentials = credentials_for_account(session, account, use_proxy=True)
+        credentials = credentials_for_account(session, account)
         yield gateway.list_authorizations(account.session_ciphertext, credentials)
 
 
