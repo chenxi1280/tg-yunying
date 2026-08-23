@@ -4,6 +4,10 @@ from dataclasses import dataclass
 from datetime import datetime
 
 
+PRIMARY_REGULAR_EGRESS_ID = "primary_regular:direct"
+PRIMARY_REGULAR_EGRESS_VERSION = 1
+
+
 class AuthorizationDrError(ValueError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
@@ -73,6 +77,8 @@ __all__ = [
     "AuthorizationDrError",
     "CopyReceipt",
     "OperationClaim",
+    "PRIMARY_REGULAR_EGRESS_ID",
+    "PRIMARY_REGULAR_EGRESS_VERSION",
     "RestoreProbeReceipt",
     "WakeBundleReceipt",
 ]

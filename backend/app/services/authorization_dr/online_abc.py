@@ -8,7 +8,6 @@ from dataclasses import asdict, dataclass
 from sqlalchemy import select
 
 from app.models import (
-    AccountProxy,
     AuthorizationDrRuntimeContract,
     DeveloperAppSlotAssignment,
     TelegramDeveloperApp,
@@ -47,7 +46,7 @@ class FrozenOnlineAbcTarget:
     app_b_credentials_version: int
     app_b_assignment_purpose: str
     app_b_assignment_version: int
-    proxy_id: int
+    proxy_id: int | None
     source_c_authorization_id: int
     source_c_fact_version: int
     source_c_slot_generation: int
@@ -154,7 +153,7 @@ def _freeze_target(session, tenant_id: int, account_id: int) -> FrozenOnlineAbcT
     _require_no_account_operation(session, account_id)
     _require_no_healthy_b(session, account_id)
     source_c = _source_c(session, account_id)
-    assignment, app_b, proxy = _backup_route(session, account, primary, source_c)
+    assignment, app_b = _backup_route(session, primary, source_c)
     return FrozenOnlineAbcTarget(
         account_id=account_id,
         primary_authorization_id=primary.id,
@@ -167,7 +166,7 @@ def _freeze_target(session, tenant_id: int, account_id: int) -> FrozenOnlineAbcT
         app_b_credentials_version=app_b.credentials_version,
         app_b_assignment_purpose=assignment.slot_purpose,
         app_b_assignment_version=assignment.assignment_version,
-        proxy_id=proxy.id,
+        proxy_id=account.proxy_id,
         source_c_authorization_id=source_c.id,
         source_c_fact_version=source_c.fact_version,
         source_c_slot_generation=source_c.slot_generation,
@@ -211,16 +210,13 @@ def _source_c(session, account_id: int) -> TgAccountAuthorization:
     return row
 
 
-def _backup_route(session, account, primary, source_c):
-    proxy = session.get(AccountProxy, account.proxy_id) if account.proxy_id else None
-    if not proxy or proxy.status not in {"healthy", "available", "normal", "active"}:
-        raise AuthorizationDrError("proxy_unavailable", "A SV proxy is unavailable for B login")
+def _backup_route(session, primary, source_c):
     excluded = {primary.developer_app_id, source_c.developer_app_id}
     for purpose in ("standby_1_sv", "primary_sv"):
         assignment = session.get(DeveloperAppSlotAssignment, purpose)
         app = session.get(TelegramDeveloperApp, assignment.developer_app_id) if assignment else None
         if assignment and assignment.status == "active" and app and app.is_active and app.id not in excluded:
-            return assignment, app, proxy
+            return assignment, app
     raise AuthorizationDrError("developer_app_slot_assignment_conflict", "No distinct SV backup App is available")
 
 

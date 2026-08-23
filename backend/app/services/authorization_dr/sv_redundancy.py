@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass
 
 from sqlalchemy import select
 
-from app.models import AccountProxy, TelegramDeveloperApp, TgAccount, TgAccountAuthorization
+from app.models import TelegramDeveloperApp, TgAccount, TgAccountAuthorization
 from app.security import decrypt_session, encrypt_secret
 from app.services._common import _now, audit, gateway
 from app.services.developer_apps import credentials_for_account, credentials_for_developer_app
@@ -97,14 +97,13 @@ def _probe_candidate(session, frozen: SvRepairCandidate):
     app = session.get(TelegramDeveloperApp, frozen.repair_app_id)
     if not account or not row or not app:
         raise AuthorizationDrError("authorization_version_conflict", "Frozen SV repair input is missing")
-    proxy = session.get(AccountProxy, row.proxy_id) if row.proxy_id else None
     current = gateway.authorization_identity(
         _raw_session(account.session_ciphertext),
-        credentials_for_account(session, account, use_proxy=True),
+        credentials_for_account(session, account),
     )
     repair = gateway.authorization_identity(
         _raw_session(row.session_ciphertext),
-        credentials_for_developer_app(app, proxy),
+        credentials_for_developer_app(app),
     )
     if current.telegram_user_id_digest != repair.telegram_user_id_digest:
         raise AuthorizationDrError("authorization_identity_mismatch", "Repair Session belongs to a different Telegram account")

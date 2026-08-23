@@ -27,7 +27,11 @@ from app.services.account_authorizations import (
     verify_standby_authorization_login,
 )
 from app.services.accounts import health_check_account
-from app.services.developer_apps import credentials_for_account, credentials_for_task_account
+from app.services.developer_apps import (
+    credentials_for_account,
+    credentials_for_authorization,
+    credentials_for_task_account,
+)
 
 
 pytestmark = pytest.mark.no_postgres
@@ -992,6 +996,34 @@ def test_credentials_for_account_can_explicitly_use_proxy() -> None:
 
 
 @pytest.mark.no_postgres
+def test_credentials_for_authorization_uses_direct_primary_regular_by_default() -> None:
+    with _sqlite_session() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TelegramDeveloperApp(
+            id=32, app_name="主应用", api_id=32001,
+            api_hash_ciphertext=encrypt_secret("hash"),
+            is_active=True, health_status="健康",
+        ))
+        session.add(AccountProxy(
+            id=42, tenant_id=1, name="历史代理", protocol="socks5",
+            host="127.0.0.1", port=10042, status="healthy",
+        ))
+        authorization = TgAccountAuthorization(
+            tenant_id=1, account_id=171, role="primary", logical_slot="primary",
+            developer_app_id=32, developer_app_api_id_snapshot=32001,
+            proxy_id=42, session_ciphertext="session", status="active",
+        )
+        session.add(authorization)
+        session.commit()
+
+        direct = credentials_for_authorization(session, authorization)
+        proxied = credentials_for_authorization(session, authorization, use_proxy=True)
+
+        assert direct.proxy_id is None
+        assert proxied.proxy_id == 42
+
+
+@pytest.mark.no_postgres
 def test_credentials_for_account_can_explicitly_bypass_proxy() -> None:
     with _sqlite_session() as session:
         session.add(Tenant(id=1, name="默认运营空间"))
@@ -1117,6 +1149,39 @@ def test_standby_authorization_login_uses_selected_proxy_credentials(monkeypatch
         )
 
         assert captured == {"proxy_id": 42, "proxy_host": "10.0.0.42"}
+
+
+@pytest.mark.no_postgres
+def test_standby_authorization_login_can_use_primary_regular_direct(monkeypatch) -> None:
+    captured: list[int | None] = []
+
+    class RecordingGateway(TelegramGateway):
+        def start_login(self, method, flow_id=None, account_id=None, phone=None, credentials=None):
+            captured.append(credentials.proxy_id if credentials else None)
+            return LoginChallenge(status=AccountStatus.WAITING_CODE.value, code_preview="12345")
+
+    monkeypatch.setattr(authorization_service, "gateway", RecordingGateway())
+    with _sqlite_session() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TelegramDeveloperApp(
+            id=32, app_name="备用应用", api_id=32001,
+            api_hash_ciphertext="encrypted", is_active=True, health_status="健康",
+        ))
+        account = TgAccount(
+            id=173, tenant_id=1, display_name="直连备用登录账号",
+            phone_masked="173", status=AccountStatus.ACTIVE.value,
+            session_ciphertext="primary-session", health_score=95,
+        )
+        session.add(account)
+        session.commit()
+
+        flow = start_standby_authorization_login(
+            session, account.id, method="code", role="standby_1",
+            developer_app_id=32, proxy_id=None, actor="admin",
+        )
+
+        assert captured == [None]
+        assert flow.proxy_id is None
 
 
 @pytest.mark.no_postgres

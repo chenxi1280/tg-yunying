@@ -77,7 +77,7 @@ def test_probe_due_online_states_keeps_stale_window_after_next_probe(monkeypatch
         assert state.stale_after_at >= now + MIN_ACTIVE_STALE_WINDOW
 
 
-def test_probe_due_online_states_uses_bound_proxy_credentials(monkeypatch):
+def test_probe_due_online_states_uses_primary_regular_direct_credentials(monkeypatch):
     now = _now()
     credential_proxy_flags: list[bool] = []
 
@@ -106,7 +106,7 @@ def test_probe_due_online_states_uses_bound_proxy_credentials(monkeypatch):
 
         assert probe_due_online_states(session, limit=10, now=now) == 1
 
-    assert credential_proxy_flags == [True]
+    assert credential_proxy_flags == [False]
 
 
 def test_probe_due_online_states_schedules_from_probe_completion(monkeypatch):

@@ -5,7 +5,6 @@ import hashlib
 from sqlalchemy import func, select
 
 from app.models import (
-    AccountProxy,
     DeveloperAppSlotAssignment,
     TelegramDeveloperApp,
     TgAccount,
@@ -147,9 +146,8 @@ def _classify_b(session, account, primary, app_c_id: int | None) -> dict:
         route = _assignment_for_app(session, current.developer_app_id)
         return _b_result("already_qualified", current.developer_app, route, current.proxy_id or account.proxy_id)
     route, app = _backup_app(session, primary, app_c_id)
-    proxy = session.get(AccountProxy, account.proxy_id) if account.proxy_id else None
-    plan = "provision" if route and app and proxy and _proxy_ready(proxy) else "blocked"
-    return _b_result(plan, app, route, proxy.id if proxy else None)
+    plan = "provision" if route and app else "blocked"
+    return _b_result(plan, app, route, account.proxy_id)
 
 
 def _current_b(session, account, primary):
@@ -256,10 +254,6 @@ def _c_result(plan: str, row, app_id: int | None) -> dict:
         "fact_version": row.fact_version if row else 0,
         "slot_generation": row.slot_generation if row else 0,
     }
-
-
-def _proxy_ready(proxy) -> bool:
-    return proxy.status in {"healthy", "available", "normal", "active"}
 
 
 def _active_operation(session, account_id: int):

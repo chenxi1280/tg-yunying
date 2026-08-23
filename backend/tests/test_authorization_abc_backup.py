@@ -116,6 +116,16 @@ def test_preview_is_database_only_and_freezes_a(session: Session) -> None:
     assert session.scalar(select(TgLoginFlow.id)) is None
 
 
+def test_preview_does_not_require_historical_account_proxy(session: Session) -> None:
+    account = session.get(TgAccount, 101)
+    account.proxy_id = None
+    session.commit()
+
+    result = preview_abc_backup(session, 1, 101, idempotency_key="abc-direct")
+
+    assert result["proxy_id"] is None
+
+
 def test_runner_preview_bootstraps_missing_a_identity_without_writing_a(
     session: Session, monkeypatch,
 ) -> None:
@@ -213,6 +223,7 @@ def test_apply_logs_in_b_without_changing_a(session: Session, monkeypatch) -> No
     before = _a_snapshot(session)
 
     def fake_start(db, account_id, **_kwargs):
+        assert _kwargs["proxy_id"] is None
         flow = TgLoginFlow(
             tenant_id=1,
             account_id=account_id,
@@ -220,7 +231,7 @@ def test_apply_logs_in_b_without_changing_a(session: Session, monkeypatch) -> No
             status="等待验证码",
             authorization_role="standby_1",
             developer_app_id=2,
-            proxy_id=8,
+            proxy_id=None,
             challenge_sent_at=_now(),
             code_expires_at=_now().replace(year=_now().year + 1),
         )
@@ -236,7 +247,7 @@ def test_apply_logs_in_b_without_changing_a(session: Session, monkeypatch) -> No
             logical_slot="standby_1",
             developer_app_id=2,
             developer_app_api_id_snapshot=1002,
-            proxy_id=8,
+            proxy_id=None,
             session_ciphertext="b-session",
             status="standby",
             health_status="healthy",
@@ -289,8 +300,11 @@ def test_apply_logs_in_b_without_changing_a(session: Session, monkeypatch) -> No
 
     assert result["status"] == "succeeded"
     assert _a_snapshot(session) == before
+    operation = session.get(TgAuthorizationDrOperation, result["operation_id"])
+    assert operation.egress_id == "primary_regular:direct"
     b = session.get(TgAccountAuthorization, result["candidate_authorization_id"])
     assert (b.logical_slot, b.provision_region_code, b.is_slot_current) == ("standby_1", "sv", True)
+    assert b.proxy_id is None
     assert b.telegram_user_id_digest == "1" * 64
     assert b.auth_key_fingerprint_digest == "3" * 64
 
