@@ -230,6 +230,10 @@ DEADLINE_PROJECTION_CONFLICT_QUERY = text("""
            projection.state AS projection_state,
            projection.task_day_ledger_id AS projection_ledger_id,
            projection.active_action_id,
+           view_owner.task_day_ledger_id AS view_owner_ledger_id,
+           payload_ledger.obligation_local_date AS payload_ledger_date,
+           projection_ledger.obligation_local_date AS projection_ledger_date,
+           view_ledger.obligation_local_date AS view_owner_ledger_date,
            reservation.id AS reservation_id,
            reservation.state AS reservation_state,
            reservation.source_deadline_at,
@@ -280,6 +284,18 @@ DEADLINE_PROJECTION_CONFLICT_QUERY = text("""
              THEN action.payload ->> 'coverage_ledger_id'
            ELSE action.primary_quantity_slot_id
          END
+    LEFT JOIN view_fulfillment_obligations AS view_owner
+      ON view_owner.id = COALESCE(
+        NULLIF(action.obligation_id, ''),
+        NULLIF(action.payload ->> 'view_fulfillment_obligation_id', '')
+      )
+     AND action.action_type = 'view_message'
+    LEFT JOIN task_day_ledgers AS payload_ledger
+      ON payload_ledger.id = NULLIF(action.payload ->> 'task_day_ledger_id', '')
+    LEFT JOIN task_day_ledgers AS projection_ledger
+      ON projection_ledger.id = projection.task_day_ledger_id
+    LEFT JOIN task_day_ledgers AS view_ledger
+      ON view_ledger.id = view_owner.task_day_ledger_id
     WHERE task.status = 'running'
       AND task.fulfillment_contract_version = 'fact_first_v3'
       AND action.status = 'pending'
