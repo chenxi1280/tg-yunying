@@ -93,7 +93,11 @@ def item_operations_complete(session, item, operations: dict) -> bool:
     )}
     b_done = slots["standby_1"].outcome in {"already_qualified", "succeeded"}
     c_done = slots["standby_2"].outcome in {"already_qualified", "succeeded"}
-    e4_done = operations["e4"] and operations["e4"].status == "succeeded"
+    e4_done = bool(
+        operations["e4"]
+        and operations["e4"].status == "succeeded"
+        and operations["e4"].expected_current_authorization_id == item.primary_authorization_id
+    )
     return bool(b_done and c_done and e4_done)
 
 

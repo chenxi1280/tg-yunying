@@ -386,8 +386,12 @@ def _existing_audit(session, item_id: str, key: str):
 
 
 def _latest_rebase_audit(session, item_id: str):
+    return _latest_action_audit(session, item_id, AUDIT_ACTION)
+
+
+def _latest_action_audit(session, item_id: str, action: str):
     return session.scalar(select(AuditLog).where(
-        AuditLog.action == AUDIT_ACTION,
+        AuditLog.action == action,
         AuditLog.target_type == "tg_authorization_online_abc_items",
         AuditLog.target_id == item_id,
     ).order_by(AuditLog.id.desc()).limit(1))

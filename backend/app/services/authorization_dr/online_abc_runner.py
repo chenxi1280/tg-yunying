@@ -35,10 +35,16 @@ from .online_abc import (
 )
 from .online_abc_operations import (
     next_online_abc_c_key,
+    next_online_abc_e4_key,
     online_abc_item_operations,
     online_abc_operation_keys,
 )
+from .online_abc_completed_recovery import (
+    COMPLETED_REBASE_BLOCKER,
+    require_completed_rebase_resume,
+)
 from .online_abc_post_activate import REBASE_BLOCKER, require_post_activate_rebase_resume
+from .online_abc_primary import PRIMARY_DRIFT_OUTCOME, stop_completed_primary_drift
 from .online_abc_chunk import MAX_CHUNK_ACCOUNTS, chunk_result, require_chunk_size, require_item_runnable, require_slot_ready
 from .readiness import ready_migration_runtime_image_sha
 from .standby_1_qualification import qualify_existing_standby_1, require_existing_standby_1_candidate
@@ -131,11 +137,17 @@ def resume_online_abc_batch(
     approved_by: str,
     approval_ref: str,
     runtime_release_sha: str,
+    account_id: int | None = None,
 ) -> dict:
     approval = _approval(requested_by, approved_by, approval_ref)
+    initial_batch = _batch(session, batch_id)
+    stop_completed_primary_drift(
+        session, initial_batch, actor=approval.approved_by, approval_ref=approval.approval_ref,
+    )
+    _require_no_completed_primary_drift(session, initial_batch)
     batch = _locked_batch(session, batch_id)
     release_sha = _require_batch_approval(batch, approval, runtime_release_sha)
-    item = _resumable_item(session, batch)
+    item = _resumable_item(session, batch, account_id)
     operations = online_abc_item_operations(session, batch, item)
     checkpoint = _require_resume_contract(session, item, operations)
     if checkpoint in {"post_c_pre_e4", "post_c_pre_existing_b_qualification"}:
@@ -166,9 +178,9 @@ def _run_current_item(session, batch_id, command, approval, poll_seconds, sleepe
         _wait_for_c(session, batch_id, poll_seconds, sleeper)
     batch, item, operations = _context(session, batch_id)
     require_slot_ready(item.standby_2_plan, operations["c"], "online_abc_runner_c_incomplete")
-    if operations["e4"] is None:
+    if _e4_requires_creation(operations["e4"], item):
         _create_e4(session, batch, item, approval, poll_seconds, sleeper)
-    _require_succeeded(_context(session, batch_id)[2]["e4"], "online_abc_runner_e4_incomplete")
+    _require_current_e4(_context(session, batch_id)[2]["e4"], item)
 
 
 def _prepare_primary_and_b(
@@ -250,6 +262,8 @@ def _create_b(
         approval_ref=approval.approval_ref,
         bootstrap_missing_primary_identity=bootstrap_missing_primary_identity,
     )
+
+
 def _create_c(session, batch, item, approval: RunnerApproval) -> None:
     key = next_online_abc_c_key(session, batch, item)
     runtime_sha = ready_migration_runtime_image_sha(session)
@@ -267,7 +281,7 @@ def _create_c(session, batch, item, approval: RunnerApproval) -> None:
 
 
 def _create_e4(session, batch, item, approval: RunnerApproval, poll_seconds: float, sleeper) -> None:
-    key = online_abc_operation_keys(batch, item)["e4"]
+    key = next_online_abc_e4_key(session, batch, item)
     preview = _wait_for_e4_preview(session, batch, item, key, poll_seconds, sleeper)
     apply_abc_e4(
         session,
@@ -350,13 +364,20 @@ def _stop_running_item(session, batch_id: str, *, blocker_code: str, actor: str,
     session.commit()
 
 
-def _resumable_item(session, batch) -> TgAuthorizationOnlineAbcItem:
+def _resumable_item(session, batch, account_id: int | None) -> TgAuthorizationOnlineAbcItem:
     if batch.status != "stopped":
         raise AuthorizationDrError("online_abc_resume_not_stopped", f"Batch is {batch.status}")
-    items = list(session.scalars(select(TgAuthorizationOnlineAbcItem).where(
+    if _running_item(session, batch.id):
+        raise AuthorizationDrError("online_abc_resume_ambiguous", "A running item already exists")
+    predicates = [
         TgAuthorizationOnlineAbcItem.batch_id == batch.id,
         TgAuthorizationOnlineAbcItem.status == "stopped",
         TgAuthorizationOnlineAbcItem.outcome.in_({"runner_blocked", RECONCILED_B_RESUME_OUTCOME}),
+    ]
+    if account_id is not None:
+        predicates.append(TgAuthorizationOnlineAbcItem.account_id == account_id)
+    items = list(session.scalars(select(TgAuthorizationOnlineAbcItem).where(
+        *predicates,
     ).with_for_update()))
     if len(items) != 1:
         raise AuthorizationDrError("online_abc_resume_ambiguous", "Exactly one runner-blocked item is required")
@@ -387,6 +408,9 @@ def _require_resume_contract(session, item, operations: dict) -> str:
     if item.blocker_code == REBASE_BLOCKER:
         require_post_activate_rebase_resume(session, item, operations)
         return "post_local_activate_rebase"
+    if item.blocker_code == COMPLETED_REBASE_BLOCKER:
+        require_completed_rebase_resume(session, item, operations)
+        return "post_completed_local_activate_rebase"
     raise AuthorizationDrError("online_abc_resume_blocker_forbidden", f"Blocker is {item.blocker_code}")
 
 
@@ -531,6 +555,15 @@ def _require_no_resume_unknown(session) -> None:
     ).limit(1))
     if unknown:
         raise AuthorizationDrError("global_reconcile_unknown", "Global reconcile unknown must be zero")
+
+
+def _require_no_completed_primary_drift(session, batch) -> None:
+    drifted = session.scalar(select(TgAuthorizationOnlineAbcItem.id).where(
+        TgAuthorizationOnlineAbcItem.batch_id == batch.id,
+        TgAuthorizationOnlineAbcItem.outcome == PRIMARY_DRIFT_OUTCOME,
+    ).limit(1))
+    if drifted:
+        raise AuthorizationDrError("online_abc_primary_drift", "A completed canary primary drifted")
 
 
 def _resume_item(
@@ -684,7 +717,7 @@ def _next_action(batch_status: str, item, operations: dict) -> str:
         if plans[name] == "already_qualified":
             continue
         operation = operations[name]
-        if operation is None:
+        if operation is None or (name == "e4" and _e4_requires_creation(operation, item)):
             return {"b": "qualify_a_and_create_b", "c": "create_c", "e4": "verify_e4"}[name]
         if operation.status != SUCCESS_STATUS:
             return f"wait_or_stop_{name}:{operation.status}"
@@ -706,6 +739,16 @@ def _require_succeeded(operation, code: str) -> None:
     if operation is None or operation.status != SUCCESS_STATUS:
         status = operation.status if operation else "missing"
         raise AuthorizationDrError(code, f"Operation is {status}")
+
+
+def _require_current_e4(operation, item) -> None:
+    _require_succeeded(operation, "online_abc_runner_e4_incomplete")
+    if operation.expected_current_authorization_id != item.primary_authorization_id:
+        raise AuthorizationDrError("online_abc_runner_e4_incomplete", "E4 is bound to an old A")
+
+
+def _e4_requires_creation(operation, item) -> bool:
+    return operation is None or operation.expected_current_authorization_id != item.primary_authorization_id
 
 
 def _item_out(item) -> dict | None:

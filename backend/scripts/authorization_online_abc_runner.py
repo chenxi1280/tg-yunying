@@ -39,6 +39,7 @@ def _execute(session, args) -> dict:
             approved_by=args.approved_by,
             approval_ref=args.approval_ref,
             runtime_release_sha=os.getenv("RELEASE_SHA", ""),
+            account_id=args.account_id or None,
         )
     return run_online_abc_batch(
         session,
@@ -66,6 +67,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--approval-ref", default="")
     parser.add_argument("--poll-seconds", type=float, default=2.0)
     parser.add_argument("--max-accounts", type=int, default=10)
+    parser.add_argument("--account-id", type=int, default=0)
     return parser
 
 

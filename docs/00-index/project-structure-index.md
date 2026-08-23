@@ -1,5 +1,7 @@
 # 项目结构索引
 
+> **2026-08-23 ABC completed A 恢复与 pre-remote rearm：** `authorization_dr/online_abc_completed_recovery.py`、`backend/scripts/authorization_online_abc_completed_recovery.py`、`deploy/authorization-online-abc-completed-recovery.sh` 提供 DB-only completed rebase 和零远端副作用 rearm；`online_abc_operations.py` 选择 E4 retry，`online_abc_runner.py` 支持显式 account resume、先扫描 succeeded A、禁止并行 running，并只接受绑定新 current 的 E4。`online_abc_primary.py` 允许健康 fact 同幅单调前进，但 typed duplicate/Session/current/代次漂移继续停止。
+
 > **2026-08-23 搜索 pre-accept 终态恢复补充：** `integrations/telegram/search_join.py` 对已审批相位的人机验证拒绝和图片验证识别失败显式写 `remote_mutation_started=false`。`reconcile_search_click_pre_accept_absence.py` 只在同 Action/Attempt 的 `unknown_deadline_closed` fact 完整、无 remote identity、无 callback/target click 且错误码+相位精确命中时，将指定 `closed_unknown` assignment 短暂 rebase 到 projector 可接受状态，追加 pre-accept receipt 并重开原义务。普通超时、连接重置、callback unknown 和发布 fence unknown 不属于该恢复集合。
 
 > **2026-08-23 AI 固定 slot Provider 解析补正：** `app/ai_gateway.py` 从群活跃结构化提示词的 `generation_slots` 提取不可变 slot 顺序；固定 slot 请求的 Provider 响应即使含可发送文本，也必须是 `slot_id` 完整且顺序一致的结构化 JSON，纯文本行、缺失或错位 slot 不再进入通用文本行兼容路径。MiMo 继续复用既有受限大 token 重试，后续生成阶段仍执行独立映射校验；不猜测、不按位置注入 slot，不改变无固定 slot 的历史调用。回归入口为 `test_ai_gateway.py` 的 fixed-slot structured contract 用例。
