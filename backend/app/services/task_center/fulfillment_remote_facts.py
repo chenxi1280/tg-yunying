@@ -23,6 +23,7 @@ from .fulfillment_obligation_materialization import (
     rebind_projection as _rebind_projection,
     skip_obligation_action as _skip_obligation_action,
 )
+from .fulfillment_ledger_owners import resolve_view_task_day_ledger_id
 
 
 PROJECTION_KINDS = ("obligation", "action", "task_read_model")
@@ -320,18 +321,23 @@ def _projection_state(fact_kind: str) -> str:
 
 
 def _obligation_identity(action: Action) -> tuple[str, str]:
-    if action.obligation_type and action.obligation_id:
-        return str(action.obligation_type), str(action.obligation_id)
     payload = _payload(action)
-    keys = (
+    typed_keys = (
         ("search_click", "search_click_fulfillment_obligation_id"),
         ("comment", "comment_fulfillment_obligation_id"),
         ("view", "view_fulfillment_obligation_id"),
         ("reaction", "reaction_fulfillment_obligation_id"),
+    )
+    for kind, key in typed_keys:
+        if payload.get(key):
+            return kind, str(payload[key])
+    if action.obligation_type and action.obligation_id:
+        return str(action.obligation_type), str(action.obligation_id)
+    legacy_keys = (
         ("coverage", "coverage_ledger_id"),
         ("quantity_slot", "primary_quantity_slot_id"),
     )
-    for kind, key in keys:
+    for kind, key in legacy_keys:
         if payload.get(key):
             return kind, str(payload[key])
     return action.action_type, str(action.action_dedupe_key or action.id)
@@ -426,6 +432,9 @@ def _task_day_ledger_id(
     require_current_ai_send: bool = False,
 ) -> str | None:
     payload_ledger = str(_payload(action).get("task_day_ledger_id") or "")
+    view_ledger = resolve_view_task_day_ledger_id(session, action, payload_ledger)
+    if view_ledger:
+        return view_ledger
     quantity_id = str(action.primary_quantity_slot_id or "")
     if not quantity_id:
         task = session.get(Task, action.task_id)

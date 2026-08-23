@@ -1,0 +1,23 @@
+from __future__ import annotations
+
+from sqlalchemy.orm import Session
+
+from app.models import Action, ViewFulfillmentObligation
+
+
+def resolve_view_task_day_ledger_id(
+    session: Session,
+    action: Action,
+    payload_ledger_id: str,
+) -> str | None:
+    payload = dict(action.payload or {})
+    owner_id = str(payload.get("view_fulfillment_obligation_id") or "")
+    if action.action_type != "view_message" or not owner_id:
+        return None
+    owner = session.get(ViewFulfillmentObligation, owner_id)
+    if owner is None or not owner.task_day_ledger_id:
+        raise ValueError("fulfillment_view_ledger_missing")
+    owner_ledger_id = str(owner.task_day_ledger_id)
+    if payload_ledger_id and payload_ledger_id != owner_ledger_id:
+        raise ValueError("fulfillment_ledger_identity_conflict")
+    return owner_ledger_id

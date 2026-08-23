@@ -16,6 +16,7 @@ from app.models import (
     TaskDayLedger,
     TaskGroupDailyMessageSlot,
     Tenant,
+    ViewFulfillmentObligation,
 )
 from app.services.task_center.fulfillment_remote_facts import (
     ensure_action_obligation,
@@ -96,6 +97,88 @@ def test_current_ai_fact_rejects_missing_ledger_owner(session: Session) -> None:
     session.flush()
     with pytest.raises(ValueError, match="fulfillment_ai_ledger_missing"):
         persist_remote_fact(session, action)
+
+
+@pytest.mark.no_postgres
+def test_view_rebind_uses_typed_owner_instead_of_stale_action_identity(
+    session: Session,
+) -> None:
+    task = Task(
+        id="task-view",
+        tenant_id=980_001,
+        name="view",
+        type="channel_view",
+        status="running",
+        fulfillment_contract_version="fact_first_v3",
+    )
+    ledgers = [
+        TaskDayLedger(
+            id=f"ledger-view-{index}",
+            tenant_id=980_001,
+            task_id=task.id,
+            timezone_snapshot="Asia/Shanghai",
+            timezone_revision=1,
+            obligation_local_date=date(2026, 8, 18 + index),
+            period_start_at=NOW + timedelta(days=index),
+            deadline_at=NOW + timedelta(days=index + 1),
+            day_phase="active",
+            planning_anchor_at=NOW + timedelta(days=index),
+        )
+        for index in range(2)
+    ]
+    owners = [
+        ViewFulfillmentObligation(
+            id=f"view-owner-{index}",
+            tenant_id=980_001,
+            task_day_ledger_id=ledger.id,
+            channel_message_id=700 + index,
+            account_id=17,
+        )
+        for index, ledger in enumerate(ledgers)
+    ]
+    action = Action(
+        id="action-view-rebound",
+        tenant_id=980_001,
+        task_id=task.id,
+        task_type="channel_view",
+        action_type="view_message",
+        status="pending",
+        obligation_type="view",
+        obligation_id=owners[0].id,
+        payload={
+            "view_fulfillment_obligation_id": owners[1].id,
+            "task_day_ledger_id": ledgers[0].id,
+        },
+    )
+    session.add_all([task, *ledgers, *owners, action])
+    session.add(FulfillmentObligationProjection(
+        id="projection-view-old",
+        tenant_id=980_001,
+        task_id=task.id,
+        task_day_ledger_id=ledgers[0].id,
+        task_lifecycle_epoch=1,
+        obligation_type="view",
+        obligation_id=owners[0].id,
+        work_lane="interaction",
+        state="open",
+        active_action_id=action.id,
+        materialization_version=1,
+        version=1,
+    ))
+    session.flush()
+
+    with pytest.raises(ValueError, match="fulfillment_ledger_identity_conflict"):
+        ensure_action_obligation(session, action)
+    action.payload = {
+        **action.payload,
+        "task_day_ledger_id": ledgers[1].id,
+    }
+    assert ensure_action_obligation(session, action)
+    assert action.obligation_id == owners[1].id
+    projection = session.scalar(select(FulfillmentObligationProjection).where(
+        FulfillmentObligationProjection.obligation_id == owners[1].id,
+    ))
+    assert projection.task_day_ledger_id == ledgers[1].id
 
 
 def _add_ai_owner_and_action(session: Session) -> Action:
