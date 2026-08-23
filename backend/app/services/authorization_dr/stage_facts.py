@@ -18,6 +18,7 @@ STAGES = frozenset({
     "restore_probe_passed",
     "slot_committed",
     "artifact_recovery_abandoned",
+    "orphan_revoke_started",
 })
 
 
@@ -75,7 +76,10 @@ def _validate_stage(stage: str, manifest_digest: str, evidence_manifest: dict) -
         raise AuthorizationDrError("reconcile_evidence_invalid", "Operation stage is unsupported")
     if len(manifest_digest) != 64 or any(char not in "0123456789abcdef" for char in manifest_digest):
         raise AuthorizationDrError("reconcile_evidence_invalid", "Operation stage digest is invalid")
-    allowed = {"bundle_generation", "ciphertext_digest", "inventory_sequence"}
+    allowed = {
+        "bundle_generation", "ciphertext_digest", "inventory_sequence",
+        "fingerprint", "candidate_hash_digest", "remote_set_digest",
+    }
     if set(evidence_manifest) - allowed:
         raise AuthorizationDrError("reconcile_evidence_invalid", "Operation stage manifest contains unsupported fields")
 

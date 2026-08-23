@@ -25,6 +25,7 @@ from app.services.developer_apps import (
 from app.timezone import as_beijing_aware
 
 from .contracts import AuthorizationDrError, OperationClaim
+from .generation import next_standby_2_generation
 from .login_code import bind_login_code
 from .migration_results import (
     mark_login_remote_failed,
@@ -72,7 +73,7 @@ def preview_migration_batch(
     session.add(batch)
     session.flush()
     for ordinal, source in enumerate(sources, start=1):
-        session.add(_batch_item(batch, source, ordinal))
+        session.add(_batch_item(session, batch, source, ordinal))
     audit(
         session,
         tenant_id=tenant_id,
@@ -337,7 +338,7 @@ def _is_healthy_sv_standby(row: TgAccountAuthorization) -> bool:
     )
 
 
-def _batch_item(batch, source: TgAccountAuthorization, ordinal: int) -> TgAuthorizationDrBatchItem:
+def _batch_item(session, batch, source: TgAccountAuthorization, ordinal: int) -> TgAuthorizationDrBatchItem:
     return TgAuthorizationDrBatchItem(
         batch_id=batch.id,
         tenant_id=batch.tenant_id,
@@ -346,7 +347,7 @@ def _batch_item(batch, source: TgAccountAuthorization, ordinal: int) -> TgAuthor
         expected_source_authorization_id=source.id,
         expected_source_fact_version=source.fact_version,
         expected_source_generation=source.slot_generation,
-        target_generation=source.slot_generation + 1,
+        target_generation=next_standby_2_generation(session, source.account_id),
     )
 
 

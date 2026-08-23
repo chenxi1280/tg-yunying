@@ -2,6 +2,7 @@ from .abc_backup import *  # noqa: F401,F403
 from .abc_canary import *  # noqa: F401,F403
 from .abc_verify import *  # noqa: F401,F403
 from .contracts import *  # noqa: F401,F403
+from .c_orphan_recovery import *  # noqa: F401,F403
 from .configuration import *  # noqa: F401,F403
 from .artifact_reconcile import *  # noqa: F401,F403
 from .authkey_duplicate import *  # noqa: F401,F403
