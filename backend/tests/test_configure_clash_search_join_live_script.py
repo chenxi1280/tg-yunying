@@ -126,6 +126,19 @@ def test_clash_infrastructure_repair_does_not_create_smoke_task_by_default(
 
 
 @pytest.mark.no_postgres
+def test_clash_smoke_task_selects_accounts_without_task_precheck() -> None:
+    script = _load_script()
+
+    class Account:
+        def __init__(self, account_id: int) -> None:
+            self.id = account_id
+
+    accounts = [Account(11), Account(12), Account(13)]
+
+    assert script.select_smoke_account_ids(accounts, 2) == [11, 12]
+
+
+@pytest.mark.no_postgres
 def test_clash_rebinds_existing_environments_before_validating_missing_ones(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

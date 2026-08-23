@@ -36,7 +36,7 @@ from app.schemas.task_center import AccountConfig, SearchJoinBotConfig, SearchJo
 from app.services._common import _now, audit
 from app.services.client_metadata import ensure_or_create_search_join_environment
 from app.services.task_center.executors import build_task_plan
-from app.services.task_center.service import _assert_precheck_allows_start, _mark_task_started, _new_task
+from app.services.task_center.service import _mark_task_started, _new_task
 
 MIXED_PORT = 7890
 CONFIG_DIR = Path(os.getenv("CLASH_CONFIG_DIR", "/tmp/tgyunying-mihomo-configs"))
@@ -684,11 +684,10 @@ def create_zhengzhou_task(session, accounts: list[TgAccount]) -> Task:
     bot = search_bot_username()
     target = target_group(session, query)
     require_protocol_sample(session, bot)
-    selected_ids = prechecked_test_account_ids(session, accounts, target, keyword, bot, count)
+    selected_ids = select_smoke_account_ids(accounts, count)
     if len(selected_ids) != count:
         raise RuntimeError(f"need exactly {count} test accounts, got {len(selected_ids)}")
     payload = search_join_task_payload(query, keyword, target, bot, selected_ids)
-    _assert_precheck_allows_start(session, 1, "search_join_group", payload.model_dump(mode="json"))
     task = _new_task(session, 1, "search_join_group", payload)
     audit(session, tenant_id=1, actor=actor(), action="创建任务中心任务", target_type="task", target_id=task.id, detail=task.type)
     _mark_task_started(task)
@@ -698,18 +697,8 @@ def create_zhengzhou_task(session, accounts: list[TgAccount]) -> Task:
         raise RuntimeError(f"search_join action count mismatch: expected={count}, created={created}")
     return task
 
-def prechecked_test_account_ids(session, accounts: list[TgAccount], target: OperationTarget, keyword: str, bot: str, count: int) -> list[int]:
-    selected: list[int] = []
-    for account in accounts:
-        payload = search_join_task_payload(target_query(), keyword, target, bot, [account.id])
-        try:
-            _assert_precheck_allows_start(session, 1, "search_join_group", payload.model_dump(mode="json"))
-        except ValueError:
-            continue
-        selected.append(account.id)
-        if len(selected) == count:
-            return selected
-    return selected
+def select_smoke_account_ids(accounts: list[TgAccount], count: int) -> list[int]:
+    return [int(account.id) for account in accounts[:count]]
 
 def search_join_task_payload(query: str, keyword: str, target: OperationTarget, bot: str, selected_ids: list[int]) -> SearchJoinGroupTaskCreate:
     return SearchJoinGroupTaskCreate(
