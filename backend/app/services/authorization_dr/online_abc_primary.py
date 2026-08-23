@@ -40,6 +40,8 @@ def stop_completed_primary_drift(session, batch, *, actor: str, approval_ref: st
 def _primary_drifted(session, item) -> bool:
     account = session.get(TgAccount, item.account_id)
     primary = session.get(TgAccountAuthorization, item.primary_authorization_id)
+    account_delta = account.authorization_fact_generation - item.authorization_fact_generation if account else -1
+    primary_delta = primary.fact_version - item.primary_fact_version if primary else -1
     return not (
         account
         and primary
@@ -49,9 +51,8 @@ def _primary_drifted(session, item) -> bool:
         and primary.health_status == "healthy"
         and _digest(primary.session_ciphertext or "") == item.primary_session_digest
         and account.authorization_generation == item.authorization_generation
-        and account.authorization_fact_generation == item.authorization_fact_generation + 1
+        and account_delta == primary_delta and account_delta >= 1
         and account.connection_generation == item.connection_generation
-        and primary.fact_version == item.primary_fact_version + 1
         and not primary.last_authoritative_error_code
     )
 

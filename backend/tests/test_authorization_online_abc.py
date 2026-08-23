@@ -244,6 +244,24 @@ def test_completed_primary_drift_stops_batch_before_next_account(session: Sessio
     assert result["standby_2_outcome_counts"] == {"pending": 9, "succeeded": 1}
 
 
+def test_completed_primary_accepts_multiple_matched_healthy_fact_advances(session: Session) -> None:
+    batch_id = _apply(session, _preview(session)["fingerprint"])["batch_id"]
+    command = start_next_online_abc_item(session, batch_id, actor="approver", approval_ref="ABC-10")
+    _qualify_primary(session, command["account_id"])
+    _add_operations(session, command, status="succeeded")
+    sync_online_abc_batch(session, batch_id, actor="approver", approval_ref="ABC-10")
+    account = session.get(TgAccount, command["account_id"])
+    primary = session.get(TgAccountAuthorization, account.current_authorization_id)
+    account.authorization_fact_generation += 2
+    primary.fact_version += 2
+    session.commit()
+
+    result = sync_online_abc_batch(session, batch_id, actor="approver", approval_ref="ABC-10")
+
+    assert result["status"] == "running"
+    assert result["account_outcome_counts"] == {"pending": 9, "succeeded": 1}
+
+
 def test_runner_status_is_read_only(session: Session) -> None:
     batch_id = _apply(session, _preview(session)["fingerprint"])["batch_id"]
 
@@ -684,14 +702,18 @@ def _add_operation(
     operation_type: str = "",
 ):
     resolved_type = operation_type or (
-        "abc_e4_primary_send" if key.endswith(":e4") else "provision_standby_1"
+        "abc_e4_primary_send" if ":e4" in key else "provision_standby_1"
     )
+    account = session.get(TgAccount, account_id)
     operation = TgAuthorizationDrOperation(
         tenant_id=1, account_id=account_id, operation_type=resolved_type,
         logical_slot="primary" if resolved_type.startswith("abc_e4") else "standby_2" if resolved_type.startswith("migrate") else "standby_1",
         source_generation=1, target_generation=1, developer_app_id=1,
         developer_app_api_id_snapshot=1001, developer_app_credentials_version=1,
         assignment_version=1, egress_id="sv-proxy:1", egress_version=1,
+        expected_current_authorization_id=(
+            account.current_authorization_id if resolved_type == "abc_e4_primary_send" else None
+        ),
         idempotency_key=key, request_fingerprint="f" * 64, status=status,
         remote_call_state="unknown" if status == "reconcile_unknown" else "succeeded",
         requested_by="requester", approved_by="approver", approval_ref="ABC-10",

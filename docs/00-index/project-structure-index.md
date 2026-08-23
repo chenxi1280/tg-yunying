@@ -1,5 +1,7 @@
 # 项目结构索引
 
+> **2026-08-23 ABC completed A 恢复与 pre-remote rearm：** `authorization_dr/online_abc_completed_recovery.py`、`backend/scripts/authorization_online_abc_completed_recovery.py`、`deploy/authorization-online-abc-completed-recovery.sh` 提供 DB-only completed rebase 和零远端副作用 rearm；`online_abc_operations.py` 选择 E4 retry，`online_abc_runner.py` 支持显式 account resume、先扫描 succeeded A、禁止并行 running，并只接受绑定新 current 的 E4。`online_abc_primary.py` 允许健康 fact 同幅单调前进，但 typed duplicate/Session/current/代次漂移继续停止。
+
 > **2026-08-23 ABC 切主后 frozen item 重基线：** `authorization_dr/online_abc_post_activate.py` 提供 DB-only preview/fingerprint/apply，`backend/scripts/authorization_online_abc_post_activate.py` 与 `deploy/authorization-online-abc-post-activate-rebase.sh` 是受限 SSH 入口；仅在 C orphan 已 compensated、local_activate case 已完成真实发送读回、旧 A typed duplicate 且受保护时，把同一 stopped item 重绑到新 current，并将 B 计划复位为互补 SV provision。`online_abc_runner.py` 只从 `post_local_activate_rebase` 精确检查点恢复，后续复用正式 B/C/E4 实现。
 
 > **2026-08-23 MY create-only generation 冲突恢复 v2.26：** `authorization_dr/c_orphan_recovery.py` 与受限 CLI 对 frozen A 做远端 exact-set preview/fingerprint，唯一识别本 operation App C/login 时间窗的新设备；apply 精确撤销并二次读回后把旧 operation 标为 compensated，重开同一 online item。`online_abc_operations.py` 选择最新 retry C operation，`online_abc_runner.py` 只从已审计 compensated checkpoint 恢复；migration/provision generation 同时扫描 authorization、历史 C operation 和中心 bundle，历史不可变文件不覆盖、不删除。

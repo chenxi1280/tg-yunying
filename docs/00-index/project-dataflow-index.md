@@ -1,5 +1,7 @@
 # 项目数据流转索引
 
+> **2026-08-23 DF-342 completed A 与 pre-remote 恢复：** `succeeded item -> A typed duplicate -> local_activate/send readback -> completed rebase keeps C/bundle/probe + resets complementary B -> account-targeted resume -> new B -> A qualification -> E4 retry bound to new A -> item succeeded`。若 resume 已提交 running 后才发现另一 succeeded A 漂移，且当前 B/E4 均未创建，则 `DB-only rearm -> original post-local-activate blocker`；禁止并行 running、复用旧 A 的 E4 或重放已合格 C。
+
 > **2026-08-23 DF-342 local_activate 后同 item 恢复：** `C orphan compensated -> old A typed duplicate -> local_activate B-as-current -> Saved Messages exact readback -> DB-only post_activate_rebase preview/fingerprint/dual approval -> same frozen item A baseline=new current + B plan=provision -> resume checkpoint -> complementary SV B -> current A qualification -> C retry next generation -> new A E4`。rebase 不连接 Telegram、不改 current A/旧 A/source C/compensated operation；任一 case、消息、代次、UID/AuthKey、route 或 unknown/runtime 事实漂移均拒绝。
 
 > **2026-08-23 DF-342 A 健康事实单调前进：** A qualification 后的后台成功 online probe 可令 account/current authorization fact 同幅单调前进；runner 以 current/Session/UID/AuthKey/authorization generation/connection generation/active+healthy/无权威错误联合判断无漂移，不再把健康事实 `+N` 当成 AuthKey 漂移。
