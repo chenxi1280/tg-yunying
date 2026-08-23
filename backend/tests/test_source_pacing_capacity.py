@@ -49,8 +49,13 @@ def session() -> Session:
         yield current
 
 
-def test_view_source_gap_uses_ledger_aggregate_due_count(session: Session) -> None:
+def test_view_source_gap_uses_full_target_before_daily_due_accrues(
+    session: Session,
+) -> None:
     task, ledger, messages = _seed_view_period(session)
+    targets = list(session.scalars(select(ChannelViewDailyMessageTarget)))
+    targets[0].due_count = 1
+    targets[1].due_count = 0
     owner = _view_owner(ledger, messages[0], plan_total=600)
     action = _view_action(task, owner, release_at=NOW)
     session.add_all([owner, action])
