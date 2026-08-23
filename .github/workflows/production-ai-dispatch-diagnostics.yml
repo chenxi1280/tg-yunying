@@ -1,0 +1,68 @@
+name: Production AI Dispatch Diagnostics
+
+'on':
+  workflow_dispatch:
+    inputs:
+      deployed_sha:
+        description: Full or short SHA expected in the current production release
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    environment: production-silicon-valley
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure production SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SILICON_VALLEY_PRODUCTION_SSH_PRIVATE_KEY }}
+          DEPLOY_HOST: ${{ secrets.SILICON_VALLEY_PRODUCTION_HOST }}
+          DEPLOY_USER: ${{ secrets.SILICON_VALLEY_PRODUCTION_USER }}
+          DEPLOY_PORT: ${{ secrets.SILICON_VALLEY_PRODUCTION_PORT }}
+          SSH_CONNECT_TIMEOUT: ${{ vars.SSH_CONNECT_TIMEOUT }}
+        run: |
+          set -euo pipefail
+          test -n "${SSH_PRIVATE_KEY}"
+          test -n "${DEPLOY_HOST}"
+          test -n "${DEPLOY_USER}"
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${SSH_PRIVATE_KEY}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<EOF
+          Host silicon-valley-production-server
+            HostName ${DEPLOY_HOST}
+            User ${DEPLOY_USER}
+            Port ${DEPLOY_PORT:-22}
+            IdentityFile ~/.ssh/id_ed25519
+            IdentitiesOnly yes
+            StrictHostKeyChecking accept-new
+            ConnectTimeout ${SSH_CONNECT_TIMEOUT:-60}
+            ConnectionAttempts 3
+            ServerAliveInterval 15
+            ServerAliveCountMax 8
+          EOF
+          chmod 600 ~/.ssh/config
+
+      - name: Verify immutable release and read dispatch facts
+        env:
+          EXPECTED_DEPLOYED_SHA: ${{ inputs.deployed_sha }}
+          PRODUCTION_BASE_DIR: ${{ vars.SILICON_VALLEY_PRODUCTION_BASE_DIR }}
+        run: |
+          set -euo pipefail
+          [[ "${EXPECTED_DEPLOYED_SHA}" =~ ^[0-9a-fA-F]{8,40}$ ]]
+          BASE_DIR="${PRODUCTION_BASE_DIR:-/data/tgyunying}"
+          EXPECTED_SHORT="${EXPECTED_DEPLOYED_SHA:0:8}"
+          CURRENT_RELEASE="$(ssh silicon-valley-production-server "readlink -f '${BASE_DIR}/current'")"
+          [[ "$(basename "${CURRENT_RELEASE}")" == *"${EXPECTED_SHORT}"* ]]
+          scp .github/scripts/ai_dispatch_admission_diagnostics.py \
+            silicon-valley-production-server:/tmp/ai_dispatch_admission_diagnostics.py
+          ssh silicon-valley-production-server \
+            "docker cp /tmp/ai_dispatch_admission_diagnostics.py tgyunying-backend:/tmp/ai_dispatch_admission_diagnostics.py && \
+             docker exec tgyunying-backend python /tmp/ai_dispatch_admission_diagnostics.py"
