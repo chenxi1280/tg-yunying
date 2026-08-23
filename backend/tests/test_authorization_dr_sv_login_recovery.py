@@ -198,3 +198,54 @@ def test_recovery_commits_existing_authorized_session_without_changing_a(monkeyp
         assert flow.temporary_session_ciphertext is None
         assert (operation.status, operation.candidate_authorization_id) == ("succeeded", asset.id)
         assert (case.status, case.classification) == ("applied", "sv_login_session_recovered")
+
+
+def test_recovery_uses_primary_slot_without_demoting_promoted_current_a(monkeypatch) -> None:
+    with _session() as session:
+        account, primary, conflict, flow, operation = _seed(session)
+        conflict.is_slot_current = False
+        primary.is_slot_current = False
+        session.flush()
+        primary.logical_slot = "standby_1"
+        primary.is_slot_current = True
+        conflict.role = "standby_repair"
+        conflict.logical_slot = "primary"
+        conflict.status = "needs_repair"
+        conflict.health_status = "invalid"
+        conflict.is_slot_current = True
+        session.commit()
+        _mock_remote(monkeypatch)
+        before = (
+            account.current_authorization_id, account.session_ciphertext, account.developer_app_id,
+            account.authorization_generation, account.authorization_fact_generation,
+            account.connection_generation, primary.fact_version, primary.logical_slot,
+        )
+        preview = preview_sv_login_recovery(
+            session, operation.id, tenant_id=1, runtime_image_sha="a" * 40,
+            requested_by="requester",
+        )
+
+        result = apply_sv_login_recovery(
+            session, operation.id, tenant_id=1, runtime_image_sha="a" * 40,
+            requested_by="requester", actor="reviewer", approval_ref="USER-RECOVERY",
+            idempotency_key="recover-promoted-101",
+            expected_fingerprint=preview["evidence_fingerprint"],
+        )
+
+        session.refresh(account)
+        session.refresh(primary)
+        session.refresh(conflict)
+        after = (
+            account.current_authorization_id, account.session_ciphertext, account.developer_app_id,
+            account.authorization_generation, account.authorization_fact_generation,
+            account.connection_generation, primary.fact_version, primary.logical_slot,
+        )
+        asset = session.get(TgAccountAuthorization, result["candidate_authorization_id"])
+        assert after == before
+        assert (primary.is_current, primary.is_slot_current, primary.status) == (True, True, "active")
+        assert (asset.role, asset.logical_slot, asset.is_slot_current) == ("standby_1", "primary", True)
+        assert (conflict.logical_slot, conflict.is_slot_current, conflict.protected_from_cleanup) == (
+            "standby_repair", False, True,
+        )
+        assert operation.logical_slot == "primary"
+        assert flow.temporary_session_ciphertext is None

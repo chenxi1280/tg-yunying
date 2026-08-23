@@ -329,6 +329,28 @@ def test_abc_e4_sends_once_and_preserves_a(session: Session, monkeypatch) -> Non
     assert _a_snapshot(session) == before
 
 
+def test_abc_e4_resolves_b_from_primary_slot_after_local_activate(session: Session) -> None:
+    _seed_e4(session)
+    account = session.get(TgAccount, 101)
+    primary = session.get(TgAccountAuthorization, account.current_authorization_id)
+    standby = session.scalar(select(TgAccountAuthorization).where(
+        TgAccountAuthorization.account_id == 101,
+        TgAccountAuthorization.role == "standby_1",
+    ))
+    primary.is_slot_current = False
+    standby.is_slot_current = False
+    session.flush()
+    primary.logical_slot = "standby_1"
+    standby.logical_slot = "primary"
+    primary.is_slot_current = True
+    standby.is_slot_current = True
+    session.commit()
+
+    result = preview_abc_e4(session, 1, 101, idempotency_key="abc-e4-promoted-a")
+
+    assert result["standby_1"][0] == standby.id
+
+
 def test_abc_e4_unknown_send_is_not_retried(session: Session, monkeypatch) -> None:
     _seed_e4(session)
     preview = preview_abc_e4(session, 1, 101, idempotency_key="abc-e4-unknown-101")

@@ -111,7 +111,7 @@ def _preview_inputs(session, tenant_id: int, account_id: int, idempotency_key: s
     proxy = session.get(AccountProxy, account.proxy_id) if account.proxy_id else None
     if not proxy or proxy.status not in {"healthy", "available", "normal", "active"}:
         raise AuthorizationDrError("proxy_unavailable", "A SV proxy is unavailable for B login")
-    _require_no_healthy_b(session, account_id, primary.developer_app_id)
+    _require_no_healthy_b(session, account_id, primary)
     _require_no_active_operation(session, account_id)
     return AbcBackupPreview(
         tenant_id=tenant_id,
@@ -162,7 +162,7 @@ def _new_b_operation(preview, account, primary, requested_by, approved_by, appro
         tenant_id=account.tenant_id,
         account_id=account.id,
         operation_type="provision_standby_1",
-        logical_slot="standby_1",
+        logical_slot=_standby_target_slot(primary),
         source_authorization_id=primary.id,
         code_source_authorization_id=primary.id,
         source_generation=primary.slot_generation,
@@ -303,7 +303,7 @@ def _qualify_b(asset, source, identity) -> None:
     asset.telegram_user_id_digest = identity.telegram_user_id_digest
     asset.auth_key_fingerprint_digest = identity.auth_key_fingerprint_digest
     asset.telegram_authorization_hash_ciphertext = encrypt_secret(identity.authorization_hash)
-    asset.logical_slot = "standby_1"
+    asset.logical_slot = _standby_target_slot(source)
     asset.role = "standby_1"
     asset.provision_region_code = "sv"
     asset.is_slot_current = True
@@ -370,14 +370,16 @@ def _sv_backup_assignment(session, primary):
     )
 
 
-def _require_no_healthy_b(session, account_id: int, primary_app_id: int) -> None:
+def _require_no_healthy_b(session, account_id: int, primary) -> None:
     row = session.scalar(select(TgAccountAuthorization.id).where(
         TgAccountAuthorization.account_id == account_id,
-        TgAccountAuthorization.logical_slot == "standby_1",
+        TgAccountAuthorization.id != primary.id,
+        TgAccountAuthorization.is_current.is_(False),
         TgAccountAuthorization.is_slot_current.is_(True),
+        TgAccountAuthorization.provision_region_code == "sv",
         TgAccountAuthorization.status.in_({"active", "standby"}),
         TgAccountAuthorization.health_status == "healthy",
-        TgAccountAuthorization.developer_app_id != primary_app_id,
+        TgAccountAuthorization.developer_app_id != primary.developer_app_id,
         TgAccountAuthorization.disabled_at.is_(None),
     ).limit(1))
     if row:
@@ -388,7 +390,8 @@ def _retain_conflicting_b(session, asset, source) -> None:
     rows = list(session.scalars(select(TgAccountAuthorization).where(
         TgAccountAuthorization.account_id == asset.account_id,
         TgAccountAuthorization.id != asset.id,
-        TgAccountAuthorization.logical_slot == "standby_1",
+        TgAccountAuthorization.id != source.id,
+        TgAccountAuthorization.logical_slot == _standby_target_slot(source),
         TgAccountAuthorization.disabled_at.is_(None),
     )))
     for row in rows:
@@ -402,6 +405,12 @@ def _retain_conflicting_b(session, asset, source) -> None:
         row.protected_from_cleanup = True
         row.failure_reason = "Retained after dynamic SV standby replacement"
         row.fact_version += 1
+
+
+def _standby_target_slot(primary) -> str:
+    if primary.logical_slot == "standby_1":
+        return "primary"
+    return "standby_1"
 
 
 def _require_no_active_operation(session, account_id: int) -> None:

@@ -44,6 +44,7 @@ SUCCESS_STATUS = "succeeded"
 TERMINAL_BATCH_STATUSES = {"accepted", "completed", "observing", "stopped"}
 POST_C_RESUME_BLOCKER = "malaysia_wake_unavailable"
 PRE_PRIMARY_RESUME_BLOCKER = "ValueError"
+RECONCILED_B_RESUME_OUTCOME = "reconcile_unknown"
 RETRYABLE_E4_READINESS_CODES = {"malaysia_wake_unavailable"}
 TERMINAL_OPERATION_STATUSES = {
     SUCCESS_STATUS,
@@ -327,7 +328,7 @@ def _resumable_item(session, batch) -> TgAuthorizationOnlineAbcItem:
     items = list(session.scalars(select(TgAuthorizationOnlineAbcItem).where(
         TgAuthorizationOnlineAbcItem.batch_id == batch.id,
         TgAuthorizationOnlineAbcItem.status == "stopped",
-        TgAuthorizationOnlineAbcItem.outcome == "runner_blocked",
+        TgAuthorizationOnlineAbcItem.outcome.in_({"runner_blocked", RECONCILED_B_RESUME_OUTCOME}),
     ).with_for_update()))
     if len(items) != 1:
         raise AuthorizationDrError("online_abc_resume_ambiguous", "Exactly one runner-blocked item is required")
@@ -337,6 +338,9 @@ def _resumable_item(session, batch) -> TgAuthorizationOnlineAbcItem:
 def _require_resume_contract(session, item, operations: dict) -> str:
     _require_runtime_off(session)
     _require_no_resume_unknown(session)
+    if item.outcome == RECONCILED_B_RESUME_OUTCOME:
+        _require_post_b_reconcile_resume(session, item, operations)
+        return "post_b_reconciled_pre_primary"
     if item.blocker_code == POST_C_RESUME_BLOCKER:
         _require_post_c_resume(session, item, operations)
         return "post_c_pre_e4"
@@ -344,6 +348,48 @@ def _require_resume_contract(session, item, operations: dict) -> str:
         _require_pre_primary_resume(session, item, operations)
         return "pre_primary_no_remote_effect"
     raise AuthorizationDrError("online_abc_resume_blocker_forbidden", f"Blocker is {item.blocker_code}")
+
+
+def _require_post_b_reconcile_resume(session, item, operations: dict) -> None:
+    operation = operations["b"]
+    valid_operation = (
+        operation
+        and operation.status == SUCCESS_STATUS
+        and operation.reconcile_status == "applied"
+        and operation.reconcile_case_id
+        and operation.candidate_authorization_id
+    )
+    if not valid_operation or operations["c"] is not None or operations["e4"] is not None:
+        raise AuthorizationDrError(
+            "online_abc_resume_remote_effect_started",
+            "Reconciled B resume requires succeeded B and no C/E4 operation",
+        )
+    account = session.get(TgAccount, item.account_id)
+    primary = session.get(TgAccountAuthorization, item.primary_authorization_id)
+    candidate = session.get(TgAccountAuthorization, operation.candidate_authorization_id)
+    target_slot = "primary" if primary and primary.logical_slot == "standby_1" else "standby_1"
+    valid_candidate = (
+        candidate
+        and primary
+        and candidate.id != primary.id
+        and candidate.logical_slot == target_slot
+        and candidate.is_slot_current
+        and not candidate.is_current
+        and candidate.provision_region_code == "sv"
+        and candidate.status in {"active", "standby"}
+        and candidate.health_status == "healthy"
+        and candidate.session_ciphertext
+        and primary.telegram_user_id_digest
+        and primary.auth_key_fingerprint_digest
+        and candidate.telegram_user_id_digest == primary.telegram_user_id_digest
+        and candidate.auth_key_fingerprint_digest
+        and candidate.auth_key_fingerprint_digest != primary.auth_key_fingerprint_digest
+    )
+    if _primary_state(account, primary, item) != "frozen" or not valid_candidate:
+        raise AuthorizationDrError("online_abc_primary_drift", "A or recovered B changed before resume")
+    preview = preview_primary_qualification(session, item.tenant_id, item.account_id)
+    if preview["primary_authorization_id"] != item.primary_authorization_id:
+        raise AuthorizationDrError("online_abc_primary_drift", "Canonical A changed before B resume")
 
 
 def _require_post_c_resume(session, item, operations: dict) -> None:

@@ -167,8 +167,10 @@ def _e4_facts(session, tenant_id: int, account_id: int) -> E4Facts:
 def _standby_b(session, account, primary) -> TgAccountAuthorization:
     row = session.scalar(select(TgAccountAuthorization).where(
         TgAccountAuthorization.account_id == account.id,
-        TgAccountAuthorization.logical_slot == "standby_1",
+        TgAccountAuthorization.id != primary.id,
+        TgAccountAuthorization.logical_slot == _standby_target_slot(primary),
         TgAccountAuthorization.is_slot_current.is_(True),
+        TgAccountAuthorization.is_current.is_(False),
         TgAccountAuthorization.disabled_at.is_(None),
     ))
     valid = (
@@ -182,6 +184,10 @@ def _standby_b(session, account, primary) -> TgAccountAuthorization:
     if not row.auth_key_fingerprint_digest or row.auth_key_fingerprint_digest == primary.auth_key_fingerprint_digest:
         raise AuthorizationDrError("authorization_identity_mismatch", "B AuthKey is not independent")
     return row
+
+
+def _standby_target_slot(primary) -> str:
+    return "primary" if primary.logical_slot == "standby_1" else "standby_1"
 
 
 def _standby_c(session, account, primary):

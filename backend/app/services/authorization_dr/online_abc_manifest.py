@@ -142,15 +142,7 @@ def _structural_primary(session, account):
 
 
 def _classify_b(session, account, primary, app_c_id: int | None) -> dict:
-    current = session.scalar(select(TgAccountAuthorization).where(
-        TgAccountAuthorization.account_id == account.id,
-        TgAccountAuthorization.logical_slot == "standby_1",
-        TgAccountAuthorization.is_slot_current.is_(True),
-        TgAccountAuthorization.health_status == "healthy",
-        TgAccountAuthorization.provision_region_code == "sv",
-        TgAccountAuthorization.session_ciphertext.is_not(None),
-        TgAccountAuthorization.disabled_at.is_(None),
-    ).limit(1))
+    current = _current_b(session, account, primary) if primary else None
     if current and primary and current.id != primary.id and current.developer_app_id != primary.developer_app_id:
         route = _assignment_for_app(session, current.developer_app_id)
         return _b_result("already_qualified", current.developer_app, route, current.proxy_id or account.proxy_id)
@@ -158,6 +150,21 @@ def _classify_b(session, account, primary, app_c_id: int | None) -> dict:
     proxy = session.get(AccountProxy, account.proxy_id) if account.proxy_id else None
     plan = "provision" if route and app and proxy and _proxy_ready(proxy) else "blocked"
     return _b_result(plan, app, route, proxy.id if proxy else None)
+
+
+def _current_b(session, account, primary):
+    target_slot = "primary" if primary.logical_slot == "standby_1" else "standby_1"
+    return session.scalar(select(TgAccountAuthorization).where(
+        TgAccountAuthorization.account_id == account.id,
+        TgAccountAuthorization.id != primary.id,
+        TgAccountAuthorization.logical_slot == target_slot,
+        TgAccountAuthorization.is_slot_current.is_(True),
+        TgAccountAuthorization.is_current.is_(False),
+        TgAccountAuthorization.health_status == "healthy",
+        TgAccountAuthorization.provision_region_code == "sv",
+        TgAccountAuthorization.session_ciphertext.is_not(None),
+        TgAccountAuthorization.disabled_at.is_(None),
+    ).limit(1))
 
 
 def _classify_c(session, account_id: int) -> dict:

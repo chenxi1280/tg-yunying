@@ -400,10 +400,17 @@ def _stop_on_global_unknown(session, batch) -> None:
 
 
 def _require_no_healthy_b(session, account_id: int) -> None:
+    account = session.get(TgAccount, account_id)
+    primary = session.get(TgAccountAuthorization, account.current_authorization_id) if account else None
+    if not primary:
+        return
+    target_slot = "primary" if primary.logical_slot == "standby_1" else "standby_1"
     row = session.scalar(select(TgAccountAuthorization.id).where(
         TgAccountAuthorization.account_id == account_id,
-        TgAccountAuthorization.logical_slot == "standby_1",
+        TgAccountAuthorization.id != primary.id,
+        TgAccountAuthorization.logical_slot == target_slot,
         TgAccountAuthorization.is_slot_current.is_(True),
+        TgAccountAuthorization.is_current.is_(False),
         TgAccountAuthorization.health_status == "healthy",
         TgAccountAuthorization.disabled_at.is_(None),
     ).limit(1))
