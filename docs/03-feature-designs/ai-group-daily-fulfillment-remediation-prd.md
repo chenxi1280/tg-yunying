@@ -228,9 +228,10 @@ maximum_confirmable_count = frozen_denominator_count - terminal_permission_block
 4. 只有出现以下明确事件之一，覆盖行才可从该 blocker 回到 ready：已批准的 provider / prompt-contract / parser 版本变更，或运营人员在受限界面确认合同已修复并留下审计理由。不得用隐式模型降级、换话题、模板或签到绕过该 blocker。
 5. 不能证明 slot 归属的任何候选文本不得写入消息记忆、不得关联账号、不得作为后续重复判断基线。
 6. 原始 provider 响应只允许加密保存并受单独权限与保留期控制；页面、普通日志和 `Action.result` 只能展示脱敏摘要。
-7. `pending` 与 `ai_result_persist_unknown` 使用同一个批次领取和 sibling
+7. 固定 slot 请求必须在 Provider 响应解析边界校验结构化 JSON 的 `slot_id` 顺序；纯文本行、缺失或错位 `slot_id` 不得进入通用文本行兼容解析。解析失败只可使用同一批准生成链已有的有限 Provider 调用预算重新请求，且每次仍执行完整 slot 校验；预算耗尽后按本节 generation-contract 终态处理，不得补写、猜测或按位置注入 `slot_id`。
+8. `pending` 与 `ai_result_persist_unknown` 使用同一个批次领取和 sibling
    谓词；不得领取十条后只生成其中一种状态。
-8. `GenerationMappingError` 必须携带 expected/received 数量；合同失败是
+9. `GenerationMappingError` 必须携带 expected/received 数量；合同失败是
    终态，通用失败重试器不得把它重新排为 pending。
 
 ### 5.4 群日累计进度与账号覆盖债务

@@ -333,6 +333,7 @@ AI 活群冻结日覆盖账本
   -> Planner backlog（历史合同）：仅聚合 running + 未删除父任务的 open Action；终态/暂停/删除任务遗留 Action 不占 max_pending_global；all_task_v2 五类任务改由义务唯一性 + 中央 Reservation + scope in-flight capacity 控制，不再受该数量门禁
   -> Planner Task 异常隔离：单 Task 事务回滚 + planner_runtime_error + 30 秒重试；同轮其他 Task 继续
   -> planner_capacity_insufficient + next_decision_at（保留 ready debt）
+  -> 固定 slot Provider 解析：只接受 JSON 中与批次快照顺序完全一致的 slot_id；纯文本行/缺失/错位禁止通用行兼容，使用既有有限 Provider 调用预算重试
   -> 批量 generation contract audit
       -> 契约失败：terminal Action + release reservation + generation_contract blocker
       -> 经批准的 provider / prompt-contract / parser 版本修复后才重新 ready
