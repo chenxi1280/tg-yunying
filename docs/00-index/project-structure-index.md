@@ -1,5 +1,7 @@
 # 项目结构索引
 
+> **2026-08-23 AI 固定 slot Provider 解析补正：** `app/ai_gateway.py` 从群活跃结构化提示词的 `generation_slots` 提取不可变 slot 顺序；固定 slot 请求的 Provider 响应即使含可发送文本，也必须是 `slot_id` 完整且顺序一致的结构化 JSON，纯文本行、缺失或错位 slot 不再进入通用文本行兼容路径。MiMo 继续复用既有受限大 token 重试，后续生成阶段仍执行独立映射校验；不猜测、不按位置注入 slot，不改变无固定 slot 的历史调用。回归入口为 `test_ai_gateway.py` 的 fixed-slot structured contract 用例。
+
 > **2026-08-23 ABC 切主后 frozen item 重基线：** `authorization_dr/online_abc_post_activate.py` 提供 DB-only preview/fingerprint/apply，`backend/scripts/authorization_online_abc_post_activate.py` 与 `deploy/authorization-online-abc-post-activate-rebase.sh` 是受限 SSH 入口；仅在 C orphan 已 compensated、local_activate case 已完成真实发送读回、旧 A typed duplicate 且受保护时，把同一 stopped item 重绑到新 current，并将 B 计划复位为互补 SV provision。`online_abc_runner.py` 只从 `post_local_activate_rebase` 精确检查点恢复，后续复用正式 B/C/E4 实现。
 
 > **2026-08-23 MY create-only generation 冲突恢复 v2.26：** `authorization_dr/c_orphan_recovery.py` 与受限 CLI 对 frozen A 做远端 exact-set preview/fingerprint，唯一识别本 operation App C/login 时间窗的新设备；apply 精确撤销并二次读回后把旧 operation 标为 compensated，重开同一 online item。`online_abc_operations.py` 选择最新 retry C operation，`online_abc_runner.py` 只从已审计 compensated checkpoint 恢复；migration/provision generation 同时扫描 authorization、历史 C operation 和中心 bundle，历史不可变文件不覆盖、不删除。
