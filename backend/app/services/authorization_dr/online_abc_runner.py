@@ -33,7 +33,11 @@ from .online_abc import (
     start_next_online_abc_item,
     sync_online_abc_batch,
 )
-from .online_abc_operations import online_abc_item_operations, online_abc_operation_keys
+from .online_abc_operations import (
+    next_online_abc_c_key,
+    online_abc_item_operations,
+    online_abc_operation_keys,
+)
 from .online_abc_chunk import MAX_CHUNK_ACCOUNTS, chunk_result, require_chunk_size, require_item_runnable, require_slot_ready
 from .readiness import ready_migration_runtime_image_sha
 from .standby_1_qualification import qualify_existing_standby_1, require_existing_standby_1_candidate
@@ -47,6 +51,7 @@ POST_C_RESUME_BLOCKER = "malaysia_wake_unavailable"
 PRE_PRIMARY_RESUME_BLOCKER = "ValueError"
 POST_B_PRE_C_RESUME_BLOCKER = "sv_redundancy_incomplete"
 RECONCILED_B_RESUME_OUTCOME = "reconcile_unknown"
+C_ORPHAN_RETRY_BLOCKER = "c_orphan_revoked_retry_ready"
 RETRYABLE_E4_READINESS_CODES = {"malaysia_wake_unavailable"}
 TERMINAL_OPERATION_STATUSES = {
     SUCCESS_STATUS,
@@ -154,7 +159,7 @@ def _run_current_item(session, batch_id, command, approval, poll_seconds, sleepe
     _prepare_primary_and_b(session, batch, item, operations=operations, approval=approval)
     batch, item, operations = _context(session, batch_id)
     require_slot_ready(item.standby_1_plan, operations["b"], "online_abc_runner_b_incomplete")
-    if item.standby_2_plan != "already_qualified" and operations["c"] is None:
+    if item.standby_2_plan != "already_qualified" and _c_requires_creation(operations["c"]):
         _create_c(session, batch, item, approval)
     if item.standby_2_plan != "already_qualified":
         _wait_for_c(session, batch_id, poll_seconds, sleeper)
@@ -245,14 +250,14 @@ def _create_b(
         bootstrap_missing_primary_identity=bootstrap_missing_primary_identity,
     )
 def _create_c(session, batch, item, approval: RunnerApproval) -> None:
-    keys = online_abc_operation_keys(batch, item)
+    key = next_online_abc_c_key(session, batch, item)
     runtime_sha = ready_migration_runtime_image_sha(session)
     prepare = prepare_scoped_c_provision if item.standby_2_plan == "provision" else prepare_scoped_c_migration
     prepare(
         session,
         batch.tenant_id,
         item.account_id,
-        idempotency_key=keys["c"],
+        idempotency_key=key,
         requested_by=approval.requested_by,
         approved_by=approval.approved_by,
         approval_ref=approval.approval_ref,
@@ -295,6 +300,10 @@ def _wait_for_c(session, batch_id: str, poll_seconds: float, sleeper) -> None:
             return
         sleeper(poll_seconds)
         session.expire_all()
+
+
+def _c_requires_creation(operation) -> bool:
+    return operation is None or operation.status == "migration_rolled_back_forward"
 
 
 def _stop_after_error(session, batch_id: str, approval: RunnerApproval, exc: Exception) -> dict:
@@ -371,7 +380,26 @@ def _require_resume_contract(session, item, operations: dict) -> str:
     if item.blocker_code == PRE_PRIMARY_RESUME_BLOCKER:
         _require_pre_primary_resume(session, item, operations)
         return "pre_primary_no_remote_effect"
+    if item.blocker_code == C_ORPHAN_RETRY_BLOCKER:
+        _require_c_orphan_retry_resume(session, item, operations)
+        return "post_c_orphan_compensated"
     raise AuthorizationDrError("online_abc_resume_blocker_forbidden", f"Blocker is {item.blocker_code}")
+
+
+def _require_c_orphan_retry_resume(session, item, operations: dict) -> None:
+    operation = operations["c"]
+    valid = (
+        operation and operation.status == "migration_rolled_back_forward"
+        and operation.remote_call_state == "compensated"
+        and operation.reconcile_status == "applied"
+        and operation.blocker_code == "orphan_remote_authorization_revoked"
+        and operations["e4"] is None
+    )
+    account = session.get(TgAccount, item.account_id)
+    primary = session.get(TgAccountAuthorization, item.primary_authorization_id)
+    if not valid or _primary_state(account, primary, item) != "qualified":
+        raise AuthorizationDrError("online_abc_primary_drift", "A or compensated C changed before retry")
+    require_slot_ready(item.standby_1_plan, operations["b"], "online_abc_runner_b_incomplete")
 
 
 def _require_post_b_reconcile_resume(session, item, operations: dict) -> None:

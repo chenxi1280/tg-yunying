@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 from app.models import (
     TelegramDeveloperApp,
@@ -17,6 +17,7 @@ from app.services._common import _now, audit
 
 from .abc_canary import _arm_exact_operation, _valid_image_sha
 from .contracts import AuthorizationDrError
+from .generation import next_standby_2_generation
 from .primary_fence import require_primary_code_source
 from .readiness import active_slot_assignments, require_migration_readiness
 
@@ -122,7 +123,7 @@ def _provision_assignment(session, account_id: int, primary):
 
 
 def _create_batch_item(session, account, *, source, idempotency_key, requested_by, approved_by, approval_ref):
-    generation = _target_generation(session, account.id, source)
+    generation = next_standby_2_generation(session, account.id)
     fingerprint = _fingerprint(account.id, source, generation)
     batch = TgAuthorizationDrBatch(
         tenant_id=account.tenant_id,
@@ -188,14 +189,6 @@ def _create_operation(session, batch, item, *, account, source, code_source, app
     session.flush()
     item.operation_id = operation.id
     return operation
-
-
-def _target_generation(session, account_id: int, source) -> int:
-    maximum = session.scalar(select(func.max(TgAccountAuthorization.slot_generation)).where(
-        TgAccountAuthorization.account_id == account_id,
-        TgAccountAuthorization.logical_slot == "standby_2",
-    ))
-    return max(int(maximum or 0), int(source.slot_generation if source else 0)) + 1
 
 
 def _operation_fingerprint(item, account, code_source, readiness, assignment) -> str:

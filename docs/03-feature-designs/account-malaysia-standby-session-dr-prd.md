@@ -194,6 +194,8 @@
 
 `complete_online_abc` 每个账号项包含两个槽位子结果 `standby_1_result` 与 `standby_2_result`，以及独立的 `primary_probe_result`。B、C 子结果都必须各自覆盖恰好 `N` 条，状态集合固定为 `already_qualified|pending|waiting|manual_required|succeeded|failed|reconcile_unknown|skipped_after_freeze`；账号级 outcome 固定为 `already_qualified|succeeded|waiting|manual_required|failed|reconcile_unknown|skipped_after_freeze`。任何时刻必须同时满足：
 
+MY 不可变 bundle generation 必须取同账号 `standby_2` 的 authorization、历史 operation 与中心 bundle 三者最大 generation 再加一，不能只看 current slot。若远端登录已确认但 create-only 路径与历史 bundle 冲突，必须保持 runtime off、停止批次并进入 unknown 对账；旧文件不得覆盖或删除。只有 A 读回唯一识别出本次 App C/时间窗内的新设备、精确撤销后再次读回该 hash 已消失，才可把原 operation 标为 compensated，并以新 idempotency key 和更高 generation 恢复同一 item。任一候选不唯一、撤销结果不明或 A 漂移都保持 unknown，禁止重试登录。
+
 ```text
 account_outcome_counts.total = N
 standby_1_outcome_counts.total = N

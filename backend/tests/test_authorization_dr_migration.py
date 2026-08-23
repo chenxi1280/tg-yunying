@@ -174,6 +174,28 @@ def _seed_account(session: Session, account_id: int) -> None:
     ])
 
 
+def test_preview_reserves_generation_after_historical_operation(session: Session) -> None:
+    session.add(TgAuthorizationDrOperation(
+        tenant_id=1, account_id=101, operation_type="migrate_standby_2",
+        logical_slot="standby_2", source_generation=4, target_generation=7,
+        developer_app_id=3, developer_app_api_id_snapshot=1003,
+        developer_app_credentials_version=1, assignment_version=7,
+        egress_id="my-egress-1", egress_version=5, idempotency_key="historical-g7",
+        request_fingerprint="f" * 64, status="manual_required",
+        requested_by="old", approved_by="other", approval_ref="OLD",
+    ))
+    session.commit()
+
+    batch = preview_migration_batch(
+        session, 1, [101], idempotency_key="generation-after-history", actor="requester",
+    )
+    item = session.scalar(select(TgAuthorizationDrBatchItem).where(
+        TgAuthorizationDrBatchItem.batch_id == batch.id,
+    ))
+
+    assert item.target_generation == 8
+
+
 def _approved_batch(session: Session):
     batch = preview_migration_batch(
         session,
