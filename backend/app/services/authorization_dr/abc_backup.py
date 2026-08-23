@@ -28,7 +28,7 @@ from app.timezone import as_beijing_aware
 
 from .contracts import AuthorizationDrError
 from .login_code import bind_login_code
-from .primary_fence import require_primary_code_source, verified_code_source
+from .primary_fence import verified_code_source
 
 
 CODE_POLL_SECONDS = 2
@@ -44,6 +44,8 @@ class AbcBackupPreview:
     authorization_generation: int
     authorization_fact_generation: int
     connection_generation: int
+    expected_primary_user_id_digest: str
+    expected_primary_auth_key_digest: str
     app_b_id: int
     app_b_credentials_version: int
     app_b_assignment_purpose: str
@@ -59,8 +61,12 @@ def preview_abc_backup(
     account_id: int,
     *,
     idempotency_key: str,
+    bootstrap_missing_primary_identity: bool = False,
 ) -> dict:
-    preview = _preview_inputs(session, tenant_id, account_id, idempotency_key)
+    preview = _preview_inputs(
+        session, tenant_id, account_id, idempotency_key,
+        bootstrap_missing_primary_identity=bootstrap_missing_primary_identity,
+    )
     payload = asdict(preview)
     payload["fingerprint"] = _fingerprint(payload)
     return payload
@@ -76,6 +82,7 @@ def apply_abc_backup(
     requested_by: str,
     approved_by: str,
     approval_ref: str,
+    bootstrap_missing_primary_identity: bool = False,
 ) -> dict:
     _require_approval(requested_by, approved_by, approval_ref)
     existing = _operation_by_key(session, tenant_id, idempotency_key)
@@ -90,6 +97,7 @@ def apply_abc_backup(
         tenant_id,
         account_id,
         idempotency_key=idempotency_key,
+        bootstrap_missing_primary_identity=bootstrap_missing_primary_identity,
     )
     if preview["fingerprint"] != expected_fingerprint:
         raise AuthorizationDrError("migration_fingerprint_conflict", "ABC backup preview changed")
@@ -100,13 +108,19 @@ def apply_abc_backup(
     return _operation_result(operation)
 
 
-def _preview_inputs(session, tenant_id: int, account_id: int, idempotency_key: str) -> AbcBackupPreview:
+def _preview_inputs(
+    session, tenant_id: int, account_id: int, idempotency_key: str, *,
+    bootstrap_missing_primary_identity: bool,
+) -> AbcBackupPreview:
     if not idempotency_key.strip():
         raise AuthorizationDrError("idempotency_key_required", "ABC backup idempotency key is required")
     account = session.get(TgAccount, account_id)
     if not account or account.tenant_id != tenant_id or account.deleted_at is not None:
         raise AuthorizationDrError("account_not_found", "ABC backup account is unavailable")
-    primary = require_primary_code_source(account)
+    primary = _primary_for_backup(account)
+    primary_uid, primary_auth_key = _primary_identity(
+        session, primary, bootstrap_missing=bootstrap_missing_primary_identity,
+    )
     assignment, app = _sv_backup_assignment(session, primary)
     proxy = session.get(AccountProxy, account.proxy_id) if account.proxy_id else None
     if not proxy or proxy.status not in {"healthy", "available", "normal", "active"}:
@@ -121,6 +135,8 @@ def _preview_inputs(session, tenant_id: int, account_id: int, idempotency_key: s
         authorization_generation=account.authorization_generation,
         authorization_fact_generation=account.authorization_fact_generation,
         connection_generation=account.connection_generation,
+        expected_primary_user_id_digest=primary_uid,
+        expected_primary_auth_key_digest=primary_auth_key,
         app_b_id=app.id,
         app_b_credentials_version=app.credentials_version,
         app_b_assignment_purpose=assignment.slot_purpose,
@@ -140,7 +156,7 @@ def _get_or_create_operation(session, preview: dict, requested_by: str, approved
             raise AuthorizationDrError("migration_fingerprint_conflict", "ABC backup idempotency key changed")
         return existing
     account = session.get(TgAccount, preview["account_id"])
-    primary = require_primary_code_source(account)
+    primary = _primary_for_backup(account)
     operation = _new_b_operation(preview, account, primary, requested_by, approved_by, approval_ref)
     session.add(operation)
     session.flush()
@@ -172,8 +188,8 @@ def _new_b_operation(preview, account, primary, requested_by, approved_by, appro
         expected_authorization_fact_generation=preview["authorization_fact_generation"],
         expected_connection_generation=preview["connection_generation"],
         expected_code_source_fact_version=primary.fact_version,
-        expected_code_source_user_id_digest=primary.telegram_user_id_digest,
-        expected_code_source_auth_key_digest=primary.auth_key_fingerprint_digest,
+        expected_code_source_user_id_digest=preview["expected_primary_user_id_digest"],
+        expected_code_source_auth_key_digest=preview["expected_primary_auth_key_digest"],
         developer_app_id=preview["app_b_id"],
         developer_app_api_id_snapshot=0,
         developer_app_credentials_version=preview["app_b_credentials_version"],
@@ -190,7 +206,7 @@ def _new_b_operation(preview, account, primary, requested_by, approved_by, appro
 
 
 def _execute_b_login(session, operation) -> None:
-    source = verified_code_source(session, operation)
+    source = verified_code_source(session, operation, allow_unpersisted_identity=True)
     operation.remote_call_state = "started"
     operation.remote_effect_started_at = _now()
     operation.status = "login_remote_started"
@@ -222,7 +238,7 @@ def _execute_b_login(session, operation) -> None:
 def _poll_bound_code(session, operation) -> str:
     while True:
         operation = session.get(TgAuthorizationDrOperation, operation.id)
-        source = verified_code_source(session, operation)
+        source = verified_code_source(session, operation, allow_unpersisted_identity=True)
         try:
             snapshots = gateway.poll_verification_codes(
                 operation.account_id,
@@ -270,7 +286,7 @@ def _finish_b_login(session, operation, source, flow, code: str) -> None:
     operation.operation_version += 1
     session.commit()
     try:
-        verified_code_source(session, operation)
+        verified_code_source(session, operation, allow_unpersisted_identity=True)
         identity = gateway.authorization_identity(
             decrypt_session(asset.session_ciphertext),
             credentials_for_authorization(session, asset),
@@ -282,7 +298,7 @@ def _finish_b_login(session, operation, source, flow, code: str) -> None:
             exclude_authorization_id=asset.id,
         )
         _retain_conflicting_b(session, asset, source)
-        _qualify_b(asset, source, identity)
+        _qualify_b(asset, source, identity, operation)
     except Exception as exc:
         _mark_manual(session, operation, exc)
         raise
@@ -293,10 +309,10 @@ def _finish_b_login(session, operation, source, flow, code: str) -> None:
     session.commit()
 
 
-def _qualify_b(asset, source, identity) -> None:
-    if identity.telegram_user_id_digest != source.telegram_user_id_digest:
+def _qualify_b(asset, source, identity, operation) -> None:
+    if identity.telegram_user_id_digest != operation.expected_code_source_user_id_digest:
         raise AuthorizationDrError("authorization_identity_mismatch", "B belongs to a different account")
-    if identity.auth_key_fingerprint_digest == source.auth_key_fingerprint_digest:
+    if identity.auth_key_fingerprint_digest == operation.expected_code_source_auth_key_digest:
         raise AuthorizationDrError("authorization_identity_mismatch", "B duplicates A AuthKey")
     if not identity.authorization_hash or identity.authorization_hash == "0":
         raise AuthorizationDrError("authorization_hash_missing", "B remote authorization hash is missing")
@@ -411,6 +427,40 @@ def _standby_target_slot(primary) -> str:
     if primary.logical_slot == "standby_1":
         return "primary"
     return "standby_1"
+
+
+def _primary_for_backup(account):
+    primary = next((row for row in account.authorizations if row.id == account.current_authorization_id), None)
+    valid = (
+        primary
+        and primary.logical_slot in {"primary", "standby_1"}
+        and primary.is_current
+        and primary.provision_region_code == "sv"
+        and primary.session_ciphertext == account.session_ciphertext
+        and primary.developer_app_id == account.developer_app_id
+    )
+    if not valid:
+        raise AuthorizationDrError("primary_canonical_unproven", "Current A authorization is unavailable")
+    return primary
+
+
+def _primary_identity(session, primary, *, bootstrap_missing: bool) -> tuple[str, str]:
+    stored = (primary.telegram_user_id_digest, primary.auth_key_fingerprint_digest)
+    if all(stored):
+        return stored
+    if not bootstrap_missing:
+        raise AuthorizationDrError("primary_canonical_unproven", "Current A identity is unavailable")
+    identity = gateway.authorization_identity(
+        decrypt_session(primary.session_ciphertext),
+        credentials_for_authorization(session, primary),
+    )
+    if not identity.telegram_user_id_digest or not identity.auth_key_fingerprint_digest:
+        raise AuthorizationDrError("primary_canonical_unproven", "Current A identity probe is incomplete")
+    if stored[0] and stored[0] != identity.telegram_user_id_digest:
+        raise AuthorizationDrError("authorization_identity_mismatch", "Current A user identity changed")
+    if stored[1] and stored[1] != identity.auth_key_fingerprint_digest:
+        raise AuthorizationDrError("authorization_identity_mismatch", "Current A AuthKey changed")
+    return identity.telegram_user_id_digest, identity.auth_key_fingerprint_digest
 
 
 def _require_no_active_operation(session, account_id: int) -> None:

@@ -275,7 +275,7 @@ def test_runner_executes_approved_batch_serially(session: Session, monkeypatch) 
     assert calls == [
         (stage, account_id)
         for account_id in ACCOUNT_IDS
-        for stage in ("qualify", "b", "c", "e4")
+        for stage in ("b", "qualify", "c", "e4")
     ]
 
 

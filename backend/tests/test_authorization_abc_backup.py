@@ -26,6 +26,7 @@ from app.models import (
 from app.integrations.telegram.contracts import AuthorizationIdentity, SendResult
 from app.services._common import _now
 from app.services.authorization_dr import (
+    AuthorizationDrError,
     apply_abc_backup,
     apply_abc_e4,
     preview_abc_backup,
@@ -113,6 +114,46 @@ def test_preview_is_database_only_and_freezes_a(session: Session) -> None:
     assert result["app_b_id"] == 2
     assert len(result["fingerprint"]) == 64
     assert session.scalar(select(TgLoginFlow.id)) is None
+
+
+def test_runner_preview_bootstraps_missing_a_identity_without_writing_a(
+    session: Session, monkeypatch,
+) -> None:
+    account = session.get(TgAccount, 101)
+    primary = session.get(TgAccountAuthorization, account.current_authorization_id)
+    primary.telegram_user_id_digest = ""
+    primary.auth_key_fingerprint_digest = ""
+    session.commit()
+    before = _a_snapshot(session)
+    monkeypatch.setattr(
+        "app.services.authorization_dr.abc_backup.gateway.authorization_identity",
+        lambda *_args, **_kwargs: AuthorizationIdentity(
+            authorization_hash="0",
+            auth_key_fingerprint_digest="2" * 64,
+            telegram_user_id_digest="1" * 64,
+            authorization_fingerprint_digest="3" * 64,
+        ),
+    )
+    monkeypatch.setattr(
+        "app.services.authorization_dr.abc_backup.decrypt_session",
+        lambda value: value,
+    )
+    monkeypatch.setattr(
+        "app.services.authorization_dr.abc_backup.credentials_for_authorization",
+        lambda *_args, **_kwargs: SimpleNamespace(),
+    )
+
+    with pytest.raises(AuthorizationDrError) as exc_info:
+        preview_abc_backup(session, 1, 101, idempotency_key="abc-db-only")
+    preview = preview_abc_backup(
+        session, 1, 101, idempotency_key="abc-runner-bootstrap",
+        bootstrap_missing_primary_identity=True,
+    )
+
+    assert exc_info.value.code == "primary_canonical_unproven"
+    assert preview["expected_primary_user_id_digest"] == "1" * 64
+    assert preview["expected_primary_auth_key_digest"] == "2" * 64
+    assert _a_snapshot(session) == before
 
 
 def test_preview_selects_other_sv_app_when_historical_primary_uses_app_b(session: Session) -> None:
