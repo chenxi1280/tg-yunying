@@ -244,7 +244,7 @@ def _source_period(session: Session, owner, domain: str) -> tuple[datetime, date
     message = session.get(ChannelMessage, int(owner.channel_message_id or 0))
     if message is None:
         raise LookupError("pacing_source_message_missing")
-    period_start = wall_datetime(message.published_at or message.created_at)
+    period_start = wall_datetime(message.created_at)
     return period_start, period_start + timedelta(days=1), f"message:{message.id}"
 
 

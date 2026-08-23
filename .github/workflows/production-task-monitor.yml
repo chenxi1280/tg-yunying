@@ -120,6 +120,26 @@ jobs:
             -i tgyunying-backend python -" \
             < .github/scripts/task_fulfillment_e4_diagnostics.py
 
+      - name: Read dispatcher shard process diagnostics
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          ssh silicon-valley-production-server '
+            set -euo pipefail
+            for name in tgyunying-worker-dispatcher-1 tgyunying-worker-dispatcher-2; do
+              docker inspect --format "DISPATCHER_CONTAINER=${name} restart_count={{.RestartCount}} started_at={{.State.StartedAt}} pid={{.State.Pid}} command={{json .Config.Cmd}}" "${name}"
+              docker inspect --format "{{range .Config.Env}}{{println .}}{{end}}" "${name}" \
+                | grep -E "^(ACCOUNT_SHARD_TOTAL|ACCOUNT_SHARD_INDEX|DISPATCH_RUNTIME_SHARD_TOTAL|DISPATCHER_CONCURRENCY|WORKER_ROLE|TG_OPS_WORKER_ID)=" \
+                | sort \
+                | sed "s/^/DISPATCHER_ENV=${name}:/"
+              docker top "${name}" -eo pid,ppid,stat,etime,pcpu,pmem,args \
+                | sed "s/^/DISPATCHER_PROCESS=${name}:/"
+              docker logs --since 30m --tail 200 "${name}" 2>&1 \
+                | tail -n 200 \
+                | sed "s/^/DISPATCHER_LOG=${name}:/"
+            done
+          '
+
       - name: Read channel comment, like, and view E4 facts
         if: ${{ always() }}
         env:
