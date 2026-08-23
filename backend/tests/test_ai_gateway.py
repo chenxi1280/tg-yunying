@@ -822,6 +822,75 @@ def test_mimo_malformed_json_drafts_retry_with_larger_token_budget(monkeypatch):
     assert [candidate.content for candidate in result.candidates] == ["重试后完整"]
 
 
+@pytest.mark.no_postgres
+def test_fixed_slot_response_retries_when_json_omits_slot_id(monkeypatch):
+    slot_id = "task-1:cycle:2:turn:3"
+    requests: list[dict[str, Any]] = []
+    responses = [
+        {"choices": [{"message": {"content": '{"drafts":[{"sequence_index":1,"content":"缺少槽位"}]}'}}]},
+        {"choices": [{"message": {"content": json.dumps({"drafts": [{
+            "slot_id": slot_id, "sequence_index": 1, "content": "槽位完整",
+        }]}, ensure_ascii=False)}}]},
+    ]
+
+    def fake_urlopen(request, timeout):  # noqa: ANN001 - mirrors urllib signature.
+        requests.append(json.loads(request.data.decode("utf-8")))
+        return FakeResponse(responses.pop(0))
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    prompt = _fixed_slot_provider_prompt(slot_id)
+
+    result = AiGateway().generate_drafts(
+        credentials(), prompt, count=1, topic="群聊", tone="自然",
+        persona_set=["A"], temperature=0.8, max_tokens=512,
+    )
+
+    assert [item["max_tokens"] for item in requests] == [512, 4096]
+    assert [(item.slot_id, item.content) for item in result.candidates] == [
+        (slot_id, "槽位完整"),
+    ]
+
+
+@pytest.mark.no_postgres
+def test_fixed_slot_plain_text_never_uses_line_compatibility(monkeypatch):
+    requests: list[dict[str, Any]] = []
+
+    def fake_urlopen(request, timeout):  # noqa: ANN001 - mirrors urllib signature.
+        requests.append(json.loads(request.data.decode("utf-8")))
+        return FakeResponse({"choices": [{"message": {"content": "普通文本候选"}}]})
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    prompt = _fixed_slot_provider_prompt("task-1:cycle:2:turn:3")
+
+    with pytest.raises(RuntimeError, match="fixed_slot_contract=slot_mapping"):
+        AiGateway().generate_drafts(
+            credentials(), prompt, count=1, topic="群聊", tone="自然",
+            persona_set=["A"], temperature=0.8, max_tokens=512,
+        )
+
+    assert [item["max_tokens"] for item in requests] == [512, 4096]
+
+
+@pytest.mark.no_postgres
+def test_non_slot_plain_text_keeps_legacy_line_compatibility() -> None:
+    candidates = AiGateway()._parse_candidates("普通文本候选", 1, ["A"], None)
+
+    assert [(item.slot_id, item.content) for item in candidates] == [("", "普通文本候选")]
+
+
+def _fixed_slot_provider_prompt(slot_id: str) -> str:
+    payload = {"generation_slots": [{
+        "slot_id": slot_id,
+        "sequence_index": 1,
+        "account_id": 1,
+    }]}
+    return (
+        "Sanitized production-shaped input:\n"
+        f"{json.dumps(payload, ensure_ascii=False, indent=2)}\n\n"
+        "Generate exactly 1 Chinese draft(s)."
+    )
+
+
 def test_generate_drafts_extracts_prefixed_json_object(monkeypatch):
     def fake_urlopen(request, timeout):  # noqa: ANN001 - mirrors urllib signature.
         return FakeResponse(

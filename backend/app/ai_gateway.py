@@ -375,7 +375,9 @@ class AiGateway:
     ) -> tuple[list[AiDraftCandidate], AiUsage]:
         retry_tokens = self._generation_retry_max_tokens(credentials, max_tokens, count)
         try:
-            candidates = self._parse_candidates(raw, count, persona_set, material_ids)
+            candidates = self._parse_candidates_for_prompt(
+                raw, prompt, count, persona_set, material_ids,
+            )
         except RuntimeError as exc:
             if not _is_malformed_drafts_error(exc) or not self._is_mimo(credentials) or retry_tokens <= max_tokens:
                 raise
@@ -388,8 +390,25 @@ class AiGateway:
                 response_format_json=True,
                 timeout=timeout,
             )
-            candidates = self._parse_candidates(raw, count, persona_set, material_ids)
+            candidates = self._parse_candidates_for_prompt(
+                raw, prompt, count, persona_set, material_ids,
+            )
         return candidates, usage
+
+    def _parse_candidates_for_prompt(
+        self,
+        raw: str,
+        prompt: str,
+        count: int,
+        persona_set: list[str],
+        material_ids: list[int] | None,
+    ) -> list[AiDraftCandidate]:
+        candidates = self._parse_candidates(raw, count, persona_set, material_ids)
+        expected_slot_ids = _fixed_prompt_slot_ids(prompt, count)
+        actual_slot_ids = [candidate.slot_id for candidate in candidates]
+        if expected_slot_ids and actual_slot_ids != expected_slot_ids:
+            raise RuntimeError(_fixed_slot_contract_error(raw))
+        return candidates
 
     def check(self, credentials: AiProviderCredentials) -> tuple[bool, str]:
         if credentials.base_url.startswith("mock://"):
@@ -739,6 +758,46 @@ def _draft_candidates_from_lines(clean: str, count: int, persona_set: list[str])
         AiDraftCandidate(persona=persona_set[index % len(persona_set)], content=line[:1000], risk_level="低")
         for index, line in enumerate(lines[:count])
     ]
+
+
+def _fixed_prompt_slot_ids(prompt: str, count: int) -> list[str]:
+    payload_slots = _group_prompt_payload_slot_ids(prompt, count)
+    if payload_slots:
+        return payload_slots
+    marker = "固定发言 slots："
+    if marker not in prompt:
+        return []
+    slot_section = prompt.split(marker, 1)[1]
+    matches = re.findall(r"(?m)^slot\s+\d+：([^；\r\n]+)", slot_section)
+    return [value.strip() for value in matches[:max(0, int(count or 0))]]
+
+
+def _group_prompt_payload_slot_ids(prompt: str, count: int) -> list[str]:
+    marker = "Sanitized production-shaped input:"
+    if marker not in prompt:
+        return []
+    payload_text = _first_balanced_json(prompt.split(marker, 1)[1])
+    try:
+        payload = json.loads(payload_text)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    slots = payload.get("generation_slots") if isinstance(payload, dict) else []
+    if not isinstance(slots, list):
+        return []
+    return [
+        str(item.get("slot_id") or "").strip()
+        for item in slots[:max(0, int(count or 0))]
+        if isinstance(item, dict)
+    ]
+
+
+def _fixed_slot_contract_error(raw: str) -> str:
+    value = str(raw or "")
+    digest = hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()[:12]
+    return (
+        "AI provider returned malformed JSON drafts; "
+        f"fixed_slot_contract=slot_mapping; len={len(value)}; sha256={digest}"
+    )
 
 
 def _draft_candidate_from_item(

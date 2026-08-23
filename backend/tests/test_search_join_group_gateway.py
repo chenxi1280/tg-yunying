@@ -700,6 +700,7 @@ def test_execute_search_join_reports_bot_human_verification() -> None:
 
     assert result["success"] is False
     assert result["error_code"] == "bot_human_verification_required"
+    assert result["remote_mutation_started"] is False
     assert captcha_page.clicked == []
 
 
@@ -1545,6 +1546,7 @@ def test_jisou_image_verification_fails_when_answer_not_in_button_matrix() -> No
     assert result["success"] is False
     assert result["error_code"] == "jisou_image_verification_failed"
     assert result["jisou_page_phase"] == "verification_image_page"
+    assert result["remote_mutation_started"] is False
     assert verification_page.clicked == []  # 禁止点击
 
 
