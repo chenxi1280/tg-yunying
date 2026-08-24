@@ -3171,8 +3171,6 @@ def _reply_targets_for_plan(
     daily_coverage_debt: bool = False,
     daily_group_target_id: str = "",
 ) -> tuple[list[dict] | None, bool]:
-    if hard_progress:
-        return [], False
     reply_min = reply_requirement_for_plan(
         session,
         turn_count=turn_count,
@@ -3184,7 +3182,7 @@ def _reply_targets_for_plan(
     reply_target_pool = _group_reply_target_pool(session, task, group, usable_context_rows)
     if reply_min > len(reply_target_pool):
         stats_inc(task, "reply_target_shortfall_count")
-        if daily_coverage_debt:
+        if daily_coverage_debt or hard_progress:
             stats_inc(task, "coverage_reply_shortfall_cycle_count")
             return [], True
         task.last_error = "我方可引用消息不足，等待本任务产生可引用消息后继续执行"
@@ -4389,8 +4387,11 @@ def _provider_generation_payload(item: dict) -> dict[str, object]:
     return {key: item[key] for key in keys if key in item}
 
 
-def _group_reply_target_pool(session: Session, task: Task, group: TgGroup, _rows: list) -> list[dict]:
-    targets = _historical_group_reply_targets(session, task, group)
+def _group_reply_target_pool(session: Session, task: Task, group: TgGroup, rows: list) -> list[dict]:
+    targets = [
+        *_listener_context_reply_targets(rows),
+        *_historical_group_reply_targets(session, task, group),
+    ]
     deduped = _dedupe_reply_targets(targets)
     candidate_ids = _reply_message_ids(deduped)
     used_ids = _used_group_reply_target_ids(session, task, group, candidate_ids)
@@ -4402,6 +4403,22 @@ def _group_reply_target_pool(session: Session, task: Task, group: TgGroup, _rows
         candidate_ids=candidate_ids,
     )
     return _exclude_used_reply_targets(deduped, used_ids | invalid_ids)
+
+
+def _listener_context_reply_targets(rows: list) -> list[dict]:
+    targets = []
+    for row in reversed(rows):
+        remote_id = str(getattr(row, "remote_message_id", "") or "").strip()
+        content = str(getattr(row, "content", "") or "").strip()
+        if not remote_id.isdigit() or not content or bool(getattr(row, "is_bot", False)):
+            continue
+        targets.append({
+            "message_id": int(remote_id),
+            "author": str(getattr(row, "sender_name", "") or "真人用户").strip(),
+            "preview": content[:120],
+            "source": "listener_context",
+        })
+    return targets
 
 
 def _dedupe_reply_targets(targets: list[dict]) -> list[dict]:

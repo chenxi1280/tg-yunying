@@ -5,6 +5,8 @@ from types import SimpleNamespace
 import pytest
 
 from app.ai_gateway import (
+    AiDraftCandidate,
+    AiGenerationResult,
     AiGateway,
     AiMalformedStructuredOutputError,
     AiProviderCredentials,
@@ -12,9 +14,14 @@ from app.ai_gateway import (
 )
 from app.models import AiProvider
 from app.services.task_center import ai_structured_provider_runtime
+from app.services.task_center import ai_provider_candidate_runtime
 from app.services.task_center.ai_provider_attempts import record_provider_attempt
 from app.services.task_center.ai_generator import AiGenerationUnavailable
 from app.services.task_center.ai_provider_candidate_runtime import (
+    DraftAttemptOutcome,
+    ProviderCandidatePolicy,
+    ProviderDraftRequest,
+    generate_with_provider_candidates,
     raise_provider_generation_failure,
 )
 from app.services.task_center.ai_structured_provider_runtime import (
@@ -81,6 +88,73 @@ def test_provider_attempt_records_split_usage_and_cost() -> None:
     assert row.cached_tokens == 20
     assert row.cost_amount == pytest.approx(0.4)
     assert row.currency == "CNY"
+
+
+def test_legacy_provider_attempt_allows_explicit_empty_route() -> None:
+    session = _CaptureSession()
+
+    record_provider_attempt(
+        session,
+        {"_generation_job_id": "job-1"},
+        _provider(),
+        purpose="group_chat_message",
+        priority=1,
+        model_name="model-a",
+        request_text="prompt",
+        outcome="success",
+        usage=AiUsage(total_tokens=12),
+    )
+
+    row = session.added[0]
+    assert row.route_set_id is None
+    assert row.route_set_revision == 0
+
+
+def test_legacy_draft_runtime_records_real_provider_usage(monkeypatch) -> None:
+    provider = _provider()
+    credentials = AiProviderCredentials(
+        provider_name="metered",
+        provider_type="openai_compatible",
+        base_url="https://provider.invalid",
+        model_name="model-a",
+        api_key="secret",
+    )
+    usage = AiUsage(prompt_tokens=8, completion_tokens=3, total_tokens=11)
+    captured = {}
+    monkeypatch.setattr(
+        ai_provider_candidate_runtime,
+        "draft_provider_calls",
+        lambda *_args: ([provider], iter([(provider, credentials)])),
+    )
+    monkeypatch.setattr(
+        ai_provider_candidate_runtime,
+        "attempt_provider_draft",
+        lambda *_args, **_kwargs: DraftAttemptOutcome(
+            AiGenerationResult([AiDraftCandidate("群友", "今天聊点啥")], usage),
+            None,
+            False,
+            False,
+        ),
+    )
+    monkeypatch.setattr(
+        ai_provider_candidate_runtime,
+        "record_provider_attempt",
+        lambda *_args, **kwargs: captured.update(kwargs),
+    )
+
+    result = generate_with_provider_candidates(
+        SimpleNamespace(),
+        provider,
+        ProviderDraftRequest("user", 1, "", "", (), 0.7, 64, "system", 30),
+        policy=ProviderCandidatePolicy(
+            "model-a", "", False, "group_chat_message", False,
+            attempt_config={"_generation_job_id": "job-1"},
+        ),
+    )
+
+    assert result.usage == usage
+    assert captured["usage"] == usage
+    assert captured["outcome"] == "success"
 
 
 @pytest.mark.parametrize(

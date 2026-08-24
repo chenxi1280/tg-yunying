@@ -1,7 +1,7 @@
 # AI 活群质量、Token 与任务履约全局优化 PRD
 
-> 文档状态：Product Design Complete，Phase 0～2 与双号依赖本地开发候选完成
-> 实现状态：Phase 0～2 与双号 `waiting_parent_remote_fact` 本地修复候选已完成，双号开关尚未灰度；AI 评论新链路仍按独立二期禁用；未发布，生产恢复状态为 `production_fixed=unproven`
+> 文档状态：Product Design Complete，2026-08-25 生产复验后进入 Phase 0 补正
+> 实现状态：JIT/节奏已在生产生效；旧生成链路仍缺逐次 Provider Token 账本且负向词只在 Prompt 中、未形成旧链路确定性门禁。V2 bootstrap 已发布但尚未灰度，当前受 Provider 价格、任务排空及成人证明前置条件阻断；双号开关与 AI 评论新链路仍禁用，生产恢复状态为 `production_fixed=unproven`
 > 适用范围：AI 活群 `group_ai_chat`；AI 评论仅定义独立二期边界
 > 不在范围：降低任务目标、压缩发送时间、静态话术兜底、网络安全专项设计
 > 最近修订：2026-08-25
@@ -340,6 +340,9 @@ AI 评论和活群共享 Provider 账本、Voice Contract 与确定性门禁框�
 
 - 关闭生成后因上下文失效而由多个循环立即重排的放大环，只保留单一 Slot 协调者。
 - 上线完整 Token/状态账本和生成后查重观测，不改变发送正文与任务目标。
+- 对尚未进入 route v2 的存量任务，Provider Attempt 允许以 `GenerationJob + provider/model` 记账而暂缺 route-set；`route_set_id` 必须显式为空、revision 固定为 0，不得伪造路由。每次真实 Provider 调用都要记录 input/output/cache、结果、延迟和费用；进入 V2 后再记录不可变 route revision。
+- Prompt 负向词不是门禁。存量链路在所有模型阶段之后仍命中 `签到/打卡/积分/努力加油/搬砖/今天状态不错/大家心情好` 时，必须以 `negative_lexicon_match` 可见拒绝，不得再转成签到静态补量；原数量债保留为 shortfall，后续只由新的真实 JIT Slot 补齐。
+- Planner 的真人 `usable_context_rows` 必须优先形成 reply target，再回退到我方已发送历史；不得丢弃 Listener 上下文。小时追量/日覆盖欠量只改变 Slot 释放时间，不能把配置的回复比例清零；回复仍消费原数量 Slot，并在 Gateway 前同时通过本地 scope 与远端目标存在性校验。
 
 ### Phase 1：正确所有权与 JIT
 

@@ -1038,6 +1038,7 @@ def _request_group_provider_candidates(
                     config.get("_ai_provider_route_models") or {}
                 ).items()
             },
+            attempt_config=config,
         ),
     )
     return result, started_at

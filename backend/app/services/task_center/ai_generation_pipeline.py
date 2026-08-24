@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.services._common import _now
 
 from .ai_generation_dependencies import GenerationDependencies
+from .ai_group_prompt import LEGACY_NEGATIVE_PHRASES
 from .ai_generator import (
     AI_CONTENT_REQUEST_TIMEOUT_SECONDS,
     AiGenerationUnavailable,
@@ -206,6 +207,8 @@ def _apply_static_quantity_fallback(
         if not _has_fallback_quantity_slot(slot):
             continue
         reason = (rejected.get(index) or SlotGenerationResult("")).rejection_code or "all_model_stages_rejected"
+        if reason == "negative_lexicon_match":
+            continue
         content = _check_in_fallback_content(slot, index, reason)
         accepted[index] = SlotGenerationResult(
             content,
@@ -465,6 +468,8 @@ def _filter_slot(request, index: int, content: str, *, baseline: list[str]) -> S
     quality_item = {"slot": request.config["generation_slots"][index]}
     mapped = _copy_generated_content_metadata(str(content), content)
     mapped.sequence_index = index + 1
+    if _legacy_negative_match(request, str(content)):
+        return SlotGenerationResult(mapped, "negative_lexicon_match", "negative_lexicon_match")
     if request.config["generation_slots"][index].get("reply_to_message_id"):
         mapped.reply_to_sequence_index = index + 1
     decision = group_ai_chat._voice_profile_match_decision_for_item(
@@ -494,6 +499,12 @@ def _filter_slot(request, index: int, content: str, *, baseline: list[str]) -> S
         code = str(stats.get("skip_reason") or "quality_rejected")
         return SlotGenerationResult(mapped, code, code)
     return SlotGenerationResult(mapped)
+
+
+def _legacy_negative_match(request, content: str) -> bool:
+    if two_stage_enabled(getattr(request, "config", {})):
+        return False
+    return any(phrase in content for phrase in LEGACY_NEGATIVE_PHRASES)
 
 
 def _ordered_results(request, accepted: dict, rejected: dict) -> list[SlotGenerationResult]:

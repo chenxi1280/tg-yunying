@@ -47,6 +47,7 @@ def build_runtime_config(
     config = dict(task.type_config or {})
     _bind_fact_first_provider(session, task, config)
     config = _bind_legacy_provider_failover(session, task, config)
+    _bind_legacy_attempt_job(config, batch)
     jobs = generation_jobs_for_batch(session, batch) if config.get("ai_content_route_v2_enabled") else ()
     config = bind_group_generation_contracts(session, task, batch, config=config, jobs=jobs)
     config = bind_generation_job_routes(
@@ -79,6 +80,14 @@ def build_runtime_config(
     if first.topic_plan:
         config["topic_plan"] = first.topic_plan
     return config
+
+
+def _bind_legacy_attempt_job(config: dict, batch: list[tuple[Action, SendMessagePayload]]) -> None:
+    if config.get("ai_content_route_v2_enabled") or not batch:
+        return
+    job_id = str(batch[0][1].generation_job_id or "")
+    if job_id:
+        config["_generation_job_id"] = job_id
 
 
 def _bind_legacy_provider_failover(

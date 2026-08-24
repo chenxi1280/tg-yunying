@@ -155,6 +155,49 @@ def test_static_fallback_setting_disables_primary_quantity_check_in() -> None:
     assert results[0].quality_fallback == ""
 
 
+def test_negative_lexicon_rejection_never_turns_into_check_in_fallback() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+
+    def banned_generator(_session, _tenant_id, config, **_kwargs):
+        return [GeneratedContent(
+            "大家来签到",
+            slot_id=config["generation_slots"][0]["slot_id"],
+            sequence_index=1,
+        )], 5
+
+    request = _request(
+        "",
+        cached=False,
+        config={
+            "_ai_group_static_fallback_enabled": True,
+            "generation_slots": [_quantity_slot("slot-1", 11)],
+        },
+    )
+    with Session(engine) as session:
+        results, tokens = generate_quality_results(
+            session,
+            request,
+            _dependencies(normal_generator=banned_generator),
+        )
+
+    assert tokens == 30
+    assert results[0].rejection_code == "negative_lexicon_match"
+    assert results[0].quality_fallback == ""
+    assert str(results[0].content) == "大家来签到"
+
+
+def test_legacy_runtime_binds_generation_job_for_attempt_ledger() -> None:
+    config = {}
+    payload = SimpleNamespace(generation_job_id="job-legacy-1")
+
+    ai_generation_runtime_config._bind_legacy_attempt_job(
+        config,
+        [(SimpleNamespace(), payload)],
+    )
+
+    assert config["_generation_job_id"] == "job-legacy-1"
+
+
 def test_coverage_slot_provider_unavailability_remains_visible() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     request = _request(

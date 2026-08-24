@@ -51,7 +51,7 @@ def profile_generator(session: Session, observed: dict[str, int]):
         assert session.in_transaction() is False
         observed["provider_calls"] += 1
         slots = list(config["generation_slots"])
-        contents = ["😂😂" if int(slot["account_id"]) == 12 else "今天先签到" for slot in slots]
+        contents = ["😂😂" if int(slot["account_id"]) == 12 else "今天先聊聊" for slot in slots]
         return [
             GeneratedContent(content, slot_id=slot["slot_id"], sequence_index=index)
             for index, (slot, content) in enumerate(zip(slots, contents, strict=True), 1)
@@ -65,7 +65,7 @@ def account_content_generator(session: Session, observed: dict[str, int], *, rej
         assert session.in_transaction() is False
         observed["provider_calls"] += 1
         slots = list(config["generation_slots"])
-        contents = [rejected_content if int(slot["account_id"]) == 12 else "今天先签到" for slot in slots]
+        contents = [rejected_content if int(slot["account_id"]) == 12 else "今天先聊聊" for slot in slots]
         return [
             GeneratedContent(content, slot_id=slot["slot_id"], sequence_index=index)
             for index, (slot, content) in enumerate(zip(slots, contents, strict=True), 1)
@@ -316,6 +316,11 @@ def _normal_coverage(index: int, account_id: int, now_value) -> TaskAccountDaily
 def invalidate_reply_target(session: Session, action: Action, *, invalidation: str, now_value) -> None:
     if invalidation == "local_missing":
         session.get(Action, "source-reply-9001").status = "failed"
+        context = session.scalar(select(GroupContextMessage).where(
+            GroupContextMessage.group_id == 7,
+            GroupContextMessage.remote_message_id == "9001",
+        ))
+        context.content = ""
     elif invalidation == "stale":
         action.created_at = now_value - timedelta(minutes=10)
     elif invalidation == "permission":

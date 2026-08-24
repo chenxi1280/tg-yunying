@@ -19,7 +19,7 @@ from .direct_check_in import (
 )
 from .group_ai_scope import (
     LOCAL_REPLY_TARGET_MISSING_DETAIL,
-    own_history_reply_target_exists,
+    group_reply_target_exists,
     validate_group_ai_content_scope,
 )
 from .payloads import SendMessagePayload
@@ -294,7 +294,7 @@ def validate_local_reply_target(
         TgGroupAccount.account_id == account_id,
         TgGroupAccount.can_send.is_(True),
     ))
-    if group and link and own_history_reply_target_exists(session, action, payload):
+    if group and link and group_reply_target_exists(session, action, payload):
         return group.tg_peer_id
     fail_generation_action(
         action,

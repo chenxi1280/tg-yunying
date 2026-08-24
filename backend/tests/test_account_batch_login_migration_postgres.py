@@ -63,7 +63,11 @@ def test_account_batch_login_schema_migrates_from_blank_postgres() -> None:
         and foreign_key["referred_table"] == "app_users"
         for foreign_key in inspector.get_foreign_keys("ai_usage_ledgers")
     )
+    attempt_columns = {
+        column["name"]: column for column in inspector.get_columns("ai_provider_attempts")
+    }
+    assert attempt_columns["route_set_id"]["nullable"] is True
     with engine.connect() as connection:
         assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
-            "0166_ai_attempt_cache"
+            "0167_legacy_ai_attempt"
         )

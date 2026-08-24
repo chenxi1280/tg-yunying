@@ -44,7 +44,7 @@ def record_provider_attempt(
     route_set_id = str(config.get("_ai_provider_route_set_id") or "")
     if not job_id and not route_set_id:
         return None
-    if not job_id or not route_set_id:
+    if not job_id:
         raise RuntimeError("ai_provider_attempt_binding_incomplete")
     attempt_index = int(session.scalar(select(func.count(AiProviderAttempt.id)).where(
         AiProviderAttempt.generation_job_id == job_id,
@@ -55,7 +55,7 @@ def record_provider_attempt(
     attempt = AiProviderAttempt(
         generation_job_id=job_id,
         purpose=purpose,
-        route_set_id=route_set_id,
+        route_set_id=route_set_id or None,
         route_set_revision=int(config.get("_ai_provider_route_set_revision") or 0),
         provider_id=provider.id,
         model_name=model_name,

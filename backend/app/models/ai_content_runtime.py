@@ -170,8 +170,8 @@ class AiProviderAttempt(Base):
         ForeignKey("generation_jobs.id", ondelete="CASCADE")
     )
     purpose: Mapped[str] = mapped_column(String(64))
-    route_set_id: Mapped[str] = mapped_column(
-        ForeignKey("tenant_ai_provider_route_sets.id", ondelete="RESTRICT")
+    route_set_id: Mapped[str | None] = mapped_column(
+        ForeignKey("tenant_ai_provider_route_sets.id", ondelete="RESTRICT"), nullable=True
     )
     route_set_revision: Mapped[int] = mapped_column(Integer)
     provider_id: Mapped[int] = mapped_column(ForeignKey("ai_providers.id", ondelete="RESTRICT"))

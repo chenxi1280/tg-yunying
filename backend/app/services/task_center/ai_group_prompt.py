@@ -44,6 +44,9 @@ SAFE_APPEARANCE = re.compile(
     r"腿又长|腿长|腿又白|腿白|皮肤白|高跟鞋|黑丝|丝袜|性感|撩人|状态很好|有活力)"
 )
 SAFE_GROUP = re.compile(r"(?:兴趣|交流|聊天|签到|天气|城市|生活|群友|普通)")
+LEGACY_NEGATIVE_PHRASES = (
+    "签到", "打卡", "积分", "努力加油", "搬砖", "今天状态不错", "大家心情好",
+)
 
 
 SYSTEM_PROMPT = """Generate Chinese community replies for a normal Telegram group using only the supplied sanitized input.
@@ -224,6 +227,7 @@ def build_group_prompt(
 __all__ = [
     "DRAFT_KEYS",
     "GroupPromptBundle",
+    "LEGACY_NEGATIVE_PHRASES",
     "build_group_prompt",
     "contains_disallowed_group_content",
     "sanitize_group_messages",

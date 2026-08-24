@@ -15,6 +15,7 @@ from app.ai_gateway import (
     AiProviderCredentials,
     AiProviderRateLimited,
     AiRequestDeadlineExceeded,
+    AiUsage,
     normalize_ai_model_name,
 )
 from app.models import AiProvider, AiProviderHealthStatus
@@ -34,6 +35,10 @@ from app.services.task_center.provider_admission import (
     provider_admission_key,
     release_provider_probe,
     settle_provider_success,
+)
+from app.services.task_center.ai_provider_attempts import (
+    ProviderAttemptClock,
+    record_provider_attempt,
 )
 
 
@@ -71,6 +76,7 @@ class ProviderCandidatePolicy:
     close_transaction_before_external: bool
     route_provider_ids: tuple[int, ...] = ()
     route_models: dict[int, str] | None = None
+    attempt_config: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -91,7 +97,8 @@ def generate_with_provider_candidates(
     providers, provider_calls = draft_provider_calls(session, provider, policy)
     failures = _CandidateFailures()
     attempts: list[dict] = []
-    for candidate, credentials in provider_calls:
+    for priority, (candidate, credentials) in enumerate(provider_calls, 1):
+        clock = ProviderAttemptClock.start()
         outcome = attempt_provider_draft(
             session,
             candidate,
@@ -99,6 +106,10 @@ def generate_with_provider_candidates(
             request=request,
             policy=policy,
             has_more=candidate != providers[-1],
+        )
+        _record_draft_attempt(
+            session, candidate, credentials, request=request, policy=policy,
+            priority=priority, outcome=outcome, clock=clock,
         )
         attempts.append(_candidate_attempt(candidate, credentials, outcome.error))
         if outcome.result is not None:
@@ -114,6 +125,30 @@ def generate_with_provider_candidates(
             break
     failures.raise_final(policy, len(providers))
     raise RuntimeError("provider candidate resolution returned without a result")
+
+
+def _record_draft_attempt(
+    session: Session,
+    candidate: AiProvider,
+    credentials: AiProviderCredentials,
+    *,
+    request: ProviderDraftRequest,
+    policy: ProviderCandidatePolicy,
+    priority: int,
+    outcome: DraftAttemptOutcome,
+    clock: ProviderAttemptClock,
+) -> None:
+    config = policy.attempt_config or {}
+    if not config:
+        return
+    usage = outcome.result.usage if outcome.result else getattr(outcome.error, "usage", AiUsage())
+    record_provider_attempt(
+        session, config, candidate, purpose=policy.purpose, priority=priority,
+        model_name=str(getattr(credentials, "model_name", "") or candidate.model_name or ""),
+        request_text=f"{request.system_prompt or ''}\n{request.prompt}",
+        outcome="success" if outcome.result else "failed",
+        error_code=_candidate_error_code(outcome.error), latency_ms=clock.latency_ms(), usage=usage,
+    )
 
 
 def _candidate_attempt(

@@ -94,6 +94,35 @@ def test_daily_coverage_debt_falls_back_to_direct_slots_when_replies_are_short(
     assert task.last_error == ""
 
 
+def test_hard_progress_keeps_reply_ratio_without_blocking_quantity(monkeypatch) -> None:
+    task = SimpleNamespace(stats={}, last_error="")
+    targets = [{"message_id": 77, "preview": "真人刚说的话"}]
+    monkeypatch.setattr(
+        group_ai_chat,
+        "reply_requirement_for_plan",
+        lambda *_args, **_kwargs: 1,
+    )
+    monkeypatch.setattr(
+        group_ai_chat,
+        "_group_reply_target_pool",
+        lambda *_args, **_kwargs: targets,
+    )
+
+    selected, coverage_shortfall = group_ai_chat._reply_targets_for_plan(
+        SimpleNamespace(),
+        task,
+        SimpleNamespace(),
+        [],
+        3,
+        {"reply_min_per_round": 1},
+        {"deficit": 5},
+        daily_coverage_debt=True,
+    )
+
+    assert selected == targets
+    assert coverage_shortfall is False
+
+
 def test_ordinary_cycle_still_waits_when_required_replies_are_short(
     monkeypatch,
 ) -> None:
