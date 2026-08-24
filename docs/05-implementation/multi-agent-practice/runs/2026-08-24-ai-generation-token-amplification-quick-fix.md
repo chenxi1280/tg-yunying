@@ -38,3 +38,36 @@
 ## 回滚
 
 回滚仅回到上一不可变应用 release；本修复无 schema migration、无生产数据 apply。历史 drift/duplicate 证据保留，不重放 Telegram，不删除业务事实。
+
+## Release Gate
+
+- message_id: `release-ai-group-token-amplification-20260824`
+- intake_id: `production-ai-content-quality-20260824`
+- from_agent: `dev`
+- to_agent: `product, qa, prod-diagnosis`
+- level: `L3`
+- release_mode: `github_actions`
+- release_owner: `main`
+- rollback_owner: `main`
+- status: `pending`
+
+### 上线范围
+
+只发布 frozen candidate 与同群 5 分钟生成后精确查重；不带生产配置、数据 apply、migration、任务开关或历史清理。
+
+### 必须满足
+
+- ci_or_build: `git diff --check`、Python compileall 与 Deploy Production 全 jobs。
+- backend_tests: 两组 60 秒内定向 no_postgres 回归，合计 `229 passed`。
+- frontend_build: 无前端改动；仍由 Deploy Production workflow 全量执行。
+- migration_impact: 无 migration。
+- worker_impact: generation worker 与 dispatcher 载入新代码后生效，不新增 worker/队列。
+- external_platform_impact: 只减少重复 Provider 调用并在重复正文时阻止 Telegram 调用；不主动补发或重放。
+- rollback_plan: 回到上一不可变 release；无 schema/data rollback。
+- observe_window: 从新容器 StartedAt 起连续观察至少两个 generation/dispatcher 周期，并读取新 E4。
+
+### 发布后复核
+
+- production_probe: expected SHA、current symlink、容器 StartedAt/health、migration revision。
+- logs_or_actions: 新 `context_superseded_requeue=0`、drift evidence、duplicate gate、GenerationJob/obligation、Token/E4、小时目标和发送时间分布。
+- owner: `prod-diagnosis/main`
