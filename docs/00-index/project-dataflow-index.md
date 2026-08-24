@@ -4,6 +4,8 @@
 
 > **2026-08-24 DF-342 SV 单出口补正：** `普通任务/A online probe/ABC A 读码/B 新登录/B qualification/local_activate/E4 -> direct primary_regular`，不再从账号或授权资产的历史 `proxy_id` 生成 Telegram credentials；新 operation 写 `primary_regular:direct`。MY C 仍走 `standby_my`。历史 `sv-proxy:*` 只允许原 operation reconcile。该变更不写 Session/current/App/generation，批次在发布前保持 stopped、running item=0、global unknown=0。
 
+> **2026-08-24 DF-342 发布漂移安全前滚：** `chunk 内生产 SHA 改变 -> executor 首错停止领取 -> 原 item/operation 对账并自然终结 -> batch 审计暂停 -> 新 release ancestry/current/container 读回 -> 窗口完成账号 A/B/C/E4 远端读回 -> release-rebind preview/fingerprint/异人 apply -> execution_release_sha CAS 更新且 batch running -> 新 max-10 chunk`。重绑只写 batch execution SHA/status/version 与审计；任一 running/stopped item、unknown、runtime/MY client、A 漂移或已完成 B/C/E4 缺口均拒绝，A 与所有授权资产不变。
+
 > **2026-08-23 DF-342 completed A 与 pre-remote 恢复：** `succeeded item -> A typed duplicate -> local_activate/send readback -> completed rebase keeps C/bundle/probe + resets complementary B -> account-targeted resume -> new B -> A qualification -> E4 retry bound to new A -> item succeeded`。若 resume 已提交 running 后才发现另一 succeeded A 漂移，且当前 B/E4 均未创建，则 `DB-only rearm -> original post-local-activate blocker`；禁止并行 running、复用旧 A 的 E4 或重放已合格 C。
 
 > **DF-330A 搜索 pre-accept 终态恢复（2026-08-23）**：已审批人机验证相位和图片验证识别失败是 callback 前的类型化 negative fact，必须写 `remote_mutation_started=false`。存量 `closed_unknown` 只能在固定 Task/assignment 集合中核对 `unknown_deadline_closed` fact、Action/Attempt/journal、无 remote identity、无 callback/target click 和精确相位后，追加 adapter receipt 并通过同一 fact/projector 重开原义务。超时、连接重置、callback 结果不明和发布 fence unknown 仍保持终态短缺，不得重放。

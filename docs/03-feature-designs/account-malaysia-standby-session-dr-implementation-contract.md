@@ -2,6 +2,8 @@
 
 > **2026-08-24 completed rebase 幂等键合同：** `primary_drift_after_success -> local_activate verified -> completed rebase` 必须识别原成功 B operation；仅当其 source/expected current 均为旧 A、candidate 为 local_activate 后的新 current、remote state/status 均 succeeded 且 blocker 为空时，才可在 item 重绑事务内归档原 key。归档键由 operation/case ID 确定生成并做唯一性检查，operation version 单调增加；失败时 item、Session、current、C 与旧 E4 均不变。
 
+> **2026-08-24 全量 runner 发布漂移重绑合同：** 外部生产发布发生在 chunk 内时，执行器必须首错停止领取；SSH 响应丢失先按原 operation 对账。当前 item 自然终结后，整批只能在 `batch=stopped`、最近批次审计精确为 `production_release_changed_mid_chunk`、item 仅有 `succeeded|pending`、running/stopped item=0、global unknown=0、runtime off/scope 空、MY active client=0 时进入专用 `preview/fingerprint/apply`。preview 还必须逐项复核全部 succeeded A 无漂移且 B/C/E4 完整，并冻结 batch version、旧/新 execution SHA、停批审计 ID 和计数；apply 以 batch row lock 复算同一 fingerprint 后，才可原子更新独立 `execution_release_sha`、恢复 batch 为 running 并写异人审批审计。`deployed_release_sha` 永不改变。该入口不连接 Telegram，不修改 Session/current/App/授权或连接代次、item、slot、operation；新 release 的 ancestry/生产 current/容器一致性和中途完成账号的 Telegram A/B/C/E4 读回仍是 apply 前的外部门禁。
+
 > **2026-08-24 primary_regular 路由补正：** 硅谷唯一业务出口在当前生产拓扑中是 backend/worker 固定直连出口。账号表和授权资产上的 `proxy_id` 仅为历史绑定/审计快照，不是 A/B 的运行路由。所有新 SV DR operation 使用 `primary_regular:direct`；A/B 登录、读码、探测、local activate、online probe 与 E4 不得携带账号代理。历史 `sv-proxy:*` operation 只按其冻结现场 reconcile，不能成为新 operation 的出口。测试必须证明 direct credentials 不含 proxy、ABC B flow 的 `proxy_id` 为空、A 读码/E4 与普通任务同出口，并证明失败不改 A。
 
 > 版本：v2.24

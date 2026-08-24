@@ -484,6 +484,8 @@ bash deploy/authorization-online-abc-runner.sh --mode resume --batch-id <same-ba
 
 `resume` 只 CAS 恢复原 item/batch 后进入普通 runner；不得用于其他 blocker，不得修改、重建或重放 B/C。`deployed_release_sha` 保留原 manifest SHA；修复发布造成 current release 变化时，resume 在同一事务审计更新独立 `execution_release_sha`，之后普通 run 继续强制 current execution release。新 runner 遇到同一 post-C/pre-E4 heartbeat 刷新窗口会等待 readiness，不再先停止批次。
 
+若无 stopped item、而是外部发布使全量 chunk 在账号边界安全暂停，禁止用 SQL 或普通 `resume` 改执行版本。先确认生产 current/容器 SHA 一致且新 SHA 保留 required ancestry，再对发布窗口内完成的账号做 A/B/C/E4 远端读回；随后使用 `authorization-online-abc-release-rebind.sh preview` 取得 fingerprint，并由不同审批人执行 `apply`。入口只接受最近停批审计中的 `production_release_changed_mid_chunk`，并在数据库内复核 batch stopped、item 仅 succeeded/pending、running/stopped=0、runtime off、global unknown=0、MY client=0、全部已完成 A 无漂移和 B/C/E4 完整；apply 只重绑 `execution_release_sha` 并把 batch 恢复为 running，不改 manifest SHA 或账号授权事实。之后才可重新启动每批最多 10 个的普通 runner。
+
 若 status 显示 C=`provision_reconcile_unknown`，runner 必须自动非零退出；禁止等待、重试或领取下一账号。批次创建、领取下一账号和 resume 的 global unknown 门槛必须同时统计 `reconcile_unknown|provision_reconcile_unknown`，任一存在都不得继续。只允许在 runtime off、MY client=0 下用正式 reconcile preview/apply 和 artifact-forward/remote-fact readback 收口同一 operation；恢复为 succeeded 后才可按原 batch ID 继续。
 
 2026-08-22 runner 生产读回：GitHub Actions run `32576826536` 已发布 release `a6481e0ae8bd851718e91eb1d6cafd1c6f74d154`；backend healthy、Alembic head=`0163_local_activate_verify`。`status` 已只读旧 stopped batch，返回 `next_action=stopped`、B/C `10/10` 和守恒有效；未调用 `run`。独立门槛读回为 runtime=`off`、claim scope 为空、global unknown=0、open ABC batch=0、MY node ready/active client=0。
