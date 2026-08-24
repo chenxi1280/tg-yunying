@@ -459,6 +459,8 @@ docker exec tgyunying-backend python scripts/authorization_dr_sv_login_recovery.
 
 apply 只复用 flow 已持久的同一 AuthKey，先在单事务内释放旧 standby current-slot、将旧设备保留为 protected repair，再写入恢复 B、清空 flow 临时密文并收口 operation/case。任何 fingerprint、A generation/fact、flow version、旧 B fact 或远端集合漂移均拒绝；不得据此继续同轮第二账号。
 
+若 B 原 flow 已进入 2FA，但旧 managed 密码触发 `PasswordHashInvalidError/reconcile_unknown`，不得重新登录或发码。先运行 `deploy/authorization-dr-sv-two-fa-resume.sh --mode preview --operation-id <id> --tenant-id 1 --requested-by <requester>`，复核 fingerprint、A frozen、batch/item/slot stopped、runtime off、MY client=0、固定 2FA 版本晚于旧 managed 版本；再由异人审批执行 `--mode apply --expected-fingerprint <fp> --actor <approver> --approval-ref <ref> --idempotency-key <key>`。入口先探测原临时 Session：已授权直接前滚，明确未授权才做一次 password-only；任何不明结果保持原 unknown，固定密码无效进入 manual_required，整个过程禁止修改 A。
+
 ## 2026-08-22 ABC 10 账号 canary 控制面
 
 先确认生产已运行包含 migration `0163_local_activate_verify` 的精确 release SHA，runtime=`off`、全局 `reconcile_unknown=0`、MY active client=0。使用同一组恰好 10 个账号连续执行两次只读 preview；fingerprint 相同后才允许异人审批 apply。apply 只建控制记录，不连接 Telegram：
