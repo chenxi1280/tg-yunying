@@ -482,6 +482,7 @@ def _require_post_b_reconcile_resume(session, item, operations: dict) -> None:
     primary = session.get(TgAccountAuthorization, item.primary_authorization_id)
     candidate = session.get(TgAccountAuthorization, operation.candidate_authorization_id)
     target_slot = "primary" if primary and primary.logical_slot == "standby_1" else "standby_1"
+    primary_identity = _reconciled_primary_identity(primary, operation)
     valid_candidate = (
         candidate
         and primary
@@ -493,17 +494,28 @@ def _require_post_b_reconcile_resume(session, item, operations: dict) -> None:
         and candidate.status in {"active", "standby"}
         and candidate.health_status == "healthy"
         and candidate.session_ciphertext
-        and primary.telegram_user_id_digest
-        and primary.auth_key_fingerprint_digest
-        and candidate.telegram_user_id_digest == primary.telegram_user_id_digest
+        and primary_identity
+        and candidate.telegram_user_id_digest == primary_identity[0]
         and candidate.auth_key_fingerprint_digest
-        and candidate.auth_key_fingerprint_digest != primary.auth_key_fingerprint_digest
+        and candidate.auth_key_fingerprint_digest != primary_identity[1]
     )
     if _primary_state(account, primary, item) != "frozen" or not valid_candidate:
         raise AuthorizationDrError("online_abc_primary_drift", "A or recovered B changed before resume")
     preview = preview_primary_qualification(session, item.tenant_id, item.account_id)
     if preview["primary_authorization_id"] != item.primary_authorization_id:
         raise AuthorizationDrError("online_abc_primary_drift", "Canonical A changed before B resume")
+
+
+def _reconciled_primary_identity(primary, operation) -> tuple[str, str] | None:
+    if not primary:
+        return None
+    stored = (primary.telegram_user_id_digest, primary.auth_key_fingerprint_digest)
+    expected = (operation.expected_code_source_user_id_digest, operation.expected_code_source_auth_key_digest)
+    if all(stored) and (not any(expected) or stored == expected):
+        return stored
+    if not any(stored) and all(expected):
+        return expected
+    return None
 
 
 def _require_post_c_resume(session, item, operations: dict) -> None:

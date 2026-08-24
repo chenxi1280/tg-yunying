@@ -281,6 +281,26 @@ def test_repeated_apply_returns_same_committed_case_without_remote_call(monkeypa
         assert second == first
 
 
+def test_legacy_a_uses_frozen_operation_identity_without_writing_a(monkeypatch) -> None:
+    with _session() as session:
+        account, primary, _security, _flow, operation = _seed(session)
+        primary.telegram_user_id_digest = ""
+        primary.auth_key_fingerprint_digest = ""
+        session.commit()
+        _patch_common(monkeypatch)
+        monkeypatch.setattr(
+            "app.services.authorization_dr.sv_two_fa_resume.gateway.authorization_identity",
+            lambda *_: _identity(),
+        )
+        result = _apply(session, operation, _preview(session, operation)["evidence_fingerprint"])
+        session.refresh(primary)
+        assert (primary.telegram_user_id_digest, primary.auth_key_fingerprint_digest) == ("", "")
+        assert _a_fence(account, primary)[0:6] == (primary.id, "a-session", 2, 1, 1, 1)
+        item = session.get(TgAuthorizationOnlineAbcItem, "item-262")
+        _require_post_b_reconcile_resume(session, item, {"b": operation, "c": None, "e4": None})
+        assert result["candidate_authorization_id"] is not None
+
+
 def test_invalid_fixed_password_is_typed_no_effect(monkeypatch) -> None:
     with _session() as session:
         account, primary, security, flow, operation = _seed(session)
