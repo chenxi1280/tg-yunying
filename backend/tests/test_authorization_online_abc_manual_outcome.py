@@ -52,8 +52,9 @@ def test_preview_is_read_only_and_freezes_manual_boundary(db_session) -> None:
 
     preview = _preview(db_session, batch_id, account_id)
 
-    assert preview["b_operation_id"] == operation_id
-    assert preview["b_blocker_code"] == "two_fa_invalid"
+    assert preview["manual_stage"] == "b"
+    assert preview["manual_operation_id"] == operation_id
+    assert preview["manual_blocker_code"] == "two_fa_invalid"
     assert preview["primary"]["state"] == "frozen"
     assert preview["global"] == {
         "runtime_mode": "off",
@@ -102,6 +103,27 @@ def test_apply_is_idempotent_and_rejects_key_conflict(db_session) -> None:
     with pytest.raises(AuthorizationDrError) as exc_info:
         _apply(db_session, batch_id, account_id, "f" * 64)
     assert exc_info.value.code == "idempotency_key_conflict"
+
+
+def test_apply_accepts_confirmed_c_manual_and_preserves_ready_b(db_session) -> None:
+    batch_id, account_id, operation_id = _stopped_c_manual_item(db_session)
+    before_a = _a_snapshot(db_session, account_id)
+    item = _item(db_session, batch_id, account_id)
+    before_b = _slots(db_session, item.id)["standby_1"].version
+    preview = _preview(db_session, batch_id, account_id)
+
+    result = _apply(db_session, batch_id, account_id, preview["fingerprint"])
+
+    item = _item(db_session, batch_id, account_id)
+    slots = _slots(db_session, item.id)
+    operation = db_session.get(TgAuthorizationDrOperation, operation_id)
+    assert preview["manual_stage"] == "c"
+    assert preview["manual_operation_id"] == operation_id
+    assert result["b_outcome"] == "already_qualified"
+    assert result["c_outcome"] == "manual_required"
+    assert slots["standby_1"].version == before_b
+    assert operation.status == "manual_required"
+    assert _a_snapshot(db_session, account_id) == before_a
 
 
 def test_preview_rejects_a_drift_and_non_no_effect_operation(db_session) -> None:
@@ -163,20 +185,7 @@ def test_manual_a_drift_stops_before_next_account(db_session, monkeypatch) -> No
 
 
 def _stopped_manual_item(session) -> tuple[str, int, str]:
-    abc_tests._seed_accepted_canary(session)
-    preview = preview_full_online_abc_batch(
-        session, 1, idempotency_key="full-manual-test", deployed_release_sha=abc_tests.RELEASE_SHA,
-    )
-    batch_id = apply_full_online_abc_batch(
-        session,
-        1,
-        idempotency_key="full-manual-test",
-        deployed_release_sha=abc_tests.RELEASE_SHA,
-        expected_fingerprint=preview["fingerprint"],
-        requested_by="requester",
-        approved_by="approver",
-        approval_ref="ABC-FULL",
-    )["batch_id"]
+    batch_id = _new_full_batch(session, "full-manual-test")
     command = start_next_online_abc_item(session, batch_id, actor="approver", approval_ref="ABC-FULL")
     operation = abc_tests._add_operation(
         session, command["account_id"], command["b_idempotency_key"], "manual_required",
@@ -186,6 +195,42 @@ def _stopped_manual_item(session) -> tuple[str, int, str]:
     session.commit()
     sync_online_abc_batch(session, batch_id, actor="approver", approval_ref="ABC-FULL")
     return batch_id, command["account_id"], operation.id
+
+
+def _stopped_c_manual_item(session) -> tuple[str, int, str]:
+    batch_id = _new_full_batch(session, "full-c-manual-test")
+    command = start_next_online_abc_item(session, batch_id, actor="approver", approval_ref="ABC-FULL")
+    item = _item(session, batch_id, command["account_id"])
+    item.standby_1_plan = "already_qualified"
+    _slots(session, item.id)["standby_1"].outcome = "already_qualified"
+    session.commit()
+    abc_tests._qualify_primary(session, command["account_id"])
+    c_result = abc_tests._add_c_operation(
+        session, command["account_id"], command["c_idempotency_key"], "manual_required",
+    )
+    operation = session.get(TgAuthorizationDrOperation, c_result["operation_id"])
+    operation.remote_call_state = "confirmed_no_effect"
+    operation.blocker_code = "two_fa_invalid"
+    session.commit()
+    sync_online_abc_batch(session, batch_id, actor="approver", approval_ref="ABC-FULL")
+    return batch_id, command["account_id"], operation.id
+
+
+def _new_full_batch(session, key: str) -> str:
+    abc_tests._seed_accepted_canary(session)
+    preview = preview_full_online_abc_batch(
+        session, 1, idempotency_key=key, deployed_release_sha=abc_tests.RELEASE_SHA,
+    )
+    return apply_full_online_abc_batch(
+        session,
+        1,
+        idempotency_key=key,
+        deployed_release_sha=abc_tests.RELEASE_SHA,
+        expected_fingerprint=preview["fingerprint"],
+        requested_by="requester",
+        approved_by="approver",
+        approval_ref="ABC-FULL",
+    )["batch_id"]
 
 
 def _preview(session, batch_id: str, account_id: int) -> dict:

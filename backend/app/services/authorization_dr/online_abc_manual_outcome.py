@@ -55,7 +55,7 @@ def preview_manual_online_abc_outcome(
     slots = _slots(session, item)
     operations = online_abc_item_operations(session, batch, item)
     _require_batch_boundary(session, batch, item)
-    _require_manual_operation(item, slots, operations)
+    manual_stage, operation = _manual_context(item, slots, operations)
     global_state = _require_global_boundary(session)
     primary = _primary_snapshot(session, item)
     counts = Counter(value.status for value in _items(session, batch))
@@ -63,7 +63,8 @@ def preview_manual_online_abc_outcome(
         batch=batch,
         item=item,
         slots=slots,
-        operation=operations["b"],
+        operation=operation,
+        manual_stage=manual_stage,
         primary=primary,
         global_state=global_state,
         counts=counts,
@@ -120,7 +121,7 @@ def read_manual_online_abc_outcome(
 
 
 def _preview_payload(
-    *, batch, item, slots, operation, primary, global_state, counts,
+    *, batch, item, slots, operation, manual_stage, primary, global_state, counts,
     release_sha: str, key: str, approval: tuple[str, str, str],
 ) -> dict:
     return {
@@ -135,12 +136,13 @@ def _preview_payload(
         "b_slot_version": slots["standby_1"].version,
         "c_slot_id": slots["standby_2"].id,
         "c_slot_version": slots["standby_2"].version,
-        "b_operation_id": operation.id,
-        "b_operation_version": operation.operation_version,
-        "b_operation_status": operation.status,
-        "b_remote_call_state": operation.remote_call_state,
-        "b_reconcile_status": operation.reconcile_status,
-        "b_blocker_code": operation.blocker_code,
+        "manual_stage": manual_stage,
+        "manual_operation_id": operation.id,
+        "manual_operation_version": operation.operation_version,
+        "manual_operation_status": operation.status,
+        "manual_remote_call_state": operation.remote_call_state,
+        "manual_reconcile_status": operation.reconcile_status,
+        "manual_blocker_code": operation.blocker_code,
         "b_slot_outcome": slots["standby_1"].outcome,
         "c_slot_outcome": slots["standby_2"].outcome,
         "primary": primary,
@@ -180,16 +182,22 @@ def _require_batch_boundary(session, batch, item) -> None:
         raise AuthorizationDrError("online_abc_manual_outcome_batch_invalid", "Full batch boundary changed")
 
 
-def _require_manual_operation(item, slots: dict, operations: dict) -> None:
+def _manual_context(item, slots: dict, operations: dict) -> tuple[str, object]:
+    if _manual_b_valid(item, slots, operations):
+        return "b", operations["b"]
+    if _manual_c_valid(item, slots, operations):
+        return "c", operations["c"]
+    raise AuthorizationDrError("online_abc_manual_outcome_state_invalid", "Manual terminal state changed")
+
+
+def _manual_b_valid(item, slots: dict, operations: dict) -> bool:
     operation = operations["b"]
     b_slot = slots["standby_1"]
     c_slot = slots["standby_2"]
-    valid = (
+    return bool(
         item.outcome in {"reconcile_unknown", MANUAL_OUTCOME}
-        and operation is not None
-        and operation.status == MANUAL_OUTCOME
-        and operation.remote_call_state == "confirmed_no_effect"
-        and bool(operation.blocker_code)
+        and _confirmed_manual(operation)
+        and item.primary_probe_outcome == "pending"
         and b_slot.operation_id == operation.id
         and b_slot.outcome in {"reconcile_unknown", MANUAL_OUTCOME}
         and c_slot.outcome == "pending"
@@ -197,8 +205,35 @@ def _require_manual_operation(item, slots: dict, operations: dict) -> None:
         and operations["c"] is None
         and operations["e4"] is None
     )
-    if not valid:
-        raise AuthorizationDrError("online_abc_manual_outcome_state_invalid", "Manual B terminal state changed")
+
+
+def _manual_c_valid(item, slots: dict, operations: dict) -> bool:
+    operation = operations["c"]
+    c_slot = slots["standby_2"]
+    return bool(
+        item.outcome == MANUAL_OUTCOME
+        and item.primary_probe_outcome == "succeeded"
+        and _b_stage_ready(item, slots["standby_1"], operations["b"])
+        and _confirmed_manual(operation)
+        and c_slot.operation_id == operation.id
+        and c_slot.outcome == MANUAL_OUTCOME
+        and operations["e4"] is None
+    )
+
+
+def _b_stage_ready(item, slot, operation) -> bool:
+    if item.standby_1_plan == "already_qualified":
+        return slot.outcome == "already_qualified" and operation is None
+    return bool(slot.outcome == "succeeded" and operation and operation.status == "succeeded")
+
+
+def _confirmed_manual(operation) -> bool:
+    return bool(
+        operation
+        and operation.status == MANUAL_OUTCOME
+        and operation.remote_call_state == "confirmed_no_effect"
+        and operation.blocker_code
+    )
 
 
 def _require_global_boundary(session) -> dict:
@@ -249,21 +284,28 @@ def _apply_transition(session, preview: dict) -> None:
     slots = _slots(session, item)
     b_slot = slots["standby_1"]
     c_slot = slots["standby_2"]
-    b_slot.outcome = MANUAL_OUTCOME
-    b_slot.blocker_code = preview["b_blocker_code"]
-    b_slot.version += 1
-    c_slot.outcome = MANUAL_OUTCOME
-    c_slot.blocker_code = UPSTREAM_MANUAL_BLOCKER
-    c_slot.version += 1
+    if preview["manual_stage"] == "b":
+        _mark_slot_manual(b_slot, preview["manual_blocker_code"])
+        _mark_slot_manual(c_slot, UPSTREAM_MANUAL_BLOCKER)
+    else:
+        _mark_slot_manual(c_slot, preview["manual_blocker_code"])
     item.status = MANUAL_OUTCOME
     item.outcome = MANUAL_OUTCOME
-    item.blocker_code = preview["b_blocker_code"]
+    item.blocker_code = preview["manual_blocker_code"]
     item.finished_at = _now()
     item.version += 1
     batch.execution_release_sha = preview["runtime_release_sha"]
     batch.status = "running" if preview["pending_count"] else "completed_with_manual"
     batch.version += 1
     _audit_transition(session, batch, item, preview)
+
+
+def _mark_slot_manual(slot, blocker_code: str) -> None:
+    if slot.outcome == MANUAL_OUTCOME and slot.blocker_code == blocker_code:
+        return
+    slot.outcome = MANUAL_OUTCOME
+    slot.blocker_code = blocker_code
+    slot.version += 1
 
 
 def _audit_transition(session, batch, item, preview: dict) -> None:
@@ -277,7 +319,8 @@ def _audit_transition(session, batch, item, preview: dict) -> None:
         detail=(
             f"account_id={item.account_id}; approval_ref={preview['approval_ref']}; "
             f"idempotency_key={preview['idempotency_key']}; fingerprint={preview['fingerprint']}; "
-            f"blocker={preview['b_blocker_code']}; operation={preview['b_operation_id']}; "
+            f"stage={preview['manual_stage']}; blocker={preview['manual_blocker_code']}; "
+            f"operation={preview['manual_operation_id']}; "
             f"batch_version={preview['batch_version']}->{batch.version}; "
             f"item_version={preview['item_version']}->{item.version}; "
             f"execution_release={preview['previous_execution_release_sha']}->{preview['runtime_release_sha']}"
