@@ -58,7 +58,7 @@ def preview_manual_online_abc_outcome(
     slots = _slots(session, item)
     operations = online_abc_item_operations(session, batch, item)
     _require_batch_boundary(session, batch, item)
-    manual_stage, operation = _manual_context(session, item, slots, operations)
+    manual_stage, operation = _manual_context(session, item, slots=slots, operations=operations)
     global_state = _require_global_boundary(session)
     primary = _primary_snapshot(session, item)
     counts = Counter(value.status for value in _items(session, batch))
@@ -185,20 +185,20 @@ def _require_batch_boundary(session, batch, item) -> None:
         raise AuthorizationDrError("online_abc_manual_outcome_batch_invalid", "Full batch boundary changed")
 
 
-def _manual_context(session, item, slots: dict, operations: dict) -> tuple[str, object]:
-    if _manual_b_valid(session, item, slots, operations):
+def _manual_context(session, item, *, slots: dict, operations: dict) -> tuple[str, object]:
+    if _manual_b_valid(session, item, slots=slots, operations=operations):
         return "b", operations["b"]
     if _manual_c_valid(item, slots, operations):
         return "c", operations["c"]
     raise AuthorizationDrError("online_abc_manual_outcome_state_invalid", "Manual terminal state changed")
 
 
-def _manual_b_valid(session, item, slots: dict, operations: dict) -> bool:
+def _manual_b_valid(session, item, *, slots: dict, operations: dict) -> bool:
     operation = operations["b"]
     b_slot = slots["standby_1"]
     c_slot = slots["standby_2"]
     return bool(
-        _manual_b_terminal(session, item, b_slot, operation)
+        _manual_b_terminal(session, item, slot=b_slot, operation=operation)
         and item.primary_probe_outcome == "pending"
         and b_slot.operation_id == operation.id
         and c_slot.outcome == "pending"
@@ -208,7 +208,7 @@ def _manual_b_valid(session, item, slots: dict, operations: dict) -> bool:
     )
 
 
-def _manual_b_terminal(session, item, slot, operation) -> bool:
+def _manual_b_terminal(session, item, *, slot, operation) -> bool:
     if _failed_b_without_code(session, operation):
         return item.outcome == "failed" and slot.outcome == "failed"
     return bool(
