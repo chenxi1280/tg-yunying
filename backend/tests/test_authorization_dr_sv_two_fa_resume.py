@@ -12,6 +12,7 @@ from telethon.errors import PasswordHashInvalidError
 from app.database import Base
 from app.integrations.telegram.contracts import AuthorizationIdentity
 from app.models import (
+    AccountProxy,
     AccountStatus,
     AuthorizationDrExecutionNode,
     AuthorizationDrRuntimeContract,
@@ -205,6 +206,22 @@ def test_preview_is_db_only_and_stable(monkeypatch) -> None:
         second = _preview(session, operation)
         assert first == second
         assert "fixed-password" not in str(first)
+
+
+def test_legacy_proxy_plan_cannot_override_frozen_direct_operation(monkeypatch) -> None:
+    with _session() as session:
+        _account, _primary, _security, _flow, operation = _seed(session)
+        session.add(AccountProxy(
+            id=62, tenant_id=1, name="legacy-plan", host="127.0.0.1", port=1080, status="healthy",
+        ))
+        item = session.get(TgAuthorizationOnlineAbcItem, "item-262")
+        item.proxy_id = 62
+        session.commit()
+        _patch_common(monkeypatch)
+        preview = _preview(session, operation)
+        assert preview["planned_proxy_id"] == 62
+        assert preview["proxy_id"] is None
+        assert preview["operation_egress_id"] == "primary_regular:direct"
 
 
 def test_apply_submits_fixed_password_once_and_preserves_a(monkeypatch) -> None:

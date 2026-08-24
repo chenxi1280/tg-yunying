@@ -269,7 +269,6 @@ def _item_primary_frozen(context: ResumeContext) -> bool:
         and item.authorization_fact_generation == account.authorization_fact_generation
         and item.connection_generation == account.connection_generation
         and item.app_b_id == context.operation.developer_app_id
-        and item.proxy_id == (context.proxy.id if context.proxy else None)
     )
 
 
@@ -321,6 +320,9 @@ def _evidence_payload(context: ResumeContext) -> dict:
                                 account.connection_generation],
         "developer_app_id": context.app.id,
         "proxy_id": context.proxy.id if context.proxy else None,
+        "planned_proxy_id": context.item.proxy_id,
+        "operation_egress_id": context.operation.egress_id,
+        "operation_egress_version": context.operation.egress_version,
         "target_logical_slot": _standby_target_slot(primary),
         "temporary_session_digest": _digest(flow.temporary_session_ciphertext),
         "phone_code_hash_digest": _digest(flow.phone_code_hash_ciphertext),
