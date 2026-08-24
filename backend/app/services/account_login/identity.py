@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import re
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 
 from app.security import get_token_key
 from app.services._common import mask_phone
@@ -14,7 +14,13 @@ from .contracts import BatchLoginError, CodeSourceSpec, ParsedLoginLine
 CODE_SOURCE_HOST = "tgbotchecker.com"
 CODE_SOURCE_LABEL = "tgbotchecker"
 CODE_SOURCE_PATH = "/GetHTML"
+SUSUBOT_CODE_SOURCE_HOST = "tgapi.susubot.com"
+SUSUBOT_CODE_SOURCE_LABEL = "susubot"
+SUSUBOT_CODE_SOURCE_PATH = "/index.html"
+SUSUBOT_CODE_SOURCE_TYPE = "107"
+SUPPORTED_CODE_SOURCE_HOSTS = (CODE_SOURCE_HOST, SUSUBOT_CODE_SOURCE_HOST)
 UUID_RE = re.compile(r"^[0-9a-fA-F]{32}$")
+API_KEY_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 PHONE_RE = re.compile(r"^\+[1-9][0-9]{7,14}$")
 
 
@@ -25,22 +31,53 @@ def parse_code_source_url(url: str) -> CodeSourceSpec:
         port = parsed.port
     except ValueError as exc:
         raise BatchLoginError("url_domain_not_allowed", "接码地址格式错误") from exc
-    if parsed.scheme != "https" or parsed.hostname != CODE_SOURCE_HOST:
+    if parsed.scheme != "https" or parsed.hostname not in SUPPORTED_CODE_SOURCE_HOSTS:
         raise BatchLoginError("url_domain_not_allowed", "仅支持指定的 HTTPS 接码平台")
-    if parsed.username or parsed.password or parsed.fragment or parsed.path != CODE_SOURCE_PATH:
+    if parsed.username or parsed.password or parsed.fragment:
         raise BatchLoginError("url_domain_not_allowed", "接码地址路径或凭据不符合要求")
     if port not in {None, 443}:
         raise BatchLoginError("url_domain_not_allowed", "接码地址仅允许 443 端口")
-    if not parsed.query.startswith("uuid=") or not UUID_RE.fullmatch(parsed.query.removeprefix("uuid=")):
+    if parsed.hostname == SUSUBOT_CODE_SOURCE_HOST:
+        return _parse_susubot_url(parsed.path, parsed.query)
+    return _parse_tgbotchecker_url(parsed.path, parsed.query)
+
+
+def _parse_tgbotchecker_url(path: str, query: str) -> CodeSourceSpec:
+    if path != CODE_SOURCE_PATH:
+        raise BatchLoginError("url_domain_not_allowed", "接码地址路径或凭据不符合要求")
+    if not query.startswith("uuid=") or not UUID_RE.fullmatch(query.removeprefix("uuid=")):
         raise BatchLoginError("url_domain_not_allowed", "接码地址必须包含唯一的 32 位 UUID")
-    uuid_value = parsed.query.removeprefix("uuid=").lower()
+    uuid_value = query.removeprefix("uuid=").lower()
     canonical = f"https://{CODE_SOURCE_HOST}{CODE_SOURCE_PATH}?uuid={uuid_value}"
+    return _code_source_spec(canonical, CODE_SOURCE_LABEL, CODE_SOURCE_HOST, uuid_value, 6)
+
+
+def _parse_susubot_url(path: str, query: str) -> CodeSourceSpec:
+    if path != SUSUBOT_CODE_SOURCE_PATH:
+        raise BatchLoginError("url_domain_not_allowed", "接码地址路径或凭据不符合要求")
+    try:
+        pairs = parse_qsl(query, keep_blank_values=True, strict_parsing=True)
+    except ValueError as exc:
+        raise BatchLoginError("url_domain_not_allowed", "接码地址参数格式错误") from exc
+    params = dict(pairs)
+    if len(pairs) != len(params):
+        raise BatchLoginError("url_domain_not_allowed", "接码地址参数重复")
+    if set(params) != {"type", "apikey"} or params["type"] != SUSUBOT_CODE_SOURCE_TYPE:
+        raise BatchLoginError("url_domain_not_allowed", "接码地址必须包含固定 type 与 apikey")
+    api_key = params["apikey"].lower()
+    if not API_KEY_RE.fullmatch(api_key):
+        raise BatchLoginError("url_domain_not_allowed", "接码地址必须包含有效 apikey")
+    canonical = f"https://{SUSUBOT_CODE_SOURCE_HOST}{SUSUBOT_CODE_SOURCE_PATH}?type={SUSUBOT_CODE_SOURCE_TYPE}&apikey={api_key}"
+    return _code_source_spec(canonical, SUSUBOT_CODE_SOURCE_LABEL, SUSUBOT_CODE_SOURCE_HOST, api_key, 8)
+
+
+def _code_source_spec(canonical: str, label: str, host: str, value: str, prefix_len: int) -> CodeSourceSpec:
     return CodeSourceSpec(
         url=canonical,
-        host=CODE_SOURCE_LABEL,
-        uuid=uuid_value,
-        uuid_fingerprint=hashlib.sha256(f"{CODE_SOURCE_HOST}:{uuid_value}".encode()).hexdigest(),
-        uuid_hint=f"{uuid_value[:6]}…{uuid_value[-4:]}",
+        host=label,
+        uuid=value,
+        uuid_fingerprint=hashlib.sha256(f"{host}:{value}".encode()).hexdigest(),
+        uuid_hint=f"{value[:prefix_len]}…{value[-4:]}",
     )
 
 
@@ -109,6 +146,8 @@ def material_hmac(value: str) -> str:
 
 __all__ = [
     "CODE_SOURCE_HOST",
+    "SUPPORTED_CODE_SOURCE_HOSTS",
+    "SUSUBOT_CODE_SOURCE_HOST",
     "material_hmac",
     "normalize_phone",
     "parse_code_source_url",

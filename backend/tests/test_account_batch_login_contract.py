@@ -7,7 +7,12 @@ from app.models import TgAccount
 from app.permission_middleware import permission_check_result, required_permission
 from app.services.account_login.contracts import BatchLoginError
 from app.services.account_login.identity import parse_code_source_url, parse_login_lines
-from app.services.code_source_client import HttpResult, parse_login_materials_html, parse_login_materials_response
+from app.services.code_source_client import (
+    HttpResult,
+    parse_login_materials_html,
+    parse_login_materials_json,
+    parse_login_materials_response,
+)
 
 
 pytestmark = pytest.mark.no_postgres
@@ -15,6 +20,8 @@ pytestmark = pytest.mark.no_postgres
 
 VALID_UUID = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
 VALID_URL = f"https://tgbotchecker.com/GetHTML?uuid={VALID_UUID}"
+SUSUBOT_API_KEY = "11111111-2222-4333-8444-555555555555"
+SUSUBOT_URL = f"https://tgapi.susubot.com/index.html?type=107&apikey={SUSUBOT_API_KEY}"
 
 
 def test_parse_login_lines_preserves_phone_uuid_mapping() -> None:
@@ -31,6 +38,16 @@ def test_parse_login_lines_accepts_paired_markdown_backticks() -> None:
     lines = parse_login_lines(f"+12025550123|`{VALID_URL}`", max_lines=100)
 
     assert lines[0].source.url == VALID_URL
+
+
+def test_parse_login_lines_accepts_susubot_https_platform() -> None:
+    lines = parse_login_lines(f"+12025550123|{SUSUBOT_URL}", max_lines=100)
+
+    assert lines[0].source.url == SUSUBOT_URL
+    assert lines[0].source.host == "susubot"
+    assert lines[0].source.uuid == SUSUBOT_API_KEY
+    assert lines[0].source.uuid_hint == "11111111…5555"
+    assert SUSUBOT_API_KEY not in lines[0].phone_masked
 
 
 @pytest.mark.parametrize(
@@ -52,8 +69,37 @@ def test_code_source_url_rejects_non_exact_urls(url: str) -> None:
     assert VALID_UUID not in str(error.value)
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        f"http://tgapi.susubot.com/index.html?type=107&apikey={SUSUBOT_API_KEY}",
+        f"https://tgapi.susubot.com/get.html?type=107&apikey={SUSUBOT_API_KEY}",
+        f"https://tgapi.susubot.com/index.html?type=108&apikey={SUSUBOT_API_KEY}",
+        f"https://tgapi.susubot.com/index.html?type=107&apikey={SUSUBOT_API_KEY}&extra=1",
+        f"https://tgapi.susubot.com/index.html?type=107&apikey=not-a-key",
+        f"https://tgapi.susubot.com/index.html?type=107&apikey={SUSUBOT_API_KEY}#fragment",
+    ],
+)
+def test_susubot_url_rejects_non_exact_urls(url: str) -> None:
+    with pytest.raises(BatchLoginError) as error:
+        parse_code_source_url(url)
+
+    assert error.value.code == "url_domain_not_allowed"
+    assert SUSUBOT_API_KEY not in str(error.value)
+
+
 def test_parse_login_lines_rejects_uuid_reuse_for_other_phone() -> None:
     text = f"+12025550123|{VALID_URL}\n+12025550124|{VALID_URL}"
+
+    with pytest.raises(BatchLoginError) as error:
+        parse_login_lines(text, max_lines=100)
+
+    assert error.value.code == "code_source_binding_conflict"
+    assert error.value.line_no == 2
+
+
+def test_parse_login_lines_rejects_susubot_key_reuse_for_other_phone() -> None:
+    text = f"+12025550123|{SUSUBOT_URL}\n+12025550124|{SUSUBOT_URL}"
 
     with pytest.raises(BatchLoginError) as error:
         parse_login_lines(text, max_lines=100)
@@ -99,6 +145,33 @@ def test_material_parser_rejects_missing_code_field() -> None:
         parse_login_materials_html("<html><title>Telegram 登录接码工具</title></html>")
 
     assert error.value.code == "url_parse_failed"
+
+
+def test_material_parser_reads_susubot_json() -> None:
+    materials = parse_login_materials_json(b'{"status":1,"msg":"12345","2fa":"safe-temporary-password"}')
+
+    assert materials.code == "12345"
+    assert materials.password_2fa == "safe-temporary-password"
+
+
+def test_material_parser_routes_json_response() -> None:
+    result = HttpResult(
+        status=200,
+        content_type="application/json; charset=utf-8",
+        content_encoding="",
+        body=b'{"status":1,"msg":"12345","2fa":""}',
+    )
+
+    materials = parse_login_materials_response(result)
+
+    assert materials.code == "12345"
+
+
+def test_material_parser_rejects_susubot_error_json() -> None:
+    with pytest.raises(BatchLoginError) as error:
+        parse_login_materials_json(b'{"btn":false,"status":0,"msg":"apikey error"}')
+
+    assert error.value.code == "url_error"
 
 
 def test_material_parser_reads_display_time_labels() -> None:

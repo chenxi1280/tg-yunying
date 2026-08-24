@@ -9,10 +9,11 @@
 > 2026-08-16 重试复盘补充：批次 #4 的失败行重试后出现 account-login worker 健康为 healthy 但 drain 日志停止、DB 中到期等待行和过期 running lease 未被继续处理的现象。根因边界是同轮并行 claim 中单个 Telegram 远端阶段可阻塞 `future.result()`，导致其它到期行饥饿。worker 并行执行必须在 lease 窗口后让主循环继续；未完成远端调用由既有 started/lease/reconcile fence 回收，不能因单行卡死拖死整批。
 > 2026-08-16 提醒与任务入口复盘补充：同一批次重试后可能产生多个 `initial` 平台提醒；全局提醒列表必须只展示每个批次最新 initial，避免旧的 174/26 结果与新的 191/8/1 结果同时误导。登录任务中心必须恢复最近 200 个批次；详情 Drawer 支持多个批次同时打开时用错位堆叠展示，而不是完全覆盖。
 > 2026-08-16 重试操作补充：详情顶部提供「重试失败行」，只批量重试 retry_count 未超限的 `failed` 行；`unresolved` 因远端结果未知，仍必须逐行确认对账状态后重试，禁止一键批量重发 unknown。
+> 2026-08-24 接码平台补充：批量登录允许的接码源从单一 `tgbotchecker.com/GetHTML?uuid=<32位uuid>` 扩展为显式白名单多平台；新增 `tgapi.susubot.com/index.html?type=107&apikey=<uuid>`，worker 实际读取同域 `/api/code` JSON。所有平台仍必须 HTTPS、固定 host/path/query、无 userinfo/fragment/非 443 端口、DNS/peer 公网校验、TLS SNI 与响应大小上限，fingerprint 统一按 `host:credential` 派生。
 
 ## 1. 背景与原始需求
 
-运营侧持续新增 TG 账号。当前只能逐个打开登录弹窗、手动等待验证码、手动输入 2FA 密码，账号一多无法运维。运营使用的第三方接码平台（tgbotchecker.com）为每个号码提供一个只读页面，页面内实时展示该号码的 Telegram 登录验证码和 2FA 密码。
+运营侧持续新增 TG 账号。当前只能逐个打开登录弹窗、手动等待验证码、手动输入 2FA 密码，账号一多无法运维。运营使用的第三方接码平台（如 tgbotchecker.com、tgapi.susubot.com）为每个号码提供只读取码入口，展示或返回该号码的 Telegram 登录验证码和 2FA 密码。
 
 用户原始需求（原话归纳）：
 
@@ -22,6 +23,7 @@
 
   ```
   +12025550123|https://tgbotchecker.com/GetHTML?uuid=<32位uuid>
+  +12025550124|https://tgapi.susubot.com/index.html?type=107&apikey=<uuid>
   ```
 
 - 系统按行顺序依次完成登录：全部使用验证码登录；验证码和 2FA 密码都从链接页面获取；需要刷新链接直到出现最新验证码，再填 2FA 密码完成登录；登录完成后账号落入所选分组。
@@ -137,12 +139,12 @@
 
    ```
    +12025550123|https://tgbotchecker.com/GetHTML?uuid=<32位uuid>
-   +1415xxxxxxx|https://tgbotchecker.com/GetHTML?uuid=...
+   +12025550124|https://tgapi.susubot.com/index.html?type=107&apikey=<uuid>
    ```
 
    - 前端本地显示「共 N 行 / 格式有效 M 行 / 手机号重复 K 行 / UUID 重复 U 行」；同一 UUID 不能对应批内多个号码。后端预检只给出 `create/existing_probe_required`，不在未访问 Telegram 时伪造 relogin/already-authorized。
    - 行格式：`phone|url`，竖线分隔，允许行内出现成对反引号包裹 URL（用户粘贴示例含 Markdown 反引号，解析时剥离）；空行忽略；单批次上限 **200 行**，由后端 capability 返回并由前端同步展示/拦截。
-   - phone 规范：`+` 开头 E.164；url 必须为 `https://` 且主机在接码平台白名单（默认 `tgbotchecker.com`，后端配置项，见 8.4）。
+   - phone 规范：`+` 开头 E.164；url 必须为 `https://` 且主机/路径/参数在接码平台白名单（当前 `tgbotchecker.com/GetHTML?uuid=<32位uuid>` 与 `tgapi.susubot.com/index.html?type=107&apikey=<uuid>`，见 8.4）。
 3. **操作原因**：`Input.TextArea rows=2 maxLength=255 showCount`，必填。所选分组是每个成功/已授权行的目标终态，不再提供默认不迁移的歧义选项。
 4. 操作按钮：「取消」「预检并确认」。预检展示 create/existing 候选数、将迁移的既有账号清单、UUID 接码备注预览、当前排队位置、估算/最坏完成时间与凭据失效时间；200 行全部耗尽 300s 时最坏约 16h40m（另加排队/行间隔），必须显示而非隐藏。既有账号已绑定不同 UUID 时逐行显示旧/新脱敏提示，必须显式勾选「替换接码绑定」并提交旧 binding version，不能静默覆盖。
 
@@ -271,7 +273,7 @@ phase 以 `(attempt_id, generation, state_version, lease_token)` CAS，网络调
   - **判错看内容**：标题含「错误」或正文含「此号不存在」或缺失 `id="code"` 输入 → `url_error`（HTTP 200 也可能是错误页）。
   - **解析容错**：先按标签定位含 `id="code"` / `id="pass2fa"` 的 `<input>`，再取其 `value`（不得依赖属性顺序）；解析失败 → `url_parse_failed`（可见失败，禁止回退为空值继续）。
   - 绝对时间不与本机时钟比较；仅对页面 `login_time` 原文做 HMAC 并与 baseline 比较，用于覆盖“新验证码恰好与旧码相同”的极小概率。
-  - **SSRF 防护**：仅接受无 userinfo/fragment 的 `https://tgbotchecker.com:443/GetHTML?uuid={32位hex}`，query 只能有一个 uuid；禁重定向；响应解压后上限 256 KiB、只接受 `text/html`。DNS 解析后拒绝私网、环回、链路本地、保留及 `198.18.0.0/15` fake-IP；连接必须 pin 已验证公网 IP，并在连接后校验 peer IP，TLS SNI/证书仍使用原 host，防 DNS rebinding。生产 readiness 若只能得到 fake-IP/非公网地址必须 fail closed，不能把 fake-IP 网段加入白名单。
+  - **SSRF 防护**：仅接受无 userinfo/fragment 的固定 HTTPS 白名单地址：`https://tgbotchecker.com:443/GetHTML?uuid={32位hex}` 或 `https://tgapi.susubot.com:443/index.html?type=107&apikey={uuid}`；禁重定向；响应解压后上限 256 KiB，只接受对应平台的 `text/html` 或 `application/json`。DNS 解析后拒绝私网、环回、链路本地、保留及 `198.18.0.0/15` fake-IP；连接必须 pin 已验证公网 IP，并在连接后校验 peer IP，TLS SNI/证书仍使用原 host，防 DNS rebinding。生产 readiness 若只能得到 fake-IP/非公网地址必须 fail closed，不能把 fake-IP 网段加入白名单。
 - 轮询默认间隔 3s、窗口 120s；请求前必须取得 host 持久限速槽，同 uuid 另做去重。限速不得只存进程内，无槽时不得绕过。
 
 ### 8.5 API 设计（批次新增 router `account_login_batches.py`；账号 UUID reveal 仍挂 accounts router）
@@ -447,8 +449,8 @@ phase 以 `(attempt_id, generation, state_version, lease_token)` CAS，网络调
 
 ## 17. 备注
 
-- 接码平台：`tgbotchecker.com`。
-- 地址模板：`https://tgbotchecker.com/GetHTML?uuid=<32位uuid>`。
+- 接码平台：`tgbotchecker.com`、`tgapi.susubot.com`。
+- 地址模板：`https://tgbotchecker.com/GetHTML?uuid=<32位uuid>`；`https://tgapi.susubot.com/index.html?type=107&apikey=<uuid>`。
 - **账号映射要求**：每一行实际 UUID 都必须在运行时加密绑定到最终账号，并在账号页显示独立接码备注；不能只把 host/模板记在文档，也不能因登录完成、账号改名或 item URL 到期而丢失映射。
 - 接码备注默认格式：`tgbotchecker · <UUID前6位>…<UUID后4位>`。具备 `accounts.code_source_credentials.read` 的同租户用户可经显式 reveal 查看完整 UUID；本文不硬编码任何账号的真实 UUID。
 - 该地址来自需求方提供并于 2026-08-15 做过只读页面 POC；POC 只证明页面当时可读取，不代表 Telegram 登录成功。

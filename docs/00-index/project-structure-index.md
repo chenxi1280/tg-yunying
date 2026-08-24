@@ -1,5 +1,7 @@
 # 项目结构索引
 
+> **2026-08-24 批量登录 susubot 接码平台补充：** `services/account_login/identity.py` 将接码 URL 合同扩展为显式多平台白名单，继续要求 HTTPS、固定 host/path/query、无 userinfo/fragment/非 443 端口；新增支持 `tgapi.susubot.com/index.html?type=107&apikey=<uuid>`，fingerprint 仍按 `host:credential` 稳定派生。`services/code_source_client.py` 对 susubot 使用同域 `/api/code` JSON 取码并保留公网 IP pinning、响应上限与显式错误；`AccountBatchLoginControl.tsx` 同步前端本地格式统计。回归入口为 `test_account_batch_login_contract.py` 的 susubot URL 与 JSON 解析用例。
+
 > **2026-08-24 completed recovery 补正：** `authorization_dr/online_abc_completed_recovery.py` 在 completed local_activate 重绑时正式冻结并归档原成功 B operation 的幂等键，释放同 item 的 B key；回归覆盖归档 version/CAS、C 与旧 E4 保留及 resume 后只创建互补新 B/E4。
 
 > **2026-08-24 ABC SV 单出口补正：** `developer_apps.credentials_for_authorization`、online probe、授权 metadata、ABC B 登录/A 读码/B qualification、local activate 与 E4 统一使用固定直连 `primary_regular:direct`；账号/授权资产 `proxy_id` 只保留历史绑定与审计。MY C 路由不变，历史 `sv-proxy:*` 仅限原 operation reconcile。

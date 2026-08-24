@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import gzip
 import http.client
 import ipaddress
@@ -10,9 +11,15 @@ import zlib
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from typing import Callable
+from urllib.parse import urlsplit
 
 from app.services.account_login.contracts import BatchLoginError, LoginMaterials
-from app.services.account_login.identity import CODE_SOURCE_HOST, parse_code_source_url
+from app.services.account_login.identity import (
+    CODE_SOURCE_HOST,
+    SUPPORTED_CODE_SOURCE_HOSTS,
+    SUSUBOT_CODE_SOURCE_HOST,
+    parse_code_source_url,
+)
 
 
 MAX_RESPONSE_BYTES = 256 * 1024
@@ -20,7 +27,7 @@ REQUEST_TIMEOUT_SECONDS = 15
 USER_AGENT = "tg-yunying-login-worker/1.0"
 RETRY_DELAYS_SECONDS = (0, 1, 3)
 READINESS_CACHE_SECONDS = 60
-_readiness_cache: tuple[float, str] | None = None
+_readiness_cache: dict[tuple[str, ...], tuple[float, str]] = {}
 
 
 @dataclass(frozen=True)
@@ -94,13 +101,17 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
 class PinnedHttpsTransport:
     def get(self, url: str) -> HttpResult:
         spec = parse_code_source_url(url)
-        pinned_ip = _resolve_public_ip(CODE_SOURCE_HOST)
-        connection = _PinnedHTTPSConnection(CODE_SOURCE_HOST, pinned_ip, timeout=REQUEST_TIMEOUT_SECONDS)
+        host, path = _request_target(spec.url)
+        pinned_ip = _resolve_public_ip(host)
+        connection = _PinnedHTTPSConnection(host, pinned_ip, timeout=REQUEST_TIMEOUT_SECONDS)
         try:
-            path = spec.url.removeprefix(f"https://{CODE_SOURCE_HOST}")
             connection.request(
                 "GET", path,
-                headers={"User-Agent": USER_AGENT, "Accept": "text/html", "Accept-Encoding": "identity"},
+                headers={
+                    "User-Agent": USER_AGENT,
+                    "Accept": "text/html, application/json",
+                    "Accept-Encoding": "identity",
+                },
             )
             response = connection.getresponse()
             body = response.read(MAX_RESPONSE_BYTES + 1)
@@ -139,24 +150,51 @@ class CodeSourceClient:
         raise BatchLoginError("url_fetch_failed", "接码平台请求失败") from last_error
 
 
-def code_source_readiness() -> str:
-    global _readiness_cache
+def code_source_readiness(hosts: tuple[str, ...] = SUPPORTED_CODE_SOURCE_HOSTS) -> str:
     now = time.monotonic()
-    if _readiness_cache and now - _readiness_cache[0] < READINESS_CACHE_SECONDS:
-        return _readiness_cache[1]
+    cache_key = tuple(sorted(set(hosts)))
+    cached = _readiness_cache.get(cache_key)
+    if cached and now - cached[0] < READINESS_CACHE_SECONDS:
+        return cached[1]
     blocker = ""
-    try:
-        result = PinnedHttpsTransport().get(
-            "https://tgbotchecker.com/GetHTML?uuid=00000000000000000000000000000000"
-        )
-        if result.status != 200 or not result.content_type.lower().startswith("text/html"):
-            blocker = "code_source_https_unready"
-    except BatchLoginError as exc:
-        blocker = exc.code
-    except Exception:
-        blocker = "code_source_https_unready"
-    _readiness_cache = (now, blocker)
+    for host in cache_key:
+        blocker = _readiness_for_host(host)
+        if blocker:
+            break
+    _readiness_cache[cache_key] = (now, blocker)
     return blocker
+
+
+def _readiness_for_host(host: str) -> str:
+    try:
+        result = PinnedHttpsTransport().get(_readiness_url(host))
+        if result.status != 200 or not _readiness_content_type_ok(host, result.content_type):
+            return "code_source_https_unready"
+    except BatchLoginError as exc:
+        return exc.code
+    except Exception:
+        return "code_source_https_unready"
+    return ""
+
+
+def _readiness_url(host: str) -> str:
+    if host == SUSUBOT_CODE_SOURCE_HOST:
+        return f"https://{host}/index.html?type=107&apikey=00000000-0000-0000-0000-000000000000"
+    return f"https://{CODE_SOURCE_HOST}/GetHTML?uuid=00000000000000000000000000000000"
+
+
+def _readiness_content_type_ok(host: str, content_type: str) -> bool:
+    if host == SUSUBOT_CODE_SOURCE_HOST:
+        return content_type.lower().startswith("application/json")
+    return content_type.lower().startswith("text/html")
+
+
+def _request_target(url: str) -> tuple[str, str]:
+    parsed = urlsplit(url)
+    host = parsed.hostname or ""
+    if host == SUSUBOT_CODE_SOURCE_HOST:
+        return host, f"/api/code?{parsed.query}"
+    return host, f"{parsed.path}?{parsed.query}"
 
 
 def _resolve_public_ip(host: str) -> str:
@@ -178,14 +216,21 @@ def _is_public_ip(value: str) -> bool:
 def parse_login_materials_response(result: HttpResult) -> LoginMaterials:
     if result.status != 200:
         raise BatchLoginError("url_fetch_failed", f"接码平台返回 HTTP {result.status}")
-    if not result.content_type.lower().startswith("text/html"):
+    content_type = result.content_type.lower()
+    if content_type.startswith("application/json"):
+        return parse_login_materials_json(_decode_response_body(result))
+    if not content_type.startswith("text/html"):
         raise BatchLoginError("url_fetch_failed", "接码平台返回了非 HTML 内容")
-    body = _decompress(result.body, result.content_encoding)
+    body = _decode_response_body(result)
     try:
         html = body.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise BatchLoginError("url_parse_failed", "接码平台页面编码无法解析") from exc
     return parse_login_materials_html(html)
+
+
+def _decode_response_body(result: HttpResult) -> bytes:
+    return _decompress(result.body, result.content_encoding)
 
 
 def _decompress(body: bytes, encoding: str) -> bytes:
@@ -220,4 +265,31 @@ def parse_login_materials_html(html: str) -> LoginMaterials:
     )
 
 
-__all__ = ["CodeSourceClient", "HttpResult", "code_source_readiness", "parse_login_materials_html", "parse_login_materials_response"]
+def parse_login_materials_json(body: bytes) -> LoginMaterials:
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise BatchLoginError("url_parse_failed", "接码平台 JSON 无法解析") from exc
+    if payload.get("status") == -1:
+        raise BatchLoginError("url_fetch_failed", "接码平台请求频繁")
+    if payload.get("status") != 1:
+        raise BatchLoginError("url_error", "接码平台报告凭据无效")
+    code = str(payload.get("msg", "")).strip()
+    if not code:
+        raise BatchLoginError("url_parse_failed", "接码平台 JSON 缺少验证码")
+    return LoginMaterials(
+        code=code,
+        password_2fa=str(payload.get("2fa", "")).strip(),
+        login_time="",
+        last_fetch_time="",
+    )
+
+
+__all__ = [
+    "CodeSourceClient",
+    "HttpResult",
+    "code_source_readiness",
+    "parse_login_materials_html",
+    "parse_login_materials_json",
+    "parse_login_materials_response",
+]

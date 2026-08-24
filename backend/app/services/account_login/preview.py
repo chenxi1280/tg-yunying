@@ -6,6 +6,7 @@ import hmac
 import json
 from dataclasses import dataclass
 from datetime import timedelta
+from urllib.parse import urlsplit
 
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
@@ -82,10 +83,6 @@ def _readiness_blockers(session: Session) -> list[str]:
         blockers.append("developer_app_rate_bucket_unconfigured")
     if _missing_current_alias_count(session):
         blockers.append("phone_alias_backfill_required")
-    if settings.account_batch_login_mode != "off":
-        transport_blocker = code_source_readiness()
-        if transport_blocker:
-            blockers.append(transport_blocker)
     return blockers
 
 
@@ -107,6 +104,7 @@ def _missing_current_alias_count(session: Session) -> int:
 def precheck_login_batch(session: Session, tenant_id: int, user_id: int, lines_text: str, pool_id: int) -> LoginBatchPrecheckOut:
     require_batch_login_enabled(session)
     build = build_preview(session, tenant_id, lines_text, pool_id)
+    _require_code_source_readiness(build)
     settings = get_settings()
     now = _now()
     expires_at = now + timedelta(seconds=PREVIEW_TTL_SECONDS)
@@ -138,6 +136,16 @@ def build_preview(session: Session, tenant_id: int, lines_text: str, pool_id: in
         TgAccountLoginBatch.status.in_(ACTIVE_BATCH_STATUSES),
     )) or 0) + 1
     return PreviewBuild(pool_id, fingerprint, state_digest, queue_position, items)
+
+
+def _require_code_source_readiness(build: PreviewBuild) -> None:
+    hosts = tuple(sorted({
+        urlsplit(item.line.source.url).hostname or ""
+        for item in build.items
+    }))
+    blocker = code_source_readiness(hosts)
+    if blocker:
+        raise BatchLoginError("account_batch_login_disabled", f"接码平台不可用：{blocker}")
 
 
 def _require_pool(session: Session, tenant_id: int, pool_id: int) -> AccountPool:

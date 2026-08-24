@@ -55,7 +55,7 @@ def session_factory(monkeypatch):
 
     settings = _settings()
     monkeypatch.setattr(preview, "get_settings", lambda: settings)
-    monkeypatch.setattr(preview, "code_source_readiness", lambda: "")
+    monkeypatch.setattr(preview, "code_source_readiness", lambda _hosts=(): "")
     monkeypatch.setattr(batches, "get_settings", lambda: settings)
     monkeypatch.setattr(state, "get_settings", lambda: settings)
     engine = create_engine("sqlite+pysqlite:///:memory:", future=True)

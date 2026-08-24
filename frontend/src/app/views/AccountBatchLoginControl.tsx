@@ -133,7 +133,7 @@ export function AccountBatchLoginControl({ pools, selectedPoolId, canCreateBatch
         {!preview ? (
           <Space orientation="vertical" size={12} style={{ width: '100%' }}>
             <label>目标分组<Select style={{ width: '100%' }} value={poolId} onChange={setPoolId} options={enabledPools.map((pool) => ({ value: pool.id, label: pool.name }))} /></label>
-            <label>账号与接码地址<Input.TextArea rows={10} value={linesText} onChange={(event) => setLinesText(event.target.value)} placeholder={'+12025550123|https://tgbotchecker.com/GetHTML?uuid=<32位uuid>'} /></label>
+            <label>账号与接码地址<Input.TextArea rows={10} value={linesText} onChange={(event) => setLinesText(event.target.value)} placeholder={'+12025550123|https://tgbotchecker.com/GetHTML?uuid=<32位uuid>\n+12025550124|https://tgapi.susubot.com/index.html?type=107&apikey=<apikey>'} /></label>
             <Typography.Text type="secondary">共 {local.total} 行 / 上限 {lineLimit} 行 / 格式有效 {local.valid} 行 / 手机号重复 {local.phoneDuplicates} 行 / UUID 重复 {local.uuidDuplicates} 行</Typography.Text>
             <Space><Button onClick={() => setOpen(false)}>取消</Button><Button type="primary" loading={loading} disabled={!poolId || !linesText.trim() || lineLimitExceeded || capability?.readiness !== true || capability.mode !== 'enabled'} onClick={() => void precheck()}>预检并确认</Button></Space>
           </Space>
@@ -196,9 +196,35 @@ function parseLocalLine(row: string) {
   const phone = phoneValue.replace(/[\s()-]/g, '');
   let url = urlValue.trim();
   if (url.startsWith('`') && url.endsWith('`')) url = url.slice(1, -1).trim();
-  const urlMatch = url.match(/^https:\/\/tgbotchecker\.com\/GetHTML\?uuid=([0-9a-fA-F]{32})$/);
-  if (!/^\+[1-9]\d{7,14}$/.test(phone) || !urlMatch) return null;
-  return { phone, uuid: urlMatch[1].toLowerCase() };
+  const credential = parseLocalCodeSource(url);
+  if (!/^\+[1-9]\d{7,14}$/.test(phone) || !credential) return null;
+  return { phone, uuid: credential };
+}
+
+function parseLocalCodeSource(url: string) {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.hash || (parsed.port && parsed.port !== '443')) return null;
+    if (parsed.hostname === 'tgbotchecker.com') return parseTgbotcheckerUrl(parsed);
+    if (parsed.hostname === 'tgapi.susubot.com') return parseSusubotUrl(parsed);
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function parseTgbotcheckerUrl(parsed: URL) {
+  const uuid = parsed.searchParams.get('uuid') || '';
+  if (parsed.pathname !== '/GetHTML' || parsed.searchParams.size !== 1 || !/^[0-9a-fA-F]{32}$/.test(uuid)) return null;
+  return `tgbotchecker.com:${uuid.toLowerCase()}`;
+}
+
+function parseSusubotUrl(parsed: URL) {
+  const apiKey = parsed.searchParams.get('apikey') || '';
+  const type = parsed.searchParams.get('type') || '';
+  const apiKeyPattern = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+  if (parsed.pathname !== '/index.html' || parsed.searchParams.size !== 2 || type !== '107' || !apiKeyPattern.test(apiKey)) return null;
+  return `tgapi.susubot.com:${apiKey.toLowerCase()}`;
 }
 
 function formatDuration(seconds: number) {
