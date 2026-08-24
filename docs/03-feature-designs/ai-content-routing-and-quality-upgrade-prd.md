@@ -498,3 +498,37 @@ Provider response 解析后抽取的 canonical UTF-8 `message_text` 字节及 ha
 - 尚未完成 shadow runner 的 120+ 人工样本验收、canary、生产发布和 Telegram E4；当前本地测试不能证明线上内容质量或任务量达标。
 
 当前状态为 `product_design_complete / implementation_in_progress / local_qa_partial / production_fixed=unproven`。
+
+## 7. 2026-08-24 生产低质重复 P1 Product Resync
+
+### 7.1 连续窗口证据与根因
+
+生产 SHA `cd91429356d623197a03e51152e67db7da194f31` 已包含本文既有实现 commits `91272da0`、`319a769b`、`3e1febda`、`eeb4cd5f`，质量代码没有在合并中丢失。但 7 个运行 `group_ai_chat` 的 `ai_two_stage_enabled` 与 `ai_content_route_v2_enabled` 均等效为 false，active policy/binding/window plan/provider attempt/reviewer evidence 均为 0。
+
+每任务最近连续 100 条成功 typed remote fact、合计 700 条的脱敏只读诊断发现：19 条精确重复逸出、272 条存在确定性近似重复、168 对跨任务近似重复、约三分之一为“签到”模板族、95.6% 集中在短句、99% 集中为陈述式开头；700 条 reviewer evidence 均缺失。`remote_message_id` 证明发送成立，不证明正文质量；远端正文与 candidate 的受控一致性仍 `unproven`。
+
+第一坏边界是生产任务未激活 V2，而不是单一 Provider。legacy static fallback 与旧质量闸允许模板、结构塌缩和签到变体进入 ready Action；模型切换只能改善运输选择，不能替代 policy、MessageBrief、voice、去重、独立 reviewer 和 quality_wait。
+
+### 7.2 单任务 canary 激活硬合同
+
+- `ai_content_route_v2_enabled=true` 必须同时满足 `ai_two_stage_enabled=true`；保存事务在任何 policy/binding 写入前拒绝半配置。
+- active policy、task binding、allowed routes、全部 purpose route snapshots、MessageBrief v2、voice contract v3 与独立 reviewer canonical identity 必须在同一 task revision 冻结。
+- V2 runtime 必须把 tenant legacy static fallback 视为 false；不得进入 due-catch-up check-in pipeline，不得产生精确“签到”、签到变体、Stage 1 正文、emoji fallback 或其他静态补量。
+- reviewer 不可用、429、route unavailable、fail 或 uncertain 均保持同一 GenerationJob/Action 为 `quality_wait`，达到 latest-safe 后写 typed shortfall；绝不转 ready Action。
+- generator 与 reviewer 的全部 canonical provider/model identity 集合必须不相交；只看首候选不同不够。
+- 只允许显式选中的一个 Task revision 作为 canary；实现和发布不得自动批改或同时打开现有 7 个生产任务。
+
+### 7.3 开发与 QA Handoff
+
+| 层 | 最小实现/验证 |
+| --- | --- |
+| activation | `route_v2=true/two_stage=false` 保存失败且零 binding；完整配置继续冻结 policy/binding |
+| runtime | V2/two-stage 下 tenant static flag 不进入普通 fallback或 due-catch-up pipeline |
+| MessageBrief/voice | 每个 job 有 v2 brief、context/policy/prompt/example 与 voice snapshot |
+| reviewer | canonical identity 独立；不可用/429/fail/uncertain -> quality_wait，无 ready Action |
+| deterministic gates | 精确/近义/结构重复、相同开头/speech act/length collapse、签到/emoji/Stage 1 均拒绝 |
+| 兼容 | flag-off legacy 行为不在本提交中迁移；频道评论按 Phase 2 独立验收 |
+
+Release Gate 仍执行不少于 120 条分层离线评测；单任务生产 canary 至少连续 3 天、100 条 typed remote fact、30 条盲审、3 个上下文簇与 10 个 voice 账号。每条发送事实必须可追到 task/config revision、ledger/slot、GenerationJob、policy/brief/voice/provider/reviewer snapshot、Action、Attempt/Gateway、typed remote ID 与受控正文 hash。切换 provider、route readback、发送数量和五类任务履约均不能替代质量验收。
+
+Product Design Complete 自检：用户截图症状、连续窗口、设计激活缺口、配置/UI、后端 activation/runtime、生成与 reviewer、并发/冻结、quality_wait、静态旁路、兼容边界、QA/canary/E4 均已覆盖。当前只授权本地实现与测试，不授权生产任务开关、重生成、补发、配置 apply 或发布；`production_fixed=unproven`。

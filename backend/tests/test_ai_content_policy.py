@@ -182,6 +182,7 @@ def test_formal_task_activation_binds_active_policy_and_provider_routes() -> Non
         policy = _policy(session)
         task.type_config = {
             "target_group_id": 7,
+            "ai_two_stage_enabled": True,
             "ai_content_route_v2_enabled": True,
             "ai_content_policy_version_id": policy.id,
             "ai_content_allowed_routes": ["general"],
@@ -194,6 +195,26 @@ def test_formal_task_activation_binds_active_policy_and_provider_routes() -> Non
         binding = session.query(TaskAiContentPolicyBinding).one()
         assert binding.policy_version_id == policy.id
         assert binding.allowed_routes == ["general"]
+
+
+def test_route_v2_activation_rejects_missing_two_stage_without_binding() -> None:
+    with Session(_engine()) as session:
+        task = _seed(session)
+        policy = _policy(session)
+        task.type_config = {
+            "target_group_id": 7,
+            "ai_two_stage_enabled": False,
+            "ai_content_route_v2_enabled": True,
+            "ai_content_policy_version_id": policy.id,
+            "ai_content_allowed_routes": ["general"],
+            "ai_content_attestation_ids": [],
+        }
+        _seed_provider_routes(session)
+
+        with pytest.raises(ValueError, match="ai_content_route_v2_requires_two_stage"):
+            activate_task_ai_content_config(session, task)
+
+        assert session.query(TaskAiContentPolicyBinding).count() == 0
 
 
 def _seed_provider_routes(session: Session) -> None:

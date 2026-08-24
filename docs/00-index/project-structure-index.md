@@ -1,5 +1,7 @@
 # 项目结构索引
 
+> **2026-08-24 AI 默认模型/route 原子切换与质量 canary 补正：** `services/tenant_ai_settings.py` 负责 PATCH 转换语义和脱敏失败审计，`services/ai_config.py` 保留兼容导出；`backend/scripts/configure_ai_provider_failover.py` 增加显式 `cutover-preview/cutover-apply`，同一 fingerprint/CAS 事务切 default 与 immutable route revision，普通 route/default 操作不变。`task_ai_content_activation.py` 拒绝 route_v2/two-stage 半配置，`ai_generation_runtime_config.py` 与 `ai_generation_worker.py` 显式阻断 V2 进入 legacy static/due-catch-up 签到路径；现有 MessageBrief v2、voice v3、purpose route snapshot、独立 reviewer 与 quality_wait 继续复用。产品真相源为 `ai-provider-multi-active-failover-repair.md` §9 与 `ai-content-routing-and-quality-upgrade-prd.md` §7；不含生产开关、数据 apply 或全任务迁移。
+
 > **2026-08-24 批量登录 susubot 接码平台补充：** `services/account_login/identity.py` 将接码 URL 合同扩展为显式多平台白名单，继续要求 HTTPS、固定 host/path/query、无 userinfo/fragment/非 443 端口；新增支持 `tgapi.susubot.com/index.html?type=107&apikey=<uuid>`，fingerprint 仍按 `host:credential` 稳定派生。`services/code_source_client.py` 对 susubot 使用同域 `/api/code` JSON 取码并保留公网 IP pinning、响应上限与显式错误；`AccountBatchLoginControl.tsx` 同步前端本地格式统计。回归入口为 `test_account_batch_login_contract.py` 的 susubot URL 与 JSON 解析用例。
 
 > **2026-08-24 completed recovery 补正：** `authorization_dr/online_abc_completed_recovery.py` 在 completed local_activate 重绑时正式冻结并归档原成功 B operation 的幂等键，释放同 item 的 B key；回归覆盖归档 version/CAS、C 与旧 E4 保留及 resume 后只创建互补新 B/E4。

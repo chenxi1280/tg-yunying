@@ -126,6 +126,11 @@ def _bind_fact_first_provider(
 
 
 def tenant_fallback_flags(task: Task) -> dict:
+    config = dict(task.type_config or {})
+    v2_quality = bool(
+        config.get("ai_two_stage_enabled")
+        or config.get("ai_content_route_v2_enabled")
+    )
     session = task._sa_instance_state.session
     setting = session.scalar(
         select(TenantAiSetting).where(TenantAiSetting.tenant_id == task.tenant_id)
@@ -139,7 +144,7 @@ def tenant_fallback_flags(task: Task) -> dict:
         ),
         "_ai_group_static_fallback_enabled": bool(
             setting.ai_group_static_fallback_enabled if setting else True
-        ),
+        ) and not v2_quality,
     }
 
 

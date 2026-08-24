@@ -21,6 +21,8 @@ def activate_task_ai_content_config(session: Session, task: Task) -> None:
     config = dict(task.type_config or {})
     if not config.get("ai_content_route_v2_enabled"):
         return
+    if not config.get("ai_two_stage_enabled"):
+        raise ValueError("ai_content_route_v2_requires_two_stage")
     policy_id = str(config.get("ai_content_policy_version_id") or "")
     policy = session.get(AiContentPolicyVersion, policy_id)
     if policy is None or policy.status != "active" or policy.tenant_id != task.tenant_id:

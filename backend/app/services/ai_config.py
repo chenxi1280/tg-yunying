@@ -10,7 +10,7 @@ from typing import Any
 from urllib.parse import urlparse
 from uuid import uuid4
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.ai_gateway import (
@@ -45,8 +45,6 @@ from app.models import (
     SourceMediaAsset,
     Tenant,
     TenantAiSetting,
-    TenantAiProviderRouteItem,
-    TenantAiProviderRouteSet,
     TgAccountSecurityBatchItem,
     TgAccount,
     TgGroup,
@@ -61,17 +59,14 @@ from app.schemas import (
     PromptTemplateCreate,
     PromptTemplateUpdate,
     SchedulingSettingUpdate,
-    TenantAiSettingUpdate,
 )
 from app.schemas.ai_config import (
     CacheChannelConfigOut,
     CacheExecutionAccountOut,
-    DEFAULT_AI_MAX_TOKENS_LIMIT,
     MaterialCacheConfigOut,
     MaterialCacheErrorItem,
     MaterialCacheHealthOut,
     MaterialCacheStatusCount,
-    MINIMAX_MAX_TOKENS_LIMIT,
     MaterialGroupCreate,
     MaterialGroupOut,
     MaterialGroupUpdate,
@@ -88,6 +83,7 @@ from ._common import _now, ai_gateway, audit, gateway, require_tenant
 from .avatar_material_import import AvatarSourceInput, new_avatar_material_source, prepare_avatar_source
 from .material_ingestion import URL_MATERIAL_TYPES, save_material_upload_temp, validate_material_url
 from .material_versions import record_material_asset_version, record_material_tg_ref_version, record_material_versions
+from .tenant_ai_settings import get_tenant_ai_setting, update_tenant_ai_setting
 
 MEDIA_MATERIAL_TYPES = {"图片", "表情包", "文件", "组合消息"}
 CACHE_REFRESH_MATERIAL_TYPES = {"图片", "表情包", "文件"}
@@ -521,101 +517,6 @@ def update_prompt_template(session: Session, template_id: int, payload: PromptTe
     session.commit()
     session.refresh(template)
     return template
-
-
-def get_tenant_ai_setting(session: Session, tenant_id: int) -> TenantAiSetting:
-    require_tenant(session, tenant_id)
-    setting = session.scalar(select(TenantAiSetting).where(TenantAiSetting.tenant_id == tenant_id))
-    if not setting:
-        default_provider_id = session.scalar(select(AiProvider.id).order_by(AiProvider.id.asc()))
-        setting = TenantAiSetting(tenant_id=tenant_id, default_provider_id=default_provider_id)
-        session.add(setting)
-        session.commit()
-        session.refresh(setting)
-    return setting
-
-
-def update_tenant_ai_setting(session: Session, tenant_id: int, payload: TenantAiSettingUpdate, actor: str) -> TenantAiSetting:
-    setting = get_tenant_ai_setting(session, tenant_id)
-    data = payload.model_dump(exclude_unset=True)
-    provider_id = data.get("default_provider_id", setting.default_provider_id)
-    if "default_provider_id" in data and provider_id != setting.default_provider_id:
-        _validate_default_ai_provider(session, provider_id)
-    if data.get("ai_provider_route_fallback_enabled") is True:
-        _validate_provider_route_fallback(session, tenant_id)
-    _validate_tenant_ai_token_limit(session, provider_id, data.get("max_tokens"))
-    for field in [
-        "default_provider_id",
-        "ai_enabled",
-        "fallback_to_mock",
-        "ai_group_model_fallback_enabled",
-        "ai_provider_route_fallback_enabled",
-        "ai_group_grok_fallback_enabled",
-        "ai_group_static_fallback_enabled",
-        "temperature",
-        "max_tokens",
-    ]:
-        if field in data:
-            setattr(setting, field, data[field])
-    setting.updated_at = _now()
-    audit(session, tenant_id=tenant_id, actor=actor, action="更新客户AI配置", target_type="tenant_ai_setting", target_id=str(setting.id))
-    session.commit()
-    session.refresh(setting)
-    return setting
-
-
-def _validate_default_ai_provider(session: Session, provider_id: int | None) -> None:
-    if provider_id is None:
-        return
-    provider = session.get(AiProvider, provider_id)
-    if provider is None:
-        raise ValueError("default AI provider not found")
-    if not provider.credential_enabled or not provider.is_active:
-        raise ValueError("default AI provider is disabled")
-    if provider.health_status != AiProviderHealthStatus.HEALTHY.value:
-        raise ValueError("default AI provider is unhealthy")
-
-
-def _validate_provider_route_fallback(session: Session, tenant_id: int) -> None:
-    provider_ids = list(session.scalars(
-        select(TenantAiProviderRouteItem.provider_id)
-        .join(
-            TenantAiProviderRouteSet,
-            TenantAiProviderRouteSet.id == TenantAiProviderRouteItem.route_set_id,
-        )
-        .join(AiProvider, AiProvider.id == TenantAiProviderRouteItem.provider_id)
-        .where(
-            TenantAiProviderRouteSet.tenant_id == tenant_id,
-            TenantAiProviderRouteSet.purpose == "group_realize_general",
-            TenantAiProviderRouteSet.status == "active",
-            TenantAiProviderRouteItem.enabled.is_(True),
-            AiProvider.credential_enabled.is_(True),
-            AiProvider.is_active.is_(True),
-            AiProvider.health_status == AiProviderHealthStatus.HEALTHY.value,
-        )
-    ))
-    if len(set(provider_ids)) < 2:
-        raise ValueError("provider route fallback requires at least two healthy active providers")
-
-
-def _validate_tenant_ai_token_limit(session: Session, provider_id: int | None, max_tokens: int | None) -> None:
-    if max_tokens is None:
-        return
-    provider = session.get(AiProvider, provider_id) if provider_id else None
-    limit = _tenant_ai_token_limit(provider)
-    if max_tokens > limit:
-        raise ValueError(f"最大 Token 超过当前模型上限：{limit}")
-
-
-def _tenant_ai_token_limit(provider: AiProvider | None) -> int:
-    if provider and _is_minimax_provider(provider):
-        return MINIMAX_MAX_TOKENS_LIMIT
-    return DEFAULT_AI_MAX_TOKENS_LIMIT
-
-
-def _is_minimax_provider(provider: AiProvider) -> bool:
-    text = f"{provider.provider_name} {provider.base_url} {provider.model_name}".lower()
-    return "minimax" in text or "minimaxi" in text
 
 
 def get_scheduling_setting(session: Session, tenant_id: int | None) -> SchedulingSetting:

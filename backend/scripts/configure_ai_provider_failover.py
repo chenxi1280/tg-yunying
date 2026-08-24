@@ -41,6 +41,8 @@ def main() -> None:
         result = _providers_operation(options)
     elif options.operation.startswith("default-"):
         result = _default_operation(options)
+    elif options.operation.startswith("cutover-"):
+        result = _cutover_operation(options)
     else:
         result = _route_operation(options)
     print(json.dumps(result, ensure_ascii=False, sort_keys=True, default=str))
@@ -52,6 +54,7 @@ def _options() -> Options:
         "providers-preview", "providers-apply", "provider-check",
         "default-preview", "default-apply",
         "route-preview", "route-apply", "readback",
+        "cutover-preview", "cutover-apply",
     ))
     parser.add_argument("--tenant-id", type=int, required=True)
     parser.add_argument("--provider-id", type=int, action="append", required=True)
@@ -213,6 +216,73 @@ def _route_operation(options: Options) -> dict:
     return {"applied": True, "readback": _readback(options)}
 
 
+def _cutover_operation(options: Options) -> dict:
+    apply = options.operation == "cutover-apply"
+    with SessionLocal() as session:
+        snapshot = _cutover_snapshot(session, options, lock=apply)
+        if not apply:
+            return snapshot
+        _require_fingerprint(snapshot, options.expected_fingerprint)
+        _require_cutover_ready(snapshot)
+        _apply_cutover(session, options, snapshot)
+        session.commit()
+    return {"applied": True, "readback": _cutover_readback(options)}
+
+
+def _cutover_snapshot(session, options: Options, *, lock: bool) -> dict:  # noqa: ANN001
+    route = _route_snapshot(session, options, lock=lock)
+    route.pop("fingerprint", None)
+    return _with_fingerprint({
+        **route,
+        "operation": "cutover",
+        "desired_default_provider_id": route["desired_items"][0]["provider_id"],
+    })
+
+
+def _apply_cutover(session, options: Options, snapshot: dict) -> None:  # noqa: ANN001
+    setting = _setting(session, options.tenant_id, lock=True)
+    old_provider_id = setting.default_provider_id
+    route = _replace_active_route(session, options, snapshot)
+    setting.default_provider_id = snapshot["desired_default_provider_id"]
+    setting.ai_provider_route_fallback_enabled = True
+    setting.updated_at = _now()
+    _write_cutover_audit(
+        session,
+        options,
+        route,
+        old_provider_id=old_provider_id,
+        new_provider_id=setting.default_provider_id,
+    )
+
+
+def _write_cutover_audit(
+    session,
+    options: Options,
+    route: TenantAiProviderRouteSet,
+    *,
+    old_provider_id: int | None,
+    new_provider_id: int,
+) -> None:  # noqa: ANN001
+    audit(
+        session,
+        tenant_id=options.tenant_id,
+        actor=options.actor,
+        action="原子切换默认AI供应商与路由",
+        target_type="tenant_ai_provider_route_set",
+        target_id=route.id,
+        detail=(
+            f"{options.approval_ref};old_default={old_provider_id};"
+            f"new_default={new_provider_id};route={route.content_hash}"
+        ),
+    )
+
+
+def _cutover_readback(options: Options) -> dict:
+    with SessionLocal() as session:
+        snapshot = _cutover_snapshot(session, options, lock=False)
+    return {**snapshot, "operation": "cutover-readback"}
+
+
 def _route_snapshot(session, options: Options, *, lock: bool) -> dict:  # noqa: ANN001
     providers = _providers(session, options.provider_ids, lock=lock)
     setting = _setting(session, options.tenant_id, lock=lock)
@@ -236,6 +306,27 @@ def _route_snapshot(session, options: Options, *, lock: bool) -> dict:  # noqa: 
 
 
 def _apply_route(session, options: Options, snapshot: dict) -> None:  # noqa: ANN001
+    route = _replace_active_route(session, options, snapshot)
+    setting = _setting(session, options.tenant_id, lock=True)
+    setting.ai_provider_route_fallback_enabled = True
+    setting.updated_at = _now()
+    old_hash = snapshot.get("old_route") and snapshot["old_route"]["content_hash"]
+    audit(
+        session,
+        tenant_id=options.tenant_id,
+        actor=options.actor,
+        action="启用AI供应商优先级降级",
+        target_type="tenant_ai_provider_route_set",
+        target_id=route.id,
+        detail=f"{options.approval_ref};old={old_hash};new={route.content_hash}",
+    )
+
+
+def _replace_active_route(
+    session,
+    options: Options,
+    snapshot: dict,
+) -> TenantAiProviderRouteSet:  # noqa: ANN001
     active = _active_route(session, options.tenant_id, lock=True)
     if active:
         active.status = "retired"
@@ -257,19 +348,7 @@ def _apply_route(session, options: Options, snapshot: dict) -> None:  # noqa: AN
     session.flush()
     for item in snapshot["desired_items"]:
         session.add(TenantAiProviderRouteItem(route_set_id=route.id, **item))
-    setting = _setting(session, options.tenant_id, lock=True)
-    setting.ai_provider_route_fallback_enabled = True
-    setting.updated_at = _now()
-    old_hash = snapshot.get("old_route") and snapshot["old_route"]["content_hash"]
-    audit(
-        session,
-        tenant_id=options.tenant_id,
-        actor=options.actor,
-        action="启用AI供应商优先级降级",
-        target_type="tenant_ai_provider_route_set",
-        target_id=route.id,
-        detail=f"{options.approval_ref};old={old_hash};new={route.content_hash}",
-    )
+    return route
 
 
 def _require_route_ready(snapshot: dict) -> None:
@@ -277,6 +356,23 @@ def _require_route_ready(snapshot: dict) -> None:
     first_provider_id = snapshot["desired_items"][0]["provider_id"]
     if first_provider_id != default_provider_id:
         raise RuntimeError("provider_route_first_candidate_must_be_tenant_default")
+    invalid = [
+        row["id"] for row in snapshot["providers"]
+        if not row["credential_enabled"]
+        or not row["is_active"]
+        or row["health_status"] != "健康"
+    ]
+    if invalid:
+        raise RuntimeError(f"provider_route_not_ready:{','.join(map(str, invalid))}")
+
+
+def _require_cutover_ready(snapshot: dict) -> None:
+    desired_default = snapshot["desired_default_provider_id"]
+    first_provider = snapshot["desired_items"][0]["provider_id"]
+    if desired_default != first_provider:
+        raise RuntimeError("cutover_default_must_be_first_route_candidate")
+    if len({item["provider_id"] for item in snapshot["desired_items"]}) < 2:
+        raise RuntimeError("cutover_requires_two_distinct_route_candidates")
     invalid = [
         row["id"] for row in snapshot["providers"]
         if not row["credential_enabled"]
