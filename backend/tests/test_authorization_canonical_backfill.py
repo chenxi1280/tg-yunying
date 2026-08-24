@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.integrations.telegram.contracts import AuthorizationIdentity
-from app.models import TelegramDeveloperApp, Tenant, TgAccount, TgAccountAuthorization
+from app.models import AuditLog, TelegramDeveloperApp, Tenant, TgAccount, TgAccountAuthorization
 from app.services import authorization_canonical_backfill as backfill
 
 
@@ -230,3 +230,67 @@ def test_primary_qualification_updates_only_identity_facts(monkeypatch) -> None:
         assert row.telegram_user_id_digest == "b" * 64
         assert row.fact_version == 2
         assert row.logical_slot == "standby_1"
+
+
+def test_primary_qualification_probe_failure_writes_nothing(monkeypatch) -> None:
+    with _session() as session:
+        session.add(_account(1))
+        session.commit()
+        monkeypatch.setattr(backfill, "_auth_key_digest", lambda value: "a" * 64)
+        canonical = backfill.preview_canonical_authorization_backfill(session, 1)
+        backfill.apply_canonical_authorization_backfill(
+            session,
+            1,
+            expected_fingerprint=canonical["fingerprint"],
+            requested_by="requester",
+            approved_by="approver",
+            approval_ref="backfill-approved",
+        )
+        account = session.get(TgAccount, 1)
+        primary = session.get(TgAccountAuthorization, account.current_authorization_id)
+        primary.health_status = "legacy"
+        session.commit()
+        preview = backfill.preview_primary_qualification(session, 1, 1)
+        before = _primary_snapshot(account, primary)
+        audit_count = session.query(AuditLog).count()
+
+        def reject_probe(*_args, **_kwargs):
+            raise RuntimeError("identity probe failed")
+
+        monkeypatch.setattr(backfill.gateway, "authorization_identity", reject_probe)
+
+        with pytest.raises(RuntimeError, match="identity probe failed"):
+            backfill.qualify_primary_authorization(
+                session,
+                1,
+                1,
+                expected_fingerprint=preview["fingerprint"],
+                actor="approver",
+                approval_ref="qualify-approved",
+            )
+
+        session.expire_all()
+        account = session.get(TgAccount, 1)
+        primary = session.get(TgAccountAuthorization, account.current_authorization_id)
+        assert _primary_snapshot(account, primary) == before
+        assert session.query(AuditLog).count() == audit_count
+
+
+def _primary_snapshot(account, primary) -> tuple:
+    return (
+        account.current_authorization_id,
+        account.session_ciphertext,
+        account.developer_app_id,
+        account.authorization_generation,
+        account.authorization_fact_generation,
+        account.connection_generation,
+        primary.session_ciphertext,
+        primary.status,
+        primary.health_status,
+        primary.telegram_user_id_digest,
+        primary.auth_key_fingerprint_digest,
+        primary.telegram_authorization_hash_ciphertext,
+        primary.fact_version,
+        primary.last_authoritative_error_code,
+        primary.disabled_at,
+    )

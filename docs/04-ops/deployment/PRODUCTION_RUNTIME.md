@@ -8,6 +8,17 @@ MY 无 GHCR 拉取凭据时，精确 release 镜像先经 SSH 传输、摘要校
 
 两账号 ABC canary 前使用 `deploy/authorization-canonical-backfill.sh`。必须先 `--mode preview` 保存 fingerprint，再以不同 requester/approver 执行 `--mode apply --expected-fingerprint ...`；它只改数据库授权投影，不连接 Telegram。账号 pointer 缺失但存在唯一 `is_current primary/SV` 且 Session/App 精确一致时只链接已有行，禁止重复创建；其余才创建新 A 行。apply 后必须 `--mode status` 读回，`missing_session/session_unreadable/current_conflict` 不得计入 canonical 成功。仅对精确 canary 候选使用 `qualify-preview/qualify-apply`，后者会使用既有 A Session 做 Telegram identity probe；Telegram current hash=0 时只允许用 preview 冻结且同账号的健康 SV peer observer 唯一解析非零 hash，observer 不成为码源。该流程不创建新登录、不替换 Session、不切主；B 新登录遇到 hash=0 使用相同唯一解析规则。
 
+全量 frozen item 的 A 若只有 `health_status=legacy`，而 current authorization、Session 摘要、三组 generation、fact version、active/current/SV/protected 和 typed error 全部仍与 manifest 一致，runner 只能把它送入上述真实 identity qualification；不能直接写 healthy 或按完成处理。Telegram probe 失败必须发生在任何 DB write 之前，并保持 A 与 B/C/E4 operation 全部不变；`invalid|unknown` health、typed error、disabled 或任一冻结事实漂移仍在 Telegram 前停止。
+
+旧 release 把仍未启动的 pending item 冻结为 blocked plan 时，禁止 SQL 修改。只在 batch stopped、runtime off/scope 空、global unknown=0、MY active client=0、精确 item 的 B/C/E4 operation 全不存在且 A/C 冻结事实不变时，使用专用 DB-only rebase。preview 与 apply 都必须携带原 batch 审批、唯一幂等键和已确认的精确 target count；apply 还必须提交 preview fingerprint，SSH wrapper 在发现 runner 进程时拒绝执行：
+
+```bash
+bash deploy/authorization-online-abc-pending-plan-rebase.sh --mode preview --batch-id <batch-id> --expected-target-count <exact-count> --idempotency-key <rebase-key> --requested-by <original-requester> --approved-by <original-approver> --approval-ref <original-ticket>
+bash deploy/authorization-online-abc-pending-plan-rebase.sh --mode apply --batch-id <batch-id> --expected-target-count <same-count> --idempotency-key <same-key> --expected-fingerprint <preview-fingerprint> --requested-by <original-requester> --approved-by <original-approver> --approval-ref <original-ticket>
+```
+
+该 apply 只更新目标 item 的 B route、B/C plan 和 item version，并写单一批次审计；不改 batch 状态/version、A、C source、slot result、operation 或 Session，也不连接 Telegram、不自动恢复 runner。target set/数量/version/fingerprint 任一漂移时整批零写入；apply 后先只读核对 audit、目标 item diff、batch 仍 stopped、runtime off、unknown=0，再按独立 release/runner 门禁继续。
+
 单账号 B/C 完成后使用 `deploy/authorization-abc-backup.sh --mode verify-preview` 冻结 E4 fingerprint，再以独立 idempotency key 和异人审批执行 `--mode verify-apply`。该入口先持久化 operation，再让 A 向 Saved Messages 只发送一次；成功后读回 A/B Telegram 身份、C 双副本/restore probe、runtime off 和 MY active client=0，并把 remote message ID 写入审计。发送结果不明进入 `reconcile_unknown`，相同 key 只能返回原 operation，禁止重发。
 
 B/C challenge 的 Telegram 服务消息时间按固定 3 秒 clock-skew/秒精度容差绑定；容差窗内必须恰好一条符合消息，否则 fail closed。旧 operation 因验证码过期终态失败后不得复用 idempotency key 或 flow；只有完成根因修复、重新 preview 并获得新批准，才可用新 key 发起一次新 challenge。
