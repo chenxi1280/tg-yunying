@@ -23,10 +23,13 @@ from app.services.task_center.ai_message_memory_batch import (
     refresh_duplicate_memory_batch,
     remember_duplicate_batch_memory,
 )
+from app.services.task_center.ai_message_window_dedupe import (
+    find_group_window_exact_duplicate,
+    group_window_reservation_key,
+)
 from app.services.task_center.ai_message_memory_text import (
     message_identity,
     normalize_group_ai_text,
-    reservation_key,
     semantic_cluster,
     template_shell_key,
     text_fingerprint,
@@ -35,7 +38,6 @@ from app.services.task_center.ai_message_memory_text import (
 
 DEDUP_STATUSES = {"pending", "reserved", "claiming", "executing", "unknown_after_send", "success"}
 DEFAULT_RESERVATION_TTL = timedelta(minutes=30)
-FIVE_MINUTE_WINDOW = timedelta(minutes=5)
 TEN_DAY_WINDOW = timedelta(days=10)
 HIGH_SIMILARITY_THRESHOLD = 0.78
 SEMANTIC_SIMILARITY_THRESHOLD = 0.80
@@ -133,6 +135,18 @@ def _persist_reserved_memory(
             raise DuplicateMessageReservation(
                 reference_id=duplicate.id, duplicate_window="5m_exact",
             ) from exc
+        duplicate = find_group_window_exact_duplicate(
+            session,
+            tenant_id=tenant_id,
+            group_id=group_id,
+            fingerprint=fingerprint,
+            now=current_time,
+            statuses=DEDUP_STATUSES,
+        )
+        if duplicate:
+            raise DuplicateMessageReservation(
+                reference_id=duplicate.id, duplicate_window="5m_group_exact",
+            ) from exc
         raise
     remember_duplicate_batch_memory(duplicate_batch, memory)
 
@@ -174,7 +188,9 @@ def _new_reserved_memory(
         text_fingerprint=fingerprint,
         semantic_cluster=semantic_cluster,
         template_shell_key=template_shell_key,
-        reservation_key=f"{account_id}:{reservation_key(tenant_id, fingerprint, current_time, FIVE_MINUTE_WINDOW)}",
+        reservation_key=group_window_reservation_key(
+            tenant_id, group_id, fingerprint, current_time,
+        ),
         status="reserved",
         planned_at=current_time,
         expires_at=current_time + reservation_ttl,
@@ -376,6 +392,17 @@ def _find_duplicate(
     exact = _find_exact_duplicate(session, tenant_id, account_id, fingerprint, now, exclude_id)
     if exact:
         return exact, "10d_exact"
+    group_exact = find_group_window_exact_duplicate(
+        session,
+        tenant_id=tenant_id,
+        group_id=group_id,
+        fingerprint=fingerprint,
+        now=now,
+        statuses=DEDUP_STATUSES,
+        exclude_id=exclude_id,
+    )
+    if group_exact:
+        return group_exact, "5m_group_exact"
     if duplicate_batch is not None and not exclude_id and account_id is not None:
         refresh_duplicate_memory_batch(
             session,

@@ -275,7 +275,7 @@ Generation worker 在 claim 后、Provider 前读取：
 - current TaskContentDirectionSnapshot；
 - current policy/prompt/example-set/provider route-set revision。
 
-v2 的 configured depth 只读 `Task.type_config.chat_history_depth`，effective depth=`min(configured_depth, policy.max_context_messages)`；初始 policy 为 12 条、600 字、最大年龄 600 秒。每个 group/source 持久化单调 `ContextScopeRevision.context_scope_revision`，真人消息新增、删除/更正或 reply target 变化都递增 revision 并发布 generation wake。`GenerationJob.generation_not_before_at` 是生成 claim 的唯一时间权威；claim、candidate persist 和 Gateway 前均重读 revision/hash/age，任何变化只失效未进 Gateway 的 slot/job。UI 同时显示 configured/effective 值；不得读取全历史或把 Action 旧 payload/version 当 current context 权威。
+v2 的 configured depth 只读 `Task.type_config.chat_history_depth`，effective depth=`min(configured_depth, policy.max_context_messages)`；初始 policy 为 12 条、600 字、最大年龄 600 秒。每个 group/source 持久化单调 `ContextScopeRevision.context_scope_revision`，真人消息新增、删除/更正或 reply target 变化都递增 revision 并发布 generation wake。`GenerationJob.generation_not_before_at` 是生成 claim 的唯一时间权威；Provider 调用前必须重读 revision/hash/age 并冻结最新上下文。普通非回复 candidate 已落库后，单纯 context revision 前进只记录 drift，不得清空 candidate、立即重排或再次调用 Provider；reply target、scope、policy、attestation 或安全合同失效仍按各自硬门禁拒绝。UI 同时显示 configured/effective 值；不得读取全历史或把 Action 旧 payload/version 当 current context 权威。
 
 ### 4.2 两层安全投影
 
@@ -382,7 +382,7 @@ plan 从现有 stable obligations、已冻结 assignment 和 due slots 建立成
 }
 ```
 
-`(plan_id, slot_ordinal, slot_revision)` 永久唯一；每个成员位/obligation 最多一个 current slot，current predicate=`frozen|claimed|candidate_ready|gateway_bound`。状态为 `frozen -> claimed -> candidate_ready -> gateway_bound -> settled`，pre-Gateway 可从 `claimed|candidate_ready` CAS 到 `invalidated` 并创建递增 revision 的替代 slot；`gateway_bound` 后只能 reconcile。claim 持有 job、lease epoch/expiry，超时只允许同 revision reclaim。candidate persist 进入 `candidate_ready`，不能提前写 consumed；窗口其他 slot 不重算，Window planner 不调用 Telegram、不写 Action。
+`(plan_id, slot_ordinal, slot_revision)` 永久唯一；每个成员位/obligation 最多一个 current slot，current predicate=`frozen|claimed|candidate_ready|gateway_bound`。状态为 `frozen -> claimed -> candidate_ready -> gateway_bound -> settled`。Provider 调用前的 `claimed` slot 可因 context revision 前进 CAS 到 `invalidated` 并创建递增 revision 的替代 slot；`candidate_ready` 不再因普通 context drift 失效或重生成，`gateway_bound` 后只能 reconcile。scope、policy、attestation、安全或 reply authority 硬合同失效仍可在 Gateway 前拒绝。claim 持有 job、lease epoch/expiry，超时只允许同 revision reclaim。candidate persist 进入 `candidate_ready`，不能提前写 consumed；窗口其他 slot 不重算，Window planner 不调用 Telegram、不写 Action。
 
 ### 4.5 MessageBrief v2
 
@@ -433,7 +433,7 @@ Realizer 每次只处理一个 slot。Prompt 输入不包含其他 mode 规则�
 - 每个 slot 独立生成；一个 slot 无合法时间、Provider 或候选时不得取消同批其他合法 slot。初次失败后最多按 rejection code 定向重生成一次。
 - 同一重试必须冻结 task binding、context revision/hash、route、mode、brief、voice、prompt、example set 和 provider route-set revision，并满足 `generation_not_before_at <= now < latest_safe_send_at`。
 - rejection feedback 只传失败码和短说明，不回灌旧完整候选。
-- route/mode/context/policy 变化不是重试，必须终结旧 GenerationJob、递增 intent revision 并新建 current job。
+- Provider 调用前的 route/mode/context/policy 变化不是重试，必须终结旧 GenerationJob、递增 intent revision 并新建 current job；普通非回复 candidate 已持久化后的 context drift 不得触发这条重建链。
 - 结构错误、超时、429 等 transport 失败与内容质量失败分开计数。
 - 内容质量失败不能通过切换 Provider 自动“洗白”；只允许同 mode 的一次定向重生成。
 
@@ -452,7 +452,7 @@ Realizer 每次只处理一个 slot。Prompt 输入不包含其他 mode 规则�
 | Sensory object | 不把感官词修饰到衣物等错误对象 | `sensory_object_wrong` |
 | Fact/context | 无无锚点经历、地点、人物或交易 | `unsupported_claim` / `context_mismatch` |
 | Voice | 可测 voice 特征匹配，正文不得被重写 | `voice_profile_mismatch_v3` |
-| Duplicate | 同账号精确重复、窗口重复和结构塌缩为 0 | `duplicate` / `structural_duplicate` |
+| Duplicate | 同账号长期精确/近似重复、同群 5 分钟跨账号精确重复、窗口重复和结构塌缩为 0 | `duplicate` / `structural_duplicate` |
 | Safety | 未成年人、PII、注入和全局政策通过 | `content_rejected` |
 
 确定性闸要求 `adult_service_sensory` 陈述只允许“好润/真润/够润/水滋滋”，问句只允许“水多不？/润不润？/湿不湿？”，用来阻断“看着好滑”“日了没”“水润感”等偏离目标或文案腔短句；该受控意图族只适用于已由证据命中的成人服务感官 mode，其他活群上下文仍按各自 route/claim 生成。批次继续检查逐字重复和结构塌缩，自然度和是否接住成人服务语境还必须由独立 semantic reviewer 判定。
@@ -467,7 +467,7 @@ Realizer 每次只处理一个 slot。Prompt 输入不包含其他 mode 规则�
 2. 写 candidate hash、route/mode/policy/prompt/provider/evaluator evidence；
 3. 结束 GenerationJob 为 ready；
 4. 创建或转为 ready Action；
-5. 由 Dispatcher 在 Gateway 前复核 scope、context freshness、adult attestation、voice、policy、route-set 和 candidate hash。
+5. 由 Dispatcher 在 Gateway 前复核 scope、reply authority、adult attestation、voice、policy、route-set、candidate hash 和最终查重；普通非回复正文的 context drift 只记录证据，不触发重生成。
 
 Provider response 解析后抽取的 canonical UTF-8 `message_text` 字节及 hash 从 candidate persist 到 Gateway 保持不变；面具 gate 只通过/拒绝，不能改写。Gateway-started/unknown 后发生任何 policy/Prompt 回滚都只能 reconcile，禁止重发。
 
@@ -490,7 +490,7 @@ Provider response 解析后抽取的 canonical UTF-8 `message_text` 字节及 ha
 - 已把 Provider 凭证可用性与 legacy `is_active` 分离并补配置 UI；当前仍保留 single-active，未开启 route-set production business read。
 - 已把 task revision/target scope/policy version、window slot、purpose route snapshots 与 Provider attempt 接到显式 v2 GenerationJob；job 首次冻结 router/realizer/reviewer 全 purpose route，后续 stage/retry 不再读取 active revision。source aggregate capacity 已接入 AI/浏览/评论/点赞 Planner 的 feature-flag 路径，保留业务 due，仅推进 `release_not_before_at` 并把 plan hash/ordinal 写回真实 owner；deficit 或 immutable scope 冲突显式阻断。
 - 正式任务 schema 与创建/编辑页已开放显式 `ai_content_route_v2_enabled`、`ai_content_policy_version_id`、`ai_content_allowed_routes`、`ai_content_attestation_ids`。启用时必须同时开启两阶段生成；保存事务会校验 active policy、全部 purpose route-set 和成人 scope attestation，并冻结当前 task revision binding。任一依赖缺失均在保存前失败，禁止形成“保存成功、worker 才失败”的半配置状态；`ai_content_context_route` 仍不公开，route 必须按 current evidence 逐上下文判定。
-- `ContextScopeRevision` 已进入 GenerationJob 消费链：pre-Gateway revision/hash 前进时旧 window slot 记为 `invalidated`，job 清除旧 candidate/window 并按新 revision 重建；Gateway-bound 后不允许改写。
+- `ContextScopeRevision` 已进入 GenerationJob 消费链；2026-08-24 紧急补正后，只允许 Provider 调用前因 revision/hash 前进而重绑上下文。普通非回复 candidate 已持久化后只记录 drift，禁止清除 candidate/window、立即重排和重复消耗 Token；Gateway-bound 后仍不允许改写。
 - `quality_wait` 已改为 pending GenerationJob/Action 并按任务 retry delay 重试，不再当普通生成失败释放数量义务；`latest_safe_send_at` 从账号 pacing reservation、履约 projection 或显式 deadline 冻结。下一次重试越过截止时写唯一 `FulfillmentShortfallFact`，Provider capacity 与 quality 分别结算 typed shortfall，并将 FOP、评论义务或 AI content-mix/quantity owner 同事务转为 terminal shortfall，禁止截止后再次重规划补发。
 - 单一成人 allowed route 不再等同于当前内容已命中成人语境；没有 current markers、多个成人 route 同时命中或弱词无法唯一分类时均返回 `context_route_unproven`。
 - 2026-08-19 生产数据 shadow 复核补正：MiMo 首轮虽通过旧 reviewer，但出现“顶/好顶”语义复读及“这水光/看着好滑”等未达到成人服务感官口径的候选；另一混合场景直接 `candidate_rows_missing`，均不得算质量通过。current v2 因此把“软软的/水灵灵的/好心动/挺好看的/这状态真不错”设为成人 route 确定性失败，成人服务 sensory 必须命中批准的润/水多/水滋滋/湿问句意图；同一冻结上下文同时具备服务询问与感官证据时，按 stable slot ordinal 在 inquiry/sensory 间交替，避免同批所有账号塌成同一 speech act。Realizer 与 reviewer 共用该简短口径，但 reviewer 仍必须是独立 Provider。
@@ -573,3 +573,11 @@ Provider、成人证明、账号面具正文、价格预算或 sampling 选择�
 入口不得自动选择“最合适”的生产任务，不得一次打开 7 个任务，不得修改 tenant legacy
 static fallback，也不得通过 general route 消化被拒绝或不确定的成人上下文。后续生产 apply
 仍需发布 SHA 一致、无并发 release，并与账号专项生产窗口串行协调。
+
+### 7.5 Token 放大紧急补正与生成后查重
+
+- 生产 `context_superseded_requeue` 证明“生成完成 -> 新真人消息 -> 清空 candidate -> 立即重排 -> 再次调用 Provider”会在活跃群形成正反馈放大。普通非回复 ready candidate 从本补正开始采用 frozen-candidate 语义：保留正文、消息记忆、candidate hash、原 due 和 quantity owner，只写 `context_drift_observed` 及新上下文计数。
+- 生成前的 listener freshness、最新上下文刷新和 Prompt 重建继续执行；本补正不允许发送无 scope、无 reply authority、内容政策失败、账号不可用或重复的正文。
+- 生成结果通过现有内容政策后、进入 ready Action 前，新增同租户同群 5 分钟跨账号精确去重；归一化指纹相同即写 `duplicate_message`，不进入 Gateway。同账号跨群 10 天精确/相似/语义/模板壳句规则保持不变。
+- 同群并发精确去重的 reservation key 以 `tenant + group + fingerprint + 5m bucket` 为原子边界；不同群不同账号仍可独立发送相同自然短语。
+- 本补正不修改任务目标、pacing slot、obligation、失败补量或 Telegram unknown 合同；发布验收必须同时观察新 `context_superseded_requeue` 为 0、drift 证据增长、duplicate gate、Token/E4、小时目标和发送分布。

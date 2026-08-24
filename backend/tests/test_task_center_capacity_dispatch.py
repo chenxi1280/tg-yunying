@@ -1069,7 +1069,7 @@ def test_dispatch_hard_hourly_pending_ai_duplicate_is_blocked(monkeypatch):
 
 
 @pytest.mark.no_postgres
-def test_dispatch_context_requeue_releases_reserved_account_runtime_resource(monkeypatch):
+def test_dispatch_context_drift_preserves_candidate_and_releases_runtime_resource(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = _now()
@@ -1091,6 +1091,15 @@ def test_dispatch_context_requeue_releases_reserved_account_runtime_resource(mon
         new_context = GroupContextMessage(tenant_id=1, group_id=7, listener_account_id=11, content="新上下文", remote_message_id="new", created_at=now_value)
         session.add_all([old_context, new_context])
         session.flush()
+        gate_payload = _add_group_ai_send_gate_payload(
+            session,
+            now_value,
+            action_id="action-skip",
+            task_id="task-skip",
+            group_id=7,
+            account_id=11,
+            text="skip",
+        )
         action = Action(
             id="action-skip",
             tenant_id=1,
@@ -1115,6 +1124,7 @@ def test_dispatch_context_requeue_releases_reserved_account_runtime_resource(mon
                 "content_scope_tenant_id": 1,
                 "content_scope_group_id": 7,
                 "content_scope_task_id": "task-skip",
+                **gate_payload,
             },
         )
         session.add(action)
@@ -1122,7 +1132,11 @@ def test_dispatch_context_requeue_releases_reserved_account_runtime_resource(mon
 
         monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
         monkeypatch.setattr(dispatcher, "reject_legacy_anchor_rewrite_before_send", lambda *_args: False)
-        monkeypatch.setattr(dispatcher.gateway, "send_message", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("context expired action must not call TG")))
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "send_message",
+            lambda *args, **kwargs: SendResult(True, remote_message_id="tg-frozen-candidate"),
+        )
         def forbidden(*_args, **_kwargs):
             raise AssertionError("Dispatcher must not call AI Provider")
 
@@ -1143,8 +1157,9 @@ def test_dispatch_context_requeue_releases_reserved_account_runtime_resource(mon
             generation_dependencies=dependencies,
         ) is True
 
-        assert claimed.status == "pending"
-        assert claimed.result["generation_stage"] == "context_superseded_requeue"
+        assert claimed.status == "success"
+        assert claimed.payload["message_text"] == "skip"
+        assert claimed.result["context_drift_observed_count"] == 1
         assert 11 not in dispatcher._IN_FLIGHT_ACCOUNTS
         assert claimed.id not in dispatcher._ACTION_RESERVATIONS
 
@@ -1672,7 +1687,7 @@ def test_task_detail_exposes_ai_quality_funnel_with_blocker_samples():
 
 
 @pytest.mark.no_postgres
-def test_context_expired_requeues_same_action_without_touching_siblings():
+def test_context_drift_preserves_same_action_without_touching_siblings():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = _now()
@@ -1708,23 +1723,23 @@ def test_context_expired_requeues_same_action_without_touching_siblings():
             content=payload.message_text,
         )
 
-        assert dispatcher._group_send_context_fresh(session, current, context) is False
+        assert dispatcher._group_send_context_fresh(session, current, context) is True
 
         stale_due = session.get(Action, "action-stale-due")
         stale_future = session.get(Action, "action-stale-future")
         fresh_future = session.get(Action, "action-fresh-future")
         task = session.get(Task, "task-cycle-skip")
         assert stale_due.status == "pending"
-        assert stale_due.payload["ai_generation_status"] == "pending"
-        assert stale_due.payload["message_text"] == ""
-        assert stale_due.result["generation_stage"] == "context_superseded_requeue"
+        assert stale_due.payload["ai_generation_status"] == "ready"
+        assert stale_due.payload["message_text"] == "skip"
+        assert stale_due.result["context_drift_observed_count"] == 1
         assert stale_future.status == "pending"
         assert fresh_future.status == "pending"
-        assert stale_due.result["context_superseded_requeue_count"] == 1
+        assert stale_due.result.get("context_superseded_requeue_count", 0) == 0
         summary = session.scalar(select(TaskRuntimeSummary).where(
             TaskRuntimeSummary.task_id == task.id,
         ))
-        assert summary.summary["quality_event_counts"]["context_superseded_requeue_count"] == 1
+        assert summary.summary["quality_event_counts"]["context_drift_observed_count"] == 1
 
 
 @pytest.mark.no_postgres
@@ -2120,7 +2135,7 @@ def test_group_ai_send_success_updates_account_stance_memory(monkeypatch):
 
 
 @pytest.mark.no_postgres
-def test_hard_hourly_plain_send_requeues_when_context_changes(monkeypatch):
+def test_hard_hourly_plain_send_preserves_frozen_candidate_when_context_changes(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = _now()
@@ -2147,19 +2162,17 @@ def test_hard_hourly_plain_send_requeues_when_context_changes(monkeypatch):
         monkeypatch.setattr(
             dispatcher.gateway,
             "send_message",
-            lambda *args, **kwargs: (_ for _ in ()).throw(
-                AssertionError("stale hard-hourly action must not call TG"),
-            ),
+            lambda *args, **kwargs: SendResult(True, remote_message_id="tg-frozen-hard-hourly"),
         )
 
         [claimed] = claim_actions(session, limit=1, worker_id="worker-test")
 
         assert dispatcher.dispatch_action(session, claimed) is True
         action = session.get(Action, "action-hard-hourly-due")
-        assert action.status == "pending"
-        assert action.payload["message_text"] == ""
-        assert action.payload["ai_generation_status"] == "pending"
-        assert action.result["generation_stage"] == "context_superseded_requeue"
+        assert action.status == "success"
+        assert action.payload["message_text"] == "hard target send"
+        assert action.payload["ai_generation_status"] == "ready"
+        assert action.result["context_drift_observed_count"] == 1
 
 
 @pytest.mark.no_postgres

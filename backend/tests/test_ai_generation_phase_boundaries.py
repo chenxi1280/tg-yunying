@@ -663,7 +663,7 @@ def test_daily_coverage_replan_rejects_occupied_check_in_scope() -> None:
     assert second_error == "check_in_scope_occupied"
 
 
-def test_ready_normal_generation_expires_when_new_context_arrives() -> None:
+def test_ready_normal_generation_is_preserved_when_new_context_arrives() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = _now()
@@ -678,7 +678,7 @@ def test_ready_normal_generation_expires_when_new_context_arrives() -> None:
         )
         payload = payload.model_copy(update={"context_expire_after_messages": 1})
 
-        refreshed = ai_generation_dispatch._invalidate_superseded_normal_generation(
+        observed = ai_generation_dispatch.observe_normal_generation_context_drift(
             session,
             session.get(Task, actions[0].task_id),
             actions[0],
@@ -686,11 +686,12 @@ def test_ready_normal_generation_expires_when_new_context_arrives() -> None:
         )
 
         assert actions[0].id == "action-reply-generation"
-        assert refreshed.ai_generation_status == "pending"
-        assert refreshed.message_text == ""
-        assert refreshed.ai_message_memory_id == ""
-        assert memory.status == "expired_before_send"
-        assert memory.result["error_code"] == "generation_context_superseded"
+        assert observed is True
+        assert payload.ai_generation_status == "ready"
+        assert payload.message_text == "旧上下文正文"
+        assert payload.ai_message_memory_id == memory.id
+        assert memory.status == "reserved"
+        assert actions[0].result["context_drift_observed_count"] == 1
 
 
 def test_ready_normal_generation_keeps_text_below_frozen_context_threshold() -> None:
@@ -708,20 +709,21 @@ def test_ready_normal_generation_keeps_text_below_frozen_context_threshold() -> 
         )
         payload = payload.model_copy(update={"context_expire_after_messages": 2})
 
-        refreshed = ai_generation_dispatch._invalidate_superseded_normal_generation(
+        observed = ai_generation_dispatch.observe_normal_generation_context_drift(
             session,
             session.get(Task, actions[0].task_id),
             actions[0],
             payload=payload,
         )
 
-        assert refreshed.ai_generation_status == "ready"
-        assert refreshed.message_text == "保留正文"
-        assert refreshed.ai_message_memory_id == memory.id
+        assert observed is False
+        assert payload.ai_generation_status == "ready"
+        assert payload.message_text == "保留正文"
+        assert payload.ai_message_memory_id == memory.id
         assert memory.status == "reserved"
 
 
-def test_ready_normal_generation_expires_at_frozen_context_threshold() -> None:
+def test_ready_normal_generation_records_drift_at_frozen_context_threshold() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = _now()
@@ -745,16 +747,18 @@ def test_ready_normal_generation_expires_at_frozen_context_threshold() -> None:
         session.commit()
         payload = payload.model_copy(update={"context_expire_after_messages": 2})
 
-        refreshed = ai_generation_dispatch._invalidate_superseded_normal_generation(
+        observed = ai_generation_dispatch.observe_normal_generation_context_drift(
             session,
             session.get(Task, actions[0].task_id),
             actions[0],
             payload=payload,
         )
 
-        assert refreshed.ai_generation_status == "pending"
-        assert refreshed.message_text == ""
-        assert memory.status == "expired_before_send"
+        assert observed is True
+        assert payload.ai_generation_status == "ready"
+        assert payload.message_text == "过期正文"
+        assert memory.status == "reserved"
+        assert actions[0].result["context_drift_newer_message_count"] == 2
 
 
 def test_due_catch_up_check_in_is_invariant_to_new_human_context() -> None:
@@ -780,21 +784,22 @@ def test_due_catch_up_check_in_is_invariant_to_new_human_context() -> None:
             "primary_quantity_slot_id": "quantity-slot-catch-up",
         })
 
-        refreshed = ai_generation_dispatch._invalidate_superseded_normal_generation(
+        observed = ai_generation_dispatch.observe_normal_generation_context_drift(
             session,
             session.get(Task, actions[0].task_id),
             actions[0],
             payload=payload,
         )
 
-        assert refreshed.ai_generation_status == "ready"
-        assert refreshed.message_text == "签到"
-        assert refreshed.ai_message_memory_id == memory.id
+        assert observed is False
+        assert payload.ai_generation_status == "ready"
+        assert payload.message_text == "签到"
+        assert payload.ai_message_memory_id == memory.id
         assert memory.status == "reserved"
         assert dispatcher._context_expiration_applies(payload) is False
 
 
-def test_ready_normal_generation_requeues_same_slot_when_context_changes() -> None:
+def test_ready_normal_generation_observation_is_idempotent() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = _now()
@@ -808,20 +813,27 @@ def test_ready_normal_generation_requeues_same_slot_when_context_changes() -> No
             text="旧正文",
         )
 
-        requeued = ai_generation_dispatch.requeue_normal_generation_after_context_change(
+        first = ai_generation_dispatch.observe_normal_generation_context_drift(
+            session,
+            session.get(Task, actions[0].task_id),
+            actions[0],
+            payload=payload,
+        )
+        second = ai_generation_dispatch.observe_normal_generation_context_drift(
             session,
             session.get(Task, actions[0].task_id),
             actions[0],
             payload=payload,
         )
 
-        assert requeued is True
-        assert actions[0].status == "pending"
-        assert actions[0].payload["message_text"] == ""
-        assert actions[0].payload["ai_generation_status"] == "pending"
-        assert actions[0].payload["ai_message_memory_id"] == ""
-        assert actions[0].result["context_superseded_requeue_count"] == 1
-        assert memory.status == "expired_before_send"
+        assert first is True
+        assert second is True
+        assert actions[0].status == "executing"
+        assert actions[0].payload["message_text"] == "旧正文"
+        assert actions[0].payload["ai_generation_status"] == "ready"
+        assert actions[0].payload["ai_message_memory_id"] == memory.id
+        assert actions[0].result["context_drift_observed_count"] == 1
+        assert memory.status == "reserved"
         assert coverages[0].state == "reserved"
         assert coverages[0].reserved_action_id == actions[0].id
         assert actions[1].status == "executing"

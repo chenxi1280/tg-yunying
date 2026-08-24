@@ -3154,13 +3154,13 @@ def _group_send_context_fresh(
     if not _context_expired(session, context.payload):
         return True
     task = session.get(Task, action.task_id)
-    if task and _ai_generation_dispatch.requeue_normal_generation_after_context_change(
+    if task and _ai_generation_dispatch.observe_normal_generation_context_drift(
         session,
         task,
         action,
         payload=context.payload,
     ):
-        return False
+        return True
     _fail_group_ai_send_before_gateway(
         session,
         action,

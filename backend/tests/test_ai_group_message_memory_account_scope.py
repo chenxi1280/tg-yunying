@@ -50,6 +50,35 @@ def test_other_account_history_never_hard_blocks() -> None:
         assert memory.account_id == 102
 
 
+def test_other_account_exact_duplicate_in_same_group_window_is_blocked() -> None:
+    now = _now()
+    with _session() as session:
+        first = reserve_group_ai_message(
+            session,
+            tenant_id=1,
+            group_id=21,
+            task_id="task-a",
+            account_id=101,
+            raw_text="今天先看看价格再决定",
+            now=now,
+        )
+        session.commit()
+
+        with pytest.raises(DuplicateMessageReservation) as exc:
+            reserve_group_ai_message(
+                session,
+                tenant_id=1,
+                group_id=21,
+                task_id="task-b",
+                account_id=102,
+                raw_text="今天先看看价格再决定！！",
+                now=now + timedelta(minutes=1),
+            )
+
+        assert exc.value.reference_id == first.id
+        assert exc.value.duplicate_window == "5m_group_exact"
+
+
 def test_same_account_history_blocks_across_tasks_groups_and_mask_versions() -> None:
     now = _now()
     with _session() as session:

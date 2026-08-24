@@ -11,7 +11,6 @@ from app.services._common import _now
 from .ai_generation_quality import fail_generation_action
 from .ai_generation_timing import GENERATION_LOOKAHEAD
 from .ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE, AiGenerationUnavailable
-from .ai_message_memory import mark_group_ai_message_result
 from .ai_quality_stats import clear_quality_blocker, record_quality_event
 from .direct_check_in import (
     is_due_catch_up_check_in,
@@ -210,42 +209,29 @@ def _latest_platform_question(
     return next((row for row in rows if str((row.payload or {}).get("message_text") or "").strip().endswith(("?", "？"))), None)
 
 
-def invalidate_superseded_normal_generation(
+def observe_normal_generation_context_drift(
     session: Session,
     task: Task,
     action: Action,
     *,
     payload: SendMessagePayload,
-) -> SendMessagePayload:
+) -> bool:
     if payload.reply_to_message_id or not payload.message_text.strip() or payload.ai_generation_status != "ready" or not payload.ai_generation_id:
-        return payload
+        return False
     if is_due_catch_up_check_in(payload.model_dump(mode="json")):
-        return payload
+        return False
     rows = latest_context_rows(session, payload, task)
     if not rows:
-        return payload
+        return False
     snapshot = session.get(GroupContextMessage, payload.context_snapshot_message_id)
     latest = max(rows, key=_context_order)
     if not snapshot or _context_order(latest) <= _context_order(snapshot):
-        return payload
-    if _newer_human_context_count(session, task, payload, snapshot) < _context_expiration_threshold(payload):
-        return payload
-    if payload.ai_message_memory_id:
-        mark_group_ai_message_result(
-            session,
-            payload.ai_message_memory_id,
-            status="expired_before_send",
-            action_id=action.id,
-            result={"error_code": "generation_context_superseded", "latest_context_message_id": int(latest.id)},
-        )
-    updated = payload.model_copy(update={
-        "message_text": "", "original_text": "", "ai_generation_status": "pending",
-        "ai_generation_result_cache": {}, "ai_generation_tokens": 0,
-        "ai_message_memory_id": "", "semantic_cluster": "",
-    })
-    action.payload = updated.model_dump(mode="json")
-    action.result = {**(action.result or {}), "generation_stage": "context_superseded", "generation_outcome": "pending"}
-    return updated
+        return False
+    newer_count = _newer_human_context_count(session, task, payload, snapshot)
+    if newer_count < _context_expiration_threshold(payload):
+        return False
+    _record_context_drift(task, action, latest_id=int(latest.id), newer_count=newer_count)
+    return True
 
 
 def _context_expiration_threshold(payload: SendMessagePayload) -> int:
@@ -274,32 +260,22 @@ def _newer_human_context_count(
     return int(count or 0)
 
 
-def requeue_normal_generation_after_context_change(
-    session: Session,
+def _record_context_drift(
     task: Task,
     action: Action,
     *,
-    payload: SendMessagePayload,
-) -> bool:
-    updated = invalidate_superseded_normal_generation(session, task, action, payload=payload)
-    if updated.ai_generation_status != "pending" or updated.message_text.strip():
-        return False
-    updated = updated.model_copy(update={
-        "ai_generation_attempt_id": "", "ai_generation_request_id": "",
-        "ai_generation_claim_owner": "", "ai_generation_claim_token": "",
-    })
-    action.payload = updated.model_dump(mode="json")
-    action.status = "pending"
-    action.executed_at = None
-    action.scheduled_at = _now()
-    _clear_claim(action)
+    latest_id: int,
+    newer_count: int,
+) -> None:
     result = dict(action.result or {})
-    result["context_superseded_requeue_count"] = int(result.get("context_superseded_requeue_count") or 0) + 1
-    result["generation_stage"] = "context_superseded_requeue"
-    result["generation_outcome"] = "pending"
+    if int(result.get("context_drift_latest_context_message_id") or 0) == latest_id:
+        return
+    result["context_drift_observed"] = True
+    result["context_drift_observed_count"] = int(result.get("context_drift_observed_count") or 0) + 1
+    result["context_drift_latest_context_message_id"] = latest_id
+    result["context_drift_newer_message_count"] = newer_count
     action.result = result
-    record_quality_event(task, action, "context_superseded_requeue_count", blocker="context_superseded_requeue")
-    return True
+    record_quality_event(task, action, "context_drift_observed_count")
 
 
 def validate_local_reply_target(
@@ -352,12 +328,11 @@ def _naive(value: datetime) -> datetime:
 
 
 __all__ = [
-    "invalidate_superseded_normal_generation",
+    "observe_normal_generation_context_drift",
     "latest_context_rows",
     "prepare_generation_guards",
     "ready_generation_payload",
     "record_should_speak_shadow",
-    "requeue_normal_generation_after_context_change",
     "require_normal_context_watermark",
     "validate_local_reply_target",
 ]

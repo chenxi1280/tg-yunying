@@ -30,12 +30,11 @@ from .ai_generation_quality import fail_generation_action, fail_generation_batch
 from .group_ai_prompt_scope import rebuild_group_prompt_inputs
 from .group_ai_scope import REMOTE_REPLY_TARGET_OBSERVATION
 from .ai_generation_guards import (
-    invalidate_superseded_normal_generation as _invalidate_superseded_normal_generation,
     latest_context_rows as _latest_context_rows,
+    observe_normal_generation_context_drift,
     prepare_generation_guards as _prepare_generation_guards,
     ready_generation_payload as _ready_generation_payload,
     record_should_speak_shadow as _record_should_speak_shadow,
-    requeue_normal_generation_after_context_change,
     require_normal_context_watermark as _require_normal_context_watermark,
     validate_local_reply_target as _validate_local_reply_target,
 )
@@ -109,7 +108,7 @@ def ensure_send_message_content(
     )
     if guarded is not None:
         return guarded
-    payload = _invalidate_superseded_normal_generation(
+    observe_normal_generation_context_drift(
         session,
         task,
         action,
@@ -124,13 +123,6 @@ def ensure_send_message_content(
     }:
         raise AiGenerationUnavailable("send_message action 缺少可发送文案")
     if not allow_provider_call:
-        if (action.result or {}).get("generation_stage") == "context_superseded":
-            requeue_normal_generation_after_context_change(
-                session,
-                task,
-                action,
-                payload=payload,
-            )
         raise AiGenerationUnavailable("ai_generation_not_ready")
     return _generate_normal_content(
         session,
