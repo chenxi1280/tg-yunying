@@ -368,6 +368,10 @@ class GroupAIChatConfig(BaseModel):
     ai_content_policy_version_id: str = ""
     ai_content_allowed_routes: list[str] = Field(default_factory=list)
     ai_content_attestation_ids: list[str] = Field(default_factory=list)
+    ai_content_policy_manifest_id: str = ""
+    ai_content_sampling_manifest_hash: str = ""
+    ai_content_max_cost_per_slot: float = Field(default=0, ge=0)
+    ai_content_daily_budget: float = Field(default=0, ge=0)
 
     @field_validator("topic_directions", mode="before")
     @classmethod

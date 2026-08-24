@@ -20,6 +20,10 @@ AI_CONTENT_REVISION_FIELDS = frozenset({
     "ai_content_policy_version_id",
     "ai_content_allowed_routes",
     "ai_content_attestation_ids",
+    "ai_content_policy_manifest_id",
+    "ai_content_sampling_manifest_hash",
+    "ai_content_max_cost_per_slot",
+    "ai_content_daily_budget",
 })
 
 

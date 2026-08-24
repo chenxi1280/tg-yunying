@@ -532,3 +532,44 @@ Provider response 解析后抽取的 canonical UTF-8 `message_text` 字节及 ha
 Release Gate 仍执行不少于 120 条分层离线评测；单任务生产 canary 至少连续 3 天、100 条 typed remote fact、30 条盲审、3 个上下文簇与 10 个 voice 账号。每条发送事实必须可追到 task/config revision、ledger/slot、GenerationJob、policy/brief/voice/provider/reviewer snapshot、Action、Attempt/Gateway、typed remote ID 与受控正文 hash。切换 provider、route readback、发送数量和五类任务履约均不能替代质量验收。
 
 Product Design Complete 自检：用户截图症状、连续窗口、设计激活缺口、配置/UI、后端 activation/runtime、生成与 reviewer、并发/冻结、quality_wait、静态旁路、兼容边界、QA/canary/E4 均已覆盖。当前只授权本地实现与测试，不授权生产任务开关、重生成、补发、配置 apply 或发布；`production_fixed=unproven`。
+
+### 7.4 受保护 policy/bootstrap 与单任务 canary 配置合同
+
+新增 `ai_group_v2_canary_policy_v1` 代码清单，只固化本文已经批准的合同：
+`message_brief_v2`、`voice_contract_v3`、mode-specific Prompt contract、
+`adult_human_anchors_v1`、独立 semantic reviewer、一次定向内容重试、
+`quality_wait`、禁止 Stage 1/emoji/签到/static fallback、`max_style_overlay_chars=200`
+和初始 `max_generation_latency_seconds=90`。清单不得包含自由 Prompt、生产 Task、
+Provider、成人证明、账号面具正文、价格预算或 sampling 选择。
+
+正式入口固定为 `preview -> fingerprint -> apply -> readback`：
+
+1. preview 可以在选择不完整时运行，必须返回 `missing_user_choices`，至少区分
+   `task_id`、`allowed_routes`、成人 `attestation_ids`、每个 required purpose 的有序
+   Provider/model/timeout/rate/concurrency items、`max_cost_per_slot`、任务日 AI 预算、
+   sampling manifest hash、requester/approver/approval reference；批准设计不能替用户
+   决定这些值。
+2. preview 冻结 deployed SHA、Task tenant/type/status/lifecycle/config revision/config hash、
+   current policy/hash、每个 purpose active revision/hash、Provider health/credential/price、
+   canonical identity 全集、task scope 的 active voice profile coverage、adult attestation、
+   open GenerationJob/Action/ExecutionAttempt/Gateway/unknown 和现有 V2 task/binding 集合。
+3. apply 要求 requester 与 approver 不同、选择完整、fingerprint 精确一致；在单事务中
+   row-lock 并重算全部事实，CAS 创建不可变 policy version 和 required purpose route
+   revisions，再只对一个显式 group task 增加一个 config revision 并创建唯一 binding。
+   任一步或 AuditLog 写入失败必须整体回滚。
+4. reviewer 的全部 canonical provider/model identities 必须与 context router 及全部启用
+   Realizer identity 全集不相交。健康检查只证明可调用；任一未健康/未启用/未计价候选、
+   purpose 缺项或交叉均阻断 apply，不能靠 fallback 顺序绕过。
+5. 首版 apply 只接受没有 open GenerationJob、没有 pending/claiming/executing/retryable
+   Action、没有 Gateway-started/unknown 的静默 Task revision。它不批量取消存量 Action，
+   不改 success/typed fact，也不实现隐式存量迁移；需要存量切换时另走 §9.3 的精确
+   candidate invalidation manifest。
+6. 全部 scoped 账号必须已有 active、quality-active、可解析的 voice profile；工具只报告
+   缺口，不生成、伪造或批改面具。成人 route 只接受与 next task revision、next policy
+   version、scope 完全一致且未过期的正式证明。
+7. readback 分别返回 persisted policy、route revisions、task config revision/binding hash 和
+   AuditLog identity；只证明配置持久化，不证明 shadow、正文质量、数量履约或 Telegram E4。
+
+入口不得自动选择“最合适”的生产任务，不得一次打开 7 个任务，不得修改 tenant legacy
+static fallback，也不得通过 general route 消化被拒绝或不确定的成人上下文。后续生产 apply
+仍需发布 SHA 一致、无并发 release，并与账号专项生产窗口串行协调。

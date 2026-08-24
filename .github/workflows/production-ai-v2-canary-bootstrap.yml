@@ -1,0 +1,152 @@
+name: Production AI V2 Canary Bootstrap
+
+'on':
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Guarded bootstrap operation
+        required: true
+        type: choice
+        options:
+          - preview
+          - apply
+          - readback
+      deployed_sha:
+        description: Exact expected production release SHA
+        required: true
+        type: string
+      tenant_id:
+        description: Exact tenant ID
+        required: true
+        default: '1'
+        type: string
+      choices_b64:
+        description: URL-safe base64 encoded canonical choice JSON
+        required: false
+        default: ''
+        type: string
+      expected_fingerprint:
+        description: Exact preview fingerprint for apply
+        required: false
+        default: ''
+        type: string
+
+concurrency:
+  group: production-ai-v2-canary-bootstrap
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    environment: production-silicon-valley
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate guarded inputs
+        env:
+          OPERATION: ${{ inputs.operation }}
+          EXPECTED_SHA: ${{ inputs.deployed_sha }}
+          TENANT_ID: ${{ inputs.tenant_id }}
+          CHOICES_B64: ${{ inputs.choices_b64 }}
+          EXPECTED_FINGERPRINT: ${{ inputs.expected_fingerprint }}
+          SSH_PRIVATE_KEY: ${{ secrets.SILICON_VALLEY_PRODUCTION_SSH_PRIVATE_KEY }}
+          DEPLOY_HOST: ${{ secrets.SILICON_VALLEY_PRODUCTION_HOST }}
+          DEPLOY_USER: ${{ secrets.SILICON_VALLEY_PRODUCTION_USER }}
+        run: |
+          set -euo pipefail
+          test -n "${SSH_PRIVATE_KEY}"
+          test -n "${DEPLOY_HOST}"
+          test -n "${DEPLOY_USER}"
+          [[ "${OPERATION}" =~ ^(preview|apply|readback)$ ]]
+          [[ "${EXPECTED_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${TENANT_ID}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${CHOICES_B64}" =~ ^[A-Za-z0-9_-]*$ ]]
+          if [[ "${OPERATION}" == apply ]]; then
+            [[ "${EXPECTED_FINGERPRINT}" =~ ^[0-9a-f]{64}$ ]]
+            test -n "${CHOICES_B64}"
+            python3 - <<'PY'
+          import base64
+          import json
+          import os
+
+          encoded = os.environ["CHOICES_B64"]
+          decoded = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+          choices = json.loads(decoded)
+          if choices.get("deployed_sha") != os.environ["EXPECTED_SHA"]:
+              raise SystemExit("choices deployed_sha does not match expected production SHA")
+          PY
+          fi
+          if [[ "${OPERATION}" == readback ]]; then
+            test -n "${CHOICES_B64}"
+          fi
+
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SILICON_VALLEY_PRODUCTION_SSH_PRIVATE_KEY }}
+          DEPLOY_HOST: ${{ secrets.SILICON_VALLEY_PRODUCTION_HOST }}
+          DEPLOY_USER: ${{ secrets.SILICON_VALLEY_PRODUCTION_USER }}
+          DEPLOY_PORT: ${{ secrets.SILICON_VALLEY_PRODUCTION_PORT }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${SSH_PRIVATE_KEY}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<EOF
+          Host production
+            HostName ${DEPLOY_HOST}
+            User ${DEPLOY_USER}
+            Port ${DEPLOY_PORT:-22}
+            IdentityFile ~/.ssh/id_ed25519
+            IdentitiesOnly yes
+            StrictHostKeyChecking accept-new
+            ConnectTimeout 60
+            ServerAliveInterval 15
+            ServerAliveCountMax 8
+          EOF
+          chmod 600 ~/.ssh/config
+
+      - name: Verify exact release and runtime SHA
+        env:
+          BASE_DIR: ${{ vars.SILICON_VALLEY_PRODUCTION_BASE_DIR }}
+          EXPECTED_SHA: ${{ inputs.deployed_sha }}
+        run: |
+          set -euo pipefail
+          CURRENT="$(ssh production "readlink -f '${BASE_DIR:-/data/tgyunying}/current'")"
+          [[ "$(basename "${CURRENT}")" == *_"${EXPECTED_SHA:0:8}" ]]
+          ssh production "set -euo pipefail
+            for name in tgyunying-backend \
+              tgyunying-worker-ai-generation \
+              tgyunying-worker-ai-generation-2 \
+              tgyunying-worker-ai-generation-3
+            do
+              state=\$(docker inspect --format '{{.State.Status}}/{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' \"\${name}\")
+              sha=\$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' \"\${name}\" | sed -n 's/^RELEASE_SHA=//p')
+              echo AI_V2_BOOTSTRAP_CONTAINER=\${name}:\${state}:\${sha}
+              [[ \"\${state}\" == running/healthy ]]
+              [[ \"\${sha}\" == '${EXPECTED_SHA}' ]]
+            done"
+
+      - name: Run guarded bootstrap operation
+        env:
+          OPERATION: ${{ inputs.operation }}
+          TENANT_ID: ${{ inputs.tenant_id }}
+          CHOICES_B64: ${{ inputs.choices_b64 }}
+          EXPECTED_FINGERPRINT: ${{ inputs.expected_fingerprint }}
+        run: |
+          set -euo pipefail
+          fingerprint_args=''
+          if [[ "${OPERATION}" == apply ]]; then
+            fingerprint_args="--expected-fingerprint ${EXPECTED_FINGERPRINT}"
+          fi
+          choices_args=''
+          if [[ -n "${CHOICES_B64}" ]]; then
+            choices_args="--choices-b64 ${CHOICES_B64}"
+          fi
+          ssh production "timeout 120 docker exec -i tgyunying-backend \
+            python -m scripts.manage_ai_v2_canary_bootstrap '${OPERATION}' \
+            --tenant-id '${TENANT_ID}' ${choices_args} ${fingerprint_args}"

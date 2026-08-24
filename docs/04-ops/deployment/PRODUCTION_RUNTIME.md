@@ -1,5 +1,25 @@
 # TG 运营管理平台生产部署说明
 
+## AI V2 单任务受保护 bootstrap
+
+生产入口为 `Production AI V2 Canary Bootstrap` workflow，仅允许 `preview/apply/readback`。
+操作前必须确认 current、backend 和三个 `worker-ai-generation` 的完整 `RELEASE_SHA` 与输入的
+40 位 deployed SHA 一致，apply 的 choice JSON 也必须携带同一 SHA；该 workflow 不发布、不重启、
+不调用 Provider 或 Telegram。
+
+choice JSON 使用 URL-safe base64 传入，必须显式包含 exact task/revision、allowed routes、
+每个 required purpose 的有序 Provider/model/timeout/rate/concurrency items、成人证明、
+slot/日成本上限、sampling manifest hash、requester、不同 approver 和 approval reference。
+preview 即使选择不完整也只读返回 `missing_user_choices`、blockers 与 fingerprint；apply
+必须提交同一 64 位 fingerprint。任何 Task/policy/route/provider/voice/open-work 漂移，
+或存在 Gateway-started/unknown，均整体零写入失败。
+
+apply 只创建不可变 policy 与 purpose route revisions，并对一个静默 `group_ai_chat` Task
+增加一个 config revision/binding/AuditLog；不修改 tenant static fallback，不取消存量 Action，
+不生成面具/证明，不接触 ABC。readback 的 `persisted_config_only` 只证明数据库配置，不能写
+`shadow_pass`、`runtime_pass` 或 `production_fixed`。正式 apply 还必须在无 active deploy 且
+账号专项释放 stopped/runner0/runtime off/unknown0/sensitive0/MY client0 的串行窗口执行。
+
 ## 马来西亚授权灾备节点
 
 MY 节点只运行 `authorization-dr-node`，不运行消息、listener、Planner、Dispatcher 或同步。部署入口为 `deploy/malaysia/deploy-authorization-dr-node.sh`，固定读取 `/opt/tgyunying-authorization-dr/node.env`。生产一期显式使用 `MY_WAKE_STORAGE_MODE=ssh_mirror`：worker 把一份不可变密文写入 MY 持久卷，再通过专用受限 SSH 身份把第二份 create-only 密文和 inventory 写入硅谷 `/data/tgyunying/shared/authorization-dr-snapshots`。专用恢复密钥以 root-only 文件保存在 MY，并备份到硅谷运维目录；普通 backend/worker 不挂载该密钥。脚本在启动前校验控制面、固定出口、SSH 目标、identity、known_hosts、恢复密钥，以及专用身份对远端镜像目录的可达、可穿越和可写权限；任一项失败时不启动 worker。硅谷父目录保持原 owner/mode，只给 `tgyunying-dr` 添加 `--x` ACL，目标镜像目录保持该用户独占 `0700`，避免目标目录归属正确但父目录不可穿越。`kms_oss` 仍是显式可选模式，不是生产一期硬依赖，也不会被自动选择。
