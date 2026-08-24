@@ -4438,7 +4438,8 @@ def test_group_ai_chat_uses_recent_group_scoped_account_memory(monkeypatch):
         captured.setdefault("account_profiles", {}).update(config.get("account_profiles") or {})
         captured["topic_thread"] = config.get("topic_thread")
         captured["topic_plan"] = config.get("topic_plan")
-        contents = ["延续自己之前说的报名时间。", "我从另一个角度补一句。"][:count]
+        account_id = int(config["generation_slots"][0]["account_id"])
+        contents = [f"{account_id} 延续自己之前说的报名时间。"][:count]
         return _slot_bound_contents(config, contents), 0
 
     with Session(engine) as session:
