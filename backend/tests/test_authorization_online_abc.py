@@ -354,13 +354,19 @@ def test_runner_stops_cleanly_after_requested_chunk(session: Session, monkeypatc
         sleeper=lambda _: None,
     )
 
-    assert result["batch"]["status"] == "running"
+    assert result["batch"]["status"] == "stopped"
     assert result["chunk"] == {
         "max_accounts": 2,
         "processed_count": 2,
         "account_ids": ACCOUNT_IDS[:2],
     }
     assert result["batch"]["account_outcome_counts"] == {"succeeded": 2, "pending": 8}
+    pause = session.scalar(select(AuditLog).where(
+        AuditLog.target_type == "tg_authorization_online_abc_batches",
+        AuditLog.target_id == batch_id,
+    ).order_by(AuditLog.id.desc()).limit(1))
+    assert pause.action == "ABC runner chunk 边界停批"
+    assert "processed_count=2" in pause.detail
 
 
 def test_observation_acceptance_is_immediate_and_idempotent(
@@ -517,6 +523,7 @@ def test_full_rollout_finishes_same_frozen_batch_in_ten_bounded_chunks(
     ]
 
     assert [result["chunk"]["processed_count"] for result in results] == [2, 2, 2, 2, 2]
+    assert [result["batch"]["status"] for result in results[:-1]] == ["stopped"] * 4
     assert results[-1]["batch"]["status"] == "completed"
     assert results[-1]["batch"]["account_outcome_counts"] == {"succeeded": 10}
 

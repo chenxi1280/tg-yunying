@@ -45,7 +45,15 @@ from .online_abc_completed_recovery import (
 )
 from .online_abc_post_activate import REBASE_BLOCKER, require_post_activate_rebase_resume
 from .online_abc_primary import PRIMARY_DRIFT_OUTCOME, stop_completed_primary_drift
-from .online_abc_chunk import MAX_CHUNK_ACCOUNTS, chunk_result, require_chunk_size, require_item_runnable, require_slot_ready
+from .online_abc_chunk import (
+    MAX_CHUNK_ACCOUNTS,
+    chunk_result,
+    pause_online_abc_chunk,
+    require_chunk_size,
+    require_item_runnable,
+    require_slot_ready,
+    resume_online_abc_chunk,
+)
 from .readiness import ready_migration_runtime_image_sha
 from .standby_1_qualification import qualify_existing_standby_1, require_existing_standby_1_candidate
 from .standby_2_provision import prepare_scoped_c_provision
@@ -108,6 +116,9 @@ def run_online_abc_batch(
     require_chunk_size(max_accounts)
     if poll_seconds <= 0:
         raise AuthorizationDrError("poll_interval_invalid", "Runner poll interval must be positive")
+    resume_online_abc_chunk(
+        session, batch_id, actor=approval.approved_by, approval_ref=approval.approval_ref,
+    )
     processed_accounts: list[int] = []
     while True:
         view = online_abc_runner_status(session, batch_id)
@@ -125,6 +136,13 @@ def run_online_abc_batch(
         )
         processed_accounts.append(command["account_id"])
         if len(processed_accounts) == max_accounts:
+            pause_online_abc_chunk(
+                session,
+                batch_id,
+                actor=approval.approved_by,
+                approval_ref=approval.approval_ref,
+                processed_count=len(processed_accounts),
+            )
             view = online_abc_runner_status(session, batch_id)
             return chunk_result(view, processed_accounts, max_accounts)
 

@@ -8,6 +8,8 @@
 
 > **2026-08-24 ABC 全量发布漂移重绑：** `authorization_dr/online_abc_release_rebind.py`、`backend/scripts/authorization_online_abc_release_rebind.py` 与 `deploy/authorization-online-abc-release-rebind.sh` 提供 DB-only `preview/fingerprint/apply`。只在最近停批审计精确绑定 `production_release_changed_mid_chunk`、批次无 running/stopped item、runtime/unknown/MY client 为零、全部 succeeded A 无漂移且 B/C/E4 完整时，原子重绑独立 execution release 并恢复 batch；manifest SHA、Session/current/generation/item/operation 均不变。
 
+> **2026-08-24 ABC rebind/rebase 与 chunk 静默状态机：** `online_abc_pending_plan_rebase.py` 额外识别“最新同审批 release-rebind 审计 + execution release 匹配 + 无 active item/runner”的 quiescent running batch，使正式顺序可固定为 rebind 后 DB-only rebase；`online_abc_chunk.py` 在每次 runner 达到 max-10 边界后锁批次重验全局静止条件并审计停批，下次仅从同 SHA/同审批的精确 chunk-pause 审计恢复。两条路径都不进入 Telegram 业务实现，不修改授权事实。
+
 > **2026-08-24 ABC SV 单出口补正：** `developer_apps.credentials_for_authorization`、online probe、授权 metadata、ABC B 登录/A 读码/B qualification、local activate 与 E4 统一使用固定直连 `primary_regular:direct`；账号/授权资产 `proxy_id` 只保留历史绑定与审计。MY C 路由不变，历史 `sv-proxy:*` 仅限原 operation reconcile。
 
 > **2026-08-23 ABC completed A 恢复与 pre-remote rearm：** `authorization_dr/online_abc_completed_recovery.py`、`backend/scripts/authorization_online_abc_completed_recovery.py`、`deploy/authorization-online-abc-completed-recovery.sh` 提供 DB-only completed rebase 和零远端副作用 rearm；`online_abc_operations.py` 选择 E4 retry，`online_abc_runner.py` 支持显式 account resume、先扫描 succeeded A、禁止并行 running，并只接受绑定新 current 的 E4。`online_abc_primary.py` 允许健康 fact 同幅单调前进，但 typed duplicate/Session/current/代次漂移继续停止。

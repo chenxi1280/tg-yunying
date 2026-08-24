@@ -23,9 +23,10 @@ from app.services._common import audit
 
 from .contracts import AuthorizationDrError
 from .online_abc import UNKNOWN_OPERATION_STATUSES
-from .online_abc_manifest import _freeze_full_target
+from .online_abc_manifest import ACTIVE_OPERATION_STATUSES, _freeze_full_target
 from .online_abc_operations import online_abc_operation_keys
 from .online_abc_primary import primary_state
+from .online_abc_release_rebind import REBIND_ACTION
 
 
 AUDIT_ACTION = "重基线 pending ABC B/C plan"
@@ -95,7 +96,7 @@ def apply_pending_plan_rebase(
 
 
 def _preview_payload(session, batch, items, expected_count, idempotency_key, approval) -> dict:
-    _require_batch_boundary(batch, items)
+    _require_batch_boundary(session, batch, items)
     _require_global_boundary(session)
     key = _idempotency_key(idempotency_key)
     operation_keys = _remote_effect_keys(session, batch)
@@ -266,14 +267,36 @@ def _slot_map(session, batch_id: str) -> dict[str, list]:
     return result
 
 
-def _require_batch_boundary(batch, items) -> None:
-    if batch.status != "stopped":
+def _require_batch_boundary(session, batch, items) -> None:
+    if batch.status == "running":
+        _require_release_rebound(session, batch)
+    elif batch.status != "stopped":
         raise AuthorizationDrError("online_abc_pending_rebase_batch_not_stopped", "Batch is not stopped")
     if len(items) != batch.target_count:
         raise AuthorizationDrError("online_abc_pending_rebase_conservation", "Frozen item count changed")
     active = [item for item in items if item.status not in {"pending", "succeeded"}]
     if active:
         raise AuthorizationDrError("online_abc_pending_rebase_item_active", "Batch has non-quiescent items")
+
+
+def _require_release_rebound(session, batch) -> None:
+    row = session.scalar(select(AuditLog).where(
+        AuditLog.target_type == "tg_authorization_online_abc_batches",
+        AuditLog.target_id == batch.id,
+    ).order_by(AuditLog.id.desc()).limit(1))
+    tokens = (
+        f"approval_ref={batch.approval_ref};",
+        f"->{batch.execution_release_sha};",
+    )
+    valid = bool(
+        row and row.action == REBIND_ACTION and batch.execution_release_sha
+        and all(token in row.detail for token in tokens)
+    )
+    if not valid:
+        raise AuthorizationDrError(
+            "online_abc_pending_rebase_running_unproven",
+            "Running batch is not a quiescent release rebind",
+        )
 
 
 def _require_global_boundary(session) -> None:
@@ -285,6 +308,11 @@ def _require_global_boundary(session) -> None:
     ).limit(1))
     if unknown:
         raise AuthorizationDrError("global_reconcile_unknown", "Global reconcile unknown must be zero")
+    sensitive = session.scalar(select(TgAuthorizationDrOperation.id).where(
+        TgAuthorizationDrOperation.status.in_(ACTIVE_OPERATION_STATUSES),
+    ).limit(1))
+    if sensitive:
+        raise AuthorizationDrError("online_abc_sensitive_operation", "Sensitive operation is active")
     my_clients = session.scalar(select(func.coalesce(func.sum(AuthorizationDrExecutionNode.active_client_count), 0)).where(
         AuthorizationDrExecutionNode.region_code == "my",
     ))

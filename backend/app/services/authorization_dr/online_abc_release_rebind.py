@@ -20,6 +20,7 @@ from app.services._common import audit
 from .contracts import AuthorizationDrError
 from .online_abc import UNKNOWN_OPERATION_STATUSES
 from .online_abc_operations import online_abc_item_operations
+from .online_abc_manifest import ACTIVE_OPERATION_STATUSES
 from .online_abc_primary import _primary_drifted
 from .online_abc_read import item_operations_complete
 
@@ -129,6 +130,11 @@ def _require_global_boundary(session) -> None:
     ))
     if unknown:
         raise AuthorizationDrError("global_reconcile_unknown", "Global reconcile unknown must be zero")
+    sensitive = session.scalar(select(TgAuthorizationDrOperation.id).where(
+        TgAuthorizationDrOperation.status.in_(ACTIVE_OPERATION_STATUSES),
+    ).limit(1))
+    if sensitive:
+        raise AuthorizationDrError("online_abc_sensitive_operation", "Sensitive operation is active")
     my_clients = session.scalar(select(func.coalesce(func.sum(AuthorizationDrExecutionNode.active_client_count), 0)).where(
         AuthorizationDrExecutionNode.region_code == "my",
     ))

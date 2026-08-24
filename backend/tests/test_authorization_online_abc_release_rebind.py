@@ -124,6 +124,21 @@ def test_preview_rejects_global_unknown(db_session) -> None:
     assert exc_info.value.code == "global_reconcile_unknown"
 
 
+def test_preview_rejects_active_sensitive_operation(db_session) -> None:
+    batch_id = _paused_batch(db_session)
+    abc_tests._add_operation(
+        db_session,
+        abc_tests.ACCOUNT_IDS[1],
+        "release-rebind-global-sensitive",
+        "pending",
+    )
+
+    with pytest.raises(AuthorizationDrError) as exc_info:
+        _preview(db_session, batch_id)
+
+    assert exc_info.value.code == "online_abc_sensitive_operation"
+
+
 def test_preview_rejects_malaysia_active_client(db_session) -> None:
     batch_id = _paused_batch(db_session)
     node = db_session.scalar(select(AuthorizationDrExecutionNode).where(

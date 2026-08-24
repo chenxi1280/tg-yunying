@@ -17,10 +17,15 @@ from app.services.authorization_dr.online_abc_pending_plan_rebase import (
     apply_pending_plan_rebase,
     preview_pending_plan_rebase,
 )
+from app.services.authorization_dr.online_abc_release_rebind import (
+    apply_execution_release_rebind,
+    preview_execution_release_rebind,
+)
 from tests import test_authorization_online_abc as abc_tests
 
 
 pytestmark = pytest.mark.no_postgres
+NEW_RELEASE_SHA = "b" * 40
 
 
 @pytest.fixture
@@ -139,6 +144,18 @@ def test_pending_plan_rebase_rejects_active_my_client(db_session) -> None:
     assert _audit_count(db_session, batch.id) == 0
 
 
+def test_pending_plan_rebase_rejects_active_sensitive_operation(db_session) -> None:
+    batch, item = _stale_pending_item(db_session)
+    abc_tests._add_operation(db_session, item.account_id, "unrelated-sensitive", "pending")
+
+    with pytest.raises(AuthorizationDrError) as exc_info:
+        _preview(db_session, batch.id)
+
+    assert exc_info.value.code == "online_abc_sensitive_operation"
+    assert item.standby_1_plan == "blocked"
+    assert _audit_count(db_session, batch.id) == 0
+
+
 def test_pending_plan_rebase_rejects_non_quiescent_batch(db_session) -> None:
     batch, item = _stale_pending_item(db_session)
     other = db_session.scalar(select(TgAuthorizationOnlineAbcItem).where(
@@ -153,6 +170,57 @@ def test_pending_plan_rebase_rejects_non_quiescent_batch(db_session) -> None:
         _preview(db_session, batch.id)
 
     assert exc_info.value.code == "online_abc_pending_rebase_item_active"
+    assert item.standby_1_plan == "blocked"
+    assert _audit_count(db_session, batch.id) == 0
+
+
+def test_pending_plan_rebase_accepts_quiescent_release_rebound_batch(db_session) -> None:
+    batch, item = _stale_pending_item(db_session)
+    _pause_for_release_rebind(db_session, batch)
+    rebind = preview_execution_release_rebind(
+        db_session,
+        batch.id,
+        runtime_release_sha=NEW_RELEASE_SHA,
+        requested_by="requester",
+        approved_by="approver",
+        approval_ref="ABC-10",
+    )
+    apply_execution_release_rebind(
+        db_session,
+        batch.id,
+        runtime_release_sha=NEW_RELEASE_SHA,
+        expected_fingerprint=rebind["fingerprint"],
+        requested_by="requester",
+        approved_by="approver",
+        approval_ref="ABC-10",
+    )
+
+    preview = _preview(db_session, batch.id)
+    result = apply_pending_plan_rebase(
+        db_session,
+        batch.id,
+        expected_target_count=1,
+        idempotency_key="pending-plan-rebase-1",
+        expected_fingerprint=preview["fingerprint"],
+        requested_by="requester",
+        approved_by="approver",
+        approval_ref="ABC-10",
+    )
+
+    assert result["batch_status"] == "running"
+    assert result["target_count"] == 1
+    assert db_session.get(TgAuthorizationOnlineAbcItem, item.id).standby_1_plan == "provision"
+
+
+def test_pending_plan_rebase_rejects_unproven_running_batch(db_session) -> None:
+    batch, item = _stale_pending_item(db_session)
+    batch.status = "running"
+    db_session.commit()
+
+    with pytest.raises(AuthorizationDrError) as exc_info:
+        _preview(db_session, batch.id)
+
+    assert exc_info.value.code == "online_abc_pending_rebase_running_unproven"
     assert item.standby_1_plan == "blocked"
     assert _audit_count(db_session, batch.id) == 0
 
@@ -199,6 +267,21 @@ def _preview(session, batch_id: str) -> dict:
         approved_by="approver",
         approval_ref="ABC-10",
     )
+
+
+def _pause_for_release_rebind(session, batch) -> None:
+    session.add(AuditLog(
+        tenant_id=batch.tenant_id,
+        actor="approver",
+        action="生产版本变化暂停 ABC runner",
+        target_type="tg_authorization_online_abc_batches",
+        target_id=batch.id,
+        detail=(
+            "approval_ref=ABC-10; blocker=production_release_changed_mid_chunk; "
+            "succeeded=0; pending=10; running_items=0; global_unknown=0; runtime=off"
+        ),
+    ))
+    session.commit()
 
 
 def _protected_snapshots(session, batch, item) -> dict:
