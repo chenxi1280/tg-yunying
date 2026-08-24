@@ -1248,6 +1248,8 @@ group_ai_chat / channel_comment 正文
 
 `SSH/operator -> authorization_abc_backup preview -> canonical A/App B/SV proxy/generation fingerprint -> different-actor apply -> durable provision_standby_1 operation -> Telegram challenge -> frozen A service-message code(message_id + received_at) -> code sign-in -> SessionPasswordNeeded -> same-client managed 2FA -> B identity qualification -> A generation readback -> one-account C migration batch -> exact operation/capability/release-SHA runtime arm -> MY local + SSH immutable copies -> restore probe -> slot CAS -> automatic runtime off`。
 
+legacy-only A 冷启动分支固定为 `frozen legacy A -> 原 A Session 只读 UID/AuthKey probe -> B operation 冻结 expected identity -> A 读码登录唯一 B -> B observer 反查 A 非零 hash -> locked A qualification -> C/E4`。A probe 失败时零 operation；B 或 qualification 失败时首错停且 A 全冻结维度零写入，若 B 已成功只复用同一 observer checkpoint，禁止第二次登录。
+
 该数据流只写 B/C 资产和 DR operation；A 的 `current_authorization_id/session_ciphertext/developer_app_id/proxy_id/authorization_generation/authorization_fact_generation/connection_generation` 全部是冻结不变量。健康检查、Dispatcher、账号安全自愈和旧 activate 只可写 `fault_candidate`，不能进入主授权切换；任何 unknown 或 A 漂移停止账号和后续 canary。
 
 历史版本若在 code sign-in 前错误调用 managed 2FA，`AuthKeyUnregisteredError -> reconcile_unknown` 只能进入 `authorization_dr_reconcile --kind pre_code_submission_failure`：preview 从 operation/flow 自动生成不含 secret 的 flow-state digest，apply 复核 runtime off、所有 DR client=0、A source fact/current/protected、operation/flow version 和异人审批后，写 `confirmed_no_effect/failed` 并清空临时 Session/hash。该路径不调用 Telegram、不产生 candidate、不改变 A。

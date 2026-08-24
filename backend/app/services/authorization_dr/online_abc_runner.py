@@ -211,7 +211,7 @@ def _prepare_primary_and_b(
         raise AuthorizationDrError("online_abc_primary_drift", "Frozen A changed before B login")
     needs_b = item.standby_1_plan != "already_qualified"
     can_bootstrap_peer = bool(
-        state == "frozen"
+        state in {"frozen", "legacy_frozen"}
         and item.standby_1_plan != "already_qualified"
     )
     if not can_bootstrap_peer:
@@ -421,8 +421,7 @@ def _require_resume_contract(session, item, operations: dict) -> str:
         _require_post_b_pre_c_resume(session, item, operations)
         return "post_b_pre_c"
     if item.blocker_code == PRE_PRIMARY_RESUME_BLOCKER:
-        _require_pre_primary_resume(session, item, operations)
-        return "pre_primary_no_remote_effect"
+        return _require_pre_primary_resume(session, item, operations)
     if item.blocker_code == C_ORPHAN_RETRY_BLOCKER:
         _require_c_orphan_retry_resume(session, item, operations)
         return "post_c_orphan_compensated"
@@ -580,19 +579,67 @@ def _require_post_b_pre_c_resume(session, item, operations: dict) -> None:
         raise AuthorizationDrError("online_abc_primary_drift", "A or B changed before post-B resume")
 
 
-def _require_pre_primary_resume(session, item, operations: dict) -> None:
-    if any(operations.values()):
+def _require_pre_primary_resume(session, item, operations: dict) -> str:
+    if operations["c"] is not None or operations["e4"] is not None:
         raise AuthorizationDrError(
             "online_abc_resume_remote_effect_started",
-            "Pre-primary resume requires zero B/C/E4 operations",
+            "Primary bootstrap resume requires no C/E4 operation",
         )
     account = session.get(TgAccount, item.account_id)
     primary = session.get(TgAccountAuthorization, item.primary_authorization_id)
-    if _primary_state(account, primary, item) != "frozen":
+    if _primary_state(account, primary, item) not in {"frozen", "legacy_frozen"}:
         raise AuthorizationDrError("online_abc_primary_drift", "A changed before pre-primary resume")
     preview = preview_primary_qualification(session, item.tenant_id, item.account_id)
     if preview["primary_authorization_id"] != item.primary_authorization_id:
         raise AuthorizationDrError("online_abc_primary_drift", "Canonical A changed before pre-primary resume")
+    if operations["b"] is None:
+        return "pre_primary_no_remote_effect"
+    if not _bootstrap_b_observer_valid(session, item, operations["b"]):
+        raise AuthorizationDrError(
+            "online_abc_resume_remote_effect_started",
+            "Primary bootstrap resume requires the frozen succeeded B observer",
+        )
+    return "post_b_pre_primary_qualification"
+
+
+def _bootstrap_b_observer_valid(session, item, operation) -> bool:
+    operation_ready = (
+        operation.status == SUCCESS_STATUS
+        and operation.remote_call_state == SUCCESS_STATUS
+        and not operation.blocker_code
+        and operation.candidate_authorization_id is not None
+    )
+    if not operation_ready:
+        return False
+    primary = session.get(TgAccountAuthorization, item.primary_authorization_id)
+    candidate = session.get(TgAccountAuthorization, operation.candidate_authorization_id)
+    expected_identity = _reconciled_primary_identity(primary, operation)
+    target_slot = "primary" if primary and primary.logical_slot == "standby_1" else "standby_1"
+    return bool(
+        primary
+        and candidate
+        and operation.source_authorization_id == primary.id
+        and operation.code_source_authorization_id == primary.id
+        and operation.expected_current_authorization_id == primary.id
+        and operation.expected_authorization_generation == item.authorization_generation
+        and operation.expected_authorization_fact_generation == item.authorization_fact_generation
+        and operation.expected_connection_generation == item.connection_generation
+        and operation.expected_code_source_fact_version == item.primary_fact_version
+        and expected_identity
+        and candidate.logical_slot == target_slot
+        and candidate.is_slot_current
+        and not candidate.is_current
+        and candidate.provision_region_code == "sv"
+        and candidate.status in {"active", "standby"}
+        and candidate.health_status == "healthy"
+        and candidate.protected_from_cleanup
+        and candidate.session_ciphertext
+        and candidate.telegram_authorization_hash_ciphertext
+        and candidate.telegram_user_id_digest == expected_identity[0]
+        and candidate.auth_key_fingerprint_digest
+        and candidate.auth_key_fingerprint_digest != expected_identity[1]
+        and candidate.developer_app_id != primary.developer_app_id
+    )
 
 
 def _require_no_resume_unknown(session) -> None:
