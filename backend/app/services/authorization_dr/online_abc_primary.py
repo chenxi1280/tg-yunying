@@ -11,6 +11,20 @@ from app.services._common import _now, audit
 PRIMARY_DRIFT_OUTCOME = "primary_drift_after_success"
 
 
+def primary_state(account, primary, item) -> str:
+    if not _structural_primary(account, primary):
+        return "drifted"
+    frozen = _primary_dimensions(account, primary, item, fact_offset=0)
+    if frozen and _healthy_primary(primary):
+        return "frozen"
+    if frozen and _legacy_primary(primary):
+        return "legacy_frozen"
+    qualified = _primary_dimensions(account, primary, item, fact_offset=1)
+    if qualified and _qualified_primary(primary):
+        return "qualified"
+    return "drifted"
+
+
 def stop_completed_primary_drift(session, batch, *, actor: str, approval_ref: str) -> bool:
     items = list(session.scalars(select(TgAuthorizationOnlineAbcItem).where(
         TgAuthorizationOnlineAbcItem.batch_id == batch.id,
@@ -65,8 +79,67 @@ def _stop_item(item) -> None:
     item.version += 1
 
 
+def _primary_dimensions(account, primary, item, *, fact_offset: int) -> bool:
+    return bool(
+        account.authorization_generation == item.authorization_generation
+        and account.connection_generation == item.connection_generation
+        and _fact_dimensions(account, primary, item, fact_offset)
+        and _digest(primary.session_ciphertext or "") == item.primary_session_digest
+        and primary.is_current
+    )
+
+
+def _structural_primary(account, primary) -> bool:
+    return bool(
+        account
+        and primary
+        and account.status == AccountStatus.ACTIVE.value
+        and account.current_authorization_id == primary.id
+        and account.session_ciphertext == primary.session_ciphertext
+        and account.developer_app_id == primary.developer_app_id
+        and primary.session_ciphertext
+        and primary.is_current
+        and primary.is_slot_current
+        and primary.logical_slot in {"primary", "standby_1"}
+        and primary.provision_region_code == "sv"
+        and primary.protected_from_cleanup
+    )
+
+
+def _fact_dimensions(account, primary, item, fact_offset: int) -> bool:
+    account_delta = account.authorization_fact_generation - item.authorization_fact_generation
+    primary_delta = primary.fact_version - item.primary_fact_version
+    if fact_offset == 0:
+        return account_delta == primary_delta == 0
+    return account_delta == primary_delta and account_delta >= 1
+
+
+def _healthy_primary(primary) -> bool:
+    return bool(
+        primary.status == "active" and primary.health_status == "healthy"
+        and primary.last_authoritative_error_code == ""
+        and primary.disabled_at is None
+    )
+
+
+def _legacy_primary(primary) -> bool:
+    return bool(
+        primary.status == "active" and primary.health_status == "legacy"
+        and primary.last_authoritative_error_code == ""
+        and primary.disabled_at is None
+    )
+
+
+def _qualified_primary(primary) -> bool:
+    return bool(
+        _healthy_primary(primary)
+        and primary.telegram_user_id_digest
+        and primary.auth_key_fingerprint_digest
+    )
+
+
 def _digest(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 
-__all__ = ["stop_completed_primary_drift"]
+__all__ = ["primary_state", "stop_completed_primary_drift"]

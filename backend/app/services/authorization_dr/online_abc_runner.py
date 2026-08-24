@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import re
 import time
 from dataclasses import dataclass
@@ -39,6 +38,7 @@ from .online_abc_operations import (
     online_abc_item_operations,
     online_abc_operation_keys,
 )
+from .online_abc_primary import primary_state as _primary_state
 from .online_abc_completed_recovery import (
     COMPLETED_REBASE_BLOCKER,
     require_completed_rebase_resume,
@@ -224,7 +224,7 @@ def _ensure_primary_qualified(session, item, approval: RunnerApproval) -> None:
     state = _primary_state(account, primary, item)
     if state == "qualified":
         return
-    if state != "frozen":
+    if state not in {"frozen", "legacy_frozen"}:
         raise AuthorizationDrError("online_abc_primary_drift", "Frozen A changed before qualification")
     preview = preview_primary_qualification(session, item.tenant_id, item.account_id)
     qualify_primary_authorization(
@@ -605,46 +605,6 @@ def _context(session, batch_id: str):
     if not item:
         raise AuthorizationDrError("online_abc_runner_item_missing", "Running ABC item is unavailable")
     return batch, item, online_abc_item_operations(session, batch, item)
-
-
-def _primary_state(account, primary, item) -> str:
-    if not account or not primary or account.current_authorization_id != primary.id:
-        return "drifted"
-    frozen = _primary_dimensions(account, primary, item, fact_offset=0)
-    qualified = _primary_dimensions(account, primary, item, fact_offset=1)
-    if frozen:
-        return "frozen"
-    if qualified and primary.telegram_user_id_digest and primary.auth_key_fingerprint_digest:
-        return "qualified"
-    return "drifted"
-
-
-def _primary_dimensions(account, primary, item, *, fact_offset: int) -> bool:
-    facts_match = _fact_dimensions(account, primary, item, fact_offset)
-    return (
-        account.authorization_generation == item.authorization_generation
-        and account.connection_generation == item.connection_generation
-        and facts_match
-        and hashlib.sha256((primary.session_ciphertext or "").encode()).hexdigest() == item.primary_session_digest
-        and primary.is_current
-        and _healthy_primary(primary)
-    )
-
-
-def _fact_dimensions(account, primary, item, fact_offset: int) -> bool:
-    account_delta = account.authorization_fact_generation - item.authorization_fact_generation
-    primary_delta = primary.fact_version - item.primary_fact_version
-    if fact_offset == 0:
-        return account_delta == primary_delta == 0
-    return account_delta == primary_delta and account_delta >= 1
-
-
-def _healthy_primary(primary) -> bool:
-    return bool(
-        primary.status == "active" and primary.health_status == "healthy"
-        and primary.last_authoritative_error_code == ""
-        and primary.disabled_at is None
-    )
 
 
 def _approval(requested_by: str, approved_by: str, approval_ref: str) -> RunnerApproval:
