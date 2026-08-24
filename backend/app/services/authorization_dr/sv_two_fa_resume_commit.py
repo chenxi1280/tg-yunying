@@ -51,6 +51,8 @@ def close_success(
 ) -> None:
     manifest = {**payload, "remote_set_digest": remote["remote_set_digest"],
                 "remote_device_count": remote["remote_device_count"],
+                "candidate_hash_digest": remote["candidate_hash_digest"],
+                "candidate_fingerprint_digest": remote["candidate_fingerprint_digest"],
                 "authorization_hash_source": remote["hash_source"]}
     case = _new_case(
         context, payload=payload, manifest=manifest, fingerprint=fingerprint, actor=actor,
