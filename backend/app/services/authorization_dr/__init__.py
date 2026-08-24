@@ -27,4 +27,5 @@ from .reconcile import *  # noqa: F401,F403
 from .slot import *  # noqa: F401,F403
 from .stage_facts import *  # noqa: F401,F403
 from .sv_redundancy import *  # noqa: F401,F403
+from .sv_two_fa_resume import *  # noqa: F401,F403
 from .wake_bundle import *  # noqa: F401,F403
