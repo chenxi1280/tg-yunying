@@ -35,7 +35,31 @@ _NUMBER = r"(?:\d+(?:\.\d{1,2})?|[零〇一二两三四五六七八九十百千�
 _EXACT_PRICE = re.compile(rf"(?:¥|￥)?{_NUMBER}(?:元|块钱|块)")
 _CONTACT = re.compile(r"(?:微信|vx|v信|电话|手机号|TG|Telegram)[:：]?\s*[A-Za-z0-9_+-]{5,}", re.I)
 _WRONG_SENSORY_OBJECT = re.compile(r"(?:衣服|裙子|裤子|布料).{0,4}(?:润|湿|水多)")
-_ADULT_MARKERS = ("好润", "水多", "湿不湿", "多少钱", "包夜", "上门")
+_ADULT_MARKERS = (
+    "好润",
+    "水多",
+    "湿不湿",
+    "身材",
+    "胸",
+    "嘴唇",
+    "写真",
+    "性感",
+    "黑丝",
+    "丝袜",
+    "高跟鞋",
+    "成人用品",
+    "情趣用品",
+    "跳蛋",
+    "飞机杯",
+    "按摩棒",
+    "怎么约",
+    "能约",
+    "可约",
+    "讲课费",
+    "多少钱",
+    "包夜",
+    "上门",
+)
 _ADULT_CUTESY_MARKERS = (
     "软软的",
     "水灵灵",
@@ -43,12 +67,22 @@ _ADULT_CUTESY_MARKERS = (
     "挺好看的",
     "真不错",
 )
-_SENSORY_INTENT_MARKERS = ("润", "水多", "水滋滋", "湿不湿", "润不润")
+_SENSORY_INTENT_MARKERS = ("润", "水多", "水量", "水滋滋", "湿不湿", "润不润")
 _SENSORY_REACTIONS = frozenset({"好润", "真润", "够润", "水滋滋"})
 _SENSORY_QUESTIONS = frozenset({"水多不？", "润不润？", "湿不湿？"})
+_SENSORY_VAGUE_EXPRESSIONS = frozenset({"水润感"})
 _UNSUPPORTED_ASSERTIONS = {
-    "experience": ("我去过", "我用过", "我试过", "亲自体验", "上次去"),
-    "transaction": ("我下单", "我付款", "已经买", "刚买", "成交了"),
+    "experience": (
+        "我去过",
+        "我用过",
+        "我试过",
+        "亲自体验",
+        "刚体验完",
+        "上次去",
+        "前天刚去过",
+        "昨天见过",
+    ),
+    "transaction": ("我下单", "我付款", "已经买", "刚买", "成交了", "花钱找气受"),
     "location": ("地址是", "就在我这", "在我这边", "具体地址"),
 }
 _QUESTION_MARKERS = {
@@ -86,7 +120,8 @@ class MessageBriefV2(MessageBrief):
     route_evidence_ids: tuple[str, ...] = ()
     claims: tuple[GroundedClaim, ...] = ()
     forbidden_claim_categories: tuple[str, ...] = ()
-    prompt_contract_version: str = "general_v2"
+    negative_phrases: tuple[str, ...] = ()
+    prompt_contract_version: str = "general_v3"
     example_set_version: str = ""
     brief_contract_version: str = BRIEF_V2
 
@@ -101,6 +136,7 @@ class MessageBriefV2(MessageBrief):
             "route_evidence_ids": list(self.route_evidence_ids),
             "claims": [item.to_payload() for item in self.claims],
             "forbidden_claim_categories": list(self.forbidden_claim_categories),
+            "negative_phrases": list(self.negative_phrases),
             "prompt_contract_version": self.prompt_contract_version,
             "example_set_version": self.example_set_version,
         }
@@ -117,6 +153,7 @@ class V2BriefContract:
     prompt_contract_version: str
     example_set_version: str
     forbidden_claim_categories: tuple[str, ...]
+    negative_phrases: tuple[str, ...] = ()
 
 
 def parse_brief_v2_item(
@@ -144,6 +181,7 @@ def parse_brief_v2_item(
         route_evidence_ids=contract.route_evidence_ids,
         claims=claims,
         forbidden_claim_categories=contract.forbidden_claim_categories,
+        negative_phrases=contract.negative_phrases,
         prompt_contract_version=contract.prompt_contract_version,
         example_set_version=contract.example_set_version,
     )
@@ -194,8 +232,10 @@ def v2_realizer_system_prompt(brief: MessageBriefV2) -> str:
 
 def _sensory_realizer_rule(brief: MessageBriefV2) -> str:
     if brief.speech_act == "question":
-        return "正文只能从水多不？、润不润？、湿不湿？中选一句。"
-    return "正文只能从好润、真润、够润、水滋滋中选一句。"
+        examples = "、".join(sorted(_SENSORY_QUESTIONS))
+        return f"围绕 evidence 写一句短问，可参考{examples}的直接感，但要自然变化，不能固定照抄。"
+    examples = "、".join(sorted(_SENSORY_REACTIONS))
+    return f"围绕 evidence 写一句短反应，可参考{examples}的直接感，但要自然变化，不能固定照抄。"
 
 
 def _service_claim_realizer_rule(brief: MessageBriefV2) -> str:
@@ -219,11 +259,13 @@ def v2_candidate_failure(
     brief: MessageBriefV2,
     evidence_texts: tuple[str, ...] = (),
 ) -> str:
+    if any(phrase in content for phrase in brief.negative_phrases):
+        return "negative_lexicon_match"
     if _EXACT_PRICE.search(content):
         return "unsupported_claim"
     if _CONTACT.search(content):
         return "unsupported_claim"
-    if _unsupported_assertion(content, brief, evidence_texts):
+    if _unsupported_assertion(content, evidence_texts):
         return "unsupported_claim"
     if brief.content_mode == "general" and any(marker in content for marker in _ADULT_MARKERS):
         return "general_forced_adult"
@@ -233,14 +275,16 @@ def v2_candidate_failure(
         return "adult_cutesy_tone"
     if brief.content_mode == "adult_service_sensory" and _WRONG_SENSORY_OBJECT.search(content):
         return "sensory_object_wrong"
+    if brief.content_mode == "adult_service_sensory" and content in _SENSORY_VAGUE_EXPRESSIONS:
+        return "sensory_expression_vague"
     if brief.content_mode == "adult_service_sensory" and not any(
         marker in content for marker in _SENSORY_INTENT_MARKERS
     ):
         return "sensory_intent_missing"
     if brief.content_mode == "adult_service_sensory":
-        approved = _SENSORY_QUESTIONS if brief.speech_act == "question" else _SENSORY_REACTIONS
-        if content not in approved:
-            return "sensory_expression_unapproved"
+        is_question = content.endswith(("?", "？"))
+        if (brief.speech_act == "question") != is_question:
+            return "sensory_speech_act_mismatch"
     if any(claim.category in QUESTION_ONLY_CLAIMS for claim in brief.claims):
         if brief.speech_act != "question":
             return "claim_category_mismatch"
@@ -253,15 +297,10 @@ def v2_candidate_failure(
 
 def _unsupported_assertion(
     content: str,
-    brief: MessageBriefV2,
     evidence_texts: tuple[str, ...],
 ) -> bool:
     evidence = " ".join(evidence_texts)
-    forbidden = set(brief.forbidden_claim_categories)
-    for category, markers in _UNSUPPORTED_ASSERTIONS.items():
-        names = {category, f"{category}_assertion"}
-        if forbidden and not names & forbidden:
-            continue
+    for markers in _UNSUPPORTED_ASSERTIONS.values():
         if any(marker in content and marker not in evidence for marker in markers):
             return True
     return False

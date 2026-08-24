@@ -91,7 +91,7 @@ def test_group_two_stage_plan_rejection_preserves_slot_mapping() -> None:
             _two_stage_dependencies(planner, fail_realizer),
         )
 
-    assert results[0].rejection_code == "brief_schema_invalid"
+    assert results[0].rejection_code == "malformed_output"
     assert results[0].content.slot_id == "slot-1"
 
 

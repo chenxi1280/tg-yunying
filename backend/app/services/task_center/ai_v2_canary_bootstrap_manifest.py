@@ -10,7 +10,7 @@ from .ai_provider_routes import (
 )
 
 
-MANIFEST_ID = "ai_group_v2_canary_policy_v1"
+MANIFEST_ID = "ai_group_v2_canary_policy_v2"
 BRIEF_CONTRACT_VERSION = "message_brief_v2"
 VOICE_CONTRACT_VERSION = "voice_contract_v3"
 EXAMPLE_SET_VERSION = "adult_human_anchors_v1"
@@ -18,13 +18,23 @@ MAX_GENERATION_LATENCY_SECONDS = 90
 MAX_STYLE_OVERLAY_CHARS = 200
 MAX_CONTENT_REGENERATIONS = 1
 MAX_PROVIDER_CALLS_PER_SLOT = 6
+NEGATIVE_LEXICON_VERSION = "generic_filler_v1"
+NEGATIVE_PHRASES = (
+    "签到",
+    "打卡",
+    "积分",
+    "努力加油",
+    "搬砖",
+    "今天状态不错",
+    "大家心情好",
+)
 
 PROMPT_VERSIONS = {
-    "general": "general_v2",
+    "general": "general_v3",
     "adult_visual": "adult_visual_v1",
     "adult_product": "adult_product_v1",
     "adult_service_inquiry": "adult_service_inquiry_v1",
-    "adult_service_sensory": "adult_service_sensory_v1",
+    "adult_service_sensory": "adult_service_sensory_v2",
 }
 
 
@@ -61,6 +71,19 @@ def policy_payload(budget: BootstrapBudget) -> dict:
                 "static_fallback",
                 "due_catch_up_check_in",
             ],
+            "negative_lexicon": {
+                "version": NEGATIVE_LEXICON_VERSION,
+                "entries": [
+                    {
+                        "phrase": phrase,
+                        "scope": "output",
+                        "routes": ["*"],
+                        "match_type": "contains",
+                        "enabled": True,
+                    }
+                    for phrase in NEGATIVE_PHRASES
+                ],
+            },
         },
         "example_set": {"version": EXAMPLE_SET_VERSION},
     }

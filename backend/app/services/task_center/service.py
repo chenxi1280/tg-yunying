@@ -68,6 +68,7 @@ from .account_pool import select_task_accounts
 from .account_pacing_guard import AccountPacingLockUnavailable
 from .account_scope import initialize_all_account_task_scope, process_account_eligibility_events, reconcile_all_account_scopes_if_due
 from .ai_act_types import canonical_ai_group_act_type
+from .ai_runtime_diagnostics import ai_runtime_diagnostics
 from .ai_generator import AiGenerationUnavailable, generate_channel_comments, generate_group_messages
 from .task_ai_content_activation import activate_task_ai_content_config
 from .source_capacity_activation import validate_source_capacity_config
@@ -800,7 +801,10 @@ def _task_summary_detail(session: Session, tenant_id: int, task: Task) -> dict[s
         "ai_cycles": [],
         "ai_generation_records": _ai_generation_records(ai_quality_actions),
         "ai_account_profiles": [],
-        "ai_quality_funnel": _ai_quality_funnel(ai_quality_actions, task.stats if isinstance(task.stats, dict) else {}),
+        "ai_quality_funnel": {
+            **_ai_quality_funnel(ai_quality_actions, task.stats if isinstance(task.stats, dict) else {}),
+            "runtime": ai_runtime_diagnostics(session, task),
+        },
         "account_online_summary": task_account_online_summary(session, task) if task.type in {"group_ai_chat", "group_relay"} else {},
         "relay_batches": [],
         "recent_relay_sources": _relay_recent_sources(session, task) if task.type == "group_relay" else [],

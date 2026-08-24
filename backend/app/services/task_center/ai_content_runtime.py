@@ -188,6 +188,8 @@ def mark_candidate_ready(
     candidate_hash: str,
 ) -> None:
     slot = _claimed_slot(session, job)
+    if slot.state == "candidate_ready" and job.candidate_hash == candidate_hash:
+        return
     changed = session.execute(update(AiContentWindowPlanSlot).where(
         AiContentWindowPlanSlot.id == slot.id,
         AiContentWindowPlanSlot.version == slot.version,
@@ -203,6 +205,72 @@ def mark_candidate_ready(
     job.candidate_hash = candidate_hash
     job.generation_stage = "reviewing"
     job.stage_version += 1
+
+
+def bind_candidate_to_gateway(
+    session: Session,
+    job: GenerationJob,
+    *,
+    candidate_hash: str,
+    task_config_revision: int,
+) -> None:
+    slot = _claimed_slot(session, job)
+    if slot.state == "gateway_bound" and job.candidate_hash == candidate_hash:
+        return
+    if slot.state != "candidate_ready" or job.candidate_hash != candidate_hash:
+        raise AiContentRuntimeConflict("generation_candidate_binding_invalid")
+    plan = session.get(AiContentWindowPlan, slot.plan_id)
+    if plan is None:
+        raise AiContentRuntimeConflict("ai_content_window_plan_missing")
+    stale_reason = _gateway_stale_reason(
+        session, plan, job, task_config_revision=task_config_revision,
+    )
+    if stale_reason:
+        _mark_gateway_candidate_stale(slot, job, stale_reason)
+        raise AiContentRuntimeConflict(stale_reason)
+    slot.state = "gateway_bound"
+    slot.lease_expires_at = None
+    slot.version += 1
+    job.generation_stage = "gateway_bound"
+    job.stage_version += 1
+
+
+def _gateway_stale_reason(
+    session: Session,
+    plan: AiContentWindowPlan,
+    job: GenerationJob,
+    *,
+    task_config_revision: int,
+) -> str:
+    revision = session.scalar(select(ContextScopeRevision).where(
+        ContextScopeRevision.tenant_id == plan.tenant_id,
+        ContextScopeRevision.scope_type == plan.scope_type,
+        ContextScopeRevision.scope_id == plan.scope_id,
+    ))
+    if revision and revision.context_scope_revision > job.context_snapshot_version:
+        return "context_stale"
+    contract = dict(job.evaluator_evidence or {}).get("generation_contract") or {}
+    frozen_topic_revision = int(dict(contract).get("task_topic_revision") or 0)
+    if frozen_topic_revision and frozen_topic_revision != task_config_revision:
+        return "policy_stale"
+    return ""
+
+
+def _mark_gateway_candidate_stale(
+    slot: AiContentWindowPlanSlot,
+    job: GenerationJob,
+    reason: str,
+) -> None:
+    slot.state = "invalidated"
+    slot.lease_expires_at = None
+    slot.version += 1
+    job.state = "failed"
+    job.generation_stage = reason
+    job.evaluator_evidence = {
+        **dict(job.evaluator_evidence or {}),
+        "invalidation_reason": reason,
+    }
+    job.job_version += 1
 
 
 def invalidate_pre_gateway_slot(
@@ -339,6 +407,7 @@ __all__ = [
     "WindowScope",
     "WindowSlotSpec",
     "bump_context_revision",
+    "bind_candidate_to_gateway",
     "claim_window_slot",
     "context_message_hash",
     "defer_generation_job",

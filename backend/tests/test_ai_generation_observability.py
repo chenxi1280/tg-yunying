@@ -135,6 +135,7 @@ def test_phase_c_quality_wait_requeues_obligation_instead_of_failing() -> None:
         session.add(job)
         action.payload = {**action.payload, "generation_job_id": job.id}
         session.commit()
+        frozen_due_at = action.scheduled_at
 
         ai_generation_dispatch._persist_generation_results(
             session,
@@ -156,6 +157,8 @@ def test_phase_c_quality_wait_requeues_obligation_instead_of_failing() -> None:
         assert action.result["generation_outcome"] == "pending"
         assert job.state == "pending"
         assert job.generation_stage == "quality_wait"
+        assert action.scheduled_at == frozen_due_at
+        assert job.next_retry_at is not None
 
 
 def test_metrics_refresh_idempotently_separates_generation_and_gateway_unknown() -> None:

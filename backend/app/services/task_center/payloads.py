@@ -103,6 +103,12 @@ class SendMessagePayload(BaseModel):
     context_expire_after_messages: int = 0
     ai_generation_id: str = ""
     ai_generation_status: str = ""
+    dialogue_chain_id: str = ""
+    dialogue_chain_role: str = ""
+    dialogue_chain_state: str = ""
+    dialogue_parent_action_id: str = ""
+    dialogue_parent_obligation_id: str = ""
+    dialogue_child_action_id: str = ""
     generation_job_id: str = ""
     ai_generation_attempt_id: str = ""
     ai_generation_request_id: str = ""

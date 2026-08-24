@@ -84,7 +84,6 @@ def _set_action_waiting(
     payload["ai_generation_claim_token"] = ""
     action.payload = payload
     action.status = "pending"
-    action.scheduled_at = next_retry_at
     action.executed_at = None
     _clear_claim(action)
     action.result = {

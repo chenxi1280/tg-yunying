@@ -70,9 +70,18 @@ def test_guarded_bootstrap_applies_policy_routes_and_one_task_atomically() -> No
         assert result["applied"] is True
         assert readback["task"]["route_v2_enabled"] is True
         assert readback["task"]["config_revision"] == 4
-        assert readback["policy"]["manifest_id"] == "ai_group_v2_canary_policy_v1"
+        assert readback["policy"]["manifest_id"] == "ai_group_v2_canary_policy_v2"
         assert readback["binding"]["allowed_routes"] == ["general"]
         assert len(readback["routes"]) == 3
+        policy = session.scalar(select(AiContentPolicyVersion))
+        lexicon = policy.gate_config["negative_lexicon"]
+        assert lexicon["version"] == "generic_filler_v1"
+        assert {item["phrase"] for item in lexicon["entries"]} >= {
+            "签到",
+            "打卡",
+            "大家心情好",
+        }
+        assert all(item["scope"] == "output" for item in lexicon["entries"])
         assert readback["production_fixed"] is False
         assert session.scalar(select(func.count(AuditLog.id))) == 1
 

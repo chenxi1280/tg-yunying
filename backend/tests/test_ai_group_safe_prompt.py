@@ -61,7 +61,8 @@ def test_builds_english_instructions_with_sanitized_chinese_data():
     )
 
     assert "Generate Chinese community replies" in bundle.system_prompt
-    assert "Every referenced person is an adult" in bundle.system_prompt
+    assert "Every referenced person is an adult" not in bundle.system_prompt
+    assert "Adult routes are handled outside this prompt" in bundle.system_prompt
     assert "one JSON object only" in bundle.system_prompt
     assert bundle.context_source == "safe_context"
     assert "气质挺撩人" in bundle.user_prompt
@@ -80,7 +81,11 @@ def test_generic_warmup_has_no_unsafe_dynamic_text():
 
     assert bundle.context_source == "generic_warmup"
     assert bundle.sanitized_context == ()
-    assert "For generic_warmup" in bundle.system_prompt
+    assert "For generic_warmup, use only" not in bundle.system_prompt
+    assert all(
+        phrase in bundle.system_prompt
+        for phrase in ("签到", "打卡", "积分", "努力加油", "搬砖")
+    )
     assert "多少钱" not in bundle.user_prompt
 
 
@@ -91,6 +96,7 @@ def test_output_contract_has_exact_keys_for_each_requested_draft():
     assert set(contract) == {"decision", "context_source", "drafts"}
     assert len(contract["drafts"]) == 2
     assert all(set(draft) == DRAFT_KEYS for draft in contract["drafts"])
+    assert all("check_in" not in draft["intent"] for draft in contract["drafts"])
     assert contract["drafts"][0]["slot_id"] == "slot-1"
     json.dumps(contract, ensure_ascii=False)
 

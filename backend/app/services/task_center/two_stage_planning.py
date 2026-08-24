@@ -132,7 +132,7 @@ def _brief_rejection(
     info: dict,
 ) -> tuple[str, str] | None:
     if brief is None:
-        return "brief_schema_invalid", "brief schema、版本或证据引用非法"
+        return "malformed_output", "brief_schema_invalid：schema、版本或证据引用非法"
     if brief.reply_to_message_id != str(info.get("reply_to_message_id") or ""):
         return "brief_reply_target_mismatch", "brief reply_to_message_id 与 slot 不一致"
     return None
@@ -185,6 +185,9 @@ def _v2_contract(info: dict) -> V2BriefContract | None:
         forbidden_claim_categories=tuple(
             str(item) for item in (info.get("forbidden_claim_categories") or ())
         ),
+        negative_phrases=tuple(
+            str(item) for item in (info.get("negative_phrases") or ())
+        ),
     )
 
 
@@ -215,6 +218,7 @@ def _v2_slot_info(slot: dict) -> dict:
         "prompt_contract_version",
         "example_set_version",
         "forbidden_claim_categories",
+        "negative_phrases",
     )
     return {key: slot.get(key) for key in keys}
 

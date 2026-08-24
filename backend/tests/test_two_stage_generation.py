@@ -49,6 +49,28 @@ def test_plan_message_briefs_parses_valid_batch_with_single_call() -> None:
     assert plans[0].brief.allowed_facts == ("f1",)
 
 
+def test_plan_message_briefs_uses_general_topic_when_history_is_silent() -> None:
+    planner = _planner([[_brief_payload("s1")]])
+
+    plans, _tokens = plan_message_briefs(
+        SimpleNamespace(),
+        1,
+        {},
+        history_lines=[],
+        slots=[{
+            "slot_id": "s1",
+            "account_id": 11,
+            "content_mode": "general",
+            "topic_direction": {"title": "夜宵吃点啥"},
+        }],
+        planner=planner,
+    )
+
+    assert plans[0].brief is not None
+    assert plans[0].brief.allowed_facts == ("f1",)
+    assert "夜宵吃点啥" in planner.calls[0]["user_prompt"]
+
+
 def test_plan_message_briefs_replans_once_on_batch_collapse_then_typed_reject() -> None:
     collapsed = [_brief_payload(f"s{i}") for i in range(3)]
     planner = _planner([collapsed, collapsed])
@@ -87,7 +109,7 @@ def test_plan_message_briefs_marks_schema_invalid_and_reply_mismatch() -> None:
         planner=planner,
     )
 
-    assert plans[0].rejection_code == "brief_schema_invalid"
+    assert plans[0].rejection_code == "malformed_output"
     assert plans[1].rejection_code == "brief_reply_target_mismatch"
 
 

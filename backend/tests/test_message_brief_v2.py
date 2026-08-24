@@ -15,6 +15,10 @@ pytestmark = pytest.mark.no_postgres
 
 
 def _contract(*, route: str = "adult_service", mode: str = "adult_service_sensory") -> V2BriefContract:
+    versions = {
+        "general": "general_v3",
+        "adult_service_sensory": "adult_service_sensory_v2",
+    }
     return V2BriefContract(
         task_direction_snapshot_hash="a" * 64,
         content_policy_hash="b" * 64,
@@ -22,9 +26,10 @@ def _contract(*, route: str = "adult_service", mode: str = "adult_service_sensor
         context_route=route,
         content_mode=mode,
         route_evidence_ids=("f1",),
-        prompt_contract_version=f"{mode}_v1",
+        prompt_contract_version=versions.get(mode, f"{mode}_v1"),
         example_set_version="adult_human_anchors_v1",
         forbidden_claim_categories=("price_assertion", "location_assertion"),
+        negative_phrases=("签到", "努力加油"),
     )
 
 
@@ -64,7 +69,24 @@ def test_adult_sensory_question_is_grounded_without_becoming_template() -> None:
     )
     assert isinstance(brief, MessageBriefV2)
     assert v2_candidate_failure("水多不？", brief) == ""
-    assert "水多不？、润不润？、湿不湿？" in v2_realizer_system_prompt(brief)
+    prompt = v2_realizer_system_prompt(brief)
+    assert "水多不？" in prompt
+    assert "正文只能从" not in prompt
+    assert v2_candidate_failure("这水量行不行？", brief) == ""
+
+
+def test_adult_sensory_reaction_allows_grounded_variation() -> None:
+    brief = parse_brief_v2_item(
+        _item(category="sensory_reaction", speech_act="reaction"),
+        slot_id="slot-1",
+        valid_fact_ids=("f1",),
+        contract=_contract(),
+    )
+
+    assert brief is not None
+    assert v2_candidate_failure("好润", brief) == ""
+    assert v2_candidate_failure("看着挺润", brief) == ""
+    assert v2_candidate_failure("这也太润了", brief) == ""
 
 
 def test_v2_rejects_wrong_object_exact_price_and_general_forced_adult() -> None:
@@ -76,7 +98,7 @@ def test_v2_rejects_wrong_object_exact_price_and_general_forced_adult() -> None:
     )
     assert sensory is not None
     assert v2_candidate_failure("裙子好润", sensory) == "sensory_object_wrong"
-    assert v2_candidate_failure("水润感", sensory) == "sensory_expression_unapproved"
+    assert v2_candidate_failure("水润感", sensory) == "sensory_expression_vague"
     assert v2_candidate_failure("嘴唇软软的", sensory) == "adult_cutesy_tone"
     assert v2_candidate_failure("水灵灵的", sensory) == "adult_cutesy_tone"
     assert v2_candidate_failure("好心动", sensory) == "adult_cutesy_tone"
@@ -84,6 +106,7 @@ def test_v2_rejects_wrong_object_exact_price_and_general_forced_adult() -> None:
     assert v2_candidate_failure("300元？", sensory) == "unsupported_claim"
     assert v2_candidate_failure("9元？", sensory) == "unsupported_claim"
     assert v2_candidate_failure("九元？", sensory) == "unsupported_claim"
+    assert v2_candidate_failure("先签到再说", sensory) == "negative_lexicon_match"
 
     general_contract = _contract(route="general", mode="general")
     general_item = _item(category="grounded_reaction", speech_act="reaction")
@@ -92,7 +115,7 @@ def test_v2_rejects_wrong_object_exact_price_and_general_forced_adult() -> None:
         "punctuation_profile": "none",
         "context_route": "general",
         "content_mode": "general",
-        "prompt_contract_version": "general_v1",
+        "prompt_contract_version": "general_v3",
     })
     general = parse_brief_v2_item(
         general_item,
@@ -102,6 +125,21 @@ def test_v2_rejects_wrong_object_exact_price_and_general_forced_adult() -> None:
     )
     assert general is not None
     assert v2_candidate_failure("好润", general) == "general_forced_adult"
+    assert v2_candidate_failure("这身材真性感", general) == "general_forced_adult"
+    assert v2_candidate_failure("飞机杯怎么挑", general) == "general_forced_adult"
+
+
+def test_v2_rejects_invented_experience_even_when_policy_list_is_incomplete() -> None:
+    sensory = parse_brief_v2_item(
+        _item(category="sensory_reaction", speech_act="reaction"),
+        slot_id="slot-1",
+        valid_fact_ids=("f1",),
+        contract=_contract(),
+    )
+
+    assert sensory is not None
+    assert v2_candidate_failure("刚体验完，确实好润", sensory) == "unsupported_claim"
+    assert v2_candidate_failure("前天刚去过，水滋滋", sensory) == "unsupported_claim"
 
 
 def test_inquiry_candidate_must_match_frozen_claim_category() -> None:

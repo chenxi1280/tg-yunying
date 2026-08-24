@@ -184,6 +184,7 @@ class AiProviderAttempt(Base):
     latency_ms: Mapped[int] = mapped_column(Integer, default=0)
     prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
     completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    cached_tokens: Mapped[int] = mapped_column(Integer, default=0)
     cost_amount: Mapped[float] = mapped_column(Float, default=0.0)
     currency: Mapped[str] = mapped_column(String(16), default="CNY")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

@@ -15,6 +15,7 @@ from app.models import Action, GenerationJob, Task
 from app.services._common import _now
 
 from .ai_generation_claim_lifecycle import owns_generation_claim
+from .ai_dialogue_chain import resolve_waiting_dialogue_dependencies
 from .ai_generation_timing import GENERATION_LEASE, GENERATION_LOOKAHEAD
 from .datetime_compat import is_after_or_equal
 from .fulfillment_activation import CURRENT_CONTRACT_VERSION
@@ -51,8 +52,13 @@ def claim_parallel_generation(
     limit: int,
 ) -> tuple[ParallelGenerationClaim, ...]:
     with session_factory() as session:
+        resolve_waiting_dialogue_dependencies(session, limit=max(1, limit * 3))
         candidates = list(session.scalars(_candidate_statement(limit)))
-        if not candidates or not _batch_claim_admitted(session, candidates[0]):
+        if not candidates:
+            session.commit()
+            return ()
+        if not _batch_claim_admitted(session, candidates[0]):
+            session.commit()
             return ()
         claims: list[ParallelGenerationClaim] = []
         for action in candidates:
@@ -99,9 +105,10 @@ def finish_generation_job(
         action = session.get(Action, claim.action_id)
         if action is not None:
             job.candidate_hash = str(action.candidate_hash or "")
-            job.evaluator_evidence = dict(
-                (action.result or {}).get("evaluator_evidence") or {},
-            )
+            job.evaluator_evidence = {
+                **dict(job.evaluator_evidence or {}),
+                "reviewer": dict((action.result or {}).get("evaluator_evidence") or {}),
+            }
         job.generation_owner_id = ""
         job.lease_expires_at = None
         job.job_version = int(job.job_version or 1) + 1
@@ -142,8 +149,18 @@ def defer_parallel_generation(
 
 
 def _candidate_statement(limit: int):
+    now_value = _now()
     payload_status = Action.payload["ai_generation_status"].as_string()
     message_text = Action.payload["message_text"].as_string()
+    deferred_job = select(GenerationJob.id).where(
+        GenerationJob.obligation_type == Action.obligation_type,
+        GenerationJob.obligation_id == Action.obligation_id,
+        GenerationJob.state.in_(("pending", "generating", "unknown")),
+        or_(
+            GenerationJob.generation_not_before_at > now_value,
+            GenerationJob.next_retry_at > now_value,
+        ),
+    ).exists()
     return (
         select(Action)
         .join(Task, Task.id == Action.task_id)
@@ -152,13 +169,14 @@ def _candidate_statement(limit: int):
             Action.action_type == "send_message",
             Action.status == "pending",
             Action.account_id.is_not(None),
-            Action.scheduled_at <= _now() + GENERATION_LOOKAHEAD,
+            Action.scheduled_at <= now_value + GENERATION_LOOKAHEAD,
             Task.status == "running",
             Task.deleted_at.is_(None),
             Task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION,
             Action.task_lifecycle_epoch == Task.task_lifecycle_epoch,
             payload_status.in_(GENERATABLE_STATUSES),
             func.coalesce(message_text, "") == "",
+            ~deferred_job,
         )
         .order_by(Action.scheduled_at, Action.task_id, Action.id)
         .limit(max(1, limit * 3))
@@ -301,9 +319,14 @@ def _claim_action(
 
 
 def _job_available(job: GenerationJob, now_value: datetime) -> bool:
+    not_before_ready = (
+        job.generation_not_before_at is None
+        or is_after_or_equal(now_value, job.generation_not_before_at)
+    )
     return bool(
         (
             job.state == "pending"
+            and not_before_ready
             and (
                 job.next_retry_at is None
                 or is_after_or_equal(now_value, job.next_retry_at)

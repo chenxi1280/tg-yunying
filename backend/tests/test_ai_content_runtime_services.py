@@ -23,6 +23,7 @@ from app.services.task_center.ai_content_runtime import (
     WindowScope,
     WindowSlotSpec,
     bump_context_revision,
+    bind_candidate_to_gateway,
     claim_window_slot,
     freeze_window_plan,
     mark_candidate_ready,
@@ -501,6 +502,46 @@ def test_context_revision_is_monotonic_and_window_slot_is_independent() -> None:
         session.flush()
         assert claimed.state == "candidate_ready"
         assert job.candidate_hash == "c" * 64
+
+        bind_candidate_to_gateway(
+            session,
+            job,
+            candidate_hash="c" * 64,
+            task_config_revision=3,
+        )
+        assert claimed.state == "gateway_bound"
+        assert job.generation_stage == "gateway_bound"
+
+
+def test_gateway_binding_rejects_newer_context_revision() -> None:
+    now = datetime(2026, 8, 19, 10, 0, 0)
+    with Session(_engine()) as session:
+        bump_context_revision(
+            session, tenant_id=1, scope_type="group", scope_id="7",
+            snapshot_hash="a" * 64,
+        )
+        freeze_window_plan(session, _scope(now), (_slot(now, 1),))
+        job = _job(now)
+        session.add(job)
+        session.flush()
+        claimed = claim_window_slot(session, job, lease_duration=timedelta(minutes=2))
+        mark_candidate_ready(session, job, candidate_hash="c" * 64)
+        bump_context_revision(
+            session, tenant_id=1, scope_type="group", scope_id="7",
+            snapshot_hash="b" * 64,
+        )
+
+        with pytest.raises(AiContentRuntimeConflict, match="context_stale"):
+            bind_candidate_to_gateway(
+                session,
+                job,
+                candidate_hash="c" * 64,
+                task_config_revision=3,
+            )
+
+        assert claimed.state == "invalidated"
+        assert job.state == "failed"
+        assert job.generation_stage == "context_stale"
 
 
 def test_context_revision_preserves_fields_that_are_not_updated() -> None:

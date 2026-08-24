@@ -42,6 +42,7 @@ class AiDraftCandidate:
 class AiUsage:
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    cached_tokens: int = 0
     total_tokens: int = 0
     billable: bool = False
 
@@ -68,6 +69,12 @@ class AiEmptyFinalContentError(RuntimeError):
 
 class AiRequestDeadlineExceeded(RuntimeError):
     pass
+
+
+class AiMalformedStructuredOutputError(RuntimeError):
+    def __init__(self, detail: str, *, usage: AiUsage | None = None) -> None:
+        self.usage = usage or AiUsage()
+        super().__init__(detail)
 
 
 class AiProviderRateLimited(RuntimeError):
@@ -356,7 +363,10 @@ class AiGateway:
         try:
             return json.loads(clean), usage
         except json.JSONDecodeError as exc:
-            raise RuntimeError("AI provider returned malformed structured JSON") from exc
+            raise AiMalformedStructuredOutputError(
+                "AI provider returned malformed structured JSON",
+                usage=usage,
+            ) from exc
 
     def _parse_candidates_with_retry(
         self,
@@ -689,10 +699,17 @@ class AiGateway:
         usage_payload = data.get("usage") or {}
         prompt_tokens = int(usage_payload.get("prompt_tokens") or 0)
         completion_tokens = int(usage_payload.get("completion_tokens") or 0)
+        prompt_details = usage_payload.get("prompt_tokens_details") or {}
+        cached_tokens = int(
+            prompt_details.get("cached_tokens")
+            or usage_payload.get("cache_read_input_tokens")
+            or 0
+        )
         total_tokens = int(usage_payload.get("total_tokens") or (prompt_tokens + completion_tokens))
         return AiUsage(
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
+            cached_tokens=cached_tokens,
             total_tokens=total_tokens,
             billable=bool(total_tokens > 0),
         )

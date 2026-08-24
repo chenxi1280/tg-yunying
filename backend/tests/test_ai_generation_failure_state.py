@@ -11,6 +11,7 @@ from app.models import Action, GroupContextMessage, Task, Tenant, TgAccount, TgA
 from app.services._common import _now
 from app.services.task_center import dispatcher
 from app.services.task_center.ai_generation_dependencies import GenerationDependencies
+from app.services.task_center.ai_generation_dispatch import _generation_failure_code
 from app.services.task_center.ai_generator import AiGenerationUnavailable, GeneratedContent
 from app.services.task_center.ai_generation_worker import drain_ai_generation
 from app.services.task_center.conversation_speaker_rotation import (
@@ -21,6 +22,10 @@ from app.services.task_center.conversation_speaker_rotation import (
 
 
 pytestmark = pytest.mark.no_postgres
+
+
+def test_malformed_output_failure_code_is_preserved() -> None:
+    assert _generation_failure_code("malformed_output") == "malformed_output"
 
 
 def test_quality_rejection_preserves_failure_and_skips_gateway(monkeypatch) -> None:

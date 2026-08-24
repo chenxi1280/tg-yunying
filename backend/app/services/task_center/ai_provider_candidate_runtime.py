@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.ai_gateway import (
     AiEmptyFinalContentError,
     AiGenerationResult,
+    AiMalformedStructuredOutputError,
     AiProviderCredentials,
     AiProviderRateLimited,
     AiRequestDeadlineExceeded,
@@ -403,6 +404,8 @@ def mark_provider_quota_exhausted(provider: AiProvider, error: Exception) -> Non
 
 
 def raise_provider_generation_failure(error: Exception | None, purpose: str) -> None:
+    if isinstance(error, AiMalformedStructuredOutputError):
+        raise AiGenerationUnavailable("malformed_output") from error
     if purpose in LONG_RUNNING_AI_PURPOSES:
         raise AiGenerationUnavailable(f"{AI_GENERATION_UNAVAILABLE_MESSAGE}：{error}") from error
     if error:

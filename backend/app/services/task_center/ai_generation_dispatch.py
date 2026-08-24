@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Action, GroupContextMessage, Task, TgAccount
+from app.models import Action, GenerationJob, GroupContextMessage, Task, TgAccount
 from app.services._common import _now
 
 from .ai_generation_dependencies import GenerationDependencies
@@ -18,6 +18,7 @@ from .ai_generation_state import (
     cached_generation_result,
 )
 from .ai_generation_recovery import persist_generation_unknown
+from .ai_content_runtime import AiContentRuntimeConflict, bind_candidate_to_gateway
 from .ai_generation_pipeline import SlotGenerationResult, generate_quality_results
 from .ai_generation_slots import generation_slot as _generation_slot
 from .ai_generation_slots import reply_targets as _reply_targets
@@ -115,6 +116,7 @@ def ensure_send_message_content(
         payload=payload,
     )
     if payload.message_text.strip():
+        _bind_ready_candidate_to_gateway(session, task, action, payload)
         return payload
     if payload.ai_generation_status not in {
         "pending",
@@ -133,6 +135,29 @@ def ensure_send_message_content(
         credentials=credentials,
         dependencies=dependencies,
     )
+
+
+def _bind_ready_candidate_to_gateway(
+    session: Session,
+    task: Task,
+    action: Action,
+    payload: SendMessagePayload,
+) -> None:
+    job_id = str(payload.generation_job_id or "")
+    job = session.get(GenerationJob, job_id) if job_id else None
+    if job is None or not job.window_slot_id:
+        return
+    try:
+        bind_candidate_to_gateway(
+            session,
+            job,
+            candidate_hash=str(action.candidate_hash or ""),
+            task_config_revision=int(task.config_revision or 1),
+        )
+    except AiContentRuntimeConflict as exc:
+        code = str(exc)
+        fail_generation_action(action, code, code, stage=code)
+        raise AiGenerationUnavailable(code) from exc
 
 
 def _generate_normal_content(
@@ -359,6 +384,7 @@ def _generation_failure_code(code: str) -> str:
     if code in {
         "ai_generation_deadline_budget_exhausted",
         "ai_generation_deadline_invalid",
+        "malformed_output",
     }:
         return code
     return "ai_generation_failed"

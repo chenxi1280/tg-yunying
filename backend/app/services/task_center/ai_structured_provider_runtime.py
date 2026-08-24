@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
-from app.ai_gateway import AiProviderCredentials
+from app.ai_gateway import AiProviderCredentials, AiUsage
 from app.models import AiProvider
 from app.services._common import ai_gateway
 from app.services.task_center.ai_generation_contract import ProviderRouteDeferred
@@ -155,7 +155,7 @@ def attempt_structured_candidate(
         )
         return StructuredAttemptOutcome(None, exc, route_bound(request), True)
     try:
-        result = call_structured_provider(lease, credentials, request)
+        payload, usage = call_structured_provider(lease, credentials, request)
     except ProviderAdmissionBlocked as exc:
         record_attempt(
             session, request, candidate,
@@ -168,6 +168,7 @@ def attempt_structured_candidate(
             session, request, candidate,
             priority=priority, model_name=model_name, clock=clock,
             outcome="failed", error=exc,
+            usage=getattr(exc, "usage", None),
         )
         return structured_failure_outcome(
             session, candidate, request=request, error=exc, has_more=has_more,
@@ -175,9 +176,14 @@ def attempt_structured_candidate(
     record_attempt(
         session, request, candidate,
         priority=priority, model_name=model_name, clock=clock,
-        outcome="success", total_tokens=result[1],
+        outcome="success", usage=usage,
     )
-    return StructuredAttemptOutcome(result, None, False, False)
+    return StructuredAttemptOutcome(
+        (payload, int(usage.total_tokens or 0)),
+        None,
+        False,
+        False,
+    )
 
 
 def structured_failure_outcome(
@@ -209,7 +215,7 @@ def record_attempt(
     clock: ProviderAttemptClock,
     outcome: str,
     error: Exception | None = None,
-    total_tokens: int = 0,
+    usage: AiUsage | None = None,
 ) -> None:
     record_provider_attempt(
         session,
@@ -222,7 +228,7 @@ def record_attempt(
         outcome=outcome,
         error_code=type(error).__name__ if error else "",
         latency_ms=clock.latency_ms(),
-        total_tokens=total_tokens,
+        usage=usage,
     )
 
 
@@ -230,7 +236,7 @@ def call_structured_provider(
     lease: ProviderProbeLease,
     credentials: AiProviderCredentials,
     request: StructuredProviderRequest,
-) -> tuple[object, int]:
+) -> tuple[object, AiUsage]:
     try:
         payload, usage = ai_gateway.generate_structured(
             credentials,
@@ -246,7 +252,7 @@ def call_structured_provider(
         release_provider_probe(lease)
         raise
     settle_provider_success(lease)
-    return payload, int(getattr(usage, "total_tokens", 0) or 0)
+    return payload, usage
 
 
 def route_bound(request: StructuredProviderRequest) -> bool:

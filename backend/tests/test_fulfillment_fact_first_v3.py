@@ -31,7 +31,11 @@ from app.services.task_center.direct_action_claims import claim_fact_first_candi
 from app.services._common import _now
 from app.services.task_center.daily_coverage_planning import ready_coverage_plan_batch
 from app.services.task_center.ai_generation_worker import drain_ai_generation
-from app.services.task_center.ai_generation_parallel import _claim_job, _job_available
+from app.services.task_center.ai_generation_parallel import (
+    _candidate_statement,
+    _claim_job,
+    _job_available,
+)
 from app.services.task_center.ai_generator import _provider_for_exact_model
 from app.services.ai_config import update_ai_provider, update_tenant_ai_setting
 from app.schemas import AiProviderUpdate, TenantAiSettingUpdate
@@ -116,6 +120,51 @@ def test_generation_job_expired_lease_compares_naive_database_time_safely() -> N
     now = datetime(2026, 8, 4, 8, 1, tzinfo=ZoneInfo("Asia/Shanghai"))
 
     assert _job_available(job, now)
+
+
+def test_generation_job_does_not_claim_before_jit_window() -> None:
+    now = datetime(2026, 8, 25, 8, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+    job = GenerationJob(
+        state="pending",
+        generation_not_before_at=now + timedelta(minutes=2),
+    )
+
+    assert _job_available(job, now) is False
+    assert _job_available(job, now + timedelta(minutes=2)) is True
+
+
+def test_deferred_generation_job_does_not_starve_ready_candidate_page(
+    session: Session,
+) -> None:
+    task = _task("task-deferred-candidate")
+    now_value = _now()
+    action = Action(
+        id="action-deferred-candidate",
+        tenant_id=1,
+        task_id=task.id,
+        task_type="group_ai_chat",
+        action_type="send_message",
+        account_id=11,
+        scheduled_at=now_value,
+        status="pending",
+        obligation_type="quantity_slot",
+        obligation_id="slot-deferred-candidate",
+        payload={"ai_generation_status": "pending", "message_text": ""},
+    )
+    job = GenerationJob(
+        tenant_id=1,
+        task_id=task.id,
+        obligation_type=action.obligation_type,
+        obligation_id=action.obligation_id,
+        generation_sequence=1,
+        context_snapshot_version=1,
+        state="pending",
+        next_retry_at=now_value + timedelta(minutes=5),
+    )
+    session.add_all((task, action, job))
+    session.flush()
+
+    assert list(session.scalars(_candidate_statement(10))) == []
 
 
 def test_generation_job_claim_cas_does_not_run_python_datetime_evaluator(

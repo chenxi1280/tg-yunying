@@ -2436,12 +2436,14 @@ def _create_reserved_actions(
     prepared: PreparedActionPlan,
 ) -> int:
     created = 0
+    created_actions: list[Action] = []
     reserved_rows: list[TaskAccountDailyCoverage] = []
     for slot in prepared.slots:
         action = _create_reserved_action(session, task, slot)
         if action is None:
             continue
         created += 1
+        created_actions.append(action)
         _remember_reserved_coverage_row(
             reserved_rows,
             blueprint.profile.coverage_rows,
@@ -2449,6 +2451,17 @@ def _create_reserved_actions(
             payload=slot.payload,
         )
     _advance_reserved_coverage_cursor(session, task, reserved_rows)
+    if dict(task.type_config or {}).get("ai_dialogue_chain_enabled"):
+        from ..ai_dialogue_chain import link_existing_dialogue_chain
+
+        link_existing_dialogue_chain(
+            task,
+            created_actions,
+            context_mode=_context_mode(
+                blueprint.context.usable_rows,
+                blueprint.context.idle_continuation,
+            ),
+        )
     return created
 
 

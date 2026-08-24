@@ -95,6 +95,21 @@ def _attestation_spec(*, scope_id: str = "group-7", revision: int = 3) -> Attest
     )
 
 
+def test_policy_rejects_unversioned_negative_lexicon() -> None:
+    with Session(_engine()) as session:
+        _seed(session)
+
+        with pytest.raises(ValueError, match="negative_lexicon_invalid"):
+            create_policy_draft(session, PolicyDraft(
+                tenant_id=1,
+                version=1,
+                route_rules={"allowed_routes": ["general"]},
+                prompt_registry={"general": {"version": "general_v3"}},
+                gate_config={"negative_lexicon": {"entries": []}},
+                example_set={"version": "examples-v1"},
+            ))
+
+
 def test_general_binding_does_not_require_adult_attestation() -> None:
     with Session(_engine()) as session:
         _seed(session)

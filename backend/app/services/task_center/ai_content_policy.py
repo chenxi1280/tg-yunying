@@ -16,6 +16,8 @@ from app.models import (
 )
 from app.services._common import _now
 
+from .ai_negative_lexicon import enabled_negative_phrases
+
 
 GENERAL_ROUTE = "general"
 ADULT_ROUTE_SUBJECTS = {
@@ -205,6 +207,8 @@ def _validate_policy_draft(spec: PolicyDraft) -> None:
     missing_prompts = routes - set(spec.prompt_registry)
     if missing_prompts:
         raise ValueError("ai_content_policy_prompt_registry_incomplete")
+    for route in routes:
+        enabled_negative_phrases(spec.gate_config, route)
 
 
 def _validate_attestation_spec(spec: AttestationSpec) -> None:

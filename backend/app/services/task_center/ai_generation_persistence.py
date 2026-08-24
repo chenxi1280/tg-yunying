@@ -19,6 +19,7 @@ from .ai_generation_state import (
 )
 from .legacy_anchor_rewrite import VOICE_PROFILE_CONTRACT_VERSION
 from .generation_wait import GenerationWaitSpec, defer_generation_wait
+from .ai_content_runtime import mark_candidate_ready
 from .two_stage_generation import QUALITY_WAIT
 from .direct_check_in import (
     DUE_CATCH_UP_CHECK_IN_REASON,
@@ -81,6 +82,7 @@ def _persist_generation_result(
         return
     action.payload = data
     action.candidate_hash = hashlib.sha256(data["message_text"].encode("utf-8")).hexdigest()
+    _mark_v2_candidate_ready(session, action)
     action.result = {
         **(action.result or {}),
         "generation_stage": "generation_ready",
@@ -91,6 +93,13 @@ def _persist_generation_result(
         "evaluator_evidence": dict(result.evaluator_evidence),
     }
     commit_generation_action(session, request, action)
+
+
+def _mark_v2_candidate_ready(session: Session, action) -> None:
+    job_id = str(dict(action.payload or {}).get("generation_job_id") or "")
+    job = session.get(GenerationJob, job_id) if job_id else None
+    if job is not None and job.window_slot_id:
+        mark_candidate_ready(session, job, candidate_hash=str(action.candidate_hash or ""))
 
 
 def _persist_generation_rejection(

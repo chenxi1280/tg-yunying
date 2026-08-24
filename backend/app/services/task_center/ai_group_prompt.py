@@ -5,6 +5,8 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from .ai_context_information import meaningful_context_text
+
 
 MAX_SAFE_MESSAGES = 5
 DRAFT_KEYS = {
@@ -34,7 +36,8 @@ FORBIDDEN = re.compile(
 AGE_RISK = re.compile(r"(?:未成年|学生妹|学生辈|少女|幼女|小女孩|好嫩|很嫩|幼态|幼齿)")
 SAFE_GENERAL = re.compile(
     r"(?:签到|积分|排行|发言|冒泡|有人吗|有人在吗|在吗|来了|早上好|晚上好|"
-    r"天气|下雨|刮风|风大|几度|北京|天津|上海|重庆|山东|青岛|普通群友|自然|直接|友好|安全话题)"
+    r"天气|下雨|刮风|风大|几度|夜宵|吃饭|电影|手机|通勤|音乐|游戏|附近|"
+    r"北京|天津|上海|重庆|山东|青岛|普通群友|自然|直接|友好|安全话题)"
 )
 SAFE_APPEARANCE = re.compile(
     r"(?:成年|成人|老师|穿搭|气质|身高|高挑|匀称|身材|曲线|显身材|样貌|长相|好看|漂亮|"
@@ -44,9 +47,10 @@ SAFE_GROUP = re.compile(r"(?:兴趣|交流|聊天|签到|天气|城市|生活|�
 
 
 SYSTEM_PROMPT = """Generate Chinese community replies for a normal Telegram group using only the supplied sanitized input.
-Every referenced person is an adult. You may continue an existing non-explicit adult topic about general appearance, figure, silhouette, long fair legs, stockings, high heels, sexy styling, alluring adult vibe, outfit, energy, or overall condition. Never introduce a new person or describe anyone as a student, minor, girl, tender-looking person, or with a youth analogy.
+Treat safe_context literally without inferring age, identity, relationship, or adult meaning. Adult routes are handled outside this prompt; do not introduce or amplify them here. Never introduce a new person or describe anyone as a student, minor, girl, tender-looking person, or with a youth analogy.
 Do not facilitate or mention prices, payments, contacts, private messages, bookings, services, locations, transactions, intimate body parts, or sexual acts. Do not mention filtering, policy, risk, AI, prompts, or moderation.
-For safe_context, reuse at least one explicit safe topic or phrase from the sanitized context. For generic_warmup, use only a greeting, check-in, weather, sign-in, or presence question. Do not invent experience, work, activities, repairs, locations, or facts.
+For safe_context, directly react to one meaningful supplied fact. For generic_warmup, ask one concrete casual local-life question about food, late-night snacks, commuting, music, games, or nearby leisure without claiming an experience.
+Never output generic filler or operational slogans such as 签到、打卡、积分、努力加油、搬砖、今天状态不错、大家心情好. Do not invent experience, work, activities, repairs, locations, or facts.
 Write casual natural Chinese, preferably 8 to 24 Chinese characters per draft. Output one JSON object only. No Markdown fences, thinking, prose, prefix, suffix, comments, or extra fields. Use exactly the supplied keys and enum values; context_source must match the input."""
 
 
@@ -87,7 +91,11 @@ def _allowed_clause(value: str) -> bool:
 def sanitize_group_messages(messages: list[str]) -> list[str]:
     safe: list[str] = []
     for message in messages:
-        safe.extend(safe_clauses(message))
+        safe.extend(
+            clause
+            for clause in safe_clauses(message)
+            if meaningful_context_text(clause)
+        )
     return safe[-MAX_SAFE_MESSAGES:]
 
 
@@ -173,7 +181,7 @@ def output_contract(
             "persona": "普通群友",
             "content": "中文回复",
             "risk_level": "low",
-            "intent": "check_in|follow_up|light_comment",
+            "intent": "topic_question|follow_up|light_comment",
             "mood": "casual|curious|friendly",
             "material_intent": "",
             "allow_material": False,

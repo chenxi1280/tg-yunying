@@ -228,6 +228,12 @@ def test_fact_id_map_sanitizes_forbidden_clauses() -> None:
     assert mapping["f1"] == "今天聊聊天气"
 
 
+def test_fact_id_map_discards_low_information_noise() -> None:
+    mapping = fact_id_map(["j", "Qz5", "。", "夜宵吃啥"])
+
+    assert mapping == {"f1": "夜宵吃啥"}
+
+
 def test_realizer_prompt_carries_feedback_and_anchor_texts() -> None:
     brief = _brief()
 

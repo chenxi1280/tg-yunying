@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -19,14 +17,23 @@ from app.models import (
 
 from .ai_content_policy import assert_route_authorized
 from .ai_content_runtime import WindowScope, WindowSlotSpec, claim_window_slot, freeze_window_plan
+from .ai_context_information import meaningful_group_evidence
 from .ai_context_revision_binding import synchronize_generation_context
 from .ai_generation_timing import GENERATION_LEASE
+from .ai_generation_context_contract import freeze_generation_context_contract
+from .ai_negative_lexicon import enabled_negative_phrases
 from .ai_provider_routes import route_v2_enabled
 from .message_brief import fact_id_map
 
 
-class AiContentJobBindingError(RuntimeError):
-    pass
+from .ai_content_job_binding_error import AiContentJobBindingError
+from .ai_content_job_support import (
+    due_at as _due_at,
+    example_version as _example_version,
+    generation_jobs_for_batch,
+    registry_version as _registry_version,
+    stable_hash as _hash,
+)
 
 
 @dataclass(frozen=True)
@@ -39,15 +46,15 @@ class _GroupContractRequest:
 
 
 _ROUTE_MARKERS = {
-    "adult_visual": ("身材", "腿", "胸", "嘴唇", "写真", "照片", "好看", "性感"),
-    "adult_product": ("玩具", "跳蛋", "震动", "飞机杯", "按摩棒", "情趣用品"),
-    "adult_service_inquiry": ("多少钱", "价格", "怎么约", "能约", "预约", "在哪", "上门"),
-    "adult_service_sensory": ("好润", "水多", "水滋滋", "湿", "嫩", "滑", "紧"),
+    "adult_visual": ("身材", "腿长", "腿又长", "胸", "嘴唇", "写真", "性感", "黑丝", "丝袜", "高跟鞋"),
+    "adult_product": ("成人用品", "情趣用品", "跳蛋", "飞机杯", "按摩棒"),
+    "adult_service_inquiry": ("怎么约", "能约", "可约", "上门", "包夜", "讲课费"),
+    "adult_service_sensory": ("好润", "真润", "够润", "水多不", "水多吗", "水滋滋", "湿不湿", "润不润"),
 }
 _ADULT_CONTEXT_MARKERS = tuple(
-    dict.fromkeys(("老师", "夜课", "服务", "约", *(
+    dict.fromkeys(
         marker for markers in _ROUTE_MARKERS.values() for marker in markers
-    )))
+    )
 )
 
 
@@ -137,17 +144,10 @@ def enrich_group_generation_slots(
 
 
 def _bind_job_contract(
-    session: Session,
-    task: Task,
-    action: Action,
-    *,
-    job: GenerationJob,
-    binding: TaskAiContentPolicyBinding,
-    policy: AiContentPolicyVersion,
-    scope_type: str,
-    scope_id: str,
-    evidence_lines: tuple[str, ...],
-    route: str,
+    session: Session, task: Task, action: Action, *,
+    job: GenerationJob, binding: TaskAiContentPolicyBinding,
+    policy: AiContentPolicyVersion, scope_type: str, scope_id: str,
+    evidence_lines: tuple[str, ...], route: str,
     scope_authorized: bool = False,
 ) -> dict:
     if not scope_authorized:
@@ -176,12 +176,12 @@ def _bind_job_contract(
         prompt_version=prompt_version,
         evidence_hash=_hash({"facts": evidence, "context": job.context_snapshot_hash}),
     )
-    _bind_job_policy(
-        job,
-        binding.evidence_hash,
-        policy.policy_hash,
-        example_version=example_version,
+    freeze_generation_context_contract(
+        session, task, action, job=job, evidence=evidence, evidence_lines=evidence_lines,
+        route=route, prompt_version=prompt_version, gate_config=dict(policy.gate_config or {}),
     )
+    _bind_job_policy(job, binding.evidence_hash, policy.policy_hash,
+                     example_version=example_version)
     return _contract_payload(
         job,
         slot,
@@ -212,8 +212,9 @@ def _group_contract_request(
     config: dict,
     binding: TaskAiContentPolicyBinding,
 ) -> _GroupContractRequest:
-    evidence = tuple(
-        str(getattr(payload, "ai_generation_history", "") or "").splitlines()
+    evidence = meaningful_group_evidence(
+        str(getattr(payload, "ai_generation_history", "") or ""),
+        getattr(payload, "topic_direction", {}), _ADULT_CONTEXT_MARKERS,
     )
     return _GroupContractRequest(
         action=action,
@@ -445,48 +446,10 @@ def _contract_payload(
         "forbidden_claim_categories": list(
             dict(policy.gate_config or {}).get("forbidden_claim_categories") or ()
         ),
+        "negative_phrases": list(enabled_negative_phrases(
+            dict(policy.gate_config or {}), slot.context_route,
+        )),
     }
-
-
-def generation_jobs_for_batch(
-    session: Session,
-    batch: list[tuple[Action, object]],
-) -> tuple[GenerationJob, ...]:
-    job_ids = tuple(
-        str(getattr(payload, "generation_job_id", "") or "")
-        for _action, payload in batch
-    )
-    if not all(job_ids) or len(set(job_ids)) != len(job_ids):
-        raise AiContentJobBindingError("generation_job_batch_invalid")
-    jobs = session.scalars(select(GenerationJob).where(GenerationJob.id.in_(job_ids))).all()
-    by_id = {job.id: job for job in jobs}
-    if len(by_id) != len(job_ids):
-        raise AiContentJobBindingError("generation_job_missing_for_content_binding")
-    return tuple(by_id[job_id] for job_id in job_ids)
-
-
-def _due_at(action: Action) -> datetime:
-    return action.pacing_due_at or action.release_not_before_at or action.scheduled_at
-
-
-def _registry_version(registry: dict, route: str, label: str) -> str:
-    value = dict(registry or {}).get(route)
-    version = str(value.get("version") if isinstance(value, dict) else value or "").strip()
-    if not version:
-        raise AiContentJobBindingError(f"{label}_version_missing:{route}")
-    return version
-
-
-def _example_version(example_set: dict) -> str:
-    version = str(dict(example_set or {}).get("version") or "").strip()
-    if not version:
-        raise AiContentJobBindingError("example_set_version_missing")
-    return version
-
-
-def _hash(value: dict) -> str:
-    payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 __all__ = [

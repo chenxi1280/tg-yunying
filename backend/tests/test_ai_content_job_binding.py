@@ -59,22 +59,31 @@ def test_group_v2_binds_policy_window_and_generation_slot() -> None:
         assert job.task_direction_snapshot_hash == "b" * 64
         assert slots[0]["context_route"] == "general"
         assert slots[0]["route_evidence_ids"] == ["f1"]
+        assert slots[0]["negative_phrases"] == ["签到"]
+        frozen = job.evaluator_evidence["generation_contract"]
+        assert frozen["context_revision"] == 4
+        assert frozen["context_mode"] == "history"
+        assert frozen["allowed_facts"] == {"f1": "今天群里挺热闹"}
+        assert frozen["forbidden_claims"] == ["price"]
+        assert frozen["content_route"] == "general"
+        assert frozen["prompt_version"] == "general_v1"
 
 
-def test_group_v2_rejects_ambiguous_route_without_router_decision() -> None:
+def test_group_v2_weak_adult_jargon_stays_in_general_route() -> None:
     with Session(_engine()) as session:
         task, action, job = _seed(
             session,
             routes=["general", "adult_service_sensory"],
         )
 
-        with pytest.raises(AiContentJobBindingError, match="context_route_unproven"):
-            bind_group_generation_contracts(
-                session,
-                task,
-                [(action, _payload(job.id, history="甲: 老师今晚在吗"))],
-                config={"ai_content_route_v2_enabled": True},
-            )
+        config = bind_group_generation_contracts(
+            session,
+            task,
+            [(action, _payload(job.id, history="甲: 老师今晚在吗"))],
+            config={"ai_content_route_v2_enabled": True},
+        )
+
+        assert config["_ai_content_contracts"][job.id]["content_mode"] == "general"
 
 
 def test_group_v2_single_adult_route_still_requires_current_evidence() -> None:
@@ -89,6 +98,62 @@ def test_group_v2_single_adult_route_still_requires_current_evidence() -> None:
                 session,
                 task,
                 [(action, _payload(job.id, history="甲: 今天天气不错"))],
+                config={"ai_content_route_v2_enabled": True},
+            )
+
+
+def test_group_v2_rejects_low_information_context_before_routing() -> None:
+    with Session(_engine()) as session:
+        task, action, job = _seed(session, routes=["general"])
+
+        with pytest.raises(
+            AiContentJobBindingError,
+            match="context_route_evidence_missing",
+        ):
+            bind_group_generation_contracts(
+                session,
+                task,
+                [(action, _payload(job.id, history="甲: Qz5\n乙: j"))],
+                config={"ai_content_route_v2_enabled": True},
+            )
+
+
+def test_group_v2_uses_frozen_general_topic_when_context_is_silent() -> None:
+    with Session(_engine()) as session:
+        task, action, job = _seed(session, routes=["general"])
+        payload = _payload(job.id, history="甲: j")
+        payload.topic_direction = {"title": "夜宵吃点啥"}
+
+        config = bind_group_generation_contracts(
+            session,
+            task,
+            [(action, payload)],
+            config={"ai_content_route_v2_enabled": True},
+        )
+
+        contract = config["_ai_content_contracts"][job.id]
+        assert contract["content_mode"] == "general"
+        assert contract["route_evidence_ids"] == ["f1"]
+        assert job.evaluator_evidence["generation_contract"]["context_mode"] == "silence"
+
+
+def test_group_v2_does_not_use_adult_topic_config_as_current_evidence() -> None:
+    with Session(_engine()) as session:
+        task, action, job = _seed(
+            session,
+            routes=["general", "adult_service_sensory"],
+        )
+        payload = _payload(job.id, history="甲: j")
+        payload.topic_direction = {"title": "老师今晚水多不"}
+
+        with pytest.raises(
+            AiContentJobBindingError,
+            match="context_route_evidence_missing",
+        ):
+            bind_group_generation_contracts(
+                session,
+                task,
+                [(action, payload)],
                 config={"ai_content_route_v2_enabled": True},
             )
 
@@ -109,6 +174,52 @@ def test_group_v2_routes_current_sensory_evidence_without_global_adult_mode() ->
         assert config["_ai_content_contracts"][job.id]["content_mode"] == (
             "adult_service_sensory"
         )
+
+
+def test_group_v2_does_not_treat_common_adjectives_as_adult_evidence() -> None:
+    with Session(_engine()) as session:
+        task, action, job = _seed(
+            session,
+            routes=["general", "adult_service_sensory"],
+        )
+        config = bind_group_generation_contracts(
+            session,
+            task,
+            [(action, _payload(job.id, history="甲: 袋子挺紧，路上有点滑"))],
+            config={"ai_content_route_v2_enabled": True},
+        )
+
+        assert config["_ai_content_contracts"][job.id]["content_mode"] == "general"
+
+
+@pytest.mark.parametrize(
+    "history",
+    (
+        "甲: 这电影真好看",
+        "甲: 手机一直震动",
+        "甲: 夜宵多少钱",
+    ),
+)
+def test_group_v2_common_topics_do_not_trigger_adult_routes(history: str) -> None:
+    with Session(_engine()) as session:
+        task, action, job = _seed(
+            session,
+            routes=[
+                "general",
+                "adult_visual",
+                "adult_product",
+                "adult_service_inquiry",
+                "adult_service_sensory",
+            ],
+        )
+        config = bind_group_generation_contracts(
+            session,
+            task,
+            [(action, _payload(job.id, history=history))],
+            config={"ai_content_route_v2_enabled": True},
+        )
+
+        assert config["_ai_content_contracts"][job.id]["content_mode"] == "general"
 
 
 def test_group_v2_alternates_inquiry_and_sensory_when_both_are_grounded() -> None:
@@ -223,7 +334,19 @@ def _seed(session: Session, *, routes: list[str]):
         status="active",
         route_rules={"allowed_routes": routes},
         prompt_registry={route: {"version": f"{route}_v1"} for route in routes},
-        gate_config={"forbidden_claim_categories": ["price"]},
+        gate_config={
+            "forbidden_claim_categories": ["price"],
+            "negative_lexicon": {
+                "version": "test-v1",
+                "entries": [{
+                    "phrase": "签到",
+                    "scope": "output",
+                    "routes": ["*"],
+                    "match_type": "contains",
+                    "enabled": True,
+                }],
+            },
+        },
         example_set={"version": "examples-v1"},
         policy_hash="p" * 64,
     )

@@ -372,6 +372,7 @@ class GroupAIChatConfig(BaseModel):
     ai_content_sampling_manifest_hash: str = ""
     ai_content_max_cost_per_slot: float = Field(default=0, ge=0)
     ai_content_daily_budget: float = Field(default=0, ge=0)
+    ai_dialogue_chain_enabled: bool = False
 
     @field_validator("topic_directions", mode="before")
     @classmethod
