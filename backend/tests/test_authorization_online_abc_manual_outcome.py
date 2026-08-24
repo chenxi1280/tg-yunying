@@ -4,6 +4,7 @@ import pytest
 from sqlalchemy import select
 
 from app.models import (
+    AccountStatus,
     AuditLog,
     TgAccount,
     TgAccountAuthorization,
@@ -11,7 +12,9 @@ from app.models import (
     TgAuthorizationOnlineAbcBatch,
     TgAuthorizationOnlineAbcItem,
     TgAuthorizationOnlineAbcSlotResult,
+    TgLoginFlow,
 )
+from app.services._common import _now
 from app.services.authorization_dr.contracts import AuthorizationDrError
 from app.services.authorization_dr.online_abc import start_next_online_abc_item, sync_online_abc_batch
 from app.services.authorization_dr.online_abc_manifest import (
@@ -89,6 +92,58 @@ def test_apply_records_real_manual_debt_and_preserves_a(db_session) -> None:
     assert _a_snapshot(db_session, account_id) == before_a
     audit_row = db_session.scalar(select(AuditLog).where(AuditLog.action == MANUAL_ACTION))
     assert audit_row and MANUAL_KEY in audit_row.detail and preview["fingerprint"] in audit_row.detail
+
+
+def test_apply_accepts_unreadable_b_code_without_rewriting_remote_fact(db_session) -> None:
+    batch_id, account_id, operation_id, flow_id = _stopped_unreadable_code_item(db_session)
+    before_a = _a_snapshot(db_session, account_id)
+
+    preview = _preview(db_session, batch_id, account_id)
+    result = _apply(db_session, batch_id, account_id, preview["fingerprint"])
+
+    operation = db_session.get(TgAuthorizationDrOperation, operation_id)
+    flow = db_session.get(TgLoginFlow, flow_id)
+    assert preview["manual_blocker_code"] == "verification_code_unreadable"
+    assert result["item_outcome"] == "manual_required"
+    assert result["b_outcome"] == result["c_outcome"] == "manual_required"
+    assert (operation.status, operation.remote_call_state) == ("failed", "started")
+    assert flow.status == AccountStatus.WAITING_CODE.value
+    assert flow.authorization_id is None
+    assert _a_snapshot(db_session, account_id) == before_a
+
+
+@pytest.mark.parametrize(
+    "unsafe_effect",
+    ["login_code_message_id", "login_code_received_at", "candidate_authorization_id", "flow_authorization"],
+)
+def test_preview_rejects_unreadable_b_code_with_downstream_effect(db_session, unsafe_effect) -> None:
+    batch_id, account_id, operation_id, flow_id = _stopped_unreadable_code_item(db_session)
+    operation = db_session.get(TgAuthorizationDrOperation, operation_id)
+    flow = db_session.get(TgLoginFlow, flow_id)
+    if unsafe_effect == "flow_authorization":
+        flow.authorization_id = db_session.get(TgAccount, account_id).current_authorization_id
+    elif unsafe_effect == "login_code_received_at":
+        operation.login_code_received_at = _now()
+    else:
+        setattr(operation, unsafe_effect, "telegram-message" if unsafe_effect.endswith("message_id") else 999)
+    db_session.commit()
+
+    with pytest.raises(AuthorizationDrError) as exc_info:
+        _preview(db_session, batch_id, account_id)
+
+    assert exc_info.value.code == "online_abc_manual_outcome_state_invalid"
+
+
+def test_preview_rejects_unreadable_b_code_with_nonfailed_slot(db_session) -> None:
+    batch_id, account_id, _, _ = _stopped_unreadable_code_item(db_session)
+    item = _item(db_session, batch_id, account_id)
+    _slots(db_session, item.id)["standby_1"].outcome = "manual_required"
+    db_session.commit()
+
+    with pytest.raises(AuthorizationDrError) as exc_info:
+        _preview(db_session, batch_id, account_id)
+
+    assert exc_info.value.code == "online_abc_manual_outcome_state_invalid"
 
 
 def test_apply_is_idempotent_and_rejects_key_conflict(db_session) -> None:
@@ -195,6 +250,37 @@ def _stopped_manual_item(session) -> tuple[str, int, str]:
     session.commit()
     sync_online_abc_batch(session, batch_id, actor="approver", approval_ref="ABC-FULL")
     return batch_id, command["account_id"], operation.id
+
+
+def _stopped_unreadable_code_item(session) -> tuple[str, int, str, int]:
+    batch_id = _new_full_batch(session, "full-unreadable-code-test")
+    command = start_next_online_abc_item(session, batch_id, actor="approver", approval_ref="ABC-FULL")
+    operation = abc_tests._add_operation(
+        session, command["account_id"], command["b_idempotency_key"], "failed",
+    )
+    flow = TgLoginFlow(
+        tenant_id=1,
+        account_id=command["account_id"],
+        method="code",
+        status=AccountStatus.WAITING_CODE.value,
+        authorization_role="standby_1",
+        developer_app_id=1,
+        challenge_sent_at=_now(),
+        code_expires_at=_now(),
+    )
+    session.add(flow)
+    session.flush()
+    operation.remote_call_state = "started"
+    operation.blocker_code = "verification_code_unreadable"
+    operation.remote_effect_started_at = _now()
+    operation.login_challenge_sent_at = _now()
+    operation.login_flow_id = flow.id
+    operation.login_code_message_id = ""
+    operation.login_code_received_at = None
+    operation.candidate_authorization_id = None
+    session.commit()
+    sync_online_abc_batch(session, batch_id, actor="approver", approval_ref="ABC-FULL")
+    return batch_id, command["account_id"], operation.id, flow.id
 
 
 def _stopped_c_manual_item(session) -> tuple[str, int, str]:

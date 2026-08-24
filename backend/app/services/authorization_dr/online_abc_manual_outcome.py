@@ -8,6 +8,7 @@ from collections import Counter
 from sqlalchemy import func, select
 
 from app.models import (
+    AccountStatus,
     AuditLog,
     AuthorizationDrExecutionNode,
     AuthorizationDrRuntimeContract,
@@ -17,6 +18,7 @@ from app.models import (
     TgAuthorizationOnlineAbcBatch,
     TgAuthorizationOnlineAbcItem,
     TgAuthorizationOnlineAbcSlotResult,
+    TgLoginFlow,
 )
 from app.services._common import _now, audit
 
@@ -30,6 +32,7 @@ from .online_abc_primary import primary_state
 MANUAL_ACTION = "确认 ABC full item 人工失败并继续"
 MANUAL_OUTCOME = "manual_required"
 UPSTREAM_MANUAL_BLOCKER = "upstream_b_manual_required"
+UNREADABLE_CODE_BLOCKER = "verification_code_unreadable"
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 KEY_PATTERN = re.compile(r"[A-Za-z0-9:._-]{1,100}")
 
@@ -55,7 +58,7 @@ def preview_manual_online_abc_outcome(
     slots = _slots(session, item)
     operations = online_abc_item_operations(session, batch, item)
     _require_batch_boundary(session, batch, item)
-    manual_stage, operation = _manual_context(item, slots, operations)
+    manual_stage, operation = _manual_context(session, item, slots, operations)
     global_state = _require_global_boundary(session)
     primary = _primary_snapshot(session, item)
     counts = Counter(value.status for value in _items(session, batch))
@@ -182,28 +185,62 @@ def _require_batch_boundary(session, batch, item) -> None:
         raise AuthorizationDrError("online_abc_manual_outcome_batch_invalid", "Full batch boundary changed")
 
 
-def _manual_context(item, slots: dict, operations: dict) -> tuple[str, object]:
-    if _manual_b_valid(item, slots, operations):
+def _manual_context(session, item, slots: dict, operations: dict) -> tuple[str, object]:
+    if _manual_b_valid(session, item, slots, operations):
         return "b", operations["b"]
     if _manual_c_valid(item, slots, operations):
         return "c", operations["c"]
     raise AuthorizationDrError("online_abc_manual_outcome_state_invalid", "Manual terminal state changed")
 
 
-def _manual_b_valid(item, slots: dict, operations: dict) -> bool:
+def _manual_b_valid(session, item, slots: dict, operations: dict) -> bool:
     operation = operations["b"]
     b_slot = slots["standby_1"]
     c_slot = slots["standby_2"]
     return bool(
-        item.outcome in {"reconcile_unknown", MANUAL_OUTCOME}
-        and _confirmed_manual(operation)
+        _manual_b_terminal(session, item, b_slot, operation)
         and item.primary_probe_outcome == "pending"
         and b_slot.operation_id == operation.id
-        and b_slot.outcome in {"reconcile_unknown", MANUAL_OUTCOME}
         and c_slot.outcome == "pending"
         and c_slot.operation_id is None
         and operations["c"] is None
         and operations["e4"] is None
+    )
+
+
+def _manual_b_terminal(session, item, slot, operation) -> bool:
+    if _failed_b_without_code(session, operation):
+        return item.outcome == "failed" and slot.outcome == "failed"
+    return bool(
+        item.outcome in {"reconcile_unknown", MANUAL_OUTCOME}
+        and slot.outcome in {"reconcile_unknown", MANUAL_OUTCOME}
+        and _confirmed_manual(operation)
+    )
+
+
+def _failed_b_without_code(session, operation) -> bool:
+    flow = session.get(TgLoginFlow, operation.login_flow_id) if operation and operation.login_flow_id else None
+    return bool(
+        operation
+        and operation.operation_type == "provision_standby_1"
+        and operation.status == "failed"
+        and operation.remote_call_state == "started"
+        and operation.blocker_code == UNREADABLE_CODE_BLOCKER
+        and operation.remote_effect_started_at
+        and operation.login_challenge_sent_at
+        and not operation.login_code_message_id
+        and not operation.login_code_received_at
+        and not operation.candidate_authorization_id
+        and flow
+        and flow.tenant_id == operation.tenant_id
+        and flow.account_id == operation.account_id
+        and flow.authorization_role == "standby_1"
+        and flow.developer_app_id == operation.developer_app_id
+        and flow.status == AccountStatus.WAITING_CODE.value
+        and flow.challenge_sent_at
+        and flow.code_expires_at
+        and flow.authorization_id is None
+        and flow.superseded_by_flow_id is None
     )
 
 
