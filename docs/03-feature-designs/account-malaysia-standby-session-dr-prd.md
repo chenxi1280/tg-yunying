@@ -1,5 +1,7 @@
 # 马来西亚异地备用 TG Session 灾备 PRD
 
+> **2026-08-24 completed rebase 旧 B operation 收口：** completed item 的 A 因 typed failure 切到原 B 后，原 `provision_standby_1` operation 的 candidate 正是新 current，不能删除或覆盖；completed rebase 必须冻结该 operation 的 id/version/source/expected-current/candidate/remote-success 事实，在与 item 重绑同一事务内把其幂等键改为不可碰撞的历史键并提升 operation version，然后释放原 B key 创建互补新 B。禁止人工先改键、复用旧 operation 创建新 B，或在归档事实不匹配时继续。
+
 > **2026-08-24 SV 唯一业务出口补正：** 生产 `primary_regular` 是硅谷 backend/worker 的固定直连出口，不是 `tg_accounts.proxy_id` 或 `tg_account_authorizations.proxy_id` 指向的历史账号代理。A、B 的登录、验证码读取、identity/device probe、online probe、local activate 和 Saved Messages E4 必须全部使用该直连出口；禁止同一 SV AuthKey 在直连与账号代理之间混用。新 SV operation 固定记录 `egress_id=primary_regular:direct`，历史 `sv-proxy:*` 只允许按原 operation 对账，不能用于新登录或新探测。C 继续只使用 MY 固定出口。该补正不改写既有 Session、current pointer、App、账号代理字段或授权代次；发布前批次必须 stopped/running item=0/global unknown=0，发布后先恢复已出现 typed `authorization_key_duplicated` 的账号，再以单账号 canary 验证 A 真实发送/读回和无漂移。
 
 > 版本：v2.24
