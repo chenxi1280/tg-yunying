@@ -57,7 +57,11 @@ def _matches_frozen_primary(account, source, operation, *, allow_unpersisted_ide
     )
     if stored_identity == expected_identity:
         return True
-    return bool(allow_unpersisted_identity and not any(stored_identity) and all(expected_identity))
+    missing_identity_matches = all(
+        not stored or stored == expected
+        for stored, expected in zip(stored_identity, expected_identity, strict=True)
+    )
+    return bool(allow_unpersisted_identity and all(expected_identity) and missing_identity_matches)
 
 
 __all__ = ["require_primary_code_source", "verified_code_source"]

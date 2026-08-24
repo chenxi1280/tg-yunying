@@ -22,6 +22,7 @@ from app.services.authorization_canonical_backfill import (
 )
 
 from .abc_backup import apply_abc_backup, preview_abc_backup
+from .abc_backup_resume import require_pre_b_no_effect_resume, resume_approved_abc_backup_if_present
 from .abc_canary import prepare_scoped_c_migration
 from .abc_verify import apply_abc_e4, preview_abc_e4
 from .contracts import AuthorizationDrError
@@ -224,6 +225,7 @@ def _prepare_primary_and_b(
                 primary.telegram_user_id_digest and primary.auth_key_fingerprint_digest
             ),
         )
+    resume_approved_abc_backup_if_present(session, operations["b"])
     if can_bootstrap_peer:
         refreshed = _context(session, batch.id)[2]
         require_slot_ready(item.standby_1_plan, refreshed["b"], "online_abc_runner_b_incomplete")
@@ -426,6 +428,8 @@ def _require_resume_contract(session, item, operations: dict) -> str:
         return "post_b_pre_c"
     if item.blocker_code == PRE_PRIMARY_RESUME_BLOCKER:
         return _require_pre_primary_resume(session, item, operations)
+    if item.blocker_code == "code_source_changed":
+        return require_pre_b_no_effect_resume(session, item, operations)
     if item.blocker_code == C_ORPHAN_RETRY_BLOCKER:
         _require_c_orphan_retry_resume(session, item, operations)
         return "post_c_orphan_compensated"
