@@ -11,6 +11,7 @@ pytestmark = pytest.mark.no_postgres
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 GUARDED_SCRIPTS = (
     "authorization-online-abc-manual-outcome.sh",
+    "authorization-online-abc-release-interrupted.sh",
     "authorization-online-abc-release-rebind.sh",
     "authorization-online-abc-pending-plan-rebase.sh",
 )
