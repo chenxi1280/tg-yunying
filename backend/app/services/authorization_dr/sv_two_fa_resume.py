@@ -23,6 +23,7 @@ from app.models import (
     TgAuthorizationOnlineAbcSlotResult,
     TgLoginFlow,
 )
+from app.integrations.telegram.authorization_fingerprint import authorization_fingerprint_digest
 from app.security import decrypt_secret
 from app.services._common import gateway
 from app.services.account_authorization_metadata import resolve_authorization_identity_hash
@@ -358,16 +359,32 @@ def _recover_remote_session(session, context: ResumeContext) -> dict:
     remote = gateway.list_authorizations(
         context.primary.session_ciphertext, credentials_for_authorization(session, context.primary),
     )
-    if sum(row.api_id == context.app.api_id for row in remote) != 1:
-        raise AuthorizationDrError("reconcile_evidence_conflict", "Recovered App device is not unique")
+    candidate = _unique_recovered_device(remote, identity, context.app)
     return {
         "raw_session": raw_session,
         "identity": identity,
         "hash_source": hash_source,
         "remote_set_digest": _remote_set_digest(remote),
         "remote_device_count": len(remote),
+        "candidate_hash_digest": _digest(candidate.authorization_hash),
+        "candidate_fingerprint_digest": authorization_fingerprint_digest(candidate),
         "fixed_password": decrypt_secret(context.tenant.fixed_two_fa_password_ciphertext),
     }
+
+
+def _unique_recovered_device(remote, identity, app):
+    expected_hash = str(identity.authorization_hash).strip()
+    expected_fingerprint = identity.authorization_fingerprint_digest
+    matches = [
+        row for row in remote
+        if str(row.authorization_hash).strip() == expected_hash
+        and row.api_id == app.api_id
+        and not row.is_current
+        and authorization_fingerprint_digest(row) == expected_fingerprint
+    ]
+    if len(matches) != 1:
+        raise AuthorizationDrError("reconcile_evidence_conflict", "Recovered B device is not unique")
+    return matches[0]
 
 
 def _submit_fixed_password(context: ResumeContext, credentials, raw_session: str) -> str:

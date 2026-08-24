@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from telethon.errors import PasswordHashInvalidError
 
 from app.database import Base
+from app.integrations.telegram.authorization_fingerprint import authorization_fingerprint_digest
 from app.integrations.telegram.contracts import AuthorizationIdentity
 from app.models import (
     AccountProxy,
@@ -39,6 +40,7 @@ from app.services.authorization_dr.online_abc_runner import _require_post_b_reco
 
 pytestmark = pytest.mark.no_postgres
 RUNTIME_SHA = "a" * 40
+REMOTE_CREATED_AT = _now().replace(microsecond=0)
 
 
 def _session() -> Session:
@@ -155,20 +157,29 @@ def _patch_common(monkeypatch) -> None:
         "app.services.authorization_dr.sv_two_fa_resume.credentials_for_authorization",
         lambda *_: SimpleNamespace(),
     )
-    remote = SimpleNamespace(
-        authorization_hash="987654", is_current=False, api_id=1001,
-        device_model="recovered", platform="test", date_created=_now(), date_active=_now(),
-    )
     monkeypatch.setattr(
         "app.services.authorization_dr.sv_two_fa_resume.gateway.list_authorizations",
-        lambda *_: [remote],
+        lambda *_: [_remote_device()],
     )
 
 
-def _identity() -> AuthorizationIdentity:
+def _remote_device(**overrides):
+    values = {
+        "authorization_hash": "987654", "is_current": False, "api_id": 1001,
+        "device_model": "recovered", "platform": "test", "system_version": "1",
+        "app_name": "App B", "app_version": "1", "date_created": REMOTE_CREATED_AT,
+        "date_active": REMOTE_CREATED_AT,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+def _identity(remote=None) -> AuthorizationIdentity:
+    candidate = remote or _remote_device()
     return AuthorizationIdentity(
         authorization_hash="987654", auth_key_fingerprint_digest="3" * 64,
-        telegram_user_id_digest="1" * 64, authorization_fingerprint_digest="4" * 64,
+        telegram_user_id_digest="1" * 64,
+        authorization_fingerprint_digest=authorization_fingerprint_digest(candidate),
     )
 
 
@@ -278,6 +289,58 @@ def test_authorized_temp_session_never_resubmits_password(monkeypatch) -> None:
         result = _apply(session, operation, _preview(session, operation)["evidence_fingerprint"])
         assert result["classification"] == "sv_two_fa_session_recovered"
         assert _a_fence(account, primary) == before
+
+
+def test_same_app_historical_device_does_not_conflict(monkeypatch) -> None:
+    with _session() as session:
+        account, primary, _security, _flow, operation = _seed(session)
+        _patch_common(monkeypatch)
+        candidate = _remote_device()
+        historical = _remote_device(
+            authorization_hash="123456", device_model="old-device",
+            date_created=REMOTE_CREATED_AT - timedelta(days=1),
+        )
+        monkeypatch.setattr(
+            "app.services.authorization_dr.sv_two_fa_resume.gateway.authorization_identity",
+            lambda *_: _identity(candidate),
+        )
+        monkeypatch.setattr(
+            "app.services.authorization_dr.sv_two_fa_resume.gateway.list_authorizations",
+            lambda *_: [candidate, historical],
+        )
+        before = _a_fence(account, primary)
+        result = _apply(session, operation, _preview(session, operation)["evidence_fingerprint"])
+        case = session.scalar(select(TgAuthorizationDrReconcileCase).where(
+            TgAuthorizationDrReconcileCase.operation_id == operation.id,
+        ))
+        assert result["classification"] == "sv_two_fa_session_recovered"
+        assert case.evidence_manifest["remote_device_count"] == 2
+        assert case.evidence_manifest["candidate_hash_digest"] == hashlib.sha256(b"987654").hexdigest()
+        assert case.evidence_manifest["candidate_fingerprint_digest"] == authorization_fingerprint_digest(candidate)
+        assert _a_fence(account, primary) == before
+
+
+def test_recovered_device_requires_exact_stable_fingerprint(monkeypatch) -> None:
+    with _session() as session:
+        account, primary, _security, flow, operation = _seed(session)
+        _patch_common(monkeypatch)
+        identity_device = _remote_device()
+        observed = _remote_device(device_model="different-device")
+        monkeypatch.setattr(
+            "app.services.authorization_dr.sv_two_fa_resume.gateway.authorization_identity",
+            lambda *_: _identity(identity_device),
+        )
+        monkeypatch.setattr(
+            "app.services.authorization_dr.sv_two_fa_resume.gateway.list_authorizations",
+            lambda *_: [observed],
+        )
+        before = _a_fence(account, primary)
+        with pytest.raises(AuthorizationDrError) as exc_info:
+            _apply(session, operation, _preview(session, operation)["evidence_fingerprint"])
+        session.rollback()
+        assert exc_info.value.code == "reconcile_evidence_conflict"
+        assert _a_fence(account, primary) == before
+        assert flow.temporary_session_ciphertext == "temp-secret"
 
 
 def test_repeated_apply_returns_same_committed_case_without_remote_call(monkeypatch) -> None:
