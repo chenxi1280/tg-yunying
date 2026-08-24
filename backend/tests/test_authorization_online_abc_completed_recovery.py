@@ -40,11 +40,16 @@ def db_session():
 def test_completed_rebase_retains_c_and_creates_new_b_and_e4(
     db_session, monkeypatch,
 ) -> None:
-    batch, item, old_primary, c_operation, old_e4 = _completed_drift(db_session)
+    batch, item, old_primary, old_b, c_operation, old_e4 = _completed_drift(
+        db_session, retain_b=True,
+    )
     account, _old, new_primary, case = orphan_tests._seed_verified_local_activate(
         db_session, item, c_operation,
     )
+    _bind_historical_b(db_session, old_b, old_primary, new_primary)
     _restore_completed_checkpoint(db_session, item, c_operation)
+    canonical_b_key = runner.online_abc_operation_keys(batch, item)["b"]
+    old_b_version = old_b.operation_version
     preview = completed.preview_completed_rebase(
         db_session, batch.id, item.account_id, case.id,
         idempotency_key="completed-rebase-1",
@@ -62,6 +67,10 @@ def test_completed_rebase_retains_c_and_creates_new_b_and_e4(
     assert old_primary.health_status == "invalid"
     assert c_operation.status == "succeeded"
     assert old_e4.status == "succeeded"
+    db_session.refresh(old_b)
+    assert old_b.idempotency_key == f"hist-b:{old_b.id}:{case.id}"
+    assert old_b.operation_version == old_b_version + 1
+    assert runner.online_abc_item_operations(db_session, batch, item)["b"] is None
     resumed = runner.resume_online_abc_batch(
         db_session, batch.id, account_id=item.account_id,
         requested_by="requester", approved_by="approver", approval_ref="ABC-10",
@@ -81,6 +90,8 @@ def test_completed_rebase_retains_c_and_creates_new_b_and_e4(
     assert finished["chunk"]["account_ids"] == [item.account_id]
     assert calls == [("b", item.account_id), ("qualify", item.account_id), ("e4", item.account_id)]
     operations = runner.online_abc_item_operations(db_session, batch, item)
+    assert operations["b"].id != old_b.id
+    assert operations["b"].idempotency_key == canonical_b_key
     assert operations["c"].id == c_operation.id
     assert operations["e4"].id != old_e4.id
     assert operations["e4"].idempotency_key.endswith(":retry:1")
@@ -116,14 +127,17 @@ def test_pre_remote_rearm_restores_stopped_checkpoint(db_session) -> None:
     assert result["blocker_code"] == "post_local_activate_rebase_ready"
 
 
-def _completed_drift(session):
+def _completed_drift(session, *, retain_b: bool = False):
     batch_id = abc_tests._apply(session, abc_tests._preview(session)["fingerprint"])["batch_id"]
     command = start_next_online_abc_item(session, batch_id, actor="approver", approval_ref="ABC-10")
     item = session.get(TgAuthorizationOnlineAbcItem, command["item_id"])
     old_primary = session.get(TgAccountAuthorization, item.primary_authorization_id)
     abc_tests._qualify_primary(session, item.account_id)
     abc_tests._add_operations(session, command, status="succeeded")
-    _convert_b_to_prequalified(session, item)
+    batch = session.get(TgAuthorizationOnlineAbcBatch, batch_id)
+    b_operation = runner.online_abc_item_operations(session, batch, item)["b"]
+    if not retain_b:
+        _convert_b_to_prequalified(session, item)
     c_operation, e4_operation = _bind_completed_operations(session, command, item, old_primary)
     sync_online_abc_batch(session, batch_id, actor="approver", approval_ref="ABC-10")
     old_primary.health_status = "invalid"
@@ -131,7 +145,18 @@ def _completed_drift(session):
     session.get(TgAccount, item.account_id).status = "Session失效"
     session.commit()
     sync_online_abc_batch(session, batch_id, actor="approver", approval_ref="ABC-10")
-    return session.get(TgAuthorizationOnlineAbcBatch, batch_id), item, old_primary, c_operation, e4_operation
+    return (
+        session.get(TgAuthorizationOnlineAbcBatch, batch_id), item, old_primary,
+        b_operation, c_operation, e4_operation,
+    )
+
+
+def _bind_historical_b(session, operation, old_primary, new_primary) -> None:
+    operation.source_authorization_id = old_primary.id
+    operation.code_source_authorization_id = old_primary.id
+    operation.expected_current_authorization_id = old_primary.id
+    operation.candidate_authorization_id = new_primary.id
+    session.commit()
 
 
 def _convert_b_to_prequalified(session, item) -> None:

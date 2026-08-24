@@ -1,5 +1,7 @@
 # 项目数据流转索引
 
+> **2026-08-24 DF-342 completed B key 归档：** `completed A drift -> verified local_activate to old B -> freeze old B operation version/source/candidate/remote success -> same transaction archive idempotency key + increment operation version -> rebind item to new current -> provision complementary B -> E4 retry`。归档事实不匹配时停止，不手改 operation key，不触碰 Session/current/C/历史 E4。
+
 > **2026-08-24 DF-342 SV 单出口补正：** `普通任务/A online probe/ABC A 读码/B 新登录/B qualification/local_activate/E4 -> direct primary_regular`，不再从账号或授权资产的历史 `proxy_id` 生成 Telegram credentials；新 operation 写 `primary_regular:direct`。MY C 仍走 `standby_my`。历史 `sv-proxy:*` 只允许原 operation reconcile。该变更不写 Session/current/App/generation，批次在发布前保持 stopped、running item=0、global unknown=0。
 
 > **2026-08-23 DF-342 completed A 与 pre-remote 恢复：** `succeeded item -> A typed duplicate -> local_activate/send readback -> completed rebase keeps C/bundle/probe + resets complementary B -> account-targeted resume -> new B -> A qualification -> E4 retry bound to new A -> item succeeded`。若 resume 已提交 running 后才发现另一 succeeded A 漂移，且当前 B/E4 均未创建，则 `DB-only rearm -> original post-local-activate blocker`；禁止并行 running、复用旧 A 的 E4 或重放已合格 C。

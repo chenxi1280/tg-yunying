@@ -6,6 +6,7 @@ from app.models import (
     AuditLog,
     TgAccount,
     TgAccountAuthorization,
+    TgAuthorizationDrOperation,
     TgAuthorizationLocalActivateCase,
     TgAuthorizationOnlineAbcBatch,
     TgAuthorizationOnlineAbcItem,
@@ -56,6 +57,7 @@ def apply_completed_rebase(
     )
     if preview["fingerprint"] != expected_fingerprint:
         raise AuthorizationDrError("migration_fingerprint_conflict", "Completed rebase preview changed")
+    _archive_historical_b(session, preview)
     slot = base._b_slot(session, item.id)
     base._apply_item_projection(item, slot, preview)
     item.status = "stopped"
@@ -153,6 +155,7 @@ def _completed_body(session, batch, item, case, idempotency_key: str) -> dict:
     account = session.get(TgAccount, item.account_id)
     primary = session.get(TgAccountAuthorization, account.current_authorization_id)
     _require_completed_source(session, batch, item, case, account, primary, operations)
+    historical_b = _historical_b_snapshot(operations["b"], case, primary)
     backup = _backup_preview(session, batch, item)
     return {
         "batch_id": batch.id,
@@ -173,6 +176,7 @@ def _completed_body(session, batch, item, case, idempotency_key: str) -> dict:
         "source_c_slot_generation": item.source_c_slot_generation,
         "retained_c_operation_id": operations["c"].id,
         "historical_e4_operation_id": operations["e4"].id,
+        "historical_b_operation": historical_b,
         **base._backup_projection(backup),
         "idempotency_key": key,
     }
@@ -211,13 +215,92 @@ def _require_completed_source(session, batch, item, case, account, primary, oper
         and item.primary_authorization_id == case.expected_current_authorization_id
         and case.status == "applied"
         and case.target_authorization_id == account.current_authorization_id
-        and operations["b"] is None
     )
     if not valid:
         raise AuthorizationDrError("online_abc_completed_rebase_unavailable", "Completed checkpoint is unavailable")
     base._require_runtime_and_unknown(session)
     base._require_primary_pair(session, item, case, account, primary)
     _require_completed_operations(session, item, case, operations)
+
+
+def _historical_b_snapshot(operation, case, primary) -> dict:
+    if operation is None:
+        return _empty_historical_b_snapshot()
+    valid = (
+        operation.operation_type == "provision_standby_1"
+        and operation.status == "succeeded"
+        and operation.remote_call_state == "succeeded"
+        and operation.blocker_code == ""
+        and operation.source_authorization_id == case.expected_current_authorization_id
+        and operation.code_source_authorization_id == case.expected_current_authorization_id
+        and operation.expected_current_authorization_id == case.expected_current_authorization_id
+        and operation.candidate_authorization_id == primary.id
+    )
+    if not valid:
+        raise AuthorizationDrError("online_abc_completed_rebase_unavailable", "Historical B operation changed")
+    return {
+        "id": operation.id,
+        "version": operation.operation_version,
+        "idempotency_key": operation.idempotency_key,
+        "source_authorization_id": operation.source_authorization_id,
+        "code_source_authorization_id": operation.code_source_authorization_id,
+        "expected_current_authorization_id": operation.expected_current_authorization_id,
+        "candidate_authorization_id": operation.candidate_authorization_id,
+        "status": operation.status,
+        "remote_call_state": operation.remote_call_state,
+        "blocker_code": operation.blocker_code,
+    }
+
+
+def _archive_historical_b(session, preview: dict) -> None:
+    frozen = preview["historical_b_operation"]
+    if frozen["id"] is None:
+        return
+    operation = session.scalar(select(TgAuthorizationDrOperation).where(
+        TgAuthorizationDrOperation.id == frozen["id"],
+    ).with_for_update())
+    if not operation or _locked_historical_b_snapshot(operation) != frozen:
+        raise AuthorizationDrError("authorization_version_conflict", "Historical B operation changed")
+    archived_key = f"hist-b:{operation.id}:{preview['case_id']}"
+    conflict = session.scalar(select(TgAuthorizationDrOperation.id).where(
+        TgAuthorizationDrOperation.tenant_id == operation.tenant_id,
+        TgAuthorizationDrOperation.idempotency_key == archived_key,
+        TgAuthorizationDrOperation.id != operation.id,
+    ).limit(1))
+    if conflict:
+        raise AuthorizationDrError("reconcile_idempotency_conflict", "Historical B archive key exists")
+    operation.idempotency_key = archived_key
+    operation.operation_version += 1
+
+
+def _empty_historical_b_snapshot() -> dict:
+    return {
+        "id": None,
+        "version": 0,
+        "idempotency_key": "",
+        "source_authorization_id": None,
+        "code_source_authorization_id": None,
+        "expected_current_authorization_id": None,
+        "candidate_authorization_id": None,
+        "status": "",
+        "remote_call_state": "",
+        "blocker_code": "",
+    }
+
+
+def _locked_historical_b_snapshot(operation) -> dict:
+    return {
+        "id": operation.id,
+        "version": operation.operation_version,
+        "idempotency_key": operation.idempotency_key,
+        "source_authorization_id": operation.source_authorization_id,
+        "code_source_authorization_id": operation.code_source_authorization_id,
+        "expected_current_authorization_id": operation.expected_current_authorization_id,
+        "candidate_authorization_id": operation.candidate_authorization_id,
+        "status": operation.status,
+        "remote_call_state": operation.remote_call_state,
+        "blocker_code": operation.blocker_code,
+    }
 
 
 def _require_completed_operations(session, item, case, operations) -> None:
