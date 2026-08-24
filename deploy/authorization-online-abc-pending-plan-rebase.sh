@@ -14,7 +14,7 @@ for ARGUMENT in "$@"; do
   PREVIOUS="$ARGUMENT"
 done
 
-if [[ "$MODE" == "apply" ]] && docker top "$CONTAINER_NAME" -eo args | grep -Fq "authorization_online_abc_runner.py"; then
+if [[ "$MODE" == "apply" ]] && docker top "$CONTAINER_NAME" -eo pid,args | grep -Fq "authorization_online_abc_runner.py"; then
   echo "online_abc_pending_plan_rebase_runner_present: stop and reconcile the existing runner first" >&2
   exit 1
 fi

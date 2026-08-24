@@ -406,6 +406,9 @@ def _require_resume_contract(session, item, operations: dict) -> str:
     _require_runtime_off(session)
     _require_no_resume_unknown(session)
     if item.outcome == RECONCILED_B_RESUME_OUTCOME:
+        if _is_reconciled_c_checkpoint(operations):
+            _require_post_c_resume(session, item, operations)
+            return "post_c_pre_e4"
         _require_post_b_reconcile_resume(session, item, operations)
         return "post_b_reconciled_pre_primary"
     if item.blocker_code == POST_C_RESUME_BLOCKER:
@@ -430,6 +433,19 @@ def _require_resume_contract(session, item, operations: dict) -> str:
         require_completed_rebase_resume(session, item, operations)
         return "post_completed_local_activate_rebase"
     raise AuthorizationDrError("online_abc_resume_blocker_forbidden", f"Blocker is {item.blocker_code}")
+
+
+def _is_reconciled_c_checkpoint(operations: dict) -> bool:
+    operation = operations["c"]
+    return bool(
+        operation
+        and operation.status == SUCCESS_STATUS
+        and operation.remote_call_state == "confirmed"
+        and operation.reconcile_status == "applied"
+        and operation.reconcile_case_id
+        and operation.candidate_authorization_id
+        and operations["e4"] is None
+    )
 
 
 def _require_c_orphan_retry_resume(session, item, operations: dict) -> None:

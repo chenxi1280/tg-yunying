@@ -202,6 +202,60 @@ def test_resume_reopens_reconciled_b_before_primary_qualification(db_session, mo
     assert result["operations"]["b"]["status"] == "succeeded"
 
 
+def test_resume_reopens_artifact_reconciled_c_without_replaying_c(db_session, monkeypatch) -> None:
+    batch_id, item, _operation_ids = _running_after_c(db_session)
+    batch = db_session.get(TgAuthorizationOnlineAbcBatch, batch_id)
+    operation = runner._context(db_session, batch_id)[2]["c"]
+    operation.remote_call_state = "confirmed"
+    operation.reconcile_status = "applied"
+    operation.reconcile_case_id = "artifact-reconcile-case"
+    operation.candidate_authorization_id = item.source_c_authorization_id
+    item.status = "stopped"
+    item.outcome = "reconcile_unknown"
+    item.blocker_code = "reconcile_unknown"
+    batch.status = "stopped"
+    db_session.commit()
+    monkeypatch.setattr(runner, "ready_migration_runtime_image_sha", lambda _session: "d" * 40)
+
+    result = runner.resume_online_abc_batch(
+        db_session,
+        batch_id,
+        requested_by="requester",
+        approved_by="approver",
+        approval_ref="ABC-10",
+        runtime_release_sha="2" * 40,
+    )
+
+    assert result["batch"]["status"] == "running"
+    assert result["current_item"]["id"] == item.id
+    assert result["operations"]["c"]["id"] == operation.id
+    assert result["operations"]["e4"] is None
+
+
+def test_resume_rejects_unreconciled_c_unknown_item(db_session, monkeypatch) -> None:
+    batch_id, item, _operation_ids = _running_after_c(db_session)
+    batch = db_session.get(TgAuthorizationOnlineAbcBatch, batch_id)
+    item.status = "stopped"
+    item.outcome = "reconcile_unknown"
+    item.blocker_code = "reconcile_unknown"
+    batch.status = "stopped"
+    db_session.commit()
+    monkeypatch.setattr(runner, "ready_migration_runtime_image_sha", lambda _session: "d" * 40)
+
+    with pytest.raises(AuthorizationDrError) as exc_info:
+        runner.resume_online_abc_batch(
+            db_session,
+            batch_id,
+            requested_by="requester",
+            approved_by="approver",
+            approval_ref="ABC-10",
+            runtime_release_sha="2" * 40,
+        )
+
+    assert exc_info.value.code == "online_abc_resume_remote_effect_started"
+    assert db_session.get(TgAuthorizationOnlineAbcBatch, batch_id).status == "stopped"
+
+
 def test_resume_reopens_succeeded_b_before_c_without_replaying_b(db_session) -> None:
     batch_id, item = _stopped_before_primary(db_session)
     batch = db_session.get(TgAuthorizationOnlineAbcBatch, batch_id)

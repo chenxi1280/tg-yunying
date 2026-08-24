@@ -501,7 +501,7 @@ bash deploy/authorization-online-abc-runner.sh --mode resume --batch-id <same-ba
 
 普通 runner 每次必须显式 `--max-accounts 10`。达到 chunk 上限且 frozen N 尚未完成时，runner 会在账号 terminal 边界重验 item 守恒、runtime off/scope 空、global sensitive/unknown=0、MY client=0，然后审计置 batch=`stopped`；SSH 返回后必须读回 runner=0。下一次同 SHA、同审批执行普通 `run` 时，只从最新 chunk-boundary pause 审计原子恢复后继续；发布漂移、失败、manual、unknown 或任一 stopped item 均不会走该自动恢复入口。
 
-若 status 显示 C=`provision_reconcile_unknown`，runner 必须自动非零退出；禁止等待、重试或领取下一账号。批次创建、领取下一账号和 resume 的 global unknown 门槛必须同时统计 `reconcile_unknown|provision_reconcile_unknown`，任一存在都不得继续。只允许在 runtime off、MY client=0 下用正式 reconcile preview/apply 和 artifact-forward/remote-fact readback 收口同一 operation；恢复为 succeeded 后才可按原 batch ID 继续。
+若 status 显示 C=`provision_reconcile_unknown`，runner 必须自动非零退出；禁止等待、重试或领取下一账号。批次创建、领取下一账号和 resume 的 global unknown 门槛必须同时统计 `reconcile_unknown|provision_reconcile_unknown`，任一存在都不得继续。只允许在 runtime off、MY client=0 下用正式 reconcile preview/apply 和 artifact-forward/remote-fact readback 收口同一 operation。operation 恢复为 `succeeded/confirmed/reconcile applied` 后，若原 online item 仍为 stopped/reconcile_unknown，使用正式 runner `--mode resume --account-id <same-account>`；入口必须读回同一 C candidate/case、B/C 完成、E4 不存在和 A qualified 后才进入 `post_c_pre_e4`，不得重登 C。随后 `run` 只完成原 E4/sync。release-rebind 与 pending-plan rebase 的 apply wrapper 必须以 `docker top <backend> -eo pid,args` 检查 runner；`-eo args` 在 Docker 中缺 PID 列会使门禁失效，禁止使用。
 
 2026-08-22 runner 生产读回：GitHub Actions run `32576826536` 已发布 release `a6481e0ae8bd851718e91eb1d6cafd1c6f74d154`；backend healthy、Alembic head=`0163_local_activate_verify`。`status` 已只读旧 stopped batch，返回 `next_action=stopped`、B/C `10/10` 和守恒有效；未调用 `run`。独立门槛读回为 runtime=`off`、claim scope 为空、global unknown=0、open ABC batch=0、MY node ready/active client=0。
 
