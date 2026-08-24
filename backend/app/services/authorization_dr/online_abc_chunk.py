@@ -8,6 +8,8 @@ from app.models import (
     AuditLog,
     AuthorizationDrExecutionNode,
     AuthorizationDrRuntimeContract,
+    TgAccount,
+    TgAccountAuthorization,
     TgAuthorizationDrOperation,
     TgAuthorizationOnlineAbcBatch,
     TgAuthorizationOnlineAbcItem,
@@ -16,12 +18,13 @@ from app.services._common import audit
 
 from .contracts import AuthorizationDrError
 from .online_abc_manifest import ACTIVE_OPERATION_STATUSES
+from .online_abc_primary import primary_state
 
 
 MAX_CHUNK_ACCOUNTS = 10
 CHUNK_PAUSE_ACTION = "ABC runner chunk 边界停批"
 CHUNK_RESUME_ACTION = "恢复 ABC runner chunk 边界"
-QUIESCENT_ITEM_STATUSES = {"pending", "succeeded"}
+QUIESCENT_ITEM_STATUSES = {"manual_required", "pending", "succeeded"}
 
 
 def require_chunk_size(max_accounts: int) -> None:
@@ -112,8 +115,19 @@ def _require_quiescent_boundary(session, batch) -> Counter:
     valid = len(items) == batch.target_count and bool(counts["pending"])
     if not valid or set(counts) - QUIESCENT_ITEM_STATUSES:
         raise AuthorizationDrError("online_abc_chunk_not_quiescent", "Chunk item boundary changed")
+    _require_manual_primary_unchanged(session, items)
     _require_global_boundary(session)
     return counts
+
+
+def _require_manual_primary_unchanged(session, items) -> None:
+    for item in items:
+        if item.status != "manual_required":
+            continue
+        account = session.get(TgAccount, item.account_id)
+        primary = session.get(TgAccountAuthorization, item.primary_authorization_id)
+        if primary_state(account, primary, item) not in {"frozen", "legacy_frozen", "qualified"}:
+            raise AuthorizationDrError("online_abc_primary_drift", "Manual item A changed")
 
 
 def _require_global_boundary(session) -> None:
@@ -158,7 +172,7 @@ def _audit_chunk(
             f"approval_ref={approval_ref}; execution_release="
             f"{batch.execution_release_sha or batch.deployed_release_sha}; "
             f"processed_count={processed_count}; succeeded={counts['succeeded']}; "
-            f"pending={counts['pending']}"
+            f"manual_required={counts['manual_required']}; pending={counts['pending']}"
         ),
     )
 

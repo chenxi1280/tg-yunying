@@ -26,6 +26,8 @@ def primary_state(account, primary, item) -> str:
 
 
 def stop_completed_primary_drift(session, batch, *, actor: str, approval_ref: str) -> bool:
+    if _stop_manual_primary_drift(session, batch, actor=actor, approval_ref=approval_ref):
+        return True
     items = list(session.scalars(select(TgAuthorizationOnlineAbcItem).where(
         TgAuthorizationOnlineAbcItem.batch_id == batch.id,
         TgAuthorizationOnlineAbcItem.status == "succeeded",
@@ -49,6 +51,36 @@ def stop_completed_primary_drift(session, batch, *, actor: str, approval_ref: st
     )
     session.commit()
     return True
+
+
+def _stop_manual_primary_drift(session, batch, *, actor: str, approval_ref: str) -> bool:
+    items = list(session.scalars(select(TgAuthorizationOnlineAbcItem).where(
+        TgAuthorizationOnlineAbcItem.batch_id == batch.id,
+        TgAuthorizationOnlineAbcItem.status == "manual_required",
+    )))
+    drifted = [item for item in items if _manual_primary_drifted(session, item)]
+    if not drifted:
+        return False
+    batch.status = "stopped"
+    batch.version += 1
+    accounts = ",".join(str(item.account_id) for item in drifted)
+    audit(
+        session,
+        tenant_id=batch.tenant_id,
+        actor=actor,
+        action=f"停止 ABC full manual A 漂移 accounts={accounts}",
+        target_type="tg_authorization_online_abc_batches",
+        target_id=batch.id,
+        detail=f"approval_ref={approval_ref}; target_count={batch.target_count}",
+    )
+    session.commit()
+    return True
+
+
+def _manual_primary_drifted(session, item) -> bool:
+    account = session.get(TgAccount, item.account_id)
+    primary = session.get(TgAccountAuthorization, item.primary_authorization_id)
+    return primary_state(account, primary, item) not in {"frozen", "legacy_frozen", "qualified"}
 
 
 def _primary_drifted(session, item) -> bool:

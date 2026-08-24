@@ -61,7 +61,7 @@ from .standby_2_provision import prepare_scoped_c_provision
 
 POLL_INTERVAL_SECONDS = 2.0
 SUCCESS_STATUS = "succeeded"
-TERMINAL_BATCH_STATUSES = {"accepted", "completed", "observing", "stopped"}
+TERMINAL_BATCH_STATUSES = {"accepted", "completed", "completed_with_manual", "observing", "stopped"}
 POST_C_RESUME_BLOCKER = "malaysia_wake_unavailable"
 PRE_PRIMARY_RESUME_BLOCKER = "ValueError"
 POST_B_PRE_C_RESUME_BLOCKER = "sv_redundancy_incomplete"

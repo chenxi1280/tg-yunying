@@ -12,6 +12,8 @@ from app.models import (
     AuthorizationDrExecutionNode,
     AuthorizationDrRuntimeContract,
     TgAuthorizationDrOperation,
+    TgAccount,
+    TgAccountAuthorization,
     TgAuthorizationOnlineAbcBatch,
     TgAuthorizationOnlineAbcItem,
 )
@@ -22,13 +24,14 @@ from .online_abc import UNKNOWN_OPERATION_STATUSES
 from .online_abc_operations import online_abc_item_operations
 from .online_abc_manifest import ACTIVE_OPERATION_STATUSES
 from .online_abc_primary import _primary_drifted
+from .online_abc_primary import primary_state
 from .online_abc_read import item_operations_complete
 
 
 PAUSE_ACTION = "生产版本变化暂停 ABC runner"
 PAUSE_BLOCKER = "production_release_changed_mid_chunk"
 REBIND_ACTION = "重绑 ABC runner 执行 release"
-ALLOWED_ITEM_STATUSES = {"pending", "succeeded"}
+ALLOWED_ITEM_STATUSES = {"manual_required", "pending", "succeeded"}
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
 
@@ -99,6 +102,7 @@ def _preview_payload(session, batch, release_sha: str, approval: tuple[str, str,
         "runtime_release_sha": release_sha,
         "pause_audit_id": pause.id,
         "succeeded_count": counts["succeeded"],
+        "manual_count": counts["manual_required"],
         "pending_count": counts["pending"],
         "requested_by": approval[0],
         "approved_by": approval[1],
@@ -112,6 +116,8 @@ def _require_item_boundary(session, batch, items, counts: Counter) -> None:
     if set(counts) - ALLOWED_ITEM_STATUSES:
         raise AuthorizationDrError("online_abc_release_rebind_item_boundary", "Items are not quiescent")
     for item in items:
+        if item.status == "manual_required":
+            _require_manual_primary(session, item)
         if item.status != "succeeded":
             continue
         if _primary_drifted(session, item):
@@ -119,6 +125,13 @@ def _require_item_boundary(session, batch, items, counts: Counter) -> None:
         operations = online_abc_item_operations(session, batch, item)
         if not item_operations_complete(session, item, operations):
             raise AuthorizationDrError("online_abc_release_rebind_completed_incomplete", "Completed item facts are incomplete")
+
+
+def _require_manual_primary(session, item) -> None:
+    account = session.get(TgAccount, item.account_id)
+    primary = session.get(TgAccountAuthorization, item.primary_authorization_id)
+    if primary_state(account, primary, item) not in {"frozen", "legacy_frozen", "qualified"}:
+        raise AuthorizationDrError("online_abc_primary_drift", "Manual item A drifted")
 
 
 def _require_global_boundary(session) -> None:
@@ -203,7 +216,7 @@ def _audit_rebind(session, batch, preview, previous_sha, actor: str, approval_re
             f"approval_ref={approval_ref}; fingerprint={preview['fingerprint']}; "
             f"pause_audit_id={preview['pause_audit_id']}; execution_release={previous_sha}->"
             f"{preview['runtime_release_sha']}; succeeded={preview['succeeded_count']}; "
-            f"pending={preview['pending_count']}"
+            f"manual_required={preview['manual_count']}; pending={preview['pending_count']}"
         ),
     )
 

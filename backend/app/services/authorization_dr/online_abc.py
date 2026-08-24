@@ -304,13 +304,14 @@ def _complete_item(session, batch, item, actor, approval_ref) -> None:
     item.finished_at = _now()
     item.version += 1
     _audit_batch(session, batch, f"完成 ABC canary account={item.account_id}", actor, approval_ref)
-    if all(value.outcome == "succeeded" for value in _items(session, batch.id)):
-        if batch.selection_mode == "exact_ten_canary":
+    outcomes = {value.outcome for value in _items(session, batch.id)}
+    if outcomes <= {"succeeded", "manual_required"}:
+        if batch.selection_mode == "exact_ten_canary" and "manual_required" not in outcomes:
             batch.status = "observing"
             batch.observation_started_at = _now()
             batch.observation_closes_at = batch.observation_started_at
         else:
-            batch.status = "completed"
+            batch.status = "completed_with_manual" if "manual_required" in outcomes else "completed"
     batch.version += 1
 
 
