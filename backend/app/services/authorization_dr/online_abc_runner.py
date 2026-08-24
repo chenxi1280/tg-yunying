@@ -498,7 +498,7 @@ def _require_post_b_reconcile_resume(session, item, operations: dict) -> None:
         and candidate.auth_key_fingerprint_digest
         and candidate.auth_key_fingerprint_digest != primary_identity[1]
     )
-    if _primary_state(account, primary, item) != "frozen" or not valid_candidate:
+    if _primary_state(account, primary, item) not in {"frozen", "legacy_frozen"} or not valid_candidate:
         raise AuthorizationDrError("online_abc_primary_drift", "A or recovered B changed before resume")
     preview = preview_primary_qualification(session, item.tenant_id, item.account_id)
     if preview["primary_authorization_id"] != item.primary_authorization_id:
