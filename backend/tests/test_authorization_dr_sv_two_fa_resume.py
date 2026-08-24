@@ -100,9 +100,10 @@ def _seed(session: Session):
         expected_code_source_auth_key_digest="2" * 64, developer_app_id=1,
         developer_app_api_id_snapshot=1001, developer_app_credentials_version=1,
         assignment_version=1, egress_id="primary_regular:direct", egress_version=1,
-        idempotency_key="online-abc:262:b", request_fingerprint="f" * 64,
+        idempotency_key="online-abc:batch-262:1:b", request_fingerprint="f" * 64,
         status="reconcile_unknown", blocker_code="PasswordHashInvalidError",
         remote_call_state="unknown", login_flow_id=flow.id, requested_by="requester",
+        login_challenge_sent_at=now, login_code_message_id=123, login_code_received_at=now,
         approved_by="reviewer", approval_ref="approved",
     )
     session.add(operation)
@@ -361,24 +362,60 @@ def test_repeated_apply_returns_same_committed_case_without_remote_call(monkeypa
         assert second == first
 
 
-def test_legacy_a_uses_frozen_operation_identity_without_writing_a(monkeypatch) -> None:
+def test_legacy_a_waiting_two_fa_resumes_same_session_without_writing_a(monkeypatch) -> None:
     with _session() as session:
-        account, primary, _security, _flow, operation = _seed(session)
+        account, primary, security, flow, operation = _seed(session)
         primary.telegram_user_id_digest = ""
         primary.auth_key_fingerprint_digest = ""
+        primary.health_status = "legacy"
+        security.two_fa_password_ciphertext = ""
+        security.two_fa_password_stored_at = None
+        security.last_error = "legacy password unavailable"
+        flow.status = AccountStatus.WAITING_2FA.value
+        operation.blocker_code = "ValueError"
         session.commit()
         _patch_common(monkeypatch)
+        identities = iter([RuntimeError("session is not authorized"), _identity()])
+        def identity(*_args):
+            value = next(identities)
+            if isinstance(value, Exception):
+                raise value
+            return value
         monkeypatch.setattr(
-            "app.services.authorization_dr.sv_two_fa_resume.gateway.authorization_identity",
-            lambda *_: _identity(),
+            "app.services.authorization_dr.sv_two_fa_resume.gateway.authorization_identity", identity,
         )
+        calls = []
+        monkeypatch.setattr("app.services.authorization_dr.sv_two_fa_resume.gateway.finish_login",
+                            lambda code, password, **kwargs: (
+                                calls.append((code, password, kwargs)) or
+                                (AccountStatus.ACTIVE.value, "raw-authorized")
+                            ))
+        before = _a_fence(account, primary)
         result = _apply(session, operation, _preview(session, operation)["evidence_fingerprint"])
         session.refresh(primary)
+        session.refresh(security)
         assert (primary.telegram_user_id_digest, primary.auth_key_fingerprint_digest) == ("", "")
-        assert _a_fence(account, primary)[0:6] == (primary.id, "a-session", 2, 1, 1, 1)
+        assert _a_fence(account, primary) == before
+        assert len(calls) == 1 and calls[0][0:2] == (None, "fixed-password")
+        assert security.two_fa_password_ciphertext == "managed:fixed-password"
         item = session.get(TgAuthorizationOnlineAbcItem, "item-262")
         _require_post_b_reconcile_resume(session, item, {"b": operation, "c": None, "e4": None})
         assert result["candidate_authorization_id"] is not None
+
+
+def test_value_error_before_waiting_two_fa_is_not_resumable(monkeypatch) -> None:
+    with _session() as session:
+        _account, primary, security, flow, operation = _seed(session)
+        primary.health_status = "legacy"
+        security.two_fa_password_ciphertext = ""
+        security.two_fa_password_stored_at = None
+        operation.blocker_code = "ValueError"
+        flow.status = AccountStatus.WAITING_CODE.value
+        session.commit()
+        _patch_common(monkeypatch)
+        with pytest.raises(AuthorizationDrError) as exc_info:
+            _preview(session, operation)
+        assert exc_info.value.code == "reconcile_transition_blocked"
 
 
 def test_invalid_fixed_password_is_typed_no_effect(monkeypatch) -> None:

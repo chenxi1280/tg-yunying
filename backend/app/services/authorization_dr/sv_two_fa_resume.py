@@ -30,6 +30,7 @@ from app.services.account_authorization_metadata import resolve_authorization_id
 from app.services.developer_apps import credentials_for_authorization, credentials_for_developer_app
 
 from .contracts import AuthorizationDrError
+from .online_abc_operations import online_abc_item_operations
 from .primary_fence import verified_code_source
 from .sv_login_recovery import (
     _egress_matches_flow,
@@ -50,6 +51,7 @@ from .sv_two_fa_resume_commit import (
 
 UNAUTHORIZED_MESSAGE = "session is not authorized"
 UNKNOWN_STATUSES = {"provision_reconcile_unknown", "reconcile_unknown"}
+RESUMABLE_BLOCKERS = {"PasswordHashInvalidError", "ValueError"}
 ACTIVE_STATUSES = {
     "pending", "waiting_login", "login_remote_started", "bundle_copies_verified",
     "ready_for_slot_commit", "slot_commit_prepared", "running", "approved",
@@ -212,28 +214,45 @@ def _require_context(session, context: ResumeContext) -> None:
     active_clients = session.scalar(select(func.sum(AuthorizationDrExecutionNode.active_client_count))) or 0
     valid = operation.operation_type == "provision_standby_1"
     valid = valid and operation.status == "reconcile_unknown"
-    valid = valid and operation.blocker_code == "PasswordHashInvalidError"
+    valid = valid and operation.blocker_code in RESUMABLE_BLOCKERS
     valid = valid and operation.remote_call_state == "unknown" and not operation.candidate_authorization_id
     valid = valid and not operation.owner_node_id and not operation.lease_token
-    valid = valid and operation.lease_expires_at is None and _primary_healthy(context)
+    valid = valid and operation.lease_expires_at is None and _primary_safe(context)
     valid = valid and flow and flow.status in {AccountStatus.WAITING_CODE.value, AccountStatus.WAITING_2FA.value}
     valid = valid and flow.temporary_session_ciphertext and flow.phone_code_hash_ciphertext
     valid = valid and context.app and context.app.is_active and _egress_matches_flow(operation, flow, context.proxy)
     valid = valid and contract and contract.mode == "off" and not contract.claim_scope_operation_id
     valid = valid and active_clients == 0 and context.runtime_image_sha and context.requested_by
     valid = valid and _operation_boundary_frozen(session, operation.id)
-    valid = valid and _online_state_frozen(context) and _security_state_frozen(context)
+    valid = valid and _online_state_frozen(session, context) and _security_state_frozen(context)
     if not valid or _healthy_target_exists(session, context):
         raise AuthorizationDrError("reconcile_transition_blocked", "SV 2FA resume state is not frozen")
 
 
-def _primary_healthy(context: ResumeContext) -> bool:
+def _primary_safe(context: ResumeContext) -> bool:
     primary, account = context.primary, context.account
+    health_allowed = primary.health_status == "healthy"
+    if context.operation.blocker_code == "ValueError":
+        health_allowed = primary.health_status == "legacy" and _legacy_waiting_two_fa(context)
     return bool(
         account.status == AccountStatus.ACTIVE.value
-        and primary.status == "active" and primary.health_status == "healthy"
+        and primary.status == "active" and health_allowed
         and primary.is_slot_current and primary.protected_from_cleanup
         and not primary.last_authoritative_error_code and primary.disabled_at is None
+    )
+
+
+def _legacy_waiting_two_fa(context: ResumeContext) -> bool:
+    security = context.security
+    return bool(
+        context.flow and context.flow.status == AccountStatus.WAITING_2FA.value
+        and context.operation.login_challenge_sent_at and context.operation.login_code_message_id
+        and context.operation.login_code_received_at
+        and security and security.trusted_session_status == "confirmed"
+        and security.two_fa_status == "enabled" and not security.two_fa_password_ciphertext
+        and not security.two_fa_password_stored_at
+        and context.tenant and context.tenant.fixed_two_fa_password_ciphertext
+        and context.tenant.fixed_two_fa_password_set_at
     )
 
 
@@ -248,7 +267,10 @@ def _operation_boundary_frozen(session, operation_id: str) -> bool:
     return unknown_ids == [operation_id] and other_active is None
 
 
-def _online_state_frozen(context: ResumeContext) -> bool:
+def _online_state_frozen(session, context: ResumeContext) -> bool:
+    if not context.batch or not context.item:
+        return False
+    operations = online_abc_item_operations(session, context.batch, context.item)
     return bool(
         context.batch and context.batch.status == "stopped"
         and context.item and context.item.status == "stopped" and context.item.outcome == "reconcile_unknown"
@@ -256,6 +278,7 @@ def _online_state_frozen(context: ResumeContext) -> bool:
         and context.slot and context.slot.logical_slot == "standby_1"
         and context.slot.outcome == "reconcile_unknown"
         and context.slot.operation_id == context.operation.id
+        and operations == {"b": context.operation, "c": None, "e4": None}
     )
 
 
@@ -274,6 +297,8 @@ def _item_primary_frozen(context: ResumeContext) -> bool:
 
 
 def _security_state_frozen(context: ResumeContext) -> bool:
+    if context.operation.blocker_code == "ValueError":
+        return _legacy_waiting_two_fa(context)
     security, tenant = context.security, context.tenant
     return bool(
         security and security.trusted_session_status == "confirmed"
@@ -306,12 +331,18 @@ def _healthy_target_exists(session, context: ResumeContext) -> bool:
 
 def _evidence_payload(context: ResumeContext) -> dict:
     account, primary, flow = context.account, context.primary, context.flow
+    managed_secret = context.security.two_fa_password_ciphertext or ""
     return {
         "operation_id": context.operation.id,
         "account_id": account.id,
         "operation_version": context.operation.operation_version,
+        "operation_blocker_code": context.operation.blocker_code,
+        "login_challenge_sent_at": str(context.operation.login_challenge_sent_at),
+        "login_code_message_id": context.operation.login_code_message_id,
+        "login_code_received_at": str(context.operation.login_code_received_at),
         "flow_id": flow.id,
         "flow_version": flow.flow_version,
+        "flow_status": flow.status,
         "primary_authorization_id": primary.id,
         "primary_fact_version": primary.fact_version,
         "primary_session_digest": _digest(primary.session_ciphertext or ""),
@@ -327,8 +358,8 @@ def _evidence_payload(context: ResumeContext) -> dict:
         "target_logical_slot": _standby_target_slot(primary),
         "temporary_session_digest": _digest(flow.temporary_session_ciphertext),
         "phone_code_hash_digest": _digest(flow.phone_code_hash_ciphertext),
-        "managed_secret_ref_digest": _digest(context.security.two_fa_password_ciphertext),
-        "managed_secret_stored_at": str(context.security.two_fa_password_stored_at),
+        "managed_secret_ref_digest": _digest(managed_secret),
+        "managed_secret_stored_at": str(context.security.two_fa_password_stored_at or ""),
         "fixed_secret_ref_digest": _digest(context.tenant.fixed_two_fa_password_ciphertext),
         "fixed_secret_set_at": str(context.tenant.fixed_two_fa_password_set_at),
         "batch_id": context.batch.id,
