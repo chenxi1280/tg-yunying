@@ -39,6 +39,12 @@ from .online_abc_manual_outcome import (
     _slots,
 )
 from .online_abc_operations import online_abc_item_operations
+from .online_abc_release_interrupted_flow import (
+    close_empty_interrupted_intent,
+    flow_snapshot,
+    interrupted_login_flows,
+    require_empty_interrupted_intent,
+)
 
 
 ACTION = "结案发布中断的 ABC B pre-flow"
@@ -55,6 +61,7 @@ class InterruptedContext:
     operation: TgAuthorizationDrOperation
     account: TgAccount
     primary: TgAccountAuthorization
+    flows: tuple[TgLoginFlow, ...]
 
 
 def preview_release_interrupted_b(
@@ -156,7 +163,8 @@ def _context(session, batch_id: str, account_id: int) -> InterruptedContext:
     primary = session.get(TgAccountAuthorization, item.primary_authorization_id)
     if not operation or not account or not primary:
         raise AuthorizationDrError("online_abc_release_interrupted_missing", "Interrupted B facts are incomplete")
-    return InterruptedContext(batch, item, slots, operation, account, primary)
+    flows = interrupted_login_flows(session, operation)
+    return InterruptedContext(batch, item, slots, operation, account, primary, flows)
 
 
 def _require_boundary(session, context: InterruptedContext, release_sha: str) -> Counter:
@@ -189,7 +197,7 @@ def _require_operation_shape(session, context: InterruptedContext) -> None:
     bundle_count = session.scalar(select(func.count()).select_from(TgAuthorizationWakeBundle).where(
         TgAuthorizationWakeBundle.operation_id == operation.id,
     ))
-    new_flow_count = _new_flow_count(session, operation)
+    require_empty_interrupted_intent(operation, context.flows)
     valid = all((
         operation.operation_type == "provision_standby_1",
         _operation_matches_frozen_plan(context),
@@ -214,7 +222,7 @@ def _require_operation_shape(session, context: InterruptedContext) -> None:
         c_slot.operation_id is None,
         operations == {"b": operation, "c": None, "e4": None},
     ))
-    if not valid or bundle_count or new_flow_count:
+    if not valid or bundle_count:
         raise AuthorizationDrError("online_abc_release_interrupted_state_invalid", "Interrupted B state changed")
 
 
@@ -234,18 +242,6 @@ def _operation_matches_frozen_plan(context: InterruptedContext) -> bool:
         operation.developer_app_id == item.app_b_id,
         operation.developer_app_credentials_version == item.app_b_credentials_version,
         operation.assignment_version == item.app_b_assignment_version,
-    ))
-
-
-def _new_flow_count(session, operation) -> int:
-    if operation.remote_effect_started_at is None:
-        return 0
-    return session.scalar(select(func.count()).select_from(TgLoginFlow).where(
-        TgLoginFlow.tenant_id == operation.tenant_id,
-        TgLoginFlow.account_id == operation.account_id,
-        TgLoginFlow.authorization_role == "standby_1",
-        TgLoginFlow.developer_app_id == operation.developer_app_id,
-        TgLoginFlow.created_at >= operation.remote_effect_started_at,
     ))
 
 
@@ -293,6 +289,7 @@ def _payload(
         "operation_status": operation.status,
         "remote_call_state": operation.remote_call_state,
         "remote_effect_started_at": str(operation.remote_effect_started_at),
+        "interrupted_flow": flow_snapshot(context.flows[0] if context.flows else None),
         "primary": _primary_snapshot(session, context.item),
         "pending_count": counts["pending"],
         "manual_count": counts[MANUAL_OUTCOME],
@@ -304,6 +301,7 @@ def _payload(
         "approved_by": approval[1],
         "approval_ref": approval[2],
     }
+
 
 def _lock_context(session, batch_id: str, account_id: int) -> None:
     session.expire_all()
@@ -328,6 +326,10 @@ def _lock_context(session, batch_id: str, account_id: int) -> None:
     list(session.scalars(select(TgAuthorizationOnlineAbcSlotResult).where(
         TgAuthorizationOnlineAbcSlotResult.item_id == item.id,
     ).with_for_update().execution_options(populate_existing=True)))
+    for flow in context.flows:
+        session.scalar(select(TgLoginFlow).where(TgLoginFlow.id == flow.id).with_for_update().execution_options(
+            populate_existing=True,
+        ))
 
 
 def _apply_transition(session, context: InterruptedContext, preview: dict) -> None:
@@ -357,6 +359,12 @@ def _apply_transition(session, context: InterruptedContext, preview: dict) -> No
     )
     session.add(case)
     session.flush()
+    close_empty_interrupted_intent(
+        operation,
+        context.flows[0] if context.flows else None,
+        blocker_code=BLOCKER,
+        interruption_ref=preview["interruption_ref"],
+    )
     _close_operation(operation, case)
     _mark_slot_manual(context.slots["standby_1"], BLOCKER)
     context.slots["standby_1"].operation_id = operation.id
@@ -391,6 +399,7 @@ def _evidence_manifest(preview: dict) -> dict:
     return {key: preview[key] for key in (
         "classification", "blocker_code", "interruption_ref", "previous_execution_release_sha",
         "runtime_release_sha", "operation_status", "remote_call_state", "remote_effect_started_at",
+        "interrupted_flow",
     )}
 
 
@@ -457,6 +466,7 @@ def _result(session, batch_id: str, account_id: int) -> dict:
         "reconcile_case_id": context.operation.reconcile_case_id,
         "classification": case.classification if case else "",
         "interruption_ref": manifest.get("interruption_ref", ""),
+        "interrupted_flow": flow_snapshot(context.flows[0] if context.flows else None),
         "primary": _primary_snapshot(session, context.item),
         "fingerprint": case.evidence_fingerprint if case else "",
     }

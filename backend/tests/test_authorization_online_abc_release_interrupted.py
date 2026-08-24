@@ -65,6 +65,8 @@ def test_preview_is_read_only_and_freezes_exact_pre_flow_boundary(db_session) ->
     assert preview["runtime_release_sha"] == NEW_RELEASE_SHA
     assert preview["classification"] == CLASSIFICATION
     assert preview["primary"]["state"] == "legacy_frozen"
+    assert preview["interrupted_flow"]["status"] == "intent_persisted"
+    assert preview["interrupted_flow"]["challenge_sent"] is False
     assert _snapshot(db_session, batch_id, account_id) == before
     assert not db_session.new and not db_session.dirty and not db_session.deleted
 
@@ -81,6 +83,7 @@ def test_apply_records_manual_debt_and_preserves_remote_effect_and_a(db_session)
     item = _item(db_session, batch_id, account_id)
     slots = _slots(db_session, item.id)
     operation = db_session.get(TgAuthorizationDrOperation, operation_id)
+    flow = _flow(db_session, account_id)
     case = db_session.get(TgAuthorizationDrReconcileCase, operation.reconcile_case_id)
     assert result["already_applied"] is False
     assert batch.status == "running" and batch.execution_release_sha == NEW_RELEASE_SHA
@@ -89,7 +92,11 @@ def test_apply_records_manual_debt_and_preserves_remote_effect_and_a(db_session)
     assert slots["standby_1"].operation_id == operation.id
     assert slots["standby_2"].operation_id is None
     assert (operation.status, operation.remote_call_state) == ("manual_required", "reconciled_hold")
+    assert operation.login_flow_id == flow.id
     assert operation.remote_effect_started_at == before_effect
+    assert (flow.status, flow.flow_version, flow.failure_type) == ("superseded", 2, BLOCKER)
+    assert flow.authorization_id is None and flow.challenge_sent_at is None
+    assert flow.temporary_session_ciphertext is None and flow.phone_code_hash_ciphertext is None
     assert operation.blocker_code == BLOCKER and operation.finished_at
     assert case and case.status == "applied" and case.classification == CLASSIFICATION
     assert case.evidence_fingerprint == preview["fingerprint"]
@@ -113,6 +120,8 @@ def test_apply_is_idempotent_and_rejects_fingerprint_conflict(db_session) -> Non
     assert readback["interruption_ref"] == INTERRUPTION_REF
     assert readback["remote_effect_started_at"] == preview["remote_effect_started_at"]
     assert readback["primary"] == preview["primary"]
+    assert readback["interrupted_flow"]["status"] == "superseded"
+    assert readback["interrupted_flow"]["id"] == preview["interrupted_flow"]["id"]
     assert second["item_version"] == first["item_version"]
     with pytest.raises(AuthorizationDrError) as exc_info:
         _apply(db_session, batch_id, account_id, fingerprint="f" * 64)
@@ -174,7 +183,7 @@ def test_preview_rejects_same_release_a_drift_or_second_sensitive_operation(db_s
     assert exc_info.value.code == "online_abc_release_interrupted_runtime_active"
 
 
-def test_preview_rejects_unlinked_login_flow_created_after_remote_start(db_session) -> None:
+def test_preview_rejects_second_ambiguous_intent_flow(db_session) -> None:
     batch_id, account_id, operation_id = _interrupted_item(db_session)
     operation = db_session.get(TgAuthorizationDrOperation, operation_id)
     db_session.add(TgLoginFlow(
@@ -194,7 +203,46 @@ def test_preview_rejects_unlinked_login_flow_created_after_remote_start(db_sessi
     assert exc_info.value.code == "online_abc_release_interrupted_state_invalid"
 
 
-def _interrupted_item(session) -> tuple[str, int, str]:
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("status", "等待验证码"),
+        ("challenge_sent_at", _now()),
+        ("temporary_session_ciphertext", "encrypted-session"),
+        ("phone_code_hash_ciphertext", "encrypted-hash"),
+        ("code_preview", "12345"),
+        ("qr_payload", "qr-payload"),
+        ("authorization_id", 1),
+        ("superseded_by_flow_id", 99),
+        ("failure_detail", "downstream-detail"),
+        ("remote_error_type", "rpc_error"),
+    ],
+)
+def test_preview_rejects_intent_flow_with_any_remote_or_terminal_fact(
+    db_session, field, value,
+) -> None:
+    batch_id, account_id, _ = _interrupted_item(db_session)
+    setattr(_flow(db_session, account_id), field, value)
+    db_session.commit()
+
+    with pytest.raises(AuthorizationDrError) as exc_info:
+        _preview(db_session, batch_id, account_id)
+
+    assert exc_info.value.code == "online_abc_release_interrupted_state_invalid"
+
+
+def test_no_flow_variant_remains_supported(db_session) -> None:
+    batch_id, account_id, _ = _interrupted_item(db_session, include_flow=False)
+
+    preview = _preview(db_session, batch_id, account_id)
+    result = _apply(db_session, batch_id, account_id, fingerprint=preview["fingerprint"])
+
+    assert preview["interrupted_flow"] is None
+    assert result["interrupted_flow"] is None
+    assert result["item_outcome"] == "manual_required"
+
+
+def _interrupted_item(session, *, include_flow: bool = True) -> tuple[str, int, str]:
     batch_id = _new_full_batch(session)
     command = start_next_online_abc_item(
         session, batch_id, actor="approver", approval_ref="ABC-FULL",
@@ -217,8 +265,29 @@ def _interrupted_item(session) -> tuple[str, int, str]:
     operation.operation_version = 2
     operation.blocker_code = ""
     operation.reconcile_status = "none"
+    if include_flow:
+        _add_empty_intent(session, operation)
     session.commit()
     return batch_id, command["account_id"], operation.id
+
+
+def _add_empty_intent(session, operation) -> None:
+    session.add(TgLoginFlow(
+        tenant_id=operation.tenant_id,
+        account_id=operation.account_id,
+        method="code",
+        status="intent_persisted",
+        authorization_role="standby_1",
+        developer_app_id=operation.developer_app_id,
+        created_at=_now(),
+    ))
+
+
+def _flow(session, account_id: int):
+    return session.scalar(select(TgLoginFlow).where(
+        TgLoginFlow.account_id == account_id,
+        TgLoginFlow.authorization_role == "standby_1",
+    ).order_by(TgLoginFlow.created_at.desc(), TgLoginFlow.id.desc()).limit(1))
 
 
 def _new_full_batch(session) -> str:
@@ -291,6 +360,7 @@ def _snapshot(session, batch_id: str, account_id: int) -> tuple:
         TgAuthorizationDrOperation.account_id == account_id,
         TgAuthorizationDrOperation.status == "login_remote_started",
     ))
+    flow = _flow(session, account_id)
     return (
         batch.status,
         batch.version,
@@ -304,6 +374,9 @@ def _snapshot(session, batch_id: str, account_id: int) -> tuple:
         slots["standby_2"].version,
         operation.status,
         operation.operation_version,
+        flow.status if flow else None,
+        flow.flow_version if flow else None,
+        flow.failure_type if flow else None,
         _a_snapshot(session, account_id),
     )
 
