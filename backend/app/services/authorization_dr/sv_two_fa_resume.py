@@ -148,7 +148,7 @@ def _load_context(session, operation_id, *, tenant_id, runtime_sha, requested_by
     if not operation or operation.tenant_id != tenant_id:
         raise AuthorizationDrError("migration_operation_not_found", "SV 2FA operation does not exist")
     account = session.get(TgAccount, operation.account_id)
-    primary = verified_code_source(session, operation)
+    primary = verified_code_source(session, operation, allow_unpersisted_identity=True)
     flow = session.get(TgLoginFlow, operation.login_flow_id)
     app = session.get(TelegramDeveloperApp, operation.developer_app_id)
     proxy = _operation_proxy(session, operation)
@@ -315,6 +315,8 @@ def _evidence_payload(context: ResumeContext) -> dict:
         "primary_authorization_id": primary.id,
         "primary_fact_version": primary.fact_version,
         "primary_session_digest": _digest(primary.session_ciphertext or ""),
+        "expected_primary_user_digest": context.operation.expected_code_source_user_id_digest,
+        "expected_primary_authkey_digest": context.operation.expected_code_source_auth_key_digest,
         "account_generations": [account.authorization_generation, account.authorization_fact_generation,
                                 account.connection_generation],
         "developer_app_id": context.app.id,
@@ -379,9 +381,11 @@ def _submit_fixed_password(context: ResumeContext, credentials, raw_session: str
 
 
 def _require_remote_identity(context: ResumeContext, identity) -> None:
-    if identity.telegram_user_id_digest != context.primary.telegram_user_id_digest:
+    expected_user = context.operation.expected_code_source_user_id_digest
+    expected_authkey = context.operation.expected_code_source_auth_key_digest
+    if identity.telegram_user_id_digest != expected_user:
         raise AuthorizationDrError("authorization_identity_mismatch", "Recovered B belongs to another account")
-    if identity.auth_key_fingerprint_digest == context.primary.auth_key_fingerprint_digest:
+    if identity.auth_key_fingerprint_digest == expected_authkey:
         raise AuthorizationDrError("authorization_identity_mismatch", "Recovered B duplicates A AuthKey")
     if not identity.authorization_hash or identity.authorization_hash == "0":
         raise AuthorizationDrError("authorization_hash_missing", "Recovered B authorization hash is missing")
