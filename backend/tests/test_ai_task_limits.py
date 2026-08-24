@@ -796,7 +796,11 @@ def test_group_ai_plans_reply_turns_with_bound_targets(monkeypatch):
     assert created == 3
     assert all(action.payload["ai_generation_status"] == "pending" for action in actions)
     assert [action.payload["reply_to_message_id"] for action in actions[:2]] == [44, 43]
-    assert [action.payload["reply_target_author"] for action in actions[:2]] == ["账号102", "账号101"]
+    assert [action.payload["reply_target_author"] for action in actions[:2]] == ["另一个真人", "真人用户"]
+    assert [action.payload["reply_target_source"] for action in actions[:2]] == [
+        "listener_context",
+        "listener_context",
+    ]
     assert actions[1].payload["reply_target_preview"] == "今天群里有什么安排"
     assert actions[2].payload["reply_to_message_id"] is None
 
