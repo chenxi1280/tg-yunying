@@ -257,28 +257,7 @@ def test_resume_rejects_unreconciled_c_unknown_item(db_session, monkeypatch) -> 
 
 
 def test_resume_reopens_succeeded_b_before_c_without_replaying_b(db_session) -> None:
-    batch_id, item = _stopped_before_primary(db_session)
-    batch = db_session.get(TgAuthorizationOnlineAbcBatch, batch_id)
-    abc_tests._qualify_primary(db_session, item.account_id)
-    primary = db_session.get(TgAccountAuthorization, item.primary_authorization_id)
-    candidate = TgAccountAuthorization(
-        tenant_id=1, account_id=item.account_id, role="standby_1", logical_slot="primary",
-        provision_region_code="sv", developer_app_id=1, session_ciphertext="new-b",
-        status="standby", health_status="healthy", is_current=False, is_slot_current=True,
-        telegram_user_id_digest=primary.telegram_user_id_digest,
-        auth_key_fingerprint_digest="9" * 64,
-    )
-    db_session.add(candidate)
-    db_session.flush()
-    operation = abc_tests._add_operation(
-        db_session,
-        item.account_id,
-        runner.online_abc_operation_keys(batch, item)["b"],
-        "succeeded",
-    )
-    operation.candidate_authorization_id = candidate.id
-    item.blocker_code = "sv_redundancy_incomplete"
-    db_session.commit()
+    batch_id, item, operation = _stopped_after_b(db_session, "sv_redundancy_incomplete")
 
     result = runner.resume_online_abc_batch(
         db_session,
@@ -294,6 +273,64 @@ def test_resume_reopens_succeeded_b_before_c_without_replaying_b(db_session) -> 
     assert result["operations"]["b"]["id"] == operation.id
     assert result["operations"]["c"] is None
     assert result["operations"]["e4"] is None
+
+
+def test_resume_reopens_succeeded_b_after_my_readiness_failure(db_session, monkeypatch) -> None:
+    batch_id, item, operation = _stopped_after_b(db_session, "malaysia_wake_unavailable")
+    readiness_calls = 0
+
+    def ready(_session):
+        nonlocal readiness_calls
+        readiness_calls += 1
+        return "d" * 40
+
+    monkeypatch.setattr(runner, "ready_migration_runtime_image_sha", ready)
+
+    result = runner.resume_online_abc_batch(
+        db_session,
+        batch_id,
+        requested_by="requester",
+        approved_by="approver",
+        approval_ref="ABC-10",
+        runtime_release_sha="2" * 40,
+    )
+
+    assert readiness_calls == 1
+    assert result["batch"]["status"] == "running"
+    assert result["current_item"]["id"] == item.id
+    assert result["operations"]["b"]["id"] == operation.id
+    assert result["operations"]["c"] is None
+    assert result["operations"]["e4"] is None
+
+
+def test_resume_my_readiness_failure_before_c_is_zero_write(db_session, monkeypatch) -> None:
+    batch_id, item, _operation = _stopped_after_b(db_session, "malaysia_wake_unavailable")
+    batch = db_session.get(TgAuthorizationOnlineAbcBatch, batch_id)
+    batch_version = batch.version
+    item_version = item.version
+
+    def unavailable(_session):
+        raise AuthorizationDrError("malaysia_wake_unavailable", "MY execution node heartbeat is stale")
+
+    monkeypatch.setattr(runner, "ready_migration_runtime_image_sha", unavailable)
+
+    with pytest.raises(AuthorizationDrError) as exc_info:
+        runner.resume_online_abc_batch(
+            db_session,
+            batch_id,
+            requested_by="requester",
+            approved_by="approver",
+            approval_ref="ABC-10",
+            runtime_release_sha="2" * 40,
+        )
+
+    assert exc_info.value.code == "malaysia_wake_unavailable"
+    db_session.refresh(batch)
+    db_session.refresh(item)
+    assert batch.status == "stopped"
+    assert batch.version == batch_version
+    assert item.status == "stopped"
+    assert item.version == item_version
 
 
 def test_resume_reopens_post_c_existing_b_qualification_without_replaying_c(
@@ -455,6 +492,29 @@ def _running_after_c(session):
     )
     item = runner._context(session, batch_id)[1]
     return batch_id, item, {b.id, c["operation_id"]}
+
+
+def _stopped_after_b(session, blocker_code: str):
+    batch_id, item = _stopped_before_primary(session)
+    batch = session.get(TgAuthorizationOnlineAbcBatch, batch_id)
+    abc_tests._qualify_primary(session, item.account_id)
+    primary = session.get(TgAccountAuthorization, item.primary_authorization_id)
+    candidate = TgAccountAuthorization(
+        tenant_id=1, account_id=item.account_id, role="standby_1", logical_slot="primary",
+        provision_region_code="sv", developer_app_id=1, session_ciphertext="new-b",
+        status="standby", health_status="healthy", is_current=False, is_slot_current=True,
+        telegram_user_id_digest=primary.telegram_user_id_digest,
+        auth_key_fingerprint_digest="9" * 64,
+    )
+    session.add(candidate)
+    session.flush()
+    operation = abc_tests._add_operation(
+        session, item.account_id, runner.online_abc_operation_keys(batch, item)["b"], "succeeded",
+    )
+    operation.candidate_authorization_id = candidate.id
+    item.blocker_code = blocker_code
+    session.commit()
+    return batch_id, item, operation
 
 
 def _stopped_after_c_with_legacy_b(session):

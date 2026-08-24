@@ -168,7 +168,8 @@ def resume_online_abc_batch(
     item = _resumable_item(session, batch, account_id)
     operations = online_abc_item_operations(session, batch, item)
     checkpoint = _require_resume_contract(session, item, operations)
-    if checkpoint in {"post_c_pre_e4", "post_c_pre_existing_b_qualification"}:
+    requires_my_readiness = item.blocker_code == POST_C_RESUME_BLOCKER
+    if requires_my_readiness or checkpoint == "post_c_pre_existing_b_qualification":
         ready_migration_runtime_image_sha(session)
     _resume_item(
         session,
@@ -412,6 +413,9 @@ def _require_resume_contract(session, item, operations: dict) -> str:
         _require_post_b_reconcile_resume(session, item, operations)
         return "post_b_reconciled_pre_primary"
     if item.blocker_code == POST_C_RESUME_BLOCKER:
+        if operations["c"] is None:
+            _require_post_b_pre_c_resume(session, item, operations)
+            return "post_b_pre_c"
         _require_post_c_resume(session, item, operations)
         return "post_c_pre_e4"
     if item.blocker_code == POST_B_PRE_C_RESUME_BLOCKER:
