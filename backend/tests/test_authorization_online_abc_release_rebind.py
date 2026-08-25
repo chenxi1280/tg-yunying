@@ -20,6 +20,7 @@ from app.services.authorization_dr.online_abc_release_rebind import (
     preview_execution_release_rebind,
 )
 from tests import test_authorization_online_abc as abc_tests
+from tests import test_authorization_online_abc_primary_manual as primary_manual_tests
 
 
 pytestmark = pytest.mark.no_postgres
@@ -86,6 +87,35 @@ def test_preview_accepts_fresh_quiescent_chunk_boundary(db_session) -> None:
 
     assert preview["release_boundary_action"] == "ABC runner chunk 边界停批"
     assert result["execution_release_sha"] == NEW_RELEASE_SHA
+
+
+def test_preview_accepts_acknowledged_primary_debt_boundary(db_session, monkeypatch) -> None:
+    batch_id, account_id, _, _ = primary_manual_tests._completed_primary_failure(db_session)
+    primary_manual_tests._reject_b(monkeypatch)
+    manual_preview = primary_manual_tests._preview(db_session, batch_id, account_id)
+    primary_manual_tests._apply(
+        db_session, batch_id, account_id, fingerprint=manual_preview["fingerprint"],
+    )
+    batch = db_session.get(TgAuthorizationOnlineAbcBatch, batch_id)
+    batch.status = "stopped"
+    batch.version += 1
+    db_session.add(AuditLog(
+        tenant_id=1, actor="approver", action="ABC runner chunk 边界停批",
+        target_type="tg_authorization_online_abc_batches", target_id=batch_id,
+        detail=(
+            f"approval_ref=ABC-FULL; execution_release={primary_manual_tests.NEW_RELEASE_SHA}; "
+            "processed_count=1; succeeded=0; manual_required=1; pending=9"
+        ),
+    ))
+    db_session.commit()
+
+    preview = preview_execution_release_rebind(
+        db_session, batch_id, runtime_release_sha=NEW_RELEASE_SHA,
+        requested_by="requester", approved_by="approver", approval_ref="ABC-FULL",
+    )
+
+    assert preview["manual_count"] == 1
+    assert preview["previous_execution_release_sha"] == primary_manual_tests.NEW_RELEASE_SHA
 
 
 def test_preview_rejects_stale_quiescent_chunk_counts(db_session) -> None:

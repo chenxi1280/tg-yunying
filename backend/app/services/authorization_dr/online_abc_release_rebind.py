@@ -23,8 +23,7 @@ from .contracts import AuthorizationDrError
 from .online_abc import UNKNOWN_OPERATION_STATUSES
 from .online_abc_operations import online_abc_item_operations
 from .online_abc_manifest import ACTIVE_OPERATION_STATUSES
-from .online_abc_primary import _primary_drifted
-from .online_abc_primary import primary_state
+from .online_abc_primary import _primary_drifted, manual_primary_unchanged
 from .online_abc_read import item_operations_complete
 
 
@@ -132,7 +131,7 @@ def _require_item_boundary(session, batch, items, counts: Counter) -> None:
 def _require_manual_primary(session, item) -> None:
     account = session.get(TgAccount, item.account_id)
     primary = session.get(TgAccountAuthorization, item.primary_authorization_id)
-    if primary_state(account, primary, item) not in {"frozen", "legacy_frozen", "qualified"}:
+    if not manual_primary_unchanged(account, primary, item):
         raise AuthorizationDrError("online_abc_primary_drift", "Manual item A drifted")
 
 
