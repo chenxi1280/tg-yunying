@@ -324,7 +324,13 @@ def test_postgres_pause_cleanup_locks_and_releases_safe_owner() -> None:
         slot.release_not_before_at = NOW - timedelta(hours=1)
         action = _action("pg-takeover-action", task.id, slot.id, slot.pacing_due_at)
         action.status = "skipped"
-        current.add_all([task, ledger, slot, action])
+        current.add(task)
+        current.flush()
+        current.add(ledger)
+        current.flush()
+        current.add(slot)
+        current.flush()
+        current.add(action)
         current.flush()
 
         released = release_safe_ai_pacing_owners(current, task, observed_at=NOW)

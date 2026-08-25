@@ -5,7 +5,13 @@ from datetime import datetime
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from app.models import Action, ExecutionAttempt, Task, TaskGroupDailyMessageSlot
+from app.models import (
+    Action,
+    ExecutionAttempt,
+    Task,
+    TaskDayLedger,
+    TaskGroupDailyMessageSlot,
+)
 
 from .source_pacing import wall_datetime
 
@@ -29,7 +35,11 @@ def release_safe_ai_pacing_owners(
     if task.type != "group_ai_chat":
         return 0
     session.flush()
-    rows = list(session.scalars(_safe_owner_statement(session, task)))
+    rows = list(session.scalars(_safe_owner_statement(
+        session,
+        task,
+        observed_at=observed_at,
+    )))
     for row in rows:
         row.task_lifecycle_epoch = None
         if (
@@ -40,7 +50,12 @@ def release_safe_ai_pacing_owners(
     return len(rows)
 
 
-def _safe_owner_statement(session: Session, task: Task):
+def _safe_owner_statement(
+    session: Session,
+    task: Task,
+    *,
+    observed_at: datetime,
+):
     action_boundary = select(Action.id).where(
         Action.primary_quantity_slot_id == TaskGroupDailyMessageSlot.id,
         or_(
@@ -63,11 +78,18 @@ def _safe_owner_statement(session: Session, task: Task):
             ExecutionAttempt.status == "success",
         ),
     ).exists()
+    current_ledger = select(TaskDayLedger.id).where(
+        TaskDayLedger.id == TaskGroupDailyMessageSlot.task_day_ledger_id,
+        TaskDayLedger.lifecycle_status == "open",
+        TaskDayLedger.period_start_at <= observed_at,
+        TaskDayLedger.deadline_at > observed_at,
+    ).exists()
     statement = select(TaskGroupDailyMessageSlot).where(
         TaskGroupDailyMessageSlot.tenant_id == task.tenant_id,
         TaskGroupDailyMessageSlot.task_id == task.id,
         TaskGroupDailyMessageSlot.state == "open",
         TaskGroupDailyMessageSlot.pacing_due_at.is_not(None),
+        current_ledger,
         ~action_boundary,
         ~attempt_boundary,
     )
