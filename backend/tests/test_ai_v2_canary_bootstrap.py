@@ -54,7 +54,7 @@ def test_incomplete_preview_lists_user_choices_without_writes() -> None:
 
 
 def test_guarded_bootstrap_applies_policy_routes_and_one_task_atomically() -> None:
-    with Session(_engine()) as session:
+    with Session(_engine(), autoflush=False) as session:
         _seed(session)
         choices = parse_choices(_choices())
         preview = preview_bootstrap(session, 1, choices)

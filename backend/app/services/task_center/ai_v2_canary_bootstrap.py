@@ -349,6 +349,7 @@ def _apply_routes(
             TenantAiProviderRouteItem(route_set_id=route.id, **asdict(item))
             for item in items
         )
+    session.flush()
 
 
 def _apply_task(

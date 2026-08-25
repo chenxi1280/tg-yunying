@@ -25,6 +25,8 @@ binding 修复以 `8ed9a4ea7d75faf5f2b1232ab4022ccd122248f1` 成功发布后，�
 
 暂停清理修复 `97e00491c63f72f50e5204c94a67439fc1d4aa0a` 发布后，同一 paused epoch 的 Action 51→0、GenerationJob 229→0，审计 703007 记录 `generation_cleanup=complete`。完整 preview 得到 blockers=[]，但首次正式 apply 被严格 schema 拒绝并回滚：生产 fact-first 运行时曾把 `ai_provider_id=4` 写回 Task，而 GroupAIChatConfig 禁止该 runtime-only extra。V2 必须在 bootstrap 事务内显式移除旧单 Provider 绑定并改由 purpose routes 接管。
 
+旧 Provider 迁移修复发布后，第二次 apply 又暴露生产 `SessionLocal(autoflush=False)` 与测试默认 Session 的差异：bootstrap 已暂存新 route items，但 activation 在显式 flush 前查询，`group_semantic_review` 被误判为空候选，事务再次完整回滚。bootstrap 必须在 route set 与全部 route items 写入后显式 flush，再进入 task activation；回归测试必须使用与生产一致的 `autoflush=False`。
+
 ## 期望结果
 
 - 仅移除完整闭合的 `<think>...</think>` Provider reasoning block，再执行原严格 JSONL、必填字段、男性身份、列表数量、摘要长度和敏感措辞校验。
@@ -47,6 +49,7 @@ binding 修复以 `8ed9a4ea7d75faf5f2b1232ab4022ccd122248f1` 成功发布后，�
 - paused V2 任务 resume 后必须同时保留历史 binding，并新增当前 lifecycle epoch、同 config revision 的 binding。
 - group AI pause 无远端不确定性时必须释放旧 Action 计划并取消开放 GenerationJob；存在 unknown/Gateway-started/gateway-bound 时必须保留事实和可见审计 blocker，不得为通过 bootstrap 强制清理。
 - bootstrap 对生产旧 `ai_provider_id` 必须 preview 指纹化、apply 显式移除并审计；不得放宽 schema 或在线手改 JSON。失败 apply 必须保持 policy/routes/task/audit 零持久化。
+- bootstrap route 写入与 activation 必须在 `autoflush=False` 下仍具备事务内可见性；测试不得依赖 SQLAlchemy 测试 Session 的默认 autoflush 掩盖生产失败。
 - binding 修复定向测试 `test_ai_content_policy.py + test_ai_v2_canary_bootstrap.py` 为 `16 passed`；本地没有 PostgreSQL 测试库，start/resume 的 PostgreSQL 扩展选择集由 Deploy Production 双矩阵门禁验证。
 - 发布后精确重试 11 条，独立读回 active voice profiles 11/11，随后重新运行 bootstrap preview。
 
@@ -65,7 +68,7 @@ binding 修复以 `8ed9a4ea7d75faf5f2b1232ab4022ccd122248f1` 成功发布后，�
 - release_mode: `github_actions`
 - release_owner: `main`
 - rollback_owner: `main`
-- status: `legacy_provider_binding_fix_pending`
+- status: `route_flush_fix_pending`
 
 ### 上线范围
 
