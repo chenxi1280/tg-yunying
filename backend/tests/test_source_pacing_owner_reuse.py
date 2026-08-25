@@ -298,6 +298,7 @@ def test_postgres_pause_cleanup_locks_and_releases_safe_owner() -> None:
 
     with SessionLocal() as current:
         current.add(Tenant(id=TENANT_ID, name="takeover-postgres"))
+        current.flush()
         current.add(TgAccount(
             id=ACCOUNT_ID,
             tenant_id=TENANT_ID,
@@ -312,6 +313,7 @@ def test_postgres_pause_cleanup_locks_and_releases_safe_owner() -> None:
             tg_peer_id="-1009001",
             title="group",
         ))
+        current.flush()
         task, ledger, slot = _owner_entities(
             "pg-takeover-task",
             "pg-takeover-slot",
