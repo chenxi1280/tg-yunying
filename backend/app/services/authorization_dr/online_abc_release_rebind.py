@@ -30,6 +30,7 @@ from .online_abc_read import item_operations_complete
 
 PAUSE_ACTION = "生产版本变化暂停 ABC runner"
 PAUSE_BLOCKER = "production_release_changed_mid_chunk"
+CHUNK_PAUSE_ACTION = "ABC runner chunk 边界停批"
 REBIND_ACTION = "重绑 ABC runner 执行 release"
 ALLOWED_ITEM_STATUSES = {"manual_required", "pending", "succeeded"}
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
@@ -92,7 +93,7 @@ def _preview_payload(session, batch, release_sha: str, approval: tuple[str, str,
     ).order_by(TgAuthorizationOnlineAbcItem.ordinal)))
     counts = Counter(item.status for item in items)
     _require_item_boundary(session, batch, items, counts)
-    pause = _require_release_pause_audit(session, batch, approval[2])
+    pause = _require_release_boundary_audit(session, batch, approval[2], counts=counts)
     _require_global_boundary(session)
     return {
         "batch_id": batch.id,
@@ -101,6 +102,7 @@ def _preview_payload(session, batch, release_sha: str, approval: tuple[str, str,
         "previous_execution_release_sha": batch.execution_release_sha or batch.deployed_release_sha,
         "runtime_release_sha": release_sha,
         "pause_audit_id": pause.id,
+        "release_boundary_action": pause.action,
         "succeeded_count": counts["succeeded"],
         "manual_count": counts["manual_required"],
         "pending_count": counts["pending"],
@@ -155,13 +157,25 @@ def _require_global_boundary(session) -> None:
         raise AuthorizationDrError("malaysia_client_leak", "Malaysia active client count must be zero")
 
 
-def _require_release_pause_audit(session, batch, approval_ref: str):
+def _require_release_boundary_audit(session, batch, approval_ref: str, *, counts: Counter):
     row = session.scalar(select(AuditLog).where(
         AuditLog.target_type == "tg_authorization_online_abc_batches",
         AuditLog.target_id == batch.id,
     ).order_by(AuditLog.id.desc()).limit(1))
     expected_ref = f"approval_ref={approval_ref}"
-    if not row or row.action != PAUSE_ACTION or PAUSE_BLOCKER not in row.detail or expected_ref not in row.detail:
+    tokens = {part.strip() for part in row.detail.split(";")} if row else set()
+    if not row or expected_ref not in tokens:
+        raise AuthorizationDrError("online_abc_release_rebind_pause_unproven", "Release pause audit is unavailable")
+    if row.action == PAUSE_ACTION and PAUSE_BLOCKER in row.detail:
+        return row
+    expected_release = batch.execution_release_sha or batch.deployed_release_sha
+    expected_parts = {
+        f"execution_release={expected_release}",
+        f"succeeded={counts['succeeded']}",
+        f"manual_required={counts['manual_required']}",
+        f"pending={counts['pending']}",
+    }
+    if row.action != CHUNK_PAUSE_ACTION or not expected_parts.issubset(tokens):
         raise AuthorizationDrError("online_abc_release_rebind_pause_unproven", "Release pause audit is unavailable")
     return row
 

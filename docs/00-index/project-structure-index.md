@@ -1,5 +1,7 @@
 # 项目结构索引
 
+> **2026-08-25 ABC quiescent chunk release-rebind：** authorization_dr/online_abc_release_rebind.py 允许最新同审批的正式“ABC runner chunk 边界停批”审计作为发布重绑边界，前提是审计中的旧 execution release 与 succeeded/manual/pending 计数和当前批次完全一致；既有 mid-chunk pause 路径保持不变。preview/fingerprint/apply 仍只写 batch execution release/status/version 与审计，全部 A/B/C 与 Telegram 事实不变，回归位于 test_authorization_online_abc_release_rebind.py。
+
 > **2026-08-25 ABC completed-checkpoint 发布收口：** `authorization_dr/online_abc_completed_checkpoint_pause.py`、`backend/scripts/authorization_online_abc_completed_checkpoint_pause.py` 与 `deploy/authorization-online-abc-completed-checkpoint-pause.sh` 提供 DB-only `preview/apply/readback`。只接受唯一 running item 的 B/C/E4 与 E4 remote ID 已成功、slot 尚未投影、A 与当前 B/C 工件无漂移、release 已变化且 runtime/unknown/sensitive/MY0；apply 原子复用普通 sync 并写 `production_release_changed_mid_chunk` pause audit，不触发 Telegram，随后由既有 release-rebind 独立重绑。
 
 > **2026-08-25 AI 活群暂停旧 epoch 清理：** `task_pause_cleanup.py` 只判断 `unknown_after_send`、已开始 Gateway Attempt 和 V2 `gateway_bound` 三类远端不确定性，并取消安全的开放 GenerationJob/pre-Gateway slot；`service.py::pause_task` 锁定单 Task，在无不确定性时复用 `_clear_unfinished_plan` 释放旧 Action、coverage 与计划占用，再推进 lifecycle epoch。存在不确定性时保留全部事实并在暂停 AuditLog 明示阻断原因，V2 bootstrap 继续拒绝 open work；任务目标、已确认远端事实和配置 revision 不变。回归入口为 `test_ai_v2_canary_bootstrap.py`。

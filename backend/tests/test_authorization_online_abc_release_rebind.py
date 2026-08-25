@@ -68,6 +68,45 @@ def test_apply_is_idempotent_by_fingerprint(db_session) -> None:
     assert second["already_applied"] is True
 
 
+def test_preview_accepts_fresh_quiescent_chunk_boundary(db_session) -> None:
+    batch_id = _paused_batch(db_session)
+    boundary = db_session.scalar(select(AuditLog).where(
+        AuditLog.target_type == "tg_authorization_online_abc_batches",
+        AuditLog.target_id == batch_id,
+    ).order_by(AuditLog.id.desc()).limit(1))
+    boundary.action = "ABC runner chunk 边界停批"
+    boundary.detail = (
+        f"approval_ref=ABC-10; execution_release={abc_tests.RELEASE_SHA}; "
+        "processed_count=1; succeeded=1; manual_required=0; pending=9"
+    )
+    db_session.commit()
+
+    preview = _preview(db_session, batch_id)
+    result = _apply(db_session, batch_id, preview["fingerprint"])
+
+    assert preview["release_boundary_action"] == "ABC runner chunk 边界停批"
+    assert result["execution_release_sha"] == NEW_RELEASE_SHA
+
+
+def test_preview_rejects_stale_quiescent_chunk_counts(db_session) -> None:
+    batch_id = _paused_batch(db_session)
+    boundary = db_session.scalar(select(AuditLog).where(
+        AuditLog.target_type == "tg_authorization_online_abc_batches",
+        AuditLog.target_id == batch_id,
+    ).order_by(AuditLog.id.desc()).limit(1))
+    boundary.action = "ABC runner chunk 边界停批"
+    boundary.detail = (
+        f"approval_ref=ABC-10; execution_release={abc_tests.RELEASE_SHA}; "
+        "processed_count=1; succeeded=0; manual_required=0; pending=10"
+    )
+    db_session.commit()
+
+    with pytest.raises(AuthorizationDrError) as exc_info:
+        _preview(db_session, batch_id)
+
+    assert exc_info.value.code == "online_abc_release_rebind_pause_unproven"
+
+
 def test_apply_rejects_changed_preview(db_session) -> None:
     batch_id = _paused_batch(db_session)
     preview = _preview(db_session, batch_id)
