@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import asdict
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.ai_gateway import canonical_ai_model_identity
@@ -86,7 +87,7 @@ def preview_bootstrap(
         "next_policy_version": next_policy_version,
         "current_policy": _current_policy(session, tenant_id, lock=lock),
         "task": _task_snapshot(session, task, lock=lock),
-        "existing_v2_tasks": _v2_tasks(session, tenant_id, lock=lock),
+        "existing_v2_tasks": _v2_tasks(session, tenant_id, lock=False),
         "routes": _route_snapshots(session, tenant_id, purposes, lock=lock),
         "providers": _provider_snapshots(session, choices, lock=lock),
         "attestations": _attestation_snapshot(
@@ -110,6 +111,7 @@ def apply_bootstrap(
     *,
     expected_fingerprint: str,
 ) -> dict:
+    _lock_bootstrap_scope(session, tenant_id)
     prior = _prior_apply(session, tenant_id, choices)
     if prior:
         if prior.get("fingerprint") != expected_fingerprint:
@@ -209,6 +211,19 @@ def _missing_choices(choices: BootstrapChoices) -> list[str]:
     ):
         missing.append("adult_attestation_ids")
     return missing
+
+
+def _lock_bootstrap_scope(session: Session, tenant_id: int) -> None:
+    if session.get_bind().dialect.name != "postgresql":
+        return
+    payload = f"ai-v2-canary-bootstrap:{tenant_id}".encode()
+    lock_key = int.from_bytes(
+        hashlib.sha256(payload).digest()[:8], "big", signed=True
+    )
+    session.execute(
+        text("SELECT pg_advisory_xact_lock(:lock_key)"),
+        {"lock_key": lock_key},
+    )
 
 
 def _blockers(snapshot: dict, choices: BootstrapChoices) -> list[str]:

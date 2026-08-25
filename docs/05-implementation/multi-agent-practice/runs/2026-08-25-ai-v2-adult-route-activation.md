@@ -27,6 +27,8 @@ binding 修复以 `8ed9a4ea7d75faf5f2b1232ab4022ccd122248f1` 成功发布后，�
 
 旧 Provider 迁移修复发布后，第二次 apply 又暴露生产 `SessionLocal(autoflush=False)` 与测试默认 Session 的差异：bootstrap 已暂存新 route items，但 activation 在显式 flush 前查询，`group_semantic_review` 被误判为空候选，事务再次完整回滚。bootstrap 必须在 route set 与全部 route items 写入后显式 flush，再进入 task activation；回归测试必须使用与生产一致的 `autoflush=False`。
 
+显式 flush 修复发布后，第三次 apply 在 preview 锁阶段被 PostgreSQL 检测到死锁：bootstrap 先锁 canary task，随后 `FOR UPDATE` 扫描租户全部 task；planner 已持有另一 task 锁并等待 canary，形成反向锁序。受保护 apply 必须先取得 tenant 级 transaction advisory lock 来串行化 bootstrap，并且 existing-V2 检查只读，不得锁住全部无关任务；canary 本身、开放工作、policy/routes/provider/attestation 仍保持原 CAS 与行锁。
+
 ## 期望结果
 
 - 仅移除完整闭合的 `<think>...</think>` Provider reasoning block，再执行原严格 JSONL、必填字段、男性身份、列表数量、摘要长度和敏感措辞校验。
@@ -50,6 +52,7 @@ binding 修复以 `8ed9a4ea7d75faf5f2b1232ab4022ccd122248f1` 成功发布后，�
 - group AI pause 无远端不确定性时必须释放旧 Action 计划并取消开放 GenerationJob；存在 unknown/Gateway-started/gateway-bound 时必须保留事实和可见审计 blocker，不得为通过 bootstrap 强制清理。
 - bootstrap 对生产旧 `ai_provider_id` 必须 preview 指纹化、apply 显式移除并审计；不得放宽 schema 或在线手改 JSON。失败 apply 必须保持 policy/routes/task/audit 零持久化。
 - bootstrap route 写入与 activation 必须在 `autoflush=False` 下仍具备事务内可见性；测试不得依赖 SQLAlchemy 测试 Session 的默认 autoflush 掩盖生产失败。
+- bootstrap apply 必须使用 tenant 级 `pg_advisory_xact_lock` 串行化同租户激活，且不得为 existing-V2 检查 `FOR UPDATE` 全租户 task；正常 planner/dispatcher 任务锁不能与 canary 激活形成反向锁序。
 - binding 修复定向测试 `test_ai_content_policy.py + test_ai_v2_canary_bootstrap.py` 为 `16 passed`；本地没有 PostgreSQL 测试库，start/resume 的 PostgreSQL 扩展选择集由 Deploy Production 双矩阵门禁验证。
 - 发布后精确重试 11 条，独立读回 active voice profiles 11/11，随后重新运行 bootstrap preview。
 
@@ -68,7 +71,7 @@ binding 修复以 `8ed9a4ea7d75faf5f2b1232ab4022ccd122248f1` 成功发布后，�
 - release_mode: `github_actions`
 - release_owner: `main`
 - rollback_owner: `main`
-- status: `route_flush_fix_pending`
+- status: `bootstrap_lock_order_fix_pending`
 
 ### 上线范围
 

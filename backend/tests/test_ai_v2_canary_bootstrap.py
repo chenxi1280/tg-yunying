@@ -93,6 +93,32 @@ def test_guarded_bootstrap_applies_policy_routes_and_one_task_atomically() -> No
         assert json.loads(audit.detail)["removed_legacy_ai_provider_id"] == 1
 
 
+def test_postgres_bootstrap_uses_tenant_transaction_lock() -> None:
+    class _Dialect:
+        name = "postgresql"
+
+    class _Bind:
+        dialect = _Dialect()
+
+    class _RecordingSession:
+        statement = None
+        params = None
+
+        @staticmethod
+        def get_bind():
+            return _Bind()
+
+        def execute(self, statement, params):  # noqa: ANN001
+            self.statement = statement
+            self.params = params
+
+    session = _RecordingSession()
+    service._lock_bootstrap_scope(session, 7)
+
+    assert "pg_advisory_xact_lock" in str(session.statement)
+    assert isinstance(session.params["lock_key"], int)
+
+
 def test_reviewer_identity_overlap_blocks_apply_without_writes() -> None:
     with Session(_engine()) as session:
         _seed(session)
