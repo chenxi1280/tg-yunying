@@ -11,6 +11,7 @@ from app.services.authorization_dr import (
     run_online_abc_batch,
 )
 from app.services.authorization_dr.contracts import AuthorizationDrError
+from app.services.authorization_dr.online_abc_chunk import MAX_CHUNK_ACCOUNTS
 
 
 def main() -> int:
@@ -66,7 +67,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--approved-by", default="")
     parser.add_argument("--approval-ref", default="")
     parser.add_argument("--poll-seconds", type=float, default=2.0)
-    parser.add_argument("--max-accounts", type=int, default=10)
+    parser.add_argument("--max-accounts", type=int, default=MAX_CHUNK_ACCOUNTS)
     parser.add_argument("--account-id", type=int, default=0)
     return parser
 
