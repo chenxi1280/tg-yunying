@@ -46,7 +46,7 @@ def test_apply_projects_completed_item_and_creates_release_pause(db_session, mon
     before = _authorization_snapshot(db_session, account_id)
 
     preview = _preview(db_session, batch_id, account_id)
-    result = _apply(db_session, batch_id, account_id, preview["fingerprint"])
+    result = _apply(db_session, batch_id, account_id, fingerprint=preview["fingerprint"])
 
     batch = db_session.get(TgAuthorizationOnlineAbcBatch, batch_id)
     item = _item(db_session, batch_id, account_id)
@@ -66,7 +66,7 @@ def test_apply_projects_completed_item_and_creates_release_pause(db_session, mon
 def test_existing_release_rebind_accepts_completed_checkpoint_pause(db_session, monkeypatch) -> None:
     batch_id, account_id = _checkpoint(db_session, monkeypatch)
     preview = _preview(db_session, batch_id, account_id)
-    _apply(db_session, batch_id, account_id, preview["fingerprint"])
+    _apply(db_session, batch_id, account_id, fingerprint=preview["fingerprint"])
 
     rebind = preview_execution_release_rebind(
         db_session, batch_id, runtime_release_sha=NEW_RELEASE_SHA,
@@ -88,8 +88,8 @@ def test_apply_and_readback_are_idempotent(db_session, monkeypatch) -> None:
     batch_id, account_id = _checkpoint(db_session, monkeypatch)
     preview = _preview(db_session, batch_id, account_id)
 
-    first = _apply(db_session, batch_id, account_id, preview["fingerprint"])
-    second = _apply(db_session, batch_id, account_id, preview["fingerprint"])
+    first = _apply(db_session, batch_id, account_id, fingerprint=preview["fingerprint"])
+    second = _apply(db_session, batch_id, account_id, fingerprint=preview["fingerprint"])
     readback = checkpoint.readback_completed_checkpoint_pause(
         db_session, batch_id, account_id, idempotency_key=CHECKPOINT_KEY,
     )
@@ -107,7 +107,7 @@ def test_apply_rejects_changed_item_version(db_session, monkeypatch) -> None:
     db_session.commit()
 
     with pytest.raises(AuthorizationDrError) as exc_info:
-        _apply(db_session, batch_id, account_id, preview["fingerprint"])
+        _apply(db_session, batch_id, account_id, fingerprint=preview["fingerprint"])
 
     assert exc_info.value.code == "migration_fingerprint_conflict"
     assert item.status == "running"
@@ -191,7 +191,7 @@ def _preview(session, batch_id: str, account_id: int) -> dict:
     )
 
 
-def _apply(session, batch_id: str, account_id: int, fingerprint: str) -> dict:
+def _apply(session, batch_id: str, account_id: int, *, fingerprint: str) -> dict:
     return checkpoint.apply_completed_checkpoint_pause(
         session, batch_id, account_id, runtime_release_sha=NEW_RELEASE_SHA,
         idempotency_key=CHECKPOINT_KEY, expected_fingerprint=fingerprint,
