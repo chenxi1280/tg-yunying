@@ -18,7 +18,7 @@ from app.services._common import audit
 
 from .contracts import AuthorizationDrError
 from .online_abc_manifest import ACTIVE_OPERATION_STATUSES
-from .online_abc_primary import primary_state
+from .online_abc_primary import manual_primary_unchanged
 
 MAX_CHUNK_ACCOUNTS = 30
 CHUNK_PAUSE_ACTION = "ABC runner chunk 边界停批"
@@ -125,7 +125,7 @@ def _require_manual_primary_unchanged(session, items) -> None:
             continue
         account = session.get(TgAccount, item.account_id)
         primary = session.get(TgAccountAuthorization, item.primary_authorization_id)
-        if primary_state(account, primary, item) not in {"frozen", "legacy_frozen", "qualified"}:
+        if not manual_primary_unchanged(account, primary, item):
             raise AuthorizationDrError("online_abc_primary_drift", "Manual item A changed")
 
 

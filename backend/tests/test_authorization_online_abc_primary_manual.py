@@ -21,6 +21,7 @@ from app.services.authorization_dr.online_abc_manifest import (
     apply_full_online_abc_batch,
     preview_full_online_abc_batch,
 )
+from app.services.authorization_dr.online_abc_chunk import pause_online_abc_chunk
 from app.services.authorization_dr.online_abc_primary_manual import (
     B_FAILURE_CODE,
     MANUAL_BLOCKER,
@@ -128,6 +129,42 @@ def test_acknowledged_primary_debt_still_stops_on_new_a_drift(db_session, monkey
         )
 
     assert exc_info.value.code == "online_abc_primary_drift"
+
+
+def test_acknowledged_primary_debt_allows_chunk_pause(db_session, monkeypatch) -> None:
+    batch_id, account_id, _, _, running_id = _completed_primary_failure(
+        db_session, with_inflight=True,
+    )
+    _reject_b(monkeypatch)
+    preview = _preview(db_session, batch_id, account_id)
+    _apply(db_session, batch_id, account_id, fingerprint=preview["fingerprint"])
+    sync_online_abc_batch(db_session, batch_id, actor="approver", approval_ref="ABC-FULL")
+
+    paused = pause_online_abc_chunk(
+        db_session, batch_id, actor="approver", approval_ref="ABC-FULL", processed_count=1,
+    )
+
+    batch = db_session.get(TgAuthorizationOnlineAbcBatch, batch_id)
+    assert paused is True and batch.status == "stopped"
+    assert _item(db_session, batch_id, account_id).blocker_code == MANUAL_BLOCKER
+    assert _item(db_session, batch_id, running_id).status == "succeeded"
+
+
+def test_chunk_pause_rejects_new_acknowledged_a_drift(db_session, monkeypatch) -> None:
+    batch_id, account_id, _, _ = _completed_primary_failure(db_session)
+    _reject_b(monkeypatch)
+    preview = _preview(db_session, batch_id, account_id)
+    _apply(db_session, batch_id, account_id, fingerprint=preview["fingerprint"])
+    db_session.get(TgAccount, account_id).connection_generation += 1
+    db_session.commit()
+
+    with pytest.raises(AuthorizationDrError) as exc_info:
+        pause_online_abc_chunk(
+            db_session, batch_id, actor="approver", approval_ref="ABC-FULL", processed_count=1,
+        )
+
+    assert exc_info.value.code == "online_abc_primary_drift"
+    assert db_session.get(TgAuthorizationOnlineAbcBatch, batch_id).status == "running"
 
 
 def test_preview_rejects_usable_b_and_missing_c_evidence(db_session, monkeypatch) -> None:

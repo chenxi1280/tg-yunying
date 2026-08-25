@@ -81,9 +81,13 @@ def _stop_manual_primary_drift(session, batch, *, actor: str, approval_ref: str)
 def _manual_primary_drifted(session, item) -> bool:
     account = session.get(TgAccount, item.account_id)
     primary = session.get(TgAccountAuthorization, item.primary_authorization_id)
+    return not manual_primary_unchanged(account, primary, item)
+
+
+def manual_primary_unchanged(account, primary, item) -> bool:
     if item.blocker_code == ACKNOWLEDGED_PRIMARY_FAILURE:
-        return not _acknowledged_primary_failure_stable(account, primary, item)
-    return primary_state(account, primary, item) not in {"frozen", "legacy_frozen", "qualified"}
+        return _acknowledged_primary_failure_stable(account, primary, item)
+    return primary_state(account, primary, item) in {"frozen", "legacy_frozen", "qualified"}
 
 
 def _acknowledged_primary_failure_stable(account, primary, item) -> bool:
@@ -197,4 +201,4 @@ def _digest(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 
-__all__ = ["primary_state", "stop_completed_primary_drift"]
+__all__ = ["manual_primary_unchanged", "primary_state", "stop_completed_primary_drift"]
