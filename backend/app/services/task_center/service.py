@@ -65,7 +65,10 @@ from app.services.developer_apps import credentials_for_account
 from app.timezone import as_beijing
 
 from .account_pool import select_task_accounts
-from .account_pacing_guard import AccountPacingLockUnavailable
+from .account_pacing_guard import (
+    AccountPacingLockUnavailable,
+    release_safe_task_account_pacing_reservations,
+)
 from .account_scope import initialize_all_account_task_scope, process_account_eligibility_events, reconcile_all_account_scopes_if_due
 from .ai_act_types import canonical_ai_group_act_type
 from .ai_runtime_diagnostics import ai_runtime_diagnostics
@@ -5534,6 +5537,7 @@ def _clear_unfinished_plan(session: Session, task: Task) -> int:
             session.execute(delete(SearchRankDeboostClickReservation).where(SearchRankDeboostClickReservation.action_id.in_(deletable_action_ids)))
             session.execute(delete(Action).where(Action.id.in_(deletable_action_ids)))
     _supersede_active_plan_actions(session, task)
+    release_safe_task_account_pacing_reservations(session, task)
     released_pacing_owners = release_safe_ai_pacing_owners(
         session,
         task,

@@ -8,7 +8,14 @@ from sqlalchemy import select, union_all
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.models import AccountPacingReservation, Action, FulfillmentRemoteFact, Task, TgAccount
+from app.models import (
+    AccountPacingReservation,
+    Action,
+    ExecutionAttempt,
+    FulfillmentRemoteFact,
+    Task,
+    TgAccount,
+)
 from app.services._common import _now
 from app.timezone import BEIJING_TZ
 
@@ -23,6 +30,7 @@ _OPEN_GUARD_STATUSES = ("pending", "claiming", "executing", "retryable_failed", 
 # claim 推到队尾形成互锁，发送坍塌；实际间隔由任务行锁 + claiming 在途点保证。
 _INFLIGHT_GUARD_STATUSES = ("claiming", "executing", "retryable_failed", "unknown_after_send")
 _OPEN_RESERVATION_STATES = ("reserved", "bound")
+_REUSABLE_TERMINAL_ACTION_STATUSES = frozenset({"failed", "skipped"})
 
 
 class AccountPacingDeadlineExceeded(RuntimeError):
@@ -158,15 +166,17 @@ def reserve_account_pacing(
         if release_not_before_at is not None
         else due_at
     )
+    release_at = latest_wall_datetime(due_at, release_not_before_at)
     lock_account_pacing(session, account_id)
     existing = _reservation_for_any_slot(session, tenant_id, account_id, slot_key)
     if existing is not None:
-        if existing.state in _OPEN_RESERVATION_STATES:
-            return existing
-        if existing.state == "missed":
-            raise AccountPacingDeadlineExceeded("pacing_slot_already_missed")
-        raise ValueError("account_pacing_reservation_state_invalid")
-    release_at = latest_wall_datetime(due_at, release_not_before_at)
+        return _reuse_existing_reservation(
+            session,
+            existing,
+            due_at=due_at,
+            release_at=release_at,
+            deadline_at=deadline_at,
+        )
     not_before = account_policy_not_before(
         session,
         account_id,
@@ -191,6 +201,133 @@ def reserve_account_pacing(
     session.add(reservation)
     session.flush()
     return reservation
+
+
+def _reuse_existing_reservation(
+    session: Session,
+    reservation: AccountPacingReservation,
+    *,
+    due_at: datetime,
+    release_at: datetime,
+    deadline_at: datetime | None,
+) -> AccountPacingReservation:
+    if reservation.state not in _OPEN_RESERVATION_STATES:
+        if reservation.state == "missed":
+            raise AccountPacingDeadlineExceeded("pacing_slot_already_missed")
+        raise ValueError("account_pacing_reservation_state_invalid")
+    if reservation.action_id is not None:
+        return reservation
+    return _rearm_available_reservation(
+        session,
+        reservation,
+        due_at=due_at,
+        release_at=release_at,
+        deadline_at=deadline_at,
+    )
+
+
+def _rearm_available_reservation(
+    session: Session,
+    reservation: AccountPacingReservation,
+    *,
+    due_at: datetime,
+    release_at: datetime,
+    deadline_at: datetime | None,
+) -> AccountPacingReservation:
+    not_before = account_policy_not_before(
+        session,
+        reservation.account_id,
+        tenant_id=reservation.tenant_id,
+        now_value=release_at,
+        deadline_at=deadline_at,
+        exclude_slot_key=reservation.pacing_slot_key,
+    )
+    effective_at = effective_claim_at(release_at, not_before)
+    if deadline_at is not None and not _before_deadline(effective_at, deadline_at):
+        raise AccountPacingDeadlineExceeded("account_timeline_conflict")
+    reservation.state = "reserved"
+    reservation.due_at = due_at
+    reservation.release_not_before_at = release_at
+    reservation.effective_claim_at = effective_at
+    reservation.source_deadline_at = deadline_at
+    reservation.version = int(reservation.version or 1) + 1
+    return reservation
+
+
+def release_safe_task_account_pacing_reservations(
+    session: Session,
+    task: Task,
+) -> int:
+    session.flush()
+    statement = select(AccountPacingReservation).where(
+        AccountPacingReservation.task_id == task.id,
+        AccountPacingReservation.state.in_(_OPEN_RESERVATION_STATES),
+        (
+            AccountPacingReservation.action_id.is_not(None)
+            | (AccountPacingReservation.state == "bound")
+        ),
+    )
+    if session.get_bind().dialect.name != "sqlite":
+        statement = statement.with_for_update(of=AccountPacingReservation)
+    reservations = list(session.scalars(statement))
+    action_ids = [row.action_id for row in reservations if row.action_id]
+    actions = (
+        {
+            row.id: row
+            for row in session.scalars(select(Action).where(Action.id.in_(action_ids)))
+        }
+        if action_ids
+        else {}
+    )
+    remote_bound = _remote_bound_action_ids(session, action_ids)
+    released = 0
+    for reservation in reservations:
+        action = actions.get(str(reservation.action_id or ""))
+        if not _reservation_reusable(action, remote_bound):
+            continue
+        reservation.action_id = None
+        reservation.state = "reserved"
+        reservation.version = int(reservation.version or 1) + 1
+        released += 1
+    return released
+
+
+def _remote_bound_action_ids(session: Session, action_ids: list[str]) -> set[str]:
+    if not action_ids:
+        return set()
+    attempts = set(
+        session.scalars(
+            select(ExecutionAttempt.action_id).where(
+                ExecutionAttempt.action_id.in_(action_ids),
+                (ExecutionAttempt.gateway_call_started_at.is_not(None))
+                | (ExecutionAttempt.remote_message_id != ""),
+            )
+        )
+    )
+    facts = set(
+        session.scalars(
+            select(FulfillmentRemoteFact.action_id).where(
+                FulfillmentRemoteFact.action_id.in_(action_ids),
+            )
+        )
+    )
+    return attempts | facts
+
+
+def _reservation_reusable(
+    action: Action | None,
+    remote_bound: set[str],
+) -> bool:
+    if action is None:
+        return True
+    if action.status not in _REUSABLE_TERMINAL_ACTION_STATUSES:
+        return False
+    result = dict(action.result or {})
+    return (
+        action.id not in remote_bound
+        and not result.get("gateway_call_started_at")
+        and not result.get("remote_message_id")
+    )
 
 
 def bind_account_pacing_reservation(
@@ -506,6 +643,7 @@ __all__ = [
     "bind_account_pacing_reservation_for_slot",
     "effective_claim_at",
     "lock_account_pacing",
+    "release_safe_task_account_pacing_reservations",
     "revalidate_action_pacing_before_claim",
     "reserve_account_pacing",
 ]

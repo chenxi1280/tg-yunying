@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.models import (
+    AccountPacingReservation,
     Action,
     AdultSubjectAttestation,
     AiAccountVoiceProfile,
@@ -243,19 +244,30 @@ def test_pause_cancels_safe_group_ai_work_before_epoch_change() -> None:
             pacing_source_key_hash="b" * 64,
         )
         session.add_all([ledger, quantity])
-        session.add(
-            Action(
-                id="pending-action",
-                tenant_id=1,
-                task_id=task.id,
-                task_type="group_ai_chat",
-                action_type="send_message",
-                account_id=1,
-                status="pending",
-                task_lifecycle_epoch=2,
-                primary_quantity_slot_id=quantity.id,
-            )
+        pending_action = Action(
+            id="pending-action",
+            tenant_id=1,
+            task_id=task.id,
+            task_type="group_ai_chat",
+            action_type="send_message",
+            account_id=1,
+            status="pending",
+            task_lifecycle_epoch=2,
+            primary_quantity_slot_id=quantity.id,
         )
+        reservation = AccountPacingReservation(
+            tenant_id=1,
+            task_id=task.id,
+            account_id=1,
+            pacing_slot_key="ai:pause-quantity",
+            policy_version="account_soft_pacing_v1",
+            due_at=datetime(2026, 8, 25, 1),
+            release_not_before_at=datetime(2026, 8, 25, 2),
+            effective_claim_at=datetime(2026, 8, 25, 2),
+            action_id=pending_action.id,
+            state="bound",
+        )
+        session.add_all([pending_action, reservation])
         session.add(
             GenerationJob(
                 id="pending-job",
@@ -277,6 +289,8 @@ def test_pause_cancels_safe_group_ai_work_before_epoch_change() -> None:
         assert paused.status == "paused"
         assert paused.task_lifecycle_epoch == 3
         assert session.get(Action, "pending-action") is None
+        assert reservation.action_id is None
+        assert reservation.state == "reserved"
         assert session.get(GenerationJob, "pending-job").state == "cancelled"
         assert quantity.task_lifecycle_epoch is None
         assert quantity.release_not_before_at is None
