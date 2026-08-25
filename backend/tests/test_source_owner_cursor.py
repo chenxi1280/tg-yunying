@@ -15,6 +15,9 @@ from app.models import (
     TaskGroupDailyMessageSlot,
     Tenant,
 )
+from app.services.task_center.executors.group_ai_chat import (
+    _replace_stale_released_owner_release,
+)
 from app.services.task_center.pacing_persistence import freeze_pacing_owner
 from app.services.task_center.source_owner_cursor import attach_owner_history
 from app.services.task_center.source_pacing import (
@@ -187,6 +190,79 @@ def test_released_owner_keeps_frozen_identity_and_recovers_after_now() -> None:
         assert owner.task_lifecycle_epoch == task.task_lifecycle_epoch
 
 
+def test_released_owner_replaces_stale_non_null_release_after_now() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        task, ledger, owner, _ = _seed_owners(session)
+        frozen_due = NOW - timedelta(minutes=40)
+        stale_release = NOW - timedelta(minutes=20)
+        base = _source_slot(task, ledger, owner)
+        slot = replace(
+            base,
+            release_not_before_at=stale_release,
+            frozen_due_at=frozen_due,
+        )
+        plan_hash = source_pacing_plan_hash(slot, {}, seed_id=f"ai:{task.id}")
+        _freeze_released_owner(
+            owner,
+            slot=slot,
+            plan_hash=plan_hash,
+            frozen_due=frozen_due,
+        )
+        owner.release_not_before_at = stale_release
+        session.flush()
+
+        enriched = attach_owner_history(
+            session,
+            task,
+            [slot],
+            owner_model=TaskGroupDailyMessageSlot,
+            config={},
+            seed_id=f"ai:{task.id}",
+        )[0]
+        point = schedule_source_pacing_points(
+            [enriched],
+            {},
+            seed_id=f"ai:{task.id}",
+            now_at=NOW,
+        )[slot.slot_key]
+        _replace_stale_released_owner_release(
+            owner,
+            point.release_not_before_at,
+        )
+        freeze_pacing_owner(
+            owner,
+            plan_hash=plan_hash,
+            slot_ordinal=enriched.slot_ordinal,
+            plan_total=enriched.plan_total,
+            due_at=point.due_at,
+            release_not_before_at=point.release_not_before_at,
+            source_identity=enriched.owner_identity,
+        )
+
+        assert point.release_not_before_at > NOW
+        assert owner.release_not_before_at == point.release_not_before_at
+
+
+def test_released_owner_keeps_future_non_null_release() -> None:
+    future_release = NOW + timedelta(minutes=20)
+    slot = replace(
+        _standalone_released_slot(),
+        release_not_before_at=future_release,
+        historical_cursor_at=future_release,
+    )
+
+    point = schedule_source_pacing_points(
+        [slot],
+        {},
+        seed_id="future-released-owner",
+        now_at=NOW,
+    )[slot.slot_key]
+
+    assert point.release_not_before_at == future_release
+
+
 def test_past_historical_cursor_recovers_after_now() -> None:
     slots = [
         SourcePacingSlot(
@@ -264,6 +340,22 @@ def _source_slot(task: Task, ledger: TaskDayLedger, owner) -> SourcePacingSlot:
         owner_id=owner.id,
         task_lifecycle_epoch=int(task.task_lifecycle_epoch or 1),
         pacing_period_key=ledger.id,
+        pacing_source_key_hash="a" * 64,
+    )
+
+
+def _standalone_released_slot() -> SourcePacingSlot:
+    return SourcePacingSlot(
+        source_key="ledger",
+        slot_key="ai:released-owner",
+        slot_ordinal=1,
+        plan_total=4,
+        period_start_at=NOW - timedelta(hours=2),
+        deadline_at=NOW + timedelta(hours=2),
+        frozen_due_at=NOW - timedelta(minutes=40),
+        owner_id="released-owner",
+        task_lifecycle_epoch=2,
+        pacing_period_key="ledger",
         pacing_source_key_hash="a" * 64,
     )
 

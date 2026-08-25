@@ -1513,6 +1513,10 @@ def _freeze_ai_pacing_assignment(
     source = assignment.source_slot
     config = task.pacing_config or {}
     seed_id = f"ai:{task.id}"
+    _replace_stale_released_owner_release(
+        assignment.owner,
+        release_not_before_at,
+    )
     freeze_pacing_owner(
         assignment.owner,
         plan_hash=source_pacing_plan_hash(
@@ -1535,6 +1539,17 @@ def _freeze_ai_pacing_assignment(
     if capacity_slot and capacity_slot.source_capacity_plan_hash:
         assignment.owner.source_capacity_plan_hash = capacity_slot.source_capacity_plan_hash
         assignment.owner.source_capacity_slot_ordinal = capacity_slot.source_capacity_slot_ordinal
+
+
+def _replace_stale_released_owner_release(
+    owner: TaskGroupDailyMessageSlot,
+    proposed: datetime,
+) -> None:
+    current = owner.release_not_before_at
+    if owner.task_lifecycle_epoch is not None or current is None:
+        return
+    if wall_datetime(current) < wall_datetime(proposed):
+        owner.release_not_before_at = None
 
 
 def _previous_ai_plan_hash(

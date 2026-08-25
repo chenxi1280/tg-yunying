@@ -239,7 +239,12 @@ def _points_after_historical_cursor(
     for slot in ordered:
         due_at = wall_datetime(due_by_slot[slot.slot_key])
         frozen = wall_datetime(slot.release_not_before_at) if slot.release_not_before_at else None
-        if frozen is not None and frozen > due_at:
+        if (
+            frozen is not None
+            and frozen > now_at
+            and frozen >= cursor
+            and frozen > due_at
+        ):
             release_at = frozen
         elif due_at >= now_at and due_at >= cursor + timedelta(seconds=gap_seconds):
             release_at = due_at
