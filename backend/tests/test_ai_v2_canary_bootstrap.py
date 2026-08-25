@@ -15,6 +15,7 @@ from app.models import (
     AiContentPolicyVersion,
     AiProvider,
     AuditLog,
+    GenerationJob,
     Task,
     TaskAiContentPolicyBinding,
     Tenant,
@@ -29,6 +30,7 @@ from app.services.task_center.ai_v2_canary_bootstrap import (
     preview_bootstrap,
     readback_bootstrap,
 )
+from app.services.task_center.service import pause_task
 
 
 pytestmark = pytest.mark.no_postgres
@@ -146,6 +148,74 @@ def test_open_unknown_action_blocks_bootstrap() -> None:
 
         assert "task_open_work_present" in preview["blockers"]
         assert preview["task"]["open_work"]["unknown_count"] == 1
+
+
+def test_pause_cancels_safe_group_ai_work_before_epoch_change() -> None:
+    with Session(_engine()) as session:
+        _seed(session)
+        task = session.get(Task, "task-canary")
+        task.status = "running"
+        session.add(
+            Action(
+                id="pending-action",
+                tenant_id=1,
+                task_id=task.id,
+                task_type="group_ai_chat",
+                action_type="send_message",
+                account_id=1,
+                status="pending",
+                task_lifecycle_epoch=2,
+            )
+        )
+        session.add(
+            GenerationJob(
+                id="pending-job",
+                tenant_id=1,
+                task_id=task.id,
+                task_lifecycle_epoch=2,
+                obligation_type="group_ai_chat",
+                obligation_id="pending-obligation",
+                generation_sequence=1,
+                context_snapshot_version=1,
+                state="pending",
+            )
+        )
+        session.commit()
+
+        paused = pause_task(session, 1, task.id, "operator")
+        preview = preview_bootstrap(session, 1, parse_choices(_choices()))
+
+        assert paused.status == "paused"
+        assert paused.task_lifecycle_epoch == 3
+        assert session.get(Action, "pending-action") is None
+        assert session.get(GenerationJob, "pending-job").state == "cancelled"
+        assert preview["task"]["open_work"]["total"] == 0
+
+
+def test_pause_preserves_unknown_group_ai_work_for_reconciliation() -> None:
+    with Session(_engine()) as session:
+        _seed(session)
+        task = session.get(Task, "task-canary")
+        task.status = "running"
+        session.add(
+            Action(
+                id="unknown-action-on-pause",
+                tenant_id=1,
+                task_id=task.id,
+                task_type="group_ai_chat",
+                action_type="send_message",
+                account_id=1,
+                status="unknown_after_send",
+                task_lifecycle_epoch=2,
+            )
+        )
+        session.commit()
+
+        pause_task(session, 1, task.id, "operator")
+        preview = preview_bootstrap(session, 1, parse_choices(_choices()))
+
+        assert session.get(Action, "unknown-action-on-pause") is not None
+        assert "task_open_work_present" in preview["blockers"]
 
 
 def test_audit_failure_rolls_back_every_bootstrap_write(monkeypatch) -> None:

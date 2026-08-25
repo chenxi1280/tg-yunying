@@ -1,7 +1,7 @@
 # AI 活群质量、Token 与任务履约全局优化 PRD
 
 > 文档状态：Product Design Complete，2026-08-25 生产复验后进入 Phase 0 补正
-> 实现状态：JIT/节奏已在生产生效；旧生成链路仍缺逐次 Provider Token 账本且负向词只在 Prompt 中、未形成旧链路确定性门禁。V2 bootstrap 已发布但尚未灰度，当前受 Provider 价格、任务排空、成人证明及账号声线完整性前置条件阻断；MiniMax 兼容响应中的闭合 `<think>` reasoning block 必须先在 Provider 响应规范化层移除，再进入原严格 JSONL/字段质量校验，未闭合或额外非 JSON 内容继续失败。双号开关与 AI 评论新链路仍禁用，生产恢复状态为 `production_fixed=unproven`
+> 实现状态：JIT/节奏已在生产生效；V2 bootstrap、Provider 逐次账本和旧链路负向词门禁已发布，单群灰度所需声线、Provider 价格与成人证明已完成生产读回。生产暂停验证发现旧 lifecycle epoch 的 Action/GenerationJob 不会被只领取 running/current-epoch 工作的 worker 清理，现补正安全暂停清理后再执行 V2 bootstrap；成人路由与 Telegram E4 尚未完成，状态仍为 `production_fixed=unproven`
 > 适用范围：AI 活群 `group_ai_chat`；AI 评论仅定义独立二期边界
 > 不在范围：降低任务目标、压缩发送时间、静态话术兜底、网络安全专项设计
 > 最近修订：2026-08-25
@@ -357,6 +357,8 @@ AI 评论和活群共享 Provider 账本、Voice Contract 与确定性门禁框�
 - canary preview 的声线覆盖必须为全量 ready；Provider 明示的闭合 `<think>...</think>` 可在解析前确定性剥离，但不得从任意自然语言或未闭合 block 中搜索、猜测或提取 JSON。
 - 声线生成的 Provider HTTP 429 必须进入 `provider_rate_limited` 退避，不得因错误正文包含 `provider` 而误判为不可重试的配置错误；推理模型的声线单条输出预算为 1024 token，以容纳 reasoning 与单行 JSON，字段及质量门禁不放宽。
 - 单群 bootstrap 在 paused epoch 创建配置后，resume 必须在新的 task lifecycle epoch 上重新建立同一 policy/config revision 的 binding；运行时只读取当前 epoch binding，不得把“配置已落库但 binding 仍属于暂停 epoch”误报为启用成功。
+- `group_ai_chat` 暂停必须先锁定 Task 并检查 `unknown_after_send`、已开始 Gateway Attempt 和 V2 `gateway_bound` slot。无远端不确定性时复用任务重规划清理，释放旧 Action 的 coverage/content-mix 占用，并把开放 GenerationJob 与 pre-Gateway window slot 显式置为 cancelled/invalidated；存在任一不确定性时必须保留原事实、在 AuditLog 标记 `blocked_remote_ambiguity`，且 bootstrap 继续以 `task_open_work_present` 阻断。
+- 暂停清理不得修改日目标、小时 due、已确认 Telegram 事实或任务配置 revision；resume 由新 epoch 重新规划原数量债，不能把清理数量记为成功或用集中补发追平。
 
 ### Phase 3：双号与 AI 评论
 

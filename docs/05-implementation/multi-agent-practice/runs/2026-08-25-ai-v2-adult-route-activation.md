@@ -21,6 +21,8 @@
 
 第二轮发布 `efe8f31bedc7ec85505ba7d6d1776b4dbac73494` 后，楼凤声线已通过严格字段门禁补齐到 1061/1061，Provider 4/5 价格与两类成人证明完成受审计读回。bootstrap 数据流复核又发现 paused epoch 上创建的 binding 会在 resume 增加 lifecycle epoch 后失效；正式 start 事务必须在 epoch 推进后重新执行既有 V2 activation，生成当前 epoch binding，再允许任务恢复运行。
 
+binding 修复以 `8ed9a4ea7d75faf5f2b1232ab4022ccd122248f1` 成功发布后，生产只暂停 `郑州楼凤` 单任务。暂停前锁内读回 `gateway_started=0`、`unknown=0`，但暂停后 Action 保持 51、GenerationJob 从 238 仅降至 229 后不再变化。代码复核确认 generation/dispatcher claim 都要求 Task running 且 lifecycle epoch 相等，因此 paused 旧 epoch 永远不会再被 worker 领取；bootstrap 的 open-work=0 门禁在现合同下不可达。
+
 ## 期望结果
 
 - 仅移除完整闭合的 `<think>...</think>` Provider reasoning block，再执行原严格 JSONL、必填字段、男性身份、列表数量、摘要长度和敏感措辞校验。
@@ -41,6 +43,7 @@
 - 完整声线解析与 worker 定向测试全部通过，60 秒硬超时。
 - Provider HTTP 429 回归必须落到 `retry_wait/provider_rate_limited`，不得落到 `manual_required/provider_config_invalid`；声线请求上限固定为 1024。
 - paused V2 任务 resume 后必须同时保留历史 binding，并新增当前 lifecycle epoch、同 config revision 的 binding。
+- group AI pause 无远端不确定性时必须释放旧 Action 计划并取消开放 GenerationJob；存在 unknown/Gateway-started/gateway-bound 时必须保留事实和可见审计 blocker，不得为通过 bootstrap 强制清理。
 - binding 修复定向测试 `test_ai_content_policy.py + test_ai_v2_canary_bootstrap.py` 为 `16 passed`；本地没有 PostgreSQL 测试库，start/resume 的 PostgreSQL 扩展选择集由 Deploy Production 双矩阵门禁验证。
 - 发布后精确重试 11 条，独立读回 active voice profiles 11/11，随后重新运行 bootstrap preview。
 
@@ -59,7 +62,7 @@
 - release_mode: `github_actions`
 - release_owner: `main`
 - rollback_owner: `main`
-- status: `binding_fix_pending`
+- status: `pause_cleanup_fix_pending`
 
 ### 上线范围
 

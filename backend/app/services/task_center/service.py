@@ -71,6 +71,10 @@ from .ai_act_types import canonical_ai_group_act_type
 from .ai_runtime_diagnostics import ai_runtime_diagnostics
 from .ai_generator import AiGenerationUnavailable, generate_channel_comments, generate_group_messages
 from .task_ai_content_activation import activate_task_ai_content_config
+from .task_pause_cleanup import (
+    cancel_open_generation_jobs,
+    lock_and_has_ambiguous_group_ai_work,
+)
 from .source_capacity_activation import validate_source_capacity_config
 from .channel_membership import (
     ACTION_TYPE as TARGET_MEMBERSHIP_ACTION_TYPE,
@@ -2417,11 +2421,39 @@ def _start_execution_result(session: Session, task: Task) -> StartExecutionResul
 
 
 def pause_task(session: Session, tenant_id: int, task_id: str, actor: str) -> Task:
-    task = _get_task(session, tenant_id, task_id)
+    task = session.scalar(
+        select(Task)
+        .where(
+            Task.id == task_id,
+            Task.tenant_id == tenant_id,
+            Task.deleted_at.is_(None),
+        )
+        .with_for_update()
+    )
+    if task is None:
+        raise ValueError("task not found")
+    cleanup_status = "not_applicable"
+    cancelled_jobs = 0
+    if task.type == "group_ai_chat":
+        cleanup_status = "blocked_remote_ambiguity"
+        if not lock_and_has_ambiguous_group_ai_work(session, task):
+            _clear_unfinished_plan(session, task)
+            cancelled_jobs = cancel_open_generation_jobs(session, task)
+            cleanup_status = "complete"
     _advance_task_lifecycle_epoch(task, "paused")
     task.status = "paused"
     task.next_run_at = None
-    audit(session, tenant_id=tenant_id, actor=actor, action="暂停任务中心任务", target_type="task", target_id=task.id)
+    audit(
+        session,
+        tenant_id=tenant_id,
+        actor=actor,
+        action="暂停任务中心任务",
+        target_type="task",
+        target_id=task.id,
+        detail=(
+            f"generation_cleanup={cleanup_status};cancelled_jobs={cancelled_jobs}"
+        ),
+    )
     session.commit()
     session.refresh(task)
     return task
