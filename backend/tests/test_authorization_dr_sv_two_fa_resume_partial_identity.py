@@ -11,7 +11,7 @@ from tests import test_authorization_dr_sv_two_fa_resume as base
 pytestmark = pytest.mark.no_postgres
 
 
-def _configure_partial(session, primary, security, flow, operation) -> None:
+def _configure_partial(session, primary, *, security, flow, operation) -> None:
     primary.telegram_user_id_digest = ""
     session.delete(security)
     flow.status = AccountStatus.WAITING_2FA.value
@@ -22,7 +22,13 @@ def _configure_partial(session, primary, security, flow, operation) -> None:
 def test_healthy_partial_identity_resumes_original_two_fa_flow(monkeypatch) -> None:
     with base._session() as session:
         account, primary, security, flow, operation = base._seed(session)
-        _configure_partial(session, primary, security, flow, operation)
+        _configure_partial(
+            session,
+            primary,
+            security=security,
+            flow=flow,
+            operation=operation,
+        )
         base._patch_common(monkeypatch)
         identities = iter([RuntimeError("session is not authorized"), base._identity()])
 
