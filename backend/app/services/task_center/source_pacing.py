@@ -230,6 +230,7 @@ def _points_after_historical_cursor(
         (wall_datetime(first.deadline_at) - wall_datetime(first.period_start_at)).total_seconds()
         / first.plan_total,
     )
+    cursor = max(cursor, now_at - timedelta(seconds=gap_seconds * 0.8))
     deadline = wall_datetime(first.deadline_at)
     result: dict[str, SourcePacingPoint] = {}
     ordered = sorted(slots, key=lambda item: (

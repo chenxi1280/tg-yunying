@@ -101,8 +101,11 @@ def _include_frozen_group_history(
     cursor: datetime | None,
     ordinal: int | None,
 ) -> tuple[datetime | None, int | None]:
-    frozen = [slot for slot in slots if slot.release_not_before_at is not None]
-    releases = [wall_datetime(slot.release_not_before_at) for slot in frozen]
+    frozen = [slot for slot in slots if slot.frozen_due_at is not None]
+    releases = [
+        wall_datetime(slot.release_not_before_at or slot.frozen_due_at)
+        for slot in frozen
+    ]
     ordinals = [slot.slot_ordinal for slot in frozen]
     next_cursor = max([wall_datetime(cursor), *releases]) if cursor is not None else max(releases, default=None)
     next_ordinal = max([ordinal, *ordinals]) if ordinal is not None else max(ordinals, default=None)
@@ -114,7 +117,7 @@ def _allocate_new_ordinals(
     historical_max_ordinal: int | None,
 ) -> list[SourcePacingSlot]:
     pending = sorted(
-        (slot for slot in slots if slot.release_not_before_at is None),
+        (slot for slot in slots if slot.frozen_due_at is None),
         key=lambda slot: (slot.slot_ordinal, slot.slot_key),
     )
     next_ordinal = 0 if historical_max_ordinal is None else historical_max_ordinal + 1

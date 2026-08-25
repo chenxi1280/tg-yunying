@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, datetime, timedelta
 
 import pytest
@@ -139,6 +140,80 @@ def test_new_owner_fails_when_frozen_source_plan_has_no_ordinal_capacity() -> No
             )
 
 
+def test_released_owner_keeps_frozen_identity_and_recovers_after_now() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        task, ledger, owner, _ = _seed_owners(session)
+        base = _source_slot(task, ledger, owner)
+        frozen_due = NOW - timedelta(minutes=30)
+        slot = replace(base, release_not_before_at=None, frozen_due_at=frozen_due)
+        plan_hash = source_pacing_plan_hash(slot, {}, seed_id=f"ai:{task.id}")
+        _freeze_released_owner(
+            owner,
+            slot=slot,
+            plan_hash=plan_hash,
+            frozen_due=frozen_due,
+        )
+        session.flush()
+
+        enriched = attach_owner_history(
+            session,
+            task,
+            [slot],
+            owner_model=TaskGroupDailyMessageSlot,
+            config={},
+            seed_id=f"ai:{task.id}",
+        )[0]
+        point = schedule_source_pacing_points(
+            [enriched],
+            {},
+            seed_id=f"ai:{task.id}",
+            now_at=NOW,
+        )[slot.slot_key]
+        freeze_pacing_owner(
+            owner,
+            plan_hash=plan_hash,
+            slot_ordinal=enriched.slot_ordinal,
+            plan_total=enriched.plan_total,
+            due_at=point.due_at,
+            release_not_before_at=point.release_not_before_at,
+            source_identity=enriched.owner_identity,
+        )
+
+        assert enriched.slot_ordinal == slot.slot_ordinal
+        assert point.due_at == frozen_due
+        assert point.release_not_before_at > NOW
+        assert owner.task_lifecycle_epoch == task.task_lifecycle_epoch
+
+
+def test_past_historical_cursor_recovers_after_now() -> None:
+    slots = [
+        SourcePacingSlot(
+            "message-1",
+            f"batch:{index}",
+            index,
+            8,
+            NOW - timedelta(hours=2),
+            NOW + timedelta(hours=2),
+            historical_cursor_at=NOW - timedelta(hours=1),
+            historical_max_ordinal=index - 1,
+        )
+        for index in (3, 4)
+    ]
+
+    points = schedule_source_pacing_points(
+        slots,
+        {},
+        seed_id="past-cursor",
+        now_at=NOW,
+    )
+    releases = sorted(point.release_not_before_at for point in points.values())
+
+    assert releases[0] > NOW
+    assert releases[1] - releases[0] >= timedelta(minutes=30)
+
+
 def _seed_owners(session: Session):
     session.add(Tenant(id=1, name="tenant"))
     session.add(OperationTarget(
@@ -200,5 +275,22 @@ def _freeze_historical_owner(owner, slot: SourcePacingSlot, plan_hash: str) -> N
     owner.pacing_due_at = NOW - timedelta(minutes=30)
     owner.release_not_before_at = NOW + timedelta(minutes=5)
     owner.task_lifecycle_epoch = slot.task_lifecycle_epoch
+    owner.pacing_period_key = slot.pacing_period_key
+    owner.pacing_source_key_hash = slot.pacing_source_key_hash
+
+
+def _freeze_released_owner(
+    owner,
+    *,
+    slot: SourcePacingSlot,
+    plan_hash: str,
+    frozen_due: datetime,
+) -> None:
+    owner.pacing_plan_hash = plan_hash
+    owner.pacing_slot_ordinal = slot.slot_ordinal
+    owner.pacing_plan_total = slot.plan_total
+    owner.pacing_due_at = frozen_due
+    owner.release_not_before_at = None
+    owner.task_lifecycle_epoch = None
     owner.pacing_period_key = slot.pacing_period_key
     owner.pacing_source_key_hash = slot.pacing_source_key_hash
