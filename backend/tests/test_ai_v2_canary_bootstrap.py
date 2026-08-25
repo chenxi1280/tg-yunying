@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+import json
 from pathlib import Path
 
 import pytest
@@ -60,6 +61,7 @@ def test_guarded_bootstrap_applies_policy_routes_and_one_task_atomically() -> No
 
         assert preview["missing_user_choices"] == []
         assert preview["blockers"] == []
+        assert preview["task"]["legacy_ai_provider_id"] == 1
         result = apply_bootstrap(
             session,
             1,
@@ -74,6 +76,7 @@ def test_guarded_bootstrap_applies_policy_routes_and_one_task_atomically() -> No
         assert readback["task"]["config_revision"] == 4
         assert readback["policy"]["manifest_id"] == "ai_group_v2_canary_policy_v2"
         assert readback["binding"]["allowed_routes"] == ["general"]
+        assert "ai_provider_id" not in session.get(Task, "task-canary").type_config
         assert len(readback["routes"]) == 3
         policy = session.scalar(select(AiContentPolicyVersion))
         lexicon = policy.gate_config["negative_lexicon"]
@@ -86,6 +89,8 @@ def test_guarded_bootstrap_applies_policy_routes_and_one_task_atomically() -> No
         assert all(item["scope"] == "output" for item in lexicon["entries"])
         assert readback["production_fixed"] is False
         assert session.scalar(select(func.count(AuditLog.id))) == 1
+        audit = session.scalar(select(AuditLog))
+        assert json.loads(audit.detail)["removed_legacy_ai_provider_id"] == 1
 
 
 def test_reviewer_identity_overlap_blocks_apply_without_writes() -> None:
@@ -346,7 +351,7 @@ def _seed(session: Session) -> None:
             config_revision=3,
             task_lifecycle_epoch=2,
             account_config={"selection_mode": "selected", "account_ids": [1]},
-            type_config={"target_group_id": 7},
+            type_config={"target_group_id": 7, "ai_provider_id": 1},
         )
     )
     session.add(

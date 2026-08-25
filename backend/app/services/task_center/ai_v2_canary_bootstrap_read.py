@@ -356,6 +356,9 @@ def task_row(task: Task) -> dict:
         "route_v2_enabled": bool(
             (task.type_config or {}).get("ai_content_route_v2_enabled")
         ),
+        "legacy_ai_provider_id": int(
+            (task.type_config or {}).get("ai_provider_id") or 0
+        ),
     }
 
 

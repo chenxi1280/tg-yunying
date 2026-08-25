@@ -379,6 +379,7 @@ def _apply_task(
             "ai_content_daily_budget": choices.daily_ai_budget,
         }
     )
+    config.pop("ai_provider_id", None)
     task.config_revision += 1
     task.type_config = validated_type_config(task.type, config)
     task.updated_at = _now()
@@ -412,6 +413,9 @@ def _write_audit(  # noqa: ANN001
         "old_policy_hash": (preview["current_policy"] or {}).get("policy_hash"),
         "new_policy_hash": policy.policy_hash,
         "binding_hash": binding.evidence_hash,
+        "removed_legacy_ai_provider_id": int(
+            (preview["task"] or {}).get("legacy_ai_provider_id") or 0
+        ),
     }
     session.add(
         AuditLog(
