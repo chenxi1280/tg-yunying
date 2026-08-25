@@ -248,6 +248,47 @@ def test_group_v2_alternates_inquiry_and_sensory_when_both_are_grounded() -> Non
         assert modes == {"adult_service_inquiry", "adult_service_sensory"}
 
 
+def test_group_v2_selects_one_grounded_route_when_visual_and_inquiry_match() -> None:
+    with Session(_engine()) as session:
+        task, first_action, first_job = _seed(
+            session,
+            routes=[
+                "adult_visual",
+                "adult_service_inquiry",
+                "adult_service_sensory",
+            ],
+        )
+        binding = session.scalar(select(TaskAiContentPolicyBinding))
+        visual_attestation = AdultSubjectAttestation(
+            id="visual-attestation-1", tenant_id=1, scope_type="task_group",
+            scope_id="7", subject_class="adult_visual",
+            evidence_codes=["adult_visual_content_verified"],
+            permission_snapshot={"adult_content_attest": True},
+            expires_at=datetime(2027, 8, 19), task_config_revision=3,
+            policy_version=1, status="active", evidence_hash="v" * 64,
+        )
+        session.add(visual_attestation)
+        binding.attestation_ids = [*binding.attestation_ids, visual_attestation.id]
+        second_action, second_job = _add_group_item(session, 3)
+        history = "甲: 她丝袜挺好看，今晚能约吗"
+
+        config = bind_group_generation_contracts(
+            session,
+            task,
+            [
+                (first_action, _payload(first_job.id, history=history)),
+                (second_action, _payload(second_job.id, history=history)),
+            ],
+            config={"ai_content_route_v2_enabled": True},
+        )
+
+        modes = {
+            item["content_mode"]
+            for item in config["_ai_content_contracts"].values()
+        }
+        assert modes == {"adult_visual", "adult_service_inquiry"}
+
+
 def test_group_v2_rebinds_pre_gateway_slot_to_current_context_revision() -> None:
     with Session(_engine()) as session:
         task, action, job = _seed(session, routes=["general"])

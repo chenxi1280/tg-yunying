@@ -279,15 +279,8 @@ def _context_route(
         route for route, markers in _ROUTE_MARKERS.items()
         if route in allowed and any(marker in evidence for marker in markers)
     )
-    service_modes = {
-        "adult_service_inquiry",
-        "adult_service_sensory",
-    }
-    if service_modes <= set(matched):
-        ordered = tuple(route for route in matched if route in service_modes)
-        return ordered[selector % len(ordered)]
-    if len(matched) == 1:
-        return matched[0]
+    if matched:
+        return matched[selector % len(matched)]
     if not matched and "general" in allowed and not any(
         marker in evidence for marker in _ADULT_CONTEXT_MARKERS
     ):
