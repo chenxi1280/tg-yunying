@@ -42,3 +42,35 @@
 - 已是 L3 标准流程；任何字段校验放宽、Provider 响应正文提取、任务范围变化或 migration 都需重新 product resync。
 - 回滚到上一不可变 release；本代码提交无 schema/data 自动 apply，既有重试/AuditLog 事实保留。
 
+## Release Gate
+
+- message_id: `release-ai-v2-voice-think-wrapper-20260825`
+- intake_id: `production-ai-v2-adult-route-activation-20260825`
+- from_agent: `dev`
+- to_agent: `product, qa, prod-diagnosis`
+- level: `L3`
+- release_mode: `github_actions`
+- release_owner: `main`
+- rollback_owner: `main`
+- status: `pending`
+
+### 上线范围
+
+仅发布 MiniMax 闭合 reasoning 前缀规范化、两条解析回归、PRD 与运行记录；不随发布修改 Provider、任务配置、policy、attestation、binding、目标量或 Telegram 数据。
+
+### 必须满足
+
+- ci_or_build: `git diff --check`、目标模块 compileall、Deploy Production 全 jobs。
+- backend_tests: 60 秒硬超时内声线解析与 worker 定向回归 `63 passed`。
+- frontend_build: 无前端改动；仍由 Deploy Production workflow 执行正式构建。
+- migration_impact: 无 migration。
+- worker_impact: `worker-voice-profile` 载入新解析器；不新增 worker、并发或轮询。
+- external_platform_impact: 只有后续显式重试才调用 Provider；发布本身不调用 Provider、不发送 Telegram。
+- rollback_plan: 回到上一不可变 release；无 schema/data rollback。
+- observe_window: 发布后对 11 个精确条目使用新 idempotency key 单次重试并读回，不盲目重复。
+
+### 发布后复核
+
+- production_probe: expected SHA、current symlink、backend/voice-profile worker SHA 与 health。
+- logs_or_actions: 11 个条目状态、active voice profile 数、bootstrap preview blockers；成人 route 与 Telegram E4 后续独立验证。
+- owner: `prod-diagnosis/main`
