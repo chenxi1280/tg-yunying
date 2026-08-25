@@ -20,8 +20,7 @@ from .contracts import AuthorizationDrError
 from .online_abc_manifest import ACTIVE_OPERATION_STATUSES
 from .online_abc_primary import primary_state
 
-
-MAX_CHUNK_ACCOUNTS = 10
+MAX_CHUNK_ACCOUNTS = 30
 CHUNK_PAUSE_ACTION = "ABC runner chunk 边界停批"
 CHUNK_RESUME_ACTION = "恢复 ABC runner chunk 边界"
 QUIESCENT_ITEM_STATUSES = {"manual_required", "pending", "succeeded"}
@@ -29,7 +28,7 @@ QUIESCENT_ITEM_STATUSES = {"manual_required", "pending", "succeeded"}
 
 def require_chunk_size(max_accounts: int) -> None:
     if max_accounts < 1 or max_accounts > MAX_CHUNK_ACCOUNTS:
-        raise AuthorizationDrError("online_abc_chunk_size_invalid", "Chunk size must be between 1 and 10")
+        raise AuthorizationDrError("online_abc_chunk_size_invalid", "Chunk size must be between 1 and 30")
 
 
 def resume_online_abc_chunk(session, batch_id: str, *, actor: str, approval_ref: str) -> bool:
