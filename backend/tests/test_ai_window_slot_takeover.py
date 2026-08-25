@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy import create_engine
@@ -21,6 +22,10 @@ from app.services.task_center.ai_generation_parallel import (
 )
 from app.services.task_center.ai_generation_recovery import (
     _reset_generation_job_for_cached_retry,
+)
+from app.services.task_center.ai_content_runtime import (
+    AiContentRuntimeConflict,
+    defer_generation_job,
 )
 from app.services.task_center.task_pause_cleanup import cancel_open_generation_jobs
 
@@ -170,3 +175,37 @@ def test_persist_unknown_requeues_same_job_without_releasing_slot() -> None:
         assert job.lease_expires_at is None
         assert slot.state == "claimed"
         assert slot.claimed_by_job_id == job.id
+
+
+def test_defer_generation_job_accepts_aware_retry_before_naive_deadline() -> None:
+    job = GenerationJob(
+        latest_safe_send_at=datetime(2026, 8, 25, 22, 55),
+        state="generating",
+        stage_version=1,
+        job_version=1,
+    )
+
+    defer_generation_job(
+        job,
+        stage="quality_wait",
+        next_retry_at=datetime(2026, 8, 25, 22, 54, tzinfo=ZoneInfo("Asia/Shanghai")),
+    )
+
+    assert job.state == "pending"
+    assert job.generation_stage == "quality_wait"
+
+
+def test_defer_generation_job_rejects_aware_retry_at_naive_deadline() -> None:
+    job = GenerationJob(
+        latest_safe_send_at=datetime(2026, 8, 25, 22, 55),
+        state="generating",
+        stage_version=1,
+        job_version=1,
+    )
+
+    with pytest.raises(AiContentRuntimeConflict, match="generation_retry_after_deadline"):
+        defer_generation_job(
+            job,
+            stage="quality_wait",
+            next_retry_at=datetime(2026, 8, 25, 14, 55, tzinfo=ZoneInfo("UTC")),
+        )

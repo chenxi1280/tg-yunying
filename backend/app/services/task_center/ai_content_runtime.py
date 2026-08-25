@@ -20,6 +20,8 @@ from app.models import (
 )
 from app.services._common import _now
 
+from .datetime_compat import is_after_or_equal
+
 
 CURRENT_SLOT_STATES = ("frozen", "claimed", "candidate_ready", "gateway_bound")
 PRE_GATEWAY_SLOT_STATES = ("claimed", "candidate_ready")
@@ -343,7 +345,10 @@ def defer_generation_job(
     stage: str,
     next_retry_at: datetime,
 ) -> None:
-    if job.latest_safe_send_at is not None and next_retry_at >= job.latest_safe_send_at:
+    if job.latest_safe_send_at is not None and is_after_or_equal(
+        next_retry_at,
+        job.latest_safe_send_at,
+    ):
         raise AiContentRuntimeConflict("generation_retry_after_deadline")
     job.state = "pending"
     job.generation_stage = stage
