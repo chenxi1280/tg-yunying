@@ -2381,6 +2381,7 @@ def start_task_in_transaction(
         except ValueError as exc:
             _record_rank_deboost_readiness_blocker(task, exc)
     _mark_task_started(session, task)
+    activate_task_ai_content_config(session, task)
     _initialize_runtime_contracts(session, task)
     _set_runtime_projection(session, task)
     audit(session, tenant_id=tenant_id, actor=actor, action="启动任务中心任务", target_type="task", target_id=task.id)

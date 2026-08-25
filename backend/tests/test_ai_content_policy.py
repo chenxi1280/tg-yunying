@@ -16,6 +16,7 @@ from app.models import (
     TenantAiProviderRouteItem,
     TenantAiProviderRouteSet,
 )
+from app.services.task_center import service as task_service
 from app.services.task_center.ai_content_policy import (
     AiContentPolicyConflict,
     AttestationSpec,
@@ -230,6 +231,36 @@ def test_route_v2_activation_rejects_missing_two_stage_without_binding() -> None
             activate_task_ai_content_config(session, task)
 
         assert session.query(TaskAiContentPolicyBinding).count() == 0
+
+
+def test_resume_rebinds_v2_policy_to_the_new_lifecycle_epoch(monkeypatch) -> None:
+    with Session(_engine()) as session:
+        task = _seed(session)
+        policy = _policy(session)
+        task.status = "paused"
+        task.type_config = {
+            "target_group_id": 7,
+            "ai_two_stage_enabled": True,
+            "ai_content_route_v2_enabled": True,
+            "ai_content_policy_version_id": policy.id,
+            "ai_content_allowed_routes": ["general"],
+            "ai_content_attestation_ids": [],
+        }
+        _seed_provider_routes(session)
+        activate_task_ai_content_config(session, task)
+        session.flush()
+        monkeypatch.setattr(task_service, "takeover_task", lambda _session, _task: None)
+        monkeypatch.setattr(task_service, "_initialize_runtime_contracts", lambda _session, _task: None)
+
+        task_service.start_task_in_transaction(session, task, "tester")
+
+        bindings = session.query(TaskAiContentPolicyBinding).order_by(
+            TaskAiContentPolicyBinding.task_lifecycle_epoch
+        ).all()
+        assert task.status == "running"
+        assert task.task_lifecycle_epoch == 3
+        assert [item.task_lifecycle_epoch for item in bindings] == [2, 3]
+        assert all(item.task_config_revision == task.config_revision for item in bindings)
 
 
 def _seed_provider_routes(session: Session) -> None:
