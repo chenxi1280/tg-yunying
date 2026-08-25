@@ -32,6 +32,7 @@ from .readiness import MY_NODE_STALE_SECONDS
 
 ACTIVE_BOUNDARY = "active_control_plane_interrupt"
 UNKNOWN_BOUNDARY = "stopped_login_unknown"
+POST_CODE_UNKNOWN_BOUNDARY = "stopped_login_post_code_unknown"
 
 
 @dataclass(frozen=True)
@@ -88,7 +89,7 @@ def _boundary_kind(context: InterruptContext, counts: Counter, release_sha: str)
     if common and _active_batch_boundary(context, counts, release_sha):
         return ACTIVE_BOUNDARY
     if common and _unknown_batch_boundary(context, counts):
-        return UNKNOWN_BOUNDARY
+        return _unknown_boundary_kind(context)
     raise AuthorizationDrError("online_abc_c_precode_interrupt_batch_invalid", "Batch boundary changed")
 
 
@@ -111,6 +112,17 @@ def _unknown_batch_boundary(context: InterruptContext, counts: Counter) -> bool:
         and c_slot.operation_id == context.c_operation.id
         and c_slot.outcome == "reconcile_unknown"
         and c_slot.blocker_code == "provision_reconcile_unknown"
+    )
+
+
+def _unknown_boundary_kind(context: InterruptContext) -> str:
+    operation = context.c_operation
+    if not operation.login_code_message_id and operation.login_code_received_at is None:
+        return UNKNOWN_BOUNDARY
+    if operation.login_code_message_id and operation.login_code_received_at is not None:
+        return POST_CODE_UNKNOWN_BOUNDARY
+    raise AuthorizationDrError(
+        "online_abc_c_precode_interrupt_state_invalid", "Interrupted C code facts are incomplete",
     )
 
 
@@ -157,8 +169,6 @@ def _require_operation_shape(session, context: InterruptContext, boundary: str) 
         _operation_matches_frozen_plan(context),
         bool(operation.remote_effect_started_at),
         bool(operation.login_challenge_sent_at),
-        not operation.login_code_message_id,
-        operation.login_code_received_at is None,
         operation.login_flow_id is None,
         operation.candidate_authorization_id is None,
         operation.reconcile_status == "none",
@@ -183,12 +193,14 @@ def _operation_boundary_valid(context: InterruptContext, boundary: str) -> bool:
             operation.status == "login_remote_started"
             and operation.remote_call_state == "started"
             and not operation.blocker_code
+            and not operation.login_code_message_id
+            and operation.login_code_received_at is None
             and bool(operation.lease_token)
             and operation.lease_expires_at is not None
             and operation.lease_expires_at <= _now()
         )
     return bool(
-        boundary == UNKNOWN_BOUNDARY
+        boundary in {UNKNOWN_BOUNDARY, POST_CODE_UNKNOWN_BOUNDARY}
         and operation.status == "provision_reconcile_unknown"
         and operation.remote_call_state == "unknown"
         and operation.blocker_code == "provision_reconcile_unknown"
@@ -265,7 +277,7 @@ def _runtime_boundary_valid(
             and not unknown and set(sensitive) == {operation_id}
         )
     return bool(
-        boundary == UNKNOWN_BOUNDARY and runtime.mode == "off"
+        boundary in {UNKNOWN_BOUNDARY, POST_CODE_UNKNOWN_BOUNDARY} and runtime.mode == "off"
         and not runtime.claim_scope_operation_id
         and set(unknown) == {operation_id} and set(sensitive) == {operation_id}
     )
@@ -275,6 +287,7 @@ __all__ = [
     "InterruptContext",
     "ACTIVE_BOUNDARY",
     "UNKNOWN_BOUNDARY",
+    "POST_CODE_UNKNOWN_BOUNDARY",
     "load_interrupt_context",
     "lock_interrupt_context",
     "require_interrupt_boundary",

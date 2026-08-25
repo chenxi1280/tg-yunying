@@ -128,8 +128,6 @@ def test_apply_is_idempotent_and_readback_matches(db_session) -> None:
 @pytest.mark.parametrize(
     ("field", "value"),
     [
-        ("login_code_message_id", "telegram-message"),
-        ("login_code_received_at", _now()),
         ("login_flow_id", 99),
         ("candidate_authorization_id", 1),
         ("reconcile_status", "previewed"),

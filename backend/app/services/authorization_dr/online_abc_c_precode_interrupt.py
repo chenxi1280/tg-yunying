@@ -23,6 +23,8 @@ from .online_abc_manual_outcome import (
 from .online_abc_c_precode_interrupt_state import (
     ACTIVE_BOUNDARY,
     InterruptContext,
+    POST_CODE_UNKNOWN_BOUNDARY,
+    UNKNOWN_BOUNDARY,
     load_interrupt_context,
     lock_interrupt_context,
     require_interrupt_boundary,
@@ -30,9 +32,11 @@ from .online_abc_c_precode_interrupt_state import (
 from .runtime_scope import disarm_scoped_runtime
 
 
-ACTION = "结案 ABC C 取码前控制面中断"
+ACTION = "结案 ABC C 控制面中断"
 BLOCKER = "c_control_plane_interrupted_pre_code"
 CLASSIFICATION = "c_pre_code_control_plane_interrupted"
+POST_CODE_BLOCKER = "c_control_plane_interrupted_post_code_unproven"
+POST_CODE_CLASSIFICATION = "c_post_code_remote_unproven"
 INTERRUPTION_PATTERN = re.compile(r"[A-Za-z0-9:._/-]{1,160}")
 
 
@@ -131,6 +135,7 @@ def _payload(
     boundary: str,
 ) -> dict:
     operation = context.c_operation
+    classification, blocker = _manual_contract(boundary)
     return {
         "batch_id": context.batch.id,
         "batch_version": context.batch.version,
@@ -147,6 +152,9 @@ def _payload(
         "c_owner": [operation.owner_node_id, operation.owner_epoch],
         "c_lease_expires_at": str(operation.lease_expires_at),
         "c_remote_effect_started_at": str(operation.remote_effect_started_at),
+        "c_challenge_sent_at": str(operation.login_challenge_sent_at),
+        "c_code_message_id": operation.login_code_message_id,
+        "c_code_received_at": str(operation.login_code_received_at),
         "migration_item": [context.migration_item.id, context.migration_item.version],
         "migration_batch": [context.migration_batch.id, context.migration_batch.version],
         "node": [context.node.id, context.node.capability_version, context.node.runtime_image_sha],
@@ -154,8 +162,8 @@ def _payload(
         "pending_count": counts["pending"],
         "manual_count": counts[MANUAL_OUTCOME],
         "boundary": boundary,
-        "classification": CLASSIFICATION,
-        "blocker_code": BLOCKER,
+        "classification": classification,
+        "blocker_code": blocker,
         "interruption_ref": interruption_ref,
         "idempotency_key": key,
         "requested_by": approval[0],
@@ -171,9 +179,9 @@ def _apply_transition(session, context: InterruptContext, preview: dict) -> None
         account_id=operation.account_id,
         operation_id=operation.id,
         status="applied",
-        classification=CLASSIFICATION,
+        classification=preview["classification"],
         recommended_transition=MANUAL_OUTCOME,
-        blocker_code=BLOCKER,
+        blocker_code=preview["blocker_code"],
         expected_operation_version=operation.operation_version,
         expected_item_version=context.item.version,
         expected_source_fact_version=context.primary.fact_version,
@@ -192,7 +200,7 @@ def _apply_transition(session, context: InterruptContext, preview: dict) -> None
     session.add(case)
     session.flush()
     _close_operation(operation, case)
-    _close_migration(session, context)
+    _close_migration(session, context, blocker=preview["blocker_code"])
     _close_online_item(context, preview)
     disarm_scoped_runtime(session, operation, actor="online-abc-c-precode-interrupt")
     _audit_transition(session, context, preview)
@@ -201,7 +209,7 @@ def _apply_transition(session, context: InterruptContext, preview: dict) -> None
 def _close_operation(operation, case) -> None:
     operation.status = MANUAL_OUTCOME
     operation.remote_call_state = "reconciled_hold"
-    operation.blocker_code = BLOCKER
+    operation.blocker_code = case.blocker_code
     operation.reconcile_case_id = case.id
     operation.reconcile_status = "applied"
     operation.reconciled_at = _now()
@@ -211,10 +219,10 @@ def _close_operation(operation, case) -> None:
     operation.operation_version += 1
 
 
-def _close_migration(session, context: InterruptContext) -> None:
+def _close_migration(session, context: InterruptContext, *, blocker: str) -> None:
     context.migration_item.status = MANUAL_OUTCOME
-    context.migration_item.outcome = BLOCKER
-    context.migration_item.blocker_code = BLOCKER
+    context.migration_item.outcome = blocker
+    context.migration_item.blocker_code = blocker
     context.migration_item.finished_at = _now()
     context.migration_item.version += 1
     refresh_migration_batch(session, context.migration_item.id)
@@ -229,12 +237,12 @@ def _close_online_item(context: InterruptContext, preview: dict) -> None:
     b_slot.version += 1
     c_slot.outcome = MANUAL_OUTCOME
     c_slot.operation_id = context.c_operation.id
-    c_slot.blocker_code = BLOCKER
+    c_slot.blocker_code = preview["blocker_code"]
     c_slot.version += 1
     context.item.status = MANUAL_OUTCOME
     context.item.outcome = MANUAL_OUTCOME
     context.item.primary_probe_outcome = "succeeded"
-    context.item.blocker_code = BLOCKER
+    context.item.blocker_code = preview["blocker_code"]
     context.item.finished_at = _now()
     context.item.version += 1
     context.batch.execution_release_sha = preview["runtime_release_sha"]
@@ -245,7 +253,8 @@ def _close_online_item(context: InterruptContext, preview: dict) -> None:
 def _evidence_manifest(preview: dict) -> dict:
     return {key: preview[key] for key in (
         "boundary", "classification", "blocker_code", "interruption_ref", "previous_execution_release_sha",
-        "runtime_release_sha", "c_owner", "c_lease_expires_at", "c_remote_effect_started_at", "node",
+        "runtime_release_sha", "c_owner", "c_lease_expires_at", "c_remote_effect_started_at",
+        "c_challenge_sent_at", "c_code_message_id", "c_code_received_at", "node",
     )}
 
 
@@ -260,7 +269,7 @@ def _audit_transition(session, context: InterruptContext, preview: dict) -> None
         detail=(
             f"account_id={context.item.account_id}; approval_ref={preview['approval_ref']}; "
             f"idempotency_key={preview['idempotency_key']}; fingerprint={preview['fingerprint']}; "
-            f"interruption_ref={preview['interruption_ref']}; blocker={BLOCKER}; "
+            f"interruption_ref={preview['interruption_ref']}; blocker={preview['blocker_code']}; "
             f"execution_release={preview['previous_execution_release_sha']}->{preview['runtime_release_sha']}"
         ),
     )
@@ -271,7 +280,8 @@ def _existing_result(session, batch_id: str, account_id: int, *, key: str) -> di
     case = session.scalar(select(TgAuthorizationDrReconcileCase).where(
         TgAuthorizationDrReconcileCase.operation_id == context.c_operation.id,
     ))
-    if not case or case.classification != CLASSIFICATION:
+    classifications = {CLASSIFICATION, POST_CODE_CLASSIFICATION}
+    if not case or case.classification not in classifications:
         return None
     if case.apply_idempotency_key != _idempotency_key(key):
         raise AuthorizationDrError("idempotency_key_conflict", "Interrupted C key was already used")
@@ -321,8 +331,18 @@ def _interruption_ref(value: str) -> str:
     return normalized
 
 
+def _manual_contract(boundary: str) -> tuple[str, str]:
+    if boundary == POST_CODE_UNKNOWN_BOUNDARY:
+        return POST_CODE_CLASSIFICATION, POST_CODE_BLOCKER
+    if boundary in {ACTIVE_BOUNDARY, UNKNOWN_BOUNDARY}:
+        return CLASSIFICATION, BLOCKER
+    raise AuthorizationDrError("online_abc_c_precode_interrupt_state_invalid", "Interrupted C boundary is invalid")
+
+
 __all__ = [
     "apply_c_precode_interrupt",
+    "POST_CODE_BLOCKER",
+    "POST_CODE_CLASSIFICATION",
     "preview_c_precode_interrupt",
     "readback_c_precode_interrupt",
 ]

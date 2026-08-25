@@ -45,7 +45,7 @@ def _execute(session, args) -> dict:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Close a control-plane-interrupted pre-code C as manual debt")
+    parser = argparse.ArgumentParser(description="Close a control-plane-interrupted C as manual debt")
     parser.add_argument("--mode", choices=("preview", "apply", "readback"), required=True)
     parser.add_argument("--batch-id", required=True)
     parser.add_argument("--account-id", type=int, required=True)
