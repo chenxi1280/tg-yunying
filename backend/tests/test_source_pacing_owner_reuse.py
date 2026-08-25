@@ -19,6 +19,7 @@ from app.models import (
     Tenant,
     TgAccount,
 )
+from app.services.task_center.ai_pacing_takeover import release_safe_ai_pacing_owners
 from app.services.task_center.pacing import PACING_CONTRACT_VERSION
 from app.services.task_center.source_pacing_admission import admit_source_paced_attempt
 
@@ -146,6 +147,100 @@ def test_replacement_retry_stays_pinned_to_first_owner_admission(
     assert state.last_call_started_at == NOW
 
 
+@pytest.mark.no_postgres
+def test_pause_cleanup_releases_only_safe_orphan_owner(session: Session) -> None:
+    due_at = NOW - timedelta(hours=2)
+    task, ledger, slot = _owner_entities("takeover-task", "takeover-slot", due_at)
+    task.task_lifecycle_epoch = 6
+    slot.task_lifecycle_epoch = 2
+    slot.pacing_period_key = ledger.id
+    slot.pacing_source_key_hash = "b" * 64
+    slot.release_not_before_at = NOW - timedelta(hours=1)
+    action = _action("takeover-skipped", task.id, slot.id, due_at)
+    action.status = "skipped"
+    session.add_all([task, ledger, slot, action])
+    session.flush()
+
+    released = release_safe_ai_pacing_owners(session, task, observed_at=NOW)
+
+    assert released == 1
+    assert slot.task_lifecycle_epoch is None
+    assert slot.release_not_before_at is None
+    assert slot.pacing_due_at == due_at
+    assert slot.pacing_plan_hash == "a" * 64
+    assert slot.pacing_slot_ordinal == 1
+
+
+@pytest.mark.no_postgres
+def test_pause_cleanup_preserves_future_release_for_safe_owner(
+    session: Session,
+) -> None:
+    future_release = NOW + timedelta(hours=1)
+    task, ledger, slot = _owner_entities(
+        "future-release-task",
+        "future-release-slot",
+        NOW - timedelta(hours=1),
+    )
+    task.task_lifecycle_epoch = 6
+    slot.task_lifecycle_epoch = 2
+    slot.pacing_period_key = ledger.id
+    slot.pacing_source_key_hash = "b" * 64
+    slot.release_not_before_at = future_release
+    session.add_all([task, ledger, slot])
+    session.flush()
+
+    released = release_safe_ai_pacing_owners(session, task, observed_at=NOW)
+
+    assert released == 1
+    assert slot.task_lifecycle_epoch is None
+    assert slot.release_not_before_at == future_release
+
+
+@pytest.mark.no_postgres
+@pytest.mark.parametrize(
+    "case",
+    (
+        {"status": "retryable_failed", "gateway_started": False, "remote_message_id": ""},
+        {"status": "success", "gateway_started": True, "remote_message_id": "1001"},
+        {"status": "failed", "gateway_started": True, "remote_message_id": ""},
+        {"status": "unknown_after_send", "gateway_started": False, "remote_message_id": ""},
+    ),
+)
+def test_pause_cleanup_preserves_remote_or_active_owner(
+    session: Session,
+    case: dict,
+) -> None:
+    status = case["status"]
+    gateway_started = case["gateway_started"]
+    remote_message_id = case["remote_message_id"]
+    suffix = status.replace("_", "-")
+    task, ledger, slot = _owner_entities(
+        f"preserve-{suffix}",
+        f"preserve-slot-{suffix}",
+        NOW,
+    )
+    task.task_lifecycle_epoch = 6
+    slot.task_lifecycle_epoch = 2
+    slot.pacing_period_key = ledger.id
+    slot.pacing_source_key_hash = "b" * 64
+    action = _action(f"preserve-action-{suffix}", task.id, slot.id, NOW)
+    action.status = status
+    session.add_all([task, ledger, slot, action])
+    session.flush()
+    if gateway_started or remote_message_id:
+        attempt = _attempt(action, 1, NOW)
+        attempt.gateway_call_started_at = NOW if gateway_started else None
+        attempt.remote_message_id = remote_message_id
+        session.add(attempt)
+        session.flush()
+
+    released = release_safe_ai_pacing_owners(session, task, observed_at=NOW)
+
+    assert released == 0
+    assert slot.task_lifecycle_epoch == 2
+    assert slot.release_not_before_at == NOW
+
+
 def test_postgres_owner_reuse_executes_with_targeted_row_lock() -> None:
     from app.database import SessionLocal
 
@@ -196,6 +291,45 @@ def test_postgres_owner_reuse_executes_with_targeted_row_lock() -> None:
             now_value=due_at,
         )
         assert current.scalar(select(func.count(SourcePacingAdmission.id))) == 1
+
+
+def test_postgres_pause_cleanup_locks_and_releases_safe_owner() -> None:
+    from app.database import SessionLocal
+
+    with SessionLocal() as current:
+        current.add(Tenant(id=TENANT_ID, name="takeover-postgres"))
+        current.add(TgAccount(
+            id=ACCOUNT_ID,
+            tenant_id=TENANT_ID,
+            display_name="account",
+            phone_masked="***0001",
+            status="在线",
+        ))
+        current.add(OperationTarget(
+            id=TARGET_ID,
+            tenant_id=TENANT_ID,
+            target_type="group",
+            tg_peer_id="-1009001",
+            title="group",
+        ))
+        task, ledger, slot = _owner_entities(
+            "pg-takeover-task",
+            "pg-takeover-slot",
+            NOW - timedelta(hours=2),
+        )
+        task.task_lifecycle_epoch = 6
+        slot.task_lifecycle_epoch = 2
+        slot.release_not_before_at = NOW - timedelta(hours=1)
+        action = _action("pg-takeover-action", task.id, slot.id, slot.pacing_due_at)
+        action.status = "skipped"
+        current.add_all([task, ledger, slot, action])
+        current.flush()
+
+        released = release_safe_ai_pacing_owners(current, task, observed_at=NOW)
+
+        assert released == 1
+        assert slot.task_lifecycle_epoch is None
+        assert slot.release_not_before_at is None
 
 
 def _add_paced_action(

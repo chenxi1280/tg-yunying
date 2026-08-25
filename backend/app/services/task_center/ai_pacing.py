@@ -23,6 +23,7 @@ ACTIVE_QUANTITY_ACTION_STATUSES = (
     "pending",
     "claiming",
     "executing",
+    "retryable_failed",
     "success",
     "unknown_after_send",
 )

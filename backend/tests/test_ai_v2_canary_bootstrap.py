@@ -19,6 +19,8 @@ from app.models import (
     GenerationJob,
     Task,
     TaskAiContentPolicyBinding,
+    TaskDayLedger,
+    TaskGroupDailyMessageSlot,
     Tenant,
     TenantAiProviderRouteSet,
     TgAccount,
@@ -207,10 +209,40 @@ def test_open_unknown_action_blocks_bootstrap() -> None:
 
 
 def test_pause_cancels_safe_group_ai_work_before_epoch_change() -> None:
-    with Session(_engine()) as session:
+    with Session(_engine(), autoflush=False) as session:
         _seed(session)
         task = session.get(Task, "task-canary")
         task.status = "running"
+        ledger = TaskDayLedger(
+            id="pause-ledger",
+            tenant_id=1,
+            task_id=task.id,
+            timezone_snapshot="Asia/Shanghai",
+            timezone_revision=1,
+            obligation_local_date=datetime(2026, 8, 25).date(),
+            period_start_at=datetime(2026, 8, 25),
+            deadline_at=datetime(2026, 8, 26),
+            day_phase="active",
+            planning_anchor_at=datetime(2026, 8, 25),
+        )
+        quantity = TaskGroupDailyMessageSlot(
+            id="pause-quantity",
+            tenant_id=1,
+            task_id=task.id,
+            task_day_ledger_id=ledger.id,
+            target_operation_target_id=7,
+            slot_kind="quantity",
+            slot_ordinal=1,
+            pacing_plan_hash="a" * 64,
+            pacing_slot_ordinal=0,
+            pacing_plan_total=10,
+            pacing_due_at=datetime(2026, 8, 25, 1),
+            release_not_before_at=datetime(2026, 8, 25, 2),
+            task_lifecycle_epoch=2,
+            pacing_period_key=ledger.id,
+            pacing_source_key_hash="b" * 64,
+        )
+        session.add_all([ledger, quantity])
         session.add(
             Action(
                 id="pending-action",
@@ -221,6 +253,7 @@ def test_pause_cancels_safe_group_ai_work_before_epoch_change() -> None:
                 account_id=1,
                 status="pending",
                 task_lifecycle_epoch=2,
+                primary_quantity_slot_id=quantity.id,
             )
         )
         session.add(
@@ -245,6 +278,13 @@ def test_pause_cancels_safe_group_ai_work_before_epoch_change() -> None:
         assert paused.task_lifecycle_epoch == 3
         assert session.get(Action, "pending-action") is None
         assert session.get(GenerationJob, "pending-job").state == "cancelled"
+        assert quantity.task_lifecycle_epoch is None
+        assert quantity.release_not_before_at is None
+        assert quantity.pacing_due_at == datetime(2026, 8, 25, 1)
+        audit_row = session.scalar(select(AuditLog).where(
+            AuditLog.action == "暂停任务中心任务",
+        ))
+        assert "released_pacing_owners=1" in audit_row.detail
         assert preview["task"]["open_work"]["total"] == 0
 
 

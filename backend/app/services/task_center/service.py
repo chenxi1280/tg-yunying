@@ -182,6 +182,7 @@ from .planner_wake import (
     wake_task_planner,
 )
 from .ai_generation_recovery import recover_stale_pre_gateway_generation
+from .ai_pacing_takeover import release_safe_ai_pacing_owners
 from .recovery_claims import (
     RecoveryClaim,
     claim_recovery_actions,
@@ -2434,10 +2435,11 @@ def pause_task(session: Session, tenant_id: int, task_id: str, actor: str) -> Ta
         raise ValueError("task not found")
     cleanup_status = "not_applicable"
     cancelled_jobs = 0
+    released_pacing_owners = 0
     if task.type == "group_ai_chat":
         cleanup_status = "blocked_remote_ambiguity"
         if not lock_and_has_ambiguous_group_ai_work(session, task):
-            _clear_unfinished_plan(session, task)
+            released_pacing_owners = _clear_unfinished_plan(session, task)
             cancelled_jobs = cancel_open_generation_jobs(session, task)
             cleanup_status = "complete"
     _advance_task_lifecycle_epoch(task, "paused")
@@ -2451,7 +2453,8 @@ def pause_task(session: Session, tenant_id: int, task_id: str, actor: str) -> Ta
         target_type="task",
         target_id=task.id,
         detail=(
-            f"generation_cleanup={cleanup_status};cancelled_jobs={cancelled_jobs}"
+            f"generation_cleanup={cleanup_status};cancelled_jobs={cancelled_jobs};"
+            f"released_pacing_owners={released_pacing_owners}"
         ),
     )
     session.commit()
@@ -5512,7 +5515,7 @@ def _get_task(session: Session, tenant_id: int, task_id: str) -> Task:
     return task
 
 
-def _clear_unfinished_plan(session: Session, task: Task) -> None:
+def _clear_unfinished_plan(session: Session, task: Task) -> int:
     _clear_hard_hourly_checkpoint(task)
     pending_actions = list(
         session.scalars(select(Action).where(Action.task_id == task.id, Action.status == "pending"))
@@ -5531,8 +5534,14 @@ def _clear_unfinished_plan(session: Session, task: Task) -> None:
             session.execute(delete(SearchRankDeboostClickReservation).where(SearchRankDeboostClickReservation.action_id.in_(deletable_action_ids)))
             session.execute(delete(Action).where(Action.id.in_(deletable_action_ids)))
     _supersede_active_plan_actions(session, task)
+    released_pacing_owners = release_safe_ai_pacing_owners(
+        session,
+        task,
+        observed_at=_now(),
+    )
     _clear_orphaned_search_join_pacing_decisions(session, task)
     session.execute(delete(ReviewQueue).where(ReviewQueue.task_id == task.id, ReviewQueue.status == "pending"))
+    return released_pacing_owners
 
 
 def _clear_deleted_action_admission_references(session: Session, action_ids: list[str]) -> None:
