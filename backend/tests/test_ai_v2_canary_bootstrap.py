@@ -25,6 +25,7 @@ from app.models import (
 )
 from app.services.task_center import ai_v2_canary_bootstrap as service
 from app.services.task_center import ai_v2_canary_bootstrap_read as read_service
+from app.services.task_center import service as task_service
 from app.services.task_center.ai_v2_canary_bootstrap import (
     AiV2BootstrapConflict,
     apply_bootstrap,
@@ -271,6 +272,26 @@ def test_pause_preserves_unknown_group_ai_work_for_reconciliation() -> None:
 
         assert session.get(Action, "unknown-action-on-pause") is not None
         assert "task_open_work_present" in preview["blockers"]
+
+
+def test_resume_preserves_existing_pacing_anchor(monkeypatch) -> None:
+    original_anchor = "2026-08-25T02:16:54.287388"
+    resumed_at = datetime(2026, 8, 25, 14, 22, 26)
+    with Session(_engine()) as session:
+        _seed(session)
+        task = session.get(Task, "task-canary")
+        task.status = "paused"
+        task.stats = {
+            "started_at": original_anchor,
+            "pacing_anchor_at": original_anchor,
+        }
+        monkeypatch.setattr(task_service, "_now", lambda: resumed_at)
+
+        task_service._mark_task_started(session, task)
+
+        assert task.status == "running"
+        assert task.stats["pacing_anchor_at"] == original_anchor
+        assert task.stats["started_at"] == original_anchor
 
 
 def test_audit_failure_rolls_back_every_bootstrap_write(monkeypatch) -> None:

@@ -5381,7 +5381,10 @@ def _mark_task_started(session: Session, task: Task) -> None:
     task.next_run_at = scheduled_start if task.status == "pending" else now
     stats = dict(task.stats or empty_stats())
     stats["started_at"] = stats.get("started_at") or now.isoformat()
-    if previous_status not in {"running", "pending"}:
+    if (
+        previous_status not in {"running", "pending"}
+        and not stats.get("pacing_anchor_at")
+    ):
         stats["pacing_anchor_at"] = now.isoformat()
     if task.type == "group_ai_chat":
         stats["force_bootstrap_once"] = True

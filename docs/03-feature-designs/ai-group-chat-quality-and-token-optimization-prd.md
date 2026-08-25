@@ -359,6 +359,7 @@ AI 评论和活群共享 Provider 账本、Voice Contract 与确定性门禁框�
 - 单群 bootstrap 在 paused epoch 创建配置后，resume 必须在新的 task lifecycle epoch 上重新建立同一 policy/config revision 的 binding；运行时只读取当前 epoch binding，不得把“配置已落库但 binding 仍属于暂停 epoch”误报为启用成功。
 - `group_ai_chat` 暂停必须先锁定 Task 并检查 `unknown_after_send`、已开始 Gateway Attempt 和 V2 `gateway_bound` slot。无远端不确定性时复用任务重规划清理，释放旧 Action 的 coverage/content-mix 占用，并把开放 GenerationJob 与 pre-Gateway window slot 显式置为 cancelled/invalidated；存在任一不确定性时必须保留原事实、在 AuditLog 标记 `blocked_remote_ambiguity`，且 bootstrap 继续以 `task_open_work_present` 阻断。
 - 暂停清理不得修改日目标、小时 due、已确认 Telegram 事实或任务配置 revision；resume 由新 epoch 重新规划原数量债，不能把清理数量记为成功或用集中补发追平。
+- `paused -> running` 的 resume 必须保留既有 `pacing_anchor_at`；只有从未建立过 pacing anchor 的首次启动才能写入当前时间。不得因灰度暂停把自然日 DueSet 从恢复时刻重新起算，也不得通过一次性集中补发弥补恢复前债务。
 - fact-first 旧链路写回 Task 的 `ai_provider_id` 是单 Provider 运行时绑定，V2 的 router/realizer/reviewer 改由各 purpose route-set 冻结。bootstrap preview 必须把旧 ID 纳入 fingerprint；apply 在同一配置 revision 事务中显式移除它并在审计记录原 ID，不能放宽 `GroupAIChatConfig(extra=forbid)`，也不能让旧 ID 覆盖 V2 route-set。
 
 ### Phase 3：双号与 AI 评论
