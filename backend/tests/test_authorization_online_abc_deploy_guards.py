@@ -10,6 +10,7 @@ import pytest
 pytestmark = pytest.mark.no_postgres
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 GUARDED_SCRIPTS = (
+    "authorization-online-abc-completed-checkpoint-pause.sh",
     "authorization-online-abc-c-precode-interrupt.sh",
     "authorization-online-abc-manual-outcome.sh",
     "authorization-online-abc-release-interrupted.sh",
