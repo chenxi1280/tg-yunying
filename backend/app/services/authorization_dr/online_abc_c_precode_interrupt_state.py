@@ -30,6 +30,10 @@ from .online_abc_operations import online_abc_item_operations
 from .readiness import MY_NODE_STALE_SECONDS
 
 
+ACTIVE_BOUNDARY = "active_control_plane_interrupt"
+UNKNOWN_BOUNDARY = "stopped_login_unknown"
+
+
 @dataclass(frozen=True)
 class InterruptContext:
     batch: TgAuthorizationOnlineAbcBatch
@@ -63,24 +67,51 @@ def load_interrupt_context(session, batch_id: str, account_id: int) -> Interrupt
     )
 
 
-def require_interrupt_boundary(session, context: InterruptContext, release_sha: str) -> Counter:
+def require_interrupt_boundary(
+    session, context: InterruptContext, release_sha: str,
+) -> tuple[Counter, str]:
     counts = Counter(row.status for row in _items(session, context.batch))
-    valid = all((
-        context.batch.selection_mode == "all_online_accounts",
-        context.batch.status == "running",
-        context.batch.execution_release_sha != release_sha,
-        sum(counts.values()) == context.batch.target_count,
-        counts["running"] == 1,
-        context.item.status == context.item.outcome == "running",
-        bool(counts["pending"]),
-        not set(counts) - {"pending", "succeeded", MANUAL_OUTCOME, "running"},
-    ))
-    if not valid:
-        raise AuthorizationDrError("online_abc_c_precode_interrupt_batch_invalid", "Batch boundary changed")
-    _require_operation_shape(session, context)
-    _require_global_boundary(session, context)
+    boundary = _boundary_kind(context, counts, release_sha)
+    _require_operation_shape(session, context, boundary)
+    _require_global_boundary(session, context, boundary)
     _primary_snapshot(session, context.item)
-    return counts
+    return counts, boundary
+
+
+def _boundary_kind(context: InterruptContext, counts: Counter, release_sha: str) -> str:
+    common = all((
+        context.batch.selection_mode == "all_online_accounts",
+        sum(counts.values()) == context.batch.target_count,
+        bool(counts["pending"]),
+        not set(counts) - {"pending", "succeeded", MANUAL_OUTCOME, "running", "stopped"},
+    ))
+    if common and _active_batch_boundary(context, counts, release_sha):
+        return ACTIVE_BOUNDARY
+    if common and _unknown_batch_boundary(context, counts):
+        return UNKNOWN_BOUNDARY
+    raise AuthorizationDrError("online_abc_c_precode_interrupt_batch_invalid", "Batch boundary changed")
+
+
+def _active_batch_boundary(context: InterruptContext, counts: Counter, release_sha: str) -> bool:
+    return bool(
+        context.batch.status == "running"
+        and context.batch.execution_release_sha != release_sha
+        and counts["running"] == 1 and not counts["stopped"]
+        and context.item.status == context.item.outcome == "running"
+    )
+
+
+def _unknown_batch_boundary(context: InterruptContext, counts: Counter) -> bool:
+    c_slot = context.slots["standby_2"]
+    return bool(
+        context.batch.status == "stopped"
+        and counts["stopped"] == 1 and not counts["running"]
+        and context.item.status == "stopped" and context.item.outcome == "reconcile_unknown"
+        and context.item.blocker_code == "reconcile_unknown"
+        and c_slot.operation_id == context.c_operation.id
+        and c_slot.outcome == "reconcile_unknown"
+        and c_slot.blocker_code == "provision_reconcile_unknown"
+    )
 
 
 def lock_interrupt_context(session, batch_id: str, account_id: int) -> None:
@@ -112,7 +143,7 @@ def lock_interrupt_context(session, batch_id: str, account_id: int) -> None:
     ).with_for_update().execution_options(populate_existing=True)))
 
 
-def _require_operation_shape(session, context: InterruptContext) -> None:
+def _require_operation_shape(session, context: InterruptContext, boundary: str) -> None:
     operation = context.c_operation
     bundle_count = session.scalar(select(func.count()).select_from(TgAuthorizationWakeBundle).where(
         TgAuthorizationWakeBundle.operation_id == operation.id,
@@ -120,12 +151,10 @@ def _require_operation_shape(session, context: InterruptContext) -> None:
     stages = list(session.scalars(select(TgAuthorizationDrStageFact.stage).where(
         TgAuthorizationDrStageFact.operation_id == operation.id,
     ).order_by(TgAuthorizationDrStageFact.created_at)))
-    valid = all((
+    common = all((
         operation.operation_type in {"migrate_standby_2", "provision_standby_2"},
         operation.logical_slot == "standby_2",
         _operation_matches_frozen_plan(context),
-        operation.status == "login_remote_started",
-        operation.remote_call_state == "started",
         bool(operation.remote_effect_started_at),
         bool(operation.login_challenge_sent_at),
         not operation.login_code_message_id,
@@ -137,15 +166,35 @@ def _require_operation_shape(session, context: InterruptContext) -> None:
         operation.finished_at is None,
         bool(operation.owner_node_id),
         operation.owner_epoch > 0,
-        bool(operation.lease_token),
-        operation.lease_expires_at is not None and operation.lease_expires_at <= _now(),
         stages == ["remote_login_started"],
         not bundle_count,
         _b_ready(session, context),
         online_abc_item_operations(session, context.batch, context.item)["e4"] is None,
     ))
+    valid = common and _operation_boundary_valid(context, boundary)
     if not valid:
         raise AuthorizationDrError("online_abc_c_precode_interrupt_state_invalid", "Interrupted C state changed")
+
+
+def _operation_boundary_valid(context: InterruptContext, boundary: str) -> bool:
+    operation = context.c_operation
+    if boundary == ACTIVE_BOUNDARY:
+        return bool(
+            operation.status == "login_remote_started"
+            and operation.remote_call_state == "started"
+            and not operation.blocker_code
+            and bool(operation.lease_token)
+            and operation.lease_expires_at is not None
+            and operation.lease_expires_at <= _now()
+        )
+    return bool(
+        boundary == UNKNOWN_BOUNDARY
+        and operation.status == "provision_reconcile_unknown"
+        and operation.remote_call_state == "unknown"
+        and operation.blocker_code == "provision_reconcile_unknown"
+        and not operation.lease_token and operation.lease_expires_at is None
+        and context.item.primary_probe_outcome == "succeeded"
+    )
 
 
 def _operation_matches_frozen_plan(context: InterruptContext) -> bool:
@@ -181,7 +230,7 @@ def _b_ready(session, context: InterruptContext) -> bool:
     )
 
 
-def _require_global_boundary(session, context: InterruptContext) -> None:
+def _require_global_boundary(session, context: InterruptContext, boundary: str) -> None:
     runtime = session.get(AuthorizationDrRuntimeContract, 1)
     unknown = list(session.scalars(select(TgAuthorizationDrOperation.id).where(
         TgAuthorizationDrOperation.status.in_(UNKNOWN_OPERATION_STATUSES),
@@ -190,13 +239,9 @@ def _require_global_boundary(session, context: InterruptContext) -> None:
         TgAuthorizationDrOperation.status.in_(ACTIVE_OPERATION_STATUSES),
     )))
     valid = all((
-        runtime,
-        runtime.mode == "migrate",
-        runtime.claim_scope_operation_id == context.c_operation.id,
-        runtime.required_node_capability_version == context.node.capability_version,
-        runtime.required_node_runtime_image_sha == context.node.runtime_image_sha,
-        not unknown,
-        set(sensitive) == {context.c_operation.id},
+        runtime, _runtime_boundary_valid(
+            runtime, context, boundary, unknown=unknown, sensitive=sensitive,
+        ),
         context.node.status == "ready",
         context.node.active_client_count == 0,
         context.node.last_heartbeat_at is not None,
@@ -206,8 +251,30 @@ def _require_global_boundary(session, context: InterruptContext) -> None:
         raise AuthorizationDrError("online_abc_c_precode_interrupt_runtime_active", "Global boundary changed")
 
 
+def _runtime_boundary_valid(
+    runtime, context, boundary: str, *, unknown: list, sensitive: list,
+) -> bool:
+    if not runtime:
+        return False
+    operation_id = context.c_operation.id
+    if boundary == ACTIVE_BOUNDARY:
+        return bool(
+            runtime.mode == "migrate" and runtime.claim_scope_operation_id == operation_id
+            and runtime.required_node_capability_version == context.node.capability_version
+            and runtime.required_node_runtime_image_sha == context.node.runtime_image_sha
+            and not unknown and set(sensitive) == {operation_id}
+        )
+    return bool(
+        boundary == UNKNOWN_BOUNDARY and runtime.mode == "off"
+        and not runtime.claim_scope_operation_id
+        and set(unknown) == {operation_id} and set(sensitive) == {operation_id}
+    )
+
+
 __all__ = [
     "InterruptContext",
+    "ACTIVE_BOUNDARY",
+    "UNKNOWN_BOUNDARY",
     "load_interrupt_context",
     "lock_interrupt_context",
     "require_interrupt_boundary",

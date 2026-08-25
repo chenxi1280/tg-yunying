@@ -21,6 +21,7 @@ from .online_abc_manual_outcome import (
     _release_sha,
 )
 from .online_abc_c_precode_interrupt_state import (
+    ACTIVE_BOUNDARY,
     InterruptContext,
     load_interrupt_context,
     lock_interrupt_context,
@@ -55,7 +56,7 @@ def preview_c_precode_interrupt(
         approval_ref=approval_ref,
     )
     release_sha = _release_sha(runtime_release_sha)
-    counts = require_interrupt_boundary(session, context, release_sha)
+    counts, boundary = require_interrupt_boundary(session, context, release_sha)
     payload = _payload(
         session,
         context,
@@ -64,6 +65,7 @@ def preview_c_precode_interrupt(
         key=_idempotency_key(idempotency_key),
         approval=approval,
         interruption_ref=_interruption_ref(interruption_ref),
+        boundary=boundary,
     )
     return {**payload, "fingerprint": _fingerprint(payload)}
 
@@ -126,6 +128,7 @@ def _payload(
     key: str,
     approval: tuple[str, str, str],
     interruption_ref: str,
+    boundary: str,
 ) -> dict:
     operation = context.c_operation
     return {
@@ -150,6 +153,7 @@ def _payload(
         "primary": _primary_snapshot(session, context.item),
         "pending_count": counts["pending"],
         "manual_count": counts[MANUAL_OUTCOME],
+        "boundary": boundary,
         "classification": CLASSIFICATION,
         "blocker_code": BLOCKER,
         "interruption_ref": interruption_ref,
@@ -240,7 +244,7 @@ def _close_online_item(context: InterruptContext, preview: dict) -> None:
 
 def _evidence_manifest(preview: dict) -> dict:
     return {key: preview[key] for key in (
-        "classification", "blocker_code", "interruption_ref", "previous_execution_release_sha",
+        "boundary", "classification", "blocker_code", "interruption_ref", "previous_execution_release_sha",
         "runtime_release_sha", "c_owner", "c_lease_expires_at", "c_remote_effect_started_at", "node",
     )}
 
@@ -303,6 +307,7 @@ def _result(session, batch_id: str, account_id: int) -> dict:
         "reconcile_status": context.c_operation.reconcile_status,
         "reconcile_case_id": context.c_operation.reconcile_case_id,
         "classification": case.classification if case else "",
+        "boundary": manifest.get("boundary", ACTIVE_BOUNDARY),
         "interruption_ref": manifest.get("interruption_ref", ""),
         "primary": _primary_snapshot(session, context.item),
         "fingerprint": case.evidence_fingerprint if case else "",
