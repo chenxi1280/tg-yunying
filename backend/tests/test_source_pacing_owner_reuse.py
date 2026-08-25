@@ -169,6 +169,7 @@ def test_pause_cleanup_releases_only_safe_orphan_owner(session: Session) -> None
     assert slot.pacing_due_at == due_at
     assert slot.pacing_plan_hash == "a" * 64
     assert slot.pacing_slot_ordinal == 1
+    assert release_safe_ai_pacing_owners(session, task, observed_at=NOW) == 0
 
 
 @pytest.mark.no_postgres

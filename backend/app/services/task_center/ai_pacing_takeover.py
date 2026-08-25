@@ -89,6 +89,7 @@ def _safe_owner_statement(
         TaskGroupDailyMessageSlot.task_id == task.id,
         TaskGroupDailyMessageSlot.state == "open",
         TaskGroupDailyMessageSlot.pacing_due_at.is_not(None),
+        TaskGroupDailyMessageSlot.task_lifecycle_epoch.is_not(None),
         current_ledger,
         ~action_boundary,
         ~attempt_boundary,
