@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from sqlalchemy import select
@@ -21,6 +22,7 @@ MAX_LIGHTWEIGHT_SUMMARY_LENGTH = 36
 MALE_MASK_TERMS = ("男", "男性", "男人", "男生", "男士", "老哥", "大哥", "老板", "先生")
 RESTRICTED_LIGHTWEIGHT_MASK_TERMS = ("色情", "性交易", "寻欢", "夜场", "楼凤", "外围", "招嫖", "嫖客")
 STRUCTURED_MASK_FIELDS = ("mask_name", "audience_archetype", "identity_frame")
+THINK_PREFIX_RE = re.compile(r"\A\s*<think>.*?</think>\s*", re.DOTALL)
 
 
 def _valid_summary(profile: dict[str, Any], account_id: int) -> str:
@@ -189,7 +191,7 @@ def _parse_voice_profile_payload_map(raw: str, *, strict_lightweight: bool = Fal
 
 
 def _clean_profile_lines(raw: str) -> str:
-    value = str(raw or "").strip()
+    value = THINK_PREFIX_RE.sub("", str(raw or "")).strip()
     if value.startswith("```"):
         value = value.strip("`").removeprefix("jsonl").removeprefix("json").removeprefix("text").strip()
     return value

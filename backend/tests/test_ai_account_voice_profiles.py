@@ -722,6 +722,31 @@ def test_parse_voice_profile_json_lines_accepts_compact_fields():
     assert profiles[1]["emoji_policy"] == "不用表情"
 
 
+def test_parse_voice_profile_json_line_accepts_minimax_think_wrapper():
+    raw = (
+        "<think>\n先核对输出字段，再生成单行对象。\n</think>\n"
+        '{"id":101,"mask":"谨慎男客","aud":"先看口碑的男客","frame":"成年男性，先看反馈再问价格",'
+        '"tags":["口碑","价格"],"habits":["先问价格","再看反馈","不催促"],'
+        '"ban":["绝对靠谱","闭眼冲","包你满意"],"summary":"成年男性先看上下文再问价格，回复简短不催促"}'
+    )
+
+    profiles = _parse_voice_profile_payloads(raw, [101], strict_lightweight=True)
+
+    assert profiles[0]["account_id"] == 101
+    assert profiles[0]["mask_name"] == "谨慎男客"
+
+
+def test_parse_voice_profile_rejects_unclosed_think_wrapper():
+    raw = "<think>未闭合\n" + (
+        '{"id":101,"mask":"谨慎男客","aud":"先看口碑的男客","frame":"成年男性，先看反馈再问价格",'
+        '"tags":["口碑","价格"],"habits":["先问价格","再看反馈","不催促"],'
+        '"ban":["绝对靠谱","闭眼冲","包你满意"],"summary":"成年男性先看上下文再问价格，回复简短不催促"}'
+    )
+
+    with pytest.raises(RuntimeError, match="必须是 JSON 行"):
+        _parse_voice_profile_payloads(raw, [101], strict_lightweight=True)
+
+
 def test_parse_voice_profile_rejects_non_male_mask_identity():
     raw = (
         '{"id":101,"mask":"黑丝偏好女客","aud":"怕跑空的年轻客","frame":"年轻女性，先看反馈再问细节","tags":["黑丝","反馈"],'

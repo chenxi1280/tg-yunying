@@ -1,7 +1,7 @@
 # AI 活群质量、Token 与任务履约全局优化 PRD
 
 > 文档状态：Product Design Complete，2026-08-25 生产复验后进入 Phase 0 补正
-> 实现状态：JIT/节奏已在生产生效；旧生成链路仍缺逐次 Provider Token 账本且负向词只在 Prompt 中、未形成旧链路确定性门禁。V2 bootstrap 已发布但尚未灰度，当前受 Provider 价格、任务排空及成人证明前置条件阻断；双号开关与 AI 评论新链路仍禁用，生产恢复状态为 `production_fixed=unproven`
+> 实现状态：JIT/节奏已在生产生效；旧生成链路仍缺逐次 Provider Token 账本且负向词只在 Prompt 中、未形成旧链路确定性门禁。V2 bootstrap 已发布但尚未灰度，当前受 Provider 价格、任务排空、成人证明及账号声线完整性前置条件阻断；MiniMax 兼容响应中的闭合 `<think>` reasoning block 必须先在 Provider 响应规范化层移除，再进入原严格 JSONL/字段质量校验，未闭合或额外非 JSON 内容继续失败。双号开关与 AI 评论新链路仍禁用，生产恢复状态为 `production_fixed=unproven`
 > 适用范围：AI 活群 `group_ai_chat`；AI 评论仅定义独立二期边界
 > 不在范围：降低任务目标、压缩发送时间、静态话术兜底、网络安全专项设计
 > 最近修订：2026-08-25
@@ -354,6 +354,7 @@ AI 评论和活群共享 Provider 账本、Voice Contract 与确定性门禁框�
 
 - 上线信息门禁、MessageBrief、Voice Contract v3、分路由 Prompt、确定性门禁和 Reviewer。
 - 先 shadow，再单群小比例 canary；Provider 路由通过完整评测后显式启用。
+- canary preview 的声线覆盖必须为全量 ready；Provider 明示的闭合 `<think>...</think>` 可在解析前确定性剥离，但不得从任意自然语言或未闭合 block 中搜索、猜测或提取 JSON。
 
 ### Phase 3：双号与 AI 评论
 
