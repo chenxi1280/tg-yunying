@@ -809,6 +809,7 @@ def test_generate_voice_profiles_uses_compact_token_budget(monkeypatch):
             SimpleNamespace(temperature=0.7, max_tokens=8192),
         )
 
+    assert VOICE_PROFILE_INITIAL_MAX_TOKENS == 1024
     assert captured["max_tokens"] == VOICE_PROFILE_INITIAL_MAX_TOKENS
     assert captured["reasoning_retry_max_tokens"] is None
     assert "所有账号面具必须体现成年男性日常社交身份" in str(captured["prompt"])

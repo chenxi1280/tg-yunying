@@ -437,6 +437,8 @@ def _error_code(error: Exception) -> str:
     if isinstance(error, json.JSONDecodeError):
         return "voice_profile_output_malformed"
     message = str(error).lower()
+    if "http 429" in message or "rate_limit_error" in message or "速率限制" in message:
+        return "voice_profile_provider_rate_limited"
     if "json" in message or "输出行" in message or "输出为空" in message:
         return "voice_profile_output_malformed"
     if "缺少字段" in message or "summary missing" in message:

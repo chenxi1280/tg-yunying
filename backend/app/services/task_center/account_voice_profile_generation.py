@@ -13,7 +13,7 @@ from app.services.ai_config import ai_provider_credentials, get_tenant_ai_settin
 
 GENERIC_SUMMARY_TERMS = {"自然", "随意", "真实", "像真人"}
 VOICE_PROFILE_AI_TIMEOUT_SECONDS = 45
-VOICE_PROFILE_INITIAL_MAX_TOKENS = 512
+VOICE_PROFILE_INITIAL_MAX_TOKENS = 1024
 ACTIONABLE_LIST_FIELDS = ("interaction_habits", "forbidden_expressions")
 MIN_ACTIONABLE_LIST_ITEMS = 3
 MAX_ACTIONABLE_LIST_ITEMS = 5

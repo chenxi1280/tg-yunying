@@ -253,6 +253,45 @@ def test_voice_profile_worker_persists_malformed_output_for_retry() -> None:
     assert attempt.prompt_feedback_summary.startswith("voice_profile_output_malformed:")
 
 
+def test_voice_profile_worker_treats_provider_http_429_as_retryable() -> None:
+    jobs = importlib.import_module("app.services.task_center.account_voice_profile_generation_jobs")
+    worker = importlib.import_module("app.services.task_center.account_voice_profile_generation_worker")
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        account = _seed_operational_account(session)
+        jobs.enqueue_voice_profile_generation(
+            session,
+            tenant_id=1,
+            account_ids=[account.id],
+            source="recovery",
+            actor="tester",
+            reason="恢复缺失账号面具",
+        )
+        session.commit()
+
+    def provider_rate_limited(_session: Session, _item) -> int:  # noqa: ANN001
+        raise RuntimeError(
+            'AI provider HTTP 429: {"type":"rate_limit_error","message":"已达到 Token Plan 速率限制"}'
+        )
+
+    worker.drain_voice_profile_generation(
+        lambda: Session(engine),
+        limit=1,
+        generate_one=provider_rate_limited,
+        worker_id="test-worker",
+    )
+
+    with Session(engine) as session:
+        item = session.scalar(select(AiAccountVoiceProfileGenerationItem))
+        attempt = session.scalar(select(AiAccountVoiceProfileGenerationAttempt))
+
+    assert item is not None and item.status == "retry_wait"
+    assert item.error_code == "voice_profile_provider_rate_limited"
+    assert attempt is not None and attempt.outcome == "retry_wait"
+    assert attempt.error_code == "voice_profile_provider_rate_limited"
+
+
 def test_voice_profile_worker_rate_limit_defers_without_a_provider_attempt() -> None:
     jobs = importlib.import_module("app.services.task_center.account_voice_profile_generation_jobs")
     limits = importlib.import_module("app.services.task_center.account_voice_profile_generation_limits")
