@@ -31,7 +31,7 @@ from app.services.account_profile_login_batch_init import (
     manifest_sha256,
     target_matches_manifest,
 )
-from app.timezone import as_beijing_aware
+from app.timezone import as_beijing_aware, beijing_now
 
 
 pytestmark = pytest.mark.no_postgres
@@ -121,7 +121,7 @@ def _login_batch(
         unresolved_count=unresolved_count,
         reason="测试批次",
         trace_id=f"trace-{batch_id}",
-        finished_at=datetime(2026, 8, 18, 12, 0),
+        finished_at=beijing_now(),
     )
 
 
