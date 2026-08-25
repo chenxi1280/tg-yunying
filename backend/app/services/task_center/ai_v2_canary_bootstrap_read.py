@@ -20,7 +20,6 @@ from app.models import (
     Task,
     TenantAiProviderRouteItem,
     TenantAiProviderRouteSet,
-    TgAccount,
 )
 from app.services._common import _now
 
@@ -98,7 +97,7 @@ def task_snapshot(session: Session, task: Task | None, *, lock: bool) -> dict | 
         **task_row(task),
         "config_hash": canonical_hash(task.type_config or {}),
         "open_work": _open_work(session, task, lock=lock),
-        "voice": _voice_snapshot(session, task, lock=lock),
+        "voice": _voice_snapshot(session, task),
     }
 
 
@@ -156,16 +155,9 @@ def _gateway_attempts(session: Session, actions: list[Action], *, lock: bool) ->
     return list(session.scalars(stmt.with_for_update() if lock else stmt))
 
 
-def _voice_snapshot(session: Session, task: Task, *, lock: bool) -> dict:
+def _voice_snapshot(session: Session, task: Task) -> dict:
     account_ids = _scope_account_ids(session, task)
-    if lock and account_ids:
-        list(
-            session.scalars(
-                select(TgAccount).where(TgAccount.id.in_(account_ids)).with_for_update()
-            )
-        )
-        account_ids = _scope_account_ids(session, task)
-    profiles = _voice_profiles(session, task, account_ids, lock=lock)
+    profiles = _voice_profiles(session, task, account_ids)
     ready = {
         item.account_id
         for item in profiles
@@ -181,7 +173,7 @@ def _voice_snapshot(session: Session, task: Task, *, lock: bool) -> dict:
 
 
 def _voice_profiles(
-    session: Session, task: Task, account_ids: list[int], *, lock: bool
+    session: Session, task: Task, account_ids: list[int]
 ) -> list[AiAccountVoiceProfile]:
     if not account_ids:
         return []
@@ -191,7 +183,7 @@ def _voice_profiles(
         AiAccountVoiceProfile.status == "active",
         AiAccountVoiceProfile.quality_status == "active",
     )
-    return list(session.scalars(stmt.with_for_update() if lock else stmt))
+    return list(session.scalars(stmt))
 
 
 def _action_row(item: Action) -> dict:

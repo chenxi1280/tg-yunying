@@ -24,6 +24,7 @@ from app.models import (
     TgAccount,
 )
 from app.services.task_center import ai_v2_canary_bootstrap as service
+from app.services.task_center import ai_v2_canary_bootstrap_read as read_service
 from app.services.task_center.ai_v2_canary_bootstrap import (
     AiV2BootstrapConflict,
     apply_bootstrap,
@@ -117,6 +118,29 @@ def test_postgres_bootstrap_uses_tenant_transaction_lock() -> None:
 
     assert "pg_advisory_xact_lock" in str(session.statement)
     assert isinstance(session.params["lock_key"], int)
+
+
+def test_locked_bootstrap_snapshot_does_not_lock_all_voice_accounts(
+    monkeypatch,
+) -> None:
+    with Session(_engine()) as session:
+        _seed(session)
+        task = session.get(Task, "task-canary")
+        voice = {
+            "account_count": 1,
+            "ready_count": 1,
+            "missing_count": 0,
+            "missing_ids_hash": "voice-hash",
+        }
+        monkeypatch.setattr(
+            read_service,
+            "_voice_snapshot",
+            lambda _session, _task: voice,
+        )
+
+        snapshot = read_service.task_snapshot(session, task, lock=True)
+
+        assert snapshot["voice"] == voice
 
 
 def test_reviewer_identity_overlap_blocks_apply_without_writes() -> None:
