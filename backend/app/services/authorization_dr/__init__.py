@@ -15,6 +15,7 @@ from .migration_results import *  # noqa: F401,F403
 from .online_abc import *  # noqa: F401,F403
 from .online_abc_manifest import *  # noqa: F401,F403
 from .online_abc_manual_outcome import *  # noqa: F401,F403
+from .online_abc_primary_manual import *  # noqa: F401,F403
 from .online_abc_post_activate import *  # noqa: F401,F403
 from .online_abc_completed_recovery import *  # noqa: F401,F403
 from .online_abc_c_precode_interrupt import *  # noqa: F401,F403
