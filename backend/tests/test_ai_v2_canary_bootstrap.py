@@ -37,6 +37,7 @@ from app.services.task_center.ai_v2_canary_bootstrap import (
     readback_bootstrap,
 )
 from app.services.task_center.service import pause_task
+from app.timezone import beijing_day_bounds
 
 
 pytestmark = pytest.mark.no_postgres
@@ -214,17 +215,18 @@ def test_pause_cancels_safe_group_ai_work_before_epoch_change() -> None:
         _seed(session)
         task = session.get(Task, "task-canary")
         task.status = "running"
+        period_start, deadline = beijing_day_bounds()
         ledger = TaskDayLedger(
             id="pause-ledger",
             tenant_id=1,
             task_id=task.id,
             timezone_snapshot="Asia/Shanghai",
             timezone_revision=1,
-            obligation_local_date=datetime(2026, 8, 25).date(),
-            period_start_at=datetime(2026, 8, 25),
-            deadline_at=datetime(2026, 8, 26),
+            obligation_local_date=period_start.date(),
+            period_start_at=period_start,
+            deadline_at=deadline,
             day_phase="active",
-            planning_anchor_at=datetime(2026, 8, 25),
+            planning_anchor_at=period_start,
         )
         quantity = TaskGroupDailyMessageSlot(
             id="pause-quantity",
@@ -237,8 +239,8 @@ def test_pause_cancels_safe_group_ai_work_before_epoch_change() -> None:
             pacing_plan_hash="a" * 64,
             pacing_slot_ordinal=0,
             pacing_plan_total=10,
-            pacing_due_at=datetime(2026, 8, 25, 1),
-            release_not_before_at=datetime(2026, 8, 25, 2),
+            pacing_due_at=period_start,
+            release_not_before_at=period_start,
             task_lifecycle_epoch=2,
             pacing_period_key=ledger.id,
             pacing_source_key_hash="b" * 64,
@@ -261,9 +263,9 @@ def test_pause_cancels_safe_group_ai_work_before_epoch_change() -> None:
             account_id=1,
             pacing_slot_key="ai:pause-quantity",
             policy_version="account_soft_pacing_v1",
-            due_at=datetime(2026, 8, 25, 1),
-            release_not_before_at=datetime(2026, 8, 25, 2),
-            effective_claim_at=datetime(2026, 8, 25, 2),
+            due_at=period_start,
+            release_not_before_at=period_start,
+            effective_claim_at=period_start,
             action_id=pending_action.id,
             state="bound",
         )
@@ -294,7 +296,7 @@ def test_pause_cancels_safe_group_ai_work_before_epoch_change() -> None:
         assert session.get(GenerationJob, "pending-job").state == "cancelled"
         assert quantity.task_lifecycle_epoch is None
         assert quantity.release_not_before_at is None
-        assert quantity.pacing_due_at == datetime(2026, 8, 25, 1)
+        assert quantity.pacing_due_at == period_start
         audit_row = session.scalar(select(AuditLog).where(
             AuditLog.action == "暂停任务中心任务",
         ))
