@@ -29,6 +29,7 @@ from .stage_facts import append_stage_fact
 
 
 RECONCILE_LEASE_SECONDS = 180
+CENTRAL_BUNDLE_CLASSIFICATION = "central_bundle_restore_forward"
 
 
 def claim_artifact_reconcile(session, operation_id: str, node_id: str) -> dict:
@@ -218,10 +219,13 @@ def _repair_case(session, operation, node_id: str) -> TgAuthorizationDrReconcile
         TgAuthorizationDrReconcileCase.operation_id == operation.id,
     ).with_for_update())
     valid = case and case.status == "repair_approved"
-    valid = valid and case.classification in {"local_only_bundle", "inventory_ahead_of_central"}
+    valid = valid and case.classification in {
+        "local_only_bundle", "inventory_ahead_of_central", CENTRAL_BUNDLE_CLASSIFICATION,
+    }
     if not valid:
         raise AuthorizationDrError("reconcile_case_conflict", "Artifact repair is not approved")
-    source = session.get(TgAccountAuthorization, operation.source_authorization_id)
+    source_id = operation.source_authorization_id or operation.code_source_authorization_id
+    source = session.get(TgAccountAuthorization, source_id)
     item = session.get(TgAuthorizationDrBatchItem, operation.batch_item_id)
     node = session.get(AuthorizationDrExecutionNode, node_id)
     initial = operation.status == "reconcile_artifact_ready" and operation.candidate_authorization_id is None
@@ -230,12 +234,24 @@ def _repair_case(session, operation, node_id: str) -> TgAuthorizationDrReconcile
     pre_bundle_retry = _pre_bundle_retry_matches(session, operation)
     frozen = case and operation.reconcile_case_id == case.id and (initial or progressed or pre_bundle_retry)
     frozen = frozen and item and item.version == case.expected_item_version
-    frozen = frozen and source and source.fact_version == case.expected_source_fact_version
-    frozen = frozen and source.is_slot_current and source.protected_from_cleanup
+    frozen = frozen and _reconcile_source_matches(operation, case, source)
     frozen = frozen and node and node.runtime_image_sha == case.expected_runtime_image_sha
     if not frozen:
         raise AuthorizationDrError("reconcile_case_conflict", "Artifact repair is not approved")
     return case
+
+
+def _reconcile_source_matches(operation, case, source) -> bool:
+    if not source or source.fact_version != case.expected_source_fact_version:
+        return False
+    if not source.is_slot_current or not source.protected_from_cleanup:
+        return False
+    if case.classification == CENTRAL_BUNDLE_CLASSIFICATION:
+        return bool(
+            operation.source_authorization_id is None
+            and operation.code_source_authorization_id == source.id
+        )
+    return operation.source_authorization_id == source.id
 
 
 def _require_claimable(operation, node_id: str) -> None:
