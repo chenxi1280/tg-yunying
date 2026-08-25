@@ -66,7 +66,7 @@ class ResumeContext:
     flow: TgLoginFlow
     app: TelegramDeveloperApp
     proxy: object | None
-    security: TgAccountSecuritySnapshot
+    security: TgAccountSecuritySnapshot | None
     tenant: Tenant
     batch: TgAuthorizationOnlineAbcBatch
     item: TgAuthorizationOnlineAbcItem
@@ -233,7 +233,7 @@ def _primary_safe(context: ResumeContext) -> bool:
     primary, account = context.primary, context.account
     health_allowed = primary.health_status == "healthy"
     if context.operation.blocker_code == "ValueError":
-        health_allowed = primary.health_status == "legacy" and _legacy_waiting_two_fa(context)
+        health_allowed = _value_error_waiting_two_fa(context)
     return bool(
         account.status == AccountStatus.ACTIVE.value
         and primary.status == "active" and health_allowed
@@ -253,6 +253,23 @@ def _legacy_waiting_two_fa(context: ResumeContext) -> bool:
         and not security.two_fa_password_stored_at
         and context.tenant and context.tenant.fixed_two_fa_password_ciphertext
         and context.tenant.fixed_two_fa_password_set_at
+    )
+
+
+def _value_error_waiting_two_fa(context: ResumeContext) -> bool:
+    if context.primary.health_status == "legacy":
+        return _legacy_waiting_two_fa(context)
+    primary, operation, tenant = context.primary, context.operation, context.tenant
+    return bool(
+        primary.health_status == "healthy" and not primary.telegram_user_id_digest
+        and primary.auth_key_fingerprint_digest
+        and operation.expected_code_source_user_id_digest
+        and primary.auth_key_fingerprint_digest == operation.expected_code_source_auth_key_digest
+        and context.security is None and context.flow
+        and context.flow.status == AccountStatus.WAITING_2FA.value
+        and operation.login_challenge_sent_at and operation.login_code_message_id
+        and operation.login_code_received_at and tenant
+        and tenant.fixed_two_fa_password_ciphertext and tenant.fixed_two_fa_password_set_at
     )
 
 
@@ -298,7 +315,7 @@ def _item_primary_frozen(context: ResumeContext) -> bool:
 
 def _security_state_frozen(context: ResumeContext) -> bool:
     if context.operation.blocker_code == "ValueError":
-        return _legacy_waiting_two_fa(context)
+        return _value_error_waiting_two_fa(context)
     security, tenant = context.security, context.tenant
     return bool(
         security and security.trusted_session_status == "confirmed"
@@ -331,7 +348,8 @@ def _healthy_target_exists(session, context: ResumeContext) -> bool:
 
 def _evidence_payload(context: ResumeContext) -> dict:
     account, primary, flow = context.account, context.primary, context.flow
-    managed_secret = context.security.two_fa_password_ciphertext or ""
+    security = context.security
+    managed_secret = (security.two_fa_password_ciphertext or "") if security else ""
     return {
         "operation_id": context.operation.id,
         "account_id": account.id,
@@ -346,6 +364,8 @@ def _evidence_payload(context: ResumeContext) -> dict:
         "primary_authorization_id": primary.id,
         "primary_fact_version": primary.fact_version,
         "primary_session_digest": _digest(primary.session_ciphertext or ""),
+        "primary_user_digest": primary.telegram_user_id_digest,
+        "primary_authkey_digest": primary.auth_key_fingerprint_digest,
         "expected_primary_user_digest": context.operation.expected_code_source_user_id_digest,
         "expected_primary_authkey_digest": context.operation.expected_code_source_auth_key_digest,
         "account_generations": [account.authorization_generation, account.authorization_fact_generation,
@@ -359,7 +379,8 @@ def _evidence_payload(context: ResumeContext) -> dict:
         "temporary_session_digest": _digest(flow.temporary_session_ciphertext),
         "phone_code_hash_digest": _digest(flow.phone_code_hash_ciphertext),
         "managed_secret_ref_digest": _digest(managed_secret),
-        "managed_secret_stored_at": str(context.security.two_fa_password_stored_at or ""),
+        "managed_secret_stored_at": str((security.two_fa_password_stored_at if security else None) or ""),
+        "security_snapshot_present": security is not None,
         "fixed_secret_ref_digest": _digest(context.tenant.fixed_two_fa_password_ciphertext),
         "fixed_secret_set_at": str(context.tenant.fixed_two_fa_password_set_at),
         "batch_id": context.batch.id,
