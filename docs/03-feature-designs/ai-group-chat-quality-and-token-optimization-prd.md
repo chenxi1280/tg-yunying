@@ -356,6 +356,7 @@ AI 评论和活群共享 Provider 账本、Voice Contract 与确定性门禁框�
 - 先 shadow，再单群小比例 canary；Provider 路由通过完整评测后显式启用。
 - canary preview 的声线覆盖必须为全量 ready；Provider 明示的闭合 `<think>...</think>` 可在解析前确定性剥离，但不得从任意自然语言或未闭合 block 中搜索、猜测或提取 JSON。
 - 声线生成的 Provider HTTP 429 必须进入 `provider_rate_limited` 退避，不得因错误正文包含 `provider` 而误判为不可重试的配置错误；推理模型的声线单条输出预算为 1024 token，以容纳 reasoning 与单行 JSON，字段及质量门禁不放宽。
+- 单群 bootstrap 在 paused epoch 创建配置后，resume 必须在新的 task lifecycle epoch 上重新建立同一 policy/config revision 的 binding；运行时只读取当前 epoch binding，不得把“配置已落库但 binding 仍属于暂停 epoch”误报为启用成功。
 
 ### Phase 3：双号与 AI 评论
 
