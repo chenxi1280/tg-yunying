@@ -5,6 +5,7 @@ import pytest
 from app.services.task_center.message_brief_v2 import (
     MessageBriefV2,
     V2BriefContract,
+    build_v2_planner_prompt,
     parse_brief_v2_item,
     v2_candidate_failure,
     v2_realizer_system_prompt,
@@ -40,7 +41,7 @@ def _item(*, category: str = "sensory_question", speech_act: str = "question") -
         "speech_act": speech_act,
         "stance": "curious",
         "length_band": "micro",
-        "punctuation_profile": "question",
+        "punctuation_profile": "question" if speech_act == "question" else "none",
         "anchor_ids": ["f1"],
         "brief_contract_version": "message_brief_v2",
         "task_direction_snapshot_hash": contract.task_direction_snapshot_hash,
@@ -58,6 +59,32 @@ def _item(*, category: str = "sensory_question", speech_act: str = "question") -
         "prompt_contract_version": contract.prompt_contract_version,
         "example_set_version": contract.example_set_version,
     }
+
+
+def test_v2_planner_prompt_exposes_semantic_schema_without_hash_echo() -> None:
+    prompt = build_v2_planner_prompt(
+        slot_infos=[{
+            "slot_id": "slot-1",
+            "reply_to_message_id": "7788",
+            "reply_preview": "老师今晚能约吗",
+            "context_route": "adult_service_inquiry",
+            "content_mode": "adult_service_inquiry",
+            "route_evidence_ids": ["f1"],
+            "task_direction_snapshot_hash": "a" * 64,
+            "content_policy_hash": "b" * 64,
+            "window_plan_hash": "c" * 64,
+        }],
+        allowed_facts=[{"fact_id": "f1", "text": "老师今晚能约吗"}],
+        recent_briefs=[{"speech_act": "question", "length_band": "micro"}],
+    )
+
+    assert '"briefs"' in prompt
+    assert '"claims"' in prompt
+    assert '"price_question"' in prompt
+    assert '"reply_to_message_id":"7788"' in prompt
+    assert '"recent_brief_shapes"' in prompt
+    assert "a" * 64 not in prompt
+    assert "task_direction_snapshot_hash" not in prompt
 
 
 def test_adult_sensory_question_is_grounded_without_becoming_template() -> None:
@@ -185,5 +212,71 @@ def test_v2_rejects_parallel_claim_arrays_and_contract_drift() -> None:
         drift,
         slot_id="slot-1",
         valid_fact_ids=("f1",),
+        contract=_contract(),
+    ) is None
+
+
+def test_v2_accepts_server_bound_contract_without_model_echo() -> None:
+    item = _item()
+    for key in (
+        "brief_contract_version",
+        "task_direction_snapshot_hash",
+        "content_policy_hash",
+        "window_plan_hash",
+        "context_route",
+        "content_mode",
+        "route_evidence_ids",
+        "forbidden_claim_categories",
+        "prompt_contract_version",
+        "example_set_version",
+    ):
+        item.pop(key, None)
+
+    brief = parse_brief_v2_item(
+        item,
+        slot_id="slot-1",
+        valid_fact_ids=("f1",),
+        contract=_contract(),
+    )
+
+    assert brief is not None
+    assert brief.content_mode == "adult_service_sensory"
+    assert brief.task_direction_snapshot_hash == "a" * 64
+
+
+@pytest.mark.parametrize(
+    ("category", "outer_speech_act", "claim_speech_act", "punctuation"),
+    (
+        ("sensory_question", "reaction", "question", "none"),
+        ("sensory_reaction", "reaction", "question", "none"),
+        ("sensory_question", "question", "question", "none"),
+    ),
+)
+def test_v2_rejects_claim_and_question_shape_mismatches(
+    category: str,
+    outer_speech_act: str,
+    claim_speech_act: str,
+    punctuation: str,
+) -> None:
+    item = _item(category=category, speech_act=outer_speech_act)
+    item["claims"][0]["speech_act"] = claim_speech_act
+    item["punctuation_profile"] = punctuation
+
+    assert parse_brief_v2_item(
+        item,
+        slot_id="slot-1",
+        valid_fact_ids=("f1",),
+        contract=_contract(),
+    ) is None
+
+
+def test_v2_rejects_anchor_outside_route_evidence() -> None:
+    item = _item()
+    item["anchor_ids"] = ["f2"]
+
+    assert parse_brief_v2_item(
+        item,
+        slot_id="slot-1",
+        valid_fact_ids=("f1", "f2"),
         contract=_contract(),
     ) is None

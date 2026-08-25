@@ -1,7 +1,7 @@
 # AI 活群质量、Token 与任务履约全局优化 PRD
 
 > 文档状态：Product Design Complete，2026-08-25 生产复验后进入 Phase 0 补正
-> 实现状态：JIT/节奏已在生产生效；V2 bootstrap、Provider 逐次账本和旧链路负向词门禁已发布，单群灰度所需声线、Provider 价格与成人证明已完成生产读回。生产暂停验证发现旧 lifecycle epoch 的 Action/GenerationJob 不会被只领取 running/current-epoch 工作的 worker 清理，现补正安全暂停清理后再执行 V2 bootstrap；成人路由与 Telegram E4 尚未完成，状态仍为 `production_fixed=unproven`
+> 实现状态：JIT/节奏已在生产生效；V2 bootstrap、Provider 逐次账本和旧链路负向词门禁已发布，单群灰度所需声线、Provider 价格与成人证明已完成生产读回。生产 canary 已证明真实上下文可命中 `adult_service_inquiry/adult_visual`，但首轮 MessageBrief v2 因 Planner 输出合同要求模型回填服务端冻结 hash/version、而 Prompt 未给完整 schema，全部停在 planning `malformed_output`，尚无成人路由 Telegram typed fact；任务已通过正式暂停清理止住无效调用。以下补正由服务端持有不可变合同、模型只返回语义 Brief，并在 Provider 前拒绝不可能的证据合同。状态仍为 `production_fixed=unproven`
 > 适用范围：AI 活群 `group_ai_chat`；AI 评论仅定义独立二期边界
 > 不在范围：降低任务目标、压缩发送时间、静态话术兜底、网络安全专项设计
 > 最近修订：2026-08-25
@@ -204,6 +204,14 @@ Prompt Registry 由四层组成：
 
 Brief 决定“说什么”，Voice Contract 决定“这个账号怎么说”，二者不得互相覆盖事实。
 
+MessageBrief v2 的 Planner 输出边界固定为：
+
+- 服务端冻结并持有 `task_direction_snapshot_hash/content_policy_hash/window_plan_hash/context_route/content_mode/prompt_contract_version/example_set_version`，模型不得承担这些字段的复制或权威判断；模型若额外返回同名字段，值与冻结合同冲突时必须显式拒绝。
+- Planner 只输出 `slot_id/speech_act/stance/length_band/punctuation_profile/anchor_ids/reply_to_message_id/claims`。`claims` 必须恰好一项，`category` 只能来自当前服务端 `content_mode` 的枚举，claim 与外层 `speech_act` 必须一致，`evidence_ids` 必须同时属于 `allowed_facts` 与该 Slot 的 `route_evidence_ids`。
+- Provider 调用前先确定性校验冻结合同完整、`route_evidence_ids` 非空且均存在于当前 `allowed_facts`。不可能满足的合同直接写 typed `brief_contract_invalid/brief_evidence_mismatch`，不得调用模型后再记作 `malformed_output`。
+- Planner Prompt 必须给出唯一根对象 `{"briefs":[...]}` 的逐 Slot 完整 schema、所有枚举和 exact reply target；不能只写“输出 MessageBrief v2 JSON”。成人服务询问只能选择 question claim 和 question 标点；成人 route 只允许 micro/short，避免生成器面对互相矛盾的长度/标点合同。
+- V2 批次若因结构塌缩重规划，第二次 Prompt 必须携带上一轮结构摘要；禁止以完全相同输入重复调用 Provider。
+
 ### 9.2 Voice Contract v3
 
 面具瘦身只删除长篇传记和重复自由文本，保留下列结构：
@@ -361,6 +369,7 @@ AI 评论和活群共享 Provider 账本、Voice Contract 与确定性门禁框�
 - 暂停清理不得修改日目标、`pacing_due_at`、plan hash、slot ordinal、已确认 Telegram 事实或任务配置 revision；success、unknown、Gateway-started 及仍有 active/retryable Action 的数量 slot 必须保持 immutable。resume 由新 epoch 在原 due/plan 合同上重新规划原数量债：owner-history 必须以非空 `pacing_due_at/frozen_due_at` 判定既有 frozen owner，不能因过期 `release_not_before_at` 已清空就把它当成新 owner 重算 due 或 ordinal；恢复 release 的历史游标若早于当前时刻，必须从当前时刻后的正常 gap 继续，不能生成已过期 release 形成集中补发。清理数量不能记为成功。
 - `paused -> running` 的 resume 必须保留既有 `pacing_anchor_at`；只有从未建立过 pacing anchor 的首次启动才能写入当前时间。不得因灰度暂停把自然日 DueSet 从恢复时刻重新起算，也不得通过一次性集中补发弥补恢复前债务。
 - fact-first 旧链路写回 Task 的 `ai_provider_id` 是单 Provider 运行时绑定，V2 的 router/realizer/reviewer 改由各 purpose route-set 冻结。bootstrap preview 必须把旧 ID 纳入 fingerprint；apply 在同一配置 revision 事务中显式移除它并在审计记录原 ID，不能放宽 `GroupAIChatConfig(extra=forbid)`，也不能让旧 ID 覆盖 V2 route-set。
+- canary 若出现 route 已命中但 planning schema 全量失败，必须先以正式 `pause_task` 确认零 unknown/Gateway-started 后清理当前 pre-Gateway Job，停止 token 放大；不得继续 wake Planner 收集更多同类失败样本。修复发布后只能从新 lifecycle epoch 恢复，并以 `adult route -> valid Brief -> realizer -> reviewer -> Gateway -> typed remote_message_observed` 全链读回验收。
 
 ### Phase 3：双号与 AI 评论
 

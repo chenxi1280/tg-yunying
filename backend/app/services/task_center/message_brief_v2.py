@@ -4,7 +4,7 @@ import json
 import re
 from dataclasses import dataclass
 
-from .message_brief import MessageBrief, parse_brief_item
+from .message_brief import LENGTH_BANDS, STANCES, MessageBrief, parse_brief_item
 
 
 BRIEF_V2 = "message_brief_v2"
@@ -31,6 +31,18 @@ MODE_CLAIMS = {
     "adult_service_sensory": frozenset({"sensory_reaction", "sensory_question"}),
 }
 QUESTION_ONLY_CLAIMS = frozenset(MODE_CLAIMS["adult_service_inquiry"])
+CLAIM_SPEECH_ACTS = {
+    "grounded_reaction": "reaction",
+    "fact_question": "question",
+    "agreement": "agreement",
+    "adult_visual_reaction": "reaction",
+    "adult_visual_question": "question",
+    "adult_product_reaction": "reaction",
+    "adult_product_question": "question",
+    **{category: "question" for category in QUESTION_ONLY_CLAIMS},
+    "sensory_reaction": "reaction",
+    "sensory_question": "question",
+}
 _NUMBER = r"(?:\d+(?:\.\d{1,2})?|[零〇一二两三四五六七八九十百千万]+)"
 _EXACT_PRICE = re.compile(rf"(?:¥|￥)?{_NUMBER}(?:元|块钱|块)")
 _CONTACT = re.compile(r"(?:微信|vx|v信|电话|手机号|TG|Telegram)[:：]?\s*[A-Za-z0-9_+-]{5,}", re.I)
@@ -168,8 +180,13 @@ def parse_brief_v2_item(
         return None
     if not _contract_matches(item, contract):
         return None
-    claims = _parse_claims(item.get("claims"), contract, valid_fact_ids)
-    if not claims:
+    claims = _parse_claims(
+        item.get("claims"),
+        contract,
+        valid_fact_ids,
+        expected_speech_act=base.speech_act,
+    )
+    if not claims or not _brief_shape_matches(base, claims, contract):
         return None
     return MessageBriefV2(
         **_base_values(base),
@@ -191,19 +208,66 @@ def build_v2_planner_prompt(
     *,
     slot_infos: list[dict],
     allowed_facts: list[dict],
+    recent_briefs: list[dict] | None = None,
 ) -> str:
-    payload = {"slots": slot_infos, "allowed_facts": allowed_facts}
-    return "只为每个 slot 输出一个有证据的 MessageBrief v2 JSON。\n" + json.dumps(
-        payload,
-        ensure_ascii=False,
-        separators=(",", ":"),
+    payload = {
+        "slots": [_planner_input_slot(slot) for slot in slot_infos],
+        "allowed_facts": allowed_facts,
+        "recent_brief_shapes": list(recent_briefs or ()),
+    }
+    output = {"briefs": [_planner_output_slot(slot) for slot in slot_infos]}
+    return (
+        "输入：" + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        + "\n输出合同（替换占位符）："
+        + json.dumps(output, ensure_ascii=False, separators=(",", ":"))
     )
+
+
+def _planner_input_slot(slot: dict) -> dict:
+    mode = str(slot.get("content_mode") or "")
+    claims = sorted(MODE_CLAIMS.get(mode, ()))
+    return {
+        "slot_id": str(slot.get("slot_id") or ""),
+        "reply_to_message_id": str(slot.get("reply_to_message_id") or ""),
+        "reply_preview": str(slot.get("reply_preview") or ""),
+        "context_route": str(slot.get("context_route") or ""),
+        "content_mode": mode,
+        "route_evidence_ids": list(slot.get("route_evidence_ids") or ()),
+        "allowed_claims": [
+            {"category": category, "speech_act": CLAIM_SPEECH_ACTS[category]}
+            for category in claims
+        ],
+        "allowed_length_bands": list(_mode_length_bands(mode)),
+    }
+
+
+def _planner_output_slot(slot: dict) -> dict:
+    return {
+        "slot_id": str(slot.get("slot_id") or ""),
+        "speech_act": "<allowed_claims.speech_act>",
+        "stance": "<" + "|".join(STANCES) + ">",
+        "length_band": "<allowed_length_bands 中一项>",
+        "punctuation_profile": "<question iff speech_act=question; otherwise none|pause>",
+        "anchor_ids": ["<route_evidence_ids 中至少一项>"],
+        "reply_to_message_id": str(slot.get("reply_to_message_id") or ""),
+        "claims": [{
+            "category": "<allowed_claims.category>",
+            "speech_act": "<与外层 speech_act 相同>",
+            "evidence_ids": ["<与 anchor_ids 相同或其子集>"],
+        }],
+    }
+
+
+def _mode_length_bands(mode: str) -> tuple[str, ...]:
+    return ("micro", "short") if mode in ADULT_MODES else LENGTH_BANDS
 
 
 def v2_planner_system_prompt() -> str:
     return (
-        "你只规划 Telegram 短消息，不写正文。每个 claim 必须绑定 category、speech_act 和 exact evidence_ids；"
-        "只用 slot 指定 route/mode，禁止补金额、地址、联系方式或经历。严格输出 briefs JSON。"
+        "你只规划 Telegram 短消息，不写正文。只输出唯一 JSON 根对象 briefs，数量和顺序必须与 slots 一致。"
+        "每个 claim 从当前 slot.allowed_claims 选一项；内外 speech_act 相同，anchor/evidence 只用该 slot 的"
+        "route_evidence_ids，reply_to_message_id 原样复制。问句必须 question 标点，其他不得用 question。"
+        "服务端持有 route、hash 和版本，输出不得复制或改写这些冻结字段。禁止补金额、地址、联系方式或经历。"
     )
 
 
@@ -322,13 +386,21 @@ def _contract_matches(item: dict, contract: V2BriefContract) -> bool:
         "prompt_contract_version": contract.prompt_contract_version,
         "example_set_version": contract.example_set_version,
     }
-    return all(str(item.get(key) or "") == value for key, value in expected.items())
+    for key, value in expected.items():
+        if key in item and str(item.get(key) or "") != value:
+            return False
+    if "route_evidence_ids" not in item:
+        return True
+    returned = tuple(str(value) for value in (item.get("route_evidence_ids") or ()))
+    return returned == contract.route_evidence_ids
 
 
 def _parse_claims(
     value: object,
     contract: V2BriefContract,
     valid_fact_ids: tuple[str, ...],
+    *,
+    expected_speech_act: str,
 ) -> tuple[GroundedClaim, ...]:
     if not isinstance(value, list) or len(value) != 1:
         return ()
@@ -340,6 +412,8 @@ def _parse_claims(
     evidence_ids = tuple(str(raw) for raw in (item.get("evidence_ids") or ()))
     if category not in MODE_CLAIMS.get(contract.content_mode, frozenset()):
         return ()
+    if speech_act != expected_speech_act or CLAIM_SPEECH_ACTS.get(category) != speech_act:
+        return ()
     if not evidence_ids or any(item not in valid_fact_ids for item in evidence_ids):
         return ()
     if any(item not in contract.route_evidence_ids for item in evidence_ids):
@@ -347,6 +421,23 @@ def _parse_claims(
     if category in QUESTION_ONLY_CLAIMS and speech_act != "question":
         return ()
     return (GroundedClaim(category, speech_act, evidence_ids),)
+
+
+def _brief_shape_matches(
+    brief: MessageBrief,
+    claims: tuple[GroundedClaim, ...],
+    contract: V2BriefContract,
+) -> bool:
+    question = brief.speech_act == "question"
+    if (brief.punctuation_profile == "question") != question:
+        return False
+    if any(anchor not in contract.route_evidence_ids for anchor in brief.anchor_ids):
+        return False
+    if any(evidence not in brief.anchor_ids for claim in claims for evidence in claim.evidence_ids):
+        return False
+    if contract.content_mode in ADULT_MODES and brief.length_band not in {"micro", "short"}:
+        return False
+    return True
 
 
 def _base_values(brief: MessageBrief) -> dict:

@@ -113,6 +113,93 @@ def test_plan_message_briefs_marks_schema_invalid_and_reply_mismatch() -> None:
     assert plans[1].rejection_code == "brief_reply_target_mismatch"
 
 
+def test_plan_message_briefs_rejects_wrong_slot_identity() -> None:
+    planner = _planner([[_brief_payload("wrong-slot")]])
+
+    plans, _tokens = plan_message_briefs(
+        SimpleNamespace(),
+        1,
+        {},
+        history_lines=["今天聊聊天气"],
+        slots=[{"slot_id": "s1", "account_id": 11}],
+        planner=planner,
+    )
+
+    assert plans[0].rejection_code == "brief_slot_id_mismatch"
+
+
+def test_v2_rejects_evidence_contract_before_provider_call() -> None:
+    planner = _planner([[]])
+    slot = {
+        "slot_id": "s1",
+        "account_id": 11,
+        "task_direction_snapshot_hash": "a" * 64,
+        "content_policy_hash": "b" * 64,
+        "window_plan_hash": "c" * 64,
+        "context_route": "adult_service_inquiry",
+        "content_mode": "adult_service_inquiry",
+        "route_evidence_ids": ["f9"],
+        "prompt_contract_version": "adult_service_inquiry_v1",
+        "example_set_version": "adult_human_anchors_v1",
+    }
+
+    plans, tokens = plan_message_briefs(
+        SimpleNamespace(),
+        1,
+        {"ai_content_route_v2_enabled": True},
+        history_lines=["老师今晚能约吗"],
+        slots=[slot],
+        planner=planner,
+    )
+
+    assert tokens == 0
+    assert planner.calls == []
+    assert plans[0].rejection_code == "brief_evidence_mismatch"
+
+
+def test_v2_plans_adult_inquiry_from_semantic_only_provider_output() -> None:
+    planner = _planner([[{
+        "slot_id": "s1",
+        "speech_act": "question",
+        "stance": "curious",
+        "length_band": "short",
+        "punctuation_profile": "question",
+        "anchor_ids": ["f1"],
+        "reply_to_message_id": "",
+        "claims": [{
+            "category": "booking_question",
+            "speech_act": "question",
+            "evidence_ids": ["f1"],
+        }],
+    }]])
+    slot = {
+        "slot_id": "s1",
+        "account_id": 11,
+        "task_direction_snapshot_hash": "a" * 64,
+        "content_policy_hash": "b" * 64,
+        "window_plan_hash": "c" * 64,
+        "context_route": "adult_service_inquiry",
+        "content_mode": "adult_service_inquiry",
+        "route_evidence_ids": ["f1"],
+        "prompt_contract_version": "adult_service_inquiry_v1",
+        "example_set_version": "adult_human_anchors_v1",
+    }
+
+    plans, tokens = plan_message_briefs(
+        SimpleNamespace(),
+        1,
+        {"ai_content_route_v2_enabled": True},
+        history_lines=["老师今晚能约吗"],
+        slots=[slot],
+        planner=planner,
+    )
+
+    assert tokens == 10
+    assert plans[0].rejection_code == ""
+    assert plans[0].brief.content_mode == "adult_service_inquiry"
+    assert plans[0].brief.claims[0].category == "booking_question"
+
+
 def test_realize_message_content_returns_content_and_passes_feedback() -> None:
     plans, _tokens = plan_message_briefs(
         SimpleNamespace(),

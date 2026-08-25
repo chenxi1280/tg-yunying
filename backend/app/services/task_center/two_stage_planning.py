@@ -46,6 +46,9 @@ def plan_message_briefs_with(
     ]
     slot_infos = _slot_infos(slots)
     use_v2 = route_v2_enabled(config)
+    preflight = _v2_preflight_rejection(slot_infos, tuple(history_facts)) if use_v2 else None
+    if preflight:
+        return _reject_v2_slots(slot_infos, *preflight), 0
     total_tokens = 0
     recent: list[dict] = []
     plans: list[TwoStagePlan] = []
@@ -133,6 +136,8 @@ def _brief_rejection(
 ) -> tuple[str, str] | None:
     if brief is None:
         return "malformed_output", "brief_schema_invalid：schema、版本或证据引用非法"
+    if brief.slot_id != str(info["slot_id"]):
+        return "brief_slot_id_mismatch", "brief slot_id 与当前 slot 不一致"
     if brief.reply_to_message_id != str(info.get("reply_to_message_id") or ""):
         return "brief_reply_target_mismatch", "brief reply_to_message_id 与 slot 不一致"
     return None
@@ -199,7 +204,11 @@ def _planner_prompt(
     use_v2: bool,
 ) -> str:
     if use_v2:
-        return build_v2_planner_prompt(slot_infos=slot_infos, allowed_facts=facts)
+        return build_v2_planner_prompt(
+            slot_infos=slot_infos,
+            allowed_facts=facts,
+            recent_briefs=recent,
+        )
     return build_brief_planner_user_prompt(
         slot_infos=slot_infos,
         allowed_facts=facts,
@@ -221,6 +230,37 @@ def _v2_slot_info(slot: dict) -> dict:
         "negative_phrases",
     )
     return {key: slot.get(key) for key in keys}
+
+
+def _v2_preflight_rejection(
+    slot_infos: list[dict],
+    fact_ids: tuple[str, ...],
+) -> tuple[str, str] | None:
+    valid = set(fact_ids)
+    for info in slot_infos:
+        contract = _v2_contract(info)
+        if contract is None:
+            return "brief_contract_invalid", "MessageBrief v2 冻结合同不完整"
+        if any(evidence_id not in valid for evidence_id in contract.route_evidence_ids):
+            return "brief_evidence_mismatch", "route evidence 不属于当前 allowed facts"
+    return None
+
+
+def _reject_v2_slots(
+    slot_infos: list[dict],
+    code: str,
+    detail: str,
+) -> list[TwoStagePlan]:
+    return [
+        TwoStagePlan(
+            slot_id=str(info["slot_id"]),
+            account_id=int(info["account_id"]),
+            rejection_code=code,
+            rejection_detail=detail,
+            reply_preview=str(info.get("reply_preview") or ""),
+        )
+        for info in slot_infos
+    ]
 
 
 def _shape(brief: MessageBrief) -> dict:
