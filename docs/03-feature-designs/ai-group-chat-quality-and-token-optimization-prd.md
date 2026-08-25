@@ -248,6 +248,7 @@ Schema 错误不得提取一段文本后继续发送；记录 `malformed_output`
 - Reviewer 输出固定维度：事实一致、上下文相关、自然度、人设一致、重复度、路由正确。
 - 评分规则需对人工认可的模式锚点做校准，不能因为短句过短或成人词本身将正确样本误杀。
 - Reviewer 不通过进入 `quality_wait` 或在同一 Job、同一稳定 Slot 内执行唯一一次同路由重写；重写预算耗尽后记录 `quality_shortfall`。
+- 两阶段链路在同一次 Job claim 内完成初稿与唯一一次重写；其 `two_stage_quality_wait` 结果已经表示重写预算耗尽，必须立即结算 `quality_shortfall`，不得按分钟重新运行整套 Router、Realizer 和 Reviewer。旧链路只有在尚未消费该重写预算时才可保留可重试 `quality_wait`。
 
 ## 11. 双号互动契约
 

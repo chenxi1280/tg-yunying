@@ -33,6 +33,7 @@ class GenerationWaitSpec:
     shortfall_kind: str
     evaluator_evidence: dict
     next_retry_at: datetime | None = None
+    retry_budget_exhausted: bool = False
 
 
 def latest_safe_send_at(session: Session, action: Action) -> datetime | None:
@@ -65,8 +66,23 @@ def defer_generation_wait(
     job.latest_safe_send_at = deadline
     job.candidate_hash = str(action.candidate_hash or "")
     job.evaluator_evidence = dict(spec.evaluator_evidence)
+    if spec.retry_budget_exhausted:
+        _settle_generation_shortfall(
+            session,
+            action,
+            job=job,
+            spec=spec,
+            reason_suffix="budget_exhausted",
+        )
+        return "shortfall"
     if deadline is not None and is_after_or_equal(next_retry_at, deadline):
-        _settle_deadline_shortfall(session, task, action, job, spec)
+        _settle_generation_shortfall(
+            session,
+            action,
+            job=job,
+            spec=spec,
+            reason_suffix="deadline",
+        )
         return "shortfall"
     defer_generation_job(job, stage=spec.stage, next_retry_at=next_retry_at)
     _set_action_waiting(action, spec, next_retry_at)
@@ -92,18 +108,39 @@ def _set_action_waiting(
     }
 
 
-def _settle_deadline_shortfall(
+def _settle_generation_shortfall(
     session: Session,
-    task: Task,
     action: Action,
+    *,
     job: GenerationJob,
     spec: GenerationWaitSpec,
+    reason_suffix: str,
+) -> None:
+    reason_code = f"{spec.error_code}_{reason_suffix}"
+    _record_generation_shortfall(
+        session,
+        action,
+        job=job,
+        spec=spec,
+        reason_code=reason_code,
+    )
+    _mark_job_shortfall(job, spec)
+    _mark_action_shortfall(session, action, spec=spec, reason_code=reason_code)
+
+
+def _record_generation_shortfall(
+    session: Session,
+    action: Action,
+    *,
+    job: GenerationJob,
+    spec: GenerationWaitSpec,
+    reason_code: str,
 ) -> None:
     period_key = _shortfall_period(job, spec)
     evidence_hash = _hash({
         "job_id": job.id,
         "deadline": job.latest_safe_send_at,
-        "code": spec.error_code,
+        "code": reason_code,
         "evidence": spec.evaluator_evidence,
     })
     settle_shortfall(session, ShortfallSpec(
@@ -114,11 +151,14 @@ def _settle_deadline_shortfall(
         owner_id=job.obligation_id,
         period_key=period_key,
         kind=spec.shortfall_kind,
-        reason_code=f"{spec.error_code}_deadline",
+        reason_code=reason_code,
         requested_quantity=1,
         settled_quantity=0,
         evidence_hash=evidence_hash,
     ))
+
+
+def _mark_job_shortfall(job: GenerationJob, spec: GenerationWaitSpec) -> None:
     job.state = "failed"
     job.generation_stage = f"{spec.stage}_shortfall"
     job.next_retry_at = None
@@ -126,8 +166,17 @@ def _settle_deadline_shortfall(
     job.lease_expires_at = None
     job.evaluator_evidence = dict(spec.evaluator_evidence)
     job.job_version += 1
+
+
+def _mark_action_shortfall(
+    session: Session,
+    action: Action,
+    *,
+    spec: GenerationWaitSpec,
+    reason_code: str,
+) -> None:
     payload = dict(action.payload or {})
-    payload["ai_generation_status"] = f"{spec.error_code}_deadline"
+    payload["ai_generation_status"] = reason_code
     payload["ai_generation_claim_owner"] = ""
     payload["ai_generation_claim_token"] = ""
     action.payload = payload
@@ -139,7 +188,7 @@ def _settle_deadline_shortfall(
         project_generation_shortfall(
             session,
             action,
-            reason_code=f"{spec.error_code}_deadline",
+            reason_code=reason_code,
         )
 
 

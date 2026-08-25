@@ -143,6 +143,10 @@ def _persist_quality_wait(session: Session, request, *, action, result) -> None:
             error_detail=result.rejection_detail,
             shortfall_kind="quality",
             evaluator_evidence=evidence,
+            retry_budget_exhausted=(
+                str(getattr(result.content, "generation_source", "") or "")
+                == "two_stage_quality_wait"
+            ),
         ),
     )
     commit_generation_action(session, request, action)

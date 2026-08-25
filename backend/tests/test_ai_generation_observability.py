@@ -8,7 +8,14 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import Action, GenerationJob, Task, Tenant, TgGroup
+from app.models import (
+    Action,
+    FulfillmentShortfallFact,
+    GenerationJob,
+    Task,
+    Tenant,
+    TgGroup,
+)
 from app.services._common import _now
 from app.services.task_center import ai_generation_dispatch
 from app.services.task_center.ai_generation_pipeline import SlotGenerationResult
@@ -159,6 +166,51 @@ def test_phase_c_quality_wait_requeues_obligation_instead_of_failing() -> None:
         assert job.generation_stage == "quality_wait"
         assert action.scheduled_at == frozen_due_at
         assert job.next_retry_at is not None
+
+
+def test_two_stage_quality_wait_settles_exhausted_rewrite_budget() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        task, action = _seed_phase_c_action(session)
+        job = GenerationJob(
+            id="two-stage-quality-job",
+            tenant_id=1,
+            task_id=task.id,
+            obligation_type="group_ai_chat",
+            obligation_id=action.id,
+            generation_sequence=1,
+            context_snapshot_version=1,
+            state="generating",
+            generation_owner_id="worker-a",
+        )
+        session.add(job)
+        action.payload = {**action.payload, "generation_job_id": job.id}
+        session.commit()
+
+        ai_generation_dispatch._persist_generation_results(
+            session,
+            _phase_c_request(task, action),
+            [SlotGenerationResult(
+                GeneratedContent(
+                    "[quality_wait:1]",
+                    generation_source="two_stage_quality_wait",
+                    slot_id="generation-observable:turn:1",
+                    sequence_index=1,
+                ),
+                rejection_code="quality_wait",
+                rejection_detail="realize budget exhausted",
+                evaluator_evidence={"decision": "fail"},
+            )],
+            tokens=10,
+        )
+
+        assert action.status == "failed"
+        assert action.payload["ai_generation_status"] == "quality_wait_budget_exhausted"
+        assert job.state == "failed"
+        assert job.generation_stage == "quality_wait_shortfall"
+        fact = session.scalar(select(FulfillmentShortfallFact))
+        assert fact.reason_code == "quality_wait_budget_exhausted"
 
 
 def test_metrics_refresh_idempotently_separates_generation_and_gateway_unknown() -> None:
