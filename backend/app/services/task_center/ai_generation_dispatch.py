@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from sqlalchemy import select
@@ -56,6 +57,7 @@ from .payloads import SendMessagePayload
 
 
 CONTEXT_HISTORY_MAX_CHARS = 1000
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -225,6 +227,10 @@ def _commit_generation_results(
         session.rollback()
         raise
     except Exception as exc:
+        logger.exception(
+            "AI generation persistence failed before cached retry action_id=%s",
+            request.action_id,
+        )
         session.rollback()
         contents = [result.content for result in results]
         persist_generation_unknown(
