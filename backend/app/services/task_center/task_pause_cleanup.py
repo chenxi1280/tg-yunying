@@ -5,11 +5,14 @@ from sqlalchemy.orm import Session
 
 from app.models import (
     Action,
+    AiContentWindowPlan,
     AiContentWindowPlanSlot,
     ExecutionAttempt,
     GenerationJob,
     Task,
 )
+
+from .ai_content_runtime import invalidate_pre_gateway_window_slot
 
 
 OPEN_ACTION_STATES = (
@@ -87,8 +90,8 @@ def cancel_open_generation_jobs(session: Session, task: Task) -> int:
             )
         )
     )
+    _invalidate_task_pre_gateway_slots(session, task)
     for job in jobs:
-        _invalidate_pre_gateway_slot(session, job)
         job.state = "cancelled"
         job.generation_stage = "cancelled_by_task_lifecycle"
         job.generation_owner_id = ""
@@ -102,20 +105,19 @@ def cancel_open_generation_jobs(session: Session, task: Task) -> int:
     return len(jobs)
 
 
-def _invalidate_pre_gateway_slot(session: Session, job: GenerationJob) -> None:
-    if not job.window_slot_id:
-        return
-    slot = session.get(AiContentWindowPlanSlot, job.window_slot_id)
-    if slot is None:
-        return
-    if slot.state == "gateway_bound":
-        raise RuntimeError("group_ai_pause_gateway_bound_work_present")
-    if slot.state not in PRE_GATEWAY_SLOT_STATES:
-        return
-    slot.state = "invalidated"
-    slot.claimed_by_job_id = None
-    slot.lease_expires_at = None
-    slot.version = int(slot.version or 1) + 1
+def _invalidate_task_pre_gateway_slots(session: Session, task: Task) -> int:
+    statement = (
+        select(AiContentWindowPlanSlot)
+        .join(AiContentWindowPlan, AiContentWindowPlan.id == AiContentWindowPlanSlot.plan_id)
+        .where(
+            AiContentWindowPlan.task_id == task.id,
+            AiContentWindowPlanSlot.state.in_(PRE_GATEWAY_SLOT_STATES),
+        )
+    )
+    if session.get_bind().dialect.name != "sqlite":
+        statement = statement.with_for_update(of=AiContentWindowPlanSlot)
+    slots = list(session.scalars(statement))
+    return sum(invalidate_pre_gateway_window_slot(slot) for slot in slots)
 
 
 __all__ = [

@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from app.models import Action, GenerationJob, Task
 from app.services._common import _now
 
+from .ai_content_runtime import invalidate_job_pre_gateway_slot
 from .ai_generation_claim_lifecycle import owns_generation_claim
 from .ai_dialogue_chain import resolve_waiting_dialogue_dependencies
 from .ai_generation_timing import GENERATION_LEASE, GENERATION_LOOKAHEAD
@@ -98,6 +99,8 @@ def finish_generation_job(
         job = session.get(GenerationJob, claim.job_id)
         if job is None or job.generation_owner_id != claim.owner:
             raise RuntimeError("parallel_generation_job_claim_lost")
+        if state in {"failed", "cancelled"}:
+            invalidate_job_pre_gateway_slot(session, job)
         job.state = state
         if generation_stage is not None:
             job.generation_stage = generation_stage

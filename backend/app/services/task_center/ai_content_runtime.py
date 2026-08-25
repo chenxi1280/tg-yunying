@@ -282,13 +282,37 @@ def invalidate_pre_gateway_slot(
     slot = _claimed_slot(session, job)
     if slot.state not in PRE_GATEWAY_SLOT_STATES:
         raise AiContentRuntimeConflict("ai_content_window_slot_not_invalidatable")
-    slot.state = "invalidated"
-    slot.lease_expires_at = None
-    slot.version += 1
+    invalidate_pre_gateway_window_slot(slot)
     job.state = "failed"
     job.generation_stage = "quality_wait"
     job.evaluator_evidence = {**dict(job.evaluator_evidence or {}), "invalidation_reason": reason}
     job.job_version += 1
+
+
+def invalidate_job_pre_gateway_slot(
+    session: Session,
+    job: GenerationJob,
+) -> bool:
+    if not job.window_slot_id:
+        return False
+    slot = session.get(AiContentWindowPlanSlot, job.window_slot_id)
+    if slot is None:
+        return False
+    return invalidate_pre_gateway_window_slot(slot)
+
+
+def invalidate_pre_gateway_window_slot(
+    slot: AiContentWindowPlanSlot,
+) -> bool:
+    if slot.state == "gateway_bound":
+        raise AiContentRuntimeConflict("ai_content_window_gateway_bound")
+    if slot.state not in PRE_GATEWAY_SLOT_STATES:
+        return False
+    slot.state = "invalidated"
+    slot.claimed_by_job_id = None
+    slot.lease_expires_at = None
+    slot.version = int(slot.version or 1) + 1
+    return True
 
 
 def settle_shortfall(
@@ -412,7 +436,9 @@ __all__ = [
     "context_message_hash",
     "defer_generation_job",
     "freeze_window_plan",
+    "invalidate_job_pre_gateway_slot",
     "invalidate_pre_gateway_slot",
+    "invalidate_pre_gateway_window_slot",
     "mark_candidate_ready",
     "settle_shortfall",
 ]
