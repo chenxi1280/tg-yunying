@@ -17,6 +17,8 @@
 
 结构化现场探测只输出分类统计，不读取正文：响应共 19 个非空行，包含一对 `<think>...</think>`、16 行 reasoning 和一个 JSON 对象。当前严格 JSONL 解析器只处理代码围栏，不处理 Provider 明示 reasoning block，因此在业务 JSON 到达前失败。
 
+首轮修复以 `e05572763c14f5c07cffb8ba24011289ca61410a` 发布后，生产读回 1 个账号已成功形成 active 面具；其余样本暴露两个后续根因：MiniMax HTTP 429 被通用字符串分类误判为 `provider_config_invalid` 并首次即终止，以及 512 token 被 reasoning 占满后没有剩余 JSON。第二轮修复将 429 明确映射为可退避状态，并把声线单条上限调整为 1024，不改变群聊正文生成预算。
+
 ## 期望结果
 
 - 仅移除完整闭合的 `<think>...</think>` Provider reasoning block，再执行原严格 JSONL、必填字段、男性身份、列表数量、摘要长度和敏感措辞校验。
@@ -35,6 +37,7 @@
 - 新增 MiniMax think wrapper 正例，证明闭合 reasoning block 后单行 JSON 通过。
 - 新增未闭合 think wrapper 反例，证明不会搜索并提取任意尾部 JSON。
 - 完整声线解析与 worker 定向测试全部通过，60 秒硬超时。
+- Provider HTTP 429 回归必须落到 `retry_wait/provider_rate_limited`，不得落到 `manual_required/provider_config_invalid`；声线请求上限固定为 1024。
 - 发布后精确重试 11 条，独立读回 active voice profiles 11/11，随后重新运行 bootstrap preview。
 
 ## 升级与回滚
@@ -52,16 +55,16 @@
 - release_mode: `github_actions`
 - release_owner: `main`
 - rollback_owner: `main`
-- status: `pending`
+- status: `resync_pending`
 
 ### 上线范围
 
-仅发布 MiniMax 闭合 reasoning 前缀规范化、两条解析回归、PRD 与运行记录；不随发布修改 Provider、任务配置、policy、attestation、binding、目标量或 Telegram 数据。
+第一轮已发布 MiniMax 闭合 reasoning 前缀规范化；第二轮仅增加 HTTP 429 类型化退避、声线单条 1024 token 上限及对应回归。均不随发布修改 Provider、任务配置、policy、attestation、binding、目标量或 Telegram 数据。
 
 ### 必须满足
 
 - ci_or_build: `git diff --check`、目标模块 compileall、Deploy Production 全 jobs。
-- backend_tests: 60 秒硬超时内声线解析与 worker 定向回归 `63 passed`。
+- backend_tests: 60 秒硬超时内声线解析与 worker 定向回归 `64 passed`。
 - frontend_build: 无前端改动；仍由 Deploy Production workflow 执行正式构建。
 - migration_impact: 无 migration。
 - worker_impact: `worker-voice-profile` 载入新解析器；不新增 worker、并发或轮询。
