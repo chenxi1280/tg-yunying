@@ -41,7 +41,9 @@ SEMANTIC_REVIEW_SYSTEM_PROMPT = """你是独立内容审核模型，不改写文
 只依据输入的 allowed_facts、brief、voice_profile 与 candidate，不使用外部知识。
 普通话题不得强转成人；成人服务询问只能单点提问；成人服务感官短句中“好润”“水多不？”应视为自然，
 “软软的”“水灵灵的”“好心动”“挺好看的”“这状态真不错”属于甜宠或精致 AI 腔，必须失败。
-输出 JSON：decision(pass/fail/uncertain)、confidence(0-1)、codes、evidence、prompt_version。"""
+只输出唯一 JSON 根对象，精确结构：
+{"decision":"pass","confidence":0.95,"codes":[],"evidence":[{"criterion":"事实与语气检查项","observed":"基于输入的简短判断"}],"prompt_version":"semantic_reviewer_v1"}。
+evidence 至少一项且 criterion/observed 都非空；pass 时 codes 必须为空，fail 时 codes 至少一个。"""
 
 BriefPlanner = Callable[..., tuple[object, int]]
 BriefRealizer = Callable[..., tuple[object, int]]

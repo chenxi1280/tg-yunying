@@ -212,6 +212,7 @@ MessageBrief v2 的 Planner 输出边界固定为：
 - Planner 只输出 `slot_id/speech_act/stance/length_band/punctuation_profile/anchor_ids/reply_to_message_id/claims`。`claims` 必须恰好一项，`category` 只能来自当前服务端 `content_mode` 的枚举，claim 与外层 `speech_act` 必须一致，`evidence_ids` 必须同时属于 `allowed_facts` 与该 Slot 的 `route_evidence_ids`。
 - Provider 调用前先确定性校验冻结合同完整、`route_evidence_ids` 非空且均存在于当前 `allowed_facts`。不可能满足的合同直接写 typed `brief_contract_invalid/brief_evidence_mismatch`，不得调用模型后再记作 `malformed_output`。
 - Planner Prompt 必须给出唯一根对象 `{"briefs":[...]}` 的逐 Slot 完整 schema、所有枚举和 exact reply target；不能只写“输出 MessageBrief v2 JSON”。成人服务询问只能选择 question claim 和 question 标点；成人 route 只允许 micro/short，避免生成器面对互相矛盾的长度/标点合同。
+- Realizer Prompt 必须把 `punctuation_profile` 翻译成正文可执行的精确约束：`question` 以问号结尾，`pause` 至少包含一种停顿标点且不得含问号，`none` 不得含问号或停顿标点；不能只把枚举值埋在输入 JSON 中，再因模型不理解枚举而连续拒绝。
 - V2 批次若因结构塌缩重规划，第二次 Prompt 必须携带上一轮结构摘要；禁止以完全相同输入重复调用 Provider。
 
 ### 9.2 Voice Contract v3
@@ -246,6 +247,7 @@ Schema 错误不得提取一段文本后继续发送；记录 `malformed_output`
 
 - Reviewer 与 Generator 使用不同模型家族，且接收精简 Brief、上下文事实和候选，不接收生成思维过程。
 - Reviewer 输出固定维度：事实一致、上下文相关、自然度、人设一致、重复度、路由正确。
+- Reviewer Prompt 必须给出唯一 JSON 根对象的精确 schema；`evidence` 至少包含一项非空 `criterion/observed`，`pass` 时 `codes=[]`，`fail` 时必须返回至少一个 typed code。不得只列字段名而让模型猜测 evidence 结构。
 - 评分规则需对人工认可的模式锚点做校准，不能因为短句过短或成人词本身将正确样本误杀。
 - Reviewer 不通过进入 `quality_wait` 或在同一 Job、同一稳定 Slot 内执行唯一一次同路由重写；重写预算耗尽后记录 `quality_shortfall`。
 - 两阶段链路在同一次 Job claim 内完成初稿与唯一一次重写；其 `two_stage_quality_wait` 结果已经表示重写预算耗尽，必须立即结算 `quality_shortfall`，不得按分钟重新运行整套 Router、Realizer 和 Reviewer。旧链路只有在尚未消费该重写预算时才可保留可重试 `quality_wait`。

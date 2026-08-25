@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 from app.services.task_center.two_stage_generation import (
+    SEMANTIC_REVIEW_SYSTEM_PROMPT,
     TwoStageRealizeError,
     plan_message_briefs,
     realize_message_content,
@@ -25,6 +26,13 @@ def test_two_stage_enabled_reads_task_flag() -> None:
     assert two_stage_enabled({"ai_two_stage_enabled": False}) is False
     assert two_stage_enabled({}) is False
     assert two_stage_enabled(None) is False
+
+
+def test_semantic_reviewer_prompt_exposes_exact_evidence_contract() -> None:
+    assert '"evidence":[{"criterion"' in SEMANTIC_REVIEW_SYSTEM_PROMPT
+    assert '"prompt_version":"semantic_reviewer_v1"' in SEMANTIC_REVIEW_SYSTEM_PROMPT
+    assert "pass 时 codes 必须为空" in SEMANTIC_REVIEW_SYSTEM_PROMPT
+    assert "fail 时 codes 至少一个" in SEMANTIC_REVIEW_SYSTEM_PROMPT
 
 
 def test_plan_message_briefs_parses_valid_batch_with_single_call() -> None:

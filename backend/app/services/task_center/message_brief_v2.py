@@ -285,13 +285,24 @@ def v2_realizer_system_prompt(brief: MessageBriefV2) -> str:
         "short": "正文9到24字",
         "medium": "正文至少25字",
     }[brief.length_band]
+    punctuation_rule = _punctuation_realizer_rule(brief)
     return (
         "把已审核 brief 写成一条自然中文 Telegram 消息。"
-        f"{mode_rules[brief.content_mode]}{claim_rule}{length_rule}；只用 evidence，保持 brief 的 speech_act；"
+        f"{mode_rules[brief.content_mode]}{claim_rule}{length_rule}；{punctuation_rule}"
+        "只用 evidence，保持 brief 的 speech_act；"
         "禁止软软的、水灵灵的、好心动、挺好看的、这状态真不错；"
         "禁止老板、老师、早上好、上午好、晚上好等称呼寒暄；"
         "输出 content、used_anchor_ids、speech_act、voice_profile_version JSON。"
     )
+
+
+def _punctuation_realizer_rule(brief: MessageBriefV2) -> str:
+    rules = {
+        "question": "正文必须以问号结尾，不得使用逗号、顿号、分号或省略号；",
+        "pause": "正文至少包含一个逗号、顿号、分号或省略号，且不得含问号；",
+        "none": "正文不得含问号、逗号、顿号、分号或省略号；",
+    }
+    return rules[brief.punctuation_profile]
 
 
 def _sensory_realizer_rule(brief: MessageBriefV2) -> str:

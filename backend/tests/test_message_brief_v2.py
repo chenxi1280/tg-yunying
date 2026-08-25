@@ -98,6 +98,8 @@ def test_adult_sensory_question_is_grounded_without_becoming_template() -> None:
     assert v2_candidate_failure("水多不？", brief) == ""
     prompt = v2_realizer_system_prompt(brief)
     assert "水多不？" in prompt
+    assert "必须以问号结尾" in prompt
+    assert "不得使用逗号" in prompt
     assert "正文只能从" not in prompt
     assert v2_candidate_failure("这水量行不行？", brief) == ""
 
@@ -111,9 +113,27 @@ def test_adult_sensory_reaction_allows_grounded_variation() -> None:
     )
 
     assert brief is not None
+    prompt = v2_realizer_system_prompt(brief)
+    assert "不得含问号、逗号、顿号、分号或省略号" in prompt
     assert v2_candidate_failure("好润", brief) == ""
     assert v2_candidate_failure("看着挺润", brief) == ""
     assert v2_candidate_failure("这也太润了", brief) == ""
+
+
+def test_v2_realizer_translates_pause_profile_into_surface_rule() -> None:
+    item = _item(category="sensory_reaction", speech_act="reaction")
+    item["punctuation_profile"] = "pause"
+    brief = parse_brief_v2_item(
+        item,
+        slot_id="slot-1",
+        valid_fact_ids=("f1",),
+        contract=_contract(),
+    )
+
+    assert brief is not None
+    prompt = v2_realizer_system_prompt(brief)
+    assert "至少包含一个逗号、顿号、分号或省略号" in prompt
+    assert "不得含问号" in prompt
 
 
 def test_v2_rejects_wrong_object_exact_price_and_general_forced_adult() -> None:
