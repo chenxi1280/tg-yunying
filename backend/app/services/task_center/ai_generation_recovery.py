@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import logging
+
 from sqlalchemy.orm import Session
 
-from app.models import Action
+from app.models import Action, GenerationJob
 from app.services._common import _now
 
 from .ai_generation_commit import commit_generation_action, load_generation_batch
 from .ai_generation_state import generation_result_cache, mark_attempt_outcome
 from .runtime_resources import _release_runtime_resources
+
+
+logger = logging.getLogger(__name__)
 
 
 def persist_generation_unknown(
@@ -17,7 +22,15 @@ def persist_generation_unknown(
     *,
     tokens: int,
     attempt_id: str,
+    error_code: str = "",
+    error_detail: str = "",
 ) -> None:
+    logger.error(
+        "AI generation result persistence failed action_id=%s error_type=%s detail=%s",
+        request.action_id,
+        error_code,
+        error_detail,
+    )
     batch = load_generation_batch(session, request)
     with session.no_autoflush:
         for index, ((action, payload), content) in enumerate(zip(batch, contents, strict=False)):
@@ -36,7 +49,31 @@ def persist_generation_unknown(
                 timestamp=_now(),
             )
             _reset_action_for_recovery(action, data)
+            _reset_generation_job_for_cached_retry(session, data)
+            action.result = {
+                **dict(action.result or {}),
+                "error_code": "ai_result_persist_unknown",
+                "error_message": error_detail,
+                "generation_outcome": "pending",
+                "persist_error_code": error_code,
+            }
             commit_generation_action(session, request, action)
+
+
+def _reset_generation_job_for_cached_retry(session: Session, data: dict) -> None:
+    job_id = str(data.get("generation_job_id") or "")
+    job = session.get(GenerationJob, job_id) if job_id else None
+    if job is None:
+        return
+    if job.state != "generating":
+        raise RuntimeError("generation_job_not_generating_for_persist_retry")
+    job.state = "pending"
+    job.generation_stage = "persist_retry"
+    job.next_retry_at = None
+    job.generation_owner_id = ""
+    job.lease_expires_at = None
+    job.stage_version = int(job.stage_version or 1) + 1
+    job.job_version = int(job.job_version or 1) + 1
 
 
 def _reset_action_for_recovery(

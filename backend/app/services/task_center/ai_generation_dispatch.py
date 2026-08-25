@@ -224,7 +224,7 @@ def _commit_generation_results(
     except GenerationAttemptStale:
         session.rollback()
         raise
-    except Exception:
+    except Exception as exc:
         session.rollback()
         contents = [result.content for result in results]
         persist_generation_unknown(
@@ -233,6 +233,8 @@ def _commit_generation_results(
             contents,
             tokens=tokens,
             attempt_id=request.attempt_id,
+            error_code=type(exc).__name__,
+            error_detail=str(exc),
         )
         session.commit()
         raise AiGenerationUnavailable("ai_result_persist_unknown")

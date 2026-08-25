@@ -19,6 +19,9 @@ from app.services.task_center.ai_generation_parallel import (
     ParallelGenerationClaim,
     finish_generation_job,
 )
+from app.services.task_center.ai_generation_recovery import (
+    _reset_generation_job_for_cached_retry,
+)
 from app.services.task_center.task_pause_cleanup import cancel_open_generation_jobs
 
 
@@ -143,3 +146,27 @@ def test_failed_generation_releases_claimed_slot_immediately() -> None:
         assert job.state == "failed"
         assert slot.state == "invalidated"
         assert slot.claimed_by_job_id is None
+
+
+def test_persist_unknown_requeues_same_job_without_releasing_slot() -> None:
+    factory = _session_factory()
+    _seed_claimed_slot(factory, job_state="generating", owner="worker-1")
+
+    with factory() as session:
+        job = session.get(GenerationJob, JOB_ID)
+        job.lease_expires_at = NOW + timedelta(minutes=10)
+        _reset_generation_job_for_cached_retry(
+            session,
+            {"generation_job_id": JOB_ID},
+        )
+        session.commit()
+
+    with factory() as session:
+        job = session.get(GenerationJob, JOB_ID)
+        slot = session.get(AiContentWindowPlanSlot, SLOT_ID)
+        assert job.state == "pending"
+        assert job.generation_stage == "persist_retry"
+        assert job.generation_owner_id == ""
+        assert job.lease_expires_at is None
+        assert slot.state == "claimed"
+        assert slot.claimed_by_job_id == job.id

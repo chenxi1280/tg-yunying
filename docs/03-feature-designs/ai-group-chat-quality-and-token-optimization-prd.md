@@ -280,10 +280,13 @@ Schema 错误不得提取一段文本后继续发送；记录 `malformed_output`
 | 429 / provider admission | `waiting_provider` | 仅按已配置 transport failover |
 | timeout / connect error | `provider_transport_failed` | 是，受同 Slot 预算限制 |
 | malformed JSON | `malformed_output` | 否，暴露模型/Schema 问题 |
+| Provider 已返回、候选落库失败 | `ai_result_persist_unknown` | 否；保留同一 Job/Slot 和结果缓存，只重试本地 CAS 落库 |
 | deterministic gate failed | `quality_gate_failed` | 否 |
 | reviewer rejected | `quality_wait` | 否；最多同路由一次重写 |
 
 Provider 切换只能解决传输可用性，不能作为内容质量重试策略。
+
+`ai_result_persist_unknown` 必须同时释放 Action claim 与 GenerationJob lease，并把同一 Job 转回可领取的 `pending`；后续领取先消费结果缓存，禁止重新调用 Router、Realizer 或 Reviewer。落库异常类型必须进入显式结果字段和日志，不能被通用恢复状态吞掉。
 
 ### 12.3 完整 Token 账本
 

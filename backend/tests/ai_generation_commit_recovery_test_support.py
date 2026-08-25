@@ -9,6 +9,9 @@ def assert_persist_unknown_state(session, action, *, coverage, observed) -> None
     assert action.status == "pending", action.result
     assert action.payload["ai_generation_status"] == "ai_result_persist_unknown"
     assert action.payload["ai_generation_result_cache"]["content"] == "就按这个节奏来"
+    assert action.result["error_code"] == "ai_result_persist_unknown"
+    assert action.result["generation_outcome"] == "pending"
+    assert action.result["persist_error_code"] == "RuntimeError"
     assert coverage.state == "reserved"
     assert observed == {"provider_calls": 1, "gateway_calls": 0}
     assert list(session.scalars(select(AiGroupMessageMemory))) == []
