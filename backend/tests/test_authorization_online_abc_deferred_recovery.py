@@ -6,15 +6,24 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import select
 
-from app.models import AuditLog, TgAuthorizationOnlineAbcBatch, TgAuthorizationOnlineAbcItem
+from app.models import (
+    AccountStatus,
+    AuditLog,
+    TgAuthorizationOnlineAbcBatch,
+    TgAuthorizationOnlineAbcItem,
+    TgLoginFlow,
+)
+from app.services._common import _now
 from app.services.authorization_dr.online_abc import start_next_online_abc_item
 from app.services.authorization_dr.online_abc_deferred_recovery import (
     FINAL_ACTION,
     ITEM_ACTION,
     apply_deferred_recovery_start,
+    pause_deferred_recovery_for_error,
     preview_deferred_recovery_start,
     run_deferred_recovery_once,
 )
+from app.services.authorization_dr.online_abc_operations import online_abc_item_operations
 from tests import test_authorization_online_abc as abc_tests
 from tests import test_authorization_online_abc_sweep as sweep_tests
 
@@ -48,8 +57,10 @@ def test_deferred_recovery_audits_remote_unknown_without_success_or_manual(db_se
     manual = _item(db_session, batch_id, manual_account)
     assert preview["deferred_count"] == 1
     assert started["deferred_recovery"]["active"] is True
+    assert started["deferred_recovery"]["business_delta"]["succeeded"] == 0
     assert first["last_item"]["result"] == "deferred_reconcile"
-    assert first["last_item"]["reason"] == "same_operation_remote_unknown"
+    assert first["last_item"]["blocker"] == "remote_authorization_unproven"
+    assert first["last_item"]["reason"] == "same_operation_remote_unproven"
     assert deferred.status == deferred.outcome == "deferred_reconcile"
     assert manual.status == manual.outcome == "manual_required"
     assert second["batch"]["status"] == "completed_with_exceptions"
@@ -100,6 +111,65 @@ def test_completed_checkpoint_forward_counts_as_real_success(db_session, monkeyp
     assert item.status == item.outcome == "succeeded"
 
 
+def test_waiting_two_fa_deferred_item_becomes_manual_required(db_session) -> None:
+    batch_id, account_id, _manual_account = _phase2_batch(db_session)
+    item = _item(db_session, batch_id, account_id)
+    batch = db_session.get(TgAuthorizationOnlineAbcBatch, batch_id)
+    operation = online_abc_item_operations(db_session, batch, item)["b"]
+    flow = TgLoginFlow(
+        tenant_id=1,
+        account_id=account_id,
+        method="code",
+        status=AccountStatus.WAITING_2FA.value,
+        authorization_role="standby_1",
+        developer_app_id=operation.developer_app_id,
+        temporary_session_ciphertext="temporary-session",
+        phone_code_hash_ciphertext="phone-code-hash",
+        challenge_sent_at=_now(),
+        code_expires_at=_now(),
+    )
+    db_session.add(flow)
+    db_session.flush()
+    operation.status = "deferred_reconcile"
+    operation.remote_call_state = "unknown"
+    operation.reconcile_status = "quarantined"
+    operation.blocker_code = "ValueError"
+    operation.login_flow_id = flow.id
+    operation.login_challenge_sent_at = _now()
+    operation.login_code_message_id = "code-message"
+    operation.login_code_received_at = _now()
+    db_session.commit()
+    preview = _preview(db_session, batch_id, expected_deferred_count=1)
+    _apply(db_session, batch_id, preview["fingerprint"], expected_deferred_count=1)
+
+    result = run_deferred_recovery_once(db_session, runtime_release_sha=abc_tests.RELEASE_SHA)
+
+    item = _item(db_session, batch_id, account_id)
+    assert result["last_item"]["result"] == "manual_required"
+    assert result["last_item"]["blocker"] == "two_fa_required"
+    assert result["deferred_recovery"]["business_delta"]["succeeded"] == 0
+    assert result["deferred_recovery"]["business_delta"]["manual_required"] == 1
+    assert item.status == item.outcome == "manual_required"
+    assert operation.status == "manual_required"
+    assert operation.remote_call_state == "reconciled_hold"
+
+
+def test_deferred_recovery_can_restart_after_operator_pause(db_session) -> None:
+    batch_id, _deferred_account, _manual_account = _phase2_batch(db_session)
+    first = _preview(db_session, batch_id, expected_deferred_count=1)
+    _apply(db_session, batch_id, first["fingerprint"], expected_deferred_count=1)
+
+    paused = pause_deferred_recovery_for_error(db_session, "operator_cancel_rejudge_not_backup")
+    restarted = preview_deferred_recovery_start(
+        db_session, batch_id, runtime_release_sha=abc_tests.RELEASE_SHA,
+        idempotency_key="abc-deferred:test:v2", expected_deferred_count=1,
+        requested_by="requester", approved_by="approver", approval_ref="ABC-FULL",
+    )
+
+    assert paused["deferred_recovery"]["paused"] is True
+    assert restarted["batch_status"] == "deferred_recovery_paused"
+
+
 def test_deferred_recovery_cli_requires_until_exhausted(db_session) -> None:
     batch_id, _deferred_account, _manual_account = _phase2_batch(db_session)
     from scripts import authorization_online_abc_deferred_recovery as cli
@@ -111,6 +181,20 @@ def test_deferred_recovery_cli_requires_until_exhausted(db_session) -> None:
             approved_by="approver", approval_ref="ABC-FULL",
             expected_fingerprint="", until_exhausted=False,
         ))
+
+
+def test_deferred_recovery_cli_pause_mode(db_session) -> None:
+    batch_id, _deferred_account, _manual_account = _phase2_batch(db_session)
+    from scripts import authorization_online_abc_deferred_recovery as cli
+
+    preview = _preview(db_session, batch_id, expected_deferred_count=1)
+    _apply(db_session, batch_id, preview["fingerprint"], expected_deferred_count=1)
+
+    result = cli._execute(db_session, SimpleNamespace(
+        mode="pause", batch_id=batch_id, blocker="operator_cancel_rejudge_not_backup",
+    ))
+
+    assert result["deferred_recovery"]["paused"] is True
 
 
 def test_compose_worker_uses_combined_abc_supervisor() -> None:

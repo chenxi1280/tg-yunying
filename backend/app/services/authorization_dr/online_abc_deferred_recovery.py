@@ -28,7 +28,13 @@ from .online_abc_exception_state import (
     e4_remote_id,
     require_exception_primaries_unchanged,
 )
+from .online_abc_deferred_decision import (
+    deferred_manual_blocker,
+    deferred_reconcile_blocker,
+    mark_deferred_operation_manual,
+)
 from .online_abc_deferred_manifest import canonical_deferred_manifest
+from .online_abc_deferred_progress import business_delta, start_counts
 from .online_abc_manifest import ACTIVE_OPERATION_STATUSES
 from .online_abc_operations import online_abc_item_operations
 from .online_abc_primary import primary_state
@@ -41,10 +47,8 @@ PAUSE_ACTION = "暂停 ABC deferred recovery sweep"
 KEY_PATTERN = re.compile(r"[A-Za-z0-9:._-]{1,100}")
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 TERMINAL_ITEM_STATUSES = {"deferred_reconcile", "manual_required", "succeeded"}
-TERMINAL_OPERATION_STATUSES = {
-    "deferred_reconcile", "failed", "manual_required",
-    "migration_rolled_back_forward", "succeeded",
-}
+TERMINAL_OPERATION_STATUSES = {"deferred_reconcile", "failed", "manual_required", "migration_rolled_back_forward", "succeeded"}
+STARTABLE_BATCH_STATUSES = {"completed_with_exceptions", "deferred_recovery_paused"}
 
 
 def preview_deferred_recovery_start(
@@ -64,6 +68,7 @@ def preview_deferred_recovery_start(
     release_sha = _release_sha(runtime_release_sha)
     previous_release = batch.execution_release_sha or batch.deployed_release_sha
     manifest = canonical_deferred_manifest(session, batch.id, runtime_release_sha=release_sha)
+    counts = Counter(online_abc_batch_status(session, batch.id)["account_outcome_counts"])
     if manifest["row_count"] != expected_deferred_count or expected_deferred_count <= 0:
         raise AuthorizationDrError("deferred_recovery_target_count_mismatch", "Deferred target count changed")
     _require_no_active_recovery(session, batch.id)
@@ -71,6 +76,8 @@ def preview_deferred_recovery_start(
     payload = {
         "batch_id": batch.id, "batch_version": batch.version, "batch_status": batch.status,
         "target_count": batch.target_count, "deferred_count": manifest["row_count"],
+        "start_succeeded": counts["succeeded"], "start_manual_required": counts["manual_required"],
+        "start_deferred_reconcile": counts["deferred_reconcile"],
         "manifest_hash": manifest["manifest_hash"], "runtime_release_sha": release_sha,
         "previous_execution_release_sha": previous_release,
         "execution_release_rebind_required": previous_release != release_sha,
@@ -158,6 +165,7 @@ def deferred_recovery_status(session, batch_id: str) -> dict:
     key = _audit_value(start.detail, "idempotency_key") if start else ""
     processed = _processed_count(session, batch_id, key) if key else 0
     counts = Counter(batch_status["account_outcome_counts"])
+    baseline = start_counts(start.detail if start else "")
     return {
         "batch": batch_status,
         "deferred_recovery": {
@@ -169,6 +177,7 @@ def deferred_recovery_status(session, batch_id: str) -> dict:
             "manual_required_count": counts["manual_required"],
             "succeeded_count": counts["succeeded"],
             "terminal_count": sum(counts[name] for name in TERMINAL_ITEM_STATUSES),
+            "business_delta": business_delta(counts, baseline),
             "idempotency_key": key,
         },
     }
@@ -180,7 +189,7 @@ def _process_item(session, batch, item, key: str) -> dict:
     if classification["result"] == "succeeded":
         _complete_checkpoint(session, batch, item)
     elif classification["result"] == "manual_required":
-        _mark_manual(session, item, classification["blocker"])
+        _mark_manual(session, item, classification["blocker"], classification["operation_id"])
     _keep_recovery_active(batch)
     _audit_item(session, batch, item, key, before, classification)
     return {"account_id": item.account_id, **classification}
@@ -192,15 +201,20 @@ def _classification(session, batch, item) -> dict:
         return {"result": "succeeded", "blocker": "", "reason": "completed_checkpoint_forward"}
     operation = _problem_operation(operations)
     if operation and _operation_manual(operation):
-        return {"result": "manual_required", "blocker": operation.blocker_code, "reason": "terminal_failure"}
+        return _decision("manual_required", operation.blocker_code, "terminal_failure", operation)
+    manual_blocker = deferred_manual_blocker(session, operations)
+    if manual_blocker:
+        return _decision("manual_required", manual_blocker, "manual_blocker_confirmed", operation)
     if primary_state(
         session.get(TgAccount, item.account_id),
         session.get(TgAccountAuthorization, item.primary_authorization_id),
         item,
     ) not in {"frozen", "legacy_frozen", "qualified"}:
-        return {"result": "deferred_reconcile", "blocker": "online_abc_primary_drift", "reason": "primary_drift"}
-    blocker = operation.blocker_code if operation else item.blocker_code
-    return {"result": "deferred_reconcile", "blocker": blocker, "reason": "same_operation_remote_unknown"}
+        return _decision("deferred_reconcile", "online_abc_primary_drift", "primary_drift", operation)
+    return _decision(
+        "deferred_reconcile", deferred_reconcile_blocker(operation),
+        "same_operation_remote_unproven", operation,
+    )
 
 
 def _completed_checkpoint(session, batch, item, operations: dict) -> bool:
@@ -225,7 +239,9 @@ def _complete_checkpoint(session, batch, item) -> None:
         raise AuthorizationDrError("deferred_recovery_completion_failed", "Completed checkpoint did not project")
 
 
-def _mark_manual(session, item, blocker: str) -> None:
+def _mark_manual(session, item, blocker: str, operation_id: str = "") -> None:
+    if operation_id:
+        mark_deferred_operation_manual(session, operation_id, blocker)
     item.status = "manual_required"
     item.outcome = "manual_required"
     item.blocker_code = (blocker or "manual_required")[:100]
@@ -238,6 +254,15 @@ def _mark_manual(session, item, blocker: str) -> None:
             slot.outcome = "manual_required"
             slot.blocker_code = item.blocker_code
             slot.version += 1
+
+
+def _decision(result: str, blocker: str, reason: str, operation) -> dict:
+    return {
+        "result": result,
+        "blocker": blocker or result,
+        "reason": reason,
+        "operation_id": operation.id if operation else "",
+    }
 
 
 def _keep_recovery_active(batch) -> None:
@@ -294,7 +319,7 @@ def _require_global_quiescent(session) -> None:
 
 
 def _require_startable(batch) -> None:
-    if batch.selection_mode != "all_online_accounts" or batch.status != "completed_with_exceptions":
+    if batch.selection_mode != "all_online_accounts" or batch.status not in STARTABLE_BATCH_STATUSES:
         raise AuthorizationDrError("deferred_recovery_start_invalid", f"Batch is {batch.status}")
 
 
@@ -375,6 +400,9 @@ def _audit_start(session, batch, preview: dict) -> None:
         detail=(
             f"idempotency_key={preview['idempotency_key']}; fingerprint={preview['fingerprint']}; "
             f"manifest_hash={preview['manifest_hash']}; deferred_count={preview['deferred_count']}; "
+            f"start_succeeded={preview['start_succeeded']}; "
+            f"start_manual_required={preview['start_manual_required']}; "
+            f"start_deferred_reconcile={preview['start_deferred_reconcile']}; "
             f"approval_ref={preview['approval_ref']}; runtime_release={preview['runtime_release_sha']}; "
             f"execution_release={preview['previous_execution_release_sha']}->"
             f"{preview['runtime_release_sha']}; "
@@ -469,14 +497,3 @@ def _fingerprint(payload: dict) -> str:
 def _audit_value(detail: str, key: str) -> str:
     match = re.search(rf"(?:^|; ){re.escape(key)}=([^;]*)(?:;|$)", detail or "")
     return match.group(1) if match else ""
-
-
-__all__ = [
-    "apply_deferred_recovery_start",
-    "canonical_deferred_manifest",
-    "deferred_recovery_status",
-    "pause_deferred_recovery_for_error",
-    "preview_deferred_recovery_start",
-    "readback_deferred_recovery_start",
-    "run_deferred_recovery_once",
-]

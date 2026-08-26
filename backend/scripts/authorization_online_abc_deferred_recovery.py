@@ -9,6 +9,7 @@ from app.services.authorization_dr.online_abc_deferred_recovery import (
     apply_deferred_recovery_start,
     canonical_deferred_manifest,
     deferred_recovery_status,
+    pause_deferred_recovery_for_error,
     preview_deferred_recovery_start,
     readback_deferred_recovery_start,
 )
@@ -31,6 +32,8 @@ def _execute(session, args) -> dict:
         return readback_deferred_recovery_start(
             session, args.batch_id, idempotency_key=args.idempotency_key,
         )
+    if args.mode == "pause":
+        return pause_deferred_recovery_for_error(session, args.blocker)
     if not args.until_exhausted:
         raise ValueError("deferred_recovery_requires_until_exhausted")
     kwargs = {
@@ -54,7 +57,7 @@ def _release_sha() -> str:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Start or inspect ABC deferred recovery sweep")
-    parser.add_argument("--mode", choices=("manifest", "preview", "apply", "readback", "status"), required=True)
+    parser.add_argument("--mode", choices=("manifest", "preview", "apply", "pause", "readback", "status"), required=True)
     parser.add_argument("--batch-id", required=True)
     parser.add_argument("--idempotency-key", default="")
     parser.add_argument("--expected-fingerprint", default="")
@@ -62,6 +65,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--requested-by", default="")
     parser.add_argument("--approved-by", default="")
     parser.add_argument("--approval-ref", default="")
+    parser.add_argument("--blocker", default="operator_pause")
     parser.add_argument("--until-exhausted", action="store_true")
     return parser
 
