@@ -7,7 +7,6 @@ from app.models import (
     AuditLog,
     TgAccount,
     TgAccountAuthorization,
-    TgAuthorizationDrOperation,
     TgAuthorizationOnlineAbcBatch,
     TgAuthorizationOnlineAbcItem,
     TgAuthorizationOnlineAbcSlotResult,
@@ -15,6 +14,7 @@ from app.models import (
 from app.services.authorization_dr.contracts import AuthorizationDrError
 from app.services.authorization_dr.online_abc import start_next_online_abc_item
 import app.services.authorization_dr.online_abc_completed_checkpoint_pause as checkpoint
+from app.services.authorization_dr.online_abc_operations import online_abc_item_operations
 from app.services.authorization_dr.online_abc_release_rebind import (
     apply_execution_release_rebind,
     preview_execution_release_rebind,
@@ -115,7 +115,7 @@ def test_apply_rejects_changed_item_version(db_session, monkeypatch) -> None:
 
 def test_preview_rejects_missing_remote_message_id(db_session, monkeypatch) -> None:
     batch_id, account_id = _checkpoint(db_session, monkeypatch)
-    operation = _operations(db_session, account_id)["e4"]
+    operation = _operations(db_session, batch_id, account_id)["e4"]
     audit_row = db_session.scalar(select(AuditLog).where(
         AuditLog.target_type == "tg_authorization_dr_operation",
         AuditLog.target_id == operation.id,
@@ -228,11 +228,10 @@ def _slots(session, item_id: str) -> dict:
     return {row.logical_slot: row for row in rows}
 
 
-def _operations(session, account_id: int) -> dict:
-    rows = list(session.scalars(select(TgAuthorizationDrOperation).where(
-        TgAuthorizationDrOperation.account_id == account_id,
-    ).order_by(TgAuthorizationDrOperation.created_at, TgAuthorizationDrOperation.id)))
-    return {"b": rows[0], "c": rows[1], "e4": rows[2]}
+def _operations(session, batch_id: str, account_id: int) -> dict:
+    batch = session.get(TgAuthorizationOnlineAbcBatch, batch_id)
+    item = _item(session, batch_id, account_id)
+    return online_abc_item_operations(session, batch, item)
 
 
 def _authorization_snapshot(session, account_id: int) -> list[tuple]:
