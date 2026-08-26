@@ -104,6 +104,8 @@ def item_operations_complete(session, item, operations: dict) -> bool:
 def operation_outcome(status: str) -> str:
     if status == "succeeded":
         return "succeeded"
+    if status == "deferred_reconcile":
+        return "deferred_reconcile"
     if status in UNKNOWN_OPERATION_STATUSES:
         return "reconcile_unknown"
     if status in TERMINAL_FAILURES:

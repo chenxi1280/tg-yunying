@@ -8,6 +8,7 @@ from typing import Callable
 from sqlalchemy import select
 
 from app.models import (
+    AuditLog,
     AuthorizationDrRuntimeContract,
     TgAccount,
     TgAccountAuthorization,
@@ -62,7 +63,10 @@ from .standby_2_provision import prepare_scoped_c_provision
 
 POLL_INTERVAL_SECONDS = 2.0
 SUCCESS_STATUS = "succeeded"
-TERMINAL_BATCH_STATUSES = {"accepted", "completed", "completed_with_manual", "observing", "stopped"}
+TERMINAL_BATCH_STATUSES = {
+    "accepted", "completed", "completed_with_exceptions", "completed_with_manual", "observing", "stopped",
+    "sweep_paused",
+}
 POST_C_RESUME_BLOCKER = "malaysia_wake_unavailable"
 PRE_PRIMARY_RESUME_BLOCKER = "ValueError"
 POST_B_PRE_C_RESUME_BLOCKER = "sv_redundancy_incomplete"
@@ -71,6 +75,7 @@ C_ORPHAN_RETRY_BLOCKER = "c_orphan_revoked_retry_ready"
 RETRYABLE_E4_READINESS_CODES = {"malaysia_wake_unavailable"}
 TERMINAL_OPERATION_STATUSES = {
     SUCCESS_STATUS,
+    "deferred_reconcile",
     "failed",
     "manual_required",
     "migration_rolled_back_forward",
@@ -148,6 +153,37 @@ def run_online_abc_batch(
             return chunk_result(view, processed_accounts, max_accounts)
 
 
+def run_next_online_abc_item(
+    session,
+    batch_id: str,
+    *,
+    requested_by: str,
+    approved_by: str,
+    approval_ref: str,
+    runtime_release_sha: str,
+    poll_seconds: float = POLL_INTERVAL_SECONDS,
+    sleeper: Callable[[float], None] = time.sleep,
+) -> dict:
+    approval = _approval(requested_by, approved_by, approval_ref)
+    batch = _batch(session, batch_id)
+    _require_batch_contract(batch, approval, runtime_release_sha)
+    if batch.selection_mode != "all_online_accounts" or batch.status != "sweeping":
+        raise AuthorizationDrError("online_abc_sweep_not_running", "Durable sweep is not active")
+    command = start_next_online_abc_item(
+        session, batch_id, actor=approval.approved_by, approval_ref=approval.approval_ref,
+    )
+    try:
+        _run_current_item(session, batch_id, command, approval, poll_seconds, sleeper)
+    except Exception as exc:
+        view = _stop_after_error(session, batch_id, approval, exc)
+        return {**view, "processed_account_id": command["account_id"], "item_terminal": False}
+    sync_online_abc_batch(
+        session, batch_id, actor=approval.approved_by, approval_ref=approval.approval_ref,
+    )
+    view = online_abc_runner_status(session, batch_id)
+    return {**view, "processed_account_id": command["account_id"], "item_terminal": True}
+
+
 def resume_online_abc_batch(
     session,
     batch_id: str,
@@ -200,7 +236,7 @@ def _run_current_item(session, batch_id, command, approval, poll_seconds, sleepe
     require_slot_ready(item.standby_2_plan, operations["c"], "online_abc_runner_c_incomplete")
     if _e4_requires_creation(operations["e4"], item):
         _create_e4(session, batch, item, approval, poll_seconds, sleeper)
-    _require_current_e4(_context(session, batch_id)[2]["e4"], item)
+    _require_current_e4(session, _context(session, batch_id)[2]["e4"], item)
 
 
 def _prepare_primary_and_b(
@@ -802,10 +838,18 @@ def _require_succeeded(operation, code: str) -> None:
         raise AuthorizationDrError(code, f"Operation is {status}")
 
 
-def _require_current_e4(operation, item) -> None:
+def _require_current_e4(session, operation, item) -> None:
     _require_succeeded(operation, "online_abc_runner_e4_incomplete")
     if operation.expected_current_authorization_id != item.primary_authorization_id:
         raise AuthorizationDrError("online_abc_runner_e4_incomplete", "E4 is bound to an old A")
+    detail = session.scalar(select(AuditLog.detail).where(
+        AuditLog.target_type == "tg_authorization_dr_operation",
+        AuditLog.target_id == operation.id,
+        AuditLog.action == "完成 ABC canary E4",
+    ).order_by(AuditLog.id.desc()).limit(1)) or ""
+    match = re.search(r"(?:^|; )primary_saved_message_id=([^;\s]+)", detail)
+    if not match:
+        raise AuthorizationDrError("online_abc_runner_e4_incomplete", "Saved Messages remote ID is missing")
 
 
 def _e4_requires_creation(operation, item) -> bool:
@@ -839,4 +883,7 @@ def _empty_operations() -> dict:
     return {"b": None, "c": None, "e4": None}
 
 
-__all__ = ["online_abc_runner_status", "resume_online_abc_batch", "run_online_abc_batch"]
+__all__ = [
+    "online_abc_runner_status", "resume_online_abc_batch", "run_next_online_abc_item",
+    "run_online_abc_batch",
+]

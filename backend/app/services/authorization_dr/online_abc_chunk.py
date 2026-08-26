@@ -23,7 +23,7 @@ from .online_abc_primary import manual_primary_unchanged
 MAX_CHUNK_ACCOUNTS = 30
 CHUNK_PAUSE_ACTION = "ABC runner chunk 边界停批"
 CHUNK_RESUME_ACTION = "恢复 ABC runner chunk 边界"
-QUIESCENT_ITEM_STATUSES = {"manual_required", "pending", "succeeded"}
+QUIESCENT_ITEM_STATUSES = {"deferred_reconcile", "manual_required", "pending", "succeeded"}
 
 
 def require_chunk_size(max_accounts: int) -> None:
@@ -121,7 +121,7 @@ def _require_quiescent_boundary(session, batch) -> Counter:
 
 def _require_manual_primary_unchanged(session, items) -> None:
     for item in items:
-        if item.status != "manual_required":
+        if item.status not in {"manual_required", "deferred_reconcile"}:
             continue
         account = session.get(TgAccount, item.account_id)
         primary = session.get(TgAccountAuthorization, item.primary_authorization_id)
@@ -171,7 +171,8 @@ def _audit_chunk(
             f"approval_ref={approval_ref}; execution_release="
             f"{batch.execution_release_sha or batch.deployed_release_sha}; "
             f"processed_count={processed_count}; succeeded={counts['succeeded']}; "
-            f"manual_required={counts['manual_required']}; pending={counts['pending']}"
+            f"manual_required={counts['manual_required']}; "
+            f"deferred_reconcile={counts['deferred_reconcile']}; pending={counts['pending']}"
         ),
     )
 

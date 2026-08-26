@@ -194,6 +194,7 @@ PY
 backend_status="$(docker inspect tgyunying-backend --format '{{.State.Status}}' 2>/dev/null || true)"
 backend_health="$(docker inspect tgyunying-backend --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' 2>/dev/null || true)"
 worker_containers=(
+  tgyunying-worker-authorization-abc-sweep
   tgyunying-worker-planner
   tgyunying-worker-ai-generation
   tgyunying-worker-ai-generation-2
