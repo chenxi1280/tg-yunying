@@ -147,7 +147,7 @@ services:
     container_name: tgyunying-worker-authorization-abc-sweep
     logging: *default-logging
     restart: unless-stopped
-    command: ["python", "scripts/authorization_online_abc_sweep.py", "--mode", "worker", "--worker-interval-seconds", "2.0"]
+    command: ["python", "scripts/authorization_online_abc_supervisor.py", "--worker-interval-seconds", "2.0"]
     environment:
       <<: *backend-env
       WORKER_ROLE: authorization-abc-sweep

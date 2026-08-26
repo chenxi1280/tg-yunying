@@ -289,7 +289,7 @@ def test_production_deploy_manages_single_durable_sweep_worker() -> None:
 
     assert "  worker-authorization-abc-sweep:" in compose
     assert "container_name: tgyunying-worker-authorization-abc-sweep" in compose
-    assert '"--mode", "worker"' in compose
+    assert "scripts/authorization_online_abc_supervisor.py" in compose
     assert "  worker-authorization-abc-sweep" in compose_up
     assert "  tgyunying-worker-authorization-abc-sweep" in check_web
 

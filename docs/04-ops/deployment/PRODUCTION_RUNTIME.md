@@ -39,6 +39,8 @@ bash deploy/authorization-online-abc-pending-plan-rebase.sh --mode apply --batch
 
 该 apply 只更新目标 item 的 B route、B/C plan 和 item version，并写单一批次审计；不改 batch 状态/version、A、C source、slot result、operation 或 Session，也不连接 Telegram、不自动恢复 runner。target set/数量/version/fingerprint 任一漂移时整批零写入；apply 后先只读核对 audit、目标 item diff、batch 仍 stopped、runtime off、unknown=0，再按独立 release/runner 门禁继续。
 
+首轮 one-shot 完成后的 `deferred_reconcile` 二阶段使用 `deploy/authorization-online-abc-deferred-recovery.sh`。`manifest` 只读输出 canonical hash 和脱敏分组；`preview/apply` 必须携带 `--expected-deferred-count`、原 batch 审批、唯一 idempotency key、fingerprint 与 `--until-exhausted`。apply 只写 start audit 并把 batch 置为 `deferred_recovery`；compose 管理的 `worker-authorization-abc-sweep` 现在运行 `authorization_online_abc_supervisor.py`，首轮 sweep 空闲后自动逐项重判 deferred。该流程不处理既有 `manual_required`、不调用 Telegram、不重登/发码；仍 unknown 的 item 保留 `deferred_reconcile`。
+
 单账号 B/C 完成后使用 `deploy/authorization-abc-backup.sh --mode verify-preview` 冻结 E4 fingerprint，再以独立 idempotency key 和异人审批执行 `--mode verify-apply`。该入口先持久化 operation，再让 A 向 Saved Messages 只发送一次；成功后读回 A/B Telegram 身份、C 双副本/restore probe、runtime off 和 MY active client=0，并把 remote message ID 写入审计。发送结果不明进入 `reconcile_unknown`，相同 key 只能返回原 operation，禁止重发。
 
 B/C challenge 的 Telegram 服务消息时间按固定 3 秒 clock-skew/秒精度容差绑定；容差窗内必须恰好一条符合消息，否则 fail closed。旧 operation 因验证码过期终态失败后不得复用 idempotency key 或 flow；只有完成根因修复、重新 preview 并获得新批准，才可用新 key 发起一次新 challenge。

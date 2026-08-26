@@ -1,6 +1,7 @@
 # 项目结构索引
 
 > **2026-08-26 ABC one-shot durable full sweep：** `authorization_dr/online_abc_sweep.py` 与 `authorization_online_abc_sweep.py` 提供唯一 full frozen-N `--mode sweep --until-exhausted` 入口；`checkpoint_interval=30` 只写持久审计/守恒检查点，supervisor 自动继续全部 pending 到 0，不接受 `--max-accounts` 作为 full sweep 上限。统一异常队列负责 deterministic failure 与 unknown quarantine，A/B/C/E4 真实业务证据门禁不变。
+> **2026-08-26 ABC deferred recovery second phase：** `authorization_dr/online_abc_deferred_manifest.py`、`online_abc_deferred_recovery.py`、`authorization_online_abc_deferred_recovery.py` 与 `authorization_online_abc_supervisor.py` 提供首轮后 deferred 子集重判入口。生产仍使用 `worker-authorization-abc-sweep` 容器名，但命令改为 supervisor，先跑首轮 sweep，空闲时自动跑二阶段 recovery。该入口只消费 `deferred_reconcile`，不触碰既有 `manual_required`，不重放 Telegram。
 
 > **2026-08-26 ABC one-shot 初始 release 绑定：** `online_abc_sweep.preview/apply_online_abc_sweep_start` 在 stopped 且无既有 one-shot start 审计的 full batch 上，把旧 `execution_release_sha` 与当前 runtime SHA 纳入同一 fingerprint/CAS；apply 先收口当前异常 checkpoint，再写 release 变化和 start 审计，禁止把该路径扩展为 legacy runner resume 或 Telegram mutation。
 
