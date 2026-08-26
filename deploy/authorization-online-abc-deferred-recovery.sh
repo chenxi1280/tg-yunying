@@ -5,7 +5,7 @@ set -euo pipefail
 CONTAINER_NAME="${TGYUNYING_BACKEND_CONTAINER:-tgyunying-backend}"
 
 if [[ $# -eq 0 ]]; then
-  echo "Usage: $0 --mode manifest|preview|apply|readback|status --batch-id ID [approval arguments]" >&2
+  echo "Usage: $0 --mode manifest|preview|apply|pause|readback|status --batch-id ID [approval arguments]" >&2
   exit 2
 fi
 
