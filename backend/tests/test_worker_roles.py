@@ -194,7 +194,7 @@ def test_worker_role_loader_targets_exist():
         for value in vars(worker_role_loaders).values()
         if callable(value) and getattr(value, "target_module", "")
     ]
-    assert len(loaders) == 28
+    assert len(loaders) == 29
     for loader in loaders:
         module = __import__(loader.target_module, fromlist=[loader.target_function])
         assert callable(getattr(module, loader.target_function))

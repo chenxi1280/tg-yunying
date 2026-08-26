@@ -94,7 +94,8 @@ def test_production_images_isolate_native_ocr_dependencies():
     for package in ("libgl1", "libglib2.0-0"):
         assert package not in dockerfile
         assert package in ocr_dockerfile
-    assert "[image-verification-worker]" in ocr_dockerfile
+    assert "install_project_dependencies.py" in ocr_dockerfile
+    assert "--extra image-verification-worker" in ocr_dockerfile
     assert "Dockerfile.image-verification-worker" in workflow
     # Grok CLI is optional fallback only; deploy must not fail closed on CLI preflight.
     assert "Preflight production Grok CLI" not in workflow
