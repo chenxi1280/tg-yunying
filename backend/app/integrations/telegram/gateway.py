@@ -51,7 +51,7 @@ from .search_join import (
     probe_search_join_membership_with_client,
 )
 from .search_rank_deboost import execute_rank_deboost_with_client, search_rank_deboost_candidates_with_client
-from app.timezone import BEIJING_TZ
+from app.timezone import BEIJING_TZ, as_beijing
 
 _resolve_telethon_target = resolve_telethon_target
 
@@ -907,10 +907,15 @@ class TelethonTelegramGateway(TelegramGateway):
         except Exception as exc:  # noqa: BLE001 - operator-facing security detail.
             mapped = self._map_send_error(exc)
             return AccountSecurityOperationResult(False, "unknown", mapped.failure_type or FailureType.UNKNOWN.value, mapped.detail or str(exc))
+        reset_date = getattr(password, "pending_reset_date", None)
         status = "enabled" if getattr(password, "has_password", False) or getattr(password, "current_algo", None) else "missing"
+        next_retry_at = None
+        if reset_date:
+            status = "reset_waiting"
+            next_retry_at = as_beijing(reset_date)
         if getattr(password, "email_unconfirmed_pattern", None):
             status = "email_confirmation_required"
-        return AccountSecurityOperationResult(True, status, detail=status)
+        return AccountSecurityOperationResult(True, status, detail=status, next_retry_at=next_retry_at)
 
     def get_two_fa_status(
         self,
@@ -986,6 +991,66 @@ class TelethonTelegramGateway(TelegramGateway):
                 self._usable_credentials(credentials),
                 hint=hint,
                 current_password=current_password,
+            )
+        )
+
+    async def _reset_two_fa_password_async(
+        self,
+        session_ciphertext: str | None,
+        credentials: DeveloperAppCredentials,
+    ) -> AccountSecurityOperationResult:
+        try:
+            client = await self._authorized_client(
+                session_ciphertext,
+                credentials,
+                error_message="账号没有可用 session",
+            )
+        except Exception as exc:  # noqa: BLE001 - surface connection failures.
+            mapped = self._map_send_error(exc)
+            return AccountSecurityOperationResult(
+                False,
+                "failed",
+                mapped.failure_type or FailureType.ACCOUNT_UNAVAILABLE.value,
+                mapped.detail or _exception_detail(exc),
+                remote_mutation_started=False,
+            )
+        from telethon import functions, types
+
+        try:
+            result = await client(functions.account.ResetPasswordRequest())
+        except Exception as exc:  # noqa: BLE001 - reset RPC may have reached Telegram.
+            mapped = self._map_send_error(exc)
+            return AccountSecurityOperationResult(
+                False,
+                "failed",
+                mapped.failure_type or FailureType.UNKNOWN.value,
+                mapped.detail or _exception_detail(exc),
+                remote_mutation_started=True,
+            )
+        if isinstance(result, types.account.ResetPasswordOk):
+            return AccountSecurityOperationResult(
+                True,
+                "reset_completed",
+                remote_mutation_started=True,
+            )
+        retry_at = getattr(result, "until_date", None) or getattr(result, "retry_date", None)
+        next_retry_at = as_beijing(retry_at)
+        return AccountSecurityOperationResult(
+            True,
+            "reset_waiting",
+            next_retry_at=next_retry_at,
+            remote_mutation_started=isinstance(result, types.account.ResetPasswordRequestedWait),
+        )
+
+    def reset_two_fa_password(
+        self,
+        session_ciphertext: str | None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> AccountSecurityOperationResult:
+        return self._run(
+            self._reset_two_fa_password_async(
+                session_ciphertext,
+                self._usable_credentials(credentials),
             )
         )
 

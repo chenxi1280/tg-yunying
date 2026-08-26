@@ -20,6 +20,7 @@ from app.services.account_post_login_init.profile import _profile_payload
 from app.services.account_post_login_init.reconcile import (
     execute_reconcile_stage,
     request_post_login_reconciliation,
+    request_two_fa_reset,
     submit_two_fa_candidate,
 )
 from app.services.account_post_login_init.contracts import FullInitializationClaim
@@ -320,6 +321,34 @@ def test_two_fa_candidate_reopens_original_manual_owner(session_factory) -> None
     assert result.stage == "two_fa"
     assert result.source_two_fa_kind == "operator_candidate"
     assert decrypt_secret(result.source_two_fa_password_ciphertext) == "candidate-password"
+
+
+def test_two_fa_reset_reopens_original_owner_without_candidate_secret(session_factory) -> None:
+    with session_factory() as session:
+        _, item = _new_login_item(session, "manual-reset")
+        owner = create_or_attach_full_initialization(session, item, actor="操作员")
+        owner.status = owner.stage = "manual_required"
+        owner.two_fa_status = "manual_required"
+        owner.failure_type = "two_fa_manual_required"
+        owner.source_two_fa_kind = "operator_candidate"
+        owner.source_two_fa_password_ciphertext = "encrypted-candidate"
+        expected_version = owner.version
+        session.commit()
+
+        result = request_two_fa_reset(
+            session,
+            1,
+            owner.id,
+            expected_version=expected_version,
+            actor="操作员",
+            reason="当前密码已确认无效，发起官方重置",
+        )
+
+    assert result.id == owner.id
+    assert result.status == "pending"
+    assert result.stage == "two_fa"
+    assert result.source_two_fa_kind == "telegram_reset_requested"
+    assert result.source_two_fa_password_ciphertext == ""
 
 
 def test_resumed_manual_batch_returns_to_running_until_correction(session_factory) -> None:

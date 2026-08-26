@@ -718,6 +718,26 @@ class TelegramGateway:
             remote_mutation_started=True,
         )
 
+    def reset_two_fa_password(
+        self,
+        session_ciphertext: str | None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> AccountSecurityOperationResult:
+        if not session_ciphertext:
+            return AccountSecurityOperationResult(
+                False,
+                "failed",
+                FailureType.ACCOUNT_UNAVAILABLE.value,
+                "账号没有可用 session",
+                remote_mutation_started=False,
+            )
+        return AccountSecurityOperationResult(
+            True,
+            "reset_waiting",
+            next_retry_at=beijing_now() + timedelta(days=7),
+            remote_mutation_started=True,
+        )
+
     def confirm_two_fa_email(
         self,
         session_ciphertext: str | None,

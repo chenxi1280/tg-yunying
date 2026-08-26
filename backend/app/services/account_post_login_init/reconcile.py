@@ -18,13 +18,22 @@ from app.services.developer_apps import credentials_for_account
 
 from .contracts import FullInitializationClaim
 from .parent import sync_parent_bindings
-from .two_fa import complete_two_fa_success, snapshot_proves_fixed
+from .two_fa import (
+    complete_two_fa_success,
+    continue_after_two_fa_reset,
+    record_two_fa_reset_waiting,
+    snapshot_proves_fixed,
+)
 
 
 CANDIDATE_ALLOWED_FAILURES = {
     "two_fa_current_password_unavailable",
     "two_fa_remote_confirmed_no_effect",
     "two_fa_remote_effect_unproven",
+    "two_fa_manual_required",
+}
+RESET_ALLOWED_FAILURES = {
+    "two_fa_current_password_unavailable",
     "two_fa_manual_required",
 }
 SAFE_TWO_FA_RECHECK_FAILURES = {"two_fa_source_resolution_failed"}
@@ -82,6 +91,35 @@ def submit_two_fa_candidate(
     _reopen(owner, "two_fa")
     _audit_action(
         session, owner, actor=actor, action="提交批量登录当前2FA候选", reason=reason,
+    )
+    sync_parent_bindings(session, owner)
+    session.commit()
+    return owner
+
+
+def request_two_fa_reset(
+    session,
+    tenant_id: int,
+    initialization_id: int,
+    *,
+    expected_version: int,
+    actor: str,
+    reason: str,
+):
+    owner = _locked_owner(
+        session, tenant_id, initialization_id, expected_version=expected_version,
+    )
+    allowed = owner.status == "manual_required" and owner.failure_type in RESET_ALLOWED_FAILURES
+    if not allowed:
+        raise ValueError("2FA reset is not allowed for this operation")
+    owner.source_two_fa_kind = "telegram_reset_requested"
+    owner.source_two_fa_password_ciphertext = ""
+    owner.source_secret_expires_at = None
+    owner.two_fa_status = "pending"
+    owner.two_fa_call_state = "none"
+    _reopen(owner, "two_fa")
+    _audit_action(
+        session, owner, actor=actor, action="请求批量登录2FA重置", reason=reason,
     )
     sync_parent_bindings(session, owner)
     session.commit()
@@ -211,6 +249,12 @@ def _reconcile_two_fa(session, owner) -> None:
         return
     if not result.ok:
         _mark_unknown(owner, result.failure_type or result.detail or "remote_unknown")
+        return
+    if result.status == "reset_waiting" and result.next_retry_at:
+        record_two_fa_reset_waiting(session, owner, result.next_retry_at)
+        return
+    if result.status == "missing" and owner.source_two_fa_kind == "telegram_reset_requested":
+        continue_after_two_fa_reset(session, owner)
         return
     if result.status == "enabled" and snapshot_proves_fixed(session, account, owner):
         snapshot = _snapshot(session, account.id)
@@ -379,5 +423,6 @@ __all__ = [
     "confirm_two_fa_email",
     "execute_reconcile_stage",
     "request_post_login_reconciliation",
+    "request_two_fa_reset",
     "submit_two_fa_candidate",
 ]

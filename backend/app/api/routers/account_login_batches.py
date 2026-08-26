@@ -61,6 +61,7 @@ from app.services.account_post_login_init.reconcile import (
     assume_execution_owner,
     confirm_two_fa_email,
     request_post_login_reconciliation,
+    request_two_fa_reset,
     submit_two_fa_candidate,
 )
 
@@ -249,6 +250,26 @@ def post_post_login_two_fa_candidate(
         initialization_id=initialization_id,
         payload=payload,
         candidate_password=payload.candidate_password,
+    )
+
+
+@router.post(
+    "/api/tg-accounts/post-login-initializations/{initialization_id}/two-fa-reset",
+    response_model=LoginBatchPostInitializationOut,
+)
+def post_post_login_two_fa_reset(
+    initialization_id: int,
+    payload: PostLoginInitializationActionRequest,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    ensure_permission(current_user, "accounts.security.credential_manage")
+    return _post_init_action(
+        session,
+        current_user,
+        action=request_two_fa_reset,
+        initialization_id=initialization_id,
+        payload=payload,
     )
 
 

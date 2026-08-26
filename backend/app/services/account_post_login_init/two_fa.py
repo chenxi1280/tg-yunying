@@ -53,6 +53,13 @@ def execute_two_fa_stage(
         return
     if inputs is None:
         return
+    if status == "reset_requested":
+        _execute_reset(session_factory, claim, inputs)
+        return
+    _execute_password_update(session_factory, claim, inputs)
+
+
+def _execute_password_update(session_factory, claim, inputs: TwoFaInputs) -> None:
     _mark_call_started(session_factory, claim)
     try:
         result = gateway.set_two_fa_password(
@@ -98,6 +105,10 @@ def _resolve_inputs(session_factory, claim, code_client):
             _mark_manual(owner, "two_fa_email_confirmation_required", remote.detail)
             session.commit()
             return "manual_required", None
+        if owner.source_two_fa_kind == "telegram_reset_requested":
+            reset = _resolve_reset_status(session, owner, account, credentials, remote)
+            if reset:
+                return reset
         current = _current_password(
             session,
             owner,
@@ -119,6 +130,86 @@ def _resolve_inputs(session_factory, claim, code_client):
             fixed,
             current,
         )
+
+
+def _resolve_reset_status(session, owner, account, credentials, remote):
+    if remote.status == "reset_waiting" and remote.next_retry_at > _now():
+        record_two_fa_reset_waiting(session, owner, remote.next_retry_at)
+        session.commit()
+        return "reset_waiting", None
+    if remote.status not in {"enabled", "reset_waiting"}:
+        return None
+    fixed = tenant_fixed_two_fa_password(session, tenant_id=owner.tenant_id)
+    if not fixed:
+        raise RuntimeError("tenant fixed 2FA unavailable")
+    return "reset_requested", TwoFaInputs(
+        account.id,
+        account.session_ciphertext or "",
+        credentials,
+        fixed,
+        None,
+    )
+
+
+def _execute_reset(session_factory, claim, inputs: TwoFaInputs) -> None:
+    _mark_call_started(session_factory, claim)
+    try:
+        result = gateway.reset_two_fa_password(
+            inputs.session_ciphertext,
+            credentials=inputs.credentials,
+        )
+    except Exception as exc:
+        _finish_unknown(session_factory, claim, exc)
+        return
+    _finish_reset_result(session_factory, claim, result)
+
+
+def _finish_reset_result(session_factory, claim, result) -> None:
+    if not result.ok:
+        if result.remote_mutation_started is False:
+            _finish_result_failure(session_factory, claim, result)
+        else:
+            _finish_result_unknown(session_factory, claim, result)
+        return
+    with session_factory() as session:
+        owner = _load_claim(session, claim)
+        if result.status == "reset_waiting" and result.next_retry_at:
+            record_two_fa_reset_waiting(session, owner, result.next_retry_at)
+        elif result.status == "reset_completed":
+            continue_after_two_fa_reset(session, owner)
+        else:
+            raise RuntimeError("Telegram returned unsupported 2FA reset result")
+        session.commit()
+
+
+def record_two_fa_reset_waiting(session, owner, next_retry_at) -> None:
+    owner.source_two_fa_kind = "telegram_reset_requested"
+    owner.status = "pending"
+    owner.stage = "two_fa"
+    owner.two_fa_status = "reset_waiting"
+    owner.two_fa_call_state = "confirmed"
+    owner.failure_type = ""
+    owner.failure_detail = ""
+    owner.next_retry_at = next_retry_at
+    owner.finished_at = None
+    owner.lease_token = ""
+    owner.lease_expires_at = None
+    owner.version += 1
+
+
+def continue_after_two_fa_reset(session, owner) -> None:
+    owner.source_two_fa_kind = "telegram_reset_completed"
+    owner.status = "pending"
+    owner.stage = "two_fa"
+    owner.two_fa_status = "pending"
+    owner.two_fa_call_state = "none"
+    owner.failure_type = ""
+    owner.failure_detail = ""
+    owner.next_retry_at = _now()
+    owner.finished_at = None
+    owner.lease_token = ""
+    owner.lease_expires_at = None
+    owner.version += 1
 
 
 def _current_password(session, owner, *, account, remote_status: str, code_client):

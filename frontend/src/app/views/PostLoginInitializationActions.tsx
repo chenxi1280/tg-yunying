@@ -3,7 +3,7 @@ import { Button, Input, Modal, Space } from 'antd';
 import { api } from '../../shared/api/client';
 import type { AccountPostLoginInitialization } from '../types';
 
-type ActionKind = 'reconcile' | 'candidate' | 'email' | 'assume';
+type ActionKind = 'reconcile' | 'candidate' | 'reset' | 'email' | 'assume';
 
 interface Props {
   detail: AccountPostLoginInitialization;
@@ -57,6 +57,7 @@ export function PostLoginInitializationActions(props: Props) {
         onOk={() => void submit()}
         onCancel={() => { setAction(null); setReason(''); setValue(''); }}
       >
+        {action === 'reset' && <div>Telegram 会发送系统通知，并进入约 7 天可撤销等待期；到期后平台将在同一任务上继续设置固定 2FA。</div>}
         {action === 'candidate' && <Input.Password value={value} onChange={(event) => setValue(event.target.value)} placeholder="当前 2FA 候选密码" autoComplete="new-password" />}
         {action === 'email' && <Input value={value} onChange={(event) => setValue(event.target.value)} placeholder="Telegram 恢复邮箱验证码" autoComplete="one-time-code" />}
         <Input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="操作原因（必填）" style={{ marginTop: 12 }} />
@@ -72,6 +73,7 @@ function availableActions(detail: AccountPostLoginInitialization, canManage: boo
     label: detail.status === 'reconcile_unknown' ? '对账原操作' : '重新检查后置阶段',
   });
   if (canManageTwoFa && candidateAllowed(detail)) actions.push({ kind: 'candidate', label: '提交当前 2FA' });
+  if (canManageTwoFa && resetAllowed(detail)) actions.push({ kind: 'reset', label: '发起 2FA 重置（7天）' });
   if (canManageTwoFa && detail.failure_type.includes('email')) actions.push({ kind: 'email', label: '确认恢复邮箱' });
   if (canManage && ['manual_required', 'reconcile_unknown', 'waiting_abc_approval'].includes(detail.status)) actions.push({ kind: 'assume', label: '接管执行' });
   return actions;
@@ -94,10 +96,18 @@ function candidateAllowed(detail: AccountPostLoginInitialization) {
   ].includes(detail.failure_type);
 }
 
+function resetAllowed(detail: AccountPostLoginInitialization) {
+  return detail.status === 'manual_required' && [
+    'two_fa_current_password_unavailable',
+    'two_fa_manual_required',
+  ].includes(detail.failure_type);
+}
+
 function actionPath(id: number, action: ActionKind) {
   const suffix = {
     reconcile: 'reconcile',
     candidate: 'two-fa-current-candidate',
+    reset: 'two-fa-reset',
     email: 'two-fa-email-confirmation',
     assume: 'assume-execution-owner',
   }[action];
@@ -112,7 +122,7 @@ function actionPayload(detail: AccountPostLoginInitialization, action: ActionKin
 }
 
 function actionLabel(action: ActionKind) {
-  return { reconcile: '对账原远端操作', candidate: '提交当前 2FA 候选', email: '确认 2FA 恢复邮箱', assume: '接管后置初始化' }[action];
+  return { reconcile: '对账原远端操作', candidate: '提交当前 2FA 候选', reset: '发起 Telegram 2FA 重置', email: '确认 2FA 恢复邮箱', assume: '接管后置初始化' }[action];
 }
 
 function needsValue(action: ActionKind | null) {
