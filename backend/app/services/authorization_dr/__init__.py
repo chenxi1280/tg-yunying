@@ -23,6 +23,8 @@ from .online_abc_post_bundle_interrupt import *  # noqa: F401,F403
 from .online_abc_rollout import *  # noqa: F401,F403
 from .online_abc_release_rebind import *  # noqa: F401,F403
 from .online_abc_completed_checkpoint_pause import *  # noqa: F401,F403
+from .online_abc_deferred_manifest import *  # noqa: F401,F403
+from .online_abc_deferred_recovery import *  # noqa: F401,F403
 from .online_abc_exception_queue import *  # noqa: F401,F403
 from .online_abc_sweep import *  # noqa: F401,F403
 from .online_abc_pending_plan_rebase import *  # noqa: F401,F403

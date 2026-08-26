@@ -1,6 +1,7 @@
 # TG 运营管理平台 PRD
 
 > **2026-08-26 当前合同覆盖以下历史口径：** frozen-N 全量批次创建后，只允许一次外部 `--mode sweep --until-exhausted` start/apply；full sweep 不接受 `--max-accounts`，同一 durable supervisor 必须逐账号串行处理全部 remaining pending 到 `pending=0`。`checkpoint_interval=30` 只用于持久审计、守恒和安全门禁复核，完成后自动继续第 31 项及以后，不等待人工续跑。确定性失败统一进入 `manual_required/deferred_issue` 异常队列并继续；SSH/远端 unknown 先对账同一 operation，仍未知且 runner=0、client=0、runtime=off、A current/Session/generation/身份无漂移、同一 operation 不可重放时才 quarantine 为 `deferred_reconcile`。A 漂移、A/B 双失效、2FA、验证码、C 制品/恢复异常都入统一队列，不修改 A、不以 C 在线顶替。只有 A 无漂移、B/SV、C/MY、双副本、restore probe、Saved Messages remote ID 和断连门禁全部通过才计 `succeeded`；首轮必须输出 succeeded、manual_required、deferred_reconcile/unresolved 与 N 守恒，只有 succeeded 全部完成才算 ABC 完成。
+> **2026-08-26 第二阶段 deferred recovery：** 首轮 `pending=0` 后，只允许对同一 frozen batch 的 `deferred_reconcile` 子集发起一次外部 `--mode apply --until-exhausted`。启动前生成只读 canonical manifest，冻结 item/account/operation/flow/candidate/stage、A 冻结事实、B/C/E4、runtime/release 与版本，并只对外输出脱敏分组和 manifest hash。二阶段 worker 不处理既有 `manual_required`，不重放 Telegram、不重登、不发码；已由持久事实证明 B/C/E4 和 Saved Messages 远端 ID 全部完成的 item 可 checkpoint-forward 为 `succeeded`，明确终态失败可转 `manual_required`，仍 remote unknown 的 item 只写二阶段重判审计并保留 `deferred_reconcile`。
 
 > **当前 one-shot release gate：** 历史 stopped frozen batch 只有在尚无 one-shot start 审计时，才可由同一次 sweep `preview/apply` 以 fingerprint/CAS 绑定当前 execution release；该控制面绑定不重放 Telegram、不改 A/B/C，不是 `--max-accounts` 续跑或 legacy resume。运行中/暂停、已有 start 或任何并发/安全事实漂移都必须零写入暂停。
 
