@@ -1,5 +1,7 @@
 # 项目结构索引
 
+> **2026-08-26 ABC B pre-challenge Timeout unknown：** `authorization_dr/online_abc_release_interrupted_state.py` 从既有 service 拆出 batch/item/B operation/flow/global 静止边界，并把 `release_changed_running` 与 `stopped_b_prechallenge_unknown` 作为互斥状态；后者精确接受原 B `TimeoutError + effect + no challenge/flow/code/candidate/artifact/stage` 的唯一 unknown。`online_abc_release_interrupted.py` 复用原 CLI/wrapper，按 boundary 生成兼容的 release-interrupted 或新的 `b_pre_challenge_remote_unproven` classification/blocker，并做 DB-only fingerprint/异人 CAS/manual 投影。回归位于原 `test_authorization_online_abc_release_interrupted.py` 与新增 `test_authorization_online_abc_b_preflow_unknown.py`。
+
 > **2026-08-25 ABC max-30 chunk：** `authorization_dr/online_abc_chunk.py` 将正式 full frozen-N runner 上限提升为 30，`authorization_online_abc_runner.py` 默认值与 SSH wrapper usage 同步为 30；runner 仍逐账号串行、首错停批，非尾 chunk 审计必须 `processed_count=30`，31 及以上在领取 item 前拒绝。专项回归位于 `test_authorization_online_abc_chunk_size.py`。
 
 > **2026-08-25 ABC quiescent chunk release-rebind：** authorization_dr/online_abc_release_rebind.py 允许最新同审批的正式“ABC runner chunk 边界停批”审计作为发布重绑边界，前提是审计中的旧 execution release 与 succeeded/manual/pending 计数和当前批次完全一致；既有 mid-chunk pause 路径保持不变。preview/fingerprint/apply 仍只写 batch execution release/status/version 与审计，全部 A/B/C 与 Telegram 事实不变，回归位于 test_authorization_online_abc_release_rebind.py。

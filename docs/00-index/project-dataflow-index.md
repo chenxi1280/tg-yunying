@@ -1,5 +1,7 @@
 # 项目数据流转索引
 
+> **2026-08-26 DF-344 B pre-challenge Timeout unknown 收口：** `runner B effect persisted -> Telegram start-login TimeoutError before challenge/flow/code/candidate -> batch stopped + same operation reconcile_unknown/unknown -> runner0/runtime off/sole unknown+sensitive/MY0/A frozen -> release-interrupted preview fingerprint -> different-actor CAS -> b_pre_challenge_remote_unproven reconcile case -> same B manual_required/reconciled_hold + B/C/item manual debt -> next pending`。若 effect 后存在 flow，只允许一条无任何远端或授权事实的空 intent 并在 apply 时绑定、supersede；任一 challenge/code/temp Session/candidate/bundle/stage/第二 flow 或 A 漂移零写入拒绝。整个路径不连接 Telegram，不重放登录，不把未知结果写成 confirmed-no-effect。
+
 > **2026-08-25 DF-342 frozen-N max-30 chunk：** `quiescent approved batch -> runner run --max-accounts 30 -> 逐账号 A probe/B/SV/C/MY/E4 串行闭环 -> 每项 A 无漂移与双副本/restore probe/remote ID 持久化 -> 满 30 项原子 chunk pause`。非尾 chunk 必须精确 30，尾批才可 1–29；任何首错在原 item/operation 停批且后续 RPC 为 0，不能拆成三次 10 后合并口径。发布漂移继续先停批、读回、release-rebind，参数超过 30 在领取 item 前失败。
 
 > **2026-08-25 DF-342 quiescent chunk 发布重绑：** max-30 completed -> latest chunk-boundary audit + batch stopped -> external release changes -> preview freezes approval/old release/audit action+id/exact item counts and revalidates A/completed operations/global quiescence -> fingerprint/different-actor CAS -> execution release rebind -> next max-30。不创建 mid-chunk 假故障，不调用 Telegram，不修改任何 authorization/Session/operation/slot/bundle。
