@@ -555,6 +555,7 @@ code-source凭据过期或binding漂移时停在 `two_fa_candidate_refresh_requi
 - exact-two 原 owner 已证明：租户固定密码作为 current candidate 被 Telegram 在 mutation 前明确拒绝；两个账号均无恢复邮箱、无 hint、无既有 reset 等待期，历史接码页也不可恢复。此时不能伪造 fixed evidence，也不能继续猜测密码。
 - 唯一允许的自动恢复是 Telegram 已登录 Session 的官方 password reset：操作员必须在原 `manual_required` owner 上显式请求；平台持久化审计、原 owner、reset request call fence 与 Telegram 返回的 `until_date/retry_date`，不得自动扫描历史账号发起 reset。
 - Telegram 首次 reset 返回等待期时，owner 保持 `two_fa/reset_waiting` 且父批次回到 running/waiting；`next_retry_at` 到期前 worker 零 Telegram 调用。系统消息侧可撤销 reset；撤销或服务端延长等待时按新的 retry date 续接，不新建 owner。
+- terminal manual/unknown owner 被同一专项操作重新打开后，父 item 必须从仅由后置初始化投影出的 `failed/unresolved` 恢复为 `post_initialization_waiting`，清除对应后置失败投影并重新计数；不得出现父批次同时 `running + waiting` 又保留同一条目的 `failed_count`。登录、目标分组等独立失败仍原样保留，不得借后置恢复擦除。
 - 到期后同一 owner 再次调用 reset；只有 Telegram 返回 `resetPasswordOk` 或权威读回 2FA missing 才进入“设置租户固定密码”，然后继续 profile 与 ABC。reset RPC 或本地提交 unknown 必须先用 `account.getPassword.pending_reset_date` 对账，禁止直接重放。
 - API/UI 仅在 `two_fa_current_password_unavailable/two_fa_manual_required` 暴露“发起 2FA 重置（7天）”，要求 `accounts.security.credential_manage`、expected version 与原因，并明确显示系统通知、等待期及可撤销影响；不得回显密码、Session、邮箱或账号标识。
 - 验收：首次请求只产生一个远端 reset 与确定等待时间；等待期零调用；到期 `resetPasswordOk -> 2FA missing -> fixed password set -> fixed evidence`；进程崩溃/超时可由读回收口；父 item/batch 在等待、完成和失败状态下计数守恒；exact-two 必须继续原 owner/batch，最终再做资料和 ABC E4。

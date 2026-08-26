@@ -42,6 +42,8 @@ def sync_parent_bindings(
         previous_post_init = item.post_initialization_status
         item.post_initialization_status = owner.status
         batch_ids.add(item.batch_id)
+        if _should_reopen_item(item, owner):
+            _reopen_item(session, item)
         if item.status != "post_initialization_waiting":
             can_correct = bool(
                 item.post_initialization_failure_type
@@ -54,6 +56,33 @@ def sync_parent_bindings(
             continue
         _project_item_terminal(session, item, owner)
     _recount_or_finalize_batches(session, batch_ids, corrections)
+
+
+def _should_reopen_item(item, owner) -> bool:
+    post_failure = item.post_initialization_failure_type
+    return bool(
+        owner.status not in CORRECTABLE_TERMINAL_OWNER_STATUSES
+        and item.status in {"failed", "unresolved"}
+        and post_failure
+        and item.failure_type == post_failure
+    )
+
+
+def _reopen_item(session: Session, item) -> None:
+    item.status = "post_initialization_waiting"
+    item.phase = "post_initialization_waiting"
+    item.failure_type = ""
+    item.failure_detail = ""
+    item.post_initialization_failure_type = ""
+    item.finished_at = None
+    item.next_retry_at = None
+    item.state_version += 1
+    attempt = session.get(TgAccountLoginBatchAttempt, item.current_attempt_id)
+    if attempt and attempt.execution_generation == item.execution_generation:
+        attempt.phase = "post_initialization_waiting"
+        attempt.lease_token = ""
+        attempt.lease_expires_at = None
+        attempt.state_version += 1
 
 
 def _project_item_terminal(session, item, owner) -> None:

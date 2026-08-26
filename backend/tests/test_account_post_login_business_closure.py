@@ -367,6 +367,12 @@ def test_resumed_manual_batch_returns_to_running_until_correction(session_factor
 
     assert batch.status == "running"
     assert batch.post_init_waiting_count == 1
+    assert batch.failed_count == 0
+    assert batch.manual_required_count == 0
+    assert item.status == "post_initialization_waiting"
+    assert item.phase == "post_initialization_waiting"
+    assert item.failure_type == ""
+    assert item.post_initialization_failure_type == ""
 
 
 def test_terminal_manual_batch_cannot_be_relabelled_cancelled(session_factory) -> None:
