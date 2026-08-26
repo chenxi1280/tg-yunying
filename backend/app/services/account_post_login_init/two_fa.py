@@ -14,6 +14,7 @@ from app.models import (
 )
 from app.security import decrypt_secret
 from app.services._common import _now, audit, gateway
+from app.services.account_login.contracts import BatchLoginError
 from app.services.account_two_fa import MANAGED_TWO_FA_HINT, record_managed_two_fa_password
 from app.services.code_source_client import CodeSourceClient
 from app.services.developer_apps import credentials_for_account
@@ -166,7 +167,12 @@ def _code_source_candidate(session, owner, code_client: CodeSourceClient) -> str
     url = decrypt_secret(item.code_url_ciphertext)
     if not url:
         return None
-    password = code_client.fetch_login_materials(url).password_2fa
+    try:
+        password = code_client.fetch_login_materials(url).password_2fa
+    except BatchLoginError as exc:
+        if exc.code == "url_error":
+            return None
+        raise
     return password or None
 
 

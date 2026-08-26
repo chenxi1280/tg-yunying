@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 
 import pytest
 from sqlalchemy import select
@@ -14,6 +15,8 @@ from app.security import decrypt_secret, encrypt_secret
 from app.services.account_post_login_init.binding import create_or_attach_full_initialization
 from app.services.account_post_login_init.contracts import FullInitializationClaim
 from app.services.account_post_login_init.two_fa import execute_two_fa_stage
+from app.services.account_login.contracts import BatchLoginError
+from app.services._common import _now
 from tests.test_account_post_login_full_init import _new_login_item, session_factory
 
 
@@ -66,6 +69,14 @@ class _UnchangedTwoFaGateway(_EnabledTwoFaGateway):
             detail="remote mutation returned false",
             remote_mutation_started=True,
         )
+
+
+class _FailingCodeClient:
+    def __init__(self, code: str) -> None:
+        self.code = code
+
+    def fetch_login_materials(self, _url):
+        raise BatchLoginError(self.code, "code source unavailable")
 
 
 def test_two_fa_stage_sets_and_records_tenant_fixed_password(session_factory, monkeypatch) -> None:
@@ -189,6 +200,64 @@ def test_existing_two_fa_without_trusted_source_requires_manual_action(
     assert gateway.passwords == []
     assert owner.status == "manual_required"
     assert owner.failure_type == "two_fa_current_password_unavailable"
+
+
+def test_expired_code_source_allows_current_password_candidate(
+    session_factory,
+    monkeypatch,
+) -> None:
+    from app.services.account_post_login_init import two_fa
+
+    monkeypatch.setattr(two_fa, "gateway", _EnabledTwoFaGateway())
+    with session_factory() as session:
+        _, item = _new_login_item(session, "two-fa-expired-source")
+        item.credential_expires_at = _now() + timedelta(minutes=5)
+        owner = create_or_attach_full_initialization(session, item, actor="操作员")
+        owner.status = "running"
+        owner.lease_token = "expired-source-lease"
+        session.commit()
+        claim = FullInitializationClaim(owner.id, "two_fa", owner.lease_token)
+
+    execute_two_fa_stage(
+        session_factory,
+        claim,
+        code_client=_FailingCodeClient("url_error"),
+    )
+
+    with session_factory() as session:
+        owner = session.get(TgAccountFullInitialization, claim.initialization_id)
+
+    assert owner.status == "manual_required"
+    assert owner.failure_type == "two_fa_current_password_unavailable"
+
+
+def test_transient_code_source_failure_remains_recheckable(
+    session_factory,
+    monkeypatch,
+) -> None:
+    from app.services.account_post_login_init import two_fa
+
+    monkeypatch.setattr(two_fa, "gateway", _EnabledTwoFaGateway())
+    with session_factory() as session:
+        _, item = _new_login_item(session, "two-fa-source-fetch-failed")
+        item.credential_expires_at = _now() + timedelta(minutes=5)
+        owner = create_or_attach_full_initialization(session, item, actor="操作员")
+        owner.status = "running"
+        owner.lease_token = "source-fetch-failed-lease"
+        session.commit()
+        claim = FullInitializationClaim(owner.id, "two_fa", owner.lease_token)
+
+    execute_two_fa_stage(
+        session_factory,
+        claim,
+        code_client=_FailingCodeClient("url_fetch_failed"),
+    )
+
+    with session_factory() as session:
+        owner = session.get(TgAccountFullInitialization, claim.initialization_id)
+
+    assert owner.status == "failed"
+    assert owner.failure_type == "two_fa_source_resolution_failed"
 
 
 def test_unchanged_two_fa_result_is_not_recorded_as_fixed(

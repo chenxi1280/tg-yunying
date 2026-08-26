@@ -535,3 +535,10 @@ code-source凭据过期或binding漂移时停在 `two_fa_candidate_refresh_requi
 - 失败基线精确命中 `15 failed, 38 passed`；修复后新增与相邻合同 `53 passed in 6.31s`，post-login/batch-login 扩大回归 `98 passed in 10.55s`，online ABC 全组 `213 passed in 38.73s`，相邻 AI/deploy/dependency/shard/frontend permission `188 passed in 3.90s`。
 - Python compileall、相关文件/函数规模检查、`git diff --check` 和前端 `tsc + vite production build` 均通过。本地 SQLite current-metadata 迁移回归已证明本轮重复对象修复；外部 PostgreSQL blank-DB 全链仍在 `0001_initial` 超过60秒，因此仍是 Release Gate 未证明项。
 - 本轮仅完成本地实施与定向 QA；未提交、未发布、未变更生产，`release_status=not_started`、`production_status=unproven`。
+
+## 22. 2026-08-27 生产 exact-two canary 补充缺陷
+
+- 生产只读预检确认两个目标都是 `already_authorized`：A Session 可权威读取，远端 2FA 均为 enabled，但平台没有可信 current-2FA 证据，profile 与 ABC 义务也没有完成。
+- 两个历史接码页均明确返回凭据已失效。当前实现把这个确定的来源终态抛成 `two_fa_source_resolution_failed`，只能通用重检，无法进入 PRD 已定义的 current-2FA candidate 人工闭环；反复重检不会改变结果。
+- 修复口径：仅把接码平台明确的 `url_error` 分类为 `two_fa_current_password_unavailable/manual_required`，允许在原 owner 上提交短期加密候选；DNS、超时、解析合同变化等依赖故障仍保留 `two_fa_source_resolution_failed`，不得静默降级或误要求候选。
+- 验收：新增测试同时证明明确失效进入 candidate 路径、瞬时 fetch 失败仍进入安全重检路径；随后重新发布并由这两个 `already_authorized` 账号完成 fixed-2FA、姓名/头像与 ABC 全部远端读回。
