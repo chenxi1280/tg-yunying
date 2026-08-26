@@ -14,6 +14,9 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.models import (
     AccountPool,
+    DeveloperAppSlotAssignment,
+    Material,
+    Tenant,
     TgAccount,
     TgAccountLoginBatch,
     TgAccountPhoneFingerprintAlias,
@@ -23,6 +26,10 @@ from app.security import get_token_key
 from app.services._common import _now
 from app.services.dedicated_account_pools import validate_account_pool_admission
 from app.services.code_source_client import code_source_readiness
+from app.services.account_post_login_init.policy import (
+    PROFILE_POLICY_VERSION,
+    require_post_login_init_ready,
+)
 
 from .contracts import BatchLoginError, ParsedLoginLine
 from .identity import parse_login_lines, phone_fingerprints
@@ -63,6 +70,8 @@ def batch_login_capability(session: Session) -> dict[str, object]:
         "item_deadline_seconds": settings.account_batch_login_item_deadline_seconds,
         "code_wait_seconds": settings.account_batch_login_code_wait_seconds,
         "poll_interval_seconds": settings.account_batch_login_poll_interval_seconds,
+        "post_login_init_mode": settings.account_post_login_init_mode,
+        "post_login_init_worker_concurrency": settings.account_post_login_init_worker_concurrency,
         "readiness": settings.account_batch_login_mode != "off" and not blockers,
         "blockers": blockers,
     }
@@ -128,14 +137,44 @@ def precheck_login_batch(session: Session, tenant_id: int, user_id: int, lines_t
 def build_preview(session: Session, tenant_id: int, lines_text: str, pool_id: int) -> PreviewBuild:
     settings = get_settings()
     pool = _require_pool(session, tenant_id, pool_id)
+    require_post_login_init_ready(session, tenant_id, pool)
     lines = parse_login_lines(lines_text, max_lines=settings.account_batch_login_max_lines)
     items = tuple(_preview_item(session, tenant_id, line, pool_id) for line in lines)
+    _require_unique_resolved_accounts(items)
+    _require_account_policy_eligibility(session, pool, items)
     fingerprint = _preview_fingerprint(pool_id, lines)
-    state_digest = _state_digest(pool, items)
+    state_digest = _state_digest(session, pool, items)
     queue_position = int(session.scalar(select(func.count(TgAccountLoginBatch.id)).where(
         TgAccountLoginBatch.status.in_(ACTIVE_BATCH_STATUSES),
     )) or 0) + 1
     return PreviewBuild(pool_id, fingerprint, state_digest, queue_position, items)
+
+
+def _require_unique_resolved_accounts(items: tuple[PreviewItem, ...]) -> None:
+    account_ids = [item.output.account_id for item in items if item.output.account_id]
+    if len(account_ids) != len(set(account_ids)):
+        raise BatchLoginError(
+            "duplicate_account_in_batch",
+            "同一账号不能在同一批次重复出现",
+        )
+
+
+def _require_account_policy_eligibility(
+    session: Session,
+    pool: AccountPool,
+    items: tuple[PreviewItem, ...],
+) -> None:
+    if pool.pool_purpose != "normal":
+        return
+    account_ids = [item.output.account_id for item in items if item.output.account_id]
+    if not account_ids:
+        return
+    accounts = session.scalars(select(TgAccount).where(TgAccount.id.in_(account_ids)))
+    if any(account.account_identity != "normal" for account in accounts):
+        raise BatchLoginError(
+            "account_identity_ineligible",
+            "专用用途账号不能进入普通账号完整初始化批次",
+        )
 
 
 def _require_code_source_readiness(build: PreviewBuild) -> None:
@@ -225,15 +264,47 @@ def _preview_fingerprint(pool_id: int, lines: list[ParsedLoginLine]) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
-def _state_digest(pool: AccountPool, items: tuple[PreviewItem, ...]) -> str:
+def _state_digest(session: Session, pool: AccountPool, items: tuple[PreviewItem, ...]) -> str:
+    tenant = session.get(Tenant, pool.tenant_id)
     state = {
         "pool": [pool.id, pool.is_enabled, pool.updated_at.isoformat() if pool.updated_at else ""],
+        "post_init": [
+            get_settings().account_post_login_init_mode,
+            tenant.fixed_two_fa_password_version if tenant else 0,
+            PROFILE_POLICY_VERSION,
+            _profile_material_revision(session, pool.tenant_id),
+            _abc_assignment_revision(session),
+        ],
         "accounts": [
             [item.output.account_id, item.output.current_pool_id, item.output.current_binding_version]
             for item in items
         ],
     }
     return hashlib.sha256(json.dumps(state, separators=(",", ":"), sort_keys=True).encode()).hexdigest()
+
+
+def _profile_material_revision(session: Session, tenant_id: int) -> list[list[object]]:
+    rows = session.execute(
+        select(Material.id, Material.asset_version_id, Material.cache_ready_status).where(
+            Material.tenant_id == tenant_id,
+            Material.material_type == "图片",
+            Material.review_status == "已审核",
+        ).order_by(Material.id)
+    )
+    return [list(row) for row in rows]
+
+
+def _abc_assignment_revision(session: Session) -> list[list[object]]:
+    rows = session.execute(
+        select(
+            DeveloperAppSlotAssignment.slot_purpose,
+            DeveloperAppSlotAssignment.developer_app_id,
+            DeveloperAppSlotAssignment.assignment_version,
+            DeveloperAppSlotAssignment.credentials_version,
+            DeveloperAppSlotAssignment.status,
+        ).order_by(DeveloperAppSlotAssignment.slot_purpose)
+    )
+    return [list(row) for row in rows]
 
 
 def _accepted_versions() -> tuple[int, ...]:

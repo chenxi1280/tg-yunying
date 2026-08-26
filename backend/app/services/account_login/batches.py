@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.models import (
+    AccountPool,
     AccountStatus,
     TgAccount,
     TgAccountLoginBatch,
@@ -25,6 +26,7 @@ from app.schemas.account_login import (
 )
 from app.security import encrypt_secret
 from app.services._common import _now, audit
+from app.services.account_post_login_init.policy import initialization_policy_for_pool
 
 from .contracts import BatchLoginError
 from .identity import parse_code_source_url, phone_fingerprint
@@ -33,6 +35,13 @@ from .preview import PreviewBuild, build_preview, require_batch_login_enabled, v
 
 TERMINAL_ITEM_STATUSES = {"unresolved", "succeeded", "succeeded_with_warning", "failed", "skipped"}
 ACTIVE_BATCH_STATUSES = ("queued", "running", "cancelling")
+TERMINAL_BATCH_STATUSES = {
+    "completed",
+    "completed_with_manual",
+    "completed_with_failures",
+    "completed_with_unresolved",
+    "cancelled",
+}
 MAX_MANUAL_RETRIES = 3
 
 
@@ -54,6 +63,10 @@ def create_login_batch(
     verify_preview_token(payload.preview_token, tenant_id, user_id, build)
     decisions = _binding_decisions(payload, build)
     batch = _new_batch(tenant_id, user_id, actor, payload, request_fingerprint, build)
+    pool = session.get(AccountPool, payload.pool_id)
+    if not pool:
+        raise BatchLoginError("pool_admission_rejected", "目标分组不存在")
+    batch.initialization_policy = initialization_policy_for_pool(pool)
     try:
         with session.begin_nested():
             _persist_new_batch(session, batch, build, decisions, actor)
@@ -179,6 +192,7 @@ def _add_batch_items(
             expected_binding_version=expected,
             route_hint=preview.output.route_hint,
             account_id=preview.output.account_id,
+            initialization_policy=batch.initialization_policy,
         )
         session.add(item)
         session.flush()
@@ -245,7 +259,7 @@ def cancel_login_batch(
         return batch
     if batch.state_version != expected_version:
         raise BatchLoginError("state_conflict", "批次状态已变化")
-    if batch.status in {"completed", "completed_with_unresolved", "cancelled"}:
+    if batch.status in TERMINAL_BATCH_STATUSES:
         return batch
     batch.status = "cancelling"
     batch.state_version += 1
@@ -262,10 +276,15 @@ def cancel_login_batch(
 def skip_cancellable_items(session: Session, batch_id: int) -> None:
     items = session.scalars(select(TgAccountLoginBatchItem).where(
         TgAccountLoginBatchItem.batch_id == batch_id,
-        TgAccountLoginBatchItem.status.in_(("pending", "waiting")),
+        TgAccountLoginBatchItem.status.in_(("pending", "waiting", "post_initialization_waiting")),
     ).with_for_update())
     for item in items:
-        attempt = session.get(TgAccountLoginBatchAttempt, item.current_attempt_id)
+        was_post_initialization = item.status == "post_initialization_waiting"
+        attempt = (
+            session.get(TgAccountLoginBatchAttempt, item.current_attempt_id)
+            if item.current_attempt_id
+            else None
+        )
         if attempt and any(value == "started" for value in (
             attempt.send_call_state, attempt.code_verify_call_state, attempt.twofa_verify_call_state,
         )):
@@ -277,7 +296,8 @@ def skip_cancellable_items(session: Session, batch_id: int) -> None:
         item.failure_type = "manual_interrupted"
         item.failure_detail = "批次已取消，未开始行已跳过"
         item.finished_at = _now()
-        item.code_url_ciphertext = None
+        if not was_post_initialization:
+            item.code_url_ciphertext = None
         item.state_version += 1
         if attempt:
             attempt.phase = "skipped"
@@ -345,11 +365,24 @@ def _retry_items(session: Session, batch: TgAccountLoginBatch, item_ids: list[in
     items = list(session.scalars(query.order_by(TgAccountLoginBatchItem.line_no).with_for_update()))
     if not items:
         raise BatchLoginError("state_conflict", "没有可重试的失败或未解行")
+    if any(_is_post_init_failure(item) for item in items):
+        raise BatchLoginError(
+            "post_init_action_required",
+            "账号已授权，请使用完整初始化专项操作收口，不能重试整条登录",
+        )
     if any(item.retry_count >= MAX_MANUAL_RETRIES for item in items):
         raise BatchLoginError("retry_limit_exceeded", "行重试次数已达到上限")
     if any(not item.code_url_ciphertext or not item.credential_expires_at or item.credential_expires_at <= _now() for item in items):
         raise BatchLoginError("credential_expired", "请先刷新已过期的接码地址")
     return items
+
+
+def _is_post_init_failure(item: TgAccountLoginBatchItem) -> bool:
+    return bool(
+        item.initialization_policy == "normal_full_init_v1"
+        and item.authorization_status == "confirmed"
+        and item.post_initialization_status != "succeeded"
+    )
 
 
 def _validate_unresolved_retry(session: Session, batch: TgAccountLoginBatch, items: list[TgAccountLoginBatchItem], payload: LoginBatchRetryRequest) -> None:
@@ -454,6 +487,7 @@ def refresh_login_item_credential(
 
 __all__ = [
     "TERMINAL_ITEM_STATUSES",
+    "TERMINAL_BATCH_STATUSES",
     "cancel_login_batch",
     "create_login_batch",
     "get_login_batch",

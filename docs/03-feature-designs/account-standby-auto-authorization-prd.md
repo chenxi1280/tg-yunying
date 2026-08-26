@@ -1,5 +1,7 @@
 # 账号备用授权自动补齐 PRD
 
+> **2026-08-26 批量登录适用补正：** 本文否决的“所有登录一律内联强制补齐”仍有效；但使用 `normal_full_init_v1` 的 `new_account/already_authorized/relogin` 都必须原子 create-or-attach账号级 full-init与 durable `abc_required`。已有账号 open/terminal owner分别 attach/readback/reconcile，不重复登录；fixed 2FA/profile完成并复查仍无 owner才创建、异人批准 `post_login_exact` request。同租户其他 global open batch只形成等待窗口，不是本账号owner。登录 worker不直接执行B/C/MY，完整A/B/C/E4读回前父行不计完整成功。
+
 > 日期口径：2026-06-14（Asia/Shanghai）
 > 适用范围：TG账号管理、账号授权资产、账号安全批次、任务中心系统批次投影。
 > **2026-08-22 适用优先级：** 本文继续约束在硅谷创建并使用的 `standby_1` 和通用补齐界面；MY `standby_2` 与全部在线 A/B/C 补齐统一由两个 v2.21 马来西亚专项合同覆盖。线上现有三套 Developer App 固定为 App A/SV primary、App B/SV standby_1、App C/MY standby_2，并分别真实登录形成独立 AuthKey、非零授权 hash 和 Telegram 登录设备，不申请第四套 App。全量在线模式先冻结动态 N，A 是 B/C 唯一码源，单账号按 A -> B -> C 补齐；健康槽只 readback。App C 旧 SV 备份必须在 MY 全新登录迁移，新 MY Session 完成 MY 本地+SV SSH 镜像双副本、恢复密钥、MY inventory 和隔离恢复闸门前不得退役旧源。primary 权威失败且 standby_1 即时 probe 通过时自动在 SV 切换；MY 只在双 SV 授权失败后读取官方登录码，永不执行业务。

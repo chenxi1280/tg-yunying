@@ -86,5 +86,5 @@ function taskColumns(pools: AccountPool[], onOpenBatch: (batchId: number) => voi
 
 function batchProgress(batch: AccountBatchLogin) {
   const settled = batch.success_count + batch.failed_count + batch.unresolved_count + batch.skipped_count;
-  return `${settled}/${batch.total_count}；成功 ${batch.success_count} / 失败 ${batch.failed_count} / 未解 ${batch.unresolved_count} / 警告 ${batch.warning_count}`;
+  return `${settled}/${batch.total_count}；已授权 ${batch.authorized_count} / 完整初始化 ${batch.fully_initialized_count} / 等待 ${batch.post_init_waiting_count} / 失败 ${batch.failed_count} / 未解 ${batch.unresolved_count}`;
 }

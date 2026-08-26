@@ -87,6 +87,7 @@ class TenantFixedTwoFaSettingsOut(BaseModel):
     tenant_id: int
     fixed_two_fa_password_configured: bool = False
     fixed_two_fa_password_set_at: datetime | None = None
+    fixed_two_fa_password_version: int = 0
 
 
 class TenantFixedTwoFaSettingsUpdate(BaseModel):

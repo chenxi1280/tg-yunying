@@ -86,6 +86,11 @@ class LoginBatchItemOut(ApiModel):
     route_hint: str
     route: str
     account_id: int | None
+    initialization_policy: str = "legacy_login_only"
+    authorization_status: str = "not_confirmed"
+    post_initialization_id: int | None = None
+    post_initialization_status: str = "not_requested"
+    post_initialization_failure_type: str = ""
     status: str
     phase: str
     failure_type: str
@@ -105,6 +110,11 @@ class LoginBatchItemOut(ApiModel):
     created_at: datetime
     updated_at: datetime
 
+    @field_validator("route", mode="before")
+    @classmethod
+    def canonicalize_route(cls, value: str) -> str:
+        return "new_account" if value == "create" else value
+
 
 class LoginBatchOut(ApiModel):
     id: int
@@ -121,6 +131,11 @@ class LoginBatchOut(ApiModel):
     unresolved_count: int
     warning_count: int
     skipped_count: int
+    authorized_count: int = 0
+    fully_initialized_count: int = 0
+    post_init_waiting_count: int = 0
+    manual_required_count: int = 0
+    initialization_policy: str = "legacy_login_only"
     reason: str
     trace_id: str
     started_at: datetime | None
@@ -154,13 +169,60 @@ class LoginBatchCancelRequest(_ReasonRequest):
 
 class LoginBatchCapabilityOut(BaseModel):
     mode: str
+    post_login_init_mode: str
     max_lines: int
     worker_concurrency: int
+    post_login_init_worker_concurrency: int
     item_deadline_seconds: int
     code_wait_seconds: int
     poll_interval_seconds: int
     readiness: bool
     blockers: list[str]
+
+
+class LoginBatchPostInitializationOut(ApiModel):
+    id: int
+    account_id: int
+    generation: int
+    predecessor_initialization_id: int | None
+    target_pool_id: int
+    policy_version: str
+    status: str
+    stage: str
+    source_two_fa_kind: str
+    two_fa_status: str
+    two_fa_call_state: str
+    two_fa_evidence_present: bool
+    profile_status: str
+    profile_batch_id: int | None
+    profile_action_types: list[str]
+    profile_evidence_present: bool
+    abc_status: str
+    abc_batch_id: str
+    abc_evidence_present: bool
+    abc_request_id: int | None
+    abc_request_status: str
+    failure_type: str
+    failure_detail: str
+    execution_owner: str
+    version: int
+    next_retry_at: datetime | None
+    started_at: datetime | None
+    finished_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class PostLoginInitializationActionRequest(_ReasonRequest):
+    expected_version: int = Field(ge=1)
+
+
+class PostLoginTwoFaCandidateRequest(PostLoginInitializationActionRequest):
+    candidate_password: str = Field(min_length=1, max_length=255)
+
+
+class PostLoginTwoFaEmailRequest(PostLoginInitializationActionRequest):
+    confirmation_code: str = Field(min_length=1, max_length=32)
 
 
 class LoginBatchNotificationOut(ApiModel):
@@ -193,4 +255,49 @@ class CodeSourceBindingRevealOut(BaseModel):
     binding_version: int
 
 
-__all__ = [name for name in globals() if name.startswith("LoginBatch") or name.startswith("CodeSource")]
+class PostLoginAbcPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    deployed_release_sha: str = Field(pattern="^[0-9a-f]{40}([0-9a-f]{24})?$")
+
+
+class PostLoginAbcApproveRequest(PostLoginAbcPreviewRequest):
+    expected_version: int = Field(ge=1)
+    expected_fingerprint: str = Field(pattern="^[0-9a-f]{64}$")
+    approval_ref: str = Field(min_length=1, max_length=160)
+
+
+class PostLoginAbcRequestOut(ApiModel):
+    id: int
+    tenant_id: int
+    account_id: int
+    full_initialization_id: int
+    status: str
+    request_version: int
+    requested_by: str
+    approved_by: str
+    approval_ref: str
+    deployed_release_sha: str
+    preview_fingerprint: str
+    abc_batch_id: str
+    failure_type: str
+    failure_detail: str
+    created_at: datetime
+    approved_at: datetime | None
+    finished_at: datetime | None
+
+
+class PostLoginAbcPreviewOut(BaseModel):
+    request_id: int
+    request_version: int
+    account_id: int
+    deployed_release_sha: str
+    fingerprint: str
+    classification_counts: dict[str, int] = Field(default_factory=dict)
+
+
+__all__ = [
+    name for name in globals()
+    if name.startswith("LoginBatch")
+    or name.startswith("CodeSource")
+    or name.startswith("PostLogin")
+]

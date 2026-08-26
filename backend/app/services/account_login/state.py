@@ -82,6 +82,7 @@ def _next_claimable_item(session: Session, batch_id: int, now) -> TgAccountLogin
         TgAccountLoginBatchItem.batch_id == batch_id,
         TgAccountLoginBatchItem.status.not_in(TERMINAL_ITEM_STATUSES),
         TgAccountLoginBatchItem.status != "reconciling",
+        TgAccountLoginBatchItem.status != "post_initialization_waiting",
         or_(TgAccountLoginBatchItem.next_retry_at.is_(None), TgAccountLoginBatchItem.next_retry_at <= now),
         or_(
             TgAccountLoginBatchAttempt.id.is_(None),

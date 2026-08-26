@@ -1,5 +1,7 @@
 # 账号资料群风格多样化与精确登录批次初始化 PRD
 
+> **2026-08-26 边界：** 本文继续约束精确历史登录批次集合的受保护资料操作，不是实时 full-init coordinator。`normal_full_init_v1` 的 `new_account/already_authorized/relogin` 姓名/头像 gap decision与required readback以 [account-batch-post-login-full-initialization-prd.md](account-batch-post-login-full-initialization-prd.md) 为准；只复用底层exact名称claim、许可头像和远端readback，具备同profile policy版本及目标指纹的完整证据才零重复写，任意非空外部资料不算完成，也不要求凑满300个。
+
 - `intake_id`: `intake-2026-08-18-account-profile-group-style-300`
 - `level`: `L2`
 - `design_status`: `complete`

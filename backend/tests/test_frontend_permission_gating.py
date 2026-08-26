@@ -2252,9 +2252,12 @@ def test_frontend_static_publish_preserves_previous_hashed_assets():
     source = (PROJECT_ROOT / "deploy/compose-up.sh").read_text()
 
     assert "preserve_frontend_assets" in source
-    assert "find \"$releases_dir\" -mindepth 2 -maxdepth 2 -type d -name assets" in source
-    assert "cp -a \"${asset_dir}/.\" \"${tmp_dir}/assets/\"" in source
-    assert "preserve_frontend_assets \"$releases_dir\" \"$tmp_dir\"" in source
+    assert 'local previous_assets="${current_link}/assets"' in source
+    assert 'cp -aln "${previous_assets}/." "${tmp_dir}/assets/"' in source
+    assert 'preserve_frontend_assets "$current_link" "$tmp_dir"' in source
+    assert source.index('docker cp "${container_id}:${html_dir}/." "$tmp_dir/"') < source.index(
+        'preserve_frontend_assets "$current_link" "$tmp_dir"'
+    )
 
 
 def test_frontend_release_check_rejects_nginx_static_pointer_drift():

@@ -22,6 +22,10 @@ from .ai_content_scope_takeover import (
     recompute_takeover_hashes,
     scope_snapshot_payload,
 )
+from .ai_content_scope_takeover_context import (
+    TakeoverClassificationContext,
+    build_takeover_classification_context,
+)
 from .dispatch_claim_ledger import for_update
 from .runtime_state_hash import canonical_state_hash
 
@@ -73,8 +77,19 @@ def apply_takeover_chunk(
     if batch.status != "applying":
         raise ValueError("takeover_batch_not_applying")
     items = _locked_pending_items(session, batch.id, batch_size)
+    actions = _actions_by_id(session, [item.action_id for item in items], lock=True)
+    context = build_takeover_classification_context(
+        session, list(actions.values()),
+    )
     for item in items:
-        if not _apply_item(session, batch, item=item, actor=actor):
+        if not _apply_item(
+            session,
+            batch,
+            item=item,
+            action=actions.get(item.action_id),
+            actor=actor,
+            context=context,
+        ):
             break
         batch.last_item_cursor = item.id
     session.flush()
@@ -151,10 +166,16 @@ def _initial_snapshot_conflicts(
         AiContentScopeTakeoverItem.batch_id == batch.id,
         AiContentScopeTakeoverItem.status == "pending",
     ).order_by(AiContentScopeTakeoverItem.action_id.asc())))
+    actions = _actions_by_id(session, [item.action_id for item in items], lock=False)
+    context = build_takeover_classification_context(
+        session, list(actions.values()),
+    )
     conflict_count = 0
     for item in items:
-        action = session.get(Action, item.action_id)
-        if action is not None and _item_hashes_match(session, item, action):
+        action = actions.get(item.action_id)
+        if action is not None and _item_hashes_match(
+            session, item, action, context=context,
+        ):
             continue
         item.status = "conflict"
         item.processed_at = _now()
@@ -168,10 +189,13 @@ def _apply_item(
     batch: AiContentScopeTakeoverBatch,
     *,
     item: AiContentScopeTakeoverItem,
+    action: Action | None,
     actor: str,
+    context: TakeoverClassificationContext,
 ) -> bool:
-    action = _locked_action(session, item.action_id)
-    if action is None or not _item_hashes_match(session, item, action):
+    if action is None or not _item_hashes_match(
+        session, item, action, context=context,
+    ):
         _mark_item_conflict(item, "apply_state_drift")
         batch.status = "blocked"
         return False
@@ -294,8 +318,12 @@ def _item_hashes_match(
     session: Session,
     item: AiContentScopeTakeoverItem,
     action: Action,
+    *,
+    context: TakeoverClassificationContext,
 ) -> bool:
-    state_hash, classification = recompute_takeover_hashes(session, action)
+    state_hash, classification = recompute_takeover_hashes(
+        session, action, context=context,
+    )
     return bool(
         state_hash == item.observed_action_state_hash
         and classification.name == item.classification
@@ -415,10 +443,20 @@ def _locked_pending_items(
     return list(session.scalars(for_update(session, statement)))
 
 
-def _locked_action(session: Session, action_id: str) -> Action | None:
-    return session.scalar(for_update(session, select(Action).where(
-        Action.id == action_id,
-    )))
+def _actions_by_id(
+    session: Session,
+    action_ids: list[str],
+    *,
+    lock: bool,
+) -> dict[str, Action]:
+    if not action_ids:
+        return {}
+    statement = select(Action).where(
+        Action.id.in_(action_ids),
+    ).order_by(Action.id.asc())
+    if lock:
+        statement = for_update(session, statement)
+    return {action.id: action for action in session.scalars(statement)}
 
 
 def _batch_chain(

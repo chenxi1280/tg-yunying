@@ -31,6 +31,7 @@ class Tenant(Base):
     fixed_two_fa_password_ciphertext: Mapped[str] = mapped_column(Text, default="")
     fixed_two_fa_password_set_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     fixed_two_fa_password_set_by: Mapped[str] = mapped_column(String(80), default="")
+    fixed_two_fa_password_version: Mapped[int] = mapped_column(Integer, default=0)
     group_rescue_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     group_rescue_admin_account_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)

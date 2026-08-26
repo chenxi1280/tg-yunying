@@ -149,7 +149,12 @@ def _reconcile_expired(session, item: TgAccountLoginBatchItem, attempt: TgAccoun
         attempt.reconcile_status = "manual_review_required"
         attempt.state_version += 1
         if was_notified:
-            record_batch_correction(session, item.batch_id, item.id, "unresolved")
+            record_batch_correction(
+                session,
+                item.batch_id,
+                changed_item_id=item.id,
+                previous_status="unresolved",
+            )
         else:
             finalize_batch_if_terminal(session, item.batch_id)
         return True
@@ -251,7 +256,12 @@ def _finish_late_success(session, item, attempt, account) -> None:
     attempt.phase = item.phase
     attempt.state_version += 1
     if _batch_has_initial_notification(session, item.batch_id):
-        record_batch_correction(session, item.batch_id, item.id, "unresolved")
+        record_batch_correction(
+            session,
+            item.batch_id,
+            changed_item_id=item.id,
+            previous_status="unresolved",
+        )
     else:
         finalize_batch_if_terminal(session, item.batch_id)
 

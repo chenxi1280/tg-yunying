@@ -86,6 +86,7 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 - 需求、流程、验收标准或数据流转变化时，先更新 PRD / 专项设计 / 数据流转索引，再进入 dev。
 - 代码入口、模块边界、API、worker、页面数据流变化时，dev 必须更新项目结构索引，必要时同步数据流转索引。
 - 上游文档或索引在开发开始后变化时，product 必须标记 `resync`，不能只改文档。
+- `docs/03-feature-designs/` 下与当前需求相关的全部专项 PRD、设计文档及其实施/运行/验收合同不设行数上限；代码文件的行数限制不得套用于这些 Markdown 文档。以需求覆盖完整、可实施、可验收和边界闭合为准，不得为缩短篇幅而删减、拆散或弱化产品合同。
 
 ## 发布和验证
 

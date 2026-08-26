@@ -21,6 +21,9 @@ from app.services.task_center.ai_content_scope_takeover_apply import (
     begin_takeover_apply,
     takeover_chain_is_complete,
 )
+from app.services.task_center.ai_content_scope_takeover import (
+    takeover_classification_reason_counts,
+)
 from ai_content_scope_takeover_test_support import (
     preview as _preview,
     seed_bound_legacy_action as _seed_bound_legacy_action,
@@ -45,6 +48,7 @@ def test_preview_excludes_actions_from_route_fenced_tasks() -> None:
         batch = _preview(session)
 
         assert batch.classification_counts == {}
+        assert takeover_classification_reason_counts(session, batch.id) == {}
 
 
 def test_reset_preserves_action_referenced_by_takeover_audit() -> None:
@@ -218,6 +222,9 @@ def test_missing_context_replans_the_same_quantity_and_content_slot() -> None:
         )
         batch = _preview(session)
         assert batch.classification_counts == {"replan_required": 1}
+        assert takeover_classification_reason_counts(session, batch.id) == {
+            "replan_required:cross_group_content_scope_mismatch": 1,
+        }
         batch_id = batch.id
         batch_hash = batch.classification_hash
         counts = dict(batch.classification_counts)

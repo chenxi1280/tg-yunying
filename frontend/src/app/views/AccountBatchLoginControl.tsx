@@ -10,11 +10,13 @@ interface Props {
   pools: AccountPool[];
   selectedPoolId: number | '';
   canCreateBatch: boolean;
+  canManagePostLoginAbc: boolean;
+  canManagePostLoginTwoFa: boolean;
   disabled?: boolean;
   onOpenAccountDetail: (account: Account) => void;
 }
 
-export function AccountBatchLoginControl({ pools, selectedPoolId, canCreateBatch, disabled = false, onOpenAccountDetail }: Props) {
+export function AccountBatchLoginControl({ pools, selectedPoolId, canCreateBatch, canManagePostLoginAbc, canManagePostLoginTwoFa, disabled = false, onOpenAccountDetail }: Props) {
   const [open, setOpen] = React.useState(false);
   const [poolId, setPoolId] = React.useState<number | ''>('');
   const [linesText, setLinesText] = React.useState('');
@@ -33,6 +35,8 @@ export function AccountBatchLoginControl({ pools, selectedPoolId, canCreateBatch
   const local = localLineStats(linesText);
   const lineLimit = capability?.max_lines ?? 200;
   const lineLimitExceeded = local.total > lineLimit;
+  const targetPool = enabledPools.find((pool) => pool.id === poolId);
+  const postInitUnavailable = targetPool?.pool_purpose === 'normal' && capability?.post_login_init_mode !== 'enabled';
 
   async function showModal() {
     setOpen(true);
@@ -106,7 +110,7 @@ export function AccountBatchLoginControl({ pools, selectedPoolId, canCreateBatch
   const columns: ColumnsType<AccountBatchLoginPreviewItem> = [
     { title: '行', dataIndex: 'line_no', width: 60 },
     { title: '手机号', dataIndex: 'phone_masked', width: 150 },
-    { title: '候选路由', dataIndex: 'route_hint', width: 190, render: (value) => value === 'create' ? '新建账号' : '已有账号，执行时权威探测' },
+    { title: '候选路由', dataIndex: 'route_hint', width: 190, render: (value) => ['create', 'new_account'].includes(value) ? '新建账号' : '已有账号，执行时权威探测' },
     { title: '接码备注', dataIndex: 'code_source_note', width: 210 },
     {
       title: '绑定变化',
@@ -129,13 +133,14 @@ export function AccountBatchLoginControl({ pools, selectedPoolId, canCreateBatch
       <Modal title="批量登录账号" open={open} width={920} footer={null} destroyOnHidden onCancel={() => setOpen(false)}>
         {error && <Alert type="error" showIcon message={error} />}
         {capability && (!capability.readiness || capability.mode !== 'enabled') && <Alert type="warning" showIcon title="批量登录当前不可用" description={`模式：${capability.mode}；阻塞：${capability.blockers.join('、') || '无'}`} />}
+        {capability && postInitUnavailable && <Alert type="warning" showIcon title="普通账号完整初始化当前不可用" description={`后置初始化模式：${capability.post_login_init_mode}`} />}
         {lineLimitExceeded && <Alert type="error" showIcon message={`当前 ${local.total} 行，单批次最多 ${lineLimit} 行`} />}
         {!preview ? (
           <Space orientation="vertical" size={12} style={{ width: '100%' }}>
             <label>目标分组<Select style={{ width: '100%' }} value={poolId} onChange={setPoolId} options={enabledPools.map((pool) => ({ value: pool.id, label: pool.name }))} /></label>
             <label>账号与接码地址<Input.TextArea rows={10} value={linesText} onChange={(event) => setLinesText(event.target.value)} placeholder={'+12025550123|https://tgbotchecker.com/GetHTML?uuid=<32位uuid>\n+12025550124|https://tgapi.susubot.com/index.html?type=107&apikey=<apikey>'} /></label>
             <Typography.Text type="secondary">共 {local.total} 行 / 上限 {lineLimit} 行 / 格式有效 {local.valid} 行 / 手机号重复 {local.phoneDuplicates} 行 / UUID 重复 {local.uuidDuplicates} 行</Typography.Text>
-            <Space><Button onClick={() => setOpen(false)}>取消</Button><Button type="primary" loading={loading} disabled={!poolId || !linesText.trim() || lineLimitExceeded || capability?.readiness !== true || capability.mode !== 'enabled'} onClick={() => void precheck()}>预检并确认</Button></Space>
+            <Space><Button onClick={() => setOpen(false)}>取消</Button><Button type="primary" loading={loading} disabled={!poolId || !linesText.trim() || lineLimitExceeded || capability?.readiness !== true || capability.mode !== 'enabled' || postInitUnavailable} onClick={() => void precheck()}>预检并确认</Button></Space>
           </Space>
         ) : (
           <Space orientation="vertical" size={12} style={{ width: '100%' }}>
@@ -166,6 +171,8 @@ export function AccountBatchLoginControl({ pools, selectedPoolId, canCreateBatch
           batchId={openBatchId}
           pools={pools}
           stackIndex={index}
+          canManagePostLoginAbc={canManagePostLoginAbc}
+          canManagePostLoginTwoFa={canManagePostLoginTwoFa}
           onOpenAccountDetail={onOpenAccountDetail}
           onClose={() => closeBatchDrawer(openBatchId)}
         />

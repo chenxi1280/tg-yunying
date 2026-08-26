@@ -16,6 +16,7 @@ from app.services.authorization_dr.online_abc_sweep import (
     pause_online_abc_sweep_for_error,
     run_online_abc_sweep_once,
 )
+from app.services.authorization_dr.online_abc_post_login import run_post_login_exact_once
 
 
 SUPERVISOR_LOCK_KEY = 0x4142435357454550
@@ -25,6 +26,8 @@ def main() -> int:
     args = _parser().parse_args()
     if args.worker_interval_seconds <= 0:
         raise ValueError("abc_supervisor_worker_interval_must_be_positive")
+    if args.poll_seconds <= 0:
+        raise ValueError("abc_supervisor_poll_interval_must_be_positive")
     with SessionLocal() as lock_session:
         if not _acquire_lock(lock_session):
             raise RuntimeError("abc_supervisor_already_running")
@@ -51,9 +54,20 @@ def _run_once(args) -> dict:
             return {"lane": "full_sweep", "result": sweep}
         with SessionLocal() as session:
             recovery = run_deferred_recovery_once(session, runtime_release_sha=_release_sha())
-        return {"lane": "deferred_recovery", "result": recovery}
     except Exception as exc:
         return _pause_after_error(type(exc).__name__)
+    if recovery.get("status") != "idle":
+        return {"lane": "deferred_recovery", "result": recovery}
+    try:
+        with SessionLocal() as session:
+            post_login = run_post_login_exact_once(
+                session,
+                runtime_release_sha=_release_sha(),
+                poll_seconds=args.poll_seconds,
+            )
+    except Exception as exc:
+        return {"lane": "post_login_exact_error", "blocker": type(exc).__name__}
+    return {"lane": "post_login_exact", "result": post_login}
 
 
 def _pause_after_error(blocker: str) -> dict:
@@ -76,7 +90,9 @@ def _release_sha() -> str:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Durable ABC full-sweep and deferred-recovery supervisor")
+    parser = argparse.ArgumentParser(
+        description="Durable ABC full-sweep, deferred-recovery, and post-login supervisor"
+    )
     parser.add_argument("--poll-seconds", type=float, default=2.0)
     parser.add_argument("--worker-interval-seconds", type=float, default=2.0)
     return parser

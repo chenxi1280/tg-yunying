@@ -1,8 +1,9 @@
+# syntax=docker/dockerfile:1
 FROM python:3.12-slim AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1
 
 WORKDIR /app/backend
 
@@ -14,9 +15,14 @@ RUN apt-get update \
         openssh-client \
     && rm -rf /var/lib/apt/lists/*
 
+COPY backend/pyproject.toml backend/scripts/install_project_dependencies.py /tmp/dependencies/
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m pip install --upgrade pip \
+    && python /tmp/dependencies/install_project_dependencies.py /tmp/dependencies/pyproject.toml
+
 COPY backend/ /app/backend/
-RUN python -m pip install --upgrade pip \
-    && python -m pip install -e .
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m pip install -e . --no-deps --no-build-isolation
 
 EXPOSE 8000
 

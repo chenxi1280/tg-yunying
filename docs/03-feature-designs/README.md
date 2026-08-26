@@ -4,6 +4,8 @@
 
 | 文件 | 定位 |
 | --- | --- |
+| [github-actions-release-performance-optimization-prd.md](github-actions-release-performance-optimization-prd.md) | **2026-08-27 两个 P0 本地修复、定向 QA 与 0168 幂等回归通过、标准 PG blank-DB 全链待 Actions 证明**：不减少发布次数与测试覆盖；Backend 3+2 确定性分片、三镜像并行构建、Python 依赖层缓存、frontend 历史 hash hard-link 复用；takeover 识别 fact-first quantity-only 合同并以常数级批量事实快照完成 preview/drift/apply 复核 |
+| [account-batch-post-login-full-initialization-prd.md](account-batch-post-login-full-initialization-prd.md) | **2026-08-27 Product Design Complete、本地实现与定向 QA 通过、待发布/生产验证**：批量登录 `new_account/already_authorized/relogin` 统一 create-or-attach账号级 durable full-init；真实 fixed 2FA、姓名/头像 readback、ABC owner去重和完整 A/B/C/E4 成功边界 |
 | [account-security-hardening-design.md](account-security-hardening-design.md) | 账号安全、设备清理、托管 2FA、资料初始化 |
 | [account-profile-group-style-initialization-prd.md](account-profile-group-style-initialization-prd.md) | **2026-08-19 新账号审计修正已实现、待发布/生产验证**：按精确批量登录 batch 集合中“本批新建且登录成功”的账号并集初始化名字+头像，排除已有账号重登，群样本仅形成匿名风格分布、不复制真实身份或头像，protected preview/apply/readback + 300 账号 E4 |
 | [account-standby-auto-authorization-prd.md](account-standby-auto-authorization-prd.md) | 备用授权自动补齐专项 PRD |

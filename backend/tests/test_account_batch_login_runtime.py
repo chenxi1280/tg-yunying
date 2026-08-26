@@ -26,6 +26,9 @@ def _runtime_settings(
         account_batch_login_credential_ttl_seconds=86400,
         account_batch_login_reconcile_seconds=86400,
         account_batch_login_worker_concurrency=worker_concurrency,
+        account_post_login_init_mode="enabled",
+        account_post_login_init_secret_ttl_seconds=900,
+        account_post_login_init_worker_concurrency=2,
         account_batch_login_host_concurrency=host_concurrency,
         account_batch_login_host_min_interval_seconds=3,
         account_batch_login_developer_app_concurrency=developer_concurrency,
@@ -62,6 +65,7 @@ def test_account_login_worker_mode_controls_new_phases(monkeypatch, mode, expect
 
     calls = {"batch": 0}
     monkeypatch.setattr(worker, "get_settings", lambda: SimpleNamespace(account_batch_login_mode=mode))
+    monkeypatch.setattr(worker, "drain_account_post_login_initializations", lambda *_args: 0)
     monkeypatch.setattr(worker, "drain_account_login_reconciliation", lambda *_args: 2)
     monkeypatch.setattr(worker, "drain_notification_outbox", lambda *_args: 3)
     monkeypatch.setattr(
@@ -82,9 +86,10 @@ def test_compose_and_release_script_mount_dedicated_account_login_worker() -> No
     assert '"--role", "account-login"' in compose
     assert "WORKER_ROLE: account-login" in compose
     assert "ACCOUNT_BATCH_LOGIN_WORKER_CONCURRENCY" in compose
+    assert "ACCOUNT_POST_LOGIN_INIT_MODE" in compose
     account_login_service = compose.split("worker-account-login:", 1)[1].split(
         "worker-material-cache:", 1
     )[0]
     assert "logging: *default-logging" in account_login_service
-    assert 'if [[ "${ACCOUNT_BATCH_LOGIN_MODE:-off}" != "off" ]]; then' in release_script
+    assert '"${ACCOUNT_POST_LOGIN_INIT_MODE:-off}" != "off"' in release_script
     assert "WORKER_SERVICES+=(worker-account-login)" in release_script

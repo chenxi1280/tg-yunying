@@ -18,12 +18,26 @@ def managed_two_fa_password(session: Session, account: TgAccount) -> str | None:
     return decrypt_secret(snapshot.two_fa_password_ciphertext)
 
 
-def record_managed_two_fa_password(session: Session, account: TgAccount, password: str, *, last_error: str = "") -> TgAccountSecuritySnapshot:
+def record_managed_two_fa_password(
+    session: Session,
+    account: TgAccount,
+    password: str,
+    *,
+    last_error: str = "",
+    source: str = "legacy_unproven",
+    fixed_version: int = 0,
+    evidence_ref: str = "",
+    authorization_generation: int = 0,
+) -> TgAccountSecuritySnapshot:
     snapshot = _snapshot(session, account)
     snapshot.two_fa_status = "enabled"
     snapshot.two_fa_password_ciphertext = encrypt_secret(password)
     snapshot.two_fa_password_hint = MANAGED_TWO_FA_HINT
     snapshot.two_fa_password_stored_at = _now()
+    snapshot.two_fa_password_source = source
+    snapshot.fixed_two_fa_version = fixed_version
+    snapshot.two_fa_evidence_ref = evidence_ref
+    snapshot.two_fa_authorization_generation = authorization_generation
     snapshot.last_error = last_error
     return snapshot
 

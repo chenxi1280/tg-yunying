@@ -1,5 +1,7 @@
 # TG 账号安全加固与资料初始化设计文档
 
+> **2026-08-26 批量登录补正：** 使用 `normal_full_init_v1` 的 normal 账号不再沿用“仅记录当前 2FA、不自动改密”和“资料批次创建即结束”的旧语义。`new_account/already_authorized/relogin` 都在 A 可用后 create-or-attach同一账号级 full-init；缺口才执行租户版本化 fixed 2FA、姓名和头像真实 mutation/readback，完整证据则零重复写。接码/降权用途和独立手工安全批次仍按本文原合同执行。
+
 > 账号备用授权自动补齐的一期 PRD 见 `docs/03-feature-designs/account-standby-auto-authorization-prd.md`。当线上已维护备用 TG Developer App 时，账号管理仍必须以真实登录成功的 `standby_1 session` / `standby_2 session` 作为备用授权验收标准，不能把 Developer App 数量当成备用 session 数量。
 > **2026-08-22 马来西亚授权 v2.21 优先级：** 线上现有三套 Developer App 固定为 App A/SV primary、App B/SV standby_1、App C/MY standby_2，各自真实登录；全部在线补齐先冻结动态 N，A 是 B/C 唯一码源，健康槽只 readback。App C 旧 SV 备份通过 MY 全新登录迁移，不复制 Session、不增加第四套 App；新 MY Session 必须完成 MY 本地+SV SSH 镜像不可变双副本、恢复密钥 readback、MY 追加 inventory 和隔离恢复探测，才允许退役旧 SV 源。新账号登录后立即可查看登录设备；设备清理不做资格预检或倒计时。primary 权威失败且 standby_1 即时探测通过时自动本地切换；MY 仍只负责双 SV 授权失败后的紧急登录码读取。其余合同以两份 v2.21 专项文档为准。
 

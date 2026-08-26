@@ -933,15 +933,42 @@ class TelethonTelegramGateway(TelegramGateway):
         except Exception as exc:  # noqa: BLE001 - surface connection failures as operation result.
             mapped = self._map_send_error(exc)
             detail = mapped.detail or _exception_detail(exc)
-            return AccountSecurityOperationResult(False, "failed", mapped.failure_type or FailureType.ACCOUNT_UNAVAILABLE.value, detail)
+            return AccountSecurityOperationResult(
+                False,
+                "failed",
+                mapped.failure_type or FailureType.ACCOUNT_UNAVAILABLE.value,
+                detail,
+                remote_mutation_started=False,
+            )
         try:
             changed = await client.edit_2fa(current_password=current_password, new_password=password, hint=hint)
         except Exception as exc:  # noqa: BLE001 - keep Telegram restriction visible.
+            from telethon.errors import PasswordHashInvalidError
+
             mapped = self._map_send_error(exc)
             detail = mapped.detail or _exception_detail(exc)
+            if isinstance(exc, PasswordHashInvalidError):
+                return AccountSecurityOperationResult(
+                    False,
+                    "failed",
+                    "two_fa_invalid",
+                    detail,
+                    remote_mutation_started=False,
+                )
             status = "email_confirmation_required" if "email" in detail.lower() else "failed"
-            return AccountSecurityOperationResult(False, status, mapped.failure_type or FailureType.UNKNOWN.value, detail)
-        return AccountSecurityOperationResult(True, "enabled" if changed else "unchanged", detail="二步验证已设置")
+            return AccountSecurityOperationResult(
+                False,
+                status,
+                mapped.failure_type or FailureType.UNKNOWN.value,
+                detail,
+                remote_mutation_started=True,
+            )
+        return AccountSecurityOperationResult(
+            True,
+            "enabled" if changed else "unchanged",
+            detail="二步验证已设置",
+            remote_mutation_started=True,
+        )
 
     def set_two_fa_password(
         self,

@@ -28,6 +28,10 @@ drain_account_login_reconciliation = _lazy_call(
     "app.services.account_login.reconciliation",
     "drain_account_login_reconciliation",
 )
+drain_account_post_login_initializations = _lazy_call(
+    "app.services.account_post_login_init.drain",
+    "drain_account_post_login_initializations",
+)
 drain_notification_outbox = _lazy_call(
     "app.services.account_login.notifications",
     "drain_notification_outbox",

@@ -12,6 +12,9 @@ EXPECTED_TABLES = {
     "tg_account_login_batch_notifications",
     "tg_account_login_rate_buckets",
     "tg_account_phone_fingerprint_aliases",
+    "tg_account_full_initializations",
+    "tg_account_login_post_init_bindings",
+    "tg_post_login_abc_requests",
     "tg_authorization_online_abc_batches",
     "tg_authorization_online_abc_items",
     "tg_authorization_online_abc_slot_results",
@@ -25,10 +28,7 @@ def _foreign_key_names(inspector, table_name: str) -> dict[tuple[str, ...], str 
     }
 
 
-def test_account_batch_login_schema_migrates_from_blank_postgres() -> None:
-    inspector = inspect(engine)
-
-    assert EXPECTED_TABLES <= set(inspector.get_table_names())
+def _assert_account_login_schema(inspector) -> None:
     account_columns = {column["name"] for column in inspector.get_columns("tg_accounts")}
     assert {
         "code_source_host",
@@ -39,6 +39,28 @@ def test_account_batch_login_schema_migrates_from_blank_postgres() -> None:
     } <= account_columns
     flow_columns = {column["name"] for column in inspector.get_columns("tg_login_flows")}
     assert {"batch_login_attempt_id", "batch_login_generation"} <= flow_columns
+    batch_columns = {column["name"] for column in inspector.get_columns("tg_account_login_batches")}
+    assert {
+        "authorized_count",
+        "fully_initialized_count",
+        "post_init_waiting_count",
+        "manual_required_count",
+        "initialization_policy",
+    } <= batch_columns
+    item_columns = {column["name"] for column in inspector.get_columns("tg_account_login_batch_items")}
+    assert {
+        "authorization_status",
+        "post_initialization_id",
+        "post_initialization_status",
+        "post_initialization_failure_type",
+        "initialization_policy",
+    } <= item_columns
+    item_indexes = {index["name"] for index in inspector.get_indexes("tg_account_login_batch_items")}
+    assert "ux_login_batch_item_account" in item_indexes
+    full_init_columns = {
+        column["name"] for column in inspector.get_columns("tg_account_full_initializations")
+    }
+    assert "abc_evidence_ref" in full_init_columns
     assert _foreign_key_names(inspector, "tg_account_login_batch_items")[("current_attempt_id",)] == (
         "fk_login_batch_item_current_attempt"
     )
@@ -48,6 +70,9 @@ def test_account_batch_login_schema_migrates_from_blank_postgres() -> None:
     assert _foreign_key_names(inspector, "tg_login_flows")[("batch_login_attempt_id",)] == (
         "fk_login_flow_batch_attempt"
     )
+
+
+def _assert_ai_schema(inspector) -> None:
     assert ("recipient_user_id",) not in _foreign_key_names(inspector, "tg_account_login_batches")
     assert ("recipient_user_id",) not in _foreign_key_names(
         inspector, "tg_account_login_batch_notifications"
@@ -67,7 +92,15 @@ def test_account_batch_login_schema_migrates_from_blank_postgres() -> None:
         column["name"]: column for column in inspector.get_columns("ai_provider_attempts")
     }
     assert attempt_columns["route_set_id"]["nullable"] is True
+
+
+def test_account_batch_login_schema_migrates_from_blank_postgres() -> None:
+    inspector = inspect(engine)
+
+    assert EXPECTED_TABLES <= set(inspector.get_table_names())
+    _assert_account_login_schema(inspector)
+    _assert_ai_schema(inspector)
     with engine.connect() as connection:
         assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
-            "0167_legacy_ai_attempt"
+            "0168_post_login_full_init"
         )

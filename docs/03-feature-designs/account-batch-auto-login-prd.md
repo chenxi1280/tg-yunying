@@ -1,5 +1,7 @@
 # 账号批量自动登号 PRD
 
+> **2026-08-26 resync：** 本文既有`two_fa_policy=do_not_store`、“登录后不改托管2FA”、“不做备用授权补齐”和“资料只入队”只适用于旧策略及非normal用途。目标普通分组normal行由后端强制`normal_full_init_v1`且前端不可关闭；三条规范route都按[完整初始化合同](account-batch-post-login-full-initialization-prd.md)原子create-or-attach账号级full-init与`abc_required`，旧`create`只读映射为`new_account`。already-authorized先fresh probe证明A，不重登A但补fixed 2FA、同policy平台+远端姓名/头像和缺失ABC。A完成后父行保持`post_initialization_waiting`，完整子链读回前不得进入`success_count`。
+
 > 日期口径：2026-08-15（Asia/Shanghai）
 > 适用范围：TG 账号管理、账号分组（AccountPool）、登录 flow、后台 worker、审计。
 > 定位：**当前**专项合同。与 [account-login-group-navigation-recovery-prd.md](account-login-group-navigation-recovery-prd.md)（单账号登录 flow 合同）、[existing-account-reauthorization-routing-prd.md](existing-account-reauthorization-routing-prd.md)（已有账号重登语义）、[account-standby-auto-authorization-prd.md](account-standby-auto-authorization-prd.md)（备用授权自动补齐）互补，不改变既有单账号登录语义。

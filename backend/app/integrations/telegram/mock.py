@@ -697,10 +697,26 @@ class TelegramGateway:
         current_password: str | None = None,
     ) -> AccountSecurityOperationResult:
         if not session_ciphertext:
-            return AccountSecurityOperationResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "账号没有可用 session")
+            return AccountSecurityOperationResult(
+                False,
+                "失败",
+                FailureType.ACCOUNT_UNAVAILABLE.value,
+                "账号没有可用 session",
+                remote_mutation_started=False,
+            )
         if recovery_email and recovery_email.endswith("@confirm.test"):
-            return AccountSecurityOperationResult(True, "pending_email_confirmation", detail="mock waiting email confirmation")
-        return AccountSecurityOperationResult(True, "enabled", detail="mock 2FA enabled")
+            return AccountSecurityOperationResult(
+                True,
+                "pending_email_confirmation",
+                detail="mock waiting email confirmation",
+                remote_mutation_started=True,
+            )
+        return AccountSecurityOperationResult(
+            True,
+            "enabled",
+            detail="mock 2FA enabled",
+            remote_mutation_started=True,
+        )
 
     def confirm_two_fa_email(
         self,

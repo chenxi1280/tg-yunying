@@ -145,6 +145,12 @@ def _validate_account_batch_login_settings(settings: object) -> None:
         raise ValueError("ACCOUNT_BATCH_LOGIN_RECONCILE_SECONDS must cover the item deadline")
     if settings.account_batch_login_worker_concurrency < 1:
         raise ValueError("ACCOUNT_BATCH_LOGIN_WORKER_CONCURRENCY must be positive")
+    if settings.account_post_login_init_mode not in {"off", "reconcile_only", "enabled"}:
+        raise ValueError("ACCOUNT_POST_LOGIN_INIT_MODE must be off, reconcile_only, or enabled")
+    if settings.account_post_login_init_secret_ttl_seconds < 60:
+        raise ValueError("ACCOUNT_POST_LOGIN_INIT_SECRET_TTL_SECONDS must be at least 60")
+    if settings.account_post_login_init_worker_concurrency < 1:
+        raise ValueError("ACCOUNT_POST_LOGIN_INIT_WORKER_CONCURRENCY must be positive")
     versions = [value.strip() for value in settings.account_batch_phone_fingerprint_versions.split(",")]
     if not versions or any(not value.isdigit() or int(value) < 1 for value in versions):
         raise ValueError("ACCOUNT_BATCH_PHONE_FINGERPRINT_VERSIONS must contain positive integers")
@@ -265,6 +271,9 @@ class Settings:
     account_batch_login_host_concurrency: int = int(os.getenv("ACCOUNT_BATCH_LOGIN_HOST_CONCURRENCY", "0"))
     account_batch_login_host_min_interval_seconds: float = float(os.getenv("ACCOUNT_BATCH_LOGIN_HOST_MIN_INTERVAL_SECONDS", "0"))
     account_batch_login_developer_app_concurrency: int = int(os.getenv("ACCOUNT_BATCH_LOGIN_DEVELOPER_APP_CONCURRENCY", "0"))
+    account_post_login_init_mode: str = os.getenv("ACCOUNT_POST_LOGIN_INIT_MODE", "off").strip().lower()
+    account_post_login_init_secret_ttl_seconds: int = int(os.getenv("ACCOUNT_POST_LOGIN_INIT_SECRET_TTL_SECONDS", "900"))
+    account_post_login_init_worker_concurrency: int = int(os.getenv("ACCOUNT_POST_LOGIN_INIT_WORKER_CONCURRENCY", "2"))
     account_batch_phone_fingerprint_version: int = int(os.getenv("ACCOUNT_BATCH_PHONE_FINGERPRINT_VERSION", "1"))
     account_batch_phone_fingerprint_versions: str = os.getenv("ACCOUNT_BATCH_PHONE_FINGERPRINT_VERSIONS", "1")
     voice_profile_reconcile_interval_seconds: float = float(os.getenv("VOICE_PROFILE_RECONCILE_INTERVAL_SECONDS", "120"))

@@ -928,6 +928,7 @@ def create_account_security_batch(
         overwrite_existing_profile=payload.profile_strategy.overwrite_existing,
         reason=payload.reason,
         trace_id=preview.trace_id,
+        idempotency_key=idempotency_key.strip(),
         started_at=_now() if initial_status == "running" else None,
     )
     session.add(batch)

@@ -56,7 +56,7 @@ def _bind_account(session, claim: PhaseClaim) -> None:
     if not login_batch:
         raise BatchLoginError("account_create_failed", "批次不存在")
     result = bind_or_create_account(session, item, login_batch.pool_id, "account-login-worker")
-    item.route = "create" if result.created else "existing_probe_required"
+    item.route = "new_account" if result.created else "existing_probe_required"
     advance_claim(session, claim, "bind_code_source" if result.created else "authorization_probe")
 
 

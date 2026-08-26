@@ -9,17 +9,49 @@ WORKFLOW = Path(__file__).resolve().parents[2] / ".github/workflows/deploy-produ
 COMPOSE_UP = Path(__file__).resolve().parents[2] / "deploy/compose-up.sh"
 COMPOSE = Path(__file__).resolve().parents[2] / "docker-compose.server.yml"
 RELEASE = Path(__file__).resolve().parents[2] / "deploy/release.sh"
+BACKEND_DOCKERFILE = Path(__file__).resolve().parents[2] / "Dockerfile.backend"
+VERIFICATION_DOCKERFILE = Path(__file__).resolve().parents[2] / "Dockerfile.image-verification-worker"
 
 
 def test_production_checks_run_complete_backend_partitions_and_frontend_in_parallel() -> None:
     jobs = yaml.safe_load(WORKFLOW.read_text())["jobs"]
-    backend = jobs["backend-checks"]
-    markers = backend["strategy"]["matrix"]["pytest_marker"]
+    no_postgres = jobs["backend-no-postgres-checks"]
+    postgres = jobs["backend-postgres-checks"]
 
-    assert set(markers) == {"no_postgres", "not no_postgres"}
-    assert 'pytest -q -m "${{ matrix.pytest_marker }}"' in _combined_run_script(backend)
+    assert no_postgres["strategy"]["matrix"]["shard_index"] == [0, 1, 2]
+    assert postgres["strategy"]["matrix"]["shard_index"] == [0, 1]
+    assert no_postgres["steps"][-1]["env"]["PYTEST_SHARD_TOTAL"] == "3"
+    assert postgres["steps"][-1]["env"]["PYTEST_SHARD_TOTAL"] == "2"
+    assert "-m no_postgres -p scripts.pytest_shard" in _combined_run_script(no_postgres)
+    assert '-m "not no_postgres" -p scripts.pytest_shard' in _combined_run_script(postgres)
     assert "frontend-checks" in jobs
-    assert set(jobs["build-images"]["needs"]) == {"backend-checks", "frontend-checks"}
+    expected_needs = {"backend-no-postgres-checks", "backend-postgres-checks", "frontend-checks"}
+    assert set(jobs["build-images"]["needs"]) == expected_needs
+    assert set(jobs["deploy"]["needs"]) == expected_needs | {"build-images"}
+
+
+def test_production_images_build_as_three_independent_matrix_entries() -> None:
+    jobs = yaml.safe_load(WORKFLOW.read_text())["jobs"]
+    image_matrix = jobs["build-images"]["strategy"]["matrix"]["include"]
+
+    assert {entry["dockerfile"] for entry in image_matrix} == {
+        "Dockerfile.backend",
+        "Dockerfile.frontend",
+        "Dockerfile.image-verification-worker",
+    }
+    assert len(image_matrix) == 3
+    assert "continue-on-error" not in jobs["build-images"]
+
+
+@pytest.mark.parametrize("dockerfile", [BACKEND_DOCKERFILE, VERIFICATION_DOCKERFILE])
+def test_python_images_cache_dependencies_before_copying_application(dockerfile: Path) -> None:
+    content = dockerfile.read_text()
+    dependency_copy = "COPY backend/pyproject.toml backend/scripts/install_project_dependencies.py"
+    application_copy = "COPY backend/ /app/backend/"
+
+    assert content.index(dependency_copy) < content.index(application_copy)
+    assert "--mount=type=cache,target=/root/.cache/pip" in content
+    assert "python -m pip install -e . --no-deps --no-build-isolation" in content
 
 
 def test_deploy_prunes_only_dangling_images_before_pull() -> None:

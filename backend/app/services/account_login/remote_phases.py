@@ -7,13 +7,18 @@ from app.config import get_settings
 from app.models import AccountStatus, TgAccount, TgLoginFlow
 from app.security import decrypt_secret, encrypt_secret, encrypt_session
 from app.services._common import _now, gateway, get_account_phone
-from app.services.account_profile_auto_init import queue_login_profile_initialization
 from app.services.accounts import login_error_from_exception
 from app.services.code_source_client import CodeSourceClient
 from app.services.developer_apps import credentials_for_account
 
 from .contracts import BatchLoginError, LoginMaterials
 from .identity import material_hmac
+from .post_initialization import (
+    attach_authorized_full_initialization,
+    complete_online_readback,
+    fail_full_initialization_online_readback,
+    requires_full_initialization,
+)
 from .rate_limit import RateLease, acquire_rate_lease, release_rate_lease
 from .state import (
     PhaseClaim,
@@ -22,7 +27,6 @@ from .state import (
     fail_claim,
     load_claim,
     mark_claim_unknown,
-    succeed_claim,
 )
 
 
@@ -153,14 +157,28 @@ def _online_readback(session_factory, claim: PhaseClaim, _client: CodeSourceClie
         account = _item_account(session, item)
         credentials = credentials_for_account(session, account)
         session_ciphertext = account.session_ciphertext
+        full_init_required = requires_full_initialization(item)
     try:
         health = gateway.check_account_health_isolated(session_ciphertext, credentials)
-        warning = "" if health.status == AccountStatus.ACTIVE.value else "授权已持久化，但在线回读未确认"
-    except Exception:
+    except Exception as exc:
+        if full_init_required:
+            fail_full_initialization_online_readback(
+                session_factory,
+                claim,
+                _safe_error("A 在线读回失败", exc),
+            )
+            return
         warning = "授权已持久化，但在线回读失败"
-    with session_factory() as session:
-        succeed_claim(session, claim, warning=warning)
-        commit_claim(session)
+    else:
+        if full_init_required and health.status != AccountStatus.ACTIVE.value:
+            fail_full_initialization_online_readback(
+                session_factory,
+                claim,
+                health.detail or health.status,
+            )
+            return
+        warning = "" if health.status == AccountStatus.ACTIVE.value else "授权已持久化，但在线回读未确认"
+    complete_online_readback(session_factory, claim, warning)
 
 
 def _login_inputs(session_factory, claim: PhaseClaim) -> tuple[LoginCallInputs, int]:
@@ -236,7 +254,13 @@ def _verify_materials(session_factory, claim: PhaseClaim, materials: LoginMateri
     if status != AccountStatus.ACTIVE.value or not raw_session:
         _fail_confirmed_call(session_factory, claim, "code_verify_call_state", "login_remote_not_completed", "Telegram 未返回已授权 session")
         return
-    _persist_authorized_session(session_factory, claim, raw_session, "code_verify_call_state")
+    _persist_authorized_session(
+        session_factory,
+        claim,
+        raw_session,
+        state_field="code_verify_call_state",
+        source_two_fa_kind="telegram_missing",
+    )
 
 
 def _verify_two_fa(
@@ -268,7 +292,14 @@ def _verify_two_fa(
     if status != AccountStatus.ACTIVE.value or not raw_session:
         _fail_confirmed_call(session_factory, claim, "twofa_verify_call_state", "login_remote_not_completed", "Telegram 二步验证未完成")
         return
-    _persist_authorized_session(session_factory, claim, raw_session, "twofa_verify_call_state")
+    _persist_authorized_session(
+        session_factory,
+        claim,
+        raw_session,
+        state_field="twofa_verify_call_state",
+        source_two_fa_kind="telegram_accepted",
+        source_two_fa_password=password_2fa,
+    )
 
 
 def _persist_waiting_two_fa(session_factory, claim: PhaseClaim, raw_session: str) -> None:
@@ -281,7 +312,15 @@ def _persist_waiting_two_fa(session_factory, claim: PhaseClaim, raw_session: str
         session.commit()
 
 
-def _persist_authorized_session(session_factory, claim: PhaseClaim, raw_session: str, state_field: str) -> None:
+def _persist_authorized_session(
+    session_factory,
+    claim: PhaseClaim,
+    raw_session: str,
+    *,
+    state_field: str,
+    source_two_fa_kind: str,
+    source_two_fa_password: str = "",
+) -> None:
     with session_factory() as session:
         item, attempt = load_claim(session, claim)
         account = _item_account(session, item)
@@ -295,7 +334,12 @@ def _persist_authorized_session(session_factory, claim: PhaseClaim, raw_session:
         flow.temporary_session_ciphertext = None
         flow.phone_code_hash_ciphertext = None
         setattr(attempt, state_field, "confirmed")
-        queue_login_profile_initialization(session, account.id, "account-login-worker")
+        attach_authorized_full_initialization(
+            session,
+            item,
+            source_two_fa_kind=source_two_fa_kind,
+            source_two_fa_password=source_two_fa_password,
+        )
         advance_claim(session, claim, "pool_transition")
         commit_claim(session)
 

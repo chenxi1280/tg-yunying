@@ -170,25 +170,17 @@ prune_docker_pull_cache() {
 }
 
 preserve_frontend_assets() {
-  local releases_dir="$1"
+  local current_link="$1"
   local tmp_dir="$2"
-  local preserved_assets=()
+  local previous_assets="${current_link}/assets"
 
-  if [[ ! -d "$releases_dir" ]]; then
+  if [[ ! -d "$previous_assets" ]]; then
     return 0
   fi
 
-  mapfile -t preserved_assets < <(find "$releases_dir" -mindepth 2 -maxdepth 2 -type d -name assets ! -path "${tmp_dir}/assets" | sort)
-  if (( ${#preserved_assets[@]} == 0 )); then
-    return 0
-  fi
-
-  echo "==> Preserving frontend assets from ${#preserved_assets[@]} previous release(s)"
+  echo "==> Hard-linking missing frontend assets from current release"
   mkdir -p "${tmp_dir}/assets"
-  local asset_dir
-  for asset_dir in "${preserved_assets[@]}"; do
-    cp -a "${asset_dir}/." "${tmp_dir}/assets/"
-  done
+  cp -aln "${previous_assets}/." "${tmp_dir}/assets/"
 }
 
 publish_frontend_static() {
@@ -207,7 +199,6 @@ publish_frontend_static() {
   mkdir -p "$releases_dir"
   rm -rf "$tmp_dir"
   mkdir -p "$tmp_dir"
-  preserve_frontend_assets "$releases_dir" "$tmp_dir"
 
   container_id="$(docker create "$image")"
   cleanup_static_container() {
@@ -219,6 +210,7 @@ publish_frontend_static() {
 
   docker cp "${container_id}:${html_dir}/." "$tmp_dir/"
   test -f "${tmp_dir}/index.html"
+  preserve_frontend_assets "$current_link" "$tmp_dir"
 
   cleanup_static_container
   container_id=""
@@ -256,7 +248,7 @@ WORKER_SERVICES=(
   worker-metrics
 )
 
-if [[ "${ACCOUNT_BATCH_LOGIN_MODE:-off}" != "off" ]]; then
+if [[ "${ACCOUNT_BATCH_LOGIN_MODE:-off}" != "off" || "${ACCOUNT_POST_LOGIN_INIT_MODE:-off}" != "off" ]]; then
   WORKER_SERVICES+=(worker-account-login)
 fi
 

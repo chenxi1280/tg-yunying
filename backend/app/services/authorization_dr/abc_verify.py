@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 
 from sqlalchemy import func, select
 
 from app.models import (
+    AuditLog,
     AuthorizationDrRuntimeContract,
     TgAccount,
     TgAccountAuthorization,
@@ -82,6 +84,49 @@ def apply_abc_e4(
     session.add(operation)
     session.commit()
     return _execute_verification(session, operation)
+
+
+def completed_abc_evidence_ref(session, tenant_id: int, account_id: int) -> str:
+    operations = session.scalars(
+        select(TgAuthorizationDrOperation).where(
+            TgAuthorizationDrOperation.tenant_id == tenant_id,
+            TgAuthorizationDrOperation.account_id == account_id,
+            TgAuthorizationDrOperation.operation_type == "abc_e4_primary_send",
+            TgAuthorizationDrOperation.status == "succeeded",
+            TgAuthorizationDrOperation.remote_call_state == "succeeded",
+        ).order_by(TgAuthorizationDrOperation.created_at.desc())
+    )
+    for operation in operations:
+        evidence = _completed_operation_evidence(session, operation)
+        if evidence:
+            return evidence
+    return ""
+
+
+def _completed_operation_evidence(session, operation) -> str:
+    try:
+        primary = verified_code_source(session, operation)
+        account = _account(session, operation.tenant_id, operation.account_id)
+        standby = _standby_b(session, account, primary)
+        malaysia, _bundle, _copies, _probe = _standby_c(session, account, primary)
+    except AuthorizationDrError:
+        return ""
+    if malaysia.auth_key_fingerprint_digest == standby.auth_key_fingerprint_digest:
+        return ""
+    row = session.scalar(
+        select(AuditLog).where(
+            AuditLog.target_type == "tg_authorization_dr_operation",
+            AuditLog.target_id == operation.id,
+            AuditLog.action == "完成 ABC canary E4",
+        ).order_by(AuditLog.id.desc()).limit(1)
+    )
+    message_id = _saved_message_id(row.detail if row else "")
+    return f"e4-operation:{operation.id}:saved-message:{message_id}" if message_id else ""
+
+
+def _saved_message_id(detail: str) -> str:
+    match = re.search(r"(?:^|;\s*)primary_saved_message_id=([^;\s]+)", detail)
+    return match.group(1) if match else ""
 
 
 def _execute_verification(session, operation) -> dict:
@@ -413,4 +458,4 @@ def _fingerprint(payload: dict) -> str:
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-__all__ = ["apply_abc_e4", "preview_abc_e4"]
+__all__ = ["apply_abc_e4", "completed_abc_evidence_ref", "preview_abc_e4"]

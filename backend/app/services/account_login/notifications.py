@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.admin_chats import send_admin_chat_broadcast
 from app.models import (
+    TERMINAL_FULL_INIT_STATUSES,
     Tenant,
     TgAccountLoginBatch,
     TgAccountLoginBatchItem,
@@ -45,6 +46,10 @@ def finalize_batch_if_terminal(session: Session, batch_id: int) -> bool:
         TgAccountLoginBatchItem.batch_id == batch.id,
     ).order_by(TgAccountLoginBatchItem.line_no).with_for_update()))
     _recount_batch(batch, items)
+    if batch.status != "cancelled" and batch.post_init_waiting_count:
+        batch.status = "running"
+        batch.finished_at = None
+        return False
     if not items or any(item.status not in TERMINAL_ITEM_STATUSES for item in items):
         return False
     previous_status = batch.status
@@ -58,8 +63,10 @@ def finalize_batch_if_terminal(session: Session, batch_id: int) -> bool:
 def record_batch_correction(
     session: Session,
     batch_id: int,
+    *,
     changed_item_id: int | None = None,
     previous_status: str = "unresolved",
+    status_scope: str = "login",
 ) -> None:
     batch = session.scalar(select(TgAccountLoginBatch).where(TgAccountLoginBatch.id == batch_id).with_for_update())
     if not batch:
@@ -70,16 +77,33 @@ def record_batch_correction(
     _recount_batch(batch, items)
     batch.resolution_version += 1
     if batch.status != "cancelled":
-        batch.status = "completed_with_unresolved" if batch.unresolved_count else "completed"
+        batch.status = "running" if batch.post_init_waiting_count else _terminal_batch_status(batch)
+        batch.finished_at = None if batch.status == "running" else (batch.finished_at or _now())
     batch.state_version += 1
-    corrections = _correction_summaries(items, changed_item_id, previous_status)
+    corrections = _correction_summaries(
+        items,
+        changed_item_id,
+        previous_status,
+        status_scope=status_scope,
+    )
     _insert_notifications(session, batch, items, "correction", corrections)
 
 
 def _recount_batch(batch: TgAccountLoginBatch, items: list[TgAccountLoginBatchItem]) -> None:
     batch.total_count = len(items)
     batch.success_count = sum(item.status in {"succeeded", "succeeded_with_warning"} for item in items)
-    batch.failed_count = sum(item.status == "failed" for item in items)
+    batch.authorized_count = sum(item.authorization_status == "confirmed" for item in items)
+    batch.fully_initialized_count = sum(
+        item.post_initialization_status == "succeeded" for item in items
+    )
+    batch.post_init_waiting_count = sum(
+        item.post_initialization_status not in {*TERMINAL_FULL_INIT_STATUSES, "not_requested"}
+        for item in items
+    )
+    batch.manual_required_count = sum(
+        item.post_initialization_status == "manual_required" for item in items
+    )
+    batch.failed_count = sum(_counts_as_failure(item) for item in items)
     batch.unresolved_count = sum(item.status == "unresolved" for item in items)
     batch.warning_count = sum(item.status == "succeeded_with_warning" for item in items)
     batch.skipped_count = sum(item.status == "skipped" for item in items)
@@ -90,7 +114,20 @@ def _terminal_batch_status(batch: TgAccountLoginBatch) -> str:
         return "cancelled"
     if batch.unresolved_count:
         return "completed_with_unresolved"
+    if batch.failed_count:
+        return "completed_with_failures"
+    if batch.manual_required_count:
+        return "completed_with_manual"
     return "completed"
+
+
+def _counts_as_failure(item: TgAccountLoginBatchItem) -> bool:
+    if item.status != "failed":
+        return False
+    return not (
+        item.post_initialization_status == "manual_required"
+        and item.post_initialization_failure_type
+    )
 
 
 def _insert_notifications(
@@ -139,8 +176,19 @@ def _notification_summary(
             "unresolved": batch.unresolved_count,
             "warning": batch.warning_count,
             "skipped": batch.skipped_count,
+            "authorized": batch.authorized_count,
+            "fully_initialized": batch.fully_initialized_count,
+            "post_init_waiting": batch.post_init_waiting_count,
+            "manual_required": batch.manual_required_count,
         },
-        "failed": _item_summaries(items, {"failed"}),
+        "failed": _item_summaries(
+            [item for item in items if _counts_as_failure(item)],
+            {"failed"},
+        ),
+        "manual": _item_summaries(
+            [item for item in items if item.post_initialization_status == "manual_required"],
+            {"failed", "unresolved"},
+        ),
         "unresolved": _item_summaries(items, {"unresolved"}),
         "warning": _item_summaries(items, {"succeeded_with_warning"}),
         "corrections": corrections or [],
@@ -151,15 +199,22 @@ def _correction_summaries(
     items: list[TgAccountLoginBatchItem],
     changed_item_id: int | None,
     previous_status: str,
+    *,
+    status_scope: str,
 ) -> list[dict[str, object]]:
     item = next((value for value in items if value.id == changed_item_id), None)
     if not item:
         return []
+    to_status = (
+        item.post_initialization_status
+        if status_scope == "post_initialization"
+        else item.status
+    )
     return [{
         "line_no": item.line_no,
         "phone_masked": item.phone_masked,
         "from_status": previous_status,
-        "to_status": item.status,
+        "to_status": to_status,
         "reason": item.failure_type or item.warning_detail or item.phase,
     }]
 
@@ -304,7 +359,8 @@ def _bot_message(row: TgAccountLoginBatchNotification) -> str:
     header = (
         f"{prefix} #{row.batch_id}\n"
         f"成功 {counts.get('success', 0)} / 失败 {counts.get('failed', 0)} / "
-        f"未解 {counts.get('unresolved', 0)} / 警告 {counts.get('warning', 0)}"
+        f"未解 {counts.get('unresolved', 0)} / 人工 {counts.get('manual_required', 0)} / "
+        f"警告 {counts.get('warning', 0)}"
     )
     message = "\n".join([header, *_bot_detail_sections(summary)])
     if len(message) <= MAX_BOT_MESSAGE_CHARACTERS:
@@ -314,7 +370,12 @@ def _bot_message(row: TgAccountLoginBatchNotification) -> str:
 
 def _bot_detail_sections(summary: dict) -> list[str]:
     sections: list[str] = []
-    for key, label in (("failed", "失败"), ("unresolved", "未解"), ("warning", "警告")):
+    for key, label in (
+        ("failed", "失败"),
+        ("manual", "需人工"),
+        ("unresolved", "未解"),
+        ("warning", "警告"),
+    ):
         items = summary.get(key, [])
         if not items:
             continue

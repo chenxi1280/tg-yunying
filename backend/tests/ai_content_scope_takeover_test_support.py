@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.database import Base
@@ -13,6 +13,7 @@ from app.models import (
     ContentMixCycle,
     ContentMixCycleSlot,
     ExecutionAttempt,
+    OperationTarget,
     Task,
     TaskDayLedger,
     TaskGroupDailyMessageSlot,
@@ -25,6 +26,8 @@ from app.services._common import _now
 from app.services.task_center.ai_content_scope_takeover import (
     preview_ai_content_scope_takeover,
 )
+from app.services.task_center.fulfillment_activation import CURRENT_CONTRACT_VERSION
+from app.services.task_center.group_ai_scope import CONTENT_SCOPE_CONTRACT_VERSION
 from app.services.task_center.payloads import SendMessagePayload
 
 
@@ -36,6 +39,14 @@ def sessions():
 
 def seed_scope(session: Session) -> None:
     session.add(Tenant(id=1, name="tenant"))
+    session.flush()
+    session.add(OperationTarget(
+        id=8,
+        tenant_id=1,
+        target_type="group",
+        tg_peer_id="-1008",
+        title="group target",
+    ))
     session.add(TgGroup(id=8, tenant_id=1, tg_peer_id="-1008", title="group"))
     session.add(TgAccount(
         id=11,
@@ -45,6 +56,7 @@ def seed_scope(session: Session) -> None:
         status="在线",
         session_ciphertext="session",
     ))
+    session.flush()
     session.add(TgGroupAccount(
         tenant_id=1,
         group_id=8,
@@ -101,6 +113,47 @@ def seed_bound_legacy_action(
     return action
 
 
+def seed_fact_first_action(
+    session: Session,
+    action_id: str,
+    **payload_updates,
+) -> Action:
+    identifiers = _content_identifiers(action_id)
+    ledger_count = session.scalar(select(func.count()).select_from(TaskDayLedger))
+    start = datetime(2026, 7, 31, 16, tzinfo=UTC) + timedelta(days=ledger_count or 0)
+    _seed_content_ledger(session, identifiers, start)
+    task = session.get(Task, "task-ai")
+    task.fulfillment_contract_version = CURRENT_CONTRACT_VERSION
+    payload = {
+        "chat_id": "-1008",
+        "group_id": 8,
+        "message_text": "fact-first body",
+        "chat_mode": "idle_warmup",
+        "primary_quantity_slot_id": identifiers[1],
+        "relation_kind": "direct",
+        "content_scope_contract_version": CONTENT_SCOPE_CONTRACT_VERSION,
+        "content_scope_tenant_id": 1,
+        "content_scope_group_id": 8,
+        "content_scope_task_id": "task-ai",
+    }
+    payload.update(payload_updates)
+    action = Action(
+        id=action_id,
+        tenant_id=1,
+        task_id="task-ai",
+        task_type="group_ai_chat",
+        action_type="send_message",
+        account_id=11,
+        scheduled_at=_now() - timedelta(minutes=1),
+        status="pending",
+        primary_quantity_slot_id=identifiers[1],
+        payload=SendMessagePayload.model_validate(payload).model_dump(mode="json"),
+    )
+    session.add(action)
+    session.flush()
+    return action
+
+
 def _content_identifiers(action_id: str) -> tuple[str, str, str, str]:
     return (
         f"ledger-{action_id}",
@@ -128,6 +181,7 @@ def _seed_content_ledger(
         day_phase="full_day_committed",
         planning_anchor_at=start,
     ))
+    session.flush()
     session.add(TaskGroupDailyMessageSlot(
         id=quantity_id,
         tenant_id=1,
@@ -137,6 +191,7 @@ def _seed_content_ledger(
         slot_kind="extra_volume",
         slot_ordinal=1,
     ))
+    session.flush()
     _seed_content_cycle(session, identifiers)
 
 

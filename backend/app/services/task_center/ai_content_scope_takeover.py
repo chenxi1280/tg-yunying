@@ -12,27 +12,28 @@ from app.models import (
     Action,
     AiContentScopeTakeoverBatch,
     AiContentScopeTakeoverItem,
-    AiGroupMessageMemory,
     ContentMixCycle,
     ContentMixCycleSlot,
     ExecutionAttempt,
-    GroupContextMessage,
     Task,
     TaskAccountDailyCoverage,
     TaskGroupDailyMessageSlot,
-    TgGroup,
-    TgGroupAccount,
 )
 
 from .group_ai_scope import (
     CONTENT_SCOPE_CONTRACT_VERSION,
     validate_group_ai_content_scope,
 )
+from .ai_content_scope_takeover_context import (
+    TakeoverClassificationContext,
+    build_takeover_classification_context,
+)
+from .ai_content_scope_takeover_facts import classification_facts
+from .fulfillment_activation import CURRENT_CONTRACT_VERSION
 from .payloads import SendMessagePayload
 from .runtime_state_hash import (
     action_state_hash,
     canonical_state_hash,
-    execution_attempt_state_hash,
 )
 
 
@@ -64,7 +65,11 @@ def preview_ai_content_scope_takeover(
     supersedes_batch_id: str | None = None,
 ) -> AiContentScopeTakeoverBatch:
     actions = _preview_actions(session, cutoff_at, supersedes_batch_id)
-    classified = [(action, classify_takeover_action(session, action)) for action in actions]
+    context = build_takeover_classification_context(session, actions)
+    classified = [
+        (action, classify_takeover_action(session, action, context=context))
+        for action in actions
+    ]
     item_facts = [_item_fact(action, result) for action, result in classified]
     batch = AiContentScopeTakeoverBatch(
         dispatcher_scope=dispatcher_scope,
@@ -89,15 +94,18 @@ def preview_ai_content_scope_takeover(
         )
         for action, result in classified
     ])
+    session.flush()
     return batch
 
 
 def classify_takeover_action(
     session: Session,
     action: Action,
+    *,
+    context: TakeoverClassificationContext | None = None,
 ) -> TakeoverClassification:
-    attempt = _latest_attempt(session, action.id)
-    facts_hash = canonical_state_hash(_classification_facts(session, action, attempt))
+    attempt = _latest_attempt(session, action.id, context)
+    facts_hash = _classification_hash(session, action, attempt, context)
     if action.status == "unknown_after_send" or _gateway_started_open(action, attempt):
         return TakeoverClassification(
             "remote_reconcile_required", facts_hash, "gateway_boundary_exists",
@@ -111,14 +119,47 @@ def classify_takeover_action(
         return TakeoverClassification(
             "replan_required", facts_hash, "legacy_payload_invalid_pre_gateway",
         )
-    binding = _binding_classification(session, action, payload)
+    binding = _binding_classification(session, action, payload, context)
     if binding is not None:
         name, reason = binding
         return TakeoverClassification(name, facts_hash, reason)
+    return _scope_classification(session, action, payload, facts_hash, context)
+
+
+def _classification_hash(
+    session: Session,
+    action: Action,
+    attempt: ExecutionAttempt | None,
+    context: TakeoverClassificationContext | None,
+) -> str:
+    quantity = _quantity(
+        session, str(action.primary_quantity_slot_id or ""), context,
+    )
+    facts = classification_facts(
+        session,
+        action,
+        attempt,
+        task=_task(session, action, context),
+        binding_rows=_binding_rows(session, action, context),
+        quantity=quantity,
+        coverage=_coverage(session, quantity, context),
+        context=context,
+    )
+    return canonical_state_hash(facts)
+
+
+def _scope_classification(
+    session: Session,
+    action: Action,
+    payload: SendMessagePayload,
+    facts_hash: str,
+    context: TakeoverClassificationContext | None,
+) -> TakeoverClassification:
     scope_values = [getattr(payload, key) for key in SCOPE_KEYS]
     if all(scope_values):
         violation = validate_group_ai_content_scope(
             session, action, payload=payload, account_id=action.account_id,
+            facts=context.scope_facts if context else None,
         )
         if violation is None:
             return TakeoverClassification(
@@ -132,6 +173,7 @@ def classify_takeover_action(
     candidate = payload.model_copy(update=_scope_snapshot(action, payload))
     violation = validate_group_ai_content_scope(
         session, action, payload=candidate, account_id=action.account_id,
+        facts=context.scope_facts if context else None,
     )
     if violation is None:
         return TakeoverClassification(
@@ -153,8 +195,27 @@ def scope_snapshot_payload(action: Action) -> dict:
 def recompute_takeover_hashes(
     session: Session,
     action: Action,
+    *,
+    context: TakeoverClassificationContext | None = None,
 ) -> tuple[str, TakeoverClassification]:
-    return action_state_hash(action), classify_takeover_action(session, action)
+    return action_state_hash(action), classify_takeover_action(
+        session, action, context=context,
+    )
+
+
+def takeover_classification_reason_counts(
+    session: Session,
+    batch_id: str,
+) -> dict[str, int]:
+    rows = session.execute(select(
+        AiContentScopeTakeoverItem.classification,
+        AiContentScopeTakeoverItem.outcome,
+    ).where(AiContentScopeTakeoverItem.batch_id == batch_id)).all()
+    counts = Counter(
+        f"{classification}:{(outcome or {}).get('reason_code') or 'unknown'}"
+        for classification, outcome in rows
+    )
+    return dict(sorted(counts.items()))
 
 
 def _preview_actions(
@@ -212,7 +273,11 @@ def _binding_classification(
     session: Session,
     action: Action,
     payload: SendMessagePayload,
+    context: TakeoverClassificationContext | None,
 ) -> tuple[str, str] | None:
+    task = _task(session, action, context)
+    if _uses_fact_first_binding(task, action, payload):
+        return _fact_first_binding_classification(session, action, payload, context)
     ids = (
         str(action.content_mix_cycle_slot_id or ""),
         str(action.primary_quantity_slot_id or ""),
@@ -223,7 +288,7 @@ def _binding_classification(
         return "replan_required", "content_mix_binding_missing"
     if len(set((ids[0], ids[2]))) != 1 or len(set((ids[1], ids[3]))) != 1:
         return "quarantine", "content_mix_binding_conflict"
-    rows = _binding_rows(session, action)
+    rows = _binding_rows(session, action, context)
     if rows is None:
         return "replan_required", "content_mix_binding_fact_missing"
     cycle_slot, quantity, cycle = rows
@@ -239,20 +304,103 @@ def _binding_classification(
         action,
         payload=payload,
         quantity=quantity,
+        context=context,
     )
+
+
+def _task(
+    session: Session,
+    action: Action,
+    context: TakeoverClassificationContext | None,
+) -> Task | None:
+    if not action.task_id:
+        return None
+    if context:
+        return context.scope_facts.tasks.get(action.task_id)
+    return session.get(Task, action.task_id)
+
+
+def _uses_fact_first_binding(
+    task: Task | None,
+    action: Action,
+    payload: SendMessagePayload,
+) -> bool:
+    return bool(
+        task
+        and task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION
+        and not action.content_mix_cycle_slot_id
+        and not payload.content_mix_cycle_slot_id
+    )
+
+
+def _fact_first_binding_classification(
+    session: Session,
+    action: Action,
+    payload: SendMessagePayload,
+    context: TakeoverClassificationContext | None,
+) -> tuple[str, str] | None:
+    action_id = str(action.primary_quantity_slot_id or "")
+    payload_id = str(payload.primary_quantity_slot_id or "")
+    if not action_id or not payload_id:
+        return "replan_required", "fact_first_quantity_binding_missing"
+    if action_id != payload_id:
+        return "quarantine", "fact_first_quantity_binding_conflict"
+    quantity = _quantity(session, action_id, context)
+    if quantity is None:
+        return "replan_required", "fact_first_quantity_fact_missing"
+    if quantity.task_id != action.task_id or quantity.tenant_id != action.tenant_id:
+        return "quarantine", "fact_first_quantity_ownership_conflict"
+    return _coverage_binding_classification(
+        session,
+        action,
+        payload=payload,
+        quantity=quantity,
+        context=context,
+    )
+
+
+def _quantity(
+    session: Session,
+    quantity_id: str,
+    context: TakeoverClassificationContext | None,
+) -> TaskGroupDailyMessageSlot | None:
+    if context:
+        return context.quantities.get(quantity_id)
+    return session.get(TaskGroupDailyMessageSlot, quantity_id)
+
+
+def _coverage(
+    session: Session,
+    quantity: TaskGroupDailyMessageSlot | None,
+    context: TakeoverClassificationContext | None,
+) -> TaskAccountDailyCoverage | None:
+    coverage_id = str(
+        quantity.task_account_daily_coverage_id or ""
+    ) if quantity else ""
+    if not coverage_id:
+        return None
+    if context:
+        return context.coverages.get(coverage_id)
+    return session.get(TaskAccountDailyCoverage, coverage_id)
 
 
 def _binding_rows(
     session: Session,
     action: Action,
+    context: TakeoverClassificationContext | None = None,
 ) -> tuple[ContentMixCycleSlot, TaskGroupDailyMessageSlot, ContentMixCycle] | None:
     cycle_slot_id = str(action.content_mix_cycle_slot_id or "")
     quantity_id = str(action.primary_quantity_slot_id or "")
     if not cycle_slot_id or not quantity_id:
         return None
-    cycle_slot = session.get(ContentMixCycleSlot, cycle_slot_id)
-    quantity = session.get(TaskGroupDailyMessageSlot, quantity_id)
-    cycle = session.get(ContentMixCycle, cycle_slot.cycle_id) if cycle_slot else None
+    if context:
+        cycle_slot = context.cycle_slots.get(cycle_slot_id)
+        quantity = context.quantities.get(quantity_id)
+        cycle = context.cycles.get(cycle_slot.cycle_id) if cycle_slot else None
+    else:
+        cycle_slot = session.get(ContentMixCycleSlot, cycle_slot_id)
+        quantity = session.get(TaskGroupDailyMessageSlot, quantity_id)
+        cycle = session.get(ContentMixCycle, cycle_slot.cycle_id) if cycle_slot else None
     if cycle_slot is None or quantity is None or cycle is None:
         return None
     return cycle_slot, quantity, cycle
@@ -282,13 +430,14 @@ def _coverage_binding_classification(
     *,
     payload: SendMessagePayload,
     quantity: TaskGroupDailyMessageSlot,
+    context: TakeoverClassificationContext | None = None,
 ) -> tuple[str, str] | None:
     expected_id = str(quantity.task_account_daily_coverage_id or "")
     if str(payload.coverage_ledger_id or "") != expected_id:
         return "quarantine", "coverage_binding_conflict"
     if not expected_id:
         return None
-    coverage = session.get(TaskAccountDailyCoverage, expected_id)
+    coverage = _coverage(session, quantity, context)
     if coverage is None:
         return "replan_required", "coverage_fact_missing"
     identity = (
@@ -326,7 +475,13 @@ def _gateway_started_open(
     )
 
 
-def _latest_attempt(session: Session, action_id: str) -> ExecutionAttempt | None:
+def _latest_attempt(
+    session: Session,
+    action_id: str,
+    context: TakeoverClassificationContext | None,
+) -> ExecutionAttempt | None:
+    if context:
+        return context.latest_attempts.get(action_id)
     return session.scalar(
         select(ExecutionAttempt).where(
             ExecutionAttempt.action_id == action_id,
@@ -334,108 +489,12 @@ def _latest_attempt(session: Session, action_id: str) -> ExecutionAttempt | None
     )
 
 
-def _classification_facts(
-    session: Session,
-    action: Action,
-    attempt: ExecutionAttempt | None,
-) -> dict:
-    payload = action.payload if isinstance(action.payload, dict) else {}
-    task = session.get(Task, action.task_id) if action.task_id else None
-    group = session.get(TgGroup, payload.get("group_id")) if payload.get("group_id") else None
-    account_link = _account_link(session, action, payload)
-    context = _context_facts(session, action, payload)
-    memory = session.get(AiGroupMessageMemory, payload.get("ai_message_memory_id")) if payload.get("ai_message_memory_id") else None
-    rows = _binding_rows(session, action)
-    return {
-        "task": _task_fact(task),
-        "group": _group_fact(group),
-        "account_link_id": account_link,
-        "binding": _binding_facts(rows),
-        "context": context,
-        "memory": _memory_fact(memory),
-        "attempt_hash": execution_attempt_state_hash(attempt) if attempt else "",
-    }
-
-
-def _account_link(session: Session, action: Action, payload: dict) -> int | None:
-    group_id = int(payload.get("group_id") or 0)
-    account_id = int(action.account_id or 0)
-    if not group_id or not account_id:
-        return None
-    return session.scalar(select(TgGroupAccount.id).where(
-        TgGroupAccount.tenant_id == action.tenant_id,
-        TgGroupAccount.group_id == group_id,
-        TgGroupAccount.account_id == account_id,
-    ))
-
-
-def _context_facts(session: Session, action: Action, payload: dict) -> list[dict]:
-    ids = set(payload.get("context_message_ids") or [])
-    ids.update(payload.get("anchor_message_ids") or [])
-    if payload.get("context_snapshot_message_id"):
-        ids.add(payload["context_snapshot_message_id"])
-    if not ids:
-        return []
-    rows = session.scalars(select(GroupContextMessage).where(
-        GroupContextMessage.id.in_(ids),
-    ).order_by(GroupContextMessage.id.asc()))
-    return [
-        {
-            "id": row.id,
-            "tenant_id": row.tenant_id,
-            "group_id": row.group_id,
-            "remote_message_id": row.remote_message_id,
-        }
-        for row in rows
-    ]
-
-
-def _task_fact(task: Task | None) -> dict:
-    if task is None:
-        return {}
-    config = task.type_config if isinstance(task.type_config, dict) else {}
-    return {
-        "id": task.id,
-        "tenant_id": task.tenant_id,
-        "type": task.type,
-        "target_group_id": config.get("target_group_id"),
-        "target_operation_target_id": config.get("target_operation_target_id"),
-    }
-
-
-def _group_fact(group: TgGroup | None) -> dict:
-    if group is None:
-        return {}
-    return {"id": group.id, "tenant_id": group.tenant_id, "peer_id": group.tg_peer_id}
-
-
-def _binding_facts(rows) -> dict:
-    if rows is None:
-        return {}
-    slot, quantity, cycle = rows
-    return {
-        "slot": [slot.id, slot.primary_quantity_slot_id, slot.current_action_id, slot.slot_state],
-        "quantity": [quantity.id, quantity.task_id, quantity.task_day_ledger_id, quantity.task_account_daily_coverage_id, quantity.state],
-        "cycle": [cycle.id, cycle.task_id, cycle.task_day_ledger_id],
-    }
-
-
-def _memory_fact(memory: AiGroupMessageMemory | None) -> dict:
-    if memory is None:
-        return {}
-    return {
-        "id": memory.id,
-        "tenant_id": memory.tenant_id,
-        "task_id": memory.task_id,
-        "group_id": memory.group_id,
-        "action_id": memory.action_id,
-    }
-
-
 __all__ = [
     "TakeoverClassification",
+    "build_takeover_classification_context",
     "classify_takeover_action",
     "preview_ai_content_scope_takeover",
     "recompute_takeover_hashes",
     "scope_snapshot_payload",
+    "takeover_classification_reason_counts",
 ]

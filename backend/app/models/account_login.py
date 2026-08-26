@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column, object_session
 
 from app.database import Base
@@ -34,6 +34,11 @@ class TgAccountLoginBatch(Base):
     unresolved_count: Mapped[int] = mapped_column(Integer, default=0)
     warning_count: Mapped[int] = mapped_column(Integer, default=0)
     skipped_count: Mapped[int] = mapped_column(Integer, default=0)
+    authorized_count: Mapped[int] = mapped_column(Integer, default=0)
+    fully_initialized_count: Mapped[int] = mapped_column(Integer, default=0)
+    post_init_waiting_count: Mapped[int] = mapped_column(Integer, default=0)
+    manual_required_count: Mapped[int] = mapped_column(Integer, default=0)
+    initialization_policy: Mapped[str] = mapped_column(String(48), default="legacy_login_only")
     last_claimed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     reason: Mapped[str] = mapped_column(String(255))
     trace_id: Mapped[str] = mapped_column(String(80))
@@ -48,6 +53,14 @@ class TgAccountLoginBatchItem(Base):
         UniqueConstraint("batch_id", "line_no", name="uq_login_batch_item_line"),
         UniqueConstraint("batch_id", "phone_fingerprint", name="uq_login_batch_item_phone"),
         UniqueConstraint("batch_id", "code_source_uuid_fingerprint", name="uq_login_batch_item_uuid"),
+        Index(
+            "ux_login_batch_item_account",
+            "batch_id",
+            "account_id",
+            unique=True,
+            postgresql_where=text("account_id IS NOT NULL"),
+            sqlite_where=text("account_id IS NOT NULL"),
+        ),
         Index("ix_login_batch_item_due", "status", "next_retry_at", "batch_id", "line_no"),
     )
 
@@ -69,6 +82,13 @@ class TgAccountLoginBatchItem(Base):
     route_hint: Mapped[str] = mapped_column(String(40))
     route: Mapped[str] = mapped_column(String(40), default="")
     account_id: Mapped[int | None] = mapped_column(ForeignKey("tg_accounts.id"), nullable=True)
+    initialization_policy: Mapped[str] = mapped_column(String(48), default="legacy_login_only")
+    authorization_status: Mapped[str] = mapped_column(String(40), default="not_confirmed")
+    post_initialization_id: Mapped[int | None] = mapped_column(
+        ForeignKey("tg_account_full_initializations.id", ondelete="SET NULL"), nullable=True
+    )
+    post_initialization_status: Mapped[str] = mapped_column(String(40), default="not_requested")
+    post_initialization_failure_type: Mapped[str] = mapped_column(String(100), default="")
     status: Mapped[str] = mapped_column(String(40), default="pending")
     phase: Mapped[str] = mapped_column(String(40), default="prepare")
     failure_type: Mapped[str] = mapped_column(String(80), default="")

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -21,6 +21,10 @@ class TgAccountSecuritySnapshot(Base):
     two_fa_password_ciphertext: Mapped[str] = mapped_column(Text, default="")
     two_fa_password_hint: Mapped[str] = mapped_column(String(120), default="")
     two_fa_password_stored_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    two_fa_password_source: Mapped[str] = mapped_column(String(40), default="legacy_unproven")
+    fixed_two_fa_version: Mapped[int] = mapped_column(Integer, default=0)
+    two_fa_evidence_ref: Mapped[str] = mapped_column(String(160), default="")
+    two_fa_authorization_generation: Mapped[int] = mapped_column(Integer, default=0)
     external_authorization_count: Mapped[int] = mapped_column(Integer, default=0)
     last_device_scan_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_2fa_check_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -83,6 +87,16 @@ class TgAccountDeviceCleanupPrecheck(Base):
 
 class TgAccountSecurityBatch(Base):
     __tablename__ = "tg_account_security_batches"
+    __table_args__ = (
+        Index(
+            "ux_security_batch_idempotency",
+            "tenant_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key <> ''"),
+            sqlite_where=text("idempotency_key <> ''"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))

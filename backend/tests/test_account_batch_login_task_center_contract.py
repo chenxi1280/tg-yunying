@@ -52,6 +52,14 @@ def test_login_batch_detail_drawer_requests_200_items_and_api_allows_them():
     assert "le=LOGIN_BATCH_DETAIL_ITEM_LIMIT" in router
 
 
+def test_login_batch_detail_restarts_polling_after_manual_recovery():
+    drawer = _source("frontend/src/app/views/AccountBatchLoginDrawer.tsx")
+
+    assert "pollRevision" in drawer
+    assert "setPollRevision((value) => value + 1)" in drawer
+    assert "[batchId, pollRevision]" in drawer
+
+
 def test_batch_login_capability_exposes_parallel_worker_slots():
     frontend_type = _source("frontend/src/app/types/accountLogin.ts")
     compose = _source("docker-compose.server.yml")

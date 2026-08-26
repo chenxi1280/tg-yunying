@@ -10,6 +10,7 @@ from app.models import AiContentScopeTakeoverBatch, AuditLog
 from app.services._common import _now
 from app.services.task_center.ai_content_scope_takeover import (
     preview_ai_content_scope_takeover,
+    takeover_classification_reason_counts,
 )
 from app.services.task_center.ai_content_scope_takeover_apply import (
     apply_takeover_chunk,
@@ -38,9 +39,17 @@ def run_preview(
             config_version=config_version,
             supersedes_batch_id=supersedes_batch_id,
         )
-        _write_batch_audit(session, batch, actor, approval_ref, "preview")
+        reason_counts = takeover_classification_reason_counts(session, batch.id)
+        _write_batch_audit(
+            session,
+            batch,
+            actor,
+            approval_ref,
+            "preview",
+            classification_reason_counts=reason_counts,
+        )
         session.commit()
-        return _batch_identity(batch)
+        return _batch_identity(batch, classification_reason_counts=reason_counts)
 
 
 def run_apply(
@@ -77,11 +86,16 @@ def run_apply(
     return summary
 
 
-def _batch_identity(batch: AiContentScopeTakeoverBatch) -> dict:
+def _batch_identity(
+    batch: AiContentScopeTakeoverBatch,
+    *,
+    classification_reason_counts: dict,
+) -> dict:
     return {
         "batch_id": batch.id,
         "classification_hash": batch.classification_hash,
         "classification_counts": dict(batch.classification_counts or {}),
+        "classification_reason_counts": classification_reason_counts,
         "status": batch.status,
         "cutoff_at": batch.cutoff_at,
     }
@@ -93,19 +107,24 @@ def _write_batch_audit(
     actor: str,
     approval_ref: str,
     phase: str,
+    *,
+    classification_reason_counts: dict | None = None,
 ) -> None:
+    detail = {
+        "phase": phase,
+        "approval_ref": approval_ref,
+        "classification_hash": batch.classification_hash,
+        "classification_counts": batch.classification_counts,
+    }
+    if classification_reason_counts is not None:
+        detail["classification_reason_counts"] = classification_reason_counts
     session.add(AuditLog(
         tenant_id=None,
         actor=actor[:100],
         action="AI历史内容scope接管批次",
         target_type="ai_content_scope_takeover_batch",
         target_id=batch.id,
-        detail=json.dumps({
-            "phase": phase,
-            "approval_ref": approval_ref,
-            "classification_hash": batch.classification_hash,
-            "classification_counts": batch.classification_counts,
-        }, ensure_ascii=False, sort_keys=True),
+        detail=json.dumps(detail, ensure_ascii=False, sort_keys=True),
     ))
 
 

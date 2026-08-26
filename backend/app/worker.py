@@ -42,6 +42,7 @@ from .worker_role_loaders import (
     dispatcher_runtime_reservation_count,
     drain_account_login_batches,
     drain_account_login_reconciliation,
+    drain_account_post_login_initializations,
     drain_account_online_keepalive,
     drain_account_security_batches,
     drain_account_sync_records,
@@ -257,14 +258,15 @@ def _drain_account_security_once(limit: int) -> int:
 
 def _drain_account_login_once(limit: int) -> int:
     settings = get_settings()
+    post_init_count = drain_account_post_login_initializations(SessionLocal, max(1, limit))
     if settings.account_batch_login_mode == "off":
-        return 0
+        return post_init_count
     reconcile_count = drain_account_login_reconciliation(SessionLocal, max(1, limit))
     notification_count = drain_notification_outbox(SessionLocal, max(1, limit))
     if settings.account_batch_login_mode == "reconcile_only":
-        return reconcile_count + notification_count
+        return reconcile_count + notification_count + post_init_count
     batch_count = drain_account_login_batches(SessionLocal, max(1, limit))
-    return batch_count + reconcile_count + notification_count
+    return batch_count + reconcile_count + notification_count + post_init_count
 
 
 def _safe_optional_drain(name: str, func, *args, **kwargs) -> int:

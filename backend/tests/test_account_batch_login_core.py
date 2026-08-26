@@ -11,19 +11,25 @@ from app.database import Base
 from app.models import (
     AccountPool,
     AppUser,
+    DeveloperAppSlotAssignment,
+    Material,
     TelegramDeveloperApp,
     Tenant,
     TgAccount,
+    TgAccountFullInitialization,
     TgAccountLoginBatchItem,
+    TgAccountLoginPostInitializationBinding,
     TgAccountLoginBatchNotification,
+    TgAccountPhoneFingerprintAlias,
     TgAccountSecuritySnapshot,
 )
 from app.integrations.telegram.contracts import AccountHealth, LoginChallenge
 from app.schemas.account_login import LoginBatchCreateRequest, LoginBatchItemOut, LoginBatchRetryRequest
-from app.security import decrypt_session, encrypt_secret
+from app.security import decrypt_secret, decrypt_session, encrypt_secret, encrypt_session
 from app.services.account_login.batches import cancel_login_batch, create_login_batch, retry_login_batch_items
 from app.services.account_login.contracts import BatchLoginError, LoginMaterials
 from app.services.account_login.notifications import finalize_batch_if_terminal, list_platform_notifications
+from app.services.account_login.identity import phone_fingerprint
 from app.services.account_login.preview import precheck_login_batch
 
 
@@ -40,6 +46,9 @@ def _settings():
         account_batch_login_credential_ttl_seconds=86400,
         account_batch_login_reconcile_seconds=86400,
         account_batch_login_worker_concurrency=4,
+        account_post_login_init_mode="enabled",
+        account_post_login_init_secret_ttl_seconds=900,
+        account_post_login_init_worker_concurrency=2,
         account_batch_login_host_concurrency=1,
         account_batch_login_host_min_interval_seconds=3,
         account_batch_login_developer_app_concurrency=1,
@@ -49,30 +58,91 @@ def _settings():
     )
 
 
-@pytest.fixture()
-def session_factory(monkeypatch):
+def _configure_test_services(monkeypatch, settings) -> None:
     from app.services.account_login import batches, preview, state
+    from app.services.account_post_login_init import binding, policy
 
-    settings = _settings()
     monkeypatch.setattr(preview, "get_settings", lambda: settings)
     monkeypatch.setattr(preview, "code_source_readiness", lambda _hosts=(): "")
     monkeypatch.setattr(batches, "get_settings", lambda: settings)
     monkeypatch.setattr(state, "get_settings", lambda: settings)
-    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
-    Base.metadata.create_all(engine)
-    factory = sessionmaker(bind=engine, expire_on_commit=False, future=True)
-    with factory() as session:
-        session.add(Tenant(id=1, name="批量登录测试租户"))
-        session.add(AccountPool(id=10, tenant_id=1, name="目标分组", pool_purpose="normal"))
-        session.add(AppUser(id=20, tenant_id=1, name="测试操作员", role="普通用户", email="batch@example.test"))
-        session.add(TelegramDeveloperApp(
+    monkeypatch.setattr(binding, "get_settings", lambda: settings)
+    monkeypatch.setattr(policy, "get_settings", lambda: settings)
+
+
+def _developer_app_fixtures() -> list[TelegramDeveloperApp]:
+    return [
+        TelegramDeveloperApp(
             id=30,
             app_name="批量登录测试应用",
             api_id=10030,
             api_hash_ciphertext=encrypt_secret("batch-api-hash"),
             credentials_version=1,
-        ))
+        ),
+        TelegramDeveloperApp(
+            id=31,
+            app_name="批量登录备用应用B",
+            api_id=10031,
+            api_hash_ciphertext=encrypt_secret("batch-api-hash-b"),
+            credentials_version=1,
+        ),
+        TelegramDeveloperApp(
+            id=32,
+            app_name="批量登录备用应用C",
+            api_id=10032,
+            api_hash_ciphertext=encrypt_secret("batch-api-hash-c"),
+            credentials_version=1,
+        ),
+    ]
+
+
+def _seed_test_dependencies(factory) -> None:
+    with factory() as session:
+        session.add_all([
+            Tenant(
+                id=1,
+                name="批量登录测试租户",
+                fixed_two_fa_password_ciphertext=encrypt_secret("test-fixed-password"),
+                fixed_two_fa_password_version=1,
+            ),
+            AccountPool(id=10, tenant_id=1, name="目标分组", pool_purpose="normal"),
+            AppUser(id=20, tenant_id=1, name="测试操作员", role="普通用户", email="batch@example.test"),
+            Material(
+                id=50,
+                tenant_id=1,
+                title="测试头像",
+                material_type="图片",
+                content="fixture-avatar",
+                source_kind="upload",
+                review_status="已审核",
+            ),
+            *_developer_app_fixtures(),
+        ])
+        session.add_all([
+            DeveloperAppSlotAssignment(
+                slot_purpose=purpose,
+                developer_app_id=app_id,
+                assignment_version=1,
+                credentials_version=1,
+                assigned_by="测试操作员",
+            )
+            for purpose, app_id in (
+                ("primary_sv", 30),
+                ("standby_1_sv", 31),
+                ("standby_2_my", 32),
+            )
+        ])
         session.commit()
+
+
+@pytest.fixture()
+def session_factory(monkeypatch):
+    settings = _settings()
+    _configure_test_services(monkeypatch, settings)
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False, future=True)
+    _seed_test_dependencies(factory)
     yield factory
     engine.dispose()
 
@@ -117,6 +187,17 @@ def test_precheck_create_and_idempotent_replay(session_factory) -> None:
     assert item.code_source_uuid_hint == "000000…0001"
 
 
+def test_preview_invalidates_when_fixed_two_fa_policy_changes(session_factory) -> None:
+    with session_factory() as session:
+        payload = _create_payload(session, _lines(), key="fixed-policy-drift")
+        tenant = session.get(Tenant, 1)
+        tenant.fixed_two_fa_password_version += 1
+        session.commit()
+
+        with pytest.raises(BatchLoginError, match="预检结果已变化"):
+            create_login_batch(session, 1, 20, "测试操作员", payload)
+
+
 def test_builtin_admin_can_create_batch_and_receive_notification(session_factory) -> None:
     from app.auth import admin_user_payload
 
@@ -149,6 +230,42 @@ def test_idempotency_key_rejects_changed_request(session_factory) -> None:
             create_login_batch(session, 1, 20, "测试操作员", changed)
 
     assert error.value.code == "idempotency_conflict"
+
+
+def test_precheck_rejects_two_aliases_resolving_to_same_account(session_factory) -> None:
+    phones = ("+12025550101", "+12025550102")
+    with session_factory() as session:
+        account = TgAccount(
+            tenant_id=1,
+            pool_id=10,
+            display_name="别名账号",
+            phone_masked="+120****0101",
+            phone_ciphertext=encrypt_secret(phones[0]),
+            developer_app_id=30,
+            status="在线",
+        )
+        session.add(account)
+        session.flush()
+        for phone in phones:
+            session.add(
+                TgAccountPhoneFingerprintAlias(
+                    tenant_id=1,
+                    account_id=account.id,
+                    key_version=1,
+                    fingerprint=phone_fingerprint(1, phone, 1),
+                )
+            )
+        session.commit()
+        lines = "\n".join(
+            (
+                f"{phones[0]}|https://tgbotchecker.com/GetHTML?uuid={'1' * 32}",
+                f"{phones[1]}|https://tgbotchecker.com/GetHTML?uuid={'2' * 32}",
+            )
+        )
+        with pytest.raises(BatchLoginError) as error:
+            precheck_login_batch(session, 1, 20, lines, 10)
+
+    assert error.value.code == "duplicate_account_in_batch"
 
 
 def test_terminal_batch_notification_separates_failure_unknown_and_warning(session_factory) -> None:
@@ -430,7 +547,162 @@ class _SuccessfulTwoFaGateway:
         return AccountHealth(status="在线", health_score=95, detail="authorized")
 
 
-def test_full_new_account_two_fa_flow_persists_binding_without_password(session_factory, monkeypatch) -> None:
+class _AlreadyAuthorizedGateway:
+    def check_account_health_isolated(self, _session_ciphertext, _credentials) -> AccountHealth:
+        return AccountHealth(status="在线", health_score=95, detail="authorized")
+
+    def start_login(self, *_args, **_kwargs):
+        raise AssertionError("already-authorized route must not relogin")
+
+    def finish_login(self, *_args, **_kwargs):
+        raise AssertionError("already-authorized route must not relogin")
+
+
+class _ReloginGateway:
+    def __init__(self) -> None:
+        self.health_calls = 0
+        self.start_calls = 0
+
+    def check_account_health_isolated(self, _session_ciphertext, _credentials) -> AccountHealth:
+        self.health_calls += 1
+        status = "Session失效" if self.health_calls == 1 else "在线"
+        return AccountHealth(status=status, health_score=95, detail=status)
+
+    def start_login(self, _method, **_kwargs) -> LoginChallenge:
+        self.start_calls += 1
+        return LoginChallenge(
+            status="等待验证码",
+            temporary_session="relogin-temporary",
+            phone_code_hash="relogin-code-hash",
+        )
+
+    def finish_login(self, code, _password_2fa, **_kwargs):
+        assert code == "22222"
+        return "在线", "relogin-authorized-session"
+
+
+def _create_existing_account_batch(
+    session_factory,
+    *,
+    display_name: str,
+    session_value: str,
+    status: str,
+    idempotency_key: str,
+):
+    phone = "+12025550100"
+    with session_factory() as session:
+        account = TgAccount(
+            tenant_id=1,
+            pool_id=10,
+            display_name=display_name,
+            phone_masked="+120****0100",
+            phone_ciphertext=encrypt_secret(phone),
+            developer_app_id=30,
+            session_ciphertext=encrypt_session(session_value),
+            status=status,
+        )
+        session.add(account)
+        session.flush()
+        session.add(
+            TgAccountPhoneFingerprintAlias(
+                tenant_id=1,
+                account_id=account.id,
+                key_version=1,
+                fingerprint=phone_fingerprint(1, phone, 1),
+            )
+        )
+        session.commit()
+        return create_login_batch(
+            session,
+            1,
+            20,
+            "测试操作员",
+            _create_payload(session, _lines(), key=idempotency_key),
+        )
+
+
+def _configure_drain_runtime(monkeypatch, gateway_instance):
+    from app.services import account_phone_aliases
+    from app.services.account_login import drain, local_phases, remote_phases
+
+    settings = _settings()
+    settings.account_batch_login_host_min_interval_seconds = 0
+    for module in (account_phone_aliases, drain, local_phases, remote_phases):
+        monkeypatch.setattr(module, "get_settings", lambda: settings)
+    monkeypatch.setattr(remote_phases, "gateway", gateway_instance)
+    return drain
+
+
+def test_already_authorized_account_reenters_full_initialization_without_relogin(
+    session_factory,
+    monkeypatch,
+) -> None:
+    batch = _create_existing_account_batch(
+        session_factory,
+        display_name="已登录待修复",
+        session_value="existing-authorized-session",
+        status="在线",
+        idempotency_key="already-authorized-full-init",
+    )
+    drain = _configure_drain_runtime(monkeypatch, _AlreadyAuthorizedGateway())
+
+    for _ in range(8):
+        drain.drain_account_login_batches(session_factory, 1, code_client=object())
+
+    with session_factory() as session:
+        item = session.scalar(
+            select(TgAccountLoginBatchItem).where(
+                TgAccountLoginBatchItem.batch_id == batch.id
+            )
+        )
+        owner = session.get(TgAccountFullInitialization, item.post_initialization_id)
+
+    assert item.route == "already_authorized"
+    assert item.status == "post_initialization_waiting"
+    assert item.authorization_status == "confirmed"
+    assert owner.status == "pending"
+    assert owner.originating_actor == "测试操作员"
+
+
+def test_existing_invalid_account_relogin_enters_same_full_initialization(
+    session_factory,
+    monkeypatch,
+) -> None:
+    batch = _create_existing_account_batch(
+        session_factory,
+        display_name="待重登修复",
+        session_value="invalid-session",
+        status="Session失效",
+        idempotency_key="relogin-full-init",
+    )
+    login_gateway = _ReloginGateway()
+    drain = _configure_drain_runtime(monkeypatch, login_gateway)
+    code_client = _LoginCodeClient()
+
+    for _ in range(12):
+        drain.drain_account_login_batches(
+            session_factory,
+            1,
+            code_client=code_client,
+        )
+
+    with session_factory() as session:
+        item = session.scalar(
+            select(TgAccountLoginBatchItem).where(
+                TgAccountLoginBatchItem.batch_id == batch.id
+            )
+        )
+        owner = session.get(TgAccountFullInitialization, item.post_initialization_id)
+        account = session.get(TgAccount, item.account_id)
+
+    assert item.route == "relogin"
+    assert item.status == "post_initialization_waiting"
+    assert decrypt_session(account.session_ciphertext) == "relogin-authorized-session"
+    assert owner.status == "pending"
+    assert login_gateway.start_calls == 1
+
+
+def test_full_new_account_two_fa_flow_waits_for_post_initialization(session_factory, monkeypatch) -> None:
     from app.services import account_phone_aliases
     from app.services.account_login import drain, local_phases, remote_phases
 
@@ -457,20 +729,30 @@ def test_full_new_account_two_fa_flow_persists_binding_without_password(session_
         item = session.scalar(select(TgAccountLoginBatchItem).where(TgAccountLoginBatchItem.batch_id == batch.id))
         account = session.get(TgAccount, item.account_id)
         security = session.scalar(select(TgAccountSecuritySnapshot).where(TgAccountSecuritySnapshot.account_id == account.id))
+        binding = session.scalar(
+            select(TgAccountLoginPostInitializationBinding).where(
+                TgAccountLoginPostInitializationBinding.login_item_id == item.id
+            )
+        )
+        initialization = session.get(TgAccountFullInitialization, binding.full_initialization_id)
         notification = session.scalar(select(TgAccountLoginBatchNotification).where(
             TgAccountLoginBatchNotification.batch_id == batch.id,
             TgAccountLoginBatchNotification.channel == "platform",
         ))
         safe_item = LoginBatchItemOut.model_validate(item).model_dump()
 
-    assert item.status == "succeeded"
+    assert item.status == "post_initialization_waiting"
+    assert item.authorization_status == "confirmed"
+    assert item.post_initialization_id == initialization.id
     assert account.status == "在线"
     assert account.pool_id == 10
     assert account.code_source_note == "tgbotchecker · 000000…0001"
     assert decrypt_session(account.session_ciphertext) == "authorized-session"
     assert login_gateway.finish_calls == [("22222", None), (None, "two-fa-secret")]
+    assert initialization.source_two_fa_kind == "telegram_accepted"
+    assert decrypt_secret(initialization.source_two_fa_password_ciphertext) == "two-fa-secret"
     assert security is None or not security.two_fa_password_ciphertext
-    assert notification is not None
+    assert notification is None
     assert "code_url_ciphertext" not in safe_item
     assert "phone_ciphertext" not in safe_item
     assert "code_source_uuid_fingerprint" not in safe_item

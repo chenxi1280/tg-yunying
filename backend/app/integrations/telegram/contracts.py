@@ -160,6 +160,7 @@ class AccountSecurityOperationResult:
     failure_type: str = ""
     detail: str = ""
     next_retry_at: datetime | None = None
+    remote_mutation_started: bool | None = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True)

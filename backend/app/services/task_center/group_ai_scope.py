@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import timedelta
 
 from sqlalchemy import String, and_, cast, exists, func, or_, select
@@ -20,22 +19,12 @@ from app.models import (
 from app.services._common import _now
 
 from .payloads import SendMessagePayload
+from .group_ai_scope_types import GroupAiScopeFacts, GroupAiScopeViolation
 
 
 CONTENT_SCOPE_CONTRACT_VERSION = "group_content_scope_v1"
 LOCAL_REPLY_TARGET_MISSING_DETAIL = "引用目标不存在或当前账号不可引用"
 REMOTE_REPLY_TARGET_OBSERVATION = "remote_missing_or_inaccessible"
-
-
-@dataclass(frozen=True)
-class GroupAiScopeViolation:
-    field: str
-    detail: str
-    reason_code: str = "cross_group_content_scope_mismatch"
-
-    @property
-    def code(self) -> str:
-        return self.reason_code
 
 
 def validate_group_ai_content_scope(
@@ -44,27 +33,29 @@ def validate_group_ai_content_scope(
     *,
     payload: SendMessagePayload,
     account_id: int | None = None,
+    facts: GroupAiScopeFacts | None = None,
 ) -> GroupAiScopeViolation | None:
     if action.task_type != "group_ai_chat" or action.action_type != "send_message":
         return None
-    task = session.get(Task, action.task_id) if action.task_id else None
-    group = session.get(TgGroup, payload.group_id) if payload.group_id else None
+    task = _task(session, action, facts)
+    group = _group(session, payload, facts)
     violation = _identity_violation(
         session,
         action,
         payload=payload,
         task=task,
         group=group,
+        facts=facts,
     )
     if violation:
         return violation
     violation = _contract_violation(action, payload=payload)
     if violation:
         return violation
-    violation = _context_violation(session, action, payload=payload)
+    violation = _context_violation(session, action, payload=payload, facts=facts)
     if violation:
         return violation
-    violation = _memory_violation(session, action, payload=payload)
+    violation = _memory_violation(session, action, payload=payload, facts=facts)
     if violation:
         return violation
     return _account_link_violation(
@@ -72,7 +63,28 @@ def validate_group_ai_content_scope(
         action,
         payload=payload,
         account_id=account_id,
+        facts=facts,
     )
+
+
+def _task(
+    session: Session,
+    action: Action,
+    facts: GroupAiScopeFacts | None,
+) -> Task | None:
+    if not action.task_id:
+        return None
+    return facts.tasks.get(action.task_id) if facts else session.get(Task, action.task_id)
+
+
+def _group(
+    session: Session,
+    payload: SendMessagePayload,
+    facts: GroupAiScopeFacts | None,
+) -> TgGroup | None:
+    if not payload.group_id:
+        return None
+    return facts.groups.get(payload.group_id) if facts else session.get(TgGroup, payload.group_id)
 
 
 def _identity_violation(
@@ -82,31 +94,50 @@ def _identity_violation(
     payload: SendMessagePayload,
     task: Task | None,
     group: TgGroup | None,
+    facts: GroupAiScopeFacts | None,
 ) -> GroupAiScopeViolation | None:
     if task is None or task.tenant_id != action.tenant_id or task.type != "group_ai_chat":
         return GroupAiScopeViolation("task", "Action 与 AI 活群 Task 的租户或类型不一致")
     if group is None or group.tenant_id != action.tenant_id:
         return GroupAiScopeViolation("group", "payload 目标群不存在或不属于 Action 租户")
-    if not _task_target_matches_group(session, task, group):
+    if not _task_target_matches_group(session, task, group, facts=facts):
         return GroupAiScopeViolation("target_group_id", "Task 目标群与 payload 目标群不一致")
     if str(payload.chat_id) != str(group.tg_peer_id):
         return GroupAiScopeViolation("chat_id", "payload Telegram peer 与目标群不一致")
     return None
 
 
-def _task_target_matches_group(session: Session, task: Task, group: TgGroup) -> bool:
+def _task_target_matches_group(
+    session: Session,
+    task: Task,
+    group: TgGroup,
+    *,
+    facts: GroupAiScopeFacts | None,
+) -> bool:
     config = task.type_config or {}
     target_group_id = int(config.get("target_group_id") or 0)
     if target_group_id:
         return target_group_id == int(group.id)
     target_id = int(config.get("target_operation_target_id") or 0)
-    target = session.get(OperationTarget, target_id) if target_id else None
+    target = _operation_target(session, target_id, facts)
     return bool(
         target
         and target.tenant_id == task.tenant_id
         and target.target_type == "group"
         and str(target.tg_peer_id) == str(group.tg_peer_id)
     )
+
+
+def _operation_target(
+    session: Session,
+    target_id: int,
+    facts: GroupAiScopeFacts | None,
+) -> OperationTarget | None:
+    if not target_id:
+        return None
+    if facts:
+        return facts.operation_targets.get(target_id)
+    return session.get(OperationTarget, target_id)
 
 
 def _contract_violation(
@@ -144,6 +175,7 @@ def _context_violation(
     action: Action,
     *,
     payload: SendMessagePayload,
+    facts: GroupAiScopeFacts | None,
 ) -> GroupAiScopeViolation | None:
     context_ids = set(payload.context_message_ids + payload.anchor_message_ids)
     if payload.context_snapshot_message_id:
@@ -153,9 +185,12 @@ def _context_violation(
         action,
         payload=payload,
         context_ids=context_ids,
+        facts=facts,
     ) != len(context_ids):
         return GroupAiScopeViolation("context_message_ids", "上下文或 snapshot 不属于 Action 目标群")
-    if payload.reply_to_message_id and not group_reply_target_exists(session, action, payload):
+    if payload.reply_to_message_id and not group_reply_target_exists(
+        session, action, payload, facts=facts,
+    ):
         return GroupAiScopeViolation("reply_to_message_id", "引用目标不属于当前群的真人上下文或我方成功历史")
     return None
 
@@ -166,7 +201,13 @@ def _scoped_context_count(
     *,
     payload: SendMessagePayload,
     context_ids: set[int],
+    facts: GroupAiScopeFacts | None,
 ) -> int:
+    if facts:
+        return sum(
+            (message_id, action.tenant_id, payload.group_id) in facts.context_keys
+            for message_id in context_ids
+        )
     count = session.scalar(
         select(func.count(GroupContextMessage.id)).where(
             GroupContextMessage.id.in_(context_ids),
@@ -197,7 +238,17 @@ def group_reply_target_exists(
     session: Session,
     action: Action,
     payload: SendMessagePayload,
+    *,
+    facts: GroupAiScopeFacts | None = None,
 ) -> bool:
+    if facts:
+        key = (
+            action.tenant_id,
+            str(action.task_id or ""),
+            payload.group_id,
+            str(payload.reply_to_message_id or ""),
+        )
+        return key in facts.reply_target_keys
     if own_history_reply_target_exists(session, action, payload):
         return True
     remote_id = str(payload.reply_to_message_id or "")
@@ -401,10 +452,15 @@ def _memory_violation(
     action: Action,
     *,
     payload: SendMessagePayload,
+    facts: GroupAiScopeFacts | None,
 ) -> GroupAiScopeViolation | None:
     if not payload.ai_message_memory_id:
         return None
-    memory = session.get(AiGroupMessageMemory, payload.ai_message_memory_id)
+    memory = (
+        facts.memories.get(payload.ai_message_memory_id)
+        if facts
+        else session.get(AiGroupMessageMemory, payload.ai_message_memory_id)
+    )
     matches = bool(
         memory
         and memory.tenant_id == action.tenant_id
@@ -423,15 +479,21 @@ def _account_link_violation(
     *,
     payload: SendMessagePayload,
     account_id: int | None,
+    facts: GroupAiScopeFacts | None,
 ) -> GroupAiScopeViolation | None:
     resolved_account_id = int(account_id or action.account_id or 0)
     if not resolved_account_id:
         return GroupAiScopeViolation("account_id", "AI 活群 Action 缺少发送账号")
-    link = session.scalar(select(TgGroupAccount.id).where(
-        TgGroupAccount.tenant_id == action.tenant_id,
-        TgGroupAccount.group_id == payload.group_id,
-        TgGroupAccount.account_id == resolved_account_id,
-    ))
+    if facts:
+        link = facts.account_link_ids.get(
+            (action.tenant_id, payload.group_id, resolved_account_id),
+        )
+    else:
+        link = session.scalar(select(TgGroupAccount.id).where(
+            TgGroupAccount.tenant_id == action.tenant_id,
+            TgGroupAccount.group_id == payload.group_id,
+            TgGroupAccount.account_id == resolved_account_id,
+        ))
     if link:
         return None
     return GroupAiScopeViolation("account_group_link", "发送账号不属于 Action 目标群")

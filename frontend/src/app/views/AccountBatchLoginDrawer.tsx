@@ -2,11 +2,22 @@ import React from 'react';
 import { Alert, Button, Checkbox, Descriptions, Drawer, Input, Modal, Space, Table, Tag, Typography, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { api } from '../../shared/api/client';
-import type { Account, AccountBatchLogin, AccountBatchLoginItem, AccountDetail, AccountPool } from '../types';
+import type {
+  Account,
+  AccountBatchLogin,
+  AccountBatchLoginItem,
+  AccountDetail,
+  AccountPool,
+  AccountPostLoginInitialization,
+  PostLoginAbcPreview,
+  PostLoginAbcRequest,
+} from '../types';
 import { formatBeijingDateTime } from '../time';
 import { loginStatusColor, loginStatusLabel, TERMINAL_LOGIN_BATCH_STATUSES } from './accountBatchLoginPresentation';
+import { PostLoginInitializationActions } from './PostLoginInitializationActions';
 
 const LOGIN_BATCH_DETAIL_ITEM_LIMIT = 200;
+const LOGIN_BATCH_DETAIL_POLL_MS = 5_000;
 const DRAWER_STACK_OFFSET_PX = 36;
 
 interface Props {
@@ -15,9 +26,11 @@ interface Props {
   stackIndex: number;
   onClose: () => void;
   onOpenAccountDetail: (account: Account) => void;
+  canManagePostLoginAbc: boolean;
+  canManagePostLoginTwoFa: boolean;
 }
 
-export function AccountBatchLoginDrawer({ batchId, pools, stackIndex, onClose, onOpenAccountDetail }: Props) {
+export function AccountBatchLoginDrawer({ batchId, pools, stackIndex, onClose, onOpenAccountDetail, canManagePostLoginAbc, canManagePostLoginTwoFa }: Props) {
   const [batch, setBatch] = React.useState<AccountBatchLogin | null>(null);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState('');
@@ -25,6 +38,13 @@ export function AccountBatchLoginDrawer({ batchId, pools, stackIndex, onClose, o
   const [credentialUrl, setCredentialUrl] = React.useState('');
   const [reason, setReason] = React.useState('');
   const [replaceBinding, setReplaceBinding] = React.useState(false);
+  const [abcRequests, setAbcRequests] = React.useState<PostLoginAbcRequest[]>([]);
+  const [approvalRequest, setApprovalRequest] = React.useState<PostLoginAbcRequest | null>(null);
+  const [releaseSha, setReleaseSha] = React.useState('');
+  const [approvalRef, setApprovalRef] = React.useState('');
+  const [abcPreview, setAbcPreview] = React.useState<PostLoginAbcPreview | null>(null);
+  const [postInitDetail, setPostInitDetail] = React.useState<AccountPostLoginInitialization | null>(null);
+  const [pollRevision, setPollRevision] = React.useState(0);
 
   React.useEffect(() => {
     if (!batchId) return;
@@ -32,11 +52,15 @@ export function AccountBatchLoginDrawer({ batchId, pools, stackIndex, onClose, o
     let timer: number | undefined;
     const load = async () => {
       try {
-        const detail = await api<AccountBatchLogin>(detailPath(batchId));
+        const [detail, requests] = await Promise.all([
+          api<AccountBatchLogin>(detailPath(batchId)),
+          api<PostLoginAbcRequest[]>(abcRequestsPath(batchId)),
+        ]);
         if (disposed) return;
         setBatch(detail);
+        setAbcRequests(requestsForBatch(detail, requests));
         setError('');
-        if (!TERMINAL_LOGIN_BATCH_STATUSES.has(detail.status)) timer = window.setTimeout(load, 5000);
+        if (shouldPollBatch(detail)) timer = window.setTimeout(load, LOGIN_BATCH_DETAIL_POLL_MS);
       } catch (requestError) {
         if (!disposed) setError(requestError instanceof Error ? requestError.message : '读取批次失败');
       }
@@ -46,14 +70,20 @@ export function AccountBatchLoginDrawer({ batchId, pools, stackIndex, onClose, o
       disposed = true;
       if (timer) window.clearTimeout(timer);
     };
-  }, [batchId]);
+  }, [batchId, pollRevision]);
 
   async function reload() {
     if (!batchId) return;
     setLoading(true);
     try {
-      setBatch(await api<AccountBatchLogin>(detailPath(batchId)));
+      const [detail, requests] = await Promise.all([
+        api<AccountBatchLogin>(detailPath(batchId)),
+        api<PostLoginAbcRequest[]>(abcRequestsPath(batchId)),
+      ]);
+      setBatch(detail);
+      setAbcRequests(requestsForBatch(detail, requests));
       setError('');
+      if (shouldPollBatch(detail)) setPollRevision((value) => value + 1);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : '读取批次失败');
     } finally {
@@ -163,12 +193,84 @@ export function AccountBatchLoginDrawer({ batchId, pools, stackIndex, onClose, o
     }
   }
 
+  async function openPostInitialization(item: AccountBatchLoginItem) {
+    if (!batch || !item.post_initialization_id) return;
+    setLoading(true);
+    try {
+      const detail = await api<AccountPostLoginInitialization>(
+        `/tg-accounts/login-batches/${batch.id}/items/${item.id}/post-initialization`,
+      );
+      setPostInitDetail(detail);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : '读取完整初始化详情失败');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function previewAbcApproval() {
+    if (!approvalRequest || !releaseSha.trim()) return;
+    setLoading(true);
+    try {
+      const preview = await api<PostLoginAbcPreview>(
+        `/tg-accounts/post-login-abc-requests/${approvalRequest.id}/preview`,
+        { method: 'POST', body: JSON.stringify({ deployed_release_sha: releaseSha.trim() }) },
+      );
+      setAbcPreview(preview);
+      setError('');
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : '生成 ABC 预览失败');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function approveAbcRequest() {
+    if (!approvalRequest || !abcPreview || !approvalRef.trim()) return;
+    setLoading(true);
+    try {
+      await api(`/tg-accounts/post-login-abc-requests/${approvalRequest.id}/approve`, {
+        method: 'POST',
+        body: JSON.stringify({
+          expected_version: abcPreview.request_version,
+          deployed_release_sha: abcPreview.deployed_release_sha,
+          expected_fingerprint: abcPreview.fingerprint,
+          approval_ref: approvalRef.trim(),
+        }),
+      });
+      setApprovalRequest(null);
+      setAbcPreview(null);
+      setApprovalRef('');
+      void message.success('ABC 请求已批准并创建执行批次');
+      await reload();
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : '批准 ABC 请求失败');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function openAbcApproval(request: PostLoginAbcRequest) {
+    setApprovalRequest(request);
+    setReleaseSha(openRequestDefaults(request));
+    setApprovalRef('');
+    setAbcPreview(null);
+  }
+
+  function closeAbcApproval() {
+    setApprovalRequest(null);
+    setReleaseSha('');
+    setApprovalRef('');
+    setAbcPreview(null);
+  }
+
   const columns: ColumnsType<AccountBatchLoginItem> = [
     { title: '行', dataIndex: 'line_no', width: 60 },
     { title: '手机号', dataIndex: 'phone_masked', width: 145 },
     { title: '接码备注', dataIndex: 'code_source_note', width: 210 },
     { title: '路由', width: 145, render: (_, item) => routeLabel(item.route || item.route_hint) },
     { title: '阶段', dataIndex: 'phase', width: 145 },
+    { title: '完整初始化', width: 170, render: (_, item) => <Tag color={loginStatusColor(item.post_initialization_status)}>{loginStatusLabel(item.post_initialization_status)}</Tag> },
     { title: '代次/重试', width: 100, render: (_, item) => `${item.execution_generation} / ${item.retry_count}` },
     { title: '下次执行', width: 170, render: (_, item) => item.next_retry_at ? formatBeijingDateTime(item.next_retry_at) : '—' },
     { title: '状态', width: 145, render: (_, item) => <Tag color={loginStatusColor(item.status)}>{loginStatusLabel(item.status)}</Tag> },
@@ -181,6 +283,7 @@ export function AccountBatchLoginDrawer({ batchId, pools, stackIndex, onClose, o
           {canRetry(item) && <Button size="small" onClick={() => void retryItem(item)}>重试</Button>}
           {['failed', 'unresolved'].includes(item.status) && <Button size="small" onClick={() => setRefreshItem(item)}>换接码地址</Button>}
           {item.account_id && <Button size="small" onClick={() => void openAccount(item)}>查看账号</Button>}
+          {item.post_initialization_id && <Button size="small" onClick={() => void openPostInitialization(item)}>初始化详情</Button>}
         </Space>
       ),
     },
@@ -206,15 +309,35 @@ export function AccountBatchLoginDrawer({ batchId, pools, stackIndex, onClose, o
               { key: 'status', label: '状态', children: loginStatusLabel(batch.status) },
               { key: 'pool', label: '目标分组', children: targetPool?.name || `#${batch.pool_id}` },
               { key: 'counts', label: '结果', children: `成功 ${batch.success_count} / 失败 ${batch.failed_count} / 未解 ${batch.unresolved_count} / 警告 ${batch.warning_count} / 跳过 ${batch.skipped_count}` },
+              { key: 'initialization', label: '完整初始化', children: `已授权 ${batch.authorized_count} / 已完成 ${batch.fully_initialized_count} / 等待 ${batch.post_init_waiting_count} / 人工 ${batch.manual_required_count}` },
               { key: 'created', label: '创建时间', children: formatBeijingDateTime(batch.created_at) },
             ]} />
             {batch.unresolved_count > 0 && <Alert showIcon type="warning" title="存在远程结果未解行" description="这些行已经让出批内顺序，后台会持续对账；权威结果变化时会发送更正提醒。" />}
+            {batch.post_init_waiting_count > 0 && <Alert showIcon type="info" title="账号已授权，完整初始化尚未完成" description="系统正在逐账号完成固定 2FA、姓名头像和 ABC；全部远端读回完成前不会计入成功。" />}
             <Space style={{ margin: '16px 0' }}>
               <Button loading={loading} onClick={() => void reload()}>刷新</Button>
               <Button loading={loading} disabled={!batch.items?.some(canBulkRetryFailed)} onClick={() => void retryFailedItems()}>重试失败行</Button>
               {!TERMINAL_LOGIN_BATCH_STATUSES.has(batch.status) && <Button danger loading={loading} onClick={() => void cancelBatch()}>取消批次</Button>}
             </Space>
             <Table rowKey="id" columns={columns} dataSource={batch.items || []} pagination={false} scroll={{ x: 1600 }} />
+            {abcRequests.length > 0 && (
+              <>
+                <Typography.Title level={5} style={{ marginTop: 20 }}>待处理 ABC 请求</Typography.Title>
+                <Table
+                  rowKey="id"
+                  dataSource={abcRequests}
+                  pagination={false}
+                  columns={[
+                    { title: '账号', dataIndex: 'account_id', width: 90 },
+                    { title: '状态', width: 140, render: (_, row) => <Tag color={loginStatusColor(row.status)}>{loginStatusLabel(row.status)}</Tag> },
+                    { title: '请求人', dataIndex: 'requested_by', width: 140 },
+                    { title: 'ABC 批次', dataIndex: 'abc_batch_id', width: 180, render: (value) => value || '—' },
+                    { title: '异常', width: 220, render: (_, row) => row.failure_detail || '—' },
+                    { title: '操作', width: 120, render: (_, row) => row.status === 'waiting_approval' && canManagePostLoginAbc ? <Button size="small" type="primary" onClick={() => openAbcApproval(row)}>审批</Button> : '—' },
+                  ]}
+                />
+              </>
+            )}
           </>
         )}
       </Drawer>
@@ -224,23 +347,104 @@ export function AccountBatchLoginDrawer({ batchId, pools, stackIndex, onClose, o
         <Checkbox checked={replaceBinding} onChange={(event) => setReplaceBinding(event.target.checked)} style={{ marginTop: 12 }}>新地址使用不同 UUID，确认替换该账号的接码绑定</Checkbox>
         <Input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="操作原因（必填）" style={{ marginTop: 12 }} />
       </Modal>
+      <Modal
+        title={`账号 #${postInitDetail?.account_id ?? ''} 完整初始化详情`}
+        open={postInitDetail !== null}
+        footer={null}
+        onCancel={() => setPostInitDetail(null)}
+      >
+        {postInitDetail && (
+          <>
+            <Descriptions size="small" column={2} bordered items={postInitializationDescriptions(postInitDetail)} />
+            <PostLoginInitializationActions
+              detail={postInitDetail}
+              loading={loading}
+              canManage={canManagePostLoginAbc}
+              canManageTwoFa={canManagePostLoginTwoFa}
+              onLoading={setLoading}
+              onError={setError}
+              onCompleted={async (detail) => { setPostInitDetail(detail); await reload(); }}
+            />
+          </>
+        )}
+      </Modal>
+      <Modal
+        title={`审批账号 #${approvalRequest?.account_id ?? ''} 的 ABC 初始化`}
+        open={approvalRequest !== null}
+        confirmLoading={loading}
+        okText="批准并创建 ABC 批次"
+        okButtonProps={{ disabled: !abcPreview || !approvalRef.trim() }}
+        onOk={() => void approveAbcRequest()}
+        onCancel={() => closeAbcApproval()}
+      >
+        <Typography.Paragraph type="secondary">审批人必须与请求人不同。先用当前部署 SHA 生成冻结预览，再填写审批依据。</Typography.Paragraph>
+        <Input value={releaseSha} onChange={(event) => { setReleaseSha(event.target.value); setAbcPreview(null); }} placeholder="当前部署 release SHA（40 或 64 位小写十六进制）" />
+        <Button loading={loading} disabled={!releaseSha.trim()} onClick={() => void previewAbcApproval()} style={{ marginTop: 12 }}>生成冻结预览</Button>
+        {abcPreview && <Alert type="success" showIcon message={`预览已冻结：${abcPreview.fingerprint.slice(0, 12)}…`} description={JSON.stringify(abcPreview.classification_counts)} style={{ marginTop: 12 }} />}
+        <Input value={approvalRef} onChange={(event) => setApprovalRef(event.target.value)} placeholder="审批单号或审批依据（必填）" style={{ marginTop: 12 }} />
+      </Modal>
     </>
   );
 }
 
+function openRequestDefaults(request: PostLoginAbcRequest) {
+  return request.deployed_release_sha || '';
+}
+
+function postInitializationDescriptions(detail: AccountPostLoginInitialization) {
+  return [
+    { key: 'status', label: '总状态', children: loginStatusLabel(detail.status) },
+    { key: 'stage', label: '当前阶段', children: detail.stage },
+    { key: 'twoFa', label: '固定 2FA', children: `${loginStatusLabel(detail.two_fa_status)} / ${detail.two_fa_call_state}` },
+    { key: 'twoFaEvidence', label: '2FA 证据', children: detail.two_fa_evidence_present ? '已读回' : '未完成' },
+    { key: 'profile', label: '姓名头像', children: loginStatusLabel(detail.profile_status) },
+    { key: 'profileActions', label: '资料缺口', children: profileActionLabel(detail.profile_action_types) },
+    { key: 'profileEvidence', label: '资料证据', children: detail.profile_evidence_present ? '已读回' : '未完成' },
+    { key: 'abc', label: 'ABC', children: loginStatusLabel(detail.abc_status) },
+    { key: 'abcEvidence', label: 'ABC 证据', children: detail.abc_evidence_present ? 'A/B/C/E4 已完成' : '未完成' },
+    { key: 'abcRequest', label: 'ABC 请求', children: detail.abc_request_status },
+    { key: 'owner', label: '当前执行人', children: detail.execution_owner || '系统协调器' },
+    { key: 'retry', label: '下次执行', children: detail.next_retry_at ? formatBeijingDateTime(detail.next_retry_at) : '—' },
+    { key: 'failure', label: '异常', children: detail.failure_detail || detail.failure_type || '—', span: 2 },
+  ];
+}
+
+function profileActionLabel(actions: string[]) {
+  if (!actions.length) return '待判定';
+  const labels: Record<string, string> = { update_profile: '姓名', update_avatar: '头像' };
+  return actions.map((action) => labels[action] || action).join('、');
+}
+
+function requestsForBatch(batch: AccountBatchLogin, requests: PostLoginAbcRequest[]) {
+  const accountIds = new Set((batch.items || []).flatMap((item) => item.account_id ? [item.account_id] : []));
+  return requests.filter((request) => accountIds.has(request.account_id));
+}
+
 function canRetry(item: AccountBatchLoginItem) {
+  if (isPostInitFailure(item)) return false;
   if (item.retry_count >= 3) return false;
   if (item.status === 'failed') return true;
   return item.status === 'unresolved' && item.reconcile_attempted && ['pending', 'exhausted', 'manual_review_required'].includes(item.reconcile_status);
 }
 
 function canBulkRetryFailed(item: AccountBatchLoginItem) {
-  return item.status === 'failed' && item.retry_count < 3;
+  return item.status === 'failed' && item.retry_count < 3 && !isPostInitFailure(item);
+}
+
+function isPostInitFailure(item: AccountBatchLoginItem) {
+  return item.initialization_policy === 'normal_full_init_v1'
+    && item.authorization_status === 'confirmed'
+    && item.post_initialization_status !== 'succeeded';
+}
+
+function shouldPollBatch(batch: AccountBatchLogin) {
+  return !TERMINAL_LOGIN_BATCH_STATUSES.has(batch.status) || batch.post_init_waiting_count > 0;
 }
 
 function routeLabel(route: string) {
   const labels: Record<string, string> = {
     create: '新建账号',
+    new_account: '新建账号',
     existing_probe_required: '已有账号待探测',
     relogin: '已有账号重登',
     already_authorized: '已有账号已授权',
@@ -250,4 +454,8 @@ function routeLabel(route: string) {
 
 function detailPath(batchId: number) {
   return `/tg-accounts/login-batches/${batchId}?item_limit=${LOGIN_BATCH_DETAIL_ITEM_LIMIT}&item_offset=0`;
+}
+
+function abcRequestsPath(batchId: number) {
+  return `/tg-accounts/post-login-abc-requests?batch_id=${batchId}&limit=200`;
 }

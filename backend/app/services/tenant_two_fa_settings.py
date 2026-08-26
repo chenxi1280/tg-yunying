@@ -37,6 +37,7 @@ def set_tenant_fixed_two_fa_password(
     tenant.fixed_two_fa_password_ciphertext = encrypt_secret(fixed_password)
     tenant.fixed_two_fa_password_set_at = _now()
     tenant.fixed_two_fa_password_set_by = actor
+    tenant.fixed_two_fa_password_version += 1
     audit(
         session,
         tenant_id=tenant.id,
@@ -63,6 +64,7 @@ def _fixed_two_fa_out(tenant: Tenant) -> TenantFixedTwoFaSettingsOut:
         tenant_id=tenant.id,
         fixed_two_fa_password_configured=bool(tenant.fixed_two_fa_password_ciphertext),
         fixed_two_fa_password_set_at=tenant.fixed_two_fa_password_set_at,
+        fixed_two_fa_password_version=tenant.fixed_two_fa_password_version,
     )
 
 

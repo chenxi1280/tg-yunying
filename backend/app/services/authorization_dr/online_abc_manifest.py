@@ -11,6 +11,7 @@ from app.models import (
     TgAccountAuthorization,
     TgAuthorizationDrOperation,
     TgAuthorizationOnlineAbcBatch,
+    TgAuthorizationOnlineAbcItem,
     TgAuthorizationRestoreProbeFact,
     TgAuthorizationWakeBundle,
     TgAuthorizationWakeBundleCopy,
@@ -92,6 +93,99 @@ def apply_full_online_abc_batch(
     _audit_batch(session, batch, "批准全量在线 ABC frozen-N manifest", approved_by)
     session.commit()
     return online_abc_batch_status(session, batch.id)
+
+
+def preview_post_login_online_abc_batch(
+    session,
+    tenant_id: int,
+    account_id: int,
+    *,
+    idempotency_key: str,
+    deployed_release_sha: str,
+) -> dict:
+    _require_runtime_off(session)
+    _require_no_global_unknown(session)
+    target = _freeze_full_target(session, tenant_id, account_id)
+    body = _preview_body(tenant_id, idempotency_key, deployed_release_sha, [target])
+    body["selection_mode"] = "post_login_exact"
+    body["classification_counts"] = _classification_counts([target])
+    return {**body, "fingerprint": _fingerprint(body)}
+
+
+def apply_post_login_online_abc_batch(
+    session,
+    tenant_id: int,
+    account_id: int,
+    *,
+    idempotency_key: str,
+    deployed_release_sha: str,
+    expected_fingerprint: str,
+    requested_by: str,
+    approved_by: str,
+    approval_ref: str,
+) -> dict:
+    _require_approval(requested_by, approved_by, approval_ref)
+    existing = _batch_by_key(session, tenant_id, idempotency_key)
+    if existing:
+        _require_existing_post_login_match(
+            session,
+            existing,
+            account_id=account_id,
+            deployed_release_sha=deployed_release_sha,
+            expected_fingerprint=expected_fingerprint,
+            requested_by=requested_by,
+            approved_by=approved_by,
+            approval_ref=approval_ref,
+        )
+        return online_abc_batch_status(session, existing.id)
+    _require_no_open_batch(session, tenant_id)
+    preview = preview_post_login_online_abc_batch(
+        session,
+        tenant_id,
+        account_id,
+        idempotency_key=idempotency_key,
+        deployed_release_sha=deployed_release_sha,
+    )
+    if preview["fingerprint"] != expected_fingerprint:
+        raise AuthorizationDrError("migration_fingerprint_conflict", "Post-login ABC manifest changed")
+    batch = _create_batch(session, preview, requested_by, approved_by, approval_ref)
+    _create_items(session, batch, preview["targets"])
+    _audit_batch(session, batch, "批准单账号 post-login ABC manifest", approved_by)
+    return online_abc_batch_status(session, batch.id)
+
+
+def _require_existing_post_login_match(
+    session,
+    batch,
+    *,
+    account_id: int,
+    deployed_release_sha: str,
+    expected_fingerprint: str,
+    requested_by: str,
+    approved_by: str,
+    approval_ref: str,
+) -> None:
+    item = session.scalar(
+        select(TgAuthorizationOnlineAbcItem).where(
+            TgAuthorizationOnlineAbcItem.batch_id == batch.id,
+        )
+    )
+    matches = bool(
+        batch.selection_mode == "post_login_exact"
+        and batch.target_count == 1
+        and batch.target_set_fingerprint == expected_fingerprint
+        and batch.deployed_release_sha == deployed_release_sha
+        and batch.requested_by == requested_by
+        and batch.approved_by == approved_by
+        and batch.approval_ref == approval_ref
+        and item
+        and item.account_id == account_id
+    )
+    if not matches:
+        raise AuthorizationDrError(
+            "migration_fingerprint_conflict",
+            "Post-login ABC manifest changed",
+        )
 
 
 def _freeze_full_target(session, tenant_id: int, account_id: int) -> dict:
@@ -288,4 +382,9 @@ def _digest(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 
-__all__ = ["apply_full_online_abc_batch", "preview_full_online_abc_batch"]
+__all__ = [
+    "apply_full_online_abc_batch",
+    "apply_post_login_online_abc_batch",
+    "preview_full_online_abc_batch",
+    "preview_post_login_online_abc_batch",
+]

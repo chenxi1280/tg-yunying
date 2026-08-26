@@ -16,10 +16,18 @@ from app.schemas.account_login import (
     LoginBatchNotificationAckRequest,
     LoginBatchNotificationOut,
     LoginBatchOut,
+    LoginBatchPostInitializationOut,
     LoginBatchPrecheckOut,
     LoginBatchPrecheckRequest,
     LoginBatchRefreshCredentialRequest,
     LoginBatchRetryRequest,
+    PostLoginAbcApproveRequest,
+    PostLoginAbcPreviewOut,
+    PostLoginAbcPreviewRequest,
+    PostLoginAbcRequestOut,
+    PostLoginInitializationActionRequest,
+    PostLoginTwoFaCandidateRequest,
+    PostLoginTwoFaEmailRequest,
 )
 from app.services.account_login import (
     BatchLoginError,
@@ -35,6 +43,21 @@ from app.services.account_login import (
     refresh_login_item_credential,
     retry_login_batch_items,
     reveal_account_code_source,
+)
+from app.services.account_post_login_init.abc import (
+    approve_post_login_abc_request,
+    list_post_login_abc_requests,
+    preview_post_login_abc_request,
+)
+from app.services.account_post_login_init.read import (
+    post_login_initialization_detail,
+    post_login_initialization_out,
+)
+from app.services.account_post_login_init.reconcile import (
+    assume_execution_owner,
+    confirm_two_fa_email,
+    request_post_login_reconciliation,
+    submit_two_fa_candidate,
 )
 
 
@@ -161,6 +184,136 @@ def post_login_item_refresh_credential(
         _raise_batch_error(exc)
 
 
+@router.get(
+    "/api/tg-accounts/login-batches/{batch_id}/items/{item_id}/post-initialization",
+    response_model=LoginBatchPostInitializationOut,
+)
+def get_login_item_post_initialization(
+    batch_id: int,
+    item_id: int,
+    *,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    ensure_permission(current_user, "accounts.view")
+    try:
+        return post_login_initialization_detail(
+            session,
+            _tenant_id(current_user),
+            batch_id=batch_id,
+            item_id=item_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post(
+    "/api/tg-accounts/post-login-initializations/{initialization_id}/reconcile",
+    response_model=LoginBatchPostInitializationOut,
+)
+def post_post_login_initialization_reconcile(
+    initialization_id: int,
+    payload: PostLoginInitializationActionRequest,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    ensure_permission(current_user, "system.manage")
+    return _post_init_action(
+        session,
+        current_user,
+        action=request_post_login_reconciliation,
+        initialization_id=initialization_id,
+        payload=payload,
+    )
+
+
+@router.post(
+    "/api/tg-accounts/post-login-initializations/{initialization_id}/two-fa-current-candidate",
+    response_model=LoginBatchPostInitializationOut,
+)
+def post_post_login_two_fa_candidate(
+    initialization_id: int,
+    payload: PostLoginTwoFaCandidateRequest,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    ensure_permission(current_user, "accounts.security.credential_manage")
+    return _post_init_action(
+        session,
+        current_user,
+        action=submit_two_fa_candidate,
+        initialization_id=initialization_id,
+        payload=payload,
+        candidate_password=payload.candidate_password,
+    )
+
+
+@router.post(
+    "/api/tg-accounts/post-login-initializations/{initialization_id}/two-fa-email-confirmation",
+    response_model=LoginBatchPostInitializationOut,
+)
+def post_post_login_two_fa_email(
+    initialization_id: int,
+    payload: PostLoginTwoFaEmailRequest,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    ensure_permission(current_user, "accounts.security.credential_manage")
+    return _post_init_action(
+        session,
+        current_user,
+        action=confirm_two_fa_email,
+        initialization_id=initialization_id,
+        payload=payload,
+        confirmation_code=payload.confirmation_code,
+    )
+
+
+@router.post(
+    "/api/tg-accounts/post-login-initializations/{initialization_id}/assume-execution-owner",
+    response_model=LoginBatchPostInitializationOut,
+)
+def post_post_login_assume_owner(
+    initialization_id: int,
+    payload: PostLoginInitializationActionRequest,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    ensure_permission(current_user, "system.manage")
+    return _post_init_action(
+        session,
+        current_user,
+        action=assume_execution_owner,
+        initialization_id=initialization_id,
+        payload=payload,
+    )
+
+
+def _post_init_action(
+    session,
+    current_user,
+    *,
+    action,
+    initialization_id,
+    payload,
+    **extra,
+):
+    try:
+        owner = action(
+            session,
+            _tenant_id(current_user),
+            initialization_id,
+            expected_version=payload.expected_version,
+            actor=current_user.name,
+            reason=payload.reason,
+            **extra,
+        )
+        return post_login_initialization_out(session, owner)
+    except ValueError as exc:
+        session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @router.post("/api/tg-accounts/login-batches/{batch_id}/cancel", response_model=LoginBatchOut)
 def post_login_batch_cancel(
     batch_id: int,
@@ -215,6 +368,74 @@ def post_code_source_binding_reveal(
     response.headers["Cache-Control"] = "no-store"
     response.headers["Pragma"] = "no-cache"
     return result
+
+
+@router.get(
+    "/api/tg-accounts/post-login-abc-requests",
+    response_model=list[PostLoginAbcRequestOut],
+)
+def get_post_login_abc_requests(
+    limit: int = Query(default=100, ge=1, le=200),
+    batch_id: int | None = Query(default=None, ge=1),
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    ensure_permission(current_user, "accounts.view")
+    return list_post_login_abc_requests(
+        session,
+        _tenant_id(current_user),
+        limit=limit,
+        batch_id=batch_id,
+    )
+
+
+@router.post(
+    "/api/tg-accounts/post-login-abc-requests/{request_id}/preview",
+    response_model=PostLoginAbcPreviewOut,
+)
+def post_post_login_abc_preview(
+    request_id: int,
+    payload: PostLoginAbcPreviewRequest,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    ensure_permission(current_user, "system.manage")
+    try:
+        return preview_post_login_abc_request(
+            session,
+            _tenant_id(current_user),
+            request_id,
+            deployed_release_sha=payload.deployed_release_sha,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post(
+    "/api/tg-accounts/post-login-abc-requests/{request_id}/approve",
+    response_model=PostLoginAbcRequestOut,
+)
+def post_post_login_abc_approve(
+    request_id: int,
+    payload: PostLoginAbcApproveRequest,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    ensure_permission(current_user, "system.manage")
+    try:
+        return approve_post_login_abc_request(
+            session,
+            _tenant_id(current_user),
+            request_id,
+            expected_version=payload.expected_version,
+            deployed_release_sha=payload.deployed_release_sha,
+            expected_fingerprint=payload.expected_fingerprint,
+            approved_by=current_user.name,
+            approval_ref=payload.approval_ref,
+        )
+    except ValueError as exc:
+        session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 __all__ = ["router"]

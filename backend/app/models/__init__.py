@@ -2,6 +2,7 @@ from __future__ import annotations
 from .accounts import *  # noqa: F401,F403
 from .account_security import *  # noqa: F401,F403
 from .account_login import *  # noqa: F401,F403
+from .account_post_login_init import *  # noqa: F401,F403
 from .authorization_dr import *  # noqa: F401,F403
 from .mixins import *  # noqa: F401,F403
 from .membership import *  # noqa: F401,F403

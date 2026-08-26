@@ -33,7 +33,7 @@ def main() -> int:
 def _execute(session, args) -> dict:
     if args.mode == "status":
         return online_abc_runner_status(session, args.batch_id)
-    _require_legacy_runner_batch(session, args.batch_id)
+    _require_manual_runner_batch(session, args.batch_id)
     if args.mode == "resume":
         resume_online_abc_batch(
             session,
@@ -56,11 +56,12 @@ def _execute(session, args) -> dict:
     )
 
 
-def _require_legacy_runner_batch(session, batch_id: str) -> None:
+def _require_manual_runner_batch(session, batch_id: str) -> None:
     batch = session.get(TgAuthorizationOnlineAbcBatch, batch_id)
-    if batch and batch.selection_mode == "all_online_accounts":
+    if batch and batch.selection_mode in {"all_online_accounts", "post_login_exact"}:
         raise AuthorizationDrError(
-            "online_abc_sweep_required", "Full frozen-N must use the durable sweep supervisor",
+            "online_abc_supervisor_required",
+            "Full frozen-N and post-login exact batches must use the durable supervisor",
         )
 
 
