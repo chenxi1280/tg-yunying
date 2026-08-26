@@ -2,6 +2,8 @@
 
 > **2026-08-26 DF-342 one-shot durable full sweep：** `quiescent approved batch -> one external --mode sweep --until-exhausted -> durable supervisor -> serial A probe/B/SV/C/MY/E4 -> persistent item checkpoint -> checkpoint_interval=30 audit/conservation -> immediate next item -> pending=0`。30 不是处理上限，不能退出或等待人工续跑；确定性失败进入统一异常队列后继续，unknown 先对账同一 operation，仍未知且 runner/client/runtime/A 门禁满足时才 quarantine 为 `deferred_reconcile` 后继续。只有完整 A/B/C/E4 真实证据才计 `succeeded`。
 
+> **2026-08-26 DF-344 B pre-challenge Timeout unknown 收口：** `runner B effect persisted -> Telegram start-login TimeoutError before challenge/flow/code/candidate -> batch stopped + same operation reconcile_unknown/unknown -> runner0/runtime off/sole unknown+sensitive/MY0/A frozen -> release-interrupted preview fingerprint -> different-actor CAS -> b_pre_challenge_remote_unproven reconcile case -> same B manual_required/reconciled_hold + B/C/item manual debt -> next pending`。若 effect 后存在 flow，只允许一条无任何远端或授权事实的空 intent 并在 apply 时绑定、supersede；任一 challenge/code/temp Session/candidate/bundle/stage/第二 flow 或 A 漂移零写入拒绝。整个路径不连接 Telegram，不重放登录，不把未知结果写成 confirmed-no-effect。
+
 > **2026-08-26 DF-342 one-shot 初始 release 绑定：** `stopped full batch + no one-shot start audit + current runtime SHA != persisted execution SHA -> same sweep preview/fingerprint/CAS -> old SHA->new SHA audit + current exception DB-only closure -> sweeping`；只写控制面 release/batch/异常投影，不连接 Telegram、不改 A/B/C 资产。已有 start、并发 operation、runtime/client/A 漂移或运行中/暂停 batch 均零写入。
 
 > **2026-08-25 DF-342 历史 chunk 发布重绑：** 仅用于已存在的历史 chunk-pause 边界；one-shot sweep 不以 30 形成外层暂停。新的 release gate 必须在 sweep 启动前完成，运行中 release/安全门禁漂移则 durable supervisor 显式暂停并等待正式对账，不重放 Telegram。
