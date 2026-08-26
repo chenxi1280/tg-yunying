@@ -542,3 +542,10 @@ code-source凭据过期或binding漂移时停在 `two_fa_candidate_refresh_requi
 - 两个历史接码页均明确返回凭据已失效。当前实现把这个确定的来源终态抛成 `two_fa_source_resolution_failed`，只能通用重检，无法进入 PRD 已定义的 current-2FA candidate 人工闭环；反复重检不会改变结果。
 - 修复口径：仅把接码平台明确的 `url_error` 分类为 `two_fa_current_password_unavailable/manual_required`，允许在原 owner 上提交短期加密候选；DNS、超时、解析合同变化等依赖故障仍保留 `two_fa_source_resolution_failed`，不得静默降级或误要求候选。
 - 验收：新增测试同时证明明确失效进入 candidate 路径、瞬时 fetch 失败仍进入安全重检路径；随后重新发布并由这两个 `already_authorized` 账号完成 fixed-2FA、姓名/头像与 ABC 全部远端读回。
+
+## 23. 2026-08-27 account-login worker fresh-import 缺陷
+
+- exact-two batch 已持久化但仍在 `pending/prepare` 时，生产 account-login worker 的 lazy role loader fresh-import post-login drain，触发 `account_post_login_init.__init__ -> binding/policy -> account_login.__init__ -> batches -> partial policy` 循环依赖；每轮在领取 item 前失败。
+- 远端边界：两个 item 的 send/code/twofa call state 均为 `none`，authorization 未确认、full-init owner/binding 未创建，因此本缺陷只形成持久队列阻塞，没有 Telegram unknown 或部分完成。
+- 修复口径：post-login 与 account-login package 均不再 eager re-export 全部实现模块；唯一依赖聚合导出的 API 路由改为显式子模块入口，生产 worker 与测试也继续使用显式入口。`from package import submodule` 保持 Python 标准行为。不得通过吞掉 ImportError、跳过 post-init drain 或伪造 worker healthy 解决。
+- 验收：worker-role 全部 lazy target 在独立进程可导入；post-login/batch-login 定向回归通过；新 release 后从原 batch/item 继续，不能新建第二批或重放登录。
