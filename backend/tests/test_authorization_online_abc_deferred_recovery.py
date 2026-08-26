@@ -66,6 +66,23 @@ def test_deferred_recovery_rejects_drifted_manifest_count(db_session) -> None:
         _preview(db_session, batch_id, expected_deferred_count=2)
 
 
+def test_deferred_recovery_start_rebinds_completed_exception_batch_release(db_session) -> None:
+    batch_id, _deferred_account, _manual_account = _phase2_batch(db_session)
+    previous_sha = "1" * 40
+    batch = db_session.get(TgAuthorizationOnlineAbcBatch, batch_id)
+    batch.execution_release_sha = previous_sha
+    db_session.commit()
+
+    preview = _preview(db_session, batch_id, expected_deferred_count=1)
+    started = _apply(db_session, batch_id, preview["fingerprint"], expected_deferred_count=1)
+
+    rebound = db_session.get(TgAuthorizationOnlineAbcBatch, batch_id)
+    assert preview["previous_execution_release_sha"] == previous_sha
+    assert preview["execution_release_rebind_required"] is True
+    assert rebound.execution_release_sha == abc_tests.RELEASE_SHA
+    assert started["deferred_recovery"]["active"] is True
+
+
 def test_completed_checkpoint_forward_counts_as_real_success(db_session, monkeypatch) -> None:
     batch_id, account_id = _completed_deferred_item(db_session)
     from app.services.authorization_dr import online_abc_deferred_recovery as recovery
