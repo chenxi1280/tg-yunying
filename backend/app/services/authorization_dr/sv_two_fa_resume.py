@@ -47,6 +47,7 @@ from .sv_two_fa_resume_commit import (
     persist_candidate,
     result,
 )
+from .sv_two_fa_security import allows_partial_identity_resume, security_evidence
 
 
 UNAUTHORIZED_MESSAGE = "session is not authorized"
@@ -265,7 +266,7 @@ def _value_error_waiting_two_fa(context: ResumeContext) -> bool:
         and primary.auth_key_fingerprint_digest
         and operation.expected_code_source_user_id_digest
         and primary.auth_key_fingerprint_digest == operation.expected_code_source_auth_key_digest
-        and context.security is None and context.flow
+        and allows_partial_identity_resume(context.security) and context.flow
         and context.flow.status == AccountStatus.WAITING_2FA.value
         and operation.login_challenge_sent_at and operation.login_code_message_id
         and operation.login_code_received_at and tenant
@@ -349,7 +350,6 @@ def _healthy_target_exists(session, context: ResumeContext) -> bool:
 def _evidence_payload(context: ResumeContext) -> dict:
     account, primary, flow = context.account, context.primary, context.flow
     security = context.security
-    managed_secret = (security.two_fa_password_ciphertext or "") if security else ""
     return {
         "operation_id": context.operation.id,
         "account_id": account.id,
@@ -378,9 +378,7 @@ def _evidence_payload(context: ResumeContext) -> dict:
         "target_logical_slot": _standby_target_slot(primary),
         "temporary_session_digest": _digest(flow.temporary_session_ciphertext),
         "phone_code_hash_digest": _digest(flow.phone_code_hash_ciphertext),
-        "managed_secret_ref_digest": _digest(managed_secret),
-        "managed_secret_stored_at": str((security.two_fa_password_stored_at if security else None) or ""),
-        "security_snapshot_present": security is not None,
+        **security_evidence(security),
         "fixed_secret_ref_digest": _digest(context.tenant.fixed_two_fa_password_ciphertext),
         "fixed_secret_set_at": str(context.tenant.fixed_two_fa_password_set_at),
         "batch_id": context.batch.id,
