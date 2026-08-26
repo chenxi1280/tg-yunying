@@ -29,8 +29,8 @@ from .online_abc_read import item_operations_complete, operation_outcome, render
 TEN_ACCOUNT_CANARY_SIZE = 10
 TERMINAL_FAILURES = {"failed", "manual_required", "migration_rolled_back_forward"}
 UNKNOWN_OPERATION_STATUSES = {"provision_reconcile_unknown", "reconcile_unknown"}
-ACTIVE_BATCH_STATUSES = {"approved", "running"}
-OPEN_BATCH_STATUSES = ACTIVE_BATCH_STATUSES | {"observing"}
+ACTIVE_BATCH_STATUSES = {"approved", "running", "sweeping"}
+OPEN_BATCH_STATUSES = ACTIVE_BATCH_STATUSES | {"observing", "sweep_paused"}
 
 
 @dataclass(frozen=True)
@@ -253,11 +253,12 @@ def _create_items(session, batch, targets) -> None:
 
 
 def _start_item(session, batch, item, actor, approval_ref) -> None:
+    sweep_active = batch.status == "sweeping"
     item.status = "running"
     item.outcome = "running"
     item.started_at = _now()
     item.version += 1
-    batch.status = "running"
+    batch.status = "sweeping" if sweep_active else "running"
     batch.version += 1
     audit(session, tenant_id=batch.tenant_id, actor=actor, action="启动单个 ABC canary item",
           target_type="tg_authorization_online_abc_items", target_id=item.id,
@@ -271,10 +272,13 @@ def _sync_primary_probe(session, item) -> None:
     primary_delta = primary.fact_version - item.primary_fact_version if primary else -1
     valid = (
         account and primary and account.current_authorization_id == primary.id
+        and account.session_ciphertext == primary.session_ciphertext
         and _digest(primary.session_ciphertext or "") == item.primary_session_digest
         and account.authorization_generation == item.authorization_generation
         and account.connection_generation == item.connection_generation
         and account_delta == primary_delta and account_delta >= 1
+        and primary.is_current and primary.is_slot_current
+        and primary.protected_from_cleanup
         and primary.telegram_user_id_digest and primary.auth_key_fingerprint_digest
         and primary.status == "active" and primary.health_status == "healthy"
         and primary.last_authoritative_error_code == "" and primary.disabled_at is None
@@ -305,13 +309,16 @@ def _complete_item(session, batch, item, actor, approval_ref) -> None:
     item.version += 1
     _audit_batch(session, batch, f"完成 ABC canary account={item.account_id}", actor, approval_ref)
     outcomes = {value.outcome for value in _items(session, batch.id)}
-    if outcomes <= {"succeeded", "manual_required"}:
+    if outcomes <= {"succeeded", "manual_required", "deferred_reconcile"}:
         if batch.selection_mode == "exact_ten_canary" and "manual_required" not in outcomes:
             batch.status = "observing"
             batch.observation_started_at = _now()
             batch.observation_closes_at = batch.observation_started_at
         else:
-            batch.status = "completed_with_manual" if "manual_required" in outcomes else "completed"
+            if "deferred_reconcile" in outcomes:
+                batch.status = "completed_with_exceptions"
+            else:
+                batch.status = "completed_with_manual" if "manual_required" in outcomes else "completed"
     batch.version += 1
 
 

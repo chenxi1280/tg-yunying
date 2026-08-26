@@ -500,6 +500,19 @@ verification 失败或 unknown 时不得回切损坏 A、不得自动重发；B 
 
 2026-08-22 生产读回：GitHub Actions run `32574528768` 已发布 release `0ec48547fc5748f095724ac4d2da363b1d6364e5`，Alembic head=`0163_local_activate_verify`。正式 `sync` 将账号 8、11 标为 `primary_drift_after_success` 并停止原批次；两账号逐个完成 typed-fact 投影、local activate、Saved Messages 发送和独立 online probe。账号 8 current=`2814`、message ID=`86`，账号 11 current=`2818`、message ID=`396`；旧 A `13/19` 均为 invalid/needs_repair/protected。最终 10 个账号全部在线，B/C 各 `10/10` healthy/remote active，C 均为双副本且 restore probe passed；runtime=`off`、claim scope 为空、global unknown=0、MY active client=0。该事实不改变 canary=`failed`，也不替代 `restore_sv_pair`。
 
+2026-08-26 当前 frozen-N one-shot 运维合同：Actions 只发布代码；`selection_mode=all_online_accounts` 的批次必须由唯一一次外部 `authorization-online-abc-sweep.sh --mode sweep --until-exhausted` 启动，不能把 `--max-accounts` 作为 full sweep 上限或续跑入口。先只读确认旧任务 idle、runner=0、active Deploy Production=0、runtime off、MY client=0、无并发 release/operation、生产 current/backend/frontend/全部 worker 与源码 SHA 一致，再执行：
+
+```bash
+bash deploy/authorization-online-abc-sweep.sh --mode preview --until-exhausted --batch-id <frozen-batch-id> --idempotency-key <sweep-key> --requested-by <requester> --approved-by <different-approver> --approval-ref <ticket>
+bash deploy/authorization-online-abc-sweep.sh --mode sweep --until-exhausted --batch-id <frozen-batch-id> --idempotency-key <sweep-key> --expected-fingerprint <fingerprint> --requested-by <requester> --approved-by <different-approver> --approval-ref <ticket>
+```
+
+`sweep` 只写一次 start/apply 审计；compose 管理的 durable supervisor 在同一生命周期逐账号串行处理全部 remaining pending，SSH 断开或 supervisor 重启从 DB item/operation checkpoint 恢复。`checkpoint_interval=30` 只触发审计、守恒和安全门禁复核，完成后自动继续第 31 项及以后；不接受 `--max-accounts`。确定性失败统一进入 `manual_required/deferred_issue`，unknown 先对账同一 operation，满足 runner/client/runtime/A 无漂移及不可重放门禁后才 quarantine 为 `deferred_reconcile`；A 漂移或安全门禁漂移显式暂停。必须持续到 `pending=0`，精确读回 `succeeded`、`manual_required`、`deferred_reconcile/unresolved` 与 N 守恒；只有完整 A/B/C/E4/remote ID 证据的 succeeded 才计 ABC 完成。
+
+若历史 stopped frozen batch 的 `execution_release_sha` 落后当前生产 SHA，且该批次尚无 one-shot start 审计，以上同一次 `preview/apply` 会把旧 SHA→新 SHA、当前唯一异常 checkpoint 与 start 一并纳入 fingerprint/CAS；绑定只写 batch execution release、异常投影和审计，不连接 Telegram、不改 A/B/C，也不启动 legacy runner。已有 start、运行中/暂停或任一并发安全门禁不满足时必须零写入并转 durable pause/reconcile。
+
+以下 `authorization-online-abc-runner.sh --mode status|run|resume` 段落是旧 canary/legacy batch 的兼容运维合同；不适用于当前 `all_online_accounts` frozen-N sweep：
+
 后续已审批 ABC batch 不再通过 GitHub Actions 或逐条临时命令执行。Actions 只发布代码；运维在生产 current release 使用 runner。先用 `status` 只读确认 batch、当前 item、B/C/E4 operation、runtime 和 `next_action`，再以原 batch 的异人审批身份执行 `run`：
 
 ```bash
@@ -517,11 +530,11 @@ bash deploy/authorization-online-abc-runner.sh --mode resume --batch-id <same-ba
 
 `resume` 只 CAS 恢复原 item/batch 后进入普通 runner；不得用于其他 blocker，不得修改、重建或重放 B/C。`deployed_release_sha` 保留原 manifest SHA；修复发布造成 current release 变化时，resume 在同一事务审计更新独立 `execution_release_sha`，之后普通 run 继续强制 current execution release。新 runner 遇到同一 post-C/pre-E4 heartbeat 刷新窗口会等待 readiness，不再先停止批次。
 
-若无 stopped item、而是外部发布使全量 chunk 在账号边界安全暂停，禁止用 SQL 或普通 `resume` 改执行版本。先确认生产 current/容器 SHA 一致且新 SHA 保留 required ancestry，再对发布窗口内完成的账号做 A/B/C/E4 远端读回；随后使用 `authorization-online-abc-release-rebind.sh preview` 取得 fingerprint，并由不同审批人执行 `apply`。入口只接受最近停批审计中的 `production_release_changed_mid_chunk`，并在数据库内复核 batch stopped、item 仅 succeeded/pending、running/stopped=0、runtime off、global unknown=0、MY client=0、全部已完成 A 无漂移和 B/C/E4 完整；apply 只重绑 `execution_release_sha` 并把 batch 恢复为 running，不改 manifest SHA 或账号授权事实。之后才可重新启动每批最多 10 个的普通 runner。
+若无 stopped item、而是外部发布使旧 full chunk 在账号边界安全暂停，禁止用 SQL 或普通 `resume` 改执行版本。先确认生产 current/容器 SHA 一致且新 SHA 保留 required ancestry，再对发布窗口内完成的账号做 A/B/C/E4 远端读回；随后使用 `authorization-online-abc-release-rebind.sh preview` 取得 fingerprint，并由不同审批人执行 `apply`。入口只接受最近停批审计中的 `production_release_changed_mid_chunk`，并在数据库内复核 batch stopped、item 仅 succeeded/pending、running/stopped=0、runtime off、global unknown=0、MY client=0、全部已完成 A 无漂移和 B/C/E4 完整；apply 只重绑 `execution_release_sha` 并把 batch 恢复为 running，不改 manifest SHA 或账号授权事实。之后才可重新启动旧批次 runner；当前 one-shot sweep 的 release drift 必须走 durable pause/reconcile 合同。
 
 若同一发布窗口还需修正 untouched pending B/C plan，顺序必须是 release-rebind preview/apply 后，再执行 pending-plan-rebase preview/apply。此时 rebase 只接受最新 batch 审计为本次同审批 rebind、execution release 与审计一致、runner 进程为 0、items 全部静止以及 runtime/sensitive/unknown/MY 门禁为零的 `running` batch；普通 running 状态不可使用。两个 preview fingerprint 均在各自 apply 前重新计算，旧窗口 fingerprint 不复用。
 
-普通 runner 每次必须显式 `--max-accounts 10`。达到 chunk 上限且 frozen N 尚未完成时，runner 会在账号 terminal 边界重验 item 守恒、runtime off/scope 空、global sensitive/unknown=0、MY client=0，然后审计置 batch=`stopped`；SSH 返回后必须读回 runner=0。下一次同 SHA、同审批执行普通 `run` 时，只从最新 chunk-boundary pause 审计原子恢复后继续；发布漂移、失败、manual、unknown 或任一 stopped item 均不会走该自动恢复入口。
+历史普通 runner 每次必须显式 `--max-accounts 10`。该段只适用于旧 canary/legacy batch；当前 one-shot sweep 不设置该参数、不在 30 或 10 个之后退出。旧 runner 达到 chunk 上限且 frozen N 尚未完成时，会在账号 terminal 边界重验 item 守恒、runtime off/scope 空、global sensitive/unknown=0、MY client=0，然后审计置 batch=`stopped`；SSH 返回后必须读回 runner=0。下一次同 SHA、同审批执行普通 `run` 时，只从最新 chunk-boundary pause 审计原子恢复后继续；发布漂移、失败、manual、unknown 或任一 stopped item 均不会走该自动恢复入口。
 
 若 status 显示 C=`provision_reconcile_unknown`，runner 必须自动非零退出；禁止等待、重试或领取下一账号。批次创建、领取下一账号和 resume 的 global unknown 门槛必须同时统计 `reconcile_unknown|provision_reconcile_unknown`，任一存在都不得继续。只允许在 runtime off、MY client=0 下用正式 reconcile preview/apply 和 artifact-forward/remote-fact readback 收口同一 operation。operation 恢复为 `succeeded/confirmed/reconcile applied` 后，若原 online item 仍为 stopped/reconcile_unknown，使用正式 runner `--mode resume --account-id <same-account>`；入口必须读回同一 C candidate/case、B/C 完成、E4 不存在和 A qualified 后才进入 `post_c_pre_e4`，不得重登 C。随后 `run` 只完成原 E4/sync。release-rebind 与 pending-plan rebase 的 apply wrapper 必须以 `docker top <backend> -eo pid,args` 检查 runner；`-eo args` 在 Docker 中缺 PID 列会使门禁失效，禁止使用。
 

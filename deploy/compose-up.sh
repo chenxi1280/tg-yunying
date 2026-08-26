@@ -238,6 +238,7 @@ BACKEND_SERVICES=(
 )
 
 WORKER_SERVICES=(
+  worker-authorization-abc-sweep
   worker-planner
   worker-ai-generation
   worker-ai-generation-2

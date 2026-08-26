@@ -142,6 +142,30 @@ services:
     networks:
       - infra_default
 
+  worker-authorization-abc-sweep:
+    image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
+    container_name: tgyunying-worker-authorization-abc-sweep
+    logging: *default-logging
+    restart: unless-stopped
+    command: ["python", "scripts/authorization_online_abc_sweep.py", "--mode", "worker", "--worker-interval-seconds", "2.0"]
+    environment:
+      <<: *backend-env
+      WORKER_ROLE: authorization-abc-sweep
+      TG_OPS_WORKER_ID: tgyunying-worker-authorization-abc-sweep
+    volumes:
+      - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 20s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    networks:
+      - infra_default
+
   worker-planner:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
     container_name: tgyunying-worker-planner

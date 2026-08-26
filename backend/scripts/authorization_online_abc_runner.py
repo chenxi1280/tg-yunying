@@ -5,6 +5,7 @@ import json
 import os
 
 from app.database import SessionLocal
+from app.models import TgAuthorizationOnlineAbcBatch
 from app.services.authorization_dr import (
     online_abc_runner_status,
     resume_online_abc_batch,
@@ -32,6 +33,7 @@ def main() -> int:
 def _execute(session, args) -> dict:
     if args.mode == "status":
         return online_abc_runner_status(session, args.batch_id)
+    _require_legacy_runner_batch(session, args.batch_id)
     if args.mode == "resume":
         resume_online_abc_batch(
             session,
@@ -52,6 +54,14 @@ def _execute(session, args) -> dict:
         max_accounts=args.max_accounts,
         poll_seconds=args.poll_seconds,
     )
+
+
+def _require_legacy_runner_batch(session, batch_id: str) -> None:
+    batch = session.get(TgAuthorizationOnlineAbcBatch, batch_id)
+    if batch and batch.selection_mode == "all_online_accounts":
+        raise AuthorizationDrError(
+            "online_abc_sweep_required", "Full frozen-N must use the durable sweep supervisor",
+        )
 
 
 def _error_out(exc: Exception) -> dict:
