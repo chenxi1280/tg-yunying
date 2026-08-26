@@ -62,8 +62,7 @@ def preview_deferred_recovery_start(
     _require_startable(batch)
     _require_approval(batch, requested_by, approved_by, approval_ref)
     release_sha = _release_sha(runtime_release_sha)
-    if (batch.execution_release_sha or batch.deployed_release_sha) != release_sha:
-        raise AuthorizationDrError("runtime_image_mismatch", "Deferred recovery must run on batch execution SHA")
+    previous_release = batch.execution_release_sha or batch.deployed_release_sha
     manifest = canonical_deferred_manifest(session, batch.id, runtime_release_sha=release_sha)
     if manifest["row_count"] != expected_deferred_count or expected_deferred_count <= 0:
         raise AuthorizationDrError("deferred_recovery_target_count_mismatch", "Deferred target count changed")
@@ -73,6 +72,8 @@ def preview_deferred_recovery_start(
         "batch_id": batch.id, "batch_version": batch.version, "batch_status": batch.status,
         "target_count": batch.target_count, "deferred_count": manifest["row_count"],
         "manifest_hash": manifest["manifest_hash"], "runtime_release_sha": release_sha,
+        "previous_execution_release_sha": previous_release,
+        "execution_release_rebind_required": previous_release != release_sha,
         "idempotency_key": _key(idempotency_key), "requested_by": requested_by.strip(),
         "approved_by": approved_by.strip(), "approval_ref": approval_ref.strip(),
         "manual_required_untouched": True, "until_exhausted": True,
@@ -104,6 +105,7 @@ def apply_deferred_recovery_start(
     if preview["fingerprint"] != expected_fingerprint:
         raise AuthorizationDrError("migration_fingerprint_conflict", "Deferred recovery preview changed")
     batch = _lock_batch(session, batch_id)
+    batch.execution_release_sha = preview["runtime_release_sha"]
     batch.status = "deferred_recovery"
     batch.version += 1
     _audit_start(session, batch, preview)
@@ -374,6 +376,8 @@ def _audit_start(session, batch, preview: dict) -> None:
             f"idempotency_key={preview['idempotency_key']}; fingerprint={preview['fingerprint']}; "
             f"manifest_hash={preview['manifest_hash']}; deferred_count={preview['deferred_count']}; "
             f"approval_ref={preview['approval_ref']}; runtime_release={preview['runtime_release_sha']}; "
+            f"execution_release={preview['previous_execution_release_sha']}->"
+            f"{preview['runtime_release_sha']}; "
             "manual_required_untouched=true; until_exhausted=true;"
         ),
     )
