@@ -25,9 +25,12 @@ def test_accounts_page_keeps_login_task_entry_visible_without_create_permission(
 def test_login_task_center_recovers_server_batches_and_polls_active_count():
     source = _source("frontend/src/app/views/AccountBatchLoginTaskCenter.tsx")
     presentation = _source("frontend/src/app/views/accountBatchLoginPresentation.ts")
+    router = _source("backend/app/api/routers/account_login_batches.py")
 
     assert "TASK_LIST_LIMIT = 200" in source
     assert "/tg-accounts/login-batches?limit=${TASK_LIST_LIMIT}&offset=0" in source
+    assert "LOGIN_BATCH_LIST_LIMIT = LOGIN_BATCH_DETAIL_ITEM_LIMIT" in router
+    assert "le=LOGIN_BATCH_LIST_LIMIT" in router
     assert "TASK_LIST_POLL_MS = 5_000" in source
     assert "window.setInterval" in source
     assert "onActiveCountChange" in source

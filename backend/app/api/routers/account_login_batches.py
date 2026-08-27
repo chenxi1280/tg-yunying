@@ -68,6 +68,7 @@ from app.services.account_post_login_init.reconcile import (
 
 router = APIRouter()
 LOGIN_BATCH_DETAIL_ITEM_LIMIT = 200
+LOGIN_BATCH_LIST_LIMIT = LOGIN_BATCH_DETAIL_ITEM_LIMIT
 
 
 def _tenant_id(current_user: CurrentUser) -> int:
@@ -130,7 +131,7 @@ def post_login_batch(
 
 @router.get("/api/tg-accounts/login-batches", response_model=list[LoginBatchOut])
 def get_login_batches(
-    limit: int = Query(default=50, ge=1, le=100),
+    limit: int = Query(default=50, ge=1, le=LOGIN_BATCH_LIST_LIMIT),
     offset: int = Query(default=0, ge=0),
     session: Session = Depends(get_session),
     current_user: CurrentUser = Depends(get_current_user),

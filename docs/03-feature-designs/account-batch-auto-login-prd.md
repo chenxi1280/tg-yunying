@@ -1,5 +1,7 @@
 # 账号批量自动登号 PRD
 
+> **2026-08-28 登录任务列表 quick_fix Mini Bug Card：** 生产账号页「登录任务」固定按既有合同请求最近 200 个批次，但列表 API 的 FastAPI `limit` 校验意外保留为 `le=100`，导致整个抽屉返回 422 `query.limit` 并显示空表；批次详情接口不受影响。修复边界仅为把列表 API 上限恢复为与 `LOGIN_BATCH_DETAIL_ITEM_LIMIT=200` 相同，前端请求、排序、轮询、权限、数据库查询和批次/Telegram 状态机均不变。验收要求：`limit=200` 通过参数校验并返回至多 200 条同租户脱敏批次；`limit=201` 仍明确 422；关闭/刷新后任务中心可恢复最近批次。该修复不得重试历史 failed 行，不得把历史批次 #9 的失败改写为成功。`design_status=product_design_complete`，进入 dev quick_fix。
+
 > **2026-08-26 resync：** 本文既有`two_fa_policy=do_not_store`、“登录后不改托管2FA”、“不做备用授权补齐”和“资料只入队”只适用于旧策略及非normal用途。目标普通分组normal行由后端强制`normal_full_init_v1`且前端不可关闭；三条规范route都按[完整初始化合同](account-batch-post-login-full-initialization-prd.md)原子create-or-attach账号级full-init与`abc_required`，旧`create`只读映射为`new_account`。already-authorized先fresh probe证明A，不重登A但补fixed 2FA、同policy平台+远端姓名/头像和缺失ABC。A完成后父行保持`post_initialization_waiting`，完整子链读回前不得进入`success_count`。
 
 > 日期口径：2026-08-15（Asia/Shanghai）
