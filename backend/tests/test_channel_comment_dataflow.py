@@ -22,10 +22,10 @@ def test_channel_comment_clean_rejects_provider_meta_content():
         "原材料内容明显是色情低俗内容 描述了性工作者和性行为",
         "这个请求要求我为 Telegram 频道生成评论区短评",
         "内容涉及到色情低俗信息的传播和讨论 让我仔细分析一下",
-        "飞机号是真的还是假的啊",
+        "频道消息是真的假的啊",
     ]
 
-    assert ai_generator.clean_channel_comment_contents(contents) == ["飞机号是真的还是假的啊"]
+    assert ai_generator.clean_channel_comment_contents(contents) == ["频道消息是真的假的啊"]
 
 
 def test_channel_city_name_does_not_select_adult_prompt_without_explicit_route():

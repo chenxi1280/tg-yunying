@@ -92,18 +92,65 @@ def test_city_and_school_names_do_not_authorize_adult_prompt():
 
 
 def test_contact_four_categories_all_forbidden():
-    # 1. 微信类
-    for t in ("加微信私聊", "微信号 my_wechat", "加v看图", "v同步 123", "vx: test", "企微联系"):
-        assert contains_disallowed_group_content(t), f"Failed for {t}"
-    # 2. 手机/电话类
-    for t in ("手机号 13812345678", "电话 15912345678", "拨打 18800001111", "联系电话 139-1234-5678"):
-        assert contains_disallowed_group_content(t), f"Failed for {t}"
-    # 3. QQ类
-    for t in ("加QQ 12345678", "企鹅: 987654321", "扣扣: 10001", "QQ号: 88888"):
-        assert contains_disallowed_group_content(t), f"Failed for {t}"
-    # 4. TG/外链/私聊类
-    for t in ("关注 @my_channel", "https://t.me/joinchat", "www.example.com", "私聊发你", "私信发定位", "加我发微信"):
-        assert contains_disallowed_group_content(t), f"Failed for {t}"
+    from app.services.task_center.ai_generator import (
+        clean_channel_comment_contents,
+        clean_group_chat_contents,
+    )
+
+    probe_samples = [
+        # 1. 国际与国内手机号
+        "+1 202-555-0123",
+        "13800138000",
+        "手机号 13812345678",
+        "电话 15912345678",
+        "拨打 18800001111",
+        "联系电话 139-1234-5678",
+        # 2. QQ类各种变体
+        "加qq联系我",
+        "留个QQ",
+        "企鹅联系",
+        "加QQ 12345678",
+        "企鹅: 987654321",
+        "扣扣: 10001",
+        "QQ号: 88888",
+        # 3. TG/电报/飞机类变体
+        "飞机号 abc_123",
+        "电报号 abc_123",
+        "关注 @my_channel",
+        "私聊发你",
+        "私信发定位",
+        # 4. URL/裸域名/协议
+        "example.com/x",
+        "ftp://example.com/x",
+        "https://t.me/joinchat",
+        "www.example.com",
+        # 5. 微信类
+        "加微信私聊",
+        "微信号 my_wechat",
+        "加v看图",
+        "v同步 123",
+        "vx: test",
+        "企微联系",
+    ]
+
+    for t in probe_samples:
+        assert contains_disallowed_group_content(t), f"contains_disallowed_group_content failed for: {t}"
+        assert clean_group_chat_contents([t]) == [], f"clean_group_chat_contents failed for: {t}"
+        assert clean_channel_comment_contents([t]) == [], f"clean_channel_comment_contents failed for: {t}"
+
+
+def test_contact_gate_keeps_non_contact_qq_words_and_business_facts():
+    from app.services.task_center.ai_generator import clean_channel_comment_contents
+
+    safe_samples = [
+        "今天去动物园看企鹅",
+        "这个动画角色叫扣扣",
+        "订单号 20260827123",
+        "价格有变吗",
+        "河东区这个位置方便吗",
+    ]
+
+    assert clean_channel_comment_contents(safe_samples) == safe_samples
 
 
 def test_channel_comment_routing_and_generic_landmarks():
