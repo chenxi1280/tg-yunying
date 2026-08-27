@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.orm import sessionmaker
 
 from app.integrations.telegram.contracts import RemoteAvatarFingerprint, RemoteProfile
 from app.models import (
@@ -286,13 +287,18 @@ class _ProfileReadbackGateway:
 def test_profile_stage_requires_platform_and_telegram_readback(session_factory, monkeypatch) -> None:
     from app.services.account_post_login_init import profile
 
+    expiring_factory = sessionmaker(
+        bind=session_factory.kw["bind"],
+        expire_on_commit=True,
+        future=True,
+    )
     monkeypatch.setattr(profile, "gateway", _ProfileReadbackGateway())
     monkeypatch.setattr(
         profile,
         "_local_avatar_fingerprint",
         lambda _key: {"sha256": "local-sha", "perceptual_hash": "0" * 16},
     )
-    with session_factory() as session:
+    with expiring_factory() as session:
         _, login_item = _new_login_item(session, "profile-readback")
         owner = create_or_attach_full_initialization(session, login_item, actor="操作员")
         account = session.get(TgAccount, 40)
@@ -325,9 +331,9 @@ def test_profile_stage_requires_platform_and_telegram_readback(session_factory, 
         session.commit()
         claim = FullInitializationClaim(owner.id, "profile", owner.lease_token)
 
-    execute_profile_stage(session_factory, claim)
+    execute_profile_stage(expiring_factory, claim)
 
-    with session_factory() as session:
+    with expiring_factory() as session:
         owner = session.get(TgAccountFullInitialization, claim.initialization_id)
 
     assert owner.status == "pending"

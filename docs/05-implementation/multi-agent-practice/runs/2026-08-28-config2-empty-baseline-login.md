@@ -133,9 +133,11 @@
 - release_result: CI 五个后端分片、前端构建、三个镜像与生产 deploy 全部通过；生产 current/backend/account-login 均读回该 SHA 且 healthy。
 - generation_2: 原 baseline `url_error` 已越过；Telegram `send_call_state=confirmed`，随后 `wait_code` 以 `url_fetch_failed` 终止；未提交 code/2FA、无 session、无授权。
 - generation_3: baseline 直接以 `url_fetch_failed` 终止，未发送 Telegram challenge。
+- generation_4: 70 秒策略下 baseline 与 Telegram send 均确认，但首次 wait_code 仍被供应方频控拒绝；code/2FA 未提交，无授权。
+- batch_10_generation_1: 130 秒策略下 send/code/2FA 全部 confirmed，flow/account 在线，主 session 与健康 authorization 持久化，online state 为 online；随后 profile 读回因本地 `DetachedInstanceError` 进入专项 reconcile，登录 E4 已通过但批次完整初始化尚未收口。
 - provider_evidence: pinned HTTPS 连续返回 200；频控页被 parser 明确识别为「接码平台请求频繁」。生产 challenge 证明 70 秒仍不足；成功读取后约 90 秒再次访问仍频控，约 130 秒静默后同一 transport 单次解析恢复且 code/2FA 字段存在，未记录字段值。
 - root_cause_extension: host rate bucket 被硬编码为 tgbotchecker scope，生产间隔仅 3 秒；config2 baseline 后立即轮询，客户端 1 秒/3 秒重试进一步延长供应方频控。
-- production_status: login_failed_rate_limited
+- production_status: login_e4_passed_post_init_reconcile_pending
 
 ## Rate Policy Remediation Development / QA
 

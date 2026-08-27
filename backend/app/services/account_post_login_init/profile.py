@@ -98,10 +98,11 @@ def _continue_profile_stage(session_factory, claim) -> None:
             session.commit()
             return
         credentials = credentials_for_account(session, account)
+        account_id = account.id
         session_ciphertext = account.session_ciphertext
         session.commit()
     try:
-        profile, avatar = _pull_remote_profile(account.id, session_ciphertext=session_ciphertext, credentials=credentials)
+        profile, avatar = _pull_remote_profile(account_id, session_ciphertext=session_ciphertext, credentials=credentials)
     except Exception as exc:
         _finish_readback_failure(session_factory, claim, exc)
         return

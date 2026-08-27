@@ -15,6 +15,7 @@
 > 2026-08-27 接码平台补充：新增支持 `api.config2.top/tgapi/tgapi/<uuid>/GetHTML` HTML 接码平台，worker 读取 HTML 页面提取验证码与 2FA；页面频控提示解析为可重试的 `url_fetch_failed`；fingerprint 按 `api.config2.top:<uuid>` 派生，前端与后端同步支持。
 > 2026-08-28 config2 空 baseline 补正：该平台在 Telegram challenge 发生前对尚无验证码的有效路径返回 HTTP 200 错误页（标题含“错误”、正文含“此号不存在”、无 code/2FA 字段），challenge 后同一路径才出现材料。仅对已通过精确 config2 host/path/UUID、HTTPS pinning 和响应上限校验的页面，将这一项已知语义解析为显式空材料 baseline；它不计成功、不建远端事实，只允许既有 `baseline -> create/bind -> send -> wait` 流继续。其他 host 的“此号不存在”、config2 频控、未知错误页和结构漂移仍显式失败，不得通用 fallback。
 > 2026-08-28 config2 生产频控补正：生产真实 challenge 证明 config2 单次 HTTPS/TLS 可稳定返回 200，但 3 秒 host 间隔会在 baseline 后的首次轮询收到「请求频繁」，1 秒/3 秒的客户端重试只会延长频控；成功读取后约 90 秒再次读取仍返回频控，约 130 秒静默后同一 pinned transport 单次解析恢复且 code/2FA 字段齐全。host rate bucket 必须以行项真实 `code_source_host` 隔离，不得继续硬编码到 tgbotchecker scope；config2 的最小请求间隔固定为实测 130 秒，其他平台继续使用部署配置。频控页面仍是显式 `url_fetch_failed`，不得解析为空材料或成功。
+> 2026-08-28 完整初始化读回补正：profile security item 成功后，worker 必须在提交并关闭 ORM session 前冻结 `account_id`、主 session 与开发者凭据，再发起 Telegram profile/avatar 读回；不得在 session 关闭后访问 expired ORM account。真实远端结果未知仍进入 `profile_readback_unknown`，确定的本地 `DetachedInstanceError` 必须通过修复后专项 reconcile 重新读回，不得伪装成功。
 
 ## 1. 背景与原始需求
 
