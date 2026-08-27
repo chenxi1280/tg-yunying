@@ -76,7 +76,7 @@ def test_production_comment_provider_call_runs_without_database_transaction(monk
             assert session.in_transaction() is False
             observed["provider"] += 1
             return AiGenerationResult(
-                candidates=[AiDraftCandidate(persona="读者", content="河东区这个位置方便吗")],
+                candidates=[AiDraftCandidate(persona="读者", content="频道正文细节挺清楚")],
                 usage=AiUsage(total_tokens=6),
             )
 
