@@ -82,13 +82,32 @@ def test_builds_adult_prompt_with_sanitized_chinese_data():
     assert "私聊安排" not in bundle.user_prompt
 
 
-def test_city_and_school_names_do_not_authorize_adult_prompt():
+def test_city_school_and_weak_business_words_do_not_authorize_adult_prompt():
     config = {key: value for key, value in _config().items() if key != "adult_prompt_enabled"}
 
-    for label in ("郑州摄影交流群", "成都大学校友群", "天津音乐交流群"):
-        bundle = build_group_prompt(config, target_label=label, history="周末聊摄影构图", count=1)
+    for label, history in (
+        ("郑州摄影交流群", "周末聊摄影构图"),
+        ("成都大学校友群", "老师今晚开课吗"),
+        ("天津音乐交流群", "周末聊音乐"),
+        ("老师避坑交流群", "老哥们去过没"),
+    ):
+        bundle = build_group_prompt(config, target_label=label, history=history, count=1)
         assert "Generate Chinese community replies" in bundle.system_prompt
         assert "Telegram 同城成人娱乐" not in bundle.system_prompt
+
+
+def test_explicit_current_route_authorizes_adult_prompt():
+    config = {
+        "ai_content_route_v2_enabled": True,
+        "content_route": "adult_service",
+        "ai_content_allowed_routes": ["general", "adult_service"],
+    }
+    bundle = build_group_prompt(config, target_label="普通名称群", history="已有成年服务语境", count=1)
+    assert "Telegram 同城成人娱乐" in bundle.system_prompt
+
+    config["content_route"] = "general"
+    bundle = build_group_prompt(config, target_label="郑州大学", history="老师今晚开课吗", count=1)
+    assert "Generate Chinese community replies" in bundle.system_prompt
 
 
 def test_contact_four_categories_all_forbidden():
@@ -121,6 +140,9 @@ def test_contact_four_categories_all_forbidden():
         "私信发定位",
         # 4. URL/裸域名/协议
         "example.com/x",
+        "example.ai/x",
+        "example.dev/x",
+        "bit.ly/abc",
         "ftp://example.com/x",
         "https://t.me/joinchat",
         "www.example.com",
@@ -131,6 +153,7 @@ def test_contact_four_categories_all_forbidden():
         "v同步 123",
         "vx: test",
         "企微联系",
+        "号码 (202) 555-0123",
     ]
 
     for t in probe_samples:
@@ -160,15 +183,17 @@ def test_channel_comment_routing_and_generic_landmarks():
         _is_adult_channel_context,
     )
 
-    # General channel with city name but without adult config must NOT be adult route
+    # City and weak words cannot override the explicit general route.
     gen_config = {"content_route": "general"}
-    assert not _is_adult_channel_context(gen_config, "郑州生活日常分享", "今天天气不错")
-    prompt = _channel_comment_system_prompt(gen_config, "郑州生活日常分享", "今天天气不错")
+    assert not _is_adult_channel_context(gen_config, "上海生活日常分享", "今天天气不错")
+    prompt = _channel_comment_system_prompt(gen_config, "上海生活日常分享", "今天天气不错")
     assert "真实订阅读者" in prompt
     assert "男客老司机" not in prompt
 
-    # Weak words cannot authorize an adult route; explicit task configuration can.
+    assert not _is_adult_channel_context(gen_config, "郑州生活日常分享", "今天天气不错")
     assert not _is_adult_channel_context(gen_config, "频道", "这位新开课老师身材水头不错")
+
+    # Explicit config also triggers adult context
     adult_config = {"adult_prompt_enabled": True}
     assert _is_adult_channel_context(adult_config, "频道", "普通频道消息")
     adult_prompt = _channel_comment_system_prompt(adult_config, "频道", "普通频道消息")
@@ -185,7 +210,7 @@ def test_channel_comment_routing_and_generic_landmarks():
     assert _channel_comment_cross_city_leak("南稍门那边水头咋样", "成都")
 
 
-def test_channel_comment_retry_removes_original_context_and_uses_neutral_prompt():
+def test_channel_comment_retry_preserves_facts_and_adult_prompt():
     from app.services.task_center.ai_generator import (
         _channel_comment_attempt_requirements,
         _channel_comment_attempt_system_prompt,
@@ -196,16 +221,26 @@ def test_channel_comment_retry_removes_original_context_and_uses_neutral_prompt(
     orig_req = "频道消息：这位老师身材很好，开课水头怎么样"
     topic = "频道评论"
 
-    # Provider safety retries must not resubmit the rejected original context.
-    assert _channel_comment_attempt_topic(topic, 1) == "频道中性短评"
-    req_1 = _channel_comment_attempt_requirements(orig_req, 1)
-    assert "这位老师身材很好" not in req_1
-    assert "换一种描述方式" in req_1
+    # Retries must preserve topic and original factual context
+    assert _channel_comment_attempt_topic(topic, 1, config=config, message_content="老师开课") == "频道评论"
+    req_1 = _channel_comment_attempt_requirements(orig_req, 1, config=config, message_content="老师开课")
+    assert "这位老师身材很好，开课水头怎么样" in req_1
+    assert "重试生成要求" in req_1
 
-    # The retry contract is deliberately neutral and independent of the adult route.
+    # The retry maintains consistent system prompt with adult role
     sys_prompt = _channel_comment_attempt_system_prompt(1, config=config, target_label="测试", message_content="老师开课")
-    assert "男客老司机" not in sys_prompt
-    assert "中性、礼貌" in sys_prompt
+    assert "男客老司机" in sys_prompt
+    assert "中性、礼貌" not in sys_prompt
+
+    plain_req = _channel_comment_attempt_requirements(
+        "频道消息：今天营业时间有调整",
+        1,
+        config={},
+        target_label="成都怡红院",
+        message_content="今天营业时间有调整",
+    )
+    assert "围绕原帖已有事实" in plain_req
+    assert "身材、照片真实度" not in plain_req
 
 
 def test_generic_warmup_has_no_unsafe_dynamic_text():

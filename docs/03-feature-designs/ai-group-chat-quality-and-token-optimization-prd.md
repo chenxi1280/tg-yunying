@@ -2,20 +2,20 @@
 
 > **文档状态**：`Product Design Complete / Release Gate Pending`（历史样本已记录，生产验收仍以发布后 typed remote fact 为准）
 > **Intake ID**：`production-ai-group-quality-and-token-remediation-20260827`
-> **适用范围**：AI 活群核心生成链路 (`group_ai_chat`、`ai_group_prompt.py`、`ai_generation_pipeline.py`、`group_ai_chat.py`)
+> **适用范围**：AI 活群与频道 AI 评论核心生成链路 (`group_ai_chat`、`channel_comment`、`ai_group_prompt.py`、`ai_generator.py`、`ai_generation_pipeline.py`、`group_ai_chat.py`)
 > **关联真相源**：
 > - 产品口径：`docs/01-product/tg-ops-platform-prd.md`
 > - 数据流转：`docs/00-index/project-dataflow-index.md`
 > - 代码结构：`docs/00-index/project-structure-index.md`
 > - 生产运行：`docs/04-ops/deployment/PRODUCTION_RUNTIME.md`
-> **版本**：v2.1 (2026-08-27)
+> **版本**：v2.2 (2026-08-27)
 
 ---
 
 ## 1. 背景与核心问题诊断
 
 ### 1.1 业务场景定位
-本专项覆盖已由任务配置明确授权的**同城成人娱乐 / 修车 / 品茶交流社群**。群名、城市名、“老师”“大学”“学生会”等弱词本身不能授权成人路由；普通群必须继续使用 general Prompt。
+本专项覆盖由任务配置明确授权的**同城成人娱乐 / 修车 / 品茶交流社群及其频道评论**。群名、城市名、大学/师范/学生会、老师等弱词本身不能授权成人路由；普通群必须继续使用 general Prompt。
 
 ### 1.2 生产三大恶性病症
 1. **内容极端劣质与严重出戏**：
@@ -96,8 +96,8 @@
 ## 4. 详细技术方案与开发实施合同
 
 ### 4.1 模块一：显式路由的系统提示词与黑话注入 (`ai_group_prompt.py`)
-- **目标**：普通任务继续使用 `GENERAL_SYSTEM_PROMPT`；只有当前 `content_route` 明确属于成人 route，或任务显式启用受控 `adult_prompt_enabled` 时，才接入 `ADULT_SYSTEM_PROMPT`。
-- **路由边界**：城市名、群名、话题中的单个弱词和 `allowed_routes` 中“存在某个成人 route”都不能证明当前上下文已命中成人方向；v2 路径还必须满足当前 route 在冻结 allowlist 内。
+- **目标**：普通任务继续使用 `GENERAL_SYSTEM_PROMPT`；只有当前 `content_route` 明确属于成人 route，或任务受控启用 `adult_prompt_enabled` 时，才接入 `ADULT_SYSTEM_PROMPT`。
+- **路由边界**：城市、群名、大学/师范/学生会、老师、开课、水头、避坑等弱词和 `allowed_routes` 中“存在某个成人 route”都不能证明当前上下文已命中成人方向；v2 路径还必须满足当前 route 在冻结 allowlist 内。群聊与频道评论复用同一个显式路由判定，禁止各自维护推断规则。
 - **单/多草稿提示词定义 (`ADULT_SYSTEM_PROMPT`)**：
   ```python
   ADULT_SYSTEM_PROMPT = """你是一个 Telegram 同城成人娱乐/修车/品茶交流群里的老群友（男客老司机）。
@@ -167,6 +167,13 @@
 | **《天津一品楼》** | 5828 | 和平区/滨江道老师新开课、工兵探路体验反馈、环境与隔音讨论 |
 | **《三亚桃花岛》** | 5996 | 海棠湾/亚龙湾公寓老师开课、服务态度与配合度、双号交流出击体验 |
 
+### 4.8 模块八：频道评论保真重试与 Provider 拒绝边界 (`ai_generator.py`)
+
+- 首次生成与质量重试必须保留原帖已有事实和当前成人/普通路由，不得把成人任务静默改成中性评论，也不得用字符串替换伪造安全事实。
+- 成人重试只能要求模型围绕原帖**实际出现**的事实换一种老客口语表达；不得把身材、照片、水头、服务、人物或地点等原帖未出现的内容描述为“原帖具体事实”。
+- Provider 返回 `new_sensitive (1026)` 或其他明确输入拒绝时，不得用同一原文和相同或更强成人 Prompt 重复请求；必须立即暴露原 Provider 错误，由既有失败结算链路处理。
+- 候选内容质量不达标但 Provider 未拒绝输入时，允许在保留原事实和路由的前提下执行有上限的重描述重试。
+
 ---
 
 ## 5. 验收标准与 Release Gate
@@ -183,7 +190,7 @@
    - `pytest backend/tests/test_ai_group_safe_prompt.py` 100% 通过；
    - `pytest backend/tests/test_ai_generation_quality_pipeline.py` 100% 通过；
    - `pytest backend/tests/test_ai_generation_phase_boundaries.py` 100% 通过；
-   - 消息记忆未来排期、普通城市群不误入成人 Prompt、联系方式/URL 红线均有回归测试。
+   - 消息记忆未来排期、显式配置的成人路由、城市/群名/话题/上下文弱词不越权、联系方式/URL 红线均有回归测试；频道评论质量重试必须保留事实，`new_sensitive (1026)` 和等价 Provider 输入拒绝必须单次失败且不重复调用 Provider。
 
 ### 5.2 Release Gate 声明
 - **Release Level**：`L2`

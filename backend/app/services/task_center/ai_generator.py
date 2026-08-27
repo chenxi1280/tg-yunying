@@ -1426,7 +1426,7 @@ def _detect_channel_city(target_label: str, config: dict) -> str | None:
     return None
 
 
-def _is_adult_channel_context(config: dict | None, target_label: str, message_content: str = "") -> bool:
+def _is_adult_channel_context(config: dict | None, target_label: str = "", message_content: str = "") -> bool:
     del target_label, message_content
     return is_adult_content_config(config)
 
@@ -1512,8 +1512,20 @@ def _generate_channel_contents_with_retry(
             contents, tokens = generate_contents(
                 session,
                 tenant_id,
-                topic=_channel_comment_attempt_topic(topic, attempt),
-                requirements=_channel_comment_attempt_requirements(requirements, attempt),
+                topic=_channel_comment_attempt_topic(
+                    topic,
+                    attempt,
+                    config=config,
+                    target_label=target_label,
+                    message_content=message_content,
+                ),
+                requirements=_channel_comment_attempt_requirements(
+                    requirements,
+                    attempt,
+                    config=config,
+                    target_label=target_label,
+                    message_content=message_content,
+                ),
                 provider_id=config.get("ai_provider_id"),
                 model_name=str(config.get("ai_model") or ""),
                 count=missing,
@@ -1534,17 +1546,44 @@ def _generate_channel_contents_with_retry(
     return accepted, total_tokens
 
 
-def _channel_comment_attempt_topic(topic: str, attempt: int) -> str:
-    return topic if attempt <= 0 else "频道中性短评"
+def _channel_comment_attempt_topic(
+    topic: str,
+    attempt: int,
+    *,
+    config: dict | None = None,
+    target_label: str = "",
+    message_content: str = "",
+) -> str:
+    del attempt
+    if topic and topic != "频道中性短评":
+        return topic
+    if _is_adult_channel_context(config, target_label, message_content):
+        return "频道老客短评"
+    return "频道读者短评"
 
 
-def _channel_comment_attempt_requirements(requirements: str, attempt: int) -> str:
+def _channel_comment_attempt_requirements(
+    requirements: str,
+    attempt: int,
+    *,
+    config: dict | None = None,
+    target_label: str = "",
+    message_content: str = "",
+) -> str:
     if attempt <= 0:
         return requirements
+    is_adult = _is_adult_channel_context(config, target_label, message_content)
+    style_guidance = (
+        "只围绕原帖实际出现的事实和措辞，换一种更自然、更口语化的老客角度生成短评；"
+        "可以使用与原帖事实对应的行业黑话，但不得新增原帖未出现的人物、身体、照片、服务、地点或经历，"
+        "严禁输出任何审核意见、分析过程或拒绝话术。"
+        if is_adult
+        else "换一种描述方式围绕原帖已有事实生成简短、自然的真实读者短评，不要补充未提供的事实，不要输出审核意见或拒绝话术。"
+    )
     return (
-        f"重描述重试 {attempt}/{CHANNEL_COMMENT_MAX_REDESCRIPTION_ATTEMPTS}："
-        "换一种描述方式生成中性、礼貌的真实读者短评。"
-        "原始内容已从本次请求移除；不要补充未提供的事实，不要输出审核意见、分析过程或拒绝话术。"
+        f"{requirements}\n"
+        f"【重试生成要求（第 {attempt}/{CHANNEL_COMMENT_MAX_REDESCRIPTION_ATTEMPTS} 次）】：\n"
+        f"{style_guidance}"
     )
 
 
@@ -1555,21 +1594,17 @@ def _channel_comment_attempt_system_prompt(
     target_label: str = "",
     message_content: str = "",
 ) -> str:
-    if attempt <= 0:
-        return _channel_comment_system_prompt(config, target_label, message_content)
-    return (
-        "你只负责生成中性、礼貌的 Telegram 频道读者短评，并输出 JSON。"
-        "只能使用本次安全概括中提供的信息；信息不足时写一个不引入新事实的简短疑问。"
-    )
+    del attempt
+    return _channel_comment_system_prompt(config, target_label, message_content)
 
 
 def _is_retryable_channel_generation_error(exc: AiGenerationUnavailable) -> bool:
     detail = str(exc).lower()
+    if MINIMAX_NEW_SENSITIVE_ERROR in detail and "unprocessable_entity_error" in detail:
+        return False
     if "AI 评论候选质量不达标" in str(exc):
         return True
-    if MINIMAX_NEW_SENSITIVE_ERROR in detail and "unprocessable_entity_error" in detail:
-        return True
-    return any(marker in detail for marker in AI_PROVIDER_REFUSAL_MARKERS)
+    return False
 
 
 def generate_channel_comments(session: Session, tenant_id: int, config: dict, *, count: int, message_content: str, target_label: str) -> tuple[list[str], int]:

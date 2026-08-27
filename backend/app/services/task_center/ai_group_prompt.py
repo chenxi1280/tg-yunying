@@ -30,6 +30,7 @@ CONTACT_PATTERN_SOURCE = (
     r"微信|微信号|加v|v同步|vx|weixin|企微|加我v|留v|加威|威信|威同|微同|加微|留微|v号|V号|"
     # 2. 手机/电话类（国内、国际、带符号、电话前缀）
     r"\+\d{1,3}[- ]?\(?\d{2,4}\)?(?:[- ]?\d{3,4}){2}\b|"
+    r"\(\d{2,4}\)[- ]?\d{3,4}[- ]?\d{3,4}\b|"
     r"\b(?:\+?86[- ]?)?1[3-9]\d{9}\b|"
     r"\b1[3-9]\d[- ]?\d{4}[- ]?\d{4}\b|"
     r"(?:电话|手机|致电|拨打|tel|phone|call)[：:\s]*\+?[\d() -]{7,20}|"
@@ -46,7 +47,7 @@ CONTACT_PATTERN_SOURCE = (
     r"(?:https?|ftp|tg)://\S+|"
     r"(?:t\.me|telegra\.ph)/[A-Za-z0-9_+/]+|"
     r"www\.\S+|"
-    r"\b[a-zA-Z0-9][-a-zA-Z0-9]{0,62}\.(?:com|cn|net|org|xyz|top|cc|me|io|co|vip|club|site|app|live|info|ru|tv|link|fun|online|tech|shop|store|work)(?:/[^\s，。！？]*|\b)"
+    r"\b(?:[a-zA-Z0-9](?:[-a-zA-Z0-9]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}(?:/[^\s，。！？]*)?"
     r")"
 )
 CONTACT_PATTERNS = re.compile(CONTACT_PATTERN_SOURCE, re.IGNORECASE)
@@ -117,7 +118,6 @@ ADULT_CONTENT_ROUTES = frozenset({
     "adult_service",
 })
 
-
 def _configured_content_route(config: dict) -> str:
     contract = dict(config.get("_ai_content_contract") or {})
     return str(contract.get("content_route") or config.get("content_route") or "").strip()
@@ -136,8 +136,8 @@ def is_adult_content_config(config: dict | None) -> bool:
     return route in {str(item) for item in allowed}
 
 
-def _is_adult_group_prompt(config: dict, target_label: str) -> bool:
-    del target_label
+def _is_adult_group_prompt(config: dict, target_label: str = "", context_text: str = "") -> bool:
+    del target_label, context_text
     return is_adult_content_config(config)
 
 
@@ -310,7 +310,7 @@ def build_group_prompt(
         f"Generate exactly {max(1, int(count or 1))} Chinese draft(s). Return this exact JSON structure with placeholder values replaced:\n"
         f"{json.dumps(contract, ensure_ascii=False, indent=2)}"
     )
-    chosen_system_prompt = ADULT_SYSTEM_PROMPT if _is_adult_group_prompt(config, target_label) else GENERAL_SYSTEM_PROMPT
+    chosen_system_prompt = ADULT_SYSTEM_PROMPT if _is_adult_group_prompt(config, target_label, " ".join(messages)) else GENERAL_SYSTEM_PROMPT
     return GroupPromptBundle(chosen_system_prompt, user_prompt, context_source, tuple(messages), payload, contract)
 
 

@@ -1927,8 +1927,8 @@ def test_channel_comment_retries_review_tone_without_fake_emoji_success(monkeypa
         )
 
     assert len(prompts) == CHANNEL_COMMENT_MAX_REDESCRIPTION_ATTEMPTS + 1
-    assert all("换一种描述方式" in prompt for prompt in prompts[1:])
-    assert all("频道原文被读者称为色情内容频道" not in prompt for prompt in prompts[1:])
+    assert all("重试生成要求" in prompt for prompt in prompts[1:])
+    assert all("频道原文被读者称为色情内容频道" in prompt for prompt in prompts[1:])
     assert contents == ["灯光细节挺醒目"]
     assert tokens == 10
 
@@ -1987,8 +1987,7 @@ def test_channel_reply_comment_retries_without_fake_emoji_success(monkeypatch):
 
 
 @pytest.mark.no_postgres
-@pytest.mark.parametrize("failures_before_success", [1, 2, 3])
-def test_channel_comment_retries_minimax_new_sensitive_with_safe_prompt(monkeypatch, failures_before_success):
+def test_channel_comment_does_not_retry_minimax_new_sensitive_with_same_prompt(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     prompts: list[str] = []
@@ -1996,34 +1995,27 @@ def test_channel_comment_retries_minimax_new_sensitive_with_safe_prompt(monkeypa
 
     def fake_generate_drafts(_credentials, prompt, **_kwargs):
         prompts.append(prompt)
-        if len(prompts) <= failures_before_success:
-            raise RuntimeError(
-                'AI provider HTTP 422: {"type":"error","error":{"type":"unprocessable_entity_error",'
-                '"message":"input new_sensitive (1026)","http_code":"422"}}'
-            )
-        return AiGenerationResult(
-            candidates=[AiDraftCandidate(persona="读者", content="灯光看着挺亮")],
-            usage=AiUsage(total_tokens=9),
+        raise RuntimeError(
+            'AI provider HTTP 422: {"type":"error","error":{"type":"unprocessable_entity_error",'
+            '"message":"input new_sensitive (1026)","http_code":"422"}}'
         )
 
     monkeypatch.setattr("app.services.task_center.ai_generator.ai_gateway.generate_drafts", fake_generate_drafts)
 
     with Session(engine) as session:
         _add_ai_provider(session)
-        contents, tokens = generate_channel_comments(
-            session,
-            1,
-            {"comment_style": "relevant"},
-            count=1,
-            message_content=f"频道原文 {sensitive_marker}",
-            target_label="阿哥日记",
-        )
+        with pytest.raises(AiGenerationUnavailable, match="new_sensitive.*1026"):
+            generate_channel_comments(
+                session,
+                1,
+                {"comment_style": "relevant"},
+                count=1,
+                message_content=f"频道原文 {sensitive_marker}",
+                target_label="阿哥日记",
+            )
 
-    assert contents == ["灯光看着挺亮"]
-    assert tokens == 9
-    assert len(prompts) == failures_before_success + 1
+    assert len(prompts) == 1
     assert sensitive_marker in prompts[0]
-    assert all(sensitive_marker not in prompt for prompt in prompts[1:])
 
 
 @pytest.mark.no_postgres
@@ -2055,7 +2047,7 @@ def test_channel_comment_does_not_retry_unrelated_http_422(monkeypatch):
 
 
 @pytest.mark.no_postgres
-def test_channel_comment_preserves_new_sensitive_after_all_retries(monkeypatch):
+def test_channel_comment_surfaces_new_sensitive_without_retry(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     calls = 0
@@ -2079,11 +2071,11 @@ def test_channel_comment_preserves_new_sensitive_after_all_retries(monkeypatch):
                 target_label="阿哥日记",
             )
 
-    assert calls == CHANNEL_COMMENT_MAX_REDESCRIPTION_ATTEMPTS + 1
+    assert calls == 1
 
 
 @pytest.mark.no_postgres
-def test_channel_reply_retries_new_sensitive_without_original_context(monkeypatch):
+def test_channel_reply_does_not_retry_new_sensitive(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     prompts: list[str] = []
@@ -2091,29 +2083,24 @@ def test_channel_reply_retries_new_sensitive_without_original_context(monkeypatc
 
     def fake_generate_drafts(_credentials, prompt, **_kwargs):
         prompts.append(prompt)
-        if len(prompts) == 1:
-            raise RuntimeError("AI provider HTTP 422: unprocessable_entity_error input new_sensitive (1026)")
-        return AiGenerationResult(
-            candidates=[AiDraftCandidate(persona="读者", content="这条问得挺细")],
-            usage=AiUsage(total_tokens=7),
-        )
+        raise RuntimeError("AI provider HTTP 422: unprocessable_entity_error input new_sensitive (1026)")
 
     monkeypatch.setattr("app.services.task_center.ai_generator.ai_gateway.generate_drafts", fake_generate_drafts)
 
     with Session(engine) as session:
         _add_ai_provider(session)
-        contents, _tokens = generate_channel_reply_comments(
-            session,
-            1,
-            {"comment_style": "relevant"},
-            reply_targets=[{"author": "甲", "preview": sensitive_marker, "comment_message_id": 101}],
-            message_content="频道原文",
-            target_label="阿哥日记",
-        )
+        with pytest.raises(AiGenerationUnavailable, match="new_sensitive.*1026"):
+            generate_channel_reply_comments(
+                session,
+                1,
+                {"comment_style": "relevant"},
+                reply_targets=[{"author": "甲", "preview": sensitive_marker, "comment_message_id": 101}],
+                message_content="频道原文",
+                target_label="阿哥日记",
+            )
 
-    assert contents == ["这条问得挺细"]
+    assert len(prompts) == 1
     assert sensitive_marker in prompts[0]
-    assert sensitive_marker not in prompts[1]
 
 
 def test_group_chat_removes_adult_service_context_before_ai_prompt(monkeypatch):
