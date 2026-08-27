@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 from app.services.account_login.contracts import BatchLoginError, LoginMaterials
 from app.services.account_login.identity import (
     CODE_SOURCE_HOST,
+    CONFIG2_CODE_SOURCE_LABEL,
     CONFIG2_CODE_SOURCE_HOST,
     SUPPORTED_CODE_SOURCE_HOSTS,
     SUSUBOT_CODE_SOURCE_HOST,
@@ -134,14 +135,14 @@ class CodeSourceClient:
         self.sleeper = sleeper
 
     def fetch_login_materials(self, url: str) -> LoginMaterials:
-        parse_code_source_url(url)
+        spec = parse_code_source_url(url)
         last_error: Exception | None = None
         for delay in RETRY_DELAYS_SECONDS:
             if delay:
                 self.sleeper(delay)
             try:
                 result = self.transport.get(url)
-                return parse_login_materials_response(result)
+                return parse_login_materials_response(result, source_host=spec.host)
             except BatchLoginError as exc:
                 if exc.code != "url_fetch_failed":
                     raise
@@ -218,7 +219,7 @@ def _is_public_ip(value: str) -> bool:
     return address.is_global and address not in benchmark
 
 
-def parse_login_materials_response(result: HttpResult) -> LoginMaterials:
+def parse_login_materials_response(result: HttpResult, *, source_host: str = "") -> LoginMaterials:
     if result.status != 200:
         raise BatchLoginError("url_fetch_failed", f"接码平台返回 HTTP {result.status}")
     content_type = result.content_type.lower()
@@ -231,7 +232,7 @@ def parse_login_materials_response(result: HttpResult) -> LoginMaterials:
         html = body.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise BatchLoginError("url_parse_failed", "接码平台页面编码无法解析") from exc
-    return parse_login_materials_html(html)
+    return parse_login_materials_html(html, source_host=source_host)
 
 
 def _decode_response_body(result: HttpResult) -> bytes:
@@ -251,7 +252,7 @@ def _decompress(body: bytes, encoding: str) -> bytes:
     return body
 
 
-def parse_login_materials_html(html: str) -> LoginMaterials:
+def parse_login_materials_html(html: str, *, source_host: str = "") -> LoginMaterials:
     parser = _LoginMaterialParser()
     try:
         parser.feed(html)
@@ -260,7 +261,10 @@ def parse_login_materials_html(html: str) -> LoginMaterials:
     body_text = " ".join(parser.text)
     if "频繁" in body_text:
         raise BatchLoginError("url_fetch_failed", "接码平台请求频繁")
-    if "错误" in parser.title or "此号不存在" in body_text:
+    missing_number = "此号不存在" in body_text
+    if source_host == CONFIG2_CODE_SOURCE_LABEL and missing_number:
+        return LoginMaterials(code="", password_2fa="", login_time="", last_fetch_time="")
+    if "错误" in parser.title or missing_number:
         raise BatchLoginError("url_error", "接码平台报告凭据无效")
     if "code" not in parser.inputs:
         raise BatchLoginError("url_parse_failed", "接码平台页面缺少验证码字段")

@@ -6,7 +6,7 @@ from app.auth import ROLE_TEMPLATE_PERMISSIONS, all_permissions
 from app.models import TgAccount
 from app.permission_middleware import permission_check_result, required_permission
 from app.services.account_login.contracts import BatchLoginError
-from app.services.account_login.identity import parse_code_source_url, parse_login_lines
+from app.services.account_login.identity import CONFIG2_CODE_SOURCE_LABEL, parse_code_source_url, parse_login_lines
 from app.services.code_source_client import (
     HttpResult,
     _readiness_url,
@@ -202,6 +202,42 @@ def test_material_parser_rejects_http_200_error_page() -> None:
 
     with pytest.raises(BatchLoginError) as error:
         parse_login_materials_response(result)
+
+    assert error.value.code == "url_error"
+
+
+def test_config2_missing_number_page_is_empty_baseline() -> None:
+    result = HttpResult(
+        status=200,
+        content_type="text/html; charset=utf-8",
+        content_encoding="",
+        body="<title>错误 - Telegram 登录接码工具</title><p>此号不存在</p>".encode(),
+    )
+
+    materials = parse_login_materials_response(
+        result,
+        source_host=CONFIG2_CODE_SOURCE_LABEL,
+    )
+
+    assert materials.code == ""
+    assert materials.password_2fa == ""
+    assert materials.login_time == ""
+    assert materials.last_fetch_time == ""
+
+
+def test_config2_unknown_error_page_still_fails() -> None:
+    result = HttpResult(
+        status=200,
+        content_type="text/html; charset=utf-8",
+        content_encoding="",
+        body="<title>错误 - Telegram 登录接码工具</title><p>供应方维护</p>".encode(),
+    )
+
+    with pytest.raises(BatchLoginError) as error:
+        parse_login_materials_response(
+            result,
+            source_host=CONFIG2_CODE_SOURCE_LABEL,
+        )
 
     assert error.value.code == "url_error"
 

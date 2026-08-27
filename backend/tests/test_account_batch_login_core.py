@@ -545,9 +545,11 @@ class _LoginCodeClient:
 
 class _SuccessfulTwoFaGateway:
     def __init__(self) -> None:
+        self.start_calls = 0
         self.finish_calls: list[tuple[str | None, str | None]] = []
 
     def start_login(self, _method, **_kwargs) -> LoginChallenge:
+        self.start_calls += 1
         return LoginChallenge(
             status="等待验证码",
             temporary_session="temporary-session",

@@ -164,6 +164,7 @@ def material_hmac(value: str) -> str:
 
 __all__ = [
     "CODE_SOURCE_HOST",
+    "CONFIG2_CODE_SOURCE_LABEL",
     "CONFIG2_CODE_SOURCE_HOST",
     "SUPPORTED_CODE_SOURCE_HOSTS",
     "SUSUBOT_CODE_SOURCE_HOST",
