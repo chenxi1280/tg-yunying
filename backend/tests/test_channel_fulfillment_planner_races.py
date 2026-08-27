@@ -245,6 +245,8 @@ def _scope(
         username="fulfillment_race",
         auth_status="已授权运营",
         can_send=True,
+        reaction_capability_mode="all",
+        available_reactions=["👍"],
     )
     message = ChannelMessage(
         id=902,

@@ -3955,7 +3955,7 @@ def test_channel_like_jitter_uses_available_accounts_without_false_capacity(monk
             )
             for account_id in range(101, 106)
         ]
-        channel = OperationTarget(id=21, tenant_id=1, target_type="channel", tg_peer_id="-10021", title="容量频道", username="capacity_channel", can_send=True, auth_status="已授权运营")
+        channel = OperationTarget(id=21, tenant_id=1, target_type="channel", tg_peer_id="-10021", title="容量频道", username="capacity_channel", can_send=True, auth_status="已授权运营", reaction_capability_mode="all", available_reactions=["👍"])
         message = ChannelMessage(id=31, tenant_id=1, channel_target_id=21, message_id=6101, message_url="https://t.me/capacity_channel/6101", content_preview="容量测试")
         lower_message = ChannelMessage(id=32, tenant_id=1, channel_target_id=21, message_id=6102, message_url="https://t.me/capacity_channel/6102", content_preview="容量下限测试")
 
