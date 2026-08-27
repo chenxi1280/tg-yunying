@@ -1502,7 +1502,7 @@ def test_channel_comment_generation_scales_token_budget_for_many_candidates(monk
         generate_channel_comments(
             session,
             1,
-            {"comment_style": "mixed"},
+            {"comment_style": "mixed", "adult_prompt_enabled": True},
             count=12,
             message_content="【天津音乐学院】所在位置：河东区；服务：陪洗，无套口，制服",
             target_label="天津音乐",
@@ -1815,7 +1815,7 @@ def test_channel_comment_allows_adult_service_context_in_ai_prompt(monkeypatch):
         contents, _tokens = generate_channel_comments(
             session,
             1,
-            {"comment_style": "mixed"},
+            {"comment_style": "mixed", "adult_prompt_enabled": True},
             count=1,
             message_content="【天津音乐学院】所在位置：河东区；服务：陪洗，无套口，制服；特别提示：态度超好，刚入行能理解，大蟒蛇",
             target_label="天津音乐",
@@ -1872,7 +1872,7 @@ def test_channel_comment_keeps_adult_service_context_outputs(monkeypatch):
         contents, _tokens = generate_channel_comments(
             session,
             1,
-            {"comment_style": "mixed"},
+            {"comment_style": "mixed", "adult_prompt_enabled": True},
             count=3,
             message_content="【天津音乐学院】所在位置：河东区；服务项目：陪洗，无套口，制服",
             target_label="天津音乐",
@@ -1920,7 +1920,7 @@ def test_channel_comment_retries_review_tone_without_fake_emoji_success(monkeypa
         contents, tokens = generate_channel_comments(
             session,
             1,
-            {"comment_style": "relevant"},
+            {"comment_style": "relevant", "adult_prompt_enabled": True},
             count=3,
             message_content="频道原文被读者称为色情内容频道，但只需要非露骨短评",
             target_label="阿哥日记",

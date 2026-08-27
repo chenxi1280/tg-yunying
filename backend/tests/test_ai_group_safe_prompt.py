@@ -181,6 +181,7 @@ def test_channel_comment_routing_and_generic_landmarks():
         _channel_comment_cross_city_leak,
         _channel_comment_system_prompt,
         _is_adult_channel_context,
+        _sanitize_channel_message_content,
     )
 
     # City and weak words cannot override the explicit general route.
@@ -192,10 +193,14 @@ def test_channel_comment_routing_and_generic_landmarks():
 
     assert not _is_adult_channel_context(gen_config, "郑州生活日常分享", "今天天气不错")
     assert not _is_adult_channel_context(gen_config, "频道", "这位新开课老师身材水头不错")
+    raw_adult_context = "所在位置：河东区；服务项目：陪洗，无套口，制服"
+    assert "河东区" not in _sanitize_channel_message_content(raw_adult_context, allow_adult_context=False)
+    assert "陪洗" not in _sanitize_channel_message_content(raw_adult_context, allow_adult_context=False)
 
     # Explicit config also triggers adult context
     adult_config = {"adult_prompt_enabled": True}
     assert _is_adult_channel_context(adult_config, "频道", "普通频道消息")
+    assert _sanitize_channel_message_content(raw_adult_context, allow_adult_context=True) == raw_adult_context
     adult_prompt = _channel_comment_system_prompt(adult_config, "频道", "普通频道消息")
     assert "男客老司机" in adult_prompt
 

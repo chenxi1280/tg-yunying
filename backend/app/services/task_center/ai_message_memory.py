@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.models import Action, AiGroupMessageMemory
 from app.services._common import _now
+from app.timezone import as_beijing
 from app.services.task_center.ai_message_memory_queries import (
     HISTORICAL_BACKFILL_STATUSES as HISTORICAL_BACKFILL_STATUSES,
     THIRTY_DAY_WINDOW,
@@ -179,8 +180,9 @@ def _new_reserved_memory(
     mask_status: str,
     content_source: str,
 ) -> AiGroupMessageMemory:
-    planned_time = planned_at or current_time
-    expires_time = max(current_time, planned_time) + reservation_ttl
+    planned_time = as_beijing(planned_at) or as_beijing(current_time)
+    current_comparable = as_beijing(current_time)
+    expires_time = max(current_comparable, planned_time) + reservation_ttl
     return AiGroupMessageMemory(
         tenant_id=tenant_id,
         group_id=group_id,

@@ -22,7 +22,9 @@ DRAFT_KEYS = {
     "allow_material",
 }
 CLAUSE_SPLIT = re.compile(r"[，。！？；,.!?;]+")
-LINE_PREFIX = re.compile(r"^[^:：\n]{1,40}[:：]\s*")
+LINE_PREFIX = re.compile(
+    r"^(?!(?:所在位置|位置|地址|服务|服务项目)[:：])[^:：\n]{1,40}[:：]\s*"
+)
 SPACE = re.compile(r"\s+")
 CONTACT_PATTERN_SOURCE = (
     r"(?:"
@@ -62,10 +64,18 @@ FORBIDDEN = re.compile(
     r")",
     re.IGNORECASE,
 )
+GENERAL_CONTEXT_STRICT = re.compile(
+    r"(?:地址|位置|定位|酒店|宾馆|房间|开房|上门|到店|预约|预订|安排|档期|可约|"
+    r"资源|求推荐|有没有好|上牌|上车|色情|寻欢客|妹妹|小妹|技师|楼凤|外围|"
+    r"面付|抓龙筋|可外|可包时)",
+    re.IGNORECASE,
+)
+GENERAL_CONTEXT_SOFT = re.compile(r"(?:服务)", re.IGNORECASE)
 AGE_RISK = re.compile(r"(?:未成年|学生妹|学生辈|少女|幼女|小女孩|好嫩|很嫩|幼态|幼齿)")
 BOT_JUNK_PATTERNS = re.compile(
     r"(?:关注.*频道|需要关注|邀请成功|获得.*积分|当前总共邀请|抽红包|抽奖|点我头像|加v|v同步|"
-    r"无限畅饮|摸摸唱|女仆92|挖宝|集齐碎片|今日发言量|群内排名|由于系统原因)",
+    r"无限畅饮|摸摸唱|女仆92|挖宝|集齐碎片|今日发言量|群内排名|由于系统原因|"
+    r"还没有你的定位|为了保护隐私|更新后回到本群发送|查询附近老师|点击底部按钮)",
     re.IGNORECASE,
 )
 SAFE_GENERAL = re.compile(
@@ -155,17 +165,21 @@ def normalize(value: object) -> str:
     return SPACE.sub(" ", str(value or "")).strip()
 
 
-def safe_clauses(value: object) -> list[str]:
+def safe_clauses(value: object, *, allow_adult_context: bool = False) -> list[str]:
     text = LINE_PREFIX.sub("", normalize(value))
     clauses = [normalize(item) for item in CLAUSE_SPLIT.split(text)]
     safe: list[str] = []
     for item in clauses:
         if not item or AGE_RISK.search(item):
             continue
-        if not FORBIDDEN.search(item):
+        if not allow_adult_context and GENERAL_CONTEXT_STRICT.search(item):
+            continue
+        has_forbidden = FORBIDDEN.search(item)
+        has_general_soft = not allow_adult_context and GENERAL_CONTEXT_SOFT.search(item)
+        if not has_forbidden and not has_general_soft:
             safe.append(item)
             continue
-        cleaned = normalize(FORBIDDEN.sub("", item))
+        cleaned = normalize(FORBIDDEN.sub("", GENERAL_CONTEXT_SOFT.sub("", item)))
         if cleaned and _allowed_clause(cleaned):
             safe.append(cleaned)
     return safe
@@ -175,67 +189,78 @@ def _allowed_clause(value: str) -> bool:
     return bool(SAFE_GENERAL.search(value) or SAFE_APPEARANCE.search(value))
 
 
-def sanitize_group_messages(messages: list[str]) -> list[str]:
+def sanitize_group_messages(messages: list[str], *, allow_adult_context: bool = False) -> list[str]:
     safe: list[str] = []
     for message in messages:
         if BOT_JUNK_PATTERNS.search(str(message or "")):
             continue
         safe.extend(
             clause
-            for clause in safe_clauses(message)
+            for clause in safe_clauses(message, allow_adult_context=allow_adult_context)
             if meaningful_context_text(clause)
         )
     return safe[-MAX_SAFE_MESSAGES:]
 
 
-def _safe_group_label(value: object, group_id: object) -> str:
+def _safe_group_label(value: object, group_id: object, *, allow_adult_context: bool = False) -> str:
     label = normalize(value)
-    if label and not FORBIDDEN.search(label) and not AGE_RISK.search(label):
+    general_safe = allow_adult_context or bool(SAFE_GROUP.search(label))
+    general_forbidden = not allow_adult_context and GENERAL_CONTEXT_STRICT.search(label)
+    if label and general_safe and not general_forbidden and not FORBIDDEN.search(label) and not AGE_RISK.search(label):
         return label
     return f"生产群-{int(group_id or 0)}"
 
 
-def _safe_map(value: object) -> dict[str, str]:
+def _safe_map(value: object, *, allow_adult_context: bool = False) -> dict[str, str]:
     if not isinstance(value, dict):
         return {}
     result: dict[str, str] = {}
     for key, raw in value.items():
-        clauses = safe_clauses(raw)
+        clauses = safe_clauses(raw, allow_adult_context=allow_adult_context)
         if clauses:
             result[str(key)] = "；".join(clauses[:3])
     return result
 
 
-def contains_disallowed_group_content(value: object) -> bool:
-    return bool(FORBIDDEN.search(normalize(value)))
+def contains_disallowed_group_content(value: object, *, allow_adult_context: bool = False) -> bool:
+    normalized = normalize(value)
+    if FORBIDDEN.search(normalized):
+        return True
+    return not allow_adult_context and bool(
+        GENERAL_CONTEXT_STRICT.search(normalized) or GENERAL_CONTEXT_SOFT.search(normalized)
+    )
 
 
-def _safe_target(value: object, label_key: str) -> dict[str, str]:
+def _safe_target(value: object, label_key: str, *, allow_adult_context: bool = False) -> dict[str, str]:
     if not isinstance(value, dict):
         return {}
-    label = safe_clauses(value.get(label_key))
-    description = safe_clauses(value.get("description"))
+    label = safe_clauses(value.get(label_key), allow_adult_context=allow_adult_context)
+    description = safe_clauses(value.get("description"), allow_adult_context=allow_adult_context)
     result = {label_key: label[0]} if label else {}
     if description:
         result["description"] = description[0]
     return result
 
 
-def _safe_slots(value: object) -> list[dict[str, Any]]:
+def _safe_slots(value: object, *, allow_adult_context: bool = False) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
-    return [_safe_slot(slot) for slot in value if isinstance(slot, dict)]
+    return [
+        _safe_slot(slot, allow_adult_context=allow_adult_context)
+        for slot in value
+        if isinstance(slot, dict)
+    ]
 
 
-def _safe_slot(slot: dict[str, Any]) -> dict[str, Any]:
+def _safe_slot(slot: dict[str, Any], *, allow_adult_context: bool = False) -> dict[str, Any]:
     exact = ("sequence_index", "slot_id", "account_id", "act_type", "reply_to_sequence_index")
     result = {key: slot.get(key) for key in exact if key in slot}
     for key in ("account_profile", "material_intent", "content_guidance"):
-        clauses = safe_clauses(slot.get(key))
+        clauses = safe_clauses(slot.get(key), allow_adult_context=allow_adult_context)
         if clauses:
             result[key] = "；".join(clauses[:3])
-    topic = _safe_target(slot.get("topic_direction"), "title")
-    teacher = _safe_target(slot.get("teacher_target"), "name")
+    topic = _safe_target(slot.get("topic_direction"), "title", allow_adult_context=allow_adult_context)
+    teacher = _safe_target(slot.get("teacher_target"), "name", allow_adult_context=allow_adult_context)
     if topic:
         result["topic_direction"] = topic
     if teacher:
@@ -243,12 +268,15 @@ def _safe_slot(slot: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def _safe_reply_targets(value: object) -> list[dict[str, str]]:
+def _safe_reply_targets(value: object, *, allow_adult_context: bool = False) -> list[dict[str, str]]:
     if not isinstance(value, list):
         return []
     targets: list[dict[str, str]] = []
     for item in value:
-        clauses = safe_clauses((item or {}).get("preview") if isinstance(item, dict) else "")
+        clauses = safe_clauses(
+            (item or {}).get("preview") if isinstance(item, dict) else "",
+            allow_adult_context=allow_adult_context,
+        )
         if clauses:
             targets.append({"preview": clauses[0]})
     return targets
@@ -278,6 +306,40 @@ def output_contract(
     return {"decision": "reply", "context_source": context_source, "drafts": drafts}
 
 
+def _prompt_payload(
+    config: dict,
+    *,
+    target_label: str,
+    messages: list[str],
+    reply_targets: list[dict] | None,
+    adult_context: bool,
+) -> dict[str, Any]:
+    active_topic = config.get("active_topic_direction")
+    if not active_topic and config.get("topic_directions"):
+        active_topic = config["topic_directions"][0]
+    allow = adult_context
+    return {
+        "group_label": _safe_group_label(
+            target_label,
+            config.get("target_group_id") or config.get("group_id"),
+            allow_adult_context=allow,
+        ),
+        "account_personas": _safe_map(config.get("account_personas"), allow_adult_context=allow),
+        "account_memories": _safe_map(config.get("account_memories"), allow_adult_context=allow),
+        "account_profiles": _safe_map(config.get("account_profiles"), allow_adult_context=allow),
+        "active_topic": _safe_target(active_topic, "title", allow_adult_context=allow),
+        "active_teacher": _safe_target(
+            config.get("active_teacher_target"),
+            "name",
+            allow_adult_context=allow,
+        ),
+        "generation_slots": _safe_slots(config.get("generation_slots"), allow_adult_context=allow),
+        "reply_targets": _safe_reply_targets(reply_targets, allow_adult_context=allow),
+        "context_source": "safe_context" if messages else "generic_warmup",
+        "sanitized_context": messages,
+    }
+
+
 def build_group_prompt(
     config: dict,
     *,
@@ -286,23 +348,19 @@ def build_group_prompt(
     count: int,
     reply_targets: list[dict] | None = None,
 ) -> GroupPromptBundle:
-    messages = sanitize_group_messages(str(history or "").splitlines())
-    context_source = "safe_context" if messages else "generic_warmup"
-    active_topic_raw = config.get("active_topic_direction")
-    if not active_topic_raw and config.get("topic_directions"):
-        active_topic_raw = config["topic_directions"][0]
-    payload = {
-        "group_label": _safe_group_label(target_label, config.get("target_group_id") or config.get("group_id")),
-        "account_personas": _safe_map(config.get("account_personas")),
-        "account_memories": _safe_map(config.get("account_memories")),
-        "account_profiles": _safe_map(config.get("account_profiles")),
-        "active_topic": _safe_target(active_topic_raw, "title"),
-        "active_teacher": _safe_target(config.get("active_teacher_target"), "name"),
-        "generation_slots": _safe_slots(config.get("generation_slots")),
-        "reply_targets": _safe_reply_targets(reply_targets),
-        "context_source": context_source,
-        "sanitized_context": messages,
-    }
+    adult_context = is_adult_content_config(config)
+    messages = sanitize_group_messages(
+        str(history or "").splitlines(),
+        allow_adult_context=adult_context,
+    )
+    payload = _prompt_payload(
+        config,
+        target_label=target_label,
+        messages=messages,
+        reply_targets=reply_targets,
+        adult_context=adult_context,
+    )
+    context_source = payload["context_source"]
     contract = output_contract(context_source, count, payload["generation_slots"])
     user_prompt = (
         "Sanitized production-shaped input:\n"
@@ -310,7 +368,7 @@ def build_group_prompt(
         f"Generate exactly {max(1, int(count or 1))} Chinese draft(s). Return this exact JSON structure with placeholder values replaced:\n"
         f"{json.dumps(contract, ensure_ascii=False, indent=2)}"
     )
-    chosen_system_prompt = ADULT_SYSTEM_PROMPT if _is_adult_group_prompt(config, target_label, " ".join(messages)) else GENERAL_SYSTEM_PROMPT
+    chosen_system_prompt = ADULT_SYSTEM_PROMPT if adult_context else GENERAL_SYSTEM_PROMPT
     return GroupPromptBundle(chosen_system_prompt, user_prompt, context_source, tuple(messages), payload, contract)
 
 

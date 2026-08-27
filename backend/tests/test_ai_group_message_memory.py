@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import create_engine, select
@@ -139,6 +139,26 @@ def test_future_planned_reservation_expires_after_scheduled_send_window():
             account_id=101,
             raw_text="今晚再聊这个话题",
             now=now,
+            planned_at=planned_at,
+            reservation_ttl=timedelta(minutes=30),
+        )
+
+        assert memory.planned_at == planned_at
+        assert memory.expires_at == planned_at + timedelta(minutes=30)
+
+
+def test_future_reservation_compares_aware_current_with_naive_beijing_plan():
+    current = datetime(2026, 8, 27, 10, tzinfo=UTC)
+    planned_at = datetime(2026, 8, 27, 19)
+    with _session() as session:
+        memory = reserve_group_ai_message(
+            session,
+            tenant_id=1,
+            group_id=22,
+            task_id="task-aware-plan",
+            account_id=101,
+            raw_text="今晚七点再聊",
+            now=current,
             planned_at=planned_at,
             reservation_ttl=timedelta(minutes=30),
         )

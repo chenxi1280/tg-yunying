@@ -49,6 +49,7 @@ from app.services.task_center.ai_group_prompt import (
     build_group_prompt,
     contains_disallowed_group_content,
     is_adult_content_config,
+    sanitize_group_messages,
 )
 from app.services.grok_cli_bridge import GrokCliBridge, GrokCliUnavailable
 AI_CONTENT_REQUEST_TIMEOUT_SECONDS = 120
@@ -269,6 +270,7 @@ def generate_contents(
     system_prompt: str | None = None,
     required_model_family: str = "",
     close_transaction_before_external: bool = False,
+    restrict_sensitive_trade: bool = False,
 ) -> tuple[list[str], int]:
     topic = _sanitize_sensitive_context(topic)
     requirements = _sanitize_sensitive_context(requirements)
@@ -304,7 +306,13 @@ def generate_contents(
     result = _generate_with_provider_candidates(
         session, provider, request, policy=policy,
     )
-    return _generated_contents_result(result, provider, purpose=purpose, count=count)
+    return _generated_contents_result(
+        result,
+        provider,
+        purpose=purpose,
+        count=count,
+        restrict_sensitive_trade=restrict_sensitive_trade,
+    )
 
 
 def _content_provider_request(
@@ -334,13 +342,20 @@ def _generated_contents_result(
     *,
     purpose: str,
     count: int,
+    restrict_sensitive_trade: bool = False,
 ) -> tuple[list[str], int]:
     raw_contents = [
         _generated_content_from_candidate(candidate)
         for candidate in result.candidates
         if str(candidate.content or "").strip()
     ]
-    contents = _clean_generated_contents(raw_contents, purpose, count, mock_provider=_is_mock_provider(provider))
+    contents = _clean_generated_contents(
+        raw_contents,
+        purpose,
+        count,
+        mock_provider=_is_mock_provider(provider),
+        restrict_sensitive_trade=restrict_sensitive_trade,
+    )
     usage = getattr(result, "usage", None)
     tokens = int(getattr(usage, "total_tokens", 0) or 0)
     if purpose in LONG_RUNNING_AI_PURPOSES:
@@ -438,23 +453,43 @@ def _prompt_profile(
     return prompt, persona_set, tone
 
 
-def _clean_generated_contents(contents: list[str], purpose: str, count: int, *, mock_provider: bool = False) -> list[str]:
+def _clean_generated_contents(
+    contents: list[str],
+    purpose: str,
+    count: int,
+    *,
+    mock_provider: bool = False,
+    restrict_sensitive_trade: bool = True,
+) -> list[str]:
     if purpose in {GROUP_CHAT_PURPOSE, GROUP_CHAT_REPLY_PURPOSE}:
-        contents = _clean_mock_group_chat_contents(contents) if mock_provider else clean_group_chat_contents(contents, restrict_sensitive_trade=True)
+        contents = (
+            _clean_mock_group_chat_contents(contents, restrict_sensitive_trade=restrict_sensitive_trade)
+            if mock_provider
+            else clean_group_chat_contents(contents, restrict_sensitive_trade=restrict_sensitive_trade)
+        )
         if not contents:
             raise AiGenerationUnavailable(AI_GENERATION_UNAVAILABLE_MESSAGE)
     if purpose in {CHANNEL_COMMENT_PURPOSE, CHANNEL_COMMENT_REPLY_PURPOSE}:
-        contents = clean_channel_comment_contents(contents, limit=count)
+        contents = clean_channel_comment_contents(
+            contents,
+            limit=count,
+            restrict_sensitive_trade=restrict_sensitive_trade,
+        )
         if not contents:
             raise AiGenerationUnavailable("AI 评论候选质量不达标，未创建评论")
     return contents
 
 
-def _clean_mock_group_chat_contents(contents: list[str]) -> list[str]:
+def _clean_mock_group_chat_contents(
+    contents: list[str],
+    *,
+    restrict_sensitive_trade: bool = True,
+) -> list[str]:
     cleaned: list[str] = []
     for content in contents:
         item = _clean_generated_content(content)
-        if item and not _looks_like_bad_group_chat_content(item) and not _looks_like_sensitive_trade_facilitation(item):
+        sensitive = restrict_sensitive_trade and _looks_like_sensitive_trade_facilitation(item)
+        if item and not _looks_like_bad_group_chat_content(item) and not sensitive:
             cleaned.append(_copy_generated_content_metadata(item, content))
     return cleaned
 
@@ -609,6 +644,13 @@ def _sanitize_channel_label(value: str) -> str:
 
 def _sanitize_sensitive_context(text: str) -> str:
     return str(text or "")
+
+
+def _sanitize_channel_message_content(value: object, *, allow_adult_context: bool) -> str:
+    text = str(value or "").strip()
+    if allow_adult_context:
+        return text
+    return "；".join(sanitize_group_messages([text]))
 
 
 def clean_group_chat_contents(contents: list[str], *, restrict_sensitive_trade: bool = False) -> list[str]:
@@ -1207,7 +1249,13 @@ def _group_provider_result(
         for item in result.candidates
         if str(item.content or "").strip()
     ]
-    cleaned = _clean_generated_contents(contents, purpose, count, mock_provider=_is_mock_provider(provider))
+    cleaned = _clean_generated_contents(
+        contents,
+        purpose,
+        count,
+        mock_provider=_is_mock_provider(provider),
+        restrict_sensitive_trade=not is_adult_content_config(config),
+    )
     usage = getattr(result, "usage", None)
     return cleaned, int(getattr(usage, "total_tokens", 0) or 0)
 
@@ -1286,7 +1334,13 @@ def _generate_group_with_grok(
         for item in result.candidates
         if str(item.content or "").strip()
     ]
-    cleaned = _clean_generated_contents(contents, purpose, count, mock_provider=False)
+    cleaned = _clean_generated_contents(
+        contents,
+        purpose,
+        count,
+        mock_provider=False,
+        restrict_sensitive_trade=not is_adult_content_config(config),
+    )
     return cleaned, int(getattr(result.usage, "total_tokens", 0) or 0)
 
 
@@ -1390,31 +1444,26 @@ def _group_chat_system_prompt(slang_prompt: str) -> str:
     return f"{base}\n\n{slang_prompt}"
 
 
-ADULT_CHANNEL_COMMENT_SYSTEM_PROMPT = """你是一个 Telegram 频道评论区的真实订阅读者（男客老司机老群友）。
-【行业黑话与暗语规则】
-1. 核心暗语：
-   - '老师/课代表' 代指可约女性/技师/外围/兼职
-   - '开课/上课/交作业' 代指营业/出台/体验反馈
-   - '出击/踩雷/机车/上岸/水头' 代指去消费/体验差/态度敷衍/退圈/颜值身材真实度
-   - '照骗/工兵' 代指修图过头/探路先锋老哥
-2. 地名规则：平时评论不主动提具体地点/区名；仅当原帖明确涉及地点时才顺着聊，严禁出现外地地名。
-3. 评论生成规则：
-   - 紧密贴合频道帖子具体内容（老师名字、身材、照片、腿长、气质、服务特点、开课动态等），像真实刷到帖子的老哥随手在评论区留言。
-   - 评论角度丰富自然：夸身材气质、打听开课水头、辨析修图痕迹、询问态度与配合度、蹲老哥战报反馈、打听是否机车。
-   - 极度口语化、接地气、短促干脆，像手机随手打字。
-   - 严禁违规联系方式（微信/TG号）、引流或露骨生理词汇。
-   - 严禁出现任何“收藏了/很有参考价值/值得探讨/继续关注博主/早安打卡/努力搬砖/喝咖啡”等 AI 模板废话！
-   - 控制字数：每条 8 到 20 个汉字。
+ADULT_CHANNEL_COMMENT_SYSTEM_PROMPT = """你是一个 Telegram 频道评论区的真实订阅读者（真实老哥/男客网友）。
+【核心规则】
+1. 像真实手机老哥随手在 Telegram 评论区留言，短促、极度口语化、接地气。
+2. 紧密贴合频道帖子具体内容（老师名字、身材、照片、腿长、气质、服务特点、开课动态等），随性抓取 1 个点发声：
+   - 随性夸赞/感慨（例：“大长腿看着真顶”、“这眼神绝了”、“看着还挺润的”）
+   - 老哥打听/提问（例：“哪个区的有老哥去过没？”、“折后多少米一次？”、“课表水多不？”）
+   - 真实调侃/互动（例：“修图痕迹略重啊老哥”、“蹲一个去过的老哥战报”、“看着像本人不？”）
+   - 极短随性附和（例：“666”、“mark一下”、“确实顶”）
+3. 严禁出现任何“收藏了/很有参考价值/值得探讨/继续关注博主/早安打卡/努力搬砖/喝咖啡”等 AI 模板废话！
+4. 控制字数：短促有力（4 到 18 个汉字），不要每句都带标点，偶尔带 1 个自然标点（？、！、...）或无标点。
 Output one JSON object only. No Markdown fences, thinking, prose, prefix, suffix, comments, or extra fields.""" + SENSITIVE_CONTEXT_GUIDANCE
 
 GENERAL_CHANNEL_COMMENT_SYSTEM_PROMPT = """你是一个 Telegram 频道评论区的真实订阅读者。
 【评论规则】
 1. 针对频道帖子中的具体事实和细节发表自然随性的看法、感受或提出具体疑问。
-2. 地名规则：平时评论不主动提具体城市或地名，仅当帖子明确涉及地点时才顺着讨论；如提地点必须严格符合本频道所属城市，严禁跨市地名。
-3. 极度口语化，像真实手机用户随手打字留言。
+2. 像真实手机用户在电报随手打字留言，极度口语化，短促自然。
+3. 角度多样：随性短评（“这波确实可以”、“mark一下”）、真实提问（“这个大概什么价位？”）、针对细节的感慨（“这效率真高啊”）。
 4. 严禁使用“这个内容很有参考价值/值得深入讨论/先收藏了/感谢博主分享/加油搬砖/早安打卡”等任何空洞模板套话。
 5. 严禁联系方式、引流或违规信息。
-6. 控制字数：每条 8 到 24 个汉字，简练自然。
+6. 控制字数：每条 4 到 18 个汉字，简练自然。
 Output one JSON object only. No Markdown fences, thinking, prose, prefix, suffix, comments, or extra fields.""" + SENSITIVE_CONTEXT_GUIDANCE
 
 
@@ -1504,35 +1553,24 @@ def _generate_channel_contents_with_retry(
     accepted: list[str] = []
     total_tokens = 0
     last_retryable_error: AiGenerationUnavailable | None = None
+    adult_context = _is_adult_channel_context(config, target_label, message_content)
     for attempt in range(CHANNEL_COMMENT_MAX_REDESCRIPTION_ATTEMPTS + 1):
         missing = count - len(accepted)
         if missing <= 0:
             break
         try:
-            contents, tokens = generate_contents(
+            contents, tokens = _generate_channel_attempt(
                 session,
                 tenant_id,
-                topic=_channel_comment_attempt_topic(
-                    topic,
-                    attempt,
-                    config=config,
-                    target_label=target_label,
-                    message_content=message_content,
-                ),
-                requirements=_channel_comment_attempt_requirements(
-                    requirements,
-                    attempt,
-                    config=config,
-                    target_label=target_label,
-                    message_content=message_content,
-                ),
-                provider_id=config.get("ai_provider_id"),
-                model_name=str(config.get("ai_model") or ""),
-                count=missing,
+                config,
+                topic=topic,
+                requirements=requirements,
+                attempt=attempt,
+                missing=missing,
                 purpose=purpose,
                 target_label=target_label,
-                system_prompt=_channel_comment_attempt_system_prompt(attempt, config=config, target_label=target_label, message_content=message_content),
-                close_transaction_before_external=bool(config.get("_close_db_transaction_before_ai")),
+                message_content=message_content,
+                adult_context=adult_context,
             )
         except AiGenerationUnavailable as exc:
             if not _is_retryable_channel_generation_error(exc):
@@ -1540,10 +1578,50 @@ def _generate_channel_contents_with_retry(
             last_retryable_error = exc
             continue
         total_tokens += tokens
-        accepted = clean_channel_comment_contents([*accepted, *contents], limit=count, local_city=local_city)
+        accepted = clean_channel_comment_contents(
+            [*accepted, *contents],
+            limit=count,
+            restrict_sensitive_trade=not adult_context,
+            local_city=local_city,
+        )
     if not accepted and last_retryable_error:
         raise last_retryable_error
     return accepted, total_tokens
+
+
+def _generate_channel_attempt(
+    session: Session,
+    tenant_id: int,
+    config: dict,
+    *,
+    topic: str,
+    requirements: str,
+    attempt: int,
+    missing: int,
+    purpose: str,
+    target_label: str,
+    message_content: str,
+    adult_context: bool,
+) -> tuple[list[str], int]:
+    attempt_options = {
+        "config": config,
+        "target_label": target_label,
+        "message_content": message_content,
+    }
+    return generate_contents(
+        session,
+        tenant_id,
+        topic=_channel_comment_attempt_topic(topic, attempt, **attempt_options),
+        requirements=_channel_comment_attempt_requirements(requirements, attempt, **attempt_options),
+        provider_id=config.get("ai_provider_id"),
+        model_name=str(config.get("ai_model") or ""),
+        count=missing,
+        purpose=purpose,
+        target_label=target_label,
+        system_prompt=_channel_comment_attempt_system_prompt(attempt, **attempt_options),
+        close_transaction_before_external=bool(config.get("_close_db_transaction_before_ai")),
+        restrict_sensitive_trade=not adult_context,
+    )
 
 
 def _channel_comment_attempt_topic(
@@ -1608,8 +1686,15 @@ def _is_retryable_channel_generation_error(exc: AiGenerationUnavailable) -> bool
 
 
 def generate_channel_comments(session: Session, tenant_id: int, config: dict, *, count: int, message_content: str, target_label: str) -> tuple[list[str], int]:
-    topic = config.get("topic_hint") or "频道评论"
-    safe_message_content = _sanitize_sensitive_context(message_content)
+    adult_context = _is_adult_channel_context(config, target_label, message_content)
+    topic = _sanitize_channel_message_content(
+        config.get("topic_hint") or "频道评论",
+        allow_adult_context=adult_context,
+    ) or "频道评论"
+    safe_message_content = _sanitize_channel_message_content(
+        message_content,
+        allow_adult_context=adult_context,
+    )
     safe_target_label = _sanitize_channel_label(target_label)
     local_city = _detect_channel_city(target_label, config)
     target_profile_prompt = _target_profile_style_prompt(config.get("target_comment_profile"), audience="channel")
@@ -1624,7 +1709,7 @@ def generate_channel_comments(session: Session, tenant_id: int, config: dict, *,
         f"评论风格：{config.get('comment_style') or 'mixed'}\n"
         f"{target_profile_prompt}\n"
         f"语言：{config.get('language') or 'zh-CN'}\n"
-        f"{_sanitize_sensitive_context(config.get('system_prompt_override') or '')}"
+        f"{_sanitize_channel_message_content(config.get('system_prompt_override'), allow_adult_context=adult_context)}"
     )
     contents, tokens = _generate_channel_contents_with_retry(
         session,
@@ -1650,7 +1735,15 @@ def generate_channel_reply_comments(
     message_content: str,
     target_label: str,
 ) -> tuple[list[str], int]:
-    reply_lines = "\n".join(_reply_target_line(index, item) for index, item in enumerate(reply_targets, start=1))
+    adult_context = _is_adult_channel_context(config, target_label, message_content)
+    safe_reply_targets = _sanitized_channel_reply_targets(
+        reply_targets,
+        adult_context=adult_context,
+    )
+    reply_lines = "\n".join(
+        _reply_target_line(index, item)
+        for index, item in enumerate(safe_reply_targets, start=1)
+    )
     target_profile_prompt = _target_profile_style_prompt(config.get("target_comment_profile"), audience="channel")
     safe_target_label = _sanitize_channel_label(target_label)
     local_city = _detect_channel_city(target_label, config)
@@ -1660,18 +1753,21 @@ def generate_channel_reply_comments(
         else "地名规则：平时不主动提具体地点/区名；如提必须与原帖一致，严禁跨市或臆造地名\n"
     )
     requirements = (
-        f"频道消息：{_sanitize_sensitive_context(message_content)}\n"
+        f"频道消息：{_sanitize_channel_message_content(message_content, allow_adult_context=adult_context)}\n"
         f"{city_line}"
         f"评论风格：{config.get('comment_style') or 'mixed'}\n"
         f"{target_profile_prompt}\n"
         f"引用目标：\n{reply_lines}\n"
-        f"{_sanitize_sensitive_context(config.get('system_prompt_override') or '')}"
+        f"{_sanitize_channel_message_content(config.get('system_prompt_override'), allow_adult_context=adult_context)}"
     )
     contents, tokens = _generate_channel_contents_with_retry(
         session,
         tenant_id,
         config,
-        topic=config.get("topic_hint") or "频道引用回复",
+        topic=_sanitize_channel_message_content(
+            config.get("topic_hint") or "频道引用回复",
+            allow_adult_context=adult_context,
+        ) or "频道引用回复",
         requirements=requirements,
         count=len(reply_targets),
         purpose=CHANNEL_COMMENT_REPLY_PURPOSE,
@@ -1680,6 +1776,23 @@ def generate_channel_reply_comments(
         local_city=local_city,
     )
     return _trim(contents, config.get("max_comment_length")), tokens
+
+
+def _sanitized_channel_reply_targets(
+    reply_targets: list[dict],
+    *,
+    adult_context: bool,
+) -> list[dict]:
+    return [
+        {
+            **item,
+            "preview": _sanitize_channel_message_content(
+                item.get("preview"),
+                allow_adult_context=adult_context,
+            ),
+        }
+        for item in reply_targets
+    ]
 
 
 def _target_profile_style_prompt(value: object, *, audience: str) -> str:
