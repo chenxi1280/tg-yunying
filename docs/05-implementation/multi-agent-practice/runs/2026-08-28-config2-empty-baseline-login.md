@@ -1,5 +1,23 @@
 # Config2 空 baseline 重新登录修复
 
+## 2026-08-28 新版空基线文案跟进
+
+- intake_id: `intake-2026-08-28-config2-document-batch-login`
+- level: L2
+- production_related: true
+- release_gate_required: true
+- user_scope: 修复后先用输入文档前两行逐行金丝雀，1～2 个成功后再提交其余 198 行。
+- incident_evidence: 新建账号金丝雀批次 `#12` 在 Telegram 发码前以 `url_error` 终止；无账号、flow、session 或远端调用状态。生产 pinned HTTPS 读回为 HTTP 200 HTML 错误页，无材料字段，正文使用新版「无三十分钟内的登录消息」。
+- root_cause: config2 已将 challenge 前空基线文案从既有「此号不存在」切换为新版文案，parser 仍按旧固定文案分型，错误地落入凭据无效。
+- product_decision: 仅把精确 config2 来源的两个已知正文识别为空 `LoginMaterials`；默认 host、频控、未知错误标题和缺字段继续显式失败。不得把所有 config2 错误页降级为空材料。
+- qa_acceptance: 两种已知文案在 config2 下均为空基线；新版文案在默认 host 下仍为 `url_error`；未知 config2 错误仍为 `url_error`；完整 worker 状态机必须越过 baseline 并真实完成 send/code/2FA/online。
+- rollout_boundary: 修复发布并独立读回后，先重试批次 `#12` 的单行目标并取得 Telegram E4；未通过不得创建其余 198 行批次。
+- design_status: product_design_complete
+- implementation_status: local_implemented
+- qa_status: qa_pass
+- production_status: canary_blocked_before_send
+- local_evidence: 新版文案回归先失败后通过；config2 定向 6 passed，批量登录 parser/core/parallelism/contract 综合 69 passed；`py_compile` 与 `git diff --check` 通过。
+
 ## Intake Card
 
 - intake_id: intake-2026-08-28-config2-empty-baseline-login

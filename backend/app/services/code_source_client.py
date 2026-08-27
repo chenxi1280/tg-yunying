@@ -29,6 +29,10 @@ REQUEST_TIMEOUT_SECONDS = 15
 USER_AGENT = "tg-yunying-login-worker/1.0"
 RETRY_DELAYS_SECONDS = (0, 1, 3)
 READINESS_CACHE_SECONDS = 60
+CONFIG2_EMPTY_BASELINE_MARKERS = (
+    "此号不存在",
+    "无三十分钟内的登录消息",
+)
 _readiness_cache: dict[tuple[str, ...], tuple[float, str]] = {}
 
 
@@ -262,7 +266,10 @@ def parse_login_materials_html(html: str, *, source_host: str = "") -> LoginMate
     if "频繁" in body_text:
         raise BatchLoginError("url_fetch_failed", "接码平台请求频繁")
     missing_number = "此号不存在" in body_text
-    if source_host == CONFIG2_CODE_SOURCE_LABEL and missing_number:
+    config2_empty_baseline = source_host == CONFIG2_CODE_SOURCE_LABEL and any(
+        marker in body_text for marker in CONFIG2_EMPTY_BASELINE_MARKERS
+    )
+    if config2_empty_baseline:
         return LoginMaterials(code="", password_2fa="", login_time="", last_fetch_time="")
     if "错误" in parser.title or missing_number:
         raise BatchLoginError("url_error", "接码平台报告凭据无效")

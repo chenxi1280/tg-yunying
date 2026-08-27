@@ -6,8 +6,8 @@ from sqlalchemy import select
 from app.models import TgAccount, TgAccountLoginBatchItem
 from app.services.account_login import host_rate_policy
 from app.services.account_login.batches import create_login_batch
-from app.services.account_login.contracts import LoginMaterials
-from app.services.code_source_client import CodeSourceClient, HttpResult
+from app.services.account_login.contracts import BatchLoginError, LoginMaterials
+from app.services.code_source_client import CodeSourceClient, HttpResult, parse_login_materials_html
 from tests.test_account_batch_login_core import (
     _SuccessfulTwoFaGateway,
     _configure_drain_runtime,
@@ -41,12 +41,52 @@ class _MissingNumberTransport:
         )
 
 
+class _HtmlTransport:
+    def __init__(self, message: str) -> None:
+        self.message = message
+
+    def get(self, _url: str) -> HttpResult:
+        return HttpResult(
+            status=200,
+            content_type="text/html; charset=utf-8",
+            content_encoding="",
+            body=f"<title>错误</title><p>{self.message}</p>".encode(),
+        )
+
+
 def test_config2_client_routes_missing_number_to_empty_baseline() -> None:
     url = CONFIG2_LINE.split("|", 1)[1]
 
     materials = CodeSourceClient(transport=_MissingNumberTransport()).fetch_login_materials(url)
 
     assert materials == LoginMaterials("", "", "", "")
+
+
+def test_config2_client_routes_no_recent_login_message_to_empty_baseline() -> None:
+    url = CONFIG2_LINE.split("|", 1)[1]
+    transport = _HtmlTransport("无三十分钟内的登录消息")
+
+    materials = CodeSourceClient(transport=transport).fetch_login_materials(url)
+
+    assert materials == LoginMaterials("", "", "", "")
+
+
+def test_no_recent_login_message_stays_error_for_other_sources() -> None:
+    html = "<title>错误</title><p>无三十分钟内的登录消息</p>"
+
+    with pytest.raises(BatchLoginError, match="接码平台报告凭据无效") as exc_info:
+        parse_login_materials_html(html, source_host="tgbotchecker")
+
+    assert exc_info.value.code == "url_error"
+
+
+def test_unknown_config2_error_stays_error() -> None:
+    html = "<title>错误</title><p>未知供应方错误</p>"
+
+    with pytest.raises(BatchLoginError, match="接码平台报告凭据无效") as exc_info:
+        parse_login_materials_html(html, source_host="config2")
+
+    assert exc_info.value.code == "url_error"
 
 
 def test_config2_uses_dedicated_host_rate_policy() -> None:
