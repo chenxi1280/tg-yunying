@@ -37,6 +37,8 @@ from ..source_pacing import (
 )
 from ..source_capacity_plans import apply_source_capacity_plan
 from ..source_owner_cursor import attach_owner_history, pacing_source_key_hash
+from .channel_like_capability import clear_reaction_capability_block as _clear_reaction_capability_block
+from .channel_like_capability import message_reaction_plan as _message_reaction_plan
 from .channel_like_reactions import reaction_plan as _reaction_plan
 from .common import adjust_for_account_hour_limit, channel_message_payload, channel_scope, quantity_jitter_bounds, record_channel_capacity_warning
 
@@ -348,12 +350,20 @@ def _like_actions_for_messages(
         selected = ranked[: min(plan_total, len(ranked))]
         plan_total = len(selected)
         desired = min(plan_total, _paced_like_target(task, message, plan_total, now=now))
-        message_reactions = _reaction_plan(
-            reactions,
-            plan_total,
-            str(config.get("reaction_type") or "random"),
+        if len(used_accounts) >= desired:
+            _clear_reaction_capability_block(task, message.id)
+            continue
+        message_reactions = _message_reaction_plan(
+            session,
+            task,
+            message,
+            config=config,
+            reactions=reactions,
+            quantity=plan_total,
             seed_id=seed_id,
         )
+        if not message_reactions:
+            continue
         for ordinal, account in enumerate(selected[:desired]):
             if account.id in used_accounts:
                 continue
@@ -429,7 +439,7 @@ def _empty_like_plan_message(
     unavailable_ids = {
         int(value)
         for value in (task.stats or {}).get(
-            "reaction_unavailable_message_ids",
+            "reaction_capability_unavailable_message_ids",
             [],
         )
     }

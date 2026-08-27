@@ -216,6 +216,12 @@ class ChannelMessageSnapshot:
 
 
 @dataclass(frozen=True)
+class ChannelReactionCapabilitySnapshot:
+    mode: str = "unknown"
+    available_reactions: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class ChannelCommentSnapshot:
     comment_message_id: int
     parent_comment_message_id: int | None = None

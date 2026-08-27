@@ -12,6 +12,7 @@ from .contracts import (
     ArchivedMessageSnapshot,
     ChannelCommentSnapshot,
     ChannelMessageSnapshot,
+    ChannelReactionCapabilitySnapshot,
     GroupControlButtonSnapshot,
     GroupMessageSnapshot,
     SendResult,
@@ -301,6 +302,67 @@ async def fetch_channel_messages(client, channel_peer_id: str, limit: int) -> li
             )
         )
     return snapshots
+
+
+async def fetch_channel_reaction_capability(
+    client,
+    channel_peer_id: str,
+) -> ChannelReactionCapabilitySnapshot:
+    from telethon import functions
+
+    target: int | str = int(channel_peer_id) if channel_peer_id.lstrip("-").isdigit() else channel_peer_id
+    entity = await client.get_entity(target)
+    full = await client(functions.channels.GetFullChannelRequest(channel=entity))
+    capability = getattr(getattr(full, "full_chat", None), "available_reactions", None)
+    return await resolve_channel_reaction_capability(client, capability)
+
+
+async def resolve_channel_reaction_capability(
+    client,
+    capability,
+) -> ChannelReactionCapabilitySnapshot:
+    from telethon import types
+
+    if isinstance(capability, types.ChatReactionsNone):
+        return ChannelReactionCapabilitySnapshot(mode="none")
+    if isinstance(capability, types.ChatReactionsSome):
+        configured = _standard_reaction_emojis(capability.reactions)
+        executable = set(await _non_premium_active_reaction_emojis(client))
+        return ChannelReactionCapabilitySnapshot(
+            mode="some",
+            available_reactions=tuple(
+                reaction for reaction in configured if reaction in executable
+            ),
+        )
+    if isinstance(capability, types.ChatReactionsAll):
+        return ChannelReactionCapabilitySnapshot(
+            mode="all",
+            available_reactions=await _non_premium_active_reaction_emojis(client),
+        )
+    return ChannelReactionCapabilitySnapshot(mode="unknown")
+
+
+async def _non_premium_active_reaction_emojis(client) -> tuple[str, ...]:
+    from telethon import functions
+
+    available = await client(functions.messages.GetAvailableReactionsRequest(hash=0))
+    values: list[str] = []
+    for item in available.reactions:
+        reaction = str(getattr(item, "reaction", "")).strip()
+        if not reaction or getattr(item, "inactive", False) or getattr(item, "premium", False):
+            continue
+        if reaction not in values:
+            values.append(reaction)
+    return tuple(values)
+
+
+def _standard_reaction_emojis(reactions) -> tuple[str, ...]:
+    values: list[str] = []
+    for reaction in reactions or []:
+        emoticon = str(getattr(reaction, "emoticon", "")).strip()
+        if emoticon and emoticon not in values:
+            values.append(emoticon)
+    return tuple(values)
 
 
 async def fetch_channel_comments(client, channel_peer_id: str, message_id: int, limit: int) -> list[ChannelCommentSnapshot]:

@@ -4,6 +4,8 @@ import sys
 import unittest
 from pathlib import Path
 
+import pytest
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 BACKEND_ROOT = PROJECT_ROOT / "backend"
@@ -11,6 +13,9 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.schemas.task_center import ChannelLikeConfig, ChannelViewConfig  # noqa: E402
+
+
+pytestmark = pytest.mark.no_postgres
 
 
 class ChannelJitterConfigTest(unittest.TestCase):
@@ -42,6 +47,17 @@ class ChannelJitterConfigTest(unittest.TestCase):
         self.assertIn("like_count_jitter: values.like_count_jitter ?? CHANNEL_COUNT_JITTER_DEFAULT", task_center)
         self.assertIn("'view_count_jitter'", view_model)
         self.assertIn("'like_count_jitter'", view_model)
+
+    def test_frontend_supports_all_available_reaction_scope(self) -> None:
+        task_center = _read_frontend("TaskCenterView.tsx")
+        channel_config = _read_frontend("TaskCenterChannelConfigSections.tsx")
+        view_model = _read_frontend("taskCenterViewModel.ts")
+
+        self.assertIn('name="reaction_scope"', channel_config)
+        self.assertIn("value: 'all_available'", channel_config)
+        self.assertIn("各表情数量不设固定比例", channel_config)
+        self.assertIn("reaction_scope: 'all_available'", view_model)
+        self.assertIn("reaction_scope: values.reaction_scope", task_center)
 
 
 def _read_frontend(filename: str) -> str:

@@ -511,6 +511,7 @@ class ChannelLikeConfig(ChannelMessageScopeConfig):
     target_likes_per_message: int = Field(default=50, ge=1, le=10000)
     like_count_jitter: float = Field(default=CHANNEL_COUNT_JITTER_DEFAULT, ge=0, le=1)
     reaction_type: Literal["random", "specific"] = "random"
+    reaction_scope: Literal["configured", "all_available"] = "all_available"
     allowed_reactions: list[str] = Field(default_factory=lambda: ["👍"])
     max_likes_per_account_per_hour: int = Field(default=1_000_000, ge=1, le=1_000_000)
 
@@ -1291,6 +1292,7 @@ class TaskSettingsUpdate(TaskUpdate):
     target_likes_per_message: int | None = Field(default=None, ge=1, le=10000)
     like_count_jitter: float | None = Field(default=None, ge=0, le=1)
     reaction_type: Literal["random", "specific"] | None = None
+    reaction_scope: Literal["configured", "all_available"] | None = None
     allowed_reactions: list[str] | None = None
     max_likes_per_account_per_hour: int | None = Field(default=1_000_000, ge=1, le=1_000_000)
 

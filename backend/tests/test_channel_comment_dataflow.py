@@ -17,6 +17,14 @@ def test_channel_comment_planner_has_no_ai_generation_entrypoints():
     assert "generate_channel_reply_comments" not in source
 
 
+def test_shadow_evaluator_uses_production_comment_pipeline() -> None:
+    source = (Path(__file__).parents[1] / "scripts/evaluate_channel_comment_shadow.py").read_text()
+
+    assert "generate_channel_comments" in source
+    assert "HUMANIZED_CHANNEL_COMMENT_SYSTEM_PROMPT" not in source
+    assert "select(AiProvider)" not in source
+
+
 def test_channel_comment_clean_rejects_provider_meta_content():
     contents = [
         "原材料内容明显是色情低俗内容 描述了性工作者和性行为",

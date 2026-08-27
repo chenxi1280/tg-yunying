@@ -17,6 +17,7 @@ from .contracts import (
     ChannelMembershipResult,
     ChannelCommentSnapshot,
     ChannelMessageSnapshot,
+    ChannelReactionCapabilitySnapshot,
     ContactSnapshot,
     DeveloperAppCredentials,
     GroupMessageSnapshot,
@@ -900,6 +901,18 @@ class TelegramGateway:
             )
             for index in range(max(1, limit))
         ][:limit]
+
+    def fetch_channel_reaction_capability(
+        self,
+        account_id: int,
+        channel_peer_id: str,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> ChannelReactionCapabilitySnapshot:
+        return ChannelReactionCapabilitySnapshot(
+            mode="all",
+            available_reactions=("👍", "❤️", "🔥", "👏", "🎉", "😁", "🤩", "👌"),
+        )
 
     def fetch_channel_comments(
         self,

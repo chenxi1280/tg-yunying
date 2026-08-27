@@ -8,6 +8,7 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
+from app.integrations.telegram import ChannelReactionCapabilitySnapshot
 from app.models import (
     AccountStatus,
     ChannelMessage,
@@ -63,6 +64,8 @@ def test_listener_owns_channel_fetch_and_publishes_fresh_snapshot(monkeypatch) -
         subscription = session.scalar(select(TaskSourceSubscription))
         wake = session.scalar(select(TaskPlannerWakeState))
         assert message is not None and message.message_id == 9001
+        assert channel.reaction_capability_mode == "all"
+        assert channel.available_reactions == ["👍", "❤️", "🔥", "👏"]
         assert state is not None and state.snapshot_status == "ready"
         assert state.snapshot_revision == 1
         assert state.fresh_until_at == NOW + timedelta(seconds=60)
@@ -112,6 +115,35 @@ def test_fresh_empty_snapshot_hides_messages_from_previous_revision(monkeypatch)
         assert item_count == 0
         assert channel is None
         assert messages == []
+
+
+def test_reaction_probe_failure_keeps_shared_message_snapshot_ready(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    _seed_listener_task(
+        engine,
+        task_id="shared-like-task",
+        task_type="channel_like",
+        channel_id=45,
+        account_id=205,
+    )
+    _add_shared_view_task(engine)
+    _stub_listener_fetch(monkeypatch, [])
+    monkeypatch.setattr(
+        channel_listener_runtime.gateway,
+        "fetch_channel_reaction_capability",
+        _raise_reaction_probe_error,
+    )
+
+    result = drain_channel_listener_runtime(lambda: Session(engine), limit=10)
+
+    with Session(engine) as session:
+        state = session.scalar(select(ListenerSourceState))
+        like_task = session.get(Task, "shared-like-task")
+        assert result.processed_count == 1 and result.error_count == 0
+        assert state.snapshot_status == "ready"
+        assert session.scalar(select(func.count(ChannelMessage.id))) == 1
+        assert like_task.stats["reaction_capability_probe"]["error_code"] == "RuntimeError"
 
 
 def test_listener_marks_subscription_unavailable_without_collect_account() -> None:
@@ -188,6 +220,24 @@ def _seed_dynamic_channel_task(engine) -> None:
     )
 
 
+def _add_shared_view_task(engine) -> None:
+    with Session(engine) as session:
+        session.add(Task(
+            id="shared-view-task",
+            tenant_id=1,
+            name="shared-view-task",
+            type="channel_view",
+            status="running",
+            account_config={"selection_mode": "manual", "account_ids": [205]},
+            type_config={
+                "target_channel_id": 45,
+                "message_scope": "dynamic_new",
+                "listener_interval_seconds": 30,
+            },
+        ))
+        session.commit()
+
+
 def _seed_listener_task(
     engine,
     *,
@@ -243,6 +293,10 @@ def _snapshot(message_id: int):
     )
 
 
+def _raise_reaction_probe_error(*_args, **_kwargs):
+    raise RuntimeError("probe failed")
+
+
 def _stub_listener_fetch(monkeypatch, calls: list[tuple]) -> None:
     monkeypatch.setattr(channel_listener_runtime, "_now", lambda: NOW)
     monkeypatch.setattr(
@@ -254,4 +308,12 @@ def _stub_listener_fetch(monkeypatch, calls: list[tuple]) -> None:
         channel_listener_runtime.gateway,
         "fetch_channel_messages",
         lambda *args, **kwargs: calls.append((args, kwargs)) or [_snapshot(9001)],
+    )
+    monkeypatch.setattr(
+        channel_listener_runtime.gateway,
+        "fetch_channel_reaction_capability",
+        lambda *_args, **_kwargs: ChannelReactionCapabilitySnapshot(
+            mode="all",
+            available_reactions=("👍", "❤️", "🔥", "👏"),
+        ),
     )

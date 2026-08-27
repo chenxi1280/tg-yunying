@@ -24,6 +24,7 @@ from .contracts import (
     ChannelMembershipResult,
     ChannelCommentSnapshot,
     ChannelMessageSnapshot,
+    ChannelReactionCapabilitySnapshot,
     ContactSnapshot,
     DeveloperAppCredentials,
     GroupMessageSnapshot,
@@ -3333,6 +3334,32 @@ class TelethonTelegramGateway(TelegramGateway):
         limit: int = 20,
     ) -> list[ChannelMessageSnapshot]:
         return self._run(self._fetch_channel_messages_async(channel_peer_id, session_ciphertext, self._usable_credentials(credentials), limit))
+
+    async def _fetch_channel_reaction_capability_async(
+        self,
+        channel_peer_id: str,
+        session_ciphertext: str | None,
+        credentials: DeveloperAppCredentials,
+    ) -> ChannelReactionCapabilitySnapshot:
+        client = await self._authorized_client(
+            session_ciphertext,
+            credentials,
+            error_message="channel Reaction capability fetch requires a valid session",
+        )
+        return await telethon_content.fetch_channel_reaction_capability(client, channel_peer_id)
+
+    def fetch_channel_reaction_capability(
+        self,
+        account_id: int,
+        channel_peer_id: str,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> ChannelReactionCapabilitySnapshot:
+        return self._run(self._fetch_channel_reaction_capability_async(
+            channel_peer_id,
+            session_ciphertext,
+            self._usable_credentials(credentials),
+        ))
 
     async def _fetch_channel_comments_async(
         self,

@@ -4661,7 +4661,7 @@ Listener 采集源群消息
 | 其他 Telegram / API 错误 | 保留原始失败码、错误消息和尝试记录，不做泛化归因 | 展示原始失败摘要，并提示查看尝试 / Trace |
 | 历史 stale 计划或策略替换 | 保留为历史跳过，不上卷为当前失败 | 历史计划已替换 |
 
-频道点赞运行时必须同样先守卫关注关系。账号没有关注 / 加入目标频道时，系统生成或复用 `ensure_target_membership`，当前点赞延后到准入后重试；不得在未关注状态下调用 Telegram reaction 接口，也不得把这类 action 直接记为失败来消耗目标量。账号已关注但 Telegram 返回 reaction unavailable 时，只结束本次 attempt，不增加逐消息 confirmed，也不直接关闭整帖；random 模式继续从已配置 `allowed_reactions` 和其他合格账号中选择，specific 模式不得替换用户指定 reaction。只有已证所有允许 reaction 对该消息均不可用时，才把该消息履约状态写为 `reaction_capability_unavailable`，任务其他消息继续。
+频道点赞运行时必须同样先守卫关注关系。账号没有关注 / 加入目标频道时，系统生成或复用 `ensure_target_membership`，当前点赞延后到准入后重试；不得在未关注状态下调用 Telegram reaction 接口，也不得把这类 action 直接记为失败来消耗目标量。频道监听器必须采集 Telegram 声明的 Reaction 能力并区分 `unknown/all/some/none`：新建任务默认 `reaction_scope=all_available`，使用频道声明且普通账号可执行的全部 active 标准 emoji Reaction；Premium-only Reaction 在没有逐账号 Premium 能力事实前不得进入公共池。`reaction_scope=configured` 时，random 模式只能在 `allowed_reactions ∩ 频道可用 Reaction` 中选择。random 模式对每个点赞槽独立等概率抽取，不设置主表情比例、最低数量或固定配额；同一任务、消息和账号排序的结果必须可重放，避免重规划漂移。能力未知或交集为空时不得猜测、替换或创建错误 Action，必须留下 `reaction_capability_unavailable` 可见阻塞。Reaction 能力探测失败必须留下 `reaction_capability_probe_failed`，但已成功读取的共享频道消息快照仍须发布，不能阻塞同频道浏览或评论。specific 模式始终只尝试用户指定 Reaction，不得替换。账号已关注但 Telegram 返回 reaction unavailable 时，只结束本次 attempt，不增加逐消息 confirmed，也不直接关闭整帖；只有已证所有允许 Reaction 对该消息均不可用时，才把该消息履约状态写为 `reaction_capability_unavailable`，任务其他消息继续。
 
 频道评论 / 回复的数量和账号执行规则：
 

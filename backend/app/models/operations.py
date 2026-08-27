@@ -30,6 +30,8 @@ class OperationTarget(Base):
     lifecycle_by: Mapped[str] = mapped_column(String(100), default="")
     lifecycle_version: Mapped[int] = mapped_column(Integer, default=1)
     reference_revision: Mapped[int] = mapped_column(Integer, default=1)
+    reaction_capability_mode: Mapped[str] = mapped_column(String(16), default="unknown")
+    available_reactions: Mapped[list] = mapped_column(JSON, default=list)
     last_sync_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now)

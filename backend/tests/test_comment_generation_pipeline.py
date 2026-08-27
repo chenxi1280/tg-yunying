@@ -6,12 +6,17 @@ from sqlalchemy.orm import Session
 
 from app.services.task_center import comment_generation_pipeline
 from app.services.task_center.comment_generation_pipeline import (
+    COMMENT_EMOJI_FALLBACKS,
     CommentGenerationDependencies,
     GeneratedCommentResult,
 )
 
 
 pytestmark = pytest.mark.no_postgres
+
+
+def test_comment_fallbacks_remain_emoji_only() -> None:
+    assert COMMENT_EMOJI_FALLBACKS == ("👍", "🙂", "👏")
 
 
 def test_provider_failure_closes_read_transaction_before_comment_retry(

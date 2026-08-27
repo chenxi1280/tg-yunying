@@ -229,6 +229,7 @@ TYPE_SETTINGS_FIELDS = {
         "target_likes_per_message",
         "like_count_jitter",
         "reaction_type",
+        "reaction_scope",
         "allowed_reactions",
         "max_likes_per_account_per_hour",
     },

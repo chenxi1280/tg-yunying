@@ -30,9 +30,12 @@ export function ChannelViewTypeConfig() {
 export function ChannelLikeTypeConfig() {
   return (
     <Space direction="vertical" style={{ width: '100%' }}>
+      <Alert type="info" showIcon message="默认从频道当前全部可用标准 Reaction 中逐个随机分配，各表情数量不设固定比例。" />
       <div className="form-grid">
         <Form.Item name="target_likes_per_message" label="预计每条点赞"><InputNumber min={1} /></Form.Item>
-        <Form.Item name="allowed_reactions" label="Reaction 范围"><Input /></Form.Item>
+        <Form.Item name="reaction_type" label="Reaction 模式"><Select options={[{ value: 'random', label: '随机' }, { value: 'specific', label: '指定' }]} /></Form.Item>
+        <Form.Item name="reaction_scope" label="随机范围"><Select options={[{ value: 'all_available', label: '频道可用全部 Reaction' }, { value: 'configured', label: '自定义 Reaction' }]} /></Form.Item>
+        <Form.Item name="allowed_reactions" label="自定义/指定 Reaction"><Input /></Form.Item>
       </div>
       <Collapse
         ghost

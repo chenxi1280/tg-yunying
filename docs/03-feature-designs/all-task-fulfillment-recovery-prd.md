@@ -868,11 +868,13 @@ listener 处理可信群管提示时，禁止在已修改 `group_bot_admissions`
 ### 6.3 频道点赞
 
 1. reaction 只有远端成功才增加 `confirmed_count`。
-2. random 模式可在已配置 `allowed_reactions` 内选择账号实际支持的 reaction；specific 模式不得替换用户指定 reaction。
+2. 监听器必须把 Telegram Reaction 能力持久化为 `unknown/all/some/none`；新建任务默认 `all_available`，从频道声明且普通账号可执行的全部 active 标准 emoji Reaction 中选择，Premium-only Reaction 在没有逐账号能力事实前不进入公共池；`configured` 只在 `allowed_reactions ∩ available_reactions` 中选择；specific 模式不得替换用户指定 Reaction。
 3. `REACTION_INVALID/EMPTY/NOT_AVAILABLE` 不占成功目标。该账号/消息的 attempt 保留；仍有其他合格账号或允许 reaction 时继续补欠额。
-4. 所有允许 reaction 对该消息均不可用时，消息为 `reaction_capability_unavailable`，不能关闭整任务或伪造完成。
+4. 能力未知、有效集合为空或所有允许 Reaction 对该消息均不可用时，消息为 `reaction_capability_unavailable`，不得猜测默认 Reaction、关闭整任务或伪造完成。
 5. success 与 `unknown_after_send` 防止同账号同消息立即重复；明确失败只有在安全重试条件满足时重新选择。
 6. `max_likes_per_account_per_hour` 在创建、编辑、启动和存量接管固定为 `1_000_000`；reaction unavailable、failed、skipped 不占有效账号成功额度。系统仍按账号全局硬安全容量排序。
+7. random 模式逐点赞槽独立等概率抽取，不设置主表情占比、保底覆盖或固定配额；随机种子绑定任务与消息，确保同一计划重放稳定，而不同任务/消息的各表情数量自然随机。
+8. Reaction 能力 RPC 失败写 `reaction_capability_probe_failed` 并把点赞能力置为 `unknown`；消息快照读取成功时仍发布共享 snapshot，频道浏览和评论不得因点赞能力探测失败而停摆。
 
 ### 6.4 频道浏览
 

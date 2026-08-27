@@ -6,12 +6,10 @@ import hashlib
 import os
 import socket
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import (
-    ChannelMessage,
-    ListenerChannelSnapshotItem,
     ListenerSourceState,
     OperationTarget,
     Task,
@@ -23,12 +21,15 @@ from app.services.channel_target_reference import channel_read_reference
 from app.services.developer_apps import credentials_for_task_account
 
 from .account_pool import select_task_accounts
+from .channel_listener_reactions import credential_task
+from .channel_listener_reactions import probe_reaction_capability
+from .channel_listener_reactions import record_reaction_probe_state
+from .channel_listener_snapshot_persistence import persist_channel_snapshot
 from .planner_wake import wake_task_planner
 
 
 CHANNEL_TASK_TYPES = frozenset({"channel_comment", "channel_like", "channel_view"})
 CHANNEL_TASK_STATUSES = frozenset({"pending", "running"})
-FRESHNESS_MULTIPLIER = 2
 
 
 @dataclass
@@ -39,6 +40,7 @@ class ChannelListenerSource:
     account_id: int
     collect_window_seconds: int
     fetch_limit: int
+    reaction_capability_required: bool = False
     task_ids: list[str] = field(default_factory=list)
 
 
@@ -182,6 +184,10 @@ def _channel_sources(
             continue
         key = (source.tenant_id, source.channel_target_id)
         current = sources.setdefault(key, source)
+        current.reaction_capability_required = (
+            current.reaction_capability_required
+            or source.reaction_capability_required
+        )
         if task.id not in current.task_ids:
             current.task_ids.append(task.id)
         _bind_subscription(session, task, current)
@@ -222,6 +228,7 @@ def _source_for_task(
         account_id=accounts[0].id,
         collect_window_seconds=window,
         fetch_limit=_fetch_limit(config),
+        reaction_capability_required=task.type == "channel_like",
         task_ids=[task.id],
     )
 
@@ -314,9 +321,52 @@ def _drain_channel_source(session_factory, source: ChannelListenerSource) -> str
             _mark_error(session, source, state, code=type(exc).__name__)
             session.commit()
             return "error"
-        _persist_snapshot(session, source, state_id=state.id, snapshots=snapshots)
+        _persist_source_result(
+            session,
+            source,
+            state_id=state.id,
+            snapshots=snapshots,
+            channel_peer=channel_peer,
+            session_ciphertext=session_ciphertext,
+            credentials=credentials,
+        )
         session.commit()
         return "processed"
+
+
+def _persist_source_result(
+    session: Session,
+    source: ChannelListenerSource,
+    *,
+    state_id: str,
+    snapshots,
+    channel_peer,
+    session_ciphertext,
+    credentials,
+) -> None:
+    reaction_capability, probe_error = probe_reaction_capability(
+        gateway.fetch_channel_reaction_capability,
+        required=source.reaction_capability_required,
+        account_id=source.account_id,
+        channel_peer=channel_peer,
+        session_ciphertext=session_ciphertext,
+        credentials=credentials,
+    )
+    persist_channel_snapshot(
+        session,
+        source,
+        state_id=state_id,
+        snapshots=snapshots,
+        reaction_capability=reaction_capability,
+        now_value=_now(),
+        wake_subscribers=_wake_subscribers,
+    )
+    record_reaction_probe_state(
+        session,
+        task_ids=source.task_ids,
+        required=source.reaction_capability_required,
+        error_code=probe_error,
+    )
 
 
 def _claim_source(
@@ -345,79 +395,15 @@ def _claim_source(
 def _fetch_context(session: Session, source: ChannelListenerSource):
     channel = session.get(OperationTarget, source.channel_target_id)
     account = session.get(TgAccount, source.account_id)
-    task = session.get(Task, source.task_ids[0]) if source.task_ids else None
+    task = credential_task(
+        session,
+        task_ids=source.task_ids,
+        reaction_capability_required=source.reaction_capability_required,
+    )
     if channel is None or account is None or task is None or not account.session_ciphertext:
         return None
     credentials = credentials_for_task_account(session, account, task.type)
     return channel_read_reference(channel), account.session_ciphertext, credentials
-
-
-def _persist_snapshot(
-    session: Session,
-    source: ChannelListenerSource,
-    *,
-    state_id: str,
-    snapshots,
-) -> None:
-    channel = session.get(OperationTarget, source.channel_target_id)
-    state = session.get(ListenerSourceState, state_id)
-    if channel is None or state is None:
-        raise RuntimeError("channel_listener_state_lost")
-    next_revision = int(state.snapshot_revision or 0) + 1
-    session.execute(delete(ListenerChannelSnapshotItem).where(
-        ListenerChannelSnapshotItem.listener_source_state_id == state.id
-    ))
-    for snapshot in snapshots:
-        message = _upsert_channel_message(session, source, channel, snapshot=snapshot)
-        if message is None:
-            continue
-        session.flush()
-        session.add(ListenerChannelSnapshotItem(
-            listener_source_state_id=state.id,
-            snapshot_revision=next_revision,
-            channel_message_id=message.id,
-        ))
-    now_value = _now()
-    state.snapshot_revision = next_revision
-    state.snapshot_status = "ready"
-    state.observed_at = now_value
-    state.fresh_until_at = now_value + timedelta(
-        seconds=source.collect_window_seconds * FRESHNESS_MULTIPLIER
-    )
-    state.next_probe_at = now_value + timedelta(seconds=source.collect_window_seconds)
-    state.last_error = ""
-    state.last_error_code = ""
-    state.lease_owner = ""
-    state.lease_expires_at = None
-    _wake_subscribers(
-        session,
-        source,
-        state,
-        reason="channel_source_snapshot_ready",
-    )
-
-
-def _upsert_channel_message(session: Session, source, channel, *, snapshot) -> ChannelMessage | None:
-    if int(snapshot.message_id or 0) <= 0:
-        return None
-    message = session.scalar(select(ChannelMessage).where(
-        ChannelMessage.tenant_id == source.tenant_id,
-        ChannelMessage.channel_target_id == channel.id,
-        ChannelMessage.message_id == int(snapshot.message_id),
-    ))
-    published_at = _wall(snapshot.published_at) if snapshot.published_at else None
-    if message is None:
-        message = ChannelMessage(
-            tenant_id=source.tenant_id,
-            channel_target_id=channel.id,
-            message_id=int(snapshot.message_id),
-        )
-        session.add(message)
-    message.message_url = snapshot.message_url or message.message_url or _message_url(channel, snapshot.message_id)
-    message.content_preview = snapshot.content_preview or message.content_preview
-    message.comment_available = bool(snapshot.comment_available)
-    message.published_at = published_at or message.published_at
-    return message
 
 
 def _mark_error(
@@ -470,15 +456,6 @@ def _fetch_limit(config: dict) -> int:
 
 def _source_hash(peer: str) -> str:
     return hashlib.sha256(str(peer).strip().lower().encode("utf-8")).hexdigest()
-
-
-def _message_url(channel: OperationTarget, message_id: int) -> str:
-    if channel.username:
-        return f"https://t.me/{channel.username}/{message_id}"
-    peer = str(channel.tg_peer_id or "")
-    if peer.startswith("-100") and peer[4:].isdigit():
-        return f"https://t.me/c/{peer[4:]}/{message_id}"
-    return ""
 
 
 def _listener_owner() -> str:

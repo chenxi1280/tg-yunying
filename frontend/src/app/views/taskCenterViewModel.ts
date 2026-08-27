@@ -587,6 +587,7 @@ export function typeInitialValues(type: TaskCenterTaskType, setting?: Scheduling
       target_likes_per_message: 50,
       like_count_jitter: CHANNEL_COUNT_JITTER_DEFAULT,
       reaction_type: 'random',
+      reaction_scope: 'all_available',
       allowed_reactions: '👍,❤️,🔥',
       max_likes_per_account_per_hour: 1000000,
     };
@@ -799,7 +800,7 @@ export function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: stri
     return [...baseFields, ...channelScopeFields(messageScope), 'listen_new_messages', 'per_message_daily_view_target', 'per_message_total_view_target', 'message_active_days', 'task_daily_view_safety_cap', 'max_views_per_account_per_day', 'view_count_jitter', 'target_views_per_message'];
   }
   if (taskType === 'channel_like') {
-    return [...baseFields, ...channelScopeFields(messageScope), 'target_likes_per_message', 'like_count_jitter', 'reaction_type', 'allowed_reactions'];
+    return [...baseFields, ...channelScopeFields(messageScope), 'target_likes_per_message', 'like_count_jitter', 'reaction_type', 'reaction_scope', 'allowed_reactions'];
   }
   return [...baseFields, ...channelScopeFields(messageScope), 'target_comments_per_message', 'max_total_comments', 'max_total_comments_jitter', 'reply_min_per_message', 'rule_set_id', 'rule_set_version_id', 'comment_style', 'topic_hint', 'ai_two_stage_enabled', 'ai_semantic_reviewer_model', 'ai_content_route_v2_enabled', 'ai_content_policy_version_id', 'ai_content_allowed_routes', 'ai_content_attestation_ids'];
 }
@@ -862,7 +863,7 @@ export function editFieldsForSubmit(taskType: TaskCenterTaskType, accountMode: s
     return [...baseFields, 'listen_new_messages', 'per_message_daily_view_target', 'per_message_total_view_target', 'message_active_days', 'task_daily_view_safety_cap', 'max_views_per_account_per_day', 'view_count_jitter', 'target_views_per_message', 'execution_mode'];
   }
   if (taskType === 'channel_like') {
-    return [...baseFields, 'target_likes_per_message', 'like_count_jitter', 'reaction_type', 'allowed_reactions', 'max_likes_per_account_per_hour'];
+    return [...baseFields, 'target_likes_per_message', 'like_count_jitter', 'reaction_type', 'reaction_scope', 'allowed_reactions', 'max_likes_per_account_per_hour'];
   }
   return [...baseFields, 'target_comments_per_message', 'max_total_comments', 'max_total_comments_jitter', 'reply_min_per_message', 'rule_set_id', 'rule_set_version_id', 'ai_model', 'comment_style', 'topic_hint', 'system_prompt_override', 'language', 'max_comment_length', 'max_comments_per_account_per_hour', 'ai_two_stage_enabled', 'ai_semantic_reviewer_model', 'ai_content_route_v2_enabled', 'ai_content_policy_version_id', 'ai_content_allowed_routes', 'ai_content_attestation_ids'];
 }

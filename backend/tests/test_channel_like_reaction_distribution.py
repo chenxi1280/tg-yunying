@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.database import Base
 from app.models import AccountStatus, Action, ChannelMessage, OperationTarget, Task, Tenant, TgAccount
 from app.services._common import _now
+from app.schemas.task_center import ChannelLikeConfig
 from app.services.task_center.executors.channel_like import _reaction_plan, build_plan as build_channel_like_plan
 from app.services.task_center.executors.channel_view import build_plan as build_channel_view_plan
 from app.services.task_center.fulfillment_takeover import takeover_task
@@ -15,7 +16,7 @@ from app.services.task_center.fulfillment_takeover import takeover_task
 pytestmark = pytest.mark.no_postgres
 
 
-def test_channel_like_random_reactions_prefer_primary_and_mix_extra_emojis():
+def test_channel_like_all_available_random_uses_channel_capability_only():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
 
@@ -42,6 +43,8 @@ def test_channel_like_random_reactions_prefer_primary_and_mix_extra_emojis():
             username="like_channel",
             can_send=True,
             auth_status="已授权运营",
+            reaction_capability_mode="all",
+            available_reactions=["👍", "❤️", "🔥", "👏", "🎉"],
         )
         message = ChannelMessage(
             id=31,
@@ -71,6 +74,7 @@ def test_channel_like_random_reactions_prefer_primary_and_mix_extra_emojis():
                 "target_likes_per_message": 10,
                 "like_count_jitter": 0,
                 "reaction_type": "random",
+                "reaction_scope": "all_available",
                 "allowed_reactions": ["👍", "❤️", "🔥"],
                 "max_likes_per_account_per_hour": 999,
             },
@@ -83,17 +87,18 @@ def test_channel_like_random_reactions_prefer_primary_and_mix_extra_emojis():
         actions = session.scalars(select(Action).where(Action.task_id == task.id)).all()
 
     reactions = Counter(action.payload["reaction_emoji"] for action in actions)
-    configured_reactions = {"👍", "❤️", "🔥"}
-
-    assert reactions["👍"] == 7
-    assert reactions["❤️"] >= 1
-    assert reactions["🔥"] >= 1
     assert sum(reactions.values()) == 10
-    assert any(reaction not in configured_reactions for reaction in reactions)
+    assert set(reactions) <= {"👍", "❤️", "🔥", "👏", "🎉"}
+    assert len(reactions) >= 2
 
 
 def test_reaction_plan_preserves_requested_quantity_when_extra_pool_is_smaller():
-    reactions = _reaction_plan(["👍", "❤️", "🔥"], 100)
+    reactions = _reaction_plan(
+        ["👍", "❤️", "🔥"],
+        100,
+        available_reactions=["👍", "❤️", "🔥"],
+        reaction_capability_mode="some",
+    )
 
     assert len(reactions) == 100
 
@@ -226,3 +231,119 @@ def test_channel_view_clears_account_error_when_messages_are_expired():
         assert build_channel_view_plan(session, task) == 0
 
     assert task.last_error == ""
+
+
+def test_reaction_plan_respects_channel_available_reactions_whitelist():
+    # Channel only allows 👍 and ❤️, but user asked for 👍, 🔥, 🎉
+    available = ["👍", "❤️"]
+    configured = ["👍", "🔥", "🎉"]
+    plan = _reaction_plan(
+        configured,
+        50,
+        "random",
+        seed_id="whitelist-test",
+        available_reactions=available,
+        reaction_capability_mode="some",
+    )
+    assert len(plan) == 50
+    # Every reaction in the plan must strictly be in available
+    assert set(plan) == {"👍"}
+    # No illegal reaction should ever be planned
+    assert "🔥" not in plan
+    assert "🎉" not in plan
+
+
+def test_reaction_plan_does_not_substitute_when_configured_not_in_available():
+    # User configured 🔥, but channel only allows 👍
+    available = ["👍"]
+    configured = ["🔥"]
+    plan = _reaction_plan(
+        configured,
+        20,
+        "random",
+        seed_id="fallback-test",
+        available_reactions=available,
+        reaction_capability_mode="some",
+    )
+    assert plan == []
+
+
+def test_specific_reaction_is_not_replaced_when_unavailable():
+    plan = _reaction_plan(
+        ["🔥"],
+        5,
+        "specific",
+        available_reactions=["👍"],
+        reaction_capability_mode="some",
+    )
+
+    assert plan == []
+
+
+def test_all_available_scope_randomizes_over_full_channel_pool():
+    plan = _reaction_plan(
+        ["👍"],
+        100,
+        "random",
+        seed_id="all-available",
+        reaction_scope="all_available",
+        available_reactions=["👍", "❤️", "🔥", "👏", "🎉", "🤩"],
+        reaction_capability_mode="all",
+    )
+
+    assert len(plan) == 100
+    assert set(plan) == {"👍", "❤️", "🔥", "👏", "🎉", "🤩"}
+
+
+def test_all_available_reaction_counts_have_no_fixed_quota():
+    pool = ["👍", "❤️", "🔥", "👏", "🎉", "🤩", "😁", "🤔"]
+    first = _reaction_plan(
+        ["👍"],
+        500,
+        seed_id="random-counts:first",
+        reaction_scope="all_available",
+        available_reactions=pool,
+        reaction_capability_mode="all",
+    )
+    second = _reaction_plan(
+        ["👍"],
+        500,
+        seed_id="random-counts:second",
+        reaction_scope="all_available",
+        available_reactions=pool,
+        reaction_capability_mode="all",
+    )
+
+    assert set(first) == set(pool)
+    assert set(second) == set(pool)
+    assert Counter(first) != Counter(second)
+
+
+@pytest.mark.parametrize("mode", ["unknown", "none"])
+def test_reaction_plan_blocks_when_channel_capability_is_not_actionable(mode):
+    plan = _reaction_plan(
+        ["👍", "❤️"],
+        5,
+        "random",
+        available_reactions=[],
+        reaction_capability_mode=mode,
+    )
+
+    assert plan == []
+
+
+def test_channel_like_config_accepts_all_available_scope_without_runtime_capability_fields():
+    config = ChannelLikeConfig(
+        target_channel_id=1,
+        reaction_scope="all_available",
+        allowed_reactions=["👍"],
+    )
+
+    assert config.reaction_scope == "all_available"
+    assert "available_reactions" not in config.model_dump()
+
+
+def test_channel_like_config_defaults_to_all_available_reactions():
+    config = ChannelLikeConfig(target_channel_id=1)
+
+    assert config.reaction_scope == "all_available"
