@@ -288,3 +288,4 @@ def test_profile_stage_requires_platform_and_telegram_readback(session_factory, 
     assert owner.stage == "abc"
     assert owner.profile_status == "succeeded"
     assert owner.profile_evidence_ref == f"full-init:{owner.id}:profile"
+    assert owner.profile_target_avatar_object_key == "avatars/linlan.jpg"
