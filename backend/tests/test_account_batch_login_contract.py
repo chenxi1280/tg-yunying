@@ -9,6 +9,8 @@ from app.services.account_login.contracts import BatchLoginError
 from app.services.account_login.identity import parse_code_source_url, parse_login_lines
 from app.services.code_source_client import (
     HttpResult,
+    _readiness_url,
+    _request_target,
     parse_login_materials_html,
     parse_login_materials_json,
     parse_login_materials_response,
@@ -22,6 +24,8 @@ VALID_UUID = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
 VALID_URL = f"https://tgbotchecker.com/GetHTML?uuid={VALID_UUID}"
 SUSUBOT_API_KEY = "11111111-2222-4333-8444-555555555555"
 SUSUBOT_URL = f"https://tgapi.susubot.com/index.html?type=107&apikey={SUSUBOT_API_KEY}"
+CONFIG2_UUID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+CONFIG2_URL = f"https://api.config2.top/tgapi/tgapi/{CONFIG2_UUID}/GetHTML"
 
 
 def test_parse_login_lines_preserves_phone_uuid_mapping() -> None:
@@ -48,6 +52,26 @@ def test_parse_login_lines_accepts_susubot_https_platform() -> None:
     assert lines[0].source.uuid == SUSUBOT_API_KEY
     assert lines[0].source.uuid_hint == "11111111…5555"
     assert SUSUBOT_API_KEY not in lines[0].phone_masked
+
+
+def test_parse_login_lines_accepts_config2_https_platform() -> None:
+    lines = parse_login_lines(f"+12025550125|{CONFIG2_URL}", max_lines=100)
+
+    assert lines[0].source.url == CONFIG2_URL
+    assert lines[0].source.host == "config2"
+    assert lines[0].source.uuid == CONFIG2_UUID
+    assert lines[0].source.uuid_hint == "aaaaaaaa…eeee"
+    assert CONFIG2_UUID not in lines[0].phone_masked
+
+
+def test_config2_transport_keeps_exact_path_without_empty_query() -> None:
+    assert _request_target(CONFIG2_URL) == (
+        "api.config2.top",
+        f"/tgapi/tgapi/{CONFIG2_UUID}/GetHTML",
+    )
+    assert _readiness_url("api.config2.top").endswith(
+        "/tgapi/tgapi/00000000-0000-0000-0000-000000000000/GetHTML"
+    )
 
 
 @pytest.mark.parametrize(
@@ -88,6 +112,24 @@ def test_susubot_url_rejects_non_exact_urls(url: str) -> None:
     assert SUSUBOT_API_KEY not in str(error.value)
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        f"http://api.config2.top/tgapi/tgapi/{CONFIG2_UUID}/GetHTML",
+        f"https://api.config2.top/GetHTML?uuid={CONFIG2_UUID}",
+        f"https://api.config2.top/tgapi/tgapi/{CONFIG2_UUID}/GetHTML?extra=1",
+        f"https://api.config2.top/tgapi/tgapi/not-a-uuid/GetHTML",
+        f"https://api.config2.top/tgapi/tgapi/{CONFIG2_UUID}/GetHTML#fragment",
+    ],
+)
+def test_config2_url_rejects_non_exact_urls(url: str) -> None:
+    with pytest.raises(BatchLoginError) as error:
+        parse_code_source_url(url)
+
+    assert error.value.code == "url_domain_not_allowed"
+    assert CONFIG2_UUID not in str(error.value)
+
+
 def test_parse_login_lines_rejects_uuid_reuse_for_other_phone() -> None:
     text = f"+12025550123|{VALID_URL}\n+12025550124|{VALID_URL}"
 
@@ -106,6 +148,30 @@ def test_parse_login_lines_rejects_susubot_key_reuse_for_other_phone() -> None:
 
     assert error.value.code == "code_source_binding_conflict"
     assert error.value.line_no == 2
+
+
+def test_parse_login_lines_rejects_config2_key_reuse_for_other_phone() -> None:
+    text = f"+12025550123|{CONFIG2_URL}\n+12025550124|{CONFIG2_URL}"
+
+    with pytest.raises(BatchLoginError) as error:
+        parse_login_lines(text, max_lines=100)
+
+    assert error.value.code == "code_source_binding_conflict"
+    assert error.value.line_no == 2
+
+
+def test_material_parser_recognizes_html_rate_limit() -> None:
+    html = """
+    <html><head><title>错误 - Telegram 登录接码工具</title></head><body>
+      <div class="error-message"><h3>错误信息:</h3><p>请求过于频繁，请等待 66秒再试。</p></div>
+    </body></html>
+    """
+
+    with pytest.raises(BatchLoginError) as error:
+        parse_login_materials_html(html)
+
+    assert error.value.code == "url_fetch_failed"
+    assert "请求频繁" in str(error.value)
 
 
 def test_material_parser_uses_input_ids_not_attribute_order() -> None:

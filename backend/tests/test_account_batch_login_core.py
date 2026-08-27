@@ -187,6 +187,23 @@ def test_precheck_create_and_idempotent_replay(session_factory) -> None:
     assert item.code_source_uuid_hint == "000000…0001"
 
 
+def test_precheck_and_create_batch_with_config2_platform(session_factory) -> None:
+    config2_line = "+12025550125|https://api.config2.top/tgapi/tgapi/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee/GetHTML"
+    with session_factory() as session:
+        payload = _create_payload(session, config2_line, key="config2-batch-key-0001")
+        batch = create_login_batch(session, 1, 20, "测试操作员", payload)
+        item = session.scalar(select(TgAccountLoginBatchItem).where(
+            TgAccountLoginBatchItem.batch_id == batch.id,
+        ))
+
+    assert batch.total_count == 1
+    assert item is not None
+    assert item.phone_masked == "+120****0125"
+    assert item.code_source_host == "config2"
+    assert item.code_source_uuid_hint == "aaaaaaaa…eeee"
+    assert item.code_source_note == "config2 · aaaaaaaa…eeee"
+
+
 def test_preview_invalidates_when_fixed_two_fa_policy_changes(session_factory) -> None:
     with session_factory() as session:
         payload = _create_payload(session, _lines(), key="fixed-policy-drift")

@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 from app.services.account_login.contracts import BatchLoginError, LoginMaterials
 from app.services.account_login.identity import (
     CODE_SOURCE_HOST,
+    CONFIG2_CODE_SOURCE_HOST,
     SUPPORTED_CODE_SOURCE_HOSTS,
     SUSUBOT_CODE_SOURCE_HOST,
     parse_code_source_url,
@@ -180,6 +181,8 @@ def _readiness_for_host(host: str) -> str:
 def _readiness_url(host: str) -> str:
     if host == SUSUBOT_CODE_SOURCE_HOST:
         return f"https://{host}/index.html?type=107&apikey=00000000-0000-0000-0000-000000000000"
+    if host == CONFIG2_CODE_SOURCE_HOST:
+        return f"https://{host}/tgapi/tgapi/00000000-0000-0000-0000-000000000000/GetHTML"
     return f"https://{CODE_SOURCE_HOST}/GetHTML?uuid=00000000000000000000000000000000"
 
 
@@ -194,7 +197,9 @@ def _request_target(url: str) -> tuple[str, str]:
     host = parsed.hostname or ""
     if host == SUSUBOT_CODE_SOURCE_HOST:
         return host, f"/api/code?{parsed.query}"
-    return host, f"{parsed.path}?{parsed.query}"
+    if parsed.query:
+        return host, f"{parsed.path}?{parsed.query}"
+    return host, parsed.path
 
 
 def _resolve_public_ip(host: str) -> str:
@@ -253,6 +258,8 @@ def parse_login_materials_html(html: str) -> LoginMaterials:
     except Exception as exc:
         raise BatchLoginError("url_parse_failed", "接码平台页面解析失败") from exc
     body_text = " ".join(parser.text)
+    if "频繁" in body_text:
+        raise BatchLoginError("url_fetch_failed", "接码平台请求频繁")
     if "错误" in parser.title or "此号不存在" in body_text:
         raise BatchLoginError("url_error", "接码平台报告凭据无效")
     if "code" not in parser.inputs:

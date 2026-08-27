@@ -214,6 +214,7 @@ function parseLocalCodeSource(url: string) {
     if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.hash || (parsed.port && parsed.port !== '443')) return null;
     if (parsed.hostname === 'tgbotchecker.com') return parseTgbotcheckerUrl(parsed);
     if (parsed.hostname === 'tgapi.susubot.com') return parseSusubotUrl(parsed);
+    if (parsed.hostname === 'api.config2.top') return parseConfig2Url(parsed);
   } catch {
     return null;
   }
@@ -232,6 +233,12 @@ function parseSusubotUrl(parsed: URL) {
   const apiKeyPattern = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
   if (parsed.pathname !== '/index.html' || parsed.searchParams.size !== 2 || type !== '107' || !apiKeyPattern.test(apiKey)) return null;
   return `tgapi.susubot.com:${apiKey.toLowerCase()}`;
+}
+
+function parseConfig2Url(parsed: URL) {
+  const match = parsed.pathname.match(/^\/tgapi\/tgapi\/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\/GetHTML$/);
+  if (!match || parsed.search) return null;
+  return `api.config2.top:${match[1].toLowerCase()}`;
 }
 
 function formatDuration(seconds: number) {

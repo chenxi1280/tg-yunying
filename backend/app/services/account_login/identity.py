@@ -18,7 +18,12 @@ SUSUBOT_CODE_SOURCE_HOST = "tgapi.susubot.com"
 SUSUBOT_CODE_SOURCE_LABEL = "susubot"
 SUSUBOT_CODE_SOURCE_PATH = "/index.html"
 SUSUBOT_CODE_SOURCE_TYPE = "107"
-SUPPORTED_CODE_SOURCE_HOSTS = (CODE_SOURCE_HOST, SUSUBOT_CODE_SOURCE_HOST)
+CONFIG2_CODE_SOURCE_HOST = "api.config2.top"
+CONFIG2_CODE_SOURCE_LABEL = "config2"
+CONFIG2_PATH_RE = re.compile(
+    r"^/tgapi/tgapi/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/GetHTML$"
+)
+SUPPORTED_CODE_SOURCE_HOSTS = (CODE_SOURCE_HOST, SUSUBOT_CODE_SOURCE_HOST, CONFIG2_CODE_SOURCE_HOST)
 UUID_RE = re.compile(r"^[0-9a-fA-F]{32}$")
 API_KEY_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 PHONE_RE = re.compile(r"^\+[1-9][0-9]{7,14}$")
@@ -39,6 +44,8 @@ def parse_code_source_url(url: str) -> CodeSourceSpec:
         raise BatchLoginError("url_domain_not_allowed", "接码地址仅允许 443 端口")
     if parsed.hostname == SUSUBOT_CODE_SOURCE_HOST:
         return _parse_susubot_url(parsed.path, parsed.query)
+    if parsed.hostname == CONFIG2_CODE_SOURCE_HOST:
+        return _parse_config2_url(parsed.path, parsed.query)
     return _parse_tgbotchecker_url(parsed.path, parsed.query)
 
 
@@ -69,6 +76,17 @@ def _parse_susubot_url(path: str, query: str) -> CodeSourceSpec:
         raise BatchLoginError("url_domain_not_allowed", "接码地址必须包含有效 apikey")
     canonical = f"https://{SUSUBOT_CODE_SOURCE_HOST}{SUSUBOT_CODE_SOURCE_PATH}?type={SUSUBOT_CODE_SOURCE_TYPE}&apikey={api_key}"
     return _code_source_spec(canonical, SUSUBOT_CODE_SOURCE_LABEL, SUSUBOT_CODE_SOURCE_HOST, api_key, 8)
+
+
+def _parse_config2_url(path: str, query: str) -> CodeSourceSpec:
+    if query:
+        raise BatchLoginError("url_domain_not_allowed", "接码地址路径或凭据不符合要求")
+    match = CONFIG2_PATH_RE.fullmatch(path)
+    if not match:
+        raise BatchLoginError("url_domain_not_allowed", "接码地址路径或凭据不符合要求")
+    uuid_value = match.group(1).lower()
+    canonical = f"https://{CONFIG2_CODE_SOURCE_HOST}/tgapi/tgapi/{uuid_value}/GetHTML"
+    return _code_source_spec(canonical, CONFIG2_CODE_SOURCE_LABEL, CONFIG2_CODE_SOURCE_HOST, uuid_value, 8)
 
 
 def _code_source_spec(canonical: str, label: str, host: str, value: str, prefix_len: int) -> CodeSourceSpec:
@@ -146,6 +164,7 @@ def material_hmac(value: str) -> str:
 
 __all__ = [
     "CODE_SOURCE_HOST",
+    "CONFIG2_CODE_SOURCE_HOST",
     "SUPPORTED_CODE_SOURCE_HOSTS",
     "SUSUBOT_CODE_SOURCE_HOST",
     "material_hmac",
