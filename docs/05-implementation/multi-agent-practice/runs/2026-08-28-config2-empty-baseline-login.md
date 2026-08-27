@@ -123,8 +123,8 @@
 - requirement_coverage: 新 config2 地址、HTTPS 报错根因、重新登录和真实验收口径全部覆盖。
 - acceptance_scope: 接受 host-scoped parser 修复；不接受通用错误降级、旧 flow/code 复用或批量重试其他失败行。
 - product_status: product_accepted
-- release_status: release_gate_in_progress
-- production_status: failed_at_baseline
+- release_status: passed
+- production_status: production_fixed
 
 ## First Release and Production Attempts
 
@@ -134,16 +134,16 @@
 - generation_2: 原 baseline `url_error` 已越过；Telegram `send_call_state=confirmed`，随后 `wait_code` 以 `url_fetch_failed` 终止；未提交 code/2FA、无 session、无授权。
 - generation_3: baseline 直接以 `url_fetch_failed` 终止，未发送 Telegram challenge。
 - generation_4: 70 秒策略下 baseline 与 Telegram send 均确认，但首次 wait_code 仍被供应方频控拒绝；code/2FA 未提交，无授权。
-- batch_10_generation_1: 130 秒策略下 send/code/2FA 全部 confirmed，flow/account 在线，主 session 与健康 authorization 持久化，online state 为 online；随后 profile 读回因本地 `DetachedInstanceError` 进入专项 reconcile，登录 E4 已通过但批次完整初始化尚未收口。
+- batch_10_generation_1: 130 秒策略下 send/code/2FA 全部 confirmed，flow/account 在线，主 session 与健康 authorization 持久化，online state 为 online；随后 profile 读回因本地 `DetachedInstanceError` 进入专项 reconcile。`f5efd41c` 发布后，owner 3/version 7 通过官方对账服务重开，profile 远端读回成功，批次恢复为正常 `post_initialization_waiting`；当前 `waiting_abc_approval` 是显式后续审批闸门，不是登录失败。
 - provider_evidence: pinned HTTPS 连续返回 200；频控页被 parser 明确识别为「接码平台请求频繁」。生产 challenge 证明 70 秒仍不足；成功读取后约 90 秒再次访问仍频控，约 130 秒静默后同一 transport 单次解析恢复且 code/2FA 字段存在，未记录字段值。
 - root_cause_extension: host rate bucket 被硬编码为 tgbotchecker scope，生产间隔仅 3 秒；config2 baseline 后立即轮询，客户端 1 秒/3 秒重试进一步延长供应方频控。
-- production_status: login_e4_passed_post_init_reconcile_pending
+- production_status: production_fixed
 
 ## Rate Policy Remediation Development / QA
 
-- implementation: host bucket scope 改为当前 item 的真实 `code_source_host`；config2 最小请求间隔固定为 `max(configured, 70)`，其他平台不变。
+- implementation: host bucket scope 改为当前 item 的真实 `code_source_host`；config2 最小请求间隔固定为 `max(configured, 130)`，其他平台不变；profile readback 在 ORM session 关闭前冻结 `account_id`。
 - failure_boundary: 频控页仍是显式 `url_fetch_failed`，未改为空材料或成功；TLS/SSRF/错误页合同不变。
 - targeted_red: 新 host-policy 与 config2 full-flow 测试 2 failed / 1 passed。
 - regression_green: 77 passed in 4.69s。
-- release_status: second_release_gate_pending
-- production_status: login_failed_rate_limited
+- release_status: `bfc4113f` / `febae0df` / `3a893fd0` / `f5efd41c` 四轮生产发布均通过，最终 run `33100360658` 成功。
+- production_status: send/code/2FA confirmed；账号/session/authorization/online state 持久化；最终版本 fresh Telegram health 返回在线；profile reconcile succeeded。
