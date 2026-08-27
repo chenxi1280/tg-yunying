@@ -14,7 +14,7 @@
 ## 1. Intake Card
 
 - `raw_input`: 批量导入的 2FA 账号没有记录已验证密码，也没有改为平台固定 2FA；每导入成功一个账号也没有立即完成名字、头像和 ABC 备份初始化；此前已登录账号重新进入批量登录时也没有补齐缺口。
-- `business_goal`: 每条批量登录行在 A 可用后，无论是新建、已授权还是重登，都统一创建或续接完整初始化；先完成姓名/头像和 ABC gap decision/request preparation，不让 Telegram password-reset 等待期阻塞可独立完成的资料工作；服务端 reset 到期并设置 fixed 2FA 后立即续接需要密码的 B/SV、C/MY 和 E4，全部真实读回后才算该行完整成功。
+- `business_goal`: 每条批量登录行在 A 可用后，无论是新建、已授权还是重登，都统一创建或续接完整初始化；先完成姓名/头像；未启用 2FA 或已记录 Telegram-accepted 当前密码的账号先完成真实 ABC，再处理 fixed 2FA；只有当前密码未知的账号才等待服务端 reset，fixed 后续接原 ABC request。全部真实读回后才算该行完整成功。
 - `affected_surface`: 批量登录、租户固定 2FA、账号安全批次、资料初始化、ABC 灾备、任务中心、提醒、审计和生产 E4。
 - `authorization_scope`: 部署后使用 `normal_full_init_v1` 的批量登录 normal 账号；覆盖本行 `new_account/already_authorized/relogin` 三种 route。
 - `out_of_scope`: 未重新进入批量登录的历史账号后台扫描、独立 account-ID 追补入口、接码专用账号、降权专用账号、设备清理和业务任务配置。
@@ -114,20 +114,15 @@ A authorized or fresh probe confirmed
   -> abc_owner_resolution(recheck)
   -> abc_owner_attached | abc_readback_satisfied | abc_request_prepared
   -> if abc_readback_satisfied: keep evidence and continue
-  -> if B/C absent and current 2FA unavailable: keep request waiting_prerequisite, no B challenge
+  -> abc_login_credential_resolution(no 2FA | Telegram-accepted encrypted password | managed snapshot)
+  -> if credential ready: abc_request_ready -> approval -> B/C/E4 -> abc_readback_satisfied
+  -> if current 2FA unavailable: keep request waiting_prerequisite, no B challenge
   -> two_fa_source_resolved
   -> fixed_2fa_rotation_pending | reset_requested_waiting(server date)
   -> fixed_2fa_rotation_started
   -> fixed_2fa_rotation_confirmed
   -> fixed_2fa_snapshot_readback
-  -> abc_request_ready (new request only)
-  -> abc_manifest_ready (new request only)
-  -> waiting_abc_approval
-  -> waiting_global_abc
-  -> abc_manifest_approved
-  -> abc_b_running
-  -> abc_c_running
-  -> abc_e4_running
+  -> if request was waiting_prerequisite: abc_request_ready -> approval -> B/C/E4
   -> abc_readback
   -> succeeded
 ```
@@ -175,11 +170,12 @@ verified current password + A Session
 
 - 源密码错误：不记录为可信密码，不进入 fixed rotation。
 - mutation 前固定设置缺失、不可解密或版本漂移：Telegram 调用数必须为 0。
-- 明确失败：保留仍有效的源密码快照和 typed failure；允许已完成的 ABC evidence readback 与未物化的 request preparation，B/C/E4 Telegram mutation 调用数仍为 0。
+- 明确失败：保留仍有效的源密码快照和 typed failure；已经先完成且与同一 A generation 绑定的 ABC evidence 不回滚，未取得可信当前密码的分支仍只允许 request preparation，B/C/E4 Telegram mutation 调用数为 0。
 - 结果 unknown：保留原 operation、request key 和源密码加密快照，进入 `two_fa_rotation_unresolved`；不猜测当前密码、不自动发起第二次改密、不进入 B/C。
 - Telegram mutation 已开始后，即使客户端返回异常、邮箱待确认或成功响应后的数据库提交结果未知，也统一保留原 request key：邮箱待确认进入人工项，其余不可判定结果进入 `reconcile_unknown`，都不得重放改密。
-- 只有固定密码已由 Telegram 明确接受并完成版本读回，才能覆盖源密码快照；旧密码随后按审计策略销毁，不保留普通历史明文或可 reveal 副本。
-- `GetPasswordRequest=enabled` 只证明已启用，不能证明固定明文相等；`unchanged`、本地 ciphertext相等或普通状态快照均不算 fixed evidence。没有可用的受保护密码校验事实时进入 `two_fa_fixed_unproven`，禁止推进 ABC。
+- 批量登录时被 Telegram 明确接受的当前密码必须立即加密写入账号安全快照，provenance 标记为本次登录接受、绑定 A authorization generation，并供 fixed rotation 前的 ABC B 登录使用；不得只放在短期 owner secret 后遗漏账号级记录。
+- 只有固定密码已由 Telegram 明确接受并完成版本读回，才能覆盖上述源密码快照；旧密码随后按审计策略销毁，不保留普通历史明文或额外可 reveal 副本。
+- `GetPasswordRequest=enabled` 只证明已启用，不能证明固定明文相等；`unchanged`、本地 ciphertext相等或普通状态快照均不算 fixed evidence。固定密码尚未证明不阻塞已有 Telegram-accepted 当前密码的 ABC；只有当前 2FA 已启用且没有可信当前密码时才禁止物化 B challenge。
 - 邮箱确认沿用同一 operation/A generation；验证码只在请求内存使用，成功后再读回，错误明确失败，RPC unknown保持原 operation。UI提供带 expected version和原因的确认入口，不把邮箱码写入数据库/日志。
 - 2FA hint不得含密码片段；未经独立配置和批准，本链不修改恢复邮箱。Telegram要求新的邮箱绑定时进入manual，不为完成批次自动填充邮箱。
 - `manual_current_2fa_required` 可由有 credential-manage权限的操作者向原 full-init提交一次新 candidate；candidate不回显、不替换 unknown secret，只有 Telegram接受后才转可信，错误候选销毁并等待新的显式提交。
@@ -201,18 +197,18 @@ verified current password + A Session
 
 ## 9. 单账号 ABC 合同
 
-### 9.1 立即建立义务、资料完成后准备 request、fixed 2FA 后物化
+### 9.1 立即建立义务、资料完成后按当前密码能力先做 ABC
 
-`new_account/relogin` 的 A 登录提交，或 `already_authorized` 的 fresh probe确认提交，必须同时 create-or-attach账号级 full-init和持久 `abc_required` 义务。gap decision 立即查询本账号 ABC owner：恰好一个可复用 owner则绑定原 owner，完整终态证据则进入 readback，多个 owner则 conflict；没有可复用 owner时先记 `request_pending_prerequisites`。姓名/头像完成后 coordinator 再次检查 owner；仍无 owner即创建唯一 `post_login_abc_request`，但当 fixed 2FA 尚未形成时该 request 只保持 `waiting_prerequisite`，不得物化 ABC batch、不得发送 B 登录 challenge。fixed 2FA 完成后原 request 原子转为 `waiting_approval`，重新生成绑定当前 A/Session/generation/fixed/profile/Apps/release 的脱敏 preview并走异人批准。批量导入确认不能替代 ABC 批准。
+`new_account/relogin` 的 A 登录提交，或 `already_authorized` 的 fresh probe确认提交，必须同时 create-or-attach账号级 full-init和持久 `abc_required` 义务。gap decision 立即查询本账号 ABC owner：恰好一个可复用 owner则绑定原 owner，完整终态证据则进入 readback，多个 owner则 conflict；没有可复用 owner时先记 `request_pending_prerequisites`。姓名/头像完成后 coordinator 再次检查 owner；仍无 owner即创建唯一 `post_login_abc_request`。如果账号未启用 2FA，或平台持有与当前 A generation 绑定的 Telegram-accepted/managed 当前密码，请求直接进入 `waiting_approval`，异人批准后先完成真实 B/C/E4，再执行平台固定 2FA rotation；这样 Telegram 的 session/password fresh 限制不会阻塞资料和可执行的 ABC。批量导入确认不能替代 ABC 批准。
 
-ABC 已有完整终态 evidence 时允许在 fixed 2FA 等待期先做只读验证并写入当前 owner 的 `abc_evidence_ref`；没有 B/C 的账号不能把“request 已准备”展示为 ABC 完成。当前 B 登录实现会在 Telegram 要求 2FA 时使用托管密码；对旧密码未知且 reset waiting 的账号，提前物化只会产生 `two_fa_required` 和即将过期的 challenge，因此明确禁止。若未来提供经专项批准且能证明独立 AuthKey/identity 的无密码授权协议，必须另立 PRD 和 E4，不能在本合同静默切换。
+如果当前 2FA 已启用但平台没有可信密码，request 保持 `waiting_prerequisite`，不得物化 ABC batch、不得发送 B 登录 challenge；同一 owner 先等待 Telegram eligibility/reset server date，reset 完成并设置 fixed 2FA 后再激活原 request。ABC 已有完整终态 evidence 时允许在 fixed 2FA 等待期先做只读验证并写入当前 owner 的 `abc_evidence_ref`；没有 B/C 的账号不能把“request 已准备”展示为 ABC 完成。若未来提供经专项批准且能证明独立 AuthKey/identity 的无密码授权协议，必须另立 PRD 和 E4，不能在本合同静默切换。
 
 批准必须满足：
 
 - `originating_user_id` 永久保留原批量登录创建者；`requested_by_user_id` 在request生成时取当前显式 `execution_owner_user_id`，不得因新binding自动变化。
 - `approved_by_user_id != requested_by_user_id`；execution owner接管后旧preview/approval失效并递增request version。
 - `approval_ref` 必填。
-- 批准绑定 exact manifest fingerprint、post-init version、A/current/generation、固定 2FA 版本、profile readback、App A/B/C 版本和 execution release SHA。
+- 批准绑定 exact manifest fingerprint、post-init version、A/current/generation、当前 2FA credential provenance/密文摘要、目标固定 2FA 版本、profile readback、App A/B/C 版本和 execution release SHA；不得记录密码明文。
 - 任一冻结事实漂移使批准失效，重新 preview 和异人批准。
 - 禁止永久 standing approval 批准未知的未来账号。
 
@@ -262,7 +258,7 @@ ABC 已有完整终态 evidence 时允许在 fixed 2FA 等待期先做只读验�
 
 新增短期 secret record，只保存 `tenant/account/full_init/type/key_version/ciphertext/source_version/expires_at/status`；API和审计不返回 ciphertext。账号、batch或binding删除均不得 cascade删除 full-init、operation、evidence或未收口 secret；只允许软隐藏投影，secret按第 7 节状态销毁。
 
-新增 `tg_post_login_abc_requests`，在姓名/头像完成且再次确认没有可复用 ABC owner时创建；fixed 2FA 未完成时承载 prerequisite waiting，完成后才承载 preview、排队和批准：
+新增 `tg_post_login_abc_requests`，在姓名/头像完成且再次确认没有可复用 ABC owner时创建；当前 ABC 登录凭据不足时承载 prerequisite waiting，凭据可用时承载 preview、排队和批准：
 
 - `full_initialization_id/account_id/request_version/status(waiting_prerequisite/waiting_approval/approved/running/succeeded/manual_required/reconcile_unknown)`。
 - `manifest_json/manifest_fingerprint/execution_release_sha`。
@@ -336,7 +332,7 @@ ABC 已有完整终态 evidence 时允许在 fixed 2FA 等待期先做只读验�
 - 同账号同一时刻只有一个 full-init owner和一个 2FA/profile mutation owner；重复批量登录只 attach，不抢占。
 - active owner只有在 A、fixed/profile policy及目标池冻结版本兼容时才 attach；不兼容的新 item进入 `waiting_active_owner_policy_conflict`，等旧 owner安全终结后重新 gap decision，禁止并行 higher generation。
 - 已有账号安全 2FA/profile mutation owner时，目标和版本完全相同则 attach；不同目标、started unknown或人工保护冲突则阻断，不创建第二个安全批次。
-- profile mutation 在 A 权威确认后优先执行，不依赖 fixed 2FA；姓名/头像未确认前不创建 ABC request，fixed 2FA 未确认前不物化新的 B/C/E4 Telegram operation。
+- profile mutation 在 A 权威确认后优先执行，不依赖 fixed 2FA；姓名/头像未确认前不创建 ABC request。姓名/头像确认后，未启用 2FA 或持有可信当前密码的账号可先物化 B/C/E4；只有当前 2FA 已启用但密码未知的账号保持 `waiting_prerequisite`。
 - 不同账号 A 登录继续使用现有有界并发；逐账号 post-init 独立推进，不等整批结束。
 - ABC 全局任一时刻只有一个敏感 operation；排队不绕过 open batch 和 runtime gate。
 - DB commit unknown 时按原 request/operation key 读回，禁止创建第二个 owner。
@@ -403,7 +399,7 @@ code-source凭据过期或binding漂移时停在 `two_fa_candidate_refresh_requi
 - terminal succeeded ABC 且 A/current/generation/evidence仍匹配：already-qualified readback。
 - terminal manual/unknown/deferred：attach原债务并按原 operation收口，禁止新建。
 - 多个 ABC owner：`abc_owner_conflict` 并停止。
-- 无 ABC owner且姓名、头像均完成：创建唯一 `post_login_exact` request；fixed 2FA 未完成时保持 `waiting_prerequisite`，完成后才允许另行异人批准和物化。
+- 无 ABC owner且姓名、头像均完成：创建唯一 `post_login_exact` request；当前 ABC 登录凭据可用时立即进入异人批准和物化，只有 2FA 已启用但可信当前密码缺失时保持 `waiting_prerequisite`，待 reset/fixed 后继续原 request。
 
 每次子动作前后都复核账号未删除/封禁、仍为normal且在冻结目标池、A current/Session/generation未漂移。漂移发生在调用前则零远端写入阻断；调用started后只收口原operation，父 item不得成功。账号重新登录产生新 A时，旧 owner终结后由当前 binding创建higher generation。
 
@@ -459,15 +455,16 @@ code-source凭据过期或binding漂移时停在 `two_fa_candidate_refresh_requi
 - API schema、权限中间件、Task Center 投影、initial/correction 去重和 200 行详情通过。
 - current-candidate/email-confirmation请求的access log、异常、AuditLog和响应均无敏感值；权限撤销/显式接管、expected-version冲突和跨tenant访问通过。
 
-### 15.2 profile / ABC preparation / 2FA reset 顺序回归
+### 15.2 profile / ABC / 2FA 最终设置顺序回归
 
 1. 新 owner 从 `profile` 开始；资料远端读回成功前 2FA mutation 与 B/C/E4 调用数均为 0。
 2. `two_fa_status=reset_eligibility_waiting|reset_waiting` 且 server due 在未来时，owner 仍可领取 profile；`two_fa_next_retry_at` 与 Telegram 日期精确保持，通用 `next_retry_at` 只调度当前 stage。
-3. profile 完成后先验证既有 ABC evidence；已有完整证据则记录 readback，缺少 B/C 则只创建一个 `waiting_prerequisite` request，不发送 B challenge。
-4. ABC request preparation 完成后 owner 回到 `two_fa` 并等待原 server due；到期前 reset 调用数为 0。
-5. fixed 2FA 完成后，同一 request 转为 `waiting_approval`；重新 preview 和异人批准后才创建 `post_login_exact` batch。
-6. 只有 profile、fixed 2FA、B/C/E4 三组 evidence 全部成功才投影 owner/父 item成功；request preparation 不能增加 `fully_initialized_count`。
-7. migration 对已有 `reset_waiting` owner只复制 server due到专用列并把未完成 profile 的当前 stage改为 profile；不取消、不重发 reset，不创建 ABC operation。
+3. 批量登录中 Telegram 已接受的 2FA 密码必须加密进入账号安全快照并绑定 A generation；ABC B 登录读取该快照，fixed rotation 成功后再由平台固定密码覆盖。
+4. profile 完成后先验证既有 ABC evidence；账号未启用 2FA或可信当前密码可用时，同一 request 进入审批并先完成真实 B/C/E4，然后 owner 才进入 fixed 2FA。
+5. 只有当前 2FA 已启用且密码未知时，缺少 B/C 的 request 才保持 `waiting_prerequisite`、零 B challenge；owner 回到 `two_fa` 并等待原 server due。
+6. reset/fixed 完成后，同一 prerequisite request 转为 `waiting_approval`；重新 preview 和异人批准后创建 `post_login_exact` batch。
+7. 只有 profile、fixed 2FA、B/C/E4 三组 evidence 全部成功才投影 owner/父 item成功；request preparation 不能增加 `fully_initialized_count`。
+8. migration 对已有 `reset_waiting` owner只复制 server due到专用列并把未完成 profile 的当前 stage改为 profile；不取消、不重发 reset，不创建 ABC operation。
 
 ## 16. Release Gate 与生产 E4
 
@@ -571,6 +568,6 @@ code-source凭据过期或binding漂移时停在 `two_fa_candidate_refresh_requi
 - 唯一允许的自动恢复是 Telegram 已登录 Session 的官方 password reset：操作员必须在原 `manual_required` owner 上显式请求；平台持久化审计、原 owner、reset request call fence 与 Telegram 返回的 `until_date/retry_date`，不得自动扫描历史账号发起 reset。
 - Telegram 可能先以 `PASSWORD_TOO_FRESH_%d` / `SESSION_TOO_FRESH_%d` 拒绝 reset RPC；平台必须把服务端秒数换算为绝对日期并记录 `reset_eligibility_waiting`，此时远端 reset 尚未创建，不能标记 `remote_mutation_started`。资格到期后再调用 reset；若返回 `resetPasswordRequestedWait(until_date)`，转为 `reset_waiting`。两个等待阶段都保持原 owner，父批次回到 running/waiting，`next_retry_at` 到期前 worker 零 Telegram 调用；已创建的 reset 可在系统消息侧撤销，撤销或服务端延长等待时按新的 retry date 续接。
 - terminal manual/unknown owner 被同一专项操作重新打开后，父 item 必须从仅由后置初始化投影出的 `failed/unresolved` 恢复为 `post_initialization_waiting`，清除对应后置失败投影并重新计数；不得出现父批次同时 `running + waiting` 又保留同一条目的 `failed_count`。登录、目标分组等独立失败仍原样保留，不得借后置恢复擦除。
-- eligibility/reset waiting 期间同一 owner先完成 profile，并对 ABC 做 evidence readback或创建 `waiting_prerequisite` request；不得物化新的 B challenge。各自到期后同一 owner继续对应 RPC；只有 Telegram 返回 `resetPasswordOk` 或权威读回 2FA missing 才设置租户固定密码，然后激活原 ABC request。reset RPC 或本地提交 unknown 必须先用 `account.getPassword.pending_reset_date` 对账，禁止直接重放。
+- eligibility/reset waiting 期间同一 owner先完成 profile；若 reset 已经发起就代表当前密码未知，只能对 ABC 做 evidence readback或创建 `waiting_prerequisite` request，不得物化新的 B challenge。各自到期后同一 owner继续对应 RPC；只有 Telegram 返回 `resetPasswordOk` 或权威读回 2FA missing 才设置租户固定密码，然后激活原 ABC request。reset RPC 或本地提交 unknown 必须先用 `account.getPassword.pending_reset_date` 对账，禁止直接重放。
 - API/UI 仅在 `two_fa_current_password_unavailable/two_fa_manual_required` 暴露“发起 2FA 重置”，要求 `accounts.security.credential_manage`、expected version 与原因；等待时间显示 Telegram 返回的绝对日期，不写死 24 小时或 7 天，并明确系统通知及可撤销影响。不得回显密码、Session、邮箱或账号标识。
 - 验收：首次请求只产生一个远端 reset 与确定等待时间；等待期 reset 零调用但 profile 可完成、ABC request 可准备；到期 `resetPasswordOk -> 2FA missing -> fixed password set -> fixed evidence -> 原 ABC request审批/执行`；进程崩溃/超时可由读回收口；父 item/batch 在等待、完成和失败状态下计数守恒；exact-two 必须继续原 owner/batch。

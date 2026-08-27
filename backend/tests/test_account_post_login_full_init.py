@@ -10,6 +10,7 @@ from sqlalchemy.orm import sessionmaker
 from app.database import Base
 from app.models import (
     AccountPool,
+    AuditLog,
     TelegramDeveloperApp,
     Tenant,
     TgAccount,
@@ -19,6 +20,7 @@ from app.models import (
     TgAccountLoginBatchItem,
     TgAccountLoginPostInitializationBinding,
     TgAccountSecurityBatch,
+    TgAccountSecuritySnapshot,
 )
 from app.security import decrypt_secret, encrypt_secret, encrypt_session
 from app.services.account_login.batches import skip_cancellable_items
@@ -132,6 +134,44 @@ def test_reentered_batch_reuses_same_account_initialization(session_factory) -> 
     assert first.source_two_fa_kind == "telegram_accepted"
 
 
+def test_repeated_accepted_password_binding_does_not_rewrite_snapshot(
+    session_factory,
+) -> None:
+    with session_factory() as session:
+        _, first_item = _new_login_item(session, "accepted-secret-first")
+        owner = create_or_attach_full_initialization(
+            session,
+            first_item,
+            actor="操作员",
+            source_two_fa_kind="telegram_accepted",
+            source_two_fa_password="source-password",
+        )
+        session.commit()
+        first_snapshot = session.scalar(select(TgAccountSecuritySnapshot))
+        first_ciphertext = first_snapshot.two_fa_password_ciphertext
+        first_owner_ciphertext = owner.source_two_fa_password_ciphertext
+        first_owner_version = owner.version
+        _, second_item = _new_login_item(session, "accepted-secret-second")
+        create_or_attach_full_initialization(
+            session,
+            second_item,
+            actor="操作员",
+            source_two_fa_kind="telegram_accepted",
+            source_two_fa_password="source-password",
+        )
+        session.commit()
+        session.refresh(first_snapshot)
+        audits = list(session.scalars(select(AuditLog).where(
+            AuditLog.action == "记录批量登录已验证 2FA 凭据",
+        )))
+
+    assert first_snapshot.two_fa_password_ciphertext == first_ciphertext
+    assert first_snapshot.two_fa_evidence_ref == f"full-init:{owner.id}:source-two-fa"
+    assert owner.source_two_fa_password_ciphertext == first_owner_ciphertext
+    assert owner.version == first_owner_version
+    assert len(audits) == 1
+
+
 def test_post_initialization_detail_is_secret_free(session_factory) -> None:
     with session_factory() as session:
         batch, item = _new_login_item(session, "post-init-detail")
@@ -198,8 +238,11 @@ def test_off_mode_still_purges_expired_source_password(session_factory, monkeypa
     assert drain.drain_account_post_login_initializations(session_factory, 1) == 0
     with session_factory() as session:
         owner = session.get(TgAccountFullInitialization, owner.id)
+        snapshot = session.scalar(select(TgAccountSecuritySnapshot))
     assert owner.source_two_fa_password_ciphertext == ""
     assert owner.source_secret_expires_at is None
+    assert decrypt_secret(snapshot.two_fa_password_ciphertext) == "expired-password"
+    assert snapshot.two_fa_password_source == "telegram_accepted_import"
 
 
 def test_reconcile_only_mode_does_not_start_pending_two_fa(session_factory, monkeypatch) -> None:

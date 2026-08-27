@@ -751,7 +751,10 @@ def test_full_new_account_two_fa_flow_waits_for_post_initialization(session_fact
     assert login_gateway.finish_calls == [("22222", None), (None, "two-fa-secret")]
     assert initialization.source_two_fa_kind == "telegram_accepted"
     assert decrypt_secret(initialization.source_two_fa_password_ciphertext) == "two-fa-secret"
-    assert security is None or not security.two_fa_password_ciphertext
+    assert security is not None
+    assert decrypt_secret(security.two_fa_password_ciphertext) == "two-fa-secret"
+    assert security.two_fa_password_source == "telegram_accepted_import"
+    assert security.two_fa_authorization_generation == account.authorization_generation
     assert notification is None
     assert "code_url_ciphertext" not in safe_item
     assert "phone_ciphertext" not in safe_item

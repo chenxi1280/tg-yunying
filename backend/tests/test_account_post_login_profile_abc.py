@@ -184,6 +184,52 @@ def test_abc_approval_records_manifest_batch_id(session_factory, monkeypatch) ->
     assert result["abc_batch_id"] == "post-login-abc-batch"
 
 
+def test_abc_approval_accepts_import_password_before_fixed_two_fa(
+    session_factory,
+    monkeypatch,
+) -> None:
+    from app.services.account_post_login_init import abc
+
+    with session_factory() as session:
+        _, item = _new_login_item(session, "abc-approve-before-fixed")
+        owner = create_or_attach_full_initialization(
+            session,
+            item,
+            actor="原操作员",
+            source_two_fa_kind="telegram_accepted",
+            source_two_fa_password="accepted-password",
+        )
+        owner.status = "running"
+        owner.stage = "abc"
+        owner.profile_status = "succeeded"
+        owner.profile_evidence_ref = "profile-evidence"
+        owner.lease_token = "abc-approval-before-fixed-lease"
+        session.commit()
+        claim = FullInitializationClaim(owner.id, "abc", owner.lease_token)
+    execute_abc_stage(session_factory, claim)
+    monkeypatch.setattr(
+        abc,
+        "apply_post_login_online_abc_batch",
+        lambda *_args, **_kwargs: {"batch_id": "abc-before-fixed-batch"},
+    )
+
+    with session_factory() as session:
+        request = session.scalar(select(TgPostLoginAbcRequest))
+        result = approve_post_login_abc_request(
+            session,
+            1,
+            request.id,
+            expected_version=request.request_version,
+            deployed_release_sha="c" * 40,
+            expected_fingerprint="d" * 64,
+            approved_by="批准人",
+            approval_ref="ABC-BEFORE-FIXED",
+        )
+
+    assert result["status"] == "approved"
+    assert result["abc_batch_id"] == "abc-before-fixed-batch"
+
+
 def test_succeeded_abc_item_without_complete_evidence_stays_unknown(session_factory) -> None:
     with session_factory() as session:
         _, login_item = _new_login_item(session, "abc-item-missing-evidence")

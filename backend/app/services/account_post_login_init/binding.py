@@ -15,9 +15,11 @@ from app.models import (
     TgAccountLoginBatchAttempt,
     TgAccountLoginBatchItem,
     TgAccountLoginPostInitializationBinding,
+    TgAccountSecuritySnapshot,
 )
-from app.security import encrypt_secret
+from app.security import decrypt_secret, encrypt_secret
 from app.services._common import _now, audit
+from app.services.account_two_fa import record_managed_two_fa_password
 
 from .canonical import ensure_canonical_primary
 from .policy import FULL_INIT_POLICY, PROFILE_POLICY_VERSION
@@ -63,7 +65,10 @@ def create_or_attach_full_initialization(
     )
     if bound_owner is None:
         _resume_safe_readback(owner)
-    _capture_source_secret(owner, source_two_fa_kind, source_two_fa_password)
+    _capture_source_secret(
+        session, account, owner,
+        source_kind=source_two_fa_kind, password=source_two_fa_password,
+    )
     _attach_binding(session, item, owner)
     _project_item(item, owner)
     _audit_binding(session, item, owner, actor=actor)
@@ -296,7 +301,10 @@ def _copy_profile_target(
 
 
 def _capture_source_secret(
+    session: Session,
+    account: TgAccount,
     owner: TgAccountFullInitialization,
+    *,
     source_kind: str,
     password: str,
 ) -> None:
@@ -306,11 +314,71 @@ def _capture_source_secret(
         return
     if source_kind != "telegram_accepted":
         return
+    already_captured = bool(
+        owner.source_two_fa_kind == source_kind
+        and owner.source_two_fa_password_ciphertext
+        and (not owner.source_secret_expires_at or owner.source_secret_expires_at > _now())
+        and decrypt_secret(owner.source_two_fa_password_ciphertext) == password
+    )
+    if already_captured:
+        _record_accepted_source_password(session, account, owner, password=password)
+        return
     owner.source_two_fa_kind = source_kind
     owner.source_two_fa_password_ciphertext = encrypt_secret(password)
     ttl = get_settings().account_post_login_init_secret_ttl_seconds
     owner.source_secret_expires_at = _now() + timedelta(seconds=ttl)
+    _record_accepted_source_password(session, account, owner, password=password)
     owner.version += 1
+
+
+def _record_accepted_source_password(
+    session: Session,
+    account: TgAccount,
+    owner: TgAccountFullInitialization,
+    *,
+    password: str,
+) -> None:
+    snapshot = session.scalar(
+        select(TgAccountSecuritySnapshot).where(
+            TgAccountSecuritySnapshot.account_id == account.id,
+        )
+    )
+    fixed_proven = bool(
+        snapshot
+        and snapshot.two_fa_password_source == "platform_fixed_confirmed"
+        and snapshot.fixed_two_fa_version == owner.fixed_two_fa_version
+        and snapshot.two_fa_authorization_generation == owner.authorization_generation
+        and snapshot.two_fa_evidence_ref
+    )
+    if fixed_proven:
+        return
+    evidence_ref = f"full-init:{owner.id}:source-two-fa"
+    already_recorded = bool(
+        snapshot
+        and snapshot.two_fa_password_source == "telegram_accepted_import"
+        and snapshot.two_fa_authorization_generation == owner.authorization_generation
+        and snapshot.two_fa_evidence_ref == evidence_ref
+        and decrypt_secret(snapshot.two_fa_password_ciphertext) == password
+    )
+    if already_recorded:
+        return
+    record_managed_two_fa_password(
+        session,
+        account,
+        password,
+        source="telegram_accepted_import",
+        evidence_ref=evidence_ref,
+        authorization_generation=owner.authorization_generation,
+    )
+    audit(
+        session,
+        tenant_id=owner.tenant_id,
+        actor=owner.execution_owner,
+        action="记录批量登录已验证 2FA 凭据",
+        target_type="tg_account",
+        target_id=str(account.id),
+        detail=f"full_init_id={owner.id}; authorization_generation={owner.authorization_generation}",
+    )
 
 
 def _attach_binding(

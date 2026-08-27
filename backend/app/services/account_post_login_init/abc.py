@@ -24,6 +24,7 @@ from app.services.authorization_dr import (
 )
 from app.services.authorization_dr.online_abc import OPEN_BATCH_STATUSES
 
+from .abc_credentials import abc_login_credential_ready
 from .contracts import FullInitializationClaim
 from .flow import advance_full_initialization
 
@@ -62,7 +63,7 @@ def execute_abc_stage(session_factory, claim: FullInitializationClaim) -> None:
             return
         request = _abc_request(session, owner.id)
         if request:
-            _sync_from_request(owner, request)
+            _sync_from_request(session, owner, request)
             session.commit()
             return
         _create_abc_request(session, owner)
@@ -70,7 +71,7 @@ def execute_abc_stage(session_factory, claim: FullInitializationClaim) -> None:
 
 
 def _create_abc_request(session, owner) -> None:
-    ready = _two_fa_prerequisite_ready(owner)
+    ready = abc_login_credential_ready(session, owner)
     request_status = "waiting_approval" if ready else "waiting_prerequisite"
     session.add(TgPostLoginAbcRequest(
         tenant_id=owner.tenant_id,
@@ -285,9 +286,9 @@ def _sync_from_online_item(session, owner, item) -> None:
     _finish_request(session, owner.id, "manual_required")
 
 
-def _sync_from_request(owner, request) -> None:
+def _sync_from_request(session, owner, request) -> None:
     if request.status == "waiting_prerequisite":
-        if not _two_fa_prerequisite_ready(owner):
+        if not abc_login_credential_ready(session, owner):
             advance_full_initialization(owner)
             return
         request.status = "waiting_approval"
@@ -393,10 +394,6 @@ def _wait_for_abc_approval(owner) -> None:
     owner.version += 1
 
 
-def _two_fa_prerequisite_ready(owner) -> bool:
-    return owner.two_fa_status == "succeeded" and bool(owner.two_fa_evidence_ref)
-
-
 def _finish_abc_terminal(owner, status: str, detail: str) -> None:
     owner.status = status
     owner.stage = status
@@ -450,8 +447,7 @@ def _require_request_ready(session, request) -> None:
         raise ValueError(str(exc)) from exc
     ready = bool(
         owner
-        and owner.two_fa_status == "succeeded"
-        and owner.two_fa_evidence_ref
+        and abc_login_credential_ready(session, owner)
         and owner.profile_status == "succeeded"
         and owner.profile_evidence_ref
         and owner.status == "waiting_abc_approval"
