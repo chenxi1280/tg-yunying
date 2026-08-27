@@ -405,6 +405,7 @@ function postInitializationDescriptions(detail: AccountPostLoginInitialization) 
     { key: 'abcRequest', label: 'ABC 请求', children: detail.abc_request_status },
     { key: 'owner', label: '当前执行人', children: detail.execution_owner || '系统协调器' },
     { key: 'retry', label: '下次执行', children: detail.next_retry_at ? formatBeijingDateTime(detail.next_retry_at) : '—' },
+    { key: 'twoFaRetry', label: '2FA 服务端到期', children: detail.two_fa_next_retry_at ? formatBeijingDateTime(detail.two_fa_next_retry_at) : '—' },
     { key: 'failure', label: '异常', children: detail.failure_detail || detail.failure_type || '—', span: 2 },
   ];
 }

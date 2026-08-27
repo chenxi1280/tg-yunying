@@ -125,6 +125,7 @@ export type AccountPostLoginInitialization = {
   execution_owner: string;
   version: number;
   next_retry_at: string | null;
+  two_fa_next_retry_at: string | null;
   started_at: string | null;
   finished_at: string | null;
   created_at: string;

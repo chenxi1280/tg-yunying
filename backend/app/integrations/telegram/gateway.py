@@ -72,6 +72,25 @@ def _exception_detail(exc: Exception) -> str:
     return detail or type(exc).__name__
 
 
+def _reset_eligibility_wait_result(exc: Exception) -> AccountSecurityOperationResult | None:
+    from telethon import errors
+
+    too_fresh_errors = (errors.PasswordTooFreshError, errors.SessionTooFreshError)
+    if not isinstance(exc, too_fresh_errors):
+        return None
+    seconds = int(getattr(exc, "seconds", 0) or 0)
+    if seconds <= 0:
+        return None
+    next_retry_at = datetime.now(BEIJING_TZ).replace(tzinfo=None) + timedelta(seconds=seconds)
+    return AccountSecurityOperationResult(
+        True,
+        "reset_eligibility_waiting",
+        detail=type(exc).__name__,
+        next_retry_at=next_retry_at,
+        remote_mutation_started=False,
+    )
+
+
 def _profile_name_matches(profile: Any, first_name: str, last_name: str) -> bool:
     return bool(
         (getattr(profile, "first_name", "") or "") == first_name
@@ -1019,6 +1038,9 @@ class TelethonTelegramGateway(TelegramGateway):
         try:
             result = await client(functions.account.ResetPasswordRequest())
         except Exception as exc:  # noqa: BLE001 - reset RPC may have reached Telegram.
+            eligibility_wait = _reset_eligibility_wait_result(exc)
+            if eligibility_wait:
+                return eligibility_wait
             mapped = self._map_send_error(exc)
             return AccountSecurityOperationResult(
                 False,

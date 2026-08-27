@@ -5,7 +5,7 @@ from datetime import timedelta
 
 import pytest
 from sqlalchemy import select
-from telethon import types
+from telethon import errors, types
 from telethon.errors import PasswordHashInvalidError
 
 from app.config import Settings
@@ -23,6 +23,7 @@ from tests.test_account_post_login_full_init import _new_login_item, session_fac
 
 
 pytestmark = pytest.mark.no_postgres
+RESET_ELIGIBILITY_WAIT_SECONDS = 24 * 60 * 60
 
 
 class _MissingTwoFaGateway:
@@ -123,6 +124,7 @@ def test_two_fa_stage_sets_and_records_tenant_fixed_password(session_factory, mo
         _, item = _new_login_item(session, "two-fa-stage")
         owner = create_or_attach_full_initialization(session, item, actor="操作员")
         owner.status = "running"
+        owner.stage = "two_fa"
         owner.lease_token = "lease-token"
         session.commit()
         claim = FullInitializationClaim(owner.id, "two_fa", "lease-token")
@@ -166,6 +168,7 @@ def test_missing_remote_two_fa_is_not_accepted_from_stale_local_proof(
             two_fa_evidence_ref="old-fixed-proof",
         ))
         owner.status = "running"
+        owner.stage = "two_fa"
         owner.lease_token = "stale-proof-lease"
         session.commit()
         claim = FullInitializationClaim(owner.id, "two_fa", "stale-proof-lease")
@@ -197,6 +200,7 @@ def test_enabled_remote_with_current_fixed_proof_performs_zero_mutation(
             two_fa_evidence_ref="current-fixed-proof",
         ))
         owner.status = "running"
+        owner.stage = "two_fa"
         owner.lease_token = "current-fixed-proof-lease"
         session.commit()
         claim = FullInitializationClaim(owner.id, "two_fa", owner.lease_token)
@@ -223,6 +227,7 @@ def test_existing_two_fa_without_trusted_source_requires_manual_action(
         _, item = _new_login_item(session, "two-fa-manual")
         owner = create_or_attach_full_initialization(session, item, actor="操作员")
         owner.status = "running"
+        owner.stage = "two_fa"
         owner.lease_token = "lease-token"
         session.commit()
         claim = FullInitializationClaim(owner.id, "two_fa", "lease-token")
@@ -249,6 +254,7 @@ def test_expired_code_source_allows_current_password_candidate(
         item.credential_expires_at = _now() + timedelta(minutes=5)
         owner = create_or_attach_full_initialization(session, item, actor="操作员")
         owner.status = "running"
+        owner.stage = "two_fa"
         owner.lease_token = "expired-source-lease"
         session.commit()
         claim = FullInitializationClaim(owner.id, "two_fa", owner.lease_token)
@@ -278,6 +284,7 @@ def test_transient_code_source_failure_remains_recheckable(
         item.credential_expires_at = _now() + timedelta(minutes=5)
         owner = create_or_attach_full_initialization(session, item, actor="操作员")
         owner.status = "running"
+        owner.stage = "two_fa"
         owner.lease_token = "source-fetch-failed-lease"
         session.commit()
         claim = FullInitializationClaim(owner.id, "two_fa", owner.lease_token)
@@ -301,6 +308,7 @@ def test_two_fa_reset_waits_then_sets_fixed_password_on_same_owner(
 ) -> None:
     from app.services.account_post_login_init import two_fa
     from app.services.account_post_login_init.drain import _claim_next
+    from app.services.account_post_login_init.flow import advance_full_initialization
 
     gateway = _ResetTwoFaGateway()
     monkeypatch.setattr(two_fa, "gateway", gateway)
@@ -315,8 +323,16 @@ def test_two_fa_reset_waits_then_sets_fixed_password_on_same_owner(
     with session_factory() as session:
         owner = session.get(TgAccountFullInitialization, claim.initialization_id)
         assert owner.status == "pending"
-        assert owner.stage == "two_fa"
+        assert owner.stage == "profile"
         assert owner.two_fa_status == "reset_waiting"
+        assert owner.two_fa_next_retry_at == gateway.readback_retry_at
+        assert owner.next_retry_at is None
+        owner.profile_status = "succeeded"
+        owner.profile_evidence_ref = "profile-evidence"
+        owner.abc_status = "waiting_prerequisite"
+        advance_full_initialization(owner)
+        session.commit()
+        assert owner.stage == "two_fa"
         assert owner.next_retry_at == gateway.readback_retry_at
         assert _claim_next(session_factory, reconcile_only=False) is None
         gateway.readback_retry_at = _now() - timedelta(seconds=1)
@@ -337,7 +353,7 @@ def test_two_fa_reset_waits_then_sets_fixed_password_on_same_owner(
     assert gateway.reset_calls == 2
     assert gateway.passwords == [("fixed-password", None)]
     assert owner.two_fa_status == "succeeded"
-    assert owner.stage == "profile"
+    assert owner.stage == "abc"
 
 
 def _running_claim(session, owner, lease_token: str) -> FullInitializationClaim:
@@ -366,6 +382,7 @@ def test_unchanged_two_fa_result_is_not_recorded_as_fixed(
             source_two_fa_password="accepted-source-password",
         )
         owner.status = "running"
+        owner.stage = "two_fa"
         owner.lease_token = "two-fa-unchanged-lease"
         session.commit()
         claim = FullInitializationClaim(owner.id, "two_fa", owner.lease_token)
@@ -444,6 +461,40 @@ def test_gateway_maps_telegram_reset_wait_date(monkeypatch) -> None:
     assert result.remote_mutation_started is True
 
 
+@pytest.mark.parametrize("error_type", [errors.PasswordTooFreshError, errors.SessionTooFreshError])
+def test_gateway_maps_reset_eligibility_wait_without_claiming_mutation(
+    monkeypatch,
+    error_type,
+) -> None:
+    class TooFreshClient:
+        async def __call__(self, _request):
+            raise error_type(None, RESET_ELIGIBILITY_WAIT_SECONDS)
+
+    gateway = TelethonTelegramGateway(Settings())
+
+    async def authorized_client(*_args, **_kwargs):
+        return TooFreshClient()
+
+    monkeypatch.setattr(gateway, "_authorized_client", authorized_client)
+    before = _now() + timedelta(seconds=RESET_ELIGIBILITY_WAIT_SECONDS - 1)
+    result = asyncio.run(
+        gateway._reset_two_fa_password_async(
+            "session",
+            DeveloperAppCredentials(
+                app_id=1,
+                api_id=12345,
+                api_hash="hash",
+                credentials_version=1,
+            ),
+        )
+    )
+
+    assert result.ok is True
+    assert result.status == "reset_eligibility_waiting"
+    assert result.next_retry_at >= before
+    assert result.remote_mutation_started is False
+
+
 @pytest.mark.parametrize(
     "case",
     [
@@ -474,6 +525,7 @@ def test_two_fa_non_success_preserves_remote_call_semantics(
         _, item = _new_login_item(session, f"two-fa-{expected_status}")
         owner = create_or_attach_full_initialization(session, item, actor="操作员")
         owner.status = "running"
+        owner.stage = "two_fa"
         owner.lease_token = f"{expected_status}-lease"
         session.commit()
         claim = FullInitializationClaim(owner.id, "two_fa", owner.lease_token)
@@ -506,6 +558,7 @@ def test_accepted_login_two_fa_is_used_to_rotate_to_tenant_fixed_password(
             source_two_fa_password="accepted-source-password",
         )
         owner.status = "running"
+        owner.stage = "two_fa"
         owner.lease_token = "accepted-two-fa-lease"
         session.commit()
         claim = FullInitializationClaim(owner.id, "two_fa", owner.lease_token)
@@ -541,6 +594,7 @@ def test_two_fa_success_commit_failure_becomes_reconcile_unknown(
         _, item = _new_login_item(session, "two-fa-commit-unknown")
         owner = create_or_attach_full_initialization(session, item, actor="操作员")
         owner.status = "running"
+        owner.stage = "two_fa"
         owner.lease_token = "two-fa-commit-unknown-lease"
         session.commit()
         claim = FullInitializationClaim(owner.id, "two_fa", owner.lease_token)

@@ -346,7 +346,7 @@ def test_two_fa_reset_reopens_original_owner_without_candidate_secret(session_fa
 
     assert result.id == owner.id
     assert result.status == "pending"
-    assert result.stage == "two_fa"
+    assert result.stage == "profile"
     assert result.source_two_fa_kind == "telegram_reset_requested"
     assert result.source_two_fa_password_ciphertext == ""
 

@@ -60,7 +60,7 @@ def _assert_account_login_schema(inspector) -> None:
     full_init_columns = {
         column["name"] for column in inspector.get_columns("tg_account_full_initializations")
     }
-    assert "abc_evidence_ref" in full_init_columns
+    assert {"abc_evidence_ref", "two_fa_next_retry_at"} <= full_init_columns
     assert _foreign_key_names(inspector, "tg_account_login_batch_items")[("current_attempt_id",)] == (
         "fk_login_batch_item_current_attempt"
     )
@@ -102,5 +102,5 @@ def test_account_batch_login_schema_migrates_from_blank_postgres() -> None:
     _assert_ai_schema(inspector)
     with engine.connect() as connection:
         assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
-            "0168_post_login_full_init"
+            "0169_post_login_stage_order"
         )

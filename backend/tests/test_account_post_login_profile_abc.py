@@ -57,7 +57,9 @@ def test_abc_stage_creates_one_separate_approval_request(session_factory) -> Non
         owner.status = "running"
         owner.stage = "abc"
         owner.two_fa_status = "succeeded"
+        owner.two_fa_evidence_ref = "two-fa-evidence"
         owner.profile_status = "succeeded"
+        owner.profile_evidence_ref = "profile-evidence"
         owner.lease_token = "abc-lease-one"
         session.commit()
         claim = FullInitializationClaim(owner.id, "abc", owner.lease_token)
@@ -93,7 +95,9 @@ def test_abc_stage_rejects_slot_only_false_positive(session_factory) -> None:
         owner.status = "running"
         owner.stage = "abc"
         owner.two_fa_status = "succeeded"
+        owner.two_fa_evidence_ref = "two-fa-evidence"
         owner.profile_status = "succeeded"
+        owner.profile_evidence_ref = "profile-evidence"
         owner.lease_token = "abc-false-positive-lease"
         session.commit()
         claim = FullInitializationClaim(owner.id, "abc", owner.lease_token)

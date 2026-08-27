@@ -21,6 +21,13 @@ from app.services.developer_apps import credentials_for_account
 from app.services.tenant_two_fa_settings import tenant_fixed_two_fa_password
 
 from .contracts import FullInitializationClaim
+from .flow import advance_full_initialization
+
+
+RESET_FLOW_SOURCE_KINDS = {
+    "telegram_reset_requested",
+    "telegram_reset_eligibility_waiting",
+}
 
 
 @dataclass(frozen=True)
@@ -105,7 +112,7 @@ def _resolve_inputs(session_factory, claim, code_client):
             _mark_manual(owner, "two_fa_email_confirmation_required", remote.detail)
             session.commit()
             return "manual_required", None
-        if owner.source_two_fa_kind == "telegram_reset_requested":
+        if owner.source_two_fa_kind in RESET_FLOW_SOURCE_KINDS:
             reset = _resolve_reset_status(session, owner, account, credentials, remote)
             if reset:
                 return reset
@@ -133,6 +140,9 @@ def _resolve_inputs(session_factory, claim, code_client):
 
 
 def _resolve_reset_status(session, owner, account, credentials, remote):
+    if _reset_eligibility_wait_is_active(owner):
+        record_two_fa_eligibility_waiting(session, owner, owner.two_fa_next_retry_at)
+        return "reset_eligibility_waiting", None
     if remote.status == "reset_waiting" and remote.next_retry_at > _now():
         record_two_fa_reset_waiting(session, owner, remote.next_retry_at)
         session.commit()
@@ -173,7 +183,9 @@ def _finish_reset_result(session_factory, claim, result) -> None:
         return
     with session_factory() as session:
         owner = _load_claim(session, claim)
-        if result.status == "reset_waiting" and result.next_retry_at:
+        if result.status == "reset_eligibility_waiting" and result.next_retry_at:
+            record_two_fa_eligibility_waiting(session, owner, result.next_retry_at)
+        elif result.status == "reset_waiting" and result.next_retry_at:
             record_two_fa_reset_waiting(session, owner, result.next_retry_at)
         elif result.status == "reset_completed":
             continue_after_two_fa_reset(session, owner)
@@ -184,17 +196,26 @@ def _finish_reset_result(session_factory, claim, result) -> None:
 
 def record_two_fa_reset_waiting(session, owner, next_retry_at) -> None:
     owner.source_two_fa_kind = "telegram_reset_requested"
-    owner.status = "pending"
-    owner.stage = "two_fa"
     owner.two_fa_status = "reset_waiting"
     owner.two_fa_call_state = "confirmed"
-    owner.failure_type = ""
-    owner.failure_detail = ""
-    owner.next_retry_at = next_retry_at
-    owner.finished_at = None
-    owner.lease_token = ""
-    owner.lease_expires_at = None
-    owner.version += 1
+    owner.two_fa_next_retry_at = next_retry_at
+    advance_full_initialization(owner)
+
+
+def record_two_fa_eligibility_waiting(session, owner, next_retry_at) -> None:
+    owner.source_two_fa_kind = "telegram_reset_eligibility_waiting"
+    owner.two_fa_status = "reset_eligibility_waiting"
+    owner.two_fa_call_state = "confirmed"
+    owner.two_fa_next_retry_at = next_retry_at
+    advance_full_initialization(owner)
+
+
+def _reset_eligibility_wait_is_active(owner) -> bool:
+    return bool(
+        owner.source_two_fa_kind == "telegram_reset_eligibility_waiting"
+        and owner.two_fa_next_retry_at
+        and owner.two_fa_next_retry_at > _now()
+    )
 
 
 def continue_after_two_fa_reset(session, owner) -> None:
@@ -205,6 +226,7 @@ def continue_after_two_fa_reset(session, owner) -> None:
     owner.two_fa_call_state = "none"
     owner.failure_type = ""
     owner.failure_detail = ""
+    owner.two_fa_next_retry_at = None
     owner.next_retry_at = _now()
     owner.finished_at = None
     owner.lease_token = ""
@@ -329,14 +351,10 @@ def complete_two_fa_success(session, owner, evidence_ref: str) -> str:
     owner.two_fa_status = "succeeded"
     owner.two_fa_call_state = "confirmed"
     owner.two_fa_evidence_ref = evidence_ref
+    owner.two_fa_next_retry_at = None
     owner.source_two_fa_password_ciphertext = ""
     owner.source_secret_expires_at = None
-    owner.stage = "profile"
-    owner.status = "pending"
-    owner.finished_at = None
-    owner.lease_token = ""
-    owner.lease_expires_at = None
-    owner.version += 1
+    advance_full_initialization(owner)
     _clear_bound_credentials(session, owner.id)
     return evidence_ref
 

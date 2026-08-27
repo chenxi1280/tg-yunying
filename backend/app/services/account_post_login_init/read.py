@@ -66,6 +66,7 @@ def post_login_initialization_out(session, owner, *, request=None) -> dict:
         "execution_owner": owner.execution_owner,
         "version": owner.version,
         "next_retry_at": owner.next_retry_at,
+        "two_fa_next_retry_at": owner.two_fa_next_retry_at,
         "started_at": owner.started_at,
         "finished_at": owner.finished_at,
         "created_at": owner.created_at,

@@ -264,6 +264,7 @@ def _new_owner(
         target_pool_id=target_pool_id,
         profile_policy_version=PROFILE_POLICY_VERSION,
         status="waiting_login_parent",
+        stage="profile",
         originating_actor=actor,
     )
     _copy_profile_target(owner, predecessor, target_pool_id)

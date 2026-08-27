@@ -17,6 +17,7 @@ from app.services._common import _now, audit, gateway
 from app.services.developer_apps import credentials_for_account
 
 from .contracts import FullInitializationClaim
+from .flow import advance_full_initialization
 from .parent import sync_parent_bindings
 from .two_fa import (
     complete_two_fa_success,
@@ -117,7 +118,8 @@ def request_two_fa_reset(
     owner.source_secret_expires_at = None
     owner.two_fa_status = "pending"
     owner.two_fa_call_state = "none"
-    _reopen(owner, "two_fa")
+    owner.two_fa_next_retry_at = None
+    advance_full_initialization(owner)
     _audit_action(
         session, owner, actor=actor, action="请求批量登录2FA重置", reason=reason,
     )

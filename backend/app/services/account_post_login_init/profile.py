@@ -32,6 +32,7 @@ from app.services.developer_apps import credentials_for_account
 from app.storage import object_path
 
 from .contracts import FullInitializationClaim
+from .flow import advance_full_initialization
 from .profile_gap import (
     ProfileGapReadback,
     freeze_completed_target,
@@ -292,14 +293,7 @@ def _finish_profile_readback(
             return
         owner.profile_status = "succeeded"
         owner.profile_evidence_ref = f"full-init:{owner.id}:profile"
-        owner.stage = "abc"
-        owner.status = "pending"
-        owner.failure_type = ""
-        owner.failure_detail = ""
-        owner.lease_token = ""
-        owner.lease_expires_at = None
-        owner.next_retry_at = None
-        owner.version += 1
+        advance_full_initialization(owner)
         _mark_snapshot_profile_complete(session, owner.account_id)
         audit(
             session,

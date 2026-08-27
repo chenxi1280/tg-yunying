@@ -207,6 +207,7 @@ class LoginBatchPostInitializationOut(ApiModel):
     execution_owner: str
     version: int
     next_retry_at: datetime | None
+    two_fa_next_retry_at: datetime | None
     started_at: datetime | None
     finished_at: datetime | None
     created_at: datetime

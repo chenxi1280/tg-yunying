@@ -25,6 +25,7 @@ from app.services.authorization_dr import (
 from app.services.authorization_dr.online_abc import OPEN_BATCH_STATUSES
 
 from .contracts import FullInitializationClaim
+from .flow import advance_full_initialization
 
 
 ABC_POLL_SECONDS = 10
@@ -69,18 +70,20 @@ def execute_abc_stage(session_factory, claim: FullInitializationClaim) -> None:
 
 
 def _create_abc_request(session, owner) -> None:
+    ready = _two_fa_prerequisite_ready(owner)
+    request_status = "waiting_approval" if ready else "waiting_prerequisite"
     session.add(TgPostLoginAbcRequest(
         tenant_id=owner.tenant_id,
         account_id=owner.account_id,
         full_initialization_id=owner.id,
+        status=request_status,
         requested_by=owner.originating_actor,
     ))
-    owner.status = "waiting_abc_approval"
-    owner.abc_status = "waiting_approval"
-    owner.lease_token = ""
-    owner.lease_expires_at = None
-    owner.next_retry_at = None
-    owner.version += 1
+    owner.abc_status = request_status
+    if ready:
+        _wait_for_abc_approval(owner)
+    else:
+        advance_full_initialization(owner)
     audit(
         session,
         tenant_id=owner.tenant_id,
@@ -283,13 +286,18 @@ def _sync_from_online_item(session, owner, item) -> None:
 
 
 def _sync_from_request(owner, request) -> None:
-    if request.status == "waiting_approval":
-        owner.status = "waiting_abc_approval"
+    if request.status == "waiting_prerequisite":
+        if not _two_fa_prerequisite_ready(owner):
+            advance_full_initialization(owner)
+            return
+        request.status = "waiting_approval"
+        request.request_version += 1
         owner.abc_status = "waiting_approval"
-        owner.lease_token = ""
-        owner.lease_expires_at = None
-        owner.next_retry_at = None
-        owner.version += 1
+        _wait_for_abc_approval(owner)
+        return
+    if request.status == "waiting_approval":
+        owner.abc_status = "waiting_approval"
+        _wait_for_abc_approval(owner)
         return
     if request.status in {"approved", "running"}:
         owner.abc_batch_id = request.abc_batch_id
@@ -355,15 +363,7 @@ def _has_active_account_operation(session, account_id: int) -> bool:
 def _finish_abc_success(session, owner, evidence_ref: str) -> None:
     owner.abc_status = "succeeded"
     owner.abc_evidence_ref = evidence_ref
-    owner.status = "succeeded"
-    owner.stage = "succeeded"
-    owner.failure_type = ""
-    owner.failure_detail = ""
-    owner.finished_at = _now()
-    owner.next_retry_at = None
-    owner.lease_token = ""
-    owner.lease_expires_at = None
-    owner.version += 1
+    advance_full_initialization(owner)
     audit(
         session,
         tenant_id=owner.tenant_id,
@@ -382,6 +382,19 @@ def _wait_for_abc(owner, status: str) -> None:
     owner.lease_token = ""
     owner.lease_expires_at = None
     owner.version += 1
+
+
+def _wait_for_abc_approval(owner) -> None:
+    owner.status = "waiting_abc_approval"
+    owner.stage = "abc"
+    owner.lease_token = ""
+    owner.lease_expires_at = None
+    owner.next_retry_at = None
+    owner.version += 1
+
+
+def _two_fa_prerequisite_ready(owner) -> bool:
+    return owner.two_fa_status == "succeeded" and bool(owner.two_fa_evidence_ref)
 
 
 def _finish_abc_terminal(owner, status: str, detail: str) -> None:
