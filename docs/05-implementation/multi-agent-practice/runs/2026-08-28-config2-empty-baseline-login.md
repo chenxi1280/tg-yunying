@@ -87,6 +87,8 @@
 
 - `backend/app/services/account_login/identity.py`
 - `backend/app/services/code_source_client.py`
+- `backend/app/services/account_login/remote_phases.py`
+- `backend/app/services/account_login/host_rate_policy.py`
 - `backend/tests/test_account_batch_login_contract.py`
 - `backend/tests/test_account_batch_login_core.py`
 - `backend/tests/test_account_batch_login_config2.py`
@@ -123,3 +125,23 @@
 - product_status: product_accepted
 - release_status: release_gate_in_progress
 - production_status: failed_at_baseline
+
+## First Release and Production Attempts
+
+- candidate_sha: `bfc4113fa47ed158a5500088034299332a522c74`
+- deploy_run: `33094305138`
+- release_result: CI 五个后端分片、前端构建、三个镜像与生产 deploy 全部通过；生产 current/backend/account-login 均读回该 SHA 且 healthy。
+- generation_2: 原 baseline `url_error` 已越过；Telegram `send_call_state=confirmed`，随后 `wait_code` 以 `url_fetch_failed` 终止；未提交 code/2FA、无 session、无授权。
+- generation_3: baseline 直接以 `url_fetch_failed` 终止，未发送 Telegram challenge。
+- provider_evidence: pinned HTTPS 连续返回 200；频控页被 parser 明确识别为「接码平台请求频繁」。停止请求 70 秒后，同一 transport 单次解析恢复且 code/2FA 字段存在，未记录字段值。
+- root_cause_extension: host rate bucket 被硬编码为 tgbotchecker scope，生产间隔仅 3 秒；config2 baseline 后立即轮询，客户端 1 秒/3 秒重试进一步延长供应方频控。
+- production_status: login_failed_rate_limited
+
+## Rate Policy Remediation Development / QA
+
+- implementation: host bucket scope 改为当前 item 的真实 `code_source_host`；config2 最小请求间隔固定为 `max(configured, 70)`，其他平台不变。
+- failure_boundary: 频控页仍是显式 `url_fetch_failed`，未改为空材料或成功；TLS/SSRF/错误页合同不变。
+- targeted_red: 新 host-policy 与 config2 full-flow 测试 2 failed / 1 passed。
+- regression_green: 77 passed in 4.69s。
+- release_status: second_release_gate_pending
+- production_status: login_failed_rate_limited

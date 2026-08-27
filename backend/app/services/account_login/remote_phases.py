@@ -12,6 +12,7 @@ from app.services.code_source_client import CodeSourceClient
 from app.services.developer_apps import credentials_for_account
 
 from .contracts import BatchLoginError, LoginMaterials
+from .host_rate_policy import item_host_rate_policy
 from .identity import material_hmac
 from .post_initialization import (
     attach_authorized_full_initialization,
@@ -407,13 +408,14 @@ def _fail_confirmed_call(session_factory, claim: PhaseClaim, state_field: str, c
 
 def _acquire_host_lease(session_factory, claim: PhaseClaim) -> RateLease | None:
     settings = get_settings()
+    scope_id, min_interval = item_host_rate_policy(session_factory, claim, settings.account_batch_login_host_min_interval_seconds)
     return _acquire_lease(
         session_factory,
         claim,
         "host",
-        "tgbotchecker.com",
+        scope_id,
         settings.account_batch_login_host_concurrency,
-        settings.account_batch_login_host_min_interval_seconds,
+        min_interval,
     )
 
 

@@ -4,6 +4,7 @@ import pytest
 from sqlalchemy import select
 
 from app.models import TgAccount, TgAccountLoginBatchItem
+from app.services.account_login import host_rate_policy
 from app.services.account_login.batches import create_login_batch
 from app.services.account_login.contracts import LoginMaterials
 from app.services.code_source_client import CodeSourceClient, HttpResult
@@ -48,7 +49,13 @@ def test_config2_client_routes_missing_number_to_empty_baseline() -> None:
     assert materials == LoginMaterials("", "", "", "")
 
 
+def test_config2_uses_dedicated_host_rate_policy() -> None:
+    assert host_rate_policy.host_rate_policy("config2", 3) == ("config2", 70)
+    assert host_rate_policy.host_rate_policy("susubot", 3) == ("susubot", 3)
+
+
 def test_config2_empty_baseline_continues_to_real_login(session_factory, monkeypatch) -> None:
+    monkeypatch.setattr(host_rate_policy, "CONFIG2_MIN_REQUEST_INTERVAL_SECONDS", 0)
     with session_factory() as session:
         batch = create_login_batch(
             session,
