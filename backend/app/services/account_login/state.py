@@ -17,6 +17,7 @@ from .notifications import finalize_batch_if_terminal
 
 LEASE_SECONDS = 90
 EXTERNAL_PHASES = {"authorization_probe", "code_baseline", "send_code", "wait_code", "online_readback"}
+RATE_ADMISSION_PHASES = {"code_baseline"}
 
 
 @dataclass(frozen=True)
@@ -61,7 +62,7 @@ def claim_batch_phase(session: Session, batch_id: int) -> PhaseClaim | None:
     attempt.lease_token = token
     attempt.lease_expires_at = now + timedelta(seconds=LEASE_SECONDS)
     attempt.state_version += 1
-    if attempt.phase in EXTERNAL_PHASES and not attempt.deadline_at:
+    if attempt.phase in EXTERNAL_PHASES - RATE_ADMISSION_PHASES and not attempt.deadline_at:
         attempt.deadline_at = now + timedelta(seconds=get_settings().account_batch_login_item_deadline_seconds)
     item.status = "running"
     item.phase = attempt.phase

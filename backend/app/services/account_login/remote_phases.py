@@ -67,7 +67,7 @@ def _authorization_probe(session_factory, claim: PhaseClaim, _client: CodeSource
         _fail_external(session_factory, claim, "authorization_probe_failed", _safe_error("授权探测失败", exc))
         return
     with session_factory() as session:
-        item, _ = load_claim(session, claim)
+        item, attempt = load_claim(session, claim)
         account = _item_account(session, item)
         if health.status == AccountStatus.ACTIVE.value:
             item.route = "already_authorized"
@@ -75,6 +75,7 @@ def _authorization_probe(session_factory, claim: PhaseClaim, _client: CodeSource
             advance_claim(session, claim, "bind_code_source")
         else:
             item.route = "relogin"
+            attempt.deadline_at = None
             advance_claim(session, claim, "code_baseline")
         commit_claim(session)
 
@@ -84,6 +85,7 @@ def _code_baseline(session_factory, claim: PhaseClaim, client: CodeSourceClient)
     if not lease:
         return
     try:
+        _start_claim_deadline(session_factory, claim)
         try:
             url = _code_url(session_factory, claim)
             materials = client.fetch_login_materials(url)
@@ -102,6 +104,18 @@ def _code_baseline(session_factory, claim: PhaseClaim, client: CodeSourceClient)
             commit_claim(session)
     finally:
         _release_lease(session_factory, lease)
+
+
+def _start_claim_deadline(session_factory, claim: PhaseClaim) -> None:
+    with session_factory() as session:
+        _, attempt = load_claim(session, claim)
+        if attempt.deadline_at:
+            return
+        attempt.deadline_at = _now() + timedelta(
+            seconds=get_settings().account_batch_login_item_deadline_seconds,
+        )
+        attempt.state_version += 1
+        session.commit()
 
 
 def _send_code(session_factory, claim: PhaseClaim, _client: CodeSourceClient) -> None:

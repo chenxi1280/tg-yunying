@@ -17,6 +17,7 @@ from app.models import (
     Tenant,
     TgAccount,
     TgAccountFullInitialization,
+    TgAccountLoginBatchAttempt,
     TgAccountLoginBatchItem,
     TgAccountLoginPostInitializationBinding,
     TgAccountLoginBatchNotification,
@@ -698,12 +699,23 @@ def test_existing_invalid_account_relogin_enters_same_full_initialization(
     drain = _configure_drain_runtime(monkeypatch, login_gateway)
     code_client = _LoginCodeClient()
 
-    for _ in range(12):
+    for _ in range(2):
         drain.drain_account_login_batches(
             session_factory,
             1,
             code_client=code_client,
         )
+
+    with session_factory() as session:
+        item = session.scalar(select(TgAccountLoginBatchItem).where(
+            TgAccountLoginBatchItem.batch_id == batch.id,
+        ))
+        attempt = session.get(TgAccountLoginBatchAttempt, item.current_attempt_id)
+        assert item.phase == "code_baseline"
+        assert attempt.deadline_at is None
+
+    for _ in range(10):
+        drain.drain_account_login_batches(session_factory, 1, code_client=code_client)
 
     with session_factory() as session:
         item = session.scalar(

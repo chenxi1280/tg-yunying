@@ -96,6 +96,32 @@ def test_same_batch_can_claim_multiple_items(session_factory) -> None:
     assert first.item_id != second.item_id
 
 
+def test_code_baseline_deadline_starts_only_after_host_admission(session_factory) -> None:
+    from app.services.account_login import remote_phases
+
+    batch_id = _add_batch(session_factory, key="host-admission", item_count=1)
+    with session_factory() as session:
+        item = session.scalar(select(TgAccountLoginBatchItem).where(
+            TgAccountLoginBatchItem.batch_id == batch_id,
+        ))
+        attempt = session.get(TgAccountLoginBatchAttempt, item.current_attempt_id)
+        item.phase = "code_baseline"
+        attempt.phase = "code_baseline"
+        session.commit()
+
+    with session_factory() as session:
+        claim = claim_batch_phase(session, batch_id)
+    with session_factory() as session:
+        attempt = session.get(TgAccountLoginBatchAttempt, claim.attempt_id)
+        assert attempt.deadline_at is None
+
+    remote_phases._start_claim_deadline(session_factory, claim)
+
+    with session_factory() as session:
+        attempt = session.get(TgAccountLoginBatchAttempt, claim.attempt_id)
+        assert attempt.deadline_at is not None
+
+
 def test_future_retry_on_first_item_does_not_block_next_line(session_factory) -> None:
     batch_id = _add_batch(session_factory, key="future-retry", item_count=2)
     with session_factory() as session:
