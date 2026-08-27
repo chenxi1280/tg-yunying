@@ -4,6 +4,7 @@
 
 | 文件 | 定位 |
 | --- | --- |
+| [ai-group-chat-quality-and-token-optimization-prd.md](ai-group-chat-quality-and-token-optimization-prd.md) | **2026-08-27 Product Design Complete、生产 7 大群 12 场景基准通过、待代码与配置落地**：AI 活群质量彻底根治、行业暗语拟真注入、机器人广告垃圾清洗、后置拦截调优、7 大任务专属话题库与 Token 控耗闭环方案 |
 | [github-actions-release-performance-optimization-prd.md](github-actions-release-performance-optimization-prd.md) | **2026-08-27 两个 P0 本地修复、定向 QA 与 0168 幂等回归通过、标准 PG blank-DB 全链待 Actions 证明**：不减少发布次数与测试覆盖；Backend 3+2 确定性分片、三镜像并行构建、Python 依赖层缓存、frontend 历史 hash hard-link 复用；takeover 识别 fact-first quantity-only 合同并以常数级批量事实快照完成 preview/drift/apply 复核 |
 | [account-batch-post-login-full-initialization-prd.md](account-batch-post-login-full-initialization-prd.md) | **2026-08-27 Product Design Complete、本地实现与定向 QA 通过、待发布/生产验证**：批量登录 `new_account/already_authorized/relogin` 统一 create-or-attach账号级 durable full-init；真实 fixed 2FA、姓名/头像 readback、ABC owner去重和完整 A/B/C/E4 成功边界 |
 | [account-security-hardening-design.md](account-security-hardening-design.md) | 账号安全、设备清理、托管 2FA、资料初始化 |

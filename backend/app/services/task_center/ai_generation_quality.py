@@ -335,6 +335,7 @@ def _attach_message_memory(
             task_id=action.task_id,
             account_id=action.account_id,
             raw_text=str(data.get("message_text") or ""),
+            planned_at=action.scheduled_at,
             topic_direction=str(payload.topic_direction.get("title") or ""),
             teacher_target=str(payload.teacher_target.get("name") or ""),
             profile_version=payload.account_mask_version or None,

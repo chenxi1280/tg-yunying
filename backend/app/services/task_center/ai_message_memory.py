@@ -49,7 +49,8 @@ class DuplicateMessageReservation(Exception):
 
 def reserve_group_ai_message(
     session: Session, *, tenant_id: int, group_id: int, task_id: str, account_id: int | None,
-    raw_text: str, now: datetime | None = None, reservation_ttl: timedelta = DEFAULT_RESERVATION_TTL,
+    raw_text: str, now: datetime | None = None, planned_at: datetime | None = None,
+    reservation_ttl: timedelta = DEFAULT_RESERVATION_TTL,
     topic_direction: str = "", teacher_target: str = "", profile_version: int | None = None,
     profile_match_score: int | None = None, profile_match_reason: str = "",
     duplicate_batch: DuplicateMemoryBatch | None = None,
@@ -84,6 +85,7 @@ def reserve_group_ai_message(
         semantic_cluster=semantic_cluster_value,
         template_shell_key=template_shell,
         current_time=current_time,
+        planned_at=planned_at,
         reservation_ttl=reservation_ttl,
         topic_direction=topic_direction,
         teacher_target=teacher_target,
@@ -163,6 +165,7 @@ def _new_reserved_memory(
     semantic_cluster: str,
     template_shell_key: str,
     current_time: datetime,
+    planned_at: datetime | None = None,
     reservation_ttl: timedelta,
     topic_direction: str,
     teacher_target: str,
@@ -176,6 +179,8 @@ def _new_reserved_memory(
     mask_status: str,
     content_source: str,
 ) -> AiGroupMessageMemory:
+    planned_time = planned_at or current_time
+    expires_time = max(current_time, planned_time) + reservation_ttl
     return AiGroupMessageMemory(
         tenant_id=tenant_id,
         group_id=group_id,
@@ -192,8 +197,8 @@ def _new_reserved_memory(
             tenant_id, group_id, fingerprint, current_time,
         ),
         status="reserved",
-        planned_at=current_time,
-        expires_at=current_time + reservation_ttl,
+        planned_at=planned_time,
+        expires_at=expires_time,
         duplicate_window="5m_exact",
         quality_decision="reserved",
         profile_version=profile_version,

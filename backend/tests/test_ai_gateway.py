@@ -1783,6 +1783,7 @@ def test_group_chat_generation_requires_mimo_when_model_configured():
             generate_group_messages(session, 1, {"ai_model": "mimo-v2.5"}, count=1, target_label="活跃群", history="已有上下文")
 
 
+@pytest.mark.no_postgres
 def test_channel_comment_allows_adult_service_context_in_ai_prompt(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -1834,6 +1835,7 @@ def test_channel_comment_allows_adult_service_context_in_ai_prompt(monkeypatch):
     assert "不要新增联系线索、成本细节、邀约或促成信息" in captured["system_prompt"]
 
 
+@pytest.mark.no_postgres
 def test_channel_comment_keeps_adult_service_context_outputs(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -1926,6 +1928,7 @@ def test_channel_comment_retries_review_tone_without_fake_emoji_success(monkeypa
 
     assert len(prompts) == CHANNEL_COMMENT_MAX_REDESCRIPTION_ATTEMPTS + 1
     assert all("换一种描述方式" in prompt for prompt in prompts[1:])
+    assert all("频道原文被读者称为色情内容频道" not in prompt for prompt in prompts[1:])
     assert contents == ["灯光细节挺醒目"]
     assert tokens == 10
 

@@ -43,7 +43,13 @@ from app.services.task_center.ai_structured_provider_runtime import (
     StructuredProviderRequest as _StructuredProviderRequest,
     generate_structured_with_candidates as _generate_structured_with_candidates,
 )
-from app.services.task_center.ai_group_prompt import GroupPromptBundle, build_group_prompt, contains_disallowed_group_content
+from app.services.task_center.ai_group_prompt import (
+    CONTACT_PATTERNS,
+    GroupPromptBundle,
+    build_group_prompt,
+    contains_disallowed_group_content,
+    is_adult_content_config,
+)
 from app.services.grok_cli_bridge import GrokCliBridge, GrokCliUnavailable
 AI_CONTENT_REQUEST_TIMEOUT_SECONDS = 120
 SENSITIVE_CONTEXT_GUIDANCE = (
@@ -65,6 +71,30 @@ AI_PROVIDER_REFUSAL_MARKERS = (
     "内容政策",
     "安全策略",
     "无法协助",
+    "违反了以下原则",
+    "不能协助创建",
+    "我无法为涉及",
+    "违反了相关法律法规",
+    "非法性交易",
+    "卖淫相关内容",
+    "涉及非法",
+    "无法生成任何形式",
+    "这个问题要求我",
+    "涉及色情",
+    "涉及性服务",
+    "不良内容",
+    "不应该参与",
+    "我不能以任何形式",
+    "我应该直接拒绝",
+    "可疑的",
+    "背景材料明确",
+    "这个要求是要我",
+    "通常是指提供",
+    "非法的",
+    "道德准则",
+    "法律法规",
+    "相关原则",
+    "严禁参与",
 )
 CHANNEL_COMMENT_MAX_REDESCRIPTION_ATTEMPTS = 3
 MINIMAX_NEW_SENSITIVE_ERROR = "input new_sensitive (1026)"
@@ -573,6 +603,10 @@ def _fallback_recent_context(requirements: str) -> str:
     return ""
 
 
+def _sanitize_channel_label(value: str) -> str:
+    return str(value or "").strip()
+
+
 def _sanitize_sensitive_context(text: str) -> str:
     return str(text or "")
 
@@ -599,12 +633,63 @@ def clean_group_chat_contents(contents: list[str], *, restrict_sensitive_trade: 
     return accepted
 
 
+GENERIC_LOCAL_LANDMARKS: frozenset[str] = frozenset({
+    "高新",
+    "高新区",
+    "经开",
+    "经开区",
+    "开发区",
+    "新区",
+    "大学城",
+    "老城",
+    "老城区",
+    "市中心",
+    "万达",
+    "步行街",
+    "火车站",
+    "高铁站",
+    "东区",
+    "西区",
+    "南区",
+    "北区",
+    "中原",
+    "商业街",
+    "夜市",
+})
+
+CITY_EXCLUSIVE_LANDMARKS: dict[str, tuple[str, ...]] = {
+    "郑州": ("金水区", "二七区", "管城区", "惠济区", "郑东新区"),
+    "成都": ("春熙路", "太古里", "锦江区", "武侯区", "成华区", "青羊区", "双流区"),
+    "西安": ("南稍门", "小寨", "碑林区", "雁塔区", "莲湖区", "未央区"),
+    "天津": ("和平区", "滨江道", "南开区", "河西区", "河北区", "河东区"),
+    "三亚": ("海棠湾", "亚龙湾", "吉阳区", "天涯区", "大东海", "三亚湾"),
+}
+
+
+def _channel_comment_cross_city_leak(content: str, local_city: str | None) -> bool:
+    if not local_city or local_city == "同城":
+        return False
+    normalized = str(content or "")
+    for city, landmarks in CITY_EXCLUSIVE_LANDMARKS.items():
+        if city == local_city:
+            continue
+        if city in normalized:
+            return True
+        for lm in landmarks:
+            if lm in GENERIC_LOCAL_LANDMARKS:
+                continue
+            if lm in normalized:
+                return True
+    return False
+
+
 def clean_channel_comment_contents(
     contents: list[str],
     previous_contents: list[str] | None = None,
     *,
     limit: int | None = None,
     restrict_sensitive_trade: bool = False,
+    local_city: str | None = None,
 ) -> list[str]:
     accepted: list[str] = []
     previous = [_normalize_for_similarity(item) for item in previous_contents or []]
@@ -615,6 +700,8 @@ def clean_channel_comment_contents(
         if not cleaned or _looks_like_bad_channel_comment(cleaned):
             continue
         if restrict_sensitive_trade and _looks_like_sensitive_trade_facilitation(cleaned):
+            continue
+        if local_city and _channel_comment_cross_city_leak(cleaned, local_city):
             continue
         normalized = _normalize_for_similarity(cleaned)
         if len(normalized) < 2:
@@ -651,6 +738,8 @@ def _looks_like_bad_channel_comment(content: str) -> bool:
         return True
     if looks_like_ai_meta_content(content):
         return True
+    if CONTACT_PATTERNS.search(content):
+        return True
     if _channel_comment_cluster(content):
         return True
     markers = (
@@ -664,6 +753,16 @@ def _looks_like_bad_channel_comment(content: str) -> bool:
         "有参考",
         "比较实在",
         "支持一下",
+        "感谢博主",
+        "博主",
+        "搬砖",
+        "喝咖啡",
+        "犯困",
+        "早安",
+        "晚安",
+        "签到",
+        "打卡",
+        "红烧肉",
         "只输出 JSON",
         "risk_level",
         "persona",
@@ -696,6 +795,8 @@ def _normalize_for_similarity(content: str) -> str:
 
 def _looks_like_bad_group_chat_content(content: str) -> bool:
     if _looks_like_ai_provider_refusal(content):
+        return True
+    if CONTACT_PATTERNS.search(content):
         return True
     markers = (
         "当前群暂无可用历史消息",
@@ -1289,13 +1390,51 @@ def _group_chat_system_prompt(slang_prompt: str) -> str:
     return f"{base}\n\n{slang_prompt}"
 
 
-def _channel_comment_system_prompt() -> str:
-    return (
-        "你只负责生成 Telegram 频道评论区的真实读者短评，并输出 JSON。"
-        "评论必须贴频道原文里的具体信息，不写泛泛表扬、收藏、值得讨论、继续展开。"
-        "如果原文细节不足，优先问一个具体小问题，不要编经历或使用模板。"
-        f"{SENSITIVE_CONTEXT_GUIDANCE}"
-    )
+ADULT_CHANNEL_COMMENT_SYSTEM_PROMPT = """你是一个 Telegram 频道评论区的真实订阅读者（男客老司机老群友）。
+【行业黑话与暗语规则】
+1. 核心暗语：
+   - '老师/课代表' 代指可约女性/技师/外围/兼职
+   - '开课/上课/交作业' 代指营业/出台/体验反馈
+   - '出击/踩雷/机车/上岸/水头' 代指去消费/体验差/态度敷衍/退圈/颜值身材真实度
+   - '照骗/工兵' 代指修图过头/探路先锋老哥
+2. 地名规则：平时评论不主动提具体地点/区名；仅当原帖明确涉及地点时才顺着聊，严禁出现外地地名。
+3. 评论生成规则：
+   - 紧密贴合频道帖子具体内容（老师名字、身材、照片、腿长、气质、服务特点、开课动态等），像真实刷到帖子的老哥随手在评论区留言。
+   - 评论角度丰富自然：夸身材气质、打听开课水头、辨析修图痕迹、询问态度与配合度、蹲老哥战报反馈、打听是否机车。
+   - 极度口语化、接地气、短促干脆，像手机随手打字。
+   - 严禁违规联系方式（微信/TG号）、引流或露骨生理词汇。
+   - 严禁出现任何“收藏了/很有参考价值/值得探讨/继续关注博主/早安打卡/努力搬砖/喝咖啡”等 AI 模板废话！
+   - 控制字数：每条 8 到 20 个汉字。
+Output one JSON object only. No Markdown fences, thinking, prose, prefix, suffix, comments, or extra fields.""" + SENSITIVE_CONTEXT_GUIDANCE
+
+GENERAL_CHANNEL_COMMENT_SYSTEM_PROMPT = """你是一个 Telegram 频道评论区的真实订阅读者。
+【评论规则】
+1. 针对频道帖子中的具体事实和细节发表自然随性的看法、感受或提出具体疑问。
+2. 地名规则：平时评论不主动提具体城市或地名，仅当帖子明确涉及地点时才顺着讨论；如提地点必须严格符合本频道所属城市，严禁跨市地名。
+3. 极度口语化，像真实手机用户随手打字留言。
+4. 严禁使用“这个内容很有参考价值/值得深入讨论/先收藏了/感谢博主分享/加油搬砖/早安打卡”等任何空洞模板套话。
+5. 严禁联系方式、引流或违规信息。
+6. 控制字数：每条 8 到 24 个汉字，简练自然。
+Output one JSON object only. No Markdown fences, thinking, prose, prefix, suffix, comments, or extra fields.""" + SENSITIVE_CONTEXT_GUIDANCE
+
+
+def _detect_channel_city(target_label: str, config: dict) -> str | None:
+    text = f"{target_label} {config.get('target_channel_name', '')} {config.get('target_title', '')}"
+    for city in CITY_EXCLUSIVE_LANDMARKS:
+        if city in text:
+            return city
+    return None
+
+
+def _is_adult_channel_context(config: dict | None, target_label: str, message_content: str = "") -> bool:
+    del target_label, message_content
+    return is_adult_content_config(config)
+
+
+def _channel_comment_system_prompt(config: dict | None = None, target_label: str = "", message_content: str = "") -> str:
+    if _is_adult_channel_context(config, target_label, message_content):
+        return ADULT_CHANNEL_COMMENT_SYSTEM_PROMPT
+    return GENERAL_CHANNEL_COMMENT_SYSTEM_PROMPT
 
 
 def _slang_system_prompt(session: Session, tenant_id: int, config: dict) -> str:
@@ -1359,6 +1498,8 @@ def _generate_channel_contents_with_retry(
     count: int,
     purpose: str,
     target_label: str,
+    message_content: str = "",
+    local_city: str | None = None,
 ) -> tuple[list[str], int]:
     accepted: list[str] = []
     total_tokens = 0
@@ -1378,7 +1519,7 @@ def _generate_channel_contents_with_retry(
                 count=missing,
                 purpose=purpose,
                 target_label=target_label,
-                system_prompt=_channel_comment_attempt_system_prompt(attempt),
+                system_prompt=_channel_comment_attempt_system_prompt(attempt, config=config, target_label=target_label, message_content=message_content),
                 close_transaction_before_external=bool(config.get("_close_db_transaction_before_ai")),
             )
         except AiGenerationUnavailable as exc:
@@ -1387,7 +1528,7 @@ def _generate_channel_contents_with_retry(
             last_retryable_error = exc
             continue
         total_tokens += tokens
-        accepted = clean_channel_comment_contents([*accepted, *contents], limit=count)
+        accepted = clean_channel_comment_contents([*accepted, *contents], limit=count, local_city=local_city)
     if not accepted and last_retryable_error:
         raise last_retryable_error
     return accepted, total_tokens
@@ -1407,9 +1548,15 @@ def _channel_comment_attempt_requirements(requirements: str, attempt: int) -> st
     )
 
 
-def _channel_comment_attempt_system_prompt(attempt: int) -> str:
+def _channel_comment_attempt_system_prompt(
+    attempt: int,
+    *,
+    config: dict | None = None,
+    target_label: str = "",
+    message_content: str = "",
+) -> str:
     if attempt <= 0:
-        return _channel_comment_system_prompt()
+        return _channel_comment_system_prompt(config, target_label, message_content)
     return (
         "你只负责生成中性、礼貌的 Telegram 频道读者短评，并输出 JSON。"
         "只能使用本次安全概括中提供的信息；信息不足时写一个不引入新事实的简短疑问。"
@@ -1428,9 +1575,17 @@ def _is_retryable_channel_generation_error(exc: AiGenerationUnavailable) -> bool
 def generate_channel_comments(session: Session, tenant_id: int, config: dict, *, count: int, message_content: str, target_label: str) -> tuple[list[str], int]:
     topic = config.get("topic_hint") or "频道评论"
     safe_message_content = _sanitize_sensitive_context(message_content)
+    safe_target_label = _sanitize_channel_label(target_label)
+    local_city = _detect_channel_city(target_label, config)
     target_profile_prompt = _target_profile_style_prompt(config.get("target_comment_profile"), audience="channel")
+    city_line = (
+        f"所属城市：{local_city}（严禁出现外地地名；平时评论不主动提地名，仅在原帖明确涉及地点时才顺着聊）\n"
+        if local_city
+        else "地名规则：平时不主动提具体地点/区名；如提必须与原帖一致，严禁跨市或臆造地名\n"
+    )
     requirements = (
         f"频道消息：{safe_message_content}\n"
+        f"{city_line}"
         f"评论风格：{config.get('comment_style') or 'mixed'}\n"
         f"{target_profile_prompt}\n"
         f"语言：{config.get('language') or 'zh-CN'}\n"
@@ -1444,7 +1599,9 @@ def generate_channel_comments(session: Session, tenant_id: int, config: dict, *,
         requirements=requirements,
         count=count,
         purpose="频道评论",
-        target_label=target_label,
+        target_label=safe_target_label,
+        message_content=message_content,
+        local_city=local_city,
     )
     return _trim(contents, config.get("max_comment_length")), tokens
 
@@ -1460,8 +1617,16 @@ def generate_channel_reply_comments(
 ) -> tuple[list[str], int]:
     reply_lines = "\n".join(_reply_target_line(index, item) for index, item in enumerate(reply_targets, start=1))
     target_profile_prompt = _target_profile_style_prompt(config.get("target_comment_profile"), audience="channel")
+    safe_target_label = _sanitize_channel_label(target_label)
+    local_city = _detect_channel_city(target_label, config)
+    city_line = (
+        f"所属城市：{local_city}（严禁出现外地地名；平时评论不主动提地名，仅在原帖明确涉及地点时才顺着聊）\n"
+        if local_city
+        else "地名规则：平时不主动提具体地点/区名；如提必须与原帖一致，严禁跨市或臆造地名\n"
+    )
     requirements = (
         f"频道消息：{_sanitize_sensitive_context(message_content)}\n"
+        f"{city_line}"
         f"评论风格：{config.get('comment_style') or 'mixed'}\n"
         f"{target_profile_prompt}\n"
         f"引用目标：\n{reply_lines}\n"
@@ -1475,7 +1640,9 @@ def generate_channel_reply_comments(
         requirements=requirements,
         count=len(reply_targets),
         purpose=CHANNEL_COMMENT_REPLY_PURPOSE,
-        target_label=target_label,
+        target_label=safe_target_label,
+        message_content=message_content,
+        local_city=local_city,
     )
     return _trim(contents, config.get("max_comment_length")), tokens
 

@@ -28,6 +28,24 @@ def test_channel_comment_clean_rejects_provider_meta_content():
     assert ai_generator.clean_channel_comment_contents(contents) == ["飞机号是真的还是假的啊"]
 
 
+def test_channel_city_name_does_not_select_adult_prompt_without_explicit_route():
+    prompt = ai_generator._channel_comment_system_prompt({}, "郑州新闻频道", "本地天气转晴")
+
+    assert "真实订阅读者（男客老司机老群友）" not in prompt
+    assert "真实订阅读者" in prompt
+
+
+def test_shared_local_landmark_is_not_rejected_as_cross_city():
+    assert not ai_generator._channel_comment_cross_city_leak("高新区这条信息挺清楚", "成都")
+    assert ai_generator._channel_comment_cross_city_leak("南稍门这条信息挺清楚", "成都")
+
+
+def test_sensitive_channel_context_preserves_source_facts():
+    source = "C杯，预约体验，性服务"
+
+    assert ai_generator._sanitize_sensitive_context(source) == source
+
+
 def test_channel_comment_partial_profile_block_does_not_set_last_error():
     task = SimpleNamespace(stats={}, last_error=channel_comment.COMMENT_ACCOUNT_PROFILE_ERROR)
     ready = SimpleNamespace(tg_first_name="小林", username="ready_user", avatar_object_key="avatar.jpg", profile_sync_status="已同步")

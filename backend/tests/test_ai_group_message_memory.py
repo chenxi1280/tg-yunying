@@ -127,6 +127,26 @@ def test_expire_stale_reservations_marks_visible_status_without_deleting():
         assert rows[0].quality_decision == "expired_visible"
 
 
+def test_future_planned_reservation_expires_after_scheduled_send_window():
+    now = _now()
+    planned_at = now + timedelta(hours=2)
+    with _session() as session:
+        memory = reserve_group_ai_message(
+            session,
+            tenant_id=1,
+            group_id=22,
+            task_id="task-1",
+            account_id=101,
+            raw_text="今晚再聊这个话题",
+            now=now,
+            planned_at=planned_at,
+            reservation_ttl=timedelta(minutes=30),
+        )
+
+        assert memory.planned_at == planned_at
+        assert memory.expires_at == planned_at + timedelta(minutes=30)
+
+
 def test_reservation_key_is_database_unique_for_atomic_planner_races():
     now = _now()
     with _session() as session:

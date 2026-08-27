@@ -35,6 +35,10 @@ def test_operation_profile_rejects_hourly_rounds_above_product_limit() -> None:
         OperationProfile(hourly_activity_curve=_curve(20, 61))
 
 
+def test_manual_messages_per_round_preserves_configured_quantity() -> None:
+    assert group_ai_chat._manual_messages_per_round({"messages_per_round": 60}, "高峰期") == 60
+
+
 def test_auto_messages_per_round_uses_current_hour_rounds(monkeypatch) -> None:
     monkeypatch.setattr(group_ai_chat, "_now", lambda: datetime(2026, 6, 3, 20, 0, 0))
     pacing_config = {

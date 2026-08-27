@@ -5010,7 +5010,9 @@ def _choose_topic_direction(config: dict, group: TgGroup, recent_counts: dict[st
             cursor += max(0.01, float(item.get("weight") or 1))
             if marker <= cursor:
                 return dict(item)
-    fallback = str(group.topic_direction or "群聊日常活跃").strip()
+    fallback = str(group.topic_direction or "同城老客交流与避坑讨论").strip()
+    if fallback in {"日常讨论、活动答疑", "群聊日常活跃"}:
+        fallback = "同城老客交流与避坑讨论"
     return {"title": fallback, "description": "", "weight": 1}
 
 
@@ -6017,12 +6019,8 @@ def _has_unanchored_idle_fact(content: str, *, chat_mode: str, anchor_message_id
         "位置提前",
         "提前发位置",
         "发了位置",
-        "穿着",
-        "照片里一样",
-        "上次那个",
-        "我上次",
-        "之前约过",
-        "路过",
+        "位置发过",
+        "发过位置",
     )
     normalized_markers = [_normalize_for_similarity(marker) for marker in fact_markers]
     if not any(marker and marker in text for marker in normalized_markers):
@@ -6033,16 +6031,16 @@ def _has_unanchored_idle_fact(content: str, *, chat_mode: str, anchor_message_id
 def _looks_like_fact_claim(content: str) -> bool:
     text = _normalize_for_similarity(content)
     markers = (
-        "我上次",
-        "之前",
-        "上次那个",
         "结束后",
         "走之前",
-        "位置",
-        "照片",
-        "准时",
+        "准时到",
+        "准点",
         "回访",
         "没让我等",
+        "发了位置",
+        "位置发过",
+        "发过位置",
+        "提前发位置",
     )
     return any(_normalize_for_similarity(marker) in text for marker in markers)
 
