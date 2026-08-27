@@ -14,7 +14,7 @@
 > 2026-08-24 接码平台补充：批量登录允许的接码源从单一 `tgbotchecker.com/GetHTML?uuid=<32位uuid>` 扩展为显式白名单多平台；新增 `tgapi.susubot.com/index.html?type=107&apikey=<uuid>`，worker 实际读取同域 `/api/code` JSON。所有平台仍必须 HTTPS、固定 host/path/query、无 userinfo/fragment/非 443 端口、DNS/peer 公网校验、TLS SNI 与响应大小上限，fingerprint 统一按 `host:credential` 派生。
 > 2026-08-27 接码平台补充：新增支持 `api.config2.top/tgapi/tgapi/<uuid>/GetHTML` HTML 接码平台，worker 读取 HTML 页面提取验证码与 2FA；页面频控提示解析为可重试的 `url_fetch_failed`；fingerprint 按 `api.config2.top:<uuid>` 派生，前端与后端同步支持。
 > 2026-08-28 config2 空 baseline 补正：该平台在 Telegram challenge 发生前对尚无验证码的有效路径返回 HTTP 200 错误页（标题含“错误”、正文含“此号不存在”、无 code/2FA 字段），challenge 后同一路径才出现材料。仅对已通过精确 config2 host/path/UUID、HTTPS pinning 和响应上限校验的页面，将这一项已知语义解析为显式空材料 baseline；它不计成功、不建远端事实，只允许既有 `baseline -> create/bind -> send -> wait` 流继续。其他 host 的“此号不存在”、config2 频控、未知错误页和结构漂移仍显式失败，不得通用 fallback。
-> 2026-08-28 config2 生产频控补正：生产真实 challenge 证明 config2 单次 HTTPS/TLS 可稳定返回 200，但 3 秒 host 间隔会在 baseline 后的首次轮询收到「请求频繁」，1 秒/3 秒的客户端重试只会延长频控；70 秒静默后同一 pinned transport 单次解析恢复且 code/2FA 字段齐全。host rate bucket 必须以行项真实 `code_source_host` 隔离，不得继续硬编码到 tgbotchecker scope；config2 的最小请求间隔固定为实测 70 秒，其他平台继续使用部署配置。频控页面仍是显式 `url_fetch_failed`，不得解析为空材料或成功。
+> 2026-08-28 config2 生产频控补正：生产真实 challenge 证明 config2 单次 HTTPS/TLS 可稳定返回 200，但 3 秒 host 间隔会在 baseline 后的首次轮询收到「请求频繁」，1 秒/3 秒的客户端重试只会延长频控；成功读取后约 90 秒再次读取仍返回频控，约 130 秒静默后同一 pinned transport 单次解析恢复且 code/2FA 字段齐全。host rate bucket 必须以行项真实 `code_source_host` 隔离，不得继续硬编码到 tgbotchecker scope；config2 的最小请求间隔固定为实测 130 秒，其他平台继续使用部署配置。频控页面仍是显式 `url_fetch_failed`，不得解析为空材料或成功。
 
 ## 1. 背景与原始需求
 
@@ -419,7 +419,7 @@ phase 以 `(attempt_id, generation, state_version, lease_token)` CAS，网络调
 6. 崩溃/未知矩阵：远程前、started 后响应前、confirmed 后落库前、落库后 ack 前注入；300 秒后为 unresolved 并跳行，晚到结果由 reconciler 修正且不重复 send/verify。
 7. retry/refresh：failed 与 unresolved 新 generation；未知行没有显式确认或版本过期均拒绝；刷新地址只换加密凭据，不触发 Telegram 副作用。
 8. 调度/限速：多租户、多长短批次、多 worker 并发下仍一批一 phase 公平轮转；host/开发者应用持久 rate bucket 不超额、无饥饿。
-   - host bucket 的 `scope_id` 必须等于行项真实平台标签；config2 的有效最小间隔为 `max(部署配置, 70 秒)`，确保 baseline 与 challenge 后首次轮询之间留出供应方冷却窗口。tgbotchecker/susubot 不继承该平台专属间隔。
+   - host bucket 的 `scope_id` 必须等于行项真实平台标签；config2 的有效最小间隔为 `max(部署配置, 130 秒)`，确保 baseline 与 challenge 后首次轮询之间留出供应方冷却窗口。tgbotchecker/susubot 不继承该平台专属间隔。
 9. alias/密钥轮换：新旧 fingerprint 版本并发命中同号只产生一个账号；固定锁序无死锁，alias/account/item 同事务。
 10. 权限/mode：读写权限组合、跨租户 batch/item/notification/binding 均 403；普通详情/列表/提醒/导出只见 UUID hint，reveal 需双权限、reason、version、no-store 和审计；`off/reconcile_only/enabled` 逐项验证。
 11. CAS/取消：lease 丢失、旧 generation/attempt/resolution 迟到回写、cancel 竞态和 item/code deadline 分型均不覆盖新事实，后续行继续。
@@ -427,7 +427,7 @@ phase 以 `(attempt_id, generation, state_version, lease_token)` CAS，网络调
 13. 提醒：initial/correction 与事实原子写且分别幂等 ack；正文分列 failed/unresolved/warning；TG Bot dead-letter 不影响平台事实并在平台暴露。
 14. 启动/运行：worker、reconciler、outbox、heartbeat、mode、DNS/HTTPS、密钥、alias 回填、rate bucket 与部署 readiness 缺一即 fail closed。
 15. 任务中心/并行：关闭详情、关闭中心、刷新页面后仍能恢复运行中任务；连续创建多批不覆盖；同批至少两个阻塞 fake phase 和跨批次 phase 确认同时进入执行，首行未来重试/有效 lease 不阻塞后续行；并发异常必须显式失败。
-16. config2 生命周期：同一「此号不存在」HTML 对 `source_host=config2` 解析为空材料、对默认/tgbotchecker 仍为 `url_error`；空 baseline 后必须真实进入 create/bind/send/wait，再以新非空 code/2FA 完成；host bucket scope 必须为 config2 且请求间隔至少 70 秒；频控、未知错误标题、缺字段和非法 URL 保持类型化失败。
+16. config2 生命周期：同一「此号不存在」HTML 对 `source_host=config2` 解析为空材料、对默认/tgbotchecker 仍为 `url_error`；空 baseline 后必须真实进入 create/bind/send/wait，再以新非空 code/2FA 完成；host bucket scope 必须为 config2 且请求间隔至少 130 秒；频控、未知错误标题、缺字段和非法 URL 保持类型化失败。
 
 真实 E4（预发/生产，少量专用号码，Release Gate 后）：
 

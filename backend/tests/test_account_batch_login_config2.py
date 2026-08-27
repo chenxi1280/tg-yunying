@@ -50,7 +50,7 @@ def test_config2_client_routes_missing_number_to_empty_baseline() -> None:
 
 
 def test_config2_uses_dedicated_host_rate_policy() -> None:
-    assert host_rate_policy.host_rate_policy("config2", 3) == ("config2", 70)
+    assert host_rate_policy.host_rate_policy("config2", 3) == ("config2", 130)
     assert host_rate_policy.host_rate_policy("susubot", 3) == ("susubot", 3)
 
 

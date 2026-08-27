@@ -4,7 +4,7 @@ from .identity import CODE_SOURCE_HOST, CONFIG2_CODE_SOURCE_LABEL
 from .state import PhaseClaim, load_claim
 
 
-CONFIG2_MIN_REQUEST_INTERVAL_SECONDS = 70
+CONFIG2_MIN_REQUEST_INTERVAL_SECONDS = 130
 
 
 def item_host_rate_policy(
