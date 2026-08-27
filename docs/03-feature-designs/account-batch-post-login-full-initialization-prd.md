@@ -403,6 +403,18 @@ code-source凭据过期或binding漂移时停在 `two_fa_candidate_refresh_requi
 
 每次子动作前后都复核账号未删除/封禁、仍为normal且在冻结目标池、A current/Session/generation未漂移。漂移发生在调用前则零远端写入阻断；调用started后只收口原operation，父 item不得成功。账号重新登录产生新 A时，旧 owner终结后由当前 binding创建higher generation。
 
+### 14.5 已登录 Session 作为 ABC 验证码设备
+
+`already_authorized` 重新进入批量登录时，不重新登录 A；`relogin` 完成新 A 后也只使用当前权威 A。两条 route 的 `post_login_exact` ABC 都必须冻结 `current_authorization_id + A Session digest + authorization/fact/connection generation`，并把该 A authorization 作为 B/C 登录 challenge 的唯一验证码读取设备：
+
+- B/C 发起新 App 登录 challenge 后，通过冻结 A Session 读取 Telegram 官方 `777000` 服务消息；只接受 challenge 发送时间窗口内、带唯一 Telegram message ID 和 received-at 的验证码。
+- 批量导入行中的接码 URL 只服务 A 登录和 current-2FA candidate，不得作为 ABC B/C 的验证码来源；A Session 服务消息不可读时显式进入 `verification_code_unreadable` 或原 operation unknown，不回退外部接码页。
+- A 只承担验证码只读和最终 Saved Messages E4，不改变 A Session、App、AuthKey、current slot 或 generation；B/C 必须继续使用不同 Developer App、不同 AuthKey 和非零 authorization hash。
+- “已有 Session 可收 code”不等于“可绕过 2FA”。Telegram 未启用 2FA 时，B/C 可在 code 后直接完成；当前密码已由本次登录明确接受或已有同 A generation 的 platform-fixed 证明时，B/C 在 code 后使用该密码；2FA 已启用但旧密码未知时，request 继续 `waiting_prerequisite`，不得发送 B challenge，必须按 Telegram 绝对 reset due 完成 reset/fixed 后再由同一 A Session 取 code。
+- 已有 Session 上执行 fixed-2FA mutation 仍走 current A 的 `getPassword -> updatePasswordSettings/resetPassword` 正式路径；missing 可直接设置，可信 current 可 rotation，未知 current 不能用 Session 身份跳过密码校验。
+
+验收必须分别证明：`already_authorized` 未重登 A、`relogin` 只产生一次新 A；B/C 的 `code_source_authorization_id` 等于冻结 current A；gateway poll 的 Session 与冻结 A 相同；验证码绑定 message ID/时间窗；B/C AuthKey 与 A 不同；外部接码 URL 未被 ABC runner读取；unknown不重放。
+
 批量详情逐行展示 `trigger_route/full_init_binding/2FA source/name/avatar/ABC owner/B/C/E4/blocker`。`already_authorized` 只表示 A 可用，不得直接进入完整 `success_count`；只有 owner完整成功才完成当前 item。
 
 前端所有approve/reconcile/cancel/candidate/email/assume-owner动作绑定`batch_id + item_id + full_init_id + action + request_seq + expected_version`；切换批次/账号、关闭抽屉或再次提交后，旧响应不得覆盖当前状态。candidate/email输入在请求结束或离开页面时立即清空，不进入持久store、埋点、错误上报或重放缓存。
@@ -496,6 +508,7 @@ code-source凭据过期或binding漂移时停在 `two_fa_candidate_refresh_requi
 - [x] 覆盖并发、幂等、unknown、迁移、mode、回滚和 Release Gate。
 - [x] 覆盖自动化 QA 与单账号生产 E4。
 - [x] 覆盖 already-authorized/relogin 重触发、无 current 2FA、full-init/ABC owner 去重和零重复 mutation E4。
+- [x] 覆盖 already-authorized/relogin 利旧 current A Session 接收 B/C 官方验证码、A 零重登/零替换、ABC 不回退导入接码 URL，以及 code 后仍服从 current-2FA/reset 的协议边界。
 - [x] 覆盖原子binding/orphan恢复、canonical route、父批次长等待计数、共享owner取消、账号生命周期、策略/权限/capability漂移和敏感secret清理。
 - [x] 无 silent fallback、mock success 或健康即完成声明。
 
@@ -516,6 +529,7 @@ code-source凭据过期或binding漂移时停在 `two_fa_candidate_refresh_requi
 - migration `0168_post_login_full_init` 已增加账号级 owner、登录代次 binding、ABC request、固定 2FA 证据和父批次投影；`0169_post_login_stage_order` 再增加独立 2FA 服务端到期字段并迁移存量等待账号到资料优先流程；同批同账号增加非空 partial unique index。
 - `new_account/relogin` 在新 A 持久化事务写入短期加密 2FA 来源与 `waiting_login_parent` 义务；`already_authorized` 必须经本行 fresh probe，三条 route 在在线读回后统一进入 `post_initialization_waiting`。
 - coordinator 已接入租户固定 2FA 真实 mutation、可信证据落库、姓名头像平台+Telegram 双读回、现有 ABC owner 分类和无 owner 单账号异人审批；完整 A/B/C/E4 前父行不成功。
+- `post_login_exact` 复用现有 online ABC runner：B/C operation 把 current A authorization 冻结为 `code_source_authorization_id`，通过 A Session 的 Telegram `777000` 服务消息按 challenge 时间和 message ID 取码；导入接码 URL 不进入该链，A 不重登也不改变。
 - `authorization_online_abc_supervisor.py` 已接入第三条 `post_login_exact` lane：full sweep/deferred均空闲后自动领取批准或可安全续接的 running exact batch；合同错误显式停止，unknown不重放，通用手工 runner拒绝该 selection mode。
 - 同 item 重放复用原 binding；同账号新 batch 复用兼容 active owner，历史 succeeded owner只作为 predecessor，必须新建本次 gap-decision generation并重新读取当前 2FA/profile/ABC，不能直接投影成功；只有最新 generation 的 terminal failed/manual/unknown继续绑定原债务和原 operation，较旧债务不得覆盖较新成功事实，unknown只读回或显式对账而不重放 mutation。
 - 前端已区分已授权、完整初始化、等待与人工状态，并提供当前 batch 精确过滤的 ABC request、冻结预览和 `system.manage` 审批入口；API/日志不返回临时 2FA 或固定密码。
