@@ -412,12 +412,12 @@ def _load_plan_facts(session: Session, task: Task) -> PlanFacts | PlanAbort:
     rule_set = session.get(RuleSet, rule_version.rule_set_id)
     target_id = int(config.get("target_operation_target_id") or 0)
     target = session.get(OperationTarget, target_id) if target_id else None
-    gate_abort = _target_membership_abort(session, task, target, progress=progress)
-    if gate_abort:
-        return gate_abort
     group = _resolve_plan_group(session, task, config, progress=progress)
     if isinstance(group, PlanAbort):
         return group
+    gate_abort = _target_membership_abort(session, task, target, progress=progress)
+    if gate_abort:
+        return gate_abort
     gate_abort = _plan_outbound_target_abort(session, task, target, group, progress)
     if gate_abort:
         return gate_abort
@@ -504,11 +504,36 @@ def _resolve_plan_group(
     )
     if group:
         return group
-    task.last_error = "目标群不存在或未授权"
+    mismatch = _configured_target_group_mismatch(session, task, config)
+    blocker = "target_identity_mismatch" if mismatch else "target_permission"
+    task.last_error = (
+        "任务目标群与运营目标身份不一致"
+        if mismatch
+        else "目标群不存在或未授权"
+    )
     if progress:
         deficit = max(1, int(progress.get("deficit") or 1))
-        mark_plan_result(task, progress, 0, {"target_permission": deficit})
+        mark_plan_result(task, progress, 0, {blocker: deficit})
     return PlanAbort()
+
+
+def _configured_target_group_mismatch(
+    session: Session,
+    task: Task,
+    config: dict,
+) -> bool:
+    target_id = int(config.get("target_operation_target_id") or 0)
+    group_id = int(config.get("target_group_id") or 0)
+    if not target_id or not group_id:
+        return False
+    target = session.get(OperationTarget, target_id)
+    group = session.get(TgGroup, group_id)
+    return bool(
+        target
+        and group
+        and target.tenant_id == task.tenant_id
+        and group.tenant_id == task.tenant_id
+    )
 
 
 def _load_plan_accounts(
@@ -2703,6 +2728,9 @@ def _record_plan_completion(
 
 
 def build_plan(session: Session, task: Task) -> int:
+    from ..admission_epoch_recovery import replan_stale_admission_actions
+
+    replan_stale_admission_actions(session, task=task)
     if task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION:
         _recover_stale_fact_first_actions(session, task)
     else:

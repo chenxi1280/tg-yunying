@@ -145,6 +145,7 @@ def refresh_group_rescue_action(
         return GroupRescueResult(RESCUE_STATUS_UNCONFIGURED, str(exc))
     action.account_id = tenant.group_rescue_admin_account_id
     action.action_type = "invite_group_account"
+    action.task_lifecycle_epoch = int(task.task_lifecycle_epoch or 1)
     action.payload = payload.model_dump(mode="json")
     action.status = "pending"
     action.scheduled_at = _now()
@@ -174,6 +175,7 @@ def _create_rescue_action(
         task_type=task.type,
         action_type="invite_group_account",
         account_id=tenant.group_rescue_admin_account_id,
+        task_lifecycle_epoch=int(task.task_lifecycle_epoch or 1),
         scheduled_at=_now(),
         status="pending",
         payload=payload.model_dump(mode="json"),

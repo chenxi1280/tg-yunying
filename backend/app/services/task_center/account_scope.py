@@ -12,6 +12,7 @@ from app.models import (
     OperationTarget,
     RuntimeMetricSnapshot,
     Task,
+    TaskAccountDailyCoverage,
     TaskMembershipAdmissionItem,
     Tenant,
     TgAccount,
@@ -89,6 +90,86 @@ def initialize_all_account_task_scope(
     created = _sync_task_relations(session, task, account_ids)
     _ensure_daily_coverage(session, task, account_ids, now=now, incremental=False)
     return ScopeSyncResult(task_count=1, created_relations=created, eligible_accounts=len(account_ids))
+
+
+def reset_all_account_scope_for_target_change(
+    session: Session,
+    task: Task,
+) -> int:
+    if not is_daily_coverage_task(task):
+        return 0
+    target = _task_target(session, task)
+    group = _task_group_for_scope_reset(session, task)
+    changed = _reset_membership_items(session, task, target.id)
+    _abandon_superseded_coverage(session, task, group.id)
+    session.flush()
+    return changed
+
+
+def _task_group_for_scope_reset(session: Session, task: Task) -> TgGroup:
+    config = task.type_config or {}
+    group = group_from_reference(
+        session,
+        task.tenant_id,
+        group_id=int(config.get("target_group_id") or 0) or None,
+        operation_target_id=int(config.get("target_operation_target_id") or 0) or None,
+        require_authorized=False,
+    )
+    if group is None:
+        raise ValueError("all-account coverage target identity mismatch")
+    return group
+
+
+def _reset_membership_items(
+    session: Session,
+    task: Task,
+    target_id: int,
+) -> int:
+    rows = list(session.scalars(select(TaskMembershipAdmissionItem).where(
+        TaskMembershipAdmissionItem.task_id == task.id,
+    )))
+    for item in rows:
+        _reset_membership_item(item, target_id)
+    return len(rows)
+
+
+def _reset_membership_item(item: TaskMembershipAdmissionItem, target_id: int) -> None:
+    item.target_id = target_id
+    item.phase = "pending"
+    item.membership_action_id = None
+    item.test_message_action_id = None
+    item.delete_action_id = None
+    item.test_message_id = ""
+    item.delete_status = ""
+    item.failure_type = ""
+    item.failure_detail = ""
+    item.manual_required = False
+    item.permission_failure_count = 0
+    item.rescue_action_id = None
+    item.rescue_status = ""
+    item.rescue_failure_detail = ""
+    item.completed_at = None
+    item.updated_at = _now()
+
+
+def _abandon_superseded_coverage(
+    session: Session,
+    task: Task,
+    current_group_id: int,
+) -> None:
+    rows = session.scalars(select(TaskAccountDailyCoverage).where(
+        TaskAccountDailyCoverage.task_id == task.id,
+        TaskAccountDailyCoverage.group_id != current_group_id,
+        TaskAccountDailyCoverage.coverage_date == _now().date(),
+    ))
+    for row in rows:
+        row.state = "abandoned_for_day"
+        row.blocker_code = "target_reference_superseded"
+        row.blocker_stage = "target_identity"
+        row.blocker_detail = "任务目标身份已受保护更新，旧群当日覆盖不再参与计划"
+        row.next_eligible_at = None
+        row.next_decision_at = None
+        row.updated_at = _now()
 
 
 def bootstrap_missing_all_account_task_scope(
@@ -470,6 +551,7 @@ __all__ = [
     "drain_account_scope_events",
     "emit_account_eligibility_event",
     "initialize_all_account_task_scope",
+    "reset_all_account_scope_for_target_change",
     "is_all_accounts_task",
     "is_daily_coverage_task",
     "process_account_eligibility_events",

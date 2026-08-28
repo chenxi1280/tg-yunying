@@ -4089,7 +4089,13 @@ def _apply_rescue_invite_result(action: Action, account: TgAccount, result: Oper
     )
     _record_group_rescue_admin_rate_limit(action, result)
     status = "invite_success" if result.ok else "invite_failed"
-    action.result = {**(action.result or {}), "rescue_status": status, "rescue_detail": result.detail or result.failure_type}
+    membership_status = "joined" if result.ok else ""
+    action.result = {
+        **(action.result or {}),
+        "rescue_status": status,
+        "rescue_detail": result.detail or result.failure_type,
+        "membership_status": membership_status,
+    }
 
 
 def _record_group_rescue_admin_rate_limit(action: Action, result: OperationResult) -> None:

@@ -18,7 +18,15 @@ def group_from_reference(
     if target:
         if target.tenant_id != tenant_id or target.target_type != "group":
             return None
-        return _best_target_group(session, tenant_id, target, require_authorized=require_authorized)
+        resolved = _best_target_group(
+            session,
+            tenant_id,
+            target,
+            require_authorized=require_authorized,
+        )
+        if group_id and (resolved is None or int(resolved.id) != int(group_id)):
+            return None
+        return resolved
     group = session.get(TgGroup, int(group_id)) if group_id else None
     if group and group.tenant_id == tenant_id and (not require_authorized or group.auth_status == GroupAuthStatus.AUTHORIZED.value):
         return group

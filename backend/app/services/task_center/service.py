@@ -972,6 +972,7 @@ def update_task_settings(session: Session, tenant_id: int, task_id: str, payload
     previous_config = dict(task.type_config or {})
     previous_timezone = str(task.timezone or "")
     previous_revision = int(task.config_revision or 1)
+    previous_target_identity = _task_target_identity(previous_config)
     previous_prejoin_refs = list(task.group_ai_prejoin_channel_ids or [])
     prejoin_field = "group_ai_prejoin_channel_ids"
     prejoin_supplied = prejoin_field in payload.model_fields_set
@@ -1028,6 +1029,13 @@ def update_task_settings(session: Session, tenant_id: int, task_id: str, payload
     activate_task_ai_content_config(session, task)
     initialize_all_account_task_scope(session, task)
     _clear_unfinished_plan(session, task)
+    target_changed = previous_target_identity != _task_target_identity(task.type_config or {})
+    if task.type == "group_ai_chat" and target_changed:
+        from .account_scope import reset_all_account_scope_for_target_change
+
+        task.task_lifecycle_epoch = int(task.task_lifecycle_epoch or 1) + 1
+        reset_all_account_scope_for_target_change(session, task)
+        initialize_all_account_task_scope(session, task)
     if task.status not in {"completed", "failed"}:
         now = _now()
         scheduled_start = _naive_datetime(task.scheduled_start)
@@ -1040,6 +1048,13 @@ def update_task_settings(session: Session, tenant_id: int, task_id: str, payload
     session.commit()
     session.refresh(task)
     return task
+
+
+def _task_target_identity(config: dict) -> tuple[int, int]:
+    return (
+        int(config.get("target_operation_target_id") or 0),
+        int(config.get("target_group_id") or 0),
+    )
 
 
 def add_task_source_filter_override(session: Session, tenant_id: int, task_id: str, payload: TaskSourceFilterOverrideRequest, actor: str) -> Task:
@@ -5374,10 +5389,6 @@ def _check_stop_conditions(session: Session, task: Task) -> bool:
 
 
 def _mark_task_started(session: Session, task: Task) -> None:
-    if task.type == "group_ai_chat":
-        from .group_bot_task_restart import rearm_stopped_admission_actions
-
-        rearm_stopped_admission_actions(session, task=task)
     now = _now()
     previous_status = task.status
     scheduled_start = _naive_datetime(task.scheduled_start)
@@ -5385,6 +5396,12 @@ def _mark_task_started(session: Session, task: Task) -> None:
     _advance_task_lifecycle_epoch(task, next_status)
     task.status = next_status
     task.next_run_at = scheduled_start if task.status == "pending" else now
+    if task.type == "group_ai_chat":
+        from .admission_epoch_recovery import replan_stale_admission_actions
+        from .group_bot_task_restart import rearm_stopped_admission_actions
+
+        rearm_stopped_admission_actions(session, task=task)
+        replan_stale_admission_actions(session, task=task)
     stats = dict(task.stats or empty_stats())
     stats["started_at"] = stats.get("started_at") or now.isoformat()
     if (

@@ -28,6 +28,12 @@ from .fulfillment_ledger_owners import resolve_view_task_day_ledger_id
 
 PROJECTION_KINDS = ("obligation", "action", "task_read_model")
 UNKNOWN_RECONCILE_DEADLINE_SECONDS = 1800
+MEMBERSHIP_ACTION_TYPES = frozenset({
+    "ensure_channel_membership",
+    "ensure_target_membership",
+    "invite_group_account",
+})
+MEMBERSHIP_CONFIRMED_STATUSES = frozenset({"joined", "already_joined"})
 
 
 def ensure_action_obligation(session: Session, action: Action) -> bool:
@@ -249,7 +255,22 @@ def _fact_kind(action: Action, attempt: ExecutionAttempt) -> str:
         return "view_observed"
     if action.action_type == "like_message":
         return "reaction_observed"
+    if action.action_type in MEMBERSHIP_ACTION_TYPES:
+        return (
+            "membership_observed"
+            if _membership_observed(action)
+            else "remote_outcome_unknown"
+        )
     return "remote_message_observed" if attempt.remote_message_id else "remote_outcome_unknown"
+
+
+def _membership_observed(action: Action) -> bool:
+    result = dict(action.result or {})
+    if action.action_type == "invite_group_account":
+        return result.get("rescue_status") == "invite_success"
+    return str(result.get("membership_status") or "").lower() in (
+        MEMBERSHIP_CONFIRMED_STATUSES
+    )
 
 
 def _fact_outcome(action: Action, attempt: ExecutionAttempt) -> dict:
@@ -260,6 +281,8 @@ def _fact_outcome(action: Action, attempt: ExecutionAttempt) -> dict:
         "remote_message_id": attempt.remote_message_id,
         "remote_fact_id": result.get("remote_fact_id"),
         "target_click_observed": bool(result.get("target_click_observed")),
+        "membership_status": str(result.get("membership_status") or ""),
+        "rescue_status": str(result.get("rescue_status") or ""),
         "failure_type": attempt.failure_type,
     }
 
