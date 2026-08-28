@@ -114,6 +114,50 @@ def test_abc_stage_rejects_slot_only_false_positive(session_factory) -> None:
     assert len(requests) == 1
 
 
+def test_abc_existing_evidence_finishes_running_request(session_factory, monkeypatch) -> None:
+    from app.services.account_post_login_init import abc
+
+    with session_factory() as session:
+        _, login_item = _new_login_item(session, "abc-existing-evidence")
+        owner = create_or_attach_full_initialization(session, login_item, actor="操作员")
+        owner.status = "running"
+        owner.stage = "abc"
+        owner.two_fa_status = "succeeded"
+        owner.two_fa_evidence_ref = "two-fa-evidence"
+        owner.profile_status = "succeeded"
+        owner.profile_evidence_ref = "profile-evidence"
+        owner.lease_token = "abc-existing-evidence-lease"
+        request = TgPostLoginAbcRequest(
+            tenant_id=1,
+            account_id=owner.account_id,
+            full_initialization_id=owner.id,
+            status="running",
+            request_version=4,
+            requested_by="操作员",
+        )
+        session.add(request)
+        session.commit()
+        claim = FullInitializationClaim(owner.id, "abc", owner.lease_token)
+        request_id = request.id
+    monkeypatch.setattr(
+        abc,
+        "completed_abc_evidence_ref",
+        lambda *_args, **_kwargs: "abc-evidence",
+    )
+
+    execute_abc_stage(session_factory, claim)
+
+    with session_factory() as session:
+        owner = session.get(TgAccountFullInitialization, claim.initialization_id)
+        request = session.get(TgPostLoginAbcRequest, request_id)
+
+    assert owner.status == "succeeded"
+    assert owner.abc_status == "succeeded"
+    assert request.status == "succeeded"
+    assert request.request_version == 5
+    assert request.finished_at is not None
+
+
 def _false_positive_abc_rows(account, primary) -> list:
     return [
         TgAccountAuthorization(

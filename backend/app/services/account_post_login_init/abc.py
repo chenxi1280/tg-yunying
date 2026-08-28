@@ -49,6 +49,7 @@ def execute_abc_stage(session_factory, claim: FullInitializationClaim) -> None:
         )
         if existing_evidence:
             _finish_abc_success(session, owner, existing_evidence)
+            _finish_request(session, owner.id, "succeeded")
             session.commit()
             return
         item = _linked_online_item(session, owner)
