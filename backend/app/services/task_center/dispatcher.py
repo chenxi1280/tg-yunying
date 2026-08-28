@@ -3434,7 +3434,8 @@ def _reserve_channel_action_attempt(
     if not admit_source_paced_attempt(session, action, attempt):
         session.commit()
         return None
-    mark_daily_identity_call_issued(session, action)
+    if action.action_type == "view_message":
+        mark_daily_identity_call_issued(session, action)
     _mark_gateway_call_started(session, attempt, commit=False)
     if action.pacing_contract_version == PACING_CONTRACT_VERSION:
         align_source_gateway_call_started(session, attempt)

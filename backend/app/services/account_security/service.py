@@ -2091,7 +2091,7 @@ def _generate_profiles_from_local_pool(
         first_name = display_name
         last_name = ""
         candidates = generate_username_variants(
-            raw_username=account.username or "",
+            raw_username=strategy.username_prefix_hint or account.username or "",
             display_name=display_name,
             seed=account.id * 17 + index,
             max_candidates=strategy.username_max_attempts if strategy.username_enabled else 0,

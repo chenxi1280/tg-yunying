@@ -47,3 +47,22 @@ def test_local_profile_generation_defaults_to_blank_bio():
         assert all(not username.startswith("tg_user_") for username in r["username_candidates"])
         for u in r["username_candidates"]:
             assert TG_USERNAME_RE.match(u)
+
+
+def test_local_profile_generation_honors_username_prefix_hint():
+    account = TgAccount(
+        id=11,
+        username="existing_user",
+        display_name="旧账号",
+        phone_masked="138****0011",
+    )
+    strategy = ProfileGenerationStrategy(
+        generation_mode="local_random",
+        username_prefix_hint="taken",
+        username_max_attempts=3,
+    )
+
+    [result] = _generate_profiles_from_local_pool([account], strategy)
+
+    assert result["username_candidates"]
+    assert all(username.startswith("taken") for username in result["username_candidates"])
