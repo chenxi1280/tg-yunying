@@ -118,6 +118,35 @@ def test_create_account_writes_phone_alias(session_factory) -> None:
     assert missing_live_aliases == 0
 
 
+def test_batch_binding_allows_distinct_phones_with_same_mask(session_factory) -> None:
+    first_item = SimpleNamespace(
+        id=101,
+        tenant_id=1,
+        line_no=1,
+        phone_masked="+191****3431",
+        phone_ciphertext=encrypt_secret("+19112343431"),
+        account_id=None,
+    )
+    second_item = SimpleNamespace(
+        id=102,
+        tenant_id=1,
+        line_no=2,
+        phone_masked="+191****3431",
+        phone_ciphertext=encrypt_secret("+19199993431"),
+        account_id=None,
+    )
+    with session_factory() as session:
+        first = binding.bind_or_create_account(session, first_item, 10, "测试操作员")
+        second = binding.bind_or_create_account(session, second_item, 10, "测试操作员")
+        session.commit()
+        aliases = list(session.scalars(select(TgAccountPhoneFingerprintAlias)))
+
+    assert first.created is True and second.created is True
+    assert first.account.id != second.account.id
+    assert first.account.phone_masked == second.account.phone_masked
+    assert len(aliases) == 2
+
+
 def test_soft_delete_deactivates_phone_alias_for_reuse(session_factory) -> None:
     with session_factory() as session:
         first = create_account(

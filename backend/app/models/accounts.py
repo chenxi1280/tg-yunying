@@ -207,10 +207,9 @@ class TgAccount(Base):
 
 
 Index(
-    "ux_tg_accounts_tenant_phone_active",
+    "ix_tg_accounts_tenant_phone_masked_active",
     TgAccount.tenant_id,
     TgAccount.phone_masked,
-    unique=True,
     postgresql_where=TgAccount.deleted_at.is_(None),
     sqlite_where=TgAccount.deleted_at.is_(None),
 )

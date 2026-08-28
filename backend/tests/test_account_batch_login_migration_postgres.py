@@ -57,6 +57,11 @@ def _assert_account_login_schema(inspector) -> None:
     } <= item_columns
     item_indexes = {index["name"] for index in inspector.get_indexes("tg_account_login_batch_items")}
     assert "ux_login_batch_item_account" in item_indexes
+    account_indexes = {
+        index["name"]: index for index in inspector.get_indexes("tg_accounts")
+    }
+    assert "ux_tg_accounts_tenant_phone_active" not in account_indexes
+    assert account_indexes["ix_tg_accounts_tenant_phone_masked_active"]["unique"] is False
     full_init_columns = {
         column["name"] for column in inspector.get_columns("tg_account_full_initializations")
     }
@@ -102,5 +107,5 @@ def test_account_batch_login_schema_migrates_from_blank_postgres() -> None:
     _assert_ai_schema(inspector)
     with engine.connect() as connection:
         assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
-            "0170_channel_reaction_cap"
+            "0171_phone_mask_display_idx"
         )
