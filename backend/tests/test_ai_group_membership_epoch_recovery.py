@@ -31,6 +31,7 @@ from app.services._common import _now
 from app.services.task_center.fulfillment_remote_facts import persist_remote_fact
 from app.services.task_center.group_rescue import trigger_group_rescue
 from app.services.task_center.targets import group_from_reference
+from app.services.task_center.executors import group_ai_chat
 
 
 pytestmark = pytest.mark.no_postgres
@@ -186,6 +187,39 @@ def test_target_and_group_mismatch_is_rejected(session: Session) -> None:
         group_id=11,
         operation_target_id=21,
     ).id == 11
+
+
+def test_username_only_target_reaches_membership_gate(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr(group_ai_chat, "_now", lambda: NOW)
+    with Session(engine) as session:
+        session.add(Tenant(id=2, name="tenant-2"))
+        session.add(OperationTarget(
+            id=31, tenant_id=2, title="public", target_type="group",
+            tg_peer_id="public_name", username="public_name",
+            can_send=True, auth_status=GroupAuthStatus.AUTHORIZED.value,
+        ))
+        session.add(TgAccount(
+            id=201, tenant_id=2, display_name="account", phone_masked="201",
+            status=AccountStatus.ACTIVE.value, session_ciphertext="session",
+        ))
+        task = Task(
+            id="username-only", tenant_id=2, name="task", type="group_ai_chat",
+            status="running", account_config={
+                "selection_mode": "manual", "account_ids": [201],
+            }, type_config={"target_operation_target_id": 31}, stats={},
+        )
+        session.add(task)
+        session.commit()
+
+        assert group_ai_chat.build_plan(session, task) == 1
+
+        action = session.scalar(select(Action).where(
+            Action.task_id == task.id,
+            Action.action_type == "ensure_target_membership",
+        ))
+        assert action.payload["channel_target_id"] == 31
 
 
 def test_target_change_resets_scope_and_abandons_old_coverage(

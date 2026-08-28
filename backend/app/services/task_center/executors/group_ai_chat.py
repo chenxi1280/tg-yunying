@@ -412,12 +412,18 @@ def _load_plan_facts(session: Session, task: Task) -> PlanFacts | PlanAbort:
     rule_set = session.get(RuleSet, rule_version.rule_set_id)
     target_id = int(config.get("target_operation_target_id") or 0)
     target = session.get(OperationTarget, target_id) if target_id else None
-    group = _resolve_plan_group(session, task, config, progress=progress)
-    if isinstance(group, PlanAbort):
-        return group
+    group = None
+    if int(config.get("target_group_id") or 0):
+        group = _resolve_plan_group(session, task, config, progress=progress)
+        if isinstance(group, PlanAbort):
+            return group
     gate_abort = _target_membership_abort(session, task, target, progress=progress)
     if gate_abort:
         return gate_abort
+    if group is None:
+        group = _resolve_plan_group(session, task, config, progress=progress)
+        if isinstance(group, PlanAbort):
+            return group
     gate_abort = _plan_outbound_target_abort(session, task, target, group, progress)
     if gate_abort:
         return gate_abort

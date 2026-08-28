@@ -5,6 +5,8 @@
 > 流程：`prod-diagnosis -> product -> dev -> qa -> product -> prod-diagnosis`
 > 状态：`design_status=product_design_complete`、`implementation_status=pending`、`production_fixed=unproven`
 
+> Release Gate 记录：首个候选 `b9f7b383` 未部署；PostgreSQL shard 0 发现仅有 username OperationTarget、尚未持久化 TgGroup 的历史任务被提前阻断。修正口径为：只有 Task 显式同时保存 target/group 时才先做双身份一致性门禁；username-only 任务仍先进入 membership gate 建立准入 Action，再由成功准入补齐群事实。
+
 ## 1. Intake Card
 
 ### 1.1 用户原话与范围
