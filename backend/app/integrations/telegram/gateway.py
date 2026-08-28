@@ -64,6 +64,7 @@ VERIFICATION_CONFIRM_BUTTON_MARKERS = ("我已加入", "我已关注", "已关�
 PUBLIC_CHANNEL_URL_RE = re.compile(r"^https?://t\.me/([A-Za-z][A-Za-z0-9_]{3,})/?$", re.I)
 ACCOUNT_HEALTH_DISCONNECT_TIMEOUT_SECONDS = 5.0
 ACCOUNT_HEALTH_RUN_GRACE_SECONDS = 1.0
+ACCOUNT_LOGIN_OPERATION_TIMEOUT_SECONDS = 60.0
 PROFILE_REMOTE_MISMATCH = "profile_remote_mismatch"
 logger = logging.getLogger(__name__)
 
@@ -584,7 +585,10 @@ class TelethonTelegramGateway(TelegramGateway):
     ) -> LoginChallenge:
         if account_id is None or flow_id is None:
             raise RuntimeError("Telethon login requires account_id and flow_id")
-        return self._run(self._start_login_async(flow_id, method, phone, self._usable_credentials(credentials)))
+        return self._run(
+            self._start_login_async(flow_id, method, phone, self._usable_credentials(credentials)),
+            timeout_seconds=ACCOUNT_LOGIN_OPERATION_TIMEOUT_SECONDS,
+        )
 
     async def _finish_login_async(
         self,
@@ -700,7 +704,8 @@ class TelethonTelegramGateway(TelegramGateway):
                 self._usable_credentials(credentials),
                 temporary_session,
                 phone_code_hash,
-            )
+            ),
+            timeout_seconds=ACCOUNT_LOGIN_OPERATION_TIMEOUT_SECONDS,
         )
 
     async def _health_async(
