@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -14,7 +14,6 @@ from app.models import (
     Task,
     ViewRemoteFact,
 )
-
 from .channel_fulfillment import (
     bind_obligation_action,
     confirm_reaction_obligation,
@@ -142,17 +141,19 @@ def _migrate_view_action(
 ) -> ChannelTakeoverSummary:
     payload = ViewMessagePayload(**(action.payload or {}))
     message = _message(session, task, action, payload.channel_message_id)
-    existing_fact = _view_fact(session, payload, action)
-    if existing_fact is not None:
-        if action.status != "success":
-            _retire_duplicate(action)
-        return ChannelTakeoverSummary(duplicate_action_count=1)
     timestamp = (
         action.executed_at
         or action.scheduled_at
         or (action.created_at if action.status == "success" else now)
     )
     ledger = ensure_task_day_ledger(session, task, now=timestamp)
+    payload.execution_date = ledger.obligation_local_date.isoformat()
+    payload.task_day_ledger_id = ledger.id
+    existing_fact = _view_fact(session, payload, action)
+    if existing_fact is not None:
+        if action.status != "success":
+            _retire_duplicate(action)
+        return ChannelTakeoverSummary(duplicate_action_count=1)
     obligation = ensure_view_obligation(
         session,
         ledger,
@@ -238,6 +239,9 @@ def _reaction_fact(
 
 
 def _view_fact(session: Session, payload, action: Action) -> ViewRemoteFact | None:
+    if not payload.execution_date:
+        raise ValueError("view_fact_execution_date_missing")
+    action_date = date.fromisoformat(payload.execution_date)
     pending = next(
         (
             fact
@@ -246,17 +250,19 @@ def _view_fact(session: Session, payload, action: Action) -> ViewRemoteFact | No
             and fact.target_peer_id == payload.channel_id
             and fact.channel_message_id == payload.channel_message_id
             and fact.account_id == action.account_id
+            and getattr(fact, "obligation_local_date", None) == action_date
         ),
         None,
     )
     if pending is not None:
         return pending
+    stmt = select(ViewRemoteFact).where(
+        ViewRemoteFact.target_peer_id == payload.channel_id,
+        ViewRemoteFact.channel_message_id == payload.channel_message_id,
+        ViewRemoteFact.account_id == action.account_id,
+    )
     return session.scalar(
-        select(ViewRemoteFact).where(
-            ViewRemoteFact.target_peer_id == payload.channel_id,
-            ViewRemoteFact.channel_message_id == payload.channel_message_id,
-            ViewRemoteFact.account_id == action.account_id,
-        )
+        stmt.where(ViewRemoteFact.obligation_local_date == action_date)
     )
 
 

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 from datetime import datetime
 
 from sqlalchemy import select
@@ -19,9 +18,13 @@ from app.models import (
     ViewRemoteFact,
 )
 from app.services._common import _now
-
 from .channel_fulfillment_identity import RemoteFactAlreadyFulfilled
-from .channel_fulfillment_identity import assert_view_obligation_identity
+from .channel_fulfillment_identity import assert_existing_view_obligation_identity
+from .channel_fulfillment_identity import assert_fact_owner
+from .channel_fulfillment_identity import evidence_hash
+from .channel_fulfillment_identity import reaction_state_revision
+from .channel_fulfillment_identity import resolve_view_action_ledger
+from .channel_fulfillment_identity import stamp_view_payload
 from .channel_payloads import LikeMessagePayload, ViewMessagePayload
 from .channel_fulfillment_queries import (
     reaction_account_ids_for_messages,
@@ -30,10 +33,13 @@ from .channel_fulfillment_queries import (
     view_confirmed_counts,
     view_daily_counts,
     view_materialized_account_ids_for_messages,
-    view_source_held_by_other_action,
+    view_remote_fact_for_date,
 )
-from .daily_ledgers import ensure_task_day_ledger
-
+from .channel_view_daily_identity import (
+    DailyIdentityClaim,
+    claim_daily_identity,
+    confirm_daily_identity,
+)
 TERMINAL_REPLAN_STATUSES = frozenset({"failed", "skipped", "cancelled"})
 LIFECYCLE_ACTION_TYPES = frozenset({"like_message", "view_message"})
 
@@ -155,48 +161,80 @@ def ensure_view_action_contract(
     *,
     now: datetime,
 ) -> ViewFulfillmentObligation:
-    existing = session.scalar(
-        select(ViewRemoteFact).where(
-            ViewRemoteFact.tenant_id == action.tenant_id,
-            ViewRemoteFact.channel_message_id == payload.channel_message_id,
-            ViewRemoteFact.account_id == action.account_id,
-        )
-    )
-    if existing is not None:
-        if existing.obligation_id == payload.view_fulfillment_obligation_id:
-            return session.get(ViewFulfillmentObligation, existing.obligation_id)
-        raise RemoteFactAlreadyFulfilled("view_remote_source_already_fulfilled")
-    if view_source_held_by_other_action(
+    task, message = _task_and_message(session, action, payload.channel_message_id)
+    obligation_id = payload.view_fulfillment_obligation_id or getattr(action, "obligation_id", None)
+    obligation = session.get(ViewFulfillmentObligation, str(obligation_id)) if obligation_id else None
+    assert_existing_view_obligation_identity(
         session,
         action,
-        int(payload.channel_message_id or 0),
-    ):
-        raise RemoteFactAlreadyFulfilled("view_remote_source_held")
-    task, message = _task_and_message(session, action, payload.channel_message_id)
-    obligation_id = payload.view_fulfillment_obligation_id or action.obligation_id
+        payload=payload,
+        obligation=obligation,
+        task=task,
+        message=message,
+    )
+    ledger = resolve_view_action_ledger(session, task, payload, obligation, now=now)
+    action_date = ledger.obligation_local_date
+    stamp_view_payload(action, payload, ledger)
+    existing = view_remote_fact_for_date(
+        session,
+        tenant_id=action.tenant_id,
+        channel_message_id=int(payload.channel_message_id or 0),
+        account_id=_account_id(action),
+        obligation_local_date=action_date,
+    )
+    if existing is not None:
+        if existing.obligation_id == str(obligation_id or ""):
+            return session.get(ViewFulfillmentObligation, existing.obligation_id)
+        raise RemoteFactAlreadyFulfilled("view_remote_source_already_fulfilled")
     if obligation_id:
-        obligation = session.get(ViewFulfillmentObligation, str(obligation_id))
         if obligation is not None:
-            assert_view_obligation_identity(
+            if obligation.current_action_id != action.id:
+                bind_obligation_action(obligation, action)
+            _claim_view_action_identity(
                 session,
                 action,
                 payload=payload,
+                ledger=ledger,
                 obligation=obligation,
-                task=task,
-                message=message,
             )
-            if obligation.current_action_id != action.id:
-                bind_obligation_action(obligation, action)
             return obligation
-    ledger = ensure_task_day_ledger(session, task, now=now)
     obligation = ensure_view_obligation(session, ledger, message, _account_id(action))
     if obligation.current_action_id != action.id:
         bind_obligation_action(obligation, action)
-    payload.execution_date = ledger.obligation_local_date.isoformat()
-    payload.task_day_ledger_id = ledger.id
-    payload.view_fulfillment_obligation_id = obligation.id
-    action.payload = payload.model_dump(mode="json")
+    stamp_view_payload(action, payload, ledger, obligation_id=obligation.id)
+    _claim_view_action_identity(
+        session,
+        action,
+        payload=payload,
+        ledger=ledger,
+        obligation=obligation,
+    )
     return obligation
+
+
+def _claim_view_action_identity(
+    session: Session,
+    action: Action,
+    *,
+    payload: ViewMessagePayload,
+    ledger: TaskDayLedger,
+    obligation: ViewFulfillmentObligation,
+) -> None:
+    owner = claim_daily_identity(
+        session,
+        DailyIdentityClaim(
+            tenant_id=action.tenant_id,
+            logical_task_id=action.task_id,
+            target_peer_id=payload.channel_id,
+            channel_message_id=obligation.channel_message_id,
+            account_id=_account_id(action),
+            obligation_local_date=ledger.obligation_local_date,
+            obligation_id=obligation.id,
+            action_id=action.id,
+        ),
+    )
+    if owner is None:
+        raise RemoteFactAlreadyFulfilled("view_daily_identity_held")
 
 
 def confirm_reaction_obligation(
@@ -207,7 +245,7 @@ def confirm_reaction_obligation(
     reaction_emoji: str,
     confirmed_at: datetime,
 ) -> ReactionRemoteFact:
-    state_revision = _reaction_state_revision(reaction_emoji)
+    state_revision = reaction_state_revision(reaction_emoji)
     fact = session.scalar(
         select(ReactionRemoteFact).where(
             ReactionRemoteFact.target_peer_id == target_peer_id,
@@ -224,7 +262,7 @@ def confirm_reaction_obligation(
             channel_message_id=obligation.channel_message_id,
             account_id=obligation.account_id,
             reaction_state_revision=state_revision,
-            reaction_evidence_hash=_evidence_hash(
+            reaction_evidence_hash=evidence_hash(
                 "reaction",
                 target_peer_id,
                 obligation.channel_message_id,
@@ -234,7 +272,7 @@ def confirm_reaction_obligation(
             remote_confirmed_at=confirmed_at,
         )
         session.add(fact)
-    _assert_fact_owner(fact.obligation_id, obligation.id)
+    assert_fact_owner(fact.obligation_id, obligation.id)
     obligation.status = "confirmed"
     return fact
 
@@ -246,25 +284,34 @@ def confirm_view_obligation(
     target_peer_id: str,
     confirmed_at: datetime,
 ) -> ViewRemoteFact:
+    ledger = session.get(TaskDayLedger, obligation.task_day_ledger_id)
+    if ledger is None:
+        raise ValueError("view_obligation_ledger_missing")
+    obligation_date = ledger.obligation_local_date
     fact = session.scalar(
         select(ViewRemoteFact).where(
             ViewRemoteFact.target_peer_id == target_peer_id,
             ViewRemoteFact.channel_message_id == obligation.channel_message_id,
             ViewRemoteFact.account_id == obligation.account_id,
+            ViewRemoteFact.obligation_local_date == obligation_date,
         )
     )
     if fact is None:
         fact = ViewRemoteFact(
             tenant_id=obligation.tenant_id,
             obligation_id=obligation.id,
+            obligation_local_date=obligation_date,
             target_peer_id=target_peer_id,
             channel_message_id=obligation.channel_message_id,
             account_id=obligation.account_id,
+            remote_effect_kind="daily_view_operation",
+            counter_increment_proven=False,
             remote_confirmed_at=confirmed_at,
         )
         session.add(fact)
-    _assert_fact_owner(fact.obligation_id, obligation.id)
+    assert_fact_owner(fact.obligation_id, obligation.id)
     obligation.status = "confirmed"
+    confirm_daily_identity(session, obligation, fact)
     return fact
 
 
@@ -460,23 +507,6 @@ def _bound_obligation(session: Session, model, obligation_id: str, action_id: st
     if obligation.current_action_id != action_id:
         raise ValueError("fulfillment_obligation_action_mismatch")
     return obligation
-
-
-def _reaction_state_revision(reaction_emoji: str) -> str:
-    normalized = reaction_emoji.strip()
-    if not normalized:
-        raise ValueError("reaction_emoji_missing")
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-
-
-def _evidence_hash(kind: str, *parts: object) -> str:
-    source = ":".join([kind, *(str(part) for part in parts)])
-    return hashlib.sha256(source.encode("utf-8")).hexdigest()
-
-
-def _assert_fact_owner(actual_obligation_id: str, expected_obligation_id: str) -> None:
-    if actual_obligation_id != expected_obligation_id:
-        raise ValueError("remote_fact_owned_by_another_obligation")
 
 
 __all__ = [

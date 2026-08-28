@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
@@ -27,6 +28,22 @@ TERMINAL_REPLAN_ACTION_STATUSES = frozenset({"failed", "skipped", "cancelled"})
 class FulfillmentDailyCounts:
     total: int
     by_account: dict[int, int]
+
+
+def view_remote_fact_for_date(
+    session: Session,
+    *,
+    tenant_id: int,
+    channel_message_id: int,
+    account_id: int,
+    obligation_local_date: date,
+) -> ViewRemoteFact | None:
+    return session.scalar(select(ViewRemoteFact).where(
+        ViewRemoteFact.tenant_id == tenant_id,
+        ViewRemoteFact.channel_message_id == channel_message_id,
+        ViewRemoteFact.account_id == account_id,
+        ViewRemoteFact.obligation_local_date == obligation_local_date,
+    ))
 
 
 def reaction_account_ids_for_messages(
@@ -85,6 +102,7 @@ def view_account_ids_for_messages(
         ).where(
             ViewRemoteFact.tenant_id == task.tenant_id,
             ViewRemoteFact.channel_message_id.in_(message_ids),
+            ViewRemoteFact.obligation_local_date == ledger.obligation_local_date,
         )
     )
     pending = session.execute(
@@ -96,6 +114,7 @@ def view_account_ids_for_messages(
         .where(
             ViewFulfillmentObligation.tenant_id == task.tenant_id,
             ViewFulfillmentObligation.channel_message_id.in_(message_ids),
+            ViewFulfillmentObligation.task_day_ledger_id == ledger.id,
             _held_or_active(
                 ViewFulfillmentObligation.status,
                 Action.status,

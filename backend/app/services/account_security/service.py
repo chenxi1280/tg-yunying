@@ -53,6 +53,7 @@ from ..account_device_cleanup_v2 import (
     device_cleanup_eligibility_reason,
     execute_device_cleanup_item,
 )
+from ..account_profile_name_generation import generate_username_variants
 from ..account_profile_identity import (
     NameClaimRequest,
     assert_profile_name_claimed,
@@ -108,83 +109,6 @@ class ProfileUpdateValues:
     bio: str
     replace_tg_name: bool
     replace_bio: bool
-
-
-PROFILE_BIO_POOL = [
-    "日常在线，随缘交流",
-    "看到有意思的会回两句",
-    "慢慢看，慢慢聊",
-    "偶尔冒泡，不太正式",
-    "记录一点生活碎片",
-    "在线时间不固定，路过就看看",
-    "喜欢新鲜事，也喜欢安静围观",
-    "不赶时间，看到合适的话题会接一句",
-    "今天也在认真看消息，偶尔分享小想法",
-    "偏随缘的普通用户，熟一点就多聊两句",
-    "有空会回，没空就先收藏着",
-    "看见好玩的内容会停一下，顺手聊两句",
-]
-PROFILE_BIO_TAILS = [
-    "",
-    "。",
-    "，先收藏。",
-    "，有空再细看。",
-    "，偶尔会冒泡。",
-    "，不太爱刷屏。",
-    "，看到合适的就接一句。",
-    "，更多时候安静围观。",
-    "，熟一点以后会多聊几句。",
-    "，在线的时候回复比较快。",
-]
-PROFILE_USERNAME_WORDS = [
-    "guoba",
-    "banana",
-    "sleepy",
-    "bear",
-    "mint",
-    "moon",
-    "melon",
-    "mochi",
-    "orange",
-    "cloud",
-    "soda",
-    "lime",
-    "mango",
-    "milk",
-    "yuni",
-    "wind",
-    "salt",
-    "diary",
-    "daily",
-    "street",
-    "snack",
-    "corner",
-    "garden",
-    "bubble",
-    "lofi",
-]
-PROFILE_USERNAME_TRAITS = [
-    "note",
-    "walk",
-    "chat",
-    "light",
-    "fresh",
-    "room",
-    "day",
-    "loop",
-    "talk",
-    "wave",
-    "leaf",
-    "box",
-    "cup",
-    "memo",
-    "zone",
-    "tiny",
-    "mood",
-    "ping",
-    "spot",
-    "line",
-]
 
 
 def _json_list(value: str) -> list[str]:
@@ -2162,15 +2086,17 @@ def _generate_profiles_from_local_pool(
     results: list[dict[str, object]] = []
     for index, account in enumerate(accounts):
         display_name = generated_names[index]
-        bio = (
-            PROFILE_BIO_POOL[(account.id * 3 + index) % len(PROFILE_BIO_POOL)]
-            + PROFILE_BIO_TAILS[(account.id * 5 + index) % len(PROFILE_BIO_TAILS)]
-        )
+        # Bio defaults to empty string to avoid repetitive robotic boilerplate across accounts
+        bio = getattr(strategy, "bio_template", "") or ""
         first_name = display_name
         last_name = ""
-        username_base = (strategy.username_prefix_hint or _local_profile_username_base(account.id, index) or _romanize_name(display_name) or f"user{account.id}").lower()
-        username_base = re.sub(r"[^a-z0-9_]", "", username_base)[:20] or f"user{account.id}"
-        candidates = [f"{username_base}_{account.id + offset:03d}" for offset in range(strategy.username_max_attempts)]
+        candidates = generate_username_variants(
+            raw_username=account.username or "",
+            display_name=display_name,
+            seed=account.id * 17 + index,
+            max_candidates=strategy.username_max_attempts if strategy.username_enabled else 0,
+            current_username=account.username or "",
+        )
         results.append(
             {
                 "display_name": display_name,
@@ -2183,19 +2109,8 @@ def _generate_profiles_from_local_pool(
     return results
 
 
-def _local_profile_username_base(account_id: int, index: int) -> str:
-    word = PROFILE_USERNAME_WORDS[(account_id + index) % len(PROFILE_USERNAME_WORDS)]
-    trait = PROFILE_USERNAME_TRAITS[(account_id * 5 + index * 2) % len(PROFILE_USERNAME_TRAITS)]
-    return f"{word}_{trait}"
-
-
 def _is_batch_confirmed(confirm_text: str) -> bool:
     return confirm_text.strip() in {"确认", "确认创建", "确认创建批次", "确认执行", "确认加固"}
-
-
-def _romanize_name(value: str) -> str:
-    # Local deterministic fallback for preview tests; live AI output can provide richer candidates.
-    return "tguser"
 
 
 def _can_replace_display_name(display_name: str | None) -> bool:

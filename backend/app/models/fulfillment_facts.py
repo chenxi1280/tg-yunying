@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from uuid import uuid4
 
 from sqlalchemy import (
     Boolean,
+    Date,
     DateTime,
     ForeignKey,
     Index,
@@ -266,8 +267,10 @@ class ViewRemoteFact(Base):
             "target_peer_id",
             "channel_message_id",
             "account_id",
-            name="uq_view_remote_fact_lifetime_source",
+            "obligation_local_date",
+            name="uq_view_remote_fact_daily_source",
         ),
+        Index("ix_view_remote_facts_date_account", "obligation_local_date", "account_id"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
@@ -275,9 +278,15 @@ class ViewRemoteFact(Base):
     obligation_id: Mapped[str] = mapped_column(
         ForeignKey("view_fulfillment_obligations.id", ondelete="CASCADE")
     )
+    obligation_local_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     target_peer_id: Mapped[str] = mapped_column(String(120))
     channel_message_id: Mapped[int] = mapped_column(Integer)
     account_id: Mapped[int] = mapped_column(ForeignKey("tg_accounts.id", ondelete="CASCADE"))
+    remote_effect_kind: Mapped[str] = mapped_column(
+        String(40),
+        default="daily_view_operation",
+    )
+    counter_increment_proven: Mapped[bool] = mapped_column(Boolean, default=False)
     remote_confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 

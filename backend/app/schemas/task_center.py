@@ -484,7 +484,7 @@ class ChannelViewConfig(ChannelMessageScopeConfig):
     listen_new_messages: bool = True
     account_coverage_mode: Literal["all_accounts_daily"] = "all_accounts_daily"
     per_message_daily_view_target: int | None = Field(default=None, ge=1, le=10000)
-    per_message_total_view_target: int | None = Field(default=None, ge=1, le=100000)
+    per_message_total_view_target: int | None = Field(default=0, ge=0, le=100000)
     message_active_days: int = Field(default=3, ge=1, le=365)
     task_daily_view_safety_cap: int | None = Field(default=1_000_000, ge=1, le=1_000_000)
     max_views_per_account_per_day: int | None = Field(default=1_000_000, ge=1, le=1_000_000)
@@ -509,9 +509,12 @@ class ChannelViewConfig(ChannelMessageScopeConfig):
         if self.per_message_daily_view_target is None:
             self.per_message_daily_view_target = legacy_target or 50
         if self.per_message_total_view_target is None:
-            self.per_message_total_view_target = legacy_target or 300
+            self.per_message_total_view_target = 0
         self.target_views_per_message = self.per_message_daily_view_target
-        if self.per_message_total_view_target < self.per_message_daily_view_target:
+        if (
+            self.per_message_total_view_target > 0
+            and self.per_message_total_view_target < self.per_message_daily_view_target
+        ):
             self.per_message_total_view_target = self.per_message_daily_view_target
         return self
 
@@ -1292,7 +1295,7 @@ class TaskSettingsUpdate(TaskUpdate):
     latest_message_count: int | None = Field(default=None, ge=1, le=500)
     listen_new_messages: bool | None = None
     per_message_daily_view_target: int | None = Field(default=None, ge=1, le=10000)
-    per_message_total_view_target: int | None = Field(default=None, ge=1, le=100000)
+    per_message_total_view_target: int | None = Field(default=None, ge=0, le=100000)
     message_active_days: int | None = Field(default=None, ge=1, le=365)
     task_daily_view_safety_cap: int | None = Field(default=1_000_000, ge=1, le=1_000_000)
     max_views_per_account_per_day: int | None = Field(default=1_000_000, ge=1, le=1_000_000)

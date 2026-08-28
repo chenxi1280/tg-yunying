@@ -305,6 +305,126 @@ def _normalize_key(value: str) -> str:
     return re.sub(r"\s+", " ", value.strip()).casefold()
 
 
+def generate_username_variants(
+    raw_username: str = "",
+    display_name: str = "",
+    *,
+    seed: int | str = 0,
+    max_candidates: int = 5,
+    current_username: str = "",
+) -> list[str]:
+    seed_int = _username_seed(seed)
+    current = (current_username or "").strip().lstrip("@").lower()
+    raw_user = re.sub(
+        r"[^a-zA-Z0-9_]",
+        "",
+        (raw_username or "").strip().lstrip("@"),
+    ).lower()
+    candidates = _raw_username_candidates(raw_user, seed_int, current)
+    candidates.extend(_display_name_username_candidates(display_name, seed_int))
+    valid = _valid_username_candidates(candidates, seed_int, current)
+    if not valid:
+        fallback_base = raw_user or f"user{seed_int % 9000 + 1000}"
+        valid = _valid_username_candidates(
+            [f"{fallback_base}_daily", f"{fallback_base}_x"],
+            seed_int,
+            current,
+        )
+    return valid[:max_candidates]
+
+
+def _username_seed(seed: int | str) -> int:
+    return int(seed) if isinstance(seed, int) else sum(ord(char) for char in str(seed))
+
+
+def _raw_username_candidates(
+    raw_user: str,
+    seed: int,
+    current: str,
+) -> list[str]:
+    if len(raw_user) < 3:
+        return []
+    clean_user = (
+        f"u{raw_user.lstrip('_')}"
+        if raw_user[0].isdigit() or raw_user[0] == "_"
+        else raw_user
+    )
+    match = re.match(r"^([a-z_]+)(\d*)$", clean_user)
+    if not match:
+        stem = clean_user if len(clean_user) >= 5 else f"{clean_user}_2026"
+        return [stem, f"{clean_user}_{(seed * 19) % 90 + 10}"]
+    base = match.group(1).rstrip("_")
+    digits = match.group(2)
+    if len(base) < 2:
+        base = clean_user[:4] if len(clean_user) >= 4 else "user"
+    candidates = [clean_user] if len(clean_user) >= 5 and clean_user != current else []
+    candidates.extend(_base_username_variants(base, digits, seed))
+    return candidates
+
+
+def _base_username_variants(base: str, digits: str, seed: int) -> list[str]:
+    if digits:
+        numeric = [
+            f"{base}{int(digits) + (seed % 7 + 1)}",
+            f"{base}_{digits}",
+            f"{base}_{(seed * 11) % 90 + 10}",
+        ]
+    else:
+        numeric = [
+            f"{base}_{(seed * 13) % 90 + 10}",
+            f"{base}{(seed * 17) % 900 + 100}",
+        ]
+    return numeric + [
+        f"{base}_x",
+        f"{base}_daily",
+        f"{base}2026",
+        f"a_{base}",
+        f"iam_{base}",
+    ]
+
+
+def _display_name_username_candidates(display_name: str, seed: int) -> list[str]:
+    ascii_name = re.sub(r"[^a-z0-9]", "", display_name.lower())
+    if len(ascii_name) < 3:
+        return []
+    return [
+        f"{ascii_name}_{(seed * 23) % 90 + 10}",
+        f"{ascii_name}_x",
+        f"{ascii_name}2026",
+        f"hey_{ascii_name}",
+    ]
+
+
+def _valid_username_candidates(
+    candidates: list[str],
+    seed: int,
+    current: str,
+) -> list[str]:
+    results: list[str] = []
+    for candidate in candidates:
+        normalized = re.sub(r"_+", "_", candidate).strip("_").lower()
+        if len(normalized) < 5:
+            normalized = f"{normalized}_{(seed * 7) % 900 + 100}"
+        normalized = normalized[:32]
+        if _valid_username_candidate(normalized, current, set(results)):
+            results.append(normalized)
+    return results
+
+
+def _valid_username_candidate(
+    candidate: str,
+    current: str,
+    seen: set[str],
+) -> bool:
+    return bool(
+        re.match(r"^[a-z][a-z0-9_]{4,31}$", candidate)
+        and not candidate.endswith("_")
+        and "__" not in candidate
+        and candidate not in seen
+        and candidate != current
+    )
+
+
 __all__ = [
     "GeneratedDisplayName",
     "NameStyleProfile",
@@ -312,6 +432,7 @@ __all__ = [
     "classify_display_name",
     "generate_display_name_candidates",
     "generate_unique_display_names",
+    "generate_username_variants",
     "name_diversity_metrics",
     "style_profile_from_names",
 ]

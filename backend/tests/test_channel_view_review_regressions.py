@@ -88,12 +88,6 @@ def test_existing_view_obligation_must_match_action_identity(monkeypatch) -> Non
         return values.get((model, identity))
 
     session.get.side_effect = get_model
-    monkeypatch.setattr(
-        channel_fulfillment,
-        "view_source_held_by_other_action",
-        lambda *_args, **_kwargs: False,
-    )
-
     with pytest.raises(ValueError, match="view_obligation_identity_mismatch"):
         channel_fulfillment.ensure_view_action_contract(
             session,

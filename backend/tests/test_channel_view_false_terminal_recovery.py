@@ -185,6 +185,7 @@ def _seed_false_terminal(session: Session, *, mutation_state: str) -> Task:
     session.add(ViewRemoteFact(
         tenant_id=1,
         obligation_id=obligation.id,
+        obligation_local_date=ledger.obligation_local_date,
         target_peer_id=channel.tg_peer_id,
         channel_message_id=message.id,
         account_id=success_account.id,

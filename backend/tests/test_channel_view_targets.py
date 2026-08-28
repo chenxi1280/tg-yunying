@@ -148,7 +148,7 @@ def test_target_attach_freezes_global_and_current_ledger_fact_baselines() -> Non
 
         assert target.lifetime_confirmed_at_attach == 2
         assert target.ledger_confirmed_at_attach == 1
-        assert target.effective_target_snapshot == 9
+        assert target.effective_target_snapshot == 10
 
 
 def test_account_scan_limit_includes_lifetime_exclusions(monkeypatch) -> None:
@@ -304,6 +304,7 @@ def _view_fact(
         id=f"fact-{ledger.id}-{account_id}",
         tenant_id=1,
         obligation_id=obligation.id,
+        obligation_local_date=ledger.obligation_local_date,
         target_peer_id="-100901",
         channel_message_id=message.id,
         account_id=account_id,

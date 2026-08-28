@@ -14,7 +14,13 @@ export function ChannelViewTypeConfig() {
       <Alert type="info" showIcon message="频道浏览按帖子、日期和账号补量：同一天同一账号同一帖子只会规划一次浏览。" />
       <div className="form-grid">
         <Form.Item name="per_message_daily_view_target" label="每条帖子每日浏览量"><InputNumber min={1} max={10000} /></Form.Item>
-        <Form.Item name="per_message_total_view_target" label="每条帖子累计目标"><InputNumber min={1} max={100000} /></Form.Item>
+        <Form.Item
+          name="per_message_total_view_target"
+          label="每条帖子累计目标"
+          extra="填写 0 表示无累计上限；有限目标允许按当日批次粒度超额。"
+        >
+          <InputNumber min={0} max={100000} />
+        </Form.Item>
         <Form.Item name="listen_new_messages" valuePropName="checked">
           <Checkbox>持续监听任务启动后的新帖</Checkbox>
         </Form.Item>

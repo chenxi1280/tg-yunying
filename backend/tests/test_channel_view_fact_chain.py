@@ -7,7 +7,12 @@ import pytest
 from sqlalchemy import select
 
 from app.integrations.telegram.contracts import OperationResult
-from app.models import ExecutionAttempt, TgAccount, ViewRemoteFact
+from app.models import (
+    ChannelViewDailyIdentityOwner,
+    ExecutionAttempt,
+    TgAccount,
+    ViewRemoteFact,
+)
 from app.services.task_center.account_coverage import task_account_coverage
 from app.services.task_center.dispatcher import _dispatch_view, _finalize_dispatch_action
 from app.services.task_center.executors.channel_view import build_plan as build_view
@@ -67,6 +72,9 @@ def test_channel_view_fact_first_execution_chain(monkeypatch) -> None:
         ]
         assert all(attempt.status == "success" for attempt in attempts), attempt_evidence
         assert session.query(ViewRemoteFact).count() == 3
+        owners = session.scalars(select(ChannelViewDailyIdentityOwner)).all()
+        assert len(owners) == 3
+        assert {owner.state for owner in owners} == {"confirmed"}
         assert task_account_coverage(session, task)["coverage_percent"] == 100
 
 

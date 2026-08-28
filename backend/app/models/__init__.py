@@ -38,6 +38,7 @@ from .conversation_speaker import *  # noqa: F401,F403
 from .group_bot_admission import *  # noqa: F401,F403
 from .fulfillment_contract import *  # noqa: F401,F403
 from .fulfillment_facts import *  # noqa: F401,F403
+from .channel_view_daily_identity import *  # noqa: F401,F403
 from .search_click_assignment import *  # noqa: F401,F403
 from .fulfillment_v2 import *  # noqa: F401,F403
 from .pacing import *  # noqa: F401,F403

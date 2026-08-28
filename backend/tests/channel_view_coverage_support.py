@@ -249,6 +249,7 @@ def add_lifetime_fact(
         ViewRemoteFact(
             tenant_id=1,
             obligation_id=f"legacy-{message.id}-{account.id}",
+            obligation_local_date=confirmed_at.date(),
             target_peer_id=scenario.channel.tg_peer_id,
             channel_message_id=message.id,
             account_id=account.id,

@@ -11,6 +11,7 @@ from app.models import (
     OperationTarget,
     Task,
     TaskDayLedger,
+    ViewFulfillmentObligation,
 )
 from app.services._common import _now
 from app.timezone import as_beijing
@@ -24,6 +25,12 @@ from ..channel_fulfillment import (
     view_confirmed_counts,
     view_daily_counts,
     view_materialized_account_ids_for_messages,
+)
+from ..channel_view_daily_identity import (
+    DailyIdentityClaim,
+    bind_daily_identity_action,
+    claim_daily_identity,
+    release_claimed_identity,
 )
 from ..channel_membership import channel_member_accounts, gate_channel_membership
 from ..channel_view_capacity import record_unique_account_capacity
@@ -199,12 +206,12 @@ def _view_target_limits(config: dict) -> tuple[int, int]:
         or config.get("target_views_per_message")
         or 1
     )
-    total = int(
-        config.get("per_message_total_view_target")
-        or config.get("target_views_per_message")
-        or daily
-    )
-    return daily, max(daily, total)
+    raw_total = config.get("per_message_total_view_target")
+    if raw_total is None or str(raw_total).strip() == "" or int(raw_total) <= 0:
+        total = 0
+    else:
+        total = max(daily, int(raw_total))
+    return daily, total
 
 
 def _view_accounts(
@@ -330,10 +337,13 @@ def _create_scheduled_view_action(session: Session, request: "ViewActionRequest"
     )
     if not obligation_accepts_new_action(obligation):
         return 0
+    if not _claim_daily_identity_for_request(session, request, obligation):
+        return 0
     schedule = reserve_view_action_pacing(
         session, request, planned_at=planned_at, deadline_at=deadline_at,
     )
     if schedule is None:
+        release_claimed_identity(session, obligation)
         return 0
     planned_at, reservation = schedule
     target = context.targets_by_message[request.message.id]
@@ -352,7 +362,40 @@ def _create_scheduled_view_action(session: Session, request: "ViewActionRequest"
     )
     bind_view_action_pacing(action, request, obligation, reservation)
     bind_obligation_action(obligation, action)
+    bind_daily_identity_action(session, obligation, action)
     return 1
+
+
+def _claim_daily_identity_for_request(
+    session: Session,
+    request: "ViewActionRequest",
+    obligation: ViewFulfillmentObligation,
+) -> bool:
+    context = request.context
+    owner = claim_daily_identity(
+        session,
+        DailyIdentityClaim(
+            tenant_id=request.task.tenant_id,
+            logical_task_id=request.task.id,
+            target_peer_id=context.channel.tg_peer_id,
+            channel_message_id=request.message.id,
+            account_id=request.account_id,
+            obligation_local_date=context.ledger.obligation_local_date,
+            obligation_id=obligation.id,
+        ),
+    )
+    if owner is not None:
+        return True
+    _record_daily_identity_conflict(request.task)
+    return False
+
+
+def _record_daily_identity_conflict(task: Task) -> None:
+    stats = dict(task.stats or {})
+    key = "channel_view_daily_identity_conflict_count"
+    stats[key] = int(stats.get(key) or 0) + 1
+    task.stats = stats
+    task.last_error = "同日同账号同帖子已由其他任务占用，未创建重复浏览 Action"
 
 
 def _view_action_payload(
@@ -417,7 +460,7 @@ def _empty_view_plan_message(
         return task.last_error or "未找到频道消息，等待下一轮采集"
     if all(_message_expired(message, config) for message in messages):
         return ""
-    if all(completed_counts.get(message.id, 0) >= total_target for message in messages):
+    if total_target > 0 and all(completed_counts.get(message.id, 0) >= total_target for message in messages):
         return ""
     return task.last_error or "没有可新增的有效浏览账号"
 

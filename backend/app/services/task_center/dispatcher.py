@@ -78,6 +78,11 @@ from .channel_fulfillment import (
     ensure_reaction_action_contract,
     ensure_view_action_contract,
 )
+from .channel_view_daily_identity import (
+    mark_daily_identity_call_issued,
+    mark_daily_identity_unknown,
+    release_daily_identity,
+)
 from .coverage_capacity import (
     HARD_HOURLY_GROUP_COOLDOWN_BLOCKED_MESSAGE,
     HARD_HOURLY_GROUP_COOLDOWN_BLOCKER_CODE,
@@ -749,9 +754,13 @@ def _sync_channel_fulfillment_state(
         if _confirm_channel_remote_fact(session, action):
             return
         obligation.status = "unknown"
+        if action.action_type == "view_message":
+            mark_daily_identity_unknown(session, action)
         return
     if action.status == "unknown_after_send":
         obligation.status = "unknown"
+        if action.action_type == "view_message":
+            mark_daily_identity_unknown(session, action)
         return
     if action.status not in {"failed", "skipped", "cancelled"}:
         return
@@ -759,6 +768,12 @@ def _sync_channel_fulfillment_state(
         return
     if _channel_action_remote_mutation_state(session, action) != "false":
         obligation.status = "unknown"
+        if action.action_type == "view_message":
+            mark_daily_identity_unknown(session, action)
+        return
+    if action.action_type == "view_message" and not release_daily_identity(session, action):
+        obligation.status = "unknown"
+        mark_daily_identity_unknown(session, action)
         return
     obligation.status = "open"
     obligation.current_action_id = None
@@ -3419,6 +3434,7 @@ def _reserve_channel_action_attempt(
     if not admit_source_paced_attempt(session, action, attempt):
         session.commit()
         return None
+    mark_daily_identity_call_issued(session, action)
     _mark_gateway_call_started(session, attempt, commit=False)
     if action.pacing_contract_version == PACING_CONTRACT_VERSION:
         align_source_gateway_call_started(session, attempt)

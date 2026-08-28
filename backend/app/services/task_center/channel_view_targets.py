@@ -176,8 +176,8 @@ def _fact_baselines_at_attach(
     message_ids = [message.id for message in messages]
     if not message_ids:
         return {}
-    lifetime_rows = session.execute(
-        select(ViewRemoteFact.channel_message_id, func.count(func.distinct(ViewRemoteFact.account_id)))
+    cumulative_rows = session.execute(
+        select(ViewRemoteFact.channel_message_id, func.count(ViewRemoteFact.id))
         .where(
             ViewRemoteFact.tenant_id == tenant_id,
             ViewRemoteFact.target_peer_id == target_peer_id,
@@ -185,7 +185,7 @@ def _fact_baselines_at_attach(
         )
         .group_by(ViewRemoteFact.channel_message_id)
     )
-    lifetime = {int(message_id): int(count) for message_id, count in lifetime_rows}
+    cumulative = {int(message_id): int(count) for message_id, count in cumulative_rows}
     ledger_rows = session.execute(
         select(ViewFulfillmentObligation.channel_message_id, func.count(ViewRemoteFact.id))
         .join(ViewRemoteFact, ViewRemoteFact.obligation_id == ViewFulfillmentObligation.id)
@@ -195,7 +195,7 @@ def _fact_baselines_at_attach(
     ledger_counts = {int(message_id): int(count) for message_id, count in ledger_rows}
     return {
         message_id: FactAttachBaseline(
-            lifetime_confirmed=int(lifetime.get(message_id, 0)),
+            lifetime_confirmed=int(cumulative.get(message_id, 0)),
             ledger_confirmed=int(ledger_counts.get(message_id, 0)),
         )
         for message_id in message_ids
@@ -217,11 +217,17 @@ def _new_target(
         or config.get("target_views_per_message")
         or 1
     )
-    total_target = max(daily_target, int(
-        config.get("per_message_total_view_target")
-        or config.get("target_views_per_message")
-        or daily_target
-    ))
+    raw_total = config.get("per_message_total_view_target")
+    if raw_total is None or str(raw_total).strip() == "" or int(raw_total) <= 0:
+        total_target = 0
+        effective_target = daily_target
+    else:
+        total_target = max(daily_target, int(raw_total))
+        effective_target = (
+            daily_target
+            if baseline.lifetime_confirmed < total_target
+            else 0
+        )
     anchor = task_pacing_anchor(task)
     anchor_at = max(anchor, message.created_at) if anchor else message.created_at
     return ChannelViewDailyMessageTarget(
@@ -235,10 +241,7 @@ def _new_target(
         total_target_snapshot=total_target,
         lifetime_confirmed_at_attach=baseline.lifetime_confirmed,
         ledger_confirmed_at_attach=baseline.ledger_confirmed,
-        effective_target_snapshot=min(
-            daily_target,
-            max(0, total_target - baseline.lifetime_confirmed),
-        ),
+        effective_target_snapshot=effective_target,
         accrual_anchor_at=anchor_at,
         active_until=_active_until(message, config, ledger),
         created_at=now,
