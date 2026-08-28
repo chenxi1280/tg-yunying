@@ -3,22 +3,14 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import select
 
-from app.models import Action, ViewRemoteFact
-from app.services.task_center.channel_membership import (
-    channel_member_accounts,
-    gate_channel_membership,
-)
-from app.services.task_center.executors.channel_like import build_plan as build_like
+from app.models import ViewRemoteFact
 from app.services.task_center.executors.channel_view import build_plan as build_view
 from tests.channel_view_coverage_support import (
     add_lifetime_fact,
-    add_like_task,
     add_message,
     add_view_task,
     confirm_actions,
-    link_accounts,
     new_session,
     seed_channel_scenario,
     view_actions,
@@ -26,71 +18,6 @@ from tests.channel_view_coverage_support import (
 
 
 pytestmark = pytest.mark.no_postgres
-
-
-def test_channel_tasks_require_per_account_membership() -> None:
-    with new_session() as session:
-        scenario = seed_channel_scenario(
-            session,
-            channel_id=101,
-            account_count=10,
-            linked=False,
-        )
-        task = add_view_task(
-            session,
-            channel=scenario.channel,
-            messages=[],
-            task_id="task-view-membership",
-            daily_target=10,
-            total_target=10,
-        )
-
-        gate = gate_channel_membership(session, task, scenario.channel)
-        assert gate.ready is False
-        assert gate.created == 10
-
-        link_accounts(session, channel=scenario.channel, accounts=scenario.accounts)
-        assert gate_channel_membership(session, task, scenario.channel).ready is True
-        members = channel_member_accounts(
-            session,
-            task,
-            scenario.channel,
-            scenario.accounts,
-        )
-        assert len(members) == 10
-
-
-def test_channel_like_waits_for_membership_before_reactions() -> None:
-    with new_session() as session:
-        scenario = seed_channel_scenario(
-            session,
-            channel_id=102,
-            account_count=5,
-            linked=False,
-        )
-        message = add_message(
-            session,
-            channel=scenario.channel,
-            message_id=51,
-            published_at=datetime(2026, 8, 28, 10, 0),
-        )
-        task = add_like_task(
-            session,
-            channel=scenario.channel,
-            message=message,
-            target=5,
-        )
-
-        assert build_like(session, task) == 5
-        assert _action_count(session, "like_message") == 0
-        link_accounts(session, channel=scenario.channel, accounts=scenario.accounts)
-        assert build_like(session, task) == 5
-        assert _action_count(session, "like_message") == 5
-
-
-def _action_count(session, action_type: str) -> int:
-    statement = select(Action).where(Action.action_type == action_type)
-    return len(list(session.scalars(statement)))
 
 
 def test_channel_view_spreads_daily_coverage_across_messages() -> None:

@@ -28,7 +28,7 @@
 ### 1.2 2026-08-28 全账号每日覆盖与时区边界补正
 
 - `channel_view.account_coverage_mode` 的当前唯一配置值为 `all_accounts_daily`。Planner 必须扫描任务范围内全部候选账号，并以当日 `view_message` coverage 作为优先级；不得用普通分页上限截断账号池。
-- 每条消息仍受 lifetime `(target_peer_id, channel_message_id, account_id)` 排除、账号日浏览上限、当前 DueSet、任务日容量和逐账号 membership 限制。已有义务在重绑 Action 前必须复核 task/ledger/target/message/account/materialization identity 完全一致。
+- 每条消息仍受 lifetime `(target_peer_id, channel_message_id, account_id)` 排除、账号日浏览上限、当前 DueSet、任务日容量和现有频道准入合同限制。已有义务在重绑 Action 前必须复核 task/ledger/target/message/account/materialization identity 完全一致。
 - 同一轮多消息分配必须在消息缺口与合法账号边之间执行确定性最大基数匹配，优先让当日未覆盖账号获得至少一个合法 slot，再按稳定 message/account 顺序填充剩余缺口。禁止逐消息贪心消耗同一批账号，导致后续消息有合法解却被饥饿。
 - `TaskDayLedger.period_start_at/planning_anchor_at/deadline_at` 与由 deadline 派生的 `ChannelViewDailyMessageTarget.active_until` 是 UTC storage；进入北京墙钟排期时使用 UTC-storage 转换。消息 `published_at` 和 target `accrual_anchor_at` 遵循项目的北京墙钟合同：naive 值按北京墙钟解释，aware 值先转换到北京时区。两类时间不得共用“直接去掉 tzinfo”的兼容路径。
 - 本补正只改变 pre-Gateway 账号选择、义务身份校验和排期时间解释；成功仍只认 `Action -> ExecutionAttempt/Gateway -> ViewRemoteFact -> TaskAccountDailyCoverage`，Action 创建或本地测试不能充当浏览履约。

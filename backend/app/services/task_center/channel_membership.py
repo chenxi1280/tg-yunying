@@ -141,10 +141,11 @@ def channel_member_accounts(session: Session, task: Task, channel: OperationTarg
     if not require_send and not _target_requires_membership_for_candidates(channel, accounts):
         return accounts
     group = linked_channel_group(session, channel, create=False, prefer_send_ready=require_send)
+    directly_ready_ids = _directly_ready_channel_account_ids(channel, accounts, require_send=require_send)
     if not group:
-        return []
+        return [account for account in accounts if account.id in directly_ready_ids]
     member_ids, blocked_send_ids = _channel_member_id_sets(session, task.tenant_id, group.id, require_send=require_send)
-    return [account for account in accounts if account.id not in blocked_send_ids and account.id in member_ids]
+    return [account for account in accounts if account.id not in blocked_send_ids and (account.id in member_ids or account.id in directly_ready_ids)]
 
 
 def _channel_member_id_sets(session: Session, tenant_id: int, group_id: int, *, require_send: bool) -> tuple[set[int], set[int]]:
@@ -162,6 +163,10 @@ def _channel_member_id_sets(session: Session, tenant_id: int, group_id: int, *, 
             continue
         member_ids.add(int(link.account_id))
     return member_ids, blocked_send_ids
+
+
+def _directly_ready_channel_account_ids(channel: OperationTarget, accounts: list[TgAccount], *, require_send: bool) -> set[int]:
+    return {account.id for account in accounts if account_satisfies_authorized_target(channel, account, require_send=require_send)}
 
 
 def mark_channel_membership_joined(session: Session, tenant_id: int, channel_target_id: int, account_id: int, *, permission_label: str = "已关注") -> None:
@@ -210,7 +215,7 @@ def channel_membership_summary(
     candidate_rows = candidates if candidates is not None else candidate_accounts_for_config(session, tenant_id, account_config)
     candidate_ids = [account.id for account in candidate_rows]
     group = linked_channel_group(session, channel, create=False, prefer_send_ready=require_send)
-    joined_ids: set[int] = set()
+    joined_ids: set[int] = {account.id for account in candidate_rows if account_satisfies_authorized_target(channel, account, require_send=require_send)}
     if group and candidate_ids:
         link_stmt = select(TgGroupAccount.account_id).where(
             TgGroupAccount.tenant_id == tenant_id,
@@ -344,17 +349,30 @@ def target_requires_membership_gate(target: OperationTarget, *, require_send: bo
     if require_send and target.target_type == "group" and not bool(target.can_send):
         return True
     if target.target_type == "channel":
-        return True
+        return not bool(target.can_send)
     return False
 
 
 _AUTHORIZED_TARGET_VALUES = {GroupAuthStatus.AUTHORIZED.value, "已授权", "授权", "正常"}
 
 
+def account_satisfies_authorized_target(target: OperationTarget, account: TgAccount, *, require_send: bool = False) -> bool:
+    if target.auth_status not in _AUTHORIZED_TARGET_VALUES:
+        return False
+    if require_send and not target.can_send:
+        return False
+    if target.target_type != "channel":
+        return False
+    peer_id = str(target.tg_peer_id or "")
+    return bool(target.can_send and (account.session_ciphertext or peer_id.startswith("-100")))
+
+
 def _target_requires_membership_for_candidates(target: OperationTarget, candidates: list[TgAccount], *, require_send: bool = False) -> bool:
     if target_requires_membership_gate(target, require_send=require_send):
         return True
-    return bool(candidates)
+    if not candidates:
+        return False
+    return any(not account_satisfies_authorized_target(target, account, require_send=require_send) for account in candidates)
 
 
 def _create_missing_membership_actions(session: Session, task: Task, channel: OperationTarget, candidates: list[TgAccount], *, require_send: bool = False) -> int:
@@ -382,6 +400,7 @@ def _ready_membership_account_ids(
     if require_send:
         link_stmt = link_stmt.where(TgGroupAccount.can_send.is_(True))
     joined_ids = {int(account_id) for account_id in session.scalars(link_stmt)}
+    joined_ids.update(_directly_ready_channel_account_ids(channel, candidates, require_send=require_send))
     return joined_ids
 
 
