@@ -67,6 +67,25 @@ def test_group_ai_defaults_reply_min_and_admission():
     assert config.group_bot_admission_required is True
 
 
+def test_group_ai_normalization_preserves_controlled_legacy_prompt_route():
+    normalized = validated_type_config(
+        "group_ai_chat",
+        {
+            "target_group_id": 7,
+            "adult_prompt_enabled": True,
+            "content_route": "adult_service",
+        },
+    )
+
+    assert normalized["adult_prompt_enabled"] is True
+    assert normalized["content_route"] == "adult_service"
+
+
+def test_group_ai_config_rejects_unknown_legacy_prompt_route():
+    with pytest.raises(ValidationError):
+        GroupAIChatConfig(target_group_id=7, content_route="unknown")  # type: ignore[arg-type]
+
+
 def test_channel_comment_defaults_mixed_reply():
     config = ChannelCommentConfig(target_channel_id=9)
     assert config.comment_mode == "mixed"

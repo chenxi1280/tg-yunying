@@ -364,6 +364,15 @@ class GroupAIChatConfig(BaseModel):
     low_confidence_silence_enabled: bool = True
     ai_two_stage_enabled: bool = False
     ai_semantic_reviewer_model: str = ""
+    adult_prompt_enabled: bool | None = None
+    content_route: Literal[
+        "general",
+        "adult_visual",
+        "adult_product",
+        "adult_service_inquiry",
+        "adult_service_sensory",
+        "adult_service",
+    ] | None = None
     ai_content_route_v2_enabled: bool = False
     ai_content_policy_version_id: str = ""
     ai_content_allowed_routes: list[str] = Field(default_factory=list)

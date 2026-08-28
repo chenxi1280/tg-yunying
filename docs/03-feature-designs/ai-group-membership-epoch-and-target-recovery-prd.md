@@ -118,6 +118,13 @@ AI 活群执行顺序固定为：配置的 `group_ai_prejoin_channel_ids` 全部
 ## 8. 回滚与恢复
 
 - 代码回滚前需确认没有新格式事实或 recovery audit 被旧代码误读；否则 rollback 为 unproven。
+
+## 9. 生产恢复配置兼容补充（2026-08-29）
+
+- 受保护恢复必须继续复用 `update_task_settings` 的完整配置校验，禁止为修复目标身份而绕过 schema 直接改 `Task.type_config`。
+- 线上 8 个 AI 活群任务均已由既有受审补丁写入 `adult_prompt_enabled=true` 与 `content_route=adult_service`；这两个字段是当前 Prompt 路由运行时仍会读取的受控兼容合同，任务设置正规化必须保留它们。
+- `adult_prompt_enabled` 只接受布尔值；`content_route` 只接受既有明确路由枚举，未知值继续 fail closed。两个字段不加入普通设置页可编辑字段白名单，本次只修复“已有合法线上配置无法经正规设置更新”的合同断裂。
+- Release Gate 首次 apply 在任何数据库写入前因 `extra_forbidden` 失败；修复候选必须新增“正规化保留受控旧路由、拒绝未知路由”回归测试，重新通过完整 CI、部署 SHA 校验和最新 fingerprint 后方可再次 apply。
 - Action 重建是追加式：旧 Action 保留 skipped，新 Action 若未进入 Gateway可由同一审计操作取消；一旦进入 Gateway 只能 reconcile，不能回滚重发。
 - 成都目标 apply 后若新 Action 尚未进入 Gateway，可用审计 before snapshot 做受保护反向配置恢复；已有新目标 Gateway 副作用后禁止自动反向切换。
 
