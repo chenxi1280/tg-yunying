@@ -125,6 +125,12 @@ AI 活群执行顺序固定为：配置的 `group_ai_prejoin_channel_ids` 全部
 - 线上 8 个 AI 活群任务均已由既有受审补丁写入 `adult_prompt_enabled=true` 与 `content_route=adult_service`；这两个字段是当前 Prompt 路由运行时仍会读取的受控兼容合同，任务设置正规化必须保留它们。
 - `adult_prompt_enabled` 只接受布尔值；`content_route` 只接受既有明确路由枚举，未知值继续 fail closed。两个字段不加入普通设置页可编辑字段白名单，本次只修复“已有合法线上配置无法经正规设置更新”的合同断裂。
 - Release Gate 首次 apply 在任何数据库写入前因 `extra_forbidden` 失败；修复候选必须新增“正规化保留受控旧路由、拒绝未知路由”回归测试，重新通过完整 CI、部署 SHA 校验和最新 fingerprint 后方可再次 apply。
+
+## 10. 每日权限复检动作 epoch 补充（2026-08-29）
+
+- 第一轮恢复后的独立回读发现，`membership_recovery_daily_permission_recheck` 会批量插入新的 `ensure_target_membership`，但插入行没有显式携带 Task 当前 lifecycle epoch，数据库默认写成 1；这会让刚生成的动作再次无法被 claimant 领取。
+- 所有准入重试创建路径都必须在创建时显式绑定 `task.task_lifecycle_epoch`，不能依赖模型默认值。回归用非 1 epoch 任务验证每日权限复检的全部新动作均绑定当前 epoch。
+- 已生成的这类旧 epoch 动作仍只允许按“pending、零 Attempt、canonical `channel_target_id`”条件由同一受保护恢复重建；已有 Attempt 的行继续禁止重放。
 - Action 重建是追加式：旧 Action 保留 skipped，新 Action 若未进入 Gateway可由同一审计操作取消；一旦进入 Gateway 只能 reconcile，不能回滚重发。
 - 成都目标 apply 后若新 Action 尚未进入 Gateway，可用审计 before snapshot 做受保护反向配置恢复；已有新目标 Gateway 副作用后禁止自动反向切换。
 

@@ -777,6 +777,7 @@ def _membership_retry_action_row(
         "payload": payload.model_dump(mode="json"),
         "result": result,
         "retry_count": 0,
+        "task_lifecycle_epoch": int(task.task_lifecycle_epoch or 1),
         "created_at": created_at,
     }
 

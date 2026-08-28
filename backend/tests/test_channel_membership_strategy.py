@@ -554,6 +554,7 @@ def test_all_account_membership_permission_blocker_rechecks_once_next_day() -> N
     assert [action.scheduled_at for action in retries] == scheduled_before
     assert scheduled_before[-1] - scheduled_before[0] == timedelta(hours=4)
     assert {action.result["reactivated_reason"] for action in retries} == {"hard_hourly_daily_permission_recheck"}
+    assert {action.task_lifecycle_epoch for action in retries} == {7}
 
 
 def _daily_permission_recheck_fixture() -> tuple[OperationTarget, Task, list[TgAccount], list]:
@@ -566,6 +567,7 @@ def _daily_permission_recheck_fixture() -> tuple[OperationTarget, Task, list[TgA
     task = Task(
         id="task-daily-permission-recheck", tenant_id=1, name="每日权限复检",
         type="group_ai_chat", status="running", account_config={"selection_mode": "all"},
+        task_lifecycle_epoch=7,
         type_config={
             "account_coverage_mode": "all_accounts_daily", "target_operation_target_id": target.id,
             "hard_hourly_target_enabled": True, "hourly_min_messages": 10,
