@@ -15,6 +15,8 @@ from app.models import (
     OperationTarget,
     Task,
     TaskAccountDailyCoverage,
+    TaskGroupDailyMessageSlot,
+    TaskGroupDailyTarget,
     TaskMembershipAdmissionItem,
     Tenant,
     TgAccount,
@@ -27,6 +29,7 @@ from app.services.task_center.account_scope import (
     initialize_all_account_task_scope,
     reset_all_account_scope_for_target_change,
 )
+from app.services.task_center.daily_ledgers import ensure_task_day_ledger
 from app.services._common import _now
 from app.services.task_center.fulfillment_remote_facts import persist_remote_fact
 from app.services.task_center.group_rescue import trigger_group_rescue
@@ -246,6 +249,43 @@ def test_target_change_resets_scope_and_abandons_old_coverage(
         TaskAccountDailyCoverage.coverage_date == _now().date(),
     )))
     assert current_groups == {11, 13}
+
+
+def test_same_day_target_change_materializes_new_target_ledger_slots(
+    session: Session,
+) -> None:
+    task = session.get(Task, "task-1")
+    _seed_old_scope(session, task)
+    first_ledger = ensure_task_day_ledger(session, task, now=_now())
+    _seed_new_target(session)
+    task.type_config = {
+        **dict(task.type_config or {}),
+        "target_operation_target_id": 22,
+        "target_group_id": 13,
+    }
+    reset_all_account_scope_for_target_change(session, task)
+    initialize_all_account_task_scope(session, task)
+
+    current_ledger = ensure_task_day_ledger(session, task, now=_now())
+
+    slots = list(session.scalars(select(TaskGroupDailyMessageSlot).where(
+        TaskGroupDailyMessageSlot.task_day_ledger_id == current_ledger.id,
+    )))
+    targets = list(session.scalars(select(TaskGroupDailyTarget).where(
+        TaskGroupDailyTarget.task_id == task.id,
+        TaskGroupDailyTarget.target_date == current_ledger.obligation_local_date,
+    )))
+    new_coverage = session.scalar(select(TaskAccountDailyCoverage).where(
+        TaskAccountDailyCoverage.task_id == task.id,
+        TaskAccountDailyCoverage.group_id == 13,
+        TaskAccountDailyCoverage.coverage_date == current_ledger.obligation_local_date,
+    ))
+
+    assert current_ledger.id == first_ledger.id
+    assert {slot.target_operation_target_id for slot in slots} == {21, 22}
+    assert {target.group_id for target in targets} == {11, 13}
+    assert all(target.task_day_ledger_id == current_ledger.id for target in targets)
+    assert new_coverage.task_day_ledger_id == current_ledger.id
 
 
 def _seed_old_scope(

@@ -131,6 +131,12 @@ AI 活群执行顺序固定为：配置的 `group_ai_prejoin_channel_ids` 全部
 - 第一轮恢复后的独立回读发现，`membership_recovery_daily_permission_recheck` 会批量插入新的 `ensure_target_membership`，但插入行没有显式携带 Task 当前 lifecycle epoch，数据库默认写成 1；这会让刚生成的动作再次无法被 claimant 领取。
 - 所有准入重试创建路径都必须在创建时显式绑定 `task.task_lifecycle_epoch`，不能依赖模型默认值。回归用非 1 epoch 任务验证每日权限复检的全部新动作均绑定当前 epoch。
 - 已生成的这类旧 epoch 动作仍只允许按“pending、零 Attempt、canonical `channel_target_id`”条件由同一受保护恢复重建；已有 Attempt 的行继续禁止重放。
+
+## 11. 同日目标切换的日账本补充（2026-08-29）
+
+- 成都切换到 `CD_yhy` 后，独立 planner 回读出现 `daily_group_target_ledger_missing`：同一 Task 当日 ledger 已有旧目标 slots，旧实现只判断“ledger 是否已有任意 slot”便提前返回，导致新目标的 `TaskGroupDailyTarget.task_day_ledger_id` 为空。
+- 当日 group slot 物化必须按 `task_day_ledger_id + target_operation_target_id` 判断，而非仅按 ledger；同日换目标时保留旧目标 slots 作为历史，不覆盖、不复用，并为新目标创建独立 slots。
+- 新目标 `TaskGroupDailyTarget` 与新目标当日 coverage 必须绑定同一个现存 TaskDayLedger；coverage 查询必须同时限定 `group_id`，禁止同账号的新旧目标 coverage 相互覆盖。
 - Action 重建是追加式：旧 Action 保留 skipped，新 Action 若未进入 Gateway可由同一审计操作取消；一旦进入 Gateway 只能 reconcile，不能回滚重发。
 - 成都目标 apply 后若新 Action 尚未进入 Gateway，可用审计 before snapshot 做受保护反向配置恢复；已有新目标 Gateway 副作用后禁止自动反向切换。
 

@@ -159,17 +159,9 @@ def _materialize_group_slots(
     ledger: TaskDayLedger,
     local_now: datetime,
 ) -> None:
-    if _slots_exist(session, ledger.id):
-        return
     group = _task_group(session, task)
     items = _scope_items(session, task)
-    ensure_task_daily_coverage(
-        session,
-        task,
-        now=local_now.replace(tzinfo=None),
-        account_ids=[item.account_id for item in items],
-        target_group=group,
-    )
+    target_id = _target_id(session, task, group, items)
     target = ensure_task_group_daily_target(
         session,
         task,
@@ -178,15 +170,30 @@ def _materialize_group_slots(
         now=local_now.replace(tzinfo=None),
     )
     target.task_day_ledger_id = ledger.id
-    rows = _coverage_rows(session, task.id, ledger.obligation_local_date)
+    if _slots_exist(session, ledger.id, target_id):
+        return
+    ensure_task_daily_coverage(
+        session,
+        task,
+        now=local_now.replace(tzinfo=None),
+        account_ids=[item.account_id for item in items],
+        target_group=group,
+    )
+    rows = _coverage_rows(
+        session,
+        task.id,
+        ledger.obligation_local_date,
+        group.id,
+    )
     _bind_coverage_rows(rows, ledger.id)
     _add_slots(session, task, ledger, group, target, items, rows)
 
 
-def _slots_exist(session: Session, ledger_id: str) -> bool:
+def _slots_exist(session: Session, ledger_id: str, target_id: int) -> bool:
     return session.scalar(
         select(TaskGroupDailyMessageSlot.id)
         .where(TaskGroupDailyMessageSlot.task_day_ledger_id == ledger_id)
+        .where(TaskGroupDailyMessageSlot.target_operation_target_id == target_id)
         .limit(1)
     ) is not None
 
@@ -248,11 +255,13 @@ def _coverage_rows(
     session: Session,
     task_id: str,
     local_date,
+    group_id: int,
 ) -> dict[int, TaskAccountDailyCoverage]:
     rows = session.scalars(
         select(TaskAccountDailyCoverage).where(
             TaskAccountDailyCoverage.task_id == task_id,
             TaskAccountDailyCoverage.coverage_date == local_date,
+            TaskAccountDailyCoverage.group_id == group_id,
         )
     )
     return {row.account_id: row for row in rows}
