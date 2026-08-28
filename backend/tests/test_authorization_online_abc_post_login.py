@@ -113,6 +113,33 @@ def test_post_login_apply_does_not_commit_before_request_approval(db_session, mo
     assert result["batch_id"]
 
 
+def test_post_login_apply_renders_pending_slots_with_autoflush_disabled(db_session) -> None:
+    db_session.autoflush = False
+    preview = preview_post_login_online_abc_batch(
+        db_session,
+        1,
+        abc_tests.ACCOUNT_IDS[0],
+        idempotency_key="post-login-autoflush-disabled",
+        deployed_release_sha=abc_tests.RELEASE_SHA,
+    )
+
+    result = apply_post_login_online_abc_batch(
+        db_session,
+        1,
+        abc_tests.ACCOUNT_IDS[0],
+        idempotency_key="post-login-autoflush-disabled",
+        deployed_release_sha=abc_tests.RELEASE_SHA,
+        expected_fingerprint=preview["fingerprint"],
+        requested_by="requester",
+        approved_by="approver",
+        approval_ref="POST-LOGIN-AUTOFLUSH-DISABLED",
+    )
+
+    assert result["standby_1_outcome_counts"] == {"pending": 1}
+    assert result["standby_2_outcome_counts"] == {"pending": 1}
+    assert result["conservation"]["valid"] is True
+
+
 def test_post_login_idempotent_apply_rejects_changed_frozen_manifest(db_session) -> None:
     _post_login_batch(db_session)
     changed_release = "b" * 40

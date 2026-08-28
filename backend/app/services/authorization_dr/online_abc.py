@@ -250,6 +250,7 @@ def _create_items(session, batch, targets) -> None:
                 account_id=item.account_id, logical_slot=logical_slot,
                 outcome="already_qualified" if plan == "already_qualified" else "pending",
             ))
+    session.flush()
 
 
 def _start_item(session, batch, item, actor, approval_ref) -> None:
