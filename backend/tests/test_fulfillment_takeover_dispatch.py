@@ -10,6 +10,7 @@ from app.database import Base
 from app.models import (
     Action,
     ChannelMessage,
+    ChannelViewDailyIdentityOwner,
     CommentFulfillmentObligation,
     ExecutionAttempt,
     FailureType,
@@ -47,6 +48,33 @@ from app.services.task_center.stats import retry_failed_actions
 
 
 pytestmark = pytest.mark.no_postgres
+
+
+def _seed_view_daily_owner(
+    session: Session,
+    obligation: ViewFulfillmentObligation,
+    action: Action,
+    *,
+    state: str,
+) -> ChannelViewDailyIdentityOwner:
+    ledger = session.get(TaskDayLedger, obligation.task_day_ledger_id)
+    message = session.get(ChannelMessage, obligation.channel_message_id)
+    channel = session.get(OperationTarget, message.channel_target_id)
+    owner = ChannelViewDailyIdentityOwner(
+        tenant_id=action.tenant_id,
+        target_peer_id=channel.tg_peer_id,
+        channel_message_id=message.id,
+        account_id=action.account_id,
+        obligation_local_date=ledger.obligation_local_date,
+        state=state,
+        logical_task_id=action.task_id,
+        obligation_id=obligation.id,
+        action_id=action.id,
+        request_identity=f"{action.task_id}:{obligation.id}",
+    )
+    session.add(owner)
+    session.flush()
+    return owner
 
 
 def test_channel_view_uses_beijing_wall_time_for_aware_utc_ledger_deadline(
@@ -576,11 +604,13 @@ def test_dispatch_finalizer_marks_view_obligation_unknown(
     obligation.current_action_id = action.id
     session.add(action)
     session.flush()
+    owner = _seed_view_daily_owner(session, obligation, action, state="call_issued")
 
     dispatcher._sync_channel_fulfillment_state(session, action)
 
     assert obligation.status == "unknown"
     assert obligation.current_action_id == action.id
+    assert owner.state == "unknown"
 
 
 def test_peer_invalid_abandons_only_current_account_and_reopens_safe_view(
@@ -611,6 +641,7 @@ def test_peer_invalid_abandons_only_current_account_and_reopens_safe_view(
     session.add_all([failed, same_account, other_account, other_action])
     obligation.current_action_id = failed.id
     session.flush()
+    owner = _seed_view_daily_owner(session, obligation, failed, state="call_issued")
     assert ensure_action_obligation(session, failed)
     attempt = dispatcher._begin_execution_attempt(session, failed, account)
     dispatcher._mark_gateway_call_started(session, attempt, commit=False)
@@ -632,6 +663,8 @@ def test_peer_invalid_abandons_only_current_account_and_reopens_safe_view(
     assert other_action.status == "pending"
     assert obligation.status == "open"
     assert obligation.current_action_id is None
+    assert owner.state == "available"
+    assert owner.action_id is None
     journal = session.query(GatewayRequestEvidenceJournal).one()
     assert journal.remote_mutation_state == "false"
 
@@ -645,11 +678,14 @@ def test_fact_first_pre_gateway_failure_projects_unbound_view_owner(
     session.add(action)
     obligation.current_action_id = action.id
     session.flush()
+    owner = _seed_view_daily_owner(session, obligation, action, state="pre_gateway")
 
     dispatcher._finalize_fact_first_dispatch(session, action)
 
     assert obligation.status == "open"
     assert obligation.current_action_id is None
+    assert owner.state == "available"
+    assert owner.action_id is None
 
 
 def test_gateway_unknown_failure_keeps_view_owner_bound(
@@ -660,6 +696,7 @@ def test_gateway_unknown_failure_keeps_view_owner_bound(
     session.add(action)
     obligation.current_action_id = action.id
     session.flush()
+    owner = _seed_view_daily_owner(session, obligation, action, state="call_issued")
     assert ensure_action_obligation(session, action)
     attempt = dispatcher._begin_execution_attempt(session, action, account)
     dispatcher._mark_gateway_call_started(session, attempt, commit=False)
@@ -678,6 +715,7 @@ def test_gateway_unknown_failure_keeps_view_owner_bound(
     assert action.status == "unknown_after_send"
     assert obligation.status == "unknown"
     assert obligation.current_action_id == action.id
+    assert owner.state == "unknown"
 
 
 def _view_failure_scope(

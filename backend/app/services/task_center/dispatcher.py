@@ -766,12 +766,17 @@ def _sync_channel_fulfillment_state(
         return
     if obligation.status == "unavailable":
         return
-    if _channel_action_remote_mutation_state(session, action) != "false":
+    remote_mutation_state = _channel_action_remote_mutation_state(session, action)
+    if remote_mutation_state != "false":
         obligation.status = "unknown"
         if action.action_type == "view_message":
             mark_daily_identity_unknown(session, action)
         return
-    if action.action_type == "view_message" and not release_daily_identity(session, action):
+    if action.action_type == "view_message" and not release_daily_identity(
+        session,
+        action,
+        remote_mutation_state=remote_mutation_state,
+    ):
         obligation.status = "unknown"
         mark_daily_identity_unknown(session, action)
         return

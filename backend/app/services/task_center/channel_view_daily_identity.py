@@ -86,9 +86,19 @@ def mark_daily_identity_unknown(session: Session, action: Action) -> None:
     owner.version += 1
 
 
-def release_daily_identity(session: Session, action: Action) -> bool:
+def release_daily_identity(
+    session: Session,
+    action: Action,
+    *,
+    remote_mutation_state: str | None = None,
+) -> bool:
     owner = _owner_for_action(session, action, required=False)
-    if owner is None or owner.state != "pre_gateway":
+    if owner is None:
+        return False
+    call_issued_safe = (
+        owner.state == "call_issued" and remote_mutation_state == "false"
+    )
+    if owner.state != "pre_gateway" and not call_issued_safe:
         return False
     owner.state = "available"
     owner.logical_task_id = action.task_id

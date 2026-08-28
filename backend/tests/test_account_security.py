@@ -474,7 +474,7 @@ def test_ai_random_profile_preview_requests_large_batch_once(monkeypatch):
         assert preview.items[-1].generated_display_name == "测试名50"
 
 
-def test_local_profile_preview_diversifies_large_batches():
+def test_local_profile_preview_diversifies_names_and_usernames_without_bio_boilerplate():
     with _session() as session:
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(
@@ -517,7 +517,7 @@ def test_local_profile_preview_diversifies_large_batches():
         bios = [item.generated_bio for item in preview.items]
         username_bases = {item.username_candidates[0].rsplit("_", 1)[0] for item in preview.items}
         assert len(set(names)) == 100
-        assert len({len(bio) for bio in bios}) >= 8
+        assert set(bios) == {""}
         assert len(username_bases) >= 30
 
 

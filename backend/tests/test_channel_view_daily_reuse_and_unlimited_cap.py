@@ -250,7 +250,12 @@ def test_cross_task_daily_identity_allows_only_one_action(monkeypatch):
         assert second_action is not None
         mark_daily_identity_call_issued(session, second_action)
         assert release_daily_identity(session, second_action) is False
-        assert build_plan(session, third) == 0
+        assert release_daily_identity(
+            session,
+            second_action,
+            remote_mutation_state="false",
+        ) is True
+        assert build_plan(session, third) == 1
 
 
 def test_channel_view_unlimited_vs_finite_cap():
