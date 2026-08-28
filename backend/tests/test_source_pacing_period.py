@@ -49,3 +49,22 @@ def test_ai_source_period_keeps_ledger_fallback() -> None:
     )
 
     assert period_key == ledger.id
+
+
+def test_ledger_source_period_converts_naive_utc_storage_to_beijing_wall() -> None:
+    ledger = SimpleNamespace(
+        id="ledger-utc",
+        period_start_at=datetime(2026, 8, 27, 16, 0),
+        deadline_at=datetime(2026, 8, 28, 16, 0),
+    )
+    owner = SimpleNamespace(
+        task_day_ledger_id=ledger.id,
+        pacing_period_key=None,
+    )
+
+    start, deadline, _period_key = _source_period(
+        LedgerSession(ledger), owner, "view"
+    )
+
+    assert start == datetime(2026, 8, 28, 0, 0)
+    assert deadline == datetime(2026, 8, 29, 0, 0)

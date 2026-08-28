@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import replace
 from datetime import datetime
 
 from sqlalchemy.orm import Session
@@ -8,7 +8,6 @@ from sqlalchemy.orm import Session
 from app.services._common import _now
 
 from .ai_generation_dependencies import GenerationDependencies
-from .ai_group_prompt import LEGACY_NEGATIVE_PHRASES
 from .ai_generator import (
     AI_CONTENT_REQUEST_TIMEOUT_SECONDS,
     AiGenerationUnavailable,
@@ -17,6 +16,13 @@ from .ai_generator import (
     _copy_generated_content_metadata,
 )
 from .ai_generation_state import validate_output_sequences, validate_output_slot_ids
+from .ai_generation_support import (
+    AI_GENERATION_DEADLINE_BUDGET_EXHAUSTED,
+    SlotGenerationResult,
+    TwoStageRuntime as _TwoStageRuntime,
+    legacy_negative_match,
+    naive_datetime,
+)
 from .ai_generation_stage_config import (
     fallback_stages as _fallback_stages,
     stage_config as _stage_config,
@@ -32,24 +38,6 @@ from .two_stage_generation import (
     two_stage_enabled,
 )
 
-AI_GENERATION_DEADLINE_BUDGET_EXHAUSTED = "ai_generation_deadline_budget_exhausted"
-@dataclass(frozen=True)
-class SlotGenerationResult:
-    content: str
-    rejection_code: str = ""
-    rejection_detail: str = ""
-    voice_profile_anchor_rewritten: bool = False
-    quality_fallback: str = ""
-    fallback_reason: str = ""
-    evaluator_evidence: dict = field(default_factory=dict)
-@dataclass
-class _TwoStageRuntime:
-    session: Session
-    request: object
-    dependencies: GenerationDependencies
-    history_lines: list[str]
-    baseline: list[str]
-    fingerprint_counts: dict[str, int]
 def generate_quality_results(
     session: Session,
     request,
@@ -384,13 +372,9 @@ def _require_provider_attempt_budget(request) -> None:
         deadline = datetime.fromisoformat(raw_deadline)
     except ValueError as exc:
         raise AiGenerationUnavailable("ai_generation_deadline_invalid") from exc
-    remaining = (_naive(deadline) - _naive(_now())).total_seconds()
+    remaining = (naive_datetime(deadline) - naive_datetime(_now())).total_seconds()
     if remaining < AI_CONTENT_REQUEST_TIMEOUT_SECONDS:
         raise AiGenerationUnavailable(AI_GENERATION_DEADLINE_BUDGET_EXHAUSTED)
-
-
-def _naive(value: datetime) -> datetime:
-    return value.replace(tzinfo=None) if value.tzinfo else value
 
 
 def _check_in_fallback_content(slot: dict, index: int, reason: str) -> GeneratedContent:
@@ -463,12 +447,17 @@ def _filter_stage_contents(
 
 def _filter_slot(request, index: int, content: str, *, baseline: list[str]) -> SlotGenerationResult:
     from .executors import group_ai_chat
+    from .ai_group_prompt import sanitize_group_message_text
+
+    cleaned_text = sanitize_group_message_text(str(content or ""))
+    if not cleaned_text or len(cleaned_text.strip()) < 2:
+        return SlotGenerationResult("", "quality_rejected", "link_restricted_or_empty")
 
     snapshot = request.quality_snapshots[index]
     quality_item = {"slot": request.config["generation_slots"][index]}
-    mapped = _copy_generated_content_metadata(str(content), content)
+    mapped = _copy_generated_content_metadata(str(cleaned_text), content)
     mapped.sequence_index = index + 1
-    if _legacy_negative_match(request, str(content)):
+    if legacy_negative_match(request, str(cleaned_text)):
         return SlotGenerationResult(mapped, "negative_lexicon_match", "negative_lexicon_match")
     if request.config["generation_slots"][index].get("reply_to_message_id"):
         mapped.reply_to_sequence_index = index + 1
@@ -499,12 +488,6 @@ def _filter_slot(request, index: int, content: str, *, baseline: list[str]) -> S
         code = str(stats.get("skip_reason") or "quality_rejected")
         return SlotGenerationResult(mapped, code, code)
     return SlotGenerationResult(mapped)
-
-
-def _legacy_negative_match(request, content: str) -> bool:
-    if two_stage_enabled(getattr(request, "config", {})):
-        return False
-    return any(phrase in content for phrase in LEGACY_NEGATIVE_PHRASES)
 
 
 def _ordered_results(request, accepted: dict, rejected: dict) -> list[SlotGenerationResult]:

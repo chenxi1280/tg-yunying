@@ -70,7 +70,7 @@ from .ai_generator import (
     AiGenerationUnavailable,
 )
 from .ai_message_memory import DuplicateMessageReservation, ensure_group_ai_message_sendable, mark_group_ai_message_result
-from .channel_membership import account_satisfies_authorized_target, linked_channel_group, mark_channel_membership_joined
+from .channel_membership import linked_channel_group, mark_channel_membership_joined
 from .channel_fulfillment import (
     RemoteFactAlreadyFulfilled,
     confirm_reaction_action,
@@ -6380,8 +6380,6 @@ def _ensure_channel_action_membership(session: Session, action: Action, account:
     channel = session.get(OperationTarget, int(channel_target_id))
     if action.action_type == "post_comment":
         return _ensure_post_comment_membership(session, action, account, channel)
-    if channel and channel.tenant_id == action.tenant_id and channel.target_type == "channel" and account_satisfies_authorized_target(channel, account):
-        return True
     if _channel_action_has_membership_link(session, action, account, channel):
         return True
     if action.action_type == "like_message" and channel and channel.tenant_id == action.tenant_id and channel.target_type == "channel":

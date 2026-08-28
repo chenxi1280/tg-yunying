@@ -13,6 +13,7 @@ from app.models import (
     TaskDayLedger,
 )
 from app.services._common import _now
+from app.timezone import as_beijing
 
 from ..account_pool import select_task_accounts
 from ..channel_fulfillment import (
@@ -27,7 +28,6 @@ from ..channel_fulfillment import (
 from ..channel_membership import channel_member_accounts, gate_channel_membership
 from ..channel_view_capacity import record_unique_account_capacity
 from ..channel_view_targets import (
-    channel_view_target_due,
     ensure_channel_view_targets,
     target_messages,
 )
@@ -37,6 +37,7 @@ from ..fulfillment_activation import CURRENT_CONTRACT_VERSION
 from ..pacing import schedule_due_times, schedule_times
 from ..payloads import ViewMessagePayload, create_view_action
 from ..schedule_reservation import reserve_task_schedule_times
+from ..config_normalization import apply_group_ai_account_coverage_defaults
 from .channel_view_pacing import (
     ViewActionRequest,
     ViewCreationContext,
@@ -45,11 +46,25 @@ from .channel_view_pacing import (
     record_view_deadline_capacity_blocker as _record_deadline_capacity_blocker,
     reserve_view_action_pacing,
 )
+from .channel_view_allocation import (
+    ViewPlanInputs,
+    record_unique_capacity as _record_unique_capacity,
+    view_actions_for_messages as _view_actions_for_messages,
+    view_quantity_for_message as _view_quantity_for_message,
+)
 from .common import adjust_for_account_hour_limit, channel_message_payload, channel_scope, quantity_jitter_bounds, record_channel_capacity_warning
 
 
+def effective_channel_view_config(task: Task) -> dict:
+    return apply_group_ai_account_coverage_defaults(
+        task.type,
+        dict(task.type_config or {}),
+        task.account_config or {},
+    )
+
+
 def build_plan(session: Session, task: Task) -> int:
-    config = task.type_config or {}
+    config = effective_channel_view_config(task)
     channel = session.get(OperationTarget, int(config.get("target_channel_id") or 0))
     if not channel or channel.tenant_id != task.tenant_id or channel.target_type != "channel":
         task.last_error = "目标频道不存在"
@@ -133,8 +148,7 @@ def _view_plan_inputs(
     *,
     config: dict,
 ) -> tuple["ViewPlanInputs", dict[int, int], int] | None:
-    daily_target = int(config.get("per_message_daily_view_target") or config.get("target_views_per_message") or 1)
-    total_target = max(daily_target, int(config.get("per_message_total_view_target") or config.get("target_views_per_message") or daily_target))
+    daily_target, total_target = _view_target_limits(config)
     record_unique_account_capacity(task, ())
     if not scope.messages:
         return None
@@ -179,6 +193,20 @@ def _view_plan_inputs(
     return inputs, completed_counts, total_target
 
 
+def _view_target_limits(config: dict) -> tuple[int, int]:
+    daily = int(
+        config.get("per_message_daily_view_target")
+        or config.get("target_views_per_message")
+        or 1
+    )
+    total = int(
+        config.get("per_message_total_view_target")
+        or config.get("target_views_per_message")
+        or daily
+    )
+    return daily, max(daily, total)
+
+
 def _view_accounts(
     session: Session,
     task: Task,
@@ -188,6 +216,7 @@ def _view_accounts(
     target_per_message: int,
     identity_scan_floor: int,
 ) -> list:
+    daily_coverage = config.get("account_coverage_mode") == "all_accounts_daily"
     task_daily_cap = int(config.get("task_daily_view_safety_cap") or 0)
     _lower, max_target_per_message = quantity_jitter_bounds(
         target_per_message,
@@ -207,8 +236,9 @@ def _view_accounts(
             session,
             task.tenant_id,
             task.account_config or {},
-            limit=account_scan_limit,
+            limit=None if daily_coverage else account_scan_limit,
             enforce_max_concurrent=False,
+            scan_all_candidates=daily_coverage,
             daily_coverage_task_id=task.id,
             daily_coverage_action_types=("view_message",),
         ),
@@ -361,100 +391,18 @@ class ViewTargetScope:
     now: datetime
 
 
-def _view_actions_for_messages(
-    task: Task,
-    config: dict,
-    inputs: "ViewPlanInputs",
-) -> list[tuple[ChannelMessage, int]]:
-    actions: list[tuple[ChannelMessage, int]] = []
-    task_remaining_today = inputs.task_remaining_today
-    for message in inputs.messages:
-        quantity = _view_quantity_for_message(
-            task,
-            inputs,
-            message,
-            config=config,
-        )
-        quantity = min(quantity, task_remaining_today)
-        if quantity <= 0:
-            continue
-        lifetime_ids = inputs.lifetime_ids_by_message[message.id]
-        candidates = [
-            account for account in inputs.accounts if account.id not in lifetime_ids
-        ]
-        selected = [account for account in candidates if _account_has_view_daily_capacity(account.id, config, inputs.daily_counts_by_account)][:quantity]
-        actions.extend((message, account.id) for account in selected)
-        task_remaining_today -= len(selected)
-        if task_remaining_today <= 0:
-            break
-    return actions
-
-
-def _record_unique_capacity(task: Task, inputs: "ViewPlanInputs", *, config: dict) -> bool:
-    source_capacities: list[tuple[int, int]] = []
-    for message in inputs.messages:
-        required = _view_quantity_for_message(task, inputs, message, config=config)
-        if required <= 0:
-            continue
-        available = sum(
-            account.id not in inputs.lifetime_ids_by_message[message.id]
-            and _account_has_view_daily_capacity(account.id, config, inputs.daily_counts_by_account)
-            for account in inputs.accounts
-        )
-        source_capacities.append((required, available))
-    return record_unique_account_capacity(task, source_capacities)
-
-
-@dataclass(frozen=True)
-class ViewPlanInputs:
-    messages: list[ChannelMessage]
-    accounts: list
-    task_remaining_today: int
-    daily_counts_by_account: dict[int, int]
-    ledger: TaskDayLedger
-    targets_by_message: dict[int, ChannelViewDailyMessageTarget]
-    lifetime_ids_by_message: dict[int, set[int]]
-    materialized_ids_by_message: dict[int, set[int]]
-    now: datetime
-
-
-def _view_quantity_for_message(
-    task: Task,
-    inputs: ViewPlanInputs,
-    message: ChannelMessage,
-    *,
-    config: dict,
-) -> int:
-    target_row = inputs.targets_by_message[message.id]
-    target = channel_view_target_due(
-        target_row,
-        inputs.ledger,
-        task.pacing_config or {},
-        now=inputs.now,
-    )
-    baseline = int(target_row.ledger_confirmed_at_attach or 0)
-    used_count = max(0, len(inputs.materialized_ids_by_message[message.id]) - baseline)
-    return max(0, target - used_count)
-
-
 def _remaining_task_daily_capacity(daily_cap: int | None, planned_today: int) -> int:
     if daily_cap is None:
         return 100000000
     return max(0, daily_cap - planned_today)
 
 
-def _account_has_view_daily_capacity(account_id: int, config: dict, daily_counts_by_account: dict[int, int]) -> bool:
-    limit = int(config.get("max_views_per_account_per_day") or 0)
-    if limit <= 0:
-        return True
-    return daily_counts_by_account.get(account_id, 0) < limit
-
-
 def _message_expired(message: ChannelMessage, config: dict) -> bool:
     active_days = int(config.get("message_active_days") or 0)
     if active_days <= 0 or not message.published_at:
         return False
-    return message.published_at < _now() - timedelta(days=active_days)
+    published_at = as_beijing(message.published_at)
+    return published_at < as_beijing(_now()) - timedelta(days=active_days)
 
 
 def _empty_view_plan_message(
@@ -465,28 +413,13 @@ def _empty_view_plan_message(
     config: dict,
     total_target: int,
 ) -> str:
-    if _view_targets_inactive_or_reached(
-        messages,
-        completed_counts,
-        config=config,
-        total_target=total_target,
-    ):
+    if not messages:
+        return task.last_error or "未找到频道消息，等待下一轮采集"
+    if all(_message_expired(message, config) for message in messages):
+        return ""
+    if all(completed_counts.get(message.id, 0) >= total_target for message in messages):
         return ""
     return task.last_error or "没有可新增的有效浏览账号"
-
-
-def _view_targets_inactive_or_reached(
-    messages: list[ChannelMessage],
-    completed_counts: dict[int, int],
-    *,
-    config: dict,
-    total_target: int,
-) -> bool:
-    if not messages:
-        return False
-    if all(_message_expired(message, config) for message in messages):
-        return True
-    return all(completed_counts.get(message.id, 0) >= total_target for message in messages)
 
 
 __all__ = ["build_plan"]

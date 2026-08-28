@@ -7,7 +7,6 @@ import re
 from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import quote
-from uuid import uuid4
 
 from app.config import Settings, get_settings
 from app.image_fingerprint import image_avatar_perceptual_hash
@@ -43,7 +42,8 @@ from .contracts import (
 from app.models import FailureType
 from app.security import decrypt_session
 from app.telethon_lifecycle import TelethonClientLifecycle
-from .telethon_media import _parse_custom_emoji_source, _telegram_entity_length, send_media_segment
+from .telethon_media import _parse_custom_emoji_source, _telegram_entity_length
+from .telethon_send import SendProgress, send_content
 from .telethon_utils import resolve_telethon_target, telethon_send_target
 from .search_join import (
     DEFAULT_IMAGE_VERIFICATION_CHALLENGE_LIMIT,
@@ -1462,39 +1462,30 @@ class TelethonTelegramGateway(TelegramGateway):
         client = await self._get_or_create_client(credentials, raw_session)
         if not await client.is_user_authorized():
             return SendResult(False, failure_type=FailureType.ACCOUNT_UNAVAILABLE.value, detail="session 已失效", remote_mutation_started=False)
-        remote_message_id: str | None = None
-        send_call_started = False
-
-        def mark_send_call_started() -> None:
-            nonlocal send_call_started
-            send_call_started = True
+        progress = SendProgress()
 
         try:
             target = await resolve_telethon_target(client, peer_id, group_id=group_id)
-            if segments:
-                for segment in segments:
-                    if segment.segment_type == "文本":
-                        mark_send_call_started()
-                        message = await client.send_message(target, segment.content, reply_to=reply_to_message_id)
-                    elif segment.segment_type == "链接":
-                        text = "\n".join(piece for piece in [segment.content, segment.source] if piece).strip()
-                        mark_send_call_started()
-                        message = await client.send_message(target, text, reply_to=reply_to_message_id)
-                    else:
-                        message = await send_media_segment(
-                            client, target, segment,
-                            reply_to_message_id=reply_to_message_id,
-                            before_send=mark_send_call_started,
-                        )
-                    remote_message_id = str(getattr(message, "id", remote_message_id or uuid4().hex[:8]))
-            else:
-                mark_send_call_started()
-                message = await client.send_message(target, content, reply_to=reply_to_message_id)
-                remote_message_id = str(message.id)
-            return SendResult(True, remote_message_id=remote_message_id, remote_mutation_started=True)
+            await send_content(
+                client,
+                target,
+                content=content or "",
+                segments=segments,
+                reply_to_message_id=reply_to_message_id,
+                progress=progress,
+            )
+            return SendResult(
+                True,
+                remote_message_id=progress.remote_message_id,
+                remote_mutation_started=True,
+            )
         except Exception as exc:  # Telethon exposes many RPC subclasses; map them at the adapter boundary.
             mapped = self._map_send_error(exc)
-            return _failed_send_result(mapped, remote_message_id, send_call_started)
+            return _failed_send_result(
+                mapped,
+                progress.remote_message_id,
+                progress.send_call_started,
+            )
 
     def send_message(
         self,

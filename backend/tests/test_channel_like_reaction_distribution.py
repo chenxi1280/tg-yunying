@@ -6,9 +6,10 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import AccountStatus, Action, ChannelMessage, OperationTarget, Task, Tenant, TgAccount
+from app.models import AccountStatus, Action, ChannelMessage, OperationTarget, Task, Tenant, TgAccount, TgGroupAccount
 from app.services._common import _now
 from app.schemas.task_center import ChannelLikeConfig
+from app.services.task_center.channel_membership import linked_channel_group
 from app.services.task_center.executors.channel_like import _reaction_plan, build_plan as build_channel_like_plan
 from app.services.task_center.executors.channel_view import build_plan as build_channel_view_plan
 from app.services.task_center.fulfillment_takeover import takeover_task
@@ -46,6 +47,20 @@ def test_channel_like_all_available_random_uses_channel_capability_only():
             reaction_capability_mode="all",
             available_reactions=["👍", "❤️", "🔥", "👏", "🎉"],
         )
+        session.add_all([*accounts, channel])
+        session.flush()
+        group = linked_channel_group(session, channel, create=True)
+        session.flush()
+        for account in accounts:
+            session.add(
+                TgGroupAccount(
+                    tenant_id=1,
+                    group_id=group.id,
+                    account_id=account.id,
+                    permission_label="已关注",
+                    can_send=True,
+                )
+            )
         message = ChannelMessage(
             id=31,
             tenant_id=1,
@@ -80,11 +95,13 @@ def test_channel_like_all_available_random_uses_channel_capability_only():
             },
             stats={},
         )
-        session.add_all([*accounts, channel, message, task])
+        session.add_all([message, task])
         session.commit()
 
         assert build_channel_like_plan(session, task) == 10
-        actions = session.scalars(select(Action).where(Action.task_id == task.id)).all()
+        actions = session.scalars(
+            select(Action).where(Action.task_id == task.id, Action.action_type == "like_message")
+        ).all()
 
     reactions = Counter(action.payload["reaction_emoji"] for action in actions)
     assert sum(reactions.values()) == 10
@@ -147,7 +164,20 @@ def test_channel_like_clears_account_error_when_targets_are_already_reached():
             },
             last_error="没有可新增的有效点赞账号",
         )
-        session.add_all([account, channel, message, task])
+        session.add_all([account, channel])
+        session.flush()
+        group = linked_channel_group(session, channel, create=True)
+        session.flush()
+        session.add(
+            TgGroupAccount(
+                tenant_id=1,
+                group_id=group.id,
+                account_id=account.id,
+                permission_label="已关注",
+                can_send=True,
+            )
+        )
+        session.add_all([message, task])
         session.flush()
         session.add(
             Action(
@@ -201,6 +231,19 @@ def test_channel_view_clears_account_error_when_messages_are_expired():
             can_send=True,
             auth_status="已授权运营",
         )
+        session.add_all([account, channel])
+        session.flush()
+        group = linked_channel_group(session, channel, create=True)
+        session.flush()
+        session.add(
+            TgGroupAccount(
+                tenant_id=1,
+                group_id=group.id,
+                account_id=account.id,
+                permission_label="已关注",
+                can_send=True,
+            )
+        )
         message = ChannelMessage(
             id=41,
             tenant_id=1,
@@ -225,7 +268,7 @@ def test_channel_view_clears_account_error_when_messages_are_expired():
             },
             last_error="没有可新增的有效浏览账号",
         )
-        session.add_all([account, channel, message, task])
+        session.add_all([message, task])
         session.commit()
 
         assert build_channel_view_plan(session, task) == 0

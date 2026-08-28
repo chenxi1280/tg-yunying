@@ -44,6 +44,10 @@ class _FakeClient:
         return True
 
 
+async def _skip_typing(*_args, **_kwargs) -> None:
+    return None
+
+
 @pytest.mark.no_postgres
 def test_send_async_maps_generic_error_when_target_resolve_fails(monkeypatch) -> None:
     """target resolve 抛错必须返回映射后的 SendResult，而不是 UnboundLocalError。"""
@@ -99,7 +103,9 @@ def test_send_async_keeps_unknown_when_first_send_response_is_lost(monkeypatch) 
     gateway = TelethonTelegramGateway()
 
     class _ResponseLostClient(_FakeClient):
-        async def send_message(self, target, content, reply_to=None):  # noqa: ANN001
+        async def send_message(  # noqa: ANN001
+            self, target, content, reply_to=None, link_preview=False
+        ):
             raise TimeoutError("response lost after send started")
 
     async def fake_get_client(credentials, raw_session):  # noqa: ANN001
@@ -111,6 +117,9 @@ def test_send_async_keeps_unknown_when_first_send_response_is_lost(monkeypatch) 
     monkeypatch.setattr(gateway, "_get_or_create_client", fake_get_client)
     monkeypatch.setattr(
         "app.integrations.telegram.gateway.resolve_telethon_target", fake_resolve
+    )
+    monkeypatch.setattr(
+        "app.integrations.telegram.telethon_send.send_typing_action", _skip_typing
     )
 
     result = asyncio.run(
@@ -131,7 +140,9 @@ def test_send_async_preserves_remote_identity_on_partial_segment_failure(monkeyp
         def __init__(self) -> None:
             self.calls = 0
 
-        async def send_message(self, target, content, reply_to=None):  # noqa: ANN001
+        async def send_message(  # noqa: ANN001
+            self, target, content, reply_to=None, link_preview=False
+        ):
             self.calls += 1
             if self.calls == 2:
                 raise RuntimeError("second segment send exploded")
@@ -148,6 +159,9 @@ def test_send_async_preserves_remote_identity_on_partial_segment_failure(monkeyp
     monkeypatch.setattr(gateway, "_get_or_create_client", fake_get_client)
     monkeypatch.setattr(
         "app.integrations.telegram.gateway.resolve_telethon_target", fake_resolve
+    )
+    monkeypatch.setattr(
+        "app.integrations.telegram.telethon_send.send_typing_action", _skip_typing
     )
 
     segments = [

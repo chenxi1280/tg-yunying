@@ -24,28 +24,12 @@ from .config_fields import (
     SEARCH_JOIN_PACING_FIELDS,
     TYPE_CONFIG_MODELS,
 )
+from .account_coverage_config import (
+    apply_group_ai_account_coverage_defaults,
+    normalize_ai_daily_target,
+)
 from .utils import as_int as _as_int, as_int_list as _as_int_list
 from .fulfillment_takeover import UNIFIED_TASK_GATE_LIMIT
-
-
-def normalize_ai_daily_target(config: dict[str, Any], *, frozen_account_count: int) -> dict[str, Any]:
-    normalized = dict(config or {})
-    _ = frozen_account_count
-    configured = _as_int(normalized.get("daily_message_target"))
-    normalized["daily_message_target"] = max(1, configured or 1)
-    normalized["account_coverage_mode"] = "all_accounts_daily"
-    for field in LEGACY_AI_TARGET_FIELDS:
-        normalized.pop(field, None)
-    return normalized
-
-
-LEGACY_AI_TARGET_FIELDS = frozenset({
-    "per_account_daily_min_messages",
-    "per_account_daily_max_messages",
-    "hard_hourly_target_enabled",
-    "hourly_min_messages",
-    "hard_hourly_strategy",
-})
 
 
 def normalize_operation_target_references(session: Session, tenant_id: int, task_type: str, config: dict[str, Any]) -> dict[str, Any]:
@@ -121,15 +105,6 @@ def apply_default_rule_binding(session: Session, tenant_id: int, *, task_type: s
     return {**config, "rule_set_id": rule_set.id}
 
 
-def apply_group_ai_account_coverage_defaults(task_type: str, config: dict[str, Any], account_config: dict[str, Any] | None) -> dict[str, Any]:
-    del account_config
-    if task_type != "group_ai_chat":
-        return config
-    if config.get("account_coverage_mode") == "all_accounts_daily":
-        return config
-    return {**config, "account_coverage_mode": "all_accounts_daily"}
-
-
 def validated_type_config(task_type: str, data: dict[str, Any]) -> dict[str, Any]:
     model = TYPE_CONFIG_MODELS.get(task_type)
     if not model:
@@ -147,6 +122,7 @@ def validated_type_config(task_type: str, data: dict[str, Any]) -> dict[str, Any
     if task_type == "channel_view":
         normalized["task_daily_view_safety_cap"] = UNIFIED_TASK_GATE_LIMIT
         normalized["max_views_per_account_per_day"] = UNIFIED_TASK_GATE_LIMIT
+        normalized.setdefault("account_coverage_mode", "all_accounts_daily")
     if task_type == "channel_like":
         normalized["max_likes_per_account_per_hour"] = UNIFIED_TASK_GATE_LIMIT
     if task_type == "channel_comment":

@@ -12,13 +12,11 @@ from sqlalchemy.orm import Session
 
 from app.models import (
     Action,
-    ChannelMessage,
     CommentFulfillmentObligation,
     ExecutionAttempt,
     ReactionFulfillmentObligation,
     SourcePacingAdmission,
     SourcePacingState,
-    TaskDayLedger,
     TaskGroupDailyMessageSlot,
     ViewFulfillmentObligation,
 )
@@ -34,6 +32,7 @@ from .source_pacing_capacity import source_plan_total
 from .source_pacing_reservation import SourceAdmissionSpec, lock_or_create_admission
 from .source_pacing import wall_datetime
 from .source_pacing_recovery import late_admission_not_before
+from .source_pacing_period import source_period as _source_period
 
 
 IDENTITY_RETRY_SECONDS = 60
@@ -229,23 +228,6 @@ def _required_owner(session: Session, model, owner_id):
     if owner is None:
         raise LookupError("pacing_source_owner_missing")
     return owner
-
-
-def _source_period(session: Session, owner, domain: str) -> tuple[datetime, datetime, str]:
-    if domain in {"ai_send", "view"}:
-        ledger = session.get(TaskDayLedger, str(owner.task_day_ledger_id or ""))
-        if ledger is None:
-            raise LookupError("pacing_source_ledger_missing")
-        return (
-            wall_datetime(ledger.period_start_at),
-            wall_datetime(ledger.deadline_at),
-            str(getattr(owner, "pacing_period_key", None) or ledger.id),
-        )
-    message = session.get(ChannelMessage, int(owner.channel_message_id or 0))
-    if message is None:
-        raise LookupError("pacing_source_message_missing")
-    period_start = wall_datetime(message.created_at)
-    return period_start, period_start + timedelta(days=1), f"message:{message.id}"
 
 
 def _source_peer(action: Action) -> str:

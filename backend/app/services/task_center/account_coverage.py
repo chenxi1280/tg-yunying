@@ -42,7 +42,7 @@ def task_account_coverage(session: Session, task: Task) -> dict[str, object]:
     eligible_count = len(eligible_ids)
     coverage_rate = covered_count / eligible_count if eligible_count else 0
     return {
-        "mode": str(config.get("account_coverage_mode") or "natural") if task.type == "group_ai_chat" else "natural",
+        "mode": str(config.get("account_coverage_mode") or "natural") if task.type in {"group_ai_chat", "channel_view"} else "natural",
         "covered_count": covered_count,
         "eligible_count": eligible_count,
         "target_account_count": len(target_accounts),

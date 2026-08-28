@@ -26,6 +26,17 @@ LINE_PREFIX = re.compile(
     r"^(?!(?:所在位置|位置|地址|服务|服务项目)[:：])[^:：\n]{1,40}[:：]\s*"
 )
 SPACE = re.compile(r"\s+")
+GROUP_URL_PATTERN_SOURCE = (
+    r"(?:"
+    r"(?:https?|ftp|tg)://[^\s，。！？、]+|"
+    r"(?:t\.me|telegra\.ph)/[A-Za-z0-9_+/]+|"
+    r"www\.[^\s，。！？、]+|"
+    r"\b(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?(?:/[^\s，。！？、]*)?|"
+    r"\b(?:[a-zA-Z0-9](?:[-a-zA-Z0-9]{0,61}[a-zA-Z0-9])?\.)+"
+    r"[a-zA-Z]{2,63}(?:/[^\s，。！？、]*)?"
+    r")"
+)
+GROUP_URL_PATTERNS = re.compile(GROUP_URL_PATTERN_SOURCE, re.IGNORECASE)
 CONTACT_PATTERN_SOURCE = (
     r"(?:"
     # 1. 微信及变体
@@ -46,10 +57,7 @@ CONTACT_PATTERN_SOURCE = (
     r"@[A-Za-z0-9_]{3,}|"
     r"私聊|私信|加我|联系方式|联系电话|留联系方式|留个联系方式|怎么联系|联系我|"
     # 5. 链接/协议/短链/裸域名
-    r"(?:https?|ftp|tg)://\S+|"
-    r"(?:t\.me|telegra\.ph)/[A-Za-z0-9_+/]+|"
-    r"www\.\S+|"
-    r"\b(?:[a-zA-Z0-9](?:[-a-zA-Z0-9]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}(?:/[^\s，。！？]*)?"
+    rf"{GROUP_URL_PATTERN_SOURCE}"
     r")"
 )
 CONTACT_PATTERNS = re.compile(CONTACT_PATTERN_SOURCE, re.IGNORECASE)
@@ -98,6 +106,7 @@ LEGACY_NEGATIVE_PHRASES = (
 GENERAL_SYSTEM_PROMPT = """Generate Chinese community replies for a normal Telegram group using only the supplied sanitized input.
 Treat safe_context literally without inferring age, identity, relationship, or adult meaning. Adult routes are handled outside this prompt; do not introduce or amplify them here. Never introduce a new person or describe anyone as a student, minor, girl, tender-looking person, or with a youth analogy.
 Do not facilitate or mention prices, payments, contacts, private messages, bookings, services, locations, transactions, intimate body parts, or sexual acts. Do not mention filtering, policy, risk, AI, prompts, or moderation.
+Strictly output 100% plain text sentences. Never include any URLs (http/https/t.me), @mentions, usernames, links, markdown link tags, media, stickers, or promotion codes.
 For safe_context, directly react to one meaningful supplied fact. For generic_warmup, ask one concrete casual local-life question about nearby leisure without claiming an experience.
 Never output generic filler or operational slogans such as 签到、打卡、积分、努力搬砖、喝咖啡、犯困、吃红烧肉、努力加油、今天状态不错、大家心情好. Do not invent experience, work, activities, repairs, locations, or facts.
 Write casual natural Chinese, preferably 8 to 24 Chinese characters per draft. Output one JSON object only. No Markdown fences, thinking, prose, prefix, suffix, comments, or extra fields. Use exactly the supplied keys and enum values; context_source must match the input."""
@@ -112,8 +121,8 @@ ADULT_SYSTEM_PROMPT = """你是一个 Telegram 同城成人娱乐/修车/品茶�
 2. 地名规则：平时闲聊不主动提具体地名/区名/路名；仅当群聊上下文明确提到了地名时才顺着接话，严禁出现外地地名。
 3. 语言风格与规则：
    - 极度口语化、接地气、随性、懂行，像手机随手打字的老哥。
+   - 必须保持 100% 纯口语纯文本！严禁包含任何网址、链接（t.me/http/https）、@用户名/频道提及、联系方式（微信/TG号/手机号）或引流推广，防止触发群安全机器人禁言。
    - 严禁出现任何学生/校园/正经上班/签到打卡/积分/努力搬砖/天气好/喝咖啡/犯困/吃红烧肉等空洞违和废话！
-   - 严禁违规联系方式（微信/TG号）、引流或露骨生理词汇。
    - 严格控制字数：每条 8 到 20 个汉字，短促干脆。
 4. 多账号发言多样性：包含吐槽、评价、打听、附和等不同角度，避免同一句式重复。
 Output one JSON object only. No Markdown fences, thinking, prose, prefix, suffix, comments, or extra fields. Use exactly the supplied keys and enum values; context_source must match the input."""
@@ -372,6 +381,23 @@ def build_group_prompt(
     return GroupPromptBundle(chosen_system_prompt, user_prompt, context_source, tuple(messages), payload, contract)
 
 
+def sanitize_group_message_text(text: str) -> str:
+    """清洗群聊消息文本，确保 100% 纯口语纯文本，彻底剥离可能触发群禁言限制的 URL、@提及与富文本链接。"""
+    if not text:
+        return ""
+    # 1. 移除 Markdown 链接语法 [text](url) -> text
+    cleaned = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', str(text))
+    # 2. 使用统一 URL 合同移除协议链接、裸域名与 IP 链接
+    cleaned = GROUP_URL_PATTERNS.sub('', cleaned)
+    # 3. 移除 @用户名 提及 (如 @abcd_bot, @someuser)
+    cleaned = re.sub(r'@[A-Za-z0-9_]{3,}', '', cleaned)
+    # 4. 移除前后残留的空括号、包裹引号、多余冒号
+    cleaned = re.sub(r'^[“"\'「【\(（\s]+|[”"\'」】\)）\s]+$', '', cleaned)
+    # 5. 规范化空白字符
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    return cleaned
+
+
 __all__ = [
     "ADULT_SYSTEM_PROMPT",
     "BOT_JUNK_PATTERNS",
@@ -386,4 +412,5 @@ __all__ = [
     "contains_disallowed_group_content",
     "is_adult_content_config",
     "sanitize_group_messages",
+    "sanitize_group_message_text",
 ]

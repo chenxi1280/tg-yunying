@@ -20,6 +20,8 @@ from app.models import (
 )
 from app.services._common import _now
 
+from .channel_fulfillment_identity import RemoteFactAlreadyFulfilled
+from .channel_fulfillment_identity import assert_view_obligation_identity
 from .channel_payloads import LikeMessagePayload, ViewMessagePayload
 from .channel_fulfillment_queries import (
     reaction_account_ids_for_messages,
@@ -32,11 +34,8 @@ from .channel_fulfillment_queries import (
 )
 from .daily_ledgers import ensure_task_day_ledger
 
-
 TERMINAL_REPLAN_STATUSES = frozenset({"failed", "skipped", "cancelled"})
 LIFECYCLE_ACTION_TYPES = frozenset({"like_message", "view_message"})
-class RemoteFactAlreadyFulfilled(ValueError):
-    pass
 
 
 def ensure_reaction_obligation(
@@ -174,6 +173,21 @@ def ensure_view_action_contract(
     ):
         raise RemoteFactAlreadyFulfilled("view_remote_source_held")
     task, message = _task_and_message(session, action, payload.channel_message_id)
+    obligation_id = payload.view_fulfillment_obligation_id or action.obligation_id
+    if obligation_id:
+        obligation = session.get(ViewFulfillmentObligation, str(obligation_id))
+        if obligation is not None:
+            assert_view_obligation_identity(
+                session,
+                action,
+                payload=payload,
+                obligation=obligation,
+                task=task,
+                message=message,
+            )
+            if obligation.current_action_id != action.id:
+                bind_obligation_action(obligation, action)
+            return obligation
     ledger = ensure_task_day_ledger(session, task, now=now)
     obligation = ensure_view_obligation(session, ledger, message, _account_id(action))
     if obligation.current_action_id != action.id:

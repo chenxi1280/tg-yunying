@@ -25,6 +25,7 @@ from ..account_pacing_guard import (
     reserve_account_pacing,
 )
 from ..channel_fulfillment import ensure_view_obligation
+from ..datetime_compat import utc_storage_as_beijing_wall
 from ..pacing_persistence import freeze_action_pacing, freeze_pacing_owner
 from ..source_pacing import (
     SourcePacingSlot,
@@ -291,13 +292,13 @@ def _view_plan_item(
     target = context.targets_by_message[message.id]
     ordinal = int(obligation.pacing_slot_ordinal)
     period_start = max(
-        wall_datetime(context.ledger.period_start_at),
-        wall_datetime(context.ledger.planning_anchor_at),
+        utc_storage_as_beijing_wall(context.ledger.period_start_at),
+        utc_storage_as_beijing_wall(context.ledger.planning_anchor_at),
         wall_datetime(target.accrual_anchor_at),
     )
     deadline = min(
-        wall_datetime(context.ledger.deadline_at),
-        wall_datetime(target.active_until),
+        utc_storage_as_beijing_wall(context.ledger.deadline_at),
+        utc_storage_as_beijing_wall(target.active_until),
     )
     period_key = (
         str(obligation.pacing_period_key)

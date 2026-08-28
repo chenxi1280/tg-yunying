@@ -27,7 +27,9 @@ from app.services.task_center.payloads import EnsureChannelMembershipPayload
 from app.services.task_center.targets import group_from_reference
 
 
-@pytest.mark.no_postgres
+pytestmark = pytest.mark.no_postgres
+
+
 def test_group_ai_membership_actions_default_to_four_hour_window(monkeypatch) -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.models import OperationTarget, RuleSet, RuleSetVersion, Tenant
-from app.schemas.task_center import GroupAIChatTaskConfigUpdate, GroupAIChatTaskCreate, TaskSettingsUpdate
+from app.schemas.task_center import ChannelViewConfig, GroupAIChatTaskConfigUpdate, GroupAIChatTaskCreate, TaskSettingsUpdate
 from app.services.task_center.config_normalization import normalize_operation_target_references
 from app.services.task_center.config_normalization import normalize_ai_daily_target
 from app.services.task_center.payloads import SendMessagePayload
@@ -19,6 +19,15 @@ from app.services.task_center.service import create_group_ai_chat_task, update_g
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.mark.no_postgres
+def test_channel_view_rejects_legacy_quota_fill_mode() -> None:
+    with pytest.raises(ValidationError, match="account_coverage_mode"):
+        ChannelViewConfig(
+            target_channel_id=7,
+            account_coverage_mode="quota_fill",
+        )
 
 
 @pytest.mark.no_postgres

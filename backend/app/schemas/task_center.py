@@ -473,6 +473,7 @@ class ChannelViewConfig(ChannelMessageScopeConfig):
     initial_message_scope: Literal["latest_n", "today_new", "date_range", "specific", "new_only"] | None = None
     latest_message_count: int | None = Field(default=None, ge=1, le=500)
     listen_new_messages: bool = True
+    account_coverage_mode: Literal["all_accounts_daily"] = "all_accounts_daily"
     per_message_daily_view_target: int | None = Field(default=None, ge=1, le=10000)
     per_message_total_view_target: int | None = Field(default=None, ge=1, le=100000)
     message_active_days: int = Field(default=3, ge=1, le=365)

@@ -174,6 +174,13 @@
 - Provider 返回 `new_sensitive (1026)` 或其他明确输入拒绝时，不得用同一原文和相同或更强成人 Prompt 重复请求；必须立即暴露原 Provider 错误，由既有失败结算链路处理。
 - 候选内容质量不达标但 Provider 未拒绝输入时，允许在保留原事实和路由的前提下执行有上限的重描述重试。
 
+### 4.9 模块九：AI 活群纯文本出站与 Telegram 发送边界（2026-08-28）
+
+- 普通与成人 Prompt 都必须要求 100% 纯文本，不生成 URL、裸域名、IP 链接、Markdown 链接或 `@username`；Provider 输出仍必须在质量过滤入口统一清洗，不能只依赖 Prompt。
+- 清洗顺序为：Markdown 链接保留可见文案并移除链接目标，再移除协议 URL、`t.me`、裸域名/IP 和 `@mention`，最后规范空白。清洗后为空或不足两个字符时以 `link_restricted_or_empty` 显式拒绝，不用静态内容、emoji 或原始脏文本兜底。
+- Telegram 文本发送先发 `SetTypingRequest(SendMessageTypingAction)`，按正文长度等待 1.0～2.5 秒，再把发送调用标为已开始并执行 `send_message(link_preview=false)`。typing 失败发生在消息发送 Gateway 边界前，必须返回 `remote_mutation_started=false`；发送调用开始后的异常继续按既有 unknown/partial 语义处理，禁止自动重发。
+- 分段发送中的文本段执行同一 typing 与 `link_preview=false` 合同；显式链接段不生成预览但不改写其业务正文。媒体段沿用既有 Gateway 事实边界。
+
 ---
 
 ## 5. 验收标准与 Release Gate
@@ -191,6 +198,7 @@
    - `pytest backend/tests/test_ai_generation_quality_pipeline.py` 100% 通过；
    - `pytest backend/tests/test_ai_generation_phase_boundaries.py` 100% 通过；
    - 消息记忆未来排期、显式配置的成人路由、城市/群名/话题/上下文弱词不越权、联系方式/URL 红线均有回归测试；频道评论质量重试必须保留事实，`new_sensitive (1026)` 和等价 Provider 输入拒绝必须单次失败且不重复调用 Provider。
+   - AI 活群候选必须覆盖 Markdown 链接、协议 URL、`t.me`、裸域名/IP、`@mention` 清洗和清洗后为空的显式拒绝；Gateway 回归必须证明 typing 发生在 send 前、文本发送关闭 link preview、typing 失败仍为 pre-Gateway false。
 
 ### 5.2 Release Gate 声明
 - **Release Level**：`L2`
