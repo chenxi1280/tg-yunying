@@ -371,6 +371,7 @@ Task 输入
 - AI membership admission 的真实执行锁固定为 `(target_group_id,account_id,admission_generation)`；同群其他账号的 unresolved/stale/waiting 不得形成群级 busy。
 - 数量投影同时输出 due target、planning deficit、quantity overflow 和 open excess；目标达成后 pre-Gateway excess 必须终结，unknown 继续占位，超发事实不得删除或跨日抵消。
 - 运行中频道浏览/点赞 Action 的可证 pre-Gateway 普通失败按 `safely_not_executed -> obligation open -> account pacing reservation available -> TaskPlannerWakeState due now` 同事务收口；replacement 继续使用同一义务。旧 Action 的冻结 release 只保留 owner ordinal/审计，不进入真实 source history cursor；只写 `Task.next_run_at` 不构成唤醒，stop/delete/lifecycle/deadline 仍把 reservation 终结为 `missed`，不得误重排。
+- AI Generation expired reconcile 以精确 Job binding 区分 live owner 与历史无人持有残留：Action 的 `claim_owner/lease_owner` 均为空、payload owner 为空或仍为 expired Job owner时不算被其他 worker 抢占；Provider 未开始恢复同一 Action/Job pending，Provider 已开始则不论旧 Action 被写成 pending/skipped 都恢复为同一 request 的 `ai_result_persist_unknown/unknown`。只有非空不同 live owner 才 fail-closed 且零写，禁止一个历史半收口行永久回滚整个 reconcile drain。
 - AI 活群和频道评论同时输出 `quantity_status`、`content_mix_status`、`acceptance_status`；只有数量与内容构成均 `met` 才能完整验收，兼容 `status` 固定等于 `acceptance_status`。
 - reply 目标在 Gateway 前失效时只释放当前 Action；同一关系槽位以递增 `slot_attempt` 选择新合法引用对象重建，不能转 direct 或增加总槽位。Gateway-started/unknown 继续占位，不得重建。
 - 计划中的维护入口为 `fulfillment_contract.py`、deadline-aware `pacing.py`、各 executor 的逐粒度 ledger 投影以及默认 dry-run 的 `audit_task_fulfillment_repair.py`；在实现落地前状态均为 planned，不得按现有代码宣称完成。

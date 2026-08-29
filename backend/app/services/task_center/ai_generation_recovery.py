@@ -213,7 +213,6 @@ def _reconcile_claimed_job(session: Session, claim: _ReconcileClaim) -> None:
         return
     if (
         action is not None
-        and action.status == "executing"
         and _is_generating_ai_action(action, dict(action.payload or {}))
         and (action.result or {}).get("ai_provider_call_started_at")
     ):
@@ -463,11 +462,15 @@ def _action_owned_by_expired_worker(
     data: dict,
     previous_owner: str,
 ) -> bool:
+    if not previous_owner:
+        return False
     payload_owner = str(data.get("ai_generation_claim_owner") or "")
     payload_token = str(data.get("ai_generation_claim_token") or "")
+    no_live_owner = not action.claim_owner and not action.lease_owner
+    if no_live_owner:
+        return payload_owner in {"", previous_owner}
     return bool(
-        previous_owner
-        and action.claim_owner == previous_owner
+        action.claim_owner == previous_owner
         and action.lease_owner == previous_owner
         and payload_owner == previous_owner
         and action.claim_token
