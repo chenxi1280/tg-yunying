@@ -70,28 +70,23 @@ from scripts.profile_candidate_filter import (
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("backfill_natural_profiles")
 
-# Diverse, natural, non-repeating personal bios to mix into the profile pool
+# Realistic, concise, non-repeating personal bios fitting natural adult/TG user persona
 NATURAL_BIO_CANDIDATES = [
-    "保持热爱，奔赴山海。",
-    "万物皆有裂痕，那是光照进来的地方。",
-    "心如止水，波澜不惊。",
-    "慢热，不常在线。",
-    "生活明朗，万物可爱。",
-    "随缘上线，路过看看。",
-    "不闲聊，有事直接说。",
-    "记录日常点滴。",
-    "行到水穷处，坐看云起时。",
-    "慢慢走，沿途皆是风景。",
-    "努力生活，开心每一天。",
-    "知足常乐，万事胜意。",
-    "热爱漫无边际，生活自有分寸。",
-    "顺其自然，随遇而安。",
-    "平凡之路，步履不停。",
-    "今天也要加油鸭！",
-    "人间值得，未来可期。",
-    "世界很大，慢慢探索。",
-    "做一个温柔且坚定的人。",
-    "风吹又日出，生活很值得。",
+    "不常在线，有事直接说。",
+    "看帖不说话，纯潜水。",
+    "随缘看看，路过。",
+    "慢热，不闲聊。",
+    "偶尔上线看看。",
+    "潜水党。",
+    "仅查看消息，不闲聊。",
+    "随缘冒泡。",
+    "只看不说。",
+    "有事留言，看到会回。",
+    "平时较忙，不常在线。",
+    "纯路过围观。",
+    "不常看tg，有事留消息。",
+    "随缘，不闲扯。",
+    "只逛不聊。",
 ]
 
 
@@ -194,7 +189,12 @@ def is_legacy_profile(account: TgAccount) -> bool:
     )
 
 
-def load_eligible_target_accounts(session: Session, limit: int, tenant_id: int | None = None) -> list[TgAccount]:
+def load_eligible_target_accounts(
+    session: Session,
+    limit: int | None = None,
+    ratio: float = 0.7,
+    tenant_id: int | None = None,
+) -> list[TgAccount]:
     """
     Apply production safety gates:
       - Account status == '在线' and not deleted
@@ -202,7 +202,7 @@ def load_eligible_target_accounts(session: Session, limit: int, tenant_id: int |
       - Account identity == 'normal'
       - No active/open security batch currently executing
       - account_security_mutation_block returns None
-      - Has legacy repetitive profile
+      - Has legacy repetitive profile or selected for refresh (default 70% ratio)
     """
     # 1. Query accounts in normal operational pool
     query = (
@@ -240,10 +240,21 @@ def load_eligible_target_accounts(session: Session, limit: int, tenant_id: int |
         if block is not None:
             continue
         eligible.append(acc)
-        if len(eligible) >= limit:
-            break
 
-    return eligible
+    # If legacy accounts are fewer than target ratio, fill from other normal operational accounts
+    target_count = limit if limit is not None else max(1, int(len(candidates) * ratio)) if candidates else 0
+    if len(eligible) < target_count:
+        for acc in candidates:
+            if acc.id in open_batch_accounts or acc in eligible:
+                continue
+            block = account_security_mutation_block(session, acc, {"update_profile", "update_username"})
+            if block is not None:
+                continue
+            eligible.append(acc)
+            if len(eligible) >= target_count:
+                break
+
+    return eligible[:target_count] if target_count > 0 else eligible
 
 
 def _unique_display_name(base_name: str, used_keys: set[str], seed_idx: int) -> tuple[str, str, str]:
@@ -310,9 +321,9 @@ def generate_plan(
             current_username=acc.username or "",
         )
 
-        # Mixed bio distribution: even indices get blank, odd indices get unique distinct natural bio
+        # Mixed bio distribution: ~10% get a short natural bio, 90% get blank bio
         assigned_bio = ""
-        if idx % 2 == 1 and bio_idx < len(bio_pool):
+        if idx % 10 == 0 and bio_idx < len(bio_pool):
             assigned_bio = bio_pool[bio_idx]
             bio_idx += 1
 
@@ -351,21 +362,26 @@ def build_manifest(plan: list[dict[str, Any]], tenant_id: int | None = None) -> 
     }
 
 
-def run_preview(limit: int, tenant_id: int | None = None, output_manifest: str | None = None) -> dict[str, Any]:
+def run_preview(
+    limit: int | None = None,
+    ratio: float = 0.7,
+    tenant_id: int | None = None,
+    output_manifest: str | None = None,
+) -> dict[str, Any]:
     with SessionLocal() as session:
         our_ids, our_usernames, our_names, teachers = load_system_exclusions(session)
         profile_filter = ProfileFilter(our_ids, our_usernames, our_names, teachers)
 
         logger.info("Loaded system exclusions: %d our accounts, %d usernames, %d names", len(our_ids), len(our_usernames), len(our_names))
 
-        target_accounts = load_eligible_target_accounts(session, limit=limit, tenant_id=tenant_id)
-        logger.info("Identified %d eligible legacy accounts in normal operational pool", len(target_accounts))
+        target_accounts = load_eligible_target_accounts(session, limit=limit, ratio=ratio, tenant_id=tenant_id)
+        logger.info("Identified %d eligible accounts in normal operational pool", len(target_accounts))
 
         if not target_accounts:
-            logger.info("No eligible legacy accounts found.")
+            logger.info("No eligible accounts found.")
             return {}
 
-        candidates = extract_group_profiles(session, profile_filter, limit=max(len(target_accounts) * 2, 50))
+        candidates = extract_group_profiles(session, profile_filter, limit=max(len(target_accounts) * 3, 50))
         logger.info("Extracted %d qualified real profiles from groups", len(candidates))
 
         unav_keys = unavailable_name_keys(session, tenant_id) if tenant_id else unavailable_name_keys(session, 1)
@@ -469,17 +485,16 @@ def run_apply(manifest_path: str) -> None:
 def main():
     parser = argparse.ArgumentParser(description="Safely backfill platform accounts with realistic group profiles")
     parser.add_argument("--mode", choices=["preview", "apply"], default="preview", help="Run mode")
-    parser.add_argument("--limit", type=int, default=20, help="Number of accounts to process (max 50)")
+    parser.add_argument("--limit", type=int, default=None, help="Explicit max number of accounts to process")
+    parser.add_argument("--ratio", type=float, default=0.7, help="Ratio of accounts to process (default 0.7 = 70%)")
     parser.add_argument("--tenant-id", type=int, default=None, help="Optional tenant ID filter")
     parser.add_argument("--output-manifest", type=str, default=None, help="Path to save preview manifest JSON")
     parser.add_argument("--manifest-file", type=str, default=None, help="Path to manifest JSON for apply mode")
     args = parser.parse_args()
 
-    capped_limit = min(args.limit, 50)
-
     if args.mode == "preview":
         manifest_out = args.output_manifest or f"manifest_profile_backfill_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.json"
-        run_preview(limit=capped_limit, tenant_id=args.tenant_id, output_manifest=manifest_out)
+        run_preview(limit=args.limit, ratio=args.ratio, tenant_id=args.tenant_id, output_manifest=manifest_out)
     elif args.mode == "apply":
         if not args.manifest_file:
             logger.error("--manifest-file is required in apply mode to guarantee fidelity to previewed plan")

@@ -100,3 +100,35 @@ def test_profile_copy_live_mode_requires_exact_account(monkeypatch):
         profile_copy.main()
 
     assert called is False
+
+
+def test_generate_plan_assigns_10_percent_concise_bios():
+    accounts = [TgAccount(id=i, tenant_id=1, phone_masked=f"138****{i:04d}") for i in range(20)]
+    candidates = [
+        backfill.NaturalCandidateProfile(
+            group_title="Active Group",
+            user_id=f"100{i}",
+            username=f"user_{i}",
+            display_name=f"老哥{i}",
+            first_name=f"老哥{i}",
+            last_name="",
+            bio="",
+        )
+        for i in range(20)
+    ]
+    plan = backfill.generate_plan(accounts, candidates)
+    assert len(plan) == 20
+    with_bio = [p for p in plan if p["proposed_bio"]]
+    without_bio = [p for p in plan if not p["proposed_bio"]]
+
+    # Exactly 2 out of 20 (10%) should have bios
+    assert len(with_bio) == 2
+    assert len(without_bio) == 18
+
+    # Bios must be from NATURAL_BIO_CANDIDATES
+    for p in with_bio:
+        assert p["proposed_bio"] in backfill.NATURAL_BIO_CANDIDATES
+        # Must not be positive literature/chicken soup
+        assert "奔赴山海" not in p["proposed_bio"]
+        assert "万物可爱" not in p["proposed_bio"]
+
