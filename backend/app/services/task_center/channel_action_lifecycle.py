@@ -103,25 +103,59 @@ def hold_channel_action_after_gateway(session: Session, action: Action) -> None:
 def validate_channel_action_resources_released(
     session: Session,
     action: Action,
+    *,
+    replan_same_obligation: bool = False,
 ) -> None:
     obligation = _payload_obligation(session, action)
-    if obligation is not None and (
-        obligation.status != "open" or obligation.current_action_id is not None
-    ):
-        raise RuntimeError("safe_settlement_replay_obligation_not_released")
-    if action.action_type == "view_message" and _daily_owner_exists(session, action):
-        raise RuntimeError("safe_settlement_replay_daily_owner_not_released")
-    reservation = session.scalar(select(AccountPacingReservation).where(
-        AccountPacingReservation.action_id == action.id,
-    ))
-    if reservation is not None and reservation.state != "missed":
-        raise RuntimeError("safe_settlement_replay_pacing_reservation_not_released")
+    if obligation is not None:
+        released = obligation.status == "open" and obligation.current_action_id is None
+        rebound = (
+            replan_same_obligation
+            and obligation.current_action_id not in {None, action.id}
+        )
+        if not released and not rebound:
+            raise RuntimeError("safe_settlement_replay_obligation_not_released")
+    if action.action_type == "view_message":
+        if _daily_owner_held_by_action(session, action.id):
+            raise RuntimeError("safe_settlement_replay_daily_owner_not_released")
+        if not replan_same_obligation and _daily_owner_exists(session, action):
+            raise RuntimeError("safe_settlement_replay_daily_owner_not_released")
+    _validate_released_pacing_reservation(
+        session,
+        action,
+        replan_same_obligation=replan_same_obligation,
+    )
     admission_id = session.scalar(select(SourcePacingAdmission.id).where(
         SourcePacingAdmission.action_id == action.id,
         SourcePacingAdmission.state.in_(("reserved", "finished")),
     ).limit(1))
     if admission_id is not None:
         raise RuntimeError("safe_settlement_replay_source_admission_not_released")
+
+
+def _validate_released_pacing_reservation(
+    session: Session,
+    action: Action,
+    *,
+    replan_same_obligation: bool,
+) -> None:
+    if not action.pacing_slot_key or action.account_id is None:
+        return
+    statement = select(AccountPacingReservation).where(
+        AccountPacingReservation.tenant_id == action.tenant_id,
+        AccountPacingReservation.task_id == action.task_id,
+        AccountPacingReservation.account_id == action.account_id,
+        AccountPacingReservation.pacing_slot_key == action.pacing_slot_key,
+    )
+    reservation = session.scalar(statement)
+    if reservation is None:
+        return
+    if replan_same_obligation:
+        if reservation.action_id != action.id:
+            return
+    elif reservation.state == "missed":
+        return
+    raise RuntimeError("safe_settlement_replay_pacing_reservation_not_released")
 
 
 def _payload_obligation(
@@ -151,6 +185,12 @@ def _daily_owner_exists(session: Session, action: Action) -> bool:
     return session.scalar(select(ChannelViewDailyIdentityOwner.id).where(
         (ChannelViewDailyIdentityOwner.action_id == action.id)
         | (ChannelViewDailyIdentityOwner.obligation_id == obligation_id)
+    ).limit(1)) is not None
+
+
+def _daily_owner_held_by_action(session: Session, action_id: str) -> bool:
+    return session.scalar(select(ChannelViewDailyIdentityOwner.id).where(
+        ChannelViewDailyIdentityOwner.action_id == action_id,
     ).limit(1)) is not None
 
 

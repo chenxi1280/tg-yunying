@@ -282,7 +282,7 @@ def settle_fact_first_action_before_gateway(
 ) -> set[str]:
     existing_fact = _safe_settlement_fact(session, action.id)
     if existing_fact is not None:
-        _validate_safe_settlement_replay(session, action)
+        _validate_safe_settlement_replay(session, action, replan_same_obligation)
         return set()
     if action.status not in SAFE_SETTLEMENT_ACTION_STATUSES:
         raise RuntimeError(f"pre_gateway_safe_settlement_status_invalid:{action.status}")
@@ -352,10 +352,18 @@ def _safe_settlement_fact(
     )
 
 
-def _validate_safe_settlement_replay(session: Session, action: Action) -> None:
+def _validate_safe_settlement_replay(
+    session: Session,
+    action: Action,
+    replan_same_obligation: bool,
+) -> None:
     if action.status != "skipped":
         raise RuntimeError("safe_settlement_replay_action_not_skipped")
-    validate_channel_action_resources_released(session, action)
+    validate_channel_action_resources_released(
+        session,
+        action,
+        replan_same_obligation=replan_same_obligation,
+    )
 
 
 def release_fact_first_action_reservations(

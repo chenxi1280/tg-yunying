@@ -10,7 +10,7 @@ from app.auth import get_challenge_target
 from app.database import SessionLocal
 from app.main import app
 from app.integrations.telegram import ChannelCommentSnapshot, ChannelMessageSnapshot, DeveloperAppCredentials, GroupMessageSnapshot, GroupSnapshot, OperationResult, SendResult, VerificationCodeSnapshot
-from app.models import AccountStatus, Action, AiAccountVoiceProfile, AiDraft, AiGroupMessageMemory, AiUsageLedger, AuditLog, Campaign, DeveloperAppHealthStatus, FailureType, GroupBotAdmission, GroupContextMessage, ListenerSourceState, ManualOperationRecord, Material, MessageFingerprint, MessageTask, OperationTarget, OperationTaskAttempt, ReviewQueue, RuntimeMetricSnapshot, SchedulingSetting, SourceMediaAsset, TargetRuntimeSummary, Task, TaskGroupBotAdmission, TaskRuntimeSummary, TaskStatus, TelegramDeveloperApp, Tenant, TgAccount, TgAccountAuthorization, TgAccountOnlineState, TgAccountProfileSyncRecord, TgAccountSyncRecord, TgGroup, TgGroupAccount, TgLoginFlow, VerificationTask
+from app.models import AccountStatus, Action, AiAccountVoiceProfile, AiDraft, AiGroupMessageMemory, AiUsageLedger, AuditLog, Campaign, DeveloperAppHealthStatus, FailureType, GroupBotAdmission, GroupContextMessage, ListenerSourceState, ManualOperationRecord, Material, MessageFingerprint, MessageTask, OperationTarget, OperationTaskAttempt, ReviewQueue, RuntimeMetricSnapshot, SchedulingSetting, SourceMediaAsset, TargetRuntimeSummary, Task, TaskGroupBotAdmission, TaskPlannerWakeState, TaskRuntimeSummary, TaskStatus, TelegramDeveloperApp, Tenant, TgAccount, TgAccountAuthorization, TgAccountOnlineState, TgAccountProfileSyncRecord, TgAccountSyncRecord, TgGroup, TgGroupAccount, TgLoginFlow, VerificationTask
 from app.services._common import _now
 from app.services.notifications import NotificationResult
 from app.services.task_center.listener_runtime import reset_listener_runtime_cache
@@ -6540,8 +6540,14 @@ def test_task_center_channel_failure_replans_same_obligation_before_task_failed(
             assert task.status == "running"
             assert action.status == "skipped"
             assert action.retry_count == 0
-            task.next_run_at = _now()
-            session.commit()
+            wake = session.scalar(select(TaskPlannerWakeState).where(
+                TaskPlannerWakeState.task_id == task_id,
+            ))
+            assert wake is not None
+            assert wake.reason_code == "channel_action_safe_replan"
+            now_value = _now().replace(tzinfo=None)
+            assert wake.not_before_at is not None
+            assert wake.not_before_at.replace(tzinfo=None) <= now_value
 
         replacement = None
         completed_retry = None
@@ -6562,8 +6568,6 @@ def test_task_center_channel_failure_replans_same_obligation_before_task_failed(
                         _force_action_due(replacement, _now())
                     session.commit()
                     break
-                session.get(Task, task_id).next_run_at = _now()
-                session.commit()
         assert replacement is not None or completed_retry is not None
         drain_task_runtime_and_metrics(task_id)
         with SessionLocal() as session:

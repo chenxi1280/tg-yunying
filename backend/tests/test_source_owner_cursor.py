@@ -190,6 +190,49 @@ def test_released_owner_keeps_frozen_identity_and_recovers_after_now() -> None:
         assert owner.task_lifecycle_epoch == task.task_lifecycle_epoch
 
 
+def test_single_slot_released_owner_does_not_count_its_old_release_as_history() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        task, ledger, owner, _ = _seed_owners(session)
+        base = _source_slot(task, ledger, owner)
+        frozen_due = NOW - timedelta(minutes=30)
+        slot = replace(
+            base,
+            slot_ordinal=0,
+            plan_total=1,
+            release_not_before_at=NOW - timedelta(minutes=20),
+            frozen_due_at=frozen_due,
+        )
+        plan_hash = source_pacing_plan_hash(slot, {}, seed_id=f"ai:{task.id}")
+        _freeze_released_owner(
+            owner,
+            slot=slot,
+            plan_hash=plan_hash,
+            frozen_due=frozen_due,
+        )
+        session.flush()
+
+        enriched = attach_owner_history(
+            session,
+            task,
+            [slot],
+            owner_model=TaskGroupDailyMessageSlot,
+            config={},
+            seed_id=f"ai:{task.id}",
+        )[0]
+        point = schedule_source_pacing_points(
+            [enriched],
+            {},
+            seed_id=f"ai:{task.id}",
+            now_at=NOW,
+        )[slot.slot_key]
+
+        assert enriched.historical_cursor_at is None
+        assert point.release_not_before_at > NOW
+        assert point.release_not_before_at < slot.deadline_at
+
+
 def test_released_owner_replaces_stale_non_null_release_after_now() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

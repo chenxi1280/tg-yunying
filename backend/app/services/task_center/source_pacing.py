@@ -197,10 +197,9 @@ def _legacy_source_recovery_points(
         )
         if due_at >= now_at:
             result[slot.slot_key] = SourcePacingPoint(due_at, due_at)
-        elif frozen is not None and frozen > due_at:
+        elif frozen is not None and frozen > due_at and frozen > now_at:
             result[slot.slot_key] = SourcePacingPoint(due_at, frozen)
-            if frozen > now_at:
-                frozen_releases.append(frozen)
+            frozen_releases.append(frozen)
         else:
             overdue.append(slot)
     if not overdue:

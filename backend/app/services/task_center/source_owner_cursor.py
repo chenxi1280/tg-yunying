@@ -85,7 +85,7 @@ def attach_owner_history(
             source_hash=key[2],
             excluded_owner_ids=[slot.owner_id for slot in group],
         )
-        cursor, ordinal = _include_frozen_group_history(group, cursor, ordinal)
+        ordinal = _include_frozen_group_ordinal(group, ordinal)
         allocated = _allocate_new_ordinals(group, ordinal)
         for slot in allocated:
             enriched[slot.slot_key] = replace(
@@ -96,20 +96,13 @@ def attach_owner_history(
     return [enriched[slot.slot_key] for slot in slots]
 
 
-def _include_frozen_group_history(
+def _include_frozen_group_ordinal(
     slots: list[SourcePacingSlot],
-    cursor: datetime | None,
     ordinal: int | None,
-) -> tuple[datetime | None, int | None]:
+) -> int | None:
     frozen = [slot for slot in slots if slot.frozen_due_at is not None]
-    releases = [
-        wall_datetime(slot.release_not_before_at or slot.frozen_due_at)
-        for slot in frozen
-    ]
     ordinals = [slot.slot_ordinal for slot in frozen]
-    next_cursor = max([wall_datetime(cursor), *releases]) if cursor is not None else max(releases, default=None)
-    next_ordinal = max([ordinal, *ordinals]) if ordinal is not None else max(ordinals, default=None)
-    return next_cursor, next_ordinal
+    return max([ordinal, *ordinals]) if ordinal is not None else max(ordinals, default=None)
 
 
 def _allocate_new_ordinals(

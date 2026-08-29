@@ -5555,7 +5555,7 @@ canary 通过后，激活 manifest 以单行 `route_epoch` CAS 一次切换 `old
 
 远端结果永久 unknown 不得长期占住执行槽。业务 deadline 前只允许同一 mutation identity 的只读远端核验；到 deadline 仍无法判定时追加 `unknown_deadline_closed` 事实，义务进入 `remote_reconcile_only`，任务日结算为 `closed_with_unknown_shortfall`，释放本地执行槽但保留 journal、dedupe、reconcile 与 tombstone。迟到远端事实只能修正历史统计，禁止发起新的远端 mutation。
 
-点赞仍以冻结reaction contract+账号为类型专用义务键；频道浏览的current义务键是`peer-message target + due_ordinal`，账号只在pre-Gateway作为可更换materialization binding，Gateway/unknown/confirmed后冻结，绝不能把账号天然键的旧说法用于浏览。历史错误改派按各专项binding/事实合同收口；同义务成功待 finalize 的 Action 继续占位。Planner 的一个 Task 规划异常只回滚该 Task、写入 `planner_runtime_error` 并在typed next-retry重新领取，同轮其他 Task 必须继续，不能因一个浏览/点赞一致性故障阻断纯搜索点击或其他类别。
+点赞仍以冻结reaction contract+账号为类型专用义务键；频道浏览的current义务键是`peer-message target + due_ordinal`，账号只在pre-Gateway作为可更换materialization binding，Gateway/unknown/confirmed后冻结，绝不能把账号天然键的旧说法用于浏览。历史错误改派按各专项binding/事实合同收口；同义务成功待 finalize 的 Action 继续占位。运行中 Task 的普通可重试频道失败在安全释放同一义务与账号节奏占位时，必须同事务唤醒持久 Planner wake owner；不能依赖只修改 `Task.next_run_at` 的兼容路径。Planner 的一个 Task 规划异常只回滚该 Task、写入 `planner_runtime_error` 并在typed next-retry重新领取，同轮其他 Task 必须继续，不能因一个浏览/点赞一致性故障阻断纯搜索点击或其他类别。
 
 #### 8.4.6 发布、观测和验收
 

@@ -646,14 +646,18 @@ def _settle_safe_fact_first_channel_action(
     from .direct_action_claims import settle_fact_first_action_before_gateway
 
     result = dict(action.result or {})
-    return settle_fact_first_action_before_gateway(
+    replan_allowed = _channel_action_replan_allowed(session, action)
+    state_ids = settle_fact_first_action_before_gateway(
         session,
         action,
         now=_now(),
         reason_code=str(result.get("error_code") or "channel_action_terminal_pre_gateway"),
         detail=str(result.get("error_message") or "频道操作未调用 Gateway"),
-        replan_same_obligation=_channel_action_replan_allowed(session, action),
+        replan_same_obligation=replan_allowed,
     )
+    if replan_allowed:
+        _wake_channel_action_replan(session, action)
+    return state_ids
 
 
 def _channel_action_replan_allowed(session: Session, action: Action) -> bool:
@@ -664,6 +668,20 @@ def _channel_action_replan_allowed(session: Session, action: Action) -> bool:
         and task.status == "running"
         and result.get("account_task_disposition") != "abandoned"
         and not dict(task.stats or {}).get("target_terminal")
+    )
+
+
+def _wake_channel_action_replan(session: Session, action: Action) -> None:
+    from .planner_wake import wake_task_planner
+
+    task = session.get(Task, action.task_id)
+    if task is None or task.status != "running":
+        raise RuntimeError("channel_action_replan_task_not_running")
+    wake_task_planner(
+        session,
+        task,
+        reason_code="channel_action_safe_replan",
+        not_before_at=_now(),
     )
 
 
