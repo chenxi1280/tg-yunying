@@ -705,6 +705,11 @@ def test_generation_worker_defers_unproven_listener_watermark_without_spinning(
             action.result["error_code"] == "context_freshness_unproven"
             for action in actions
         )
+        assert all(
+            action.payload["ai_generation_status"] == "pending"
+            for action in actions
+        )
+        assert all(not action.claim_owner and not action.lease_owner for action in actions)
         assert all(action.scheduled_at > _now() + timedelta(minutes=30) for action in actions)
 
 

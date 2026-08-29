@@ -123,6 +123,7 @@ def _defer_unproven_context(task: Task, action: Action, *, group: TgGroup | None
     action.executed_at = None
     _clear_claim(action)
     payload = dict(action.payload or {})
+    payload["ai_generation_status"] = "pending"
     payload["ai_generation_claim_owner"] = ""
     payload["ai_generation_claim_token"] = ""
     action.payload = payload

@@ -18,6 +18,7 @@ from app.services._common import _now
 
 from .ai_content_runtime import invalidate_job_pre_gateway_slot
 from .ai_generation_commit import commit_generation_action, load_generation_batch
+from .ai_generation_pending_recovery import recover_pending_generation_residue
 from .ai_generation_state import generation_result_cache, mark_attempt_outcome
 from .ai_generation_timing import GENERATION_LEASE
 from .ai_generation_unknown_recovery import (
@@ -28,7 +29,6 @@ from .runtime_resources import _release_runtime_resources
 
 
 logger = logging.getLogger(__name__)
-
 
 @dataclass(frozen=True)
 class _ReconcileClaim:
@@ -148,6 +148,10 @@ def reconcile_generation_jobs(session: Session, limit: int = 20) -> int:
         reconciled += 1
     remaining = bounded_limit - reconciled
     if remaining > 0:
+        reconciled += recover_pending_generation_residue(
+            session, remaining, action_resolver=_current_generation_action)
+    remaining = bounded_limit - reconciled
+    if remaining > 0:
         reconciled += recover_cached_unknown_jobs(
             session, remaining, action_resolver=_current_generation_action,
         )
@@ -189,9 +193,7 @@ def _claim_expired_job(
     if changed != 1:
         return None
     session.expire(job)
-    return _ReconcileClaim(
-        job_id, owner, previous_owner, version + 1, epoch + 1,
-    )
+    return _ReconcileClaim(job_id, owner, previous_owner, version + 1, epoch + 1)
 
 
 def _reconcile_claimed_job(session: Session, claim: _ReconcileClaim) -> None:

@@ -92,3 +92,75 @@ def test_reconcile_rejects_provider_started_action_with_different_live_owner() -
         refreshed_job = session.get(GenerationJob, job.id)
         assert refreshed_action.claim_owner == "worker-new"
         assert refreshed_job.generation_owner_id == "worker-old"
+
+
+def test_reconcile_repairs_unowned_pending_generating_residue() -> None:
+    engine = _engine()
+    with Session(engine) as session:
+        _seed_scope(session)
+        job = _job("job-pending-residue", "slot-pending-residue", state="pending")
+        job.generation_stage = "generation_recovery"
+        action = _action(
+            "action-pending-residue", "slot-pending-residue", job.id,
+            status="pending", generation_status="generating",
+        )
+        session.add_all([job, action])
+        session.commit()
+
+        assert reconcile_generation_jobs(session, limit=10) == 1
+        session.commit()
+
+        refreshed_action = session.get(Action, action.id)
+        refreshed_job = session.get(GenerationJob, job.id)
+        assert refreshed_action.status == "pending"
+        assert refreshed_action.payload["ai_generation_status"] == "pending"
+        assert refreshed_action.action_version == 2
+        assert refreshed_job.state == "pending"
+        assert refreshed_job.generation_stage == "generation_recovery"
+
+
+def test_reconcile_does_not_retry_pending_residue_after_provider_started() -> None:
+    engine = _engine()
+    with Session(engine) as session:
+        _seed_scope(session)
+        job = _job("job-pending-provider", "slot-pending-provider", state="pending")
+        job.generation_stage = "generation_recovery"
+        action = _action(
+            "action-pending-provider", "slot-pending-provider", job.id,
+            status="pending", generation_status="generating",
+        )
+        action.result = {"ai_provider_call_started_at": _now().isoformat()}
+        session.add_all([job, action])
+        session.commit()
+
+        assert reconcile_generation_jobs(session, limit=10) == 0
+        session.commit()
+
+        refreshed_action = session.get(Action, action.id)
+        assert refreshed_action.payload["ai_generation_status"] == "generating"
+        assert refreshed_action.action_version == 1
+
+
+def test_reconcile_pending_residue_batches_make_forward_progress() -> None:
+    engine = _engine()
+    with Session(engine) as session:
+        _seed_scope(session)
+        actions = []
+        for index in range(3):
+            job = _job(f"job-residue-{index}", f"slot-residue-{index}", state="pending")
+            job.generation_stage = "generation_recovery"
+            action = _action(
+                f"action-residue-{index}", f"slot-residue-{index}", job.id,
+                status="pending", generation_status="generating",
+            )
+            actions.append(action)
+            session.add_all([job, action])
+        session.commit()
+
+        assert [reconcile_generation_jobs(session, limit=1) for _ in range(4)] == [1, 1, 1, 0]
+        session.commit()
+
+        assert all(
+            session.get(Action, action.id).payload["ai_generation_status"] == "pending"
+            for action in actions
+        )
