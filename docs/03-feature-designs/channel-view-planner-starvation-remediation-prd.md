@@ -175,7 +175,7 @@ Planner先在只读快照对`MaterializationGap`按`target/source revision -> du
 - 账号级 `(task_id,account_id,view_message)` 使用当前配置解析并冻结的 `account_min_gap`，授权级真实FloodWait/限流可以跨Task延后该账号。不同账号Action可具有相同`scheduled_at`，Dispatcher以`scheduled_at,task_id,obligation_id/action_id`稳定排序；
 - 对每个匹配edge，从`max(database_now,preferred_at)`扫描该账号已有同日future reservations前、中、后的合法空隙，同时满足account gap、quiet-hours、显式bucket和deadline。找到后以due unit materialization version CAS绑定；冲突回读重算。禁止只看max future、禁止整批平移、禁止改写旧future Action；
 - 账号自身的授权、Session、代理、FloodWait、全局硬容量和 Gateway inflight 在 claim/Gateway 前复核；这些硬边界不得转成 Task 全局 180 秒间隔；
-- 同一 `(target_peer_id,channel_message_id,account_id)` 已有 open/unknown/fact 时永远不补第二条。明确且可证明的 pre-Gateway 失败只重开原 due unit、递增 materialization version，并可按新快照匹配另一合法账号；旧 Action/Attempt不改写；
+- 同一 `(target_peer_id,channel_message_id,account_id,obligation_local_date)` 已有 open/unknown/fact 时，在该业务日期内永远不补第二条；下一业务日期形成新的 daily identity 并恢复资格。明确且可证明的 pre-Gateway 失败只重开原 due unit、递增 materialization version，并可按新快照匹配另一合法账号；旧 Action/Attempt不改写；
 - 已存在的 23:57 future Action 不批量提前、不删除、不改写；新批直接使用当天仍合法的软时间，避免历史 Action 尾部继续制造饥饿。
 
 排期输出少于可物化候选时必须记录 `scheduling_capacity_shortfall` 和被截断身份数；不能返回 0 且保持空 `last_error`。这不是降低 due，后续 tick 仍重评估原身份，deadline 后进入 ledger `missed/shortfall`。
@@ -301,7 +301,7 @@ mixed PATCH先对全部字段做规范化、权限、来源状态和expected Tas
 
 - legacy：`UNIQUE(task_day_ledger_id,channel_message_id,account_id) WHERE daily_message_target_id IS NULL`；
 - current due：`UNIQUE(daily_message_target_id,due_ordinal) WHERE daily_message_target_id IS NOT NULL`；
-- global daily owner：`ChannelViewDailyIdentityOwner`物理`UNIQUE(target_peer_id,channel_message_id,account_id,obligation_local_date)`覆盖legacy/current，同日 `state=available` 才可被另一 Task 领取；`call_issued` 仅在同一 Attempt 的权威 Gateway journal/result 明确证明 `remote_mutation_started=false` 时可回到available，缺证据或 `unknown|confirmed` 当日不可释放；非空 `obligation_id`、`action_id` 分别唯一；confirmed 最终仍由 `view_remote_facts` 同一 daily unique 保证；
+- global daily owner：`ChannelViewDailyIdentityOwner`物理`UNIQUE(target_peer_id,channel_message_id,account_id,obligation_local_date)`覆盖legacy/current，同日 `state=available` 才可被另一 Task 领取；`call_issued` 仅在该 Action 的全部已启动 Gateway Attempt 都由各自权威 journal/result 明确证明 `remote_mutation_started=false` 时可回到available，任一 Attempt 缺证据或为 `true|unknown` 以及 Owner 为 `unknown|confirmed` 时当日不可释放；非空 `obligation_id`、`action_id` 分别唯一；confirmed 最终仍由 `view_remote_facts` 同一 daily unique 保证；
 - current action owner：`UNIQUE(action_id)`与`UNIQUE(view_fulfillment_obligation_id) WHERE state='active'` on `ChannelViewActionBinding`；fact binding为`UNIQUE(fact_id)`与`UNIQUE(view_fulfillment_obligation_id) WHERE binding_state='bound'`；
 - CHECK：current row的target/source/target revision/due ordinal/materialization version/lifecycle/deadline全非空；legacy row不得半填current identity；
 - daily owner 状态扫描索引为 `(obligation_local_date,state)`；按 obligation/action 查找由各自唯一索引承担；target claim：`(task_day_ledger_id,source_state,id)`；due materialization：`(daily_message_target_id,state,due_ordinal,id) WHERE state IN ('unmaterialized','action_bound')`；
@@ -387,7 +387,7 @@ QA 必须包含：
 26. takeover粗preview后强制legacy写入，再preparing/quiescence/final manifest必须吸收；final manifest后hold→fact作为唯一source event delta，未处理delta时activation失败。
 27. 全takeover class保持原Task状态；invalid组合blocked，paused/stopped零发送，settling先结算，rollover不复活closed route。
 28. exact `scheduled_at=deadline_at`不进入A集合也不能Tx A；deadline前一微秒与deadline后一微秒按半开区间分类。
-29. sealed mixed fleet中legacy Planner与current Planner/Tx A并发竞争同一peer-message-account-date时，只有一个`ChannelViewDailyIdentityOwner` CAS winner；safe pre-transport release后另一owner才可领取，call-issued仅在同一Attempt权威Gateway证据明确未发生远端写入时释放，unknown/fact后在该业务日期内不释放，下一业务日期使用新的daily identity。兼容基线对全部legacy open Action/Gateway/fact backfill/readback零缺owner后才放Dispatcher，任一无owner Action均fail-closed；真PG反向输入无check-then-insert双调用或死锁。
+29. sealed mixed fleet中legacy Planner与current Planner/Tx A并发竞争同一peer-message-account-date时，只有一个`ChannelViewDailyIdentityOwner` CAS winner；safe pre-transport release后另一owner才可领取，call-issued仅在该Action全部已启动Gateway Attempt各自具有权威未发生远端写入证据时释放，任一Attempt为true/unknown或缺否定证据都保留Owner；unknown/fact后在该业务日期内不释放，下一业务日期使用新的daily identity。兼容基线对全部legacy open Action/Gateway/fact backfill/readback零缺owner后才放Dispatcher，任一无owner Action均fail-closed；真PG反向输入无check-then-insert双调用或死锁。
 30. takeover apply创建的过期TargetExpirySchedule与SettlementOperation在activation前均不进入claim索引；class activation常数级事务只唤醒单一ExpiryActivationOperation与SettlementOperation，expiry fan-out按manifest keyset逐行写`max(active_until,database_now)`并以count/hash完成，任一崩溃可续且schedule只领取一次。same-period running/paused/stopped在final CAS前/恰等于deadline/后一微秒交错，只有`database_now < deadline_at`可激活或开clock segment；跨界保持preparing并用新manifest重分settling-closed/rollover-eligible，旧class发送为0。
 31. Task物理删除前，global owner与fact/binding/observation一并进入tombstone count/hash；仅可证safe pre_gateway释放，call-issued/unknown/confirmed保留并SET NULL导航FK。删除后late Tx C/reconcile仍推进同一owner，Planner始终fail-closed且不会因Task FK消失重用identity；canonical fact抢占pre_gateway时同事务直接转confirmed，无available可见窗口。
 32. takeover class黄金fixture覆盖draft、scheduled、stopped-never-started、same-period running/paused/stopped、running+closed settlement completed、live expired unsettled、`target_reached|wrapping_up`有/无ledger及settled/unsettled、failed/completed/deleted仍有未结远端identity；每条输入恰好命中一个class。zero-history不得进入rollover，terminal不得进入live settling/rollover；terminal settlement/archive完成前发送增量为0，完成后只retire且late reconcile仍可达。
@@ -397,7 +397,9 @@ QA 必须包含：
 
 ## 8. 发布、存量处理与回滚
 
-`0172_channel_view_daily_fact` 的 schema downgrade 必须保留按日新增数据：先确认不存在 `pre_gateway|call_issued|unknown` Owner，再把全部 Daily Owner 写入 `channel_view_daily_owner_rollback_archive` 并做数量 readback；对旧三元唯一键下的跨日重复 fact 按 `obligation_local_date,created_at,id` 稳定排序，保留第一条在主表，将其余完整写入 `view_remote_fact_daily_rollback_archive`，归档数量 readback 一致后才删除主表额外行、恢复旧唯一键并删 daily 列。任一 readback 不一致整笔事务失败。重新 upgrade 时先恢复 daily 列/四元唯一键，再从两个 archive 完整回灌并 readback，成功后才删除 archive。存在进行中或 unknown Owner 时拒绝 downgrade，禁止旧版本接管并重发。
+`0172_channel_view_daily_fact` 的 schema downgrade 必须保留按日新增数据：先确认不存在 `pre_gateway|call_issued|unknown` Owner，且所有仍在主表的 fact 都具有旧版本可表示的 obligation navigation；再把**全部** Daily Owner 和**全部** daily fact 分别写入 rollback archive 并对全部业务字段做数量 readback。旧三元唯一键下的 fact 按 `obligation_local_date,created_at,id` 稳定排序，只把第一条留在旧主表，其余行在完整归档后删除；随后把 fact navigation FK 恢复为旧版 non-null/CASCADE、恢复旧唯一键并删 daily 列。任一 readback 不一致整笔事务失败。重新 upgrade 时先恢复 daily 列、nullable `obligation_id ON DELETE SET NULL` 与四元唯一键；回灌 fact/Owner 时，旧版本期间已删除的 obligation/action navigation 必须写为NULL，logical peer/message/account/date、task/request identity和事实时间仍从archive恢复，不能因导航行消失使回灌失败；全部archive identity逐行readback成功后才删除archive。存在进行中或 unknown Owner时拒绝downgrade，禁止旧版本接管并重发。
+
+Task stop/delete、lifecycle supersede 与 `safely_not_executed` 共用同一事实优先安全收口：先锁DailyIdentityOwner；Action 完全没有 Gateway-started Attempt，或全部 Gateway-started Attempt 都由各自权威证据证明 `remote_mutation_state=false` 时，先幂等创建或回读 no-Gateway `ExecutionAttempt + safely_not_executed` fact/projection，再把Owner转`available`并清除action/obligation navigation，随后同事务把obligation转`open`并终结Action。任一 Gateway-started Attempt 为 `true|unknown` 或缺少权威否定证据时必须保留Owner并进入unknown/reconcile，禁止被更新的false/pre-Gateway Attempt降级；任何产品入口不得只把Action写成`skipped`而旁路typed fact、Owner或obligation。相同settlement identity提交后重放只回读既有Attempt/fact/projection和已释放资源，不重复写事实、不重新绑定义务，也不因Owner已经available而失败。
 
 新增：
 

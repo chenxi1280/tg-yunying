@@ -252,6 +252,9 @@ def _normalize_legacy_group_ai_config(task_type: str, data: dict[str, Any]) -> d
         # Preserve explicit create/update values; only fill missing keys for legacy JSON.
         next_data.setdefault("comment_mode", "mixed")
         next_data.setdefault("reply_min_per_message", 1)
+        next_data.setdefault("comment_count_jitter", 0.05)
+        next_data.setdefault("rolling_window_days", 1)
+        next_data.setdefault("daily_comment_cap", 0)
     return next_data
 
 

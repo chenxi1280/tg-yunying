@@ -1,6 +1,7 @@
 import pytest
 from datetime import date, datetime, timedelta, timezone
 from importlib import import_module
+from pathlib import Path
 from types import SimpleNamespace
 
 pytestmark = pytest.mark.no_postgres
@@ -38,6 +39,9 @@ from tests.channel_view_coverage_support import (
     seed_channel_scenario,
     view_actions,
 )
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _set_view_clock(monkeypatch, value: datetime) -> None:
@@ -132,6 +136,25 @@ def test_channel_view_schema_accepts_unlimited_total(schema, unlimited_value):
     )
 
     assert config.per_message_total_view_target == 0
+    finite = schema(
+        target_input="@daily_view_contract",
+        per_message_daily_view_target=10,
+        per_message_total_view_target=5,
+    )
+    assert finite.per_message_total_view_target == 5
+
+
+def test_channel_view_create_entry_preserves_zero_unlimited_value():
+    fields = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterChannelConfigSections.tsx").read_text()
+    view = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
+
+    total_field = fields[fields.index('name="per_message_total_view_target"'):]
+    assert "填写 0 表示无累计上限" in total_field
+    assert "<InputNumber min={0} max={100000}" in total_field
+    assert (
+        "per_message_total_view_target: values.per_message_total_view_target ?? "
+        "Math.max(300, dailyTarget)"
+    ) in view
 
 
 def test_view_takeover_uses_frozen_execution_date_instead_of_schedule_date():
@@ -162,15 +185,18 @@ def test_daily_fact_migration_archives_before_restoring_old_contract(monkeypatch
     migration = import_module("migrations.versions.0172_channel_view_daily_fact")
     events: list[str] = []
     monkeypatch.setattr(migration, "_assert_no_inflight_daily_owners", lambda: events.append("guard"))
+    monkeypatch.setattr(migration, "_assert_lifetime_fact_navigation_safe", lambda: events.append("navigation"))
     monkeypatch.setattr(migration, "_archive_daily_owners", lambda: events.append("owners"))
-    monkeypatch.setattr(migration, "_archive_daily_fact_duplicates", lambda: events.append("facts"))
+    monkeypatch.setattr(migration, "_archive_daily_facts", lambda: events.append("facts"))
     monkeypatch.setattr(migration, "_restore_lifetime_fact_contract", lambda: events.append("old_contract"))
 
     migration.downgrade()
 
-    assert events == ["guard", "owners", "facts", "old_contract"]
-    assert "ROW_NUMBER() OVER" in migration._FACT_ARCHIVE_INSERT_SQL
+    assert events == ["guard", "navigation", "owners", "facts", "old_contract"]
+    assert "ROW_NUMBER() OVER" not in migration._FACT_ARCHIVE_INSERT_SQL
+    assert "ROW_NUMBER() OVER" in migration._FACT_DUPLICATE_DELETE_SQL
     assert migration.FACT_ARCHIVE in migration._FACT_ARCHIVE_RESTORE_SQL
+    assert "LEFT JOIN view_fulfillment_obligations" in migration._FACT_ARCHIVE_RESTORE_SQL
 
 
 def test_daily_fact_migration_blocks_inflight_owner_downgrade(monkeypatch):
@@ -182,6 +208,17 @@ def test_daily_fact_migration_blocks_inflight_owner_downgrade(monkeypatch):
 
     with pytest.raises(RuntimeError, match="channel_view_daily_owner_downgrade_inflight:1"):
         migration._assert_no_inflight_daily_owners()
+
+
+def test_daily_fact_migration_blocks_missing_lifetime_navigation(monkeypatch):
+    migration = import_module("migrations.versions.0172_channel_view_daily_fact")
+    monkeypatch.setattr(migration, "_scalar_count", lambda _statement: 2)
+
+    with pytest.raises(
+        RuntimeError,
+        match="channel_view_daily_fact_downgrade_navigation_missing:2",
+    ):
+        migration._assert_lifetime_fact_navigation_safe()
 
 
 def test_daily_fact_migration_rejects_archive_readback_mismatch():
@@ -347,7 +384,7 @@ def test_channel_view_unlimited_vs_finite_cap():
         session.add(ledger_finite_1)
         session.commit()
 
-        # Day 1: baseline 0 -> effective = min(100, 150 - 0) = 100
+        # Day 1: baseline 0 is below the soft target -> full daily batch 100.
         targets_finite_1 = ensure_channel_view_targets(
             session,
             task_finite,

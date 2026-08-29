@@ -28,6 +28,24 @@ from tests.ai_generation_phase_test_support import (
 pytestmark = pytest.mark.no_postgres
 
 
+def test_generation_worker_exposes_reconcile_failure(monkeypatch) -> None:
+    from app.services.task_center import ai_generation_worker
+
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr(
+        ai_generation_worker,
+        "reconcile_generation_jobs",
+        lambda *_args, **_kwargs: _raise_runtime_error("reconcile_failed"),
+    )
+
+    with pytest.raises(RuntimeError, match="reconcile_failed"):
+        drain_ai_generation(
+            lambda: Session(engine),
+            generate_action=lambda *_args: pytest.fail("generation must not start"),
+        )
+
+
 def _single_action_generator(session: Session, content_by_slot: dict[str, str]):
     def generate(_session, _tenant_id, config, *, count, **_kwargs):
         assert session.in_transaction() is False
@@ -480,6 +498,22 @@ def test_generation_worker_exposes_unpersisted_generation_failure() -> None:
             ),
         )
 
+    with Session(engine) as session:
+        action = session.get(Action, "pending-generation")
+        assert action.status != "executing"
+        assert action.payload["ai_generation_status"] != "generating"
+        assert action.lease_owner == ""
+        assert action.claim_owner == ""
+        assert action.result["error_type"] == "AiGenerationUnavailable"
+        assert len(action.result["error_fingerprint"]) == 64
+        assert "error_message" not in action.result
+        job = session.scalar(select(GenerationJob).where(
+            GenerationJob.obligation_id == action.obligation_id,
+        ))
+        if job is not None:
+            assert job.state != "generating"
+            assert job.generation_owner_id == ""
+
 
 def test_generation_worker_defers_route_transport_without_failing_action(tmp_path) -> None:
     engine = create_engine(f"sqlite:///{tmp_path / 'provider-deferred.db'}", future=True)
@@ -517,6 +551,10 @@ def test_generation_worker_defers_route_transport_without_failing_action(tmp_pat
 
 def _raise_generation_unavailable(code: str) -> None:
     raise AiGenerationUnavailable(code)
+
+
+def _raise_runtime_error(code: str) -> None:
+    raise RuntimeError(code)
 
 
 def test_production_generation_pipeline_returns_batch_to_pending_dispatch(

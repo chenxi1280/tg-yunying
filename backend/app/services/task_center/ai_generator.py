@@ -767,7 +767,7 @@ def _channel_comment_cluster(content: str) -> str:
     text = _normalize_for_similarity(content)
     clusters = [
         ("generic_reference", ("参考价值", "收藏一下", "值得讨论", "继续展开", "继续看看", "角度不错", "说得比较实在")),
-        ("generic_support", ("支持一下", "不错不错", "感谢分享", "学习了")),
+        ("generic_support", ("支持一下", "不错不错", "感谢分享", "学习了", "太棒了", "支持楼主", "支持博主", "好文章", "好帖", "好文", "楼主辛苦", "博主辛苦")),
     ]
     for cluster, markers in clusters:
         if any(_normalize_for_similarity(marker) in text for marker in markers):
@@ -796,6 +796,15 @@ def _looks_like_bad_channel_comment(content: str) -> bool:
         "比较实在",
         "支持一下",
         "感谢博主",
+        "感谢分享",
+        "太棒了",
+        "支持楼主",
+        "支持博主",
+        "好文章",
+        "好帖",
+        "好文",
+        "楼主辛苦",
+        "博主辛苦",
         "博主",
         "搬砖",
         "喝咖啡",

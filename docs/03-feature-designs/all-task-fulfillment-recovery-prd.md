@@ -880,12 +880,12 @@ listener 处理可信群管提示时，禁止在已修改 `group_bot_admissions`
 
 1. 每消息每日目标和累计目标独立；任务级门禁不能替代、缩减或完成逐消息目标。
 2. `task_daily_view_safety_cap` 在创建、编辑、启动和存量接管统一写 `1_000_000`，不再接受更小值；当前生产的 `500` 必须随发布直接归一。该值是异常门禁，不是日目标、逐消息目标或完成条件。
-   `max_views_per_account_per_day` 同步固定为 `1_000_000`；同一账号/消息的 lifetime view 远端事实唯一性继续生效，不能用更小的任务内账号上限截断任务。
+   `max_views_per_account_per_day` 同步固定为 `1_000_000`；本行旧 lifetime view 唯一性仅作历史事故说明，current 合同改为同一账号/消息/业务日期的 daily view 事实唯一，跨日恢复资格；不能用更小的任务内账号上限截断任务。
 3. dynamic_new 每轮按当日 active message 欠额重算；只有真实规划量触及 `1_000_000` 才显示 `task_gate_limit_reached`，不自动关闭已完成帖子，也不缩减新增消息义务。
 4. 每日消息只统计 distinct successful remote view facts；open/unknown/failed 分列。
 5. 当天未达标在日切写 `missed`；次日创建新 daily ledger，累计总目标继续保留真实欠额。
 6. 每消息每日浏览target及其due unit都绑定`task_day_ledger_id`；target唯一`(task_day_ledger_id,channel_message_id)`，due unit唯一`(daily_message_target_id,due_ordinal)`，本地日期不作唯一身份。时区切换按 §4.2.1 创建连续 ledger，旧日成功数不搬到 transition ledger，累计总目标事实仍连续保留。
-7. 浏览的target/due owner是`ChannelViewDailyMessageTarget(task_day_ledger_id,channel_message_id)`及稳定`due_ordinal`；`ViewFulfillmentObligation`绑定该due unit，账号只在物化时绑定。current唯一键为`(daily_message_target_id,due_ordinal)`，Action冻结materialization/source/target/lifecycle版本；远端事实仍按peer+message+account lifetime unique。
+7. 浏览的target/due owner是`ChannelViewDailyMessageTarget(task_day_ledger_id,channel_message_id)`及稳定`due_ordinal`；`ViewFulfillmentObligation`绑定该due unit，账号只在物化时绑定。current唯一键为`(daily_message_target_id,due_ordinal)`，Action冻结materialization/source/target/lifecycle版本；旧peer+message+account lifetime unique仅作历史，current远端事实按peer+message+account+业务日期daily unique。
 8. initial source set在ledger首次规划冻结；`dynamic_new/listen_new_messages`只append。消息过`message_active_days`只停止后续due增长并冻结accrued due，不得让已到期分母或历史事实从latest/active查询中消失。
 9. anchor精确时due=0，之后按完整ledger曲线单调增加；required来自DueSet，不来自已物化obligation行数。fact、Gateway inflight、unknown、current pre-Gateway Action按证据优先级互斥构成MaterializedSet。
 10. `channel_view`的Task级curve只分布软时间，`task_pairwise_min_gap=0`；template最小间隔只作用于同Task账号级view链。新due逐账号扫描已有future Action前/中/后合法空隙，禁止以Task最晚future Action为floor或整体平移。
@@ -1175,7 +1175,7 @@ apply 不得修改 success、unknown_after_send、Gateway-started，不得补 re
 | 评论缺面具 | Phase A 能证明 active 面具不存在并转单表情；有面具时固化版本并保持普通 emoji 策略，不能把“未读取面具”误判为缺失 |
 | 点赞 unavailable | 不增加 confirmed，不关闭其他账号/消息 |
 | 非 AI 数量归属 | 评论按 `(task_id,channel_message_id,comment_plan_revision,target_ordinal)`、点赞按 `(task_id,channel_message_id,account_id,reaction_contract_version)`、浏览按 `(task_day_ledger_id,channel_message_id,account_id)`、click 按 `(task_day_ledger_id,target_id,click_obligation_ordinal)` 去重；每键同时最多一个 open/unknown/success，replacement 复用原键；评论/点赞不虚构任务日，浏览/click 保留任务日，均不要求 `primary_quantity_slot_id` |
-| 非 AI 远端事实跨 Task 所有权 | 同一评论 remote ID、同一账号/消息的未变化 reaction state、同一账号/消息的 lifetime view fact、同一 click evidence hash 各只能完成一个业务义务；事实早于义务起点不得倒灌，所有权冲突只隔离受影响对象并显示 `remote_fact_owned_elsewhere` |
+| 非 AI 远端事实跨 Task 所有权 | 同一评论 remote ID、同一账号/消息的未变化 reaction state、同一账号/消息/业务日期的 daily view fact、同一 click evidence hash 各只能完成一个业务义务；浏览跨日形成新daily identity并恢复资格；事实早于义务起点不得倒灌，所有权冲突只隔离受影响对象并显示 `remote_fact_owned_elsewhere` |
 | click 远端事实完整性 | 只有同一 Attempt 同时具备 Gateway 开始、目标身份、批准按钮指纹、click 调用、批准协议 outcome、确认时间和 evidence hash 才确认 ordinal；仅找到目标/按钮、调用超时或 outcome 不可分类进入失败/unknown，不得写 `target_click_observed=true` |
 | 纯 click 无成员副作用 | 只有 `membership_side_effect=none` 且 `membership_mutating_rpc_invoked=false` 才可确认 click；除精确 `jisou-v2` 解析语义迁移外，旧 `join_candidate` 或副作用未知形成运行路径 blocker，不调用 join/request/follow/confirm/can-send，其他合法路径继续 |
 | `moderate_6h` | 所有 Action 在 6 小时 deadline 内；容量不足显式 blocked |

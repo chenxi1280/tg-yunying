@@ -19,6 +19,8 @@ from app.services._common import _now
 from ..ai_limits import allocate_message_budget
 from ..fulfillment_activation import CURRENT_CONTRACT_VERSION
 from ..pacing import source_rolling_pacing_due
+from ..pacing_quantity import deterministic_quantity_with_jitter
+from ..source_pacing import rolling_source_window
 from .common import quantity_with_jitter
 
 COMMENT_RESERVATION_STATUSES = ("pending", "claiming", "executing", "success", "unknown_after_send")
@@ -69,10 +71,20 @@ def message_comment_quantities(
     deficits = _apply_daily_coverage_minimum(deficits, coverage_floor)
     hour_limit = _task_hour_limit(task)
     budget = _remaining_current_hour_budget(session, task, hour_limit)
+    daily_cap = int(config.get("daily_comment_cap") or (task.type_config or {}).get("daily_comment_cap") or 0)
+    has_daily_cap = daily_cap > 0
+    if has_daily_cap:
+        day_budget = _remaining_current_day_budget(session, task, daily_cap)
+        budget = min(budget, day_budget) if hour_limit > 0 else day_budget
+        if day_budget <= 0:
+            stats = dict(task.stats or {})
+            stats["daily_cap_reached"] = True
+            stats["daily_cap_limit"] = daily_cap
+            task.stats = stats
     if total_remaining is not None:
         total_budget = max(0, int(total_remaining or 0))
-        budget = min(budget, total_budget) if hour_limit > 0 else total_budget
-    quantities = allocate_message_budget(deficits, budget) if hour_limit > 0 or total_remaining is not None else deficits
+        budget = min(budget, total_budget) if (hour_limit > 0 or has_daily_cap) else total_budget
+    quantities = allocate_message_budget(deficits, budget) if (hour_limit > 0 or has_daily_cap or total_remaining is not None) else deficits
     return list(zip(messages, [min(value, MAX_COMMENT_GENERATION_BATCH_PER_MESSAGE) for value in quantities], strict=False))
 
 
@@ -338,6 +350,33 @@ def _current_hour_comment_action_count(session: Session, task: Task) -> int:
     )
 
 
+def _remaining_current_day_budget(session: Session, task: Task, daily_cap: int) -> int:
+    if daily_cap <= 0:
+        return 0
+    return max(0, daily_cap - _current_day_comment_action_count(session, task))
+
+
+def _current_day_comment_action_count(session: Session, task: Task) -> int:
+    day_start = _now().replace(hour=0, minute=0, second=0, microsecond=0)
+    day_end = day_start + timedelta(days=1)
+    return int(
+        session.scalar(
+            select(func.count(Action.id)).where(
+                Action.tenant_id == task.tenant_id,
+                Action.task_id == task.id,
+                Action.task_type == "channel_comment",
+                Action.action_type == "post_comment",
+                Action.status.in_(CURRENT_HOUR_BUDGET_STATUSES),
+                or_(
+                    (Action.scheduled_at >= day_start) & (Action.scheduled_at < day_end),
+                    (Action.executed_at >= day_start) & (Action.executed_at < day_end),
+                ),
+            )
+        )
+        or 0
+    )
+
+
 def _apply_daily_coverage_minimum(deficits: list[int], minimum: int) -> list[int]:
     adjusted = [max(0, int(deficit or 0)) for deficit in deficits]
     remaining = max(0, int(minimum or 0) - sum(adjusted))
@@ -357,9 +396,15 @@ def _message_comment_deficit(
     message: ChannelMessage,
     now: datetime,
 ) -> int:
-    desired = quantity_with_jitter(
+    if task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION:
+        _period_start, deadline = rolling_source_window(task, message.created_at)
+        if deadline <= now:
+            return 0
+    seed_id = f"comment:{task.id}:{message.id}:{task.config_revision or 1}"
+    desired = deterministic_quantity_with_jitter(
         int(config.get("target_comments_per_message") or 1),
         float(config.get("comment_count_jitter") or 0),
+        seed_id=seed_id,
     )
     if task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION:
         desired = source_rolling_pacing_due(

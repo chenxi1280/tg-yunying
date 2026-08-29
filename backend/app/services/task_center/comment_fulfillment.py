@@ -260,4 +260,40 @@ def _reply_target_id(snapshot: dict) -> int | None:
     ) or None
 
 
-__all__ = ["bind_comment_obligation", "freeze_comment_obligations"]
+def clean_expired_comment_obligations(
+    session: Session,
+    task: Task,
+    *,
+    now_value=None,
+) -> int:
+    from app.services._common import _now
+    from .fulfillment_activation import CURRENT_CONTRACT_VERSION
+    from .source_pacing import rolling_source_window
+    if getattr(task, "fulfillment_contract_version", None) != CURRENT_CONTRACT_VERSION:
+        return 0
+    now_val = now_value or _now()
+    rows = session.scalars(
+        select(CommentFulfillmentObligation)
+        .where(
+            CommentFulfillmentObligation.task_id == task.id,
+            CommentFulfillmentObligation.status.in_(OPEN_OBLIGATION_STATUSES),
+            CommentFulfillmentObligation.current_action_id.is_(None),
+        )
+    ).all()
+    closed = 0
+    for obligation in rows:
+        message = session.get(ChannelMessage, obligation.channel_message_id)
+        if message:
+            _period_start, deadline = rolling_source_window(task, message.created_at)
+            if deadline <= now_val:
+                obligation.status = "closed_expired"
+                closed += 1
+    if closed:
+        stats = dict(task.stats or {})
+        stats["window_expired_settled_count"] = int(stats.get("window_expired_settled_count") or 0) + closed
+        task.stats = stats
+        session.flush()
+    return closed
+
+
+__all__ = ["bind_comment_obligation", "clean_expired_comment_obligations", "freeze_comment_obligations"]

@@ -511,11 +511,6 @@ class ChannelViewConfig(ChannelMessageScopeConfig):
         if self.per_message_total_view_target is None:
             self.per_message_total_view_target = 0
         self.target_views_per_message = self.per_message_daily_view_target
-        if (
-            self.per_message_total_view_target > 0
-            and self.per_message_total_view_target < self.per_message_daily_view_target
-        ):
-            self.per_message_total_view_target = self.per_message_daily_view_target
         return self
 
 
@@ -532,9 +527,11 @@ class ChannelLikeConfig(ChannelMessageScopeConfig):
 class ChannelCommentConfig(ChannelMessageScopeConfig):
     message_scope: Literal["all", "latest_n", "date_range", "specific", "dynamic_new"] = "dynamic_new"
     target_comments_per_message: int = Field(default=10, ge=1, le=1000)
-    comment_count_jitter: float = Field(default=0.3, ge=0, le=1)
+    comment_count_jitter: float = Field(default=0.05, ge=0, le=1)
     max_total_comments: int = Field(default=1_000_000, ge=1, le=1_000_000)
     max_total_comments_jitter: float = Field(default=0, ge=0, le=MAX_TOTAL_COMMENT_JITTER)
+    daily_comment_cap: int = Field(default=0, ge=0)
+    rolling_window_days: int = Field(default=1, ge=1, le=30)
     comment_mode: Literal["comment", "reply", "mixed"] = "mixed"
     reply_to_message_ids: list[int] = Field(default_factory=list)
     reply_min_per_message: int = Field(default=1, ge=0)
@@ -1313,6 +1310,8 @@ class TaskSettingsUpdate(TaskUpdate):
     comment_count_jitter: float | None = Field(default=None, ge=0, le=1)
     max_total_comments: int | None = Field(default=1_000_000, ge=1, le=1_000_000)
     max_total_comments_jitter: float | None = Field(default=None, ge=0, le=MAX_TOTAL_COMMENT_JITTER)
+    daily_comment_cap: int | None = Field(default=None, ge=0)
+    rolling_window_days: int | None = Field(default=None, ge=1, le=30)
     comment_mode: Literal["comment", "reply", "mixed"] | None = None
     reply_to_message_ids: list[int] | None = None
     reply_min_per_message: int | None = Field(default=None, ge=0)

@@ -16,6 +16,7 @@ from app.models import (
     Action,
     AuditLog,
     ChannelMessage,
+    ChannelViewDailyIdentityOwner,
     FulfillmentRemoteFact,
     OperationTarget,
     SourcePacingAdmission,
@@ -111,6 +112,7 @@ def test_apply_chunk_writes_safe_fact_and_releases_owner(session: Session) -> No
 
     action = session.get(Action, "stale-view-action")
     owner = session.get(ViewFulfillmentObligation, "stale-view-owner")
+    daily_owner = session.scalar(select(ChannelViewDailyIdentityOwner))
     reservation = session.scalar(select(AccountPacingReservation))
     fact = session.scalar(select(FulfillmentRemoteFact).where(
         FulfillmentRemoteFact.action_id == action.id,
@@ -124,6 +126,8 @@ def test_apply_chunk_writes_safe_fact_and_releases_owner(session: Session) -> No
     assert action.result["error_code"] == "stale_channel_daily_action"
     assert fact is not None and fact.fact_kind == "safely_not_executed"
     assert owner.status == "open" and owner.current_action_id is None
+    assert daily_owner is not None and daily_owner.state == "available"
+    assert daily_owner.obligation_id is None and daily_owner.action_id is None
     assert reservation.state == "missed"
     assert source_admission.state == "cancelled_pre_gateway"
     assert source_state.next_call_not_before_at == (
@@ -203,6 +207,19 @@ def _seed(session: Session) -> None:
     action = _action(task, ledger, owner)
     session.add_all([owner, action])
     session.flush()
+    session.add(ChannelViewDailyIdentityOwner(
+        id="stale-view-daily-owner",
+        tenant_id=1,
+        target_peer_id=target.tg_peer_id,
+        channel_message_id=message.id,
+        account_id=1,
+        obligation_local_date=ledger.obligation_local_date,
+        state="pre_gateway",
+        logical_task_id=task.id,
+        obligation_id=owner.id,
+        action_id=action.id,
+        request_identity=f"{task.id}:{owner.id}",
+    ))
     state = SourcePacingState(
         id="stale-view-source-state",
         tenant_id=1,

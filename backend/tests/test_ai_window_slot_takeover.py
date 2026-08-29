@@ -141,6 +141,8 @@ def test_failed_generation_releases_claimed_slot_immediately() -> None:
         job_id=JOB_ID,
         owner="worker-1",
         token="claim-token",
+        job_version=1,
+        generation_lease_epoch=0,
     )
 
     finish_generation_job(factory, claim, state="failed")
@@ -162,7 +164,10 @@ def test_persist_unknown_requeues_same_job_without_releasing_slot() -> None:
         job.lease_expires_at = NOW + timedelta(minutes=10)
         _reset_generation_job_for_cached_retry(
             session,
-            {"generation_job_id": JOB_ID},
+            {
+                "generation_job_id": JOB_ID,
+                "ai_generation_claim_owner": "worker-1",
+            },
         )
         session.commit()
 
@@ -175,6 +180,28 @@ def test_persist_unknown_requeues_same_job_without_releasing_slot() -> None:
         assert job.lease_expires_at is None
         assert slot.state == "claimed"
         assert slot.claimed_by_job_id == job.id
+
+
+def test_persist_unknown_rejects_job_reclaimed_by_another_owner() -> None:
+    factory = _session_factory()
+    _seed_claimed_slot(factory, job_state="generating", owner="reconcile-winner")
+
+    with factory() as session:
+        with pytest.raises(RuntimeError, match="generation_persist_retry_job_claim_lost"):
+            _reset_generation_job_for_cached_retry(
+                session,
+                {
+                    "generation_job_id": JOB_ID,
+                    "ai_generation_claim_owner": "stale-worker",
+                },
+            )
+        session.rollback()
+
+    with factory() as session:
+        job = session.get(GenerationJob, JOB_ID)
+        assert job.state == "generating"
+        assert job.generation_owner_id == "reconcile-winner"
+        assert job.job_version == 1
 
 
 def test_defer_generation_job_accepts_aware_retry_before_naive_deadline() -> None:

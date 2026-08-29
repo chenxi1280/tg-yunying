@@ -11,8 +11,7 @@ AI_GROUP_DEFAULT_ROUNDS_PER_HOUR = 6
 
 AI_COMMENT_HOURLY_PER_ACCOUNT = 4
 AI_COMMENT_TARGET_RATIO = 0.6
-AI_COMMENT_MIN_PER_MESSAGE = 10
-AI_COMMENT_MAX_PER_MESSAGE = 80
+AI_COMMENT_MIN_PER_MESSAGE = 1
 
 
 def clamp_int(value: int, lower: int, upper: int) -> int:
@@ -43,7 +42,9 @@ def _recommended_group_hourly(account_count: int) -> int:
 
 
 def _recommended_comment_target(account_count: int) -> int:
-    return clamp_int(round(max(1, account_count) * AI_COMMENT_TARGET_RATIO), AI_COMMENT_MIN_PER_MESSAGE, AI_COMMENT_MAX_PER_MESSAGE)
+    if account_count <= 0:
+        return AI_COMMENT_MIN_PER_MESSAGE
+    return max(AI_COMMENT_MIN_PER_MESSAGE, min(account_count, round(account_count * AI_COMMENT_TARGET_RATIO)))
 
 
 def allocate_message_budget(deficits: list[int], budget: int) -> list[int]:

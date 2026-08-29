@@ -78,6 +78,7 @@ from .channel_fulfillment import (
     ensure_reaction_action_contract,
     ensure_view_action_contract,
 )
+from .channel_remote_evidence import action_remote_mutation_evidence
 from .channel_view_daily_identity import (
     mark_daily_identity_call_issued,
     mark_daily_identity_unknown,
@@ -597,6 +598,8 @@ def _finalize_fact_first_dispatch(session: Session, action: Action) -> None:
     )
     from .search_click_unknown_projection import project_search_click_unknown
 
+    settled_state_ids = _settle_safe_fact_first_channel_action(session, action)
+    state_ids = set(settled_state_ids or set())
     project_search_click_unknown(session, action)
     fact = persist_remote_fact(session, action)
     if fact is not None:
@@ -605,11 +608,12 @@ def _finalize_fact_first_dispatch(session: Session, action: Action) -> None:
             action,
             fact.fact_kind,
         )
-        state_ids = release_fact_first_action_reservations(
-            session,
-            action,
-            fact_kind=fact.fact_kind,
-        )
+        if settled_state_ids is None:
+            state_ids.update(release_fact_first_action_reservations(
+                session,
+                action,
+                fact_kind=fact.fact_kind,
+            ))
         reconcile_source_pacing_states(session, state_ids)
     fact_id = fact.fact_id if fact is not None else ""
     if action.status == "unknown_after_send":
@@ -626,6 +630,29 @@ def _finalize_fact_first_dispatch(session: Session, action: Action) -> None:
     if fact_id:
         complete_derived_projections(session, fact_id)
     session.commit()
+
+
+def _settle_safe_fact_first_channel_action(
+    session: Session,
+    action: Action,
+) -> set[str] | None:
+    if action.action_type not in {"like_message", "view_message"}:
+        return None
+    if action.status not in {"cancelled", "failed", "skipped"}:
+        return None
+    evidence = action_remote_mutation_evidence(session, action)
+    if evidence.state not in {None, "false"}:
+        return None
+    from .direct_action_claims import settle_fact_first_action_before_gateway
+
+    result = dict(action.result or {})
+    return settle_fact_first_action_before_gateway(
+        session,
+        action,
+        now=_now(),
+        reason_code=str(result.get("error_code") or "channel_action_terminal_pre_gateway"),
+        detail=str(result.get("error_message") or "频道操作未调用 Gateway"),
+    )
 
 
 def _open_fact_first_remote_case(session: Session, action: Action) -> None:
@@ -767,7 +794,7 @@ def _sync_channel_fulfillment_state(
     if obligation.status == "unavailable":
         return
     remote_mutation_state = _channel_action_remote_mutation_state(session, action)
-    if remote_mutation_state != "false":
+    if remote_mutation_state not in {None, "false"}:
         obligation.status = "unknown"
         if action.action_type == "view_message":
             mark_daily_identity_unknown(session, action)
@@ -787,13 +814,8 @@ def _sync_channel_fulfillment_state(
 def _channel_action_remote_mutation_state(
     session: Session,
     action: Action,
-) -> str:
-    attempt = _latest_execution_attempt(session, action.id)
-    if attempt is None or attempt.gateway_call_started_at is None:
-        return "false"
-    from .fulfillment_remote_facts import remote_mutation_state
-
-    return remote_mutation_state(action, attempt)
+) -> str | None:
+    return action_remote_mutation_evidence(session, action).state
 
 
 def _confirm_channel_remote_fact(session: Session, action: Action) -> bool:

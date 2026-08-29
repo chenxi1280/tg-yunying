@@ -275,8 +275,13 @@ class ViewRemoteFact(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
-    obligation_id: Mapped[str] = mapped_column(
-        ForeignKey("view_fulfillment_obligations.id", ondelete="CASCADE")
+    obligation_id: Mapped[str | None] = mapped_column(
+        ForeignKey(
+            "view_fulfillment_obligations.id",
+            ondelete="SET NULL",
+            name="fk_view_remote_fact_obligation_navigation",
+        ),
+        nullable=True,
     )
     obligation_local_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     target_peer_id: Mapped[str] = mapped_column(String(120))

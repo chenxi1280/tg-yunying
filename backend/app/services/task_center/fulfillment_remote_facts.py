@@ -5,7 +5,7 @@ import json
 from datetime import datetime, timedelta
 
 from sqlalchemy import select, update
-from sqlalchemy.orm import Session, object_session
+from sqlalchemy.orm import Session
 
 from app.models import (
     Action,
@@ -13,7 +13,6 @@ from app.models import (
     FulfillmentFactProjectionState,
     FulfillmentObligationProjection,
     FulfillmentRemoteFact,
-    GatewayRequestEvidenceJournal,
     Task,
     TaskGroupDailyMessageSlot,
 )
@@ -24,6 +23,8 @@ from .fulfillment_obligation_materialization import (
     skip_obligation_action as _skip_obligation_action,
 )
 from .fulfillment_ledger_owners import resolve_view_task_day_ledger_id
+from .channel_remote_evidence import CHANNEL_REMOTE_ACTION_TYPES, action_remote_mutation_evidence
+from .channel_remote_evidence import remote_mutation_state
 
 
 PROJECTION_KINDS = ("obligation", "action", "task_read_model")
@@ -146,7 +147,7 @@ def _obligation_projection(
 
 
 def persist_remote_fact(session: Session, action: Action) -> FulfillmentRemoteFact | None:
-    attempt = _latest_attempt(session, action.id)
+    attempt = _fact_attempt(session, action)
     if attempt is None or not _fact_worthy(action, attempt):
         return None
     values = _fact_values(session, action, attempt)
@@ -183,6 +184,9 @@ def project_remote_fact(session: Session, fact: FulfillmentRemoteFact) -> None:
     if projection is None:
         raise RuntimeError("remote_fact_obligation_projection_missing")
     next_state = _projection_state(fact.fact_kind)
+    if projection.state == next_state:
+        _complete_projection_state(session, fact.fact_id, "obligation")
+        return
     expected_version = int(projection.version or 1)
     changed = session.execute(
         update(FulfillmentObligationProjection)
@@ -239,7 +243,7 @@ def _fact_values(
 
 
 def _fact_kind(action: Action, attempt: ExecutionAttempt) -> str:
-    remote_state = _remote_mutation_state(action, attempt)
+    remote_state = remote_mutation_state(action, attempt)
     if action.status == "unknown_after_send" and remote_state != "false":
         return "remote_outcome_unknown"
     if action.status != "success" or attempt.status != "success":
@@ -293,7 +297,7 @@ def _fact_worthy(action: Action, attempt: ExecutionAttempt) -> bool:
         or action.status in {"success", "unknown_after_send"}
         or (
             action.status == "skipped"
-            and _remote_mutation_state(action, attempt) == "false"
+            and remote_mutation_state(action, attempt) == "false"
         )
     )
 
@@ -385,38 +389,6 @@ def _deadline(action: Action):
         raise ValueError("fulfillment_obligation_deadline_invalid") from exc
 
 
-def _remote_mutation_state(action: Action, attempt: ExecutionAttempt) -> str:
-    session = object_session(action)
-    if session is not None:
-        journal = session.scalar(
-            select(GatewayRequestEvidenceJournal)
-            .where(
-                GatewayRequestEvidenceJournal.action_id == action.id,
-                GatewayRequestEvidenceJournal.execution_attempt_id == attempt.id,
-            )
-            .limit(1)
-        )
-        if journal is not None:
-            journal_state = str(journal.remote_mutation_state or "unknown")
-            if journal_state != "unknown":
-                return journal_state
-            # Legacy gateway rows may have recorded an incomplete journal before
-            # the adapter's typed pre-accept rejection was persisted.
-    observed = dict(attempt.result_snapshot or {}).get("remote_mutation_started")
-    result = dict(action.result or {})
-    if result.get("callback_mutation_started") is True:
-        return "unknown"
-    if result.get("remote_mutation_started") is True or observed is True:
-        return "true"
-    if observed is False:
-        return "false"
-    return "unknown"
-
-
-def remote_mutation_state(action: Action, attempt: ExecutionAttempt) -> str:
-    return _remote_mutation_state(action, attempt)
-
-
 def _request_identity(action: Action, attempt: ExecutionAttempt) -> str:
     payload = _payload(action)
     return str(
@@ -442,6 +414,13 @@ def _latest_attempt(session: Session, action_id: str) -> ExecutionAttempt | None
         .order_by(ExecutionAttempt.attempt_no.desc())
         .limit(1)
     )
+
+
+def _fact_attempt(session: Session, action: Action) -> ExecutionAttempt | None:
+    if action.action_type in CHANNEL_REMOTE_ACTION_TYPES:
+        evidence = action_remote_mutation_evidence(session, action)
+        return evidence.representative_attempt
+    return _latest_attempt(session, action.id)
 
 
 def _payload(action: Action) -> dict:

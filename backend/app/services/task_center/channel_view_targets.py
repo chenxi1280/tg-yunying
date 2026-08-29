@@ -222,7 +222,7 @@ def _new_target(
         total_target = 0
         effective_target = daily_target
     else:
-        total_target = max(daily_target, int(raw_total))
+        total_target = int(raw_total)
         effective_target = (
             daily_target
             if baseline.lifetime_confirmed < total_target

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime, timedelta
 from threading import Barrier
 from zoneinfo import ZoneInfo
@@ -1082,11 +1083,13 @@ def test_v3_ai_generation_calls_provider_concurrently(tmp_path) -> None:
 
     def generate(session: Session, action: Action, _account: TgAccount) -> None:
         barrier.wait(timeout=3)
+        content = f"generated-{action.id}"
         action.payload = {
             **dict(action.payload or {}),
-            "message_text": f"generated-{action.id}",
+            "message_text": content,
             "ai_generation_status": "ready",
         }
+        action.candidate_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
         session.commit()
 
     processed = drain_ai_generation(

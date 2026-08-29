@@ -200,6 +200,7 @@ def generation_result_cache(
         "content": str(content or "").strip(),
         "tokens": max(0, int(tokens or 0)),
         "attempt_id": attempt_id,
+        "request_id": payload.ai_generation_request_id,
         "content_scope_contract_version": payload.content_scope_contract_version,
         "content_scope_tenant_id": payload.content_scope_tenant_id,
         "content_scope_group_id": payload.content_scope_group_id,
@@ -210,6 +211,7 @@ def generation_result_cache(
 def _generation_cache_matches_payload(cache: dict, payload: SendMessagePayload) -> bool:
     expected = (
         payload.ai_generation_attempt_id,
+        payload.ai_generation_request_id,
         payload.content_scope_contract_version,
         payload.content_scope_tenant_id,
         payload.content_scope_group_id,
@@ -217,6 +219,7 @@ def _generation_cache_matches_payload(cache: dict, payload: SendMessagePayload) 
     )
     actual = (
         cache.get("attempt_id"),
+        cache.get("request_id"),
         cache.get("content_scope_contract_version"),
         cache.get("content_scope_tenant_id"),
         cache.get("content_scope_group_id"),

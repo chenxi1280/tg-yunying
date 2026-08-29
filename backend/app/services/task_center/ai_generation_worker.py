@@ -4,7 +4,6 @@ import logging
 import socket
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from datetime import timedelta
 from uuid import uuid4
 
 from sqlalchemy import and_, func, or_, select
@@ -16,16 +15,23 @@ from app.services.developer_apps import credentials_for_account
 
 from .ai_generation_composition import PRODUCTION_GENERATION_DEPENDENCIES
 from .ai_generation_admission_gate import defer_generation_for_group_bot_admission
+from .ai_generation_contract_errors import (
+    GenerationContractErrorTarget,
+    terminate_generation_contract_error,
+)
 from .ai_generation_claim_lifecycle import (
-    defer_unprepared_batch,
     mark_generation_claim,
     owns_generation_claim,
-    persisted_generation_outcome,
-    release_prepared_batch,
     release_unprepared_batch,
 )
 from .ai_generation_dependencies import GenerationDependencies
 from .ai_generation_dispatch import ensure_send_message_content
+from .ai_generation_recovery import reconcile_generation_jobs
+from .ai_generation_parallel import finish_generation_job, settle_deferred_parallel_claim
+from .ai_generation_parallel_settlement import (
+    settle_parallel_outcome,
+    settle_sequential_outcome,
+)
 from .ai_generator import AiGenerationUnavailable, ProviderRouteDeferred
 from .ai_generation_worker_types import GenerationOutcome, SequentialClaim
 from .provider_admission import (
@@ -47,7 +53,6 @@ from .payloads import SendMessagePayload
 GENERATABLE_STATUSES = ("pending", "ai_result_persist_unknown")
 DUE_CATCH_UP_MAX_PIPELINE_DEPTH = 4
 GenerateAction = Callable[[Session, Action, TgAccount], None]
-
 logger = logging.getLogger(__name__)
 
 
@@ -62,12 +67,16 @@ def drain_ai_generation(
     generate_action: GenerateAction | None = None,
     dependencies: GenerationDependencies = PRODUCTION_GENERATION_DEPENDENCIES,
 ) -> int:
+    with session_factory() as session:
+        reconcile_generation_jobs(session, limit=max(1, int(limit)))
+        session.commit()
+
     processor = generate_action or _production_generate_action(dependencies)
     owner = f"ai-generation:{socket.gethostname()}:{uuid4()}"
     processed = 0
     try:
         processed = _drain_parallel_generation(
-            session_factory, owner, max(1, int(limit)), processor
+            session_factory, owner, max(1, int(limit)), processor=processor,
         )
     except ProviderAdmissionUnavailable as exc:
         logger.warning("ai generation claim stopped: %s", exc)
@@ -127,21 +136,18 @@ def _process_sequential_claim(
         except AiGenerationUnavailable as exc:
             session.rollback()
             generation_failure = exc
+        except Exception as exc:
+            session.rollback()
+            terminate_generation_contract_error(
+                session_factory,
+                GenerationContractErrorTarget(
+                    claim.action_id, claim.owner, claim.token,
+                ),
+                exc,
+            )
+            raise
     outcome = GenerationOutcome(generation_failure, admission_deferred, provider_deferred)
-    if outcome.provider_deferred is not None:
-        return _defer_sequential_claim(session_factory, claim, outcome.provider_deferred)
-    if outcome.admission_deferred:
-        release_unprepared_batch(session_factory, claim.owner, claim.token)
-        return claim.claimed_count
-    if outcome.failure is not None:
-        persisted = persisted_generation_outcome(session_factory, claim.action_id)
-        if not persisted:
-            raise outcome.failure
-        if persisted == "deferred":
-            return claim.claimed_count
-        release_unprepared_batch(session_factory, claim.owner, claim.token)
-        return claim.claimed_count
-    return release_prepared_batch(session_factory, claim.owner, claim.token)
+    return settle_sequential_outcome(session_factory, claim, outcome)
 
 
 def _stop_sequential_claim(
@@ -158,25 +164,11 @@ def _stop_sequential_claim(
     logger.warning("ai generation claim stopped: %s", error)
 
 
-def _defer_sequential_claim(
-    session_factory,
-    claim: SequentialClaim,
-    deferred: ProviderRouteDeferred,
-) -> int:
-    next_retry_at = _now() + timedelta(seconds=deferred.retry_after_seconds)
-    defer_unprepared_batch(
-        session_factory,
-        claim.owner,
-        claim.token,
-        next_retry_at=next_retry_at,
-    )
-    return claim.claimed_count
-
-
 def _drain_parallel_generation(
     session_factory,
     owner: str,
     limit: int,
+    *,
     processor: GenerateAction,
 ) -> int:
     from .ai_generation_parallel import claim_parallel_generation
@@ -199,8 +191,6 @@ def _drain_parallel_generation(
 
 
 def _process_parallel_claim(session_factory, processor, claim) -> int:
-    from .ai_generation_parallel import finish_generation_job
-
     failure: AiGenerationUnavailable | None = None
     provider_deferred: ProviderRouteDeferred | None = None
     deferred = False
@@ -232,45 +222,22 @@ def _process_parallel_claim(session_factory, processor, claim) -> int:
             failure = exc
         except ProviderAdmissionUnavailable as exc:
             session.rollback()
-            release_unprepared_batch(
+            record_provider_admission_unavailable(session, action)
+            session.commit()
+            settle_deferred_parallel_claim(session_factory, claim)
+            raise
+        except Exception as exc:
+            session.rollback()
+            terminate_generation_contract_error(
                 session_factory,
-                claim.owner,
-                claim.token,
-                provider_admission_unavailable=True,
+                GenerationContractErrorTarget(
+                    claim.action_id, claim.owner, claim.token, claim.job_id,
+                ),
+                exc,
             )
-            finish_generation_job(session_factory, claim, state="pending")
             raise
     outcome = GenerationOutcome(failure, deferred, provider_deferred)
-    return _settle_parallel_outcome(session_factory, claim, outcome)
-
-
-def _settle_parallel_outcome(session_factory, claim, outcome: GenerationOutcome) -> int:
-    from .ai_generation_parallel import defer_parallel_generation, finish_generation_job
-
-    if outcome.provider_deferred is not None:
-        next_retry_at = _now() + timedelta(seconds=outcome.provider_deferred.retry_after_seconds)
-        defer_parallel_generation(
-            session_factory,
-            claim,
-            next_retry_at=next_retry_at,
-        )
-        return 1
-    if outcome.admission_deferred:
-        release_unprepared_batch(session_factory, claim.owner, claim.token)
-        finish_generation_job(session_factory, claim, state="pending")
-        return 1
-    if outcome.failure is not None:
-        persisted = persisted_generation_outcome(session_factory, claim.action_id)
-        if not persisted:
-            raise outcome.failure
-        if persisted == "deferred":
-            return 1
-        release_unprepared_batch(session_factory, claim.owner, claim.token)
-        finish_generation_job(session_factory, claim, state="failed")
-        return 1
-    released = release_prepared_batch(session_factory, claim.owner, claim.token)
-    finish_generation_job(session_factory, claim, state="ready")
-    return released
+    return settle_parallel_outcome(session_factory, claim, outcome)
 
 
 def _generation_action_lifecycle_current(

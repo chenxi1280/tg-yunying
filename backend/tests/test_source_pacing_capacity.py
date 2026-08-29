@@ -8,7 +8,6 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.models import (
-    AccountPacingReservation,
     Action,
     ChannelMessage,
     ChannelViewDailyMessageTarget,
@@ -33,11 +32,16 @@ from app.services.task_center.fulfillment_retry import retry_failed_actions
 from app.services.task_center import dispatcher
 from app.services.task_center.pacing import PACING_CONTRACT_VERSION
 from app.services.task_center.source_pacing_admission import admit_source_paced_attempt
+from tests.source_pacing_capacity_support import (
+    DEADLINE,
+    NOW,
+    account_reservation as _account_reservation,
+    daily_identity_owner as _daily_identity_owner,
+    execution_attempt as _attempt,
+)
 
 
 pytestmark = pytest.mark.no_postgres
-NOW = datetime(2026, 8, 18, 10, 0)
-DEADLINE = NOW + timedelta(days=1)
 
 
 @pytest.fixture
@@ -83,7 +87,8 @@ def test_future_action_past_deadline_is_safely_closed_now(session: Session) -> N
     owner.status = "pending"
     reservation = _account_reservation(task, action, deadline=DEADLINE, future=future)
     state, admission = _future_source_reservation(task, owner, action, future=future)
-    session.add_all([owner, action, reservation, state, admission])
+    daily_owner = _daily_identity_owner(task, ledger, owner, action)
+    session.add_all([owner, action, reservation, state, admission, daily_owner])
     session.commit()
 
     batch = claim_fact_first_candidates(
@@ -123,7 +128,8 @@ def test_stale_skipped_action_can_be_reconciled_without_gateway(session: Session
     owner.status = "pending"
     reservation = _account_reservation(task, action, deadline=DEADLINE, future=future)
     state, admission = _future_source_reservation(task, owner, action, future=future)
-    session.add_all([owner, action, reservation, state, admission])
+    daily_owner = _daily_identity_owner(task, ledger, owner, action)
+    session.add_all([owner, action, reservation, state, admission, daily_owner])
     session.commit()
 
     settle_fact_first_action_before_gateway(
@@ -163,7 +169,16 @@ def test_reconciled_cursor_includes_remaining_reserved_gap(session: Session) -> 
     reservation = _account_reservation(task, action, deadline=DEADLINE, future=future)
     state, admission = _future_source_reservation(task, owner, action, future=future)
     remaining = _remaining_source_reservation(task, state, future=future)
-    session.add_all([owner, action, reservation, state, admission, remaining])
+    daily_owner = _daily_identity_owner(task, ledger, owner, action)
+    session.add_all([
+        owner,
+        action,
+        reservation,
+        state,
+        admission,
+        remaining,
+        daily_owner,
+    ])
     session.flush()
 
     state_ids = settle_fact_first_action_before_gateway(
@@ -197,7 +212,16 @@ def test_account_abandonment_safely_settles_pending_view_sibling(
     failed = _view_action(task, owner, release_at=NOW)
     failed.id = "view-capacity-failed-action"
     failed.status = "failed"
-    session.add_all([owner, sibling, reservation, state, admission, failed])
+    daily_owner = _daily_identity_owner(task, ledger, owner, sibling)
+    session.add_all([
+        owner,
+        sibling,
+        reservation,
+        state,
+        admission,
+        failed,
+        daily_owner,
+    ])
     session.flush()
 
     dispatcher._abandon_pending_account_actions(session, failed)
@@ -411,39 +435,6 @@ def _view_action(
             "channel_message_id": owner.channel_message_id,
             "channel_id": "-1009001",
         },
-    )
-
-
-def _attempt(action: Action, now: datetime) -> ExecutionAttempt:
-    return ExecutionAttempt(
-        tenant_id=1,
-        action_id=action.id,
-        account_id=1,
-        attempt_no=1,
-        status="before_call",
-        before_call_at=now,
-    )
-
-
-def _account_reservation(
-    task: Task,
-    action: Action,
-    *,
-    deadline: datetime,
-    future: datetime,
-) -> AccountPacingReservation:
-    return AccountPacingReservation(
-        tenant_id=1,
-        task_id=task.id,
-        account_id=1,
-        pacing_slot_key=action.pacing_slot_key,
-        policy_version="account_soft_pacing_v1",
-        due_at=NOW,
-        release_not_before_at=future,
-        effective_claim_at=future,
-        source_deadline_at=deadline,
-        action_id=action.id,
-        state="bound",
     )
 
 

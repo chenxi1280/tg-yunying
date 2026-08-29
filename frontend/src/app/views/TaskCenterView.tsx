@@ -1138,6 +1138,9 @@ export default function TaskCenterView({
       require_review: false,
     };
     if (values.target_comments_per_message != null) payload.target_comments_per_message = values.target_comments_per_message;
+    if (values.comment_count_jitter != null) payload.comment_count_jitter = values.comment_count_jitter;
+    if (values.rolling_window_days != null) payload.rolling_window_days = values.rolling_window_days;
+    if (values.daily_comment_cap != null) payload.daily_comment_cap = values.daily_comment_cap;
     payload.max_total_comments = 1000000;
     payload.max_total_comments_jitter = 0;
     payload.max_comments_per_account_per_hour = 1000000;

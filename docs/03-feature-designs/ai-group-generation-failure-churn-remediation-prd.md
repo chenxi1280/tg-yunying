@@ -21,6 +21,18 @@
 - legacy `TaskGroupDailyMessageSlot/ContentMixCycleSlot` 不恢复为 `fact_first_v3` 真相源；reply、关系和素材要求改由 current AI content intent 冻结承接；
 - 历史失败 Action 保留审计，但不得继续被页面解释为实时队列拥堵。
 
+### 1.1 2026-08-30 Generation reconcile 与验收投影实施补正
+
+本次只修复 current `fact_first_v3` AI 生成收敛链，不执行生产写入、重试、发布或账号初始化修复。
+
+1. `ai-generation` drain 必须先显式执行 GenerationJob reconcile；对账函数缺失、查询失败或状态转移冲突必须暴露为本轮失败，禁止 `warning + continue` 的静默降级。
+2. expired `GenerationJob(generating)` 只能通过 `id + state + generation_owner_id + generation_lease_epoch + job_version + expired lease` CAS 取得 reconcile 所有权；败者不得更改 Job、Action 或 content window slot。
+3. Action 必须按 `tenant/task/task_lifecycle_epoch/obligation_type/obligation_id` 绑定，并且是当前 Job payload 中的 `generation_job_id`；历史 terminal Action 不得被用来取消当前 Job。当前 Action 缺失时，因 claim 链是 Action-first，Job 必须结束为 typed `cancelled/action_missing`并释放 pre-Gateway slot，不得写回永久无法领取的 pending。
+4. Provider 尚未开始且 Action/Job 仍属于被 reconcile 的旧 owner 时，才允许原义务回到 pending；已开始 Provider request 或结果持久化不确定时，保留同一 Job/request 的 `unknown` open owner，禁止新建 replacement 或重调 Provider。只有已持久化的同 request 结果缓存才能把原 Action/Job 恢复到 `persist_retry`。
+5. 非分类合同异常只能在 Action claim owner/token 和 Job owner/version 均仍匹配时结算；错误投影只保存类型化 code、exception type 和稳定摘要 hash，不持久化 Provider 原始异常文本。
+6. `quantity_status` 只由 quantity slot/fact 投影；`content_mix_status` 必须由当日、当前 lifecycle 的 `AiContentWindowPlan/Slot.content_mode` 事实独立投影。没有完整、可验证的 content-mode 集合时只能是 `evaluating`，不得因 quantity slot 全部 confirmed 而写 `met`。
+7. 以上修复只能证明本地状态机收敛。任务完成仍必须按 `Task -> ledger/coverage -> Action -> ExecutionAttempt/Gateway -> typed remote fact` 取得生产 E4 证据；测试、部署 SHA、worker 健康或数量达标都不能替代。
+
 ## 2. 生产事实与根因分组
 
 2026-08-09 21:44 +08 的只读生产快照显示：最近 60 分钟成功 52 条、失败 140 条，成功均有 Gateway/远端消息事实，失败均未进入 Gateway；Dispatcher active 0/26，只有一条未来 pending，因此不是执行队列或 Gateway 堵塞。

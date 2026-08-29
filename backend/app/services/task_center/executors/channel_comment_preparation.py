@@ -295,10 +295,17 @@ def _prepared_slot(
     account_index: int,
     payload_builder: Callable,
 ) -> PreparedCommentAction | None:
+    reply_target = getattr(slot, "reply_target", None)
+    target_author_id = reply_target.get("author_account_id") if isinstance(reply_target, dict) else None
+    available_accounts = (
+        [acc for acc in context.accounts if acc.id != target_author_id]
+        if target_author_id and len(context.accounts) > 1
+        else context.accounts
+    )
     account = pick_channel_account(
         session,
         task,
-        context.accounts,
+        available_accounts,
         "post_comment",
         planned_at,
         context.config,

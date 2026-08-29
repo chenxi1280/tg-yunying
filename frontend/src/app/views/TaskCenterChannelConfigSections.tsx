@@ -63,6 +63,8 @@ export function ChannelCommentTypeConfig({ replyMinPerMessageRules, ruleFields }
         <Form.Item name="max_total_comments" label="系统任务门禁（固定）"><InputNumber min={1000000} max={1000000} disabled /></Form.Item>
         <Form.Item name="target_comments_per_message" label="预计每条评论/回复"><InputNumber min={1} /></Form.Item>
         <Form.Item name="reply_min_per_message" label="每条最少引用回复数" dependencies={['target_comments_per_message']} rules={replyMinPerMessageRules}><InputNumber min={0} /></Form.Item>
+        <Form.Item name="daily_comment_cap" label="每日评论上限" extra="0 表示不限制每日额度"><InputNumber min={0} /></Form.Item>
+        <Form.Item name="rolling_window_days" label="滚动排期窗口（天）" extra="单帖在指定天数内平滑排期（默认 1 天）"><InputNumber min={1} max={30} /></Form.Item>
         <Form.Item name="comment_style" label="评论方向"><Select options={[{ value: 'mixed', label: '混合' }, { value: 'relevant', label: '相关' }, { value: 'question', label: '提问' }, { value: 'praise', label: '正向' }, { value: 'discussion', label: '讨论' }]} /></Form.Item>
         <Form.Item name="topic_hint" label="主题方向"><Input /></Form.Item>
       </div>
@@ -100,6 +102,7 @@ function ChannelCommentAdvancedFields() {
     <div className="form-grid">
       <Form.Item name="max_comments_per_account_per_hour" label="系统账号门禁（固定）"><InputNumber min={1000000} max={1000000} disabled /></Form.Item>
       <Form.Item name="max_total_comments_jitter" label="任务门禁抖动（固定）"><InputNumber min={0} max={0} disabled /></Form.Item>
+      <Form.Item name="comment_count_jitter" label="评论数量抖动"><InputNumber min={0} max={1} step={0.01} /></Form.Item>
       <Form.Item name="system_prompt_override" label="System Prompt 覆盖"><Input.TextArea rows={3} /></Form.Item>
       <Form.Item name="max_comment_length" label="最大评论长度"><InputNumber min={1} /></Form.Item>
       <Form.Item

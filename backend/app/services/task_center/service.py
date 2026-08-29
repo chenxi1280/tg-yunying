@@ -85,6 +85,10 @@ from .channel_membership import (
     channel_membership_summary,
 )
 from .channel_listener_runtime import request_channel_snapshot_refresh
+from .channel_action_lifecycle import (
+    hold_channel_action_after_gateway,
+)
+from .channel_remote_evidence import action_remote_mutation_evidence
 from .dispatcher import (
     _sync_action_coverage_state,
     claim_actions,
@@ -2485,14 +2489,18 @@ def resume_task(session: Session, tenant_id: int, task_id: str, actor: str) -> T
 
 
 def stop_task(session: Session, tenant_id: int, task_id: str, actor: str, reason: str = "") -> Task:
-    task = _get_task(session, tenant_id, task_id)
+    task = _get_task_for_lifecycle(session, tenant_id, task_id)
     _advance_task_lifecycle_epoch(task, "stopped")
     task.status = "stopped"
     task.next_run_at = None
-    for action in session.scalars(select(Action).where(Action.task_id == task.id, Action.status == "pending")):
-        action.status = "skipped"
-        action.result = {"success": False, "error_code": "task_stopped", "error_message": "任务已停止"}
-        action.executed_at = _now()
+    _settle_task_closing_actions(
+        session,
+        task,
+        statuses=tuple(sorted(OPEN_PLAN_ACTION_STATUSES)),
+        error_code="task_stopped",
+        error_message="任务已停止",
+        now=_now(),
+    )
     refresh_task_stats(session, task)
     audit(session, tenant_id=tenant_id, actor=actor, action="停止任务中心任务", target_type="task", target_id=task.id, detail=reason)
     session.commit()
@@ -2504,12 +2512,16 @@ def delete_task(session: Session, tenant_id: int, task_id: str, actor: str, reas
     if is_profile_batch_task_id(task_id):
         delete_profile_batch_task(session, tenant_id, task_id, actor=actor, reason=reason)
         return
-    task = _get_task(session, tenant_id, task_id)
+    task = _get_task_for_lifecycle(session, tenant_id, task_id)
     now = _now()
-    for action in session.scalars(select(Action).where(Action.task_id == task.id, Action.status.in_(["pending", "executing"]))):
-        action.status = "skipped"
-        action.result = {"success": False, "error_code": "task_deleted", "error_message": "任务已删除"}
-        action.executed_at = now
+    _settle_task_closing_actions(
+        session,
+        task,
+        statuses=tuple(sorted(OPEN_PLAN_ACTION_STATUSES)),
+        error_code="task_deleted",
+        error_message="任务已删除",
+        now=now,
+    )
     refresh_task_stats(session, task)
     _advance_task_lifecycle_epoch(task, "deleted")
     task.status = "deleted"
@@ -2521,6 +2533,124 @@ def delete_task(session: Session, tenant_id: int, task_id: str, actor: str, reas
     clear_task_runtime_artifacts(session, task, reason="任务删除后自动解决关联告警", actor=actor)
     audit(session, tenant_id=tenant_id, actor=actor, action="删除任务中心任务", target_type="task", target_id=task.id, detail=reason)
     session.commit()
+
+
+def _settle_task_closing_actions(
+    session: Session,
+    task: Task,
+    *,
+    statuses: tuple[str, ...],
+    error_code: str,
+    error_message: str,
+    now: datetime,
+) -> None:
+    actions = list(session.scalars(select(Action).where(
+        Action.task_id == task.id,
+        Action.status.in_(statuses),
+    ).with_for_update()))
+    for action in actions:
+        _settle_task_closing_action(
+            session,
+            action,
+            error_code=error_code,
+            error_message=error_message,
+            now=now,
+        )
+
+
+def _settle_task_closing_action(
+    session: Session,
+    action: Action,
+    *,
+    error_code: str,
+    error_message: str,
+    now: datetime,
+) -> None:
+    if action.action_type not in {"view_message", "like_message"}:
+        action.status = "skipped"
+        action.result = _task_closing_action_result(
+            action,
+            error_code=error_code,
+            error_message=error_message,
+        )
+        action.executed_at = now
+        return
+    remote_state = action_remote_mutation_evidence(session, action).state
+    if remote_state not in {None, "false"}:
+        hold_channel_action_after_gateway(session, action)
+        action.status = "unknown_after_send"
+        error_code = f"{error_code}_gateway_unknown"
+        action.result = _task_closing_action_result(
+            action,
+            error_code=error_code,
+            error_message=error_message,
+            remote_mutation_started=None,
+        )
+        action.executed_at = now
+        return
+    _settle_task_closing_channel_action(
+        session,
+        action,
+        error_code=error_code,
+        error_message=error_message,
+        now=now,
+    )
+
+
+def _task_closing_action_result(
+    action: Action,
+    *,
+    error_code: str,
+    error_message: str,
+    remote_mutation_started: bool | None = None,
+) -> dict:
+    result = {
+        **dict(action.result or {}),
+        "success": False,
+        "error_code": error_code,
+        "error_message": error_message,
+    }
+    if action.action_type in {"view_message", "like_message"}:
+        result["remote_mutation_started"] = remote_mutation_started
+    return result
+
+
+def _settle_task_closing_channel_action(
+    session: Session,
+    action: Action,
+    *,
+    error_code: str,
+    error_message: str,
+    now: datetime,
+) -> None:
+    from .direct_action_claims import (
+        reconcile_source_pacing_states,
+        settle_fact_first_action_before_gateway,
+    )
+
+    state_ids = settle_fact_first_action_before_gateway(
+        session,
+        action,
+        now=now,
+        reason_code=error_code,
+        detail=error_message,
+    )
+    reconcile_source_pacing_states(session, state_ids)
+
+
+def _get_task_for_lifecycle(session: Session, tenant_id: int, task_id: str) -> Task:
+    task = session.scalar(
+        select(Task)
+        .where(
+            Task.id == task_id,
+            Task.tenant_id == tenant_id,
+            Task.deleted_at.is_(None),
+        )
+        .with_for_update()
+    )
+    if task is None:
+        raise ValueError("task not found")
+    return task
 
 
 SAFE_RETRY_ACTION_STATUSES = ("failed", "skipped", "cancelled")
@@ -4133,7 +4263,7 @@ def _recover_claimed_stale_action(
     if not recovery_claim_owned(action, claim):
         session.rollback()
         return 0
-    if recovered is None and not gateway_started and recover_stale_pre_gateway_generation(action):
+    if recovered is None and not gateway_started and recover_stale_pre_gateway_generation(action, session=session):
         recovered = 1
     projection = None
     if recovered is None:

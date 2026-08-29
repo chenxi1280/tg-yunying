@@ -93,11 +93,19 @@ def _migrate_test_database() -> None:
 
 
 def _selected_tests_require_postgres(items: list[pytest.Item]) -> bool:
-    return any(item.get_closest_marker("no_postgres") is None for item in items)
+    return any(
+        item.get_closest_marker("no_postgres") is None
+        and item.get_closest_marker("isolated_postgres") is None
+        for item in items
+    )
 
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "no_postgres: does not require PostgreSQL test database reset")
+    config.addinivalue_line(
+        "markers",
+        "isolated_postgres: uses its own temporary PostgreSQL schema without resetting public",
+    )
     config.addinivalue_line(
         "markers",
         "allow_missing_rule_binding: opt out of default test rule binding for negative runtime-gate cases",

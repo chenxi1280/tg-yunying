@@ -90,7 +90,6 @@ GROUP_RELAY_LEGACY_CREATE_FIELDS = {
 CHANNEL_JITTER_FIELDS = {
     "channel_view": {"view_count_jitter"},
     "channel_like": {"like_count_jitter"},
-    "channel_comment": {"comment_count_jitter"},
 }
 
 LEGACY_PACING_FIELDS = {
@@ -238,6 +237,8 @@ TYPE_SETTINGS_FIELDS = {
         "comment_count_jitter",
         "max_total_comments",
         "max_total_comments_jitter",
+        "daily_comment_cap",
+        "rolling_window_days",
         "comment_mode",
         "reply_to_message_ids",
         "reply_min_per_message",

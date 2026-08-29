@@ -16,7 +16,11 @@ from ..comment_account_profiles import (
     comment_account_profile_ready,
     config_with_comment_profile as _config_with_comment_profile,
 )
-from ..comment_fulfillment import bind_comment_obligation, freeze_comment_obligations
+from ..comment_fulfillment import (
+    bind_comment_obligation,
+    clean_expired_comment_obligations,
+    freeze_comment_obligations,
+)
 from ..payloads import PostCommentPayload, create_comment_action
 from app.services.target_learning_audit import audit_learning_profile_use
 from app.services.tenant_target_profile import tenant_learning_profile_preview
@@ -224,6 +228,7 @@ def _persisted_channel_scope(
     if not channel or channel.tenant_id != task.tenant_id or channel.target_type != "channel":
         task.last_error = "目标频道不存在"
         return None, []
+    clean_expired_comment_obligations(session, task)
     messages = channel_messages(
         session,
         task.tenant_id,
@@ -235,7 +240,10 @@ def _persisted_channel_scope(
         messages,
     )
     if not messages:
-        task.last_error = "未找到已采集频道消息，等待监听采集"
+        if config.get("message_scope") == "dynamic_new":
+            task.last_error = ""
+        else:
+            task.last_error = "未找到已采集频道消息，等待监听采集"
         return None, []
     return channel, messages
 

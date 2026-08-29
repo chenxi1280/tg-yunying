@@ -6,7 +6,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import (
-    AccountPacingReservation,
     Action,
     ChannelMessage,
     ExecutionAttempt,
@@ -35,11 +34,10 @@ from .channel_fulfillment_queries import (
     view_materialized_account_ids_for_messages,
     view_remote_fact_for_date,
 )
-from .channel_view_daily_identity import (
-    DailyIdentityClaim,
-    claim_daily_identity,
-    confirm_daily_identity,
+from .channel_action_lifecycle import (
+    release_channel_action_before_gateway,
 )
+from .channel_view_daily_identity import DailyIdentityClaim, claim_daily_identity, confirm_daily_identity
 TERMINAL_REPLAN_STATUSES = frozenset({"failed", "skipped", "cancelled"})
 LIFECYCLE_ACTION_TYPES = frozenset({"like_message", "view_message"})
 
@@ -361,34 +359,12 @@ def confirm_view_action(
     )
 
 
-def release_channel_action_before_gateway(
-    session: Session,
-    action: Action,
-) -> None:
-    contract = {
-        "like_message": (
-            ReactionFulfillmentObligation,
-            "reaction_fulfillment_obligation_id",
-        ),
-        "view_message": (
-            ViewFulfillmentObligation,
-            "view_fulfillment_obligation_id",
-        ),
-    }.get(action.action_type)
-    if contract is None:
-        return
-    model, payload_key = contract
-    payload = action.payload if isinstance(action.payload, dict) else {}
-    obligation = session.get(model, str(payload.get(payload_key) or ""))
-    if obligation is None or obligation.current_action_id != action.id:
-        return
-    if obligation.status == "confirmed":
-        raise RuntimeError("confirmed_channel_obligation_cannot_reopen")
-    obligation.current_action_id = None
-    obligation.status = "open"
-
-
 def cancel_superseded_channel_actions(session: Session, task: Task) -> int:
+    from .direct_action_claims import (
+        reconcile_source_pacing_states,
+        settle_fact_first_action_before_gateway,
+    )
+
     gateway_started = select(ExecutionAttempt.id).where(
         ExecutionAttempt.action_id == Action.id,
         ExecutionAttempt.gateway_call_started_at.is_not(None),
@@ -397,47 +373,23 @@ def cancel_superseded_channel_actions(session: Session, task: Task) -> int:
         select(Action).where(
             Action.task_id == task.id,
             Action.action_type.in_(LIFECYCLE_ACTION_TYPES),
-            Action.status == "pending",
+            Action.status.in_(("pending", "retryable_failed")),
             Action.task_lifecycle_epoch != task.task_lifecycle_epoch,
             ~gateway_started,
-        )
+        ).with_for_update()
     ))
     state_ids: set[str] = set()
     for action in actions:
-        release_channel_action_before_gateway(session, action)
-        action.status = "skipped"
-        action.executed_at = action.executed_at or _now()
-        action.action_version = int(action.action_version or 1) + 1
-        action.result = {
-            **dict(action.result or {}),
-            "error_code": "task_lifecycle_superseded_pre_gateway",
-            "remote_mutation_started": False,
-        }
-        state_ids.update(_release_superseded_reservations(session, action))
+        state_ids.update(settle_fact_first_action_before_gateway(
+            session,
+            action,
+            now=_now(),
+            reason_code="task_lifecycle_superseded_pre_gateway",
+            detail="任务生命周期已推进，旧 Action 未调用 Gateway",
+        ))
     if state_ids:
-        from .direct_action_claims import reconcile_source_pacing_states
-
         reconcile_source_pacing_states(session, state_ids)
     return len(actions)
-
-
-def _release_superseded_reservations(
-    session: Session,
-    action: Action,
-) -> set[str]:
-    reservation = session.scalar(select(AccountPacingReservation.id).where(
-        AccountPacingReservation.action_id == action.id,
-        AccountPacingReservation.state.in_(("reserved", "bound")),
-    ))
-    if reservation is None or not action.pacing_slot_key:
-        return set()
-    from .direct_action_claims import release_fact_first_action_reservations
-
-    return release_fact_first_action_reservations(
-        session,
-        action,
-        fact_kind="safely_not_executed",
-    )
 
 
 def _release_terminal_action(

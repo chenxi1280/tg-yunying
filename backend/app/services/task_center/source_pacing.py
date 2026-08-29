@@ -46,11 +46,24 @@ class SourcePacingPoint:
     release_not_before_at: datetime
 
 
+def _source_window_days(task) -> int:
+    pacing_config = getattr(task, "pacing_config", None) or {}
+    type_config = getattr(task, "type_config", None) or {}
+    days = pacing_config.get("rolling_window_days") or type_config.get("rolling_window_days")
+    if days:
+        try:
+            return max(1, int(days))
+        except (TypeError, ValueError):
+            pass
+    return 1
+
+
 def rolling_source_window(task, observed_at: datetime) -> tuple[datetime, datetime]:
     source_start = wall_datetime(observed_at)
     task_anchor = task_pacing_anchor(task)
     period_start = max(source_start, task_anchor) if task_anchor else source_start
-    return period_start, source_start + timedelta(days=1)
+    days = _source_window_days(task)
+    return period_start, source_start + timedelta(days=days)
 
 
 def wall_datetime(value: datetime) -> datetime:

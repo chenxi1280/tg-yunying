@@ -6,7 +6,14 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import ContentMixCycle, Task, TaskDayLedger, TaskGroupDailyMessageSlot
+from app.models import (
+    AiContentWindowPlan,
+    AiContentWindowPlanSlot,
+    ContentMixCycle,
+    Task,
+    TaskDayLedger,
+    TaskGroupDailyMessageSlot,
+)
 from app.services._common import _now
 
 
@@ -23,7 +30,12 @@ def ai_acceptance_statuses(
         TaskDayLedger.obligation_local_date == local_date,
     )))
     quantity = _quantity_status(session, ledger_ids)
-    content_mix = _content_mix_status(session, ledger_ids)
+    is_v3 = getattr(task, "fulfillment_contract_version", "legacy_v1") == "fact_first_v3"
+    content_mix = (
+        _content_mix_status_v3(session, task, ledger_ids)
+        if is_v3
+        else _content_mix_status_legacy(session, ledger_ids)
+    )
     conversation = _conversation_status(stats)
     return {
         "quantity_status": quantity,
@@ -53,7 +65,7 @@ def _quantity_status(session: Session, ledger_ids: list[str]) -> str:
     return "met" if all(state == "confirmed" for state in states) else "evaluating"
 
 
-def _content_mix_status(session: Session, ledger_ids: list[str]) -> str:
+def _content_mix_status_legacy(session: Session, ledger_ids: list[str]) -> str:
     if not ledger_ids:
         return "evaluating"
     rows = list(session.execute(select(
@@ -68,6 +80,44 @@ def _content_mix_status(session: Session, ledger_ids: list[str]) -> str:
     if all(status == "settled" and outcome == "met" for status, outcome in rows):
         return "met"
     return "evaluating"
+
+
+def _content_mix_status_v3(
+    session: Session,
+    task: Task,
+    ledger_ids: list[str],
+) -> str:
+    if not ledger_ids:
+        return "evaluating"
+    quantity_slot_ids = tuple(session.scalars(select(TaskGroupDailyMessageSlot.id).where(
+        TaskGroupDailyMessageSlot.task_day_ledger_id.in_(ledger_ids)
+    )))
+    if not quantity_slot_ids:
+        return "evaluating"
+    rows = list(session.execute(select(
+        AiContentWindowPlanSlot.obligation_id,
+        AiContentWindowPlanSlot.content_mode,
+        AiContentWindowPlanSlot.state,
+    ).join(
+        AiContentWindowPlan,
+        AiContentWindowPlan.id == AiContentWindowPlanSlot.plan_id,
+    ).where(
+        AiContentWindowPlan.tenant_id == task.tenant_id,
+        AiContentWindowPlan.task_id == task.id,
+        AiContentWindowPlan.task_lifecycle_epoch == task.task_lifecycle_epoch,
+        AiContentWindowPlanSlot.obligation_id.in_(quantity_slot_ids),
+        AiContentWindowPlanSlot.state == "gateway_bound",
+    )))
+    bound_modes = {
+        str(obligation_id): str(content_mode or "").strip()
+        for obligation_id, content_mode, _state in rows
+        if str(content_mode or "").strip()
+    }
+    return (
+        "met"
+        if set(quantity_slot_ids) == set(bound_modes)
+        else "evaluating"
+    )
 
 
 def _conversation_status(stats: dict) -> str:

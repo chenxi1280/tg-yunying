@@ -88,6 +88,7 @@ def test_phase_c_copies_provider_audit_metadata() -> None:
         group_id=7,
         ai_generation_status="ai_result_persist_unknown",
         ai_generation_attempt_id="attempt-current",
+        ai_generation_request_id="request-current",
         content_scope_contract_version="group_content_scope_v1",
         content_scope_tenant_id=1,
         content_scope_group_id=7,
@@ -99,6 +100,7 @@ def test_phase_c_copies_provider_audit_metadata() -> None:
         "attempt-current",
         payload=payload,
     )
+    assert cache["request_id"] == "request-current"
     payload = payload.model_copy(update={"ai_generation_result_cache": cache})
     restored, tokens = cached_generation_result(payload)
     restored_data = apply_generated_content_metadata({}, restored)
@@ -126,6 +128,7 @@ def test_cached_generation_rejects_scope_mismatch() -> None:
         group_id=8,
         ai_generation_status="ai_result_persist_unknown",
         ai_generation_attempt_id="attempt-current",
+        ai_generation_request_id="request-current",
         content_scope_contract_version="group_content_scope_v1",
         content_scope_tenant_id=1,
         content_scope_group_id=8,
@@ -134,10 +137,36 @@ def test_cached_generation_rejects_scope_mismatch() -> None:
             "content": "A群旧缓存",
             "tokens": 9,
             "attempt_id": "attempt-current",
+            "request_id": "request-current",
             "content_scope_contract_version": "group_content_scope_v1",
             "content_scope_tenant_id": 1,
             "content_scope_group_id": 7,
             "content_scope_task_id": "task-a",
+        },
+    )
+
+    assert cached_generation_result(payload) is None
+
+
+def test_cached_generation_rejects_request_mismatch() -> None:
+    payload = SendMessagePayload(
+        group_id=7,
+        ai_generation_status="ai_result_persist_unknown",
+        ai_generation_attempt_id="attempt-current",
+        ai_generation_request_id="request-current",
+        content_scope_contract_version="group_content_scope_v1",
+        content_scope_tenant_id=1,
+        content_scope_group_id=7,
+        content_scope_task_id="task-1",
+        ai_generation_result_cache={
+            "content": "旧 request 的缓存",
+            "tokens": 9,
+            "attempt_id": "attempt-current",
+            "request_id": "request-stale",
+            "content_scope_contract_version": "group_content_scope_v1",
+            "content_scope_tenant_id": 1,
+            "content_scope_group_id": 7,
+            "content_scope_task_id": "task-1",
         },
     )
 

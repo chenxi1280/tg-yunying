@@ -172,6 +172,7 @@ def _target_from_action(action: Action, remote_message_id: str) -> dict | None:
         "message_id": int(raw_id),
         "channel_message_id": _payload_int(action, "channel_message_id"),
         "author": str(payload.get("account_role") or "历史评论账号").strip(),
+        "author_account_id": action.account_id,
         "preview": content[:120],
         "source": "own_history",
     }

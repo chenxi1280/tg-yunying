@@ -45,6 +45,23 @@ def task_pacing_anchor(task) -> datetime | None:
     return runtime_start or scheduled_start or _wall_time(task.created_at)
 
 
+def _source_pacing_window_days(task, config: dict | None = None) -> int:
+    pacing_config = getattr(task, "pacing_config", None) or {}
+    type_config = getattr(task, "type_config", None) or {}
+    passed_config = config or {}
+    days = (
+        passed_config.get("rolling_window_days")
+        or pacing_config.get("rolling_window_days")
+        or type_config.get("rolling_window_days")
+    )
+    if days:
+        try:
+            return max(1, int(days))
+        except (TypeError, ValueError):
+            pass
+    return 1
+
+
 def source_rolling_pacing_due(
     total_target: int,
     config: dict,
@@ -56,12 +73,13 @@ def source_rolling_pacing_due(
     source_anchor = _wall_time(source_observed_at)
     task_anchor = task_pacing_anchor(task)
     anchor = max(source_anchor, task_anchor) if task_anchor else source_anchor
+    days = _source_pacing_window_days(task, config)
     return cumulative_pacing_due(
         total_target,
         config,
         anchor_at=anchor,
         period_start_at=anchor,
-        period_end_at=anchor + timedelta(days=1),
+        period_end_at=anchor + timedelta(days=days),
         now=now,
     )
 

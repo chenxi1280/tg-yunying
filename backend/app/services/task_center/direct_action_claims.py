@@ -11,6 +11,7 @@ from app.models import (
     AccountPacingReservation,
     Action,
     ExecutionAttempt,
+    FulfillmentRemoteFact,
     SourcePacingAdmission,
     SourcePacingState,
     Task,
@@ -18,7 +19,11 @@ from app.models import (
 
 from .fulfillment_activation import CURRENT_CONTRACT_VERSION
 from .account_pacing_guard import revalidate_action_pacing_before_claim
-from .channel_fulfillment import release_channel_action_before_gateway
+from .channel_action_lifecycle import (
+    release_channel_action_resources_before_gateway,
+    validate_channel_action_resources_released,
+)
+from .channel_remote_evidence import action_remote_mutation_evidence
 from .fulfillment_remote_facts import (
     ensure_action_obligation,
     persist_remote_fact,
@@ -26,6 +31,17 @@ from .fulfillment_remote_facts import (
 )
 from .fulfillment_ledger_owners import align_view_ledger_for_safe_settlement
 from .source_pacing import wall_datetime
+
+
+SAFE_SETTLEMENT_ACTION_STATUSES = frozenset({
+    "cancelled",
+    "claiming",
+    "executing",
+    "failed",
+    "pending",
+    "retryable_failed",
+    "skipped",
+})
 
 
 @dataclass(frozen=True)
@@ -103,9 +119,7 @@ def _candidate_rows(
                 Action.task_type != "group_ai_chat",
                 Action.action_type != "send_message",
                 func.coalesce(Action.payload["message_text"].as_string(), "") != "",
-                func.coalesce(
-                    Action.payload["ai_generation_status"].as_string(), ""
-                ) == "",
+                func.coalesce(Action.payload["ai_generation_status"].as_string(), "") == "",
             ),
         )
     )
@@ -265,22 +279,20 @@ def settle_fact_first_action_before_gateway(
     detail: str,
     effective_at: datetime | None = None,
 ) -> set[str]:
-    if action.status not in {"pending", "skipped"}:
+    existing_fact = _safe_settlement_fact(session, action.id)
+    if existing_fact is not None:
+        _validate_safe_settlement_replay(session, action)
+        return set()
+    if action.status not in SAFE_SETTLEMENT_ACTION_STATUSES:
         raise RuntimeError(f"pre_gateway_safe_settlement_status_invalid:{action.status}")
-    ledger_alignment = align_view_ledger_for_safe_settlement(session, action)
-    if ledger_alignment:
-        action.result = {
-            **dict(action.result or {}),
-            "pre_gateway_view_ledger_alignment": ledger_alignment,
-        }
-    if not ensure_action_obligation(session, action):
-        raise RuntimeError("pre_gateway_safe_settlement_obligation_unavailable")
+    remote_mutation_state = _prepare_safe_settlement_action(session, action)
     action.status = "skipped"
     action.executed_at = action.executed_at or now
     action.action_version = int(action.action_version or 1) + 1
     action.result = _safe_settlement_result(
         action,
         reason_code=reason_code,
+        detail=detail,
         effective_at=effective_at,
     )
     attempt = _safe_shortfall_attempt(
@@ -301,7 +313,47 @@ def settle_fact_first_action_before_gateway(
         session,
         action,
         fact_kind=fact.fact_kind,
+        remote_mutation_state=remote_mutation_state,
     )
+
+
+def _prepare_safe_settlement_action(session: Session, action: Action) -> str | None:
+    ledger_alignment = align_view_ledger_for_safe_settlement(session, action)
+    if ledger_alignment:
+        action.result = {
+            **dict(action.result or {}),
+            "pre_gateway_view_ledger_alignment": ledger_alignment,
+        }
+    evidence = action_remote_mutation_evidence(session, action)
+    if evidence.state not in {None, "false"}:
+        raise RuntimeError(
+            f"pre_gateway_safe_settlement_remote_evidence_unsafe:{evidence.state}"
+        )
+    remote_mutation_state = evidence.state
+    if not ensure_action_obligation(session, action):
+        raise RuntimeError("pre_gateway_safe_settlement_obligation_unavailable")
+    return remote_mutation_state
+
+
+def _safe_settlement_fact(
+    session: Session,
+    action_id: str,
+) -> FulfillmentRemoteFact | None:
+    return session.scalar(
+        select(FulfillmentRemoteFact)
+        .where(
+            FulfillmentRemoteFact.action_id == action_id,
+            FulfillmentRemoteFact.fact_kind == "safely_not_executed",
+        )
+        .order_by(FulfillmentRemoteFact.observed_at.desc())
+        .limit(1)
+    )
+
+
+def _validate_safe_settlement_replay(session: Session, action: Action) -> None:
+    if action.status != "skipped":
+        raise RuntimeError("safe_settlement_replay_action_not_skipped")
+    validate_channel_action_resources_released(session, action)
 
 
 def release_fact_first_action_reservations(
@@ -309,35 +361,30 @@ def release_fact_first_action_reservations(
     action: Action,
     *,
     fact_kind: str,
+    remote_mutation_state: str | None = None,
 ) -> set[str]:
     if fact_kind != "safely_not_executed":
         return set()
-    if action.action_type not in {"view_message", "like_message"}:
-        return set()
-    if not action.pacing_slot_key:
-        return set()
-    result = dict(action.result or {})
-    terminal = (
-        action.status == "skipped"
-        or result.get("account_task_disposition") == "abandoned"
+    return release_channel_action_resources_before_gateway(
+        session,
+        action,
+        remote_mutation_state=remote_mutation_state,
     )
-    if not terminal:
-        return set()
-    _mark_pacing_reservation_missed(session, action.id)
-    state_ids = _cancel_pre_gateway_source_admissions(session, action.id)
-    release_channel_action_before_gateway(session, action)
-    return state_ids
 
 
 def _safe_settlement_result(
     action: Action,
     *,
     reason_code: str,
+    detail: str,
     effective_at: datetime | None,
 ) -> dict:
     result = {
         **(action.result or {}),
+        "success": False,
         "error_code": reason_code,
+        "error_message": detail,
+        "remote_mutation_started": False,
         "pre_gateway_safe_settlement": {"reason_code": reason_code},
     }
     if reason_code == "pacing_claim_deadline_exceeded":
@@ -345,47 +392,6 @@ def _safe_settlement_result(
             "effective_claim_at": effective_at.isoformat() if effective_at else None,
         }
     return result
-
-
-def _cancel_pre_gateway_source_admissions(
-    session: Session,
-    action_id: str,
-) -> set[str]:
-    state_ids = set(session.scalars(
-        select(SourcePacingAdmission.source_pacing_state_id)
-        .where(
-            SourcePacingAdmission.action_id == action_id,
-            SourcePacingAdmission.state.in_(("reserved", "finished")),
-        )
-        .distinct()
-    ))
-    if not state_ids:
-        return set()
-    list(session.scalars(
-        select(SourcePacingState)
-        .where(SourcePacingState.id.in_(state_ids))
-        .order_by(SourcePacingState.id)
-        .with_for_update()
-    ))
-    rows = session.scalars(
-        select(SourcePacingAdmission)
-        .outerjoin(ExecutionAttempt, ExecutionAttempt.id == SourcePacingAdmission.attempt_id)
-        .where(
-            SourcePacingAdmission.action_id == action_id,
-            SourcePacingAdmission.state.in_(("reserved", "finished")),
-            or_(
-                SourcePacingAdmission.attempt_id.is_(None),
-                ExecutionAttempt.gateway_call_started_at.is_(None),
-            ),
-        )
-        .with_for_update(of=SourcePacingAdmission)
-    )
-    cancelled: set[str] = set()
-    for admission in rows:
-        admission.state = "cancelled_pre_gateway"
-        admission.version = int(admission.version or 1) + 1
-        cancelled.add(admission.source_pacing_state_id)
-    return cancelled
 
 
 def reconcile_source_pacing_states(
@@ -458,22 +464,6 @@ def _safe_shortfall_attempt(
         failure_detail=detail,
         result_snapshot={"remote_mutation_started": False},
     )
-
-
-def _mark_pacing_reservation_missed(session: Session, action_id: str) -> None:
-    reservation = session.scalar(select(AccountPacingReservation).where(
-        AccountPacingReservation.action_id == action_id,
-    ))
-    if reservation is None:
-        raise RuntimeError("pacing_claim_reservation_missing")
-    if reservation.state == "missed":
-        return
-    if reservation.state not in {"reserved", "bound"}:
-        raise RuntimeError(
-            f"pacing_claim_reservation_state_invalid:{reservation.state}"
-        )
-    reservation.state = "missed"
-    reservation.version = int(reservation.version or 1) + 1
 
 
 __all__ = [

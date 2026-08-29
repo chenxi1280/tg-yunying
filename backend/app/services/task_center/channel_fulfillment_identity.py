@@ -121,7 +121,10 @@ def evidence_hash(kind: str, *parts: object) -> str:
     return hashlib.sha256(source.encode("utf-8")).hexdigest()
 
 
-def assert_fact_owner(actual_obligation_id: str, expected_obligation_id: str) -> None:
+def assert_fact_owner(
+    actual_obligation_id: str | None,
+    expected_obligation_id: str,
+) -> None:
     if actual_obligation_id != expected_obligation_id:
         raise ValueError("remote_fact_owned_by_another_obligation")
 
