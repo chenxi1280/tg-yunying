@@ -244,6 +244,8 @@ Recovery 必须依次提交前序 Action 修复、连续 Task 状态修复，再
 2. 本机应用层：`http://127.0.0.1:18090/api/health`
 3. 宿主 Nginx / 公网入口：`https://<域名>/` 与 `https://<域名>/api/health`
 
+频道浏览按日事实版本发布时，已标记旧 `0172_channel_view_daily_fact` 的生产库必须继续执行新增 `0173_channel_view_fact_nav`，不能通过修改同名 0172 期待 Alembic 重放。发布后除 `alembic current` 外，还要读回 `view_remote_facts.obligation_id` 为 nullable、该列只有一个导航外键且名称为 `fk_view_remote_fact_obligation_navigation`、删除动作是 `SET NULL`；按日唯一键 `uq_view_remote_fact_daily_source` 与 fact/Owner 数量必须保持。若回滚前存在 NULL 或孤儿 obligation navigation，0173 downgrade 必须失败，应用保持当前 release 并继续前向修复，禁止删除 canonical fact 强行回退。
+
 常用手工检查：
 
 ```bash
