@@ -101,6 +101,8 @@ pending -> generating -> ready | failed | unknown | cancelled
 
 `pending/generating/unknown` 的 open predicate 必须与现有实现保持完全一致；migration、claim、reclaim 与 comment generation job 的 predicate 必须做 schema 级回归。内部进度新增 `generation_stage=routing|planning|realizing|reviewing|waiting_provider|quality_wait`、`stage_version` 与 `next_retry_at`：
 
+`GenerationJob.pending` 与 `Action.pending` 时，payload 的 `ai_generation_status=generating` 不是合法等待态，因为普通 claim 会永久排除该 Action。reconcile 必须有界扫描所有 pending stage，而不是只扫描 `generation_recovery`；仅当 Job/Action/payload 精确 binding、全部 owner/token 为空且没有 `ai_provider_call_started_at` 时，CAS 将同一 Action payload 恢复为 `pending`。Provider 已开始或任一 owner 漂移时零写，禁止新建替代 Job/Action 或重放 Provider。
+
 - claim 后 durable state 为 `generating`，lease 结束前记录当前 stage；
 - Provider/reviewer 暂不可用且仍可重试时，释放 lease并 CAS 回 `pending`，保留 `generation_stage` 和 `next_retry_at`；
 - 超过 `latest_safe_send_at` 或内容预算耗尽时终结 `failed`，写 typed `quality_shortfall`；

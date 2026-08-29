@@ -358,6 +358,9 @@ plan 从现有 stable obligations、已冻结 assignment 和 due slots 建立成
 
 每个成员落为独立 `AiContentWindowPlanSlot`：
 
+- Job 与 Action 的发送前状态必须原子对齐；`Job.pending + Action.pending + payload.generating` 会被领取谓词永久排除，不是合法等待态。
+- 历史/跨事务中断自愈按安全事实而非 `generation_stage` 名称判断：只处理 exact Job binding、Job/Action/payload 均无 owner/token、Provider 未开始的 pending 行，将同一 Action payload CAS 回 `pending`；任何 Provider/Gateway 边界、unknown 或 owner 漂移均零写。
+
 ```json
 {
   "plan_id": "uuid",

@@ -119,6 +119,52 @@ def test_reconcile_repairs_unowned_pending_generating_residue() -> None:
         assert refreshed_job.generation_stage == "generation_recovery"
 
 
+def test_reconcile_repairs_unowned_routing_pending_generating_residue() -> None:
+    engine = _engine()
+    with Session(engine) as session:
+        _seed_scope(session)
+        job = _job("job-routing-residue", "slot-routing-residue", state="pending")
+        job.generation_stage = "routing"
+        action = _action(
+            "action-routing-residue", "slot-routing-residue", job.id,
+            status="pending", generation_status="generating",
+        )
+        session.add_all([job, action])
+        session.commit()
+
+        assert reconcile_generation_jobs(session, limit=10) == 1
+        session.commit()
+
+        refreshed_action = session.get(Action, action.id)
+        assert refreshed_action.payload["ai_generation_status"] == "pending"
+        assert refreshed_action.action_version == 2
+        assert session.get(GenerationJob, job.id).generation_stage == "routing"
+
+
+def test_reconcile_preserves_pending_residue_with_live_job_owner() -> None:
+    engine = _engine()
+    with Session(engine) as session:
+        _seed_scope(session)
+        job = _job(
+            "job-live-pending-owner", "slot-live-pending-owner",
+            state="pending", owner="worker-live",
+        )
+        job.generation_stage = "routing"
+        action = _action(
+            "action-live-pending-owner", "slot-live-pending-owner", job.id,
+            status="pending", generation_status="generating",
+        )
+        session.add_all([job, action])
+        session.commit()
+
+        assert reconcile_generation_jobs(session, limit=10) == 0
+        session.commit()
+
+        refreshed_action = session.get(Action, action.id)
+        assert refreshed_action.payload["ai_generation_status"] == "generating"
+        assert refreshed_action.action_version == 1
+
+
 def test_reconcile_does_not_retry_pending_residue_after_provider_started() -> None:
     engine = _engine()
     with Session(engine) as session:

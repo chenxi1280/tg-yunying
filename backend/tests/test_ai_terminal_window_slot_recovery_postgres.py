@@ -8,8 +8,11 @@ import pytest
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import Session
 
-from app.models import AiContentWindowPlan, AiContentWindowPlanSlot, GenerationJob
+from app.models import Action, AiContentWindowPlan, AiContentWindowPlanSlot, GenerationJob
 from app.services._common import _now
+from app.services.task_center.ai_generation_pending_recovery import (
+    recover_pending_generation_residue,
+)
 from app.services.task_center.ai_content_runtime import (
     invalidate_terminal_pre_gateway_obligation_slot,
     recover_terminal_pre_gateway_window_slots,
@@ -80,6 +83,52 @@ def test_binding_guard_invalidates_exact_terminal_owner_with_row_lock() -> None:
             assert slot.claimed_by_job_id is None
 
 
+def test_pending_routing_residue_recovers_with_postgres_json_guards() -> None:
+    with _postgres_schema() as engine:
+        with engine.begin() as connection:
+            _create_tables(connection)
+        with Session(engine, expire_on_commit=False) as session:
+            job = _pending_routing_job()
+            action = _pending_generating_action(job)
+            session.add_all((job, action))
+            session.commit()
+
+            assert recover_pending_generation_residue(
+                session, 1,
+                action_resolver=lambda current, _job: current.get(Action, action.id),
+            ) == 1
+            session.commit()
+            session.expire(action)
+
+            assert action.status == "pending"
+            assert action.payload["ai_generation_status"] == "pending"
+            assert job.generation_stage == "routing"
+
+
+def _pending_routing_job() -> GenerationJob:
+    return GenerationJob(
+        id="pending-routing-job", tenant_id=1, task_id="task-1",
+        task_lifecycle_epoch=1, obligation_type="coverage",
+        obligation_id="pending-routing-coverage", generation_sequence=1,
+        context_snapshot_version=1, state="pending", generation_stage="routing",
+    )
+
+
+def _pending_generating_action(job: GenerationJob) -> Action:
+    return Action(
+        id="pending-routing-action", tenant_id=1, task_id="task-1",
+        task_type="group_ai_chat", action_type="send_message", account_id=1,
+        status="pending", obligation_type=job.obligation_type,
+        obligation_id=job.obligation_id, task_lifecycle_epoch=1,
+        payload={
+            "message_text": "", "generation_job_id": job.id,
+            "ai_generation_status": "generating",
+            "ai_generation_claim_owner": "", "ai_generation_claim_token": "",
+        },
+        result={},
+    )
+
+
 def _terminal_job_and_plan() -> tuple[GenerationJob, AiContentWindowPlan]:
     now_value = _now()
     job = GenerationJob(
@@ -124,11 +173,18 @@ def _create_tables(connection) -> None:
     connection.exec_driver_sql("CREATE TABLE tasks (id VARCHAR(36) PRIMARY KEY)")
     connection.exec_driver_sql("CREATE TABLE tg_accounts (id INTEGER PRIMARY KEY)")
     connection.exec_driver_sql(
+        "CREATE TABLE task_group_daily_message_slots (id VARCHAR(36) PRIMARY KEY)"
+    )
+    connection.exec_driver_sql(
+        "CREATE TABLE content_mix_cycle_slots (id VARCHAR(36) PRIMARY KEY)"
+    )
+    connection.exec_driver_sql(
         "INSERT INTO tenants VALUES (1); "
         "INSERT INTO tasks VALUES ('task-1'); "
         "INSERT INTO tg_accounts VALUES (1)"
     )
     GenerationJob.__table__.create(connection)
+    Action.__table__.create(connection)
     AiContentWindowPlan.__table__.create(connection)
     AiContentWindowPlanSlot.__table__.create(connection)
 

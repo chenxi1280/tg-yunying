@@ -48,7 +48,7 @@ def _candidate_jobs(session: Session, limit: int) -> tuple[GenerationJob, ...]:
     ).exists()
     return tuple(session.scalars(select(GenerationJob).where(
         GenerationJob.state == "pending",
-        GenerationJob.generation_stage == "generation_recovery",
+        GenerationJob.generation_owner_id == "",
         residue_exists,
     ).order_by(GenerationJob.created_at, GenerationJob.id).limit(max(1, int(limit)))))
 
@@ -63,6 +63,7 @@ def _is_unowned_pending_residue(
     return bool(
         data.get("ai_generation_status") == "generating"
         and str(data.get("generation_job_id") or "") == job.id
+        and not job.generation_owner_id
         and not action.claim_owner
         and not action.lease_owner
         and not str(data.get("ai_generation_claim_owner") or "")
@@ -78,7 +79,7 @@ def _recover_action(session: Session, action: Action, job: GenerationJob) -> int
     job_still_pending = select(GenerationJob.id).where(
         GenerationJob.id == job.id,
         GenerationJob.state == "pending",
-        GenerationJob.generation_stage == "generation_recovery",
+        GenerationJob.generation_owner_id == "",
     ).exists()
     return int(session.execute(update(Action).where(
         Action.id == action.id,
