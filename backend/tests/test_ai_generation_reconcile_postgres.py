@@ -56,8 +56,9 @@ def _run_reconcile() -> int:
 def _seed_expired_generation() -> None:
     now_value = _now()
     with SessionLocal() as session:
+        session.add(Tenant(id=TENANT_ID, name="AI reconcile concurrency"))
+        session.flush()
         session.add_all([
-            Tenant(id=TENANT_ID, name="AI reconcile concurrency"),
             TgAccount(
                 id=TENANT_ID,
                 tenant_id=TENANT_ID,

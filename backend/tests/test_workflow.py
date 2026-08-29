@@ -6538,7 +6538,7 @@ def test_task_center_channel_failure_replans_same_obligation_before_task_failed(
             task = session.get(Task, task_id)
             action = session.query(Action).filter(Action.task_id == task_id).one()
             assert task.status == "running"
-            assert action.status == "failed"
+            assert action.status == "skipped"
             assert action.retry_count == 0
             task.next_run_at = _now()
             session.commit()

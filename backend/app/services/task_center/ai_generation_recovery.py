@@ -168,7 +168,7 @@ def _claim_expired_job(
 ) -> _ReconcileClaim | None:
     job = session.get(GenerationJob, job_id)
     now_value = _now()
-    if job is None or job.lease_expires_at is None or job.lease_expires_at > now_value:
+    if job is None or job.lease_expires_at is None:
         return None
     version = int(job.job_version or 1)
     epoch = int(job.generation_lease_epoch or 0)

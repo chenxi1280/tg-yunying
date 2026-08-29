@@ -652,6 +652,18 @@ def _settle_safe_fact_first_channel_action(
         now=_now(),
         reason_code=str(result.get("error_code") or "channel_action_terminal_pre_gateway"),
         detail=str(result.get("error_message") or "频道操作未调用 Gateway"),
+        replan_same_obligation=_channel_action_replan_allowed(session, action),
+    )
+
+
+def _channel_action_replan_allowed(session: Session, action: Action) -> bool:
+    task = session.get(Task, action.task_id)
+    result = dict(action.result or {})
+    return bool(
+        task is not None
+        and task.status == "running"
+        and result.get("account_task_disposition") != "abandoned"
+        and not dict(task.stats or {}).get("target_terminal")
     )
 
 

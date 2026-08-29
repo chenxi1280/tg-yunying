@@ -33,13 +33,19 @@ def release_channel_action_before_gateway(
         remote_mutation_state=remote_mutation_state,
     ):
         raise RuntimeError("channel_view_daily_identity_safe_release_failed")
-    obligation = _bound_obligation(session, action)
+    obligation = _locked_payload_obligation(session, action)
     if obligation is None:
         if action.action_type == "like_message":
             return
         raise RuntimeError("channel_action_safe_release_obligation_missing")
     if obligation.status == "confirmed":
         raise RuntimeError("confirmed_channel_obligation_cannot_reopen")
+    if obligation.current_action_id is None:
+        if obligation.status != "open":
+            raise RuntimeError("released_channel_obligation_state_invalid")
+        return
+    if obligation.current_action_id != action.id:
+        raise RuntimeError("channel_action_safe_release_obligation_owner_mismatch")
     obligation.current_action_id = None
     obligation.status = "open"
 
@@ -49,6 +55,7 @@ def release_channel_action_resources_before_gateway(
     action: Action,
     *,
     remote_mutation_state: str | None = None,
+    replan_same_obligation: bool = False,
 ) -> set[str]:
     if action.action_type not in {"view_message", "like_message"}:
         return set()
@@ -72,7 +79,11 @@ def release_channel_action_resources_before_gateway(
     )
     if not action.pacing_slot_key:
         return set()
-    _mark_pacing_reservation_missed(session, action.id)
+    _settle_pacing_reservation(
+        session,
+        action.id,
+        replan_same_obligation=replan_same_obligation,
+    )
     return _cancel_pre_gateway_source_admissions(session, action.id)
 
 
@@ -171,6 +182,31 @@ def _bound_obligation(
     return obligation
 
 
+def _locked_payload_obligation(
+    session: Session,
+    action: Action,
+) -> ReactionFulfillmentObligation | ViewFulfillmentObligation | None:
+    contract = {
+        "like_message": (
+            ReactionFulfillmentObligation,
+            "reaction_fulfillment_obligation_id",
+        ),
+        "view_message": (
+            ViewFulfillmentObligation,
+            "view_fulfillment_obligation_id",
+        ),
+    }.get(action.action_type)
+    if contract is None:
+        return None
+    model, payload_key = contract
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    return session.scalar(
+        select(model)
+        .where(model.id == str(payload.get(payload_key) or ""))
+        .with_for_update()
+    )
+
+
 def _cancel_pre_gateway_source_admissions(
     session: Session,
     action_id: str,
@@ -212,7 +248,12 @@ def _cancel_pre_gateway_source_admissions(
     return cancelled
 
 
-def _mark_pacing_reservation_missed(session: Session, action_id: str) -> None:
+def _settle_pacing_reservation(
+    session: Session,
+    action_id: str,
+    *,
+    replan_same_obligation: bool,
+) -> None:
     reservation = session.scalar(select(AccountPacingReservation).where(
         AccountPacingReservation.action_id == action_id,
     ))
@@ -224,7 +265,9 @@ def _mark_pacing_reservation_missed(session: Session, action_id: str) -> None:
         raise RuntimeError(
             f"pacing_claim_reservation_state_invalid:{reservation.state}"
         )
-    reservation.state = "missed"
+    reservation.state = "reserved" if replan_same_obligation else "missed"
+    if replan_same_obligation:
+        reservation.action_id = None
     reservation.version = int(reservation.version or 1) + 1
 
 

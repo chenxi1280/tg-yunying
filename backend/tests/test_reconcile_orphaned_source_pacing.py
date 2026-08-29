@@ -15,6 +15,7 @@ from app.models import (
     Action,
     AuditLog,
     ChannelMessage,
+    ChannelViewDailyIdentityOwner,
     ChannelViewDailyMessageTarget,
     FulfillmentRemoteFact,
     OperationTarget,
@@ -109,6 +110,7 @@ def test_apply_closes_orphan_and_rebases_current_timeline(session: Session) -> N
     terminal_admission = session.get(SourcePacingAdmission, "terminal-admission")
     current_admission = session.get(SourcePacingAdmission, "current-admission")
     state = session.get(SourcePacingState, "shared-source-state")
+    daily_owner = session.get(ChannelViewDailyIdentityOwner, "terminal-daily-owner")
     fact = session.scalar(select(FulfillmentRemoteFact).where(
         FulfillmentRemoteFact.action_id == terminal.id,
     ))
@@ -124,6 +126,9 @@ def test_apply_closes_orphan_and_rebases_current_timeline(session: Session) -> N
     assert fact is not None and fact.fact_kind == "safely_not_executed"
     assert terminal_reservation.state == "missed"
     assert terminal_admission.state == "cancelled_pre_gateway"
+    assert daily_owner.state == "available"
+    assert daily_owner.obligation_id is None
+    assert daily_owner.action_id is None
     assert current.scheduled_at == ANCHOR
     assert current.release_not_before_at == ANCHOR
     assert current_reservation.effective_claim_at == ANCHOR
@@ -285,6 +290,19 @@ def _seed_terminal(session, task, ledger, message, state) -> None:
     session.add_all([owner, action])
     session.flush()
     session.add_all([
+        ChannelViewDailyIdentityOwner(
+            id="terminal-daily-owner",
+            tenant_id=1,
+            target_peer_id="-10010",
+            channel_message_id=message.id,
+            account_id=1,
+            obligation_local_date=TERMINAL_DATE,
+            state="pre_gateway",
+            logical_task_id=task.id,
+            obligation_id=owner.id,
+            action_id=action.id,
+            request_identity=f"{task.id}:{owner.id}",
+        ),
         _reservation("terminal-reservation", task, action, ledger.deadline_at),
         _admission("terminal-admission", task, owner, action, state, 87),
     ])

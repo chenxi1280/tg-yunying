@@ -278,6 +278,7 @@ def settle_fact_first_action_before_gateway(
     reason_code: str,
     detail: str,
     effective_at: datetime | None = None,
+    replan_same_obligation: bool = False,
 ) -> set[str]:
     existing_fact = _safe_settlement_fact(session, action.id)
     if existing_fact is not None:
@@ -314,6 +315,7 @@ def settle_fact_first_action_before_gateway(
         action,
         fact_kind=fact.fact_kind,
         remote_mutation_state=remote_mutation_state,
+        replan_same_obligation=replan_same_obligation,
     )
 
 
@@ -362,6 +364,7 @@ def release_fact_first_action_reservations(
     *,
     fact_kind: str,
     remote_mutation_state: str | None = None,
+    replan_same_obligation: bool = False,
 ) -> set[str]:
     if fact_kind != "safely_not_executed":
         return set()
@@ -369,6 +372,7 @@ def release_fact_first_action_reservations(
         session,
         action,
         remote_mutation_state=remote_mutation_state,
+        replan_same_obligation=replan_same_obligation,
     )
 
 
