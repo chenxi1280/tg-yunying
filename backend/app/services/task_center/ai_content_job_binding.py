@@ -16,7 +16,13 @@ from app.models import (
 )
 
 from .ai_content_policy import assert_route_authorized
-from .ai_content_runtime import WindowScope, WindowSlotSpec, claim_window_slot, freeze_window_plan
+from .ai_content_runtime import (
+    WindowScope,
+    WindowSlotSpec,
+    claim_window_slot,
+    freeze_window_plan,
+    invalidate_terminal_pre_gateway_obligation_slot,
+)
 from .ai_context_information import meaningful_group_evidence
 from .ai_context_revision_binding import synchronize_generation_context
 from .ai_generation_timing import GENERATION_LEASE
@@ -346,6 +352,11 @@ def _ensure_window_slot(
         route=route,
         prompt_version=prompt_version,
         evidence_hash=evidence_hash,
+    )
+    invalidate_terminal_pre_gateway_obligation_slot(
+        session,
+        obligation_type=job.obligation_type,
+        obligation_id=job.obligation_id,
     )
     freeze_window_plan(session, scope, (spec,))
     return claim_window_slot(session, job, lease_duration=GENERATION_LEASE)

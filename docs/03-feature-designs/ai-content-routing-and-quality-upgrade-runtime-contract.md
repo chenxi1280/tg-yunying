@@ -108,6 +108,8 @@ pending -> generating -> ready | failed | unknown | cancelled
 
 `AiContentWindowPlan` 为 `draft -> frozen -> settled|invalidated`；slot 为 `frozen -> claimed -> candidate_ready -> gateway_bound -> settled`。`claimed|candidate_ready` 可在 Gateway 前转 `invalidated` 并建立下一 slot revision；`gateway_bound` 只能随 Action/Attempt reconcile。lease 超时按相同 revision/epoch reclaim，不能同时产生第二个 candidate。
 
+终态等待结算必须先释放 pre-Gateway current slot：当 Job 因质量/Provider 容量等待耗尽预算或越过 deadline 转 `failed|cancelled`，同一事务将其 `claimed|candidate_ready` slot CAS 为 `invalidated` 并清空 owner/lease。reconcile 另以有界、`skip locked` 批次修复历史 `terminal Job + pre-Gateway current slot` 精确残留；只处理 slot 当前 owner 与 terminal Job 精确一致的行，不触碰 `gateway_bound`、open/unknown Job 或任何远端不确定结果。后续 Job 仍必须通过 current-obligation 唯一约束，不能以第二 current slot、silent retry 或 worker 级异常作为兼容路径。
+
 ### 6.3 Invalidation
 
 以下变化使未进 Gateway candidate 失效：

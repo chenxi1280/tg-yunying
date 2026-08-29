@@ -10,10 +10,13 @@ from sqlalchemy.orm import Session
 from app.database import Base
 from app.models import (
     Action,
+    AiContentWindowPlan,
+    AiContentWindowPlanSlot,
     FulfillmentShortfallFact,
     GenerationJob,
     Task,
     Tenant,
+    TgAccount,
     TgGroup,
 )
 from app.services._common import _now
@@ -184,7 +187,7 @@ def test_two_stage_quality_wait_settles_exhausted_rewrite_budget() -> None:
             state="generating",
             generation_owner_id="worker-a",
         )
-        session.add(job)
+        slot = _attach_claimed_quality_slot(session, task, action, job)
         action.payload = {**action.payload, "generation_job_id": job.id}
         session.commit()
 
@@ -209,6 +212,9 @@ def test_two_stage_quality_wait_settles_exhausted_rewrite_budget() -> None:
         assert action.payload["ai_generation_status"] == "quality_wait_budget_exhausted"
         assert job.state == "failed"
         assert job.generation_stage == "quality_wait_shortfall"
+        assert slot.state == "invalidated"
+        assert slot.claimed_by_job_id is None
+        assert slot.lease_expires_at is None
         fact = session.scalar(select(FulfillmentShortfallFact))
         assert fact.reason_code == "quality_wait_budget_exhausted"
 
@@ -335,6 +341,73 @@ def _phase_c_request(task: Task, action: Action):
             "coverage_ledger_id": "",
         }]},
     })()
+
+
+def _window_plan(task: Task, action: Action) -> AiContentWindowPlan:
+    return AiContentWindowPlan(
+        id="quality-plan",
+        tenant_id=task.tenant_id,
+        task_id=task.id,
+        task_lifecycle_epoch=task.task_lifecycle_epoch,
+        scope_type="group",
+        scope_id="7",
+        pacing_plan_hash="p" * 64,
+        period_key="quality-period",
+        window_start_at=action.scheduled_at,
+        window_end_at=action.scheduled_at,
+        task_config_revision=task.config_revision,
+        content_policy_hash="c" * 64,
+        state="frozen",
+        plan_hash="h" * 64,
+    )
+
+
+def _attach_claimed_quality_slot(
+    session: Session,
+    task: Task,
+    action: Action,
+    job: GenerationJob,
+) -> AiContentWindowPlanSlot:
+    account = TgAccount(
+        id=11, tenant_id=1, display_name="quality-account",
+        phone_masked="+86111", status="在线",
+    )
+    action.account_id = account.id
+    plan = _window_plan(task, action)
+    session.add_all((account, job, plan))
+    session.flush()
+    slot = _claimed_window_slot(plan, action, job)
+    session.add(slot)
+    session.flush()
+    job.window_slot_id = slot.id
+    return slot
+
+
+def _claimed_window_slot(
+    plan: AiContentWindowPlan,
+    action: Action,
+    job: GenerationJob,
+) -> AiContentWindowPlanSlot:
+    return AiContentWindowPlanSlot(
+        id="quality-slot",
+        plan_id=plan.id,
+        slot_ordinal=1,
+        obligation_type=job.obligation_type,
+        obligation_id=job.obligation_id,
+        generation_sequence=job.generation_sequence,
+        account_id=action.account_id,
+        due_at=action.scheduled_at,
+        context_scope_revision=job.context_snapshot_version,
+        context_snapshot_hash="s" * 64,
+        context_route="general",
+        content_mode="general",
+        route_evidence_hash="e" * 64,
+        prompt_contract_version="general_v1",
+        state="claimed",
+        claimed_by_job_id=job.id,
+        lease_epoch=1,
+        lease_expires_at=_now(),
+    )
 
 
 def _seed_observability_actions(session: Session) -> Task:

@@ -4,7 +4,7 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import Action, GenerationJob
+from app.models import Action, AiContentWindowPlan, AiContentWindowPlanSlot, GenerationJob
 from app.services._common import _now
 from app.services.task_center.ai_generation_recovery import reconcile_generation_jobs
 from tests.test_ai_generation_reconcile_fencing import (
@@ -164,3 +164,96 @@ def test_reconcile_pending_residue_batches_make_forward_progress() -> None:
             session.get(Action, action.id).payload["ai_generation_status"] == "pending"
             for action in actions
         )
+
+
+def test_reconcile_invalidates_terminal_pre_gateway_slot_residue() -> None:
+    engine = _engine()
+    with Session(engine) as session:
+        _seed_scope(session)
+        job = _job("job-terminal-slot", "slot-terminal", state="failed")
+        plan = AiContentWindowPlan(
+            id="plan-terminal-slot", tenant_id=1, task_id="task-1",
+            task_lifecycle_epoch=1, scope_type="group", scope_id="7",
+            pacing_plan_hash="p" * 64, period_key="terminal-period",
+            window_start_at=_now(), window_end_at=_now(), task_config_revision=1,
+            content_policy_hash="c" * 64, state="frozen", plan_hash="h" * 64,
+        )
+        session.add_all((job, plan))
+        session.flush()
+        slot = AiContentWindowPlanSlot(
+            id="window-terminal-slot", plan_id=plan.id, slot_ordinal=1,
+            obligation_type=job.obligation_type, obligation_id=job.obligation_id,
+            generation_sequence=1, account_id=11, due_at=_now(),
+            context_scope_revision=1, context_snapshot_hash="s" * 64,
+            context_route="general", content_mode="general",
+            route_evidence_hash="e" * 64, prompt_contract_version="general_v1",
+            state="claimed", claimed_by_job_id=job.id, lease_epoch=1,
+            lease_expires_at=_now(),
+        )
+        session.add(slot)
+        session.flush()
+        job.window_slot_id = slot.id
+        session.commit()
+
+        assert reconcile_generation_jobs(session, limit=10) == 1
+        session.commit()
+
+        assert slot.state == "invalidated"
+        assert slot.claimed_by_job_id is None
+        assert slot.lease_expires_at is None
+
+
+def test_reconcile_preserves_gateway_bound_and_open_job_slots() -> None:
+    engine = _engine()
+    with Session(engine) as session:
+        _seed_scope(session)
+        terminal = _job("job-terminal-gateway", "slot-gateway", state="failed")
+        unknown = _job("job-unknown-claimed", "slot-unknown", state="unknown")
+        plan = AiContentWindowPlan(
+            id="plan-preserved", tenant_id=1, task_id="task-1",
+            task_lifecycle_epoch=1, scope_type="group", scope_id="7",
+            pacing_plan_hash="p" * 64, period_key="preserved-period",
+            window_start_at=_now(), window_end_at=_now(), task_config_revision=1,
+            content_policy_hash="c" * 64, state="frozen", plan_hash="h" * 64,
+        )
+        session.add_all((terminal, unknown, plan))
+        session.flush()
+        gateway_slot = _owned_slot(
+            "window-gateway", plan.id, terminal, state="gateway_bound", ordinal=1,
+        )
+        unknown_slot = _owned_slot(
+            "window-unknown", plan.id, unknown, state="claimed", ordinal=2,
+        )
+        session.add_all((gateway_slot, unknown_slot))
+        session.flush()
+        terminal.window_slot_id = gateway_slot.id
+        unknown.window_slot_id = unknown_slot.id
+        session.commit()
+
+        assert reconcile_generation_jobs(session, limit=10) == 0
+        session.commit()
+
+        assert gateway_slot.state == "gateway_bound"
+        assert gateway_slot.claimed_by_job_id == terminal.id
+        assert unknown_slot.state == "claimed"
+        assert unknown_slot.claimed_by_job_id == unknown.id
+
+
+def _owned_slot(
+    slot_id: str,
+    plan_id: str,
+    job: GenerationJob,
+    *,
+    state: str,
+    ordinal: int,
+) -> AiContentWindowPlanSlot:
+    return AiContentWindowPlanSlot(
+        id=slot_id, plan_id=plan_id, slot_ordinal=ordinal,
+        obligation_type=job.obligation_type, obligation_id=job.obligation_id,
+        generation_sequence=1, account_id=11, due_at=_now(),
+        context_scope_revision=1, context_snapshot_hash="s" * 64,
+        context_route="general", content_mode="general",
+        route_evidence_hash="e" * 64, prompt_contract_version="general_v1",
+        state=state, claimed_by_job_id=job.id, lease_epoch=1,
+        lease_expires_at=_now(),
+    )

@@ -322,6 +322,7 @@ def test_group_v2_rebinds_pre_gateway_slot_to_current_context_revision() -> None
             second["_ai_content_contracts"][job.id]["window_plan_hash"]
         )
 
+
 def test_group_v2_batch_loads_job_and_policy_snapshots_once() -> None:
     engine = _engine()
     with Session(engine) as session:

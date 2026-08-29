@@ -7,6 +7,8 @@ from sqlalchemy.orm import Session
 
 from app.models import Action, GenerationJob
 
+from .ai_content_runtime import recover_terminal_pre_gateway_window_slots
+
 
 ActionResolver = Callable[[Session, GenerationJob], Action | None]
 
@@ -17,8 +19,9 @@ def recover_pending_generation_residue(
     *,
     action_resolver: ActionResolver,
 ) -> int:
-    recovered = 0
-    for job in _candidate_jobs(session, limit):
+    bounded_limit = max(1, int(limit))
+    recovered = recover_terminal_pre_gateway_window_slots(session, bounded_limit)
+    for job in _candidate_jobs(session, bounded_limit - recovered):
         action = action_resolver(session, job)
         if not _is_unowned_pending_residue(action, job):
             continue
@@ -27,6 +30,8 @@ def recover_pending_generation_residue(
 
 
 def _candidate_jobs(session: Session, limit: int) -> tuple[GenerationJob, ...]:
+    if limit <= 0:
+        return ()
     residue_exists = select(Action.id).where(
         Action.tenant_id == GenerationJob.tenant_id,
         Action.task_id == GenerationJob.task_id,

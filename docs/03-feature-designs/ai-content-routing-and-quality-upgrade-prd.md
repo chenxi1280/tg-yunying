@@ -384,6 +384,8 @@ plan 从现有 stable obligations、已冻结 assignment 和 due slots 建立成
 
 `(plan_id, slot_ordinal, slot_revision)` 永久唯一；每个成员位/obligation 最多一个 current slot，current predicate=`frozen|claimed|candidate_ready|gateway_bound`。状态为 `frozen -> claimed -> candidate_ready -> gateway_bound -> settled`。Provider 调用前的 `claimed` slot 可因 context revision 前进 CAS 到 `invalidated` 并创建递增 revision 的替代 slot；`candidate_ready` 不再因普通 context drift 失效或重生成，`gateway_bound` 后只能 reconcile。scope、policy、attestation、安全或 reply authority 硬合同失效仍可在 Gateway 前拒绝。claim 持有 job、lease epoch/expiry，超时只允许同 revision reclaim。candidate persist 进入 `candidate_ready`，不能提前写 consumed；窗口其他 slot 不重算，Window planner 不调用 Telegram、不写 Action。
 
+GenerationJob 在 Gateway 前因质量/Provider 容量等待超过预算或 deadline 形成 typed shortfall 并终结为 `failed|cancelled` 时，必须在同一事务把该 Job 持有的 `claimed|candidate_ready` slot CAS 为 `invalidated`、清空 `claimed_by_job_id/lease`，再允许同一 obligation 的替代 Job 建立 current slot。历史版本遗留的精确形态 `slot.current + claimed_by_job.state IN (failed,cancelled)` 由 ai-generation reconcile 按有界批次和行锁自动失效；`gateway_bound`、open/unknown Job 或归属漂移一律不进入自愈。数据库 current-obligation 唯一约束始终保留为最终并发闸门，禁止通过放宽唯一性、删除旧事实或把唯一冲突降级成假成功恢复吞吐。
+
 ### 4.5 MessageBrief v2
 
 在 v1 基础上新增：

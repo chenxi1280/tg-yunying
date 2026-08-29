@@ -17,7 +17,12 @@ from app.models import (
 )
 from app.services._common import _now
 
-from .ai_content_runtime import ShortfallSpec, defer_generation_job, settle_shortfall
+from .ai_content_runtime import (
+    ShortfallSpec,
+    defer_generation_job,
+    invalidate_job_pre_gateway_slot,
+    settle_shortfall,
+)
 from .datetime_compat import is_after_or_equal
 from .generation_shortfall_projection import project_generation_shortfall
 
@@ -124,6 +129,7 @@ def _settle_generation_shortfall(
         spec=spec,
         reason_code=reason_code,
     )
+    invalidate_job_pre_gateway_slot(session, job)
     _mark_job_shortfall(job, spec)
     _mark_action_shortfall(session, action, spec=spec, reason_code=reason_code)
 

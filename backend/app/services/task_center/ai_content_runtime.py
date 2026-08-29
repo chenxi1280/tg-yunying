@@ -26,6 +26,7 @@ from .datetime_compat import is_after_or_equal
 CURRENT_SLOT_STATES = ("frozen", "claimed", "candidate_ready", "gateway_bound")
 PRE_GATEWAY_SLOT_STATES = ("claimed", "candidate_ready")
 SHORTFALL_KINDS = frozenset({"quality", "provider_capacity", "context_stale", "pacing_capacity"})
+TERMINAL_JOB_STATES = ("failed", "cancelled")
 
 
 class AiContentRuntimeConflict(RuntimeError):
@@ -317,6 +318,50 @@ def invalidate_pre_gateway_window_slot(
     return True
 
 
+def invalidate_terminal_pre_gateway_obligation_slot(
+    session: Session,
+    *,
+    obligation_type: str,
+    obligation_id: str,
+) -> bool:
+    slot = session.scalar(
+        _terminal_pre_gateway_slot_query()
+        .where(
+            AiContentWindowPlanSlot.obligation_type == obligation_type,
+            AiContentWindowPlanSlot.obligation_id == obligation_id,
+        )
+        .with_for_update()
+    )
+    return bool(slot and invalidate_pre_gateway_window_slot(slot))
+
+
+def recover_terminal_pre_gateway_window_slots(
+    session: Session,
+    limit: int,
+) -> int:
+    slots = session.scalars(
+        _terminal_pre_gateway_slot_query()
+        .order_by(AiContentWindowPlanSlot.created_at, AiContentWindowPlanSlot.id)
+        .limit(max(1, int(limit)))
+        .with_for_update(skip_locked=True)
+    )
+    return sum(invalidate_pre_gateway_window_slot(slot) for slot in slots)
+
+
+def _terminal_pre_gateway_slot_query():
+    return (
+        select(AiContentWindowPlanSlot)
+        .join(
+            GenerationJob,
+            GenerationJob.id == AiContentWindowPlanSlot.claimed_by_job_id,
+        )
+        .where(
+            AiContentWindowPlanSlot.state.in_(PRE_GATEWAY_SLOT_STATES),
+            GenerationJob.state.in_(TERMINAL_JOB_STATES),
+        )
+    )
+
+
 def settle_shortfall(
     session: Session,
     spec: ShortfallSpec,
@@ -444,6 +489,8 @@ __all__ = [
     "invalidate_job_pre_gateway_slot",
     "invalidate_pre_gateway_slot",
     "invalidate_pre_gateway_window_slot",
+    "invalidate_terminal_pre_gateway_obligation_slot",
     "mark_candidate_ready",
+    "recover_terminal_pre_gateway_window_slots",
     "settle_shortfall",
 ]
