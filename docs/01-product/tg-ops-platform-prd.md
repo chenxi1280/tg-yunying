@@ -11,7 +11,7 @@
 > 6. 目标群全局 Sequencer：基于单调递增拟人延迟与 Reply/Topic/Album 显式 DAG 保序，队头阻塞生成 `CloneSequencerHeadCase` 并支持可审计的 `visible_gap_accepted`；
 > 7. 严格区分 `sender-role`（消息发送与自编辑）与 `control-role`（Topic管理、Pin/Unpin、管理员Delete）；
 > 8. 完整专项合同见 `docs/03-feature-designs/telegram-group-clone-1to1-prd.md`。
-> 9. 当前仅完成文本 NewMessage 主链的本地部分验证，`implementation_status=partial_local_validation`；共享 collector/difference、消息全生命周期与媒体、全平台 authority 接入、cutover/rollback、详情人工处置、PostgreSQL/真实 Telegram QA 均为发布硬阻塞。
+> 9. 当前已完成共享 collector/difference、文本与消息生命周期主链、非 Send desired-state reconcile、已识别 writer authority、详情人工处置和 guarded pre-mutation cutover/rollback 的本地部分验证，`implementation_status=partial_local_validation`；Album/Poll/媒体实际发送、完整 exclusion rollback、PostgreSQL/真实 Telegram QA 仍为发布硬阻塞。
 
 > **2026-08-30 运行历史存储补正：** Action 明细按终态分层保留，`skipped/success/failed` 默认分别保留 1/2/7 个完整自然日；删除前固化日期、状态、Action 类型和类型化原因汇总。`closed_unknown`、`unknown_after_send`、全部开放/重试态、cancelled 与 typed remote facts 不进入普通时间清理。任务中心窗口外明确显示“明细已按保留策略清理”，运营数据读取长期汇总；生产清理只能走 SHA/fingerprint/actor/ref 守卫的 preview/apply/readback，逻辑清理与物理索引回收分别验收。详见 `docs/03-feature-designs/runtime-storage-retention-and-reclaim-prd.md`。
 

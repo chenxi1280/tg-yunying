@@ -966,20 +966,27 @@ worker/container healthy 不能证明克隆健康。任务健康至少同时观�
 8. 前端向导、详情与告警。
 9. PostgreSQL/Telegram 集成 QA、Release Gate 和 E4 canary。
 
-### 18.3 当前实现差距审计（2026-08-30）
+### 18.2 当前实现差距审计（2026-08-30）
 
 当前代码已具备本地可验证的文本 NewMessage 与消息生命周期主链：严格 create/precheck、starting boundary、durable delivery 消费、source event、sender slot/binding、obligation/FOP/Action、冻结 mutation identity/random_id、Gateway 前 route/execution/authorization/transport/authority/Sequencer 复核、Attempt/typed Remote Fact、outbound mapping 与 message mapping；Edit/Delete/Pin、显式 Topic 生命周期、旧 Topic 权威 lazy fetch/create，以及旧父消息权威读取后的 quote fallback 已接入同一主链。API 已提供 source event、obligation、binding、message mapping、reconcile case、update-ingress status 和 Sequencer case 的只读导航；前端已能创建 `group_clone`。
 
-以下仍是 Release Gate 硬阻塞，不得因当前定向测试通过而改写成 `implemented_local`、`qa_pass` 或已上线：
+本轮差距修复后，以下能力已有本地代码与定向测试证据，但仍不等于发布或 Telegram 生产验收：
 
-- 平台共享 Telethon collector 已接入 listener worker，包含 authorization 单 owner/lease/fencing 接管、`updates.getDifference/getChannelDifference`、durable update journal 与 `updateMessageID` 断线恢复；本地 adapter/collector/reconcile 自动化测试已通过，但真实 Telegram collector、断线恢复和 PostgreSQL 并发证据仍未取得，Release Gate 保持阻塞。
-- Edit/Delete/Pin/Topic 与 Reply 旧父消息 lazy bootstrap 已有本地 Action/Attempt/typed-fact 回归；非 Send mutation 的 RPC 丢响应后 desired-state readback、Album、Poll、媒体下载/tenant 隔离加密缓存/上传 adapter 尚未闭合。Album/Poll/媒体和无法取得权威 source Topic/parent 的对象仍显式进入 waiting/manual 状态，不做文本降级或伪成功。
-- manual review decision 已具备 tenant/manage 权限、revision CAS、client request 幂等、审计和 release/drop/keep-blocked 本地回归；binding release、cutover apply、rollback API 及其原子状态机未完成，cutover apply 当前明确返回 501，禁止半割接。
-- 其他平台群写 writer 尚未全部接入共享 `TelegramGroupMutationAuthority`，因此不能启用全平台强制独占或执行真实割接。
-- 前端任务详情的链路下钻、告警、人工决策和受控换绑未完成。
-- 尚无 blank/current PostgreSQL、并发 CAS、真实 Telegram 集成与 E4 canary 证据；当前只有 SQLite 定向迁移/测试与前端构建证据。
+- 共享 Telethon collector 已接入 listener worker，包含 authorization 单 owner/lease/fencing、`updates.getDifference/getChannelDifference`、durable update journal 和 `updateMessageID` 恢复；Topic create 的 random-id mapping 会按 mutation identity 精确关联 `group_clone_mutation` Action。
+- Edit/Delete/Pin/Topic 与 Reply lazy bootstrap 均走同一 Action/Attempt/typed-fact 主链；Edit/Delete/Pin/Unpin/Topic Edit/Delete 的 RPC 丢响应后执行冻结期望状态 readback，只有精确匹配才收口成功，不匹配保持 unknown 且不重放。unknown deadline 会转 `remote_reconcile_only` 并创建唯一 Sequencer head case。
+- obligation 成功词汇已统一为 `succeeded`；manual review 与 Sequencer decision 均有 manage 权限、revision CAS、请求幂等、原因和审计。详情页已提供 source event、obligation、binding、mapping、ingress lease、manual review、Sequencer case 下钻与受控决策。
+- 已识别的群写入口（Task Center 群/目标发送、删除、频道评论/反应、MessageTask、OperationTask、人工即时发送）均在 Gateway 前接入 `TelegramGroupMutationAuthority`；handoff 还必须匹配 exact active-side holder，不能仅凭 `writer_kind` 旁路。一次性 shared writer 在远端调用后释放，调用中断则保留 holder 以 fail-closed。
+- 单 route cutover preview/apply 和 pre-mutation rollback 已实现 revision、route manifest、authority version、open-action fingerprint 与 client request CAS；旧任务 unsafe/unknown 或 Clone 已有 Gateway-started mutation 时阻断。该实现只证明安全的“尚未产生 Clone 远端副作用”回滚子集。
+- Album quiet/max deadline 已有持久 manifest，并在缺少 fresh-refetch/media adapter 时按冻结策略明确 `filtered` 或 `waiting_manual_review`，不会永久卡住后续文本事件，也不会把部分媒体伪装为成功。
 
-### 18.2 禁止实现方式
+以下仍是 Release Gate 硬阻塞，不得改写成 `implemented_local`、`qa_pass`、已上线或生产完成：
+
+- Album 原子发送、Poll、单媒体下载、tenant 隔离加密缓存、上传和 source fingerprint fresh-refetch adapter 尚未实现；当前只具备显式失败/人工态闭环。
+- 完整 cutover exclusion、Clone 已产生远端 mutation 后的去重 rollback、handoff canary 后 finalize 为 `exclusive_clone`、binding release/reset 仍未实现；不得用当前 pre-mutation rollback 代替完整合同。
+- 前端尚未提供 legacy task 的 clone-config cutover 表单和受控 sender 换绑；当前只提供 Clone 详情证据、人工处置及符合条件的 rollback。
+- 尚无 blank/current PostgreSQL、并发 CAS、真实 Telegram collector/desired-state readback、媒体、割接和 E4 canary 证据；当前证据仅为 SQLite 定向自动化测试与前端生产构建。
+
+### 18.3 禁止实现方式
 
 - 禁止复用 `recent_context_messages` 扫描代替 source event journal。
 - 禁止把 Clone Executor 写成绕过 Action/Attempt/typed fact 的第二套发送引擎。
@@ -993,6 +1000,8 @@ worker/container healthy 不能证明克隆健康。任务健康至少同时观�
 - 禁止 sender/control lifecycle role 因当前 binding 或管理员变化而换用其他账号；禁止把 accepted failed/unknown visible gap 改写为 success/degraded。
 
 ## 19. Product Design Complete 自检
+
+以下勾选表示“设计合同已覆盖”，不表示相应代码、发布或生产验收已完成；实时实施状态只以 18.2 为准。
 
 - [x] 用户原始需求：群 1 对 1、发言人稳定账号映射、内容克隆。
 - [x] Telegram 身份、内容保护和媒体真实能力边界。
@@ -1009,4 +1018,4 @@ worker/container healthy 不能证明克隆健康。任务健康至少同时观�
 - [x] 单 route cutover、rollback、shared exclusion 和 authority side handoff。
 - [x] QA、Release Gate、E4 与失败边界。
 
-结论：设计合同仍为 `design_status=complete`，且项目真相源已完成 resync。当前实现仅为 `partial_local_validation`；18.3 所列 Release Gate 硬阻塞全部闭合前，不得声称实现完成、QA 通过、已发布或生产已恢复。
+结论：设计合同仍为 `design_status=complete`，且项目真相源已完成 resync。当前实现仅为 `partial_local_validation`；18.2 所列 Release Gate 硬阻塞全部闭合前，不得声称实现完成、QA 通过、已发布或生产已恢复。

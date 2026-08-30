@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy import select
 
 from app.integrations.telegram import GroupMessageSnapshot, SendResult
-from app.models import Action, Task
+from app.models import Action, ExecutionAttempt, Task
 from app.models.group_clone import (
     CloneDeliveryObligation,
     CloneAlbumManifest,
@@ -234,6 +234,49 @@ def test_unknown_edit_is_closed_by_exact_desired_state_readback(
     session.refresh(edit)
     assert edit.status == "success"
     assert _obligation(session, edit).state == "succeeded"
+
+
+def test_target_control_right_is_rechecked_before_attempt(client_and_session, monkeypatch):
+    client, session = client_and_session
+    response = client.post(
+        "/api/tasks/group-clone/create-and-start",
+        json=_create_payload(), headers=_auth_headers(),
+    )
+    task = session.get(Task, response.json()["task_id"])
+    stream = session.scalar(select(CloneSourceStreamState).where(
+        CloneSourceStreamState.task_id == task.id,
+    ))
+    task.status = "running"
+    task.stats = {**dict(task.stats or {}), "clone_start_state": "running"}
+    stream.state = "live"
+    _add_event(session, task, order=1, event_type="message_new", content="v1")
+    assert build_plan(session, task) == 1
+    send = _action(session, task, 1)
+    monkeypatch.setattr(
+        "app.services.task_center.dispatcher.gateway.send_raw_mtproto_message",
+        lambda *args, **kwargs: SendResult(True, "7001", remote_mutation_started=True),
+    )
+    assert dispatch_action(session, send, project_task_stats=False)
+    _add_event(session, task, order=2, event_type="message_delete")
+    assert build_plan(session, task) == 1
+    delete = _action(session, task, 2)
+    gateway_calls: list[bool] = []
+    monkeypatch.setattr(
+        "app.services.task_center.dispatcher.gateway.fetch_raw_group_admin_rights",
+        lambda *args, **kwargs: {"delete_messages": False},
+    )
+    monkeypatch.setattr(
+        "app.services.task_center.dispatcher.gateway.delete_raw_mtproto_messages",
+        lambda *args, **kwargs: gateway_calls.append(True),
+    )
+
+    assert dispatch_action(session, delete, project_task_stats=False)
+    assert delete.status == "failed"
+    assert "group_clone_target_control_right_missing" in delete.result["error_message"]
+    assert gateway_calls == []
+    assert session.scalar(select(ExecutionAttempt.id).where(
+        ExecutionAttempt.action_id == delete.id,
+    )) is None
 
 
 def test_manual_review_decision_is_revisioned_and_idempotent(client_and_session):

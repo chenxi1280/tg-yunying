@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from datetime import datetime
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import and_, func, or_, select
@@ -9,32 +9,18 @@ from sqlalchemy.orm import Session
 
 from app.auth import CurrentUser, ensure_permission, get_current_user
 from app.database import get_session as get_db
-from app.models.enums import now
 from app.models.group_clone import (
     CloneDeliveryObligation,
-    CloneManualReviewDecision,
-    CloneMessagePart,
     CloneSenderBindingHistory,
     CloneSequencerHeadCase,
     CloneSourceEvent,
-    CloneSourceStreamState,
 )
 from app.models.task_center import Task
-from app.models.telegram_authorities import (
-    TelegramGroupMutationAuthority,
-    TelegramGroupMutationAuthorityHolder,
-)
-from app.models.telegram_updates import TelegramAuthorizationUpdateState
 from app.schemas.task_center import (
     GroupClonePrecheckResponse,
     GroupCloneSequencerHeadDecisionRequest,
     GroupCloneTaskConfigUpdate,
     GroupCloneTaskCreate,
-)
-from app.services.task_center.group_mutation_authority import (
-    check_and_claim_exclusive_authority,
-    compute_route_hash,
-    release_exclusive_authority,
 )
 from app.services.task_center.group_clone_lifecycle import (
     create_and_start_group_clone_task as create_and_start_clone,
@@ -381,6 +367,7 @@ def list_clone_sequencer_head_cases(
                 "state": c.state,
                 "revision": c.revision,
                 "remote_mutation_started": c.remote_mutation_started,
+                "authoritative_absence_evidence_id": c.authoritative_absence_evidence_id,
                 "policy_snapshot": c.policy_snapshot,
                 "created_at": c.created_at.isoformat() if c.created_at else None,
             }

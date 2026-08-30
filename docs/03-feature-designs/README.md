@@ -4,6 +4,7 @@
 
 | 文件 | 定位 |
 | --- | --- |
+| [telegram-group-clone-1to1-prd.md](telegram-group-clone-1to1-prd.md) | **2026-08-30 Product Design Complete、本地差距修复进行中、禁止发布声明**：独立 `group_clone/v2_group_clone`、共享 update ingress/target authority、稳定 sender binding、Sequencer、消息生命周期、desired-state reconcile、人工处置和 guarded cutover；媒体实际发送、完整 rollback 与 PostgreSQL/真实 Telegram E4 仍阻塞 |
 | [antigravity-cli-server-provider-design.md](antigravity-cli-server-provider-design.md) | **2026-08-30 design partial / 默认 profile POC 通过 / 新 slot-01 资格受阻**：五个 OS user/HOME/OAuth 隔离 slot、显式 `antigravity_cli` adapter、durable request reconcile、unknown 不重放、Docker-to-host 和受保护 canary/E4 合同；当前仅允许无生产效果 POC 脚本 |
 | [runtime-storage-retention-and-reclaim-prd.md](runtime-storage-retention-and-reclaim-prd.md) | **2026-08-30 Product Design Complete、本地实现与隔离 PG QA 通过、待发布/生产执行**：Action 分状态热明细 TTL、删除前类型化原因汇总、受保护 preview/apply/readback、逻辑清理与索引物理回收分阶段验收 |
 | [production-release-batch-single-deploy-prd.md](production-release-batch-single-deploy-prd.md) | **2026-08-30 Product Design Complete、待 workflow QA**：取消每次 push release 自动生产部署；master 汇总、release 一次冻结、从 release ref 显式 dispatch，并在完整 CI 前校验 master/release/checkout 同一不可变 SHA |

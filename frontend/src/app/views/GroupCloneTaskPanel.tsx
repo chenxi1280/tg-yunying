@@ -19,7 +19,8 @@ type ManualReview = {
 };
 type SequencerCase = {
   id: string; sequencer_id: number; case_kind: string; state: string; revision: number;
-  remote_mutation_started: boolean; policy_snapshot: string; created_at?: string;
+  remote_mutation_started: boolean; authoritative_absence_evidence_id?: string;
+  policy_snapshot: string; created_at?: string;
 };
 type Binding = {
   id: string; source_sender_peer_id: string; source_sender_name?: string;
@@ -214,7 +215,12 @@ export function GroupCloneTaskPanel({ task, canManageTasks, onChanged }: GroupCl
       render: (_: unknown, item: SequencerCase) => canManageTasks && item.state === 'waiting_decision' ? (
         <Space wrap>
           <Button size="small" onClick={() => decideCase(item, 'accept_visible_gap')}>接受可见缺口</Button>
-          <Button size="small" onClick={() => decideCase(item, 'retry_same_mutation')}>重试原 mutation</Button>
+          <Button
+            size="small"
+            disabled={item.case_kind === 'unknown_deadline_closed'
+              || (item.remote_mutation_started && !item.authoritative_absence_evidence_id)}
+            onClick={() => decideCase(item, 'retry_same_mutation')}
+          >重试原 mutation</Button>
           <Button size="small" onClick={() => decideCase(item, 'keep_blocked')}>保持阻塞</Button>
         </Space>
       ) : '-',
