@@ -2,7 +2,7 @@
 
 > 日期：2026-08-30
 >
-> 状态：`design_status=complete` / `resync_status=complete` / `implementation_status=complete` / `qa_status=pending_ci_fix_revalidation` / `product_status=pending_revalidation` / `production_status=blocked`
+> 状态：`design_status=complete` / `resync_status=complete` / `implementation_status=complete` / `qa_status=pass` / `product_status=accepted` / `production_status=blocked`
 >
 > 冻结模型顺序：`gemini-3.5-flash-medium` 第一，`gemini-3.1-pro-low` 第二；生成 route 中 Antigravity 优先于既有 Provider。
 >
@@ -387,7 +387,7 @@ guarded preview 冻结 provider/slot/route/task/deployed SHA/fingerprint；apply
 | 配置/并发/一致性 | complete | 全 generation route 单事务、漂移零写、重复 apply no-op |
 | QA/发布/回滚/E4 | complete | 自动 QA、生产 canary、前向回滚与证据分层已闭合 |
 
-本次 `resync_status=complete`；B1～B6 实现和项目结构索引已同步，`implementation_status=complete`。生产基线与独立 QA 先后暴露出 `/data` traverse/ledger、发布前 unit 漂移门禁、既有 runtime 元数据、legacy WAL ledger、空账本 authority crash-window、host Python 3.6、CLI 子进程 secret 继承、Python user-site 注入和多 slot rollback 缺口；候选已逐项修复并转成行为测试。首次完整 Actions 随后在服务器部署前暴露第 14.8 节的 stale migration-head assertions 与缺失标准库导入，当前 quick fix 已完成本地定向/聚焦/相邻回归，仍需独立 QA 与新一次完整 Actions，因此暂记 `qa_status=pending_ci_fix_revalidation`、`product_status=pending_revalidation`。真实 PostgreSQL、Linux systemd、OAuth、agy、Gateway 与生产调用仍由发布/生产 Gate 提供证据；`production_status` 在第 14.5 节真实读回前继续保持 `blocked`。
+本次 `resync_status=complete`；B1～B6 实现和项目结构索引已同步，`implementation_status=complete`。生产基线与独立 QA 先后暴露出 `/data` traverse/ledger、发布前 unit 漂移门禁、既有 runtime 元数据、legacy WAL ledger、空账本 authority crash-window、host Python 3.6、CLI 子进程 secret 继承、Python user-site 注入和多 slot rollback 缺口；候选已逐项修复并转成行为测试。首次完整 Actions 随后在服务器部署前暴露第 14.8 节的 stale migration-head assertions 与缺失标准库导入；quick fix 已完成本地定向/聚焦/相邻回归和独立 QA，未发现 P0/P1/P2，Product Design Complete 复核确认只同步验收与缺失导入、不改变迁移/route/Provider/生产配置，故恢复 `qa_status=pass`、`product_status=accepted`。blank PostgreSQL、Linux systemd、OAuth、agy、Gateway 与生产调用仍由下一次完整 Actions/生产 Gate 提供证据；`production_status` 在第 14.5 节真实读回前继续保持 `blocked`。
 
 ### 14.7 Dev Handoff：代码入口和修改责任
 
