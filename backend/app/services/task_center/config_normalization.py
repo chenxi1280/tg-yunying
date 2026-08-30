@@ -231,7 +231,10 @@ _REMOVED_GROUP_AI_FIELDS = {
     "consecutive_message_max",
     "consecutive_message_probability",
     "auto_follow_required_channel",
+    "ai_provider_id",
+    "context_freshness_window_hours",
 }
+
 
 
 def _normalize_legacy_group_ai_config(task_type: str, data: dict[str, Any]) -> dict[str, Any]:

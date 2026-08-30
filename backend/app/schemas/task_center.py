@@ -339,7 +339,10 @@ class GroupAIChatConfig(BaseModel):
     hard_hourly_target_enabled: bool | None = Field(default=None, exclude=True)
     hourly_min_messages: int | None = Field(default=None, ge=1, exclude=True)
     hard_hourly_strategy: str | None = Field(default=None, exclude=True)
+    ai_provider_id: int | None = Field(default=None, exclude=True)
+    context_freshness_window_hours: int | None = Field(default=None, exclude=True)
     account_coverage_mode: Literal["all_accounts_daily"] = "all_accounts_daily"
+
     coverage_window_hours: Literal[24] = 24
     history_fetch_account_id: int | None = None
     auto_join_target: bool = True

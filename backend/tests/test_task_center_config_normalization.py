@@ -11,10 +11,19 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.models import OperationTarget, RuleSet, RuleSetVersion, Tenant
-from app.schemas.task_center import ChannelViewConfig, GroupAIChatTaskConfigUpdate, GroupAIChatTaskCreate, TaskSettingsUpdate
-from app.services.task_center.config_normalization import normalize_operation_target_references
-from app.services.task_center.config_normalization import normalize_ai_daily_target
+from app.schemas.task_center import (
+    ChannelViewConfig,
+    GroupAIChatTaskConfigUpdate,
+    GroupAIChatTaskCreate,
+    TaskSettingsUpdate,
+)
+from app.services.task_center.config_normalization import (
+    normalize_ai_daily_target,
+    normalize_operation_target_references,
+    validated_type_config,
+)
 from app.services.task_center.payloads import SendMessagePayload
+
 from app.services.task_center.service import create_group_ai_chat_task, update_group_ai_chat_config, update_task_settings
 
 
@@ -593,3 +602,28 @@ def test_group_ai_settings_endpoint_updates_prejoin_channels() -> None:
 
     assert updated.group_ai_prejoin_channel_ids == ["channel_delta"]
     assert updated.config_revision == initial_revision + 1
+
+
+@pytest.mark.no_postgres
+def test_group_ai_config_normalization_strips_legacy_fields() -> None:
+    raw_config = {
+        "target_group_id": 2806,
+        "ai_provider_id": 4,
+        "context_freshness_window_hours": 6,
+        "consecutive_message_enabled": True,
+        "consecutive_message_min": 1,
+        "consecutive_message_max": 3,
+        "consecutive_message_probability": 0.5,
+        "auto_follow_required_channel": True,
+        "messages_per_round": 1,
+        "reply_min_per_round": 1,
+    }
+    normalized = validated_type_config("group_ai_chat", raw_config)
+    assert normalized["target_group_id"] == 2806
+    assert "ai_provider_id" not in normalized
+    assert "context_freshness_window_hours" not in normalized
+    assert "consecutive_message_enabled" not in normalized
+    assert "auto_follow_required_channel" not in normalized
+    assert normalized["messages_per_round"] == 1
+    assert normalized["reply_min_per_round"] == 1
+
