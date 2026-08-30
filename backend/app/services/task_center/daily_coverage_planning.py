@@ -4,12 +4,17 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import case, func, or_, select, tuple_
+from sqlalchemy import case, exists, func, or_, select, tuple_
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
-from app.models import Task, TaskAccountDailyCoverage, TaskDailyCoveragePlanCursor
+from app.models import (
+    FulfillmentObligationProjection,
+    Task,
+    TaskAccountDailyCoverage,
+    TaskDailyCoveragePlanCursor,
+)
 from app.services._common import _now
 
 from .daily_coverage_schedule import daily_coverage_due_debt_totals
@@ -211,6 +216,7 @@ def _ready_rows_after_cursor(
             TaskAccountDailyCoverage.next_eligible_at.is_(None),
             TaskAccountDailyCoverage.next_eligible_at <= timestamp,
         ),
+        _has_no_terminal_shortfall_projection(),
     ]
     if cursor.last_targeted_at is not None and cursor.last_account_id is not None:
         filters.append(
@@ -260,6 +266,7 @@ def _ready_rows_without_cursor(
             TaskAccountDailyCoverage.next_eligible_at.is_(None),
             TaskAccountDailyCoverage.next_eligible_at <= timestamp,
         ),
+        _has_no_terminal_shortfall_projection(),
     ]
     if exclude_account_ids:
         filters.append(TaskAccountDailyCoverage.account_id.not_in(exclude_account_ids))
@@ -274,6 +281,15 @@ def _ready_rows_without_cursor(
         .limit(limit)
     )
     return list(session.scalars(statement))
+
+
+def _has_no_terminal_shortfall_projection():
+    return ~exists(select(FulfillmentObligationProjection.id).where(
+        FulfillmentObligationProjection.task_id == TaskAccountDailyCoverage.task_id,
+        FulfillmentObligationProjection.obligation_type == "coverage",
+        FulfillmentObligationProjection.obligation_id == TaskAccountDailyCoverage.id,
+        FulfillmentObligationProjection.state == "terminal_shortfall",
+    ))
 
 
 def _rewind_cursor(cursor: TaskDailyCoveragePlanCursor, timestamp: datetime) -> None:

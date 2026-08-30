@@ -1,5 +1,7 @@
 # 项目数据流转索引
 
+> **2026-08-30 DF-356 AI coverage terminal-shortfall 防重入：** `quality/provider wait terminal settlement -> FulfillmentObligationProjection(coverage, terminal_shortfall) -> Planner ready candidate anti-join + daily fulfillment terminal-shortfall overlay`。FOP 是终态真相源；兼容 coverage 行即使被 readiness 刷新为 `ready`，也不得再次物化 Action、不得占满 context-bound 批次并饿死后续 coverage。读模型将该 owner 计入 blocked/terminal shortfall，而不是 ready/sendable；修复不重开 FOP、不删除历史 skipped Action、不补发 Telegram 消息。
+
 > **2026-08-30 DF-355 AI pending/generating 跨状态残留收敛：** `GenerationJob.pending(any stage) + exact Action.pending + payload.ai_generation_status=generating + Action/Job/payload owner empty + Provider not started -> bounded reconcile row guard -> same Action payload.pending -> ordinary generation claim`。恢复资格由可证明的发送前、无主、未调用 Provider 边界决定，不得错误限定为 `generation_stage=generation_recovery`；`routing|waiting_provider|quality_wait` 等 pending 阶段均可出现跨事务/历史中断残留。Provider 已开始、任一 live owner/token、非 pending Job/Action、binding 不一致或 Gateway 边界均保持零写，不创建替代 Action/Job，不重放 Provider/Telegram。
 
 > **2026-08-30 DF-354 AI 终态 shortfall window-slot 收敛：** `quality/provider wait -> budget/deadline terminal shortfall -> typed shortfall fact -> same-tx invalidate claimed|candidate_ready slot + clear owner/lease -> terminal Job/Action`；ai-generation reconcile 在 expired/unknown 恢复之外有界扫描 `current pre-Gateway slot -> exact claimed terminal Job`，以行锁/skip-locked 失效历史残留，再允许同 obligation 后续 Job 通过既有 current-obligation unique 建立唯一 current slot。`gateway_bound`、pending/generating/unknown Job、owner 漂移和远端不确定结果均不释放，不放宽唯一约束、不删除历史计划或事实。

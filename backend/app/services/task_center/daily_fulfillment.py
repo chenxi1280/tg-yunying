@@ -7,7 +7,14 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from app.models import AiGenerationContractAudit, Action, Task, TaskAccountDailyCoverage, TaskDailyFulfillmentDecision
+from app.models import (
+    AiGenerationContractAudit,
+    Action,
+    FulfillmentObligationProjection,
+    Task,
+    TaskAccountDailyCoverage,
+    TaskDailyFulfillmentDecision,
+)
 from app.services._common import _now
 
 from .datetime_compat import is_after_or_equal, is_before
@@ -56,7 +63,13 @@ def summarize_daily_fulfillment(
     timestamp = now or _now()
     rows = _current_rows(session, task, coverage_date or _task_coverage_date(task, timestamp))
     actions = _open_actions_by_coverage(session, task, rows)
-    counts = _state_counts(rows, actions, timestamp)
+    terminal_ids = _terminal_shortfall_coverage_ids(session, task, rows)
+    counts = _state_counts(
+        rows,
+        actions,
+        timestamp,
+        terminal_shortfall_ids=terminal_ids,
+    )
     return _summary_from_counts(rows, counts, timestamp)
 
 
@@ -242,6 +255,8 @@ def _state_counts(
     rows: list[TaskAccountDailyCoverage],
     actions: dict[str, Action],
     timestamp: datetime,
+    *,
+    terminal_shortfall_ids: set[str],
 ) -> dict[str, int | dict[str, int]]:
     counts: dict[str, int | dict[str, int]] = {
         "frozen": 0, "confirmed": 0, "ready": 0, "reserved": 0,
@@ -252,8 +267,40 @@ def _state_counts(
         remaining = max(0, int(row.target_count or 1) - int(row.confirmed_count or 0))
         counts["frozen"] += int(row.target_count or 1)
         counts["confirmed"] += min(int(row.target_count or 1), int(row.confirmed_count or 0))
+        if row.id in terminal_shortfall_ids:
+            _count_terminal_shortfall(counts, remaining)
+            continue
         _count_row_state(counts, row, remaining, actions.get(row.id), timestamp)
     return counts
+
+
+def _count_terminal_shortfall(
+    counts: dict[str, int | dict[str, int]],
+    remaining: int,
+) -> None:
+    if remaining <= 0:
+        return
+    counts["blocked"] += remaining
+    counts["blocked_shortfall"] += remaining
+    blockers = counts["blockers"]
+    assert isinstance(blockers, dict)
+    blockers["terminal_shortfall"] = int(blockers.get("terminal_shortfall", 0)) + remaining
+
+
+def _terminal_shortfall_coverage_ids(
+    session: Session,
+    task: Task,
+    rows: list[TaskAccountDailyCoverage],
+) -> set[str]:
+    coverage_ids = [row.id for row in rows]
+    if not coverage_ids:
+        return set()
+    return set(session.scalars(select(FulfillmentObligationProjection.obligation_id).where(
+        FulfillmentObligationProjection.task_id == task.id,
+        FulfillmentObligationProjection.obligation_type == "coverage",
+        FulfillmentObligationProjection.obligation_id.in_(coverage_ids),
+        FulfillmentObligationProjection.state == "terminal_shortfall",
+    )))
 
 
 def _count_row_state(

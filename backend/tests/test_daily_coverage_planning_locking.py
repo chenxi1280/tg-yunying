@@ -7,8 +7,15 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import Task, TaskAccountDailyCoverage, TaskDailyCoveragePlanCursor, Tenant
+from app.models import (
+    FulfillmentObligationProjection,
+    Task,
+    TaskAccountDailyCoverage,
+    TaskDailyCoveragePlanCursor,
+    Tenant,
+)
 from app.services.task_center import daily_coverage_planning
+from app.services.task_center.daily_fulfillment import summarize_daily_fulfillment
 
 
 pytestmark = pytest.mark.no_postgres
@@ -70,3 +77,62 @@ def test_missing_daily_cursor_is_created_without_task_lock(monkeypatch: pytest.M
 
     assert [row.id for row in batch.rows] == ["coverage-create-row"]
     assert session.query(TaskDailyCoveragePlanCursor).one().task_id == task.id
+
+
+def test_terminal_shortfall_coverage_is_not_selected_again(session: Session) -> None:
+    timestamp = datetime(2026, 8, 30, 12, 0)
+    task = Task(id="terminal-plan", tenant_id=1, name="终态防重入", type="group_ai_chat", status="running")
+    session.add_all([
+        Tenant(id=1, name="租户"),
+        task,
+        _coverage("terminal-coverage", task.id, 1, timestamp=timestamp),
+        _coverage("open-coverage", task.id, 2, timestamp=timestamp),
+        FulfillmentObligationProjection(
+            id="terminal-projection", tenant_id=1, task_id=task.id,
+            obligation_type="coverage", obligation_id="terminal-coverage",
+            work_lane="ai_generation", state="terminal_shortfall",
+        ),
+    ])
+    session.commit()
+
+    batch = daily_coverage_planning.ready_coverage_plan_batch(session, task, now=timestamp)
+
+    assert [row.id for row in batch.rows] == ["open-coverage"]
+
+
+def test_terminal_shortfall_coverage_is_reported_as_blocked(session: Session) -> None:
+    timestamp = datetime(2026, 8, 30, 12, 0)
+    task = Task(id="terminal-summary", tenant_id=1, name="终态读模型", type="group_ai_chat", status="running")
+    session.add_all([
+        Tenant(id=1, name="租户"),
+        task,
+        _coverage("terminal-summary-row", task.id, 1, timestamp=timestamp),
+        _coverage("ready-summary-row", task.id, 2, timestamp=timestamp),
+        FulfillmentObligationProjection(
+            id="terminal-summary-projection", tenant_id=1, task_id=task.id,
+            obligation_type="coverage", obligation_id="terminal-summary-row",
+            work_lane="ai_generation", state="terminal_shortfall",
+        ),
+    ])
+    session.commit()
+
+    summary = summarize_daily_fulfillment(session, task, now=timestamp)
+
+    assert summary.ready_to_plan_count == 1
+    assert summary.sendable_capacity_count == 1
+    assert summary.blocked_shortfall_count == 1
+    assert summary.blocker_counts["terminal_shortfall"] == 1
+
+
+def _coverage(
+    coverage_id: str,
+    task_id: str,
+    account_id: int,
+    *,
+    timestamp: datetime,
+) -> TaskAccountDailyCoverage:
+    return TaskAccountDailyCoverage(
+        id=coverage_id, tenant_id=1, task_id=task_id, group_id=1,
+        account_id=account_id, coverage_date=timestamp.date(), target_count=1,
+        state="ready", targeted_at=timestamp,
+    )
