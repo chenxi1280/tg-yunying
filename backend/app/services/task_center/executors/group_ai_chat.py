@@ -90,6 +90,7 @@ from ..daily_coverage_planning import (
     MAX_DAILY_COVERAGE_PLAN_BATCH,
     advance_coverage_plan_cursor,
     coverage_plan_totals,
+    has_no_terminal_shortfall_projection,
     ready_coverage_plan_batch,
 )
 from ..content_mix_replan_recovery import recover_stale_pending_content_mix_slots
@@ -799,6 +800,7 @@ def _base_replan_coverage_statement(task: Task, ledger_id: str, *, fact_first: b
             ),
             TaskAccountDailyCoverage.confirmed_count
             < TaskAccountDailyCoverage.target_count,
+            has_no_terminal_shortfall_projection(),
         )
     )
     return statement

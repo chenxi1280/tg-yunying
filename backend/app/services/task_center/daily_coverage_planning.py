@@ -216,7 +216,7 @@ def _ready_rows_after_cursor(
             TaskAccountDailyCoverage.next_eligible_at.is_(None),
             TaskAccountDailyCoverage.next_eligible_at <= timestamp,
         ),
-        _has_no_terminal_shortfall_projection(),
+        has_no_terminal_shortfall_projection(),
     ]
     if cursor.last_targeted_at is not None and cursor.last_account_id is not None:
         filters.append(
@@ -266,7 +266,7 @@ def _ready_rows_without_cursor(
             TaskAccountDailyCoverage.next_eligible_at.is_(None),
             TaskAccountDailyCoverage.next_eligible_at <= timestamp,
         ),
-        _has_no_terminal_shortfall_projection(),
+        has_no_terminal_shortfall_projection(),
     ]
     if exclude_account_ids:
         filters.append(TaskAccountDailyCoverage.account_id.not_in(exclude_account_ids))
@@ -283,7 +283,7 @@ def _ready_rows_without_cursor(
     return list(session.scalars(statement))
 
 
-def _has_no_terminal_shortfall_projection():
+def has_no_terminal_shortfall_projection():
     return ~exists(select(FulfillmentObligationProjection.id).where(
         FulfillmentObligationProjection.task_id == TaskAccountDailyCoverage.task_id,
         FulfillmentObligationProjection.obligation_type == "coverage",
@@ -308,5 +308,6 @@ __all__ = [
     "SENDABLE_COVERAGE_STATES",
     "advance_coverage_plan_cursor",
     "coverage_plan_totals",
+    "has_no_terminal_shortfall_projection",
     "ready_coverage_plan_batch",
 ]
