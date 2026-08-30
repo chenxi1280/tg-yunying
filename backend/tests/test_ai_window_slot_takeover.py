@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.database import Base
 from app.models import (
+    Action,
     AiContentWindowPlan,
     AiContentWindowPlanSlot,
     GenerationJob,
@@ -203,6 +204,85 @@ def test_failed_generation_rejects_lease_epoch_takeover_after_version_advance() 
 
     with factory() as session:
         assert session.get(GenerationJob, JOB_ID).state == "generating"
+
+
+def test_failed_generation_accepts_same_epoch_terminal_readback() -> None:
+    factory = _session_factory()
+    _seed_claimed_slot(factory, job_state="failed")
+    with factory() as session:
+        job = session.get(GenerationJob, JOB_ID)
+        job.job_version = 2
+        session.add(Action(
+            id="terminal-action",
+            tenant_id=1,
+            task_id=TASK_ID,
+            task_type="group_ai_chat",
+            action_type="send_message",
+            account_id=1,
+            status="failed",
+            obligation_type="coverage",
+            obligation_id="coverage-owner",
+            task_lifecycle_epoch=8,
+            payload={"generation_job_id": JOB_ID},
+        ))
+        session.commit()
+    claim = ParallelGenerationClaim(
+        action_id="terminal-action",
+        job_id=JOB_ID,
+        owner="worker-1",
+        token="claim-token",
+        job_version=1,
+        generation_lease_epoch=0,
+    )
+
+    finish_generation_job(factory, claim, state="failed")
+
+    with factory() as session:
+        job = session.get(GenerationJob, JOB_ID)
+        slot = session.get(AiContentWindowPlanSlot, SLOT_ID)
+        assert job.state == "failed"
+        assert job.job_version == 2
+        assert slot.state == "invalidated"
+        assert slot.claimed_by_job_id is None
+
+
+def test_failed_generation_rejects_terminal_readback_after_epoch_takeover() -> None:
+    factory = _session_factory()
+    _seed_claimed_slot(factory, job_state="failed")
+    with factory() as session:
+        job = session.get(GenerationJob, JOB_ID)
+        job.job_version = 2
+        job.generation_lease_epoch = 1
+        session.add(Action(
+            id="terminal-action",
+            tenant_id=1,
+            task_id=TASK_ID,
+            task_type="group_ai_chat",
+            action_type="send_message",
+            account_id=1,
+            status="failed",
+            obligation_type="coverage",
+            obligation_id="coverage-owner",
+            task_lifecycle_epoch=8,
+            payload={"generation_job_id": JOB_ID},
+        ))
+        session.commit()
+    claim = ParallelGenerationClaim(
+        action_id="terminal-action",
+        job_id=JOB_ID,
+        owner="worker-1",
+        token="claim-token",
+        job_version=1,
+        generation_lease_epoch=0,
+    )
+
+    with pytest.raises(RuntimeError, match="parallel_generation_job_claim_lost"):
+        finish_generation_job(factory, claim, state="failed")
+
+    with factory() as session:
+        slot = session.get(AiContentWindowPlanSlot, SLOT_ID)
+        assert slot.state == "claimed"
+        assert slot.claimed_by_job_id == JOB_ID
 
 
 def test_persist_unknown_requeues_same_job_without_releasing_slot() -> None:

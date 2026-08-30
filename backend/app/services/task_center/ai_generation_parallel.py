@@ -14,8 +14,8 @@ from sqlalchemy.orm import Session
 from app.models import Action, GenerationJob, Task
 from app.services._common import _now
 
-from .ai_content_runtime import invalidate_job_pre_gateway_slot
 from .ai_generation_claim_lifecycle import owns_generation_claim
+from .ai_generation_job_finish import finish_owned_job
 from .ai_dialogue_chain import resolve_waiting_dialogue_dependencies
 from .ai_generation_timing import GENERATION_LEASE, GENERATION_LOOKAHEAD
 from .datetime_compat import is_after_or_equal
@@ -100,7 +100,7 @@ def finish_generation_job(
     with session_factory() as session:
         job = session.get(GenerationJob, claim.job_id)
         action = session.get(Action, claim.action_id)
-        _finish_owned_job(
+        finish_owned_job(
             session,
             claim,
             job=job,
@@ -130,85 +130,8 @@ def settle_deferred_parallel_claim(
             release_generation_claim(action, dict(action.payload or {}))
         elif action.status != "pending":
             raise RuntimeError("parallel_generation_action_claim_lost")
-        _finish_owned_job(session, claim, job=job, action=action, state="pending")
+        finish_owned_job(session, claim, job=job, action=action, state="pending")
         session.commit()
-
-
-def _finish_owned_job(
-    session: Session,
-    claim: ParallelGenerationClaim,
-    *,
-    job: GenerationJob | None,
-    action: Action | None,
-    state: str,
-    generation_stage: str | None = None,
-) -> None:
-    if job is None:
-        raise RuntimeError("parallel_generation_job_claim_lost")
-    if state == "ready":
-        _require_ready_action(job, action)
-    expected_job_version = int(job.job_version or 1)
-    if expected_job_version < claim.job_version:
-        raise RuntimeError("parallel_generation_job_claim_lost")
-    values = _job_finish_values(
-        job, action, state=state, generation_stage=generation_stage,
-    )
-    values["job_version"] = expected_job_version + 1
-    changed = session.execute(update(GenerationJob).where(
-        GenerationJob.id == claim.job_id,
-        GenerationJob.state == "generating",
-        GenerationJob.generation_owner_id == claim.owner,
-        GenerationJob.job_version == expected_job_version,
-        GenerationJob.generation_lease_epoch == claim.generation_lease_epoch,
-    ).values(**values).execution_options(synchronize_session=False)).rowcount
-    if changed != 1:
-        raise RuntimeError("parallel_generation_job_claim_lost")
-    session.expire(job)
-    session.refresh(job)
-    if state in {"failed", "cancelled"}:
-        invalidate_job_pre_gateway_slot(session, job)
-
-
-def _require_ready_action(job: GenerationJob, action: Action | None) -> None:
-    if action is None:
-        raise RuntimeError("parallel_generation_ready_action_invalid")
-    payload = dict(action.payload or {})
-    content = str(payload.get("message_text") or "").strip()
-    candidate_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
-    identity_matches = bool(
-        action.tenant_id == job.tenant_id
-        and action.task_id == job.task_id
-        and int(action.task_lifecycle_epoch or 1) == int(job.task_lifecycle_epoch or 1)
-        and action.obligation_type == job.obligation_type
-        and action.obligation_id == job.obligation_id
-        and str(payload.get("generation_job_id") or "") == job.id
-    )
-    candidate_ready = bool(
-        content
-        and payload.get("ai_generation_status") == "ready"
-        and action.candidate_hash == candidate_hash
-    )
-    if not identity_matches or not candidate_ready:
-        raise RuntimeError("parallel_generation_ready_action_invalid")
-
-
-def _job_finish_values(job, action, *, state, generation_stage) -> dict:
-    evidence = dict(job.evaluator_evidence or {})
-    if action is not None:
-        evidence["reviewer"] = dict(
-            (action.result or {}).get("evaluator_evidence") or {}
-        )
-    values = {
-        "state": state,
-        "next_retry_at": None,
-        "candidate_hash": str(action.candidate_hash or "") if action else "",
-        "evaluator_evidence": evidence,
-        "generation_owner_id": "",
-        "lease_expires_at": None,
-    }
-    if generation_stage is not None:
-        values["generation_stage"] = generation_stage
-    return values
 
 
 def defer_parallel_generation(
