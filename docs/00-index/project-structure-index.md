@@ -1,5 +1,7 @@
 # 项目结构索引
 
+> **2026-08-30 生产发布批次门禁入口：** `.github/workflows/deploy-production.yml::validate-release-candidate` 是正式发布的前置 owner，拒绝非手工事件、非 `release` ref 以及 checkout/master/release SHA 漂移；三个测试 job 均在该门禁后运行。产品合同为 `docs/03-feature-designs/production-release-batch-single-deploy-prd.md`，回归入口为 `backend/tests/test_deploy_production_quality_gates.py` 与 `backend/tests/test_live_clash_config_script_contracts.py`。
+
 > **2026-08-30 AI terminal replacement window revision：** `services/task_center/ai_content_job_binding.py` 将稳定 `generation_sequence` 纳入 window `period_key` revision；同 obligation 的旧 pre-Gateway Job/slot 明确终结后，替代 Job 即使 context revision 未变化也建立新的 immutable standalone plan，不再与旧 plan 发生 `ai_content_window_scope_conflict`。长 obligation identity 使用带业务日的确定性 hash，避免 80 字符截断丢失 revision。`test_ai_content_job_binding.py::test_group_v2_terminal_replacement_gets_new_plan_revision` 覆盖生产同形回归。
 
 > **2026-08-30 AI pending/generating 残留收敛：** `services/task_center/ai_generation_pending_recovery.py` 对所有 pending Job stage 执行有界候选扫描，以 exact Action/Job binding、空 Action/Job/payload owner/token 和 Provider 未开始为写入门禁，将不可领取的 `Action.pending + payload.generating` CAS 回 `payload.pending`；不再错误限定 `generation_recovery`。`test_ai_generation_legacy_reconcile.py` 覆盖 routing 残留恢复、Provider-started 和 live-owner 负例。

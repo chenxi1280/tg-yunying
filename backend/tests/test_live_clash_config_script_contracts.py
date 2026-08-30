@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import yaml
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -48,14 +49,7 @@ def test_live_clash_workflow_defaults_to_infrastructure_only_repair() -> None:
 
 
 def test_workflow_dispatch_stays_within_github_input_limit() -> None:
-    workflow = WORKFLOW.read_text()
-    dispatch_inputs = workflow.split("    inputs:\n", 1)[1].split("  push:\n", 1)[0]
-    input_names = [
-        line.strip()[:-1]
-        for line in dispatch_inputs.splitlines()
-        if line.startswith("      ")
-        and not line.startswith("        ")
-        and line.strip().endswith(":")
-    ]
+    workflow = yaml.safe_load(WORKFLOW.read_text())
+    input_names = workflow["on"]["workflow_dispatch"]["inputs"]
 
     assert len(input_names) <= 25

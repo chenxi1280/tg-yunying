@@ -123,10 +123,6 @@ name: Deploy Production
         required: false
         default: false
         type: boolean
-  push:
-    branches:
-      - release
-
 concurrency:
   group: deploy-production
   cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' && inputs.force_cancel_in_progress }}
@@ -142,7 +138,51 @@ env:
   TGYUNYING_FRONTEND_IMAGE_NAME: tg-yunying-frontend
 
 jobs:
+  validate-release-candidate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout frozen release candidate
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate frozen release candidate
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          CANDIDATE_REF: ${{ github.ref }}
+          CANDIDATE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "${EVENT_NAME}" != "workflow_dispatch" ]]; then
+            echo "Deploy Production only accepts workflow_dispatch" >&2
+            exit 1
+          fi
+          if [[ "${CANDIDATE_REF}" != "refs/heads/release" ]]; then
+            echo "Deploy Production must be dispatched from the release ref" >&2
+            exit 1
+          fi
+          git fetch --no-tags origin \
+            '+refs/heads/master:refs/remotes/origin/master' \
+            '+refs/heads/release:refs/remotes/origin/release'
+          checkout_sha="$(git rev-parse HEAD)"
+          master_sha="$(git rev-parse refs/remotes/origin/master)"
+          release_sha="$(git rev-parse refs/remotes/origin/release)"
+          if [[ "${checkout_sha}" != "${CANDIDATE_SHA}" ]]; then
+            echo "checkout SHA does not match the dispatched candidate SHA" >&2
+            exit 1
+          fi
+          if [[ "${checkout_sha}" != "${release_sha}" ]]; then
+            echo "dispatched candidate is not the current release HEAD" >&2
+            exit 1
+          fi
+          if [[ "${checkout_sha}" != "${master_sha}" ]]; then
+            echo "release candidate is not the complete master HEAD" >&2
+            exit 1
+          fi
+          echo "FROZEN_RELEASE_CANDIDATE=${checkout_sha}"
+
   backend-no-postgres-checks:
+    needs: validate-release-candidate
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -206,6 +246,7 @@ jobs:
             --durations=50 --durations-min=1.0
 
   backend-postgres-checks:
+    needs: validate-release-candidate
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -269,6 +310,7 @@ jobs:
             --durations=50 --durations-min=1.0
 
   frontend-checks:
+    needs: validate-release-candidate
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

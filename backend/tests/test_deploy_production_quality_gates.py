@@ -13,6 +13,28 @@ BACKEND_DOCKERFILE = Path(__file__).resolve().parents[2] / "Dockerfile.backend"
 VERIFICATION_DOCKERFILE = Path(__file__).resolve().parents[2] / "Dockerfile.image-verification-worker"
 
 
+def test_production_deploy_requires_one_frozen_manual_release_candidate() -> None:
+    workflow = yaml.safe_load(WORKFLOW.read_text())
+    jobs = workflow["jobs"]
+    guard = jobs["validate-release-candidate"]
+    guard_script = _combined_run_script(guard)
+    guard_env = guard["steps"][-1]["env"]
+
+    assert set(workflow["on"]) == {"workflow_dispatch"}
+    assert guard_env == {
+        "EVENT_NAME": "${{ github.event_name }}",
+        "CANDIDATE_REF": "${{ github.ref }}",
+        "CANDIDATE_SHA": "${{ github.sha }}",
+    }
+    assert "Deploy Production only accepts workflow_dispatch" in guard_script
+    assert "Deploy Production must be dispatched from the release ref" in guard_script
+    assert "checkout SHA does not match the dispatched candidate SHA" in guard_script
+    assert "dispatched candidate is not the current release HEAD" in guard_script
+    assert "release candidate is not the complete master HEAD" in guard_script
+    for job_name in ("backend-no-postgres-checks", "backend-postgres-checks", "frontend-checks"):
+        assert jobs[job_name]["needs"] == "validate-release-candidate"
+
+
 def test_production_checks_run_complete_backend_partitions_and_frontend_in_parallel() -> None:
     jobs = yaml.safe_load(WORKFLOW.read_text())["jobs"]
     no_postgres = jobs["backend-no-postgres-checks"]
