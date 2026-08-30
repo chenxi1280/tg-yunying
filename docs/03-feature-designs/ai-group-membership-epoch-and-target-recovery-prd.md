@@ -240,6 +240,8 @@ old rescue Action/Attempt/journal (immutable)
 
 replacement 必须绑定 current task epoch、canonical group/target、当前救援账号、原 trigger account，并用 `source_action_id + current_epoch + recovery_manifest_hash` 形成唯一 dedupe；旧 Action 保留，admission item 只在同一事务 CAS 改绑 replacement。重复 apply 不得创建第二条 replacement。
 
+历史生产数据允许 admission item 的 `rescue_action_id` 为空，但只限同 tenant、Task、target、target account 均精确匹配且当前没有指向无关救援 Action。preview 必须把 item 的 phase、rescue status 和 rescue action 摘要纳入 fingerprint；member 分支可在保持空指针的同时写类型化成员事实并完成投影，absent 分支才把 item 改绑到新 replacement。重复 apply 时只接受由该 source、epoch、target account 和 target 精确派生的既有 replacement；item 指向其他 Action 或精确 item 不存在时继续阻断，不能按账号模糊补写。
+
 只读成员核对发生 FloodWait 时保存明确 checkpoint 并停止本批；不得把未探测项目当缺席。若目标已是成员，只有 target-account 精确成员事实才允许推进 admission；管理员可邀请、invite API success 或本地 `TgGroupAccount` 均不单独确认目标成员。
 
 ### 13.4 新邀请失败的 mutation-state 语义

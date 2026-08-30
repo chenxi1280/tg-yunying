@@ -10,8 +10,6 @@ from app.models import (
     Action,
     OperationTarget,
     Task,
-    TaskAccountDailyCoverage,
-    TaskMembershipAdmissionItem,
 )
 from app.services._common import _now, audit
 
@@ -21,6 +19,10 @@ from .ai_group_rescue_binding_recovery import (
     exact_task,
     require_apply_fields,
     require_target_identity,
+)
+from .ai_group_rescue_admission_projection import (
+    complete_member_projection,
+    membership_item_for_source,
 )
 from .channel_membership import mark_channel_membership_joined
 from .group_rescue import rescue_admin_account_id_for_task
@@ -220,6 +222,14 @@ def _observation_snapshot(
         observation=observation,
         lock=lock,
     )
+    membership_item = membership_item_for_source(
+        session,
+        task,
+        source_action=action,
+        account_id=observation.target_account_id,
+        target_id=scope.expected_target_id,
+        lock=lock,
+    )
     return {
         "source_action_hash": canonical_state_hash({"action": action.id})[:16],
         "target_account_hash": account_hash(task.tenant_id, observation.target_account_id),
@@ -232,6 +242,11 @@ def _observation_snapshot(
             task.tenant_id,
             _replacement_key(task, observation),
         ) is not None,
+        "membership_phase": membership_item.phase,
+        "membership_rescue_status": membership_item.rescue_status,
+        "membership_rescue_action_hash": canonical_state_hash({
+            "action": membership_item.rescue_action_id or "",
+        })[:16],
     }
 
 
@@ -327,7 +342,7 @@ def _apply_member_observation(
         scope.expected_target_id,
         observation.target_account_id,
     )
-    _mark_member_ready(
+    complete_member_projection(
         session,
         task,
         source_action=action,
@@ -335,75 +350,6 @@ def _apply_member_observation(
         target_id=scope.expected_target_id,
         group_id=scope.expected_group_id,
     )
-
-
-def _mark_member_ready(
-    session: Session,
-    task: Task,
-    *,
-    source_action: Action,
-    account_id: int,
-    target_id: int,
-    group_id: int,
-) -> None:
-    item = _membership_item(
-        session,
-        task,
-        source_action=source_action,
-        account_id=account_id,
-        target_id=target_id,
-    )
-    now = _now()
-    item.phase = "completed"
-    item.manual_required = False
-    item.failure_type = ""
-    item.failure_detail = ""
-    item.rescue_status = "membership_observed"
-    item.rescue_failure_detail = ""
-    item.completed_at = now
-    item.updated_at = now
-    coverages = session.scalars(select(TaskAccountDailyCoverage).where(
-        TaskAccountDailyCoverage.task_id == task.id,
-        TaskAccountDailyCoverage.account_id == account_id,
-        TaskAccountDailyCoverage.group_id == group_id,
-        TaskAccountDailyCoverage.coverage_date == now.date(),
-        TaskAccountDailyCoverage.confirmed_count == 0,
-        TaskAccountDailyCoverage.reserved_action_id.is_(None),
-        TaskAccountDailyCoverage.state.in_(("blocked", "pending_admission")),
-    ).with_for_update())
-    for coverage in coverages:
-        _release_coverage(coverage, now)
-
-
-def _release_coverage(coverage: TaskAccountDailyCoverage, now: object) -> None:
-    coverage.state = "ready"
-    coverage.blocker_code = ""
-    coverage.blocker_stage = ""
-    coverage.blocker_detail = ""
-    coverage.recovery_path = "membership_observed"
-    coverage.next_eligible_at = None
-    coverage.next_decision_at = None
-    coverage.updated_at = now
-
-
-def _membership_item(
-    session: Session,
-    task: Task,
-    *,
-    source_action: Action,
-    account_id: int,
-    target_id: int,
-) -> TaskMembershipAdmissionItem:
-    item = session.scalar(select(TaskMembershipAdmissionItem).where(
-        TaskMembershipAdmissionItem.tenant_id == task.tenant_id,
-        TaskMembershipAdmissionItem.task_id == task.id,
-        TaskMembershipAdmissionItem.account_id == account_id,
-        TaskMembershipAdmissionItem.target_id == target_id,
-        TaskMembershipAdmissionItem.rescue_action_id == source_action.id,
-    ).with_for_update())
-    if item is None:
-        raise RuntimeError("admission_recovery_membership_item_drift")
-    return item
 
 
 def _create_replacement(
@@ -440,7 +386,7 @@ def _create_replacement(
     )
     session.add(replacement)
     session.flush()
-    item = _membership_item(
+    item = membership_item_for_source(
         session,
         task,
         source_action=source_action,

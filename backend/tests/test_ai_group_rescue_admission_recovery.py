@@ -88,6 +88,59 @@ def test_member_observation_writes_fact_without_replaying_old_action(
     assert historical.state == "blocked"
 
 
+def test_member_observation_accepts_legacy_unbound_membership_item(
+    session: Session,
+) -> None:
+    old, item, coverage = _seed_unknown_rescue(session)
+    item.rescue_action_id = None
+    task = session.get(Task, "task-1")
+    task.type_config = {
+        **dict(task.type_config or {}),
+        "group_rescue_admin_account_id": 103,
+    }
+    _seed_recovery_accounts(session)
+    session.flush()
+    observation = _membership_observation("member")
+    scope = _recovery_scope(config_revision=1)
+    preview = preview_admission_recovery(session, scope, (observation,))
+
+    result = apply_admission_recovery(
+        session,
+        scope,
+        (observation,),
+        expected_fingerprint=preview["fingerprint"],
+        actor="operator",
+        approval_reference="incident-1",
+    )
+
+    assert result["member_count"] == 1
+    assert old.status == "closed_unknown"
+    assert item.rescue_action_id is None
+    assert item.phase == "completed"
+    assert coverage.state == "ready"
+
+
+def test_member_observation_rejects_unrelated_membership_action(
+    session: Session,
+) -> None:
+    _old, item, _coverage = _seed_unknown_rescue(session)
+    item.rescue_action_id = "unrelated-action"
+    task = session.get(Task, "task-1")
+    task.type_config = {
+        **dict(task.type_config or {}),
+        "group_rescue_admin_account_id": 103,
+    }
+    _seed_recovery_accounts(session)
+    session.flush()
+
+    with pytest.raises(RuntimeError, match="membership_item_drift"):
+        preview_admission_recovery(
+            session,
+            _recovery_scope(config_revision=1),
+            (_membership_observation("member"),),
+        )
+
+
 def test_absent_observation_creates_unique_replacement_action(
     session: Session,
 ) -> None:
