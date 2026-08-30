@@ -401,23 +401,25 @@ GROUP_QUERY = text("""
 """)
 
 
-RESCUE_QUERY = text("""
-    SELECT t.id AS tenant_id, t.name AS tenant_name,
-           t.group_rescue_enabled, t.group_rescue_admin_account_id,
-           adm.phone AS admin_phone, adm.status AS admin_status
-    FROM tenants AS t
-    LEFT JOIN tg_accounts AS adm ON adm.id = t.group_rescue_admin_account_id
+AI_PROVIDERS_QUERY = text("""
+    SELECT id, provider_name, model_name, is_active, credential_enabled, health_status, last_error
+    FROM ai_providers
+    ORDER BY id ASC
 """)
 
-RESCUE_ACTIONS_QUERY = text("""
-    SELECT a.id, a.task_id, a.action_type, a.status, a.scheduled_at, a.executed_at,
-           a.payload, a.result, t.name AS task_name
-    FROM actions AS a
-    JOIN tasks AS t ON t.id = a.task_id
-    WHERE a.action_type IN ('invite_group_account', 'invite_group_bot')
-       OR (a.payload ->> 'group_id')::text = '5997'
-    ORDER BY a.created_at DESC
-    LIMIT 20
+AI_SETTINGS_QUERY = text("""
+    SELECT tenant_id, default_provider_id, ai_enabled,
+           ai_group_model_fallback_enabled, ai_provider_route_fallback_enabled
+    FROM tenant_ai_settings
+""")
+
+AI_ROUTES_QUERY = text("""
+    SELECT rs.id AS route_set_id, rs.name AS route_set_name, rs.status AS route_set_status,
+           ri.priority, ri.provider_id, ri.model_override, p.provider_name, p.health_status
+    FROM tenant_ai_provider_route_sets AS rs
+    JOIN tenant_ai_provider_route_items AS ri ON ri.route_set_id = rs.id
+    JOIN ai_providers AS p ON p.id = ri.provider_id
+    ORDER BY rs.id, ri.priority ASC
 """)
 
 
@@ -433,8 +435,9 @@ def main() -> None:
         deadline_conflicts = _rows(session, DEADLINE_PROJECTION_CONFLICT_QUERY)
         batch_conflicts = _rows(session, BATCH_PROJECTION_CONFLICT_QUERY)
         group_states = _rows(session, GROUP_QUERY)
-        rescue_settings = _rows(session, RESCUE_QUERY)
-        rescue_actions = _rows(session, RESCUE_ACTIONS_QUERY)
+        ai_providers = _rows(session, AI_PROVIDERS_QUERY)
+        ai_settings = _rows(session, AI_SETTINGS_QUERY)
+        ai_routes = _rows(session, AI_ROUTES_QUERY)
     _print_rows("AI_DISPATCH_ACTION_CLASS", classifications)
     _print_rows("AI_DISPATCH_ACTION_SAMPLE", samples)
     _print_rows("AI_DISPATCH_ACTION_RUNTIME_REASON", runtime_reasons)
@@ -445,12 +448,14 @@ def main() -> None:
     _print_rows("AI_DISPATCH_DEADLINE_PROJECTION", deadline_conflicts)
     _print_rows("AI_DISPATCH_BATCH_PROJECTION", batch_conflicts)
     _print_rows("AI_DISPATCH_GROUP_STATE", group_states)
-    _print_rows("AI_DISPATCH_RESCUE_SETTINGS", rescue_settings)
-    _print_rows("AI_DISPATCH_RESCUE_ACTIONS", rescue_actions)
+    _print_rows("AI_DISPATCH_AI_PROVIDERS", ai_providers)
+    _print_rows("AI_DISPATCH_AI_SETTINGS", ai_settings)
+    _print_rows("AI_DISPATCH_AI_ROUTES", ai_routes)
 
 
 if __name__ == "__main__":
     main()
+
 
 
 
