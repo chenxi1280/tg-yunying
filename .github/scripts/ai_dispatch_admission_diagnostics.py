@@ -401,6 +401,17 @@ GROUP_QUERY = text("""
 """)
 
 
+TARGET_ACCOUNT_QUERY = text("""
+    SELECT ga.group_id, ga.account_id, ga.is_listener, ga.can_send, ga.role,
+           a.phone, a.status AS account_status, a.deleted_at IS NOT NULL AS is_deleted,
+           g.title AS group_title
+    FROM tg_group_accounts AS ga
+    JOIN tg_accounts AS a ON a.id = ga.account_id
+    JOIN tg_groups AS g ON g.id = ga.group_id
+    WHERE ga.group_id = 5997
+    ORDER BY ga.is_listener DESC, ga.can_send DESC, a.id ASC
+    LIMIT 30
+""")
 
 
 def main() -> None:
@@ -415,6 +426,7 @@ def main() -> None:
         deadline_conflicts = _rows(session, DEADLINE_PROJECTION_CONFLICT_QUERY)
         batch_conflicts = _rows(session, BATCH_PROJECTION_CONFLICT_QUERY)
         group_states = _rows(session, GROUP_QUERY)
+        target_accounts = _rows(session, TARGET_ACCOUNT_QUERY)
     _print_rows("AI_DISPATCH_ACTION_CLASS", classifications)
     _print_rows("AI_DISPATCH_ACTION_SAMPLE", samples)
     _print_rows("AI_DISPATCH_ACTION_RUNTIME_REASON", runtime_reasons)
@@ -425,8 +437,10 @@ def main() -> None:
     _print_rows("AI_DISPATCH_DEADLINE_PROJECTION", deadline_conflicts)
     _print_rows("AI_DISPATCH_BATCH_PROJECTION", batch_conflicts)
     _print_rows("AI_DISPATCH_GROUP_STATE", group_states)
+    _print_rows("AI_DISPATCH_TARGET_ACCOUNT", target_accounts)
 
 
 if __name__ == "__main__":
     main()
+
 
