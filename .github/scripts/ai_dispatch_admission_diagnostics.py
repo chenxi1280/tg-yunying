@@ -389,16 +389,17 @@ def _print_rows(prefix: str, rows: list[dict]) -> None:
 
 
 GROUP_QUERY = text("""
-    SELECT DISTINCT g.id, g.title, g.group_type, g.is_forum,
+    SELECT DISTINCT g.id, g.title, g.group_type, g.auth_status, g.can_send,
            g.listener_enabled, g.listener_cursor_status,
            g.listener_last_polled_at, g.listener_last_error,
-           g.listener_interval_seconds, g.listener_account_id,
+           g.listener_interval_seconds,
            t.name AS task_name, t.id AS task_id
     FROM tg_groups AS g
     JOIN tasks AS t ON t.deleted_at IS NULL AND t.type = 'group_ai_chat'
       AND (t.type_config ->> 'target_group_id')::text = g.id::text
     ORDER BY t.name
 """)
+
 
 
 
