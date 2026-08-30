@@ -388,6 +388,22 @@ def _print_rows(prefix: str, rows: list[dict]) -> None:
         print(prefix + "=" + json.dumps(row, ensure_ascii=False, sort_keys=True))
 
 
+GROUP_QUERY = text("""
+    SELECT DISTINCT g.id, g.title, g.group_type, g.is_forum,
+           g.listener_enabled, g.listener_cursor_status,
+           g.listener_last_polled_at, g.listener_last_error,
+           g.listener_interval_seconds, g.listener_account_id,
+           t.name AS task_name, t.id AS task_id
+    FROM tg_groups AS g
+    JOIN tasks AS t ON t.deleted_at IS NULL AND t.type = 'group_ai_chat'
+      AND (
+        (t.type_config ->> 'target_group_id')::text = g.id::text
+        OR (t.type_config ->> 'target_operation_target_id')::text = g.operation_target_id::text
+      )
+    ORDER BY t.name
+""")
+
+
 def main() -> None:
     with SessionLocal() as session:
         classifications = _rows(session, ACTION_CLASSIFICATION_QUERY)
@@ -399,6 +415,7 @@ def main() -> None:
         recent_workers = _rows(session, RECENT_WORKER_QUERY)
         deadline_conflicts = _rows(session, DEADLINE_PROJECTION_CONFLICT_QUERY)
         batch_conflicts = _rows(session, BATCH_PROJECTION_CONFLICT_QUERY)
+        group_states = _rows(session, GROUP_QUERY)
     _print_rows("AI_DISPATCH_ACTION_CLASS", classifications)
     _print_rows("AI_DISPATCH_ACTION_SAMPLE", samples)
     _print_rows("AI_DISPATCH_ACTION_RUNTIME_REASON", runtime_reasons)
@@ -408,7 +425,9 @@ def main() -> None:
     _print_rows("AI_DISPATCH_RECENT_WORKER", recent_workers)
     _print_rows("AI_DISPATCH_DEADLINE_PROJECTION", deadline_conflicts)
     _print_rows("AI_DISPATCH_BATCH_PROJECTION", batch_conflicts)
+    _print_rows("AI_DISPATCH_GROUP_STATE", group_states)
 
 
 if __name__ == "__main__":
     main()
+
