@@ -110,8 +110,9 @@ def takeover_chain_is_complete(
         AiContentScopeTakeoverItem.batch_id.in_(batch_ids),
     )))
     latest = _latest_items_by_action(chain, items)
-    if any(item.status not in {"applied", "noop"} for item in latest.values()):
+    if any(item.status not in {"applied", "noop", "quarantined"} for item in latest.values()):
         return False
+
     applied = Counter(
         item.action_id for item in items if item.status == "applied"
     )
