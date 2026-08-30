@@ -76,6 +76,63 @@ def test_rescue_action_prefers_exact_task_admin_override(session: Session) -> No
     assert session.get(Tenant, 1).group_rescue_admin_account_id == 101
 
 
+@pytest.mark.parametrize(
+    ("old_admin_id", "error_message"),
+    [
+        (101, "旧救援账号无权限"),
+        (103, "The provided user is not a mutual contact"),
+    ],
+)
+def test_rescue_refresh_uses_exact_task_admin(
+    session: Session,
+    old_admin_id: int,
+    error_message: str,
+) -> None:
+    _seed_recovery_accounts(session)
+    task = session.get(Task, "task-1")
+    task.type_config = {
+        **dict(task.type_config or {}),
+        "group_rescue_admin_account_id": 103,
+    }
+    action = Action(
+        id="stale-rescue",
+        tenant_id=1,
+        task_id=task.id,
+        task_type=task.type,
+        action_type="invite_group_account",
+        account_id=old_admin_id,
+        scheduled_at=NOW,
+        status="failed",
+        task_lifecycle_epoch=7,
+        payload={
+            "group_id": 11,
+            "operation_target_id": 21,
+            "group_peer_id": "-10011",
+            "target_account_id": 102,
+            "target_account_ref": "@member",
+            "trigger_account_id": 102,
+            "trigger_task_id": task.id,
+            "trigger_reason": "permission denied",
+        },
+        result={"rescue_status": "invite_failed", "error_message": error_message},
+    )
+    session.add(action)
+    session.flush()
+
+    result = trigger_group_rescue(
+        session,
+        task,
+        session.get(TgGroup, 11),
+        trigger_account_id=102,
+        trigger_reason="permission denied",
+        operation_target_id=21,
+    )
+
+    assert result.action is action
+    assert action.status == "pending"
+    assert action.account_id == 103
+
+
 def test_dispatcher_reserves_exact_task_admin_override(session: Session) -> None:
     _seed_recovery_accounts(session)
     task = session.get(Task, "task-1")

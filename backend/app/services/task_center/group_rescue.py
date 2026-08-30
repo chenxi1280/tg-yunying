@@ -74,7 +74,13 @@ def trigger_group_rescue(
         return GroupRescueResult(RESCUE_STATUS_UNCONFIGURED, route_error)
     existing = _existing_rescue_action(session, task, group, trigger_account_id)
     if existing:
-        if _rescue_action_needs_refresh(session, tenant, existing, trigger_account_id):
+        if _rescue_action_needs_refresh(
+            session,
+            tenant,
+            existing,
+            task=task,
+            trigger_account_id=trigger_account_id,
+        ):
             return refresh_group_rescue_action(
                 session,
                 task,
@@ -227,7 +233,14 @@ def _existing_rescue_action(session: Session, task: Task, group: TgGroup, trigge
     return None
 
 
-def _rescue_action_needs_refresh(session: Session, tenant: Tenant, action: Action, trigger_account_id: int) -> bool:
+def _rescue_action_needs_refresh(
+    session: Session,
+    tenant: Tenant,
+    action: Action,
+    *,
+    task: Task,
+    trigger_account_id: int,
+) -> bool:
     if action.status not in REFRESHABLE_RESCUE_ACTION_STATUSES:
         return False
     if action.action_type != "invite_group_account":
