@@ -28,6 +28,7 @@ from .target_profile import router as target_profile_router
 from .telegram_bot import router as telegram_bot_router
 from app.routers.group_clone import router as group_clone_router
 from app.routers.group_clone_operations import router as group_clone_operations_router
+from app.routers.group_clone_cutover import router as group_clone_cutover_router
 
 
 router = APIRouter()
@@ -54,6 +55,7 @@ for sub_router in (
     task_center_router,
     group_clone_router,
     group_clone_operations_router,
+    group_clone_cutover_router,
     telegram_bot_router,
     archives_router,
     audit_router,

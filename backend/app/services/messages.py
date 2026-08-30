@@ -1075,7 +1075,11 @@ def _release_message_task_authority(session: Session, task: MessageTask) -> None
         release_platform_writer_admission,
     )
 
-    peer_type = "channel" if (target and target.target_type == "channel") else "chat"
+    peer_type = "channel" if (
+        (group and group.group_type in {"supergroup", "channel"})
+        or (target and target.target_type in {"channel", "supergroup"})
+        or str(peer_id).startswith("-100")
+    ) else "chat"
     release_platform_writer_admission(
         session,
         task.tenant_id,
@@ -1246,7 +1250,11 @@ def _evaluate_message_task_gate(
     )
     if block is not None or task.target_type == "private" or not peer_id:
         return block
-    peer_type = "channel" if (target and target.target_type == "channel") else "chat"
+    peer_type = "channel" if (
+        (group and group.group_type in {"supergroup", "channel"})
+        or (target and target.target_type in {"channel", "supergroup"})
+        or str(peer_id).startswith("-100")
+    ) else "chat"
     allowed, reason = ensure_platform_writer_admission(
         session,
         task.tenant_id,

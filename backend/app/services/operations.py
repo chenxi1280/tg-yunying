@@ -1854,7 +1854,9 @@ def _reserve_operation_gateway_attempt(
         allowed, reason = ensure_platform_writer_admission(
             session,
             task.tenant_id,
-            target_peer_type=_authority_peer_type(locked_target.target_type),
+            target_peer_type=_authority_peer_type(
+                locked_target.target_type, locked_target.tg_peer_id,
+            ),
             target_peer_id=str(locked_target.tg_peer_id),
             writer_kind="operation_task",
             writer_id=str(task.id),
@@ -2002,8 +2004,11 @@ def _execute_operation_attempt(
     return ok, attempt.failure_type, attempt.failure_detail
 
 
-def _authority_peer_type(target_type: str) -> str:
-    return "channel" if target_type in {"channel", "supergroup"} else "chat"
+def _authority_peer_type(target_type: str, peer_id: str = "") -> str:
+    return "channel" if (
+        target_type in {"channel", "supergroup"}
+        or str(peer_id).startswith("-100")
+    ) else "chat"
 
 
 def _release_operation_task_authority(
@@ -2020,7 +2025,7 @@ def _release_operation_task_authority(
     release_platform_writer_admission(
         session,
         task.tenant_id,
-        target_peer_type=_authority_peer_type(target.target_type),
+        target_peer_type=_authority_peer_type(target.target_type, target.tg_peer_id),
         target_peer_id=str(target.tg_peer_id),
         writer_kind="operation_task",
         writer_id=str(task.id),
@@ -2260,6 +2265,23 @@ def manual_send(session: Session, account_id: int, payload: ManualSendRequest, a
         session.commit()
         session.refresh(record)
         return record
+    authority_block = _manual_authority_block(session, target, actor=actor)
+    if authority_block is not None:
+        record = ManualOperationRecord(
+            tenant_id=account.tenant_id,
+            account_id=account.id,
+            target_id=target.id,
+            operation_type="MESSAGE_SEND",
+            content=payload.content,
+            status=TaskStatus.FAILED.value,
+            failure_type="group_mutation_authority_denied",
+            failure_detail=authority_block,
+            actor=actor,
+        )
+        session.add(record)
+        session.commit()
+        session.refresh(record)
+        return record
     credentials = credentials_for_account(session, account)
     target_id = target.id
     target_peer_id = target.tg_peer_id
@@ -2303,10 +2325,52 @@ def manual_send(session: Session, account_id: int, payload: ManualSendRequest, a
         account.last_active_at = _now()
     elif result.failure_type == FailureType.ACCOUNT_LIMITED.value:
         account.status = AccountStatus.LIMITED.value
+    _release_manual_authority(session, target, actor=actor)
     audit(session, tenant_id=account.tenant_id, actor=actor, action="账号立即发送", target_type="manual_operation", target_id=str(account.id), detail=target.title)
     session.commit()
     session.refresh(record)
     return record
+
+
+def _manual_authority_block(
+    session: Session,
+    target: OperationTarget,
+    *,
+    actor: str,
+) -> str | None:
+    from app.services.task_center.group_mutation_authority import (
+        ensure_platform_writer_admission,
+    )
+
+    allowed, reason = ensure_platform_writer_admission(
+        session,
+        target.tenant_id,
+        target_peer_type=_authority_peer_type(target.target_type, target.tg_peer_id),
+        target_peer_id=str(target.tg_peer_id),
+        writer_kind="manual_operation",
+        writer_id=actor[:64],
+    )
+    return None if allowed else reason
+
+
+def _release_manual_authority(
+    session: Session,
+    target: OperationTarget,
+    *,
+    actor: str,
+) -> None:
+    from app.services.task_center.group_mutation_authority import (
+        release_platform_writer_admission,
+    )
+
+    release_platform_writer_admission(
+        session,
+        target.tenant_id,
+        target_peer_type=_authority_peer_type(target.target_type, target.tg_peer_id),
+        target_peer_id=str(target.tg_peer_id),
+        writer_kind="manual_operation",
+        writer_id=actor[:64],
+    )
 
 
 def list_manual_operations(session: Session, tenant_id: int = 1, account_id: int | None = None) -> list[ManualOperationRecord]:

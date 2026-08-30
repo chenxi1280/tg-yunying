@@ -3309,6 +3309,12 @@ def _dispatch_target_send_message(
         session_ciphertext=context.account.session_ciphertext,
         credentials=context.credentials,
     )
+    if not _platform_mutation_admitted(
+        session, action,
+        target_peer_type="channel",
+        target_peer_id=str(gateway_request.target_peer),
+    ):
+        return True
     attempt = _reserve_target_send_attempt(session, action, context.account, payload)
     if attempt is None:
         return True
@@ -3561,6 +3567,35 @@ def _send_group_message_via_gateway(
     _lock_post_gateway_dispatch_prefix(session, action)
     _finalize_group_send(session, action, context, result=result, attempt=attempt)
     return True
+
+
+def _platform_mutation_admitted(
+    session: Session,
+    action: Action,
+    *,
+    target_peer_type: str,
+    target_peer_id: str,
+) -> bool:
+    from .group_mutation_authority import ensure_platform_writer_admission
+
+    allowed, reason = ensure_platform_writer_admission(
+        session,
+        action.tenant_id,
+        target_peer_type=target_peer_type,
+        target_peer_id=target_peer_id,
+        writer_kind=action.task_type,
+        writer_id=action.task_id,
+    )
+    if allowed:
+        return True
+    _fail(
+        action,
+        "group_mutation_authority_denied",
+        reason,
+        auto_check="拦截",
+        validation_stage="group_mutation_authority",
+    )
+    return False
 
 
 def _lock_post_gateway_dispatch_prefix(
@@ -4228,6 +4263,13 @@ def _dispatch_delete_message(session: Session, action: Action, account: TgAccoun
     target_peer = group.tg_peer_id if group else payload.chat_id
     if not target_peer:
         _fail(action, FailureType.PEER_INVALID.value, "删除消息缺少目标群")
+        return True
+    peer_type = "channel" if group and group.group_type in {"supergroup", "channel"} else "chat"
+    if not _platform_mutation_admitted(
+        session, action,
+        target_peer_type=peer_type,
+        target_peer_id=str(target_peer),
+    ):
         return True
     attempt = _begin_execution_attempt(session, action, account)
     _mark_executing(action)
@@ -6306,6 +6348,12 @@ def _dispatch_like(action: Action, account: TgAccount, credentials, session: Ses
         payload,
     ):
         return True
+    if not _platform_mutation_admitted(
+        session, action,
+        target_peer_type="channel",
+        target_peer_id=str(channel_peer),
+    ):
+        return True
     attempt = _reserve_channel_action_attempt(session, action, account, payload)
     if attempt is None:
         return True
@@ -6405,6 +6453,12 @@ def _dispatch_comment(
     filtered = filter_outbound_content(session, tenant_id=action.tenant_id, group=policy_group, content=content)
     if not filtered.ok:
         _fail(action, FailureType.CONTENT_REJECTED.value, filtered.reason, auto_check="拦截", validation_stage="content_policy")
+        return True
+    if not _platform_mutation_admitted(
+        session, action,
+        target_peer_type="channel",
+        target_peer_id=str(channel_peer),
+    ):
         return True
     attempt = _reserve_channel_action_attempt(session, action, account, payload)
     if attempt is None:
