@@ -877,6 +877,7 @@ listener 处理可信群管提示时，禁止在已修改 `group_bot_admissions`
 8. Reaction 能力 RPC 失败写 `reaction_capability_probe_failed` 并把点赞能力置为 `unknown`；消息快照读取成功时仍发布共享 snapshot，频道浏览和评论不得因点赞能力探测失败而停摆。
 9. 点赞的来源滚动窗口到达 deadline 后，不再为该消息创建新义务或 Action；Planner 必须先把 `current_action_id IS NULL` 的开放点赞义务结算为 `closed_expired` 并累计 `window_expired_settled_count`。仍有 Gateway/unknown/有效 Action 的义务保持原证据状态，不能被过期清理改写；该终态只关闭已逝来源窗口，不得计入 confirmed，也不得阻止 `dynamic_new` 后续新消息继续规划。
 10. 有限点赞目标以 typed remote fact 达标，不以历史 obligation/attempt 数封顶。明确未成功且已释放 Action 后，若原账号不再可用，Planner 可以为新账号建立 replacement 自然键；基础 `plan_total` 的 ordinal 已耗尽时，只为新的未冻结 owner 单调扩展 `pacing_plan_total` 到容纳本批 replacement 的最小值并继续递增 source ordinal，旧 owner 的 plan hash、ordinal、due、release 保持不可变。该超限只表示 replacement owner/attempt 可以超过配置目标，confirmed 仍按目标停止；不得复用 ordinal、压缩 deadline、重试 unknown 或把失败计为完成。
+11. 生产 E4 的 `due`/`due_at_missing` 只统计仍需履约的义务；`closed_expired` 是合法终止且不再要求远端事实，必须从这两个缺口集合排除。诊断仍保留其独立 status count，不能把它伪装成 `confirmed`，也不能据此产生 `interaction_due_unmet` 或 `interaction_post_release_remote_fact_missing`。
 
 ### 6.4 频道浏览
 

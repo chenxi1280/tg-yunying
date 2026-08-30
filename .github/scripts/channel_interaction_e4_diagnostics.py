@@ -32,6 +32,7 @@ ACTION_TYPES = {
     "channel_view": "view_message",
 }
 OPEN_ACTION_STATUSES = frozenset({"pending", "claiming", "executing"})
+NON_REQUIRED_OBLIGATION_STATUSES = frozenset({"closed_expired"})
 
 
 LIFECYCLE_MISMATCH_QUERY = text("""
@@ -93,13 +94,14 @@ def _status_counts(session, model, scope) -> dict[str, int]:
 
 
 def _due_counts(session, model, scope, now: datetime) -> dict[str, int]:
-    due_scope = (model.pacing_due_at.is_not(None), model.pacing_due_at <= now)
+    required_scope = model.status.notin_(NON_REQUIRED_OBLIGATION_STATUSES)
+    due_scope = (required_scope, model.pacing_due_at.is_not(None), model.pacing_due_at <= now)
     due = int(session.scalar(select(func.count(model.id)).where(scope, *due_scope)) or 0)
     confirmed = int(session.scalar(select(func.count(model.id)).where(
         scope, *due_scope, model.status == "confirmed",
     )) or 0)
     missing_due = int(session.scalar(select(func.count(model.id)).where(
-        scope, model.pacing_due_at.is_(None),
+        scope, required_scope, model.pacing_due_at.is_(None),
     )) or 0)
     return {"due": due, "due_confirmed": confirmed, "due_at_missing": missing_due}
 
