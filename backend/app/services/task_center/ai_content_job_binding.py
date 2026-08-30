@@ -62,6 +62,7 @@ _ADULT_CONTEXT_MARKERS = tuple(
         marker for markers in _ROUTE_MARKERS.values() for marker in markers
     )
 )
+_WINDOW_PERIOD_KEY_MAX_LENGTH = 80
 
 
 def bind_group_generation_contracts(
@@ -344,6 +345,7 @@ def _ensure_window_slot(
         pacing_hash=pacing_hash,
         policy_hash=policy_hash,
         context_revision=job.context_snapshot_version,
+        generation_sequence=job.generation_sequence,
     )
     spec = _window_slot_spec(
         action,
@@ -372,6 +374,7 @@ def _window_scope(
     pacing_hash: str,
     policy_hash: str,
     context_revision: int,
+    generation_sequence: int,
 ) -> WindowScope:
     return WindowScope(
         tenant_id=task.tenant_id,
@@ -380,14 +383,32 @@ def _window_scope(
         scope_type=scope_type,
         scope_id=scope_id,
         pacing_plan_hash=pacing_hash,
-        period_key=(
-            f"{due_at.date().isoformat()}:{action.obligation_id}:{context_revision}"
-        )[:80],
+        period_key=_window_period_key(
+            due_at,
+            obligation_id=action.obligation_id,
+            context_revision=context_revision,
+            generation_sequence=generation_sequence,
+        ),
         window_start_at=due_at,
         window_end_at=due_at + timedelta(hours=1),
         task_config_revision=int(task.config_revision or 1),
         content_policy_hash=policy_hash,
     )
+
+
+def _window_period_key(
+    due_at: datetime,
+    *,
+    obligation_id: str,
+    context_revision: int,
+    generation_sequence: int,
+) -> str:
+    day = due_at.date().isoformat()
+    identity = f"{obligation_id}:{context_revision}:{generation_sequence}"
+    period_key = f"{day}:{identity}"
+    if len(period_key) <= _WINDOW_PERIOD_KEY_MAX_LENGTH:
+        return period_key
+    return f"{day}:{_hash({'window_revision': identity})}"
 
 
 def _window_slot_spec(

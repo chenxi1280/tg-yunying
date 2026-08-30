@@ -323,6 +323,47 @@ def test_group_v2_rebinds_pre_gateway_slot_to_current_context_revision() -> None
         )
 
 
+def test_group_v2_terminal_replacement_gets_new_plan_revision() -> None:
+    with Session(_engine()) as session:
+        task, action, job = _seed(session, routes=["general"])
+        first = bind_group_generation_contracts(
+            session,
+            task,
+            [(action, _payload(job.id))],
+            config={"ai_content_route_v2_enabled": True},
+        )
+        old_slot_id = job.window_slot_id
+        job.state = "failed"
+        replacement = GenerationJob(
+            id="job-2",
+            tenant_id=job.tenant_id,
+            task_id=job.task_id,
+            task_lifecycle_epoch=job.task_lifecycle_epoch,
+            obligation_type=job.obligation_type,
+            obligation_id=job.obligation_id,
+            generation_sequence=2,
+            context_snapshot_version=job.context_snapshot_version,
+            context_snapshot_hash=job.context_snapshot_hash,
+            state="generating",
+        )
+        session.add(replacement)
+        session.flush()
+
+        second = bind_group_generation_contracts(
+            session,
+            task,
+            [(action, _payload(replacement.id))],
+            config={"ai_content_route_v2_enabled": True},
+            jobs=(replacement,),
+        )
+
+        assert session.get(AiContentWindowPlanSlot, old_slot_id).state == "invalidated"
+        assert replacement.window_slot_id != old_slot_id
+        assert first["_ai_content_contracts"][job.id]["window_plan_hash"] != (
+            second["_ai_content_contracts"][replacement.id]["window_plan_hash"]
+        )
+
+
 def test_group_v2_batch_loads_job_and_policy_snapshots_once() -> None:
     engine = _engine()
     with Session(engine) as session:

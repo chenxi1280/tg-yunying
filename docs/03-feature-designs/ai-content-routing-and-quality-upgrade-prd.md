@@ -356,6 +356,8 @@ Window planner 输入 bounded routed slots，输出不可变 plan：
 
 plan 从现有 stable obligations、已冻结 assignment 和 due slots 建立成员关系；它不创建数量、不改 `due_at/account_id/reply authority`。plan 冻结后不得追加或重排成员。迟到 obligation 进入下一 plan；若已无下一窗口，则按同一确定性规则创建只含该 obligation 的 standalone plan，不能修改 frozen plan。
 
+同一 obligation 的 pre-Gateway Job 已明确终结后，替代 Job 必须先失效旧 current slot，再以递增且稳定的 `generation_sequence` 建立新的不可变 standalone plan revision；`period_key` 同时冻结业务日、obligation、context revision 与 generation sequence。context 未变化也不得复用或改写旧 plan，旧 plan/slot 永久保留审计；generation sequence 只用于 revision 身份、审计和复现，不形成等待更早 sequence 的发送闸门。
+
 每个成员落为独立 `AiContentWindowPlanSlot`：
 
 - Job 与 Action 的发送前状态必须原子对齐；`Job.pending + Action.pending + payload.generating` 会被领取谓词永久排除，不是合法等待态。
