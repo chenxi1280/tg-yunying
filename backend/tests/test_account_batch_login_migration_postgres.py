@@ -109,3 +109,5 @@ def test_account_batch_login_schema_migrates_from_blank_postgres() -> None:
         assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
             "0181_runtime_storage_clone_merge"
         )
+
+
