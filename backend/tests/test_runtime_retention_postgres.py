@@ -40,7 +40,6 @@ TARGET_ID = 915_071
 TASK_ID = "runtime-retention-pg-task"
 OLD_AT = datetime(2000, 1, 1, 10, 0, 0)
 TODAY = date(2000, 1, 10)
-CUTOFF_DATE = date(2000, 1, 5)
 
 
 def test_cleanup_clears_or_deletes_all_action_foreign_keys() -> None:
@@ -50,7 +49,7 @@ def test_cleanup_clears_or_deletes_all_action_foreign_keys() -> None:
         _seed_base()
         _seed_referenced_action()
         with SessionLocal() as session:
-            assert cleanup_runtime_details(session, retention_days=5, today=TODAY, batch_size=10) == 3
+            assert cleanup_runtime_details(session, today=TODAY, batch_size=10) == 3
             session.commit()
         _assert_references_removed()
     finally:
@@ -66,8 +65,8 @@ def test_two_cleanup_workers_claim_disjoint_batches_and_atomically_accumulate(mo
         barrier = Barrier(2, timeout=5)
         original_batch = runtime_retention._runtime_detail_batch
 
-        def synchronized_batch(session, cutoff_dt, batch_size):  # noqa: ANN001
-            rows = original_batch(session, cutoff_dt, batch_size)
+        def synchronized_batch(session, cutoffs, batch_size):  # noqa: ANN001
+            rows = original_batch(session, cutoffs, batch_size)
             barrier.wait()
             return rows
 
@@ -83,7 +82,7 @@ def test_two_cleanup_workers_claim_disjoint_batches_and_atomically_accumulate(mo
                 DailyRuntimeStat.metric_name == "total",
             ))
             audits = session.scalar(select(func.count()).select_from(RuntimeCleanupAudit).where(
-                RuntimeCleanupAudit.cleanup_date == CUTOFF_DATE,
+                RuntimeCleanupAudit.cleanup_date == TODAY,
             ))
             remaining = session.scalar(select(func.count()).select_from(Action).where(Action.tenant_id == TENANT_ID))
         assert results == [1, 1]
@@ -209,7 +208,7 @@ def _action(suffix: str) -> Action:
 
 def _run_cleanup(_worker: int) -> int:
     with SessionLocal() as session:
-        deleted = cleanup_runtime_details(session, retention_days=5, today=TODAY, batch_size=1)
+        deleted = cleanup_runtime_details(session, today=TODAY, batch_size=1)
         session.commit()
         return deleted
 
@@ -249,7 +248,7 @@ def _cleanup() -> None:
         session.execute(delete(ReviewQueue).where(ReviewQueue.tenant_id == TENANT_ID))
         session.execute(delete(Action).where(Action.tenant_id == TENANT_ID))
         session.execute(delete(DailyRuntimeStat).where(DailyRuntimeStat.stat_date == OLD_AT.date()))
-        session.execute(delete(RuntimeCleanupAudit).where(RuntimeCleanupAudit.cleanup_date == CUTOFF_DATE))
+        session.execute(delete(RuntimeCleanupAudit).where(RuntimeCleanupAudit.cleanup_date == TODAY))
         session.execute(delete(Task).where(Task.tenant_id == TENANT_ID))
         session.execute(delete(OperationTarget).where(OperationTarget.tenant_id == TENANT_ID))
         session.execute(delete(TgGroup).where(TgGroup.tenant_id == TENANT_ID))

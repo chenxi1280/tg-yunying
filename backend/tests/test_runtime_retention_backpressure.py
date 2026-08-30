@@ -9,11 +9,11 @@ from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from datetime import date, datetime
 
-from sqlalchemy import Column, DateTime, JSON, MetaData, String, Table, create_engine, text
+from sqlalchemy import Column, DateTime, JSON, MetaData, String, Table, create_engine, func, select, text
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import Action, Task, Tenant
+from app.models import Action, ActionTerminalDailyStat, ExecutionAttempt, Task, Tenant
 from app.services.task_center.runtime_retention import cleanup_runtime_details
 
 
@@ -73,11 +73,21 @@ def test_server_runtime_cleanup_defaults_and_legacy_upgrade_match() -> None:
     source = installer.read_text()
 
     for expected in (
+        "RUNTIME_ACTION_SKIPPED_RETENTION_DAYS: ${RUNTIME_ACTION_SKIPPED_RETENTION_DAYS:-1}",
+        "RUNTIME_ACTION_SUCCESS_RETENTION_DAYS: ${RUNTIME_ACTION_SUCCESS_RETENTION_DAYS:-2}",
+        "RUNTIME_ACTION_FAILED_RETENTION_DAYS: ${RUNTIME_ACTION_FAILED_RETENTION_DAYS:-7}",
+        "ENABLE_STATE_SPECIFIC_ACTION_RETENTION: ${ENABLE_STATE_SPECIFIC_ACTION_RETENTION:-false}",
         "RUNTIME_DETAIL_RETENTION_BATCH_SIZE: ${RUNTIME_DETAIL_RETENTION_BATCH_SIZE:-2000}",
         "RUNTIME_DETAIL_CLEANUP_INTERVAL_SECONDS: ${RUNTIME_DETAIL_CLEANUP_INTERVAL_SECONDS:-60}",
         "RUNTIME_METRIC_CLEANUP_INTERVAL_SECONDS: ${RUNTIME_METRIC_CLEANUP_INTERVAL_SECONDS:-300}",
     ):
         assert expected in compose
+    assert "RUNTIME_ACTION_SKIPPED_RETENTION_DAYS=1" in env_example
+    assert "RUNTIME_ACTION_SUCCESS_RETENTION_DAYS=2" in env_example
+    assert "RUNTIME_ACTION_FAILED_RETENTION_DAYS=7" in env_example
+    assert "ENABLE_STATE_SPECIFIC_ACTION_RETENTION=false" in env_example
+    assert "RUNTIME_DETAIL_RETENTION_DAYS" not in compose
+    assert "RUNTIME_DETAIL_RETENTION_DAYS" not in env_example
     assert "RUNTIME_DETAIL_RETENTION_BATCH_SIZE=2000" in env_example
     assert "RUNTIME_DETAIL_CLEANUP_INTERVAL_SECONDS=60" in env_example
     assert "RUNTIME_METRIC_CLEANUP_INTERVAL_SECONDS=300" in env_example
@@ -107,7 +117,6 @@ def test_runtime_retention_preserves_open_actions() -> None:
 
         cleanup_runtime_details(
             session,
-            retention_days=5,
             today=date(2000, 1, 10),
             batch_size=10,
         )
@@ -115,6 +124,54 @@ def test_runtime_retention_preserves_open_actions() -> None:
 
         assert session.get(Action, "open") is not None
         assert session.get(Action, "terminal") is None
+
+
+def test_runtime_retention_uses_status_specific_cutoffs_and_typed_summary() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="tenant"))
+        session.add(Task(id="task", tenant_id=1, name="task", type="group_relay", status="running"))
+        session.add_all([
+            _retention_action("expired-skip", "skipped", datetime(2000, 1, 8, 10, 0)),
+            _retention_action("hot-success", "success", datetime(2000, 1, 8, 10, 0)),
+            _retention_action("expired-failure", "failed", datetime(2000, 1, 1, 10, 0)),
+        ])
+        session.get(Action, "expired-skip").result = {"reason_code": "obligation_not_open"}
+        session.commit()
+
+        assert cleanup_runtime_details(session, today=date(2000, 1, 10), batch_size=10) == 2
+        session.commit()
+
+        assert session.get(Action, "hot-success") is not None
+        typed = list(session.scalars(select(ActionTerminalDailyStat)))
+        assert {(row.status, row.reason_code, row.action_count) for row in typed} == {
+            ("skipped", "obligation_not_open", 1),
+            ("failed", "unclassified", 1),
+        }
+
+
+def test_runtime_retention_fails_closed_on_protected_attempt() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    old_at = datetime(2000, 1, 1, 10, 0)
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="tenant"))
+        session.add(Task(id="task", tenant_id=1, name="task", type="group_relay", status="running"))
+        session.add(_retention_action("inconsistent", "success", old_at))
+        session.add(ExecutionAttempt(
+            id="protected-attempt",
+            tenant_id=1,
+            action_id="inconsistent",
+            status="result_unknown",
+        ))
+        session.commit()
+
+        with pytest.raises(RuntimeError, match="runtime_retention_protected_attempt"):
+            cleanup_runtime_details(session, today=date(2000, 1, 10), batch_size=10)
+
+        assert session.get(Action, "inconsistent") is not None
+        assert session.scalar(select(func.count()).select_from(ActionTerminalDailyStat)) == 0
 
 
 def _retention_action(

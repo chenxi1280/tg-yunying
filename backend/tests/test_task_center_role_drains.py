@@ -727,14 +727,12 @@ def test_runtime_detail_retention_runs_only_when_due() -> None:
 
         first_deleted = cleanup_runtime_details_if_due(
             session,
-            retention_days=5,
             batch_size=1,
             interval_seconds=300,
             now_value=now_value,
         )
         second_deleted = cleanup_runtime_details_if_due(
             session,
-            retention_days=5,
             batch_size=1,
             interval_seconds=300,
             now_value=now_value + timedelta(seconds=60),

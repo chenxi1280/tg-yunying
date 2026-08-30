@@ -6651,7 +6651,7 @@ def test_runtime_cleanup_summarizes_and_deletes_terminal_details_only():
         session.add(ReviewQueue(id="old-review", tenant_id=1, task_id="task-clean", action_id="old-unknown", status="pending"))
         session.commit()
 
-        deleted = cleanup_runtime_details(session, retention_days=5, today=today)
+        deleted = cleanup_runtime_details(session, today=today)
         session.commit()
 
         assert deleted == 1
@@ -6688,10 +6688,10 @@ def test_runtime_cleanup_batches_details_and_accumulates_totals():
         )
         session.commit()
 
-        assert cleanup_runtime_details(session, retention_days=5, today=today, batch_size=2) == 2
+        assert cleanup_runtime_details(session, today=today, batch_size=2) == 2
         session.commit()
         assert session.query(Action).count() == 1
-        assert cleanup_runtime_details(session, retention_days=5, today=today, batch_size=2) == 1
+        assert cleanup_runtime_details(session, today=today, batch_size=2) == 1
         session.commit()
 
         total = session.query(DailyRuntimeStat).filter_by(

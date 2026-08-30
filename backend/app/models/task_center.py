@@ -347,6 +347,33 @@ class DailyRuntimeStat(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 
+class ActionTerminalDailyStat(Base):
+    __tablename__ = "action_terminal_daily_stats"
+    __table_args__ = (
+        UniqueConstraint(
+            "stat_date",
+            "status",
+            "action_type",
+            "reason_code",
+            name="uq_action_terminal_daily_stats_bucket",
+        ),
+        Index(
+            "ix_action_terminal_daily_stats_lookup",
+            "stat_date",
+            "status",
+            "action_type",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    stat_date: Mapped[date] = mapped_column(Date)
+    status: Mapped[str] = mapped_column(String(20))
+    action_type: Mapped[str] = mapped_column(String(30))
+    reason_code: Mapped[str] = mapped_column(String(80))
+    action_count: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
 class RuntimeCleanupAudit(Base):
     __tablename__ = "runtime_cleanup_audits"
 
@@ -850,6 +877,7 @@ class WorkerHeartbeat(Base):
 
 __all__ = [
     "Action",
+    "ActionTerminalDailyStat",
     "AiAccountGroupStanceMemory",
     "AiAccountVoiceProfile",
     "AiGroupMessageMemory",

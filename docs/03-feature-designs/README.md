@@ -5,6 +5,7 @@
 | 文件 | 定位 |
 | --- | --- |
 | [antigravity-cli-server-provider-design.md](antigravity-cli-server-provider-design.md) | **2026-08-30 design partial / 默认 profile POC 通过 / 新 slot-01 资格受阻**：五个 OS user/HOME/OAuth 隔离 slot、显式 `antigravity_cli` adapter、durable request reconcile、unknown 不重放、Docker-to-host 和受保护 canary/E4 合同；当前仅允许无生产效果 POC 脚本 |
+| [runtime-storage-retention-and-reclaim-prd.md](runtime-storage-retention-and-reclaim-prd.md) | **2026-08-30 Product Design Complete、本地实现与隔离 PG QA 通过、待发布/生产执行**：Action 分状态热明细 TTL、删除前类型化原因汇总、受保护 preview/apply/readback、逻辑清理与索引物理回收分阶段验收 |
 | [production-release-batch-single-deploy-prd.md](production-release-batch-single-deploy-prd.md) | **2026-08-30 Product Design Complete、待 workflow QA**：取消每次 push release 自动生产部署；master 汇总、release 一次冻结、从 release ref 显式 dispatch，并在完整 CI 前校验 master/release/checkout 同一不可变 SHA |
 | [ai-group-chat-quality-and-token-optimization-prd.md](ai-group-chat-quality-and-token-optimization-prd.md) | **2026-08-27 Product Design Complete、生产 7 大群 12 场景基准通过、待代码与配置落地**：AI 活群质量彻底根治、行业暗语拟真注入、机器人广告垃圾清洗、后置拦截调优、7 大任务专属话题库与 Token 控耗闭环方案 |
 | [github-actions-release-performance-optimization-prd.md](github-actions-release-performance-optimization-prd.md) | **2026-08-27 两个 P0 本地修复、定向 QA 与 0168 幂等回归通过、标准 PG blank-DB 全链待 Actions 证明**：不减少发布次数与测试覆盖；Backend 3+2 确定性分片、三镜像并行构建、Python 依赖层缓存、frontend 历史 hash hard-link 复用；takeover 识别 fact-first quantity-only 合同并以常数级批量事实快照完成 preview/drift/apply 复核 |

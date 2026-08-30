@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 import math
 from uuid import uuid4
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
@@ -12,7 +13,6 @@ from sqlalchemy.orm import Session
 from app.models import (
     Action,
     AiCoverageVariationIntent,
-    DailyRuntimeStat,
     ExecutionAttempt,
     ReviewQueue,
     RuntimeCleanupAudit,
@@ -25,37 +25,107 @@ from app.models import (
     WorkerRuntimeResourceSample,
 )
 from app.services._common import _now
+from app.timezone import as_beijing
+from app.services.task_center.runtime_retention_policy import (
+    DEFAULT_RUNTIME_ACTION_RETENTION_POLICY,
+    PROTECTED_ATTEMPT_STATUSES,
+    RetentionCandidate,
+    RuntimeActionRetentionPolicy,
+    candidate_fingerprint,
+    terminal_reason_code,
+)
+from app.services.task_center.runtime_retention_summary import (
+    summarize_actions,
+    summarize_terminal_actions,
+    upsert_daily_stats,
+    upsert_terminal_stats,
+)
 
 RUNTIME_DETAIL_CLEANUP_KIND = "runtime_details"
+RUNTIME_DETAIL_BATCH_KIND = "runtime_detail_batch"
 RUNTIME_METRIC_CLEANUP_KIND = "runtime_metric_snapshots"
-TERMINAL_ACTION_STATUSES = ("success", "failed", "skipped")
 RESOURCE_ROLLUP_SECONDS = 300
+
+
+@dataclass(frozen=True)
+class _RetentionBatch:
+    rows: list
+    reasons: dict[str, str]
+    fingerprint: str
+    cutoffs: dict[str, datetime]
+    as_of: datetime
 
 
 def cleanup_runtime_details(
     session: Session,
     *,
-    retention_days: int = 5,
+    policy: RuntimeActionRetentionPolicy = DEFAULT_RUNTIME_ACTION_RETENTION_POLICY,
     today: date | None = None,
     batch_size: int = 100,
     now_value: datetime | None = None,
+    as_of: datetime | None = None,
+    expected_fingerprint: str = "",
+    audit_context: dict | None = None,
 ) -> int:
     """Summarize, audit, and delete one bounded batch of expired runtime details."""
 
-    retention_days = max(1, int(retention_days or 5))
     batch_size = max(1, int(batch_size or 100))
     now_value = now_value or _now()
-    today = today or now_value.date()
-    cutoff_date = today - timedelta(days=retention_days)
-    cutoff_dt = datetime.combine(cutoff_date, datetime.min.time())
-    rows = _runtime_detail_batch(session, cutoff_dt, batch_size)
-    if not rows:
+    frozen_as_of = as_of or (datetime.combine(today, datetime.min.time()) if today else now_value)
+    batch = _prepare_retention_batch(
+        session,
+        policy=policy,
+        as_of=frozen_as_of,
+        batch_size=batch_size,
+        expected_fingerprint=expected_fingerprint,
+    )
+    if batch is None:
         return 0
-    stats = _summarize_actions(rows)
-    for key, value in stats.items():
-        _upsert_stat(session, key, value)
-    action_ids = [row.id for row in rows]
-    status_counts = Counter(str(row.status or "unknown") for row in rows)
+    return _apply_retention_batch(
+        session,
+        batch=batch,
+        policy=policy,
+        batch_size=batch_size,
+        now_value=now_value,
+        audit_context=audit_context,
+    )
+
+
+def _prepare_retention_batch(
+    session: Session,
+    *,
+    policy: RuntimeActionRetentionPolicy,
+    as_of: datetime,
+    batch_size: int,
+    expected_fingerprint: str,
+) -> _RetentionBatch | None:
+    cutoffs = policy.cutoffs(as_of)
+    rows = _runtime_detail_batch(session, cutoffs, batch_size)
+    if not rows:
+        return None
+    reasons, protected_attempts = _attempt_analysis(session, rows)
+    if protected_attempts:
+        raise RuntimeError(f"runtime_retention_protected_attempt:{protected_attempts[0]}")
+    fingerprint = _candidate_fingerprint(rows, reasons)
+    if expected_fingerprint and fingerprint != expected_fingerprint:
+        raise RuntimeError("runtime_retention_candidate_fingerprint_drift")
+    return _RetentionBatch(rows, reasons, fingerprint, cutoffs, as_of)
+
+
+def _apply_retention_batch(
+    session: Session,
+    *,
+    batch: _RetentionBatch,
+    policy: RuntimeActionRetentionPolicy,
+    batch_size: int,
+    now_value: datetime,
+    audit_context: dict | None,
+) -> int:
+    action_ids = [row.id for row in batch.rows]
+    terminal_stats = summarize_terminal_actions(batch.rows, batch.reasons)
+    upsert_daily_stats(session, summarize_actions(batch.rows))
+    upsert_terminal_stats(session, terminal_stats)
+    status_counts = Counter(str(row.status or "unknown") for row in batch.rows)
     attempt_count = session.scalar(select(func.count(ExecutionAttempt.id)).where(ExecutionAttempt.action_id.in_(action_ids))) or 0
     review_count = session.scalar(select(func.count(ReviewQueue.id)).where(ReviewQueue.action_id.in_(action_ids))) or 0
     reference_counts = _remove_action_references(session, action_ids)
@@ -64,7 +134,7 @@ def cleanup_runtime_details(
     session.execute(delete(Action).where(Action.id.in_(action_ids)))
     session.add(
         RuntimeCleanupAudit(
-            cleanup_date=cutoff_date,
+            cleanup_date=as_beijing(batch.as_of).date(),
             status_counts=dict(status_counts),
             deleted_counts={
                 "actions": len(action_ids),
@@ -73,9 +143,17 @@ def cleanup_runtime_details(
                 **reference_counts,
             },
             summary={
-                "retention_days": retention_days,
-                "cutoff_date": cutoff_date.isoformat(),
+                "cleanup_kind": RUNTIME_DETAIL_BATCH_KIND,
+                "policy_version": policy.version,
+                "retention_days": policy.retention_days(),
+                "cutoffs": {status: cutoff.isoformat() for status, cutoff in batch.cutoffs.items()},
+                "as_of": batch.as_of.isoformat(),
+                "candidate_fingerprint": batch.fingerprint,
+                "candidate_count": len(action_ids),
+                "candidate_ids": action_ids if audit_context else [],
                 "batch_size": batch_size,
+                "typed_summary_count": sum(terminal_stats.values()),
+                **(audit_context or {}),
             },
             created_at=now_value,
         )
@@ -86,13 +164,12 @@ def cleanup_runtime_details(
 def cleanup_runtime_details_if_due(
     session: Session,
     *,
-    retention_days: int = 5,
+    policy: RuntimeActionRetentionPolicy = DEFAULT_RUNTIME_ACTION_RETENTION_POLICY,
     batch_size: int = 100,
     interval_seconds: int = 300,
     now_value: datetime | None = None,
 ) -> int:
     now_value = now_value or _now()
-    retention_days = max(1, int(retention_days or 5))
     batch_size = max(1, int(batch_size or 100))
     interval_seconds = max(1, int(interval_seconds or 300))
     latest = _latest_runtime_cleanup_at(session, RUNTIME_DETAIL_CLEANUP_KIND)
@@ -100,10 +177,10 @@ def cleanup_runtime_details_if_due(
         return 0
     deleted = cleanup_runtime_details(
         session,
-        retention_days=retention_days,
-        today=now_value.date(),
+        policy=policy,
         batch_size=batch_size,
         now_value=now_value,
+        as_of=now_value,
     )
     session.add(
         RuntimeCleanupAudit(
@@ -112,7 +189,8 @@ def cleanup_runtime_details_if_due(
             deleted_counts={RUNTIME_DETAIL_CLEANUP_KIND: deleted},
             summary={
                 "cleanup_kind": RUNTIME_DETAIL_CLEANUP_KIND,
-                "retention_days": retention_days,
+                "policy_version": policy.version,
+                "retention_days": policy.retention_days(),
                 "batch_size": batch_size,
                 "interval_seconds": interval_seconds,
             },
@@ -122,7 +200,13 @@ def cleanup_runtime_details_if_due(
     return deleted
 
 
-def _runtime_detail_batch(session: Session, cutoff_dt: datetime, batch_size: int) -> list:
+def _runtime_detail_batch(
+    session: Session,
+    cutoffs: dict[str, datetime],
+    batch_size: int,
+    *,
+    lock: bool = True,
+) -> list:
     age = func.coalesce(Action.executed_at, Action.scheduled_at, Action.created_at)
     target_dimension = func.coalesce(
         Action.payload["operation_target_id"].as_string(),
@@ -138,21 +222,68 @@ def _runtime_detail_batch(session: Session, cutoff_dt: datetime, batch_size: int
             Action.task_id,
             Action.account_id,
             Action.task_type,
+            Action.action_type,
             Action.status,
+            Action.result,
             Action.executed_at,
             Action.scheduled_at,
             Action.created_at,
+            age.label("age_at"),
             target_dimension,
         )
         .where(
-            age < cutoff_dt,
-            Action.status.in_(TERMINAL_ACTION_STATUSES),
+            or_(*(
+                and_(Action.status == status, age < cutoff)
+                for status, cutoff in cutoffs.items()
+            )),
         )
         .order_by(age.asc(), Action.created_at.asc(), Action.id.asc())
         .limit(batch_size)
-        .with_for_update(of=Action, skip_locked=True)
     )
+    if lock:
+        statement = statement.with_for_update(of=Action, skip_locked=True)
     return list(session.execute(statement))
+
+
+def _attempt_analysis(session: Session, rows: list) -> tuple[dict[str, str], list[str]]:
+    action_ids = [row.id for row in rows]
+    if not action_ids:
+        return {}, []
+    attempts = session.execute(
+        select(
+            ExecutionAttempt.action_id,
+            ExecutionAttempt.status,
+            ExecutionAttempt.failure_type,
+        )
+        .where(ExecutionAttempt.action_id.in_(action_ids))
+        .order_by(ExecutionAttempt.action_id, ExecutionAttempt.attempt_no.desc())
+    )
+    failure_by_action_id: dict[str, str] = {}
+    protected_attempts: list[str] = []
+    for attempt in attempts:
+        if attempt.status in PROTECTED_ATTEMPT_STATUSES:
+            protected_attempts.append(f"{attempt.action_id}:{attempt.status}")
+        if attempt.failure_type and attempt.action_id not in failure_by_action_id:
+            failure_by_action_id[attempt.action_id] = attempt.failure_type
+    reasons = {
+        row.id: terminal_reason_code(row.result, failure_by_action_id.get(row.id, ""))
+        for row in rows
+    }
+    return reasons, protected_attempts
+
+
+def _candidate_fingerprint(rows: list, reasons: dict[str, str]) -> str:
+    candidates = [
+        RetentionCandidate(
+            id=row.id,
+            status=row.status,
+            age_at=row.age_at,
+            action_type=row.action_type,
+            reason_code=reasons[row.id],
+        )
+        for row in rows
+    ]
+    return candidate_fingerprint(candidates)
 
 
 def _remove_action_references(session: Session, action_ids: list[str]) -> dict[str, int]:
@@ -395,72 +526,7 @@ def _elapsed_seconds(start: datetime, end: datetime) -> float:
     return (end - start).total_seconds()
 
 
-def _summarize_actions(actions: list) -> dict[tuple[date, str, str, str], int]:
-    stats: dict[tuple[date, str, str, str], int] = defaultdict(int)
-    for action in actions:
-        stat_date = _action_date(action)
-        status = str(action.status or "unknown")
-        _add(stats, stat_date, "global", "all", "total", 1)
-        _add(stats, stat_date, "global", "all", f"status.{status}", 1)
-        _add(stats, stat_date, "task", action.task_id or "", "total", 1)
-        _add(stats, stat_date, "task", action.task_id or "", f"status.{status}", 1)
-        if action.account_id is not None:
-            _add(stats, stat_date, "account", str(action.account_id), "total", 1)
-            _add(stats, stat_date, "account", str(action.account_id), f"status.{status}", 1)
-        if action.task_type:
-            _add(stats, stat_date, "task_type", action.task_type, "total", 1)
-            _add(stats, stat_date, "task_type", action.task_type, f"status.{status}", 1)
-        target_id = str(action.target_dimension or "")
-        if target_id:
-            _add(stats, stat_date, "target", target_id, "total", 1)
-            _add(stats, stat_date, "target", target_id, f"status.{status}", 1)
-        if status in {"unknown_after_send", "executing", "claiming", "pending", "retryable_failed"}:
-            _add(stats, stat_date, "global", "all", "window_deleted_unresolved", 1)
-    return dict(stats)
-
-
-def _add(stats: dict[tuple[date, str, str, str], int], stat_date: date, dimension_type: str, dimension_id: str, metric_name: str, value: int) -> None:
-    stats[(stat_date, dimension_type, dimension_id, metric_name)] += int(value or 0)
-
-
-def _upsert_stat(session: Session, key: tuple[date, str, str, str], value: int) -> None:
-    stat_date, dimension_type, dimension_id, metric_name = key
-    timestamp = _now()
-    statement = _daily_stat_insert(session).values(
-        stat_date=stat_date,
-        dimension_type=dimension_type,
-        dimension_id=dimension_id,
-        metric_name=metric_name,
-        metric_value=int(value or 0),
-        updated_at=timestamp,
-    )
-    statement = statement.on_conflict_do_update(
-        index_elements=[
-            DailyRuntimeStat.stat_date,
-            DailyRuntimeStat.dimension_type,
-            DailyRuntimeStat.dimension_id,
-            DailyRuntimeStat.metric_name,
-        ],
-        set_={
-            "metric_value": DailyRuntimeStat.metric_value + statement.excluded.metric_value,
-            "updated_at": timestamp,
-        },
-    )
-    session.execute(statement)
-
-
-def _daily_stat_insert(session: Session):
-    dialect = session.get_bind().dialect.name
-    if dialect == "postgresql":
-        return pg_insert(DailyRuntimeStat)
-    if dialect == "sqlite":
-        return sqlite_insert(DailyRuntimeStat)
-    raise RuntimeError(f"unsupported runtime retention dialect: {dialect}")
-
-
-def _action_date(action) -> date:
-    value = action.executed_at or action.scheduled_at or action.created_at or _now()
-    return value.date()
-
-
-__all__ = ["cleanup_runtime_details", "cleanup_runtime_details_if_due"]
+__all__ = [
+    "cleanup_runtime_details",
+    "cleanup_runtime_details_if_due",
+]
