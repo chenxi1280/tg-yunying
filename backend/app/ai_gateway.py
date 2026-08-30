@@ -141,18 +141,10 @@ MODEL_ALIASES = {
     "minimax-m2.7-highspeed": "MiniMax-M2.7-highspeed",
     "minimax m2.5": "MiniMax-M2.5",
     "minimax-m2.5": "MiniMax-M2.5",
-    "gemini 3.7 flash": "gemini-3.7-flash",
-    "gemini-3.7-flash": "gemini-3.7-flash",
-    "gemini 3.6 flash": "gemini-3.6-flash",
-    "gemini-3.6-flash": "gemini-3.6-flash",
-    "gemini 3.5 flash": "gemini-3.5-flash",
-    "gemini-3.5-flash": "gemini-3.5-flash",
     "gemini 3.5 flash medium": "gemini-3.5-flash-medium",
     "gemini-3.5-flash-medium": "gemini-3.5-flash-medium",
     "gemini 3.1 pro low": "gemini-3.1-pro-low",
     "gemini-3.1-pro-low": "gemini-3.1-pro-low",
-    "antigravity gemini 3.7 flash": "gemini-3.7-flash",
-    "antigravity-gemini-3.7-flash": "gemini-3.7-flash",
 }
 DEFAULT_AI_REQUEST_TIMEOUT_SECONDS = 30
 IMAGE_VERIFICATION_MAX_TOKENS = 512
@@ -321,8 +313,8 @@ class AiGateway:
         topic: str,
         tone: str,
         persona_set: list[str],
-        temperature: float,
-        max_tokens: int,
+        temperature: float | None,
+        max_tokens: int | None,
         material_ids: list[int] | None = None,
         selected_account_ids: list[int] | None = None,
         system_prompt: str | None = None,
@@ -335,6 +327,7 @@ class AiGateway:
                 material_ids=material_ids, selected_account_ids=selected_account_ids,
             )
         if credentials.provider_type == "antigravity_cli":
+            self._require_antigravity_parameters_omitted(temperature, max_tokens)
             return self._generate_antigravity_drafts(
                 credentials, prompt, count=count, persona_set=persona_set,
                 material_ids=material_ids, system_prompt=system_prompt,
@@ -342,6 +335,8 @@ class AiGateway:
             )
         if credentials.provider_type != "openai_compatible":
             raise RuntimeError(f"unsupported ai provider type: {credentials.provider_type}")
+        if temperature is None or max_tokens is None:
+            raise RuntimeError("openai_provider_sampling_parameters_required")
         return self._generate_openai_drafts(
             credentials, prompt, count=count, persona_set=persona_set,
             material_ids=material_ids, temperature=temperature,
@@ -356,8 +351,8 @@ class AiGateway:
         count: int,
         persona_set: list[str],
         material_ids: list[int] | None,
-        temperature: float,
-        max_tokens: int,
+        temperature: float | None,
+        max_tokens: int | None,
         system_prompt: str | None,
         timeout: int,
     ) -> AiGenerationResult:
@@ -434,6 +429,7 @@ class AiGateway:
         不静默降级为行文本。载荷合法性由调用方按 MessageBrief 契约校验。
         """
         if credentials.provider_type == "antigravity_cli":
+            self._require_antigravity_parameters_omitted(temperature, max_tokens)
             response = self._post_antigravity(
                 credentials,
                 prompt,
@@ -445,6 +441,8 @@ class AiGateway:
             return response.payload, response.usage
         if credentials.provider_type != "openai_compatible":
             raise RuntimeError(f"unsupported ai provider type: {credentials.provider_type}")
+        if temperature is None or max_tokens is None:
+            raise RuntimeError("openai_provider_sampling_parameters_required")
         raw, usage = self._post_openai_compatible(
             credentials,
             prompt,
@@ -463,6 +461,21 @@ class AiGateway:
                 "AI provider returned malformed structured JSON",
                 usage=usage,
             ) from exc
+
+    def _require_antigravity_parameters_omitted(
+        self,
+        temperature: float | None,
+        max_tokens: int | None,
+    ) -> None:
+        unsupported = []
+        if temperature is not None:
+            unsupported.append("temperature")
+        if max_tokens is not None:
+            unsupported.append("max_tokens")
+        if unsupported:
+            raise RuntimeError(
+                "unsupported_provider_parameter:" + ",".join(unsupported)
+            )
 
     def _parse_candidates_with_retry(
         self,
@@ -559,10 +572,9 @@ class AiGateway:
         from app.services.antigravity_provider_client import AntigravityProviderClient
 
         stable_id = request_id or str(uuid.uuid4())
-        model_hash = hashlib.sha256(credentials.model_name.encode("utf-8")).hexdigest()[:12]
         return AntigravityProviderClient().generate(
             credentials,
-            request_id=f"{stable_id}-{model_hash}",
+            request_id=stable_id,
             system_prompt=system_prompt,
             user_prompt=prompt,
             json_schema=json_schema,

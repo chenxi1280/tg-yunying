@@ -55,6 +55,7 @@ AI_PROVIDER_QUOTA_EXHAUSTED_MARKERS = (
     "token plan",
     "购买积分补充用量",
     "token_limit_exceeded",
+    "antigravity_quota_limited",
 )
 
 
@@ -112,6 +113,7 @@ def generate_with_provider_candidates(
             request=request,
             policy=policy,
             has_more=candidate != providers[-1],
+            priority=priority,
         )
         _record_draft_attempt(
             session, candidate, credentials, request=request, policy=policy,
@@ -152,6 +154,9 @@ def _record_draft_attempt(
         session, config, candidate, purpose=policy.purpose, priority=priority,
         model_name=str(getattr(credentials, "model_name", "") or candidate.model_name or ""),
         request_text=f"{request.system_prompt or ''}\n{request.prompt}",
+        provider_request_id=_candidate_request_id(
+            request, candidate.id, priority, credentials,
+        ),
         outcome="success" if outcome.result else "failed",
         error_code=_candidate_error_code(outcome.error), latency_ms=clock.latency_ms(), usage=usage,
     )
@@ -235,6 +240,7 @@ def attempt_provider_draft(
     request: ProviderDraftRequest,
     policy: ProviderCandidatePolicy,
     has_more: bool,
+    priority: int = 1,
 ) -> DraftAttemptOutcome:
     route_bound = bool(policy.route_provider_ids)
     try:
@@ -242,7 +248,9 @@ def attempt_provider_draft(
     except ProviderAdmissionBlocked as exc:
         return DraftAttemptOutcome(None, exc, route_bound, True)
     try:
-        result = generate_provider_drafts(candidate, credentials, request, lease=lease)
+        result = generate_provider_drafts(
+            candidate, credentials, request, lease=lease, priority=priority,
+        )
         return DraftAttemptOutcome(result, None, False, False)
     except ProviderAdmissionBlocked as exc:
         return DraftAttemptOutcome(None, exc, route_bound, has_more)
@@ -260,6 +268,10 @@ def provider_draft_failure(
     policy: ProviderCandidatePolicy,
     has_more: bool,
 ) -> DraftAttemptOutcome:
+    from app.services.antigravity_provider_client import AntigravityProviderResultUnknown
+
+    if isinstance(error, AntigravityProviderResultUnknown):
+        return DraftAttemptOutcome(None, error, False, False)
     if is_ai_provider_quota_exhausted(error):
         mark_provider_quota_exhausted(candidate, error)
         if policy.close_transaction_before_external:
@@ -282,7 +294,9 @@ def generate_provider_drafts(
     request: ProviderDraftRequest,
     *,
     lease: ProviderProbeLease | None,
+    priority: int = 1,
 ) -> AiGenerationResult:
+    antigravity = getattr(credentials, "provider_type", "") == "antigravity_cli"
     try:
         result = ai_gateway.generate_drafts(
             credentials,
@@ -291,11 +305,13 @@ def generate_provider_drafts(
             topic=request.topic,
             tone=request.tone,
             persona_set=list(request.persona_set),
-            temperature=request.temperature,
-            max_tokens=request.max_tokens,
+            temperature=None if antigravity else request.temperature,
+            max_tokens=None if antigravity else request.max_tokens,
             system_prompt=request.system_prompt,
             timeout=request.timeout,
-            request_id=request.request_id,
+            request_id=_candidate_request_id(
+                request, provider.id, priority, credentials,
+            ),
         )
     except AiProviderRateLimited as exc:
         defer_rate_limited_provider(provider, lease, exc)
@@ -304,6 +320,20 @@ def generate_provider_drafts(
         raise
     settle_provider_success(lease)
     return result
+
+
+def _candidate_request_id(
+    request: ProviderDraftRequest,
+    provider_id: int,
+    priority: int,
+    credentials: AiProviderCredentials,
+) -> str:
+    if not request.request_id:
+        return ""
+    model = str(credentials.model_name or "")
+    route_item = f"provider:{provider_id}:priority:{priority}:model:{model}"
+    item_hash = hashlib.sha256(route_item.encode("utf-8")).hexdigest()[:20]
+    return f"{request.request_id}:i{item_hash}"
 
 
 def defer_rate_limited_provider(

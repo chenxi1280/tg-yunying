@@ -178,6 +178,7 @@ class AiProviderAttempt(Base):
     model_name: Mapped[str] = mapped_column(String(120))
     priority: Mapped[int] = mapped_column(Integer)
     attempt_index: Mapped[int] = mapped_column(Integer)
+    provider_request_id: Mapped[str] = mapped_column(String(200), default="")
     request_hash: Mapped[str] = mapped_column(String(64))
     outcome: Mapped[str] = mapped_column(String(40))
     error_code: Mapped[str] = mapped_column(String(80), default="")

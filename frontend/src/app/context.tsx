@@ -512,6 +512,7 @@ export function AppProvider({ children }: AppProviderProps) {
   } = createSystemActions({
     adminUserForm,
     aiProviderForm,
+    aiProviders,
     currentUser,
     developerAppForm,
     promptTemplateForm,

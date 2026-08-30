@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 import time
 from difflib import SequenceMatcher
@@ -1173,7 +1174,11 @@ def _request_group_provider_candidates(
             _content_max_tokens(setting.max_tokens, count, purpose),
             bundle.system_prompt,
             AI_CONTENT_REQUEST_TIMEOUT_SECONDS,
-            _provider_request_id(config, purpose, stage),
+            _provider_request_id(
+                config,
+                purpose,
+                stage,
+            ),
         ),
         policy=_ProviderCandidatePolicy(
             model_name,
@@ -1199,9 +1204,27 @@ def _request_group_provider_candidates(
     return result, started_at
 
 
-def _provider_request_id(config: dict, purpose: str, stage: str) -> str:
+def _provider_request_id(
+    config: dict,
+    purpose: str,
+    stage: str,
+) -> str:
     job_id = str(config.get("_generation_job_id") or "")
-    return f"{job_id}:{purpose}:{stage or 'primary'}" if job_id else ""
+    if not job_id:
+        return ""
+    invocation_key = str(config.get("_ai_provider_invocation_key") or "")
+    if not invocation_key:
+        slot_ids = [
+            str(slot.get("slot_id") or "")
+            for slot in (config.get("generation_slots") or ())
+            if str(slot.get("slot_id") or "")
+        ]
+        if not slot_ids:
+            raise RuntimeError("ai_provider_invocation_key_missing")
+        invocation_key = f"draft:slots:{','.join(slot_ids)}:attempt:1"
+    request_hash = hashlib.sha256(invocation_key.encode("utf-8")).hexdigest()[:24]
+    revision = int(config.get("_ai_provider_route_set_revision") or 0)
+    return f"agy:{job_id}:{purpose}:{stage or 'primary'}:r{revision}:{request_hash}"
 
 
 def _generate_grok_stage(

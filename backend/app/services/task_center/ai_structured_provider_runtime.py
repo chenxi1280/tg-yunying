@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
@@ -49,7 +50,14 @@ class StructuredProviderRequest:
 
     def request_id(self) -> str:
         job_id = str(self.config.get("_generation_job_id") or "")
-        return f"{job_id}:{self.purpose}:{self.stage or 'primary'}" if job_id else ""
+        if not job_id:
+            return ""
+        invocation_key = str(self.config.get("_ai_provider_invocation_key") or "")
+        if not invocation_key:
+            raise RuntimeError("ai_provider_invocation_key_missing")
+        invocation_hash = hashlib.sha256(invocation_key.encode("utf-8")).hexdigest()[:24]
+        revision = int(self.config.get("_ai_provider_route_set_revision") or 0)
+        return f"agy:{job_id}:{self.purpose}:{self.stage or 'primary'}:r{revision}:{invocation_hash}"
 
 
 @dataclass(frozen=True)
@@ -150,33 +158,30 @@ def attempt_structured_candidate(
     has_more: bool,
 ) -> StructuredAttemptOutcome:
     clock = ProviderAttemptClock.start()
+    provider_request_id = _candidate_request_id(
+        request, candidate.id, priority, model_name,
+    )
     try:
         lease = begin_provider_call(candidate)
     except ProviderAdmissionBlocked as exc:
-        record_attempt(
-            session, request, candidate,
-            priority=priority, model_name=model_name, clock=clock,
-            outcome="admission_blocked", error=exc,
+        return _structured_admission_blocked_outcome(
+            session, candidate, request=request, priority=priority,
+            model_name=model_name, clock=clock, error=exc, failover=True,
         )
-        return StructuredAttemptOutcome(None, exc, route_bound(request), True)
     try:
-        payload, usage = call_structured_provider(lease, credentials, request)
+        payload, usage = call_structured_provider(
+            lease, credentials, request, provider_request_id=provider_request_id,
+        )
     except ProviderAdmissionBlocked as exc:
-        record_attempt(
-            session, request, candidate,
-            priority=priority, model_name=model_name, clock=clock,
-            outcome="admission_blocked", error=exc,
+        return _structured_admission_blocked_outcome(
+            session, candidate, request=request, priority=priority,
+            model_name=model_name, clock=clock, error=exc,
+            failover=route_bound(request) and has_more,
         )
-        return StructuredAttemptOutcome(None, exc, route_bound(request), route_bound(request) and has_more)
     except Exception as exc:
-        record_attempt(
-            session, request, candidate,
-            priority=priority, model_name=model_name, clock=clock,
-            outcome="failed", error=exc,
-            usage=getattr(exc, "usage", None),
-        )
-        return structured_failure_outcome(
-            session, candidate, request=request, error=exc, has_more=has_more,
+        return _structured_failed_outcome(
+            session, candidate, request=request, priority=priority,
+            model_name=model_name, clock=clock, error=exc, has_more=has_more,
         )
     record_attempt(
         session, request, candidate,
@@ -191,6 +196,46 @@ def attempt_structured_candidate(
     )
 
 
+def _structured_admission_blocked_outcome(
+    session: Session,
+    candidate: AiProvider,
+    *,
+    request: StructuredProviderRequest,
+    priority: int,
+    model_name: str,
+    clock: ProviderAttemptClock,
+    error: Exception,
+    failover: bool,
+) -> StructuredAttemptOutcome:
+    record_attempt(
+        session, request, candidate,
+        priority=priority, model_name=model_name, clock=clock,
+        outcome="admission_blocked", error=error,
+    )
+    return StructuredAttemptOutcome(None, error, route_bound(request), failover)
+
+
+def _structured_failed_outcome(
+    session: Session,
+    candidate: AiProvider,
+    *,
+    request: StructuredProviderRequest,
+    priority: int,
+    model_name: str,
+    clock: ProviderAttemptClock,
+    error: Exception,
+    has_more: bool,
+) -> StructuredAttemptOutcome:
+    record_attempt(
+        session, request, candidate,
+        priority=priority, model_name=model_name, clock=clock,
+        outcome="failed", error=error, usage=getattr(error, "usage", None),
+    )
+    return structured_failure_outcome(
+        session, candidate, request=request, error=error, has_more=has_more,
+    )
+
+
 def structured_failure_outcome(
     session: Session,
     candidate: AiProvider,
@@ -199,15 +244,19 @@ def structured_failure_outcome(
     error: Exception,
     has_more: bool,
 ) -> StructuredAttemptOutcome:
+    from app.services.antigravity_provider_client import AntigravityProviderResultUnknown
+
+    if isinstance(error, AntigravityProviderResultUnknown):
+        return StructuredAttemptOutcome(None, error, False, False)
+    if is_ai_provider_quota_exhausted(error):
+        mark_provider_quota_exhausted(candidate, error)
+        if bool(request.config.get("_close_db_transaction_before_ai")):
+            session.add(candidate)
+            session.commit()
+        return StructuredAttemptOutcome(None, error, route_bound(request), has_more)
     if route_bound(request) and route_transport_failure(error):
         return StructuredAttemptOutcome(None, error, True, True)
-    if not is_ai_provider_quota_exhausted(error):
-        return StructuredAttemptOutcome(None, error, False, False)
-    mark_provider_quota_exhausted(candidate, error)
-    if bool(request.config.get("_close_db_transaction_before_ai")):
-        session.add(candidate)
-        session.commit()
-    return StructuredAttemptOutcome(None, error, False, has_more)
+    return StructuredAttemptOutcome(None, error, False, False)
 
 
 def record_attempt(
@@ -230,6 +279,9 @@ def record_attempt(
         priority=priority,
         model_name=model_name,
         request_text=f"{request.system_prompt}\n{request.user_prompt}",
+        provider_request_id=_candidate_request_id(
+            request, candidate.id, priority, model_name,
+        ),
         outcome=outcome,
         error_code=type(error).__name__ if error else "",
         latency_ms=clock.latency_ms(),
@@ -241,17 +293,19 @@ def call_structured_provider(
     lease: ProviderProbeLease,
     credentials: AiProviderCredentials,
     request: StructuredProviderRequest,
+    *,
+    provider_request_id: str,
 ) -> tuple[object, AiUsage]:
     try:
         payload, usage = ai_gateway.generate_structured(
             credentials,
             request.user_prompt,
-            temperature=request.temperature,
-            max_tokens=request.max_tokens,
+            temperature=None,
+            max_tokens=None,
             system_prompt=request.system_prompt,
             timeout=AI_CONTENT_REQUEST_TIMEOUT_SECONDS,
-            request_id=request.request_id(),
-            json_schema=antigravity_schema_for_purpose(request.purpose),
+            request_id=provider_request_id,
+            json_schema=antigravity_schema_for_purpose(request.purpose, request.config),
         )
     except ProviderAdmissionBlocked:
         raise
@@ -260,6 +314,20 @@ def call_structured_provider(
         raise
     settle_provider_success(lease)
     return payload, usage
+
+
+def _candidate_request_id(
+    request: StructuredProviderRequest,
+    provider_id: int,
+    priority: int,
+    model_name: str,
+) -> str:
+    request_id = request.request_id()
+    if not request_id:
+        return ""
+    route_item = f"provider:{provider_id}:priority:{priority}:model:{model_name}"
+    item_hash = hashlib.sha256(route_item.encode("utf-8")).hexdigest()[:20]
+    return f"{request_id}:i{item_hash}"
 
 
 def route_bound(request: StructuredProviderRequest) -> bool:

@@ -38,6 +38,18 @@ ALLOWED_PURPOSES = frozenset({
     "offline_pairwise_eval",
     *REALIZE_PURPOSE_BY_MODE.values(),
 })
+ANTIGRAVITY_GENERATION_PURPOSES = frozenset({
+    GROUP_ROUTE_PURPOSE,
+    *REALIZE_PURPOSE_BY_MODE.values(),
+})
+ANTIGRAVITY_GENERATION_PURPOSE_ORDER = (
+    GROUP_ROUTE_PURPOSE,
+    "group_realize_general",
+    "group_realize_adult_visual",
+    "group_realize_adult_product",
+    "group_realize_adult_service_inquiry",
+    "group_realize_adult_service_sensory",
+)
 
 
 class ProviderRouteUnavailable(RuntimeError):

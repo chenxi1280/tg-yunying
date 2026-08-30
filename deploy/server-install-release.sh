@@ -13,6 +13,7 @@ RELEASES_DIR="${RELEASES_DIR:-${BASE_DIR}/releases}"
 INCOMING_DIR="${INCOMING_DIR:-${BASE_DIR}/incoming}"
 BACKUP_DIR="${BACKUP_DIR:-${BASE_DIR}/backups}"
 KEEP_RELEASES="${KEEP_RELEASES:-5}"
+ANTIGRAVITY_SLOT_LOCK_FILE="${ANTIGRAVITY_SLOT_LOCK_FILE:-/run/lock/tgyunying-antigravity-provider.lock}"
 
 usage() {
   cat <<'EOF'
@@ -167,14 +168,21 @@ run_post_deploy_checks() {
 }
 
 require_command docker
-prepare_shared_layout
-bootstrap_shared_env
-upgrade_legacy_runtime_cleanup_interval
-
+exec 8>"${ANTIGRAVITY_SLOT_LOCK_FILE}"
+if ! flock -n 8; then
+  echo "ANTIGRAVITY_SLOT_OPERATION_LOCKED=${ANTIGRAVITY_SLOT_LOCK_FILE}" >&2
+  exit 1
+fi
 if [[ ! -f "${RELEASE_DIR}/docker-compose.server.yml" ]]; then
   echo "Release directory is invalid: ${RELEASE_DIR}" >&2
   exit 1
 fi
+
+bash "${RELEASE_DIR}/deploy/antigravity-slot-release-plan.sh" >/dev/null
+
+prepare_shared_layout
+bootstrap_shared_env
+upgrade_legacy_runtime_cleanup_interval
 
 echo "==> Deploying release ${RELEASE_ID}"
 echo "==> Release directory: ${RELEASE_DIR}"
@@ -192,12 +200,9 @@ mv -Tf "${CURRENT_LINK}.tmp" "$CURRENT_LINK"
 run_post_deploy_checks
 prune_old_releases
 
+BASE_DIR="${BASE_DIR}" RELEASE_DIR="${RELEASE_DIR}" \
+ANTIGRAVITY_SLOT_LOCK_HELD=1 \
+  bash "${RELEASE_DIR}/deploy/restart-antigravity-provider-slots.sh"
+
 echo "Release ${RELEASE_ID} is live"
 echo "current -> $(readlink -f "$CURRENT_LINK")"
-
-for slot_unit in /etc/systemd/system/tgyunying-antigravity-slot-*.service; do
-  [[ -f "${slot_unit}" ]] || continue
-  unit_name="$(basename "${slot_unit}")"
-  systemctl restart "${unit_name}"
-  systemctl is-active --quiet "${unit_name}"
-done

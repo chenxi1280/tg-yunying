@@ -172,6 +172,7 @@ def realize_message_content(
     *,
     history_lines: list[str],
     rejection_feedback: str = "",
+    realization_attempt: int = 1,
     realizer: BriefRealizer | None = None,
     reviewer: SemanticReviewer | None = None,
 ) -> tuple[str, dict, int]:
@@ -182,6 +183,7 @@ def realize_message_content(
     content, meta, tokens, voice, facts = _realize_draft(
         session, tenant_id, config, plan=plan, history_lines=history_lines,
         rejection_feedback=rejection_feedback,
+        realization_attempt=realization_attempt,
         realizer=realizer or _default_realizer,
     )
     lexical_evidence = _validate_lexical_grounding(
@@ -191,6 +193,7 @@ def realize_message_content(
         session, tenant_id, config, plan=plan, content=content,
         facts=facts, voice=voice, reviewer=reviewer or _default_reviewer,
         draft_tokens=tokens,
+        realization_attempt=realization_attempt,
     )
     meta["lexical_grounding"] = lexical_evidence
     meta["semantic_review"] = semantic_review
@@ -238,11 +241,13 @@ def _review_realized_content(
     voice: dict,
     reviewer: SemanticReviewer,
     draft_tokens: int,
+    realization_attempt: int = 1,
 ) -> tuple[dict, int]:
     try:
         return _run_semantic_review(
             session, tenant_id, config, plan=plan, content=content,
             facts=facts, voice=voice, reviewer=reviewer,
+            realization_attempt=realization_attempt,
         )
     except TwoStageRealizeError as exc:
         raise TwoStageRealizeError(
@@ -260,6 +265,7 @@ def _realize_draft(
     plan: TwoStagePlan,
     history_lines: list[str],
     rejection_feedback: str,
+    realization_attempt: int,
     realizer: BriefRealizer,
 ) -> tuple[str, dict, int, dict, dict[str, str]]:
     voice = load_voice_profile(session, tenant_id, plan.account_id)
@@ -271,7 +277,7 @@ def _realize_draft(
         reply_preview=plan.reply_preview,
         rejection_feedback=rejection_feedback,
     )
-    realizer_config = _realizer_config(config, plan.brief)
+    realizer_config = _realizer_config(config, plan.brief, realization_attempt)
     system_prompt = (
         v2_realizer_system_prompt(plan.brief)
         if isinstance(plan.brief, MessageBriefV2)
@@ -289,9 +295,19 @@ def _realize_draft(
     return content, meta, int(tokens or 0), voice, facts
 
 
-def _realizer_config(config: dict, brief: MessageBrief) -> dict:
+def _realizer_config(config: dict, brief: MessageBrief, attempt_index: int) -> dict:
     content_mode = str(getattr(brief, "content_mode", "") or "general")
-    return {**config, "_ai_content_mode": content_mode}
+    invocation_key = f"realizer:{brief.slot_id}:attempt:{attempt_index}"
+    return {
+        **config,
+        "_ai_content_mode": content_mode,
+        "_ai_provider_invocation_key": invocation_key,
+        "_ai_provider_realizer_contract": {
+            "speech_act": brief.speech_act,
+            "anchor_ids": list(brief.anchor_ids),
+            "voice_profile_version": brief.voice_profile_version,
+        },
+    }
 
 
 
@@ -306,11 +322,18 @@ def _run_semantic_review(
     facts: dict[str, str],
     voice: dict,
     reviewer: SemanticReviewer,
+    realization_attempt: int,
 ) -> tuple[dict, int]:
+    reviewer_config = {
+        **config,
+        "_ai_provider_invocation_key": (
+            f"reviewer:{plan.slot_id}:attempt:{realization_attempt}"
+        ),
+    }
     payload, tokens = reviewer(
         session,
         tenant_id,
-        config,
+        reviewer_config,
         system_prompt=SEMANTIC_REVIEW_SYSTEM_PROMPT,
         user_prompt=_semantic_review_prompt(plan, content, facts=facts, voice=voice),
     )

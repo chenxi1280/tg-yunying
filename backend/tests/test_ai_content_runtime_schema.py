@@ -67,6 +67,7 @@ def test_v2_tables_and_generation_columns_are_registered() -> None:
         "provider_route_snapshots",
         "window_slot_id",
     } <= columns
+    assert "provider_request_id" in Base.metadata.tables["ai_provider_attempts"].columns
     assert OPEN_GENERATION_JOB_PREDICATE == "state IN ('pending','generating','unknown')"
 
 

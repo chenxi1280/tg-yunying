@@ -19,30 +19,30 @@ from urllib.parse import unquote, urlparse
 
 try:
     from scripts.antigravity_provider_ledger import LedgerRecord, RequestLedger
+    from scripts.antigravity_provider_protocol import BridgeError, parse_cli_output
 except ModuleNotFoundError:  # Direct host execution from backend/scripts.
     from antigravity_provider_ledger import LedgerRecord, RequestLedger
+    from antigravity_provider_protocol import BridgeError, parse_cli_output
 
 
 PRIMARY_MODEL = "gemini-3.5-flash-medium"
 SECONDARY_MODEL = "gemini-3.1-pro-low"
+BRIDGE_VERSION = "2"
 ALLOWED_MODELS = frozenset({PRIMARY_MODEL, SECONDARY_MODEL})
 MAX_BODY_BYTES = 1_000_000
 PROCESS_GRACE_SECONDS = 20
 PROCESS_TERMINATE_SECONDS = 5
-USAGE_FIELDS = (
-    "input_tokens",
-    "output_tokens",
-    "thinking_tokens",
-    "cache_read_tokens",
-    "total_tokens",
-)
+HEALTH_PROBE_MAX_AGE_SECONDS = 300
+CLI_ENVIRONMENT_KEYS = frozenset({
+    "HOME", "PATH", "LANG", "TMPDIR", "USER", "LOGNAME", "SHELL",
+    "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME",
+    "SSL_CERT_FILE", "SSL_CERT_DIR", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+    "http_proxy", "https_proxy", "no_proxy",
+})
 
 
-class BridgeError(RuntimeError):
-    def __init__(self, code: str, status: int) -> None:
-        self.code = code
-        self.status = status
-        super().__init__(code)
+class ProcessResultUnknown(RuntimeError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -60,17 +60,26 @@ class AntigravityRuntime:
         self.config = config
         self.ledger = RequestLedger(config.ledger_path, config.ledger_key)
         self.capacity = threading.Lock()
+        self.last_confirmed_at: float | None = None
+        self.last_terminal_code = "not_probed"
+        self.confirmed_models: set[str] = set()
+        self.cli_version = _detect_cli_version(config.agy_bin)
 
     def generate(self, payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         request_id, request_hash = self._validate(payload)
         existing = self.ledger.get(request_id)
         if existing is not None:
-            return self._existing(existing, request_hash)
+            if existing.request_hash != request_hash:
+                raise BridgeError("antigravity_request_id_reused", HTTPStatus.CONFLICT)
+            if existing.state == "not_started":
+                existing = self.ledger.reclaim(request_id, request_hash)
+            else:
+                return self._existing(existing, request_hash)
         if not self.capacity.acquire(blocking=False):
             raise BridgeError("antigravity_capacity_busy", HTTPStatus.TOO_MANY_REQUESTS)
         try:
             record = self.ledger.start(request_id, request_hash)
-            if record.state != "started" or record.response is not None:
+            if record.state != "claimed" or record.response is not None:
                 return self._existing(record, request_hash)
             return self._execute(request_id, payload)
         finally:
@@ -83,12 +92,36 @@ class AntigravityRuntime:
         return self._record_response(record)
 
     def health(self) -> dict[str, Any]:
+        probe_age = None
+        if self.last_confirmed_at is not None:
+            probe_age = max(0, round(time.time() - self.last_confirmed_at, 3))
+        binary_ready = self.config.agy_bin.is_file()
+        probe_fresh = probe_age is not None and probe_age <= HEALTH_PROBE_MAX_AGE_SECONDS
+        model_visibility = {
+            model: model in self.confirmed_models for model in sorted(ALLOWED_MODELS)
+        }
+        ready = (
+            binary_ready
+            and self.cli_version not in {"missing", "unavailable"}
+            and probe_fresh
+            and self.last_terminal_code == "confirmed"
+            and all(model_visibility.values())
+        )
         return {
-            "status": "ok",
+            "status": "ready" if ready else "degraded",
+            "bridge_version": BRIDGE_VERSION,
             "slot_id": self.config.slot_id,
-            "binary_ready": self.config.agy_bin.is_file(),
+            "binary_ready": binary_ready,
+            "cli_version": self.cli_version,
             "inflight": self.capacity.locked(),
-            "models": [PRIMARY_MODEL, SECONDARY_MODEL],
+            "process_state": "busy" if self.capacity.locked() else "idle",
+            "auth_probe_age_seconds": probe_age,
+            "schema_probe_age_seconds": probe_age,
+            "last_terminal_code": self.last_terminal_code,
+            "confirmed_models": sorted(self.confirmed_models),
+            "model_visibility": model_visibility,
+            "probe_max_age_seconds": HEALTH_PROBE_MAX_AGE_SECONDS,
+            "quota_limited": self.last_terminal_code == "antigravity_quota_limited",
         }
 
     def _validate(self, payload: dict[str, Any]) -> tuple[str, str]:
@@ -110,7 +143,7 @@ class AntigravityRuntime:
     def _execute(self, request_id: str, payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         started = time.monotonic()
         try:
-            completed = self._run_cli(payload)
+            completed = self._run_cli(request_id, payload)
             response = self._parse_cli(request_id, payload, completed, started)
         except subprocess.TimeoutExpired:
             self.ledger.settle(
@@ -118,19 +151,87 @@ class AntigravityRuntime:
                 state="unknown",
                 error_code="antigravity_provider_result_unknown",
             )
-            return HTTPStatus.ACCEPTED, {
-                "request_id": request_id,
-                "state": "unknown",
-                "error_code": "antigravity_provider_result_unknown",
-            }
+            return self._unknown_result(request_id)
+        except ProcessResultUnknown:
+            return self._unknown_result(request_id)
+        except OSError as exc:
+            return self._handle_os_error(request_id, exc)
         except BridgeError as exc:
-            self.ledger.settle(request_id, state="failed", error_code=exc.code)
+            self.last_terminal_code = exc.code
+            terminal_state = exc.state if exc.state in {"not_started", "unknown"} else "failed"
+            self.ledger.settle(request_id, state=terminal_state, error_code=exc.code)
+            if exc.state == "unknown":
+                return HTTPStatus.ACCEPTED, {
+                    "request_id": request_id,
+                    "state": "unknown",
+                    "error_code": exc.code,
+                }
             raise
         self.ledger.settle(request_id, state="confirmed", response=response)
+        self.last_confirmed_at = time.time()
+        self.last_terminal_code = "confirmed"
+        self.confirmed_models.add(str(payload["model"]))
         return HTTPStatus.OK, response
 
-    def _run_cli(self, payload: dict[str, Any]) -> subprocess.CompletedProcess[str]:
+    def _unknown_result(self, request_id: str) -> tuple[int, dict[str, Any]]:
+        self.last_terminal_code = "antigravity_provider_result_unknown"
+        return HTTPStatus.ACCEPTED, {
+            "request_id": request_id,
+            "state": "unknown",
+            "error_code": "antigravity_provider_result_unknown",
+        }
+
+    def _handle_os_error(
+        self,
+        request_id: str,
+        error: OSError,
+    ) -> tuple[int, dict[str, Any]]:
+        record = self.ledger.get(request_id)
+        if record is not None and record.state == "started":
+            self.ledger.settle(
+                request_id,
+                state="unknown",
+                error_code="antigravity_provider_result_unknown",
+            )
+            return self._unknown_result(request_id)
+        code = (
+            "antigravity_binary_missing"
+            if isinstance(error, FileNotFoundError)
+            else "antigravity_process_start_failed"
+        )
+        self.ledger.settle(request_id, state="not_started", error_code=code)
+        self.last_terminal_code = code
+        raise BridgeError(code, HTTPStatus.SERVICE_UNAVAILABLE) from error
+
+    def _run_cli(
+        self,
+        request_id: str,
+        payload: dict[str, Any],
+    ) -> subprocess.CompletedProcess[str]:
         timeout = int(payload["timeout_seconds"])
+        command = self._cli_command(payload, timeout)
+        prompt = self._prompt(payload)
+        command.extend(("-p", prompt))
+        with tempfile.TemporaryDirectory(prefix=f"agy-{self.config.slot_id}-") as workdir:
+            process = subprocess.Popen(
+                command,
+                cwd=workdir,
+                env=_cli_environment(),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                shell=False,
+                start_new_session=True,
+            )
+            self._mark_process_started(request_id, process)
+            try:
+                stdout, stderr = process.communicate(timeout=timeout + PROCESS_GRACE_SECONDS)
+            except subprocess.TimeoutExpired as exc:
+                self._terminate(process)
+                raise exc
+        return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+    def _cli_command(self, payload: dict[str, Any], timeout: int) -> list[str]:
         command = [
             str(self.config.agy_bin),
             "--sandbox",
@@ -146,24 +247,23 @@ class AntigravityRuntime:
         ]
         if payload["model"] == PRIMARY_MODEL:
             command.extend(("--effort", "medium"))
-        prompt = self._prompt(payload)
-        command.extend(("-p", prompt))
-        with tempfile.TemporaryDirectory(prefix=f"agy-{self.config.slot_id}-") as workdir:
-            process = subprocess.Popen(
-                command,
-                cwd=workdir,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                shell=False,
-                start_new_session=True,
-            )
+        return command
+
+    def _mark_process_started(self, request_id: str, process) -> None:  # noqa: ANN001
+        try:
+            self.ledger.mark_started(request_id, process.pid)
+        except Exception as exc:
+            settle_error: Exception | None = None
             try:
-                stdout, stderr = process.communicate(timeout=timeout + PROCESS_GRACE_SECONDS)
-            except subprocess.TimeoutExpired as exc:
-                self._terminate(process)
-                raise exc
-        return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+                self.ledger.settle(
+                    request_id,
+                    state="unknown",
+                    error_code="antigravity_provider_result_unknown",
+                )
+            except Exception as ledger_exc:
+                settle_error = ledger_exc
+            self._terminate(process)
+            raise ProcessResultUnknown from settle_error or exc
 
     def _prompt(self, payload: dict[str, Any]) -> str:
         system = str(payload.get("system_prompt") or "").strip()
@@ -171,12 +271,18 @@ class AntigravityRuntime:
         return f"System instructions:\n{system}\n\nUser request:\n{user}".strip()
 
     def _terminate(self, process: subprocess.Popen[str]) -> None:
-        os.killpg(process.pid, signal.SIGTERM)
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except (ProcessLookupError, OSError):
+            return
         try:
             process.communicate(timeout=PROCESS_TERMINATE_SECONDS)
         except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGKILL)
-            process.communicate()
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.communicate()
+            except (ProcessLookupError, OSError):
+                return
 
     def _parse_cli(
         self,
@@ -185,47 +291,8 @@ class AntigravityRuntime:
         completed: subprocess.CompletedProcess[str],
         started: float,
     ) -> dict[str, Any]:
-        envelope = self._load_object(completed.stdout)
-        if completed.returncode != 0 or envelope.get("status") != "SUCCESS":
-            raise BridgeError(
-                self._classify_failure(envelope, completed.stderr),
-                HTTPStatus.UNPROCESSABLE_ENTITY,
-            )
-        structured = envelope.get("structured_output")
-        if not isinstance(structured, dict):
-            raise BridgeError("antigravity_schema_missing", HTTPStatus.UNPROCESSABLE_ENTITY)
-        usage = dict(envelope.get("usage") or {})
-        return {
-            "request_id": request_id,
-            "state": "confirmed",
-            "slot_id": self.config.slot_id,
-            "model": str(payload["model"]),
-            "structured_output": structured,
-            "usage": {field: int(usage.get(field) or 0) for field in USAGE_FIELDS},
-            "duration_seconds": round(time.monotonic() - started, 3),
-            "num_turns": int(envelope.get("num_turns") or 0),
-        }
-
-    def _load_object(self, raw: str) -> dict[str, Any]:
-        try:
-            payload = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise BridgeError("antigravity_invalid_envelope", HTTPStatus.UNPROCESSABLE_ENTITY) from exc
-        if not isinstance(payload, dict):
-            raise BridgeError("antigravity_invalid_envelope", HTTPStatus.UNPROCESSABLE_ENTITY)
-        return payload
-
-    def _classify_failure(self, envelope: dict[str, Any], stderr: str) -> str:
-        detail = " ".join((str(envelope.get("error") or ""), stderr)).lower()
-        if "not eligible" in detail or "eligibility check failed" in detail:
-            return "antigravity_account_ineligible"
-        if "authentication" in detail or "sign in" in detail or "log in" in detail:
-            return "antigravity_auth_required"
-        if "quota" in detail or "rate limit" in detail or "credits" in detail:
-            return "antigravity_quota_limited"
-        if "model" in detail and ("invalid" in detail or "not recognized" in detail):
-            return "antigravity_model_invalid"
-        return "antigravity_cli_exit_nonzero"
+        response = parse_cli_output(request_id, payload, completed, started)
+        return {**response, "slot_id": self.config.slot_id}
 
     def _existing(self, record: LedgerRecord, request_hash: str) -> tuple[int, dict[str, Any]]:
         if record.request_hash != request_hash:
@@ -235,6 +302,23 @@ class AntigravityRuntime:
     def _record_response(self, record: LedgerRecord) -> tuple[int, dict[str, Any]]:
         if record.state == "confirmed" and record.response is not None:
             return HTTPStatus.OK, record.response
+        if record.state == "claimed":
+            self.ledger.settle(
+                record.request_id,
+                state="unknown",
+                error_code="antigravity_provider_result_unknown",
+            )
+            return HTTPStatus.ACCEPTED, {
+                "request_id": record.request_id,
+                "state": "unknown",
+                "error_code": "antigravity_provider_result_unknown",
+            }
+        if record.state == "not_started":
+            return HTTPStatus.UNPROCESSABLE_ENTITY, {
+                "request_id": record.request_id,
+                "state": "not_started",
+                "error_code": record.error_code,
+            }
         status = HTTPStatus.ACCEPTED if record.state in {"started", "unknown"} else HTTPStatus.UNPROCESSABLE_ENTITY
         return status, {
             "request_id": record.request_id,
@@ -274,7 +358,7 @@ class Handler(BaseHTTPRequestHandler):
             payload = self._read_payload()
             status, body = self.runtime.generate(payload)
         except BridgeError as exc:
-            self._send(exc.status, {"state": "not_started", "error_code": exc.code})
+            self._send(exc.status, {"state": exc.state, "error_code": exc.code})
             return
         self._send(status, body)
 
@@ -308,6 +392,31 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, _format: str, *_args) -> None:
         return
+
+
+def _detect_cli_version(path: Path) -> str:
+    if not path.is_file():
+        return "missing"
+    try:
+        completed = subprocess.run(
+            [str(path), "--version"],
+            capture_output=True,
+            env=_cli_environment(),
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return "unavailable"
+    output = str(completed.stdout or completed.stderr or "").strip().splitlines()
+    return output[0][:80] if output else "unavailable"
+
+
+def _cli_environment() -> dict[str, str]:
+    return {
+        key: value for key, value in os.environ.items()
+        if key in CLI_ENVIRONMENT_KEYS or key.startswith("LC_")
+    }
 
 
 def config_from_env() -> BridgeConfig:

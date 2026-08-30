@@ -72,6 +72,7 @@ def test_provider_attempt_records_split_usage_and_cost() -> None:
         priority=1,
         model_name="model-a",
         request_text="prompt",
+        provider_request_id="agy:job-1:realizer:slot-1",
         outcome="success",
         usage=AiUsage(
             prompt_tokens=100,
@@ -88,6 +89,7 @@ def test_provider_attempt_records_split_usage_and_cost() -> None:
     assert row.cached_tokens == 20
     assert row.cost_amount == pytest.approx(0.4)
     assert row.currency == "CNY"
+    assert row.provider_request_id == "agy:job-1:realizer:slot-1"
 
 
 def test_legacy_provider_attempt_allows_explicit_empty_route() -> None:

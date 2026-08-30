@@ -306,8 +306,9 @@ export function AppModals() {
       <div className="modal-body">
           <div className="policy-grid">
             <label>默认模型<Select<number | ''> value={selectedAiProviderId || ''} disabled={!aiProviders.length} onChange={(value) => setSelectedAiProviderId(Number(value) || '')} options={aiProviders.filter((provider) => provider.credential_enabled && provider.is_active && provider.health_status === '健康').map((provider) => ({ value: provider.id, label: `${provider.provider_name} / ${provider.model_name}` }))} /></label>
-            <label>温度<InputNumber min={0} max={2} step={0.1} value={tenantAiSetting.temperature} onChange={(value) => setTenantAiSetting({ ...tenantAiSetting, temperature: Number(value ?? 0) })} /></label>
-            <label>最大 Token<InputNumber min={128} max={tenantAiMaxTokensLimit(selectedAiProvider)} value={tenantAiSetting.max_tokens} onChange={(value) => setTenantAiSetting({ ...tenantAiSetting, max_tokens: Number(value ?? 128) })} /></label>
+            <label>温度<InputNumber disabled={selectedAiProvider?.provider_type === 'antigravity_cli'} min={0} max={2} step={0.1} value={tenantAiSetting.temperature} onChange={(value) => setTenantAiSetting({ ...tenantAiSetting, temperature: Number(value ?? 0) })} /></label>
+            <label>最大 Token<InputNumber disabled={selectedAiProvider?.provider_type === 'antigravity_cli'} min={128} max={tenantAiMaxTokensLimit(selectedAiProvider)} value={tenantAiSetting.max_tokens} onChange={(value) => setTenantAiSetting({ ...tenantAiSetting, max_tokens: Number(value ?? 128) })} /></label>
+            {selectedAiProvider?.provider_type === 'antigravity_cli' && <Typography.Text type="secondary">Antigravity 不接收温度和最大 Token 参数，保存时不会提交这两个字段。</Typography.Text>}
             <Checkbox checked={tenantAiSetting.ai_enabled} onChange={(event) => setTenantAiSetting({ ...tenantAiSetting, ai_enabled: event.target.checked })}>启用 AI 内容生成</Checkbox>
             <Checkbox checked={tenantAiSetting.fallback_to_mock} onChange={(event) => setTenantAiSetting({ ...tenantAiSetting, fallback_to_mock: event.target.checked })}>失败回退模板</Checkbox>
             <Checkbox checked={tenantAiSetting.ai_group_model_fallback_enabled} onChange={(event) => setTenantAiSetting({ ...tenantAiSetting, ai_group_model_fallback_enabled: event.target.checked })}>AI 活群启用 M2.5 回退</Checkbox>

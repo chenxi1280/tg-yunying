@@ -265,12 +265,13 @@ def _realize_two_stage_plan(
         return _two_stage_rejected(QUALITY_WAIT, detail, plan.slot_id, index), 0
     feedback = ""
     spent_tokens = 0
-    for _attempt in range(TWO_STAGE_REALIZE_ATTEMPTS):
+    for attempt_index in range(1, TWO_STAGE_REALIZE_ATTEMPTS + 1):
         result, spent = _realize_two_stage_attempt(
             runtime,
             plan,
             index,
             feedback=feedback,
+            attempt_index=attempt_index,
         )
         spent_tokens += spent
         if not result.rejection_code:
@@ -291,6 +292,7 @@ def _realize_two_stage_attempt(
     index: int,
     *,
     feedback: str,
+    attempt_index: int,
 ) -> tuple[SlotGenerationResult, int]:
     _require_provider_attempt_budget(runtime.request)
     try:
@@ -298,6 +300,7 @@ def _realize_two_stage_attempt(
             runtime.session, runtime.request.tenant_id, runtime.request.config, plan,
             history_lines=runtime.history_lines,
             rejection_feedback=feedback,
+            realization_attempt=attempt_index,
             realizer=runtime.dependencies.brief_realizer,
             reviewer=runtime.dependencies.semantic_reviewer,
         )

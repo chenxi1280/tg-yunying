@@ -11,13 +11,9 @@ name: Production AI Provider Failover
           - providers-preview
           - providers-apply
           - provider-check
-          - default-preview
-          - default-apply
-          - route-preview
-          - route-apply
-          - cutover-preview
-          - cutover-apply
-          - readback
+          - generation-cutover-preview
+          - generation-cutover-apply
+          - generation-readback
       deployed_sha:
         description: Expected production release SHA
         required: true
@@ -30,11 +26,6 @@ name: Production AI Provider Failover
       provider_ids:
         description: Ordered comma-separated provider IDs
         required: true
-        type: string
-      purpose:
-        description: Exact provider route purpose
-        required: true
-        default: group_realize_general
         type: string
       expected_fingerprint:
         description: Exact preview fingerprint for apply
@@ -76,7 +67,6 @@ jobs:
           EXPECTED_SHA: ${{ inputs.deployed_sha }}
           TENANT_ID: ${{ inputs.tenant_id }}
           PROVIDER_IDS: ${{ inputs.provider_ids }}
-          PURPOSE: ${{ inputs.purpose }}
           EXPECTED_FINGERPRINT: ${{ inputs.expected_fingerprint }}
           ACTOR: ${{ inputs.actor }}
           APPROVAL_REF: ${{ inputs.approval_ref }}
@@ -85,11 +75,10 @@ jobs:
           test -n "${SSH_PRIVATE_KEY}"
           test -n "${DEPLOY_HOST}"
           test -n "${DEPLOY_USER}"
-          [[ "${OPERATION}" =~ ^(providers-preview|providers-apply|provider-check|default-preview|default-apply|route-preview|route-apply|cutover-preview|cutover-apply|readback)$ ]]
-          [[ "${EXPECTED_SHA}" =~ ^[0-9a-fA-F]{8,40}$ ]]
+          [[ "${OPERATION}" =~ ^(providers-preview|providers-apply|provider-check|generation-cutover-preview|generation-cutover-apply|generation-readback)$ ]]
+          [[ "${EXPECTED_SHA}" =~ ^[0-9a-fA-F]{40}$ ]]
           [[ "${TENANT_ID}" =~ ^[1-9][0-9]*$ ]]
           [[ "${PROVIDER_IDS}" =~ ^[1-9][0-9]*(,[1-9][0-9]*)+$ ]]
-          [[ "${PURPOSE}" =~ ^[a-z0-9_]{1,64}$ ]]
           [[ "${ACTOR}" =~ ^[A-Za-z0-9._@+-]{1,100}$ ]]
           if [[ -n "${APPROVAL_REF}" ]]; then
             [[ "${APPROVAL_REF}" =~ ^[A-Za-z0-9._:/#-]{1,160}$ ]]
@@ -136,25 +125,35 @@ jobs:
           EXPECTED_SHA: ${{ inputs.deployed_sha }}
         run: |
           set -euo pipefail
+          git fetch --no-tags origin master release
+          [[ "$(git rev-parse origin/master)" == "${EXPECTED_SHA}" ]]
+          [[ "$(git rev-parse origin/release)" == "${EXPECTED_SHA}" ]]
           CURRENT="$(ssh production "readlink -f '${BASE_DIR:-/data/tgyunying}/current'")"
           [[ "$(basename "${CURRENT}")" == *_"${EXPECTED_SHA:0:8}" ]]
-          ssh production 'set -euo pipefail
-            for name in tgyunying-backend tgyunying-worker-ai-generation
+          CURRENT_SHA="$(ssh production "sed -n 's/^RELEASE_SHA=//p' '${BASE_DIR:-/data/tgyunying}/current/.image.env'")"
+          [[ "${CURRENT_SHA}" == "${EXPECTED_SHA}" ]]
+          ssh production "set -euo pipefail
+            for name in tgyunying-backend \
+              tgyunying-worker-ai-generation \
+              tgyunying-worker-ai-generation-2 \
+              tgyunying-worker-ai-generation-3
             do
-              state="$(docker inspect --format "{{.State.Status}}/{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}" "${name}")"
-              echo "AI_PROVIDER_FAILOVER_CONTAINER=${name}:${state}"
-              [[ "${state}" == running/healthy ]]
-            done'
+              state=\$(docker inspect --format '{{.State.Status}}/{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "\${name}")
+              sha=\$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "\${name}" | sed -n 's/^RELEASE_SHA=//p')
+              echo AI_PROVIDER_FAILOVER_CONTAINER=\${name}:\${state}:\${sha}
+              [[ "\${state}" == running/healthy ]]
+              [[ "\${sha}" == '${EXPECTED_SHA}' ]]
+            done"
 
       - name: Run guarded provider failover operation
         env:
           OPERATION: ${{ inputs.operation }}
+          EXPECTED_SHA: ${{ inputs.deployed_sha }}
           TENANT_ID: ${{ inputs.tenant_id }}
           PROVIDER_IDS: ${{ inputs.provider_ids }}
           EXPECTED_FINGERPRINT: ${{ inputs.expected_fingerprint }}
           ACTOR: ${{ inputs.actor }}
           APPROVAL_REF: ${{ inputs.approval_ref }}
-          PURPOSE: ${{ inputs.purpose }}
         run: |
           set -euo pipefail
           provider_args=''
@@ -172,4 +171,4 @@ jobs:
           fi
           ssh production "timeout 240 docker exec -i tgyunying-backend python -m scripts.configure_ai_provider_failover \
             '${OPERATION}' --tenant-id '${TENANT_ID}' ${provider_args} ${apply_args} \
-            --actor '${ACTOR}' --purpose '${PURPOSE}' ${approval_args}"
+            --actor '${ACTOR}' --deployed-sha '${EXPECTED_SHA}' ${approval_args}"

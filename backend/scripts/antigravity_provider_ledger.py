@@ -11,6 +11,11 @@ from pathlib import Path
 
 from cryptography.fernet import Fernet, InvalidToken
 
+try:
+    from scripts.antigravity_provider_schema import initialize_request_ledger_schema
+except ModuleNotFoundError:  # Direct host execution from the immutable runtime.
+    from antigravity_provider_schema import initialize_request_ledger_schema
+
 
 @dataclass(frozen=True)
 class LedgerRecord:
@@ -19,6 +24,7 @@ class LedgerRecord:
     state: str
     response: dict | None
     error_code: str
+    pid: int | None
 
 
 class RequestLedger:
@@ -33,7 +39,7 @@ class RequestLedger:
     def get(self, request_id: str) -> LedgerRecord | None:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT request_id, request_hash, state, response_ciphertext, error_code "
+                "SELECT request_id, request_hash, state, response_ciphertext, error_code, pid "
                 "FROM requests WHERE request_id = ?",
                 (request_id,),
             ).fetchone()
@@ -44,7 +50,7 @@ class RequestLedger:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT request_id, request_hash, state, response_ciphertext, error_code "
+                "SELECT request_id, request_hash, state, response_ciphertext, error_code, pid "
                 "FROM requests WHERE request_id = ?",
                 (request_id,),
             ).fetchone()
@@ -56,12 +62,33 @@ class RequestLedger:
                 return record
             connection.execute(
                 "INSERT INTO requests "
-                "(request_id, request_hash, state, response_ciphertext, error_code, created_at, updated_at) "
-                "VALUES (?, ?, 'started', NULL, '', ?, ?)",
+                "(request_id, request_hash, state, response_ciphertext, error_code, pid, created_at, updated_at) "
+                "VALUES (?, ?, 'claimed', NULL, '', NULL, ?, ?)",
                 (request_id, request_hash, now, now),
             )
             connection.commit()
-        return LedgerRecord(request_id, request_hash, "started", None, "")
+        return LedgerRecord(request_id, request_hash, "claimed", None, "", None)
+
+    def reclaim(self, request_id: str, request_hash: str) -> LedgerRecord:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "UPDATE requests SET state = 'claimed', error_code = '', updated_at = ? "
+                "WHERE request_id = ? AND request_hash = ? AND state = 'not_started'",
+                (time.time(), request_id, request_hash),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("antigravity_request_reclaim_failed")
+        return LedgerRecord(request_id, request_hash, "claimed", None, "", None)
+
+    def mark_started(self, request_id: str, pid: int) -> None:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "UPDATE requests SET state = 'started', pid = ?, updated_at = ? "
+                "WHERE request_id = ? AND state = 'claimed'",
+                (pid, time.time(), request_id),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("antigravity_request_claim_lost")
 
     def settle(
         self,
@@ -75,18 +102,14 @@ class RequestLedger:
         with self._connect() as connection:
             connection.execute(
                 "UPDATE requests SET state = ?, response_ciphertext = ?, "
-                "error_code = ?, updated_at = ? WHERE request_id = ? AND state = 'started'",
+                "error_code = ?, updated_at = ? WHERE request_id = ? "
+                "AND state IN ('claimed', 'started')",
                 (state, ciphertext, error_code, time.time(), request_id),
             )
 
     def _initialize(self) -> None:
         with self._connect() as connection:
-            connection.execute(
-                "CREATE TABLE IF NOT EXISTS requests ("
-                "request_id TEXT PRIMARY KEY, request_hash TEXT NOT NULL, state TEXT NOT NULL, "
-                "response_ciphertext BLOB, error_code TEXT NOT NULL, "
-                "created_at REAL NOT NULL, updated_at REAL NOT NULL)"
-            )
+            initialize_request_ledger_schema(connection)
         os.chmod(self._path, 0o600)
 
     @contextmanager
@@ -123,6 +146,7 @@ class RequestLedger:
             state=str(row[2]),
             response=self._decrypt(row[3]),
             error_code=str(row[4] or ""),
+            pid=int(row[5]) if row[5] is not None else None,
         )
 
 

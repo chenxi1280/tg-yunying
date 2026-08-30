@@ -28,6 +28,7 @@ function errorText(error: unknown) {
 interface SystemActionParams {
   adminUserForm: AdminUserForm;
   aiProviderForm: { id: number | null; provider_type: string; provider_name: string; base_url: string; model_name: string; api_key: string; api_key_header: string; notes: string; credential_enabled: boolean; is_active: boolean };
+  aiProviders: AiProvider[];
   currentUser: CurrentUser | null;
   developerAppForm: { id: number | null; app_name: string; api_id: string; api_hash: string; max_accounts: number; notes: string; is_active: boolean };
   promptTemplateForm: { id: number | null; name: string; template_type: string; content: string; is_active: boolean };
@@ -303,6 +304,15 @@ export function createSystemActions(params: SystemActionParams) {
   }
 
   function tenantAiSettingPayload() {
+    const selectedProvider = params.aiProviders.find(
+      (provider) => provider.id === params.selectedAiProviderId,
+    );
+    const sampling = selectedProvider?.provider_type === 'antigravity_cli'
+      ? {}
+      : {
+          temperature: params.tenantAiSetting?.temperature,
+          max_tokens: params.tenantAiSetting?.max_tokens,
+        };
     return {
       default_provider_id: params.selectedAiProviderId || null,
       ai_enabled: params.tenantAiSetting?.ai_enabled,
@@ -311,8 +321,7 @@ export function createSystemActions(params: SystemActionParams) {
       ai_provider_route_fallback_enabled: params.tenantAiSetting?.ai_provider_route_fallback_enabled,
       ai_group_grok_fallback_enabled: params.tenantAiSetting?.ai_group_grok_fallback_enabled,
       ai_group_static_fallback_enabled: params.tenantAiSetting?.ai_group_static_fallback_enabled,
-      temperature: params.tenantAiSetting?.temperature,
-      max_tokens: params.tenantAiSetting?.max_tokens,
+      ...sampling,
     };
   }
 

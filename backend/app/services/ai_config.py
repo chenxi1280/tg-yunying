@@ -80,6 +80,7 @@ from app.schemas.ai_config import (
 from app.security import decrypt_secret, encrypt_secret
 
 from ._common import _now, ai_gateway, audit, gateway, require_tenant
+from .antigravity_provider_identity import canonical_antigravity_base_url
 from .avatar_material_import import AvatarSourceInput, new_avatar_material_source, prepare_avatar_source
 from .material_ingestion import URL_MATERIAL_TYPES, save_material_upload_temp, validate_material_url
 from .material_versions import record_material_asset_version, record_material_tg_ref_version, record_material_versions
@@ -100,7 +101,91 @@ MATERIAL_DELIVERY_MODES = {"download_reupload"}
 CUSTOM_EMOJI_PATTERN = re.compile(r"^custom_emoji:(?P<document_id>\d+):(?P<alt>.+)$")
 ZIP_IMAGE_MAX_BYTES = 500 * 1024
 AI_PROVIDER_RECHECK_REQUIRED = "供应商配置已变更，必须重新检查"
-AI_PROVIDER_IDENTITY_FIELDS = frozenset({"base_url", "model_name", "api_key", "api_key_header"})
+AI_PROVIDER_IDENTITY_FIELDS = frozenset({
+    "provider_type", "base_url", "model_name", "api_key", "api_key_header",
+})
+ANTIGRAVITY_INTERNAL_HOST = "host.docker.internal"
+ANTIGRAVITY_INTERNAL_PORTS = frozenset(range(18101, 18106))
+ANTIGRAVITY_MODELS = frozenset({
+    "gemini-3.5-flash-medium",
+    "gemini-3.1-pro-low",
+})
+
+
+def _validate_ai_provider_boundary(
+    provider_type: str,
+    base_url: str,
+    model_name: str,
+    api_key_header: str,
+) -> None:
+    if provider_type != "antigravity_cli":
+        return
+    parsed = urlparse(base_url)
+    approved_url = (
+        parsed.scheme == "http"
+        and parsed.hostname == ANTIGRAVITY_INTERNAL_HOST
+        and parsed.port in ANTIGRAVITY_INTERNAL_PORTS
+        and parsed.path.rstrip("/") == ""
+        and not parsed.params
+        and not parsed.query
+        and not parsed.fragment
+        and not parsed.username
+    )
+    if not approved_url:
+        raise ValueError("antigravity_base_url_not_approved")
+    if normalize_ai_model_name(model_name) not in ANTIGRAVITY_MODELS:
+        raise ValueError("antigravity_model_invalid")
+    if api_key_header != "Authorization":
+        raise ValueError("antigravity_api_key_header_invalid")
+
+
+def _validate_antigravity_bridge_credentials(
+    provider_type: str,
+    base_url: str,
+    model_name: str,
+    api_key: str,
+) -> None:
+    if provider_type != "antigravity_cli":
+        return
+    credentials = AiProviderCredentials(
+        provider_name="antigravity-validation",
+        provider_type=provider_type,
+        base_url=base_url,
+        model_name=normalize_ai_model_name(model_name),
+        api_key=api_key,
+        api_key_header="Authorization",
+    )
+    try:
+        ok, detail = ai_gateway.check(credentials)
+    except Exception as exc:
+        raise ValueError(f"antigravity_bridge_validation_failed:{exc}") from exc
+    if not ok:
+        raise ValueError(f"antigravity_bridge_validation_failed:{detail}")
+
+
+def _require_unique_antigravity_identity(
+    session: Session,
+    *,
+    provider_id: int | None,
+    provider_type: str,
+    base_url: str,
+    model_name: str,
+) -> None:
+    if provider_type != "antigravity_cli":
+        return
+    normalized_url = canonical_antigravity_base_url(base_url)
+    normalized_model = normalize_ai_model_name(model_name)
+    providers = session.scalars(select(AiProvider).where(
+        AiProvider.provider_type == "antigravity_cli",
+    ))
+    duplicate = next((
+        provider for provider in providers
+        if provider.id != provider_id
+        and canonical_antigravity_base_url(str(provider.base_url or "")) == normalized_url
+        and normalize_ai_model_name(provider.model_name) == normalized_model
+    ), None)
+    if duplicate is not None:
+        raise ValueError(f"antigravity_provider_identity_duplicate:{duplicate.id}")
 
 
 def _material_fingerprint(payload: MaterialCreate | MaterialUpdate, existing: Material | None = None) -> str:
@@ -356,6 +441,25 @@ def list_ai_providers(session: Session) -> list[AiProvider]:
 def create_ai_provider(session: Session, payload: AiProviderCreate, actor: str) -> AiProvider:
     if payload.is_active and not payload.credential_enabled:
         raise ValueError("active provider requires enabled credentials")
+    _validate_ai_provider_boundary(
+        payload.provider_type,
+        payload.base_url,
+        payload.model_name,
+        payload.api_key_header,
+    )
+    _require_unique_antigravity_identity(
+        session,
+        provider_id=None,
+        provider_type=payload.provider_type,
+        base_url=payload.base_url,
+        model_name=payload.model_name,
+    )
+    _validate_antigravity_bridge_credentials(
+        payload.provider_type,
+        payload.base_url,
+        payload.model_name,
+        payload.api_key,
+    )
     provider = AiProvider(
         provider_name=payload.provider_name,
         provider_type=payload.provider_type,
@@ -392,6 +496,35 @@ def update_ai_provider(session: Session, provider_id: int, payload: AiProviderUp
     data = payload.model_dump(exclude_unset=True)
     if data.get("model_name") is not None:
         data["model_name"] = normalize_ai_model_name(data["model_name"])
+    _validate_ai_provider_boundary(
+        str(data.get("provider_type", provider.provider_type)),
+        str(data.get("base_url", provider.base_url)),
+        str(data.get("model_name", provider.model_name)),
+        str(data.get("api_key_header", provider.api_key_header)),
+    )
+    _require_unique_antigravity_identity(
+        session,
+        provider_id=provider.id,
+        provider_type=str(data.get("provider_type", provider.provider_type)),
+        base_url=str(data.get("base_url", provider.base_url)),
+        model_name=str(data.get("model_name", provider.model_name)),
+    )
+    identity_changed = _validate_provider_update_credentials(provider, data)
+    _apply_provider_identity_update(provider, data)
+    _apply_provider_enabled_update(session, provider, data)
+    if identity_changed and provider.credential_enabled:
+        provider.health_status = AiProviderHealthStatus.UNHEALTHY.value
+        provider.last_error = AI_PROVIDER_RECHECK_REQUIRED
+    if data.get("is_active") is not None:
+        provider.is_active = data["is_active"]
+    provider.updated_at = _now()
+    audit(session, tenant_id=None, actor=actor, action="更新AI供应商", target_type="ai_provider", target_id=str(provider.id))
+    session.commit()
+    session.refresh(provider)
+    return provider
+
+
+def _apply_provider_identity_update(provider: AiProvider, data: dict) -> None:
     for field in ["provider_name", "provider_type", "base_url", "model_name", "api_key_header", "notes", "currency"]:
         if data.get(field) is not None:
             setattr(provider, field, data[field])
@@ -400,6 +533,13 @@ def update_ai_provider(session: Session, provider_id: int, payload: AiProviderUp
             setattr(provider, field, data[field])
     if data.get("api_key"):
         provider.api_key_ciphertext = encrypt_secret(data["api_key"])
+
+
+def _apply_provider_enabled_update(
+    session: Session,
+    provider: AiProvider,
+    data: dict,
+) -> None:
     next_credential_enabled = bool(data.get("credential_enabled", provider.credential_enabled))
     next_active = bool(data.get("is_active", provider.is_active))
     if next_active and not next_credential_enabled:
@@ -411,19 +551,23 @@ def update_ai_provider(session: Session, provider_id: int, payload: AiProviderUp
         if not next_credential_enabled:
             provider.health_status = AiProviderHealthStatus.DISABLED.value
             provider.last_error = ""
-    requires_recheck = bool(AI_PROVIDER_IDENTITY_FIELDS.intersection(data)) or (
+
+
+def _validate_provider_update_credentials(provider: AiProvider, data: dict) -> bool:
+    identity_changed = bool(AI_PROVIDER_IDENTITY_FIELDS.intersection(data)) or (
         data.get("credential_enabled") is True
     )
-    if next_credential_enabled and requires_recheck:
-        provider.health_status = AiProviderHealthStatus.UNHEALTHY.value
-        provider.last_error = AI_PROVIDER_RECHECK_REQUIRED
-    if data.get("is_active") is not None:
-        provider.is_active = data["is_active"]
-    provider.updated_at = _now()
-    audit(session, tenant_id=None, actor=actor, action="更新AI供应商", target_type="ai_provider", target_id=str(provider.id))
-    session.commit()
-    session.refresh(provider)
-    return provider
+    enabled = bool(data.get("credential_enabled", provider.credential_enabled))
+    if not identity_changed or not enabled:
+        return identity_changed
+    effective_key = str(data.get("api_key") or decrypt_secret(provider.api_key_ciphertext))
+    _validate_antigravity_bridge_credentials(
+        str(data.get("provider_type", provider.provider_type)),
+        str(data.get("base_url", provider.base_url)),
+        str(data.get("model_name", provider.model_name)),
+        effective_key,
+    )
+    return identity_changed
 
 
 def _require_provider_not_default(session: Session, provider_id: int) -> None:

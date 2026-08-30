@@ -52,12 +52,12 @@ def plan_message_briefs_with(
     total_tokens = 0
     recent: list[dict] = []
     plans: list[TwoStagePlan] = []
-    for _attempt in range(2):
+    for attempt_index in range(1, 3):
         prompt = _planner_prompt(slot_infos, fact_entries, recent, use_v2=use_v2)
         payload, tokens = planner(
             session,
             tenant_id,
-            config,
+            _planner_config(config, slot_infos, attempt_index),
             system_prompt=v2_planner_system_prompt() if use_v2 else BRIEF_PLANNER_SYSTEM_PROMPT,
             user_prompt=prompt,
             count=len(slot_infos),
@@ -74,6 +74,25 @@ def plan_message_briefs_with(
             return plans, total_tokens
         recent = [_shape(brief) for brief in briefs]
     return _mark_collapsed(plans), total_tokens
+
+
+def _planner_config(config: dict, slot_infos: list[dict], attempt_index: int) -> dict:
+    slot_ids = ",".join(str(item["slot_id"]) for item in slot_infos)
+    invocation_key = f"planner:slots:{slot_ids}:attempt:{attempt_index}"
+    planner_slots = [
+        {
+            "slot_id": item["slot_id"],
+            "reply_to_message_id": item.get("reply_to_message_id") or "",
+            "content_mode": item.get("content_mode") or "general",
+            "route_evidence_ids": list(item.get("route_evidence_ids") or ()),
+        }
+        for item in slot_infos
+    ]
+    return {
+        **config,
+        "_ai_provider_invocation_key": invocation_key,
+        "_ai_provider_planner_slots": planner_slots,
+    }
 
 
 def _brief_items(payload: object) -> list[object]:

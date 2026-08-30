@@ -6,6 +6,7 @@ import urllib.error
 import urllib.request
 import uuid
 from dataclasses import dataclass
+from dataclasses import replace
 from typing import Any
 
 from app.ai_gateway import AiProviderCredentials, AiUsage
@@ -17,6 +18,15 @@ ANTIGRAVITY_SECONDARY_MODEL = "gemini-3.1-pro-low"
 ANTIGRAVITY_MODELS = frozenset(
     {ANTIGRAVITY_PRIMARY_MODEL, ANTIGRAVITY_SECONDARY_MODEL}
 )
+ANTIGRAVITY_PRE_CALL_CODES = frozenset({
+    "antigravity_auth_required",
+    "antigravity_account_ineligible",
+    "antigravity_model_invalid",
+    "antigravity_quota_limited",
+    "antigravity_capacity_busy",
+    "antigravity_binary_missing",
+    "antigravity_process_start_failed",
+})
 
 
 class AntigravityProviderResultUnknown(RuntimeError):
@@ -79,6 +89,23 @@ class AntigravityProviderClient:
         *,
         timeout: float,
     ) -> tuple[bool, str]:
+        for model in sorted(ANTIGRAVITY_MODELS):
+            if not self._check_model(replace(credentials, model_name=model), timeout):
+                return False, f"antigravity_schema_invalid:{model}"
+        health = self._request(
+            credentials,
+            "/internal/v1/health",
+            method="GET",
+            payload=None,
+            timeout=timeout,
+        )
+        return self._validate_health(health)
+
+    def _check_model(
+        self,
+        credentials: AiProviderCredentials,
+        timeout: float,
+    ) -> bool:
         schema = {
             "type": "object",
             "properties": {"status": {"type": "string", "enum": ["ok"]}},
@@ -93,9 +120,28 @@ class AntigravityProviderClient:
             json_schema=schema,
             timeout=timeout,
         )
-        if response.payload != {"status": "ok"}:
-            return False, "antigravity_schema_invalid"
-        return True, "antigravity process/auth/model/schema ready"
+        return response.payload == {"status": "ok"}
+
+    def _validate_health(self, health: dict[str, Any]) -> tuple[bool, str]:
+        visibility = dict(health.get("model_visibility") or {})
+        expected_models = set(ANTIGRAVITY_MODELS)
+        probe_age = health.get("schema_probe_age_seconds")
+        max_age = health.get("probe_max_age_seconds")
+        ready = (
+            health.get("status") == "ready"
+            and health.get("binary_ready") is True
+            and str(health.get("cli_version") or "") not in {"", "missing", "unavailable"}
+            and health.get("process_state") == "idle"
+            and health.get("last_terminal_code") == "confirmed"
+            and health.get("quota_limited") is False
+            and expected_models == {model for model, visible in visibility.items() if visible}
+            and isinstance(probe_age, (int, float))
+            and isinstance(max_age, (int, float))
+            and probe_age <= max_age
+        )
+        if not ready:
+            return False, f"antigravity_health_not_ready:{health}"
+        return True, "antigravity process/auth/models/schema/health ready"
 
     def _request(
         self,
@@ -122,9 +168,13 @@ class AntigravityProviderClient:
             code = str(data.get("error_code") or f"antigravity_bridge_http_{exc.code}")
             if state in {"started", "unknown"} or exc.code == 202:
                 raise AntigravityProviderResultUnknown(code) from exc
-            if exc.code in {401, 409, 422}:
-                raise RuntimeError(code) from exc
-            raise AntigravityProviderPreCallError(code) from exc
+            if state == "not_started" and code in ANTIGRAVITY_PRE_CALL_CODES:
+                raise AntigravityProviderPreCallError(code) from exc
+            if exc.code >= 500:
+                raise AntigravityProviderResultUnknown(
+                    "antigravity_provider_result_unknown"
+                ) from exc
+            raise RuntimeError(code) from exc
         except (socket.timeout, TimeoutError) as exc:
             raise AntigravityProviderResultUnknown(
                 "antigravity_provider_result_unknown"
@@ -140,7 +190,7 @@ class AntigravityProviderClient:
 
     def _validate_model(self, model: str) -> None:
         if model not in ANTIGRAVITY_MODELS:
-            raise RuntimeError("antigravity_model_invalid")
+            raise AntigravityProviderPreCallError("antigravity_model_invalid")
 
     def _load_error(self, error: urllib.error.HTTPError) -> dict[str, Any]:
         try:

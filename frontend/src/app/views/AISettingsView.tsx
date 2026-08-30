@@ -167,15 +167,7 @@ export default function AISettingsView({
     }
   }
 
-  const displayedProviders = React.useMemo(() => {
-    const antigravityOnly = aiProviders.filter(
-      (p) =>
-        p.provider_name.toLowerCase().includes('antigravity') ||
-        p.model_name.toLowerCase().includes('gemini') ||
-        p.base_url.includes('18099'),
-    );
-    return antigravityOnly.length > 0 ? antigravityOnly : aiProviders;
-  }, [aiProviders]);
+  const displayedProviders = aiProviders;
 
   return (
     <section className="view-grid">
@@ -194,10 +186,7 @@ export default function AISettingsView({
             </Empty>
           )}
           {displayedProviders.map((provider) => {
-            const isAntigravity =
-              provider.provider_name.toLowerCase().includes('antigravity') ||
-              provider.model_name.toLowerCase().includes('gemini') ||
-              provider.base_url.includes('18099');
+            const isAntigravity = provider.provider_type === 'antigravity_cli';
             return (
               <Card className={`developer-card ${statusAccent(provider.credential_enabled ? provider.health_status : '禁用')}`} key={provider.id} size="small" title={provider.provider_name}>
                 <Space wrap>

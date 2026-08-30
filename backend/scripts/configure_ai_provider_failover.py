@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import argparse
 import hashlib
 import json
-from dataclasses import dataclass
+import os
 
 from sqlalchemy import func, select
 
@@ -17,27 +16,30 @@ from app.models import (
 )
 from app.services._common import _now, audit
 from app.services.ai_config import AI_PROVIDER_RECHECK_REQUIRED, check_ai_provider
+from scripts.ai_provider_failover_options import (
+    DEFAULT_ROUTE_PURPOSE,
+    GENERATION_OPERATIONS,
+    Options,
+    parse_options,
+)
+from scripts.configure_ai_provider_generation_cutover import (
+    provider_snapshot_row,
+    setting_snapshot_row,
+)
 
 
-DEFAULT_ROUTE_PURPOSE = "group_realize_general"
 ROUTE_PURPOSE = DEFAULT_ROUTE_PURPOSE
 SCRIPT_VERSION = "ai_provider_failover_v1"
 
 
-@dataclass(frozen=True)
-class Options:
-    operation: str
-    tenant_id: int
-    provider_ids: tuple[int, ...]
-    expected_fingerprint: str
-    actor: str
-    approval_ref: str
-    purpose: str = DEFAULT_ROUTE_PURPOSE
-
-
 def main() -> None:
     options = _options()
-    if options.operation == "provider-check":
+    if options.operation not in GENERATION_OPERATIONS and not options.operation.startswith("providers-") \
+            and options.operation != "provider-check":
+        _forbid_legacy_antigravity_operation(options)
+    if options.operation in GENERATION_OPERATIONS:
+        result = _generation_cutover_operation(options)
+    elif options.operation == "provider-check":
         result = _check_providers(options)
     elif options.operation.startswith("providers-"):
         result = _providers_operation(options)
@@ -50,53 +52,39 @@ def main() -> None:
     print(json.dumps(result, ensure_ascii=False, sort_keys=True, default=str))
 
 
+def _forbid_legacy_antigravity_operation(options: Options) -> None:
+    with SessionLocal() as session:
+        providers = _providers(session, options.provider_ids, lock=False)
+    if any(provider.provider_type == "antigravity_cli" for provider in providers):
+        raise RuntimeError("antigravity_generation_cutover_required")
+
+
 def _options() -> Options:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("operation", choices=(
-        "providers-preview", "providers-apply", "provider-check",
-        "default-preview", "default-apply",
-        "route-preview", "route-apply", "readback",
-        "cutover-preview", "cutover-apply",
-    ))
-    parser.add_argument("--tenant-id", type=int, required=True)
-    parser.add_argument("--provider-id", type=int, action="append", required=True)
-    parser.add_argument("--expected-fingerprint", default="")
-    parser.add_argument("--actor", default="codex-production-remediation")
-    parser.add_argument("--approval-ref", default="")
-    parser.add_argument("--purpose", default=DEFAULT_ROUTE_PURPOSE)
-    args = parser.parse_args()
-    provider_ids = tuple(dict.fromkeys(args.provider_id))
-    if len(provider_ids) < 2:
-        parser.error("at least two distinct --provider-id values are required")
-    if args.operation.endswith("apply") and (
-        len(args.expected_fingerprint) != 64 or not args.approval_ref
-    ):
-        parser.error("apply requires --expected-fingerprint and --approval-ref")
-    if args.operation == "provider-check" and not args.approval_ref:
-        parser.error("provider-check requires --approval-ref")
-    return Options(
-        args.operation,
-        args.tenant_id,
-        provider_ids,
-        args.expected_fingerprint,
-        args.actor,
-        args.approval_ref,
-        args.purpose,
-    )
+    return parse_options()
+
+
+def _generation_cutover_operation(options: Options) -> dict:
+    from scripts.configure_ai_provider_generation_cutover import run_generation_cutover
+
+    return run_generation_cutover(options, SessionLocal)
 
 
 def _providers_operation(options: Options) -> dict:
+    runtime_sha = _require_runtime_sha(options)
     apply = options.operation == "providers-apply"
     with SessionLocal() as session:
         providers = _providers(session, options.provider_ids, lock=apply)
-        snapshot = _providers_snapshot(options.tenant_id, providers)
+        snapshot = _providers_snapshot(options, providers, runtime_sha)
         if not apply:
             return snapshot
         _require_fingerprint(snapshot, options.expected_fingerprint)
         for provider in providers:
             _enable_provider(session, provider, options)
         session.commit()
-    return {"applied": True, "readback": _readback(options)}
+    with SessionLocal() as session:
+        providers = _providers(session, options.provider_ids, lock=False)
+        readback = _providers_snapshot(options, providers, _require_runtime_sha(options))
+    return {"applied": True, "readback": readback}
 
 
 def _enable_provider(session, provider: AiProvider, options: Options) -> None:  # noqa: ANN001
@@ -120,6 +108,7 @@ def _enable_provider(session, provider: AiProvider, options: Options) -> None:  
 
 
 def _check_providers(options: Options) -> dict:
+    runtime_sha = _require_runtime_sha(options)
     results = []
     with SessionLocal() as session:
         _providers(session, options.provider_ids, lock=False)
@@ -135,12 +124,14 @@ def _check_providers(options: Options) -> dict:
                 detail=options.approval_ref,
             )
             session.commit()
-            results.append(_provider_row(provider))
+            results.append(provider_snapshot_row(provider))
     healthy = [row["id"] for row in results if row["health_status"] == "健康"]
     return {
         "version": SCRIPT_VERSION,
         "operation": "provider-check",
         "approval_ref": options.approval_ref,
+        "deployed_sha": options.deployed_sha,
+        "runtime_sha": runtime_sha,
         "healthy_provider_ids": healthy,
         "all_healthy": len(healthy) == len(options.provider_ids),
         "providers": results,
@@ -182,8 +173,8 @@ def _default_snapshot(session, options: Options, *, lock: bool) -> dict:  # noqa
         "version": SCRIPT_VERSION,
         "operation": "default",
         "tenant_id": options.tenant_id,
-        "providers": [_provider_row(provider) for provider in providers],
-        "setting": _setting_row(setting),
+        "providers": [provider_snapshot_row(provider) for provider in providers],
+        "setting": setting_snapshot_row(setting),
         "desired_default_provider_id": providers[0].id,
     }
     return _with_fingerprint(body)
@@ -301,8 +292,8 @@ def _route_snapshot(session, options: Options, *, lock: bool) -> dict:  # noqa: 
         "operation": "route",
         "tenant_id": options.tenant_id,
         "purpose": options.purpose,
-        "providers": [_provider_row(provider) for provider in providers],
-        "setting": _setting_row(setting),
+        "providers": [provider_snapshot_row(provider) for provider in providers],
+        "setting": setting_snapshot_row(setting),
         "old_route": old_route,
         "desired_items": desired_items,
         "desired_hash": _content_hash(desired_items),
@@ -427,14 +418,27 @@ def _active_route(session, tenant_id: int, purpose: str, *, lock: bool):  # noqa
     return session.scalar(statement)
 
 
-def _providers_snapshot(tenant_id: int, providers: list[AiProvider]) -> dict:
+def _providers_snapshot(
+    options: Options,
+    providers: list[AiProvider],
+    runtime_sha: str,
+) -> dict:
     body = {
         "version": SCRIPT_VERSION,
         "operation": "providers",
-        "tenant_id": tenant_id,
-        "providers": [_provider_row(provider) for provider in providers],
+        "tenant_id": options.tenant_id,
+        "deployed_sha": options.deployed_sha,
+        "runtime_sha": runtime_sha,
+        "providers": [provider_snapshot_row(provider) for provider in providers],
     }
     return _with_fingerprint(body)
+
+
+def _require_runtime_sha(options: Options) -> str:
+    runtime_sha = os.environ.get("RELEASE_SHA", "")
+    if runtime_sha != options.deployed_sha:
+        raise RuntimeError("ai_provider_runtime_sha_mismatch")
+    return runtime_sha
 
 
 def _route_row(session, route: TenantAiProviderRouteSet, *, lock: bool) -> dict:  # noqa: ANN001
@@ -452,27 +456,6 @@ def _route_row(session, route: TenantAiProviderRouteSet, *, lock: bool) -> dict:
             {"priority": item.priority, "provider_id": item.provider_id, "model_name": item.model_name}
             for item in items
         ],
-    }
-
-
-def _provider_row(provider: AiProvider) -> dict:
-    return {
-        "id": provider.id,
-        "provider_name": provider.provider_name,
-        "model_name": provider.model_name,
-        "credential_enabled": provider.credential_enabled,
-        "is_active": provider.is_active,
-        "health_status": provider.health_status,
-        "last_check_at": provider.last_check_at,
-        "last_error": str(provider.last_error or "")[:240],
-    }
-
-
-def _setting_row(setting: TenantAiSetting) -> dict:
-    return {
-        "tenant_id": setting.tenant_id,
-        "default_provider_id": setting.default_provider_id,
-        "ai_provider_route_fallback_enabled": setting.ai_provider_route_fallback_enabled,
     }
 
 
