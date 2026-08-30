@@ -39,6 +39,7 @@ from ..source_capacity_plans import apply_source_capacity_plan
 from ..source_owner_cursor import attach_owner_history, pacing_source_key_hash
 from .channel_like_capability import clear_reaction_capability_block as _clear_reaction_capability_block
 from .channel_like_capability import message_reaction_plan as _message_reaction_plan
+from .channel_like_expiration import active_like_messages, close_expired_like_obligations
 from .channel_like_reactions import reaction_plan as _reaction_plan
 from .common import adjust_for_account_hour_limit, channel_message_payload, channel_scope, quantity_jitter_bounds, record_channel_capacity_warning
 
@@ -63,6 +64,12 @@ def build_plan(session: Session, task: Task) -> int:
     channel, messages = channel_scope(session, task, config)
     if not channel or not messages:
         return 0
+    now_value = _now()
+    close_expired_like_obligations(session, task, now_value=now_value)
+    messages = active_like_messages(task, messages, now_value=now_value)
+    if not messages:
+        task.last_error = ""
+        return 0
     reactions = config.get("allowed_reactions") or ["👍"]
     target_per_message = int(config.get("target_likes_per_message") or 1)
     accounts = _like_accounts(
@@ -86,7 +93,7 @@ def build_plan(session: Session, task: Task) -> int:
         reactions,
         target_per_message,
         account_ids_by_message,
-        now=_now(),
+        now=now_value,
     )
     if not actions:
         task.last_error = _empty_like_plan_message(task, messages, target_per_message, account_ids_by_message)
@@ -195,6 +202,7 @@ def _like_due_by_slot(
             owner_model=ReactionFulfillmentObligation,
             config=task.pacing_config or {},
             seed_id=f"like:{task.id}",
+            allow_plan_total_overrun=True,
         )
         points = schedule_source_pacing_points(
             slots,
@@ -398,7 +406,11 @@ def _like_source_slot(
         source_key=str(item.message.id),
         slot_key=_like_slot_key(task, item),
         slot_ordinal=pacing_ordinal,
-        plan_total=item.plan_total,
+        plan_total=(
+            int(owner.pacing_plan_total)
+            if owner.pacing_due_at is not None and owner.pacing_plan_total
+            else item.plan_total
+        ),
         period_start_at=period_start,
         deadline_at=deadline,
         release_not_before_at=owner.release_not_before_at,

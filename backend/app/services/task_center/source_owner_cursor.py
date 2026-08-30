@@ -67,6 +67,7 @@ def attach_owner_history(
     owner_model,
     config: dict,
     seed_id: str,
+    allow_plan_total_overrun: bool = False,
 ) -> list[SourcePacingSlot]:
     grouped: dict[tuple, list[SourcePacingSlot]] = defaultdict(list)
     for slot in slots:
@@ -86,7 +87,11 @@ def attach_owner_history(
             excluded_owner_ids=[slot.owner_id for slot in group],
         )
         ordinal = _include_frozen_group_ordinal(group, ordinal)
-        allocated = _allocate_new_ordinals(group, ordinal)
+        allocated = _allocate_new_ordinals(
+            group,
+            ordinal,
+            allow_plan_total_overrun=allow_plan_total_overrun,
+        )
         for slot in allocated:
             enriched[slot.slot_key] = replace(
                 slot,
@@ -108,17 +113,29 @@ def _include_frozen_group_ordinal(
 def _allocate_new_ordinals(
     slots: list[SourcePacingSlot],
     historical_max_ordinal: int | None,
+    *,
+    allow_plan_total_overrun: bool,
 ) -> list[SourcePacingSlot]:
     pending = sorted(
         (slot for slot in slots if slot.frozen_due_at is None),
         key=lambda slot: (slot.slot_ordinal, slot.slot_key),
     )
+    if not pending:
+        return slots
     next_ordinal = 0 if historical_max_ordinal is None else historical_max_ordinal + 1
+    expanded_total = max(
+        [slot.plan_total for slot in pending]
+        + ([next_ordinal + len(pending)] if allow_plan_total_overrun else [])
+    )
     replacements: dict[str, SourcePacingSlot] = {}
     for slot in pending:
-        if next_ordinal >= slot.plan_total:
+        if next_ordinal >= slot.plan_total and not allow_plan_total_overrun:
             raise PacingOwnerImmutableConflict("pacing_source_plan_exhausted")
-        replacements[slot.slot_key] = replace(slot, slot_ordinal=next_ordinal)
+        replacements[slot.slot_key] = replace(
+            slot,
+            slot_ordinal=next_ordinal,
+            plan_total=expanded_total,
+        )
         next_ordinal += 1
     return [replacements.get(slot.slot_key, slot) for slot in slots]
 

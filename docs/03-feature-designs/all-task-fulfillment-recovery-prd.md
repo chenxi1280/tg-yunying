@@ -875,6 +875,8 @@ listener 处理可信群管提示时，禁止在已修改 `group_bot_admissions`
 6. `max_likes_per_account_per_hour` 在创建、编辑、启动和存量接管固定为 `1_000_000`；reaction unavailable、failed、skipped 不占有效账号成功额度。系统仍按账号全局硬安全容量排序。
 7. random 模式逐点赞槽独立等概率抽取，不设置主表情占比、保底覆盖或固定配额；随机种子绑定任务与消息，确保同一计划重放稳定，而不同任务/消息的各表情数量自然随机。
 8. Reaction 能力 RPC 失败写 `reaction_capability_probe_failed` 并把点赞能力置为 `unknown`；消息快照读取成功时仍发布共享 snapshot，频道浏览和评论不得因点赞能力探测失败而停摆。
+9. 点赞的来源滚动窗口到达 deadline 后，不再为该消息创建新义务或 Action；Planner 必须先把 `current_action_id IS NULL` 的开放点赞义务结算为 `closed_expired` 并累计 `window_expired_settled_count`。仍有 Gateway/unknown/有效 Action 的义务保持原证据状态，不能被过期清理改写；该终态只关闭已逝来源窗口，不得计入 confirmed，也不得阻止 `dynamic_new` 后续新消息继续规划。
+10. 有限点赞目标以 typed remote fact 达标，不以历史 obligation/attempt 数封顶。明确未成功且已释放 Action 后，若原账号不再可用，Planner 可以为新账号建立 replacement 自然键；基础 `plan_total` 的 ordinal 已耗尽时，只为新的未冻结 owner 单调扩展 `pacing_plan_total` 到容纳本批 replacement 的最小值并继续递增 source ordinal，旧 owner 的 plan hash、ordinal、due、release 保持不可变。该超限只表示 replacement owner/attempt 可以超过配置目标，confirmed 仍按目标停止；不得复用 ordinal、压缩 deadline、重试 unknown 或把失败计为完成。
 
 ### 6.4 频道浏览
 

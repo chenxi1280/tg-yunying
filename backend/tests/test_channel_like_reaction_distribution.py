@@ -1,16 +1,35 @@
 from collections import Counter
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import AccountStatus, Action, ChannelMessage, OperationTarget, Task, Tenant, TgAccount, TgGroupAccount
+from app.models import (
+    AccountStatus,
+    Action,
+    ChannelMessage,
+    OperationTarget,
+    ReactionFulfillmentObligation,
+    Task,
+    Tenant,
+    TgAccount,
+    TgGroupAccount,
+)
 from app.services._common import _now
 from app.schemas.task_center import ChannelLikeConfig
 from app.services.task_center.channel_membership import linked_channel_group
-from app.services.task_center.executors.channel_like import _reaction_plan, build_plan as build_channel_like_plan
+from app.services.task_center.executors.channel_like import (
+    LikePlanItem,
+    _like_source_slot,
+    _reaction_plan,
+    build_plan as build_channel_like_plan,
+)
+from app.services.task_center.executors.channel_like_expiration import (
+    active_like_messages,
+    close_expired_like_obligations,
+)
 from app.services.task_center.executors.channel_view import build_plan as build_channel_view_plan
 from app.services.task_center.fulfillment_takeover import takeover_task
 
@@ -118,6 +137,101 @@ def test_reaction_plan_preserves_requested_quantity_when_extra_pool_is_smaller()
     )
 
     assert len(reactions) == 100
+
+
+def test_expired_like_obligation_is_closed_without_touching_active_owner():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 8, 30, 12, 0)
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        task = Task(
+            id="expired-like-task",
+            tenant_id=1,
+            name="过期点赞",
+            type="channel_like",
+            status="running",
+            fulfillment_contract_version="fact_first_v3",
+        )
+        channel = OperationTarget(
+            id=25,
+            tenant_id=1,
+            target_type="channel",
+            tg_peer_id="-10025",
+            title="过期频道",
+        )
+        message = ChannelMessage(
+            id=35,
+            tenant_id=1,
+            channel_target_id=channel.id,
+            message_id=6105,
+            created_at=now_value - timedelta(days=2),
+        )
+        session.add_all([task, channel, message])
+        session.flush()
+        open_owner = ReactionFulfillmentObligation(
+            id="expired-open-owner",
+            tenant_id=1,
+            task_id=task.id,
+            channel_message_id=message.id,
+            account_id=101,
+            reaction_contract_version=1,
+            status="open",
+        )
+        held_owner = ReactionFulfillmentObligation(
+            id="expired-held-owner",
+            tenant_id=1,
+            task_id=task.id,
+            channel_message_id=message.id,
+            account_id=102,
+            reaction_contract_version=1,
+            status="pending",
+        )
+        session.add_all([open_owner, held_owner])
+        session.flush()
+
+        closed = close_expired_like_obligations(session, task, now_value=now_value)
+        active = active_like_messages(task, [message], now_value=now_value)
+
+    assert closed == 1
+    assert open_owner.status == "closed_expired"
+    assert held_owner.status == "pending"
+    assert active == []
+    assert task.stats["window_expired_settled_count"] == 1
+
+
+def test_like_source_slot_keeps_extended_frozen_plan_total():
+    task = Task(
+        id="like-overrun",
+        tenant_id=1,
+        name="点赞补位",
+        type="channel_like",
+        created_at=datetime(2026, 8, 30, 8, 0),
+    )
+    message = ChannelMessage(
+        id=41,
+        tenant_id=1,
+        channel_target_id=21,
+        message_id=6141,
+        created_at=datetime(2026, 8, 30, 8, 0),
+    )
+    owner = ReactionFulfillmentObligation(
+        id="like-overrun-owner",
+        tenant_id=1,
+        task_id=task.id,
+        channel_message_id=message.id,
+        account_id=101,
+        reaction_contract_version=1,
+        pacing_plan_total=51,
+        pacing_slot_ordinal=50,
+        pacing_due_at=datetime(2026, 8, 30, 9, 0),
+    )
+    item = LikePlanItem(message, owner.account_id, "👍", 0, 50)
+
+    slot = _like_source_slot(task, item, owner=owner, source_hash="a" * 64)
+
+    assert slot.slot_ordinal == 50
+    assert slot.plan_total == 51
 
 
 def test_channel_like_clears_account_error_when_targets_are_already_reached():

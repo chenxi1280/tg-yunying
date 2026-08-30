@@ -46,7 +46,7 @@ class SourcePacingPoint:
     release_not_before_at: datetime
 
 
-def _source_window_days(task) -> int:
+def source_window_days(task) -> int:
     pacing_config = getattr(task, "pacing_config", None) or {}
     type_config = getattr(task, "type_config", None) or {}
     days = pacing_config.get("rolling_window_days") or type_config.get("rolling_window_days")
@@ -62,7 +62,7 @@ def rolling_source_window(task, observed_at: datetime) -> tuple[datetime, dateti
     source_start = wall_datetime(observed_at)
     task_anchor = task_pacing_anchor(task)
     period_start = max(source_start, task_anchor) if task_anchor else source_start
-    days = _source_window_days(task)
+    days = source_window_days(task)
     return period_start, source_start + timedelta(days=days)
 
 
@@ -204,7 +204,7 @@ def _legacy_source_recovery_points(
             overdue.append(slot)
     if not overdue:
         return result
-    first = slots[0]
+    first = max(slots, key=lambda slot: slot.plan_total)
     period_start_at = wall_datetime(first.period_start_at)
     deadline_at = wall_datetime(first.deadline_at)
     gap_seconds = max(
@@ -236,7 +236,7 @@ def _points_after_historical_cursor(
     now_at: datetime,
     seed_id: str,
 ) -> dict[str, SourcePacingPoint]:
-    first = slots[0]
+    first = max(slots, key=lambda slot: slot.plan_total)
     gap_seconds = max(
         1.0,
         (wall_datetime(first.deadline_at) - wall_datetime(first.period_start_at)).total_seconds()
@@ -331,5 +331,6 @@ __all__ = [
     "schedule_source_pacing_slots",
     "schedule_source_pacing_points",
     "source_pacing_plan_hash",
+    "source_window_days",
     "wall_datetime",
 ]

@@ -143,6 +143,32 @@ def test_new_owner_fails_when_frozen_source_plan_has_no_ordinal_capacity() -> No
             )
 
 
+def test_new_owner_can_extend_finite_source_plan_for_replacement() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        task, ledger, old_owner, new_owner = _seed_owners(session)
+        slot = _source_slot(task, ledger, new_owner)
+        plan_hash = source_pacing_plan_hash(slot, {}, seed_id=f"ai:{task.id}")
+        _freeze_historical_owner(old_owner, slot, plan_hash)
+        old_owner.pacing_slot_ordinal = slot.plan_total - 1
+        session.flush()
+
+        enriched = attach_owner_history(
+            session,
+            task,
+            [slot],
+            owner_model=TaskGroupDailyMessageSlot,
+            config={},
+            seed_id=f"ai:{task.id}",
+            allow_plan_total_overrun=True,
+        )[0]
+
+    assert enriched.slot_ordinal == slot.plan_total
+    assert enriched.plan_total == slot.plan_total + 1
+    assert old_owner.pacing_plan_total == slot.plan_total
+
+
 def test_released_owner_keeps_frozen_identity_and_recovers_after_now() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
