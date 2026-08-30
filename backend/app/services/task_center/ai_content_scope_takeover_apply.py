@@ -211,9 +211,9 @@ def _apply_item(
         actor=actor,
     )
     if item.status == "quarantined":
-        batch.status = "blocked"
-        return False
+        return True
     return True
+
 
 
 def _classification_outcome(
@@ -412,9 +412,10 @@ def _finish_batch_if_ready(
         AiContentScopeTakeoverItem.batch_id == batch.id,
         AiContentScopeTakeoverItem.status == "pending",
     ))
-    if not pending and not batch.conflict_count and not batch.quarantined_count:
+    if not pending and not batch.conflict_count:
         batch.status = "completed"
         batch.completed_at = _now()
+
 
 
 def _locked_batch(
