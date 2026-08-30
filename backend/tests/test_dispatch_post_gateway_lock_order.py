@@ -12,7 +12,9 @@ def test_group_send_locks_dispatch_prefix_before_business_finalize(
     monkeypatch,
 ) -> None:
     events: list[str] = []
-    action = SimpleNamespace(id="action-1", task_type="check_in")
+    action = SimpleNamespace(
+        id="action-1", tenant_id=1, task_id="task-1", task_type="check_in",
+    )
     attempt = SimpleNamespace(id="attempt-1")
     payload = SimpleNamespace(
         message_text="hello",
@@ -21,7 +23,7 @@ def test_group_send_locks_dispatch_prefix_before_business_finalize(
     )
     context = SimpleNamespace(
         account=SimpleNamespace(id=11, session_ciphertext="cipher"),
-        group=SimpleNamespace(id=7, tg_peer_id="-1007"),
+        group=SimpleNamespace(id=7, tg_peer_id="-1007", group_type="supergroup"),
         content="hello",
         credentials=object(),
         payload=payload,
@@ -36,6 +38,10 @@ def test_group_send_locks_dispatch_prefix_before_business_finalize(
         dispatcher,
         "_reserve_group_send_attempt",
         lambda *_args: attempt,
+    )
+    monkeypatch.setattr(
+        "app.services.task_center.group_mutation_authority.ensure_platform_writer_admission",
+        lambda *_args, **_kwargs: (True, ""),
     )
     monkeypatch.setattr(
         dispatcher.gateway,

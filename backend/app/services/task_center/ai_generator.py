@@ -240,6 +240,8 @@ def _first_provider_for_family(session: Session, family: str) -> AiProvider | No
 
 def _model_family(value: str) -> str:
     normalized = value.lower()
+    if "antigravity" in normalized or "gemini" in normalized:
+        return "antigravity"
     if "deepseek" in normalized:
         return "deepseek"
     if "minimax" in normalized:

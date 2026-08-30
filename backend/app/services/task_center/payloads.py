@@ -213,6 +213,78 @@ class DeleteMessagePayload(BaseModel):
         return self
 
 
+class GroupCloneSendPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    obligation_id: str = Field(min_length=1, max_length=36)
+    gateway_mutation_identity_id: str = Field(min_length=1, max_length=36)
+    route_snapshot_id: str = Field(min_length=1, max_length=36)
+    execution_snapshot_id: str = Field(min_length=1, max_length=36)
+    target_peer_type: Literal["channel"] = "channel"
+    target_peer_id: str = Field(min_length=1, max_length=120)
+    content: str = Field(min_length=1)
+    entities: list[dict[str, Any]] = Field(default_factory=list)
+    random_id: int
+    stream_order_no: int = Field(ge=1)
+    source_message_id: int = Field(ge=1)
+    reply_to_message_id: int | None = Field(default=None, ge=1)
+    target_top_message_id: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def validate_random_id(self) -> "GroupCloneSendPayload":
+        if self.random_id == 0:
+            raise ValueError("group_clone_send random_id 必须为非零 signed 64-bit")
+        if not -(2**63) <= self.random_id < 2**63:
+            raise ValueError("group_clone_send random_id 超出 signed 64-bit")
+        return self
+
+
+class GroupCloneMutationPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    obligation_id: str = Field(min_length=1, max_length=36)
+    gateway_mutation_identity_id: str = Field(min_length=1, max_length=36)
+    route_snapshot_id: str = Field(min_length=1, max_length=36)
+    execution_snapshot_id: str = Field(min_length=1, max_length=36)
+    mutation_kind: Literal[
+        "editMessage", "deleteMessages", "pinMessage", "unpinMessage",
+        "createForumTopic", "editForumTopic", "deleteForumTopic",
+    ]
+    execution_role: Literal["sender", "target_control"]
+    target_peer_type: Literal["channel"] = "channel"
+    target_peer_id: str = Field(min_length=1, max_length=120)
+    source_message_id: int = Field(ge=1)
+    target_message_ids: list[int] = Field(default_factory=list)
+    content: str = ""
+    entities: list[dict[str, Any]] = Field(default_factory=list)
+    random_id: int | None = None
+    target_top_message_id: int | None = Field(default=None, ge=1)
+    resume_obligation_after_success: bool = False
+    topic_closed: bool | None = None
+    topic_hidden: bool | None = None
+    topic_icon_color: int | None = None
+    topic_icon_emoji_id: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def validate_mutation(self) -> "GroupCloneMutationPayload":
+        if self.mutation_kind == "createForumTopic":
+            if not self.content.strip() or not self.random_id:
+                raise ValueError("createForumTopic requires title and non-zero random_id")
+            return self
+        if not self.target_message_ids:
+            raise ValueError(f"{self.mutation_kind} requires target_message_ids")
+        if self.mutation_kind == "editMessage" and not self.content.strip():
+            raise ValueError(f"{self.mutation_kind} requires content")
+        if self.mutation_kind == "editForumTopic" and not any((
+            self.content.strip(), self.topic_closed is not None,
+            self.topic_hidden is not None, self.topic_icon_emoji_id is not None,
+        )):
+            raise ValueError("editForumTopic requires title/icon/closed/hidden state")
+        if self.random_id is not None:
+            raise ValueError(f"{self.mutation_kind} must not carry random_id")
+        return self
+
+
 class EnsureChannelMembershipPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -428,6 +500,8 @@ PAYLOAD_MODELS = {
     "invite_group_bot": DeprecatedGroupRescuePayload,
     "invite_group_account": InviteGroupAccountPayload,
     "delete_message": DeleteMessagePayload,
+    "group_clone_mutation": GroupCloneMutationPayload,
+    "group_clone_send": GroupCloneSendPayload,
     "send_message": SendMessagePayload,
     "view_message": ViewMessagePayload,
     "like_message": LikeMessagePayload,
@@ -678,6 +752,8 @@ __all__ = [
     "GroupBotRequiredChannelFollowPayload",
     "GroupBotControlObservationPayload",
     "GroupBotConfirmationButtonPayload",
+    "GroupCloneMutationPayload",
+    "GroupCloneSendPayload",
     "create_group_bot_confirmation_button_action",
     "create_group_bot_required_channel_follow_action",
     "LikeMessagePayload",

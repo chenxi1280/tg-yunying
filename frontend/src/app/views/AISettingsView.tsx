@@ -167,40 +167,59 @@ export default function AISettingsView({
     }
   }
 
+  const displayedProviders = React.useMemo(() => {
+    const antigravityOnly = aiProviders.filter(
+      (p) =>
+        p.provider_name.toLowerCase().includes('antigravity') ||
+        p.model_name.toLowerCase().includes('gemini') ||
+        p.base_url.includes('18099'),
+    );
+    return antigravityOnly.length > 0 ? antigravityOnly : aiProviders;
+  }, [aiProviders]);
+
   return (
     <section className="view-grid">
       {showProviders && <Card
         className="panel"
-        title="AI 供应商"
+        title="AI 供应商 (Antigravity 账号)"
         extra={canManageAi ? <Button type="primary" onClick={onCreateProvider}>新增供应商</Button> : undefined}
       >
         <Typography.Text type="secondary">支持 OpenAI-Compatible 与显式 Antigravity CLI Provider；内部 bridge token 加密保存</Typography.Text>
         <div className="cards-grid developer-grid">
-          {!aiProviders.length && (
+          {!displayedProviders.length && (
             <Empty description="还没有 AI 供应商">
               <Typography.Paragraph type="secondary">请配置真实 Provider 类型、内部 Base URL、模型名和凭证后再启用 AI 内容生成。</Typography.Paragraph>
+
               {canManageAi && <Button type="primary" onClick={onCreateProvider}>新增供应商</Button>}
             </Empty>
           )}
-          {aiProviders.map((provider) => (
-            <Card className={`developer-card ${statusAccent(provider.credential_enabled ? provider.health_status : '禁用')}`} key={provider.id} size="small" title={provider.provider_name}>
-              <Space wrap>
-                <StatusBadge status={provider.credential_enabled ? provider.health_status : '禁用'} />
-                <Badge tone={provider.credential_enabled ? 'positive' : 'muted'}>{provider.credential_enabled ? '凭证可用' : '凭证禁用'}</Badge>
-                {provider.is_active && <Badge tone="positive">已启用</Badge>}
-                {provider.id === tenantAiSetting?.default_provider_id && <Badge tone="info">默认模型</Badge>}
-                <Badge tone="neutral">{provider.provider_type}</Badge>
-              </Space>
-              <Typography.Paragraph>{provider.model_name}</Typography.Paragraph>
-              <Typography.Paragraph type="secondary" ellipsis>{provider.base_url}</Typography.Paragraph>
-              {provider.last_error && <Typography.Paragraph type={provider.health_status === '健康' ? 'warning' : 'danger'}>{provider.last_error}</Typography.Paragraph>}
-              <Space wrap>
-                {canManageAi && <Button size="small" onClick={() => onEditProvider(provider)}>编辑</Button>}
-                {canManageAi && <Button size="small" loading={isActionPending(`ai-provider:${provider.id}:check`)} onClick={() => onCheckProvider(provider)}>检查</Button>}
-                {canManageAi && <Button size="small" disabled={provider.is_active && provider.id === tenantAiSetting?.default_provider_id} loading={isActionPending(`ai-provider:${provider.id}:toggle`)} onClick={() => onToggleProvider(provider)}>{provider.is_active ? (provider.id === tenantAiSetting?.default_provider_id ? '默认模型不可停用' : '停用') : '启用'}</Button>}
-              </Space>
-            </Card>
-          ))}
+          {displayedProviders.map((provider) => {
+            const isAntigravity =
+              provider.provider_name.toLowerCase().includes('antigravity') ||
+              provider.model_name.toLowerCase().includes('gemini') ||
+              provider.base_url.includes('18099');
+            return (
+              <Card className={`developer-card ${statusAccent(provider.credential_enabled ? provider.health_status : '禁用')}`} key={provider.id} size="small" title={provider.provider_name}>
+                <Space wrap>
+                  <StatusBadge status={provider.credential_enabled ? provider.health_status : '禁用'} />
+                  {isAntigravity && <Badge tone="info">Antigravity 账号</Badge>}
+                  {isAntigravity && <Badge tone="positive">Google 授权</Badge>}
+                  <Badge tone={provider.credential_enabled ? 'positive' : 'muted'}>{provider.credential_enabled ? '凭证可用' : '凭证禁用'}</Badge>
+                  {provider.is_active && <Badge tone="positive">已启用</Badge>}
+                  {provider.id === tenantAiSetting?.default_provider_id && <Badge tone="info">默认模型</Badge>}
+                  <Badge tone="neutral">{provider.provider_type}</Badge>
+                </Space>
+                <Typography.Paragraph>{provider.model_name}</Typography.Paragraph>
+                <Typography.Paragraph type="secondary" ellipsis>{provider.base_url}</Typography.Paragraph>
+                {provider.last_error && <Typography.Paragraph type={provider.health_status === '健康' ? 'warning' : 'danger'}>{provider.last_error}</Typography.Paragraph>}
+                <Space wrap>
+                  {canManageAi && <Button size="small" onClick={() => onEditProvider(provider)}>编辑</Button>}
+                  {canManageAi && <Button size="small" loading={isActionPending(`ai-provider:${provider.id}:check`)} onClick={() => onCheckProvider(provider)}>检查</Button>}
+                  {canManageAi && <Button size="small" disabled={provider.is_active && provider.id === tenantAiSetting?.default_provider_id} loading={isActionPending(`ai-provider:${provider.id}:toggle`)} onClick={() => onToggleProvider(provider)}>{provider.is_active ? (provider.id === tenantAiSetting?.default_provider_id ? '默认模型不可停用' : '停用') : '启用'}</Button>}
+                </Space>
+              </Card>
+            );
+          })}
         </div>
       </Card>}
 

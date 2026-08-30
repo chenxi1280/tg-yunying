@@ -1,4 +1,4 @@
-export type TaskCenterTaskType = 'group_ai_chat' | 'group_relay' | 'group_membership_admission' | 'channel_view' | 'channel_like' | 'channel_comment' | 'search_click' | 'search_join_group' | 'search_rank_deboost';
+export type TaskCenterTaskType = 'group_ai_chat' | 'group_relay' | 'group_clone' | 'group_membership_admission' | 'channel_view' | 'channel_like' | 'channel_comment' | 'search_click' | 'search_join_group' | 'search_rank_deboost';
 export type TaskCenterSystemTaskType = 'account_profile_init' | 'account_device_cleanup' | 'account_2fa_setup' | 'account_standby_session_provision';
 export type TaskCenterAnyTaskType = TaskCenterTaskType | TaskCenterSystemTaskType;
 

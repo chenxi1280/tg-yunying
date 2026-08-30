@@ -32,7 +32,7 @@ from app.services.account_online_state import is_account_online_ready
 from app.services.account_authorizations import attempt_primary_proxy_recovery, attempt_standby_authorization_recovery
 from app.services.account_capacity import account_capacity_decision
 from app.services.content_filters import filter_outbound_content, rewrite_rejected_content
-from app.services.developer_apps import credentials_for_account, credentials_for_developer_app
+from app.services.developer_apps import credentials_for_account, credentials_for_authorization, credentials_for_developer_app
 from app.services.ai_config import get_scheduling_setting
 from app.services.membership_challenges import auto_resolve_image_verification, auto_resolve_text_verification, build_search_join_image_verification_solver, read_challenge_context_with_fallback, record_challenge_attempt
 from app.services.notifications import NotificationResult, send_telegram_bot_message
@@ -133,6 +133,8 @@ from .payloads import (
     DeprecatedGroupRescuePayload,
     DeleteMessagePayload,
     EnsureChannelMembershipPayload,
+    GroupCloneMutationPayload,
+    GroupCloneSendPayload,
     InviteGroupAccountPayload,
     LikeMessagePayload,
     PostCommentPayload,
@@ -428,6 +430,22 @@ class CommentDispatchContext:
 
 
 @dataclass(frozen=True)
+class GroupCloneSendDispatchContext:
+    session: Session
+    action: Action
+    account: TgAccount
+    payload: GroupCloneSendPayload
+
+
+@dataclass(frozen=True)
+class GroupCloneMutationDispatchContext:
+    session: Session
+    action: Action
+    account: TgAccount
+    payload: GroupCloneMutationPayload
+
+
+@dataclass(frozen=True)
 class GroupSendGatewayContext:
     account: TgAccount
     credentials: object
@@ -536,7 +554,7 @@ def _fulfillment_route_allows_gateway(session: Session, action: Action) -> bool:
         return False
     from .fulfillment_activation import gateway_task_allowed
 
-    if task.fulfillment_contract_version == "fact_first_v3" and (
+    if task.fulfillment_contract_version in {"fact_first_v3", "v2_group_clone"} and (
         task.status != "running"
         or task.deleted_at is not None
         or int(action.task_lifecycle_epoch or 1)
@@ -698,6 +716,10 @@ def _open_fact_first_remote_case(session: Session, action: Action) -> None:
 
 
 def _project_fact_first_derived_reads(session: Session, action: Action) -> None:
+    if action.task_type == "group_clone":
+        from .group_clone_settlement import project_group_clone_result
+
+        project_group_clone_result(session, action)
     _sync_action_coverage_state(session, action)
     _sync_action_content_mix_state(session, action)
     _sync_comment_fulfillment_state(session, action)
@@ -1270,6 +1292,20 @@ def _dispatch_validated_action(
         return _dispatch_search_join_membership(session, action, context.account, context.payload)
     if action.action_type == "search_rank_deboost":
         return _dispatch_search_rank_deboost(session, action, context.account, context.payload)
+    if action.action_type == "group_clone_send":
+        return _dispatch_group_clone_send(GroupCloneSendDispatchContext(
+            session,
+            action,
+            context.account,
+            context.payload,
+        ))
+    if action.action_type == "group_clone_mutation":
+        return _dispatch_group_clone_mutation(GroupCloneMutationDispatchContext(
+            session,
+            action,
+            context.account,
+            context.payload,
+        ))
     channel_action_types = {"view_message", "like_message", "post_comment"}
     if action.action_type in channel_action_types and not _ensure_channel_action_membership(
         session,
@@ -1326,6 +1362,145 @@ def _dispatch_credentialed_action(
         return True
     _fail(action, FailureType.UNKNOWN.value, f"未知 action_type: {action.action_type}")
     return True
+
+
+def _dispatch_group_clone_send(ctx: GroupCloneSendDispatchContext) -> bool:
+    from .group_clone_dispatch import validate_clone_dispatch
+
+    contract = validate_clone_dispatch(
+        ctx.session,
+        ctx.action,
+        account=ctx.account,
+        payload=ctx.payload,
+    )
+    attempt = _begin_execution_attempt(ctx.session, ctx.action, ctx.account)
+    contract.identity.state = "attempt_bound"
+    contract.obligation.state = "executing"
+    credentials = credentials_for_authorization(ctx.session, contract.authorization)
+    _mark_gateway_call_started(ctx.session, attempt)
+    result = gateway.send_raw_mtproto_message(
+        ctx.payload.target_peer_id,
+        ctx.payload.content,
+        ctx.payload.random_id,
+        entities=ctx.payload.entities,
+        reply_to_msg_id=ctx.payload.reply_to_message_id,
+        top_msg_id=ctx.payload.target_top_message_id,
+        session_ciphertext=contract.authorization.session_ciphertext,
+        credentials=credentials,
+    )
+    _apply_group_clone_send_result(ctx, attempt, result)
+    return True
+
+
+def _apply_group_clone_send_result(ctx, attempt, result) -> None:
+    if result.ok:
+        _apply_send_result(
+            ctx.action,
+            ctx.account,
+            True,
+            result.remote_message_id or "",
+            attempt=attempt,
+            remote_mutation_started=True,
+        )
+        return
+    failure = result.failure_type or FailureType.UNKNOWN.value
+    detail = result.detail or "Group Clone raw MTProto 发送失败"
+    if result.remote_mutation_started is False:
+        _fail(ctx.action, failure, detail, validation_stage="telegram_api")
+        _finish_execution_attempt(
+            attempt,
+            ctx.action,
+            failure_type=failure,
+            detail=detail,
+            remote_mutation_started=False,
+        )
+        return
+    _mark_unknown_after_send(ctx.session, ctx.action, detail)
+    _finish_execution_attempt(
+        attempt,
+        ctx.action,
+        failure_type="unknown_after_send",
+        detail=detail,
+        remote_mutation_started=result.remote_mutation_started,
+    )
+
+
+def _dispatch_group_clone_mutation(ctx: GroupCloneMutationDispatchContext) -> bool:
+    from .group_clone_dispatch import validate_clone_dispatch
+
+    contract = validate_clone_dispatch(
+        ctx.session, ctx.action, account=ctx.account, payload=ctx.payload,
+    )
+    credentials = credentials_for_authorization(ctx.session, contract.authorization)
+    _validate_clone_mutation_remote_rights(ctx.payload, contract, credentials)
+    attempt = _begin_execution_attempt(ctx.session, ctx.action, ctx.account)
+    contract.identity.state = "attempt_bound"
+    contract.obligation.state = "executing"
+    _mark_gateway_call_started(ctx.session, attempt)
+    result = _invoke_group_clone_mutation(ctx.payload, contract, credentials)
+    _apply_group_clone_send_result(ctx, attempt, result)
+    return True
+
+
+def _validate_clone_mutation_remote_rights(payload, contract, credentials) -> None:
+    if contract.execution.execution_role != "target_control":
+        return
+    required = {
+        "deleteMessages": "delete_messages",
+        "pinMessage": "pin_messages",
+        "unpinMessage": "pin_messages",
+        "createForumTopic": "manage_topics",
+        "editForumTopic": "manage_topics",
+        "deleteForumTopic": "manage_topics",
+    }.get(payload.mutation_kind)
+    if required is None:
+        return
+    rights = gateway.fetch_raw_group_admin_rights(
+        payload.target_peer_id,
+        session_ciphertext=contract.authorization.session_ciphertext,
+        credentials=credentials,
+    )
+    if not bool(rights.get(required)):
+        raise ValueError(f"group_clone_target_control_right_missing:{required}")
+
+
+def _invoke_group_clone_mutation(payload, contract, credentials):
+    common = {
+        "session_ciphertext": contract.authorization.session_ciphertext,
+        "credentials": credentials,
+    }
+    message_id = payload.target_message_ids[0] if payload.target_message_ids else 0
+    if payload.mutation_kind == "editMessage":
+        return gateway.edit_raw_mtproto_message(
+            payload.target_peer_id, message_id, content=payload.content,
+            entities=payload.entities, **common,
+        )
+    if payload.mutation_kind == "deleteMessages":
+        return gateway.delete_raw_mtproto_messages(
+            payload.target_peer_id, payload.target_message_ids, **common,
+        )
+    if payload.mutation_kind in {"pinMessage", "unpinMessage"}:
+        return gateway.pin_raw_mtproto_message(
+            payload.target_peer_id, message_id,
+            unpin=payload.mutation_kind == "unpinMessage", **common,
+        )
+    if payload.mutation_kind == "createForumTopic":
+        return gateway.create_raw_mtproto_forum_topic(
+            payload.target_peer_id, title=payload.content,
+            random_id=payload.random_id,
+            icon_color=payload.topic_icon_color,
+            icon_emoji_id=payload.topic_icon_emoji_id,
+            **common,
+        )
+    if payload.mutation_kind == "editForumTopic":
+        return gateway.edit_raw_mtproto_forum_topic(
+            payload.target_peer_id, message_id, title=payload.content or None,
+            closed=payload.topic_closed, hidden=payload.topic_hidden,
+            icon_emoji_id=payload.topic_icon_emoji_id, **common,
+        )
+    return gateway.delete_raw_mtproto_forum_topic(
+        payload.target_peer_id, message_id, **common,
+    )
 
 
 def mark_dispatcher_db_error(session: Session, action_id: str, detail: str) -> bool:
@@ -2034,7 +2209,7 @@ def _fact_first_action(session: Session, action: Action) -> bool:
     if not callable(getattr(session, "get", None)):
         return False
     task = session.get(Task, action.task_id)
-    return bool(task and task.fulfillment_contract_version == "fact_first_v3")
+    return bool(task and task.fulfillment_contract_version in {"fact_first_v3", "v2_group_clone"})
 
 
 def _skip_superseded_group_bot_confirmation_claim(session: Session, action: Action) -> bool:
@@ -3322,6 +3497,28 @@ def _send_group_message_via_gateway(
     action: Action,
     context: GroupSendGatewayContext,
 ) -> bool:
+    from .group_mutation_authority import ensure_platform_writer_admission
+
+    peer_type = (
+        "channel" if context.group.group_type in {"supergroup", "channel"} else "chat"
+    )
+    allowed, reason = ensure_platform_writer_admission(
+        session,
+        action.tenant_id,
+        target_peer_type=peer_type,
+        target_peer_id=str(context.group.tg_peer_id),
+        writer_kind=action.task_type,
+        writer_id=action.task_id,
+    )
+    if not allowed:
+        _fail(
+            action,
+            "group_mutation_authority_denied",
+            reason,
+            auto_check="拦截",
+            validation_stage="group_mutation_authority",
+        )
+        return True
     gateway_request = GroupGatewayRequest(
         account_id=context.account.id,
         group_id=context.group.id,

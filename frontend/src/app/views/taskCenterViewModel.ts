@@ -6,6 +6,7 @@ export { runtimeStage, runtimeStageLabel, statusLabel } from './taskRuntimeStage
 export const TASK_TYPES: Array<{ value: TaskCenterTaskType; label: string }> = [
   { value: 'group_ai_chat', label: 'AI 活跃群' },
   { value: 'group_relay', label: '转发监听群' },
+  { value: 'group_clone', label: '1对1 群克隆' },
   { value: 'group_membership_admission', label: '群聊准入任务' },
   { value: 'channel_view', label: '频道消息浏览' },
   { value: 'channel_like', label: '频道消息点赞' },
@@ -33,6 +34,7 @@ export function aiModelIdentity(value: unknown): string {
 export const CREATE_ENDPOINT: Record<TaskCenterTaskType, string> = {
   group_ai_chat: '/tasks/group-ai-chat',
   group_relay: '/tasks/group-relay',
+  group_clone: '/tasks/group-clone',
   group_membership_admission: '/tasks/group-membership-admission',
   channel_view: '/tasks/channel-view',
   channel_like: '/tasks/channel-like',
@@ -45,6 +47,7 @@ export const CREATE_ENDPOINT: Record<TaskCenterTaskType, string> = {
 export const CREATE_AND_START_ENDPOINT: Record<TaskCenterTaskType, string> = {
   group_ai_chat: '/tasks/group-ai-chat/create-and-start',
   group_relay: '/tasks/group-relay/create-and-start',
+  group_clone: '/tasks/group-clone/create-and-start',
   group_membership_admission: '/tasks/group-membership-admission/create-and-start',
   channel_view: '/tasks/channel-view/create-and-start',
   channel_like: '/tasks/channel-like/create-and-start',
@@ -548,6 +551,25 @@ export function typeInitialValues(type: TaskCenterTaskType, setting?: Scheduling
       dedup_method: 'hash',
     };
   }
+  if (type === 'group_clone') {
+    return {
+      authorization_mode: 'admin_authorized',
+      sender_pool_account_ids: [],
+      min_delay_ms: 1000,
+      max_delay_ms: 6000,
+      active_minutes: 30,
+      guarded_minutes: 120,
+      eligible_release_minutes: 720,
+      minimum_tenure_minutes: 60,
+      orphan_reply_policy: 'quote_fallback',
+      incomplete_album_policy: 'drop_incomplete',
+      unsupported_media_policy: 'block',
+      failure_order_policy: 'fail_stop',
+      unknown_deadline_seconds: 900,
+      source_event_days: 30,
+      media_cache_ttl_seconds: 86400,
+    };
+  }
   if (type === 'group_membership_admission') {
     return {
       scheduled_start: toBeijingDateTimeLocalValue(new Date().toISOString()),
@@ -682,6 +704,7 @@ export function fieldsForStep(step: number, taskType: TaskCenterTaskType, messag
     if (isSimpleSearchClickTask(taskType)) return ['target_title', 'target_link'];
     if (taskType === 'group_ai_chat' || taskType === 'group_membership_admission') return ['target_operation_target_id'];
     if (taskType === 'group_relay') return ['source_operation_target_ids', 'target_operation_target_id'];
+    if (taskType === 'group_clone') return ['source_operation_target_id', 'source_internal_group_id', 'source_peer_id', 'target_operation_target_id', 'target_internal_group_id', 'target_peer_id'];
     const fields = ['target_channel_id', 'message_scope'];
     if (['latest_n', 'dynamic_new'].includes(messageScope)) fields.push('message_count');
     if (messageScope === 'specific') fields.push('message_ids');
@@ -780,6 +803,26 @@ export function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: stri
       'filter_admin_messages',
       'excluded_sender_peer_ids',
       'excluded_sender_input',
+    ];
+  }
+  if (taskType === 'group_clone') {
+    return [
+      'name',
+      'source_operation_target_id',
+      'source_internal_group_id',
+      'source_peer_id',
+      'target_operation_target_id',
+      'target_internal_group_id',
+      'target_peer_id',
+      'listener_account_id',
+      'listener_authorization_id',
+      'control_account_id',
+      'control_authorization_id',
+      'sender_pool_account_ids',
+      'rule_set_id',
+      'rule_set_version',
+      'min_delay_ms',
+      'max_delay_ms',
     ];
   }
   if (taskType === 'group_membership_admission') {

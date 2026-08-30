@@ -226,8 +226,11 @@ def _target_fact(action: Action) -> dict:
     keys = (
         "group_id", "chat_id", "channel_id", "channel_target_id",
         "operation_target_id", "target_operation_target_id",
+        "target_peer_type", "target_peer_id", "target_top_message_id",
         "message_id", "channel_message_id", "source_message_id",
         "remote_message_id", "reaction_emoji",
+        "gateway_mutation_identity_id", "random_id",
+        "route_snapshot_id", "execution_snapshot_id",
     )
     return {
         "tenant_id": action.tenant_id,

@@ -8,7 +8,19 @@ from app.models import Task
 
 from ..fulfillment_activation import CURRENT_CONTRACT_VERSION
 
-from . import channel_comment, channel_like, channel_view, group_ai_chat, group_membership_admission, group_relay, search_click, search_join_group, search_rank_deboost, target_admission_retry
+from . import (
+    channel_comment,
+    channel_like,
+    channel_view,
+    group_ai_chat,
+    group_clone,
+    group_membership_admission,
+    group_relay,
+    search_click,
+    search_join_group,
+    search_rank_deboost,
+    target_admission_retry,
+)
 
 
 class TaskExecutor(Protocol):
@@ -18,6 +30,7 @@ class TaskExecutor(Protocol):
 EXECUTORS: dict[str, TaskExecutor] = {
     "group_ai_chat": group_ai_chat,
     "group_relay": group_relay,
+    "group_clone": group_clone,
     "group_membership_admission": group_membership_admission,
     "target_admission_retry": target_admission_retry,
     "channel_view": channel_view,

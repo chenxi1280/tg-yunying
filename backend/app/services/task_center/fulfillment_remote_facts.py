@@ -253,6 +253,20 @@ def _fact_kind(action: Action, attempt: ExecutionAttempt) -> str:
             else "remote_outcome_unknown"
         )
     result = dict(action.result or {})
+    if action.action_type == "group_clone_send":
+        return "clone_message_observed" if attempt.remote_message_id else "remote_outcome_unknown"
+    if action.action_type == "group_clone_mutation":
+        mutation = str((action.payload or {}).get("mutation_kind") or "")
+        observed = {
+            "editMessage": "clone_edit_observed",
+            "deleteMessages": "clone_delete_observed",
+            "pinMessage": "clone_pin_observed",
+            "unpinMessage": "clone_pin_observed",
+            "createForumTopic": "clone_topic_observed",
+            "editForumTopic": "clone_topic_observed",
+            "deleteForumTopic": "clone_topic_observed",
+        }.get(mutation)
+        return observed or "remote_outcome_unknown"
     if action.action_type in {"search_join", "search_join_membership"}:
         return "target_click_observed" if result.get("target_click_observed") else "remote_outcome_unknown"
     if action.action_type == "view_message":

@@ -22,6 +22,12 @@ from app.models import (
     TgAccount,
     TgAccountAuthorization,
 )
+from app.models.group_clone import (
+    CloneDeliveryObligation,
+    CloneSequencerHeadCase,
+    CloneSourceEvent,
+    TelegramGatewayMutationIdentity,
+)
 from app.services.task_center.executors.search_click_direct import _open_units
 from app.services.task_center.dispatch_activation_ledger import (
     recover_fenced_dispatch_actions,
@@ -286,3 +292,123 @@ def test_deadline_closure_uses_short_terminal_and_appends_decision_fact(
     )))
     assert len(states) == 3
     assert {row.state for row in states} == {"projected"}
+
+
+def test_deadline_closure_creates_clone_unknown_head_case(session: Session) -> None:
+    tenant = Tenant(id=1, name="clone unknown")
+    task = Task(
+        id="clone-unknown-task",
+        tenant_id=1,
+        name="clone unknown",
+        type="group_clone",
+        status="running",
+        type_config={"lifecycle": {"failure_order_policy": "fail_stop"}},
+    )
+    account = TgAccount(id=1, tenant_id=1, display_name="clone", phone_masked="***")
+    authorization = TgAccountAuthorization(id=1, tenant_id=1, account_id=1)
+    session.add_all([tenant, task, account, authorization])
+    session.flush()
+    event = CloneSourceEvent(
+        id="clone-event",
+        tenant_id=1,
+        task_id=task.id,
+        task_lifecycle_epoch=1,
+        source_peer_type="channel",
+        source_peer_id="-10011",
+        source_message_id=1,
+        event_type="message_new",
+        event_identity_hash="a" * 64,
+        apply_order_key="1",
+        stream_order_no=1,
+        sender_peer_type="user",
+        sender_peer_id="11",
+        content_fingerprint="b" * 64,
+    )
+    session.add(event)
+    session.flush()
+    obligation = CloneDeliveryObligation(
+        id="clone-obligation",
+        tenant_id=1,
+        task_id=task.id,
+        epoch=1,
+        source_event_id=event.id,
+        obligation_kind="send",
+        stream_order_no=1,
+        sequencer_id=1,
+        planned_at=datetime(2026, 8, 4, 8, 0),
+        state="unknown_after_send",
+    )
+    identity = TelegramGatewayMutationIdentity(
+        id="clone-identity",
+        tenant_id=1,
+        task_id=task.id,
+        epoch=1,
+        obligation_id=obligation.id,
+        mutation_kind="sendMessage",
+        account_id=1,
+        telegram_account_peer_id="1",
+        authorization_id=1,
+        target_peer_type="channel",
+        target_peer_id="-10022",
+        random_id=123,
+        request_fingerprint="c" * 64,
+        state="unknown",
+    )
+    action = Action(
+        id="clone-action",
+        tenant_id=1,
+        task_id=task.id,
+        task_type="group_clone",
+        action_type="group_clone_send",
+        account_id=1,
+        status="unknown_after_send",
+        obligation_type="group_clone_delivery",
+        obligation_id=obligation.id,
+        unknown_deadline_at=datetime(2000, 1, 1),
+        payload={"gateway_mutation_identity_id": identity.id},
+    )
+    attempt = ExecutionAttempt(
+        id="clone-attempt",
+        tenant_id=1,
+        action_id=action.id,
+        account_id=1,
+        status="result_unknown",
+        gateway_call_started_at=datetime(2026, 8, 4, 8, 1),
+    )
+    projection = FulfillmentObligationProjection(
+        tenant_id=1,
+        task_id=task.id,
+        obligation_type="group_clone_delivery",
+        obligation_id=obligation.id,
+        work_lane="interaction",
+        state="remote_reconcile_only",
+        active_action_id=action.id,
+    )
+    source_fact = FulfillmentRemoteFact(
+        tenant_id=1,
+        task_type=task.type,
+        task_id=task.id,
+        obligation_type="group_clone_delivery",
+        obligation_id=obligation.id,
+        action_id=action.id,
+        attempt_id=attempt.id,
+        mutation_kind="sendMessage",
+        remote_mutation_key_hash="d" * 64,
+        gateway_request_hash="e" * 64,
+        fact_kind="remote_outcome_unknown",
+        fact_identity_hash="f" * 64,
+    )
+    session.add_all([obligation, identity, action, attempt, projection, source_fact])
+    session.flush()
+
+    assert close_unknown_after_deadline(session, limit=10) == 1
+    session.flush()
+
+    assert obligation.state == "remote_reconcile_only"
+    case = session.scalar(select(CloneSequencerHeadCase).where(
+        CloneSequencerHeadCase.obligation_id == obligation.id,
+    ))
+    assert case is not None
+    assert case.case_kind == "unknown_deadline_closed"
+    assert case.state == "waiting_decision"
+    assert obligation.sequencer_head_case_id == case.id

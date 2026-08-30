@@ -1846,6 +1846,23 @@ def _reserve_operation_gateway_attempt(
     )
     if block is not None:
         return locked_target, _fail_operation_attempt(locked_attempt, block.code, block.detail), block.code, block.detail
+    if task.task_type != "CHANNEL_VIEW":
+        from app.services.task_center.group_mutation_authority import (
+            ensure_platform_writer_admission,
+        )
+
+        allowed, reason = ensure_platform_writer_admission(
+            session,
+            task.tenant_id,
+            target_peer_type=_authority_peer_type(locked_target.target_type),
+            target_peer_id=str(locked_target.tg_peer_id),
+            writer_kind="operation_task",
+            writer_id=str(task.id),
+        )
+        if not allowed:
+            return locked_target, _fail_operation_attempt(
+                locked_attempt, "group_mutation_authority_denied", reason,
+            ), "group_mutation_authority_denied", reason
     locked_attempt.gateway_call_started_at = _now()
     session.commit()
     return locked_target, locked_attempt, "", ""
@@ -1981,7 +1998,33 @@ def _execute_operation_attempt(
             source_ref=f"operation_task={task.id}; attempt={attempt.id}",
         )
     attempt.executed_at = _now()
+    _release_operation_task_authority(session, task, target or channel)
     return ok, attempt.failure_type, attempt.failure_detail
+
+
+def _authority_peer_type(target_type: str) -> str:
+    return "channel" if target_type in {"channel", "supergroup"} else "chat"
+
+
+def _release_operation_task_authority(
+    session: Session,
+    task: OperationTask,
+    target: OperationTarget | None,
+) -> None:
+    if target is None or task.task_type == "CHANNEL_VIEW":
+        return
+    from app.services.task_center.group_mutation_authority import (
+        release_platform_writer_admission,
+    )
+
+    release_platform_writer_admission(
+        session,
+        task.tenant_id,
+        target_peer_type=_authority_peer_type(target.target_type),
+        target_peer_id=str(target.tg_peer_id),
+        writer_kind="operation_task",
+        writer_id=str(task.id),
+    )
 
 
 def _legacy_channel_account_has_membership(session: Session, tenant_id: int, account_id: int, channel: OperationTarget) -> bool:

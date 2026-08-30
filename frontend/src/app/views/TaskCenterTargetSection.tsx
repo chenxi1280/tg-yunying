@@ -73,6 +73,19 @@ function RelayTargetFields({ onTargetsLoaded, allowInlineTarget }: Pick<WizardTa
   );
 }
 
+function CloneTargetFields({ onTargetsLoaded }: Pick<WizardTargetProps, 'onTargetsLoaded'>) {
+  return (
+    <div className="form-grid">
+      <GroupTargetField name="source_operation_target_id" label="源群运营目标" capability="listen" required onTargetsLoaded={onTargetsLoaded} />
+      <Form.Item name="source_internal_group_id" label="源群内部 ID" rules={[{ required: true }]}><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item>
+      <Form.Item name="source_peer_id" label="源群 canonical peer id" rules={[{ required: true }]}><Input placeholder="-100..." /></Form.Item>
+      <GroupTargetField name="target_operation_target_id" label="克隆目标群" capability="send" required onTargetsLoaded={onTargetsLoaded} />
+      <Form.Item name="target_internal_group_id" label="目标群内部 ID" rules={[{ required: true }]}><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item>
+      <Form.Item name="target_peer_id" label="目标群 canonical peer id" rules={[{ required: true }]}><Input placeholder="-100..." /></Form.Item>
+    </div>
+  );
+}
+
 function ChannelTargetFields(props: WizardTargetProps) {
   const scopedMessages = props.messages.filter((message) => !props.targetChannelId || message.channel_target_id === props.targetChannelId);
   return (
@@ -106,6 +119,9 @@ export function WizardTarget(props: WizardTargetProps) {
   }
   if (props.taskType === 'group_relay') {
     return <RelayTargetFields onTargetsLoaded={props.onTargetsLoaded} allowInlineTarget={normalizedProps.allowInlineTarget} />;
+  }
+  if (props.taskType === 'group_clone') {
+    return <CloneTargetFields onTargetsLoaded={props.onTargetsLoaded} />;
   }
   return <ChannelTargetFields {...normalizedProps} />;
 }

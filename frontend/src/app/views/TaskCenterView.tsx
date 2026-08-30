@@ -511,7 +511,7 @@ export default function TaskCenterView({
 
   function taskTypeSupportRequests(type: TaskCenterTaskType): Array<Promise<unknown>> {
     const requests: Array<Promise<unknown>> = [];
-    if (['group_relay', 'group_ai_chat', 'channel_comment'].includes(type)) requests.push(ensureRuleSets());
+    if (['group_relay', 'group_clone', 'group_ai_chat', 'channel_comment'].includes(type)) requests.push(ensureRuleSets());
     if (type.startsWith('channel_')) requests.push(ensureMessages());
     if (type === 'channel_comment') requests.push(ensureComments());
     return requests;
@@ -1339,6 +1339,56 @@ export default function TaskCenterView({
         context_expire_after_messages: values.context_expire_after_messages ?? 10,
         idle_continuation_enabled: values.idle_continuation_enabled ?? true,
         idle_continuation_seconds: values.idle_continuation_seconds ?? 300,
+      };
+    }
+    if (taskType === 'group_clone') {
+      return {
+        ...base,
+        source: {
+          internal_group_id: Number(values.source_internal_group_id),
+          operation_target_id: Number(values.source_operation_target_id),
+          peer_type: 'channel',
+          peer_id: String(values.source_peer_id || '').trim(),
+          listener_account_id: Number(values.listener_account_id),
+          authorization_id: Number(values.listener_authorization_id),
+          authorization_mode: values.authorization_mode ?? 'admin_authorized',
+        },
+        target: {
+          internal_group_id: Number(values.target_internal_group_id),
+          operation_target_id: Number(values.target_operation_target_id),
+          peer_type: 'channel',
+          peer_id: String(values.target_peer_id || '').trim(),
+          control_account_id: Number(values.control_account_id),
+          control_authorization_id: Number(values.control_authorization_id),
+        },
+        sender_pool: {
+          account_ids: csvNumbers(values.sender_pool_account_ids),
+          active_minutes: values.active_minutes ?? 30,
+          guarded_minutes: values.guarded_minutes ?? 120,
+          eligible_release_minutes: values.eligible_release_minutes ?? 720,
+          minimum_tenure_minutes: values.minimum_tenure_minutes ?? 60,
+        },
+        pacing: {
+          min_delay_ms: values.min_delay_ms ?? 1000,
+          max_delay_ms: values.max_delay_ms ?? 6000,
+          strict_target_order: true,
+        },
+        content: {
+          rule_set_id: Number(values.rule_set_id),
+          rule_set_version: Number(values.rule_set_version),
+          orphan_reply_policy: values.orphan_reply_policy ?? 'quote_fallback',
+          incomplete_album_policy: values.incomplete_album_policy ?? 'drop_incomplete',
+          unsupported_media_policy: values.unsupported_media_policy ?? 'block',
+        },
+        lifecycle: {
+          start_mode: 'start_from_now',
+          failure_order_policy: values.failure_order_policy ?? 'fail_stop',
+          unknown_deadline_seconds: values.unknown_deadline_seconds ?? 900,
+        },
+        retention: {
+          source_event_days: values.source_event_days ?? 30,
+          media_cache_ttl_seconds: values.media_cache_ttl_seconds ?? 86400,
+        },
       };
     }
     if (taskType === 'group_relay') {

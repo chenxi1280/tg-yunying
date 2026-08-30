@@ -1059,9 +1059,31 @@ def dispatch_task(session_factory, task_id: int) -> MessageTask:
         elif task.status == TaskStatus.SENT.value:
             resolve_message_task_issues_if_recovered(session, task)
         audit(session, tenant_id=task.tenant_id, actor="tg-worker", action="执行消息发送", target_type="message_task", target_id=str(task.id), detail=detail)
+        _release_message_task_authority(session, task)
         session.commit()
         session.refresh(task)
         return _attach_operation_issue_status(session, task)
+
+
+def _release_message_task_authority(session: Session, task: MessageTask) -> None:
+    if task.target_type == "private":
+        return
+    target, _group, peer_id = _message_task_target_context(session, task)
+    if not peer_id:
+        return
+    from app.services.task_center.group_mutation_authority import (
+        release_platform_writer_admission,
+    )
+
+    peer_type = "channel" if (target and target.target_type == "channel") else "chat"
+    release_platform_writer_admission(
+        session,
+        task.tenant_id,
+        target_peer_type=peer_type,
+        target_peer_id=str(peer_id),
+        writer_kind="message_task",
+        writer_id=str(task.id),
+    )
 
 
 def _replacement_message_account(session: Session, task: MessageTask, current_account: TgAccount) -> TgAccount | None:
@@ -1198,8 +1220,10 @@ def _evaluate_message_task_gate(
     peer_id: str,
 ):
     from app.services.outbound_target_gate import OutboundGateDiagnosticTarget, evaluate_outbound_target_gate
+    from app.services.outbound_target_gate import OutboundGateBlock
+    from app.services.task_center.group_mutation_authority import ensure_platform_writer_admission
 
-    return evaluate_outbound_target_gate(
+    block = evaluate_outbound_target_gate(
         session,
         target=target,
         group=group,
@@ -1219,6 +1243,20 @@ def _evaluate_message_task_gate(
             target_id=str(task.id),
             actor="tg-worker",
         ),
+    )
+    if block is not None or task.target_type == "private" or not peer_id:
+        return block
+    peer_type = "channel" if (target and target.target_type == "channel") else "chat"
+    allowed, reason = ensure_platform_writer_admission(
+        session,
+        task.tenant_id,
+        target_peer_type=peer_type,
+        target_peer_id=str(peer_id),
+        writer_kind="message_task",
+        writer_id=str(task.id),
+    )
+    return None if allowed else OutboundGateBlock(
+        "group_mutation_authority_denied", reason,
     )
 
 

@@ -19,6 +19,7 @@ from .channel_listener_runtime import drain_channel_listener_runtime
 from .hard_hourly import enabled as hard_hourly_enabled
 from .planner_wake import wake_task_planner
 from .targets import group_from_reference
+from .telegram_update_collector import drain_telegram_update_collector
 
 
 _LOCK = Lock()
@@ -72,9 +73,18 @@ def reset_listener_runtime_cache() -> None:
 
 
 def drain_listener_runtime(session_factory, *, tenant_id: int | None = None, limit: int = 50) -> ListenerRuntimeDrainResult:
+    collector_result = drain_telegram_update_collector(
+        session_factory,
+        tenant_id=tenant_id,
+        limit=limit,
+    )
     with session_factory() as session:
         sources = _listener_sources(session, tenant_id=tenant_id, limit=limit)
-    result = ListenerRuntimeDrainResult(source_count=len(sources))
+    result = ListenerRuntimeDrainResult(
+        source_count=len(sources) + collector_result.source_count,
+        collected_count=collector_result.batch_count + collector_result.reconciled_count,
+        error_count=collector_result.error_count,
+    )
     for source in sources:
         with session_factory() as session:
             _drain_listener_source(session, source, result)

@@ -45,3 +45,6 @@ from .pacing import *  # noqa: F401,F403
 from .source_capacity import *  # noqa: F401,F403
 from .planner_runtime import *  # noqa: F401,F403
 from .task_contract_activation import *  # noqa: F401,F403
+from .telegram_updates import *  # noqa: F401,F403
+from .telegram_authorities import *  # noqa: F401,F403
+from .group_clone import *  # noqa: F401,F403

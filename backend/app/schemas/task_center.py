@@ -15,7 +15,7 @@ from .api import ApiModel
 from .operation_plans import OperationPlanTaskLinkOut
 from .runtime_summary import TaskRuntimeSummaryOut
 
-TaskTypeValue = Literal["group_ai_chat", "group_relay", "group_membership_admission", "channel_view", "channel_like", "channel_comment", "search_click", "search_join_group"]
+TaskTypeValue = Literal["group_ai_chat", "group_relay", "group_membership_admission", "channel_view", "channel_like", "channel_comment", "search_click", "search_join_group", "group_clone"]
 TaskStatusValue = Literal["draft", "pending", "running", "paused", "target_reached", "wrapping_up", "completed", "stopped", "failed", "deleted"]
 ActionStatusValue = Literal["pending", "executing", "success", "failed", "skipped"]
 ReviewStatusValue = Literal["pending", "approved", "rejected", "expired"]
@@ -453,6 +453,112 @@ class GroupRelayConfig(BaseModel):
             self.target_operation_target_ids = [self.target_operation_target_id, *self.target_operation_target_ids]
         self.require_review = False
         return self
+
+
+class GroupCloneSourceConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    internal_group_id: int = Field(gt=0)
+    operation_target_id: int = Field(gt=0)
+    peer_type: Literal["channel"] = "channel"
+    peer_id: str = Field(min_length=1, max_length=120)
+    listener_account_id: int = Field(gt=0)
+    authorization_id: int = Field(gt=0)
+    authorization_mode: Literal["public", "owned", "admin_authorized"]
+
+    @model_validator(mode="after")
+    def validate_source(self) -> "GroupCloneSourceConfig":
+        if not self.peer_id.strip():
+            raise ValueError("source.peer_id 必填")
+        return self
+
+
+class GroupCloneTargetConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    internal_group_id: int = Field(gt=0)
+    operation_target_id: int = Field(gt=0)
+    peer_type: Literal["channel"] = "channel"
+    peer_id: str = Field(min_length=1, max_length=120)
+    control_account_id: int = Field(gt=0)
+    control_authorization_id: int = Field(gt=0)
+
+    @model_validator(mode="after")
+    def validate_target(self) -> "GroupCloneTargetConfig":
+        if not self.peer_id.strip():
+            raise ValueError("target.peer_id 必填")
+        return self
+
+
+class GroupCloneSenderPoolConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    account_ids: list[int] = Field(min_length=1)
+    active_minutes: int = Field(default=30, ge=1, le=1440)
+    guarded_minutes: int = Field(default=120, ge=1, le=10080)
+    eligible_release_minutes: int = Field(default=720, ge=1, le=43200)
+    minimum_tenure_minutes: int = Field(default=60, ge=1, le=10080)
+
+    @model_validator(mode="after")
+    def validate_pool(self) -> "GroupCloneSenderPoolConfig":
+        if len(set(self.account_ids)) != len(self.account_ids):
+            raise ValueError("sender_pool.account_ids 不得重复")
+        if not self.active_minutes < self.guarded_minutes < self.eligible_release_minutes:
+            raise ValueError("sender binding 生命周期必须满足 active < guarded < eligible_release")
+        if self.minimum_tenure_minutes > self.eligible_release_minutes:
+            raise ValueError("minimum_tenure_minutes 不能大于 eligible_release_minutes")
+        return self
+
+
+class GroupClonePacingConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    min_delay_ms: int = Field(default=1000, ge=0, le=300000)
+    max_delay_ms: int = Field(default=6000, ge=0, le=300000)
+    strict_target_order: Literal[True] = True
+
+    @model_validator(mode="after")
+    def validate_delay(self) -> "GroupClonePacingConfig":
+        if self.min_delay_ms > self.max_delay_ms:
+            raise ValueError("pacing.min_delay_ms 不能大于 pacing.max_delay_ms")
+        return self
+
+
+class GroupCloneContentConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    rule_set_id: int = Field(gt=0)
+    rule_set_version: int = Field(gt=0)
+    orphan_reply_policy: Literal["quote_fallback", "drop_subtree", "block_for_review"] = "quote_fallback"
+    incomplete_album_policy: Literal["drop_incomplete", "send_partial_degraded"] = "drop_incomplete"
+    unsupported_media_policy: Literal["block", "manual_review"] = "block"
+
+
+class GroupCloneLifecycleConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    start_mode: Literal["start_from_now"] = "start_from_now"
+    failure_order_policy: Literal["fail_stop", "continue_with_visible_gap"] = "fail_stop"
+    unknown_deadline_seconds: int = Field(default=900, ge=60, le=86400)
+
+
+class GroupCloneRetentionConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_event_days: int = Field(default=30, ge=1, le=365)
+    media_cache_ttl_seconds: int = Field(default=86400, ge=60, le=604800)
+
+
+class GroupCloneConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: GroupCloneSourceConfig
+    target: GroupCloneTargetConfig
+    sender_pool: GroupCloneSenderPoolConfig
+    pacing: GroupClonePacingConfig = Field(default_factory=GroupClonePacingConfig)
+    content: GroupCloneContentConfig
+    lifecycle: GroupCloneLifecycleConfig = Field(default_factory=GroupCloneLifecycleConfig)
+    retention: GroupCloneRetentionConfig = Field(default_factory=GroupCloneRetentionConfig)
 
 
 class ChannelMessageScopeConfig(BaseModel):
@@ -986,6 +1092,74 @@ class GroupRelayTaskConfigUpdate(GroupRelayConfig):
 
 class ChannelViewTaskConfigUpdate(ChannelViewConfig):
     pass
+
+
+class GroupCloneTaskCreate(TaskCreateCommon, GroupCloneConfig):
+    pass
+
+
+class GroupCloneTaskConfigUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    sender_pool: GroupCloneSenderPoolConfig
+    pacing: GroupClonePacingConfig
+    content: GroupCloneContentConfig
+    lifecycle: GroupCloneLifecycleConfig
+    retention: GroupCloneRetentionConfig
+
+
+class GroupClonePrecheckResponse(BaseModel):
+    passed: bool
+    precheck_fingerprint: str = ""
+    authority_version: int = 0
+    hard_blocks: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    source_info: dict = Field(default_factory=dict)
+    target_info: dict = Field(default_factory=dict)
+    sender_pool_info: dict = Field(default_factory=dict)
+
+
+class GroupCloneSequencerHeadDecisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_case_revision: int = 1
+    decision: Literal["accept_visible_gap", "retry_same_mutation", "keep_blocked"]
+    reason: str = Field(..., min_length=1, max_length=255)
+    client_request_id: str = Field(..., min_length=8, max_length=100)
+
+
+class GroupCloneManualReviewDecisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_review_revision: int = Field(ge=1)
+    decision: Literal["release", "drop", "keep_blocked"]
+    reason: str = Field(..., min_length=1, max_length=255)
+    client_request_id: str = Field(..., min_length=8, max_length=100)
+
+
+class GroupCloneCutoverRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    preview_token: str
+    legacy_task_id: str
+    expected_legacy_revision: int
+    route_manifest_hash: str
+    expected_authority_version: int
+    open_action_fingerprint: str
+    client_request_id: str = Field(..., min_length=8, max_length=100)
+    reason: str = Field(..., min_length=1, max_length=255)
+    clone_config: GroupCloneTaskCreate
+
+
+class GroupCloneRollbackRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    preview_token: str
+    clone_task_id: str
+    expected_authority_version: int
+    open_action_fingerprint: str
+    client_request_id: str = Field(..., min_length=8, max_length=100)
+    reason: str = Field(..., min_length=1, max_length=255)
 
 
 class ChannelLikeTaskConfigUpdate(ChannelLikeConfig):

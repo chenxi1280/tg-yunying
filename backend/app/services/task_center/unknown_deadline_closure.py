@@ -186,6 +186,9 @@ def _close_reconcile_case(session: Session, action_id: str) -> None:
 
 
 def _close_business_unknown(session: Session, action: Action) -> None:
+    if action.task_type == "group_clone":
+        _close_group_clone_unknown(session, action)
+        return
     if action.task_type != "search_click":
         return
     payload = dict(action.payload or {})
@@ -206,6 +209,63 @@ def _close_business_unknown(session: Session, action: Action) -> None:
         and obligation.status != "confirmed"
     ):
         obligation.status = "closed_unknown"
+
+
+def _close_group_clone_unknown(session: Session, action: Action) -> None:
+    from app.models.group_clone import (
+        CloneDeliveryObligation,
+        CloneSequencerHeadCase,
+        TelegramGatewayMutationIdentity,
+    )
+
+    obligation = session.get(CloneDeliveryObligation, action.obligation_id)
+    if obligation is None:
+        raise RuntimeError("group_clone_unknown_obligation_missing")
+    obligation.state = "remote_reconcile_only"
+    payload = dict(action.payload or {})
+    identity = session.get(
+        TelegramGatewayMutationIdentity,
+        str(payload.get("gateway_mutation_identity_id") or ""),
+    )
+    if identity is None:
+        raise RuntimeError("group_clone_unknown_identity_missing")
+    identity.state = "unknown"
+    case = _group_clone_unknown_case(session, action, obligation)
+    obligation.sequencer_head_case_id = case.id
+
+
+def _group_clone_unknown_case(session, action, obligation):
+    from app.models import Task
+    from app.models.group_clone import CloneSequencerHeadCase
+
+    existing = session.scalar(select(CloneSequencerHeadCase).where(
+        CloneSequencerHeadCase.task_id == action.task_id,
+        CloneSequencerHeadCase.epoch == obligation.epoch,
+        CloneSequencerHeadCase.sequencer_id == obligation.sequencer_id,
+        CloneSequencerHeadCase.case_kind == DECISION_FACT_KIND,
+    ))
+    if existing is not None:
+        return existing
+    task = session.get(Task, action.task_id)
+    policy = ((task.type_config or {}).get("lifecycle", {}) if task else {}).get(
+        "failure_order_policy", "fail_stop",
+    )
+    accepted = policy == "continue_with_visible_gap"
+    case = CloneSequencerHeadCase(
+        task_id=action.task_id,
+        epoch=obligation.epoch,
+        sequencer_id=obligation.sequencer_id,
+        obligation_id=obligation.id,
+        case_kind=DECISION_FACT_KIND,
+        failure_evidence={"action_id": action.id, "action_status": "closed_unknown"},
+        remote_mutation_started=True,
+        policy_snapshot=policy,
+        state="visible_gap_accepted" if accepted else "waiting_decision",
+        decision_reason="policy_continue_with_visible_gap" if accepted else None,
+    )
+    session.add(case)
+    session.flush()
+    return case
 
 
 __all__ = ["close_unknown_after_deadline"]

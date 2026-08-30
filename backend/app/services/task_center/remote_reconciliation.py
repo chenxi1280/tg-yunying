@@ -113,7 +113,7 @@ def apply_remote_reconcile_evidence(
     replay = _replayed_outcome(case, evidence.result, evidence_hash)
     if replay is not None:
         return replay
-    if case.state not in {"pending", "inconclusive"}:
+    if case.state not in {"pending", "open", "inconclusive"}:
         return _mark_conflict(
             session, case, action, evidence_hash, actor, observed_at,
         )

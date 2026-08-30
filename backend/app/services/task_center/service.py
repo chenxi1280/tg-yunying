@@ -4211,6 +4211,7 @@ def _recover_stale_executing_actions(session: Session, *, timeout_minutes: int =
     )
     recovered += _recover_existing_unknown_membership_actions(session, now, limit=_membership_reprobe_limit(limit))
     recovered += _recover_existing_unknown_search_join_membership_actions(session, now, limit=_membership_reprobe_limit(limit))
+    recovered += _recover_existing_unknown_group_clone_mutations(session, now, limit=limit)
     return recovered
 
 
@@ -4656,6 +4657,35 @@ def _recover_existing_unknown_membership_actions(session: Session, now: datetime
     reprobed_identities: set[tuple[int, int, str]] = set()
     return sum(
         _recover_claimed_unknown_action(session, claim, now=now, reprobed_identities=reprobed_identities)
+        for claim in claims
+    )
+
+
+def _recover_existing_unknown_group_clone_mutations(
+    session: Session,
+    now: datetime,
+    *,
+    limit: int,
+) -> int:
+    next_probe = Action.result["group_clone_probe_next_at"].as_string()
+    claims = claim_recovery_actions(
+        session,
+        conditions=(
+            Action.status == "unknown_after_send",
+            Action.task_type == "group_clone",
+            Action.action_type == "group_clone_mutation",
+            or_(next_probe.is_(None), next_probe <= now.isoformat()),
+        ),
+        order_by=(Action.executed_at.asc().nullsfirst(), Action.id.asc()),
+        now=now,
+        limit=_recovery_batch_limit(limit),
+    )
+    from .group_clone_remote_reconcile import recover_unknown_clone_mutation
+
+    return sum(
+        recover_unknown_clone_mutation(
+            session, claim, gateway=gateway, now=now,
+        )
         for claim in claims
     )
 
@@ -5457,6 +5487,12 @@ def _release_unknown_membership_reprobe_result(
 
 def _activate_pending_tasks(session: Session) -> None:
     for task in session.scalars(select(Task).where(Task.status == "pending", (Task.scheduled_start.is_(None)) | (Task.scheduled_start <= _now()))):
+        if task.type == "group_clone":
+            from .group_clone_source_stream import advance_group_clone_start
+
+            advance_group_clone_start(session, task)
+            if task.status != "running":
+                continue
         task.status = "running"
         task.next_run_at = _now()
         wake_task_planner(

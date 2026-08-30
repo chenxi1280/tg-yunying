@@ -2,6 +2,17 @@
 
 > **2026-08-30 Antigravity CLI AI Provider 冻结合同：** 本轮生产切片先启用独立 `slot-01`，生成类路由中 `gemini-3.5-flash-medium` 为第一优先级、`gemini-3.1-pro-low` 为第二优先级，之后才是既有供应商；语义审查保持独立既有供应商。五账号整体只有每个 Linux user 分别 OAuth、schema POC、健康读回并通过 guarded route apply 后才可称五 slot 完成，禁止复制 OAuth 或用一个 root HOME 冒充五账号。详见 `docs/03-feature-designs/antigravity-cli-server-provider-design.md`。
 
+> **2026-08-30 Telegram 1:1 群组镜像克隆（group_clone / v2_group_clone）专项合同（当前最高优先级）：**
+> 1. 新增独立任务类型 `group_clone`，履约合同版本为 `v2_group_clone`；存量 `group_relay` 保持 `legacy_v1` 不变；
+> 2. 一个任务严格绑定一个源群和一个目标群；同一源发言人稳定映射到一个受控马甲账号，换绑时绝不动态修改马甲账号资料或头像；
+> 3. 采用四类持久化事实模型：`CloneSourceEvent`（源事实与连续 `stream_order_no`）、`CloneSenderBindingHistory`（发言人状态机与部分唯一索引）、`CloneDeliveryObligation`（18种状态全集）、`CloneMessagePart`（不可变 `random_id` 与远端映射）；
+> 4. 平台共享目标群写入权威 `TelegramGroupMutationAuthority`：Clone 必须申请 `exclusive_clone` 独占模式，跨业务拦截其他平台 writer；
+> 5. 平台共享 `TelegramAuthorizationUpdateState`：账号级单 Collector 消费 common updates，任务通过订阅交付消费，根除 PTS 竞争；
+> 6. 目标群全局 Sequencer：基于单调递增拟人延迟与 Reply/Topic/Album 显式 DAG 保序，队头阻塞生成 `CloneSequencerHeadCase` 并支持可审计的 `visible_gap_accepted`；
+> 7. 严格区分 `sender-role`（消息发送与自编辑）与 `control-role`（Topic管理、Pin/Unpin、管理员Delete）；
+> 8. 完整专项合同见 `docs/03-feature-designs/telegram-group-clone-1to1-prd.md`。
+> 9. 当前仅完成文本 NewMessage 主链的本地部分验证，`implementation_status=partial_local_validation`；共享 collector/difference、消息全生命周期与媒体、全平台 authority 接入、cutover/rollback、详情人工处置、PostgreSQL/真实 Telegram QA 均为发布硬阻塞。
+
 > **2026-08-26 批量账号逐账号完整初始化当前合同：** 目标普通分组的normal行由后端强制`normal_full_init_v1`，不能由前端关闭；`new_account/already_authorized/relogin`在新A登录或fresh A probe后原子create-or-attach唯一账号级full initialization，旧`create`只读映射为`new_account`。A完成后父行进入非终态`post_initialization_waiting`并释放login lease，真实Telegram固定2FA、同policy平台+远端姓名/头像、B/SV、C/MY双副本/恢复和Saved Messages E4全部读回前不得计完整成功。历史成功只作为当前gap decision的predecessor，姓名/头像逐项补缺；manual/unknown在原operation上通过current-2FA、恢复邮箱或对账收口，后置失败不得重试整条登录，也不得在随后成功时覆盖目标分组等原失败。2FA enabled/本地密文相等或无provenance legacy ciphertext不证明固定密码，candidate只有经Telegram接受后才可信；固定值和临时secret不得硬编码或进入文档/日志。共享owner必须兼容才attach，策略/权限/capability/账号生命周期漂移显式阻断；未重新进入批量登录的账号不扫描。完整合同见`docs/03-feature-designs/account-batch-post-login-full-initialization-prd.md`；当前已完成本地实现和定向 QA，`implementation_status=implemented_local`、`release_status=not_started`、`production_status=unproven`。
 
 > **2026-08-26 当前合同覆盖以下历史口径：** frozen-N 全量批次创建后，只允许一次外部 `--mode sweep --until-exhausted` start/apply；full sweep 不接受 `--max-accounts`，同一 durable supervisor 必须逐账号串行处理全部 remaining pending 到 `pending=0`。`checkpoint_interval=30` 只用于持久审计、守恒和安全门禁复核，完成后自动继续第 31 项及以后，不等待人工续跑。确定性失败统一进入 `manual_required/deferred_issue` 异常队列并继续；SSH/远端 unknown 先对账同一 operation，仍未知且 runner=0、client=0、runtime=off、A current/Session/generation/身份无漂移、同一 operation 不可重放时才 quarantine 为 `deferred_reconcile`。A 漂移、A/B 双失效、2FA、验证码、C 制品/恢复异常都入统一队列，不修改 A、不以 C 在线顶替。只有 A 无漂移、B/SV、C/MY、双副本、restore probe、Saved Messages remote ID 和断连门禁全部通过才计 `succeeded`；首轮必须输出 succeeded、manual_required、deferred_reconcile/unresolved 与 N 守恒，只有 succeeded 全部完成才算 ABC 完成。

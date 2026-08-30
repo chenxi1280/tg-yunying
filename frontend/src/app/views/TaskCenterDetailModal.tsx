@@ -9,6 +9,7 @@ import { TYPE_LABEL, accountCoverageLabel, errorMessage, formatDateTime, runtime
 import { TaskAccountOnlineSummaryPanel } from './TaskAccountOnlineSummaryPanel';
 import { TaskAIQualityFunnelPanel } from './TaskAIQualityFunnelPanel';
 import { TaskMembershipPanel } from './TaskMembershipPanel';
+import { GroupCloneTaskPanel } from './GroupCloneTaskPanel';
 
 type DetailProfile = {
   hour: number;
@@ -769,6 +770,7 @@ export function TaskCenterDetailModal({
   ];
   const admissionTotal = Number(detail?.membership_admission_phase?.snapshot_total ?? admissionItemPagination.total ?? 0);
   const showAiTab = detail?.task.type === 'group_ai_chat';
+  const showCloneTab = detail?.task.type === 'group_clone';
   const showSearchJoinTab = ['search_click', 'search_join_group'].includes(detail?.task.type || '');
   const showSearchRankDeboostTab = detail?.task.type === 'search_rank_deboost';
   const botMissingReasons = botAvailabilityReasons(telegramBotSettings);
@@ -776,6 +778,17 @@ export function TaskCenterDetailModal({
   const accountCoverage = detail?.task.stats?.account_coverage;
   const dailyFulfillment = accountCoverage?.daily_fulfillment;
   const detailTabs = detail ? [
+    showCloneTab ? {
+      key: 'group-clone',
+      label: '克隆证据与处置',
+      children: (
+        <GroupCloneTaskPanel
+          task={detail.task}
+          canManageTasks={canManageTasks}
+          onChanged={() => onRefreshTask(detail.task)}
+        />
+      ),
+    } : null,
     showSearchJoinTab ? {
       key: 'search-join',
       label: '搜索目标点击统计',

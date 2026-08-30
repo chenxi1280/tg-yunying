@@ -45,6 +45,7 @@ class TelegramGateway:
     """Adapter boundary for Telethon-backed production integration."""
 
     supports_rank_deboost_observation = False
+    supports_group_clone_desired_state_probe = False
 
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
@@ -177,6 +178,112 @@ class TelegramGateway:
         if simulated == "limited":
             return SendResult(False, failure_type=FailureType.ACCOUNT_LIMITED.value, detail="账号临时受限，已暂停派单", remote_mutation_started=False)
         return SendResult(True, remote_message_id=f"tg-{account_id}-{group_id}-{uuid4().hex[:8]}", remote_mutation_started=True)
+
+    def send_raw_mtproto_message(
+        self,
+        peer_id: str,
+        content: str,
+        random_id: int,
+        *,
+        entities: list | None = None,
+        reply_to_msg_id: int | None = None,
+        top_msg_id: int | None = None,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> SendResult:
+        return SendResult(
+            False,
+            failure_type="raw_mtproto_gateway_unavailable",
+            detail="mock gateway 不执行 Group Clone 远程写入",
+            remote_mutation_started=False,
+        )
+
+    def fetch_raw_channel_boundary(
+        self,
+        peer_id: str,
+        *,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> dict[str, int]:
+        raise RuntimeError("mock gateway 不提供 Group Clone Telegram 边界证据")
+
+    def fetch_raw_authorization_update_state(
+        self,
+        *,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ):
+        raise RuntimeError("mock gateway 不提供共享 Telegram Update State")
+
+    def fetch_raw_authorization_difference(
+        self,
+        cursor: dict[str, int],
+        *,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ):
+        raise RuntimeError("mock gateway 不提供共享 Telegram Difference")
+
+    def fetch_raw_channel_difference(
+        self,
+        peer_id: str,
+        pts: int,
+        *,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ):
+        raise RuntimeError("mock gateway 不提供 Group Clone Channel Difference")
+
+    def create_raw_mtproto_forum_topic(
+        self,
+        peer_id: str,
+        title: str,
+        random_id: int,
+        *,
+        icon_color: int | None = None,
+        icon_emoji_id: int | None = None,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> SendResult:
+        return SendResult(
+            False,
+            failure_type="raw_mtproto_gateway_unavailable",
+            detail="mock gateway 不执行 Group Clone Topic 写入",
+            remote_mutation_started=False,
+        )
+
+    def edit_raw_mtproto_message(self, *args, **kwargs) -> SendResult:
+        return self._raw_clone_mutation_unavailable()
+
+    def delete_raw_mtproto_messages(self, *args, **kwargs) -> SendResult:
+        return self._raw_clone_mutation_unavailable()
+
+    def pin_raw_mtproto_message(self, *args, **kwargs) -> SendResult:
+        return self._raw_clone_mutation_unavailable()
+
+    def edit_raw_mtproto_forum_topic(self, *args, **kwargs) -> SendResult:
+        return self._raw_clone_mutation_unavailable()
+
+    def delete_raw_mtproto_forum_topic(self, *args, **kwargs) -> SendResult:
+        return self._raw_clone_mutation_unavailable()
+
+    def fetch_raw_forum_topic(self, *args, **kwargs) -> dict:
+        raise RuntimeError("mock gateway 不提供 Group Clone source Topic 权威读取")
+
+    def fetch_raw_group_admin_rights(self, *args, **kwargs) -> dict:
+        raise RuntimeError("mock gateway 不提供 Telegram 管理员细分权限事实")
+
+    def fetch_raw_pinned_message_id(self, *args, **kwargs) -> int | None:
+        raise RuntimeError("mock gateway 不提供 Group Clone 置顶状态权威读取")
+
+    @staticmethod
+    def _raw_clone_mutation_unavailable() -> SendResult:
+        return SendResult(
+            False,
+            failure_type="raw_mtproto_gateway_unavailable",
+            detail="mock gateway 不执行 Group Clone 生命周期写入",
+            remote_mutation_started=False,
+        )
 
     def check_account_health(
         self,

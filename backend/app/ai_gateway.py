@@ -141,10 +141,18 @@ MODEL_ALIASES = {
     "minimax-m2.7-highspeed": "MiniMax-M2.7-highspeed",
     "minimax m2.5": "MiniMax-M2.5",
     "minimax-m2.5": "MiniMax-M2.5",
+    "gemini 3.7 flash": "gemini-3.7-flash",
+    "gemini-3.7-flash": "gemini-3.7-flash",
+    "gemini 3.6 flash": "gemini-3.6-flash",
+    "gemini-3.6-flash": "gemini-3.6-flash",
+    "gemini 3.5 flash": "gemini-3.5-flash",
+    "gemini-3.5-flash": "gemini-3.5-flash",
     "gemini 3.5 flash medium": "gemini-3.5-flash-medium",
     "gemini-3.5-flash-medium": "gemini-3.5-flash-medium",
     "gemini 3.1 pro low": "gemini-3.1-pro-low",
     "gemini-3.1-pro-low": "gemini-3.1-pro-low",
+    "antigravity gemini 3.7 flash": "gemini-3.7-flash",
+    "antigravity-gemini-3.7-flash": "gemini-3.7-flash",
 }
 DEFAULT_AI_REQUEST_TIMEOUT_SECONDS = 30
 IMAGE_VERIFICATION_MAX_TOKENS = 512
