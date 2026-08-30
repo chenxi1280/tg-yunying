@@ -70,6 +70,7 @@ class ProviderDraftRequest:
     max_tokens: int
     system_prompt: str | None
     timeout: int
+    request_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -294,6 +295,7 @@ def generate_provider_drafts(
             max_tokens=request.max_tokens,
             system_prompt=request.system_prompt,
             timeout=request.timeout,
+            request_id=request.request_id,
         )
     except AiProviderRateLimited as exc:
         defer_rate_limited_provider(provider, lease, exc)
@@ -394,6 +396,12 @@ def ordered_route_providers(session: Session, provider_ids: tuple[int, ...]) -> 
 
 
 def route_transport_failure(error: Exception) -> bool:
+    from app.services.antigravity_provider_client import (
+        AntigravityProviderResultUnknown,
+    )
+
+    if isinstance(error, AntigravityProviderResultUnknown):
+        return False
     if isinstance(error, urllib.error.HTTPError):
         return int(error.code or 0) >= 500
     if isinstance(error, (TimeoutError, ConnectionError, socket.timeout, urllib.error.URLError)):

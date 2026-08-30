@@ -184,6 +184,7 @@ export function AppModals() {
         <Modal className="tg-modal medium" title={modal.type === 'aiProviderEdit' ? '编辑 AI 供应商' : '新增 AI 供应商'} open width={640} onCancel={closeModal} footer={null} destroyOnHidden centered>
       <div className="modal-body">
           <div className="policy-grid">
+            <label>类型<Select value={aiProviderForm.provider_type} onChange={(value) => setAiProviderForm({ ...aiProviderForm, provider_type: value })} options={[{ value: 'openai_compatible', label: 'OpenAI Compatible' }, { value: 'antigravity_cli', label: 'Antigravity CLI' }]} /></label>
             <label>名称<Input value={aiProviderForm.provider_name} onChange={(event) => setAiProviderForm({ ...aiProviderForm, provider_name: event.target.value })} /></label>
             <label>Base URL<Input value={aiProviderForm.base_url} onChange={(event) => setAiProviderForm({ ...aiProviderForm, base_url: event.target.value })} /></label>
             <label>模型名<Input value={aiProviderForm.model_name} onChange={(event) => setAiProviderForm({ ...aiProviderForm, model_name: event.target.value })} /></label>

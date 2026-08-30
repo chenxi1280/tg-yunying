@@ -119,6 +119,13 @@ Repository variables:
 
 ### AI 活跃群 Grok CLI Bridge
 
+### Antigravity CLI AI Provider
+
+- 每个 slot 使用独立 Linux user/HOME、18101..18105 端口、bridge token 和加密 SQLite request ledger；服务只绑定 `infra_default` 的宿主 gateway，不监听公网。
+- `deploy/install-antigravity-provider-slot.sh` 只建立 OS/service 边界，不代替 OAuth。必须以对应 service user 执行 `agy` 并完成模型/schema POC后才启用 unit。
+- 生产生成 route 顺序为 3.5 Flash Medium、3.1 Pro Low、旧 Provider；语义审查 route 不复用同一 slot。started/unknown 请求必须用同一 request ID 对账，禁止 failover 重放。
+- Provider 创建、健康检查、default/route 切换分别保留 preview/apply/readback 和部署 SHA 门禁；端口健康不等于 auth/model/schema 健康。
+
 - 生产 Linux 必须在 `/root/.grok/bin/grok` 安装并完成授权，`grok models` 必须包含 `grok-4.5`。发布 workflow 的 `admin` 部署账号通过 `sudo -n` 在部署前检查 root 的 CLI / 模型，部署后检查 planner 容器内可执行文件；任一检查失败则发布失败，不把 Grok 静默视为可用。
 - 后端镜像必须安装 `git`，供 Bridge 在临时目录执行 `git init`；发布后预检同时检查 planner 容器内 Grok 可执行文件和 `git --version`。
 - `docker-compose.server.yml` 将 `${GROK_CLI_HOME_DIR:-/root/.grok}` 挂载到 backend、planner 和四个 dispatcher；共享锁默认位于 `/root/.grok/tgyunying-cli.lock`，同一服务器只允许一个 Grok 生成进程。

@@ -8,6 +8,7 @@ from app.ai_gateway import AiProviderCredentials, AiUsage
 from app.models import AiProvider
 from app.services._common import ai_gateway
 from app.services.task_center.ai_generation_contract import ProviderRouteDeferred
+from app.services.task_center.antigravity_schemas import antigravity_schema_for_purpose
 from app.services.task_center.ai_provider_attempts import (
     ProviderAttemptClock,
     record_provider_attempt,
@@ -45,6 +46,10 @@ class StructuredProviderRequest:
     model_name: str
     stage: str
     required_model_family: str
+
+    def request_id(self) -> str:
+        job_id = str(self.config.get("_generation_job_id") or "")
+        return f"{job_id}:{self.purpose}:{self.stage or 'primary'}" if job_id else ""
 
 
 @dataclass(frozen=True)
@@ -245,6 +250,8 @@ def call_structured_provider(
             max_tokens=request.max_tokens,
             system_prompt=request.system_prompt,
             timeout=AI_CONTENT_REQUEST_TIMEOUT_SECONDS,
+            request_id=request.request_id(),
+            json_schema=antigravity_schema_for_purpose(request.purpose),
         )
     except ProviderAdmissionBlocked:
         raise

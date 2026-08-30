@@ -27,7 +27,7 @@ function errorText(error: unknown) {
 
 interface SystemActionParams {
   adminUserForm: AdminUserForm;
-  aiProviderForm: { id: number | null; provider_name: string; base_url: string; model_name: string; api_key: string; api_key_header: string; notes: string; credential_enabled: boolean; is_active: boolean };
+  aiProviderForm: { id: number | null; provider_type: string; provider_name: string; base_url: string; model_name: string; api_key: string; api_key_header: string; notes: string; credential_enabled: boolean; is_active: boolean };
   currentUser: CurrentUser | null;
   developerAppForm: { id: number | null; app_name: string; api_id: string; api_hash: string; max_accounts: number; notes: string; is_active: boolean };
   promptTemplateForm: { id: number | null; name: string; template_type: string; content: string; is_active: boolean };
@@ -261,7 +261,6 @@ export function createSystemActions(params: SystemActionParams) {
   function aiProviderPayload() {
     return {
       ...params.aiProviderForm,
-      provider_type: 'openai_compatible',
       api_key: params.aiProviderForm.api_key || undefined,
     };
   }
@@ -626,7 +625,7 @@ export function createSystemActions(params: SystemActionParams) {
       if (!isActiveAiProviderSaveRequest(providerId, requestSeq, signature)) return;
       params.closeModal();
       params.showResult(editing ? 'AI 供应商已保存' : 'AI 供应商已新增', `${saved.provider_name} 当前状态：${saved.health_status}`);
-      params.setAiProviderForm({ id: null, provider_name: 'DeepSeek', base_url: 'https://api.deepseek.com', model_name: 'deepseek-v4-flash', api_key: '', api_key_header: 'Authorization', notes: '', credential_enabled: true, is_active: true });
+      params.setAiProviderForm({ id: null, provider_type: 'openai_compatible', provider_name: 'DeepSeek', base_url: 'https://api.deepseek.com', model_name: 'deepseek-v4-flash', api_key: '', api_key_header: 'Authorization', notes: '', credential_enabled: true, is_active: true });
       await refreshSystemSettingsAfterAction(editing ? 'AI 供应商保存' : 'AI 供应商新增');
     } catch (error) {
       if (!isActiveAiProviderSaveRequest(providerId, requestSeq, signature)) return;
@@ -639,6 +638,7 @@ export function createSystemActions(params: SystemActionParams) {
   function openAiProviderEdit(provider: AiProvider) {
     params.setAiProviderForm({
       id: provider.id,
+      provider_type: provider.provider_type,
       provider_name: provider.provider_name,
       base_url: provider.base_url,
       model_name: provider.model_name,

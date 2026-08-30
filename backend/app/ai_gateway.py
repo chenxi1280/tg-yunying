@@ -8,6 +8,7 @@ import re
 import time
 import urllib.error
 import urllib.request
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
@@ -140,12 +141,33 @@ MODEL_ALIASES = {
     "minimax-m2.7-highspeed": "MiniMax-M2.7-highspeed",
     "minimax m2.5": "MiniMax-M2.5",
     "minimax-m2.5": "MiniMax-M2.5",
+    "gemini 3.5 flash medium": "gemini-3.5-flash-medium",
+    "gemini-3.5-flash-medium": "gemini-3.5-flash-medium",
+    "gemini 3.1 pro low": "gemini-3.1-pro-low",
+    "gemini-3.1-pro-low": "gemini-3.1-pro-low",
 }
 DEFAULT_AI_REQUEST_TIMEOUT_SECONDS = 30
 IMAGE_VERIFICATION_MAX_TOKENS = 512
 IMAGE_VERIFICATION_REASONING_RETRY_MAX_TOKENS = 4096
 MOCK_UNIQUENESS_TOKEN_LENGTH = 200
 MOCK_UNIQUENESS_TOKEN_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+ANTIGRAVITY_DRAFT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "drafts": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"content": {"type": "string"}},
+                "required": ["content"],
+                "additionalProperties": True,
+            },
+        },
+    },
+    "required": ["drafts"],
+    "additionalProperties": False,
+}
+ANTIGRAVITY_STRUCTURED_SCHEMA = {"type": "object", "minProperties": 1}
 
 
 def _deadline_request_timeout(
@@ -297,15 +319,40 @@ class AiGateway:
         selected_account_ids: list[int] | None = None,
         system_prompt: str | None = None,
         timeout: int = DEFAULT_AI_REQUEST_TIMEOUT_SECONDS,
+        request_id: str = "",
     ) -> AiGenerationResult:
         if credentials.base_url.startswith("mock://"):
             return _mock_generation_result(
                 prompt, count, topic=topic, tone=tone, persona_set=persona_set,
                 material_ids=material_ids, selected_account_ids=selected_account_ids,
             )
+        if credentials.provider_type == "antigravity_cli":
+            return self._generate_antigravity_drafts(
+                credentials, prompt, count=count, persona_set=persona_set,
+                material_ids=material_ids, system_prompt=system_prompt,
+                timeout=timeout, request_id=request_id,
+            )
         if credentials.provider_type != "openai_compatible":
             raise RuntimeError(f"unsupported ai provider type: {credentials.provider_type}")
+        return self._generate_openai_drafts(
+            credentials, prompt, count=count, persona_set=persona_set,
+            material_ids=material_ids, temperature=temperature,
+            max_tokens=max_tokens, system_prompt=system_prompt, timeout=timeout,
+        )
 
+    def _generate_openai_drafts(
+        self,
+        credentials: AiProviderCredentials,
+        prompt: str,
+        *,
+        count: int,
+        persona_set: list[str],
+        material_ids: list[int] | None,
+        temperature: float,
+        max_tokens: int,
+        system_prompt: str | None,
+        timeout: int,
+    ) -> AiGenerationResult:
         raw, usage = self._post_openai_compatible(
             credentials,
             prompt,
@@ -331,6 +378,35 @@ class AiGateway:
         )
         return AiGenerationResult(candidates=candidates, usage=usage)
 
+    def _generate_antigravity_drafts(
+        self,
+        credentials: AiProviderCredentials,
+        prompt: str,
+        *,
+        count: int,
+        persona_set: list[str],
+        material_ids: list[int] | None,
+        system_prompt: str | None,
+        timeout: int,
+        request_id: str,
+    ) -> AiGenerationResult:
+        response = self._post_antigravity(
+            credentials,
+            prompt,
+            system_prompt=system_prompt or "你是一个 Telegram 群运营话术助手，只输出用户要求的 JSON。",
+            json_schema=ANTIGRAVITY_DRAFT_SCHEMA,
+            timeout=timeout,
+            request_id=request_id,
+        )
+        candidates = self._parse_candidates_for_prompt(
+            json.dumps(response.payload, ensure_ascii=False),
+            prompt,
+            count,
+            persona_set,
+            material_ids,
+        )
+        return AiGenerationResult(candidates=candidates, usage=response.usage)
+
     def generate_structured(
         self,
         credentials: AiProviderCredentials,
@@ -340,6 +416,8 @@ class AiGateway:
         max_tokens: int,
         system_prompt: str,
         timeout: int = DEFAULT_AI_REQUEST_TIMEOUT_SECONDS,
+        request_id: str = "",
+        json_schema: dict[str, Any] | None = None,
     ) -> tuple[Any, AiUsage]:
         """两阶段生成（PRD §5.4）的结构化 provider 调用。
 
@@ -347,6 +425,16 @@ class AiGateway:
         载荷（dict/list），不映射为 drafts；解析失败按结构性错误抛出，
         不静默降级为行文本。载荷合法性由调用方按 MessageBrief 契约校验。
         """
+        if credentials.provider_type == "antigravity_cli":
+            response = self._post_antigravity(
+                credentials,
+                prompt,
+                system_prompt=system_prompt,
+                json_schema=json_schema or ANTIGRAVITY_STRUCTURED_SCHEMA,
+                timeout=timeout,
+                request_id=request_id,
+            )
+            return response.payload, response.usage
         if credentials.provider_type != "openai_compatible":
             raise RuntimeError(f"unsupported ai provider type: {credentials.provider_type}")
         raw, usage = self._post_openai_compatible(
@@ -423,6 +511,16 @@ class AiGateway:
     def check(self, credentials: AiProviderCredentials) -> tuple[bool, str]:
         if credentials.base_url.startswith("mock://"):
             return True, "mock provider ready"
+        if credentials.provider_type == "antigravity_cli":
+            from app.services.antigravity_provider_client import AntigravityProviderClient
+
+            try:
+                return AntigravityProviderClient().check(
+                    credentials,
+                    timeout=DEFAULT_AI_REQUEST_TIMEOUT_SECONDS,
+                )
+            except Exception as exc:  # noqa: BLE001 - operator-facing typed detail.
+                return False, str(exc)
         try:
             self._post_openai_compatible(
                 credentials,
@@ -439,6 +537,29 @@ class AiGateway:
         if warning:
             return True, warning
         return True, "provider ready; chat capability ready"
+
+    def _post_antigravity(
+        self,
+        credentials: AiProviderCredentials,
+        prompt: str,
+        *,
+        system_prompt: str,
+        json_schema: dict[str, Any],
+        timeout: float,
+        request_id: str,
+    ):
+        from app.services.antigravity_provider_client import AntigravityProviderClient
+
+        stable_id = request_id or str(uuid.uuid4())
+        model_hash = hashlib.sha256(credentials.model_name.encode("utf-8")).hexdigest()[:12]
+        return AntigravityProviderClient().generate(
+            credentials,
+            request_id=f"{stable_id}-{model_hash}",
+            system_prompt=system_prompt,
+            user_prompt=prompt,
+            json_schema=json_schema,
+            timeout=timeout,
+        )
 
     def solve_image_verification(
         self,

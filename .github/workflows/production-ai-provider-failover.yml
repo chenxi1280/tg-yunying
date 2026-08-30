@@ -31,6 +31,11 @@ name: Production AI Provider Failover
         description: Ordered comma-separated provider IDs
         required: true
         type: string
+      purpose:
+        description: Exact provider route purpose
+        required: true
+        default: group_realize_general
+        type: string
       expected_fingerprint:
         description: Exact preview fingerprint for apply
         required: false
@@ -71,6 +76,7 @@ jobs:
           EXPECTED_SHA: ${{ inputs.deployed_sha }}
           TENANT_ID: ${{ inputs.tenant_id }}
           PROVIDER_IDS: ${{ inputs.provider_ids }}
+          PURPOSE: ${{ inputs.purpose }}
           EXPECTED_FINGERPRINT: ${{ inputs.expected_fingerprint }}
           ACTOR: ${{ inputs.actor }}
           APPROVAL_REF: ${{ inputs.approval_ref }}
@@ -83,6 +89,7 @@ jobs:
           [[ "${EXPECTED_SHA}" =~ ^[0-9a-fA-F]{8,40}$ ]]
           [[ "${TENANT_ID}" =~ ^[1-9][0-9]*$ ]]
           [[ "${PROVIDER_IDS}" =~ ^[1-9][0-9]*(,[1-9][0-9]*)+$ ]]
+          [[ "${PURPOSE}" =~ ^[a-z0-9_]{1,64}$ ]]
           [[ "${ACTOR}" =~ ^[A-Za-z0-9._@+-]{1,100}$ ]]
           if [[ -n "${APPROVAL_REF}" ]]; then
             [[ "${APPROVAL_REF}" =~ ^[A-Za-z0-9._:/#-]{1,160}$ ]]
@@ -147,6 +154,7 @@ jobs:
           EXPECTED_FINGERPRINT: ${{ inputs.expected_fingerprint }}
           ACTOR: ${{ inputs.actor }}
           APPROVAL_REF: ${{ inputs.approval_ref }}
+          PURPOSE: ${{ inputs.purpose }}
         run: |
           set -euo pipefail
           provider_args=''
@@ -164,4 +172,4 @@ jobs:
           fi
           ssh production "timeout 240 docker exec -i tgyunying-backend python -m scripts.configure_ai_provider_failover \
             '${OPERATION}' --tenant-id '${TENANT_ID}' ${provider_args} ${apply_args} \
-            --actor '${ACTOR}' ${approval_args}"
+            --actor '${ACTOR}' --purpose '${PURPOSE}' ${approval_args}"

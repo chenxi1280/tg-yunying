@@ -122,6 +122,7 @@ export function defaultTenantForm() {
 export function defaultAiProviderForm() {
   return {
     id: null as number | null,
+    provider_type: 'openai_compatible',
     provider_name: 'DeepSeek',
     base_url: 'https://api.deepseek.com',
     model_name: 'deepseek-v4-flash',

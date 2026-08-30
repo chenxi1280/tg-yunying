@@ -200,8 +200,8 @@ export interface AppState {
   setDeveloperAppForm: (form: { id: number | null; app_name: string; api_id: string; api_hash: string; max_accounts: number; notes: string; is_active: boolean }) => void;
   tenantForm: TenantForm;
   setTenantForm: (form: TenantForm) => void;
-  aiProviderForm: { id: number | null; provider_name: string; base_url: string; model_name: string; api_key: string; api_key_header: string; notes: string; credential_enabled: boolean; is_active: boolean };
-  setAiProviderForm: (form: { id: number | null; provider_name: string; base_url: string; model_name: string; api_key: string; api_key_header: string; notes: string; credential_enabled: boolean; is_active: boolean }) => void;
+  aiProviderForm: { id: number | null; provider_type: string; provider_name: string; base_url: string; model_name: string; api_key: string; api_key_header: string; notes: string; credential_enabled: boolean; is_active: boolean };
+  setAiProviderForm: (form: { id: number | null; provider_type: string; provider_name: string; base_url: string; model_name: string; api_key: string; api_key_header: string; notes: string; credential_enabled: boolean; is_active: boolean }) => void;
   promptTemplateForm: { id: number | null; name: string; template_type: string; content: string; is_active: boolean };
   setPromptTemplateForm: (form: { id: number | null; name: string; template_type: string; content: string; is_active: boolean }) => void;
   materialForm: {

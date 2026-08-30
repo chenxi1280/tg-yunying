@@ -1171,6 +1171,7 @@ def _request_group_provider_candidates(
             _content_max_tokens(setting.max_tokens, count, purpose),
             bundle.system_prompt,
             AI_CONTENT_REQUEST_TIMEOUT_SECONDS,
+            _provider_request_id(config, purpose, stage),
         ),
         policy=_ProviderCandidatePolicy(
             model_name,
@@ -1194,6 +1195,11 @@ def _request_group_provider_candidates(
         ),
     )
     return result, started_at
+
+
+def _provider_request_id(config: dict, purpose: str, stage: str) -> str:
+    job_id = str(config.get("_generation_job_id") or "")
+    return f"{job_id}:{purpose}:{stage or 'primary'}" if job_id else ""
 
 
 def _generate_grok_stage(

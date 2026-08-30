@@ -19,7 +19,7 @@ from app.services._common import _now, audit
 from app.services.ai_config import AI_PROVIDER_RECHECK_REQUIRED, check_ai_provider
 
 
-ROUTE_PURPOSE = "group_realize_general"
+DEFAULT_ROUTE_PURPOSE = "group_realize_general"
 SCRIPT_VERSION = "ai_provider_failover_v1"
 
 
@@ -31,6 +31,7 @@ class Options:
     expected_fingerprint: str
     actor: str
     approval_ref: str
+    purpose: str = DEFAULT_ROUTE_PURPOSE
 
 
 def main() -> None:
@@ -61,6 +62,7 @@ def _options() -> Options:
     parser.add_argument("--expected-fingerprint", default="")
     parser.add_argument("--actor", default="codex-production-remediation")
     parser.add_argument("--approval-ref", default="")
+    parser.add_argument("--purpose", default=DEFAULT_ROUTE_PURPOSE)
     args = parser.parse_args()
     provider_ids = tuple(dict.fromkeys(args.provider_id))
     if len(provider_ids) < 2:
@@ -78,6 +80,7 @@ def _options() -> Options:
         args.expected_fingerprint,
         args.actor,
         args.approval_ref,
+        args.purpose,
     )
 
 
@@ -286,7 +289,7 @@ def _cutover_readback(options: Options) -> dict:
 def _route_snapshot(session, options: Options, *, lock: bool) -> dict:  # noqa: ANN001
     providers = _providers(session, options.provider_ids, lock=lock)
     setting = _setting(session, options.tenant_id, lock=lock)
-    active = _active_route(session, options.tenant_id, lock=lock)
+    active = _active_route(session, options.tenant_id, options.purpose, lock=lock)
     old_route = _route_row(session, active, lock=lock) if active else None
     desired_items = [
         {"priority": priority, "provider_id": provider.id, "model_name": provider.model_name}
@@ -296,6 +299,7 @@ def _route_snapshot(session, options: Options, *, lock: bool) -> dict:  # noqa: 
         "version": SCRIPT_VERSION,
         "operation": "route",
         "tenant_id": options.tenant_id,
+        "purpose": options.purpose,
         "providers": [_provider_row(provider) for provider in providers],
         "setting": _setting_row(setting),
         "old_route": old_route,
@@ -327,17 +331,17 @@ def _replace_active_route(
     options: Options,
     snapshot: dict,
 ) -> TenantAiProviderRouteSet:  # noqa: ANN001
-    active = _active_route(session, options.tenant_id, lock=True)
+    active = _active_route(session, options.tenant_id, options.purpose, lock=True)
     if active:
         active.status = "retired"
         session.flush()
     revision = int(session.scalar(select(func.max(TenantAiProviderRouteSet.revision)).where(
         TenantAiProviderRouteSet.tenant_id == options.tenant_id,
-        TenantAiProviderRouteSet.purpose == ROUTE_PURPOSE,
+        TenantAiProviderRouteSet.purpose == options.purpose,
     )) or 0) + 1
     route = TenantAiProviderRouteSet(
         tenant_id=options.tenant_id,
-        purpose=ROUTE_PURPOSE,
+        purpose=options.purpose,
         revision=revision,
         status="active",
         content_hash=snapshot["desired_hash"],
@@ -411,10 +415,10 @@ def _setting(session, tenant_id: int, *, lock: bool) -> TenantAiSetting:  # noqa
     return setting
 
 
-def _active_route(session, tenant_id: int, *, lock: bool):  # noqa: ANN001
+def _active_route(session, tenant_id: int, purpose: str, *, lock: bool):  # noqa: ANN001
     statement = select(TenantAiProviderRouteSet).where(
         TenantAiProviderRouteSet.tenant_id == tenant_id,
-        TenantAiProviderRouteSet.purpose == ROUTE_PURPOSE,
+        TenantAiProviderRouteSet.purpose == purpose,
         TenantAiProviderRouteSet.status == "active",
     )
     if lock:

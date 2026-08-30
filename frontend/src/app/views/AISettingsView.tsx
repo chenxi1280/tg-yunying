@@ -174,11 +174,11 @@ export default function AISettingsView({
         title="AI 供应商"
         extra={canManageAi ? <Button type="primary" onClick={onCreateProvider}>新增供应商</Button> : undefined}
       >
-        <Typography.Text type="secondary">MiMo / DeepSeek 使用 OpenAI-Compatible 接口，Key 加密保存</Typography.Text>
+        <Typography.Text type="secondary">支持 OpenAI-Compatible 与显式 Antigravity CLI Provider；内部 bridge token 加密保存</Typography.Text>
         <div className="cards-grid developer-grid">
           {!aiProviders.length && (
             <Empty description="还没有 AI 供应商">
-              <Typography.Paragraph type="secondary">请配置真实 OpenAI-Compatible Base URL、模型名和 API Key 后再启用 AI 内容生成。</Typography.Paragraph>
+              <Typography.Paragraph type="secondary">请配置真实 Provider 类型、内部 Base URL、模型名和凭证后再启用 AI 内容生成。</Typography.Paragraph>
               {canManageAi && <Button type="primary" onClick={onCreateProvider}>新增供应商</Button>}
             </Empty>
           )}

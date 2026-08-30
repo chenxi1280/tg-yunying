@@ -194,3 +194,10 @@ prune_old_releases
 
 echo "Release ${RELEASE_ID} is live"
 echo "current -> $(readlink -f "$CURRENT_LINK")"
+
+for slot_unit in /etc/systemd/system/tgyunying-antigravity-slot-*.service; do
+  [[ -f "${slot_unit}" ]] || continue
+  unit_name="$(basename "${slot_unit}")"
+  systemctl restart "${unit_name}"
+  systemctl is-active --quiet "${unit_name}"
+done
