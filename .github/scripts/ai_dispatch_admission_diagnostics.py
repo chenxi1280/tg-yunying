@@ -396,12 +396,10 @@ GROUP_QUERY = text("""
            t.name AS task_name, t.id AS task_id
     FROM tg_groups AS g
     JOIN tasks AS t ON t.deleted_at IS NULL AND t.type = 'group_ai_chat'
-      AND (
-        (t.type_config ->> 'target_group_id')::text = g.id::text
-        OR (t.type_config ->> 'target_operation_target_id')::text = g.operation_target_id::text
-      )
+      AND (t.type_config ->> 'target_group_id')::text = g.id::text
     ORDER BY t.name
 """)
+
 
 
 def main() -> None:
