@@ -66,7 +66,7 @@ def trigger_group_rescue(
     operation_target_id: int | None = None,
 ) -> GroupRescueResult:
     tenant = session.get(Tenant, task.tenant_id)
-    config_error = _rescue_config_error(session, tenant)
+    config_error = _rescue_config_error(session, tenant, task)
     if config_error:
         return GroupRescueResult(RESCUE_STATUS_UNCONFIGURED, config_error)
     group, route_error = _canonical_rescue_group(session, task, group, operation_target_id)
@@ -133,7 +133,7 @@ def refresh_group_rescue_action(
     operation_target_id: int | None,
 ) -> GroupRescueResult:
     tenant = session.get(Tenant, task.tenant_id)
-    config_error = _rescue_config_error(session, tenant)
+    config_error = _rescue_config_error(session, tenant, task)
     if config_error:
         return GroupRescueResult(RESCUE_STATUS_UNCONFIGURED, config_error)
     group, route_error = _canonical_rescue_group(session, task, group, operation_target_id)
@@ -143,7 +143,7 @@ def refresh_group_rescue_action(
         payload = _rescue_payload(session, tenant, task, group, trigger_account_id, trigger_reason, operation_target_id)
     except ValueError as exc:
         return GroupRescueResult(RESCUE_STATUS_UNCONFIGURED, str(exc))
-    action.account_id = tenant.group_rescue_admin_account_id
+    action.account_id = rescue_admin_account_id_for_task(session, task)
     action.action_type = "invite_group_account"
     action.task_lifecycle_epoch = int(task.task_lifecycle_epoch or 1)
     action.payload = payload.model_dump(mode="json")
@@ -174,7 +174,7 @@ def _create_rescue_action(
         task_id=task.id,
         task_type=task.type,
         action_type="invite_group_account",
-        account_id=tenant.group_rescue_admin_account_id,
+        account_id=rescue_admin_account_id_for_task(session, task),
         task_lifecycle_epoch=int(task.task_lifecycle_epoch or 1),
         scheduled_at=_now(),
         status="pending",
@@ -232,7 +232,7 @@ def _rescue_action_needs_refresh(session: Session, tenant: Tenant, action: Actio
         return False
     if action.action_type != "invite_group_account":
         return True
-    if int(action.account_id or 0) != int(tenant.group_rescue_admin_account_id or 0):
+    if int(action.account_id or 0) != rescue_admin_account_id_for_task(session, task):
         return True
     payload = action.payload if isinstance(action.payload, dict) else {}
     if str(payload.get("target_account_ref") or "") != _target_account_invite_ref(session, tenant, trigger_account_id):
@@ -264,12 +264,26 @@ def _record_rescue_admin_rate_limit(task: Task, retry_at: datetime, detail: str)
     task.stats = stats
 
 
-def _rescue_config_error(session: Session, tenant: Tenant | None) -> str:
+def rescue_admin_account_id_for_task(session: Session, task: Task) -> int:
+    config = task.type_config if isinstance(task.type_config, dict) else {}
+    override = _payload_int(config, "group_rescue_admin_account_id")
+    if override:
+        return override
+    tenant = session.get(Tenant, task.tenant_id)
+    return int(tenant.group_rescue_admin_account_id or 0) if tenant else 0
+
+
+def _rescue_config_error(
+    session: Session,
+    tenant: Tenant | None,
+    task: Task,
+) -> str:
     if not tenant or not tenant.group_rescue_enabled:
         return "救援配置缺失：未启用群聊救援"
-    if not tenant.group_rescue_admin_account_id:
+    account_id = rescue_admin_account_id_for_task(session, task)
+    if not account_id:
         return "救援配置缺失：未选择救援管理员账号"
-    account = session.get(TgAccount, tenant.group_rescue_admin_account_id)
+    account = session.get(TgAccount, account_id)
     if not account or account.tenant_id != tenant.id or account.deleted_at is not None:
         return "救援配置缺失：救援管理员账号不存在"
     if account.status != AccountStatus.ACTIVE.value or not account.session_ciphertext:

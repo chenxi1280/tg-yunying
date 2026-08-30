@@ -183,3 +183,109 @@ AI 活群执行顺序固定为：配置的 `group_ai_prejoin_channel_ids` 全部
 - QA：先提交失败回归，再验证允许/禁止重建矩阵及目标错绑 preview/apply。
 - Product：按本 PRD 逐项验收，不把 qa_pass 当产品接受。
 - Prod diagnosis：发布后以精确任务链和 Telegram typed remote fact 复核；未达到 E4 时保持 `production_fixed=unproven`。
+
+## 13. 成都救援管理员错绑与 listener 远端失真补充（2026-08-30）
+
+### 13.1 新增用户事实与生产复现
+
+用户在 Telegram Desktop 中打开“成都怡红院”，明确说明当前账号已经是群管理员，并要求继续修复。该人工观察只证明桌面账号可访问目标群，不能直接证明生产 `Tenant.group_rescue_admin_account_id` 指向同一 Session。
+
+生产只读关联得到以下事实：
+
+1. Task、OperationTarget、TgGroup 和 125 条当前 epoch 救援 Action 的目标引用均解析为同一个 `CD_yhy` peer，本轮不是 target/group 再次错绑；
+2. 当前生产救援 Session 与截图账号身份不一致，且该 Session 对目标 peer 的参与者读取为非成员，因此历史邀请必然缺少管理员权限；
+3. 生产存在两条本地账号行映射到截图中的同一 Telegram 身份；两条远端均为 `ChannelParticipantAdmin`，具有 `invite_users` 与 `ban_users` 权限，但只有 display 精确匹配、current authorization 健康且零 open Action 的行可安全冻结为专职救援账号；
+4. 当前 listener source 的本地投影为在线/可用，远端 `GetParticipant` 与 GetHistory 却返回 private/banned；排除救援身份后，另有多个不同 Telegram 身份的账号通过成员和 GetHistory 只读验证；
+5. 当前 epoch 的救援 Action 中，113 条已进入 Gateway、journal 为 recorded 但 `remote_mutation_state=unknown`，不得因管理员配置修正而原地恢复 pending。
+
+### 13.2 救援管理员绑定合同
+
+`group_rescue_admin_account_id` 是本地账号行，不是昵称或 Telegram 身份的别名。本次只证明候选是 exact target 的管理员，因此新增 Task `type_config.group_rescue_admin_account_id` 作为目标级覆盖，Tenant 字段仅保留 legacy fallback；禁止凭一个群的 rights 改写 tenant 全局管理员并影响其他群。针对生产事故的管理员切换必须走受保护的 `preview -> apply -> readback`，并冻结：
+
+- exact tenant、task、epoch、config revision、operation target、group；
+- 当前救援账号行、候选救援账号行及二者 authorization generation；
+- 候选账号未删除、在线、Session 存在、current authorization 为 current/healthy/active；
+- 候选 Session 的远端 self identity 摘要；
+- 三种目标引用解析到同一 peer；
+- 候选对该 peer 的参与者类型为 admin/creator，且 `invite_users=true`；需要解除群限制时还必须 `ban_users=true`；
+- 候选账号全局 open Action 数为 0，避免切为专职救援后使普通业务 Action 被 `rescue_admin_reserved` 跳过；
+- 同一远端 self identity 的其他本地行只作为重复身份风险记录，不得同时充当第二个覆盖身份或 listener 来扩大完成分母。
+
+候选只在该 Task/target 的救援 claim 中保留；它仍可按既有合同服务其他任务，不能因 target 级覆盖而从 tenant 全局账号池或其他任务 coverage 分母移除。
+
+apply 前必须锁定 Task，复核 deployed SHA、预览 fingerprint、当前 Task 覆盖值/legacy fallback、候选 authorization/session 摘要、open Action 数、目标引用和远端 rights 均无漂移。apply 只修改 exact Task 的救援账号覆盖并写 AuditLog；不触碰 Tenant 全局管理员、其他 task、账号、Action/Attempt 或 Telegram。独立 readback 必须再次读取 Task 覆盖并用新 Session 复核远端 self/peer/admin rights。
+
+普通设置 API 现有“在线 + Session”校验仍可用于日常配置，但不能代替本次目标特定的远端管理员证明；不得为了让设置保存成功而静默降级远端校验。
+
+### 13.3 历史 unknown 救援 Action 的恢复合同
+
+管理员绑定修正不构成旧远端结果的对账证据。所有已有 Gateway-started、`closed_unknown|unknown_after_send`、journal unknown 的救援 Action、Attempt 和 evidence journal 保持不可变，禁止：
+
+- 把原 Action 改回 pending；
+- 清空 Attempt 或 Gateway started；
+- 复用原 gateway request identity；
+- 仅凭当前管理员权限或错误文案推断旧邀请未发生；
+- 批量把 unknown 改成 failed 后调用现有 refresh 路径。
+
+受保护恢复按 exact Task/current epoch/current group 扫描 admission item 与其救援 Action，并由新管理员对每个目标账号做只读当前成员核对：
+
+```text
+old rescue Action/Attempt/journal (immutable)
+  -> admin resolves frozen target_account_ref
+  -> GetParticipant(target peer, target account)
+     -> member: append membership_observed/reconcile fact; admission resumes without invite
+     -> UserNotParticipant: create replacement invite_group_account with new Action ID and gateway request identity
+     -> resolve/permission/FloodWait/transport unknown: keep blocked; no replacement
+```
+
+replacement 必须绑定 current task epoch、canonical group/target、当前救援账号、原 trigger account，并用 `source_action_id + current_epoch + recovery_manifest_hash` 形成唯一 dedupe；旧 Action 保留，admission item 只在同一事务 CAS 改绑 replacement。重复 apply 不得创建第二条 replacement。
+
+只读成员核对发生 FloodWait 时保存明确 checkpoint 并停止本批；不得把未探测项目当缺席。若目标已是成员，只有 target-account 精确成员事实才允许推进 admission；管理员可邀请、invite API success 或本地 `TgGroupAccount` 均不单独确认目标成员。
+
+### 13.4 新邀请失败的 mutation-state 语义
+
+Gateway 对 `InviteToChannelRequest` 的异常必须保留具体错误分类。只有 Telegram 在请求接受前明确拒绝的类型（例如 admin required、当前调用账号无法访问目标 peer、目标实体解析失败）才能返回 `remote_mutation_started=false`；超时、连接中断、RPC 结果丢失或无法判断是否已受理继续返回 unknown。不得仅按中文错误文本包含“权限”统一断言 false。
+
+新邀请确定失败且 `remote_mutation_started=false` 时可以形成新的失败事实并由显式恢复重规划；unknown 继续进入 RemoteReconcileCase，不自动重发。
+
+### 13.5 listener 账号合同
+
+listener 选择不能只相信 `TgGroupAccount.can_send/is_listener` 和账号在线投影。目标群已有 listener error 或 source 连续 private/banned 时，恢复必须在不发送消息的情况下验证候选：
+
+1. 候选不是救援管理员行，也不与救援管理员共享同一远端 self identity；
+2. 候选 current authorization 健康、Session 已授权；
+3. 候选对 canonical target 的 `GetParticipant` 成功；
+4. GetHistory 最小只读请求成功；
+5. exact Task 的 `history_fetch_account_id` 通过 config revision/CAS 和审计更新，或由 runtime 使用带远端失败证据的有界 failover；本次生产恢复采用前者，避免在未完成通用 failover 设计时扩大范围。
+
+旧 listener source、cursor 与错误记录不删除。新 source 必须从当前持久 cursor 按现有连续水位规则继续；只有新 context message/cursor readback 才证明 listener 恢复，设置字段 readback 不等于 E4。
+
+### 13.6 本次受保护变更范围与顺序
+
+本次精确顺序固定为：
+
+1. preview 冻结当前部署 SHA、Task/epoch/revision、target/group、旧/新救援账号、远端 rights、零 open Action、listener 候选、113 条 unknown 与其不可回放集合；
+2. apply 以同一 fingerprint 写入 exact Task 的救援账号覆盖，并把已远端验证的不同身份 listener 写入 `history_fetch_account_id`，推进 config revision，写单一恢复审计；Tenant 全局管理员与其他 Task 保持不变；
+3. 独立 readback 核对救援绑定、Task config revision、listener Session 的成员/GetHistory、neighbor tenant/task 未变化；
+4. 只读构建成员恢复 manifest；只对 `UserNotParticipant` 且无 replacement 的项目追加新救援 Action；不确定项保持 blocked；
+5. Dispatcher 按新 Action 执行邀请，随后目标账号自己的 membership probe 形成 `membership_observed`；
+6. listener 产生新上下文事实后，Planner/Generation/Dispatcher 继续原任务；最终按 due/coverage/typed remote facts 验收。
+
+本次不修复账号初始化，不清理重复本地账号行，不对其他 AI 活群任务批量切换管理员或 listener，不删除旧 unknown。
+
+### 13.7 QA 与验收补充
+
+- 设置恢复 preview：候选昵称相同但远端身份不同、同身份多本地行、候选有 open Action、非成员、无 invite rights、peer 漂移、revision/SHA 漂移均阻断。
+- apply：Tenant/Task 锁和 fingerprint CAS；重复 apply 幂等；AuditLog 含 approval reference 与 before/after hash，不含账号、Session、AuthKey、手机号或 target ref 明文。
+- unknown 恢复：旧 Action/Attempt/journal 字段逐列不变；member/absent/inconclusive 三分支；只有 absent 创建唯一 replacement；重复 apply 零新增。
+- Gateway：确定 pre-accept rejection 为 false；timeout/connection reset 为 unknown；错误分类不靠中文模糊匹配。
+- listener：当前本地可用但远端 private 的账号不能继续选中；救援同 identity 的重复行排除；验证通过候选写入后从既有 cursor 连续采集。
+- Release Gate：定向 no-PostgreSQL、真实 PostgreSQL/CAS、完整 CI、部署 SHA、受保护 preview/apply/readback、远端成员与 listener context 事实分别提供证据。
+- 状态语言：配置与 revision 读回只能写 `persisted_verified`；replacement Action 入队只能写 `recovery_scheduled`；目标账号成员事实为 `remote_effect_verified`；原 Task 的 due/coverage 和 context/消息事实全部闭合后才允许 `production_fixed`。
+
+### 13.8 Product Design Complete 再自检
+
+- 已覆盖用户新增事实“截图账号已是管理员”，并区分桌面观察、生产 Session identity 和远端 rights。
+- 已覆盖救援配置、重复身份、本地 open Action、目标解析、listener、旧 unknown、replacement 幂等、并发/CAS、FloodWait、审计、敏感信息、回滚和 E4。
+- 已明确旧 unknown 不原地重试、不修改账号初始化、不扩大其他任务。
+- `design_status=product_design_complete` 保持成立；可进入 dev，但必须先更新数据流索引并按本节 Product Handoff 实现。

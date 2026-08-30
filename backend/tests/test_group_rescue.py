@@ -1422,6 +1422,82 @@ def test_invite_account_to_group_reports_unresolvable_account(monkeypatch) -> No
     assert result.remote_mutation_started is False
 
 
+@pytest.mark.no_postgres
+@pytest.mark.parametrize("error_name", ["ChatAdminRequiredError", "ChannelPrivateError"])
+def test_invite_account_deterministic_rejection_is_pre_accept(
+    monkeypatch,
+    error_name: str,
+) -> None:
+    from telethon import errors
+
+    gateway = TelethonTelegramGateway()
+
+    class FakeClient:
+        async def is_user_authorized(self) -> bool:
+            return True
+
+        async def get_entity(self, _username: str):
+            return SimpleNamespace(id=11)
+
+        async def __call__(self, _request):
+            raise getattr(errors, error_name)(request=None)
+
+    async def fake_client(_credentials, _raw_session):
+        return FakeClient()
+
+    async def fake_target(_client, _peer_id, *, group_id=0):
+        return SimpleNamespace(id=7)
+
+    monkeypatch.setattr(gateway, "_get_or_create_client", fake_client)
+    monkeypatch.setattr("app.integrations.telegram.gateway.resolve_telethon_target", fake_target)
+
+    result = gateway._run(gateway._invite_account_to_group_async(
+        "raw-session",
+        "-1007",
+        "@target_user",
+        DeveloperAppCredentials(app_id=1, api_id=123, api_hash="hash", credentials_version=1),
+    ))
+
+    assert result.ok is False
+    assert result.failure_type == FailureType.GROUP_PERMISSION_DENIED.value
+    assert result.remote_mutation_started is False
+
+
+@pytest.mark.no_postgres
+def test_invite_account_unknown_transport_result_stays_unknown(monkeypatch) -> None:
+    gateway = TelethonTelegramGateway()
+
+    class FakeClient:
+        async def is_user_authorized(self) -> bool:
+            return True
+
+        async def get_entity(self, _username: str):
+            return SimpleNamespace(id=11)
+
+        async def __call__(self, _request):
+            raise ConnectionError("transport disconnected")
+
+    async def fake_client(_credentials, _raw_session):
+        return FakeClient()
+
+    async def fake_target(_client, _peer_id, *, group_id=0):
+        return SimpleNamespace(id=7)
+
+    monkeypatch.setattr(gateway, "_get_or_create_client", fake_client)
+    monkeypatch.setattr("app.integrations.telegram.gateway.resolve_telethon_target", fake_target)
+
+    result = gateway._run(gateway._invite_account_to_group_async(
+        "raw-session",
+        "-1007",
+        "@target_user",
+        DeveloperAppCredentials(app_id=1, api_id=123, api_hash="hash", credentials_version=1),
+    ))
+
+    assert result.ok is False
+    assert result.failure_type == FailureType.UNKNOWN.value
+    assert result.remote_mutation_started is None
+
+
 def test_export_group_invite_link_creates_rescue_titled_link(monkeypatch) -> None:
     gateway = TelethonTelegramGateway()
     seen_requests: list[object] = []

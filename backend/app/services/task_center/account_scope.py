@@ -194,6 +194,13 @@ def _scope_account_ids(
         if eligible_ids is None
         else eligible_ids
     )
+    task_rescue_admin_id = _task_rescue_admin_id(task)
+    if task_rescue_admin_id:
+        eligible_ids = [
+            account_id
+            for account_id in eligible_ids
+            if account_id != task_rescue_admin_id
+        ]
     selection_mode = str((task.account_config or {}).get("selection_mode") or "all")
     if selection_mode == "all":
         return eligible_ids
@@ -214,6 +221,13 @@ def _scope_account_ids(
         if str(account_id).isdigit()
     }
     return [account_id for account_id in eligible_ids if account_id in configured_ids]
+
+
+def _task_rescue_admin_id(task: Task) -> int:
+    try:
+        return int((task.type_config or {}).get("group_rescue_admin_account_id") or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def scoped_account_ids(session: Session, task: Task) -> list[int]:

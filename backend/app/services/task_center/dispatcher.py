@@ -117,7 +117,7 @@ from .executors.channel_comment_budget import (
     resolved_total_comment_limit as _resolved_total_comment_limit,
     total_comment_action_count as _total_comment_action_count,
 )
-from .group_rescue import GROUP_RESCUE_FAILURE_THRESHOLD, infer_rescue_admin_rate_limit, permission_failure_count_for_send_action, refresh_group_rescue_action, trigger_group_rescue
+from .group_rescue import GROUP_RESCUE_FAILURE_THRESHOLD, infer_rescue_admin_rate_limit, permission_failure_count_for_send_action, refresh_group_rescue_action, rescue_admin_account_id_for_task, trigger_group_rescue
 from .group_bot_confirmation_refresh import (
     LiveConfirmationRecipientAmbiguousError,
     LiveConfirmationRefreshContext,
@@ -1370,8 +1370,10 @@ def _account_bound_channel_fulfillment(
 def _is_reserved_rescue_admin_action(session: Session, action: Action, account: TgAccount) -> bool:
     if action.action_type in {"invite_group_bot", "invite_group_account"}:
         return False
-    tenant = session.get(Tenant, action.tenant_id)
-    return bool(tenant and tenant.group_rescue_admin_account_id and int(tenant.group_rescue_admin_account_id) == int(account.id))
+    task = session.get(Task, action.task_id)
+    if task is None:
+        return False
+    return rescue_admin_account_id_for_task(session, task) == int(account.id)
 
 
 def _migrate_deprecated_group_rescue_action(session: Session, action: Action) -> bool:
@@ -1412,13 +1414,16 @@ def _refresh_stale_invite_group_account_action(session: Session, action: Action)
     except (ValidationError, ValueError) as exc:
         _fail(action, FailureType.UNKNOWN.value, payload_error_message(exc), validation_stage="rescue")
         return False
-    tenant = session.get(Tenant, action.tenant_id)
-    if not tenant or not tenant.group_rescue_admin_account_id:
+    task = session.get(Task, action.task_id) if action.task_id else None
+    if task is None:
+        _fail(action, FailureType.UNKNOWN.value, "救援配置缺失：任务不存在", validation_stage="rescue")
+        return False
+    rescue_admin_id = rescue_admin_account_id_for_task(session, task)
+    if not rescue_admin_id:
         _fail(action, FailureType.UNKNOWN.value, "救援配置缺失：未选择救援管理员账号", validation_stage="rescue")
         return False
-    if int(action.account_id or 0) == int(tenant.group_rescue_admin_account_id):
+    if int(action.account_id or 0) == rescue_admin_id:
         return True
-    task = session.get(Task, action.task_id) if action.task_id else None
     group = session.get(TgGroup, payload.group_id) if payload.group_id else None
     if not task or not group:
         _fail(action, FailureType.PEER_INVALID.value, "群聊救援动作缺少目标群，无法刷新执行账号", validation_stage="rescue")

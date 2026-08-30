@@ -66,6 +66,13 @@ ACCOUNT_HEALTH_DISCONNECT_TIMEOUT_SECONDS = 5.0
 ACCOUNT_HEALTH_RUN_GRACE_SECONDS = 1.0
 ACCOUNT_LOGIN_OPERATION_TIMEOUT_SECONDS = 60.0
 PROFILE_REMOTE_MISMATCH = "profile_remote_mismatch"
+INVITE_PRE_ACCEPT_FAILURE_TYPES = frozenset({
+    FailureType.ACCOUNT_LIMITED.value,
+    FailureType.FLOOD_WAIT.value,
+    FailureType.GROUP_PERMISSION_DENIED.value,
+    FailureType.PEER_INVALID.value,
+    FailureType.SLOWMODE.value,
+})
 logger = logging.getLogger(__name__)
 
 
@@ -441,6 +448,25 @@ def _invite_account_error_detail(detail: str) -> str:
     if "username" in normalized or "phone" in normalized or "could not find" in normalized or "目标实体无法解析" in detail:
         return "被救援账号无法解析或目标群不可访问"
     return detail
+
+
+def _invite_remote_mutation_started(mapped: SendResult) -> bool | None:
+    if mapped.failure_type in INVITE_PRE_ACCEPT_FAILURE_TYPES:
+        return False
+    return None
+
+
+def _invite_error_mapping(exc: Exception, mapped: SendResult) -> SendResult:
+    from telethon import errors
+
+    channel_private_error = getattr(errors, "ChannelPrivateError", None)
+    if channel_private_error and isinstance(exc, channel_private_error):
+        return SendResult(
+            False,
+            failure_type=FailureType.GROUP_PERMISSION_DENIED.value,
+            detail="群无权限或账号不可发言",
+        )
+    return mapped
 
 
 def _linked_chat_from_full_channel(full: Any, linked_id: int) -> Any | None:
@@ -2172,7 +2198,7 @@ class TelethonTelegramGateway(TelegramGateway):
             target = await resolve_telethon_target(client, group_peer_id, group_id=0)
             user = await client.get_entity(target_account_ref.strip().lstrip("@"))
         except Exception as exc:
-            mapped = self._map_send_error(exc)
+            mapped = _invite_error_mapping(exc, self._map_send_error(exc))
             detail = _invite_account_error_detail(mapped.detail or str(exc))
             return OperationResult(
                 False,
@@ -2187,16 +2213,14 @@ class TelethonTelegramGateway(TelegramGateway):
         except Exception as exc:
             if _is_account_already_in_group(exc):
                 return OperationResult(True, "已处理", detail="account_already_present")
-            mapped = self._map_send_error(exc)
+            mapped = _invite_error_mapping(exc, self._map_send_error(exc))
             detail = _invite_account_error_detail(mapped.detail or str(exc))
             return OperationResult(
                 False,
                 "失败",
                 mapped.failure_type or FailureType.UNKNOWN.value,
                 detail,
-                remote_mutation_started=(
-                    False if mapped.failure_type == FailureType.PEER_INVALID.value else None
-                ),
+                remote_mutation_started=_invite_remote_mutation_started(mapped),
             )
 
     def invite_account_to_group(
