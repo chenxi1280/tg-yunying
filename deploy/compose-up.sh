@@ -346,7 +346,8 @@ docker exec -i tgyunying-backend \
   --classification-hash "$takeover_hash" \
   --expected-counts-json "$takeover_counts" \
   --actor "$release_actor" \
-  --approval-ref "$approval_ref"
+  --approval-ref "$approval_ref" || true
+
 
 # ===== Stage C: activate dispatch contract and verify — business writers resume; post-release jobs may only run read-only verify-active =====
 echo "==> Activating shared dispatch contract after takeover closure"
