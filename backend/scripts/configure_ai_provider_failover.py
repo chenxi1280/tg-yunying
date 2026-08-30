@@ -20,6 +20,7 @@ from app.services.ai_config import AI_PROVIDER_RECHECK_REQUIRED, check_ai_provid
 
 
 DEFAULT_ROUTE_PURPOSE = "group_realize_general"
+ROUTE_PURPOSE = DEFAULT_ROUTE_PURPOSE
 SCRIPT_VERSION = "ai_provider_failover_v1"
 
 
