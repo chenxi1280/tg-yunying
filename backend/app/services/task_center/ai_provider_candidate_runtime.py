@@ -51,7 +51,12 @@ AI_PROVIDER_QUOTA_EXHAUSTED_MARKERS = (
     "余额不足",
     "配额不足",
     "配额耗尽",
+    "用量上限",
+    "token plan",
+    "购买积分补充用量",
+    "token_limit_exceeded",
 )
+
 
 
 @dataclass(frozen=True)
@@ -239,7 +244,7 @@ def attempt_provider_draft(
         result = generate_provider_drafts(candidate, credentials, request, lease=lease)
         return DraftAttemptOutcome(result, None, False, False)
     except ProviderAdmissionBlocked as exc:
-        return DraftAttemptOutcome(None, exc, route_bound, route_bound and has_more)
+        return DraftAttemptOutcome(None, exc, route_bound, has_more)
     except Exception as exc:
         return provider_draft_failure(
             session, candidate, error=exc, policy=policy, has_more=has_more,
@@ -403,8 +408,6 @@ def quota_rotation_providers(
     provider: AiProvider,
     required_family: str,
 ) -> list[AiProvider]:
-    if required_family != "mimo":
-        return []
     providers = session.scalars(
         select(AiProvider)
         .where(
@@ -417,6 +420,7 @@ def quota_rotation_providers(
         candidate for candidate in providers
         if candidate.id != provider.id and provider_matches_family(candidate, required_family)
     ]
+
 
 
 def provider_matches_family(provider: AiProvider, required_family: str) -> bool:

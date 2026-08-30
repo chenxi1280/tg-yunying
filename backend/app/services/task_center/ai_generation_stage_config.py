@@ -31,6 +31,8 @@ def fallback_stages(config: dict) -> tuple[str, ...]:
     return tuple(stages)
 
 
+
+
 def two_stage_plan_slots(request) -> list[dict]:
     slots: list[dict] = []
     for index, raw in enumerate(request.config.get("generation_slots") or []):

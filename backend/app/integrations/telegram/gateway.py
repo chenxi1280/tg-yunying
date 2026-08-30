@@ -3403,6 +3403,222 @@ class TelethonTelegramGateway(TelegramGateway):
     ) -> list[ChannelCommentSnapshot]:
         return self._run(self._fetch_channel_comments_async(channel_peer_id, message_id, session_ciphertext, self._usable_credentials(credentials), limit))
 
+    async def _send_raw_mtproto_message_async(
+        self,
+        peer_id: str,
+        content: str,
+        random_id: int,
+        entities: list | None,
+        reply_to_msg_id: int | None,
+        top_msg_id: int | None,
+        session_ciphertext: str | None,
+        credentials: DeveloperAppCredentials,
+    ) -> SendResult:
+        from telethon import functions, types
+        client = await self._authorized_client(session_ciphertext, credentials, error_message="raw send requires a valid session")
+        target = await resolve_telethon_target(client, peer_id)
+        reply_header = None
+        if reply_to_msg_id is not None or top_msg_id is not None:
+            reply_header = types.InputReplyToMessage(
+                reply_to_msg_id=reply_to_msg_id or 0,
+                top_msg_id=top_msg_id,
+            )
+        req = functions.messages.SendMessageRequest(
+            peer=target,
+            message=content,
+            random_id=random_id,
+            reply_to=reply_header,
+            no_webpage=True,
+        )
+        res = await client(req)
+        msg_id = None
+        if hasattr(res, "id"):
+            msg_id = res.id
+        elif hasattr(res, "updates"):
+            for u in res.updates:
+                if hasattr(u, "id"):
+                    msg_id = u.id
+                    break
+                elif hasattr(u, "message") and hasattr(u.message, "id"):
+                    msg_id = u.message.id
+                    break
+        return SendResult(True, remote_message_id=str(msg_id) if msg_id else None, remote_mutation_started=True)
+
+    def send_raw_mtproto_message(
+        self,
+        peer_id: str,
+        content: str,
+        random_id: int,
+        entities: list | None = None,
+        reply_to_msg_id: int | None = None,
+        top_msg_id: int | None = None,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> SendResult:
+        return self._run(self._send_raw_mtproto_message_async(
+            peer_id,
+            content,
+            random_id,
+            entities,
+            reply_to_msg_id,
+            top_msg_id,
+            session_ciphertext,
+            self._usable_credentials(credentials),
+        ))
+
+    async def _edit_raw_mtproto_message_async(
+        self,
+        peer_id: str,
+        message_id: int,
+        content: str,
+        session_ciphertext: str | None,
+        credentials: DeveloperAppCredentials,
+    ) -> SendResult:
+        from telethon import functions
+        client = await self._authorized_client(session_ciphertext, credentials, error_message="raw edit requires a valid session")
+        target = await resolve_telethon_target(client, peer_id)
+        req = functions.messages.EditMessageRequest(
+            peer=target,
+            id=message_id,
+            message=content,
+            no_webpage=True,
+        )
+        res = await client(req)
+        return SendResult(True, remote_message_id=str(message_id), remote_mutation_started=True)
+
+    def edit_raw_mtproto_message(
+        self,
+        peer_id: str,
+        message_id: int,
+        content: str,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> SendResult:
+        return self._run(self._edit_raw_mtproto_message_async(
+            peer_id,
+            message_id,
+            content,
+            session_ciphertext,
+            self._usable_credentials(credentials),
+        ))
+
+    async def _delete_raw_mtproto_messages_async(
+        self,
+        peer_id: str,
+        message_ids: list[int],
+        session_ciphertext: str | None,
+        credentials: DeveloperAppCredentials,
+    ) -> SendResult:
+        from telethon import functions
+        client = await self._authorized_client(session_ciphertext, credentials, error_message="raw delete requires a valid session")
+        target = await resolve_telethon_target(client, peer_id)
+        req = functions.channels.DeleteMessagesRequest(
+            channel=target,
+            id=message_ids,
+        )
+        await client(req)
+        return SendResult(True, remote_mutation_started=True)
+
+    def delete_raw_mtproto_messages(
+        self,
+        peer_id: str,
+        message_ids: list[int],
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> SendResult:
+        return self._run(self._delete_raw_mtproto_messages_async(
+            peer_id,
+            message_ids,
+            session_ciphertext,
+            self._usable_credentials(credentials),
+        ))
+
+    async def _pin_raw_mtproto_message_async(
+        self,
+        peer_id: str,
+        message_id: int,
+        unpin: bool,
+        session_ciphertext: str | None,
+        credentials: DeveloperAppCredentials,
+    ) -> SendResult:
+        from telethon import functions
+        client = await self._authorized_client(session_ciphertext, credentials, error_message="raw pin requires a valid session")
+        target = await resolve_telethon_target(client, peer_id)
+        if unpin:
+            req = functions.messages.UnpinAllMessagesRequest(peer=target)
+        else:
+            req = functions.messages.UpdatePinnedMessageRequest(
+                peer=target,
+                id=message_id,
+                silent=True,
+            )
+        await client(req)
+        return SendResult(True, remote_message_id=str(message_id), remote_mutation_started=True)
+
+    def pin_raw_mtproto_message(
+        self,
+        peer_id: str,
+        message_id: int,
+        unpin: bool = False,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> SendResult:
+        return self._run(self._pin_raw_mtproto_message_async(
+            peer_id,
+            message_id,
+            unpin,
+            session_ciphertext,
+            self._usable_credentials(credentials),
+        ))
+
+    async def _create_raw_mtproto_forum_topic_async(
+        self,
+        peer_id: str,
+        title: str,
+        random_id: int,
+        icon_color: int | None,
+        session_ciphertext: str | None,
+        credentials: DeveloperAppCredentials,
+    ) -> SendResult:
+        from telethon import functions
+        client = await self._authorized_client(session_ciphertext, credentials, error_message="raw topic create requires a valid session")
+        target = await resolve_telethon_target(client, peer_id)
+        req = functions.channels.CreateForumTopicRequest(
+            channel=target,
+            title=title,
+            random_id=random_id,
+            icon_color=icon_color,
+        )
+        res = await client(req)
+        topic_id = None
+        if hasattr(res, "updates"):
+            for u in res.updates:
+                if hasattr(u, "id"):
+                    topic_id = u.id
+                    break
+                elif hasattr(u, "message") and hasattr(u.message, "id"):
+                    topic_id = u.message.id
+                    break
+        return SendResult(True, remote_message_id=str(topic_id) if topic_id else None, remote_mutation_started=True)
+
+    def create_raw_mtproto_forum_topic(
+        self,
+        peer_id: str,
+        title: str,
+        random_id: int,
+        icon_color: int | None = None,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> SendResult:
+        return self._run(self._create_raw_mtproto_forum_topic_async(
+            peer_id,
+            title,
+            random_id,
+            icon_color,
+            session_ciphertext,
+            self._usable_credentials(credentials),
+        ))
+
 
 def create_gateway(settings: Settings | None = None) -> TelegramGateway:
     active_settings = settings or get_settings()
