@@ -2,7 +2,7 @@
 
 > 日期：2026-08-30
 >
-> 状态：`design_status=complete` / `resync_status=complete` / `implementation_status=complete` / `qa_status=pass` / `product_status=accepted` / `production_status=blocked`
+> 状态：`design_status=complete` / `resync_status=complete` / `implementation_status=complete` / `qa_status=pending_ci_fix_revalidation` / `product_status=pending_revalidation` / `production_status=blocked`
 >
 > 冻结模型顺序：`gemini-3.5-flash-medium` 第一，`gemini-3.1-pro-low` 第二；生成 route 中 Antigravity 优先于既有 Provider。
 >
@@ -387,7 +387,7 @@ guarded preview 冻结 provider/slot/route/task/deployed SHA/fingerprint；apply
 | 配置/并发/一致性 | complete | 全 generation route 单事务、漂移零写、重复 apply no-op |
 | QA/发布/回滚/E4 | complete | 自动 QA、生产 canary、前向回滚与证据分层已闭合 |
 
-本次 `resync_status=complete`；B1～B6 实现和项目结构索引已同步，`implementation_status=complete`。生产基线与独立 QA 先后暴露出 `/data` traverse/ledger、发布前 unit 漂移门禁、既有 runtime 元数据、legacy WAL ledger、空账本 authority crash-window、host Python 3.6、CLI 子进程 secret 继承、Python user-site 注入和多 slot rollback 缺口；当前候选已逐项修复并转成行为测试。完整聚焦回归、相邻无 PostgreSQL 回归和独立 QA 均通过，未发现 P0/P1/P2；Product Design Complete 自检确认原始优先级、失败路径、并发/幂等、数据一致性、迁移、回滚和分层验收均闭合，故 `qa_status=pass`、`product_status=accepted`。真实 PostgreSQL、Linux systemd、OAuth、agy、Gateway 与生产调用仍由发布/生产 Gate 提供证据；`production_status` 在第 14.5 节真实读回前继续保持 `blocked`。
+本次 `resync_status=complete`；B1～B6 实现和项目结构索引已同步，`implementation_status=complete`。生产基线与独立 QA 先后暴露出 `/data` traverse/ledger、发布前 unit 漂移门禁、既有 runtime 元数据、legacy WAL ledger、空账本 authority crash-window、host Python 3.6、CLI 子进程 secret 继承、Python user-site 注入和多 slot rollback 缺口；候选已逐项修复并转成行为测试。首次完整 Actions 随后在服务器部署前暴露第 14.8 节的 stale migration-head assertions 与缺失标准库导入，当前 quick fix 已完成本地定向/聚焦/相邻回归，仍需独立 QA 与新一次完整 Actions，因此暂记 `qa_status=pending_ci_fix_revalidation`、`product_status=pending_revalidation`。真实 PostgreSQL、Linux systemd、OAuth、agy、Gateway 与生产调用仍由发布/生产 Gate 提供证据；`production_status` 在第 14.5 节真实读回前继续保持 `blocked`。
 
 ### 14.7 Dev Handoff：代码入口和修改责任
 
@@ -403,6 +403,12 @@ guarded preview 冻结 provider/slot/route/task/deployed SHA/fingerprint；apply
 | QA 与索引 | Antigravity provider/bridge/route/provider API/deploy script 测试；`docs/00-index/project-structure-index.md` | 覆盖第 14.4 节全部矩阵；由 dev 同步删除项与 current 唯一入口 |
 
 实现顺序按 B1～B7；B2+B3 共享 request/terminal 状态机，必须由同一 merge owner 合并。dev 不得把旧 wrapper 改名后保留，也不得通过 catch-all、mock success、自动重放或放宽 Schema 绕过失败。
+
+### 14.8 CI Quick Fix：首次完整分片暴露的测试同步与导入缺口
+
+正式发布 run `33327782377` 在服务器部署前被质量门禁阻断，生产没有写入。失败归为同一小批次：迁移 `0182_ai_provider_request_id` 已成为唯一 Alembic head，但两个全仓/blank-PostgreSQL 验收仍把 head 写死为 `0181_runtime_storage_clone_merge`；同时 `ai_provider_candidate_runtime.py` 的 candidate request ID 新增 SHA-256 计算却遗漏 `hashlib` 导入，导致两个真实 AI 活群 PostgreSQL 流程在生成前抛出 `NameError`。
+
+Mini Bug Card 冻结为：只补缺失标准库导入，并把两个陈旧 head 断言同步到已存在且已由 Alembic 验证的 `0182`；不得改写迁移 revision/down_revision、业务请求身份算法、route、Provider 或生产配置。定向验收必须覆盖 merge integrity、blank PostgreSQL migration、candidate request identity 和两个失败的 AI 活群 workflow；随后重新跑 Provider 聚焦回归、独立 QA 和完整 Actions。任一测试仍失败则保持 `production_status=blocked`，不得手动绕过部署。
 
 ## 15. 多模型业务回复 POC
 

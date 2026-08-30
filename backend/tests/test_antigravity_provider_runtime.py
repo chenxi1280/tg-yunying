@@ -20,7 +20,11 @@ from app.services.task_center.ai_structured_provider_runtime import StructuredPr
 from app.services.task_center.ai_structured_provider_runtime import _candidate_request_id
 from app.services.task_center.ai_structured_provider_runtime import structured_failure_outcome
 from app.models import AiProvider
-from app.services.task_center.ai_provider_candidate_runtime import route_transport_failure
+from app.services.task_center.ai_provider_candidate_runtime import (
+    ProviderDraftRequest,
+    _candidate_request_id as _draft_candidate_request_id,
+    route_transport_failure,
+)
 from app.services.task_center.ai_generator import _provider_request_id
 from app.services.task_center.two_stage_generation import _realizer_config
 from app.services.task_center.message_brief import MessageBrief
@@ -39,6 +43,17 @@ def credentials(model: str = "gemini-3.5-flash-medium") -> AiProviderCredentials
         model_name=model,
         api_key="bridge-token",
     )
+
+
+def test_draft_candidate_request_identity_binds_route_item() -> None:
+    request = ProviderDraftRequest(
+        prompt="prompt", count=1, topic="topic", tone="tone", persona_set=(),
+        temperature=0.5, max_tokens=100, system_prompt=None, timeout=30,
+        request_id="agy:job:stage",
+    )
+    primary = _draft_candidate_request_id(request, 11, 1, credentials())
+    assert primary.startswith("agy:job:stage:i")
+    assert _draft_candidate_request_id(request, 12, 2, credentials()) != primary
 
 
 class FakeResponse:

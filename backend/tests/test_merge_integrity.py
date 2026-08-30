@@ -35,7 +35,7 @@ def test_alembic_versions_have_single_head():
 
     assert all(len(revision) <= 32 for revision in revisions)
     heads = sorted(set(revisions) - referenced)
-    assert heads == ["0181_runtime_storage_clone_merge"]
+    assert heads == ["0182_ai_provider_request_id"]
 
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import socket
 import urllib.error
 from collections.abc import Iterator
