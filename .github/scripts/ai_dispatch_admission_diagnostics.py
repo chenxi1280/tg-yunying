@@ -402,7 +402,7 @@ GROUP_QUERY = text("""
 
 
 TARGET_ACCOUNT_QUERY = text("""
-    SELECT ga.group_id, ga.account_id, ga.is_listener, ga.can_send, ga.role,
+    SELECT ga.group_id, ga.account_id, ga.is_listener, ga.can_send, ga.permission_label,
            a.phone, a.status AS account_status, a.deleted_at IS NOT NULL AS is_deleted,
            g.title AS group_title
     FROM tg_group_accounts AS ga
@@ -412,6 +412,7 @@ TARGET_ACCOUNT_QUERY = text("""
     ORDER BY ga.is_listener DESC, ga.can_send DESC, a.id ASC
     LIMIT 30
 """)
+
 
 
 def main() -> None:
