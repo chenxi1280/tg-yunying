@@ -1068,7 +1068,7 @@ def dispatch_task(session_factory, task_id: int) -> MessageTask:
 def _release_message_task_authority(session: Session, task: MessageTask) -> None:
     if task.target_type == "private":
         return
-    target, _group, peer_id = _message_task_target_context(session, task)
+    target, group, peer_id = _message_task_target_context(session, task)
     if not peer_id:
         return
     from app.services.task_center.group_mutation_authority import (
