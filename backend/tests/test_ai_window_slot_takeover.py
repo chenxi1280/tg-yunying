@@ -155,6 +155,56 @@ def test_failed_generation_releases_claimed_slot_immediately() -> None:
         assert slot.claimed_by_job_id is None
 
 
+def test_failed_generation_accepts_owned_context_version_advance() -> None:
+    factory = _session_factory()
+    _seed_claimed_slot(factory, job_state="generating", owner="worker-1")
+    with factory() as session:
+        job = session.get(GenerationJob, JOB_ID)
+        job.job_version = 2
+        session.commit()
+    claim = ParallelGenerationClaim(
+        action_id="missing-action-is-allowed",
+        job_id=JOB_ID,
+        owner="worker-1",
+        token="claim-token",
+        job_version=1,
+        generation_lease_epoch=0,
+    )
+
+    finish_generation_job(factory, claim, state="failed")
+
+    with factory() as session:
+        job = session.get(GenerationJob, JOB_ID)
+        slot = session.get(AiContentWindowPlanSlot, SLOT_ID)
+        assert job.state == "failed"
+        assert job.job_version == 3
+        assert slot.state == "invalidated"
+
+
+def test_failed_generation_rejects_lease_epoch_takeover_after_version_advance() -> None:
+    factory = _session_factory()
+    _seed_claimed_slot(factory, job_state="generating", owner="worker-1")
+    with factory() as session:
+        job = session.get(GenerationJob, JOB_ID)
+        job.job_version = 2
+        job.generation_lease_epoch = 1
+        session.commit()
+    claim = ParallelGenerationClaim(
+        action_id="missing-action-is-allowed",
+        job_id=JOB_ID,
+        owner="worker-1",
+        token="claim-token",
+        job_version=1,
+        generation_lease_epoch=0,
+    )
+
+    with pytest.raises(RuntimeError, match="parallel_generation_job_claim_lost"):
+        finish_generation_job(factory, claim, state="failed")
+
+    with factory() as session:
+        assert session.get(GenerationJob, JOB_ID).state == "generating"
+
+
 def test_persist_unknown_requeues_same_job_without_releasing_slot() -> None:
     factory = _session_factory()
     _seed_claimed_slot(factory, job_state="generating", owner="worker-1")

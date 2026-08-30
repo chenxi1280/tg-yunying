@@ -147,15 +147,18 @@ def _finish_owned_job(
         raise RuntimeError("parallel_generation_job_claim_lost")
     if state == "ready":
         _require_ready_action(job, action)
+    expected_job_version = int(job.job_version or 1)
+    if expected_job_version < claim.job_version:
+        raise RuntimeError("parallel_generation_job_claim_lost")
     values = _job_finish_values(
         job, action, state=state, generation_stage=generation_stage,
     )
-    values["job_version"] = claim.job_version + 1
+    values["job_version"] = expected_job_version + 1
     changed = session.execute(update(GenerationJob).where(
         GenerationJob.id == claim.job_id,
         GenerationJob.state == "generating",
         GenerationJob.generation_owner_id == claim.owner,
-        GenerationJob.job_version == claim.job_version,
+        GenerationJob.job_version == expected_job_version,
         GenerationJob.generation_lease_epoch == claim.generation_lease_epoch,
     ).values(**values).execution_options(synchronize_session=False)).rowcount
     if changed != 1:
