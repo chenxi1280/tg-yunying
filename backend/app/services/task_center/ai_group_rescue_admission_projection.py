@@ -74,7 +74,7 @@ def _coverage_statement(task: Task, account_id: int, group_id: int, now: object)
         TaskAccountDailyCoverage.coverage_date == now.date(),
         TaskAccountDailyCoverage.confirmed_count == 0,
         TaskAccountDailyCoverage.reserved_action_id.is_(None),
-        TaskAccountDailyCoverage.state.in_(("blocked", "pending_admission")),
+        TaskAccountDailyCoverage.state.in_(("blocked", "pending_admission", "unknown")),
     ).with_for_update()
 
 

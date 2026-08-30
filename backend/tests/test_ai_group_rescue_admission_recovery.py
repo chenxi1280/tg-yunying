@@ -44,6 +44,8 @@ def test_member_observation_writes_fact_without_replaying_old_action(
     session: Session,
 ) -> None:
     old, item, coverage = _seed_unknown_rescue(session)
+    coverage.state = "unknown"
+    coverage.blocker_code = "membership_permission_denied"
     historical = TaskAccountDailyCoverage(
         tenant_id=1,
         task_id="task-1",
