@@ -15,19 +15,31 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "clone_source_events",
-        sa.Column("config_snapshot", sa.JSON(), nullable=True),
-    )
-    op.add_column(
-        "clone_source_events",
-        sa.Column("sender_name", sa.String(length=160), nullable=False, server_default=""),
-    )
+    columns = _columns()
+    if "config_snapshot" not in columns:
+        op.add_column(
+            "clone_source_events",
+            sa.Column("config_snapshot", sa.JSON(), nullable=True),
+        )
+    if "sender_name" not in columns:
+        op.add_column(
+            "clone_source_events",
+            sa.Column("sender_name", sa.String(length=160), nullable=False, server_default=""),
+        )
     _backfill_config_snapshots(op.get_bind())
-    op.alter_column(
-        "clone_source_events", "config_snapshot",
-        existing_type=sa.JSON(), nullable=False,
-    )
+    current = _columns()["config_snapshot"]
+    if current.get("nullable", True):
+        op.alter_column(
+            "clone_source_events", "config_snapshot",
+            existing_type=sa.JSON(), nullable=False,
+        )
+
+
+def _columns() -> dict[str, dict]:
+    return {
+        str(column["name"]): column
+        for column in sa.inspect(op.get_bind()).get_columns("clone_source_events")
+    }
 
 
 def _backfill_config_snapshots(bind) -> None:
@@ -44,17 +56,23 @@ def _backfill_config_snapshots(bind) -> None:
     task_config = sa.select(tasks.c.type_config).where(
         tasks.c.id == events.c.task_id,
     ).scalar_subquery()
-    bind.execute(events.update().values(config_snapshot=task_config))
-    missing = bind.scalar(sa.select(sa.func.count()).select_from(events).where(
-        sa.or_(
-            events.c.config_snapshot.is_(None),
-            sa.cast(events.c.config_snapshot, sa.Text()) == "{}",
-        ),
-    ))
+    missing_snapshot = sa.or_(
+        events.c.config_snapshot.is_(None),
+        sa.cast(events.c.config_snapshot, sa.Text()) == "{}",
+    )
+    bind.execute(
+        events.update().where(missing_snapshot).values(config_snapshot=task_config)
+    )
+    missing = bind.scalar(
+        sa.select(sa.func.count()).select_from(events).where(missing_snapshot)
+    )
     if missing:
         raise RuntimeError("clone_source_events config snapshot backfill incomplete")
 
 
 def downgrade() -> None:
-    op.drop_column("clone_source_events", "sender_name")
-    op.drop_column("clone_source_events", "config_snapshot")
+    columns = _columns()
+    if "sender_name" in columns:
+        op.drop_column("clone_source_events", "sender_name")
+    if "config_snapshot" in columns:
+        op.drop_column("clone_source_events", "config_snapshot")

@@ -133,7 +133,7 @@ def test_task_center_row_actions_bind_busy_state_to_action_key():
         assert "setBusyId('');" not in body
 
 
-def test_task_center_creation_does_not_wait_for_precheck():
+def test_task_center_creation_only_waits_for_group_clone_precheck():
     source = _source()
     run_recommendation = _function_body(source, "runEditAiLimitRecommendation")
     create_task = _function_body(source, "createTask")
@@ -146,8 +146,11 @@ def test_task_center_creation_does_not_wait_for_precheck():
     assert "function isCurrentEditRecommendationRequest(requestSeq: number)" in source
     assert "currentEditRecommendationPayloadSignature() === signature" in source
 
-    assert "body: JSON.stringify(createPayload(submitValues))" in create_task
-    assert "/tasks/precheck" not in create_task
+    assert "const payload = createPayload(submitValues);" in create_task
+    assert "if (taskType === 'group_clone')" in create_task
+    assert "'/tasks/group-clone/precheck'" in create_task
+    assert "body: JSON.stringify(payload)" in create_task
+    assert "'/tasks/precheck'" not in create_task
     assert "runTaskPrecheck" not in source
 
     assert "const payload = settingsPayload(editableType, editForm.getFieldsValue(true));" in run_recommendation
