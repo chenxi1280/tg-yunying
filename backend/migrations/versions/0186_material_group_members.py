@@ -2,9 +2,12 @@
 
 Revision ID: 0186_material_group_members
 Revises: 0185_channel_comment_fallback
+
+The initial migration builds current metadata on a fresh database, so this
+migration must not recreate columns that already exist in that path.
 """
 
-from alembic import op
+from alembic import context, op
 import sqlalchemy as sa
 
 
@@ -15,6 +18,8 @@ depends_on = None
 
 
 def upgrade() -> None:
+    if _has_column("material_groups", "material_ids"):
+        return
     op.add_column(
         "material_groups",
         sa.Column("material_ids", sa.JSON(), nullable=False, server_default="[]"),
@@ -44,6 +49,13 @@ def upgrade() -> None:
         """
     )
     op.alter_column("material_groups", "material_ids", server_default=None)
+
+
+def _has_column(table_name: str, column_name: str) -> bool:
+    if context.is_offline_mode():
+        return False
+    columns = sa.inspect(op.get_bind()).get_columns(table_name)
+    return any(column["name"] == column_name for column in columns)
 
 
 def downgrade() -> None:

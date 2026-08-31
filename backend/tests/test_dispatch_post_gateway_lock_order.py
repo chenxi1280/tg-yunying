@@ -20,6 +20,7 @@ def test_group_send_locks_dispatch_prefix_before_business_finalize(
         message_text="hello",
         media_segments=[],
         reply_to_message_id=None,
+        group_id=7,
     )
     context = SimpleNamespace(
         account=SimpleNamespace(id=11, session_ciphertext="cipher"),
@@ -38,6 +39,10 @@ def test_group_send_locks_dispatch_prefix_before_business_finalize(
         dispatcher,
         "_reserve_group_send_attempt",
         lambda *_args: attempt,
+    )
+    monkeypatch.setattr(
+        "app.services.task_center.ai_group_content_allocation.validate_content_intent_for_gateway",
+        lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
         "app.services.task_center.group_mutation_authority.ensure_platform_writer_admission",

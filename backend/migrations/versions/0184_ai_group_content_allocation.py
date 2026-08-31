@@ -2,9 +2,12 @@
 
 Revision ID: 0184_ai_group_content_alloc
 Revises: 0183_clone_event_config_snapshot
+
+The initial migration builds current metadata on a fresh database, so this
+migration must not recreate tables that already exist in that path.
 """
 
-from alembic import op
+from alembic import context, op
 import sqlalchemy as sa
 
 
@@ -15,6 +18,8 @@ depends_on = None
 
 
 def upgrade() -> None:
+    if _has_table("ai_group_content_allocation_plans"):
+        return
     op.create_table(
         "ai_group_content_allocation_plans",
         sa.Column("id", sa.String(length=36), nullable=False),
@@ -91,6 +96,12 @@ def upgrade() -> None:
         "ai_group_content_intents",
         ["allocation_plan_id", "created_at"],
     )
+
+
+def _has_table(table_name: str) -> bool:
+    if context.is_offline_mode():
+        return False
+    return table_name in sa.inspect(op.get_bind()).get_table_names()
 
 
 def downgrade() -> None:

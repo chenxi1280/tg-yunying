@@ -2,9 +2,12 @@
 
 Revision ID: 0188_comment_plan_contract
 Revises: 0187_comment_material_integrity
+
+The initial migration builds current metadata on a fresh database, so this
+migration must not recreate tables and columns that already exist in that path.
 """
 
-from alembic import op
+from alembic import context, op
 import sqlalchemy as sa
 
 
@@ -15,6 +18,8 @@ depends_on = None
 
 
 def upgrade() -> None:
+    if _has_table("channel_message_source_revisions"):
+        return
     _create_source_revisions()
     _create_plan_contracts()
     _create_eligible_rows()
@@ -23,6 +28,12 @@ def upgrade() -> None:
     _extend_existing_tables()
     _create_capacity_periods()
     _create_capacity_reservations()
+
+
+def _has_table(table_name: str) -> bool:
+    if context.is_offline_mode():
+        return False
+    return table_name in sa.inspect(op.get_bind()).get_table_names()
 
 
 def _create_source_revisions() -> None:

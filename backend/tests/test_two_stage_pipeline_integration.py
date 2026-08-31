@@ -197,6 +197,7 @@ def test_group_two_stage_structural_duplicate_falls_to_quality_wait() -> None:
         _question_shape("今天还聊不聊呢？"),
         _question_shape("今天想聊不聊呢？"),
         _question_shape("今天再聊不聊呢？"),
+        _question_shape("今天又聊不聊呢？"),
     ])
 
     with Session(_sqlite_engine()) as session:
@@ -206,8 +207,13 @@ def test_group_two_stage_structural_duplicate_falls_to_quality_wait() -> None:
             _two_stage_dependencies(planner, realizer),
         )
 
-    assert [result.rejection_code for result in results] == ["", "", "", QUALITY_WAIT]
-    assert len(realizer.calls) == 5
+    assert [result.rejection_code for result in results] == [
+        "",
+        "",
+        QUALITY_WAIT,
+        QUALITY_WAIT,
+    ]
+    assert len(realizer.calls) == 6
 
 
 def _comment_request(*, flag: bool = True):

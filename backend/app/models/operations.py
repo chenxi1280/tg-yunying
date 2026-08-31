@@ -50,7 +50,12 @@ class ChannelMessage(Base):
     comment_available: Mapped[bool] = mapped_column(Boolean, default=True)
     published_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     current_source_revision_id: Mapped[str | None] = mapped_column(
-        ForeignKey("channel_message_source_revisions.id", ondelete="SET NULL"),
+        ForeignKey(
+            "channel_message_source_revisions.id",
+            name="fk_channel_message_current_source_revision",
+            ondelete="SET NULL",
+            use_alter=True,
+        ),
         nullable=True,
     )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)

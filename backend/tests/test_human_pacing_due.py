@@ -53,7 +53,14 @@ def test_comment_and_like_only_materialize_source_due_quantity() -> None:
     anchor = datetime(2026, 8, 7, 21, 16)
     now = anchor + timedelta(hours=3)
     task = _current_task("channel_comment", started_at=anchor - timedelta(hours=1))
-    message = ChannelMessage(id=1, tenant_id=1, channel_target_id=1, message_id=1, created_at=anchor)
+    message = ChannelMessage(
+        id=1,
+        tenant_id=1,
+        channel_target_id=1,
+        message_id=1,
+        published_at=anchor,
+        created_at=anchor,
+    )
 
     comment_due = channel_comment_budget._message_comment_deficit(
         {"target_comments_per_message": 80, "comment_count_jitter": 0},

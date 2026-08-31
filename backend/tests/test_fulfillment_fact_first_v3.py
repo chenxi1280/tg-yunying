@@ -96,7 +96,10 @@ def _task(task_id: str, *, status: str = "running", contract: str = "fact_first_
         status=status,
         fulfillment_contract_version=contract,
         account_config={"mode": "all"},
-        type_config={"daily_message_target": 10},
+        type_config={
+            "daily_message_target": 10,
+            "topic_participation_rate": 0.30,
+        },
     )
 
 

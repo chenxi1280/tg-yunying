@@ -2,9 +2,12 @@
 
 Revision ID: 0185_channel_comment_fallback
 Revises: 0184_ai_group_content_alloc
+
+The initial migration builds current metadata on a fresh database, so this
+migration must not recreate tables that already exist in that path.
 """
 
-from alembic import op
+from alembic import context, op
 import sqlalchemy as sa
 
 
@@ -15,10 +18,18 @@ depends_on = None
 
 
 def upgrade() -> None:
+    if _has_table("comment_fallback_policy_snapshots"):
+        return
     _create_policy_table()
     _create_pool_table()
     _create_cursor_table()
     _create_selection_table()
+
+
+def _has_table(table_name: str) -> bool:
+    if context.is_offline_mode():
+        return False
+    return table_name in sa.inspect(op.get_bind()).get_table_names()
 
 
 def _create_policy_table() -> None:
