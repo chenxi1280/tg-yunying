@@ -53,6 +53,9 @@ def db_session():
             "sender_pool": {
                 "account_ids": [10, 20, 30],
                 "minimum_tenure_minutes": 1,
+                "active_minutes": 1,
+                "guarded_minutes": 2,
+                "eligible_release_minutes": 3,
             }
         },
         task_lifecycle_epoch=1,
@@ -121,6 +124,23 @@ def test_gate_2_reply_self_collision_prevention(db_session: Session):
     assert b_bob.assigned_account_id != b_alice.assigned_account_id
 
 
+def test_same_sender_can_reply_to_own_message(db_session: Session):
+    task = db_session.get(Task, "task-bind-1")
+    binding, _ = _bind(db_session, task, "user_alice")
+
+    reused, err = CloneSenderBindingManager.get_or_assign_sender_binding(
+        db_session,
+        task,
+        source_sender_peer_type="user",
+        source_sender_peer_id="user_alice",
+        source_sender_name="Alice",
+        reply_to_sender_peer_id="user_alice",
+    )
+
+    assert err == ""
+    assert reused.id == binding.id
+
+
 def test_gate_3_cooldown_and_lru_reclaim(db_session: Session):
     task = db_session.get(Task, "task-bind-1")
     # 占满 3 个可用号
@@ -135,7 +155,8 @@ def test_gate_3_cooldown_and_lru_reclaim(db_session: Session):
 
     # 只有 lifecycle 已进入 eligible 且达到最低 tenure 的绑定才可回收。
     b1.status = "eligible"
-    b1.valid_from = datetime.now(timezone.utc) - timedelta(minutes=2)
+    b1.valid_from = datetime.now(timezone.utc) - timedelta(minutes=4)
+    b1.last_spoken_at = datetime.now(timezone.utc) - timedelta(minutes=4)
     db_session.flush()
 
     # 现在 u4 应该能够成功 LRU 回收 u1 的账号
@@ -144,6 +165,23 @@ def test_gate_3_cooldown_and_lru_reclaim(db_session: Session):
     assert b4 is not None
     assert b4.assigned_account_id == b1.assigned_account_id
     assert b1.status == "expired"
+
+
+def test_pool_exhaustion_advances_stale_bindings_automatically(db_session: Session):
+    task = db_session.get(Task, "task-bind-1")
+    bindings = [_bind(db_session, task, sender)[0] for sender in ("u1", "u2", "u3")]
+    stale = datetime.now(timezone.utc) - timedelta(minutes=4)
+    for binding in bindings:
+        binding.last_spoken_at = stale
+        binding.valid_from = stale
+
+    assigned, err = _bind(db_session, task, "u4")
+
+    assert err == ""
+    assert assigned is not None
+    expired = [binding for binding in bindings if binding.status == "expired"]
+    assert len(expired) == 1
+    assert assigned.assigned_account_id == expired[0].assigned_account_id
 
 
 def test_vip_pinning_protection(db_session: Session):
@@ -161,7 +199,7 @@ def test_vip_pinning_protection(db_session: Session):
     b3, _ = _bind(db_session, task, "u3")
 
     # 将所有人的发言时间都设为过去（已过冷却）
-    past = datetime.now(timezone.utc) - timedelta(minutes=2)
+    past = datetime.now(timezone.utc) - timedelta(minutes=4)
     for binding in (b1, b2, b3):
         binding.last_spoken_at = past
         binding.valid_from = past

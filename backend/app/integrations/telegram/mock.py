@@ -198,6 +198,26 @@ class TelegramGateway:
             remote_mutation_started=False,
         )
 
+    def send_raw_mtproto_media(
+        self,
+        peer_id: str,
+        *,
+        source_peer_id: str,
+        media_items: list[dict],
+        reply_to_msg_id: int | None = None,
+        top_msg_id: int | None = None,
+        source_session_ciphertext: str | None = None,
+        source_credentials: DeveloperAppCredentials | None = None,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> SendResult:
+        return SendResult(
+            False,
+            failure_type="raw_mtproto_gateway_unavailable",
+            detail="mock gateway 不执行 Group Clone 媒体写入",
+            remote_mutation_started=False,
+        )
+
     def fetch_raw_channel_boundary(
         self,
         peer_id: str,

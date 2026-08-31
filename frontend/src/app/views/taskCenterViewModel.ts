@@ -59,6 +59,7 @@ export const CREATE_AND_START_ENDPOINT: Record<TaskCenterTaskType, string> = {
 
 export const WIZARD_STEPS = ['基础信息', '目标来源', '任务配置', '账号与节奏', '确认创建'];
 export const SIMPLE_SEARCH_CLICK_WIZARD_STEPS = ['任务类型', '目标群', '关键词与目标次数', '执行范围与节奏', '确认'];
+export const GROUP_CLONE_WIZARD_STEPS = ['基础信息', '克隆路由', '克隆策略', '确认创建'];
 export const CHANNEL_COUNT_JITTER_DEFAULT = 0.2;
 const DEFAULT_SEARCH_CLICK_DAILY_ACTIONS = 10;
 const DEFAULT_SEARCH_CLICK_DURATION_HOURS = 24;
@@ -76,6 +77,7 @@ export function simpleSearchTargetField(taskType: TaskCenterTaskType) {
 }
 
 export function wizardStepsForTask(taskType: TaskCenterTaskType) {
+  if (taskType === 'group_clone') return GROUP_CLONE_WIZARD_STEPS;
   return isSimpleSearchClickTask(taskType) ? SIMPLE_SEARCH_CLICK_WIZARD_STEPS : WIZARD_STEPS;
 }
 
@@ -719,6 +721,7 @@ export function fieldsForStep(step: number, taskType: TaskCenterTaskType, messag
       : ['keywords', simpleSearchTargetField(taskType)];
   }
   if (step === 3 && isSimpleSearchClickTask(taskType)) return simpleSearchExecutionFields(taskType);
+  if (step === 3 && taskType === 'group_clone') return [];
   if (step === 3 && taskType === 'group_membership_admission') return ['account_group_ids'];
   if (step === 3) return accountSelectionFields(accountMode);
   return [];
@@ -901,6 +904,17 @@ export function editFieldsForSubmit(taskType: TaskCenterTaskType, accountMode: s
   }
   if (taskType === 'group_relay') {
     return [...baseFields, 'source_operation_target_ids', 'source_groups', 'target_operation_target_id', 'target_operation_target_ids', 'rule_set_id', 'rule_set_version_id', 'content_mode', 'filter_bot_messages', 'filter_admin_messages', 'excluded_sender_peer_ids', 'excluded_sender_input'];
+  }
+  if (taskType === 'group_clone') {
+    return [
+      'sender_pool_account_ids', 'active_minutes', 'guarded_minutes',
+      'eligible_release_minutes', 'minimum_tenure_minutes',
+      'rule_set_id', 'rule_set_version', 'min_delay_ms', 'max_delay_ms',
+      'orphan_reply_policy', 'incomplete_album_policy',
+      'unsupported_media_policy', 'failure_order_policy',
+      'unknown_deadline_seconds', 'source_event_days',
+      'media_cache_ttl_seconds',
+    ];
   }
   if (taskType === 'channel_view') {
     return [...baseFields, 'listen_new_messages', 'per_message_daily_view_target', 'per_message_total_view_target', 'message_active_days', 'task_daily_view_safety_cap', 'max_views_per_account_per_day', 'view_count_jitter', 'target_views_per_message', 'execution_mode'];

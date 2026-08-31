@@ -44,7 +44,8 @@ def project_group_clone_result(session: Session, action: Action) -> None:
         return
     if action.status == "unknown_after_send":
         obligation.state = "unknown_after_send"
-        identity.state = "unknown"
+        for item in _send_identities(session, payload, identity):
+            item.state = "unknown"
         return
     if action.status in {"failed", "skipped", "cancelled"}:
         _settle_terminal_failure(session, action, obligation=obligation, identity=identity, attempt=attempt)
@@ -59,17 +60,20 @@ def _confirm_remote_mutation(session, action, *, payload, obligation, identity, 
     ))
     if fact is None:
         raise RuntimeError("group_clone_remote_fact_missing")
-    obligation.state = "succeeded"
+    outcome = "degraded" if obligation.degradation_reason else "succeeded"
+    obligation.state = outcome
     obligation.resolved_at = fact.observed_at
-    identity.state = "closed"
+    for item in _send_identities(session, payload, identity):
+        item.state = "closed"
     action.result = {**dict(action.result or {}), "remote_fact_id": fact.fact_id}
     if action.action_type == "group_clone_send":
-        _record_outbound_mapping(session, action, payload=payload, identity=identity, attempt=attempt)
+        _record_outbound_mappings(session, action, payload=payload, identity=identity, attempt=attempt)
     if action.action_type == "group_clone_send" and _message_part(session, obligation.id) is None:
-        session.add(_new_message_part(
+        session.add_all(_new_message_parts(
             session, action, payload=payload, obligation=obligation,
             identity=identity, attempt=attempt, fact=fact,
         ))
+    _settle_album_manifest(session, obligation, state=outcome)
     if action.action_type == "group_clone_mutation":
         _settle_lifecycle_side_effect(session, action, payload=payload, attempt=attempt)
         if payload.resume_obligation_after_success:
@@ -120,7 +124,7 @@ def _settle_lifecycle_side_effect(session, action, *, payload, attempt) -> None:
     topic.revision += 1
 
 
-def _record_outbound_mapping(session, action, *, payload, identity, attempt) -> None:
+def _record_outbound_mappings(session, action, *, payload, identity, attempt) -> None:
     state_id = session.scalar(select(TelegramAuthorizationUpdateState.id).where(
         TelegramAuthorizationUpdateState.tenant_id == action.tenant_id,
         TelegramAuthorizationUpdateState.authorization_id == identity.authorization_id,
@@ -130,20 +134,23 @@ def _record_outbound_mapping(session, action, *, payload, identity, attempt) -> 
         raise RuntimeError("group_clone_outbound_update_state_missing")
     from .telegram_update_ingress import record_outbound_random_id_mapping
 
-    record_outbound_random_id_mapping(
-        session,
-        state_id,
-        random_id=identity.random_id,
-        target_peer_type=payload.target_peer_type,
-        target_peer_id=payload.target_peer_id,
-        remote_message_or_topic_id=attempt.remote_message_id,
-        action_id=action.id,
-        execution_attempt_id=attempt.id,
-        gateway_mutation_identity_id=identity.id,
-    )
+    identities = _send_identities(session, payload, identity)
+    remote_ids = _send_remote_ids(action, attempt, expected=len(identities))
+    for mutation, remote_id in zip(identities, remote_ids, strict=True):
+        record_outbound_random_id_mapping(
+            session,
+            state_id,
+            random_id=mutation.random_id,
+            target_peer_type=payload.target_peer_type,
+            target_peer_id=payload.target_peer_id,
+            remote_message_or_topic_id=remote_id,
+            action_id=action.id,
+            execution_attempt_id=attempt.id,
+            gateway_mutation_identity_id=mutation.id,
+        )
 
 
-def _new_message_part(session, action, *, payload, obligation, identity, attempt, fact):
+def _new_message_parts(session, action, *, payload, obligation, identity, attempt, fact):
     execution = session.get(CloneTargetExecutionSnapshot, payload.execution_snapshot_id)
     route = session.get(CloneTargetRouteSnapshot, payload.route_snapshot_id)
     if execution is None or route is None:
@@ -151,28 +158,55 @@ def _new_message_part(session, action, *, payload, obligation, identity, attempt
     request_identity = str((attempt.result_snapshot or {}).get("gateway_request_identity") or "")
     if not request_identity:
         raise RuntimeError("group_clone_gateway_request_identity_missing")
-    return CloneMessagePart(
-        tenant_id=action.tenant_id,
-        task_id=action.task_id,
-        epoch=obligation.epoch,
-        obligation_id=obligation.id,
-        action_id=action.id,
-        attempt_id=attempt.id,
-        remote_fact_id=fact.fact_id,
-        source_message_id=payload.source_message_id,
-        account_id=execution.account_id,
+    identities = _send_identities(session, payload, identity)
+    remote_ids = _send_remote_ids(action, attempt, expected=len(identities))
+    source_ids = [item.source_message_id for item in payload.media_items] or [payload.source_message_id]
+    return [CloneMessagePart(
+        tenant_id=action.tenant_id, task_id=action.task_id, epoch=obligation.epoch,
+        obligation_id=obligation.id, action_id=action.id, attempt_id=attempt.id,
+        remote_fact_id=fact.fact_id, part_index=index, part_total=len(identities),
+        source_message_id=source_ids[index], account_id=execution.account_id,
         authorization_id=execution.authorization_id,
         session_generation=execution.session_generation,
         execution_binding_hash=execution.execution_binding_hash,
-        target_peer_type=route.target_peer_type,
-        target_peer_id=route.target_peer_id,
-        target_message_id=int(attempt.remote_message_id),
+        target_peer_type=route.target_peer_type, target_peer_id=route.target_peer_id,
+        target_message_id=int(remote_ids[index]),
         target_top_message_id=payload.target_top_message_id,
-        gateway_mutation_identity_id=identity.id,
-        random_id=identity.random_id,
-        gateway_request_identity=request_identity,
-        remote_confirmed_at=fact.observed_at,
-    )
+        gateway_mutation_identity_id=mutation.id, random_id=mutation.random_id,
+        gateway_request_identity=request_identity, remote_confirmed_at=fact.observed_at,
+    ) for index, mutation in enumerate(identities)]
+
+
+def _send_identities(session, payload, primary):
+    if not isinstance(payload, GroupCloneSendPayload) or not payload.media_items:
+        return [primary]
+    rows = [
+        session.get(TelegramGatewayMutationIdentity, item.gateway_mutation_identity_id)
+        for item in payload.media_items
+    ]
+    if any(item is None for item in rows):
+        raise RuntimeError("group_clone_media_identity_missing_at_settlement")
+    return rows
+
+
+def _send_remote_ids(action, attempt, *, expected):
+    values = list((action.result or {}).get("telegram_msg_ids") or ())
+    if not values and attempt.remote_message_id:
+        values = [str(attempt.remote_message_id)]
+    if len(values) != expected:
+        raise RuntimeError("group_clone_media_remote_mapping_incomplete")
+    return [str(value) for value in values]
+
+
+def _settle_album_manifest(session, obligation, *, state) -> None:
+    if not obligation.album_manifest_id:
+        return
+    from app.models.group_clone import CloneAlbumManifest
+
+    manifest = session.get(CloneAlbumManifest, obligation.album_manifest_id)
+    if manifest is not None:
+        manifest.state = state
+        manifest.version += 1
 
 
 def _settle_terminal_failure(session, action, *, obligation, identity, attempt) -> None:
@@ -183,10 +217,15 @@ def _settle_terminal_failure(session, action, *, obligation, identity, attempt) 
     if attempt.gateway_call_started_at and fact_kind != "safely_not_executed":
         action.status = "unknown_after_send"
         obligation.state = "unknown_after_send"
-        identity.state = "unknown"
+        payload = _clone_payload(action)
+        for item in _send_identities(session, payload, identity):
+            item.state = "unknown"
         return
     obligation.state = "failed_terminal"
-    identity.state = "allocated"
+    payload = _clone_payload(action)
+    for item in _send_identities(session, payload, identity):
+        item.state = "allocated"
+    _settle_album_manifest(session, obligation, state="failed")
     _ensure_failed_head_case(session, action, obligation)
 
 

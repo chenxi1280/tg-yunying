@@ -21,6 +21,7 @@ class SendResult:
     failure_type: str | None = None
     detail: str | None = None
     remote_mutation_started: bool | None = None
+    remote_message_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

@@ -1,6 +1,7 @@
 import React from 'react';
 import { Alert, Checkbox, Collapse, Descriptions, Form, Input, InputNumber, Select, Space, Typography } from 'antd';
 import type { Account, AccountPool, ChannelMessageComment, OperationTarget, PromptTemplate, RuleSet, TaskCenterTaskType } from '../types';
+import { GroupCloneTaskFields, GroupCloneTaskReview } from './GroupCloneTaskFields';
 import { ChannelCommentTypeConfig, ChannelLikeTypeConfig, ChannelViewTypeConfig } from './TaskCenterChannelConfigSections';
 import { TASK_TYPES, TYPE_LABEL, OPERATION_PROFILE_TEMPLATES, type OperationProfileTemplateId, accountPrecheck, aiModelIdentity, csvStrings, curveNumbers, curveText, currentOperationProfile, formatDateTime, operationProfileSummary, operationTemplate, ruleSummary, targetName, words } from './taskCenterViewModel';
 
@@ -254,6 +255,7 @@ export function WizardTypeConfig({
   simpleSearchCreation = false,
   simpleSearchEditing = false,
   simpleSearchLegacyUncapped = false,
+  groupCloneEditing = false,
 }: {
   taskType: TaskCenterTaskType;
   ruleSets?: RuleSet[];
@@ -266,6 +268,7 @@ export function WizardTypeConfig({
   simpleSearchCreation?: boolean;
   simpleSearchEditing?: boolean;
   simpleSearchLegacyUncapped?: boolean;
+  groupCloneEditing?: boolean;
 }) {
   const form = Form.useFormInstance();
   if (simpleSearchCreation && (taskType === 'search_join_group' || taskType === 'search_rank_deboost')) {
@@ -587,32 +590,7 @@ export function WizardTypeConfig({
     );
   }
   if (taskType === 'group_clone') {
-    return (
-      <Space direction="vertical" style={{ width: '100%' }}>
-        <Alert
-          type="warning"
-          showIcon
-          message="目标群使用独占写权；启动前会校验共享 Update Ingress、授权 generation 和发送权限。"
-        />
-        <div className="form-grid">
-          <Form.Item name="listener_account_id" label="源群 listener 账号 ID" rules={[{ required: true }]}><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item>
-          <Form.Item name="listener_authorization_id" label="listener authorization ID" rules={[{ required: true }]}><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item>
-          <Form.Item name="authorization_mode" label="源群授权方式" rules={[{ required: true }]}>
-            <Select options={[{ value: 'public', label: '公开群' }, { value: 'owned', label: '自有群' }, { value: 'admin_authorized', label: '管理员授权' }]} />
-          </Form.Item>
-          <Form.Item name="control_account_id" label="目标控制账号 ID" rules={[{ required: true }]}><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item>
-          <Form.Item name="control_authorization_id" label="control authorization ID" rules={[{ required: true }]}><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item>
-          <Form.Item name="sender_pool_account_ids" label="发送账号 ID（逗号或换行）" rules={[{ required: true }]}><Input.TextArea rows={3} /></Form.Item>
-          <Form.Item name="rule_set_id" label="冻结规则集 ID" rules={[{ required: true }]}><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item>
-          <Form.Item name="rule_set_version" label="冻结规则版本号" rules={[{ required: true }]}><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item>
-          <Form.Item name="min_delay_ms" label="最小发送延迟 ms" rules={[{ required: true }]}><InputNumber min={0} precision={0} style={{ width: '100%' }} /></Form.Item>
-          <Form.Item name="max_delay_ms" label="最大发送延迟 ms" rules={[{ required: true }]}><InputNumber min={0} precision={0} style={{ width: '100%' }} /></Form.Item>
-          <Form.Item name="failure_order_policy" label="失败保序策略">
-            <Select options={[{ value: 'fail_stop', label: '阻断并等待决策' }, { value: 'continue_with_visible_gap', label: '记录可见缺口后继续' }]} />
-          </Form.Item>
-        </div>
-      </Space>
-    );
+    return <GroupCloneTaskFields editing={groupCloneEditing} />;
   }
   if (taskType === 'channel_view') {
     return <ChannelViewTypeConfig />;
@@ -827,6 +805,7 @@ export function WizardReview({ taskType, values, accounts, accountPools, targets
   if (['search_click', 'search_join_group', 'search_rank_deboost'].includes(taskType)) {
     return <SimpleSearchClickReview taskType={taskType} values={values} targets={targets} accountPools={accountPools} />;
   }
+  if (taskType === 'group_clone') return <GroupCloneTaskReview values={values} />;
   const account = accountPrecheck(values, accounts, accountPools, taskType);
   const profile = currentOperationProfile(values);
   const selectedSlang = slangTemplates.find((template) => template.id === values.slang_prompt_template_id);

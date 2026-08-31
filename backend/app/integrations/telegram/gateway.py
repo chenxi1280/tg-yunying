@@ -3470,6 +3470,63 @@ class TelethonTelegramGateway(TelegramGateway):
             self._usable_credentials(credentials),
         ))
 
+    async def _send_raw_mtproto_media_async(
+        self,
+        peer_id: str,
+        *,
+        source_peer_id: str,
+        media_items: list[dict],
+        reply_to_msg_id: int | None,
+        top_msg_id: int | None,
+        source_session_ciphertext: str | None,
+        source_credentials: DeveloperAppCredentials,
+        session_ciphertext: str | None,
+        credentials: DeveloperAppCredentials,
+    ) -> SendResult:
+        from .telethon_clone_media import send_clone_media
+
+        source_client = await self._authorized_client(
+            source_session_ciphertext, source_credentials,
+            error_message="raw clone media source requires a valid session",
+        )
+        target_client = await self._authorized_client(
+            session_ciphertext, credentials,
+            error_message="raw clone media target requires a valid session",
+        )
+        return await send_clone_media(
+            source_client, target_client,
+            source_peer_id=source_peer_id,
+            target_peer_id=peer_id,
+            items=media_items,
+            reply_to_message_id=reply_to_msg_id,
+            target_top_message_id=top_msg_id,
+        )
+
+    def send_raw_mtproto_media(
+        self,
+        peer_id: str,
+        *,
+        source_peer_id: str,
+        media_items: list[dict],
+        reply_to_msg_id: int | None = None,
+        top_msg_id: int | None = None,
+        source_session_ciphertext: str | None = None,
+        source_credentials: DeveloperAppCredentials | None = None,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> SendResult:
+        return self._run(self._send_raw_mtproto_media_async(
+            peer_id,
+            source_peer_id=source_peer_id,
+            media_items=media_items,
+            reply_to_msg_id=reply_to_msg_id,
+            top_msg_id=top_msg_id,
+            source_session_ciphertext=source_session_ciphertext,
+            source_credentials=self._usable_credentials(source_credentials),
+            session_ciphertext=session_ciphertext,
+            credentials=self._usable_credentials(credentials),
+        ))
+
     async def _fetch_raw_channel_boundary_async(
         self,
         peer_id: str,

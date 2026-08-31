@@ -70,6 +70,7 @@ def validate_clone_dispatch(
     )
     if not allowed:
         raise ValueError(f"group_clone_gateway_authority_blocked: {reason}")
+    _consume_retry_authorization(session, action, rows)
     return rows
 
 
@@ -121,7 +122,9 @@ def _validate_identity(payload, rows) -> None:
         raise ValueError("group_clone_mutation_identity_scope_mismatch")
     if identity.random_id != payload.random_id:
         raise ValueError("group_clone_random_id_mismatch")
-    if expected_kind in {"sendMessage", "createForumTopic"} and not identity.random_id:
+    if expected_kind in {
+        "sendMessage", "sendMedia", "sendMultiMedia", "createForumTopic",
+    } and not identity.random_id:
         raise ValueError("group_clone_random_id_missing")
     if (identity.target_peer_type, identity.target_peer_id) != (
         payload.target_peer_type,
@@ -203,8 +206,37 @@ def _validate_sequence_head(session, action, rows) -> None:
         ExecutionAttempt.gateway_call_started_at.is_not(None),
         ExecutionAttempt.status.in_(("gateway_call_started", "result_unknown", "success")),
     ).limit(1))
-    if started:
+    if started and not _retry_authorized(session, rows.obligation):
         raise ValueError("group_clone_mutation_already_started")
+
+
+def _retry_authorized(session, obligation) -> bool:
+    from app.models.group_clone import CloneSequencerHeadCase
+
+    case = session.scalar(select(CloneSequencerHeadCase).where(
+        CloneSequencerHeadCase.obligation_id == obligation.id,
+        CloneSequencerHeadCase.state == "retry_authorized",
+        CloneSequencerHeadCase.authoritative_absence_evidence_id.is_not(None),
+    ).with_for_update())
+    return case is not None
+
+
+def _consume_retry_authorization(session, action, rows) -> None:
+    started = session.scalar(select(ExecutionAttempt.id).where(
+        ExecutionAttempt.action_id == action.id,
+        ExecutionAttempt.gateway_call_started_at.is_not(None),
+    ).limit(1))
+    if not started:
+        return
+    from app.models.group_clone import CloneSequencerHeadCase
+
+    case = session.scalar(select(CloneSequencerHeadCase).where(
+        CloneSequencerHeadCase.obligation_id == rows.obligation.id,
+        CloneSequencerHeadCase.state == "retry_authorized",
+    ).with_for_update())
+    if case is not None:
+        case.state = "retry_in_progress"
+        case.revision += 1
 
 
 def _visible_gap_accepted(session, obligation) -> bool:

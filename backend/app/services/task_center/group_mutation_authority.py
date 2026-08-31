@@ -113,7 +113,19 @@ def _claim_shared(session, auth, *, writer_kind, writer_id, route_hash):
 def _claim_vacant(session, auth, *, writer_kind, writer_id, route_hash):
     auth.mode, auth.gateway_admission_side, auth.state = "exclusive_clone", "new", "active"
     auth.version += 1
-    session.add(_new_holder(auth, writer_kind, writer_id=writer_id, route_hash=route_hash))
+    holder = session.scalar(select(TelegramGroupMutationAuthorityHolder).where(
+        TelegramGroupMutationAuthorityHolder.authority_id == auth.id,
+        TelegramGroupMutationAuthorityHolder.writer_kind == writer_kind,
+        TelegramGroupMutationAuthorityHolder.writer_id == writer_id,
+        TelegramGroupMutationAuthorityHolder.route_hash == route_hash,
+    ).with_for_update())
+    if holder is None:
+        session.add(_new_holder(
+            auth, writer_kind, writer_id=writer_id, route_hash=route_hash,
+        ))
+    else:
+        holder.state = "active"
+        holder.version = int(holder.version or 1) + 1
     session.flush()
     return True, "", auth
 

@@ -56,6 +56,7 @@
 
 - 创建者必须声明源群为公开可访问、我方拥有，或已取得管理员/内容方授权；保存 `source_authorization_mode`、确认人、确认时间和审计理由。
 - 源群启用内容保护或消息被 Telegram 标记不可转发/保存时，source event 仍可保存最小审计元数据，但不得下载媒体、复制正文或进入 Gateway；义务终态为 `blocked(source_content_protected)`。
+- 匿名管理员以源群 channel 身份发言且 Telegram 不提供稳定个人 peer 时，只保存可见 `post_author` 作为展示名，义务进入 `manual_review(anonymous_sender_identity_unproven)`；不得把可变昵称伪造成稳定 sender，也不得把多个匿名管理员静默合并为同一人设。
 - 原始 Telegram Updates 不整体写入业务库。业务库只保存任务所需的规范化字段、hash 和脱敏 typed evidence。
 - 临时媒体缓存必须加密、按 tenant 隔离、带 TTL；成功、终态失败或任务归档后按数据保留策略清理。
 
@@ -745,12 +746,12 @@ V1 自动 Cutover 只支持整个旧任务就是一条 1→1 route。Preview 必
 - `GET /api/tasks/{task_id}/clone-message-mappings`
 - `GET /api/tasks/{task_id}/clone-reconcile-cases`
 - `GET /api/tasks/{task_id}/clone-update-ingress-status`
+- `GET /api/tasks/{task_id}/clone-runtime-summary`
 - `GET /api/tasks/{task_id}/clone-manual-reviews`
 - `POST /api/tasks/{task_id}/clone-manual-reviews/{review_id}/decision`
 - `GET /api/tasks/{task_id}/clone-sequencer-head-cases`
 - `POST /api/tasks/{task_id}/clone-sequencer-head-cases/{case_id}/decision`
-- `POST /api/tasks/{task_id}/clone-bindings/{binding_id}/release/preview`
-- `POST /api/tasks/{task_id}/clone-bindings/{binding_id}/release/apply`
+- `POST /api/tasks/{task_id}/clone-bindings/{binding_id}/change`
 - `POST /api/tasks/{legacy_task_id}/group-clone/cutover/preview`
 - `POST /api/tasks/{legacy_task_id}/group-clone/cutover/apply`
 - `POST /api/tasks/{clone_task_id}/group-clone/rollback/preview`
@@ -759,6 +760,8 @@ V1 自动 Cutover 只支持整个旧任务就是一条 1→1 route。Preview 必
 cutover 路径中的 `legacy_task_id` 必须指存量 `group_relay`。服务端自行解析完整旧配置并证明唯一 1→1 route，前端不得传 route id 从多 route 任务中选择一条；apply payload 携带 preview token、旧 revision、route manifest hash、authority version 和新 clone 配置。rollback 路径中的 `clone_task_id` 必须指由该 cutover 创建的 `group_clone`，服务端从 cutover generation 解析旧任务，前端不得自由指定另一旧任务。
 
 sequencer-head decision payload 只允许 `accept_visible_gap|retry_same_mutation|keep_blocked`，携带 expected case revision、reason 和 client request id。unknown-deadline case 不接受 retry；failed case 的 `retry_same_mutation` eligibility 由服务端基于 Gateway/Attempt/authoritative absence evidence 计算，前端布尔值不构成授权。
+
+binding change payload 携带 expected binding version、可空 replacement account id、reason 和 client request id；replacement 为空表示释放。服务端必须锁当前 binding/slot、证明没有 open obligation、证明替换账号属于冻结 sender pool 且 slot available；重复 client request 返回同一结果，不得二次释放或创建第二 binding。前端提交前必须显示释放/换绑目标并二次确认。
 
 列表接口必须分页/keyset，不返回整表。所有写接口使用 tenant scope、expected revision、client request id、reason 和 AuditLog。
 
@@ -836,6 +839,8 @@ worker/container healthy 不能证明克隆健康。任务健康至少同时观�
 - typed remote fact 增长与 source-to-target lag。
 - target binding/authority mismatch、账号池容量、共享 transport block 和权限变化。
 - stopped/archived Task 是否仍异常持有 authority，及 initializing subscription 是否超时未完成 boundary。
+
+详情页“健康”只能由领域聚合得出：Task 正在运行、ingress/subscription/source stream 均 live、owner lease 有效，且不存在 `observed|ready|action_bound|executing|waiting_*|blocked|unknown|failed_terminal` 等未收口或异常义务时，才允许显示 healthy。`succeeded/degraded/filtered/superseded` 必须分栏计数，degraded 不得并入严格成功。
 
 ## 16. QA 验收矩阵
 
@@ -966,7 +971,7 @@ worker/container healthy 不能证明克隆健康。任务健康至少同时观�
 8. 前端向导、详情与告警。
 9. PostgreSQL/Telegram 集成 QA、Release Gate 和 E4 canary。
 
-### 18.2 当前实现差距审计（2026-08-30）
+### 18.2 当前实现差距审计（2026-08-31）
 
 当前代码已具备本地可验证的文本 NewMessage 与消息生命周期主链：严格 create/precheck、starting boundary、durable delivery 消费、source event、sender slot/binding、obligation/FOP/Action、冻结 mutation identity/random_id、Gateway 前 route/execution/authorization/transport/authority/Sequencer 复核、Attempt/typed Remote Fact、outbound mapping 与 message mapping；Edit/Delete/Pin、显式 Topic 生命周期、旧 Topic 权威 lazy fetch/create，以及旧父消息权威读取后的 quote fallback 已接入同一主链。API 已提供 source event、obligation、binding、message mapping、reconcile case、update-ingress status 和 Sequencer case 的只读导航；前端已能创建 `group_clone`。
 
@@ -974,17 +979,23 @@ worker/container healthy 不能证明克隆健康。任务健康至少同时观�
 
 - 共享 Telethon collector 已接入 listener worker，包含 authorization 单 owner/lease/fencing、`updates.getDifference/getChannelDifference`、durable update journal 和 `updateMessageID` 恢复；Topic create 的 random-id mapping 会按 mutation identity 精确关联 `group_clone_mutation` Action。
 - Edit/Delete/Pin/Topic 与 Reply lazy bootstrap 均走同一 Action/Attempt/typed-fact 主链；Edit/Delete/Pin/Unpin/Topic Edit/Delete 的 RPC 丢响应后执行冻结期望状态 readback，只有精确匹配才收口成功，不匹配保持 unknown 且不重放。unknown deadline 会转 `remote_reconcile_only` 并创建唯一 Sequencer head case。
-- obligation 成功词汇已统一为 `succeeded`；manual review 与 Sequencer decision 均有 manage 权限、revision CAS、请求幂等、原因和审计。详情页已提供 source event、obligation、binding、mapping、ingress lease、manual review、Sequencer case 下钻与受控决策。
+- obligation 成功词汇已统一为 `succeeded`；manual review 与 Sequencer decision 均有 manage 权限、revision CAS、请求幂等、原因和审计。详情页已提供 source event、obligation、FOP/Action/Attempt/RemoteFact、binding、mapping、ingress lease、人工审核历史、Sequencer case 下钻与受控决策；健康灯由当前 epoch 领域状态聚合，严格成功、降级、过滤、阻塞、失败和未知分栏展示。
 - 已识别的群写入口（Task Center 群/目标发送、删除、频道评论/反应、MessageTask、OperationTask、人工即时发送）均在 Gateway 前接入 `TelegramGroupMutationAuthority`；handoff 还必须匹配 exact active-side holder，不能仅凭 `writer_kind` 旁路。一次性 shared writer 在远端调用后释放，调用中断则保留 holder 以 fail-closed。
-- 单 route cutover preview/apply 和 pre-mutation rollback 已实现 revision、route manifest、authority version、open-action fingerprint 与 client request CAS；旧任务 unsafe/unknown 或 Clone 已有 Gateway-started mutation 时阻断。该实现只证明安全的“尚未产生 Clone 远端副作用”回滚子集。
-- Album quiet/max deadline 已有持久 manifest，并在缺少 fresh-refetch/media adapter 时按冻结策略明确 `filtered` 或 `waiting_manual_review`，不会永久卡住后续文本事件，也不会把部分媒体伪装为成功。
+- 单 route cutover preview/apply 已实现 revision、route manifest、authority version、open-action fingerprint 与 client request CAS；旧任务存在任一 open Action 时阻断。apply 在持有共享 update state 与 source stream 锁时读取 Telegram channel PTS/message boundary，冻结 start cursor 后才交接写权。rollback 只允许 Clone 尚无 task delivery/source event 且尚无 Gateway-started mutation，避免把 Clone 已接收但旧任务未接收的消息静默丢弃；apply 成功会停止 Clone stream/subscription 后再恢复旧任务。该实现仍只覆盖无 Clone 业务输入/副作用的安全回滚子集。
+- Album quiet/max deadline、冻结 manifest 与每 part 独立 random-id 已接入 `sendMultiMedia` 原子发送；单媒体在 Gateway 前从冻结 source authorization fresh fetch/download，再由 sender authorization upload/send，Poll 重建题面、选项、匿名/多选/Quiz 正确选项下标而不复制票数。RPC 前的读取/下载/上传失败为 safely-not-started，RPC 后映射不完整进入 unknown；partial policy 成功后记为 degraded，不并入严格成功。当前尚无持久媒体缓存与 source content fingerprint 复核。
+- 通用 Task Center 的 Start/Pause/Resume/Stop/Reset/Delete 已接入 Clone 专用生命周期：Start 建立 stream/subscription/route/control/slot，Pause/Resume 不换 epoch，Stop/Reset 只取消未进入 Gateway 的当前 epoch 工作并释放 holder/binding，Gateway-started/unknown 继续 fail-closed。task 级账号槽在新 epoch 复用，released authority holder 可按同 writer/route 重新领取。
+- precheck 会阻断活动 Clone route 环路，并实时读取 target control 的 Telegram `delete_messages/pin_messages/manage_topics` 权限；前端创建前先独立提交 precheck，使首次创建的 authorization ingress state 能提交给 collector，hard block 明示、warning 二次确认。普通创建后的任务也可经通用 Start 正确启动。
+- channel PTS gap 后，collector 会继续领取 failed/gap stream、执行 `getChannelDifference` 并将任务恢复为 `runtime_recovering -> running/live`；sender binding 会按冻结的 active/guarded/eligible 阈值推进，安全回收仍校验 tenure/未决依赖/VIP，同一源发言人回复自身不再误判账号碰撞。
+- `CloneSourceEvent.config_snapshot` 冻结采集时完整 Clone 配置，旧 waiting obligation 不再读取后来 PATCH 的 pacing/rule/lifecycle；同秒连续 Edit 的 update identity 纳入 PTS。Edit 复用 New 的内容过滤/转换；规则转换或共享出站过滤导致最终文本变化且原消息带 entities 时，New/Edit 均进入显式人工审核，不携带失效偏移继续发送，也不会使 planner 异常退出。
+- 权威 absence evidence 授权的 same-mutation retry 现在可穿过历史 Gateway-started Attempt，但授权在 admission 后只消费一次；manual review 按 error code 返回允许决定，protected/media/entity 等不可释放原因只允许 drop/keep-blocked，避免 release 循环。
+- sender release/rebind 已实现 binding-version CAS、open-obligation 阻断、冻结 pool/available slot 复核、请求幂等和审计；前端 Clone 详情提供原因、释放与指定账号换绑入口。
+- 前端 Clone 创建向导已移除不驱动 Clone 的通用账号/节奏页，确认页展示真实 route/listener/control/sender/rule/pacing 合同，并自动选择已发布规则的真实版本号；编辑只调用专用 PATCH，冻结的发送账号池不可伪装成可直接修改，其余可变 sender/pacing/content/lifecycle/retention 字段完整展示。旧单 route `group_relay` 详情提供 cutover preview、Clone 配置表单和 apply，Clone 详情提供受限 rollback。详情的 SourceEvent/Obligation/Mapping/Binding/Case 数来自当前 epoch 领域表聚合，不再以 Action 数或首屏数组长度替代总量。
 
 以下仍是 Release Gate 硬阻塞，不得改写成 `implemented_local`、`qa_pass`、已上线或生产完成：
 
-- Album 原子发送、Poll、单媒体下载、tenant 隔离加密缓存、上传和 source fingerprint fresh-refetch adapter 尚未实现；当前只具备显式失败/人工态闭环。
-- 完整 cutover exclusion、Clone 已产生远端 mutation 后的去重 rollback、handoff canary 后 finalize 为 `exclusive_clone`、binding release/reset 仍未实现；不得用当前 pre-mutation rollback 代替完整合同。
-- 前端尚未提供 legacy task 的 clone-config cutover 表单和受控 sender 换绑；当前只提供 Clone 详情证据、人工处置及符合条件的 rollback。
-- 尚无 blank/current PostgreSQL、并发 CAS、真实 Telegram collector/desired-state readback、媒体、割接和 E4 canary 证据；当前证据仅为 SQLite 定向自动化测试与前端生产构建。
+- tenant 隔离加密媒体缓存、TTL 清理、下载内容 fingerprint 与 source metadata 的 fresh-refetch 一致性复核尚未实现；当前媒体 adapter 每次发送前直接读取源消息，不能替代完整缓存合同。
+- 完整 cutover exclusion、Clone 已产生 source event 或远端 mutation 后的去重 rollback、handoff canary 后 finalize 为 `exclusive_clone` 仍未实现；不得用当前 no-input/pre-mutation rollback 或 task 级 Stop/Reset 代替完整合同。
+- 尚无 blank/current PostgreSQL、并发 CAS、真实 Telegram collector/desired-state readback、媒体/相册/Poll、割接和 E4 canary 证据；当前证据仅为 SQLite 定向自动化测试、Telethon 对象序列化检查与前端生产构建，不能外推为 Telegram 或生产验收。
 
 ### 18.3 禁止实现方式
 

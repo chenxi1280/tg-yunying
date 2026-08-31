@@ -21,19 +21,23 @@ from app.models.group_clone import (
 from app.services._common import gateway
 from app.services.developer_apps import credentials_for_authorization
 
+from .group_clone_content import sanitize_clone_edit
 from .group_clone_identity import derive_deterministic_random_id
 from .payloads import GroupCloneMutationPayload
 
 GROUP_CLONE_CONTRACT = "v2_group_clone"
 
 
-def materialize_lifecycle_event(session, task, *, route, event, obligation):
+def materialize_lifecycle_event(session, task, *, config, route, event, obligation):
     if event.event_type == "message_delete" and _deleted_topic_map(session, task, event):
         return _materialize_topic(
             session, task, route=route, event=event, obligation=obligation,
         )
     if event.event_type == "message_edit":
-        return _materialize_edit(session, task, route=route, event=event, obligation=obligation)
+        return _materialize_edit(
+            session, task, config=config, route=route,
+            event=event, obligation=obligation,
+        )
     if event.event_type == "message_delete":
         return _materialize_delete(session, task, route=route, event=event, obligation=obligation)
     if event.event_type == "message_pin":
@@ -76,7 +80,7 @@ def materialize_topic_bootstrap(session, task, *, route, event, obligation):
     )
 
 
-def _materialize_edit(session, task, *, route, event, obligation):
+def _materialize_edit(session, task, *, config, route, event, obligation):
     original = _original_obligation(session, task, event.source_message_id)
     if original is None:
         return _wait(obligation, "edit_original_obligation_missing")
@@ -91,11 +95,16 @@ def _materialize_edit(session, task, *, route, event, obligation):
     part = _message_part(session, task, event.source_message_id)
     if part is None:
         return _wait_for_original(obligation, original, "edit_target_mapping_required")
+    sanitized = sanitize_clone_edit(
+        session, task, config=config, event=event, obligation=obligation,
+    )
+    if sanitized is None:
+        return False
     execution = _sender_execution(session, route.id, part)
     return _bind_mutation(
         session, task, route=route, execution=execution, event=event,
         obligation=obligation, mutation_kind="editMessage",
-        target_ids=[part.target_message_id], content=event.content,
+        target_ids=[part.target_message_id], content=sanitized,
         entities=event.entities,
     )
 

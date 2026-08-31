@@ -6,10 +6,11 @@ import pytest
 from sqlalchemy import select
 
 from app.integrations.telegram import GroupMessageSnapshot, SendResult
-from app.models import Action, ExecutionAttempt, Task
+from app.models import Action, ExecutionAttempt, RuleSetVersion, Task
 from app.models.group_clone import (
     CloneDeliveryObligation,
     CloneAlbumManifest,
+    CloneMessagePart,
     CloneSourceEvent,
     CloneSourceStreamState,
     CloneTopicMap,
@@ -133,6 +134,11 @@ def test_edit_delete_pin_and_topic_use_typed_mutation_chain(client_and_session, 
         session, task, order=6, event_type="message_new", source_message_id=902,
         content="child", reply_to_message_id=400,
     )
+    child_event = session.scalar(select(CloneSourceEvent).where(
+        CloneSourceEvent.task_id == task.id,
+        CloneSourceEvent.stream_order_no == 6,
+    ))
+    child_event.entities = [{"type": "bold", "offset": 0, "length": 5}]
     monkeypatch.setattr(
         "app.services.task_center.group_clone_reply.gateway.fetch_group_message",
         lambda *args, **kwargs: GroupMessageSnapshot(
@@ -147,6 +153,8 @@ def test_edit_delete_pin_and_topic_use_typed_mutation_chain(client_and_session, 
     quoted = _action(session, task, 6)
     assert quoted.payload["reply_to_message_id"] is None
     assert quoted.payload["content"].startswith("> parent body\n\nchild")
+    prefix = quoted.payload["content"].removesuffix("child")
+    assert quoted.payload["entities"][0]["offset"] == len(prefix.encode("utf-16-le")) // 2
     assert _obligation(session, quoted).degradation_reason == "orphan_reply_quote_fallback"
 
 
@@ -309,6 +317,24 @@ def test_manual_review_decision_is_revisioned_and_idempotent(client_and_session)
         "client_request_id": "manual-review-request-1",
     }
     url = f"/api/tasks/{task.id}/clone-manual-reviews/{obligation.id}/decision"
+    listed = client.get(
+        f"/api/tasks/{task.id}/clone-manual-reviews",
+        headers=_auth_headers(),
+    )
+    assert listed.status_code == 200
+    assert listed.json()["items"][0]["allowed_decisions"] == [
+        "drop", "keep_blocked",
+    ]
+    forbidden_release = client.post(
+        url,
+        json={
+            **payload,
+            "decision": "release",
+            "client_request_id": "manual-review-release-1",
+        },
+        headers=_auth_headers(),
+    )
+    assert forbidden_release.status_code == 409
     first = client.post(url, json=payload, headers=_auth_headers())
     replay = client.post(url, json=payload, headers=_auth_headers())
     assert first.status_code == 200
@@ -321,6 +347,118 @@ def test_manual_review_decision_is_revisioned_and_idempotent(client_and_session)
         headers=_auth_headers(),
     )
     assert conflict.status_code == 409
+
+
+def test_source_event_uses_frozen_config_after_task_patch(client_and_session):
+    client, session = client_and_session
+    task = _running_task(client, session)
+    frozen = dict(task.type_config)
+    _add_event(session, task, order=1, event_type="message_new", content="frozen")
+    event = session.scalar(select(CloneSourceEvent).where(
+        CloneSourceEvent.task_id == task.id,
+    ))
+    event.config_snapshot = frozen
+    current = dict(task.type_config)
+    current["lifecycle"] = {
+        **dict(current["lifecycle"]),
+        "unknown_deadline_seconds": 60,
+    }
+    task.type_config = current
+    task.config_revision += 1
+    session.flush()
+
+    assert build_plan(session, task) == 1
+
+    obligation = session.scalar(select(CloneDeliveryObligation).where(
+        CloneDeliveryObligation.task_id == task.id,
+    ))
+    now_utc_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+    delta = obligation.unknown_deadline_at - now_utc_naive
+    assert delta.total_seconds() > 800
+
+
+def test_source_event_without_config_snapshot_fails_closed(client_and_session):
+    client, session = client_and_session
+    task = _running_task(client, session)
+    _add_event(session, task, order=1, event_type="message_new", content="missing")
+    event = session.scalar(select(CloneSourceEvent).where(
+        CloneSourceEvent.task_id == task.id,
+    ))
+    event.config_snapshot = {}
+    session.flush()
+
+    with pytest.raises(RuntimeError, match="group_clone_event_config_snapshot_missing"):
+        build_plan(session, task)
+
+
+def test_edit_reuses_sanitizer_and_blocks_entity_transform(
+    client_and_session,
+    monkeypatch,
+):
+    client, session = client_and_session
+    task = _running_task(client, session)
+    rule = session.scalar(select(RuleSetVersion).where(
+        RuleSetVersion.rule_set_id == 31,
+        RuleSetVersion.version == 1,
+    ))
+    rule.output_checks = {
+        "forbidden_keywords": ["risk"],
+        "failure_strategy": "transform_once_drop",
+    }
+    rule.transforms = {"keyword_replacements": {"risk": "safe"}}
+    _add_event(session, task, order=1, event_type="message_new", content="original")
+    assert build_plan(session, task) == 1
+    send = _action(session, task, 1)
+    monkeypatch.setattr(
+        "app.services.task_center.dispatcher.gateway.send_raw_mtproto_message",
+        lambda *args, **kwargs: SendResult(
+            True, "7101", remote_mutation_started=True,
+        ),
+    )
+    assert dispatch_action(session, send, project_task_stats=False)
+    _add_event(session, task, order=2, event_type="message_edit", content="risk")
+    edit_event = session.scalar(select(CloneSourceEvent).where(
+        CloneSourceEvent.task_id == task.id,
+        CloneSourceEvent.stream_order_no == 2,
+    ))
+    edit_event.entities = [{"type": "bold", "offset": 0, "length": 4}]
+
+    assert build_plan(session, task) == 0
+
+    obligation = session.scalar(select(CloneDeliveryObligation).where(
+        CloneDeliveryObligation.task_id == task.id,
+        CloneDeliveryObligation.stream_order_no == 2,
+    ))
+    assert obligation.state == "waiting_manual_review"
+    assert obligation.error_code == (
+        "group_clone_entity_rebuild_required_after_transform"
+    )
+    assert _action(session, task, 2) is None
+
+
+def test_new_message_blocks_entities_when_outbound_filter_changes_text(
+    client_and_session,
+):
+    client, session = client_and_session
+    task = _running_task(client, session)
+    _add_event(
+        session, task, order=1, event_type="message_new",
+        content="hello  world",
+    )
+    event = session.scalar(select(CloneSourceEvent).where(
+        CloneSourceEvent.task_id == task.id,
+    ))
+    event.entities = [{"type": "bold", "offset": 7, "length": 5}]
+
+    assert build_plan(session, task) == 0
+
+    obligation = session.scalar(select(CloneDeliveryObligation).where(
+        CloneDeliveryObligation.task_id == task.id,
+    ))
+    assert obligation.state == "waiting_manual_review"
+    assert obligation.error_code == (
+        "group_clone_entity_rebuild_required_after_sanitization"
+    )
 
 
 def test_incomplete_album_does_not_permanently_block_stream(client_and_session):
@@ -347,13 +485,117 @@ def test_incomplete_album_does_not_permanently_block_stream(client_and_session):
     manifest.quiet_deadline_at = datetime.now(timezone.utc) - timedelta(seconds=1)
     manifest.max_deadline_at = datetime.now(timezone.utc) - timedelta(seconds=1)
 
-    assert build_plan(session, task) == 0
+    assert build_plan(session, task) == 1
+    action = session.scalar(select(Action).where(Action.task_id == task.id))
+    assert action.payload["mutation_kind"] == "sendMultiMedia"
+    assert [item["source_message_id"] for item in action.payload["media_items"]] == [501, 502]
     obligations = list(session.scalars(select(CloneDeliveryObligation).where(
         CloneDeliveryObligation.task_id == task.id,
     ).order_by(CloneDeliveryObligation.stream_order_no)))
-    assert [row.state for row in obligations] == ["filtered", "filtered"]
+    assert [row.state for row in obligations] == ["action_bound", "superseded"]
     _add_event(session, task, order=3, event_type="message_new", source_message_id=503, content="after album")
     assert build_plan(session, task) == 1
+
+
+def test_photo_without_caption_dispatches_media_and_closes_typed_chain(
+    client_and_session, monkeypatch,
+):
+    client, session = client_and_session
+    task = _running_task(client, session)
+    _add_event(
+        session, task, order=1, event_type="message_new",
+        media_type="photo", content="",
+    )
+
+    assert build_plan(session, task) == 1
+    action = _action(session, task, 1)
+    assert action.payload["mutation_kind"] == "sendMedia"
+    assert action.payload["content"] == ""
+    assert len(action.payload["media_items"]) == 1
+    called = {}
+
+    def send_media(*args, **kwargs):
+        called.update(kwargs)
+        return SendResult(
+            True, "8101", remote_message_ids=("8101",),
+            remote_mutation_started=True,
+        )
+
+    monkeypatch.setattr(
+        "app.services.task_center.dispatcher.gateway.send_raw_mtproto_media",
+        send_media,
+    )
+    assert dispatch_action(session, action, project_task_stats=False)
+
+    obligation = _obligation(session, action)
+    part = session.scalar(select(CloneMessagePart).where(
+        CloneMessagePart.obligation_id == obligation.id,
+    ))
+    assert called["source_peer_id"] == "-100111"
+    assert obligation.state == "succeeded"
+    assert part.target_message_id == 8101
+
+
+def test_album_late_part_after_freeze_is_explicit(client_and_session):
+    client, session = client_and_session
+    task = _running_task(client, session)
+    _add_event(session, task, order=1, event_type="message_new", grouped_id="album-late", media_type="photo")
+    _add_event(session, task, order=2, event_type="message_new", source_message_id=502, grouped_id="album-late", media_type="photo")
+    assert build_plan(session, task) == 0
+    manifest = session.scalar(select(CloneAlbumManifest).where(
+        CloneAlbumManifest.task_id == task.id,
+    ))
+    manifest.quiet_deadline_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    assert build_plan(session, task) == 1
+    _add_event(session, task, order=3, event_type="message_new", source_message_id=503, grouped_id="album-late", media_type="photo")
+
+    assert build_plan(session, task) == 0
+    late = session.scalar(select(CloneDeliveryObligation).where(
+        CloneDeliveryObligation.task_id == task.id,
+        CloneDeliveryObligation.stream_order_no == 3,
+    ))
+    assert late.state == "waiting_manual_review"
+    assert late.error_code == "album_late_part_after_freeze"
+
+
+def test_unsupported_media_never_degrades_to_file_or_text(client_and_session):
+    client, session = client_and_session
+    task = _running_task(client, session)
+    _add_event(
+        session, task, order=1, event_type="message_new",
+        media_type="location", content="location caption",
+    )
+
+    assert build_plan(session, task) == 0
+    obligation = session.scalar(select(CloneDeliveryObligation).where(
+        CloneDeliveryObligation.task_id == task.id,
+    ))
+    assert obligation.state == "waiting_manual_review"
+    assert obligation.error_code == "unsupported_media:location:block"
+    assert _action(session, task, 1) is None
+
+
+def test_media_acquisition_failure_is_safely_not_sent(client_and_session, monkeypatch):
+    client, session = client_and_session
+    task = _running_task(client, session)
+    _add_event(
+        session, task, order=1, event_type="message_new",
+        media_type="photo", content="caption",
+    )
+    assert build_plan(session, task) == 1
+    action = _action(session, task, 1)
+    monkeypatch.setattr(
+        "app.services.task_center.dispatcher.gateway.send_raw_mtproto_media",
+        lambda *args, **kwargs: SendResult(
+            False, failure_type="group_clone_media_download_empty",
+            detail="source media unavailable", remote_mutation_started=False,
+        ),
+    )
+
+    assert dispatch_action(session, action, project_task_stats=False)
+
+    assert action.status == "failed"
+    assert _obligation(session, action).state == "failed_terminal"
 
 
 def _create_payload():
@@ -383,6 +625,21 @@ def _create_payload():
     }
 
 
+def _running_task(client, session):
+    response = client.post(
+        "/api/tasks/group-clone/create-and-start",
+        json=_create_payload(), headers=_auth_headers(),
+    )
+    task = session.get(Task, response.json()["task_id"])
+    stream = session.scalar(select(CloneSourceStreamState).where(
+        CloneSourceStreamState.task_id == task.id,
+    ))
+    task.status = "running"
+    task.stats = {**dict(task.stats or {}), "clone_start_state": "running"}
+    stream.state = "live"
+    return task
+
+
 def _add_event(
     session, task, *, order, event_type, content="", source_message_id=501,
     source_top_message_id=None, poll_snapshot=None, reply_to_message_id=None,
@@ -410,6 +667,7 @@ def _add_event(
         poll_snapshot=poll_snapshot or {},
         content_fingerprint=f"content-{order}",
         config_revision=task.config_revision,
+        config_snapshot=dict(task.type_config or {}),
     ))
     session.flush()
 

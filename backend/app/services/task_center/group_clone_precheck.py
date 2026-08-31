@@ -16,6 +16,7 @@ from app.models import (
     TgAccountAuthorization,
     TgGroup,
     TgGroupAccount,
+    Task,
 )
 from app.models.enums import AccountStatus
 from app.models.telegram_authorities import (
@@ -58,6 +59,8 @@ def precheck_group_clone(
     blocks: list[str] = []
     warnings: list[str] = []
     resolved = resolve_clone_config(session, tenant_id, payload=payload, blocks=blocks)
+    _check_route_cycle(session, tenant_id, payload=payload, blocks=blocks)
+    _check_fresh_control_rights(session, payload, resolved=resolved, blocks=blocks)
     authority = _check_authority(session, tenant_id, payload=payload, blocks=blocks)
     _check_open_writers(session, tenant_id, payload=payload, blocks=blocks)
     _check_gateway_capabilities(blocks)
@@ -229,17 +232,31 @@ def _check_online_accounts(session, tenant_id, payload, *, blocks) -> None:
 def _check_rule_set(
     session: Session, tenant_id: int, *, payload: GroupCloneTaskCreate, blocks: list[str],
 ) -> None:
+    _check_rule_binding(
+        session, tenant_id, content=payload.content, blocks=blocks,
+    )
+
+
+def validate_clone_rule_binding(session: Session, tenant_id: int, content) -> None:
+    blocks: list[str] = []
+    _check_rule_binding(session, tenant_id, content=content, blocks=blocks)
+    if blocks:
+        raise ValueError(blocks[0])
+
+
+def _check_rule_binding(session, tenant_id, *, content, blocks) -> None:
     rule = session.scalar(select(RuleSet).where(
-        RuleSet.id == payload.content.rule_set_id,
+        RuleSet.id == content.rule_set_id,
         RuleSet.tenant_id == tenant_id,
     ))
     version = session.scalar(select(RuleSetVersion).where(
-        RuleSetVersion.rule_set_id == payload.content.rule_set_id,
+        RuleSetVersion.rule_set_id == content.rule_set_id,
         RuleSetVersion.tenant_id == tenant_id,
-        RuleSetVersion.version == payload.content.rule_set_version,
+        RuleSetVersion.version == content.rule_set_version,
         RuleSetVersion.status == "published",
     ))
-    if rule is None or version is None:
+    supported = rule is not None and "group_clone" in (rule.task_types or [])
+    if not supported or version is None:
         blocks.append("content rule set/version 不存在、未发布或不属于当前租户")
 
 
@@ -290,6 +307,52 @@ def _check_open_writers(
         blocks.append("目标群存在 pending/executing/unknown 平台写入 Action")
 
 
+def _check_route_cycle(session, tenant_id, *, payload, blocks) -> None:
+    rows = session.scalars(select(Task).where(
+        Task.tenant_id == tenant_id,
+        Task.type == "group_clone",
+        Task.status.in_(("pending", "running", "paused")),
+        Task.deleted_at.is_(None),
+    )).all()
+    edges = {_task_route_edge(task) for task in rows}
+    edges.discard(None)
+    source = (payload.source.peer_type, payload.source.peer_id)
+    target = (payload.target.peer_type, payload.target.peer_id)
+    if _would_create_route_cycle(edges, source=source, target=target):
+        blocks.append("clone_route_cycle: 当前活动克隆路由会形成消息放大环路")
+
+
+def _task_route_edge(task):
+    config = task.type_config or {}
+    source = config.get("source") or {}
+    target = config.get("target") or {}
+    if not source.get("peer_type") or not source.get("peer_id"):
+        return None
+    if not target.get("peer_type") or not target.get("peer_id"):
+        return None
+    return (
+        (str(source["peer_type"]), str(source["peer_id"])),
+        (str(target["peer_type"]), str(target["peer_id"])),
+    )
+
+
+def _would_create_route_cycle(edges, *, source, target) -> bool:
+    graph: dict[tuple[str, str], set[tuple[str, str]]] = {}
+    for start, end in edges:
+        graph.setdefault(start, set()).add(end)
+    pending = [target]
+    visited: set[tuple[str, str]] = set()
+    while pending:
+        node = pending.pop()
+        if node == source:
+            return True
+        if node in visited:
+            continue
+        visited.add(node)
+        pending.extend(graph.get(node, ()))
+    return False
+
+
 def _check_gateway_capabilities(blocks: list[str]) -> None:
     required = (
         "send_raw_mtproto_message",
@@ -300,6 +363,25 @@ def _check_gateway_capabilities(blocks: list[str]) -> None:
     missing = [name for name in required if not callable(getattr(gateway, name, None))]
     if missing:
         blocks.append(f"raw MTProto Gateway capability 未就绪: {missing}")
+
+
+def _check_fresh_control_rights(session, payload, *, resolved, blocks) -> None:
+    if resolved is None:
+        return
+    authorization = resolved.control_authorization
+    try:
+        rights = gateway.fetch_raw_group_admin_rights(
+            payload.target.peer_id,
+            session_ciphertext=authorization.session_ciphertext,
+            credentials=credentials_for_authorization(session, authorization),
+        )
+    except Exception as exc:
+        blocks.append(f"target control 实时权限读取失败: {exc}")
+        return
+    required = ("delete_messages", "pin_messages", "manage_topics")
+    missing = [name for name in required if not bool(rights.get(name))]
+    if missing:
+        blocks.append(f"target control 实时管理员权限不足: {missing}")
 
 
 def _target(session, tenant_id, target_id):

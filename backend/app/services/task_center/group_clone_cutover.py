@@ -6,7 +6,13 @@ import json
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Action, AuditLog, ExecutionAttempt, Task
+from app.models import Action, AuditLog, ExecutionAttempt, Task, TgAccountAuthorization
+from app.models.group_clone import CloneSourceEvent, CloneSourceStreamState
+from app.models.telegram_updates import (
+    TelegramAuthorizationUpdateDelivery,
+    TelegramAuthorizationUpdateState,
+    TelegramAuthorizationUpdateSubscription,
+)
 from app.models.telegram_authorities import (
     TelegramGroupMutationAuthority,
     TelegramGroupMutationAuthorityHolder,
@@ -14,6 +20,8 @@ from app.models.telegram_authorities import (
 
 from .group_clone_lifecycle import create_cutover_group_clone_task
 from .group_mutation_authority import compute_route_hash, ensure_legacy_shared_holder
+from app.services._common import gateway
+from app.services.developer_apps import credentials_for_authorization
 
 OPEN_ACTION_STATES = ("pending", "claiming", "executing", "unknown_after_send")
 UNSAFE_CUTOVER_STATES = ("claiming", "executing", "unknown_after_send")
@@ -78,12 +86,12 @@ def apply_clone_cutover(session: Session, legacy_task: Task, *, request, actor_i
     blockers = _cutover_blockers(session, legacy_task.id, authority, old_holder)
     if blockers:
         raise ValueError(f"cutover_blocked: {blockers}")
-    _cancel_pending_legacy_actions(session, legacy_task.id)
     clone, created = create_cutover_group_clone_task(
         session, legacy_task.tenant_id, actor_id, payload=request.clone_config,
     )
     if not created:
         raise ValueError("cutover clone task 已存在但未记录为本次割接")
+    boundary = _freeze_clone_cutover_boundary(session, clone)
     _handoff_to_clone(session, authority, old_holder, clone, manifest)
     legacy_task.status = "paused"
     legacy_task.stats = {
@@ -91,13 +99,19 @@ def apply_clone_cutover(session: Session, legacy_task: Task, *, request, actor_i
         "clone_start_state": "cutover_paused",
         "cutover_clone_task_id": clone.id,
         "cutover_generation": authority.cutover_generation,
+        "cutover_boundary": boundary,
     }
     clone.stats = {
         **dict(clone.stats or {}),
         "cutover_legacy_task_id": legacy_task.id,
         "cutover_generation": authority.cutover_generation,
     }
-    result = {"success": True, "legacy_task_id": legacy_task.id, "clone_task_id": clone.id}
+    result = {
+        "success": True,
+        "legacy_task_id": legacy_task.id,
+        "clone_task_id": clone.id,
+        "cutover_boundary": boundary,
+    }
     _store_request(legacy_task, "clone_cutover_apply", request, result)
     session.add(_audit(legacy_task, actor_id, "cutover_applied", result))
     return result
@@ -239,19 +253,60 @@ def _cutover_blockers(session, task_id, authority, holder) -> list[str]:
         TelegramGroupMutationAuthorityHolder.id != holder.id,
     )))
     result = [f"unsafe_action:{state}" for state in sorted(states)]
+    pending = session.scalar(select(Action.id).where(
+        Action.task_id == task_id,
+        Action.status == "pending",
+    ).limit(1))
+    if pending:
+        result.append("pending_action: drain legacy actions before cutover")
     result.extend(f"other_holder:{item.writer_kind}:{item.writer_id}" for item in holders)
     return result
 
 
-def _cancel_pending_legacy_actions(session, task_id: str) -> None:
-    actions = session.scalars(select(Action).where(
-        Action.task_id == task_id,
-        Action.status == "pending",
-    ).with_for_update()).all()
-    for action in actions:
-        action.status = "cancelled"
-        action.result = {**dict(action.result or {}), "cancel_reason": "group_clone_cutover"}
-        action.action_version += 1
+def _freeze_clone_cutover_boundary(session, clone) -> dict[str, int]:
+    stream = session.scalar(select(CloneSourceStreamState).where(
+        CloneSourceStreamState.task_id == clone.id,
+        CloneSourceStreamState.task_lifecycle_epoch == clone.task_lifecycle_epoch,
+    ).with_for_update())
+    if stream is None:
+        raise RuntimeError("cutover clone stream missing")
+    update_state = session.scalar(select(TelegramAuthorizationUpdateState).where(
+        TelegramAuthorizationUpdateState.id == stream.authorization_update_state_id,
+    ).with_for_update())
+    if update_state is None or update_state.state != "live":
+        raise ValueError("cutover listener update ingress not live")
+    authorization = session.get(TgAccountAuthorization, stream.authorization_id)
+    if authorization is None:
+        raise RuntimeError("cutover listener authorization missing")
+    boundary = gateway.fetch_raw_channel_boundary(
+        stream.source_peer_id,
+        session_ciphertext=authorization.session_ciphertext,
+        credentials=credentials_for_authorization(session, authorization),
+    )
+    channel_pts = int(boundary.get("channel_pts") or 0)
+    max_message_id = int(boundary.get("max_message_id") or 0)
+    if channel_pts <= 0 or max_message_id < 0:
+        raise ValueError("cutover boundary unproven")
+    stream.channel_pts = channel_pts
+    stream.start_pts = channel_pts
+    stream.start_message_id = max_message_id
+    stream.difference_cursor = {
+        "start_message_id": max_message_id,
+        "start_channel_pts": channel_pts,
+        "cutover_ingress_order": int(update_state.last_ingress_order_no or 0),
+    }
+    stream.state = "catching_up"
+    stream.version += 1
+    subscription = session.scalar(select(TelegramAuthorizationUpdateSubscription).where(
+        TelegramAuthorizationUpdateSubscription.task_id == clone.id,
+        TelegramAuthorizationUpdateSubscription.task_epoch == clone.task_lifecycle_epoch,
+    ).with_for_update())
+    if subscription is None:
+        raise RuntimeError("cutover clone subscription missing")
+    subscription.start_ingress_order = int(update_state.last_ingress_order_no or 0)
+    subscription.state = "active"
+    subscription.version += 1
+    return {"channel_pts": channel_pts, "max_message_id": max_message_id}
 
 
 def _handoff_to_clone(session, authority, old_holder, clone, manifest) -> None:
@@ -298,10 +353,28 @@ def _handoff_to_legacy(session, authority, clone, legacy) -> None:
     authority.mode = "shared"
     authority.gateway_admission_side = "all"
     authority.version += 1
+    _stop_clone_ingress(session, clone)
     clone.status = "paused"
     clone.stats = {**dict(clone.stats or {}), "clone_start_state": "rollback_paused"}
     legacy.status = "running"
     legacy.stats = {**dict(legacy.stats or {}), "clone_start_state": "rollback_restored"}
+
+
+def _stop_clone_ingress(session, clone) -> None:
+    stream = session.scalar(select(CloneSourceStreamState).where(
+        CloneSourceStreamState.task_id == clone.id,
+        CloneSourceStreamState.task_lifecycle_epoch == clone.task_lifecycle_epoch,
+    ).with_for_update())
+    subscription = session.scalar(select(TelegramAuthorizationUpdateSubscription).where(
+        TelegramAuthorizationUpdateSubscription.task_id == clone.id,
+        TelegramAuthorizationUpdateSubscription.task_epoch == clone.task_lifecycle_epoch,
+    ).with_for_update())
+    if stream is None or subscription is None:
+        raise RuntimeError("rollback clone ingress rows missing")
+    stream.state = "stopped"
+    stream.version += 1
+    subscription.state = "stopped"
+    subscription.version += 1
 
 
 def _clone_authority(session, clone, *, for_update):
@@ -333,7 +406,21 @@ def _rollback_blockers(session, task_id: str) -> list[str]:
         Action.task_id == task_id,
         ExecutionAttempt.gateway_call_started_at.is_not(None),
     ).limit(1))
-    return ["clone_gateway_mutation_started"] if started else []
+    if started:
+        return ["clone_gateway_mutation_started"]
+    observed = session.scalar(select(CloneSourceEvent.id).where(
+        CloneSourceEvent.task_id == task_id,
+    ).limit(1))
+    if observed:
+        return ["clone_source_event_observed"]
+    delivered = session.scalar(select(TelegramAuthorizationUpdateDelivery.id).join(
+        TelegramAuthorizationUpdateSubscription,
+        TelegramAuthorizationUpdateSubscription.id
+        == TelegramAuthorizationUpdateDelivery.subscription_id,
+    ).where(
+        TelegramAuthorizationUpdateSubscription.task_id == task_id,
+    ).limit(1))
+    return ["clone_source_delivery_observed"] if delivered else []
 
 
 def _action_fingerprint(session, task_id: str) -> str:

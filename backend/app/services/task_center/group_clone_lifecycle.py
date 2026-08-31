@@ -18,6 +18,7 @@ from .group_clone_precheck import (
     precheck_group_clone,
     request_fingerprint,
     resolve_clone_config,
+    validate_clone_rule_binding,
 )
 from .group_clone_start_rows import initialize_start_rows
 
@@ -127,7 +128,9 @@ def update_group_clone_config(
     requested_senders = set((mutable.get("sender_pool") or {}).get("account_ids") or [])
     if requested_senders != current_senders:
         raise ValueError("sender_pool.account_ids 变更必须走受控账号槽交接")
-    task.type_config = {**current, **mutable}
+    candidate = GroupCloneConfig.model_validate({**current, **mutable})
+    validate_clone_rule_binding(session, tenant_id, candidate.content)
+    task.type_config = candidate.model_dump(mode="json")
     task.config_revision = int(task.config_revision or 1) + 1
     return task
 

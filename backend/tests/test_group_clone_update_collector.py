@@ -119,6 +119,122 @@ def test_active_foreign_owner_is_not_stolen(collector_runtime, monkeypatch) -> N
     assert called is False
 
 
+def test_channel_difference_recovers_failed_gap_stream(
+    collector_runtime,
+    monkeypatch,
+) -> None:
+    with collector_runtime() as session:
+        state = session.scalar(select(TelegramAuthorizationUpdateState))
+        state.state = "gap"
+        state.common_pts = 100
+        state.common_date = 1000
+        task = session.get(Task, "clone-collector-task")
+        task.status = "failed"
+        task.last_error = "group_clone_source_pts_gap"
+        stream = session.scalar(select(CloneSourceStreamState))
+        stream.state = "gap"
+        session.commit()
+    common = TelegramDifferenceBatch(
+        scope="common",
+        status="live",
+        cursor={"pts": 100, "qts": 0, "date": 1000, "seq": 1},
+        final=True,
+    )
+    channel = TelegramDifferenceBatch(
+        scope="channel",
+        status="live",
+        cursor={"pts": 501},
+        updates=(_channel_update(),),
+        final=True,
+    )
+    monkeypatch.setattr(
+        "app.services.task_center.telegram_update_collector.gateway.fetch_raw_authorization_difference",
+        lambda *_args, **_kwargs: common,
+    )
+    monkeypatch.setattr(
+        "app.services.task_center.telegram_update_collector.gateway.fetch_raw_channel_difference",
+        lambda *_args, **_kwargs: channel,
+    )
+
+    result = drain_telegram_update_collector(collector_runtime, tenant_id=1)
+
+    assert result.error_count == 0
+    with collector_runtime() as session:
+        task = session.get(Task, "clone-collector-task")
+        stream = session.scalar(select(CloneSourceStreamState))
+        assert task.status == "running"
+        assert task.stats["clone_start_state"] == "runtime_recovering"
+        assert stream.state == "catching_up"
+        assert consume_clone_deliveries(session, task) == 1
+        assert stream.state == "live"
+        assert task.stats["clone_start_state"] == "running"
+
+
+def test_channel_too_long_continues_from_persisted_cursor_until_final(
+    collector_runtime,
+    monkeypatch,
+) -> None:
+    _mark_collector_gap(collector_runtime)
+    common = TelegramDifferenceBatch(
+        scope="common",
+        status="live",
+        cursor={"pts": 100, "qts": 0, "date": 1000, "seq": 1},
+        final=True,
+    )
+    batches = [
+        TelegramDifferenceBatch(
+            scope="channel", status="too_long", cursor={"pts": 550}, final=False,
+        ),
+        TelegramDifferenceBatch(
+            scope="channel", status="live", cursor={"pts": 551}, final=True,
+        ),
+    ]
+    requested_pts: list[int] = []
+
+    def fetch_channel(_peer_id, pts, **_kwargs):
+        requested_pts.append(pts)
+        return batches.pop(0)
+
+    monkeypatch.setattr(
+        "app.services.task_center.telegram_update_collector.gateway.fetch_raw_authorization_difference",
+        lambda *_args, **_kwargs: common,
+    )
+    monkeypatch.setattr(
+        "app.services.task_center.telegram_update_collector.gateway.fetch_raw_channel_difference",
+        fetch_channel,
+    )
+
+    first = drain_telegram_update_collector(collector_runtime, tenant_id=1)
+    with collector_runtime() as session:
+        task = session.get(Task, "clone-collector-task")
+        stream = session.scalar(select(CloneSourceStreamState))
+        assert first.error_count == 0
+        assert task.status == "failed"
+        assert stream.state == "gap"
+    second = drain_telegram_update_collector(collector_runtime, tenant_id=1)
+
+    with collector_runtime() as session:
+        task = session.get(Task, "clone-collector-task")
+        stream = session.scalar(select(CloneSourceStreamState))
+        assert second.error_count == 0
+        assert requested_pts == [500, 550]
+        assert task.status == "running"
+        assert stream.state == "catching_up"
+
+
+def _mark_collector_gap(collector_runtime) -> None:
+    with collector_runtime() as session:
+        state = session.scalar(select(TelegramAuthorizationUpdateState))
+        state.state = "gap"
+        state.common_pts = 100
+        state.common_date = 1000
+        task = session.get(Task, "clone-collector-task")
+        task.status = "failed"
+        stream = session.scalar(select(CloneSourceStreamState))
+        stream.state = "gap"
+        session.commit()
+
+
 def test_topic_create_mapping_resolves_mutation_action(collector_runtime) -> None:
     with collector_runtime() as session:
         identity = TelegramGatewayMutationIdentity(

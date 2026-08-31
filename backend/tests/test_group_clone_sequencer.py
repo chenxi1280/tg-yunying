@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -8,8 +9,17 @@ from sqlalchemy.orm import Session, sessionmaker
 pytestmark = pytest.mark.no_postgres
 
 from app.database import Base
-from app.models import Tenant, Task
-from app.models.group_clone import CloneAlbumManifest, CloneDeliveryObligation, CloneSourceEvent
+from app.models import Action, ExecutionAttempt, Tenant, Task
+from app.models.group_clone import (
+    CloneAlbumManifest,
+    CloneDeliveryObligation,
+    CloneSequencerHeadCase,
+    CloneSourceEvent,
+)
+from app.services.task_center.group_clone_dispatch import (
+    _consume_retry_authorization,
+    _validate_sequence_head,
+)
 from app.services.task_center.executors.group_clone import (
     CloneAlbumAggregator,
     CloneSequencer,
@@ -131,3 +141,59 @@ def test_sequencer_monotonic_planned_at(db_session: Session):
     t2 = CloneSequencer.calculate_human_planned_at(db_session, task, stream_order_no=2, delay_min_seconds=3.0, delay_max_seconds=5.0)
     assert t2 >= t1
     assert (t2 - t1).total_seconds() >= 3.0
+
+
+def test_authoritative_absence_allows_exactly_one_same_mutation_retry(
+    db_session: Session,
+):
+    task = db_session.get(Task, "task-seq-1")
+    obligation = CloneDeliveryObligation(
+        id="retry-obligation",
+        tenant_id=1,
+        task_id=task.id,
+        epoch=1,
+        source_event_id="retry-source-event",
+        obligation_kind="send",
+        stream_order_no=1,
+        sequencer_id=1,
+        planned_at=datetime.now(timezone.utc),
+        state="action_bound",
+    )
+    action = Action(
+        id="retry-action",
+        tenant_id=1,
+        task_id=task.id,
+        task_type="group_clone",
+        action_type="group_clone_send",
+        status="pending",
+        obligation_type="group_clone_delivery",
+        obligation_id=obligation.id,
+    )
+    attempt = ExecutionAttempt(
+        id="retry-first-attempt",
+        tenant_id=1,
+        action_id=action.id,
+        attempt_no=1,
+        status="result_unknown",
+        gateway_call_started_at=datetime.now(timezone.utc),
+    )
+    case = CloneSequencerHeadCase(
+        task_id=task.id,
+        epoch=1,
+        sequencer_id=1,
+        obligation_id=obligation.id,
+        case_kind="failed_terminal",
+        remote_mutation_started=True,
+        authoritative_absence_evidence_id="absence-fact-1",
+        state="retry_authorized",
+    )
+    db_session.add_all([obligation, action, attempt, case])
+    db_session.flush()
+    rows = SimpleNamespace(task=task, obligation=obligation)
+
+    _validate_sequence_head(db_session, action, rows)
+    _consume_retry_authorization(db_session, action, rows)
+
+    assert case.state == "retry_in_progress"
+    with pytest.raises(ValueError, match="already_started"):
+        _validate_sequence_head(db_session, action, rows)

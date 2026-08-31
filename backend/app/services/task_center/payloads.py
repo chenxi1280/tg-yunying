@@ -213,6 +213,24 @@ class DeleteMessagePayload(BaseModel):
         return self
 
 
+class GroupCloneMediaItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    gateway_mutation_identity_id: str = Field(min_length=1, max_length=36)
+    source_message_id: int = Field(ge=1)
+    media_type: str = Field(min_length=1, max_length=40)
+    content: str = ""
+    entities: list[dict[str, Any]] = Field(default_factory=list)
+    poll_snapshot: dict[str, Any] = Field(default_factory=dict)
+    random_id: int
+
+    @model_validator(mode="after")
+    def validate_random_id(self) -> "GroupCloneMediaItem":
+        if self.random_id == 0 or not -(2**63) <= self.random_id < 2**63:
+            raise ValueError("group_clone media random_id 必须为非零 signed 64-bit")
+        return self
+
+
 class GroupCloneSendPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -220,15 +238,20 @@ class GroupCloneSendPayload(BaseModel):
     gateway_mutation_identity_id: str = Field(min_length=1, max_length=36)
     route_snapshot_id: str = Field(min_length=1, max_length=36)
     execution_snapshot_id: str = Field(min_length=1, max_length=36)
+    mutation_kind: Literal["sendMessage", "sendMedia", "sendMultiMedia"] = "sendMessage"
     target_peer_type: Literal["channel"] = "channel"
     target_peer_id: str = Field(min_length=1, max_length=120)
-    content: str = Field(min_length=1)
+    content: str = ""
     entities: list[dict[str, Any]] = Field(default_factory=list)
     random_id: int
     stream_order_no: int = Field(ge=1)
     source_message_id: int = Field(ge=1)
     reply_to_message_id: int | None = Field(default=None, ge=1)
     target_top_message_id: int | None = Field(default=None, ge=1)
+    source_peer_id: str = ""
+    source_authorization_id: int | None = Field(default=None, ge=1)
+    source_session_generation: int | None = Field(default=None, ge=1)
+    media_items: list[GroupCloneMediaItem] = Field(default_factory=list, max_length=10)
 
     @model_validator(mode="after")
     def validate_random_id(self) -> "GroupCloneSendPayload":
@@ -236,6 +259,21 @@ class GroupCloneSendPayload(BaseModel):
             raise ValueError("group_clone_send random_id 必须为非零 signed 64-bit")
         if not -(2**63) <= self.random_id < 2**63:
             raise ValueError("group_clone_send random_id 超出 signed 64-bit")
+        if not self.media_items and not self.content:
+            raise ValueError("group_clone_send text content 不能为空")
+        if self.media_items and not all((
+            self.source_peer_id,
+            self.source_authorization_id,
+            self.source_session_generation,
+        )):
+            raise ValueError("group_clone media source contract 不完整")
+        expected_kind = "sendMultiMedia" if len(self.media_items) > 1 else "sendMedia"
+        if self.media_items and self.mutation_kind != expected_kind:
+            raise ValueError("group_clone media mutation_kind 与媒体数量不一致")
+        if not self.media_items and self.mutation_kind != "sendMessage":
+            raise ValueError("group_clone text mutation_kind 必须为 sendMessage")
+        if self.media_items and self.random_id != self.media_items[0].random_id:
+            raise ValueError("group_clone primary random_id 与首个媒体不一致")
         return self
 
 

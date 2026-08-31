@@ -87,6 +87,7 @@ def _common_difference(result: Any, *, requested_pts: int) -> TelegramDifference
         fallback_peer_id=None,
         requested_pts=requested_pts,
         result_pts=int(getattr(state, "pts", 0) or 0),
+        entities=[*(getattr(result, "users", ()) or ()), *(getattr(result, "chats", ()) or ())],
     )
     return TelegramDifferenceBatch(
         scope="common",
@@ -111,6 +112,7 @@ def _channel_difference(result: Any, *, peer_id: str, requested_pts: int) -> Tel
         fallback_peer_id=peer_id,
         requested_pts=requested_pts,
         result_pts=result_pts,
+        entities=[*(getattr(result, "users", ()) or ()), *(getattr(result, "chats", ()) or ())],
     )
     return TelegramDifferenceBatch(
         scope="channel",
@@ -129,10 +131,15 @@ def _normalize_container(
     fallback_peer_id: str | None,
     requested_pts: int,
     result_pts: int,
+    entities: Any = (),
 ) -> tuple[tuple[TelegramNormalizedUpdate, ...], tuple[TelegramOutboundMessageMapping, ...]]:
     envelopes: list[TelegramNormalizedUpdate] = []
     mappings: list[TelegramOutboundMessageMapping] = []
-    message_items = [_normalized_message(item, event_type="message_new") for item in messages]
+    sender_names = _sender_names(entities)
+    message_items = [
+        _normalized_message(item, event_type="message_new", sender_names=sender_names)
+        for item in messages
+    ]
     message_items = [item for item in message_items if item is not None]
     for peer_id, peer_items in _message_groups(message_items, fallback_peer_id=fallback_peer_id):
         envelopes.append(_difference_messages_envelope(
@@ -142,7 +149,7 @@ def _normalize_container(
             result_pts=result_pts,
         ))
     for update in updates:
-        envelope, mapping = _normalize_update(update)
+        envelope, mapping = _normalize_update(update, sender_names=sender_names)
         if envelope is not None:
             envelopes.append(envelope)
         if mapping is not None:
@@ -162,7 +169,9 @@ def _message_groups(
     return list(groups.items())
 
 
-def _normalize_update(update: Any) -> tuple[TelegramNormalizedUpdate | None, TelegramOutboundMessageMapping | None]:
+def _normalize_update(
+    update: Any, *, sender_names: dict[tuple[str, str], str],
+) -> tuple[TelegramNormalizedUpdate | None, TelegramOutboundMessageMapping | None]:
     name = type(update).__name__
     if name == "UpdateMessageID":
         identity = f"outbound:{int(update.random_id)}:{int(update.id)}"
@@ -172,7 +181,9 @@ def _normalize_update(update: Any) -> tuple[TelegramNormalizedUpdate | None, Tel
         )
     if name in {"UpdateNewChannelMessage", "UpdateNewMessage", "UpdateEditChannelMessage", "UpdateEditMessage"}:
         event_type = "message_edit" if "Edit" in name else "message_new"
-        item = _normalized_message(update.message, event_type=event_type)
+        item = _normalized_message(
+            update.message, event_type=event_type, sender_names=sender_names,
+        )
         return (_message_update_envelope(update, item) if item else None, None)
     if name == "UpdateDeleteChannelMessages":
         return (_ids_update_envelope(update, event_type="message_delete", pinned=None), None)
@@ -182,13 +193,14 @@ def _normalize_update(update: Any) -> tuple[TelegramNormalizedUpdate | None, Tel
 
 
 def _message_update_envelope(update: Any, item: dict[str, Any]) -> TelegramNormalizedUpdate:
-    identity = _message_identity(item)
+    pts = int(getattr(update, "pts", 0) or 0)
+    identity = _message_identity(item, pts=pts)
     peer_type = str(item.pop("routing_peer_type"))
     peer_id = str(item.pop("routing_peer_id"))
     return TelegramNormalizedUpdate(
         identity_key=identity,
         constructor_name=type(update).__name__,
-        pts=int(getattr(update, "pts", 0) or 0) or None,
+        pts=pts or None,
         pts_count=int(getattr(update, "pts_count", 0) or 0) or None,
         routing_peer_type=peer_type,
         routing_peer_id=peer_id,
@@ -222,7 +234,9 @@ def _minimal_update_envelope(update: Any) -> TelegramNormalizedUpdate:
     )
 
 
-def _normalized_message(message: Any, *, event_type: str) -> dict[str, Any] | None:
+def _normalized_message(
+    message: Any, *, event_type: str, sender_names: dict[tuple[str, str], str] | None = None,
+) -> dict[str, Any] | None:
     peer_type, peer_id = _peer_identity(getattr(message, "peer_id", None))
     if not peer_id or int(getattr(message, "id", 0) or 0) <= 0:
         return None
@@ -237,6 +251,7 @@ def _normalized_message(message: Any, *, event_type: str) -> dict[str, Any] | No
         "event_type": event_type,
         "sender_peer_type": _peer_identity(getattr(message, "from_id", None))[0],
         "sender_peer_id": _peer_identity(getattr(message, "from_id", None))[1],
+        "sender_name": _sender_name(message, sender_names or {}),
         "reply_to_message_id": _optional_int(getattr(reply, "reply_to_msg_id", None)),
         "source_top_message_id": _optional_int(getattr(reply, "reply_to_top_id", None)),
         "grouped_id": str(message.grouped_id) if getattr(message, "grouped_id", None) else None,
@@ -309,6 +324,7 @@ def _empty_item(message_id: int, *, event_type: str, pinned: bool | None) -> dic
         "event_type": event_type,
         "sender_peer_type": None,
         "sender_peer_id": None,
+        "sender_name": "",
         "reply_to_message_id": None,
         "source_top_message_id": None,
         "grouped_id": None,
@@ -333,6 +349,35 @@ def _peer_identity(peer: Any) -> tuple[str | None, str | None]:
     if name == "PeerChat":
         return "chat", str(-value)
     return "user", str(value)
+
+
+def _sender_names(entities: Any) -> dict[tuple[str, str], str]:
+    result = {}
+    for entity in entities or ():
+        value = int(getattr(entity, "id", 0) or 0)
+        name = type(entity).__name__
+        identity = (
+            ("user", str(value)) if name == "User" and value
+            else ("channel", _channel_peer_id(value)) if name == "Channel" and value
+            else ("chat", str(-value)) if name == "Chat" and value
+            else (None, None)
+        )
+        title = str(getattr(entity, "title", "") or "").strip()
+        personal = " ".join(filter(None, (
+            str(getattr(entity, "first_name", "") or "").strip(),
+            str(getattr(entity, "last_name", "") or "").strip(),
+        )))
+        name = title or personal or str(getattr(entity, "username", "") or "").strip()
+        if identity[0] and identity[1] and name:
+            result[(identity[0], identity[1])] = name
+    return result
+
+
+def _sender_name(message: Any, names: dict[tuple[str, str], str]) -> str:
+    post_author = str(getattr(message, "post_author", "") or "").strip()
+    if post_author:
+        return post_author
+    return names.get(_peer_identity(getattr(message, "from_id", None)), "")
 
 
 def _channel_peer_id(channel_id: int) -> str:
@@ -362,7 +407,11 @@ def _document_media_type(document: Any) -> str:
     if "DocumentAttributeAudio" in names:
         return "voice" if any(bool(getattr(item, "voice", False)) for item in document.attributes) else "audio"
     if "DocumentAttributeVideo" in names or mime.startswith("video/"):
-        return "video"
+        is_round = any(
+            bool(getattr(item, "round_message", False))
+            for item in document.attributes
+        )
+        return "video_note" if is_round else "video"
     return "document"
 
 
@@ -385,6 +434,12 @@ def _poll_snapshot(media: Any) -> dict[str, Any]:
     poll = media.poll
     results = media.results
     question = getattr(getattr(poll, "question", None), "text", "") or ""
+    answer_options = [bytes(item.option) for item in (poll.answers or ())]
+    correct_options = [
+        bytes(item.option)
+        for item in (getattr(results, "results", None) or ())
+        if bool(getattr(item, "correct", False))
+    ]
     return {
         "poll_id": str(poll.id),
         "question": question,
@@ -393,8 +448,14 @@ def _poll_snapshot(media: Any) -> dict[str, Any]:
             for item in (poll.answers or ())
         ],
         "closed": bool(poll.closed),
+        "public_voters": bool(poll.public_voters),
         "multiple_choice": bool(poll.multiple_choice),
         "quiz": bool(poll.quiz),
+        "correct_answer_indices": [
+            answer_options.index(option)
+            for option in correct_options
+            if option in answer_options
+        ],
         "total_voters": int(getattr(results, "total_voters", 0) or 0),
     }
 
@@ -412,12 +473,13 @@ def _topic_snapshot(action: Any) -> dict[str, Any]:
     }
 
 
-def _message_identity(item: dict[str, Any]) -> str:
+def _message_identity(item: dict[str, Any], *, pts: int) -> str:
     return ":".join((
         str(item["event_type"]),
         str(item["routing_peer_id"]),
         str(item["source_message_id"]),
         str(item["message_revision"]),
+        str(pts),
     ))
 
 

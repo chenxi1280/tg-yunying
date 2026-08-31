@@ -26,6 +26,7 @@ def decide_clone_sequencer_case(
     case = session.scalar(select(CloneSequencerHeadCase).where(
         CloneSequencerHeadCase.id == case_id,
         CloneSequencerHeadCase.task_id == task.id,
+        CloneSequencerHeadCase.epoch == task.task_lifecycle_epoch,
     ).with_for_update())
     if case is None:
         raise LookupError("Case 不存在")

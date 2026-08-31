@@ -303,16 +303,29 @@ def _apply_channel_batch(session, state, batch, *, peer_id) -> None:
         raise RuntimeError("telegram_channel_difference_peer_missing")
     current = dict(state.difference_cursor or {})
     channels = dict(current.get("channels") or {})
-    channels[peer_id] = {**dict(batch.cursor or {}), "status": batch.status}
+    channels[peer_id] = {
+        **dict(batch.cursor or {}),
+        "status": batch.status,
+        "final": bool(batch.final),
+    }
     current["channels"] = channels
     state.difference_cursor = current
     state.last_applied_at = _now()
-    if batch.status == "too_long":
-        _block_channel_streams(session, state.id, peer_id)
+    if batch.status == "too_long" or not batch.final:
+        reason = (
+            "group_clone_channel_difference_too_long"
+            if batch.status == "too_long"
+            else "group_clone_channel_difference_incomplete"
+        )
+        _block_channel_streams(session, state.id, peer_id, reason=reason)
+        return
+    _recover_channel_streams(session, state.id, peer_id)
 
 
 def _channel_cursors(session_factory, state_id: str) -> list[tuple[str, int]]:
     with session_factory() as session:
+        state = session.get(TelegramAuthorizationUpdateState, state_id)
+        channel_state = dict((state.difference_cursor or {}).get("channels") or {})
         rows = session.execute(
             select(
                 CloneSourceStreamState.source_peer_id,
@@ -323,15 +336,21 @@ def _channel_cursors(session_factory, state_id: str) -> list[tuple[str, int]]:
                 CloneSourceStreamState.authorization_update_state_id == state_id,
                 CloneSourceStreamState.state.in_(SOURCE_STREAM_STATES),
                 CloneSourceStreamState.channel_pts > 0,
-                Task.status.in_(("pending", "running")),
+                Task.status.in_(("pending", "running", "failed")),
                 Task.task_lifecycle_epoch == CloneSourceStreamState.task_lifecycle_epoch,
             )
             .group_by(CloneSourceStreamState.source_peer_id)
         ).all()
-        return [(str(peer_id), int(pts)) for peer_id, pts in rows]
+        return [
+            (
+                str(peer_id),
+                max(int(pts), int((channel_state.get(str(peer_id)) or {}).get("pts") or 0)),
+            )
+            for peer_id, pts in rows
+        ]
 
 
-def _block_channel_streams(session, state_id: str, peer_id: str) -> None:
+def _block_channel_streams(session, state_id: str, peer_id: str, *, reason: str) -> None:
     streams = list(session.scalars(select(CloneSourceStreamState).where(
         CloneSourceStreamState.authorization_update_state_id == state_id,
         CloneSourceStreamState.source_peer_id == peer_id,
@@ -342,8 +361,28 @@ def _block_channel_streams(session, state_id: str, peer_id: str) -> None:
         task = session.get(Task, stream.task_id)
         if task and task.task_lifecycle_epoch == stream.task_lifecycle_epoch:
             task.status = "failed"
-            task.last_error = "group_clone_channel_difference_too_long"
+            task.last_error = reason
             task.stats = {**dict(task.stats or {}), "clone_start_state": "runtime_blocked"}
+
+
+def _recover_channel_streams(session, state_id: str, peer_id: str) -> None:
+    streams = list(session.scalars(select(CloneSourceStreamState).where(
+        CloneSourceStreamState.authorization_update_state_id == state_id,
+        CloneSourceStreamState.source_peer_id == peer_id,
+        CloneSourceStreamState.state == "gap",
+    ).with_for_update()))
+    for stream in streams:
+        task = session.get(Task, stream.task_id)
+        if task is None or task.task_lifecycle_epoch != stream.task_lifecycle_epoch:
+            continue
+        stream.state = "catching_up"
+        stream.version = int(stream.version or 1) + 1
+        task.status = "running"
+        task.last_error = ""
+        task.stats = {
+            **dict(task.stats or {}),
+            "clone_start_state": "runtime_recovering",
+        }
 
 
 def _owned_state(session: Session, claim: CollectorClaim):

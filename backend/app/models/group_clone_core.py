@@ -108,6 +108,7 @@ class CloneSourceEvent(Base):
     message_revision: Mapped[int] = mapped_column(Integer, default=1)
     sender_peer_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
     sender_peer_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    sender_name: Mapped[str] = mapped_column(String(160), default="")
     reply_to_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     source_top_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     grouped_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -118,6 +119,7 @@ class CloneSourceEvent(Base):
     content_fingerprint: Mapped[str] = mapped_column(String(64))
     protected_content: Mapped[bool] = mapped_column(Boolean, default=False)
     config_revision: Mapped[int] = mapped_column(Integer, default=1)
+    config_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
     sanitization_revision: Mapped[int] = mapped_column(Integer, default=1)
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
@@ -378,4 +380,3 @@ class TelegramGatewayMutationIdentity(Base):
     state: Mapped[str] = mapped_column(String(32), default="allocated")  # allocated, attempt_bound, unknown, closed
     version: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
-

@@ -49,7 +49,7 @@ from app.services.task_center.telegram_update_collector import drain_telegram_up
 
 
 @pytest.fixture
-def client_and_session():
+def client_and_session(monkeypatch):
     engine = create_engine(
         "sqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -126,6 +126,14 @@ def client_and_session():
 
     app.dependency_overrides[get_session] = override_get_db
     client = TestClient(app)
+    monkeypatch.setattr(
+        "app.services.task_center.group_clone_precheck.gateway.fetch_raw_group_admin_rights",
+        lambda *args, **kwargs: {
+            "delete_messages": True,
+            "pin_messages": True,
+            "manage_topics": True,
+        },
+    )
 
     yield client, session
 
@@ -135,6 +143,80 @@ def client_and_session():
 
 def _auth_headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {create_admin_access_token()}"}
+
+
+def test_precheck_blocks_active_clone_route_cycle(client_and_session):
+    client, session = client_and_session
+    first = _cutover_clone_payload()
+    type_config = {
+        key: value for key, value in first.items()
+        if key in {"source", "target", "sender_pool", "pacing", "content", "lifecycle"}
+    }
+    session.add(Task(
+        id="active-clone-a-b",
+        tenant_id=1,
+        name="A to B",
+        type="group_clone",
+        status="running",
+        type_config=type_config,
+    ))
+    session.commit()
+    reverse = _cutover_clone_payload()
+    reverse["source"] = {
+        **reverse["source"],
+        "internal_group_id": 22,
+        "operation_target_id": 12,
+        "peer_id": "-100222",
+        "listener_account_id": 102,
+        "authorization_id": 202,
+    }
+    reverse["target"] = {
+        **reverse["target"],
+        "internal_group_id": 21,
+        "operation_target_id": 11,
+        "peer_id": "-100111",
+        "control_account_id": 101,
+        "control_authorization_id": 201,
+    }
+
+    response = client.post(
+        "/api/tasks/group-clone/precheck",
+        json=reverse,
+        headers=_auth_headers(),
+    )
+
+    assert response.status_code == 200
+    assert any(
+        "clone_route_cycle" in block
+        for block in response.json()["hard_blocks"]
+    )
+
+
+def test_precheck_blocks_missing_live_control_rights(
+    client_and_session,
+    monkeypatch,
+):
+    client, _session = client_and_session
+    monkeypatch.setattr(
+        "app.services.task_center.group_clone_precheck.gateway.fetch_raw_group_admin_rights",
+        lambda *args, **kwargs: {
+            "delete_messages": True,
+            "pin_messages": False,
+            "manage_topics": True,
+        },
+    )
+
+    response = client.post(
+        "/api/tasks/group-clone/precheck",
+        json=_cutover_clone_payload(),
+        headers=_auth_headers(),
+    )
+
+    assert response.status_code == 200
+    assert any(
+        "实时管理员权限不足" in block
+        for block in response.json()["hard_blocks"]
+    )
 
 
 def test_api_precheck_and_create_start(client_and_session, monkeypatch):
@@ -254,6 +336,7 @@ def test_api_precheck_and_create_start(client_and_session, monkeypatch):
         entities=[],
         content_fingerprint="content-501",
         config_revision=2,
+        config_snapshot=dict(task.type_config),
     ))
     session.flush()
     assert build_clone_plan(session, task) == 1
@@ -302,6 +385,11 @@ def test_api_precheck_and_create_start(client_and_session, monkeypatch):
     ingress_status = client.get(f"/api/tasks/{task_id}/clone-update-ingress-status", headers=headers)
     assert ingress_status.status_code == 200
     assert ingress_status.json()["owner_lease_healthy"] is True
+    summary = client.get(f"/api/tasks/{task_id}/clone-runtime-summary", headers=headers)
+    assert summary.status_code == 200
+    assert summary.json()["source_event_count"] == 1
+    assert summary.json()["obligation_count"] == 1
+    assert summary.json()["message_mapping_count"] == 1
     reconcile_cases = client.get(f"/api/tasks/{task_id}/clone-reconcile-cases", headers=headers)
     assert reconcile_cases.status_code == 200 and reconcile_cases.json()["items"] == []
 
@@ -323,6 +411,7 @@ def test_api_precheck_and_create_start(client_and_session, monkeypatch):
         entities=[],
         content_fingerprint="content-502",
         config_revision=2,
+        config_snapshot=dict(task.type_config),
     ))
     session.flush()
     assert build_clone_plan(session, task) == 1
@@ -443,9 +532,13 @@ def test_api_sequencer_head_decision(client_and_session):
     assert replay.json() == res.json()
 
 
-def test_api_cutover_preview(client_and_session):
+def test_api_cutover_preview(client_and_session, monkeypatch):
     client, session = client_and_session
     headers = _auth_headers()
+    monkeypatch.setattr(
+        "app.services.task_center.group_clone_cutover.gateway.fetch_raw_channel_boundary",
+        lambda *_args, **_kwargs: {"channel_pts": 88, "max_message_id": 701},
+    )
 
     # 存量 1->1 relay task
     legacy_task = Task(
@@ -509,6 +602,14 @@ def test_api_cutover_preview(client_and_session):
     assert rollback.status_code == 200, rollback.text
     assert session.get(Task, legacy_task.id).status == "running"
     assert session.get(Task, clone_id).status == "paused"
+    stream = session.scalar(select(CloneSourceStreamState).where(
+        CloneSourceStreamState.task_id == clone_id,
+    ))
+    subscription = session.scalar(select(TelegramAuthorizationUpdateSubscription).where(
+        TelegramAuthorizationUpdateSubscription.task_id == clone_id,
+    ))
+    assert stream.state == "stopped"
+    assert subscription.state == "stopped"
 
 
 def _cutover_clone_payload() -> dict:

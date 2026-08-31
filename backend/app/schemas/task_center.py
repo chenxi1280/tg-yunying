@@ -1137,6 +1137,15 @@ class GroupCloneManualReviewDecisionRequest(BaseModel):
     client_request_id: str = Field(..., min_length=8, max_length=100)
 
 
+class GroupCloneSenderBindingChangeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_binding_version: int = Field(ge=1)
+    replacement_account_id: int | None = Field(default=None, ge=1)
+    reason: str = Field(..., min_length=1, max_length=255)
+    client_request_id: str = Field(..., min_length=8, max_length=100)
+
+
 class GroupCloneCutoverRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

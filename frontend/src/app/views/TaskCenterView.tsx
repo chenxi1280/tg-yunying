@@ -151,6 +151,7 @@ type MembershipPageState = { current: number; pageSize: number; total: number; l
 type MembershipFilters = { phase: string; manualRequired: string };
 type ActionPageKind = 'planned' | 'executed';
 type ActionPageState = { current: number; pageSize: number; total: number; loading: boolean };
+type GroupClonePrecheck = { passed: boolean; hard_blocks: string[]; warnings: string[] };
 type DetailSectionKind = 'aiCycles' | 'messageGroups' | 'relayBatches' | 'admissionItems' | 'accountCoverage';
 type AccountCoverageFilters = { date: string; state: string; blockerCode: string };
 const TASK_CREATE_TIMEOUT_MS = 120_000;
@@ -166,6 +167,18 @@ const DEFAULT_DETAIL_SECTION_PAGE: ActionPageState = { current: 1, pageSize: DET
 const DEFAULT_ACCOUNT_COVERAGE_FILTERS: AccountCoverageFilters = { date: '', state: '', blockerCode: '' };
 const GROUP_AI_RECOMMENDATION_FIELDS: AiLimitRecommendationField[] = ['messages_per_round'];
 const COMMENT_AI_RECOMMENDATION_FIELDS: AiLimitRecommendationField[] = ['target_comments_per_message'];
+
+function confirmClonePrecheckWarnings(warnings: string[]): Promise<boolean> {
+  if (!warnings.length) return Promise.resolve(true);
+  return new Promise((resolve) => Modal.confirm({
+    title: '确认按当前群克隆配置继续？',
+    content: warnings.join('；'),
+    okText: '确认继续',
+    cancelText: '返回修改',
+    onOk: () => resolve(true),
+    onCancel: () => resolve(false),
+  }));
+}
 
 const TASK_TYPE_FILTER_OPTIONS: Array<{ value: TaskTypeFilter; label: string }> = [
   { value: 'all', label: '全部类型' },
@@ -503,6 +516,17 @@ export default function TaskCenterView({
   }
 
   function applyDefaultRuleSet(loadedRuleSets: RuleSet[], type: TaskCenterTaskType = taskType) {
+    if (type === 'group_clone') {
+      const current = form.getFieldsValue(['rule_set_id', 'rule_set_version']);
+      if (current.rule_set_id || current.rule_set_version) return;
+      const selection = defaultRuleSelection(loadedRuleSets, type);
+      const ruleSet = loadedRuleSets.find((item) => item.id === selection?.rule_set_id);
+      const version = ruleSet?.versions.find((item) => item.id === selection?.rule_set_version_id);
+      if (ruleSet && version) {
+        form.setFieldsValue({ rule_set_id: ruleSet.id, rule_set_version: version.version });
+      }
+      return;
+    }
     const current = form.getFieldsValue(['rule_set_id', 'rule_set_version_id']);
     if (current.rule_set_id || current.rule_set_version_id) return;
     const selection = defaultRuleSelection(loadedRuleSets, type);
@@ -523,6 +547,7 @@ export default function TaskCenterView({
       requests.push(ensureAccountPools());
       return requests;
     }
+    if (type === 'group_clone') return requests;
     requests.push(ensureAccounts(), ensurePromptTemplates());
     return requests;
   }
@@ -589,7 +614,7 @@ export default function TaskCenterView({
     void ensureTaskFormData(nextType, requestSeq)
       .then(async (loaded) => {
         if (!loaded || !isActiveTaskFormSupportRequest(requestSeq)) return;
-        if (!['group_relay', 'group_ai_chat', 'channel_comment'].includes(nextType)) return;
+        if (!['group_relay', 'group_clone', 'group_ai_chat', 'channel_comment'].includes(nextType)) return;
         const loadedRuleSets = await ensureRuleSets();
         if (isActiveTaskFormSupportRequest(requestSeq)) applyDefaultRuleSet(loadedRuleSets, nextType);
       })
@@ -936,6 +961,32 @@ export default function TaskCenterView({
     const operationProfile = pacing.operation_profile || {};
     const operationTemplateId = operationProfile.template_id ?? 'natural_full_day';
     const operationCurve = curveNumbers(operationProfile.hourly_activity_curve ?? operationTemplate(operationTemplateId).curve);
+    if (task.type === 'group_clone') {
+      const senderPool = config.sender_pool || {};
+      const clonePacing = config.pacing || {};
+      const content = config.content || {};
+      const lifecycle = config.lifecycle || {};
+      const retention = config.retention || {};
+      return {
+        ...taskTypeInitialValues('group_clone'),
+        sender_pool_account_ids: senderPool.account_ids || [],
+        active_minutes: senderPool.active_minutes,
+        guarded_minutes: senderPool.guarded_minutes,
+        eligible_release_minutes: senderPool.eligible_release_minutes,
+        minimum_tenure_minutes: senderPool.minimum_tenure_minutes,
+        min_delay_ms: clonePacing.min_delay_ms,
+        max_delay_ms: clonePacing.max_delay_ms,
+        rule_set_id: content.rule_set_id,
+        rule_set_version: content.rule_set_version,
+        orphan_reply_policy: content.orphan_reply_policy,
+        incomplete_album_policy: content.incomplete_album_policy,
+        unsupported_media_policy: content.unsupported_media_policy,
+        failure_order_policy: lifecycle.failure_order_policy,
+        unknown_deadline_seconds: lifecycle.unknown_deadline_seconds,
+        source_event_days: retention.source_event_days,
+        media_cache_ttl_seconds: retention.media_cache_ttl_seconds,
+      };
+    }
     return {
       ...taskTypeInitialValues(task.type as TaskCenterTaskType),
       name: task.name,
@@ -1490,6 +1541,38 @@ export default function TaskCenterView({
       }) : [...(values.source_groups ?? [])];
       return { ...base, source_groups: sourceGroups, target_operation_target_id: values.target_operation_target_id ?? null, target_operation_target_ids: targetOperationIds, rule_set_id: values.rule_set_id ?? null, rule_set_version_id: values.rule_set_version_id ?? null, content_mode: values.content_mode ?? 'light_rewrite', ...relaySourceFilterPayload(values), require_review: false };
     }
+    if (type === 'group_clone') {
+      return {
+        sender_pool: {
+          account_ids: csvNumbers(values.sender_pool_account_ids),
+          active_minutes: values.active_minutes ?? 30,
+          guarded_minutes: values.guarded_minutes ?? 120,
+          eligible_release_minutes: values.eligible_release_minutes ?? 720,
+          minimum_tenure_minutes: values.minimum_tenure_minutes ?? 60,
+        },
+        pacing: {
+          min_delay_ms: values.min_delay_ms ?? 1000,
+          max_delay_ms: values.max_delay_ms ?? 6000,
+          strict_target_order: true,
+        },
+        content: {
+          rule_set_id: Number(values.rule_set_id),
+          rule_set_version: Number(values.rule_set_version),
+          orphan_reply_policy: values.orphan_reply_policy ?? 'quote_fallback',
+          incomplete_album_policy: values.incomplete_album_policy ?? 'drop_incomplete',
+          unsupported_media_policy: values.unsupported_media_policy ?? 'block',
+        },
+        lifecycle: {
+          start_mode: 'start_from_now',
+          failure_order_policy: values.failure_order_policy ?? 'fail_stop',
+          unknown_deadline_seconds: values.unknown_deadline_seconds ?? 900,
+        },
+        retention: {
+          source_event_days: values.source_event_days ?? 30,
+          media_cache_ttl_seconds: values.media_cache_ttl_seconds ?? 86400,
+        },
+      };
+    }
     if (type === 'channel_view') {
       return { ...base, ...channelViewProductionPayload(values) };
     }
@@ -1555,9 +1638,20 @@ export default function TaskCenterView({
       await form.validateFields(fieldsForSubmit(taskType, messageScope, accountMode, pacingMode));
       const shouldStartNow = taskType === 'search_rank_deboost' ? false : start;
       const submitValues = form.getFieldsValue(true);
+      const payload = createPayload(submitValues);
+      if (taskType === 'group_clone') {
+        const precheck = await api<GroupClonePrecheck>('/tasks/group-clone/precheck', {
+          method: 'POST', body: JSON.stringify(payload),
+          timeoutMs: TASK_CREATE_TIMEOUT_MS,
+        });
+        if (!precheck.passed) {
+          throw new Error(`群克隆启动前检查未通过：${precheck.hard_blocks.join('；')}`);
+        }
+        if (!(await confirmClonePrecheckWarnings(precheck.warnings))) return;
+      }
       await api<TaskCenterTask>((shouldStartNow ? CREATE_AND_START_ENDPOINT : CREATE_ENDPOINT)[taskType], {
         method: 'POST',
-        body: JSON.stringify(createPayload(submitValues)),
+        body: JSON.stringify(payload),
         timeoutMs: TASK_CREATE_TIMEOUT_MS,
       });
       form.resetFields();
@@ -1596,9 +1690,18 @@ export default function TaskCenterView({
         ? `/tasks/${taskId}/search-join-group`
         : editableType === 'search_rank_deboost'
           ? `/tasks/${taskId}/search_rank_deboost_config`
+          : editableType === 'group_clone'
+            ? `/tasks/${taskId}/group-clone`
           : `/tasks/${taskId}/settings`;
-      const updated = await api<TaskCenterTask>(settingsEndpoint, { method: 'PATCH', body: JSON.stringify(payload) });
+      const result = await api<TaskCenterTask | { task_id: string; config_revision: number }>(
+        settingsEndpoint,
+        { method: 'PATCH', body: JSON.stringify(payload) },
+      );
       if (!isActiveTaskSettingsSaveRequest(taskId, requestSeq, payloadSignature)) return;
+      const cloneResult = result as { task_id: string; config_revision: number };
+      const updated = editableType === 'group_clone'
+        ? { ...detail.task, id: cloneResult.task_id, config_revision: cloneResult.config_revision }
+        : result as TaskCenterTask;
       setEditOpen(false);
       const warning = editableType === 'search_rank_deboost' && updated.status === 'draft'
         ? rankDeboostSaveWarning(updated)
@@ -1833,7 +1936,7 @@ export default function TaskCenterView({
         void ensureTaskFormData(taskType, requestSeq)
           .then(async (loaded) => {
             if (!loaded || !isActiveTaskFormSupportRequest(requestSeq)) return;
-            if (!['group_relay', 'group_ai_chat', 'channel_comment'].includes(taskType)) return;
+            if (!['group_relay', 'group_clone', 'group_ai_chat', 'channel_comment'].includes(taskType)) return;
             const loadedRuleSets = await ensureRuleSets();
             if (isActiveTaskFormSupportRequest(requestSeq)) applyDefaultRuleSet(loadedRuleSets, taskType);
           })
@@ -1858,7 +1961,7 @@ export default function TaskCenterView({
     void ensureTaskFormData(nextType, requestSeq)
       .then(async (loaded) => {
         if (!loaded || !isActiveTaskFormSupportRequest(requestSeq)) return;
-        if (['group_relay', 'group_ai_chat', 'channel_comment'].includes(nextType)) {
+        if (['group_relay', 'group_clone', 'group_ai_chat', 'channel_comment'].includes(nextType)) {
           const loadedRuleSets = await ensureRuleSets();
           if (!isActiveTaskFormSupportRequest(requestSeq)) return;
           applyDefaultRuleSet(loadedRuleSets, nextType);
@@ -2229,7 +2332,7 @@ export default function TaskCenterView({
           {wizardStep === 1 && <WizardTarget taskType={taskType} messages={messages} messageScope={messageScope} targetChannelId={targetChannelId} onTargetChannelChange={() => form.setFieldsValue({ message_ids: [] })} onTargetsLoaded={mergeLoadedTargets} simpleSearchCreation={simpleSearchClickTask} />}
           {wizardStep === 2 && <WizardTypeConfig taskType={taskType} ruleSets={ruleSets} slangTemplates={slangTemplates} comments={comments} relaySourceOptions={[]} targetChannelId={targetChannelId} messageScope={messageScope} messageIds={messageIds} simpleSearchCreation={simpleSearchClickTask} />}
           {simpleSearchClickTask && wizardStep === 3 && <SearchClickExecutionConfig taskType={taskType} accountPools={taskAccountPools} />}
-          {!simpleSearchClickTask && wizardStep === 3 && (
+          {!simpleSearchClickTask && taskType !== 'group_clone' && wizardStep === 3 && (
             <Space direction="vertical" size={16} style={{ width: '100%' }}>
               <WizardAccounts accountMode={accountMode} accounts={taskAccounts} accountPools={taskAccountPools} taskType={taskType} />
               <WizardOperationProfile form={form} values={formValues} taskType={taskType} />
@@ -2276,7 +2379,7 @@ export default function TaskCenterView({
       <Modal className="tg-modal large" title="编辑任务" open={editOpen} width={980} confirmLoading={editSaving} okText="保存并重新规划" cancelText="取消" onOk={saveTaskSettings} onCancel={closeEditTaskModal} destroyOnHidden centered>
         {actionError && <Alert className="form-alert" type="error" showIcon message={actionError} />}
         <Form form={editForm} layout="vertical">
-          {!isSimpleSearchClickTask(editableTaskType) && <EditBasics />}
+          {!isSimpleSearchClickTask(editableTaskType) && editableTaskType !== 'group_clone' && <EditBasics />}
           {isSimpleSearchClickTask(editableTaskType) && <Alert className="form-alert" type="info" showIcon message="可修改目标群、搜索关键词、目标次数、账号组与执行节奏；代理、机器人、账号资格与风控仍由系统托管。" />}
           {detail && !isSystemTask(detail.task) && ['group_ai_chat', 'group_relay', 'search_click', 'search_join_group', 'search_rank_deboost'].includes(detail.task.type) && (
             <>
@@ -2285,9 +2388,9 @@ export default function TaskCenterView({
             </>
           )}
           <Typography.Title level={5}>类型参数</Typography.Title>
-          <WizardTypeConfig taskType={(detail && !isSystemTask(detail.task) ? detail.task.type : taskType) as TaskCenterTaskType} ruleSets={ruleSets} slangTemplates={slangTemplates} comments={comments} relaySourceOptions={relaySourceOptions(detail)} targetChannelId={editTargetChannelId} messageScope={editMessageScope} messageIds={editMessageIds} simpleSearchCreation={isSimpleSearchClickTask(editableTaskType)} simpleSearchEditing={isSimpleSearchClickTask(editableTaskType)} simpleSearchLegacyUncapped={editableTaskType === 'search_join_group' ? detail?.task.type_config?.daily_target_count == null && detail?.task.type_config?.target_count == null : detail?.task.type_config?.target_count == null} />
+          <WizardTypeConfig taskType={(detail && !isSystemTask(detail.task) ? detail.task.type : taskType) as TaskCenterTaskType} ruleSets={ruleSets} slangTemplates={slangTemplates} comments={comments} relaySourceOptions={relaySourceOptions(detail)} targetChannelId={editTargetChannelId} messageScope={editMessageScope} messageIds={editMessageIds} simpleSearchCreation={isSimpleSearchClickTask(editableTaskType)} simpleSearchEditing={isSimpleSearchClickTask(editableTaskType)} simpleSearchLegacyUncapped={editableTaskType === 'search_join_group' ? detail?.task.type_config?.daily_target_count == null && detail?.task.type_config?.target_count == null : detail?.task.type_config?.target_count == null} groupCloneEditing={editableTaskType === 'group_clone'} />
           {isSimpleSearchClickTask(editableTaskType) && <><Typography.Title level={5}>执行范围与节奏</Typography.Title><SearchClickExecutionConfig taskType={editableTaskType} accountPools={taskAccountPools} editing={true} strictDailyTargetEnabled={Boolean(detail?.task.type_config?.strict_daily_target)} showStrictDailyTargetOptIn={editableTaskType === 'search_join_group' && (detail?.task.type_config?.daily_click_target_count != null || detail?.task.type_config?.daily_target_count != null)} /></>}
-          {!isSimpleSearchClickTask(editableTaskType) && (
+          {!isSimpleSearchClickTask(editableTaskType) && editableTaskType !== 'group_clone' && (
             <>
               <Typography.Title level={5}>账号选择</Typography.Title>
               <WizardAccounts accountMode={editAccountMode} accounts={taskAccounts} accountPools={taskAccountPools} taskType={editableTaskType} />
@@ -2310,7 +2413,7 @@ export default function TaskCenterView({
               )}
             />
           )}
-          {!isSimpleSearchClickTask(editableTaskType) && <TaskRuntimeAdvancedFields taskType={editableTaskType} />}
+          {!isSimpleSearchClickTask(editableTaskType) && editableTaskType !== 'group_clone' && <TaskRuntimeAdvancedFields taskType={editableTaskType} />}
         </Form>
       </Modal>
 

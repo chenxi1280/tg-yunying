@@ -2383,6 +2383,15 @@ def start_task_in_transaction(
     actor: str,
 ) -> StartExecutionResult:
     tenant_id = task.tenant_id
+    if task.type == "group_clone":
+        from .group_clone_runtime_lifecycle import start_existing_group_clone
+
+        start_existing_group_clone(session, task)
+        audit(
+            session, tenant_id=tenant_id, actor=actor,
+            action="启动任务中心任务", target_type="task", target_id=task.id,
+        )
+        return _start_execution_result(session, task)
     if task.type in {"search_click", "search_join_group", "search_rank_deboost"}:
         if _check_stop_conditions(session, task) or _search_click_task_completed_on_start(session, task):
             return _start_execution_result(session, task)
@@ -2456,6 +2465,17 @@ def pause_task(session: Session, tenant_id: int, task_id: str, actor: str) -> Ta
     )
     if task is None:
         raise ValueError("task not found")
+    if task.type == "group_clone":
+        from .group_clone_runtime_lifecycle import pause_group_clone
+
+        pause_group_clone(task)
+        audit(
+            session, tenant_id=tenant_id, actor=actor,
+            action="暂停任务中心任务", target_type="task", target_id=task.id,
+        )
+        session.commit()
+        session.refresh(task)
+        return task
     cleanup_status = "not_applicable"
     cancelled_jobs = 0
     released_pacing_owners = 0
@@ -2486,11 +2506,35 @@ def pause_task(session: Session, tenant_id: int, task_id: str, actor: str) -> Ta
 
 
 def resume_task(session: Session, tenant_id: int, task_id: str, actor: str) -> Task:
+    task = _get_task_for_lifecycle(session, tenant_id, task_id)
+    if task.type == "group_clone":
+        from .group_clone_runtime_lifecycle import resume_group_clone
+
+        resume_group_clone(session, task)
+        audit(
+            session, tenant_id=tenant_id, actor=actor,
+            action="恢复任务中心任务", target_type="task", target_id=task.id,
+        )
+        session.commit()
+        session.refresh(task)
+        return task
     return start_task(session, tenant_id, task_id, actor)
 
 
 def stop_task(session: Session, tenant_id: int, task_id: str, actor: str, reason: str = "") -> Task:
     task = _get_task_for_lifecycle(session, tenant_id, task_id)
+    if task.type == "group_clone":
+        from .group_clone_runtime_lifecycle import stop_group_clone_runtime
+
+        stop_group_clone_runtime(session, task)
+        audit(
+            session, tenant_id=tenant_id, actor=actor,
+            action="停止任务中心任务", target_type="task",
+            target_id=task.id, detail=reason,
+        )
+        session.commit()
+        session.refresh(task)
+        return task
     _advance_task_lifecycle_epoch(task, "stopped")
     task.status = "stopped"
     task.next_run_at = None
@@ -2514,6 +2558,10 @@ def delete_task(session: Session, tenant_id: int, task_id: str, actor: str, reas
         delete_profile_batch_task(session, tenant_id, task_id, actor=actor, reason=reason)
         return
     task = _get_task_for_lifecycle(session, tenant_id, task_id)
+    if task.type == "group_clone":
+        from .group_clone_runtime_lifecycle import assert_group_clone_delete_safe
+
+        assert_group_clone_delete_safe(session, task)
     now = _now()
     _settle_task_closing_actions(
         session,
@@ -2929,6 +2977,18 @@ def _set_retry_blocker(action: Action, reason: str) -> None:
 
 def reset_task(session: Session, tenant_id: int, task_id: str, actor: str, reason: str = "") -> Task:
     task = _get_task(session, tenant_id, task_id)
+    if task.type == "group_clone":
+        from .group_clone_runtime_lifecycle import reset_group_clone_runtime
+
+        reset_group_clone_runtime(session, task)
+        audit(
+            session, tenant_id=tenant_id, actor=actor,
+            action="重置任务中心任务", target_type="task",
+            target_id=task.id, detail=reason,
+        )
+        session.commit()
+        session.refresh(task)
+        return task
     now = _now()
     stats = empty_stats()
     if task.type != "search_rank_deboost":

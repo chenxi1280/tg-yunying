@@ -30,8 +30,10 @@ from app.services.task_center.group_clone_lifecycle import (
     update_group_clone_config,
 )
 from app.services.task_center.group_clone_read_model import (
+    clone_runtime_summary,
     manual_review_items,
     message_mapping_items,
+    obligation_item,
     reconcile_case_items,
     update_ingress_status,
 )
@@ -126,13 +128,17 @@ def list_clone_source_events(
     获取源群捕获的事件流水列表。
     """
     ensure_permission(current_user, "tasks.view")
-    _require_clone_task(db, current_user, task_id)
-    stmt = select(CloneSourceEvent).where(CloneSourceEvent.task_id == task_id)
+    task = _require_clone_task(db, current_user, task_id)
+    scope = (
+        CloneSourceEvent.task_id == task_id,
+        CloneSourceEvent.task_lifecycle_epoch == task.task_lifecycle_epoch,
+    )
+    stmt = select(CloneSourceEvent).where(*scope)
     if before_stream_order_no is not None:
         stmt = stmt.where(CloneSourceEvent.stream_order_no < before_stream_order_no)
     stmt = stmt.order_by(CloneSourceEvent.stream_order_no.desc()).limit(limit)
     items = db.execute(stmt).scalars().all()
-    total = db.scalar(select(func.count()).select_from(CloneSourceEvent).where(CloneSourceEvent.task_id == task_id)) or 0
+    total = db.scalar(select(func.count()).select_from(CloneSourceEvent).where(*scope)) or 0
     return {
         "total": total,
         "next_cursor": items[-1].stream_order_no if len(items) == limit else None,
@@ -143,6 +149,7 @@ def list_clone_source_events(
                 "event_type": ev.event_type,
                 "source_message_id": ev.source_message_id,
                 "sender_peer_id": ev.sender_peer_id,
+                "sender_name": ev.sender_name,
                 "content": ev.content[:100] if ev.content else "",
                 "observed_at": ev.observed_at.isoformat() if ev.observed_at else None,
             }
@@ -165,8 +172,11 @@ def list_clone_obligations(
     获取送达义务状态列表。
     """
     ensure_permission(current_user, "tasks.view")
-    _require_clone_task(db, current_user, task_id)
-    query = select(CloneDeliveryObligation).where(CloneDeliveryObligation.task_id == task_id)
+    task = _require_clone_task(db, current_user, task_id)
+    query = select(CloneDeliveryObligation).where(
+        CloneDeliveryObligation.task_id == task_id,
+        CloneDeliveryObligation.epoch == task.task_lifecycle_epoch,
+    )
     if state:
         query = query.where(CloneDeliveryObligation.state == state)
     if before_stream_order_no is not None:
@@ -180,12 +190,7 @@ def list_clone_obligations(
         "next_cursor": items[-1].stream_order_no if len(items) == limit else None,
         "items": [
             {
-                "id": o.id,
-                "stream_order_no": o.stream_order_no,
-                "obligation_kind": o.obligation_kind,
-                "state": o.state,
-                "planned_at": o.planned_at.isoformat() if o.planned_at else None,
-                "sequencer_head_case_id": o.sequencer_head_case_id,
+                **obligation_item(db, o),
             }
             for o in items
         ]
@@ -205,9 +210,10 @@ def list_clone_bindings(
     获取当前发言人与受控账号绑定关系。
     """
     ensure_permission(current_user, "tasks.view")
-    _require_clone_task(db, current_user, task_id)
+    task = _require_clone_task(db, current_user, task_id)
     stmt = select(CloneSenderBindingHistory).where(
         CloneSenderBindingHistory.task_id == task_id,
+        CloneSenderBindingHistory.task_lifecycle_epoch == task.task_lifecycle_epoch,
     )
     if before_last_spoken_at is not None:
         cursor_clause = CloneSenderBindingHistory.last_spoken_at < before_last_spoken_at
@@ -226,22 +232,30 @@ def list_clone_bindings(
     ).limit(limit)
     items = db.execute(stmt).scalars().all()
     return {
-        "next_cursor": ({
-            "last_spoken_at": items[-1].last_spoken_at.isoformat(),
-            "id": items[-1].id,
-        } if len(items) == limit else None),
-        "items": [
-            {
-                "id": b.id,
-                "source_sender_peer_id": b.source_sender_peer_id,
-                "source_sender_name": b.source_sender_name,
-                "assigned_account_id": b.assigned_account_id,
-                "status": b.status,
-                "is_vip": b.is_vip,
-                "last_spoken_at": b.last_spoken_at.isoformat() if b.last_spoken_at else None,
-            }
-            for b in items
-        ]
+        "next_cursor": _binding_cursor(items, limit),
+        "items": [_binding_item(item) for item in items],
+    }
+
+
+def _binding_cursor(items, limit):
+    if len(items) != limit:
+        return None
+    return {
+        "last_spoken_at": items[-1].last_spoken_at.isoformat(),
+        "id": items[-1].id,
+    }
+
+
+def _binding_item(binding):
+    return {
+        "id": binding.id,
+        "binding_version": binding.binding_version,
+        "source_sender_peer_id": binding.source_sender_peer_id,
+        "source_sender_name": binding.source_sender_name,
+        "assigned_account_id": binding.assigned_account_id,
+        "status": binding.status,
+        "is_vip": binding.is_vip,
+        "last_spoken_at": binding.last_spoken_at.isoformat() if binding.last_spoken_at else None,
     }
 
 
@@ -305,11 +319,23 @@ def get_clone_update_ingress_status(
     return update_ingress_status(db, task)
 
 
+@router.get("/{task_id}/clone-runtime-summary")
+def get_clone_runtime_summary(
+    task_id: str,
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    ensure_permission(current_user, "tasks.view")
+    task = _require_clone_task(db, current_user, task_id)
+    return clone_runtime_summary(db, task)
+
+
 @router.get("/{task_id}/clone-manual-reviews")
 def list_clone_manual_reviews(
     task_id: str,
     limit: int = Query(default=50, ge=1, le=200),
     after_sequencer_id: int | None = Query(default=None, ge=0),
+    include_resolved: bool = Query(default=False),
     db: Session = Depends(get_db),
     current_user: CurrentUser = Depends(get_current_user),
 ) -> dict:
@@ -317,6 +343,7 @@ def list_clone_manual_reviews(
     task = _require_clone_task(db, current_user, task_id)
     items = manual_review_items(
         db, task, limit=limit, after_sequencer_id=after_sequencer_id,
+        include_resolved=include_resolved,
     )
     return {
         "items": items,
@@ -334,9 +361,10 @@ def list_clone_sequencer_head_cases(
     current_user: CurrentUser = Depends(get_current_user),
 ) -> dict:
     ensure_permission(current_user, "tasks.view")
-    _require_clone_task(db, current_user, task_id)
+    task = _require_clone_task(db, current_user, task_id)
     stmt = select(CloneSequencerHeadCase).where(
         CloneSequencerHeadCase.task_id == task_id,
+        CloneSequencerHeadCase.epoch == task.task_lifecycle_epoch,
     )
     if before_created_at is not None:
         cursor_clause = CloneSequencerHeadCase.created_at < before_created_at

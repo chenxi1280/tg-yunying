@@ -1374,22 +1374,59 @@ def _dispatch_group_clone_send(ctx: GroupCloneSendDispatchContext) -> bool:
         payload=ctx.payload,
     )
     attempt = _begin_execution_attempt(ctx.session, ctx.action, ctx.account)
-    contract.identity.state = "attempt_bound"
+    _mark_clone_send_identities_bound(ctx, contract)
     contract.obligation.state = "executing"
     credentials = credentials_for_authorization(ctx.session, contract.authorization)
     _mark_gateway_call_started(ctx.session, attempt)
-    result = gateway.send_raw_mtproto_message(
+    result = _invoke_group_clone_send(ctx, contract, credentials)
+    _apply_group_clone_send_result(ctx, attempt, result)
+    return True
+
+
+def _invoke_group_clone_send(ctx, contract, credentials):
+    if not ctx.payload.media_items:
+        return gateway.send_raw_mtproto_message(
+            ctx.payload.target_peer_id, ctx.payload.content, ctx.payload.random_id,
+            entities=ctx.payload.entities,
+            reply_to_msg_id=ctx.payload.reply_to_message_id,
+            top_msg_id=ctx.payload.target_top_message_id,
+            session_ciphertext=contract.authorization.session_ciphertext,
+            credentials=credentials,
+        )
+    source = _clone_source_authorization(ctx, contract)
+    return gateway.send_raw_mtproto_media(
         ctx.payload.target_peer_id,
-        ctx.payload.content,
-        ctx.payload.random_id,
-        entities=ctx.payload.entities,
+        source_peer_id=ctx.payload.source_peer_id,
+        media_items=[item.model_dump(mode="json") for item in ctx.payload.media_items],
         reply_to_msg_id=ctx.payload.reply_to_message_id,
         top_msg_id=ctx.payload.target_top_message_id,
+        source_session_ciphertext=source.session_ciphertext,
+        source_credentials=credentials_for_authorization(ctx.session, source),
         session_ciphertext=contract.authorization.session_ciphertext,
         credentials=credentials,
     )
-    _apply_group_clone_send_result(ctx, attempt, result)
-    return True
+
+
+def _clone_source_authorization(ctx, contract):
+    source = ctx.session.get(TgAccountAuthorization, ctx.payload.source_authorization_id)
+    if source is None or source.account_id != contract.task.type_config["source"]["listener_account_id"]:
+        raise ValueError("group_clone_media_source_authorization_mismatch")
+    if not source.is_current or source.status != "active":
+        raise ValueError("group_clone_media_source_authorization_stale")
+    if source.slot_generation != ctx.payload.source_session_generation:
+        raise ValueError("group_clone_media_source_generation_mismatch")
+    return source
+
+
+def _mark_clone_send_identities_bound(ctx, contract) -> None:
+    contract.identity.state = "attempt_bound"
+    for item in ctx.payload.media_items[1:]:
+        identity = ctx.session.get(TelegramGatewayMutationIdentity, item.gateway_mutation_identity_id)
+        if identity is None or identity.obligation_id != contract.obligation.id:
+            raise ValueError("group_clone_media_identity_scope_mismatch")
+        if identity.random_id != item.random_id or identity.state != "allocated":
+            raise ValueError("group_clone_media_identity_not_callable")
+        identity.state = "attempt_bound"
 
 
 def _apply_group_clone_send_result(ctx, attempt, result) -> None:
@@ -1402,6 +1439,11 @@ def _apply_group_clone_send_result(ctx, attempt, result) -> None:
             attempt=attempt,
             remote_mutation_started=True,
         )
+        if result.remote_message_ids:
+            ctx.action.result = {
+                **dict(ctx.action.result or {}),
+                "telegram_msg_ids": list(result.remote_message_ids),
+            }
         return
     failure = result.failure_type or FailureType.UNKNOWN.value
     detail = result.detail or "Group Clone raw MTProto 发送失败"

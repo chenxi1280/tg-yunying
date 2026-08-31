@@ -30,6 +30,7 @@ class NormalizedCloneItem(BaseModel):
     event_type: str
     sender_peer_type: str | None = None
     sender_peer_id: str | None = None
+    sender_name: str = ""
     reply_to_message_id: int | None = None
     source_top_message_id: int | None = None
     grouped_id: str | None = None
@@ -52,17 +53,27 @@ def advance_group_clone_start(session: Session, task: Task) -> bool:
     update_state = session.get(TelegramAuthorizationUpdateState, stream.authorization_update_state_id)
     _validate_listener_runtime(account, authorization, update_state)
     try:
-        boundary = gateway.fetch_raw_channel_boundary(
-            stream.source_peer_id,
-            session_ciphertext=authorization.session_ciphertext,
-            credentials=credentials_for_authorization(session, authorization),
-        )
-        _apply_start_boundary(session, task, boundary)
+        if int(stream.start_pts or 0) <= 0:
+            boundary = gateway.fetch_raw_channel_boundary(
+                stream.source_peer_id,
+                session_ciphertext=authorization.session_ciphertext,
+                credentials=credentials_for_authorization(session, authorization),
+            )
+            _apply_start_boundary(session, task, boundary)
+        else:
+            _resume_start_boundary(session, task, stream)
         consume_clone_deliveries(session, task)
     except Exception as exc:
         _fail_clone_start(session, task, stream=stream, exc=exc)
         return False
     return task.status == "running"
+
+
+def _resume_start_boundary(session, task, stream) -> None:
+    stream.state = "catching_up"
+    subscription = _subscription(session, task, lock=True)
+    subscription.state = "active"
+    subscription.version = int(subscription.version or 1) + 1
 
 
 def _fail_clone_start(session, task, *, stream, exc) -> None:
@@ -199,6 +210,7 @@ def _source_event(task, stream, *, envelope, delivery, item, identity):
         message_revision=item.message_revision,
         sender_peer_type=item.sender_peer_type,
         sender_peer_id=item.sender_peer_id,
+        sender_name=item.sender_name,
         reply_to_message_id=item.reply_to_message_id,
         source_top_message_id=item.source_top_message_id,
         grouped_id=item.grouped_id,
@@ -209,6 +221,7 @@ def _source_event(task, stream, *, envelope, delivery, item, identity):
         content_fingerprint=delivery.payload_fingerprint,
         protected_content=item.protected_content,
         config_revision=task.config_revision,
+        config_snapshot=dict(task.type_config or {}),
     )
 
 

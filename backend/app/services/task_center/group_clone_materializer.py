@@ -6,10 +6,9 @@ import random
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models import Action, RuleSetVersion, Task, TgAccountAuthorization, TgGroup
+from app.models import Action, Task, TgAccountAuthorization
 from app.models.fulfillment_v2 import FulfillmentObligationProjection
 from app.models.group_clone import (
     CloneDeliveryObligation,
@@ -23,18 +22,24 @@ from app.models.group_clone import (
     TelegramGatewayMutationIdentity,
 )
 from app.schemas.task_center import GroupCloneConfig
-from app.services.content_filters import filter_outbound_content
-from app.services.rule_engine import apply_output_policy, evaluate_input_filter
 
 from .group_clone_binding import CloneSenderBindingManager
-from .group_clone_identity import derive_deterministic_random_id
+from .group_clone_content import (
+    CloneContentReviewRequired,
+    clone_content_entities,
+    sanitize_clone_content,
+)
+from .group_clone_media_materializer import (
+    admit_media_events,
+    allocate_send_identity,
+    materialize_media_items,
+)
 from .payloads import GroupCloneSendPayload
 
 GROUP_CLONE_CONTRACT = "v2_group_clone"
 
 
 def materialize_ready_clone_events(session: Session, task: Task) -> int:
-    config = GroupCloneConfig.model_validate(task.type_config or {})
     if not _runtime_ready(session, task):
         return 0
     route = _current_route(session, task)
@@ -47,6 +52,7 @@ def materialize_ready_clone_events(session: Session, task: Task) -> int:
             event = session.get(CloneSourceEvent, waiting.source_event_id)
             if event is None:
                 raise RuntimeError("group_clone_waiting_source_event_missing")
+            config = _event_config(task, event)
             created += int(_materialize_event(session, task, config=config, route=route, event=event, obligation=waiting))
             if waiting.state not in {"action_bound", "filtered", "cancelled", "superseded"}:
                 return created
@@ -54,6 +60,7 @@ def materialize_ready_clone_events(session: Session, task: Task) -> int:
         event = _next_event(session, task)
         if event is None:
             return created
+        config = _event_config(task, event)
         obligation = _new_obligation(session, task, config=config, route=route, event=event)
         created += int(_materialize_event(session, task, config=config, route=route, event=event, obligation=obligation))
         if obligation.state not in {"action_bound", "filtered", "cancelled", "superseded"}:
@@ -134,7 +141,8 @@ def _materialize_event(session, task, *, config, route, event, obligation):
         from .group_clone_lifecycle_materializer import materialize_lifecycle_event
 
         result = materialize_lifecycle_event(
-            session, task, route=route, event=event, obligation=obligation,
+            session, task, config=config, route=route,
+            event=event, obligation=obligation,
         )
         if result != "resend":
             return result
@@ -144,9 +152,10 @@ def _materialize_event(session, task, *, config, route, event, obligation):
 
 
 def _materialize_new_event(session, task, *, config, route, event, obligation):
-    if not _new_content_shape_ready(
+    media_events = _new_content_events(
         session, task, config=config, event=event, obligation=obligation,
-    ):
+    )
+    if media_events is None or not media_events:
         return False
     topic_target = _topic_target(session, task, event)
     if event.source_top_message_id and not topic_target:
@@ -163,19 +172,19 @@ def _materialize_new_event(session, task, *, config, route, event, obligation):
     if reply_fallback is None:
         return False
     quote_prefix, fallback_parent_sender = reply_fallback
-    sanitized = _sanitize_content(session, task, config=config, event=event)
+    sanitized = _new_event_content(
+        session, task, config=config, event=event,
+        media_events=media_events, obligation=obligation,
+    )
     if sanitized is None:
-        obligation.state = "filtered"
-        obligation.resolved_at = datetime.now(timezone.utc)
         return False
     sanitized = f"{quote_prefix}{sanitized}" if quote_prefix else sanitized
     parent_sender_id = _reply_sender_id(session, task, event) or fallback_parent_sender
     binding, reason = CloneSenderBindingManager.get_or_assign_sender_binding(
-        session,
-        task,
+        session, task,
         source_sender_peer_type=event.sender_peer_type,
         source_sender_peer_id=event.sender_peer_id,
-        source_sender_name="",
+        source_sender_name=event.sender_name,
         reply_to_sender_peer_id=parent_sender_id,
     )
     if binding is None:
@@ -189,30 +198,58 @@ def _materialize_new_event(session, task, *, config, route, event, obligation):
         session, task, route=route, execution=execution, event=event,
         obligation=obligation, content=sanitized, reply_target=reply_target,
         target_top_message_id=topic_target or route.target_top_msg_id,
+        media_events=media_events if event.media_type != "text" else [],
+        config=config,
     )
 
 
-def _new_content_shape_ready(session, task, *, config, event, obligation) -> bool:
+def _new_event_content(session, task, *, config, event, media_events, obligation):
+    try:
+        sanitized = sanitize_clone_content(
+            session, task, config=config, event=event,
+        )
+    except CloneContentReviewRequired as exc:
+        _block(obligation, str(exc))
+        return None
+    if sanitized is not None:
+        return sanitized
+    if any(item.media_type != "text" for item in media_events):
+        return ""
+    obligation.state = "filtered"
+    obligation.resolved_at = datetime.now(timezone.utc)
+    return None
+
+
+def _new_content_events(session, task, *, config, event, obligation):
     if event.protected_content:
         _block(obligation, "protected_content")
-        return False
+        return None
+    if (
+        event.sender_peer_type == "channel"
+        and event.sender_peer_id == event.source_peer_id
+        and event.sender_name
+    ):
+        _block(obligation, "anonymous_sender_identity_unproven")
+        return None
     if event.grouped_id:
-        from .group_clone_album import prepare_album_obligation
+        from .group_clone_album import prepare_album_events
 
-        return prepare_album_obligation(
+        events = prepare_album_events(
             session,
             task,
             event=event,
             obligation=obligation,
             incomplete_policy=config.content.incomplete_album_policy,
         )
-    if event.media_type and event.media_type != "text":
-        _block(obligation, "media_adapter_not_implemented")
-        return False
+        return admit_media_events(
+            events, obligation, policy=config.content.unsupported_media_policy,
+        )
     if not event.sender_peer_type or not event.sender_peer_id:
         _block(obligation, "source_sender_identity_unproven")
-        return False
-    return True
+        return None
+    return admit_media_events(
+        [event], obligation, policy=config.content.unsupported_media_policy,
+    )
 
 
 def _resolve_reply_fallback(
@@ -224,7 +261,7 @@ def _resolve_reply_fallback(
 
     resolution = resolve_orphan_reply(
         session, task, config=config, event=event,
-        sanitize=lambda parent: _sanitize_content(
+        sanitize=lambda parent: sanitize_clone_content(
             session, task, config=config, event=parent,
         ),
     )
@@ -236,30 +273,6 @@ def _resolve_reply_fallback(
     if resolution.terminal_state == "filtered":
         obligation.resolved_at = datetime.now(timezone.utc)
     return None
-
-
-def _sanitize_content(session, task, *, config, event):
-    version = session.scalar(select(RuleSetVersion).where(
-        RuleSetVersion.tenant_id == task.tenant_id,
-        RuleSetVersion.rule_set_id == config.content.rule_set_id,
-        RuleSetVersion.version == config.content.rule_set_version,
-        RuleSetVersion.status == "published",
-    ))
-    if version is None:
-        raise RuntimeError("group_clone_frozen_rule_version_missing")
-    admitted = evaluate_input_filter(event.content, event.sender_peer_id or "", event.media_type or "text", version.filters)
-    if not admitted.passed:
-        return None
-    output = apply_output_policy(event.content, version.output_checks, version.transforms)
-    if not output.allowed:
-        return None
-    if output.content != event.content and event.entities:
-        raise RuntimeError("group_clone_entity_rebuild_required_after_transform")
-    target_group = session.get(TgGroup, config.target.internal_group_id)
-    filtered = filter_outbound_content(session, tenant_id=task.tenant_id, group=target_group, content=output.content)
-    if not filtered.ok:
-        return None
-    return filtered.content
 
 
 def _execution_snapshot(session, route, binding):
@@ -299,26 +312,24 @@ def _execution_snapshot(session, route, binding):
 
 def _bind_send_action(
     session, task, *, route, execution, event, obligation, content,
-    reply_target, target_top_message_id,
+    reply_target, target_top_message_id, media_events, config,
 ):
-    identity = _allocate_identity(
+    try:
+        media_items = materialize_media_items(
+            session, task, route=route, execution=execution,
+            obligation=obligation, events=media_events, primary_content=content,
+        )
+    except CloneContentReviewRequired as exc:
+        return _block(obligation, str(exc))
+    identity = _primary_identity(
         session, task, route=route, execution=execution, event=event,
-        obligation=obligation, content=content,
+        obligation=obligation, content=content, media_items=media_items,
     )
-    payload = GroupCloneSendPayload(
-        obligation_id=obligation.id,
-        gateway_mutation_identity_id=identity.id,
-        route_snapshot_id=route.id,
-        execution_snapshot_id=execution.id,
-        target_peer_type=route.target_peer_type,
-        target_peer_id=route.target_peer_id,
-        content=content,
-        entities=event.entities,
-        random_id=identity.random_id,
-        stream_order_no=event.stream_order_no,
-        source_message_id=event.source_message_id,
-        reply_to_message_id=reply_target,
-        target_top_message_id=target_top_message_id,
+    payload = _send_payload(
+        session, config=config, route=route, execution=execution,
+        event=event, obligation=obligation, identity=identity,
+        content=content, reply_target=reply_target,
+        target_top_message_id=target_top_message_id, media_items=media_items,
     )
     action = Action(
         tenant_id=task.tenant_id,
@@ -338,8 +349,60 @@ def _bind_send_action(
     session.add(action)
     session.flush()
     obligation.state = "action_bound"
+    _mark_album_action_bound(session, obligation)
     _bind_projection(session, task, obligation=obligation, action=action)
     return True
+
+
+def _send_payload(
+    session, *, config, route, execution, event, obligation, identity,
+    content, reply_target, target_top_message_id, media_items,
+):
+    source = session.get(TgAccountAuthorization, config.source.authorization_id)
+    if media_items and source is None:
+        raise RuntimeError("group_clone_media_source_authorization_missing")
+    return GroupCloneSendPayload(
+        obligation_id=obligation.id, gateway_mutation_identity_id=identity.id,
+        route_snapshot_id=route.id, execution_snapshot_id=execution.id,
+        mutation_kind=identity.mutation_kind, target_peer_type=route.target_peer_type,
+        target_peer_id=route.target_peer_id, content=content,
+        entities=clone_content_entities(event, content),
+        random_id=identity.random_id, stream_order_no=event.stream_order_no,
+        source_message_id=event.source_message_id, reply_to_message_id=reply_target,
+        target_top_message_id=target_top_message_id,
+        source_peer_id=route.source_peer_id if media_items else "",
+        source_authorization_id=source.id if source and media_items else None,
+        source_session_generation=source.slot_generation if source and media_items else None,
+        media_items=media_items,
+    )
+
+
+def _primary_identity(
+    session, task, *, route, execution, event, obligation, content, media_items,
+):
+    if media_items:
+        identity = session.get(
+            TelegramGatewayMutationIdentity,
+            media_items[0].gateway_mutation_identity_id,
+        )
+        if identity is None:
+            raise RuntimeError("group_clone_media_identity_missing")
+        return identity
+    return allocate_send_identity(
+        session, task, route=route, execution=execution, event=event,
+        obligation=obligation, content=content,
+    )
+
+
+def _mark_album_action_bound(session, obligation) -> None:
+    if not obligation.album_manifest_id:
+        return
+    from app.models.group_clone import CloneAlbumManifest
+
+    manifest = session.get(CloneAlbumManifest, obligation.album_manifest_id)
+    if manifest is not None:
+        manifest.state = "action_bound"
+        manifest.version += 1
 
 
 def _bind_projection(session, task, *, obligation, action):
@@ -363,66 +426,6 @@ def _bind_projection(session, task, *, obligation, action):
     ))
 
 
-def _allocate_identity(session, task, *, route, execution, event, obligation, content):
-    authorization = session.get(TgAccountAuthorization, execution.authorization_id)
-    account_peer = str(authorization.telegram_user_id_digest or "") if authorization else ""
-    if not account_peer:
-        raise RuntimeError("canonical_telegram_account_peer_id_unproven")
-    fingerprint = _hash({"content": content, "entities": event.entities})
-    existing = _identity_for_obligation(session, obligation)
-    if existing:
-        if existing.request_fingerprint != fingerprint:
-            raise RuntimeError("group_clone_mutation_identity_fingerprint_conflict")
-        return existing
-    nonce = 0
-    while True:
-        random_id = derive_deterministic_random_id(
-            GROUP_CLONE_CONTRACT,
-            task.tenant_id,
-            task_id=task.id,
-            epoch=task.task_lifecycle_epoch,
-            obligation_id=obligation.id,
-            mutation_kind="sendMessage",
-            part_index=0,
-            collision_nonce=nonce,
-        )
-        identity = TelegramGatewayMutationIdentity(
-            tenant_id=task.tenant_id,
-            task_id=task.id,
-            epoch=task.task_lifecycle_epoch,
-            obligation_id=obligation.id,
-            mutation_kind="sendMessage",
-            execution_role="sender",
-            account_id=execution.account_id,
-            telegram_account_peer_id=account_peer,
-            authorization_id=execution.authorization_id,
-            session_generation=execution.session_generation,
-            target_peer_type=route.target_peer_type,
-            target_peer_id=route.target_peer_id,
-            random_id=random_id,
-            collision_nonce=nonce,
-            request_fingerprint=fingerprint,
-        )
-        try:
-            with session.begin_nested():
-                session.add(identity)
-                session.flush()
-            return identity
-        except IntegrityError:
-            nonce += 1
-
-
-def _identity_for_obligation(session, obligation):
-    return session.scalar(select(TelegramGatewayMutationIdentity).where(
-        TelegramGatewayMutationIdentity.task_id == obligation.task_id,
-        TelegramGatewayMutationIdentity.epoch == obligation.epoch,
-        TelegramGatewayMutationIdentity.obligation_id == obligation.id,
-        TelegramGatewayMutationIdentity.materialization_version == obligation.materialization_version,
-        TelegramGatewayMutationIdentity.mutation_kind == "sendMessage",
-        TelegramGatewayMutationIdentity.part_index == 0,
-    ))
-
-
 def _planned_at(session, task, *, config, stream_order_no):
     previous = session.scalar(select(func.max(CloneDeliveryObligation.planned_at)).where(
         CloneDeliveryObligation.task_id == task.id,
@@ -435,6 +438,13 @@ def _planned_at(session, task, *, config, stream_order_no):
     base = max(now_value, previous) if previous else now_value
     delay = random.uniform(config.pacing.min_delay_ms, config.pacing.max_delay_ms) / 1000
     return base + timedelta(seconds=delay)
+
+
+def _event_config(task, event) -> GroupCloneConfig:
+    snapshot = dict(event.config_snapshot or {})
+    if not snapshot:
+        raise RuntimeError("group_clone_event_config_snapshot_missing")
+    return GroupCloneConfig.model_validate(snapshot)
 
 
 def _reply_target(session, task, event):

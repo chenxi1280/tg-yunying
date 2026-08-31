@@ -10,6 +10,7 @@ import { TaskAccountOnlineSummaryPanel } from './TaskAccountOnlineSummaryPanel';
 import { TaskAIQualityFunnelPanel } from './TaskAIQualityFunnelPanel';
 import { TaskMembershipPanel } from './TaskMembershipPanel';
 import { GroupCloneTaskPanel } from './GroupCloneTaskPanel';
+import { GroupCloneCutoverPanel } from './GroupCloneCutoverPanel';
 
 type DetailProfile = {
   hour: number;
@@ -771,6 +772,7 @@ export function TaskCenterDetailModal({
   const admissionTotal = Number(detail?.membership_admission_phase?.snapshot_total ?? admissionItemPagination.total ?? 0);
   const showAiTab = detail?.task.type === 'group_ai_chat';
   const showCloneTab = detail?.task.type === 'group_clone';
+  const showCloneCutoverTab = detail?.task.type === 'group_relay';
   const showSearchJoinTab = ['search_click', 'search_join_group'].includes(detail?.task.type || '');
   const showSearchRankDeboostTab = detail?.task.type === 'search_rank_deboost';
   const botMissingReasons = botAvailabilityReasons(telegramBotSettings);
@@ -778,6 +780,17 @@ export function TaskCenterDetailModal({
   const accountCoverage = detail?.task.stats?.account_coverage;
   const dailyFulfillment = accountCoverage?.daily_fulfillment;
   const detailTabs = detail ? [
+    showCloneCutoverTab ? {
+      key: 'group-clone-cutover',
+      label: '切换到 1 对 1 克隆',
+      children: (
+        <GroupCloneCutoverPanel
+          task={detail.task}
+          canManageTasks={canManageTasks}
+          onChanged={() => onRefreshTask(detail.task)}
+        />
+      ),
+    } : null,
     showCloneTab ? {
       key: 'group-clone',
       label: '克隆证据与处置',

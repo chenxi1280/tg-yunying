@@ -70,6 +70,51 @@ class CloneSenderBindingManager:
         )
         return binding, ""
 
+    @staticmethod
+    def release_or_rebind(
+        session: Session,
+        task: Task,
+        *,
+        binding_id: str,
+        expected_binding_version: int,
+        replacement_account_id: int | None,
+        reason: str,
+    ) -> CloneSenderBindingHistory | None:
+        binding = session.scalar(select(CloneSenderBindingHistory).where(
+            CloneSenderBindingHistory.id == binding_id,
+            CloneSenderBindingHistory.task_id == task.id,
+            CloneSenderBindingHistory.task_lifecycle_epoch == task.task_lifecycle_epoch,
+        ).with_for_update())
+        if binding is None or binding.status not in ACTIVE_BINDING_STATES:
+            raise ValueError("sender binding 不存在或已释放")
+        if binding.binding_version != expected_binding_version:
+            raise ValueError("sender binding version 已变化")
+        if not _no_open_obligations(session, binding):
+            raise ValueError("sender binding 仍有未收口义务，不能换绑")
+        old_slot = session.get(CloneAccountSlot, binding.account_slot_id, with_for_update=True)
+        replacement = _replacement_slot(
+            session, task, account_id=replacement_account_id, old_slot=old_slot,
+        )
+        binding.status = "expired"
+        binding.valid_to = datetime.now(timezone.utc)
+        binding.last_reassigned_at = binding.valid_to
+        binding.reassignment_reason = reason[:100]
+        if old_slot is not None:
+            old_slot.state = "available"
+            old_slot.version += 1
+        session.flush()
+        if replacement is None:
+            return None
+        replacement.state = "active"
+        replacement.version += 1
+        return _new_binding(
+            session, task, replacement,
+            peer_type=binding.source_sender_peer_type,
+            peer_id=binding.source_sender_peer_id,
+            name=binding.source_sender_name,
+            is_vip=binding.is_vip,
+        )
+
 
 def _active_binding(session, task, *, peer_type, peer_id):
     return session.scalar(
@@ -87,9 +132,14 @@ def _active_binding(session, task, *, peer_type, peer_id):
 
 def _reuse_binding(session, task, *, existing, parent_peer_id, is_vip):
     parent_account_id = _parent_account_id(session, task, parent_peer_id)
-    if parent_account_id and parent_account_id == existing.assigned_account_id:
+    if (
+        parent_peer_id
+        and parent_peer_id != existing.source_sender_peer_id
+        and parent_account_id == existing.assigned_account_id
+    ):
         return None, "reply_self_collision: 回复父消息与当前发言人映射到同一账号"
     existing.last_spoken_at = datetime.now(timezone.utc)
+    existing.status = "active"
     existing.is_vip = existing.is_vip or is_vip
     session.flush()
     return existing, ""
@@ -109,6 +159,8 @@ def _parent_account_id(session, task, parent_peer_id):
 
 
 def _claim_slot(session, task, excluded_account_id):
+    now_value = datetime.now(timezone.utc)
+    _advance_binding_states(session, task, now_value=now_value)
     account_ids = tuple((task.type_config or {}).get("sender_pool", {}).get("account_ids", ()))
     slots = session.scalars(
         select(CloneAccountSlot)
@@ -116,7 +168,6 @@ def _claim_slot(session, task, excluded_account_id):
         .order_by(CloneAccountSlot.account_id)
         .with_for_update()
     ).all()
-    now_value = datetime.now(timezone.utc)
     available = [slot for slot in slots if _slot_available(slot, excluded_account_id, now_value)]
     if available:
         return _activate_slot(available[0]), None
@@ -167,17 +218,64 @@ def _reclaimable_bindings(session, task, *, excluded_account_id, now_value):
 
 
 def _safe_to_reclaim(session, task, *, binding, now_value):
-    minimum_minutes = int((task.type_config or {}).get("sender_pool", {}).get("minimum_tenure_minutes", 60))
+    pool = (task.type_config or {}).get("sender_pool", {})
+    minimum_minutes = max(
+        int(pool.get("minimum_tenure_minutes", 60)),
+        int(pool.get("eligible_release_minutes", 720)),
+    )
     valid_from = binding.valid_from
     if valid_from.tzinfo is None:
         valid_from = valid_from.replace(tzinfo=timezone.utc)
     if (now_value - valid_from).total_seconds() < minimum_minutes * 60:
         return False
+    return _no_open_obligations(session, binding)
+
+
+def _no_open_obligations(session, binding) -> bool:
     open_count = session.scalar(select(func.count()).select_from(CloneDeliveryObligation).where(
         CloneDeliveryObligation.binding_history_id == binding.id,
         CloneDeliveryObligation.state.in_(OPEN_OBLIGATION_STATES),
     ))
     return not open_count
+
+
+def _replacement_slot(session, task, *, account_id, old_slot):
+    if account_id is None:
+        return None
+    if old_slot is not None and old_slot.account_id == account_id:
+        raise ValueError("replacement account 必须与当前账号不同")
+    allowed = set((task.type_config or {}).get("sender_pool", {}).get("account_ids", ()))
+    if account_id not in allowed:
+        raise ValueError("replacement account 不在冻结 sender pool")
+    slot = session.scalar(select(CloneAccountSlot).where(
+        CloneAccountSlot.task_id == task.id,
+        CloneAccountSlot.account_id == account_id,
+    ).with_for_update())
+    if slot is None or slot.state != "available":
+        raise ValueError("replacement account slot 当前不可用")
+    return slot
+
+
+def _advance_binding_states(session, task, *, now_value) -> None:
+    pool = (task.type_config or {}).get("sender_pool", {})
+    active_minutes = int(pool.get("active_minutes", 30))
+    guarded_minutes = int(pool.get("guarded_minutes", 120))
+    bindings = session.scalars(select(CloneSenderBindingHistory).where(
+        CloneSenderBindingHistory.task_id == task.id,
+        CloneSenderBindingHistory.task_lifecycle_epoch == task.task_lifecycle_epoch,
+        CloneSenderBindingHistory.status.in_(("active", "guarded")),
+    ).with_for_update()).all()
+    for binding in bindings:
+        spoken_at = binding.last_spoken_at
+        if spoken_at.tzinfo is None:
+            spoken_at = spoken_at.replace(tzinfo=timezone.utc)
+        age_minutes = (now_value - spoken_at).total_seconds() / 60
+        if age_minutes < active_minutes:
+            binding.status = "active"
+        elif binding.is_vip or age_minutes < guarded_minutes:
+            binding.status = "guarded"
+        else:
+            binding.status = "eligible"
 
 
 def _expire_binding(binding, replacement_peer_id):
