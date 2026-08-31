@@ -421,6 +421,14 @@ Mini Bug Card 冻结为：`deploy/docker-env.sh` 在任何 Compose mutation 前�
 
 本轮 dev 后 QA 已取得 147 条 Antigravity、slot lifecycle、release/worker 合同回归通过，另有 Compose config、Bash 语法和 diff check 通过；Product Design Complete 复核确认该修复不改变 Provider 身份、模型顺序、生成 Schema、route 或 unknown 语义，`qa_status=pass`、`product_status=accepted`。新 SHA 的完整 Actions、容器地址读回和本节生产调用尚未完成，故 `production_status=blocked` 不变。
 
+### 14.10 Production Quick Fix：冻结 slot 未进入 Antigravity draft Schema
+
+`21ab17a2642737bdb361df58c24907802fb40105` 已完整发布，backend 与三个 AI generation worker 通过 `infra_default` 精确 gateway 到达 slot，双 Provider health、双模型结构化 Gateway 探针及六条 generation route readback 均通过。route apply 后真实 `group_ai_chat` GenerationJob 进入 Provider，但 `AiProviderAttempt` 仍终结为 `RuntimeError`，Action 明确记录 `fixed_slot_contract=slot_mapping`；对应 bridge ledger 为 confirmed，解密后的安全结构检查显示 `drafts[0]` 只有 `content`，没有业务冻结的 `slot_id`。因此首个失败边界是 Gateway draft Schema 与既有固定 slot parser 不一致，不是 OAuth、网络、配额、CLI 或 Telegram。
+
+Mini Bug Card 冻结为：Antigravity legacy draft 调用必须从当前 prompt 的 `generation_slots`/固定 slot 段解析预期 slot IDs，并据此生成调用级 JSON Schema；每个 draft 必须包含 `content` 与非空 `slot_id`，`slot_id` 只能取冻结集合，draft 数量必须等于冻结 slot 数。无固定 slot 的旧调用继续使用原通用 draft Schema。返回后仍由既有顺序精确匹配闸门校验，不得自动补 slot、按位置猜测、放宽 parser 或把 malformed 结果当成功。
+
+定向 QA 必须覆盖：单/多固定 slot 的 required/enum/minItems/maxItems；无固定 slot 的旧 Schema 不变；Provider 即使返回错误顺序、重复或缺失 slot 仍显式失败；真实生产 canary 必须形成 `AiProviderAttempt=success`、非空 token usage、GenerationJob candidate/ready 或后续合法质量终态，且 bridge ledger 无无主 `claimed|started|unknown`。Telegram Action/ExecutionAttempt/typed remote fact 继续作为独立 E4，不以 Provider confirmed 代替。
+
 ## 15. 多模型业务回复 POC
 
 2026-08-30 已使用独立 `slot-01` 对 `gemini-3.5-flash-medium`、`gemini-3.6-flash-medium`、`gemini-3.7-flash-medium` 执行固定 AI 活群与频道评论合成样本。六个候选均形成终态；样本内跨场景质量为 3.6 最稳，3.7 活群质量和时延最佳但评论被当前地点/敏感交易 cleaner 拒绝，并触发事实边界硬失败。完整输入、候选、评分、运行异常与证据边界见 `docs/05-implementation/antigravity-cli-model-reply-poc-20260830.md`。

@@ -161,6 +161,87 @@ def test_gateway_uses_explicit_antigravity_provider(monkeypatch):
     assert captured["request_id"] == "generation-job-1"
 
 
+def test_antigravity_draft_schema_freezes_prompt_slots(monkeypatch):
+    captured = {}
+    slot_ids = ["task-1:cycle:2:turn:1", "task-1:cycle:2:turn:2"]
+    prompt = _fixed_slot_prompt(slot_ids)
+
+    def fake_generate(_self, _credentials, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            payload={"drafts": [
+                {"slot_id": slot_ids[0], "content": "第一条"},
+                {"slot_id": slot_ids[1], "content": "第二条"},
+            ]},
+            usage=SimpleNamespace(total_tokens=9),
+        )
+
+    monkeypatch.setattr(AntigravityProviderClient, "generate", fake_generate)
+    result = AiGateway().generate_drafts(
+        credentials(), prompt, count=2, topic="群聊", tone="自然",
+        persona_set=["A", "B"], temperature=None, max_tokens=None,
+        request_id="generation-job-1",
+    )
+
+    drafts = captured["json_schema"]["properties"]["drafts"]
+    assert (drafts["minItems"], drafts["maxItems"]) == (2, 2)
+    assert drafts["items"]["required"] == ["content", "slot_id"]
+    assert drafts["items"]["properties"]["slot_id"]["enum"] == slot_ids
+    assert [candidate.slot_id for candidate in result.candidates] == slot_ids
+
+
+def test_antigravity_non_slot_draft_keeps_generic_schema(monkeypatch):
+    captured = {}
+
+    def fake_generate(_self, _credentials, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            payload={"drafts": [{"content": "普通候选"}]},
+            usage=SimpleNamespace(total_tokens=7),
+        )
+
+    monkeypatch.setattr(AntigravityProviderClient, "generate", fake_generate)
+    result = AiGateway().generate_drafts(
+        credentials(), "普通提示", count=1, topic="群聊", tone="自然",
+        persona_set=["A"], temperature=None, max_tokens=None,
+        request_id="generation-job-2",
+    )
+
+    item = captured["json_schema"]["properties"]["drafts"]["items"]
+    assert item["required"] == ["content"]
+    assert result.candidates[0].slot_id == ""
+
+
+def test_antigravity_fixed_slot_response_still_rejects_missing_slot(monkeypatch):
+    def fake_generate(_self, _credentials, **_kwargs):
+        return SimpleNamespace(
+            payload={"drafts": [{"content": "缺少槽位"}]},
+            usage=SimpleNamespace(total_tokens=7),
+        )
+
+    monkeypatch.setattr(AntigravityProviderClient, "generate", fake_generate)
+    with pytest.raises(RuntimeError, match="fixed_slot_contract=slot_mapping"):
+        AiGateway().generate_drafts(
+            credentials(), _fixed_slot_prompt(["task-1:cycle:2:turn:1"]),
+            count=1, topic="群聊", tone="自然", persona_set=["A"],
+            temperature=None, max_tokens=None, request_id="generation-job-3",
+        )
+
+
+def _fixed_slot_prompt(slot_ids: list[str]) -> str:
+    payload = {
+        "generation_slots": [
+            {"slot_id": slot_id, "sequence_index": index}
+            for index, slot_id in enumerate(slot_ids, 1)
+        ],
+    }
+    return (
+        "Sanitized production-shaped input:\n"
+        f"{json.dumps(payload, ensure_ascii=False)}\n\n"
+        f"Generate exactly {len(slot_ids)} Chinese draft(s)."
+    )
+
+
 def test_gateway_rejects_unsupported_antigravity_sampling_parameters():
     with pytest.raises(RuntimeError, match="unsupported_provider_parameter"):
         AiGateway().generate_structured(

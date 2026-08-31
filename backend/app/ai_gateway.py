@@ -397,7 +397,7 @@ class AiGateway:
             credentials,
             prompt,
             system_prompt=system_prompt or "你是一个 Telegram 群运营话术助手，只输出用户要求的 JSON。",
-            json_schema=ANTIGRAVITY_DRAFT_SCHEMA,
+            json_schema=_antigravity_draft_schema(prompt, count),
             timeout=timeout,
             request_id=request_id,
         )
@@ -928,6 +928,33 @@ def _fixed_prompt_slot_ids(prompt: str, count: int) -> list[str]:
     slot_section = prompt.split(marker, 1)[1]
     matches = re.findall(r"(?m)^slot\s+\d+：([^；\r\n]+)", slot_section)
     return [value.strip() for value in matches[:max(0, int(count or 0))]]
+
+
+def _antigravity_draft_schema(prompt: str, count: int) -> dict[str, Any]:
+    slot_ids = _fixed_prompt_slot_ids(prompt, count)
+    if not slot_ids:
+        return ANTIGRAVITY_DRAFT_SCHEMA
+    return {
+        "type": "object",
+        "properties": {
+            "drafts": {
+                "type": "array",
+                "minItems": len(slot_ids),
+                "maxItems": len(slot_ids),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "content": {"type": "string", "minLength": 1},
+                        "slot_id": {"type": "string", "enum": slot_ids},
+                    },
+                    "required": ["content", "slot_id"],
+                    "additionalProperties": True,
+                },
+            },
+        },
+        "required": ["drafts"],
+        "additionalProperties": False,
+    }
 
 
 def _group_prompt_payload_slot_ids(prompt: str, count: int) -> list[str]:
