@@ -19,6 +19,7 @@ from app.timezone import BEIJING_TZ
 OPEN_CAPACITY_STATES = frozenset({
     "plan_reserved", "action_reserved", "gateway_hold", "confirmed",
 })
+ROLLING_CAPACITY_WINDOW = timedelta(hours=24)
 
 
 def remaining_comment_capacity(
@@ -29,8 +30,9 @@ def remaining_comment_capacity(
     at: datetime,
 ) -> int:
     period = _capacity_period(session, task, daily_cap=daily_cap, at=at)
-    used = _used_capacity(session, period)
-    return max(0, int(period.capacity_limit) - used)
+    period_remaining = int(period.capacity_limit) - _used_capacity(session, period)
+    rolling_remaining = daily_cap - _rolling_used_capacity(session, task.id, at)
+    return max(0, min(period_remaining, rolling_remaining))
 
 
 def reserve_comment_capacity(
@@ -43,6 +45,7 @@ def reserve_comment_capacity(
 ) -> TaskCommentCapacityReservation | None:
     if not obligation.plan_contract_id:
         raise RuntimeError("comment_capacity_plan_contract_missing")
+    _lock_task_capacity_owner(session, task.id)
     existing = session.scalar(select(TaskCommentCapacityReservation).where(
         TaskCommentCapacityReservation.obligation_id == obligation.id,
     ))
@@ -51,9 +54,11 @@ def reserve_comment_capacity(
     period = _capacity_period(
         session, task, daily_cap=daily_cap, at=scheduled_at,
     )
-    if remaining_comment_capacity(
-        session, task, daily_cap, at=scheduled_at,
-    ) <= 0:
+    period_remaining = int(period.capacity_limit) - _used_capacity(session, period)
+    rolling_remaining = daily_cap - _rolling_used_capacity(
+        session, task.id, scheduled_at,
+    )
+    if min(period_remaining, rolling_remaining) <= 0:
         return None
     reservation = existing or TaskCommentCapacityReservation(
         tenant_id=task.tenant_id,
@@ -240,6 +245,52 @@ def _used_capacity(session: Session, period: TaskCommentCapacityPeriod) -> int:
         TaskCommentCapacityReservation.capacity_period_id == period.id,
         TaskCommentCapacityReservation.reservation_state.in_(OPEN_CAPACITY_STATES),
     )) or 0)
+
+
+def _rolling_used_capacity(session: Session, task_id: str, at: datetime) -> int:
+    lower_bound = at - ROLLING_CAPACITY_WINDOW
+    upper_bound = at + ROLLING_CAPACITY_WINDOW
+    rows = session.execute(select(
+        TaskCommentCapacityReservation.scheduled_for_at,
+        TaskCommentCapacityReservation.capacity_units,
+    ).where(
+        TaskCommentCapacityReservation.task_id == task_id,
+        TaskCommentCapacityReservation.reservation_state.in_(OPEN_CAPACITY_STATES),
+        TaskCommentCapacityReservation.scheduled_for_at > lower_bound,
+        TaskCommentCapacityReservation.scheduled_for_at < upper_bound,
+    )).all()
+    candidate_at = _beijing_aware(at)
+    points = [
+        (_beijing_aware(scheduled_at), int(units))
+        for scheduled_at, units in rows
+    ]
+    points.append((candidate_at, 0))
+    points.sort(key=lambda item: item[0])
+    return _max_window_units_containing(points, candidate_at)
+
+
+def _max_window_units_containing(
+    points: list[tuple[datetime, int]],
+    candidate_at: datetime,
+) -> int:
+    left = 0
+    used = 0
+    maximum = 0
+    for right, (scheduled_at, units) in enumerate(points):
+        used += units
+        cutoff = scheduled_at - ROLLING_CAPACITY_WINDOW
+        while left <= right and points[left][0] <= cutoff:
+            used -= points[left][1]
+            left += 1
+        if scheduled_at >= candidate_at:
+            maximum = max(maximum, used)
+    return maximum
+
+
+def _lock_task_capacity_owner(session: Session, task_id: str) -> None:
+    if session.get_bind().dialect.name != "postgresql":
+        return
+    session.scalar(select(Task.id).where(Task.id == task_id).with_for_update())
 
 
 def _task_local(value: datetime, timezone_name: str) -> datetime:

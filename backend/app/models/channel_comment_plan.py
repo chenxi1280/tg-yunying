@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -184,6 +184,10 @@ class TaskCommentCapacityReservation(Base):
     __table_args__ = (
         UniqueConstraint(
             "obligation_id", name="uq_task_comment_capacity_obligation",
+        ),
+        Index(
+            "ix_task_comment_capacity_rolling",
+            "task_id", "scheduled_for_at", "reservation_state",
         ),
     )
 

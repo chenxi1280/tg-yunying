@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 from sqlalchemy import func, select
@@ -21,6 +21,7 @@ from app.services.task_center.channel_comment_acceptance import channel_comment_
 from app.services.task_center.channel_comment_capacity import (
     mark_comment_capacity_gateway_hold,
     remaining_comment_capacity,
+    reserve_comment_capacity,
     settle_comment_capacity,
 )
 from app.services.task_center.channel_comment_grounding_guard import comment_grounding_send_blocker
@@ -231,6 +232,54 @@ def test_timezone_change_creates_contiguous_capacity_periods() -> None:
     assert periods[1].period_start_at == periods[0].period_end_at
     assert periods[1].calendar_revision == 2
     assert periods[1].capacity_limit <= 10
+
+
+@pytest.mark.parametrize(
+    ("occupied_offset_hours", "candidate_offset_hours", "expected_reserved"),
+    ((0, 23, False), (23, 0, False), (0, 24, True)),
+)
+def test_rolling_24h_cap_spans_capacity_periods(
+    monkeypatch,
+    occupied_offset_hours: int,
+    candidate_offset_hours: int,
+    expected_reserved: bool,
+) -> None:
+    forbid_planner_external_boundaries(monkeypatch)
+    fixed_profile(monkeypatch)
+    with planner_session() as session:
+        task = seed_comment_task(session, mode="comment", target_count=3)
+        _enable_grounding_plan(session, task)
+        task.type_config = {**task.type_config, "daily_comment_cap": 1}
+        session.commit()
+        channel_comment.build_plan(session, task)
+        reservations = list(session.scalars(
+            select(TaskCommentCapacityReservation)
+            .order_by(TaskCommentCapacityReservation.scheduled_for_at)
+        ))
+        first, second = reservations
+        first.scheduled_for_at = STABLE_PLANNER_NOW + timedelta(
+            hours=occupied_offset_hours,
+        )
+        second.reservation_state = "released"
+        session.flush()
+        obligation = session.get(CommentFulfillmentObligation, second.obligation_id)
+
+        reserved = reserve_comment_capacity(
+            session,
+            task,
+            obligation,
+            scheduled_at=STABLE_PLANNER_NOW + timedelta(
+                hours=candidate_offset_hours,
+            ),
+            daily_cap=1,
+        )
+
+        assert (reserved is not None) is expected_reserved
+        assert second.reservation_state == (
+            "plan_reserved" if expected_reserved else "released"
+        )
+        assert session.scalar(select(func.count(TaskCommentCapacityReservation.id))) == 2
+
 
 
 def test_source_edit_blocks_frozen_action_before_gateway(monkeypatch) -> None:

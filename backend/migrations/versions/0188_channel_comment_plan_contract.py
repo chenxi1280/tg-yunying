@@ -229,6 +229,11 @@ def _create_capacity_reservations() -> None:
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("obligation_id", name="uq_task_comment_capacity_obligation"),
     )
+    op.create_index(
+        "ix_task_comment_capacity_rolling",
+        "task_comment_capacity_reservations",
+        ["task_id", "scheduled_for_at", "reservation_state"],
+    )
 
 
 def downgrade() -> None:

@@ -6,7 +6,7 @@
 | --- | --- |
 | 需求级别 | L2 产品能力升级；同时闭合评论参与数量、广播/老师相关性与整体验收 |
 | 产品设计状态 | `design_complete` / `ready_for_dev`（v1.4 五轮业务复核通过） |
-| 实现状态 | `partial_local`：v1.4 兜底 policy/pool/cursor/selection、20 表情、静态图片发送、素材组完整性/CAS、journal typed fact 恢复已实现；0188 已补 SourceRevision、数量 Plan、eligible snapshot、ordinal-account binding、首版基础 GroundingAssignment、全量 obligation/JIT Action、planned fallback、连续 UTC capacity period/reservation 状态基线和三维保守验收。完整 max-min allocation epoch、rolling 24h 二次硬限额、编辑/删除 successor、独立 QualityTargetRevision、完整多老师/时效 extraction 与 Gateway accepted/outbound hash 闭环仍未完成 |
+| 实现状态 | `partial_local`：v1.4 兜底 policy/pool/cursor/selection、20 表情、静态图片发送、素材组完整性/CAS、journal typed fact 恢复已实现；0188 已补 SourceRevision、数量 Plan、eligible snapshot、ordinal-account binding、首版基础 GroundingAssignment、全量 obligation/JIT Action、planned fallback、连续 UTC capacity period/reservation、跨 period rolling 24h 二次硬限额和三维保守验收。完整 max-min allocation epoch、编辑/删除 successor、独立 QualityTargetRevision、完整多老师/时效 extraction 与 Gateway accepted/outbound hash 闭环仍未完成 |
 | QA 状态 | `partial_local`：新增数量/来源/assignment/planned fallback/selection read-model/三维验收定向 no-postgres 回归通过；0188 PostgreSQL 离线 upgrade/downgrade SQL 已生成，但真实 PostgreSQL 并发、完整回归、UI 人工验收和 E4 未通过 |
 | 发布状态 | `not_released` |
 | 生产状态 | `unproven`；无真实 Telegram E4 证据 |
@@ -30,6 +30,8 @@
 本地实现审计（2026-09-01）：完成 v1.4 兜底切片并修复无证据默认方向、内容弱信号提升 route、媒体评论关系、远端事实挂接和无 caption 图片缓存重放；随后把 policy/pool 冻结前移到消息首次规划事务，历史 revision 缺 snapshot 时 fail closed，typed fact 补齐 Action/Attempt/outbound identity，并以 `MaterialGroup.material_ids` 实现图片包显式成员隔离。定向测试与前端构建通过。反向核查确认本 PRD 的数量、来源修订、grounding 全量冻结、质量目标、编辑 successor、Daily Cap 公平分配和三维 acceptance 尚无完整 owner，因此实现与 QA 只能标记为 partial，发布与生产状态不变。
 
 第八轮本地修复（2026-09-01）：新增 `ChannelMessageSourceRevision`、`ChannelCommentPlanContract`、eligible snapshot、ordinal-account binding 与基础 `ChannelCommentGroundingAssignment`；当前合同只纳入 Task enrollment 后发布且具权威 `source_published_at` 的消息，首次规划冻结 55%～65% distinct-account 目标、全部 obligation、账号和 planned fallback。`TaskCommentCapacityPeriod/Reservation` 按连续 UTC 周期持有 cap，并在 `plan_reserved -> action_reserved -> gateway_hold -> confirmed/released` 间单向推进；Action 按 ordinal/发布时间/消息顺序在预约约束下 JIT 物化。planned fallback 不再调用普通正文 Provider；详情直接读取 `CommentFallbackSelection`，完成量只认 obligation remote fact，并组合 quantity/content mix/grounding quality。该轮仍未实现跨全部开放消息的完整 max-min allocation epoch、rolling 24h 二次硬限额、来源编辑/删除 successor、独立 quality target component、多老师证据块和完整时效事实，因此状态保持 `partial_local/not_released/unproven`。
+
+第九轮本地修复（2026-09-01）：`channel_comment_capacity.py` 在 reservation 事务中以 Task 行作为 PostgreSQL 容量 owner，保留单 UTC period cap，并对候选时间前后 24 小时的全部非 released reservation 做滑动窗口聚合；任一 `(window_end-24h,window_end]` 达到冻结 Daily Cap 时不创建/复活 reservation，恰好相隔 24 小时的旧占用退出窗口。0188 增加 `(task_id,scheduled_for_at,reservation_state)` 查询索引；定向反例覆盖先有过去预约、先有未来预约和精确 24 小时边界。该切片只闭合 rolling 24h 二次硬限额，不代表 max-min allocation epoch、完整 PostgreSQL 并发、发布或 E4 已完成，整体状态仍为 `partial_local/not_released/unproven`。
 
 ---
 
@@ -1565,7 +1567,8 @@ E4 样本必须至少包含：
 - [x] 正常正文 Action 绑定 source revision、grounding assignment 和 evidence hash；详情只以持久 selection/typed remote fact 投影完成；
 - [x] quantity/content mix/grounding quality 三维验收已接入 Task 与消息详情，且 emergency fallback 不冒充 grounded；
 - [x] 连续 UTC Daily Cap period/reservation 基线、时区切换首尾相接与 reservation 单向状态已实现；
-- [ ] 跨全部开放消息的完整 max-min allocation epoch、epoch CAS、公平重排和 rolling 24h 二次硬限额；
+- [ ] 跨全部开放消息的完整 max-min allocation epoch、epoch CAS 和公平重排；
+- [x] reservation 创建同时通过单 UTC period cap 与跨 period rolling 24h 二次硬限额；候选前后已有预约均纳入，恰好 24 小时旧占用退出窗口；
 - [ ] 来源 edit/delete successor、独立 QualityTargetRevision、完整多老师/否定/时效 extraction 与远端覆盖审查；
 - [x] 无内容弱信号提升 route；
 - [x] 无无证据默认方向。
@@ -1654,7 +1657,7 @@ E4 样本必须至少包含：
 | `backend/app/services/task_center/ai_generator.py::_is_adult_channel_context` | 内容弱信号可提升 route | 改为 canonical config authority；内容只记录 signal |
 | `backend/app/services/task_center/comment_generation_pipeline.py::_call_generator` | 当前传递 frozen source text/assignment identity，planned fallback 零普通正文调用；Prompt 仍按 source text 重抽展示方向 | 改为只 render assignment，Provider schema 回传并校验 evidence identity |
 | `backend/app/services/task_center/comment_generation_quality.py` | 已校验 source revision/assignment/evidence hash identity，并保守要求 semantic reviewer 才计 grounded；完整老师/主亮点语义门仍不足 | 增加 teacher/reply/aspect 结构化 evaluator 与 accepted/outbound hash 闭环 |
-| `backend/app/services/task_center/comment_fulfillment.py` | legacy 仍按 Task revision；当前合同已由 0188 Plan 首次冻结全部 ordinal/账号/基础 assignment，连续 capacity period/reservation 持有基础 Daily Cap，技术批次只物化 Action | 补来源编辑 successor、独立 QualityTargetRevision、完整 allocation epoch/rolling 24h 硬限额 |
+| `backend/app/services/task_center/comment_fulfillment.py` | legacy 仍按 Task revision；当前合同已由 0188 Plan 首次冻结全部 ordinal/账号/基础 assignment，连续 capacity period/reservation 持有 Daily Cap，`channel_comment_capacity.py` 已增加 Task owner 锁和 rolling 24h 二次硬限额，技术批次只物化 Action | 补来源编辑 successor、独立 QualityTargetRevision和完整 max-min allocation epoch |
 | `backend/app/services/task_center/dispatcher.py` | 当前可在 dispatch 路径生成内容，且过滤结果与实际发送正文身份未闭环 | 移除 Provider owner；只发送 `quality_accepted|fallback_ready`，按 content source 校验正文 hash 或图片 asset fingerprint |
 | `material-library-design.md` 对应素材服务与任务配置 UI | 已接入 `image_meme` 版本、缓存、显式成员、ZIP 原子归组、引用保护和成员 CAS，并成为评论 fallback selection owner | 保持素材组 ready/review_required/invalid 与版本不变量；后续完整读模型继续复用现有素材表，不复制素材 owner |
 | `channel_listener_snapshot_persistence.py` / `operations.py` / `telethon_content.py` | listener 已 append 幂等 SourceRevision 并拒绝发布时间冲突；采集仍只有 preview，删除与 Telegram edit identity 不完整 | 补精确正文、edit date、delete operation 与 successor 编排；preview 只作展示 |
