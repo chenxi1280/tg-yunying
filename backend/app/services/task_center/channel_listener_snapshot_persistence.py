@@ -2,12 +2,19 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import timedelta
+import hashlib
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from app.models import ChannelMessage, ListenerChannelSnapshotItem, ListenerSourceState, OperationTarget
+from app.models import (
+    ChannelMessage,
+    ChannelMessageSourceRevision,
+    ListenerChannelSnapshotItem,
+    ListenerSourceState,
+    OperationTarget,
+)
 FRESHNESS_MULTIPLIER = 2
 
 
@@ -33,7 +40,9 @@ def persist_channel_snapshot(
         ListenerChannelSnapshotItem.listener_source_state_id == state.id
     ))
     for snapshot in snapshots:
-        message = _upsert_channel_message(session, source, channel, snapshot=snapshot)
+        message = _upsert_channel_message(
+            session, source, channel, snapshot=snapshot, observed_at=now_value,
+        )
         if message is None:
             continue
         session.flush()
@@ -62,6 +71,7 @@ def _upsert_channel_message(
     channel: OperationTarget,
     *,
     snapshot: Any,
+    observed_at: Any,
 ) -> ChannelMessage | None:
     if int(snapshot.message_id or 0) <= 0:
         return None
@@ -78,11 +88,76 @@ def _upsert_channel_message(
             message_id=int(snapshot.message_id),
         )
         session.add(message)
+        session.flush()
+    if message.published_at and published_at and message.published_at != published_at:
+        raise RuntimeError("source_published_at_conflict")
+    revision = _append_source_revision(
+        session, source, message, snapshot=snapshot,
+        published_at=published_at, observed_at=observed_at,
+    )
     message.message_url = snapshot.message_url or message.message_url or _message_url(channel, snapshot.message_id)
     message.content_preview = snapshot.content_preview or message.content_preview
     message.comment_available = bool(snapshot.comment_available)
     message.published_at = published_at or message.published_at
+    if revision is not None:
+        message.current_source_revision_id = revision.id
     return message
+
+
+def _append_source_revision(
+    session: Session,
+    source: Any,
+    message: ChannelMessage,
+    *,
+    snapshot: Any,
+    published_at: Any,
+    observed_at: Any,
+) -> ChannelMessageSourceRevision | None:
+    if published_at is None:
+        return None
+    text = str(snapshot.content_preview or "")
+    content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    identity = _source_observation_hash(
+        source.tenant_id, message.channel_target_id,
+        int(snapshot.message_id), published_at, content_hash,
+    )
+    existing = session.scalar(select(ChannelMessageSourceRevision).where(
+        ChannelMessageSourceRevision.observation_identity_hash == identity,
+    ))
+    if existing is not None:
+        return existing
+    latest = session.scalar(select(func.max(ChannelMessageSourceRevision.source_revision)).where(
+        ChannelMessageSourceRevision.channel_message_id == message.id,
+    )) or 0
+    revision = ChannelMessageSourceRevision(
+        tenant_id=source.tenant_id,
+        channel_message_id=message.id,
+        source_revision=int(latest) + 1,
+        source_remote_message_id=int(snapshot.message_id),
+        source_published_at=published_at,
+        source_observed_at=_wall(observed_at),
+        source_text_snapshot=text,
+        source_content_hash=content_hash,
+        observation_identity_hash=identity,
+        source_operation="observed" if not latest else "edited",
+    )
+    session.add(revision)
+    session.flush()
+    return revision
+
+
+def _source_observation_hash(
+    tenant_id: int,
+    channel_target_id: int,
+    remote_message_id: int,
+    published_at: Any,
+    content_hash: str,
+) -> str:
+    identity = ":".join((
+        str(tenant_id), str(channel_target_id), str(remote_message_id),
+        _wall(published_at).isoformat(), content_hash,
+    ))
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
 
 def _message_url(channel: OperationTarget, message_id: int) -> str:

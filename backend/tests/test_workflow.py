@@ -2933,7 +2933,11 @@ def test_material_prd_api_surface_detail_versions_references_refresh_and_groups(
         patched_group = client.patch(
             f"/api/material-groups/{group_id}",
             headers=headers,
-            json={"name": f"活动素材更新{suffix}", "is_active": False},
+            json={
+                "expected_membership_revision": group.json()["membership_revision"],
+                "name": f"活动素材更新{suffix}",
+                "is_active": False,
+            },
         )
         assert patched_group.status_code == 200, patched_group.text
         assert patched_group.json()["name"].startswith("活动素材更新")

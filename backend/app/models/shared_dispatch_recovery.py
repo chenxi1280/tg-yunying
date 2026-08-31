@@ -150,6 +150,7 @@ class GatewayRequestEvidenceJournal(Base):
     evidence_hash: Mapped[str] = mapped_column(String(64))
     remote_message_id: Mapped[str] = mapped_column(String(160), default="")
     remote_fact_id: Mapped[str] = mapped_column(String(160), default="")
+    typed_remote_fact: Mapped[dict] = mapped_column(JSON, default=dict)
     failure_code: Mapped[str] = mapped_column(String(120), default="")
     remote_mutation_state: Mapped[str] = mapped_column(
         String(16), default="unknown",

@@ -589,7 +589,13 @@ def test_planner_batches_message_state_with_legacy_and_tenant_isolation(monkeypa
     fixed_profile(monkeypatch)
     with planner_session() as session:
         task = seed_comment_task(session, mode="comment", target_count=1)
+        task.fulfillment_contract_version = "fact_first_v3"
         existing_action_ids = _seed_batched_message_state(session, task)
+        for message in session.scalars(
+            select(ChannelMessage).where(ChannelMessage.id.in_([41, 42, 43, 44]))
+        ):
+            message.published_at = datetime(2030, 8, 1, 10, 0, 0)
+        session.commit()
         messages = list(
             session.scalars(
                 select(ChannelMessage).where(ChannelMessage.id.in_([41, 42, 43, 44])).order_by(ChannelMessage.id)
@@ -607,13 +613,30 @@ def test_planner_batches_message_state_with_legacy_and_tenant_isolation(monkeypa
         actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
         new_actions = [action for action in actions if action.id not in existing_action_ids]
 
-    assert state_select_count == 2
+    assert state_select_count == 1
     assert (states[41].reservation_count, states[41].next_slot_index, states[41].managed_collected_count) == (1, 1, 0)
     assert (states[42].reservation_count, states[42].next_slot_index, states[42].managed_collected_count) == (0, 6, 0)
-    assert (states[43].reservation_count, states[43].next_slot_index, states[43].managed_collected_count) == (0, 0, 1)
+    assert (states[43].reservation_count, states[43].next_slot_index, states[43].managed_collected_count) == (0, 0, 0)
     assert (states[44].reservation_count, states[44].next_slot_index, states[44].managed_collected_count) == (0, 0, 0)
-    assert created == 2
+    assert created == 3
     assert sorted(action.payload["slot_id"] for action in new_actions) == [
         "channel-comment:42:5",
+        "channel-comment:43:0",
         "channel-comment:44:0",
     ]
+
+
+def test_same_message_never_materializes_two_slots_for_one_account(monkeypatch):
+    forbid_planner_external_boundaries(monkeypatch)
+    fixed_profile(monkeypatch)
+    with planner_session() as session:
+        task = seed_comment_task(session, mode="comment", target_count=4)
+
+        created = channel_comment.build_plan(session, task)
+        account_ids = list(session.scalars(
+            select(Action.account_id).where(Action.task_id == task.id)
+        ))
+
+    assert created == 3
+    assert len(account_ids) == len(set(account_ids)) == 3
+    assert int((task.stats or {}).get("distinct_account_capacity_shortfall") or 0) == 1

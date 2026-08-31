@@ -44,6 +44,10 @@ def build_runtime_config(
     *,
     generation_slot_builder: GenerationSlotBuilder,
 ) -> dict:
+    from .ai_group_content_allocation import validate_content_intent_for_gateway
+
+    for action, payload in batch:
+        validate_content_intent_for_gateway(session, payload, action=action)
     config = dict(task.type_config or {})
     _bind_fact_first_provider(session, task, config)
     config = _bind_legacy_provider_failover(session, task, config)

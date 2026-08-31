@@ -101,6 +101,9 @@ export type Material = {
     rule_version_count: number;
     operation_plan_count: number;
     account_profile_batch_count: number;
+    material_group_count: number;
+    fallback_pool_count: number;
+    fallback_selection_count: number;
     total_count: number;
   };
 };
@@ -176,6 +179,28 @@ export type MaterialImportResult = {
   duplicate_count: number;
   oversize_count: number;
   items: MaterialImportItem[];
+};
+
+export type MaterialGroup = {
+  id: number;
+  tenant_id: number;
+  name: string;
+  group_type: string;
+  material_ids: number[];
+  membership_revision: number;
+  membership_state: 'ready' | 'review_required' | 'invalid';
+  membership_state_reason: string;
+  description: string;
+  is_active: boolean;
+  material_count: number;
+  ready_image_meme_count: number;
+  ready_image_meme_assets: Array<{
+    material_id: number;
+    asset_version_id: number;
+    asset_fingerprint: string;
+    tg_ref_version_id: number;
+  }>;
+  ready_image_meme_pool_hash: string;
 };
 
 export type ContentKeywordRule = {

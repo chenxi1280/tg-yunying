@@ -1,6 +1,8 @@
 # AI 活跃群话题、讨论老师与连发模拟设计
 
 > **2026-07-25 supersede：** `consecutive_message_*` 同账号连发与 burst 规划已被 `docs/03-feature-designs/ai-conversation-humanization-and-group-bot-admission-prd.md` **删除**。新实现不得再暴露连发配置、不得生成同账号 burst action；无真人打断时相邻平台消息必须换账号。下文连发段落仅保留为历史说明。`topic_directions` / `teacher_targets` / TG bot 轻量设置仍有效。
+>
+> **2026-08-31 任务话题占比 supersede：** `docs/03-feature-designs/ai-group-prompt-daily-rotation-and-rich-vocabulary-prd.md` 取代本文“每个 slot 都分配任务话题”的旧口径。`AiGroupContentAllocationPlan` 是唯一内容构成 owner；只有 `topic_mode=configured_topic` 的 assignment 才使用任务 `topic_directions`，并受显式 `0%～30%` 上限约束。`teacher_targets` 是独立维度，不进入该比例，但必须单独展示 teacher planned/remote ratio。词库每日主题与两者独立。
 
 ## 背景
 
@@ -14,7 +16,7 @@
 - Web 系统设置新增租户级 TG Bot 配置中心，支持 Bot Token、多个管理员 Chat ID、AI 活群 Bot 设置开关、测试发送和 webhook 配置状态。
 - Web 任务详情页提供 AI 活跃群专项设置；创建 / 编辑任务表单同步支持，并以多行文本作为话题方向和讨论老师主入口。
 - TG bot 作为轻量运营入口，支持管理员选择任务、查看设置摘要、查看话题 / 讨论老师摘要，并通过按钮用多行文本设置话题方向和讨论老师。
-- 执行器每轮把选中的话题方向和讨论老师写入 AI prompt、话题计划和 action payload。
+- `AiGroupContentAllocationPlan` 先冻结 relation/act type/stance，再为合法 assignment 分配 task topic mode 和独立 teacher target；immutable intent、Prompt、消息记忆和 Action payload 透传同一 snapshot。
 - ~~同账号连发模拟~~：已废止；见真人化专项轮换规则。
 
 ## 租户级 TG Bot 配置
@@ -60,9 +62,10 @@ Web 创建 / 编辑表单和 TG bot 配置会话不要求用户手写数组或 J
 
 ## 执行规则
 
-- 每轮先读取同目标群近期话题方向 / 讨论老师使用记录，再为本轮每个发言 slot 分配话题方向和讨论老师；分配时按近期使用量与本轮已使用量优先分散，使用量相同时按配置顺序衍生的 weight / priority 排序。
-- 若没有配置话题方向，slot 回退到群目标方向；若没有配置讨论老师，slot 的讨论老师为空。
-- AI 生成提示必须在固定 slot 中明确每条的“话题方向”和“讨论老师”，但不得在群聊内容中暴露系统、任务或 AI。
+- 每轮先读取同目标群近期话题方向 / 讨论老师使用记录。只有已取得任务话题计划资格和 remote capacity reservation 的 assignment 才冻结 `topic_mode=configured_topic` 并按近期使用量、weight 分配 `topic_directions`；其余 assignment 为 `human_context/group_free_chat`，不得隐式塞入任务话题。
+- 未配置 `topic_directions` 时，群目标方向只可作为 `group_free_chat` 的运营背景，不能标为 `configured_topic` 或计入任务话题分子。
+- teacher target 由同一 allocation plan 在 relation/act type/真人上下文兼容后独立分配；不受任务话题 30% 限制，不要求每个 slot 必有 teacher。没有配置或不兼容时为空。
+- AI 生成提示必须透传固定 assignment 的 topic mode、话题和老师；词库每日主题只能改兼容表面表达，不能改写这些字段，也不得在群聊内容中暴露系统、任务或 AI。
 - ~~连发 burst_id / burst_index~~：已废止。Planner 必须按会话真实顺序换号；无替代账号时 `speaker_rotation_wait`。
 
 ## Web 交互
@@ -85,8 +88,8 @@ Bot 内使用 inline keyboard，但只保留轻量运营能力：
 3. “AI 活群任务”列出最近 20 个未删除的 AI 活群任务。
 4. 选择任务后显示当前话题数、讨论老师数、连发状态、全账号日覆盖状态和 Bot 可设置范围。
 5. “查看话题摘要”只展示前若干条话题方向和讨论老师，便于在移动端快速核对。
-6. “设置话题方向”进入一次性多行输入会话，用户发送每行一个话题后立即保存为 `topic_directions`。
-7. “设置讨论老师”进入一次性多行输入会话，用户发送每行一个对象后立即保存为 `teacher_targets`。
+6. “设置话题方向”进入一次性多行输入会话，用户发送每行一个话题后立即保存为 `topic_directions`；成功回复说明只影响尚未冻结的新 intent，今日任务话题占比上限不变。
+7. “设置讨论老师”进入一次性多行输入会话，用户发送每行一个对象后立即保存为 `teacher_targets`；成功回复说明老师讨论独立于任务话题占比。
 8. “打开 Web 编辑”跳转到 Web 任务中心；若服务端没有配置公网地址，必须回复“请到 Web 任务中心编辑该任务”。
 9. 旧按钮或旧命令 `/ai_group_set <json>` 不得作为主入口；复杂字段写入必须返回可见说明：TG bot 仅支持查看摘要，以及配置话题方向和讨论老师，其它完整配置请到 Web 任务详情编辑。
 
@@ -114,11 +117,12 @@ TG bot 入站轻量配置：
 
 - 创建和更新任务可保存新字段；非法空标题、非法权重、连发窗口越界必须失败。
 - 旧任务只有 `topic_hint` 时，迁移后必须在 `topic_directions` 中看到同名话题，且 `topic_hint` 被移除。
-- 开启连发且轮次足够时，同一账号生成 2-4 条连续 action，带完整 burst 元数据。
+- 新实现不得创建 `consecutive_message_*` 或 burst Action；无真人打断时相邻平台消息必须换账号。
 - Web 可配置 Bot Token、多个管理员 Chat ID、AI 活群 Bot 设置开关，并可向全部管理员测试发送。
 - 保存 Bot Token 和管理员 Chat ID 后必须自动注册 webhook，并能查询 Telegram 当前 webhook URL；注册失败或 URL 不匹配时页面显示不可用，测试发送成功不能覆盖该失败。
 - TG bot webhook 不依赖 update 体内业务 `tenant_id`，secret 错误、Chat ID 不在管理员列表、未启用 AI 活群 Bot 设置时必须拒绝。
 - `/start`、`/admin`、`/ai_group` 对授权管理员必须有可见回复；AI 活群设置未启用时回复状态说明，不允许静默无响应。
 - TG bot 提供按钮式任务选择、设置摘要、话题摘要、话题方向配置、讨论老师配置和 Web 编辑入口；不提供复杂字段分步编辑、确认保存或 JSON 设置主入口。
 - Web 详情页修改任务后，TG bot 再次查看同一任务时读取到一致摘要。
+- rate=30% 时任意 allocation-plan/task-day/remote-boundary 比例不超过 30%；teacher ratio 单独投影且不进入任务话题分子分母。
 - QA 通过不等于生产恢复；本需求无需生产验证。

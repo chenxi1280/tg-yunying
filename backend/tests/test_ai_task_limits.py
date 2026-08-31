@@ -237,6 +237,7 @@ def test_group_ai_config_update_preserves_unspecified_round_size() -> None:
             GroupAIChatTaskConfigUpdate(
                 target_group_id=7,
                 target_operation_target_id=7,
+                topic_participation_rate=0.30,
                 membership_max_concurrent=50,
             ),
             "tester",
@@ -305,7 +306,7 @@ def _add_comment_task(session: Session) -> Task:
 
 
 def test_group_ai_schema_allows_large_round_plan():
-    payload = GroupAIChatTaskCreate(name="大轮次计划", target_group_id=7, messages_per_round_mode="manual", messages_per_round=30)
+    payload = GroupAIChatTaskCreate(name="大轮次计划", target_group_id=7, topic_participation_rate=0.30, messages_per_round_mode="manual", messages_per_round=30)
 
     assert payload.messages_per_round == 30
 
@@ -314,6 +315,7 @@ def test_reply_minimum_schema_fields_are_explicit_and_bounded():
     group_payload = GroupAIChatTaskCreate(
         name="引用回复活群",
         target_group_id=7,
+        topic_participation_rate=0.30,
         messages_per_round_mode="manual",
         messages_per_round=3,
         reply_min_per_round=2,
@@ -664,7 +666,7 @@ def test_reply_payload_config_error_is_visible_in_task_stats():
 
 
 def test_group_ai_schema_exposes_membership_strategy_defaults():
-    payload = GroupAIChatTaskCreate(name="准入策略", target_group_id=7)
+    payload = GroupAIChatTaskCreate(name="准入策略", target_group_id=7, topic_participation_rate=0.30)
 
     assert payload.auto_join_target is True
     assert payload.group_bot_admission_required is True

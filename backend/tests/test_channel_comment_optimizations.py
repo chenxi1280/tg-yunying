@@ -5,40 +5,59 @@ from unittest.mock import MagicMock
 
 import pytest
 
-pytestmark = pytest.mark.no_postgres
-
-from app.models import Action, ChannelMessage, CommentFulfillmentObligation, Task, TgAccount
+from app.models import Action, ChannelMessage, Task
 from app.services.task_center.ai_generator import (
     _looks_like_bad_channel_comment,
     clean_channel_comment_contents,
 )
 from app.services.task_center.ai_limits import recommend_ai_limits
-from app.services.task_center.comment_fulfillment import clean_expired_comment_obligations
 from app.services.task_center.config_normalization import validated_type_config
 from app.services.task_center.executors.channel_comment_budget import (
-    _current_day_comment_action_count,
     _message_comment_deficit,
-    _remaining_current_day_budget,
     MessageCommentPlanState,
 )
-from app.services.task_center.executors.channel_comment_preparation import _prepared_slot
 from app.services.task_center.executors.channel_comment_targets import _target_from_action
-from app.services.task_center.pacing_progress import source_rolling_pacing_due
 from app.services.task_center.pacing_quantity import deterministic_quantity_with_jitter
 from app.services.task_center.source_pacing import rolling_source_window
+
+
+pytestmark = pytest.mark.no_postgres
 
 
 def test_channel_comment_defaults_and_normalization():
     config = validated_type_config("channel_comment", {"target_channel_id": 123})
     assert config["comment_count_jitter"] == 0.05
-    # Default remains 1 day to respect existing baseline contract
-    assert config["rolling_window_days"] == 1
+    assert config["rolling_window_days"] == 3
     assert config["daily_comment_cap"] == 0
     assert config["comment_mode"] == "mixed"
 
     # Explicit 3-day window configuration is preserved
     custom_config = validated_type_config("channel_comment", {"target_channel_id": 123, "rolling_window_days": 3})
     assert custom_config["rolling_window_days"] == 3
+
+
+def test_grounding_contract_requires_three_days_and_positive_daily_cap():
+    base = {
+        "target_channel_id": 123,
+        "channel_comment_grounding_v1_enabled": True,
+        "ai_two_stage_enabled": True,
+        "ai_model": "generator-model",
+        "ai_semantic_reviewer_model": "reviewer-model",
+        "ai_content_route_v2_enabled": True,
+        "ai_content_policy_version_id": "policy-v1",
+        "ai_content_allowed_routes": ["general"],
+        "unicode_emoji_enabled": True,
+        "image_meme_enabled": False,
+        "unicode_emoji_weight_bps": 10000,
+        "image_meme_weight_bps": 0,
+    }
+    with pytest.raises(ValueError, match="channel_comment_daily_cap_required"):
+        validated_type_config("channel_comment", base)
+    with pytest.raises(ValueError, match="channel_comment_rolling_window_must_be_3_days"):
+        validated_type_config(
+            "channel_comment",
+            {**base, "daily_comment_cap": 100, "rolling_window_days": 1},
+        )
 
 
 def test_channel_comment_coverage_recommendation_scales_for_large_pools():
@@ -73,9 +92,9 @@ def test_rolling_source_window_uses_configured_days():
     task.created_at = datetime(2026, 8, 20, 10, 0, 0)
 
     observed_at = datetime(2026, 8, 25, 12, 0, 0)
-    # Default 1 day
+    # Channel comments use the three-day product contract by default.
     start, end = rolling_source_window(task, observed_at)
-    assert end == observed_at + timedelta(days=1)
+    assert end == observed_at + timedelta(days=3)
 
     # Configured 3 days
     task.type_config = {"rolling_window_days": 3}
@@ -108,7 +127,8 @@ def test_expired_window_returns_zero_deficit():
     task.created_at = datetime(2026, 8, 20, 10, 0, 0)
 
     message = MagicMock(spec=ChannelMessage)
-    message.created_at = datetime(2026, 8, 20, 12, 0, 0)
+    message.created_at = datetime(2026, 8, 24, 12, 0, 0)
+    message.published_at = datetime(2026, 8, 20, 12, 0, 0)
 
     # Now is 4 days later (expired window > 3 days)
     now = datetime(2026, 8, 25, 0, 0, 0)
@@ -122,6 +142,34 @@ def test_expired_window_returns_zero_deficit():
         now=now,
     )
     assert deficit == 0
+
+
+def test_current_contract_without_published_at_does_not_plan_from_observed_time():
+    task = MagicMock(spec=Task)
+    task.id = "comment-source-fact"
+    task.type = "channel_comment"
+    task.fulfillment_contract_version = "fact_first_v3"
+    task.pacing_config = {}
+    task.type_config = {"rolling_window_days": 3}
+    task.stats = {}
+    task.scheduled_start = None
+    task.created_at = datetime(2026, 8, 20, 10, 0, 0)
+    task.config_revision = 1
+    message = MagicMock(spec=ChannelMessage)
+    message.id = 41
+    message.created_at = datetime(2026, 8, 24, 12, 0, 0)
+    message.published_at = None
+
+    deficit = _message_comment_deficit(
+        {"target_comments_per_message": 10, "rolling_window_days": 3},
+        MessageCommentPlanState(0, 0, 0),
+        task=task,
+        message=message,
+        now=datetime(2026, 8, 25, 0, 0, 0),
+    )
+
+    assert deficit == 0
+    assert task.last_error == "source_published_at_unproven"
 
 
 def test_anti_bot_comment_filters():

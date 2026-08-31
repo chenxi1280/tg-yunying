@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from app.models import Action, ChannelMessage, ChannelMessageComment, OperationTarget, RuleSetVersion, TgGroup
+from app.models import Action, ChannelCommentGroundingAssignment, ChannelMessage, ChannelMessageComment, OperationTarget, RuleSetVersion, TgGroup
 from app.services.content_filters import filter_outbound_content
 from app.services.rule_engine import apply_output_policy
 
@@ -41,6 +42,9 @@ def evaluate_comment_generation_quality(
 ) -> CommentQualityDecision:
     if not _lock_channel_message(session, action, payload):
         return _unavailable_comment_decision()
+    grounding_error = _grounding_binding_error(session, action, payload)
+    if grounding_error is not None:
+        return grounding_error
     version, error = _fixed_rule_version(session, action, payload)
     if error:
         return error
@@ -79,6 +83,37 @@ def evaluate_comment_generation_quality(
         payload=payload,
         content=str(cleaned[0]),
         audit=audit,
+    )
+
+
+def _grounding_binding_error(
+    session: Session,
+    action: Action,
+    payload: PostCommentPayload,
+) -> CommentQualityDecision | None:
+    if not payload.source_revision_id:
+        return None
+    assignment = session.get(
+        ChannelCommentGroundingAssignment,
+        payload.grounding_assignment_id,
+    ) if payload.grounding_assignment_id else None
+    evidence_hash = hashlib.sha256(payload.message_content.encode("utf-8")).hexdigest()
+    valid = bool(
+        assignment
+        and assignment.tenant_id == action.tenant_id
+        and assignment.source_revision_id == payload.source_revision_id
+        and assignment.target_ordinal == payload.target_ordinal
+        and assignment.evidence_hash == payload.grounding_evidence_hash == evidence_hash
+        and assignment.assignment_state == "active"
+    )
+    if valid:
+        return None
+    return CommentQualityDecision(
+        False,
+        "",
+        "grounding_assignment_invalid",
+        "评论内容依据与冻结的来源修订或槽位分配不一致",
+        {"grounding_assignment_id": payload.grounding_assignment_id},
     )
 
 

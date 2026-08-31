@@ -165,7 +165,9 @@ adult_visual/adult_product 若真实样本不足，不允许用合成样本凑 R
 
 - 独立 comment 真实样本与 reply authority QA；
 - 复用公共 policy/Provider/eval，不复用群聊 route 结论冒充通过；
-- 完成独立 120+ 分层评测；一个频道任务 canary 同样满足时间+typed fact+人工抽检的预注册数量后再扩容。
+- 完成独立 120+ 分层生成评测，并按 `ai-channel-comment-broadcast-and-teacher-relevance-prd.md` 另完成 200 条来源 extraction/grounding 金标；两者不得互相替代；
+- 仅一个显式频道评论 Task 同时启用 grounding/route-v2/two-stage，canary 至少连续 3 天、100 条 typed remote comment facts、30 条预注册盲审、3 个内容簇和 10 个 distinct 账号；
+- 频道评论允许专项 `👍 / 🙂 / 👏` 同槽单表情兜底，但兜底只计 quantity，不进入 grounded/老师/亮点分子；quantity/content mix/grounding 三维均达标后才扩容。
 
 ### Phase E：扩容
 

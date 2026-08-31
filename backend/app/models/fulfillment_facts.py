@@ -57,6 +57,19 @@ class CommentFulfillmentObligation(Base):
         ForeignKey("content_mix_contracts.id"),
         nullable=True,
     )
+    plan_contract_id: Mapped[str | None] = mapped_column(
+        ForeignKey("channel_comment_plan_contracts.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    account_id: Mapped[int | None] = mapped_column(
+        ForeignKey("tg_accounts.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    grounding_assignment_id: Mapped[str | None] = mapped_column(
+        ForeignKey("channel_comment_grounding_assignments.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    fallback_intent_kind: Mapped[str] = mapped_column(String(24), default="emergency")
     relation_kind: Mapped[str] = mapped_column(String(16), default="direct")
     reply_to_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     reply_target_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)

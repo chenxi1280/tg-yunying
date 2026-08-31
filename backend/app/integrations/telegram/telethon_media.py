@@ -15,6 +15,7 @@ async def send_media_segment(
     segment: OutboundSegment,
     *,
     reply_to_message_id: int | None = None,
+    comment_to_message_id: int | None = None,
     before_send: Callable[[], None] | None = None,
 ) -> Any:
     source = segment.source or segment.content
@@ -30,13 +31,17 @@ async def send_media_segment(
             alt,
             segment.caption or segment.content or "",
             reply_to_message_id=reply_to_message_id,
+            comment_to_message_id=comment_to_message_id,
             before_send=before_send,
         )
     caption = segment.caption or segment.content or None
     cache_ref = _parse_tg_cache_source(source)
     if not cache_ref:
         _notify_before_send(before_send)
-        return await client.send_file(target, source, caption=caption, reply_to=reply_to_message_id)
+        return await client.send_file(
+            target, source, caption=caption,
+            **_reply_kwargs(reply_to_message_id, comment_to_message_id),
+        )
     cache_peer, message_id = cache_ref
     cache_target = await resolve_telethon_target(client, cache_peer, group_id=0)
     cached_message = await client.get_messages(cache_target, ids=message_id)
@@ -47,7 +52,10 @@ async def send_media_segment(
         if not downloaded:
             raise ValueError("TG 缓存媒体下载失败")
         _notify_before_send(before_send)
-        return await client.send_file(target, downloaded, caption=caption, reply_to=reply_to_message_id)
+        return await client.send_file(
+            target, downloaded, caption=caption,
+            **_reply_kwargs(reply_to_message_id, comment_to_message_id),
+        )
 
 
 def _notify_before_send(callback: Callable[[], None] | None) -> None:
@@ -83,6 +91,7 @@ async def _send_custom_emoji_segment(
     caption: str,
     *,
     reply_to_message_id: int | None = None,
+    comment_to_message_id: int | None = None,
     before_send: Callable[[], None] | None = None,
 ) -> Any:
     from telethon import types
@@ -96,9 +105,27 @@ async def _send_custom_emoji_segment(
     )
     _notify_before_send(before_send)
     try:
-        return await client.send_message(target, text, formatting_entities=[entity], reply_to=reply_to_message_id)
+        return await client.send_message(
+            target, text, formatting_entities=[entity],
+            **_reply_kwargs(reply_to_message_id, comment_to_message_id),
+        )
     except TypeError:
-        return await client.send_message(target, text, entities=[entity], reply_to=reply_to_message_id)
+        return await client.send_message(
+            target, text, entities=[entity],
+            **_reply_kwargs(reply_to_message_id, comment_to_message_id),
+        )
+
+
+def _reply_kwargs(
+    reply_to_message_id: int | None,
+    comment_to_message_id: int | None,
+) -> dict[str, int]:
+    result: dict[str, int] = {}
+    if comment_to_message_id:
+        result["comment_to"] = comment_to_message_id
+    if reply_to_message_id:
+        result["reply_to"] = reply_to_message_id
+    return result
 
 
 def _telegram_entity_length(text: str) -> int:

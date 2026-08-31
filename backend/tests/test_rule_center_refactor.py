@@ -1023,6 +1023,7 @@ def test_cache_config_rejects_cache_account_from_another_tenant():
     assert error == "缓存执行账号不存在或不属于当前租户"
 
 
+@pytest.mark.no_postgres
 def test_zip_material_import_persists_result_and_skips_invalid_entries():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -1067,6 +1068,7 @@ def test_zip_material_import_persists_result_and_skips_invalid_entries():
     assert materials[0].source_kind == "upload"
 
 
+@pytest.mark.no_postgres
 def test_zip_material_import_rejects_oversize_entry_before_reading(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -1274,6 +1276,7 @@ def test_telethon_probe_preserves_required_channel_reference(monkeypatch):
     assert "@RequiredChannel" in result.detail
 
 
+@pytest.mark.no_postgres
 def test_zip_avatar_pack_import_maps_to_image_materials():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -1490,6 +1493,7 @@ def test_material_update_content_change_clears_cache_refs():
     assert updated.tg_ref_version_id == 4
 
 
+@pytest.mark.no_postgres
 def test_material_center_reference_summary_disable_and_restore():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -1572,6 +1576,7 @@ def test_material_center_reference_summary_disable_and_restore():
     assert restored.reference_summary.total_count == 5
 
 
+@pytest.mark.no_postgres
 def test_material_list_uses_batch_reference_summary(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

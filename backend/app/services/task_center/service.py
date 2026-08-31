@@ -7,6 +7,7 @@ import logging
 import re
 from typing import Any
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import and_, delete, func, or_, select, tuple_, update
 from sqlalchemy.exc import SQLAlchemyError
@@ -14,9 +15,43 @@ from sqlalchemy.orm import Session, object_session
 
 from app.config import get_settings
 from app.integrations.telegram import OperationResult
-from app.models import AccountPool, AccountStatus, Action, AiCoverageVariationIntent, ChannelMessage, ExecutionAttempt, FailureType, MessageFingerprint, OperationIssue, OperationPlanTaskLink, OperationTarget, ReviewQueue, RuleSet, RuleSetVersion, SearchClickOpportunityAssignment, SearchJoinPacingDecision, Task, TaskAccountDailyCoverage, TaskDayLedger, TaskMembershipAdmissionItem, TaskPlannerWakeState, TaskRuntimeSummary, TgAccount, TgGroup, WorkerHeartbeat
-from app.models.shared_dispatch_recovery import AiContentScopeTakeoverItem, GatewayRequestEvidenceJournal
-from app.models.search_rank_deboost import AccountGroupProxyBinding, SearchRankDeboostClickReservation, SearchRankDeboostExemptGroup
+from app.models import (
+    AccountPool,
+    AccountStatus,
+    Action,
+    AiCoverageVariationIntent,
+    AiGroupContentAllocationPlan,
+    ChannelMessage,
+    ExecutionAttempt,
+    FailureType,
+    MessageFingerprint,
+    OperationIssue,
+    OperationPlanTaskLink,
+    OperationTarget,
+    ReviewQueue,
+    RuleSet,
+    RuleSetVersion,
+    SearchClickOpportunityAssignment,
+    SearchJoinPacingDecision,
+    Task,
+    TaskAccountDailyCoverage,
+    TaskDayLedger,
+    TaskMembershipAdmissionItem,
+    TaskPlannerWakeState,
+    TaskRuntimeSummary,
+    TgAccount,
+    TgGroup,
+    WorkerHeartbeat,
+)
+from app.models.shared_dispatch_recovery import (
+    AiContentScopeTakeoverItem,
+    GatewayRequestEvidenceJournal,
+)
+from app.models.search_rank_deboost import (
+    AccountGroupProxyBinding,
+    SearchRankDeboostClickReservation,
+    SearchRankDeboostExemptGroup,
+)
 from app.search_keywords import normalized_keyword_hash, repair_legacy_keyword_materials
 from app.schemas.task_center import (
     AccountConfig,
@@ -69,10 +104,18 @@ from .account_pacing_guard import (
     AccountPacingLockUnavailable,
     release_safe_task_account_pacing_reservations,
 )
-from .account_scope import initialize_all_account_task_scope, process_account_eligibility_events, reconcile_all_account_scopes_if_due
+from .account_scope import (
+    initialize_all_account_task_scope,
+    process_account_eligibility_events,
+    reconcile_all_account_scopes_if_due,
+)
 from .ai_act_types import canonical_ai_group_act_type
 from .ai_runtime_diagnostics import ai_runtime_diagnostics
-from .ai_generator import AiGenerationUnavailable, generate_channel_comments, generate_group_messages
+from .ai_generator import (
+    AiGenerationUnavailable,
+    generate_channel_comments,
+    generate_group_messages,
+)
 from .task_ai_content_activation import activate_task_ai_content_config
 from .task_pause_cleanup import (
     cancel_open_generation_jobs,
@@ -103,7 +146,12 @@ from .dispatcher import (
 from .daily_coverage import recover_terminal_coverage_reservations
 from .daily_coverage_planning import MAX_DAILY_COVERAGE_PLAN_BATCH
 from .daily_fulfillment import record_daily_fulfillment_decision
-from .executors import build_task_plan, channel_comment, prepare_open_actions_for_planning, requires_planning_with_open_actions
+from .executors import (
+    build_task_plan,
+    channel_comment,
+    prepare_open_actions_for_planning,
+    requires_planning_with_open_actions,
+)
 from .fulfillment_takeover import (
     FULFILLMENT_CONTRACT_VERSION,
     FULFILLMENT_TASK_TYPES,
@@ -115,7 +163,12 @@ from .fulfillment_activation import CURRENT_CONTRACT_VERSION
 from .fulfillment_takeover_actions import (
     retire_unbound_legacy_actions_for_planner,
 )
-from .search_rank_deboost_pacing import DeboostPacingStats, account_click_allowed, deboost_pacing_window, lock_rank_deboost_quota_scope
+from .search_rank_deboost_pacing import (
+    DeboostPacingStats,
+    account_click_allowed,
+    deboost_pacing_window,
+    lock_rank_deboost_quota_scope,
+)
 from .search_rank_deboost_reservations import (
     mark_reserved_reservation_unknown,
     reopen_released_reservation,
@@ -136,7 +189,9 @@ from .search_join_daily_capacity import (
     configured_account_source_capacity,
     strict_daily_capacity,
 )
-from .rank_deboost_runtime_authorization import resolve_rank_deboost_runtime_authorization
+from .rank_deboost_runtime_authorization import (
+    resolve_rank_deboost_runtime_authorization,
+)
 from .details import (
     _accounts_by_id,
     _ai_account_profiles,
@@ -179,7 +234,12 @@ from .membership_admission import (
 from .review import expire_reviews
 from .reviews import ReviewStateError, approve_review, list_reviews, reject_review
 from .precheck import run_precheck_task_creation
-from .profile_batch_projection import delete_profile_batch_task, get_profile_batch_task_detail, is_profile_batch_task_id, list_profile_batch_tasks
+from .profile_batch_projection import (
+    delete_profile_batch_task,
+    get_profile_batch_task_detail,
+    is_profile_batch_task_id,
+    list_profile_batch_tasks,
+)
 from app.services.task_runtime_stage import derive_task_runtime_stage
 from .metrics_runtime import drain_task_metrics
 from .planner_backlog import planner_global_pending
@@ -196,12 +256,26 @@ from .recovery_claims import (
     recovery_claim_owned,
     release_recovery_claim,
 )
-from .stats import clear_planner_backlog_stats, empty_stats, next_run_after_task, planner_backlog_snapshot, refresh_task_stats, retry_failed_actions
+from .stats import (
+    clear_planner_backlog_stats,
+    empty_stats,
+    next_run_after_task,
+    planner_backlog_snapshot,
+    refresh_task_stats,
+    retry_failed_actions,
+)
 from .utils import as_int as _as_int, as_int_list as _as_int_list
-from .runtime_retention import cleanup_runtime_details_if_due, cleanup_runtime_metric_snapshots_if_due
+from .runtime_retention import (
+    cleanup_runtime_details_if_due,
+    cleanup_runtime_metric_snapshots_if_due,
+)
 from .runtime_retention_policy import configured_runtime_action_retention_policy
 from app.services.tenant_target_profile import tenant_learning_profile_preview
-from app.services.source_media import WAITING_MATERIAL_CACHE, expire_waiting_source_media_actions, wake_waiting_actions_for_source_media
+from app.services.source_media import (
+    WAITING_MATERIAL_CACHE,
+    expire_waiting_source_media_actions,
+    wake_waiting_actions_for_source_media,
+)
 from app.services.account_online_projection import task_account_online_summary
 from app.services.runtime_summary import clear_task_runtime_artifacts
 
@@ -214,12 +288,14 @@ PLANNER_RUNTIME_ERROR_RETRY_SECONDS = 30
 # 退避到 1 小时；目标单调上调迁移（pacing_persistence）或次日新账本可自然解除。
 PLANNER_PACING_CONFLICT_RETRY_SECONDS = 3600
 FACT_FIRST_PLANNER_POLL_SECONDS = 2
-HUMAN_PACED_FACT_FIRST_TASK_TYPES = frozenset({
-    "channel_comment",
-    "channel_like",
-    "channel_view",
-    "group_ai_chat",
-})
+HUMAN_PACED_FACT_FIRST_TASK_TYPES = frozenset(
+    {
+        "channel_comment",
+        "channel_like",
+        "channel_view",
+        "group_ai_chat",
+    }
+)
 OPEN_ACTION_PLANNER_RECHECK_SECONDS = 30
 PLANNER_GLOBAL_PENDING_SESSION_KEY = "planner_global_pending"
 CHANNEL_COMMENT_SCENE = "channel_comment"
@@ -249,7 +325,15 @@ COMMENT_UNAVAILABLE_MARKERS = (
     "msgidinvalid",
     "discussion",
 )
-ACCOUNT_AUTH_MARKERS = ("session", "auth key", "auth_key", "unauthorized", "重新登录", "账号没有可用 session", "session 已失效")
+ACCOUNT_AUTH_MARKERS = (
+    "session",
+    "auth key",
+    "auth_key",
+    "unauthorized",
+    "重新登录",
+    "账号没有可用 session",
+    "session 已失效",
+)
 RATE_LIMIT_MARKERS = ("floodwait", "too many requests", "slowmode", "慢速模式", "冷却")
 DEFAULT_RECOVERY_BATCH_LIMIT = 100
 UNKNOWN_MEMBERSHIP_REPROBE_PER_DRAIN_LIMIT = 10
@@ -279,7 +363,10 @@ from .search_rank_deboost import (
     validate_rank_deboost_preconditions,
     validate_rank_deboost_protocol_samples,
 )
-from .search_click_target_progress import reconcile_search_click_target_progress, search_click_target_progress
+from .search_click_target_progress import (
+    reconcile_search_click_target_progress,
+    search_click_target_progress,
+)
 from .search_click_assignment_release import release_search_click_assignment
 from .search_click_controls import (
     DAILY_TARGET_ACTION_SKIP_PROBABILITY,
@@ -304,7 +391,13 @@ from .config_normalization import (
     validate_rule_binding,
     validated_type_config,
 )
-from .continuity_config import increment_revision_for_continuity_change
+from .continuity_config import (
+    AI_GROUP_CONTENT_POLICY_FIELDS,
+    CONTENT_POLICY_META_FIELD,
+    increment_revision_for_content_policy_change,
+    increment_revision_for_continuity_change,
+    is_content_policy_only_change,
+)
 from .creation_operations import StartExecutionResult
 from .search_click_revisions import (
     pending_search_click_revision,
@@ -312,31 +405,50 @@ from .search_click_revisions import (
 )
 
 
-def create_group_ai_chat_task(session: Session, tenant_id: int, payload: GroupAIChatTaskCreate, actor: str) -> Task:
+def create_group_ai_chat_task(
+    session: Session, tenant_id: int, payload: GroupAIChatTaskCreate, actor: str
+) -> Task:
     return _create_task(session, tenant_id, "group_ai_chat", payload, actor)
 
 
-def create_group_relay_task(session: Session, tenant_id: int, payload: GroupRelayTaskCreate, actor: str) -> Task:
+def create_group_relay_task(
+    session: Session, tenant_id: int, payload: GroupRelayTaskCreate, actor: str
+) -> Task:
     return _create_task(session, tenant_id, "group_relay", payload, actor)
 
 
-def create_group_membership_admission_task(session: Session, tenant_id: int, payload: GroupMembershipAdmissionTaskCreate, actor: str) -> Task:
-    return _create_task(session, tenant_id, "group_membership_admission", payload, actor)
+def create_group_membership_admission_task(
+    session: Session,
+    tenant_id: int,
+    payload: GroupMembershipAdmissionTaskCreate,
+    actor: str,
+) -> Task:
+    return _create_task(
+        session, tenant_id, "group_membership_admission", payload, actor
+    )
 
 
-def create_channel_view_task(session: Session, tenant_id: int, payload: ChannelViewTaskCreate, actor: str) -> Task:
+def create_channel_view_task(
+    session: Session, tenant_id: int, payload: ChannelViewTaskCreate, actor: str
+) -> Task:
     return _create_task(session, tenant_id, "channel_view", payload, actor)
 
 
-def create_channel_like_task(session: Session, tenant_id: int, payload: ChannelLikeTaskCreate, actor: str) -> Task:
+def create_channel_like_task(
+    session: Session, tenant_id: int, payload: ChannelLikeTaskCreate, actor: str
+) -> Task:
     return _create_task(session, tenant_id, "channel_like", payload, actor)
 
 
-def create_channel_comment_task(session: Session, tenant_id: int, payload: ChannelCommentTaskCreate, actor: str) -> Task:
+def create_channel_comment_task(
+    session: Session, tenant_id: int, payload: ChannelCommentTaskCreate, actor: str
+) -> Task:
     return _create_task(session, tenant_id, "channel_comment", payload, actor)
 
 
-def create_search_join_group_task(session: Session, tenant_id: int, payload: SearchJoinGroupTaskCreate, actor: str) -> Task:
+def create_search_join_group_task(
+    session: Session, tenant_id: int, payload: SearchJoinGroupTaskCreate, actor: str
+) -> Task:
     return _create_task(session, tenant_id, "search_join_group", payload, actor)
 
 
@@ -364,32 +476,53 @@ def create_simple_search_join_group_task(
     )
 
 
-def create_and_start_group_ai_chat_task(session: Session, tenant_id: int, payload: GroupAIChatTaskCreate, actor: str) -> Task:
+def create_and_start_group_ai_chat_task(
+    session: Session, tenant_id: int, payload: GroupAIChatTaskCreate, actor: str
+) -> Task:
     return _create_and_start_task(session, tenant_id, "group_ai_chat", payload, actor)
 
 
-def create_and_start_group_relay_task(session: Session, tenant_id: int, payload: GroupRelayTaskCreate, actor: str) -> Task:
+def create_and_start_group_relay_task(
+    session: Session, tenant_id: int, payload: GroupRelayTaskCreate, actor: str
+) -> Task:
     return _create_and_start_task(session, tenant_id, "group_relay", payload, actor)
 
 
-def create_and_start_group_membership_admission_task(session: Session, tenant_id: int, payload: GroupMembershipAdmissionTaskCreate, actor: str) -> Task:
-    return _create_and_start_task(session, tenant_id, "group_membership_admission", payload, actor)
+def create_and_start_group_membership_admission_task(
+    session: Session,
+    tenant_id: int,
+    payload: GroupMembershipAdmissionTaskCreate,
+    actor: str,
+) -> Task:
+    return _create_and_start_task(
+        session, tenant_id, "group_membership_admission", payload, actor
+    )
 
 
-def create_and_start_channel_view_task(session: Session, tenant_id: int, payload: ChannelViewTaskCreate, actor: str) -> Task:
+def create_and_start_channel_view_task(
+    session: Session, tenant_id: int, payload: ChannelViewTaskCreate, actor: str
+) -> Task:
     return _create_and_start_task(session, tenant_id, "channel_view", payload, actor)
 
 
-def create_and_start_channel_like_task(session: Session, tenant_id: int, payload: ChannelLikeTaskCreate, actor: str) -> Task:
+def create_and_start_channel_like_task(
+    session: Session, tenant_id: int, payload: ChannelLikeTaskCreate, actor: str
+) -> Task:
     return _create_and_start_task(session, tenant_id, "channel_like", payload, actor)
 
 
-def create_and_start_channel_comment_task(session: Session, tenant_id: int, payload: ChannelCommentTaskCreate, actor: str) -> Task:
+def create_and_start_channel_comment_task(
+    session: Session, tenant_id: int, payload: ChannelCommentTaskCreate, actor: str
+) -> Task:
     return _create_and_start_task(session, tenant_id, "channel_comment", payload, actor)
 
 
-def create_and_start_search_join_group_task(session: Session, tenant_id: int, payload: SearchJoinGroupTaskCreate, actor: str) -> Task:
-    return _create_and_start_task(session, tenant_id, "search_join_group", payload, actor)
+def create_and_start_search_join_group_task(
+    session: Session, tenant_id: int, payload: SearchJoinGroupTaskCreate, actor: str
+) -> Task:
+    return _create_and_start_task(
+        session, tenant_id, "search_join_group", payload, actor
+    )
 
 
 def create_and_start_search_click_task(
@@ -423,12 +556,25 @@ def _new_task(session: Session, tenant_id: int, task_type: str, payload) -> Task
         if task_type == "group_ai_chat"
         else []
     )
-    raw_type_config = payload.model_dump(mode="json", exclude=COMMON_CREATE_FIELDS, exclude_unset=True)
-    raw_type_config = normalize_operation_target_references(session, tenant_id, task_type, raw_type_config)
-    raw_type_config = apply_default_slang_config(session, tenant_id, task_type, raw_type_config)
-    raw_type_config = apply_default_rule_binding(session, tenant_id, task_type=task_type, config=raw_type_config)
-    raw_type_config = apply_group_ai_account_coverage_defaults(task_type, raw_type_config, payload.account_config.model_dump(mode="json"))
+    raw_type_config = payload.model_dump(
+        mode="json", exclude=COMMON_CREATE_FIELDS, exclude_unset=True
+    )
+    raw_type_config = normalize_operation_target_references(
+        session, tenant_id, task_type, raw_type_config
+    )
+    raw_type_config = apply_default_slang_config(
+        session, tenant_id, task_type, raw_type_config
+    )
+    raw_type_config = apply_default_rule_binding(
+        session, tenant_id, task_type=task_type, config=raw_type_config
+    )
+    raw_type_config = apply_group_ai_account_coverage_defaults(
+        task_type, raw_type_config, payload.account_config.model_dump(mode="json")
+    )
     type_config = validated_type_config(task_type, raw_type_config)
+    _validate_channel_comment_fallback(
+        session, tenant_id, task_type, type_config,
+    )
     validate_rule_binding(session, tenant_id, type_config)
     pacing_config = normalize_fulfillment_pacing(
         task_type,
@@ -441,7 +587,9 @@ def _new_task(session: Session, tenant_id: int, task_type: str, payload) -> Task
         pacing_config,
     )
     if task_type == LEGACY_SEARCH_CLICK_TASK and type_config.get("strict_daily_target"):
-        pacing_config["skip_probability_per_action"] = DAILY_TARGET_ACTION_SKIP_PROBABILITY
+        pacing_config["skip_probability_per_action"] = (
+            DAILY_TARGET_ACTION_SKIP_PROBABILITY
+        )
     if task_type == LEGACY_SEARCH_CLICK_TASK:
         _validate_strict_search_join_daily_capacity(
             session,
@@ -470,7 +618,9 @@ def _new_task(session: Session, tenant_id: int, task_type: str, payload) -> Task
         failure_policy=payload.failure_policy.model_dump(mode="json"),
         type_config=type_config,
         fulfillment_contract_version=(
-            CURRENT_CONTRACT_VERSION if task_type in FULFILLMENT_TASK_TYPES else "legacy_v1"
+            CURRENT_CONTRACT_VERSION
+            if task_type in FULFILLMENT_TASK_TYPES
+            else "legacy_v1"
         ),
         group_ai_prejoin_channel_ids=prejoin_channel_refs,
         stats={
@@ -489,7 +639,9 @@ def _new_task(session: Session, tenant_id: int, task_type: str, payload) -> Task
     return task
 
 
-def _simple_search_click_target(session: Session, tenant_id: int, target_id: int) -> OperationTarget:
+def _simple_search_click_target(
+    session: Session, tenant_id: int, target_id: int
+) -> OperationTarget:
     target = session.scalar(
         select(OperationTarget).where(
             OperationTarget.id == target_id,
@@ -546,7 +698,9 @@ def _search_click_internal_payload(
         search_bots=[{"username": "jisou", "display_name": "极搜"}],
         keyword_hashes=hashes,
         keyword_text_ciphertexts=ciphertexts,
-        account_config=AccountConfig(**search_click_account_config(payload.account_group_id)),
+        account_config=AccountConfig(
+            **search_click_account_config(payload.account_group_id)
+        ),
         pacing_config=pacing,
         scheduled_end=as_beijing(payload.scheduled_end),
     )
@@ -572,7 +726,9 @@ def _simple_search_join_group_payload(
             payload.target_title,
             daily_target=True,
             daily_membership_target_count=(
-                payload.daily_target_count if payload.daily_click_target_count is not None else None
+                payload.daily_target_count
+                if payload.daily_click_target_count is not None
+                else None
             ),
         ),
         target_operation_target_id=target.id,
@@ -617,13 +773,18 @@ def _simple_search_click_target_from_input(
         .where(
             OperationTarget.tenant_id == tenant_id,
             OperationTarget.target_type == "group",
-            or_(func.lower(OperationTarget.username) == username, func.lower(OperationTarget.tg_peer_id) == username),
+            or_(
+                func.lower(OperationTarget.username) == username,
+                func.lower(OperationTarget.tg_peer_id) == username,
+            ),
         )
         .order_by(OperationTarget.id.asc())
         .limit(1)
     )
     if target is not None:
-        return _simple_search_click_target(session, tenant_id, target.id), canonical_link
+        return _simple_search_click_target(
+            session, tenant_id, target.id
+        ), canonical_link
     target = OperationTarget(
         tenant_id=tenant_id,
         target_type="group",
@@ -660,12 +821,16 @@ def _simple_search_click_name(
     target_label = (target_title or target.title or f"@{target.username}").strip()
     count_label = f"每日 {target_count}" if daily_target else str(target_count)
     if daily_target and daily_membership_target_count is not None:
-        count_label = f"每日点击 {target_count} 次（加入目标 {daily_membership_target_count} 次）"
+        count_label = (
+            f"每日点击 {target_count} 次（加入目标 {daily_membership_target_count} 次）"
+        )
         return f"{target_label} {task_label} {count_label}"[:200]
     return f"{target_label} {task_label} {count_label} 次"[:200]
 
 
-def _refresh_simple_search_click_name(session: Session, task: Task, *, task_label: str) -> None:
+def _refresh_simple_search_click_name(
+    session: Session, task: Task, *, task_label: str
+) -> None:
     config = task.type_config or {}
     target_id = config.get("target_operation_target_id")
     if target_id is None:
@@ -675,11 +840,15 @@ def _refresh_simple_search_click_name(session: Session, task: Task, *, task_labe
     if target_id is None:
         return
     is_legacy_search = task.type == LEGACY_SEARCH_CLICK_TASK
-    daily_click_target = is_legacy_search and config.get("daily_click_target_count") is not None
+    daily_click_target = (
+        is_legacy_search and config.get("daily_click_target_count") is not None
+    )
     daily_target = is_legacy_search and config.get("daily_target_count") is not None
     target_count = int(
-        config.get("daily_click_target_count") if daily_click_target
-        else config.get("daily_target_count") if daily_target
+        config.get("daily_click_target_count")
+        if daily_click_target
+        else config.get("daily_target_count")
+        if daily_target
         else config.get("target_count") or 0
     )
     if target_count <= 0:
@@ -692,20 +861,34 @@ def _refresh_simple_search_click_name(session: Session, task: Task, *, task_labe
         str(config.get("target_title") or ""),
         daily_target=daily_target or daily_click_target,
         daily_membership_target_count=(
-            int(config.get("daily_target_count")) if daily_click_target and config.get("daily_target_count") is not None else None
+            int(config.get("daily_target_count"))
+            if daily_click_target and config.get("daily_target_count") is not None
+            else None
         ),
     )
 
 
-def _create_task(session: Session, tenant_id: int, task_type: str, payload, actor: str) -> Task:
+def _create_task(
+    session: Session, tenant_id: int, task_type: str, payload, actor: str
+) -> Task:
     task = _new_task(session, tenant_id, task_type, payload)
-    audit(session, tenant_id=tenant_id, actor=actor, action="创建任务中心任务", target_type="task", target_id=task.id, detail=task.type)
+    audit(
+        session,
+        tenant_id=tenant_id,
+        actor=actor,
+        action="创建任务中心任务",
+        target_type="task",
+        target_id=task.id,
+        detail=task.type,
+    )
     session.commit()
     session.refresh(task)
     return task
 
 
-def _create_and_start_task(session: Session, tenant_id: int, task_type: str, payload, actor: str) -> Task:
+def _create_and_start_task(
+    session: Session, tenant_id: int, task_type: str, payload, actor: str
+) -> Task:
     task = _create_task(session, tenant_id, task_type, payload, actor)
     return start_task(session, tenant_id, task.id, actor)
 
@@ -743,7 +926,55 @@ def _task_payload_with_runtime_summary(
     return payload
 
 
-def list_tasks(session: Session, tenant_id: int, task_type: str | None = None, status: str | None = None) -> list[dict[str, Any]]:
+def _task_local_date(task: Task, value: datetime | None = None):
+    source = value or _now()
+    if source.tzinfo is None:
+        source = source.replace(tzinfo=ZoneInfo("Asia/Shanghai"))
+    return source.astimezone(ZoneInfo(task.timezone or "Asia/Shanghai")).date()
+
+
+def _has_current_ai_group_plan(session: Session, task: Task) -> bool:
+    if task.type != "group_ai_chat":
+        return False
+    return session.scalar(
+        select(AiGroupContentAllocationPlan.id)
+        .where(
+            AiGroupContentAllocationPlan.task_id == task.id,
+            AiGroupContentAllocationPlan.task_day == _task_local_date(task),
+        )
+        .limit(1)
+    ) is not None
+
+
+def _promote_due_ai_group_topic_rate(session: Session, task: Task) -> bool:
+    if task.type != "group_ai_chat":
+        return False
+    from .ai_group_topic_policy import promote_due_topic_rate
+
+    config = dict(task.type_config or {})
+    promoted = promote_due_topic_rate(config, _task_local_date(task))
+    if promoted == config:
+        return False
+    statement = select(Task).where(Task.id == task.id)
+    if session.bind and session.bind.dialect.name != "sqlite":
+        statement = statement.with_for_update()
+    locked = session.scalar(statement)
+    if locked is None:
+        return False
+    current = dict(locked.type_config or {})
+    promoted = promote_due_topic_rate(current, _task_local_date(locked))
+    if promoted == current:
+        return False
+    locked.type_config = promoted
+    return True
+
+
+def list_tasks(
+    session: Session,
+    tenant_id: int,
+    task_type: str | None = None,
+    status: str | None = None,
+) -> list[dict[str, Any]]:
     type_filter = normalize_list_filter(task_type)
     status_filter = normalize_list_filter(status)
     stmt = select(Task).where(Task.tenant_id == tenant_id, Task.deleted_at.is_(None))
@@ -751,17 +982,31 @@ def list_tasks(session: Session, tenant_id: int, task_type: str | None = None, s
         stmt = stmt.where(Task.type == type_filter)
     if status_filter:
         stmt = stmt.where(Task.status == status_filter)
-    tasks = list(session.scalars(stmt.order_by(Task.priority.asc(), Task.created_at.desc())))
+    tasks = list(
+        session.scalars(stmt.order_by(Task.priority.asc(), Task.created_at.desc()))
+    )
+    promoted = False
+    for task in tasks:
+        promoted = _promote_due_ai_group_topic_rate(session, task) or promoted
+    if promoted:
+        session.commit()
     summaries = _task_runtime_summaries(session, tenant_id)
     list_context = build_task_list_payload_context(session, tasks)
     task_rows = [
-        _task_payload_with_runtime_summary(session, task, summaries.get(task.id), list_context=list_context)
+        _task_payload_with_runtime_summary(
+            session, task, summaries.get(task.id), list_context=list_context
+        )
         for task in tasks
     ]
-    return [*task_rows, *list_profile_batch_tasks(session, tenant_id, type_filter, status_filter)]
+    return [
+        *task_rows,
+        *list_profile_batch_tasks(session, tenant_id, type_filter, status_filter),
+    ]
 
 
-def _task_runtime_summaries(session: Session, tenant_id: int) -> dict[str, TaskRuntimeSummary]:
+def _task_runtime_summaries(
+    session: Session, tenant_id: int
+) -> dict[str, TaskRuntimeSummary]:
     rows = session.scalars(
         select(TaskRuntimeSummary)
         .join(Task, Task.id == TaskRuntimeSummary.task_id)
@@ -774,28 +1019,57 @@ def get_task_detail(session: Session, tenant_id: int, task_id: str) -> dict[str,
     if is_profile_batch_task_id(task_id):
         return get_profile_batch_task_detail(session, tenant_id, task_id)
     task = _get_task(session, tenant_id, task_id)
+    if _promote_due_ai_group_topic_rate(session, task):
+        session.commit()
+        session.refresh(task)
     return _task_summary_detail(session, tenant_id, task)
 
 
-def refresh_task_detail_stats(session: Session, tenant_id: int, task_id: str) -> dict[str, Any]:
+def refresh_task_detail_stats(
+    session: Session, tenant_id: int, task_id: str
+) -> dict[str, Any]:
     task = _get_task(session, tenant_id, task_id)
-    stats = _stats_with_account_coverage(session, task, refresh_task_stats(session, task))
+    stats = _stats_with_account_coverage(
+        session, task, refresh_task_stats(session, task)
+    )
     return _with_dispatch_claim_snapshot(session, task, stats)
 
 
-def _task_summary_detail(session: Session, tenant_id: int, task: Task) -> dict[str, Any]:
-    task_summary = session.scalar(select(TaskRuntimeSummary).where(TaskRuntimeSummary.tenant_id == tenant_id, TaskRuntimeSummary.task_id == task.id))
-    operation_plan_links = list(session.scalars(select(OperationPlanTaskLink).where(OperationPlanTaskLink.tenant_id == tenant_id, OperationPlanTaskLink.task_id == task.id)))
+def _task_summary_detail(
+    session: Session, tenant_id: int, task: Task
+) -> dict[str, Any]:
+    task_summary = session.scalar(
+        select(TaskRuntimeSummary).where(
+            TaskRuntimeSummary.tenant_id == tenant_id,
+            TaskRuntimeSummary.task_id == task.id,
+        )
+    )
+    operation_plan_links = list(
+        session.scalars(
+            select(OperationPlanTaskLink).where(
+                OperationPlanTaskLink.tenant_id == tenant_id,
+                OperationPlanTaskLink.task_id == task.id,
+            )
+        )
+    )
     membership_phase = _summary_membership_phase(session, task)
     stats = _with_dispatch_claim_snapshot(
         session,
         task,
-        _stats_with_account_coverage(session, task, _summary_stats(task, membership_phase)),
+        _stats_with_account_coverage(
+            session, task, _summary_stats(task, membership_phase)
+        ),
     )
     admission_phase = membership_admission_summary(session, task)
     task_payload = _task_payload(session, task, actions=[], include_detail_search=False)
-    task_payload["runtime_stage"] = derive_task_runtime_stage(task, actions=[], membership_phase=membership_phase, summary=task_summary)
-    ai_quality_actions = _ai_quality_actions(session, task) if task.type == "group_ai_chat" else []
+    task_payload["runtime_stage"] = derive_task_runtime_stage(
+        task, actions=[], membership_phase=membership_phase, summary=task_summary
+    )
+    ai_quality_actions = (
+        _ai_quality_actions(session, task) if task.type == "group_ai_chat" else []
+    )
+    from .ai_group_content_read_model import ai_group_content_allocation_summary
+
     return {
         "task": task_payload,
         "actions": [],
@@ -815,17 +1089,28 @@ def _task_summary_detail(session: Session, tenant_id: int, task: Task) -> dict[s
         "ai_generation_records": _ai_generation_records(ai_quality_actions),
         "ai_account_profiles": [],
         "ai_quality_funnel": {
-            **_ai_quality_funnel(ai_quality_actions, task.stats if isinstance(task.stats, dict) else {}),
+            **_ai_quality_funnel(
+                ai_quality_actions, task.stats if isinstance(task.stats, dict) else {}
+            ),
             "runtime": ai_runtime_diagnostics(session, task),
         },
-        "account_online_summary": task_account_online_summary(session, task) if task.type in {"group_ai_chat", "group_relay"} else {},
+        "account_online_summary": task_account_online_summary(session, task)
+        if task.type in {"group_ai_chat", "group_relay"}
+        else {},
         "relay_batches": [],
-        "recent_relay_sources": _relay_recent_sources(session, task) if task.type == "group_relay" else [],
+        "recent_relay_sources": _relay_recent_sources(session, task)
+        if task.type == "group_relay"
+        else [],
         "learning_profile_preview": _task_learning_profile_preview(session, task),
+        "ai_group_content_allocation": ai_group_content_allocation_summary(
+            session, task
+        ),
     }
 
 
-def _rank_deboost_exempt_group_payload(session: Session, task: Task) -> dict[str, Any] | None:
+def _rank_deboost_exempt_group_payload(
+    session: Session, task: Task
+) -> dict[str, Any] | None:
     if task.type != "search_rank_deboost":
         return None
     record = session.scalar(
@@ -873,7 +1158,9 @@ def _summary_stats(task: Task, membership_phase: dict[str, Any]) -> dict[str, An
             "failure_count": int(membership_phase.get("failed_count") or 0),
             "pending_count": int(membership_phase.get("pending_account_count") or 0),
             "executing_count": int(membership_phase.get("running_count") or 0),
-            "unknown_after_send_count": int(membership_phase.get("unknown_after_send_count") or 0),
+            "unknown_after_send_count": int(
+                membership_phase.get("unknown_after_send_count") or 0
+            ),
         }
     )
     return stats
@@ -881,11 +1168,12 @@ def _summary_stats(task: Task, membership_phase: dict[str, Any]) -> dict[str, An
 
 def _lightweight_membership_phase(session: Session, task: Task) -> dict[str, Any]:
     rows = session.scalars(
-        select(Action)
-        .where(
+        select(Action).where(
             Action.tenant_id == task.tenant_id,
             Action.task_id == task.id,
-            Action.action_type.in_([TARGET_MEMBERSHIP_ACTION_TYPE, LEGACY_MEMBERSHIP_ACTION_TYPE]),
+            Action.action_type.in_(
+                [TARGET_MEMBERSHIP_ACTION_TYPE, LEGACY_MEMBERSHIP_ACTION_TYPE]
+            ),
         )
     ).all()
     success = sum(1 for action in rows if _membership_action_succeeded(action))
@@ -895,15 +1183,41 @@ def _lightweight_membership_phase(session: Session, task: Task) -> dict[str, Any
     total = len(rows)
     running = sum(1 for action in rows if action.status in {"claiming", "executing"})
     blocked = sum(1 for action in rows if _membership_action_blocked(action)) + unknown
-    stage = "membership_running" if pending else "membership_blocked" if blocked else "membership_ready"
-    status = "partial_success" if success and (pending or blocked) else "pending" if pending else "blocked" if unknown else "failed" if failed else "completed"
+    stage = (
+        "membership_running"
+        if pending
+        else "membership_blocked"
+        if blocked
+        else "membership_ready"
+    )
+    status = (
+        "partial_success"
+        if success and (pending or blocked)
+        else "pending"
+        if pending
+        else "blocked"
+        if unknown
+        else "failed"
+        if failed
+        else "completed"
+    )
     return {
         "stage": stage,
         "status": status,
         "progress_percent": round((success + failed) * 100 / total) if total else 100,
-        "current_phase": "排队中" if pending else "等待人工确认" if unknown else "等待人工处理" if failed else "已完成",
+        "current_phase": "排队中"
+        if pending
+        else "等待人工确认"
+        if unknown
+        else "等待人工处理"
+        if failed
+        else "已完成",
         "warnings": [],
-        "summary": {"action_count": total, "success_account_count": success, "unknown_after_send_count": unknown},
+        "summary": {
+            "action_count": total,
+            "success_account_count": success,
+            "unknown_after_send_count": unknown,
+        },
         "ready_account_count": success,
         "pending_account_count": pending,
         "running_account_count": running,
@@ -919,25 +1233,44 @@ def _lightweight_membership_phase(session: Session, task: Task) -> dict[str, Any
 
 def _task_learning_profile_preview(session: Session, task: Task) -> dict[str, Any]:
     if task.type == "group_ai_chat":
-        return tenant_learning_profile_preview(session, task.tenant_id, GROUP_CHAT_SCENE)
+        return tenant_learning_profile_preview(
+            session, task.tenant_id, GROUP_CHAT_SCENE
+        )
     if task.type == "channel_comment":
-        return tenant_learning_profile_preview(session, task.tenant_id, CHANNEL_COMMENT_SCENE)
+        return tenant_learning_profile_preview(
+            session, task.tenant_id, CHANNEL_COMMENT_SCENE
+        )
     return {}
 
 
-def update_task(session: Session, tenant_id: int, task_id: str, payload: TaskUpdate, actor: str) -> Task:
+def update_task(
+    session: Session, tenant_id: int, task_id: str, payload: TaskUpdate, actor: str
+) -> Task:
     task = _get_task(session, tenant_id, task_id)
     previous_config = dict(task.type_config or {})
     previous_timezone = str(task.timezone or "")
     raw_data = payload.model_dump(exclude_unset=True)
     _require_search_click_dedicated_update(task, raw_data)
     data = payload.model_dump(exclude_unset=True, mode="json")
-    for field in ["name", "priority", "timezone", "scheduled_start", "scheduled_end", "max_duration_hours"]:
+    for field in [
+        "name",
+        "priority",
+        "timezone",
+        "scheduled_start",
+        "scheduled_end",
+        "max_duration_hours",
+    ]:
         if field in raw_data:
             setattr(task, field, raw_data[field])
     for field in ["account_config", "pacing_config", "failure_policy"]:
         if field in data and data[field] is not None:
-            setattr(task, field, _pacing_payload_for_task(task, raw_data[field]) if field == "pacing_config" else data[field])
+            setattr(
+                task,
+                field,
+                _pacing_payload_for_task(task, raw_data[field])
+                if field == "pacing_config"
+                else data[field],
+            )
     validate_source_capacity_config(
         session,
         tenant_id,
@@ -945,7 +1278,9 @@ def update_task(session: Session, tenant_id: int, task_id: str, payload: TaskUpd
         dict(task.pacing_config or {}),
     )
     if task.type == "group_ai_chat" and "account_config" in data:
-        task.type_config = apply_group_ai_account_coverage_defaults(task.type, task.type_config or {}, task.account_config or {})
+        task.type_config = apply_group_ai_account_coverage_defaults(
+            task.type, task.type_config or {}, task.account_config or {}
+        )
         initialize_all_account_task_scope(session, task)
         _clear_unfinished_plan(session, task)
         _requeue_updated_task(task)
@@ -956,7 +1291,14 @@ def update_task(session: Session, tenant_id: int, task_id: str, payload: TaskUpd
     )
     activate_task_ai_content_config(session, task)
     task.updated_at = _now()
-    audit(session, tenant_id=tenant_id, actor=actor, action="更新任务中心任务", target_type="task", target_id=task.id)
+    audit(
+        session,
+        tenant_id=tenant_id,
+        actor=actor,
+        action="更新任务中心任务",
+        target_type="task",
+        target_id=task.id,
+    )
     session.commit()
     session.refresh(task)
     return task
@@ -972,8 +1314,15 @@ def _requeue_updated_task(task: Task) -> None:
     task.last_error = ""
 
 
-def update_task_settings(session: Session, tenant_id: int, task_id: str, payload: TaskSettingsUpdate, actor: str) -> Task:
+def update_task_settings(
+    session: Session,
+    tenant_id: int,
+    task_id: str,
+    payload: TaskSettingsUpdate,
+    actor: str,
+) -> Task:
     task = _get_task(session, tenant_id, task_id)
+    change_observed_at = _now()
     previous_config = dict(task.type_config or {})
     previous_timezone = str(task.timezone or "")
     previous_revision = int(task.config_revision or 1)
@@ -984,34 +1333,79 @@ def update_task_settings(session: Session, tenant_id: int, task_id: str, payload
     if prejoin_supplied and task.type != "group_ai_chat":
         raise ValueError("预关注频道仅支持 AI 活群任务")
     if prejoin_supplied:
-        task.group_ai_prejoin_channel_ids = list(payload.group_ai_prejoin_channel_ids or [])
+        task.group_ai_prejoin_channel_ids = list(
+            payload.group_ai_prejoin_channel_ids or []
+        )
     raw_data = payload.model_dump(exclude_unset=True)
     _require_search_click_dedicated_update(task, raw_data)
     data = payload.model_dump(exclude_unset=True, mode="json")
     type_fields = TYPE_SETTINGS_FIELDS.get(task.type)
     if type_fields is None:
         raise ValueError(f"unknown task type: {task.type}")
-    type_updates = {key: value for key, value in data.items() if key not in COMMON_SETTINGS_FIELDS}
+    type_updates = {
+        key: value for key, value in data.items() if key not in COMMON_SETTINGS_FIELDS
+    }
     invalid = sorted(set(type_updates) - type_fields)
     if invalid:
         raise ValueError(f"这些字段不能用于 {task.type} 任务: {', '.join(invalid)}")
-    for field in ["name", "priority", "timezone", "scheduled_start", "scheduled_end", "max_duration_hours"]:
+    if task.type == "group_ai_chat" and "topic_participation_rate" in type_updates:
+        from .ai_group_topic_policy import stage_topic_rate_update
+
+        requested_rate = type_updates.pop("topic_participation_rate")
+        staged = stage_topic_rate_update(
+            task.type_config or {},
+            requested_rate,
+            task_status=task.status,
+            today=_task_local_date(task),
+            has_current_task_day_plan=_has_current_ai_group_plan(session, task),
+        )
+        type_updates.update(
+            {
+                "topic_participation_rate": staged.get("topic_participation_rate"),
+                "topic_participation_rate_next": staged.get(
+                    "topic_participation_rate_next"
+                ),
+                "topic_participation_rate_effective_date": staged.get(
+                    "topic_participation_rate_effective_date"
+                ),
+            }
+        )
+    for field in [
+        "name",
+        "priority",
+        "timezone",
+        "scheduled_start",
+        "scheduled_end",
+        "max_duration_hours",
+    ]:
         if field in raw_data:
             setattr(task, field, raw_data[field])
     for field in ["account_config", "pacing_config", "failure_policy"]:
         if field in data and data[field] is not None:
-            setattr(task, field, _pacing_payload_for_task(task, raw_data[field]) if field == "pacing_config" else data[field])
+            setattr(
+                task,
+                field,
+                _pacing_payload_for_task(task, raw_data[field])
+                if field == "pacing_config"
+                else data[field],
+            )
     validate_source_capacity_config(
         session,
         tenant_id,
         task.type,
         dict(task.pacing_config or {}),
     )
-    if task.type == "group_ai_chat" and {"account_config", "pacing_config"} & set(data) and not type_updates:
+    if (
+        task.type == "group_ai_chat"
+        and {"account_config", "pacing_config"} & set(data)
+        and not type_updates
+    ):
         next_config = dict(task.type_config or {})
         for field in GROUP_AI_LEGACY_RUNTIME_FIELDS:
             next_config.pop(field, None)
-        next_config = apply_group_ai_account_coverage_defaults(task.type, next_config, task.account_config or {})
+        next_config = apply_group_ai_account_coverage_defaults(
+            task.type, next_config, task.account_config or {}
+        )
         task.type_config = validated_type_config(task.type, next_config)
     if type_updates:
         next_config = dict(task.type_config or {})
@@ -1020,21 +1414,51 @@ def update_task_settings(session: Session, tenant_id: int, task_id: str, payload
             for field in GROUP_AI_LEGACY_RUNTIME_FIELDS:
                 if field not in type_updates:
                     next_config.pop(field, None)
-        next_config = normalize_operation_target_references(session, tenant_id, task.type, next_config)
-        next_config = apply_group_ai_account_coverage_defaults(task.type, next_config, task.account_config or {})
+        next_config = normalize_operation_target_references(
+            session, tenant_id, task.type, next_config
+        )
+        next_config = apply_group_ai_account_coverage_defaults(
+            task.type, next_config, task.account_config or {}
+        )
         task.type_config = validated_type_config(task.type, next_config)
+        _validate_channel_comment_fallback(
+            session, tenant_id, task.type, task.type_config,
+        )
     incremented = increment_revision_for_continuity_change(
         task,
         previous_config=previous_config,
         previous_timezone=previous_timezone,
     )
-    prejoin_changed = previous_prejoin_refs != list(task.group_ai_prejoin_channel_ids or [])
-    if prejoin_changed and not incremented and task.config_revision == previous_revision:
+    increment_revision_for_content_policy_change(
+        task,
+        previous_config=previous_config,
+        previous_revision=previous_revision,
+        observed_at=change_observed_at,
+    )
+    prejoin_changed = previous_prejoin_refs != list(
+        task.group_ai_prejoin_channel_ids or []
+    )
+    if (
+        prejoin_changed
+        and not incremented
+        and task.config_revision == previous_revision
+    ):
         task.config_revision += 1
     activate_task_ai_content_config(session, task)
     initialize_all_account_task_scope(session, task)
-    _clear_unfinished_plan(session, task)
-    target_changed = previous_target_identity != _task_target_identity(task.type_config or {})
+    content_policy_only = (
+        is_content_policy_only_change(
+            task,
+            previous_config=previous_config,
+        )
+        and not (set(raw_data) - AI_GROUP_CONTENT_POLICY_FIELDS)
+        and not prejoin_changed
+    )
+    if not content_policy_only:
+        _clear_unfinished_plan(session, task)
+    target_changed = previous_target_identity != _task_target_identity(
+        task.type_config or {}
+    )
     if task.type == "group_ai_chat" and target_changed:
         from .account_scope import reset_all_account_scope_for_target_change
 
@@ -1044,15 +1468,38 @@ def update_task_settings(session: Session, tenant_id: int, task_id: str, payload
     if task.status not in {"completed", "failed"}:
         now = _now()
         scheduled_start = _naive_datetime(task.scheduled_start)
-        task.status = "pending" if scheduled_start and scheduled_start > now else "running"
+        task.status = (
+            "pending" if scheduled_start and scheduled_start > now else "running"
+        )
         task.next_run_at = scheduled_start if task.status == "pending" else now
     task.last_error = ""
-    task.updated_at = _now()
-    audit(session, tenant_id=tenant_id, actor=actor, action="更新任务中心任务配置", target_type="task", target_id=task.id, detail=task.type)
+    task.updated_at = change_observed_at
+    audit(
+        session,
+        tenant_id=tenant_id,
+        actor=actor,
+        action="更新任务中心任务配置",
+        target_type="task",
+        target_id=task.id,
+        detail=_content_policy_change_detail(task, previous_config),
+    )
     refresh_task_stats(session, task)
     session.commit()
     session.refresh(task)
     return task
+
+
+def _validate_channel_comment_fallback(
+    session: Session,
+    tenant_id: int,
+    task_type: str,
+    config: dict,
+) -> None:
+    if task_type != "channel_comment":
+        return
+    from .comment_fallback_selection import validate_comment_fallback_config
+
+    validate_comment_fallback_config(session, tenant_id, config)
 
 
 def _task_target_identity(config: dict) -> tuple[int, int]:
@@ -1062,21 +1509,96 @@ def _task_target_identity(config: dict) -> tuple[int, int]:
     )
 
 
-def add_task_source_filter_override(session: Session, tenant_id: int, task_id: str, payload: TaskSourceFilterOverrideRequest, actor: str) -> Task:
+def _content_policy_change_detail(task: Task, previous_config: dict) -> str:
+    if task.type != "group_ai_chat":
+        return task.type
+    current = dict(task.type_config or {})
+    scopes = _content_policy_change_scopes(current)
+    changes = []
+    for field, scope in scopes.items():
+        if field == "topic_participation_rate":
+            if not _topic_rate_changed(previous_config, current):
+                continue
+            old = _effective_configured_topic_rate(previous_config)
+            new = _effective_configured_topic_rate(current)
+        else:
+            old = previous_config.get(field)
+            new = current.get(field)
+        if old == new:
+            continue
+        revision = _content_policy_field_revision(current, field, scope)
+        changes.append(
+            f"{field}:old={old!r},new={new!r},scope={scope},revision={revision}"
+        )
+    return ";".join(changes) or task.type
+
+
+def _content_policy_change_scopes(config: dict) -> dict[str, str]:
+    return {
+        "topic_participation_rate": (
+            "next_task_day"
+            if config.get("topic_participation_rate_next") is not None
+            else "current_task_day"
+        ),
+        "topic_directions": "new_content_intent",
+        "teacher_targets": "new_content_intent",
+    }
+
+
+def _topic_rate_changed(previous: dict, current: dict) -> bool:
+    fields = (
+        "topic_participation_rate",
+        "topic_participation_rate_next",
+        "topic_participation_rate_effective_date",
+    )
+    return any(previous.get(field) != current.get(field) for field in fields)
+
+
+def _effective_configured_topic_rate(config: dict):
+    pending = config.get("topic_participation_rate_next")
+    return pending if pending is not None else config.get("topic_participation_rate")
+
+
+def _content_policy_field_revision(config: dict, field: str, scope: str) -> int:
+    meta = dict(config.get(CONTENT_POLICY_META_FIELD) or {})
+    entry = dict(meta.get(field) or {})
+    key = "next_revision" if scope == "next_task_day" else "revision"
+    if scope == "current_task_day":
+        key = "current_revision"
+    return int(entry.get(key) or config.get("_ai_group_content_policy_revision") or 1)
+
+
+def add_task_source_filter_override(
+    session: Session,
+    tenant_id: int,
+    task_id: str,
+    payload: TaskSourceFilterOverrideRequest,
+    actor: str,
+) -> Task:
     task = _get_task(session, tenant_id, task_id)
     if task.type != "group_relay":
         raise ValueError("来源过滤覆盖仅支持群转发任务")
 
     next_config = dict(task.type_config or {})
     if payload.sender_peer_id:
-        next_config["excluded_sender_peer_ids"] = _append_unique_string(next_config.get("excluded_sender_peer_ids"), payload.sender_peer_id)
+        next_config["excluded_sender_peer_ids"] = _append_unique_string(
+            next_config.get("excluded_sender_peer_ids"), payload.sender_peer_id
+        )
     if payload.sender_username:
-        next_config["excluded_sender_usernames"] = _append_unique_string(next_config.get("excluded_sender_usernames"), payload.sender_username)
+        next_config["excluded_sender_usernames"] = _append_unique_string(
+            next_config.get("excluded_sender_usernames"), payload.sender_username
+        )
     if payload.sender_name:
-        next_config["excluded_sender_names"] = _append_unique_string(next_config.get("excluded_sender_names"), payload.sender_name)
+        next_config["excluded_sender_names"] = _append_unique_string(
+            next_config.get("excluded_sender_names"), payload.sender_name
+        )
 
-    next_config = normalize_operation_target_references(session, tenant_id, task.type, next_config)
-    next_config = apply_default_rule_binding(session, tenant_id, task_type=task.type, config=next_config)
+    next_config = normalize_operation_target_references(
+        session, tenant_id, task.type, next_config
+    )
+    next_config = apply_default_rule_binding(
+        session, tenant_id, task_type=task.type, config=next_config
+    )
     validate_rule_binding(session, tenant_id, next_config)
     task.type_config = validated_type_config(task.type, next_config)
     _clear_unfinished_plan(session, task)
@@ -1121,7 +1643,13 @@ def _source_filter_override_detail(payload: TaskSourceFilterOverrideRequest) -> 
     return "; ".join(parts)
 
 
-def update_group_ai_chat_config(session: Session, tenant_id: int, task_id: str, payload: GroupAIChatTaskConfigUpdate, actor: str) -> Task:
+def update_group_ai_chat_config(
+    session: Session,
+    tenant_id: int,
+    task_id: str,
+    payload: GroupAIChatTaskConfigUpdate,
+    actor: str,
+) -> Task:
     field = "group_ai_prejoin_channel_ids"
     update_data = payload.model_dump(mode="json", exclude_unset=True)
     task = _get_task(session, tenant_id, task_id)
@@ -1145,23 +1673,61 @@ def update_group_ai_chat_config(session: Session, tenant_id: int, task_id: str, 
     return task
 
 
-def update_group_relay_config(session: Session, tenant_id: int, task_id: str, payload: GroupRelayTaskConfigUpdate, actor: str) -> Task:
-    return _update_type_config(session, tenant_id, task_id, "group_relay", payload, actor)
+def update_group_relay_config(
+    session: Session,
+    tenant_id: int,
+    task_id: str,
+    payload: GroupRelayTaskConfigUpdate,
+    actor: str,
+) -> Task:
+    return _update_type_config(
+        session, tenant_id, task_id, "group_relay", payload, actor
+    )
 
 
-def update_channel_view_config(session: Session, tenant_id: int, task_id: str, payload: ChannelViewTaskConfigUpdate, actor: str) -> Task:
-    return _update_type_config(session, tenant_id, task_id, "channel_view", payload, actor)
+def update_channel_view_config(
+    session: Session,
+    tenant_id: int,
+    task_id: str,
+    payload: ChannelViewTaskConfigUpdate,
+    actor: str,
+) -> Task:
+    return _update_type_config(
+        session, tenant_id, task_id, "channel_view", payload, actor
+    )
 
 
-def update_channel_like_config(session: Session, tenant_id: int, task_id: str, payload: ChannelLikeTaskConfigUpdate, actor: str) -> Task:
-    return _update_type_config(session, tenant_id, task_id, "channel_like", payload, actor)
+def update_channel_like_config(
+    session: Session,
+    tenant_id: int,
+    task_id: str,
+    payload: ChannelLikeTaskConfigUpdate,
+    actor: str,
+) -> Task:
+    return _update_type_config(
+        session, tenant_id, task_id, "channel_like", payload, actor
+    )
 
 
-def update_channel_comment_config(session: Session, tenant_id: int, task_id: str, payload: ChannelCommentTaskConfigUpdate, actor: str) -> Task:
-    return _update_type_config(session, tenant_id, task_id, "channel_comment", payload, actor)
+def update_channel_comment_config(
+    session: Session,
+    tenant_id: int,
+    task_id: str,
+    payload: ChannelCommentTaskConfigUpdate,
+    actor: str,
+) -> Task:
+    return _update_type_config(
+        session, tenant_id, task_id, "channel_comment", payload, actor
+    )
 
 
-def update_search_join_group_config(session: Session, tenant_id: int, task_id: str, payload: SearchJoinGroupTaskConfigUpdate, actor: str) -> Task:
+def update_search_join_group_config(
+    session: Session,
+    tenant_id: int,
+    task_id: str,
+    payload: SearchJoinGroupTaskConfigUpdate,
+    actor: str,
+) -> Task:
     task = _get_task(session, tenant_id, task_id)
     if task.type != "search_join_group":
         raise ValueError(f"任务类型不匹配，当前任务是 {task.type}")
@@ -1190,13 +1756,17 @@ def update_search_join_group_config(session: Session, tenant_id: int, task_id: s
             "daily_click_target_count",
             "daily_target_count",
         }.intersection(update_data):
-            _refresh_simple_search_click_name(session, task, task_label="搜索目标群点击")
+            _refresh_simple_search_click_name(
+                session, task, task_label="搜索目标群点击"
+            )
     pacing_updated = False
     if pacing_data is not None:
         next_pacing = pacing_config_payload(pacing_data)
         pacing_updated = next_pacing != (task.pacing_config or {})
         task.pacing_config = next_pacing
-    controls_updated = _apply_search_click_operator_controls(session, task, operator_controls)
+    controls_updated = _apply_search_click_operator_controls(
+        session, task, operator_controls
+    )
     planning_type_config_fields = {
         "allow_same_account_repeat_application",
         "actions_per_round",
@@ -1233,7 +1803,8 @@ def update_search_click_config(
     revision_fields = {
         key: values.pop(key)
         for key in tuple(values)
-        if key in {
+        if key
+        in {
             "target_title",
             "target_link",
             "keywords",
@@ -1328,12 +1899,14 @@ def _apply_search_click_target_update(
             target_title,
             target_link,
         )
-        config.update({
-            "target_operation_target_id": target.id,
-            "target_input": canonical_link,
-            "target_title": target_title,
-            "target_link": canonical_link,
-        })
+        config.update(
+            {
+                "target_operation_target_id": target.id,
+                "target_input": canonical_link,
+                "target_title": target_title,
+                "target_link": canonical_link,
+            }
+        )
     keywords = values.pop("keywords", None)
     if keywords is not None:
         normalized = [item.strip() for item in keywords if item.strip()]
@@ -1344,9 +1917,7 @@ def _apply_search_click_target_update(
             encrypt_secret(item) for item in normalized
         ]
     if "daily_click_target_count" in values:
-        config["daily_click_target_count"] = values.pop(
-            "daily_click_target_count"
-        )
+        config["daily_click_target_count"] = values.pop("daily_click_target_count")
     task.type_config = validated_type_config(task.type, config)
 
 
@@ -1385,14 +1956,16 @@ def _release_search_click_plan_for_revision(
     session: Session,
     task: Task,
 ) -> None:
-    assignments = list(session.scalars(
-        select(SearchClickOpportunityAssignment).where(
-            SearchClickOpportunityAssignment.task_id == task.id,
-            SearchClickOpportunityAssignment.state.in_(
-                ("reserved", "action_bound", "claimed")
-            ),
+    assignments = list(
+        session.scalars(
+            select(SearchClickOpportunityAssignment).where(
+                SearchClickOpportunityAssignment.task_id == task.id,
+                SearchClickOpportunityAssignment.state.in_(
+                    ("reserved", "action_bound", "claimed")
+                ),
+            )
         )
-    ))
+    )
     now_value = _now()
     for assignment in assignments:
         release_search_click_assignment(
@@ -1467,7 +2040,9 @@ SEARCH_RANK_OPERATOR_EDIT_FIELDS = {
 }
 
 
-def _require_search_click_dedicated_update(task: Task, raw_data: dict[str, Any]) -> None:
+def _require_search_click_dedicated_update(
+    task: Task, raw_data: dict[str, Any]
+) -> None:
     if task.type in SEARCH_CLICK_TASK_TYPES and raw_data:
         raise ValueError("搜索点击任务必须通过专用编辑接口更新")
 
@@ -1480,7 +2055,9 @@ def _require_search_click_operator_fields(payload: Any, task_type: str) -> None:
     )
     forbidden = sorted(payload.model_fields_set - allowed)
     if forbidden:
-        raise ValueError(f"搜索点击任务的系统托管字段不能通过运营编辑接口修改: {', '.join(forbidden)}")
+        raise ValueError(
+            f"搜索点击任务的系统托管字段不能通过运营编辑接口修改: {', '.join(forbidden)}"
+        )
 
 
 def _search_click_operator_controls(payload: Any, task_type: str) -> dict[str, Any]:
@@ -1520,7 +2097,9 @@ def _validate_search_join_daily_target(
     source_target = daily_click_target or daily_membership_target
     if source_target is None:
         return
-    max_actions = controls.get("max_actions_per_day", (task.pacing_config or {}).get("max_actions_per_day"))
+    max_actions = controls.get(
+        "max_actions_per_day", (task.pacing_config or {}).get("max_actions_per_day")
+    )
     if max_actions is None or int(max_actions) < int(source_target):
         raise ValueError("max_actions_per_day 不能小于每日点击目标")
     _validate_search_join_configured_daily_capacity(
@@ -1528,8 +2107,12 @@ def _validate_search_join_daily_target(
         task.tenant_id,
         account_config=_next_search_join_account_config(session, task, controls),
         pacing_config=_next_search_join_pacing_config(task, controls),
-        daily_click_target_count=int(daily_click_target) if daily_click_target is not None else None,
-        daily_target_count=int(daily_membership_target) if daily_membership_target is not None else None,
+        daily_click_target_count=int(daily_click_target)
+        if daily_click_target is not None
+        else None,
+        daily_target_count=int(daily_membership_target)
+        if daily_membership_target is not None
+        else None,
         allow_same_account_repeat_application=bool(
             update_data.get(
                 "allow_same_account_repeat_application",
@@ -1541,7 +2124,11 @@ def _validate_search_join_daily_target(
     next_type_config = {
         **(task.type_config or {}),
         **update_data,
-        **({"strict_daily_target": True} if controls.get("enable_strict_daily_target") else {}),
+        **(
+            {"strict_daily_target": True}
+            if controls.get("enable_strict_daily_target")
+            else {}
+        ),
     }
     _validate_strict_search_join_daily_capacity(
         session,
@@ -1556,19 +2143,30 @@ def _validate_search_join_daily_target(
     )
 
 
-def _next_search_join_account_config(session: Session, task: Task, controls: dict[str, Any]) -> dict[str, Any]:
+def _next_search_join_account_config(
+    session: Session, task: Task, controls: dict[str, Any]
+) -> dict[str, Any]:
     account_group_id = controls.get("account_group_id")
     if account_group_id is None:
         return dict(task.account_config or {})
-    require_search_click_account_group(session, task.tenant_id, task.type, int(account_group_id))
+    require_search_click_account_group(
+        session, task.tenant_id, task.type, int(account_group_id)
+    )
     return {
         **(task.account_config or {}),
         **search_click_account_config(int(account_group_id)),
     }
 
 
-def _next_search_join_pacing_config(task: Task, controls: dict[str, Any]) -> dict[str, Any]:
-    fields = ("max_actions_per_day", "daily_jitter_percent", "hourly_jitter_percent", "per_account_daily_action_limit")
+def _next_search_join_pacing_config(
+    task: Task, controls: dict[str, Any]
+) -> dict[str, Any]:
+    fields = (
+        "max_actions_per_day",
+        "daily_jitter_percent",
+        "hourly_jitter_percent",
+        "per_account_daily_action_limit",
+    )
     next_config = {
         **(task.pacing_config or {}),
         **{field: controls[field] for field in fields if field in controls},
@@ -1586,7 +2184,13 @@ def _next_search_join_pacing_config(task: Task, controls: dict[str, Any]) -> dic
 def _search_join_keyword_count(task: Task, update_data: dict[str, Any]) -> int:
     if "keywords" not in update_data:
         return len((task.type_config or {}).get("keyword_hashes") or [])
-    return len({normalized_keyword_hash(str(item)) for item in update_data["keywords"] if str(item).strip()})
+    return len(
+        {
+            normalized_keyword_hash(str(item))
+            for item in update_data["keywords"]
+            if str(item).strip()
+        }
+    )
 
 
 def _validate_search_join_configured_daily_capacity(
@@ -1615,11 +2219,17 @@ def _validate_search_join_configured_daily_capacity(
     per_account_limit = (
         daily_budget
         if allow_same_account_repeat_application
-        else _effective_search_join_account_daily_limit(pacing_config, keyword_count, daily_budget)
+        else _effective_search_join_account_daily_limit(
+            pacing_config, keyword_count, daily_budget
+        )
     )
     capacity = min(daily_budget, len(candidates) * per_account_limit)
     if target > capacity:
-        target_field = "daily_click_target_count" if daily_click_target_count is not None else "daily_target_count"
+        target_field = (
+            "daily_click_target_count"
+            if daily_click_target_count is not None
+            else "daily_target_count"
+        )
         raise ValueError(
             "daily_target_capacity_insufficient: "
             f"{target_field}={target}, candidate_accounts={len(candidates)}, "
@@ -1641,7 +2251,9 @@ def _validate_strict_search_join_daily_capacity(
 ) -> None:
     if not type_config.get("strict_daily_target"):
         return
-    target = type_config.get("daily_click_target_count") or type_config.get("daily_target_count")
+    target = type_config.get("daily_click_target_count") or type_config.get(
+        "daily_target_count"
+    )
     if target is None:
         return
     capacity_window = configured_capacity_window(
@@ -1660,7 +2272,10 @@ def _validate_strict_search_join_daily_capacity(
         enforce_capacity=False,
         scan_all_candidates=True,
     )
-    config = {**type_config, **{key: value for key, value in pacing_config.items() if value is not None}}
+    config = {
+        **type_config,
+        **{key: value for key, value in pacing_config.items() if value is not None},
+    }
     account_capacity = configured_account_source_capacity(
         config,
         candidate_account_count=len(candidates),
@@ -1699,7 +2314,11 @@ def _effective_search_join_account_daily_limit(
 ) -> int:
     account_limit = int(pacing_config.get("per_account_daily_action_limit") or 0)
     keyword_limit = int(pacing_config.get("per_keyword_account_daily_limit") or 0)
-    limits = [limit for limit in (account_limit, keyword_limit * max(1, keyword_count)) if limit > 0]
+    limits = [
+        limit
+        for limit in (account_limit, keyword_limit * max(1, keyword_count))
+        if limit > 0
+    ]
     return min(limits) if limits else daily_budget
 
 
@@ -1709,7 +2328,9 @@ def _requeue_search_join_daily_target(task: Task) -> None:
     _requeue_updated_task(task)
 
 
-def _requeue_search_join_after_operator_change(session: Session, task: Task, controls: dict[str, Any]) -> None:
+def _requeue_search_join_after_operator_change(
+    session: Session, task: Task, controls: dict[str, Any]
+) -> None:
     if _deadline_extension_reopens_daily_target(session, task, controls):
         _requeue_search_join_daily_target(task)
         return
@@ -1737,16 +2358,25 @@ def _apply_search_click_operator_controls(
     changed = False
     if "account_group_id" in controls:
         account_group_id = int(controls["account_group_id"])
-        require_search_click_account_group(session, task.tenant_id, task.type, account_group_id)
-        next_account_config = AccountConfig.model_validate({
-            **(task.account_config or {}),
-            **search_click_account_config(account_group_id),
-        }).model_dump(mode="json")
+        require_search_click_account_group(
+            session, task.tenant_id, task.type, account_group_id
+        )
+        next_account_config = AccountConfig.model_validate(
+            {
+                **(task.account_config or {}),
+                **search_click_account_config(account_group_id),
+            }
+        ).model_dump(mode="json")
         if next_account_config != (task.account_config or {}):
             task.account_config = next_account_config
             changed = True
     next_pacing = dict(task.pacing_config or {})
-    for field in ("max_actions_per_day", "daily_jitter_percent", "hourly_jitter_percent", "per_account_daily_action_limit"):
+    for field in (
+        "max_actions_per_day",
+        "daily_jitter_percent",
+        "hourly_jitter_percent",
+        "per_account_daily_action_limit",
+    ):
         if field in controls:
             next_pacing[field] = controls[field]
     if "quiet_hours" in controls:
@@ -1762,7 +2392,9 @@ def _apply_search_click_operator_controls(
         if next_type_config != (task.type_config or {}):
             task.type_config = next_type_config
             changed = True
-        next_pacing["skip_probability_per_action"] = DAILY_TARGET_ACTION_SKIP_PROBABILITY
+        next_pacing["skip_probability_per_action"] = (
+            DAILY_TARGET_ACTION_SKIP_PROBABILITY
+        )
     if next_pacing != (task.pacing_config or {}):
         task.pacing_config = next_pacing
         changed = True
@@ -1781,27 +2413,42 @@ def _require_future_search_click_deadline(scheduled_end: datetime | None) -> Non
         raise ValueError("完成截止时间必须晚于当前时间")
 
 
-def _resolve_search_join_target_input(session: Session, tenant_id: int, update_data: dict[str, Any]) -> None:
+def _resolve_search_join_target_input(
+    session: Session, tenant_id: int, update_data: dict[str, Any]
+) -> None:
     if "target_link" not in update_data:
         return
     target, canonical_link = _simple_search_click_target_from_input(
-        session, tenant_id, str(update_data["target_title"]), str(update_data["target_link"])
+        session,
+        tenant_id,
+        str(update_data["target_title"]),
+        str(update_data["target_link"]),
     )
     update_data["target_operation_target_id"] = target.id
     update_data["target_input"] = canonical_link
     update_data["target_link"] = canonical_link
 
 
-def _remove_unchanged_search_join_target_input(config: dict[str, Any], update_data: dict[str, Any]) -> None:
+def _remove_unchanged_search_join_target_input(
+    config: dict[str, Any], update_data: dict[str, Any]
+) -> None:
     if "target_link" not in update_data:
         return
     unchanged = (
-        int(config.get("target_operation_target_id") or 0) == int(update_data["target_operation_target_id"])
-        and str(config.get("target_title") or "").strip() == str(update_data["target_title"]).strip()
-        and str(config.get("target_link") or config.get("target_input") or "").strip() == str(update_data["target_link"])
+        int(config.get("target_operation_target_id") or 0)
+        == int(update_data["target_operation_target_id"])
+        and str(config.get("target_title") or "").strip()
+        == str(update_data["target_title"]).strip()
+        and str(config.get("target_link") or config.get("target_input") or "").strip()
+        == str(update_data["target_link"])
     )
     if unchanged:
-        for field in ("target_operation_target_id", "target_input", "target_title", "target_link"):
+        for field in (
+            "target_operation_target_id",
+            "target_input",
+            "target_title",
+            "target_link",
+        ):
             update_data.pop(field, None)
 
 
@@ -1813,7 +2460,10 @@ def _normalize_legacy_search_join_config(config: dict[str, Any]) -> dict[str, An
         pairs = repair_legacy_keyword_materials(hashes, ciphertexts)
         normalized["keyword_hashes"] = [item[0] for item in pairs]
         normalized["keyword_text_ciphertexts"] = [item[1] for item in pairs]
-    if "post_join_safe_navigation_min" in normalized or "post_join_safe_navigation_max" in normalized:
+    if (
+        "post_join_safe_navigation_min" in normalized
+        or "post_join_safe_navigation_max" in normalized
+    ):
         normalized["post_join_safe_navigation_min"] = 0
         normalized["post_join_safe_navigation_max"] = 0
     return normalized
@@ -1831,7 +2481,9 @@ def create_search_rank_deboost_task(
     account_pool_id = int(payload.account_pool_id or 0)
     proxy_airport_node_id = int(payload.proxy_airport_node_id or 0)
 
-    type_config = _build_rank_deboost_type_config(payload, account_pool_id, proxy_airport_node_id)
+    type_config = _build_rank_deboost_type_config(
+        payload, account_pool_id, proxy_airport_node_id
+    )
 
     task = Task(
         tenant_id=tenant_id,
@@ -1905,21 +2557,23 @@ def _simple_search_rank_deboost_payload(
         session, tenant_id, payload.target_title, payload.target_link
     )
     return SearchRankDeboostTaskCreate(
-            name=_simple_search_click_name(target, "搜索排名观察", payload.target_count, payload.target_title),
-            search_bots=["jisou"],
-            keywords=[{"text": keyword} for keyword in payload.keywords],
-            target_group_ids=[target.id],
-            account_config=search_click_account_config(payload.account_group_id),
-            scheduled_end=as_beijing(payload.scheduled_end),
-            pacing_config=search_click_pacing_config(payload),
-            config={
-                "target_count": payload.target_count,
-                "target_operation_target_id": target.id,
-                "target_reference_type": TARGET_REFERENCE_OPERATION_TARGET,
-                "target_title": payload.target_title,
-                "target_link": canonical_link,
-            },
-        )
+        name=_simple_search_click_name(
+            target, "搜索排名观察", payload.target_count, payload.target_title
+        ),
+        search_bots=["jisou"],
+        keywords=[{"text": keyword} for keyword in payload.keywords],
+        target_group_ids=[target.id],
+        account_config=search_click_account_config(payload.account_group_id),
+        scheduled_end=as_beijing(payload.scheduled_end),
+        pacing_config=search_click_pacing_config(payload),
+        config={
+            "target_count": payload.target_count,
+            "target_operation_target_id": target.id,
+            "target_reference_type": TARGET_REFERENCE_OPERATION_TARGET,
+            "target_title": payload.target_title,
+            "target_link": canonical_link,
+        },
+    )
 
 
 def create_and_start_search_rank_deboost_task(
@@ -1930,8 +2584,12 @@ def create_and_start_search_rank_deboost_task(
 ) -> Task:
     """创建并启动搜索排名观察任务；未满足真实执行闸门时回滚全部创建痕迹。"""
     try:
-        task = create_search_rank_deboost_task(session, tenant_id, payload, operator, commit=False)
-        return start_task(session, tenant_id, task.id, operator, persist_rank_readiness_failure=False)
+        task = create_search_rank_deboost_task(
+            session, tenant_id, payload, operator, commit=False
+        )
+        return start_task(
+            session, tenant_id, task.id, operator, persist_rank_readiness_failure=False
+        )
     except Exception:
         session.rollback()
         raise
@@ -1962,15 +2620,28 @@ def update_search_rank_deboost_config(
     operator_controls = _search_click_operator_controls(payload, task.type)
     for field in operator_controls:
         update_data.pop(field, None)
-    next_config, target_changed, target_display_changed, keywords_changed, target_count_changed = _next_rank_deboost_config(
+    (
+        next_config,
+        target_changed,
+        target_display_changed,
+        keywords_changed,
+        target_count_changed,
+    ) = _next_rank_deboost_config(
         session,
         tenant_id,
         config=task.type_config or {},
         update_data=update_data,
     )
-    type_config_updated = target_changed or target_display_changed or keywords_changed or target_count_changed
+    type_config_updated = (
+        target_changed
+        or target_display_changed
+        or keywords_changed
+        or target_count_changed
+    )
     account_group_changed = _search_click_account_group_changed(task, operator_controls)
-    controls_updated = _apply_search_click_operator_controls(session, task, operator_controls)
+    controls_updated = _apply_search_click_operator_controls(
+        session, task, operator_controls
+    )
     if not type_config_updated and not controls_updated:
         return task
     type_plan_rebuilt = False
@@ -2021,11 +2692,15 @@ def _next_rank_deboost_config(
     target_count_changed = False
     if "target_link" in update_data:
         target, canonical_link = _simple_search_click_target_from_input(
-            session, tenant_id, str(update_data["target_title"]), str(update_data["target_link"])
+            session,
+            tenant_id,
+            str(update_data["target_title"]),
+            str(update_data["target_link"]),
         )
         target_changed = _rank_deboost_target_changed(next_config, target.id)
         target_display_changed = (
-            str(next_config.get("target_title") or "").strip() != str(update_data["target_title"]).strip()
+            str(next_config.get("target_title") or "").strip()
+            != str(update_data["target_title"]).strip()
             or str(next_config.get("target_link") or "").strip() != canonical_link
         )
         next_config["target_title"] = str(update_data["target_title"]).strip()
@@ -2034,7 +2709,9 @@ def _next_rank_deboost_config(
         next_config["target_operation_target_id"] = target.id
         next_config["target_reference_type"] = TARGET_REFERENCE_OPERATION_TARGET
     elif "target_operation_target_id" in update_data:
-        target = _simple_search_click_target(session, tenant_id, update_data["target_operation_target_id"])
+        target = _simple_search_click_target(
+            session, tenant_id, update_data["target_operation_target_id"]
+        )
         target_changed = _rank_deboost_target_changed(next_config, target.id)
         if target_changed:
             next_config["target_group_ids"] = [target.id]
@@ -2050,7 +2727,13 @@ def _next_rank_deboost_config(
         target_count_changed = target_count != int(next_config.get("target_count") or 0)
         if target_count_changed:
             next_config["target_count"] = target_count
-    return next_config, target_changed, target_display_changed, keywords_changed, target_count_changed
+    return (
+        next_config,
+        target_changed,
+        target_display_changed,
+        keywords_changed,
+        target_count_changed,
+    )
 
 
 def _apply_rank_deboost_config_change(
@@ -2087,7 +2770,9 @@ def _apply_rank_deboost_config_change(
     return True
 
 
-def _reset_rank_deboost_plan_after_operator_change(session: Session, task: Task) -> None:
+def _reset_rank_deboost_plan_after_operator_change(
+    session: Session, task: Task
+) -> None:
     _clear_unfinished_plan(session, task)
     _mark_rank_deboost_pending_if_incomplete(session, task)
 
@@ -2099,7 +2784,9 @@ def _mark_rank_deboost_pending_if_incomplete(session: Session, task: Task) -> No
     task.next_run_at = None
 
 
-def _mark_rank_deboost_account_group_binding_recheck(task: Task, account_group_changed: bool) -> None:
+def _mark_rank_deboost_account_group_binding_recheck(
+    task: Task, account_group_changed: bool
+) -> None:
     if not account_group_changed or not _rank_deboost_readiness_is_ready(task):
         return
     _record_rank_deboost_readiness_pending(
@@ -2116,7 +2803,8 @@ def _rank_deboost_target_changed(config: dict[str, Any], target_id: int) -> bool
         configured_target_id = target_group_ids[0] if len(target_group_ids) == 1 else 0
     return (
         int(configured_target_id or 0) != target_id
-        or _rank_deboost_target_reference_type(config) != TARGET_REFERENCE_OPERATION_TARGET
+        or _rank_deboost_target_reference_type(config)
+        != TARGET_REFERENCE_OPERATION_TARGET
     )
 
 
@@ -2148,7 +2836,9 @@ def reroll_search_rank_deboost_exempt_group(
 
     type_config = task.type_config or {}
     my_target_ids = _rank_deboost_target_tokens(session, task, dict(type_config))
-    search_results = _rank_deboost_exempt_search_results(session, task, dict(type_config))
+    search_results = _rank_deboost_exempt_search_results(
+        session, task, dict(type_config)
+    )
 
     record = preselect_exempt_group(
         session,
@@ -2176,10 +2866,16 @@ def reroll_search_rank_deboost_exempt_group(
     return SearchRankDeboostExemptGroupResponse(**to_exempt_group_response(record))
 
 
-def _rank_deboost_exempt_search_results(session: Session, task: Task, type_config: dict[str, Any]) -> list[dict]:
+def _rank_deboost_exempt_search_results(
+    session: Session, task: Task, type_config: dict[str, Any]
+) -> list[dict]:
     account = _rank_deboost_exempt_account(session, task)
-    payload, keyword_text = _rank_deboost_exempt_payload(session, task, account, type_config)
-    authorization = resolve_rank_deboost_runtime_authorization(session, account, payload)
+    payload, keyword_text = _rank_deboost_exempt_payload(
+        session, task, account, type_config
+    )
+    authorization = resolve_rank_deboost_runtime_authorization(
+        session, account, payload
+    )
     searcher = getattr(gateway, "search_rank_deboost_candidates", None)
     if not callable(searcher):
         raise ValueError("搜索排名观察真实搜索候选源未接入，不能重选随机豁免群")
@@ -2193,7 +2889,11 @@ def _rank_deboost_exempt_search_results(session: Session, task: Task, type_confi
         )
     except Exception as exc:
         raise ValueError(f"搜索排名观察真实候选搜索失败：{type(exc).__name__}") from exc
-    if not isinstance(result, dict) or result.get("execution_status") != "candidates_found" or not result.get("success"):
+    if (
+        not isinstance(result, dict)
+        or result.get("execution_status") != "candidates_found"
+        or not result.get("success")
+    ):
         raise ValueError("搜索排名观察真实搜索候选源返回格式无效")
     results = result.get("search_results")
     if not isinstance(results, list):
@@ -2204,13 +2904,17 @@ def _rank_deboost_exempt_search_results(session: Session, task: Task, type_confi
 
 
 def _rank_deboost_exempt_account(session: Session, task: Task) -> TgAccount:
-    pool_ids = _rank_deboost_selected_pool_ids(session, task.tenant_id, dict(task.account_config or {}))
-    statement = apply_rank_deboost_account_filters(select(TgAccount).where(
-        TgAccount.tenant_id == task.tenant_id,
-        TgAccount.pool_id.in_(pool_ids),
-        TgAccount.status == AccountStatus.ACTIVE.value,
-        TgAccount.deleted_at.is_(None),
-    ))
+    pool_ids = _rank_deboost_selected_pool_ids(
+        session, task.tenant_id, dict(task.account_config or {})
+    )
+    statement = apply_rank_deboost_account_filters(
+        select(TgAccount).where(
+            TgAccount.tenant_id == task.tenant_id,
+            TgAccount.pool_id.in_(pool_ids),
+            TgAccount.status == AccountStatus.ACTIVE.value,
+            TgAccount.deleted_at.is_(None),
+        )
+    )
     account = session.scalar(statement.order_by(TgAccount.id.asc()).limit(1))
     if account is None:
         raise ValueError("搜索排名观察真实候选搜索缺少可执行黑账号")
@@ -2224,7 +2928,9 @@ def _rank_deboost_exempt_payload(
     type_config: dict[str, Any],
 ) -> tuple[SearchRankDeboostPayload, str]:
     keyword_text = _rank_deboost_first_keyword(type_config)
-    binding = _rank_deboost_active_binding(session, task.tenant_id, int(account.pool_id or 0))
+    binding = _rank_deboost_active_binding(
+        session, task.tenant_id, int(account.pool_id or 0)
+    )
     target_refs = require_rank_deboost_target_group_refs(
         session,
         task.tenant_id,
@@ -2232,7 +2938,8 @@ def _rank_deboost_exempt_payload(
         reference_type=_rank_deboost_target_reference_type(type_config),
     )
     return SearchRankDeboostPayload(
-        bot_username=_first_rank_deboost_bot(list(type_config.get("search_bots") or [])) or "jisou",
+        bot_username=_first_rank_deboost_bot(list(type_config.get("search_bots") or []))
+        or "jisou",
         keyword_hash=hashlib.sha256(keyword_text.lower().encode("utf-8")).hexdigest(),
         keyword_text_ciphertext=encrypt_secret(keyword_text),
         target_group_ids=list(type_config.get("target_group_ids") or []),
@@ -2257,19 +2964,27 @@ def _rank_deboost_first_keyword(type_config: dict[str, Any]) -> str:
     raise ValueError("搜索排名观察真实候选搜索缺少关键词")
 
 
-def _rank_deboost_active_binding(session: Session, tenant_id: int, account_pool_id: int) -> AccountGroupProxyBinding:
-    binding = session.scalar(select(AccountGroupProxyBinding).where(
-        AccountGroupProxyBinding.tenant_id == tenant_id,
-        AccountGroupProxyBinding.account_pool_id == account_pool_id,
-        AccountGroupProxyBinding.status == "active",
-        AccountGroupProxyBinding.unbound_at.is_(None),
-    ).limit(1))
+def _rank_deboost_active_binding(
+    session: Session, tenant_id: int, account_pool_id: int
+) -> AccountGroupProxyBinding:
+    binding = session.scalar(
+        select(AccountGroupProxyBinding)
+        .where(
+            AccountGroupProxyBinding.tenant_id == tenant_id,
+            AccountGroupProxyBinding.account_pool_id == account_pool_id,
+            AccountGroupProxyBinding.status == "active",
+            AccountGroupProxyBinding.unbound_at.is_(None),
+        )
+        .limit(1)
+    )
     if binding is None:
         raise ValueError("搜索排名观察真实候选搜索缺少 active 分组代理绑定")
     return binding
 
 
-def _rank_deboost_target_tokens(session: Session, task: Task, type_config: dict[str, Any]) -> list[int | str]:
+def _rank_deboost_target_tokens(
+    session: Session, task: Task, type_config: dict[str, Any]
+) -> list[int | str]:
     target_ids = list(type_config.get("target_group_ids") or [])
     refs = rank_deboost_target_group_refs(
         session,
@@ -2300,21 +3015,33 @@ def _rank_deboost_ready_bindings(
     account_config: dict[str, Any],
 ) -> list[AccountGroupProxyBinding]:
     pool_ids = _rank_deboost_selected_pool_ids(session, tenant_id, account_config)
-    bindings = list(session.scalars(select(AccountGroupProxyBinding).where(
-        AccountGroupProxyBinding.tenant_id == tenant_id,
-        AccountGroupProxyBinding.account_pool_id.in_(pool_ids),
-        AccountGroupProxyBinding.status == "active",
-        AccountGroupProxyBinding.runtime_proxy_id.is_not(None),
-        AccountGroupProxyBinding.unbound_at.is_(None),
-    ).order_by(AccountGroupProxyBinding.account_pool_id.asc())))
+    bindings = list(
+        session.scalars(
+            select(AccountGroupProxyBinding)
+            .where(
+                AccountGroupProxyBinding.tenant_id == tenant_id,
+                AccountGroupProxyBinding.account_pool_id.in_(pool_ids),
+                AccountGroupProxyBinding.status == "active",
+                AccountGroupProxyBinding.runtime_proxy_id.is_not(None),
+                AccountGroupProxyBinding.unbound_at.is_(None),
+            )
+            .order_by(AccountGroupProxyBinding.account_pool_id.asc())
+        )
+    )
     bound_pool_ids = {int(binding.account_pool_id) for binding in bindings}
-    missing_pool_ids = [pool_id for pool_id in pool_ids if pool_id not in bound_pool_ids]
+    missing_pool_ids = [
+        pool_id for pool_id in pool_ids if pool_id not in bound_pool_ids
+    ]
     if missing_pool_ids:
-        raise ValueError(f"搜索排名观察专用分组缺少 active runtime 代理绑定：{missing_pool_ids}")
+        raise ValueError(
+            f"搜索排名观察专用分组缺少 active runtime 代理绑定：{missing_pool_ids}"
+        )
     return bindings
 
 
-def _rank_deboost_selected_pool_ids(session: Session, tenant_id: int, account_config: dict[str, Any]) -> list[int]:
+def _rank_deboost_selected_pool_ids(
+    session: Session, tenant_id: int, account_config: dict[str, Any]
+) -> list[int]:
     mode = str(account_config.get("selection_mode") or "all")
     stmt = select(AccountPool.id).where(
         AccountPool.tenant_id == tenant_id,
@@ -2327,18 +3054,26 @@ def _rank_deboost_selected_pool_ids(session: Session, tenant_id: int, account_co
             raise ValueError("搜索排名观察任务缺少黑账号组")
         stmt = stmt.where(AccountPool.id == pool_id)
     elif mode == "manual":
-        account_ids = [int(item) for item in account_config.get("account_ids") or [] if int(item) > 0]
+        account_ids = [
+            int(item)
+            for item in account_config.get("account_ids") or []
+            if int(item) > 0
+        ]
         if not account_ids:
             raise ValueError("搜索排名观察任务缺少手动黑账号")
-        stmt = stmt.where(AccountPool.id.in_(
-            select(TgAccount.pool_id).where(
-                TgAccount.tenant_id == tenant_id,
-                TgAccount.id.in_(account_ids),
-                TgAccount.account_identity == "rank_deboost",
-                TgAccount.pool_id.is_not(None),
+        stmt = stmt.where(
+            AccountPool.id.in_(
+                select(TgAccount.pool_id).where(
+                    TgAccount.tenant_id == tenant_id,
+                    TgAccount.id.in_(account_ids),
+                    TgAccount.account_identity == "rank_deboost",
+                    TgAccount.pool_id.is_not(None),
+                )
             )
-        ))
-    pool_ids = [int(pool_id) for pool_id in session.scalars(stmt.order_by(AccountPool.id.asc()))]
+        )
+    pool_ids = [
+        int(pool_id) for pool_id in session.scalars(stmt.order_by(AccountPool.id.asc()))
+    ]
     if not pool_ids:
         raise ValueError("搜索排名观察任务没有可用黑账号组")
     return pool_ids
@@ -2388,12 +3123,18 @@ def start_task_in_transaction(
 
         start_existing_group_clone(session, task)
         audit(
-            session, tenant_id=tenant_id, actor=actor,
-            action="启动任务中心任务", target_type="task", target_id=task.id,
+            session,
+            tenant_id=tenant_id,
+            actor=actor,
+            action="启动任务中心任务",
+            target_type="task",
+            target_id=task.id,
         )
         return _start_execution_result(session, task)
     if task.type in {"search_click", "search_join_group", "search_rank_deboost"}:
-        if _check_stop_conditions(session, task) or _search_click_task_completed_on_start(session, task):
+        if _check_stop_conditions(
+            session, task
+        ) or _search_click_task_completed_on_start(session, task):
             return _start_execution_result(session, task)
     takeover_task(session, task)
     if task.type == "channel_comment":
@@ -2421,7 +3162,14 @@ def start_task_in_transaction(
     activate_task_ai_content_config(session, task)
     _initialize_runtime_contracts(session, task)
     _set_runtime_projection(session, task)
-    audit(session, tenant_id=tenant_id, actor=actor, action="启动任务中心任务", target_type="task", target_id=task.id)
+    audit(
+        session,
+        tenant_id=tenant_id,
+        actor=actor,
+        action="启动任务中心任务",
+        target_type="task",
+        target_id=task.id,
+    )
     return _start_execution_result(session, task)
 
 
@@ -2470,8 +3218,12 @@ def pause_task(session: Session, tenant_id: int, task_id: str, actor: str) -> Ta
 
         pause_group_clone(task)
         audit(
-            session, tenant_id=tenant_id, actor=actor,
-            action="暂停任务中心任务", target_type="task", target_id=task.id,
+            session,
+            tenant_id=tenant_id,
+            actor=actor,
+            action="暂停任务中心任务",
+            target_type="task",
+            target_id=task.id,
         )
         session.commit()
         session.refresh(task)
@@ -2512,8 +3264,12 @@ def resume_task(session: Session, tenant_id: int, task_id: str, actor: str) -> T
 
         resume_group_clone(session, task)
         audit(
-            session, tenant_id=tenant_id, actor=actor,
-            action="恢复任务中心任务", target_type="task", target_id=task.id,
+            session,
+            tenant_id=tenant_id,
+            actor=actor,
+            action="恢复任务中心任务",
+            target_type="task",
+            target_id=task.id,
         )
         session.commit()
         session.refresh(task)
@@ -2521,16 +3277,22 @@ def resume_task(session: Session, tenant_id: int, task_id: str, actor: str) -> T
     return start_task(session, tenant_id, task_id, actor)
 
 
-def stop_task(session: Session, tenant_id: int, task_id: str, actor: str, reason: str = "") -> Task:
+def stop_task(
+    session: Session, tenant_id: int, task_id: str, actor: str, reason: str = ""
+) -> Task:
     task = _get_task_for_lifecycle(session, tenant_id, task_id)
     if task.type == "group_clone":
         from .group_clone_runtime_lifecycle import stop_group_clone_runtime
 
         stop_group_clone_runtime(session, task)
         audit(
-            session, tenant_id=tenant_id, actor=actor,
-            action="停止任务中心任务", target_type="task",
-            target_id=task.id, detail=reason,
+            session,
+            tenant_id=tenant_id,
+            actor=actor,
+            action="停止任务中心任务",
+            target_type="task",
+            target_id=task.id,
+            detail=reason,
         )
         session.commit()
         session.refresh(task)
@@ -2547,15 +3309,27 @@ def stop_task(session: Session, tenant_id: int, task_id: str, actor: str, reason
         now=_now(),
     )
     refresh_task_stats(session, task)
-    audit(session, tenant_id=tenant_id, actor=actor, action="停止任务中心任务", target_type="task", target_id=task.id, detail=reason)
+    audit(
+        session,
+        tenant_id=tenant_id,
+        actor=actor,
+        action="停止任务中心任务",
+        target_type="task",
+        target_id=task.id,
+        detail=reason,
+    )
     session.commit()
     session.refresh(task)
     return task
 
 
-def delete_task(session: Session, tenant_id: int, task_id: str, actor: str, reason: str = "") -> None:
+def delete_task(
+    session: Session, tenant_id: int, task_id: str, actor: str, reason: str = ""
+) -> None:
     if is_profile_batch_task_id(task_id):
-        delete_profile_batch_task(session, tenant_id, task_id, actor=actor, reason=reason)
+        delete_profile_batch_task(
+            session, tenant_id, task_id, actor=actor, reason=reason
+        )
         return
     task = _get_task_for_lifecycle(session, tenant_id, task_id)
     if task.type == "group_clone":
@@ -2579,8 +3353,18 @@ def delete_task(session: Session, tenant_id: int, task_id: str, actor: str, reas
     task.deleted_by = actor
     task.delete_reason = reason
     task.updated_at = now
-    clear_task_runtime_artifacts(session, task, reason="任务删除后自动解决关联告警", actor=actor)
-    audit(session, tenant_id=tenant_id, actor=actor, action="删除任务中心任务", target_type="task", target_id=task.id, detail=reason)
+    clear_task_runtime_artifacts(
+        session, task, reason="任务删除后自动解决关联告警", actor=actor
+    )
+    audit(
+        session,
+        tenant_id=tenant_id,
+        actor=actor,
+        action="删除任务中心任务",
+        target_type="task",
+        target_id=task.id,
+        detail=reason,
+    )
     session.commit()
 
 
@@ -2593,10 +3377,16 @@ def _settle_task_closing_actions(
     error_message: str,
     now: datetime,
 ) -> None:
-    actions = list(session.scalars(select(Action).where(
-        Action.task_id == task.id,
-        Action.status.in_(statuses),
-    ).with_for_update()))
+    actions = list(
+        session.scalars(
+            select(Action)
+            .where(
+                Action.task_id == task.id,
+                Action.status.in_(statuses),
+            )
+            .with_for_update()
+        )
+    )
     for action in actions:
         _settle_task_closing_action(
             session,
@@ -2706,13 +3496,21 @@ SAFE_RETRY_ACTION_STATUSES = ("failed", "skipped", "cancelled")
 MAX_AUDIT_REJECTED_IDS = 20
 
 
-def retry_task(session: Session, tenant_id: int, task_id: str, payload: TaskRetryRequest, actor: str) -> Task:
+def retry_task(
+    session: Session,
+    tenant_id: int,
+    task_id: str,
+    payload: TaskRetryRequest,
+    actor: str,
+) -> Task:
     task = _get_task(session, tenant_id, task_id)
     retry_slots: int | None = None
     if task.type in {"search_click", "search_join_group", "search_rank_deboost"}:
         if task.type == "search_rank_deboost":
             lock_rank_deboost_quota_scope(session, task)
-        session.execute(select(Task.id).where(Task.id == task.id).with_for_update()).scalar_one()
+        session.execute(
+            select(Task.id).where(Task.id == task.id).with_for_update()
+        ).scalar_one()
         session.refresh(task)
         target_progress = reconcile_search_click_target_progress(session, task)
         if target_progress.completed:
@@ -2756,10 +3554,14 @@ def _retry_safe_actions(
     retry_slots: int | None,
     now: datetime,
 ) -> tuple[int, list[str]]:
-    stmt = select(Action).where(
-        Action.task_id == task.id,
-        Action.status.in_(SAFE_RETRY_ACTION_STATUSES),
-    ).with_for_update()
+    stmt = (
+        select(Action)
+        .where(
+            Action.task_id == task.id,
+            Action.status.in_(SAFE_RETRY_ACTION_STATUSES),
+        )
+        .with_for_update()
+    )
     retried_count = 0
     rejected_ids: list[str] = []
     for action in session.scalars(stmt):
@@ -2791,10 +3593,14 @@ def _mark_unknown_retry_blockers(session: Session, task: Task) -> list[str]:
         if task.type == "search_rank_deboost"
         else "unsafe_retry_gateway_outcome_unknown"
     )
-    stmt = select(Action).where(
-        Action.task_id == task.id,
-        Action.status == "unknown_after_send",
-    ).with_for_update()
+    stmt = (
+        select(Action)
+        .where(
+            Action.task_id == task.id,
+            Action.status == "unknown_after_send",
+        )
+        .with_for_update()
+    )
     rejected_ids: list[str] = []
     for action in session.scalars(stmt):
         if (action.result or {}).get("retry_skipped_reason") != reason:
@@ -2854,10 +3660,16 @@ def _action_retry_remote_evidence(session: Session, action: Action) -> tuple[boo
         return False, "unsafe_retry_evidence_conflict"
     if typed_flag is True or journal_state == "true":
         return False, "unsafe_retry_remote_mutation_started"
-    gateway_started = attempt is not None and attempt.gateway_call_started_at is not None
+    gateway_started = (
+        attempt is not None and attempt.gateway_call_started_at is not None
+    )
     if gateway_started:
         return False, "unsafe_retry_gateway_outcome_unknown"
-    if journal_state == "false" or typed_flag is False or result.get("error_code") == "pre_accept_rejected":
+    if (
+        journal_state == "false"
+        or typed_flag is False
+        or result.get("error_code") == "pre_accept_rejected"
+    ):
         return True, ""
     return False, "unsafe_retry_evidence_missing"
 
@@ -2902,7 +3714,9 @@ def _action_should_retry(session: Session, task: Task, action: Action) -> bool:
     )
 
 
-def _prepare_action_retry(session: Session, task: Task, action: Action, now: datetime) -> bool:
+def _prepare_action_retry(
+    session: Session, task: Task, action: Action, now: datetime
+) -> bool:
     if action.action_type == SEARCH_JOIN_MEMBERSHIP_ACTION_TYPE:
         rebind_membership_action_to_source_account(session, action)
         return True
@@ -2975,16 +3789,22 @@ def _set_retry_blocker(action: Action, reason: str) -> None:
     action.result = {**(action.result or {}), "retry_skipped_reason": reason}
 
 
-def reset_task(session: Session, tenant_id: int, task_id: str, actor: str, reason: str = "") -> Task:
+def reset_task(
+    session: Session, tenant_id: int, task_id: str, actor: str, reason: str = ""
+) -> Task:
     task = _get_task(session, tenant_id, task_id)
     if task.type == "group_clone":
         from .group_clone_runtime_lifecycle import reset_group_clone_runtime
 
         reset_group_clone_runtime(session, task)
         audit(
-            session, tenant_id=tenant_id, actor=actor,
-            action="重置任务中心任务", target_type="task",
-            target_id=task.id, detail=reason,
+            session,
+            tenant_id=tenant_id,
+            actor=actor,
+            action="重置任务中心任务",
+            target_type="task",
+            target_id=task.id,
+            detail=reason,
         )
         session.commit()
         session.refresh(task)
@@ -3007,19 +3827,33 @@ def reset_task(session: Session, tenant_id: int, task_id: str, actor: str, reaso
             tenant_id=tenant_id,
             task_id=task.id,
             operator=actor,
-            my_target_ids=_rank_deboost_target_tokens(session, task, dict(task.type_config or {})),
+            my_target_ids=_rank_deboost_target_tokens(
+                session, task, dict(task.type_config or {})
+            ),
             search_results=None,
         )
         _record_rank_deboost_readiness_pending(task, "reset_requires_start")
         task.status = "draft"
         task.next_run_at = None
     else:
-        task.status = "pending" if task.scheduled_start and task.scheduled_start > now else "running"
+        task.status = (
+            "pending"
+            if task.scheduled_start and task.scheduled_start > now
+            else "running"
+        )
         task.next_run_at = task.scheduled_start if task.status == "pending" else now
     task.last_error = ""
     task.updated_at = now
     refresh_task_stats(session, task)
-    audit(session, tenant_id=tenant_id, actor=actor, action="重置任务中心任务", target_type="task", target_id=task.id, detail=reason)
+    audit(
+        session,
+        tenant_id=tenant_id,
+        actor=actor,
+        action="重置任务中心任务",
+        target_type="task",
+        target_id=task.id,
+        detail=reason,
+    )
     session.commit()
     session.refresh(task)
     return task
@@ -3036,13 +3870,24 @@ def _clear_group_ai_context_fingerprints(session: Session, task: Task) -> None:
     )
 
 
-def list_actions(session: Session, tenant_id: int, task_id: str | None = None, status: str | None = None) -> list[Action]:
+def list_actions(
+    session: Session,
+    tenant_id: int,
+    task_id: str | None = None,
+    status: str | None = None,
+) -> list[Action]:
     stmt = select(Action).where(Action.tenant_id == tenant_id)
     if task_id:
         stmt = stmt.where(Action.task_id == task_id)
     if status:
         stmt = stmt.where(Action.status == status)
-    return list(session.scalars(stmt.order_by(Action.scheduled_at.desc(), Action.created_at.desc()).limit(500)))
+    return list(
+        session.scalars(
+            stmt.order_by(Action.scheduled_at.desc(), Action.created_at.desc()).limit(
+                500
+            )
+        )
+    )
 
 
 def list_actions_page(
@@ -3087,13 +3932,35 @@ def list_actions_page(
     return _action_payloads_with_issue_rollup(session, tenant_id, actions), int(total)
 
 
-def list_ai_cycles_page(session: Session, tenant_id: int, task_id: str, *, page: int = 1, page_size: int = 20) -> tuple[list[dict[str, Any]], int]:
+def list_ai_cycles_page(
+    session: Session,
+    tenant_id: int,
+    task_id: str,
+    *,
+    page: int = 1,
+    page_size: int = 20,
+) -> tuple[list[dict[str, Any]], int]:
     cycle_id = Action.payload["cycle_id"].as_string()
-    actions, total = _list_actions_for_group_page(session, tenant_id, task_id, [cycle_id.is_not(None)], [cycle_id], page=page, page_size=page_size)
+    actions, total = _list_actions_for_group_page(
+        session,
+        tenant_id,
+        task_id,
+        [cycle_id.is_not(None)],
+        [cycle_id],
+        page=page,
+        page_size=page_size,
+    )
     return _ai_cycles(actions), total
 
 
-def list_message_groups_page(session: Session, tenant_id: int, task_id: str, *, page: int = 1, page_size: int = 20) -> tuple[list[dict[str, Any]], int]:
+def list_message_groups_page(
+    session: Session,
+    tenant_id: int,
+    task_id: str,
+    *,
+    page: int = 1,
+    page_size: int = 20,
+) -> tuple[list[dict[str, Any]], int]:
     task = _get_task(session, tenant_id, task_id)
     channel_target_id = Action.payload["channel_target_id"].as_integer()
     channel_message_id = Action.payload["channel_message_id"].as_integer()
@@ -3103,13 +3970,30 @@ def list_message_groups_page(session: Session, tenant_id: int, task_id: str, *, 
         Action.payload["channel_id"].as_string().is_not(None),
     ]
     key_exprs = [channel_target_id, channel_message_id, message_id, Action.action_type]
-    actions, total = _list_actions_for_group_page(session, tenant_id, task_id, filters, key_exprs, page=page, page_size=page_size)
+    actions, total = _list_actions_for_group_page(
+        session, tenant_id, task_id, filters, key_exprs, page=page, page_size=page_size
+    )
     return _message_groups(session, task, actions), total
 
 
-def list_relay_batches_page(session: Session, tenant_id: int, task_id: str, *, page: int = 1, page_size: int = 20) -> tuple[list[dict[str, Any]], int]:
+def list_relay_batches_page(
+    session: Session,
+    tenant_id: int,
+    task_id: str,
+    *,
+    page: int = 1,
+    page_size: int = 20,
+) -> tuple[list[dict[str, Any]], int]:
     batch_id = Action.payload["relay_batch_id"].as_string()
-    actions, total = _list_actions_for_group_page(session, tenant_id, task_id, [batch_id.is_not(None)], [batch_id], page=page, page_size=page_size)
+    actions, total = _list_actions_for_group_page(
+        session,
+        tenant_id,
+        task_id,
+        [batch_id.is_not(None)],
+        [batch_id],
+        page=page,
+        page_size=page_size,
+    )
     return _relay_batches(actions), total
 
 
@@ -3125,7 +4009,9 @@ def _list_actions_for_group_page(
 ) -> tuple[list[Action], int]:
     _get_task(session, tenant_id, task_id)
     filters = [Action.tenant_id == tenant_id, Action.task_id == task_id, *extra_filters]
-    page_keys, total = _group_page_keys(session, filters, key_exprs, page=page, page_size=page_size)
+    page_keys, total = _group_page_keys(
+        session, filters, key_exprs, page=page, page_size=page_size
+    )
     if not page_keys:
         return [], total
     key_filter = _group_key_filter(key_exprs, page_keys)
@@ -3139,10 +4025,21 @@ def _list_actions_for_group_page(
     return actions, int(total)
 
 
-def _group_page_keys(session: Session, filters: list[Any], key_exprs: list[Any], *, page: int, page_size: int) -> tuple[list[tuple], int]:
+def _group_page_keys(
+    session: Session,
+    filters: list[Any],
+    key_exprs: list[Any],
+    *,
+    page: int,
+    page_size: int,
+) -> tuple[list[tuple], int]:
     labels = [expr.label(f"key_{index}") for index, expr in enumerate(key_exprs)]
     grouped = (
-        select(*labels, func.max(Action.scheduled_at).label("latest_scheduled"), func.max(Action.created_at).label("latest_created"))
+        select(
+            *labels,
+            func.max(Action.scheduled_at).label("latest_scheduled"),
+            func.max(Action.created_at).label("latest_created"),
+        )
         .where(*filters)
         .group_by(*key_exprs)
         .subquery()
@@ -3158,7 +4055,17 @@ def _group_page_keys(session: Session, filters: list[Any], key_exprs: list[Any],
 
 
 def _group_key_filter(key_exprs: list[Any], keys: list[tuple]) -> Any:
-    return or_(*[and_(*[_value_matches(expr, value) for expr, value in zip(key_exprs, key, strict=True)]) for key in keys])
+    return or_(
+        *[
+            and_(
+                *[
+                    _value_matches(expr, value)
+                    for expr, value in zip(key_exprs, key, strict=True)
+                ]
+            )
+            for key in keys
+        ]
+    )
 
 
 def _value_matches(expr: Any, value: Any) -> Any:
@@ -3230,7 +4137,13 @@ def _filtered_membership_items_page(
     start = (page - 1) * page_size
     while True:
         actions, action_total = _list_membership_actions_page(
-            session, task.tenant_id, task.id, status=status, account_id=account_id, page=action_page, page_size=chunk_size
+            session,
+            task.tenant_id,
+            task.id,
+            status=status,
+            account_id=account_id,
+            page=action_page,
+            page_size=chunk_size,
         )
         if not actions:
             return selected, total_matches
@@ -3245,10 +4158,15 @@ def _filtered_membership_items_page(
         action_page += 1
 
 
-def _membership_row_matches(row: dict[str, Any], phase: str | None, manual_required: bool | None) -> bool:
+def _membership_row_matches(
+    row: dict[str, Any], phase: str | None, manual_required: bool | None
+) -> bool:
     if phase and row.get("phase") != phase:
         return False
-    if manual_required is not None and bool(row.get("manual_required")) != manual_required:
+    if (
+        manual_required is not None
+        and bool(row.get("manual_required")) != manual_required
+    ):
         return False
     return True
 
@@ -3263,13 +4181,19 @@ def _list_membership_actions_page(
     page: int = 1,
     page_size: int = 50,
 ) -> tuple[list[Action], int]:
-    filters = _membership_action_filters(tenant_id, task_id, status=status, account_id=account_id)
+    filters = _membership_action_filters(
+        tenant_id, task_id, status=status, account_id=account_id
+    )
     total = session.scalar(select(func.count(Action.id)).where(*filters)) or 0
     rows = list(
         session.scalars(
             select(Action)
             .where(*filters)
-            .order_by(Action.scheduled_at.desc(), Action.account_id.asc(), Action.created_at.desc())
+            .order_by(
+                Action.scheduled_at.desc(),
+                Action.account_id.asc(),
+                Action.created_at.desc(),
+            )
             .offset((page - 1) * page_size)
             .limit(page_size)
         )
@@ -3277,12 +4201,19 @@ def _list_membership_actions_page(
     return rows, int(total)
 
 
-def _membership_page_payloads(session: Session, task: Task, actions: list[Action]) -> list[dict[str, Any]]:
+def _membership_page_payloads(
+    session: Session, task: Task, actions: list[Action]
+) -> list[dict[str, Any]]:
     accounts = _accounts_by_id(session, actions)
     groups = _groups_by_target_id(session, task.tenant_id, actions)
-    verifications = _verification_tasks_by_group_account(session, task.tenant_id, groups, actions)
+    verifications = _verification_tasks_by_group_account(
+        session, task.tenant_id, groups, actions
+    )
     attempts = _latest_attempts_by_action(session, actions)
-    return [_membership_item_payload(action, accounts, groups, verifications, attempts) for action in actions]
+    return [
+        _membership_item_payload(action, accounts, groups, verifications, attempts)
+        for action in actions
+    ]
 
 
 def _list_membership_actions(
@@ -3293,8 +4224,16 @@ def _list_membership_actions(
     status: str | None = None,
     account_id: int | None = None,
 ) -> list[Action]:
-    filters = _membership_action_filters(tenant_id, task_id, status=status, account_id=account_id)
-    return list(session.scalars(select(Action).where(*filters).order_by(Action.scheduled_at.desc(), Action.created_at.desc())))
+    filters = _membership_action_filters(
+        tenant_id, task_id, status=status, account_id=account_id
+    )
+    return list(
+        session.scalars(
+            select(Action)
+            .where(*filters)
+            .order_by(Action.scheduled_at.desc(), Action.created_at.desc())
+        )
+    )
 
 
 def _membership_action_filters(
@@ -3307,7 +4246,9 @@ def _membership_action_filters(
     filters: list[Any] = [
         Action.tenant_id == tenant_id,
         Action.task_id == task_id,
-        Action.action_type.in_([TARGET_MEMBERSHIP_ACTION_TYPE, LEGACY_MEMBERSHIP_ACTION_TYPE]),
+        Action.action_type.in_(
+            [TARGET_MEMBERSHIP_ACTION_TYPE, LEGACY_MEMBERSHIP_ACTION_TYPE]
+        ),
     ]
     if status:
         filters.append(Action.status == status)
@@ -3316,36 +4257,62 @@ def _membership_action_filters(
     return filters
 
 
-def list_action_attempts(session: Session, tenant_id: int, task_id: str, action_id: str) -> list[ExecutionAttempt]:
+def list_action_attempts(
+    session: Session, tenant_id: int, task_id: str, action_id: str
+) -> list[ExecutionAttempt]:
     action = session.get(Action, action_id)
     if not action or action.tenant_id != tenant_id or action.task_id != task_id:
         raise ValueError("action not found")
     return list(
         session.scalars(
             select(ExecutionAttempt)
-            .where(ExecutionAttempt.tenant_id == tenant_id, ExecutionAttempt.action_id == action_id)
-            .order_by(ExecutionAttempt.attempt_no.asc(), ExecutionAttempt.created_at.asc())
+            .where(
+                ExecutionAttempt.tenant_id == tenant_id,
+                ExecutionAttempt.action_id == action_id,
+            )
+            .order_by(
+                ExecutionAttempt.attempt_no.asc(), ExecutionAttempt.created_at.asc()
+            )
         )
     )
 
 
-def generate_group_ai_chat_preview(session: Session, tenant_id: int, payload: GroupAIChatTaskPreviewRequest) -> dict[str, list[str]]:
-    config = GroupAIChatConfig(**payload.model_dump(mode="json", exclude={"count"})).model_dump(mode="json")
-    contents, _ = generate_group_messages(session, tenant_id, config, count=payload.count, target_label="群组", history="")
+def generate_group_ai_chat_preview(
+    session: Session, tenant_id: int, payload: GroupAIChatTaskPreviewRequest
+) -> dict[str, list[str]]:
+    config = GroupAIChatConfig(
+        **payload.model_dump(mode="json", exclude={"count"})
+    ).model_dump(mode="json")
+    contents, _ = generate_group_messages(
+        session, tenant_id, config, count=payload.count, target_label="群组", history=""
+    )
     if len(contents) < payload.count:
         raise AiGenerationUnavailable(GROUP_PREVIEW_CANDIDATE_SHORTFALL_MESSAGE)
     return {"previews": contents[: payload.count]}
 
 
-def generate_channel_comment_preview(session: Session, tenant_id: int, payload: ChannelCommentTaskPreviewRequest) -> dict[str, list[str]]:
-    config = ChannelCommentConfig(**payload.model_dump(mode="json", exclude={"count", "message_content"})).model_dump(mode="json")
-    contents, _ = generate_channel_comments(session, tenant_id, config, count=payload.count, message_content=payload.message_content or "频道消息内容示例", target_label="频道")
+def generate_channel_comment_preview(
+    session: Session, tenant_id: int, payload: ChannelCommentTaskPreviewRequest
+) -> dict[str, list[str]]:
+    config = ChannelCommentConfig(
+        **payload.model_dump(mode="json", exclude={"count", "message_content"})
+    ).model_dump(mode="json")
+    contents, _ = generate_channel_comments(
+        session,
+        tenant_id,
+        config,
+        count=payload.count,
+        message_content=payload.message_content or "频道消息内容示例",
+        target_label="频道",
+    )
     if len(contents) < payload.count:
         raise AiGenerationUnavailable(CHANNEL_PREVIEW_CANDIDATE_SHORTFALL_MESSAGE)
     return {"previews": contents[: payload.count]}
 
 
-def recommend_accounts(session: Session, tenant_id: int, payload: RecommendTaskAccountsRequest) -> list[dict[str, Any]]:
+def recommend_accounts(
+    session: Session, tenant_id: int, payload: RecommendTaskAccountsRequest
+) -> list[dict[str, Any]]:
     accounts = select_task_accounts(
         session,
         tenant_id,
@@ -3353,10 +4320,21 @@ def recommend_accounts(session: Session, tenant_id: int, payload: RecommendTaskA
         target_group_id=payload.target_group_id,
         limit=payload.limit,
     )
-    return [{"id": item.id, "display_name": item.display_name, "username": item.username, "status": item.status, "reason": "可用账号"} for item in accounts]
+    return [
+        {
+            "id": item.id,
+            "display_name": item.display_name,
+            "username": item.username,
+            "status": item.status,
+            "reason": "可用账号",
+        }
+        for item in accounts
+    ]
 
 
-def check_channel_capacity(session: Session, tenant_id: int, payload: ChannelCapacityCheckRequest) -> dict[str, Any]:
+def check_channel_capacity(
+    session: Session, tenant_id: int, payload: ChannelCapacityCheckRequest
+) -> dict[str, Any]:
     accounts = select_task_accounts(
         session,
         tenant_id,
@@ -3367,10 +4345,26 @@ def check_channel_capacity(session: Session, tenant_id: int, payload: ChannelCap
     membership_summary: dict[str, Any] = {}
     if payload.target_channel_id:
         channel = session.get(OperationTarget, int(payload.target_channel_id))
-        if channel and channel.tenant_id == tenant_id and channel.target_type == "channel":
-            membership_summary = channel_membership_summary(session, tenant_id, channel, payload.account_config.model_dump(mode="json"), candidates=accounts)
-            effective_count = int(membership_summary.get("joined_account_count") or 0) + int(membership_summary.get("need_join_account_count") or 0)
-    action_label = {"channel_view": "浏览", "channel_like": "点赞", "channel_comment": "评论"}.get(payload.task_type, "互动")
+        if (
+            channel
+            and channel.tenant_id == tenant_id
+            and channel.target_type == "channel"
+        ):
+            membership_summary = channel_membership_summary(
+                session,
+                tenant_id,
+                channel,
+                payload.account_config.model_dump(mode="json"),
+                candidates=accounts,
+            )
+            effective_count = int(
+                membership_summary.get("joined_account_count") or 0
+            ) + int(membership_summary.get("need_join_account_count") or 0)
+    action_label = {
+        "channel_view": "浏览",
+        "channel_like": "点赞",
+        "channel_comment": "评论",
+    }.get(payload.task_type, "互动")
     will_shortfall = payload.target_per_message > effective_count
     warning = ""
     if will_shortfall:
@@ -3385,7 +4379,9 @@ def check_channel_capacity(session: Session, tenant_id: int, payload: ChannelCap
     }
 
 
-def precheck_task_creation(session: Session, tenant_id: int, payload: TaskPrecheckRequest) -> dict[str, Any]:
+def precheck_task_creation(
+    session: Session, tenant_id: int, payload: TaskPrecheckRequest
+) -> dict[str, Any]:
     return run_precheck_task_creation(
         session,
         tenant_id,
@@ -3396,7 +4392,9 @@ def precheck_task_creation(session: Session, tenant_id: int, payload: TaskPreche
     )
 
 
-def _assert_rank_deboost_allows_start(session: Session, tenant_id: int, task: Task, actor: str) -> None:
+def _assert_rank_deboost_allows_start(
+    session: Session, tenant_id: int, task: Task, actor: str
+) -> None:
     config = dict(task.type_config or {})
     bot_username = _first_rank_deboost_bot(list(config.get("search_bots") or ["jisou"]))
     target_group_ids = list(config.get("target_group_ids") or [])
@@ -3407,7 +4405,9 @@ def _assert_rank_deboost_allows_start(session: Session, tenant_id: int, task: Ta
         reference_type=_rank_deboost_target_reference_type(config),
     )
     validate_rank_deboost_protocol_samples(session, tenant_id, bot_username)
-    bindings = _rank_deboost_ready_bindings(session, tenant_id, dict(task.account_config or {}))
+    bindings = _rank_deboost_ready_bindings(
+        session, tenant_id, dict(task.account_config or {})
+    )
     for binding in bindings:
         validate_rank_deboost_preconditions(
             session,
@@ -3421,18 +4421,24 @@ def _assert_rank_deboost_allows_start(session: Session, tenant_id: int, task: Ta
     _prepare_pending_rank_deboost_exempt_group(session, task, actor)
 
 
-def _prepare_rank_deboost_start(session: Session, tenant_id: int, task: Task, actor: str) -> None:
+def _prepare_rank_deboost_start(
+    session: Session, tenant_id: int, task: Task, actor: str
+) -> None:
     if _rank_deboost_readiness_is_ready(task):
         return
     if _rank_deboost_requires_account_group_binding(task):
         _assert_rank_deboost_account_group_binding(session, tenant_id, task)
-        _record_rank_deboost_readiness_ready(task, evidence_summary="rank_account_group_binding")
+        _record_rank_deboost_readiness_ready(
+            task, evidence_summary="rank_account_group_binding"
+        )
         return
     _assert_rank_deboost_allows_start(session, tenant_id, task, actor)
     _record_rank_deboost_readiness_ready(task)
 
 
-def _assert_rank_deboost_account_group_binding(session: Session, tenant_id: int, task: Task) -> None:
+def _assert_rank_deboost_account_group_binding(
+    session: Session, tenant_id: int, task: Task
+) -> None:
     _rank_deboost_ready_bindings(session, tenant_id, dict(task.account_config or {}))
 
 
@@ -3472,7 +4478,9 @@ def _record_rank_deboost_readiness_pending(
 
 
 def _search_click_task_completed_on_start(session: Session, task: Task) -> bool:
-    session.execute(select(Task.id).where(Task.id == task.id).with_for_update()).scalar_one()
+    session.execute(
+        select(Task.id).where(Task.id == task.id).with_for_update()
+    ).scalar_one()
     session.refresh(task)
     return reconcile_search_click_target_progress(session, task).completed
 
@@ -3487,7 +4495,9 @@ def _rank_deboost_requires_account_group_binding(task: Task) -> bool:
     return readiness.get("required_check") == "account_group_binding"
 
 
-def _record_rank_deboost_readiness_ready(task: Task, *, evidence_summary: str = "rank_start_preparation") -> None:
+def _record_rank_deboost_readiness_ready(
+    task: Task, *, evidence_summary: str = "rank_start_preparation"
+) -> None:
     stats = dict(task.stats or {})
     stats["rank_deboost_readiness"] = {
         "status": "ready",
@@ -3497,7 +4507,9 @@ def _record_rank_deboost_readiness_ready(task: Task, *, evidence_summary: str = 
     task.stats = stats
 
 
-def _prepare_pending_rank_deboost_exempt_group(session: Session, task: Task, actor: str) -> None:
+def _prepare_pending_rank_deboost_exempt_group(
+    session: Session, task: Task, actor: str
+) -> None:
     try:
         require_real_exempt_group(session, tenant_id=task.tenant_id, task_id=task.id)
         return
@@ -3532,15 +4544,21 @@ def _task_create_payload_for_precheck(task: Task) -> dict[str, Any]:
         "failure_policy": task.failure_policy or {},
         **type_config,
     }
+
+
 def drain_task_center(session_factory, limit: int = 100) -> int:
     processed = 0
     with session_factory() as session:
         record_worker_heartbeat(session, metadata={"limit": limit})
         session.commit()
     processed += _drain_task_listener(session_factory, limit=limit, process_type=None)
-    recovery_count, _ = _drain_task_recovery(session_factory, limit=limit, process_type=None)
+    recovery_count, _ = _drain_task_recovery(
+        session_factory, limit=limit, process_type=None
+    )
     processed += recovery_count
-    planner_count, future_open_action_task_ids = _drain_task_planner(session_factory, limit=limit, process_type=None)
+    planner_count, future_open_action_task_ids = _drain_task_planner(
+        session_factory, limit=limit, process_type=None
+    )
     processed += planner_count
     processed += _drain_task_dispatcher(
         session_factory,
@@ -3563,30 +4581,42 @@ def drain_task_listener(session_factory, limit: int = 100) -> int:
     return _drain_task_listener(session_factory, limit=limit, process_type="listener")
 
 
-def _drain_task_listener(session_factory, *, limit: int, process_type: str | None) -> int:
+def _drain_task_listener(
+    session_factory, *, limit: int, process_type: str | None
+) -> int:
     result = drain_listener_runtime(session_factory, limit=limit)
     if process_type:
         with session_factory() as session:
             record_worker_heartbeat(
                 session,
                 process_type=process_type,
-                metadata={"limit": limit, "source_count": result.source_count, "processed_count": result.processed_count},
+                metadata={
+                    "limit": limit,
+                    "source_count": result.source_count,
+                    "processed_count": result.processed_count,
+                },
             )
             session.commit()
     return result.processed_count
 
 
 def drain_task_recovery(session_factory, limit: int = 100) -> int:
-    processed, _ = _drain_task_recovery(session_factory, limit=limit, process_type="recovery")
+    processed, _ = _drain_task_recovery(
+        session_factory, limit=limit, process_type="recovery"
+    )
     return processed
 
 
-def _drain_task_recovery(session_factory, *, limit: int, process_type: str | None) -> tuple[int, set[int]]:
+def _drain_task_recovery(
+    session_factory, *, limit: int, process_type: str | None
+) -> tuple[int, set[int]]:
     processed = 0
     touched_tenant_ids: set[int] = set()
     with session_factory() as session:
         if process_type:
-            record_worker_heartbeat(session, process_type=process_type, metadata={"limit": limit})
+            record_worker_heartbeat(
+                session, process_type=process_type, metadata={"limit": limit}
+            )
         processed += recover_expired_claims(session)
         processed += recover_pending_visibility_credits(
             session,
@@ -3594,7 +4624,9 @@ def _drain_task_recovery(session_factory, *, limit: int, process_type: str | Non
         )
         from .unknown_deadline_closure import close_unknown_after_deadline
 
-        processed += close_unknown_after_deadline(session, limit=max(1, int(limit or 0)))
+        processed += close_unknown_after_deadline(
+            session, limit=max(1, int(limit or 0))
+        )
         session.commit()
         processed += recover_terminal_coverage_reservations(session, limit=limit)
         session.commit()
@@ -3629,24 +4661,38 @@ def _drain_task_recovery(session_factory, *, limit: int, process_type: str | Non
                 interval_seconds=settings.runtime_metric_cleanup_interval_seconds,
             )
         processed += expire_waiting_source_media_actions(session, limit=max(10, limit))
-        tenant_ids = list(session.scalars(select(Action.tenant_id).where(Action.status == WAITING_MATERIAL_CACHE).distinct()))
+        tenant_ids = list(
+            session.scalars(
+                select(Action.tenant_id)
+                .where(Action.status == WAITING_MATERIAL_CACHE)
+                .distinct()
+            )
+        )
         touched_tenant_ids.update(int(tenant_id) for tenant_id in tenant_ids)
         for tenant_id in tenant_ids:
-            processed += wake_waiting_actions_for_source_media(session, tenant_id=tenant_id, limit=max(10, limit))
+            processed += wake_waiting_actions_for_source_media(
+                session, tenant_id=tenant_id, limit=max(10, limit)
+            )
         session.commit()
     return processed, touched_tenant_ids
 
 
 def drain_task_planner(session_factory, limit: int = 100) -> int:
-    processed, _ = _drain_task_planner(session_factory, limit=limit, process_type="planner")
+    processed, _ = _drain_task_planner(
+        session_factory, limit=limit, process_type="planner"
+    )
     return processed
 
 
-def _drain_task_planner(session_factory, *, limit: int, process_type: str | None) -> tuple[int, set[str]]:
+def _drain_task_planner(
+    session_factory, *, limit: int, process_type: str | None
+) -> tuple[int, set[str]]:
     processed = 0
     with session_factory() as session:
         if process_type:
-            record_worker_heartbeat(session, process_type=process_type, metadata={"limit": limit})
+            record_worker_heartbeat(
+                session, process_type=process_type, metadata={"limit": limit}
+            )
         processed += process_account_eligibility_events(session, limit=limit)
         processed += reconcile_all_account_scopes_if_due(session)
         _activate_pending_tasks(session)
@@ -3749,7 +4795,10 @@ def _record_planner_runtime_error(
 
 def _clear_planner_runtime_error(task: Task) -> None:
     stats = dict(task.stats or {})
-    if "planner_runtime_error" not in stats and "planner_pacing_target_conflict" not in stats:
+    if (
+        "planner_runtime_error" not in stats
+        and "planner_pacing_target_conflict" not in stats
+    ):
         return
     stats.pop("planner_runtime_error", None)
     stats.pop("planner_pacing_target_conflict", None)
@@ -3770,13 +4819,15 @@ def _plan_due_task(
     future_open = False
     while planned < round_goal:
         plan_limit = round_goal - planned
-        batch_processed, batch_planned, future_open, global_pending = _plan_due_task_batch(
-            session_factory,
-            task_id,
-            process_type,
-            limit=limit,
-            plan_limit=plan_limit,
-            global_pending=global_pending,
+        batch_processed, batch_planned, future_open, global_pending = (
+            _plan_due_task_batch(
+                session_factory,
+                task_id,
+                process_type,
+                limit=limit,
+                plan_limit=plan_limit,
+                global_pending=global_pending,
+            )
         )
         processed += batch_processed
         planned += batch_planned
@@ -3795,7 +4846,11 @@ def _plan_due_task_batch(
     global_pending: int | None = None,
 ) -> tuple[int, int, bool, int]:
     with session_factory() as session:
-        current_global_pending = global_pending if global_pending is not None else planner_global_pending(session)
+        current_global_pending = (
+            global_pending
+            if global_pending is not None
+            else planner_global_pending(session)
+        )
         session.info["daily_coverage_plan_limit"] = max(1, plan_limit)
         _refresh_planner_heartbeat(session, process_type, limit, task_id=task_id)
         task = session.get(Task, task_id)
@@ -3819,8 +4874,12 @@ def _plan_due_task_batch(
         processed += prepared
         if task is None:
             return processed, 0, False, current_global_pending
-        open_actions_allow_planning = has_open_actions and requires_planning_with_open_actions(session, task)
-        if _skip_open_ai_plan(session, task, has_open_actions, allow_planning=open_actions_allow_planning):
+        open_actions_allow_planning = (
+            has_open_actions and requires_planning_with_open_actions(session, task)
+        )
+        if _skip_open_ai_plan(
+            session, task, has_open_actions, allow_planning=open_actions_allow_planning
+        ):
             complete_task_planner_wake(session, task, next_run_at=task.next_run_at)
             session.commit()
             return processed, 0, open_actions_are_future, current_global_pending
@@ -3890,10 +4949,12 @@ def _takeover_before_retry(
 
 
 def _task_open_action_count(session: Session, task: Task) -> int:
-    count = session.scalar(select(func.count(Action.id)).where(
-        Action.task_id == task.id,
-        Action.status.in_(("pending", "claiming", "executing")),
-    ))
+    count = session.scalar(
+        select(func.count(Action.id)).where(
+            Action.task_id == task.id,
+            Action.status.in_(("pending", "claiming", "executing")),
+        )
+    )
     return int(count or 0)
 
 
@@ -3919,7 +4980,9 @@ def _fact_first_planner_batch_limit() -> int:
     return min(configured, MAX_DAILY_COVERAGE_PLAN_BATCH)
 
 
-def _skip_open_ai_plan(session: Session, task: Task, has_open_actions: bool, *, allow_planning: bool) -> bool:
+def _skip_open_ai_plan(
+    session: Session, task: Task, has_open_actions: bool, *, allow_planning: bool
+) -> bool:
     del session
     return (
         task.type == "group_ai_chat"
@@ -3929,7 +4992,13 @@ def _skip_open_ai_plan(session: Session, task: Task, has_open_actions: bool, *, 
     )
 
 
-def _refresh_planner_heartbeat(session: Session, process_type: str | None, limit: int, *, task_id: str | None = None) -> None:
+def _refresh_planner_heartbeat(
+    session: Session,
+    process_type: str | None,
+    limit: int,
+    *,
+    task_id: str | None = None,
+) -> None:
     if not process_type:
         return
     metadata = {"limit": limit, "phase": "task"}
@@ -3971,7 +5040,9 @@ def _drain_task_dispatcher(
         dialect_name = session.bind.dialect.name if session.bind else ""
         effective_concurrency = _lane_concurrency(execution_lane)
         if process_type:
-            record_worker_heartbeat(session, process_type=process_type, metadata={"limit": limit})
+            record_worker_heartbeat(
+                session, process_type=process_type, metadata={"limit": limit}
+            )
             session.commit()
         claim_limit = min(max(1, int(limit or 1)), effective_concurrency)
         claimed = claim_actions(
@@ -3985,10 +5056,19 @@ def _drain_task_dispatcher(
         return 0
     concurrency = 1 if dialect_name == "sqlite" else effective_concurrency
     if concurrency <= 1 or len(action_batches) == 1:
-        return sum(_dispatch_claimed_action_batch(session_factory, batch) for batch in action_batches)
+        return sum(
+            _dispatch_claimed_action_batch(session_factory, batch)
+            for batch in action_batches
+        )
     processed = 0
-    with ThreadPoolExecutor(max_workers=min(concurrency, len(action_batches)), thread_name_prefix="task-dispatcher") as executor:
-        futures = [executor.submit(_dispatch_claimed_action_batch, session_factory, batch) for batch in action_batches]
+    with ThreadPoolExecutor(
+        max_workers=min(concurrency, len(action_batches)),
+        thread_name_prefix="task-dispatcher",
+    ) as executor:
+        futures = [
+            executor.submit(_dispatch_claimed_action_batch, session_factory, batch)
+            for batch in action_batches
+        ]
         for future in as_completed(futures):
             processed += int(future.result() or 0)
     return processed
@@ -4027,9 +5107,14 @@ def _has_shared_ai_generation_batch(actions: list[Action]) -> bool:
 
 def _shared_ai_generation_batch_key(action: Action) -> tuple[object, ...] | None:
     payload = action.payload if isinstance(action.payload, dict) else {}
-    if action.action_type != "send_message" or str(payload.get("message_text") or "").strip():
+    if (
+        action.action_type != "send_message"
+        or str(payload.get("message_text") or "").strip()
+    ):
         return None
-    if payload.get("reply_to_message_id") or payload.get("ai_generation_status") not in {"pending", "ai_result_persist_unknown"}:
+    if payload.get("reply_to_message_id") or payload.get(
+        "ai_generation_status"
+    ) not in {"pending", "ai_result_persist_unknown"}:
         return None
     key = (
         action.tenant_id,
@@ -4044,7 +5129,9 @@ def _shared_ai_generation_batch_key(action: Action) -> tuple[object, ...] | None
 def _dispatcher_concurrency() -> int:
     settings = get_settings()
     configured = max(1, int(settings.dispatcher_concurrency or 1))
-    db_budget = max(1, int(settings.db_pool_size or 1) + int(settings.db_max_overflow or 0) - 2)
+    db_budget = max(
+        1, int(settings.db_pool_size or 1) + int(settings.db_max_overflow or 0) - 2
+    )
     return max(1, min(configured, db_budget))
 
 
@@ -4068,7 +5155,9 @@ def _dispatch_claimed_action(session_factory, action_id: str) -> int:
 
 
 def _dispatch_claimed_action_batch(session_factory, action_ids: tuple[str, ...]) -> int:
-    return sum(_dispatch_claimed_action(session_factory, action_id) for action_id in action_ids)
+    return sum(
+        _dispatch_claimed_action(session_factory, action_id) for action_id in action_ids
+    )
 
 
 def _dispatch_claimed_action_once(session_factory, action_id: str) -> int:
@@ -4099,7 +5188,9 @@ def _project_dispatch_stats(session_factory, action_id: str) -> None:
         )
 
 
-def _record_dispatch_db_error(session_factory, action_id: str, exc: SQLAlchemyError) -> int:
+def _record_dispatch_db_error(
+    session_factory, action_id: str, exc: SQLAlchemyError
+) -> int:
     with session_factory() as session:
         if not mark_dispatcher_db_error(session, action_id, str(exc)):
             return 0
@@ -4111,8 +5202,7 @@ def _planning_backlog_blocked(session: Session, task: Task) -> bool:
     stats = dict(task.stats or {})
     if (
         task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION
-        or stats.get("fulfillment_contract_version")
-        == FULFILLMENT_CONTRACT_VERSION
+        or stats.get("fulfillment_contract_version") == FULFILLMENT_CONTRACT_VERSION
     ):
         task.stats = clear_planner_backlog_stats(stats)
         return False
@@ -4122,7 +5212,9 @@ def _planning_backlog_blocked(session: Session, task: Task) -> bool:
         task,
         global_pending=session.info.get(PLANNER_GLOBAL_PENDING_SESSION_KEY),
     )
-    if not snapshot["blocked"] or _strict_search_daily_target_can_plan(session, task, snapshot, now_value):
+    if not snapshot["blocked"] or _strict_search_daily_target_can_plan(
+        session, task, snapshot, now_value
+    ):
         task.stats = clear_planner_backlog_stats(dict(task.stats or {}))
         return False
     stats = dict(task.stats or {})
@@ -4132,7 +5224,9 @@ def _planning_backlog_blocked(session: Session, task: Task) -> bool:
     stats["planner_backlog_task_pending"] = int(snapshot["task_pending"])
     stats["planner_backlog_oldest_age_seconds"] = int(snapshot["oldest_age_seconds"])
     task.stats = stats
-    interval = max(10, min(300, int((task.pacing_config or {}).get("interval_seconds") or 30)))
+    interval = max(
+        10, min(300, int((task.pacing_config or {}).get("interval_seconds") or 30))
+    )
     task.next_run_at = now_value + timedelta(seconds=interval)
     return True
 
@@ -4166,7 +5260,10 @@ def _uses_immediate_fact_first_pacing(task: Task) -> bool:
 
 def _record_planner_backlog_daily_fulfillment(session: Session, task: Task) -> None:
     config = task.type_config if isinstance(task.type_config, dict) else {}
-    if task.type != "group_ai_chat" or config.get("account_coverage_mode") != "all_accounts_daily":
+    if (
+        task.type != "group_ai_chat"
+        or config.get("account_coverage_mode") != "all_accounts_daily"
+    ):
         return
     timestamp = _now()
     next_decision_at = task.next_run_at or timestamp
@@ -4175,7 +5272,8 @@ def _record_planner_backlog_daily_fulfillment(session: Session, task: Task) -> N
             TaskAccountDailyCoverage.task_id == task.id,
             TaskAccountDailyCoverage.coverage_date == timestamp.date(),
             TaskAccountDailyCoverage.state == "ready",
-            TaskAccountDailyCoverage.confirmed_count < TaskAccountDailyCoverage.target_count,
+            TaskAccountDailyCoverage.confirmed_count
+            < TaskAccountDailyCoverage.target_count,
         )
     )
     for row in rows:
@@ -4230,7 +5328,9 @@ def _recover_continuous_task_states(session: Session) -> int:
             Task.deleted_at.is_(None),
         )
     ):
-        has_actions = session.scalar(select(Action.id).where(Action.task_id == task.id).limit(1))
+        has_actions = session.scalar(
+            select(Action.id).where(Action.task_id == task.id).limit(1)
+        )
         if has_actions:
             continue
         last_error = task.last_error or ""
@@ -4252,7 +5352,10 @@ def _recover_continuous_task_states(session: Session) -> int:
         if (config.get("message_scope") or "dynamic_new") == "specific":
             continue
         stats = task.stats if isinstance(task.stats, dict) else {}
-        if task.type == "channel_comment" and stats.get("completion_reason") == "lifetime_cap_reached":
+        if (
+            task.type == "channel_comment"
+            and stats.get("completion_reason") == "lifetime_cap_reached"
+        ):
             continue
         task.status = "running"
         task.next_run_at = now
@@ -4262,7 +5365,12 @@ def _recover_continuous_task_states(session: Session) -> int:
     return recovered
 
 
-def _recover_stale_executing_actions(session: Session, *, timeout_minutes: int = 30, limit: int = DEFAULT_RECOVERY_BATCH_LIMIT) -> int:
+def _recover_stale_executing_actions(
+    session: Session,
+    *,
+    timeout_minutes: int = 30,
+    limit: int = DEFAULT_RECOVERY_BATCH_LIMIT,
+) -> int:
     session.commit()
     now = _now()
     claims, stale_worker_ids = _claim_stale_executing_action_ids(
@@ -4272,12 +5380,20 @@ def _recover_stale_executing_actions(session: Session, *, timeout_minutes: int =
         limit=limit,
     )
     recovered = sum(
-        _recover_claimed_stale_action(session, claim, stale_worker_ids=stale_worker_ids, now=now)
+        _recover_claimed_stale_action(
+            session, claim, stale_worker_ids=stale_worker_ids, now=now
+        )
         for claim in claims
     )
-    recovered += _recover_existing_unknown_membership_actions(session, now, limit=_membership_reprobe_limit(limit))
-    recovered += _recover_existing_unknown_search_join_membership_actions(session, now, limit=_membership_reprobe_limit(limit))
-    recovered += _recover_existing_unknown_group_clone_mutations(session, now, limit=limit)
+    recovered += _recover_existing_unknown_membership_actions(
+        session, now, limit=_membership_reprobe_limit(limit)
+    )
+    recovered += _recover_existing_unknown_search_join_membership_actions(
+        session, now, limit=_membership_reprobe_limit(limit)
+    )
+    recovered += _recover_existing_unknown_group_clone_mutations(
+        session, now, limit=limit
+    )
     return recovered
 
 
@@ -4316,7 +5432,10 @@ def _recover_claimed_stale_action(
     gateway_started = _attempt_gateway_started(latest_attempt)
     if gateway_started:
         latest_attempt = _membership_recovery_attempt(
-            session, action, latest_attempt, now=now,
+            session,
+            action,
+            latest_attempt,
+            now=now,
         )
     recovered = _recover_claimed_gateway_action(
         session,
@@ -4330,7 +5449,11 @@ def _recover_claimed_stale_action(
     if not recovery_claim_owned(action, claim):
         session.rollback()
         return 0
-    if recovered is None and not gateway_started and recover_stale_pre_gateway_generation(action, session=session):
+    if (
+        recovered is None
+        and not gateway_started
+        and recover_stale_pre_gateway_generation(action, session=session)
+    ):
         recovered = 1
     projection = None
     if recovered is None:
@@ -4392,18 +5515,27 @@ def _recover_claimed_gateway_action(
     if not gateway_started:
         return None
     if _recover_unknown_membership_action(
-        session, action=action, task=task, latest_attempt=latest_attempt, now=now, recovery_claim=claim,
+        session,
+        action=action,
+        task=task,
+        latest_attempt=latest_attempt,
+        now=now,
+        recovery_claim=claim,
     ):
         return 1
     if not recovery_claim_owned(action, claim):
         return 0
     if _membership_reprobe_deferred(action) or _membership_reprobe_failed(action):
-        _release_unknown_membership_reprobe_result(action=action, task=task, latest_attempt=latest_attempt, now=now)
+        _release_unknown_membership_reprobe_result(
+            action=action, task=task, latest_attempt=latest_attempt, now=now
+        )
         return 0
     return None
 
 
-def _stale_executing_conditions(now: datetime, timeout_minutes: int, stale_worker_ids: set[str]):
+def _stale_executing_conditions(
+    now: datetime, timeout_minutes: int, stale_worker_ids: set[str]
+):
     cutoff = now - timedelta(minutes=max(1, int(timeout_minutes or 30)))
     conditions = [
         and_(Action.lease_expires_at.is_not(None), Action.lease_expires_at <= now),
@@ -4430,47 +5562,67 @@ def _stale_executing_action_ids(
     ]
     if stale_worker_ids:
         recovery_conditions.append(Action.lease_owner.in_(stale_worker_ids))
-    return list(session.scalars(
-        select(Action.id)
-        .join(Task, Task.id == Action.task_id)
-        .where(
-            Action.status == "executing",
-            or_(*recovery_conditions),
-            Task.status == "running",
-            Task.deleted_at.is_(None),
+    return list(
+        session.scalars(
+            select(Action.id)
+            .join(Task, Task.id == Action.task_id)
+            .where(
+                Action.status == "executing",
+                or_(*recovery_conditions),
+                Task.status == "running",
+                Task.deleted_at.is_(None),
+            )
+            .order_by(Action.scheduled_at.asc(), Action.id.asc())
+            .limit(min(20, _recovery_batch_limit(limit)))
         )
-        .order_by(Action.scheduled_at.asc(), Action.id.asc())
-        .limit(min(20, _recovery_batch_limit(limit)))
-    ))
+    )
 
 
-def _stale_worker_lease_owners(session: Session, heartbeat_cutoff: datetime) -> set[str]:
+def _stale_worker_lease_owners(
+    session: Session, heartbeat_cutoff: datetime
+) -> set[str]:
     lease_owners = _executing_lease_owners(session)
     if not lease_owners:
         return set()
-    rows = list(session.execute(
-        select(WorkerHeartbeat.worker_id, WorkerHeartbeat.hostname, WorkerHeartbeat.pid).where(
-            WorkerHeartbeat.last_seen_at < heartbeat_cutoff,
-            WorkerHeartbeat.worker_id.in_(lease_owners),
+    rows = list(
+        session.execute(
+            select(
+                WorkerHeartbeat.worker_id, WorkerHeartbeat.hostname, WorkerHeartbeat.pid
+            ).where(
+                WorkerHeartbeat.last_seen_at < heartbeat_cutoff,
+                WorkerHeartbeat.worker_id.in_(lease_owners),
+            )
         )
-    ))
+    )
     legacy_pairs = _legacy_lease_owner_pairs(lease_owners)
     if legacy_pairs:
-        rows.extend(session.execute(
-            select(WorkerHeartbeat.worker_id, WorkerHeartbeat.hostname, WorkerHeartbeat.pid).where(
-                WorkerHeartbeat.last_seen_at < heartbeat_cutoff,
-                tuple_(WorkerHeartbeat.hostname, WorkerHeartbeat.pid).in_(legacy_pairs),
+        rows.extend(
+            session.execute(
+                select(
+                    WorkerHeartbeat.worker_id,
+                    WorkerHeartbeat.hostname,
+                    WorkerHeartbeat.pid,
+                ).where(
+                    WorkerHeartbeat.last_seen_at < heartbeat_cutoff,
+                    tuple_(WorkerHeartbeat.hostname, WorkerHeartbeat.pid).in_(
+                        legacy_pairs
+                    ),
+                )
             )
-        ))
+        )
     return _matching_stale_lease_owners(rows, lease_owners)
 
 
 def _executing_lease_owners(session: Session) -> set[str]:
-    statement = select(Action.lease_owner).where(
-        Action.status == "executing",
-        Action.lease_owner.is_not(None),
-        Action.lease_owner != "",
-    ).distinct()
+    statement = (
+        select(Action.lease_owner)
+        .where(
+            Action.status == "executing",
+            Action.lease_owner.is_not(None),
+            Action.lease_owner != "",
+        )
+        .distinct()
+    )
     return {str(owner) for owner in session.scalars(statement) if owner}
 
 
@@ -4510,7 +5662,13 @@ def _mark_stale_executing_action(
     previous_lease_owner = action.lease_owner or ""
     previous_lease_expires_at = action.lease_expires_at
     gateway_started = _attempt_gateway_started(latest_attempt)
-    recovery_reason = "stale_worker" if previous_lease_owner in stale_worker_ids else "lease_expired" if previous_lease_expires_at else "execution_timeout"
+    recovery_reason = (
+        "stale_worker"
+        if previous_lease_owner in stale_worker_ids
+        else "lease_expired"
+        if previous_lease_expires_at
+        else "execution_timeout"
+    )
     _reconcile_rank_deboost_reservation_after_stale_execution(action, gateway_started)
     action.status = "unknown_after_send" if gateway_started else "failed"
     action.executed_at = now
@@ -4526,7 +5684,9 @@ def _mark_stale_executing_action(
     if previous_result:
         action.result["previous_result"] = previous_result
     if latest_attempt:
-        latest_attempt.status = "result_unknown" if gateway_started else "call_not_started"
+        latest_attempt.status = (
+            "result_unknown" if gateway_started else "call_not_started"
+        )
         latest_attempt.after_call_at = now
         latest_attempt.result_snapshot = dict(action.result or {})
     return {
@@ -4566,7 +5726,9 @@ def _project_stale_recovery_stats(
         )
 
 
-def _reconcile_rank_deboost_reservation_after_stale_execution(action: Action, gateway_started: bool) -> None:
+def _reconcile_rank_deboost_reservation_after_stale_execution(
+    action: Action, gateway_started: bool
+) -> None:
     if action.action_type != "search_rank_deboost":
         return
     session = object_session(action)
@@ -4589,13 +5751,17 @@ def _stale_executing_result(
     return {
         "success": False,
         "error_code": "unknown_after_send" if gateway_started else "execution_timeout",
-        "error_message": "执行项已进入 TG 调用边界但本地结果未知，需人工或补偿确认" if gateway_started else "执行项长时间处于执行中，已由投递守护标记为超时",
+        "error_message": "执行项已进入 TG 调用边界但本地结果未知，需人工或补偿确认"
+        if gateway_started
+        else "执行项长时间处于执行中，已由投递守护标记为超时",
         "validation_stage": "execution_recovery",
         "auto_check": "结果未知" if gateway_started else "超时恢复",
         "recovery_reason": recovery_reason,
         "recovered_at": now.isoformat(),
         "previous_lease_owner": previous_lease_owner,
-        "previous_lease_expires_at": previous_lease_expires_at.isoformat() if previous_lease_expires_at else "",
+        "previous_lease_expires_at": previous_lease_expires_at.isoformat()
+        if previous_lease_expires_at
+        else "",
     }
 
 
@@ -4618,15 +5784,26 @@ def _record_stale_recovery_stats(
     stats["stale_executing_last_lease_owner"] = previous_lease_owner
     stats["stale_executing_last_recovery_reason"] = recovery_reason
     stats["stale_executing_recovered_action_ids"] = recovered_action_ids[-20:]
-    stats["recovered_execution_timeout_count"] = int(stats.get("recovered_execution_timeout_count") or 0) + 1
+    stats["recovered_execution_timeout_count"] = (
+        int(stats.get("recovered_execution_timeout_count") or 0) + 1
+    )
     if gateway_started:
-        stats["unknown_after_send_count"] = int(stats.get("unknown_after_send_count") or 0) + 1
+        stats["unknown_after_send_count"] = (
+            int(stats.get("unknown_after_send_count") or 0) + 1
+        )
     stats["last_recovery_stage"] = "execution_recovery"
     task.stats = stats
 
 
-def _latest_execution_attempt(session: Session, action: Action) -> ExecutionAttempt | None:
-    return session.scalar(select(ExecutionAttempt).where(ExecutionAttempt.action_id == action.id).order_by(ExecutionAttempt.attempt_no.desc()).limit(1))
+def _latest_execution_attempt(
+    session: Session, action: Action
+) -> ExecutionAttempt | None:
+    return session.scalar(
+        select(ExecutionAttempt)
+        .where(ExecutionAttempt.action_id == action.id)
+        .order_by(ExecutionAttempt.attempt_no.desc())
+        .limit(1)
+    )
 
 
 def _create_legacy_membership_recovery_attempt(
@@ -4673,12 +5850,15 @@ def _membership_recovery_attempt(
         return latest_attempt
     if _attempt_has_frozen_gateway_request(latest_attempt):
         return latest_attempt
-    return _create_legacy_membership_recovery_attempt(
-        session,
-        action,
-        now=now,
-        previous_attempt=latest_attempt,
-    ) or latest_attempt
+    return (
+        _create_legacy_membership_recovery_attempt(
+            session,
+            action,
+            now=now,
+            previous_attempt=latest_attempt,
+        )
+        or latest_attempt
+    )
 
 
 def _attempt_has_frozen_gateway_request(
@@ -4696,7 +5876,11 @@ def _attempt_has_frozen_gateway_request(
 
 
 def _attempt_gateway_started(latest_attempt: ExecutionAttempt | None) -> bool:
-    return bool(latest_attempt and latest_attempt.gateway_call_started_at and latest_attempt.status not in {"success", "failed", "call_not_started"})
+    return bool(
+        latest_attempt
+        and latest_attempt.gateway_call_started_at
+        and latest_attempt.status not in {"success", "failed", "call_not_started"}
+    )
 
 
 def _recovery_batch_limit(limit: int) -> int:
@@ -4708,7 +5892,9 @@ def _membership_reprobe_limit(limit: int) -> int:
     return max(1, min(configured, UNKNOWN_MEMBERSHIP_REPROBE_PER_DRAIN_LIMIT))
 
 
-def _recover_existing_unknown_membership_actions(session: Session, now: datetime, *, limit: int) -> int:
+def _recover_existing_unknown_membership_actions(
+    session: Session, now: datetime, *, limit: int
+) -> int:
     claims = claim_recovery_actions(
         session,
         conditions=(
@@ -4716,13 +5902,19 @@ def _recover_existing_unknown_membership_actions(session: Session, now: datetime
             Action.action_type.in_(MEMBERSHIP_ACTION_TYPES),
             _unknown_membership_reprobe_due_clause(now),
         ),
-        order_by=(Action.executed_at.asc().nullsfirst(), Action.scheduled_at.asc(), Action.id.asc()),
+        order_by=(
+            Action.executed_at.asc().nullsfirst(),
+            Action.scheduled_at.asc(),
+            Action.id.asc(),
+        ),
         now=now,
         limit=_recovery_batch_limit(limit),
     )
     reprobed_identities: set[tuple[int, int, str]] = set()
     return sum(
-        _recover_claimed_unknown_action(session, claim, now=now, reprobed_identities=reprobed_identities)
+        _recover_claimed_unknown_action(
+            session, claim, now=now, reprobed_identities=reprobed_identities
+        )
         for claim in claims
     )
 
@@ -4750,7 +5942,10 @@ def _recover_existing_unknown_group_clone_mutations(
 
     return sum(
         recover_unknown_clone_mutation(
-            session, claim, gateway=gateway, now=now,
+            session,
+            claim,
+            gateway=gateway,
+            now=now,
         )
         for claim in claims
     )
@@ -4779,7 +5974,11 @@ def _recover_existing_unknown_search_join_membership_actions(
             Action.action_type == SEARCH_JOIN_MEMBERSHIP_ACTION_TYPE,
             _search_join_membership_reprobe_due_clause(now),
         ),
-        order_by=(Action.executed_at.asc().nullsfirst(), Action.scheduled_at.asc(), Action.id.asc()),
+        order_by=(
+            Action.executed_at.asc().nullsfirst(),
+            Action.scheduled_at.asc(),
+            Action.id.asc(),
+        ),
         now=now,
         limit=_recovery_batch_limit(limit),
     )
@@ -4813,26 +6012,36 @@ def _recover_claimed_search_join_membership_action(
     return recovered
 
 
-def _recover_search_join_membership_action(session: Session, action: Action, *, now: datetime) -> int:
+def _recover_search_join_membership_action(
+    session: Session, action: Action, *, now: datetime
+) -> int:
     try:
         payload = SearchJoinMembershipPayload.model_validate(action.payload or {})
     except ValueError:
-        _finalize_search_join_membership_confirmation_timeout(session, action, now, reason="payload_invalid")
+        _finalize_search_join_membership_confirmation_timeout(
+            session, action, now, reason="payload_invalid"
+        )
         session.commit()
         return 1
     source = source_action_for_membership(session, action, payload)
     if source is None:
-        _finalize_search_join_membership_confirmation_timeout(session, action, now, reason="source_action_invalid")
+        _finalize_search_join_membership_confirmation_timeout(
+            session, action, now, reason="source_action_invalid"
+        )
         session.commit()
         return 1
     if _search_join_membership_confirmation_overdue(action, now):
-        _finalize_search_join_membership_confirmation_timeout(session, action, now, reason="confirmation_timeout")
+        _finalize_search_join_membership_confirmation_timeout(
+            session, action, now, reason="confirmation_timeout"
+        )
         _propagate_search_join_membership_timeout_to_source(source, action, now)
         session.commit()
         return 1
     account = session.get(TgAccount, action.account_id) if action.account_id else None
     if account is None or account.deleted_at is not None:
-        _finalize_search_join_membership_confirmation_timeout(session, action, now, reason="account_unavailable")
+        _finalize_search_join_membership_confirmation_timeout(
+            session, action, now, reason="account_unavailable"
+        )
         _propagate_search_join_membership_timeout_to_source(source, action, now)
         session.commit()
         return 1
@@ -4848,7 +6057,9 @@ def _recover_search_join_membership_action(session: Session, action: Action, *, 
             credentials,
         )
     except (TimeoutError, ConnectionError) as exc:
-        _defer_search_join_membership_reprobe(action, now, error=str(exc) or exc.__class__.__name__)
+        _defer_search_join_membership_reprobe(
+            action, now, error=str(exc) or exc.__class__.__name__
+        )
         session.commit()
         return 0
     if not isinstance(result, dict):
@@ -4871,7 +6082,10 @@ def _recover_search_join_membership_action(session: Session, action: Action, *, 
 
 def _search_join_membership_confirmation_overdue(action: Action, now: datetime) -> bool:
     settings = get_settings()
-    timeout_seconds = int(getattr(settings, "search_join_membership_confirmation_timeout_seconds", 600) or 600)
+    timeout_seconds = int(
+        getattr(settings, "search_join_membership_confirmation_timeout_seconds", 600)
+        or 600
+    )
     reference = action.executed_at or action.scheduled_at or action.created_at
     if reference is None:
         return False
@@ -4954,10 +6168,15 @@ def _finalize_search_join_membership_failed(
     mark_source_membership_failed(source, action, result, observed_at=now)
 
 
-def _defer_search_join_membership_reprobe(action: Action, now: datetime, *, error: str = "") -> None:
+def _defer_search_join_membership_reprobe(
+    action: Action, now: datetime, *, error: str = ""
+) -> None:
     """PRD §2.20.2: pending 状态或临时错误时延后下一轮 reprobe，避免长期挂起。"""
     settings = get_settings()
-    cooldown_seconds = int(getattr(settings, "search_join_membership_confirmation_timeout_seconds", 600) or 600)
+    cooldown_seconds = int(
+        getattr(settings, "search_join_membership_confirmation_timeout_seconds", 600)
+        or 600
+    )
     next_probe_at = now + timedelta(seconds=min(cooldown_seconds, 120))
     deferred = {
         **dict(action.result or {}),
@@ -4989,18 +6208,25 @@ def _recover_claimed_unknown_action(
         return 0
     reprobed_identities.add(identity)
     latest_attempt = _membership_recovery_attempt(
-        session, action, _latest_execution_attempt(session, action), now=now,
+        session,
+        action,
+        _latest_execution_attempt(session, action),
+        now=now,
     )
     recovered = _recover_unknown_membership_action(
-        session, action=action, task=task, latest_attempt=latest_attempt, now=now, recovery_claim=claim,
+        session,
+        action=action,
+        task=task,
+        latest_attempt=latest_attempt,
+        now=now,
+        recovery_claim=claim,
     )
     if recovered:
         release_recovery_claim(action, claim)
         session.commit()
         return 1
     if not recovery_claim_owned(action, claim) and not (
-        _membership_reprobe_deferred(action)
-        or _membership_reprobe_failed(action)
+        _membership_reprobe_deferred(action) or _membership_reprobe_failed(action)
     ):
         session.rollback()
         return 0
@@ -5011,9 +6237,13 @@ def _recover_claimed_unknown_action(
     return 0
 
 
-def _finalize_failed_unknown_reprobe(session: Session, action: Action, now: datetime) -> None:
+def _finalize_failed_unknown_reprobe(
+    session: Session, action: Action, now: datetime
+) -> None:
     if _membership_reprobe_deferred(action) or _membership_reprobe_failed(action):
-        _propagate_unknown_membership_reprobe_result(session, source_action=action, now=now)
+        _propagate_unknown_membership_reprobe_result(
+            session, source_action=action, now=now
+        )
         return
     action.result = {
         **dict(action.result or {}),
@@ -5022,7 +6252,9 @@ def _finalize_failed_unknown_reprobe(session: Session, action: Action, now: date
     }
 
 
-def _propagate_unknown_membership_reprobe_result(session: Session, *, source_action: Action, now: datetime) -> int:
+def _propagate_unknown_membership_reprobe_result(
+    session: Session, *, source_action: Action, now: datetime
+) -> int:
     update_fields = _unknown_membership_reprobe_result_fields(source_action)
     if not update_fields:
         return 0
@@ -5048,7 +6280,11 @@ def _propagate_unknown_membership_reprobe_result(session: Session, *, source_act
             continue
         if _skip_unknown_membership_reprobe(action, now):
             continue
-        action.result = {**dict(action.result or {}), **update_fields, "reprobe_deduped_from_action_id": source_action.id}
+        action.result = {
+            **dict(action.result or {}),
+            **update_fields,
+            "reprobe_deduped_from_action_id": source_action.id,
+        }
         updated += 1
     return updated
 
@@ -5104,7 +6340,10 @@ def _skip_unknown_membership_reprobe(action: Action, now: datetime) -> bool:
 
 def _membership_reprobe_deferred(action: Action) -> bool:
     result = dict(action.result or {})
-    return result.get("unknown_membership_reprobe_status") in UNKNOWN_MEMBERSHIP_REPROBE_COOLDOWN_STATUSES
+    return (
+        result.get("unknown_membership_reprobe_status")
+        in UNKNOWN_MEMBERSHIP_REPROBE_COOLDOWN_STATUSES
+    )
 
 
 def _membership_reprobe_failed(action: Action) -> bool:
@@ -5204,7 +6443,13 @@ def _finish_unknown_membership_probe(
             source="membership_reprobe_not_confirmed",
             failure_code=result.failure_type or FailureType.UNKNOWN.value,
         )
-        _mark_unknown_membership_reprobe_failed(action=action, task=task, latest_attempt=latest_attempt, now=now, result=result)
+        _mark_unknown_membership_reprobe_failed(
+            action=action,
+            task=task,
+            latest_attempt=latest_attempt,
+            now=now,
+            result=result,
+        )
         _refresh_membership_case_hashes(session, action, latest_attempt)
         return False
     return _apply_membership_probe_confirmed(
@@ -5230,8 +6475,14 @@ def _handle_unknown_membership_probe_error(
     if recovery_claim and not recovery_claim_owned(action, recovery_claim):
         return False
     is_timeout = isinstance(exc, TimeoutError)
-    source = "membership_reprobe_timeout" if is_timeout else "membership_reprobe_connection_error"
-    failure_code = "telegram_probe_timeout" if is_timeout else "telegram_probe_connection_error"
+    source = (
+        "membership_reprobe_timeout"
+        if is_timeout
+        else "membership_reprobe_connection_error"
+    )
+    failure_code = (
+        "telegram_probe_timeout" if is_timeout else "telegram_probe_connection_error"
+    )
     _apply_membership_probe_inconclusive(
         session,
         action,
@@ -5240,7 +6491,11 @@ def _handle_unknown_membership_probe_error(
         source=source,
         failure_code=failure_code,
     )
-    marker = _mark_unknown_membership_reprobe_timeout if is_timeout else _mark_unknown_membership_reprobe_connection_error
+    marker = (
+        _mark_unknown_membership_reprobe_timeout
+        if is_timeout
+        else _mark_unknown_membership_reprobe_connection_error
+    )
     marker(
         action=action,
         task=task,
@@ -5276,16 +6531,22 @@ def _apply_membership_probe_confirmed(
     evidence = RemoteReconcileEvidence(
         result="remote_confirmed",
         source="membership_reprobe_read_only",
-        evidence_fingerprint=canonical_state_hash({
-            "action_id": action.id,
-            "attempt_id": latest_attempt.id,
-            "fact_id": fact_id,
-        }),
+        evidence_fingerprint=canonical_state_hash(
+            {
+                "action_id": action.id,
+                "attempt_id": latest_attempt.id,
+                "fact_id": fact_id,
+            }
+        ),
         remote_fact_id=fact_id,
         exact_match_count=1,
     )
     outcome = apply_remote_reconcile_evidence(
-        session, case.id, evidence, actor="membership-recovery", checked_at=now,
+        session,
+        case.id,
+        evidence,
+        actor="membership-recovery",
+        checked_at=now,
     )
     action.result = {
         **dict(action.result or {}),
@@ -5358,12 +6619,14 @@ def _quarantine_membership_case_drift(
         remote_reconcile_action_state_hash,
     )
 
-    fingerprint = canonical_state_hash({
-        "case_id": case_id,
-        "action_hash": remote_reconcile_action_state_hash(action),
-        "attempt_hash": execution_attempt_state_hash(latest_attempt),
-        "source": "membership_recovery_state_drift",
-    })
+    fingerprint = canonical_state_hash(
+        {
+            "case_id": case_id,
+            "action_hash": remote_reconcile_action_state_hash(action),
+            "attempt_hash": execution_attempt_state_hash(latest_attempt),
+            "source": "membership_recovery_state_drift",
+        }
+    )
     apply_remote_reconcile_evidence(
         session,
         case_id,
@@ -5398,16 +6661,22 @@ def _apply_membership_probe_inconclusive(
     evidence = RemoteReconcileEvidence(
         result="inconclusive",
         source=source,
-        evidence_fingerprint=canonical_state_hash({
-            "action_id": action.id,
-            "attempt_id": latest_attempt.id,
-            "source": source,
-            "failure_code": failure_code,
-        }),
+        evidence_fingerprint=canonical_state_hash(
+            {
+                "action_id": action.id,
+                "attempt_id": latest_attempt.id,
+                "source": source,
+                "failure_code": failure_code,
+            }
+        ),
         failure_code=failure_code,
     )
     apply_remote_reconcile_evidence(
-        session, case.id, evidence, actor="membership-recovery", checked_at=now,
+        session,
+        case.id,
+        evidence,
+        actor="membership-recovery",
+        checked_at=now,
     )
 
 
@@ -5424,10 +6693,12 @@ def _refresh_membership_case_hashes(
         remote_reconcile_action_state_hash,
     )
 
-    case = session.scalar(select(RemoteReconcileCase).where(
-        RemoteReconcileCase.action_id == action.id,
-        RemoteReconcileCase.execution_attempt_id == latest_attempt.id,
-    ))
+    case = session.scalar(
+        select(RemoteReconcileCase).where(
+            RemoteReconcileCase.action_id == action.id,
+            RemoteReconcileCase.execution_attempt_id == latest_attempt.id,
+        )
+    )
     if case is None or case.state != "inconclusive":
         return
     case.expected_action_state_hash = remote_reconcile_action_state_hash(action)
@@ -5468,7 +6739,9 @@ def _mark_unknown_membership_reprobe_timeout(
         "error_message": error_message,
         "unknown_membership_reprobe_status": "timeout",
         "unknown_membership_reprobe_at": now.isoformat(),
-        "unknown_membership_reprobe_next_at": (now + UNKNOWN_MEMBERSHIP_REPROBE_COOLDOWN).isoformat(),
+        "unknown_membership_reprobe_next_at": (
+            now + UNKNOWN_MEMBERSHIP_REPROBE_COOLDOWN
+        ).isoformat(),
         "unknown_membership_reprobe_error": str(exc),
     }
     task.last_error = error_message
@@ -5522,7 +6795,9 @@ def _mark_unknown_membership_reprobe_connection_error(
         "error_message": error_message,
         "unknown_membership_reprobe_status": "connection_error",
         "unknown_membership_reprobe_at": now.isoformat(),
-        "unknown_membership_reprobe_next_at": (now + UNKNOWN_MEMBERSHIP_REPROBE_COOLDOWN).isoformat(),
+        "unknown_membership_reprobe_next_at": (
+            now + UNKNOWN_MEMBERSHIP_REPROBE_COOLDOWN
+        ).isoformat(),
         "unknown_membership_reprobe_error": str(exc),
     }
     task.last_error = error_message
@@ -5548,11 +6823,18 @@ def _release_unknown_membership_reprobe_result(
         latest_attempt.status = "result_unknown"
         latest_attempt.after_call_at = now
         latest_attempt.result_snapshot = dict(action.result or {})
-    task.last_error = str((action.result or {}).get("error_message") or task.last_error or "")
+    task.last_error = str(
+        (action.result or {}).get("error_message") or task.last_error or ""
+    )
 
 
 def _activate_pending_tasks(session: Session) -> None:
-    for task in session.scalars(select(Task).where(Task.status == "pending", (Task.scheduled_start.is_(None)) | (Task.scheduled_start <= _now()))):
+    for task in session.scalars(
+        select(Task).where(
+            Task.status == "pending",
+            (Task.scheduled_start.is_(None)) | (Task.scheduled_start <= _now()),
+        )
+    ):
         if task.type == "group_clone":
             from .group_clone_source_stream import advance_group_clone_start
 
@@ -5569,7 +6851,9 @@ def _activate_pending_tasks(session: Session) -> None:
         )
 
 
-def _normal_planner_task_ids(session: Session, *, limit: int, now: datetime) -> list[str]:
+def _normal_planner_task_ids(
+    session: Session, *, limit: int, now: datetime
+) -> list[str]:
     target_count = max(1, limit)
     wake_due = or_(
         TaskPlannerWakeState.not_before_at.is_(None),
@@ -5598,7 +6882,9 @@ def _normal_planner_task_ids(session: Session, *, limit: int, now: datetime) -> 
             func.coalesce(
                 TaskPlannerWakeState.not_before_at,
                 Task.next_run_at,
-            ).asc().nullsfirst(),
+            )
+            .asc()
+            .nullsfirst(),
             Task.created_at.asc(),
         )
         .limit(target_count)
@@ -5636,9 +6922,8 @@ def _mark_task_started(session: Session, task: Task) -> None:
         replan_stale_admission_actions(session, task=task)
     stats = dict(task.stats or empty_stats())
     stats["started_at"] = stats.get("started_at") or now.isoformat()
-    if (
-        previous_status not in {"running", "pending"}
-        and not stats.get("pacing_anchor_at")
+    if previous_status not in {"running", "pending"} and not stats.get(
+        "pacing_anchor_at"
     ):
         stats["pacing_anchor_at"] = now.isoformat()
     if task.type == "group_ai_chat":
@@ -5691,13 +6976,31 @@ def _frozen_ai_account_count(session: Session, task: Task) -> int:
     )
 
 
-def _update_type_config(session: Session, tenant_id: int, task_id: str, expected_type: str, payload, actor: str) -> Task:
+def _update_type_config(
+    session: Session,
+    tenant_id: int,
+    task_id: str,
+    expected_type: str,
+    payload,
+    actor: str,
+) -> Task:
     update_data = payload.model_dump(mode="json", exclude_unset=True)
-    return _update_type_config_data(session, tenant_id, task_id, expected_type, update_data, actor)
+    return _update_type_config_data(
+        session, tenant_id, task_id, expected_type, update_data, actor
+    )
 
 
-def _update_type_config_data(session: Session, tenant_id: int, task_id: str, expected_type: str, update_data: dict[str, Any], actor: str) -> Task:
-    task = _apply_type_config_data(session, tenant_id, task_id, expected_type, update_data, actor)
+def _update_type_config_data(
+    session: Session,
+    tenant_id: int,
+    task_id: str,
+    expected_type: str,
+    update_data: dict[str, Any],
+    actor: str,
+) -> Task:
+    task = _apply_type_config_data(
+        session, tenant_id, task_id, expected_type, update_data, actor
+    )
     session.commit()
     session.refresh(task)
     return task
@@ -5713,18 +7016,52 @@ def _apply_type_config_data(
     *,
     remove_fields: tuple[str, ...] = (),
 ) -> Task:
+    update_data = dict(update_data)
     task = _get_task(session, tenant_id, task_id)
+    change_observed_at = _now()
     if task.type != expected_type:
         raise ValueError(f"任务类型不匹配，当前任务是 {task.type}")
     previous_config = dict(task.type_config or {})
+    previous_revision = int(task.config_revision or 1)
+    if expected_type == "group_ai_chat" and "topic_participation_rate" in update_data:
+        from .ai_group_topic_policy import stage_topic_rate_update
+
+        requested_rate = update_data.pop("topic_participation_rate")
+        staged = stage_topic_rate_update(
+            previous_config,
+            requested_rate,
+            task_status=task.status,
+            today=_task_local_date(task),
+            has_current_task_day_plan=_has_current_ai_group_plan(session, task),
+        )
+        update_data.update(
+            {
+                "topic_participation_rate": staged.get("topic_participation_rate"),
+                "topic_participation_rate_next": staged.get(
+                    "topic_participation_rate_next"
+                ),
+                "topic_participation_rate_effective_date": staged.get(
+                    "topic_participation_rate_effective_date"
+                ),
+            }
+        )
     previous_timezone = str(task.timezone or "")
     next_config = {**(task.type_config or {}), **update_data}
     for field in remove_fields:
         next_config.pop(field, None)
-    next_config = normalize_operation_target_references(session, tenant_id, expected_type, next_config)
-    next_config = apply_default_rule_binding(session, tenant_id, task_type=expected_type, config=next_config)
-    next_config = apply_group_ai_account_coverage_defaults(expected_type, next_config, task.account_config or {})
+    next_config = normalize_operation_target_references(
+        session, tenant_id, expected_type, next_config
+    )
+    next_config = apply_default_rule_binding(
+        session, tenant_id, task_type=expected_type, config=next_config
+    )
+    next_config = apply_group_ai_account_coverage_defaults(
+        expected_type, next_config, task.account_config or {}
+    )
     next_config = validated_type_config(expected_type, next_config)
+    _validate_channel_comment_fallback(
+        session, tenant_id, expected_type, next_config,
+    )
     validate_rule_binding(session, tenant_id, next_config)
     task.type_config = next_config
     increment_revision_for_continuity_change(
@@ -5732,26 +7069,49 @@ def _apply_type_config_data(
         previous_config=previous_config,
         previous_timezone=previous_timezone,
     )
+    increment_revision_for_content_policy_change(
+        task,
+        previous_config=previous_config,
+        previous_revision=previous_revision,
+        observed_at=change_observed_at,
+    )
     activate_task_ai_content_config(session, task)
-    _clear_unfinished_plan(session, task)
+    if not is_content_policy_only_change(task, previous_config=previous_config):
+        _clear_unfinished_plan(session, task)
     if task.status not in {"completed", "failed"}:
         now = _now()
         scheduled_start = _naive_datetime(task.scheduled_start)
-        task.status = "pending" if scheduled_start and scheduled_start > now else "running"
+        task.status = (
+            "pending" if scheduled_start and scheduled_start > now else "running"
+        )
         task.next_run_at = scheduled_start if task.status == "pending" else now
     task.last_error = ""
-    task.updated_at = _now()
-    audit(session, tenant_id=tenant_id, actor=actor, action="更新任务类型配置", target_type="task", target_id=task.id, detail=expected_type)
+    task.updated_at = change_observed_at
+    audit(
+        session,
+        tenant_id=tenant_id,
+        actor=actor,
+        action="更新任务类型配置",
+        target_type="task",
+        target_id=task.id,
+        detail=_content_policy_change_detail(task, previous_config),
+    )
     return task
 
 
 def _pacing_payload_for_task(task: Task, pacing_config: Any) -> dict[str, Any]:
     if task.type != "search_join_group":
-        raw_data = pacing_config.model_dump(mode="json", exclude_unset=True) if hasattr(pacing_config, "model_dump") else pacing_config
+        raw_data = (
+            pacing_config.model_dump(mode="json", exclude_unset=True)
+            if hasattr(pacing_config, "model_dump")
+            else pacing_config
+        )
         raw_data = dict(raw_data or {})
         if raw_data.get("hourly_jitter_percent") == raw_data.get("jitter_percent"):
             raw_data.pop("hourly_jitter_percent", None)
-        if (SEARCH_JOIN_PACING_FIELDS - {"max_actions_per_day"}).intersection(raw_data or {}):
+        if (SEARCH_JOIN_PACING_FIELDS - {"max_actions_per_day"}).intersection(
+            raw_data or {}
+        ):
             raise ValueError("search_join_group 专属 pacing 字段不能用于其他任务类型")
         return normalize_fulfillment_pacing(
             task.type,
@@ -5770,20 +7130,39 @@ def _get_task(session: Session, tenant_id: int, task_id: str) -> Task:
 def _clear_unfinished_plan(session: Session, task: Task) -> int:
     _clear_hard_hourly_checkpoint(task)
     pending_actions = list(
-        session.scalars(select(Action).where(Action.task_id == task.id, Action.status == "pending"))
+        session.scalars(
+            select(Action).where(Action.task_id == task.id, Action.status == "pending")
+        )
     )
     _clear_superseded_search_join_pacing_decisions(session, pending_actions)
     pending_action_ids = [action.id for action in pending_actions]
     if pending_action_ids:
         _clear_pending_relay_fingerprints(session, task, pending_actions)
-        session.execute(delete(ReviewQueue).where(ReviewQueue.task_id == task.id, ReviewQueue.action_id.in_(pending_action_ids)))
-        preserved_action_ids = _preserved_pending_action_ids(session, pending_action_ids)
+        session.execute(
+            delete(ReviewQueue).where(
+                ReviewQueue.task_id == task.id,
+                ReviewQueue.action_id.in_(pending_action_ids),
+            )
+        )
+        preserved_action_ids = _preserved_pending_action_ids(
+            session, pending_action_ids
+        )
         _skip_preserved_pending_actions(session, pending_actions, preserved_action_ids)
-        deletable_action_ids = [action_id for action_id in pending_action_ids if action_id not in preserved_action_ids]
+        deletable_action_ids = [
+            action_id
+            for action_id in pending_action_ids
+            if action_id not in preserved_action_ids
+        ]
         if deletable_action_ids:
             _clear_deleted_action_admission_references(session, deletable_action_ids)
             _release_deleted_action_coverage(session, deletable_action_ids)
-            session.execute(delete(SearchRankDeboostClickReservation).where(SearchRankDeboostClickReservation.action_id.in_(deletable_action_ids)))
+            session.execute(
+                delete(SearchRankDeboostClickReservation).where(
+                    SearchRankDeboostClickReservation.action_id.in_(
+                        deletable_action_ids
+                    )
+                )
+            )
             session.execute(delete(Action).where(Action.id.in_(deletable_action_ids)))
     _supersede_active_plan_actions(session, task)
     release_safe_task_account_pacing_reservations(session, task)
@@ -5793,11 +7172,17 @@ def _clear_unfinished_plan(session: Session, task: Task) -> int:
         observed_at=_now(),
     )
     _clear_orphaned_search_join_pacing_decisions(session, task)
-    session.execute(delete(ReviewQueue).where(ReviewQueue.task_id == task.id, ReviewQueue.status == "pending"))
+    session.execute(
+        delete(ReviewQueue).where(
+            ReviewQueue.task_id == task.id, ReviewQueue.status == "pending"
+        )
+    )
     return released_pacing_owners
 
 
-def _clear_deleted_action_admission_references(session: Session, action_ids: list[str]) -> None:
+def _clear_deleted_action_admission_references(
+    session: Session, action_ids: list[str]
+) -> None:
     action_fields = (
         TaskMembershipAdmissionItem.membership_action_id,
         TaskMembershipAdmissionItem.test_message_action_id,
@@ -5847,18 +7232,26 @@ def _clear_hard_hourly_checkpoint(task: Task) -> None:
 
 
 def _preserved_pending_action_ids(session: Session, action_ids: list[str]) -> set[str]:
-    attempted = set(session.scalars(
-        select(ExecutionAttempt.action_id).where(ExecutionAttempt.action_id.in_(action_ids))
-    ))
-    takeover_audited = set(session.scalars(
-        select(AiContentScopeTakeoverItem.action_id).where(
-            AiContentScopeTakeoverItem.action_id.in_(action_ids)
+    attempted = set(
+        session.scalars(
+            select(ExecutionAttempt.action_id).where(
+                ExecutionAttempt.action_id.in_(action_ids)
+            )
         )
-    ))
+    )
+    takeover_audited = set(
+        session.scalars(
+            select(AiContentScopeTakeoverItem.action_id).where(
+                AiContentScopeTakeoverItem.action_id.in_(action_ids)
+            )
+        )
+    )
     return attempted | takeover_audited
 
 
-def _skip_preserved_pending_actions(session: Session, pending_actions: list[Action], preserved_ids: set[str]) -> None:
+def _skip_preserved_pending_actions(
+    session: Session, pending_actions: list[Action], preserved_ids: set[str]
+) -> None:
     now = _now()
     for action in pending_actions:
         if action.id not in preserved_ids:
@@ -5870,11 +7263,17 @@ def _skip_preserved_pending_actions(session: Session, pending_actions: list[Acti
         action.claim_owner = ""
         action.claim_token = ""
         action.claim_expires_at = None
-        action.result = {"success": False, "error_code": "plan_superseded", "error_message": "任务配置已更新，旧执行计划已废弃"}
+        action.result = {
+            "success": False,
+            "error_code": "plan_superseded",
+            "error_message": "任务配置已更新，旧执行计划已废弃",
+        }
         release_reserved_reservation(session, action.id)
 
 
-def _clear_superseded_search_join_pacing_decisions(session: Session, actions: list[Action]) -> None:
+def _clear_superseded_search_join_pacing_decisions(
+    session: Session, actions: list[Action]
+) -> None:
     for action in actions:
         _clear_search_join_pacing_decision(session, action)
 
@@ -5910,7 +7309,11 @@ def _clear_orphaned_search_join_pacing_decisions(session: Session, task: Task) -
             SearchJoinPacingDecision.decision_scope == "action",
         )
     ):
-        if (decision.account_id, decision.keyword_hash, decision.scheduled_at) not in retained:
+        if (
+            decision.account_id,
+            decision.keyword_hash,
+            decision.scheduled_at,
+        ) not in retained:
             session.delete(decision)
 
 
@@ -5922,8 +7325,14 @@ def _retains_search_join_pacing_decision(action: Action) -> bool:
     return str((action.result or {}).get("gateway_call_state") or "") == "started"
 
 
-def _search_join_pacing_decision_key(action: Action) -> tuple[int | None, str, datetime | None]:
-    return action.account_id, str((action.payload or {}).get("keyword_hash") or ""), action.scheduled_at
+def _search_join_pacing_decision_key(
+    action: Action,
+) -> tuple[int | None, str, datetime | None]:
+    return (
+        action.account_id,
+        str((action.payload or {}).get("keyword_hash") or ""),
+        action.scheduled_at,
+    )
 
 
 def _supersede_active_plan_actions(session: Session, task: Task) -> None:
@@ -5932,7 +7341,9 @@ def _supersede_active_plan_actions(session: Session, task: Task) -> None:
         statuses = ["claiming", "retryable_failed", "executing"]
     else:
         statuses = sorted(OPEN_PLAN_ACTION_STATUSES - {"pending"})
-    actions = session.scalars(select(Action).where(Action.task_id == task.id, Action.status.in_(statuses)))
+    actions = session.scalars(
+        select(Action).where(Action.task_id == task.id, Action.status.in_(statuses))
+    )
     for action in actions:
         if (
             task.type in SEARCH_CLICK_TASK_TYPES
@@ -5945,14 +7356,22 @@ def _supersede_active_plan_actions(session: Session, task: Task) -> None:
 
 def _search_click_action_is_pre_gateway(session: Session, action: Action) -> bool:
     if action.action_type == "search_rank_deboost":
-        attempts = list(session.scalars(select(ExecutionAttempt).where(ExecutionAttempt.action_id == action.id)))
-        return not any(attempt.gateway_call_started_at is not None for attempt in attempts)
+        attempts = list(
+            session.scalars(
+                select(ExecutionAttempt).where(ExecutionAttempt.action_id == action.id)
+            )
+        )
+        return not any(
+            attempt.gateway_call_started_at is not None for attempt in attempts
+        )
     if action.action_type == "search_join":
         return str((action.result or {}).get("gateway_call_state") or "") != "started"
     return False
 
 
-def _mark_action_plan_superseded(session: Session, action: Action, now: datetime) -> None:
+def _mark_action_plan_superseded(
+    session: Session, action: Action, now: datetime
+) -> None:
     _clear_search_join_pacing_decision(session, action)
     action.status = "skipped"
     action.executed_at = now
@@ -5961,11 +7380,17 @@ def _mark_action_plan_superseded(session: Session, action: Action, now: datetime
     action.claim_owner = ""
     action.claim_token = ""
     action.claim_expires_at = None
-    action.result = {"success": False, "error_code": "plan_superseded", "error_message": "任务配置已更新，旧执行计划已废弃"}
+    action.result = {
+        "success": False,
+        "error_code": "plan_superseded",
+        "error_message": "任务配置已更新，旧执行计划已废弃",
+    }
     release_reserved_reservation(session, action.id)
 
 
-def _clear_pending_relay_fingerprints(session: Session, task: Task, pending_actions: list[Action]) -> None:
+def _clear_pending_relay_fingerprints(
+    session: Session, task: Task, pending_actions: list[Action]
+) -> None:
     for action in pending_actions:
         if action.task_type != "group_relay" or action.action_type != "send_message":
             continue
@@ -5978,7 +7403,8 @@ def _clear_pending_relay_fingerprints(session: Session, task: Task, pending_acti
         session.execute(
             delete(MessageFingerprint).where(
                 MessageFingerprint.tenant_id == task.tenant_id,
-                MessageFingerprint.source_group_id == f"{task.id}:relay:{source_group_id}:target:{target_group_id}",
+                MessageFingerprint.source_group_id
+                == f"{task.id}:relay:{source_group_id}:target:{target_group_id}",
                 MessageFingerprint.fingerprint == content_fingerprint(original_text),
             )
         )
@@ -6002,29 +7428,58 @@ def _invalidate_task_listener_cache(task: Task) -> None:
                 invalidate_listener_collect("group", int(item["group_id"]))
 
 
-def _action_payloads_with_issue_rollup(session: Session, tenant_id: int, actions: list[Action]) -> list[dict[str, Any]]:
+def _action_payloads_with_issue_rollup(
+    session: Session, tenant_id: int, actions: list[Action]
+) -> list[dict[str, Any]]:
     if not actions:
         return []
     action_ids = [action.id for action in actions]
     task_ids = {action.task_id for action in actions}
-    account_ids = sorted({int(action.account_id) for action in actions if action.account_id})
-    accounts = {account.id: account for account in session.scalars(select(TgAccount).where(TgAccount.id.in_(account_ids)))} if account_ids else {}
+    account_ids = sorted(
+        {int(action.account_id) for action in actions if action.account_id}
+    )
+    accounts = (
+        {
+            account.id: account
+            for account in session.scalars(
+                select(TgAccount).where(TgAccount.id.in_(account_ids))
+            )
+        }
+        if account_ids
+        else {}
+    )
     issues = list(
         session.scalars(
             select(OperationIssue).where(
                 OperationIssue.tenant_id == tenant_id,
                 OperationIssue.status.in_(["open", "acknowledged"]),
-                or_(OperationIssue.representative_action_id.in_(action_ids), OperationIssue.source_task_id.in_(task_ids)),
+                or_(
+                    OperationIssue.representative_action_id.in_(action_ids),
+                    OperationIssue.source_task_id.in_(task_ids),
+                ),
             )
         )
     )
-    direct_issue = {issue.representative_action_id: issue for issue in issues if issue.representative_action_id}
+    direct_issue = {
+        issue.representative_action_id: issue
+        for issue in issues
+        if issue.representative_action_id
+    }
     issue_by_task_failure: dict[tuple[str, str], OperationIssue] = {}
     for issue in issues:
         if issue.source_task_id and issue.failure_type:
-            issue_by_task_failure.setdefault((issue.source_task_id, issue.failure_type), issue)
+            issue_by_task_failure.setdefault(
+                (issue.source_task_id, issue.failure_type), issue
+            )
     return [
-        _action_payload(action, direct_issue.get(action.id) or issue_by_task_failure.get((action.task_id, _action_failure_type(action))), accounts.get(int(action.account_id or 0)))
+        _action_payload(
+            action,
+            direct_issue.get(action.id)
+            or issue_by_task_failure.get(
+                (action.task_id, _action_failure_type(action))
+            ),
+            accounts.get(int(action.account_id or 0)),
+        )
         for action in actions
     ]
 
@@ -6037,44 +7492,61 @@ class _ActionPayload(dict):
             raise AttributeError(key) from exc
 
 
-def _action_payload(action: Action, issue: OperationIssue | None = None, account: TgAccount | None = None) -> dict[str, Any]:
+def _action_payload(
+    action: Action,
+    issue: OperationIssue | None = None,
+    account: TgAccount | None = None,
+) -> dict[str, Any]:
     result = action.result or {}
     failure_type = _action_failure_type(action)
     failure_reason = _action_failure_reason(action)
-    return _ActionPayload({
-        "id": action.id,
-        "tenant_id": action.tenant_id,
-        "task_id": action.task_id,
-        "task_type": action.task_type,
-        "action_type": action.action_type,
-        "account_id": action.account_id,
-        "account_display_name": account.display_name if account else "",
-        "account_username": account.username if account else "",
-        "scheduled_at": action.scheduled_at,
-        "executed_at": action.executed_at,
-        "pacing_due_at": action.pacing_due_at,
-        "release_not_before_at": action.release_not_before_at,
-        "effective_claim_at": action.effective_claim_at,
-        "pacing_slot_key": str(action.pacing_slot_key or ""),
-        "status": action.status,
-        "payload": _observable_action_payload(action),
-        "result": result,
-        "retry_count": action.retry_count,
-        "failure_type": failure_type,
-        "failure_reason": failure_reason,
-        "failure_diagnosis": _action_failure_diagnosis(action, failure_type, failure_reason),
-        "raw_error": str(result.get("raw_error") or result.get("raw_response") or result.get("exception") or ""),
-        "trace_id": str(result.get("trace_id") or result.get("request_id") or ""),
-        "operation_issue_id": issue.id if issue else "",
-        "operation_issue_status": issue.status if issue else "",
-        "operation_issue_rolled_up": bool(issue),
-        "created_at": action.created_at,
-    })
+    return _ActionPayload(
+        {
+            "id": action.id,
+            "tenant_id": action.tenant_id,
+            "task_id": action.task_id,
+            "task_type": action.task_type,
+            "action_type": action.action_type,
+            "account_id": action.account_id,
+            "account_display_name": account.display_name if account else "",
+            "account_username": account.username if account else "",
+            "scheduled_at": action.scheduled_at,
+            "executed_at": action.executed_at,
+            "pacing_due_at": action.pacing_due_at,
+            "release_not_before_at": action.release_not_before_at,
+            "effective_claim_at": action.effective_claim_at,
+            "pacing_slot_key": str(action.pacing_slot_key or ""),
+            "status": action.status,
+            "payload": _observable_action_payload(action),
+            "result": result,
+            "retry_count": action.retry_count,
+            "failure_type": failure_type,
+            "failure_reason": failure_reason,
+            "failure_diagnosis": _action_failure_diagnosis(
+                action, failure_type, failure_reason
+            ),
+            "raw_error": str(
+                result.get("raw_error")
+                or result.get("raw_response")
+                or result.get("exception")
+                or ""
+            ),
+            "trace_id": str(result.get("trace_id") or result.get("request_id") or ""),
+            "operation_issue_id": issue.id if issue else "",
+            "operation_issue_status": issue.status if issue else "",
+            "operation_issue_rolled_up": bool(issue),
+            "created_at": action.created_at,
+        }
+    )
 
 
 def _observable_action_payload(action: Action) -> dict[str, Any]:
     payload = dict(action.payload or {})
-    if action.task_type == "group_ai_chat" and action.action_type == "send_message" and payload.get("act_type"):
+    if (
+        action.task_type == "group_ai_chat"
+        and action.action_type == "send_message"
+        and payload.get("act_type")
+    ):
         payload["act_type"] = canonical_ai_group_act_type(str(payload["act_type"]))
     return payload
 
@@ -6090,24 +7562,47 @@ def _action_failure_reason(action: Action) -> str:
     if action.status == "success":
         return ""
     result = action.result or {}
-    return str(result.get("error_message") or result.get("failure_reason") or result.get("detail") or "")
+    return str(
+        result.get("error_message")
+        or result.get("failure_reason")
+        or result.get("detail")
+        or ""
+    )
 
 
-def _action_failure_diagnosis(action: Action, failure_type: str, failure_reason: str) -> dict[str, str]:
-    if action.status not in {"failed", "retryable_failed", "skipped"} and not failure_type and not failure_reason:
+def _action_failure_diagnosis(
+    action: Action, failure_type: str, failure_reason: str
+) -> dict[str, str]:
+    if (
+        action.status not in {"failed", "retryable_failed", "skipped"}
+        and not failure_type
+        and not failure_reason
+    ):
         return {}
     if action.action_type == "post_comment":
         diagnosis = _channel_comment_failure_diagnosis(failure_type)
         if diagnosis:
             return diagnosis
     text = _action_failure_text(action, failure_type, failure_reason)
-    if _has_failure_marker(text, COMMENT_UNAVAILABLE_MARKERS) or failure_type == FailureType.COMMENT_UNAVAILABLE.value:
+    if (
+        _has_failure_marker(text, COMMENT_UNAVAILABLE_MARKERS)
+        or failure_type == FailureType.COMMENT_UNAVAILABLE.value
+    ):
         return _comment_unavailable_diagnosis()
-    if _has_failure_marker(text, TARGET_PERMISSION_MARKERS) or failure_type in _target_permission_types():
+    if (
+        _has_failure_marker(text, TARGET_PERMISSION_MARKERS)
+        or failure_type in _target_permission_types()
+    ):
         return _target_permission_diagnosis()
-    if _has_failure_marker(text, ACCOUNT_AUTH_MARKERS) or failure_type in _account_auth_types():
+    if (
+        _has_failure_marker(text, ACCOUNT_AUTH_MARKERS)
+        or failure_type in _account_auth_types()
+    ):
         return _account_auth_diagnosis()
-    if _has_failure_marker(text, RATE_LIMIT_MARKERS) or failure_type in _rate_limit_types():
+    if (
+        _has_failure_marker(text, RATE_LIMIT_MARKERS)
+        or failure_type in _rate_limit_types()
+    ):
         return _rate_limit_diagnosis(failure_type)
     if failure_type == FailureType.CONTENT_REJECTED.value:
         return _content_policy_diagnosis()
@@ -6118,7 +7613,13 @@ def _action_failure_diagnosis(action: Action, failure_type: str, failure_reason:
 
 def _action_failure_text(action: Action, failure_type: str, failure_reason: str) -> str:
     result = action.result or {}
-    parts = [failure_type, failure_reason, result.get("raw_error"), result.get("exception"), result.get("validation_stage")]
+    parts = [
+        failure_type,
+        failure_reason,
+        result.get("raw_error"),
+        result.get("exception"),
+        result.get("validation_stage"),
+    ]
     return " ".join(str(part).lower() for part in parts if part)
 
 
@@ -6127,7 +7628,11 @@ def _has_failure_marker(text: str, markers: tuple[str, ...]) -> bool:
 
 
 def _target_permission_types() -> set[str]:
-    return {FailureType.GROUP_PERMISSION_DENIED.value, FailureType.PEER_INVALID.value, FailureType.CHANNEL_POST_DENIED.value}
+    return {
+        FailureType.GROUP_PERMISSION_DENIED.value,
+        FailureType.PEER_INVALID.value,
+        FailureType.CHANNEL_POST_DENIED.value,
+    }
 
 
 def _account_auth_types() -> set[str]:
@@ -6197,7 +7702,9 @@ def _account_auth_diagnosis() -> dict[str, str]:
 def _rate_limit_diagnosis(failure_type: str) -> dict[str, str]:
     return {
         "category": "rate_limit",
-        "scope": "account_target" if failure_type == FailureType.SLOWMODE.value else "account",
+        "scope": "account_target"
+        if failure_type == FailureType.SLOWMODE.value
+        else "account",
         "operator_summary": "Telegram 节流或目标慢速模式触发，当前失败不是配置丢失。",
         "suggested_action": "等待失败详情中的冷却时间后重试，并降低该账号或该目标的发送频率。",
     }
@@ -6249,7 +7756,9 @@ def _open_actions_state(session: Session, task: Task) -> tuple[bool, bool]:
     earliest = session.scalar(
         select(func.min(Action.scheduled_at)).where(
             Action.task_id == task.id,
-            Action.action_type.notin_([TARGET_MEMBERSHIP_ACTION_TYPE, LEGACY_MEMBERSHIP_ACTION_TYPE]),
+            Action.action_type.notin_(
+                [TARGET_MEMBERSHIP_ACTION_TYPE, LEGACY_MEMBERSHIP_ACTION_TYPE]
+            ),
             Action.status.in_(OPEN_PLAN_ACTION_STATUSES),
         )
     )

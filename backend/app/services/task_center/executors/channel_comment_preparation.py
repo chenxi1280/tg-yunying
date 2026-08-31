@@ -6,7 +6,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import Action, ChannelMessage, CommentFulfillmentObligation, Task
+from app.models import Action, CommentFulfillmentObligation, Task
 from app.services._common import _now
 
 from ..account_pacing_guard import (
@@ -14,6 +14,13 @@ from ..account_pacing_guard import (
     bind_account_pacing_reservation_for_slot,
     reserve_account_pacing,
 )
+from ..channel_comment_source import comment_source_window
+from ..channel_comment_capacity import (
+    bind_comment_capacity_action,
+    release_comment_capacity,
+    reserve_comment_capacity,
+)
+from ..channel_comment_plan_contract import grounding_plan_enabled
 from ..fulfillment_activation import CURRENT_CONTRACT_VERSION
 from ..pacing import next_local_day_deadline, schedule_times
 from ..pacing_persistence import freeze_action_pacing, freeze_pacing_owner
@@ -22,7 +29,6 @@ from ..schedule_reservation import reserve_task_schedule_times
 from ..source_pacing import (
     SourcePacingSlot,
     latest_wall_datetime,
-    rolling_source_window,
     schedule_source_pacing_points,
     source_pacing_plan_hash,
     wall_datetime,
@@ -30,6 +36,7 @@ from ..source_pacing import (
 from ..source_capacity_plans import apply_source_capacity_plan
 from ..source_owner_cursor import attach_owner_history, pacing_source_key_hash
 from .channel_comment_schedule import materialized_reply_slots
+from .channel_comment_budget import comment_action_materialization_limit
 from .common import (
     adjust_for_account_hour_limit,
     pick_channel_account,
@@ -64,6 +71,8 @@ def bind_prepared_comment_pacing(
         slot_key=slot_key,
         action=action,
     )
+    if grounding_plan_enabled(task):
+        bind_comment_capacity_action(session, obligation.id, action.id)
 
 
 def prepare_comment_actions(
@@ -81,22 +90,25 @@ def prepare_comment_actions(
     )
     if task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION and len(planned_times) < requested_count:
         _record_comment_shortfall(task, requested_count, len(planned_times))
+    _freeze_scheduled_comment_pacing(
+        task, slots, due_by_slot, release_by_slot, source_slots,
+    )
     materialized = materialized_reply_slots(
         task,
         slots,
         planned_times,
         now_value=now_value,
     )
+    materialized = _fair_materialized_slots(materialized)
+    materialized = _apply_materialization_limit(
+        session, task, context.config, materialized,
+    )
+    materialized = _reserve_daily_capacity(
+        session, task, context.config, materialized,
+    )
     prepared: list[PreparedCommentAction] = []
+    used_accounts = _active_message_accounts(session, task, slots)
     for index, (slot, planned_at) in enumerate(materialized):
-        slot_key = _comment_slot_key(slot)
-        _freeze_comment_pacing(
-            task,
-            source_slots,
-            slot=slot,
-            due_at=due_by_slot[slot_key],
-            release_not_before_at=release_by_slot[slot_key],
-        )
         item = _prepared_slot(
             session,
             task,
@@ -104,11 +116,102 @@ def prepare_comment_actions(
             slot=slot,
             planned_at=planned_at,
             account_index=index,
+            excluded_account_ids=used_accounts.setdefault(slot.message.id, set()),
             payload_builder=payload_builder,
         )
         if item is not None:
             prepared.append(item)
+            used_accounts[slot.message.id].add(item[0])
+        elif grounding_plan_enabled(task):
+            release_comment_capacity(session, slot.obligation.id)
     return prepared
+
+
+def _reserve_daily_capacity(
+    session: Session,
+    task: Task,
+    config: dict,
+    materialized: list[tuple[Any, Any]],
+) -> list[tuple[Any, Any]]:
+    if not grounding_plan_enabled(task):
+        return materialized
+    daily_cap = int(config.get("daily_comment_cap") or 0)
+    reserved = []
+    for slot, planned_at in materialized:
+        row = reserve_comment_capacity(
+            session, task, slot.obligation,
+            scheduled_at=planned_at, daily_cap=daily_cap,
+        )
+        if row is not None:
+            reserved.append((slot, planned_at))
+    shortfall = len(materialized) - len(reserved)
+    if shortfall:
+        stats = dict(task.stats or {})
+        stats["daily_cap_unallocated"] = shortfall
+        task.stats = stats
+    return reserved
+
+
+def _freeze_scheduled_comment_pacing(
+    task: Task,
+    slots: list,
+    due_by_slot: dict[str, object],
+    release_by_slot: dict[str, object],
+    source_slots: list[SourcePacingSlot],
+) -> None:
+    for slot in slots:
+        slot_key = _comment_slot_key(slot)
+        if slot_key not in due_by_slot:
+            continue
+        _freeze_comment_pacing(
+            task, source_slots, slot=slot,
+            due_at=due_by_slot[slot_key],
+            release_not_before_at=release_by_slot[slot_key],
+        )
+
+
+def _fair_materialized_slots(materialized: list[tuple[Any, Any]]) -> list[tuple[Any, Any]]:
+    return sorted(
+        materialized,
+        key=lambda item: (
+            int(item[0].obligation.target_ordinal),
+            item[0].message.published_at or item[0].message.created_at,
+            int(item[0].message.id),
+        ),
+    )
+
+
+def _apply_materialization_limit(
+    session: Session,
+    task: Task,
+    config: dict,
+    materialized: list[tuple[Any, Any]],
+) -> list[tuple[Any, Any]]:
+    if not grounding_plan_enabled(task):
+        return materialized
+    limit = comment_action_materialization_limit(session, task, config)
+    if limit is None or limit >= len(materialized):
+        return materialized
+    stats = dict(task.stats or {})
+    stats["daily_cap_unallocated"] = len(materialized) - max(0, limit)
+    task.stats = stats
+    return materialized[:max(0, limit)]
+
+
+def _active_message_accounts(session: Session, task: Task, slots: list) -> dict[int, set[int]]:
+    result = {int(slot.message.id): set() for slot in slots}
+    actions = session.scalars(select(Action).where(
+        Action.task_id == task.id,
+        Action.action_type == "post_comment",
+        Action.account_id.is_not(None),
+        Action.status.in_(("pending", "claiming", "executing", "success", "unknown_after_send")),
+    ))
+    for action in actions:
+        payload = action.payload if isinstance(action.payload, dict) else {}
+        message_id = int(payload.get("channel_message_id") or 0)
+        if message_id in result:
+            result[message_id].add(int(action.account_id))
+    return result
 
 
 def _comment_schedule(
@@ -246,7 +349,10 @@ def _comment_source_slots(
                 CommentFulfillmentObligation.channel_message_id == message_id,
             )) or 0
             totals[message_id] = max(max_target, int(frozen_max))
-        period_start, deadline = rolling_source_window(task, slot.message.created_at)
+        source_window = comment_source_window(task, slot.message)
+        if source_window is None:
+            continue
+        period_start, deadline = source_window
         pacing_ordinal = (
             int(slot.obligation.pacing_slot_ordinal)
             if slot.obligation.pacing_slot_ordinal is not None
@@ -294,14 +400,24 @@ def _prepared_slot(
     planned_at: Any,
     account_index: int,
     payload_builder: Callable,
+    excluded_account_ids: set[int] | None = None,
 ) -> PreparedCommentAction | None:
     reply_target = getattr(slot, "reply_target", None)
     target_author_id = reply_target.get("author_account_id") if isinstance(reply_target, dict) else None
-    available_accounts = (
+    relation_accounts = (
         [acc for acc in context.accounts if acc.id != target_author_id]
         if target_author_id and len(context.accounts) > 1
         else context.accounts
     )
+    excluded = excluded_account_ids or set()
+    bound_account_id = int(slot.obligation.account_id or 0)
+    available_accounts = [
+        acc for acc in relation_accounts
+        if acc.id not in excluded and (not bound_account_id or acc.id == bound_account_id)
+    ]
+    if not available_accounts:
+        stats_inc(task, "distinct_account_capacity_shortfall")
+        return None
     account = pick_channel_account(
         session,
         task,
@@ -348,7 +464,10 @@ def _comment_effective_time(
     if task.fulfillment_contract_version != CURRENT_CONTRACT_VERSION:
         return adjusted_at
     due_at = slot.obligation.pacing_due_at or planned_at
-    _period_start, deadline = rolling_source_window(task, slot.message.created_at)
+    source_window = comment_source_window(task, slot.message)
+    if source_window is None:
+        return None
+    _period_start, deadline = source_window
     try:
         reservation = reserve_account_pacing(
             session, tenant_id=task.tenant_id, task_id=task.id,

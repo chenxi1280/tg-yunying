@@ -25,6 +25,11 @@ from .direct_check_in import (
     DUE_CATCH_UP_CHECK_IN_REASON,
     DUE_CATCH_UP_CHECK_IN_SOURCE,
 )
+from .ai_group_vocabulary_sampling import (
+    extract_vocabulary_usage,
+    protected_frequency_phrases,
+    surface_phrase_fingerprints,
+)
 
 
 def persist_generation_results(
@@ -48,7 +53,9 @@ def persist_generation_results(
     )
     duplicate_batch = DuplicateMemoryBatch(now=_now())
     with session.no_autoflush:
-        for index, ((action, payload), result) in enumerate(zip(batch, results, strict=True)):
+        for index, ((action, payload), result) in enumerate(
+            zip(batch, results, strict=True)
+        ):
             _persist_generation_result(
                 session,
                 request,
@@ -76,12 +83,18 @@ def _persist_generation_result(
     data = _generated_payload(payload, result, tokens=tokens)
     mark_attempt_outcome(data, request.attempt_id, "ready", timestamp=_now())
     if not store_generation_quality(
-        session, action, payload, data=data, duplicate_batch=duplicate_batch,
+        session,
+        action,
+        payload,
+        data=data,
+        duplicate_batch=duplicate_batch,
     ):
         commit_generation_action(session, request, action)
         return
     action.payload = data
-    action.candidate_hash = hashlib.sha256(data["message_text"].encode("utf-8")).hexdigest()
+    action.candidate_hash = hashlib.sha256(
+        data["message_text"].encode("utf-8")
+    ).hexdigest()
     _mark_v2_candidate_ready(session, action)
     action.result = {
         **(action.result or {}),
@@ -99,7 +112,9 @@ def _mark_v2_candidate_ready(session: Session, action) -> None:
     job_id = str(dict(action.payload or {}).get("generation_job_id") or "")
     job = session.get(GenerationJob, job_id) if job_id else None
     if job is not None and job.window_slot_id:
-        mark_candidate_ready(session, job, candidate_hash=str(action.candidate_hash or ""))
+        mark_candidate_ready(
+            session, job, candidate_hash=str(action.candidate_hash or "")
+        )
 
 
 def _persist_generation_rejection(
@@ -153,14 +168,32 @@ def _persist_quality_wait(session: Session, request, *, action, result) -> None:
 
 
 def _generated_payload(payload, result: SlotGenerationResult, *, tokens: int) -> dict:
-    data = apply_generated_content_metadata(payload.model_dump(mode="json"), result.content)
-    data.update({
-        "message_text": str(result.content).strip(),
-        "ai_generation_status": "ready",
-        "ai_generation_tokens": tokens,
-        "ai_generation_result_cache": {},
-        "voice_profile_contract_version": VOICE_PROFILE_CONTRACT_VERSION,
-    })
+    data = apply_generated_content_metadata(
+        payload.model_dump(mode="json"), result.content
+    )
+    data.update(
+        {
+            "message_text": str(result.content).strip(),
+            "ai_generation_status": "ready",
+            "ai_generation_tokens": tokens,
+            "ai_generation_result_cache": {},
+            "voice_profile_contract_version": VOICE_PROFILE_CONTRACT_VERSION,
+        }
+    )
+    if payload.allocation_plan_id:
+        used_ids, used_terms = extract_vocabulary_usage(
+            str(result.content),
+            route_family=payload.route_family or "general",
+        )
+        data["vocabulary_used_ids"] = list(used_ids)
+        data["vocabulary_used_term_ids"] = list(used_terms)
+        excluded = protected_frequency_phrases(
+            dict(data.get("topic_direction") or {}),
+            dict(data.get("teacher_target") or {}),
+        )
+        data["surface_phrase_fingerprints"] = list(
+            surface_phrase_fingerprints(str(result.content), excluded_phrases=excluded)
+        )
     quality_fallback = result.quality_fallback or str(
         getattr(result.content, "quality_fallback", "") or "",
     )
@@ -175,19 +208,32 @@ def _apply_quality_fallback(
     *,
     quality_fallback: str,
 ) -> None:
-    is_check_in = quality_fallback == "check_in_fallback" or str(result.content).strip() == "签到"
-    data.update({
-        "act_type": "check_in" if is_check_in else quality_fallback,
-        "human_quality_decision": (
-            "check_in_fallback" if is_check_in else "explicit_static_quality_fallback"
-        ),
-        "quality_fallback": "check_in_fallback" if is_check_in else quality_fallback,
-        "content_source": _fallback_content_source(data, result, is_check_in=is_check_in),
-        "generation_source": (
-            "static_safe_fallback" if is_check_in else data.get("generation_source", "")
-        ),
-        "fallback_reason": result.fallback_reason or data.get("fallback_reason", ""),
-    })
+    is_check_in = (
+        quality_fallback == "check_in_fallback" or str(result.content).strip() == "签到"
+    )
+    data.update(
+        {
+            "act_type": "check_in" if is_check_in else quality_fallback,
+            "human_quality_decision": (
+                "check_in_fallback"
+                if is_check_in
+                else "explicit_static_quality_fallback"
+            ),
+            "quality_fallback": "check_in_fallback"
+            if is_check_in
+            else quality_fallback,
+            "content_source": _fallback_content_source(
+                data, result, is_check_in=is_check_in
+            ),
+            "generation_source": (
+                "static_safe_fallback"
+                if is_check_in
+                else data.get("generation_source", "")
+            ),
+            "fallback_reason": result.fallback_reason
+            or data.get("fallback_reason", ""),
+        }
+    )
 
 
 def _fallback_content_source(

@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 class GatewayResultEvidence:
     remote_message_id: str = ""
     remote_fact_id: str = ""
+    typed_remote_fact: dict | None = None
     failure_code: str = ""
     remote_mutation_started: bool | None = None
 
@@ -157,6 +158,7 @@ def _journal_snapshot(
         "evidence_hash": evidence_hash,
         "remote_message_id": evidence.remote_message_id,
         "remote_fact_id": evidence.remote_fact_id,
+        "typed_remote_fact": dict(evidence.typed_remote_fact or {}),
         "failure_code": evidence.failure_code,
         "remote_mutation_state": _mutation_state(evidence),
         "state": "conflict" if drifted else "recorded",
@@ -243,6 +245,7 @@ def _result_fact(evidence: GatewayResultEvidence) -> dict:
     return {
         "remote_message_id": evidence.remote_message_id,
         "remote_fact_id": evidence.remote_fact_id,
+        "typed_remote_fact": dict(evidence.typed_remote_fact or {}),
         "failure_code": evidence.failure_code,
         "remote_mutation_state": _mutation_state(evidence),
     }

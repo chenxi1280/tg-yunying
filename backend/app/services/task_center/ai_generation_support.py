@@ -31,6 +31,7 @@ class TwoStageRuntime:
     dependencies: GenerationDependencies
     history_lines: list[str]
     baseline: list[str]
+    vocabulary_frequency_baseline: list[dict]
     fingerprint_counts: dict[str, int]
 
 

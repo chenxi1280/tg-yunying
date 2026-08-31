@@ -5295,7 +5295,8 @@ def test_group_ai_build_plan_keeps_fixed_pending_slot_accounts(monkeypatch):
         actions = list(session.scalars(select(Action).where(Action.task_id == task.id).order_by(Action.payload["turn_index"])))
     assert [action.account_id for action in actions] == [11, 12]
     assert [action.payload["slot_id"] for action in actions] == ["task-slot-first:cycle:1:turn:1", "task-slot-first:cycle:1:turn:2"]
-    assert [action.payload["act_type"] for action in actions] == ["short_react", "detail_follow"]
+    assert [action.payload["act_type"] for action in actions] == ["question", "question"]
+    assert [action.payload["content_intent_stance"] for action in actions] == ["neutral", "neutral"]
     assert [action.payload["generation_source"] for action in actions] == ["bootstrap", "bootstrap"]
     assert [action.payload["ai_generation_status"] for action in actions] == ["pending", "pending"]
 

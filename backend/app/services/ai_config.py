@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import zipfile
 from collections import defaultdict
@@ -28,6 +29,8 @@ from app.models import (
     AiProviderHealthStatus,
     AiUsageLedger,
     Campaign,
+    ChannelCommentFallbackPoolSnapshot,
+    CommentFallbackSelection,
     ContentKeywordRule,
     Material,
     MaterialCacheConfig,
@@ -826,59 +829,7 @@ def _count_json_references_for_materials(session: Session, stmt, fields: list[st
 
 
 def material_reference_summary(session: Session, tenant_id: int, material_id: int) -> MaterialReferenceSummary:
-    message_task_count = session.scalar(
-        select(func.count(MessageTask.id)).where(
-            MessageTask.tenant_id == tenant_id,
-            MessageTask.material_id == material_id,
-        )
-    ) or 0
-    action_count = _count_json_references(
-        session,
-        select(Action).where(Action.tenant_id == tenant_id),
-        ["payload", "result"],
-        material_id,
-    )
-    rule_version_count = _count_json_references(
-        session,
-        select(RuleSetVersion).where(RuleSetVersion.tenant_id == tenant_id),
-        ["filters", "output_checks", "transforms", "routing", "account_strategy", "rate_limits", "retry_policy"],
-        material_id,
-    )
-    operation_plan_count = (
-        _count_json_references(
-            session,
-            select(OperationPlanTemplate).where(OperationPlanTemplate.tenant_id == tenant_id),
-            ["strategy_config", "task_blueprints"],
-            material_id,
-        )
-        + _count_json_references(
-            session,
-            select(OperationPlanTarget).where(OperationPlanTarget.tenant_id == tenant_id),
-            ["strategy_config"],
-            material_id,
-        )
-        + _count_json_references(
-            session,
-            select(OperationPlanGenerationRun).where(OperationPlanGenerationRun.tenant_id == tenant_id),
-            ["request_payload", "result_payload"],
-            material_id,
-        )
-    )
-    account_profile_batch_count = session.scalar(
-        select(func.count(TgAccountSecurityBatchItem.id)).where(
-            TgAccountSecurityBatchItem.tenant_id == tenant_id,
-            TgAccountSecurityBatchItem.avatar_source.in_([str(material_id), f"material:{material_id}"]),
-        )
-    ) or 0
-    total_count = int(message_task_count) + action_count + rule_version_count + operation_plan_count + int(account_profile_batch_count)
-    return MaterialReferenceSummary(
-        message_task_count=int(message_task_count),
-        action_count=action_count,
-        rule_version_count=rule_version_count,
-        operation_plan_count=operation_plan_count,
-        account_profile_batch_count=int(account_profile_batch_count),
-        total_count=total_count,
-    )
+    return material_reference_summaries(session, tenant_id, [material_id])[material_id]
 
 
 def material_reference_summaries(session: Session, tenant_id: int, material_ids: list[int]) -> dict[int, MaterialReferenceSummary]:
@@ -886,62 +837,138 @@ def material_reference_summaries(session: Session, tenant_id: int, material_ids:
     summaries = {material_id: MaterialReferenceSummary() for material_id in material_ids}
     if not material_id_set:
         return summaries
+    _apply_direct_material_reference_counts(
+        session, tenant_id, material_id_set, summaries,
+    )
+    _apply_operation_plan_reference_counts(
+        session, tenant_id, material_id_set, summaries,
+    )
+    _apply_account_profile_reference_counts(
+        session, tenant_id, material_id_set, summaries,
+    )
+    _apply_comment_material_reference_counts(
+        session, tenant_id, material_id_set, summaries,
+    )
+    for summary in summaries.values():
+        summary.total_count = _material_reference_total(summary)
+    return summaries
 
-    for material_id, count in session.execute(
+
+def _apply_direct_material_reference_counts(
+    session: Session,
+    tenant_id: int,
+    material_ids: set[int],
+    summaries: dict[int, MaterialReferenceSummary],
+) -> None:
+    message_counts = session.execute(
         select(MessageTask.material_id, func.count(MessageTask.id))
-        .where(MessageTask.tenant_id == tenant_id, MessageTask.material_id.in_(material_id_set))
+        .where(MessageTask.tenant_id == tenant_id, MessageTask.material_id.in_(material_ids))
         .group_by(MessageTask.material_id)
-    ):
+    )
+    for material_id, count in message_counts:
         summaries[int(material_id)].message_task_count = int(count or 0)
+    reference_specs = (
+        (select(Action).where(Action.tenant_id == tenant_id), ["payload", "result"], "action_count"),
+        (
+            select(RuleSetVersion).where(RuleSetVersion.tenant_id == tenant_id),
+            ["filters", "output_checks", "transforms", "routing", "account_strategy", "rate_limits", "retry_policy"],
+            "rule_version_count",
+        ),
+    )
+    for stmt, fields, attribute in reference_specs:
+        counts = _count_json_references_for_materials(
+            session, stmt, fields, material_ids,
+        )
+        for material_id, count in counts.items():
+            setattr(summaries[material_id], attribute, count)
 
-    for material_id, count in _count_json_references_for_materials(
-        session,
-        select(Action).where(Action.tenant_id == tenant_id),
-        ["payload", "result"],
-        material_id_set,
-    ).items():
-        summaries[material_id].action_count = count
 
-    for material_id, count in _count_json_references_for_materials(
-        session,
-        select(RuleSetVersion).where(RuleSetVersion.tenant_id == tenant_id),
-        ["filters", "output_checks", "transforms", "routing", "account_strategy", "rate_limits", "retry_policy"],
-        material_id_set,
-    ).items():
-        summaries[material_id].rule_version_count = count
-
-    operation_plan_counts: dict[int, int] = defaultdict(int)
-    for stmt, fields in (
+def _apply_operation_plan_reference_counts(
+    session: Session,
+    tenant_id: int,
+    material_ids: set[int],
+    summaries: dict[int, MaterialReferenceSummary],
+) -> None:
+    counts: dict[int, int] = defaultdict(int)
+    specs = (
         (select(OperationPlanTemplate).where(OperationPlanTemplate.tenant_id == tenant_id), ["strategy_config", "task_blueprints"]),
         (select(OperationPlanTarget).where(OperationPlanTarget.tenant_id == tenant_id), ["strategy_config"]),
         (select(OperationPlanGenerationRun).where(OperationPlanGenerationRun.tenant_id == tenant_id), ["request_payload", "result_payload"]),
-    ):
-        for material_id, count in _count_json_references_for_materials(session, stmt, fields, material_id_set).items():
-            operation_plan_counts[material_id] += count
-    for material_id, count in operation_plan_counts.items():
+    )
+    for stmt, fields in specs:
+        for material_id, count in _count_json_references_for_materials(
+            session, stmt, fields, material_ids,
+        ).items():
+            counts[material_id] += count
+    for material_id, count in counts.items():
         summaries[material_id].operation_plan_count = int(count)
 
-    for avatar_source, count in session.execute(
+
+def _apply_account_profile_reference_counts(
+    session: Session,
+    tenant_id: int,
+    material_ids: set[int],
+    summaries: dict[int, MaterialReferenceSummary],
+) -> None:
+    sources = [
+        item
+        for material_id in material_ids
+        for item in (str(material_id), f"material:{material_id}")
+    ]
+    rows = session.execute(
         select(TgAccountSecurityBatchItem.avatar_source, func.count(TgAccountSecurityBatchItem.id))
         .where(
             TgAccountSecurityBatchItem.tenant_id == tenant_id,
-            TgAccountSecurityBatchItem.avatar_source.in_([item for material_id in material_id_set for item in (str(material_id), f"material:{material_id}")]),
+            TgAccountSecurityBatchItem.avatar_source.in_(sources),
         )
         .group_by(TgAccountSecurityBatchItem.avatar_source)
-    ):
-        matched_ids = _material_ids_from_value(avatar_source, material_id_set, material_key=True)
+    )
+    for avatar_source, count in rows:
+        matched_ids = _material_ids_from_value(
+            avatar_source, material_ids, material_key=True,
+        )
         for material_id in matched_ids:
             summaries[material_id].account_profile_batch_count += int(count or 0)
 
-    for summary in summaries.values():
-        summary.total_count = (
-            summary.message_task_count
-            + summary.action_count
-            + summary.rule_version_count
-            + summary.operation_plan_count
-            + summary.account_profile_batch_count
+
+def _material_reference_total(summary: MaterialReferenceSummary) -> int:
+    return (
+        summary.message_task_count
+        + summary.action_count
+        + summary.rule_version_count
+        + summary.operation_plan_count
+        + summary.account_profile_batch_count
+        + summary.material_group_count
+        + summary.fallback_pool_count
+        + summary.fallback_selection_count
+    )
+
+
+def _apply_comment_material_reference_counts(
+    session: Session,
+    tenant_id: int,
+    material_ids: set[int],
+    summaries: dict[int, MaterialReferenceSummary],
+) -> None:
+    for group in session.scalars(select(MaterialGroup).where(MaterialGroup.tenant_id == tenant_id)):
+        for material_id in _material_ids_from_value(
+            group.material_ids, material_ids, material_key=True,
+        ):
+            summaries[material_id].material_group_count += 1
+    for pool in session.scalars(select(ChannelCommentFallbackPoolSnapshot).where(
+        ChannelCommentFallbackPoolSnapshot.tenant_id == tenant_id,
+    )):
+        for material_id in _material_ids_from_value(pool.image_meme_assets, material_ids):
+            summaries[material_id].fallback_pool_count += 1
+    for material_id, count in session.execute(
+        select(CommentFallbackSelection.material_id, func.count(CommentFallbackSelection.id))
+        .where(
+            CommentFallbackSelection.tenant_id == tenant_id,
+            CommentFallbackSelection.material_id.in_(material_ids),
         )
-    return summaries
+        .group_by(CommentFallbackSelection.material_id)
+    ):
+        summaries[int(material_id)].fallback_selection_count = int(count or 0)
 
 
 def _attach_material_reference_summary(session: Session, material: Material) -> Material:
@@ -998,6 +1025,28 @@ def material_references(session: Session, tenant_id: int, material_id: int) -> M
             items.append(MaterialReferenceItemOut(source_type="action", source_id=str(action.id), title=action.action_type, status=action.status))
             if len(items) >= 100:
                 break
+    for group in session.scalars(select(MaterialGroup).where(MaterialGroup.tenant_id == tenant_id)):
+        if material.id in _normalized_material_ids(group.material_ids):
+            items.append(MaterialReferenceItemOut(
+                source_type="material_group", source_id=str(group.id),
+                title=group.name, status=group.membership_state,
+            ))
+    for pool in session.scalars(select(ChannelCommentFallbackPoolSnapshot).where(
+        ChannelCommentFallbackPoolSnapshot.tenant_id == tenant_id,
+    )):
+        if _json_mentions_material(pool.image_meme_assets, material.id):
+            items.append(MaterialReferenceItemOut(
+                source_type="comment_fallback_pool", source_id=str(pool.id),
+                title=pool.content_mix_contract_id, status=pool.pool_state,
+            ))
+    for selection in session.scalars(select(CommentFallbackSelection).where(
+        CommentFallbackSelection.tenant_id == tenant_id,
+        CommentFallbackSelection.material_id == material.id,
+    ).limit(50)):
+        items.append(MaterialReferenceItemOut(
+            source_type="comment_fallback_selection", source_id=str(selection.id),
+            title=selection.fallback_content_kind, status=selection.selection_state,
+        ))
     return MaterialReferencesOut(material_id=material.id, summary=material.reference_summary, items=items)
 
 
@@ -1028,23 +1077,60 @@ def refresh_material_cache(session: Session, tenant_id: int, material_id: int, a
 
 
 def _material_group_out(session: Session, group: MaterialGroup) -> MaterialGroupOut:
+    material_ids, membership_state, state_reason = _material_group_read_state(
+        session, group,
+    )
     material_count = session.scalar(
         select(func.count(Material.id)).where(
             Material.tenant_id == group.tenant_id,
-            Material.material_type == group.group_type,
+            Material.id.in_(material_ids),
         )
-    ) if group.group_type else 0
+    ) if material_ids else 0
+    ready_assets = _ready_image_meme_group_assets(
+        session, group, membership_state=membership_state,
+    )
     return MaterialGroupOut(
         id=group.id,
         tenant_id=group.tenant_id,
         name=group.name,
         group_type=group.group_type,
+        material_ids=material_ids,
+        membership_revision=int(group.membership_revision or 1),
+        membership_state=membership_state,
+        membership_state_reason=state_reason,
         description=group.description,
         is_active=group.is_active,
         material_count=int(material_count or 0),
+        ready_image_meme_count=len(ready_assets),
+        ready_image_meme_assets=ready_assets,
+        ready_image_meme_pool_hash=_material_manifest_hash(ready_assets),
         created_at=group.created_at,
         updated_at=group.updated_at,
     )
+
+
+def _ready_image_meme_group_assets(
+    session: Session,
+    group: MaterialGroup,
+    *,
+    membership_state: str,
+) -> list[dict[str, Any]]:
+    if not group.is_active or not group.group_type or membership_state != "ready":
+        return []
+    from app.services.task_center.comment_fallback_materials import (
+        asset_manifest,
+        ready_image_assets,
+    )
+
+    return [
+        asset_manifest(item)
+        for item in ready_image_assets(session, group.tenant_id, group.id)
+    ]
+
+
+def _material_manifest_hash(assets: list[dict[str, Any]]) -> str:
+    payload = json.dumps(assets, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def list_material_groups(session: Session, tenant_id: int) -> list[MaterialGroupOut]:
@@ -1055,13 +1141,22 @@ def list_material_groups(session: Session, tenant_id: int) -> list[MaterialGroup
 
 def create_material_group(session: Session, tenant_id: int, payload: MaterialGroupCreate, actor: str) -> MaterialGroupOut:
     require_tenant(session, tenant_id)
-    name = payload.name.strip()
+    name = _material_group_name(payload.name)
+    _lock_material_group_name(session, tenant_id, name)
     if session.scalar(select(MaterialGroup.id).where(MaterialGroup.tenant_id == tenant_id, MaterialGroup.name == name)):
         raise ValueError("material group already exists")
+    group_type = (payload.group_type or "").strip()
+    material_ids = _material_group_member_ids(
+        session, tenant_id, group_type, payload.material_ids,
+    )
     group = MaterialGroup(
         tenant_id=tenant_id,
         name=name,
-        group_type=(payload.group_type or "").strip(),
+        group_type=group_type,
+        material_ids=material_ids,
+        membership_revision=1,
+        membership_state="ready",
+        membership_state_reason="",
         description=(payload.description or "").strip(),
         is_active=payload.is_active,
     )
@@ -1075,27 +1170,136 @@ def create_material_group(session: Session, tenant_id: int, payload: MaterialGro
 
 def update_material_group(session: Session, tenant_id: int, group_id: int, payload: MaterialGroupUpdate, actor: str) -> MaterialGroupOut:
     require_tenant(session, tenant_id)
-    group = session.get(MaterialGroup, group_id)
-    if not group or group.tenant_id != tenant_id:
-        raise ValueError("material group not found")
     data = payload.model_dump(exclude_unset=True)
+    if data.get("name") is not None:
+        data["name"] = _material_group_name(data["name"])
+        _lock_material_group_name(session, tenant_id, data["name"])
+    group = session.scalar(select(MaterialGroup).where(
+        MaterialGroup.id == group_id,
+        MaterialGroup.tenant_id == tenant_id,
+    ).with_for_update())
+    if not group:
+        raise ValueError("material group not found")
+    expected_revision = int(data.pop("expected_membership_revision"))
+    if int(group.membership_revision or 1) != expected_revision:
+        raise ValueError(
+            f"material_group_revision_conflict:{int(group.membership_revision or 1)}"
+        )
+    original_membership = _material_group_membership_identity(group)
+    _apply_material_group_fields(
+        session, tenant_id=tenant_id, group=group, data=data,
+    )
+    if _material_group_membership_identity(group) != original_membership:
+        group.membership_revision = expected_revision + 1
+    if "group_type" in data or "material_ids" in data:
+        group.membership_state = "ready"
+        group.membership_state_reason = ""
+    group.updated_at = _now()
+    audit(session, tenant_id=tenant_id, actor=actor, action="更新素材分组", target_type="material_group", target_id=str(group.id), detail=group.name)
+    session.commit()
+    session.refresh(group)
+    return _material_group_out(session, group)
+
+
+def _apply_material_group_fields(
+    session: Session,
+    *,
+    tenant_id: int,
+    group: MaterialGroup,
+    data: dict[str, Any],
+) -> None:
     if "name" in data and data["name"] is not None:
-        name = str(data["name"]).strip()
+        name = str(data["name"])
         existing_id = session.scalar(select(MaterialGroup.id).where(MaterialGroup.tenant_id == tenant_id, MaterialGroup.name == name, MaterialGroup.id != group.id))
         if existing_id:
             raise ValueError("material group already exists")
         group.name = name
     if "group_type" in data and data["group_type"] is not None:
         group.group_type = str(data["group_type"]).strip()
+    if "material_ids" in data and data["material_ids"] is not None:
+        group.material_ids = _material_group_member_ids(
+            session, tenant_id, group.group_type, data["material_ids"],
+        )
+    elif "group_type" in data:
+        group.material_ids = _material_group_member_ids(
+            session, tenant_id, group.group_type, group.material_ids or [],
+        )
     if "description" in data and data["description"] is not None:
         group.description = str(data["description"]).strip()
     if "is_active" in data and data["is_active"] is not None:
         group.is_active = bool(data["is_active"])
-    group.updated_at = _now()
-    audit(session, tenant_id=tenant_id, actor=actor, action="更新素材分组", target_type="material_group", target_id=str(group.id), detail=group.name)
-    session.commit()
-    session.refresh(group)
-    return _material_group_out(session, group)
+
+
+def _material_group_membership_identity(group: MaterialGroup) -> tuple:
+    return (
+        group.group_type, tuple(_normalized_material_ids(group.material_ids)),
+        bool(group.is_active),
+    )
+
+
+def _material_group_name(value: Any) -> str:
+    name = str(value or "").strip()
+    if not name:
+        raise ValueError("material_group_name_required")
+    return name
+
+
+def _lock_material_group_name(
+    session: Session,
+    tenant_id: int,
+    group_name: str,
+) -> None:
+    if session.get_bind().dialect.name != "postgresql":
+        return
+    digest = hashlib.sha256(f"{tenant_id}:{group_name}".encode("utf-8")).digest()
+    lock_key = int.from_bytes(digest[:8], byteorder="big", signed=True)
+    session.execute(select(func.pg_advisory_xact_lock(lock_key)))
+
+
+def _material_group_member_ids(
+    session: Session,
+    tenant_id: int,
+    group_type: str,
+    material_ids: list[int],
+) -> list[int]:
+    normalized = sorted({int(item) for item in material_ids if int(item) > 0})
+    if not normalized:
+        return []
+    if not group_type:
+        raise ValueError("material_group_type_required")
+    rows = list(session.execute(select(Material.id, Material.material_type).where(
+        Material.tenant_id == tenant_id,
+        Material.id.in_(normalized),
+    )))
+    if len(rows) != len(normalized):
+        raise ValueError("material_group_member_not_found")
+    if group_type and any(row.material_type != group_type for row in rows):
+        raise ValueError("material_group_member_type_mismatch")
+    return normalized
+
+
+def _normalized_material_ids(value: Any) -> list[int]:
+    if not isinstance(value, list):
+        return []
+    return sorted({int(item) for item in value if str(item).isdigit() and int(item) > 0})
+
+
+def _material_group_read_state(
+    session: Session,
+    group: MaterialGroup,
+) -> tuple[list[int], str, str]:
+    material_ids = _normalized_material_ids(group.material_ids)
+    stored_state = str(group.membership_state or "ready")
+    stored_reason = str(group.membership_state_reason or "")
+    if stored_state != "ready":
+        return material_ids, stored_state, stored_reason
+    try:
+        valid_ids = _material_group_member_ids(
+            session, group.tenant_id, group.group_type, material_ids,
+        )
+    except ValueError as exc:
+        return material_ids, "invalid", str(exc)
+    return valid_ids, "ready", ""
 
 
 def create_material(session: Session, payload: MaterialCreate, actor: str = "普通用户") -> Material:
@@ -1276,98 +1480,180 @@ def create_material_zip_import(
     actor: str = "普通用户",
 ) -> MaterialImportResultOut:
     require_tenant(session, tenant_id)
-    if not data:
-        raise ValueError("ZIP 文件不能为空")
-    if material_type not in {"图片", "表情包", "头像包"}:
-        raise ValueError("ZIP 导入仅支持图片、表情包和头像包素材")
-    try:
-        archive = zipfile.ZipFile(BytesIO(data))
-    except zipfile.BadZipFile as exc:
-        raise ValueError("ZIP 文件无法解析") from exc
-
-    zip_image_max_bytes = min(get_settings().material_max_bytes, ZIP_IMAGE_MAX_BYTES)
+    archive = _open_material_zip(data, material_type)
     import_id = uuid4().hex
     source_filename = filename or "materials.zip"
     default_group = (title.strip() or Path(source_filename).stem or "素材包").strip()
     base_title = title.strip() or default_group
     stored_material_type = "图片" if material_type == "头像包" else material_type
+    _lock_material_group_name(session, tenant_id, default_group)
+    target_group = _locked_material_group_by_name(session, tenant_id, default_group)
+    if target_group and target_group.group_type != stored_material_type:
+        raise ValueError("material_import_group_type_conflict")
     import_type = "avatar_pack" if material_type == "头像包" else ("sticker_pack" if material_type == "表情包" else "image_group")
+    with archive:
+        materials, details = _import_material_zip_entries(
+            session, archive, tenant_id=tenant_id, base_title=base_title,
+            material_type=stored_material_type, tags=tags, caption=caption,
+        )
+    if materials:
+        _merge_imported_material_group(
+            session, tenant_id=tenant_id, group=target_group,
+            group_name=default_group, group_type=stored_material_type,
+            material_ids=[item.id for item in materials], actor=actor,
+        )
+    job = _persist_material_zip_import(
+        session, import_id=import_id, tenant_id=tenant_id,
+        source_filename=source_filename, import_type=import_type,
+        group_name=default_group, details=details, materials=materials,
+        actor=actor,
+    )
+    session.commit()
+    session.refresh(job)
+    return _material_import_result(job)
+
+
+def _open_material_zip(data: bytes, material_type: str) -> zipfile.ZipFile:
+    if not data:
+        raise ValueError("ZIP 文件不能为空")
+    if material_type not in {"图片", "表情包", "头像包"}:
+        raise ValueError("ZIP 导入仅支持图片、表情包和头像包素材")
+    try:
+        return zipfile.ZipFile(BytesIO(data))
+    except zipfile.BadZipFile as exc:
+        raise ValueError("ZIP 文件无法解析") from exc
+
+
+def _import_material_zip_entries(
+    session: Session,
+    archive: zipfile.ZipFile,
+    *,
+    tenant_id: int,
+    base_title: str,
+    material_type: str,
+    tags: str,
+    caption: str,
+) -> tuple[list[Material], list[dict[str, Any]]]:
+    max_bytes = min(get_settings().material_max_bytes, ZIP_IMAGE_MAX_BYTES)
+    materials: list[Material] = []
     details: list[dict[str, Any]] = []
     seen_hashes: set[str] = set()
-    success_count = skipped_count = duplicate_count = oversize_count = failed_count = 0
-    materials: list[Material] = []
+    for item in [entry for entry in archive.infolist() if not entry.is_dir()]:
+        name, payload, reason = _material_zip_entry(archive, item, max_bytes)
+        digest = hashlib.sha256(payload).hexdigest() if payload else ""
+        if not reason and digest in seen_hashes:
+            reason = "重复文件已跳过"
+        if reason:
+            details.append(_zip_import_detail(item.filename, "skipped", reason, None, len(payload) or item.file_size))
+            continue
+        seen_hashes.add(digest)
+        try:
+            material = _create_zip_material(
+                session, tenant_id=tenant_id, base_title=base_title,
+                material_type=material_type, tags=tags, caption=caption,
+                normalized_name=name, data=payload, index=len(materials) + 1,
+            )
+        except ValueError as exc:
+            details.append(_zip_import_detail(item.filename, "failed", str(exc), None, len(payload)))
+            continue
+        materials.append(material)
+        details.append(_zip_import_detail(item.filename, "created", "", material.id, len(payload)))
+    return materials, details
 
-    with archive:
-        entries = [item for item in archive.infolist() if not item.is_dir()]
-        for item in entries:
-            entry_name = item.filename
-            normalized_name = entry_name.replace("\\", "/").lstrip("/")
-            parts = [part for part in normalized_name.split("/") if part]
-            reason = ""
-            payload = b""
-            material_id: int | None = None
-            if not parts or any(part == ".." for part in parts):
-                reason = "路径不安全已跳过"
-            elif parts[0] == "__MACOSX" or any(part.startswith("._") or part.startswith(".") for part in parts):
-                reason = "系统目录已跳过"
-            elif item.file_size > zip_image_max_bytes:
-                reason = f"素材文件过大，最大 {zip_image_max_bytes} 字节"
-                oversize_count += 1
-            else:
-                try:
-                    payload = archive.read(item)
-                except (KeyError, RuntimeError, zipfile.BadZipFile):
-                    reason = "文件读取失败"
-            if not reason and not payload:
-                reason = "素材文件不能为空"
-            if not reason and len(payload) > zip_image_max_bytes:
-                reason = f"素材文件过大，最大 {zip_image_max_bytes} 字节"
-                oversize_count += 1
-            content_type = _zip_content_type(normalized_name, payload)
-            if not reason and content_type not in {"image/png", "image/jpeg"}:
-                reason = "素材文件类型不支持"
-            digest = hashlib.sha256(payload).hexdigest() if payload else ""
-            if not reason and digest in seen_hashes:
-                reason = "重复文件已跳过"
-                duplicate_count += 1
-            if reason:
-                skipped_count += 1
-                details.append({"file_name": entry_name, "status": "skipped", "reason": reason, "material_id": None, "file_size": len(payload) if payload else int(item.file_size or 0)})
-                continue
-            seen_hashes.add(digest)
-            try:
-                material = _new_uploaded_material(
-                    tenant_id=tenant_id,
-                    title=_uploaded_material_title(base_title, Path(normalized_name).name, index=success_count + 1, multiple=True),
-                    material_type=stored_material_type,
-                    tags=tags,
-                    caption=caption,
-                    filename=Path(normalized_name).name,
-                    content_type=content_type,
-                    data=payload,
-                    emoji_asset_kind="image_meme" if stored_material_type == "表情包" else "",
-                )
-                session.add(material)
-                session.flush()
-                material_id = material.id
-                materials.append(material)
-                success_count += 1
-                details.append({"file_name": entry_name, "status": "created", "reason": "", "material_id": material_id, "file_size": len(payload)})
-            except ValueError as exc:
-                failed_count += 1
-                details.append({"file_name": entry_name, "status": "failed", "reason": str(exc), "material_id": None, "file_size": len(payload)})
 
+def _material_zip_entry(
+    archive: zipfile.ZipFile,
+    item: zipfile.ZipInfo,
+    max_bytes: int,
+) -> tuple[str, bytes, str]:
+    name = item.filename.replace("\\", "/").lstrip("/")
+    parts = [part for part in name.split("/") if part]
+    if not parts or any(part == ".." for part in parts):
+        return name, b"", "路径不安全已跳过"
+    if parts[0] == "__MACOSX" or any(
+        part.startswith("._") or part.startswith(".") for part in parts
+    ):
+        return name, b"", "系统目录已跳过"
+    if item.file_size > max_bytes:
+        return name, b"", f"素材文件过大，最大 {max_bytes} 字节"
+    try:
+        payload = archive.read(item)
+    except (KeyError, RuntimeError, zipfile.BadZipFile):
+        return name, b"", "文件读取失败"
+    if not payload:
+        return name, payload, "素材文件不能为空"
+    if len(payload) > max_bytes:
+        return name, payload, f"素材文件过大，最大 {max_bytes} 字节"
+    if _zip_content_type(name, payload) not in {"image/png", "image/jpeg"}:
+        return name, payload, "素材文件类型不支持"
+    return name, payload, ""
+
+
+def _create_zip_material(
+    session: Session,
+    *,
+    tenant_id: int,
+    base_title: str,
+    material_type: str,
+    tags: str,
+    caption: str,
+    normalized_name: str,
+    data: bytes,
+    index: int,
+) -> Material:
+    filename = Path(normalized_name).name
+    material = _new_uploaded_material(
+        tenant_id=tenant_id,
+        title=_uploaded_material_title(base_title, filename, index=index, multiple=True),
+        material_type=material_type, tags=tags, caption=caption,
+        filename=filename, content_type=_zip_content_type(normalized_name, data),
+        data=data,
+        emoji_asset_kind="image_meme" if material_type == "表情包" else "",
+    )
+    session.add(material)
+    session.flush()
+    return material
+
+
+def _zip_import_detail(
+    file_name: str,
+    status: str,
+    reason: str,
+    material_id: int | None,
+    file_size: int,
+) -> dict[str, Any]:
+    return {
+        "file_name": file_name, "status": status, "reason": reason,
+        "material_id": material_id, "file_size": int(file_size or 0),
+    }
+
+
+def _persist_material_zip_import(
+    session: Session,
+    *,
+    import_id: str,
+    tenant_id: int,
+    source_filename: str,
+    import_type: str,
+    group_name: str,
+    details: list[dict[str, Any]],
+    materials: list[Material],
+    actor: str,
+) -> MaterialImportJob:
+    counts = {status: sum(item["status"] == status for item in details) for status in ("created", "failed", "skipped")}
+    duplicate_count = sum(item["reason"] == "重复文件已跳过" for item in details)
+    oversize_count = sum(str(item["reason"]).startswith("素材文件过大") for item in details)
     job = MaterialImportJob(
         id=import_id,
         tenant_id=tenant_id,
         source_filename=source_filename,
         import_type=import_type,
-        target_group_name=default_group,
+        target_group_name=group_name,
         status="completed",
         total_count=len(details),
-        success_count=success_count,
-        failed_count=failed_count,
-        skipped_count=skipped_count,
+        success_count=counts["created"],
+        failed_count=counts["failed"],
+        skipped_count=counts["skipped"],
         duplicate_count=duplicate_count,
         oversize_count=oversize_count,
         item_details=details,
@@ -1376,10 +1662,51 @@ def create_material_zip_import(
     for material in materials:
         record_material_versions(session, material, actor=actor)
         audit(session, tenant_id=material.tenant_id, actor=actor, action="ZIP导入素材", target_type="material", target_id=str(material.id), detail=f"import_id={import_id}")
-    audit(session, tenant_id=tenant_id, actor=actor, action="ZIP导入素材包", target_type="material_import", target_id=import_id, detail=f"success={success_count}; skipped={skipped_count}; failed={failed_count}")
-    session.commit()
-    session.refresh(job)
-    return _material_import_result(job)
+    audit(session, tenant_id=tenant_id, actor=actor, action="ZIP导入素材包", target_type="material_import", target_id=import_id, detail=f"success={counts['created']}; skipped={counts['skipped']}; failed={counts['failed']}")
+    return job
+
+
+def _locked_material_group_by_name(
+    session: Session,
+    tenant_id: int,
+    group_name: str,
+) -> MaterialGroup | None:
+    return session.scalar(select(MaterialGroup).where(
+        MaterialGroup.tenant_id == tenant_id,
+        MaterialGroup.name == group_name,
+    ).with_for_update())
+
+
+def _merge_imported_material_group(
+    session: Session,
+    *,
+    tenant_id: int,
+    group: MaterialGroup | None,
+    group_name: str,
+    group_type: str,
+    material_ids: list[int],
+    actor: str,
+) -> MaterialGroup:
+    if group is None:
+        group = MaterialGroup(
+            tenant_id=tenant_id, name=group_name, group_type=group_type,
+            material_ids=sorted(material_ids), membership_revision=1,
+            membership_state="ready", membership_state_reason="",
+        )
+        session.add(group)
+        session.flush()
+        action = "ZIP导入创建素材组"
+    else:
+        group.material_ids = sorted({*_normalized_material_ids(group.material_ids), *material_ids})
+        group.membership_revision = int(group.membership_revision or 1) + 1
+        group.updated_at = _now()
+        action = "ZIP导入合并素材组"
+    audit(
+        session, tenant_id=tenant_id, actor=actor, action=action,
+        target_type="material_group", target_id=str(group.id),
+        detail=f"group={group_name}; added={len(material_ids)}",
+    )
+    return group
 
 
 def _new_uploaded_material(
@@ -1548,6 +1875,7 @@ def update_material(session: Session, material_id: int, payload: MaterialUpdate,
     if not material:
         raise ValueError("material not found")
     raw_data = payload.model_dump(exclude_unset=True)
+    _validate_material_type_change(session, material, raw_data.get("material_type"))
     data, content_changed = _sanitize_public_material_update(raw_data, material)
     media_content_changed = content_changed and str(data.get("material_type") or material.material_type) in MEDIA_MATERIAL_TYPES
     if media_content_changed:
@@ -1577,6 +1905,29 @@ def update_material(session: Session, material_id: int, payload: MaterialUpdate,
     session.commit()
     session.refresh(material)
     return _attach_material_reference_summary(session, material)
+
+
+def _validate_material_type_change(
+    session: Session,
+    material: Material,
+    requested_type: Any,
+) -> None:
+    next_type = str(requested_type or material.material_type)
+    if next_type == material.material_type:
+        return
+    blocking_groups = [
+        group.name
+        for group in session.scalars(select(MaterialGroup).where(
+            MaterialGroup.tenant_id == material.tenant_id,
+        ))
+        if material.id in _normalized_material_ids(group.material_ids)
+        and group.group_type != next_type
+    ]
+    if blocking_groups:
+        raise ValueError(
+            "material_group_member_type_change_blocked:"
+            + ",".join(sorted(blocking_groups))
+        )
 
 
 def disable_material(session: Session, material_id: int, actor: str, *, reason: str = "") -> Material:

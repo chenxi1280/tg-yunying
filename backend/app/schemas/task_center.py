@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from datetime import date, datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 from urllib.parse import urlparse
 
@@ -15,8 +16,29 @@ from .api import ApiModel
 from .operation_plans import OperationPlanTaskLinkOut
 from .runtime_summary import TaskRuntimeSummaryOut
 
-TaskTypeValue = Literal["group_ai_chat", "group_relay", "group_membership_admission", "channel_view", "channel_like", "channel_comment", "search_click", "search_join_group", "group_clone"]
-TaskStatusValue = Literal["draft", "pending", "running", "paused", "target_reached", "wrapping_up", "completed", "stopped", "failed", "deleted"]
+TaskTypeValue = Literal[
+    "group_ai_chat",
+    "group_relay",
+    "group_membership_admission",
+    "channel_view",
+    "channel_like",
+    "channel_comment",
+    "search_click",
+    "search_join_group",
+    "group_clone",
+]
+TaskStatusValue = Literal[
+    "draft",
+    "pending",
+    "running",
+    "paused",
+    "target_reached",
+    "wrapping_up",
+    "completed",
+    "stopped",
+    "failed",
+    "deleted",
+]
 ActionStatusValue = Literal["pending", "executing", "success", "failed", "skipped"]
 ReviewStatusValue = Literal["pending", "approved", "rejected", "expired"]
 GROUP_AI_HARD_HOURLY_MIN_MESSAGES = 10
@@ -30,10 +52,51 @@ DEFAULT_SEARCH_JOIN_KEYWORD_ACCOUNT_DAILY_LIMIT = 2
 DEFAULT_SEARCH_JOIN_ACTION_SKIP_PROBABILITY = 0.1
 DEFAULT_SEARCH_JOIN_HOURLY_JITTER_PERCENT = 30
 DEFAULT_SEARCH_JOIN_DAILY_JITTER_PERCENT = 20
-DEFAULT_SEARCH_JOIN_CURVE = [1, 1, 0, 0, 0, 0, 1, 2, 2, 3, 3, 3, 2, 2, 3, 4, 4, 5, 5, 5, 4, 3, 2, 1]
+DEFAULT_SEARCH_JOIN_CURVE = [
+    1,
+    1,
+    0,
+    0,
+    0,
+    0,
+    1,
+    2,
+    2,
+    3,
+    3,
+    3,
+    2,
+    2,
+    3,
+    4,
+    4,
+    5,
+    5,
+    5,
+    4,
+    3,
+    2,
+    1,
+]
 KEYWORD_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 TELEGRAM_PUBLIC_USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{1,64}$")
 MAX_GROUP_AI_PREJOIN_CHANNELS = 3
+
+
+def _strict_topic_participation_rate(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
+        raise ValueError("任务话题占比上限必须是数值")
+    try:
+        normalized = Decimal(str(value))
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError("任务话题占比上限必须是数值") from exc
+    if not normalized.is_finite() or normalized < 0 or normalized > Decimal("0.30"):
+        raise ValueError("任务话题占比上限必须在 0 到 0.30 之间")
+    if normalized.as_tuple().exponent < -2:
+        raise ValueError("任务话题占比上限最多两位小数")
+    return float(normalized)
 
 
 def _normalize_public_telegram_channel_ref(value: Any) -> str:
@@ -92,15 +155,44 @@ class QuietHours(BaseModel):
         return self
 
 
-DEFAULT_HOURLY_ACTIVITY_CURVE = [2, 2, 1, 1, 0, 0, 1, 2, 4, 5, 6, 6, 5, 4, 6, 7, 8, 9, 10, 10, 8, 6, 4, 3]
+DEFAULT_HOURLY_ACTIVITY_CURVE = [
+    2,
+    2,
+    1,
+    1,
+    0,
+    0,
+    1,
+    2,
+    4,
+    5,
+    6,
+    6,
+    5,
+    4,
+    6,
+    7,
+    8,
+    9,
+    10,
+    10,
+    8,
+    6,
+    4,
+    3,
+]
 
 
 class OperationProfile(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     template_id: str = "natural_full_day"
-    source: Literal["built_in_default", "target_recommended", "manual"] = "built_in_default"
-    hourly_activity_curve: list[int] = Field(default_factory=lambda: list(DEFAULT_HOURLY_ACTIVITY_CURVE))
+    source: Literal["built_in_default", "target_recommended", "manual"] = (
+        "built_in_default"
+    )
+    hourly_activity_curve: list[int] = Field(
+        default_factory=lambda: list(DEFAULT_HOURLY_ACTIVITY_CURVE)
+    )
     quiet_threshold: int = Field(default=2, ge=0, le=60)
     peak_threshold: int = Field(default=8, ge=0, le=60)
     manual_override: bool = False
@@ -146,9 +238,13 @@ class PacingConfig(BaseModel):
     operation_profile: OperationProfile = Field(default_factory=OperationProfile)
     interval_seconds_min: int | None = Field(default=None, ge=0)
     interval_seconds_max: int | None = Field(default=None, ge=0)
-    curve_type: Literal["front_heavy", "back_heavy", "random_burst", "steady"] | None = None
+    curve_type: (
+        Literal["front_heavy", "back_heavy", "random_burst", "steady"] | None
+    ) = None
     curve_duration_hours: int | None = Field(default=None, ge=1, le=168)
-    template: Literal["aggressive_1h", "moderate_6h", "gentle_24h", "burst_30min"] | None = "moderate_6h"
+    template: (
+        Literal["aggressive_1h", "moderate_6h", "gentle_24h", "burst_30min"] | None
+    ) = "moderate_6h"
     jitter_percent: int = Field(default=30, ge=0, le=100)
     max_actions_per_hour: int | None = Field(default=None, ge=1)
     max_actions_per_day: int | None = Field(default=None, ge=1)
@@ -158,13 +254,25 @@ class PacingConfig(BaseModel):
 
     @model_validator(mode="after")
     def normalize_fixed(self) -> "PacingConfig":
-        if self.source_capacity_v2_enabled and not self.source_capacity_policy_version_id:
+        if (
+            self.source_capacity_v2_enabled
+            and not self.source_capacity_policy_version_id
+        ):
             raise ValueError("启用来源容量 v2 时必须绑定策略版本")
-        if not self.source_capacity_v2_enabled and self.source_capacity_policy_version_id:
+        if (
+            not self.source_capacity_v2_enabled
+            and self.source_capacity_policy_version_id
+        ):
             raise ValueError("来源容量策略版本只能在 v2 启用时配置")
         if self.mode == "fixed":
-            self.interval_seconds_min = 60 if self.interval_seconds_min is None else self.interval_seconds_min
-            self.interval_seconds_max = self.interval_seconds_min if self.interval_seconds_max is None else self.interval_seconds_max
+            self.interval_seconds_min = (
+                60 if self.interval_seconds_min is None else self.interval_seconds_min
+            )
+            self.interval_seconds_max = (
+                self.interval_seconds_min
+                if self.interval_seconds_max is None
+                else self.interval_seconds_max
+            )
             if self.interval_seconds_max < self.interval_seconds_min:
                 self.interval_seconds_max = self.interval_seconds_min
         if self.mode == "curve" and not self.curve_type:
@@ -177,17 +285,29 @@ class PacingConfig(BaseModel):
 class SearchJoinPacingConfig(PacingConfig):
     max_actions_per_hour: int | None = Field(default=None, ge=0, le=500)
     per_account_total_action_limit: int = Field(default=0, ge=0, le=100000)
-    per_account_daily_action_limit: int = Field(default=DEFAULT_SEARCH_JOIN_DAILY_ACCOUNT_LIMIT, ge=0, le=1000)
+    per_account_daily_action_limit: int = Field(
+        default=DEFAULT_SEARCH_JOIN_DAILY_ACCOUNT_LIMIT, ge=0, le=1000
+    )
     per_account_hourly_action_limit: int = Field(default=0, ge=0, le=500)
     per_account_cooldown_days: int = Field(default=0, ge=0, le=365)
-    per_keyword_account_daily_limit: int = Field(default=DEFAULT_SEARCH_JOIN_KEYWORD_ACCOUNT_DAILY_LIMIT, ge=0, le=1000)
+    per_keyword_account_daily_limit: int = Field(
+        default=DEFAULT_SEARCH_JOIN_KEYWORD_ACCOUNT_DAILY_LIMIT, ge=0, le=1000
+    )
     captcha_trigger_rate: float = Field(default=0, ge=0, le=1)
-    max_actions_per_day: int | None = Field(default=DEFAULT_SEARCH_JOIN_MAX_ACTIONS_PER_DAY, ge=0)
+    max_actions_per_day: int | None = Field(
+        default=DEFAULT_SEARCH_JOIN_MAX_ACTIONS_PER_DAY, ge=0
+    )
     hourly_skip_probability: float = Field(default=0, ge=0, le=1)
     daily_skip_probability: float = Field(default=0, ge=0, le=1)
-    skip_probability_per_action: float = Field(default=DEFAULT_SEARCH_JOIN_ACTION_SKIP_PROBABILITY, ge=0, le=1)
-    hourly_jitter_percent: int = Field(default=DEFAULT_SEARCH_JOIN_HOURLY_JITTER_PERCENT, ge=0, le=100)
-    daily_jitter_percent: int = Field(default=DEFAULT_SEARCH_JOIN_DAILY_JITTER_PERCENT, ge=0, le=100)
+    skip_probability_per_action: float = Field(
+        default=DEFAULT_SEARCH_JOIN_ACTION_SKIP_PROBABILITY, ge=0, le=1
+    )
+    hourly_jitter_percent: int = Field(
+        default=DEFAULT_SEARCH_JOIN_HOURLY_JITTER_PERCENT, ge=0, le=100
+    )
+    daily_jitter_percent: int = Field(
+        default=DEFAULT_SEARCH_JOIN_DAILY_JITTER_PERCENT, ge=0, le=100
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -221,9 +341,13 @@ class FailurePolicy(BaseModel):
     max_retries: int = Field(default=3, ge=0, le=10)
     retry_delay_seconds: int = Field(default=60, ge=0)
     retry_backoff: Literal["none", "linear", "exponential"] = "exponential"
-    on_account_banned: Literal["skip_account", "pause_task", "stop_task"] = "skip_account"
+    on_account_banned: Literal["skip_account", "pause_task", "stop_task"] = (
+        "skip_account"
+    )
     on_api_rate_limit: Literal["wait_and_retry", "skip", "pause"] = "wait_and_retry"
-    on_content_rejected: Literal["skip_message", "rewrite_and_retry", "pause"] = "skip_message"
+    on_content_rejected: Literal["skip_message", "rewrite_and_retry", "pause"] = (
+        "skip_message"
+    )
     alert_on_failure: bool = False
     alert_webhook: str | None = None
 
@@ -254,8 +378,14 @@ class SourceGroup(BaseModel):
 
     @model_validator(mode="after")
     def validate_group_reference(self) -> "SourceGroup":
-        if not self.group_id and not self.operation_target_id and not (self.target_input or "").strip():
-            raise ValueError("source group requires group_id, operation_target_id or target_input")
+        if (
+            not self.group_id
+            and not self.operation_target_id
+            and not (self.target_input or "").strip()
+        ):
+            raise ValueError(
+                "source group requires group_id, operation_target_id or target_input"
+            )
         return self
 
 
@@ -282,13 +412,18 @@ def _plain_lines(value: str) -> list[str]:
 def _topic_directions_from_lines(value: str) -> list[dict[str, Any]]:
     lines = _plain_lines(value)
     total = len(lines)
-    return [{"title": line, "weight": float(total - index)} for index, line in enumerate(lines)]
+    return [
+        {"title": line, "weight": float(total - index)}
+        for index, line in enumerate(lines)
+    ]
 
 
 def _teacher_targets_from_lines(value: str) -> list[dict[str, Any]]:
     lines = _plain_lines(value)
     total = len(lines)
-    return [{"name": line, "priority": total - index} for index, line in enumerate(lines)]
+    return [
+        {"name": line, "priority": total - index} for index, line in enumerate(lines)
+    ]
 
 
 def _normalize_topic_directions(value: Any) -> Any:
@@ -317,6 +452,18 @@ class GroupAIChatConfig(BaseModel):
     rule_set_version_id: int | None = None
     target_group_name: str = ""
     topic_directions: list[GroupAITopicDirection] = Field(default_factory=list)
+    topic_participation_rate: float | None = Field(
+        default=None,
+        ge=0,
+        le=0.30,
+        description="任务 topic_directions 的普通正文占比上限；非目标值，不限制词库主题或讨论老师",
+    )
+    topic_participation_rate_next: float | None = Field(
+        default=None, ge=0, le=0.30, exclude=True
+    )
+    topic_participation_rate_effective_date: date | None = Field(
+        default=None, exclude=True
+    )
     teacher_targets: list[GroupAITeacherTarget] = Field(default_factory=list)
     chat_history_depth: int = Field(default=50, ge=1, le=200)
     ai_model: str = ""
@@ -368,14 +515,17 @@ class GroupAIChatConfig(BaseModel):
     ai_two_stage_enabled: bool = False
     ai_semantic_reviewer_model: str = ""
     adult_prompt_enabled: bool | None = None
-    content_route: Literal[
-        "general",
-        "adult_visual",
-        "adult_product",
-        "adult_service_inquiry",
-        "adult_service_sensory",
-        "adult_service",
-    ] | None = None
+    content_route: (
+        Literal[
+            "general",
+            "adult_visual",
+            "adult_product",
+            "adult_service_inquiry",
+            "adult_service_sensory",
+            "adult_service",
+        ]
+        | None
+    ) = None
     ai_content_route_v2_enabled: bool = False
     ai_content_policy_version_id: str = ""
     ai_content_allowed_routes: list[str] = Field(default_factory=list)
@@ -391,6 +541,13 @@ class GroupAIChatConfig(BaseModel):
     def normalize_topic_directions(cls, value: Any) -> Any:
         return _normalize_topic_directions(value)
 
+    @field_validator(
+        "topic_participation_rate", "topic_participation_rate_next", mode="before"
+    )
+    @classmethod
+    def validate_topic_participation_rate(cls, value: Any) -> Any:
+        return _strict_topic_participation_rate(value)
+
     @field_validator("teacher_targets", mode="before")
     @classmethod
     def normalize_teacher_targets(cls, value: Any) -> Any:
@@ -403,8 +560,14 @@ class GroupAIChatConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_target_reference(self) -> "GroupAIChatConfig":
-        if not self.target_group_id and not self.target_operation_target_id and not (self.target_input or "").strip():
-            raise ValueError("target_group_id、target_operation_target_id 或 target_input 至少填写一个")
+        if (
+            not self.target_group_id
+            and not self.target_operation_target_id
+            and not (self.target_input or "").strip()
+        ):
+            raise ValueError(
+                "target_group_id、target_operation_target_id 或 target_input 至少填写一个"
+            )
         if self.reply_min_per_round > self.messages_per_round:
             raise ValueError("reply_min_per_round 不能大于 messages_per_round")
         if not self.group_bot_admission_required:
@@ -430,7 +593,9 @@ class GroupRelayConfig(BaseModel):
     target_group_ids: list[int] = Field(default_factory=list)
     target_operation_target_ids: list[int] = Field(default_factory=list)
     send_account_ids: list[int] = Field(default_factory=list)
-    content_mode: Literal["raw", "light_rewrite", "ai_rewrite", "summary"] = "light_rewrite"
+    content_mode: Literal["raw", "light_rewrite", "ai_rewrite", "summary"] = (
+        "light_rewrite"
+    )
     rewrite_prompt: str | None = None
     preserve_media: bool = False
     add_source_attribution: bool = False
@@ -445,12 +610,26 @@ class GroupRelayConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_relay_targets(self) -> "GroupRelayConfig":
-        if not self.target_group_id and not self.target_group_ids and not self.target_operation_target_id and not self.target_operation_target_ids and not (self.target_input or "").strip():
-            raise ValueError("target_group_id、target_group_ids、运营目标或 target_input 至少填写一个")
+        if (
+            not self.target_group_id
+            and not self.target_group_ids
+            and not self.target_operation_target_id
+            and not self.target_operation_target_ids
+            and not (self.target_input or "").strip()
+        ):
+            raise ValueError(
+                "target_group_id、target_group_ids、运营目标或 target_input 至少填写一个"
+            )
         if self.target_group_id and self.target_group_id not in self.target_group_ids:
             self.target_group_ids = [self.target_group_id, *self.target_group_ids]
-        if self.target_operation_target_id and self.target_operation_target_id not in self.target_operation_target_ids:
-            self.target_operation_target_ids = [self.target_operation_target_id, *self.target_operation_target_ids]
+        if (
+            self.target_operation_target_id
+            and self.target_operation_target_id not in self.target_operation_target_ids
+        ):
+            self.target_operation_target_ids = [
+                self.target_operation_target_id,
+                *self.target_operation_target_ids,
+            ]
         self.require_review = False
         return self
 
@@ -503,8 +682,14 @@ class GroupCloneSenderPoolConfig(BaseModel):
     def validate_pool(self) -> "GroupCloneSenderPoolConfig":
         if len(set(self.account_ids)) != len(self.account_ids):
             raise ValueError("sender_pool.account_ids 不得重复")
-        if not self.active_minutes < self.guarded_minutes < self.eligible_release_minutes:
-            raise ValueError("sender binding 生命周期必须满足 active < guarded < eligible_release")
+        if (
+            not self.active_minutes
+            < self.guarded_minutes
+            < self.eligible_release_minutes
+        ):
+            raise ValueError(
+                "sender binding 生命周期必须满足 active < guarded < eligible_release"
+            )
         if self.minimum_tenure_minutes > self.eligible_release_minutes:
             raise ValueError("minimum_tenure_minutes 不能大于 eligible_release_minutes")
         return self
@@ -529,8 +714,12 @@ class GroupCloneContentConfig(BaseModel):
 
     rule_set_id: int = Field(gt=0)
     rule_set_version: int = Field(gt=0)
-    orphan_reply_policy: Literal["quote_fallback", "drop_subtree", "block_for_review"] = "quote_fallback"
-    incomplete_album_policy: Literal["drop_incomplete", "send_partial_degraded"] = "drop_incomplete"
+    orphan_reply_policy: Literal[
+        "quote_fallback", "drop_subtree", "block_for_review"
+    ] = "quote_fallback"
+    incomplete_album_policy: Literal["drop_incomplete", "send_partial_degraded"] = (
+        "drop_incomplete"
+    )
     unsupported_media_policy: Literal["block", "manual_review"] = "block"
 
 
@@ -538,7 +727,9 @@ class GroupCloneLifecycleConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     start_mode: Literal["start_from_now"] = "start_from_now"
-    failure_order_policy: Literal["fail_stop", "continue_with_visible_gap"] = "fail_stop"
+    failure_order_policy: Literal["fail_stop", "continue_with_visible_gap"] = (
+        "fail_stop"
+    )
     unknown_deadline_seconds: int = Field(default=900, ge=60, le=86400)
 
 
@@ -557,8 +748,12 @@ class GroupCloneConfig(BaseModel):
     sender_pool: GroupCloneSenderPoolConfig
     pacing: GroupClonePacingConfig = Field(default_factory=GroupClonePacingConfig)
     content: GroupCloneContentConfig
-    lifecycle: GroupCloneLifecycleConfig = Field(default_factory=GroupCloneLifecycleConfig)
-    retention: GroupCloneRetentionConfig = Field(default_factory=GroupCloneRetentionConfig)
+    lifecycle: GroupCloneLifecycleConfig = Field(
+        default_factory=GroupCloneLifecycleConfig
+    )
+    retention: GroupCloneRetentionConfig = Field(
+        default_factory=GroupCloneRetentionConfig
+    )
 
 
 class ChannelMessageScopeConfig(BaseModel):
@@ -569,7 +764,9 @@ class ChannelMessageScopeConfig(BaseModel):
     target_input: str | None = None
     target_title: str | None = None
     target_channel_name: str = ""
-    message_scope: Literal["all", "latest_n", "date_range", "specific", "dynamic_new"] = "latest_n"
+    message_scope: Literal[
+        "all", "latest_n", "date_range", "specific", "dynamic_new"
+    ] = "latest_n"
     message_count: int | None = Field(default=10, ge=1, le=500)
     date_from: datetime | None = None
     date_to: datetime | None = None
@@ -582,21 +779,31 @@ class ChannelMessageScopeConfig(BaseModel):
         if self.message_scope == "specific" and not self.message_ids:
             raise ValueError("message_scope=specific 时 message_ids 必填")
         if self.message_scope == "date_range" and not (self.date_from or self.date_to):
-            raise ValueError("message_scope=date_range 时 date_from/date_to 至少填写一个")
+            raise ValueError(
+                "message_scope=date_range 时 date_from/date_to 至少填写一个"
+            )
         return self
 
 
 class ChannelViewConfig(ChannelMessageScopeConfig):
-    message_scope: Literal["all", "latest_n", "date_range", "specific", "dynamic_new"] = "dynamic_new"
-    initial_message_scope: Literal["latest_n", "today_new", "date_range", "specific", "new_only"] | None = None
+    message_scope: Literal[
+        "all", "latest_n", "date_range", "specific", "dynamic_new"
+    ] = "dynamic_new"
+    initial_message_scope: (
+        Literal["latest_n", "today_new", "date_range", "specific", "new_only"] | None
+    ) = None
     latest_message_count: int | None = Field(default=None, ge=1, le=500)
     listen_new_messages: bool = True
     account_coverage_mode: Literal["all_accounts_daily"] = "all_accounts_daily"
     per_message_daily_view_target: int | None = Field(default=None, ge=1, le=10000)
     per_message_total_view_target: int | None = Field(default=0, ge=0, le=100000)
     message_active_days: int = Field(default=3, ge=1, le=365)
-    task_daily_view_safety_cap: int | None = Field(default=1_000_000, ge=1, le=1_000_000)
-    max_views_per_account_per_day: int | None = Field(default=1_000_000, ge=1, le=1_000_000)
+    task_daily_view_safety_cap: int | None = Field(
+        default=1_000_000, ge=1, le=1_000_000
+    )
+    max_views_per_account_per_day: int | None = Field(
+        default=1_000_000, ge=1, le=1_000_000
+    )
     target_views_per_message: int | None = Field(default=None, ge=1, le=10000)
     view_count_jitter: float = Field(default=CHANNEL_COUNT_JITTER_DEFAULT, ge=0, le=1)
     execution_mode: Literal["distribute", "burst"] = "distribute"
@@ -624,7 +831,9 @@ class ChannelViewConfig(ChannelMessageScopeConfig):
 
 
 class ChannelLikeConfig(ChannelMessageScopeConfig):
-    message_scope: Literal["all", "latest_n", "date_range", "specific", "dynamic_new"] = "dynamic_new"
+    message_scope: Literal[
+        "all", "latest_n", "date_range", "specific", "dynamic_new"
+    ] = "dynamic_new"
     target_likes_per_message: int = Field(default=50, ge=1, le=10000)
     like_count_jitter: float = Field(default=CHANNEL_COUNT_JITTER_DEFAULT, ge=0, le=1)
     reaction_type: Literal["random", "specific"] = "random"
@@ -634,25 +843,33 @@ class ChannelLikeConfig(ChannelMessageScopeConfig):
 
 
 class ChannelCommentConfig(ChannelMessageScopeConfig):
-    message_scope: Literal["all", "latest_n", "date_range", "specific", "dynamic_new"] = "dynamic_new"
+    message_scope: Literal[
+        "all", "latest_n", "date_range", "specific", "dynamic_new"
+    ] = "dynamic_new"
     target_comments_per_message: int = Field(default=10, ge=1, le=1000)
     comment_count_jitter: float = Field(default=0.05, ge=0, le=1)
     max_total_comments: int = Field(default=1_000_000, ge=1, le=1_000_000)
-    max_total_comments_jitter: float = Field(default=0, ge=0, le=MAX_TOTAL_COMMENT_JITTER)
+    max_total_comments_jitter: float = Field(
+        default=0, ge=0, le=MAX_TOTAL_COMMENT_JITTER
+    )
     daily_comment_cap: int = Field(default=0, ge=0)
-    rolling_window_days: int = Field(default=1, ge=1, le=30)
+    rolling_window_days: int = Field(default=3, ge=1, le=30)
     comment_mode: Literal["comment", "reply", "mixed"] = "mixed"
     reply_to_message_ids: list[int] = Field(default_factory=list)
     reply_min_per_message: int = Field(default=1, ge=0)
     rule_set_id: int | None = None
     rule_set_version_id: int | None = None
     ai_model: str = ""
-    comment_style: Literal["relevant", "question", "praise", "discussion", "mixed"] = "mixed"
+    comment_style: Literal["relevant", "question", "praise", "discussion", "mixed"] = (
+        "mixed"
+    )
     topic_hint: str | None = None
     system_prompt_override: str | None = None
     language: str = "zh-CN"
     max_comment_length: int | None = Field(default=None, ge=1)
-    max_comments_per_account_per_hour: int = Field(default=1_000_000, ge=1, le=1_000_000)
+    max_comments_per_account_per_hour: int = Field(
+        default=1_000_000, ge=1, le=1_000_000
+    )
     require_review: bool = False
     ai_two_stage_enabled: bool = False
     ai_semantic_reviewer_model: str = ""
@@ -660,20 +877,53 @@ class ChannelCommentConfig(ChannelMessageScopeConfig):
     ai_content_policy_version_id: str = ""
     ai_content_allowed_routes: list[str] = Field(default_factory=list)
     ai_content_attestation_ids: list[str] = Field(default_factory=list)
+    channel_comment_grounding_v1_enabled: bool = False
+    unicode_emoji_enabled: bool = True
+    image_meme_enabled: bool = False
+    image_meme_material_group_id: int | None = Field(default=None, gt=0)
+    unicode_emoji_weight_bps: int = Field(default=10000, ge=0, le=10000)
+    image_meme_weight_bps: int = Field(default=0, ge=0, le=10000)
+    allow_image_reselection_before_gateway: bool = True
+    allow_cross_kind_fallback_to_unicode: bool = True
 
     @model_validator(mode="after")
     def disable_manual_review(self) -> "ChannelCommentConfig":
         if self.comment_mode == "reply" and not self.reply_to_message_ids:
             raise ValueError("comment_mode=reply 时 reply_to_message_ids 必填")
         if self.reply_min_per_message > self.target_comments_per_message:
-            raise ValueError("reply_min_per_message 不能大于 target_comments_per_message")
+            raise ValueError(
+                "reply_min_per_message 不能大于 target_comments_per_message"
+            )
         _validate_semantic_reviewer(self)
         _validate_ai_content_route_config(self)
+        self._validate_comment_fallback_policy()
         self.require_review = False
         return self
 
+    def _validate_comment_fallback_policy(self) -> None:
+        if not self.channel_comment_grounding_v1_enabled:
+            return
+        if not self.ai_two_stage_enabled or not self.ai_content_route_v2_enabled:
+            raise ValueError("channel_comment_grounding_activation_incomplete")
+        if self.rolling_window_days != 3:
+            raise ValueError("channel_comment_rolling_window_must_be_3_days")
+        if self.daily_comment_cap <= 0:
+            raise ValueError("channel_comment_daily_cap_required")
+        if not self.unicode_emoji_enabled and not self.image_meme_enabled:
+            raise ValueError("comment_fallback_type_required")
+        if self.unicode_emoji_weight_bps + self.image_meme_weight_bps != 10000:
+            raise ValueError("comment_fallback_weights_must_total_10000")
+        if self.unicode_emoji_weight_bps and not self.unicode_emoji_enabled:
+            raise ValueError("unicode_emoji_weight_requires_enabled_type")
+        if self.image_meme_weight_bps and not self.image_meme_enabled:
+            raise ValueError("image_meme_weight_requires_enabled_type")
+        if self.image_meme_weight_bps > 0 and not self.image_meme_material_group_id:
+            raise ValueError("image_meme_material_group_required")
 
-def _validate_semantic_reviewer(config: GroupAIChatConfig | ChannelCommentConfig) -> None:
+
+def _validate_semantic_reviewer(
+    config: GroupAIChatConfig | ChannelCommentConfig,
+) -> None:
     if not config.ai_two_stage_enabled:
         return
     generator_model = config.ai_model.strip()
@@ -748,12 +998,18 @@ class GroupMembershipAdmissionConfig(BaseModel):
 
     target_operation_target_id: int = Field(gt=0)
     account_group_ids: list[int] = Field(default_factory=list)
-    admission_pacing: GroupMembershipAdmissionPacingConfig = Field(default_factory=GroupMembershipAdmissionPacingConfig)
-    test_message: GroupMembershipAdmissionTestMessageConfig = Field(default_factory=GroupMembershipAdmissionTestMessageConfig)
+    admission_pacing: GroupMembershipAdmissionPacingConfig = Field(
+        default_factory=GroupMembershipAdmissionPacingConfig
+    )
+    test_message: GroupMembershipAdmissionTestMessageConfig = Field(
+        default_factory=GroupMembershipAdmissionTestMessageConfig
+    )
 
     @model_validator(mode="after")
     def validate_account_groups(self) -> "GroupMembershipAdmissionConfig":
-        group_ids = list(dict.fromkeys(int(item) for item in self.account_group_ids if int(item) > 0))
+        group_ids = list(
+            dict.fromkeys(int(item) for item in self.account_group_ids if int(item) > 0)
+        )
         if not group_ids:
             raise ValueError("account_group_ids 至少选择一个账号分组")
         self.account_group_ids = group_ids
@@ -794,19 +1050,31 @@ class SearchJoinGroupConfig(BaseModel):
     target_link: str | None = Field(default=None, max_length=300)
     execution_mode: Literal["mtproto_userbot"] = "mtproto_userbot"
     search_bots: list[SearchJoinBotConfig] = Field(default_factory=list)
-    max_pages: int = Field(default=MAX_SEARCH_JOIN_PAGES, ge=1, le=MAX_SEARCH_JOIN_PAGES)
+    max_pages: int = Field(
+        default=MAX_SEARCH_JOIN_PAGES, ge=1, le=MAX_SEARCH_JOIN_PAGES
+    )
     keywords: list[str] = Field(default_factory=list, exclude=True)
     keyword_hashes: list[str] = Field(default_factory=list)
     keyword_text_ciphertexts: list[str] = Field(default_factory=list)
     business_region: str = Field(default="", max_length=80)
     account_locale: str = Field(default="zh-CN", max_length=20)
     proxy_country: str = Field(default="", max_length=20)
-    pre_join_decoy_click_min: int = Field(default=0, ge=0, le=MAX_SEARCH_JOIN_SAFE_NAVIGATION)
-    pre_join_decoy_click_max: int = Field(default=2, ge=0, le=MAX_SEARCH_JOIN_SAFE_NAVIGATION)
-    post_join_safe_navigation_min: int = Field(default=0, ge=0, le=MAX_SEARCH_JOIN_SAFE_NAVIGATION)
-    post_join_safe_navigation_max: int = Field(default=0, ge=0, le=MAX_SEARCH_JOIN_SAFE_NAVIGATION)
+    pre_join_decoy_click_min: int = Field(
+        default=0, ge=0, le=MAX_SEARCH_JOIN_SAFE_NAVIGATION
+    )
+    pre_join_decoy_click_max: int = Field(
+        default=2, ge=0, le=MAX_SEARCH_JOIN_SAFE_NAVIGATION
+    )
+    post_join_safe_navigation_min: int = Field(
+        default=0, ge=0, le=MAX_SEARCH_JOIN_SAFE_NAVIGATION
+    )
+    post_join_safe_navigation_max: int = Field(
+        default=0, ge=0, le=MAX_SEARCH_JOIN_SAFE_NAVIGATION
+    )
     decoy_join_enabled: bool = False
-    hourly_round_curve: list[int] = Field(default_factory=lambda: list(DEFAULT_SEARCH_JOIN_CURVE))
+    hourly_round_curve: list[int] = Field(
+        default_factory=lambda: list(DEFAULT_SEARCH_JOIN_CURVE)
+    )
     actions_per_round: int = Field(default=1, ge=1, le=20)
     max_actions_per_hour: int = Field(default=20, ge=1, le=500)
     hourly_min_successful_joins: int = Field(default=1, ge=1, le=500)
@@ -817,26 +1085,39 @@ class SearchJoinGroupConfig(BaseModel):
     strict_daily_target: bool = False
     target_relevance_score: int | None = Field(default=None, ge=0, le=100)
     target_content_health: Literal["healthy", "weak", "blocked", "unknown"] = "unknown"
-    jisou_ecosystem_status: Literal["bot_joined", "flow_alliance", "unknown"] = "unknown"
+    jisou_ecosystem_status: Literal["bot_joined", "flow_alliance", "unknown"] = (
+        "unknown"
+    )
     paid_keyword_ad_status: Literal["none", "active", "expired", "unknown"] = "unknown"
-    search_visibility_attribution: SearchJoinVisibilityAttribution = Field(default_factory=SearchJoinVisibilityAttribution)
+    search_visibility_attribution: SearchJoinVisibilityAttribution = Field(
+        default_factory=SearchJoinVisibilityAttribution
+    )
     post_join_policy: Literal["stay_joined"] = "stay_joined"
     post_join_task_links: list[dict[str, Any]] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_search_join_config(self) -> "SearchJoinGroupConfig":
         if self.target_count is not None and (
-            self.daily_click_target_count is not None or self.daily_target_count is not None
+            self.daily_click_target_count is not None
+            or self.daily_target_count is not None
         ):
             raise ValueError("target_count 与每日目标不能同时填写")
-        if not self.target_group_id and not self.target_operation_target_id and not (self.target_input or "").strip():
-            raise ValueError("target_group_id、target_operation_target_id 或 target_input 至少填写一个")
+        if (
+            not self.target_group_id
+            and not self.target_operation_target_id
+            and not (self.target_input or "").strip()
+        ):
+            raise ValueError(
+                "target_group_id、target_operation_target_id 或 target_input 至少填写一个"
+            )
         if not self.search_bots:
             raise ValueError("search_bots 至少选择一个搜索机器人")
         if len(self.hourly_round_curve) != 24:
             raise ValueError("hourly_round_curve 必须包含 24 个小时点")
         if self.pre_join_decoy_click_min > self.pre_join_decoy_click_max:
-            raise ValueError("pre_join_decoy_click_min 不能大于 pre_join_decoy_click_max")
+            raise ValueError(
+                "pre_join_decoy_click_min 不能大于 pre_join_decoy_click_max"
+            )
         if self.post_join_safe_navigation_min or self.post_join_safe_navigation_max:
             raise ValueError("post_join_safe_navigation 本期不支持")
         if self.pre_join_decoy_click_max > MAX_SEARCH_JOIN_SAFE_NAVIGATION:
@@ -870,7 +1151,9 @@ class SearchClickConfig(BaseModel):
     keyword_hashes: list[str] = Field(min_length=1)
     keyword_text_ciphertexts: list[str] = Field(min_length=1)
     execution_mode: Literal["mtproto_userbot"] = "mtproto_userbot"
-    max_pages: int = Field(default=MAX_SEARCH_JOIN_PAGES, ge=1, le=MAX_SEARCH_JOIN_PAGES)
+    max_pages: int = Field(
+        default=MAX_SEARCH_JOIN_PAGES, ge=1, le=MAX_SEARCH_JOIN_PAGES
+    )
 
     @model_validator(mode="after")
     def validate_keyword_materials(self) -> "SearchClickConfig":
@@ -924,7 +1207,11 @@ class TaskCreateCommon(BaseModel):
 
     @model_validator(mode="after")
     def validate_schedule_window(self) -> "TaskCreateCommon":
-        if self.scheduled_start and self.scheduled_end and self.scheduled_end <= self.scheduled_start:
+        if (
+            self.scheduled_start
+            and self.scheduled_end
+            and self.scheduled_end <= self.scheduled_start
+        ):
             raise ValueError("scheduled_end 必须晚于 scheduled_start")
         return self
 
@@ -976,7 +1263,9 @@ class SearchJoinGroupSimpleTaskCreate(SearchClickSimpleTaskCreate):
     daily_click_target_count: int | None = Field(default=None, ge=1)
     daily_target_count: int = Field(ge=1)
     allow_same_account_repeat_application: bool = False
-    per_account_daily_action_limit: int = Field(default=DEFAULT_SEARCH_JOIN_DAILY_ACCOUNT_LIMIT, ge=0, le=1000)
+    per_account_daily_action_limit: int = Field(
+        default=DEFAULT_SEARCH_JOIN_DAILY_ACCOUNT_LIMIT, ge=0, le=1000
+    )
 
     @model_validator(mode="after")
     def validate_daily_action_budget(self) -> "SearchJoinGroupSimpleTaskCreate":
@@ -1019,7 +1308,11 @@ class SearchRankDeboostSimpleTaskCreate(SearchClickSimpleTaskCreate):
 
 
 class GroupAIChatTaskCreate(TaskCreateCommon, GroupAIChatConfig):
-    pass
+    topic_participation_rate: float = Field(
+        ge=0,
+        le=0.30,
+        description="任务 topic_directions 的普通正文占比上限；非目标值，不限制词库主题或讨论老师",
+    )
 
 
 class GroupRelayTaskCreate(TaskCreateCommon, GroupRelayConfig):
@@ -1038,12 +1331,16 @@ class ChannelCommentTaskCreate(TaskCreateCommon, ChannelCommentConfig):
     pass
 
 
-class GroupMembershipAdmissionTaskCreate(TaskCreateCommon, GroupMembershipAdmissionConfig):
+class GroupMembershipAdmissionTaskCreate(
+    TaskCreateCommon, GroupMembershipAdmissionConfig
+):
     pass
 
 
 class SearchJoinGroupTaskCreate(TaskCreateCommon, SearchJoinGroupConfig):
-    pacing_config: SearchJoinPacingConfig = Field(default_factory=SearchJoinPacingConfig)
+    pacing_config: SearchJoinPacingConfig = Field(
+        default_factory=SearchJoinPacingConfig
+    )
 
     @model_validator(mode="after")
     def validate_daily_action_budget(self) -> "SearchJoinGroupTaskCreate":
@@ -1083,7 +1380,11 @@ class SearchClickTaskConfigUpdate(BaseModel):
 
 
 class GroupAIChatTaskConfigUpdate(GroupAIChatConfig):
-    pass
+    topic_participation_rate: float = Field(
+        ge=0,
+        le=0.30,
+        description="任务 topic_directions 的普通正文占比上限；下一任务日的新 allocation plan 生效",
+    )
 
 
 class GroupRelayTaskConfigUpdate(GroupRelayConfig):
@@ -1210,19 +1511,33 @@ class SearchJoinGroupTaskConfigUpdate(BaseModel):
     business_region: str | None = Field(default=None, max_length=80)
     account_locale: str | None = Field(default=None, max_length=20)
     proxy_country: str | None = Field(default=None, max_length=20)
-    pre_join_decoy_click_min: int | None = Field(default=None, ge=0, le=MAX_SEARCH_JOIN_SAFE_NAVIGATION)
-    pre_join_decoy_click_max: int | None = Field(default=None, ge=0, le=MAX_SEARCH_JOIN_SAFE_NAVIGATION)
-    post_join_safe_navigation_min: int | None = Field(default=None, ge=0, le=MAX_SEARCH_JOIN_SAFE_NAVIGATION)
-    post_join_safe_navigation_max: int | None = Field(default=None, ge=0, le=MAX_SEARCH_JOIN_SAFE_NAVIGATION)
+    pre_join_decoy_click_min: int | None = Field(
+        default=None, ge=0, le=MAX_SEARCH_JOIN_SAFE_NAVIGATION
+    )
+    pre_join_decoy_click_max: int | None = Field(
+        default=None, ge=0, le=MAX_SEARCH_JOIN_SAFE_NAVIGATION
+    )
+    post_join_safe_navigation_min: int | None = Field(
+        default=None, ge=0, le=MAX_SEARCH_JOIN_SAFE_NAVIGATION
+    )
+    post_join_safe_navigation_max: int | None = Field(
+        default=None, ge=0, le=MAX_SEARCH_JOIN_SAFE_NAVIGATION
+    )
     decoy_join_enabled: bool | None = None
     hourly_round_curve: list[int] | None = None
     actions_per_round: int | None = Field(default=None, ge=1, le=20)
     max_actions_per_hour: int | None = Field(default=None, ge=1, le=500)
     hourly_min_successful_joins: int | None = Field(default=None, ge=1, le=500)
     target_relevance_score: int | None = Field(default=None, ge=0, le=100)
-    target_content_health: Literal["healthy", "weak", "blocked", "unknown"] | None = None
-    jisou_ecosystem_status: Literal["bot_joined", "flow_alliance", "unknown"] | None = None
-    paid_keyword_ad_status: Literal["none", "active", "expired", "unknown"] | None = None
+    target_content_health: Literal["healthy", "weak", "blocked", "unknown"] | None = (
+        None
+    )
+    jisou_ecosystem_status: Literal["bot_joined", "flow_alliance", "unknown"] | None = (
+        None
+    )
+    paid_keyword_ad_status: Literal["none", "active", "expired", "unknown"] | None = (
+        None
+    )
     search_visibility_attribution: SearchJoinVisibilityAttribution | None = None
     post_join_policy: Literal["stay_joined"] | None = None
     post_join_task_links: list[dict[str, Any]] | None = None
@@ -1239,7 +1554,11 @@ class SearchJoinGroupTaskConfigUpdate(BaseModel):
     @field_validator("target_title", "target_link")
     @classmethod
     def normalize_target_text(cls, value: str | None) -> str | None:
-        return SearchClickSimpleTaskCreate.normalize_target_text(value) if value is not None else None
+        return (
+            SearchClickSimpleTaskCreate.normalize_target_text(value)
+            if value is not None
+            else None
+        )
 
     @model_validator(mode="after")
     def validate_keyword_material_patch(self) -> "SearchJoinGroupTaskConfigUpdate":
@@ -1268,17 +1587,29 @@ class SearchJoinGroupTaskConfigUpdate(BaseModel):
 
 class SearchRankDeboostTaskCreate(BaseModel):
     """搜索排名降权任务创建 schema。"""
+
     name: str
     search_bots: list[str] = Field(default=["jisou"], description="首版仅支持 jisou")
     keywords: list[dict] = Field(default_factory=list, description="关键词列表")
-    target_group_ids: list[int] = Field(default_factory=list, description="我方目标群 ID 列表，用于实时排名判定与白名单")
-    account_pool_id: int | None = Field(default=None, description="兼容字段：账号分组 ID，必须为 pool_purpose=rank_deboost 的分组")
-    proxy_airport_node_id: int | None = Field(default=None, description="兼容字段：分组级绑定的 Clash 节点 ID")
+    target_group_ids: list[int] = Field(
+        default_factory=list, description="我方目标群 ID 列表，用于实时排名判定与白名单"
+    )
+    account_pool_id: int | None = Field(
+        default=None,
+        description="兼容字段：账号分组 ID，必须为 pool_purpose=rank_deboost 的分组",
+    )
+    proxy_airport_node_id: int | None = Field(
+        default=None, description="兼容字段：分组级绑定的 Clash 节点 ID"
+    )
     timezone: str = "Asia/Shanghai"
     scheduled_end: datetime | None = None
     account_config: AccountConfig = Field(default_factory=AccountConfig)
-    pacing_config: SearchRankDeboostPacingConfig = Field(default_factory=SearchRankDeboostPacingConfig)
-    config: dict = Field(default_factory=dict, description="任务配置，含节奏、停留时长、限流")
+    pacing_config: SearchRankDeboostPacingConfig = Field(
+        default_factory=SearchRankDeboostPacingConfig
+    )
+    config: dict = Field(
+        default_factory=dict, description="任务配置，含节奏、停留时长、限流"
+    )
     notes: str = ""
 
 
@@ -1302,7 +1633,11 @@ class SearchRankDeboostTaskConfigUpdate(BaseModel):
     @field_validator("target_title", "target_link")
     @classmethod
     def normalize_target_text(cls, value: str | None) -> str | None:
-        return SearchClickSimpleTaskCreate.normalize_target_text(value) if value is not None else None
+        return (
+            SearchClickSimpleTaskCreate.normalize_target_text(value)
+            if value is not None
+            else None
+        )
 
     @model_validator(mode="after")
     def validate_target_patch(self) -> "SearchRankDeboostTaskConfigUpdate":
@@ -1323,6 +1658,7 @@ class SearchRankDeboostTaskConfigUpdate(BaseModel):
 
 class SearchRankDeboostExemptGroupResponse(BaseModel):
     """随机豁免群响应 schema。"""
+
     task_id: str
     exempt_group_username: str
     exempt_group_peer_id: str
@@ -1393,6 +1729,7 @@ class TaskSettingsUpdate(TaskUpdate):
 
     topic_hint: str | None = None
     topic_directions: list[GroupAITopicDirection] | None = None
+    topic_participation_rate: float | None = Field(default=None, ge=0, le=0.30)
     teacher_targets: list[GroupAITeacherTarget] | None = None
     chat_history_depth: int | None = Field(default=None, ge=1, le=200)
     ai_model: str | None = None
@@ -1408,10 +1745,16 @@ class TaskSettingsUpdate(TaskUpdate):
     def normalize_topic_directions(cls, value: Any) -> Any:
         return _normalize_topic_directions(value)
 
+    @field_validator("topic_participation_rate", mode="before")
+    @classmethod
+    def validate_topic_participation_rate(cls, value: Any) -> Any:
+        return _strict_topic_participation_rate(value)
+
     @field_validator("teacher_targets", mode="before")
     @classmethod
     def normalize_teacher_targets(cls, value: Any) -> Any:
         return _normalize_teacher_targets(value)
+
     participation_rate: float | None = Field(default=None, ge=0.01, le=1)
     participation_jitter: float | None = Field(default=None, ge=0, le=1)
     allow_account_repeat: bool | None = None
@@ -1474,14 +1817,20 @@ class TaskSettingsUpdate(TaskUpdate):
     require_review: bool | None = None
 
     target_views_per_message: int | None = Field(default=None, ge=1, le=10000)
-    initial_message_scope: Literal["latest_n", "today_new", "date_range", "specific", "new_only"] | None = None
+    initial_message_scope: (
+        Literal["latest_n", "today_new", "date_range", "specific", "new_only"] | None
+    ) = None
     latest_message_count: int | None = Field(default=None, ge=1, le=500)
     listen_new_messages: bool | None = None
     per_message_daily_view_target: int | None = Field(default=None, ge=1, le=10000)
     per_message_total_view_target: int | None = Field(default=None, ge=0, le=100000)
     message_active_days: int | None = Field(default=None, ge=1, le=365)
-    task_daily_view_safety_cap: int | None = Field(default=1_000_000, ge=1, le=1_000_000)
-    max_views_per_account_per_day: int | None = Field(default=1_000_000, ge=1, le=1_000_000)
+    task_daily_view_safety_cap: int | None = Field(
+        default=1_000_000, ge=1, le=1_000_000
+    )
+    max_views_per_account_per_day: int | None = Field(
+        default=1_000_000, ge=1, le=1_000_000
+    )
     view_count_jitter: float | None = Field(default=None, ge=0, le=1)
     execution_mode: Literal["distribute", "burst"] | None = None
 
@@ -1490,12 +1839,16 @@ class TaskSettingsUpdate(TaskUpdate):
     reaction_type: Literal["random", "specific"] | None = None
     reaction_scope: Literal["configured", "all_available"] | None = None
     allowed_reactions: list[str] | None = None
-    max_likes_per_account_per_hour: int | None = Field(default=1_000_000, ge=1, le=1_000_000)
+    max_likes_per_account_per_hour: int | None = Field(
+        default=1_000_000, ge=1, le=1_000_000
+    )
 
     target_comments_per_message: int | None = Field(default=None, ge=1, le=1000)
     comment_count_jitter: float | None = Field(default=None, ge=0, le=1)
     max_total_comments: int | None = Field(default=1_000_000, ge=1, le=1_000_000)
-    max_total_comments_jitter: float | None = Field(default=None, ge=0, le=MAX_TOTAL_COMMENT_JITTER)
+    max_total_comments_jitter: float | None = Field(
+        default=None, ge=0, le=MAX_TOTAL_COMMENT_JITTER
+    )
     daily_comment_cap: int | None = Field(default=None, ge=0)
     rolling_window_days: int | None = Field(default=None, ge=1, le=30)
     comment_mode: Literal["comment", "reply", "mixed"] | None = None
@@ -1504,12 +1857,26 @@ class TaskSettingsUpdate(TaskUpdate):
     rule_set_id: int | None = None
     rule_set_version_id: int | None = None
     ai_model: str | None = None
-    comment_style: Literal["relevant", "question", "praise", "discussion", "mixed"] | None = None
+    comment_style: (
+        Literal["relevant", "question", "praise", "discussion", "mixed"] | None
+    ) = None
     topic_hint: str | None = None
     system_prompt_override: str | None = None
     language: str | None = None
     max_comment_length: int | None = Field(default=None, ge=1)
-    max_comments_per_account_per_hour: int | None = Field(default=1_000_000, ge=1, le=1_000_000)
+    max_comments_per_account_per_hour: int | None = Field(
+        default=1_000_000, ge=1, le=1_000_000
+    )
+    channel_comment_grounding_v1_enabled: bool | None = None
+    unicode_emoji_enabled: bool | None = None
+    image_meme_enabled: bool | None = None
+    image_meme_material_group_id: int | None = Field(default=None, gt=0)
+    unicode_emoji_weight_bps: int | None = Field(default=None, ge=0, le=10000)
+    image_meme_weight_bps: int | None = Field(default=None, ge=0, le=10000)
+    allow_image_reselection_before_gateway: bool | None = None
+    allow_cross_kind_fallback_to_unicode: bool | None = None
+
+
 class TaskSourceFilterOverrideRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1529,7 +1896,9 @@ class TaskSourceFilterOverrideRequest(BaseModel):
         self.source_action = self.source_action.strip()
         self.reason = self.reason.strip()
         if not any([self.sender_peer_id, self.sender_username, self.sender_name]):
-            raise ValueError("sender_peer_id、sender_username 或 sender_name 至少提供一个")
+            raise ValueError(
+                "sender_peer_id、sender_username 或 sender_name 至少提供一个"
+            )
         if not any([self.source_action_id, self.source_action]):
             raise ValueError("source_action_id 或 source_action 至少提供一个")
         if not self.reason:
@@ -1599,6 +1968,11 @@ class TaskOut(ApiModel):
     pacing_config: dict[str, Any]
     failure_policy: dict[str, Any]
     type_config: dict[str, Any]
+    config_revision: int = 1
+    task_lifecycle_epoch: int = 1
+    topic_policy_state: str = "not_applicable"
+    topic_policy_inventory: dict[str, Any] = Field(default_factory=dict)
+    content_policy_effective_scopes: dict[str, Any] = Field(default_factory=dict)
     group_ai_prejoin_channel_ids: list[str] = Field(default_factory=list)
     stats: dict[str, Any]
     runtime_stage: dict[str, Any] = Field(default_factory=dict)
@@ -1614,6 +1988,95 @@ class TaskOut(ApiModel):
     start_operation_legacy_untracked: bool = False
     created_at: datetime
     updated_at: datetime
+
+    @model_validator(mode="after")
+    def project_topic_policy_state(self) -> "TaskOut":
+        if self.type != "group_ai_chat":
+            self.topic_policy_state = "not_applicable"
+        elif self.type_config.get("topic_participation_rate") is None:
+            self.topic_policy_state = "legacy_unconfirmed"
+        else:
+            self.topic_policy_state = "confirmed"
+        if self.type == "group_ai_chat":
+            expected = int(self.type_config.get("daily_message_target") or 0)
+            self.topic_policy_inventory = {
+                "task_id": self.id,
+                "task_status": self.status,
+                "config_revision": self.config_revision,
+                "topic_direction_count": len(
+                    self.type_config.get("topic_directions") or []
+                ),
+                "expected_normal_count": expected,
+                "projected_topic_max_counts": {
+                    "0.00": 0,
+                    "0.10": expected // 10,
+                    "0.20": expected // 5,
+                    "0.30": expected * 3 // 10,
+                },
+                "confirmation_state": self.topic_policy_state,
+            }
+            pending_rate = self.type_config.get("topic_participation_rate_next")
+            effective_date = self.type_config.get(
+                "topic_participation_rate_effective_date"
+            )
+            policy_meta = dict(
+                self.type_config.get("_ai_group_content_policy_meta") or {}
+            )
+            rate_meta = dict(policy_meta.get("topic_participation_rate") or {})
+            rate_is_pending = pending_rate is not None
+            self.content_policy_effective_scopes = {
+                "topic_participation_rate": {
+                    "effective_scope": "next_task_day"
+                    if rate_is_pending
+                    else "current_task_day",
+                    "effective_revision": _policy_meta_value(
+                        rate_meta,
+                        "next_revision" if rate_is_pending else "current_revision",
+                        self.config_revision,
+                    ),
+                    "effective_at": _policy_meta_value(
+                        rate_meta,
+                        "next_effective_at"
+                        if rate_is_pending
+                        else "current_effective_at",
+                        effective_date or self.updated_at,
+                    ),
+                    "current_value": self.type_config.get("topic_participation_rate"),
+                    "next_value": pending_rate,
+                },
+                "topic_directions": _new_intent_effective_scope(
+                    policy_meta,
+                    "topic_directions",
+                    self.config_revision,
+                    self.updated_at,
+                ),
+                "teacher_targets": _new_intent_effective_scope(
+                    policy_meta,
+                    "teacher_targets",
+                    self.config_revision,
+                    self.updated_at,
+                ),
+            }
+        return self
+
+
+def _policy_meta_value(meta: dict[str, Any], key: str, fallback: Any) -> Any:
+    value = meta.get(key)
+    return fallback if value in (None, "") else value
+
+
+def _new_intent_effective_scope(
+    policy_meta: dict[str, Any],
+    field: str,
+    fallback_revision: int,
+    fallback_at: datetime,
+) -> dict[str, Any]:
+    meta = dict(policy_meta.get(field) or {})
+    return {
+        "effective_scope": "new_content_intent",
+        "effective_revision": _policy_meta_value(meta, "revision", fallback_revision),
+        "effective_at": _policy_meta_value(meta, "effective_at", fallback_at),
+    }
 
 
 class ActionOut(ApiModel):
@@ -1868,7 +2331,9 @@ class TaskDetailOut(BaseModel):
     membership_accounts: list[dict[str, Any]] = Field(default_factory=list)
     membership_admission_phase: dict[str, Any] = Field(default_factory=dict)
     membership_admission_items: list[dict[str, Any]] = Field(default_factory=list)
-    account_coverage_items: list[TaskAccountCoverageItemOut] = Field(default_factory=list)
+    account_coverage_items: list[TaskAccountCoverageItemOut] = Field(
+        default_factory=list
+    )
     message_groups: list[TaskMessageGroupOut] = Field(default_factory=list)
     ai_cycles: list[TaskAICycleOut] = Field(default_factory=list)
     ai_generation_records: list[TaskAIGenerationRecordOut] = Field(default_factory=list)
@@ -1880,6 +2345,7 @@ class TaskDetailOut(BaseModel):
     profile_batch: dict[str, Any] | None = None
     account_security_batch: dict[str, Any] | None = None
     learning_profile_preview: dict[str, Any] = Field(default_factory=dict)
+    ai_group_content_allocation: dict[str, Any] = Field(default_factory=dict)
 
 
 class TaskMembershipItemOut(BaseModel):
@@ -1999,7 +2465,9 @@ class ChannelCapacityCheckRequest(BaseModel):
     target_per_message: int = Field(default=1, ge=1, le=10000)
     target_channel_id: int | None = None
     target_channel_name: str = ""
-    message_scope: Literal["all", "latest_n", "date_range", "specific", "dynamic_new"] = "latest_n"
+    message_scope: Literal[
+        "all", "latest_n", "date_range", "specific", "dynamic_new"
+    ] = "latest_n"
     message_count: int | None = Field(default=1, ge=1, le=500)
     date_from: datetime | None = None
     date_to: datetime | None = None

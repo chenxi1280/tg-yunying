@@ -21,6 +21,8 @@ from ..comment_fulfillment import (
     clean_expired_comment_obligations,
     freeze_comment_obligations,
 )
+from ..comment_fallback_selection import freeze_comment_fallback_contract
+from ..channel_comment_plan_contract import grounding_plan_enabled
 from ..payloads import PostCommentPayload, create_comment_action
 from app.services.target_learning_audit import audit_learning_profile_use
 from app.services.tenant_target_profile import tenant_learning_profile_preview
@@ -33,11 +35,13 @@ from .channel_comment_budget import (
 )
 from .channel_comment_targets import (
     message_reply_targets as _message_reply_targets,
-    reply_target_label as _reply_target_label,
-    reply_target_message_id as _reply_target_message_id,
-    reply_target_text as _reply_target_text,
     valid_reply_targets as _valid_reply_targets,
 )
+from .channel_comment_grounding_planner import (
+    CommentPlanSlot,
+    build_grounding_comment_plan_slots,
+)
+from .channel_comment_payload_builder import build_comment_payload
 from .channel_comment_schedule import (
     prepare_open_actions_for_planning,  # noqa: F401
     reply_minimum_for_mode as _reply_minimum_for_mode,
@@ -49,7 +53,6 @@ from .channel_comment_preparation import (
 )
 from .common import (
     channel_messages,
-    channel_message_payload,
     quantity_jitter_bounds,
     record_channel_capacity_warning,
     stats_inc,
@@ -77,14 +80,6 @@ class CommentPlanContext:
 class CommentPlanSetup:
     context: CommentPlanContext | None
     created: int = 0
-
-
-@dataclass(frozen=True)
-class CommentPlanSlot:
-    message: ChannelMessage
-    reply_target: dict | None
-    slot_index: int
-    obligation: CommentFulfillmentObligation
 
 
 def build_plan(session: Session, task: Task) -> int:
@@ -140,6 +135,14 @@ def _create_prepared_actions(
 ) -> int:
     count_before = _total_comment_action_count(session, task)
     for account_id, planned_at, payload, obligation in prepared:
+        if obligation.content_mix_contract_id:
+            freeze_comment_fallback_contract(
+                session,
+                task,
+                channel_message_id=obligation.channel_message_id,
+                comment_plan_revision=obligation.comment_plan_revision,
+                content_mix_contract_id=obligation.content_mix_contract_id,
+            )
         action = create_comment_action(
             session,
             task,
@@ -284,6 +287,7 @@ def _merge_comment_messages(*groups: list[ChannelMessage]) -> list[ChannelMessag
 
 
 def _planning_accounts(session: Session, task: Task, channel: OperationTarget, config: dict) -> list:
+    grounding_v1 = grounding_plan_enabled(task)
     target_per_message = int(config.get("target_comments_per_message") or 1)
     _lower, max_target_per_message = quantity_jitter_bounds(target_per_message, float(config.get("comment_count_jitter") or 0))
     account_scan_limit = max(max_target_per_message, int((task.account_config or {}).get("max_concurrent") or max_target_per_message))
@@ -297,6 +301,8 @@ def _planning_accounts(session: Session, task: Task, channel: OperationTarget, c
             task.account_config or {},
             limit=account_scan_limit,
             enforce_max_concurrent=False,
+            enforce_capacity=not grounding_v1,
+            scan_all_candidates=grounding_v1,
             daily_coverage_task_id=task.id,
             daily_coverage_action_types=("post_comment",),
         ),
@@ -313,6 +319,14 @@ def _comment_plan_slots(
     task: Task,
     context: CommentPlanContext,
 ) -> list[CommentPlanSlot] | None:
+    if grounding_plan_enabled(task):
+        return build_grounding_comment_plan_slots(
+            session,
+            task,
+            context,
+            input_allowed=_comment_input_allowed,
+            target_builder=_comment_slot_targets,
+        )
     config = context.config
     coverage_remaining = daily_uncovered_account_count(
         session,
@@ -436,56 +450,7 @@ def _prepare_comment_actions(
         task,
         context=context,
         slots=slots,
-        payload_builder=_comment_payload,
-    )
-
-
-def _comment_payload(
-    task: Task,
-    context: CommentPlanContext,
-    slot: CommentPlanSlot,
-    *,
-    account_id: int,
-) -> PostCommentPayload:
-    reply_target = slot.reply_target
-    slot_id = f"channel-comment:{slot.message.id}:{slot.slot_index}"
-    rule_version = context.rule_version
-    profile = context.profile_preview
-    mask = context.voice_profiles.get(account_id, {})
-    return PostCommentPayload(
-        **channel_message_payload(context.channel, slot.message),
-        comment_text="",
-        comment_mode="reply" if reply_target else "comment",
-        reply_to_message_id=_reply_target_message_id(reply_target),
-        reply_target_label=_reply_target_label(reply_target),
-        reply_target_author=_reply_target_text(reply_target, "author"),
-        reply_target_preview=_reply_target_text(reply_target, "preview"),
-        reply_target_source=_reply_target_text(reply_target, "source"),
-        review_approved=False,
-        slot_id=slot_id,
-        comment_fulfillment_obligation_id=slot.obligation.id,
-        comment_plan_revision=slot.obligation.comment_plan_revision,
-        target_ordinal=slot.obligation.target_ordinal,
-        comment_action_attempt_no=slot.obligation.action_attempt_no + 1,
-        content_mix_contract_id=slot.obligation.content_mix_contract_id or "",
-        ai_generation_id=f"{task.id}:{slot_id}",
-        ai_generation_status="pending",
-        rule_set_id=rule_version.rule_set_id,
-        rule_set_name=context.rule_set.name if context.rule_set else "",
-        rule_set_version_id=rule_version.id,
-        resolved_rule_set_version_id=rule_version.id,
-        rule_set_version=rule_version.version,
-        rule_binding_mode="fixed_version" if context.config.get("rule_set_version_id") else "follow_current",
-        profile_scene=str(profile.get("profile_scene") or CHANNEL_COMMENT_SCENE),
-        profile_version=int(profile.get("profile_version") or 0),
-        profile_hit_summary=str(profile.get("profile_hit_summary") or ""),
-        profile_unavailable_reason=str(profile.get("profile_unavailable_reason") or ""),
-        account_mask_id=str(mask.get("id") or ""),
-        account_mask_version=int(mask.get("version") or 0),
-        account_mask_snapshot_hash=str(mask.get("snapshot_hash") or ""),
-        account_mask_summary=str(mask.get("summary") or ""),
-        voice_profile_contract_version=str(mask.get("contract_version") or ""),
-        mask_status="active" if mask.get("id") else "missing",
+        payload_builder=build_comment_payload,
     )
 
 

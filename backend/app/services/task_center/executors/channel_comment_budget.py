@@ -17,10 +17,10 @@ from app.models import (
 from app.services._common import _now
 
 from ..ai_limits import allocate_message_budget
+from ..channel_comment_source import comment_source_published_at, comment_source_window
 from ..fulfillment_activation import CURRENT_CONTRACT_VERSION
 from ..pacing import source_rolling_pacing_due
 from ..pacing_quantity import deterministic_quantity_with_jitter
-from ..source_pacing import rolling_source_window
 from .common import quantity_with_jitter
 
 COMMENT_RESERVATION_STATUSES = ("pending", "claiming", "executing", "success", "unknown_after_send")
@@ -88,6 +88,14 @@ def message_comment_quantities(
     return list(zip(messages, [min(value, MAX_COMMENT_GENERATION_BATCH_PER_MESSAGE) for value in quantities], strict=False))
 
 
+def comment_action_materialization_limit(session: Session, task: Task, config: dict) -> int | None:
+    limits: list[int] = []
+    hour_limit = _task_hour_limit(task)
+    if hour_limit > 0:
+        limits.append(_remaining_current_hour_budget(session, task, hour_limit))
+    return min(limits) if limits else None
+
+
 def reconcile_lifetime_cap(session: Session, task: Task, config: dict | None = None) -> int:
     limit = resolved_total_comment_limit(task, config if config is not None else (task.type_config or {}))
     counts = _total_comment_action_counts(session, task)
@@ -137,7 +145,11 @@ def load_message_comment_plan_states(
     if not messages:
         return {}
     obligation_states = _obligation_message_plan_states(session, task, messages)
-    managed_counts = _managed_collected_comment_counts(session, task, messages)
+    managed_counts = (
+        {}
+        if task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION
+        else _managed_collected_comment_counts(session, task, messages)
+    )
     states: dict[int, MessageCommentPlanState] = {}
     for message in messages:
         reserved, historical_count, max_slot_index = obligation_states.get(
@@ -397,7 +409,10 @@ def _message_comment_deficit(
     now: datetime,
 ) -> int:
     if task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION:
-        _period_start, deadline = rolling_source_window(task, message.created_at)
+        source_window = comment_source_window(task, message)
+        if source_window is None:
+            return 0
+        _period_start, deadline = source_window
         if deadline <= now:
             return 0
     seed_id = f"comment:{task.id}:{message.id}:{task.config_revision or 1}"
@@ -411,7 +426,7 @@ def _message_comment_deficit(
             desired,
             task.pacing_config or {},
             task=task,
-            source_observed_at=message.created_at,
+            source_observed_at=comment_source_published_at(task, message),
             now=now,
         )
     used_count = max(
@@ -422,6 +437,7 @@ def _message_comment_deficit(
 
 
 __all__ = [
+    "comment_action_materialization_limit",
     "load_message_comment_plan_states",
     "message_comment_quantities",
     "reconcile_lifetime_cap",

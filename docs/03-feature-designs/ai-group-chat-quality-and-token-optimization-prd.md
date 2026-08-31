@@ -10,6 +10,7 @@
 > - 生产运行：`docs/04-ops/deployment/PRODUCTION_RUNTIME.md`
 > **版本**：v2.3 (2026-08-31)
 > **专项优先级**：对显式成人 route 的输入词汇、Prompt 和输出质量门，本 PRD §4.1、§4.2、§4.4、§4.8 优先于 `ai-group-provider-fallback-and-safe-prompt-design.md` 2026-08-04 版的一般场景限制；普通 route 仍适用旧安全合同，未成年人、联系方式、引流和露骨内容等绝对红线对所有 route 保持有效。
+> **2026-08-31 词库轮换 supersede：** `ai-group-prompt-daily-rotation-and-rich-vocabulary-prd.md` 对 general/adult 词库、每日调色板、行业词是否必用、表面词频、任务话题占比和新 writer 的质量/成本验收优先。本文“每条成人消息至少包含 1 个核心暗语”与固定 Prompt token 区间只保留为历史诊断，不得作为新 writer 的实现或 QA 门。
 
 ---
 
@@ -143,7 +144,7 @@
 - **目标**：彻底消除“日常讨论、活动答疑”默认值。
 - **调整**：
   - 将 `models/groups.py` 中 `topic_direction` 默认值变更为 `"同城老客交流与避坑讨论"`；
-  - 修改 `_choose_topic_direction`：在任务话题为空时，自动提取内置暗语破冰话题（老师动态、水头评价、避坑打听），不再组装“围绕日常讨论补一句小事”。
+  - 修改 `_choose_topic_direction`：在任务话题为空时，目标群运营方向或内置破冰方向只能作为 `group_free_chat` 背景，不能伪装成任务 `topic_directions`、不能标为 configured-topic，也不进入任务话题比例；新 writer 的具体分配以每日词库专项为准。
 
 ### 4.6 模块六：计划发送时间与消息记忆有效期
 - `AiGroupMessageMemory.planned_at` 使用 `Action.scheduled_at`，不读取不存在的 `Action.planned_at`；
@@ -184,9 +185,9 @@
 ### 5.1 验收标准 (DoD)
 1. **内容质量验收**：
    - 生产环境实时抓取连续 50 条生成消息，**0 次** 出现“红烧肉、吃好吃的、喝咖啡、下午犯困、挖宝、签到、积分”等废话；
-   - 消息严格包含“老师、开课、水头、机车、踩雷、照骗、交作业、出击、上岸”等至少 1 项核心暗语。
+   - 行业暗语均为可选表达，任何单条消息都不要求强制命中；按 remote-confirmed 正文统计 vocabulary/normalized-term/surface phrase 频率，禁止机械堆砌高显著词。
 2. **性能与消耗验收**：
-   - 单批生成 Prompt Tokens 控制在 350~550 之间；
+   - 新 writer 按单条 Telegram remote-confirmed normal body 计算 Prompt Tokens、Provider calls 和成本；相对同 Task/route 基线增长不超过每日词库专项规定的 15%，本文历史 350～550 区间不再作为新 writer 绝对门；
    - 单批生成耗时控制在 2.5~5.0 秒以内；
    - 发送前废弃率 (`expired_before_send`) 由 75%+ 降至 15% 以下。
 3. **自动化测试回归**：

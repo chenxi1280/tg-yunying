@@ -217,7 +217,12 @@ def test_precheck_capacity_uses_all_session_ready_accounts(session: Session) -> 
             session_ciphertext=encrypt_session(f"session-{account_id}"),
         ))
     session.commit()
-    payload = GroupAIChatTaskCreate(name="容量不足任务", target_group_id=21, hourly_min_messages=10)
+    payload = GroupAIChatTaskCreate(
+        name="容量不足任务",
+        target_group_id=21,
+        topic_participation_rate=0.30,
+        hourly_min_messages=10,
+    )
 
     proof = _daily_coverage_capacity_check(
         session,

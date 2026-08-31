@@ -2993,7 +2993,7 @@ def test_group_tasks_accept_operation_target_ids_as_primary_references():
         ai_task = create_group_ai_chat_task(
             session,
             1,
-            GroupAIChatTaskCreate(name="运营目标 AI 活跃", target_operation_target_id=21),
+            GroupAIChatTaskCreate(name="运营目标 AI 活跃", target_operation_target_id=21, topic_participation_rate=0.30),
             "tester",
         )
         assert ai_task.type_config["target_operation_target_id"] == 21
@@ -3029,6 +3029,7 @@ def test_group_tasks_accept_operation_target_ids_as_primary_references():
             GroupAIChatTaskCreate(
                 name="手动曲线 AI 活跃",
                 target_operation_target_id=21,
+                topic_participation_rate=0.30,
                 pacing_config={"operation_profile": {"template_id": "event_warmup", "source": "manual", "hourly_activity_curve": manual_curve, "manual_override": True}},
             ),
             "tester",
@@ -3040,7 +3041,7 @@ def test_group_tasks_accept_operation_target_ids_as_primary_references():
             create_group_ai_chat_task(
                 session,
                 1,
-                GroupAIChatTaskCreate(name="历史规则 AI 活跃", target_operation_target_id=21, rule_set_id=41, rule_set_version_id=42),
+                GroupAIChatTaskCreate(name="历史规则 AI 活跃", target_operation_target_id=21, topic_participation_rate=0.30, rule_set_id=41, rule_set_version_id=42),
                 "tester",
             )
 

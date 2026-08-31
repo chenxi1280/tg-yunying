@@ -146,10 +146,14 @@ def _task_settings_text(session: Session, tenant_id: int, task_id: str) -> str:
     config = task.type_config or {}
     topics = _topic_titles(config)
     targets = _target_names(config)
+    rate = config.get("topic_participation_rate")
+    rate_label = "待 Web 确认" if rate is None else f"{float(rate) * 100:g}%（上限，非目标）"
     return "\n".join(
         [
             f"任务：{task.name} ({task.id})",
             f"话题数：{len(topics)}",
+            f"任务话题占比上限：{rate_label}",
+            "词库每日主题和讨论老师不计入该比例；Bot 不可修改此上限。",
             f"讨论老师数：{len(targets)}",
             f"话题摘要：{_compact_list(topics) or '-'}",
             f"讨论老师摘要：{_compact_list(targets) or '-'}",
@@ -287,7 +291,11 @@ def _handle_draft_message(session: Session, tenant_id: int, chat_id: str, text: 
         count = len(_topic_titles(task.type_config or {}))
         session.delete(conversation)
         session.commit()
-        return _reply(chat_id, f"已保存话题方向 {count} 条。", _task_settings_keyboard(task_id))
+        return _reply(
+            chat_id,
+            f"已保存话题方向 {count} 条；仅对新建内容意图生效，当日任务话题占比上限不变。",
+            _task_settings_keyboard(task_id),
+        )
     if conversation.step == "teachers":
         task = _save_draft_settings(session, tenant_id=tenant_id, chat_id=chat_id, task_id=task_id, payload={"teacher_targets": text})
         if isinstance(task, str):
@@ -295,7 +303,11 @@ def _handle_draft_message(session: Session, tenant_id: int, chat_id: str, text: 
         count = len(_target_names(task.type_config or {}))
         session.delete(conversation)
         session.commit()
-        return _reply(chat_id, f"已保存讨论老师 {count} 条。", _task_settings_keyboard(task_id))
+        return _reply(
+            chat_id,
+            f"已保存讨论老师 {count} 条；仅对新建内容意图生效，当日任务话题占比上限不变。",
+            _task_settings_keyboard(task_id),
+        )
     session.delete(conversation)
     session.commit()
     return _reply(chat_id, f"旧草稿已取消。{CONFIG_WRITE_UNSUPPORTED_MESSAGE}", _task_settings_keyboard(task_id))

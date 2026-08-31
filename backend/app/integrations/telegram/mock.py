@@ -556,6 +556,41 @@ class TelegramGateway:
             True,
             remote_message_id=f"reply-{account_id}-{target_id}-{uuid4().hex[:8]}",
             remote_mutation_started=True,
+            remote_fact={
+                "fact_type": "channel_comment",
+                "content_kind": "text",
+                "relation_kind": "reply" if reply_to_message_id else "direct",
+                "reply_to_message_id": reply_to_message_id,
+            },
+        )
+
+    def reply_channel_media(
+        self,
+        account_id: int,
+        channel_peer_id: str,
+        message_id: int,
+        segment: dict,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+        *,
+        reply_to_message_id: int | None = None,
+    ) -> SendResult:
+        del session_ciphertext, credentials
+        source = str(segment.get("source") or "")
+        if not source:
+            return SendResult(False, failure_type=FailureType.CONTENT_REJECTED.value, detail="媒体素材缺少来源", remote_mutation_started=False)
+        target_id = reply_to_message_id or message_id
+        return SendResult(
+            True,
+            remote_message_id=f"reply-media-{account_id}-{target_id}-{uuid4().hex[:8]}",
+            remote_mutation_started=True,
+            remote_fact={
+                "fact_type": "channel_comment",
+                "content_kind": "image_meme",
+                "remote_media_kind": "image_meme",
+                "relation_kind": "reply" if reply_to_message_id else "direct",
+                "reply_to_message_id": reply_to_message_id,
+            },
         )
 
     def probe_target_capabilities(

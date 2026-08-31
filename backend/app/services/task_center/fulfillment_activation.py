@@ -80,6 +80,8 @@ def _clone_type_config(session: Session, old_task: Task) -> dict:
     config = dict(old_task.type_config or {})
     if old_task.type != "group_ai_chat":
         return config
+    if config.get("topic_participation_rate") is None:
+        raise ValueError("topic_participation_rate_required")
     setting = session.scalar(select(TenantAiSetting).where(
         TenantAiSetting.tenant_id == old_task.tenant_id,
     ))

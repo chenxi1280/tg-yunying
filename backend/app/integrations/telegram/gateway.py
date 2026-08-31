@@ -42,7 +42,11 @@ from .contracts import (
 from app.models import FailureType
 from app.security import decrypt_session
 from app.telethon_lifecycle import TelethonClientLifecycle
-from .telethon_media import _parse_custom_emoji_source, _telegram_entity_length
+from .telethon_media import (
+    _parse_custom_emoji_source,
+    _telegram_entity_length,
+    send_media_segment,
+)
 from .telethon_send import SendProgress, send_content
 from .telethon_utils import resolve_telethon_target, telethon_send_target
 from .search_join import (
@@ -504,6 +508,28 @@ async def _click_admin_approve_button(message: Any) -> bool:
                 await message.click(row_index, col_index)
                 return True
     return False
+
+
+def _channel_comment_remote_fact(
+    message,
+    *,
+    content_kind: str,
+    requested_reply_to: int | None,
+) -> dict:
+    reply_header = getattr(message, "reply_to", None)
+    actual_reply_to = int(getattr(reply_header, "reply_to_msg_id", 0) or 0)
+    if requested_reply_to and actual_reply_to != requested_reply_to:
+        return {}
+    fact = {
+        "fact_type": "channel_comment",
+        "remote_message_id": str(getattr(message, "id", "")),
+        "content_kind": content_kind,
+        "relation_kind": "reply" if requested_reply_to else "direct",
+        "reply_to_message_id": actual_reply_to if requested_reply_to else None,
+    }
+    if content_kind == "image_meme":
+        fact["remote_media_kind"] = "image_meme"
+    return fact
 
 
 class TelethonTelegramGateway(TelegramGateway):
@@ -2378,6 +2404,10 @@ class TelethonTelegramGateway(TelegramGateway):
                 True,
                 remote_message_id=str(getattr(message, "id", "")),
                 remote_mutation_started=True,
+                remote_fact=_channel_comment_remote_fact(
+                    message, content_kind="text",
+                    requested_reply_to=reply_to_message_id,
+                ),
             )
         except Exception as exc:
             mapped = self._map_send_error(exc)
@@ -2407,6 +2437,71 @@ class TelethonTelegramGateway(TelegramGateway):
         reply_to_message_id: int | None = None,
     ) -> SendResult:
         return self._run(self._reply_channel_message_async(session_ciphertext, channel_peer_id, message_id, content, self._usable_credentials(credentials), reply_to_message_id))
+
+    async def _reply_channel_media_async(
+        self,
+        session_ciphertext: str | None,
+        channel_peer_id: str,
+        message_id: int,
+        segment: OutboundSegment,
+        credentials: DeveloperAppCredentials,
+        reply_to_message_id: int | None = None,
+    ) -> SendResult:
+        raw_session = decrypt_session(session_ciphertext)
+        if not raw_session:
+            return SendResult(False, failure_type=FailureType.ACCOUNT_UNAVAILABLE.value, detail="账号没有可用 session", remote_mutation_started=False)
+        client = await self._get_or_create_client(credentials, raw_session)
+        if not await client.is_user_authorized():
+            return SendResult(False, failure_type=FailureType.ACCOUNT_UNAVAILABLE.value, detail="session 已失效", remote_mutation_started=False)
+        started = [False]
+        try:
+            target: int | str = int(channel_peer_id) if channel_peer_id.lstrip("-").isdigit() else channel_peer_id
+            entity = await client.get_entity(target)
+            message = await send_media_segment(
+                client, entity, segment,
+                reply_to_message_id=reply_to_message_id,
+                comment_to_message_id=message_id,
+                before_send=lambda: started.__setitem__(0, True),
+            )
+            return SendResult(
+                True,
+                remote_message_id=str(getattr(message, "id", "")),
+                remote_mutation_started=True,
+                remote_fact=_channel_comment_remote_fact(
+                    message, content_kind="image_meme",
+                    requested_reply_to=reply_to_message_id,
+                ),
+            )
+        except Exception as exc:
+            mapped = self._map_send_error(exc)
+            return SendResult(
+                False,
+                failure_type=mapped.failure_type or FailureType.COMMENT_UNAVAILABLE.value,
+                detail=mapped.detail or "频道消息不支持媒体评论",
+                remote_mutation_started=None if started[0] else False,
+            )
+
+    def reply_channel_media(
+        self,
+        account_id: int,
+        channel_peer_id: str,
+        message_id: int,
+        segment: dict,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+        *,
+        reply_to_message_id: int | None = None,
+    ) -> SendResult:
+        outbound = OutboundSegment(
+            segment_type=str(segment.get("segment_type") or segment.get("type") or "表情包"),
+            content=str(segment.get("content") or ""),
+            source=str(segment.get("source") or ""),
+            caption=str(segment.get("caption") or ""),
+        )
+        return self._run(self._reply_channel_media_async(
+            session_ciphertext, channel_peer_id, message_id, outbound,
+            self._usable_credentials(credentials), reply_to_message_id,
+        ))
 
     def send_message_to_target(
         self,

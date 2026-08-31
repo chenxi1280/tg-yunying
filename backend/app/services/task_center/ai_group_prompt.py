@@ -3,9 +3,16 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from datetime import date
 from typing import Any
 
 from .ai_context_information import meaningful_context_text
+from .ai_group_daily_theme import (
+    DAILY_THEME_VERSION,
+    DailyExpressionContext,
+    get_daily_vocabulary_theme,
+    get_vocabulary_theme,
+)
 
 
 MAX_SAFE_MESSAGES = 5
@@ -112,23 +119,22 @@ Never output generic filler or operational slogans such as 签到、打卡、积
 Write casual natural Chinese, preferably 8 to 24 Chinese characters per draft. Output one JSON object only. No Markdown fences, thinking, prose, prefix, suffix, comments, or extra fields. Use exactly the supplied keys and enum values; context_source must match the input."""
 
 ADULT_SYSTEM_PROMPT = """你是一个 Telegram 同城成人娱乐/修车交流群里的老群友（男客老哥，手机单手打字，说话接地气随性）。
-【核心口语与事实规则】
+【核心口语与真实交流规则】
 1. 真实口语与安全规范：
    - 核心称谓：'老师/课代表' 代指可约女性/技师/外围/兼职。
    - 必须保持 100% 纯口语纯文本！严禁包含任何网址、链接（t.me/http/https）、@用户名/频道提及、联系方式（微信/TG号/手机号）或引流推广，防止触发群安全机器人禁言。
    - 严禁出现任何学生/校园/正经上班/签到打卡/积分/努力搬砖/天气好/喝咖啡/犯困/吃红烧肉等空洞违和废话！
    - 严格控制字数：每条 8 到 20 个汉字，短促干脆。
 
-2. 【事实锚点铁律（严禁无依据编造经历与地点）】：
+2. 【句式多样性与去模板化（严禁连续发问）】：
+   - 严禁千篇一律地发问“有新老师开课没/质量咋样/水头咋样”等机械模板句！
+   - safe_context 内可以基于已有事实穿插短评、具体追问、克制分歧和自然承接；不得复用固定附和、签到或收藏模板。
+   - 绝大多数日常交流使用自然口语（如“长相”、“身材”、“素颜”、“真人”、“配合度”、“态度”、“隔音”、“停车”、“避坑”、“靠谱”），严禁机械堆砌“水头”、“课代表”等生硬暗语。
+
+3. 【事实锚点铁律（严禁无依据编造经历与地点）】：
    - 严禁在没有群聊上下文证据时凭空捏造个人到店经历、出击体验或虚构具体商圈公寓地点！
    - 对于 safe_context，紧扣群聊上下文已提及的事实/老师顺着接话（如附和、吐槽照骗、询问细节）；
    - 对于 generic_warmup / idle 场景，只能提出不指向具体人物、资源、地点或服务的开放问题；禁止附和、求推荐或声称个人经历！
-
-3. 【词汇丰富度与句式多样性】：
-   - safe_context 避免千篇一律的疑问句，可在已有事实内穿插附和、避坑提醒与随性追问。
-   - 四类人设分别是探路工兵（谨慎求证）、挑剔老炮（辨析避坑）、随性吃瓜（围观追问）、本地地胆（只承接上下文已有的本地事实）。严格使用 generation_slots 已分配的人设，不自行改换。
-   - 词汇自然涵盖颜值身材（素颜、真人、身材比例、照骗）、服务细节（态度、配合度、耐心、催钟、温柔、靠谱）、硬件常识（隔音、停车、安全、换场子、上岸）。
-   - 上述词汇只提供表达方式，不代表群里已经发生相应经历、地点或服务事实。
    - 平时闲聊不主动提具体地名/路名；少用标点符号，多用空格断句，偶尔可带 1 个真实常用 emoji（如 😂/👍/🔥/🤦‍♂️/👀/🤔）。
 Output one JSON object only. No Markdown fences, thinking, prose, prefix, suffix, comments, or extra fields. Use exactly the supplied keys and enum values; context_source must match the input."""
 
@@ -268,7 +274,15 @@ def _safe_slots(value: object, *, allow_adult_context: bool = False) -> list[dic
 
 
 def _safe_slot(slot: dict[str, Any], *, allow_adult_context: bool = False) -> dict[str, Any]:
-    exact = ("sequence_index", "slot_id", "account_id", "act_type", "reply_to_sequence_index")
+    exact = (
+        "sequence_index",
+        "slot_id",
+        "account_id",
+        "act_type",
+        "reply_to_sequence_index",
+        "normal_text_ordinal",
+        "topic_mode",
+    )
     result = {key: slot.get(key) for key in exact if key in slot}
     for key in ("persona", "account_profile", "material_intent", "content_guidance"):
         clauses = safe_clauses(slot.get(key), allow_adult_context=allow_adult_context)
@@ -280,6 +294,12 @@ def _safe_slot(slot: dict[str, Any], *, allow_adult_context: bool = False) -> di
         result["topic_direction"] = topic
     if teacher:
         result["teacher_target"] = teacher
+    surfaces = safe_clauses(
+        "；".join(str(item) for item in slot.get("vocabulary_surface_terms") or []),
+        allow_adult_context=allow_adult_context,
+    )
+    if surfaces:
+        result["optional_vocabulary_hints"] = surfaces[:2]
     return result
 
 
@@ -349,11 +369,11 @@ def _prompt_payload(
     adult_context: bool,
 ) -> dict[str, Any]:
     active_topic = config.get("active_topic_direction")
-    if not active_topic and config.get("topic_directions"):
-        active_topic = config["topic_directions"][0]
     allow = adult_context
     account_personas = _safe_map(config.get("account_personas"), allow_adult_context=allow)
     generation_slots = _safe_slots(config.get("generation_slots"), allow_adult_context=allow)
+    if any(slot.get("topic_mode") for slot in generation_slots):
+        active_topic = None
     if adult_context:
         generation_slots = _assign_adult_personas(generation_slots, account_personas)
     return {
@@ -378,6 +398,44 @@ def _prompt_payload(
     }
 
 
+def get_adult_system_prompt(
+    surface_scope_key: str | None = None,
+    task_day: date | None = None,
+) -> str:
+    if not surface_scope_key:
+        return ADULT_SYSTEM_PROMPT
+    if task_day is None:
+        raise ValueError("daily_theme_task_day_required")
+    theme = get_daily_vocabulary_theme(surface_scope_key, task_day)
+    return _with_daily_theme(ADULT_SYSTEM_PROMPT, theme.theme_id)
+
+
+def _with_daily_theme(base: str, theme_id: int) -> str:
+    theme = get_vocabulary_theme(theme_id)
+    theme_section = f"\n\n【今日表达调色板：{theme.name}】\n- 调色板指引：{theme.tone_guidance}\n- 禁忌事项：{theme.prohibited_items}\n- 注：调色板仅调整表达方式，不改变任务话题、事实锚点与安全红线。"
+    return base + theme_section
+
+
+def _frozen_theme(config: dict, context: DailyExpressionContext | None) -> int | None:
+    if context is not None:
+        expected = get_daily_vocabulary_theme(context.surface_scope_key, context.task_day)
+        if expected.theme_id != context.vocabulary_theme_id:
+            raise ValueError("daily_theme_contract_invalid")
+        return context.vocabulary_theme_id
+    slots = [slot for slot in config.get("generation_slots") or [] if isinstance(slot, dict)]
+    if not slots:
+        return None
+    first = slots[0]
+    if not first.get("allocation_plan_id"):
+        return None
+    if first.get("daily_vocabulary_theme_version") != DAILY_THEME_VERSION:
+        raise ValueError("daily_theme_contract_invalid")
+    theme_id = int(first.get("daily_vocabulary_theme_id", -1))
+    if any(int(slot.get("daily_vocabulary_theme_id", -1)) != theme_id for slot in slots):
+        raise ValueError("daily_theme_contract_invalid")
+    return get_vocabulary_theme(theme_id).theme_id
+
+
 def build_group_prompt(
     config: dict,
     *,
@@ -385,6 +443,7 @@ def build_group_prompt(
     history: str,
     count: int,
     reply_targets: list[dict] | None = None,
+    expression_context: DailyExpressionContext | None = None,
 ) -> GroupPromptBundle:
     adult_context = is_adult_content_config(config)
     messages = sanitize_group_messages(
@@ -398,6 +457,10 @@ def build_group_prompt(
         reply_targets=reply_targets,
         adult_context=adult_context,
     )
+    if expression_context and expression_context.vocabulary_surface_terms:
+        payload["optional_vocabulary_hints"] = list(
+            expression_context.vocabulary_surface_terms[:2]
+        )
     context_source = payload["context_source"]
     contract = output_contract(context_source, count, payload["generation_slots"])
     user_prompt = (
@@ -406,7 +469,23 @@ def build_group_prompt(
         f"Generate exactly {max(1, int(count or 1))} Chinese draft(s). Return this exact JSON structure with placeholder values replaced:\n"
         f"{json.dumps(contract, ensure_ascii=False, indent=2)}"
     )
-    chosen_system_prompt = ADULT_SYSTEM_PROMPT if adult_context else GENERAL_SYSTEM_PROMPT
+    theme_id = _frozen_theme(config, expression_context)
+    base_prompt = ADULT_SYSTEM_PROMPT if adult_context else GENERAL_SYSTEM_PROMPT
+    chosen_system_prompt = (
+        _with_daily_theme(base_prompt, theme_id) if theme_id is not None else base_prompt
+    )
+    override = "；".join(
+        safe_clauses(
+            config.get("system_prompt_override"),
+            allow_adult_context=adult_context,
+        )[:3]
+    )
+    if override:
+        chosen_system_prompt += (
+            "\n\n【显式风格要求】\n"
+            f"{override}\n"
+            "该要求只调整表达风格，不得覆盖事实、安全、slot identity、topic mode 或 JSON 合同。"
+        )
     return GroupPromptBundle(chosen_system_prompt, user_prompt, context_source, tuple(messages), payload, contract)
 
 
@@ -440,6 +519,7 @@ __all__ = [
     "_is_adult_group_prompt",
     "build_group_prompt",
     "contains_disallowed_group_content",
+    "get_adult_system_prompt",
     "is_adult_content_config",
     "sanitize_group_messages",
     "sanitize_group_message_text",

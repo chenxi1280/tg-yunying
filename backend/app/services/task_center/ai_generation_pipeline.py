@@ -38,6 +38,13 @@ from .two_stage_generation import (
     realize_message_content,
     two_stage_enabled,
 )
+from .ai_group_vocabulary_frequency import vocabulary_frequency_violation_from_rows
+from .ai_group_vocabulary_sampling import (
+    extract_vocabulary_usage,
+    protected_frequency_phrases,
+    surface_phrase_fingerprints,
+)
+
 
 def generate_quality_results(
     session: Session,
@@ -122,18 +129,33 @@ def _cached_quality_results(session: Session, request) -> list[SlotGenerationRes
     cached_fallbacks = _cached_static_fallbacks(request.cached_contents)
     accepted = cached_fallbacks if _static_fallback_enabled(request) else {}
     rejected = {
-        index: SlotGenerationResult(result.content, "static_fallback_disabled", "static_fallback_disabled")
+        index: SlotGenerationResult(
+            result.content, "static_fallback_disabled", "static_fallback_disabled"
+        )
         for index, result in cached_fallbacks.items()
         if index not in accepted
     }
     plain_indexes = [
-        index for index in range(len(request.cached_contents))
+        index
+        for index in range(len(request.cached_contents))
         if index not in cached_fallbacks
     ]
     plain_contents = [request.cached_contents[index] for index in plain_indexes]
     results = _filter_stage_contents(request, plain_contents, indexes=plain_indexes)
-    accepted.update({index: result for index, result in zip(plain_indexes, results) if not result.rejection_code})
-    rejected.update({index: result for index, result in zip(plain_indexes, results) if result.rejection_code})
+    accepted.update(
+        {
+            index: result
+            for index, result in zip(plain_indexes, results)
+            if not result.rejection_code
+        }
+    )
+    rejected.update(
+        {
+            index: result
+            for index, result in zip(plain_indexes, results)
+            if result.rejection_code
+        }
+    )
     _apply_static_quantity_fallback(
         session,
         request,
@@ -149,7 +171,9 @@ def _cached_static_fallbacks(contents: list[str]) -> dict[int, SlotGenerationRes
         index: SlotGenerationResult(
             content,
             quality_fallback="check_in_fallback",
-            fallback_reason=str(getattr(content, "fallback_reason", "") or "cached_static_fallback"),
+            fallback_reason=str(
+                getattr(content, "fallback_reason", "") or "cached_static_fallback"
+            ),
         )
         for index, content in enumerate(contents)
         if getattr(content, "quality_fallback", "") == "check_in_fallback"
@@ -195,7 +219,9 @@ def _apply_static_quantity_fallback(
         slot = slots[index]
         if not _has_fallback_quantity_slot(slot):
             continue
-        reason = (rejected.get(index) or SlotGenerationResult("")).rejection_code or "all_model_stages_rejected"
+        reason = (
+            rejected.get(index) or SlotGenerationResult("")
+        ).rejection_code or "all_model_stages_rejected"
         if reason == "negative_lexicon_match":
             continue
         content = _check_in_fallback_content(slot, index, reason)
@@ -244,6 +270,7 @@ def _generate_two_stage_results(
         dependencies,
         history_lines,
         list(request.duplicate_baseline_messages),
+        list(getattr(request, "vocabulary_frequency_baseline", [])),
         {},
     )
     total_tokens = brief_tokens
@@ -260,7 +287,9 @@ def _realize_two_stage_plan(
     index: int,
 ) -> tuple[SlotGenerationResult, int]:
     if plan.rejection_code:
-        return _two_stage_rejected(plan.rejection_code, plan.rejection_detail, plan.slot_id, index), 0
+        return _two_stage_rejected(
+            plan.rejection_code, plan.rejection_detail, plan.slot_id, index
+        ), 0
     if plan.brief is None or plan.brief.speech_act == "silence":
         detail = "brief_silence：上下文不支持安全发言，宁可沉默不造句"
         return _two_stage_rejected(QUALITY_WAIT, detail, plan.slot_id, index), 0
@@ -277,11 +306,20 @@ def _realize_two_stage_plan(
         spent_tokens += spent
         if not result.rejection_code:
             runtime.baseline.append(str(result.content))
+            runtime.vocabulary_frequency_baseline.insert(
+                0,
+                _candidate_frequency_payload(
+                    runtime.request, index, str(result.content)
+                ),
+            )
             return result, spent_tokens
         feedback = f"{result.rejection_code}:{result.rejection_detail}"
     detail = f"realize 预算耗尽，最后拒绝码={result.rejection_code or 'unknown'}"
     rejected = _two_stage_rejected(
-        QUALITY_WAIT, detail, plan.slot_id, index,
+        QUALITY_WAIT,
+        detail,
+        plan.slot_id,
+        index,
         evaluator_evidence=result.evaluator_evidence,
     )
     return rejected, spent_tokens
@@ -298,7 +336,10 @@ def _realize_two_stage_attempt(
     _require_provider_attempt_budget(runtime.request)
     try:
         content, meta, spent = realize_message_content(
-            runtime.session, runtime.request.tenant_id, runtime.request.config, plan,
+            runtime.session,
+            runtime.request.tenant_id,
+            runtime.request.config,
+            plan,
             history_lines=runtime.history_lines,
             rejection_feedback=feedback,
             realization_attempt=attempt_index,
@@ -307,11 +348,19 @@ def _realize_two_stage_attempt(
         )
     except TwoStageRealizeError as exc:
         return SlotGenerationResult(
-            "", exc.code, exc.code,
+            "",
+            exc.code,
+            exc.code,
             evaluator_evidence=exc.evidence,
         ), exc.tokens
     mapped = GeneratedContent(content, slot_id=plan.slot_id, sequence_index=index + 1)
-    gate = _filter_slot(runtime.request, index, mapped, baseline=runtime.baseline)
+    gate = _filter_slot(
+        runtime.request,
+        index,
+        mapped,
+        baseline=runtime.baseline,
+        frequency_baseline=runtime.vocabulary_frequency_baseline,
+    )
     gate = replace(gate, evaluator_evidence=dict(meta))
     return _two_stage_structural_gate(runtime, plan, gate), spent
 
@@ -336,7 +385,11 @@ def _two_stage_structural_gate(
 
 
 def _two_stage_rejected(
-    code: str, detail: str, slot_id: str, index: int, *,
+    code: str,
+    detail: str,
+    slot_id: str,
+    index: int,
+    *,
     evaluator_evidence: dict | None = None,
 ) -> SlotGenerationResult:
     """被拒 slot 的映射守恒占位：内容仅用于数量映射校验与审计，不进入发送。
@@ -345,12 +398,16 @@ def _two_stage_rejected(
     message_text 永不写入该占位。
     """
     marker = GeneratedContent(
-        f"[{code}:{index + 1}]", generation_source="two_stage_quality_wait",
+        f"[{code}:{index + 1}]",
+        generation_source="two_stage_quality_wait",
         slot_id=slot_id,
         sequence_index=index + 1,
     )
     return SlotGenerationResult(
-        marker, code, detail, evaluator_evidence=dict(evaluator_evidence or {}),
+        marker,
+        code,
+        detail,
+        evaluator_evidence=dict(evaluator_evidence or {}),
     )
 
 
@@ -407,7 +464,9 @@ def _generate_stage(
     dependencies: GenerationDependencies,
 ) -> tuple[list[str], int]:
     if session.in_transaction():
-        raise RuntimeError("Phase B provider call started with an open database transaction")
+        raise RuntimeError(
+            "Phase B provider call started with an open database transaction"
+        )
     config = _stage_config(request.config, indexes, stage)
     if request.is_reply:
         contents, tokens = dependencies.reply_generator(
@@ -440,18 +499,37 @@ def _filter_stage_contents(
 ) -> list[SlotGenerationResult]:
     selected = indexes or list(range(len(contents)))
     accepted_baseline = list(request.duplicate_baseline_messages)
+    frequency_baseline = list(getattr(request, "vocabulary_frequency_baseline", []))
     results = []
     for item_index, content in zip(selected, contents, strict=True):
-        result = _filter_slot(request, item_index, content, baseline=accepted_baseline)
+        result = _filter_slot(
+            request,
+            item_index,
+            content,
+            baseline=accepted_baseline,
+            frequency_baseline=frequency_baseline,
+        )
         results.append(result)
         if not result.rejection_code:
             accepted_baseline.append(result.content)
+            frequency_baseline.insert(
+                0,
+                _candidate_frequency_payload(request, item_index, str(result.content)),
+            )
     return results
 
 
-def _filter_slot(request, index: int, content: str, *, baseline: list[str]) -> SlotGenerationResult:
+def _filter_slot(
+    request,
+    index: int,
+    content: str,
+    *,
+    baseline: list[str],
+    frequency_baseline: list[dict] | None = None,
+) -> SlotGenerationResult:
     from .executors import group_ai_chat
     from .ai_group_prompt import sanitize_group_message_text
+
     cleaned_text = sanitize_group_message_text(str(content or ""))
     if not cleaned_text or len(cleaned_text.strip()) < 2:
         return SlotGenerationResult("", "quality_rejected", "link_restricted_or_empty")
@@ -459,10 +537,14 @@ def _filter_slot(request, index: int, content: str, *, baseline: list[str]) -> S
     quality_item = {"slot": request.config["generation_slots"][index]}
     mapped = _copy_generated_content_metadata(str(cleaned_text), content)
     mapped.sequence_index = index + 1
-    if violation := validate_adult_content_contract(request.config, content=str(cleaned_text), history=request.history):
+    if violation := validate_adult_content_contract(
+        request.config, content=str(cleaned_text), history=request.history
+    ):
         return SlotGenerationResult(mapped, violation.code, violation.detail)
     if legacy_negative_match(request, str(cleaned_text)):
-        return SlotGenerationResult(mapped, "negative_lexicon_match", "negative_lexicon_match")
+        return SlotGenerationResult(
+            mapped, "negative_lexicon_match", "negative_lexicon_match"
+        )
     if request.config["generation_slots"][index].get("reply_to_message_id"):
         mapped.reply_to_sequence_index = index + 1
     decision = group_ai_chat._voice_profile_match_decision_for_item(
@@ -477,8 +559,20 @@ def _filter_slot(request, index: int, content: str, *, baseline: list[str]) -> S
             str(decision["reason"]),
             False,
         )
-    if reason := group_ai_chat._stance_conflict_reason(str(content), snapshot["stance_summary"]):
+    if reason := group_ai_chat._stance_conflict_reason(
+        str(content), snapshot["stance_summary"]
+    ):
         return SlotGenerationResult(mapped, "stance_conflict", reason)
+    frequency_payload = _candidate_frequency_payload(request, index, str(cleaned_text))
+    frequency_violation = vocabulary_frequency_violation_from_rows(
+        list(frequency_baseline or []), data=frequency_payload
+    )
+    if frequency_violation:
+        return SlotGenerationResult(
+            mapped,
+            "vocabulary_frequency_exceeded",
+            frequency_violation,
+        )
     quality, stats = group_ai_chat._quality_filter_ai_messages(
         [str(content)],
         baseline,
@@ -494,7 +588,31 @@ def _filter_slot(request, index: int, content: str, *, baseline: list[str]) -> S
     return SlotGenerationResult(mapped)
 
 
-def _ordered_results(request, accepted: dict, rejected: dict) -> list[SlotGenerationResult]:
+def _candidate_frequency_payload(request, index: int, content: str) -> dict:
+    slot = request.config["generation_slots"][index]
+    route_family = str(slot.get("route_family") or "general")
+    used_ids, used_terms = extract_vocabulary_usage(content, route_family=route_family)
+    excluded = protected_frequency_phrases(
+        dict(slot.get("topic_direction") or {}),
+        dict(slot.get("teacher_target") or {}),
+    )
+    return {
+        "vocabulary_used_ids": list(used_ids),
+        "vocabulary_used_term_ids": list(used_terms),
+        "surface_phrase_fingerprints": list(
+            surface_phrase_fingerprints(content, excluded_phrases=excluded)
+        ),
+    }
+
+
+def _ordered_results(
+    request, accepted: dict, rejected: dict
+) -> list[SlotGenerationResult]:
     missing = SlotGenerationResult("", "quality_rejected", "all_model_stages_rejected")
-    return [accepted.get(index) or rejected.get(index) or missing for index in range(len(request.batch_ids))]
+    return [
+        accepted.get(index) or rejected.get(index) or missing
+        for index in range(len(request.batch_ids))
+    ]
+
+
 __all__ = ["SlotGenerationResult", "generate_quality_results"]

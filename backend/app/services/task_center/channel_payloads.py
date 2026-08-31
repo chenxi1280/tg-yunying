@@ -45,6 +45,13 @@ class PostCommentPayload(ViewMessagePayload):
     target_ordinal: int = 0
     comment_action_attempt_no: int = 0
     content_mix_contract_id: str = ""
+    source_revision_id: str = ""
+    grounding_assignment_id: str = ""
+    grounding_evidence_hash: str = ""
+    grounding_primary_aspect_code: str = ""
+    grounding_primary_aspect_text: str = ""
+    grounding_teacher_name: str = ""
+    grounding_speech_act: str = ""
     ai_generation_id: str = ""
     ai_generation_status: str = ""
     ai_generation_attempt_id: str = ""
@@ -81,13 +88,19 @@ class PostCommentPayload(ViewMessagePayload):
     fallback_reason: str = ""
     deterministic_fallback_reason: str = ""
     comment_fallback_kind: str = ""
+    comment_fallback_intent_kind: str = "emergency"
+    comment_media_segment: dict[str, Any] = Field(default_factory=dict)
+    comment_fallback_selection: dict[str, Any] = Field(default_factory=dict)
     planned_normal_text_emoji: str = "unresolved"
     human_quality_decision: str = ""
 
     @model_validator(mode="after")
     def validate_comment_state(self) -> "PostCommentPayload":
+        if self.comment_fallback_intent_kind not in {"planned", "emergency"}:
+            raise ValueError("comment_fallback_intent_kind_invalid")
         pending_statuses = {"pending", "generating", "ai_result_persist_unknown"}
-        if not self.comment_text.strip() and self.ai_generation_status not in pending_statuses:
+        ready_content = self.comment_text.strip() or self.comment_media_segment
+        if not ready_content and self.ai_generation_status not in pending_statuses:
             raise ValueError("post_comment action requires comment_text unless AI generation is pending")
         reply_meta = any(
             [self.reply_target_label, self.reply_target_author, self.reply_target_preview, self.reply_target_source]

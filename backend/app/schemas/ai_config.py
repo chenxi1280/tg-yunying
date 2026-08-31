@@ -419,6 +419,9 @@ class MaterialReferenceSummary(ApiModel):
     rule_version_count: int = 0
     operation_plan_count: int = 0
     account_profile_batch_count: int = 0
+    material_group_count: int = 0
+    fallback_pool_count: int = 0
+    fallback_selection_count: int = 0
     total_count: int = 0
 
 
@@ -513,13 +516,16 @@ class MaterialReferencesOut(ApiModel):
 class MaterialGroupCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=160)
     group_type: str = ""
+    material_ids: list[int] = Field(default_factory=list)
     description: str = ""
     is_active: bool = True
 
 
 class MaterialGroupUpdate(BaseModel):
+    expected_membership_revision: int = Field(..., ge=1)
     name: str | None = Field(default=None, min_length=1, max_length=160)
     group_type: str | None = None
+    material_ids: list[int] | None = None
     description: str | None = None
     is_active: bool | None = None
 
@@ -529,9 +535,16 @@ class MaterialGroupOut(ApiModel):
     tenant_id: int
     name: str
     group_type: str
+    material_ids: list[int] = Field(default_factory=list)
+    membership_revision: int = 1
+    membership_state: str = "ready"
+    membership_state_reason: str = ""
     description: str
     is_active: bool
     material_count: int = 0
+    ready_image_meme_count: int = 0
+    ready_image_meme_assets: list[dict[str, Any]] = Field(default_factory=list)
+    ready_image_meme_pool_hash: str = ""
     created_at: datetime | None = None
     updated_at: datetime | None = None
 

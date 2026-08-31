@@ -27,6 +27,11 @@ def freeze_comment_obligations(
     rule_version: RuleSetVersion,
     reply_min_required: int,
     first_ordinal: int = 1,
+    plan_contract_id: str | None = None,
+    revision_override: int | None = None,
+    account_by_ordinal: dict[int, int] | None = None,
+    grounding_assignment_by_ordinal: dict[int, object] | None = None,
+    planned_fallback_ordinals: set[int] | None = None,
 ) -> list[CommentFulfillmentObligation]:
     existing = _message_obligations(session, task, message.id)
     reusable: list[CommentFulfillmentObligation] = []
@@ -45,7 +50,7 @@ def freeze_comment_obligations(
             )
             if not reply_targets:
                 return reusable
-    revision = int(task.config_revision or 1)
+    revision = int(revision_override or task.config_revision or 1)
     contract = _create_comment_contract(
         session,
         task,
@@ -55,6 +60,13 @@ def freeze_comment_obligations(
         revision=revision,
         reply_min_required=reply_min_required,
     )
+    _freeze_fallback_contract(
+        session,
+        task,
+        message,
+        contract,
+        comment_plan_revision=revision,
+    )
     rows = _new_obligations(
         task,
         message,
@@ -62,10 +74,33 @@ def freeze_comment_obligations(
         revision=revision,
         first_ordinal=first_ordinal,
         reply_targets=reply_targets,
+        plan_contract_id=plan_contract_id,
+        account_by_ordinal=account_by_ordinal or {},
+        grounding_assignment_by_ordinal=grounding_assignment_by_ordinal or {},
+        planned_fallback_ordinals=planned_fallback_ordinals or set(),
     )
     session.add_all(rows)
     session.flush()
     return [*reusable, *rows]
+
+
+def _freeze_fallback_contract(
+    session: Session,
+    task: Task,
+    message: ChannelMessage,
+    contract: ContentMixContract,
+    *,
+    comment_plan_revision: int,
+) -> None:
+    from .comment_fallback_selection import freeze_comment_fallback_contract
+
+    freeze_comment_fallback_contract(
+        session,
+        task,
+        channel_message_id=message.id,
+        comment_plan_revision=comment_plan_revision,
+        content_mix_contract_id=contract.id,
+    )
 
 
 def _new_obligations(
@@ -76,6 +111,10 @@ def _new_obligations(
     revision: int,
     first_ordinal: int,
     reply_targets: list[dict | None],
+    plan_contract_id: str | None,
+    account_by_ordinal: dict[int, int],
+    grounding_assignment_by_ordinal: dict[int, object],
+    planned_fallback_ordinals: set[int],
 ) -> list[CommentFulfillmentObligation]:
     return [
         _new_obligation(
@@ -85,6 +124,14 @@ def _new_obligations(
             revision=revision,
             ordinal=index,
             reply_target=target,
+            plan_contract_id=plan_contract_id,
+            account_id=account_by_ordinal.get(index),
+            grounding_assignment_id=getattr(
+                grounding_assignment_by_ordinal.get(index), "id", None,
+            ),
+            fallback_intent_kind=(
+                "planned" if index in planned_fallback_ordinals else "emergency"
+            ),
         )
         for index, target in enumerate(reply_targets, start=first_ordinal)
     ]
@@ -235,6 +282,10 @@ def _new_obligation(
     revision: int,
     ordinal: int,
     reply_target: dict | None,
+    plan_contract_id: str | None,
+    account_id: int | None,
+    grounding_assignment_id: str | None,
+    fallback_intent_kind: str,
 ) -> CommentFulfillmentObligation:
     snapshot = dict(reply_target or {})
     reply_id = _reply_target_id(snapshot)
@@ -245,6 +296,10 @@ def _new_obligation(
         comment_plan_revision=revision,
         target_ordinal=ordinal,
         content_mix_contract_id=contract.id,
+        plan_contract_id=plan_contract_id,
+        account_id=account_id,
+        grounding_assignment_id=grounding_assignment_id,
+        fallback_intent_kind=fallback_intent_kind,
         relation_kind="reply" if reply_id else "direct",
         reply_to_message_id=reply_id,
         reply_target_snapshot=snapshot,
@@ -268,7 +323,7 @@ def clean_expired_comment_obligations(
 ) -> int:
     from app.services._common import _now
     from .fulfillment_activation import CURRENT_CONTRACT_VERSION
-    from .source_pacing import rolling_source_window
+    from .channel_comment_source import comment_source_window
     if getattr(task, "fulfillment_contract_version", None) != CURRENT_CONTRACT_VERSION:
         return 0
     now_val = now_value or _now()
@@ -284,7 +339,10 @@ def clean_expired_comment_obligations(
     for obligation in rows:
         message = session.get(ChannelMessage, obligation.channel_message_id)
         if message:
-            _period_start, deadline = rolling_source_window(task, message.created_at)
+            source_window = comment_source_window(task, message)
+            if source_window is None:
+                continue
+            _period_start, deadline = source_window
             if deadline <= now_val:
                 obligation.status = "closed_expired"
                 closed += 1

@@ -189,10 +189,10 @@ eligible/recovering -> abandoned_for_day
 ### 4.5 评论、浏览、点赞与 AI 活群非压缩拟人节奏
 
 - `fact_first_v3` 与执行节奏正交：typed remote fact、Gateway unknown、防重、准入、恢复和projector合同保持不变；到期量由任务类型DueSet决定，current AI先形成stable obligation/Generation work，只有ready Action才使用发送排期，不能把Action数当DueSet。
-- 四类任务统一使用 `pacing_anchor=max(period_start,task_activation_anchor,source_observed_at when source-scoped)`；在 anchor 精确时刻累计到期量为 0。AI/浏览的 pacing period 是当前任务自然日；评论/点赞的 pacing period 默认是来源消息首次采集后的滚动 24 小时（1 天），支持在任务配置中显式指定 `rolling_window_days`（1~30 天）以平滑拉长履约跨度，并支持 `daily_comment_cap` 限制每日发送上限。
+- legacy 四类任务统一使用 `pacing_anchor=max(period_start,task_activation_anchor,source_observed_at when source-scoped)`；在 anchor 精确时刻累计到期量为 0。AI/浏览的 pacing period 是当前任务自然日；legacy 评论和点赞默认是来源消息首次采集后的滚动 24 小时（1 天），通用配置支持 `rolling_window_days`（1~30 天）和 `daily_comment_cap`。显式启用 `channel_comment_business_grounding_v1_1` 的新评论消息改以 Telegram 权威 `source_published_at` 起算固定 72 小时，晚采集只走剩余曲线、不顺延、不追赶；冻结稳定 60%±5 个百分点 distinct-account 目标，并通过 Task-wide allocation epoch 在开放消息间公平分配 Daily Cap。其 Task fallback policy 冻结 20 个 Unicode 表情、素材组和显式 bps 权重，每条消息另冻结 ready `image_meme` 素材版本池，使用消息级 cursor-backed 稳定随机且 Gateway-started/unknown 不换内容。存量消息不重解释，专项合同见 `ai-channel-comment-broadcast-and-teacher-relevance-prd.md`。
 - 当前到期量在`now <= pacing_anchor`时严格为0；`now > pacing_anchor`才按完整周期（默认 24 小时或显式 `rolling_window_days`）curve 形成目标集合。分母不得缩成剩余窗口。AI必须在同一snapshot用ActiveDueRankSet anti-join bound fact、Gateway、unknown与有效pre-call owner；浏览按peer-message DueSet/MaterializedSet anti-join，禁止分别count相减。
 - AI活群`volume_need`是当前ledger/target ActiveDueRankSet减去互斥bound fact/Gateway/unknown/valid-pre-call owner后的基数；`coverage_need`是到期且未被同一证据占位的coverage key数；`planning_need`取二者并集/较大需求。实际物化量为`min(planning_need,distinct ready/online/Task-scoped可推进账号数,Generation/interaction真实空闲槽,daily_coverage_plan_batch_limit,20)`；前排blocker只跳过自身并扫描后页。future/cancelled/late/unbound conflict/protected overage不抵扣current active rank。
-- `channel_comment/channel_like`只为当前累计到期缺口建单并保留各自`schedule_times()`；单帖评论数量抖动基于 `(task_id, message_id, revision)` 确定性冻结，避免跨轮抖动漂移；频道浏览按message target+due ordinal与ledger-wide账号时隙匹配，不再走Task future-tail reservation。Planner、takeover和Recovery不得把future pending Action批量改成当前时间；晚采集来源从anchor=0按完整period分母自然增长，既不压缩到剩余窗口也不先预建全天目标，deadline按typed shortfall结算。
+- legacy `channel_comment/channel_like` 只为当前累计到期缺口建单并保留各自 `schedule_times()`；v1 评论在消息首次规划时一次冻结完整数量 ordinal/关系/ContentMix、首版 grounding snapshot/assignment，后续只按累计到期量 JIT 物化 Action。Telegram 来源编辑不新增 ordinal，只为尚未进入 Gateway 的原 ordinal append grounding/assignment successor；删除则终止 pre-Gateway。单帖评论数量抖动基于 `(task_id,message_id,comment_plan_revision,quantity_contract_version)` 确定性冻结；future plan reservation 可在 allocation epoch 间公平重排，Gateway/unknown/confirmed 不动。Planner、takeover和Recovery不得把 future Action 批量改成当前时间；晚采集只从 `source_published_at` 已累计到期量继续，deadline 按 typed shortfall 结算。
 - quiet-hours 调整必须顺序处理：第一条移到合法窗口后，后续 Action 至少保留调整前相邻间隔；若再次落入 quiet-hours，继续移到下一个合法窗口并从该点保留间隔。`max_actions_per_hour` 的间隔下限在后置调整后仍必须成立，禁止多个时间落到同一窗口起点。
 - `operation_profile.hourly_activity_curve` 决定动作落在哪些小时。评论、点赞和 AI 继续按各自专项解释 template/fixed 最小间隔；频道浏览的 distinct 账号是独立被动浏览身份，task template 只分布软时间，不形成 Task 全局 180 秒串行上限。浏览的账号授权/Session/FloodWait/硬容量和 Gateway inflight 仍逐账号复核，不能把取消 Task 全局间隔理解成绕过账号安全。
 - 拟人间隔同时约束同批和跨 Planner 批次，但粒度必须由任务类型定义。`channel_comment/channel_like/group_ai_chat` 继续读取本 Task/动作最晚有效 `scheduled_at` 与最近成功 `executed_at` 并按各专项占位；`channel_view` 不得把另一 distinct 账号的 future Action 当成区间或尾部锚点，新批不能整体平移到 `max(future scheduled_at)` 之后。浏览只在同 `(tenant,target_peer_id,channel_message_id,account_id)` logical lifetime identity、账号硬容量和 Gateway 资源上防重/占位，物理fact unique按频道专项保留peer+message+account，完整合同见 `channel-view-planner-starvation-remediation-prd.md`。
@@ -423,7 +423,7 @@ Task 主状态仍可为 running；任务中心必须展示上述当前业务状�
 ### 11.2 来源义务生成
 
 - 评论/点赞等source-scoped义务以`(task_id,source_message_id,source_revision,obligation_kind,ordinal)`唯一；频道浏览不使用该通用键，固定为`(daily_message_target_id,due_ordinal)`并按浏览专项绑定账号。
-- listener 重复采集不得重复建立义务；revision 变化只影响未进入 Gateway 的旧义务。
+- listener 重复采集不得重复建立义务；v1 revision 变化保持同一数量 Plan/ordinal，只按专项 revision operation fence 并替换未进入 Gateway 的内容 owner，已进入 Gateway/unknown/confirmed 保持原 revision；来源删除终止未进 Gateway，禁止继续表情兜底。
 - 来源删除或权限消失时，未执行义务进入 `source_unresolved|shortfall`，已进入 Gateway 的保持远端对账边界。
 - `dynamic_new` 任务没有新消息时不制造空 Action，也不写失败。
 
@@ -584,7 +584,7 @@ Task 主状态仍可为 running；任务中心必须展示上述当前业务状�
 | Telegram 无法发送统一放弃 | complete；Session/权限权威事实按授权槽复用、按 Task 日独立物化，目标解散终结目标，unknown 不误判 |
 | Search 唤醒与页面状态持久化 | complete；assignment 是持久工作，通知可丢，所有 hot-list/category/result/challenge/click phase 先 CAS 后前进 |
 | 无 Reservation 的最快并行执行 | complete；四类真实阶段槽 JIT 领取，多 Task 同时推进，不创建份额、Window、预扣或中央 Reservation |
-| 四类拟人任务节奏 | complete；AI 活群、频道评论、频道点赞、频道浏览只领取当前累计到期义务，partial_start/晚采集来源从 anchor=0 起算，完整 24 小时分母不被剩余窗口替换，future Action 不被全局提前 |
+| 四类拟人任务节奏 | complete；AI 活群、频道评论、频道点赞、频道浏览只领取当前累计到期义务，partial_start/晚采集来源从 anchor=0 起算，完整周期分母不被剩余窗口替换，future Action 不被全局提前；legacy 评论为 24 小时，grounding v1.1 新评论消息为冻结三天并冻结 20 表情/图片表情包 policy |
 | AI/view接管顺序 | current专项独立验收中；原Task inventory→preparing/quiescence→final manifest→chunk apply/readback→class activation，禁止prepared新Task从0；其他类型可引用本文件历史release方案 |
 | ordinal、Provider、签到与 tombstone 统一 | complete；义务 UUID 可释放重领、单 active key、多模型共享、direct 签到任务日唯一、只留最小远端防重事实 |
 | Recovery 权威时钟 | complete；lease/heartbeat takeover 只认同事务 PostgreSQL clock_timestamp() 与 UTC-aware timestamptz |

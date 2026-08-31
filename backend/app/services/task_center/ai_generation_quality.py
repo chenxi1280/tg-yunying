@@ -36,6 +36,12 @@ from .direct_check_in import (
 )
 from .payloads import SendMessagePayload
 from .policies import validate_group_send_policy
+from .ai_group_vocabulary_frequency import vocabulary_frequency_violation
+from .ai_group_vocabulary_sampling import (
+    extract_vocabulary_usage,
+    protected_frequency_phrases,
+    surface_phrase_fingerprints,
+)
 
 
 def store_generation_quality(
@@ -48,11 +54,54 @@ def store_generation_quality(
 ) -> bool:
     if not _content_policy_allows(session, action, payload, data=data):
         return False
+    _lock_vocabulary_surface(session, payload)
+    _refresh_vocabulary_usage(payload, data)
+    violation = vocabulary_frequency_violation(session, action, payload, data=data)
+    if violation:
+        fail_generation_action(
+            action,
+            "vocabulary_frequency_exceeded",
+            f"AI 活群词汇频率超过滚动窗口上限：{violation}",
+            stage="ai_generation_quality",
+        )
+        return False
     if not _apply_material_policy(session, action, payload, data=data):
         return False
     return _attach_message_memory(
-        session, action, payload, data=data, duplicate_batch=duplicate_batch,
+        session,
+        action,
+        payload,
+        data=data,
+        duplicate_batch=duplicate_batch,
     )
+
+
+def _refresh_vocabulary_usage(payload: SendMessagePayload, data: dict) -> None:
+    if not payload.allocation_plan_id:
+        return
+    content = str(data.get("message_text") or "")
+    used_ids, used_terms = extract_vocabulary_usage(
+        content, route_family=payload.route_family or "general"
+    )
+    excluded = protected_frequency_phrases(
+        payload.topic_direction,
+        payload.teacher_target,
+    )
+    data["vocabulary_used_ids"] = list(used_ids)
+    data["vocabulary_used_term_ids"] = list(used_terms)
+    data["surface_phrase_fingerprints"] = list(
+        surface_phrase_fingerprints(content, excluded_phrases=excluded)
+    )
+
+
+def _lock_vocabulary_surface(session: Session, payload: SendMessagePayload) -> None:
+    if not payload.allocation_plan_id or not payload.group_id:
+        return
+    statement = select(TgGroup).where(TgGroup.id == payload.group_id)
+    if session.bind and session.bind.dialect.name != "sqlite":
+        statement = statement.with_for_update()
+    if session.scalar(statement) is None:
+        raise ValueError("ai_group_surface_group_missing")
 
 
 def fail_generation_batch(
@@ -120,7 +169,10 @@ def _generation_category(code: str, stage: str) -> str:
     if code in {"reply_target_missing", "reply_target_stale"}:
         return "reply_target_invalid"
     if stage in {
-        "ai_generation_quality", "content_policy", "ai_message_memory", "material_policy",
+        "ai_generation_quality",
+        "content_policy",
+        "ai_message_memory",
+        "material_policy",
     }:
         return "quality_rejected"
     return "generation_failed"
@@ -136,7 +188,9 @@ def _content_policy_allows(
     group = session.get(TgGroup, payload.group_id) if payload.group_id else None
     content = str(data.get("message_text") or "")
     if not group:
-        fail_generation_action(action, "peer_invalid", "目标群不存在", stage="content_policy")
+        fail_generation_action(
+            action, "peer_invalid", "目标群不存在", stage="content_policy"
+        )
         return False
     failure_type, detail = validate_group_send_policy(
         session,
@@ -145,7 +199,9 @@ def _content_policy_allows(
         content=content,
         review_approved=payload.review_approved,
     )
-    filtered = filter_outbound_content(session, tenant_id=action.tenant_id, group=group, content=content)
+    filtered = filter_outbound_content(
+        session, tenant_id=action.tenant_id, group=group, content=content
+    )
     if failure_type or not filtered.ok:
         fail_generation_action(
             action,
@@ -223,7 +279,11 @@ def _normal_text_contains_emoji(data: dict, material_kind: str) -> bool:
         return False
     if str(data.get("content_source") or "normal") != "normal":
         return False
-    return bool(re.search(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]", str(data.get("message_text") or "")))
+    return bool(
+        re.search(
+            r"[\U0001F300-\U0001FAFF\u2600-\u27BF]", str(data.get("message_text") or "")
+        )
+    )
 
 
 def _ensure_selector_obligation(
@@ -234,33 +294,46 @@ def _ensure_selector_obligation(
     contract = _content_mix_contract_for_action(session, action)
     if contract is None or not action.content_mix_cycle_slot_id:
         return
-    existing = session.scalar(select(ContentMixObligation).where(
-        ContentMixObligation.content_mix_contract_id == contract.id,
-        ContentMixObligation.obligation_kind == obligation_kind,
-        ContentMixObligation.assigned_cycle_slot_id == action.content_mix_cycle_slot_id,
-    ))
+    existing = session.scalar(
+        select(ContentMixObligation).where(
+            ContentMixObligation.content_mix_contract_id == contract.id,
+            ContentMixObligation.obligation_kind == obligation_kind,
+            ContentMixObligation.assigned_cycle_slot_id
+            == action.content_mix_cycle_slot_id,
+        )
+    )
     if existing is not None:
         if not existing.assigned_action_id:
             existing.assigned_action_id = action.id
         return
-    ordinal = int(session.scalar(select(func.max(ContentMixObligation.obligation_ordinal)).where(
-        ContentMixObligation.content_mix_contract_id == contract.id,
-        ContentMixObligation.obligation_source == "selector_plan",
-        ContentMixObligation.obligation_kind == obligation_kind,
-    )) or 0) + 1
-    session.add(ContentMixObligation(
-        tenant_id=action.tenant_id,
-        content_mix_contract_id=contract.id,
-        content_mix_scope_key=contract.content_mix_scope_key,
-        obligation_source="selector_plan",
-        obligation_kind=obligation_kind,
-        obligation_ordinal=ordinal,
-        assigned_cycle_slot_id=action.content_mix_cycle_slot_id,
-        assigned_action_id=action.id,
-        assignment_version=1,
-        required_count=1,
-        planned_count=1,
-    ))
+    ordinal = (
+        int(
+            session.scalar(
+                select(func.max(ContentMixObligation.obligation_ordinal)).where(
+                    ContentMixObligation.content_mix_contract_id == contract.id,
+                    ContentMixObligation.obligation_source == "selector_plan",
+                    ContentMixObligation.obligation_kind == obligation_kind,
+                )
+            )
+            or 0
+        )
+        + 1
+    )
+    session.add(
+        ContentMixObligation(
+            tenant_id=action.tenant_id,
+            content_mix_contract_id=contract.id,
+            content_mix_scope_key=contract.content_mix_scope_key,
+            obligation_source="selector_plan",
+            obligation_kind=obligation_kind,
+            obligation_ordinal=ordinal,
+            assigned_cycle_slot_id=action.content_mix_cycle_slot_id,
+            assigned_action_id=action.id,
+            assignment_version=1,
+            required_count=1,
+            planned_count=1,
+        )
+    )
 
 
 def _content_mix_contract_for_action(
@@ -280,10 +353,12 @@ def _content_mix_contract_for_action(
         f"ai:{cycle.task_id}:{cycle.target_operation_target_id}:"
         f"{cycle.id}:{cycle.config_revision}"
     )
-    return session.scalar(select(ContentMixContract).where(
-        ContentMixContract.content_mix_scope_key == scope_key,
-        ContentMixContract.content_contract_version == cycle.config_revision,
-    ))
+    return session.scalar(
+        select(ContentMixContract).where(
+            ContentMixContract.content_mix_scope_key == scope_key,
+            ContentMixContract.content_contract_version == cycle.config_revision,
+        )
+    )
 
 
 def _material_rule_trace(source: dict, result: MaterialRuleResult) -> dict:
@@ -346,13 +421,17 @@ def _attach_message_memory(
             mask_contract_version=payload.voice_profile_contract_version,
             mask_snapshot_hash=payload.account_mask_snapshot_hash,
             mask_status=payload.mask_status or "active",
-            content_source=str(data.get("content_source") or payload.content_source or "account_mask"),
+            content_source=str(
+                data.get("content_source") or payload.content_source or "account_mask"
+            ),
             duplicate_batch=duplicate_batch,
         )
     except DuplicateMessageReservation as exc:
         _mark_duplicate(action, data, exc)
         return False
-    mark_group_ai_message_result(session, memory.id, status="reserved", action_id=action.id)
+    mark_group_ai_message_result(
+        session, memory.id, status="reserved", action_id=action.id
+    )
     _attach_memory_payload(data, memory)
     return True
 
@@ -364,10 +443,12 @@ def _reusable_message_memory(
     data: dict,
 ) -> AiGroupMessageMemory | None:
     content = str(data.get("message_text") or "")
-    memory = session.scalar(select(AiGroupMessageMemory).where(
-        AiGroupMessageMemory.action_id == action.id,
-        AiGroupMessageMemory.status == "reserved",
-    ))
+    memory = session.scalar(
+        select(AiGroupMessageMemory).where(
+            AiGroupMessageMemory.action_id == action.id,
+            AiGroupMessageMemory.status == "reserved",
+        )
+    )
     if memory and memory.normalized_text == normalize_group_ai_text(content):
         return memory
     return None
@@ -378,12 +459,16 @@ def _attach_memory_payload(data: dict, memory: AiGroupMessageMemory) -> None:
     data["semantic_cluster"] = data.get("semantic_cluster") or memory.semantic_cluster
 
 
-def _mark_duplicate(action: Action, data: dict, exc: DuplicateMessageReservation) -> None:
-    data.update({
-        "ai_generation_status": "duplicate_rejected",
-        "quality_skip_reason": "duplicate_message",
-        "duplicate_risk": exc.duplicate_window,
-    })
+def _mark_duplicate(
+    action: Action, data: dict, exc: DuplicateMessageReservation
+) -> None:
+    data.update(
+        {
+            "ai_generation_status": "duplicate_rejected",
+            "quality_skip_reason": "duplicate_message",
+            "duplicate_risk": exc.duplicate_window,
+        }
+    )
     action.payload = data
     fail_generation_action(
         action,
@@ -391,7 +476,10 @@ def _mark_duplicate(action: Action, data: dict, exc: DuplicateMessageReservation
         f"AI 活群生成内容重复：{exc.duplicate_window}",
         stage="ai_message_memory",
     )
-    action.result = {**(action.result or {}), "duplicate_reference_id": exc.reference_id}
+    action.result = {
+        **(action.result or {}),
+        "duplicate_reference_id": exc.reference_id,
+    }
 
 
 def _release_action_coverage(
@@ -416,29 +504,35 @@ def _release_action_coverage(
             blocker_detail=detail,
         )
         return
-    release_coverage_reservation(session, coverage_id, action.id, blocker_code=code, blocker_detail=detail)
+    release_coverage_reservation(
+        session, coverage_id, action.id, blocker_code=code, blocker_detail=detail
+    )
 
 
 def _record_variation_outcome(session: Session, action: Action, code: str) -> None:
     if code != "duplicate_message":
         return
-    intent = session.scalar(select(AiCoverageVariationIntent).where(
-        AiCoverageVariationIntent.action_id == action.id,
-    ))
+    intent = session.scalar(
+        select(AiCoverageVariationIntent).where(
+            AiCoverageVariationIntent.action_id == action.id,
+        )
+    )
     if intent is not None:
         intent.outcome = "quality_rejected"
 
 
-_GENERATION_CONTRACT_CODES = frozenset({
-    "ai_generation_output_count_mismatch",
-    "ai_generation_slot_mapping_invalid",
-    "ai_generation_slot_mapping_mismatch",
-    "ai_generation_output_sequence_duplicate",
-    "ai_generation_output_sequence_mismatch",
-    "ai_generation_reply_sequence_mismatch",
-    "ai_generation_reply_sequence_unexpected",
-    "ai_generation_output_empty",
-})
+_GENERATION_CONTRACT_CODES = frozenset(
+    {
+        "ai_generation_output_count_mismatch",
+        "ai_generation_slot_mapping_invalid",
+        "ai_generation_slot_mapping_mismatch",
+        "ai_generation_output_sequence_duplicate",
+        "ai_generation_output_sequence_mismatch",
+        "ai_generation_reply_sequence_mismatch",
+        "ai_generation_reply_sequence_unexpected",
+        "ai_generation_output_empty",
+    }
+)
 
 
 def _record_generation_contract_audit(
@@ -451,33 +545,45 @@ def _record_generation_contract_audit(
     attempt_id = str(getattr(request, "attempt_id", "") or "")
     if not attempt_id:
         return
-    existing = session.scalar(select(AiGenerationContractAudit).where(
-        AiGenerationContractAudit.generation_attempt_id == attempt_id,
-    ))
+    existing = session.scalar(
+        select(AiGenerationContractAudit).where(
+            AiGenerationContractAudit.generation_attempt_id == attempt_id,
+        )
+    )
     if existing is not None:
         return
     slots = list(getattr(request, "config", {}).get("generation_slots") or [])
     batch_ids = list(getattr(request, "batch_ids", []) or [])
     first_action = session.get(Action, batch_ids[0]) if batch_ids else None
-    payload = first_action.payload if first_action and isinstance(first_action.payload, dict) else {}
+    payload = (
+        first_action.payload
+        if first_action and isinstance(first_action.payload, dict)
+        else {}
+    )
     config = getattr(request, "config", {}) or {}
-    session.add(AiGenerationContractAudit(
-        tenant_id=int(getattr(request, "tenant_id", 0) or 0),
-        task_id=str(getattr(request, "task_id", "") or ""),
-        generation_attempt_id=attempt_id,
-        request_id=str(payload.get("ai_generation_request_id") or ""),
-        provider_id=str(config.get("provider_id") or config.get("provider") or ""),
-        model_id=str(config.get("actual_model") or config.get("requested_model") or ""),
-        prompt_contract_version=str(config.get("prompt_contract_version") or ""),
-        parser_version=str(config.get("parser_version") or ""),
-        expected_slot_count=int(
-            getattr(mapping_error, "expected_slot_count", None) or len(slots)
-        ),
-        received_slot_count=int(getattr(mapping_error, "received_slot_count", 0) or 0),
-        slot_summary=_contract_slot_summary(slots),
-        error_code=code,
-        restricted_response_summary=str(detail or code)[:500],
-    ))
+    session.add(
+        AiGenerationContractAudit(
+            tenant_id=int(getattr(request, "tenant_id", 0) or 0),
+            task_id=str(getattr(request, "task_id", "") or ""),
+            generation_attempt_id=attempt_id,
+            request_id=str(payload.get("ai_generation_request_id") or ""),
+            provider_id=str(config.get("provider_id") or config.get("provider") or ""),
+            model_id=str(
+                config.get("actual_model") or config.get("requested_model") or ""
+            ),
+            prompt_contract_version=str(config.get("prompt_contract_version") or ""),
+            parser_version=str(config.get("parser_version") or ""),
+            expected_slot_count=int(
+                getattr(mapping_error, "expected_slot_count", None) or len(slots)
+            ),
+            received_slot_count=int(
+                getattr(mapping_error, "received_slot_count", 0) or 0
+            ),
+            slot_summary=_contract_slot_summary(slots),
+            error_code=code,
+            restricted_response_summary=str(detail or code)[:500],
+        )
+    )
 
 
 def _contract_slot_summary(slots: list[dict]) -> dict:
@@ -487,4 +593,8 @@ def _contract_slot_summary(slots: list[dict]) -> dict:
     }
 
 
-__all__ = ["fail_generation_action", "fail_generation_batch", "store_generation_quality"]
+__all__ = [
+    "fail_generation_action",
+    "fail_generation_batch",
+    "store_generation_quality",
+]

@@ -13,6 +13,7 @@ from app.schemas.ai_config import TenantAiSettingUpdate
 from app.services.ai_config import update_tenant_ai_setting
 from app.services.task_center.ai_generation_dependencies import GenerationDependencies
 from app.services.task_center.ai_generation_pipeline import generate_quality_results
+from app.services.task_center.ai_group_vocabulary_sampling import surface_phrase_fingerprints
 from app.services.task_center.ai_generation_state import apply_generated_content_metadata
 from app.services.task_center.ai_generator import (
     AiGenerationUnavailable,
@@ -264,6 +265,36 @@ def test_ai_group_fallback_retries_the_same_reply_target(monkeypatch):
 
     assert visited == [("primary_default", 88)] * 3 + [("fallback_m25", 88)]
     assert items[0].content == "这双高跟鞋确实很搭"
+
+
+def test_vocabulary_frequency_rejection_retries_same_slot_before_persistence():
+    visited: list[str] = []
+
+    def fake_generate(_session, _tenant_id, config, *, count, target_label, history):
+        stage = config["_ai_fallback_stage"]
+        visited.append(stage)
+        content = "今天这身搭配挺自然" if stage == "primary_default" else "颜色看着很协调"
+        return [GeneratedContent(
+            content,
+            slot_id=config["generation_slots"][0]["slot_id"],
+            sequence_index=1,
+        )], 1
+
+    request = _generation_request()
+    fingerprints = list(surface_phrase_fingerprints("今天这身搭配挺自然"))
+    request.vocabulary_frequency_baseline = [
+        {"surface_phrase_fingerprints": fingerprints},
+        {"surface_phrase_fingerprints": fingerprints},
+    ]
+    with Session(create_engine("sqlite:///:memory:", future=True)) as session:
+        items, _tokens = generate_quality_results(
+            session,
+            request,
+            _generation_dependencies(normal_generator=fake_generate),
+        )
+
+    assert items[0].content == "颜色看着很协调"
+    assert visited == ["primary_default"] * 3 + ["fallback_m25"]
 
 
 def _generation_request(*, is_reply: bool = False, duplicate_baseline_messages=None):

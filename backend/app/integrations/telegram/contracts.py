@@ -22,6 +22,7 @@ class SendResult:
     detail: str | None = None
     remote_mutation_started: bool | None = None
     remote_message_ids: tuple[str, ...] = ()
+    remote_fact: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

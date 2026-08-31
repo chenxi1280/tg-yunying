@@ -54,6 +54,7 @@ def _payload(name: str) -> GroupAIChatTaskCreate:
     return GroupAIChatTaskCreate(
         name=name,
         target_group_id=7,
+        topic_participation_rate=0.30,
         daily_message_target=10,
     )
 
@@ -141,6 +142,7 @@ def test_explicit_start_does_not_call_capacity_precheck(
 def test_hard_hourly_fields_are_accepted_but_removed_from_update_contract() -> None:
     payload = GroupAIChatTaskConfigUpdate(
         target_group_id=7,
+        topic_participation_rate=0.30,
         hard_hourly_target_enabled=True,
         hourly_min_messages=20,
         hard_hourly_strategy="force_planning",

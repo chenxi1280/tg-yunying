@@ -41,6 +41,7 @@ class RemoteReconcileEvidence:
     evidence_fingerprint: str
     remote_message_id: str = ""
     remote_fact_id: str = ""
+    typed_remote_fact: dict | None = None
     failure_code: str = ""
     remote_mutation_started: bool | None = None
     exact_match_count: int = 0
@@ -172,6 +173,7 @@ def evidence_from_gateway_journal(
             evidence_fingerprint=journal.evidence_hash,
             remote_message_id=journal.remote_message_id,
             remote_fact_id=journal.remote_fact_id,
+            typed_remote_fact=dict(journal.typed_remote_fact or {}),
             remote_mutation_started=True,
             exact_match_count=1,
         )
@@ -238,6 +240,7 @@ def _evidence_hash(evidence: RemoteReconcileEvidence) -> str:
         "evidence_fingerprint": evidence.evidence_fingerprint,
         "remote_message_id": evidence.remote_message_id,
         "remote_fact_id": evidence.remote_fact_id,
+        "typed_remote_fact": dict(evidence.typed_remote_fact or {}),
         "failure_code": evidence.failure_code,
         "remote_mutation_started": evidence.remote_mutation_started,
         "exact_match_count": evidence.exact_match_count,
@@ -339,8 +342,10 @@ def _apply_confirmed(
     attempt.remote_message_id = evidence.remote_message_id
     attempt.failure_type = ""
     attempt.failure_detail = ""
+    typed_remote_fact = dict(evidence.typed_remote_fact or {})
     attempt.result_snapshot = {
         **dict(attempt.result_snapshot or {}),
+        **typed_remote_fact,
         "success": True,
         "remote_message_id": evidence.remote_message_id,
         "remote_fact_id": evidence.remote_fact_id,
@@ -350,6 +355,7 @@ def _apply_confirmed(
     action.executed_at = action.executed_at or observed_at
     action.result = {
         **dict(action.result or {}),
+        **typed_remote_fact,
         "success": True,
         "remote_message_id": evidence.remote_message_id,
         "remote_fact_id": evidence.remote_fact_id,

@@ -61,8 +61,37 @@ class SendMessagePayload(BaseModel):
     rewrite_attempts: int = 0
     human_quality_decision: str = ""
     quality_fallback: str = ""
+    allocation_plan_id: str = ""
+    content_intent_id: str = ""
+    content_intent_config_revision: int = 0
+    content_intent_config_snapshot_hash: str = ""
+    content_intent_task_lifecycle_epoch: int = 0
+    content_intent_target_reference_revision: int = 0
+    content_contract_revision: str = ""
+    normal_text_ordinal: int = 0
+    content_intent_stance: str = ""
+    topic_rate_bps: int = 0
+    topic_budget_eligible: bool = False
+    topic_mode: Literal["", "configured_topic", "human_context", "group_free_chat"] = ""
+    topic_capacity_reservation_id: str = ""
     topic_direction: dict[str, Any] = Field(default_factory=dict)
     teacher_target: dict[str, Any] = Field(default_factory=dict)
+    surface_scope_key: str = ""
+    topic_ratio_scope_key: str = ""
+    content_task_day: str = ""
+    route_family: Literal["", "general", "adult"] = ""
+    daily_vocabulary_theme_id: int = -1
+    daily_vocabulary_theme_version: str = ""
+    daily_vocabulary_theme_effective_state: str = ""
+    vocabulary_catalog_version: str = ""
+    vocabulary_sample_ids: list[str] = Field(default_factory=list)
+    vocabulary_surface_terms: list[str] = Field(default_factory=list)
+    vocabulary_normalized_term_ids: list[str] = Field(default_factory=list)
+    vocabulary_candidate_count: int = 0
+    vocabulary_reservation_id: str = ""
+    vocabulary_used_ids: list[str] = Field(default_factory=list)
+    vocabulary_used_term_ids: list[str] = Field(default_factory=list)
+    surface_phrase_fingerprints: list[str] = Field(default_factory=list)
     burst_id: str = ""
     burst_index: int = 0
     burst_size: int = 0
@@ -190,9 +219,21 @@ class SendMessagePayload(BaseModel):
             "generating",
             "ai_result_persist_unknown",
         }
-        if not self.message_text.strip() and self.ai_generation_status not in pending_generation_statuses:
-            raise ValueError("send_message action requires message_text unless ai_generation_status is pending")
-        if not self.reply_to_message_id and any([self.reply_target_label, self.reply_target_author, self.reply_target_preview, self.reply_target_source]):
+        if (
+            not self.message_text.strip()
+            and self.ai_generation_status not in pending_generation_statuses
+        ):
+            raise ValueError(
+                "send_message action requires message_text unless ai_generation_status is pending"
+            )
+        if not self.reply_to_message_id and any(
+            [
+                self.reply_target_label,
+                self.reply_target_author,
+                self.reply_target_preview,
+                self.reply_target_source,
+            ]
+        ):
             raise ValueError("引用回复 action 缺少 reply_to_message_id")
         return self
 
@@ -261,11 +302,13 @@ class GroupCloneSendPayload(BaseModel):
             raise ValueError("group_clone_send random_id 超出 signed 64-bit")
         if not self.media_items and not self.content:
             raise ValueError("group_clone_send text content 不能为空")
-        if self.media_items and not all((
-            self.source_peer_id,
-            self.source_authorization_id,
-            self.source_session_generation,
-        )):
+        if self.media_items and not all(
+            (
+                self.source_peer_id,
+                self.source_authorization_id,
+                self.source_session_generation,
+            )
+        ):
             raise ValueError("group_clone media source contract 不完整")
         expected_kind = "sendMultiMedia" if len(self.media_items) > 1 else "sendMedia"
         if self.media_items and self.mutation_kind != expected_kind:
@@ -285,8 +328,13 @@ class GroupCloneMutationPayload(BaseModel):
     route_snapshot_id: str = Field(min_length=1, max_length=36)
     execution_snapshot_id: str = Field(min_length=1, max_length=36)
     mutation_kind: Literal[
-        "editMessage", "deleteMessages", "pinMessage", "unpinMessage",
-        "createForumTopic", "editForumTopic", "deleteForumTopic",
+        "editMessage",
+        "deleteMessages",
+        "pinMessage",
+        "unpinMessage",
+        "createForumTopic",
+        "editForumTopic",
+        "deleteForumTopic",
     ]
     execution_role: Literal["sender", "target_control"]
     target_peer_type: Literal["channel"] = "channel"
@@ -307,16 +355,22 @@ class GroupCloneMutationPayload(BaseModel):
     def validate_mutation(self) -> "GroupCloneMutationPayload":
         if self.mutation_kind == "createForumTopic":
             if not self.content.strip() or not self.random_id:
-                raise ValueError("createForumTopic requires title and non-zero random_id")
+                raise ValueError(
+                    "createForumTopic requires title and non-zero random_id"
+                )
             return self
         if not self.target_message_ids:
             raise ValueError(f"{self.mutation_kind} requires target_message_ids")
         if self.mutation_kind == "editMessage" and not self.content.strip():
             raise ValueError(f"{self.mutation_kind} requires content")
-        if self.mutation_kind == "editForumTopic" and not any((
-            self.content.strip(), self.topic_closed is not None,
-            self.topic_hidden is not None, self.topic_icon_emoji_id is not None,
-        )):
+        if self.mutation_kind == "editForumTopic" and not any(
+            (
+                self.content.strip(),
+                self.topic_closed is not None,
+                self.topic_hidden is not None,
+                self.topic_icon_emoji_id is not None,
+            )
+        ):
             raise ValueError("editForumTopic requires title/icon/closed/hidden state")
         if self.random_id is not None:
             raise ValueError(f"{self.mutation_kind} must not carry random_id")
@@ -396,7 +450,9 @@ class GroupBotConfirmationButtonPayload(BaseModel):
     @model_validator(mode="after")
     def validate_admission_scope(self) -> "GroupBotConfirmationButtonPayload":
         if bool(self.admission_id) == bool(self.task_group_bot_admission_id.strip()):
-            raise ValueError("group bot confirmation requires exactly one admission scope")
+            raise ValueError(
+                "group bot confirmation requires exactly one admission scope"
+            )
         return self
 
 
@@ -471,7 +527,9 @@ class SearchJoinPayload(BaseModel):
         if total_max > 3:
             raise ValueError("search_join safe navigation total_max cannot exceed 3")
         if safe.get("decoy_join_enabled") is True:
-            raise ValueError("search_join decoy navigation cannot join non-target groups")
+            raise ValueError(
+                "search_join decoy navigation cannot join non-target groups"
+            )
         if self.authorization_id <= 0:
             raise ValueError("search_join requires authorization_id")
         if not self.session_role.strip():
@@ -525,7 +583,13 @@ class SearchRankDeboostPayload(BaseModel):
 
 
 def _missing_client_metadata(metadata: dict[str, str]) -> bool:
-    required = ("device_model", "system_version", "app_version", "platform", "client_identity_key")
+    required = (
+        "device_model",
+        "system_version",
+        "app_version",
+        "platform",
+        "client_identity_key",
+    )
     return any(not str(metadata.get(key) or "").strip() for key in required)
 
 
@@ -606,7 +670,9 @@ def _create_action(
 ) -> Action:
     payload_data = payload.model_dump(mode="json")
     plan_batch_key = _plan_batch_key(task, scheduled_at)
-    action_dedupe_key = _action_dedupe_key(task, plan_batch_key, action_type, account_id, payload_data)
+    action_dedupe_key = _action_dedupe_key(
+        task, plan_batch_key, action_type, account_id, payload_data
+    )
     existing = _existing_action(session, task.tenant_id, action_dedupe_key)
     if existing:
         return existing
@@ -631,7 +697,9 @@ def _create_action(
     return action
 
 
-def _existing_action(session: Session, tenant_id: int, action_dedupe_key: str) -> Action | None:
+def _existing_action(
+    session: Session, tenant_id: int, action_dedupe_key: str
+) -> Action | None:
     return session.scalar(
         select(Action).where(
             Action.tenant_id == tenant_id,
@@ -641,16 +709,32 @@ def _existing_action(session: Session, tenant_id: int, action_dedupe_key: str) -
 
 
 def _plan_batch_key(task: Task, scheduled_at: datetime) -> str:
-    configured = (task.stats or {}).get("current_plan_batch_key") if isinstance(task.stats, dict) else ""
+    configured = (
+        (task.stats or {}).get("current_plan_batch_key")
+        if isinstance(task.stats, dict)
+        else ""
+    )
     if configured:
         return str(configured)
-    slot = scheduled_at.isoformat() if hasattr(scheduled_at, "isoformat") else str(scheduled_at)
+    slot = (
+        scheduled_at.isoformat()
+        if hasattr(scheduled_at, "isoformat")
+        else str(scheduled_at)
+    )
     return f"{task.id}:{slot}"
 
 
-def _action_dedupe_key(task: Task, plan_batch_key: str, action_type: str, account_id: int | None, payload_data: dict[str, Any]) -> str:
+def _action_dedupe_key(
+    task: Task,
+    plan_batch_key: str,
+    action_type: str,
+    account_id: int | None,
+    payload_data: dict[str, Any],
+) -> str:
     if action_type == "view_message" and payload_data.get("execution_date"):
-        message_identity = payload_data.get("channel_message_id") or payload_data.get("message_id")
+        message_identity = payload_data.get("channel_message_id") or payload_data.get(
+            "message_id"
+        )
         return f"{task.tenant_id}:{task.id}:{payload_data.get('execution_date')}:{account_id}:{message_identity}:{action_type}"
     if action_type == "post_comment":
         return _post_comment_dedupe_key(task, action_type, account_id, payload_data)
@@ -659,11 +743,17 @@ def _action_dedupe_key(task: Task, plan_batch_key: str, action_type: str, accoun
         "account_id": account_id,
         "payload": _stable_payload_for_dedupe(payload_data),
     }
-    digest = hashlib.sha256(json.dumps(business_parts, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(
+        json.dumps(
+            business_parts, sort_keys=True, ensure_ascii=False, default=str
+        ).encode("utf-8")
+    ).hexdigest()
     return f"{task.tenant_id}:{plan_batch_key}:{digest}"
 
 
-def _post_comment_dedupe_key(task: Task, action_type: str, account_id: int | None, payload_data: dict[str, Any]) -> str:
+def _post_comment_dedupe_key(
+    task: Task, action_type: str, account_id: int | None, payload_data: dict[str, Any]
+) -> str:
     stable_payload = {key: payload_data.get(key) for key in POST_COMMENT_DEDUPE_FIELDS}
     business_parts = {
         "action_type": action_type,
@@ -671,13 +761,19 @@ def _post_comment_dedupe_key(task: Task, action_type: str, account_id: int | Non
         "payload": stable_payload,
     }
     digest = hashlib.sha256(
-        json.dumps(business_parts, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
+        json.dumps(
+            business_parts, sort_keys=True, ensure_ascii=False, default=str
+        ).encode("utf-8")
     ).hexdigest()
     return f"{task.tenant_id}:{task.id}:{digest}"
 
 
 def _stable_payload_for_dedupe(payload_data: dict[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in payload_data.items() if key not in DEDUPE_VOLATILE_PAYLOAD_FIELDS}
+    return {
+        key: value
+        for key, value in payload_data.items()
+        if key not in DEDUPE_VOLATILE_PAYLOAD_FIELDS
+    }
 
 
 def create_send_action(
@@ -689,11 +785,27 @@ def create_send_action(
     *,
     action_id: str | None = None,
 ) -> Action:
-    return _create_action(session, task, "send_message", account_id, scheduled_at, payload, action_id=action_id)
+    return _create_action(
+        session,
+        task,
+        "send_message",
+        account_id,
+        scheduled_at,
+        payload,
+        action_id=action_id,
+    )
 
 
-def create_delete_action(session: Session, task: Task, account_id: int | None, scheduled_at: datetime, payload: DeleteMessagePayload) -> Action:
-    return _create_action(session, task, "delete_message", account_id, scheduled_at, payload)
+def create_delete_action(
+    session: Session,
+    task: Task,
+    account_id: int | None,
+    scheduled_at: datetime,
+    payload: DeleteMessagePayload,
+) -> Action:
+    return _create_action(
+        session, task, "delete_message", account_id, scheduled_at, payload
+    )
 
 
 def create_membership_action(
@@ -705,7 +817,15 @@ def create_membership_action(
     *,
     flush: bool = True,
 ) -> Action:
-    return _create_action(session, task, "ensure_target_membership", account_id, scheduled_at, payload, flush=flush)
+    return _create_action(
+        session,
+        task,
+        "ensure_target_membership",
+        account_id,
+        scheduled_at,
+        payload,
+        flush=flush,
+    )
 
 
 def create_group_bot_required_channel_follow_action(
@@ -748,20 +868,52 @@ def create_group_bot_confirmation_button_action(
     )
 
 
-def create_view_action(session: Session, task: Task, account_id: int | None, scheduled_at: datetime, payload: ViewMessagePayload) -> Action:
-    return _create_action(session, task, "view_message", account_id, scheduled_at, payload)
+def create_view_action(
+    session: Session,
+    task: Task,
+    account_id: int | None,
+    scheduled_at: datetime,
+    payload: ViewMessagePayload,
+) -> Action:
+    return _create_action(
+        session, task, "view_message", account_id, scheduled_at, payload
+    )
 
 
-def create_like_action(session: Session, task: Task, account_id: int | None, scheduled_at: datetime, payload: LikeMessagePayload) -> Action:
-    return _create_action(session, task, "like_message", account_id, scheduled_at, payload)
+def create_like_action(
+    session: Session,
+    task: Task,
+    account_id: int | None,
+    scheduled_at: datetime,
+    payload: LikeMessagePayload,
+) -> Action:
+    return _create_action(
+        session, task, "like_message", account_id, scheduled_at, payload
+    )
 
 
-def create_comment_action(session: Session, task: Task, account_id: int | None, scheduled_at: datetime, payload: PostCommentPayload) -> Action:
-    return _create_action(session, task, "post_comment", account_id, scheduled_at, payload)
+def create_comment_action(
+    session: Session,
+    task: Task,
+    account_id: int | None,
+    scheduled_at: datetime,
+    payload: PostCommentPayload,
+) -> Action:
+    return _create_action(
+        session, task, "post_comment", account_id, scheduled_at, payload
+    )
 
 
-def create_search_join_action(session: Session, task: Task, account_id: int | None, scheduled_at: datetime, payload: SearchJoinPayload) -> Action:
-    return _create_action(session, task, "search_join", account_id, scheduled_at, payload)
+def create_search_join_action(
+    session: Session,
+    task: Task,
+    account_id: int | None,
+    scheduled_at: datetime,
+    payload: SearchJoinPayload,
+) -> Action:
+    return _create_action(
+        session, task, "search_join", account_id, scheduled_at, payload
+    )
 
 
 def create_search_join_membership_action(
@@ -771,16 +923,29 @@ def create_search_join_membership_action(
     scheduled_at: datetime,
     payload: SearchJoinMembershipPayload,
 ) -> Action:
-    return _create_action(session, task, "search_join_membership", account_id, scheduled_at, payload)
+    return _create_action(
+        session, task, "search_join_membership", account_id, scheduled_at, payload
+    )
 
 
-def create_search_rank_deboost_action(session: Session, task: Task, account_id: int | None, scheduled_at: datetime, payload: SearchRankDeboostPayload) -> Action:
-    return _create_action(session, task, "search_rank_deboost", account_id, scheduled_at, payload)
+def create_search_rank_deboost_action(
+    session: Session,
+    task: Task,
+    account_id: int | None,
+    scheduled_at: datetime,
+    payload: SearchRankDeboostPayload,
+) -> Action:
+    return _create_action(
+        session, task, "search_rank_deboost", account_id, scheduled_at, payload
+    )
 
 
 def payload_error_message(exc: ValidationError | ValueError) -> str:
     if isinstance(exc, ValidationError):
-        return "; ".join(".".join(str(part) for part in error["loc"]) + ": " + error["msg"] for error in exc.errors())
+        return "; ".join(
+            ".".join(str(part) for part in error["loc"]) + ": " + error["msg"]
+            for error in exc.errors()
+        )
     return str(exc)
 
 

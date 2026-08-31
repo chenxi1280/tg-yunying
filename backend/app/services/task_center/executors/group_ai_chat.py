@@ -56,6 +56,8 @@ from ..ai_pacing import AiPacingAssignment, assign_ai_pacing_slots
 from ..account_scope import bootstrap_missing_all_account_task_scope
 from ..ai_act_types import canonical_ai_group_act_type
 from ..ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE
+from ..ai_group_content_allocation import freeze_content_intents
+from ..ai_group_content_intent_support import GenericWarmupQuestionWait
 from ..ai_message_memory import mark_group_ai_message_result, reserve_group_ai_message
 from ..ai_reply_allocation import reply_requirement_for_plan
 from ..account_voice_profile_generation_jobs import enqueue_voice_profile_generation
@@ -1401,26 +1403,64 @@ def _load_generation_plan(
     )
     if reply_targets is None:
         return PlanAbort()
-    allow_repeat = bool(turn.round_config.get("allow_account_repeat", True))
-    burst_plan = _consecutive_burst_plan(
-        turn.round_config, turn.turn_count, allow_repeat, profile.cycle_id,
+    quality_items, burst_plan, is_generic_warmup = _generation_quality_items(
+        turn,
+        profile,
+        reply_targets,
+        has_context=bool(context.usable_rows),
     )
-    slots = _immutable_generation_slots(
-        turn, profile, reply_targets=reply_targets, allow_repeat=allow_repeat,
-        burst_plan=burst_plan,
-    )
-    normal_count = max(0, turn.turn_count - len(reply_targets))
-    planned_items = _deferred_ai_planned_items(reply_targets, normal_count, slots)
     chat_mode = _chat_mode(context.usable_rows, context.idle_continuation)
-    quality_items = planned_items[:turn.turn_count]
     if not quality_items:
         _mark_empty_generation_plan(task, facts, context, chat_mode=chat_mode)
         return PlanAbort()
     schedule = _finalize_generation_schedule(
         session, task, facts, context, quality_items=quality_items,
+        is_generic_warmup=is_generic_warmup,
     )
     if schedule is None:
         return PlanAbort()
+    return _generation_plan_state(
+        schedule,
+        context=context,
+        coverage_reply_shortfall=coverage_reply_shortfall,
+        burst_plan=burst_plan,
+        chat_mode=chat_mode,
+    )
+
+
+def _generation_quality_items(
+    turn: TurnPlanState,
+    profile: ProfilePlanState,
+    reply_targets: list[dict],
+    *,
+    has_context: bool,
+) -> tuple[list[dict], dict, bool]:
+    allow_repeat = bool(turn.round_config.get("allow_account_repeat", True))
+    burst_plan = _consecutive_burst_plan(
+        turn.round_config, turn.turn_count, allow_repeat, profile.cycle_id,
+    )
+    is_generic_warmup = not has_context and not any(reply_targets)
+    slots = _immutable_generation_slots(
+        turn,
+        profile,
+        reply_targets=reply_targets,
+        allow_repeat=allow_repeat,
+        burst_plan=burst_plan,
+        is_generic_warmup=is_generic_warmup,
+    )
+    normal_count = max(0, turn.turn_count - len(reply_targets))
+    planned_items = _deferred_ai_planned_items(reply_targets, normal_count, slots)
+    return planned_items[:turn.turn_count], burst_plan, is_generic_warmup
+
+
+def _generation_plan_state(
+    schedule: tuple[list[dict], list[datetime]],
+    *,
+    context: ContextPlanState,
+    coverage_reply_shortfall: int,
+    burst_plan: dict,
+    chat_mode: str,
+) -> GenerationPlanState:
     quality_items, times = schedule
     requested_reply_count = sum(
         1 for item in quality_items if item.get("reply_target")
@@ -1446,21 +1486,21 @@ def _finalize_generation_schedule(
     context: ContextPlanState,
     *,
     quality_items: list[dict],
+    is_generic_warmup: bool,
 ) -> tuple[list[dict], list[datetime]] | None:
     requested_count = len(quality_items)
-    if task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION:
-        scheduled = _current_ai_pacing_schedule(session, task, facts, quality_items)
-        quality_items, times = scheduled
-    else:
-        times = _schedule_times_for_plan(
-            session,
-            task,
-            facts.hard_progress,
-            len(quality_items),
-            mode=context.mode,
-            deadline_at=facts.coverage.deadline_at,
-        )
+    quality_items, times = _schedule_generation_items(
+        session,
+        task,
+        facts,
+        context,
+        quality_items=quality_items,
+        is_generic_warmup=is_generic_warmup,
+    )
     if task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION and len(times) < requested_count:
+        if task.last_error.startswith("generic_warmup_"):
+            _record_generic_warmup_shortfall(task, requested_count)
+            return None
         _record_ai_pacing_shortfall(task, requested_count, len(times))
         return None
     quality_items, times = _limit_context_bound_quality_schedule(
@@ -1483,12 +1523,69 @@ def _finalize_generation_schedule(
     return None
 
 
+def _schedule_generation_items(
+    session: Session,
+    task: Task,
+    facts: PlanFacts,
+    context: ContextPlanState,
+    *,
+    quality_items: list[dict],
+    is_generic_warmup: bool,
+) -> tuple[list[dict], list[datetime]]:
+    if task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION:
+        return _current_ai_pacing_schedule(
+            session,
+            task,
+            facts,
+            quality_items,
+            is_generic_warmup=is_generic_warmup,
+        )
+    times = _schedule_times_for_plan(
+        session,
+        task,
+        facts.hard_progress,
+        len(quality_items),
+        mode=context.mode,
+        deadline_at=facts.coverage.deadline_at,
+    )
+    return quality_items, times
+
+
 def _current_ai_pacing_schedule(
     session: Session,
     task: Task,
     facts: PlanFacts,
     quality_items: list[dict],
+    *,
+    is_generic_warmup: bool,
 ) -> tuple[list[dict], list[datetime]]:
+    assignments, points_by_slot, capacity_slots = _ai_source_capacity_schedule(
+        session,
+        task,
+        facts,
+        quality_items,
+    )
+    quality_items = _freeze_scheduled_content_intents(
+        session,
+        task,
+        facts,
+        assignments,
+        quality_items,
+        is_generic_warmup=is_generic_warmup,
+    )
+    if quality_items is None:
+        return [], []
+    return _materialize_ai_pacing_schedule(
+        task, assignments, quality_items, points_by_slot, capacity_slots
+    )
+
+
+def _ai_source_capacity_schedule(
+    session: Session,
+    task: Task,
+    facts: PlanFacts,
+    quality_items: list[dict],
+) -> tuple[list[AiPacingAssignment], dict, list[SourcePacingSlot]]:
     assignments = assign_ai_pacing_slots(
         session,
         task,
@@ -1511,6 +1608,54 @@ def _current_ai_pacing_schedule(
         points=points_by_slot,
         pacing_domain="ai_send",
     )
+    assignments = [
+        assignment
+        for assignment in assignments
+        if assignment.source_slot.slot_key in points_by_slot
+    ]
+    return assignments, points_by_slot, capacity_slots
+
+
+def _freeze_scheduled_content_intents(
+    session: Session,
+    task: Task,
+    facts: PlanFacts,
+    assignments: list[AiPacingAssignment],
+    quality_items: list[dict],
+    *,
+    is_generic_warmup: bool,
+) -> list[dict] | None:
+    target_id = facts.target.id if facts.target else int(
+        facts.config.get("target_operation_target_id") or 0
+    )
+    if not assignments or facts.config.get("topic_participation_rate") is None:
+        return quality_items
+    if not target_id:
+        raise ValueError("ai_group_content_target_missing")
+    try:
+        return freeze_content_intents(
+            session,
+            task,
+            daily_group_target_id=facts.coverage.daily_group_target_id,
+            target_operation_target_id=target_id,
+            canonical_group_id=facts.group.id,
+            assignments=assignments,
+            quality_items=quality_items,
+            config_revision=facts.task_config_revision,
+            is_generic_warmup=is_generic_warmup,
+        )
+    except GenericWarmupQuestionWait as exc:
+        task.last_error = str(exc)
+        return None
+
+
+def _materialize_ai_pacing_schedule(
+    task: Task,
+    assignments: list[AiPacingAssignment],
+    quality_items: list[dict],
+    points_by_slot: dict,
+    capacity_slots: list[SourcePacingSlot],
+) -> tuple[list[dict], list[datetime]]:
     capacity_by_key = {slot.slot_key: slot for slot in capacity_slots}
     enriched: list[dict] = []
     due_times: list[datetime] = []
@@ -1606,6 +1751,7 @@ def _immutable_generation_slots(
     reply_targets: list[dict],
     allow_repeat: bool,
     burst_plan: dict,
+    is_generic_warmup: bool,
 ) -> list[dict]:
     burst_account = (
         _slot_account(profile.selected, min(burst_plan), allow_repeat) if burst_plan else None
@@ -1620,10 +1766,15 @@ def _immutable_generation_slots(
         allow_account_repeat=allow_repeat,
         burst_plan=burst_plan,
         burst_account=burst_account,
-        topic_directions=_slot_topic_directions(turn.round_config),
+        topic_directions=(
+            []
+            if turn.round_config.get("topic_participation_rate") is not None
+            else _slot_topic_directions(turn.round_config)
+        ),
         teacher_targets=_slot_teacher_targets(turn.round_config),
         recent_topic_counts=usage.get("topics", {}),
         recent_teacher_counts=usage.get("teachers", {}),
+        is_generic_warmup=is_generic_warmup,
     )
 
 
@@ -1696,6 +1847,7 @@ def _build_slot_snapshot(slot: SlotBuildInput) -> SlotSnapshot:
     for fields in (
         _slot_identity_payload(slot),
         _slot_profile_payload(slot),
+        _slot_allocation_payload(slot),
         _slot_conversation_payload(slot),
         _slot_generation_payload(slot),
         _slot_rule_payload(slot),
@@ -1829,6 +1981,60 @@ def _slot_profile_payload(slot: SlotBuildInput) -> dict[str, Any]:
         "quality_fallback": str(item.get("quality_fallback") or ""),
         "topic_direction": _quality_topic_direction(item, slot.blueprint.facts.config),
         "teacher_target": _quality_teacher_target(item, slot.blueprint.facts.config),
+    }
+
+
+def _slot_allocation_payload(slot: SlotBuildInput) -> dict[str, Any]:
+    frozen = _quality_slot(slot.item)
+    return {
+        "allocation_plan_id": str(frozen.get("allocation_plan_id") or ""),
+        "content_intent_id": str(frozen.get("content_intent_id") or ""),
+        "content_intent_config_revision": int(
+            frozen.get("content_intent_config_revision") or 0
+        ),
+        "content_intent_config_snapshot_hash": str(
+            frozen.get("content_intent_config_snapshot_hash") or ""
+        ),
+        "content_intent_task_lifecycle_epoch": int(
+            frozen.get("content_intent_task_lifecycle_epoch") or 0
+        ),
+        "content_intent_target_reference_revision": int(
+            frozen.get("content_intent_target_reference_revision") or 0
+        ),
+        "content_contract_revision": str(frozen.get("content_contract_revision") or ""),
+        "normal_text_ordinal": int(frozen.get("normal_text_ordinal") or 0),
+        "relation_kind": str(frozen.get("relation_kind") or ""),
+        "act_type": str(frozen.get("act_type") or ""),
+        "content_intent_stance": str(frozen.get("stance") or ""),
+        "topic_rate_bps": int(frozen.get("topic_rate_bps") or 0),
+        "topic_budget_eligible": bool(frozen.get("topic_budget_eligible")),
+        "topic_mode": str(frozen.get("topic_mode") or ""),
+        "topic_capacity_reservation_id": str(
+            frozen.get("topic_capacity_reservation_id") or ""
+        ),
+        "surface_scope_key": str(frozen.get("surface_scope_key") or ""),
+        "topic_ratio_scope_key": str(frozen.get("topic_ratio_scope_key") or ""),
+        "content_task_day": str(frozen.get("task_day") or ""),
+        "route_family": str(frozen.get("route_family") or ""),
+        "daily_vocabulary_theme_id": int(
+            frozen.get("daily_vocabulary_theme_id")
+            if frozen.get("daily_vocabulary_theme_id") is not None
+            else -1
+        ),
+        "daily_vocabulary_theme_version": str(
+            frozen.get("daily_vocabulary_theme_version") or ""
+        ),
+        "daily_vocabulary_theme_effective_state": str(
+            frozen.get("daily_vocabulary_theme_effective_state") or ""
+        ),
+        "vocabulary_catalog_version": str(frozen.get("vocabulary_catalog_version") or ""),
+        "vocabulary_sample_ids": list(frozen.get("vocabulary_sample_ids") or []),
+        "vocabulary_surface_terms": list(frozen.get("vocabulary_surface_terms") or []),
+        "vocabulary_normalized_term_ids": list(
+            frozen.get("vocabulary_normalized_term_ids") or []
+        ),
+        "vocabulary_candidate_count": int(frozen.get("vocabulary_candidate_count") or 0),
+        "vocabulary_reservation_id": str(frozen.get("vocabulary_reservation_id") or ""),
     }
 
 
@@ -4127,21 +4333,15 @@ def _generation_slots_for_plan(
     teacher_targets: list[dict] | None = None,
     recent_topic_counts: dict[str, int] | None = None,
     recent_teacher_counts: dict[str, int] | None = None,
+    is_generic_warmup: bool = False,
 ) -> list[dict]:
     slots: list[dict] = []
-    topics = _conversation_target_sequence(
-        topic_directions or [],
+    topics, teachers = _generation_target_sequences(
         turn_count,
-        label_key="title",
-        rank_key="weight",
-        recent_counts=recent_topic_counts,
-    )
-    teachers = _conversation_target_sequence(
-        teacher_targets or [],
-        turn_count,
-        label_key="name",
-        rank_key="priority",
-        recent_counts=recent_teacher_counts,
+        topic_directions=topic_directions,
+        teacher_targets=teacher_targets,
+        recent_topic_counts=recent_topic_counts,
+        recent_teacher_counts=recent_teacher_counts,
     )
     for index in range(max(0, int(turn_count or 0))):
         account = (
@@ -4161,9 +4361,29 @@ def _generation_slots_for_plan(
                 account_prompt_profiles,
                 _slot_target(topics, index),
                 _slot_target(teachers, index),
+                is_generic_warmup=is_generic_warmup,
             )
         )
     return slots
+
+
+def _generation_target_sequences(
+    turn_count: int,
+    *,
+    topic_directions: list[dict] | None,
+    teacher_targets: list[dict] | None,
+    recent_topic_counts: dict[str, int] | None,
+    recent_teacher_counts: dict[str, int] | None,
+) -> tuple[list[dict], list[dict]]:
+    topics = _conversation_target_sequence(
+        topic_directions or [], turn_count, label_key="title", rank_key="weight",
+        recent_counts=recent_topic_counts,
+    )
+    teachers = _conversation_target_sequence(
+        teacher_targets or [], turn_count, label_key="name", rank_key="priority",
+        recent_counts=recent_teacher_counts,
+    )
+    return topics, teachers
 
 
 def _slot_account(accounts: list, index: int, allow_account_repeat: bool):
@@ -4182,15 +4402,21 @@ def _generation_slot(
     profiles: dict[str, str],
     topic_direction: dict | None = None,
     teacher_target: dict | None = None,
+    *,
+    is_generic_warmup: bool = False,
 ) -> dict:
     quality_item = {"reply_target": reply_target} if reply_target else {}
     content = str((reply_target or {}).get("content") or "")
     profile = profiles.get(str(account.id), "")
+    act_type = (
+        "question" if is_generic_warmup else _act_type_for_turn(index, quality_item)
+    )
     slot = {
         "slot_id": _slot_id(cycle_id, index),
         "sequence_index": index + 1,
         "account_id": account.id,
-        "act_type": _act_type_for_turn(index, quality_item),
+        "act_type": act_type,
+        "stance": _stance_for_act_type(act_type),
         "account_profile": profile,
         "reply_to_message_id": _reply_target_message_id(quality_item),
         "reply_to_content": content,
@@ -4200,6 +4426,14 @@ def _generation_slot(
     if teacher_target:
         slot["teacher_target"] = dict(teacher_target)
     return slot
+
+
+def _stance_for_act_type(act_type: str) -> str:
+    if act_type == "light_disagree":
+        return "reserved"
+    if act_type == "short_react":
+        return "positive"
+    return "neutral"
 
 
 def _conversation_target_sequence(
@@ -4586,6 +4820,18 @@ def _record_ai_pacing_shortfall(task: Task, requested: int, scheduled: int) -> N
     }
     task.stats = stats
     task.last_error = "当前日截止前无合法节奏窗口可安排本轮 AI 义务，形成 pacing shortfall"
+
+
+def _record_generic_warmup_shortfall(task: Task, requested: int) -> None:
+    stats = dict(task.stats or {})
+    stats["content_shortfall_count"] = int(stats.get("content_shortfall_count") or 0) + requested
+    stats["content_shortfall"] = {
+        "reason_code": "generic_warmup_question_mix_wait",
+        "requested": requested,
+        "scheduled": 0,
+    }
+    task.stats = stats
+    task.last_error = "generic_warmup_question_mix_wait"
 
 
 def _turn_slot_keys(task: Task, cycle_index: int, turn_count: int) -> list[str]:
@@ -5166,9 +5412,12 @@ def _slot_teacher_targets(config: dict) -> list[dict]:
 
 
 def _quality_topic_direction(quality_item: dict, config: dict) -> dict:
-    slot_topic = _quality_slot(quality_item).get("topic_direction")
+    frozen = _quality_slot(quality_item)
+    slot_topic = frozen.get("topic_direction")
     if isinstance(slot_topic, dict) and str(slot_topic.get("title") or "").strip():
         return dict(slot_topic)
+    if frozen.get("topic_mode"):
+        return {}
     active = config.get("active_topic_direction") if isinstance(config.get("active_topic_direction"), dict) else {}
     return dict(active) if active else {}
 
@@ -5182,6 +5431,8 @@ def _quality_teacher_target(quality_item: dict, config: dict) -> dict:
 
 
 def _active_topic_text(config: dict, group: TgGroup) -> str:
+    if config.get("topic_participation_rate") is not None:
+        return ""
     topic = config.get("active_topic_direction") or _choose_topic_direction(config, group)
     return _topic_target_text(topic, group)
 
@@ -5303,17 +5554,17 @@ def _topic_thread_summary(config: dict, group: TgGroup, context_rows: list, prev
 
 
 def _topic_plan_summary(config: dict, group: TgGroup, topic_thread: str, turn_count: int) -> str:
-    topic = _active_topic_text(config, group) or "群聊日常活跃"
+    topic = _active_topic_text(config, group) or "当前真人上下文或群内日常交流"
     teacher = _active_teacher_text(config)
     anchors = [part.strip() for part in re.split(r"[；/]", topic_thread or "") if part.strip()]
     anchor = anchors[-1] if anchors else f"主线方向：{topic[:80]}"
     teacher_hint = f"，讨论老师参考“{teacher[:40]}”" if teacher else ""
     steps = [
         f"1. 贴近现场：从“{anchor[:80]}”里挑一个最像真人会接的点{teacher_hint}，短句承接。",
-        f"2. 补充一点生活化细节：只给一个和“{topic[:60]}”相关的小信息或亲身口吻，不像科普。",
+        f"2. 补充一点生活化细节：只使用上下文已有的、和“{topic[:60]}”相关的小信息，不像科普。",
         "3. 轻轻问一句：问题要小、具体、容易回，不要问“大家怎么看”。",
         "4. 收到一个具体细节上：把内容放回上一条真人上下文，别总结成公告。",
-        "5. 换个小细节：如果前面已经有人接话，就从反应、吐槽或经历切入。",
+        "5. 换个小细节：如果前面已经有人接话，就从具体反应、克制分歧或继续求证切入。",
     ]
     return "\n".join(steps[: max(1, min(int(turn_count or 1), len(steps)))])
 

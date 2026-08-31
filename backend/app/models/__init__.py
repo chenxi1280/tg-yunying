@@ -12,6 +12,9 @@ from .proxy_airport import *  # noqa: F401,F403
 from .ai import *  # noqa: F401,F403
 from .ai_content_policy import *  # noqa: F401,F403
 from .ai_content_runtime import *  # noqa: F401,F403
+from .ai_group_content_allocation import *  # noqa: F401,F403
+from .channel_comment_fallback import *  # noqa: F401,F403
+from .channel_comment_plan import *  # noqa: F401,F403
 from .archives import *  # noqa: F401,F403
 from .campaigns import *  # noqa: F401,F403
 from .cloning import *  # noqa: F401,F403

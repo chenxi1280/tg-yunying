@@ -215,6 +215,17 @@ export type TaskCenterTask = {
   pacing_config: Record<string, any>;
   failure_policy: Record<string, any>;
   type_config: Record<string, any> & Partial<GroupAIChatDailyTargetConfig>;
+  config_revision?: number;
+  task_lifecycle_epoch?: number;
+  topic_policy_state?: 'not_applicable' | 'legacy_unconfirmed' | 'confirmed';
+  topic_policy_inventory?: Record<string, any>;
+  content_policy_effective_scopes?: Record<string, {
+    effective_scope?: string;
+    effective_revision?: number;
+    effective_at?: string;
+    current_value?: unknown;
+    next_value?: unknown;
+  }>;
   group_ai_prejoin_channel_ids: string[];
   stats: TaskCenterStats;
   runtime_stage?: Record<string, any>;
@@ -479,6 +490,7 @@ export type TaskCenterDetail = {
   membership_admission_items: TaskMembershipAdmissionItem[];
   account_coverage_items: TaskAccountCoverageItem[];
   learning_profile_preview?: Record<string, any>;
+  ai_group_content_allocation?: Record<string, any>;
   message_groups: Array<{
     channel_target_id: number | null;
     channel_title: string;
@@ -497,6 +509,32 @@ export type TaskCenterDetail = {
     capacity_shortfall: number;
     subtask_status: string;
     stats: Record<string, any>;
+    fallback_pool?: {
+      state: string;
+      ready_image_meme_count: number;
+      image_meme_asset_pool_hash: string;
+    };
+    fallback_selections?: Array<{
+      selection_id: string;
+      selection_state: string;
+      fallback_kind: 'planned' | 'emergency';
+      fallback_content_kind: 'unicode_emoji' | 'image_meme';
+      unicode_emoji: string;
+      material_id: number | null;
+      asset_version_id: number | null;
+      selection_attempt: number;
+      fallback_reason: string;
+    }>;
+    acceptance?: {
+      acceptance_status?: string;
+      quantity_status?: string;
+      content_mix_status?: string;
+      grounding_quality_status?: string;
+      quantity_target_count?: number;
+      quantity_confirmed_count?: number;
+      grounding_required_count?: number;
+      grounded_remote_confirmed_count?: number;
+    };
     actions: TaskCenterAction[];
   }>;
   ai_cycles: Array<{

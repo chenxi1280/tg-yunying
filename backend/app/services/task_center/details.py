@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import Action, ChannelMessage, ExecutionAttempt, GroupContextMessage, OperationTarget, Task, TgAccount, TgGroup, VerificationTask
+from app.models import Action, ChannelCommentFallbackPoolSnapshot, ChannelMessage, CommentFallbackSelection, ExecutionAttempt, GroupContextMessage, OperationTarget, Task, TgAccount, TgGroup, VerificationTask
 
 from .executors.common import quantity_jitter_bounds
 from .executors.group_ai_chat import account_profile_summaries
@@ -16,6 +16,7 @@ from .fingerprints import content_fingerprint
 from .hard_hourly import disabled_stats as disabled_hard_hourly_stats, hard_hourly_stats
 from .ai_act_types import canonical_ai_group_act_type
 from .ai_acceptance import ai_acceptance_statuses
+from .channel_comment_acceptance import channel_comment_acceptance
 from .membership_recovery import classify_membership_recovery
 from .account_coverage import task_account_coverage
 from .dispatch_reservations import task_dispatch_claim_snapshot
@@ -100,6 +101,8 @@ def _stats_with_account_coverage(session: Session, task: Task, stats: dict[str, 
     if task.type == "group_ai_chat":
         result = hard_hourly_stats(session, task, _now(), result)
         result.update(ai_acceptance_statuses(session, task, result))
+    if task.type == "channel_comment":
+        result.update(channel_comment_acceptance(session, task))
     coverage = task_account_coverage(session, task)
     if coverage:
         result["account_coverage"] = coverage
@@ -821,11 +824,17 @@ def _latest_attempts_by_action(session: Session, actions: list[Action]) -> dict[
 
 def _message_groups(session: Session, task: Task, actions: list[Action]) -> list[dict[str, Any]]:
     groups: dict[tuple[int | None, int | None, str], dict[str, Any]] = {}
+    comment_acceptance = (
+        channel_comment_acceptance(session, task)
+        if task.type == "channel_comment"
+        else {"message_acceptance": {}}
+    )
+    acceptance_by_message = comment_acceptance.get("message_acceptance") or {}
     message_ids = {
         int(action.payload["channel_message_id"])
         for action in actions
         if isinstance(action.payload, dict) and isinstance(action.payload.get("channel_message_id"), int)
-    }
+    } | {int(message_id) for message_id in acceptance_by_message}
     messages = list(session.scalars(select(ChannelMessage).where(ChannelMessage.id.in_(message_ids)))) if message_ids else []
     messages_by_id = {message.id: message for message in messages}
     channel_ids = {
@@ -839,6 +848,23 @@ def _message_groups(session: Session, task: Task, actions: list[Action]) -> list
     }
     channels = list(session.scalars(select(OperationTarget).where(OperationTarget.id.in_(channel_ids)))) if channel_ids else []
     channels_by_id = {channel.id: channel for channel in channels}
+    pools_by_contract = _fallback_pools_by_contract(session, actions)
+    selections_by_slot = _fallback_selections_by_slot(session, actions)
+
+    for message_id, acceptance in acceptance_by_message.items():
+        message = messages_by_id.get(int(message_id))
+        if message is None:
+            continue
+        channel = channels_by_id.get(int(message.channel_target_id))
+        key = (message.channel_target_id, message.message_id, "post_comment")
+        groups[key] = _new_message_group(
+            task,
+            message=message,
+            channel=channel,
+            payload={},
+            action_type="post_comment",
+            acceptance=acceptance,
+        )
 
     for action in actions:
         payload = action.payload or {}
@@ -849,29 +875,17 @@ def _message_groups(session: Session, task: Task, actions: list[Action]) -> list
         channel = channels_by_id.get(channel_target_id) if channel_target_id else None
         action_type = action.action_type
         key = (channel_target_id, int(payload.get("message_id") or 0) or None, action_type)
-        target_count = _channel_subtask_configured_target_count(task, action_type)
+        acceptance = acceptance_by_message.get(int(message.id)) if message else None
         item = groups.setdefault(
             key,
-            {
-                "channel_target_id": channel_target_id,
-                "channel_title": channel.title if channel else str(payload.get("target_display") or ""),
-                "channel_username": channel.username if channel else "",
-                "message_id": key[1],
-                "action_type": action_type,
-                "action_label": _action_label(action_type),
-                "message_url": message.message_url if message else "",
-                "content_preview": message.content_preview if message else str(payload.get("message_content") or ""),
-                "target_count": target_count,
-                "completed_count": 0,
-                "failed_count": 0,
-                "running_count": 0,
-                "skipped_count": 0,
-                "duplicate_count": 0,
-                "capacity_shortfall": 0,
-                "subtask_status": "运行中",
-                "stats": {"target": target_count, "total": 0, "pending": 0, "executing": 0, "success": 0, "failed": 0, "skipped": 0, "duplicate": 0, "direct": 0, "reply": 0},
-                "actions": [],
-            },
+            _new_message_group(
+                task,
+                message=message,
+                channel=channel,
+                payload=payload,
+                action_type=action_type,
+                acceptance=acceptance,
+            ),
         )
         item["actions"].append(action)
         stats = item["stats"]
@@ -880,6 +894,17 @@ def _message_groups(session: Session, task: Task, actions: list[Action]) -> list
             stats["reply"] += 1
         else:
             stats["direct"] += 1
+        selection_key = (
+            str(payload.get("content_mix_contract_id") or ""),
+            int(payload.get("target_ordinal") or 0),
+        )
+        _apply_comment_fallback_group(
+            item,
+            action,
+            payload,
+            pools=pools_by_contract,
+            selection=selections_by_slot.get(selection_key),
+        )
         if action.status in stats:
             stats[action.status] += 1
         if _is_duplicate_action(action):
@@ -894,11 +919,182 @@ def _message_groups(session: Session, task: Task, actions: list[Action]) -> list
         item["skipped_count"] = int(stats.get("skipped") or 0)
         item["duplicate_count"] = int(stats.get("duplicate") or 0)
         total_actions = int(stats.get("total") or 0)
-        item["target_count"] = _channel_subtask_effective_target_count(task, str(item.get("action_type") or ""), total_actions)
+        acceptance = item.get("acceptance") or {}
+        item["target_count"] = int(
+            acceptance.get("quantity_target_count")
+            or _channel_subtask_effective_target_count(
+                task, str(item.get("action_type") or ""), total_actions,
+            )
+        )
+        if acceptance:
+            item["completed_count"] = int(
+                acceptance.get("quantity_confirmed_count") or 0,
+            )
+            item["stats"]["remote_confirmed"] = item["completed_count"]
         item["stats"]["target"] = item["target_count"]
         item["capacity_shortfall"] = max(int(item.get("target_count") or 0) - total_actions, 0)
         item["subtask_status"] = _channel_subtask_status(item)
     return sorted(groups.values(), key=lambda item: (item.get("channel_title") or "", -(item.get("message_id") or 0)))
+
+
+def _new_message_group(
+    task: Task,
+    *,
+    message: ChannelMessage | None,
+    channel: OperationTarget | None,
+    payload: dict,
+    action_type: str,
+    acceptance: dict | None,
+) -> dict[str, Any]:
+    target = int((acceptance or {}).get("quantity_target_count") or 0)
+    if not target:
+        target = _channel_subtask_configured_target_count(task, action_type)
+    return {
+        "channel_target_id": message.channel_target_id if message else payload.get("channel_target_id"),
+        "channel_title": channel.title if channel else str(payload.get("target_display") or ""),
+        "channel_username": channel.username if channel else "",
+        "message_id": message.message_id if message else int(payload.get("message_id") or 0) or None,
+        "action_type": action_type,
+        "action_label": _action_label(action_type),
+        "message_url": message.message_url if message else "",
+        "content_preview": message.content_preview if message else str(payload.get("message_content") or ""),
+        "target_count": target,
+        "completed_count": 0,
+        "failed_count": 0,
+        "running_count": 0,
+        "skipped_count": 0,
+        "duplicate_count": 0,
+        "capacity_shortfall": 0,
+        "subtask_status": "运行中",
+        "acceptance": acceptance or {},
+        "stats": {"target": target, "total": 0, "pending": 0, "executing": 0, "success": 0, "failed": 0, "skipped": 0, "duplicate": 0, "direct": 0, "reply": 0},
+        "actions": [],
+    }
+
+
+def _fallback_pools_by_contract(
+    session: Session,
+    actions: list[Action],
+) -> dict[str, ChannelCommentFallbackPoolSnapshot]:
+    contract_ids = {
+        str((action.payload or {}).get("content_mix_contract_id") or "")
+        for action in actions
+        if isinstance(action.payload, dict)
+    } - {""}
+    if not contract_ids:
+        return {}
+    rows = session.scalars(select(ChannelCommentFallbackPoolSnapshot).where(
+        ChannelCommentFallbackPoolSnapshot.content_mix_contract_id.in_(contract_ids)
+    ))
+    return {item.content_mix_contract_id: item for item in rows}
+
+
+def _fallback_selections_by_slot(
+    session: Session,
+    actions: list[Action],
+) -> dict[tuple[str, int], CommentFallbackSelection]:
+    contract_ids = {
+        str((action.payload or {}).get("content_mix_contract_id") or "")
+        for action in actions
+        if isinstance(action.payload, dict)
+    } - {""}
+    if not contract_ids:
+        return {}
+    rows = session.scalars(
+        select(CommentFallbackSelection)
+        .where(CommentFallbackSelection.content_mix_contract_id.in_(contract_ids))
+        .order_by(
+            CommentFallbackSelection.created_at.desc(),
+            CommentFallbackSelection.selection_attempt.desc(),
+        )
+    )
+    result: dict[tuple[str, int], CommentFallbackSelection] = {}
+    for row in rows:
+        key = (row.content_mix_contract_id, int(row.target_ordinal))
+        result.setdefault(key, row)
+    return result
+
+
+def _apply_comment_fallback_group(
+    item: dict,
+    action: Action,
+    payload: dict,
+    *,
+    pools: dict[str, ChannelCommentFallbackPoolSnapshot],
+    selection: CommentFallbackSelection | None = None,
+) -> None:
+    pool = pools.get(str(payload.get("content_mix_contract_id") or ""))
+    if pool:
+        item["fallback_pool"] = {
+            "state": pool.pool_state,
+            "ready_image_meme_count": len(pool.image_meme_assets or []),
+            "image_meme_asset_pool_hash": pool.image_meme_asset_pool_hash,
+        }
+    content_source = str(payload.get("content_source") or "")
+    if not content_source and selection is not None:
+        content_source = {
+            "unicode_emoji": "comment_unicode_emoji_fallback",
+            "image_meme": "comment_image_meme_fallback",
+        }.get(selection.fallback_content_kind, "")
+    key = {
+        "comment_unicode_emoji_fallback": "unicode_emoji_fallback",
+        "comment_image_meme_fallback": "image_meme_fallback",
+    }.get(content_source)
+    if key:
+        stats = item["stats"]
+        stats[f"{key}_selected"] = int(stats.get(f"{key}_selected") or 0) + 1
+        fallback_kind = str(
+            getattr(selection, "fallback_kind", "")
+            or dict(payload.get("comment_fallback_selection") or {}).get("fallback_kind")
+            or "emergency"
+        )
+        stats[f"{fallback_kind}_fallback_selected"] = int(
+            stats.get(f"{fallback_kind}_fallback_selected") or 0
+        ) + 1
+        _append_fallback_selection(item, selection)
+        if _comment_fallback_remote_confirmed(action, payload):
+            stats[key] = int(stats.get(key) or 0) + 1
+            stats[f"{key}_remote_confirmed"] = int(
+                stats.get(f"{key}_remote_confirmed") or 0
+            ) + 1
+            stats[f"{fallback_kind}_fallback_remote_confirmed"] = int(
+                stats.get(f"{fallback_kind}_fallback_remote_confirmed") or 0
+            ) + 1
+
+
+def _append_fallback_selection(
+    item: dict,
+    selection: CommentFallbackSelection | None,
+) -> None:
+    if selection is None:
+        return
+    rows = item.setdefault("fallback_selections", [])
+    if any(row.get("selection_id") == selection.id for row in rows):
+        return
+    rows.append({
+        "selection_id": selection.id,
+        "selection_state": selection.selection_state,
+        "fallback_kind": selection.fallback_kind,
+        "fallback_content_kind": selection.fallback_content_kind,
+        "unicode_emoji": selection.unicode_emoji or "",
+        "material_id": selection.material_id,
+        "asset_version_id": selection.asset_version_id,
+        "selection_attempt": selection.selection_attempt,
+        "fallback_reason": selection.fallback_reason,
+    })
+
+
+def _comment_fallback_remote_confirmed(action: Action, payload: dict) -> bool:
+    if action.status != "success":
+        return False
+    fact = dict((action.result or {}).get("channel_comment_remote_fact") or {})
+    remote_id = str(fact.get("remote_message_id") or "")
+    return bool(
+        remote_id
+        and fact.get("fact_type") == "channel_comment"
+        and fact.get("action_id") == action.id
+        and fact.get("content_source") == payload.get("content_source")
+    )
 
 
 def _channel_subtask_configured_target_count(task: Task, action_type: str) -> int:
@@ -949,6 +1145,17 @@ def _is_duplicate_action(action: Action) -> bool:
 
 
 def _channel_subtask_status(item: dict[str, Any]) -> str:
+    acceptance_status = str((item.get("acceptance") or {}).get("acceptance_status") or "")
+    if acceptance_status:
+        return {
+            "met": "已达标",
+            "missed": "已错过",
+            "terminated": "已终止",
+            "blocked": "受阻",
+            "at_risk": "有缺口",
+            "evaluating": "运行中",
+            "not_applicable": "不适用",
+        }.get(acceptance_status, acceptance_status)
     if item.get("capacity_shortfall"):
         return "容量不足"
     if item.get("running_count"):

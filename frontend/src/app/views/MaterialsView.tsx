@@ -45,6 +45,10 @@ type MaterialGroup = {
   tenant_id: number;
   name: string;
   group_type: string;
+  material_ids: number[];
+  membership_revision: number;
+  membership_state: 'ready' | 'review_required' | 'invalid';
+  membership_state_reason: string;
   description: string;
   is_active: boolean;
   material_count: number;
@@ -53,6 +57,7 @@ type MaterialGroup = {
 type MaterialGroupForm = {
   name: string;
   group_type: string;
+  material_ids: number[];
   description: string;
   is_active: boolean;
 };
@@ -86,6 +91,9 @@ function referenceText(material: Material) {
     summary.rule_version_count ? `规则 ${summary.rule_version_count}` : '',
     summary.operation_plan_count ? `方案 ${summary.operation_plan_count}` : '',
     summary.account_profile_batch_count ? `资料 ${summary.account_profile_batch_count}` : '',
+    summary.material_group_count ? `素材组 ${summary.material_group_count}` : '',
+    summary.fallback_pool_count ? `冻结池 ${summary.fallback_pool_count}` : '',
+    summary.fallback_selection_count ? `兜底选择 ${summary.fallback_selection_count}` : '',
   ].filter(Boolean);
   return parts.join(' / ');
 }
@@ -248,6 +256,7 @@ export default function MaterialsView({
       id: groupId,
       name: payload.name.trim(),
       group_type: payload.group_type,
+      material_ids: [...payload.material_ids].sort((a, b) => a - b),
       description: payload.description.trim(),
       is_active: payload.is_active,
     });
@@ -289,6 +298,7 @@ export default function MaterialsView({
     setGroupForm({
       name: group.name,
       group_type: group.group_type,
+      material_ids: group.material_ids,
       description: group.description,
       is_active: group.is_active,
     });
@@ -310,8 +320,10 @@ export default function MaterialsView({
       const payload = {
         name: groupForm.name.trim(),
         group_type: groupForm.group_type,
+        material_ids: groupForm.material_ids,
         description: groupForm.description.trim(),
         is_active: groupForm.is_active,
+        ...(editingGroup ? { expected_membership_revision: editingGroup.membership_revision } : {}),
       };
       if (editingGroup) {
         await api<MaterialGroup>(`/material-groups/${editingGroup.id}`, { method: 'PATCH', body: JSON.stringify(payload) });
@@ -327,7 +339,13 @@ export default function MaterialsView({
     } catch (error) {
       if (!isActiveMaterialGroupAction(actionKey)) return;
       if (!isCurrentMaterialGroupSaveRequest(saveRequest)) return;
-      void message.error(error instanceof Error ? error.message : '保存素材组失败');
+      const reason = error instanceof Error ? error.message : '保存素材组失败';
+      if (reason.includes('material_group_revision_conflict')) {
+        void message.warning('素材组已被其他操作更新，请按最新成员重新编辑');
+        await refreshMaterialGroupsAfterAction('并发冲突刷新');
+      } else {
+        void message.error(reason);
+      }
     } finally {
       if (isActiveMaterialGroupAction(actionKey)) setGroupSaving(false);
     }
@@ -343,7 +361,10 @@ export default function MaterialsView({
     try {
       await api<MaterialGroup>(`/material-groups/${group.id}`, {
         method: 'PATCH',
-        body: JSON.stringify({ is_active: !group.is_active }),
+        body: JSON.stringify({
+          is_active: !group.is_active,
+          expected_membership_revision: group.membership_revision,
+        }),
       });
       if (!isActiveMaterialGroupAction(actionKey)) return;
       await refreshMaterialGroupsAfterAction('素材组启停');
@@ -558,7 +579,8 @@ export default function MaterialsView({
           <Card size="small" title={editingGroup ? `编辑素材组：${editingGroup.name}` : '新增素材组'}>
             <div className="policy-grid">
               <label>名称<Input value={groupForm.name} onChange={(event) => setGroupForm((form) => ({ ...form, name: event.target.value }))} /></label>
-              <label>类型<Select value={groupForm.group_type} onChange={(value) => setGroupForm((form) => ({ ...form, group_type: value }))} options={materialGroupTypeOptions()} /></label>
+              <label>类型<Select value={groupForm.group_type} onChange={(value) => setGroupForm((form) => ({ ...form, group_type: value, material_ids: [] }))} options={materialGroupTypeOptions()} /></label>
+              <label>组内素材<Select mode="multiple" value={groupForm.material_ids} onChange={(value) => setGroupForm((form) => ({ ...form, material_ids: value }))} options={materials.filter((item) => !groupForm.group_type || item.material_type === groupForm.group_type).map((item) => ({ value: item.id, label: `${item.title}（#${item.id}）` }))} placeholder="选择该素材组的明确成员" /></label>
               <label>描述<Input value={groupForm.description} onChange={(event) => setGroupForm((form) => ({ ...form, description: event.target.value }))} /></label>
               <label>启用<Switch checked={groupForm.is_active} onChange={(checked) => setGroupForm((form) => ({ ...form, is_active: checked }))} /></label>
             </div>
@@ -579,7 +601,8 @@ export default function MaterialsView({
               { title: '类型', dataIndex: 'group_type', width: 140, render: (value) => value || '-' },
               { title: '素材数', dataIndex: 'material_count', width: 90 },
               { title: '描述', dataIndex: 'description', render: (value) => value || '-' },
-              { title: '状态', dataIndex: 'is_active', width: 90, render: (value) => <StatusBadge status={value ? 'active' : 'disabled'} label={value ? '启用' : '停用'} /> },
+              { title: '状态', key: 'state', width: 150, render: (_, group) => <Space size={4}><StatusBadge status={group.is_active ? 'active' : 'disabled'} label={group.is_active ? '启用' : '停用'} />{group.membership_state !== 'ready' && <Tag color="warning">{group.membership_state === 'review_required' ? '待确认成员' : '成员异常'}</Tag>}</Space> },
+              { title: '成员版本', dataIndex: 'membership_revision', width: 90 },
               {
                 title: '操作',
                 width: 150,
@@ -729,7 +752,7 @@ function materialPreviewSrc(material: Material) {
 }
 
 function emptyMaterialGroupForm(): MaterialGroupForm {
-  return { name: '', group_type: '', description: '', is_active: true };
+  return { name: '', group_type: '', material_ids: [], description: '', is_active: true };
 }
 
 function materialGroupTypeOptions() {

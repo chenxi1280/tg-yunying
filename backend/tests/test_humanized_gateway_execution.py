@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
-from app.integrations.telegram.contracts import DeveloperAppCredentials
+from app.integrations.telegram.contracts import DeveloperAppCredentials, OutboundSegment
 from app.integrations.telegram.gateway import TelethonTelegramGateway
 
 pytestmark = pytest.mark.no_postgres
@@ -112,3 +112,35 @@ async def test_reply_channel_message_has_no_typing_rpc_or_pre_mutation_delay(moc
         assert result.remote_message_id == "9901"
         assert mock_client.call_count == 0
         mock_client.send_message.assert_called_once()
+
+
+@pytest.mark.anyio
+async def test_reply_channel_media_preserves_comment_and_reply_relationship(mock_credentials):
+    gateway = TelethonTelegramGateway()
+    mock_client = AsyncMock()
+    mock_client.is_user_authorized.return_value = True
+    mock_client.get_entity.return_value = MagicMock(id=1001)
+    sent = MagicMock(id=9902)
+    sent.reply_to.reply_to_msg_id = 8101
+
+    with patch.object(gateway, "_get_or_create_client", return_value=mock_client), \
+         patch("app.integrations.telegram.gateway.decrypt_session", return_value="1ApW..."), \
+         patch("app.integrations.telegram.gateway.send_media_segment", new_callable=AsyncMock, return_value=sent) as send_media:
+        result = await gateway._reply_channel_media_async(
+            session_ciphertext="enc_session",
+            channel_peer_id="-1001001",
+            message_id=501,
+            segment=OutboundSegment(
+                segment_type="表情包",
+                source="tg-cache://-10088/201",
+            ),
+            credentials=mock_credentials,
+            reply_to_message_id=8101,
+        )
+
+    assert result.ok is True
+    assert result.remote_message_id == "9902"
+    assert result.remote_fact["relation_kind"] == "reply"
+    send_media.assert_awaited_once()
+    assert send_media.await_args.kwargs["comment_to_message_id"] == 501
+    assert send_media.await_args.kwargs["reply_to_message_id"] == 8101

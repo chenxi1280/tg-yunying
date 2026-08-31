@@ -1,11 +1,13 @@
 import React from 'react';
 import { Alert, Checkbox, Collapse, Form, Input, InputNumber, Select, Space } from 'antd';
 import type { Rule } from 'antd/es/form';
+import type { MaterialGroup } from '../types';
 import { aiModelIdentity } from './taskCenterViewModel';
 
 type ChannelCommentTypeConfigProps = {
   replyMinPerMessageRules: Rule[];
   ruleFields: React.ReactNode;
+  materialGroups: MaterialGroup[];
 };
 
 export function ChannelViewTypeConfig() {
@@ -51,7 +53,7 @@ export function ChannelLikeTypeConfig() {
   );
 }
 
-export function ChannelCommentTypeConfig({ replyMinPerMessageRules, ruleFields }: ChannelCommentTypeConfigProps) {
+export function ChannelCommentTypeConfig({ replyMinPerMessageRules, ruleFields, materialGroups }: ChannelCommentTypeConfigProps) {
   return (
     <Space direction="vertical" style={{ width: '100%' }}>
       <div style={{ gridColumn: '1 / -1' }}>
@@ -63,14 +65,27 @@ export function ChannelCommentTypeConfig({ replyMinPerMessageRules, ruleFields }
         <Form.Item name="max_total_comments" label="系统任务门禁（固定）"><InputNumber min={1000000} max={1000000} disabled /></Form.Item>
         <Form.Item name="target_comments_per_message" label="预计每条评论/回复"><InputNumber min={1} /></Form.Item>
         <Form.Item name="reply_min_per_message" label="每条最少引用回复数" dependencies={['target_comments_per_message']} rules={replyMinPerMessageRules}><InputNumber min={0} /></Form.Item>
-        <Form.Item name="daily_comment_cap" label="每日评论上限" extra="0 表示不限制每日额度"><InputNumber min={0} /></Form.Item>
-        <Form.Item name="rolling_window_days" label="滚动排期窗口（天）" extra="单帖在指定天数内平滑排期（默认 1 天）"><InputNumber min={1} max={30} /></Form.Item>
+        <Form.Item
+          name="daily_comment_cap"
+          label="每日评论上限"
+          dependencies={['channel_comment_grounding_v1_enabled']}
+          extra="启用频道评论 grounding v1 时必须填写正整数"
+          rules={[({ getFieldValue }) => ({
+            validator: async (_, value) => {
+              if (!getFieldValue('channel_comment_grounding_v1_enabled') || Number(value) > 0) return;
+              throw new Error('启用频道评论 grounding v1 时，每日评论上限必须大于 0');
+            },
+          })]}
+        >
+          <InputNumber min={0} />
+        </Form.Item>
+        <Form.Item name="rolling_window_days" label="滚动排期窗口（天）" extra="新合同固定从 Telegram 发布时间起 3 天"><InputNumber min={3} max={3} disabled /></Form.Item>
         <Form.Item name="comment_style" label="评论方向"><Select options={[{ value: 'mixed', label: '混合' }, { value: 'relevant', label: '相关' }, { value: 'question', label: '提问' }, { value: 'praise', label: '正向' }, { value: 'discussion', label: '讨论' }]} /></Form.Item>
         <Form.Item name="topic_hint" label="主题方向"><Input /></Form.Item>
       </div>
       <Collapse
         ghost
-        items={[{ key: 'advanced', label: '高级设置', children: <ChannelCommentAdvancedFields /> }]}
+        items={[{ key: 'advanced', label: '高级设置', children: <ChannelCommentAdvancedFields materialGroups={materialGroups} /> }]}
       />
     </Space>
   );
@@ -97,7 +112,10 @@ function ChannelLikeAdvancedFields() {
   );
 }
 
-function ChannelCommentAdvancedFields() {
+function ChannelCommentAdvancedFields({ materialGroups }: { materialGroups: MaterialGroup[] }) {
+  const imageMemeGroups = materialGroups.filter(
+    (group) => group.is_active && group.ready_image_meme_count > 0,
+  );
   return (
     <div className="form-grid">
       <Form.Item name="max_comments_per_account_per_hour" label="系统账号门禁（固定）"><InputNumber min={1000000} max={1000000} disabled /></Form.Item>
@@ -157,6 +175,70 @@ function ChannelCommentAdvancedFields() {
       <Form.Item name="ai_content_attestation_ids" label="成人主题证明 ID">
         <Select mode="tags" tokenSeparators={[',', '，']} placeholder="仅成人路由需要" />
       </Form.Item>
+      <Form.Item name="channel_comment_grounding_v1_enabled" label="频道评论相关性 v1" valuePropName="checked">
+        <Checkbox>启用证据化评论和 v2 表情兜底合同</Checkbox>
+      </Form.Item>
+      <Form.Item label="Unicode 表情白名单">
+        <Input readOnly value="👍 🙂 👏 🔥 ❤️ 😍 🤩 🎉 💯 🙌 👌 ✨ 😄 😊 🥳 👀 🤝 💪 🌟 💖" />
+      </Form.Item>
+      <Form.Item name="unicode_emoji_enabled" label="文字表情兜底" valuePropName="checked">
+        <Checkbox>允许 20 个白名单 Unicode 表情</Checkbox>
+      </Form.Item>
+      <Form.Item name="unicode_emoji_weight_bps" label="文字表情权重（bps）" dependencies={fallbackPolicyFields} rules={fallbackWeightRules()}><InputNumber min={0} max={10000} /></Form.Item>
+      <Form.Item name="image_meme_enabled" label="图片表情包兜底" valuePropName="checked">
+        <Checkbox>允许静态 image_meme 素材</Checkbox>
+      </Form.Item>
+      <Form.Item name="image_meme_material_group_id" label="图片表情包素材组" dependencies={['image_meme_enabled', 'image_meme_weight_bps']} rules={[({ getFieldValue }: any) => ({ required: Boolean(getFieldValue('image_meme_enabled')) && Number(getFieldValue('image_meme_weight_bps') || 0) > 0, message: '图片权重大于 0 时请选择有 ready 素材的图片表情包组' })]}>
+        <Select
+          allowClear
+          options={imageMemeGroups.map((group) => ({
+            value: group.id,
+            label: `${group.name}（ready ${group.ready_image_meme_count}）`,
+          }))}
+          placeholder="只显示有 ready 静态 image_meme 的素材组"
+        />
+      </Form.Item>
+      <Form.Item noStyle dependencies={['image_meme_material_group_id']}>
+        {({ getFieldValue }) => {
+          const group = materialGroups.find((item) => item.id === getFieldValue('image_meme_material_group_id'));
+          return group ? <Alert type="info" showIcon message={`当前预览 ${group.ready_image_meme_count} 个 ready 版本，hash ${group.ready_image_meme_pool_hash.slice(0, 12)}…；每条消息首次规划时才冻结真实池。`} /> : null;
+        }}
+      </Form.Item>
+      <Form.Item name="image_meme_weight_bps" label="图片表情包权重（bps）" dependencies={fallbackPolicyFields} rules={fallbackWeightRules()}><InputNumber min={0} max={10000} /></Form.Item>
+      <Form.Item name="allow_image_reselection_before_gateway" valuePropName="checked">
+        <Checkbox>图片在 Gateway 前失效时顺延冻结池下一张</Checkbox>
+      </Form.Item>
+      <Form.Item name="allow_cross_kind_fallback_to_unicode" valuePropName="checked">
+        <Checkbox>图片冻结池耗尽时允许转 Unicode 表情</Checkbox>
+      </Form.Item>
     </div>
   );
+}
+
+const fallbackPolicyFields = [
+  'channel_comment_grounding_v1_enabled',
+  'unicode_emoji_enabled',
+  'image_meme_enabled',
+  'unicode_emoji_weight_bps',
+  'image_meme_weight_bps',
+];
+
+function fallbackWeightRules(): Rule[] {
+  return [
+    ({ getFieldValue }: any) => ({
+      validator() {
+        if (!getFieldValue('channel_comment_grounding_v1_enabled')) return Promise.resolve();
+        const unicodeEnabled = Boolean(getFieldValue('unicode_emoji_enabled'));
+        const imageEnabled = Boolean(getFieldValue('image_meme_enabled'));
+        const unicodeWeight = Number(getFieldValue('unicode_emoji_weight_bps') || 0);
+        const imageWeight = Number(getFieldValue('image_meme_weight_bps') || 0);
+        if (!unicodeEnabled && !imageEnabled) return Promise.reject(new Error('至少启用一种评论兜底'));
+        if ((!unicodeEnabled && unicodeWeight) || (!imageEnabled && imageWeight)) {
+          return Promise.reject(new Error('未启用的兜底类型权重必须为 0'));
+        }
+        if (unicodeWeight + imageWeight !== 10000) return Promise.reject(new Error('两类兜底权重合计必须为 10000 bps'));
+        return Promise.resolve();
+      },
+    }),
+  ];
 }

@@ -1,6 +1,6 @@
 import React from 'react';
 import { Alert, Checkbox, Collapse, Descriptions, Form, Input, InputNumber, Select, Space, Typography } from 'antd';
-import type { Account, AccountPool, ChannelMessageComment, OperationTarget, PromptTemplate, RuleSet, TaskCenterTaskType } from '../types';
+import type { Account, AccountPool, ChannelMessageComment, MaterialGroup, OperationTarget, PromptTemplate, RuleSet, TaskCenterTaskType } from '../types';
 import { GroupCloneTaskFields, GroupCloneTaskReview } from './GroupCloneTaskFields';
 import { ChannelCommentTypeConfig, ChannelLikeTypeConfig, ChannelViewTypeConfig } from './TaskCenterChannelConfigSections';
 import { TASK_TYPES, TYPE_LABEL, OPERATION_PROFILE_TEMPLATES, type OperationProfileTemplateId, accountPrecheck, aiModelIdentity, csvStrings, curveNumbers, curveText, currentOperationProfile, formatDateTime, operationProfileSummary, operationTemplate, ruleSummary, targetName, words } from './taskCenterViewModel';
@@ -256,6 +256,7 @@ export function WizardTypeConfig({
   simpleSearchEditing = false,
   simpleSearchLegacyUncapped = false,
   groupCloneEditing = false,
+  materialGroups = [],
 }: {
   taskType: TaskCenterTaskType;
   ruleSets?: RuleSet[];
@@ -269,6 +270,7 @@ export function WizardTypeConfig({
   simpleSearchEditing?: boolean;
   simpleSearchLegacyUncapped?: boolean;
   groupCloneEditing?: boolean;
+  materialGroups?: MaterialGroup[];
 }) {
   const form = Form.useFormInstance();
   if (simpleSearchCreation && (taskType === 'search_join_group' || taskType === 'search_rank_deboost')) {
@@ -324,6 +326,28 @@ export function WizardTypeConfig({
         <div className="form-grid">
           <Form.Item name="topic_directions" label="话题方向（每行一个）">
             <Input.TextArea rows={5} placeholder={'郑州楼凤妹子怎么样\n主任最近约新妹子了\n精品榜的妹子真好'} />
+          </Form.Item>
+          <Form.Item
+            name="topic_participation_percent"
+            label="任务话题占比上限"
+            rules={[{ required: true, message: '请确认任务话题占比上限' }]}
+            extra="只限制任务 topic_directions 的普通正文，最多 30%，不是必须达到的目标；词库每日主题、讨论老师、账号参与比例和每日总量均不计入。运行中修改从下一任务日的新分配计划生效。"
+          >
+            <InputNumber min={0} max={30} step={1} precision={0} addonAfter="%" style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item
+            name="topic_participation_confirmed"
+            valuePropName="checked"
+            dependencies={['topic_participation_percent']}
+            rules={[
+              {
+                validator: (_, value) => value
+                  ? Promise.resolve()
+                  : Promise.reject(new Error('请显式确认该上限')),
+              },
+            ]}
+          >
+            <Checkbox>我确认这是任务配置话题的上限，词库每日主题和讨论老师不受此比例限制</Checkbox>
           </Form.Item>
           <Form.Item name="teacher_targets" label="讨论老师（每行一个）">
             <Input.TextArea rows={5} placeholder={'花花老师身材服务真好\n新人榜单妹子'} />
@@ -598,7 +622,7 @@ export function WizardTypeConfig({
   if (taskType === 'channel_like') {
     return <ChannelLikeTypeConfig />;
   }
-  return <ChannelCommentTypeConfig replyMinPerMessageRules={replyMinPerMessageRules} ruleFields={ruleFields} />;
+  return <ChannelCommentTypeConfig replyMinPerMessageRules={replyMinPerMessageRules} ruleFields={ruleFields} materialGroups={materialGroups} />;
 }
 
 export function WizardOperationProfile({ form, values, taskType }: { form: any; values: Record<string, any>; taskType: TaskCenterTaskType }) {
@@ -833,6 +857,13 @@ export function WizardReview({ taskType, values, accounts, accountPools, targets
       { key: 'estimate', label: '预计动作量', children: '启动后按义务欠额生成，不以预测量阻止创建' },
       { key: 'reply', label: '引用回复配置', children: replySummary },
       { key: 'daily-target', label: '该群每天发送总量', children: taskType === 'group_ai_chat' ? `${values.daily_message_target || '-'} 条；所有账号每天至少成功 1 条` : '不适用' },
+      {
+        key: 'topic-rate',
+        label: '任务话题占比上限',
+        children: taskType === 'group_ai_chat'
+          ? `${values.topic_participation_percent ?? '-'}%；按当前日总量粗估最多 ${Math.floor(Number(values.daily_message_target || 0) * Number(values.topic_participation_percent || 0) / 100)} 条普通正文。实际可以更少；词库主题/讨论老师不计入`
+          : '不适用',
+      },
       { key: 'quantity', label: '数量配置', children: configuredQuantitySummary(taskType, values) },
       { key: 'capacity', label: '容量口径', children: '创建阶段不做容量门禁；启动后持续重算并展示，不阻止合法任务创建' },
       { key: 'pacing', label: '曲线摘要', children: `${operationProfileSummary(values)}；当前 ${String(profile.hour).padStart(2, '0')}:00 ${profile.intensity} ${profileUnit}，${profile.mode}运行` },

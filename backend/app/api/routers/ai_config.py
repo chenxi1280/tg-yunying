@@ -560,7 +560,11 @@ def patch_material_group(
     try:
         return update_material_group(session, resolve_tenant_id(current_user, tenant_id), group_id, payload, current_user.name)
     except ValueError as exc:
-        raise not_found(str(exc)) from exc
+        if str(exc) == "material group not found":
+            raise not_found(str(exc)) from exc
+        if str(exc).startswith("material_group_revision_conflict:"):
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/api/materials/cache/health", response_model=MaterialCacheHealthOut)

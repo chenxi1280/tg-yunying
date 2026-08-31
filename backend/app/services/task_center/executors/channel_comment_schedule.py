@@ -25,7 +25,8 @@ def materialized_reply_slots(
     selected: list[tuple[object, datetime]] = []
     deferred_times: list[datetime] = []
     for slot, planned_at in zip(slots, planned_times, strict=False):
-        if not slot.reply_target:
+        grounding_v1 = bool((task.type_config or {}).get("channel_comment_grounding_v1_enabled"))
+        if not grounding_v1 and not slot.reply_target:
             selected.append((slot, planned_at))
             continue
         if int(slot.obligation.action_attempt_no or 0) > 0:

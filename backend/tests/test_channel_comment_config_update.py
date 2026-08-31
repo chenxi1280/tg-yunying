@@ -174,6 +174,57 @@ def test_channel_comment_config_update_allows_ai_model_switch():
     assert updated.type_config["target_comments_per_message"] == 80
 
 
+def test_channel_comment_config_update_rejects_empty_image_meme_group():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        task = Task(
+            id="task-comment-image-meme",
+            tenant_id=1,
+            name="频道评论图片兜底",
+            type="channel_comment",
+            status="running",
+            type_config={
+                "target_channel_id": 6,
+                "target_comments_per_message": 10,
+                "message_scope": "dynamic_new",
+                "message_count": 10,
+            },
+        )
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(OperationTarget(
+            id=6, tenant_id=1, target_type="channel",
+            tg_peer_id="-1006", title="频道",
+        ))
+        session.add(task)
+        session.commit()
+
+        with pytest.raises(ValueError, match="image_meme_material_group_has_no_ready_assets"):
+            update_channel_comment_config(
+                session,
+                1,
+                task.id,
+                ChannelCommentTaskConfigUpdate(
+                    target_channel_id=6,
+                    ai_model="generator-model",
+                    ai_two_stage_enabled=True,
+                    ai_semantic_reviewer_model="reviewer-model",
+                    ai_content_route_v2_enabled=True,
+                    ai_content_policy_version_id="policy-v1",
+                    ai_content_allowed_routes=["general"],
+                    channel_comment_grounding_v1_enabled=True,
+                    daily_comment_cap=10,
+                    unicode_emoji_enabled=False,
+                    image_meme_enabled=True,
+                    image_meme_material_group_id=81,
+                    unicode_emoji_weight_bps=0,
+                    image_meme_weight_bps=10000,
+                ),
+                "tester",
+            )
+
+
 def test_channel_comment_dispatch_detects_existing_success_limit():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

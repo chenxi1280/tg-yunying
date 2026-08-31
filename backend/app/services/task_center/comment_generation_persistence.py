@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import timedelta
 
 from sqlalchemy import select, update
@@ -152,22 +153,37 @@ def _apply_generation_ready(
     result: GeneratedCommentResult,
 ) -> None:
     data = dict(action.payload or {})
-    is_emoji_fallback = result.fallback_kind == "emoji_text"
+    is_emoji_fallback = result.fallback_kind in {"emoji_text", "unicode_emoji"}
+    is_image_fallback = result.fallback_kind == "image_meme"
+    content_source = (
+        "comment_image_meme_fallback"
+        if is_image_fallback
+        else "comment_unicode_emoji_fallback"
+        if result.fallback_kind == "unicode_emoji"
+        else "comment_emoji_fallback"
+        if is_emoji_fallback
+        else "normal"
+    )
     data.update({
         "comment_text": result.content,
+        "comment_media_segment": result.media_segment or {},
+        "comment_fallback_selection": result.selection_metadata or {},
         "ai_generation_status": "ready",
         "ai_generation_tokens": max(0, int(result.tokens or 0)),
         "comment_generation_attempts": list(result.attempts),
         "comment_fallback_kind": result.fallback_kind,
-        "content_source": "comment_emoji_fallback" if is_emoji_fallback else "normal",
-        "quality_fallback": "comment_emoji_fallback" if is_emoji_fallback else "",
+        "content_source": content_source,
+        "quality_fallback": content_source if (is_emoji_fallback or is_image_fallback) else "",
         "fallback_reason": result.fallback_reason,
         "planned_normal_text_emoji": "no" if is_emoji_fallback else "unresolved",
         "ai_generation_result_cache": {},
     })
     mark_attempt_outcome(data, request.attempt_id, "ready", timestamp=_now())
     action.payload = data
-    action.candidate_hash = hashlib.sha256(result.content.encode("utf-8")).hexdigest()
+    candidate_identity = result.content or json.dumps(
+        result.media_segment or {}, sort_keys=True, separators=(",", ":"),
+    )
+    action.candidate_hash = hashlib.sha256(candidate_identity.encode("utf-8")).hexdigest()
     evaluator_evidence = dict(
         (result.quality_audit or {}).get("two_stage_evaluator_evidence") or {},
     )
@@ -177,6 +193,7 @@ def _apply_generation_ready(
         "generation_outcome": "ready",
         "ai_generation_attempt_id": request.attempt_id,
         "comment_quality_audit": result.quality_audit or {},
+        "comment_fallback_selection": result.selection_metadata or {},
         "evaluator_evidence": evaluator_evidence,
     }
 
@@ -266,6 +283,8 @@ def persist_generation_unknown(
             "fallback_kind": generated.fallback_kind,
             "fallback_reason": generated.fallback_reason,
             "attempts": list(generated.attempts),
+            "media_segment": generated.media_segment or {},
+            "selection_metadata": generated.selection_metadata or {},
             "attempt_id": request.attempt_id,
         },
     })

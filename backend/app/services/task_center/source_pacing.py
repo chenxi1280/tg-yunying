@@ -55,7 +55,7 @@ def source_window_days(task) -> int:
             return max(1, int(days))
         except (TypeError, ValueError):
             pass
-    return 1
+    return 3 if getattr(task, "type", "") == "channel_comment" else 1
 
 
 def rolling_source_window(task, observed_at: datetime) -> tuple[datetime, datetime]:

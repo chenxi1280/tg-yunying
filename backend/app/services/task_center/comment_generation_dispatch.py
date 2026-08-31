@@ -53,7 +53,8 @@ def ensure_post_comment_content(
     payload: PostCommentPayload,
     dependencies: CommentGenerationDependencies,
 ) -> PostCommentPayload:
-    if payload.comment_text.strip() and payload.ai_generation_status in {"", "ready"}:
+    ready_content = payload.comment_text.strip() or payload.comment_media_segment
+    if ready_content and payload.ai_generation_status in {"", "ready"}:
         ready = payload.model_copy(update={"ai_generation_status": "ready"})
         action.payload = ready.model_dump(mode="json")
         return ready
@@ -81,7 +82,7 @@ def _generate_comment(
     dependencies: CommentGenerationDependencies,
 ) -> GeneratedCommentResult:
     try:
-        if not request.cached_content:
+        if not request.has_cached_result:
             _mark_provider_call_started(session, request)
         return generate_comment_result(
             session,
@@ -175,6 +176,12 @@ def prepare_comment_generation_request(
         cached_fallback_kind=str(cached.get("fallback_kind") or ""),
         cached_fallback_reason=str(cached.get("fallback_reason") or ""),
         cached_attempts=tuple(cached.get("attempts") or ()),
+        cached_media_segment=(
+            dict(cached.get("media_segment") or {}) or None
+        ),
+        cached_selection_metadata=(
+            dict(cached.get("selection_metadata") or {}) or None
+        ),
     )
     session.commit()
     _validate_comment_target(session, action, request=request)

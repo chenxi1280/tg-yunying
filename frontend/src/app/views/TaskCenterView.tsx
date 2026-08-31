@@ -3,7 +3,7 @@ import { Alert, Button, Card, Collapse, Form, Input, Modal, Select, Space, Steps
 import type { ColumnsType } from 'antd/es/table';
 import { Activity, CirclePause, CirclePlay, RefreshCcw } from 'lucide-react';
 import { api, apiWithMeta, apiErrorFromResponse, ApiError, API_BASE } from '../../shared/api/client';
-import type { Account, AccountPool, ChannelMessage, ChannelMessageComment, OperationTarget, PromptTemplate, RuleSet, TaskCenterAction, TaskCenterAnyTaskType, TaskCenterDetail, TaskCenterListItem, TaskCenterPrefill, TaskCenterTask, TaskCenterTaskType, TaskExecutionAttempt, TaskMembershipItem, TaskPrecheck, TenantBotSettings } from '../types';
+import type { Account, AccountPool, ChannelMessage, ChannelMessageComment, MaterialGroup, OperationTarget, PromptTemplate, RuleSet, TaskCenterAction, TaskCenterAnyTaskType, TaskCenterDetail, TaskCenterListItem, TaskCenterPrefill, TaskCenterTask, TaskCenterTaskType, TaskExecutionAttempt, TaskMembershipItem, TaskPrecheck, TenantBotSettings } from '../types';
 import { StatusBadge, StatCard } from '../components/shared';
 import { fromBeijingDateTimeLocalValue } from '../time';
 import {
@@ -253,6 +253,7 @@ export default function TaskCenterView({
   const [messages, setMessages] = React.useState<ChannelMessage[]>([]);
   const [comments, setComments] = React.useState<ChannelMessageComment[]>([]);
   const [ruleSets, setRuleSets] = React.useState<RuleSet[]>([]);
+  const [materialGroups, setMaterialGroups] = React.useState<MaterialGroup[]>([]);
   const [taskAccounts, setTaskAccounts] = React.useState<Account[]>(accounts);
   const [taskAccountPools, setTaskAccountPools] = React.useState<AccountPool[]>(accountPools);
   const [taskPromptTemplates, setTaskPromptTemplates] = React.useState<PromptTemplate[]>(promptTemplates);
@@ -479,6 +480,13 @@ export default function TaskCenterView({
     return ruleSetData;
   }
 
+  async function ensureMaterialGroups() {
+    if (materialGroups.length) return materialGroups;
+    const groups = await api<MaterialGroup[]>('/material-groups');
+    setMaterialGroups(groups);
+    return groups;
+  }
+
   function taskAccountListPath(page: number): string {
     const params = new URLSearchParams({ page: String(page), page_size: String(TASK_FORM_ACCOUNT_PAGE_SIZE) });
     return `/tg-accounts?${params.toString()}`;
@@ -537,7 +545,7 @@ export default function TaskCenterView({
     const requests: Array<Promise<unknown>> = [];
     if (['group_relay', 'group_clone', 'group_ai_chat', 'channel_comment'].includes(type)) requests.push(ensureRuleSets());
     if (type.startsWith('channel_')) requests.push(ensureMessages());
-    if (type === 'channel_comment') requests.push(ensureComments());
+    if (type === 'channel_comment') requests.push(ensureComments(), ensureMaterialGroups());
     return requests;
   }
 
@@ -1031,6 +1039,10 @@ export default function TaskCenterView({
         : [],
       account_personas: formatKeyValueMap(config.account_personas),
       topic_directions: formatTopicDirectionLines(config.topic_directions),
+      topic_participation_percent: config.topic_participation_rate == null
+        ? null
+        : Number(config.topic_participation_rate) * 100,
+      topic_participation_confirmed: config.topic_participation_rate != null,
       teacher_targets: formatChatTargetLines(config.teacher_targets),
       group_ai_prejoin_channel_ids: task.group_ai_prejoin_channel_ids ?? [],
       slang_terms: formatKeyValueMap(config.slang_terms),
@@ -1181,6 +1193,14 @@ export default function TaskCenterView({
       ai_content_policy_version_id: values.ai_content_route_v2_enabled ? values.ai_content_policy_version_id?.trim() ?? '' : '',
       ai_content_allowed_routes: values.ai_content_route_v2_enabled ? csvStrings(values.ai_content_allowed_routes) : [],
       ai_content_attestation_ids: values.ai_content_route_v2_enabled ? csvStrings(values.ai_content_attestation_ids) : [],
+      channel_comment_grounding_v1_enabled: Boolean(values.channel_comment_grounding_v1_enabled),
+      unicode_emoji_enabled: Boolean(values.unicode_emoji_enabled),
+      image_meme_enabled: Boolean(values.image_meme_enabled),
+      image_meme_material_group_id: values.image_meme_enabled ? values.image_meme_material_group_id ?? null : null,
+      unicode_emoji_weight_bps: Number(values.unicode_emoji_weight_bps ?? 10000),
+      image_meme_weight_bps: Number(values.image_meme_weight_bps ?? 0),
+      allow_image_reselection_before_gateway: Boolean(values.allow_image_reselection_before_gateway),
+      allow_cross_kind_fallback_to_unicode: Boolean(values.allow_cross_kind_fallback_to_unicode),
       comment_style: values.comment_style ?? 'mixed',
       topic_hint: values['topic_hint'] ?? '',
       system_prompt_override: values.system_prompt_override ?? '',
@@ -1360,6 +1380,7 @@ export default function TaskCenterView({
         rule_set_version_id: values.rule_set_version_id ?? null,
         target_group_name: target?.title ?? '',
         topic_directions: parseTopicDirectionLines(values.topic_directions),
+        topic_participation_rate: Number(values.topic_participation_percent) / 100,
         teacher_targets: parseChatTargetLines(values.teacher_targets),
         chat_history_depth: values.chat_history_depth ?? 50,
         ai_model: values.ai_model ?? '',
@@ -1500,6 +1521,7 @@ export default function TaskCenterView({
         rule_set_version_id: values.rule_set_version_id ?? null,
         target_group_name: target?.title ?? '',
         topic_directions: parseTopicDirectionLines(values.topic_directions, existingTypeConfig.topic_directions),
+        topic_participation_rate: Number(values.topic_participation_percent) / 100,
         teacher_targets: parseChatTargetLines(values.teacher_targets, existingTypeConfig.teacher_targets),
         chat_history_depth: values.chat_history_depth ?? 50,
         ai_model: values.ai_model ?? '',
@@ -2113,6 +2135,30 @@ export default function TaskCenterView({
     { title: '目标', dataIndex: 'target_count', width: 80 },
     { title: '直接评论', key: 'direct', width: 90, render: (_, item) => item.stats.direct ?? 0 },
     { title: '回复评论', key: 'reply', width: 90, render: (_, item) => item.stats.reply ?? 0 },
+    { title: '文字 已发/已选', key: 'unicode_fallback', width: 120, render: (_, item) => `${item.stats.unicode_emoji_fallback_remote_confirmed ?? 0}/${item.stats.unicode_emoji_fallback_selected ?? 0}` },
+    { title: '图片 已发/已选', key: 'image_fallback', width: 120, render: (_, item) => `${item.stats.image_meme_fallback_remote_confirmed ?? 0}/${item.stats.image_meme_fallback_selected ?? 0}` },
+    { title: '计划/紧急 已发', key: 'fallback_kinds', width: 130, render: (_, item) => `${item.stats.planned_fallback_remote_confirmed ?? 0}/${item.stats.emergency_fallback_remote_confirmed ?? 0}` },
+    {
+      title: '实际兜底选择',
+      key: 'fallback_selections',
+      width: 230,
+      ellipsis: true,
+      render: (_, item) => item.fallback_selections?.map((selection) => {
+        const content = selection.fallback_content_kind === 'unicode_emoji'
+          ? selection.unicode_emoji
+          : `素材#${selection.material_id ?? '-'} v${selection.asset_version_id ?? '-'}`;
+        return `${selection.fallback_kind === 'planned' ? '计划' : '紧急'} ${content}（尝试${selection.selection_attempt}）`;
+      }).join('；') || '-',
+    },
+    {
+      title: '三维验收',
+      key: 'acceptance',
+      width: 240,
+      render: (_, item) => item.acceptance
+        ? `数量 ${item.acceptance.quantity_status ?? '-'} / 内容 ${item.acceptance.content_mix_status ?? '-'} / 依据 ${item.acceptance.grounding_quality_status ?? '-'}`
+        : '-',
+    },
+    { title: '冻结图片池', key: 'fallback_pool', width: 180, render: (_, item) => item.fallback_pool ? `${item.fallback_pool.ready_image_meme_count} 张 / ${item.fallback_pool.image_meme_asset_pool_hash.slice(0, 10)}…` : '-' },
     { title: '完成', dataIndex: 'completed_count', width: 80 },
     { title: '失败', dataIndex: 'failed_count', width: 80 },
     { title: '重复', dataIndex: 'duplicate_count', width: 80 },
@@ -2330,7 +2376,7 @@ export default function TaskCenterView({
         <Form form={form} layout="vertical" preserve initialValues={taskTypeInitialValues(taskType)}>
           {wizardStep === 0 && <WizardBasics taskType={taskType} onTypeChange={resetTypeFields} canCreateSearchClick={canCreateSearchClick} />}
           {wizardStep === 1 && <WizardTarget taskType={taskType} messages={messages} messageScope={messageScope} targetChannelId={targetChannelId} onTargetChannelChange={() => form.setFieldsValue({ message_ids: [] })} onTargetsLoaded={mergeLoadedTargets} simpleSearchCreation={simpleSearchClickTask} />}
-          {wizardStep === 2 && <WizardTypeConfig taskType={taskType} ruleSets={ruleSets} slangTemplates={slangTemplates} comments={comments} relaySourceOptions={[]} targetChannelId={targetChannelId} messageScope={messageScope} messageIds={messageIds} simpleSearchCreation={simpleSearchClickTask} />}
+          {wizardStep === 2 && <WizardTypeConfig taskType={taskType} ruleSets={ruleSets} slangTemplates={slangTemplates} comments={comments} materialGroups={materialGroups} relaySourceOptions={[]} targetChannelId={targetChannelId} messageScope={messageScope} messageIds={messageIds} simpleSearchCreation={simpleSearchClickTask} />}
           {simpleSearchClickTask && wizardStep === 3 && <SearchClickExecutionConfig taskType={taskType} accountPools={taskAccountPools} />}
           {!simpleSearchClickTask && taskType !== 'group_clone' && wizardStep === 3 && (
             <Space direction="vertical" size={16} style={{ width: '100%' }}>
@@ -2388,7 +2434,7 @@ export default function TaskCenterView({
             </>
           )}
           <Typography.Title level={5}>类型参数</Typography.Title>
-          <WizardTypeConfig taskType={(detail && !isSystemTask(detail.task) ? detail.task.type : taskType) as TaskCenterTaskType} ruleSets={ruleSets} slangTemplates={slangTemplates} comments={comments} relaySourceOptions={relaySourceOptions(detail)} targetChannelId={editTargetChannelId} messageScope={editMessageScope} messageIds={editMessageIds} simpleSearchCreation={isSimpleSearchClickTask(editableTaskType)} simpleSearchEditing={isSimpleSearchClickTask(editableTaskType)} simpleSearchLegacyUncapped={editableTaskType === 'search_join_group' ? detail?.task.type_config?.daily_target_count == null && detail?.task.type_config?.target_count == null : detail?.task.type_config?.target_count == null} groupCloneEditing={editableTaskType === 'group_clone'} />
+          <WizardTypeConfig taskType={(detail && !isSystemTask(detail.task) ? detail.task.type : taskType) as TaskCenterTaskType} ruleSets={ruleSets} slangTemplates={slangTemplates} comments={comments} materialGroups={materialGroups} relaySourceOptions={relaySourceOptions(detail)} targetChannelId={editTargetChannelId} messageScope={editMessageScope} messageIds={editMessageIds} simpleSearchCreation={isSimpleSearchClickTask(editableTaskType)} simpleSearchEditing={isSimpleSearchClickTask(editableTaskType)} simpleSearchLegacyUncapped={editableTaskType === 'search_join_group' ? detail?.task.type_config?.daily_target_count == null && detail?.task.type_config?.target_count == null : detail?.task.type_config?.target_count == null} groupCloneEditing={editableTaskType === 'group_clone'} />
           {isSimpleSearchClickTask(editableTaskType) && <><Typography.Title level={5}>执行范围与节奏</Typography.Title><SearchClickExecutionConfig taskType={editableTaskType} accountPools={taskAccountPools} editing={true} strictDailyTargetEnabled={Boolean(detail?.task.type_config?.strict_daily_target)} showStrictDailyTargetOptIn={editableTaskType === 'search_join_group' && (detail?.task.type_config?.daily_click_target_count != null || detail?.task.type_config?.daily_target_count != null)} /></>}
           {!isSimpleSearchClickTask(editableTaskType) && editableTaskType !== 'group_clone' && (
             <>

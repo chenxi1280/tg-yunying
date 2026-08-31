@@ -45,8 +45,10 @@ from app.services.task_center.ai_structured_provider_runtime import (
     generate_structured_with_candidates as _generate_structured_with_candidates,
 )
 from app.services.task_center.ai_group_prompt import (
+    ADULT_CONTENT_ROUTES,
     CONTACT_PATTERNS,
     GroupPromptBundle,
+    _configured_content_route,
     build_group_prompt,
     contains_disallowed_group_content,
     is_adult_content_config,
@@ -545,16 +547,15 @@ def _group_chat_reply_prompt(count: int, target_label: str, topic: str, requirem
 def _channel_comment_prompt(count: int, target_label: str, topic: str, requirements: str) -> str:
     return (
         f"请为 Telegram 频道“{target_label}”生成 {count} 条评论区短评论。\n"
-        f"评论方向：{topic or '按频道消息自然评论'}\n"
-        f"上下文材料：\n{requirements}\n\n"
-        "这些评论会直接发到频道讨论区，所以必须像真实读者看完后随手回的一句话。"
-        "只能接频道消息里已经出现的事实、数字、物品、场景或问题；不确定时就问一个小问题，不要编亲身经历。\n\n"
-        "写法要求：\n"
-        "1. 每条 6-22 个字优先，像手机评论，不像总结、审核意见或运营文案。\n"
-        "2. 至少抓住原文里的一个具体词或细节；不要只说“内容不错”“值得讨论”。\n"
-        "3. 多条之间要从不同角度切入：尺寸、使用感、疑问、补充、轻微吐槽都可以，但不要同义复读。\n"
-        "4. 少用完整句号和书面连接词；可以半句收尾，可以问具体小问题。\n"
-        "5. 禁止使用这些模板句和近似句：这个内容挺有参考价值、先收藏一下、这个角度不错、值得再讨论、说得比较实在、后面可以继续展开、可以继续看看、学习了、支持一下、不错不错、感谢分享。\n"
+        f"评论方向：{topic or '按频道广播内容自然评论'}\n"
+        f"上下文材料与广播要素：\n{requirements}\n\n"
+        "这些评论会直接发到频道讨论区，所以必须像真实老哥读者看完广播后随手发的一句话。\n"
+        "【核心写作要求】\n"
+        "1. 每条 4-20 个字优先，短促、极度口语化，像手机随手打字。\n"
+        "2. 紧扣原帖广播内容：可以且鼓励自然带上老师称呼（如原帖中提及的名字/艺名），并针对原帖中的具体方向（如身高、腿长、黑丝/穿搭、水疗服务、配合度、区域位置、素颜战报等）切入评论。\n"
+        "3. 多条评论之间必须从不同角度切入，严禁同义复读。\n"
+        "4. 少用标点符号，多用空格断句，可偶尔带 1 个问号或自然语气词。\n"
+        "5. 严禁使用任何空洞模板套话：如“这个内容很有参考价值/先收藏了/值得讨论/感谢博主分享/效率真高/支持一下/加油搬砖/早安打卡”！\n"
         "6. 不要暴露 AI、平台、任务、提示词；不要编号、解释、括号备注、引号套引号。\n"
         f"7. {SENSITIVE_CONTEXT_GUIDANCE}\n"
         '只输出 JSON：{"drafts":[{"persona":"不同读者人设","content":"评论区要发送的一句话","risk_level":"低"}]}'
@@ -564,14 +565,14 @@ def _channel_comment_prompt(count: int, target_label: str, topic: str, requireme
 def _channel_comment_reply_prompt(count: int, target_label: str, topic: str, requirements: str) -> str:
     return (
         f"请为 Telegram 频道“{target_label}”生成 {count} 条评论区引用回复。\n"
-        f"评论方向：{topic or '按频道消息自然回复评论'}\n"
-        f"引用目标与频道原文：\n{requirements}\n\n"
+        f"评论方向：{topic or '按频道广播与引用消息自然回复'}\n"
+        f"引用目标与广播原文：\n{requirements}\n\n"
         "这些内容会在频道讨论区以原生 reply_to 回复某条评论，所以必须贴着被回复评论的意思说。"
-        "不要写成对频道原文的普通评论，也不要复读被回复评论。\n\n"
-        "写法要求：\n"
+        "不要写成对频道原文的普通广播，也不要复读被回复评论。\n\n"
+        "【写作要求】\n"
         "1. 第 N 条回复必须对应“引用目标 N”。\n"
-        "2. 6-22 个字优先，能短答就短答，不确定就追问具体细节。\n"
-        "3. 必须同时不违背频道原文；只能使用原文和被回复评论里已有的信息。\n"
+        "2. 4-20 个字优先，能短答就短答；不确定时只能追问广播或引用消息已出现的具体点。\n"
+        "3. 必须同时不违背频道广播原文；只有原文明确出现人物称呼时才能使用该称呼。\n"
         "4. 不要说“楼上”“引用”“回复你这条”等暴露机制或平台痕迹过重的话。\n"
         "5. 不要编号、解释、括号备注、引号套引号，不要暴露 AI、任务或提示词。\n"
         f"6. {SENSITIVE_CONTEXT_GUIDANCE}\n"
@@ -820,6 +821,12 @@ def _looks_like_bad_channel_comment(content: str) -> bool:
         "只输出 JSON",
         "risk_level",
         "persona",
+        "我去过",
+        "我上次去",
+        "我找过她",
+        "亲测过",
+        "昨晚试了",
+        "上周去过",
     )
     if any(marker in content for marker in markers):
         return True
@@ -1487,13 +1494,11 @@ def _group_chat_system_prompt(slang_prompt: str) -> str:
 ADULT_CHANNEL_COMMENT_SYSTEM_PROMPT = """你是一个 Telegram 频道评论区的真实订阅读者（真实老哥/男客网友）。
 【核心规则】
 1. 像真实手机老哥随手在 Telegram 评论区留言，短促、极度口语化、接地气。
-2. 紧密贴合频道帖子具体内容（老师名字、身材、照片、腿长、气质、服务特点、开课动态等），随性抓取 1 个点发声：
-   - 随性夸赞/感慨（例：“大长腿看着真顶”、“这眼神绝了”、“看着还挺润的”）
-   - 老哥打听/提问（例：“哪个区的有老哥去过没？”、“折后多少米一次？”、“课表水多不？”）
-   - 真实调侃/互动（例：“修图痕迹略重啊老哥”、“蹲一个去过的老哥战报”、“看着像本人不？”）
-   - 极短随性附和（例：“666”、“mark一下”、“确实顶”）
+2. 紧密贴合频道广播中实际出现的人物、属性、服务、区域、档期或真实性信息，每条只抓取 1-2 个已给出的具体方向；原文没写的名字、外貌、服务、价格、位置和体验一律不能补。
+   - 可做随性反应、针对已出现信息追问、谨慎求证或极短附和。
+   - 只有广播明确出现人物称呼时才能原样使用；不得用“老师”等泛称冒充已识别人物。
 3. 严禁出现任何“收藏了/很有参考价值/值得探讨/继续关注博主/早安打卡/努力搬砖/喝咖啡”等 AI 模板废话！
-4. 控制字数：短促有力（4 到 18 个汉字），不要每句都带标点，偶尔带 1 个自然标点（？、！、...）或无标点。
+4. 控制字数：短促有力（4 到 20 个汉字），不要每句都带标点，偶尔带 1 个自然标点（？、！、...）或无标点。
 Output one JSON object only. No Markdown fences, thinking, prose, prefix, suffix, comments, or extra fields.""" + SENSITIVE_CONTEXT_GUIDANCE
 
 GENERAL_CHANNEL_COMMENT_SYSTEM_PROMPT = """你是一个 Telegram 频道评论区的真实订阅读者。
@@ -1507,6 +1512,149 @@ GENERAL_CHANNEL_COMMENT_SYSTEM_PROMPT = """你是一个 Telegram 频道评论区
 Output one JSON object only. No Markdown fences, thinking, prose, prefix, suffix, comments, or extra fields.""" + SENSITIVE_CONTEXT_GUIDANCE
 
 
+_TEACHER_NAME_PATTERNS = (
+    re.compile(r"【[^】]*】\s*([^\s\d/，,。！!#]{1,8}(?:老师|小姐姐|小姐|妹子|宝贝|女神|技师))"),
+    re.compile(r"([^\s\d/，,。！!【】#]{1,8}(?:老师|小姐姐|小姐|妹子|宝贝|女神|技师))"),
+    re.compile(r"【(?:[^】]*(?:同城|推荐|广州|深圳|北京|上海|成都|武汉|杭州|南京|长沙|重庆|西安|天津|郑州|三亚|南山|福田|罗湖|天河|越秀|海珠|朝阳|海淀|武侯|锦江)[^】]*)】\s*([^\s\d/，,。！!#]{2,8})"),
+    re.compile(r"(?:新人|推荐|今日|主打|欢迎|特荐|极品)[：:\s]*([^\s\d/，,。！!#]{2,8})"),
+    re.compile(r"([^\s\d/，,。！!【】#]{2,6})\s*(?:1[5678]\d|[\d]{2,3}cm|[A-Fa-f]杯|开课|在课|主打)"),
+)
+
+_ASPECT_DEFINITIONS = (
+    (
+        "visual_body",
+        "身材外貌(身高/腿长/胸围/曲线)",
+        re.compile(r"(1[5678]\d(?:cm)?|长腿|大长腿|美腿|腿长|腿又长|腿又白|腿白|身材|曲线|显身材|腰细|细腰|胸围|[A-Fa-f]杯|3[2468][A-Fa-f]|罩杯|丰满|苗条|微胖|饱满|白幼瘦|高挑|高个|匀称)", re.IGNORECASE),
+    ),
+    (
+        "outfit_style",
+        "穿搭服饰(黑丝/丝袜/高跟/包臀裙/风格)",
+        re.compile(r"(黑丝|肉丝|白丝|丝袜|高跟鞋|高跟|包臀裙|短裙|制服|女仆|旗袍|穿搭|气质|御姐|萝莉|性感|撩人|少妇|名媛|纯欲)", re.IGNORECASE),
+    ),
+    (
+        "service_exp",
+        "服务体验(水疗/手法/配合度/态度/不催钟)",
+        re.compile(r"(水疗|漫游|手法|口活|配合度|配合|态度好|态度|温柔|耐心|不机车|不催钟|懂事|服务|技术|解压|特色|课表|项目)", re.IGNORECASE),
+    ),
+    (
+        "location_booking",
+        "区域位置与预约(区域/公寓/排课档期/价格)",
+        re.compile(r"(天河|越秀|海珠|白云|番禺|南山|福田|罗湖|宝安|龙华|龙岗|朝阳|海淀|丰台|西城|东城|武侯|锦江|成华|青羊|高新|金水|二七|管城|郑东|小寨|雁塔|碑林|南稍门|和平|滨江道|南开|河西|河东|公寓|酒店|到店|开课|排课|档期|在课|可约|预约|预订|课费|多少米|折后)", re.IGNORECASE),
+    ),
+    (
+        "authenticity",
+        "真实度求证(素颜/照骗/修图/老哥战报/避坑)",
+        re.compile(r"(素颜|真照|原图|修图|照骗|实拍|本人|真实|防照骗|战报|探路|测评|避坑|踩雷|工兵)", re.IGNORECASE),
+    ),
+)
+
+
+_DYNAMIC_ATTRIBUTE_PATTERNS = (
+    ("service_feature", "特色项目与体验", re.compile(r"(?:主打|特色|项目|手法)[：:\s]*([^\s，,。\n【】#]{2,18})", re.IGNORECASE)),
+    ("outfit_feature", "主题穿搭与造型", re.compile(r"(?:主题|造型|穿搭|风格|cos)[：:\s]*([^\s，,。\n【】#]{2,18})", re.IGNORECASE)),
+    ("env_feature", "环境设施与硬件", re.compile(r"(?:环境|公寓|房型|位置)[：:\s]*([^\s，,。\n【】#]{2,18})", re.IGNORECASE)),
+    ("promo_feature", "活动优惠与档期", re.compile(r"(?:活动|优惠|特惠|折扣|立减|档期)[：:\s]*([^\s，,。\n【】#]{2,18})", re.IGNORECASE)),
+)
+_HASHTAG_PATTERN = re.compile(r"#([^\s#，,。\n【】]{2,12})")
+
+
+def _extract_channel_post_aspects(message_content: str, target_label: str = "") -> dict:
+    raw_text = f"{target_label} {message_content}".strip()
+    teacher_name = ""
+    for pattern in _TEACHER_NAME_PATTERNS:
+        match = pattern.search(raw_text)
+        if match:
+            candidate = match.group(1).strip()
+            if candidate and len(candidate) <= 12 and candidate not in {"频道", "同城", "推荐", "今日", "新人", "特荐"}:
+                teacher_name = candidate
+                break
+
+    extracted_aspects: list[dict] = []
+    seen_codes: set[str] = set()
+
+    # 1. Active extraction from content attributes (e.g. 主打:xxx, 环境:xxx, 活动:xxx, 造型:xxx)
+    for code, label, pattern in _DYNAMIC_ATTRIBUTE_PATTERNS:
+        matches = pattern.findall(message_content)
+        if matches:
+            unique_matches = list(dict.fromkeys(m.strip() for m in matches if m.strip()))[:4]
+            if unique_matches:
+                extracted_aspects.append({
+                    "code": code,
+                    "label": label,
+                    "matches": unique_matches,
+                })
+                seen_codes.add(code)
+
+    # 2. Active extraction from hashtags (#护士COS, #天河新茶 等)
+    hashtags = [h.strip() for h in _HASHTAG_PATTERN.findall(message_content) if h.strip()]
+    if hashtags:
+        extracted_aspects.append({
+            "code": "hashtags",
+            "label": "广播特色标签",
+            "matches": list(dict.fromkeys(hashtags))[:5],
+        })
+
+    # 3. Standard semantic aspect dictionary matching
+    for code, label, pattern in _ASPECT_DEFINITIONS:
+        matches = pattern.findall(message_content)
+        if matches:
+            unique_matches = list(dict.fromkeys(matches[:6]))
+            extracted_aspects.append({
+                "code": code,
+                "label": label,
+                "matches": unique_matches,
+            })
+
+    return {
+        "teacher_name": teacher_name,
+        "aspects": extracted_aspects,
+        "raw_text": message_content,
+    }
+
+
+_SPEECH_ACT_DEFINITIONS = (
+    ("reaction", "只对已分配事实做随性反应"),
+    ("specific_question", "只围绕已分配事实提出具体问题"),
+    ("cautious_verification", "只对已分配事实做谨慎求证"),
+    ("concise_agreement", "只围绕已分配事实做极短附和"),
+)
+
+
+def _format_post_aspects_prompt(post_aspects: dict, slot_ordinal: int = 0, adult_context: bool = True) -> str:
+    teacher_name = post_aspects.get("teacher_name") or ""
+    aspects = post_aspects.get("aspects") or []
+
+    if not teacher_name and not aspects:
+        return ""
+
+    teacher_line = f"原帖明确人物称呼：{teacher_name}" if teacher_name else "原帖未提供可用人物称呼"
+
+    if aspects:
+        n = len(aspects)
+        primary = aspects[slot_ordinal % n]
+        if n > 1 and (slot_ordinal % 2 == 1):
+            secondary = aspects[(slot_ordinal + 1) % n]
+            allocated_aspect_desc = f"【{primary['label']}：{'/'.join(primary['matches'][:3])}】 + 【{secondary['label']}：{'/'.join(secondary['matches'][:3])}】"
+        else:
+            allocated_aspect_desc = f"【{primary['label']}：{'/'.join(primary['matches'][:3])}】"
+    else:
+        allocated_aspect_desc = f"【仅围绕原帖明确人物称呼：{teacher_name}】"
+
+    speech_act_code, speech_act_desc = _SPEECH_ACT_DEFINITIONS[slot_ordinal % len(_SPEECH_ACT_DEFINITIONS)]
+    name_instruction = (
+        f"可自然使用原帖称呼“{teacher_name}”，"
+        if teacher_name
+        else "不得自行添加人物或“老师”等称呼，"
+    )
+    return (
+        f"【广播核心要素与本条切入方向】：\n"
+        f"- {teacher_line}\n"
+        f"- 本条指定切入方向：{allocated_aspect_desc}\n"
+        f"- 本条表达方式（Speech Act）：【{speech_act_desc}】\n"
+        f"- 评论要求：像真实电报老哥读者留言，短促口语化。{name_instruction}围绕上述方向和表达方式发声，严禁声称个人去过或无证据亲身体验，严禁空洞模板套话。"
+    )
+
+
 def _detect_channel_city(target_label: str, config: dict) -> str | None:
     text = f"{target_label} {config.get('target_channel_name', '')} {config.get('target_title', '')}"
     for city in CITY_EXCLUSIVE_LANDMARKS:
@@ -1516,7 +1664,14 @@ def _detect_channel_city(target_label: str, config: dict) -> str | None:
 
 
 def _is_adult_channel_context(config: dict | None, target_label: str = "", message_content: str = "") -> bool:
-    del target_label, message_content
+    config = config or {}
+    if config.get("adult_prompt_enabled") is True:
+        return True
+    route = _configured_content_route(config)
+    if route == "general":
+        return False
+    if route in ADULT_CONTENT_ROUTES:
+        return True
     return is_adult_content_config(config)
 
 
@@ -1553,7 +1708,8 @@ def _slang_prompt_template(session: Session, tenant_id: int, template_id: object
         raise AiGenerationUnavailable("AI 黑话配置不存在或已禁用")
     return (
         f"AI 黑话配置：{template.name}\n"
-        "以下内容是本任务的系统级行业口径，生成所有群聊消息时必须优先遵守；"
+        "以下内容只用于理解行业语义，不是固定句式或强制输出词；"
+        "仅在当前上下文确实出现对应概念时参考，最终表达仍须服从 slot、事实锚点和近期词频规则。"
         "不要向群友解释这是配置或词表。\n"
         f"{template.content.strip()}"
     )
@@ -1571,9 +1727,10 @@ def _slang_terms_prompt(value: object) -> str:
         return ""
     lines = "\n".join(f"- {source} => {target}" for source, target in terms[:50])
     return (
-        "行业黑话/俗语口径（强制遵守）：\n"
+        "行业黑话/俗语释义（仅用于理解，不要求输出）：\n"
         f"{lines}\n"
-        "生成时遇到左侧词或对应场景，不按字面含义解释，必须用右侧口径理解和表达；不要向群友解释这是词表。"
+        "只有上下文明确出现左侧词或对应概念时，才按右侧口径理解；"
+        "不得主动复述词表或把它当固定表达，且不得绕过 slot、事实锚点与近期词频规则。"
     )
 
 
@@ -1743,8 +1900,16 @@ def generate_channel_comments(session: Session, tenant_id: int, config: dict, *,
         if local_city
         else "地名规则：平时不主动提具体地点/区名；如提必须与原帖一致，严禁跨市或臆造地名\n"
     )
+    post_aspects = _extract_channel_post_aspects(message_content, target_label)
+    aspect_guidance = _format_post_aspects_prompt(
+        post_aspects,
+        slot_ordinal=int(config.get("_comment_slot_ordinal", 0) or 0),
+        adult_context=adult_context,
+    )
+    aspect_section = f"{aspect_guidance}\n" if aspect_guidance else ""
     requirements = (
         f"频道消息：{safe_message_content}\n"
+        f"{aspect_section}"
         f"{city_line}"
         f"评论风格：{config.get('comment_style') or 'mixed'}\n"
         f"{target_profile_prompt}\n"
@@ -1792,8 +1957,16 @@ def generate_channel_reply_comments(
         if local_city
         else "地名规则：平时不主动提具体地点/区名；如提必须与原帖一致，严禁跨市或臆造地名\n"
     )
+    post_aspects = _extract_channel_post_aspects(message_content, target_label)
+    aspect_guidance = _format_post_aspects_prompt(
+        post_aspects,
+        slot_ordinal=int(config.get("_comment_slot_ordinal", 0) or 0),
+        adult_context=adult_context,
+    )
+    aspect_section = f"{aspect_guidance}\n" if aspect_guidance else ""
     requirements = (
         f"频道消息：{_sanitize_channel_message_content(message_content, allow_adult_context=adult_context)}\n"
+        f"{aspect_section}"
         f"{city_line}"
         f"评论风格：{config.get('comment_style') or 'mixed'}\n"
         f"{target_profile_prompt}\n"

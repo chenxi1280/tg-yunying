@@ -522,8 +522,8 @@ Provider response 解析后抽取的 canonical UTF-8 `message_text` 字节及 ha
 
 - `ai_content_route_v2_enabled=true` 必须同时满足 `ai_two_stage_enabled=true`；保存事务在任何 policy/binding 写入前拒绝半配置。
 - active policy、task binding、allowed routes、全部 purpose route snapshots、MessageBrief v2、voice contract v3 与独立 reviewer canonical identity 必须在同一 task revision 冻结。
-- V2 runtime 必须把 tenant legacy static fallback 视为 false；不得进入 due-catch-up check-in pipeline，不得产生精确“签到”、签到变体、Stage 1 正文、emoji fallback 或其他静态补量。
-- reviewer 不可用、429、route unavailable、fail 或 uncertain 均保持同一 GenerationJob/Action 为 `quality_wait`，达到 latest-safe 后写 typed shortfall；绝不转 ready Action。
+- V2 runtime 必须把 tenant legacy static fallback 视为 false；AI 活群不得进入 due-catch-up check-in pipeline，不得产生精确“签到”、签到变体、Stage 1 正文、emoji fallback 或其他静态补量。频道评论是唯一显式例外：沿用评论专项/全任务合同保留原 ordinal/direct-reply、冻结 fallback hash 和原因后，允许 `👍 / 🙂 / 👏` 单表情 `post_comment` 兜底；启用 grounding v1 时，该事实只确认 quantity，不计 grounding/老师/亮点质量。
+- reviewer 不可用、429、route unavailable、fail 或 uncertain 均保持同一 GenerationJob/Action 为 `quality_wait`。AI 活群达到 latest-safe 后写 typed shortfall且绝不转 ready Action；频道评论达到公共预算/latest-safe 后允许按评论专项把同一 Action 转为单表情 `fallback_ready`，不得标记 quality accepted。
 - generator 与 reviewer 的全部 canonical provider/model identity 集合必须不相交；只看首候选不同不够。
 - 只允许显式选中的一个 Task revision 作为 canary；实现和发布不得自动批改或同时打开现有 7 个生产任务。
 
@@ -534,9 +534,9 @@ Provider response 解析后抽取的 canonical UTF-8 `message_text` 字节及 ha
 | activation | `route_v2=true/two_stage=false` 保存失败且零 binding；完整配置继续冻结 policy/binding |
 | runtime | V2/two-stage 下 tenant static flag 不进入普通 fallback或 due-catch-up pipeline |
 | MessageBrief/voice | 每个 job 有 v2 brief、context/policy/prompt/example 与 voice snapshot |
-| reviewer | canonical identity 独立；不可用/429/fail/uncertain -> quality_wait，无 ready Action |
+| reviewer | canonical identity 独立；不可用/429/fail/uncertain -> quality_wait；AI 活群无 ready Action，频道评论预算/latest-safe 后仅可同槽 `fallback_ready` |
 | deterministic gates | 精确/近义/结构重复、相同开头/speech act/length collapse、签到/emoji/Stage 1 均拒绝 |
-| 兼容 | flag-off legacy 行为不在本提交中迁移；频道评论按 Phase 2 独立验收 |
+| 兼容 | flag-off legacy 行为不在本提交中迁移；频道评论按公共评估合同 Phase D 与 `ai-channel-comment-broadcast-and-teacher-relevance-prd.md` 独立验收 |
 
 Release Gate 仍执行不少于 120 条分层离线评测；单任务生产 canary 至少连续 3 天、100 条 typed remote fact、30 条盲审、3 个上下文簇与 10 个 voice 账号。每条发送事实必须可追到 task/config revision、ledger/slot、GenerationJob、policy/brief/voice/provider/reviewer snapshot、Action、Attempt/Gateway、typed remote ID 与受控正文 hash。切换 provider、route readback、发送数量和五类任务履约均不能替代质量验收。
 

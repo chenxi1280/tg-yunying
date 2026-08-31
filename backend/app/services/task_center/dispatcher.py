@@ -783,10 +783,18 @@ def _sync_comment_fulfillment_state(
         attempt = _latest_execution_attempt(session, action.id)
         remote_id = str(attempt.remote_message_id or "") if attempt else ""
         if attempt and attempt.status == "success" and remote_id:
+            if _requires_comment_remote_fact(action) and not _comment_remote_fact_matches(
+                attempt, payload, remote_id,
+            ):
+                obligation.status = "unknown"
+                return
             obligation.status = "confirmed"
             obligation.telegram_discussion_peer_id = str(payload.get("channel_id") or "")
             obligation.remote_comment_id = remote_id
             obligation.remote_confirmed_at = attempt.after_call_at or _now()
+            from .channel_comment_capacity import settle_comment_capacity
+
+            settle_comment_capacity(session, obligation.id, confirmed=True)
             return
         obligation.status = "unknown"
         return
@@ -794,6 +802,9 @@ def _sync_comment_fulfillment_state(
         obligation.status = "unknown"
         return
     if action.status in {"cancelled", "failed", "skipped", "retryable_failed"}:
+        from .channel_comment_capacity import settle_comment_capacity
+
+        settle_comment_capacity(session, obligation.id, confirmed=False)
         obligation.status = "replan_required"
         obligation.current_action_id = None
         task = session.get(Task, action.task_id) if action.task_id else None
@@ -801,6 +812,88 @@ def _sync_comment_fulfillment_state(
             from .executors.channel_comment_schedule import wake_comment_replan
 
             wake_comment_replan(task, now_value=_now())
+
+
+def _requires_comment_remote_fact(action: Action) -> bool:
+    session = object_session(action)
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    contract_id = str(payload.get("content_mix_contract_id") or "")
+    if session is not None and contract_id:
+        from app.models import ChannelCommentFallbackPoolSnapshot
+
+        frozen_contract = session.scalar(
+            select(ChannelCommentFallbackPoolSnapshot.id).where(
+                ChannelCommentFallbackPoolSnapshot.content_mix_contract_id
+                == contract_id
+            )
+        )
+        if frozen_contract:
+            return True
+    task = session.get(Task, action.task_id) if session and action.task_id else None
+    return bool(
+        task
+        and (task.type_config or {}).get("channel_comment_grounding_v1_enabled")
+    )
+
+
+def _comment_remote_fact_matches(
+    attempt: ExecutionAttempt,
+    payload: dict,
+    remote_id: str,
+) -> bool:
+    fact = dict((attempt.result_snapshot or {}).get("channel_comment_remote_fact") or {})
+    expected_reply = int(payload.get("reply_to_message_id") or 0)
+    if not _comment_fact_common_matches(fact, attempt, remote_id, expected_reply):
+        return False
+    source = str(payload.get("content_source") or "")
+    if source == "comment_unicode_emoji_fallback":
+        emoji = str(payload.get("comment_text") or "")
+        return (
+            fact.get("content_kind") == "text"
+            and fact.get("unicode_emoji") == emoji
+            and fact.get("unicode_emoji_hash") == _comment_text_hash(emoji)
+            and fact.get("outbound_content_hash") == _comment_text_hash(emoji)
+        )
+    if source == "comment_image_meme_fallback":
+        selection = dict(payload.get("comment_fallback_selection") or {})
+        return (
+            fact.get("content_kind") == "image_meme"
+            and fact.get("remote_media_kind") == "image_meme"
+            and all(
+                fact.get(key) == selection.get(key)
+                for key in (
+                    "material_id", "asset_version_id", "asset_fingerprint",
+                    "tg_ref_version_id",
+                )
+            )
+            and fact.get("outbound_media_fingerprint")
+            == _comment_media_fingerprint(payload)
+        )
+    content = str(payload.get("comment_text") or "")
+    return (
+        fact.get("content_kind") == "text"
+        and fact.get("outbound_content_hash") == _comment_text_hash(content)
+    )
+
+
+def _comment_fact_common_matches(
+    fact: dict,
+    attempt: ExecutionAttempt,
+    remote_id: str,
+    expected_reply: int,
+) -> bool:
+    return bool(
+        fact.get("fact_type") == "channel_comment"
+        and fact.get("action_id") == attempt.action_id
+        and fact.get("execution_attempt_id") == attempt.id
+        and str(fact.get("remote_message_id") or "") == remote_id
+        and fact.get("relation_kind")
+        == ("reply" if expected_reply else "direct")
+        and (
+            not expected_reply
+            or int(fact.get("reply_to_message_id") or 0) == expected_reply
+        )
+    )
 
 
 def _sync_channel_fulfillment_state(
@@ -3385,6 +3478,77 @@ def _dispatch_target_send_message(
     return True
 
 
+def _comment_typed_remote_fact(
+    action: Action,
+    attempt: ExecutionAttempt,
+    payload: PostCommentPayload,
+    result,
+) -> dict:
+    if not result.ok or not result.remote_message_id:
+        return {}
+    remote_fact = dict(getattr(result, "remote_fact", None) or {})
+    if not remote_fact:
+        return {}
+    remote_fact.update(_comment_outbound_fact(action, attempt, payload))
+    remote_fact.update({
+        "remote_message_id": str(result.remote_message_id),
+    })
+    return {"channel_comment_remote_fact": remote_fact}
+
+
+def _comment_outbound_fact(
+    action: Action,
+    attempt: ExecutionAttempt,
+    payload: PostCommentPayload,
+) -> dict:
+    selection = dict(payload.comment_fallback_selection or {})
+    unicode_emoji = payload.comment_text if payload.comment_fallback_kind == "unicode_emoji" else None
+    media_fingerprint = _comment_media_fingerprint(payload)
+    return {
+        "action_id": action.id,
+        "execution_attempt_id": attempt.id,
+        "content_source": payload.content_source,
+        "fallback_kind": selection.get("fallback_kind"),
+        "fallback_reason": payload.fallback_reason,
+        "selection_id": selection.get("selection_id"),
+        "unicode_emoji": unicode_emoji,
+        "unicode_emoji_hash": _comment_text_hash(unicode_emoji) if unicode_emoji else None,
+        "outbound_content_hash": _comment_text_hash(payload.comment_text) if payload.comment_text else None,
+        "remote_media_kind": "image_meme" if media_fingerprint else None,
+        "outbound_media_fingerprint": media_fingerprint or None,
+        **{
+            key: selection.get(key)
+            for key in (
+                "material_id", "asset_version_id", "asset_fingerprint",
+                "tg_ref_version_id", "asset_pool_hash", "selection_attempt",
+            )
+        },
+    }
+
+
+def _comment_text_hash(content: str) -> str:
+    return hashlib.sha256(content.encode()).hexdigest()
+
+
+def _comment_media_fingerprint(payload: PostCommentPayload | dict) -> str:
+    data = payload if isinstance(payload, dict) else payload.model_dump(mode="json")
+    segment = dict(data.get("comment_media_segment") or {})
+    if not segment:
+        return ""
+    selection = dict(data.get("comment_fallback_selection") or {})
+    identity = {
+        key: selection.get(key) or segment.get(key)
+        for key in (
+            "material_id", "asset_version_id", "asset_fingerprint",
+            "tg_ref_version_id",
+        )
+    }
+    identity["source"] = segment.get("source")
+    return hashlib.sha256(
+        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
 def _group_send_preconditions_pass(
     session: Session,
     action: Action,
@@ -3546,6 +3710,24 @@ def _send_group_message_via_gateway(
     context: GroupSendGatewayContext,
 ) -> bool:
     from .group_mutation_authority import ensure_platform_writer_admission
+    from .ai_group_content_allocation import validate_content_intent_for_gateway
+
+    try:
+        validate_content_intent_for_gateway(
+            session,
+            context.payload,
+            action=action,
+            remote_boundary=True,
+        )
+    except ValueError as exc:
+        _fail(
+            action,
+            str(exc),
+            str(exc),
+            auto_check="拦截",
+            validation_stage="content_allocation_contract",
+        )
+        return True
 
     peer_type = (
         "channel" if context.group.group_type in {"supergroup", "channel"} else "chat"
@@ -6459,17 +6641,93 @@ def _dispatch_comment(
     generation_dependencies: CommentGenerationDependencies,
 ) -> bool:
     account = context.account
+    account_id = int(account.id)
+    session_ciphertext = str(account.session_ciphertext)
+    credentials = context.credentials
+    prepared = _prepare_comment_send(
+        session, action, context,
+        generation_dependencies=generation_dependencies,
+    )
+    if prepared is None:
+        return True
+    payload, attempt = prepared
+    result = _send_channel_comment(
+        account_id=account_id,
+        channel_peer=payload.channel_id,
+        message_id=payload.message_id,
+        content=payload.comment_text,
+        media_segment=payload.comment_media_segment,
+        session_ciphertext=session_ciphertext,
+        credentials=credentials,
+        reply_to_message_id=payload.reply_to_message_id,
+    )
+    _lock_post_gateway_dispatch_prefix(session, action)
+    typed_remote_fact = _comment_typed_remote_fact(action, attempt, payload, result)
+    _apply_send_result(
+        action, account, result.ok, result.remote_message_id or "",
+        result.failure_type or "", result.detail or "", attempt=attempt,
+        typed_remote_fact=typed_remote_fact,
+        remote_mutation_started=getattr(result, "remote_mutation_started", None),
+    )
+    return True
+
+
+def _prepare_comment_send(
+    session: Session,
+    action: Action,
+    context: CommentDispatchContext,
+    *,
+    generation_dependencies: CommentGenerationDependencies,
+) -> tuple[PostCommentPayload, ExecutionAttempt] | None:
+    account = context.account
     payload = context.payload
     if _comment_total_limit_reached(session, action):
         _skip(action, "comment_task_total_reached", "频道评论任务总上限已达到，跳过旧计划")
-        return True
+        return None
     if _comment_success_limit_reached(session, action, payload):
         _skip(action, "comment_target_reached", "频道消息评论已达到当前上限，跳过旧计划")
-        return True
+        return None
     if not _ensure_channel_action_membership(session, action, account, payload.channel_target_id):
-        return True
+        return None
     if not _channel_comment_speaker_rotation_gate_pass(session, action, account_id=int(account.id), payload=payload):
-        return True
+        return None
+    payload = _ready_comment_payload(
+        session, action, payload,
+        generation_dependencies=generation_dependencies,
+    )
+    if payload is None:
+        return None
+    content = payload.comment_text
+    policy_group = _comment_content_policy_group(session, action, payload)
+    if not policy_group:
+        return None
+    if content:
+        filtered = filter_outbound_content(
+            session, tenant_id=action.tenant_id,
+            group=policy_group, content=content,
+        )
+        if not filtered.ok:
+            _fail(action, FailureType.CONTENT_REJECTED.value, filtered.reason, auto_check="拦截", validation_stage="content_policy")
+            return None
+    if not _platform_mutation_admitted(
+        session, action,
+        target_peer_type="channel",
+        target_peer_id=str(payload.channel_id),
+    ):
+        return None
+    attempt = _reserve_channel_action_attempt(session, action, account, payload)
+    if attempt is None:
+        return None
+    return payload, attempt
+
+
+def _ready_comment_payload(
+    session: Session,
+    action: Action,
+    payload: PostCommentPayload,
+    *,
+    generation_dependencies: CommentGenerationDependencies,
+) -> PostCommentPayload | None:
     try:
         payload = ensure_post_comment_content(
             session,
@@ -6479,47 +6737,50 @@ def _dispatch_comment(
         )
     except GenerationAttemptStale:
         _release_runtime_resources(action)
-        return True
+        return None
     except AiGenerationUnavailable:
-        return True
-    if payload.ai_generation_status != "ready" or not payload.comment_text.strip():
-        return True
-    account_id = account.id
-    session_ciphertext = account.session_ciphertext
-    channel_peer = payload.channel_id
-    message_id = payload.message_id
-    content = payload.comment_text
-    policy_group = _comment_content_policy_group(session, action, payload)
-    if not policy_group:
-        return True
-    filtered = filter_outbound_content(session, tenant_id=action.tenant_id, group=policy_group, content=content)
-    if not filtered.ok:
-        _fail(action, FailureType.CONTENT_REJECTED.value, filtered.reason, auto_check="拦截", validation_stage="content_policy")
-        return True
-    if not _platform_mutation_admitted(
-        session, action,
-        target_peer_type="channel",
-        target_peer_id=str(channel_peer),
+        return None
+    if payload.ai_generation_status != "ready" or not (
+        payload.comment_text.strip() or payload.comment_media_segment
     ):
-        return True
-    attempt = _reserve_channel_action_attempt(session, action, account, payload)
-    if attempt is None:
-        return True
-    result = gateway.reply_channel_message(account_id, channel_peer, message_id, content, session_ciphertext, context.credentials, reply_to_message_id=payload.reply_to_message_id)
-    _lock_post_gateway_dispatch_prefix(session, action)
-    _apply_send_result(
-        action,
-        account,
-        result.ok,
-        result.remote_message_id or "",
-        result.failure_type or "",
-        result.detail or "",
-        attempt=attempt,
-        remote_mutation_started=getattr(
-            result, "remote_mutation_started", None,
-        ),
+        return None
+    from .channel_comment_grounding_guard import comment_grounding_send_blocker
+
+    blocker = comment_grounding_send_blocker(session, action, payload)
+    if blocker:
+        _fail(
+            action,
+            blocker,
+            "频道来源消息或评论依据已变化，旧 Action 禁止发送",
+            auto_check="拦截",
+            validation_stage="grounding_identity",
+        )
+        return None
+    return payload
+
+
+def _send_channel_comment(
+    *,
+    account_id: int,
+    channel_peer: str,
+    message_id: int,
+    content: str,
+    media_segment: dict,
+    session_ciphertext: str,
+    credentials,
+    reply_to_message_id: int | None,
+):
+    if media_segment:
+        return gateway.reply_channel_media(
+            account_id, channel_peer, message_id, media_segment,
+            session_ciphertext, credentials,
+            reply_to_message_id=reply_to_message_id,
+        )
+    return gateway.reply_channel_message(
+        account_id, channel_peer, message_id, content,
+        session_ciphertext, credentials,
+        reply_to_message_id=reply_to_message_id,
     )
-    return True
 
 
 def _comment_content_policy_group(session: Session, action: Action, payload: PostCommentPayload) -> TgGroup | None:
@@ -6910,50 +7171,23 @@ def _classify_membership_failure(failure_type: str, detail: str) -> str:
     return failure_type
 
 
-def _apply_send_result(action: Action, account: TgAccount, ok: bool, remote_id: str = "", failure_type: str = "", detail: str = "", *, attempt: ExecutionAttempt | None = None, remote_fact_id: str = "", remote_mutation_started: bool | None = None) -> None:
+def _apply_send_result(action: Action, account: TgAccount, ok: bool, remote_id: str = "", failure_type: str = "", detail: str = "", *, attempt: ExecutionAttempt | None = None, remote_fact_id: str = "", typed_remote_fact: dict | None = None, remote_mutation_started: bool | None = None) -> None:
     if ok:
-        action.status = "success"
-        result = {
-            key: value
-            for key, value in (action.result or {}).items()
-            if key not in SUCCESS_RESULT_FAILURE_KEYS
-        }
-        action.result = {**result, "success": True, "telegram_msg_id": remote_id, "auto_check": "通过", "validation_stage": "sent"}
-        _clear_action_lease(action)
-        account.last_active_at = _now()
-        _release_runtime_resources(action)
+        _apply_success_send_result(action, account, remote_id)
     else:
-        _fail(action, failure_type or FailureType.UNKNOWN.value, detail or "执行失败", auto_check="失败", validation_stage="telegram_api")
-        if failure_type == FailureType.ACCOUNT_LIMITED.value:
-            account.status = AccountStatus.LIMITED.value
-            account.health_score = min(account.health_score, 55)
-        if _is_account_frozen_failure(failure_type, detail):
-            _mark_account_frozen(account)
-        elif _is_account_proxy_failure(failure_type, detail):
-            _recover_account_proxy_after_failure(action, account, detail or failure_type)
-        elif _is_account_session_failure(failure_type, detail):
-            _recover_account_session_after_failure(action, account, detail or failure_type)
-        if _is_target_send_permission_failure(failure_type):
-            if not _defer_comment_membership_from_gateway_failure(action, account, detail or failure_type):
-                _mark_group_account_cannot_send(action, account, detail or failure_type)
-                _mark_channel_comment_account_cannot_send(action, account, detail or failure_type)
-                _maybe_trigger_send_permission_rescue(action, account, detail or failure_type)
-        if failure_type in _COMMENT_THREAD_UNAVAILABLE_FAILURES:
-            _close_unavailable_comment_thread(action, failure_type, detail or failure_type)
-        if failure_type == FailureType.REACTION_UNAVAILABLE.value:
-            _close_unavailable_reaction(action, detail or failure_type)
-        if action.status == "failed" and _abandon_unusable_fact_first_account(
-            action, account, failure_type, detail
-        ):
-            pass
-        elif action.status == "failed":
-            _apply_default_failure_policy(action, failure_type or FailureType.UNKNOWN.value)
+        _apply_failed_send_result(action, account, failure_type, detail)
     action.executed_at = None if action.status == "pending" else _now()
     if remote_fact_id:
         action.result = {
             **dict(action.result or {}),
             "remote_fact_id": remote_fact_id,
         }
+    if typed_remote_fact:
+        action.result = {**dict(action.result or {}), **typed_remote_fact}
+        if attempt is not None:
+            attempt.result_snapshot = {
+                **dict(attempt.result_snapshot or {}), **typed_remote_fact,
+            }
     _update_reply_result_stats(action, ok, failure_type or "")
     _finish_execution_attempt(
         attempt,
@@ -6962,6 +7196,7 @@ def _apply_send_result(action: Action, account: TgAccount, ok: bool, remote_id: 
         failure_type=failure_type or "",
         detail=detail or "",
         remote_fact_id=remote_fact_id,
+        typed_remote_fact=typed_remote_fact,
         remote_mutation_started=remote_mutation_started,
     )
     if not ok:
@@ -6972,6 +7207,56 @@ def _apply_send_result(action: Action, account: TgAccount, ok: bool, remote_id: 
             session = object_session(action)
             if session is not None:
                 _finalize_speaker_after_send(session, action, outcome="success", remote_id=remote_id)
+
+
+def _apply_success_send_result(
+    action: Action,
+    account: TgAccount,
+    remote_id: str,
+) -> None:
+    action.status = "success"
+    result = {
+        key: value
+        for key, value in (action.result or {}).items()
+        if key not in SUCCESS_RESULT_FAILURE_KEYS
+    }
+    action.result = {**result, "success": True, "telegram_msg_id": remote_id, "auto_check": "通过", "validation_stage": "sent"}
+    _clear_action_lease(action)
+    account.last_active_at = _now()
+    _release_runtime_resources(action)
+
+
+def _apply_failed_send_result(
+    action: Action,
+    account: TgAccount,
+    failure_type: str,
+    detail: str,
+) -> None:
+    failure = failure_type or FailureType.UNKNOWN.value
+    failure_detail = detail or "执行失败"
+    _fail(action, failure, failure_detail, auto_check="失败", validation_stage="telegram_api")
+    if failure_type == FailureType.ACCOUNT_LIMITED.value:
+        account.status = AccountStatus.LIMITED.value
+        account.health_score = min(account.health_score, 55)
+    if _is_account_frozen_failure(failure_type, detail):
+        _mark_account_frozen(account)
+    elif _is_account_proxy_failure(failure_type, detail):
+        _recover_account_proxy_after_failure(action, account, failure_detail)
+    elif _is_account_session_failure(failure_type, detail):
+        _recover_account_session_after_failure(action, account, failure_detail)
+    if _is_target_send_permission_failure(failure_type):
+        if not _defer_comment_membership_from_gateway_failure(action, account, failure_detail):
+            _mark_group_account_cannot_send(action, account, failure_detail)
+            _mark_channel_comment_account_cannot_send(action, account, failure_detail)
+            _maybe_trigger_send_permission_rescue(action, account, failure_detail)
+    if failure_type in _COMMENT_THREAD_UNAVAILABLE_FAILURES:
+        _close_unavailable_comment_thread(action, failure_type, failure_detail)
+    if failure_type == FailureType.REACTION_UNAVAILABLE.value:
+        _close_unavailable_reaction(action, failure_detail)
+    if action.status == "failed" and not _abandon_unusable_fact_first_account(
+        action, account, failure_type, detail,
+    ):
+        _apply_default_failure_policy(action, failure)
 
 
 def _maybe_auto_mark_target_ref_invalid(
@@ -10275,6 +10560,9 @@ def _begin_execution_attempt(session: Session, action: Action, account: TgAccoun
 def _mark_gateway_call_started(session: Session, attempt: ExecutionAttempt, *, commit: bool = True) -> None:
     attempt.gateway_call_started_at = _now()
     attempt.status = "gateway_call_started"
+    from .channel_comment_capacity import mark_comment_capacity_gateway_hold
+
+    mark_comment_capacity_gateway_hold(session, attempt.action_id)
     if commit:
         session.commit()
     else:
@@ -10419,6 +10707,7 @@ def _finish_execution_attempt(
     *,
     remote_id: str = "",
     remote_fact_id: str = "",
+    typed_remote_fact: dict | None = None,
     failure_type: str = "",
     detail: str = "",
     remote_mutation_started: bool | None = None,
@@ -10447,6 +10736,7 @@ def _finish_execution_attempt(
             GatewayResultEvidence(
                 remote_message_id=remote_id,
                 remote_fact_id=remote_fact_id,
+                typed_remote_fact=typed_remote_fact,
                 failure_code=failure_type,
                 remote_mutation_started=remote_mutation_started,
             ),

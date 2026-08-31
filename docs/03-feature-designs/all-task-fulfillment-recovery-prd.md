@@ -434,7 +434,7 @@ calculated_at
 
 点赞和浏览义务把 `account_id` 作为远端副作用身份的一部分；payload 已带 `reaction_fulfillment_obligation_id|view_fulfillment_obligation_id` 的 Action 在 claim 时禁止改派账号。历史 Action 若已被错误改派，payload 当前绑定与原义务不一致时必须先原子释放原义务，再允许其用原账号重建；已成功但尚待远端事实 finalize、且 payload 仍绑定同一义务的 Action 继续占位，不能被当成终态失败重建。不得让一个 Action 同时占住两个账号义务。
 
-评论/点赞不是自然日任务时不得虚构 `task_day_ledger_id`；浏览与 click 的任务日身份则必须保留。Planner 在锁定对应业务账本后按 `planning_deficit_count` 原子取得有限义务：评论/点赞/浏览创建 Action，click 只冻结稳定 ordinal，当前 Claim Window commit 才在中央份额内创建 assignment/Action。浏览/点赞从批量候选快照到单个义务绑定之间，Dispatcher 可能并发写入 confirmed 远端事实或当前 Action；Planner 必须在创建 Action 前重新读取义务所有权，发现 `confirmed|unknown|有效 current_action_id` 时只跳过该账号—消息源并继续本轮其他义务，禁止先创建孤儿 Action，也禁止以 `fulfilled_obligation_cannot_be_rebound|fulfillment_obligation_already_bound` 回滚整条 Task。目标满足后终结 pre-Gateway excess。membership、`GroupBotAdmission.ready` 等可共享前置事实可以被多任务复检，但不能替代各任务自己的发送/click/admission 完成义务。
+评论/点赞不是自然日任务时不得虚构 `task_day_ledger_id`；浏览与 click 的任务日身份则必须保留。启用频道评论 v1.1 时，Daily Cap 另由专项 `TaskCommentCapacityCalendarRevision + UTC capacity period ledger` 承载，不等于 task-day ledger；时区切换前后周期必须首尾相接且不重叠，transition 按时长折算并受同 Task rolling 24h cap 二次约束。Planner 在锁定对应业务账本后按 `planning_deficit_count` 原子取得有限义务：评论/点赞/浏览创建 Action，click 只冻结稳定 ordinal，当前 Claim Window commit 才在中央份额内创建 assignment/Action。浏览/点赞从批量候选快照到单个义务绑定之间，Dispatcher 可能并发写入 confirmed 远端事实或当前 Action；Planner 必须在创建 Action 前重新读取义务所有权，发现 `confirmed|unknown|有效 current_action_id` 时只跳过该账号—消息源并继续本轮其他义务，禁止先创建孤儿 Action，也禁止以 `fulfilled_obligation_cannot_be_rebound|fulfillment_obligation_already_bound` 回滚整条 Task。目标满足后终结 pre-Gateway excess。membership、`GroupBotAdmission.ready` 等可共享前置事实可以被多任务复检，但不能替代各任务自己的发送/click/admission 完成义务。
 
 按时归属必须使用 `remote_confirmed_at`：优先 Telegram/协议返回的远端事件时间，其次是同一 ExecutionAttempt 在 Gateway 成功回执时原子记录的确认时间；普通 `Action.updated_at`、reconcile 执行时间或页面读取时间不得替代。无法证明事实发生在 deadline 内时进入 `confirmation_time_unproven`/unknown，不能猜测计入 `confirmed_count`。
 
@@ -557,7 +557,7 @@ Planner 以父 Task 为最小异常隔离单元：单个 Task 的代码异常或
 | 任务 | 受保护内容合同 | 禁止行为 |
 | --- | --- | --- |
 | AI 活群 | `reply_min_per_round`、direct/reply 槽位、每个 Action attempt 的 `reply_to_message_id` 快照、账号面具 `emoji_policy`、正常文本 emoji 习惯、`material_intent/allow_material`、既有图片/表情包/custom emoji 每轮比例、意图映射与素材冷却 | 删除门禁时把引用槽位改普通消息；原地改写某个 attempt 的引用对象；用签到吞掉图片/表情包槽位；重新默认比例 |
-| 频道评论 | `comment_mode`、`reply_min_per_message`、direct/reply 槽位、每个 Action attempt 的 `reply_to_message_id` 快照，以及任务/规则已启用的普通文本 emoji、图片、表情包或 custom emoji 占比 | 用单表情兜底把 reply 改 direct；原地改写某个 attempt 的引用对象；把兜底 Unicode 表情冒充正常文本 emoji 或图片/表情包配额 |
+| 频道评论 | `comment_mode`、`reply_min_per_message`、direct/reply 槽位、每个 Action attempt 的 `reply_to_message_id` 快照，以及任务/规则已启用的普通文本 emoji、图片、表情包或 custom emoji 占比 | 用 Unicode/图片表情包兜底把 reply 改 direct；原地改写某个 attempt 的引用对象；把兜底 Unicode 或 `image_meme` 冒充正常文本 emoji、普通图片或其他素材配额 |
 
 执行顺序固定：
 
@@ -623,13 +623,13 @@ ContentMixCycleSlot
 
 `settlement_outcome` 判定顺序固定：全部主发送槽均在 deadline 内 confirmed 且内容义务均 met 为 `met`；存在不可恢复 quantity/content/reply 缺口但结算发生在 deadline 前，或数量已按时完成但内容仍有明确缺口，为 `shortfall`；结算发生在 deadline 后且仍有任一主发送槽未取得 on-time confirmed 为 `missed`。late fact 保留但不能把 `missed` 改为 `met`。Cycle 的 outcome 只描述该 Cycle，任务日最终状态仍由所有主发送槽和所有 Cycle 汇总，不允许用单个 Cycle 的 `met` 完成整日。
 
-频道评论不新增另一套 Cycle：`comment_plan_revision` 就是消息级内容作用域生命周期。首次规划必须在一个短事务冻结该消息全部目标 ordinal、direct/reply 关系、reply 选择合同、`ContentMixContract` 和 `policy_min` 义务；补差额、技术切批、主/备用 AI、单表情兜底和重试只物化尚未完成的原 ordinal。reply 对象在 Gateway 前失效时，原 ordinal 保持 reply，只用递增 attempt 的新 Action 冻结新对象。运行中配置修改只让修改后新纳入的消息使用新 revision；同一频道消息既有 revision 不重置。
+频道评论不新增另一套 Cycle：`comment_plan_revision` 是消息级数量/关系生命周期。首次规划必须在一个短事务冻结该消息 PlanContract、全部目标 ordinal、direct/reply 关系、reply 选择合同、唯一 `ContentMixContract` 和 `policy_min` 义务；启用 `channel_comment_business_grounding_v1_1` 时，同事务还冻结首个 GroundingSnapshot、semantic capacity、全部首版 GroundingAssignment、Task 20 表情/图片权重 `CommentFallbackPolicySnapshot` binding 和消息级图片 `ChannelCommentFallbackPoolSnapshot`。技术切批、正常生成、表情兜底和重试只 JIT 物化尚未完成的原 ordinal，不得 append 数量 ordinal或重抽内容。Telegram 内容编辑时，专项 operation 只为未进 Gateway 原 ordinal append GroundingSnapshot/Assignment successor；已进 Gateway/unknown/confirmed 保持旧 revision，删除则终止 pre-Gateway。reply 对象在 Gateway 前失效时，原 ordinal 保持 reply，只用递增 attempt 的新 Action 冻结新对象。普通配置修改只影响之后发布的新消息。
 
-`quantity_status` 与 `content_mix_status` 分开：前者回答数量义务是否完成，后者回答既有引用/素材编排是否保持。完整修复的 E4 验收要求两者都为 `met`；不能靠拆状态降低产品验收标准。
+`quantity_status` 与 `content_mix_status` 分开：前者回答数量义务是否完成，后者回答既有引用/素材编排是否保持。启用频道评论 grounding v1.1 时再增加 `grounding_quality_status`，以首次冻结全部 ordinal 为原始分母；Unicode 或 `image_meme` 兜底可确认 quantity 但不确认 grounding。专项按可复现 semantic capacity 冻结 `planned_fallback_count`：计划内兜底可在 fallback-eligible plain/relation 槽结算，超额 emergency fallback 只完成 quantity 并留下 grounding shortfall。完整 E4 验收要求三维按专项组合为 met，不能把 emergency fallback 当质量成功。
 
-任务详情与生产验收至少分列 `planned/success/shortfall/overflow` 的 direct、reply、normal_text_emoji、image、sticker/custom emoji 数量，并单列 `check_in_fallback_count/comment_emoji_fallback_count`。确定性兜底不得进入正常文本 emoji 或图片/表情素材比例的成功分子，也不得缩小或重算原计划分母/目标数、重置上限或冷却；只有实际保留原引用关系或素材类型时，才同时确认相应内容槽位。
+任务详情与生产验收至少分列 `planned/success/shortfall/overflow` 的 direct、reply、normal_text_emoji、image、sticker/custom emoji 数量，并单列 `check_in_fallback_count/comment_unicode_emoji_fallback_count/comment_image_meme_fallback_count{planned,emergency}`。确定性兜底不得进入正常文本 emoji、普通图片或其他素材比例的成功分子，也不得缩小或重算原计划分母/目标数、重置上限或冷却；fallback-eligible plain 槽可由计划内兜底结算，专用素材义务必须在 Gateway 前 append-only 转移给合法未开始槽，否则形成 shortfall。
 
-归因规则固定：reply 兜底只有远端实际携带原 `reply_to_message_id` 才计 reply；`normal_text_emoji` 只统计 `content_source=normal` 的正常正文，`comment_emoji_fallback` 永远单列；图片/sticker/custom emoji 兜底只有原槽位已归属该素材类型且远端实际消息类型一致时才计该素材槽位。
+归因规则固定：reply 兜底只有远端实际携带原 `reply_to_message_id` 才计 reply；`normal_text_emoji` 只统计 `content_source=normal` 的正常正文；`comment_unicode_emoji_fallback|comment_image_meme_fallback` 永远单列 planned/emergency。图片表情包只可结算 fallback-eligible 或显式 image_meme 兜底槽，不能冒充普通 image/sticker/custom emoji；只有远端实际类型和冻结 asset fingerprint 一致才计。
 
 不新增任务级运营比例字段，但现有 RuleSet / 素材策略必须在业务作用域建立时解析为不可变 `ContentMixContract`；禁止继续依赖任意 JSON 在执行时临时解释。合同至少保存：
 
@@ -666,7 +666,7 @@ material_policy_rule_set_id / material_policy_rule_set_version
 material_intent / allow_material
 planned_material_kind = unresolved | none | image | sticker | custom_emoji
 planned_normal_text_emoji = unresolved | yes | no
-content_source = normal | check_in_fallback | comment_emoji_fallback
+content_source = normal | check_in_fallback | comment_emoji_fallback_legacy | comment_unicode_emoji_fallback | comment_image_meme_fallback
 ```
 
 `relation_kind` 在 Planner 拆槽时确定；素材策略快照随 Action 固化。`planned_material_kind` 与 `planned_normal_text_emoji` 初始可为 `unresolved`，只在既有内容/素材选择阶段或内容义务分配时解析为最终值，解析后对该 Action 不可变。读模型从合同、义务绑定、这些字段和远端实际 message type 派生 `content_mix`，不得通过正文包含某个 Unicode 表情反推成表情包/custom emoji 成功。
@@ -858,8 +858,8 @@ listener 处理可信群管提示时，禁止在已修改 `group_bot_admissions`
 3. `max_total_comments` 不再是运营可调的完成或规划上限；创建、编辑、启动和存量接管统一写 `1_000_000`。详情只把达到该值展示为 `task_gate_limit_reached` 异常门禁，不能单独触发完成或降低逐消息目标。
    `max_comments_per_account_per_hour` 同步固定为 `1_000_000`；账号选择与发送顺序由系统按账号全局硬安全容量排序，任务内低值不得延期或吞掉评论义务。
 4. `unknown_after_send` 只占防重复 hold；不得与 success 相加后触发 `completed`。
-5. 正常评论先由主 AI 最多生成并校验 3 轮；全部失败后切换到不同的备用 AI，再最多生成并校验 3 轮。各轮不可用后的事务收口与 AI 活群相同：显式回滚只读轮次事务后继续，不能以事务边界错误终结原评论义务。缺面具、已验证授权代理路线发生切换或主/备用六轮均无可用候选时，原 `post_comment` Action 使用一个审核白名单中的 Unicode 表情文本兜底，写 `comment_fallback_kind=emoji_text` 和原始原因。它不是 reaction/点赞，不改变原数量 ordinal 或 direct/reply 槽位；已有内容义务先按 §4.5 兼容矩阵共载或 Gateway 前 CAS 转派，纯文本表情不能消费正常文本 emoji、图片、表情包或 custom emoji 配额。
-   固定白名单为 `👍 / 🙂 / 👏`，按发送义务键稳定轮换且正文只能包含一个表情；该白名单不提供关闭开关。
+5. legacy 评论继续执行主 AI 最多 3 轮、备用 AI 最多 3 轮，并使用原 3 个 Unicode 单表情合同；启用 route-v2/two-stage 的评论（无论 grounding 是否开启）改为复用公共合同的 route/realizer/reviewer transport attempts 各≤2、每槽 Provider calls 总数≤6、初始总生成延迟≤90秒，并受单槽成本、任务日预算和 `latest_safe_send_at` 约束，不得同时叠加 legacy 3+3。启用 `channel_comment_business_grounding_v1_1` 后，缺面具、事实不足、质量/预算耗尽或可恢复 Provider 路线用尽时，原 `post_comment` Action 按专项冻结 policy 使用 20 个 Unicode 表情之一或 `image_meme` 图片表情包，写明 planned/emergency、content kind、selection identity 和原始原因。它不是 reaction/点赞，不改变原数量 ordinal 或 direct/reply 槽位；已有内容义务先按 §4.5 兼容矩阵共载或 Gateway 前 CAS 转派，两类 fallback 都不能消费普通正文/普通图片/sticker/custom emoji 配额。只有 grounding v1/v1.1 才把兜底保留在 grounding 原始分母并计算质量 shortfall。
+   v1.1 Unicode 白名单固定为 `👍 🙂 👏 🔥 ❤️ 😍 🤩 🎉 💯 🙌 👌 ✨ 😄 😊 🥳 👀 🤝 💪 🌟 💖`；图片只从新消息首次规划时冻结的 ready `image_meme` asset-version pool 使用消息级稳定洗牌袋选择。文字/图片权重必须显式合计 10000；同槽重试不换内容，Gateway-started/unknown 禁止重选，素材失效只按专项 append 下一 frozen-pool attempt 或显式转 Unicode。
 6. reply 评论必须保留 `relation_kind=reply`：当前 `reply_to_message_id` 在 Gateway 前失效时终结当前 Action，并在同一 reply 槽递增 attempt、选择新的合法引用对象；不得改 direct。只有显式单目标已终态失效，或普通 reply 到 deadline 仍无任何合法替代对象时，才写 `reply_target_unrecoverable`。表情兜底仍需讨论区可用、目标准入和真实远端评论 ID；无传输路线时写 `waiting_transport`，不得伪造成功。
 7. AI 质量失败、讨论区不可用和账号不可评论分别写 blocker；其他账号和消息继续。
 8. 存量 `lifetime_cap_reached` 不自动复活；审计后由运营显式选择迁移为 continuous 或新 finite batch。

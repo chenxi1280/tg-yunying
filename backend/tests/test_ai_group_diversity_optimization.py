@@ -11,17 +11,15 @@ pytestmark = pytest.mark.no_postgres
 
 
 def test_adult_system_prompt_contains_diversity_and_rich_vocabulary():
-    assert "核心口语与事实规则" in ADULT_SYSTEM_PROMPT
+    assert "核心口语与真实交流规则" in ADULT_SYSTEM_PROMPT
+    assert "句式多样性与去模板化" in ADULT_SYSTEM_PROMPT
     assert "事实锚点铁律" in ADULT_SYSTEM_PROMPT
     assert "严禁在没有群聊上下文证据时凭空捏造个人到店经历" in ADULT_SYSTEM_PROMPT
-    assert "禁止附和、求推荐或声称个人经历" in ADULT_SYSTEM_PROMPT
-    assert "词汇丰富度与句式多样性" in ADULT_SYSTEM_PROMPT
     assert "严格控制字数：每条 8 到 20 个汉字，短促干脆。" in ADULT_SYSTEM_PROMPT
     assert "素颜" in ADULT_SYSTEM_PROMPT
     assert "隔音" in ADULT_SYSTEM_PROMPT
     assert "停车" in ADULT_SYSTEM_PROMPT
-    assert "确实”、“卧槽真假”、“蹲一个”、“+1" not in ADULT_SYSTEM_PROMPT
-    assert "禁止附和、求推荐" in ADULT_SYSTEM_PROMPT
+    assert "严禁机械堆砌“水头”" in ADULT_SYSTEM_PROMPT
 
 
 def test_generic_warmup_uses_the_adult_no_context_contract():
@@ -33,8 +31,7 @@ def test_generic_warmup_uses_the_adult_no_context_contract():
     bundle = build_group_prompt(config, target_label="测试群", history="", count=1)
 
     assert bundle.context_source == "generic_warmup"
-    assert bundle.sanitized_context == ()
-    assert "只能提出不指向具体人物、资源、地点或服务的开放问题" in bundle.system_prompt
+    assert "严禁在没有群聊上下文证据时凭空捏造个人到店经历" in bundle.system_prompt
 
 
 def test_build_group_prompt_respects_planner_slots():

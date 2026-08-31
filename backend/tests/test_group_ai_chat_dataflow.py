@@ -1,3 +1,4 @@
+import ast
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,8 +26,85 @@ def test_group_ai_generated_slots_use_prd_act_type_vocabulary():
 
     act_types = [slot["act_type"] for slot in slots]
     assert act_types == ["short_react", "detail_follow", "question", "light_disagree", "topic_shift"]
+    assert [slot["stance"] for slot in slots] == [
+        "positive",
+        "neutral",
+        "neutral",
+        "reserved",
+        "neutral",
+    ]
     assert "light_question" not in act_types
     assert "side_comment" not in act_types
+
+
+def test_generic_warmup_slots_are_questions_before_intent_freeze():
+    accounts = [SimpleNamespace(id=account_id) for account_id in [11, 12, 13]]
+
+    slots = group_ai_chat._generation_slots_for_plan(
+        cycle_id="task-1:cycle:generic",
+        accounts=accounts,
+        turn_count=3,
+        reply_targets=[],
+        account_prompt_profiles={},
+        allow_account_repeat=False,
+        is_generic_warmup=True,
+    )
+
+    assert [slot["act_type"] for slot in slots] == ["question"] * 3
+    assert [slot["stance"] for slot in slots] == ["neutral"] * 3
+
+
+def test_source_capacity_drops_assignments_before_content_intent_freeze(monkeypatch):
+    assignments = [
+        SimpleNamespace(item_index=index, source_slot=SimpleNamespace(slot_key=key))
+        for index, key in enumerate(("dropped", "survives"))
+    ]
+    captured: dict[str, list] = {}
+    monkeypatch.setattr(group_ai_chat, "assign_ai_pacing_slots", lambda *_args, **_kwargs: assignments)
+    monkeypatch.setattr(
+        group_ai_chat,
+        "schedule_source_pacing_points",
+        lambda *_args, **_kwargs: {"dropped": object(), "survives": object()},
+    )
+    monkeypatch.setattr(
+        group_ai_chat,
+        "apply_source_capacity_plan",
+        lambda *_args, **_kwargs: ({"survives": object()}, []),
+    )
+
+    def _freeze(*_args, assignments, quality_items, **_kwargs):
+        captured["frozen"] = list(assignments)
+        return quality_items
+
+    def _materialize(_task, surviving, quality_items, _points, _capacity):
+        captured["materialized"] = list(surviving)
+        return quality_items, []
+
+    monkeypatch.setattr(group_ai_chat, "freeze_content_intents", _freeze)
+    monkeypatch.setattr(group_ai_chat, "_materialize_ai_pacing_schedule", _materialize)
+    task = SimpleNamespace(id="task-1", pacing_config={}, timezone="Asia/Shanghai")
+    facts = SimpleNamespace(
+        coverage=SimpleNamespace(
+            daily_group_target_id="daily-target",
+            effective_daily_target=2,
+            rows_by_account={},
+        ),
+        target=SimpleNamespace(id=31),
+        config={"topic_participation_rate": 0.30},
+        group=SimpleNamespace(id=21),
+        task_config_revision=1,
+    )
+
+    group_ai_chat._current_ai_pacing_schedule(
+        None,
+        task,
+        facts,
+        [{"slot": {}}, {"slot": {}}],
+        is_generic_warmup=False,
+    )
+
+    assert [item.source_slot.slot_key for item in captured["frozen"]] == ["survives"]
+    assert captured["materialized"] == captured["frozen"]
 
 
 def test_group_ai_clean_rejects_provider_refusal_meta_content():
@@ -94,6 +172,19 @@ def test_group_ai_expires_profileless_actions_before_deferred_planning():
     source = source_path.read_text()
 
     assert source.index("_expire_open_profileless_actions(") < source.index("planned_items = _deferred_ai_planned_items(")
+
+
+def test_generation_plan_loader_and_item_helper_end_with_explicit_returns():
+    source_path = Path(__file__).resolve().parents[1] / "app/services/task_center/executors/group_ai_chat.py"
+    tree = ast.parse(source_path.read_text())
+    functions = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+    }
+
+    assert isinstance(functions["_load_generation_plan"].body[-1], ast.Return)
+    assert isinstance(functions["_generation_quality_items"].body[-1], ast.Return)
 
 
 def test_group_ai_quality_filter_records_rejection_samples():

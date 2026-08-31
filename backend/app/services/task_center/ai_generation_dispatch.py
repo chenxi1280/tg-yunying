@@ -53,6 +53,7 @@ from .ai_quality_stats import (
     record_quality_event as _record_quality_event,
 )
 from .payloads import SendMessagePayload
+from .ai_group_vocabulary_frequency import vocabulary_frequency_baseline
 
 
 CONTEXT_HISTORY_MAX_CHARS = 1000
@@ -80,6 +81,7 @@ class GenerationRequest:
     cached_contents: list[str]
     cached_tokens: int
     duplicate_baseline_messages: list[str]
+    vocabulary_frequency_baseline: list[dict]
     quality_snapshots: list[dict]
     chat_mode: str
     context_message_ids: list[int]
@@ -152,7 +154,9 @@ def _bind_ready_candidate_to_gateway(
             session,
             job,
             candidate_hash=str(action.candidate_hash or ""),
-            task_config_revision=int(task.config_revision or 1),
+            task_config_revision=int(
+                payload.content_intent_config_revision or task.config_revision or 1
+            ),
         )
     except AiContentRuntimeConflict as exc:
         code = str(exc)
@@ -317,6 +321,9 @@ def _generation_request(
             session,
             batch,
             payload=payload,
+        ),
+        vocabulary_frequency_baseline=vocabulary_frequency_baseline(
+            session, action, payload
         ),
         quality_snapshots=[_quality_snapshot(item) for _row, item in batch],
         chat_mode=payload.chat_mode,

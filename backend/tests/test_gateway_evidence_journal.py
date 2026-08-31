@@ -129,6 +129,45 @@ def test_remote_case_consumes_journal_without_resending() -> None:
         assert action.status == "failed"
 
 
+def test_remote_case_restores_typed_fact_from_gateway_journal() -> None:
+    engine = _engine()
+    with Session(engine) as session:
+        action, attempt = _seed_started_attempt(session)
+        bind_gateway_request_identity(action, attempt)
+        typed_fact = {
+            "channel_comment_remote_fact": {
+                "fact_type": "channel_comment",
+                "action_id": action.id,
+                "execution_attempt_id": attempt.id,
+                "remote_message_id": "remote-comment-1",
+            },
+        }
+        record_gateway_result_evidence(
+            session, action, attempt,
+            GatewayResultEvidence(
+                remote_message_id="remote-comment-1",
+                typed_remote_fact=typed_fact,
+                remote_mutation_started=True,
+            ),
+        )
+        action.status = "unknown_after_send"
+        attempt.status = "result_unknown"
+        case = ensure_remote_reconcile_case(session, action, attempt)
+
+        evidence = evidence_from_gateway_journal(session, case.id)
+        apply_remote_reconcile_evidence(
+            session, case.id, evidence, actor="qa",
+        )
+
+        assert evidence.typed_remote_fact == typed_fact
+        assert action.result["channel_comment_remote_fact"] == typed_fact[
+            "channel_comment_remote_fact"
+        ]
+        assert attempt.result_snapshot["channel_comment_remote_fact"] == typed_fact[
+            "channel_comment_remote_fact"
+        ]
+
+
 def test_dispatcher_b0_identity_and_pre_b1_result_journal_are_persisted() -> None:
     engine = _engine()
     with Session(engine) as session:

@@ -29,6 +29,11 @@ from .comment_two_stage_generation import (
     generate_two_stage_comment,
 )
 from .two_stage_generation import QUALITY_WAIT, two_stage_enabled
+from .comment_fallback_selection import (
+    CommentFallbackUnavailable,
+    UNICODE_EMOJI_ALLOWLIST_V2,
+    select_comment_fallback,
+)
 
 
 COMMENT_GENERATION_ATTEMPTS_PER_MODEL = 3
@@ -76,6 +81,12 @@ class CommentGenerationRequest:
     cached_fallback_kind: str
     cached_fallback_reason: str
     cached_attempts: tuple[dict, ...]
+    cached_media_segment: dict | None = None
+    cached_selection_metadata: dict | None = None
+
+    @property
+    def has_cached_result(self) -> bool:
+        return bool(self.cached_content or self.cached_media_segment)
 
 
 @dataclass(frozen=True)
@@ -86,6 +97,8 @@ class GeneratedCommentResult:
     fallback_reason: str = ""
     attempts: tuple[dict, ...] = ()
     quality_audit: dict | None = None
+    media_segment: dict | None = None
+    selection_metadata: dict | None = None
 
 
 def generate_comment_result(
@@ -95,6 +108,20 @@ def generate_comment_result(
     *,
     action_loader: Callable[[Session, CommentGenerationRequest], Action],
 ) -> GeneratedCommentResult:
+    session.rollback()
+    if request.has_cached_result:
+        return _cached_result(request)
+    if (
+        request.payload.comment_fallback_intent_kind == "planned"
+        and not request.payload.grounding_assignment_id
+    ):
+        return _emoji_fallback_result(
+            session,
+            request,
+            total_tokens=0,
+            attempts=[{"stage": "planned_fallback", "outcome": "selected"}],
+            action_loader=action_loader,
+        )
     mask_reason = _comment_mask_fallback_reason(session, request)
     session.rollback()
     two_stage = two_stage_enabled(request.config)
@@ -112,8 +139,6 @@ def generate_comment_result(
             attempts=[_mask_fallback_attempt(mask_reason)],
             action_loader=action_loader,
         )
-    if request.cached_content:
-        return _cached_result(request)
     if session.in_transaction():
         raise RuntimeError("comment generation transaction boundary is open")
     if two_stage:
@@ -206,7 +231,21 @@ def _run_two_stage_comment(
         action_loader=action_loader,
         structural_failure_codes=STRUCTURAL_COMMENT_FAILURES,
     )
-    result = generate_two_stage_comment(session, request, hooks)
+    try:
+        result = generate_two_stage_comment(session, request, hooks)
+    except CommentGenerationBlocked as exc:
+        if (
+            exc.code != QUALITY_WAIT
+            or not request.config.get("channel_comment_grounding_v1_enabled")
+        ):
+            raise
+        return _emoji_fallback_result(
+            session,
+            request,
+            total_tokens=exc.tokens,
+            attempts=[{"stage": "two_stage", "outcome": "quality_exhausted", "reason": exc.detail}],
+            action_loader=action_loader,
+        )
     return GeneratedCommentResult(
         result.content, result.tokens,
         attempts=result.attempts, quality_audit=result.quality_audit,
@@ -248,6 +287,9 @@ def _call_generator(
     if stage.startswith("fallback_"):
         config["_ai_fallback_stage"] = stage
     payload = request.payload
+    config["_comment_slot_ordinal"] = max(
+        0, int(getattr(payload, "target_ordinal", 0) or 0) - 1,
+    )
     if payload.reply_to_message_id:
         return dependencies.reply_generator(
             session,
@@ -300,6 +342,15 @@ def _emoji_fallback_result(
     action_loader: Callable,
 ) -> GeneratedCommentResult:
     fallback_reason = _fallback_reason(attempts)
+    if request.config.get("channel_comment_grounding_v1_enabled"):
+        return _v2_fallback_result(
+            session,
+            request,
+            total_tokens=total_tokens,
+            attempts=attempts,
+            fallback_reason=fallback_reason,
+            action_loader=action_loader,
+        )
     for emoji in _ordered_fallback_emojis(request):
         decision = _evaluate_candidate(
             session,
@@ -325,6 +376,47 @@ def _emoji_fallback_result(
     )
 
 
+def _v2_fallback_result(
+    session: Session,
+    request: CommentGenerationRequest,
+    *,
+    total_tokens: int,
+    attempts: list[dict],
+    fallback_reason: str,
+    action_loader: Callable,
+) -> GeneratedCommentResult:
+    try:
+        selected = select_comment_fallback(
+            session,
+            action_id=request.action_id,
+            tenant_id=request.tenant_id,
+            task_id=request.task_id,
+            content_mix_contract_id=request.payload.content_mix_contract_id,
+            target_ordinal=int(request.payload.target_ordinal or 0),
+            fallback_reason=fallback_reason,
+            fallback_kind=request.payload.comment_fallback_intent_kind,
+        )
+    except CommentFallbackUnavailable as exc:
+        raise CommentGenerationBlocked(exc.code, str(exc)) from exc
+    if selected.content_kind == "image_meme":
+        return GeneratedCommentResult(
+            "", total_tokens, "image_meme", fallback_reason,
+            tuple(attempts), {"fallback_selection": selected.metadata},
+            selected.media_segment, selected.metadata,
+        )
+    decision = _evaluate_candidate(
+        session, request, selected.content, fallback=True,
+        action_loader=action_loader,
+    )
+    if not decision.allowed:
+        raise CommentGenerationBlocked(decision.code, decision.detail)
+    audit = {**(decision.audit or {}), "fallback_selection": selected.metadata}
+    return GeneratedCommentResult(
+        decision.content, total_tokens, "unicode_emoji", fallback_reason,
+        tuple(attempts), audit, None, selected.metadata,
+    )
+
+
 def _comment_generation_stages() -> tuple[str, ...]:
     return (
         *("primary_m3" for _ in range(COMMENT_GENERATION_ATTEMPTS_PER_MODEL)),
@@ -337,8 +429,16 @@ def _ordered_fallback_emojis(
 ) -> tuple[str, ...]:
     key = f"{request.task_id}:{request.payload.channel_message_id}:{request.payload.slot_id}"
     offset = int(hashlib.sha256(key.encode("utf-8")).hexdigest()[:8], 16)
-    index = offset % len(COMMENT_EMOJI_FALLBACKS)
-    return COMMENT_EMOJI_FALLBACKS[index:] + COMMENT_EMOJI_FALLBACKS[:index]
+    pool = (
+        UNICODE_EMOJI_ALLOWLIST_V2
+        if bool(
+            getattr(request, "config", {}).get("channel_comment_grounding_v1_enabled")
+            or getattr(request, "config", {}).get("unicode_emoji_allowlist_v2")
+        )
+        else COMMENT_EMOJI_FALLBACKS
+    )
+    index = offset % len(pool)
+    return pool[index:] + pool[:index]
 
 
 def _cached_result(request: CommentGenerationRequest) -> GeneratedCommentResult:
@@ -348,6 +448,8 @@ def _cached_result(request: CommentGenerationRequest) -> GeneratedCommentResult:
         request.cached_fallback_kind,
         request.cached_fallback_reason,
         request.cached_attempts,
+        media_segment=request.cached_media_segment,
+        selection_metadata=request.cached_selection_metadata,
     )
 
 

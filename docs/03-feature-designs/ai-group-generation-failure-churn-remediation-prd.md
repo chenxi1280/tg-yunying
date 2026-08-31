@@ -218,12 +218,16 @@ coverage subtype 是群日数量单位和覆盖义务的同一次候选发送。
 | `reply_min_required/direct/reply_count` | reply minimum 与关系分配守恒 |
 | `material_requirement_counts` | image/sticker/custom emoji/normal-text-emoji 等 policy minimum |
 | `act_type_counts` | context_reply/short_react/topic_shift/question 等行为分配 |
+| `topic_rate_bps/task_day_normal_ordinal_start/end` | task-day ledger 冻结的任务话题上限与本 plan 消费的普通正文 ordinal；技术切批不得重置 |
+| `topic_mode_counts/topic_capacity_reservation_counts` | `configured_topic/human_context/group_free_chat` 分配与生成前 remote capacity reservation 守恒；词库每日主题/teacher 不进入任务话题比例 |
 | `allocated/confirmed/shortfall_count` | 内容构成读模型；不得代替数量 remote fact |
 | `state/version` | open/allocated/settled_with_content/settled_with_shortfall + CAS |
 
 `scope_total_units = min(resolved_logical_turn_count_for_current_mode, remaining_planned_target_units)`，`reply_min_required = min(reply_min_per_round, scope_total_units)`。`resolved_logical_turn_count_for_current_mode` 复用现有 mode-aware Cycle 解析结果；不得直接读取 raw `messages_per_round`，因为其 `1` 在现有模式中具有“按参与账号解析”的特殊语义。最多 20 条只是技术物化批次，消费同一 Cycle assignment，不重置比例、minimum 或 Cycle cursor。
 
 `content_cycle_seq` 由 task-day content cursor 单行 CAS 分配，数据库唯一 `(task_day_ledger_id,target_operation_target_id,content_cycle_seq)`。plan 冻结完整 deterministic allocation vector/hash 和 aggregate counts，但 `AiGroupContentRequirementAssignment` 按最多 20 个技术 unit 懒创建/领取；plan 的 `next_plan_unit_ordinal + version` CAS 防止技术批次重复分配。assignment 至少保存 `plan_unit_ordinal/relation_kind/reply_target_scope/reply_source_key+observed_revision/material_requirement/material_dependency_key+observed_revision/act_type/state/reclassification_revision/obligation_id/version`，状态为 `available|reserved|bound|confirmed|content_shortfall|cancelled`。数据库唯一 `(allocation_plan_id,plan_unit_ordinal)`；`reserved|bound` 时 obligation partial unique，且一个 obligation 只允许一个 active assignment。reservation 与 obligation insert 同事务，崩溃恢复按 owner/version 释放；confirmed/Gateway-bound 不释放。reclassification 只允许 current policy compatibility matrix 明确列出的 pre-Gateway 转换，更新 aggregate count 后才能提交；否则进入 content shortfall。
+
+任务话题占比不得另建平行 aggregate owner。每日词库专项启用后，本 plan 还必须冻结 `topic_mode/topic_direction_snapshot/teacher_target_snapshot`；eligible assignment 只有在 immutable intent/Provider 前取得唯一 topic capacity reservation 才能成为 `configured_topic`。容量按最坏情况计算：remote-confirmed 普通正文提供分母，`configured_topic` unknown 同时进入分子/分母，non-topic unknown 不提供容量。无容量时在 intent 前正常选择兼容 `human_context/group_free_chat`，少用任务话题不形成 content shortfall，也不影响数量/coverage。
 
 replacement Action、variation 和 extra-volume→coverage 转换复用原 assignment，不重新抽比例。reply target 失效、账号能力或素材不足时，只能按现有显式 reclassification 规则 CAS 变更 assignment revision，或投影 content shortfall；任何 aggregate count 改变均在同一 plan version 下守恒并留审计。该 plan 是 current 内容合同所有者，但不拥有数量成功、Gateway 或 remote fact，因此不是恢复 legacy ContentMix 双账本。
 
@@ -236,6 +240,8 @@ current reclassification matrix 固定为：`relation_kind` 与 `act_type` 不�
 - `relation_kind` 与 reply/direct 资格；reply 不得转 check-in；
 - 当前 Cycle/批次的 `reply_min_per_round` 分配依据；
 - `act_type`、话题方向、老师目标和真人化要求；
+- `topic_mode/topic_rate_revision/task_day_normal_ordinal/topic_capacity_reservation_id`；只有 `configured_topic` 需要 reservation，词库每日主题和 teacher 不计入该比例；
+- `daily_vocabulary_theme_id/effective_state/catalog_version/vocabulary_sample_ids/normalized_term_ids/vocabulary_reservation_id`；每日主题不得改变 relation、act type、stance、reply/material、话题或老师；
 - 素材类型、policy minimum、允许共载矩阵和规则版本；
 - own-message reply scope、初始 reply target/revision 与失效处理；
 - prompt、内容安全、面具和 contract version；
@@ -765,7 +771,8 @@ generic `TaskUpdate/TaskSettingsUpdate` 与专用 `GroupAIChatConfig` PATCH 必�
 | target/ledger identity | `target_group_id/target_operation_target_id/target_input/target_type/timezone/daily_message_target` 只写next-ledger pending revision；current ledger/target-set/ordinal/due/deadline不改。server-owned `target_reference_revision`不可由客户端写 |
 | Task排期/pacing | `scheduled_start`仅first ledger前可改，current route固定409；`scheduled_end/max_duration_hours`仅first ledger前直接改，运行后只能写next-ledger lifecycle schedule且不得缩短当前period/deadline；generic `pacing_config`、hourly weights、`hard_hourly_* / hourly_min_messages` 对current fact-first固定422 `ai_message_legacy_pacing_not_supported` |
 | task-day quiet/ramp | `silent_mode/start/end/max_accounts/messages_per_round`、`ramp_up_minutes/ramp_start_ratio` 只写next-ledger schedule revision，不重算current due_at或移动既有Action |
-| aggregate content | `messages_per_round_mode/messages_per_round/reply_min_per_round/participation_* / allow_account_repeat/repeat_cooldown/rule_set/material/act-type` 递增content-policy revision，只从下一 `AiGroupContentAllocationPlan`生效；当前plan vector/count不改，且不能改变stable obligation、20条硬上限或Task轮转 |
+| aggregate content | `messages_per_round_mode/messages_per_round/reply_min_per_round/participation_rate/participation_jitter/allow_account_repeat/repeat_cooldown/rule_set/material/act-type` 递增content-policy revision，只从下一 `AiGroupContentAllocationPlan`生效；当前plan vector/count不改，且不能改变stable obligation、20条硬上限或Task轮转 |
+| task-day topic cap | `topic_participation_rate` 是独立 task-day content-policy snapshot：新建/启用必须显式确认 `0～0.30`，运行中修改只写 next-task-day revision；每个新 allocation plan 复制当前 ledger 冻结值，topic/teacher 修改和技术切批不得重置 ordinal/rate |
 | unit generation/content | `topic_directions/teacher_targets/chat_history_depth/ai_model/system_prompt/slang/tone/language/max_message_length/account_personas/account_memory_depth/context_expire/fact_anchor/semantic_repeat/low_confidence` 只允许对无Action、无active Generation、无call-issued的未绑定unit按assignment守恒创建新intent revision；已绑定intent immutable |
 | account/admission | `account_config/history_fetch_account_id/auto_join/group_bot_admission/verification/captcha/membership_max_concurrent` 写current scope/admission revision，按§7.1.1动态加入、等待或abandon；不清ordinal、hold、fact或其他账号义务 |
 | 技术/退役控制 | `due_catch_up_pipeline_depth` 只影响未来materialization调度且受代码20上限/真实槽约束；`idle_continuation_*`、旧retry/reset/rewrite-on-reject语义在durable wake合同下拒绝，不能恢复固定轮询 |

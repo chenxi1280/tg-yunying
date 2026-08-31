@@ -591,6 +591,7 @@ def test_group_ai_task_creation_initializes_persistent_account_scope(session: Se
         GroupAIChatTaskCreate(
             name="新建全部账号任务",
             target_operation_target_id=31,
+            topic_participation_rate=0.30,
             hourly_min_messages=10,
         ),
         actor="tester",

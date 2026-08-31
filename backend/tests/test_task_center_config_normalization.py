@@ -10,7 +10,14 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import OperationTarget, RuleSet, RuleSetVersion, Tenant
+from app.models import (
+    Action,
+    AuditLog,
+    OperationTarget,
+    RuleSet,
+    RuleSetVersion,
+    Tenant,
+)
 from app.schemas.task_center import (
     ChannelViewConfig,
     GroupAIChatTaskConfigUpdate,
@@ -23,8 +30,14 @@ from app.services.task_center.config_normalization import (
     validated_type_config,
 )
 from app.services.task_center.payloads import SendMessagePayload
+from app.services.task_center import service as task_service
 
-from app.services.task_center.service import create_group_ai_chat_task, update_group_ai_chat_config, update_task_settings
+from app.services.task_center.service import (
+    create_group_ai_chat_task,
+    list_tasks,
+    update_group_ai_chat_config,
+    update_task_settings,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -44,6 +57,7 @@ def test_group_ai_config_uses_one_daily_group_target() -> None:
     payload = GroupAIChatTaskCreate(
         name="AI 活群",
         target_group_id=7,
+        topic_participation_rate=0.30,
         daily_message_target=797,
     )
 
@@ -62,6 +76,7 @@ def test_group_ai_prejoin_channels_accept_public_addresses_and_normalize() -> No
     payload = GroupAIChatTaskCreate(
         name="AI 活群",
         target_group_id=7,
+        topic_participation_rate=0.30,
         group_ai_prejoin_channel_ids=[
             "https://t.me/channel_alpha/",
             "@channel_beta",
@@ -112,8 +127,13 @@ def test_legacy_group_ai_target_does_not_promote_frozen_account_count() -> None:
 
 
 def _load_required_rule_binding_migration():
-    migration_path = PROJECT_ROOT / "backend/migrations/versions/0072_backfill_required_task_rule_binding.py"
-    spec = importlib.util.spec_from_file_location("migration_0072_required_rule_binding", migration_path)
+    migration_path = (
+        PROJECT_ROOT
+        / "backend/migrations/versions/0072_backfill_required_task_rule_binding.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "migration_0072_required_rule_binding", migration_path
+    )
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -137,6 +157,7 @@ def test_group_ai_config_accepts_topic_teacher_and_consecutive_settings() -> Non
     payload = GroupAIChatTaskCreate(
         name="AI 活群",
         target_group_id=7,
+        topic_participation_rate=0.30,
         topic_directions=[
             {"title": "升学规划", "description": "围绕择校节奏聊", "weight": 2},
             {"title": "材料准备", "description": "围绕材料清单聊", "weight": 1},
@@ -169,7 +190,12 @@ def test_group_ai_task_creation_binds_default_rule_set() -> None:
         task = create_group_ai_chat_task(
             session,
             1,
-            GroupAIChatTaskCreate(name="AI 活群", target_group_id=7, hourly_min_messages=10),
+            GroupAIChatTaskCreate(
+                name="AI 活群",
+                target_group_id=7,
+                topic_participation_rate=0.30,
+                hourly_min_messages=10,
+            ),
             actor="tester",
         )
         rule_set = session.get(RuleSet, task.type_config["rule_set_id"])
@@ -191,7 +217,12 @@ def test_group_ai_all_account_task_defaults_to_daily_coverage_on_create() -> Non
         task = create_group_ai_chat_task(
             session,
             1,
-            GroupAIChatTaskCreate(name="AI 活群", target_group_id=7, hourly_min_messages=10),
+            GroupAIChatTaskCreate(
+                name="AI 活群",
+                target_group_id=7,
+                topic_participation_rate=0.30,
+                hourly_min_messages=10,
+            ),
             actor="tester",
         )
 
@@ -215,13 +246,22 @@ def test_default_rule_binding_repairs_draft_active_version() -> None:
             active_version_id=100,
         )
         session.add(rule_set)
-        session.add(RuleSetVersion(id=100, tenant_id=1, rule_set_id=99, version=1, status="draft"))
+        session.add(
+            RuleSetVersion(
+                id=100, tenant_id=1, rule_set_id=99, version=1, status="draft"
+            )
+        )
         session.commit()
 
         task = create_group_ai_chat_task(
             session,
             1,
-            GroupAIChatTaskCreate(name="AI 活群", target_group_id=7, hourly_min_messages=10),
+            GroupAIChatTaskCreate(
+                name="AI 活群",
+                target_group_id=7,
+                topic_participation_rate=0.30,
+                hourly_min_messages=10,
+            ),
             actor="tester",
         )
         session.refresh(rule_set)
@@ -272,6 +312,7 @@ def test_group_ai_config_accepts_plain_line_topic_and_chat_targets() -> None:
     payload = GroupAIChatTaskCreate(
         name="AI 活群",
         target_group_id=7,
+        topic_participation_rate=0.30,
         topic_directions="郑州楼凤妹子怎么样\n主任最近约新妹子了\n精品榜的妹子真好",
         teacher_targets="花花老师身材服务真好\n新人榜单妹子",
         hourly_min_messages=10,
@@ -285,13 +326,18 @@ def test_group_ai_config_accepts_plain_line_topic_and_chat_targets() -> None:
         "精品榜的妹子真好",
     ]
     assert [item["weight"] for item in data["topic_directions"]] == [3.0, 2.0, 1.0]
-    assert [item["name"] for item in data["teacher_targets"]] == ["花花老师身材服务真好", "新人榜单妹子"]
+    assert [item["name"] for item in data["teacher_targets"]] == [
+        "花花老师身材服务真好",
+        "新人榜单妹子",
+    ]
     assert [item["priority"] for item in data["teacher_targets"]] == [2, 1]
 
 
 @pytest.mark.no_postgres
 def test_topic_hint_migration_moves_legacy_hint_to_topic_directions() -> None:
-    migration = PROJECT_ROOT / "backend/migrations/versions/0070_migrate_group_ai_topic_hint.py"
+    migration = (
+        PROJECT_ROOT / "backend/migrations/versions/0070_migrate_group_ai_topic_hint.py"
+    )
     source = migration.read_text()
 
     assert "topic_hint" in source
@@ -305,6 +351,7 @@ def test_group_ai_config_accepts_all_accounts_daily_coverage_settings() -> None:
     payload = GroupAIChatTaskCreate(
         name="AI 活群",
         target_group_id=7,
+        topic_participation_rate=0.30,
         account_coverage_mode="all_accounts_daily",
         daily_message_target=20,
         coverage_window_hours=24,
@@ -336,7 +383,9 @@ def test_group_ai_config_rejects_invalid_all_accounts_daily_coverage_settings() 
 
 
 @pytest.mark.no_postgres
-def test_group_ai_config_rejects_invalid_topic_teacher_and_consecutive_settings() -> None:
+def test_group_ai_config_rejects_invalid_topic_teacher_and_consecutive_settings() -> (
+    None
+):
     with pytest.raises(ValidationError):
         GroupAIChatTaskCreate(
             name="AI 活群",
@@ -513,6 +562,7 @@ def test_group_ai_daily_target_change_increments_server_revision() -> None:
             GroupAIChatTaskCreate(
                 name="配置版本 AI 活群",
                 target_operation_target_id=91,
+                topic_participation_rate=0.30,
                 daily_message_target=10,
             ),
             actor="tester",
@@ -525,6 +575,7 @@ def test_group_ai_daily_target_change_increments_server_revision() -> None:
             task.id,
             GroupAIChatTaskConfigUpdate(
                 target_operation_target_id=91,
+                topic_participation_rate=0.30,
                 daily_message_target=11,
             ),
             actor="tester",
@@ -549,7 +600,11 @@ def test_group_ai_prejoin_channels_persist_and_update_independent_task_field() -
             GroupAIChatTaskCreate(
                 name="预关注频道 AI 活群",
                 target_group_id=7,
-                group_ai_prejoin_channel_ids=["https://t.me/channel_alpha", "@channel_beta"],
+                topic_participation_rate=0.30,
+                group_ai_prejoin_channel_ids=[
+                    "https://t.me/channel_alpha",
+                    "@channel_beta",
+                ],
             ),
             actor="tester",
         )
@@ -565,6 +620,7 @@ def test_group_ai_prejoin_channels_persist_and_update_independent_task_field() -
             task.id,
             GroupAIChatTaskConfigUpdate(
                 target_group_id=7,
+                topic_participation_rate=0.30,
                 group_ai_prejoin_channel_ids=["https://t.me/channel_gamma"],
             ),
             actor="tester",
@@ -585,7 +641,9 @@ def test_group_ai_settings_endpoint_updates_prejoin_channels() -> None:
         task = create_group_ai_chat_task(
             session,
             1,
-            GroupAIChatTaskCreate(name="AI 活群", target_group_id=7),
+            GroupAIChatTaskCreate(
+                name="AI 活群", target_group_id=7, topic_participation_rate=0.30
+            ),
             actor="tester",
         )
         initial_revision = task.config_revision
@@ -602,6 +660,161 @@ def test_group_ai_settings_endpoint_updates_prejoin_channels() -> None:
 
     assert updated.group_ai_prejoin_channel_ids == ["channel_delta"]
     assert updated.config_revision == initial_revision + 1
+
+
+@pytest.mark.no_postgres
+def test_running_group_ai_topic_rate_update_is_next_task_day_only() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.commit()
+        task = create_group_ai_chat_task(
+            session,
+            1,
+            GroupAIChatTaskCreate(
+                name="AI 活群",
+                target_group_id=7,
+                topic_participation_rate=0.10,
+            ),
+            actor="tester",
+        )
+        task.status = "running"
+        session.commit()
+
+        updated = update_task_settings(
+            session,
+            1,
+            task.id,
+            TaskSettingsUpdate(topic_participation_rate=0.30),
+            actor="tester",
+        )
+
+    assert updated.type_config["topic_participation_rate"] == 0.10
+    assert updated.type_config["topic_participation_rate_next"] == 0.30
+    assert updated.type_config["topic_participation_rate_effective_date"]
+
+
+@pytest.mark.no_postgres
+def test_topic_rate_effective_day_uses_task_timezone(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    observed_at = datetime(2026, 9, 1, 1, tzinfo=timezone.utc)
+    monkeypatch.setattr(task_service, "_now", lambda: observed_at)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.commit()
+        task = create_group_ai_chat_task(
+            session,
+            1,
+            GroupAIChatTaskCreate(
+                name="夏威夷任务日",
+                target_group_id=7,
+                topic_participation_rate=0.10,
+            ),
+            actor="tester",
+        )
+        task.status = "running"
+        task.timezone = "Pacific/Honolulu"
+        session.commit()
+
+        updated = update_task_settings(
+            session,
+            1,
+            task.id,
+            TaskSettingsUpdate(topic_participation_rate=0.30),
+            actor="tester",
+        )
+
+    assert updated.type_config["topic_participation_rate_effective_date"] == "2026-09-01"
+
+
+@pytest.mark.no_postgres
+def test_task_list_persists_due_topic_rate_promotion(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    observed_at = datetime(2026, 9, 1, 2, tzinfo=timezone.utc)
+    monkeypatch.setattr(task_service, "_now", lambda: observed_at)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.commit()
+        task = create_group_ai_chat_task(
+            session,
+            1,
+            GroupAIChatTaskCreate(
+                name="到期晋升",
+                target_group_id=7,
+                topic_participation_rate=0.10,
+            ),
+            actor="tester",
+        )
+        task.type_config = {
+            **task.type_config,
+            "topic_participation_rate_next": 0.30,
+            "topic_participation_rate_effective_date": "2026-09-01",
+        }
+        session.commit()
+
+        rows = list_tasks(session, 1)
+        session.expire_all()
+        persisted = session.get(type(task), task.id)
+
+    assert rows[0]["type_config"]["topic_participation_rate"] == 0.30
+    assert "topic_participation_rate_next" not in persisted.type_config
+    assert "topic_participation_rate_effective_date" not in persisted.type_config
+
+
+@pytest.mark.no_postgres
+def test_content_policy_update_preserves_pending_action_and_uses_field_audit() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.commit()
+        task = create_group_ai_chat_task(
+            session,
+            1,
+            GroupAIChatTaskCreate(
+                name="AI 活群",
+                target_group_id=7,
+                topic_participation_rate=0.10,
+            ),
+            actor="tester",
+        )
+        task.status = "running"
+        initial_task_revision = task.config_revision
+        session.add(
+            Action(
+                id="pending-content-action",
+                tenant_id=1,
+                task_id=task.id,
+                task_type="group_ai_chat",
+                action_type="send_message",
+                status="pending",
+            )
+        )
+        session.commit()
+
+        updated = update_task_settings(
+            session,
+            1,
+            task.id,
+            TaskSettingsUpdate(topic_directions=[{"title": "新任务话题", "weight": 1}]),
+            actor="tester",
+        )
+        audit_row = session.query(AuditLog).order_by(AuditLog.id.desc()).first()
+
+        assert session.get(Action, "pending-content-action") is not None
+        assert updated.config_revision == initial_task_revision
+        assert updated.type_config["_ai_group_content_policy_revision"] == (
+            initial_task_revision + 1
+        )
+        assert "topic_directions:" in audit_row.detail
+        assert "topic_participation_rate:" not in audit_row.detail
 
 
 @pytest.mark.no_postgres
@@ -626,4 +839,3 @@ def test_group_ai_config_normalization_strips_legacy_fields() -> None:
     assert "auto_follow_required_channel" not in normalized
     assert normalized["messages_per_round"] == 1
     assert normalized["reply_min_per_round"] == 1
-

@@ -312,6 +312,22 @@ function DailyGroupTargetPanel({ detail }: { detail: TaskCenterDetail }) {
   );
 }
 
+function ChannelCommentAcceptancePanel({ detail }: { detail: TaskCenterDetail }) {
+  if (detail.task.type !== 'channel_comment') return null;
+  const stats = detail.task.stats || {};
+  return (
+    <Descriptions bordered size="small" column={4} title="频道评论业务验收" items={[
+      { key: 'overall', label: '整体验收', children: <DetailStatusBadge status={stats.acceptance_status || 'evaluating'} /> },
+      { key: 'quantity', label: '数量', children: `${stats.quantity_status || 'evaluating'} · ${stats.quantity_confirmed_count ?? 0}/${stats.quantity_target_count ?? 0}` },
+      { key: 'content', label: '内容组合', children: `${stats.content_mix_status || 'evaluating'} · 计划兜底 ${stats.planned_fallback_confirmed_count ?? 0}/${stats.planned_fallback_target_count ?? 0}` },
+      { key: 'grounding', label: '原文依据', children: `${stats.grounding_quality_status || 'evaluating'} · ${stats.grounded_remote_confirmed_count ?? 0}/${stats.grounding_required_count ?? 0}` },
+      { key: 'emergency', label: '超计划兜底', children: stats.unplanned_fallback_confirmed_count ?? 0 },
+      { key: 'teacher', label: '老师绑定覆盖', children: `${stats.teacher_remote_covered_count ?? 0}/${stats.teacher_required_count ?? 0}` },
+      { key: 'aspect', label: '主亮点覆盖', children: `${stats.primary_aspect_remote_covered_count ?? 0}/${stats.primary_aspect_required_count ?? 0}` },
+    ]} />
+  );
+}
+
 const formatGapSeconds = (value: number | null | undefined) => (value == null ? '-' : `${Math.round(value)} 秒`);
 
 function TaskPacingSummaryPanel({ summary }: { summary: TaskPacingSummary }) {
@@ -663,6 +679,7 @@ export function TaskCenterDetailModal({
     system_task_type: 'account_profile_init',
   } : null);
   const coverageItems = detail?.account_coverage_items || [];
+  const contentAllocation = detail?.ai_group_content_allocation || {};
   const profileBatchItems = accountSecurityBatch?.items ?? [];
   const archivedSkippedCount = Number(detail?.stats?.archived_skipped_count ?? 0);
   const effectiveSkippedCount = Number(detail?.stats?.skipped_count ?? 0);
@@ -846,7 +863,52 @@ export function TaskCenterDetailModal({
             column={2}
             items={[
               { key: 'topic_directions', label: '话题方向', children: topicDirectionTags(detail.task.type_config?.topic_directions) },
+              {
+                key: 'topic_participation_rate',
+                label: '任务话题占比上限',
+                children: contentAllocation.current_task_day_rate == null
+                  ? '待确认（存量合同）'
+                  : `${Number(contentAllocation.current_task_day_rate) * 100}%（当前任务日；上限，非目标）`,
+              },
+              {
+                key: 'topic_participation_rate_next',
+                label: '下个任务日上限',
+                children: contentAllocation.next_task_day_rate == null
+                  ? '-'
+                  : `${Number(contentAllocation.next_task_day_rate) * 100}%（${contentAllocation.next_task_day_effective_date} 生效）`,
+              },
+              {
+                key: 'topic_expected_max',
+                label: '预计普通正文 / 最多任务话题',
+                children: `${Number(contentAllocation.expected_normal_count || 0)} / ${Number(contentAllocation.expected_topic_max_count || 0)}；词库主题和讨论老师不计入`,
+              },
+              {
+                key: 'topic_planned_ratio',
+                label: '计划任务话题',
+                children: contentAllocation.planned_topic_ratio == null
+                  ? '-'
+                  : `${contentAllocation.planned_topic_count}/${contentAllocation.planned_normal_count}（${(Number(contentAllocation.planned_topic_ratio) * 100).toFixed(1)}%）`,
+              },
+              {
+                key: 'topic_remote_ratio',
+                label: '远端任务话题容量',
+                children: contentAllocation.remote_topic_ratio == null
+                  ? `不适用（0/0）；确认 ${Number(contentAllocation.remote_topic_count || 0)}/${Number(contentAllocation.remote_normal_count || 0)}，未知占位 ${Number(contentAllocation.unknown_topic_hold_count || 0)}，有效预约 ${Number(contentAllocation.active_topic_reservation_count || 0)}`
+                  : `容量 ${Number(contentAllocation.remote_topic_capacity_numerator || 0)}/${Number(contentAllocation.remote_topic_capacity_denominator || 0)}（${(Number(contentAllocation.remote_topic_ratio) * 100).toFixed(1)}%）；其中确认 ${Number(contentAllocation.remote_topic_count || 0)}/${Number(contentAllocation.remote_normal_count || 0)}，未知占位 ${Number(contentAllocation.unknown_topic_hold_count || 0)}；${contentAllocation.topic_capacity_state}`,
+              },
               { key: 'teacher_targets', label: '讨论老师', children: teacherTargetTags(detail.task.type_config?.teacher_targets) },
+              {
+                key: 'teacher_ratio',
+                label: '老师内容（独立统计）',
+                children: `计划 ${Number(contentAllocation.planned_teacher_count || 0)}/${Number(contentAllocation.planned_normal_count || 0)}；远端确认 ${Number(contentAllocation.remote_teacher_count || 0)}/${Number(contentAllocation.remote_normal_count || 0)}`,
+              },
+              {
+                key: 'daily_vocabulary_theme',
+                label: '每日词库主题',
+                children: !Array.isArray(contentAllocation.daily_vocabulary_theme_ids) || contentAllocation.daily_vocabulary_theme_ids.length === 0
+                  ? '尚未创建当日内容计划'
+                  : `${contentAllocation.daily_vocabulary_theme_ids.map((item: number) => `#${item}`).join('、')} / ${(contentAllocation.route_families || []).join('、')} / ${String(contentAllocation.daily_vocabulary_theme_effective_states || []).split(',').join('、') || '未采样'}；有效池 ${Number(contentAllocation.effective_pool_size_min || 0)}～${Number(contentAllocation.effective_pool_size_max || 0)}${contentAllocation.suppression_reason ? `；抑制：${contentAllocation.suppression_reason}` : ''}`,
+              },
               { key: 'speaker_rotation', label: '账号轮换', children: '必须' },
               { key: 'group_bot_admission', label: '群管准入', children: detail.task.type_config?.group_bot_admission_required === false ? '异常关闭' : '必须' },
               { key: 'prejoin_channels', label: '预关注频道', children: detail.task.group_ai_prejoin_channel_ids?.length ? detail.task.group_ai_prejoin_channel_ids.map((item) => `@${item}`).join('、') : '未配置' },
@@ -1187,6 +1249,7 @@ export function TaskCenterDetailModal({
               <TaskPacingSummaryPanel summary={detail.pacing_summary} />
             )}
             <DailyGroupTargetPanel detail={detail} />
+            <ChannelCommentAcceptancePanel detail={detail} />
             <Tabs className="tabs-row" items={detailTabs} />
           </Space>
         )}
