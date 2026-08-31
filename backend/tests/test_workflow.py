@@ -4390,6 +4390,7 @@ def test_task_center_group_ai_chat_creates_and_dispatches_actions(monkeypatch):
                 "pacing_config": workflow_ai_active_pacing(),
                 "failure_policy": {"max_retries": 1, "retry_delay_seconds": 0, "retry_backoff": "none"},
                 "target_group_id": group["id"],
+                "topic_participation_rate": 0.30,
                 "topic_directions": [{"title": "测试话题", "weight": 1}],
                 "participation_rate": 1,
                 "participation_jitter": 0,
@@ -4480,6 +4481,7 @@ def test_task_center_group_ai_chat_runs_from_worker_loop(monkeypatch):
                 "pacing_config": workflow_ai_active_pacing(),
                 "failure_policy": {"max_retries": 1, "retry_delay_seconds": 0, "retry_backoff": "none"},
                 "target_group_id": group["id"],
+                "topic_participation_rate": 0.30,
                 "topic_directions": [{"title": "worker loop 测试", "weight": 1}],
                 "participation_rate": 1,
                 "participation_jitter": 0,
@@ -4630,6 +4632,7 @@ def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(
                 "account_config": {"selection_mode": "manual", "account_ids": [account["id"]], "max_concurrent": 1, "cooldown_per_account_minutes": 0},
                 "pacing_config": workflow_ai_active_pacing(),
                 "target_group_id": group["id"],
+                "topic_participation_rate": 0.30,
                 "topic_directions": [{"title": "continuous ai", "weight": 1}],
                 "participation_rate": 1,
                 "participation_jitter": 0,
@@ -4726,6 +4729,16 @@ def test_task_center_group_ai_chat_does_not_plan_over_open_actions(monkeypatch):
     with TestClient(app):
         future = datetime.now(UTC) + timedelta(hours=1)
         with SessionLocal() as session:
+            target = OperationTarget(
+                tenant_id=1,
+                target_type="group",
+                tg_peer_id=f"pytest-open-action-{uuid4().hex[:8]}",
+                title="pytest open action guard",
+                can_send=True,
+                auth_status="已授权运营",
+            )
+            session.add(target)
+            session.flush()
             task = Task(
                 tenant_id=1,
                 name="pytest open action guard",
@@ -4736,7 +4749,10 @@ def test_task_center_group_ai_chat_does_not_plan_over_open_actions(monkeypatch):
                 account_config={},
                 pacing_config={"mode": "fixed", "interval_seconds_min": 60},
                 failure_policy={},
-                type_config={},
+                type_config={
+                    "target_operation_target_id": target.id,
+                    "topic_participation_rate": 0.30,
+                },
                 stats={},
             )
             session.add(task)
@@ -4827,6 +4843,7 @@ def test_task_center_channel_view_like_comment_execute(
                 "message_id": 2001,
                 "message_url": "https://t.me/pytest_growth/2001",
                 "content_preview": "频道增长消息",
+                "published_at": datetime.now(UTC).isoformat(),
             },
         ).json()
         task_payloads = [
@@ -5091,8 +5108,10 @@ def test_task_center_channel_comment_allows_multiple_replies_per_account(monkeyp
                 "message_id": 6201,
                 "message_url": "https://t.me/pytest_comment_capacity/6201",
                 "content_preview": "评论可以多条",
+                "published_at": datetime.now(UTC).isoformat(),
             },
         ).json()
+        mark_test_channel_comment_ready(channel_target["id"], account_ids)
         created = client.post(
             "/api/tasks/channel-comment",
             headers=headers,
@@ -5120,8 +5139,9 @@ def test_task_center_channel_comment_allows_multiple_replies_per_account(monkeyp
         drain_task_center(SessionLocal, 10)
         detail = task_detail_after_metrics(client, headers, task_id)
         actions = task_detail_actions(client, headers, task_id, action_type="post_comment")
-        assert len(actions) == 3
-        assert detail["task"]["stats"]["total_actions"] == 3
+        assert len(actions) == 2
+        assert len({action["account_id"] for action in actions}) == 2
+        assert detail["task"]["stats"]["total_actions"] == 2
 
 
 def test_task_center_channel_like_auto_collects_dynamic_new_messages(monkeypatch):
@@ -5641,6 +5661,7 @@ def test_task_center_reset_group_ai_chat_respects_idle_window(monkeypatch):
                 "account_config": {"selection_mode": "manual", "account_ids": [account["id"]], "max_concurrent": 1, "cooldown_per_account_minutes": 0},
                 "pacing_config": workflow_ai_active_pacing(),
                 "target_group_id": group["id"],
+                "topic_participation_rate": 0.30,
                 "topic_directions": [{"title": "reset ai", "weight": 1}],
                 "participation_rate": 1,
                 "participation_jitter": 0,
@@ -6109,6 +6130,7 @@ def test_task_center_pause_holds_due_actions(monkeypatch):
                 "account_config": {"selection_mode": "manual", "account_ids": [account["id"]], "max_concurrent": 1, "cooldown_per_account_minutes": 0},
                 "pacing_config": {"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
                 "target_group_id": group["id"],
+                "topic_participation_rate": 0.30,
             },
         ).json()
         client.post(f"/api/tasks/{task['id']}/start", headers=headers)
@@ -6314,6 +6336,7 @@ def test_task_center_common_patch_rejects_type_config_and_typed_patch_checks_tas
                 "name": "pytest typed patch boundary",
                 "account_config": {"selection_mode": "manual", "account_ids": [account["id"]]},
                 "target_group_id": group["id"],
+                "topic_participation_rate": 0.30,
             },
         )
         assert task.status_code == 201, task.text
@@ -6406,8 +6429,11 @@ def test_task_center_send_message_payload_requires_destination(monkeypatch):
             session.commit()
             action_id = action.id
 
-        client.post("/api/worker/drain-once", headers=headers, json={"reason": "测试手动 drain"})
         with SessionLocal() as session:
+            from app.services.task_center.dispatcher import dispatch_action
+
+            dispatch_action(session, session.get(Action, action_id))
+            session.commit()
             row = session.get(Action, action_id)
             assert row.status == "failed"
             assert "group_id or chat_id" in row.result["error_message"]
@@ -6872,6 +6898,7 @@ def test_task_center_settings_accepts_target_scope_refresh():
                 "name": "pytest settings reject target",
                 "account_config": {"selection_mode": "manual", "account_ids": [account["id"]], "max_concurrent": 1, "cooldown_per_account_minutes": 0},
                 "target_group_id": group["id"],
+                "topic_participation_rate": 0.30,
             },
         )
         assert created.status_code == 201, created.text

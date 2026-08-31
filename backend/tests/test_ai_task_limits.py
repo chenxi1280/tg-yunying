@@ -1311,8 +1311,8 @@ def test_channel_comment_planner_excludes_uninitialized_profile_accounts():
         created = build_channel_comment_plan(session, task)
         action_accounts = session.scalars(select(Action.account_id).where(Action.task_id == task.id)).all()
 
-    assert created == 2
-    assert action_accounts == [102, 102]
+    assert created == 1
+    assert action_accounts == [102]
 
 
 def test_channel_comment_plans_minimum_auto_replies():

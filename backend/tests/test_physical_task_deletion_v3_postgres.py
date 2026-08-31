@@ -110,7 +110,10 @@ def test_physical_delete_resumes_stages_and_preserves_only_remote_tombstone() ->
             status="running",
             fulfillment_contract_version="legacy_v1",
             account_config={"selection_mode": "all"},
-            type_config={"daily_message_target": 1},
+            type_config={
+                "daily_message_target": 1,
+                "topic_participation_rate": 0.30,
+            },
         )
         session.add(old)
         session.flush()

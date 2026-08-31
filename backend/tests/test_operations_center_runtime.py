@@ -3080,6 +3080,7 @@ def test_task_creation_precheck_covers_group_and_channel_requirements():
                 payload={
                     "name": "AI 活跃预检",
                     "target_operation_target_id": 21,
+                    "topic_participation_rate": 0.30,
                     "rule_set_id": 51,
                     "rule_set_version_id": 52,
                     "account_config": {"selection_mode": "manual", "account_ids": [11, 12, 13], "max_concurrent": 3, "cooldown_per_account_minutes": 0},
@@ -3266,6 +3267,7 @@ def test_group_ai_precheck_warns_for_preparable_target_and_mixed_account_health(
                 payload={
                     "name": "可补齐准入 AI 活跃",
                     "target_operation_target_id": 21,
+                    "topic_participation_rate": 0.30,
                     "account_config": {"selection_mode": "manual", "account_ids": [11, 12], "cooldown_per_account_minutes": 0},
                 },
             ),
@@ -4063,7 +4065,10 @@ def test_channel_comment_reply_mode_requires_and_plans_reply_targets():
     Base.metadata.create_all(engine)
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
-        session.add(_initialized_comment_account())
+        session.add_all([
+            _initialized_comment_account(101),
+            _initialized_comment_account(102),
+        ])
         session.add(OperationTarget(id=31, tenant_id=1, target_type="channel", tg_peer_id="-10031", title="频道目标", can_send=True, auth_status="已授权运营"))
         session.add(ChannelMessage(id=41, tenant_id=1, channel_target_id=31, message_id=9001, content_preview="频道消息"))
         session.add(ChannelMessageComment(tenant_id=1, channel_target_id=31, channel_message_id=41, comment_message_id=8101, author_name="用户 A"))
@@ -4074,7 +4079,7 @@ def test_channel_comment_reply_mode_requires_and_plans_reply_targets():
             name="频道回复",
             type="channel_comment",
             status="running",
-            account_config={"selection_mode": "manual", "account_ids": [101], "max_concurrent": 2, "cooldown_per_account_minutes": 0},
+            account_config={"selection_mode": "manual", "account_ids": [101, 102], "max_concurrent": 2, "cooldown_per_account_minutes": 0},
             pacing_config={"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
             type_config={
                 "target_channel_id": 31,
@@ -4142,7 +4147,10 @@ def test_channel_comment_planner_defers_template_and_duplicate_filtering():
     Base.metadata.create_all(engine)
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
-        session.add(_initialized_comment_account())
+        session.add_all([
+            _initialized_comment_account(account_id)
+            for account_id in range(101, 105)
+        ])
         session.add(OperationTarget(id=31, tenant_id=1, target_type="channel", tg_peer_id="-10031", title="频道目标", can_send=True, auth_status="已授权运营"))
         session.add(ChannelMessage(id=41, tenant_id=1, channel_target_id=31, message_id=9001, content_preview="今天试了 18cm 收纳盒，塞进小柜子刚好"))
         task = Task(
@@ -4151,7 +4159,7 @@ def test_channel_comment_planner_defers_template_and_duplicate_filtering():
             name="频道评论质量",
             type="channel_comment",
             status="running",
-            account_config={"selection_mode": "manual", "account_ids": [101], "max_concurrent": 4, "cooldown_per_account_minutes": 0},
+            account_config={"selection_mode": "manual", "account_ids": [101, 102, 103, 104], "max_concurrent": 4, "cooldown_per_account_minutes": 0},
             pacing_config={"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
             type_config={
                 "target_channel_id": 31,
@@ -4196,12 +4204,10 @@ def test_channel_comment_planner_defers_same_message_text_dedupe():
         session.commit()
 
         takeover_task(session, task, now=base_time)
-        assert build_channel_comment_plan(session, task) == 1
+        assert build_channel_comment_plan(session, task) == 0
         pending = session.scalars(select(Action).where(Action.task_id == task.id, Action.status == "pending")).all()
 
-    assert len(pending) == 1
-    assert pending[0].payload["comment_text"] == ""
-    assert pending[0].payload["ai_generation_status"] == "pending"
+    assert pending == []
 
 
 def _seed_channel_comment_history_window(session: Session, base_time: datetime) -> Task:
