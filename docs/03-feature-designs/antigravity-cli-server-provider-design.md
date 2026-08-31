@@ -429,6 +429,16 @@ Mini Bug Card 冻结为：Antigravity legacy draft 调用必须从当前 prompt 
 
 定向 QA 必须覆盖：单/多固定 slot 的 required/enum/minItems/maxItems；无固定 slot 的旧 Schema 不变；Provider 即使返回错误顺序、重复或缺失 slot 仍显式失败；真实生产 canary 必须形成 `AiProviderAttempt=success`、非空 token usage、GenerationJob candidate/ready 或后续合法质量终态，且 bridge ledger 无无主 `claimed|started|unknown`。Telegram Action/ExecutionAttempt/typed remote fact 继续作为独立 E4，不以 Provider confirmed 代替。
 
+### 14.11 Production Quick Fix：两阶段业务 purpose 误选通用 Schema
+
+`0d98490aadaf1a7022d368f911265425441f3912` 发布后，双 Provider 健康、六条路由顺序和主生成调用已有成功事实；但发布后 `group_context_route` 又出现 `antigravity_schema_missing`。代码读回确认：两阶段 Planner 的业务 purpose 是 `两阶段意图规划`，路由绑定已将其解析并冻结为 `_ai_provider_route_purpose=group_context_route`，但 Antigravity Schema 选择仍使用业务 purpose，因而落入通用 `object` Schema，没有要求 `briefs`。该失败不得归因为 OAuth、模型可见性或网络异常。
+
+Mini Bug Card 冻结为：已绑定 Provider route 的结构化调用必须使用 `_ai_provider_route_purpose` 选择 Antigravity Schema；只有未绑定 route 时才使用原业务 purpose。attempt 记录、Schema 选择和 route snapshot 必须指向同一有效 purpose。不得在 CLI 结果后补写 `briefs`、放宽 parser，或把缺少 `structured_output` 改为静默降级。
+
+定向 QA 必须覆盖：`purpose=两阶段意图规划` 且 `_ai_provider_route_purpose=group_context_route` 时，Gateway 收到包含 `required=[briefs]`、冻结 slot ID 及精确 item 数的 Planner Schema；未绑定 route 的现有调用保持原语义。生产验收必须在新 backend 启动锚点后读回 `group_context_route` 成功 attempt 和非空 usage，且无新 `antigravity_schema_missing`；Provider 成功仍不代替 Telegram E4。
+
+本轮 dev 只改动有效 purpose 选择点并增加一条端到端参数回归；QA 已取得 6 条精确 Schema 断言、85 条邻接回归和 138 条 Antigravity/Provider/两阶段聚焦回归通过，compileall 与精确 diff check 通过。修复未改 Provider 身份、模型顺序、parser、failover 或 unknown 语义，`qa_status=pass`、`product_status=accepted`；新 SHA 发布及生产 purpose 证据完成前，`production_status=blocked`。
+
 ## 15. 多模型业务回复 POC
 
 2026-08-30 已使用独立 `slot-01` 对 `gemini-3.5-flash-medium`、`gemini-3.6-flash-medium`、`gemini-3.7-flash-medium` 执行固定 AI 活群与频道评论合成样本。六个候选均形成终态；样本内跨场景质量为 3.6 最稳，3.7 活群质量和时延最佳但评论被当前地点/敏感交易 cleaner 拒绝，并触发事实边界硬失败。完整输入、候选、评分、运行异常与证据边界见 `docs/05-implementation/antigravity-cli-model-reply-poc-20260830.md`。

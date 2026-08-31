@@ -296,6 +296,9 @@ def call_structured_provider(
     *,
     provider_request_id: str,
 ) -> tuple[object, AiUsage]:
+    schema_purpose = str(
+        request.config.get("_ai_provider_route_purpose") or request.purpose
+    )
     try:
         payload, usage = ai_gateway.generate_structured(
             credentials,
@@ -305,7 +308,7 @@ def call_structured_provider(
             system_prompt=request.system_prompt,
             timeout=AI_CONTENT_REQUEST_TIMEOUT_SECONDS,
             request_id=provider_request_id,
-            json_schema=antigravity_schema_for_purpose(request.purpose, request.config),
+            json_schema=antigravity_schema_for_purpose(schema_purpose, request.config),
         )
     except ProviderAdmissionBlocked:
         raise
