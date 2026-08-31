@@ -224,7 +224,12 @@ async def run_pipeline(
 ) -> dict[str, Any]:
     with SessionLocal() as session:
         our_ids, our_usernames, our_names, teachers = load_system_exclusions(session)
-        profile_filter = ProfileFilter(our_ids, our_usernames, our_names, teachers)
+        profile_filter = ProfileFilter(
+            our_ids,
+            our_usernames,
+            our_names,
+            task_discussion_teachers=teachers,
+        )
 
         live_candidates: list[GroupCandidateProfile] = []
         msg_candidates: list[GroupCandidateProfile] = []

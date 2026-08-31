@@ -4,10 +4,10 @@ import re
 import unicodedata
 from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import Task, TenantLearningProfile, TgAccount, TgGroup
+from app.models import GroupContextMessage, Task, TenantLearningProfile, TgAccount, TgGroup
 
 
 TEACHER_OR_AD_KEYWORDS = (
@@ -99,21 +99,37 @@ class GroupCandidateProfile:
     collected_at: str
 
 
+@dataclass(frozen=True)
+class NaturalCandidateProfile:
+    group_title: str
+    user_id: str
+    username: str
+    display_name: str
+    first_name: str
+    last_name: str
+    bio: str
+
+
 class ProfileFilter:
     def __init__(
         self,
         our_account_ids: set[str],
         our_usernames: set[str],
         our_display_names: set[str],
+        *,
         task_discussion_teachers: set[str],
+        forbidden_words: set[str] | None = None,
     ) -> None:
-        self.our_account_ids = our_account_ids
-        self.our_usernames = {value.lower() for value in our_usernames if value}
+        self.our_account_ids = {str(val).strip() for val in our_account_ids if val}
+        self.our_usernames = {value.lower().strip() for value in our_usernames if value}
         self.our_display_names = {
             self.normalize_name(value) for value in our_display_names if value
         }
         self.task_discussion_teachers = {
             self.normalize_name(value) for value in task_discussion_teachers if value
+        }
+        self.forbidden_words = {
+            self.normalize_name(word) for word in (forbidden_words or set()) if word and word.strip()
         }
 
     @staticmethod
@@ -134,8 +150,8 @@ class ProfileFilter:
         reason = self._rejection_reason(
             user_id,
             display_name,
-            username,
-            bio,
+            username=username,
+            bio=bio,
             is_bot=is_bot,
             is_deleted=is_deleted,
         )
@@ -145,9 +161,9 @@ class ProfileFilter:
         self,
         user_id: str,
         display_name: str,
+        *,
         username: str,
         bio: str,
-        *,
         is_bot: bool,
         is_deleted: bool,
     ) -> str:
@@ -167,6 +183,8 @@ class ProfileFilter:
             return "old_synthetic_name_template"
         if normalized_name in self.task_discussion_teachers:
             return "task_discussion_teacher"
+        if self._matches_forbidden(normalized_name):
+            return "forbidden_word_in_name"
         name_reason = _unsafe_text_reason(display_name, "name")
         if name_reason:
             return name_reason
@@ -176,13 +194,19 @@ class ProfileFilter:
         if clean_name.isdigit() or all(char in SYMBOLS_ONLY for char in clean_name):
             return "invalid_name_content"
         clean_bio = bio.strip()
-        if not clean_bio:
-            return ""
-        if any(old_bio in clean_bio for old_bio in OLD_SYNTHETIC_BIOS):
-            return "old_synthetic_bio"
-        if len(clean_bio) > 120:
-            return f"bio_too_long ({len(clean_bio)})"
-        return _unsafe_text_reason(clean_bio, "bio")
+        if clean_bio:
+            normalized_bio = self.normalize_name(clean_bio)
+            if self._matches_forbidden(normalized_bio):
+                return "forbidden_word_in_bio"
+            if any(old_bio in clean_bio for old_bio in OLD_SYNTHETIC_BIOS):
+                return "old_synthetic_bio"
+            if len(clean_bio) > 120:
+                return f"bio_too_long ({len(clean_bio)})"
+            return _unsafe_text_reason(clean_bio, "bio")
+        return ""
+
+    def _matches_forbidden(self, normalized_text: str) -> bool:
+        return any(word in normalized_text for word in self.forbidden_words)
 
 
 def _unsafe_text_reason(value: str, field: str) -> str:
@@ -197,25 +221,52 @@ def _unsafe_text_reason(value: str, field: str) -> str:
 
 def load_system_exclusions(
     session: Session,
+    tenant_id: int | None = None,
 ) -> tuple[set[str], set[str], set[str], set[str]]:
-    accounts = session.scalars(select(TgAccount)).all()
-    account_ids = {str(account.id) for account in accounts if account.id}
-    usernames = {account.username.strip() for account in accounts if account.username}
-    names = {account.display_name.strip() for account in accounts if account.display_name}
-    names.update(account.tg_first_name.strip() for account in accounts if account.tg_first_name)
-    teachers = _discussion_teachers(session)
+    stmt = select(
+        TgAccount.id,
+        TgAccount.tg_user_id,
+        TgAccount.username,
+        TgAccount.display_name,
+        TgAccount.tg_first_name,
+    )
+    if tenant_id is not None:
+        stmt = stmt.where(TgAccount.tenant_id == tenant_id)
+    rows = session.execute(stmt).all()
+    account_ids: set[str] = set()
+    usernames: set[str] = set()
+    names: set[str] = set()
+    for row in rows:
+        if row[0]:
+            account_ids.add(str(row[0]))
+        if row[1]:
+            account_ids.add(str(row[1]))
+        if row[2]:
+            usernames.add(row[2].strip())
+        if row[3]:
+            names.add(row[3].strip())
+        if row[4]:
+            names.add(row[4].strip())
+    teachers = _discussion_teachers(session, tenant_id=tenant_id)
     return account_ids, usernames, names, teachers
 
 
-def _discussion_teachers(session: Session) -> set[str]:
+def _discussion_teachers(session: Session, tenant_id: int | None = None) -> set[str]:
     teachers: set[str] = set()
-    for group in session.scalars(select(TgGroup)).all():
+    g_stmt = select(TgGroup)
+    t_stmt = select(Task)
+    p_stmt = select(TenantLearningProfile)
+    if tenant_id is not None:
+        g_stmt = g_stmt.where(TgGroup.tenant_id == tenant_id)
+        t_stmt = t_stmt.where(Task.tenant_id == tenant_id)
+        p_stmt = p_stmt.where(TenantLearningProfile.tenant_id == tenant_id)
+    for group in session.scalars(g_stmt).all():
         teachers.update(_teacher_names(str(group.topic_direction or "")))
-    for task in session.scalars(select(Task)).all():
+    for task in session.scalars(t_stmt).all():
         for value in (task.type_config or {}).values():
             if isinstance(value, str):
                 teachers.update(_teacher_names(value))
-    for profile in session.scalars(select(TenantLearningProfile)).all():
+    for profile in session.scalars(p_stmt).all():
         summary = getattr(profile, "persona_summary", "") or ""
         teachers.update(re.findall(r"[\u4e00-\u9fa5]{2,6}老师", summary))
     return teachers
@@ -226,3 +277,157 @@ def _teacher_names(value: str) -> set[str]:
     if not match:
         return set()
     return {item for item in re.split(r"[,，、\s]+", match.group(1)) if item}
+
+
+def extract_group_profiles(
+    session: Session,
+    profile_filter: ProfileFilter,
+    *,
+    limit: int = 50,
+    tenant_id: int | None = None,
+) -> list[NaturalCandidateProfile]:
+    max_id = _latest_group_message_id(session, tenant_id)
+    stmt = (
+        select(
+            GroupContextMessage.sender_peer_id,
+            GroupContextMessage.sender_name,
+            GroupContextMessage.sender_username,
+            GroupContextMessage.group_id,
+        )
+        .join(TgGroup, TgGroup.id == GroupContextMessage.group_id)
+        .where(
+            GroupContextMessage.id >= max(0, max_id - 50000),
+            GroupContextMessage.sender_name.is_not(None),
+            GroupContextMessage.sender_name != "",
+            GroupContextMessage.is_bot.is_(False),
+        )
+    )
+    if tenant_id is not None:
+        stmt = stmt.where(TgGroup.tenant_id == tenant_id)
+    stmt = stmt.group_by(
+        GroupContextMessage.sender_peer_id,
+        GroupContextMessage.sender_name,
+        GroupContextMessage.sender_username,
+        GroupContextMessage.group_id,
+    ).order_by(func.count().desc()).limit(limit * 2)
+    return _natural_candidates(
+        session,
+        stmt,
+        profile_filter=profile_filter,
+        limit=limit,
+        tenant_id=tenant_id,
+    )
+
+
+def _latest_group_message_id(session: Session, tenant_id: int | None) -> int:
+    stmt = select(func.max(GroupContextMessage.id))
+    if tenant_id is not None:
+        stmt = stmt.join(TgGroup, TgGroup.id == GroupContextMessage.group_id).where(
+            TgGroup.tenant_id == tenant_id
+        )
+    return int(session.scalar(stmt) or 0)
+
+
+def _natural_candidates(
+    session: Session,
+    stmt,
+    *,
+    profile_filter: ProfileFilter,
+    limit: int,
+    tenant_id: int | None,
+) -> list[NaturalCandidateProfile]:
+    group_stmt = select(TgGroup)
+    if tenant_id is not None:
+        group_stmt = group_stmt.where(TgGroup.tenant_id == tenant_id)
+    group_map = {group.id: group.title for group in session.scalars(group_stmt).all()}
+    candidates: list[NaturalCandidateProfile] = []
+    seen_names: set[str] = set()
+    for row in session.execute(stmt).all():
+        candidate = _candidate_from_msg_row(
+            row,
+            group_map=group_map,
+            profile_filter=profile_filter,
+            seen_names=seen_names,
+        )
+        if candidate is not None:
+            candidates.append(candidate)
+        if len(candidates) >= limit:
+            break
+    return candidates
+
+
+def _candidate_from_msg_row(
+    row,
+    *,
+    group_map: dict[int, str],
+    profile_filter: ProfileFilter,
+    seen_names: set[str],
+) -> NaturalCandidateProfile | None:
+    display_name = (row.sender_name or "").strip()
+    username = (row.sender_username or "").strip()
+    peer_id = str(row.sender_peer_id or "")
+    if not profile_filter.filter_candidate(user_id=peer_id, display_name=display_name, username=username):
+        return None
+    name_key = ProfileFilter.normalize_name(display_name)
+    if name_key in seen_names:
+        return None
+    seen_names.add(name_key)
+    parts = display_name.split(" ", 1)
+    return NaturalCandidateProfile(
+        group_title=group_map.get(row.group_id, "Active Group"),
+        user_id=peer_id,
+        username=username,
+        display_name=display_name,
+        first_name=parts[0],
+        last_name=parts[1] if len(parts) > 1 else "",
+        bio="",
+    )
+
+
+def unique_display_name_from_candidate(
+    base_name: str,
+    used_keys: set[str],
+    seed_idx: int,
+    *,
+    forbidden_words: set[str] | None = None,
+) -> tuple[str, str, str]:
+    clean_base = re.sub(r"\s+", " ", base_name.strip())
+    forbidden = {ProfileFilter.normalize_name(w) for w in (forbidden_words or set()) if w}
+    prefixes = ("小", "阿", "老", "大", "木")
+    suffixes = ("呀", "君", "日常", "木木", "呢", "随记")
+    natural_words = ("随笔", "行者", "闲客", "听风", "向阳", "漫步", "静思")
+    candidates = [clean_base]
+    candidates.extend(f"{prefix}{clean_base}" for prefix in prefixes)
+    candidates.extend(f"{clean_base}{suffix}" for suffix in suffixes)
+    candidates.extend(_compound_name_candidates(clean_base, natural_words, seed_idx))
+    for candidate in candidates:
+        result = _claim_candidate_name(candidate, used_keys, forbidden)
+        if result is not None:
+            return result
+    raise ValueError("unique_display_name_exhausted")
+
+
+def _compound_name_candidates(
+    base_name: str,
+    words: tuple[str, ...],
+    seed_idx: int,
+) -> list[str]:
+    size = len(words)
+    return [
+        f"{base_name}{words[(seed_idx + offset) % size]}{words[(seed_idx + offset // size + 1) % size]}"
+        for offset in range(size * size)
+    ]
+
+
+def _claim_candidate_name(
+    candidate: str,
+    used_keys: set[str],
+    forbidden: set[str],
+) -> tuple[str, str, str] | None:
+    clean_name = re.sub(r"\s+", " ", candidate.strip())[:25]
+    key = ProfileFilter.normalize_name(clean_name)
+    if not key or key in used_keys or any(word in key for word in forbidden):
+        return None
+    used_keys.add(key)
+    parts = clean_name.split(" ", 1)
+    return clean_name, parts[0], parts[1] if len(parts) > 1 else ""

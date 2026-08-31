@@ -18,13 +18,13 @@ LEGACY_TOPIC_DIRECTIONS = {"", "日常讨论、活动答疑", "群聊日常活�
 DEFAULT_TOPIC_DIRECTION = "同城老客交流与避坑讨论"
 APPROVED_GROUP_TOPICS: dict[int, list[dict[str, Any]]] = {
     5998: [
-        {"title": "新开课老师水头与身材测评", "description": "打听近期新开课老师水头与身材真实度，防照骗", "weight": 1},
+        {"title": "新老师身材与颜值真实度打听", "description": "打听近期新开课老师素颜与身材比例，防照骗", "weight": 1},
         {"title": "服务态度与催钟机车避坑", "description": "讨论哪些老师态度好不机车，哪些老师催钟严重避坑", "weight": 1},
         {"title": "工兵探路先锋战报交流", "description": "老哥出击交作业，反馈真实体验与环境隔音", "weight": 1},
         {"title": "老熟客打听常去老师动态与上岸", "description": "打听某位老师是否休假、换场子或上岸", "weight": 1},
     ],
     5363: [
-        {"title": "新老师开课动态与水头打听", "description": "打听近期新上架老师水头真实度与服务细节", "weight": 1},
+        {"title": "新老师开课动态与服务细节打听", "description": "打听近期新上架老师配合度与服务细节", "weight": 1},
         {"title": "踩雷避坑与机车老师吐槽", "description": "交流近期踩雷经历，提醒老哥们避坑防翻车", "weight": 1},
         {"title": "老哥夜间出击交作业战报", "description": "分享出击真实体验、配合度与环境评价", "weight": 1},
         {"title": "常去老师上岸退圈与换场打听", "description": "打听老熟客常去的老师最新动态", "weight": 1},
@@ -43,20 +43,20 @@ APPROVED_GROUP_TOPICS: dict[int, list[dict[str, Any]]] = {
     ],
     2821: [
         {"title": "夜间出击组局打听与求推荐", "description": "今晚有无靠谱不机车的好老师开课，老哥想出击", "weight": 1},
-        {"title": "新茶水头真实度与照骗避坑", "description": "讨论新开课老师水头足不足，防止踩雷", "weight": 1},
+        {"title": "新开课老师真实身材与照骗辨析", "description": "讨论新开课老师身材比例与素颜真实度，防止踩雷", "weight": 1},
         {"title": "出击交作业真实体验交流", "description": "分享上课过程中的配合度与服务态度", "weight": 1},
         {"title": "热门老师排课与预约打听", "description": "打听热门老师档期，提前预约避免跑空", "weight": 1},
     ],
     5828: [
-        {"title": "新开课老师测评与水头打听", "description": "打听新上架老师水头与身材曲线", "weight": 1},
+        {"title": "新开课老师测评与身材打听", "description": "打听新上架老师素颜与身材曲线", "weight": 1},
         {"title": "工兵探路先锋与交作业战报", "description": "刚交完作业的老哥反馈服务态度与机车程度", "weight": 1},
         {"title": "环境隔音与公寓安全避坑", "description": "讨论老师公寓环境隔音好坏与避坑要点", "weight": 1},
         {"title": "常去老熟人老师动态打听", "description": "打听常去的老师是不是换场子或上岸了", "weight": 1},
     ],
     5996: [
-        {"title": "公寓新老师测评与水头打听", "description": "打听新开课老师的配合度与水头真实度", "weight": 1},
+        {"title": "公寓新老师测评与配合度打听", "description": "打听新开课老师的服务态度与配合度", "weight": 1},
         {"title": "出击体验反馈与环境隔音避坑", "description": "讨论公寓环境隔音与老师服务态度", "weight": 1},
-        {"title": "老哥出击交作业战报交流", "description": "分享真实出击体验，评价水头与流程", "weight": 1},
+        {"title": "老哥出击交作业战报交流", "description": "分享真实出击体验与靠谱度评价", "weight": 1},
         {"title": "双号老司机避坑交流与组局", "description": "两位老哥一问一答交流最新开课动态", "weight": 1},
     ],
 }

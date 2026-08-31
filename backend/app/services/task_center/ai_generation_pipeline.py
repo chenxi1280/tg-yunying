@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.services._common import _now
 
+from .ai_adult_content_contract import validate_adult_content_contract
 from .ai_generation_dependencies import GenerationDependencies
 from .ai_generator import (
     AI_CONTENT_REQUEST_TIMEOUT_SECONDS,
@@ -451,15 +452,15 @@ def _filter_stage_contents(
 def _filter_slot(request, index: int, content: str, *, baseline: list[str]) -> SlotGenerationResult:
     from .executors import group_ai_chat
     from .ai_group_prompt import sanitize_group_message_text
-
     cleaned_text = sanitize_group_message_text(str(content or ""))
     if not cleaned_text or len(cleaned_text.strip()) < 2:
         return SlotGenerationResult("", "quality_rejected", "link_restricted_or_empty")
-
     snapshot = request.quality_snapshots[index]
     quality_item = {"slot": request.config["generation_slots"][index]}
     mapped = _copy_generated_content_metadata(str(cleaned_text), content)
     mapped.sequence_index = index + 1
+    if violation := validate_adult_content_contract(request.config, content=str(cleaned_text), history=request.history):
+        return SlotGenerationResult(mapped, violation.code, violation.detail)
     if legacy_negative_match(request, str(cleaned_text)):
         return SlotGenerationResult(mapped, "negative_lexicon_match", "negative_lexicon_match")
     if request.config["generation_slots"][index].get("reply_to_message_id"):
@@ -496,6 +497,4 @@ def _filter_slot(request, index: int, content: str, *, baseline: list[str]) -> S
 def _ordered_results(request, accepted: dict, rejected: dict) -> list[SlotGenerationResult]:
     missing = SlotGenerationResult("", "quality_rejected", "all_model_stages_rejected")
     return [accepted.get(index) or rejected.get(index) or missing for index in range(len(request.batch_ids))]
-
-
 __all__ = ["SlotGenerationResult", "generate_quality_results"]

@@ -89,6 +89,83 @@ def test_voice_profile_never_rewrites_generated_content() -> None:
     assert results[0].voice_profile_anchor_rewritten is False
 
 
+def _adult_quality_config() -> dict:
+    return {
+        "adult_prompt_enabled": True,
+        "content_route": "adult_service",
+        "generation_slots": [{"slot_id": "slot-1", "account_id": 11}],
+    }
+
+
+@pytest.mark.parametrize(
+    ("content", "expected_code"),
+    [
+        ("照片看着挺靠谱", "adult_content_length_out_of_range"),
+        ("照片看着确实靠谱", ""),
+        ("照片看着确实靠谱😂", ""),
+        ("真" * 20, ""),
+        ("真" * 21, "adult_content_length_out_of_range"),
+    ],
+)
+def test_adult_content_enforces_chinese_character_boundaries(content, expected_code) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    request = _request(content, config=_adult_quality_config(), history="真人用户: 照片看着确实靠谱")
+
+    with Session(engine) as session:
+        results, _tokens = generate_quality_results(session, request, _dependencies())
+
+    assert results[0].rejection_code == expected_code
+
+
+def test_general_route_is_not_subject_to_adult_length_contract() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    request = _request("今天先聊聊")
+
+    with Session(engine) as session:
+        results, _tokens = generate_quality_results(session, request, _dependencies())
+
+    assert results[0].rejection_code == ""
+
+
+@pytest.mark.parametrize(
+    ("content", "expected_code"),
+    [
+        ("照片看着确实靠谱", "adult_generic_warmup_requires_question"),
+        ("最近哪位老师值得推荐？", "adult_generic_warmup_scope_violation"),
+        ("最近照骗是不是又多了？", ""),
+    ],
+)
+def test_adult_generic_warmup_only_allows_context_free_questions(content, expected_code) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    request = _request(content, config=_adult_quality_config(), history="", context_message_ids=[])
+
+    with Session(engine) as session:
+        results, _tokens = generate_quality_results(session, request, _dependencies())
+
+    assert results[0].rejection_code == expected_code
+
+
+@pytest.mark.parametrize(
+    ("content", "history", "expected_code"),
+    [
+        ("昨晚去试了感觉挺稳", "真人用户: 最近照片修得很夸张", "adult_content_fact_unanchored"),
+        ("昨晚去试了感觉挺稳", "真人用户: 昨晚去试了感觉一般", ""),
+        ("万达公寓楼下停车方便", "真人用户: 最近照片修得很夸张", "adult_content_fact_unanchored"),
+        ("万达公寓楼下停车方便", "真人用户: 万达公寓楼下停车不方便", ""),
+        ("这个老师态度确实耐心", "真人用户: 最近照片修得很夸张", "adult_content_fact_unanchored"),
+        ("这个老师态度确实耐心", "真人用户: 这个老师态度很耐心", ""),
+    ],
+)
+def test_adult_fact_claims_require_same_kind_of_context_anchor(content, history, expected_code) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    request = _request(content, config=_adult_quality_config(), history=history)
+
+    with Session(engine) as session:
+        results, _tokens = generate_quality_results(session, request, _dependencies())
+
+    assert results[0].rejection_code == expected_code
+
+
 def test_mask_profile_does_not_force_transaction_topic_guidance() -> None:
     slot = group_ai_chat._generation_slot(
         "cycle-1",

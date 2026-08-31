@@ -2,13 +2,15 @@
 
 > **2026-08-04 current contract：** 本文只保留输入安全、统一输出契约和 Provider adapter 原则。全系统只允许一个 active `ai_provider_key_version`；所有文本模型共享这一把 key 和总额度，每个 GenerationJob 独立调用、direct 结果独立提交。固定 M3→M2.5→Grok 拓扑、Grok CLI Bridge、按模型/配置复制 key 额度、验证码 AI/VLM、ContentMix 数量槽和旧双签到均为 `historical_do_not_implement`。当前并发、key 轮换和签到合同以 `task-fulfillment-contract-closure-prd.md` §8 与 `ai-group-daily-group-target-redesign-prd.md` §7.4 为准；搜索验证码只走 RapidOCR→ddddOCR。
 
+> **2026-08-31 scoped supersede：** 本文 §1、§3.1、§3.2 中对地点、服务和行业黑话的全面禁止只适用于普通 route。任务经 `is_adult_content_config()` 明确授权为成人 route 后，其行业词汇、Prompt、8～20 汉字质量门和事实锚定以 `ai-group-chat-quality-and-token-optimization-prd.md` v2.3 §4.1、§4.2、§4.4、§4.8 为准。该授权不放宽未成年人、联系方式、引流、露骨内容和无依据事实等绝对红线。
+
 > **2026-07-31 supersede：** Provider 重试次数、静态签到适用范围、单 Action late binding 与跨群 scope 失败规则，以 `ai-conversation-humanization-and-group-bot-admission-prd.md` §15.2 为准。本文保留输入安全与 Provider 适配设计；下文“M3→M2.5→Grok 每层一次”和缺少数量槽/scope 校验的旧编排不再是运行合同。
 
 ## 1. 目标与范围
 
 本设计仅覆盖 `group_ai_chat` 文本生成输入安全和 Provider 适配。模型由版本化 policy 从唯一 active Provider key 支持的 model ID 中选择；每个 GenerationJob 独立调用并可并发，不等待其他 sequence。版本化生成流程明确耗尽后，可按统一签到合同使用精确 `签到`，不得使用文本表情。搜索验证码不复用任何多模态 Provider。
 
-本次同时统一安全上下文和 Prompt 口径：指令使用英文，安全动态上下文可以使用中文，模型输出必须是中文固定 JSON。明确成年人的非露骨身材、穿搭和轻度暧昧既有话题允许自然承接；交易撮合、联系方式、预约、服务、具体性行为和未成年人风险在生成前过滤。
+本次同时统一安全上下文和 Prompt 口径：指令使用英文，安全动态上下文可以使用中文，模型输出必须是中文固定 JSON。普通 route 只允许明确成年人的非露骨身材、穿搭和轻度暧昧既有话题自然承接；显式成人 route 按上述 scoped supersede 处理。所有 route 都必须在生成前过滤未成年人、联系方式、引流和露骨内容。
 
 ## 2. 当前事实与目标状态
 
@@ -28,9 +30,9 @@
 
 ### 3.2 允许与禁止
 
-允许已有上下文中的普通签到、积分、天气、城市、在场询问，以及明确成年人的漂亮、身材、曲线、腿长腿白、丝袜 / 高跟鞋、性感穿搭、撩人气质和成人活力评价。模型只能围绕原文做非露骨短评，不得扩大为亲密部位、性行为、可用性或服务能力。
+普通 route 允许已有上下文中的普通签到、积分、天气、城市、在场询问，以及明确成年人的漂亮、身材、曲线、腿长腿白、丝袜 / 高跟鞋、性感穿搭、撩人气质和成人活力评价。模型只能围绕原文做非露骨短评，不得扩大为亲密部位、性行为、可用性或服务能力。
 
-禁止价格、预算、付款、联系方式、私聊邀请、地点 / 酒店、预约、推荐资源、服务反馈、交易黑话、具体性行为，以及学生、少女、好嫩等未成年人或年龄歧义表达。危险输入不得因为首选模型拒答而转交更宽松模型强行生成。
+普通 route 禁止价格、预算、付款、联系方式、私聊邀请、地点 / 酒店、预约、推荐资源、服务反馈、交易黑话、具体性行为，以及学生、少女、好嫩等未成年人或年龄歧义表达。显式成人 route 可以承接专项 PRD allowlist 内的非露骨行业词，但人物、经历、地点和服务反馈仍须来自清洗后的真实上下文；`generic_warmup` 不得附和、求推荐或声称这些事实。危险输入不得因为首选模型拒答而转交更宽松模型强行生成。
 
 ### 3.3 输出 JSON
 

@@ -111,20 +111,25 @@ For safe_context, directly react to one meaningful supplied fact. For generic_wa
 Never output generic filler or operational slogans such as 签到、打卡、积分、努力搬砖、喝咖啡、犯困、吃红烧肉、努力加油、今天状态不错、大家心情好. Do not invent experience, work, activities, repairs, locations, or facts.
 Write casual natural Chinese, preferably 8 to 24 Chinese characters per draft. Output one JSON object only. No Markdown fences, thinking, prose, prefix, suffix, comments, or extra fields. Use exactly the supplied keys and enum values; context_source must match the input."""
 
-ADULT_SYSTEM_PROMPT = """你是一个 Telegram 同城成人娱乐/修车/品茶交流群里的老群友（男客老司机）。
-【行业黑话与暗语规则】
-1. 核心暗语：
-   - '老师/课代表' 代指可约女性/技师/外围/兼职
-   - '开课/上课/交作业' 代指营业/出台/体验反馈
-   - '出击/踩雷/机车/上岸/水头' 代指去消费/体验差/态度敷衍/退圈/颜值身材真实度
-   - '照骗/工兵' 代指修图过头/探路先锋老哥
-2. 地名规则：平时闲聊不主动提具体地名/区名/路名；仅当群聊上下文明确提到了地名时才顺着接话，严禁出现外地地名。
-3. 语言风格与规则：
-   - 极度口语化、接地气、随性、懂行，像手机随手打字的老哥。
+ADULT_SYSTEM_PROMPT = """你是一个 Telegram 同城成人娱乐/修车交流群里的老群友（男客老哥，手机单手打字，说话接地气随性）。
+【核心口语与事实规则】
+1. 真实口语与安全规范：
+   - 核心称谓：'老师/课代表' 代指可约女性/技师/外围/兼职。
    - 必须保持 100% 纯口语纯文本！严禁包含任何网址、链接（t.me/http/https）、@用户名/频道提及、联系方式（微信/TG号/手机号）或引流推广，防止触发群安全机器人禁言。
    - 严禁出现任何学生/校园/正经上班/签到打卡/积分/努力搬砖/天气好/喝咖啡/犯困/吃红烧肉等空洞违和废话！
    - 严格控制字数：每条 8 到 20 个汉字，短促干脆。
-4. 多账号发言多样性：包含吐槽、评价、打听、附和等不同角度，避免同一句式重复。
+
+2. 【事实锚点铁律（严禁无依据编造经历与地点）】：
+   - 严禁在没有群聊上下文证据时凭空捏造个人到店经历、出击体验或虚构具体商圈公寓地点！
+   - 对于 safe_context，紧扣群聊上下文已提及的事实/老师顺着接话（如附和、吐槽照骗、询问细节）；
+   - 对于 generic_warmup / idle 场景，只能提出不指向具体人物、资源、地点或服务的开放问题；禁止附和、求推荐或声称个人经历！
+
+3. 【词汇丰富度与句式多样性】：
+   - safe_context 避免千篇一律的疑问句，可在已有事实内穿插附和、避坑提醒与随性追问。
+   - 四类人设分别是探路工兵（谨慎求证）、挑剔老炮（辨析避坑）、随性吃瓜（围观追问）、本地地胆（只承接上下文已有的本地事实）。严格使用 generation_slots 已分配的人设，不自行改换。
+   - 词汇自然涵盖颜值身材（素颜、真人、身材比例、照骗）、服务细节（态度、配合度、耐心、催钟、温柔、靠谱）、硬件常识（隔音、停车、安全、换场子、上岸）。
+   - 上述词汇只提供表达方式，不代表群里已经发生相应经历、地点或服务事实。
+   - 平时闲聊不主动提具体地名/路名；少用标点符号，多用空格断句，偶尔可带 1 个真实常用 emoji（如 😂/👍/🔥/🤦‍♂️/👀/🤔）。
 Output one JSON object only. No Markdown fences, thinking, prose, prefix, suffix, comments, or extra fields. Use exactly the supplied keys and enum values; context_source must match the input."""
 
 SYSTEM_PROMPT = GENERAL_SYSTEM_PROMPT
@@ -136,6 +141,7 @@ ADULT_CONTENT_ROUTES = frozenset({
     "adult_service_sensory",
     "adult_service",
 })
+ADULT_PERSONAS = ("探路工兵", "挑剔老炮", "随性吃瓜", "本地地胆")
 
 def _configured_content_route(config: dict) -> str:
     contract = dict(config.get("_ai_content_contract") or {})
@@ -264,7 +270,7 @@ def _safe_slots(value: object, *, allow_adult_context: bool = False) -> list[dic
 def _safe_slot(slot: dict[str, Any], *, allow_adult_context: bool = False) -> dict[str, Any]:
     exact = ("sequence_index", "slot_id", "account_id", "act_type", "reply_to_sequence_index")
     result = {key: slot.get(key) for key in exact if key in slot}
-    for key in ("account_profile", "material_intent", "content_guidance"):
+    for key in ("persona", "account_profile", "material_intent", "content_guidance"):
         clauses = safe_clauses(slot.get(key), allow_adult_context=allow_adult_context)
         if clauses:
             result[key] = "；".join(clauses[:3])
@@ -275,6 +281,25 @@ def _safe_slot(slot: dict[str, Any], *, allow_adult_context: bool = False) -> di
     if teacher:
         result["teacher_target"] = teacher
     return result
+
+
+def _assign_adult_personas(
+    slots: list[dict[str, Any]],
+    account_personas: dict[str, str],
+) -> list[dict[str, Any]]:
+    assigned = []
+    for index, slot in enumerate(slots):
+        account_persona = account_personas.get(str(slot.get("account_id") or ""))
+        persona = str(slot.get("persona") or account_persona or "").strip()
+        if not persona:
+            raw_position = slot.get("account_id") or slot.get("sequence_index") or index + 1
+            try:
+                position = int(raw_position) - 1
+            except (TypeError, ValueError):
+                position = index
+            persona = ADULT_PERSONAS[position % len(ADULT_PERSONAS)]
+        assigned.append({**slot, "persona": persona})
+    return assigned
 
 
 def _safe_reply_targets(value: object, *, allow_adult_context: bool = False) -> list[dict[str, str]]:
@@ -304,7 +329,7 @@ def output_contract(
             "slot_id": str(slot.get("slot_id") or ""),
             "sequence_index": index + 1,
             "reply_to_sequence_index": slot.get("reply_to_sequence_index"),
-            "persona": "普通群友",
+            "persona": str(slot.get("persona") or "普通群友"),
             "content": "中文回复",
             "risk_level": "low",
             "intent": "topic_question|follow_up|light_comment",
@@ -327,13 +352,17 @@ def _prompt_payload(
     if not active_topic and config.get("topic_directions"):
         active_topic = config["topic_directions"][0]
     allow = adult_context
+    account_personas = _safe_map(config.get("account_personas"), allow_adult_context=allow)
+    generation_slots = _safe_slots(config.get("generation_slots"), allow_adult_context=allow)
+    if adult_context:
+        generation_slots = _assign_adult_personas(generation_slots, account_personas)
     return {
         "group_label": _safe_group_label(
             target_label,
             config.get("target_group_id") or config.get("group_id"),
             allow_adult_context=allow,
         ),
-        "account_personas": _safe_map(config.get("account_personas"), allow_adult_context=allow),
+        "account_personas": account_personas,
         "account_memories": _safe_map(config.get("account_memories"), allow_adult_context=allow),
         "account_profiles": _safe_map(config.get("account_profiles"), allow_adult_context=allow),
         "active_topic": _safe_target(active_topic, "title", allow_adult_context=allow),
@@ -342,7 +371,7 @@ def _prompt_payload(
             "name",
             allow_adult_context=allow,
         ),
-        "generation_slots": _safe_slots(config.get("generation_slots"), allow_adult_context=allow),
+        "generation_slots": generation_slots,
         "reply_targets": _safe_reply_targets(reply_targets, allow_adult_context=allow),
         "context_source": "safe_context" if messages else "generic_warmup",
         "sanitized_context": messages,
@@ -400,6 +429,7 @@ def sanitize_group_message_text(text: str) -> str:
 
 __all__ = [
     "ADULT_SYSTEM_PROMPT",
+    "ADULT_PERSONAS",
     "BOT_JUNK_PATTERNS",
     "CONTACT_PATTERNS",
     "DRAFT_KEYS",

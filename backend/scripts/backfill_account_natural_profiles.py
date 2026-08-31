@@ -1,19 +1,12 @@
 """
 Script to safely backfill platform accounts with realistic, non-duplicate profiles
-(display names, usernames, and mixed bios) extracted from non-AI, non-teacher real Telegram group members.
+extracted from non-AI, non-teacher real Telegram group members.
 
 Features:
-  1. Strict Preview -> Manifest -> Apply contract (previewed data is 100% faithfully applied via preview_overrides).
-  2. Production safety gates (only normal operational pool, excludes active batch accounts, max batch size 50).
-  3. Realistic mixed bio distribution (~50% empty, ~50% unique authentic personal bios; ZERO duplicates across accounts).
-  4. Fresh username mutations (candidates derived from scraped group users, strictly excluding account's current username).
-
-Usage:
-  # 1. Preview and save manifest:
-  python backend/scripts/backfill_account_natural_profiles.py --mode preview --limit 20 --output-manifest manifest.json
-
-  # 2. Apply exactly what was previewed using the manifest:
-  python backend/scripts/backfill_account_natural_profiles.py --mode apply --manifest-file manifest.json
+  1. Strict Preview -> Manifest -> Apply contract (100% fidelity via overrides).
+  2. Production safety gates (normal operational pool, no open batch, mutation block check).
+  3. Action types restricted to PRD scope: update_profile + update_avatar.
+  4. Full tenant isolation and strictly < 50 lines per function.
 """
 
 from __future__ import annotations
@@ -24,14 +17,11 @@ import hmac
 import json
 import logging
 import os
-import random
-import re
 import sys
-from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 # Add backend directory to sys.path
@@ -44,167 +34,92 @@ from app.models import (
     TgAccount,
     TgAccountSecurityBatch,
     TgAccountSecurityBatchItem,
-    TgGroup,
 )
-from app.models.groups import GroupContextMessage
 from app.schemas.account_security import (
     AccountSecurityBatchCreate,
     AccountSecurityProfileOverride,
-    ProfileGenerationStrategy,
     AvatarStrategy,
+    ProfileGenerationStrategy,
 )
 from app.services.account_profile_identity import unavailable_name_keys
-from app.services.account_security.service import (
-    create_account_security_batch,
-    account_security_mutation_block,
+from app.services.account_profile_login_batch_init import (
+    allocate_avatar_sources,
+    ready_avatar_materials,
 )
-from app.services.account_profile_name_generation import generate_username_variants
+from app.services.account_security.service import (
+    account_security_mutation_block,
+    create_account_security_batch,
+)
 from scripts.profile_candidate_filter import (
     GENERIC_NAMES,
-    OLD_SYNTHETIC_BIOS,
     OLD_SYNTHETIC_STEMS,
+    NaturalCandidateProfile,
     ProfileFilter,
+    extract_group_profiles,
     load_system_exclusions,
+    unique_display_name_from_candidate,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("backfill_natural_profiles")
 
-# Realistic, concise, non-repeating personal bios fitting natural adult/TG user persona
-NATURAL_BIO_CANDIDATES = [
-    "不常在线，有事直接说。",
-    "看帖不说话，纯潜水。",
-    "随缘看看，路过。",
-    "慢热，不闲聊。",
-    "偶尔上线看看。",
-    "潜水党。",
-    "仅查看消息，不闲聊。",
-    "随缘冒泡。",
-    "只看不说。",
-    "有事留言，看到会回。",
-    "平时较忙，不常在线。",
-    "纯路过围观。",
-    "不常看tg，有事留消息。",
-    "随缘，不闲扯。",
-    "只逛不聊。",
-]
-
-
-@dataclass
-class NaturalCandidateProfile:
-    group_title: str
-    user_id: str
-    username: str
-    display_name: str
-    first_name: str
-    last_name: str
-    bio: str
-
-
-def extract_group_profiles(session: Session, profile_filter: ProfileFilter, limit: int = 500) -> list[NaturalCandidateProfile]:
-    candidates: list[NaturalCandidateProfile] = []
-    seen_names: set[str] = set()
-
-    subq = (
-        select(
-            GroupContextMessage.sender_peer_id,
-            GroupContextMessage.sender_name,
-            GroupContextMessage.sender_username,
-            GroupContextMessage.group_id,
-            func.max(GroupContextMessage.id).label("max_id"),
-        )
-        .where(
-            GroupContextMessage.sender_name.is_not(None),
-            GroupContextMessage.sender_name != "",
-            GroupContextMessage.is_bot.is_(False),
-        )
-        .group_by(
-            GroupContextMessage.sender_peer_id,
-            GroupContextMessage.sender_name,
-            GroupContextMessage.sender_username,
-            GroupContextMessage.group_id,
-        )
-        .order_by(func.count().desc())
-        .limit(limit * 2)
-    )
-
-    rows = session.execute(subq).all()
-    group_map = {g.id: g.title for g in session.scalars(select(TgGroup)).all()}
-
-    for row in rows:
-        candidate = _natural_candidate_from_row(
-            row,
-            group_map=group_map,
-            profile_filter=profile_filter,
-            seen_names=seen_names,
-        )
-        if candidate is None:
-            continue
-        candidates.append(candidate)
-        if len(candidates) >= limit:
-            break
-
-    return candidates
-
-
-def _natural_candidate_from_row(
-    row,
-    *,
-    group_map: dict[int, str],
-    profile_filter: ProfileFilter,
-    seen_names: set[str],
-) -> NaturalCandidateProfile | None:
-    display_name = (row.sender_name or "").strip()
-    username = (row.sender_username or "").strip()
-    peer_id = str(row.sender_peer_id or "")
-    accepted = profile_filter.filter_candidate(
-        user_id=peer_id,
-        display_name=display_name,
-        username=username,
-    )
-    name_key = ProfileFilter.normalize_name(display_name)
-    if not accepted or name_key in seen_names:
-        return None
-    seen_names.add(name_key)
-    parts = display_name.split(" ", 1)
-    return NaturalCandidateProfile(
-        group_title=group_map.get(row.group_id, "Active Group"),
-        user_id=peer_id,
-        username=username,
-        display_name=display_name,
-        first_name=parts[0],
-        last_name=parts[1] if len(parts) > 1 else "",
-        bio="",
-    )
+MANIFEST_VERSION = "2.0"
+MAX_BATCH_SIZE = 50
 
 
 def is_legacy_profile(account: TgAccount) -> bool:
     name = (account.display_name or "").strip()
-    bio = (account.tg_bio or "").strip()
-    return bool(
-        any(stem in name for stem in OLD_SYNTHETIC_STEMS)
-        or any(old_bio in bio for old_bio in OLD_SYNTHETIC_BIOS)
-        or name in GENERIC_NAMES
-        or not name
-    )
+    if not name or name in GENERIC_NAMES or name.startswith("账号_"):
+        return True
+    return any(stem in name for stem in OLD_SYNTHETIC_STEMS)
 
 
 def load_eligible_target_accounts(
     session: Session,
+    *,
     limit: int | None = None,
     ratio: float = 0.7,
     tenant_id: int | None = None,
+    pool_id: int | None = None,
+    pool_name: str | None = None,
 ) -> list[TgAccount]:
-    """
-    Apply production safety gates:
-      - Account status == '在线' and not deleted
-      - Pool purpose == 'normal' (exclude system, code_receiver, rank_deboost pools)
-      - Account identity == 'normal'
-      - No active/open security batch currently executing
-      - account_security_mutation_block returns None
-      - Has legacy repetitive profile or selected for refresh (default 70% ratio)
-    """
-    # 1. Query accounts in normal operational pool
+    query = _target_account_query(tenant_id, pool_id, pool_name)
+    candidates = session.scalars(query.order_by(TgAccount.id.asc())).all()
+    open_batch_accounts = _load_open_batch_account_ids(session)
+    specific_pool = pool_id is not None or bool(pool_name)
+    eligible: list[TgAccount] = []
+    for acc in candidates:
+        if acc.id in open_batch_accounts:
+            continue
+        if not specific_pool and not is_legacy_profile(acc):
+            continue
+        if account_security_mutation_block(session, acc, {"update_profile", "update_avatar"}) is not None:
+            continue
+        eligible.append(acc)
+
+    target_count = _target_count(
+        limit,
+        ratio,
+        candidates=candidates,
+        eligible=eligible,
+        specific_pool=specific_pool,
+    )
+    if len(eligible) < target_count:
+        _fill_eligible_accounts(
+            session,
+            candidates,
+            eligible=eligible,
+            open_batch_accounts=open_batch_accounts,
+            target_count=target_count,
+        )
+    return eligible[:target_count] if target_count > 0 else eligible
+
+
+def _target_account_query(
+    tenant_id: int | None,
+    pool_id: int | None,
+    pool_name: str | None,
+):
     query = (
         select(TgAccount)
         .join(AccountPool, TgAccount.pool_id == AccountPool.id)
@@ -216,13 +131,50 @@ def load_eligible_target_accounts(
             AccountPool.pool_purpose == "normal",
         )
     )
-    if tenant_id:
+    if tenant_id is not None:
         query = query.where(TgAccount.tenant_id == tenant_id)
+    if pool_id is not None:
+        query = query.where(TgAccount.pool_id == pool_id)
+    if pool_name:
+        query = query.where(AccountPool.name == pool_name)
+    return query
 
-    candidates = session.scalars(query.order_by(TgAccount.id.asc())).all()
 
-    # 2. Exclude accounts currently in open security batches
-    open_batch_accounts = set(
+def _target_count(
+    limit: int | None,
+    ratio: float,
+    *,
+    candidates: list[TgAccount],
+    eligible: list[TgAccount],
+    specific_pool: bool,
+) -> int:
+    if limit is not None:
+        return limit
+    if specific_pool:
+        return len(eligible)
+    return max(1, int(len(candidates) * ratio)) if candidates else 0
+
+
+def _fill_eligible_accounts(
+    session: Session,
+    candidates: list[TgAccount],
+    *,
+    eligible: list[TgAccount],
+    open_batch_accounts: set[int],
+    target_count: int,
+) -> None:
+    for acc in candidates:
+        if acc.id in open_batch_accounts or acc in eligible:
+            continue
+        if account_security_mutation_block(session, acc, {"update_profile", "update_avatar"}) is not None:
+            continue
+        eligible.append(acc)
+        if len(eligible) >= target_count:
+            return
+
+
+def _load_open_batch_account_ids(session: Session) -> set[int]:
+    return set(
         session.scalars(
             select(TgAccountSecurityBatchItem.account_id)
             .join(TgAccountSecurityBatch, TgAccountSecurityBatchItem.batch_id == TgAccountSecurityBatch.id)
@@ -230,103 +182,30 @@ def load_eligible_target_accounts(
         ).all()
     )
 
-    eligible = []
-    for acc in candidates:
-        if acc.id in open_batch_accounts:
-            continue
-        if not is_legacy_profile(acc):
-            continue
-        block = account_security_mutation_block(session, acc, {"update_profile", "update_username"})
-        if block is not None:
-            continue
-        eligible.append(acc)
-
-    # If legacy accounts are fewer than target ratio, fill from other normal operational accounts
-    target_count = limit if limit is not None else max(1, int(len(candidates) * ratio)) if candidates else 0
-    if len(eligible) < target_count:
-        for acc in candidates:
-            if acc.id in open_batch_accounts or acc in eligible:
-                continue
-            block = account_security_mutation_block(session, acc, {"update_profile", "update_username"})
-            if block is not None:
-                continue
-            eligible.append(acc)
-            if len(eligible) >= target_count:
-                break
-
-    return eligible[:target_count] if target_count > 0 else eligible
-
-
-def _unique_display_name(base_name: str, used_keys: set[str], seed_idx: int) -> tuple[str, str, str]:
-    """
-    Ensures a 100% unique display_name across the batch and tenant to prevent DisplayNameConflict.
-    """
-    clean_base = re.sub(r"\s+", " ", base_name.strip())
-    key = ProfileFilter.normalize_name(clean_base)
-    if key and key not in used_keys:
-        used_keys.add(key)
-        parts = clean_base.split(" ", 1)
-        return clean_base, parts[0], parts[1] if len(parts) > 1 else ""
-
-    # Generate natural variations if base is taken
-    suffixes = ["_", "呀", "同学", "君", "日常", "酱", "木木", "小"]
-    prefixes = ["小", "阿", "老"]
-
-    candidates = [
-        f"{clean_base}{suffixes[seed_idx % len(suffixes)]}",
-        f"{prefixes[seed_idx % len(prefixes)]}{clean_base}",
-        f"{clean_base}_{(seed_idx * 17) % 90 + 10}",
-    ]
-    for c in candidates:
-        c_clean = re.sub(r"\s+", " ", c.strip())[:25]
-        c_key = ProfileFilter.normalize_name(c_clean)
-        if c_key and c_key not in used_keys:
-            used_keys.add(c_key)
-            parts = c_clean.split(" ", 1)
-            return c_clean, parts[0], parts[1] if len(parts) > 1 else ""
-
-    fallback = f"{clean_base}_{(seed_idx * 31) % 900 + 100}"[:25]
-    fallback_key = ProfileFilter.normalize_name(fallback)
-    used_keys.add(fallback_key)
-    return fallback, fallback, ""
-
 
 def generate_plan(
     target_accounts: list[TgAccount],
     candidates: list[NaturalCandidateProfile],
+    *,
+    avatar_sources: list[str],
     unavailable_keys: set[str] | None = None,
+    forbidden_words: set[str] | None = None,
 ) -> list[dict[str, Any]]:
-    plan: list[dict[str, Any]] = []
     if target_accounts and not candidates:
         raise ValueError("profile_candidate_source_empty")
+    if len(avatar_sources) != len(target_accounts):
+        raise ValueError("avatar_source_count_mismatch")
     used_name_keys = set(unavailable_keys or set())
-
-    # Prepare pool of unique natural bios
-    bio_pool = list(dict.fromkeys(NATURAL_BIO_CANDIDATES))
-    random.seed(42)
-    random.shuffle(bio_pool)
-    bio_idx = 0
+    plan: list[dict[str, Any]] = []
 
     for idx, acc in enumerate(target_accounts):
         cand = candidates[idx % len(candidates)]
-
-        disp_name, f_name, l_name = _unique_display_name(cand.display_name, used_name_keys, seed_idx=idx + acc.id)
-
-        # Generate fresh username candidates derived from scraped user, strictly excluding current username
-        u_cands = generate_username_variants(
-            raw_username=cand.username,
-            display_name=disp_name,
-            seed=acc.id * 31 + idx,
-            max_candidates=5,
-            current_username=acc.username or "",
+        disp_name, f_name, l_name = unique_display_name_from_candidate(
+            cand.display_name,
+            used_name_keys,
+            seed_idx=idx + acc.id,
+            forbidden_words=forbidden_words,
         )
-
-        # Mixed bio distribution: ~10% get a short natural bio, 90% get blank bio
-        assigned_bio = ""
-        if idx % 10 == 0 and bio_idx < len(bio_pool):
-            assigned_bio = bio_pool[bio_idx]
-            bio_idx += 1
-
         plan.append({
             "account_id": acc.id,
             "tenant_id": acc.tenant_id or 1,
@@ -337,12 +216,10 @@ def generate_plan(
             "proposed_display_name": disp_name,
             "proposed_first_name": f_name,
             "proposed_last_name": l_name,
-            "proposed_bio": assigned_bio,
-            "proposed_username_candidates": u_cands,
+            "proposed_bio": acc.tg_bio or "",
+            "proposed_avatar_source": avatar_sources[idx],
             "source_group": cand.group_title,
-            "copied_from_user": cand.username or cand.user_id,
         })
-
     return plan
 
 
@@ -353,7 +230,7 @@ def _plan_hash(plan: list[dict[str, Any]]) -> str:
 
 def build_manifest(plan: list[dict[str, Any]], tenant_id: int | None = None) -> dict[str, Any]:
     return {
-        "manifest_version": "1.0",
+        "manifest_version": MANIFEST_VERSION,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "tenant_id": tenant_id,
         "plan_hash": _plan_hash(plan),
@@ -363,63 +240,127 @@ def build_manifest(plan: list[dict[str, Any]], tenant_id: int | None = None) -> 
 
 
 def run_preview(
+    *,
     limit: int | None = None,
     ratio: float = 0.7,
     tenant_id: int | None = None,
+    pool_id: int | None = None,
+    pool_name: str | None = None,
     output_manifest: str | None = None,
 ) -> dict[str, Any]:
+    if tenant_id is None:
+        raise ValueError("tenant_id_required")
     with SessionLocal() as session:
-        our_ids, our_usernames, our_names, teachers = load_system_exclusions(session)
-        profile_filter = ProfileFilter(our_ids, our_usernames, our_names, teachers)
+        our_ids, our_usernames, our_names, teachers = load_system_exclusions(session, tenant_id=tenant_id)
+        profile_filter = ProfileFilter(
+            our_ids,
+            our_usernames,
+            our_names,
+            task_discussion_teachers=teachers,
+        )
 
-        logger.info("Loaded system exclusions: %d our accounts, %d usernames, %d names", len(our_ids), len(our_usernames), len(our_names))
-
-        target_accounts = load_eligible_target_accounts(session, limit=limit, ratio=ratio, tenant_id=tenant_id)
-        logger.info("Identified %d eligible accounts in normal operational pool", len(target_accounts))
-
+        target_accounts = load_eligible_target_accounts(
+            session,
+            limit=limit,
+            ratio=ratio,
+            tenant_id=tenant_id,
+            pool_id=pool_id,
+            pool_name=pool_name,
+        )
         if not target_accounts:
             logger.info("No eligible accounts found.")
             return {}
 
-        candidates = extract_group_profiles(session, profile_filter, limit=max(len(target_accounts) * 3, 50))
-        logger.info("Extracted %d qualified real profiles from groups", len(candidates))
-
-        unav_keys = unavailable_name_keys(session, tenant_id) if tenant_id else unavailable_name_keys(session, 1)
-        plan = generate_plan(target_accounts, candidates, unavailable_keys=unav_keys)
+        plan = _build_preview_plan(
+            session,
+            target_accounts,
+            profile_filter,
+            tenant_id=tenant_id,
+            scope_key=str(pool_id or pool_name or "default"),
+        )
         manifest = build_manifest(plan, tenant_id=tenant_id)
 
-        print("\n" + "=" * 90)
-        print(f" 🚀 PROFILE UPDATE RUNNER (PREVIEW) - {len(plan)} ACCOUNTS | Plan SHA: {manifest['plan_hash'][:12]}")
-        print("=" * 90)
-
-        for item in plan:
-            print(f"\n[Account #{item['account_id']} | {item['phone_masked']}]")
-            print(f"  ❌ Current:  Name={item['current_display_name']!r}, Username={item['current_username']!r}, Bio={item['current_bio']!r}")
-            print(f"  ✅ Proposed: Name={item['proposed_display_name']!r}")
-            print(f"              User Candidates={item['proposed_username_candidates']}")
-            bio_disp = item['proposed_bio'] if item['proposed_bio'] else "(留空)"
-            print(f"              Bio={bio_disp!r}  <from: {item['source_group']}>")
-
-        print("\n" + "=" * 90)
-        print(f"Summary: {len(plan)} accounts planned. Mixed Bio: {sum(1 for i in plan if i['proposed_bio'])} with distinct bios, {sum(1 for i in plan if not i['proposed_bio'])} blank.")
-        print("=" * 90 + "\n")
-
+        _print_preview_summary(plan, manifest)
         if output_manifest:
             with open(output_manifest, "w", encoding="utf-8") as f:
                 json.dump(manifest, f, indent=2, ensure_ascii=False)
             logger.info("Saved plan manifest to %s", output_manifest)
-
         return manifest
 
 
+def _build_preview_plan(
+    session: Session,
+    target_accounts: list[TgAccount],
+    profile_filter: ProfileFilter,
+    *,
+    tenant_id: int,
+    scope_key: str,
+) -> list[dict[str, Any]]:
+    candidates = extract_group_profiles(
+        session,
+        profile_filter,
+        limit=max(len(target_accounts) * 3, 50),
+        tenant_id=tenant_id,
+    )
+    avatar_sources = _preview_avatar_sources(
+        session,
+        tenant_id=tenant_id,
+        target_count=len(target_accounts),
+        scope_key=scope_key,
+    )
+    return generate_plan(
+        target_accounts,
+        candidates,
+        avatar_sources=avatar_sources,
+        unavailable_keys=unavailable_name_keys(session, tenant_id),
+    )
+
+
+def _preview_avatar_sources(
+    session: Session,
+    *,
+    tenant_id: int,
+    target_count: int,
+    scope_key: str,
+) -> list[str]:
+    materials = ready_avatar_materials(session, tenant_id)
+    seed = f"profile-backfill:{tenant_id}:{scope_key}"
+    return allocate_avatar_sources(materials, target_count, seed)
+
+
+def _print_preview_summary(plan: list[dict[str, Any]], manifest: dict[str, Any]) -> None:
+    print("\n" + "=" * 90)
+    print(f" 🚀 PROFILE UPDATE RUNNER (PREVIEW) - {len(plan)} ACCOUNTS | Plan SHA: {manifest['plan_hash'][:12]}")
+    print("=" * 90)
+    for item in plan:
+        print(f"\n[Account #{item['account_id']} | {item['phone_masked']}]")
+        print(f"  ❌ Current:  Name={item['current_display_name']!r}, Username={item['current_username']!r}, Bio={item['current_bio']!r}")
+        print(f"  ✅ Proposed: Name={item['proposed_display_name']!r}")
+        print(f"              Avatar={item['proposed_avatar_source']} <from: {item['source_group']}>")
+    print("\n" + "=" * 90)
+    print(f"Summary: {len(plan)} accounts planned with frozen names and avatar sources.")
+    print("=" * 90 + "\n")
+
+
 def _validated_manifest_items(manifest: dict[str, Any]) -> list[dict[str, Any]]:
-    if manifest.get("manifest_version") != "1.0":
+    if manifest.get("manifest_version") != MANIFEST_VERSION:
         raise ValueError("manifest_version_invalid")
+    tenant_id = manifest.get("tenant_id")
+    if not isinstance(tenant_id, int) or tenant_id <= 0:
+        raise ValueError("manifest_tenant_invalid")
     items = manifest.get("items")
     if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
         raise ValueError("manifest_items_invalid")
     if manifest.get("item_count") != len(items):
         raise ValueError("manifest_item_count_mismatch")
+    required = {
+        "account_id", "tenant_id", "proposed_display_name", "proposed_first_name",
+        "proposed_last_name", "proposed_bio", "proposed_avatar_source",
+    }
+    if any(not required.issubset(item) for item in items):
+        raise ValueError("manifest_item_contract_invalid")
+    if any(item.get("tenant_id") != tenant_id for item in items):
+        raise ValueError("manifest_tenant_mismatch")
     actual_hash = _plan_hash(items)
     if not hmac.compare_digest(str(manifest.get("plan_hash") or ""), actual_hash):
         raise ValueError("manifest_hash_mismatch")
@@ -435,7 +376,6 @@ def run_apply(manifest_path: str) -> None:
         manifest = json.load(f)
 
     items = _validated_manifest_items(manifest)
-
     logger.info("Loaded %d items from manifest (Plan SHA: %s)", len(items), manifest.get("plan_hash", "")[:12])
 
     with SessionLocal() as session:
@@ -445,59 +385,75 @@ def run_apply(manifest_path: str) -> None:
             by_tenant.setdefault(t_id, []).append(item)
 
         for t_id, tenant_items in by_tenant.items():
-            acc_ids = [it["account_id"] for it in tenant_items]
-
-            # Construct exact preview overrides to ensure 100% fidelity to preview
-            overrides = [
-                AccountSecurityProfileOverride(
-                    account_id=it["account_id"],
-                    generated_display_name=it["proposed_display_name"],
-                    generated_first_name=it["proposed_first_name"],
-                    generated_last_name=it["proposed_last_name"],
-                    generated_bio=it["proposed_bio"],
-                    username_candidates=it["proposed_username_candidates"],
-                    avatar_source="",
+            for offset in range(0, len(tenant_items), MAX_BATCH_SIZE):
+                _execute_tenant_batch(
+                    session,
+                    t_id,
+                    tenant_items[offset:offset + MAX_BATCH_SIZE],
                 )
-                for it in tenant_items
-            ]
-
-            batch_payload = AccountSecurityBatchCreate(
-                account_ids=acc_ids,
-                action_types=["update_profile", "update_username"],
-                confirm_text="确认",
-                reason="统一更新为真实群成员自然资料与用户名（去重化）",
-                profile_strategy=ProfileGenerationStrategy(
-                    generation_mode="local_random",
-                    bio_enabled=True,
-                    username_enabled=True,
-                    overwrite_existing=True,
-                ),
-                avatar_strategy=AvatarStrategy(mode="none"),
-                preview_overrides=overrides,
-            )
-
-            batch = create_account_security_batch(session, t_id, batch_payload, actor="profile-backfill-runner")
-            logger.info("Successfully created Security Batch #%d for Tenant #%d (%d accounts queued with exact preview overrides)", batch.id, t_id, len(acc_ids))
-
-        print(f"\n🎉 Successfully created security batches for {len(items)} accounts using exact manifest overrides. Worker will execute updates smoothly.\n")
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Safely backfill platform accounts with realistic group profiles")
-    parser.add_argument("--mode", choices=["preview", "apply"], default="preview", help="Run mode")
+def _execute_tenant_batch(session: Session, tenant_id: int, items: list[dict[str, Any]]) -> None:
+    acc_ids = [it["account_id"] for it in items]
+    overrides = [
+        AccountSecurityProfileOverride(
+            account_id=it["account_id"],
+            generated_display_name=it["proposed_display_name"],
+            generated_first_name=it["proposed_first_name"],
+            generated_last_name=it["proposed_last_name"],
+            generated_bio=it["proposed_bio"],
+            username_candidates=[],
+            avatar_source=it["proposed_avatar_source"],
+        )
+        for it in items
+    ]
+    batch_payload = AccountSecurityBatchCreate(
+        account_ids=acc_ids,
+        action_types=["update_profile", "update_avatar"],
+        confirm_text="确认",
+        reason="统一更新为真实群成员自然资料（去重化）",
+        profile_strategy=ProfileGenerationStrategy(
+            generation_mode="template",
+            bio_enabled=True,
+            username_enabled=False,
+            overwrite_existing=True,
+        ),
+        avatar_strategy=AvatarStrategy(mode="none"),
+        preview_overrides=overrides,
+    )
+    batch = create_account_security_batch(session, tenant_id, batch_payload, actor="script:backfill_natural_profiles")
+    logger.info("Tenant %d: Security Batch #%d created with status %s", tenant_id, batch.id, batch.status)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Safely backfill natural profiles for accounts")
+    parser.add_argument("--mode", choices=["preview", "apply"], required=True, help="Mode: preview or apply")
     parser.add_argument("--limit", type=int, default=None, help="Explicit max number of accounts to process")
     parser.add_argument("--ratio", type=float, default=0.7, help="Ratio of accounts to process (default 0.7 = 70%)")
     parser.add_argument("--tenant-id", type=int, default=None, help="Optional tenant ID filter")
+    parser.add_argument("--pool-id", type=int, default=None, help="Target specific account pool by ID")
+    parser.add_argument("--pool-name", type=str, default=None, help="Target specific account pool by name")
     parser.add_argument("--output-manifest", type=str, default=None, help="Path to save preview manifest JSON")
     parser.add_argument("--manifest-file", type=str, default=None, help="Path to manifest JSON for apply mode")
     args = parser.parse_args()
 
+    if args.mode == "preview" and not args.tenant_id:
+        logger.error("--tenant-id is required for tenant-isolated preview.")
+        sys.exit(1)
+
     if args.mode == "preview":
-        manifest_out = args.output_manifest or f"manifest_profile_backfill_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.json"
-        run_preview(limit=args.limit, ratio=args.ratio, tenant_id=args.tenant_id, output_manifest=manifest_out)
+        manifest_out = args.output_manifest or f"manifest_profile_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.json"
+        run_preview(
+            limit=args.limit,
+            ratio=args.ratio,
+            tenant_id=args.tenant_id,
+            pool_id=args.pool_id,
+            pool_name=args.pool_name,
+            output_manifest=manifest_out,
+        )
     elif args.mode == "apply":
         if not args.manifest_file:
-            logger.error("--manifest-file is required in apply mode to guarantee fidelity to previewed plan")
+            logger.error("--manifest-file is required in apply mode")
             sys.exit(1)
         run_apply(manifest_path=args.manifest_file)
 

@@ -8,7 +8,8 @@
 > - 数据流转：`docs/00-index/project-dataflow-index.md`
 > - 代码结构：`docs/00-index/project-structure-index.md`
 > - 生产运行：`docs/04-ops/deployment/PRODUCTION_RUNTIME.md`
-> **版本**：v2.2 (2026-08-27)
+> **版本**：v2.3 (2026-08-31)
+> **专项优先级**：对显式成人 route 的输入词汇、Prompt 和输出质量门，本 PRD §4.1、§4.2、§4.4、§4.8 优先于 `ai-group-provider-fallback-and-safe-prompt-design.md` 2026-08-04 版的一般场景限制；普通 route 仍适用旧安全合同，未成年人、联系方式、引流和露骨内容等绝对红线对所有 route 保持有效。
 
 ---
 
@@ -98,23 +99,16 @@
 ### 4.1 模块一：显式路由的系统提示词与黑话注入 (`ai_group_prompt.py`)
 - **目标**：普通任务继续使用 `GENERAL_SYSTEM_PROMPT`；只有当前 `content_route` 明确属于成人 route，或任务受控启用 `adult_prompt_enabled` 时，才接入 `ADULT_SYSTEM_PROMPT`。
 - **路由边界**：城市、群名、大学/师范/学生会、老师、开课、水头、避坑等弱词和 `allowed_routes` 中“存在某个成人 route”都不能证明当前上下文已命中成人方向；v2 路径还必须满足当前 route 在冻结 allowlist 内。群聊与频道评论复用同一个显式路由判定，禁止各自维护推断规则。
+- **四类 persona 分配**：成人 generation slot 使用“探路工兵、挑剔老炮、随性吃瓜、本地地胆”四类稳定 persona。slot 已显式绑定 persona 或其 `account_id` 在 `account_personas` 中已有配置时必须原样保留；仅对未绑定 slot 按 `account_id`（无账号时按 `sequence_index`）稳定轮换。persona 分配不得改写 planner 已冻结的话题、老师、回复目标或 slot identity。
 - **单/多草稿提示词定义 (`ADULT_SYSTEM_PROMPT`)**：
   ```python
-  ADULT_SYSTEM_PROMPT = """你是一个 Telegram 同城成人娱乐/修车/品茶交流群里的老群友（男客老司机）。
-  【行业黑话与暗语规则】
-  1. 核心暗语：
-     - '老师/课代表' 代指可约女性/技师/外围/兼职
-     - '开课/上课/交作业' 代指营业/出台/体验反馈
-     - '出击/踩雷/机车/上岸/水头' 代指去消费/体验差/态度敷衍/退圈/颜值身材真实度
-     - '照骗/工兵' 代指修图过头/探路先锋老哥
-  2. 语言风格与规则：
-     - 极度口语化、接地气、随性、懂行，像手机随手打字的老哥。
-     - 严禁出现任何学生/校园/正经上班/签到打卡/积分/努力搬砖/天气好/喝咖啡/犯困/吃红烧肉等空洞违和废话！
-     - 严禁违规联系方式（微信/TG号）、引流或露骨生理词汇。
-     - 严格控制字数：每条 8 到 20 个汉字，短促干脆。
-  3. 多账号发言多样性：
-     - 包含吐槽、评价、打听、附和等不同角度，避免同一句式重复。
-  只输出 JSON: {"drafts": [{"persona": "...", "act_type": "吐槽|评价|打听|附和", "content": "..."}]}"""
+  ADULT_SYSTEM_PROMPT = """你是显式成人 route 的老群友。
+  - 每条必须包含 8 到 20 个汉字；短于 8 字的极简附和不合法。
+  - safe_context 只能承接已出现的人物、经历、地点和服务事实；问题可以追问已有事实。
+  - generic_warmup 只能提出不指向具体人物、资源、地点或服务的开放问题；禁止附和、求推荐和声称经历。
+  - 行业词只提供表达口径，不构成事实；不得把 Prompt 词表写成群内已经发生的事实。
+  - 所有 route 继续拦截未成年人、联系方式、引流和露骨内容。
+  只输出既定 JSON 合同。"""
   ```
 
 ### 4.2 模块二：安全合规与分级清洗红线 (`ai_group_prompt.py`)
@@ -137,11 +131,13 @@
   ```
 - **真实群名保留**：废止将群名强制篡改为 `"生产群-314"` 的旧逻辑，保留群组真实地域与名称（如成都怡红院、西安天上人间、郑州大学），赋能大模型理解本地地标。
 
-### 4.4 模块四：后置质量拦截器调优 (`group_ai_chat.py`)
-- **目标**：放行老客正常讨论“上次那个/老师/水头/体验”等个人感受，杜绝误杀降级为静态“签到”。
+### 4.4 模块四：成人内容确定性质量门 (`ai_adult_content_contract.py`、`ai_generation_pipeline.py`)
+- **目标**：成人 route 的 Prompt 规则必须由发送前的确定性质量门落实，不能把模型服从当成验收证据。
 - **规则调整**：
-  - 修改 `_has_unanchored_idle_fact`，不再将包含“上次那个”、“老师”、“水头”、“照骗”、“踩雷”等老客短句判定为 `hallucination_risk`；
-  - 仅对虚构全局外部新闻或明确涉及直接转账违规的虚假声明进行拦截。
+  - 清洗后的成人候选按 Unicode 汉字计数，必须为闭区间 8～20；emoji、数字、空格和标点不计入汉字数。越界以 `adult_content_length_out_of_range` 显式拒绝，普通 route 不套用该边界；
+  - `generic_warmup` 只允许问句，并拒绝附和、推荐、具体人物、地点、服务和个人经历词；不生成静态短句兜底；
+  - `safe_context` 中的经历、地点和服务陈述必须在清洗后的上下文中存在同类事实锚点；无锚点以 `adult_content_fact_unanchored` 拒绝；
+  - 问句可以围绕已有上下文追问，但显式成人 route、行业词表或非空 `anchor_message_ids` 本身都不能替代正文事实锚点。
 
 ### 4.5 模块五：话题回退机制与数据库默认值治理 (`models/groups.py` & `executors/group_ai_chat.py`)
 - **目标**：彻底消除“日常讨论、活动答疑”默认值。
@@ -199,6 +195,8 @@
    - `pytest backend/tests/test_ai_generation_phase_boundaries.py` 100% 通过；
    - 消息记忆未来排期、显式配置的成人路由、城市/群名/话题/上下文弱词不越权、联系方式/URL 红线均有回归测试；频道评论质量重试必须保留事实，`new_sensitive (1026)` 和等价 Provider 输入拒绝必须单次失败且不重复调用 Provider。
    - AI 活群候选必须覆盖 Markdown 链接、协议 URL、`t.me`、裸域名/IP、`@mention` 清洗和清洗后为空的显式拒绝；Gateway 回归必须证明 typing 发生在 send 前、文本发送关闭 link preview、typing 失败仍为 pre-Gateway false。
+   - 成人 route 必须覆盖 7/8/20/21 个汉字边界、普通 route 不受成人边界影响、`generic_warmup` 无对象附和/求推荐拒绝、无锚点经历/地点/服务反馈拒绝，以及上下文含同类事实时允许承接。
+   - 四类成人 persona 必须覆盖无绑定 slot 的稳定轮换、显式 slot persona 保留、`account_personas` 保留，以及 persona 注入不改写 planner topic/teacher/reply target。
 
 ### 5.2 Release Gate 声明
 - **Release Level**：`L2`
