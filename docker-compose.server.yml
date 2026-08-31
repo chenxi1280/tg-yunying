@@ -148,7 +148,7 @@ services:
     networks:
       - infra_default
     extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - "host.docker.internal:${ANTIGRAVITY_DOCKER_GATEWAY:?ANTIGRAVITY_DOCKER_GATEWAY is required}"
 
   worker-authorization-abc-sweep:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
@@ -214,7 +214,7 @@ services:
     networks:
       - infra_default
     extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - "host.docker.internal:${ANTIGRAVITY_DOCKER_GATEWAY:?ANTIGRAVITY_DOCKER_GATEWAY is required}"
 
   worker-ai-generation-2:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
@@ -236,7 +236,7 @@ services:
     networks:
       - infra_default
     extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - "host.docker.internal:${ANTIGRAVITY_DOCKER_GATEWAY:?ANTIGRAVITY_DOCKER_GATEWAY is required}"
 
   worker-ai-generation-3:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
@@ -258,7 +258,7 @@ services:
     networks:
       - infra_default
     extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - "host.docker.internal:${ANTIGRAVITY_DOCKER_GATEWAY:?ANTIGRAVITY_DOCKER_GATEWAY is required}"
 
   worker-dispatcher-1:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}

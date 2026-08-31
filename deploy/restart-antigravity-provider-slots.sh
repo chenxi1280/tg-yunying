@@ -8,6 +8,7 @@ PLAN_SCRIPT="${ANTIGRAVITY_SLOT_PLAN_SCRIPT:-${SCRIPT_DIR}/antigravity-slot-rele
 RUNTIME_INSTALLER="${ANTIGRAVITY_RUNTIME_INSTALLER:-${SCRIPT_DIR}/install-antigravity-provider-runtime.sh}"
 PROBE_SCRIPT="${ANTIGRAVITY_PROBE_SCRIPT:-${RELEASE_DIR}/deploy/check-antigravity-provider-slot.py}"
 RUNTIME_ROOT="${ANTIGRAVITY_RUNTIME_ROOT:-/usr/local/lib/tgyunying-antigravity}"
+INFRA_NETWORK_NAME="${INFRA_NETWORK_NAME:-infra_default}"
 PYTHON_BIN="${ANTIGRAVITY_PYTHON_BIN:-/usr/bin/python3.11}"
 RUNTIME_PYTHON_BIN="${ANTIGRAVITY_RUNTIME_PYTHON_BIN:-/usr/bin/python3.11}"
 TIMEOUT_BIN="${ANTIGRAVITY_TIMEOUT_BIN:-timeout}"
@@ -97,7 +98,7 @@ elif [[ -e "${RUNTIME_ROOT}/current" ]]; then
 fi
 
 release_sha="$(sed -n 's/^RELEASE_SHA=//p' "${RELEASE_DIR}/.image.env")"
-docker_gateway="$(docker network inspect infra_default --format '{{(index .IPAM.Config 0).Gateway}}')"
+docker_gateway="$(docker network inspect "${INFRA_NETWORK_NAME}" --format '{{(index .IPAM.Config 0).Gateway}}')"
 [[ -n "${docker_gateway}" ]]
 if SOURCE_DIR="${RELEASE_DIR}/backend/scripts" RELEASE_SHA="${release_sha}" \
   ANTIGRAVITY_RUNTIME_ROOT="${RUNTIME_ROOT}" bash "${RUNTIME_INSTALLER}" \

@@ -54,6 +54,7 @@ load_base_env() {
 
 ensure_runtime_env() {
   load_base_env
+  initialize_antigravity_docker_gateway_env
   initialize_shared_dispatch_contract_env
 
   local required=(
@@ -146,6 +147,27 @@ ensure_runtime_env() {
       IMAGE_VERIFICATION_WORKER_STOP_GRACE_PERIOD
     validate_remote_verification_values
   fi
+}
+
+initialize_antigravity_docker_gateway_env() {
+  local network_name gateway first second third fourth octet
+  network_name="${INFRA_NETWORK_NAME:-infra_default}"
+  if ! gateway="$(docker network inspect "${network_name}" --format '{{(index .IPAM.Config 0).Gateway}}')"; then
+    echo "Unable to resolve ${network_name} gateway" >&2
+    return 1
+  fi
+  if [[ ! "${gateway}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+    echo "Invalid ${network_name} IPv4 gateway: ${gateway:-missing}" >&2
+    return 1
+  fi
+  IFS=. read -r first second third fourth <<<"${gateway}"
+  for octet in "${first}" "${second}" "${third}" "${fourth}"; do
+    if (( 10#${octet} > 255 )); then
+      echo "Invalid ${network_name} IPv4 gateway: ${gateway}" >&2
+      return 1
+    fi
+  done
+  export ANTIGRAVITY_DOCKER_GATEWAY="${gateway}"
 }
 
 initialize_shared_dispatch_contract_env() {

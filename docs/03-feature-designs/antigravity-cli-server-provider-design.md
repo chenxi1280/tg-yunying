@@ -117,7 +117,8 @@ CLI 的隐藏 `app_data_dir/gemini_dir` 参数不在官方 flag reference，只�
 ### 5.2 Docker-to-host
 
 - 每个 slot service 只监听宿主内部端口，不开放公网。
-- Compose 显式注入 `host.docker.internal:host-gateway`；防火墙只允许 Docker bridge 网段。
+- slot unit 与 Compose 必须从同一个实际业务网络（默认 `infra_default`）读取 gateway；Compose 将该精确地址注入为 `host.docker.internal`，禁止使用可能指向默认 `docker0` 的裸 `host-gateway`。
+- gateway 解析失败必须在 Compose 变更前 fail closed；backend 与三个 AI generation worker 必须读取相同地址，发布后逐容器验证 DNS 解析、带 token health 和真实模型调用。防火墙只允许该 Docker bridge 网段。
 - `AiProvider.api_key` 保存的是每 slot 内部 bearer token 密文，绝不是 Google OAuth token。
 - process health 和真实 model/auth/schema check 是不同证据。
 
@@ -409,6 +410,16 @@ guarded preview 冻结 provider/slot/route/task/deployed SHA/fingerprint；apply
 正式发布 run `33327782377` 在服务器部署前被质量门禁阻断，生产没有写入。失败归为同一小批次：迁移 `0182_ai_provider_request_id` 已成为唯一 Alembic head，但两个全仓/blank-PostgreSQL 验收仍把 head 写死为 `0181_runtime_storage_clone_merge`；同时 `ai_provider_candidate_runtime.py` 的 candidate request ID 新增 SHA-256 计算却遗漏 `hashlib` 导入，导致两个真实 AI 活群 PostgreSQL 流程在生成前抛出 `NameError`。
 
 Mini Bug Card 冻结为：只补缺失标准库导入，并把两个陈旧 head 断言同步到已存在且已由 Alembic 验证的 `0182`；不得改写迁移 revision/down_revision、业务请求身份算法、route、Provider 或生产配置。定向验收必须覆盖 merge integrity、blank PostgreSQL migration、candidate request identity 和两个失败的 AI 活群 workflow；随后重新跑 Provider 聚焦回归、独立 QA 和完整 Actions。任一测试仍失败则保持 `production_status=blocked`，不得手动绕过部署。
+
+### 14.9 Production Quick Fix：Docker host gateway 地址漂移
+
+发布 `034664bbaa3804d14eb6b473b51bb1d575964e3e`、slot-01 OAuth、原生双模型 POC 和 host bridge 双模型探针均成功后，正式 Provider check 得到 `all_healthy=false`：backend 容器把 `host.docker.internal:host-gateway` 解析为默认 `docker0` gateway `172.17.0.1`，而 slot service 按 `infra_default` 实际 gateway `172.19.0.1` 监听，导致两个 Provider 都以 `antigravity_bridge_unreachable_pre_call` 失败。由于直接访问 `172.19.0.1:18101` 已到达 bridge 并返回预期 401，该故障冻结为容器地址注入错误，不归因于 OAuth、模型、token 或 bridge 进程。
+
+Mini Bug Card 冻结为：`deploy/docker-env.sh` 在任何 Compose mutation 前从 `${INFRA_NETWORK_NAME:-infra_default}` 动态读取唯一 IPv4 gateway，导出 `ANTIGRAVITY_DOCKER_GATEWAY`；`docker-compose.server.yml` 只允许 backend 与三个 AI generation worker 将 `host.docker.internal` 映射到该精确值。slot install/restart 使用同一网络名和读取算法。不得把 bridge 改为公网/`0.0.0.0` 监听，不得放宽 Antigravity URL SSRF allowlist，不得手工修改运行中容器 `/etc/hosts` 充当完成。
+
+定向 QA 必须证明：裸 `host-gateway` 已从这四个容器删除；网络不存在、gateway 为空或非 IPv4 时发布在 Compose 前失败；自定义 `INFRA_NETWORK_NAME` 被同一算法使用；现有 slot restart/rollback 与 Compose 合同回归通过。修复重新走 dev -> QA -> product accepted -> master/release 同 SHA -> 完整 Actions；生产验收必须重新取得 backend/三个 worker 的目标 DNS、Provider `all_healthy=true`、双模型 Gateway confirmed、六条 generation route 原子 readback 和无 open/unknown ledger。此前绿色 workflow 只证明命令执行成功，不覆盖其 JSON 业务结果。
+
+本轮 dev 后 QA 已取得 147 条 Antigravity、slot lifecycle、release/worker 合同回归通过，另有 Compose config、Bash 语法和 diff check 通过；Product Design Complete 复核确认该修复不改变 Provider 身份、模型顺序、生成 Schema、route 或 unknown 语义，`qa_status=pass`、`product_status=accepted`。新 SHA 的完整 Actions、容器地址读回和本节生产调用尚未完成，故 `production_status=blocked` 不变。
 
 ## 15. 多模型业务回复 POC
 

@@ -17,6 +17,7 @@ RUNTIME_ROOT="${ANTIGRAVITY_RUNTIME_ROOT:-/usr/local/lib/tgyunying-antigravity}"
 LOCK_FILE="${ANTIGRAVITY_SLOT_LOCK_FILE:-/run/lock/tgyunying-antigravity-provider.lock}"
 STATE_CHECKER="${ANTIGRAVITY_SLOT_STATE_CHECKER:-${SCRIPT_DIR}/check-antigravity-slot-install-state.sh}"
 PYTHON_BIN="${ANTIGRAVITY_PYTHON_BIN:-/usr/bin/python3.11}"
+INFRA_NETWORK_NAME="${INFRA_NETWORK_NAME:-infra_default}"
 
 require_unit_inactive() {
   bash "${STATE_CHECKER}" "${SERVICE_NAME}"
@@ -102,9 +103,9 @@ chown root:root "${env_tmp}"
 chmod 0600 "${env_tmp}"
 mv -f "${env_tmp}" "${ENV_FILE}"
 
-docker_gateway="$(docker network inspect infra_default --format '{{(index .IPAM.Config 0).Gateway}}')"
+docker_gateway="$(docker network inspect "${INFRA_NETWORK_NAME}" --format '{{(index .IPAM.Config 0).Gateway}}')"
 if [[ -z "${docker_gateway}" ]]; then
-  echo "infra_default gateway missing" >&2
+  echo "${INFRA_NETWORK_NAME} gateway missing" >&2
   exit 1
 fi
 
