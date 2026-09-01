@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -136,6 +136,13 @@ class ChannelCommentGroundingAssignment(Base):
             "plan_contract_id", "target_ordinal", "assignment_version",
             name="uq_channel_comment_grounding_assignment",
         ),
+        Index(
+            "uq_channel_comment_grounding_active",
+            "plan_contract_id", "target_ordinal",
+            unique=True,
+            postgresql_where=text("assignment_state = 'active'"),
+            sqlite_where=text("assignment_state = 'active'"),
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
@@ -148,6 +155,10 @@ class ChannelCommentGroundingAssignment(Base):
     )
     target_ordinal: Mapped[int] = mapped_column(Integer)
     assignment_version: Mapped[int] = mapped_column(Integer, default=1)
+    supersedes_assignment_id: Mapped[str | None] = mapped_column(
+        ForeignKey("channel_comment_grounding_assignments.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
     evidence_text: Mapped[str] = mapped_column(Text)
     evidence_hash: Mapped[str] = mapped_column(String(64))
     primary_aspect_code: Mapped[str] = mapped_column(String(64), default="source_fact")
@@ -155,6 +166,33 @@ class ChannelCommentGroundingAssignment(Base):
     teacher_name: Mapped[str] = mapped_column(String(160), default="")
     speech_act: Mapped[str] = mapped_column(String(48), default="reaction")
     assignment_state: Mapped[str] = mapped_column(String(32), default="active")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class ChannelCommentContentRevisionOperation(Base):
+    __tablename__ = "channel_comment_content_revision_operations"
+    __table_args__ = (
+        UniqueConstraint(
+            "plan_contract_id", "to_source_revision_id",
+            name="uq_channel_comment_content_revision_operation",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"))
+    plan_contract_id: Mapped[str] = mapped_column(
+        ForeignKey("channel_comment_plan_contracts.id", ondelete="CASCADE"),
+    )
+    from_source_revision_id: Mapped[str] = mapped_column(
+        ForeignKey("channel_message_source_revisions.id", ondelete="RESTRICT"),
+    )
+    to_source_revision_id: Mapped[str] = mapped_column(
+        ForeignKey("channel_message_source_revisions.id", ondelete="RESTRICT"),
+    )
+    operation_version: Mapped[int] = mapped_column(Integer, default=1)
+    operation_state: Mapped[str] = mapped_column(String(32), default="completed")
+    result_hash: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
@@ -237,6 +275,7 @@ class TaskCommentCapacityReservation(Base):
 __all__ = [
     "ChannelCommentEligibleAccountSnapshotRow",
     "ChannelCommentCapacityAllocationEpoch",
+    "ChannelCommentContentRevisionOperation",
     "ChannelCommentGroundingAssignment",
     "ChannelCommentOrdinalAccountBinding",
     "ChannelCommentPlanContract",

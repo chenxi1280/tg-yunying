@@ -24,7 +24,7 @@ def comment_grounding_send_blocker(
     if message is None or not message.comment_available:
         return "source_unavailable_before_send"
     if message.current_source_revision_id != payload.source_revision_id:
-        return "source_revision_superseded"
+        return "source_revision_superseded_before_gateway"
     capacity_blocker = _capacity_send_blocker(session, action)
     if capacity_blocker:
         return capacity_blocker

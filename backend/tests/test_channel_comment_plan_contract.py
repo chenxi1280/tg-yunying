@@ -7,13 +7,16 @@ from sqlalchemy import func, select
 
 from app.models import (
     Action,
+    AccountPacingReservation,
     ChannelCommentCapacityAllocationEpoch,
+    ChannelCommentContentRevisionOperation,
     ChannelCommentGroundingAssignment,
     ChannelCommentOrdinalAccountBinding,
     ChannelCommentPlanContract,
     ChannelMessage,
     ChannelMessageSourceRevision,
     CommentFulfillmentObligation,
+    GenerationJob,
     TaskCommentCapacityPeriod,
     TaskCommentCapacityReservation,
 )
@@ -29,6 +32,9 @@ from app.services.task_center.channel_comment_capacity_allocation import (
     rebalance_comment_capacity_epoch,
 )
 from app.services.task_center.channel_comment_grounding_guard import comment_grounding_send_blocker
+from app.services.task_center.channel_comment_content_revision import (
+    reconcile_channel_comment_source_edit,
+)
 from app.services.task_center.channel_payloads import PostCommentPayload
 from channel_comment_planner_test_support import (
     STABLE_PLANNER_NOW,
@@ -396,39 +402,127 @@ def test_rebalance_never_moves_gateway_or_confirmed_capacity(monkeypatch) -> Non
         ] == frozen
 
 
+def _ordered_obligations(session):
+    return list(session.scalars(
+        select(CommentFulfillmentObligation).order_by(
+            CommentFulfillmentObligation.target_ordinal,
+        )
+    ))
 
-def test_source_edit_blocks_frozen_action_before_gateway(monkeypatch) -> None:
+
+def _obligation_shape(rows) -> list[tuple]:
+    return [
+        (
+            row.target_ordinal, row.account_id, row.relation_kind,
+            row.pacing_due_at, row.release_not_before_at,
+        )
+        for row in rows
+    ]
+
+
+def _new_edited_source(session, message) -> ChannelMessageSourceRevision:
+    edited = ChannelMessageSourceRevision(
+        id="source-revision-2", tenant_id=1, channel_message_id=message.id,
+        source_revision=2, source_remote_message_id=message.message_id,
+        source_published_at=message.published_at,
+        source_observed_at=STABLE_PLANNER_NOW,
+        source_text_snapshot="编辑后的频道事实",
+        source_content_hash="c" * 64, observation_identity_hash="d" * 64,
+        source_operation="edited",
+    )
+    session.add(edited)
+    session.flush()
+    message.current_source_revision_id = edited.id
+    session.flush()
+    return edited
+
+
+def _prepare_source_edit_case(session, task):
+    channel_comment.build_plan(session, task)
+    actions = sorted(
+        session.scalars(select(Action).where(Action.task_id == task.id)),
+        key=lambda row: int(row.payload["target_ordinal"]),
+    )
+    action, held_action = actions
+    obligations = _ordered_obligations(session)
+    held = next(row for row in obligations if row.current_action_id == held_action.id)
+    movable = next(row for row in obligations if row.current_action_id == action.id)
+    session.add(GenerationJob(
+        id="source-edit-generation-job",
+        tenant_id=task.tenant_id,
+        task_id=task.id,
+        obligation_type="post_comment",
+        obligation_id=movable.id,
+        generation_sequence=1,
+        context_snapshot_version=1,
+        state="pending",
+    ))
+    held_action.status = "unknown_after_send"
+    mark_comment_capacity_gateway_hold(session, held_action.id)
+    edited = _new_edited_source(session, session.get(ChannelMessage, 41))
+    return action, held_action, edited, _obligation_shape(obligations), held
+
+
+def test_source_edit_replaces_only_pre_gateway_assignment(monkeypatch) -> None:
     forbid_planner_external_boundaries(monkeypatch)
     fixed_profile(monkeypatch)
     with planner_session() as session:
         task = seed_comment_task(session, mode="comment", target_count=3)
         _enable_grounding_plan(session, task)
-        channel_comment.build_plan(session, task)
-        action = session.scalar(select(Action).where(Action.task_id == task.id))
-        message = session.get(ChannelMessage, 41)
-        edited = ChannelMessageSourceRevision(
-            id="source-revision-2",
-            tenant_id=1,
-            channel_message_id=message.id,
-            source_revision=2,
-            source_remote_message_id=message.message_id,
-            source_published_at=message.published_at,
-            source_observed_at=STABLE_PLANNER_NOW,
-            source_text_snapshot="编辑后的频道事实",
-            source_content_hash="c" * 64,
-            observation_identity_hash="d" * 64,
-            source_operation="edited",
+        action, held_action, edited, original, held_obligation = (
+            _prepare_source_edit_case(session, task)
         )
-        session.add(edited)
-        session.flush()
-        message.current_source_revision_id = edited.id
-        session.flush()
+        held_assignment_id = held_obligation.grounding_assignment_id
+        held_payload = dict(held_action.payload)
+        message = session.get(ChannelMessage, 41)
+        operation = reconcile_channel_comment_source_edit(
+            session, message, edited, at=STABLE_PLANNER_NOW,
+        )[0]
+        replay = reconcile_channel_comment_source_edit(
+            session, message, edited, at=STABLE_PLANNER_NOW,
+        )[0]
 
         blocker = comment_grounding_send_blocker(
             session, action, PostCommentPayload.model_validate(action.payload),
         )
 
-    assert blocker == "source_revision_superseded"
+        session.flush()
+        refreshed = _ordered_obligations(session)
+        movable = next(row for row in refreshed if row.current_action_id is None)
+        successor = session.get(
+            ChannelCommentGroundingAssignment, movable.grounding_assignment_id,
+        )
+        held = next(row for row in refreshed if row.current_action_id == held_action.id)
+        reservation = session.scalar(select(TaskCommentCapacityReservation).where(
+            TaskCommentCapacityReservation.obligation_id == movable.id,
+        ))
+        after = _obligation_shape(refreshed)
+        operation_count = session.scalar(select(
+            func.count(ChannelCommentContentRevisionOperation.id),
+        ))
+        generation_job = session.get(GenerationJob, "source-edit-generation-job")
+        pacing_reservation = session.scalar(select(AccountPacingReservation).where(
+            AccountPacingReservation.pacing_slot_key == f"comment:{movable.id}",
+        ))
+
+    assert blocker == "source_revision_superseded_before_gateway"
+    assert replay.id == operation.id
+    assert after == original
+    assert movable.status == "replan_required"
+    assert successor.source_revision_id == edited.id
+    assert successor.supersedes_assignment_id == action.payload["grounding_assignment_id"]
+    assert successor.assignment_version == 2
+    assert reservation.reservation_state == "released"
+    assert action.status == "cancelled"
+    assert pacing_reservation.state == "reserved"
+    assert pacing_reservation.action_id is None
+    assert generation_job.state == "failed"
+    assert generation_job.evaluator_evidence == {
+        "invalidation_reason": "source_revision_superseded_before_gateway",
+    }
+    assert held.grounding_assignment_id == held_assignment_id
+    assert held_action.payload == held_payload
+    assert operation_count == 1
 
 
 def test_released_capacity_blocks_frozen_action_before_gateway(monkeypatch) -> None:

@@ -23,6 +23,7 @@ from app.models import (
 )
 from app.services.channel_target_reference import channel_read_reference
 from app.services.task_center import channel_listener_runtime
+from app.services.task_center import channel_listener_snapshot_persistence
 from app.services.task_center.channel_listener_runtime import (
     channel_snapshot_state,
     drain_channel_listener_runtime,
@@ -115,6 +116,38 @@ def test_fresh_empty_snapshot_hides_messages_from_previous_revision(monkeypatch)
         assert item_count == 0
         assert channel is None
         assert messages == []
+
+
+def test_listener_dispatches_source_edit_revision_operation(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    _seed_dynamic_channel_task(engine)
+    current_time = [NOW]
+    first = _snapshot(9001)
+    edited = SimpleNamespace(**{**vars(first), "content_preview": "edited message"})
+    snapshots = [[first], [edited]]
+    operations = []
+    monkeypatch.setattr(channel_listener_runtime, "_now", lambda: current_time[0])
+    monkeypatch.setattr(
+        channel_listener_runtime, "credentials_for_task_account", lambda *_args: object(),
+    )
+    monkeypatch.setattr(
+        channel_listener_runtime.gateway, "fetch_channel_messages",
+        lambda *_args, **_kwargs: snapshots.pop(0),
+    )
+    monkeypatch.setattr(
+        channel_listener_snapshot_persistence,
+        "reconcile_channel_comment_source_edit",
+        lambda _session, _message, source, **_kwargs: operations.append(source.id),
+    )
+
+    drain_channel_listener_runtime(lambda: Session(engine), limit=10)
+    current_time[0] += timedelta(seconds=30)
+    drain_channel_listener_runtime(lambda: Session(engine), limit=10)
+
+    with Session(engine) as session:
+        message = session.scalar(select(ChannelMessage))
+        assert operations == [message.current_source_revision_id]
 
 
 def test_reaction_probe_failure_keeps_shared_message_snapshot_ready(monkeypatch) -> None:

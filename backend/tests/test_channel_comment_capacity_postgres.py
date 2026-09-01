@@ -8,6 +8,8 @@ from sqlalchemy import delete, func, select
 from app.database import Base, SessionLocal, engine
 from app.models import (
     ChannelCommentCapacityAllocationEpoch,
+    ChannelCommentContentRevisionOperation,
+    ChannelCommentGroundingAssignment,
     ChannelCommentPlanContract,
     ChannelMessage,
     ChannelMessageSourceRevision,
@@ -21,6 +23,9 @@ from app.services.task_center.channel_comment_capacity import reserve_comment_ca
 from app.services.task_center.channel_comment_capacity_allocation import (
     rebalance_comment_capacity_epoch,
 )
+from app.services.task_center.channel_comment_content_revision import (
+    reconcile_channel_comment_source_edit,
+)
 from app.timezone import BEIJING_TZ
 
 
@@ -30,6 +35,7 @@ TASK_ID = "pg-comment-rolling-cap"
 MESSAGE_ID = 915_188
 PLAN_ID = "pg-comment-rolling-plan"
 SOURCE_ID = "pg-comment-rolling-source"
+EDIT_SOURCE_ID = "pg-comment-edited-source"
 SCHEDULED_AT = datetime(2030, 8, 2, 10, 0, tzinfo=BEIJING_TZ)
 
 
@@ -99,6 +105,42 @@ def test_postgres_task_lock_cas_reuses_same_allocation_epoch() -> None:
         _cleanup()
 
 
+def test_postgres_plan_lock_cas_reuses_same_content_revision_operation() -> None:
+    Base.metadata.create_all(engine)
+    _cleanup()
+    _seed_source_edit_scope()
+    start = Barrier(2)
+
+    def reconcile() -> str:
+        with SessionLocal() as session:
+            message = session.get(ChannelMessage, MESSAGE_ID)
+            source = session.get(ChannelMessageSourceRevision, EDIT_SOURCE_ID)
+            start.wait(timeout=5)
+            operation = reconcile_channel_comment_source_edit(
+                session, message, source, at=SCHEDULED_AT,
+            )[0]
+            session.commit()
+            return operation.id
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            operation_ids = list(pool.map(lambda _index: reconcile(), range(2)))
+        with SessionLocal() as session:
+            operation_count = session.scalar(select(func.count(
+                ChannelCommentContentRevisionOperation.id,
+            )).where(ChannelCommentContentRevisionOperation.task_id == TASK_ID))
+            assignments = list(session.scalars(select(
+                ChannelCommentGroundingAssignment,
+            ).where(ChannelCommentGroundingAssignment.plan_contract_id == PLAN_ID)))
+        assert operation_ids[0] == operation_ids[1]
+        assert operation_count == 1
+        assert len(assignments) == 2
+        assert sum(row.assignment_state == "active" for row in assignments) == 1
+        assert next(row for row in assignments if row.assignment_state == "active").source_revision_id == EDIT_SOURCE_ID
+    finally:
+        _cleanup()
+
+
 def _seed_scope() -> list[str]:
     obligation_ids = ["pg-comment-obligation-1", "pg-comment-obligation-2"]
     with SessionLocal() as session:
@@ -134,6 +176,43 @@ def _seed_scope() -> list[str]:
         _seed_plan(session, obligation_ids)
         session.commit()
     return obligation_ids
+
+
+def _seed_source_edit_scope() -> None:
+    obligation_ids = _seed_scope()
+    with SessionLocal() as session:
+        source = _source_revision()
+        session.add(ChannelMessageSourceRevision(
+            id=EDIT_SOURCE_ID,
+            tenant_id=TENANT_ID,
+            channel_message_id=MESSAGE_ID,
+            source_revision=2,
+            source_remote_message_id=MESSAGE_ID,
+            source_published_at=SCHEDULED_AT,
+            source_observed_at=SCHEDULED_AT,
+            source_text_snapshot="PG edited source",
+            source_content_hash="e" * 64,
+            observation_identity_hash="f" * 64,
+            source_operation="edited",
+        ))
+        assignment = ChannelCommentGroundingAssignment(
+            id="pg-comment-grounding-1",
+            tenant_id=TENANT_ID,
+            plan_contract_id=PLAN_ID,
+            source_revision_id=source.id,
+            target_ordinal=1,
+            assignment_version=1,
+            evidence_text=source.source_text_snapshot,
+            evidence_hash=source.source_content_hash,
+            primary_aspect_text=source.source_text_snapshot,
+            assignment_state="active",
+        )
+        session.add(assignment)
+        obligation = session.get(CommentFulfillmentObligation, obligation_ids[0])
+        obligation.grounding_assignment_id = assignment.id
+        message = session.get(ChannelMessage, MESSAGE_ID)
+        message.current_source_revision_id = EDIT_SOURCE_ID
+        session.commit()
 
 
 def _seed_plan(session, obligation_ids: list[str]) -> None:

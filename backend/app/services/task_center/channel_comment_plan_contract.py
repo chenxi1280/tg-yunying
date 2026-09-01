@@ -221,22 +221,14 @@ def _freeze_grounding_assignments(
     contract: ChannelCommentPlanContract,
     source: ChannelMessageSourceRevision,
 ) -> None:
-    extracted = _extract_channel_post_aspects(source.source_text_snapshot)
-    aspects = list(extracted.get("aspects") or [])
     for ordinal in range(1, int(contract.grounding_required_count) + 1):
-        code, text = _assigned_aspect(source.source_text_snapshot, aspects, ordinal)
         session.add(ChannelCommentGroundingAssignment(
             tenant_id=task.tenant_id,
             plan_contract_id=contract.id,
             source_revision_id=source.id,
             target_ordinal=ordinal,
             assignment_version=1,
-            evidence_text=source.source_text_snapshot,
-            evidence_hash=source.source_content_hash,
-            primary_aspect_code=code,
-            primary_aspect_text=text,
-            teacher_name=str(extracted.get("teacher_name") or ""),
-            speech_act=SPEECH_ACTS[(ordinal - 1) % len(SPEECH_ACTS)],
+            **grounding_assignment_content(source, ordinal),
             assignment_state="active",
         ))
     session.flush()
@@ -248,6 +240,23 @@ def _assigned_aspect(source_text: str, aspects: list[dict], ordinal: int) -> tup
     aspect = aspects[(ordinal - 1) % len(aspects)]
     matches = "/".join(str(item) for item in (aspect.get("matches") or [])[:3])
     return str(aspect.get("code") or "source_fact"), matches or str(aspect.get("label") or "")
+
+
+def grounding_assignment_content(
+    source: ChannelMessageSourceRevision,
+    ordinal: int,
+) -> dict:
+    extracted = _extract_channel_post_aspects(source.source_text_snapshot)
+    aspects = list(extracted.get("aspects") or [])
+    code, text = _assigned_aspect(source.source_text_snapshot, aspects, ordinal)
+    return {
+        "evidence_text": source.source_text_snapshot,
+        "evidence_hash": source.source_content_hash,
+        "primary_aspect_code": code,
+        "primary_aspect_text": text,
+        "teacher_name": str(extracted.get("teacher_name") or ""),
+        "speech_act": SPEECH_ACTS[(ordinal - 1) % len(SPEECH_ACTS)],
+    }
 
 
 def _account_bindings(session: Session, plan_contract_id: str) -> dict[int, int]:
@@ -284,5 +293,6 @@ __all__ = [
     "FrozenCommentPlan",
     "QUANTITY_CONTRACT_VERSION",
     "ensure_comment_plan_contract",
+    "grounding_assignment_content",
     "grounding_plan_enabled",
 ]

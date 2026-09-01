@@ -15,6 +15,7 @@ from app.models import (
     ListenerSourceState,
     OperationTarget,
 )
+from .channel_comment_content_revision import reconcile_channel_comment_source_edit
 FRESHNESS_MULTIPLIER = 2
 
 
@@ -101,6 +102,10 @@ def _upsert_channel_message(
     message.published_at = published_at or message.published_at
     if revision is not None:
         message.current_source_revision_id = revision.id
+        if revision.source_operation == "edited":
+            reconcile_channel_comment_source_edit(
+                session, message, revision, at=_wall(observed_at),
+            )
     return message
 
 
