@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from alembic import command
 from alembic.config import Config
 import pytest
@@ -19,6 +21,8 @@ from test_channel_comment_capacity_postgres import (
 
 
 pytestmark = pytest.mark.allow_missing_rule_binding
+
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_0192_backfills_legacy_quality_target_and_round_trips() -> None:
@@ -63,8 +67,8 @@ def test_0192_backfills_legacy_quality_target_and_round_trips() -> None:
 
 def _migrate(operation: str, revision: str) -> None:
     engine.dispose()
-    config = Config("backend/alembic.ini")
-    config.set_main_option("script_location", "backend/migrations")
+    config = Config(str(BACKEND_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(BACKEND_ROOT / "migrations"))
     getattr(command, operation)(config, revision)
     engine.dispose()
 
