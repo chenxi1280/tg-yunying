@@ -159,17 +159,21 @@ def _create_prepared_actions(
 
 
 def _lock_comment_task(session: Session, task: Task) -> bool:
+    statement = select(Task.id).where(
+        Task.id == task.id,
+        Task.tenant_id == task.tenant_id,
+        Task.status == "running",
+        Task.deleted_at.is_(None),
+        Task.task_lifecycle_epoch == int(task.task_lifecycle_epoch or 1),
+    )
+    if session.get_bind().dialect.name == "postgresql":
+        statement = statement.with_for_update()
+    task_id = session.scalar(statement)
+    if task_id is None:
+        return False
     if session.get_bind().dialect.name == "postgresql":
         session.execute(select(func.pg_advisory_xact_lock(_comment_task_lock_key(task))))
-    task_id = session.scalar(
-        select(Task.id)
-        .where(
-            Task.id == task.id,
-            Task.tenant_id == task.tenant_id,
-            Task.deleted_at.is_(None),
-        )
-    )
-    return task_id is not None
+    return True
 
 
 def _comment_task_lock_key(task: Task) -> int:

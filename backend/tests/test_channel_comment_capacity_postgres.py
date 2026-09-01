@@ -7,6 +7,7 @@ from sqlalchemy import delete, func, select
 
 from app.database import Base, SessionLocal, engine
 from app.models import (
+    AuditLog,
     ChannelCommentCapacityAllocationEpoch,
     ChannelCommentContentRevisionOperation,
     ChannelCommentGroundingAssignment,
@@ -30,6 +31,7 @@ from app.services.task_center.channel_comment_content_revision import (
 from app.services.task_center.channel_comment_source_delete import (
     settle_channel_comment_source_deleted,
 )
+from app.services.task_center.service import pause_task
 from app.timezone import BEIJING_TZ
 
 
@@ -179,6 +181,42 @@ def test_postgres_plan_lock_cas_reuses_same_source_delete_event() -> None:
         _cleanup()
 
 
+def test_postgres_task_lock_cas_reuses_same_pause_event() -> None:
+    Base.metadata.create_all(engine)
+    _cleanup()
+    obligation_ids = _seed_scope()
+    start = Barrier(2)
+
+    def pause() -> tuple[int, str]:
+        with SessionLocal() as session:
+            start.wait(timeout=5)
+            task = pause_task(session, TENANT_ID, TASK_ID, "operator")
+            event_id = session.scalar(select(ChannelCommentPlanLifecycleEvent.id).where(
+                ChannelCommentPlanLifecycleEvent.task_id == TASK_ID,
+                ChannelCommentPlanLifecycleEvent.event_type == "pause",
+            ))
+            return int(task.task_lifecycle_epoch), event_id
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            outcomes = list(pool.map(lambda _index: pause(), range(2)))
+        with SessionLocal() as session:
+            event_count = session.scalar(select(func.count(
+                ChannelCommentPlanLifecycleEvent.id,
+            )).where(
+                ChannelCommentPlanLifecycleEvent.task_id == TASK_ID,
+                ChannelCommentPlanLifecycleEvent.event_type == "pause",
+            ))
+            obligations = list(session.scalars(select(
+                CommentFulfillmentObligation,
+            ).where(CommentFulfillmentObligation.id.in_(obligation_ids))))
+        assert outcomes[0] == outcomes[1]
+        assert event_count == 1
+        assert all(row.status == "paused_unallocated" for row in obligations)
+    finally:
+        _cleanup()
+
+
 def _seed_scope() -> list[str]:
     obligation_ids = ["pg-comment-obligation-1", "pg-comment-obligation-2"]
     with SessionLocal() as session:
@@ -320,5 +358,6 @@ def _cleanup() -> None:
         session.execute(delete(Task).where(Task.id == TASK_ID))
         session.execute(delete(ChannelMessage).where(ChannelMessage.id == MESSAGE_ID))
         session.execute(delete(OperationTarget).where(OperationTarget.id == TENANT_ID))
+        session.execute(delete(AuditLog).where(AuditLog.tenant_id == TENANT_ID))
         session.execute(delete(Tenant).where(Tenant.id == TENANT_ID))
         session.commit()

@@ -3240,6 +3240,10 @@ def pause_task(session: Session, tenant_id: int, task_id: str, actor: str) -> Ta
     _advance_task_lifecycle_epoch(task, "paused")
     task.status = "paused"
     task.next_run_at = None
+    if task.type == "channel_comment":
+        from .channel_comment_lifecycle import pause_channel_comment_plans
+
+        pause_channel_comment_plans(session, task, occurred_at=_now())
     audit(
         session,
         tenant_id=tenant_id,

@@ -17,6 +17,7 @@ from app.models import (
     ChannelMessage,
     ChannelMessageSourceRevision,
     CommentFulfillmentObligation,
+    ExecutionAttempt,
     GenerationJob,
     SourcePacingAdmission,
     SourcePacingState,
@@ -41,6 +42,7 @@ from app.services.task_center.channel_comment_content_revision import (
 from app.services.task_center.channel_comment_source_delete import (
     settle_channel_comment_source_deleted,
 )
+from app.services.task_center.service import pause_task
 from app.services.task_center.channel_payloads import PostCommentPayload
 from channel_comment_planner_test_support import (
     STABLE_PLANNER_NOW,
@@ -593,6 +595,156 @@ def test_source_delete_terminates_only_pre_gateway_owner(
         "confirmed" if held_state == "confirmed" else "gateway_hold"
     )
     assert result["event_count"] == 1
+
+
+def test_task_pause_releases_only_pre_gateway_comment_owner(monkeypatch) -> None:
+    forbid_planner_external_boundaries(monkeypatch)
+    fixed_profile(monkeypatch)
+    with planner_session() as session:
+        task = seed_comment_task(session, mode="comment", target_count=3)
+        _enable_grounding_plan(session, task)
+        channel_comment.build_plan(session, task)
+        actions = sorted(
+            session.scalars(select(Action).where(Action.task_id == task.id)),
+            key=lambda row: int(row.payload["target_ordinal"]),
+        )
+        movable, held_action = actions
+        obligations = _ordered_obligations(session)
+        movable_obligation = next(row for row in obligations if row.current_action_id == movable.id)
+        held_obligation = next(row for row in obligations if row.current_action_id == held_action.id)
+        _seed_pre_gateway_generation_and_source_admission(
+            session, task, action=movable, obligation=movable_obligation,
+        )
+        _hold_delete_identity(session, held_action, held_obligation, held_state="unknown")
+        old_deadline = session.get(
+            ChannelCommentPlanContract, movable_obligation.plan_contract_id,
+        ).deadline_at
+        old_epoch = task.task_lifecycle_epoch
+
+        paused = pause_task(session, task.tenant_id, task.id, "operator")
+        edited = _new_edited_source(session, session.get(ChannelMessage, 41))
+        reconcile_channel_comment_source_edit(
+            session, session.get(ChannelMessage, 41), edited, at=STABLE_PLANNER_NOW,
+        )
+        replay = pause_task(session, task.tenant_id, task.id, "operator")
+        created_while_paused = channel_comment.build_plan(session, replay)
+        result = _task_pause_result(session, movable_obligation.id, held_obligation.id)
+
+    assert paused.status == "paused"
+    assert paused.task_lifecycle_epoch == old_epoch + 1
+    assert replay.task_lifecycle_epoch == paused.task_lifecycle_epoch
+    assert created_while_paused == 0
+    assert result["deadline"] == old_deadline
+    assert result["movable_status"] == "paused_unallocated"
+    assert result["movable_action_status"] == "cancelled"
+    assert result["generation_state"] == "failed"
+    assert result["capacity_state"] == "released"
+    assert result["pacing_action_id"] is None
+    assert result["source_admission_state"] == "cancelled_pre_gateway"
+    assert result["held_status"] == "unknown"
+    assert result["held_action_status"] == "unknown_after_send"
+    assert result["held_capacity_state"] == "gateway_hold"
+    assert result["event_types"] == ["pause"]
+    assert result["allocation_epochs"] == [1, 2]
+    assert result["assignment_source_revision"] == "source-revision-2"
+
+
+def test_task_pause_preserves_gateway_started_and_settles_expired(monkeypatch) -> None:
+    forbid_planner_external_boundaries(monkeypatch)
+    fixed_profile(monkeypatch)
+    with planner_session() as session:
+        task = seed_comment_task(session, mode="comment", target_count=3)
+        _enable_grounding_plan(session, task)
+        channel_comment.build_plan(session, task)
+        actions = sorted(
+            session.scalars(select(Action).where(Action.task_id == task.id)),
+            key=lambda row: int(row.payload["target_ordinal"]),
+        )
+        gateway_action, expired_action = actions
+        gateway_action_id = gateway_action.id
+        obligations = _ordered_obligations(session)
+        gateway_obligation = next(
+            row for row in obligations if row.current_action_id == gateway_action.id
+        )
+        expired_obligation = next(
+            row for row in obligations if row.current_action_id == expired_action.id
+        )
+        plan = session.get(ChannelCommentPlanContract, gateway_obligation.plan_contract_id)
+        after_deadline = plan.deadline_at + timedelta(seconds=1)
+        gateway_action.status = "executing"
+        session.add(ExecutionAttempt(
+            id="pause-gateway-attempt", tenant_id=task.tenant_id,
+            action_id=gateway_action.id, worker_id="worker", attempt_no=1,
+            status="gateway_call_started", before_call_at=after_deadline,
+            gateway_call_started_at=after_deadline,
+        ))
+        monkeypatch.setattr(
+            "app.services.task_center.service._now", lambda: after_deadline,
+        )
+
+        pause_task(session, task.tenant_id, task.id, "operator")
+        gateway_capacity = session.scalar(select(TaskCommentCapacityReservation).where(
+            TaskCommentCapacityReservation.obligation_id == gateway_obligation.id,
+        ))
+        expired_capacity = session.scalar(select(TaskCommentCapacityReservation).where(
+            TaskCommentCapacityReservation.obligation_id == expired_obligation.id,
+        ))
+        result = {
+            "gateway_action_status": gateway_action.status,
+            "gateway_obligation_status": gateway_obligation.status,
+            "gateway_action_id": gateway_obligation.current_action_id,
+            "gateway_capacity": gateway_capacity.reservation_state,
+            "expired_obligation_status": expired_obligation.status,
+            "expired_action_id": expired_obligation.current_action_id,
+            "expired_action_status": expired_action.status,
+            "expired_capacity": expired_capacity.reservation_state,
+        }
+
+    assert result["gateway_action_status"] == "executing"
+    assert result["gateway_obligation_status"] == "pending"
+    assert result["gateway_action_id"] == gateway_action_id
+    assert result["gateway_capacity"] == "gateway_hold"
+    assert result["expired_obligation_status"] == "missed_task_paused"
+    assert result["expired_action_id"] is None
+    assert result["expired_action_status"] == "cancelled"
+    assert result["expired_capacity"] == "released"
+
+
+def _task_pause_result(session, movable_id: str, held_id: str) -> dict:
+    movable = session.get(CommentFulfillmentObligation, movable_id)
+    held = session.get(CommentFulfillmentObligation, held_id)
+    capacity = session.scalar(select(TaskCommentCapacityReservation).where(
+        TaskCommentCapacityReservation.obligation_id == movable.id,
+    ))
+    held_capacity = session.scalar(select(TaskCommentCapacityReservation).where(
+        TaskCommentCapacityReservation.obligation_id == held.id,
+    ))
+    pacing = session.scalar(select(AccountPacingReservation).where(
+        AccountPacingReservation.pacing_slot_key == f"comment:{movable.id}",
+    ))
+    return {
+        "deadline": session.get(ChannelCommentPlanContract, movable.plan_contract_id).deadline_at,
+        "movable_status": movable.status,
+        "movable_action_status": session.get(Action, capacity.action_id).status,
+        "generation_state": session.get(GenerationJob, "source-delete-generation-job").state,
+        "capacity_state": capacity.reservation_state,
+        "pacing_action_id": pacing.action_id,
+        "source_admission_state": session.get(
+            SourcePacingAdmission, "source-delete-admission",
+        ).state,
+        "held_status": held.status,
+        "held_action_status": session.get(Action, held.current_action_id).status,
+        "held_capacity_state": held_capacity.reservation_state,
+        "event_types": list(session.scalars(select(
+            ChannelCommentPlanLifecycleEvent.event_type,
+        ).order_by(ChannelCommentPlanLifecycleEvent.event_type))),
+        "allocation_epochs": list(session.scalars(select(
+            ChannelCommentCapacityAllocationEpoch.allocation_epoch,
+        ).order_by(ChannelCommentCapacityAllocationEpoch.allocation_epoch))),
+        "assignment_source_revision": session.get(
+            ChannelCommentGroundingAssignment, movable.grounding_assignment_id,
+        ).source_revision_id,
+    }
 
 
 def _seed_pre_gateway_generation_and_source_admission(

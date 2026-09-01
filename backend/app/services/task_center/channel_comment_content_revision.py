@@ -155,7 +155,8 @@ def _terminate_pre_gateway_owner(
         }
         release_action_pacing_reservation_before_gateway(session, action)
     obligation.current_action_id = None
-    obligation.status = "replan_required"
+    if obligation.status != "paused_unallocated":
+        obligation.status = "replan_required"
     release_comment_capacity(session, obligation.id)
 
 
