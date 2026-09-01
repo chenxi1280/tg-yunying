@@ -1,0 +1,86 @@
+name: Production AI Group Target Tuning
+
+on:
+  workflow_dispatch:
+    inputs:
+      deployed_sha:
+        description: Expected production release SHA
+        required: true
+        type: string
+        default: "4875b24ee977830a2bca7458c6b252ca31991c6e"
+      target:
+        description: New daily message target
+        required: true
+        type: string
+        default: "4200"
+      apply:
+        description: Apply changes to production database (default is false/preview)
+        required: true
+        type: boolean
+        default: false
+      task_id:
+        description: Optional specific task UUID (leave empty for all running tasks)
+        required: false
+        type: string
+        default: ""
+
+concurrency:
+  group: production-ai-group-target-tuning
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  tuning:
+    runs-on: ubuntu-latest
+    environment: production-silicon-valley
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SILICON_VALLEY_PRODUCTION_SSH_PRIVATE_KEY }}
+          DEPLOY_HOST: ${{ secrets.SILICON_VALLEY_PRODUCTION_HOST }}
+          DEPLOY_USER: ${{ secrets.SILICON_VALLEY_PRODUCTION_USER }}
+          DEPLOY_PORT: ${{ secrets.SILICON_VALLEY_PRODUCTION_PORT }}
+          SSH_CONNECT_TIMEOUT: ${{ vars.SSH_CONNECT_TIMEOUT }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf "%s\n" "${SSH_PRIVATE_KEY}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<EOF
+          Host silicon-valley-production-server
+            HostName ${DEPLOY_HOST}
+            User ${DEPLOY_USER}
+            Port ${DEPLOY_PORT:-22}
+            IdentityFile ~/.ssh/id_ed25519
+            IdentitiesOnly yes
+            StrictHostKeyChecking accept-new
+            ConnectTimeout ${SSH_CONNECT_TIMEOUT:-60}
+            ConnectionAttempts 3
+            ServerAliveInterval 15
+            ServerAliveCountMax 8
+          EOF
+          chmod 600 ~/.ssh/config
+
+      - name: Run daily target tuning script
+        env:
+          TARGET: ${{ inputs.target }}
+          APPLY: ${{ inputs.apply }}
+          TASK_ID: ${{ inputs.task_id }}
+        run: |
+          set -euo pipefail
+          APPLY_FLAG=""
+          if [[ "${APPLY}" == "true" ]]; then
+            APPLY_FLAG="--apply"
+          fi
+          TASK_FLAG=""
+          if [[ -n "${TASK_ID}" ]]; then
+            TASK_FLAG="--task-id ${TASK_ID}"
+          fi
+          ssh silicon-valley-production-server "timeout 120 docker exec -i tgyunying-backend python - --target ${TARGET} ${APPLY_FLAG} ${TASK_FLAG}" \
+            < backend/scripts/update_ai_group_daily_targets.py
