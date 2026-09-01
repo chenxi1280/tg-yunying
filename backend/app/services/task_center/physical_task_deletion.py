@@ -23,6 +23,11 @@ from app.models import (
 )
 from app.services._common import _now
 
+from .channel_comment_delete_tombstone import (
+    COMMENT_OUTCOME_ITEM,
+    comment_outcome_snapshots,
+    comment_tombstone_values,
+)
 from .physical_task_cleanup import delete_task_runtime_rows
 
 
@@ -66,6 +71,11 @@ def prepare_task_deletion(session: Session, request: DeleteRequest) -> TaskDelet
     ).rowcount
     if changed != 1:
         raise ValueError("physical_delete_lifecycle_epoch_conflict")
+    session.refresh(task)
+    if task.type == "channel_comment":
+        from .channel_comment_lifecycle import delete_channel_comment_plans
+
+        delete_channel_comment_plans(session, task, occurred_at=_now())
     return operation
 
 
@@ -150,6 +160,12 @@ def _snapshot_runtime(session: Session, operation: TaskDeleteOperation) -> dict:
     )) or 0)
     remote_actions = _remote_candidate_actions(session, task.id)
     _record_remote_items(session, operation.id, remote_actions)
+    comment_outcomes = comment_outcome_snapshots(session, task.id)
+    for outcome in comment_outcomes:
+        _record_item(
+            session, operation.id, entity_type=COMMENT_OUTCOME_ITEM,
+            entity_id=outcome.plan_id, state_hash=outcome.state_hash,
+        )
     item_hash = _item_set_hash(session, operation.id)
     return {
         "state": "snapshot_committed",
@@ -159,6 +175,7 @@ def _snapshot_runtime(session: Session, operation: TaskDeleteOperation) -> dict:
             "tasks": 1,
             "actions": action_count,
             "remote_candidates": len(remote_actions),
+            "channel_comment_outcomes": len(comment_outcomes),
         },
         "checkpoint": {"snapshot_hash": item_hash},
     }
@@ -172,6 +189,9 @@ def _write_tombstones(session: Session, operation: TaskDeleteOperation) -> dict:
         operation.original_task_id,
         action_ids,
     )
+    values.extend(comment_tombstone_values(
+        session, _fenced_task(session, operation), operation.id,
+    ))
     _insert_tombstones(session, values)
     pairs = {_pair(item) for item in values}
     tombstone_hash = _hash("|".join(sorted(pairs)))
@@ -201,6 +221,7 @@ def _begin_delete(session: Session, operation: TaskDeleteOperation) -> dict:
 
 def _delete_runtime(session: Session, operation: TaskDeleteOperation) -> dict:
     task = _fenced_task(session, operation)
+    _require_tombstone_pairs_exist(session, _expected_tombstone_pairs(session, operation))
     delete_task_runtime_rows(session, task.id)
     changed = session.execute(delete(Task).where(
         Task.id == task.id,
@@ -231,6 +252,8 @@ def _current_runtime_hash(session: Session, task: Task) -> str:
     rows = [("task", task.id, _task_hash(task))]
     for action in _remote_candidate_actions(session, task.id):
         rows.append(("remote_action", action.id, _action_hash(action)))
+    for outcome in comment_outcome_snapshots(session, task.id):
+        rows.append((COMMENT_OUTCOME_ITEM, outcome.plan_id, outcome.state_hash))
     return _hash("|".join(":".join(row) for row in sorted(rows)))
 
 
@@ -336,6 +359,9 @@ def _expected_tombstone_pairs(
         operation.original_task_id,
         _item_ids(session, operation.id, "remote_action"),
     )
+    values.extend(comment_tombstone_values(
+        session, _fenced_task(session, operation), operation.id,
+    ))
     pairs = {_pair(item) for item in values}
     return sorted(pairs)
 

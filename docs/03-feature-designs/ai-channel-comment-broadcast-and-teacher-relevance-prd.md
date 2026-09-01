@@ -6,8 +6,8 @@
 | --- | --- |
 | 需求级别 | L2 产品能力升级；同时闭合评论参与数量、广播/老师相关性与整体验收 |
 | 产品设计状态 | `design_complete` / `ready_for_dev`（v1.4 五轮业务复核通过） |
-| 实现状态 | `partial_local`：v1.4 兜底 policy/pool/cursor/selection、20 表情、静态图片发送、素材组完整性/CAS、journal typed fact 恢复已实现；0188 已补 SourceRevision、数量 Plan、eligible snapshot、ordinal-account binding、首版基础 GroundingAssignment、全量 obligation/JIT Action、planned fallback、连续 UTC capacity period/reservation、跨 period rolling 24h 二次硬限额和三维保守验收；0189 已补 append-only allocation epoch 与新 open Plan 加入时的 max-min future `plan_reserved` 重排；0190 已补来源编辑 operation、pre-Gateway assignment successor 与 Gateway identity fence；0191 已补 Telegram 精确消息查询删除事实及通用 append-only lifecycle event 表，当前 source-deleted、pause、resume 与 stop 已接入。Task 删除触发的完整 tombstone/epoch 闭环、独立 QualityTargetRevision、完整多老师/时效 extraction 与 Gateway accepted/outbound hash 闭环仍未完成 |
-| QA 状态 | `partial_local`：数量/来源/assignment/planned fallback/selection read-model/三维验收、max-min、来源编辑、来源删除与 pause/resume/stop 分流定向 no-postgres 回归通过；0189/0190 离线 upgrade/downgrade、真实旧 schema transition、fresh 全链迁移通过；真实 PostgreSQL rolling cap/epoch/content revision/source delete/pause/resume/stop CAS 七项通过。完整跨功能回归、Task delete、UI 人工验收和 E4 未通过 |
+| 实现状态 | `partial_local`：v1.4 兜底 policy/pool/cursor/selection、20 表情、静态图片发送、素材组完整性/CAS、journal typed fact 恢复已实现；0188 已补 SourceRevision、数量 Plan、eligible snapshot、ordinal-account binding、首版基础 GroundingAssignment、全量 obligation/JIT Action、planned fallback、连续 UTC capacity period/reservation、跨 period rolling 24h 二次硬限额和三维保守验收；0189 已补 append-only allocation epoch 与新 open Plan 加入时的 max-min future `plan_reserved` 重排；0190 已补来源编辑 operation、pre-Gateway assignment successor 与 Gateway identity fence；0191 已补 Telegram 精确消息查询删除事实及通用 append-only lifecycle event 表，当前 source-deleted、pause、resume、stop、软删除和物理删除前 Task 独立 outcome tombstone 已接入。独立 QualityTargetRevision、完整多老师/时效 extraction 与 Gateway accepted/outbound hash 闭环仍未完成 |
+| QA 状态 | `partial_local`：数量/来源/assignment/planned fallback/selection read-model/三维验收、max-min、来源编辑、来源删除与 pause/resume/stop/delete 分流定向 no-postgres 回归通过；0189/0190 离线 upgrade/downgrade、真实旧 schema transition、fresh 全链迁移通过；真实 PostgreSQL rolling cap/epoch/content revision/source delete/pause/resume/stop CAS 七项及 Task delete 三项通过。完整跨功能回归、UI 人工验收和 E4 未通过 |
 | 发布状态 | `not_released` |
 | 生产状态 | `unproven`；无真实 Telegram E4 证据 |
 | 适用任务 | `channel_comment`、`channel_comment_reply` |
@@ -44,6 +44,8 @@
 第十四轮本地修复（2026-09-01）：继续复用 0191 通用 lifecycle 表接入 `resume`，不新增 schema。`resume_task` 在 Task 行锁内冻结 `was_paused`，推进到新 lifecycle epoch 后，仅对真实 `paused -> running` 的 channel-comment 写唯一 resume event；并发第二个恢复者读到 running 后不重复事件或 allocation epoch。仍未过 deadline 的 `paused_unallocated` 只恢复为同 ordinal 的 `replan_required`，复用原 Plan、账号 binding、direct/reply 关系、pacing due 与当前 active assignment（包括暂停期间 source edit 产生的 successor），随后按 `max(pacing_due_at,release_not_before_at,resume_at)` 进入新 capacity allocation epoch，不集中追赶。`missed_task_paused` 永不重开；Gateway-started/unknown/confirmed 的 Action、payload、assignment 与 capacity hold 原样保留。该切片不包含 stop/Task-delete，也不代表发布或 E4。
 
 第十五轮本地修复（2026-09-01）：继续复用 0191 通用 lifecycle 表接入 `stop`，不新增 schema。`stop_task` 推进新 Task lifecycle epoch/status 后绕开会把 `post_comment` 一律写 skipped 的通用结算，按 Plan 行锁与稳定 evidence hash 追加唯一 stop event；仅未进 Gateway 且未形成历史终态的 GenerationJob/Action owner 被终结，comment capacity、account pacing、source pacing admission 全部释放，obligation 与 Plan 明确写 `terminated_by_operator`。Gateway-started/unknown/confirmed 的 Action、payload、assignment、remote fact 与 capacity hold 保持；历史 `missed_*`/terminated outcome 不被后续 stop 改写。Plan 退出 open set后追加空剩余 capacity allocation epoch；acceptance 三维显式投影 terminated，不能用已有确认数把 stop 伪装成 met。重复 stop 与 PostgreSQL 双 worker CAS 只产生一个 event/epoch。该切片不包含软删除/物理 Task 删除 tombstone，也不代表发布或 E4。
+
+第十六轮本地修复（2026-09-01）：软删除在 Task 行锁内先推进新 lifecycle epoch/status，再复用 0191 追加唯一 delete event，绕开通用 `task_deleted` Action 结算；pre-Gateway GenerationJob/Action、comment/account/source 三类 owner 终结并释放，Plan/obligation 写 `terminated_by_operator`，Gateway-started/unknown/confirmed identity 只 reconcile。物理删除 `prepare` 对直接删除的 channel-comment Task 执行同一 lifecycle fence；snapshot 将每个 Plan 的 contract state、lifecycle event identity 与 obligation outcome 汇总为不可逆 hash，并写入不受 Task cascade 的 `RemoteMutationTombstone(channel_comment_lifecycle)`。`delete_runtime` 前重新读回全部 expected tombstone，缺失或 outcome 变化即拒绝删除；重复软删除双 writer只产生一个 event。该切片不代表 QualityTargetRevision、完整抽取、发布或 E4 已完成。
 
 ---
 
@@ -637,7 +639,7 @@ v1 只把平台已持久化的文本正文、caption 和明确结构化字段作
 
 实现读回（2026-09-01）：0190 已实现 operation CAS、active assignment 部分唯一键、pre-Gateway owner 终结/容量释放/successor 追加及 Gateway identity 保留；当前 successor 仍复用基础 SourceRevision 文本抽取，独立 GroundingSnapshot、QualityTargetRevision 和多老师/时效 component 尚未实现，不能把该切片解释为完整 grounding 质量合同完成。
 
-删除与 Task 生命周期实现读回（2026-09-01）：0191 已实现 exact-ID 权威删除探测、append-only lifecycle event、pre-Gateway owner/三类 reservation 释放及 Dispatcher 前专项阻断；历史页窗口缺失或探测错误都不结算删除。已进入 Gateway 的 identity 和远端事实保持不变。pause 已闭合 owner 释放、deadline 分流与 Planner epoch fence；resume 已闭合剩余曲线再分配、source-edit successor 复用、missed 不重开及 PostgreSQL 双 worker CAS；stop 已闭合 operator termination、三类 owner 释放、terminated acceptance 与双 worker CAS。软删除/物理 Task 删除 tombstone 仍是独立未完成生命周期切片。
+删除与 Task 生命周期实现读回（2026-09-01）：0191 已实现 exact-ID 权威删除探测、append-only lifecycle event、pre-Gateway owner/三类 reservation 释放及 Dispatcher 前专项阻断；历史页窗口缺失或探测错误都不结算删除。已进入 Gateway 的 identity 和远端事实保持不变。pause 已闭合 owner 释放、deadline 分流与 Planner epoch fence；resume 已闭合剩余曲线再分配、source-edit successor 复用、missed 不重开及 PostgreSQL 双 worker CAS；stop 与软删除已闭合 operator termination、三类 owner 释放、terminated acceptance 与双 worker CAS。物理删除在 Task cascade 前固化并读回 Plan lifecycle/outcome `RemoteMutationTombstone`，缺 tombstone 时禁止删除 runtime。
 
 ---
 
@@ -1405,7 +1407,7 @@ Phase 0 开始前必须对最近 30 天真实来源做只读基线：可取时�
 - [ ] 同账号同消息 revision 最多确认一次 distinct participation，重复远端事实不重复计数；
 - [ ] Gateway 前账号失效只可从冻结 eligible rows 按 stable rank append binding attempt；Gateway/unknown/success 后不换号；
 - [ ] 正常正文、20 个 Unicode 表情和图片表情包评论均须匹配冻结内容身份且取得 `remote_message_id` 才计 quantity；planned fallback 可按合同验收但不计 grounding，emergency fallback 只保 quantity；
-- [ ] resume 只走剩余曲线；stop/Task delete 终止 pre-Gateway 且不伪装 met；source deleted 与 pause 的终止/保留分流已完成，pause 会释放 future capacity且不顺延 deadline；
+- [x] resume 只走剩余曲线；stop/Task delete 终止 pre-Gateway 且不伪装 met；source deleted 与 pause 的终止/保留分流已完成，pause 会释放 future capacity且不顺延 deadline；
 - [ ] current execution、recent 7/30 天 SLA 与 lifetime outcome 分列，历史 missed 不永久覆盖当前状态；
 - [ ] quantity、content mix、grounding 三维组合状态和 deadline/late fact 规则与 §4.4 一致。
 
@@ -1583,7 +1585,7 @@ E4 样本必须至少包含：
 - [x] 正常正文 Action 绑定 source revision、grounding assignment 和 evidence hash；详情只以持久 selection/typed remote fact 投影完成；
 - [x] quantity/content mix/grounding quality 三维验收已接入 Task 与消息详情，且 emergency fallback 不冒充 grounded；
 - [x] 连续 UTC Daily Cap period/reservation 基线、时区切换首尾相接与 reservation 单向状态已实现；
-- [ ] 跨全部开放消息的完整 max-min allocation epoch、epoch CAS 和公平重排（新 open Plan 加入、append-only fingerprint/result epoch、future `plan_reserved` 公平重排与 pause release/resume remaining-curve/stop termination trigger 已实现；仍缺 Task delete 的 tombstone/Plan 终止 writer trigger）；
+- [x] 跨全部开放消息的 max-min allocation epoch、epoch CAS 和公平重排；新 open Plan、append-only fingerprint/result epoch、future `plan_reserved` 重排及 pause/resume/stop/delete lifecycle trigger 均已接入；
 - [x] reservation 创建同时通过单 UTC period cap 与跨 period rolling 24h 二次硬限额；候选前后已有预约均纳入，恰好 24 小时旧占用退出窗口；
 - [ ] 独立 QualityTargetRevision、完整多老师/否定/时效 extraction 与远端覆盖审查（source edit operation/successor 已由 0190 实现，source delete lifecycle 已由 0191 实现）；
 - [x] 无内容弱信号提升 route；

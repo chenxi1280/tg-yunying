@@ -3355,15 +3355,6 @@ def delete_task(
 
         assert_group_clone_delete_safe(session, task)
     now = _now()
-    _settle_task_closing_actions(
-        session,
-        task,
-        statuses=tuple(sorted(OPEN_PLAN_ACTION_STATUSES)),
-        error_code="task_deleted",
-        error_message="任务已删除",
-        now=now,
-    )
-    refresh_task_stats(session, task)
     _advance_task_lifecycle_epoch(task, "deleted")
     task.status = "deleted"
     task.next_run_at = None
@@ -3371,6 +3362,20 @@ def delete_task(
     task.deleted_by = actor
     task.delete_reason = reason
     task.updated_at = now
+    if task.type == "channel_comment":
+        from .channel_comment_lifecycle import delete_channel_comment_plans
+
+        delete_channel_comment_plans(session, task, occurred_at=now)
+    else:
+        _settle_task_closing_actions(
+            session,
+            task,
+            statuses=tuple(sorted(OPEN_PLAN_ACTION_STATUSES)),
+            error_code="task_deleted",
+            error_message="任务已删除",
+            now=now,
+        )
+    refresh_task_stats(session, task)
     clear_task_runtime_artifacts(
         session, task, reason="任务删除后自动解决关联告警", actor=actor
     )

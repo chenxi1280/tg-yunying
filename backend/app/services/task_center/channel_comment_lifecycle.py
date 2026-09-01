@@ -36,6 +36,9 @@ RESUME_REASON = "task_resumed_by_operator"
 STOP_EVENT = "stop"
 STOP_REASON = "task_stopped_by_operator"
 STOP_ACTION_REASON = "task_stopped_before_gateway"
+DELETE_EVENT = "delete"
+DELETE_REASON = "task_deleted_by_operator"
+DELETE_ACTION_REASON = "task_deleted_before_gateway"
 OPERATOR_TERMINATED_STATE = "terminated_by_operator"
 
 
@@ -114,7 +117,11 @@ def stop_channel_comment_plans(
     if not plan_ids:
         return []
     events = [
-        _stop_plan(session, task, plan_id=plan_id, occurred_at=occurred_at)
+        _terminate_plan(
+            session, task, plan_id=plan_id, occurred_at=occurred_at,
+            event_type=STOP_EVENT, event_reason=STOP_REASON,
+            action_reason=STOP_ACTION_REASON,
+        )
         for plan_id in plan_ids
     ]
     rebalance_comment_capacity_epoch(
@@ -122,6 +129,39 @@ def stop_channel_comment_plans(
         daily_cap=int((task.type_config or {}).get("daily_comment_cap") or 0),
         at=occurred_at,
     )
+    return events
+
+
+def delete_channel_comment_plans(
+    session: Session,
+    task: Task,
+    *,
+    occurred_at: datetime,
+) -> list[ChannelCommentPlanLifecycleEvent]:
+    if task.type != "channel_comment" or task.status not in {"deleted", "deleting"}:
+        raise ValueError("channel_comment_delete_task_state_invalid")
+    plan_ids = list(session.scalars(
+        select(ChannelCommentPlanContract.id).where(
+            ChannelCommentPlanContract.task_id == task.id,
+            ChannelCommentPlanContract.contract_state.in_((
+                "open", OPERATOR_TERMINATED_STATE,
+            )),
+        ).order_by(ChannelCommentPlanContract.id)
+    ))
+    events = [
+        _terminate_plan(
+            session, task, plan_id=plan_id, occurred_at=occurred_at,
+            event_type=DELETE_EVENT, event_reason=DELETE_REASON,
+            action_reason=DELETE_ACTION_REASON,
+        )
+        for plan_id in plan_ids
+    ]
+    if plan_ids:
+        rebalance_comment_capacity_epoch(
+            session, task,
+            daily_cap=int((task.type_config or {}).get("daily_comment_cap") or 0),
+            at=occurred_at,
+        )
     return events
 
 
@@ -189,12 +229,15 @@ def _resume_plan(
     return event
 
 
-def _stop_plan(
+def _terminate_plan(
     session: Session,
     task: Task,
     *,
     plan_id: str,
     occurred_at: datetime,
+    event_type: str,
+    event_reason: str,
+    action_reason: str,
 ) -> ChannelCommentPlanLifecycleEvent:
     plan = session.scalar(
         select(ChannelCommentPlanContract)
@@ -202,19 +245,19 @@ def _stop_plan(
         .with_for_update()
     )
     if plan is None:
-        raise RuntimeError("channel_comment_plan_missing_during_stop")
-    evidence_hash = _event_evidence_hash(task, plan, STOP_EVENT)
+        raise RuntimeError("channel_comment_plan_missing_during_termination")
+    evidence_hash = _event_evidence_hash(task, plan, event_type)
     existing = _existing_event(
-        session, task, plan=plan, event_type=STOP_EVENT,
+        session, task, plan=plan, event_type=event_type,
         evidence_hash=evidence_hash,
     )
     if existing is not None:
         return existing
-    outcomes = _stop_obligations(session, plan)
+    outcomes = _terminate_obligations(session, plan, action_reason=action_reason)
     plan.contract_state = OPERATOR_TERMINATED_STATE
     event = _new_event(
         task, plan, occurred_at=occurred_at,
-        event_type=STOP_EVENT, reason=STOP_REASON,
+        event_type=event_type, reason=event_reason,
         evidence_hash=evidence_hash, outcomes=outcomes,
     )
     session.add(event)
@@ -246,9 +289,11 @@ def _resume_obligations(
     return sorted(outcomes, key=lambda item: int(item["ordinal"]))
 
 
-def _stop_obligations(
+def _terminate_obligations(
     session: Session,
     plan: ChannelCommentPlanContract,
+    *,
+    action_reason: str,
 ) -> list[dict]:
     obligations = list(session.scalars(
         select(CommentFulfillmentObligation).where(
@@ -272,7 +317,7 @@ def _stop_obligations(
             })
             continue
         _settle_pre_gateway_owner(
-            session, obligation, action, reason=STOP_ACTION_REASON,
+            session, obligation, action, reason=action_reason,
         )
         obligation.status = OPERATOR_TERMINATED_STATE
         outcomes.append({
@@ -434,6 +479,7 @@ def _hash(value: object) -> str:
 
 
 __all__ = [
+    "delete_channel_comment_plans",
     "pause_channel_comment_plans",
     "resume_channel_comment_plans",
     "stop_channel_comment_plans",
