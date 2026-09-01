@@ -60,6 +60,9 @@ def test_0192_backfills_legacy_quality_target_and_round_trips() -> None:
         assert "fk_channel_comment_assignment_quality_target" in _foreign_keys(
             "channel_comment_grounding_assignments",
         )
+        assert "fk_channel_comment_quality_target_supersedes" in _foreign_keys(
+            "channel_comment_quality_target_revisions",
+        )
     finally:
         _migrate("upgrade", "head")
         _cleanup()

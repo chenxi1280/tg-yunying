@@ -50,7 +50,9 @@ def _create_quality_target_table() -> None:
         ),
         sa.ForeignKeyConstraint(
             ["supersedes_quality_target_revision_id"],
-            ["channel_comment_quality_target_revisions.id"], ondelete="RESTRICT",
+            ["channel_comment_quality_target_revisions.id"],
+            name="fk_channel_comment_quality_target_supersedes",
+            ondelete="RESTRICT",
         ),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint(
