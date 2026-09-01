@@ -218,6 +218,13 @@ class ChannelMessageSnapshot:
 
 
 @dataclass(frozen=True)
+class ChannelMessageDeletionObservation:
+    message_id: int
+    deleted: bool
+    evidence_kind: str = "telegram_exact_message_lookup"
+
+
+@dataclass(frozen=True)
 class ChannelReactionCapabilitySnapshot:
     mode: str = "unknown"
     available_reactions: tuple[str, ...] = ()

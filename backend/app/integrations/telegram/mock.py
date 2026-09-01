@@ -16,6 +16,7 @@ from .contracts import (
     CachedMediaResult,
     ChannelMembershipResult,
     ChannelCommentSnapshot,
+    ChannelMessageDeletionObservation,
     ChannelMessageSnapshot,
     ChannelReactionCapabilitySnapshot,
     ContactSnapshot,
@@ -1063,6 +1064,20 @@ class TelegramGateway:
             )
             for index in range(max(1, limit))
         ][:limit]
+
+    def fetch_channel_message_deletions(
+        self,
+        account_id: int,
+        channel_peer_id: str,
+        message_ids: list[int],
+        *,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> list[ChannelMessageDeletionObservation]:
+        return [
+            ChannelMessageDeletionObservation(message_id=message_id, deleted=False)
+            for message_id in message_ids
+        ]
 
     def fetch_channel_reaction_capability(
         self,

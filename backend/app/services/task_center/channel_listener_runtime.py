@@ -10,6 +10,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import (
+    ChannelCommentPlanContract,
+    ChannelMessage,
     ListenerSourceState,
     OperationTarget,
     Task,
@@ -306,6 +308,7 @@ def _drain_channel_source(session_factory, source: ChannelListenerSource) -> str
             session.commit()
             return "error"
         channel_peer, session_ciphertext, credentials = fetch
+        tracked_message_ids = _tracked_message_ids(session, source)
         session.commit()
         try:
             snapshots = gateway.fetch_channel_messages(
@@ -314,6 +317,13 @@ def _drain_channel_source(session_factory, source: ChannelListenerSource) -> str
                 session_ciphertext,
                 credentials,
                 limit=source.fetch_limit,
+            )
+            deletion_observations = _probe_missing_messages(
+                source, snapshots=snapshots,
+                tracked_message_ids=tracked_message_ids,
+                channel_peer=channel_peer,
+                session_ciphertext=session_ciphertext,
+                credentials=credentials,
             )
         except Exception as exc:  # noqa: BLE001 - typed state remains visible to Planner.
             session.rollback()
@@ -329,9 +339,50 @@ def _drain_channel_source(session_factory, source: ChannelListenerSource) -> str
             channel_peer=channel_peer,
             session_ciphertext=session_ciphertext,
             credentials=credentials,
+            deletion_observations=deletion_observations,
         )
         session.commit()
         return "processed"
+
+
+def _tracked_message_ids(
+    session: Session,
+    source: ChannelListenerSource,
+) -> list[int]:
+    return list(session.scalars(
+        select(ChannelMessage.message_id)
+        .join(
+            ChannelCommentPlanContract,
+            ChannelCommentPlanContract.channel_message_id == ChannelMessage.id,
+        )
+        .where(
+            ChannelMessage.tenant_id == source.tenant_id,
+            ChannelMessage.channel_target_id == source.channel_target_id,
+            ChannelCommentPlanContract.contract_state == "open",
+        )
+        .distinct()
+        .order_by(ChannelMessage.message_id)
+    ))
+
+
+def _probe_missing_messages(
+    source: ChannelListenerSource,
+    *,
+    snapshots,
+    tracked_message_ids: list[int],
+    channel_peer,
+    session_ciphertext,
+    credentials,
+):
+    present = {int(snapshot.message_id) for snapshot in snapshots}
+    missing = [message_id for message_id in tracked_message_ids if message_id not in present]
+    if not missing:
+        return []
+    return gateway.fetch_channel_message_deletions(
+        source.account_id, channel_peer, missing,
+        session_ciphertext=session_ciphertext,
+        credentials=credentials,
+    )
 
 
 def _persist_source_result(
@@ -343,6 +394,7 @@ def _persist_source_result(
     channel_peer,
     session_ciphertext,
     credentials,
+    deletion_observations,
 ) -> None:
     reaction_capability, probe_error = probe_reaction_capability(
         gateway.fetch_channel_reaction_capability,
@@ -357,6 +409,7 @@ def _persist_source_result(
         source,
         state_id=state_id,
         snapshots=snapshots,
+        deletion_observations=deletion_observations,
         reaction_capability=reaction_capability,
         now_value=_now(),
         wake_subscribers=_wake_subscribers,

@@ -196,6 +196,32 @@ class ChannelCommentContentRevisionOperation(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
+class ChannelCommentPlanLifecycleEvent(Base):
+    __tablename__ = "channel_comment_plan_lifecycle_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "plan_contract_id", "lifecycle_epoch", "event_type", "evidence_hash",
+            name="uq_channel_comment_plan_lifecycle_event",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"))
+    plan_contract_id: Mapped[str] = mapped_column(
+        ForeignKey("channel_comment_plan_contracts.id", ondelete="CASCADE"),
+    )
+    lifecycle_epoch: Mapped[int] = mapped_column(Integer)
+    event_type: Mapped[str] = mapped_column(String(32))
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    task_revision: Mapped[int] = mapped_column(Integer)
+    reason: Mapped[str] = mapped_column(String(120))
+    evidence_hash: Mapped[str] = mapped_column(String(64))
+    event_state: Mapped[str] = mapped_column(String(32), default="completed")
+    result_hash: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
 class TaskCommentCapacityPeriod(Base):
     __tablename__ = "task_comment_capacity_periods"
     __table_args__ = (
@@ -278,6 +304,7 @@ __all__ = [
     "ChannelCommentContentRevisionOperation",
     "ChannelCommentGroundingAssignment",
     "ChannelCommentOrdinalAccountBinding",
+    "ChannelCommentPlanLifecycleEvent",
     "ChannelCommentPlanContract",
     "ChannelMessageSourceRevision",
     "TaskCommentCapacityPeriod",

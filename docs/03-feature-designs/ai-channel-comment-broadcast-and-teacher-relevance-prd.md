@@ -6,8 +6,8 @@
 | --- | --- |
 | 需求级别 | L2 产品能力升级；同时闭合评论参与数量、广播/老师相关性与整体验收 |
 | 产品设计状态 | `design_complete` / `ready_for_dev`（v1.4 五轮业务复核通过） |
-| 实现状态 | `partial_local`：v1.4 兜底 policy/pool/cursor/selection、20 表情、静态图片发送、素材组完整性/CAS、journal typed fact 恢复已实现；0188 已补 SourceRevision、数量 Plan、eligible snapshot、ordinal-account binding、首版基础 GroundingAssignment、全量 obligation/JIT Action、planned fallback、连续 UTC capacity period/reservation、跨 period rolling 24h 二次硬限额和三维保守验收；0189 已补 append-only allocation epoch 与新 open Plan 加入时的 max-min future `plan_reserved` 重排；0190 已补来源编辑 operation、pre-Gateway assignment successor 与 Gateway identity fence。暂停/终止/释放触发的完整 epoch 闭环、来源删除、独立 QualityTargetRevision、完整多老师/时效 extraction 与 Gateway accepted/outbound hash 闭环仍未完成 |
-| QA 状态 | `partial_local`：数量/来源/assignment/planned fallback/selection read-model/三维验收、max-min 与来源编辑 successor 定向 no-postgres 回归通过；0189/0190 离线 upgrade/downgrade、真实旧 schema transition、fresh 全链迁移、rolling cap/epoch/content revision CAS 并发按各切片 Gate 验证。完整跨功能回归、UI 人工验收和 E4 未通过 |
+| 实现状态 | `partial_local`：v1.4 兜底 policy/pool/cursor/selection、20 表情、静态图片发送、素材组完整性/CAS、journal typed fact 恢复已实现；0188 已补 SourceRevision、数量 Plan、eligible snapshot、ordinal-account binding、首版基础 GroundingAssignment、全量 obligation/JIT Action、planned fallback、连续 UTC capacity period/reservation、跨 period rolling 24h 二次硬限额和三维保守验收；0189 已补 append-only allocation epoch 与新 open Plan 加入时的 max-min future `plan_reserved` 重排；0190 已补来源编辑 operation、pre-Gateway assignment successor 与 Gateway identity fence；0191 已补 Telegram 精确消息查询删除事实、append-only source-deleted lifecycle event 及 pre-Gateway 资源结算。暂停/恢复/停止/Task 删除触发的完整 epoch 闭环、独立 QualityTargetRevision、完整多老师/时效 extraction 与 Gateway accepted/outbound hash 闭环仍未完成 |
+| QA 状态 | `partial_local`：数量/来源/assignment/planned fallback/selection read-model/三维验收、max-min、来源编辑 successor 与来源删除分流定向 no-postgres 回归通过；0189/0190 离线 upgrade/downgrade、真实旧 schema transition、fresh 全链迁移、rolling cap/epoch/content revision CAS 并发按各切片 Gate 验证；0191 迁移与 PostgreSQL CAS 仍以本轮最终 Gate 为准。完整跨功能回归、UI 人工验收和 E4 未通过 |
 | 发布状态 | `not_released` |
 | 生产状态 | `unproven`；无真实 Telegram E4 证据 |
 | 适用任务 | `channel_comment`、`channel_comment_reply` |
@@ -36,6 +36,8 @@
 第十轮本地修复（2026-09-01）：新增独立 0189 migration 和 append-only `ChannelCommentCapacityAllocationEpoch`，持久化 Task epoch、分配 horizon、open Plan set、不可移动使用量与分配结果哈希；reservation 记录 allocation epoch。Planner 在全部 obligation pacing 冻结后、Action JIT 前按 `(capacity period, target ordinal as allocation round, deadline, source_published_at, message_id)` 重算全部 open Plan 的 future `plan_reserved`；allocation round 必须先于同周期 deadline 排序，否则真实后到消息因 deadline 较晚仍会被旧消息全部 ordinal 饿死。新消息加入时释放并重排的仅是 open/future `plan_reserved`，`action_reserved/gateway_hold/confirmed` 不进入 movable candidate。容量不足仍保留完整 ordinal，并在 Task stats 投影 `daily_cap_unallocated`。相同 fingerprint/result 重试复用当前 epoch，不追加重复账本。该切片尚未把 pause/resume、Plan 终止和独立 release writer 全部接入 epoch trigger，也不代表发布或 E4，整体状态仍为 `partial_local/not_released/unproven`。
 
 第十一轮本地修复（2026-09-01）：新增独立 0190 migration、`ChannelCommentContentRevisionOperation`、assignment `supersedes_assignment_id` 与 active 部分唯一键。Listener 观测到同一消息正文 hash 变化后，按 open Plan 行锁/CAS 建立唯一 operation；未进 Gateway 的旧 GenerationJob/Action 显式终结并返回 `source_revision_superseded_before_gateway`，释放可移动 reservation，同 ordinal append 基于新 SourceRevision 的 assignment successor，下一次 Planner 只重新物化该 Action；Gateway-started、`unknown_after_send`、success 或 typed remote confirmed 保留原 Action/payload/assignment/capacity identity，不改数量、账号、ordinal、关系、due 或 deadline。该切片未实现来源删除、QualityTargetRevision 与全文/edit_date 采集，也不代表发布或 E4，整体状态仍为 `partial_local/not_released/unproven`。
+
+第十二轮本地修复（2026-09-01）：新增 0191 migration 与 `ChannelCommentPlanLifecycleEvent`。Listener 不再把分页历史中“未出现”解释成删除，只对 open Plan 跟踪消息发起 Telegram exact-ID lookup；仅 `None/MessageEmpty` 形成 `telegram_exact_message_lookup` 权威删除证据。source-deleted 事务按 Plan 行锁及 `(plan,lifecycle_epoch,event_type,evidence_hash)` 幂等：只终止未进 Gateway 的 GenerationJob/Action/obligation，释放 comment capacity、账号节奏和来源 admission，发送闸返回 `source_deleted_before_send`；Gateway-started、`unknown_after_send`、success 与 typed remote confirmed 保留原 payload/assignment/remote fact，只 reconcile。普通正文、Unicode 与图片表情包均不能绕过该闸。该切片不包含 pause/resume/stop/Task-delete lifecycle，也不代表发布或 E4。
 
 ---
 
@@ -628,6 +630,8 @@ v1 只把平台已持久化的文本正文、caption 和明确结构化字段作
 每个 successor assignment 保存 `supersedes_assignment_id`，并以 `(plan_contract_id,target_ordinal,active_assignment=true)` 部分唯一约束保证同一 ordinal 同时只有一个 active 内容 owner。Plan 的 `applicable_grounding_ordinal_count` 和 quantity target 永不变化；已经远端确认的旧 revision grounded 事实与新 revision 后续事实共同进入原分母。每个 `ChannelCommentQualityTargetRevision` component 分别结算 teacher/aspect 纯度和覆盖，Plan 聚合按其最终 owned ordinal 加权，不能用编辑后的易样本覆盖编辑前违规事实。
 
 实现读回（2026-09-01）：0190 已实现 operation CAS、active assignment 部分唯一键、pre-Gateway owner 终结/容量释放/successor 追加及 Gateway identity 保留；当前 successor 仍复用基础 SourceRevision 文本抽取，独立 GroundingSnapshot、QualityTargetRevision 和多老师/时效 component 尚未实现，不能把该切片解释为完整 grounding 质量合同完成。
+
+删除实现读回（2026-09-01）：0191 已实现 exact-ID 权威删除探测、append-only lifecycle event、pre-Gateway owner/三类 reservation 释放及 Dispatcher 前专项阻断；历史页窗口缺失或探测错误都不结算删除。已进入 Gateway 的 identity 和远端事实保持不变。pause/resume/stop/Task-delete 仍是独立未完成生命周期切片。
 
 ---
 
@@ -1395,7 +1399,7 @@ Phase 0 开始前必须对最近 30 天真实来源做只读基线：可取时�
 - [ ] 同账号同消息 revision 最多确认一次 distinct participation，重复远端事实不重复计数；
 - [ ] Gateway 前账号失效只可从冻结 eligible rows 按 stable rank append binding attempt；Gateway/unknown/success 后不换号；
 - [ ] 正常正文、20 个 Unicode 表情和图片表情包评论均须匹配冻结内容身份且取得 `remote_message_id` 才计 quantity；planned fallback 可按合同验收但不计 grounding，emergency fallback 只保 quantity；
-- [ ] pause 释放 future capacity 且不顺延 deadline，resume 只走剩余曲线；stop/delete/source deleted 终止 pre-Gateway 且不伪装 met；
+- [ ] pause 释放 future capacity且不顺延 deadline，resume 只走剩余曲线；stop/Task delete 终止 pre-Gateway 且不伪装 met；source deleted 的终止/保留分流已由 0191 完成；
 - [ ] current execution、recent 7/30 天 SLA 与 lifetime outcome 分列，历史 missed 不永久覆盖当前状态；
 - [ ] quantity、content mix、grounding 三维组合状态和 deadline/late fact 规则与 §4.4 一致。
 
@@ -1575,7 +1579,7 @@ E4 样本必须至少包含：
 - [x] 连续 UTC Daily Cap period/reservation 基线、时区切换首尾相接与 reservation 单向状态已实现；
 - [ ] 跨全部开放消息的完整 max-min allocation epoch、epoch CAS 和公平重排（新 open Plan 加入、append-only fingerprint/result epoch 与 future `plan_reserved` 公平重排已实现；仍缺 pause/resume、Plan 终止和独立 release writer trigger）；
 - [x] reservation 创建同时通过单 UTC period cap 与跨 period rolling 24h 二次硬限额；候选前后已有预约均纳入，恰好 24 小时旧占用退出窗口；
-- [ ] 来源 delete successor、独立 QualityTargetRevision、完整多老师/否定/时效 extraction 与远端覆盖审查（source edit operation/successor 已由 0190 实现）；
+- [ ] 独立 QualityTargetRevision、完整多老师/否定/时效 extraction 与远端覆盖审查（source edit operation/successor 已由 0190 实现，source delete lifecycle 已由 0191 实现）；
 - [x] 无内容弱信号提升 route；
 - [x] 无无证据默认方向。
 - [ ] Dispatcher 无 Provider 调用或正文改写，Gateway hash mismatch 零调用；
@@ -1666,7 +1670,7 @@ E4 样本必须至少包含：
 | `backend/app/services/task_center/comment_fulfillment.py` | legacy 仍按 Task revision；当前合同已由 0188 Plan 首次冻结全部 ordinal/账号/基础 assignment，0189 持有公平 allocation epoch，0190 只替换 pre-Gateway assignment 并让技术批次重新物化原 Action | 补独立 QualityTargetRevision及 pause/终止/release epoch trigger |
 | `backend/app/services/task_center/dispatcher.py` | 当前可在 dispatch 路径生成内容，且过滤结果与实际发送正文身份未闭环 | 移除 Provider owner；只发送 `quality_accepted|fallback_ready`，按 content source 校验正文 hash 或图片 asset fingerprint |
 | `material-library-design.md` 对应素材服务与任务配置 UI | 已接入 `image_meme` 版本、缓存、显式成员、ZIP 原子归组、引用保护和成员 CAS，并成为评论 fallback selection owner | 保持素材组 ready/review_required/invalid 与版本不变量；后续完整读模型继续复用现有素材表，不复制素材 owner |
-| `channel_listener_snapshot_persistence.py` / `channel_comment_content_revision.py` / `operations.py` / `telethon_content.py` | listener 已 append 幂等 SourceRevision、拒绝发布时间冲突并触发 0190 source-edit operation/successor；采集仍只有 preview，删除与 Telegram edit_date identity 不完整 | 补精确正文、edit date 与 delete operation；preview 只作展示 |
+| `channel_listener_snapshot_persistence.py` / `channel_comment_content_revision.py` / `channel_comment_source_delete.py` / `operations.py` / `telethon_content.py` | listener 已 append 幂等 SourceRevision、拒绝发布时间冲突并触发 0190 source-edit successor；0191 对历史页缺失消息做 exact-ID lookup，仅 `None/MessageEmpty` 触发 append-only source-deleted event 与 pre-Gateway 结算；采集仍只有 preview，Telegram edit_date identity 不完整 | 补精确正文与 edit date；preview 只作展示 |
 | `backend/tests/test_channel_comment_aspect_and_teacher_relevance.py` | 主要验证 Prompt 包含词 | 扩展为本 PRD §22 矩阵，不能只用 mock 输出证明质量 |
 
 ### 24.3 失败边界

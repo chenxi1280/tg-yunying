@@ -22,6 +22,7 @@ from .contracts import (
     CachedMediaResult,
     ChannelMembershipResult,
     ChannelCommentSnapshot,
+    ChannelMessageDeletionObservation,
     ChannelMessageSnapshot,
     ChannelReactionCapabilitySnapshot,
     ContactSnapshot,
@@ -3450,6 +3451,35 @@ class TelethonTelegramGateway(TelegramGateway):
         limit: int = 20,
     ) -> list[ChannelMessageSnapshot]:
         return self._run(self._fetch_channel_messages_async(channel_peer_id, session_ciphertext, self._usable_credentials(credentials), limit))
+
+    async def _fetch_channel_message_deletions_async(
+        self,
+        channel_peer_id: str,
+        message_ids: list[int],
+        session_ciphertext: str | None,
+        credentials: DeveloperAppCredentials,
+    ) -> list[ChannelMessageDeletionObservation]:
+        client = await self._authorized_client(
+            session_ciphertext, credentials,
+            error_message="channel message exact lookup requires a valid session",
+        )
+        return await telethon_content.fetch_channel_message_deletions(
+            client, channel_peer_id, message_ids,
+        )
+
+    def fetch_channel_message_deletions(
+        self,
+        account_id: int,
+        channel_peer_id: str,
+        message_ids: list[int],
+        *,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> list[ChannelMessageDeletionObservation]:
+        return self._run(self._fetch_channel_message_deletions_async(
+            channel_peer_id, message_ids, session_ciphertext,
+            self._usable_credentials(credentials),
+        ))
 
     async def _fetch_channel_reaction_capability_async(
         self,

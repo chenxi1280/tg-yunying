@@ -11,6 +11,7 @@ from .contracts import (
     CachedMediaResult,
     ArchivedMessageSnapshot,
     ChannelCommentSnapshot,
+    ChannelMessageDeletionObservation,
     ChannelMessageSnapshot,
     ChannelReactionCapabilitySnapshot,
     GroupControlButtonSnapshot,
@@ -302,6 +303,25 @@ async def fetch_channel_messages(client, channel_peer_id: str, limit: int) -> li
             )
         )
     return snapshots
+
+
+async def fetch_channel_message_deletions(
+    client,
+    channel_peer_id: str,
+    message_ids: list[int],
+) -> list[ChannelMessageDeletionObservation]:
+    target: int | str = int(channel_peer_id) if channel_peer_id.lstrip("-").isdigit() else channel_peer_id
+    entity = await client.get_entity(target)
+    response = await client.get_messages(entity, ids=message_ids)
+    rows = list(response) if isinstance(response, (list, tuple)) else [response]
+    rows.extend([None] * max(0, len(message_ids) - len(rows)))
+    return [
+        ChannelMessageDeletionObservation(
+            message_id=message_id,
+            deleted=row is None or type(row).__name__ == "MessageEmpty",
+        )
+        for message_id, row in zip(message_ids, rows, strict=True)
+    ]
 
 
 async def fetch_channel_reaction_capability(

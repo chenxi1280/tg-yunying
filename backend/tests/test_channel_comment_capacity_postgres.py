@@ -11,6 +11,7 @@ from app.models import (
     ChannelCommentContentRevisionOperation,
     ChannelCommentGroundingAssignment,
     ChannelCommentPlanContract,
+    ChannelCommentPlanLifecycleEvent,
     ChannelMessage,
     ChannelMessageSourceRevision,
     CommentFulfillmentObligation,
@@ -25,6 +26,9 @@ from app.services.task_center.channel_comment_capacity_allocation import (
 )
 from app.services.task_center.channel_comment_content_revision import (
     reconcile_channel_comment_source_edit,
+)
+from app.services.task_center.channel_comment_source_delete import (
+    settle_channel_comment_source_deleted,
 )
 from app.timezone import BEIJING_TZ
 
@@ -137,6 +141,40 @@ def test_postgres_plan_lock_cas_reuses_same_content_revision_operation() -> None
         assert len(assignments) == 2
         assert sum(row.assignment_state == "active" for row in assignments) == 1
         assert next(row for row in assignments if row.assignment_state == "active").source_revision_id == EDIT_SOURCE_ID
+    finally:
+        _cleanup()
+
+
+def test_postgres_plan_lock_cas_reuses_same_source_delete_event() -> None:
+    Base.metadata.create_all(engine)
+    _cleanup()
+    obligation_ids = _seed_scope()
+    start = Barrier(2)
+
+    def settle() -> str:
+        with SessionLocal() as session:
+            message = session.get(ChannelMessage, MESSAGE_ID)
+            start.wait(timeout=5)
+            event = settle_channel_comment_source_deleted(
+                session, message,
+                occurred_at=SCHEDULED_AT, evidence_hash="d" * 64,
+            )[0]
+            session.commit()
+            return event.id
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            event_ids = list(pool.map(lambda _index: settle(), range(2)))
+        with SessionLocal() as session:
+            event_count = session.scalar(select(func.count(
+                ChannelCommentPlanLifecycleEvent.id,
+            )).where(ChannelCommentPlanLifecycleEvent.task_id == TASK_ID))
+            obligations = list(session.scalars(select(
+                CommentFulfillmentObligation,
+            ).where(CommentFulfillmentObligation.id.in_(obligation_ids))))
+        assert event_ids[0] == event_ids[1]
+        assert event_count == 1
+        assert all(row.status == "terminated" for row in obligations)
     finally:
         _cleanup()
 

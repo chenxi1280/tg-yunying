@@ -11,12 +11,15 @@ from app.models import (
     ChannelCommentCapacityAllocationEpoch,
     ChannelCommentContentRevisionOperation,
     ChannelCommentGroundingAssignment,
+    ChannelCommentPlanLifecycleEvent,
     ChannelCommentOrdinalAccountBinding,
     ChannelCommentPlanContract,
     ChannelMessage,
     ChannelMessageSourceRevision,
     CommentFulfillmentObligation,
     GenerationJob,
+    SourcePacingAdmission,
+    SourcePacingState,
     TaskCommentCapacityPeriod,
     TaskCommentCapacityReservation,
 )
@@ -34,6 +37,9 @@ from app.services.task_center.channel_comment_capacity_allocation import (
 from app.services.task_center.channel_comment_grounding_guard import comment_grounding_send_blocker
 from app.services.task_center.channel_comment_content_revision import (
     reconcile_channel_comment_source_edit,
+)
+from app.services.task_center.channel_comment_source_delete import (
+    settle_channel_comment_source_deleted,
 )
 from app.services.task_center.channel_payloads import PostCommentPayload
 from channel_comment_planner_test_support import (
@@ -523,6 +529,153 @@ def test_source_edit_replaces_only_pre_gateway_assignment(monkeypatch) -> None:
     assert held.grounding_assignment_id == held_assignment_id
     assert held_action.payload == held_payload
     assert operation_count == 1
+
+
+@pytest.mark.parametrize("held_state", ("unknown", "confirmed"))
+def test_source_delete_terminates_only_pre_gateway_owner(
+    monkeypatch,
+    held_state: str,
+) -> None:
+    forbid_planner_external_boundaries(monkeypatch)
+    fixed_profile(monkeypatch)
+    with planner_session() as session:
+        task = seed_comment_task(session, mode="comment", target_count=3)
+        _enable_grounding_plan(session, task)
+        channel_comment.build_plan(session, task)
+        actions = sorted(
+            session.scalars(select(Action).where(Action.task_id == task.id)),
+            key=lambda row: int(row.payload["target_ordinal"]),
+        )
+        movable, held_action = actions
+        obligations = _ordered_obligations(session)
+        movable_obligation = next(row for row in obligations if row.current_action_id == movable.id)
+        held_obligation = next(row for row in obligations if row.current_action_id == held_action.id)
+        _seed_pre_gateway_generation_and_source_admission(
+            session, task, action=movable, obligation=movable_obligation,
+        )
+        _hold_delete_identity(
+            session, held_action, held_obligation, held_state=held_state,
+        )
+        frozen_held = (
+            dict(held_action.payload), held_obligation.grounding_assignment_id,
+            held_obligation.remote_comment_id,
+        )
+        message = session.get(ChannelMessage, 41)
+
+        event = settle_channel_comment_source_deleted(
+            session, message,
+            occurred_at=STABLE_PLANNER_NOW,
+            evidence_hash="e" * 64,
+        )[0]
+        replay = settle_channel_comment_source_deleted(
+            session, message,
+            occurred_at=STABLE_PLANNER_NOW,
+            evidence_hash="e" * 64,
+        )[0]
+        blocker = comment_grounding_send_blocker(
+            session, movable, PostCommentPayload.model_validate(movable.payload),
+        )
+        result = _source_delete_result(
+            session, movable_obligation, held_obligation,
+        )
+
+    assert replay.id == event.id
+    assert blocker == "source_deleted_before_send"
+    assert result["plan_state"] == "terminated_source_deleted"
+    assert result["movable_status"] == "terminated"
+    assert result["movable_action_status"] == "cancelled"
+    assert result["generation_state"] == "failed"
+    assert result["capacity_state"] == "released"
+    assert result["pacing_action_id"] is None
+    assert result["source_admission_state"] == "cancelled_pre_gateway"
+    assert result["held_identity"] == frozen_held
+    assert result["held_capacity_state"] == (
+        "confirmed" if held_state == "confirmed" else "gateway_hold"
+    )
+    assert result["event_count"] == 1
+
+
+def _seed_pre_gateway_generation_and_source_admission(
+    session,
+    task,
+    *,
+    action,
+    obligation,
+) -> None:
+    session.add(GenerationJob(
+        id="source-delete-generation-job", tenant_id=task.tenant_id,
+        task_id=task.id, obligation_type="post_comment",
+        obligation_id=obligation.id, generation_sequence=1,
+        context_snapshot_version=1, state="pending",
+    ))
+    state = SourcePacingState(
+        id="source-delete-pacing-state", tenant_id=task.tenant_id,
+        pacing_domain="comment", source_key_hash="s" * 64,
+    )
+    session.add(state)
+    session.flush()
+    session.add(SourcePacingAdmission(
+        id="source-delete-admission", admission_key="source-delete-admission",
+        tenant_id=task.tenant_id, task_id=task.id,
+        source_pacing_state_id=state.id, owner_type="comment_obligation",
+        owner_id=obligation.id, action_id=action.id,
+        pacing_period_key="message:41", pacing_plan_hash="p" * 64,
+        planned_release_at=STABLE_PLANNER_NOW,
+        call_not_before_at=STABLE_PLANNER_NOW, source_gap_seconds=1,
+        state="reserved",
+    ))
+
+
+def _hold_delete_identity(
+    session,
+    action,
+    obligation,
+    *,
+    held_state: str,
+) -> None:
+    if held_state == "confirmed":
+        action.status = "success"
+        obligation.status = "confirmed"
+        obligation.remote_comment_id = "remote-confirmed"
+        settle_comment_capacity(session, obligation.id, confirmed=True)
+        return
+    action.status = "unknown_after_send"
+    obligation.status = "unknown"
+    mark_comment_capacity_gateway_hold(session, action.id)
+
+
+def _source_delete_result(session, movable, held) -> dict:
+    plan = session.get(ChannelCommentPlanContract, movable.plan_contract_id)
+    capacity = session.scalar(select(TaskCommentCapacityReservation).where(
+        TaskCommentCapacityReservation.obligation_id == movable.id,
+    ))
+    held_capacity = session.scalar(select(TaskCommentCapacityReservation).where(
+        TaskCommentCapacityReservation.obligation_id == held.id,
+    ))
+    pacing = session.scalar(select(AccountPacingReservation).where(
+        AccountPacingReservation.pacing_slot_key == f"comment:{movable.id}",
+    ))
+    admission = session.get(SourcePacingAdmission, "source-delete-admission")
+    generation = session.get(GenerationJob, "source-delete-generation-job")
+    action = session.get(Action, capacity.action_id)
+    held_action = session.get(Action, held.current_action_id)
+    return {
+        "plan_state": plan.contract_state,
+        "movable_status": movable.status,
+        "movable_action_status": action.status,
+        "generation_state": generation.state,
+        "capacity_state": capacity.reservation_state,
+        "pacing_action_id": pacing.action_id,
+        "source_admission_state": admission.state,
+        "held_identity": (
+            dict(held_action.payload), held.grounding_assignment_id,
+            held.remote_comment_id,
+        ),
+        "held_capacity_state": held_capacity.reservation_state,
+        "event_count": session.scalar(select(func.count(
+            ChannelCommentPlanLifecycleEvent.id,
+        ))),
+    }
 
 
 def test_released_capacity_blocks_frozen_action_before_gateway(monkeypatch) -> None:

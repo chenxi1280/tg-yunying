@@ -16,6 +16,7 @@ from app.models import (
     OperationTarget,
 )
 from .channel_comment_content_revision import reconcile_channel_comment_source_edit
+from .channel_comment_source_delete import settle_channel_comment_source_deleted
 FRESHNESS_MULTIPLIER = 2
 
 
@@ -25,6 +26,7 @@ def persist_channel_snapshot(
     *,
     state_id: str,
     snapshots: list[Any],
+    deletion_observations: list[Any] | None = None,
     reaction_capability: Any,
     now_value: Any,
     wake_subscribers: Callable[..., None],
@@ -52,6 +54,10 @@ def persist_channel_snapshot(
             snapshot_revision=next_revision,
             channel_message_id=message.id,
         ))
+    _settle_deleted_messages(
+        session, source, channel,
+        observations=deletion_observations or [], observed_at=now_value,
+    )
     state.snapshot_revision = next_revision
     state.snapshot_status = "ready"
     state.observed_at = now_value
@@ -64,6 +70,35 @@ def persist_channel_snapshot(
     state.lease_owner = ""
     state.lease_expires_at = None
     wake_subscribers(session, source, state, reason="channel_source_snapshot_ready")
+
+
+def _settle_deleted_messages(
+    session: Session,
+    source: Any,
+    channel: OperationTarget,
+    *,
+    observations: list[Any],
+    observed_at: Any,
+) -> None:
+    for observation in observations:
+        if not observation.deleted:
+            continue
+        message = session.scalar(select(ChannelMessage).where(
+            ChannelMessage.tenant_id == source.tenant_id,
+            ChannelMessage.channel_target_id == channel.id,
+            ChannelMessage.message_id == int(observation.message_id),
+        ))
+        if message is None:
+            continue
+        evidence = ":".join((
+            str(source.tenant_id), str(channel.id), str(observation.message_id),
+            str(observation.evidence_kind),
+        ))
+        settle_channel_comment_source_deleted(
+            session, message,
+            occurred_at=_wall(observed_at),
+            evidence_hash=hashlib.sha256(evidence.encode("utf-8")).hexdigest(),
+        )
 
 
 def _upsert_channel_message(

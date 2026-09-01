@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
@@ -8,7 +9,11 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.integrations.telegram import ChannelReactionCapabilitySnapshot
+from app.integrations.telegram import (
+    ChannelMessageDeletionObservation,
+    ChannelReactionCapabilitySnapshot,
+)
+from app.integrations.telegram.telethon_content import fetch_channel_message_deletions
 from app.models import (
     AccountStatus,
     ChannelMessage,
@@ -34,6 +39,46 @@ from app.services.task_center.executors import common as executor_common
 
 pytestmark = pytest.mark.no_postgres
 NOW = datetime(2026, 8, 17, 12, 0)
+
+
+def test_missing_history_requires_exact_delete_evidence(monkeypatch) -> None:
+    source = channel_listener_runtime.ChannelListenerSource(1, 31, "hash", 101, 30, 20)
+    calls = []
+    monkeypatch.setattr(
+        channel_listener_runtime.gateway,
+        "fetch_channel_message_deletions",
+        lambda *args, **_kwargs: calls.append(args) or [
+            ChannelMessageDeletionObservation(message_id=9001, deleted=False),
+        ],
+    )
+
+    observations = channel_listener_runtime._probe_missing_messages(
+        source, snapshots=[], tracked_message_ids=[9001],
+        channel_peer="-10031", session_ciphertext="session", credentials=object(),
+    )
+
+    assert calls and calls[0][2] == [9001]
+    assert observations == [
+        ChannelMessageDeletionObservation(message_id=9001, deleted=False),
+    ]
+
+
+def test_exact_lookup_only_marks_none_and_message_empty_deleted() -> None:
+    class MessageEmpty:
+        pass
+
+    class Client:
+        async def get_entity(self, target):
+            return target
+
+        async def get_messages(self, entity, ids):
+            return [SimpleNamespace(id=ids[0]), MessageEmpty(), None]
+
+    observations = asyncio.run(fetch_channel_message_deletions(
+        Client(), "-10031", [9001, 9002, 9003],
+    ))
+
+    assert [row.deleted for row in observations] == [False, True, True]
 
 
 def test_listener_owns_channel_fetch_and_publishes_fresh_snapshot(monkeypatch) -> None:
