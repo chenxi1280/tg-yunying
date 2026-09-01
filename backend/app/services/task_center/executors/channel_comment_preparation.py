@@ -6,7 +6,12 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import Action, CommentFulfillmentObligation, Task
+from app.models import (
+    Action,
+    CommentFulfillmentObligation,
+    Task,
+    TaskCommentCapacityReservation,
+)
 from app.services._common import _now
 
 from ..account_pacing_guard import (
@@ -18,8 +23,8 @@ from ..channel_comment_source import comment_source_window
 from ..channel_comment_capacity import (
     bind_comment_capacity_action,
     release_comment_capacity,
-    reserve_comment_capacity,
 )
+from ..channel_comment_capacity_allocation import rebalance_comment_capacity_epoch
 from ..channel_comment_plan_contract import grounding_plan_enabled
 from ..fulfillment_activation import CURRENT_CONTRACT_VERSION
 from ..pacing import next_local_day_deadline, schedule_times
@@ -88,10 +93,12 @@ def prepare_comment_actions(
     slots, planned_times, due_by_slot, release_by_slot, source_slots = _comment_schedule(
         session, task, slots=slots, context=context, now_at=now_value,
     )
-    if task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION and len(planned_times) < requested_count:
-        _record_comment_shortfall(task, requested_count, len(planned_times))
+    _record_current_schedule_shortfall(task, requested_count, len(planned_times))
     _freeze_scheduled_comment_pacing(
         task, slots, due_by_slot, release_by_slot, source_slots,
+    )
+    _rebalance_comment_capacity(
+        session, task, config=context.config, at=now_value,
     )
     materialized = materialized_reply_slots(
         task,
@@ -101,11 +108,9 @@ def prepare_comment_actions(
     )
     materialized = _fair_materialized_slots(materialized)
     materialized = _apply_materialization_limit(
-        session, task, context.config, materialized,
+        session, task, config=context.config, materialized=materialized,
     )
-    materialized = _reserve_daily_capacity(
-        session, task, context.config, materialized,
-    )
+    materialized = _current_epoch_materialized_slots(session, task, materialized)
     prepared: list[PreparedCommentAction] = []
     used_accounts = _active_message_accounts(session, task, slots)
     for index, (slot, planned_at) in enumerate(materialized):
@@ -127,29 +132,49 @@ def prepare_comment_actions(
     return prepared
 
 
-def _reserve_daily_capacity(
+def _record_current_schedule_shortfall(
+    task: Task,
+    requested: int,
+    scheduled: int,
+) -> None:
+    if task.fulfillment_contract_version != CURRENT_CONTRACT_VERSION:
+        return
+    if scheduled < requested:
+        _record_comment_shortfall(task, requested, scheduled)
+
+
+def _rebalance_comment_capacity(
     session: Session,
     task: Task,
+    *,
     config: dict,
+    at,
+) -> None:
+    if not grounding_plan_enabled(task):
+        return
+    rebalance_comment_capacity_epoch(
+        session, task,
+        daily_cap=int(config.get("daily_comment_cap") or 0), at=at,
+    )
+
+
+def _current_epoch_materialized_slots(
+    session: Session,
+    task: Task,
     materialized: list[tuple[Any, Any]],
 ) -> list[tuple[Any, Any]]:
     if not grounding_plan_enabled(task):
         return materialized
-    daily_cap = int(config.get("daily_comment_cap") or 0)
-    reserved = []
-    for slot, planned_at in materialized:
-        row = reserve_comment_capacity(
-            session, task, slot.obligation,
-            scheduled_at=planned_at, daily_cap=daily_cap,
-        )
-        if row is not None:
-            reserved.append((slot, planned_at))
-    shortfall = len(materialized) - len(reserved)
-    if shortfall:
-        stats = dict(task.stats or {})
-        stats["daily_cap_unallocated"] = shortfall
-        task.stats = stats
-    return reserved
+    obligation_ids = [slot.obligation.id for slot, _planned_at in materialized]
+    reserved_ids = set(session.scalars(select(
+        TaskCommentCapacityReservation.obligation_id,
+    ).where(
+        TaskCommentCapacityReservation.obligation_id.in_(obligation_ids),
+        TaskCommentCapacityReservation.reservation_state == "plan_reserved",
+    )))
+    return [
+        item for item in materialized if item[0].obligation.id in reserved_ids
+    ]
 
 
 def _freeze_scheduled_comment_pacing(
@@ -184,6 +209,7 @@ def _fair_materialized_slots(materialized: list[tuple[Any, Any]]) -> list[tuple[
 def _apply_materialization_limit(
     session: Session,
     task: Task,
+    *,
     config: dict,
     materialized: list[tuple[Any, Any]],
 ) -> list[tuple[Any, Any]]:
@@ -193,7 +219,7 @@ def _apply_materialization_limit(
     if limit is None or limit >= len(materialized):
         return materialized
     stats = dict(task.stats or {})
-    stats["daily_cap_unallocated"] = len(materialized) - max(0, limit)
+    stats["comment_action_materialization_deferred"] = len(materialized) - max(0, limit)
     task.stats = stats
     return materialized[:max(0, limit)]
 

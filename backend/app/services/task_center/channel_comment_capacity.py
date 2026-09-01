@@ -42,6 +42,7 @@ def reserve_comment_capacity(
     *,
     scheduled_at: datetime,
     daily_cap: int,
+    allocation_epoch: int | None = None,
 ) -> TaskCommentCapacityReservation | None:
     if not obligation.plan_contract_id:
         raise RuntimeError("comment_capacity_plan_contract_missing")
@@ -69,6 +70,7 @@ def reserve_comment_capacity(
     reservation.capacity_period_id = period.id
     reservation.capacity_units = 1
     reservation.reservation_state = "plan_reserved"
+    reservation.allocation_epoch = allocation_epoch
     reservation.scheduled_for_at = scheduled_at
     session.add(reservation)
     session.flush()

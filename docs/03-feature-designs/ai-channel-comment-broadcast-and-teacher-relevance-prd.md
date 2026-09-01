@@ -6,8 +6,8 @@
 | --- | --- |
 | 需求级别 | L2 产品能力升级；同时闭合评论参与数量、广播/老师相关性与整体验收 |
 | 产品设计状态 | `design_complete` / `ready_for_dev`（v1.4 五轮业务复核通过） |
-| 实现状态 | `partial_local`：v1.4 兜底 policy/pool/cursor/selection、20 表情、静态图片发送、素材组完整性/CAS、journal typed fact 恢复已实现；0188 已补 SourceRevision、数量 Plan、eligible snapshot、ordinal-account binding、首版基础 GroundingAssignment、全量 obligation/JIT Action、planned fallback、连续 UTC capacity period/reservation、跨 period rolling 24h 二次硬限额和三维保守验收。完整 max-min allocation epoch、编辑/删除 successor、独立 QualityTargetRevision、完整多老师/时效 extraction 与 Gateway accepted/outbound hash 闭环仍未完成 |
-| QA 状态 | `partial_local`：新增数量/来源/assignment/planned fallback/selection read-model/三维验收定向 no-postgres 回归通过；0188 PostgreSQL 离线 upgrade/downgrade SQL 已生成，但真实 PostgreSQL 并发、完整回归、UI 人工验收和 E4 未通过 |
+| 实现状态 | `partial_local`：v1.4 兜底 policy/pool/cursor/selection、20 表情、静态图片发送、素材组完整性/CAS、journal typed fact 恢复已实现；0188 已补 SourceRevision、数量 Plan、eligible snapshot、ordinal-account binding、首版基础 GroundingAssignment、全量 obligation/JIT Action、planned fallback、连续 UTC capacity period/reservation、跨 period rolling 24h 二次硬限额和三维保守验收；0189 已补 append-only allocation epoch 与新 open Plan 加入时的 max-min future `plan_reserved` 重排。暂停/终止/释放触发的完整 epoch 闭环、编辑/删除 successor、独立 QualityTargetRevision、完整多老师/时效 extraction 与 Gateway accepted/outbound hash 闭环仍未完成 |
+| QA 状态 | `partial_local`：数量/来源/assignment/planned fallback/selection read-model/三维验收及 max-min 定向 no-postgres 回归通过；0189 离线 upgrade/downgrade、真实旧 0188→0189 transition、fresh 全链迁移、rolling cap 并发与 epoch CAS 并发通过。完整跨功能回归、UI 人工验收和 E4 未通过 |
 | 发布状态 | `not_released` |
 | 生产状态 | `unproven`；无真实 Telegram E4 证据 |
 | 适用任务 | `channel_comment`、`channel_comment_reply` |
@@ -32,6 +32,8 @@
 第八轮本地修复（2026-09-01）：新增 `ChannelMessageSourceRevision`、`ChannelCommentPlanContract`、eligible snapshot、ordinal-account binding 与基础 `ChannelCommentGroundingAssignment`；当前合同只纳入 Task enrollment 后发布且具权威 `source_published_at` 的消息，首次规划冻结 55%～65% distinct-account 目标、全部 obligation、账号和 planned fallback。`TaskCommentCapacityPeriod/Reservation` 按连续 UTC 周期持有 cap，并在 `plan_reserved -> action_reserved -> gateway_hold -> confirmed/released` 间单向推进；Action 按 ordinal/发布时间/消息顺序在预约约束下 JIT 物化。planned fallback 不再调用普通正文 Provider；详情直接读取 `CommentFallbackSelection`，完成量只认 obligation remote fact，并组合 quantity/content mix/grounding quality。该轮仍未实现跨全部开放消息的完整 max-min allocation epoch、rolling 24h 二次硬限额、来源编辑/删除 successor、独立 quality target component、多老师证据块和完整时效事实，因此状态保持 `partial_local/not_released/unproven`。
 
 第九轮本地修复（2026-09-01）：`channel_comment_capacity.py` 在 reservation 事务中以 Task 行作为 PostgreSQL 容量 owner，保留单 UTC period cap，并对候选时间前后 24 小时的全部非 released reservation 做滑动窗口聚合；任一 `(window_end-24h,window_end]` 达到冻结 Daily Cap 时不创建/复活 reservation，恰好相隔 24 小时的旧占用退出窗口。0188 增加 `(task_id,scheduled_for_at,reservation_state)` 查询索引；定向反例覆盖先有过去预约、先有未来预约和精确 24 小时边界。该切片只闭合 rolling 24h 二次硬限额，不代表 max-min allocation epoch、完整 PostgreSQL 并发、发布或 E4 已完成，整体状态仍为 `partial_local/not_released/unproven`。
+
+第十轮本地修复（2026-09-01）：新增独立 0189 migration 和 append-only `ChannelCommentCapacityAllocationEpoch`，持久化 Task epoch、分配 horizon、open Plan set、不可移动使用量与分配结果哈希；reservation 记录 allocation epoch。Planner 在全部 obligation pacing 冻结后、Action JIT 前按 `(capacity period, target ordinal as allocation round, deadline, source_published_at, message_id)` 重算全部 open Plan 的 future `plan_reserved`；allocation round 必须先于同周期 deadline 排序，否则真实后到消息因 deadline 较晚仍会被旧消息全部 ordinal 饿死。新消息加入时释放并重排的仅是 open/future `plan_reserved`，`action_reserved/gateway_hold/confirmed` 不进入 movable candidate。容量不足仍保留完整 ordinal，并在 Task stats 投影 `daily_cap_unallocated`。相同 fingerprint/result 重试复用当前 epoch，不追加重复账本。该切片尚未把 pause/resume、Plan 终止和独立 release writer 全部接入 epoch trigger，也不代表发布或 E4，整体状态仍为 `partial_local/not_released/unproven`。
 
 ---
 
@@ -218,7 +220,7 @@ TaskCommentDailyCapacityReservation
 6. 首次规划同一短事务冻结全部 `scope_total_slots=required_distinct_account_count`、全部 CommentFulfillmentObligation ordinal、direct/reply 关系、一个 ContentMixContract、首个 Grounding Snapshot 和全部首版 GroundingAssignment；Action 只按 due/JIT 分批物化。来源编辑只能按 §9.4 为未进 Gateway ordinal 追加内容 revision，不增加、删除或重排数量 ordinal。
 7. `AI_COMMENT_MAX_PER_MESSAGE=80`、单次 Planner batch 和 Action claim limit 都不是产品上限。目标大于 80 时仍创建完整义务集合，只分批物化 Action。
 8. `daily_comment_cap` 是必填正整数，只允许运营配置；Daily Cap 优先于单帖 60% 目标，是 Task 所有来源消息共享的硬上限。容量按不重叠的 UTC `[period_start_at,period_end_at)` ledger 结算，local date/timezone 只解释周期展示；同一 ordinal 的 reservation 按 `plan_reserved -> action_reserved -> gateway_hold -> confirmed` 单向迁移，终止或公平重分配才 `released`，不得把不同状态重复相加。
-9. 新 Plan、Plan 终止、暂停/恢复或 future `plan_reserved` 释放时，创建新的 `ChannelCommentCapacityAllocationEpoch`。先扣除 confirmed、gateway_hold 和当前 claim window 内不可抢占的 action_reserved，再对所有 open Plan 的未进入 Gateway ordinal 按 `(capacity period, deadline_at, allocation_round, source_published_at, message_id, target_ordinal)` 做确定性 max-min 轮转：每轮每个消息至多取得一个 slot，再开始下一轮。只允许移动/release future `plan_reserved`，不能改写 Gateway/unknown/confirmed；因此新消息能参与剩余容量公平分配，先到消息不能永久独占三天 cap。
+9. 新 Plan、Plan 终止、暂停/恢复或 future `plan_reserved` 释放时，创建新的 `ChannelCommentCapacityAllocationEpoch`。先扣除 confirmed、gateway_hold 和当前 claim window 内不可抢占的 action_reserved，再对所有 open Plan 的未进入 Gateway ordinal 按 `(capacity period, allocation_round, deadline_at, source_published_at, message_id, target_ordinal)` 做确定性 max-min 轮转：每轮每个消息至多取得一个 slot，再开始下一轮；deadline 只能在同一 allocation round 内排序，不能排在 round 前导致较晚 deadline 的新消息饥饿。只允许移动/release future `plan_reserved`，不能改写 Gateway/unknown/confirmed；因此新消息能参与剩余容量公平分配，先到消息不能永久独占三天 cap。
 10. 公平分配后容量仍不足时，所有 Plan 保留完整 required ordinal，未分配部分标记 `daily_cap_unallocated`；shortfall 按轮转结果分布，不能集中给最后到达的消息，也不能缩小目标或排到 deadline 后。Task 预览必须同时展示最近 30 天来源消息日到达量 p50/p95/max、当前单帖目标区间、三天重叠需求与 cap 缺口；历史不足时显示 `capacity_forecast_unproven`。运营可显式接受预测风险，但这不把已知容量不足改成 met。
 11. 初始账号绑定与 PlanContract 一起冻结。绑定账号在 Gateway 前不可用时，只能 append 下一 `binding_attempt`，从同一冻结 eligible pool 中 stable rank 最前且尚未绑定/确认的账号接替；旧 binding 终结但不删除。Gateway-started/unknown/success 后禁止换号；冻结池已无可替代账号时形成 `distinct_account_capacity_shortfall`。
 12. Task 时区变化按 §4.6 的连续容量日历执行；旧、新 Plan 即使引用不同 timezone revision，也只能占用首尾相接且绝不重叠的 UTC capacity ledger，禁止因改时区获得第二份 Daily Cap。
@@ -1567,7 +1569,7 @@ E4 样本必须至少包含：
 - [x] 正常正文 Action 绑定 source revision、grounding assignment 和 evidence hash；详情只以持久 selection/typed remote fact 投影完成；
 - [x] quantity/content mix/grounding quality 三维验收已接入 Task 与消息详情，且 emergency fallback 不冒充 grounded；
 - [x] 连续 UTC Daily Cap period/reservation 基线、时区切换首尾相接与 reservation 单向状态已实现；
-- [ ] 跨全部开放消息的完整 max-min allocation epoch、epoch CAS 和公平重排；
+- [ ] 跨全部开放消息的完整 max-min allocation epoch、epoch CAS 和公平重排（新 open Plan 加入、append-only fingerprint/result epoch 与 future `plan_reserved` 公平重排已实现；仍缺 pause/resume、Plan 终止和独立 release writer trigger）；
 - [x] reservation 创建同时通过单 UTC period cap 与跨 period rolling 24h 二次硬限额；候选前后已有预约均纳入，恰好 24 小时旧占用退出窗口；
 - [ ] 来源 edit/delete successor、独立 QualityTargetRevision、完整多老师/否定/时效 extraction 与远端覆盖审查；
 - [x] 无内容弱信号提升 route；

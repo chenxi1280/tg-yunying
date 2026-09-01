@@ -7,6 +7,7 @@ from sqlalchemy import delete, func, select
 
 from app.database import Base, SessionLocal, engine
 from app.models import (
+    ChannelCommentCapacityAllocationEpoch,
     ChannelCommentPlanContract,
     ChannelMessage,
     ChannelMessageSourceRevision,
@@ -17,6 +18,9 @@ from app.models import (
     Tenant,
 )
 from app.services.task_center.channel_comment_capacity import reserve_comment_capacity
+from app.services.task_center.channel_comment_capacity_allocation import (
+    rebalance_comment_capacity_epoch,
+)
 from app.timezone import BEIJING_TZ
 
 
@@ -59,6 +63,38 @@ def test_postgres_task_lock_serializes_last_rolling_capacity_unit() -> None:
             )).where(TaskCommentCapacityReservation.task_id == TASK_ID))
         assert sorted(outcomes) == [False, True]
         assert count == 1
+    finally:
+        _cleanup()
+
+
+def test_postgres_task_lock_cas_reuses_same_allocation_epoch() -> None:
+    Base.metadata.create_all(engine)
+    _cleanup()
+    _seed_scope()
+    start = Barrier(2)
+
+    def allocate() -> int:
+        with SessionLocal() as session:
+            task = session.get(Task, TASK_ID)
+            start.wait(timeout=5)
+            epoch = rebalance_comment_capacity_epoch(
+                session, task, daily_cap=1, at=SCHEDULED_AT,
+            )
+            session.commit()
+            return epoch.allocation_epoch
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            epochs = list(pool.map(lambda _index: allocate(), range(2)))
+        with SessionLocal() as session:
+            epoch_count = session.scalar(select(func.count(
+                ChannelCommentCapacityAllocationEpoch.id,
+            )).where(ChannelCommentCapacityAllocationEpoch.task_id == TASK_ID))
+            reservation_count = session.scalar(select(func.count(
+                TaskCommentCapacityReservation.id,
+            )).where(TaskCommentCapacityReservation.task_id == TASK_ID))
+        assert epochs == [1, 1]
+        assert epoch_count == reservation_count == 1
     finally:
         _cleanup()
 
@@ -158,6 +194,7 @@ def _seed_obligations(session, obligation_ids: list[str]) -> None:
             target_ordinal=ordinal,
             plan_contract_id=PLAN_ID,
             status="open",
+            pacing_due_at=SCHEDULED_AT,
         ))
 
 

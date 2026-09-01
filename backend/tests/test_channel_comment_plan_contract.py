@@ -7,6 +7,7 @@ from sqlalchemy import func, select
 
 from app.models import (
     Action,
+    ChannelCommentCapacityAllocationEpoch,
     ChannelCommentGroundingAssignment,
     ChannelCommentOrdinalAccountBinding,
     ChannelCommentPlanContract,
@@ -23,6 +24,9 @@ from app.services.task_center.channel_comment_capacity import (
     remaining_comment_capacity,
     reserve_comment_capacity,
     settle_comment_capacity,
+)
+from app.services.task_center.channel_comment_capacity_allocation import (
+    rebalance_comment_capacity_epoch,
 )
 from app.services.task_center.channel_comment_grounding_guard import comment_grounding_send_blocker
 from app.services.task_center.channel_payloads import PostCommentPayload
@@ -279,6 +283,117 @@ def test_rolling_24h_cap_spans_capacity_periods(
             "plan_reserved" if expected_reserved else "released"
         )
         assert session.scalar(select(func.count(TaskCommentCapacityReservation.id))) == 2
+
+
+def _add_second_open_plan(session, task, *, due_at: datetime) -> ChannelCommentPlanContract:
+    message = ChannelMessage(
+        id=42, tenant_id=1, channel_target_id=31, message_id=9002,
+        content_preview="第二条频道事实", comment_available=True,
+        published_at=datetime(2030, 8, 1, 10, 0, 0),
+    )
+    session.add(message)
+    session.flush()
+    first = session.scalar(select(ChannelCommentPlanContract))
+    values = {
+        column.name: getattr(first, column.name)
+        for column in ChannelCommentPlanContract.__table__.columns
+        if column.name not in {"id", "channel_message_id", "source_revision_id"}
+    }
+    revision = ChannelMessageSourceRevision(
+        id="source-revision-2", tenant_id=1, channel_message_id=42,
+        source_revision=1, source_remote_message_id=9002,
+        source_published_at=message.published_at,
+        source_observed_at=STABLE_PLANNER_NOW,
+        source_text_snapshot="第二条频道事实", source_content_hash="c" * 64,
+        observation_identity_hash="d" * 64, source_operation="observed",
+    )
+    session.add(revision)
+    session.flush()
+    plan = ChannelCommentPlanContract(
+        **values, channel_message_id=42, source_revision_id=revision.id,
+    )
+    session.add(plan)
+    session.flush()
+    session.add_all([
+        CommentFulfillmentObligation(
+            tenant_id=task.tenant_id, task_id=task.id, channel_message_id=42,
+            comment_plan_revision=1, target_ordinal=ordinal,
+            plan_contract_id=plan.id, status="open", pacing_due_at=due_at,
+        )
+        for ordinal in (1, 2)
+    ])
+    session.flush()
+    return plan
+
+
+def test_new_open_plan_shares_future_capacity_by_max_min_round(monkeypatch) -> None:
+    forbid_planner_external_boundaries(monkeypatch)
+    fixed_profile(monkeypatch)
+    with planner_session() as session:
+        task = seed_comment_task(session, mode="comment", target_count=3)
+        _enable_grounding_plan(session, task)
+        channel_comment.build_plan(session, task)
+        due_at = STABLE_PLANNER_NOW + timedelta(hours=1)
+        first_plan = session.scalar(select(ChannelCommentPlanContract))
+        for row in session.scalars(select(TaskCommentCapacityReservation)):
+            row.action_id = None
+            row.reservation_state = "plan_reserved"
+            row.scheduled_for_at = due_at
+            obligation = session.get(CommentFulfillmentObligation, row.obligation_id)
+            obligation.current_action_id = None
+            obligation.status = "open"
+            obligation.pacing_due_at = due_at
+            obligation.release_not_before_at = due_at
+        session.scalar(select(TaskCommentCapacityPeriod)).capacity_limit = 2
+        second_plan = _add_second_open_plan(session, task, due_at=due_at)
+        second_plan.deadline_at = first_plan.deadline_at + timedelta(hours=1)
+        epoch = rebalance_comment_capacity_epoch(
+            session, task, daily_cap=2, at=STABLE_PLANNER_NOW,
+        )
+        reserved_plan_ids = list(session.scalars(select(
+            TaskCommentCapacityReservation.plan_contract_id,
+        ).where(TaskCommentCapacityReservation.reservation_state == "plan_reserved")))
+
+        assert sorted(reserved_plan_ids) == sorted([
+            first_plan.id, second_plan.id,
+        ])
+        assert epoch.allocation_epoch == 2
+        assert session.scalar(select(func.count(CommentFulfillmentObligation.id))) == 4
+        assert task.stats["daily_cap_unallocated"] == 2
+        assert session.scalar(select(func.count(ChannelCommentCapacityAllocationEpoch.id))) == 2
+
+
+def test_rebalance_never_moves_gateway_or_confirmed_capacity(monkeypatch) -> None:
+    forbid_planner_external_boundaries(monkeypatch)
+    fixed_profile(monkeypatch)
+    with planner_session() as session:
+        task = seed_comment_task(session, mode="comment", target_count=3)
+        _enable_grounding_plan(session, task)
+        channel_comment.build_plan(session, task)
+        reservations = list(session.scalars(select(TaskCommentCapacityReservation)))
+        reservations[0].reservation_state = "gateway_hold"
+        reservations[1].reservation_state = "confirmed"
+        frozen = [
+            (row.id, row.action_id, row.scheduled_for_at, row.allocation_epoch)
+            for row in reservations
+        ]
+        _add_second_open_plan(
+            session, task, due_at=STABLE_PLANNER_NOW + timedelta(hours=1),
+        )
+
+        rebalance_comment_capacity_epoch(
+            session, task, daily_cap=3, at=STABLE_PLANNER_NOW,
+        )
+        immutable = list(session.scalars(select(TaskCommentCapacityReservation).where(
+            TaskCommentCapacityReservation.reservation_state.in_({
+                "gateway_hold", "confirmed",
+            }),
+        )))
+
+        assert [
+            (row.id, row.action_id, row.scheduled_for_at, row.allocation_epoch)
+            for row in immutable
+        ] == frozen
 
 
 

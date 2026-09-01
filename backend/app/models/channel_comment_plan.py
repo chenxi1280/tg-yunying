@@ -179,6 +179,27 @@ class TaskCommentCapacityPeriod(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
+class ChannelCommentCapacityAllocationEpoch(Base):
+    __tablename__ = "channel_comment_capacity_allocation_epochs"
+    __table_args__ = (
+        UniqueConstraint(
+            "task_id", "allocation_epoch",
+            name="uq_channel_comment_capacity_allocation_epoch",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"))
+    allocation_epoch: Mapped[int] = mapped_column(Integer)
+    horizon_start_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    horizon_end_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    open_plan_set_hash: Mapped[str] = mapped_column(String(64))
+    immutable_usage_hash: Mapped[str] = mapped_column(String(64))
+    allocation_result_hash: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
 class TaskCommentCapacityReservation(Base):
     __tablename__ = "task_comment_capacity_reservations"
     __table_args__ = (
@@ -208,12 +229,14 @@ class TaskCommentCapacityReservation(Base):
     )
     capacity_units: Mapped[int] = mapped_column(Integer, default=1)
     reservation_state: Mapped[str] = mapped_column(String(32), default="plan_reserved")
+    allocation_epoch: Mapped[int | None] = mapped_column(Integer, nullable=True)
     scheduled_for_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
 __all__ = [
     "ChannelCommentEligibleAccountSnapshotRow",
+    "ChannelCommentCapacityAllocationEpoch",
     "ChannelCommentGroundingAssignment",
     "ChannelCommentOrdinalAccountBinding",
     "ChannelCommentPlanContract",
