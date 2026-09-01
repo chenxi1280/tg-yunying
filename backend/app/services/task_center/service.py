@@ -3278,7 +3278,15 @@ def resume_task(session: Session, tenant_id: int, task_id: str, actor: str) -> T
         session.commit()
         session.refresh(task)
         return task
-    return start_task(session, tenant_id, task_id, actor)
+    was_paused = task.status == "paused"
+    start_task_in_transaction(session, task, actor)
+    if was_paused and task.type == "channel_comment" and task.status == "running":
+        from .channel_comment_lifecycle import resume_channel_comment_plans
+
+        resume_channel_comment_plans(session, task, occurred_at=_now())
+    session.commit()
+    session.refresh(task)
+    return task
 
 
 def stop_task(

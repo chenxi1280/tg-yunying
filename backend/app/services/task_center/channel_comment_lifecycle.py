@@ -31,6 +31,8 @@ from .source_pacing_release import release_source_pacing_admissions_before_gatew
 PAUSE_EVENT = "pause"
 PAUSE_REASON = "task_paused_by_operator"
 PAUSE_ACTION_REASON = "task_paused_before_gateway"
+RESUME_EVENT = "resume"
+RESUME_REASON = "task_resumed_by_operator"
 
 
 def pause_channel_comment_plans(
@@ -61,6 +63,34 @@ def pause_channel_comment_plans(
     return events
 
 
+def resume_channel_comment_plans(
+    session: Session,
+    task: Task,
+    *,
+    occurred_at: datetime,
+) -> list[ChannelCommentPlanLifecycleEvent]:
+    if task.type != "channel_comment" or task.status != "running":
+        raise ValueError("channel_comment_resume_task_state_invalid")
+    plan_ids = list(session.scalars(
+        select(ChannelCommentPlanContract.id).where(
+            ChannelCommentPlanContract.task_id == task.id,
+            ChannelCommentPlanContract.contract_state == "open",
+        ).order_by(ChannelCommentPlanContract.id)
+    ))
+    if not plan_ids:
+        return []
+    events = [
+        _resume_plan(session, task, plan_id=plan_id, occurred_at=occurred_at)
+        for plan_id in plan_ids
+    ]
+    rebalance_comment_capacity_epoch(
+        session, task,
+        daily_cap=int((task.type_config or {}).get("daily_comment_cap") or 0),
+        at=occurred_at,
+    )
+    return events
+
+
 def _pause_plan(
     session: Session,
     task: Task,
@@ -77,18 +107,76 @@ def _pause_plan(
         raise RuntimeError("channel_comment_plan_missing_during_pause")
     evidence_hash = _event_evidence_hash(task, plan, PAUSE_EVENT)
     existing = _existing_event(
-        session, task, plan=plan, evidence_hash=evidence_hash,
+        session, task, plan=plan, event_type=PAUSE_EVENT,
+        evidence_hash=evidence_hash,
     )
     if existing is not None:
         return existing
     outcomes = _pause_obligations(session, plan, occurred_at=occurred_at)
     event = _new_event(
         task, plan, occurred_at=occurred_at,
+        event_type=PAUSE_EVENT, reason=PAUSE_REASON,
         evidence_hash=evidence_hash, outcomes=outcomes,
     )
     session.add(event)
     session.flush()
     return event
+
+
+def _resume_plan(
+    session: Session,
+    task: Task,
+    *,
+    plan_id: str,
+    occurred_at: datetime,
+) -> ChannelCommentPlanLifecycleEvent:
+    plan = session.scalar(
+        select(ChannelCommentPlanContract)
+        .where(ChannelCommentPlanContract.id == plan_id)
+        .with_for_update()
+    )
+    if plan is None:
+        raise RuntimeError("channel_comment_plan_missing_during_resume")
+    evidence_hash = _event_evidence_hash(task, plan, RESUME_EVENT)
+    existing = _existing_event(
+        session, task, plan=plan, event_type=RESUME_EVENT,
+        evidence_hash=evidence_hash,
+    )
+    if existing is not None:
+        return existing
+    outcomes = _resume_obligations(session, plan, occurred_at=occurred_at)
+    event = _new_event(
+        task, plan, occurred_at=occurred_at,
+        event_type=RESUME_EVENT, reason=RESUME_REASON,
+        evidence_hash=evidence_hash, outcomes=outcomes,
+    )
+    session.add(event)
+    session.flush()
+    return event
+
+
+def _resume_obligations(
+    session: Session,
+    plan: ChannelCommentPlanContract,
+    *,
+    occurred_at: datetime,
+) -> list[dict]:
+    outcomes = []
+    obligations = session.scalars(select(CommentFulfillmentObligation).where(
+        CommentFulfillmentObligation.plan_contract_id == plan.id,
+    ).order_by(CommentFulfillmentObligation.target_ordinal))
+    for obligation in obligations:
+        if obligation.status != "paused_unallocated":
+            outcomes.append({
+                "ordinal": obligation.target_ordinal,
+                "result": "identity_preserved",
+            })
+            continue
+        deadline_passed = compare_datetimes(occurred_at, plan.deadline_at) > 0
+        status = "missed_task_paused" if deadline_passed else "replan_required"
+        obligation.status = status
+        outcomes.append({"ordinal": obligation.target_ordinal, "result": status})
+    return sorted(outcomes, key=lambda item: int(item["ordinal"]))
 
 
 def _pause_obligations(
@@ -186,12 +274,13 @@ def _existing_event(
     task: Task,
     *,
     plan: ChannelCommentPlanContract,
+    event_type: str,
     evidence_hash: str,
 ) -> ChannelCommentPlanLifecycleEvent | None:
     return session.scalar(select(ChannelCommentPlanLifecycleEvent).where(
         ChannelCommentPlanLifecycleEvent.plan_contract_id == plan.id,
         ChannelCommentPlanLifecycleEvent.lifecycle_epoch == int(task.task_lifecycle_epoch or 1),
-        ChannelCommentPlanLifecycleEvent.event_type == PAUSE_EVENT,
+        ChannelCommentPlanLifecycleEvent.event_type == event_type,
         ChannelCommentPlanLifecycleEvent.evidence_hash == evidence_hash,
     ))
 
@@ -201,15 +290,17 @@ def _new_event(
     plan: ChannelCommentPlanContract,
     *,
     occurred_at: datetime,
+    event_type: str,
+    reason: str,
     evidence_hash: str,
     outcomes: list[dict],
 ) -> ChannelCommentPlanLifecycleEvent:
     result_hash = _hash(outcomes)
     return ChannelCommentPlanLifecycleEvent(
         tenant_id=task.tenant_id, task_id=task.id, plan_contract_id=plan.id,
-        lifecycle_epoch=int(task.task_lifecycle_epoch or 1), event_type=PAUSE_EVENT,
+        lifecycle_epoch=int(task.task_lifecycle_epoch or 1), event_type=event_type,
         occurred_at=occurred_at, task_revision=int(task.config_revision or 1),
-        reason=PAUSE_REASON, evidence_hash=evidence_hash,
+        reason=reason, evidence_hash=evidence_hash,
         event_state="completed", result_hash=result_hash,
     )
 
@@ -227,4 +318,4 @@ def _hash(value: object) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-__all__ = ["pause_channel_comment_plans"]
+__all__ = ["pause_channel_comment_plans", "resume_channel_comment_plans"]

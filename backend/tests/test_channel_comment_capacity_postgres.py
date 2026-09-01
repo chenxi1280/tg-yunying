@@ -31,7 +31,7 @@ from app.services.task_center.channel_comment_content_revision import (
 from app.services.task_center.channel_comment_source_delete import (
     settle_channel_comment_source_deleted,
 )
-from app.services.task_center.service import pause_task
+from app.services.task_center.service import pause_task, resume_task
 from app.timezone import BEIJING_TZ
 
 
@@ -213,6 +213,42 @@ def test_postgres_task_lock_cas_reuses_same_pause_event() -> None:
         assert outcomes[0] == outcomes[1]
         assert event_count == 1
         assert all(row.status == "paused_unallocated" for row in obligations)
+    finally:
+        _cleanup()
+
+
+def test_postgres_task_lock_cas_reuses_same_resume_event() -> None:
+    Base.metadata.create_all(engine)
+    _cleanup()
+    _seed_scope()
+    with SessionLocal() as session:
+        pause_task(session, TENANT_ID, TASK_ID, "operator")
+    start = Barrier(2)
+
+    def resume() -> tuple[int, str]:
+        with SessionLocal() as session:
+            start.wait(timeout=5)
+            task = resume_task(session, TENANT_ID, TASK_ID, "operator")
+            event_id = session.scalar(select(ChannelCommentPlanLifecycleEvent.id).where(
+                ChannelCommentPlanLifecycleEvent.task_id == TASK_ID,
+                ChannelCommentPlanLifecycleEvent.event_type == "resume",
+            ))
+            return int(task.task_lifecycle_epoch), event_id
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            outcomes = list(pool.map(lambda _index: resume(), range(2)))
+        with SessionLocal() as session:
+            event_count = session.scalar(select(func.count(
+                ChannelCommentPlanLifecycleEvent.id,
+            )).where(
+                ChannelCommentPlanLifecycleEvent.task_id == TASK_ID,
+                ChannelCommentPlanLifecycleEvent.event_type == "resume",
+            ))
+            task = session.get(Task, TASK_ID)
+        assert outcomes[0] == outcomes[1]
+        assert event_count == 1
+        assert task.status == "running"
     finally:
         _cleanup()
 
