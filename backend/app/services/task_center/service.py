@@ -3312,14 +3312,20 @@ def stop_task(
     _advance_task_lifecycle_epoch(task, "stopped")
     task.status = "stopped"
     task.next_run_at = None
-    _settle_task_closing_actions(
-        session,
-        task,
-        statuses=tuple(sorted(OPEN_PLAN_ACTION_STATUSES)),
-        error_code="task_stopped",
-        error_message="任务已停止",
-        now=_now(),
-    )
+    now = _now()
+    if task.type == "channel_comment":
+        from .channel_comment_lifecycle import stop_channel_comment_plans
+
+        stop_channel_comment_plans(session, task, occurred_at=now)
+    else:
+        _settle_task_closing_actions(
+            session,
+            task,
+            statuses=tuple(sorted(OPEN_PLAN_ACTION_STATUSES)),
+            error_code="task_stopped",
+            error_message="任务已停止",
+            now=now,
+        )
     refresh_task_stats(session, task)
     audit(
         session,

@@ -31,7 +31,7 @@ from app.services.task_center.channel_comment_content_revision import (
 from app.services.task_center.channel_comment_source_delete import (
     settle_channel_comment_source_deleted,
 )
-from app.services.task_center.service import pause_task, resume_task
+from app.services.task_center.service import pause_task, resume_task, stop_task
 from app.timezone import BEIJING_TZ
 
 
@@ -249,6 +249,42 @@ def test_postgres_task_lock_cas_reuses_same_resume_event() -> None:
         assert outcomes[0] == outcomes[1]
         assert event_count == 1
         assert task.status == "running"
+    finally:
+        _cleanup()
+
+
+def test_postgres_task_lock_cas_reuses_same_stop_event() -> None:
+    Base.metadata.create_all(engine)
+    _cleanup()
+    obligation_ids = _seed_scope()
+    start = Barrier(2)
+
+    def stop() -> tuple[int, str]:
+        with SessionLocal() as session:
+            start.wait(timeout=5)
+            task = stop_task(session, TENANT_ID, TASK_ID, "operator")
+            event_id = session.scalar(select(ChannelCommentPlanLifecycleEvent.id).where(
+                ChannelCommentPlanLifecycleEvent.task_id == TASK_ID,
+                ChannelCommentPlanLifecycleEvent.event_type == "stop",
+            ))
+            return int(task.task_lifecycle_epoch), event_id
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            outcomes = list(pool.map(lambda _index: stop(), range(2)))
+        with SessionLocal() as session:
+            event_count = session.scalar(select(func.count(
+                ChannelCommentPlanLifecycleEvent.id,
+            )).where(
+                ChannelCommentPlanLifecycleEvent.task_id == TASK_ID,
+                ChannelCommentPlanLifecycleEvent.event_type == "stop",
+            ))
+            obligations = list(session.scalars(select(
+                CommentFulfillmentObligation,
+            ).where(CommentFulfillmentObligation.id.in_(obligation_ids))))
+        assert outcomes[0] == outcomes[1]
+        assert event_count == 1
+        assert all(row.status == "terminated_by_operator" for row in obligations)
     finally:
         _cleanup()
 

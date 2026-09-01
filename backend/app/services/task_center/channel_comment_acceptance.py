@@ -98,13 +98,18 @@ def _plan_acceptance(
     grounding = _grounding_counts(confirmed, actions, assignments)
     deadline_passed = _deadline_passed(plan.deadline_at)
     target = int(plan.required_distinct_account_count)
-    quantity_status = _target_status(len(confirmed), target, deadline_passed=deadline_passed)
-    content_status = _content_status(
-        plan, content, confirmed=len(confirmed), deadline_passed=deadline_passed,
-    )
-    grounding_status = _grounding_status(
-        plan, grounding, content=content, deadline_passed=deadline_passed,
-    )
+    if plan.contract_state in {"terminated_by_operator", "terminated_source_deleted"}:
+        quantity_status = content_status = grounding_status = "terminated"
+    else:
+        quantity_status = _target_status(
+            len(confirmed), target, deadline_passed=deadline_passed,
+        )
+        content_status = _content_status(
+            plan, content, confirmed=len(confirmed), deadline_passed=deadline_passed,
+        )
+        grounding_status = _grounding_status(
+            plan, grounding, content=content, deadline_passed=deadline_passed,
+        )
     return {
         "acceptance_status": _combined_status(
             quantity_status, content_status, grounding_status,
