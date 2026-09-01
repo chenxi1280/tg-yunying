@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.models import ChannelMessage, CommentFulfillmentObligation, Task
 
 from ..channel_comment_plan_contract import ensure_comment_plan_contract
+from ..channel_comment_quality_target import target_component_for_ordinal
 from ..comment_fulfillment import freeze_comment_obligations
 from .channel_comment_schedule import reply_minimum_for_mode
 from .channel_comment_targets import valid_reply_targets
@@ -24,6 +25,7 @@ class CommentPlanSlot:
     obligation: CommentFulfillmentObligation
     grounding_assignment: object | None = None
     source_revision_id: str = ""
+    quality_target_revision_id: str = ""
 
 
 def build_grounding_comment_plan_slots(
@@ -58,7 +60,7 @@ def build_grounding_comment_plan_slots(
             message,
             obligations,
             plan.assignment_by_ordinal,
-            source_revision_id=plan.contract.source_revision_id,
+            quality_target=plan.quality_target,
         ))
     return slots
 
@@ -123,7 +125,7 @@ def _freeze_grounding_obligations(
     )
     if targets is None:
         return []
-    first_fallback = int(plan.contract.grounding_required_count) + 1
+    first_fallback = int(plan.quality_target.aggregate_grounding_required_count) + 1
     return freeze_comment_obligations(
         session, task, message, targets,
         rule_version=context.rule_version,
@@ -143,21 +145,25 @@ def _open_plan_slots(
     obligations: list[CommentFulfillmentObligation],
     assignments: dict[int, object],
     *,
-    source_revision_id: str,
+    quality_target: object,
 ) -> list[CommentPlanSlot]:
-    return [
-        CommentPlanSlot(
+    slots = []
+    for item in obligations:
+        if item.status not in {"open", "replan_required"} or item.current_action_id:
+            continue
+        ordinal = int(item.target_ordinal)
+        assignment = assignments.get(ordinal)
+        component = target_component_for_ordinal(quality_target, ordinal)
+        slots.append(CommentPlanSlot(
             message,
             item.reply_target_snapshot if item.relation_kind == "reply" else None,
-            item.target_ordinal - 1,
+            ordinal - 1,
             item,
-            assignments.get(int(item.target_ordinal)),
-            source_revision_id,
-        )
-        for item in obligations
-        if item.status in {"open", "replan_required"}
-        and item.current_action_id is None
-    ]
+            assignment,
+            str(getattr(assignment, "source_revision_id", "") or component["source_revision_id"]),
+            str(getattr(assignment, "quality_target_revision_id", "") or quality_target.id),
+        ))
+    return slots
 
 
 __all__ = ["CommentPlanSlot", "build_grounding_comment_plan_slots"]

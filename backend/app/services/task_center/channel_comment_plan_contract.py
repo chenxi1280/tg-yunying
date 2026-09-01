@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 from dataclasses import dataclass
 
 from sqlalchemy import select
@@ -13,25 +12,30 @@ from app.models import (
     ChannelCommentGroundingAssignment,
     ChannelCommentOrdinalAccountBinding,
     ChannelCommentPlanContract,
+    ChannelCommentQualityTargetRevision,
     ChannelMessage,
     ChannelMessageSourceRevision,
     Task,
 )
 
 from .source_pacing import rolling_source_window
-from .ai_generator import _extract_channel_post_aspects
+from .channel_comment_quality_target import (
+    build_quality_target_component,
+    current_quality_target,
+    freeze_initial_quality_target,
+    quality_assignment_content,
+)
 
 
 QUANTITY_CONTRACT_VERSION = "channel_comment_participation_v1"
 PARTICIPATION_MIN_BPS = 5500
 PARTICIPATION_MAX_BPS = 6500
-GROUNDING_TARGET_BPS = 8500
-SPEECH_ACTS = ("reaction", "specific_question", "cautious_verification", "concise_agreement")
 
 
 @dataclass(frozen=True)
 class FrozenCommentPlan:
     contract: ChannelCommentPlanContract
+    quality_target: ChannelCommentQualityTargetRevision
     account_by_ordinal: dict[int, int]
     assignment_by_ordinal: dict[int, ChannelCommentGroundingAssignment]
 
@@ -60,7 +64,9 @@ def ensure_comment_plan_contract(
     bps = _participation_bps(task, message)
     required = _required_count(len(ranked), bps)
     window_start, deadline = rolling_source_window(task, source.source_published_at)
-    grounding_required = _grounding_required_count(required, source.source_text_snapshot)
+    component = build_quality_target_component(
+        source, list(range(1, required + 1)), comment_grounding_revision=1,
+    )
     contract = _new_plan_contract(
         task,
         message,
@@ -70,15 +76,19 @@ def ensure_comment_plan_contract(
         required=required,
         window_start=window_start,
         deadline=deadline,
-        grounding_required=grounding_required,
+        grounding_required=int(component["grounding_required_count"]),
     )
     session.add(contract)
     session.flush()
+    quality_target = freeze_initial_quality_target(
+        session, contract, source, component=component,
+    )
     _freeze_accounts(
         session, task, contract=contract, accounts=ranked, required=required,
     )
     _freeze_grounding_assignments(
         session, task, contract=contract, source=source,
+        quality_target=quality_target,
     )
     return _frozen_plan(session, contract)
 
@@ -145,12 +155,6 @@ def _require_post_enrollment_source(
         return
     task.last_error = "source_before_task_enrollment"
     raise ValueError("source_before_task_enrollment")
-
-
-def _grounding_required_count(required: int, source_text: str) -> int:
-    if required <= 0 or not source_text.strip():
-        return 0
-    return min(required, math.ceil(required * GROUNDING_TARGET_BPS / 10000))
 
 
 def _ranked_accounts(task: Task, message: ChannelMessage, accounts: list) -> list:
@@ -220,43 +224,22 @@ def _freeze_grounding_assignments(
     *,
     contract: ChannelCommentPlanContract,
     source: ChannelMessageSourceRevision,
+    quality_target: ChannelCommentQualityTargetRevision,
 ) -> None:
-    for ordinal in range(1, int(contract.grounding_required_count) + 1):
+    component = quality_target.component_targets_json[0]
+    for ordinal in component["grounding_ordinal_ids"]:
         session.add(ChannelCommentGroundingAssignment(
             tenant_id=task.tenant_id,
             plan_contract_id=contract.id,
             source_revision_id=source.id,
             target_ordinal=ordinal,
             assignment_version=1,
-            **grounding_assignment_content(source, ordinal),
+            quality_target_revision_id=quality_target.id,
+            quality_component_key=component["quality_component_key"],
+            **quality_assignment_content(source, component, int(ordinal)),
             assignment_state="active",
         ))
     session.flush()
-
-
-def _assigned_aspect(source_text: str, aspects: list[dict], ordinal: int) -> tuple[str, str]:
-    if not aspects:
-        return "source_fact", source_text.strip()[:500]
-    aspect = aspects[(ordinal - 1) % len(aspects)]
-    matches = "/".join(str(item) for item in (aspect.get("matches") or [])[:3])
-    return str(aspect.get("code") or "source_fact"), matches or str(aspect.get("label") or "")
-
-
-def grounding_assignment_content(
-    source: ChannelMessageSourceRevision,
-    ordinal: int,
-) -> dict:
-    extracted = _extract_channel_post_aspects(source.source_text_snapshot)
-    aspects = list(extracted.get("aspects") or [])
-    code, text = _assigned_aspect(source.source_text_snapshot, aspects, ordinal)
-    return {
-        "evidence_text": source.source_text_snapshot,
-        "evidence_hash": source.source_content_hash,
-        "primary_aspect_code": code,
-        "primary_aspect_text": text,
-        "teacher_name": str(extracted.get("teacher_name") or ""),
-        "speech_act": SPEECH_ACTS[(ordinal - 1) % len(SPEECH_ACTS)],
-    }
 
 
 def _account_bindings(session: Session, plan_contract_id: str) -> dict[int, int]:
@@ -284,6 +267,7 @@ def _grounding_assignments(
 def _frozen_plan(session: Session, contract: ChannelCommentPlanContract) -> FrozenCommentPlan:
     return FrozenCommentPlan(
         contract,
+        current_quality_target(session, contract),
         _account_bindings(session, contract.id),
         _grounding_assignments(session, contract.id),
     )
@@ -293,6 +277,5 @@ __all__ = [
     "FrozenCommentPlan",
     "QUANTITY_CONTRACT_VERSION",
     "ensure_comment_plan_contract",
-    "grounding_assignment_content",
     "grounding_plan_enabled",
 ]

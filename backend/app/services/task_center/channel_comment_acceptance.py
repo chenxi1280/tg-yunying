@@ -10,10 +10,12 @@ from app.models import (
     Action,
     ChannelCommentGroundingAssignment,
     ChannelCommentPlanContract,
+    ChannelCommentQualityTargetRevision,
     CommentFulfillmentObligation,
     Task,
 )
 from app.services._common import _now
+from .channel_comment_quality_target import quality_target_projection
 
 
 TERMINAL_PRIORITY = ("missed", "terminated", "blocked", "at_risk", "evaluating")
@@ -28,11 +30,13 @@ def channel_comment_acceptance(session: Session, task: Task) -> dict:
     obligations = _obligations(session, plans)
     actions = _actions_by_id(session, obligations)
     assignments = _assignments_by_id(session, obligations)
+    targets = _quality_targets(session, plans)
     by_message = {}
     for plan in plans:
         rows = [row for row in obligations if row.plan_contract_id == plan.id]
         by_message[int(plan.channel_message_id)] = _plan_acceptance(
             plan, rows, actions, assignments=assignments,
+            quality_target=targets.get(plan.current_quality_target_revision_id or ""),
         )
     return _aggregate_acceptance(by_message)
 
@@ -86,16 +90,36 @@ def _assignments_by_id(
     }
 
 
+def _quality_targets(
+    session: Session,
+    plans: list[ChannelCommentPlanContract],
+) -> dict[str, ChannelCommentQualityTargetRevision]:
+    ids = [row.current_quality_target_revision_id for row in plans if row.current_quality_target_revision_id]
+    if not ids:
+        return {}
+    return {
+        row.id: row
+        for row in session.scalars(select(ChannelCommentQualityTargetRevision).where(
+            ChannelCommentQualityTargetRevision.id.in_(ids),
+        ))
+    }
+
+
 def _plan_acceptance(
     plan: ChannelCommentPlanContract,
     obligations: list[CommentFulfillmentObligation],
     actions: dict[str, Action],
     *,
     assignments: dict[str, ChannelCommentGroundingAssignment],
+    quality_target: ChannelCommentQualityTargetRevision | None,
 ) -> dict:
     confirmed = _distinct_confirmed(obligations)
     content = _content_counts(confirmed, actions)
     grounding = _grounding_counts(confirmed, actions, assignments)
+    target_projection = _target_projection(plan, quality_target)
+    target_projection = _assignment_projection(
+        target_projection, quality_target, obligations, assignments,
+    )
     deadline_passed = _deadline_passed(plan.deadline_at)
     target = int(plan.required_distinct_account_count)
     if plan.contract_state in {"terminated_by_operator", "terminated_source_deleted"}:
@@ -105,10 +129,12 @@ def _plan_acceptance(
             len(confirmed), target, deadline_passed=deadline_passed,
         )
         content_status = _content_status(
-            plan, content, confirmed=len(confirmed), deadline_passed=deadline_passed,
+            plan, content, target_projection=target_projection,
+            confirmed=len(confirmed), deadline_passed=deadline_passed,
         )
         grounding_status = _grounding_status(
-            plan, grounding, content=content, deadline_passed=deadline_passed,
+            grounding, target_projection=target_projection,
+            content=content, deadline_passed=deadline_passed,
         )
     return {
         "acceptance_status": _combined_status(
@@ -119,16 +145,13 @@ def _plan_acceptance(
         "grounding_quality_status": grounding_status,
         "quantity_target_count": target,
         "quantity_confirmed_count": len(confirmed),
-        "planned_fallback_target_count": int(plan.planned_fallback_count),
         "planned_fallback_confirmed_count": content["planned_fallback"],
         "unplanned_fallback_confirmed_count": content["emergency_fallback"],
-        "grounding_required_count": int(plan.grounding_required_count),
         "grounded_remote_confirmed_count": grounding["grounded"],
-        "teacher_required_count": grounding["teacher_required"],
         "teacher_remote_covered_count": grounding["teacher_covered"],
-        "primary_aspect_required_count": grounding["aspect_required"],
         "primary_aspect_remote_covered_count": grounding["aspect_covered"],
         "deadline_at": plan.deadline_at,
+        **target_projection,
     }
 
 
@@ -171,8 +194,6 @@ def _grounding_counts(
     actions: dict[str, Action],
     assignments: dict[str, ChannelCommentGroundingAssignment],
 ) -> dict[str, int]:
-    teacher_required = {row.id for row in assignments.values() if row.teacher_name}
-    aspect_required = {row.primary_aspect_code for row in assignments.values() if row.primary_aspect_code}
     teachers: set[str] = set()
     aspects: set[str] = set()
     grounded = 0
@@ -184,14 +205,12 @@ def _grounding_counts(
         grounded += 1
         text = str((action.payload or {}).get("comment_text") or "")
         if assignment.teacher_name and assignment.teacher_name in text:
-            teachers.add(assignment.id)
+            teachers.add(assignment.teacher_name)
         if _aspect_realized(text, assignment.primary_aspect_text):
             aspects.add(assignment.primary_aspect_code)
     return {
         "grounded": grounded,
-        "teacher_required": len(teacher_required),
         "teacher_covered": len(teachers),
-        "aspect_required": len(aspect_required),
         "aspect_covered": len(aspects),
     }
 
@@ -209,6 +228,7 @@ def _grounded_action(
         payload.get("content_source") == "normal"
         and payload.get("grounding_assignment_id") == assignment.id
         and payload.get("grounding_evidence_hash") == assignment.evidence_hash
+        and payload.get("quality_target_revision_id") == assignment.quality_target_revision_id
         and isinstance(semantic, dict)
         and semantic.get("decision") == "pass"
     )
@@ -233,6 +253,7 @@ def _content_status(
     plan: ChannelCommentPlanContract,
     content: dict[str, int],
     *,
+    target_projection: dict,
     confirmed: int,
     deadline_passed: bool,
 ) -> str:
@@ -240,28 +261,37 @@ def _content_status(
         return "missed" if deadline_passed else "blocked"
     complete = bool(
         confirmed >= int(plan.required_distinct_account_count)
-        and content["planned_fallback"] >= int(plan.planned_fallback_count)
+        and content["planned_fallback"] >= int(
+            target_projection["planned_fallback_target_count"],
+        )
         and not content["unproven"]
     )
     return _target_status(int(complete), 1, deadline_passed=deadline_passed)
 
 
 def _grounding_status(
-    plan: ChannelCommentPlanContract,
     grounding: dict[str, int],
     *,
+    target_projection: dict,
     content: dict[str, int],
     deadline_passed: bool,
 ) -> str:
-    required = int(plan.grounding_required_count)
-    if required == 0:
-        return "not_applicable"
+    if target_projection["quality_target_revision_state"] != "frozen":
+        return "missed" if deadline_passed else "blocked"
+    if target_projection["quality_target_unassigned_ordinal_count"]:
+        return "missed" if deadline_passed else "blocked"
+    required = int(target_projection["grounding_required_count"])
     if content["emergency_fallback"]:
         return "missed" if deadline_passed else "blocked"
     complete = bool(
         grounding["grounded"] >= required
-        and grounding["teacher_covered"] >= grounding["teacher_required"]
-        and grounding["aspect_covered"] >= grounding["aspect_required"]
+        and content["planned_fallback"] >= int(
+            target_projection["planned_fallback_target_count"],
+        )
+        and grounding["teacher_covered"] >= int(target_projection["teacher_required_count"])
+        and grounding["aspect_covered"] >= int(
+            target_projection["primary_aspect_required_count"],
+        )
     )
     return _target_status(int(complete), 1, deadline_passed=deadline_passed)
 
@@ -284,6 +314,10 @@ def _aggregate_acceptance(by_message: dict[int, dict]) -> dict:
         "grounded_remote_confirmed_count", "teacher_required_count",
         "teacher_remote_covered_count", "primary_aspect_required_count",
         "primary_aspect_remote_covered_count",
+        "applicable_grounding_ordinal_count", "unadjusted_grounding_target_count",
+        "groundable_capacity_count", "quality_target_unassigned_ordinal_count",
+        "quality_target_not_applicable_ordinal_count",
+        "quality_target_shortfall_ordinal_count",
     )
     result = {key: sum(int(row.get(key) or 0) for row in rows) for key in keys}
     for dimension in (
@@ -296,7 +330,81 @@ def _aggregate_acceptance(by_message: dict[int, dict]) -> dict:
         result["grounding_quality_status"],
     )
     result["message_acceptance"] = by_message
+    result.update(_aggregate_quality_revision(rows))
     return result
+
+
+def _target_projection(
+    plan: ChannelCommentPlanContract,
+    target: ChannelCommentQualityTargetRevision | None,
+) -> dict:
+    if target is not None:
+        return quality_target_projection(target)
+    return {
+        "quality_target_current_revision": 0,
+        "quality_target_effective_revision": 0,
+        "quality_target_revision_state": "missing",
+        "quality_target_component_count": 0,
+        "quality_target_component_set_hash": "",
+        "quality_target_unassigned_ordinal_count": int(plan.required_distinct_account_count),
+        "quality_target_not_applicable_ordinal_count": 0,
+        "quality_target_shortfall_ordinal_count": int(plan.required_distinct_account_count),
+        "applicable_grounding_ordinal_count": int(plan.required_distinct_account_count),
+        "unadjusted_grounding_target_count": int(plan.grounding_required_count),
+        "groundable_capacity_count": 0,
+        "grounding_required_count": int(plan.grounding_required_count),
+        "planned_fallback_target_count": int(plan.planned_fallback_count),
+        "teacher_required_count": 0,
+        "primary_aspect_required_count": 0,
+        "semantic_capacity_state": "unproven",
+    }
+
+
+def _assignment_projection(
+    projection: dict,
+    target: ChannelCommentQualityTargetRevision | None,
+    obligations: list[CommentFulfillmentObligation],
+    assignments: dict[str, ChannelCommentGroundingAssignment],
+) -> dict:
+    if target is None:
+        return projection
+    required = {
+        int(value)
+        for component in target.component_targets_json
+        for value in component.get("grounding_ordinal_ids", [])
+    }
+    assigned = {
+        int(row.target_ordinal)
+        for row in obligations
+        if (
+            (assignment := assignments.get(str(row.grounding_assignment_id or "")))
+            and assignment.assignment_state == "active"
+        )
+    }
+    missing = len(required - assigned)
+    return {
+        **projection,
+        "quality_target_unassigned_ordinal_count": (
+            int(projection["quality_target_unassigned_ordinal_count"]) + missing
+        ),
+        "quality_target_not_applicable_ordinal_count": 0,
+        "quality_target_shortfall_ordinal_count": missing,
+    }
+
+
+def _aggregate_quality_revision(rows: list[dict]) -> dict:
+    revisions = {int(row["quality_target_current_revision"]) for row in rows}
+    states = {str(row["quality_target_revision_state"]) for row in rows}
+    capacity_states = {str(row["semantic_capacity_state"]) for row in rows}
+    revision = max(revisions, default=0)
+    return {
+        "quality_target_current_revision": revision,
+        "quality_target_effective_revision": revision,
+        "quality_target_revision_state": states.pop() if len(states) == 1 else "mixed",
+        "semantic_capacity_state": (
+            capacity_states.pop() if len(capacity_states) == 1 else "mixed"
+        ),
+    }
 
 
 __all__ = ["channel_comment_acceptance"]

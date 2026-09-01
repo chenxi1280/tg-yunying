@@ -6,8 +6,8 @@
 | --- | --- |
 | 需求级别 | L2 产品能力升级；同时闭合评论参与数量、广播/老师相关性与整体验收 |
 | 产品设计状态 | `design_complete` / `ready_for_dev`（v1.4 五轮业务复核通过） |
-| 实现状态 | `partial_local`：v1.4 兜底 policy/pool/cursor/selection、20 表情、静态图片发送、素材组完整性/CAS、journal typed fact 恢复已实现；0188 已补 SourceRevision、数量 Plan、eligible snapshot、ordinal-account binding、首版基础 GroundingAssignment、全量 obligation/JIT Action、planned fallback、连续 UTC capacity period/reservation、跨 period rolling 24h 二次硬限额和三维保守验收；0189 已补 append-only allocation epoch 与新 open Plan 加入时的 max-min future `plan_reserved` 重排；0190 已补来源编辑 operation、pre-Gateway assignment successor 与 Gateway identity fence；0191 已补 Telegram 精确消息查询删除事实及通用 append-only lifecycle event 表，当前 source-deleted、pause、resume、stop、软删除和物理删除前 Task 独立 outcome tombstone 已接入。独立 QualityTargetRevision、完整多老师/时效 extraction 与 Gateway accepted/outbound hash 闭环仍未完成 |
-| QA 状态 | `partial_local`：数量/来源/assignment/planned fallback/selection read-model/三维验收、max-min、来源编辑、来源删除与 pause/resume/stop/delete 分流定向 no-postgres 回归通过；0189/0190 离线 upgrade/downgrade、真实旧 schema transition、fresh 全链迁移通过；真实 PostgreSQL rolling cap/epoch/content revision/source delete/pause/resume/stop CAS 七项及 Task delete 三项通过。完整跨功能回归、UI 人工验收和 E4 未通过 |
+| 实现状态 | `partial_local`：v1.4 兜底 policy/pool/cursor/selection、20 表情、静态图片发送、素材组完整性/CAS、journal typed fact 恢复已实现；0188 已补 SourceRevision、数量 Plan、eligible snapshot、ordinal-account binding、首版基础 GroundingAssignment、全量 obligation/JIT Action、planned fallback、连续 UTC capacity period/reservation、跨 period rolling 24h 二次硬限额和三维保守验收；0189 已补 append-only allocation epoch 与新 open Plan 加入时的 max-min future `plan_reserved` 重排；0190 已补来源编辑 operation、pre-Gateway assignment successor 与 Gateway identity fence；0191 已补 Telegram 精确消息查询删除事实及通用 append-only lifecycle event 表，当前 source-deleted、pause、resume、stop、软删除和物理删除前 Task 独立 outcome tombstone 已接入；0192 已补 append-only QualityTargetRevision、component ordinal owner、85% 语义容量目标、编辑 successor 分账及 acceptance/read-model。完整多老师/否定/时效 extraction 与 Gateway accepted/outbound hash 闭环仍未完成 |
+| QA 状态 | `partial_local`：数量/来源/assignment/planned fallback/selection read-model/三维验收、max-min、来源编辑、来源删除与 pause/resume/stop/delete/quality target 分流回归通过；0189/0190/0192 upgrade/downgrade、真实旧 schema transition、fresh 全链迁移通过；真实 PostgreSQL rolling cap/epoch/content revision/source delete/pause/resume/stop/quality target CAS 及 Task delete 通过。当前频道评论 no-PostgreSQL 分片合计 `165 passed / 21 deselected`，0192 PostgreSQL 组合回归 `15 passed`，前端构建通过；完整多老师/否定/时效与 outbound identity 跨功能回归、UI 人工验收和 E4 未通过 |
 | 发布状态 | `not_released` |
 | 生产状态 | `unproven`；无真实 Telegram E4 证据 |
 | 适用任务 | `channel_comment`、`channel_comment_reply` |
@@ -46,6 +46,8 @@
 第十五轮本地修复（2026-09-01）：继续复用 0191 通用 lifecycle 表接入 `stop`，不新增 schema。`stop_task` 推进新 Task lifecycle epoch/status 后绕开会把 `post_comment` 一律写 skipped 的通用结算，按 Plan 行锁与稳定 evidence hash 追加唯一 stop event；仅未进 Gateway 且未形成历史终态的 GenerationJob/Action owner 被终结，comment capacity、account pacing、source pacing admission 全部释放，obligation 与 Plan 明确写 `terminated_by_operator`。Gateway-started/unknown/confirmed 的 Action、payload、assignment、remote fact 与 capacity hold 保持；历史 `missed_*`/terminated outcome 不被后续 stop 改写。Plan 退出 open set后追加空剩余 capacity allocation epoch；acceptance 三维显式投影 terminated，不能用已有确认数把 stop 伪装成 met。重复 stop 与 PostgreSQL 双 worker CAS 只产生一个 event/epoch。该切片不包含软删除/物理 Task 删除 tombstone，也不代表发布或 E4。
 
 第十六轮本地修复（2026-09-01）：软删除在 Task 行锁内先推进新 lifecycle epoch/status，再复用 0191 追加唯一 delete event，绕开通用 `task_deleted` Action 结算；pre-Gateway GenerationJob/Action、comment/account/source 三类 owner 终结并释放，Plan/obligation 写 `terminated_by_operator`，Gateway-started/unknown/confirmed identity 只 reconcile。物理删除 `prepare` 对直接删除的 channel-comment Task 执行同一 lifecycle fence；snapshot 将每个 Plan 的 contract state、lifecycle event identity 与 obligation outcome 汇总为不可逆 hash，并写入不受 Task cascade 的 `RemoteMutationTombstone(channel_comment_lifecycle)`。`delete_runtime` 前重新读回全部 expected tombstone，缺失或 outcome 变化即拒绝删除；重复软删除双 writer只产生一个 event。该切片不代表 QualityTargetRevision、完整抽取、发布或 E4 已完成。
+
+第十七轮本地修复（2026-09-01）：新增 0192 migration 与 append-only `ChannelCommentQualityTargetRevision`，由 Plan 的 initial/current 指针和 component set 持有全部 ordinal 的唯一质量归属。首版按版本化 `channel_comment_semantic_capacity_v1` 将可验证 evidence 与四类 speech act 组合为可复现 semantic capacity，以固定 85% 原始适用分母冻结 grounded required、planned fallback 与显式 shortfall；Provider、预算和运行时状态不得下调目标。来源编辑只把 pre-Gateway movable ordinal 迁入 successor component，Gateway-started/unknown/confirmed ordinal 保留历史 revision；旧 assignment 只追加 successor且绑定对应 quality target，不能复用已删除来源或修改历史事实。planned fallback 仍可结算 quantity/content mix，但只能作为 applicable fallback 进入质量分母，远端确认后 grounded 分子保持为零；emergency fallback 仍阻断质量达标。acceptance/read-model 显示 current/effective revision、raw count、semantic capacity、required、fallback、unassigned 与 shortfall，物理删除 tombstone 也绑定当前 target hash。该切片不包含完整多老师/否定/时效 extraction、accepted/outbound hash、发布或 E4。
 
 ---
 
@@ -637,7 +639,7 @@ v1 只把平台已持久化的文本正文、caption 和明确结构化字段作
 
 每个 successor assignment 保存 `supersedes_assignment_id`，并以 `(plan_contract_id,target_ordinal,active_assignment=true)` 部分唯一约束保证同一 ordinal 同时只有一个 active 内容 owner。Plan 的 `applicable_grounding_ordinal_count` 和 quantity target 永不变化；已经远端确认的旧 revision grounded 事实与新 revision 后续事实共同进入原分母。每个 `ChannelCommentQualityTargetRevision` component 分别结算 teacher/aspect 纯度和覆盖，Plan 聚合按其最终 owned ordinal 加权，不能用编辑后的易样本覆盖编辑前违规事实。
 
-实现读回（2026-09-01）：0190 已实现 operation CAS、active assignment 部分唯一键、pre-Gateway owner 终结/容量释放/successor 追加及 Gateway identity 保留；当前 successor 仍复用基础 SourceRevision 文本抽取，独立 GroundingSnapshot、QualityTargetRevision 和多老师/时效 component 尚未实现，不能把该切片解释为完整 grounding 质量合同完成。
+实现读回（2026-09-01）：0190 已实现 operation CAS、active assignment 部分唯一键、pre-Gateway owner 终结/容量释放/successor 追加及 Gateway identity 保留；0192 已实现 Plan 级 append-only QualityTargetRevision、完整 ordinal component owner、source-edit successor 分账和 current/effective acceptance/read-model。当前 successor 仍复用基础 SourceRevision 文本抽取，独立完整 GroundingSnapshot、精确多老师/否定/时效 evidence component 尚未实现，不能把 quality target owner 解释为完整 extraction/grounding 质量合同完成。
 
 删除与 Task 生命周期实现读回（2026-09-01）：0191 已实现 exact-ID 权威删除探测、append-only lifecycle event、pre-Gateway owner/三类 reservation 释放及 Dispatcher 前专项阻断；历史页窗口缺失或探测错误都不结算删除。已进入 Gateway 的 identity 和远端事实保持不变。pause 已闭合 owner 释放、deadline 分流与 Planner epoch fence；resume 已闭合剩余曲线再分配、source-edit successor 复用、missed 不重开及 PostgreSQL 双 worker CAS；stop 与软删除已闭合 operator termination、三类 owner 释放、terminated acceptance 与双 worker CAS。物理删除在 Task cascade 前固化并读回 Plan lifecycle/outcome `RemoteMutationTombstone`，缺 tombstone 时禁止删除 runtime。
 
@@ -1443,7 +1445,7 @@ Phase 0 开始前必须对最近 30 天真实来源做只读基线：可取时�
 - [ ] 技术批次只物化首次冻结 ordinal 的 Action，不追加 assignment 或第二个 ContentMix；
 - [x] 来源编辑不改 quantity Plan/eligible/ordinal/relation/deadline，只切未进 Gateway 内容 revision；普通 route/policy 变化不改既有 Plan；
 - [ ] source deleted 终止未进 Gateway ordinal，零普通/Unicode/图片表情包 Gateway 调用；
-- [ ] semantic capacity policy 对相同 snapshot 可复现；capacity-adjusted 仍保留原始 85% 分母与 planned fallback 证据；
+- [x] semantic capacity policy 对相同 source revision 可复现；capacity-adjusted 仍保留原始 85% 分母与 planned fallback 证据；
 - [ ] supported 多老师先逐人覆盖再复用，teacher-bound assignment 100% 绑定人物 evidence；
 - [ ] primary aspect 先 distinct 覆盖再复用，远端覆盖按冻结目标计算；
 - [ ] 时效 evidence 只有 `valid_until >= latest_safe_send_at` 才可分配，三天未来槽不绑定注定过期证据；
@@ -1587,7 +1589,8 @@ E4 样本必须至少包含：
 - [x] 连续 UTC Daily Cap period/reservation 基线、时区切换首尾相接与 reservation 单向状态已实现；
 - [x] 跨全部开放消息的 max-min allocation epoch、epoch CAS 和公平重排；新 open Plan、append-only fingerprint/result epoch、future `plan_reserved` 重排及 pause/resume/stop/delete lifecycle trigger 均已接入；
 - [x] reservation 创建同时通过单 UTC period cap 与跨 period rolling 24h 二次硬限额；候选前后已有预约均纳入，恰好 24 小时旧占用退出窗口；
-- [ ] 独立 QualityTargetRevision、完整多老师/否定/时效 extraction 与远端覆盖审查（source edit operation/successor 已由 0190 实现，source delete lifecycle 已由 0191 实现）；
+- [x] 独立 QualityTargetRevision、source-edit component successor、planned fallback 分账与 current/effective read-model（由 0192 实现）；
+- [ ] 完整多老师/否定/时效 extraction、GroundingSnapshot evidence component 与远端覆盖审查；
 - [x] 无内容弱信号提升 route；
 - [x] 无无证据默认方向。
 - [ ] Dispatcher 无 Provider 调用或正文改写，Gateway hash mismatch 零调用；
@@ -1675,7 +1678,7 @@ E4 样本必须至少包含：
 | `backend/app/services/task_center/ai_generator.py::_is_adult_channel_context` | 内容弱信号可提升 route | 改为 canonical config authority；内容只记录 signal |
 | `backend/app/services/task_center/comment_generation_pipeline.py::_call_generator` | 当前传递 frozen source text/assignment identity，planned fallback 零普通正文调用；Prompt 仍按 source text 重抽展示方向 | 改为只 render assignment，Provider schema 回传并校验 evidence identity |
 | `backend/app/services/task_center/comment_generation_quality.py` | 已校验 source revision/assignment/evidence hash identity，并保守要求 semantic reviewer 才计 grounded；完整老师/主亮点语义门仍不足 | 增加 teacher/reply/aspect 结构化 evaluator 与 accepted/outbound hash 闭环 |
-| `backend/app/services/task_center/comment_fulfillment.py` | legacy 仍按 Task revision；当前合同已由 0188 Plan 首次冻结全部 ordinal/账号/基础 assignment，0189 持有公平 allocation epoch，0190 只替换 pre-Gateway assignment 并让技术批次重新物化原 Action | 补独立 QualityTargetRevision及 pause/终止/release epoch trigger |
+| `backend/app/services/task_center/comment_fulfillment.py` / `channel_comment_quality_target.py` | 当前合同由 0188 Plan 首次冻结全部 ordinal/账号/基础 assignment，0189 持有公平 allocation epoch，0190 只替换 pre-Gateway assignment，0191 持有 lifecycle，0192 冻结 append-only QualityTargetRevision/component 并让技术批次重新物化原 Action | 补完整 GroundingSnapshot、多老师/否定/时效 evidence component 与远端覆盖 |
 | `backend/app/services/task_center/dispatcher.py` | 当前可在 dispatch 路径生成内容，且过滤结果与实际发送正文身份未闭环 | 移除 Provider owner；只发送 `quality_accepted|fallback_ready`，按 content source 校验正文 hash 或图片 asset fingerprint |
 | `material-library-design.md` 对应素材服务与任务配置 UI | 已接入 `image_meme` 版本、缓存、显式成员、ZIP 原子归组、引用保护和成员 CAS，并成为评论 fallback selection owner | 保持素材组 ready/review_required/invalid 与版本不变量；后续完整读模型继续复用现有素材表，不复制素材 owner |
 | `channel_listener_snapshot_persistence.py` / `channel_comment_content_revision.py` / `channel_comment_source_delete.py` / `operations.py` / `telethon_content.py` | listener 已 append 幂等 SourceRevision、拒绝发布时间冲突并触发 0190 source-edit successor；0191 对历史页缺失消息做 exact-ID lookup，仅 `None/MessageEmpty` 触发 append-only source-deleted event 与 pre-Gateway 结算；采集仍只有 preview，Telegram edit_date identity 不完整 | 补精确正文与 edit date；preview 只作展示 |

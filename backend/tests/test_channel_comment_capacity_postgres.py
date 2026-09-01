@@ -13,6 +13,7 @@ from app.models import (
     ChannelCommentGroundingAssignment,
     ChannelCommentPlanContract,
     ChannelCommentPlanLifecycleEvent,
+    ChannelCommentQualityTargetRevision,
     ChannelMessage,
     ChannelMessageSourceRevision,
     CommentFulfillmentObligation,
@@ -27,6 +28,10 @@ from app.services.task_center.channel_comment_capacity_allocation import (
 )
 from app.services.task_center.channel_comment_content_revision import (
     reconcile_channel_comment_source_edit,
+)
+from app.services.task_center.channel_comment_quality_target import (
+    freeze_initial_quality_target,
+    quality_assignment_content,
 )
 from app.services.task_center.channel_comment_source_delete import (
     settle_channel_comment_source_deleted,
@@ -138,11 +143,22 @@ def test_postgres_plan_lock_cas_reuses_same_content_revision_operation() -> None
             assignments = list(session.scalars(select(
                 ChannelCommentGroundingAssignment,
             ).where(ChannelCommentGroundingAssignment.plan_contract_id == PLAN_ID)))
+            quality_targets = list(session.scalars(select(
+                ChannelCommentQualityTargetRevision,
+            ).where(
+                ChannelCommentQualityTargetRevision.plan_contract_id == PLAN_ID,
+            ).order_by(ChannelCommentQualityTargetRevision.quality_target_revision)))
+            plan = session.get(ChannelCommentPlanContract, PLAN_ID)
         assert operation_ids[0] == operation_ids[1]
         assert operation_count == 1
-        assert len(assignments) == 2
-        assert sum(row.assignment_state == "active" for row in assignments) == 1
-        assert next(row for row in assignments if row.assignment_state == "active").source_revision_id == EDIT_SOURCE_ID
+        assert len(assignments) == 4
+        assert sum(row.assignment_state == "active" for row in assignments) == 2
+        assert all(
+            row.source_revision_id == EDIT_SOURCE_ID
+            for row in assignments if row.assignment_state == "active"
+        )
+        assert len(quality_targets) == 2
+        assert plan.current_quality_target_revision_id == quality_targets[-1].id
     finally:
         _cleanup()
 
@@ -327,9 +343,8 @@ def _seed_scope() -> list[str]:
 
 
 def _seed_source_edit_scope() -> None:
-    obligation_ids = _seed_scope()
+    _seed_scope()
     with SessionLocal() as session:
-        source = _source_revision()
         session.add(ChannelMessageSourceRevision(
             id=EDIT_SOURCE_ID,
             tenant_id=TENANT_ID,
@@ -343,32 +358,33 @@ def _seed_source_edit_scope() -> None:
             observation_identity_hash="f" * 64,
             source_operation="edited",
         ))
-        assignment = ChannelCommentGroundingAssignment(
-            id="pg-comment-grounding-1",
-            tenant_id=TENANT_ID,
-            plan_contract_id=PLAN_ID,
-            source_revision_id=source.id,
-            target_ordinal=1,
-            assignment_version=1,
-            evidence_text=source.source_text_snapshot,
-            evidence_hash=source.source_content_hash,
-            primary_aspect_text=source.source_text_snapshot,
-            assignment_state="active",
-        )
-        session.add(assignment)
-        obligation = session.get(CommentFulfillmentObligation, obligation_ids[0])
-        obligation.grounding_assignment_id = assignment.id
         message = session.get(ChannelMessage, MESSAGE_ID)
         message.current_source_revision_id = EDIT_SOURCE_ID
         session.commit()
 
 
 def _seed_plan(session, obligation_ids: list[str]) -> None:
-    session.add(_source_revision())
+    source = _source_revision()
+    session.add(source)
     session.flush()
-    session.add(_plan_contract())
+    plan = _plan_contract()
+    session.add(plan)
     session.flush()
     _seed_obligations(session, obligation_ids)
+    target = freeze_initial_quality_target(session, plan, source)
+    component = target.component_targets_json[0]
+    for ordinal, obligation_id in enumerate(obligation_ids, 1):
+        assignment = ChannelCommentGroundingAssignment(
+            id=f"pg-comment-grounding-{ordinal}",
+            tenant_id=TENANT_ID, plan_contract_id=PLAN_ID,
+            source_revision_id=source.id, target_ordinal=ordinal,
+            assignment_version=1, quality_target_revision_id=target.id,
+            quality_component_key=component["quality_component_key"],
+            **quality_assignment_content(source, component, ordinal),
+            assignment_state="active",
+        )
+        session.add(assignment)
+        session.get(CommentFulfillmentObligation, obligation_id).grounding_assignment_id = assignment.id
 
 
 def _source_revision() -> ChannelMessageSourceRevision:
@@ -404,8 +420,8 @@ def _plan_contract() -> ChannelCommentPlanContract:
         participation_seed="pg-rolling-cap",
         effective_participation_bps=5000,
         required_distinct_account_count=2,
-        grounding_required_count=0,
-        planned_fallback_count=2,
+        grounding_required_count=2,
+        planned_fallback_count=0,
         daily_comment_cap=1,
     )
 

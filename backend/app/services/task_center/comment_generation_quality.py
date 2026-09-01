@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.models import Action, ChannelCommentGroundingAssignment, ChannelMessage, ChannelMessageComment, OperationTarget, RuleSetVersion, TgGroup
 from app.services.content_filters import filter_outbound_content
-from app.services.rule_engine import apply_output_policy
+from app.services.rule_engine import OutputPolicyResult, apply_output_policy
 
 from .ai_generator import clean_channel_comment_contents
 from .channel_payloads import PostCommentPayload
@@ -53,12 +53,7 @@ def evaluate_comment_generation_quality(
         version.output_checks or {},
         version.transforms or {},
     )
-    audit = {
-        "rule_set_version_id": version.id,
-        "rule_output_action": policy.action,
-        "rule_output_transformed": policy.transformed,
-        "rule_output_hits": list(policy.hits),
-    }
+    audit = _rule_policy_audit(version, policy)
     if not policy.allowed:
         return CommentQualityDecision(
             False,
@@ -86,6 +81,18 @@ def evaluate_comment_generation_quality(
     )
 
 
+def _rule_policy_audit(
+    version: RuleSetVersion,
+    policy: OutputPolicyResult,
+) -> dict:
+    return {
+        "rule_set_version_id": version.id,
+        "rule_output_action": policy.action,
+        "rule_output_transformed": policy.transformed,
+        "rule_output_hits": list(policy.hits),
+    }
+
+
 def _grounding_binding_error(
     session: Session,
     action: Action,
@@ -102,6 +109,7 @@ def _grounding_binding_error(
         assignment
         and assignment.tenant_id == action.tenant_id
         and assignment.source_revision_id == payload.source_revision_id
+        and assignment.quality_target_revision_id == payload.quality_target_revision_id
         and assignment.target_ordinal == payload.target_ordinal
         and assignment.evidence_hash == payload.grounding_evidence_hash == evidence_hash
         and assignment.assignment_state == "active"

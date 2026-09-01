@@ -11,6 +11,7 @@ from app.models import (
     Action,
     ChannelCommentPlanContract,
     ChannelCommentPlanLifecycleEvent,
+    ChannelCommentQualityTargetRevision,
     CommentFulfillmentObligation,
     ExecutionAttempt,
     Task,
@@ -48,7 +49,10 @@ def comment_outcome_snapshots(
         [row.current_action_id for rows in obligations.values() for row in rows],
     )
     return [
-        _snapshot(plan, events.get(plan.id, []), obligations.get(plan.id, []), remote_action_ids)
+        _snapshot(
+            plan, events.get(plan.id, []), obligations.get(plan.id, []),
+            remote_action_ids, quality_target=_quality_target(session, plan),
+        )
         for plan in plans
     ]
 
@@ -79,12 +83,15 @@ def _snapshot(
     events: list[ChannelCommentPlanLifecycleEvent],
     obligations: list[CommentFulfillmentObligation],
     remote_action_ids: set[str],
+    *,
+    quality_target: ChannelCommentQualityTargetRevision | None,
 ) -> CommentOutcomeSnapshot:
     payload = {
         "plan_id": plan.id,
         "contract_state": plan.contract_state,
         "events": [_event_identity(row) for row in events],
         "obligations": [_obligation_identity(row) for row in obligations],
+        "quality_target": _quality_target_identity(plan, quality_target),
     }
     remote_started = any(_remote_started(row, remote_action_ids) for row in obligations)
     reconcile_open = any(_reconcile_open(row, remote_action_ids) for row in obligations)
@@ -95,6 +102,36 @@ def _snapshot(
         remote_started=remote_started,
         reconcile_state="open" if reconcile_open else "closed",
     )
+
+
+def _quality_target(
+    session: Session,
+    plan: ChannelCommentPlanContract,
+) -> ChannelCommentQualityTargetRevision | None:
+    if not plan.current_quality_target_revision_id:
+        return None
+    target = session.get(
+        ChannelCommentQualityTargetRevision, plan.current_quality_target_revision_id,
+    )
+    if target is None or target.plan_contract_id != plan.id:
+        raise ValueError("physical_delete_comment_quality_target_missing")
+    return target
+
+
+def _quality_target_identity(
+    plan: ChannelCommentPlanContract,
+    target: ChannelCommentQualityTargetRevision | None,
+) -> dict:
+    if target is None:
+        return {"state": "legacy_missing", "plan_id": plan.id}
+    return {
+        "id": target.id,
+        "revision": target.quality_target_revision,
+        "component_set_hash": target.component_set_hash,
+        "grounding_required_count": target.aggregate_grounding_required_count,
+        "planned_fallback_count": target.aggregate_planned_fallback_count,
+        "state": target.target_state,
+    }
 
 
 def _events_by_plan(

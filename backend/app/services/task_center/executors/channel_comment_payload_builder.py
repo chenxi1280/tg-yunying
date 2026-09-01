@@ -32,7 +32,9 @@ def build_comment_payload(
         source_payload["message_content"] = str(assignment.evidence_text or "")
     return PostCommentPayload(
         **source_payload,
-        **_assignment_fields(assignment, slot.source_revision_id),
+        **_assignment_fields(
+            assignment, slot.source_revision_id, slot.quality_target_revision_id,
+        ),
         **_generation_fields(
             task, context, slot_id=slot_id, mask=mask,
         ),
@@ -54,10 +56,18 @@ def build_comment_payload(
     )
 
 
-def _assignment_fields(assignment: Any, source_revision_id: str) -> dict:
+def _assignment_fields(
+    assignment: Any,
+    source_revision_id: str,
+    quality_target_revision_id: str,
+) -> dict:
     return {
         "source_revision_id": str(
             getattr(assignment, "source_revision_id", "") or source_revision_id,
+        ),
+        "quality_target_revision_id": str(
+            getattr(assignment, "quality_target_revision_id", "")
+            or quality_target_revision_id,
         ),
         "grounding_assignment_id": str(getattr(assignment, "id", "") or ""),
         "grounding_evidence_hash": str(getattr(assignment, "evidence_hash", "") or ""),

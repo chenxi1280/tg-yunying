@@ -46,6 +46,7 @@ class PostCommentPayload(ViewMessagePayload):
     comment_action_attempt_no: int = 0
     content_mix_contract_id: str = ""
     source_revision_id: str = ""
+    quality_target_revision_id: str = ""
     grounding_assignment_id: str = ""
     grounding_evidence_hash: str = ""
     grounding_primary_aspect_code: str = ""

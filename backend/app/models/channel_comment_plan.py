@@ -74,11 +74,55 @@ class ChannelCommentPlanContract(Base):
     required_distinct_account_count: Mapped[int] = mapped_column(Integer)
     grounding_required_count: Mapped[int] = mapped_column(Integer)
     planned_fallback_count: Mapped[int] = mapped_column(Integer)
+    initial_quality_target_revision_id: Mapped[str | None] = mapped_column(
+        ForeignKey(
+            "channel_comment_quality_target_revisions.id",
+            ondelete="RESTRICT", name="fk_channel_comment_plan_initial_quality_target",
+        ),
+        nullable=True,
+    )
+    current_quality_target_revision_id: Mapped[str | None] = mapped_column(
+        ForeignKey(
+            "channel_comment_quality_target_revisions.id",
+            ondelete="RESTRICT", name="fk_channel_comment_plan_current_quality_target",
+        ),
+        nullable=True,
+    )
     daily_comment_cap: Mapped[int] = mapped_column(Integer)
     quantity_contract_version: Mapped[str] = mapped_column(
         String(48), default="channel_comment_participation_v1",
     )
     contract_state: Mapped[str] = mapped_column(String(32), default="open")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class ChannelCommentQualityTargetRevision(Base):
+    __tablename__ = "channel_comment_quality_target_revisions"
+    __table_args__ = (
+        UniqueConstraint(
+            "plan_contract_id", "quality_target_revision",
+            name="uq_channel_comment_quality_target_revision",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
+    plan_contract_id: Mapped[str] = mapped_column(
+        ForeignKey("channel_comment_plan_contracts.id", ondelete="CASCADE"),
+    )
+    quality_target_revision: Mapped[int] = mapped_column(Integer)
+    supersedes_quality_target_revision_id: Mapped[str | None] = mapped_column(
+        ForeignKey(
+            "channel_comment_quality_target_revisions.id",
+            ondelete="RESTRICT", name="fk_channel_comment_quality_target_supersedes",
+        ),
+        nullable=True,
+    )
+    component_targets_json: Mapped[list] = mapped_column(JSON, default=list)
+    aggregate_grounding_required_count: Mapped[int] = mapped_column(Integer)
+    aggregate_planned_fallback_count: Mapped[int] = mapped_column(Integer)
+    component_set_hash: Mapped[str] = mapped_column(String(64))
+    target_state: Mapped[str] = mapped_column(String(32), default="frozen")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
@@ -159,6 +203,14 @@ class ChannelCommentGroundingAssignment(Base):
         ForeignKey("channel_comment_grounding_assignments.id", ondelete="RESTRICT"),
         nullable=True,
     )
+    quality_target_revision_id: Mapped[str | None] = mapped_column(
+        ForeignKey(
+            "channel_comment_quality_target_revisions.id",
+            ondelete="RESTRICT", name="fk_channel_comment_assignment_quality_target",
+        ),
+        nullable=True,
+    )
+    quality_component_key: Mapped[str] = mapped_column(String(64), default="")
     evidence_text: Mapped[str] = mapped_column(Text)
     evidence_hash: Mapped[str] = mapped_column(String(64))
     primary_aspect_code: Mapped[str] = mapped_column(String(64), default="source_fact")
@@ -306,6 +358,7 @@ __all__ = [
     "ChannelCommentOrdinalAccountBinding",
     "ChannelCommentPlanLifecycleEvent",
     "ChannelCommentPlanContract",
+    "ChannelCommentQualityTargetRevision",
     "ChannelMessageSourceRevision",
     "TaskCommentCapacityPeriod",
     "TaskCommentCapacityReservation",
