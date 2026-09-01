@@ -3,17 +3,13 @@
 from __future__ import annotations
 
 import argparse
-import json
-import sys
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 
 from sqlalchemy import select
+
 from app.database import SessionLocal
 from app.models import Task, TgGroup, TaskGroupDailyTarget
-from app.services.task_center.daily_group_target import (
-    ensure_task_group_daily_target,
-    refresh_task_group_daily_target,
-)
+from app.services.task_center.daily_group_target import ensure_task_group_daily_target
 
 
 def main():
@@ -43,7 +39,7 @@ def main():
             old_target = cfg.get("daily_message_target")
             gid = cfg.get("target_group_id")
             group = session.get(TgGroup, gid) if gid else None
-            
+
             # 当前日账本
             dg_target = session.scalar(
                 select(TaskGroupDailyTarget).where(
