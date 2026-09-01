@@ -304,7 +304,7 @@ def _beijing_aware(value: datetime) -> datetime:
 
 
 def _beijing_wall(value: datetime) -> datetime:
-    return value.astimezone(BEIJING_TZ).replace(tzinfo=None)
+    return _beijing_aware(value).astimezone(BEIJING_TZ).replace(tzinfo=None)
 
 
 __all__ = [

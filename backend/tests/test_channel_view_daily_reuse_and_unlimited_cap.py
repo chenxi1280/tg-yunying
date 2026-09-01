@@ -345,7 +345,7 @@ def test_channel_view_unlimited_vs_finite_cap():
             ledger=ledger_unlimited,
             messages=[msg],
             config=task_unlimited.type_config,
-            now=datetime.now(BEIJING_TZ),
+            now=datetime(2026, 8, 28, 10, 0, tzinfo=BEIJING_TZ),
         )
         target_unlimited = targets_unlimited[msg.id]
         assert target_unlimited.daily_target_snapshot == 100
@@ -392,7 +392,7 @@ def test_channel_view_unlimited_vs_finite_cap():
             ledger=ledger_finite_1,
             messages=[msg],
             config=task_finite.type_config,
-            now=datetime.now(BEIJING_TZ),
+            now=datetime(2026, 8, 28, 10, 0, tzinfo=BEIJING_TZ),
         )
         assert targets_finite_1[msg.id].effective_target_snapshot == 100
 
@@ -444,7 +444,7 @@ def test_channel_view_unlimited_vs_finite_cap():
             ledger=ledger_finite_2,
             messages=[msg],
             config=task_finite.type_config,
-            now=datetime.now(BEIJING_TZ),
+            now=datetime(2026, 8, 29, 10, 0, tzinfo=BEIJING_TZ),
         )
         assert targets_finite_2[msg.id].effective_target_snapshot == 100
 

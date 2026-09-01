@@ -20,6 +20,7 @@ from app.models import (
     OperationTarget,
     Task,
     TaskCommentCapacityReservation,
+    TaskRuntimeSummary,
     Tenant,
 )
 from app.services.task_center.channel_comment_capacity import reserve_comment_capacity
@@ -443,6 +444,9 @@ def _seed_obligations(session, obligation_ids: list[str]) -> None:
 
 def _cleanup() -> None:
     with SessionLocal() as session:
+        session.execute(delete(TaskRuntimeSummary).where(
+            TaskRuntimeSummary.task_id == TASK_ID,
+        ))
         session.execute(delete(Task).where(Task.id == TASK_ID))
         session.execute(delete(ChannelMessage).where(ChannelMessage.id == MESSAGE_ID))
         session.execute(delete(OperationTarget).where(OperationTarget.id == TENANT_ID))
