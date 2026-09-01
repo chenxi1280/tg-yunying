@@ -9,8 +9,7 @@ from datetime import date, datetime, timezone
 
 from sqlalchemy import select
 from app.database import SessionLocal
-from app.models.task_center import Task, TgGroup
-from app.models.task_group_daily_target import TaskGroupDailyTarget
+from app.models import Task, TgGroup, TaskGroupDailyTarget
 from app.services.task_center.daily_group_target import (
     ensure_task_group_daily_target,
     refresh_task_group_daily_target,
