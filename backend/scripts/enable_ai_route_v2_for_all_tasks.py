@@ -43,6 +43,7 @@ def main():
             if args.apply:
                 cfg["ai_content_route_v2_enabled"] = new_v2
                 cfg["ai_provider_id"] = new_provider
+                cfg["ai_two_stage_enabled"] = True
                 t.type_config = cfg
                 t.updated_at = datetime.now(timezone.utc)
                 
