@@ -1179,7 +1179,11 @@ def prepare_test_comment_message(
 def test_missing_developer_app_requires_config_before_account_create():
     connection = engine.connect()
     transaction = connection.begin()
-    session = Session(bind=connection, autoflush=False)
+    session = Session(
+        bind=connection,
+        autoflush=False,
+        join_transaction_mode="create_savepoint",
+    )
 
     def isolated_session():
         yield session
@@ -4892,6 +4896,7 @@ def test_task_center_channel_view_like_comment_execute(
             processed += client.post("/api/worker/drain-once", headers=headers, json={"reason": "测试手动 drain"}).json()["processed"]
             for drain_task_id in task_ids:
                 force_due_actions(drain_task_id)
+                processed += dispatch_pending_task_actions(drain_task_id)
             if len(calls) >= 3:
                 break
         assert processed >= 3
@@ -5074,7 +5079,9 @@ def test_task_center_channel_comment_allows_multiple_replies_per_account(monkeyp
     replies: list[tuple[int, str]] = []
     monkeypatch.setattr(
         "app.services.task_center.dispatcher.gateway.reply_channel_message",
-        lambda *args, **kwargs: replies.append((args[2], args[3])) or SendResult(True, remote_message_id=f"reply-{len(replies)}"),
+        lambda *args, **kwargs: replies.append(
+            (kwargs["message_id"], kwargs["content"])
+        ) or SendResult(True, remote_message_id=f"reply-{len(replies)}"),
     )
     with TestClient(app) as client:
         headers = auth_headers(client)
@@ -5267,7 +5274,10 @@ def test_task_center_channel_like_auto_collects_dynamic_new_messages(monkeypatch
             "post_comment",
             {"target_comments_per_message": 1, "comment_count_jitter": 0, "topic_hint": "持续评论"},
             "reply_channel_message",
-            lambda calls: (lambda *args, **kwargs: calls.append(args[2]) or SendResult(True, remote_message_id=f"comment-{len(calls)}")),
+            lambda calls: (
+                lambda *args, **kwargs: calls.append(kwargs["message_id"])
+                or SendResult(True, remote_message_id=f"comment-{len(calls)}")
+            ),
         ),
     ],
 )
@@ -5566,7 +5576,9 @@ def test_task_center_reset_channel_comment_rebuilds_auto_plan(monkeypatch):
     monkeypatch.setattr("app.services.task_center.channel_listener_runtime.gateway.fetch_channel_messages", fake_fetch_channel_messages)
     monkeypatch.setattr(
         "app.services.task_center.dispatcher.gateway.reply_channel_message",
-        lambda *args, **kwargs: comments.append((args[2], args[3])) or SendResult(True, remote_message_id=f"comment-{len(comments)}"),
+        lambda *args, **kwargs: comments.append(
+            (kwargs["message_id"], kwargs["content"])
+        ) or SendResult(True, remote_message_id=f"comment-{len(comments)}"),
     )
     with TestClient(app) as client:
         headers = auth_headers(client)
@@ -5608,7 +5620,7 @@ def test_task_center_reset_channel_comment_rebuilds_auto_plan(monkeypatch):
 
         drain_task_center(SessionLocal, 10)
         force_due_actions(task_id)
-        drain_task_center(SessionLocal, 10)
+        dispatch_pending_task_actions(task_id)
         old_detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
         old_actions = task_detail_actions(client, headers, task_id)
         assert len(old_actions) == 1

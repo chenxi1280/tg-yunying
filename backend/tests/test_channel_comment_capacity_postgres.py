@@ -1,3 +1,4 @@
+import hashlib
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from threading import Barrier
@@ -53,6 +54,8 @@ MESSAGE_ID = 915_188
 PLAN_ID = "pg-comment-rolling-plan"
 SOURCE_ID = "pg-comment-rolling-source"
 EDIT_SOURCE_ID = "pg-comment-edited-source"
+SOURCE_TEXT = "今日主推小可老师，地点在金水"
+EDIT_SOURCE_TEXT = "今日主推小可老师，地点改到二七"
 SCHEDULED_AT = datetime(2030, 8, 2, 10, 0, tzinfo=BEIJING_TZ)
 
 
@@ -354,13 +357,15 @@ def _seed_source_edit_scope() -> None:
         session.add(ChannelMessageSourceRevision(
             id=EDIT_SOURCE_ID,
             tenant_id=TENANT_ID,
+            channel_target_id=TENANT_ID,
             channel_message_id=MESSAGE_ID,
             source_revision=2,
             source_remote_message_id=MESSAGE_ID,
             source_published_at=SCHEDULED_AT,
+            source_published_at_fact_id="pg-comment-edited-published",
             source_observed_at=SCHEDULED_AT,
-            source_text_snapshot="PG edited source",
-            source_content_hash="e" * 64,
+            source_text_snapshot=EDIT_SOURCE_TEXT,
+            source_content_hash=hashlib.sha256(EDIT_SOURCE_TEXT.encode()).hexdigest(),
             observation_identity_hash="f" * 64,
             source_operation="edited",
         ))
@@ -411,13 +416,15 @@ def _source_revision() -> ChannelMessageSourceRevision:
     return ChannelMessageSourceRevision(
         id=SOURCE_ID,
         tenant_id=TENANT_ID,
+        channel_target_id=TENANT_ID,
         channel_message_id=MESSAGE_ID,
         source_revision=1,
         source_remote_message_id=MESSAGE_ID,
         source_published_at=SCHEDULED_AT,
+        source_published_at_fact_id="pg-comment-source-published",
         source_observed_at=SCHEDULED_AT,
-        source_text_snapshot="PG rolling cap source",
-        source_content_hash="a" * 64,
+        source_text_snapshot=SOURCE_TEXT,
+        source_content_hash=hashlib.sha256(SOURCE_TEXT.encode()).hexdigest(),
         observation_identity_hash="b" * 64,
         source_operation="observed",
     )

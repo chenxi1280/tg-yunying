@@ -38,6 +38,9 @@ from app.services.task_center.comment_generation_dispatch import (
     CommentGenerationDependencies,
     GenerationAttemptStale,
 )
+from app.services.task_center.comment_generation_worker import drain_comment_generation
+
+
 TENANT_ID = 915_715
 TASK_ID = "pg-channel-comment-dispatch"
 ACTION_ID = "pg-channel-comment-dispatch-action"
@@ -64,17 +67,19 @@ def test_postgres_two_dispatchers_claim_and_generate_comment_once(monkeypatch) -
     )
     try:
         _seed_scope()
+        with SessionLocal() as observer:
+            assert drain_comment_generation(
+                SessionLocal,
+                limit=1,
+                dependencies=_dependencies(observer, calls, lock),
+            ) == 1
 
         def run_dispatcher(worker_id: str) -> int:
             start.wait(timeout=5)
             with SessionLocal() as session:
-                claimed = dispatcher.claim_actions(session, limit=1, worker_id=worker_id, allow_inline_ai_generation=True)
+                claimed = dispatcher.claim_actions(session, limit=1, worker_id=worker_id)
                 for action in claimed:
-                    dispatcher.dispatch_action(
-                        session,
-                        action,
-                        comment_generation_dependencies=_dependencies(session, calls, lock),
-                    )
+                    dispatcher.dispatch_action(session, action)
                 session.commit()
                 return len(claimed)
 
@@ -156,14 +161,16 @@ def test_postgres_reply_comment_uses_persisted_target_and_reply_generator(monkey
     try:
         _seed_scope()
         _seed_reply_target()
+        with SessionLocal() as observer:
+            assert drain_comment_generation(
+                SessionLocal,
+                limit=1,
+                dependencies=_reply_dependencies(observer, calls),
+            ) == 1
         with SessionLocal() as session:
-            claimed = dispatcher.claim_actions(session, limit=1, worker_id="reply-worker", allow_inline_ai_generation=True)
+            claimed = dispatcher.claim_actions(session, limit=1, worker_id="reply-worker")
             assert len(claimed) == 1
-            dispatcher.dispatch_action(
-                session,
-                claimed[0],
-                comment_generation_dependencies=_reply_dependencies(session, calls),
-            )
+            dispatcher.dispatch_action(session, claimed[0])
             session.commit()
 
         with SessionLocal() as session:
@@ -183,29 +190,28 @@ def test_postgres_unknown_result_second_claim_reuses_cache_without_provider(monk
     monkeypatch.setattr(dispatcher.gateway, "reply_channel_message", _gateway_sender(calls, Lock()))
     try:
         _seed_scope()
-        with SessionLocal() as session:
-            first = dispatcher.claim_actions(session, limit=1, worker_id="unknown-worker", allow_inline_ai_generation=True)[0]
-            dispatcher.dispatch_action(
-                session,
-                first,
-                comment_generation_dependencies=_unknown_dependencies(session, calls),
-            )
-            session.commit()
-
+        with SessionLocal() as observer:
+            assert drain_comment_generation(
+                SessionLocal,
+                limit=1,
+                dependencies=_unknown_dependencies(observer, calls),
+            ) == 1
         with SessionLocal() as session:
             pending = session.get(Action, ACTION_ID)
             assert pending.status == "pending"
             assert pending.payload["ai_generation_status"] == "ai_result_persist_unknown"
             assert pending.payload["ai_generation_result_cache"]["content"] == "PG 缓存评论"
-            second = dispatcher.claim_actions(session, limit=1, worker_id="cache-worker", allow_inline_ai_generation=True)[0]
-            dispatcher.dispatch_action(
-                session,
-                second,
-                comment_generation_dependencies=CommentGenerationDependencies(
-                    direct_generator=_forbidden_provider,
-                    reply_generator=_forbidden_provider,
-                ),
-            )
+        assert drain_comment_generation(
+            SessionLocal,
+            limit=1,
+            dependencies=CommentGenerationDependencies(
+                direct_generator=_forbidden_provider,
+                reply_generator=_forbidden_provider,
+            ),
+        ) == 1
+        with SessionLocal() as session:
+            second = dispatcher.claim_actions(session, limit=1, worker_id="cache-worker")[0]
+            dispatcher.dispatch_action(session, second)
             session.commit()
 
         with SessionLocal() as session:

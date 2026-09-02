@@ -35,7 +35,7 @@ def test_0192_backfills_legacy_quality_target_and_round_trips() -> None:
         )
         _migrate("upgrade", "head")
         assert _scalar(text("select version_num from alembic_version")) == (
-            "0195_comment_grounding_snapshot"
+            "0196_comment_plan_safety"
         )
         assert _scalar(select(func.count()).select_from(
             ChannelCommentPlanContract,

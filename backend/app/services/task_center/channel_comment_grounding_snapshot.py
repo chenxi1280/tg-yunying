@@ -208,6 +208,8 @@ def _validate_source_fact(
 
 def _canonical_route(task: Task) -> str:
     config = dict(task.type_config or {})
+    if not config.get("ai_content_route_v2_enabled"):
+        return "general"
     allowed = tuple(str(item) for item in config.get("ai_content_allowed_routes") or ())
     explicit = str(config.get("ai_content_context_route") or "").strip()
     if explicit:

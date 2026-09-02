@@ -319,7 +319,7 @@ def _soft_delete_auto_bound_tasks(task_ids: set[str]) -> None:
 
 
 def _session_uses_sqlite(session: Session) -> bool:
-    return session.get_bind().url.get_backend_name() == "sqlite"
+    return session.get_bind().dialect.name == "sqlite"
 
 
 def _test_rule_set_id(tenant_id: int) -> int:
