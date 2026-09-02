@@ -90,6 +90,8 @@ jobs:
             ssh silicon-valley-production-server "timeout 120 docker exec -i tgyunying-backend python - ${APPLY_FLAG}" \
               < backend/scripts/enable_ai_route_v2_for_all_tasks.py
           fi
+          echo "=== GENERATE AND BIND ADULT ATTESTATIONS ==="
+          ssh silicon-valley-production-server "timeout 120 docker exec -i tgyunying-backend python - ${APPLY_FLAG}" < backend/scripts/generate_and_bind_adult_attestations.py
           echo "=== DIAGNOSE ZERO CONFIRMED TASKS ==="
           ssh silicon-valley-production-server "timeout 60 docker exec -i tgyunying-backend python -" < backend/scripts/diagnose_zero_confirmed_tasks.py
           echo "=== SYNC POLICY BINDINGS ==="
