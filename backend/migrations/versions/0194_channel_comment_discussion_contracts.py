@@ -116,8 +116,13 @@ def _create_thread_bindings() -> None:
         sa.Column("discussion_peer_id", sa.String(160), nullable=False),
         sa.Column("thread_root_message_id", sa.Integer(), nullable=False),
         sa.Column("identity_hash", sa.String(64), nullable=False),
-        sa.Column("probe_event_id", sa.String(36), sa.ForeignKey("channel_discussion_thread_probe_events.id"), nullable=False),
-        sa.Column("supersedes_thread_binding_id", sa.String(36), sa.ForeignKey("channel_discussion_thread_bindings.id", ondelete="RESTRICT")),
+        sa.Column("probe_event_id", sa.String(36), sa.ForeignKey(
+            "channel_discussion_thread_probe_events.id", name="fk_thread_binding_probe_event",
+        ), nullable=False),
+        sa.Column("supersedes_thread_binding_id", sa.String(36), sa.ForeignKey(
+            "channel_discussion_thread_bindings.id", ondelete="RESTRICT",
+            name="fk_thread_binding_supersedes",
+        )),
         sa.Column("is_current", sa.Boolean(), nullable=False, server_default=sa.true()),
         sa.Column("observed_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
@@ -145,7 +150,10 @@ def _create_membership_facts() -> None:
         sa.Column("observed_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("fresh_until_at", sa.DateTime(timezone=True)),
         sa.Column("evidence_json", sa.JSON(), nullable=False),
-        sa.Column("supersedes_fact_id", sa.String(36), sa.ForeignKey("discussion_membership_facts.id", ondelete="RESTRICT")),
+        sa.Column("supersedes_fact_id", sa.String(36), sa.ForeignKey(
+            "discussion_membership_facts.id", ondelete="RESTRICT",
+            name="fk_disc_membership_supersedes",
+        )),
         sa.Column("is_current", sa.Boolean(), nullable=False, server_default=sa.true()),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.UniqueConstraint("tenant_id", "account_id", "discussion_peer_id", "group_binding_id", "fact_revision", name="uq_discussion_membership_fact_revision"),
@@ -246,10 +254,16 @@ def _create_recovery_manifests() -> None:
 def _add_source_revision_columns() -> None:
     table = "channel_message_source_revisions"
     _add_columns(table, (
-        sa.Column("discussion_group_binding_id", sa.String(36), sa.ForeignKey("channel_discussion_group_bindings.id", ondelete="RESTRICT")),
+        sa.Column("discussion_group_binding_id", sa.String(36), sa.ForeignKey(
+            "channel_discussion_group_bindings.id", ondelete="RESTRICT",
+            name="fk_channel_source_rev_group_binding",
+        )),
         sa.Column("discussion_group_binding_revision", sa.Integer()),
         sa.Column("discussion_group_identity_hash", sa.String(64), nullable=False, server_default=""),
-        sa.Column("discussion_thread_binding_id", sa.String(36), sa.ForeignKey("channel_discussion_thread_bindings.id", ondelete="RESTRICT")),
+        sa.Column("discussion_thread_binding_id", sa.String(36), sa.ForeignKey(
+            "channel_discussion_thread_bindings.id", ondelete="RESTRICT",
+            name="fk_channel_source_rev_thread_binding",
+        )),
         sa.Column("discussion_thread_revision", sa.Integer()),
         sa.Column("discussion_thread_identity_hash", sa.String(64), nullable=False, server_default=""),
     ))

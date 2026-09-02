@@ -67,12 +67,24 @@ def delete_task_runtime_rows(session: Session, task_id: str) -> None:
     ), params)
     _delete_cross_task_children(session, params)
     _delete_direct_children(session, TASK_CHILD_COLUMNS, params)
+    _delete_channel_comment_plan_children(session, params)
     _delete_action_children(session, params)
     session.execute(text(
         "DELETE FROM execution_attempts "
         "WHERE action_id IN (SELECT id FROM actions WHERE task_id = :task_id)"
     ), params)
     session.execute(text("DELETE FROM actions WHERE task_id = :task_id"), params)
+
+
+def _delete_channel_comment_plan_children(session: Session, params: dict[str, str]) -> None:
+    plan_scope = "SELECT id FROM channel_comment_plan_contracts WHERE task_id = :task_id"
+    session.execute(text(
+        "DELETE FROM channel_comment_grounding_assignments "
+        f"WHERE plan_contract_id IN ({plan_scope})"
+    ), params)
+    session.execute(text(
+        "DELETE FROM channel_comment_grounding_snapshots WHERE task_id = :task_id"
+    ), params)
 
 
 def _delete_cross_task_children(session: Session, params: dict[str, str]) -> None:
