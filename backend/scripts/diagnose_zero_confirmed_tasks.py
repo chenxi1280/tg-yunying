@@ -55,7 +55,7 @@ def main():
             sql_failed_actions = f"""
             SELECT id, action_type, status, payload ->> 'ai_generation_status' as gen_status,
                    payload ->> 'group_id' as group_id,
-                   result, last_error, created_at, executed_at
+                   result, created_at, executed_at
             FROM actions
             WHERE task_id = '{tid}' AND status = 'failed'
             ORDER BY created_at DESC
