@@ -49,6 +49,40 @@ def ensure_channel_view_targets(
         config=config,
         now=now,
     )
+    _attach_new_targets(
+        session,
+        task,
+        channel,
+        ledger=ledger,
+        candidates=candidates,
+        existing=existing,
+        config=config,
+        now=now,
+        candidate_account_count=candidate_account_count,
+    )
+    refresh_channel_view_targets(
+        existing,
+        ledger,
+        task.pacing_config or {},
+        now=now,
+        candidate_account_count=candidate_account_count,
+        config=config,
+    )
+    return existing
+
+
+def _attach_new_targets(
+    session: Session,
+    task: Task,
+    channel: OperationTarget,
+    *,
+    ledger: TaskDayLedger,
+    candidates: list[ChannelMessage],
+    existing: dict[int, ChannelViewDailyMessageTarget],
+    config: dict,
+    now: datetime,
+    candidate_account_count: int | None,
+) -> None:
     baselines = _fact_baselines_at_attach(
         session,
         ledger,
@@ -68,18 +102,9 @@ def ensure_channel_view_targets(
             candidate_account_count=candidate_account_count,
         )
         existing[message.id] = _insert_or_read(session, target)
-    _refresh_targets(
-        existing,
-        ledger,
-        task.pacing_config or {},
-        now=now,
-        candidate_account_count=candidate_account_count,
-        config=config,
-    )
-    return existing
 
 
-def _refresh_targets(
+def refresh_channel_view_targets(
     targets: dict[int, ChannelViewDailyMessageTarget],
     ledger: TaskDayLedger,
     pacing_config: dict,
@@ -97,8 +122,12 @@ def _refresh_targets(
             and config.get("per_message_daily_view_target") is None
         ):
             target.daily_target_snapshot = candidate_account_count
-            if int(target.total_target_snapshot or 0) <= 0:
-                target.effective_target_snapshot = candidate_account_count
+            total_target = int(target.total_target_snapshot or 0)
+            has_lifetime_capacity = (
+                total_target <= 0
+                or int(target.lifetime_confirmed_at_attach or 0) < total_target
+            )
+            target.effective_target_snapshot = candidate_account_count if has_lifetime_capacity else 0
         due = channel_view_target_due(target, ledger, pacing_config, now=now)
         target.due_count = max(int(target.due_count or 0), due)
         target.source_state = "expired" if _at_or_after(now, target.active_until) else "active"
@@ -345,5 +374,6 @@ def _same_timezone(value: datetime | None, reference: datetime) -> datetime | No
 __all__ = [
     "channel_view_target_due",
     "ensure_channel_view_targets",
+    "refresh_channel_view_targets",
     "target_messages",
 ]

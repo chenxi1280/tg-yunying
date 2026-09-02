@@ -74,13 +74,10 @@ def channel_scope(session: Session, task: Task, config: dict, *, comment_availab
             if next_probe_at is not None:
                 task.next_run_at = normalize_datetime(next_probe_at)
             if task.type == "channel_view" and snapshot_status == "stale" and state_id is not None:
-                existing_messages = channel_messages(
-                    session,
-                    task.tenant_id,
-                    config,
-                    comment_available_only=comment_available_only,
-                    listener_state_id=state_id,
+                existing_messages = _stale_channel_view_messages(
+                    session, task, config, state_id=state_id,
                     snapshot_revision=snapshot_revision,
+                    comment_available_only=comment_available_only,
                 )
                 if existing_messages:
                     return channel, existing_messages
@@ -104,6 +101,51 @@ def channel_scope(session: Session, task: Task, config: dict, *, comment_availab
         task.last_error = task.last_error or "未找到频道消息，等待下一轮采集"
         return None, []
     return channel, messages
+
+
+def _stale_channel_view_messages(
+    session: Session,
+    task: Task,
+    config: dict,
+    *,
+    state_id: str,
+    snapshot_revision: int,
+    comment_available_only: bool,
+) -> list[ChannelMessage]:
+    messages = channel_messages(
+        session, task.tenant_id, config,
+        comment_available_only=comment_available_only,
+        listener_state_id=state_id,
+        snapshot_revision=snapshot_revision,
+    )
+    return messages or _active_unbound_channel_messages(
+        session, task, config,
+        comment_available_only=comment_available_only,
+    )
+
+
+def _active_unbound_channel_messages(
+    session: Session,
+    task: Task,
+    config: dict,
+    *,
+    comment_available_only: bool,
+) -> list[ChannelMessage]:
+    messages = channel_messages(
+        session,
+        task.tenant_id,
+        config,
+        comment_available_only=comment_available_only,
+    )
+    active_days = max(0, int(config.get("message_active_days") or 0))
+    if active_days <= 0:
+        return []
+    cutoff = _now().replace(tzinfo=None) - timedelta(days=active_days)
+    return [
+        message for message in messages
+        if message.published_at
+        and message.published_at.replace(tzinfo=None) >= cutoff
+    ]
 
 
 def collect_channel_messages(session: Session, task: Task, channel: OperationTarget, config: dict) -> int:

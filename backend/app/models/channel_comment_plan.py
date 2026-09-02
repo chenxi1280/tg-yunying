@@ -84,6 +84,13 @@ class ChannelCommentPlanContract(Base):
             "task_id", "channel_message_id", "comment_plan_revision",
             name="uq_channel_comment_plan_revision",
         ),
+        Index(
+            "uq_channel_comment_plan_active",
+            "task_id", "channel_message_id",
+            unique=True,
+            postgresql_where=text("contract_state = 'open'"),
+            sqlite_where=text("contract_state = 'open'"),
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
@@ -101,6 +108,9 @@ class ChannelCommentPlanContract(Base):
     window_start_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     deadline_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     eligible_account_count: Mapped[int] = mapped_column(Integer)
+    eligibility_snapshot_state: Mapped[str] = mapped_column(
+        String(32), default="ready", server_default="ready",
+    )
     eligible_account_ids_hash: Mapped[str] = mapped_column(String(64))
     participation_seed: Mapped[str] = mapped_column(String(128))
     effective_participation_bps: Mapped[int] = mapped_column(Integer)

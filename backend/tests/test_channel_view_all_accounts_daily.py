@@ -157,3 +157,37 @@ def test_channel_view_dynamic_new_messages_multi_message_all_accounts(monkeypatc
         msg2_accounts = {a.account_id for a in actions if a.payload.get("channel_message_id") == msg2.id}
         assert msg1_accounts == set(range(1, 6))
         assert msg2_accounts == set(range(1, 6))
+
+
+def test_channel_view_dynamic_all_accounts_respects_finite_lifetime_target(monkeypatch):
+    now = datetime(2026, 9, 2, 14, 0, tzinfo=BEIJING_TZ)
+    _set_view_clock(monkeypatch, now)
+
+    with new_session() as session:
+        scenario = seed_channel_scenario(session, channel_id=103, account_count=10)
+        message = add_message(
+            session,
+            channel=scenario.channel,
+            message_id=20,
+            published_at=now - timedelta(hours=1),
+        )
+        task = _create_view_task(
+            session,
+            channel=scenario.channel,
+            messages=[message],
+            task_id="task-view-finite-all-accounts",
+            per_message_daily_target=None,
+            total_target=100,
+        )
+
+        assert build_plan(session, task) == 10
+        target = session.scalar(
+            select(ChannelViewDailyMessageTarget).where(
+                ChannelViewDailyMessageTarget.task_id == task.id,
+                ChannelViewDailyMessageTarget.channel_message_id == message.id,
+            )
+        )
+        assert target is not None
+        assert target.daily_target_snapshot == 10
+        assert target.effective_target_snapshot == 10
+        assert target.due_count == 10

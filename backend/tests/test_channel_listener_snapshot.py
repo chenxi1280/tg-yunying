@@ -457,6 +457,7 @@ def _seed_listener_task(
                     "target_channel_id": channel_id,
                     "message_scope": "dynamic_new",
                     "listener_interval_seconds": 30,
+                    "message_active_days": 7,
                 },
             ),
         ])
@@ -536,6 +537,8 @@ def test_channel_view_uses_snapshot_revision_messages_when_stale(monkeypatch) ->
     current_time[0] = NOW + timedelta(seconds=120)
 
     with Session(engine) as session:
+        session.query(ListenerChannelSnapshotItem).delete()
+        session.flush()
         task = session.get(Task, "view-stale-task")
         channel, messages = executor_common.channel_scope(
             session,
@@ -547,3 +550,10 @@ def test_channel_view_uses_snapshot_revision_messages_when_stale(monkeypatch) ->
         assert messages[0].message_id == 9001
         assert task.last_error == "channel_source_snapshot_stale"
 
+        messages[0].published_at = NOW - timedelta(days=8)
+        session.flush()
+        channel, messages = executor_common.channel_scope(
+            session, task, task.type_config,
+        )
+        assert channel is None
+        assert messages == []

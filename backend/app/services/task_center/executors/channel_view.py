@@ -35,8 +35,8 @@ from ..channel_view_daily_identity import (
 from ..channel_membership import channel_member_accounts, gate_channel_membership
 from ..channel_view_capacity import record_unique_account_capacity
 from ..channel_view_targets import (
-    channel_view_target_due,
     ensure_channel_view_targets,
+    refresh_channel_view_targets,
     target_messages,
 )
 from ..daily_ledgers import ensure_task_day_ledger
@@ -161,35 +161,22 @@ def _view_plan_inputs(
         return None
     task_daily_cap = int(config.get("task_daily_view_safety_cap") or 0)
     effective_daily_cap = task_daily_cap if task_daily_cap > 0 else None
-    capacity_target = max(
-        (target.daily_target_snapshot for target in scope.targets_by_message.values()),
-        default=1,
-    )
-    account_ids_by_message = view_account_ids_for_messages(session, task, scope.ledger, scope.messages)
-    identity_scan_floor = max(
-        (capacity_target + len(account_ids) for account_ids in account_ids_by_message.values()),
-        default=capacity_target,
-    )
-    accounts = _view_accounts(
+    accounts, account_ids_by_message, capacity_target = _view_account_plan(
         session,
         task,
-        scope.channel,
+        scope,
         config=config,
-        target_per_message=capacity_target,
-        identity_scan_floor=identity_scan_floor,
     )
     if not accounts:
         task.last_error = "没有可用账号，等待账号恢复后继续执行"
         return None
     account_pool_size = len(accounts)
-    daily_target, total_target = _view_target_limits(config, candidate_count=account_pool_size)
-    if config.get("account_coverage_mode") == "all_accounts_daily" and config.get("per_message_daily_view_target") is None:
-        for target in scope.targets_by_message.values():
-            target.daily_target_snapshot = account_pool_size
-            if int(target.total_target_snapshot or 0) <= 0:
-                target.effective_target_snapshot = account_pool_size
-            due = channel_view_target_due(target, scope.ledger, task.pacing_config or {}, now=scope.now)
-            target.due_count = max(int(target.due_count or 0), due)
+    total_target = _refresh_view_target_capacity(
+        task,
+        scope,
+        config,
+        account_pool_size=account_pool_size,
+    )
     record_channel_capacity_warning(task, "浏览", capacity_target, len(accounts))
     daily_counts = view_daily_counts(session, scope.ledger)
     task_remaining_today = _remaining_task_daily_capacity(effective_daily_cap, daily_counts.total)
@@ -210,6 +197,52 @@ def _view_plan_inputs(
         now=scope.now,
     )
     return inputs, completed_counts, total_target
+
+
+def _view_account_plan(
+    session: Session,
+    task: Task,
+    scope: "ViewTargetScope",
+    *,
+    config: dict,
+) -> tuple[list, dict[int, set[int]], int]:
+    capacity_target = max(
+        (target.daily_target_snapshot for target in scope.targets_by_message.values()),
+        default=1,
+    )
+    account_ids_by_message = view_account_ids_for_messages(session, task, scope.ledger, scope.messages)
+    identity_scan_floor = max(
+        (capacity_target + len(account_ids) for account_ids in account_ids_by_message.values()),
+        default=capacity_target,
+    )
+    accounts = _view_accounts(
+        session,
+        task,
+        scope.channel,
+        config=config,
+        target_per_message=capacity_target,
+        identity_scan_floor=identity_scan_floor,
+    )
+    return accounts, account_ids_by_message, capacity_target
+
+
+def _refresh_view_target_capacity(
+    task: Task,
+    scope: "ViewTargetScope",
+    config: dict,
+    *,
+    account_pool_size: int,
+) -> int:
+    _daily_target, total_target = _view_target_limits(config, candidate_count=account_pool_size)
+    refresh_channel_view_targets(
+        scope.targets_by_message,
+        scope.ledger,
+        task.pacing_config or {},
+        now=scope.now,
+        candidate_account_count=account_pool_size,
+        config=config,
+    )
+    return total_target
 
 
 def _view_target_limits(config: dict, candidate_count: int | None = None) -> tuple[int, int]:

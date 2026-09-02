@@ -7,6 +7,10 @@ on:
         description: Expected production release SHA
         required: true
         type: string
+      task_id:
+        description: Optional running AI group task UUID; empty means all running tasks
+        required: false
+        type: string
       target:
         description: New daily message target
         required: true
@@ -41,12 +45,16 @@ jobs:
       - name: Validate target tuning inputs
         env:
           EXPECTED_DEPLOYED_SHA: ${{ inputs.deployed_sha }}
+          TASK_ID: ${{ inputs.task_id }}
           TARGET: ${{ inputs.target }}
         run: |
           set -euo pipefail
           [[ "${EXPECTED_DEPLOYED_SHA}" =~ ^[0-9a-fA-F]{40}$ ]]
           [[ "${TARGET}" =~ ^[0-9]+$ ]]
           (( TARGET > 0 ))
+          if [[ -n "${TASK_ID}" ]]; then
+            [[ "${TASK_ID}" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]
+          fi
 
       - name: Configure SSH
         env:
@@ -107,47 +115,18 @@ jobs:
           if [[ -n "${TASK_ID}" ]]; then
             TASK_FLAG="--task-id ${TASK_ID}"
           fi
-          echo "=== RESCUE AND WAKEUP ZHENGZHOU DAXUE ==="
-          ssh silicon-valley-production-server 'docker exec -i tgyunying-backend python -c "
-from datetime import datetime, timezone
-from sqlalchemy import select, update
-from app.database import SessionLocal
-from app.models import Task, TgGroup, TgGroupAccount, Action
-from app.services.task_center.daily_group_target import ensure_task_group_daily_target
-
-session = SessionLocal()
-now = datetime.now(timezone.utc)
-today = now.date()
-
-t = session.get(Task, \"a52e84f2-8663-4b00-bbbe-196fb626b28d\")
-if t:
-    t.status = \"running\"
-    t.last_error = \"\"
-    t.next_run_at = now
-    t.updated_at = now
-    
-    session.execute(
-        update(Action)
-        .where(Action.task_id == t.id, Action.status == \"pending\", Action.scheduled_at > now)
-        .values(scheduled_at=now, lease_owner=None, lease_expires_at=None, updated_at=now)
-    )
-    
-    gid = (t.type_config or {}).get(\"target_group_id\")
-    if gid:
-        grp = session.get(TgGroup, int(gid))
-        if grp:
-            grp.can_send = True
-            grp.auth_status = \"已授权运营\"
-            ensure_task_group_daily_target(session, t, grp, today)
-        session.execute(
-            update(TgGroupAccount)
-            .where(TgGroupAccount.group_id == int(gid))
-            .values(can_send=True, send_cooldown_expires_at=None)
-        )
-    session.commit()
-    print(\"SUCCESS_ZHENGZHOU_DAXUE_WOKEN_UP\")
-session.close()
-"'
+          echo "=== DAILY TARGET TUNING (${APPLY_FLAG:-preview}) ==="
+          ssh silicon-valley-production-server \
+            "docker exec -i tgyunying-backend python - --target ${TARGET} ${APPLY_FLAG} ${TASK_FLAG}" \
+            < backend/scripts/update_ai_group_daily_targets.py
+          if [[ "${SWITCH_V2}" == "true" ]]; then
+            echo "=== AI ROUTE V2 (${APPLY_FLAG:-preview}) ==="
+            ssh silicon-valley-production-server \
+              "docker exec -i tgyunying-backend python - ${APPLY_FLAG} ${TASK_FLAG}" \
+              < backend/scripts/enable_ai_route_v2_for_all_tasks.py
+          else
+            echo "=== AI ROUTE V2 SKIPPED ==="
+          fi
           echo "=== EXACT PRODUCTION RUNTIME FACTS ==="
           ssh silicon-valley-production-server '
             echo "HOST_CURRENT_RELEASE_SYMLINK: $(readlink -f /data/tgyunying/current)"

@@ -30,7 +30,12 @@ from app.services.task_center.channel_comment_capacity_allocation import (
 from app.services.task_center.channel_comment_content_revision import (
     reconcile_channel_comment_source_edit,
 )
+from app.services.task_center.channel_comment_grounding_snapshot import (
+    build_initial_grounding_draft,
+    freeze_initial_grounding_snapshot,
+)
 from app.services.task_center.channel_comment_quality_target import (
+    build_quality_target_component,
     freeze_initial_quality_target,
     quality_assignment_content,
 )
@@ -372,7 +377,19 @@ def _seed_plan(session, obligation_ids: list[str]) -> None:
     session.add(plan)
     session.flush()
     _seed_obligations(session, obligation_ids)
-    target = freeze_initial_quality_target(session, plan, source)
+    task = session.get(Task, TASK_ID)
+    draft = build_initial_grounding_draft(task, source)
+    grounding_snapshot = freeze_initial_grounding_snapshot(
+        session, task, plan=plan, source=source, draft=draft,
+    )
+    component = build_quality_target_component(
+        source,
+        list(range(1, len(obligation_ids) + 1)),
+        comment_grounding_revision=1,
+        planned_fallback_max_bps=int(plan.planned_fallback_max_bps),
+        grounding_snapshot_id=grounding_snapshot.id,
+    )
+    target = freeze_initial_quality_target(session, plan, source, component=component)
     for component in target.component_targets_json:
         for ordinal in component.get("grounding_ordinal_ids") or []:
             obligation_id = obligation_ids[int(ordinal) - 1]
@@ -382,6 +399,7 @@ def _seed_plan(session, obligation_ids: list[str]) -> None:
                 source_revision_id=source.id, target_ordinal=int(ordinal),
                 assignment_version=1, quality_target_revision_id=target.id,
                 quality_component_key=component["quality_component_key"],
+                grounding_snapshot_id=grounding_snapshot.id,
                 **quality_assignment_content(source, component, int(ordinal)),
                 assignment_state="active",
             )

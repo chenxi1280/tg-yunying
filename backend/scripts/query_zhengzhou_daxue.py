@@ -26,8 +26,7 @@ def main():
         actions = list(session.scalars(
             select(Action).where(Action.task_id == t.id).order_by(Action.created_at.desc()).limit(5)
         ).all())
-        print(f"
-Recent Actions ({len(actions)}):")
+        print(f"\nRecent Actions ({len(actions)}):")
         for a in actions:
             print(f"  - id={a.id}, type={a.action_type}, status={a.status}, result={a.result}, time={a.created_at}")
 

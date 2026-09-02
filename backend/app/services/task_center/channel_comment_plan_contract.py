@@ -5,6 +5,7 @@ import json
 from dataclasses import dataclass, replace
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -30,6 +31,7 @@ from .channel_comment_discussion_guard import (
     DiscussionPlanIdentity,
     resolve_discussion_plan_identity,
 )
+from .channel_comment_plan_concurrency import active_plan_conflict
 from .channel_comment_grounding_snapshot import (
     assignment_eligible_variants,
     GroundingSnapshotDraft,
@@ -72,7 +74,20 @@ def ensure_comment_plan_contract(
     ))
     if existing is not None:
         return _frozen_plan(session, existing)
-    return _create_comment_plan(session, task, message, accounts=accounts)
+    try:
+        with session.begin_nested():
+            return _create_comment_plan(session, task, message, accounts=accounts)
+    except IntegrityError as exc:
+        if not active_plan_conflict(exc):
+            raise
+        winner = session.scalar(select(ChannelCommentPlanContract).where(
+            ChannelCommentPlanContract.task_id == task.id,
+            ChannelCommentPlanContract.channel_message_id == message.id,
+            ChannelCommentPlanContract.contract_state == "open",
+        ))
+        if winner is None:
+            raise
+        return _frozen_plan(session, winner)
 
 
 def _create_comment_plan(
@@ -227,14 +242,13 @@ def _new_plan_contract(
         window_start_at=window_start,
         deadline_at=deadline,
         eligible_account_count=len(ranked),
+        eligibility_snapshot_state=("ready" if ranked else "no_eligible_accounts"),
         eligible_account_ids_hash=_account_ids_hash(ranked),
         participation_seed=_participation_seed(task, message),
         effective_participation_bps=bps,
         uncapped_required_distinct_account_count=uncapped_required,
         business_max_comments_per_message=business_max,
-        business_cap_state=(
-            "business_cap_adjusted" if required < uncapped_required else "not_adjusted"
-        ),
+        business_cap_state="business_cap_adjusted" if required < uncapped_required else "not_adjusted",
         planned_fallback_max_bps=fallback_max_bps,
         required_distinct_account_count=required,
         grounding_required_count=grounding_required,

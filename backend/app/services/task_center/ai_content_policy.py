@@ -150,6 +150,25 @@ def bind_task_policy(
     session: Session,
     spec: TaskBindingSpec,
 ) -> TaskAiContentPolicyBinding:
+    values = validate_task_policy_binding(session, spec)
+    task = session.get(Task, spec.task_id)
+    assert task is not None
+    existing = session.scalar(select(TaskAiContentPolicyBinding).where(
+        TaskAiContentPolicyBinding.task_id == task.id,
+        TaskAiContentPolicyBinding.task_lifecycle_epoch == task.task_lifecycle_epoch,
+        TaskAiContentPolicyBinding.task_config_revision == task.config_revision,
+    ))
+    if existing is not None:
+        if existing.evidence_hash != values["evidence_hash"]:
+            raise AiContentPolicyConflict("ai_content_binding_revision_conflict")
+        return existing
+    binding = TaskAiContentPolicyBinding(**values)
+    session.add(binding)
+    session.flush()
+    return binding
+
+
+def validate_task_policy_binding(session: Session, spec: TaskBindingSpec) -> dict:
     task = session.get(Task, spec.task_id)
     if task is None or task.deleted_at is not None:
         raise AiContentPolicyConflict("ai_content_binding_task_missing")
@@ -165,14 +184,9 @@ def bind_task_policy(
         TaskAiContentPolicyBinding.task_lifecycle_epoch == task.task_lifecycle_epoch,
         TaskAiContentPolicyBinding.task_config_revision == task.config_revision,
     ))
-    if existing is not None:
-        if existing.evidence_hash != values["evidence_hash"]:
-            raise AiContentPolicyConflict("ai_content_binding_revision_conflict")
-        return existing
-    binding = TaskAiContentPolicyBinding(**values)
-    session.add(binding)
-    session.flush()
-    return binding
+    if existing is not None and existing.evidence_hash != values["evidence_hash"]:
+        raise AiContentPolicyConflict("ai_content_binding_revision_conflict")
+    return values
 
 
 def assert_route_authorized(
@@ -373,4 +387,5 @@ __all__ = [
     "bind_task_policy",
     "create_adult_attestation",
     "create_policy_draft",
+    "validate_task_policy_binding",
 ]

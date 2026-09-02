@@ -4,7 +4,12 @@ from sqlalchemy.orm import Session
 
 from app.models import AiContentPolicyVersion, Task
 
-from .ai_content_policy import AiContentPolicyConflict, TaskBindingSpec, bind_task_policy
+from .ai_content_policy import (
+    AiContentPolicyConflict,
+    TaskBindingSpec,
+    bind_task_policy,
+    validate_task_policy_binding,
+)
 from .ai_provider_routes import (
     COMMENT_REALIZE_PURPOSE,
     COMMENT_REVIEW_PURPOSE,
@@ -18,9 +23,18 @@ from .ai_provider_routes import (
 
 
 def activate_task_ai_content_config(session: Session, task: Task) -> None:
+    spec = validate_task_ai_content_config(session, task)
+    if spec is not None:
+        bind_task_policy(session, spec)
+
+
+def validate_task_ai_content_config(
+    session: Session,
+    task: Task,
+) -> TaskBindingSpec | None:
     config = dict(task.type_config or {})
     if not config.get("ai_content_route_v2_enabled"):
-        return
+        return None
     if not config.get("ai_two_stage_enabled"):
         raise ValueError("ai_content_route_v2_requires_two_stage")
     policy_id = str(config.get("ai_content_policy_version_id") or "")
@@ -30,14 +44,16 @@ def activate_task_ai_content_config(session: Session, task: Task) -> None:
     routes = tuple(str(item) for item in config.get("ai_content_allowed_routes") or ())
     try:
         _validate_provider_routes(session, task, routes)
-        bind_task_policy(session, TaskBindingSpec(
+        spec = TaskBindingSpec(
             task_id=task.id,
             policy_version_id=policy_id,
             allowed_routes=routes,
             attestation_ids=tuple(config.get("ai_content_attestation_ids") or ()),
             scope_refs=_scope_refs(task, config),
             approved_by=policy.approved_by,
-        ))
+        )
+        validate_task_policy_binding(session, spec)
+        return spec
     except (AiContentPolicyConflict, ProviderRouteUnavailable) as exc:
         raise ValueError(str(exc)) from exc
 
@@ -75,4 +91,4 @@ def _scope_refs(task: Task, config: dict) -> tuple[tuple[str, str], ...]:
     return ((scope_type, scope_id),)
 
 
-__all__ = ["activate_task_ai_content_config"]
+__all__ = ["activate_task_ai_content_config", "validate_task_ai_content_config"]

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import pytest
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 
 from app.models import (
     Action,
@@ -25,6 +27,7 @@ from app.models import (
     ChannelMessageComment,
     ChannelMessageSourceRevision,
     CommentFulfillmentObligation,
+    DiscussionMembershipFact,
     ExecutionAttempt,
     GenerationJob,
     OperationTarget,
@@ -49,6 +52,7 @@ from app.services.task_center.channel_comment_discussion_contracts import (
 from app.services.task_center.channel_comment_grounding_enrollment import activate_grounding_enrollment
 from app.services.task_center.executors import channel_comment
 from app.services.task_center.channel_comment_acceptance import channel_comment_acceptance
+from app.services.task_center.channel_comment_plan_concurrency import active_plan_conflict
 from app.services.task_center.channel_comment_capacity import (
     mark_comment_capacity_gateway_hold,
     remaining_comment_capacity,
@@ -302,7 +306,61 @@ def test_grounding_plan_freezes_distinct_target_and_survives_config_revision(mon
         assert all(action.payload["grounding_assignment_id"] for action in actions)
         assert created_after_edit == 0
         assert session.scalar(select(func.count(ChannelCommentPlanContract.id))) == 1
-        assert session.scalar(select(func.count(CommentFulfillmentObligation.id))) == 2
+    assert session.scalar(select(func.count(CommentFulfillmentObligation.id))) == 2
+
+
+def test_zero_eligible_accounts_freezes_blocked_plan(monkeypatch):
+    forbid_planner_external_boundaries(monkeypatch)
+    fixed_profile(monkeypatch)
+    monkeypatch.setattr(
+        "app.services.task_center.channel_comment_discussion_admission."
+        "discussion_admission_candidate_ids",
+        lambda *_args, **_kwargs: frozenset(),
+    )
+    with planner_session() as session:
+        task = seed_comment_task(session, mode="comment", target_count=3)
+        _enable_grounding_plan(session, task)
+        session.query(DiscussionMembershipFact).delete()
+        session.flush()
+
+        created = channel_comment.build_plan(session, task)
+        plan = session.scalar(select(ChannelCommentPlanContract))
+        acceptance = channel_comment_acceptance(session, task)
+        actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
+
+    assert created == 0
+    assert plan is not None, (task.last_error, task.stats)
+    assert plan.eligible_account_count == 0
+    assert plan.required_distinct_account_count == 0
+    assert plan.eligibility_snapshot_state == "no_eligible_accounts"
+    assert acceptance["acceptance_status"] == "blocked"
+    assert acceptance["quantity_status"] == "blocked"
+    assert actions == []
+
+
+def test_plan_conflict_reconciliation_only_accepts_named_uniqueness() -> None:
+    matching = IntegrityError(
+        "insert", {}, Exception("uq_channel_comment_plan_active"),
+    )
+    unrelated = IntegrityError("insert", {}, Exception("other_constraint"))
+
+    assert active_plan_conflict(matching) is True
+    assert active_plan_conflict(unrelated) is False
+    assert {
+        index.name for index in ChannelCommentPlanContract.__table__.indexes
+    } >= {"uq_channel_comment_plan_active"}
+
+
+def test_comment_plan_safety_migration_is_current_head() -> None:
+    path = Path(__file__).resolve().parents[1] / (
+        "migrations/versions/0196_channel_comment_plan_safety.py"
+    )
+    source = path.read_text()
+
+    assert 'revision = "0196_comment_plan_safety"' in source
+    assert 'down_revision = "0195_comment_grounding_snapshot"' in source
+    assert "eligibility_snapshot_state" in source
+    assert "uq_channel_comment_plan_active" in source
 
 
 def test_empty_source_blocks_when_planned_fallback_exceeds_business_cap(monkeypatch):

@@ -141,6 +141,7 @@ def _plan_acceptance(
         "content_mix_status": content_status,
         "grounding_quality_status": grounding_status,
         "quantity_target_count": target,
+        "eligibility_snapshot_state": str(plan.eligibility_snapshot_state),
         "quantity_uncapped_target_count": int(
             plan.uncapped_required_distinct_account_count,
         ),
@@ -170,6 +171,8 @@ def _acceptance_statuses(
 ) -> tuple[str, str, str]:
     if plan.contract_state in {"terminated_by_operator", "terminated_source_deleted"}:
         return "terminated", "terminated", "terminated"
+    if plan.eligibility_snapshot_state == "no_eligible_accounts":
+        return "blocked", "blocked", "blocked"
     target = int(plan.required_distinct_account_count)
     quantity_status = _target_status(
         confirmed_count, target, deadline_passed=deadline_passed,

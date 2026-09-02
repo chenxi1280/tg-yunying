@@ -334,7 +334,7 @@ def _validate_component(component: dict) -> None:
     owned = [int(value) for value in component.get("owned_ordinal_ids", [])]
     grounded = [int(value) for value in component.get("grounding_ordinal_ids", [])]
     fallback = [int(value) for value in component.get("planned_fallback_ordinal_ids", [])]
-    if not owned or len(owned) != len(set(owned)):
+    if len(owned) != len(set(owned)):
         raise ValueError("channel_comment_quality_component_owned_invalid")
     if sorted(grounded + fallback) != sorted(owned) or set(grounded) & set(fallback):
         raise ValueError("channel_comment_quality_component_roles_invalid")

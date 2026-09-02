@@ -6,8 +6,8 @@
 | --- | --- |
 | 需求级别 | L2 产品能力升级；同时闭合评论参与数量、广播/老师相关性与整体验收 |
 | 产品设计状态 | `partial`：v1.5 核心合同已完整；§12.8 评论 Reaction 与 §2.2 的范围声明冲突，且未定义数量、目标选择、obligation 与完成标准 |
-| 实现状态 | `local_core_complete / document_partial`：0193～0195 已实现业务 cap/fallback、Discussion Binding/Thread/Membership/Enrollment、互斥 RPC、Listener ownership、存量恢复、精确 SourceRevision、GroundingSnapshot/Evaluation、多老师/否定/时效抽取、Action-first GenerationJob、Provider evidence identity、accepted/outbound hash、确定性字数层/persona 与 read model/UI。§12.8 未闭合的评论 Reaction 自动规划未实现；发布、生产迁移和 Telegram E4 未执行 |
-| QA 状态 | `local_core_pass / pg_external_pending`：最终相关 file-level no-PostgreSQL 回归 `302 passed`（此前核心主链 `97 passed`），前端 TypeScript/Vite build、任务 scoped Python compileall 与 Alembic 单 head `0195_comment_grounding_snapshot` 通过；UI 人工验收、Phase 0 金标、生产 canary/E4 均未通过 |
+| 实现状态 | `local_core_complete / document_partial`：0193～0196 已实现业务 cap/fallback、Discussion Binding/Thread/Membership/Enrollment、互斥 RPC、Listener ownership、存量恢复、精确 SourceRevision、GroundingSnapshot/Evaluation、多老师/否定/时效抽取、Action-first GenerationJob、Provider evidence identity、accepted/outbound hash、确定性字数层/persona 与 read model/UI；0196 追加单消息 open Plan 部分唯一键与 `eligibility_snapshot_state`，Planner 唯一冲突仅在保存点内回读胜者，0 eligible 明确冻结为 blocked。§12.8 未闭合的评论 Reaction 自动规划未实现；发布、生产迁移和 Telegram E4 未执行 |
+| QA 状态 | `local_core_pass / pg_external_pending`：本轮频道评论 no-PostgreSQL 回归 `232 passed`，相关定向模型/迁移/监听/AI 策略回归 `70 passed`，任务 scoped Python compileall、diff check 与 Alembic 单 head `0196_comment_plan_safety` 通过；PostgreSQL 双 Planner、UI 人工验收、Phase 0 金标、生产 canary/E4 均未通过 |
 | 发布状态 | `not_released` |
 | 生产状态 | `unproven`；无真实 Telegram E4 证据 |
 | 适用任务 | `channel_comment`、`channel_comment_reply` |
@@ -40,6 +40,8 @@
 本地实现审计（2026-09-01）：完成 v1.4 兜底切片并修复无证据默认方向、内容弱信号提升 route、媒体评论关系、远端事实挂接和无 caption 图片缓存重放；随后把 policy/pool 冻结前移到消息首次规划事务，历史 revision 缺 snapshot 时 fail closed，typed fact 补齐 Action/Attempt/outbound identity，并以 `MaterialGroup.material_ids` 实现图片包显式成员隔离。定向测试与前端构建通过。反向核查确认本 PRD 的数量、来源修订、grounding 全量冻结、质量目标、编辑 successor、Daily Cap 公平分配和三维 acceptance 尚无完整 owner，因此实现与 QA 只能标记为 partial，发布与生产状态不变。
 
 第八轮本地修复（2026-09-01）：新增 `ChannelMessageSourceRevision`、`ChannelCommentPlanContract`、eligible snapshot、ordinal-account binding 与基础 `ChannelCommentGroundingAssignment`；当前合同只纳入 Task enrollment 后发布且具权威 `source_published_at` 的消息，首次规划冻结 55%～65% distinct-account 目标、全部 obligation、账号和 planned fallback。`TaskCommentCapacityPeriod/Reservation` 按连续 UTC 周期持有 cap，并在 `plan_reserved -> action_reserved -> gateway_hold -> confirmed/released` 间单向推进；Action 按 ordinal/发布时间/消息顺序在预约约束下 JIT 物化。planned fallback 不再调用普通正文 Provider；详情直接读取 `CommentFallbackSelection`，完成量只认 obligation remote fact，并组合 quantity/content mix/grounding quality。该轮仍未实现跨全部开放消息的完整 max-min allocation epoch、rolling 24h 二次硬限额、来源编辑/删除 successor、独立 quality target component、多老师证据块和完整时效事实，因此状态保持 `partial_local/not_released/unproven`。
+
+第十九轮本地修复（2026-09-02）：迁移 `0196_comment_plan_safety` 为 `(task_id, channel_message_id)` 增加仅 `contract_state='open'` 生效的部分唯一索引，并增加 `eligibility_snapshot_state`。首次 Plan 写入使用事务保存点；只有命中 active/revision 两个命名唯一约束时才回读并复用并发胜者，其他完整性错误继续外抛。Discussion Binding、Thread 与 Enrollment 仍为硬前置，但账号 membership/admission 集为空时不再在 Plan 前退出，而是原子冻结 `eligible_account_count=0 / required=0 / no_eligible_accounts`、空 ordinal/Action 和三维 `blocked`；零账号 QualityTarget 允许拥有空 ordinal 的规范组件，禁止 0/0 投影为 met。该轮本地回归通过，但 PostgreSQL 双 Planner 竞争、迁移执行、发布和 Telegram E4 仍未验证。
 
 第九轮本地修复（2026-09-01）：`channel_comment_capacity.py` 在 reservation 事务中以 Task 行作为 PostgreSQL 容量 owner，保留单 UTC period cap，并对候选时间前后 24 小时的全部非 released reservation 做滑动窗口聚合；任一 `(window_end-24h,window_end]` 达到冻结 Daily Cap 时不创建/复活 reservation，恰好相隔 24 小时的旧占用退出窗口。0188 增加 `(task_id,scheduled_for_at,reservation_state)` 查询索引；定向反例覆盖先有过去预约、先有未来预约和精确 24 小时边界。该切片只闭合 rolling 24h 二次硬限额，不代表 max-min allocation epoch、完整 PostgreSQL 并发、发布或 E4 已完成，整体状态仍为 `partial_local/not_released/unproven`。
 

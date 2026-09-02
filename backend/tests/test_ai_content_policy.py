@@ -28,6 +28,7 @@ from app.services.task_center.ai_content_policy import (
     bind_task_policy,
     create_adult_attestation,
     create_policy_draft,
+    validate_task_policy_binding,
 )
 from app.services.task_center.task_ai_content_activation import (
     activate_task_ai_content_config,
@@ -133,6 +134,23 @@ def test_general_binding_does_not_require_adult_attestation() -> None:
             scope_type="task_group",
             scope_id="group-7",
         )
+
+
+def test_policy_binding_preflight_does_not_persist_binding() -> None:
+    with Session(_engine()) as session:
+        _seed(session)
+        policy = _policy(session)
+        values = validate_task_policy_binding(session, TaskBindingSpec(
+            task_id="task-1",
+            policy_version_id=policy.id,
+            allowed_routes=("general",),
+            attestation_ids=(),
+            scope_refs=(),
+            approved_by="approver",
+        ))
+
+        assert values["policy_version_id"] == policy.id
+        assert session.query(TaskAiContentPolicyBinding).count() == 0
 
 
 def test_adult_binding_requires_strong_current_evidence_for_every_scope() -> None:

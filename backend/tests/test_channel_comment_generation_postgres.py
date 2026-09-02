@@ -68,7 +68,7 @@ def test_postgres_two_dispatchers_claim_and_generate_comment_once(monkeypatch) -
         def run_dispatcher(worker_id: str) -> int:
             start.wait(timeout=5)
             with SessionLocal() as session:
-                claimed = dispatcher.claim_actions(session, limit=1, worker_id=worker_id)
+                claimed = dispatcher.claim_actions(session, limit=1, worker_id=worker_id, allow_inline_ai_generation=True)
                 for action in claimed:
                     dispatcher.dispatch_action(
                         session,
@@ -157,7 +157,7 @@ def test_postgres_reply_comment_uses_persisted_target_and_reply_generator(monkey
         _seed_scope()
         _seed_reply_target()
         with SessionLocal() as session:
-            claimed = dispatcher.claim_actions(session, limit=1, worker_id="reply-worker")
+            claimed = dispatcher.claim_actions(session, limit=1, worker_id="reply-worker", allow_inline_ai_generation=True)
             assert len(claimed) == 1
             dispatcher.dispatch_action(
                 session,
@@ -184,7 +184,7 @@ def test_postgres_unknown_result_second_claim_reuses_cache_without_provider(monk
     try:
         _seed_scope()
         with SessionLocal() as session:
-            first = dispatcher.claim_actions(session, limit=1, worker_id="unknown-worker")[0]
+            first = dispatcher.claim_actions(session, limit=1, worker_id="unknown-worker", allow_inline_ai_generation=True)[0]
             dispatcher.dispatch_action(
                 session,
                 first,
@@ -197,7 +197,7 @@ def test_postgres_unknown_result_second_claim_reuses_cache_without_provider(monk
             assert pending.status == "pending"
             assert pending.payload["ai_generation_status"] == "ai_result_persist_unknown"
             assert pending.payload["ai_generation_result_cache"]["content"] == "PG 缓存评论"
-            second = dispatcher.claim_actions(session, limit=1, worker_id="cache-worker")[0]
+            second = dispatcher.claim_actions(session, limit=1, worker_id="cache-worker", allow_inline_ai_generation=True)[0]
             dispatcher.dispatch_action(
                 session,
                 second,

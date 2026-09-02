@@ -8,6 +8,7 @@ from sqlalchemy import select
 from app.integrations.telegram.contracts import OperationResult
 from app.models import (
     Action,
+    ChannelCommentPlanContract,
     ChannelDiscussionGroupBinding,
     CommentFulfillmentObligation,
     DiscussionMembershipFact,
@@ -115,7 +116,7 @@ def _record_membership(session, binding_id: str, account_id: int, status: str, n
     ))
 
 
-def test_auto_join_disabled_blocks_without_join_action(monkeypatch) -> None:
+def test_auto_join_disabled_freezes_zero_eligible_plan_without_join_action(monkeypatch) -> None:
     forbid_planner_external_boundaries(monkeypatch)
     fixed_profile(monkeypatch)
     with planner_session() as session:
@@ -125,9 +126,11 @@ def test_auto_join_disabled_blocks_without_join_action(monkeypatch) -> None:
         _mark_accounts_not_joined(session, binding_id)
 
         created = channel_comment.build_plan(session, task)
+        plan = session.scalar(select(ChannelCommentPlanContract))
 
         assert created == 0
-        assert task.last_error == "discussion_membership_blocked"
+        assert plan is not None
+        assert plan.eligibility_snapshot_state == "no_eligible_accounts"
         assert session.scalar(select(Action).where(
             Action.action_type == "ensure_discussion_membership",
         )) is None

@@ -5,6 +5,11 @@ from pathlib import Path
 
 import pytest
 
+from app.models.channel_comment_discussion import (
+    ChannelDiscussionThreadBinding,
+    DiscussionMembershipFact,
+)
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 pytestmark = pytest.mark.no_postgres
@@ -35,7 +40,7 @@ def test_alembic_versions_have_single_head():
 
     assert all(len(revision) <= 32 for revision in revisions)
     heads = sorted(set(revisions) - referenced)
-    assert heads == ["0195_comment_grounding_snapshot"]
+    assert heads == ["0196_comment_plan_safety"]
 
 
 
@@ -48,6 +53,27 @@ def test_backend_test_names_are_unique_per_file():
             if isinstance(node, ast.FunctionDef) and node.name.startswith("test_")
         ]
         assert len(names) == len(set(names)), path
+
+
+def test_backend_scripts_compile() -> None:
+    for path in (PROJECT_ROOT / "backend/scripts").glob("*.py"):
+        compile(path.read_text(), str(path), "exec")
+
+
+def test_channel_comment_cycle_foreign_keys_keep_explicit_alter_metadata() -> None:
+    columns = (
+        ChannelDiscussionThreadBinding.__table__.c.probe_event_id,
+        ChannelDiscussionThreadBinding.__table__.c.supersedes_thread_binding_id,
+        DiscussionMembershipFact.__table__.c.supersedes_fact_id,
+    )
+    foreign_keys = [next(iter(column.foreign_keys)) for column in columns]
+
+    assert [foreign_key.use_alter for foreign_key in foreign_keys] == [True, True, True]
+    assert [foreign_key.name for foreign_key in foreign_keys] == [
+        "fk_thread_binding_probe_event",
+        "fk_thread_binding_supersedes",
+        "fk_disc_membership_supersedes",
+    ]
 
 
 def test_task_center_timeout_constant_is_declared_once():

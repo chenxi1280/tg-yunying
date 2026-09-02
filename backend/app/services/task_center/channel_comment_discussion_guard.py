@@ -62,8 +62,6 @@ def resolve_discussion_plan_identity(
         accounts=accounts,
         now_value=observed_at,
     )
-    if not memberships and not candidates:
-        _block(task, "discussion_membership_blocked")
     return DiscussionPlanIdentity(
         enrollment, binding, thread, memberships, {}, candidates,
     )

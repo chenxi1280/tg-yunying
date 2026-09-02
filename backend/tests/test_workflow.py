@@ -7,7 +7,7 @@ from zipfile import ZipFile
 from app.ai_gateway import AiDraftCandidate, AiGenerationResult, AiUsage, mock_candidates
 from app.config import Settings, get_settings
 from app.auth import get_challenge_target
-from app.database import SessionLocal
+from app.database import SessionLocal, engine, get_session
 from app.main import app
 from app.integrations.telegram import ChannelCommentSnapshot, ChannelMessageSnapshot, DeveloperAppCredentials, GroupMessageSnapshot, GroupSnapshot, OperationResult, SendResult, VerificationCodeSnapshot
 from app.models import AccountStatus, Action, AiAccountVoiceProfile, AiDraft, AiGroupMessageMemory, AiUsageLedger, AuditLog, Campaign, DeveloperAppHealthStatus, FailureType, GroupBotAdmission, GroupContextMessage, ListenerSourceState, ManualOperationRecord, Material, MessageFingerprint, MessageTask, OperationTarget, OperationTaskAttempt, ReviewQueue, RuntimeMetricSnapshot, SchedulingSetting, SourceMediaAsset, TargetRuntimeSummary, Task, TaskGroupBotAdmission, TaskPlannerWakeState, TaskRuntimeSummary, TaskStatus, TelegramDeveloperApp, Tenant, TgAccount, TgAccountAuthorization, TgAccountOnlineState, TgAccountProfileSyncRecord, TgAccountSyncRecord, TgGroup, TgGroupAccount, TgLoginFlow, VerificationTask
@@ -22,6 +22,7 @@ from app.services.task_center.service import drain_task_center
 from fastapi.testclient import TestClient
 import pytest
 from sqlalchemy import func, inspect, select
+from sqlalchemy.orm import Session
 
 
 def _force_action_due(action: Action, now_value) -> None:
@@ -1175,21 +1176,36 @@ def prepare_test_comment_message(
     return message_id
 
 
-def test_clean_seed_requires_config_before_account_create():
-    with TestClient(app) as client:
-        headers = auth_headers(client)
-        runtime = client.get("/api/config/runtime", headers=headers).json()
-        assert runtime["can_create_tg_account"] is False
-        assert runtime["developer_app_count"] == 0
-        assert runtime["ai_provider_count"] == 0
+def test_missing_developer_app_requires_config_before_account_create():
+    connection = engine.connect()
+    transaction = connection.begin()
+    session = Session(bind=connection, autoflush=False)
 
-        blocked = client.post(
-            "/api/tg-accounts",
-            headers=headers,
-            json={"tenant_id": 1, "display_name": "未配置账号", "phone_number": "+8613800000000"},
-        )
-        assert blocked.status_code == 400
-        assert "开发者应用" in blocked.text
+    def isolated_session():
+        yield session
+
+    app.dependency_overrides[get_session] = isolated_session
+    try:
+        with TestClient(app) as client:
+            headers = auth_headers(client)
+            session.query(TelegramDeveloperApp).delete(synchronize_session=False)
+            session.flush()
+            runtime = client.get("/api/config/runtime", headers=headers).json()
+            assert runtime["can_create_tg_account"] is False
+            assert runtime["developer_app_count"] == 0
+
+            blocked = client.post(
+                "/api/tg-accounts",
+                headers=headers,
+                json={"tenant_id": 1, "display_name": "未配置账号", "phone_number": "+8613800000000"},
+            )
+            assert blocked.status_code == 400
+            assert "开发者应用" in blocked.text
+    finally:
+        app.dependency_overrides.pop(get_session, None)
+        transaction.rollback()
+        session.close()
+        connection.close()
 
 
 def test_verification_tasks_backfill_group_target_label():
