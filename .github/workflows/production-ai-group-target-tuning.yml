@@ -107,15 +107,10 @@ jobs:
           if [[ -n "${TASK_ID}" ]]; then
             TASK_FLAG="--task-id ${TASK_ID}"
           fi
-          ssh silicon-valley-production-server "timeout 120 docker exec -i tgyunying-backend python - --target ${TARGET} ${APPLY_FLAG} ${TASK_FLAG}" \
-            < backend/scripts/update_ai_group_daily_targets.py
-          if [[ "${SWITCH_V2}" == "true" ]]; then
-            echo "=== SWITCHING AI ROUTE V2 ==="
-            ssh silicon-valley-production-server "timeout 120 docker exec -i tgyunying-backend python - ${APPLY_FLAG}" \
-              < backend/scripts/enable_ai_route_v2_for_all_tasks.py
-          fi
           echo "=== DIAGNOSE ZHENGZHOU DAXUE DEEP ==="
           ssh silicon-valley-production-server "timeout 60 docker exec -i tgyunying-backend python -" < backend/scripts/diagnose_zhengzhou_daxue_deep.py
+          ssh silicon-valley-production-server "timeout 120 docker exec -i tgyunying-backend python - --target ${TARGET} ${APPLY_FLAG} ${TASK_FLAG}" \
+            < backend/scripts/update_ai_group_daily_targets.py
           echo "=== QUERY TIANJIN GROUPS ==="
           ssh silicon-valley-production-server "timeout 60 docker exec -i tgyunying-backend python -" < backend/scripts/query_tianjin_group.py
           echo "=== DIAGNOSE TIANJIN RESCUE ==="
