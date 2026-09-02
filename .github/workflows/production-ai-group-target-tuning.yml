@@ -18,11 +18,11 @@ on:
         required: true
         type: boolean
         default: false
-      task_id:
-        description: Optional specific task UUID (leave empty for all running tasks)
-        required: false
-        type: string
-        default: ""
+      switch_v2:
+        description: Switch all running AI group tasks to AI Route V2 (default true)
+        required: true
+        type: boolean
+        default: true
 
 concurrency:
   group: production-ai-group-target-tuning
@@ -72,6 +72,7 @@ jobs:
           TARGET: ${{ inputs.target }}
           APPLY: ${{ inputs.apply }}
           TASK_ID: ${{ inputs.task_id }}
+          SWITCH_V2: ${{ inputs.switch_v2 }}
         run: |
           set -euo pipefail
           APPLY_FLAG=""
@@ -84,6 +85,11 @@ jobs:
           fi
           ssh silicon-valley-production-server "timeout 120 docker exec -i tgyunying-backend python - --target ${TARGET} ${APPLY_FLAG} ${TASK_FLAG}" \
             < backend/scripts/update_ai_group_daily_targets.py
+          if [[ "${SWITCH_V2}" == "true" ]]; then
+            echo "=== SWITCHING AI ROUTE V2 ==="
+            ssh silicon-valley-production-server "timeout 120 docker exec -i tgyunying-backend python - ${APPLY_FLAG}" \
+              < backend/scripts/enable_ai_route_v2_for_all_tasks.py
+          fi
           echo "=== EXACT PRODUCTION RUNTIME FACTS ==="
           ssh silicon-valley-production-server '
             echo "HOST_CURRENT_RELEASE_SYMLINK: $(readlink -f /data/tgyunying/current)"
