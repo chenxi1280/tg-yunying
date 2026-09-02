@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 from sqlalchemy import select
 
@@ -266,7 +268,7 @@ def _stopped_unreadable_code_item(session) -> tuple[str, int, str, int]:
         authorization_role="standby_1",
         developer_app_id=1,
         challenge_sent_at=_now(),
-        code_expires_at=_now(),
+        code_expires_at=_now() + timedelta(minutes=5),
     )
     session.add(flow)
     session.flush()

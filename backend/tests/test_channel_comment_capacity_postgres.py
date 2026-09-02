@@ -4,7 +4,7 @@ from datetime import datetime
 from threading import Barrier
 
 import pytest
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 
 from app.database import Base, SessionLocal, engine
 from app.models import (
@@ -12,6 +12,7 @@ from app.models import (
     ChannelCommentCapacityAllocationEpoch,
     ChannelCommentContentRevisionOperation,
     ChannelCommentGroundingAssignment,
+    ChannelCommentGroundingSnapshot,
     ChannelCommentPlanContract,
     ChannelCommentPlanLifecycleEvent,
     ChannelCommentQualityTargetRevision,
@@ -470,6 +471,15 @@ def _seed_obligations(session, obligation_ids: list[str]) -> None:
 
 def _cleanup() -> None:
     with SessionLocal() as session:
+        session.execute(update(CommentFulfillmentObligation).where(
+            CommentFulfillmentObligation.task_id == TASK_ID,
+        ).values(grounding_assignment_id=None))
+        session.execute(delete(ChannelCommentGroundingAssignment).where(
+            ChannelCommentGroundingAssignment.tenant_id == TENANT_ID,
+        ))
+        session.execute(delete(ChannelCommentGroundingSnapshot).where(
+            ChannelCommentGroundingSnapshot.tenant_id == TENANT_ID,
+        ))
         session.execute(delete(TaskRuntimeSummary).where(
             TaskRuntimeSummary.task_id == TASK_ID,
         ))
