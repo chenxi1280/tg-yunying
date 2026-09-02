@@ -114,8 +114,8 @@ jobs:
             ssh silicon-valley-production-server "timeout 120 docker exec -i tgyunying-backend python - ${APPLY_FLAG}" \
               < backend/scripts/enable_ai_route_v2_for_all_tasks.py
           fi
-          echo "=== QUERY ZHENGZHOU DAXUE ==="
-          ssh silicon-valley-production-server "timeout 60 docker exec -i tgyunying-backend python -" < backend/scripts/query_zhengzhou_daxue.py
+          echo "=== DIAGNOSE ZHENGZHOU DAXUE DEEP ==="
+          ssh silicon-valley-production-server "timeout 60 docker exec -i tgyunying-backend python -" < backend/scripts/diagnose_zhengzhou_daxue_deep.py
           echo "=== QUERY TIANJIN GROUPS ==="
           ssh silicon-valley-production-server "timeout 60 docker exec -i tgyunying-backend python -" < backend/scripts/query_tianjin_group.py
           echo "=== DIAGNOSE TIANJIN RESCUE ==="
