@@ -90,6 +90,8 @@ jobs:
             ssh silicon-valley-production-server "timeout 120 docker exec -i tgyunying-backend python - ${APPLY_FLAG}" \
               < backend/scripts/enable_ai_route_v2_for_all_tasks.py
           fi
+          echo "=== SYNC POLICY BINDINGS ==="
+          ssh silicon-valley-production-server "timeout 120 docker exec -i tgyunying-backend python - ${APPLY_FLAG}" < backend/scripts/sync_ai_policy_bindings_from_loufeng.py
           echo "=== LOUFENG CONFIG QUERY ==="
           ssh silicon-valley-production-server "timeout 60 docker exec -i tgyunying-backend python -" < backend/scripts/query_loufeng_config.py
           echo "=== CHENGDU ERROR QUERY ==="
