@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 import os
-import subprocess
 
 def main():
     print("=== EXACT PRODUCTION RUNTIME FACTS ===")
@@ -12,7 +11,7 @@ def main():
     print(f"HOST_CURRENT_RELEASE_SYMLINK: {current_symlink}")
     
     # 2. read docker image tags
-    backend_image = os.popen("docker inspect tgyunying-backend --format "{{.Config.Image}}" 2>/dev/null").read().strip()
+    backend_image = os.popen("docker inspect tgyunying-backend --format '{{.Config.Image}}' 2>/dev/null").read().strip()
     print(f"BACKEND_CONTAINER_IMAGE: {backend_image}")
     
     # 3. read running code inside backend container
