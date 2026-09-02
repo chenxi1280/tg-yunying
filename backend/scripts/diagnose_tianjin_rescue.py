@@ -31,8 +31,7 @@ def main():
                 TgAccount.username.in_(["settingbother", "tianjin_admin"])
             )
         ).all())
-        print(f"
-Candidate Admin Accounts Found: {len(candidates)}")
+        print(f"\nCandidate Admin Accounts Found: {len(candidates)}")
         for c in candidates:
             print(f"  - id={c.id}, username={c.username}, phone={c.phone}, status={c.status}, has_session={bool(c.session_ciphertext)}")
 
@@ -40,11 +39,9 @@ Candidate Admin Accounts Found: {len(candidates)}")
         for gid in [5999, 5828]:
             grp = session.get(TgGroup, gid)
             if not grp:
-                print(f"
-Group {gid} NOT FOUND!")
+                print(f"\nGroup {gid} NOT FOUND!")
                 continue
-            print(f"
-=== GROUP {gid} ({grp.title}) ===")
+            print(f"\n=== GROUP {gid} ({grp.title}) ===")
             print(f"tg_peer_id: {grp.tg_peer_id}, auth: {grp.auth_status}, member_count: {grp.member_count}, can_send: {grp.can_send}")
             
             # Group accounts count
