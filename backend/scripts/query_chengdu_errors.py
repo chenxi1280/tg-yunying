@@ -9,7 +9,7 @@ def main():
     try:
         sql = """
         SELECT id, task_id, state, error_code, error_message, created_at, updated_at
-        FROM ai_generation_jobs
+        FROM generation_jobs
         WHERE task_id = 'b6f0ebd6-880a-4d6e-9279-04709383486e'
         ORDER BY created_at DESC
         LIMIT 5;
