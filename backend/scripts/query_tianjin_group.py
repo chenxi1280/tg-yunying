@@ -23,8 +23,7 @@ def main():
         # Check current task 7fd0bbb7
         t = session.get(Task, "7fd0bbb7-53dd-45ae-a7af-0c37bcc380d1")
         if t:
-            print(f"
-Task [7fd0bbb7] Name: {t.name}, Status: {t.status}")
+            print(f"\nTask [7fd0bbb7] Name: {t.name}, Status: {t.status}")
             print(f"Type Config: {t.type_config}")
     finally:
         session.close()
