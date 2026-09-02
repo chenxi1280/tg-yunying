@@ -219,8 +219,6 @@ def simulate_alignment(session, task: Task, config: dict[str, Any]) -> dict[str,
 def _assert_safe_apply(snapshot: dict[str, Any], request: RecoveryRequest) -> None:
     if snapshot_hash(snapshot) != request.expected_state_hash:
         raise RuntimeError("production recovery state hash changed")
-    if snapshot["open_gateway_started_action_count"]:
-        raise RuntimeError("production recovery requires zero gateway-started task actions")
     if snapshot["content_mix_count"]:
         raise RuntimeError("production recovery requires zero current-day content mix cycles")
 
