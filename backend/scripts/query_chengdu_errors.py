@@ -27,8 +27,7 @@ def main():
         LIMIT 5;
         """
         rows2 = [dict(r) for r in session.execute(text(sql2)).mappings()]
-        print("
-=== CHENGDU ACTIONS LATEST ERRORS ===")
+        print("\n=== CHENGDU ACTIONS LATEST ERRORS ===")
         for r in rows2:
             print(f"Action: {r.get('id')}, Status: {r.get('status')}, GenStatus: {r.get('gen_status')}, Err: {r.get('last_error')}, Time: {r.get('created_at')}")
     finally:
