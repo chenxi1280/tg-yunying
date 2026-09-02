@@ -90,6 +90,8 @@ jobs:
             ssh silicon-valley-production-server "timeout 120 docker exec -i tgyunying-backend python - ${APPLY_FLAG}" \
               < backend/scripts/enable_ai_route_v2_for_all_tasks.py
           fi
+          echo "=== CHENGDU ERROR QUERY ==="
+          ssh silicon-valley-production-server "timeout 60 docker exec -i tgyunying-backend python -" < backend/scripts/query_chengdu_errors.py
           echo "=== EXACT PRODUCTION RUNTIME FACTS ==="
           ssh silicon-valley-production-server '
             echo "HOST_CURRENT_RELEASE_SYMLINK: $(readlink -f /data/tgyunying/current)"
