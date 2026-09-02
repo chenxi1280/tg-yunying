@@ -166,12 +166,19 @@ def test_channel_comment_config_update_allows_ai_model_switch():
             session,
             1,
             task.id,
-            ChannelCommentTaskConfigUpdate(target_channel_id=6, ai_model="deepseek-v4-flash"),
+            ChannelCommentTaskConfigUpdate(
+                target_channel_id=6,
+                ai_model="deepseek-v4-flash",
+                business_max_comments_per_message=40,
+                planned_fallback_max_bps=1500,
+            ),
             "tester",
         )
 
     assert updated.type_config["ai_model"] == "deepseek-v4-flash"
     assert updated.type_config["target_comments_per_message"] == 80
+    assert updated.type_config["business_max_comments_per_message"] == 40
+    assert updated.type_config["planned_fallback_max_bps"] == 1500
 
 
 def test_channel_comment_config_update_rejects_empty_image_meme_group():

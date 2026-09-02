@@ -504,3 +504,74 @@ def test_channel_like_config_defaults_to_all_available_reactions():
     config = ChannelLikeConfig(target_channel_id=1)
 
     assert config.reaction_scope == "all_available"
+
+
+def test_reaction_plan_matches_emoji_with_variation_selectors():
+    # User configures '❤️' (\u2764\ufe0f), channel reports '❤' (\u2764)
+    plan = _reaction_plan(
+        ["❤️", "👍"],
+        50,
+        "random",
+        seed_id="variation-selector-matching",
+        reaction_scope="configured",
+        available_reactions=["❤", "👍", "🔥"],
+        reaction_capability_mode="some",
+    )
+
+    assert len(plan) == 50
+    assert set(plan) == {"❤", "👍"}
+
+
+def test_message_reaction_plan_defaults_to_all_available_when_reaction_scope_is_none():
+    from app.services.task_center.executors.channel_like_capability import message_reaction_plan
+
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        channel = OperationTarget(
+            id=101,
+            tenant_id=1,
+            target_type="channel",
+            tg_peer_id="-100101",
+            title="全部表情频道",
+            reaction_capability_mode="all",
+            available_reactions=["👍", "❤", "🔥", "🥰", "👏"],
+        )
+        task = Task(
+            id="task-none-scope",
+            tenant_id=1,
+            name="缺省范围任务",
+            type="channel_like",
+            status="running",
+            type_config={
+                "target_channel_id": 101,
+                "reaction_type": "random",
+                "reaction_scope": None,
+                "allowed_reactions": ["👍"],
+            },
+        )
+        message = ChannelMessage(
+            id=201,
+            tenant_id=1,
+            channel_target_id=101,
+            message_id=9001,
+        )
+        session.add_all([channel, task, message])
+        session.flush()
+
+        plan = message_reaction_plan(
+            session,
+            task,
+            message,
+            config=task.type_config,
+            reactions=task.type_config["allowed_reactions"],
+            quantity=100,
+            seed_id="none-scope-seed",
+        )
+
+        assert len(plan) == 100
+        # Since reaction_scope is None, it defaults to all_available, using all 5 channel reactions
+        assert set(plan) == {"👍", "❤", "🔥", "🥰", "👏"}
+

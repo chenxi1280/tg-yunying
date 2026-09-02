@@ -6,12 +6,14 @@ from dataclasses import dataclass
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from app.models import Action, ChannelCommentGroundingAssignment, ChannelMessage, ChannelMessageComment, OperationTarget, RuleSetVersion, TgGroup
+from app.models import Action, ChannelCommentGroundingAssignment, ChannelCommentGroundingSnapshot, ChannelMessage, ChannelMessageComment, OperationTarget, RuleSetVersion, TgGroup
 from app.services.content_filters import filter_outbound_content
 from app.services.rule_engine import OutputPolicyResult, apply_output_policy
 
 from .ai_generator import clean_channel_comment_contents
 from .channel_payloads import PostCommentPayload
+from .channel_comment_grounding_evaluation import evaluate_grounding_claims
+from .channel_comment_style_assignment import frozen_comment_style, length_matches_style
 
 
 FIXED_RULE_SNAPSHOT_STATUSES = frozenset({"published", "archived"})
@@ -48,6 +50,19 @@ def evaluate_comment_generation_quality(
     version, error = _fixed_rule_version(session, action, payload)
     if error:
         return error
+    return _evaluate_normal_candidate(
+        session, action, version, payload=payload, content=content,
+    )
+
+
+def _evaluate_normal_candidate(
+    session: Session,
+    action: Action,
+    version: RuleSetVersion,
+    *,
+    payload: PostCommentPayload,
+    content: str,
+) -> CommentQualityDecision:
     policy = apply_output_policy(
         content,
         version.output_checks or {},
@@ -72,12 +87,71 @@ def evaluate_comment_generation_quality(
             "评论与同频道消息已有评论语义重复",
             audit,
         )
+    final_content = str(cleaned[0])
+    style_error = _style_error(payload, final_content, audit=audit)
+    if style_error is not None:
+        return style_error
+    return _grounded_outbound_decision(
+        session, action, payload=payload, content=final_content, audit=audit,
+    )
+
+
+def _grounded_outbound_decision(
+    session: Session,
+    action: Action,
+    *,
+    payload: PostCommentPayload,
+    content: str,
+    audit: dict,
+) -> CommentQualityDecision:
+    claim_decision = evaluate_grounding_claims(
+        session, action, payload, content=content,
+    )
+    audit.update(_claim_audit(claim_decision.claim_results))
+    if not claim_decision.allowed:
+        return CommentQualityDecision(
+            False, "", claim_decision.code, claim_decision.detail, audit,
+        )
     return _outbound_decision(
         session,
         action,
         payload=payload,
-        content=str(cleaned[0]),
+        content=content,
         audit=audit,
+    )
+
+
+def _claim_audit(claim_results: tuple[dict, ...]) -> dict:
+    return {
+        "quality_contract_version": "channel_comment_grounding_quality_v1",
+        "deterministic_claim_results": list(claim_results),
+    }
+
+
+def _style_error(
+    payload: PostCommentPayload,
+    content: str,
+    *,
+    audit: dict,
+) -> CommentQualityDecision | None:
+    if not payload.grounding_enrollment_id:
+        return None
+    assignment = frozen_comment_style(
+        payload.grounding_snapshot_id, payload.target_ordinal,
+    )
+    audit["frozen_length_tier"] = assignment.length_tier
+    audit["frozen_persona_key"] = assignment.persona_key
+    if length_matches_style(content, assignment):
+        return None
+    return CommentQualityDecision(
+        False,
+        "",
+        "comment_length_tier_mismatch",
+        (
+            f"评论未满足冻结字数层 {assignment.length_tier}: "
+            f"{assignment.minimum_length}-{assignment.maximum_length}"
+        ),
+        audit,
     )
 
 
@@ -105,6 +179,9 @@ def _grounding_binding_error(
         payload.grounding_assignment_id,
     ) if payload.grounding_assignment_id else None
     evidence_hash = hashlib.sha256(payload.message_content.encode("utf-8")).hexdigest()
+    snapshot = session.get(
+        ChannelCommentGroundingSnapshot, payload.grounding_snapshot_id,
+    ) if payload.grounding_snapshot_id else None
     valid = bool(
         assignment
         and assignment.tenant_id == action.tenant_id
@@ -113,6 +190,13 @@ def _grounding_binding_error(
         and assignment.target_ordinal == payload.target_ordinal
         and assignment.evidence_hash == payload.grounding_evidence_hash == evidence_hash
         and assignment.assignment_state == "active"
+        and snapshot
+        and snapshot.id == assignment.grounding_snapshot_id
+        and snapshot.source_revision_id == assignment.source_revision_id
+        and snapshot.source_content_hash == evidence_hash
+        and assignment.comment_grounding_revision == payload.comment_grounding_revision
+        and assignment.teacher_candidate_id == payload.grounding_teacher_candidate_id
+        and assignment.primary_evidence_id == payload.grounding_primary_evidence_id
     )
     if valid:
         return None

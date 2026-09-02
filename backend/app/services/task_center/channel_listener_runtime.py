@@ -27,6 +27,10 @@ from .channel_listener_reactions import credential_task
 from .channel_listener_reactions import probe_reaction_capability
 from .channel_listener_reactions import record_reaction_probe_state
 from .channel_listener_snapshot_persistence import persist_channel_snapshot
+from .channel_comment_listener_errors import (
+    clear_owned_listener_errors,
+    record_listener_error,
+)
 from .planner_wake import wake_task_planner
 
 
@@ -91,6 +95,8 @@ def ensure_channel_subscription(
             lifecycle_epoch=int(task.task_lifecycle_epoch or 1),
             source_type="channel",
             source_peer_hash=source_hash,
+            target_reference_revision=channel.reference_revision,
+            listener_revision=0,
         )
         session.add(subscription)
         session.flush()
@@ -311,19 +317,12 @@ def _drain_channel_source(session_factory, source: ChannelListenerSource) -> str
         tracked_message_ids = _tracked_message_ids(session, source)
         session.commit()
         try:
-            snapshots = gateway.fetch_channel_messages(
-                source.account_id,
-                channel_peer,
-                session_ciphertext,
-                credentials,
-                limit=source.fetch_limit,
-            )
-            deletion_observations = _probe_missing_messages(
-                source, snapshots=snapshots,
-                tracked_message_ids=tracked_message_ids,
+            observations = _fetch_source_observations(
+                source,
                 channel_peer=channel_peer,
                 session_ciphertext=session_ciphertext,
                 credentials=credentials,
+                tracked_message_ids=tracked_message_ids,
             )
         except Exception as exc:  # noqa: BLE001 - typed state remains visible to Planner.
             session.rollback()
@@ -335,14 +334,43 @@ def _drain_channel_source(session_factory, source: ChannelListenerSource) -> str
             session,
             source,
             state_id=state.id,
-            snapshots=snapshots,
+            snapshots=observations[0],
             channel_peer=channel_peer,
             session_ciphertext=session_ciphertext,
             credentials=credentials,
-            deletion_observations=deletion_observations,
+            deletion_observations=observations[1],
+            discussion_snapshot=observations[2],
+            discussion_probe_error=observations[3],
         )
         session.commit()
         return "processed"
+
+
+def _fetch_source_observations(
+    source: ChannelListenerSource,
+    *,
+    channel_peer,
+    session_ciphertext,
+    credentials,
+    tracked_message_ids: list[int],
+) -> tuple:
+    snapshots = gateway.fetch_channel_messages(
+        source.account_id,
+        channel_peer,
+        session_ciphertext=session_ciphertext,
+        credentials=credentials,
+        limit=source.fetch_limit,
+    )
+    discussion_snapshot, discussion_probe_error = _probe_channel_discussion(
+        source, snapshots=snapshots, channel_peer=channel_peer,
+        session_ciphertext=session_ciphertext, credentials=credentials,
+    )
+    deletions = _probe_missing_messages(
+        source, snapshots=snapshots, tracked_message_ids=tracked_message_ids,
+        channel_peer=channel_peer, session_ciphertext=session_ciphertext,
+        credentials=credentials,
+    )
+    return snapshots, deletions, discussion_snapshot, discussion_probe_error
 
 
 def _tracked_message_ids(
@@ -385,6 +413,27 @@ def _probe_missing_messages(
     )
 
 
+def _probe_channel_discussion(
+    source: ChannelListenerSource,
+    *,
+    snapshots,
+    channel_peer,
+    session_ciphertext,
+    credentials,
+):
+    try:
+        result = gateway.fetch_channel_discussion_identity(
+            source.account_id,
+            channel_peer,
+            source_message_ids=[int(item.message_id) for item in snapshots],
+            session_ciphertext=session_ciphertext,
+            credentials=credentials,
+        )
+        return result, ""
+    except Exception as exc:  # noqa: BLE001 - probe failure is persisted, not inferred as unbound.
+        return None, type(exc).__name__
+
+
 def _persist_source_result(
     session: Session,
     source: ChannelListenerSource,
@@ -395,6 +444,8 @@ def _persist_source_result(
     session_ciphertext,
     credentials,
     deletion_observations,
+    discussion_snapshot,
+    discussion_probe_error: str,
 ) -> None:
     reaction_capability, probe_error = probe_reaction_capability(
         gateway.fetch_channel_reaction_capability,
@@ -410,6 +461,8 @@ def _persist_source_result(
         state_id=state_id,
         snapshots=snapshots,
         deletion_observations=deletion_observations,
+        discussion_snapshot=discussion_snapshot,
+        discussion_probe_error=discussion_probe_error,
         reaction_capability=reaction_capability,
         now_value=_now(),
         wake_subscribers=_wake_subscribers,
@@ -484,6 +537,7 @@ def _mark_error(
 
 
 def _wake_subscribers(session, source, state, *, reason: str) -> None:
+    channel = session.get(OperationTarget, source.channel_target_id)
     for task_id in source.task_ids:
         task = session.get(Task, task_id)
         if task is None:
@@ -496,8 +550,28 @@ def _wake_subscribers(session, source, state, *, reason: str) -> None:
         if subscription:
             subscription.listener_source_state_id = state.id
             subscription.required_snapshot_revision = int(state.snapshot_revision or 0)
+            subscription.target_reference_revision = int(channel.reference_revision if channel else 0)
+            subscription.listener_revision = int(state.snapshot_revision or 0) + int(state.snapshot_status != "ready")
             subscription.state = state.snapshot_status
+            _project_listener_error(
+                session, task, subscription=subscription, state=state,
+            )
         wake_task_planner(session, task, reason_code=reason, not_before_at=_now())
+
+
+def _project_listener_error(session, task, *, subscription, state) -> None:
+    observed_at = state.observed_at or _now()
+    if state.snapshot_status == "ready":
+        clear_owned_listener_errors(
+            session, task, subscription, cleared_at=observed_at,
+        )
+        return
+    record_listener_error(
+        session, task, subscription,
+        error_code=state.last_error_code or "channel_source_snapshot_unavailable",
+        detail=state.last_error,
+        observed_at=observed_at,
+    )
 
 
 def _fetch_limit(config: dict) -> int:

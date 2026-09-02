@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime
 
 import pytest
@@ -78,11 +79,15 @@ def test_semantic_capacity_adjustment_keeps_raw_target_and_fallback() -> None:
         source_revision=1, source_remote_message_id=9001,
         source_published_at=datetime(2030, 8, 1, 10),
         source_observed_at=STABLE_PLANNER_NOW,
-        source_text_snapshot="频道事实正文", source_content_hash="a" * 64,
+        source_text_snapshot="活动",
+        source_content_hash=hashlib.sha256("活动".encode("utf-8")).hexdigest(),
         observation_identity_hash="b" * 64, source_operation="observed",
     )
     component = build_quality_target_component(
-        source, list(range(1, 11)), comment_grounding_revision=1,
+        source,
+        list(range(1, 11)),
+        comment_grounding_revision=1,
+        planned_fallback_max_bps=10000,
     )
 
     assert component["owned_ordinal_count"] == 10
@@ -119,6 +124,7 @@ def test_source_edit_revises_only_pre_gateway_quality_component(monkeypatch) -> 
         reconcile_channel_comment_source_edit(
             session, session.get(ChannelMessage, 41), edited, at=STABLE_PLANNER_NOW,
         )
+        created_after_edit = channel_comment.build_plan(session, task)
         session.flush()
         target = session.get(
             ChannelCommentQualityTargetRevision,
@@ -140,6 +146,8 @@ def test_source_edit_revises_only_pre_gateway_quality_component(monkeypatch) -> 
     assert held.grounding_assignment_id == held_assignment_id
     assert actions[1].payload == held_payload
     assert actions[0].status == "cancelled"
+    assert created_after_edit == 0
+    assert task.last_error == "channel_comment_planned_fallback_cap_exceeded"
 
 
 def test_planned_fallback_is_applicable_but_never_grounded(monkeypatch) -> None:
@@ -147,7 +155,7 @@ def test_planned_fallback_is_applicable_but_never_grounded(monkeypatch) -> None:
     fixed_profile(monkeypatch)
     with planner_session() as session:
         task = seed_comment_task(session, mode="comment", target_count=3)
-        _enable_grounding_plan(session, task, source_text="")
+        _enable_grounding_plan(session, task, source_text="", fallback_max_bps=10000)
         channel_comment.build_plan(session, task)
         before = channel_comment_acceptance(session, task)
         obligations = list(session.scalars(select(CommentFulfillmentObligation)))
@@ -180,7 +188,8 @@ def test_source_edit_can_promote_planned_fallback_before_gateway(monkeypatch) ->
         _enable_grounding_plan(session, task, source_text="")
         channel_comment.build_plan(session, task)
         old_actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
-        edited = _edited_source(session, text="频道事实正文", source_id="quality-rich-source-2")
+        edited = _edited_source(session, text="活动", source_id="quality-rich-source-2")
+        edited_id = edited.id
         reconcile_channel_comment_source_edit(
             session, session.get(ChannelMessage, 41), edited, at=STABLE_PLANNER_NOW,
         )
@@ -202,7 +211,7 @@ def test_source_edit_can_promote_planned_fallback_before_gateway(monkeypatch) ->
     assert target.quality_target_revision == 2
     assert target.aggregate_grounding_required_count == 2
     assert target.aggregate_planned_fallback_count == 0
-    assert {row.payload["source_revision_id"] for row in new_actions} == {edited.id}
+    assert {row.payload["source_revision_id"] for row in new_actions} == {edited_id}
     assert {row.payload["quality_target_revision_id"] for row in new_actions} == {target.id}
     assert {row.payload["comment_fallback_intent_kind"] for row in new_actions} == {"emergency"}
 
@@ -215,11 +224,15 @@ def _edited_source(session, *, text: str, source_id: str) -> ChannelMessageSourc
     message = session.get(ChannelMessage, 41)
     source = ChannelMessageSourceRevision(
         id=source_id, tenant_id=1,
-        channel_message_id=message.id, source_revision=2,
+        channel_message_id=message.id, channel_target_id=message.channel_target_id,
+        source_revision=2,
         source_remote_message_id=message.message_id,
         source_published_at=message.published_at,
+        source_published_at_fact_id=f"telegram:message_date:{message.message_id}",
         source_observed_at=STABLE_PLANNER_NOW, source_text_snapshot=text,
-        source_content_hash="c" * 64, observation_identity_hash="d" * 64,
+        source_content_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        observation_identity_hash="d" * 64,
+        source_length=len(text), captured_length=len(text), truncation_state="complete",
         source_operation="edited",
     )
     session.add(source)

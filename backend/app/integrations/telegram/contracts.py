@@ -212,9 +212,22 @@ class GroupMessageSnapshot:
 class ChannelMessageSnapshot:
     message_id: int
     content_preview: str = ""
+    content_text: str = ""
     message_url: str = ""
     published_at: datetime | None = None
+    edited_at: datetime | None = None
+    source_type: str = "message_text"
+    content_complete: bool = True
     comment_available: bool = True
+
+
+@dataclass(frozen=True)
+class ChannelDiscussionIdentitySnapshot:
+    channel_peer_id: str
+    discussion_peer_id: str | None
+    thread_root_by_source_message_id: dict[int, int] = field(default_factory=dict)
+    probe_stage: str = "channels_get_full_channel"
+    discussion_title: str = ""
 
 
 @dataclass(frozen=True)

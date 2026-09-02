@@ -73,6 +73,27 @@ class CommentFulfillmentObligation(Base):
     relation_kind: Mapped[str] = mapped_column(String(16), default="direct")
     reply_to_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     reply_target_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    grounding_enrollment_id: Mapped[str | None] = mapped_column(
+        ForeignKey("channel_comment_grounding_enrollments.id", ondelete="RESTRICT"), nullable=True,
+    )
+    discussion_group_binding_id: Mapped[str | None] = mapped_column(
+        ForeignKey("channel_discussion_group_bindings.id", ondelete="RESTRICT"), nullable=True,
+    )
+    discussion_group_binding_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    discussion_group_identity_hash: Mapped[str] = mapped_column(String(64), default="")
+    discussion_thread_binding_id: Mapped[str | None] = mapped_column(
+        ForeignKey("channel_discussion_thread_bindings.id", ondelete="RESTRICT"), nullable=True,
+    )
+    discussion_thread_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    discussion_thread_identity_hash: Mapped[str] = mapped_column(String(64), default="")
+    rpc_mode: Mapped[str] = mapped_column(String(32), default="")
+    channel_peer_id: Mapped[str] = mapped_column(String(160), default="")
+    discussion_peer_id: Mapped[str] = mapped_column(String(160), default="")
+    source_remote_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    thread_root_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    membership_fact_id: Mapped[str | None] = mapped_column(
+        ForeignKey("discussion_membership_facts.id", ondelete="RESTRICT"), nullable=True,
+    )
     current_action_id: Mapped[str | None] = mapped_column(
         ForeignKey(
             "actions.id",
@@ -107,6 +128,7 @@ class CommentFulfillmentObligation(Base):
     source_capacity_slot_ordinal: Mapped[int | None] = mapped_column(Integer, nullable=True)
     release_not_before_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     task_lifecycle_epoch: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    task_config_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
     pacing_period_key: Mapped[str | None] = mapped_column(String(80), nullable=True)
     pacing_source_key_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

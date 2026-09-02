@@ -7,6 +7,7 @@ import pytest
 
 from app.models import Action, ChannelMessage, Task
 from app.services.task_center.ai_generator import (
+    _is_adult_channel_context,
     _looks_like_bad_channel_comment,
     clean_channel_comment_contents,
 )
@@ -17,6 +18,7 @@ from app.services.task_center.executors.channel_comment_budget import (
     MessageCommentPlanState,
 )
 from app.services.task_center.executors.channel_comment_targets import _target_from_action
+from app.services.task_center.executors.channel_comment_preparation import _relation_accounts
 from app.services.task_center.pacing_quantity import deterministic_quantity_with_jitter
 from app.services.task_center.source_pacing import rolling_source_window
 
@@ -34,6 +36,16 @@ def test_channel_comment_defaults_and_normalization():
     # Explicit 3-day window configuration is preserved
     custom_config = validated_type_config("channel_comment", {"target_channel_id": 123, "rolling_window_days": 3})
     assert custom_config["rolling_window_days"] == 3
+
+
+def test_route_v2_general_cannot_be_promoted_by_legacy_adult_flag() -> None:
+    config = {
+        "ai_content_route_v2_enabled": True,
+        "content_route": "general",
+        "adult_prompt_enabled": True,
+    }
+
+    assert _is_adult_channel_context(config) is False
 
 
 def test_grounding_contract_requires_three_days_and_positive_daily_cap():
@@ -210,3 +222,11 @@ def test_target_from_action_includes_author_account_id():
     assert target["message_id"] == 999888
     assert target["author_account_id"] == 42
     assert target["preview"] == "真实老哥在此"
+
+
+def test_own_history_reply_never_uses_the_author_account() -> None:
+    account = MagicMock(id=42)
+
+    assert _relation_accounts(
+        [account], {"source": "own_history", "author_account_id": 42},
+    ) == []

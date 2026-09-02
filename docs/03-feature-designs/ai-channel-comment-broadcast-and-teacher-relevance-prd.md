@@ -5,19 +5,29 @@
 | 项目 | 内容 |
 | --- | --- |
 | 需求级别 | L2 产品能力升级；同时闭合评论参与数量、广播/老师相关性与整体验收 |
-| 产品设计状态 | `design_complete` / `ready_for_dev`（v1.4 五轮业务复核通过） |
-| 实现状态 | `partial_local`：v1.4 兜底 policy/pool/cursor/selection、20 表情、静态图片发送、素材组完整性/CAS、journal typed fact 恢复已实现；0188 已补 SourceRevision、数量 Plan、eligible snapshot、ordinal-account binding、首版基础 GroundingAssignment、全量 obligation/JIT Action、planned fallback、连续 UTC capacity period/reservation、跨 period rolling 24h 二次硬限额和三维保守验收；0189 已补 append-only allocation epoch 与新 open Plan 加入时的 max-min future `plan_reserved` 重排；0190 已补来源编辑 operation、pre-Gateway assignment successor 与 Gateway identity fence；0191 已补 Telegram 精确消息查询删除事实及通用 append-only lifecycle event 表，当前 source-deleted、pause、resume、stop、软删除和物理删除前 Task 独立 outcome tombstone 已接入；0192 已补 append-only QualityTargetRevision、component ordinal owner、85% 语义容量目标、编辑 successor 分账及 acceptance/read-model。完整多老师/否定/时效 extraction 与 Gateway accepted/outbound hash 闭环仍未完成 |
-| QA 状态 | `partial_local`：数量/来源/assignment/planned fallback/selection read-model/三维验收、max-min、来源编辑、来源删除与 pause/resume/stop/delete/quality target 分流回归通过；0189/0190/0192 upgrade/downgrade、真实旧 schema transition、fresh 全链迁移通过；真实 PostgreSQL rolling cap/epoch/content revision/source delete/pause/resume/stop/quality target CAS 及 Task delete 通过。当前频道评论 no-PostgreSQL 分片合计 `165 passed / 21 deselected`，0192 PostgreSQL 组合回归 `15 passed`，前端构建通过；完整多老师/否定/时效与 outbound identity 跨功能回归、UI 人工验收和 E4 未通过 |
+| 产品设计状态 | `partial`：v1.5 核心合同已完整；§12.8 评论 Reaction 与 §2.2 的范围声明冲突，且未定义数量、目标选择、obligation 与完成标准 |
+| 实现状态 | `local_core_complete / document_partial`：0193～0195 已实现业务 cap/fallback、Discussion Binding/Thread/Membership/Enrollment、互斥 RPC、Listener ownership、存量恢复、精确 SourceRevision、GroundingSnapshot/Evaluation、多老师/否定/时效抽取、Action-first GenerationJob、Provider evidence identity、accepted/outbound hash、确定性字数层/persona 与 read model/UI。§12.8 未闭合的评论 Reaction 自动规划未实现；发布、生产迁移和 Telegram E4 未执行 |
+| QA 状态 | `local_core_pass / pg_external_pending`：最终相关 file-level no-PostgreSQL 回归 `302 passed`（此前核心主链 `97 passed`），前端 TypeScript/Vite build、任务 scoped Python compileall 与 Alembic 单 head `0195_comment_grounding_snapshot` 通过；UI 人工验收、Phase 0 金标、生产 canary/E4 均未通过 |
 | 发布状态 | `not_released` |
 | 生产状态 | `unproven`；无真实 Telegram E4 证据 |
 | 适用任务 | `channel_comment`、`channel_comment_reply` |
 | 上位真相源 | `docs/01-product/tg-ops-platform-prd.md` |
 | 数据流真相源 | `docs/00-index/project-dataflow-index.md` |
 | 相关合同 | `docs/03-feature-designs/all-task-fulfillment-recovery-prd.md`、`docs/03-feature-designs/task-fulfillment-classified-recovery-prd.md`、`docs/03-feature-designs/material-library-design.md`、`docs/03-feature-designs/ai-content-routing-and-quality-upgrade-prd.md`、`docs/03-feature-designs/ai-content-routing-and-quality-upgrade-evaluation-release-contract.md` |
-| 本专项合同版本 | `channel_comment_business_grounding_v1_1` |
-| 最后更新 | 2026-09-01 |
+| 本专项合同版本 | `channel_comment_business_grounding_v1_2` |
+| 最后更新 | 2026-09-02 |
 
 状态声明：本文中的“必须”“应当”是待开发与待验收合同，不表示代码、测试、发布或生产效果已经完成。只有本文 §23 的分层证据分别成立，才能更新对应状态。
+
+第二十轮业务与拟人化升级修订（2026-09-02）：补齐多自有账号群友互评、引用接话与点赞互动合同（Own-Account Reply & Comment Reaction Interaction Contract）。明确支持任务内的不同自有账号相互引用回复（Quote Reply），形成生动的楼中楼群聊氛围（搭腔、接梗、调侃、求证、附和），严格执行异号互评防自言自语门禁（`Account B -> Account A`）；重构引用回复提示词为群聊接话体系，支持极短接梗（如“+1”、“真顶”、“别搞”、“确实”）与生活化长接话；支持自有账号对频道讨论区中的优质评论、热门评论及自有评论进行点赞/表情互动（👍、🔥、❤️、👏、🤣 等），极大提升群聊拟人度与社区热度。
+
+第十九轮业务与质量优化修订（2026-09-02）：补齐跨帖评论随机性、字数阶梯分布与 20% 极短/长评随机抖动合同。针对各帖子评论长度趋同、人设单调的机械感，建立三层字数梯度配比：约 20% 极短短评（2~6 字，如“爽翻天”、“好便宜”、“真顶”、“插眼”）、约 60% 中等自然短评（7~16 字）、约 20% 生活化详细长评（18~35 字）；在 Prompt 生成器中按帖子 ID/时间哈希注入动态老哥人设与俚语池随机洗牌，确保不同帖子间的评论区风格具备充足的随机性与众生相；更新单元测试与线上诊断闭环。
+
+第十八轮业务与质量优化修订（2026-09-02）：补齐真实生产环境评论质量深度排障与结构化改进合同。多维度事实抽取扩充 `appearance_style`（颜值气质）、`price_cost`（课费价格）、`score_rating`（评分评价）及细化 `body_feature`（身材胸围身高）；重构 `_semantic_variants` 为交织轮转算法（Interleaved Round-Robin），使连续 Ordinal 优先轮转不同 Aspect 并协同交错 Speech Act（问询、佐证、评价、求证），彻底解决同一帖子多条评论集中扎堆单一关键词（如“100斤/身材”）的问题；优化正文清洗正则，建立精准列表序号（`1. `, `1、`, `- `, `* `, `(1) `, `（1）`, `① `, `一、`）剥离与有效数值（`160cm`, `600/P`, `26岁`）保留的分流门禁，杜绝断句残缺；设计专用线上质量诊断与测试脚本闭环。
+
+第六轮业务与生产排障修订（2026-09-02）：补齐正向“频道—讨论组”版本化绑定与远端事实（通过 Telegram `GetFullChannel` 读取 `linked_chat_id` 并持久化版本化绑定，严禁人工配置伪造），并冻结频道源帖—讨论组 thread root 映射及互斥的 top-level/comment-reply RPC 形态；补齐账号讨论组正向前置准入与会员事实（任务级自动入组显式授权、`ensure_discussion_membership` Action、Gateway 与 typed membership fact 回读，Dispatcher 冻结身份门禁）；补齐 Telegram RPC 类型化错误映射，仅将权威且明确未开始远端变更的已知拒绝退出 unknown，超时、断连和歧义结果继续 reconcile；修正 Listener 状态投影和只读 Telegram/本地来源比对；修正账号 schema 与分层容量 read-model；固化消息级过期结算、三大线上存量 Task 的 hash-locked 独立处置、8 维激活门禁和 `ChannelCommentGroundingEnrollment` 新消息隔离边界；新增 T2 来源即时恢复、技术烟测与三日产品验收分离的恢复顺序。本文升级为 v1.5 Product Design Complete；实现、QA、发布与生产状态不因此变化。
+
+第七轮纯业务有效性修订（2026-09-02）：纠正“全部 `closed_expired` 且零远端事实仍显示 met”和标准监控漏掉 paused Task；把 55%～65% 从无条件发送量拆成 `uncapped_required_count` 原始需求与显式 `business_max_comments_per_message` 执行上限，截断时显示 `business_cap_adjusted` 而非假称参与率达标；新增 planned fallback 占比上限，禁止 reply 槽使用文字/图片表情兜底，reply 目标不足不得静默补 direct；补齐关系模式页面、账号跨帖曝光、消息业务时效和真实互动/负反馈指标合同。当前本地实现只覆盖监控语义、业务 cap/fallback cap/reply 严格门和页面字段；账号跨帖曝光及真实业务效果仍须权威数据源，状态保持 implementation pending，不得用估算值冒充完成。
 
 二轮设计修订（2026-08-31，已被三轮 owner 修订取代部分口径）：补齐来源消息 append-only 修订、独立 grounding revision、Action-first GenerationJob、质量接受正文到 Gateway 的哈希绑定、canonical route 迁移、时效证据、同源分母指标和引用感知留存；其中此前的分批分配口径已在三轮改为首次全量冻结。实现、QA、发布与生产状态仍未变化。
 
@@ -67,7 +77,7 @@
 | 用户价值 | 在可控三天节奏和日上限内形成真实多账号参与，每条正常评论都能解释来源证据、老师和角度 |
 | 业务风险 | 数量合同被推荐上限截断、动态配置重解释存量义务、质量失败被 fallback 掩盖、老师/亮点覆盖只看成功样本 |
 | 系统边界 | 消息级数量合同、全量义务/关系/内容/grounding 冻结、JIT 生成发送、质量门、分层结算 |
-| 不在本轮 | Telegram Gateway 协议实现、账号登录/准入机制、点赞/浏览/AI 活群数量合同 |
+| 不在本轮 | 通用 Telegram 登录协议、与频道评论无关的账号准入、点赞/浏览/AI 活群数量合同；频道评论专用的讨论组拓扑、成员准入、Gateway 身份与远端事实属于本轮范围 |
 
 ### 2.3 成功定义
 
@@ -164,6 +174,9 @@ Task
 7. 三天参与收敛：Task 运行期间发布的新消息从 Telegram `source_published_at` 起 72 小时内，由冻结稳定资格范围中约 55%～65% 的账号各完成至多一条评论；Listener 晚采集不顺延窗口。
 8. Daily Cap 可解释且公平：日上限是高于单帖目标的 Task 硬约束；多个开放消息按确定性 max-min 轮转分配尚未进入 Gateway 的未来容量，不能由先到消息永久占满。
 9. 编辑与生命周期正确：来源编辑只重建尚未进入 Gateway 的内容修订，不新增数量目标；来源删除、Task 暂停/恢复/停止均有明确的停止、释放和结算语义。
+10. 单帖规模自然：55%～65% 是原始需求量，不是无限发送授权；显式单帖业务上限优先，截断必须可见且不能展示为参与率达标。
+11. 兜底不成墙：计划内文字/图片兜底不得超过显式比例，也不得用于 reply 槽；超限或关系不适用时阻断，不靠表情填满数量。
+12. 业务效果独立验收：typed remote fact 只证明履约；真人互动、负反馈和转化必须独立报告，未接入权威来源时为 `business_effect_unproven`。
 
 ### 4.2 消息级数量参与合同
 
@@ -173,8 +186,10 @@ Task
 rolling_window_days = 3
 participation_target_bps = 6000
 participation_jitter_bps = 500
+business_max_comments_per_message
+planned_fallback_max_bps
 daily_comment_cap
-quantity_contract_version = channel_comment_participation_v1
+quantity_contract_version = channel_comment_business_grounding_v1_2
 ```
 
 `participation_jitter_bps=500` 表示在 60% 基础上上下浮动 5 个百分点，即 55%～65%，不是对 60% 再乘 5%。每个来源消息首次规划时建立唯一 `ChannelCommentPlanContract`：
@@ -186,7 +201,8 @@ window_start_at / deadline_at / source_intake_state / lifecycle_epoch
 timezone_at_publish / capacity_calendar_revision / quantity_contract_version
 eligible_account_fact_version / eligible_account_count / eligible_account_ids_hash
 eligibility_snapshot_state / participation_seed / effective_participation_bps
-required_distinct_account_count
+uncapped_required_distinct_account_count / business_max_comments_per_message
+required_distinct_account_count / business_cap_state
 actual_participation_bps / participation_band_state
 daily_comment_cap / capacity_allocation_epoch / daily_bucket_plan_json
 scope_total_slots / relation_contract_version / content_contract_version
@@ -229,10 +245,10 @@ TaskCommentDailyCapacityReservation
 1. 来源是否属于“新消息”由 Telegram 权威 `source_published_at` 判断：消息必须在 Task/enrollment 已运行且目标频道已生效期间发布。`window_start_at=source_published_at`，`deadline_at=window_start_at+3×24h`；`source_observed_at` 只记录采集时间，永远不能顺延 deadline。本合同只用于新 `comment_plan_revision`，不把既有 24 小时义务改成三天。
 2. Listener 晚采集但仍在 deadline 前时，Planner 按完整 frozen target 建 Plan，却只在剩余 pacing 曲线中执行，不追赶已逝时段；采集时已过 deadline，则禁止创建可发送 Action，使用发布时资格历史建立 settlement-only Plan 并记 `source_collected_after_deadline`。若发布时资格事实不可证明，记 `eligibility_snapshot_unproven`，不能用当前较小范围伪造完成。Task/enrollment 生效前发布的历史消息是 `historical_before_enrollment`，不建目标也不算 missed。
 3. eligible 分母使用发布时点的稳定业务资格，而不是 Planner 瞬时在线集合：账号已归属该 Task、授权未终态失效、具有目标讨论组评论资格且未被业务排除即进入 snapshot；`temporarily_offline|recovering|flood_wait` 只影响 execution readiness，不缩小分母。资格事实必须覆盖 `source_published_at` 或落在版本化 freshness 窗内；unknown 形成 `eligibility_snapshot_unproven`，不得静默排除。发布后新加入 Task 的账号不扩大该消息分母，发布时已在范围且随后恢复的账号可以继续绑定或替补。
-4. `eligible_account_count=0` 时 Plan 明确为 `no_eligible_accounts`，quantity/acceptance 为 `blocked`，绝不能因 required=0 显示 met。非零小账号池先稳定抽取 `effective_participation_bps`，再从 `[1,eligible_count]` 选择实际比例最接近该 bps 的整数 count；禁止一律 `ceil` 导致 2 个账号变成 100%。若没有整数落入 55%～65%，冻结 `participation_band_state=discrete_unattainable` 和实际 bps，quantity 仍按该整数结算，百分比 SLA 显示 `not_evaluable_small_pool`，不得展示虚假 55%～65%。
+4. `eligible_account_count=0` 时 Plan 明确为 `no_eligible_accounts`，quantity/acceptance 为 `blocked`，绝不能因 required=0 显示 met。非零小账号池先稳定抽取 `effective_participation_bps`，再从 `[1,eligible_count]` 选择实际比例最接近该 bps 的整数 `uncapped_required_distinct_account_count`；禁止一律 `ceil` 导致 2 个账号变成 100%。最终 `required_distinct_account_count=min(uncapped_required_distinct_account_count,business_max_comments_per_message)`。发生截断时冻结 `business_cap_state=business_cap_adjusted`、原始需求和差额，数量可按 capped required 结算，但参与率 SLA 必须显示 `business_cap_adjusted`，不得展示虚假 55%～65%。若没有整数落入 55%～65%，另冻结 `participation_band_state=discrete_unattainable` 和实际 bps。
 5. `effective_participation_bps` 由 `(tenant,task,message,comment_plan_revision,quantity_contract_version)` 稳定 seed 在 `[5500,6500]` 均匀选择一次并持久化；重试、配置修改和 worker 重启不重抽。Planner 用同一 seed 对全部 eligible snapshot rows 稳定排序，前 required 个账号初始绑定 ordinal；同一 plan/account 最多一个 active/Gateway/confirmed binding，每个账号对同一 Telegram 消息最多确认一条数量事实。
 6. 首次规划同一短事务冻结全部 `scope_total_slots=required_distinct_account_count`、全部 CommentFulfillmentObligation ordinal、direct/reply 关系、一个 ContentMixContract、首个 Grounding Snapshot 和全部首版 GroundingAssignment；Action 只按 due/JIT 分批物化。来源编辑只能按 §9.4 为未进 Gateway ordinal 追加内容 revision，不增加、删除或重排数量 ordinal。
-7. `AI_COMMENT_MAX_PER_MESSAGE=80`、单次 Planner batch 和 Action claim limit 都不是产品上限。目标大于 80 时仍创建完整义务集合，只分批物化 Action。
+7. `AI_COMMENT_MAX_PER_MESSAGE`、单次 Planner batch 和 Action claim limit 仍只是技术批次边界；产品上限只认 Task 显式且页面可见的 `business_max_comments_per_message`。默认值为 80，可由运营调低或调高到 schema 允许范围；每条新 Plan 冻结当时值，运行中修改只影响之后的新消息。不得把技术常量当产品 cap，也不得绕过显式产品 cap 创建额外 ordinal。
 8. `daily_comment_cap` 是必填正整数，只允许运营配置；Daily Cap 优先于单帖 60% 目标，是 Task 所有来源消息共享的硬上限。容量按不重叠的 UTC `[period_start_at,period_end_at)` ledger 结算，local date/timezone 只解释周期展示；同一 ordinal 的 reservation 按 `plan_reserved -> action_reserved -> gateway_hold -> confirmed` 单向迁移，终止或公平重分配才 `released`，不得把不同状态重复相加。
 9. 新 Plan、Plan 终止、暂停/恢复或 future `plan_reserved` 释放时，创建新的 `ChannelCommentCapacityAllocationEpoch`。先扣除 confirmed、gateway_hold 和当前 claim window 内不可抢占的 action_reserved，再对所有 open Plan 的未进入 Gateway ordinal 按 `(capacity period, allocation_round, deadline_at, source_published_at, message_id, target_ordinal)` 做确定性 max-min 轮转：每轮每个消息至多取得一个 slot，再开始下一轮；deadline 只能在同一 allocation round 内排序，不能排在 round 前导致较晚 deadline 的新消息饥饿。只允许移动/release future `plan_reserved`，不能改写 Gateway/unknown/confirmed；因此新消息能参与剩余容量公平分配，先到消息不能永久独占三天 cap。
 10. 公平分配后容量仍不足时，所有 Plan 保留完整 required ordinal，未分配部分标记 `daily_cap_unallocated`；shortfall 按轮转结果分布，不能集中给最后到达的消息，也不能缩小目标或排到 deadline 后。Task 预览必须同时展示最近 30 天来源消息日到达量 p50/p95/max、当前单帖目标区间、三天重叠需求与 cap 缺口；历史不足时显示 `capacity_forecast_unproven`。运营可显式接受预测风险，但这不把已知容量不足改成 met。
@@ -263,10 +279,11 @@ unadjusted_grounding_target_count = ceil(applicable_grounding_ordinal_count * 85
 groundable_capacity_count = min(applicable_grounding_ordinal_count, sum(allowed semantic variant units))
 grounding_required_count = min(unadjusted_grounding_target_count, groundable_capacity_count)
 planned_fallback_count = applicable_grounding_ordinal_count - grounding_required_count
+planned_fallback_limit_count = floor(applicable_grounding_ordinal_count * planned_fallback_max_bps / 10000)
 semantic_capacity_state = sufficient | capacity_adjusted | none
 ```
 
-`capacity_adjusted|none` 不得从报表分母消失；必须显示原始 85% 目标、实际可生成容量、调整原因和计划兜底量。它的业务含义是“为了不捏造而显式使用允许的表情兜底”，不是 grounded 达标。若实现无法给出可复现的 capacity policy/version/result，则整条 Plan `semantic_capacity_unproven`，不能任意缩小 grounded 目标。
+`capacity_adjusted|none` 不得从报表分母消失；必须显示原始 85% 目标、实际可生成容量、调整原因和计划兜底量。仅当 `planned_fallback_count <= planned_fallback_limit_count` 且所有 fallback ordinal 均为 direct 时，才允许冻结 planned fallback；否则 quality target 写 `business_fallback_cap_exceeded|reply_fallback_forbidden`，整条 Plan `grounding_quality_status=blocked`，不创建对应可发送 Action。它的业务含义是“少量显式兜底”，不是用表情填满数量或 grounded 达标。若实现无法给出可复现的 capacity policy/version/result，则整条 Plan `semantic_capacity_unproven`，不能任意缩小 grounded 目标。
 
 质量目标不允许直接回写 Plan count。首次规划及每次 §9.4 来源编辑都 append 唯一：
 
@@ -342,11 +359,11 @@ ChannelCommentQualityTargetRevision
 | `missed` | deadline 后仍未达到 met；late fact 保留但不改写历史 missed |
 | `terminated` | 来源删除或 Task 显式 stop/delete 终止剩余质量义务；不是质量通过 |
 
-`grounding_required_count` 由当前 append-only `ChannelCommentQualityTargetRevision` 冻结；之后 Provider 失败、预算耗尽或账号变化不得再下调。唯一能产生下一 quality target revision 的原因是 §9.4 Telegram 来源编辑，且只重算被转移的未进 Gateway ordinal。`unplanned_fallback` 可以继续完成 quantity，但立即使 grounding quality `blocked|missed`；计划内 fallback 是允许且可验收的内容来源，仍不进入 grounded、老师或亮点分子。
+`grounding_required_count` 由当前 append-only `ChannelCommentQualityTargetRevision` 冻结；之后 Provider 失败、预算耗尽或账号变化不得再下调。唯一能产生下一 quality target revision 的原因是 §9.4 Telegram 来源编辑，且只重算被转移的未进 Gateway ordinal。`unplanned_fallback` 可以继续完成 quantity，但立即使 grounding quality `blocked|missed`；计划内 fallback 只有在比例 cap 内且 relation=direct 时才是允许且可验收的内容来源，仍不进入 grounded、老师或亮点分子。
 
 当 snapshot 存在 supported teacher 时，先在该 quality target component 的 `grounding_required_count` 内保证每位 supported teacher 至少有一个 teacher-specific assignment，再分配其他 teacher-specific 与 global aspect。只有 primary evidence 属于某老师人物块的槽才进入 `teacher_binding_required_count`；global aspect、环境、活动等独立事实不得为了提高老师指标被强行绑定老师。teacher-bound 正文可用无歧义指代，不要求机械重复姓名。`primary_aspect_required_distinct_count=min(available_supported_primary_aspects,component grounding_required_count)`；两项均在 `ChannelCommentQualityTargetRevision` 冻结，不能运行时通过少绑定来缩小覆盖分母。
 
-频道评论 `acceptance_status` 固定组合 `quantity_status + content_mix_status + grounding_quality_status`：任一 `missed` 则 missed；任一 `terminated` 则 terminated；未截止任一 blocked 则 blocked；否则任一 at_risk/evaluating 则 at_risk；只有三个维度均 `met|not_applicable` 才 met。`comment_unicode_emoji_fallback` 与 `comment_image_meme_fallback` 是 v1.1 明确允许的同一 `post_comment` 槽内容来源；前者从 §12.5 的 20 个白名单表情选择，后者从任务冻结的可用图片表情包素材池选择。两者均保留原 direct/reply 关系并使用稳定 seed。计划内 fallback 在 fallback-eligible ContentMix 槽取得 typed remote fact 后可以参与整体验收，确认 quantity 与该 plain/relation 槽 settlement，但永不计 grounded、老师、亮点或正常正文成功；超出 frozen `planned_fallback_count` 的 emergency fallback 仍可发出并确认 quantity，但 grounding quality 必须 blocked/missed。
+频道评论 `acceptance_status` 固定组合 `quantity_status + content_mix_status + grounding_quality_status`：任一 `missed` 则 missed；任一 `terminated` 则 terminated；未截止任一 blocked 则 blocked；否则任一 at_risk/evaluating 则 at_risk；只有三个维度均 `met|not_applicable` 才 met。`comment_unicode_emoji_fallback` 与 `comment_image_meme_fallback` 是同一 `post_comment` direct 槽的受限内容来源；前者从 §12.5 的 20 个白名单表情选择，后者从任务冻结的可用图片表情包素材池选择。两者使用稳定 seed。计划内 fallback 仅在显式比例 cap 内的 fallback-eligible direct 槽取得 typed remote fact 后参与 settlement，确认 quantity，但永不计 grounded、老师、亮点或正常正文成功；reply 槽 fallback、超过 cap 的 planned fallback 和任何 emergency fallback 均使 grounding quality blocked/missed。
 
 Task 级读模型不得再把所有历史消息取最差状态作为当前状态：
 
@@ -530,7 +547,7 @@ ai_two_stage_enabled
 | --- | --- |
 | 三开关均 false 的存量 Task | 继续 legacy 3+3 与原 3 个单表情评论兜底；`grounding_quality_status=not_applicable` |
 | grounding=false，route-v2/two-stage 均 true | 继续公共 V2 生成/审查预算与原 3 个单表情评论兜底；不建立本专项 Plan/Grounding 合同，质量维度 `not_applicable` |
-| 三开关均 true 的新 Task/新纳入消息 | 使用本 v1.1 全量冻结、公共两阶段预算、grounding 质量门、20 个 Unicode 表情和图片表情包兜底 |
+| 三开关均 true 的新 Task/新纳入消息 | 使用当前 v1.2 全量冻结、公共两阶段预算、grounding 质量门、20 个 Unicode 表情、图片表情包兜底与 discussion binding/admission；已冻结 v1.1 不变 |
 | route-v2/two-stage 不一致，或 grounding=true 但依赖不全 | 阻断新 revision，显示 activation incomplete，不猜测、不半启用 |
 
 canary 使用唯一 `ChannelCommentGroundingEnrollment(task_id, expected_config_revision, enabled_at, contract_versions_hash)` 锁定精确 Task；同一 Task/config revision 最多一条 active enrollment。消息是否纳入以 Telegram `source_published_at >= enabled_at` 且发布时 Task 为 running 判断，不以 Listener 第一次看见时间判断；已经存在的旧消息不因晚采集进入 v1，已冻结消息按原数量合同及 §9.4 内容修订合同收口。
@@ -855,9 +872,110 @@ reply 槽：
 - 同时冻结 `reply_target_snapshot_hash`；
 - reply target 正文、作者、远端 ID 和 hash 形成 append-only `reply_target_attempt_revision`；任何既有 attempt 都不得原地改写；
 - 生成语义优先回答被回复评论，再用来源 evidence 约束事实；
+
+### 12.4 语义变体交织轮转合同（Interleaved Semantic Variants Contract）
+
+为彻底根除同一篇帖子评论区中多个账号扎堆围绕单一维度（例如连续多条都在讨论“100斤/身高”）的问题，变体生成必须遵守交织轮转规则：
+
+1. **变体构造顺序**：以 `(speech_act_index, evidence_index)` 矩阵方式进行交错遍历：
+   ```python
+   for speech_act_index, _ in enumerate(SPEECH_ACTS):
+       for evidence_index, row in enumerate(evidence):
+           effective_speech_act = SPEECH_ACTS[(speech_act_index + evidence_index) % len(SPEECH_ACTS)]
+   ```
+2. **槽位离散保障**：对于前 $K$ 个分配槽位（$K \le \text{len}(evidence)$），每个槽位必须对应不同的 `aspect_code` 与证据实体；
+3. **事实维度覆盖**：标准抽取器必须至少覆盖以下 10 大核心事实维度：
+   - `body_feature`（身材外貌、身高、体重、罩杯、胸围、高挑等量化属性）
+   - `appearance_style`（颜值、气质、好看、甜美、御姐、清纯等风格属性）
+   - `outfit_feature`（穿搭、黑丝、白丝、制服、cos、高跟等服饰属性）
+   - `service_feature`（水疗、按摩、SPA、手法、配合度、态度等服务属性）
+   - `price_cost`（课费、价格、预算、收费、定金、单价等成本属性）
+   - `score_rating`（评分、综合、好评、体验、战报、验证榜等口碑属性）
+   - `location_booking`（地区、行政区、商圈、到店、档期、预约等位置排课属性）
+   - `authenticity`（素颜、真照、实拍、本人、探路、测评、避坑等真实性属性）
+   - `promotion`（活动、优惠、特惠、折扣、立减、福利等营销属性）
+   - `time_window`（今日、当天、今晚等时效属性）
+
+### 12.5 正文清洗与前缀数值保留合同（Text Cleaning & Number Preservation Contract）
+
+1. **序号剥离范围**：清洗正则仅允许剥离模型生成的列表编号与排版前缀：
+   - 常见列表数字：`1. `, `2. `, `10. `, `1、`, `2、`, `10、`
+   - 括号/中括号编号：`(1) `, `（1）`, `[1] `, `【1】`
+   - 符号标号：`- `, `* `, `+ `, `• `, `· `
+   - 特殊字符与中文序号：`① `, `② `, `一、`, `二、`
+2. **正文数值严格保留**：严禁误伤句首作为事实组成部分的数字或单位，包括但不限于：
+   - 身高/体重数据（如 `160的身高配100斤确实匀称`）
+   - 价格/单价数据（如 `600/P这个价格管城能安排？`）
+   - 年龄/标签数据（如 `26岁御姐款`）
+   - 罩杯/比例数据（如 `36B配100斤看着刚好`）
+3. **断句完整性保障**：清洗后不得留下以助词“的”（如 `的身高`）或残缺单价单位“/P”（如 `P这个价格`）开头的断裂残句。
+
+### 12.6 拟真社区氛围、众生相人设与去机械化想象力合同（Community Atmosphere & Diverse Personas Contract）
+
+为彻底消除“每一条评论都死板对齐原帖考卷逐字复述”的机械 AI 腔，评论生成必须引入 Telegram 真实老哥社区的多元人设与生活化想象力：
+
+1. **事实锚点原则（Anchor vs. Parrot）**：
+   - 提取的 Grounding Fact（如地点“管城”、课费“600”、花名“暖暖”、评分“9分”）是**语义锚点与真实性边界**，用于确保评论处于正确的时空与话题语境；
+   - 严禁机械复述“原帖事实是XX，我认为XX实在”的提纲式汇报，鼓励在锚点周围结合老哥生活经验进行自然延展、侧面打趣与氛围互动。
+2. **五大拟真群友人设光谱（Community Personas Spectrum）**：
+   - **吃瓜围观/插眼等排雷型（Lurker / Wait for Pioneer）**：
+     - 口吻：随性看戏、等待勇士先行、观望态度；
+     - 范例：“先插个眼”、“蹲个老哥排雷”、“留爪观望，等月底发工资”、“看着有点顶，等勇士先冲”；
+   - **轻度吐槽/调侃玩梗型（Witty / Playful Banter）**：
+     - 口吻：市井幽默、调侃修图或行情、大白话吐槽；
+     - 范例：“这照片修得亲妈都不认识了吧哈哈”、“感觉有点科技与狠活”、“现在动不动就上千，这算良心了”、“灯光一打直接现原形”；
+   - **老油条比对/经验侧写型（Veteran / Comparative Vibe）**：
+     - 口吻：行家切磋、关注实际细节（如催钟、环境、性价比、查风向）；
+     - 范例：“这年头600还能打？老哥稳啊”、“管城现在查得严不严？最近风大不敢乱跑”、“9分水份有多大？有没有懂哥出来走两步”、“就怕催钟，上周被催成狗”；
+   - **心动打趣/直接共鸣型（Tempted / Playful Resonance）**：
+     - 口吻：直接表达审美偏好、打趣互动；
+     - 范例：“御姐好啊我就吃这套”、“看着有点顶”、“老哥发车记得叫我一声”、“这身材放平时真顶不住”；
+   - **极短随性口语型（Casual Vibes）**：
+     - 口吻：手机随手回复、大白话；
+     - 范例：“这波可以”、“瞅着还行”、“mark一下”、“稳”。
+3. **想象力与安全边界**：
+   - 允许老哥口吻的侧面联想（如天气、行情、催钟担忧、修图调侃、地区风向、发车打趣）；
+   - 严禁无中生有编造真实的第三方联系方式、违规引流或声称自己实际到访过的伪造虚假探店细节。
+
+### 12.7 评论字数阶梯分布与 20% 极短/长评随机抖动合同（Length Tier Dispersion & Random Jitter Contract）
+
+为彻底根除所有评论长度千篇一律（全部挤在 12~16 字）、各个帖子评论风格雷同的机械感，大模型生成与内容清洗管线必须执行三层字数阶梯分布与跨帖随机抖动：
+
+1. **三层字数阶梯分布标准（Three-Tier Length Spectrum）**：
+   - **极短短评层（Ultra-Short Tier, 2~6 字，占比约 20% 随机抖动）**：
+     - 特征：短促有力、情绪鲜明、口语俚语、极具 Telegram 手机随手回复感；
+     - 典型范例：`爽翻天`、`好便宜`、`真顶`、`卧槽`、`老哥稳`、`先插个眼`、`等勇士`、`确实`、`冲了`、`良心价`、`牛批`、`有点东西`、`先mark`、`稳了`、`别搞`；
+   - **中等自然短评层（Medium Tier, 7~16 字，占比约 60%）**：
+     - 特征：针对具体维度的调侃、提问、比对与随性看法；
+     - 典型范例：`这照片修得亲妈都不认识了吧哈哈`、`600这年头在管城算良心了`、`御姐好啊我就吃这套 看着挺顶`、`9分水分大不大 有没有懂哥走两步`；
+   - **详细长评唠嗑层（Long Detailed Tier, 18~35 字，占比约 20% 随机抖动）**：
+     - 特征：带有真实生活前因后果、经历比对、防坑顾虑或详细场景的老哥深度留言；
+     - 典型范例：`看了半天不知道催不催钟，上周去别的地方被催成狗，要是真能有9分下周发工资去探探`、`管城这片最近查得严不严？看着挺顶的就怕是照骗，蹲个去过的老哥说说真实体验`。
+2. **跨帖动态随机洗牌（Post-Level Dynamic Shuffling）**：
+   - 在 Prompt 构建层，根据每个帖子/批次的独立种子进行动态人设池抽样与俚语库洗牌，打破固定顺序排布；
+   - 杜绝两个不同帖子的评论区呈现完全一致的人设序列或相同的口癖。
+3. **清洗与去重适配**：
+   - 严禁过滤器把合法的 2~6 字极短俚语（如 `爽翻天`、`好便宜`、`真顶`、`老哥稳`）当作无意义短文本误杀；
+   - 维持最小长度有效阈值 $\ge 2$ 个有效汉字，并对极短评论建立词族分散去重，防止连续刷同一个短词。
+
+### 12.8 自有账号群友互评、引用接话与点赞互动合同（Own-Account Reply & Comment Reaction Interaction Contract）
+
+为极大提升评论区的社区拟真度、热度与群友互动感，系统必须全面支持自有账号之间的引用回复（Quote Reply）与点赞/表情互动（Comment Reaction）：
+
+1. **自有评论引用互评机制（Inter-Account Quote Reply）**：
+   - **目标优先级排序**：按 `未被回答的真人提问 -> 未被回答的真人评论 -> 任务内已成功的自有评论` 阶梯选取引用目标；
+   - **异号互评门禁（Anti-Self-Reply Fence）**：若引用目标为任务内自有评论（`source: own_history`），执行账号必须与目标评论作者账号不同（`Account B -> Account A`），严禁同一个账号自问自答或回复自己；
+   - **群友接话 Prompt 体系**：引用回复提示词必须遵循群聊搭腔与接梗规范（如“确实 课费真不贵”、“+1 等你发车”、“老哥你上周不是才去的另一家吗哈哈”、“别搞 看着像照骗”），杜绝生硬的机器汇报；
+   - **长短字数自由度**：支持极短接话（如“+1”、“真顶”、“别搞”、“确实”）与中长篇生活化探讨。
+2. **自有评论与讨论区点赞互动机制（Comment Reaction Capability）**：
+   - 支持自有账号对频道讨论区中的优质评论、热门评论及自有账号评论发送表情 Reaction（👍、🔥、❤️、👏、🤣 等）；
+   - 沿用频道点赞的离散随机表情分布与账号冷却保护，形成自然活跃的点赞与互动氛围。
 - 引用目标与来源帖子冲突时，不站队、不补事实，进入 `reply_grounding_conflict` 或生成谨慎求证；
 - 引用目标在 Gateway 前失效时，只能在同一 reply relation slot 递增 `reply_target_attempt_revision` 并创建新 Action attempt；旧目标历史保留，grounding assignment/老师/主亮点不变，不降级 direct；
 - Gateway 已开始后引用目标状态未知时保持原 attempt unknown，禁止改目标重放。
+- `reply_min_per_message` 是硬业务最小值；mixed/reply 目标不足时必须 `reply_target_shortfall` 并等待或 blocked，不得静默把缺口改成 direct；
+- v1.2 只允许回复 root comment，按“未被回答的真人问题 -> 未被回答的其他真人评论 -> 本 Task 已确认自有评论”稳定排序；同一父评论每个 Plan 最多一个 reply，最大链深为 1；
+- reply 槽不允许 Unicode 或图片表情兜底。无法生成回答引用目标且受来源约束的正常正文时形成 `reply_quality_shortfall`，不能用随机表情冒充对话完成。
 
 ### 12.4 内容不足
 
@@ -870,7 +988,7 @@ reply 槽：
 | 只有链接/@用户名/联系方式 | 安全过滤后无事实则 `grounding_insufficient` |
 | evidence 已全部被质量门拒绝 | `grounding_quality_exhausted`，不得发送万能评论 |
 
-允许的同槽数量兜底统一记为 `comment_fallback`，并以 `fallback_content_kind=unicode_emoji|image_meme` 区分文字表情和图片表情包。远端内容来源必须分别写成 `content_source=comment_unicode_emoji_fallback|comment_image_meme_fallback`，同时保存 `fallback_kind=planned|emergency`、`fallback_reason`、生成尝试摘要和冻结选择结果；两类兜底都不计入 `grounded_comment_rate`、正常正文、老师或亮点成功分子，也不能宣称实现相关性。direct 槽发 direct 兜底；reply 槽仍须携带冻结的合法 `reply_to_message_id`，没有合法替代引用时等待或形成 reply shortfall，不得降级 direct。planned fallback 可按 §4.4 参与整体验收；emergency fallback 只保 quantity。
+允许的同槽数量兜底统一记为 `comment_fallback`，并以 `fallback_content_kind=unicode_emoji|image_meme` 区分文字表情和图片表情包。远端内容来源必须分别写成 `content_source=comment_unicode_emoji_fallback|comment_image_meme_fallback`，同时保存 `fallback_kind=planned|emergency`、`fallback_reason`、生成尝试摘要和冻结选择结果；两类兜底都不计入 `grounded_comment_rate`、正常正文、老师或亮点成功分子，也不能宣称实现相关性。只有 direct 槽可冻结 planned fallback；reply 槽内容不足时形成 reply shortfall，禁止发送文字/图片表情、禁止降级 direct。planned fallback 仅在 §4.3 比例 cap 内按 §4.4 参与 settlement；emergency fallback 只保 quantity并阻断质量达标。
 
 ### 12.5 20 个文字表情与图片表情包随机合同
 
@@ -886,7 +1004,7 @@ reply 槽：
 
 #### 12.5.2 图片素材范围与冻结策略
 
-图片表情包复用 `material-library-design.md` 的 `image_meme`、`MaterialAssetVersion`、资产指纹和 Telegram 缓存合同，不建立第二套上传、版本或缓存 owner。v1.1 仅支持静态 `image_meme`；static/animated/video sticker、custom emoji 和普通 campaign image 仍按原 ContentMix 类型处理，不能借图片表情包兜底互相冒充。
+图片表情包复用 `material-library-design.md` 的 `image_meme`、`MaterialAssetVersion`、资产指纹和 Telegram 缓存合同，不建立第二套上传、版本或缓存 owner。v1.1/v1.2 仅支持静态 `image_meme`；static/animated/video sticker、custom emoji 和普通 campaign image 仍按原 ContentMix 类型处理，不能借图片表情包兜底互相冒充。
 
 素材包导入与素材组必须是同一个业务动作：ZIP 导入成功的素材在同一事务创建或合并 `target_group_name` 对应的同租户、同类型 `MaterialGroup`，并把本次成功 material IDs 原子追加到显式成员集合；组名已存在但类型不同时整次导入失败，不能留下“导入成功但没有包”的孤立素材。单个文件上传仍可后续人工归组，不得把标题暗示为已归组。素材组持久化 `membership_revision` 与 `membership_state=ready|review_required|invalid`：正常 API 只保存 tenant 内存在且类型一致的成员；组内素材变更类型必须先移出或改组，素材更新接口以 `material_group_member_type_change_blocked` 拒绝破坏不变量。历史坏成员只把对应组标成 `invalid` 并令其 ready pool 为空，不能让整个素材组列表 500。
 
@@ -1157,13 +1275,15 @@ unresolved
 
 ### 16.1 配置面
 
-v1.1 不新增“自动识别成人内容”开关，不新增运营可调抽取阈值。运营使用 canonical `content_route`、评论风格、规则版本和内容策略，并显式配置 `rolling_window_days=3`、参与目标 60%、抖动 5 个百分点、`daily_comment_cap` 及 §8.3 三个激活开关；内部抽取/质量阈值属于版本化合同，不能作为任意 JSON 动态修改。
+v1.1/v1.2 不新增“自动识别成人内容”开关，不新增运营可调抽取阈值。运营使用 canonical `content_route`、评论风格、规则版本和内容策略，并显式配置 `rolling_window_days=3`、参与目标 60%、抖动 5 个百分点、`business_max_comments_per_message`、`planned_fallback_max_bps`、`daily_comment_cap` 及 §8.3 三个激活开关；内部抽取/质量阈值属于版本化合同，不能作为任意 JSON 动态修改。v1.2 的 `auto_join_discussion_enabled` 只授权讨论组成员准入，不改变 content route 或成人安全权限。
+
+配置面必须显式显示 `comment_mode=comment|mixed|reply`、`reply_min_per_message` 和 reply target 输入/策略；默认 mixed 也必须以选中态展示，不能仅在从评论详情预填时隐式出现。选择 reply 时没有目标禁止保存；mixed 的最少回复数大于零时页面明确提示“目标不足将 blocked，不会改为顶层评论”。
 
 配置面必须完整显示 20 个只读版本化 Unicode 表情，并允许启用文字表情、启用图片表情包、选择一个 `image_meme` 素材组、填写两类权重以及显式设置“图片失效时顺延下一张”“图片池耗尽时转 Unicode”。两类都启用时权重合计不等于 10000、图片 weight 大于 0 但素材组为空/当前无 ready 素材、或所有类型都不可用时禁止保存。配置预览显示当前候选 ready 图片数与候选 asset version/fingerprint/hash，并明确“这是预估，真正 pool 在每条消息首次规划时冻结”；消息详情再显示实际 frozen pool snapshot/hash、预计文字/图片数量及“同槽重试不会换内容”。不能把素材组当前总数或配置预览 hash 冒充某条消息的冻结池。
 
 素材组管理必须显示 membership state/revision、成员数、ready 数及歧义原因。ZIP 导入结果只有在组成员关系同事务提交后才显示“素材包”；`review_required|invalid` 组不能用于新的频道评论配置或消息级 pool freeze。编辑保存携带打开页面时的 expected revision，冲突时保留双方结果并要求刷新，不自动覆盖。
 
-创建/编辑预览必须显示稳定 eligible 数与瞬时 execution-ready 数、55%～65% 目标区间、离散整数目标/实际 bps、发布时间起三天窗口、最近 30 天消息日到达量 p50/p95/max、三天重叠需求、Daily Cap 缺口、Provider 单槽/任务日预算和激活完整性；历史不足显示 `capacity_forecast_unproven`。容量不足明确拒绝启动或由运营接受预测风险，不得静默缩小目标或声称必达。运行中普通配置修改不改已有 PlanContract/ordinal；来源编辑仅按 §9.4 更新未进 Gateway 内容 revision。数量 `comment_plan_revision` 与 grounding revision 分开显示，关系是一个数量 Plan 对一个或多个 append-only 内容 revision，不再错误声明一对一。
+创建/编辑预览必须显示稳定 eligible 数与瞬时 execution-ready 数、55%～65% 原始目标、uncapped/capped 整数目标、单帖业务 cap 及被截断量、planned fallback cap/预计比例、发布时间起三天技术窗口、任务配置的业务有效期、最近 30 天消息日到达量 p50/p95/max、三天重叠需求、Daily Cap 缺口、Provider 单槽/任务日预算和激活完整性；历史不足显示 `capacity_forecast_unproven`。容量或业务 cap 不足明确拒绝启动或展示调整状态，不得静默缩小目标或声称参与率达标。运行中普通配置修改不改已有 PlanContract/ordinal；来源编辑仅按 §9.4 更新未进 Gateway 内容 revision。数量 `comment_plan_revision` 与 grounding revision 分开显示，关系是一个数量 Plan 对一个或多个 append-only 内容 revision，不再错误声明一对一。
 
 ### 16.2 任务详情
 
@@ -1186,7 +1306,7 @@ Task 顶部必须分开显示 `current_execution_status`、最近 7/30 天 SLA �
 
 每个 Action 展开项至少展示：
 
-- `target_ordinal`、direct/reply、`reply_to_message_id`；
+- `target_ordinal`、direct/reply、`rpc_mode`、channel/source identity、discussion binding/thread root identity 与 requested/actual `reply_to_message_id`；
 - 冻结老师、主/辅助 evidence、speech act；
 - Provider attempt 与拒绝 code；
 - 最终 accepted comment_text/hash、reviewer 版本、规则版本和 quality audit；
@@ -1219,7 +1339,7 @@ Task 顶部必须分开显示 `current_execution_status`、最近 7/30 天 SLA �
 新 revision 显式写入：
 
 ```text
-grounding_contract_version = channel_comment_business_grounding_v1_1
+grounding_contract_version = channel_comment_business_grounding_v1_2
 ```
 
 未知版本必须阻断，不得套用当前默认值。
@@ -1231,8 +1351,9 @@ grounding_contract_version = channel_comment_business_grounding_v1_1
 - 不因新合同上线把旧 open/replan obligation 标成 expired；
 - 不更改旧 Action、Attempt、remote fact 和 settlement；
 - 若产品要求存量迁移，必须另建 preview/manifest/revision 与回滚设计。
-- 任何存量消息不得因开启 v1/v1.1 改成三天、重抽 60%±5 个百分点或新增 ordinal；单任务 enrollment 只接管之后首次纳入的新消息。
+- 任何存量消息不得因开启 v1/v1.1/v1.2 改成三天、重抽 60%±5 个百分点或新增 ordinal；单任务 enrollment 只接管之后首次纳入的新消息。
 - 已冻结 `channel_comment_business_grounding_v1` Plan 继续使用原 3 表情 `comment_emoji_fallback`，不得把尚未发送的 ordinal 原地升级为 20 表情或图片；v1.1 只作用于新消息首次规划。读模型把 legacy `comment_emoji_fallback` 规范化投影为 `fallback_content_kind=unicode_emoji`，但不改写历史事实。
+- 已冻结 `channel_comment_business_grounding_v1_1` Plan 继续使用其冻结的 fallback、素材、来源和结算合同；v1.2 的 DiscussionBinding、MembershipFact 与新错误分类只作用于 Enrollment 后首次纳入的新消息，不原地重写历史 Plan/Action/Attempt/Remote Fact。历史动作只有经过 §31 的精确 preview/reconcile 工作流才能收口。
 - 显式素材组迁移不得猜测同租户多个同类型组的成员。唯一可证明组可自动回填并标 `ready`；歧义组标 `review_required`、成员保持空、输出迁移待处理清单。引用该组且图片权重大于 0 的 Task 在运营确认成员前不得为新消息冻结图片 pool，失败码为 `material_group_membership_review_required`，既有 frozen pool/selection 不改写。
 - Gateway evidence journal 新增 typed fact JSON 时，历史 row 以空值兼容；只有新 row 或可由任务类型权威探针取得完整 typed fact 的历史 row 才能完成 comment reconcile，不能根据 Action payload 猜造远端内容事实。
 
@@ -1244,7 +1365,7 @@ route 迁移遵循 §8.1 的 preview/apply/cutover：preview 必须列出 task I
 
 ### 17.4 新旧并存
 
-读模型必须按 `grounding_contract_version` 解释。旧 revision 显示 `not_applicable_legacy`，不能伪装为 grounding met；v1/v1.1 按 §4.4 分开 current execution、最近窗口 SLA 与 lifetime outcome。v1.1 新事实使用 `comment_unicode_emoji_fallback|comment_image_meme_fallback`；legacy `comment_emoji_fallback` 只映射为旧 Unicode 事实，不能被猜成图片或原地改名。
+读模型必须按 `grounding_contract_version` 解释。旧 revision 显示 `not_applicable_legacy`，不能伪装为 grounding met；v1/v1.1/v1.2 按 §4.4 分开 current execution、最近窗口 SLA 与 lifetime outcome。v1.1/v1.2 新事实使用 `comment_unicode_emoji_fallback|comment_image_meme_fallback`；legacy `comment_emoji_fallback` 只映射为旧 Unicode 事实，不能被猜成图片或原地改名。v1.2 另按 frozen `discussion_binding_revision` 与 membership fact 解释评论目标，禁止读取当前 active binding 反向改写历史。
 
 ---
 
@@ -1254,16 +1375,17 @@ route 迁移遵循 §8.1 的 preview/apply/cutover：preview 必须列出 task I
 2. PlanContract 的 `(tenant,task,message,comment_plan_revision)` 和消息 active-plan 唯一键阻止双 Planner 创建两份数量计划；eligible row 与 active account binding 唯一键阻止同账号重复参与；capacity ledger 的 UTC period exclusion 约束防重叠，reservation 的 `(daily_capacity_ledger_id,plan,target_ordinal)` 唯一键和 allocation epoch CAS 保证不超过 cap且不被旧 epoch 覆盖；
 3. 首次事务原子提交 eligible rows/目标、全部 obligation/关系/初始账号绑定、唯一 ContentMix、首个 snapshot/semantic capacity、全部首版 assignment、fallback policy binding 与消息级图片 pool snapshot；任一步失败整体回滚，不留下部分分母或可漂移素材池；capacity bucket 由独立 allocation epoch 在全部 open Plan 间公平计算；
 4. assignment 的 revision 唯一键与 active 部分唯一键阻止同 ordinal 同时拥有两套内容 owner；账号替补只 append binding attempt，来源编辑只 append successor assignment，普通后续批次只 JIT 物化已有 ordinal 的 Action，绝不 append 新 ordinal；
-5. Action payload 必须携带 `plan_contract_id + source_revision_id + grounding_snapshot_id + assignment_version + source_content_hash + accepted_or_fallback_identity + content_source`；fallback 还必须携带 `fallback_policy_snapshot_id + fallback_selection_id`；
+5. Action payload 必须携带 `plan_contract_id + source_revision_id + grounding_snapshot_id + assignment_version + source_content_hash + accepted_or_fallback_identity + content_source`；fallback 还必须携带 `fallback_policy_snapshot_id + fallback_selection_id`；v1.2 另必须携带 frozen `discussion_binding_id/revision/hash + discussion_thread_binding_id/revision/hash + rpc_mode + actual_target_peer + requested_reply_identity`；
 6. GenerationJob 使用 action/assignment identity 与 fence；双 worker 只能一个接受结果；
 7. quality audit、accepted content text/hash 与 Action 状态同事务写入；
 8. Gateway 前重算 outbound text hash 或 media fingerprint，不按 Action 自由文本、当前素材组或过滤器副本反推；
 9. `unknown_after_send`、success 和 typed remote fact 永久阻止同逻辑槽替代发送；source edit/lifecycle operation 只能 fence pre-Gateway owner；
 10. pause/resume/source edit/capacity reallocation 使用独立 operation/epoch CAS；旧 epoch 或旧 active assignment 的迟到 worker 在 Gateway 前被拒绝；
 11. fallback policy 的任务修订唯一键、每 Plan 唯一 pool snapshot、每 Plan/kind 唯一 shuffle-bag cursor、selection 的 `(plan_contract_id,target_ordinal,assignment_version,selection_attempt)` 唯一键和 active attempt 部分唯一键共同防止双 worker 抽出不同表情或重复消费 rank；图片 reselection 只 append、锁 cursor 并 CAS 原 attempt；
-12. 读模型从 PlanContract、eligible/account binding、UTC capacity ledger/allocation epoch、source revision、snapshot、assignment successor、fallback policy/pool/cursor/selection、Action、Attempt 和 remote fact 重算，不维护可漂移的直接累加计数器。
-13. MaterialGroup 的 `membership_revision` 在成员、类型或 active state 改变时单调递增；PATCH 必须携带 expected revision并锁定当前组，创建、改名和 ZIP 导入先取得 `(tenant_id, normalized_group_name)` 事务锁，ZIP 合并再锁组后追加，避免并发创建同名组或导入与人工编辑互相覆盖。
-14. 详情同时投影 `selected_*` 与 `remote_confirmed_*`；selected 只来自持久 selection，remote confirmed 只来自校验通过的 typed fact。planned/emergency 只读 `CommentFallbackSelection.fallback_kind`；没有 QualityTarget/Assignment owner 的路径必须是 emergency，禁止按成功结果倒推 planned。
+12. 读模型从 PlanContract、eligible/account binding、UTC capacity ledger/allocation epoch、source revision、discussion binding/probe、thread binding/probe、membership fact/join Action、snapshot、assignment successor、fallback policy/pool/cursor/selection、Action、Attempt 和 remote fact 重算，不维护可漂移的直接累加计数器。
+13. v1.2 discussion/thread probe、binding revision、membership fact 与 Join Action 分别使用 §26/§27 的唯一键和 current pointer；双 worker 只能形成一个逻辑 owner。任何 current topology/fact 变化只 fence pre-Gateway Action，不能改写 Gateway-started/unknown/confirmed identity。
+14. MaterialGroup 的 `membership_revision` 在成员、类型或 active state 改变时单调递增；PATCH 必须携带 expected revision并锁定当前组，创建、改名和 ZIP 导入先取得 `(tenant_id, normalized_group_name)` 事务锁，ZIP 合并再锁组后追加，避免并发创建同名组或导入与人工编辑互相覆盖。
+15. 详情同时投影 `selected_*` 与 `remote_confirmed_*`；selected 只来自持久 selection，remote confirmed 只来自校验通过的 typed fact。planned/emergency 只读 `CommentFallbackSelection.fallback_kind`；没有 QualityTarget/Assignment owner 的路径必须是 emergency，禁止按成功结果倒推 planned。
 
 必须用 PostgreSQL 并发测试覆盖双 Planner、双 generation worker、配置修改与消息修订竞争；SQLite 单测不能替代数据库唯一键与锁语义。
 
@@ -1277,13 +1399,19 @@ route 迁移遵循 §8.1 的 preview/apply/cutover：preview 必须列出 task I
 
 - `grounding_snapshot_created_count`
 - `eligible_account_count / execution_ready_count / required_distinct_account_count / effective_participation_bps / actual_participation_bps`
+- `uncapped_required_distinct_account_count / business_max_comments_per_message / business_cap_adjusted_count`
 - `source_collection_lag_seconds` 的 p50/p95/max 与 `source_collected_after_deadline_count`
 - `quantity_confirmed_distinct_count / quantity_held_count / quantity_remaining_count`
 - `daily_cap_reserved_count / daily_cap_capacity_shortfall_count / capacity_reallocated_count / capacity_fair_share_deficit_count`
 - `capacity_period_overlap_violation_count`（目标恒为 0）
+- `discussion_binding_active/unbound/probe_failed_count`、`discussion_binding_age_seconds`、`discussion_binding_change_count`
+- `discussion_thread_mapping_ready/probe_failed_count`、`discussion_rpc_identity_mismatch_count`（后者目标恒为 0）
+- `discussion_membership_ready/admission_required/forbidden/unknown_count`、`discussion_join_attempt/success/flood_wait/unknown_count`
+- `channel_comment_recovery_preview_drift_count`、`channel_comment_reconcile_unknown_remaining_count`
 - `applicable_grounding_ordinal_count`
 - `unadjusted_grounding_target_count / groundable_capacity_count / grounding_required_count`
 - `planned_fallback_count / emergency_fallback_count`
+- `planned_fallback_limit_count / business_fallback_cap_exceeded_count / reply_fallback_forbidden_count`
 - `source_revision_ready_count`
 - `assignment_frozen_count{status}`
 - `grounding_insufficient_count`
@@ -1311,6 +1439,8 @@ route 迁移遵循 §8.1 的 preview/apply/cutover：preview 必须列出 task I
 - `source_revision_superseded_before_gateway_count / source_deleted_before_send_count`
 - `plan_lifecycle_event_count{pause,resume,stop,delete}`
 - `message_outcome_count{met,missed,terminated}` 与 current/recent7d/recent30d/lifetime 分层
+- `comment_task_monitor_outcome{idle,evaluating,met,missed,paused,blocked,unproven}`；全 expired 不得归 met，paused 必须纳入清单
+- `human_reply_rate / external_participant_increment / remote_hidden_deleted_reported_rate / channel_unsubscribe_delta / business_conversion_delta`；没有权威来源时固定为 `business_effect_unproven`，不得填 0 或估算值
 - `adult_safety_rejection_count{code}`
 - §4.3 全漏斗 rate 与每阶段 shortfall/unknown 数量
 
@@ -1323,6 +1453,7 @@ route 迁移遵循 §8.1 的 preview/apply/cutover：preview 必须列出 task I
 - `teacher_name_supported_rate < 100%`；
 - canary 预注册时间窗内任一适用消息 `quantity_status|content_mix_status|grounding_quality_status != met`；terminated 必须有预注册操作原因，不能当 met；
 - `semantic_capacity_sufficient_message_rate < 85%`、可行 grounded 目标未 100% 完成、出现 unplanned fallback，或老师/亮点远端覆盖低于 §4.3；
+- 单帖触发 business cap 后仍展示参与率达标、planned fallback 超过显式 cap、任何 reply fallback 或 reply 最小值静默降级 direct；
 - source collection lag 导致到窗后采集，或 capacity period 出现 UTC 重叠；
 - Provider 单槽次数、90 秒、单槽成本或任务日预算超限；
 - snapshot identity 漂移或 unknown contract version；
@@ -1368,7 +1499,7 @@ route 迁移遵循 §8.1 的 preview/apply/cutover：preview 必须列出 task I
 | Phase 0：离线语料 | 不写业务表、不发送 | 金标老师/亮点/否定/多人物评测达标 |
 | Phase 1：shadow extract | 写 shadow 审计，不改变 Prompt/Action | 无 route 提升；人工抽检 precision 达标 |
 | Phase 2：shadow assign/quality | 生成候选但不进入 Gateway | assignment、相关性、成本与延迟达标 |
-| Phase 3：单任务 canary | 仅新 revision 使用 v1.1，冻结 20 表情/图片素材 manifest | 本地/PG/运行 Gate 通过，明确任务和时间窗 |
+| Phase 3：单任务 canary | 仅新 revision 使用 v1.2，冻结讨论组绑定、成员准入、20 表情/图片素材 manifest | 本地/PG/运行 Gate 通过，明确任务、来源消息和时间窗 |
 | Phase 4：有限扩大 | 按 allowlist 扩大 | 连续 3 天无 P0，E4 指标达标 |
 
 Phase 0 开始前必须对最近 30 天真实来源做只读基线：可取时稳定抽样至少 500 条，不足 500 条则纳入全部并标记样本不足；报告 source publish-to-observe lag、每日消息到达量 p50/p95/max、纯媒体/空文本、minimal、ready、单/多老师、时效证据、semantic capacity/预计 planned fallback 和 route 分布。若 `ready|minimal` 或 `semantic_capacity_sufficient` 消息占比低于 85%，不得用合成金标代替真实可用性，设计结论保持 `business_effect_unproven`。
@@ -1379,13 +1510,13 @@ Phase 0 开始前必须对最近 30 天真实来源做只读基线：可取时�
 
 回滚只影响尚未建立的新 revision：
 
-- 停止为新消息创建 `channel_comment_business_grounding_v1_1`；
+- 停止为新消息创建 `channel_comment_business_grounding_v1_2`；
 - 精确关闭 `ChannelCommentGroundingEnrollment` 和三开关，只影响之后首次纳入的新消息；
-- 已冻结 v1.1 Plan 继续按其 frozen fallback policy、20 表情白名单和图片素材版本池收口；不得因回滚把图片槽换成文字、改用当前素材组或重新抽图。Telegram 编辑仍按 §9.4 追加 successor，或由显式 audited stop 按 §4.5 终止，不能换旧 Prompt 继续同槽；
+- 已冻结 v1.1 Plan 继续按其 fallback policy、20 表情白名单和图片素材版本池收口；已冻结 v1.2 Plan 另继续使用 frozen discussion binding/thread、membership 与 RPC mode。不得因回滚把图片槽换成文字、改用当前讨论组/素材组或重新抽图。Telegram 编辑仍按 §9.4 追加 successor，或由显式 audited stop 按 §4.5 终止，不能换旧 Prompt 继续同槽；
 - 不删除 snapshot、assignment、Action、Attempt 或 remote fact；
 - 不删除仍被 snapshot/Action/Attempt/remote fact 引用的 SourceRevision；
 - 不把 v1 的质量 shortfall 改成 met；
-- 回滚后独立读回新 revision 不再使用 v1.1，旧 revision 数量与 unknown 均保持。
+- 回滚后独立读回新 revision 不再使用 v1.2，旧 revision 数量、绑定身份与 unknown 均保持。
 
 ---
 
@@ -1399,7 +1530,7 @@ Phase 0 开始前必须对最近 30 天真实来源做只读基线：可取时�
 - [ ] stable eligible 与 execution readiness 分离；temporarily offline/recovering 不缩分母，发布后新加入账号不扩分母；
 - [ ] `eligible=0` 为 blocked；小账号池选择最接近 effective bps 的整数并显示 actual bps/discrete-unattainable，不用 ceil 伪造 55%～65%；
 - [ ] 相同计划 identity 重放得到相同 effective bps、目标数和三天 Daily Cap bucket；
-- [ ] `AI_COMMENT_MAX_PER_MESSAGE=80`、Planner/claim batch 不截断大于 80 的目标；
+- [ ] 先冻结 uncapped 55%～65% 原始需求，再由显式 `business_max_comments_per_message` 截断最终 required；截断量和 `business_cap_adjusted` 可见，技术 batch 不二次截断；
 - [ ] 首次事务一次写全所有 ordinal、关系、唯一 ContentMix、首个 snapshot/semantic capacity 和全部首版 assignment，失败不留半计划；
 - [ ] Daily Cap 同时扣除 confirmed、Gateway-started hold 和 reservation，不超发、不重复占 unit；
 - [ ] capacity reservation 只在 `plan/action/Gateway/confirmed/released` 状态间单向搬移，同一 ordinal 任一时刻只占一个 unit；future plan reservation 可经新 allocation epoch 公平重排；
@@ -1408,7 +1539,7 @@ Phase 0 开始前必须对最近 30 天真实来源做只读基线：可取时�
 - [ ] 时区切换前后 UTC capacity period 首尾相接且不重叠，同一 scheduled_at 只命中一个 ledger；transition 按时长折算且任意 rolling 24h 不超过一份 cap；
 - [ ] 同账号同消息 revision 最多确认一次 distinct participation，重复远端事实不重复计数；
 - [ ] Gateway 前账号失效只可从冻结 eligible rows 按 stable rank append binding attempt；Gateway/unknown/success 后不换号；
-- [ ] 正常正文、20 个 Unicode 表情和图片表情包评论均须匹配冻结内容身份且取得 `remote_message_id` 才计 quantity；planned fallback 可按合同验收但不计 grounding，emergency fallback 只保 quantity；
+- [ ] 正常正文、20 个 Unicode 表情和图片表情包评论均须匹配冻结内容身份且取得 `remote_message_id` 才计 quantity；planned fallback 不超过显式 cap 且只用于 direct，emergency/reply fallback 均阻断质量；
 - [x] resume 只走剩余曲线；stop/Task delete 终止 pre-Gateway 且不伪装 met；source deleted 与 pause 的终止/保留分流已完成，pause 会释放 future capacity且不顺延 deadline；
 - [ ] current execution、recent 7/30 天 SLA 与 lifetime outcome 分列，历史 missed 不永久覆盖当前状态；
 - [ ] quantity、content mix、grounding 三维组合状态和 deadline/late fact 规则与 §4.4 一致。
@@ -1450,6 +1581,7 @@ Phase 0 开始前必须对最近 30 天真实来源做只读基线：可取时�
 - [ ] primary aspect 先 distinct 覆盖再复用，远端覆盖按冻结目标计算；
 - [ ] 时效 evidence 只有 `valid_until >= latest_safe_send_at` 才可分配，三天未来槽不绑定注定过期证据；
 - [ ] reply target 失效只递增 target attempt revision，不原地改写或降级 direct。
+- [ ] mixed/reply 的目标数不足时显式 shortfall，不把最少 reply 目标静默补成 direct；reply 只选 root target，真人未回答问题优先且每个父评论最多一次。
 
 ### 22.4 生成与质量测试
 
@@ -1481,7 +1613,7 @@ Phase 0 开始前必须对最近 30 天真实来源做只读基线：可取时�
 - [ ] Telegram 成功后主事务失败时，独立 journal 保留完整 comment typed fact；reconcile 恢复相同 fact 后 obligation confirmed，缺 typed fact 时保持 unknown；
 - [ ] 任务详情分别展示 selected/remote-confirmed 与 planned/emergency，pending/failed/unknown selection 不计 remote confirmed；
 - [ ] 专用 normal AI/普通 image/sticker/custom emoji 槽不能被 Unicode 或 image_meme 兜底冒充；合法 ContentMix reallocation 必须 append revision，没有接替槽形成 shortfall；
-- [ ] reply 没有合法替代引用时不得把 Unicode 或图片表情包兜底降级 direct；成功远端事实必须读回相同 `reply_to_message_id`；
+- [ ] reply 槽禁止 Unicode 或图片表情包兜底；没有合法替代引用或正常回答正文时形成 shortfall，成功远端事实必须读回相同 `reply_to_message_id`；
 - [ ] route/realizer/reviewer/总调用、90 秒、单槽成本、任务日预算和 `latest_safe_send_at` 全部执行硬门；
 - [ ] Provider unknown 在 fence 后迟到不能覆盖 `fallback_ready`；
 - [ ] 质量接受后任何正文变换都必须重新验收，过滤器不能发送另一版本；
@@ -1506,6 +1638,11 @@ Phase 0 开始前必须对最近 30 天真实来源做只读基线：可取时�
 - [ ] 两个素材组编辑者以同一 expected membership revision 保存时只有一个成功，另一个得到 revision conflict；ZIP 合并与人工编辑并发不丢成员；
 - [ ] 多个同类型历史素材组迁移为 review_required 且成员为空，引用 Task 对新消息 fail closed；运营确认成员并递增 revision 后才可重新启用；
 - [ ] Dispatcher 不调用 Provider，只领取 `quality_accepted|fallback_ready` Action，并按 content source 校验 text hash 或 media fingerprint。
+- [ ] 双 discussion probe 对相同 binding identity 只刷新 freshness，不追加 revision；真实换绑只产生一个 successor，旧 pre-Gateway Action 被 fence，Gateway/unknown identity 保留；
+- [ ] source-to-thread mapping 在不同 peer 下即使数值 ID 相同也按完整 identity 区分；top-level request 只有 `comment_to`，comment reply request 只有 `reply_to`，二者 Gateway fact 回读关系一致；
+- [ ] 双 Join worker 只消费一个 `ensure_discussion_membership` identity；auto-join 关闭、scope/budget/Task epoch 漂移均 Gateway zero-call，Join unknown 不重放；
+- [ ] RPC authoritative pre-mutation reject、Gateway-started timeout 与 source identity reprobe 三类结果分别进入 replan、unknown、typed source closure，不能互相冒充；
+- [ ] 存量 apply 在 deployed SHA、Task config/epoch、binding/action-set hash 任一漂移时 exact Task 零写入，重复同 preview hash 幂等回读。
 
 ### 22.6 API / UI
 
@@ -1517,7 +1654,9 @@ Phase 0 开始前必须对最近 30 天真实来源做只读基线：可取时�
 - [ ] accepted/outbound hash、reviewer 结果、时效过期和安全拒绝可见但按角色脱敏；
 - [ ] 漏斗指标以适用义务为固定原始分母，不能过滤失败样本。
 - [ ] 创建预览和详情显示 3 天、stable eligible/readiness、effective/actual bps、小池状态、消息到达量、重叠需求、allocation epoch 与公平容量缺口；
-- [ ] legacy(全 false)、existing V2(grounding false、其余全 true)和 grounding v1.1(全 true)均可保存；两阶段半配置或 grounding 依赖不全必须拒绝；
+- [ ] legacy(全 false)、existing V2(grounding false、其余全 true)、冻结历史 v1.1 和 grounding v1.2 均可读取；只有满足 8 维门禁、fresh binding 与完整 enrollment identity 的 v1.2 新配置可启用；
+- [ ] 账号选择 UI/API 只使用 `all|group|manual`，并分列 base candidate、contract eligible、membership ready、admission required、forbidden、effective ready；`all + []` 不显示 0，也不把基础候选冒充评论就绪；
+- [ ] discussion binding、auto-join 默认关闭/授权范围、membership freshness、Listener error ownership 与生产恢复 preview/readback 对有权限角色可见且审计完整；
 - [ ] 配置页展示 20 表情、图片素材组、当前 ready 候选数/hash、两类权重与顺延/跨类型开关；非法权重、空图片池和全类型不可用均不能保存；消息详情另显示实际 frozen pool snapshot/hash；
 - [ ] Unicode/图片表情包兜底分别显示 planned/emergency、具体表情或素材版本、selection attempt 与失效原因；两者都不得显示正常 grounded，planned 可显示“合同内兜底已结算”，emergency 显示质量 shortfall；
 - [ ] current/recent7d/recent30d/lifetime 四类读模型不混淆。
@@ -1532,9 +1671,14 @@ E4 样本必须至少包含：
 - 极简文本；
 - general route 含“老师”弱词；
 - direct 与 reply；
+- top-level `channel + comment_to(source)` 与 comment-level `discussion + reply_to(remote comment)` 两种互斥 RPC 形态，禁止同请求混传；
 - Provider 重试；
 - pre-Gateway 可恢复失败；
 - `unknown_after_send` reconciliation；
+- 权威 unbound、probe_failed、相同 binding 重探活与真实讨论组换绑；
+- auto-join 关闭时 zero-call、显式授权 Join 成功/already joined、FloodWait absolute retry 与 Join unknown 零重放；
+- 账号级 private/restricted/banned 与全局 binding 状态不混淆，`MSG_ID_INVALID` 必须经 exact source/comment-capability reprobe；
+- Listener JIT/future T2 新消息恢复，且 canonical listener Session 无第二客户端竞争；
 - 消息在部分发送后编辑：已进 Gateway 保持旧 revision，未进 Gateway 切新 revision且不增加 quantity；
 - Listener 晚采集、enrollment 前历史消息和采集已过 deadline；
 - `eligible=0`、2/4/5 个小账号池、临时离线后恢复；
@@ -1573,14 +1717,23 @@ E4 样本必须至少包含：
 - [x] Daily Cap 跨消息公平分配、连续 UTC 时区周期和容量预测已定义。
 - [x] stable eligible/readiness、零/小账号池、semantic capacity、老师自然分布和 planned/emergency 兜底验收已定义。
 - [x] current execution、recent SLA 与 lifetime outcome 已分离。
+- [x] 单帖业务 cap、planned fallback cap、reply 禁止兜底及 reply shortfall 不降级 direct 已定义。
+- [x] paused/expired/idle/met 监控语义与业务效果独立指标已定义。
 - [x] 20 个唯一 Unicode 表情、图片表情包素材版本池、显式权重和稳定随机 owner 已定义。
 - [x] 图片失效顺延、跨类型兜底、Gateway/unknown 不换内容、ContentMix 和 typed remote media fact 已闭合。
+- [x] 频道—讨论组绑定的稳定身份、版本冻结、探测失败与未绑定分流、绑定变化后的 Action fence 已定义。
+- [x] 频道源帖—讨论组 thread root 的权威映射，以及 top-level `comment_to` 与 comment reply `reply_to` 的互斥 RPC 形态已定义。
+- [x] 讨论组自动入组的默认关闭、任务级显式授权、MembershipFact、Action 幂等、远端 unknown 对账与停止语义已定义。
+- [x] RPC 类型化错误、来源级可评论性复核与 `remote_mutation_started` 证据边界已定义，未承诺消除真正 unknown。
+- [x] 当前账号 schema、基础可选/准入所需/评论就绪容量、Listener 错误 ownership 和只读来源比对已定义。
+- [x] 三个存量 Task 的快照版本、preview/hash lock、漂移停止、独立回读、T2 恢复与分层 canary 顺序已定义。
+- [ ] §12.8 评论 Reaction 的范围、数量、目标选择、obligation、账号冷却与完成标准尚未闭合；在 Product 补齐前不得由开发自行推断。
 
 ### 23.2 Dev Complete
 
-- [ ] schema/migration、抽取、分配、Prompt、质量门与读模型实现；
-- [ ] 项目结构索引和数据流索引与最终代码入口一致；
-- [ ] 无旧即时 `slot_ordinal % aspects` 双 owner；
+- [x] schema/migration、抽取、分配、Prompt、质量门与读模型实现；
+- [x] 项目结构索引和数据流索引与最终代码入口一致；
+- [x] v1.2 无旧即时 `slot_ordinal % aspects` 双 owner；
 - [x] 当前合同使用 Telegram `source_published_at` 起三天窗口，缺权威 SourceRevision fail closed；
 - [x] 首次冻结 Plan、eligible snapshot、distinct ordinal-account binding 与全部 obligation，Action 受连续 UTC capacity period/reservation 约束后 JIT 物化；
 - [x] planned fallback 由冻结 Plan 产生并直接进入 20 表情/图片表情包 selection，不调用普通正文生成；
@@ -1590,29 +1743,35 @@ E4 样本必须至少包含：
 - [x] 跨全部开放消息的 max-min allocation epoch、epoch CAS 和公平重排；新 open Plan、append-only fingerprint/result epoch、future `plan_reserved` 重排及 pause/resume/stop/delete lifecycle trigger 均已接入；
 - [x] reservation 创建同时通过单 UTC period cap 与跨 period rolling 24h 二次硬限额；候选前后已有预约均纳入，恰好 24 小时旧占用退出窗口；
 - [x] 独立 QualityTargetRevision、source-edit component successor、planned fallback 分账与 current/effective read-model（由 0192 实现）；
-- [ ] 完整多老师/否定/时效 extraction、GroundingSnapshot evidence component 与远端覆盖审查；
+- [x] 完整多老师/否定/时效 extraction、GroundingSnapshot evidence component 与远端覆盖审查；
 - [x] 无内容弱信号提升 route；
 - [x] 无无证据默认方向。
-- [ ] Dispatcher 无 Provider 调用或正文改写，Gateway hash mismatch 零调用；
-- [ ] legacy route 字段退出运行时授权 owner。
+- [x] Dispatcher 无 Provider 调用或正文改写，Gateway hash mismatch 零调用；
+- [x] v1.2 legacy route 字段退出运行时授权 owner。
 - [x] fallback policy/selection、20 表情、image_meme 素材池与 media fact 本地实现，重试不换内容。
 - [x] fallback policy/pool 在消息首次规划事务冻结，历史 revision 不读取当前 Task 配置。
 - [x] 图片素材组使用显式 material membership，不再按同类型隐式共享；typed fact 绑定 Action/Attempt/outbound identity。
 - [x] ZIP 导入原子创建/合并显式素材组；坏组局部 invalid、历史歧义 review required，类型修改不破坏成员不变量。
 - [x] 素材组成员使用 expected revision CAS，素材引用摘要覆盖 group/frozen pool/selection。
 - [x] comment typed fact 在独立 Gateway journal 持久化并可由 reconcile 原样恢复；详情分列 selected/remote-confirmed 与 planned/emergency。
+- [x] `ChannelDiscussionGroupBinding`、Plan/Action frozen binding revision 与绑定变化 fence 实现；
+- [x] `ChannelDiscussionThreadBinding`、top-level comment/comment-reply RPC 分流、Gateway request/fact identity 实现；
+- [x] `ensure_discussion_membership` Action、typed `DiscussionMembershipFact`、显式 auto-join policy、Gateway/reconcile 和 read-model 实现；
+- [x] Telegram RPC class/stage 分类、来源可评论性权威复核、Listener error ownership 投影与账号容量分层实现；
+- [x] 三个存量 Task 的只读 snapshot/preview、hash-locked apply/readback 工具与 enrollment writer fence 实现。
 
 ### 23.3 QA Pass
 
 - [x] 本地兜底/生成/配置/Gateway 定向单元测试通过；
 - [x] 第七轮素材完整性、事实恢复、详情和既有兼容聚焦回归 `74 passed in 7.58s`；
 - [ ] PostgreSQL 集成/并发通过；
-- [ ] backend 完整相关回归通过；
+- [x] backend 全部相关 file-level `no_postgres` 回归通过（最终合并重跑 `302 passed`）；
 - [x] frontend TypeScript/Vite build 通过；
 - [ ] UI 人工验收通过；
-- [x] `git diff --check` 与 Python compileall 通过；
+- [x] 本任务 scoped `git diff --check`、新增文件空白检查与 Python compileall 通过；
 - [x] Alembic 单 head 与 0187 PostgreSQL dialect upgrade/downgrade SQL 生成通过；
-- [ ] 失败样本和拒绝 code 与合同一致。
+- [x] 本地失败样本和拒绝 code 与合同一致。
+- [x] 本地讨论组换绑、探测失败、不自动入组、Join unknown、评论 RPC 拒绝/unknown、T2 来源即时恢复和 AI lane 非回归通过。
 
 ### 23.4 Release Gate
 
@@ -1622,6 +1781,8 @@ E4 样本必须至少包含：
 - [ ] canary 精确目标、allowlist、时间窗和停止条件已批准；
 - [ ] rollback 开关只影响新 revision 并已演练；
 - [ ] 部署 SHA、容器运行、worker readiness 分别读回。
+- [ ] 迁移/apply manifest 绑定部署 SHA、Task epoch/config revision、Action 集合 hash，漂移时零写入停止。
+- [ ] 技术单消息 smoke 与三日/100 条 typed fact 产品 canary 使用不同 Gate，前者不得解锁全部存量恢复。
 
 ### 23.5 Production Fixed / Product Accepted
 
@@ -1631,7 +1792,7 @@ E4 样本必须至少包含：
 - [ ] 产品人工抽检接受；
 - [ ] 数量、内容 mix、grounding quality 分别达标，无 unknown 被误算成功。
 
-在以上各层实际完成前，只能写 `design_complete`、`implementation_pending/partial`、`qa_pending`、`production_unproven`，不得写“线上已优化”。
+当前只可写 `local_core_complete / document_partial` 与 `local_core_pass / pg_external_pending`；Release Gate、Production Fixed 或 Product Accepted 未全部通过前，必须保持 `not_released/production_unproven`，不得写“线上已优化”。
 
 ---
 
@@ -1639,30 +1800,42 @@ E4 样本必须至少包含：
 
 ### 24.1 实施顺序
 
-1. **Phase A：来源、route 与模型 migration**
+0. **Phase 0：纯业务门禁与诊断真实性**
+   - 修复 `channel_interaction_e4_diagnostics.py`：paused 纳入报告、全 expired 为 missed、无适用来源不冒充 met；
+   - Task schema/UI 显式配置并冻结 `business_max_comments_per_message`、`planned_fallback_max_bps`、comment mode 与 reply 目标；
+   - Planner 冻结 uncapped/capped 数量并执行 fallback cap；mixed/reply shortfall 不降级 direct，reply fallback zero Action；
+   - 账号跨帖曝光和真人互动/负反馈指标只有接入权威来源后才进入实现状态，未接入前固定 `business_effect_unproven`。
+
+1. **Phase A：讨论组拓扑、成员准入与恢复基础设施**
+   - 建立 append-only `ChannelDiscussionGroupBinding`、`ChannelDiscussionThreadBinding`、当前指针与 identity-change revision；把 binding/thread revision 冻结进 SourceRevision、Plan、Obligation、Action；
+   - 建立默认关闭的 Task `auto_join_discussion_enabled`、独立 `ensure_discussion_membership` Action、typed `DiscussionMembershipFact` 与 Gateway/reconcile；
+   - Dispatcher 校验 Action 冻结的 channel/source/discussion/thread/account/binding/task epoch，不读取 current binding 改写历史；top-level comment 与 comment reply 使用互斥 RPC 形态；
+   - 以 RPC class/code + operation stage 分类 Telegram 拒绝，来源级关闭必须先做权威 comment-capability reprobe；
+   - 实现 Listener error ownership、账号容量分层、T2 来源 JIT/future recovery 和三 Task exact snapshot/hash-locked preview/apply/readback 工具。
+2. **Phase B：来源、route 与模型 migration**
    - 建立带 Telegram `source_published_at` 的 append-only SourceRevision、发布时间 intake gate、编辑/删除 revision operation、独立 GroundingSnapshot/Assignment/QualityTargetRevision 和 Evaluation owner；
    - 实现 canonical route preview/apply/cutover 与 readback；
    - 扩展 `PostCommentPayload` 的 source/grounding/content hash identity；
    - 验证 legacy revision 不变。
-2. **Phase B：数量计划、抽取、时效与全量冻结**
+3. **Phase C：数量计划、抽取、时效与全量冻结**
    - 建立 PlanContract、发布时间起 3 天、stable eligible/readiness、零/小账号池、60%±5 个百分点整数目标和全部 ordinal；
    - 建立 Task-wide CapacityAllocationEpoch、连续 UTC capacity calendar 与跨消息 max-min 分配；
    - 将确定性抽取从 `ai_generator.py` 拆到独立模块；
    - 实现精确 span、老师状态、否定、多人物分块和时效有效期；
    - Planner 首次原子冻结关系、唯一 ContentMix、首个 snapshot/semantic capacity/quality target 与全部首版 assignment；Action 按 due JIT 物化，来源编辑只 append successor，不复用 Task config revision。
-3. **Phase C：Action-first GenerationJob 与 Provider**
+4. **Phase D：Action-first GenerationJob 与 Provider**
    - 专用 generation worker 在 Action 后创建/领取 Job，Dispatcher 不生成；
    - Prompt 只 render frozen assignment；
    - 来源数据结构隔离；
    - Provider schema 返回 slot/evidence identity。
-4. **Phase D：确定性 claim、独立 reviewer 与哈希闭环**
+5. **Phase E：确定性 claim、独立 reviewer 与哈希闭环**
    - 扩展 `comment_generation_quality.py`；
    - accepted 文本/hash、audit 与 identity 同事务保存；
    - Gateway 前重算 outbound hash，禁止发送后置改写；
    - 建立 Task `CommentFallbackPolicySnapshot`、消息级 `ChannelCommentFallbackPoolSnapshot`、每 Plan/kind `FallbackShuffleBagCursor` 与 `CommentFallbackSelection`，接入素材库 `image_meme` 的版本、指纹、ready cache 和 `download_reupload`；
    - 实现 20 表情/图片类型 bps 分配和 cursor-backed stable shuffle bag，planned fallback 不调用 Provider并可按 fallback-eligible 槽结算；
    - 正常质量失败按预算/latest-safe 转 emergency 同槽兜底，图片失效只在冻结池 append attempt，跨类型须显式开关；quantity 与质量 shortfall 分账，文本 hash、媒体 fingerprint 与质量 hash 分离。
-5. **Phase E：生命周期、UI/指标与灰度**
+6. **Phase F：生命周期、UI/指标与灰度**
    - pause/resume/stop/delete/source deleted 的 fence、capacity release、剩余曲线与 settlement；
    - AdultSafetyRuleSet 输入输出 fail-closed 与 zero-call；
    - 详情页、固定分母漏斗、current/recent/lifetime 状态与留存投影；
@@ -1680,9 +1853,14 @@ E4 样本必须至少包含：
 | `backend/app/services/task_center/comment_generation_quality.py` | 已校验 source revision/assignment/evidence hash identity，并保守要求 semantic reviewer 才计 grounded；完整老师/主亮点语义门仍不足 | 增加 teacher/reply/aspect 结构化 evaluator 与 accepted/outbound hash 闭环 |
 | `backend/app/services/task_center/comment_fulfillment.py` / `channel_comment_quality_target.py` | 当前合同由 0188 Plan 首次冻结全部 ordinal/账号/基础 assignment，0189 持有公平 allocation epoch，0190 只替换 pre-Gateway assignment，0191 持有 lifecycle，0192 冻结 append-only QualityTargetRevision/component 并让技术批次重新物化原 Action | 补完整 GroundingSnapshot、多老师/否定/时效 evidence component 与远端覆盖 |
 | `backend/app/services/task_center/dispatcher.py` | 当前可在 dispatch 路径生成内容，且过滤结果与实际发送正文身份未闭环 | 移除 Provider owner；只发送 `quality_accepted|fallback_ready`，按 content source 校验正文 hash 或图片 asset fingerprint |
+| `backend/app/integrations/telegram/gateway.py::_reply_channel_message_async/_reply_channel_media_async` | 当前请求总带 `comment_to=source_message_id`，reply 槽再附加 `reply_to_message_id`；Telegram/Telethon 语义中 `comment_to` 优先，无法证明 comment-level reply 关系生效 | 拆成互斥 RPC：top-level 用 frozen channel + `comment_to(source)`；comment reply 用 frozen discussion + `reply_to(remote comment)`；两者绑定 ThreadBinding 并回读 actual peer/reply/top identity |
 | `material-library-design.md` 对应素材服务与任务配置 UI | 已接入 `image_meme` 版本、缓存、显式成员、ZIP 原子归组、引用保护和成员 CAS，并成为评论 fallback selection owner | 保持素材组 ready/review_required/invalid 与版本不变量；后续完整读模型继续复用现有素材表，不复制素材 owner |
 | `channel_listener_snapshot_persistence.py` / `channel_comment_content_revision.py` / `channel_comment_source_delete.py` / `operations.py` / `telethon_content.py` | listener 已 append 幂等 SourceRevision、拒绝发布时间冲突并触发 0190 source-edit successor；0191 对历史页缺失消息做 exact-ID lookup，仅 `None/MessageEmpty` 触发 append-only source-deleted event 与 pre-Gateway 结算；采集仍只有 preview，Telegram edit_date identity 不完整 | 补精确正文与 edit date；preview 只作展示 |
 | `backend/tests/test_channel_comment_aspect_and_teacher_relevance.py` | 主要验证 Prompt 包含词 | 扩展为本 PRD §22 矩阵，不能只用 mock 输出证明质量 |
+| `ChannelDiscussionGroupBinding` / `ChannelDiscussionThreadBinding` / discussion probe（待新增） | 当前无版本化拓扑/thread owner，线上 `discussion_group_id=None` 无法形成可审计目标，频道帖子 ID 也不能冒充讨论组 thread root ID | 新增 Telegram 权威探测、稳定 revision、current pointer、source-to-thread mapping、frozen identity 与变化 fence；探测失败不能写成 unbound |
+| `ensure_discussion_membership` / `DiscussionMembershipFact`（待新增） | 当前评论 Action 可能直接撞 Telegram 成员门槛 | 新增默认关闭的 Task 授权、独立 Action/Attempt/Gateway/typed fact/reconcile；禁止以字符串或本地缓存冒充 membership ready |
+| `backend/app/schemas/task_center.py::AccountConfig` | 当前合法模式为 `all | group | manual`，`all + account_ids=[]` 代表全量候选 | read-model 沿用现有字段并分列 raw online、base candidate、membership ready/admission required/forbidden 和 effective ready |
+| Listener source-state / production recovery tooling | 当前 Task `last_error` 可残留，存量 Action/unknown 不具备本次专用恢复 manifest | 增加 error ownership、canonical listener 只读比对、T2 即时恢复回归及 SHA/revision/action-set hash 锁定工具 |
 
 ### 24.3 失败边界
 
@@ -1699,6 +1877,11 @@ E4 样本必须至少包含：
 - 把 Provider 自报 evidence ID 当作事实证明；
 - 在安全拒绝样本上做真实 Telegram 发送 E4；
 - 把本地测试、发布或 worker 健康写成 Telegram 完成。
+- 把 `GetFullChannel` 探测异常解释成频道未绑定，或在重复探活时无身份变化地递增 binding revision；
+- 未经 Task 明确授权自动加入讨论组，或在授权范围、节奏预算、Task 状态漂移后继续 Join；
+- 按英文错误字符串分类、把账号级不可访问升级成全局讨论组解散、把 `MSG_ID_INVALID` 直接结算为来源关闭；
+- 把 timeout/断连/Gateway 已开始的结果退出 unknown，或将单条技术 smoke 当作三日产品验收。
+- 把频道 `source_message_id` 当成讨论组 `discussion_root_message_id`，或在同一次发送同时传 `comment_to` 与 comment-level `reply_to` 并假定后者生效。
 
 ---
 
@@ -1728,3 +1911,276 @@ E4 样本必须至少包含：
 | 质量通过后能否过滤改写 | 否；改写必须重新完整验收 | 保证 accepted 与 outbound 正文相同 |
 | 成人安全歧义如何处理 | fail closed，Gateway zero-call | 未成年人、非自愿和剥削风险不可由模型猜测 |
 | E4 完成依据 | typed remote fact + `remote_message_id` | 生成、Action 和容器健康均不是远端事实 |
+| 讨论组身份是否允许人工配置 | 否，必须来自 Telegram `GetFullChannel.linked_chat_id` 远端事实 | 讨论组是 Telegram 原生拓扑，人工随意填数字容易发错群或被封号 |
+| 频道顶层评论与评论回复是否使用同一 RPC 参数 | 否；顶层评论只用 `channel + comment_to(source)`，评论回复只用 `discussion + reply_to(remote comment)` | `comment_to` 会优先于 `reply_to`；必须冻结 source-to-thread mapping，避免 reply 关系失效或 `MSG_ID_INVALID` |
+| 账号未加入讨论组的处理方式 | 前置 `ensure_discussion_membership` 动作并回读事实，禁止直接发评论 | 避免 Telegram 报错 `You join the discussion group before commenting` 导致 unknown 挂起 |
+| Telegram 讨论组未加入错误分类 | 仅权威 RPC class/code 在评论变更开始前明确拒绝时映射为 `discussion_membership_required` 且 `remote_mutation_started=false` | 安全退出这一已知无远端评论副作用的 unknown；timeout、断连、字符串歧义和 Gateway 已开始仍保持 unknown 并 reconcile |
+| 自动加入讨论组是否默认开启 | 否；Task 必须显式配置 `auto_join_discussion_enabled=true`，冻结精确账号范围与 pacing/budget 后才可执行 | 加群是外部 Telegram 变更，不能由评论失败隐式授权或静默扩大账号范围 |
+| 存量任务已过期的 20 条 closed_expired 能否重新打开补发 | 否；固化为历史 shortfall，不追赶旧消息 | 避免 72 小时后向已过期的历史广播集中注水产生封禁与业务骚扰 |
+| 历史 0 Attempt 的 pending Action 如何处理 | 经 hash-locked preview 确认为 pre-gateway 后收口为 `retired_pre_gateway_future_materialization` | 释放 obligation 指针与容量，不重放旧动作 |
+| Grounding 协议激活边界 | 建立 `ChannelCommentGroundingEnrollment`，只接管 `source_published_at >= enabled_at` 的新消息 | 新老消息严格隔离，老消息保持原审计，新消息启用完整广播锚定与老师相关性 |
+
+---
+
+## 26. 频道与讨论组（Discussion Group）版本化绑定合同
+
+### 26.1 业务背景与远端事实源
+
+在 Telegram 原生架构中，频道（Channel）本身是只读单向广播流，所谓的“频道评论区（Comments）”实际承载在该频道绑定的**关联超级群/讨论组（Discussion Group / Linked Chat）**。Telegram 会把频道 source post 映射为讨论组 thread root；客户端可用频道侧 `comment_to=source_message_id` 创建顶层评论，而对既有评论的回复必须使用讨论组侧 `reply_to=remote_comment_message_id`，两类身份与 RPC 不能混用。
+
+系统**严禁**允许操作员或后端在 `type_config` 中随意填入一个未经验证的 `discussion_group_id` 作为评论真相源。讨论组身份必须具备权威的远端事实与版本化追溯：
+
+1. **远端解析探活**：对目标频道调用 MTProto `channels.GetFullChannelRequest`，读取 Telegram 权威返回的 `full_chat.linked_chat_id`（或 `ChannelFull.linked_chat_id`）；
+2. **版本化绑定模型 `ChannelDiscussionGroupBinding`**：
+   - 自然键：`(tenant_id, channel_target_id, telegram_reference_revision)`；同一 `(tenant_id, channel_target_id)` 仅允许一个 current row；
+   - 身份字段：`channel_tg_peer_id`、`discussion_target_id`、`discussion_tg_peer_id`、`binding_identity_hash`；
+   - 版本链：`telegram_reference_revision`、`supersedes_binding_id`、`is_current`；只有 channel/discussion peer 身份或 authoritative unbound 状态发生变化时才追加 revision；
+   - 状态字段：`binding_status = active | unbound`、`first_observed_at`、`created_by_probe_event_id`；Binding row 身份与状态创建后不可变，当前 freshness/evidence 由最新成功 ProbeEvent 投影；
+   - 唯一约束：同一 channel 的 active current binding 唯一，`binding_identity_hash` 在同一 revision 内不可变。
+3. **探测事件与绑定事实分账**：append-only `ChannelDiscussionGroupProbeEvent` 以 `(tenant_id, channel_target_id, probe_request_id)` 幂等记录 `success | probe_failed`、operation stage、account、observed_at、fresh_until 和 evidence；相同 authoritative identity 的成功事件只推进 freshness projection，不新增/修改 Binding revision。`GetFullChannel` 成功且权威返回 `linked_chat_id in [None, 0]` 才能创建新的 immutable `unbound` revision；超时、断连、账号权限不足、RPC unknown 或解析异常只写 probe event，不能创建 `probe_failed` binding row、覆盖最后一个已知 binding 或推断为未绑定。
+4. **身份冻结**：v1.2 的 `ChannelMessageSourceRevision`、`ChannelCommentPlanContract`、每个 obligation 与 `post_comment` Action 必须持有相同的 `discussion_binding_id + telegram_reference_revision + binding_identity_hash`；Planner/Gateway 不得临场读取 current binding 替换冻结目标。
+5. **绑定变化**：发现换绑/解绑后，旧 binding 下尚未进入 Gateway 的 Action 由唯一 binding-change operation 显式终止并按新消息合同重规划；Gateway 已开始、success、typed remote confirmed 或 unknown 的 Action 保留旧身份并 reconcile，禁止换到新讨论组重放同一 ordinal。
+6. **未绑定处理**：权威 `unbound` 时任务进入 `channel_comment_discussion_unbound` 显式等待，冻结新评论物化并保留已有历史证据，**严禁**盲目派发评论。
+
+### 26.2 频道源帖—讨论线程映射与 Gateway RPC 形态
+
+频道广播消息与讨论组中的 thread root 是两个 peer 空间内的两个远端身份，不能只凭整数消息 ID 假定相等。对每个 v1.2 SourceRevision，系统必须通过 Telegram discussion-message 权威查询建立 append-only `ChannelDiscussionThreadBinding`：
+
+- 自然键为 `(tenant_id, channel_tg_peer_id, source_message_id, discussion_binding_revision, thread_revision)`，冻结 `discussion_tg_peer_id`、`discussion_root_message_id`、`mapping_identity_hash`、`first_observed_at`、`created_by_probe_event_id` 与 current/supersedes 指针；mapping row 创建后不可变；
+- append-only `ChannelDiscussionThreadProbeEvent` 持有 request identity、success/probe_failed、observed/freshness/evidence。同一 source + binding 的相同映射只追加 probe event 并推进 freshness projection；thread root 改变、来源删除或换绑才追加 mapping revision。探测失败保留最后已知映射并阻塞新 Action，不写伪 root；
+- **top-level comment**：Gateway 目标是 frozen channel peer，发送参数只使用 `comment_to=source_message_id`，由 Telegram 路由到 linked discussion；
+- **reply to an existing comment**：Gateway 目标是 frozen discussion peer，发送参数只使用 `reply_to=remote_comment_message_id`，并校验该 comment 属于同一 `discussion_root_message_id` 的 thread；不得同时传 `comment_to`，也不得把频道 source ID 当作 discussion reply ID；
+- Action/Gateway request/typed remote fact 必须冻结并回读 `rpc_mode=channel_comment_to | discussion_reply_to`、实际 target peer、source message、thread root、requested reply target、actual `reply_to/top_msg_id` 与 remote comment ID。任一 identity mismatch 都是 Gateway zero-call 或 reconcile blocker，不能以“发送成功”覆盖关系错误。
+
+---
+
+## 27. 账号讨论组正向前置准入与会员事实合同
+
+### 27.1 现有反向准入与正向评论准入的区别
+
+- **现有 `ensure_linked_channel_membership`**：用于“群聊场景下，某些群强制要求用户先关注其关联频道”，属于反向准入；
+- **本合同 `ensure_discussion_membership`**：用于“频道评论场景下，账号在发表评论前必须先成为频道关联讨论组的成员”，属于正向评论准入。二者属于不同场景，**严禁混淆或借道冒充**。
+
+### 27.2 外部变更授权与 MembershipFact
+
+自动加入讨论组属于真实 Telegram 外部变更，不是只读检查，也不能由一次评论失败隐式授权：
+
+1. Task 配置必须显式写入 `auto_join_discussion_enabled`，默认值为 `false`；只有 `true` 才允许创建 Join Action。关闭时，未加入账号只能标为 `discussion_admission_required` 并换用已有 membership-ready 账号或阻塞，不能静默加群；
+2. 启用时必须冻结 `authorized_account_scope_hash`、精确账号集合/账号组 revision、`admission_pacing_policy_version` 与运营配置的 join budget；PRD 不提供隐藏默认次数。超出节奏/预算、Task 非 running、epoch/config revision 漂移、pause/stop/delete 均禁止新增 Join；
+3. `DiscussionMembershipFact` 自然键为 `(tenant_id, account_id, discussion_tg_peer_id, discussion_binding_revision, fact_revision)`，并持有 `membership_status = joined | already_joined | not_participant | restricted | banned | inaccessible | unknown`、`can_send`、`observed_at`、`fresh_until`、`evidence_ref`、`supersedes_fact_id`、`is_current`；只有 Telegram 权威回读可以写 ready；
+4. `ensure_discussion_membership` Action 以 `(task_id, task_lifecycle_epoch, task_config_revision, account_id, discussion_binding_revision)` 为逻辑幂等键，必须经过 Action -> ExecutionAttempt -> Gateway -> typed remote fact；`joined/already_joined + can_send=true` 才能解锁评论；
+5. `FloodWait` 使用服务端绝对重试时间并保持原 Action identity；private/invite-only、restricted、banned 分别类型化阻塞。Gateway 已开始后的 timeout/断连/终态不明写 membership unknown 并 reconcile，禁止再次 Join 或直接假定 ready；
+6. 人工关闭自动入组只停止未来未创建的 Join；已进入 Gateway 或 unknown 的动作保持 identity 与对账责任，不以配置回滚伪造未加入。
+
+### 27.3 正向前置准入全链路流程
+
+```mermaid
+sequenceDiagram
+    participant P as 评论规划器 (Planner)
+    participant AC as 账号池与准入 (Admission)
+    participant A as 动作执行器 (Dispatcher/Worker)
+    participant G as Telegram Gateway
+    participant TG as Telegram 远端
+
+    P->>AC: 选中评论候选账号 (Account X)
+    AC->>AC: 查询 Account X 在讨论组的 MembershipFact
+    alt 账号已在讨论组且 can_send = true
+        AC-->>P: 准入就绪 (membership_ready)
+        P->>P: JIT 创建 post_comment Action (绑定 Channel, Message, Discussion, Account)
+    else 账号未加入且 Task 已显式授权自动入组
+        AC-->>P: 需前置加群 (membership_required)
+        P->>A: 创建独立的 ensure_discussion_membership Action
+        A->>G: 调用 channels.JoinChannelRequest(discussion_peer)
+        G->>TG: 执行加群
+        TG-->>G: JoinChannel 成功
+        G-->>A: 权威回读并写 typed remote fact (joined / already_joined + can_send)
+        A-->>P: 准入事实闭环 -> 触发 post_comment Action 物化
+    else 账号未加入且未授权自动入组
+        AC-->>P: admission_required，换用 ready 账号或显式阻塞
+    end
+```
+
+### 27.4 Dispatcher 发送前 7 维一致性硬门禁
+
+Dispatcher 在将 `post_comment` 动作提交给 Gateway 前，必须在同一事务内完成以下 7 维身份校验：
+1. **冻结绑定 (`discussion_binding_id/revision/hash`)**：必须等于 Action 创建时冻结的 binding，且该 binding 的 channel/discussion 身份完整；不得要求它仍是 current 后再用 current 身份覆盖；
+2. **频道 Peer (`channel_tg_peer_id`)**：必须与该冻结 binding 中的频道一致；
+3. **源广播消息 ID (`source_message_id`)**：必须属于该频道的有效 frozen SourceRevision，且 source/comment-capability fence 未关闭；
+4. **讨论组 Peer (`discussion_tg_peer_id`)**：必须与该冻结 binding 的讨论组一致；
+5. **讨论线程与 RPC mode**：必须匹配 frozen `ChannelDiscussionThreadBinding`；top-level 仅 `channel + comment_to(source)`，comment reply 仅 `discussion + reply_to(remote comment)`，禁止混用；
+6. **执行账号 ID (`account_id`)**：必须具备同一 discussion peer/binding revision 的 fresh `DiscussionMembershipFact(status in ['joined', 'already_joined'], can_send = true)`；
+7. **任务代次 (`task_lifecycle_epoch`)**：必须与当前正在运行的 Task epoch/config revision 一致。
+
+任一维度不匹配时，Dispatcher 立即拒绝发送并写类型化拦截原因，**严禁向 Telegram 派发非法动作**。
+
+---
+
+## 28. Telegram 错误分类、映射与重规划闭环
+
+### 28.1 现有未知错误与精准映射
+
+此前由于缺乏前置准入，Telegram 在账号直接向讨论组 `comment_to` 时会返回成员、写权限、访问或消息身份类 RPC Error。历史日志中的英文文案只可作为展示证据，**不得**作为状态机判定条件；分类 owner 必须使用 Telethon exception class / Telegram RPC error code、operation stage 与 Gateway mutation fence。
+
+已知 authoritative pre-mutation 拒绝可以安全退出 unknown；系统仍必须保留真正的 `unknown_after_send/closed_unknown`：请求已交给 Gateway、连接中断、timeout、返回无法解析或远端终态不明确时，禁止重放并进入 reconcile。
+
+### 28.2 错误映射与重规划规范
+
+| Telegram RPC class/code + stage | 系统类型化错误代码 | `remote_mutation_started` | 后续状态流转与处置 |
+| :--- | :--- | :--- | :--- |
+| Telegram/Telethon 的成员未加入类型（例如 `USER_NOT_PARTICIPANT` / 对应 exception），且 `post_comment` 在 RPC authoritative reject 前未形成远端变更 | `discussion_membership_required` | `false` | 释放该评论 Action 的可移动 owner；写 `not_participant` fact；仅在 Task 显式授权时创建 Join Action，否则换用 ready 账号或阻塞；义务回到 `replan_required`。不得匹配英文错误句子。 |
+| `CHAT_WRITE_FORBIDDEN` / `CHAT_RESTRICTED` / 对应 exception，且为 authoritative pre-mutation reject | `discussion_send_forbidden` | `false` | 写该账号/讨论组 binding 下 `can_send=false` 的 fact，移出该讨论组候选并重排；不得推断其他账号也不可发送。 |
+| `CHANNEL_PRIVATE` / `CHANNEL_INVALID` / 对应 exception | `discussion_access_rejected_for_account` | 仅 authoritative pre-mutation reject 为 `false` | 先记录账号级 access fact 并使用有权限探测账号复核 binding；不能仅凭一个账号失败宣称讨论组已解散或全局 unbound。复核失败保持 blocked/probe_failed。 |
+| `USER_BANNED_IN_CHANNEL` / 对应 exception，且为 authoritative pre-mutation reject | `account_banned_in_discussion` | `false` | 写账号级 banned fact，任务重新选择账号；不得污染其他账号或 channel binding。 |
+| `MSG_ID_INVALID` / 对应 exception | `source_comment_identity_reprobe_required` | 仅 authoritative pre-mutation reject 为 `false` | 不直接关闭义务；先以 frozen channel/source/binding identity 做 Telegram exact message + comment capability 权威复核。只有证明该来源不存在或评论已关闭，才写 typed source fact 并把 pre-Gateway obligations 结算为 `closed_feature_disabled`；身份映射错误则修 identity/replan。 |
+| timeout、断连、RPC response unknown、Gateway 已开始或无法证明未开始 | `comment_remote_result_unknown` | `unknown/true` | 保留 Action、payload、binding、reservation 与 obligation identity，禁止替代发送，进入 Gateway journal/Telegram readback reconcile；不得为了减少 unknown 强行分类。 |
+
+`remote_mutation_started=false` 必须由 Gateway 在对应 RPC 调用阶段记录的权威拒绝证明，不能由异常名称、英文 message 或“未拿到 remote_message_id”反推。
+
+---
+
+## 29. Listener 状态投影、诊断与多维监控修正
+
+### 29.1 Listener 错误残留与精准清理机制
+
+- **历史缺陷**：成都阿楠等任务的 Listener 状态虽已恢复为 `ready`，但 `Task.last_error` 依然长期残留 `channel_source_snapshot_unavailable`。
+- **正规清理合同**：
+  - 当收到 `channel_source_snapshot_ready` 事件时，系统**仅且必须**清除属于**同一 Task 订阅（`TaskSourceSubscription`）、同一 target revision** 的 `channel_source_snapshot_*` 错误；
+  - 可清理的错误必须携带结构化 ownership：`task_id + subscription_id + target_reference_revision + listener_state_revision + error_code`；ready 事件只能 supersede 同 ownership 的 snapshot error，不能清理其他 target、其他代次或业务执行错误；
+  - `Task.last_error` 仅是由当前有效 error records 计算的兼容 projection，不是独立 writer；任务与前端健康状态必须以 `TaskSourceSubscription + ListenerSourceState + current error ownership` 的联合实时投影为准，不再由历史非空字符串单方面决定。
+
+### 29.2 监控与诊断多维投影要素
+
+标准频道互动诊断必须枚举 `running|paused|completed` 的非删除 Task，并把 lifecycle 与业务 outcome 分开：paused 显示 `goal_status=paused` 并保留 open/pending/unknown 债务，但不因暂停本身伪造成 met；running Task 只有存在适用 obligation 且 required typed remote fact 达标时才可 `met`。零 obligation 为 `idle|source_unproven`，全部 obligation=`closed_expired` 且零远端事实为 `missed`，不能因 due 分母归零显示 met。发布 Gate 可按 Task lifecycle 决定 paused 是否阻断扩大，但报告不得漏项。
+
+前端与运维诊断工具必须清晰展示以下 4 个独立维度：
+1. **当前快照状态 (`Snapshot State`)**：`ready`（正常监听中）、`pending`（等待抓取）、`unavailable`（监听器未就绪/缺账号）；
+2. **最后成功采集时间 (`Last Collected At`)**：Listener 成功同步频道的最新时间戳；
+3. **最后一条来源消息发布时间 (`Last Message Published At`)**：频道内真实最新帖子的发布时间；
+4. **状态明确分流**：
+   - **频道无新消息（Normal Idle）**：Listener 状态为 `ready` 且最近消息已处理完，系统处于正常等待新帖广播状态；
+   - **Listener 采集失败（Error Blocker）**：Listener 状态为 `unavailable` 或报错，属于采集链路故障。
+
+### 29.3 只读 Telegram 最新 Message ID 与数据库比对规则
+
+运维诊断脚本提供只读的 Telegram 频道最新消息身份与本地数据库 SourceRevision/Snapshot 身份的快速校验：
+- Telegram 查询必须复用该订阅的 canonical listener worker/account，并在执行前证明没有第二个客户端占用或并发消费同一 Session；禁止为诊断临时登录、替换账号或破坏 listener update state；
+- 比对键为 `channel_tg_peer_id + source_message_id + source_published_at/edit identity`，不能只比较跨 peer 不唯一的整数 Message ID；
+- **两端一致且 listener state ready**：仅证明本次读取时没有未采集的更新，任务等待新消息属预期行为；
+- **Telegram 更新但本地未更新**：定位 Listener 账号权限、网络连通性、update state 或分页/即时事件处理问题，并保留原订阅 identity；
+- Telegram 查询自身失败只能报告 `diagnostic_probe_failed`，不能据此声明“频道无新消息”或修改 Task/Listener 状态。
+
+---
+
+## 30. 账号数量诊断与 Read-model 统一规范
+
+### 30.1 严禁裸查 `status = 'active'`
+
+- 生产数据库中账号状态的权威在线枚举是 `在线`（或经过统一映射的标准 state），且实际业务可用账号必须经过以下过滤流水线：
+  1. `deleted_at IS NULL`（未被软删除）；
+  2. `TgAccount.status = '在线'`，并通过现有认证 Session/授权健康检查；不得引入不存在的 `login_status` 作为真相源；
+  3. 满足账号池（Account Pool）和所属租户隔离；
+  4. 未被标记为专用隔离账号（如专属注册/专属监听账号）。
+
+### 30.2 统一诊断与前端 Read-model 字段
+
+统一展示以下结构化模型：
+- `selection_mode`：沿用当前 `AccountConfig` 的 `all`（全部账号）/ `group`（`account_group_id`）/ `manual`（`account_ids`），不得另造 `tags/custom`；
+- `configured_account_ids`：`manual` 模式显式账号数量；`all` 模式下 `account_ids=[]` 表示全量选择，不表示账号池为空；
+- `raw_online_count`：租户内原始在线账号总数（例如 1360）；
+- `base_operational_candidate_count`：经过 tenant、selection mode、软删除、Session、隔离用途等基础过滤后的候选数；历史快照中的 1348 只能表达这一层，不得直接称为评论就绪；
+- `discussion_membership_ready_count`：对 frozen discussion binding 具备 fresh `joined/already_joined + can_send=true` fact 的数量；
+- `discussion_admission_required_count`：基础候选中尚未加入、且是否能自动 Join 仍取决于 Task 授权/预算的数量；
+- `discussion_forbidden_count`：在该 binding 下 private/restricted/banned/can_send=false 的账号数量；
+- `comment_contract_eligible_count`：消息首次规划时可进入 60% 数量分母的稳定集合，只包含 membership-ready 账号，以及 `auto_join_discussion_enabled=true` 时位于 frozen authorized scope 且已取得 join budget/reservation 的 admission candidates；未授权、超预算和 forbidden 账号不能进入分母。该集合冻结后，后续 Join 失败形成真实 shortfall，不能下调 required count；
+- `effective_comment_ready_count`：最终同时满足基础候选、frozen binding、fresh membership/can_send、当前执行 readiness 与容量门禁的账号数；这是消息数量 Plan 的可执行容量，不等于 `raw_online_count` 或 `base_operational_candidate_count`；
+- **显示口径**：当 `account_ids=[]` 且 `selection_mode=all` 时，界面显示“全部账号”，并分列上述计数，例如“基础候选 1348 / 评论就绪待远端核验”；在 MembershipFact 未建立前禁止显示“可用评论账号 1348”，更禁止显示“账号数 0”。
+
+---
+
+## 31. 消息级过期结算与存量任务安全迁移合同（三大线上 Task 独立处置）
+
+### 31.1 消息级结算冻结合同
+
+每个频道消息的评论履约生命周期必须以独立的消息级合同进行不可变结算，包含：
+- `source_published_at`：Telegram 权威消息发布时间；
+- `window_contract_version`：消息首次创建时冻结的窗口合同版本；v1/v1.1/v1.2 可为 3 天 / 72 小时，legacy 以其历史冻结值为准；
+- `deadline_at`：按冻结 `window_contract_version` 计算的权威截止时间；不得统一把所有 legacy 消息改成 `source_published_at + 72h`；
+- `required_count`：冻结的应评论目标数（60% ± 5%）；
+- `confirmed_count`：实际远端确认成功的评论数；
+- `shortfall_count`：结算短缺数（`max(0, required_count - confirmed_count)`）；
+- `closure_reason`：关闭原因（如 `window_expired` / `terminated_by_operator`）；
+- `settlement_owner`：执行结算的事务与代次。
+
+存量历史义务必须严格按照其**当时冻结的合同版本**进行结算，**严禁**被当前部署的新代码或新配置进行追溯性重解释。
+
+### 31.2 当前生产快照的证据边界
+
+本节三任务数量是 **2026-09-02、部署 SHA `37dfdd80fec7…`** 的只读排障快照，只用于制定迁移方案，不是永久常量，也不授权生产写入。任何 apply 前必须重新查询并冻结：
+
+- `expected_deployed_sha`、`task_id`、Task status、`task_lifecycle_epoch`、`task_config_revision`、target/binding revision；
+- 精确 Action/obligation/Attempt/typed fact 集合与分类计数、`action_set_hash`、unknown reconciliation manifest；
+- `preview_batch_id + preview_hash`、计划变更的 exact row IDs、旧值/新值、操作者与审批证据、生成时间与有效期；
+- apply 在同一事务复核所有 expected identity；SHA、Task/target/binding revision、集合 hash 或状态任一漂移则该 Task **零写入停止**；
+- apply 后由独立只读连接回读 Task、Action、obligation、Attempt/Gateway、typed fact 和 tombstone/审计守恒，结果绑定同一 batch/hash。命令成功、更新行数或服务健康不能替代回读。
+
+### 31.3 线上 3 个存量任务独立处置方案
+
+| 任务名称 | 任务 ID | 当前状态 | 独立安全处置方案与合同 |
+| :--- | :--- | :--- | :--- |
+| **【成都阿楠】** | `ef94507d-6f09-4e19-8727-d978643e06a1` | `running` | 1. **保留 `running`** 状态，但 v1.2 enrollment writer fence 在发布门禁前保持关闭；<br/>2. 优先修复 Listener 状态投影、T2 来源即时恢复、讨论组版本化绑定及账号准入；<br/>3. 既有的 20 条 `closed_expired` 义务作为历史 shortfall 固化归档，**严禁重新打开或集中补发**；<br/>4. 门禁通过后只让 `source_published_at >= enabled_at` 的下一条全新消息进入技术 Canary。 |
+| **【阿哥日记】** | `16c8bbc2-9465-4eb2-bfab-65ad52048b2c` | `paused` | 1. **继续保持 `paused`**；<br/>2. 对快照中的 9 条旧 epoch、零 Attempt `pending` Action 按 §31.2 重新取数并执行 Hash-locked Preview；<br/>3. 仅对 manifest 证明无 Claim、无 Gateway 派发、无 unknown/typed fact 的 exact IDs 收口为 `retired_pre_gateway_future_materialization` 并释放 obligation 指针；<br/>4. 其余历史 open/pending obligations 按各自 frozen window 结算，不追赶旧消息；<br/>5. 三日产品 Canary 验收通过后，操作员以新 expected revision 单 Task Resume。 |
+| **【郑州楼凤】** | `64f009db-7212-4402-8665-cd4ea8817572` | `paused` | 1. **严禁直接 Resume**；<br/>2. 先补全讨论组绑定与账号前置准入；<br/>3. 对快照中的 92 条 `closed_unknown` 逐条做 Gateway Journal 与 Telegram 远端历史对账：仅当 authoritative reconcile 证明未产生远端评论时才可形成 audited no-effect terminal；无法证明的保持 unknown identity/hold，禁止重放；<br/>4. 快照中的 370 条无 Attempt pending Action 只有经 §31.2 Preview 证明 pre-Gateway 才能 exact-ID 安全退休；<br/>5. 保留旧 Task 完整审计记录，产品验收后新建 Successor Task，从 Enrollment 后全新消息开始履约。 |
+
+---
+
+## 32. Grounding 协议全量激活门禁与 Enrollment 边界合同
+
+### 32.1 8 维严格激活门禁 (Activation Gate)
+
+系统在开启新版 Grounding 协议时，必须在 Task 配置保存门禁（`task_center.py`）中强制校验以下 8 项参数：
+1. `ai_two_stage_enabled == true`（两阶段生成已开启）；
+2. `ai_content_route_v2_enabled == true`（V2 路由已开启）；
+3. `channel_comment_grounding_v1_enabled == true`（Grounding 开关已开启）；
+4. `rolling_window_days == 3`（必须为 3 天滚动窗口）；
+5. `daily_comment_cap > 0`（必须配置正数每日评论上限）；
+6. `生成模型 != 评审模型`（生成与独立评审模型必须物理隔离）；
+7. `canonical_content_route` 与内容策略版本完整；
+8. 兜底策略中 Unicode 表情与图片表情包权重合计精确等于 `10000` bps。
+
+上述 8 项是内容/Grounding 配置门禁；另有不可被配置绕过的运行时 discussion readiness gate：Enrollment 时必须存在 fresh active binding；每条新消息建立 Plan 前必须取得 authoritative ThreadBinding，并至少有一个 membership-ready 账号，或在显式 auto-join 授权下为 exact admission candidates 取得 join budget/reservation。否则消息状态为 `discussion_binding_blocked | discussion_membership_blocked`、Gateway zero-call，不能以基础候选数创建虚假可执行容量。
+
+### 32.2 消息隔离边界 `ChannelCommentGroundingEnrollment`
+
+- 激活 Grounding 协议时，系统为该 Task 创建 append-only `ChannelCommentGroundingEnrollment`，至少冻结 `tenant_id`、`task_id`、`expected_task_config_revision`、`task_lifecycle_epoch`、`enabled_at`、`grounding_contract_version=channel_comment_business_grounding_v1_2`、`contract_versions_hash`、`discussion_binding_id/revision/hash`、`activation_gate_snapshot_hash`、`operator_id`、`approval_evidence_ref` 与审计事件；同一 Task 同一 config revision 仅允许一个 active enrollment；
+- 写入事务必须重新校验 8 维门禁、Task running、预期配置/生命周期代次、frozen discussion binding freshness 与部署合同版本；任一漂移则拒绝创建，不允许部分启用；
+- **生效边界**：该 Enrollment **仅且只接管 `source_published_at >= enabled_at` 的新频道消息**：
+  - 老消息不新增 60% obligation；
+  - 老 Action / Attempt / Remote Fact 保持原身份不可变；
+  - 老 `closed_expired` / `closed_unknown` 不因配置或开关变更而重新打开；
+  - 只有新消息才使用 v1.2 的讨论组绑定/成员准入、老师艺名提取、广播多特征主动挖掘、多 Slot 切入与 20 表情/图片兜底。
+
+---
+
+## 33. 发布、验证与线上恢复顺序
+
+为确保线上生产环境安全无损，整体发布与恢复必须按以下顺序严格执行：
+
+```mermaid
+flowchart TD
+    S0[0. 精确生产快照与审批<br/>SHA + Task revisions + action-set hash] --> S1[1. 代码/Migration 发布<br/>writer fence 默认关闭 + 独立读回]
+    S1 --> S2[2. T2 来源即时恢复 Canary<br/>JIT/future source + AI lane non-regression]
+    S2 --> S3[3. Hash-locked 存量 apply/reconcile<br/>exact IDs + drift stop + readback]
+    S3 --> S4[4. 单消息技术 Smoke<br/>自然新帖或显式授权的受控 canary channel]
+    S4 --> S5[5. 三日产品 Canary<br/>100 typed facts + 30 blind review]
+    S5 --> S6[6. 逐 Task 受控恢复<br/>Resume 或 Successor]
+```
+
+1. **Step 0（快照与授权）**：按 §31.2 重新读取部署 SHA、三 Task 状态/revision、binding、Action/Attempt/fact 集合并生成 preview hash；批准内容必须分开列出代码发布、历史数据 apply、auto-join、技术 smoke 与任务恢复，彼此不隐式授权；
+2. **Step 1（代码与数据库迁移）**：部署 binding、membership、RPC 分类、Listener 投影、账号 read-model 与恢复工具；Enrollment/auto-join/历史 apply writer fence 默认关闭。独立读回 deployed SHA、migration head、worker readiness 和所有默认开关；
+3. **Step 2（T2 来源恢复硬门禁）**：先在无评论外部变更的条件下证明新到消息可由 listener 即时事件/JIT 或 future recovery 纳入 SourceRevision/Plan，并验证既有 AI 生成 lane 不回归。只证明定时 T1 扫描、手工补数据或旧快照不通过；
+4. **Step 3（存量任务安全收口）**：对【阿哥日记】与【郑州楼凤】只执行已批准且 hash-locked 的 exact-ID apply/reconcile；92 条 historical unknown 只有 typed authoritative no-effect fact 才能退出 unknown。apply 后独立做守恒回读；
+5. **Step 4（技术单消息 Smoke）**：成都阿楠满足 8 维门禁并写 v1.2 Enrollment 后，等待频道自然发布的下一条消息；如业务必须主动制造样本，只能使用另行明确批准的受控 canary channel，不得擅自向真实业务频道发广播。验证 `source -> discussion binding -> thread mapping -> membership -> Action RPC mode -> Attempt/Gateway -> typed remote comment fact` 一条完整 E4；
+6. **Step 5（三日产品 Canary）**：技术 smoke 仅证明链路可通，不能解锁全部恢复。继续满足 §21.1 的连续三日、至少 100 条 typed facts、30 条预注册盲审、3 个内容簇、10 个 distinct 账号、全量 outcome manifest 和停止条件，产品验收通过后才允许扩大；
+7. **Step 6（逐 Task 恢复）**：使用新的 expected SHA/revision/binding readback 逐一决定【阿哥日记】单 Task Resume 与【郑州楼凤】Successor；每个 Task 独立授权、独立观察窗口，前一 Task 未出现业务 E4/稳定性证据时不批量恢复下一 Task。
+
+任何阶段失败都只关闭尚未创建的新 enrollment/join/comment writer；已进入 Gateway、unknown、success 或 typed fact 的身份保持并 reconcile。发布成功、容器健康、Action 数量、单条 smoke 或成都阿楠恢复均不能单独声明三频道 `production_fixed`。

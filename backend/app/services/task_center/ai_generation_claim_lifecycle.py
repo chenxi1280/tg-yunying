@@ -14,6 +14,8 @@ from .ai_quality_stats import record_provider_admission_unavailable
 def mark_generation_claim(action: Action, owner: str, token: str) -> None:
     payload = dict(action.payload) if isinstance(action.payload, dict) else {}
     payload["ai_generation_status"] = "generating"
+    if action.task_type == "channel_comment":
+        payload["comment_lifecycle_state"] = "generation_claimed"
     payload["ai_generation_claim_owner"] = owner
     payload["ai_generation_claim_token"] = token
     action.payload = payload
@@ -122,6 +124,8 @@ def release_generation_claim(action: Action, payload: dict) -> None:
         and not str(payload.get("message_text") or "").strip()
     ):
         payload["ai_generation_status"] = "pending"
+        if action.task_type == "channel_comment":
+            payload["comment_lifecycle_state"] = "pending_generation"
     payload["ai_generation_claim_owner"] = ""
     payload["ai_generation_claim_token"] = ""
     action.payload = payload

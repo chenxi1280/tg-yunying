@@ -305,12 +305,21 @@ def _obligation_snapshot(session, task: Task, since: datetime, now: datetime) ->
     return _view_obligations(session, task, since, now)
 
 
-def _blockers(task: Task, obligations: dict[str, Any], actions: dict[str, Any], attempts: dict[str, Any]) -> list[str]:
+def _blockers(
+    task: Task,
+    *,
+    obligations: dict[str, Any],
+    actions: dict[str, Any],
+    attempts: dict[str, Any],
+) -> list[str]:
     blockers: list[str] = []
     if task.status != "running":
         blockers.append("task_not_running")
-    if sum(obligations["status_counts"].values()) == 0:
+    status_counts = obligations["status_counts"]
+    if sum(status_counts.values()) == 0:
         blockers.append("interaction_obligation_missing")
+    if _expired_only_without_remote_fact(obligations):
+        blockers.append("interaction_expired_unmet")
     if obligations["due_confirmed"] < obligations["due"]:
         blockers.append("interaction_due_unmet")
     if actions["due_lifecycle_mismatch_count"]:
@@ -325,11 +334,42 @@ def _blockers(task: Task, obligations: dict[str, Any], actions: dict[str, Any], 
     return blockers
 
 
-def _snapshot(session, task: Task, since: datetime, now: datetime) -> dict[str, Any]:
+def _expired_only_without_remote_fact(obligations: dict[str, Any]) -> bool:
+    status_counts = obligations["status_counts"]
+    expired = int(status_counts.get("closed_expired") or 0)
+    required = sum(
+        int(count)
+        for status, count in status_counts.items()
+        if status not in NON_REQUIRED_OBLIGATION_STATUSES
+    )
+    return (
+        expired > 0
+        and required == 0
+        and int(obligations["post_release_remote_fact_count"] or 0) == 0
+    )
+
+
+def _goal_status(task: Task, blockers: list[str]) -> str:
+    if task.status == "paused":
+        return "paused"
+    if "interaction_expired_unmet" in blockers:
+        return "missed"
+    return "met" if not blockers else "not_met"
+
+
+def _snapshot(
+    session,
+    task: Task,
+    *,
+    since: datetime,
+    now: datetime,
+) -> dict[str, Any]:
     obligations = _obligation_snapshot(session, task, since, now)
     actions = _action_snapshot(session, task, since, now)
     attempts = _attempt_snapshot(session, task, since)
-    blockers = _blockers(task, obligations, actions, attempts)
+    blockers = _blockers(
+        task, obligations=obligations, actions=actions, attempts=attempts,
+    )
     return {
         "task_id": task.id,
         "task_name": task.name,
@@ -342,7 +382,7 @@ def _snapshot(session, task: Task, since: datetime, now: datetime) -> dict[str, 
         "actions": actions,
         "attempts": attempts,
         "blockers": blockers,
-        "goal_status": "met" if not blockers else "not_met",
+        "goal_status": _goal_status(task, blockers),
     }
 
 
@@ -355,15 +395,15 @@ def main() -> None:
             select(Task)
             .where(
                 Task.type.in_(TASK_TYPES),
-                Task.status.in_(("running", "completed")),
+                Task.status.in_(("running", "paused", "completed")),
                 Task.deleted_at.is_(None),
             )
             .order_by(Task.type, Task.name, Task.id)
         ))
         print("CHANNEL_INTERACTION_TASK_COUNT=" + str(len(tasks)), flush=True)
         for task in tasks:
-            snapshot = _snapshot(session, task, since, now)
-            failed = failed or snapshot["goal_status"] != "met"
+            snapshot = _snapshot(session, task, since=since, now=now)
+            failed = failed or snapshot["goal_status"] not in {"met", "paused"}
             print(
                 "CHANNEL_INTERACTION_E4="
                 + json.dumps(snapshot, ensure_ascii=False, sort_keys=True),

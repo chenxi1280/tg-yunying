@@ -35,6 +35,7 @@ from ..channel_view_daily_identity import (
 from ..channel_membership import channel_member_accounts, gate_channel_membership
 from ..channel_view_capacity import record_unique_account_capacity
 from ..channel_view_targets import (
+    channel_view_target_due,
     ensure_channel_view_targets,
     target_messages,
 )
@@ -155,17 +156,19 @@ def _view_plan_inputs(
     *,
     config: dict,
 ) -> tuple["ViewPlanInputs", dict[int, int], int] | None:
-    daily_target, total_target = _view_target_limits(config)
     record_unique_account_capacity(task, ())
     if not scope.messages:
         return None
     task_daily_cap = int(config.get("task_daily_view_safety_cap") or 0)
     effective_daily_cap = task_daily_cap if task_daily_cap > 0 else None
-    capacity_target = max(target.daily_target_snapshot for target in scope.targets_by_message.values())
+    capacity_target = max(
+        (target.daily_target_snapshot for target in scope.targets_by_message.values()),
+        default=1,
+    )
     account_ids_by_message = view_account_ids_for_messages(session, task, scope.ledger, scope.messages)
     identity_scan_floor = max(
-        capacity_target + len(account_ids)
-        for account_ids in account_ids_by_message.values()
+        (capacity_target + len(account_ids) for account_ids in account_ids_by_message.values()),
+        default=capacity_target,
     )
     accounts = _view_accounts(
         session,
@@ -178,6 +181,15 @@ def _view_plan_inputs(
     if not accounts:
         task.last_error = "没有可用账号，等待账号恢复后继续执行"
         return None
+    account_pool_size = len(accounts)
+    daily_target, total_target = _view_target_limits(config, candidate_count=account_pool_size)
+    if config.get("account_coverage_mode") == "all_accounts_daily" and config.get("per_message_daily_view_target") is None:
+        for target in scope.targets_by_message.values():
+            target.daily_target_snapshot = account_pool_size
+            if int(target.total_target_snapshot or 0) <= 0:
+                target.effective_target_snapshot = account_pool_size
+            due = channel_view_target_due(target, scope.ledger, task.pacing_config or {}, now=scope.now)
+            target.due_count = max(int(target.due_count or 0), due)
     record_channel_capacity_warning(task, "浏览", capacity_target, len(accounts))
     daily_counts = view_daily_counts(session, scope.ledger)
     task_remaining_today = _remaining_task_daily_capacity(effective_daily_cap, daily_counts.total)
@@ -200,12 +212,14 @@ def _view_plan_inputs(
     return inputs, completed_counts, total_target
 
 
-def _view_target_limits(config: dict) -> tuple[int, int]:
-    daily = int(
-        config.get("per_message_daily_view_target")
-        or config.get("target_views_per_message")
-        or 1
-    )
+def _view_target_limits(config: dict, candidate_count: int | None = None) -> tuple[int, int]:
+    configured_daily = config.get("per_message_daily_view_target") or config.get("target_views_per_message")
+    if configured_daily is not None and str(configured_daily).strip() != "" and int(configured_daily) > 0:
+        daily = int(configured_daily)
+    elif candidate_count is not None and candidate_count > 0:
+        daily = candidate_count
+    else:
+        daily = 1
     raw_total = config.get("per_message_total_view_target")
     if raw_total is None or str(raw_total).strip() == "" or int(raw_total) <= 0:
         total = 0

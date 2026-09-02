@@ -1161,13 +1161,13 @@ export default function TaskCenterView({
   }
 
   function channelViewProductionPayload(values: any) {
-    const dailyTarget = values.per_message_daily_view_target ?? values.target_views_per_message ?? 50;
+    const dailyTarget = values.per_message_daily_view_target ?? values.target_views_per_message ?? null;
     return {
       initial_message_scope: values.message_scope === 'dynamic_new' ? 'new_only' : values.message_scope ?? 'latest_n',
       latest_message_count: ['latest_n', 'dynamic_new'].includes(values.message_scope) ? values.message_count ?? 10 : null,
       listen_new_messages: values.listen_new_messages !== false,
       per_message_daily_view_target: dailyTarget,
-      per_message_total_view_target: values.per_message_total_view_target ?? Math.max(300, dailyTarget),
+      per_message_total_view_target: values.per_message_total_view_target ?? (dailyTarget ? Math.max(300, dailyTarget) : 0),
       message_active_days: values.message_active_days ?? 3,
       task_daily_view_safety_cap: 1000000,
       max_views_per_account_per_day: 1000000,
@@ -1181,9 +1181,11 @@ export default function TaskCenterView({
     const payload: Record<string, any> = {
       ...base,
       ...(includeScope ? channelScopePayload(values) : {}),
-      comment_mode: values.comment_mode ?? 'comment',
+      comment_mode: values.comment_mode ?? 'mixed',
       reply_to_message_ids: csvNumbers(values.reply_to_message_ids),
       reply_min_per_message: values.reply_min_per_message ?? 0,
+      business_max_comments_per_message: values.business_max_comments_per_message ?? 80,
+      planned_fallback_max_bps: values.planned_fallback_max_bps ?? 2000,
       rule_set_id: values.rule_set_id ?? null,
       rule_set_version_id: values.rule_set_version_id ?? null,
       ai_model: values.ai_model ?? '',
@@ -1194,6 +1196,11 @@ export default function TaskCenterView({
       ai_content_allowed_routes: values.ai_content_route_v2_enabled ? csvStrings(values.ai_content_allowed_routes) : [],
       ai_content_attestation_ids: values.ai_content_route_v2_enabled ? csvStrings(values.ai_content_attestation_ids) : [],
       channel_comment_grounding_v1_enabled: Boolean(values.channel_comment_grounding_v1_enabled),
+      auto_join_discussion_enabled: Boolean(values.auto_join_discussion_enabled),
+      discussion_join_account_ids: values.auto_join_discussion_enabled ? csvNumbers(values.discussion_join_account_ids) : [],
+      discussion_join_budget: values.auto_join_discussion_enabled ? Number(values.discussion_join_budget || 0) : 0,
+      discussion_join_pacing_policy_version: values.auto_join_discussion_enabled ? values.discussion_join_pacing_policy_version?.trim() ?? '' : '',
+      discussion_join_pacing_policy: values.auto_join_discussion_enabled ? values.discussion_join_pacing_policy || {} : {},
       unicode_emoji_enabled: Boolean(values.unicode_emoji_enabled),
       image_meme_enabled: Boolean(values.image_meme_enabled),
       image_meme_material_group_id: values.image_meme_enabled ? values.image_meme_material_group_id ?? null : null,
@@ -1599,7 +1606,7 @@ export default function TaskCenterView({
       return { ...base, ...channelViewProductionPayload(values) };
     }
     if (type === 'channel_like') {
-      return { ...base, target_likes_per_message: values.target_likes_per_message ?? 50, like_count_jitter: values.like_count_jitter ?? CHANNEL_COUNT_JITTER_DEFAULT, reaction_type: values.reaction_type ?? 'random', reaction_scope: values.reaction_scope ?? 'configured', allowed_reactions: words(values.allowed_reactions || '👍'), max_likes_per_account_per_hour: 1000000 };
+      return { ...base, target_likes_per_message: values.target_likes_per_message ?? 50, like_count_jitter: values.like_count_jitter ?? CHANNEL_COUNT_JITTER_DEFAULT, reaction_type: values.reaction_type ?? 'random', reaction_scope: values.reaction_scope ?? 'all_available', allowed_reactions: words(values.allowed_reactions || '👍'), max_likes_per_account_per_hour: 1000000 };
     }
     return channelCommentPayload(values, base, false);
   }

@@ -22,7 +22,7 @@ def message_reaction_plan(
         quantity,
         str(config.get("reaction_type") or "random"),
         seed_id=seed_id,
-        reaction_scope=str(config.get("reaction_scope") or "configured"),
+        reaction_scope=str(config.get("reaction_scope") or "all_available"),
         available_reactions=_available_reactions(session, message),
         reaction_capability_mode=_capability_mode(session, message),
     )
@@ -66,7 +66,7 @@ def _record_reaction_capability_block(
         "reason_code": "reaction_capability_unavailable",
         "channel_message_id": message.id,
         "capability_mode": mode,
-        "reaction_scope": str(config.get("reaction_scope") or "configured"),
+        "reaction_scope": str(config.get("reaction_scope") or "all_available"),
     }
     task.stats = stats
     probe = stats.get("reaction_capability_probe") or {}

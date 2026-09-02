@@ -48,6 +48,9 @@ def _empty_acceptance(task: Task) -> dict:
         "quantity_status": status,
         "content_mix_status": status,
         "grounding_quality_status": status,
+        "business_cap_state": "unproven",
+        "fallback_business_state": "unproven",
+        "business_effect_status": "unproven",
         "message_acceptance": {},
     }
 
@@ -122,20 +125,14 @@ def _plan_acceptance(
     )
     deadline_passed = _deadline_passed(plan.deadline_at)
     target = int(plan.required_distinct_account_count)
-    if plan.contract_state in {"terminated_by_operator", "terminated_source_deleted"}:
-        quantity_status = content_status = grounding_status = "terminated"
-    else:
-        quantity_status = _target_status(
-            len(confirmed), target, deadline_passed=deadline_passed,
-        )
-        content_status = _content_status(
-            plan, content, target_projection=target_projection,
-            confirmed=len(confirmed), deadline_passed=deadline_passed,
-        )
-        grounding_status = _grounding_status(
-            grounding, target_projection=target_projection,
-            content=content, deadline_passed=deadline_passed,
-        )
+    quantity_status, content_status, grounding_status = _acceptance_statuses(
+        plan,
+        confirmed_count=len(confirmed),
+        content=content,
+        grounding=grounding,
+        target_projection=target_projection,
+        deadline_passed=deadline_passed,
+    )
     return {
         "acceptance_status": _combined_status(
             quantity_status, content_status, grounding_status,
@@ -144,6 +141,13 @@ def _plan_acceptance(
         "content_mix_status": content_status,
         "grounding_quality_status": grounding_status,
         "quantity_target_count": target,
+        "quantity_uncapped_target_count": int(
+            plan.uncapped_required_distinct_account_count,
+        ),
+        "business_max_comments_per_message": int(plan.business_max_comments_per_message),
+        "business_cap_state": str(plan.business_cap_state),
+        "business_cap_adjusted_count": int(plan.business_cap_state == "business_cap_adjusted"),
+        "business_effect_status": "unproven",
         "quantity_confirmed_count": len(confirmed),
         "planned_fallback_confirmed_count": content["planned_fallback"],
         "unplanned_fallback_confirmed_count": content["emergency_fallback"],
@@ -153,6 +157,32 @@ def _plan_acceptance(
         "deadline_at": plan.deadline_at,
         **target_projection,
     }
+
+
+def _acceptance_statuses(
+    plan: ChannelCommentPlanContract,
+    *,
+    confirmed_count: int,
+    content: dict,
+    grounding: dict,
+    target_projection: dict,
+    deadline_passed: bool,
+) -> tuple[str, str, str]:
+    if plan.contract_state in {"terminated_by_operator", "terminated_source_deleted"}:
+        return "terminated", "terminated", "terminated"
+    target = int(plan.required_distinct_account_count)
+    quantity_status = _target_status(
+        confirmed_count, target, deadline_passed=deadline_passed,
+    )
+    content_status = _content_status(
+        plan, content, target_projection=target_projection,
+        confirmed=confirmed_count, deadline_passed=deadline_passed,
+    )
+    grounding_status = _grounding_status(
+        grounding, target_projection=target_projection,
+        content=content, deadline_passed=deadline_passed,
+    )
+    return quantity_status, content_status, grounding_status
 
 
 def _distinct_confirmed(
@@ -194,7 +224,7 @@ def _grounding_counts(
     actions: dict[str, Action],
     assignments: dict[str, ChannelCommentGroundingAssignment],
 ) -> dict[str, int]:
-    teachers: set[str] = set()
+    teacher_covered = 0
     aspects: set[str] = set()
     grounded = 0
     for row in confirmed:
@@ -205,12 +235,12 @@ def _grounding_counts(
         grounded += 1
         text = str((action.payload or {}).get("comment_text") or "")
         if assignment.teacher_name and assignment.teacher_name in text:
-            teachers.add(assignment.teacher_name)
+            teacher_covered += 1
         if _aspect_realized(text, assignment.primary_aspect_text):
             aspects.add(assignment.primary_aspect_code)
     return {
         "grounded": grounded,
-        "teacher_covered": len(teachers),
+        "teacher_covered": teacher_covered,
         "aspect_covered": len(aspects),
     }
 
@@ -257,6 +287,8 @@ def _content_status(
     confirmed: int,
     deadline_passed: bool,
 ) -> str:
+    if target_projection["fallback_business_state"] != "within_cap":
+        return "missed" if deadline_passed else "blocked"
     if content["emergency_fallback"]:
         return "missed" if deadline_passed else "blocked"
     complete = bool(
@@ -279,6 +311,8 @@ def _grounding_status(
     if target_projection["quality_target_revision_state"] != "frozen":
         return "missed" if deadline_passed else "blocked"
     if target_projection["quality_target_unassigned_ordinal_count"]:
+        return "missed" if deadline_passed else "blocked"
+    if target_projection["fallback_business_state"] != "within_cap":
         return "missed" if deadline_passed else "blocked"
     required = int(target_projection["grounding_required_count"])
     if content["emergency_fallback"]:
@@ -308,8 +342,10 @@ def _combined_status(*statuses: str) -> str:
 def _aggregate_acceptance(by_message: dict[int, dict]) -> dict:
     rows = list(by_message.values())
     keys = (
-        "quantity_target_count", "quantity_confirmed_count",
+        "quantity_target_count", "quantity_uncapped_target_count",
+        "quantity_confirmed_count", "business_cap_adjusted_count",
         "planned_fallback_target_count", "planned_fallback_confirmed_count",
+        "planned_fallback_limit_count",
         "unplanned_fallback_confirmed_count", "grounding_required_count",
         "grounded_remote_confirmed_count", "teacher_required_count",
         "teacher_remote_covered_count", "primary_aspect_required_count",
@@ -330,6 +366,17 @@ def _aggregate_acceptance(by_message: dict[int, dict]) -> dict:
         result["grounding_quality_status"],
     )
     result["message_acceptance"] = by_message
+    result["business_effect_status"] = "unproven"
+    result["business_max_comments_per_message"] = max(
+        (int(row.get("business_max_comments_per_message") or 0) for row in rows),
+        default=0,
+    )
+    cap_states = {str(row.get("business_cap_state") or "unproven") for row in rows}
+    result["business_cap_state"] = (
+        "business_cap_adjusted"
+        if "business_cap_adjusted" in cap_states
+        else (cap_states.pop() if len(cap_states) == 1 else "mixed")
+    )
     result.update(_aggregate_quality_revision(rows))
     return result
 
@@ -354,6 +401,8 @@ def _target_projection(
         "groundable_capacity_count": 0,
         "grounding_required_count": int(plan.grounding_required_count),
         "planned_fallback_target_count": int(plan.planned_fallback_count),
+        "planned_fallback_limit_count": int(plan.required_distinct_account_count),
+        "fallback_business_state": "unproven",
         "teacher_required_count": 0,
         "primary_aspect_required_count": 0,
         "semantic_capacity_state": "unproven",
@@ -396,6 +445,7 @@ def _aggregate_quality_revision(rows: list[dict]) -> dict:
     revisions = {int(row["quality_target_current_revision"]) for row in rows}
     states = {str(row["quality_target_revision_state"]) for row in rows}
     capacity_states = {str(row["semantic_capacity_state"]) for row in rows}
+    fallback_states = {str(row["fallback_business_state"]) for row in rows}
     revision = max(revisions, default=0)
     return {
         "quality_target_current_revision": revision,
@@ -403,6 +453,9 @@ def _aggregate_quality_revision(rows: list[dict]) -> dict:
         "quality_target_revision_state": states.pop() if len(states) == 1 else "mixed",
         "semantic_capacity_state": (
             capacity_states.pop() if len(capacity_states) == 1 else "mixed"
+        ),
+        "fallback_business_state": (
+            fallback_states.pop() if len(fallback_states) == 1 else "mixed"
         ),
     }
 

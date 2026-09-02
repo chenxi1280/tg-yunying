@@ -5495,7 +5495,8 @@ fulfillment.calculated_at
 测试基础设施：
 
 - `backend/tests/conftest.py` 不得在 pytest 模块导入期强制连接 PostgreSQL。只读源码、前端数据流、接口契约和本地 SQLite 单元测试必须能显式标记为 `no_postgres` 后独立运行，用于快速验证逻辑、操作和数据流问题。
-- 需要 PostgreSQL 的集成测试仍必须显式依赖 `TEST_DATABASE_URL` / `DATABASE_URL`，并在数据库不可用时 fail closed，错误信息要指向测试库配置或连通性问题；不得静默降级到 SQLite、mock 数据库或跳过真实集成验证。
+- 需要 PostgreSQL 的集成测试只能显式依赖 `TEST_DATABASE_URL`，禁止回退应用 `DATABASE_URL`；允许的目标数据库仅为 CI 临时库 `tg_yunying_test`，不得连接云端或生产实例上的共享测试库。URL 名称与连接后的 `current_database()` 必须在任何破坏性 DDL 前双重校验，错误不得回显凭据。
+- 同一测试库只能有一个 pytest session 持有非等待 advisory lock；并发 session 必须在 DDL 前显式失败。`DROP SCHEMA public CASCADE` 与 `CREATE SCHEMA public` 必须位于同一事务，reset/migration 异常后必须释放 session lock，不得静默降级到 SQLite、mock 数据库或跳过真实集成验证。完整合同见 `docs/03-feature-designs/pytest-test-database-isolation-prd.md`。
 
 ---
 

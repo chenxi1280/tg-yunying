@@ -25,6 +25,13 @@ from app.services._common import _now
 from app.services.task_runtime_stage import derive_task_runtime_stage
 
 
+_MEMBERSHIP_ACTION_TYPES = frozenset({
+    "ensure_channel_membership",
+    "ensure_target_membership",
+    "ensure_discussion_membership",
+})
+
+
 @dataclass(frozen=True)
 class TaskListPayloadContext:
     target_summary_by_task_id: dict[str, str]
@@ -399,7 +406,7 @@ def _membership_phase(task: Task, actions: list[Action] | None = None) -> dict[s
     if isinstance(stats, dict) and _has_membership_stats(stats):
         return _deduped_membership_phase(actions, stats)
     if actions:
-        rows = [action for action in actions if action.action_type in {"ensure_channel_membership", "ensure_target_membership"}]
+        rows = [action for action in actions if action.action_type in _MEMBERSHIP_ACTION_TYPES]
         if rows:
             return _membership_phase_from_actions(rows)
     if not isinstance(stats, dict):
@@ -423,7 +430,7 @@ def _deduped_membership_phase(actions: list[Action] | None, stats: dict[str, Any
         "failed_count": int(stats.get("membership_failed_count") or 0),
     }
     phase = {**_membership_phase_from_stats(stats), **legacy}
-    rows = [action for action in (actions or []) if action.action_type in {"ensure_channel_membership", "ensure_target_membership"}]
+    rows = [action for action in (actions or []) if action.action_type in _MEMBERSHIP_ACTION_TYPES]
     if rows:
         phase["ready_account_count"] = sum(1 for action in rows if _membership_action_ready_before_task(action))
     return phase
@@ -524,6 +531,9 @@ def _membership_action_ready_before_task(action: Action) -> bool:
 
 def _membership_action_succeeded(action: Action) -> bool:
     result = action.result or {}
+    discussion_fact = dict(result.get("discussion_membership_remote_fact") or {})
+    if discussion_fact.get("can_send") and discussion_fact.get("membership_status") in {"joined", "already_joined"}:
+        return True
     if result.get("membership_status") in {"joined", "already_joined"}:
         return True
     if result.get("error_code") == "already_joined":
@@ -613,7 +623,7 @@ def _membership_warnings(rows: list[Action]) -> list[str]:
 
 
 def _membership_accounts(session: Session, actions: list[Action]) -> list[dict[str, Any]]:
-    rows = [action for action in actions if action.action_type in {"ensure_channel_membership", "ensure_target_membership"} and action.account_id]
+    rows = [action for action in actions if action.action_type in _MEMBERSHIP_ACTION_TYPES and action.account_id]
     account_ids = sorted({int(action.account_id) for action in rows if action.account_id})
     accounts = list(session.scalars(select(TgAccount).where(TgAccount.id.in_(account_ids)))) if account_ids else []
     by_id = {account.id: account for account in accounts}
@@ -622,6 +632,7 @@ def _membership_accounts(session: Session, actions: list[Action]) -> list[dict[s
     for action in sorted(rows, key=lambda item: (int(item.account_id or 0), item.created_at)):
         payload = action.payload or {}
         action_result = action.result or {}
+        discussion_fact = dict(action_result.get("discussion_membership_remote_fact") or {})
         account_id = int(action.account_id or 0)
         latest_attempt = latest_attempts.get(action.id)
         result.append(
@@ -630,7 +641,7 @@ def _membership_accounts(session: Session, actions: list[Action]) -> list[dict[s
                 "display_name": by_id[account_id].display_name if account_id in by_id else f"账号 #{account_id}",
                 "username": by_id[account_id].username if account_id in by_id else "",
                 "status": action.status,
-                "membership_status": action_result.get("membership_status") or action_result.get("error_code") or action.status,
+                "membership_status": discussion_fact.get("membership_status") or action_result.get("membership_status") or action_result.get("error_code") or action.status,
                 "failure_reason": action_result.get("error_message") or action_result.get("detail") or "",
                 "retry_count": action.retry_count,
                 "scheduled_at": action.scheduled_at,
@@ -659,7 +670,7 @@ def _membership_items(session: Session, task: Task, actions: list[Action]) -> li
 
 
 def _is_membership_action(action: Action) -> bool:
-    return action.action_type in {"ensure_channel_membership", "ensure_target_membership"} and bool(action.account_id)
+    return action.action_type in _MEMBERSHIP_ACTION_TYPES and bool(action.account_id)
 
 
 def _accounts_by_id(session: Session, actions: list[Action]) -> dict[int, TgAccount]:
@@ -689,7 +700,7 @@ def _membership_target_ids(actions: list[Action]) -> list[int]:
 
 def _membership_target_id(payload: dict[str, Any]) -> int | None:
     try:
-        return int(payload.get("channel_target_id") or 0) or None
+        return int(payload.get("channel_target_id") or payload.get("target_operation_target_id") or 0) or None
     except (TypeError, ValueError):
         return None
 

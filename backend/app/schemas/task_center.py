@@ -44,6 +44,8 @@ ReviewStatusValue = Literal["pending", "approved", "rejected", "expired"]
 GROUP_AI_HARD_HOURLY_MIN_MESSAGES = 10
 CHANNEL_COUNT_JITTER_DEFAULT = 0.2
 MAX_TOTAL_COMMENT_JITTER = 0.3
+DEFAULT_CHANNEL_COMMENT_BUSINESS_MAX_PER_MESSAGE = 80
+DEFAULT_CHANNEL_COMMENT_PLANNED_FALLBACK_MAX_BPS = 2000
 MAX_SEARCH_JOIN_SAFE_NAVIGATION = 3
 MAX_SEARCH_JOIN_PAGES = 70
 DEFAULT_SEARCH_JOIN_MAX_ACTIONS_PER_DAY = 100
@@ -823,7 +825,7 @@ class ChannelViewConfig(ChannelMessageScopeConfig):
         if self.latest_message_count is not None:
             self.message_count = self.latest_message_count
         if self.per_message_daily_view_target is None:
-            self.per_message_daily_view_target = legacy_target or 50
+            self.per_message_daily_view_target = legacy_target
         if self.per_message_total_view_target is None:
             self.per_message_total_view_target = 0
         self.target_views_per_message = self.per_message_daily_view_target
@@ -847,6 +849,16 @@ class ChannelCommentConfig(ChannelMessageScopeConfig):
         "all", "latest_n", "date_range", "specific", "dynamic_new"
     ] = "dynamic_new"
     target_comments_per_message: int = Field(default=10, ge=1, le=1000)
+    business_max_comments_per_message: int = Field(
+        default=DEFAULT_CHANNEL_COMMENT_BUSINESS_MAX_PER_MESSAGE,
+        ge=1,
+        le=1000,
+    )
+    planned_fallback_max_bps: int = Field(
+        default=DEFAULT_CHANNEL_COMMENT_PLANNED_FALLBACK_MAX_BPS,
+        ge=0,
+        le=10000,
+    )
     comment_count_jitter: float = Field(default=0.05, ge=0, le=1)
     max_total_comments: int = Field(default=1_000_000, ge=1, le=1_000_000)
     max_total_comments_jitter: float = Field(
@@ -878,6 +890,11 @@ class ChannelCommentConfig(ChannelMessageScopeConfig):
     ai_content_allowed_routes: list[str] = Field(default_factory=list)
     ai_content_attestation_ids: list[str] = Field(default_factory=list)
     channel_comment_grounding_v1_enabled: bool = False
+    auto_join_discussion_enabled: bool = False
+    discussion_join_account_ids: list[int] = Field(default_factory=list)
+    discussion_join_budget: int = Field(default=0, ge=0)
+    discussion_join_pacing_policy_version: str = ""
+    discussion_join_pacing_policy: dict[str, int] = Field(default_factory=dict)
     unicode_emoji_enabled: bool = True
     image_meme_enabled: bool = False
     image_meme_material_group_id: int | None = Field(default=None, gt=0)
@@ -897,8 +914,21 @@ class ChannelCommentConfig(ChannelMessageScopeConfig):
         _validate_semantic_reviewer(self)
         _validate_ai_content_route_config(self)
         self._validate_comment_fallback_policy()
+        self._validate_discussion_join_policy()
         self.require_review = False
         return self
+
+    def _validate_discussion_join_policy(self) -> None:
+        if not self.auto_join_discussion_enabled:
+            return
+        if not self.discussion_join_account_ids:
+            raise ValueError("discussion_join_authorized_scope_required")
+        if self.discussion_join_budget <= 0:
+            raise ValueError("discussion_join_budget_required")
+        if not self.discussion_join_pacing_policy_version.strip():
+            raise ValueError("discussion_join_pacing_policy_version_required")
+        if int(self.discussion_join_pacing_policy.get("interval_seconds") or 0) <= 0:
+            raise ValueError("discussion_join_pacing_policy_required")
 
     def _validate_comment_fallback_policy(self) -> None:
         if not self.channel_comment_grounding_v1_enabled:
@@ -1844,6 +1874,8 @@ class TaskSettingsUpdate(TaskUpdate):
     )
 
     target_comments_per_message: int | None = Field(default=None, ge=1, le=1000)
+    business_max_comments_per_message: int | None = Field(default=None, ge=1, le=1000)
+    planned_fallback_max_bps: int | None = Field(default=None, ge=0, le=10000)
     comment_count_jitter: float | None = Field(default=None, ge=0, le=1)
     max_total_comments: int | None = Field(default=1_000_000, ge=1, le=1_000_000)
     max_total_comments_jitter: float | None = Field(
@@ -1868,6 +1900,11 @@ class TaskSettingsUpdate(TaskUpdate):
         default=1_000_000, ge=1, le=1_000_000
     )
     channel_comment_grounding_v1_enabled: bool | None = None
+    auto_join_discussion_enabled: bool | None = None
+    discussion_join_account_ids: list[int] | None = None
+    discussion_join_budget: int | None = Field(default=None, ge=0)
+    discussion_join_pacing_policy_version: str | None = None
+    discussion_join_pacing_policy: dict[str, int] | None = None
     unicode_emoji_enabled: bool | None = None
     image_meme_enabled: bool | None = None
     image_meme_material_group_id: int | None = Field(default=None, gt=0)
@@ -2346,6 +2383,8 @@ class TaskDetailOut(BaseModel):
     account_security_batch: dict[str, Any] | None = None
     learning_profile_preview: dict[str, Any] = Field(default_factory=dict)
     ai_group_content_allocation: dict[str, Any] = Field(default_factory=dict)
+    channel_comment_discussion: dict[str, Any] = Field(default_factory=dict)
+    channel_comment_grounding: dict[str, Any] = Field(default_factory=dict)
 
 
 class TaskMembershipItemOut(BaseModel):
@@ -2438,6 +2477,41 @@ class TaskActionReasonRequest(BaseModel):
         if not self.reason:
             raise ValueError("操作原因不能为空")
         return self
+
+
+class ChannelCommentGroundingEnrollmentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_config_revision: int = Field(ge=1)
+    expected_lifecycle_epoch: int = Field(ge=1)
+    group_binding_id: str = Field(min_length=1, max_length=36)
+    enabled_at: datetime
+    approval_reference: str = Field(min_length=1, max_length=160)
+
+
+class ChannelCommentGroundingEnrollmentCloseRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enrollment_id: str = Field(min_length=1, max_length=36)
+    expected_config_revision: int = Field(ge=1)
+    expected_lifecycle_epoch: int = Field(ge=1)
+    closed_at: datetime
+    approval_reference: str = Field(min_length=1, max_length=160)
+
+
+class ChannelCommentGroundingEnrollmentOut(ApiModel):
+    id: str
+    task_id: str
+    task_config_revision: int
+    task_lifecycle_epoch: int
+    enrollment_revision: int
+    enabled_at: datetime
+    contract_version: str
+    group_binding_id: str
+    group_binding_revision: int
+    activation_hash: str
+    enrollment_state: str
+    closed_at: datetime | None = None
 
 
 class GroupAIChatTaskPreviewRequest(GroupAIChatConfig):
@@ -2560,6 +2634,9 @@ __all__ = [
     "AccountGroupProxyBindingOut",
     "ActionOut",
     "ChannelCommentConfig",
+    "ChannelCommentGroundingEnrollmentCloseRequest",
+    "ChannelCommentGroundingEnrollmentOut",
+    "ChannelCommentGroundingEnrollmentRequest",
     "ChannelCapacityCheckOut",
     "ChannelCapacityCheckRequest",
     "ChannelCommentTaskConfigUpdate",

@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.models import ChannelMessage, CommentFulfillmentObligation, Task
 
 from ..channel_comment_plan_contract import ensure_comment_plan_contract
-from ..channel_comment_quality_target import target_component_for_ordinal
+from ..channel_comment_quality_target import quality_target_projection, target_component_for_ordinal
 from ..comment_fulfillment import freeze_comment_obligations
 from .channel_comment_schedule import reply_minimum_for_mode
 from .channel_comment_targets import valid_reply_targets
@@ -26,6 +26,9 @@ class CommentPlanSlot:
     grounding_assignment: object | None = None
     source_revision_id: str = ""
     quality_target_revision_id: str = ""
+    grounding_snapshot_id: str = ""
+    comment_grounding_revision: int = 0
+    grounding_evidence_hash: str = ""
 
 
 def build_grounding_comment_plan_slots(
@@ -47,6 +50,8 @@ def build_grounding_comment_plan_slots(
         if plan is None:
             continue
         existing = _plan_obligations(session, plan.contract.id)
+        if existing and not _existing_obligations_ready(task, plan.quality_target, existing):
+            continue
         obligations = existing or _freeze_grounding_obligations(
             session,
             task=task,
@@ -91,7 +96,10 @@ def _grounding_reply_targets(
         if int(item or 0) > 0
     ]
     targets = valid_reply_targets(
-        session, task, context.channel.id, context.messages, requested,
+        session, task,
+        channel_target_id=context.channel.id,
+        messages=context.messages,
+        requested_ids=requested,
     )
     mode = str(context.config.get("comment_mode") or "comment")
     if mode in {"reply", "mixed"} and requested and not targets:
@@ -121,13 +129,25 @@ def _freeze_grounding_obligations(
 ) -> list[CommentFulfillmentObligation]:
     total = int(plan.contract.required_distinct_account_count)
     targets = target_builder(
-        session, task, context, message, total, reply_targets,
+        session, task, context=context, message=message,
+        quantity=total, requested_targets=reply_targets,
     )
     if targets is None:
         return []
-    first_fallback = int(plan.quality_target.aggregate_grounding_required_count) + 1
+    if any(
+        account_id not in plan.discussion_identity.membership_by_account
+        for account_id in plan.account_by_ordinal.values()
+    ):
+        task.last_error = "discussion_membership_pending"
+        return []
+    fallback_ordinals = _planned_fallback_ordinals(plan.quality_target)
+    if not _fallback_contract_ready(
+        task, plan.quality_target,
+        targets=targets, fallback_ordinals=fallback_ordinals,
+    ):
+        return []
     return freeze_comment_obligations(
-        session, task, message, targets,
+        session, task, message, reply_targets=targets,
         rule_version=context.rule_version,
         reply_min_required=reply_minimum_for_mode(
             context.config.get("comment_mode") or "comment", total, context.config,
@@ -136,8 +156,61 @@ def _freeze_grounding_obligations(
         revision_override=plan.contract.comment_plan_revision,
         account_by_ordinal=plan.account_by_ordinal,
         grounding_assignment_by_ordinal=plan.assignment_by_ordinal,
-        planned_fallback_ordinals=set(range(first_fallback, total + 1)),
+        planned_fallback_ordinals=fallback_ordinals,
+        discussion_identity=plan.discussion_identity,
     )
+
+
+def _planned_fallback_ordinals(quality_target: object) -> set[int]:
+    return {
+        int(value)
+        for component in quality_target.component_targets_json
+        for value in component.get("planned_fallback_ordinal_ids", [])
+    }
+
+
+def _fallback_contract_ready(
+    task: Task,
+    quality_target: object,
+    *,
+    targets: list[dict | None],
+    fallback_ordinals: set[int],
+) -> bool:
+    reply_fallback = any(
+        targets[ordinal - 1] is not None for ordinal in fallback_ordinals
+    )
+    return _quality_contract_ready(task, quality_target, reply_fallback=reply_fallback)
+
+
+def _existing_obligations_ready(
+    task: Task,
+    quality_target: object,
+    obligations: list[CommentFulfillmentObligation],
+) -> bool:
+    fallback_ordinals = _planned_fallback_ordinals(quality_target)
+    reply_fallback = any(
+        int(row.target_ordinal) in fallback_ordinals and row.relation_kind == "reply"
+        for row in obligations
+    )
+    return _quality_contract_ready(task, quality_target, reply_fallback=reply_fallback)
+
+
+def _quality_contract_ready(
+    task: Task,
+    quality_target: object,
+    *,
+    reply_fallback: bool,
+) -> bool:
+    projection = quality_target_projection(quality_target)
+    if projection["fallback_business_state"] != "within_cap":
+        task.last_error = "channel_comment_planned_fallback_cap_exceeded"
+        stats_inc(task, "planned_fallback_cap_exceeded_count")
+        return False
+    if reply_fallback:
+        task.last_error = "channel_comment_reply_fallback_forbidden"
+        stats_inc(task, "reply_fallback_forbidden_count")
+        return False
+    return True
 
 
 def _open_plan_slots(
@@ -155,13 +228,33 @@ def _open_plan_slots(
         assignment = assignments.get(ordinal)
         component = target_component_for_ordinal(quality_target, ordinal)
         slots.append(CommentPlanSlot(
-            message,
-            item.reply_target_snapshot if item.relation_kind == "reply" else None,
-            ordinal - 1,
-            item,
-            assignment,
-            str(getattr(assignment, "source_revision_id", "") or component["source_revision_id"]),
-            str(getattr(assignment, "quality_target_revision_id", "") or quality_target.id),
+            message=message,
+            reply_target=(
+                item.reply_target_snapshot if item.relation_kind == "reply" else None
+            ),
+            slot_index=ordinal - 1,
+            obligation=item,
+            grounding_assignment=assignment,
+            source_revision_id=str(
+                getattr(assignment, "source_revision_id", "")
+                or component["source_revision_id"]
+            ),
+            quality_target_revision_id=str(
+                getattr(assignment, "quality_target_revision_id", "")
+                or quality_target.id
+            ),
+            grounding_snapshot_id=str(
+                getattr(assignment, "grounding_snapshot_id", "")
+                or component.get("grounding_snapshot_id", "")
+            ),
+            comment_grounding_revision=int(
+                getattr(assignment, "comment_grounding_revision", 0)
+                or component.get("comment_grounding_revision", 0)
+            ),
+            grounding_evidence_hash=str(
+                getattr(assignment, "evidence_hash", "")
+                or component.get("source_content_hash", "")
+            ),
         ))
     return slots
 

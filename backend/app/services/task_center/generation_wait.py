@@ -101,6 +101,10 @@ def _set_action_waiting(
 ) -> None:
     payload = dict(action.payload or {})
     payload["ai_generation_status"] = "pending"
+    if action.task_type == "channel_comment":
+        payload["comment_lifecycle_state"] = (
+            spec.stage if spec.shortfall_kind == "quality" else "pending_generation"
+        )
     payload["ai_generation_claim_owner"] = ""
     payload["ai_generation_claim_token"] = ""
     action.payload = payload
@@ -183,6 +187,8 @@ def _mark_action_shortfall(
 ) -> None:
     payload = dict(action.payload or {})
     payload["ai_generation_status"] = reason_code
+    if action.task_type == "channel_comment":
+        payload["comment_lifecycle_state"] = "terminal_shortfall"
     payload["ai_generation_claim_owner"] = ""
     payload["ai_generation_claim_token"] = ""
     action.payload = payload

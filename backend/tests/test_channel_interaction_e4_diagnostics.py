@@ -62,18 +62,39 @@ def test_due_counts_exclude_closed_expired_without_counting_it_as_confirmed() ->
     assert counts == {"due": 2, "due_confirmed": 1, "due_at_missing": 1}
 
 
-def test_closed_expired_only_snapshot_has_no_due_blocker() -> None:
+def test_closed_expired_only_snapshot_is_missed_not_met() -> None:
     module = load_module()
+    task = type("TaskSnapshot", (), {"status": "running"})()
     blockers = module._blockers(
-        type("TaskSnapshot", (), {"status": "running"})(),
-        {
+        task,
+        obligations={
             "status_counts": {"closed_expired": 3},
             "due": 0,
             "due_confirmed": 0,
             "post_release_remote_fact_count": 0,
         },
-        {"due_lifecycle_mismatch_count": 0, "due_open_count": 0},
-        {"post_release_count": 0},
+        actions={"due_lifecycle_mismatch_count": 0, "due_open_count": 0},
+        attempts={"post_release_count": 0},
     )
 
-    assert blockers == []
+    assert blockers == ["interaction_expired_unmet"]
+    assert module._goal_status(task, blockers) == "missed"
+
+
+def test_paused_task_remains_visible_without_becoming_met() -> None:
+    module = load_module()
+    task = type("TaskSnapshot", (), {"status": "paused"})()
+    blockers = module._blockers(
+        task,
+        obligations={
+            "status_counts": {"open": 3},
+            "due": 0,
+            "due_confirmed": 0,
+            "post_release_remote_fact_count": 0,
+        },
+        actions={"due_lifecycle_mismatch_count": 0, "due_open_count": 0},
+        attempts={"post_release_count": 0},
+    )
+
+    assert blockers == ["task_not_running"]
+    assert module._goal_status(task, blockers) == "paused"

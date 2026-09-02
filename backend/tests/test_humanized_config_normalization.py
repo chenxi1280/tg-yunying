@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from app.models import Task
 from app.schemas.task_center import ChannelCommentConfig, GroupAIChatConfig
 from app.services.task_center.config_normalization import validated_type_config
+from app.services.task_center.config_fields import TYPE_SETTINGS_FIELDS
 from app.services.task_center.service import _task_create_payload_for_precheck
 
 pytestmark = pytest.mark.no_postgres
@@ -90,3 +91,20 @@ def test_channel_comment_defaults_mixed_reply():
     config = ChannelCommentConfig(target_channel_id=9)
     assert config.comment_mode == "mixed"
     assert config.reply_min_per_message == 1
+    assert config.business_max_comments_per_message == 80
+    assert config.planned_fallback_max_bps == 2000
+
+
+def test_channel_comment_business_fields_are_editable_only_on_comment_tasks():
+    comment_fields = TYPE_SETTINGS_FIELDS["channel_comment"]
+    group_fields = TYPE_SETTINGS_FIELDS["group_ai_chat"]
+    expected = {
+        "business_max_comments_per_message",
+        "planned_fallback_max_bps",
+        "channel_comment_grounding_v1_enabled",
+        "unicode_emoji_enabled",
+        "image_meme_enabled",
+    }
+
+    assert expected <= comment_fields
+    assert not expected & group_fields

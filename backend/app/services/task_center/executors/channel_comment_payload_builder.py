@@ -32,9 +32,8 @@ def build_comment_payload(
         source_payload["message_content"] = str(assignment.evidence_text or "")
     return PostCommentPayload(
         **source_payload,
-        **_assignment_fields(
-            assignment, slot.source_revision_id, slot.quality_target_revision_id,
-        ),
+        **_assignment_fields(assignment, slot),
+        **_discussion_fields(task, slot.obligation),
         **_generation_fields(
             task, context, slot_id=slot_id, mask=mask,
         ),
@@ -58,23 +57,70 @@ def build_comment_payload(
 
 def _assignment_fields(
     assignment: Any,
-    source_revision_id: str,
-    quality_target_revision_id: str,
+    slot: Any,
 ) -> dict:
     return {
         "source_revision_id": str(
-            getattr(assignment, "source_revision_id", "") or source_revision_id,
+            getattr(assignment, "source_revision_id", "") or slot.source_revision_id,
         ),
         "quality_target_revision_id": str(
             getattr(assignment, "quality_target_revision_id", "")
-            or quality_target_revision_id,
+            or slot.quality_target_revision_id,
         ),
         "grounding_assignment_id": str(getattr(assignment, "id", "") or ""),
-        "grounding_evidence_hash": str(getattr(assignment, "evidence_hash", "") or ""),
+        "grounding_snapshot_id": str(
+            getattr(assignment, "grounding_snapshot_id", "")
+            or slot.grounding_snapshot_id,
+        ),
+        "comment_grounding_revision": int(
+            getattr(assignment, "comment_grounding_revision", 0)
+            or slot.comment_grounding_revision,
+        ),
+        "grounding_evidence_hash": str(
+            getattr(assignment, "evidence_hash", "")
+            or slot.grounding_evidence_hash,
+        ),
+        "grounding_teacher_candidate_id": str(
+            getattr(assignment, "teacher_candidate_id", "") or "",
+        ),
+        "grounding_primary_evidence_id": str(
+            getattr(assignment, "primary_evidence_id", "") or "",
+        ),
+        "grounding_secondary_evidence_id": str(
+            getattr(assignment, "secondary_evidence_id", "") or "",
+        ),
         "grounding_primary_aspect_code": str(getattr(assignment, "primary_aspect_code", "") or ""),
         "grounding_primary_aspect_text": str(getattr(assignment, "primary_aspect_text", "") or ""),
         "grounding_teacher_name": str(getattr(assignment, "teacher_name", "") or ""),
         "grounding_speech_act": str(getattr(assignment, "speech_act", "") or ""),
+    }
+
+
+def _discussion_fields(task: Task, obligation: Any) -> dict:
+    enrollment_id = str(getattr(obligation, "grounding_enrollment_id", "") or "")
+    if not enrollment_id:
+        return {}
+    rpc_mode = str(obligation.rpc_mode or "")
+    actual_peer = (
+        str(obligation.channel_peer_id)
+        if rpc_mode == "channel_comment_to"
+        else str(obligation.discussion_peer_id)
+    )
+    return {
+        "grounding_enrollment_id": enrollment_id,
+        "discussion_group_binding_id": str(obligation.discussion_group_binding_id or ""),
+        "discussion_group_binding_revision": int(obligation.discussion_group_binding_revision or 0),
+        "discussion_group_identity_hash": str(obligation.discussion_group_identity_hash or ""),
+        "discussion_thread_binding_id": str(obligation.discussion_thread_binding_id or ""),
+        "discussion_thread_revision": int(obligation.discussion_thread_revision or 0),
+        "discussion_thread_identity_hash": str(obligation.discussion_thread_identity_hash or ""),
+        "discussion_peer_id": str(obligation.discussion_peer_id or ""),
+        "thread_root_message_id": int(obligation.thread_root_message_id or 0),
+        "rpc_mode": rpc_mode,
+        "actual_target_peer": actual_peer,
+        "membership_fact_id": str(obligation.membership_fact_id or ""),
+        "task_config_revision": int(obligation.task_config_revision or task.config_revision),
+        "task_lifecycle_epoch": int(obligation.task_lifecycle_epoch or task.task_lifecycle_epoch),
     }
 
 
@@ -90,6 +136,7 @@ def _generation_fields(
     return {
         "ai_generation_id": f"{task.id}:{slot_id}",
         "ai_generation_status": "pending",
+        "comment_lifecycle_state": "pending_generation",
         "rule_set_id": rule_version.rule_set_id,
         "rule_set_name": context.rule_set.name if context.rule_set else "",
         "rule_set_version_id": rule_version.id,

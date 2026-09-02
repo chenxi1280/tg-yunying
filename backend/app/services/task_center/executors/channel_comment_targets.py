@@ -6,9 +6,13 @@ from sqlalchemy.orm import Session
 from app.models import Action, ChannelMessage, ChannelMessageComment, ExecutionAttempt, Task
 
 
+REPLY_TARGET_CANDIDATE_MULTIPLIER = 5
+
+
 def valid_reply_targets(
     session: Session,
     task: Task,
+    *,
     channel_target_id: int,
     messages: list[ChannelMessage],
     requested_ids: list[int],
@@ -24,6 +28,8 @@ def valid_reply_targets(
             ChannelMessageComment.channel_target_id == channel_target_id,
             ChannelMessageComment.channel_message_id.in_(channel_message_ids),
             ChannelMessageComment.comment_message_id.in_(requested_ids),
+            ChannelMessageComment.parent_comment_message_id.is_(None),
+            ChannelMessageComment.is_bot.is_(False),
         )
     )
     by_id = {int(comment.comment_message_id): _target_from_comment(comment) for comment in comments}
@@ -39,9 +45,9 @@ def valid_reply_targets(
 def message_reply_targets(
     session: Session,
     task: Task,
+    *,
     channel_target_id: int,
     message: ChannelMessage,
-    *,
     limit: int = 20,
 ) -> list[dict]:
     used_ids = _used_reply_target_ids(session, task, channel_target_id, message)
@@ -50,15 +56,20 @@ def message_reply_targets(
         ChannelMessageComment.tenant_id == task.tenant_id,
         ChannelMessageComment.channel_target_id == channel_target_id,
         ChannelMessageComment.channel_message_id == message.id,
+        ChannelMessageComment.parent_comment_message_id.is_(None),
+        ChannelMessageComment.is_bot.is_(False),
     )
     if used_ids:
         query = query.where(~ChannelMessageComment.comment_message_id.in_(used_ids))
     comments = session.scalars(
-        query.order_by(ChannelMessageComment.created_at.asc(), ChannelMessageComment.id.asc()).limit(limit_value)
+        query.order_by(
+            ChannelMessageComment.created_at.asc(), ChannelMessageComment.id.asc(),
+        ).limit(limit_value * REPLY_TARGET_CANDIDATE_MULTIPLIER)
     )
     targets = [_target_from_comment(comment) for comment in comments]
     targets.extend(_historical_targets(session, task, channel_target_id, message, limit_value + len(used_ids)))
-    return _exclude_used_targets(_dedupe_targets(targets), used_ids)
+    ranked = sorted(_dedupe_targets(targets), key=_target_priority)
+    return _exclude_used_targets(ranked, used_ids)[:limit_value]
 
 
 def reply_target_message_id(target: dict | None) -> int | None:
@@ -175,6 +186,7 @@ def _target_from_action(action: Action, remote_message_id: str) -> dict | None:
         "author_account_id": action.account_id,
         "preview": content[:120],
         "source": "own_history",
+        "reply_count": 0,
     }
 
 
@@ -185,7 +197,25 @@ def _target_from_comment(comment: ChannelMessageComment) -> dict:
         "author": str(comment.author_name or "读者").strip(),
         "preview": str(comment.content_preview or "").strip()[:120],
         "source": "channel_comment",
+        "reply_count": int(comment.reply_count or 0),
     }
+
+
+def _target_priority(target: dict) -> tuple[int, int]:
+    preview = str(target.get("preview") or "")
+    unanswered = int(target.get("reply_count") or 0) == 0
+    is_question = "?" in preview or "？" in preview or any(
+        marker in preview for marker in ("怎么", "如何", "多少", "能否", "吗", "么")
+    )
+    if target.get("source") == "channel_comment" and unanswered and is_question:
+        rank = 0
+    elif target.get("source") == "channel_comment" and unanswered:
+        rank = 1
+    elif target.get("source") == "own_history":
+        rank = 2
+    else:
+        rank = 3
+    return rank, int(target.get("message_id") or 0)
 
 
 __all__ = [

@@ -216,15 +216,29 @@ def test_group_two_stage_structural_duplicate_falls_to_quality_wait() -> None:
     assert len(realizer.calls) == 6
 
 
-def _comment_request(*, flag: bool = True):
+def _comment_request(
+    *,
+    flag: bool = True,
+    grounding: bool = False,
+    reply: bool = False,
+):
     return SimpleNamespace(
         tenant_id=1,
-        config={"ai_two_stage_enabled": flag},
+        config={
+            "ai_two_stage_enabled": flag,
+            "channel_comment_grounding_v1_enabled": grounding,
+        },
         payload=SimpleNamespace(
             slot_id="comment-slot-1",
             message_content="频道正文里提到周五上新",
-            reply_to_message_id="",
-            reply_target_preview="",
+            reply_to_message_id="8101" if reply else "",
+            reply_target_preview="这个尺寸是多少" if reply else "",
+            grounding_snapshot_id="",
+            grounding_assignment_id="",
+            grounding_enrollment_id="",
+            grounding_teacher_candidate_id="",
+            grounding_primary_evidence_id="",
+            grounding_speech_act="",
         ),
         account_id=11,
     )
@@ -294,3 +308,49 @@ def test_comment_two_stage_never_falls_back_to_emoji(monkeypatch) -> None:
 
     assert exc_info.value.code == QUALITY_WAIT
     assert "brief_schema_invalid" in exc_info.value.detail
+
+
+def test_grounding_reply_quality_exhaustion_becomes_reply_shortfall(monkeypatch) -> None:
+    planner = planner_factory([[
+        brief_payload("comment-slot-1", reply_to_message_id="8101"),
+    ]])
+    output = {
+        "content": "这条回复没有回答读者问题",
+        "used_anchor_ids": ["f1"],
+        "speech_act": "follow_up",
+        "voice_profile_version": "style_contract_v3",
+    }
+    realizer = realizer_factory([output, output])
+
+    def reject_evaluate(_session, _request, content, *, action_loader, **_kwargs):
+        return SimpleNamespace(
+            allowed=False,
+            code="reply_relation_rejected",
+            detail="没有回答引用目标",
+            content=content,
+            audit={},
+        )
+
+    monkeypatch.setattr(comment_generation_pipeline, "_evaluate_candidate", reject_evaluate)
+    monkeypatch.setattr(
+        comment_generation_pipeline,
+        "_emoji_fallback_result",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("reply slot must not enter fallback selection")
+        ),
+    )
+    with Session(_sqlite_engine()) as session:
+        with pytest.raises(CommentGenerationBlocked) as exc_info:
+            comment_generation_pipeline._run_two_stage_comment(
+                session,
+                _comment_request(grounding=True, reply=True),
+                comment_generation_pipeline.CommentGenerationDependencies(
+                    brief_planner=planner,
+                    brief_realizer=realizer,
+                    semantic_reviewer=reviewer_factory(),
+                ),
+                action_loader=lambda *_args: None,
+            )
+
+    assert exc_info.value.code == "reply_quality_shortfall"
+    assert exc_info.value.tokens > 0

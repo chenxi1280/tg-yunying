@@ -42,5 +42,5 @@ def test_single_channel_comment_task_prefill_keeps_comment_identity():
         task_source.index("function channelCommentPayload"):
         task_source.index("\n\n  function parseExcludedSenderInput")
     ]
-    assert "comment_mode: values.comment_mode ?? 'comment'," in payload_builder
+    assert "comment_mode: values.comment_mode ?? 'mixed'," in payload_builder
     assert "reply_to_message_ids: csvNumbers(values.reply_to_message_ids)," in payload_builder

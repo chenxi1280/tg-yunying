@@ -33,6 +33,7 @@ def ensure_channel_view_targets(
     messages: list[ChannelMessage],
     config: dict,
     now: datetime,
+    candidate_account_count: int | None = None,
 ) -> dict[int, ChannelViewDailyMessageTarget]:
     existing = _targets_by_message(session, ledger.id)
     materialized_message_ids = set(session.scalars(
@@ -64,9 +65,17 @@ def ensure_channel_view_targets(
             config=config,
             baseline=baselines.get(message.id, FactAttachBaseline()),
             now=now,
+            candidate_account_count=candidate_account_count,
         )
         existing[message.id] = _insert_or_read(session, target)
-    _refresh_targets(existing, ledger, task.pacing_config or {}, now=now)
+    _refresh_targets(
+        existing,
+        ledger,
+        task.pacing_config or {},
+        now=now,
+        candidate_account_count=candidate_account_count,
+        config=config,
+    )
     return existing
 
 
@@ -76,8 +85,20 @@ def _refresh_targets(
     pacing_config: dict,
     *,
     now: datetime,
+    candidate_account_count: int | None = None,
+    config: dict | None = None,
 ) -> None:
     for target in targets.values():
+        if (
+            candidate_account_count is not None
+            and candidate_account_count > 0
+            and config
+            and config.get("account_coverage_mode") == "all_accounts_daily"
+            and config.get("per_message_daily_view_target") is None
+        ):
+            target.daily_target_snapshot = candidate_account_count
+            if int(target.total_target_snapshot or 0) <= 0:
+                target.effective_target_snapshot = candidate_account_count
         due = channel_view_target_due(target, ledger, pacing_config, now=now)
         target.due_count = max(int(target.due_count or 0), due)
         target.source_state = "expired" if _at_or_after(now, target.active_until) else "active"
@@ -211,12 +232,15 @@ def _new_target(
     config: dict,
     baseline: "FactAttachBaseline",
     now: datetime,
+    candidate_account_count: int | None = None,
 ) -> ChannelViewDailyMessageTarget:
-    daily_target = int(
-        config.get("per_message_daily_view_target")
-        or config.get("target_views_per_message")
-        or 1
-    )
+    configured_daily = config.get("per_message_daily_view_target") or config.get("target_views_per_message")
+    if configured_daily is not None and str(configured_daily).strip() != "" and int(configured_daily) > 0:
+        daily_target = int(configured_daily)
+    elif candidate_account_count is not None and candidate_account_count > 0:
+        daily_target = candidate_account_count
+    else:
+        daily_target = 1
     raw_total = config.get("per_message_total_view_target")
     if raw_total is None or str(raw_total).strip() == "" or int(raw_total) <= 0:
         total_target = 0

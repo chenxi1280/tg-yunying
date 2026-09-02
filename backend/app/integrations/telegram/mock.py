@@ -538,12 +538,14 @@ class TelegramGateway:
         self,
         account_id: int,
         channel_peer_id: str,
+        *,
         message_id: int,
         content: str,
         session_ciphertext: str | None = None,
         credentials: DeveloperAppCredentials | None = None,
-        *,
         reply_to_message_id: int | None = None,
+        rpc_mode: str = "legacy_channel_comment",
+        thread_root_message_id: int = 0,
     ) -> SendResult:
         if "无评论" in content:
             return SendResult(
@@ -562,19 +564,38 @@ class TelegramGateway:
                 "content_kind": "text",
                 "relation_kind": "reply" if reply_to_message_id else "direct",
                 "reply_to_message_id": reply_to_message_id,
+                "rpc_mode": rpc_mode,
+                "actual_target_peer": channel_peer_id,
+                "source_message_id": message_id,
+                "thread_root_message_id": thread_root_message_id,
+                "actual_top_msg_id": thread_root_message_id,
             },
         )
+
+    def fetch_channel_discussion_identity(
+        self,
+        account_id: int,
+        channel_peer_id: str,
+        *,
+        source_message_ids: list[int],
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ):
+        del account_id, channel_peer_id, source_message_ids, session_ciphertext, credentials
+        raise RuntimeError("mock gateway 不提供权威频道讨论组探测")
 
     def reply_channel_media(
         self,
         account_id: int,
         channel_peer_id: str,
+        *,
         message_id: int,
         segment: dict,
         session_ciphertext: str | None = None,
         credentials: DeveloperAppCredentials | None = None,
-        *,
         reply_to_message_id: int | None = None,
+        rpc_mode: str = "legacy_channel_comment",
+        thread_root_message_id: int = 0,
     ) -> SendResult:
         del session_ciphertext, credentials
         source = str(segment.get("source") or "")
@@ -591,6 +612,11 @@ class TelegramGateway:
                 "remote_media_kind": "image_meme",
                 "relation_kind": "reply" if reply_to_message_id else "direct",
                 "reply_to_message_id": reply_to_message_id,
+                "rpc_mode": rpc_mode,
+                "actual_target_peer": channel_peer_id,
+                "source_message_id": message_id,
+                "thread_root_message_id": thread_root_message_id,
+                "actual_top_msg_id": thread_root_message_id,
             },
         )
 
@@ -1050,6 +1076,7 @@ class TelegramGateway:
         self,
         account_id: int,
         channel_peer_id: str,
+        *,
         session_ciphertext: str | None = None,
         credentials: DeveloperAppCredentials | None = None,
         limit: int = 20,
@@ -1059,6 +1086,7 @@ class TelegramGateway:
             ChannelMessageSnapshot(
                 message_id=100000 + index,
                 content_preview=f"mock channel {channel_peer_id} message {index + 1}",
+                content_text=f"mock channel {channel_peer_id} message {index + 1}",
                 message_url="",
                 published_at=now_value - timedelta(minutes=index),
             )

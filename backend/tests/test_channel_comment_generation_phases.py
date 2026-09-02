@@ -101,6 +101,33 @@ def test_post_comment_payload_rejects_empty_ready_text():
         )
 
 
+def test_grounding_reply_payload_accepts_reply_quality_shortfall_wait_state():
+    payload = PostCommentPayload(
+        channel_id="-10031",
+        channel_message_id=41,
+        message_id=9001,
+        comment_mode="reply",
+        reply_to_message_id=8101,
+        ai_generation_status="pending",
+        comment_lifecycle_state="reply_quality_shortfall",
+        grounding_enrollment_id="enrollment-1",
+        grounding_snapshot_id="snapshot-1",
+        comment_grounding_revision=1,
+        grounding_evidence_hash="e" * 64,
+        discussion_group_binding_id="binding-1",
+        discussion_group_identity_hash="g" * 64,
+        discussion_thread_binding_id="thread-1",
+        discussion_thread_identity_hash="t" * 64,
+        discussion_peer_id="-10032",
+        thread_root_message_id=8001,
+        rpc_mode="discussion_reply_to",
+        actual_target_peer="-10032",
+        membership_fact_id="membership-1",
+    )
+
+    assert payload.comment_lifecycle_state == "reply_quality_shortfall"
+
+
 def test_post_comment_dedupe_ignores_generated_text_and_generation_audit():
     task = Task(id="comment-dedupe", tenant_id=1, stats={})
     payload = {

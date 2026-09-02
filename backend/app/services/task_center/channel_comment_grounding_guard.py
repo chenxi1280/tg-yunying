@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from app.models import (
     Action,
     ChannelCommentGroundingAssignment,
+    ChannelCommentGroundingSnapshot,
     ChannelCommentPlanContract,
     ChannelCommentPlanLifecycleEvent,
     ChannelCommentQualityTargetRevision,
@@ -50,8 +51,60 @@ def comment_grounding_send_blocker(
         and assignment.quality_target_revision_id == payload.quality_target_revision_id
         and assignment.target_ordinal == payload.target_ordinal
         and assignment.assignment_state == "active"
+        and assignment.grounding_snapshot_id == payload.grounding_snapshot_id
+        and assignment.comment_grounding_revision == payload.comment_grounding_revision
+        and assignment.teacher_candidate_id == payload.grounding_teacher_candidate_id
+        and assignment.primary_evidence_id == payload.grounding_primary_evidence_id
+        and assignment.secondary_evidence_id == payload.grounding_secondary_evidence_id
     )
-    return "" if valid else "grounding_assignment_superseded"
+    if not valid:
+        return "grounding_assignment_superseded"
+    return _grounding_snapshot_blocker(
+        session, action, payload, assignment=assignment,
+    )
+
+
+def _grounding_snapshot_blocker(
+    session: Session,
+    action: Action,
+    payload: PostCommentPayload,
+    *,
+    assignment: ChannelCommentGroundingAssignment,
+) -> str:
+    snapshot = session.get(ChannelCommentGroundingSnapshot, payload.grounding_snapshot_id)
+    if not snapshot or snapshot.tenant_id != action.tenant_id:
+        return "grounding_snapshot_missing"
+    if (
+        snapshot.source_revision_id != payload.source_revision_id
+        or snapshot.comment_plan_contract_id != assignment.plan_contract_id
+        or snapshot.source_content_hash != payload.grounding_evidence_hash
+        or snapshot.source_state not in {"ready", "minimal"}
+    ):
+        return "grounding_snapshot_stale"
+    evidence = next(
+        (
+            row for row in snapshot.aspect_evidence_json
+            if row.get("evidence_id") == payload.grounding_primary_evidence_id
+        ),
+        None,
+    )
+    if evidence is None:
+        return "grounding_primary_evidence_missing"
+    return _temporal_evidence_blocker(evidence)
+
+
+def _temporal_evidence_blocker(evidence: dict) -> str:
+    valid_until = str(evidence.get("valid_until") or "")
+    if not valid_until:
+        return ""
+    from datetime import datetime
+    from app.services._common import _now
+
+    return (
+        "temporal_evidence_expired"
+        if _now() > datetime.fromisoformat(valid_until)
+        else ""
+    )
 
 
 def _quality_target_blocker(
@@ -84,8 +137,33 @@ def _quality_target_blocker(
         "planned_fallback_ordinal_ids", [],
     )
     if payload.comment_fallback_intent_kind == "planned" and planned:
-        return ""
+        return _planned_fallback_snapshot_blocker(
+            session, action, payload, obligation=obligation, component=components[0],
+        )
     return "grounding_assignment_missing"
+
+
+def _planned_fallback_snapshot_blocker(
+    session: Session,
+    action: Action,
+    payload: PostCommentPayload,
+    *,
+    obligation: CommentFulfillmentObligation,
+    component: dict,
+) -> str:
+    snapshot = session.get(ChannelCommentGroundingSnapshot, payload.grounding_snapshot_id)
+    valid = bool(
+        snapshot
+        and snapshot.tenant_id == action.tenant_id
+        and snapshot.source_revision_id == payload.source_revision_id
+        and snapshot.comment_plan_contract_id == obligation.plan_contract_id
+        and snapshot.comment_grounding_revision == payload.comment_grounding_revision
+        and snapshot.source_content_hash == payload.grounding_evidence_hash
+        and component.get("grounding_snapshot_id") == payload.grounding_snapshot_id
+        and int(component.get("comment_grounding_revision") or 0)
+        == payload.comment_grounding_revision
+    )
+    return "" if valid else "grounding_snapshot_stale"
 
 
 def _source_deleted(

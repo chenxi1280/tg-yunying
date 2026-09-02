@@ -28,6 +28,7 @@ from app.services.task_center.account_voice_profile_cache import (
     VOICE_PROFILE_CONTRACT_VERSION,
     voice_profile_snapshot_hash,
 )
+from app.services.task_center.comment_generation_worker import drain_comment_generation
 
 
 def comment_dispatch_session() -> Session:
@@ -257,4 +258,51 @@ def expire_comment_action(action: Action) -> None:
     action.created_at = _now() - timedelta(minutes=10)
 
 
-__all__ = ["comment_dispatch_session", "expire_comment_action", "seed_dispatch_scope"]
+def dispatch_generated_comment_action(
+    session: Session,
+    action: Action,
+    *,
+    comment_generation_dependencies,
+) -> bool:
+    from app.services.task_center import dispatcher
+
+    _release_for_generation(action)
+    session.commit()
+    processed = drain_comment_generation(
+        lambda: Session(bind=session.get_bind()),
+        limit=1,
+        dependencies=comment_generation_dependencies,
+    )
+    session.expire_all()
+    refreshed = session.get(Action, action.id)
+    if processed != 1 or refreshed is None:
+        raise AssertionError("comment generation worker did not process expected action")
+    if refreshed.status in {"failed", "skipped", "cancelled"}:
+        return True
+    if str((refreshed.payload or {}).get("ai_generation_status") or "") != "ready":
+        return True
+    _claim_for_dispatch(refreshed)
+    session.commit()
+    return dispatcher.dispatch_action(session, refreshed)
+
+
+def _release_for_generation(action: Action) -> None:
+    action.status = "pending"
+    action.lease_owner = ""
+    action.lease_expires_at = None
+    action.claim_owner = ""
+    action.claim_token = ""
+
+
+def _claim_for_dispatch(action: Action) -> None:
+    action.status = "executing"
+    action.lease_owner = "dispatcher-test"
+    action.lease_expires_at = _now() + timedelta(minutes=5)
+
+
+__all__ = [
+    "comment_dispatch_session",
+    "dispatch_generated_comment_action",
+    "expire_comment_action",
+    "seed_dispatch_scope",
+]

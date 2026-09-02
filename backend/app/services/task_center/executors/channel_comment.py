@@ -82,6 +82,13 @@ class CommentPlanSetup:
     created: int = 0
 
 
+@dataclass(frozen=True)
+class LegacyPlanInputs:
+    coverage_remaining: int
+    reply_targets: list[dict]
+    message_states: dict
+
+
 def build_plan(session: Session, task: Task) -> int:
     if not _lock_comment_task(session, task):
         return 0
@@ -203,7 +210,9 @@ def _comment_plan_setup(session: Session, task: Task) -> CommentPlanSetup:
     profile_preview = tenant_learning_profile_preview(session, task.tenant_id, CHANNEL_COMMENT_SCENE)
     audit_learning_profile_use(session, task, profile_preview, "AI评论任务")
     config = _config_with_comment_profile(config, profile_preview)
-    accounts = _planning_accounts(session, task, channel, config)
+    accounts = _planning_accounts(
+        session, task, channel=channel, config=config,
+    )
     if not accounts:
         return CommentPlanSetup(None)
     voices = voice_profile_prompt_details(
@@ -290,27 +299,30 @@ def _merge_comment_messages(*groups: list[ChannelMessage]) -> list[ChannelMessag
     return merged
 
 
-def _planning_accounts(session: Session, task: Task, channel: OperationTarget, config: dict) -> list:
+def _planning_accounts(
+    session: Session,
+    task: Task,
+    *,
+    channel: OperationTarget,
+    config: dict,
+) -> list:
     grounding_v1 = grounding_plan_enabled(task)
     target_per_message = int(config.get("target_comments_per_message") or 1)
     _lower, max_target_per_message = quantity_jitter_bounds(target_per_message, float(config.get("comment_count_jitter") or 0))
     account_scan_limit = max(max_target_per_message, int((task.account_config or {}).get("max_concurrent") or max_target_per_message))
-    ready_accounts = channel_member_accounts(
+    selected_accounts = select_task_accounts(
         session,
-        task,
-        channel,
-        select_task_accounts(
-            session,
-            task.tenant_id,
-            task.account_config or {},
-            limit=account_scan_limit,
-            enforce_max_concurrent=False,
-            enforce_capacity=not grounding_v1,
-            scan_all_candidates=grounding_v1,
-            daily_coverage_task_id=task.id,
-            daily_coverage_action_types=("post_comment",),
-        ),
-        require_send=True,
+        task.tenant_id,
+        task.account_config or {},
+        limit=account_scan_limit,
+        enforce_max_concurrent=False,
+        enforce_capacity=not grounding_v1,
+        scan_all_candidates=grounding_v1,
+        daily_coverage_task_id=task.id,
+        daily_coverage_action_types=("post_comment",),
+    )
+    ready_accounts = selected_accounts if grounding_v1 else channel_member_accounts(
+        session, task, channel, selected_accounts, require_send=True,
     )
     accounts = _comment_ready_accounts(task, ready_accounts)
     if not accounts:
@@ -331,64 +343,103 @@ def _comment_plan_slots(
             input_allowed=_comment_input_allowed,
             target_builder=_comment_slot_targets,
         )
-    config = context.config
-    coverage_remaining = daily_uncovered_account_count(
-        session,
-        task.id,
-        ("post_comment",),
-        context.accounts,
-    )
-    requested_reply_targets = [int(item) for item in config.get("reply_to_message_ids") or [] if int(item or 0) > 0]
-    comment_mode = config.get("comment_mode") or "comment"
-    reply_targets = _valid_reply_targets(
-        session,
-        task,
-        context.channel.id,
-        context.messages,
-        requested_reply_targets,
-    )
-    if comment_mode in {"reply", "mixed"} and requested_reply_targets and not reply_targets:
-        task.last_error = "回复对象不属于当前频道消息，请先采集评论后重新选择"
+    return _legacy_comment_plan_slots(session, task, context=context)
+
+
+def _legacy_comment_plan_slots(
+    session: Session,
+    task: Task,
+    *,
+    context: CommentPlanContext,
+) -> list[CommentPlanSlot] | None:
+    inputs = _legacy_plan_inputs(session, task, context=context)
+    if inputs is None:
         return None
-    message_states = _load_message_comment_plan_states(session, task, context.messages)
+    config = context.config
     slots: list[CommentPlanSlot] = []
     for message, quantity in _message_comment_quantities(
         session,
         task,
         config,
         context.messages,
-        daily_coverage_min_total=coverage_remaining,
+        daily_coverage_min_total=inputs.coverage_remaining,
         total_remaining=context.total_remaining,
-        message_states=message_states,
+        message_states=inputs.message_states,
     ):
         if not quantity or not _comment_input_allowed(task, context, message):
             continue
-        targets = _comment_slot_targets(session, task, context, message, quantity, reply_targets)
-        if targets is None:
+        message_slots = _legacy_message_slots(
+            session, task, context=context, message=message,
+            quantity=quantity, inputs=inputs,
+        )
+        if message_slots is None:
             return None
-        obligations = freeze_comment_obligations(
-            session,
-            task,
-            message,
-            targets,
-            rule_version=context.rule_version,
-            reply_min_required=_reply_minimum_for_mode(
-                context.config.get("comment_mode") or "comment",
-                quantity,
-                context.config,
-            ),
-            first_ordinal=message_states[message.id].next_slot_index + 1,
-        )
-        slots.extend(
-            CommentPlanSlot(
-                message,
-                item.reply_target_snapshot if item.relation_kind == "reply" else None,
-                item.target_ordinal - 1,
-                item,
-            )
-            for item in obligations
-        )
+        slots.extend(message_slots)
     return slots
+
+
+def _legacy_plan_inputs(
+    session: Session,
+    task: Task,
+    *,
+    context: CommentPlanContext,
+) -> LegacyPlanInputs | None:
+    requested = [
+        int(item) for item in context.config.get("reply_to_message_ids") or []
+        if int(item or 0) > 0
+    ]
+    targets = _valid_reply_targets(
+        session, task, channel_target_id=context.channel.id,
+        messages=context.messages, requested_ids=requested,
+    )
+    mode = context.config.get("comment_mode") or "comment"
+    if mode in {"reply", "mixed"} and requested and not targets:
+        task.last_error = "回复对象不属于当前频道消息，请先采集评论后重新选择"
+        return None
+    return LegacyPlanInputs(
+        coverage_remaining=daily_uncovered_account_count(
+            session, task.id, ("post_comment",), context.accounts,
+        ),
+        reply_targets=targets,
+        message_states=_load_message_comment_plan_states(
+            session, task, context.messages,
+        ),
+    )
+
+
+def _legacy_message_slots(
+    session: Session,
+    task: Task,
+    *,
+    context: CommentPlanContext,
+    message: ChannelMessage,
+    quantity: int,
+    inputs: LegacyPlanInputs,
+) -> list[CommentPlanSlot] | None:
+    targets = _comment_slot_targets(
+        session, task, context=context, message=message, quantity=quantity,
+        requested_targets=inputs.reply_targets,
+    )
+    if targets is None:
+        return None
+    obligations = freeze_comment_obligations(
+        session, task, message, reply_targets=targets,
+        rule_version=context.rule_version,
+        reply_min_required=_reply_minimum_for_mode(
+            context.config.get("comment_mode") or "comment",
+            quantity, context.config,
+        ),
+        first_ordinal=inputs.message_states[message.id].next_slot_index + 1,
+    )
+    return [
+        CommentPlanSlot(
+            message,
+            item.reply_target_snapshot if item.relation_kind == "reply" else None,
+            item.target_ordinal - 1,
+            item,
+        )
+        for item in obligations
+    ]
 
 
 def _comment_input_allowed(task: Task, context: CommentPlanContext, message: ChannelMessage) -> bool:
@@ -415,6 +466,7 @@ def _comment_input_allowed(task: Task, context: CommentPlanContext, message: Cha
 def _comment_slot_targets(
     session: Session,
     task: Task,
+    *,
     context: CommentPlanContext,
     message: ChannelMessage,
     quantity: int,
@@ -426,17 +478,18 @@ def _comment_slot_targets(
     pool = (
         [target for target in requested_targets if int(target.get("channel_message_id") or 0) == message.id]
         if mode == "reply"
-        else _message_reply_targets(session, task, context.channel.id, message)
+        else _message_reply_targets(
+            session, task,
+            channel_target_id=context.channel.id, message=message,
+        )
     )
     required = quantity if mode == "reply" else _reply_minimum_for_mode(mode, quantity, context.config)
     if required > len(pool):
         stats_inc(task, "reply_target_shortfall_count")
-        if mode == "reply":
-            task.last_error = "可引用评论不足，等待采集到可回复评论后继续执行"
-            # Hard reply mode cannot plan without valid targets.
+        if mode == "reply" or grounding_plan_enabled(task):
+            task.last_error = "channel_comment_reply_target_shortfall"
             return None
-        # Mixed mode: use available replies, keep remaining as normal comments (PRD §1.2.4).
-        # Keep last_error empty so healthy tasks are not marked blocked; shortfall is in stats.
+        # Legacy mixed plans retain their frozen downgrade behavior.
         return [*pool, *([None] * max(0, quantity - len(pool)))]
     return [*pool[:required], *([None] * (quantity - required))]
 

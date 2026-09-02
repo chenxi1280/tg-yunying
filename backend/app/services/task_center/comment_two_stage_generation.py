@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from sqlalchemy.orm import Session
 
 from .ai_generator import clean_channel_comment_contents
+from .channel_comment_grounding_evaluation import persist_grounding_evaluation
 from .two_stage_generation import (
     QUALITY_WAIT,
     TWO_STAGE_REALIZE_ATTEMPTS,
@@ -118,6 +119,15 @@ def _comment_slot(request) -> dict:
         "account_id": int(request.account_id or 0),
         "reply_to_message_id": str(request.payload.reply_to_message_id or ""),
         "reply_preview": str(request.payload.reply_target_preview or ""),
+        "grounding_snapshot_id": str(request.payload.grounding_snapshot_id or ""),
+        "grounding_assignment_id": str(request.payload.grounding_assignment_id or ""),
+        "teacher_candidate_id": str(
+            request.payload.grounding_teacher_candidate_id or "",
+        ),
+        "primary_evidence_id": str(
+            request.payload.grounding_primary_evidence_id or "",
+        ),
+        "speech_act": str(request.payload.grounding_speech_act or ""),
         **dict(request.config.get("_ai_content_contract") or {}),
     }
 
@@ -138,6 +148,15 @@ def _run_attempt(
             realizer=hooks.brief_realizer, reviewer=hooks.semantic_reviewer,
         )
     except TwoStageRealizeError as exc:
+        _record_grounding_evaluation(
+            session, request, hooks,
+            candidate_hash=str(exc.evidence.get("candidate_hash") or ""),
+            semantic_evidence=dict(exc.evidence or {}),
+            claim_results=[],
+            final_result=(
+                "unknown" if exc.code.startswith("semantic_review_") else "reject"
+            ),
+        )
         event = {"stage": "two_stage_realize", "outcome": "rejected", "reason": exc.code}
         return _Attempt(
             event=event, feedback=exc.code, tokens=exc.tokens,
@@ -148,7 +167,7 @@ def _run_attempt(
         event = {"stage": "two_stage_realize", "outcome": "candidate_missing"}
         return _Attempt(event=event, feedback="candidate_missing", tokens=spent)
     return _evaluate_attempt(
-        session, request, hooks, str(cleaned[0]).strip(), meta=meta, spent=spent,
+        session, request, hooks, content=str(cleaned[0]).strip(), meta=meta, spent=spent,
     )
 
 
@@ -156,11 +175,12 @@ def _evaluate_attempt(
     session: Session,
     request,
     hooks: TwoStageCommentHooks,
-    content: str,
     *,
+    content: str,
     meta: dict,
     spent: int,
 ) -> _Attempt:
+    semantic_evidence = dict(meta.get("semantic_review") or {})
     decision = hooks.evaluate_candidate(
         session, request, content, action_loader=hooks.action_loader,
     )
@@ -172,15 +192,54 @@ def _evaluate_attempt(
     if decision.code in hooks.structural_failure_codes:
         raise CommentGenerationBlocked(decision.code, decision.detail)
     if not decision.allowed:
+        _record_grounding_evaluation(
+            session, request, hooks,
+            candidate_hash=str(semantic_evidence.get("candidate_hash") or ""),
+            semantic_evidence=semantic_evidence,
+            claim_results=list(
+                (decision.audit or {}).get("deterministic_claim_results") or [],
+            ),
+            final_result="reject",
+        )
         return _Attempt(
             event=event, feedback=f"{decision.code}:{decision.detail}",
             tokens=spent, evaluator_evidence=meta,
         )
     audit = {**(decision.audit or {}), "two_stage_evaluator_evidence": meta}
+    _record_grounding_evaluation(
+        session, request, hooks,
+        candidate_hash=str(semantic_evidence.get("candidate_hash") or ""),
+        semantic_evidence=semantic_evidence,
+        claim_results=list(audit.get("deterministic_claim_results") or []),
+        final_result="pass",
+    )
     return _Attempt(
         content=decision.content, quality_audit=audit, event=event,
         tokens=spent, evaluator_evidence=meta,
     )
+
+
+def _record_grounding_evaluation(
+    session: Session,
+    request,
+    hooks: TwoStageCommentHooks,
+    *,
+    candidate_hash: str,
+    semantic_evidence: dict,
+    claim_results: list[dict],
+    final_result: str,
+) -> None:
+    if not candidate_hash or not request.payload.grounding_enrollment_id:
+        return
+    action = hooks.action_loader(session, request)
+    persist_grounding_evaluation(
+        session, action, request.payload,
+        candidate_hash=candidate_hash,
+        claim_results=claim_results,
+        semantic_evidence=semantic_evidence,
+        final_result=final_result,
+    )
+    session.commit()
 
 
 __all__ = [

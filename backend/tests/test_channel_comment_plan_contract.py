@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime, timedelta
 
 import pytest
@@ -8,22 +9,44 @@ from sqlalchemy import func, select
 from app.models import (
     Action,
     AccountPacingReservation,
+    AiContentPolicyVersion,
+    AiProvider,
     ChannelCommentCapacityAllocationEpoch,
     ChannelCommentContentRevisionOperation,
     ChannelCommentGroundingAssignment,
+    ChannelCommentGroundingEvaluation,
+    ChannelCommentGroundingSnapshot,
     ChannelCommentPlanLifecycleEvent,
     ChannelCommentOrdinalAccountBinding,
     ChannelCommentPlanContract,
+    ChannelDiscussionGroupBinding,
+    ChannelDiscussionThreadBinding,
     ChannelMessage,
+    ChannelMessageComment,
     ChannelMessageSourceRevision,
     CommentFulfillmentObligation,
     ExecutionAttempt,
     GenerationJob,
+    OperationTarget,
     SourcePacingAdmission,
     SourcePacingState,
     TaskCommentCapacityPeriod,
     TaskCommentCapacityReservation,
+    TenantAiProviderRouteItem,
+    TenantAiProviderRouteSet,
 )
+from app.services.task_center.channel_comment_discussion_contracts import (
+    AUTHORITATIVE_GROUP_STAGE,
+    AUTHORITATIVE_THREAD_STAGE,
+    EnrollmentRequest,
+    GroupProbeObservation,
+    MembershipObservation,
+    ThreadProbeObservation,
+    record_group_probe,
+    record_membership_fact,
+    record_thread_probe,
+)
+from app.services.task_center.channel_comment_grounding_enrollment import activate_grounding_enrollment
 from app.services.task_center.executors import channel_comment
 from app.services.task_center.channel_comment_acceptance import channel_comment_acceptance
 from app.services.task_center.channel_comment_capacity import (
@@ -36,6 +59,14 @@ from app.services.task_center.channel_comment_capacity_allocation import (
     rebalance_comment_capacity_epoch,
 )
 from app.services.task_center.channel_comment_grounding_guard import comment_grounding_send_blocker
+from app.services.task_center.channel_comment_grounding_evaluation import (
+    evaluate_grounding_claims,
+    persist_grounding_evaluation,
+)
+from app.services.task_center.channel_comment_grounding_read_model import (
+    channel_comment_grounding_read_model,
+)
+from app.services.task_center import dispatcher
 from app.services.task_center.channel_comment_content_revision import (
     reconcile_channel_comment_source_edit,
 )
@@ -56,39 +87,184 @@ from channel_comment_planner_test_support import (
 pytestmark = pytest.mark.no_postgres
 
 
-def _enable_grounding_plan(session, task, *, source_text: str = "频道事实正文") -> None:
+def _enable_grounding_plan(
+    session,
+    task,
+    *,
+    source_text: str = "糖糖老师 今日主推黑丝 下午可约",
+    business_max: int = 80,
+    fallback_max_bps: int = 2000,
+) -> None:
     task.fulfillment_contract_version = "fact_first_v3"
-    task.type_config = {
-        **task.type_config,
+    task.type_config = {**task.type_config, **_grounding_config(
+        business_max=business_max, fallback_max_bps=fallback_max_bps,
+    )}
+    _seed_ai_content_runtime(session)
+    message = session.get(ChannelMessage, 41)
+    message.content_preview = source_text
+    message.published_at = datetime(2030, 8, 1, 10, 0, 0)
+    binding = _seed_discussion_binding(session, task)
+    revision = _new_source_revision(message, source_text=source_text, binding=binding)
+    session.add(revision)
+    session.flush()
+    thread = _seed_discussion_thread(session, revision, binding)
+    revision.discussion_thread_binding_id = thread.id
+    revision.discussion_thread_revision = thread.thread_revision
+    revision.discussion_thread_identity_hash = thread.identity_hash
+    _seed_discussion_memberships(session, binding)
+    _activate_test_enrollment(session, task, message=message, binding=binding)
+    message.current_source_revision_id = revision.id
+    session.commit()
+
+
+def _grounding_config(*, business_max: int, fallback_max_bps: int) -> dict:
+    return {
         "rolling_window_days": 3,
         "daily_comment_cap": 10,
+        "business_max_comments_per_message": business_max,
+        "planned_fallback_max_bps": fallback_max_bps,
         "channel_comment_grounding_v1_enabled": True,
+        "ai_two_stage_enabled": True,
+        "ai_content_route_v2_enabled": True,
+        "ai_model": "comment-generator",
+        "ai_semantic_reviewer_model": "comment-reviewer",
+        "ai_content_policy_version_id": "policy-v1",
+        "ai_content_allowed_routes": ["general"],
         "unicode_emoji_enabled": True,
         "image_meme_enabled": False,
         "unicode_emoji_weight_bps": 10000,
         "image_meme_weight_bps": 0,
         "context_bound_schedule_window_seconds": 3 * 24 * 60 * 60,
     }
-    message = session.get(ChannelMessage, 41)
-    message.content_preview = source_text
-    message.published_at = datetime(2030, 8, 1, 10, 0, 0)
-    revision = ChannelMessageSourceRevision(
+
+
+def _new_source_revision(message, *, source_text: str, binding) -> ChannelMessageSourceRevision:
+    return ChannelMessageSourceRevision(
         id="source-revision-1",
         tenant_id=1,
+        channel_target_id=message.channel_target_id,
         channel_message_id=message.id,
         source_revision=1,
         source_remote_message_id=message.message_id,
         source_published_at=message.published_at,
+        source_published_at_fact_id=f"telegram_message_date:{message.channel_target_id}:{message.message_id}",
         source_observed_at=STABLE_PLANNER_NOW,
+        source_type="message_text",
         source_text_snapshot=source_text,
-        source_content_hash="a" * 64,
+        source_content_hash=hashlib.sha256(source_text.encode("utf-8")).hexdigest(),
         observation_identity_hash="b" * 64,
+        source_length=len(source_text),
+        captured_length=len(source_text),
+        truncation_state="complete",
         source_operation="observed",
+        discussion_group_binding_id=binding.id,
+        discussion_group_binding_revision=binding.binding_revision,
+        discussion_group_identity_hash=binding.identity_hash,
     )
-    session.add(revision)
+
+
+def _activate_test_enrollment(session, task, *, message, binding) -> None:
+    activate_grounding_enrollment(
+        session,
+        EnrollmentRequest(
+            tenant_id=task.tenant_id,
+            task_id=task.id,
+            expected_config_revision=task.config_revision,
+            expected_lifecycle_epoch=task.task_lifecycle_epoch,
+            group_binding_id=binding.id,
+            enabled_at=message.published_at - timedelta(minutes=1),
+            operator_id="test-operator",
+            approval_reference="test-approval",
+        ),
+    )
+
+
+def _seed_ai_content_runtime(session) -> None:
+    if session.get(AiContentPolicyVersion, "policy-v1") is None:
+        session.add(AiContentPolicyVersion(
+            id="policy-v1", tenant_id=1, version=1, status="active",
+            policy_hash="e" * 64, approved_by="test-operator",
+            route_rules={"allowed_routes": ["general"]},
+        ))
+    providers = (
+        (201, "comment-generator", "mock://generator"),
+        (202, "comment-reviewer", "mock://reviewer"),
+    )
+    for provider_id, model, base_url in providers:
+        if session.get(AiProvider, provider_id) is None:
+            session.add(AiProvider(
+                id=provider_id, provider_name=f"provider-{provider_id}",
+                base_url=base_url, model_name=model,
+                api_key_ciphertext="ciphertext", credential_enabled=True,
+            ))
     session.flush()
-    message.current_source_revision_id = revision.id
-    session.commit()
+    purposes = (
+        ("comment_context_route", 201, "comment-generator"),
+        ("comment_realize_general", 201, "comment-generator"),
+        ("comment_semantic_review", 202, "comment-reviewer"),
+    )
+    for revision, (purpose, provider_id, model) in enumerate(purposes, 1):
+        route = TenantAiProviderRouteSet(
+            tenant_id=1, purpose=purpose, revision=1, status="active",
+            content_hash=str(revision) * 64,
+        )
+        session.add(route)
+        session.flush()
+        session.add(TenantAiProviderRouteItem(
+            route_set_id=route.id, priority=1,
+            provider_id=provider_id, model_name=model,
+        ))
+
+
+def _seed_discussion_binding(session, task) -> ChannelDiscussionGroupBinding:
+    if session.get(OperationTarget, 32) is None:
+        session.add(OperationTarget(
+            id=32, tenant_id=1, target_type="group", tg_peer_id="-10032",
+            title="测试频道讨论组", can_send=True, auth_status="已授权运营",
+        ))
+        session.flush()
+    return record_group_probe(session, GroupProbeObservation(
+        tenant_id=1,
+        channel_target_id=31,
+        target_reference_revision=1,
+        channel_peer_id="-10031",
+        discussion_target_id=32,
+        discussion_peer_id="-10032",
+        probe_request_id=f"probe-{task.id}",
+        probe_status="success",
+        probe_stage=AUTHORITATIVE_GROUP_STAGE,
+        observed_at=STABLE_PLANNER_NOW,
+        fresh_until_at=STABLE_PLANNER_NOW + timedelta(days=1),
+    ))
+
+
+def _seed_discussion_thread(session, revision, binding) -> ChannelDiscussionThreadBinding:
+    return record_thread_probe(session, ThreadProbeObservation(
+        tenant_id=1,
+        source_revision_id=revision.id,
+        group_binding_id=binding.id,
+        probe_request_id=f"thread-{revision.id}",
+        probe_status="success",
+        probe_stage=AUTHORITATIVE_THREAD_STAGE,
+        observed_at=STABLE_PLANNER_NOW,
+        fresh_until_at=STABLE_PLANNER_NOW + timedelta(days=1),
+        discussion_peer_id="-10032",
+        thread_root_message_id=7001,
+    ))
+
+
+def _seed_discussion_memberships(session, binding) -> None:
+    for account_id in (101, 102, 103):
+        record_membership_fact(session, MembershipObservation(
+            tenant_id=1,
+            account_id=account_id,
+            group_binding_id=binding.id,
+            discussion_peer_id="-10032",
+            membership_status="already_joined",
+            can_send=True,
+            observed_at=STABLE_PLANNER_NOW,
+            fresh_until_at=STABLE_PLANNER_NOW + timedelta(days=1),
+        ))
 
 
 def test_grounding_plan_freezes_distinct_target_and_survives_config_revision(monkeypatch):
@@ -129,7 +305,7 @@ def test_grounding_plan_freezes_distinct_target_and_survives_config_revision(mon
         assert session.scalar(select(func.count(CommentFulfillmentObligation.id))) == 2
 
 
-def test_empty_source_freezes_planned_fallback_actions(monkeypatch):
+def test_empty_source_blocks_when_planned_fallback_exceeds_business_cap(monkeypatch):
     forbid_planner_external_boundaries(monkeypatch)
     fixed_profile(monkeypatch)
     with planner_session() as session:
@@ -139,12 +315,104 @@ def test_empty_source_freezes_planned_fallback_actions(monkeypatch):
         created = channel_comment.build_plan(session, task)
         plan = session.scalar(select(ChannelCommentPlanContract))
         actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
+        obligations = list(session.scalars(select(CommentFulfillmentObligation)))
+        acceptance = channel_comment_acceptance(session, task)
 
-    assert created == 2
+    assert created == 0
     assert plan.grounding_required_count == 0
     assert plan.planned_fallback_count == 2
-    assert {action.payload["comment_fallback_intent_kind"] for action in actions} == {"planned"}
-    assert {action.payload["grounding_assignment_id"] for action in actions} == {""}
+    assert actions == obligations == []
+    assert task.last_error == "channel_comment_planned_fallback_cap_exceeded"
+    assert acceptance["fallback_business_state"] == "cap_exceeded"
+    assert acceptance["acceptance_status"] == "blocked"
+
+
+def test_planned_fallback_action_keeps_exact_grounding_snapshot_identity(monkeypatch):
+    forbid_planner_external_boundaries(monkeypatch)
+    fixed_profile(monkeypatch)
+    with planner_session() as session:
+        task = seed_comment_task(session, mode="comment", target_count=3)
+        _enable_grounding_plan(
+            session, task, source_text="", fallback_max_bps=10000,
+        )
+
+        created = channel_comment.build_plan(session, task)
+        snapshot = session.scalar(select(ChannelCommentGroundingSnapshot))
+        actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
+
+    assert created == 2
+    assert snapshot.source_state == "insufficient"
+    assert actions
+    assert all(not row.payload["grounding_assignment_id"] for row in actions)
+    assert all(row.payload["grounding_snapshot_id"] == snapshot.id for row in actions)
+    assert all(row.payload["comment_grounding_revision"] == 1 for row in actions)
+    assert all(
+        row.payload["grounding_evidence_hash"] == snapshot.source_content_hash
+        for row in actions
+    )
+
+
+def test_business_cap_freezes_uncapped_demand_without_claiming_ratio_met(monkeypatch):
+    forbid_planner_external_boundaries(monkeypatch)
+    fixed_profile(monkeypatch)
+    with planner_session() as session:
+        task = seed_comment_task(session, mode="comment", target_count=99)
+        _enable_grounding_plan(session, task, business_max=1)
+
+        created = channel_comment.build_plan(session, task)
+        plan = session.scalar(select(ChannelCommentPlanContract))
+        acceptance = channel_comment_acceptance(session, task)
+
+    assert created == 1
+    assert plan.uncapped_required_distinct_account_count == 2
+    assert plan.required_distinct_account_count == 1
+    assert plan.business_max_comments_per_message == 1
+    assert plan.business_cap_state == "business_cap_adjusted"
+    assert acceptance["quantity_uncapped_target_count"] == 2
+    assert acceptance["business_cap_adjusted_count"] == 1
+
+
+def test_grounding_mixed_reply_shortfall_blocks_without_direct_downgrade(monkeypatch):
+    forbid_planner_external_boundaries(monkeypatch)
+    fixed_profile(monkeypatch)
+    with planner_session() as session:
+        task = seed_comment_task(session, mode="mixed", reply_min=2, target_count=3)
+        _enable_grounding_plan(session, task)
+        reply = session.scalar(select(ChannelMessageComment).where(
+            ChannelMessageComment.comment_message_id == 8102,
+        ))
+        session.delete(reply)
+        session.flush()
+
+        created = channel_comment.build_plan(session, task)
+        actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
+        obligations = list(session.scalars(select(CommentFulfillmentObligation)))
+
+    assert created == 0
+    assert actions == obligations == []
+    assert task.last_error == "channel_comment_reply_target_shortfall"
+
+
+def test_grounding_reply_slot_rejects_planned_fallback(monkeypatch):
+    forbid_planner_external_boundaries(monkeypatch)
+    fixed_profile(monkeypatch)
+    with planner_session() as session:
+        task = seed_comment_task(
+            session,
+            mode="reply",
+            reply_min=2,
+            requested_reply_ids=[8101, 8102],
+            target_count=3,
+        )
+        _enable_grounding_plan(session, task, source_text="", fallback_max_bps=10000)
+
+        created = channel_comment.build_plan(session, task)
+        actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
+        obligations = list(session.scalars(select(CommentFulfillmentObligation)))
+
+    assert created == 0
+    assert actions == obligations == []
+    assert task.last_error == "channel_comment_reply_fallback_forbidden"
 
 
 def test_daily_cap_applies_per_continuous_period_without_shrinking_obligations(monkeypatch):
@@ -201,11 +469,17 @@ def test_acceptance_requires_typed_fact_and_grounding_evidence(monkeypatch):
         obligations = list(session.scalars(select(CommentFulfillmentObligation)))
         for obligation in obligations:
             action = session.get(Action, obligation.current_action_id)
+            assignment = session.get(
+                ChannelCommentGroundingAssignment,
+                obligation.grounding_assignment_id,
+            )
             action.status = "success"
             action.payload = {
                 **action.payload,
                 "content_source": "normal",
-                "comment_text": "频道事实正文",
+                "comment_text": (
+                    f"{assignment.teacher_name} {assignment.primary_aspect_text}"
+                ).strip(),
             }
             action.result = {
                 "comment_quality_audit": {
@@ -224,6 +498,136 @@ def test_acceptance_requires_typed_fact_and_grounding_evidence(monkeypatch):
     assert acceptance["content_mix_status"] == "met"
     assert acceptance["grounding_quality_status"] == "met"
     assert acceptance["acceptance_status"] == "met"
+
+
+def test_plan_freezes_snapshot_and_assignments_reference_exact_evidence(monkeypatch) -> None:
+    forbid_planner_external_boundaries(monkeypatch)
+    fixed_profile(monkeypatch)
+    with planner_session() as session:
+        task = seed_comment_task(session, mode="comment", target_count=3)
+        _enable_grounding_plan(session, task)
+        channel_comment.build_plan(session, task)
+
+        snapshot = session.scalar(select(ChannelCommentGroundingSnapshot))
+        assignments = list(session.scalars(select(ChannelCommentGroundingAssignment)))
+
+        assert snapshot.comment_grounding_revision == 1
+        assert snapshot.source_state == "ready"
+        assert snapshot.teacher_candidates_json
+        assert snapshot.aspect_evidence_json
+        evidence_ids = {row["evidence_id"] for row in snapshot.aspect_evidence_json}
+        assert assignments
+        assert all(row.grounding_snapshot_id == snapshot.id for row in assignments)
+        assert all(row.primary_evidence_id in evidence_ids for row in assignments)
+        assert all(row.relation_kind == "direct" for row in assignments)
+
+        read_model = channel_comment_grounding_read_model(session, task)
+        assert read_model["messages"][0]["snapshot_id"] == snapshot.id
+        assert len(read_model["slots"]) == 2
+        assert {row["lifecycle_state"] for row in read_model["slots"]} == {
+            "pending_generation",
+        }
+
+
+def test_grounding_evaluation_rejects_unsupported_experience_and_is_append_only(
+    monkeypatch,
+) -> None:
+    forbid_planner_external_boundaries(monkeypatch)
+    fixed_profile(monkeypatch)
+    with planner_session() as session:
+        task = seed_comment_task(session, mode="comment", target_count=3)
+        _enable_grounding_plan(session, task)
+        channel_comment.build_plan(session, task)
+        action = session.scalar(select(Action).where(Action.action_type == "post_comment"))
+        payload = PostCommentPayload.model_validate(action.payload)
+        assignment = session.get(
+            ChannelCommentGroundingAssignment, payload.grounding_assignment_id,
+        )
+        accepted = f"{assignment.teacher_name} {assignment.primary_aspect_text}".strip()
+
+        pass_decision = evaluate_grounding_claims(
+            session, action, payload, content=accepted,
+        )
+        rejected = evaluate_grounding_claims(
+            session, action, payload, content=f"我去过 {accepted}",
+        )
+        candidate_hash = hashlib.sha256(accepted.encode("utf-8")).hexdigest()
+        evaluation = persist_grounding_evaluation(
+            session, action, payload,
+            candidate_hash=candidate_hash,
+            claim_results=list(pass_decision.claim_results),
+            semantic_evidence={
+                "decision": "pass", "model": "reviewer",
+                "prompt_version": "semantic_reviewer_v1",
+                "primary_aspect_result": "pass",
+            },
+            final_result="pass",
+        )
+        session.flush()
+
+        assert pass_decision.allowed is True
+        assert rejected.code == "unsupported_claim"
+        assert evaluation.final_result == "pass"
+        assert session.scalar(select(ChannelCommentGroundingEvaluation)).id == evaluation.id
+
+
+def test_grounding_evaluation_cannot_pass_when_reply_relation_is_unknown(monkeypatch) -> None:
+    forbid_planner_external_boundaries(monkeypatch)
+    fixed_profile(monkeypatch)
+    with planner_session() as session:
+        task = seed_comment_task(session, mode="comment", target_count=3)
+        _enable_grounding_plan(session, task)
+        channel_comment.build_plan(session, task)
+        action = session.scalar(select(Action).where(Action.action_type == "post_comment"))
+        payload = PostCommentPayload.model_validate(action.payload).model_copy(update={
+            "comment_mode": "reply",
+            "reply_to_message_id": 8101,
+        })
+        evaluation = persist_grounding_evaluation(
+            session,
+            action,
+            payload,
+            candidate_hash="b" * 64,
+            claim_results=[],
+            semantic_evidence={
+                "decision": "pass",
+                "primary_aspect_result": "pass",
+                "reply_relation_result": "unknown",
+            },
+            final_result="pass",
+        )
+
+        assert evaluation.primary_aspect_result == "pass"
+        assert evaluation.reply_relation_result == "unknown"
+        assert evaluation.final_result == "unknown"
+
+
+def test_v12_outbound_text_hash_is_recomputed_before_gateway(monkeypatch) -> None:
+    forbid_planner_external_boundaries(monkeypatch)
+    fixed_profile(monkeypatch)
+    with planner_session() as session:
+        task = seed_comment_task(session, mode="comment", target_count=3)
+        _enable_grounding_plan(session, task)
+        channel_comment.build_plan(session, task)
+        action = session.scalar(select(Action).where(Action.action_type == "post_comment"))
+        payload = PostCommentPayload.model_validate(action.payload)
+        text = payload.grounding_primary_aspect_text
+        content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        accepted = payload.model_copy(update={
+            "comment_text": text,
+            "ai_generation_status": "ready",
+            "comment_lifecycle_state": "quality_accepted",
+            "accepted_content_text": text,
+            "accepted_content_hash": content_hash,
+            "quality_contract_version": "channel_comment_grounding_quality_v1",
+        })
+        action.candidate_hash = content_hash
+
+        assert dispatcher._comment_outbound_hash_blocker(action, accepted) == ""
+        tampered = accepted.model_copy(update={"comment_text": f"{text} "})
+        assert dispatcher._comment_outbound_hash_blocker(
+            action, tampered,
+        ) == "grounding_outbound_content_mismatch"
 
 
 def test_timezone_change_creates_contiguous_capacity_periods() -> None:
@@ -429,13 +833,19 @@ def _obligation_shape(rows) -> list[tuple]:
 
 
 def _new_edited_source(session, message) -> ChannelMessageSourceRevision:
+    source_text = "妮妮老师 主推水疗 今晚可约"
     edited = ChannelMessageSourceRevision(
-        id="source-revision-2", tenant_id=1, channel_message_id=message.id,
+        id="source-revision-2", tenant_id=1,
+        channel_target_id=message.channel_target_id, channel_message_id=message.id,
         source_revision=2, source_remote_message_id=message.message_id,
         source_published_at=message.published_at,
+        source_published_at_fact_id=f"telegram_message_date:{message.channel_target_id}:{message.message_id}",
         source_observed_at=STABLE_PLANNER_NOW,
-        source_text_snapshot="编辑后的频道事实",
-        source_content_hash="c" * 64, observation_identity_hash="d" * 64,
+        source_type="message_text", source_text_snapshot=source_text,
+        source_content_hash=hashlib.sha256(source_text.encode("utf-8")).hexdigest(),
+        observation_identity_hash="d" * 64,
+        source_length=len(source_text), captured_length=len(source_text),
+        truncation_state="complete",
         source_operation="edited",
     )
     session.add(edited)

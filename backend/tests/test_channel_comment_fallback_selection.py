@@ -33,6 +33,7 @@ from app.services.task_center.comment_generation_dispatch import (
 from app.schemas.task_center import ChannelCommentConfig, TaskSettingsUpdate
 from channel_comment_dispatch_test_support import (
     comment_dispatch_session,
+    dispatch_generated_comment_action,
     seed_dispatch_scope,
 )
 
@@ -130,11 +131,10 @@ def test_image_shuffle_bag_uses_every_frozen_asset_before_repeat() -> None:
         assert material_ids[2] == material_ids[0]
 
 
-@pytest.mark.parametrize("reply", [False, True])
-def test_image_fallback_reaches_channel_media_gateway(monkeypatch, reply: bool) -> None:
+def test_direct_image_fallback_reaches_channel_media_gateway(monkeypatch) -> None:
     observed: dict = {}
     with comment_dispatch_session() as session:
-        action = seed_dispatch_scope(session, reply=reply)
+        action = seed_dispatch_scope(session)
         _seed_image_meme(session)
         task = _enable_v2(
             session, action, unicode_weight=0, image_weight=10000,
@@ -142,38 +142,14 @@ def test_image_fallback_reaches_channel_media_gateway(monkeypatch, reply: bool) 
         )
         _freeze(session, task)
         monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_: object())
-        monkeypatch.setattr(
-            dispatcher.gateway,
-            "reply_channel_message",
-            lambda *_args, **_kwargs: pytest.fail("图片兜底不能走文本 Gateway"),
-        )
+        _install_image_gateway(monkeypatch, observed)
 
-        def send_media(_account, _peer, _message, segment, *_args, **kwargs):
-            reply_to = kwargs.get("reply_to_message_id")
-            observed.update({"segment": segment, "reply_to": reply_to})
-            return SendResult(
-                True,
-                remote_message_id="image-comment-1",
-                remote_mutation_started=True,
-                remote_fact={
-                    "fact_type": "channel_comment",
-                    "content_kind": "image_meme",
-                    "remote_media_kind": "image_meme",
-                    "relation_kind": "reply" if reply_to else "direct",
-                    "reply_to_message_id": reply_to,
-                },
-            )
-
-        monkeypatch.setattr(dispatcher.gateway, "reply_channel_media", send_media)
-        def failing(*_args, **_kwargs):
-            raise RuntimeError("provider down")
-
-        assert dispatcher.dispatch_action(
+        assert dispatch_generated_comment_action(
             session,
             action,
             comment_generation_dependencies=CommentGenerationDependencies(
-                direct_generator=failing,
-                reply_generator=failing,
+                direct_generator=_provider_down,
+                reply_generator=_provider_down,
             ),
         ) is True
         assert action.status == "success"
@@ -182,37 +158,119 @@ def test_image_fallback_reaches_channel_media_gateway(monkeypatch, reply: bool) 
         assert action.payload["content_source"] == "comment_image_meme_fallback"
         assert observed["segment"]["emoji_asset_kind"] == "image_meme"
         assert observed["segment"]["caption"] == ""
-        assert observed["reply_to"] == (8101 if reply else None)
+        assert observed["reply_to"] is None
         obligation = session.get(CommentFulfillmentObligation, "comment-obligation-1")
         attempt = session.scalar(select(ExecutionAttempt))
         assert obligation.status == "confirmed"
         fact = attempt.result_snapshot["channel_comment_remote_fact"]
-        assert fact == {
-            "fact_type": "channel_comment",
-            "content_kind": "image_meme",
-            "remote_media_kind": "image_meme",
-            "relation_kind": "reply" if reply else "direct",
-            "reply_to_message_id": 8101 if reply else None,
-            "remote_message_id": "image-comment-1",
-            "action_id": action.id,
-            "execution_attempt_id": attempt.id,
-            "content_source": "comment_image_meme_fallback",
-            "fallback_kind": "emergency",
-            "fallback_reason": action.payload["fallback_reason"],
-            "selection_id": action.payload["comment_fallback_selection"]["selection_id"],
-            "unicode_emoji": None,
-            "unicode_emoji_hash": None,
-            "outbound_content_hash": None,
-            "outbound_media_fingerprint": dispatcher._comment_media_fingerprint(
-                action.payload
-            ),
-            "material_id": 201,
-            "asset_version_id": 1,
-            "asset_fingerprint": "asset-201-v1",
-            "tg_ref_version_id": 1,
-            "asset_pool_hash": action.payload["comment_fallback_selection"]["asset_pool_hash"],
-            "selection_attempt": 1,
+        assert fact == _expected_image_fact(action, attempt, reply=False)
+
+
+def test_frozen_grounding_reply_never_reaches_fallback_after_flag_disabled(monkeypatch) -> None:
+    with comment_dispatch_session() as session:
+        action = seed_dispatch_scope(session, reply=True)
+        _seed_image_meme(session)
+        task = _enable_v2(
+            session, action, unicode_weight=0, image_weight=10000,
+            unicode_enabled=False,
+        )
+        _freeze(session, task)
+        action.payload = {
+            **action.payload,
+            "grounding_assignment_id": "frozen-assignment-1",
         }
+        task.type_config = {
+            **task.type_config,
+            "channel_comment_grounding_v1_enabled": False,
+        }
+        session.commit()
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "reply_channel_message",
+            lambda *_args, **_kwargs: pytest.fail("回复质量失败不能调用文本 Gateway"),
+        )
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "reply_channel_media",
+            lambda *_args, **_kwargs: pytest.fail("回复质量失败不能调用媒体 Gateway"),
+        )
+
+        assert dispatch_generated_comment_action(
+            session,
+            action,
+            comment_generation_dependencies=CommentGenerationDependencies(
+                direct_generator=_provider_down,
+                reply_generator=_provider_down,
+            ),
+        ) is True
+        session.refresh(action)
+        assert action.status == "pending"
+        assert action.payload["ai_generation_status"] == "pending"
+        assert action.payload["comment_lifecycle_state"] == "reply_quality_shortfall"
+        assert session.scalar(select(CommentFallbackSelection)) is None
+
+
+def _install_image_gateway(monkeypatch, observed: dict) -> None:
+    monkeypatch.setattr(
+        dispatcher.gateway,
+        "reply_channel_message",
+        lambda *_args, **_kwargs: pytest.fail("图片兜底不能走文本 Gateway"),
+    )
+
+    def send_media(_account, _peer, *, segment, **kwargs):
+        reply_to = kwargs.get("reply_to_message_id")
+        observed.update({"segment": segment, "reply_to": reply_to})
+        return SendResult(
+            True,
+            remote_message_id="image-comment-1",
+            remote_mutation_started=True,
+            remote_fact={
+                "fact_type": "channel_comment",
+                "content_kind": "image_meme",
+                "remote_media_kind": "image_meme",
+                "relation_kind": "reply" if reply_to else "direct",
+                "reply_to_message_id": reply_to,
+            },
+        )
+
+    monkeypatch.setattr(dispatcher.gateway, "reply_channel_media", send_media)
+
+
+def _provider_down(*_args, **_kwargs):
+    raise RuntimeError("provider down")
+
+
+def _expected_image_fact(action, attempt, *, reply: bool) -> dict:
+    selection = action.payload["comment_fallback_selection"]
+    return {
+        "fact_type": "channel_comment",
+        "content_kind": "image_meme",
+        "remote_media_kind": "image_meme",
+        "relation_kind": "reply" if reply else "direct",
+        "reply_to_message_id": 8101 if reply else None,
+        "remote_message_id": "image-comment-1",
+        "action_id": action.id,
+        "execution_attempt_id": attempt.id,
+        "content_source": "comment_image_meme_fallback",
+        "fallback_kind": "emergency",
+        "fallback_reason": action.payload["fallback_reason"],
+        "selection_id": selection["selection_id"],
+        "unicode_emoji": None,
+        "unicode_emoji_hash": None,
+        "outbound_content_hash": None,
+        "accepted_content_hash": None,
+        "fallback_content_hash": None,
+        "quality_contract_version": "channel_comment_grounding_quality_v1",
+        "outbound_media_fingerprint": dispatcher._comment_media_fingerprint(
+            action.payload
+        ),
+        "material_id": 201,
+        "asset_version_id": 1,
+        "asset_fingerprint": "asset-201-v1",
+        "tg_ref_version_id": 1,
+        "asset_pool_hash": selection["asset_pool_hash"],
+        "selection_attempt": 1,
+    }
 
 
 def test_material_shortfall_keeps_unavailable_selection_audit() -> None:
@@ -294,7 +352,7 @@ def test_unicode_fallback_requires_matching_remote_fact(monkeypatch) -> None:
         _freeze(session, task)
         monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_: object())
 
-        def send_text(_account, _peer, _message, _content, *_args, **_kwargs):
+        def send_text(_account, _peer, **_kwargs):
             return SendResult(
                 True,
                 remote_message_id="unicode-comment-1",
@@ -311,7 +369,7 @@ def test_unicode_fallback_requires_matching_remote_fact(monkeypatch) -> None:
         def failing(*_args, **_kwargs):
             raise RuntimeError("provider down")
 
-        assert dispatcher.dispatch_action(
+        assert dispatch_generated_comment_action(
             session,
             action,
             comment_generation_dependencies=CommentGenerationDependencies(
@@ -360,7 +418,7 @@ def test_frozen_contract_still_requires_fact_after_task_flag_disabled(
         def failing(*_args, **_kwargs):
             raise RuntimeError("provider down")
 
-        assert dispatcher.dispatch_action(
+        assert dispatch_generated_comment_action(
             session,
             action,
             comment_generation_dependencies=CommentGenerationDependencies(

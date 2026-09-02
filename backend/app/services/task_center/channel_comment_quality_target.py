@@ -12,24 +12,23 @@ from app.models import (
     ChannelMessageSourceRevision,
 )
 
-from .ai_generator import _extract_channel_post_aspects
+from .channel_comment_grounding_extractor import extract_grounding_facts
+from .channel_comment_grounding_snapshot import assignment_eligible_variants
 
 
 GROUNDING_TARGET_BPS = 8500
 SEMANTIC_CAPACITY_POLICY_VERSION = "channel_comment_semantic_capacity_v1"
-SPEECH_ACTS = (
-    "reaction", "specific_question", "cautious_verification", "concise_agreement",
-)
-
-
 def build_quality_target_component(
     source: ChannelMessageSourceRevision,
     owned_ordinals: list[int],
     *,
     comment_grounding_revision: int,
+    planned_fallback_max_bps: int,
+    semantic_variant_units: list[dict] | None = None,
+    grounding_snapshot_id: str = "",
 ) -> dict:
     owned = sorted({int(value) for value in owned_ordinals})
-    variants = _semantic_variants(source)
+    variants = _semantic_variants(source, frozen=semantic_variant_units)
     raw_count = math.ceil(len(owned) * GROUNDING_TARGET_BPS / 10000)
     capacity_count = min(len(owned), len(variants))
     grounded_count = min(raw_count, capacity_count)
@@ -41,13 +40,19 @@ def build_quality_target_component(
     component = {
         "comment_grounding_revision": int(comment_grounding_revision),
         "source_revision_id": source.id,
+        "source_content_hash": source.source_content_hash,
+        "grounding_snapshot_id": grounding_snapshot_id,
         "owned_ordinal_ids": owned,
         "raw_grounding_ordinal_ids": raw_ordinals,
         "groundable_ordinal_ids": groundable_ordinals,
         "grounding_ordinal_ids": grounding_ordinals,
         "planned_fallback_ordinal_ids": planned_fallback,
+        "planned_fallback_max_bps": int(planned_fallback_max_bps),
         "teacher_binding_ordinal_ids": _teacher_ordinals(specs),
         "primary_aspect_by_ordinal": _aspect_by_ordinal(specs),
+        "assignment_specs_by_ordinal": {
+            str(ordinal): spec for ordinal, spec in specs.items()
+        },
         "semantic_capacity_policy_version": SEMANTIC_CAPACITY_POLICY_VERSION,
         "semantic_capacity_result_hash": _hash(variants),
     }
@@ -67,6 +72,7 @@ def freeze_initial_quality_target(
         source,
         list(range(1, int(plan.required_distinct_account_count) + 1)),
         comment_grounding_revision=1,
+        planned_fallback_max_bps=int(plan.planned_fallback_max_bps),
     )
     target = _new_target(plan, [initial], revision=1, supersedes_id=None)
     session.add(target)
@@ -83,6 +89,7 @@ def append_quality_target_revision(
     source: ChannelMessageSourceRevision,
     *,
     immutable_ordinals: set[int],
+    grounding_snapshot: object | None = None,
 ) -> ChannelCommentQualityTargetRevision:
     current = current_quality_target(session, plan)
     historical = [
@@ -95,7 +102,26 @@ def append_quality_target_revision(
     if movable:
         historical.append(build_quality_target_component(
             source, movable,
-            comment_grounding_revision=_next_grounding_revision(current),
+            comment_grounding_revision=int(
+                getattr(grounding_snapshot, "comment_grounding_revision", 0)
+                or _next_grounding_revision(current)
+            ),
+            planned_fallback_max_bps=int(plan.planned_fallback_max_bps),
+            semantic_variant_units=(
+                assignment_eligible_variants(
+                    {
+                        "aspect_evidence_json": list(
+                            getattr(grounding_snapshot, "aspect_evidence_json", []),
+                        ),
+                        "semantic_variant_units_json": list(
+                            getattr(grounding_snapshot, "semantic_variant_units_json", []),
+                        ),
+                    },
+                    latest_safe_send_at=plan.deadline_at,
+                )
+                if grounding_snapshot is not None else None
+            ),
+            grounding_snapshot_id=str(getattr(grounding_snapshot, "id", "") or ""),
         ))
     target = _new_target(
         plan,
@@ -147,14 +173,18 @@ def quality_assignment_content(
     grounding = [int(value) for value in component["grounding_ordinal_ids"]]
     if int(ordinal) not in grounding:
         raise ValueError("channel_comment_quality_assignment_not_required")
+    frozen = dict(component.get("assignment_specs_by_ordinal") or {})
     variants = _semantic_variants(source)
-    spec = variants[grounding.index(int(ordinal))]
+    spec = frozen.get(str(ordinal)) or variants[grounding.index(int(ordinal))]
     return {
         "evidence_text": source.source_text_snapshot,
         "evidence_hash": source.source_content_hash,
         "primary_aspect_code": spec["aspect_code"],
         "primary_aspect_text": spec["aspect_text"],
         "teacher_name": spec["teacher_name"],
+        "teacher_candidate_id": str(spec.get("teacher_candidate_id") or ""),
+        "primary_evidence_id": str(spec.get("primary_evidence_id") or ""),
+        "secondary_evidence_id": str(spec.get("secondary_evidence_id") or ""),
         "speech_act": spec["speech_act"],
     }
 
@@ -169,6 +199,7 @@ def quality_target_projection(
         + _flatten_ordinals(components, "planned_fallback_ordinal_ids")
     )
     states = {str(row["semantic_capacity_state"]) for row in components}
+    fallback_policy = _aggregate_fallback_policy(components)
     return {
         "quality_target_current_revision": int(target.quality_target_revision),
         "quality_target_effective_revision": int(target.quality_target_revision),
@@ -181,6 +212,7 @@ def quality_target_projection(
         "groundable_capacity_count": _sum(components, "groundable_capacity_count"),
         "grounding_required_count": int(target.aggregate_grounding_required_count),
         "planned_fallback_target_count": int(target.aggregate_planned_fallback_count),
+        **fallback_policy,
         "teacher_required_count": _sum(components, "teacher_binding_required_count"),
         "primary_aspect_required_count": _sum(
             components, "primary_aspect_required_distinct_count",
@@ -232,6 +264,11 @@ def _partition_component(component: dict, immutable_ordinals: set[int]) -> dict 
         for key, value in dict(component.get("primary_aspect_by_ordinal") or {}).items()
         if int(key) in owned
     }
+    result["assignment_specs_by_ordinal"] = {
+        str(key): value
+        for key, value in dict(component.get("assignment_specs_by_ordinal") or {}).items()
+        if int(key) in owned
+    }
     return _finalize_component(result)
 
 
@@ -257,8 +294,11 @@ def _finalize_component(component: dict) -> dict:
         component["unadjusted_grounding_target_count"],
         component["groundable_capacity_count"],
     )
+    if "planned_fallback_max_bps" in component:
+        component.update(_fallback_policy(component))
     component["quality_component_key"] = _hash({
         "grounding_revision": component["comment_grounding_revision"],
+        "grounding_snapshot_id": component.get("grounding_snapshot_id", ""),
         "source_revision_id": component["source_revision_id"],
         "owned_ordinal_ids_hash": component["owned_ordinal_ids_hash"],
     })
@@ -303,51 +343,49 @@ def _validate_component(component: dict) -> None:
         raise ValueError("channel_comment_quality_component_contract_invalid")
 
 
-def _semantic_variants(source: ChannelMessageSourceRevision) -> list[dict]:
-    evidence = _semantic_evidence_units(source.source_text_snapshot)
-    return [
-        {**unit, "speech_act": speech_act}
-        for unit in evidence
-        for speech_act in SPEECH_ACTS
-    ]
+def _fallback_policy(component: dict) -> dict:
+    owned_count = len(component.get("owned_ordinal_ids") or [])
+    fallback_count = len(component.get("planned_fallback_ordinal_ids") or [])
+    max_bps = int(component.get("planned_fallback_max_bps", 10000))
+    limit = math.floor(owned_count * max_bps / 10000)
+    return {
+        "planned_fallback_limit_count": limit,
+        "fallback_business_state": (
+            "within_cap" if fallback_count <= limit else "cap_exceeded"
+        ),
+    }
 
 
-def _semantic_evidence_units(source_text: str) -> list[dict]:
-    if not source_text.strip():
-        return []
-    extracted = _extract_channel_post_aspects(source_text)
-    units = []
-    teacher = str(extracted.get("teacher_name") or "")
-    if teacher:
-        units.append({
-            "aspect_code": "teacher_identity", "aspect_text": teacher,
-            "teacher_name": teacher,
-        })
-    for aspect in extracted.get("aspects") or []:
-        text = "/".join(str(value) for value in (aspect.get("matches") or [])[:3])
-        units.append({
-            "aspect_code": str(aspect.get("code") or "source_fact"),
-            "aspect_text": text or str(aspect.get("label") or ""),
-            "teacher_name": "",
-        })
-    if not units:
-        units.append({
-            "aspect_code": "source_fact", "aspect_text": source_text.strip()[:500],
-            "teacher_name": "",
-        })
-    return _deduplicate_units(units)
+def _aggregate_fallback_policy(components: list[dict]) -> dict:
+    owned_count = len(_flatten_ordinals(components, "owned_ordinal_ids"))
+    fallback_count = len(_flatten_ordinals(components, "planned_fallback_ordinal_ids"))
+    max_bps_values = {
+        int(component.get("planned_fallback_max_bps", 10000))
+        for component in components
+    }
+    max_bps = max_bps_values.pop() if len(max_bps_values) == 1 else 0
+    limit = math.floor(owned_count * max_bps / 10000)
+    return {
+        "planned_fallback_limit_count": limit,
+        "fallback_business_state": (
+            "within_cap" if fallback_count <= limit else "cap_exceeded"
+        ),
+    }
 
 
-def _deduplicate_units(units: list[dict]) -> list[dict]:
-    result = []
-    seen = set()
-    for unit in units:
-        identity = (unit["aspect_code"], unit["aspect_text"], unit["teacher_name"])
-        if identity in seen:
-            continue
-        result.append(unit)
-        seen.add(identity)
-    return result
+def _semantic_variants(
+    source: ChannelMessageSourceRevision,
+    *,
+    frozen: list[dict] | None = None,
+) -> list[dict]:
+    if frozen is not None:
+        return [dict(row) for row in frozen]
+    facts = extract_grounding_facts(
+        source.source_text_snapshot,
+        source.source_published_at,
+        content_route="general",
+    )
+    return list(facts["semantic_variant_units_json"])
 
 
 def _assignment_specs(variants: list[dict], ordinals: list[int]) -> dict[int, dict]:

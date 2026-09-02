@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
@@ -10,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.integrations.telegram import (
+    ChannelDiscussionIdentitySnapshot,
     ChannelMessageDeletionObservation,
     ChannelReactionCapabilitySnapshot,
 )
@@ -17,6 +19,7 @@ from app.integrations.telegram.telethon_content import fetch_channel_message_del
 from app.models import (
     AccountStatus,
     ChannelMessage,
+    ChannelMessageSourceRevision,
     ListenerChannelSnapshotItem,
     ListenerSourceState,
     OperationTarget,
@@ -124,6 +127,52 @@ def test_listener_owns_channel_fetch_and_publishes_fresh_snapshot(monkeypatch) -
         )
 
 
+def test_listener_persists_exact_full_source_text_and_edit_identity(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    _seed_listener_task(
+        engine,
+        task_id="channel-exact-source-task",
+        task_type="channel_like",
+        channel_id=31,
+        account_id=101,
+        username="channel_exact",
+    )
+    exact = "  " + ("长正文" * 220) + "\n"
+    edited_at = NOW + timedelta(minutes=1)
+    snapshot = SimpleNamespace(
+        message_id=9001,
+        content_preview=exact[:500].strip(),
+        content_text=exact,
+        message_url="",
+        published_at=NOW,
+        edited_at=edited_at,
+        source_type="caption",
+        content_complete=True,
+        comment_available=True,
+    )
+    calls: list[tuple] = []
+    _stub_listener_fetch(monkeypatch, calls)
+    monkeypatch.setattr(
+        channel_listener_runtime.gateway,
+        "fetch_channel_messages",
+        lambda *_args, **_kwargs: [snapshot],
+    )
+
+    drain_channel_listener_runtime(lambda: Session(engine), limit=10)
+
+    with Session(engine) as session:
+        source = session.scalar(select(ChannelMessageSourceRevision))
+        assert source.source_text_snapshot == exact
+        assert source.source_content_hash == hashlib.sha256(
+            exact.encode("utf-8"),
+        ).hexdigest()
+        assert source.source_length == len(exact) == source.captured_length
+        assert source.truncation_state == "complete"
+        assert source.telegram_edit_date == edited_at
+        assert source.source_type == "caption"
+
+
 def test_fresh_empty_snapshot_hides_messages_from_previous_revision(monkeypatch) -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -193,6 +242,59 @@ def test_listener_dispatches_source_edit_revision_operation(monkeypatch) -> None
     with Session(engine) as session:
         message = session.scalar(select(ChannelMessage))
         assert operations == [message.current_source_revision_id]
+
+
+def test_discussion_identity_creates_successor_without_mutating_source(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    _seed_listener_task(
+        engine,
+        task_id="discussion-successor-task",
+        task_type="channel_comment",
+        channel_id=31,
+        account_id=101,
+    )
+    current_time = [NOW]
+    discussion_results = [
+        RuntimeError("discussion unavailable"),
+        ChannelDiscussionIdentitySnapshot(
+            channel_peer_id="-10031",
+            discussion_peer_id="-10032",
+            thread_root_by_source_message_id={9001: 8101},
+            discussion_title="discussion",
+        ),
+    ]
+    monkeypatch.setattr(channel_listener_runtime, "_now", lambda: current_time[0])
+    monkeypatch.setattr(
+        channel_listener_runtime, "credentials_for_task_account", lambda *_args: object(),
+    )
+    monkeypatch.setattr(
+        channel_listener_runtime.gateway, "fetch_channel_messages",
+        lambda *_args, **_kwargs: [_snapshot(9001)],
+    )
+    monkeypatch.setattr(
+        channel_listener_runtime.gateway, "fetch_channel_discussion_identity",
+        lambda *_args, **_kwargs: _next_discussion_result(discussion_results),
+    )
+
+    drain_channel_listener_runtime(lambda: Session(engine), limit=10)
+    current_time[0] += timedelta(seconds=30)
+    drain_channel_listener_runtime(lambda: Session(engine), limit=10)
+
+    with Session(engine) as session:
+        message = session.scalar(select(ChannelMessage))
+        revisions = list(session.scalars(
+            select(ChannelMessageSourceRevision).order_by(
+                ChannelMessageSourceRevision.source_revision,
+            )
+        ))
+        assert len(revisions) == 2
+        assert message.current_source_revision_id == revisions[1].id
+        assert revisions[0].discussion_group_binding_id is None
+        assert revisions[0].discussion_thread_binding_id is None
+        assert revisions[1].discussion_group_binding_id is not None
+        assert revisions[1].discussion_thread_binding_id is not None
+        assert revisions[1].source_operation == "observed"
 
 
 def test_reaction_probe_failure_keeps_shared_message_snapshot_ready(monkeypatch) -> None:
@@ -373,6 +475,13 @@ def _snapshot(message_id: int):
 
 def _raise_reaction_probe_error(*_args, **_kwargs):
     raise RuntimeError("probe failed")
+
+
+def _next_discussion_result(results: list):
+    result = results.pop(0)
+    if isinstance(result, Exception):
+        raise result
+    return result
 
 
 def _stub_listener_fetch(monkeypatch, calls: list[tuple]) -> None:

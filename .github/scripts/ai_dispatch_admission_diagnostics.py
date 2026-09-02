@@ -414,8 +414,10 @@ AI_SETTINGS_QUERY = text("""
 """)
 
 AI_ROUTES_QUERY = text("""
-    SELECT rs.id AS route_set_id, rs.name AS route_set_name, rs.status AS route_set_status,
-           ri.priority, ri.provider_id, ri.model_override, p.provider_name, p.health_status
+    SELECT rs.id AS route_set_id, rs.purpose AS route_set_purpose,
+           rs.revision AS route_set_revision, rs.status AS route_set_status,
+           ri.priority, ri.provider_id, ri.model_name, ri.enabled,
+           p.provider_name, p.health_status
     FROM tenant_ai_provider_route_sets AS rs
     JOIN tenant_ai_provider_route_items AS ri ON ri.route_set_id = rs.id
     JOIN ai_providers AS p ON p.id = ri.provider_id
@@ -455,7 +457,6 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
 
 
 

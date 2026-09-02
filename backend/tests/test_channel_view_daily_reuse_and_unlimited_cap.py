@@ -153,7 +153,7 @@ def test_channel_view_create_entry_preserves_zero_unlimited_value():
     assert "<InputNumber min={0} max={100000}" in total_field
     assert (
         "per_message_total_view_target: values.per_message_total_view_target ?? "
-        "Math.max(300, dailyTarget)"
+        "(dailyTarget ? Math.max(300, dailyTarget) : 0)"
     ) in view
 
 

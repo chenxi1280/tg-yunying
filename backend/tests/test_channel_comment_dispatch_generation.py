@@ -25,6 +25,7 @@ from app.services.task_center.comment_generation_dispatch import CommentGenerati
 from app.services.task_center.executors import channel_comment_targets
 from channel_comment_dispatch_test_support import (
     comment_dispatch_session,
+    dispatch_generated_comment_action,
     expire_comment_action,
     seed_dispatch_scope,
 )
@@ -45,7 +46,7 @@ def test_comment_generation_and_gateway_run_without_database_transaction(monkeyp
             _gateway_sender(session, observed),
         )
 
-        handled = dispatcher.dispatch_action(
+        handled = dispatch_generated_comment_action(
             session,
             action,
             comment_generation_dependencies=_dependencies(session, observed),
@@ -82,7 +83,7 @@ def test_production_comment_provider_call_runs_without_database_transaction(monk
 
         monkeypatch.setattr(ai_generator.ai_gateway, "generate_drafts", generate_drafts)
 
-        assert dispatcher.dispatch_action(
+        assert dispatch_generated_comment_action(
             session,
             action,
             comment_generation_dependencies=CommentGenerationDependencies(),
@@ -111,7 +112,7 @@ def test_phase_b_uses_action_fixed_profile_snapshot_in_provider_config(monkeypat
             observed["config"] = dict(config)
             return ["河东区这个位置方便吗"], 1
 
-        assert dispatcher.dispatch_action(
+        assert dispatch_generated_comment_action(
             session,
             action,
             comment_generation_dependencies=CommentGenerationDependencies(
@@ -137,7 +138,7 @@ def test_phase_c_applies_fixed_rule_transform_before_ready(monkeypatch) -> None:
         monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args: object())
         monkeypatch.setattr(dispatcher.gateway, "reply_channel_message", _gateway_sender(session, observed))
 
-        assert dispatcher.dispatch_action(
+        assert dispatch_generated_comment_action(
             session,
             action,
             comment_generation_dependencies=CommentGenerationDependencies(
@@ -164,7 +165,7 @@ def test_phase_c_fixed_rule_rejection_never_enters_gateway(monkeypatch) -> None:
         monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args: object())
         monkeypatch.setattr(dispatcher.gateway, "reply_channel_message", _gateway_sender(session, observed))
 
-        assert dispatcher.dispatch_action(
+        assert dispatch_generated_comment_action(
             session,
             action,
             comment_generation_dependencies=CommentGenerationDependencies(
@@ -194,7 +195,7 @@ def test_phase_c_rejects_same_message_historical_comment_duplicate(monkeypatch, 
         monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args: object())
         monkeypatch.setattr(dispatcher.gateway, "reply_channel_message", _gateway_sender(session, observed))
 
-        assert dispatcher.dispatch_action(
+        assert dispatch_generated_comment_action(
             session,
             action,
             comment_generation_dependencies=CommentGenerationDependencies(
@@ -226,7 +227,7 @@ def test_invalid_reply_target_skips_generation_and_gateway_without_direct_downgr
         monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args: object())
         monkeypatch.setattr(dispatcher.gateway, "reply_channel_message", _forbidden_gateway)
 
-        assert dispatcher.dispatch_action(
+        assert dispatch_generated_comment_action(
             session,
             action,
             comment_generation_dependencies=_dependencies(session, observed),
@@ -252,10 +253,8 @@ def test_own_history_reply_pool_requires_authoritative_success_attempt() -> None
         message = session.get(ChannelMessage, 41)
 
         assert channel_comment_targets.message_reply_targets(
-            session,
-            task,
-            31,
-            message,
+            session, task,
+            channel_target_id=31, message=message,
         ) == []
 
         session.add(ExecutionAttempt(
@@ -268,10 +267,8 @@ def test_own_history_reply_pool_requires_authoritative_success_attempt() -> None
         session.commit()
 
         targets = channel_comment_targets.message_reply_targets(
-            session,
-            task,
-            31,
-            message,
+            session, task,
+            channel_target_id=31, message=message,
         )
         assert [(item["message_id"], item["source"]) for item in targets] == [
             (8102, "own_history"),
@@ -306,7 +303,7 @@ def test_own_history_reply_target_accepts_authoritative_success_attempt(monkeypa
             _gateway_sender(session, observed),
         )
 
-        assert dispatcher.dispatch_action(
+        assert dispatch_generated_comment_action(
             session,
             action,
             comment_generation_dependencies=_dependencies(session, observed),
@@ -330,7 +327,7 @@ def test_old_reply_action_with_existing_target_continues_to_gateway(monkeypatch)
             _gateway_sender(session, observed),
         )
 
-        assert dispatcher.dispatch_action(
+        assert dispatch_generated_comment_action(
             session,
             action,
             comment_generation_dependencies=_dependencies(session, observed),
@@ -347,7 +344,7 @@ def test_generation_failure_is_explicit_and_never_enters_gateway(monkeypatch) ->
         monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args: object())
         monkeypatch.setattr(dispatcher.gateway, "reply_channel_message", _gateway_sender(session, observed))
 
-        assert dispatcher.dispatch_action(
+        assert dispatch_generated_comment_action(
             session,
             action,
             comment_generation_dependencies=CommentGenerationDependencies(
@@ -376,7 +373,7 @@ def test_comment_primary_third_attempt_succeeds_without_backup(monkeypatch) -> N
                 raise AiGenerationUnavailable("primary unavailable")
             return ["第三轮生成的真实评论"], 3
 
-        assert dispatcher.dispatch_action(
+        assert dispatch_generated_comment_action(
             session,
             action,
             comment_generation_dependencies=CommentGenerationDependencies(
@@ -398,7 +395,7 @@ def test_comment_reply_emoji_fallback_preserves_reply_binding(monkeypatch) -> No
         monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args: object())
         monkeypatch.setattr(dispatcher.gateway, "reply_channel_message", _gateway_sender(session, observed))
 
-        assert dispatcher.dispatch_action(
+        assert dispatch_generated_comment_action(
             session,
             action,
             comment_generation_dependencies=CommentGenerationDependencies(
@@ -429,7 +426,7 @@ def test_comment_missing_mask_uses_emoji_without_ai(monkeypatch) -> None:
         monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args: object())
         monkeypatch.setattr(dispatcher.gateway, "reply_channel_message", _gateway_sender(session, observed))
 
-        assert dispatcher.dispatch_action(
+        assert dispatch_generated_comment_action(
             session,
             action,
             comment_generation_dependencies=CommentGenerationDependencies(
@@ -458,7 +455,7 @@ def test_generated_comment_reuses_outbound_filter_before_gateway(monkeypatch) ->
         monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args: object())
         monkeypatch.setattr(dispatcher.gateway, "reply_channel_message", _gateway_sender(session, observed))
 
-        assert dispatcher.dispatch_action(
+        assert dispatch_generated_comment_action(
             session,
             action,
             comment_generation_dependencies=CommentGenerationDependencies(
@@ -480,7 +477,7 @@ def test_phase_c_commit_failure_is_generation_unknown_and_skips_gateway(monkeypa
         monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args: object())
         monkeypatch.setattr(dispatcher.gateway, "reply_channel_message", _forbidden_gateway)
 
-        assert dispatcher.dispatch_action(
+        assert dispatch_generated_comment_action(
             session,
             action,
             comment_generation_dependencies=_dependencies(

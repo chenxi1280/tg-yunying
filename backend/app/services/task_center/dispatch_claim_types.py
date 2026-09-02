@@ -18,6 +18,7 @@ GROUP_AI_ADMISSION_ACTION_TYPES = frozenset(
     {
         "ensure_target_membership",
         "ensure_channel_membership",
+        "ensure_discussion_membership",
         "invite_group_account",
     }
 )

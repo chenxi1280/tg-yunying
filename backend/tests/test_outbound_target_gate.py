@@ -615,14 +615,20 @@ def test_channel_view_target_ref_invalid_does_not_call_gateway(monkeypatch):
         )
         session.commit()
         mark_target_ref_invalid(session, target=target, actor="ops", reason="引用失效", evidence_ref="a13", expected_version=1)
-        monkeypatch.setattr(dispatcher, "_ensure_channel_action_membership", lambda *_args: True)
+        monkeypatch.setattr(
+            dispatcher, "_ensure_channel_action_membership",
+            lambda *_args, **_kwargs: True,
+        )
         monkeypatch.setattr(
             dispatcher.gateway,
             "view_channel_message",
             lambda *_args: (_ for _ in ()).throw(AssertionError("invalid target must not reach gateway")),
         )
 
-        assert dispatcher._dispatch_view(action, account, object(), session, ViewMessagePayload(**action.payload)) is True
+        assert dispatcher._dispatch_view(
+            session, action, account=account, credentials=object(),
+            payload=ViewMessagePayload(**action.payload),
+        ) is True
 
         assert action.result["error_code"] == ERROR_TARGET_REF_INVALID
         assert action.result.get("gateway_call_started_at") is None

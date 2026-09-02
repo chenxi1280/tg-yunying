@@ -6,6 +6,7 @@ import pytest
 from app.services.task_center.two_stage_generation import (
     SEMANTIC_REVIEW_SYSTEM_PROMPT,
     TwoStageRealizeError,
+    _parse_semantic_review,
     plan_message_briefs,
     realize_message_content,
     two_stage_enabled,
@@ -33,6 +34,76 @@ def test_semantic_reviewer_prompt_exposes_exact_evidence_contract() -> None:
     assert '"prompt_version":"semantic_reviewer_v1"' in SEMANTIC_REVIEW_SYSTEM_PROMPT
     assert "pass 时 codes 必须为空" in SEMANTIC_REVIEW_SYSTEM_PROMPT
     assert "fail 时 codes 至少一个" in SEMANTIC_REVIEW_SYSTEM_PROMPT
+    assert '"primary_aspect_result":"pass"' in SEMANTIC_REVIEW_SYSTEM_PROMPT
+    assert '"reply_relation_result":"not_applicable"' in SEMANTIC_REVIEW_SYSTEM_PROMPT
+
+
+def test_grounded_semantic_review_requires_separate_dimension_results() -> None:
+    payload = {
+        "decision": "pass",
+        "confidence": 0.95,
+        "codes": [],
+        "primary_aspect_result": "pass",
+        "reply_relation_result": "unknown",
+        "evidence": [{"criterion": "primary_aspect", "observed": "matched"}],
+        "prompt_version": "semantic_reviewer_v1",
+    }
+    parsed = _parse_semantic_review(payload, {
+        "_comment_grounding_assignment": {"relation_kind": "reply"},
+    })
+
+    assert parsed["primary_aspect_result"] == "pass"
+    assert parsed["reply_relation_result"] == "unknown"
+    with pytest.raises(
+        TwoStageRealizeError, match="semantic_reply_relation_applicability_invalid",
+    ):
+        _parse_semantic_review({**payload, "reply_relation_result": "not_applicable"}, {
+            "_comment_grounding_assignment": {"relation_kind": "reply"},
+        })
+
+
+def test_grounded_realizer_must_echo_frozen_evidence_identity() -> None:
+    plans, _tokens = plan_message_briefs(
+        SimpleNamespace(), 1, {}, history_lines=["今天聊聊天气"],
+        slots=[{"slot_id": "s1", "account_id": 0}],
+        planner=_planner([[_brief_payload("s1")]]),
+    )
+    assignment = {
+        "assignment_id": "assignment-1",
+        "primary_evidence_id": "e-1",
+        "secondary_evidence_id": "",
+        "teacher_candidate_id": "teacher-1",
+        "speech_act": "follow_up",
+        "relation_kind": "direct",
+    }
+    output = {
+        "content": "那天气后面具体怎么说",
+        "used_anchor_ids": ["f1"],
+        "speech_act": "follow_up",
+        "voice_profile_version": "style_contract_v3",
+        "grounding_assignment_id": "assignment-1",
+        "used_evidence_ids": ["e-1"],
+        "teacher_candidate_id": "teacher-1",
+    }
+    realizer = _realizer([output])
+
+    _content, meta, _tokens = realize_message_content(
+        SimpleNamespace(), 1, {"_comment_grounding_assignment": assignment},
+        plans[0], history_lines=["今天聊聊天气"], realizer=realizer,
+        reviewer=_reviewer(),
+    )
+
+    assert meta["grounding_assignment_id"] == "assignment-1"
+    assert meta["used_evidence_ids"] == ["e-1"]
+    assert '"used_evidence_ids": ["e-1"]' in realizer.calls[0]["user_prompt"]
+
+    with pytest.raises(TwoStageRealizeError, match="realizer_grounding_evidence_mismatch"):
+        realize_message_content(
+            SimpleNamespace(), 1, {"_comment_grounding_assignment": assignment},
+            plans[0], history_lines=["今天聊聊天气"],
+            realizer=_realizer([{**output, "used_evidence_ids": ["forged"]}]),
+            reviewer=_reviewer(),
+        )
 
 
 def test_plan_message_briefs_parses_valid_batch_with_single_call() -> None:

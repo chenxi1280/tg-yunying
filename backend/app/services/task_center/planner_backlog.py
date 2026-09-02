@@ -13,7 +13,11 @@ from app.timezone import BEIJING_TZ, as_beijing
 
 from .hard_hourly import enabled as hard_hourly_enabled
 
-BACKLOG_MEMBERSHIP_ACTION_TYPES = ["ensure_channel_membership", "ensure_target_membership"]
+BACKLOG_MEMBERSHIP_ACTION_TYPES = [
+    "ensure_channel_membership",
+    "ensure_target_membership",
+    "ensure_discussion_membership",
+]
 PLANNER_BACKLOG_OPEN_STATUSES = {"pending", "claiming", "executing"}
 
 

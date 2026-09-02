@@ -25,6 +25,7 @@ from .channel_comment_quality_target import (
     quality_assignment_content,
     target_component_for_ordinal,
 )
+from .channel_comment_grounding_snapshot import append_grounding_snapshot
 from .channel_payloads import PostCommentPayload
 from .comment_generation_job import invalidate_comment_generation_jobs
 from .target_lifecycle import action_has_gateway_started
@@ -66,12 +67,24 @@ def _reconcile_plan(
         return existing
     obligations = _ordered_obligations(session, locked.id)
     immutable = _immutable_ordinals(session, obligations)
+    grounding_snapshot = append_grounding_snapshot(session, locked, source)
     target = append_quality_target_revision(
-        session, locked, source, immutable_ordinals=immutable,
+        session, locked, source,
+        immutable_ordinals=immutable,
+        grounding_snapshot=grounding_snapshot,
     )
     outcomes = _migrate_obligations(
         session, obligations, source=source, target=target, immutable=immutable,
+        grounding_snapshot=grounding_snapshot,
     )
+    outcomes.extend(_migrate_unfrozen_ordinals(
+        session,
+        locked,
+        obligations,
+        source=source,
+        target=target,
+        grounding_snapshot=grounding_snapshot,
+    ))
     operation = _new_operation(session, locked, source, target, outcomes)
     session.add(operation)
     session.flush()
@@ -85,6 +98,7 @@ def _migrate_obligations(
     source: ChannelMessageSourceRevision,
     target: ChannelCommentQualityTargetRevision,
     immutable: set[int],
+    grounding_snapshot: object,
 ) -> list[dict]:
     outcomes = []
     for obligation in obligations:
@@ -94,6 +108,7 @@ def _migrate_obligations(
             continue
         outcomes.append(_migrate_obligation(
             session, obligation, source=source, target=target,
+            grounding_snapshot=grounding_snapshot,
         ))
     return outcomes
 
@@ -104,6 +119,7 @@ def _migrate_obligation(
     *,
     source: ChannelMessageSourceRevision,
     target: ChannelCommentQualityTargetRevision,
+    grounding_snapshot: object,
 ) -> dict:
     action = _bound_action(session, obligation)
     assignment = _bound_assignment(session, obligation)
@@ -116,11 +132,52 @@ def _migrate_obligation(
         return {"ordinal": obligation.target_ordinal, "result": "planned_fallback"}
     successor = _append_successor(
         session, assignment, source=source, target=target, component=component,
-        ordinal=int(obligation.target_ordinal),
+        ordinal=int(obligation.target_ordinal), grounding_snapshot=grounding_snapshot,
     )
     obligation.grounding_assignment_id = successor.id
     obligation.fallback_intent_kind = "emergency"
     return {"ordinal": obligation.target_ordinal, "result": "successor", "id": successor.id}
+
+
+def _migrate_unfrozen_ordinals(
+    session: Session,
+    plan: ChannelCommentPlanContract,
+    obligations: list[CommentFulfillmentObligation],
+    *,
+    source: ChannelMessageSourceRevision,
+    target: ChannelCommentQualityTargetRevision,
+    grounding_snapshot: object,
+) -> list[dict]:
+    owned = {int(row.target_ordinal) for row in obligations}
+    outcomes = []
+    for ordinal in range(1, int(plan.required_distinct_account_count) + 1):
+        if ordinal in owned:
+            continue
+        component = target_component_for_ordinal(target, ordinal)
+        assignment = _active_assignment(session, plan.id, ordinal)
+        if ordinal not in component["grounding_ordinal_ids"]:
+            _supersede_assignment(session, assignment)
+            outcomes.append({"ordinal": ordinal, "result": "planned_fallback_unfrozen"})
+            continue
+        successor = _append_successor(
+            session, assignment, source=source, target=target,
+            component=component, ordinal=ordinal,
+            grounding_snapshot=grounding_snapshot,
+        )
+        outcomes.append({"ordinal": ordinal, "result": "successor_unfrozen", "id": successor.id})
+    return outcomes
+
+
+def _active_assignment(
+    session: Session,
+    plan_contract_id: str,
+    ordinal: int,
+) -> ChannelCommentGroundingAssignment | None:
+    return session.scalar(select(ChannelCommentGroundingAssignment).where(
+        ChannelCommentGroundingAssignment.plan_contract_id == plan_contract_id,
+        ChannelCommentGroundingAssignment.target_ordinal == ordinal,
+        ChannelCommentGroundingAssignment.assignment_state == "active",
+    ))
 
 
 def _immutable_ordinals(
@@ -212,12 +269,15 @@ def _append_successor(
     target: ChannelCommentQualityTargetRevision,
     component: dict,
     ordinal: int,
+    grounding_snapshot: object,
 ) -> ChannelCommentGroundingAssignment:
     _supersede_assignment(session, assignment)
     successor = ChannelCommentGroundingAssignment(
         tenant_id=target.tenant_id,
         plan_contract_id=target.plan_contract_id,
         source_revision_id=source.id,
+        grounding_snapshot_id=grounding_snapshot.id,
+        comment_grounding_revision=grounding_snapshot.comment_grounding_revision,
         target_ordinal=ordinal,
         assignment_version=(int(assignment.assignment_version) + 1 if assignment else 1),
         supersedes_assignment_id=(assignment.id if assignment else None),

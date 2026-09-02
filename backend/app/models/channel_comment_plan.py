@@ -30,17 +30,38 @@ class ChannelMessageSourceRevision(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
+    channel_target_id: Mapped[int | None] = mapped_column(
+        ForeignKey("operation_targets.id", ondelete="CASCADE"), nullable=True,
+    )
     channel_message_id: Mapped[int] = mapped_column(
         ForeignKey("channel_messages.id", ondelete="CASCADE"),
     )
     source_revision: Mapped[int] = mapped_column(Integer)
     source_remote_message_id: Mapped[int] = mapped_column(Integer)
     source_published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    source_published_at_fact_id: Mapped[str] = mapped_column(String(160), default="")
+    telegram_edit_date: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
     source_observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    source_type: Mapped[str] = mapped_column(String(24), default="message_text")
     source_text_snapshot: Mapped[str] = mapped_column(Text)
     source_content_hash: Mapped[str] = mapped_column(String(64))
     observation_identity_hash: Mapped[str] = mapped_column(String(64))
+    source_length: Mapped[int] = mapped_column(Integer, default=0)
+    captured_length: Mapped[int] = mapped_column(Integer, default=0)
+    truncation_state: Mapped[str] = mapped_column(String(32), default="complete")
     source_operation: Mapped[str] = mapped_column(String(24), default="observed")
+    discussion_group_binding_id: Mapped[str | None] = mapped_column(
+        ForeignKey("channel_discussion_group_bindings.id", ondelete="RESTRICT"), nullable=True,
+    )
+    discussion_group_binding_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    discussion_group_identity_hash: Mapped[str] = mapped_column(String(64), default="")
+    discussion_thread_binding_id: Mapped[str | None] = mapped_column(
+        ForeignKey("channel_discussion_thread_bindings.id", ondelete="RESTRICT"), nullable=True,
+    )
+    discussion_thread_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    discussion_thread_identity_hash: Mapped[str] = mapped_column(String(64), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
@@ -71,9 +92,26 @@ class ChannelCommentPlanContract(Base):
     eligible_account_ids_hash: Mapped[str] = mapped_column(String(64))
     participation_seed: Mapped[str] = mapped_column(String(128))
     effective_participation_bps: Mapped[int] = mapped_column(Integer)
+    uncapped_required_distinct_account_count: Mapped[int] = mapped_column(Integer, default=0)
+    business_max_comments_per_message: Mapped[int] = mapped_column(Integer, default=80)
+    business_cap_state: Mapped[str] = mapped_column(String(32), default="not_adjusted")
+    planned_fallback_max_bps: Mapped[int] = mapped_column(Integer, default=2000)
     required_distinct_account_count: Mapped[int] = mapped_column(Integer)
     grounding_required_count: Mapped[int] = mapped_column(Integer)
     planned_fallback_count: Mapped[int] = mapped_column(Integer)
+    grounding_enrollment_id: Mapped[str | None] = mapped_column(
+        ForeignKey("channel_comment_grounding_enrollments.id", ondelete="RESTRICT"), nullable=True,
+    )
+    discussion_group_binding_id: Mapped[str | None] = mapped_column(
+        ForeignKey("channel_discussion_group_bindings.id", ondelete="RESTRICT"), nullable=True,
+    )
+    discussion_group_binding_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    discussion_group_identity_hash: Mapped[str] = mapped_column(String(64), default="")
+    discussion_thread_binding_id: Mapped[str | None] = mapped_column(
+        ForeignKey("channel_discussion_thread_bindings.id", ondelete="RESTRICT"), nullable=True,
+    )
+    discussion_thread_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    discussion_thread_identity_hash: Mapped[str] = mapped_column(String(64), default="")
     initial_quality_target_revision_id: Mapped[str | None] = mapped_column(
         ForeignKey(
             "channel_comment_quality_target_revisions.id",
@@ -90,7 +128,7 @@ class ChannelCommentPlanContract(Base):
     )
     daily_comment_cap: Mapped[int] = mapped_column(Integer)
     quantity_contract_version: Mapped[str] = mapped_column(
-        String(48), default="channel_comment_participation_v1",
+        String(48), default="channel_comment_business_grounding_v1_2",
     )
     contract_state: Mapped[str] = mapped_column(String(32), default="open")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
@@ -197,6 +235,11 @@ class ChannelCommentGroundingAssignment(Base):
     source_revision_id: Mapped[str] = mapped_column(
         ForeignKey("channel_message_source_revisions.id", ondelete="RESTRICT"),
     )
+    grounding_snapshot_id: Mapped[str | None] = mapped_column(
+        ForeignKey("channel_comment_grounding_snapshots.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    comment_grounding_revision: Mapped[int] = mapped_column(Integer, default=0)
     target_ordinal: Mapped[int] = mapped_column(Integer)
     assignment_version: Mapped[int] = mapped_column(Integer, default=1)
     supersedes_assignment_id: Mapped[str | None] = mapped_column(
@@ -216,6 +259,10 @@ class ChannelCommentGroundingAssignment(Base):
     primary_aspect_code: Mapped[str] = mapped_column(String(64), default="source_fact")
     primary_aspect_text: Mapped[str] = mapped_column(Text)
     teacher_name: Mapped[str] = mapped_column(String(160), default="")
+    teacher_candidate_id: Mapped[str] = mapped_column(String(80), default="")
+    primary_evidence_id: Mapped[str] = mapped_column(String(80), default="")
+    secondary_evidence_id: Mapped[str] = mapped_column(String(80), default="")
+    relation_kind: Mapped[str] = mapped_column(String(24), default="direct")
     speech_act: Mapped[str] = mapped_column(String(48), default="reaction")
     assignment_state: Mapped[str] = mapped_column(String(32), default="active")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

@@ -60,9 +60,7 @@ from .group_ai_scope import validate_group_ai_content_scope
 from .ai_generation_recovery import recover_stale_pre_gateway_generation
 from .comment_generation_dispatch import (
     CommentGenerationDependencies,
-    GenerationAttemptStale,
     PRODUCTION_COMMENT_GENERATION_DEPENDENCIES,
-    ensure_post_comment_content,
 )
 from .content_mix_cycles import reconcile_content_mix_cycle
 from .ai_generator import (
@@ -133,6 +131,7 @@ from .payloads import (
     DeprecatedGroupRescuePayload,
     DeleteMessagePayload,
     EnsureChannelMembershipPayload,
+    EnsureDiscussionMembershipPayload,
     GroupCloneMutationPayload,
     GroupCloneSendPayload,
     InviteGroupAccountPayload,
@@ -193,7 +192,12 @@ _redis_client = _runtime_resources._redis_client
 def dispatcher_runtime_reservation_count() -> int:
     return len(_ACTION_RESERVATIONS) + len(_IN_FLIGHT_ACCOUNTS)
 MEMBERSHIP_ACTION_TYPES = ("ensure_channel_membership", "ensure_target_membership")
-GROUP_AI_ADMISSION_ACTION_TYPES = (*MEMBERSHIP_ACTION_TYPES, "invite_group_account")
+DISCUSSION_MEMBERSHIP_ACTION_TYPE = "ensure_discussion_membership"
+GROUP_AI_ADMISSION_ACTION_TYPES = (
+    *MEMBERSHIP_ACTION_TYPES,
+    DISCUSSION_MEMBERSHIP_ACTION_TYPE,
+    "invite_group_account",
+)
 GROUP_BOT_ADMISSION_ACTION_TYPES = (
     GROUP_BOT_CHANNEL_FOLLOW_ACTION_TYPE,
     "group_bot_control_observation",
@@ -853,6 +857,8 @@ def _comment_remote_fact_matches(
             and fact.get("unicode_emoji") == emoji
             and fact.get("unicode_emoji_hash") == _comment_text_hash(emoji)
             and fact.get("outbound_content_hash") == _comment_text_hash(emoji)
+            and fact.get("fallback_content_hash")
+            == str(payload.get("fallback_content_hash") or "")
         )
     if source == "comment_image_meme_fallback":
         selection = dict(payload.get("comment_fallback_selection") or {})
@@ -873,6 +879,11 @@ def _comment_remote_fact_matches(
     return (
         fact.get("content_kind") == "text"
         and fact.get("outbound_content_hash") == _comment_text_hash(content)
+        and (
+            not payload.get("grounding_enrollment_id")
+            or fact.get("accepted_content_hash")
+            == str(payload.get("accepted_content_hash") or "")
+        )
     )
 
 
@@ -1401,10 +1412,9 @@ def _dispatch_validated_action(
         ))
     channel_action_types = {"view_message", "like_message", "post_comment"}
     if action.action_type in channel_action_types and not _ensure_channel_action_membership(
-        session,
-        action,
-        context.account,
-        context.payload.channel_target_id,
+        session, action,
+        account=context.account,
+        channel_target_id=context.payload.channel_target_id,
     ):
         return True
     credentials = credentials_for_account(session, context.account)
@@ -1420,6 +1430,11 @@ def _dispatch_credentialed_action(
 ) -> bool:
     if action.action_type in {"ensure_channel_membership", "ensure_target_membership"}:
         return _dispatch_channel_membership(session, action, context.account, credentials, context.payload)
+    if action.action_type == DISCUSSION_MEMBERSHIP_ACTION_TYPE:
+        return _dispatch_discussion_membership(
+            session, action,
+            account=context.account, credentials=credentials, payload=context.payload,
+        )
     if action.action_type == "send_message":
         return _dispatch_send_message(
             session,
@@ -1431,16 +1446,9 @@ def _dispatch_credentialed_action(
         return _dispatch_delete_message(session, action, context.account, credentials, context.payload)
     if action.action_type == "invite_group_account":
         return _dispatch_invite_group_account(session, action, context.account, credentials, context.payload)
-    if action.action_type == "view_message":
-        return _dispatch_view(action, context.account, credentials, session, context.payload)
-    if action.action_type == "like_message":
-        return _dispatch_like(action, context.account, credentials, session, context.payload)
-    if action.action_type == "post_comment":
-        return _dispatch_comment(
-            session,
-            action,
-            CommentDispatchContext(context.account, credentials, context.payload),
-            generation_dependencies=context.comment_generation_dependencies,
+    if action.action_type in {"view_message", "like_message", "post_comment"}:
+        return _dispatch_channel_engagement_action(
+            session, action, context=context, credentials=credentials,
         )
     if action.action_type == GROUP_BOT_CHANNEL_FOLLOW_ACTION_TYPE:
         return _dispatch_group_bot_required_channel_follow(
@@ -1455,6 +1463,29 @@ def _dispatch_credentialed_action(
         return True
     _fail(action, FailureType.UNKNOWN.value, f"未知 action_type: {action.action_type}")
     return True
+
+
+def _dispatch_channel_engagement_action(
+    session: Session,
+    action: Action,
+    *,
+    context: ActionDispatchContext,
+    credentials,
+) -> bool:
+    if action.action_type == "view_message":
+        return _dispatch_view(
+            session, action, account=context.account,
+            credentials=credentials, payload=context.payload,
+        )
+    if action.action_type == "like_message":
+        return _dispatch_like(
+            session, action, account=context.account,
+            credentials=credentials, payload=context.payload,
+        )
+    return _dispatch_comment(
+        session, action,
+        CommentDispatchContext(context.account, credentials, context.payload),
+    )
 
 
 def _dispatch_group_clone_send(ctx: GroupCloneSendDispatchContext) -> bool:
@@ -1946,6 +1977,7 @@ def _ai_send_content_is_ready():
     return and_(
         _ai_legacy_scope_is_ready(),
         _ai_send_generation_is_ready(),
+        _comment_generation_is_ready(),
     )
 
 
@@ -1968,6 +2000,15 @@ def _ai_send_generation_is_ready():
         Action.action_type != "send_message",
         func.coalesce(message_text, "") != "",
         func.coalesce(generation_status, "") == "",
+    )
+
+
+def _comment_generation_is_ready():
+    generation_status = Action.payload["ai_generation_status"].as_string()
+    return or_(
+        Action.task_type != "channel_comment",
+        Action.action_type != "post_comment",
+        func.coalesce(generation_status, "").in_(("", "ready")),
     )
 
 
@@ -3504,7 +3545,7 @@ def _comment_outbound_fact(
     selection = dict(payload.comment_fallback_selection or {})
     unicode_emoji = payload.comment_text if payload.comment_fallback_kind == "unicode_emoji" else None
     media_fingerprint = _comment_media_fingerprint(payload)
-    return {
+    fact = {
         "action_id": action.id,
         "execution_attempt_id": attempt.id,
         "content_source": payload.content_source,
@@ -3514,6 +3555,9 @@ def _comment_outbound_fact(
         "unicode_emoji": unicode_emoji,
         "unicode_emoji_hash": _comment_text_hash(unicode_emoji) if unicode_emoji else None,
         "outbound_content_hash": _comment_text_hash(payload.comment_text) if payload.comment_text else None,
+        "accepted_content_hash": payload.accepted_content_hash or None,
+        "fallback_content_hash": payload.fallback_content_hash or None,
+        "quality_contract_version": payload.quality_contract_version or None,
         "remote_media_kind": "image_meme" if media_fingerprint else None,
         "outbound_media_fingerprint": media_fingerprint or None,
         **{
@@ -3523,6 +3567,27 @@ def _comment_outbound_fact(
                 "tg_ref_version_id", "asset_pool_hash", "selection_attempt",
             )
         },
+    }
+    if payload.grounding_enrollment_id:
+        fact.update(_discussion_comment_outbound_fact(payload))
+    return fact
+
+
+def _discussion_comment_outbound_fact(payload: PostCommentPayload) -> dict:
+    return {
+        "grounding_enrollment_id": payload.grounding_enrollment_id,
+        "discussion_group_binding_id": payload.discussion_group_binding_id,
+        "discussion_group_binding_revision": payload.discussion_group_binding_revision,
+        "discussion_group_identity_hash": payload.discussion_group_identity_hash,
+        "discussion_thread_binding_id": payload.discussion_thread_binding_id,
+        "discussion_thread_revision": payload.discussion_thread_revision,
+        "discussion_thread_identity_hash": payload.discussion_thread_identity_hash,
+        "rpc_mode": payload.rpc_mode,
+        "requested_target_peer": payload.actual_target_peer,
+        "source_message_id": payload.message_id,
+        "thread_root_message_id": payload.thread_root_message_id,
+        "requested_reply_to_message_id": payload.reply_to_message_id,
+        "membership_fact_id": payload.membership_fact_id,
     }
 
 
@@ -3978,6 +4043,38 @@ def _reserve_channel_membership_attempt(
         require_identity=True,
         require_frozen_identity=True,
         expected_target_id=payload.channel_target_id,
+        expected_revision=payload.target_reference_revision,
+        expected_reference_snapshot=payload.target_reference_snapshot,
+        include_group_policy=False,
+    )
+    if gate_block is not None:
+        _skip_for_target_gate(session, action, gate_block.code, gate_block.detail)
+        return None
+    attempt = _begin_execution_attempt(session, action, account)
+    _mark_executing(action)
+    _mark_gateway_call_started(session, attempt, commit=False)
+    session.commit()
+    return attempt
+
+
+def _reserve_discussion_membership_attempt(
+    session: Session,
+    action: Action,
+    *,
+    account: TgAccount,
+    payload: EnsureDiscussionMembershipPayload,
+) -> ExecutionAttempt | None:
+    from app.services.outbound_target_gate import evaluate_outbound_target_gate
+
+    target = _attempt_target(session, action)
+    gate_block = evaluate_outbound_target_gate(
+        session,
+        action=action,
+        target=target,
+        outbound_peer=payload.discussion_peer_id,
+        require_identity=True,
+        require_frozen_identity=True,
+        expected_target_id=payload.target_operation_target_id,
         expected_revision=payload.target_reference_revision,
         expected_reference_snapshot=payload.target_reference_snapshot,
         include_group_policy=False,
@@ -4695,6 +4792,171 @@ def _task_group_rescue_admin_rate_limited_until(task: Task | None) -> datetime |
         return _naive_datetime(datetime.fromisoformat(raw))
     except ValueError:
         return None
+
+
+def _dispatch_discussion_membership(
+    session: Session,
+    action: Action,
+    *,
+    account: TgAccount,
+    credentials,
+    payload: EnsureDiscussionMembershipPayload,
+) -> bool:
+    blocker = _discussion_membership_scope_blocker(
+        session, action, account=account, payload=payload,
+    )
+    if blocker:
+        _fail(
+            action, blocker, blocker,
+            auto_check="拦截", validation_stage="discussion_membership_scope",
+        )
+        return True
+    attempt = _reserve_discussion_membership_attempt(
+        session, action, account=account, payload=payload,
+    )
+    if attempt is None:
+        return True
+    result = gateway.ensure_channel_membership(
+        account.id, payload.discussion_peer_id,
+        account.session_ciphertext, credentials,
+    )
+    outcome = _discussion_membership_outcome(
+        session, action,
+        account=account, credentials=credentials, payload=payload, result=result,
+    )
+    fact, effective_result = outcome
+    typed_fact = _discussion_membership_typed_fact(fact, payload)
+    action.result = {**dict(action.result or {}), **typed_fact}
+    attempt.result_snapshot = {**dict(attempt.result_snapshot or {}), **typed_fact}
+    _apply_operation_result(
+        action, account,
+        effective_result.ok,
+        effective_result.failure_type,
+        effective_result.detail,
+        attempt=attempt,
+        remote_fact_id=fact.id if fact.can_send else "",
+        remote_mutation_started=getattr(effective_result, "remote_mutation_started", None),
+    )
+    return True
+
+
+def _discussion_membership_scope_blocker(
+    session: Session,
+    action: Action,
+    *,
+    account: TgAccount,
+    payload: EnsureDiscussionMembershipPayload,
+) -> str:
+    from app.models import ChannelDiscussionGroupBinding
+    from .channel_comment_discussion_admission import discussion_join_scope_hash
+
+    task = session.get(Task, action.task_id)
+    binding = session.get(ChannelDiscussionGroupBinding, payload.discussion_group_binding_id)
+    if task is None or task.status != "running":
+        return "discussion_membership_task_not_running"
+    if task.config_revision != payload.task_config_revision:
+        return "discussion_membership_config_drift"
+    if task.task_lifecycle_epoch != payload.task_lifecycle_epoch:
+        return "discussion_membership_epoch_drift"
+    if binding is None or not binding.is_current:
+        return "discussion_membership_binding_drift"
+    if (binding.binding_revision, binding.identity_hash, binding.discussion_peer_id) != (
+        payload.discussion_group_binding_revision,
+        payload.discussion_group_identity_hash,
+        payload.discussion_peer_id,
+    ):
+        return "discussion_membership_binding_identity_mismatch"
+    if binding.discussion_target_id != payload.target_operation_target_id:
+        return "discussion_membership_target_identity_mismatch"
+    config = dict(task.type_config or {})
+    if not config.get("auto_join_discussion_enabled"):
+        return "discussion_auto_join_not_authorized"
+    if account.id not in {int(value) for value in config.get("discussion_join_account_ids") or []}:
+        return "discussion_join_account_out_of_scope"
+    if payload.join_budget_ordinal > int(config.get("discussion_join_budget") or 0):
+        return "discussion_join_budget_exhausted"
+    if payload.authorized_scope_hash != discussion_join_scope_hash(config, binding):
+        return "discussion_join_scope_hash_drift"
+    return ""
+
+
+def _discussion_membership_outcome(
+    session: Session,
+    action: Action,
+    *,
+    account: TgAccount,
+    credentials,
+    payload: EnsureDiscussionMembershipPayload,
+    result,
+):
+    from app.services.task_center.channel_comment_discussion_contracts import (
+        MembershipObservation,
+        record_membership_fact,
+    )
+
+    now_value = _now()
+    status, can_send, effective = _discussion_membership_status(
+        account, credentials, payload=payload, result=result,
+    )
+    fact = record_membership_fact(session, MembershipObservation(
+        tenant_id=action.tenant_id,
+        account_id=account.id,
+        group_binding_id=payload.discussion_group_binding_id,
+        discussion_peer_id=payload.discussion_peer_id,
+        membership_status=status,
+        can_send=can_send,
+        observed_at=now_value,
+        fresh_until_at=now_value + timedelta(minutes=30) if can_send else now_value,
+        evidence_json={
+            "action_id": action.id,
+            "gateway_status": getattr(result, "membership_status", ""),
+            "failure_type": effective.failure_type or "",
+        },
+    ))
+    return fact, effective
+
+
+def _discussion_membership_status(
+    account: TgAccount,
+    credentials,
+    *,
+    payload: EnsureDiscussionMembershipPayload,
+    result,
+):
+    if result.ok:
+        probe = gateway.probe_target_capabilities(
+            account.id, payload.discussion_peer_id, "group",
+            account.session_ciphertext, credentials,
+        )
+        if probe.ok:
+            status = str(getattr(result, "membership_status", "") or "joined")
+            status = status if status in {"joined", "already_joined"} else "joined"
+            return status, True, result
+        return "unknown", False, OperationResult(
+            False, "结果待确认", "discussion_membership_readback_unknown",
+            probe.detail or probe.failure_type,
+            remote_mutation_started=True,
+        )
+    status = {
+        FailureType.GROUP_PERMISSION_DENIED.value: "restricted",
+        FailureType.PEER_INVALID.value: "inaccessible",
+        FailureType.ACCOUNT_LIMITED.value: "banned",
+    }.get(result.failure_type, "unknown")
+    return status, False, result
+
+
+def _discussion_membership_typed_fact(fact, payload) -> dict:
+    return {"discussion_membership_remote_fact": {
+        "fact_id": fact.id,
+        "account_id": fact.account_id,
+        "discussion_peer_id": fact.discussion_peer_id,
+        "discussion_group_binding_id": fact.group_binding_id,
+        "discussion_group_binding_revision": payload.discussion_group_binding_revision,
+        "membership_status": fact.membership_status,
+        "can_send": fact.can_send,
+        "observed_at": fact.observed_at.isoformat(),
+        "fresh_until_at": fact.fresh_until_at.isoformat() if fact.fresh_until_at else None,
+    }}
 
 
 def _dispatch_channel_membership(session: Session, action: Action, account: TgAccount, credentials, payload: EnsureChannelMembershipPayload) -> bool:
@@ -6524,8 +6786,18 @@ def _outbound_segments(payload: SendMessagePayload) -> list[OutboundSegment]:
     return segments
 
 
-def _dispatch_view(action: Action, account: TgAccount, credentials, session: Session, payload: ViewMessagePayload) -> bool:
-    if not _ensure_channel_action_membership(session, action, account, payload.channel_target_id):
+def _dispatch_view(
+    session: Session,
+    action: Action,
+    *,
+    account: TgAccount,
+    credentials,
+    payload: ViewMessagePayload,
+) -> bool:
+    if not _ensure_channel_action_membership(
+        session, action, account=account,
+        channel_target_id=payload.channel_target_id,
+    ):
         return True
     account_id = account.id
     session_ciphertext = account.session_ciphertext
@@ -6558,8 +6830,18 @@ def _dispatch_view(action: Action, account: TgAccount, credentials, session: Ses
     return True
 
 
-def _dispatch_like(action: Action, account: TgAccount, credentials, session: Session, payload: LikeMessagePayload) -> bool:
-    if not _ensure_channel_action_membership(session, action, account, payload.channel_target_id):
+def _dispatch_like(
+    session: Session,
+    action: Action,
+    *,
+    account: TgAccount,
+    credentials,
+    payload: LikeMessagePayload,
+) -> bool:
+    if not _ensure_channel_action_membership(
+        session, action, account=account,
+        channel_target_id=payload.channel_target_id,
+    ):
         return True
     account_id = account.id
     session_ciphertext = account.session_ciphertext
@@ -6637,8 +6919,6 @@ def _dispatch_comment(
     session: Session,
     action: Action,
     context: CommentDispatchContext,
-    *,
-    generation_dependencies: CommentGenerationDependencies,
 ) -> bool:
     account = context.account
     account_id = int(account.id)
@@ -6646,22 +6926,32 @@ def _dispatch_comment(
     credentials = context.credentials
     prepared = _prepare_comment_send(
         session, action, context,
-        generation_dependencies=generation_dependencies,
     )
     if prepared is None:
         return True
     payload, attempt = prepared
     result = _send_channel_comment(
         account_id=account_id,
-        channel_peer=payload.channel_id,
+        channel_peer=payload.actual_target_peer or payload.channel_id,
         message_id=payload.message_id,
         content=payload.comment_text,
         media_segment=payload.comment_media_segment,
         session_ciphertext=session_ciphertext,
         credentials=credentials,
         reply_to_message_id=payload.reply_to_message_id,
+        rpc_mode=payload.rpc_mode or "legacy_channel_comment",
+        thread_root_message_id=payload.thread_root_message_id,
     )
     _lock_post_gateway_dispatch_prefix(session, action)
+    from .channel_comment_rpc_failure import project_comment_pre_mutation_failure
+
+    failure_fact = project_comment_pre_mutation_failure(
+        session, action, payload=payload, result=result,
+        attempt_id=attempt.id, observed_at=_now(),
+    )
+    if failure_fact:
+        action.result = {**dict(action.result or {}), **failure_fact}
+        attempt.result_snapshot = {**dict(attempt.result_snapshot or {}), **failure_fact}
     typed_remote_fact = _comment_typed_remote_fact(action, attempt, payload, result)
     _apply_send_result(
         action, account, result.ok, result.remote_message_id or "",
@@ -6676,8 +6966,6 @@ def _prepare_comment_send(
     session: Session,
     action: Action,
     context: CommentDispatchContext,
-    *,
-    generation_dependencies: CommentGenerationDependencies,
 ) -> tuple[PostCommentPayload, ExecutionAttempt] | None:
     account = context.account
     payload = context.payload
@@ -6687,32 +6975,26 @@ def _prepare_comment_send(
     if _comment_success_limit_reached(session, action, payload):
         _skip(action, "comment_target_reached", "频道消息评论已达到当前上限，跳过旧计划")
         return None
-    if not _ensure_channel_action_membership(session, action, account, payload.channel_target_id):
+    if not _ensure_channel_action_membership(
+        session, action, account=account,
+        channel_target_id=payload.channel_target_id,
+    ):
         return None
     if not _channel_comment_speaker_rotation_gate_pass(session, action, account_id=int(account.id), payload=payload):
         return None
     payload = _ready_comment_payload(
         session, action, payload,
-        generation_dependencies=generation_dependencies,
     )
     if payload is None:
         return None
-    content = payload.comment_text
-    policy_group = _comment_content_policy_group(session, action, payload)
-    if not policy_group:
+    if not _comment_content_admitted(session, action, payload=payload):
         return None
-    if content:
-        filtered = filter_outbound_content(
-            session, tenant_id=action.tenant_id,
-            group=policy_group, content=content,
-        )
-        if not filtered.ok:
-            _fail(action, FailureType.CONTENT_REJECTED.value, filtered.reason, auto_check="拦截", validation_stage="content_policy")
-            return None
+    target_peer = payload.actual_target_peer or payload.channel_id
+    target_peer_type = "group" if payload.rpc_mode == "discussion_reply_to" else "channel"
     if not _platform_mutation_admitted(
         session, action,
-        target_peer_type="channel",
-        target_peer_id=str(payload.channel_id),
+        target_peer_type=target_peer_type,
+        target_peer_id=str(target_peer),
     ):
         return None
     attempt = _reserve_channel_action_attempt(session, action, account, payload)
@@ -6721,28 +7003,111 @@ def _prepare_comment_send(
     return payload, attempt
 
 
+def _comment_content_admitted(
+    session: Session,
+    action: Action,
+    *,
+    payload: PostCommentPayload,
+) -> bool:
+    hash_blocker = _comment_outbound_hash_blocker(action, payload)
+    if hash_blocker:
+        _fail(
+            action, hash_blocker,
+            "频道评论最终正文与质量接受身份不一致",
+            auto_check="拦截", validation_stage="outbound_content_identity",
+        )
+        return False
+    policy_group = _comment_content_policy_group(session, action, payload)
+    if not policy_group:
+        return False
+    if not payload.comment_text:
+        return True
+    filtered = filter_outbound_content(
+        session, tenant_id=action.tenant_id,
+        group=policy_group, content=payload.comment_text,
+    )
+    if filtered.ok and filtered.content == payload.comment_text:
+        return True
+    if filtered.ok:
+        _fail(
+            action,
+            "grounding_outbound_content_mismatch",
+            "出站过滤器试图改写已冻结正文，必须重新进入完整质量流程",
+            auto_check="拦截",
+            validation_stage="outbound_content_identity",
+        )
+        return False
+    _fail(
+        action, FailureType.CONTENT_REJECTED.value, filtered.reason,
+        auto_check="拦截", validation_stage="content_policy",
+    )
+    return False
+
+
+def _comment_outbound_hash_blocker(
+    action: Action,
+    payload: PostCommentPayload,
+) -> str:
+    if not payload.grounding_enrollment_id:
+        return ""
+    if payload.comment_media_segment:
+        return _comment_media_identity_blocker(action, payload)
+    actual_hash = hashlib.sha256(payload.comment_text.encode("utf-8")).hexdigest()
+    if payload.comment_fallback_kind in {"emoji_text", "unicode_emoji"}:
+        expected_text = payload.fallback_content_text
+        expected_hash = payload.fallback_content_hash
+    else:
+        expected_text = payload.accepted_content_text
+        expected_hash = payload.accepted_content_hash
+    if not expected_text or expected_text != payload.comment_text:
+        return "grounding_outbound_content_mismatch"
+    if not expected_hash or expected_hash != actual_hash:
+        return "grounding_outbound_content_mismatch"
+    if str(action.candidate_hash or "") != actual_hash:
+        return "grounding_outbound_content_mismatch"
+    return ""
+
+
+def _comment_media_identity_blocker(
+    action: Action,
+    payload: PostCommentPayload,
+) -> str:
+    segment = dict(payload.comment_media_segment or {})
+    selection = dict(payload.comment_fallback_selection or {})
+    if payload.comment_fallback_kind != "image_meme":
+        return "fallback_media_identity_mismatch"
+    identity_keys = (
+        "material_id", "asset_version_id", "asset_fingerprint", "tg_ref_version_id",
+    )
+    if any(selection.get(key) != segment.get(key) for key in identity_keys):
+        return "fallback_media_identity_mismatch"
+    encoded = json.dumps(segment, sort_keys=True, separators=(",", ":"))
+    if str(action.candidate_hash or "") != hashlib.sha256(encoded.encode()).hexdigest():
+        return "fallback_media_identity_mismatch"
+    return ""
+
+
 def _ready_comment_payload(
     session: Session,
     action: Action,
     payload: PostCommentPayload,
-    *,
-    generation_dependencies: CommentGenerationDependencies,
 ) -> PostCommentPayload | None:
-    try:
-        payload = ensure_post_comment_content(
-            session,
-            action,
-            payload=payload,
-            dependencies=generation_dependencies,
-        )
-    except GenerationAttemptStale:
-        _release_runtime_resources(action)
-        return None
-    except AiGenerationUnavailable:
-        return None
     if payload.ai_generation_status != "ready" or not (
         payload.comment_text.strip() or payload.comment_media_segment
     ):
+        _defer_comment_to_generation_worker(action)
+        return None
+    if (
+        payload.grounding_enrollment_id
+        and payload.comment_lifecycle_state not in {"quality_accepted", "fallback_ready"}
+    ):
+        _fail(
+            action,
+            "comment_generation_lifecycle_invalid",
+            "频道评论生成生命周期未进入 Gateway ready 状态",
+            auto_check="拦截",
+            validation_stage="generation_identity",
+        )
         return None
     from .channel_comment_grounding_guard import comment_grounding_send_blocker
 
@@ -6756,7 +7121,37 @@ def _ready_comment_payload(
             validation_stage="grounding_identity",
         )
         return None
+    from .channel_comment_discussion_guard import discussion_send_blocker
+
+    discussion_blocker = discussion_send_blocker(session, action, payload)
+    if discussion_blocker:
+        _fail(
+            action,
+            discussion_blocker,
+            "频道评论讨论组冻结身份已变化或账号准入事实无效",
+            auto_check="拦截",
+            validation_stage="discussion_identity",
+        )
+        return None
     return payload
+
+
+def _defer_comment_to_generation_worker(action: Action) -> None:
+    from .ai_generation_claim_lifecycle import release_generation_claim
+
+    status = str((action.payload or {}).get("ai_generation_status") or "")
+    if status not in {
+        "pending", "generating", "ai_result_persist_unknown", "provider_result_unknown",
+    }:
+        raise RuntimeError("post_comment_generation_state_invalid")
+    release_generation_claim(action, dict(action.payload or {}))
+    action.result = {
+        **dict(action.result or {}),
+        "success": False,
+        "error_code": "comment_generation_worker_required",
+        "generation_stage": "waiting_comment_generation",
+    }
+    _release_runtime_resources(action)
 
 
 def _send_channel_comment(
@@ -6769,17 +7164,25 @@ def _send_channel_comment(
     session_ciphertext: str,
     credentials,
     reply_to_message_id: int | None,
+    rpc_mode: str,
+    thread_root_message_id: int,
 ):
     if media_segment:
         return gateway.reply_channel_media(
-            account_id, channel_peer, message_id, media_segment,
-            session_ciphertext, credentials,
+            account_id, channel_peer,
+            message_id=message_id, segment=media_segment,
+            session_ciphertext=session_ciphertext, credentials=credentials,
             reply_to_message_id=reply_to_message_id,
+            rpc_mode=rpc_mode,
+            thread_root_message_id=thread_root_message_id,
         )
     return gateway.reply_channel_message(
-        account_id, channel_peer, message_id, content,
-        session_ciphertext, credentials,
+        account_id, channel_peer,
+        message_id=message_id, content=content,
+        session_ciphertext=session_ciphertext, credentials=credentials,
         reply_to_message_id=reply_to_message_id,
+        rpc_mode=rpc_mode,
+        thread_root_message_id=thread_root_message_id,
     )
 
 
@@ -7006,7 +7409,13 @@ def _payload_int(payload: dict, key: str) -> int:
     return int(text) if text.isdigit() else 0
 
 
-def _ensure_channel_action_membership(session: Session, action: Action, account: TgAccount, channel_target_id: int | None) -> bool:
+def _ensure_channel_action_membership(
+    session: Session,
+    action: Action,
+    *,
+    account: TgAccount,
+    channel_target_id: int | None,
+) -> bool:
     if not channel_target_id:
         _fail_with_policy(
             action,
@@ -7018,7 +7427,9 @@ def _ensure_channel_action_membership(session: Session, action: Action, account:
         return False
     channel = session.get(OperationTarget, int(channel_target_id))
     if action.action_type == "post_comment":
-        return _ensure_post_comment_membership(session, action, account, channel)
+        return _ensure_post_comment_membership(
+            session, action, account=account, channel=channel,
+        )
     if channel and channel.tenant_id == action.tenant_id and channel.target_type == "channel" and account_satisfies_authorized_target(channel, account):
         return True
     if _channel_action_has_membership_link(session, action, account, channel):
@@ -7056,10 +7467,19 @@ def _channel_action_has_membership_link(
     return bool(group and _channel_account_link(session, action.tenant_id, group.id, account.id))
 
 
-def _ensure_post_comment_membership(session: Session, action: Action, account: TgAccount, channel: OperationTarget | None) -> bool:
+def _ensure_post_comment_membership(
+    session: Session,
+    action: Action,
+    *,
+    account: TgAccount,
+    channel: OperationTarget | None,
+) -> bool:
     if not channel or channel.tenant_id != action.tenant_id or channel.target_type != "channel":
         _fail_with_policy(action, FailureType.PEER_INVALID.value, "频道评论目标不存在", auto_check="拦截", validation_stage="account_channel_membership")
         return False
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    if payload.get("grounding_enrollment_id"):
+        return True
     group = linked_channel_group(session, channel, create=False)
     link = _channel_account_link(session, action.tenant_id, group.id, account.id) if group else None
     if link and link.can_send:

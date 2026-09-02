@@ -13,8 +13,7 @@ name: Production Task Monitor
         type: string
       task_ids:
         description: Comma-separated incident task IDs
-        required: false
-        default: d3365706-afe1-4166-9d0d-c2d6404bc8ad,84180c47-cf92-408e-bdd9-c68804f7de29,7805d8f2-dfef-4842-b11c-14cc1f434c94,fdb48029-4fda-4801-818d-0c509da37ea3,3e9db16a-ff5a-4b19-b917-c0182b16734a
+        required: true
         type: string
 
 concurrency:
@@ -39,12 +38,14 @@ jobs:
           DEPLOY_USER: ${{ secrets.SILICON_VALLEY_PRODUCTION_USER }}
           RELEASE_LIVE_AT: ${{ inputs.release_live_at }}
           EXPECTED_DEPLOYED_SHA: ${{ inputs.deployed_sha }}
+          TASK_IDS: ${{ inputs.task_ids }}
         run: |
           set -euo pipefail
           test -n "${SSH_PRIVATE_KEY}"
           test -n "${DEPLOY_HOST}"
           test -n "${DEPLOY_USER}"
           test -n "${RELEASE_LIVE_AT}"
+          test -n "${TASK_IDS}"
           [[ "${EXPECTED_DEPLOYED_SHA}" =~ ^[0-9a-fA-F]{8,40}$ ]]
 
       - name: Configure SSH

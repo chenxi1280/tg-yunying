@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 import random
 from uuid import uuid4
@@ -63,6 +64,26 @@ TELEGRAM_PUBLIC_LINK_PREFIXES = (
     "https://telegram.me/", "http://telegram.me/", "telegram.me/",
     "https://www.t.me/", "http://www.t.me/",
 )
+
+
+@dataclass(frozen=True)
+class OperationExecutionScope:
+    session: Session
+    task: OperationTask
+    attempt: OperationTaskAttempt
+    target: OperationTarget | None
+    channel_message: ChannelMessage | None
+    channel: OperationTarget | None
+    account: TgAccount
+    credentials: object
+
+
+@dataclass(frozen=True)
+class OperationGatewayOutcome:
+    ok: bool | None
+    failure_type: str = ""
+    detail: str = ""
+    remote_id: str = ""
 
 
 def _account_id_csv(values: list[int] | str | None) -> str:
@@ -1447,8 +1468,8 @@ def _sync_channel_target_messages(session: Session, target: OperationTarget, *, 
     snapshots = gateway.fetch_channel_messages(
         account.id,
         channel_read_reference(target),
-        account.session_ciphertext,
-        credentials_for_account(session, account),
+        session_ciphertext=account.session_ciphertext,
+        credentials=credentials_for_account(session, account),
         limit=limit,
     )
     inserted = 0
@@ -1885,6 +1906,7 @@ def _fail_operation_attempt(
 def _execute_operation_attempt(
     session: Session,
     task: OperationTask,
+    *,
     attempt: OperationTaskAttempt,
     target: OperationTarget | None,
     channel_message: ChannelMessage | None,
@@ -1897,96 +1919,126 @@ def _execute_operation_attempt(
         if not channel or not _legacy_channel_account_has_membership(session, task.tenant_id, account.id, channel):
             return False, FailureType.ACCOUNT_UNAVAILABLE.value, "账号未关注目标频道，已拦截频道互动"
     try:
-        credentials = credentials_for_account(session, account)
-        if task.task_type == "MESSAGE_SEND":
-            target, attempt, failure_type, detail = _reserve_operation_gateway_attempt(
-                session, task, attempt, target,
-            )
-            if failure_type:
-                return False, failure_type, detail
-            assert target is not None and attempt is not None
-            result = gateway.send_message_to_target(
-                account.id,
-                target.tg_peer_id,
-                attempt.content,
-                target.target_type,
-                None,
-                account.session_ciphertext,
-                credentials,
-            )
-            ok = result.ok
-            failure_type = result.failure_type or ""
-            detail = result.detail or ""
-            remote_id = result.remote_message_id or ""
-        elif task.task_type == "CHANNEL_VIEW":
-            channel, attempt, failure_type, detail = _reserve_operation_gateway_attempt(
-                session, task, attempt, channel,
-            )
-            if failure_type:
-                return False, failure_type, detail
-            assert channel_message and channel and attempt is not None
-            op = gateway.view_channel_message(account.id, channel.tg_peer_id, channel_message.message_id, account.session_ciphertext, credentials)
-            ok = op.ok
-            failure_type = op.failure_type
-            detail = op.detail
-            remote_id = ""
-        elif task.task_type == "CHANNEL_REACTION":
-            channel, attempt, failure_type, detail = _reserve_operation_gateway_attempt(
-                session, task, attempt, channel,
-            )
-            if failure_type:
-                return False, failure_type, detail
-            assert channel_message and channel and attempt is not None
-            op = gateway.send_channel_reaction(
-                account.id,
-                channel.tg_peer_id,
-                channel_message.message_id,
-                attempt.reaction or task.reaction,
-                account.session_ciphertext,
-                credentials,
-            )
-            ok = op.ok
-            failure_type = op.failure_type
-            detail = op.detail
-            remote_id = ""
-        else:
-            channel, attempt, failure_type, detail = _reserve_operation_gateway_attempt(
-                session, task, attempt, channel,
-            )
-            if failure_type:
-                return False, failure_type, detail
-            assert channel_message and channel and attempt is not None
-            result = gateway.reply_channel_message(
-                account.id,
-                channel.tg_peer_id,
-                channel_message.message_id,
-                attempt.content,
-                account.session_ciphertext,
-                credentials,
-            )
-            ok = result.ok
-            failure_type = result.failure_type or ""
-            detail = result.detail or ""
-            remote_id = result.remote_message_id or ""
+        outcome = _operation_gateway_call(OperationExecutionScope(
+            session=session, task=task, attempt=attempt, target=target,
+            channel_message=channel_message, channel=channel, account=account,
+            credentials=credentials_for_account(session, account),
+        ))
     except Exception as exc:
-        ok = False
-        failure_type = FailureType.UNKNOWN.value
-        detail = str(exc)
-        remote_id = ""
+        outcome = OperationGatewayOutcome(
+            False, FailureType.UNKNOWN.value, str(exc), "",
+        )
+    if outcome.ok is None:
+        return False, outcome.failure_type, outcome.detail
+    return _settle_operation_outcome(
+        session, task, attempt=attempt, account=account,
+        target=target or channel, outcome=outcome,
+    )
 
-    if ok:
+
+def _operation_gateway_call(scope: OperationExecutionScope) -> OperationGatewayOutcome:
+    calls = {
+        "MESSAGE_SEND": _message_send_gateway_call,
+        "CHANNEL_VIEW": _channel_view_gateway_call,
+        "CHANNEL_REACTION": _channel_reaction_gateway_call,
+        "CHANNEL_REPLY": _channel_reply_gateway_call,
+    }
+    return calls.get(scope.task.task_type, _channel_reply_gateway_call)(scope)
+
+
+def _message_send_gateway_call(scope: OperationExecutionScope) -> OperationGatewayOutcome:
+    target, attempt, failure, detail = _reserve_operation_gateway_attempt(
+        scope.session, scope.task, scope.attempt, scope.target,
+    )
+    if failure:
+        return OperationGatewayOutcome(None, failure, detail)
+    assert target is not None and attempt is not None
+    result = gateway.send_message_to_target(
+        scope.account.id, target.tg_peer_id, attempt.content,
+        target.target_type, None, scope.account.session_ciphertext,
+        scope.credentials,
+    )
+    return OperationGatewayOutcome(
+        result.ok, result.failure_type or "", result.detail or "",
+        result.remote_message_id or "",
+    )
+
+
+def _channel_view_gateway_call(scope: OperationExecutionScope) -> OperationGatewayOutcome:
+    channel, attempt, failure, detail = _reserve_operation_gateway_attempt(
+        scope.session, scope.task, scope.attempt, scope.channel,
+    )
+    if failure:
+        return OperationGatewayOutcome(None, failure, detail)
+    assert scope.channel_message and channel and attempt is not None
+    result = gateway.view_channel_message(
+        scope.account.id, channel.tg_peer_id, scope.channel_message.message_id,
+        scope.account.session_ciphertext, scope.credentials,
+    )
+    return OperationGatewayOutcome(
+        result.ok, result.failure_type, result.detail,
+    )
+
+
+def _channel_reaction_gateway_call(scope: OperationExecutionScope) -> OperationGatewayOutcome:
+    channel, attempt, failure, detail = _reserve_operation_gateway_attempt(
+        scope.session, scope.task, scope.attempt, scope.channel,
+    )
+    if failure:
+        return OperationGatewayOutcome(None, failure, detail)
+    assert scope.channel_message and channel and attempt is not None
+    result = gateway.send_channel_reaction(
+        scope.account.id, channel.tg_peer_id, scope.channel_message.message_id,
+        attempt.reaction or scope.task.reaction,
+        scope.account.session_ciphertext, scope.credentials,
+    )
+    return OperationGatewayOutcome(
+        result.ok, result.failure_type, result.detail,
+    )
+
+
+def _channel_reply_gateway_call(scope: OperationExecutionScope) -> OperationGatewayOutcome:
+    channel, attempt, failure, detail = _reserve_operation_gateway_attempt(
+        scope.session, scope.task, scope.attempt, scope.channel,
+    )
+    if failure:
+        return OperationGatewayOutcome(None, failure, detail)
+    assert scope.channel_message and channel and attempt is not None
+    result = gateway.reply_channel_message(
+        scope.account.id, channel.tg_peer_id,
+        message_id=scope.channel_message.message_id,
+        content=attempt.content,
+        session_ciphertext=scope.account.session_ciphertext,
+        credentials=scope.credentials,
+    )
+    return OperationGatewayOutcome(
+        result.ok, result.failure_type or "", result.detail or "",
+        result.remote_message_id or "",
+    )
+
+
+def _settle_operation_outcome(
+    session: Session,
+    task: OperationTask,
+    *,
+    attempt: OperationTaskAttempt,
+    account: TgAccount,
+    target: OperationTarget | None,
+    outcome: OperationGatewayOutcome,
+) -> tuple[bool, str, str]:
+    if outcome.ok:
         account.last_active_at = _now()
         attempt.status = TaskStatus.COMPLETED.value
         attempt.failure_type = ""
         attempt.failure_detail = ""
-        attempt.remote_message_id = remote_id
+        attempt.remote_message_id = outcome.remote_id
     else:
-        failure_type = failure_type or FailureType.UNKNOWN.value
-        detail = detail or "执行失败"
+        failure_type = outcome.failure_type or FailureType.UNKNOWN.value
+        detail = outcome.detail or "执行失败"
         attempt.status = TaskStatus.FAILED.value
         attempt.failure_type = failure_type
         attempt.failure_detail = detail
-        attempt.remote_message_id = remote_id
+        attempt.remote_message_id = outcome.remote_id
         if failure_type == FailureType.ACCOUNT_LIMITED.value:
             account.status = AccountStatus.LIMITED.value
             account.health_score = min(account.health_score, 55)
@@ -1994,14 +2046,14 @@ def _execute_operation_attempt(
             session,
             tenant_id=task.tenant_id,
             reference_revision=task.target_reference_revision,
-            target=target or channel,
+            target=target,
             account_id=account.id,
             failure_detail=detail,
             source_ref=f"operation_task={task.id}; attempt={attempt.id}",
         )
     attempt.executed_at = _now()
-    _release_operation_task_authority(session, task, target or channel)
-    return ok, attempt.failure_type, attempt.failure_detail
+    _release_operation_task_authority(session, task, target)
+    return bool(outcome.ok), attempt.failure_type, attempt.failure_detail
 
 
 def _authority_peer_type(target_type: str, peer_id: str = "") -> str:
@@ -2127,7 +2179,10 @@ def dispatch_operation_task(session: Session, task_id: int, actor: str) -> Opera
     task.status = TaskStatus.RUNNING.value
     processed = 0
     for attempt in due_attempts:
-        ok, failure_type, failure_detail = _execute_operation_attempt(session, task, attempt, target, channel_message, channel)
+        ok, failure_type, failure_detail = _execute_operation_attempt(
+            session, task, attempt=attempt, target=target,
+            channel_message=channel_message, channel=channel,
+        )
         processed += 1
         if not ok:
             last_failure_type = failure_type

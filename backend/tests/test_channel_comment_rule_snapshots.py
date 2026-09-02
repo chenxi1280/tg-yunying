@@ -9,7 +9,11 @@ from app.models import Action, ChannelMessage, ChannelMessageComment, RuleSet, R
 from app.services._common import _now
 from app.services.task_center import dispatcher
 from app.services.task_center.comment_generation_dispatch import CommentGenerationDependencies
-from channel_comment_dispatch_test_support import comment_dispatch_session, seed_dispatch_scope
+from channel_comment_dispatch_test_support import (
+    comment_dispatch_session,
+    dispatch_generated_comment_action,
+    seed_dispatch_scope,
+)
 
 
 pytestmark = pytest.mark.no_postgres
@@ -31,7 +35,7 @@ def test_phase_c_uses_archived_fixed_rule_snapshot_after_new_version_publish(mon
         session.commit()
         _configure_gateway(monkeypatch, observed)
 
-        assert dispatcher.dispatch_action(
+        assert dispatch_generated_comment_action(
             session,
             action,
             comment_generation_dependencies=_dependencies(),
@@ -63,7 +67,7 @@ def test_phase_c_rejects_rule_version_that_cannot_match_fixed_snapshot(
         monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args: object())
         monkeypatch.setattr(dispatcher.gateway, "reply_channel_message", _forbidden_gateway)
 
-        assert dispatcher.dispatch_action(
+        assert dispatch_generated_comment_action(
             session,
             action,
             comment_generation_dependencies=_dependencies(),
@@ -84,7 +88,7 @@ def test_direct_comment_unavailable_before_generation_skips_provider_and_gateway
         _make_comment_target_unavailable(session, target_state)
         _configure_forbidden_external_calls(monkeypatch)
 
-        assert dispatcher.dispatch_action(
+        assert dispatch_generated_comment_action(
             session,
             action,
             comment_generation_dependencies=_forbidden_dependencies(),
@@ -108,7 +112,7 @@ def test_phase_c_rechecks_comment_available_after_provider(monkeypatch) -> None:
             direct_generator=generate,
             reply_generator=_forbidden_generation,
         )
-        assert dispatcher.dispatch_action(
+        assert dispatch_generated_comment_action(
             session,
             action,
             comment_generation_dependencies=dependencies,
@@ -130,7 +134,7 @@ def test_empty_pending_blueprints_do_not_hide_older_success_duplicate(monkeypatc
         session.commit()
         _configure_gateway(monkeypatch, observed)
 
-        assert dispatcher.dispatch_action(
+        assert dispatch_generated_comment_action(
             session,
             action,
             comment_generation_dependencies=_dependencies(duplicate),
@@ -152,7 +156,7 @@ def test_legacy_message_id_history_still_rejects_duplicate(monkeypatch) -> None:
         session.commit()
         _configure_gateway(monkeypatch, observed)
 
-        assert dispatcher.dispatch_action(
+        assert dispatch_generated_comment_action(
             session,
             action,
             comment_generation_dependencies=_dependencies(duplicate),
@@ -192,8 +196,8 @@ def _forbidden_dependencies() -> CommentGenerationDependencies:
 def _configure_gateway(monkeypatch, observed: list[str]) -> None:
     monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args: object())
 
-    def send(_account_id, _channel_peer, _message_id, *args, **_kwargs):
-        observed.append(args[0])
+    def send(_account_id, _channel_peer, **kwargs):
+        observed.append(kwargs["content"])
         return SendResult(True, remote_message_id="9902")
 
     monkeypatch.setattr(dispatcher.gateway, "reply_channel_message", send)

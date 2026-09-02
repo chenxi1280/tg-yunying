@@ -13,6 +13,7 @@ from app.models import (
     Task,
 )
 from app.services._common import _now
+from app.services.antigravity_provider_client import AntigravityProviderResultUnknown
 
 from .ai_generator import AiGenerationUnavailable, ProviderRouteDeferred
 from .ai_generation_state import GenerationAttemptStale
@@ -37,6 +38,7 @@ from .comment_generation_persistence import (
     mark_provider_call_started as _mark_provider_call_started,
     persist_comment_generation_result,
     persist_generation_failure as _persist_generation_failure,
+    persist_provider_result_unknown as _persist_provider_result_unknown,
     persist_generation_unknown as _persist_generation_unknown,
 )
 from .comment_reply_target_authority import has_authoritative_own_history_target
@@ -58,7 +60,9 @@ def ensure_post_comment_content(
         ready = payload.model_copy(update={"ai_generation_status": "ready"})
         action.payload = ready.model_dump(mode="json")
         return ready
-    if payload.ai_generation_status not in {"pending", "ai_result_persist_unknown"}:
+    if payload.ai_generation_status not in {
+        "pending", "generating", "ai_result_persist_unknown",
+    }:
         raise AiGenerationUnavailable("post_comment action 缺少可发送文案")
     task = session.get(Task, action.task_id) if action.task_id else None
     if not task:
@@ -112,6 +116,10 @@ def _generate_comment(
             tokens=exc.tokens,
         )
         raise AiGenerationUnavailable(exc.code) from exc
+    except AntigravityProviderResultUnknown as exc:
+        session.rollback()
+        _persist_provider_result_unknown(session, request, detail=str(exc))
+        raise AiGenerationUnavailable("provider_result_unknown") from exc
     except Exception as exc:
         session.rollback()
         _persist_generation_failure(session, request, str(exc))
@@ -291,6 +299,7 @@ def _mark_generating(action: Action, data: dict, *, attempt_id: str, request_id:
     })
     data.update({
         "ai_generation_status": "generating",
+        "comment_lifecycle_state": "generation_claimed",
         "ai_generation_attempt_id": attempt_id,
         "ai_generation_request_id": request_id,
         "ai_generation_attempt_history": history,

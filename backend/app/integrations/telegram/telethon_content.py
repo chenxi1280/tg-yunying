@@ -11,6 +11,7 @@ from .contracts import (
     CachedMediaResult,
     ArchivedMessageSnapshot,
     ChannelCommentSnapshot,
+    ChannelDiscussionIdentitySnapshot,
     ChannelMessageDeletionObservation,
     ChannelMessageSnapshot,
     ChannelReactionCapabilitySnapshot,
@@ -290,15 +291,19 @@ async def fetch_channel_messages(client, channel_peer_id: str, limit: int) -> li
         message_id = int(getattr(message, "id", 0) or 0)
         if message_id <= 0:
             continue
-        text = (getattr(message, "message", "") or "").strip()
+        text = getattr(message, "message", "") or ""
         message_url = f"https://t.me/{username}/{message_id}" if username else ""
         replies = getattr(message, "replies", None)
         snapshots.append(
             ChannelMessageSnapshot(
                 message_id=message_id,
-                content_preview=text[:500],
+                content_preview=text[:500].strip(),
+                content_text=text,
                 message_url=message_url,
                 published_at=getattr(message, "date", None),
+                edited_at=getattr(message, "edit_date", None),
+                source_type="caption" if getattr(message, "media", None) else "message_text",
+                content_complete=True,
                 comment_available=bool(replies and getattr(replies, "comments", False)),
             )
         )
@@ -335,6 +340,55 @@ async def fetch_channel_reaction_capability(
     full = await client(functions.channels.GetFullChannelRequest(channel=entity))
     capability = getattr(getattr(full, "full_chat", None), "available_reactions", None)
     return await resolve_channel_reaction_capability(client, capability)
+
+
+async def fetch_channel_discussion_identity(
+    client,
+    channel_peer_id: str,
+    source_message_ids: list[int],
+) -> ChannelDiscussionIdentitySnapshot:
+    from telethon import functions, types, utils
+
+    target = int(channel_peer_id) if channel_peer_id.lstrip("-").isdigit() else channel_peer_id
+    channel = await client.get_entity(target)
+    full = await client(functions.channels.GetFullChannelRequest(channel=channel))
+    linked_id = getattr(getattr(full, "full_chat", None), "linked_chat_id", None)
+    if not linked_id:
+        return ChannelDiscussionIdentitySnapshot(channel_peer_id, None)
+    discussion = _linked_chat(full, int(linked_id))
+    if discussion is None:
+        discussion = await client.get_entity(types.PeerChannel(int(linked_id)))
+    peer_id = str(utils.get_peer_id(discussion))
+    roots = await _discussion_thread_roots(client, channel, source_message_ids)
+    return ChannelDiscussionIdentitySnapshot(
+        channel_peer_id, peer_id, roots,
+        discussion_title=str(getattr(discussion, "title", "") or ""),
+    )
+
+
+async def _discussion_thread_roots(client, channel, source_message_ids: list[int]) -> dict[int, int]:
+    from telethon import functions
+
+    roots: dict[int, int] = {}
+    for source_message_id in source_message_ids:
+        result = await client(functions.messages.GetDiscussionMessageRequest(
+            peer=channel, msg_id=source_message_id,
+        ))
+        messages = list(getattr(result, "messages", ()) or ())
+        root_id = int(getattr(messages[0], "id", 0) or 0) if messages else 0
+        if root_id:
+            roots[int(source_message_id)] = root_id
+    return roots
+
+
+def _linked_chat(full, linked_id: int):
+    return next(
+        (
+            chat for chat in getattr(full, "chats", ()) or ()
+            if abs(int(getattr(chat, "id", 0) or 0)) == abs(linked_id)
+        ),
+        None,
+    )
 
 
 async def resolve_channel_reaction_capability(

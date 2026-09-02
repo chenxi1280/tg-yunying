@@ -1038,6 +1038,18 @@ def refresh_task_detail_stats(
 def _task_summary_detail(
     session: Session, tenant_id: int, task: Task
 ) -> dict[str, Any]:
+    state = _summary_detail_state(session, tenant_id, task)
+    return {
+        **_summary_detail_base(state),
+        **_summary_detail_enrichment(session, task, state=state),
+    }
+
+
+def _summary_detail_state(
+    session: Session,
+    tenant_id: int,
+    task: Task,
+) -> dict[str, Any]:
     task_summary = session.scalar(
         select(TaskRuntimeSummary).where(
             TaskRuntimeSummary.tenant_id == tenant_id,
@@ -1068,26 +1080,52 @@ def _task_summary_detail(
     ai_quality_actions = (
         _ai_quality_actions(session, task) if task.type == "group_ai_chat" else []
     )
-    from .ai_group_content_read_model import ai_group_content_allocation_summary
-
     return {
         "task": task_payload,
-        "actions": [],
         "stats": stats,
-        "pacing_summary": task_pacing_summary(session, task),
-        "rank_deboost_exempt_group": _rank_deboost_exempt_group_payload(session, task),
         "task_runtime_summary": task_summary,
         "operation_plan_links": operation_plan_links,
-        "accounts": [],
         "membership_phase": membership_phase,
-        "membership_accounts": [],
         "membership_admission_phase": admission_phase,
+        "ai_quality_actions": ai_quality_actions,
+    }
+
+
+def _summary_detail_base(state: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "task": state["task"],
+        "actions": [],
+        "stats": state["stats"],
+        "task_runtime_summary": state["task_runtime_summary"],
+        "operation_plan_links": state["operation_plan_links"],
+        "accounts": [],
+        "membership_phase": state["membership_phase"],
+        "membership_accounts": [],
+        "membership_admission_phase": state["membership_admission_phase"],
         "membership_admission_items": [],
         "account_coverage_items": [],
         "message_groups": [],
         "ai_cycles": [],
-        "ai_generation_records": _ai_generation_records(ai_quality_actions),
+        "ai_generation_records": _ai_generation_records(state["ai_quality_actions"]),
         "ai_account_profiles": [],
+        "relay_batches": [],
+    }
+
+
+def _summary_detail_enrichment(
+    session: Session,
+    task: Task,
+    *,
+    state: dict[str, Any],
+) -> dict[str, Any]:
+    from .ai_group_content_read_model import ai_group_content_allocation_summary
+    from .channel_comment_discussion_read_model import channel_comment_discussion_read_model
+    from .channel_comment_grounding_read_model import channel_comment_grounding_read_model
+
+    ai_quality_actions = state["ai_quality_actions"]
+    return {
+        "pacing_summary": task_pacing_summary(session, task),
+        "rank_deboost_exempt_group": _rank_deboost_exempt_group_payload(session, task),
         "ai_quality_funnel": {
             **_ai_quality_funnel(
                 ai_quality_actions, task.stats if isinstance(task.stats, dict) else {}
@@ -1097,12 +1135,17 @@ def _task_summary_detail(
         "account_online_summary": task_account_online_summary(session, task)
         if task.type in {"group_ai_chat", "group_relay"}
         else {},
-        "relay_batches": [],
         "recent_relay_sources": _relay_recent_sources(session, task)
         if task.type == "group_relay"
         else [],
         "learning_profile_preview": _task_learning_profile_preview(session, task),
         "ai_group_content_allocation": ai_group_content_allocation_summary(
+            session, task
+        ),
+        "channel_comment_discussion": channel_comment_discussion_read_model(
+            session, task
+        ),
+        "channel_comment_grounding": channel_comment_grounding_read_model(
             session, task
         ),
     }

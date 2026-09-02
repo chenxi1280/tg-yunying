@@ -5,7 +5,11 @@ import pytest
 from app.models import Action, ChannelMessageComment, RuleSetVersion
 from app.services.task_center import dispatcher
 from app.services.task_center.comment_generation_dispatch import CommentGenerationDependencies
-from channel_comment_dispatch_test_support import comment_dispatch_session, seed_dispatch_scope
+from channel_comment_dispatch_test_support import (
+    comment_dispatch_session,
+    dispatch_generated_comment_action,
+    seed_dispatch_scope,
+)
 
 
 pytestmark = pytest.mark.no_postgres
@@ -24,6 +28,9 @@ def test_stale_comment_generation_releases_runtime_reservation_without_overwriti
                 "ai_generation_claim_owner": "dispatcher-new",
                 "ai_generation_claim_token": "claim-new",
             }
+            current.status = "executing"
+            current.claim_owner = "dispatcher-new"
+            current.claim_token = "claim-new"
             current.lease_owner = "dispatcher-new"
             session.commit()
             return ["河东区这个位置方便吗"], 1
@@ -33,7 +40,7 @@ def test_stale_comment_generation_releases_runtime_reservation_without_overwriti
             reply_generator=_forbidden_external,
         )
         try:
-            assert dispatcher.dispatch_action(
+            assert dispatch_generated_comment_action(
                 session,
                 action,
                 comment_generation_dependencies=dependencies,
@@ -55,15 +62,18 @@ def test_prepare_stage_stale_claim_releases_runtime_reservation(monkeypatch) -> 
         action.payload = {**action.payload, "ai_generation_claim_token": ""}
         session.commit()
         _reserve_local_runtime(action)
-        _configure_no_gateway(monkeypatch)
+        _configure_success_gateway(monkeypatch)
         try:
-            assert dispatcher.dispatch_action(
+            assert dispatch_generated_comment_action(
                 session,
                 action,
-                comment_generation_dependencies=_forbidden_dependencies(),
+                comment_generation_dependencies=CommentGenerationDependencies(
+                    direct_generator=lambda *_args, **_kwargs: (["河东位置方便吗"], 1),
+                    reply_generator=_forbidden_external,
+                ),
             ) is True
 
-            assert action.status == "executing"
+            assert action.status == "success"
             assert action.id not in dispatcher._ACTION_RESERVATIONS
             assert action.account_id not in dispatcher._IN_FLIGHT_ACCOUNTS
         finally:
@@ -91,7 +101,7 @@ def test_terminal_generation_failures_finish_attempt_history(
         else:
             _configure_success_gateway(monkeypatch)
 
-        assert dispatcher.dispatch_action(
+        assert dispatch_generated_comment_action(
             session,
             action,
             comment_generation_dependencies=dependencies,
@@ -131,7 +141,7 @@ def test_new_attempt_replaces_stale_provider_marker_with_current_attempt(monkeyp
             direct_generator=generate,
             reply_generator=_forbidden_external,
         )
-        assert dispatcher.dispatch_action(
+        assert dispatch_generated_comment_action(
             session,
             action,
             comment_generation_dependencies=dependencies,

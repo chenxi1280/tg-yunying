@@ -22,8 +22,8 @@ def freeze_comment_obligations(
     session: Session,
     task: Task,
     message: ChannelMessage,
-    reply_targets: list[dict | None],
     *,
+    reply_targets: list[dict | None],
     rule_version: RuleSetVersion,
     reply_min_required: int,
     first_ordinal: int = 1,
@@ -32,39 +32,52 @@ def freeze_comment_obligations(
     account_by_ordinal: dict[int, int] | None = None,
     grounding_assignment_by_ordinal: dict[int, object] | None = None,
     planned_fallback_ordinals: set[int] | None = None,
+    discussion_identity: object | None = None,
 ) -> list[CommentFulfillmentObligation]:
     existing = _message_obligations(session, task, message.id)
-    reusable: list[CommentFulfillmentObligation] = []
-    if existing:
-        _release_terminal_bindings(session, existing)
-        available = [
-            item
-            for item in existing
-            if item.status in OPEN_OBLIGATION_STATUSES
-            and item.current_action_id is None
-        ]
-        if available:
-            reusable, reply_targets = _reuse_available_obligations(
-                available,
-                reply_targets,
-            )
-            if not reply_targets:
-                return reusable
+    reusable, remaining = _take_reusable_obligations(session, existing, reply_targets)
+    if not remaining:
+        return reusable
+    rows = _append_comment_obligations(
+        session, task, message, reply_targets=remaining,
+        rule_version=rule_version,
+        reply_min_required=reply_min_required,
+        first_ordinal=first_ordinal,
+        plan_contract_id=plan_contract_id,
+        revision_override=revision_override,
+        account_by_ordinal=account_by_ordinal or {},
+        grounding_assignment_by_ordinal=grounding_assignment_by_ordinal or {},
+        planned_fallback_ordinals=planned_fallback_ordinals or set(),
+        discussion_identity=discussion_identity,
+    )
+    return [*reusable, *rows]
+
+
+def _append_comment_obligations(
+    session: Session,
+    task: Task,
+    message: ChannelMessage,
+    *,
+    reply_targets: list[dict | None],
+    rule_version: RuleSetVersion,
+    reply_min_required: int,
+    first_ordinal: int,
+    plan_contract_id: str | None,
+    revision_override: int | None,
+    account_by_ordinal: dict[int, int],
+    grounding_assignment_by_ordinal: dict[int, object],
+    planned_fallback_ordinals: set[int],
+    discussion_identity: object | None,
+) -> list[CommentFulfillmentObligation]:
     revision = int(revision_override or task.config_revision or 1)
     contract = _create_comment_contract(
-        session,
-        task,
-        message,
-        reply_targets,
+        session, task, message, targets=reply_targets,
         rule_version=rule_version,
         revision=revision,
         reply_min_required=reply_min_required,
     )
     _freeze_fallback_contract(
-        session,
-        task,
-        message,
-        contract,
+        session, task, message, contract=contract,
         comment_plan_revision=revision,
     )
     rows = _new_obligations(
@@ -75,21 +88,49 @@ def freeze_comment_obligations(
         first_ordinal=first_ordinal,
         reply_targets=reply_targets,
         plan_contract_id=plan_contract_id,
-        account_by_ordinal=account_by_ordinal or {},
-        grounding_assignment_by_ordinal=grounding_assignment_by_ordinal or {},
-        planned_fallback_ordinals=planned_fallback_ordinals or set(),
+        account_by_ordinal=account_by_ordinal,
+        grounding_assignment_by_ordinal=grounding_assignment_by_ordinal,
+        planned_fallback_ordinals=planned_fallback_ordinals,
+        discussion_identity=discussion_identity,
     )
+    _freeze_assignment_relations(rows, grounding_assignment_by_ordinal)
     session.add_all(rows)
     session.flush()
-    return [*reusable, *rows]
+    return rows
+
+
+def _freeze_assignment_relations(
+    obligations: list[CommentFulfillmentObligation],
+    assignments: dict[int, object],
+) -> None:
+    for obligation in obligations:
+        assignment = assignments.get(int(obligation.target_ordinal))
+        if assignment is None:
+            continue
+        assignment.relation_kind = obligation.relation_kind
+
+
+def _take_reusable_obligations(
+    session: Session,
+    existing: list[CommentFulfillmentObligation],
+    targets: list[dict | None],
+) -> tuple[list[CommentFulfillmentObligation], list[dict | None]]:
+    if not existing:
+        return [], targets
+    _release_terminal_bindings(session, existing)
+    available = [
+        item for item in existing
+        if item.status in OPEN_OBLIGATION_STATUSES and item.current_action_id is None
+    ]
+    return _reuse_available_obligations(available, targets) if available else ([], targets)
 
 
 def _freeze_fallback_contract(
     session: Session,
     task: Task,
     message: ChannelMessage,
-    contract: ContentMixContract,
     *,
+    contract: ContentMixContract,
     comment_plan_revision: int,
 ) -> None:
     from .comment_fallback_selection import freeze_comment_fallback_contract
@@ -115,6 +156,7 @@ def _new_obligations(
     account_by_ordinal: dict[int, int],
     grounding_assignment_by_ordinal: dict[int, object],
     planned_fallback_ordinals: set[int],
+    discussion_identity: object | None,
 ) -> list[CommentFulfillmentObligation]:
     return [
         _new_obligation(
@@ -132,6 +174,7 @@ def _new_obligations(
             fallback_intent_kind=(
                 "planned" if index in planned_fallback_ordinals else "emergency"
             ),
+            discussion_identity=discussion_identity,
         )
         for index, target in enumerate(reply_targets, start=first_ordinal)
     ]
@@ -232,8 +275,8 @@ def _create_comment_contract(
     session: Session,
     task: Task,
     message: ChannelMessage,
-    targets: list[dict | None],
     *,
+    targets: list[dict | None],
     rule_version: RuleSetVersion,
     revision: int,
     reply_min_required: int,
@@ -286,9 +329,11 @@ def _new_obligation(
     account_id: int | None,
     grounding_assignment_id: str | None,
     fallback_intent_kind: str,
+    discussion_identity: object | None,
 ) -> CommentFulfillmentObligation:
     snapshot = dict(reply_target or {})
     reply_id = _reply_target_id(snapshot)
+    account_id_value = account_id
     return CommentFulfillmentObligation(
         tenant_id=task.tenant_id,
         task_id=task.id,
@@ -297,14 +342,55 @@ def _new_obligation(
         target_ordinal=ordinal,
         content_mix_contract_id=contract.id,
         plan_contract_id=plan_contract_id,
-        account_id=account_id,
+        account_id=account_id_value,
         grounding_assignment_id=grounding_assignment_id,
         fallback_intent_kind=fallback_intent_kind,
         relation_kind="reply" if reply_id else "direct",
         reply_to_message_id=reply_id,
         reply_target_snapshot=snapshot,
+        **_obligation_discussion_fields(
+            task, message,
+            discussion_identity=discussion_identity,
+            account_id=account_id_value,
+            reply_id=reply_id,
+        ),
         status="open",
     )
+
+
+def _obligation_discussion_fields(
+    task: Task,
+    message: ChannelMessage,
+    *,
+    discussion_identity: object | None,
+    account_id: int | None,
+    reply_id: int | None,
+) -> dict:
+    if discussion_identity is None:
+        return {}
+    enrollment = discussion_identity.enrollment
+    binding = discussion_identity.group_binding
+    thread = discussion_identity.thread_binding
+    membership = discussion_identity.membership_by_account.get(int(account_id or 0))
+    if membership is None:
+        raise ValueError("channel_comment_membership_fact_not_frozen")
+    return {
+        "grounding_enrollment_id": enrollment.id,
+        "discussion_group_binding_id": binding.id,
+        "discussion_group_binding_revision": binding.binding_revision,
+        "discussion_group_identity_hash": binding.identity_hash,
+        "discussion_thread_binding_id": thread.id,
+        "discussion_thread_revision": thread.thread_revision,
+        "discussion_thread_identity_hash": thread.identity_hash,
+        "rpc_mode": "discussion_reply_to" if reply_id else "channel_comment_to",
+        "channel_peer_id": binding.channel_peer_id,
+        "discussion_peer_id": thread.discussion_peer_id,
+        "source_remote_message_id": message.message_id,
+        "thread_root_message_id": thread.thread_root_message_id,
+        "membership_fact_id": membership.id,
+        "task_lifecycle_epoch": task.task_lifecycle_epoch,
+        "task_config_revision": task.config_revision,
+    }
 
 
 def _reply_target_id(snapshot: dict) -> int | None:

@@ -10,6 +10,7 @@ from .runtime_state_hash import canonical_state_hash
 TYPED_REMOTE_FACTS = {
     "ensure_channel_membership": "membership_observed",
     "ensure_target_membership": "membership_observed",
+    "ensure_discussion_membership": "discussion_membership_observed",
     "group_bot_channel_follow": "group_bot_channel_follow",
     "group_bot_confirmation_button": "group_bot_confirmation_button",
 }
@@ -57,6 +58,9 @@ def apply_confirmed_business_fact(
     if fact_type == "membership_observed":
         _confirm_membership_fact(session, action)
         return
+    if fact_type == "discussion_membership_observed":
+        _confirm_discussion_membership_fact(session, action)
+        return
     if fact_type == "group_bot_channel_follow":
         _confirm_group_bot_follow_fact(session, action)
         return
@@ -83,6 +87,54 @@ def _confirm_membership_fact(session: Session, action: Action) -> None:
         "membership_status": "recovered_after_unknown",
         "validation_stage": "remote_reconcile_membership_probe",
     }
+
+
+def _confirm_discussion_membership_fact(session: Session, action: Action) -> None:
+    from datetime import timedelta
+
+    from app.services._common import _now
+    from .channel_comment_discussion_contracts import MembershipObservation, record_membership_fact
+
+    payload = dict(action.payload or {})
+    fact = dict((action.result or {}).get("discussion_membership_remote_fact") or {})
+    _require_discussion_membership_identity(action, payload, fact)
+    observed_at = _now()
+    restored = record_membership_fact(session, MembershipObservation(
+        tenant_id=action.tenant_id, account_id=int(action.account_id),
+        group_binding_id=str(payload["discussion_group_binding_id"]),
+        discussion_peer_id=str(payload["discussion_peer_id"]),
+        membership_status=str(fact["membership_status"]), can_send=True,
+        observed_at=observed_at, fresh_until_at=observed_at + timedelta(minutes=30),
+        evidence_json={
+            "action_id": action.id, "source": "remote_reconcile_authoritative_readback",
+        },
+    ))
+    action.result = {
+        **dict(action.result or {}),
+        "discussion_membership_remote_fact": {
+            **fact, "fact_id": restored.id,
+            "observed_at": restored.observed_at.isoformat(),
+            "fresh_until_at": restored.fresh_until_at.isoformat(),
+        },
+        "validation_stage": "remote_reconcile_discussion_membership",
+    }
+
+
+def _require_discussion_membership_identity(action: Action, payload: dict, fact: dict) -> None:
+    expected = (
+        int(action.account_id or 0), str(payload.get("discussion_peer_id") or ""),
+        str(payload.get("discussion_group_binding_id") or ""),
+        int(payload.get("discussion_group_binding_revision") or 0),
+    )
+    actual = (
+        int(fact.get("account_id") or 0), str(fact.get("discussion_peer_id") or ""),
+        str(fact.get("discussion_group_binding_id") or ""),
+        int(fact.get("discussion_group_binding_revision") or 0),
+    )
+    if expected != actual or fact.get("membership_status") not in {"joined", "already_joined"}:
+        raise RuntimeError("discussion_membership_remote_fact_identity_mismatch")
+    if fact.get("can_send") is not True:
+        raise RuntimeError("discussion_membership_remote_fact_send_permission_missing")
 
 
 def _confirm_group_bot_follow_fact(session: Session, action: Action) -> None:

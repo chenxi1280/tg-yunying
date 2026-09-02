@@ -136,6 +136,8 @@ class TaskSourceSubscription(Base):
         nullable=True,
     )
     required_snapshot_revision: Mapped[int] = mapped_column(Integer, default=0)
+    target_reference_revision: Mapped[int] = mapped_column(Integer, default=0)
+    listener_revision: Mapped[int] = mapped_column(Integer, default=0)
     state: Mapped[str] = mapped_column(String(32), default="pending")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)

@@ -604,7 +604,10 @@ def test_legacy_channel_attempt_runtime_guard_blocks_unjoined_account():
         session.add(attempt)
         session.commit()
 
-        ok, failure_type, detail = _execute_operation_attempt(session, task, attempt, None, message, channel)
+        ok, failure_type, detail = _execute_operation_attempt(
+            session, task, attempt=attempt, target=None,
+            channel_message=message, channel=channel,
+        )
         assert ok is False
         assert failure_type == "账号不可用"
         assert "未关注目标频道" in detail

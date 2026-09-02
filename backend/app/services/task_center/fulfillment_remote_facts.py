@@ -32,6 +32,7 @@ UNKNOWN_RECONCILE_DEADLINE_SECONDS = 1800
 MEMBERSHIP_ACTION_TYPES = frozenset({
     "ensure_channel_membership",
     "ensure_target_membership",
+    "ensure_discussion_membership",
     "invite_group_account",
 })
 MEMBERSHIP_CONFIRMED_STATUSES = frozenset({"joined", "already_joined"})
@@ -286,6 +287,9 @@ def _membership_observed(action: Action) -> bool:
     result = dict(action.result or {})
     if action.action_type == "invite_group_account":
         return result.get("rescue_status") == "invite_success"
+    if action.action_type == "ensure_discussion_membership":
+        fact = dict(result.get("discussion_membership_remote_fact") or {})
+        return bool(fact.get("can_send")) and fact.get("membership_status") in MEMBERSHIP_CONFIRMED_STATUSES
     return str(result.get("membership_status") or "").lower() in (
         MEMBERSHIP_CONFIRMED_STATUSES
     )

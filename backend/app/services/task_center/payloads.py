@@ -391,6 +391,26 @@ class EnsureChannelMembershipPayload(BaseModel):
     require_send: bool = False
 
 
+class EnsureDiscussionMembershipPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    discussion_peer_id: str = Field(min_length=1, max_length=160)
+    target_operation_target_id: int = Field(ge=1)
+    target_reference_revision: int = Field(ge=1)
+    target_reference_snapshot: dict[str, str] = Field(default_factory=dict)
+    target_type: Literal["group"] = "group"
+    target_display: str = ""
+    discussion_group_binding_id: str = Field(min_length=1, max_length=36)
+    discussion_group_binding_revision: int = Field(ge=1)
+    discussion_group_identity_hash: str = Field(min_length=64, max_length=64)
+    task_config_revision: int = Field(ge=1)
+    task_lifecycle_epoch: int = Field(ge=1)
+    authorized_scope_hash: str = Field(min_length=64, max_length=64)
+    pacing_policy_version: str = Field(min_length=1, max_length=80)
+    pacing_policy_hash: str = Field(min_length=64, max_length=64)
+    join_budget_ordinal: int = Field(ge=1)
+
+
 class GroupBotRequiredChannelFollowPayload(BaseModel):
     """Exact channel follow required by a trusted group-bot prompt."""
 
@@ -599,6 +619,7 @@ GROUP_BOT_CHANNEL_FOLLOW_ACTION_TYPE = "group_bot_channel_follow"
 PAYLOAD_MODELS = {
     "ensure_channel_membership": EnsureChannelMembershipPayload,
     "ensure_target_membership": EnsureChannelMembershipPayload,
+    "ensure_discussion_membership": EnsureDiscussionMembershipPayload,
     "invite_group_bot": DeprecatedGroupRescuePayload,
     "invite_group_account": InviteGroupAccountPayload,
     "delete_message": DeleteMessagePayload,

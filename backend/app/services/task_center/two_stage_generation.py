@@ -37,12 +37,13 @@ QUALITY_WAIT = "quality_wait"
 SEMANTIC_REVIEW_PROMPT_VERSION = "semantic_reviewer_v1"
 SEMANTIC_REVIEW_CONFIDENCE_THRESHOLD = 0.8
 SEMANTIC_REVIEW_SYSTEM_PROMPT = """你是独立内容审核模型，不改写文案。
-先逐项核对事实支持、上下文承接和账号声线，再给结论；不得因文案更长或位置靠前而偏好。
+先逐项核对主亮点命中、reply 关系、事实支持、上下文承接和账号声线，再给结论；不得因文案更长或位置靠前而偏好。
 只依据输入的 allowed_facts、brief、voice_profile 与 candidate，不使用外部知识。
+如果输入含 grounding_assignment，evidence 必须分别记录 criterion=primary_aspect 和（reply 时）criterion=reply_relation。
 普通话题不得强转成人；成人服务询问只能单点提问；成人服务感官短句中“好润”“水多不？”应视为自然，
 “软软的”“水灵灵的”“好心动”“挺好看的”“这状态真不错”属于甜宠或精致 AI 腔，必须失败。
 只输出唯一 JSON 根对象，精确结构：
-{"decision":"pass","confidence":0.95,"codes":[],"evidence":[{"criterion":"事实与语气检查项","observed":"基于输入的简短判断"}],"prompt_version":"semantic_reviewer_v1"}。
+{"decision":"pass","confidence":0.95,"codes":[],"primary_aspect_result":"pass","reply_relation_result":"not_applicable","evidence":[{"criterion":"事实与语气检查项","observed":"基于输入的简短判断"}],"prompt_version":"semantic_reviewer_v1"}。
 evidence 至少一项且 criterion/observed 都非空；pass 时 codes 必须为空，fail 时 codes 至少一个。"""
 
 BriefPlanner = Callable[..., tuple[object, int]]
@@ -277,6 +278,7 @@ def _realize_draft(
         reply_preview=plan.reply_preview,
         rejection_feedback=rejection_feedback,
     )
+    user_prompt = _grounding_realizer_prompt(user_prompt, config)
     realizer_config = _realizer_config(config, plan.brief, realization_attempt)
     system_prompt = (
         v2_realizer_system_prompt(plan.brief)
@@ -290,9 +292,75 @@ def _realize_draft(
     item = payload[0] if isinstance(payload, list) and payload else payload
     try:
         content, meta = parse_realizer_response(item, plan.brief)
+        meta.update(_grounding_realizer_identity(item, config, plan.brief))
     except ValueError as exc:
         raise TwoStageRealizeError(str(exc)) from exc
     return content, meta, int(tokens or 0), voice, facts
+
+
+def _grounding_realizer_prompt(user_prompt: str, config: dict) -> str:
+    assignment = dict(config.get("_comment_grounding_assignment") or {})
+    if not assignment:
+        return user_prompt
+    contract = {
+        "grounding_assignment_id": str(assignment.get("assignment_id") or ""),
+        "used_evidence_ids": _assignment_evidence_ids(assignment),
+        "teacher_candidate_id": str(assignment.get("teacher_candidate_id") or ""),
+        "speech_act": str(assignment.get("speech_act") or ""),
+    }
+    return (
+        f"{user_prompt}\nGrounding output contract (copy exactly):\n"
+        f"{json.dumps(contract, ensure_ascii=False, sort_keys=True)}\n"
+        "输出还必须包含 grounding_assignment_id、used_evidence_ids、"
+        "teacher_candidate_id，禁止省略或改写。"
+    )
+
+
+def _grounding_realizer_identity(
+    item: object,
+    config: dict,
+    brief: MessageBrief,
+) -> dict:
+    assignment = dict(config.get("_comment_grounding_assignment") or {})
+    if not assignment:
+        return {}
+    if not isinstance(item, dict):
+        raise ValueError("realizer_grounding_identity_missing")
+    expected_evidence = _assignment_evidence_ids(assignment)
+    returned_evidence = _returned_evidence_ids(item)
+    expected = _expected_grounding_identity(assignment)
+    if not _grounding_identity_matches(item, expected):
+        raise ValueError("realizer_grounding_identity_mismatch")
+    if returned_evidence != expected_evidence:
+        raise ValueError("realizer_grounding_evidence_mismatch")
+    if str(assignment.get("speech_act") or "") != brief.speech_act:
+        raise ValueError("realizer_grounding_speech_act_mismatch")
+    return {**expected, "used_evidence_ids": returned_evidence}
+
+
+def _returned_evidence_ids(item: dict) -> list[str]:
+    return [
+        str(value) for value in (item.get("used_evidence_ids") or []) if str(value)
+    ]
+
+
+def _expected_grounding_identity(assignment: dict) -> dict[str, str]:
+    return {
+        "grounding_assignment_id": str(assignment.get("assignment_id") or ""),
+        "teacher_candidate_id": str(assignment.get("teacher_candidate_id") or ""),
+    }
+
+
+def _grounding_identity_matches(item: dict, expected: dict[str, str]) -> bool:
+    return all(str(item.get(key) or "") == value for key, value in expected.items())
+
+
+def _assignment_evidence_ids(assignment: dict) -> list[str]:
+    return [
+        str(assignment[key])
+        for key in ("primary_evidence_id", "secondary_evidence_id")
+        if str(assignment.get(key) or "")
+    ]
 
 
 def _realizer_config(config: dict, brief: MessageBrief, attempt_index: int) -> dict:
@@ -335,7 +403,10 @@ def _run_semantic_review(
         tenant_id,
         reviewer_config,
         system_prompt=SEMANTIC_REVIEW_SYSTEM_PROMPT,
-        user_prompt=_semantic_review_prompt(plan, content, facts=facts, voice=voice),
+        user_prompt=_semantic_review_prompt(
+            plan, content, facts=facts, voice=voice,
+            grounding_assignment=dict(config.get("_comment_grounding_assignment") or {}),
+        ),
     )
     evidence = _parse_semantic_review(payload, config)
     evidence["candidate_hash"] = hashlib.sha256(content.encode("utf-8")).hexdigest()
@@ -364,11 +435,13 @@ def _semantic_review_prompt(
     *,
     facts: dict[str, str],
     voice: dict,
+    grounding_assignment: dict | None = None,
 ) -> str:
     brief = plan.brief
     payload = {
         "brief": brief.to_payload() if brief else {},
         "allowed_facts": {key: facts[key] for key in (brief.anchor_ids if brief else ()) if key in facts},
+        "grounding_assignment": dict(grounding_assignment or {}),
         "reply_preview": plan.reply_preview,
         "voice_profile": voice,
         "candidate": content,
@@ -399,6 +472,7 @@ def _parse_semantic_review(payload: object, config: dict) -> dict:
         raise TwoStageRealizeError("semantic_review_evidence_invalid")
     if prompt_version != SEMANTIC_REVIEW_PROMPT_VERSION:
         raise TwoStageRealizeError("semantic_review_prompt_version_mismatch")
+    dimensions = _grounding_review_dimensions(item, config)
     return {
         "decision": decision,
         "confidence": float(confidence),
@@ -406,12 +480,36 @@ def _parse_semantic_review(payload: object, config: dict) -> dict:
         "evidence": evidence,
         "prompt_version": prompt_version,
         "model": str(config.get("ai_semantic_reviewer_model") or "injected_test_reviewer"),
+        **dimensions,
+    }
+
+
+def _grounding_review_dimensions(item: dict, config: dict) -> dict:
+    assignment = dict(config.get("_comment_grounding_assignment") or {})
+    if not assignment:
+        return {}
+    primary = str(item.get("primary_aspect_result") or "")
+    relation = str(item.get("reply_relation_result") or "")
+    if primary not in {"pass", "reject", "unknown"}:
+        raise TwoStageRealizeError("semantic_primary_aspect_result_invalid")
+    allowed_relation = {"pass", "reject", "unknown", "not_applicable"}
+    if relation not in allowed_relation:
+        raise TwoStageRealizeError("semantic_reply_relation_result_invalid")
+    expected_reply = assignment.get("relation_kind") == "reply"
+    if expected_reply == (relation == "not_applicable"):
+        raise TwoStageRealizeError("semantic_reply_relation_applicability_invalid")
+    return {
+        "primary_aspect_result": primary,
+        "reply_relation_result": relation,
     }
 
 
 def comment_history_lines(payload) -> list[str]:
     """评论两阶段的事实锚点来源：频道原文 + 引用目标预览。"""
-    lines = [str(payload.message_content or "")]
+    if getattr(payload, "grounding_enrollment_id", ""):
+        lines = [str(getattr(payload, "grounding_primary_aspect_text", "") or "")]
+    else:
+        lines = [str(payload.message_content or "")]
     if getattr(payload, "reply_to_message_id", ""):
         lines.append(str(getattr(payload, "reply_target_preview", "") or ""))
     return [line for line in lines if line.strip()]

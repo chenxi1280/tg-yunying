@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass
 from typing import Callable
 
 from sqlalchemy.orm import Session
 
 from app.models import Action, AiAccountVoiceProfile
+from app.services.antigravity_provider_client import AntigravityProviderResultUnknown
 
 from .account_voice_profile_cache import (
     VOICE_PROFILE_CONTRACT_VERSION,
@@ -31,22 +31,24 @@ from .comment_two_stage_generation import (
 from .two_stage_generation import QUALITY_WAIT, two_stage_enabled
 from .comment_fallback_selection import (
     CommentFallbackUnavailable,
-    UNICODE_EMOJI_ALLOWLIST_V2,
     select_comment_fallback,
 )
-
-
-COMMENT_GENERATION_ATTEMPTS_PER_MODEL = 3
-COMMENT_EMOJI_FALLBACKS = ("👍", "🙂", "👏")
-STRUCTURAL_COMMENT_FAILURES = frozenset(
-    {
-        "comment_unavailable_message",
-        "peer_invalid",
-        "reply_target_missing",
-        "reply_target_stale",
-        "rule_version_unavailable",
-    }
+from .comment_generation_helpers import (
+    COMMENT_EMOJI_FALLBACKS,
+    STRUCTURAL_COMMENT_FAILURES,
+    UNICODE_EMOJI_ALLOWLIST_V2,
+    comment_generation_stages as _comment_generation_stages,
+    fallback_reason as _fallback_reason,
+    grounding_contract as _grounding_contract,
+    mask_fallback_attempt as _mask_fallback_attempt,
+    ordered_fallback_emojis as _ordered_fallback_emojis,
+    provider_failure as _provider_failure,
+    quality_attempt as _quality_attempt,
+    reply_target as _reply_target,
 )
+
+
+REPLY_QUALITY_SHORTFALL = "reply_quality_shortfall"
 
 
 def _commit_session(session: Session) -> None:
@@ -111,10 +113,8 @@ def generate_comment_result(
     session.rollback()
     if request.has_cached_result:
         return _cached_result(request)
-    if (
-        request.payload.comment_fallback_intent_kind == "planned"
-        and not request.payload.grounding_assignment_id
-    ):
+    planned_fallback = request.payload.comment_fallback_intent_kind == "planned"
+    if planned_fallback and not request.payload.grounding_assignment_id:
         return _emoji_fallback_result(
             session,
             request,
@@ -127,9 +127,8 @@ def generate_comment_result(
     two_stage = two_stage_enabled(request.config)
     if mask_reason:
         if two_stage:
-            # 两阶段合同（PRD §5.4）：面具不就绪不降级 emoji，进入 quality_wait。
             raise CommentGenerationBlocked(
-                QUALITY_WAIT,
+                _quality_wait_code(request),
                 f"mask_not_ready:{mask_reason}",
             )
         return _emoji_fallback_result(
@@ -171,6 +170,8 @@ def _run_generation_stages(
                 session, request, dependencies, stage=stage,
             )
         except GenerationAttemptStale:
+            raise
+        except AntigravityProviderResultUnknown:
             raise
         except Exception as exc:
             _close_failed_stage_transaction(session)
@@ -234,9 +235,16 @@ def _run_two_stage_comment(
     try:
         result = generate_two_stage_comment(session, request, hooks)
     except CommentGenerationBlocked as exc:
+        if exc.code == QUALITY_WAIT and _grounding_reply(request):
+            raise CommentGenerationBlocked(
+                REPLY_QUALITY_SHORTFALL,
+                exc.detail,
+                evaluator_evidence=exc.evaluator_evidence,
+                tokens=exc.tokens,
+            ) from exc
         if (
             exc.code != QUALITY_WAIT
-            or not request.config.get("channel_comment_grounding_v1_enabled")
+            or not _grounding_contract(request)
         ):
             raise
         return _emoji_fallback_result(
@@ -290,6 +298,9 @@ def _call_generator(
     config["_comment_slot_ordinal"] = max(
         0, int(getattr(payload, "target_ordinal", 0) or 0) - 1,
     )
+    if _grounding_contract(request):
+        config["channel_comment_grounding_v1_enabled"] = True
+        config["_comment_grounding_assignment"] = _grounding_assignment_payload(payload)
     if payload.reply_to_message_id:
         return dependencies.reply_generator(
             session,
@@ -307,6 +318,37 @@ def _call_generator(
         message_content=payload.message_content,
         target_label=payload.target_display,
     )
+
+
+def _grounding_assignment_payload(payload: object) -> dict:
+    required = {
+        "snapshot_id": str(getattr(payload, "grounding_snapshot_id", "") or ""),
+        "assignment_id": str(getattr(payload, "grounding_assignment_id", "") or ""),
+        "relation_kind": "reply" if payload.reply_to_message_id else "direct",
+        "primary_evidence_id": str(
+            getattr(payload, "grounding_primary_evidence_id", "") or "",
+        ),
+        "secondary_evidence_id": str(
+            getattr(payload, "grounding_secondary_evidence_id", "") or "",
+        ),
+        "primary_aspect_code": str(
+            getattr(payload, "grounding_primary_aspect_code", "") or "",
+        ),
+        "primary_aspect_text": str(
+            getattr(payload, "grounding_primary_aspect_text", "") or "",
+        ),
+        "teacher_candidate_id": str(
+            getattr(payload, "grounding_teacher_candidate_id", "") or "",
+        ),
+        "teacher_name": str(getattr(payload, "grounding_teacher_name", "") or ""),
+        "speech_act": str(getattr(payload, "grounding_speech_act", "") or ""),
+    }
+    if not all(required[key] for key in (
+        "snapshot_id", "assignment_id", "primary_evidence_id",
+        "primary_aspect_code", "primary_aspect_text", "speech_act",
+    )):
+        raise AiGenerationUnavailable("channel_comment_grounding_assignment_incomplete")
+    return required
 
 
 def _evaluate_candidate(
@@ -341,8 +383,14 @@ def _emoji_fallback_result(
     attempts: list[dict],
     action_loader: Callable,
 ) -> GeneratedCommentResult:
+    if _grounding_reply(request):
+        raise CommentGenerationBlocked(
+            REPLY_QUALITY_SHORTFALL,
+            "reply slot quality exhausted; fallback content is forbidden",
+            tokens=total_tokens,
+        )
     fallback_reason = _fallback_reason(attempts)
-    if request.config.get("channel_comment_grounding_v1_enabled"):
+    if _grounding_contract(request):
         return _v2_fallback_result(
             session,
             request,
@@ -417,28 +465,12 @@ def _v2_fallback_result(
     )
 
 
-def _comment_generation_stages() -> tuple[str, ...]:
-    return (
-        *("primary_m3" for _ in range(COMMENT_GENERATION_ATTEMPTS_PER_MODEL)),
-        *("fallback_m25" for _ in range(COMMENT_GENERATION_ATTEMPTS_PER_MODEL)),
-    )
+def _grounding_reply(request: CommentGenerationRequest) -> bool:
+    return bool(_grounding_contract(request) and request.payload.reply_to_message_id)
 
 
-def _ordered_fallback_emojis(
-    request: CommentGenerationRequest,
-) -> tuple[str, ...]:
-    key = f"{request.task_id}:{request.payload.channel_message_id}:{request.payload.slot_id}"
-    offset = int(hashlib.sha256(key.encode("utf-8")).hexdigest()[:8], 16)
-    pool = (
-        UNICODE_EMOJI_ALLOWLIST_V2
-        if bool(
-            getattr(request, "config", {}).get("channel_comment_grounding_v1_enabled")
-            or getattr(request, "config", {}).get("unicode_emoji_allowlist_v2")
-        )
-        else COMMENT_EMOJI_FALLBACKS
-    )
-    index = offset % len(pool)
-    return pool[index:] + pool[:index]
+def _quality_wait_code(request: CommentGenerationRequest) -> str:
+    return REPLY_QUALITY_SHORTFALL if _grounding_reply(request) else QUALITY_WAIT
 
 
 def _cached_result(request: CommentGenerationRequest) -> GeneratedCommentResult:
@@ -451,47 +483,6 @@ def _cached_result(request: CommentGenerationRequest) -> GeneratedCommentResult:
         media_segment=request.cached_media_segment,
         selection_metadata=request.cached_selection_metadata,
     )
-
-
-def _mask_fallback_attempt(reason: str) -> dict:
-    return {
-        "stage": "phase_a",
-        "outcome": "deterministic_fallback",
-        "reason": reason,
-    }
-
-
-def _provider_failure(stage: str, exc: Exception) -> dict:
-    return {
-        "stage": stage,
-        "outcome": "provider_failed",
-        "reason": str(exc),
-    }
-
-
-def _quality_attempt(stage: str, decision) -> dict:
-    return {
-        "stage": stage,
-        "outcome": "accepted" if decision.allowed else "rejected",
-        "reason": decision.code,
-    }
-
-
-def _fallback_reason(attempts: list[dict]) -> str:
-    reasons = [
-        str(item.get("reason") or item.get("outcome") or "")
-        for item in attempts
-    ]
-    return ",".join(item for item in reasons if item) or "all_model_stages_rejected"
-
-
-def _reply_target(payload: PostCommentPayload) -> dict:
-    return {
-        "message_id": int(payload.reply_to_message_id or 0),
-        "author": payload.reply_target_author,
-        "preview": payload.reply_target_preview,
-        "source": payload.reply_target_source,
-    }
 
 
 __all__ = [

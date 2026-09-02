@@ -15,7 +15,13 @@ export function ChannelViewTypeConfig() {
     <Space direction="vertical" style={{ width: '100%' }}>
       <Alert type="info" showIcon message="频道浏览按帖子、日期和账号补量：同一天同一账号同一帖子只会规划一次浏览。" />
       <div className="form-grid">
-        <Form.Item name="per_message_daily_view_target" label="每条帖子每日浏览量"><InputNumber min={1} max={10000} /></Form.Item>
+        <Form.Item
+          name="per_message_daily_view_target"
+          label="每条帖子每日浏览量"
+          extra="留空默认自动使用全部可用账号进行全量覆盖"
+        >
+          <InputNumber min={1} max={10000} placeholder="全部可用账号" />
+        </Form.Item>
         <Form.Item
           name="per_message_total_view_target"
           label="每条帖子累计目标"
@@ -59,11 +65,32 @@ export function ChannelCommentTypeConfig({ replyMinPerMessageRules, ruleFields, 
       <div style={{ gridColumn: '1 / -1' }}>
         <Alert type="info" showIcon message="AI 评论会按绑定规则集逐条做输出校验，单条失败不会废弃整批评论。" />
         <Alert type="info" showIcon message="任务总评论上限控制生命周期总量；每条评论/回复是单条消息累计目标；小时上限只控制发送节奏。" />
+        <Alert type="warning" showIcon message="新版相关性合同不会把回复缺口静默改成顶层评论；计划兜底超过上限或落到回复槽时会阻断该帖。" />
       </div>
       <div className="form-grid">
         <div style={{ gridColumn: '1 / -1' }}>{ruleFields}</div>
         <Form.Item name="max_total_comments" label="系统任务门禁（固定）"><InputNumber min={1000000} max={1000000} disabled /></Form.Item>
         <Form.Item name="target_comments_per_message" label="预计每条评论/回复"><InputNumber min={1} /></Form.Item>
+        <Form.Item name="business_max_comments_per_message" label="单帖业务评论上限" extra="55%～65% 需求量超过此值时按上限冻结，并显示业务 cap 已调整。"><InputNumber min={1} max={1000} /></Form.Item>
+        <Form.Item name="planned_fallback_max_bps" label="计划兜底上限（万分比）" extra="2000 表示最多 20%；兜底只允许用于顶层评论。"><InputNumber min={0} max={10000} step={100} /></Form.Item>
+        <Form.Item name="comment_mode" label="评论关系模式">
+          <Select options={[{ value: 'comment', label: '仅顶层评论' }, { value: 'mixed', label: '顶层评论 + 引用回复' }, { value: 'reply', label: '仅引用回复' }]} />
+        </Form.Item>
+        <Form.Item
+          name="reply_to_message_ids"
+          label="指定回复目标 ID"
+          dependencies={['comment_mode']}
+          extra="仅引用回复模式必填；多个 ID 用逗号分隔。混合模式留空时从已采集根评论中优先选择未回答问题。"
+          rules={[({ getFieldValue }) => ({
+            validator: async (_, value) => {
+              const hasValue = Array.isArray(value) ? value.length > 0 : String(value || '').trim().length > 0;
+              if (getFieldValue('comment_mode') !== 'reply' || hasValue) return;
+              throw new Error('仅引用回复模式必须指定回复目标 ID');
+            },
+          })]}
+        >
+          <Input placeholder="例如 12345, 12346" />
+        </Form.Item>
         <Form.Item name="reply_min_per_message" label="每条最少引用回复数" dependencies={['target_comments_per_message']} rules={replyMinPerMessageRules}><InputNumber min={0} /></Form.Item>
         <Form.Item
           name="daily_comment_cap"
@@ -178,6 +205,58 @@ function ChannelCommentAdvancedFields({ materialGroups }: { materialGroups: Mate
       <Form.Item name="channel_comment_grounding_v1_enabled" label="频道评论相关性 v1" valuePropName="checked">
         <Checkbox>启用证据化评论和 v2 表情兜底合同</Checkbox>
       </Form.Item>
+      <Form.Item name="auto_join_discussion_enabled" label="自动加入讨论组" valuePropName="checked">
+        <Checkbox>仅对下方精确授权账号创建独立 Join Action（默认关闭）</Checkbox>
+      </Form.Item>
+      <Form.Item
+        name="discussion_join_account_ids"
+        label="允许自动入组账号 ID"
+        dependencies={['auto_join_discussion_enabled']}
+        rules={[({ getFieldValue }) => ({
+          required: Boolean(getFieldValue('auto_join_discussion_enabled')),
+          message: '开启自动入组时必须填写精确账号 ID',
+        })]}
+      >
+        <Select mode="tags" tokenSeparators={[',', '，']} placeholder="例如 101, 102" />
+      </Form.Item>
+      <Form.Item
+        name="discussion_join_budget"
+        label="单次入组预算"
+        dependencies={['auto_join_discussion_enabled']}
+        rules={[({ getFieldValue }) => ({
+          validator: async (_, value) => {
+            if (!getFieldValue('auto_join_discussion_enabled') || Number(value) > 0) return;
+            throw new Error('开启自动入组时预算必须大于 0');
+          },
+        })]}
+      >
+        <InputNumber min={0} />
+      </Form.Item>
+      <Form.Item
+        name="discussion_join_pacing_policy_version"
+        label="入组节奏协议版本"
+        dependencies={['auto_join_discussion_enabled']}
+        rules={[({ getFieldValue }) => ({
+          required: Boolean(getFieldValue('auto_join_discussion_enabled')),
+          message: '开启自动入组时必须冻结节奏协议版本',
+        })]}
+      >
+        <Input readOnly />
+      </Form.Item>
+      <Form.Item
+        name={['discussion_join_pacing_policy', 'interval_seconds']}
+        label="入组动作间隔（秒）"
+        dependencies={['auto_join_discussion_enabled']}
+        rules={[({ getFieldValue }) => ({
+          validator: async (_, value) => {
+            if (!getFieldValue('auto_join_discussion_enabled') || Number(value) > 0) return;
+            throw new Error('开启自动入组时必须配置正数动作间隔');
+          },
+        })]}
+      >
+        <InputNumber min={1} />
+      </Form.Item>
+      <Alert type="warning" showIcon message="自动入组会产生真实 Telegram 外部变更；关闭时，未具备 fresh 讨论组成员事实的账号只会阻塞，不会静默加群。" />
       <Form.Item label="Unicode 表情白名单">
         <Input readOnly value="👍 🙂 👏 🔥 ❤️ 😍 🤩 🎉 💯 🙌 👌 ✨ 😄 😊 🥳 👀 🤝 💪 🌟 💖" />
       </Form.Item>

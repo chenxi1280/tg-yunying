@@ -136,7 +136,10 @@ def _dispatch_actions(session, *, actions, monkeypatch) -> None:
         _set_clock(monkeypatch, due_at)
         account = session.get(TgAccount, action.account_id)
         payload = ViewMessagePayload(**(action.payload or {}))
-        assert _dispatch_view(action, account, credentials, session, payload) is True
+        assert _dispatch_view(
+            session, action, account=account,
+            credentials=credentials, payload=payload,
+        ) is True
         _finalize_dispatch_action(session, action)
         session.flush()
     session.commit()

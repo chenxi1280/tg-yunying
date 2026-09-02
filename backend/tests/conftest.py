@@ -8,6 +8,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 import pytest
 from sqlalchemy import create_engine, event, text
+from sqlalchemy.engine import Connection, Engine, make_url
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -39,6 +40,12 @@ TEST_RULE_SET_ID_BASE = 900_000_000
 TEST_RULE_VERSION_ID_BASE = 901_000_000
 AUTO_BOUND_TASKS_SESSION_KEY = "auto_bound_rule_tasks"
 ACTIVE_WINDOW_BEHAVIOR_TESTS = frozenset({"test_group_ai_send_waits_for_configured_active_window"})
+ALLOWED_TEST_DATABASE_NAMES = frozenset({"tg_yunying_test"})
+PRODUCTION_ENVIRONMENT_NAMES = frozenset({"prod", "production"})
+TEST_DATABASE_ADVISORY_LOCK_KEY = 8_240_901_001
+
+_TEST_DATABASE_LOCK_CONNECTION: Connection | None = None
+_TEST_DATABASE_LOCK_ENGINE: Engine | None = None
 
 
 @pytest.fixture(autouse=True)
@@ -55,6 +62,25 @@ def keep_default_group_send_tests_inside_active_window(monkeypatch, request):
     monkeypatch.setattr(outbound_target_gate, "active_window_block", allow_active_window)
 
 
+def _validate_test_database_url(database_url: str) -> str:
+    app_env = (os.getenv("APP_ENV") or "").strip().lower()
+    if app_env in PRODUCTION_ENVIRONMENT_NAMES:
+        raise RuntimeError(f"Cannot run database integration tests in production environment (APP_ENV={app_env}).")
+    try:
+        url = make_url(database_url)
+    except Exception as exc:
+        raise RuntimeError("Invalid TEST_DATABASE_URL; database credentials were omitted") from exc
+    db_name = (url.database or "").strip()
+    if not db_name:
+        raise RuntimeError("Database name is missing in test database URL")
+    if db_name.lower() not in ALLOWED_TEST_DATABASE_NAMES:
+        raise RuntimeError(
+            f"Refusing to run integration tests against non-test database '{db_name}'. "
+            f"Allowed test databases: {', '.join(sorted(ALLOWED_TEST_DATABASE_NAMES))}."
+        )
+    return db_name.lower()
+
+
 def _normalize_postgres_url(raw_url: str) -> str:
     if raw_url.startswith("postgresql+asyncpg://"):
         return raw_url.replace("postgresql+asyncpg://", "postgresql+psycopg://", 1)
@@ -66,23 +92,92 @@ def _normalize_postgres_url(raw_url: str) -> str:
 
 
 def _postgres_test_database_url() -> str:
-    raw_url = os.getenv("TEST_DATABASE_URL") or os.getenv("DATABASE_URL")
+    raw_url = os.getenv("TEST_DATABASE_URL")
     if not raw_url:
-        raise RuntimeError("TEST_DATABASE_URL or DATABASE_URL must point to a PostgreSQL test database")
+        raise RuntimeError("TEST_DATABASE_URL must explicitly point to a PostgreSQL test database")
     database_url = _normalize_postgres_url(raw_url)
     if not database_url.startswith("postgresql+psycopg://"):
         raise RuntimeError("Integration tests require PostgreSQL; set TEST_DATABASE_URL to postgresql+psycopg://...")
+    _validate_test_database_url(database_url)
     os.environ["DATABASE_URL"] = database_url
     os.environ["TEST_DATABASE_URL"] = database_url
     return database_url
 
 
+def _create_test_database_engine(database_url: str) -> Engine:
+    return create_engine(
+        database_url,
+        future=True,
+        connect_args={
+            "connect_timeout": 5,
+            "options": "-c lock_timeout=5s -c statement_timeout=30s",
+        },
+    )
+
+
+def _assert_connected_test_database(connection: Connection, expected_name: str) -> None:
+    actual_name = str(connection.scalar(text("SELECT current_database()")) or "").lower()
+    if actual_name != expected_name or actual_name not in ALLOWED_TEST_DATABASE_NAMES:
+        raise RuntimeError(
+            f"Connected database identity mismatch: expected '{expected_name}', got '{actual_name or 'missing'}'"
+        )
+
+
+def _acquire_test_database_session_lock(database_url: str) -> None:
+    global _TEST_DATABASE_LOCK_CONNECTION, _TEST_DATABASE_LOCK_ENGINE
+    if _TEST_DATABASE_LOCK_CONNECTION is not None:
+        raise RuntimeError("PostgreSQL test database session lock is already held by this pytest process")
+    expected_name = _validate_test_database_url(database_url)
+    engine = _create_test_database_engine(database_url)
+    connection = engine.connect().execution_options(isolation_level="AUTOCOMMIT")
+    try:
+        _assert_connected_test_database(connection, expected_name)
+        acquired = connection.scalar(
+            text("SELECT pg_try_advisory_lock(:lock_key)"),
+            {"lock_key": TEST_DATABASE_ADVISORY_LOCK_KEY},
+        )
+        if not acquired:
+            raise RuntimeError("Another pytest session is already using this PostgreSQL test database")
+    except Exception:
+        connection.close()
+        engine.dispose()
+        raise
+    _TEST_DATABASE_LOCK_CONNECTION = connection
+    _TEST_DATABASE_LOCK_ENGINE = engine
+
+
+def _release_test_database_session_lock() -> None:
+    global _TEST_DATABASE_LOCK_CONNECTION, _TEST_DATABASE_LOCK_ENGINE
+    if _TEST_DATABASE_LOCK_CONNECTION is None or _TEST_DATABASE_LOCK_ENGINE is None:
+        return
+    connection = _TEST_DATABASE_LOCK_CONNECTION
+    engine = _TEST_DATABASE_LOCK_ENGINE
+    try:
+        released = connection.scalar(
+            text("SELECT pg_advisory_unlock(:lock_key)"),
+            {"lock_key": TEST_DATABASE_ADVISORY_LOCK_KEY},
+        )
+        if not released:
+            raise RuntimeError("PostgreSQL test database session lock was not held during release")
+    finally:
+        connection.close()
+        engine.dispose()
+        _TEST_DATABASE_LOCK_CONNECTION = None
+        _TEST_DATABASE_LOCK_ENGINE = None
+
+
 def _reset_test_database(database_url: str) -> None:
-    engine = create_engine(database_url, future=True, isolation_level="AUTOCOMMIT")
-    with engine.connect() as connection:
-        connection.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
-        connection.execute(text("CREATE SCHEMA IF NOT EXISTS public"))
-    engine.dispose()
+    if _TEST_DATABASE_LOCK_CONNECTION is None:
+        raise RuntimeError("PostgreSQL test database reset requires the pytest session lock")
+    expected_name = _validate_test_database_url(database_url)
+    engine = _create_test_database_engine(database_url)
+    try:
+        with engine.begin() as connection:
+            _assert_connected_test_database(connection, expected_name)
+            connection.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
+            connection.execute(text("CREATE SCHEMA IF NOT EXISTS public"))
+    finally:
+        engine.dispose()
 
 
 def _migrate_test_database() -> None:
@@ -240,14 +335,21 @@ def pytest_collection_modifyitems(session, config, items):
     if not _selected_tests_require_postgres(items):
         return
     try:
-        _reset_test_database(_postgres_test_database_url())
+        database_url = _postgres_test_database_url()
+        _acquire_test_database_session_lock(database_url)
+        _reset_test_database(database_url)
         _migrate_test_database()
     except (RuntimeError, SQLAlchemyError) as exc:
+        _release_test_database_session_lock()
         raise pytest.UsageError(
             "PostgreSQL test database is required for the selected tests, "
-            "but reset failed. Check TEST_DATABASE_URL/DATABASE_URL and database connectivity. "
+            "but reset failed. Check TEST_DATABASE_URL and database connectivity. "
             f"Root cause: {type(exc).__name__}: {exc}"
         ) from exc
+
+
+def pytest_sessionfinish(session, exitstatus):
+    _release_test_database_session_lock()
 
 
 def pytest_runtest_setup(item):

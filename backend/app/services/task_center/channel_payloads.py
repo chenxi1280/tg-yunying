@@ -32,6 +32,11 @@ class LikeMessagePayload(ViewMessagePayload):
 class PostCommentPayload(ViewMessagePayload):
     message_content: str = ""
     comment_text: str = ""
+    accepted_content_text: str = ""
+    accepted_content_hash: str = ""
+    fallback_content_text: str = ""
+    fallback_content_hash: str = ""
+    quality_contract_version: str = ""
     comment_mode: str = "comment"
     reply_to_message_id: int | None = None
     reply_target_label: str = ""
@@ -48,13 +53,33 @@ class PostCommentPayload(ViewMessagePayload):
     source_revision_id: str = ""
     quality_target_revision_id: str = ""
     grounding_assignment_id: str = ""
+    grounding_snapshot_id: str = ""
+    comment_grounding_revision: int = 0
     grounding_evidence_hash: str = ""
+    grounding_teacher_candidate_id: str = ""
+    grounding_primary_evidence_id: str = ""
+    grounding_secondary_evidence_id: str = ""
     grounding_primary_aspect_code: str = ""
     grounding_primary_aspect_text: str = ""
     grounding_teacher_name: str = ""
     grounding_speech_act: str = ""
+    grounding_enrollment_id: str = ""
+    discussion_group_binding_id: str = ""
+    discussion_group_binding_revision: int = 0
+    discussion_group_identity_hash: str = ""
+    discussion_thread_binding_id: str = ""
+    discussion_thread_revision: int = 0
+    discussion_thread_identity_hash: str = ""
+    discussion_peer_id: str = ""
+    thread_root_message_id: int = 0
+    rpc_mode: str = ""
+    actual_target_peer: str = ""
+    membership_fact_id: str = ""
+    task_config_revision: int = 0
+    task_lifecycle_epoch: int = 0
     ai_generation_id: str = ""
     ai_generation_status: str = ""
+    comment_lifecycle_state: str = "unresolved"
     ai_generation_attempt_id: str = ""
     ai_generation_request_id: str = ""
     ai_generation_claim_owner: str = ""
@@ -99,7 +124,9 @@ class PostCommentPayload(ViewMessagePayload):
     def validate_comment_state(self) -> "PostCommentPayload":
         if self.comment_fallback_intent_kind not in {"planned", "emergency"}:
             raise ValueError("comment_fallback_intent_kind_invalid")
-        pending_statuses = {"pending", "generating", "ai_result_persist_unknown"}
+        pending_statuses = {
+            "pending", "generating", "ai_result_persist_unknown", "provider_result_unknown",
+        }
         ready_content = self.comment_text.strip() or self.comment_media_segment
         if not ready_content and self.ai_generation_status not in pending_statuses:
             raise ValueError("post_comment action requires comment_text unless AI generation is pending")
@@ -110,7 +137,51 @@ class PostCommentPayload(ViewMessagePayload):
             raise ValueError("引用评论 action 缺少 reply_to_message_id")
         if reply_meta and not self.reply_to_message_id:
             raise ValueError("引用评论 action 缺少 reply_to_message_id")
+        self._validate_discussion_identity()
+        self._validate_grounding_lifecycle()
         return self
+
+    def _validate_discussion_identity(self) -> None:
+        if not self.grounding_enrollment_id:
+            return
+        required = (
+            self.discussion_group_binding_id,
+            self.discussion_group_identity_hash,
+            self.discussion_thread_binding_id,
+            self.discussion_thread_identity_hash,
+            self.discussion_peer_id,
+            self.actual_target_peer,
+            self.membership_fact_id,
+        )
+        if not all(required) or not self.thread_root_message_id:
+            raise ValueError("channel_comment_discussion_identity_incomplete")
+        if self.rpc_mode == "channel_comment_to" and self.reply_to_message_id:
+            raise ValueError("channel_comment_rpc_identity_conflict")
+        if self.rpc_mode == "discussion_reply_to" and not self.reply_to_message_id:
+            raise ValueError("channel_comment_reply_identity_missing")
+        if self.rpc_mode not in {"channel_comment_to", "discussion_reply_to"}:
+            raise ValueError("channel_comment_rpc_mode_invalid")
+
+    def _validate_grounding_lifecycle(self) -> None:
+        if not self.grounding_enrollment_id:
+            return
+        if not (
+            self.grounding_snapshot_id
+            and self.comment_grounding_revision > 0
+            and self.grounding_evidence_hash
+        ):
+            raise ValueError("channel_comment_grounding_snapshot_identity_incomplete")
+        ready_states = {"quality_accepted", "fallback_ready"}
+        waiting_states = {
+            "pending_generation", "generation_claimed", "provider_result_unknown",
+            "generation_result_persist_unknown", "quality_wait", "reply_quality_shortfall",
+        }
+        if self.ai_generation_status == "ready":
+            if self.comment_lifecycle_state not in ready_states:
+                raise ValueError("channel_comment_generation_lifecycle_invalid")
+            return
+        if self.comment_lifecycle_state not in waiting_states:
+            raise ValueError("channel_comment_generation_lifecycle_invalid")
 
 
 __all__ = ["LikeMessagePayload", "PostCommentPayload", "ViewMessagePayload"]

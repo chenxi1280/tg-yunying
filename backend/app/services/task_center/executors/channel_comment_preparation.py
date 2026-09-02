@@ -429,18 +429,12 @@ def _prepared_slot(
     excluded_account_ids: set[int] | None = None,
 ) -> PreparedCommentAction | None:
     reply_target = getattr(slot, "reply_target", None)
-    target_author_id = reply_target.get("author_account_id") if isinstance(reply_target, dict) else None
-    relation_accounts = (
-        [acc for acc in context.accounts if acc.id != target_author_id]
-        if target_author_id and len(context.accounts) > 1
-        else context.accounts
+    relation_accounts = _relation_accounts(context.accounts, reply_target)
+    available_accounts = _available_accounts(
+        relation_accounts,
+        bound_account_id=int(slot.obligation.account_id or 0),
+        excluded=excluded_account_ids or set(),
     )
-    excluded = excluded_account_ids or set()
-    bound_account_id = int(slot.obligation.account_id or 0)
-    available_accounts = [
-        acc for acc in relation_accounts
-        if acc.id not in excluded and (not bound_account_id or acc.id == bound_account_id)
-    ]
     if not available_accounts:
         stats_inc(task, "distinct_account_capacity_shortfall")
         return None
@@ -476,6 +470,30 @@ def _prepared_slot(
         payload_builder(task, context, slot, account_id=account.id),
         slot.obligation,
     )
+
+
+def _relation_accounts(accounts: list, reply_target: object) -> list:
+    target_author_id = (
+        reply_target.get("author_account_id")
+        if isinstance(reply_target, dict)
+        else None
+    )
+    if not target_author_id:
+        return accounts
+    return [account for account in accounts if account.id != target_author_id]
+
+
+def _available_accounts(
+    accounts: list,
+    *,
+    bound_account_id: int,
+    excluded: set[int],
+) -> list:
+    return [
+        account for account in accounts
+        if account.id not in excluded
+        and (not bound_account_id or account.id == bound_account_id)
+    ]
 
 
 def _comment_effective_time(

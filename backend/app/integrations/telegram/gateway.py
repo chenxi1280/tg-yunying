@@ -22,6 +22,7 @@ from .contracts import (
     CachedMediaResult,
     ChannelMembershipResult,
     ChannelCommentSnapshot,
+    ChannelDiscussionIdentitySnapshot,
     ChannelMessageDeletionObservation,
     ChannelMessageSnapshot,
     ChannelReactionCapabilitySnapshot,
@@ -516,10 +517,17 @@ def _channel_comment_remote_fact(
     *,
     content_kind: str,
     requested_reply_to: int | None,
+    rpc_mode: str = "legacy_channel_comment",
+    actual_target_peer: str = "",
+    source_message_id: int = 0,
+    thread_root_message_id: int = 0,
 ) -> dict:
     reply_header = getattr(message, "reply_to", None)
     actual_reply_to = int(getattr(reply_header, "reply_to_msg_id", 0) or 0)
+    actual_top_id = int(getattr(reply_header, "reply_to_top_id", 0) or 0)
     if requested_reply_to and actual_reply_to != requested_reply_to:
+        return {}
+    if rpc_mode != "legacy_channel_comment" and thread_root_message_id and actual_top_id != thread_root_message_id:
         return {}
     fact = {
         "fact_type": "channel_comment",
@@ -527,10 +535,92 @@ def _channel_comment_remote_fact(
         "content_kind": content_kind,
         "relation_kind": "reply" if requested_reply_to else "direct",
         "reply_to_message_id": actual_reply_to if requested_reply_to else None,
+        "rpc_mode": rpc_mode,
+        "actual_target_peer": actual_target_peer,
+        "source_message_id": source_message_id,
+        "thread_root_message_id": thread_root_message_id,
+        "actual_top_msg_id": actual_top_id,
     }
     if content_kind == "image_meme":
         fact["remote_media_kind"] = "image_meme"
     return fact
+
+
+def _channel_comment_send_kwargs(
+    rpc_mode: str,
+    source_message_id: int,
+    reply_to_message_id: int | None,
+) -> dict:
+    if rpc_mode == "channel_comment_to":
+        if reply_to_message_id:
+            raise ValueError("channel_comment_rpc_identity_conflict")
+        return {"comment_to": source_message_id}
+    if rpc_mode == "discussion_reply_to":
+        if not reply_to_message_id:
+            raise ValueError("channel_comment_reply_identity_missing")
+        return {"reply_to": reply_to_message_id}
+    result = {"comment_to": source_message_id}
+    if reply_to_message_id:
+        result["reply_to"] = reply_to_message_id
+    return result
+
+
+def _map_channel_comment_rpc_error(exc: Exception) -> SendResult:
+    error_name = type(exc).__name__
+    mapping = {
+        "UserNotParticipantError": "discussion_membership_required",
+        "ChatWriteForbiddenError": "discussion_send_forbidden",
+        "ChatRestrictedError": "discussion_send_forbidden",
+        "ChannelPrivateError": "discussion_access_rejected_for_account",
+        "ChannelInvalidError": "discussion_access_rejected_for_account",
+        "UserBannedInChannelError": "account_banned_in_discussion",
+        "MessageIdInvalidError": "source_comment_identity_reprobe_required",
+    }
+    failure = mapping.get(error_name)
+    if failure:
+        return SendResult(False, failure_type=failure, detail=error_name, remote_mutation_started=False)
+    return SendResult(
+        False,
+        failure_type="comment_remote_result_unknown",
+        detail=error_name,
+        remote_mutation_started=None,
+    )
+
+
+def _channel_comment_success_result(
+    message,
+    *,
+    content_kind: str,
+    rpc_mode: str,
+    actual_target_peer: str,
+    source_message_id: int,
+    thread_root_message_id: int,
+    requested_reply_to: int | None,
+) -> SendResult:
+    fact = _channel_comment_remote_fact(
+        message,
+        content_kind=content_kind,
+        requested_reply_to=requested_reply_to,
+        rpc_mode=rpc_mode,
+        actual_target_peer=actual_target_peer,
+        source_message_id=source_message_id,
+        thread_root_message_id=thread_root_message_id,
+    )
+    remote_id = str(getattr(message, "id", ""))
+    if rpc_mode != "legacy_channel_comment" and not fact:
+        return SendResult(
+            False,
+            remote_message_id=remote_id,
+            failure_type="comment_remote_result_unknown",
+            detail="channel_comment_remote_identity_unproven",
+            remote_mutation_started=True,
+        )
+    return SendResult(
+        True,
+        remote_message_id=remote_id,
+        remote_mutation_started=True,
+        remote_fact=fact,
+    )
 
 
 class TelethonTelegramGateway(TelegramGateway):
@@ -2373,10 +2463,13 @@ class TelethonTelegramGateway(TelegramGateway):
         self,
         session_ciphertext: str | None,
         channel_peer_id: str,
+        *,
         message_id: int,
         content: str,
         credentials: DeveloperAppCredentials,
         reply_to_message_id: int | None = None,
+        rpc_mode: str = "legacy_channel_comment",
+        thread_root_message_id: int = 0,
     ) -> SendResult:
         raw_session = decrypt_session(session_ciphertext)
         if not raw_session:
@@ -2397,56 +2490,54 @@ class TelethonTelegramGateway(TelegramGateway):
         try:
             target: int | str = int(channel_peer_id) if channel_peer_id.lstrip("-").isdigit() else channel_peer_id
             entity = await client.get_entity(target)
-            send_kwargs = {"comment_to": message_id}
-            if reply_to_message_id:
-                send_kwargs["reply_to"] = reply_to_message_id
+            send_kwargs = _channel_comment_send_kwargs(
+                rpc_mode, message_id, reply_to_message_id,
+            )
             message = await client.send_message(entity, content, **send_kwargs)
-            return SendResult(
-                True,
-                remote_message_id=str(getattr(message, "id", "")),
-                remote_mutation_started=True,
-                remote_fact=_channel_comment_remote_fact(
-                    message, content_kind="text",
-                    requested_reply_to=reply_to_message_id,
-                ),
+            return _channel_comment_success_result(
+                message,
+                content_kind="text",
+                rpc_mode=rpc_mode,
+                actual_target_peer=channel_peer_id,
+                source_message_id=message_id,
+                thread_root_message_id=thread_root_message_id,
+                requested_reply_to=reply_to_message_id,
             )
         except Exception as exc:
-            mapped = self._map_send_error(exc)
-            mapped_failure = mapped.failure_type or FailureType.UNKNOWN.value
-            return SendResult(
-                False,
-                failure_type=(
-                    mapped.failure_type or FailureType.COMMENT_UNAVAILABLE.value
-                ),
-                detail=mapped.detail or "频道消息不支持回复",
-                remote_mutation_started=(
-                    None
-                    if mapped_failure == FailureType.UNKNOWN.value
-                    else False
-                ),
-            )
+            return _map_channel_comment_rpc_error(exc)
 
     def reply_channel_message(
         self,
         account_id: int,
         channel_peer_id: str,
+        *,
         message_id: int,
         content: str,
         session_ciphertext: str | None = None,
         credentials: DeveloperAppCredentials | None = None,
-        *,
         reply_to_message_id: int | None = None,
+        rpc_mode: str = "legacy_channel_comment",
+        thread_root_message_id: int = 0,
     ) -> SendResult:
-        return self._run(self._reply_channel_message_async(session_ciphertext, channel_peer_id, message_id, content, self._usable_credentials(credentials), reply_to_message_id))
+        return self._run(self._reply_channel_message_async(
+            session_ciphertext, channel_peer_id,
+            message_id=message_id, content=content,
+            credentials=self._usable_credentials(credentials),
+            reply_to_message_id=reply_to_message_id,
+            rpc_mode=rpc_mode, thread_root_message_id=thread_root_message_id,
+        ))
 
     async def _reply_channel_media_async(
         self,
         session_ciphertext: str | None,
         channel_peer_id: str,
+        *,
         message_id: int,
         segment: OutboundSegment,
         credentials: DeveloperAppCredentials,
         reply_to_message_id: int | None = None,
+        rpc_mode: str = "legacy_channel_comment",
+        thread_root_message_id: int = 0,
     ) -> SendResult:
         raw_session = decrypt_session(session_ciphertext)
         if not raw_session:
@@ -2458,40 +2549,47 @@ class TelethonTelegramGateway(TelegramGateway):
         try:
             target: int | str = int(channel_peer_id) if channel_peer_id.lstrip("-").isdigit() else channel_peer_id
             entity = await client.get_entity(target)
+            send_kwargs = _channel_comment_send_kwargs(
+                rpc_mode, message_id, reply_to_message_id,
+            )
             message = await send_media_segment(
                 client, entity, segment,
-                reply_to_message_id=reply_to_message_id,
-                comment_to_message_id=message_id,
+                reply_to_message_id=send_kwargs.get("reply_to"),
+                comment_to_message_id=send_kwargs.get("comment_to"),
                 before_send=lambda: started.__setitem__(0, True),
             )
-            return SendResult(
-                True,
-                remote_message_id=str(getattr(message, "id", "")),
-                remote_mutation_started=True,
-                remote_fact=_channel_comment_remote_fact(
-                    message, content_kind="image_meme",
-                    requested_reply_to=reply_to_message_id,
-                ),
+            return _channel_comment_success_result(
+                message,
+                content_kind="image_meme",
+                rpc_mode=rpc_mode,
+                actual_target_peer=channel_peer_id,
+                source_message_id=message_id,
+                thread_root_message_id=thread_root_message_id,
+                requested_reply_to=reply_to_message_id,
             )
         except Exception as exc:
-            mapped = self._map_send_error(exc)
-            return SendResult(
-                False,
-                failure_type=mapped.failure_type or FailureType.COMMENT_UNAVAILABLE.value,
-                detail=mapped.detail or "频道消息不支持媒体评论",
-                remote_mutation_started=None if started[0] else False,
-            )
+            mapped = _map_channel_comment_rpc_error(exc)
+            if started[0] and mapped.remote_mutation_started is False:
+                return SendResult(
+                    False,
+                    failure_type="comment_remote_result_unknown",
+                    detail=mapped.detail,
+                    remote_mutation_started=None,
+                )
+            return mapped
 
     def reply_channel_media(
         self,
         account_id: int,
         channel_peer_id: str,
+        *,
         message_id: int,
         segment: dict,
         session_ciphertext: str | None = None,
         credentials: DeveloperAppCredentials | None = None,
-        *,
         reply_to_message_id: int | None = None,
+        rpc_mode: str = "legacy_channel_comment",
+        thread_root_message_id: int = 0,
     ) -> SendResult:
         outbound = OutboundSegment(
             segment_type=str(segment.get("segment_type") or segment.get("type") or "表情包"),
@@ -2500,8 +2598,11 @@ class TelethonTelegramGateway(TelegramGateway):
             caption=str(segment.get("caption") or ""),
         )
         return self._run(self._reply_channel_media_async(
-            session_ciphertext, channel_peer_id, message_id, outbound,
-            self._usable_credentials(credentials), reply_to_message_id,
+            session_ciphertext, channel_peer_id,
+            message_id=message_id, segment=outbound,
+            credentials=self._usable_credentials(credentials),
+            reply_to_message_id=reply_to_message_id,
+            rpc_mode=rpc_mode, thread_root_message_id=thread_root_message_id,
         ))
 
     def send_message_to_target(
@@ -3446,11 +3547,45 @@ class TelethonTelegramGateway(TelegramGateway):
         self,
         account_id: int,
         channel_peer_id: str,
+        *,
         session_ciphertext: str | None = None,
         credentials: DeveloperAppCredentials | None = None,
         limit: int = 20,
     ) -> list[ChannelMessageSnapshot]:
         return self._run(self._fetch_channel_messages_async(channel_peer_id, session_ciphertext, self._usable_credentials(credentials), limit))
+
+    async def _fetch_channel_discussion_identity_async(
+        self,
+        channel_peer_id: str,
+        *,
+        source_message_ids: list[int],
+        session_ciphertext: str | None,
+        credentials: DeveloperAppCredentials,
+    ) -> ChannelDiscussionIdentitySnapshot:
+        client = await self._authorized_client(
+            session_ciphertext, credentials,
+            error_message="channel discussion probe requires a valid session",
+        )
+        return await telethon_content.fetch_channel_discussion_identity(
+            client, channel_peer_id, source_message_ids,
+        )
+
+    def fetch_channel_discussion_identity(
+        self,
+        account_id: int,
+        channel_peer_id: str,
+        *,
+        source_message_ids: list[int],
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> ChannelDiscussionIdentitySnapshot:
+        del account_id
+        return self._run(self._fetch_channel_discussion_identity_async(
+            channel_peer_id,
+            source_message_ids=source_message_ids,
+            session_ciphertext=session_ciphertext,
+            credentials=self._usable_credentials(credentials),
+        ))
 
     async def _fetch_channel_message_deletions_async(
         self,

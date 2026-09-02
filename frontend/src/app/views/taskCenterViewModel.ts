@@ -595,10 +595,10 @@ export function typeInitialValues(type: TaskCenterTaskType, setting?: Scheduling
     return {
       message_scope: 'dynamic_new',
       message_count: 10,
-      target_views_per_message: 50,
+      target_views_per_message: null,
       listen_new_messages: true,
-      per_message_daily_view_target: 50,
-      per_message_total_view_target: 300,
+      per_message_daily_view_target: null,
+      per_message_total_view_target: 0,
       message_active_days: 3,
       task_daily_view_safety_cap: 1000000,
       max_views_per_account_per_day: 1000000,
@@ -630,7 +630,10 @@ export function typeInitialValues(type: TaskCenterTaskType, setting?: Scheduling
     max_total_comments_jitter: 0,
     max_comments_per_account_per_hour: 1000000,
     comment_mode: 'mixed',
+    reply_to_message_ids: [],
     reply_min_per_message: 1,
+    business_max_comments_per_message: 80,
+    planned_fallback_max_bps: 2000,
     language: 'zh-CN',
     comment_style: 'mixed',
     ai_two_stage_enabled: false,
@@ -640,6 +643,11 @@ export function typeInitialValues(type: TaskCenterTaskType, setting?: Scheduling
     ai_content_allowed_routes: ['general'],
     ai_content_attestation_ids: [],
     channel_comment_grounding_v1_enabled: false,
+    auto_join_discussion_enabled: false,
+    discussion_join_account_ids: [],
+    discussion_join_budget: 0,
+    discussion_join_pacing_policy_version: 'discussion_join_pacing_v1',
+    discussion_join_pacing_policy: {},
     unicode_emoji_enabled: true,
     image_meme_enabled: false,
     image_meme_material_group_id: null,
@@ -862,7 +870,7 @@ export function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: stri
   if (taskType === 'channel_like') {
     return [...baseFields, ...channelScopeFields(messageScope), 'target_likes_per_message', 'like_count_jitter', 'reaction_type', 'reaction_scope', 'allowed_reactions'];
   }
-  return [...baseFields, ...channelScopeFields(messageScope), 'target_comments_per_message', 'max_total_comments', 'max_total_comments_jitter', 'reply_min_per_message', 'rule_set_id', 'rule_set_version_id', 'comment_style', 'topic_hint', 'ai_two_stage_enabled', 'ai_semantic_reviewer_model', 'ai_content_route_v2_enabled', 'ai_content_policy_version_id', 'ai_content_allowed_routes', 'ai_content_attestation_ids', ...commentFallbackFields()];
+  return [...baseFields, ...channelScopeFields(messageScope), 'target_comments_per_message', 'business_max_comments_per_message', 'planned_fallback_max_bps', 'max_total_comments', 'max_total_comments_jitter', 'comment_mode', 'reply_to_message_ids', 'reply_min_per_message', 'rule_set_id', 'rule_set_version_id', 'comment_style', 'topic_hint', 'ai_two_stage_enabled', 'ai_semantic_reviewer_model', 'ai_content_route_v2_enabled', 'ai_content_policy_version_id', 'ai_content_allowed_routes', 'ai_content_attestation_ids', ...commentFallbackFields()];
 }
 
 export function editFieldsForSubmit(taskType: TaskCenterTaskType, accountMode: string, pacingMode: string): string[] {
@@ -937,12 +945,17 @@ export function editFieldsForSubmit(taskType: TaskCenterTaskType, accountMode: s
   if (taskType === 'channel_like') {
     return [...baseFields, 'target_likes_per_message', 'like_count_jitter', 'reaction_type', 'reaction_scope', 'allowed_reactions', 'max_likes_per_account_per_hour'];
   }
-  return [...baseFields, 'target_comments_per_message', 'max_total_comments', 'max_total_comments_jitter', 'reply_min_per_message', 'rule_set_id', 'rule_set_version_id', 'ai_model', 'comment_style', 'topic_hint', 'system_prompt_override', 'language', 'max_comment_length', 'max_comments_per_account_per_hour', 'ai_two_stage_enabled', 'ai_semantic_reviewer_model', 'ai_content_route_v2_enabled', 'ai_content_policy_version_id', 'ai_content_allowed_routes', 'ai_content_attestation_ids', ...commentFallbackFields()];
+  return [...baseFields, 'target_comments_per_message', 'business_max_comments_per_message', 'planned_fallback_max_bps', 'max_total_comments', 'max_total_comments_jitter', 'comment_mode', 'reply_to_message_ids', 'reply_min_per_message', 'rule_set_id', 'rule_set_version_id', 'ai_model', 'comment_style', 'topic_hint', 'system_prompt_override', 'language', 'max_comment_length', 'max_comments_per_account_per_hour', 'ai_two_stage_enabled', 'ai_semantic_reviewer_model', 'ai_content_route_v2_enabled', 'ai_content_policy_version_id', 'ai_content_allowed_routes', 'ai_content_attestation_ids', ...commentFallbackFields()];
 }
 
 function commentFallbackFields(): string[] {
   return [
     'channel_comment_grounding_v1_enabled',
+    'auto_join_discussion_enabled',
+    'discussion_join_account_ids',
+    'discussion_join_budget',
+    'discussion_join_pacing_policy_version',
+    'discussion_join_pacing_policy',
     'unicode_emoji_enabled',
     'image_meme_enabled',
     'image_meme_material_group_id',

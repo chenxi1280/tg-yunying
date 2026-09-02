@@ -38,9 +38,14 @@ def _specific_plan(
     available: list[str],
     quantity: int,
 ) -> list[str]:
-    if not configured or configured[0] not in available:
+    if not configured:
         return []
-    return [configured[0]] * quantity
+    target = configured[0]
+    available_map = {_normalize_emoji_key(item): item for item in available}
+    key = _normalize_emoji_key(target)
+    if key not in available_map:
+        return []
+    return [available_map[key]] * quantity
 
 
 def _normalize_reactions(reactions: list[str] | None) -> list[str]:
@@ -52,9 +57,21 @@ def _normalize_reactions(reactions: list[str] | None) -> list[str]:
     return normalized
 
 
+def _normalize_emoji_key(value: str) -> str:
+    return value.replace("\ufe0f", "").replace("\ufe0e", "").strip()
+
+
 def _intersection(configured: list[str], available: list[str]) -> list[str]:
-    available_set = set(available)
-    return [reaction for reaction in configured if reaction in available_set]
+    available_map = {_normalize_emoji_key(item): item for item in available}
+    result: list[str] = []
+    for reaction in configured:
+        key = _normalize_emoji_key(reaction)
+        if key in available_map:
+            matched = available_map[key]
+            if matched not in result:
+                result.append(matched)
+    return result
 
 
 __all__ = ["reaction_plan"]
+

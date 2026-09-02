@@ -315,18 +315,89 @@ function DailyGroupTargetPanel({ detail }: { detail: TaskCenterDetail }) {
 function ChannelCommentAcceptancePanel({ detail }: { detail: TaskCenterDetail }) {
   if (detail.task.type !== 'channel_comment') return null;
   const stats = detail.task.stats || {};
+  const discussion = detail.channel_comment_discussion || {};
+  const binding = discussion.binding || {};
+  const enrollment = discussion.enrollment || {};
+  const listener = discussion.listener || {};
   return (
-    <Descriptions bordered size="small" column={4} title="频道评论业务验收" items={[
+    <Space direction="vertical" style={{ width: '100%' }}>
+      <Descriptions bordered size="small" column={4} title="频道评论业务验收" items={[
       { key: 'overall', label: '整体验收', children: <DetailStatusBadge status={stats.acceptance_status || 'evaluating'} /> },
-      { key: 'quantity', label: '数量', children: `${stats.quantity_status || 'evaluating'} · ${stats.quantity_confirmed_count ?? 0}/${stats.quantity_target_count ?? 0}` },
-      { key: 'content', label: '内容组合', children: `${stats.content_mix_status || 'evaluating'} · 计划兜底 ${stats.planned_fallback_confirmed_count ?? 0}/${stats.planned_fallback_target_count ?? 0}` },
+      { key: 'quantity', label: '数量', children: `${stats.quantity_status || 'evaluating'} · 已确认 ${stats.quantity_confirmed_count ?? 0}/${stats.quantity_target_count ?? 0} · 原始需求 ${stats.quantity_uncapped_target_count ?? 0}` },
+      { key: 'business-cap', label: '单帖业务上限', children: `${stats.business_cap_state || 'unproven'} · 上限 ${stats.business_max_comments_per_message ?? '-'}` },
+      { key: 'content', label: '内容组合', children: `${stats.content_mix_status || 'evaluating'} · 计划兜底 ${stats.planned_fallback_confirmed_count ?? 0}/${stats.planned_fallback_target_count ?? 0} · 上限 ${stats.planned_fallback_limit_count ?? 0} (${stats.fallback_business_state || 'unproven'})` },
       { key: 'grounding', label: '原文依据', children: `${stats.grounding_quality_status || 'evaluating'} · ${stats.grounded_remote_confirmed_count ?? 0}/${stats.grounding_required_count ?? 0} · 目标 r${stats.quality_target_current_revision ?? '-'}` },
       { key: 'semantic-capacity', label: '语义容量', children: `${stats.semantic_capacity_state || 'unproven'} · 原始目标 ${stats.unadjusted_grounding_target_count ?? 0} · 可生成 ${stats.groundable_capacity_count ?? 0}` },
       { key: 'quality-owner', label: '质量槽位', children: `适用 ${stats.applicable_grounding_ordinal_count ?? 0} · 未分配 ${stats.quality_target_unassigned_ordinal_count ?? 0} · 短缺 ${stats.quality_target_shortfall_ordinal_count ?? 0} · 不适用 ${stats.quality_target_not_applicable_ordinal_count ?? 0}` },
       { key: 'emergency', label: '超计划兜底', children: stats.unplanned_fallback_confirmed_count ?? 0 },
       { key: 'teacher', label: '老师绑定覆盖', children: `${stats.teacher_remote_covered_count ?? 0}/${stats.teacher_required_count ?? 0}` },
       { key: 'aspect', label: '主亮点覆盖', children: `${stats.primary_aspect_remote_covered_count ?? 0}/${stats.primary_aspect_required_count ?? 0}` },
-    ]} />
+      { key: 'business-effect', label: '真实业务效果', children: stats.business_effect_status || 'unproven' },
+      ]} />
+      <Descriptions bordered size="small" column={4} title="讨论组准入与监听" items={[
+        { key: 'selection', label: '账号范围', children: discussion.selection_mode === 'all' ? '全部账号' : `${discussion.selection_mode || '-'} · ${discussion.configured_account_ids?.length ?? 0} 个显式账号` },
+        { key: 'raw', label: '租户原始在线', children: discussion.raw_online_count ?? 0 },
+        { key: 'base', label: '基础运营候选', children: discussion.base_operational_candidate_count ?? 0 },
+        { key: 'membership', label: '讨论组成员事实', children: `ready ${discussion.discussion_membership_ready_count ?? 0} / 待准入 ${discussion.discussion_admission_required_count ?? 0} / 禁止 ${discussion.discussion_forbidden_count ?? 0} / unknown ${discussion.discussion_membership_unknown_count ?? 0}` },
+        { key: 'eligible', label: '评论合同 eligible', children: discussion.comment_contract_eligible_count ?? 0 },
+        { key: 'effective', label: '当前可执行评论', children: discussion.effective_comment_ready_count ?? 0 },
+        { key: 'binding', label: '讨论组 Binding', children: `${binding.status || 'unproven'} · r${binding.revision ?? '-'} · ${binding.fresh ? 'fresh' : 'stale/unproven'}` },
+        { key: 'enrollment', label: 'Grounding Enrollment', children: `${enrollment.state || 'not_enrolled'} · r${enrollment.revision ?? '-'} · ${enrollment.contract_version || '-'}` },
+        { key: 'snapshot', label: 'Listener 快照', children: listener.snapshot_state || 'pending' },
+        { key: 'collected', label: '最后成功采集', children: formatDateTime(listener.last_collected_at) },
+        { key: 'published', label: '最后来源发布时间', children: formatDateTime(listener.last_message_published_at) },
+        { key: 'listener-error', label: 'Listener 错误', children: listener.error_code || '无' },
+      ]} />
+    </Space>
+  );
+}
+
+function ChannelCommentGroundingPanel({ detail }: { detail: TaskCenterDetail }) {
+  if (detail.task.type !== 'channel_comment') return null;
+  const grounding = detail.channel_comment_grounding || {};
+  const messages = grounding.messages || [];
+  const slots = grounding.slots || [];
+  if (!messages.length && !slots.length) return null;
+  return (
+    <Space direction="vertical" style={{ width: '100%' }}>
+      <Table
+        rowKey="snapshot_id"
+        size="small"
+        pagination={false}
+        dataSource={messages}
+        columns={[
+          { title: '源消息', dataIndex: 'source_message_id' },
+          { title: '内容修订', dataIndex: 'comment_grounding_revision', render: (value) => `r${value}` },
+          { title: '路由', dataIndex: 'content_route' },
+          { title: '来源状态', dataIndex: 'source_state' },
+          { title: '发布时间', dataIndex: 'source_published_at', render: (value) => formatDateTime(value) },
+          { title: '来源 Hash', dataIndex: 'source_content_hash', render: (value) => value ? `${value.slice(0, 10)}…` : '-' },
+          { title: '老师状态', dataIndex: 'teacher_state' },
+          { title: '老师候选', render: (_, row) => row.teacher_candidates.map((item) => item.display_name).join('、') || '无' },
+          { title: '证据/容量', render: (_, row) => `${row.aspect_evidence.length} / ${row.groundable_capacity_count}` },
+        ]}
+      />
+      <Table
+        rowKey="obligation_id"
+        size="small"
+        pagination={{ pageSize: 10 }}
+        dataSource={slots}
+        columns={[
+          { title: '槽位', dataIndex: 'target_ordinal' },
+          { title: '生命周期', dataIndex: 'lifecycle_state' },
+          { title: '关系', dataIndex: 'relation_kind' },
+          { title: '老师', dataIndex: 'teacher_name', render: (value) => value || '不点名' },
+          { title: '主亮点', dataIndex: 'primary_aspect', render: (value) => value || '计划兜底' },
+          { title: 'Assignment', render: (_, row) => row.assignment_version ? `v${row.assignment_version} · ${row.assignment_state}` : '-' },
+          { title: 'Speech act', dataIndex: 'speech_act', render: (value) => value || '-' },
+          { title: '字数层', dataIndex: 'length_tier', render: (value) => value || '-' },
+          { title: '人设', dataIndex: 'persona_key', render: (value) => value || '-' },
+          { title: '评审', render: (_, row) => row.evaluation?.final_result || '未评审' },
+          { title: '正文 Hash', render: (_, row) => row.outbound_content_hash || row.accepted_content_hash || row.fallback_content_hash || '-' },
+          { title: 'Telegram', render: (_, row) => row.remote_comment_id || '未确认' },
+        ]}
+      />
+    </Space>
   );
 }
 
@@ -1252,6 +1323,7 @@ export function TaskCenterDetailModal({
             )}
             <DailyGroupTargetPanel detail={detail} />
             <ChannelCommentAcceptancePanel detail={detail} />
+            <ChannelCommentGroundingPanel detail={detail} />
             <Tabs className="tabs-row" items={detailTabs} />
           </Space>
         )}

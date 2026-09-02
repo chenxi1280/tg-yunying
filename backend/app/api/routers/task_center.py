@@ -19,6 +19,9 @@ from app.schemas import (
     ChannelCapacityCheckOut,
     ChannelCapacityCheckRequest,
     ChannelCommentTaskConfigUpdate,
+    ChannelCommentGroundingEnrollmentCloseRequest,
+    ChannelCommentGroundingEnrollmentOut,
+    ChannelCommentGroundingEnrollmentRequest,
     ChannelCommentTaskCreate,
     ChannelCommentTaskPreviewRequest,
     ChannelLikeTaskConfigUpdate,
@@ -409,6 +412,62 @@ def patch_channel_comment_config(task_id: str, payload: ChannelCommentTaskConfig
         return update_channel_comment_config(session, current_user.tenant_id or 1, task_id, payload, current_user.name)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post(
+    "/api/tasks/{task_id}/channel-comment-grounding-enrollment",
+    response_model=ChannelCommentGroundingEnrollmentOut,
+)
+def activate_channel_comment_grounding(
+    task_id: str,
+    payload: ChannelCommentGroundingEnrollmentRequest,
+    *,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    from app.services.task_center.channel_comment_discussion_contracts import EnrollmentRequest
+    from app.services.task_center.channel_comment_grounding_enrollment import activate_grounding_enrollment
+
+    try:
+        enrollment = activate_grounding_enrollment(session, EnrollmentRequest(
+            tenant_id=current_user.tenant_id or 1, task_id=task_id,
+            operator_id=current_user.name, **payload.model_dump(),
+        ))
+        session.commit()
+        session.refresh(enrollment)
+        return enrollment
+    except ValueError as exc:
+        session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post(
+    "/api/tasks/{task_id}/channel-comment-grounding-enrollment/close",
+    response_model=ChannelCommentGroundingEnrollmentOut,
+)
+def close_channel_comment_grounding(
+    task_id: str,
+    payload: ChannelCommentGroundingEnrollmentCloseRequest,
+    *,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    from app.services.task_center.channel_comment_grounding_enrollment import (
+        EnrollmentCloseRequest,
+        close_grounding_enrollment,
+    )
+
+    try:
+        enrollment = close_grounding_enrollment(session, EnrollmentCloseRequest(
+            tenant_id=current_user.tenant_id or 1, task_id=task_id,
+            operator_id=current_user.name, **payload.model_dump(),
+        ))
+        session.commit()
+        session.refresh(enrollment)
+        return enrollment
+    except ValueError as exc:
+        session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.patch("/api/tasks/{task_id}/search-join-group", response_model=TaskOut)

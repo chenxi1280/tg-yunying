@@ -46,12 +46,22 @@ def realizer_factory(outputs):
 
 def reviewer_factory(decision: str = "pass", *, code: str = ""):
     def reviewer(session, tenant_id, config, *, system_prompt, user_prompt):
-        return {
+        payload = {
             "decision": decision,
             "confidence": 0.95,
             "codes": [code] if code else [],
             "evidence": [{"criterion": "context", "observed": "anchor checked"}],
             "prompt_version": "semantic_reviewer_v1",
-        }, 3
+        }
+        assignment = dict(config.get("_comment_grounding_assignment") or {})
+        if assignment:
+            payload.update({
+                "primary_aspect_result": "pass",
+                "reply_relation_result": (
+                    "pass" if assignment.get("relation_kind") == "reply"
+                    else "not_applicable"
+                ),
+            })
+        return payload, 3
 
     return reviewer

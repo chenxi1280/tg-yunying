@@ -95,34 +95,7 @@ def _candidate_rows(
     shard_total: int = 1,
     shard_index: int = 0,
 ) -> list[tuple[str, str, int]]:
-    ranked = (
-        select(
-            Action.id.label("action_id"),
-            Action.task_id.label("task_id"),
-            Action.action_version.label("action_version"),
-            Action.scheduled_at.label("scheduled_at"),
-            func.row_number().over(
-                partition_by=Action.task_id,
-                order_by=_candidate_order(),
-            ).label("task_rank"),
-        )
-        .join(Task, Task.id == Action.task_id)
-        .where(
-            Action.status == "pending",
-            or_(Action.scheduled_at <= now, _deadline_exhausted_action()),
-            _has_claimable_account_reservation(),
-            Task.status == "running",
-            Task.deleted_at.is_(None),
-            Task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION,
-            Action.task_lifecycle_epoch == Task.task_lifecycle_epoch,
-            or_(
-                Action.task_type != "group_ai_chat",
-                Action.action_type != "send_message",
-                func.coalesce(Action.payload["message_text"].as_string(), "") != "",
-                func.coalesce(Action.payload["ai_generation_status"].as_string(), "") == "",
-            ),
-        )
-    )
+    ranked = _ranked_candidate_query(now)
     if exclude_task_ids:
         ranked = ranked.where(Action.task_id.not_in(exclude_task_ids))
     ranked = _filter_execution_lane(ranked, execution_lane)
@@ -134,6 +107,53 @@ def _candidate_rows(
         .limit(max(1, limit))
     )
     return list(session.execute(statement))
+
+
+def _ranked_candidate_query(now: datetime):
+    rank = func.row_number().over(
+        partition_by=Action.task_id, order_by=_candidate_order(),
+    ).label("task_rank")
+    return (
+        select(
+            Action.id.label("action_id"),
+            Action.task_id.label("task_id"),
+            Action.action_version.label("action_version"),
+            Action.scheduled_at.label("scheduled_at"),
+            rank,
+        )
+        .join(Task, Task.id == Action.task_id)
+        .where(
+            Action.status == "pending",
+            or_(Action.scheduled_at <= now, _deadline_exhausted_action()),
+            _has_claimable_account_reservation(),
+            Task.status == "running",
+            Task.deleted_at.is_(None),
+            Task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION,
+            Action.task_lifecycle_epoch == Task.task_lifecycle_epoch,
+            _group_generation_ready(),
+            _comment_generation_ready(),
+        )
+    )
+
+
+def _group_generation_ready():
+    return or_(
+        Action.task_type != "group_ai_chat",
+        Action.action_type != "send_message",
+        func.coalesce(Action.payload["message_text"].as_string(), "") != "",
+        func.coalesce(Action.payload["ai_generation_status"].as_string(), "") == "",
+    )
+
+
+def _comment_generation_ready():
+    status = func.coalesce(
+        Action.payload["ai_generation_status"].as_string(), "",
+    )
+    return or_(
+        Action.task_type != "channel_comment",
+        Action.action_type != "post_comment",
+        status.in_(("", "ready")),
+    )
 
 
 def _deadline_exhausted_action():
@@ -213,7 +233,10 @@ def _claim_rows(
         if not pacing.allowed:
             if pacing.reason_code == "pacing_claim_deadline_exceeded":
                 cancelled_state_ids.update(_mark_claim_deadline_missed(
-                    session, action, now, pacing.effective_claim_at,
+                    session,
+                    action,
+                    now=now,
+                    effective_at=pacing.effective_claim_at,
                 ))
             session.flush()
             continue
@@ -257,6 +280,7 @@ def _lock_candidate_action(
 def _mark_claim_deadline_missed(
     session: Session,
     action: Action,
+    *,
     now: datetime,
     effective_at: datetime | None,
 ) -> set[str]:

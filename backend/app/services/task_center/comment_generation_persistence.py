@@ -4,18 +4,25 @@ import hashlib
 import json
 from datetime import timedelta
 
-from sqlalchemy import select, update
-from sqlalchemy.orm import Session, attributes
+from sqlalchemy.orm import Session
 
 from app.models import Action, GenerationJob, Task
 from app.services._common import _now
 
-from .ai_generation_state import GenerationAttemptStale, mark_attempt_outcome
+from .ai_generation_state import mark_attempt_outcome
 from .ai_generator import AiGenerationUnavailable
 from .comment_generation_job import (
     finish_comment_generation_job,
 )
-from .comment_generation_pipeline import CommentGenerationRequest, GeneratedCommentResult
+from .comment_generation_action_store import (
+    cas_write_action as _cas_write_action,
+    load_attempt_action,
+)
+from .comment_generation_pipeline import (
+    REPLY_QUALITY_SHORTFALL,
+    CommentGenerationRequest,
+    GeneratedCommentResult,
+)
 from .comment_generation_result import (
     evaluate_legacy_generated_comment,
     generated_comment_decision,
@@ -23,6 +30,10 @@ from .comment_generation_result import (
 from .runtime_resources import _release_runtime_resources
 from .generation_wait import GenerationWaitSpec, defer_generation_wait
 from .two_stage_generation import QUALITY_WAIT
+
+
+COMMENT_QUALITY_CONTRACT_VERSION = "channel_comment_grounding_quality_v1"
+COMMENT_QUALITY_WAIT_CODES = frozenset({QUALITY_WAIT, REPLY_QUALITY_SHORTFALL})
 
 
 def fail_generation_context(
@@ -118,11 +129,12 @@ def persist_comment_generation_result(
     )
     decision = generated_comment_decision(result)
     if not decision.allowed:
-        if decision.code == QUALITY_WAIT:
+        if decision.code in COMMENT_QUALITY_WAIT_CODES:
             _defer_comment_quality_wait(
                 session,
                 request,
                 action,
+                code=decision.code,
                 detail=decision.detail,
                 evidence=decision.audit or {},
             )
@@ -155,35 +167,25 @@ def _apply_generation_ready(
     data = dict(action.payload or {})
     is_emoji_fallback = result.fallback_kind in {"emoji_text", "unicode_emoji"}
     is_image_fallback = result.fallback_kind == "image_meme"
-    content_source = (
-        "comment_image_meme_fallback"
-        if is_image_fallback
-        else "comment_unicode_emoji_fallback"
-        if result.fallback_kind == "unicode_emoji"
-        else "comment_emoji_fallback"
-        if is_emoji_fallback
-        else "normal"
+    content_source = _ready_content_source(result)
+    candidate_hash = hashlib.sha256(result.content.encode("utf-8")).hexdigest()
+    accepted_fields = _accepted_content_fields(
+        result,
+        candidate_hash=candidate_hash,
+        is_text_fallback=is_emoji_fallback,
     )
-    data.update({
-        "comment_text": result.content,
-        "comment_media_segment": result.media_segment or {},
-        "comment_fallback_selection": result.selection_metadata or {},
-        "ai_generation_status": "ready",
-        "ai_generation_tokens": max(0, int(result.tokens or 0)),
-        "comment_generation_attempts": list(result.attempts),
-        "comment_fallback_kind": result.fallback_kind,
-        "content_source": content_source,
-        "quality_fallback": content_source if (is_emoji_fallback or is_image_fallback) else "",
-        "fallback_reason": result.fallback_reason,
-        "planned_normal_text_emoji": "no" if is_emoji_fallback else "unresolved",
-        "ai_generation_result_cache": {},
-    })
+    data.update(_ready_payload_fields(
+        result,
+        content_source=content_source,
+        fallback=is_emoji_fallback or is_image_fallback,
+        text_fallback=is_emoji_fallback,
+    ))
+    data.update(accepted_fields)
     mark_attempt_outcome(data, request.attempt_id, "ready", timestamp=_now())
     action.payload = data
-    candidate_identity = result.content or json.dumps(
-        result.media_segment or {}, sort_keys=True, separators=(",", ":"),
+    _set_ready_candidate_hash(
+        action, result, candidate_hash=candidate_hash, image=is_image_fallback,
     )
-    action.candidate_hash = hashlib.sha256(candidate_identity.encode("utf-8")).hexdigest()
     evaluator_evidence = dict(
         (result.quality_audit or {}).get("two_stage_evaluator_evidence") or {},
     )
@@ -195,6 +197,91 @@ def _apply_generation_ready(
         "comment_quality_audit": result.quality_audit or {},
         "comment_fallback_selection": result.selection_metadata or {},
         "evaluator_evidence": evaluator_evidence,
+    }
+
+
+def _ready_payload_fields(
+    result: GeneratedCommentResult,
+    *,
+    content_source: str,
+    fallback: bool,
+    text_fallback: bool,
+) -> dict:
+    return {
+        "comment_text": result.content,
+        "comment_media_segment": result.media_segment or {},
+        "comment_fallback_selection": result.selection_metadata or {},
+        "ai_generation_status": "ready",
+        "comment_lifecycle_state": "fallback_ready" if fallback else "quality_accepted",
+        "ai_generation_tokens": max(0, int(result.tokens or 0)),
+        "comment_generation_attempts": list(result.attempts),
+        "comment_fallback_kind": result.fallback_kind,
+        "content_source": content_source,
+        "quality_fallback": content_source if fallback else "",
+        "fallback_reason": result.fallback_reason,
+        "planned_normal_text_emoji": "no" if text_fallback else "unresolved",
+        "ai_generation_result_cache": {},
+    }
+
+
+def _ready_content_source(result: GeneratedCommentResult) -> str:
+    if result.fallback_kind == "image_meme":
+        return "comment_image_meme_fallback"
+    if result.fallback_kind == "unicode_emoji":
+        return "comment_unicode_emoji_fallback"
+    if result.fallback_kind == "emoji_text":
+        return "comment_emoji_fallback"
+    return "normal"
+
+
+def _set_ready_candidate_hash(
+    action: Action,
+    result: GeneratedCommentResult,
+    *,
+    candidate_hash: str,
+    image: bool,
+) -> None:
+    if image:
+        candidate_identity = json.dumps(
+            result.media_segment or {}, sort_keys=True, separators=(",", ":"),
+        )
+        action.candidate_hash = hashlib.sha256(candidate_identity.encode("utf-8")).hexdigest()
+        return
+    action.candidate_hash = candidate_hash
+
+
+def _accepted_content_fields(
+    result: GeneratedCommentResult,
+    *,
+    candidate_hash: str,
+    is_text_fallback: bool,
+) -> dict[str, str]:
+    quality_version = str(
+        (result.quality_audit or {}).get("quality_contract_version")
+        or COMMENT_QUALITY_CONTRACT_VERSION
+    )
+    if is_text_fallback:
+        return {
+            "accepted_content_text": "",
+            "accepted_content_hash": "",
+            "fallback_content_text": result.content,
+            "fallback_content_hash": candidate_hash,
+            "quality_contract_version": quality_version,
+        }
+    if result.fallback_kind == "image_meme":
+        return {
+            "accepted_content_text": "",
+            "accepted_content_hash": "",
+            "fallback_content_text": "",
+            "fallback_content_hash": "",
+            "quality_contract_version": quality_version,
+        }
+    return {
+        "accepted_content_text": result.content,
+        "accepted_content_hash": candidate_hash,
+        "fallback_content_text": "",
+        "fallback_content_hash": "",
+        "quality_contract_version": quality_version,
     }
 
 
@@ -214,11 +301,12 @@ def persist_generation_failure(
     data = dict(action.payload or {})
     data["ai_generation_tokens"] = max(0, int(tokens or 0))
     action.payload = data
-    if code == QUALITY_WAIT:
+    if code in COMMENT_QUALITY_WAIT_CODES:
         _defer_comment_quality_wait(
             session,
             request,
             action,
+            code=code,
             detail=detail,
             evidence=evidence,
         )
@@ -240,6 +328,7 @@ def _defer_comment_quality_wait(
     request: CommentGenerationRequest,
     action: Action,
     *,
+    code: str,
     detail: str,
     evidence: dict,
 ) -> None:
@@ -254,8 +343,8 @@ def _defer_comment_quality_wait(
         action,
         job,
         GenerationWaitSpec(
-            stage=QUALITY_WAIT,
-            error_code=QUALITY_WAIT,
+            stage=code,
+            error_code=code,
             error_detail=detail,
             shortfall_kind="quality",
             evaluator_evidence=evidence,
@@ -277,6 +366,7 @@ def persist_generation_unknown(
     data = dict(action.payload or {})
     data.update({
         "ai_generation_status": "ai_result_persist_unknown",
+        "comment_lifecycle_state": "generation_result_persist_unknown",
         "ai_generation_result_cache": {
             "content": generated.content,
             "tokens": max(0, int(generated.tokens or 0)),
@@ -312,6 +402,38 @@ def persist_generation_unknown(
     _release_runtime_resources(action)
 
 
+def persist_provider_result_unknown(
+    session: Session,
+    request: CommentGenerationRequest,
+    *,
+    detail: str,
+) -> None:
+    action = load_attempt_action(session, request)
+    finish_comment_generation_job(
+        session, action, request.payload, state="unknown", owner=request.claim_owner,
+    )
+    data = dict(action.payload or {})
+    data.update({
+        "ai_generation_status": "provider_result_unknown",
+        "comment_lifecycle_state": "provider_result_unknown",
+    })
+    mark_attempt_outcome(
+        data, request.attempt_id, "provider_result_unknown", timestamp=_now(),
+    )
+    action.payload = data
+    action.result = {
+        **(action.result or {}),
+        "success": False,
+        "error_code": "provider_result_unknown",
+        "error_message": detail or "Provider 返回状态未知",
+        "validation_stage": "ai_generation_provider",
+        "generation_stage": "provider_result_unknown",
+        "generation_outcome": "provider_result_unknown",
+    }
+    _cas_write_action(session, request, action)
+    session.commit()
+
+
 def _fail_before_generation(
     action: Action,
     code: str,
@@ -321,6 +443,7 @@ def _fail_before_generation(
 ) -> None:
     data = dict(action.payload or {})
     data["ai_generation_status"] = code
+    data["comment_lifecycle_state"] = "pre_gateway_failed"
     attempt_id = str(data.get("ai_generation_attempt_id") or "")
     if attempt_id:
         mark_attempt_outcome(data, attempt_id, code, timestamp=_now())
@@ -340,62 +463,6 @@ def _fail_before_generation(
         "validation_stage": "ai_reply_target" if code.startswith("reply_target") else stage,
         "generation_stage": stage,
         "generation_outcome": code,
-    }
-
-
-def load_attempt_action(
-    session: Session,
-    request: CommentGenerationRequest,
-) -> Action:
-    action = session.scalar(select(Action).where(
-        Action.id == request.action_id,
-        Action.tenant_id == request.tenant_id,
-        Action.task_id == request.task_id,
-        Action.status == "executing",
-        Action.payload["ai_generation_claim_owner"].as_string() == request.claim_owner,
-        Action.payload["ai_generation_claim_token"].as_string() == request.claim_token,
-        Action.payload["ai_generation_attempt_id"].as_string() == request.attempt_id,
-    ))
-    if not action:
-        raise GenerationAttemptStale("ai_generation_attempt_stale")
-    return action
-
-
-def _cas_write_action(
-    session: Session,
-    request: CommentGenerationRequest,
-    action: Action,
-) -> None:
-    values = _action_values(action)
-    statement = update(Action).where(
-        Action.id == request.action_id,
-        Action.tenant_id == request.tenant_id,
-        Action.task_id == request.task_id,
-        Action.status == "executing",
-        Action.payload["ai_generation_claim_owner"].as_string() == request.claim_owner,
-        Action.payload["ai_generation_claim_token"].as_string() == request.claim_token,
-        Action.payload["ai_generation_attempt_id"].as_string() == request.attempt_id,
-    ).values(**values).execution_options(synchronize_session=False)
-    with session.no_autoflush:
-        result = session.execute(statement)
-    if result.rowcount != 1:
-        raise GenerationAttemptStale("ai_generation_attempt_stale")
-    for field, value in values.items():
-        attributes.set_committed_value(action, field, value)
-
-
-def _action_values(action: Action) -> dict:
-    return {
-        "payload": action.payload,
-        "result": action.result,
-        "status": action.status,
-        "scheduled_at": action.scheduled_at,
-        "executed_at": action.executed_at,
-        "claim_owner": action.claim_owner,
-        "claim_token": action.claim_token,
-        "claim_expires_at": action.claim_expires_at,
-        "lease_owner": action.lease_owner,
-        "lease_expires_at": action.lease_expires_at,
     }
 
 

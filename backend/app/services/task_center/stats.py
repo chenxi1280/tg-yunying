@@ -31,7 +31,11 @@ from .targets import group_from_reference
 
 ARCHIVED_SKIP_ERROR_CODES = {"context_expired"}
 COMMENT_CONTEXT_BOUND_NEXT_RUN_STAT = "comment_context_bound_next_run_at"
-BUSINESS_MEMBERSHIP_ACTION_TYPES = ["ensure_channel_membership", "ensure_target_membership"]
+BUSINESS_MEMBERSHIP_ACTION_TYPES = [
+    "ensure_channel_membership",
+    "ensure_target_membership",
+    "ensure_discussion_membership",
+]
 PLANNER_BACKLOG_STAT_KEYS = (
     "planner_backlog_blocked",
     "planner_backlog_blocked_at",
