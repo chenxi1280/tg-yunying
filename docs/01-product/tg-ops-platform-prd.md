@@ -1,6 +1,6 @@
 # TG 运营管理平台 PRD
 
-> **2026-08-30 Antigravity CLI AI Provider 冻结合同：** 本轮生产切片先启用独立 `slot-01`，生成类路由中 `gemini-3.5-flash-medium` 为第一优先级、`gemini-3.1-pro-low` 为第二优先级，之后才是既有供应商；语义审查保持独立既有供应商。五账号整体只有每个 Linux user 分别 OAuth、schema POC、健康读回并通过 guarded route apply 后才可称五 slot 完成，禁止复制 OAuth 或用一个 root HOME 冒充五账号。详见 `docs/03-feature-designs/antigravity-cli-server-provider-design.md`。
+> **2026-09-03 Antigravity CLI AI Provider 冻结合同：** 生产 authenticated `agy models` 已移除 `gemini-3.5-flash-medium`，且发布探针以 zero-turn/zero-usage 的 `antigravity_model_invalid` 失败；本轮生产切片因此将第一优先级收敛为已有跨场景 POC 的 `gemini-3.6-flash-medium`，第二优先级仍为 `gemini-3.1-pro-low`，之后才是既有供应商。`gemini-3.7-flash-medium` 的评论样本未通过事实/地点硬门，`gemini-3.8-*` 尚无项目 POC，均不得代替当前主模型。语义审查保持独立既有供应商；五账号整体只有每个 Linux user 分别 OAuth、schema POC、健康读回并通过 guarded route apply 后才可称五 slot 完成，禁止复制 OAuth 或用一个 root HOME 冒充五账号。详见 `docs/03-feature-designs/antigravity-cli-server-provider-design.md`。
 
 > **2026-08-30 Telegram 1:1 群组镜像克隆（group_clone / v2_group_clone）专项合同（当前最高优先级）：**
 > 1. 新增独立任务类型 `group_clone`，履约合同版本为 `v2_group_clone`；存量 `group_relay` 保持 `legacy_v1` 不变；

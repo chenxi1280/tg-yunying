@@ -13,7 +13,7 @@ from app.ai_gateway import AiProviderCredentials, AiUsage
 
 
 ANTIGRAVITY_PROVIDER_TYPE = "antigravity_cli"
-ANTIGRAVITY_PRIMARY_MODEL = "gemini-3.5-flash-medium"
+ANTIGRAVITY_PRIMARY_MODEL = "gemini-3.6-flash-medium"
 ANTIGRAVITY_SECONDARY_MODEL = "gemini-3.1-pro-low"
 ANTIGRAVITY_MODELS = frozenset(
     {ANTIGRAVITY_PRIMARY_MODEL, ANTIGRAVITY_SECONDARY_MODEL}

@@ -8,7 +8,7 @@ import urllib.request
 import uuid
 
 
-MODELS = ("gemini-3.5-flash-medium", "gemini-3.1-pro-low")
+MODELS = ("gemini-3.6-flash-medium", "gemini-3.1-pro-low")
 STARTUP_ATTEMPTS = 10
 STARTUP_INTERVAL_SECONDS = 1
 CALL_TIMEOUT_SECONDS = 180

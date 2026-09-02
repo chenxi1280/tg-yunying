@@ -35,7 +35,7 @@ from scripts.antigravity_provider_server import AntigravityRuntime, BridgeConfig
 pytestmark = pytest.mark.no_postgres
 
 
-def credentials(model: str = "gemini-3.5-flash-medium") -> AiProviderCredentials:
+def credentials(model: str = "gemini-3.6-flash-medium") -> AiProviderCredentials:
     return AiProviderCredentials(
         provider_name="slot-01",
         provider_type="antigravity_cli",
@@ -97,7 +97,7 @@ def test_client_check_requires_both_models_and_ready_health(monkeypatch):
                 "quota_limited": False, "schema_probe_age_seconds": 0,
                 "probe_max_age_seconds": 300,
                 "model_visibility": {
-                    "gemini-3.5-flash-medium": True,
+                    "gemini-3.6-flash-medium": True,
                     "gemini-3.1-pro-low": True,
                 },
             })
@@ -258,7 +258,7 @@ def test_structured_request_id_is_stable_per_prompt_and_distinct_between_calls()
             "_ai_provider_invocation_key": "realizer:slot-1:attempt:1",
         },
         temperature=0.7, max_tokens=128, count=1,
-        purpose="group_realize_general", model_name="gemini-3.5-flash-medium",
+        purpose="group_realize_general", model_name="gemini-3.6-flash-medium",
         stage="primary", required_model_family="antigravity",
     )
     first = StructuredProviderRequest(system_prompt="s", user_prompt="prompt-a", **base)
@@ -275,11 +275,11 @@ def test_structured_request_id_is_stable_per_prompt_and_distinct_between_calls()
     )
     assert first.request_id() == retry.request_id()
     assert first.request_id() != second.request_id()
-    primary = _candidate_request_id(first, 11, 1, "gemini-3.5-flash-medium")
+    primary = _candidate_request_id(first, 11, 1, "gemini-3.6-flash-medium")
     secondary = _candidate_request_id(first, 12, 2, "gemini-3.1-pro-low")
     assert primary != secondary
-    assert _candidate_request_id(retry, 11, 1, "gemini-3.5-flash-medium") == primary
-    assert _candidate_request_id(first, 13, 2, "gemini-3.5-flash-medium") != primary
+    assert _candidate_request_id(retry, 11, 1, "gemini-3.6-flash-medium") == primary
+    assert _candidate_request_id(first, 13, 2, "gemini-3.6-flash-medium") != primary
 
 
 def test_draft_request_id_uses_durable_slots_not_prompt_text():
@@ -473,7 +473,7 @@ def test_client_maps_proven_pre_call_errors_to_route_retryable(monkeypatch, code
 
 def test_structured_quota_failure_marks_provider_and_continues_route():
     provider = AiProvider(
-        id=1, provider_name="slot", model_name="gemini-3.5-flash-medium",
+        id=1, provider_name="slot", model_name="gemini-3.6-flash-medium",
         base_url="http://host.docker.internal:18101",
         api_key_ciphertext="cipher", health_status="健康",
     )
@@ -485,7 +485,7 @@ def test_structured_quota_failure_marks_provider_and_continues_route():
             "_ai_provider_invocation_key": "realizer:slot:attempt:1",
         },
         temperature=0.7, max_tokens=128, count=1,
-        purpose="group_realize_general", model_name="gemini-3.5-flash-medium",
+        purpose="group_realize_general", model_name="gemini-3.6-flash-medium",
         stage="primary", required_model_family="antigravity",
     )
     outcome = structured_failure_outcome(
@@ -500,7 +500,7 @@ def test_structured_quota_failure_marks_provider_and_continues_route():
 
 def test_started_unknown_quota_never_continues_route():
     provider = AiProvider(
-        id=1, provider_name="slot", model_name="gemini-3.5-flash-medium",
+        id=1, provider_name="slot", model_name="gemini-3.6-flash-medium",
         base_url="http://host.docker.internal:18101",
         api_key_ciphertext="cipher", health_status="健康",
     )
@@ -512,7 +512,7 @@ def test_started_unknown_quota_never_continues_route():
             "_ai_provider_invocation_key": "realizer:slot:attempt:1",
         },
         temperature=0.7, max_tokens=128, count=1,
-        purpose="group_realize_general", model_name="gemini-3.5-flash-medium",
+        purpose="group_realize_general", model_name="gemini-3.6-flash-medium",
         stage="primary", required_model_family="antigravity",
     )
     error = AntigravityProviderResultUnknown("antigravity_quota_limited")
@@ -545,7 +545,7 @@ def _runtime_config(tmp_path: Path) -> BridgeConfig:
 
 def _request_payload() -> dict:
     return {
-        "request_id": "request-1", "model": "gemini-3.5-flash-medium",
+        "request_id": "request-1", "model": "gemini-3.6-flash-medium",
         "system_prompt": "system", "user_prompt": "user",
         "json_schema": {"type": "object"}, "timeout_seconds": 30,
     }

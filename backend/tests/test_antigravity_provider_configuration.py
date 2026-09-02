@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,16 +14,41 @@ from app.database import Base
 from app.models import AiProvider
 from app.schemas import AiProviderCreate, AiProviderUpdate
 from app.services.ai_config import (
+    ANTIGRAVITY_MODELS as CONFIG_MODELS,
     _validate_ai_provider_boundary,
     _validate_antigravity_bridge_credentials,
     create_ai_provider,
     update_ai_provider,
 )
+from app.services.antigravity_provider_client import ANTIGRAVITY_MODELS as CLIENT_MODELS
 from app.services.task_center.antigravity_schemas import antigravity_schema_for_purpose
-from scripts.antigravity_provider_server import AntigravityRuntime, BridgeConfig
+from scripts.antigravity_provider_server import ALLOWED_MODELS, AntigravityRuntime, BridgeConfig
+from scripts.configure_ai_provider_generation_cutover import (
+    ANTIGRAVITY_MODELS as CUTOVER_MODELS,
+)
+from scripts.configure_antigravity_providers import PROVIDERS
 
 
 pytestmark = pytest.mark.no_postgres
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_frozen_model_catalog_is_consistent_across_release_boundaries():
+    expected = ("gemini-3.6-flash-medium", "gemini-3.1-pro-low")
+    assert CLIENT_MODELS == CONFIG_MODELS == ALLOWED_MODELS == frozenset(expected)
+    assert CUTOVER_MODELS == expected
+    assert tuple(model for _name, model in PROVIDERS) == expected
+    probe_source = (
+        PROJECT_ROOT / "deploy/check-antigravity-provider-slot.py"
+    ).read_text()
+    probe_tree = ast.parse(probe_source)
+    probe_models = next(
+        ast.literal_eval(node.value)
+        for node in probe_tree.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "MODELS" for target in node.targets)
+    )
+    assert probe_models == expected
 
 
 def test_brief_schema_requires_v2_claim_and_reply_binding():
@@ -110,7 +136,7 @@ def test_health_requires_fresh_success_for_both_models(tmp_path: Path):
     runtime = AntigravityRuntime(BridgeConfig(**{**config.__dict__, "agy_bin": binary}))
     runtime.cli_version = "agy-test"
     runtime.confirmed_models.update({
-        "gemini-3.5-flash-medium", "gemini-3.1-pro-low",
+        "gemini-3.6-flash-medium", "gemini-3.1-pro-low",
     })
     runtime.last_confirmed_at = __import__("time").time()
     runtime.last_terminal_code = "confirmed"
@@ -140,7 +166,7 @@ def test_bridge_credential_validation_rejects_wrong_token(monkeypatch):
     with pytest.raises(ValueError, match="bridge_validation_failed"):
         _validate_antigravity_bridge_credentials(
             "antigravity_cli", "http://host.docker.internal:18101",
-            "gemini-3.5-flash-medium", "wrong-token",
+            "gemini-3.6-flash-medium", "wrong-token",
         )
 
 
@@ -155,7 +181,7 @@ def test_antigravity_create_and_update_fail_before_write_on_wrong_token(monkeypa
     create_payload = AiProviderCreate(
         provider_name="Antigravity invalid", provider_type="antigravity_cli",
         base_url="http://host.docker.internal:18101",
-        model_name="gemini-3.5-flash-medium", api_key="wrong-token",
+        model_name="gemini-3.6-flash-medium", api_key="wrong-token",
         is_billable=False,
     )
     with factory() as session:
@@ -190,7 +216,7 @@ def test_antigravity_create_rejects_same_identity_under_another_name(monkeypatch
     base = {
         "provider_type": "antigravity_cli",
         "base_url": "http://host.docker.internal:18101",
-        "model_name": "gemini-3.5-flash-medium",
+        "model_name": "gemini-3.6-flash-medium",
         "api_key": "bridge-token", "is_billable": False,
     }
     with factory() as session:
@@ -208,10 +234,11 @@ def test_antigravity_create_rejects_same_identity_under_another_name(monkeypatch
 @pytest.mark.parametrize(
     ("url", "model", "header"),
     [
-        ("https://example.com:18101", "gemini-3.5-flash-medium", "Authorization"),
-        ("http://host.docker.internal:18199", "gemini-3.5-flash-medium", "Authorization"),
+        ("https://example.com:18101", "gemini-3.6-flash-medium", "Authorization"),
+        ("http://host.docker.internal:18199", "gemini-3.6-flash-medium", "Authorization"),
+        ("http://host.docker.internal:18101", "gemini-3.5-flash-medium", "Authorization"),
         ("http://host.docker.internal:18101", "gemini-3.7-flash", "Authorization"),
-        ("http://host.docker.internal:18101", "gemini-3.5-flash-medium", "X-API-Key"),
+        ("http://host.docker.internal:18101", "gemini-3.6-flash-medium", "X-API-Key"),
     ],
 )
 def test_antigravity_provider_boundary_rejects_ssrf_and_unfrozen_identity(url, model, header):
@@ -219,10 +246,11 @@ def test_antigravity_provider_boundary_rejects_ssrf_and_unfrozen_identity(url, m
         _validate_ai_provider_boundary("antigravity_cli", url, model, header)
 
 
-def test_antigravity_provider_boundary_accepts_frozen_internal_slot():
+@pytest.mark.parametrize("model", ["gemini-3.6-flash-medium", "gemini-3.1-pro-low"])
+def test_antigravity_provider_boundary_accepts_frozen_internal_slot(model):
     _validate_ai_provider_boundary(
         "antigravity_cli", "http://host.docker.internal:18101",
-        "gemini-3.1-pro-low", "Authorization",
+        model, "Authorization",
     )
 
 

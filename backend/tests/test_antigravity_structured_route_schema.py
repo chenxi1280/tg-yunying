@@ -29,7 +29,7 @@ def test_structured_provider_schema_uses_effective_route_purpose(monkeypatch):
         max_tokens=128,
         count=1,
         purpose="两阶段意图规划",
-        model_name="gemini-3.5-flash-medium",
+        model_name="gemini-3.6-flash-medium",
         stage="routing",
         required_model_family="",
     )
@@ -49,7 +49,7 @@ def test_structured_provider_schema_uses_effective_route_purpose(monkeypatch):
         provider_name="slot-01",
         provider_type="antigravity_cli",
         base_url="http://host.docker.internal:18101",
-        model_name="gemini-3.5-flash-medium",
+        model_name="gemini-3.6-flash-medium",
         api_key="bridge-token",
     )
     ai_structured_provider_runtime.call_structured_provider(

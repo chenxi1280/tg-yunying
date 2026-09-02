@@ -25,7 +25,7 @@ except ModuleNotFoundError:  # Direct host execution from backend/scripts.
     from antigravity_provider_protocol import BridgeError, parse_cli_output
 
 
-PRIMARY_MODEL = "gemini-3.5-flash-medium"
+PRIMARY_MODEL = "gemini-3.6-flash-medium"
 SECONDARY_MODEL = "gemini-3.1-pro-low"
 BRIDGE_VERSION = "2"
 ALLOWED_MODELS = frozenset({PRIMARY_MODEL, SECONDARY_MODEL})

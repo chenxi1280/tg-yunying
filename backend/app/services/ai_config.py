@@ -110,7 +110,7 @@ AI_PROVIDER_IDENTITY_FIELDS = frozenset({
 ANTIGRAVITY_INTERNAL_HOST = "host.docker.internal"
 ANTIGRAVITY_INTERNAL_PORTS = frozenset(range(18101, 18106))
 ANTIGRAVITY_MODELS = frozenset({
-    "gemini-3.5-flash-medium",
+    "gemini-3.6-flash-medium",
     "gemini-3.1-pro-low",
 })
 

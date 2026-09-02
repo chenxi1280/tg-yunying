@@ -141,8 +141,8 @@ MODEL_ALIASES = {
     "minimax-m2.7-highspeed": "MiniMax-M2.7-highspeed",
     "minimax m2.5": "MiniMax-M2.5",
     "minimax-m2.5": "MiniMax-M2.5",
-    "gemini 3.5 flash medium": "gemini-3.5-flash-medium",
-    "gemini-3.5-flash-medium": "gemini-3.5-flash-medium",
+    "gemini 3.6 flash medium": "gemini-3.6-flash-medium",
+    "gemini-3.6-flash-medium": "gemini-3.6-flash-medium",
     "gemini 3.1 pro low": "gemini-3.1-pro-low",
     "gemini-3.1-pro-low": "gemini-3.1-pro-low",
 }

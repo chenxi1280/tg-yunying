@@ -21,7 +21,7 @@ from app.services.task_center.ai_provider_routes import (
 
 SCRIPT_VERSION = "ai_provider_failover_v1"
 ANTIGRAVITY_MODELS = (
-    "gemini-3.5-flash-medium",
+    "gemini-3.6-flash-medium",
     "gemini-3.1-pro-low",
 )
 ANTIGRAVITY_SLOT_BASE_URL = "http://host.docker.internal:18101"

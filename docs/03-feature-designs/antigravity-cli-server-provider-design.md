@@ -4,7 +4,7 @@
 >
 > 状态：`design_status=complete` / `resync_status=complete` / `implementation_status=complete` / `qa_status=pass` / `product_status=accepted` / `production_status=blocked`
 >
-> 冻结模型顺序：`gemini-3.5-flash-medium` 第一，`gemini-3.1-pro-low` 第二；生成 route 中 Antigravity 优先于既有 Provider。
+> 冻结模型顺序：`gemini-3.6-flash-medium` 第一，`gemini-3.1-pro-low` 第二；生成 route 中 Antigravity 优先于既有 Provider。2026-09-03 生产模型目录已移除 3.5，替换合同见第 17 节。
 >
 > 证据边界：CLI 生成成功不等于 Gateway 完成、远程已部署、GenerationJob 完成或 Telegram 业务恢复
 
@@ -22,7 +22,7 @@
 ### 1.1 本轮生产切片
 
 - 先上线一个完成独立 OAuth 的 `slot-01`，同一 slot 暴露两个固定模型 Provider 行；其余四个 slot 未逐个 OAuth 前保持不存在或 disabled，不能虚报五账号就绪。
-- 生成类 purpose 的顺序固定为 3.5 Flash Medium、3.1 Pro Low、原路由供应商；`group_semantic_review` 和评论审查保持既有独立 Provider，禁止同一 slot 同时生成和审查。
+- 生成类 purpose 的顺序固定为 3.6 Flash Medium、3.1 Pro Low、原路由供应商；`group_semantic_review` 和评论审查保持既有独立 Provider，禁止同一 slot 同时生成和审查。
 - 两个模型共享 slot-01 的账号配额和单并发，因此第二模型是模型级后备，不是账号级容灾；五账号容灾必须等五个 Linux user 分别完成登录和读回。
 - 线上完成口径为：部署 SHA 一致、slot process/auth/schema 健康、Provider/route 独立读回、生产容器经 Gateway 真实结构化调用成功。该口径不等于 Telegram 消息已发送。
 
@@ -265,7 +265,7 @@ guarded preview 冻结 provider/slot/route/task/deployed SHA/fingerprint；apply
 | 需求、现有入口、目标架构 | complete_for_handoff | 已审计 Gateway/route/admission/Grok 先例 |
 | 本场可行性 | complete_for_one_slot | 默认 profile 与换号后的独立 slot-01 POC 通过 |
 | 五账号对应/资格/授权 | complete_for_slot_01 | 本轮只上线 slot-01；其余四个 slot 明确不在本轮完成口径 |
-| model slug/effort | complete | 3.5 Flash Medium 第一；3.1 Pro Low 第二，Low slug 不额外传 effort |
+| model slug/effort | complete | 3.6 Flash Medium 第一；3.1 Pro Low 第二，Low slug 不额外传 effort |
 | API、状态、幂等、unknown | complete_for_handoff | 已定义运行边界 |
 | 前端、安全、QA、回滚、E4 | complete_for_handoff | 已定义 |
 | 远程现状 | complete_for_handoff | 已 fresh readback 并完成临时 root 模型资格检查；专用 slot service/OAuth 仍属于实施步骤 |
@@ -279,7 +279,7 @@ guarded preview 冻结 provider/slot/route/task/deployed SHA/fingerprint；apply
 | 字段 | 冻结值 |
 | --- | --- |
 | batch_id | `ANTIGRAVITY-PROVIDER-PROD-BUG-BATCH-20260830` |
-| 原始目标 | 修复已发布实现，使生产 `slot-01` 可经正式 Gateway 结构化调用；3.5 Flash Medium 第一、3.1 Pro Low 第二、原 Provider 后备 |
+| 原始目标 | 修复已发布实现，使生产 `slot-01` 可经正式 Gateway 结构化调用；3.6 Flash Medium 第一、3.1 Pro Low 第二、原 Provider 后备 |
 | 当前事实 | 代码 SHA 已部署；专用 slot 未登录/未监听；Provider/route 未配置；生产调用未证明 |
 | 分级 | `L3`，影响 Provider 计费、AI 活群生成和生产发布 |
 | 当前决策 | route apply 与最高优先级切换保持阻断，先完成本 Batch 的开发和 QA |
@@ -315,7 +315,7 @@ guarded preview 冻结 provider/slot/route/task/deployed SHA/fingerprint；apply
 
 1. 删除 `backend/app/services/antigravity_cli_bridge.py`、`backend/scripts/antigravity_http_bridge.py` 及只验证该旧拓扑的测试。
 2. 删除仅服务旧拓扑的全局 Settings 字段与 `ANTIGRAVITY_CLI_ENABLED` 路径；host unit 仍可使用自己的 `ANTIGRAVITY_CLI_BIN` 环境变量，不得重新接入 backend Settings。
-3. 删除 UI 对名称、Gemini 字样和 18099 端口的启发式识别/过滤，以及旧 wrapper 引入的非冻结 model alias；Antigravity 只按 `provider_type=antigravity_cli` 判断，保留精确 `gemini-3.5-flash-medium` 与 `gemini-3.1-pro-low`。
+3. 删除 UI 对名称、Gemini 字样和 18099 端口的启发式识别/过滤，以及旧 wrapper 引入的非冻结 model alias；Antigravity 只按 `provider_type=antigravity_cli` 判断，保留精确 `gemini-3.6-flash-medium` 与 `gemini-3.1-pro-low`。
 4. 全仓必须只剩正式拓扑：`AiGateway -> AntigravityProviderClient -> /internal/v1/generate|requests|health -> antigravity_provider_server -> durable ledger -> agy JSON Schema`。禁止 `/v1/chat/completions`、`output-format=text`、fuzzy model mapping、18099 端口和伪造 usage 回流。
 
 #### RC-5：Provider capability、Schema 与健康口径不闭合
@@ -351,7 +351,7 @@ guarded preview 冻结 provider/slot/route/task/deployed SHA/fingerprint；apply
 1. **请求身份**：一个 GenerationJob 含至少 3 个不同 brief、每个 brief 两次 realizer attempt、两个 Provider route item；所有不同 invocation ID 唯一，同一 invocation retry ID/hash 不变，不出现 409；篡改同一 ID 的 payload 必须 409。
 2. **spawn 边界**：binary missing、permission denied、invalid cwd 为 `process_started=false` typed failed；PID 后 kill/连接断开/无法读回为 unknown；ledger 不得永久卡在 started 且无 PID/terminal/reconcile case。
 3. **错误解析**：非 JSON stdout + auth stderr、quota stderr、invalid model stderr 均保留正确 typed code；成功才进入 envelope/schema parser；日志和 API 不回显 OAuth、prompt 或原始 stderr 敏感片段。
-4. **route 安全**：busy、binary missing、可证明 auth/quota/model pre-call 进入下一候选；started、unknown、confirmed content/schema/quality failure 均不换 Provider。3.5 到 3.1 再到原 Provider 的每次转移都有独立 attempt 与原因。
+4. **route 安全**：busy、binary missing、可证明 auth/quota/model pre-call 进入下一候选；started、unknown、confirmed content/schema/quality failure 均不换 Provider。3.6 到 3.1 再到原 Provider 的每次转移都有独立 attempt 与原因。
 5. **systemd**：专用 user 在 unit sandbox 内可写认证/profile/cache/ledger，只能从 root-owned、SHA-bound runtime 读取 bridge 代码；host 必须有独立 `/usr/bin/python3.11` 及其 `cryptography` 包，依赖探针、Fernet key、迁移 helper、发布探针和 unit 均以 `-E -s` 启动，不改变系统 Python 3.6；agy 正式调用和版本探针均不得继承 bearer token/ledger key；不能读取 `/data` release、Telegram Session、应用 secrets 或其他 slot HOME。slot 安装与普通发布持有同一 host flock；既存 unit 必须为 `LoadState=loaded, ActiveState=inactive, MainPID=0`，首次安装只额外允许 `LoadState=not-found, MainPID=0`，activating/deactivating/failed 一律拒绝并在 ledger 操作前后复核。legacy WAL ledger 以现有 env 的 `ANTIGRAVITY_LEDGER_PATH` 判 authority：legacy authoritative 时 destination 已存在必须 settled/integrity/count/hash 相等；首次 legacy 与 destination 都不存在时创建 canonical 零行 service ledger；若 helper 成功后、env 原子切换前中断，只允许结构完全匹配且 settled/integrity 正常的零行 staged ledger 续接；service authoritative 时 service ledger 缺失必须失败；无 env 的 crash retry 同样必须 compare，一致后才能重写 env。disabled/inactive 发布后仍 disabled/inactive；enabled 健康 unit 被重启；第 N 个 enabled slot 探针失败时恢复旧 runtime symlink，并按所有 enabled unit 的发布前 active/inactive 状态恢复。
 6. **唯一拓扑**：生产代码、配置、UI 和测试不存在直接 backend CLI、OpenAI Antigravity text wrapper、18099 或 fuzzy model mapping；正式 bridge 未授权请求 401，公网不可达。
 7. **参数和 Schema**：显式 temperature/max_tokens 预调用失败；planner v2 与全部 realizer mode 的成功 payload 通过 canonical parser/gate，缺 claims/reply/evidence 或多余非法字段失败；不能以 permissive schema 伪造成功。
@@ -359,7 +359,7 @@ guarded preview 冻结 provider/slot/route/task/deployed SHA/fingerprint；apply
 9. **Provider 边界**：非批准 host/port、非冻结 model、空/错误 bridge token 创建和更新失败；旧 OpenAI Provider 不受影响。
 10. **配置原子性**：preview 后任一 provider/route/default/SHA 漂移均 apply 零写；注入第 N 个 route 写失败时全部 route 回滚；相同 desired state 重复 apply 为 no-op；readback 精确保持原 Provider 后备顺序。
 11. **发布**：全测试、前端构建、脚本静态检查通过；backend 和全部 generation worker 完整 SHA 一致且 healthy；不能用 CI success 代替 slot/Gateway 读回。
-12. **生产 canary**：先从生产 backend 容器以显式选定但尚未进入 active route 的 Provider credentials，依次经正式 Gateway adapter 对 3.5 和 3.1 做真实结构化调用，校验 model/slot/request ID/usage/schema/ledger confirmed；通过后才执行 guarded route apply/readback，再跑一个按新 route 解析但不发 Telegram 的冻结 GenerationJob canary。Telegram 业务 E4 仍需独立 Action/Attempt/remote fact。
+12. **生产 canary**：先从生产 backend 容器以显式选定但尚未进入 active route 的 Provider credentials，依次经正式 Gateway adapter 对 3.6 和 3.1 做真实结构化调用，校验 model/slot/request ID/usage/schema/ledger confirmed；通过后才执行 guarded route apply/readback，再跑一个按新 route 解析但不发 Telegram 的冻结 GenerationJob canary。Telegram 业务 E4 仍需独立 Action/Attempt/remote fact。
 
 ### 14.5 Release Gate 与回滚 Gate
 
@@ -369,7 +369,7 @@ guarded preview 冻结 provider/slot/route/task/deployed SHA/fingerprint；apply
 2. `master == release == workflow candidate == current release == backend/all generation workers` 完整 SHA，容器全部 healthy。
 3. 生产 `tgy-agy-01` 独立 OAuth 成功；unit `enabled/active`；18101 仅 Docker bridge 可达；分项 health 与两个固定模型 Schema probe 均通过。
 4. 两行 Provider 已 guarded preview/apply/readback，内部 token 与 Google OAuth 严格分离；未出现重复 provider row。
-5. 所有 generation purpose 在单事务 route revision 中读回为 `3.5 Flash Medium -> 3.1 Pro Low -> 原顺序 Provider`，semantic review 与非本批 purpose 零变化。
+5. 所有 generation purpose 在单事务 route revision 中读回为 `3.6 Flash Medium -> 3.1 Pro Low -> 原顺序 Provider`，semantic review 与非本批 purpose 零变化。
 6. 生产 Gateway 两模型真实结构化调用和无 Telegram canary 均 confirmed；ledger 无无主 started/unknown，旧 Provider 可用性读回正常。
 7. rollback revision/fingerprint 已预生成：停止新请求后先排空或 hold started/unknown，再以前向 revision 恢复原 generation routes；不得删历史 attempt/ledger 或重放 Provider/Gateway。
 
@@ -379,7 +379,7 @@ guarded preview 冻结 provider/slot/route/task/deployed SHA/fingerprint；apply
 
 | 维度 | resync 状态 | 开发交接结论 |
 | --- | --- | --- |
-| 用户优先级与 slot 范围 | complete | slot-01；3.5 第一、3.1 第二、旧 Provider 后备 |
+| 用户优先级与 slot 范围 | complete | slot-01；3.6 第一、3.1 第二、旧 Provider 后备 |
 | 重复实现取舍 | complete | 删除 OpenAI/text wrapper，不保留兼容路径 |
 | invocation identity/幂等/unknown | complete | 已冻结调用级身份和 route/reconcile 边界 |
 | typed error/failover | complete | 只允许有证据的 pre-call failure 切换 |
@@ -454,3 +454,13 @@ Mini Bug Card 冻结为：已绑定 Provider route 的结构化调用必须使�
 同日补测 `gemini-3.1-flash-medium`：authenticated `agy models` 不提供 3.1 Flash；带 effort 和去掉 effort 的两次探针均在模型调用前失败，后者明确为 model not recognized，且两次都是 zero turn/usage。当前只有 3.1 Pro High/Low，不能替代为 3.1 Flash 结果。
 
 用户明确改为 `gemini-3.1-pro-low` 后，按同一 7 场景和 Schema 补测：7/7 形成结构化终态，当前四个正式成人 v2 mode 为 4/4 parser/gate 通过，sensory 可用，两个安全边界均静默；成人双关的“最费腰”因新增源证据没有的身体效果被独立事实审查拒绝。其平均 CLI duration 为 11.22 秒，是四模型最慢，因此只形成可行 Pro 候选，不改变当前 3.5 单模型基础候选判断。
+
+## 17. 生产模型目录漂移 Quick Fix
+
+2026-09-03，release `978d71afd4d02eff51fc98ad3c942600cece4cba` 的主应用发布、共享调度激活、容器健康与公网检查全部通过，但 enabled `slot-01` 的发布后双模型探针以 HTTP 422 中止。加密 ledger 的只读终态为 `not_started/antigravity_model_invalid`；随后以同一专用 Linux user 执行 authenticated `agy models`，列表已不再包含 `gemini-3.5-flash-medium`，仍包含 `gemini-3.6-flash-medium`、3.7、3.8 和 `gemini-3.1-pro-low`。slot runtime 已按既有 fail-closed 合同回滚，主应用 release 未冒充完整发布成功。
+
+Mini Bug Card 冻结为：将正式第一模型从已下架的 3.5 精确替换为 `gemini-3.6-flash-medium`，第二模型仍为 `gemini-3.1-pro-low`，不得保留 3.5 alias 或把 model-invalid 改成静默成功。选择 3.6 的依据仅限第 15 节现有 POC：它在 AI 活群和频道评论两个样本均通过硬检查且样本内跨场景最稳；3.7 的频道评论样本被事实/地点硬门拒绝，3.8 没有项目 POC，因此本次都不进入正式候选。成人 visual 的“腿型”事实扩写风险继续由既有结构化事实/质量门阻断，本次不放宽任何 parser、Schema、安全门或 unknown 语义。
+
+代码合同必须同步 Gateway alias、Provider 客户端 allowlist、Provider API 边界、host bridge allowlist、发布双模型探针以及 guarded Provider/route 配置脚本。定向 QA 覆盖上述常量一致性、bridge 双模型确认、Provider 创建/检查边界、route 顺序与部署 rollback。生产发布成功必须再次取得 3.6 和 3.1 的 release probe confirmed、`/health=ready`、Antigravity runtime SHA 等于候选 SHA、主应用 current/容器/迁移/公网健康；生产 Provider/route 从旧 3.5 配置迁移到 3.6 仍必须使用 guarded preview/apply/readback，普通 release 不得隐式改写生产配置。Telegram 业务完成继续要求独立 Action、ExecutionAttempt 与 typed remote fact。
+
+本轮设计同步与代码实现已完成；Antigravity、Provider、结构化 route、配置脚本和部署生命周期聚焦回归为 95 passed，compileall、Bash 语法与 diff check 通过，`qa_status=pass`、`product_status=accepted`。新候选 SHA 的完整 Actions、3.6/3.1 真实发布探针和生产 runtime 回读完成前，`production_status=blocked`。

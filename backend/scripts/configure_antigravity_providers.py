@@ -18,7 +18,7 @@ from app.services.antigravity_provider_identity import canonical_antigravity_bas
 PROVIDER_TYPE = "antigravity_cli"
 BASE_URL = "http://host.docker.internal:18101"
 PROVIDERS = (
-    ("Antigravity slot-01 3.5 Flash Medium", "gemini-3.5-flash-medium"),
+    ("Antigravity slot-01 3.6 Flash Medium", "gemini-3.6-flash-medium"),
     ("Antigravity slot-01 3.1 Pro Low", "gemini-3.1-pro-low"),
 )
 

@@ -216,10 +216,10 @@ def test_generation_cutover_updates_all_routes_in_one_transaction(monkeypatch) -
             credential_enabled=True, is_active=True, health_status="健康",
         ))
         provider = session.get(AiProvider, 2)
-        provider.provider_name = "Antigravity 3.5"
+        provider.provider_name = "Antigravity 3.6"
         provider.provider_type = "antigravity_cli"
         provider.base_url = "http://host.docker.internal:18101"
-        provider.model_name = "gemini-3.5-flash-medium"
+        provider.model_name = "gemini-3.6-flash-medium"
         provider.api_key_ciphertext = encrypt_secret("same-bridge-token")
         provider.credential_enabled = True
         provider.is_active = True
