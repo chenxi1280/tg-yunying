@@ -44,6 +44,10 @@ def main():
         expiry = datetime.now(timezone.utc) + timedelta(days=365)
 
         for t in tasks:
+            if t.id == "6407d98f-e6af-4df8-a10b-806135bf24ff":
+                print(f"\n- [郑州楼凤] (ID: {t.id}): Skipping modification, already running smoothly.")
+                continue
+
             cfg = dict(t.type_config or {})
             gid = str(cfg.get("target_group_id") or "")
             if not gid:
