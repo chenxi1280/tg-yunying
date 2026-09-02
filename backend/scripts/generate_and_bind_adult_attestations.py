@@ -98,6 +98,10 @@ def main():
             if args.apply and len(att_ids) == 2:
                 cfg["ai_content_route_v2_enabled"] = "true"
                 cfg["ai_two_stage_enabled"] = True
+                if not str(cfg.get("ai_model", "")).strip():
+                    cfg["ai_model"] = "gemini-2.5-flash"
+                if not str(cfg.get("ai_semantic_reviewer_model", "")).strip():
+                    cfg["ai_semantic_reviewer_model"] = "gemini-1.5-flash"
                 cfg["ai_provider_id"] = "6"
                 cfg["ai_content_policy_version_id"] = policy.id
                 cfg["ai_content_allowed_routes"] = list(ALLOWED_ROUTES)

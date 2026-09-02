@@ -94,6 +94,10 @@ def proposed_config(task: Task, request: RecoveryRequest) -> dict[str, Any]:
     cfg = dict(task.type_config or {})
     if str(cfg.get("ai_content_route_v2_enabled", "")).lower() in {"true", "1"}:
         cfg["ai_two_stage_enabled"] = True
+        if not str(cfg.get("ai_model", "")).strip():
+            cfg["ai_model"] = "gemini-2.5-flash"
+        if not str(cfg.get("ai_semantic_reviewer_model", "")).strip():
+            cfg["ai_semantic_reviewer_model"] = "gemini-1.5-flash"
     return validated_type_config(
         TASK_TYPE,
         {
