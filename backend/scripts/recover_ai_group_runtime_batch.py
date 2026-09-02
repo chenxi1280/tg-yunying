@@ -235,7 +235,6 @@ def apply_recovery(session, task: Task, request: RecoveryRequest, snapshot: dict
         .values(
             status="closed_unknown",
             result={"reason": "closed_by_runtime_recovery", "approval_ref": request.approval_ref},
-            updated_at=_now(),
         )
     )
     before = dict(task.type_config or {})
