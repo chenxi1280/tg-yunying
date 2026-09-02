@@ -504,3 +504,46 @@ def _stub_listener_fetch(monkeypatch, calls: list[tuple]) -> None:
             available_reactions=("👍", "❤️", "🔥", "👏"),
         ),
     )
+
+
+def test_channel_view_uses_snapshot_revision_messages_when_stale(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    _seed_listener_task(
+        engine,
+        task_id="view-stale-task",
+        task_type="channel_view",
+        channel_id=31,
+        account_id=401,
+    )
+    current_time = [NOW]
+    monkeypatch.setattr(channel_listener_runtime, "_now", lambda: current_time[0])
+    monkeypatch.setattr(executor_common, "_now", lambda: current_time[0])
+    monkeypatch.setattr(
+        channel_listener_runtime,
+        "credentials_for_task_account",
+        lambda *_args: object(),
+    )
+    monkeypatch.setattr(
+        channel_listener_runtime.gateway,
+        "fetch_channel_messages",
+        lambda *_args, **_kwargs: [_snapshot(9001)],
+    )
+
+    drain_channel_listener_runtime(lambda: Session(engine), limit=10)
+
+    # Fast-forward time past fresh_until_at (60s) so snapshot becomes stale
+    current_time[0] = NOW + timedelta(seconds=120)
+
+    with Session(engine) as session:
+        task = session.get(Task, "view-stale-task")
+        channel, messages = executor_common.channel_scope(
+            session,
+            task,
+            task.type_config,
+        )
+        assert channel is not None
+        assert len(messages) == 1
+        assert messages[0].message_id == 9001
+        assert task.last_error == "channel_source_snapshot_stale"
+

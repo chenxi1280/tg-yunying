@@ -122,9 +122,21 @@ class ChannelDiscussionThreadBinding(Base):
     discussion_peer_id: Mapped[str] = mapped_column(String(160))
     thread_root_message_id: Mapped[int] = mapped_column(Integer)
     identity_hash: Mapped[str] = mapped_column(String(64))
-    probe_event_id: Mapped[str] = mapped_column(ForeignKey("channel_discussion_thread_probe_events.id"))
+    probe_event_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "channel_discussion_thread_probe_events.id",
+            use_alter=True,
+            name="fk_thread_binding_probe_event",
+        )
+    )
     supersedes_thread_binding_id: Mapped[str | None] = mapped_column(
-        ForeignKey("channel_discussion_thread_bindings.id", ondelete="RESTRICT"), nullable=True,
+        ForeignKey(
+            "channel_discussion_thread_bindings.id",
+            ondelete="RESTRICT",
+            use_alter=True,
+            name="fk_thread_binding_supersedes",
+        ),
+        nullable=True,
     )
     is_current: Mapped[bool] = mapped_column(Boolean, default=True)
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
@@ -158,7 +170,13 @@ class DiscussionMembershipFact(Base):
     fresh_until_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     evidence_json: Mapped[dict] = mapped_column(JSON, default=dict)
     supersedes_fact_id: Mapped[str | None] = mapped_column(
-        ForeignKey("discussion_membership_facts.id", ondelete="RESTRICT"), nullable=True,
+        ForeignKey(
+            "discussion_membership_facts.id",
+            ondelete="RESTRICT",
+            use_alter=True,
+            name="fk_disc_membership_supersedes",
+        ),
+        nullable=True,
     )
     is_current: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

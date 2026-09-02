@@ -53,12 +53,24 @@ class ChannelMessageSourceRevision(Base):
     truncation_state: Mapped[str] = mapped_column(String(32), default="complete")
     source_operation: Mapped[str] = mapped_column(String(24), default="observed")
     discussion_group_binding_id: Mapped[str | None] = mapped_column(
-        ForeignKey("channel_discussion_group_bindings.id", ondelete="RESTRICT"), nullable=True,
+        ForeignKey(
+            "channel_discussion_group_bindings.id",
+            ondelete="RESTRICT",
+            use_alter=True,
+            name="fk_channel_source_rev_group_binding",
+        ),
+        nullable=True,
     )
     discussion_group_binding_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
     discussion_group_identity_hash: Mapped[str] = mapped_column(String(64), default="")
     discussion_thread_binding_id: Mapped[str | None] = mapped_column(
-        ForeignKey("channel_discussion_thread_bindings.id", ondelete="RESTRICT"), nullable=True,
+        ForeignKey(
+            "channel_discussion_thread_bindings.id",
+            ondelete="RESTRICT",
+            use_alter=True,
+            name="fk_channel_source_rev_thread_binding",
+        ),
+        nullable=True,
     )
     discussion_thread_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
     discussion_thread_identity_hash: Mapped[str] = mapped_column(String(64), default="")

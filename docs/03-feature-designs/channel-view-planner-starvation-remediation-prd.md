@@ -48,6 +48,11 @@
 - **`dynamic_new` 保持并生效**：保留新消息监听与捕获机制。当频道发布新帖时，系统自动为新帖建立 Target 并立即在当日对全量可用账号生成浏览排期；进入新自然日后，对活跃 Target 全量账号重置资格，再次每日滚动全量浏览。
 - **全链路目标与调度贯通**：在 Target 附着/刷新、Planner 规划、二分图最大匹配和 Action 生成全链路上，每条消息当天的目标量均对齐可用账号规模，确保每个可用账号每天都会被调度去浏览一次该消息，彻底达成刷高频道浏览量的产品效果。
 
+### 1.5 2026-09-02 频道浏览快照暂态保底与履约连续性修复
+
+- **快照过期容错与存量消息保底**：针对 Listener 轮询间隔或网络抖动导致的 `channel_source_snapshot_stale` 暂态状态，频道浏览任务（`channel_view`）与评论等前置写互动任务解耦。浏览任务为只读被动消费，在快照处于 `stale` 状态时，允许 `channel_scope` 保底读取当前 snapshot_revision 或既有数据库内合法存量消息（在 `message_active_days` 范围内）继续执行每日浏览规划，避免任务整日停滞在 `interaction_obligation_missing`。
+- **诊断可观测性**：保留 `task.last_error = f"channel_source_snapshot_{snapshot_status}"` 和 `next_probe_at` 排期信息，确保快照采集状态可被监控审计。
+
 ## 2. 产品合同优先级
 
 频道浏览按以下顺序解释，低层规则不得覆盖高层规则：
