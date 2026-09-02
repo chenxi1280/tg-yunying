@@ -50,8 +50,7 @@ def main():
                 print(f"- [{t.name}] (ID: {t.id}): NO target_group_id, skipping.")
                 continue
 
-            print(f"
-- [{t.name}] (ID: {t.id}, Group: {gid}, Epoch: {t.task_lifecycle_epoch}, Rev: {t.config_revision})")
+            print(f"\n- [{t.name}] (ID: {t.id}, Group: {gid}, Epoch: {t.task_lifecycle_epoch}, Rev: {t.config_revision})")
 
             # 1. Ensure visual attestation
             att_ids = []
@@ -134,16 +133,13 @@ def main():
         tianjin = session.get(Task, tianjin_task_id)
         if tianjin and args.apply:
             tianjin.last_error = ""
-            print("
-[TIANJIN MUSIC] Cleared task last_error.")
+            print("\n[TIANJIN MUSIC] Cleared task last_error.")
 
         if args.apply:
             session.commit()
-            print("
->>> All attestations created, policies bound, and tasks refreshed successfully!")
+            print("\n>>> All attestations created, policies bound, and tasks refreshed successfully!")
         else:
-            print("
->>> Preview completed. Run with --apply to commit.")
+            print("\n>>> Preview completed. Run with --apply to commit.")
     finally:
         session.close()
 
