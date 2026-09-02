@@ -91,10 +91,13 @@ def _task(session, request: RecoveryRequest, *, lock: bool) -> Task:
 
 
 def proposed_config(task: Task, request: RecoveryRequest) -> dict[str, Any]:
+    cfg = dict(task.type_config or {})
+    if str(cfg.get("ai_content_route_v2_enabled", "")).lower() in {"true", "1"}:
+        cfg["ai_two_stage_enabled"] = True
     return validated_type_config(
         TASK_TYPE,
         {
-            **dict(task.type_config or {}),
+            **cfg,
             "messages_per_round_mode": "manual",
             "messages_per_round": request.messages_per_round,
             "reply_min_per_round": request.reply_min_per_round,
