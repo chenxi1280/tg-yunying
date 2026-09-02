@@ -107,8 +107,8 @@ jobs:
           if [[ -n "${TASK_ID}" ]]; then
             TASK_FLAG="--task-id ${TASK_ID}"
           fi
-          echo "=== DIAGNOSE ZHENGZHOU DAXUE DEEP ==="
-          ssh silicon-valley-production-server "timeout 60 docker exec -i tgyunying-backend python -" < backend/scripts/diagnose_zhengzhou_daxue_deep.py
+          echo "=== RESCUE AND WAKEUP ZHENGZHOU DAXUE ==="
+          ssh silicon-valley-production-server "timeout 60 docker exec -i tgyunying-backend python - ${APPLY_FLAG}" < backend/scripts/rescue_and_wakeup_zhengzhou_daxue.py
           ssh silicon-valley-production-server "timeout 120 docker exec -i tgyunying-backend python - --target ${TARGET} ${APPLY_FLAG} ${TASK_FLAG}" \
             < backend/scripts/update_ai_group_daily_targets.py
           echo "=== QUERY TIANJIN GROUPS ==="
