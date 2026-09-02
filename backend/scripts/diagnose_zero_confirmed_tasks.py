@@ -32,7 +32,7 @@ def main():
             if gid:
                 grp = session.get(TgGroup, gid)
                 if grp:
-                    print(f"Group Info: title={grp.title}, username={grp.username}, status={grp.status}, member_count={grp.member_count}")
+                    print(f"Group Info: title={grp.title}, auth={grp.auth_status}, can_send={grp.can_send}, member_count={grp.member_count}, active_window={grp.active_window}")
                 else:
                     print("Group NOT FOUND in tg_groups!")
 
