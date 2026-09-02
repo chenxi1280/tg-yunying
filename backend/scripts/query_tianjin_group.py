@@ -9,7 +9,7 @@ def main():
     session = SessionLocal()
     try:
         sql = """
-        SELECT id, tg_peer_id, title, auth_status, member_count, can_send, active_window, created_at
+        SELECT id, tg_peer_id, title, auth_status, member_count, can_send, active_window
         FROM tg_groups
         WHERE tg_peer_id ILIKE '%tjlove666%' OR title ILIKE '%逃学威龙%' OR title ILIKE '%天津%音乐%' OR tg_peer_id ILIKE '%luoyang%';
         """
