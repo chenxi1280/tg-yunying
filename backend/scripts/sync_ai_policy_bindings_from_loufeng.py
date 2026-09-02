@@ -86,7 +86,7 @@ def main():
                         policy_version_id=lf_binding.policy_version_id,
                         allowed_routes=lf_binding.allowed_routes,
                         attestation_ids=lf_binding.attestation_ids,
-                        scope_refs=lf_binding.scope_refs,
+                        style_overlay_id=getattr(lf_binding, "style_overlay_id", "") or "",
                         approved_by=lf_binding.approved_by,
                         evidence_hash=lf_binding.evidence_hash,
                     )
