@@ -249,31 +249,41 @@ def apply_recovery(session, task: Task, request: RecoveryRequest, snapshot: dict
 
 def main() -> None:
     request = parse_request()
-    with SessionLocal() as session:
-        task = _task(session, request, lock=request.apply)
-        snapshot = state_snapshot(session, task)
-        proposed = proposed_config(task, request)
-        simulation = simulate_alignment(session, task, proposed)
-        result = {
-            "mode": "apply" if request.apply else "preview",
-            "snapshot": snapshot,
-            "state_hash": snapshot_hash(snapshot),
-            "proposed": {
-                "messages_per_round_mode": proposed["messages_per_round_mode"],
-                "messages_per_round": proposed["messages_per_round"],
-                "reply_min_per_round": proposed["reply_min_per_round"],
-            },
-            "simulation": simulation,
-        }
-        if request.apply:
-            if not simulation.get("alignment_complete"):
-                raise RuntimeError("proposed recovery does not produce complete quantity alignment")
-            task = _task(session, request, lock=True)
-            apply_recovery(session, task, request, state_snapshot(session, task))
-            result["applied"] = True
-        else:
-            session.rollback()
-        print("AI_GROUP_RUNTIME_BATCH_RECOVERY=" + json.dumps(result, ensure_ascii=False, sort_keys=True))
+    import time
+    last_err = None
+    for attempt in range(5):
+        try:
+            with SessionLocal() as session:
+                task = _task(session, request, lock=request.apply)
+                snapshot = state_snapshot(session, task)
+                proposed = proposed_config(task, request)
+                simulation = simulate_alignment(session, task, proposed)
+                result = {
+                    "mode": "apply" if request.apply else "preview",
+                    "snapshot": snapshot,
+                    "state_hash": snapshot_hash(snapshot),
+                    "proposed": {
+                        "messages_per_round_mode": proposed["messages_per_round_mode"],
+                        "messages_per_round": proposed["messages_per_round"],
+                        "reply_min_per_round": proposed["reply_min_per_round"],
+                    },
+                    "simulation": simulation,
+                }
+                if request.apply:
+                    if not simulation.get("alignment_complete"):
+                        raise RuntimeError("proposed recovery does not produce complete quantity alignment")
+                    task = _task(session, request, lock=True)
+                    apply_recovery(session, task, request, state_snapshot(session, task))
+                    result["applied"] = True
+                else:
+                    session.rollback()
+                print("AI_GROUP_RUNTIME_BATCH_RECOVERY=" + json.dumps(result, ensure_ascii=False, sort_keys=True))
+                return
+        except Exception as exc:
+            last_err = exc
+            time.sleep(1)
+    if last_err:
+        raise last_err
 
 
 if __name__ == "__main__":
