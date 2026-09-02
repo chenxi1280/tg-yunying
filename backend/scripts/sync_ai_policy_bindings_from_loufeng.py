@@ -53,8 +53,7 @@ def main():
         ).all())
 
         today = datetime.now(timezone.utc).date()
-        print(f"
-Found {len(tasks)} other tasks to sync policy binding.")
+        print(f"\nFound {len(tasks)} other tasks to sync policy binding.")
 
         for t in tasks:
             cfg = dict(t.type_config or {})
@@ -105,11 +104,9 @@ Found {len(tasks)} other tasks to sync policy binding.")
 
         if args.apply:
             session.commit()
-            print("
->>> All tasks successfully bound with AI Policy and synced with Loufeng template!")
+            print("\n>>> All tasks successfully bound with AI Policy and synced with Loufeng template!")
         else:
-            print("
->>> Preview completed. Run with --apply to commit.")
+            print("\n>>> Preview completed. Run with --apply to commit.")
     finally:
         session.close()
 
