@@ -191,7 +191,13 @@ def _operation_matches_frozen_plan(context: InterruptedContext) -> bool:
 
 def _no_downstream_operations(session, context: InterruptedContext) -> bool:
     operations = online_abc_item_operations(session, context.batch, context.item)
-    return operations == {"b": context.operation, "c": None, "e4": None}
+    operation_b = operations["b"]
+    return bool(
+        operation_b
+        and operation_b.id == context.operation.id
+        and operations["c"] is None
+        and operations["e4"] is None
+    )
 
 
 def _artifact_or_stage_count(session, operation) -> int:

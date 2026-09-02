@@ -29,6 +29,10 @@ from app.services.authorization_dr.online_abc_release_interrupted import (
     preview_release_interrupted_b,
     readback_release_interrupted_b,
 )
+from app.services.authorization_dr.online_abc_release_interrupted_state import (
+    _no_downstream_operations,
+    load_interrupted_context,
+)
 from tests import test_authorization_online_abc as abc_tests
 
 
@@ -69,6 +73,14 @@ def test_preview_is_read_only_and_freezes_exact_pre_flow_boundary(db_session) ->
     assert preview["interrupted_flow"]["challenge_sent"] is False
     assert _snapshot(db_session, batch_id, account_id) == before
     assert not db_session.new and not db_session.dirty and not db_session.deleted
+
+
+def test_downstream_check_uses_persistent_identity_not_orm_instance(db_session) -> None:
+    batch_id, account_id, _ = _interrupted_item(db_session)
+    context = load_interrupted_context(db_session, batch_id, account_id)
+    db_session.expunge(context.operation)
+
+    assert _no_downstream_operations(db_session, context)
 
 
 def test_apply_records_manual_debt_and_preserves_remote_effect_and_a(db_session) -> None:
