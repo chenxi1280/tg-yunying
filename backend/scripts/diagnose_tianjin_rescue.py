@@ -17,7 +17,7 @@ def main():
         if admin_id:
             admin_acc = session.get(TgAccount, admin_id)
             if admin_acc:
-                print(f"Rescue Admin Account: id={admin_acc.id}, phone={admin_acc.phone}, username={admin_acc.username}, status={admin_acc.status}, has_session={bool(admin_acc.session_ciphertext)}")
+                print(f"Rescue Admin Account: id={admin_acc.id}, phone={admin_acc.phone_masked}, username={admin_acc.username}, status={admin_acc.status}, has_session={bool(admin_acc.session_ciphertext)}")
             else:
                 print("Rescue Admin Account NOT FOUND in tg_accounts!")
         else:
@@ -33,7 +33,7 @@ def main():
         ).all())
         print(f"\nCandidate Admin Accounts Found: {len(candidates)}")
         for c in candidates:
-            print(f"  - id={c.id}, username={c.username}, phone={c.phone}, status={c.status}, has_session={bool(c.session_ciphertext)}")
+            print(f"  - id={c.id}, username={c.username}, phone={c.phone_masked}, status={c.status}, has_session={bool(c.session_ciphertext)}")
 
         # Check Tianjin Music Group (5999) and Tianjin Yipinlou (5828)
         for gid in [5999, 5828]:
