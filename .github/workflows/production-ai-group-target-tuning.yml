@@ -7,7 +7,6 @@ on:
         description: Expected production release SHA
         required: true
         type: string
-        default: "4875b24ee977830a2bca7458c6b252ca31991c6e"
       target:
         description: New daily message target
         required: true
@@ -39,6 +38,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Validate target tuning inputs
+        env:
+          EXPECTED_DEPLOYED_SHA: ${{ inputs.deployed_sha }}
+          TARGET: ${{ inputs.target }}
+        run: |
+          set -euo pipefail
+          [[ "${EXPECTED_DEPLOYED_SHA}" =~ ^[0-9a-fA-F]{40}$ ]]
+          [[ "${TARGET}" =~ ^[0-9]+$ ]]
+          (( TARGET > 0 ))
+
       - name: Configure SSH
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SILICON_VALLEY_PRODUCTION_SSH_PRIVATE_KEY }}
@@ -67,6 +76,21 @@ jobs:
           EOF
           chmod 600 ~/.ssh/config
 
+      - name: Verify deployed release without mutation
+        env:
+          PRODUCTION_BASE_DIR: ${{ vars.SILICON_VALLEY_PRODUCTION_BASE_DIR }}
+          EXPECTED_DEPLOYED_SHA: ${{ inputs.deployed_sha }}
+        run: |
+          set -euo pipefail
+          BASE_DIR="${PRODUCTION_BASE_DIR:-/data/tgyunying}"
+          EXPECTED_SHORT_SHA="${EXPECTED_DEPLOYED_SHA:0:8}"
+          CURRENT_RELEASE="$(ssh silicon-valley-production-server "readlink -f '${BASE_DIR}/current'")"
+          CURRENT_NAME="$(basename "${CURRENT_RELEASE}")"
+          case "${CURRENT_NAME}" in
+            *_"${EXPECTED_SHORT_SHA}") ;;
+            *) echo "deployed release SHA does not match requested SHA" >&2; exit 1 ;;
+          esac
+
       - name: Run daily target tuning script
         env:
           TARGET: ${{ inputs.target }}
@@ -90,6 +114,8 @@ jobs:
             ssh silicon-valley-production-server "timeout 120 docker exec -i tgyunying-backend python - ${APPLY_FLAG}" \
               < backend/scripts/enable_ai_route_v2_for_all_tasks.py
           fi
+          echo "=== DIAGNOSE TIANJIN RESCUE ==="
+          ssh silicon-valley-production-server "timeout 60 docker exec -i tgyunying-backend python -" < backend/scripts/diagnose_tianjin_rescue.py
           echo "=== GENERATE AND BIND ADULT ATTESTATIONS ==="
           ssh silicon-valley-production-server "timeout 120 docker exec -i tgyunying-backend python - ${APPLY_FLAG}" < backend/scripts/generate_and_bind_adult_attestations.py
           echo "=== DIAGNOSE ZERO CONFIRMED TASKS ==="
