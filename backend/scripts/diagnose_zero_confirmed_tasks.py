@@ -47,8 +47,7 @@ def main():
             ORDER BY count(*) DESC;
             """
             rows = [dict(r) for r in session.execute(text(sql_actions)).mappings()]
-            print("
-Actions Breakdown:")
+            print("\nActions Breakdown:")
             for r in rows:
                 print(f"  - status: {r.get('status')}, type: {r.get('action_type')}, cnt: {r.get('cnt')}, latest_created: {r.get('latest_created_at')}, latest_exec: {r.get('latest_executed_at')}")
 
@@ -63,8 +62,7 @@ Actions Breakdown:")
             LIMIT 3;
             """
             failed_rows = [dict(r) for r in session.execute(text(sql_failed_actions)).mappings()]
-            print("
-Recent Failed Actions:")
+            print("\nRecent Failed Actions:")
             for r in failed_rows:
                 print(f"  Action ID: {r.get('id')}, Type: {r.get('action_type')}, GenStatus: {r.get('gen_status')}")
                 print(f"    Result: {r.get('result')}")
@@ -79,8 +77,7 @@ Recent Failed Actions:")
             LIMIT 3;
             """
             pending_rows = [dict(r) for r in session.execute(text(sql_pending_actions)).mappings()]
-            print("
-Earliest Pending Actions:")
+            print("\nEarliest Pending Actions:")
             for r in pending_rows:
                 print(f"  Action ID: {r.get('id')}, Type: {r.get('action_type')}, Scheduled: {r.get('scheduled_at')}, Lease: {r.get('lease_owner')}")
 
@@ -92,8 +89,7 @@ Earliest Pending Actions:")
             GROUP BY state;
             """
             job_rows = [dict(r) for r in session.execute(text(sql_jobs)).mappings()]
-            print("
-Generation Jobs Breakdown:")
+            print("\nGeneration Jobs Breakdown:")
             for r in job_rows:
                 print(f"  - state: {r.get('state')}, count: {r.get('count')}, latest: {r.get('latest_created')}")
 
@@ -105,8 +101,7 @@ Generation Jobs Breakdown:")
             GROUP BY status;
             """
             m_rows = [dict(r) for r in session.execute(text(sql_membership)).mappings()]
-            print("
-Membership Actions Breakdown:")
+            print("\nMembership Actions Breakdown:")
             for r in m_rows:
                 print(f"  - status: {r.get('status')}, count: {r.get('count')}, latest_exec: {r.get('latest_exec')}")
 
