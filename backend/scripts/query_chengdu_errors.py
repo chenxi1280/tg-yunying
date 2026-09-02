@@ -10,7 +10,7 @@ def main():
         sql = """
         SELECT id, status, payload ->> 'ai_generation_status' as gen_status,
                payload ->> 'generation_error_message' as gen_err,
-               last_error, error_message, created_at
+               result, created_at
         FROM actions
         WHERE task_id = 'b6f0ebd6-880a-4d6e-9279-04709383486e'
         ORDER BY created_at DESC
@@ -21,8 +21,7 @@ def main():
         for r in rows:
             print(f"Action: {r.get('id')}, Status: {r.get('status')}, GenStatus: {r.get('gen_status')}")
             print(f"  GenErr: {r.get('gen_err')}")
-            print(f"  LastError: {r.get('last_error')}")
-            print(f"  ErrMsg: {r.get('error_message')}")
+            print(f"  Result: {r.get('result')}")
             print(f"  Time: {r.get('created_at')}")
     finally:
         session.close()
