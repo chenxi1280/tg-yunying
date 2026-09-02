@@ -84,3 +84,6 @@ jobs:
           fi
           ssh silicon-valley-production-server "timeout 120 docker exec -i tgyunying-backend python - --target ${TARGET} ${APPLY_FLAG} ${TASK_FLAG}" \
             < backend/scripts/update_ai_group_daily_targets.py
+          echo "=== READING RUNTIME SHA ==="
+          ssh silicon-valley-production-server "python3 -" \
+            < backend/scripts/read_exact_production_sha.py
