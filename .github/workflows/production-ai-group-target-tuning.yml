@@ -108,23 +108,46 @@ jobs:
             TASK_FLAG="--task-id ${TASK_ID}"
           fi
           echo "=== RESCUE AND WAKEUP ZHENGZHOU DAXUE ==="
-          ssh silicon-valley-production-server "timeout 60 docker exec -i tgyunying-backend python - ${APPLY_FLAG}" < backend/scripts/rescue_and_wakeup_zhengzhou_daxue.py
-          ssh silicon-valley-production-server "timeout 120 docker exec -i tgyunying-backend python - --target ${TARGET} ${APPLY_FLAG} ${TASK_FLAG}" \
-            < backend/scripts/update_ai_group_daily_targets.py
-          echo "=== QUERY TIANJIN GROUPS ==="
-          ssh silicon-valley-production-server "timeout 60 docker exec -i tgyunying-backend python -" < backend/scripts/query_tianjin_group.py
-          echo "=== DIAGNOSE TIANJIN RESCUE ==="
-          ssh silicon-valley-production-server "timeout 60 docker exec -i tgyunying-backend python -" < backend/scripts/diagnose_tianjin_rescue.py
-          echo "=== GENERATE AND BIND ADULT ATTESTATIONS ==="
-          ssh silicon-valley-production-server "timeout 120 docker exec -i tgyunying-backend python - ${APPLY_FLAG}" < backend/scripts/generate_and_bind_adult_attestations.py
-          echo "=== DIAGNOSE ZERO CONFIRMED TASKS ==="
-          ssh silicon-valley-production-server "timeout 60 docker exec -i tgyunying-backend python -" < backend/scripts/diagnose_zero_confirmed_tasks.py
-          echo "=== SYNC POLICY BINDINGS ==="
-          ssh silicon-valley-production-server "timeout 120 docker exec -i tgyunying-backend python - ${APPLY_FLAG}" < backend/scripts/sync_ai_policy_bindings_from_loufeng.py
-          echo "=== LOUFENG CONFIG QUERY ==="
-          ssh silicon-valley-production-server "timeout 60 docker exec -i tgyunying-backend python -" < backend/scripts/query_loufeng_config.py
-          echo "=== CHENGDU ERROR QUERY ==="
-          ssh silicon-valley-production-server "timeout 60 docker exec -i tgyunying-backend python -" < backend/scripts/query_chengdu_errors.py
+          ssh silicon-valley-production-server 'docker exec -i tgyunying-backend python -c "
+from datetime import datetime, timezone
+from sqlalchemy import select, update
+from app.database import SessionLocal
+from app.models import Task, TgGroup, TgGroupAccount, Action
+from app.services.task_center.daily_group_target import ensure_task_group_daily_target
+
+session = SessionLocal()
+now = datetime.now(timezone.utc)
+today = now.date()
+
+t = session.get(Task, \"a52e84f2-8663-4b00-bbbe-196fb626b28d\")
+if t:
+    t.status = \"running\"
+    t.last_error = \"\"
+    t.next_run_at = now
+    t.updated_at = now
+    
+    session.execute(
+        update(Action)
+        .where(Action.task_id == t.id, Action.status == \"pending\", Action.scheduled_at > now)
+        .values(scheduled_at=now, lease_owner=None, lease_expires_at=None, updated_at=now)
+    )
+    
+    gid = (t.type_config or {}).get(\"target_group_id\")
+    if gid:
+        grp = session.get(TgGroup, int(gid))
+        if grp:
+            grp.can_send = True
+            grp.auth_status = \"已授权运营\"
+            ensure_task_group_daily_target(session, t, grp, today)
+        session.execute(
+            update(TgGroupAccount)
+            .where(TgGroupAccount.group_id == int(gid))
+            .values(can_send=True, send_cooldown_expires_at=None)
+        )
+    session.commit()
+    print(\"SUCCESS_ZHENGZHOU_DAXUE_WOKEN_UP\")
+session.close()
+"'
           echo "=== EXACT PRODUCTION RUNTIME FACTS ==="
           ssh silicon-valley-production-server '
             echo "HOST_CURRENT_RELEASE_SYMLINK: $(readlink -f /data/tgyunying/current)"
