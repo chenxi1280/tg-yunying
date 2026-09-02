@@ -36,8 +36,7 @@ def main():
             new_v2 = "true"
             new_provider = old_provider if (old_provider and str(old_provider).strip()) else "6"
             
-            print(f"
-- [{t.name}] (ID: {t.id})")
+            print(f"\n- [{t.name}] (ID: {t.id})")
             print(f"  Route V2: {old_v2} -> {new_v2}")
             print(f"  Provider ID: {old_provider} -> {new_provider}")
 
@@ -56,11 +55,9 @@ def main():
 
         if args.apply:
             session.commit()
-            print("
->>> All tasks successfully switched to AI Route V2 in production database!")
+            print("\n>>> All tasks successfully switched to AI Route V2 in production database!")
         else:
-            print("
->>> Preview completed. Run with --apply to commit changes.")
+            print("\n>>> Preview completed. Run with --apply to commit changes.")
     finally:
         session.close()
 
