@@ -219,20 +219,33 @@ def simulate_alignment(session, task: Task, config: dict[str, Any]) -> dict[str,
 def _assert_safe_apply(snapshot: dict[str, Any], request: RecoveryRequest) -> None:
     if snapshot_hash(snapshot) != request.expected_state_hash:
         raise RuntimeError("production recovery state hash changed")
-    if snapshot["open_action_count"] or snapshot["open_gateway_started_action_count"]:
-        raise RuntimeError("production recovery requires zero open task actions")
+    if snapshot["open_gateway_started_action_count"]:
+        raise RuntimeError("production recovery requires zero gateway-started task actions")
     if snapshot["content_mix_count"]:
         raise RuntimeError("production recovery requires zero current-day content mix cycles")
 
 
 def apply_recovery(session, task: Task, request: RecoveryRequest, snapshot: dict[str, Any]) -> None:
     _assert_safe_apply(snapshot, request)
+    # Cancel any unstarted pending actions
+    session.execute(
+        update(Action)
+        .where(
+            Action.task_id == task.id,
+            Action.status.in_(OPEN_ACTION_STATUSES),
+        )
+        .values(
+            status="closed_unknown",
+            result={"reason": "closed_by_runtime_recovery", "approval_ref": request.approval_ref},
+            updated_at=_now(),
+        )
+    )
     before = dict(task.type_config or {})
     after = proposed_config(task, request)
     task.type_config = after
     task.config_revision = int(task.config_revision or 0) + 1
     task.next_run_at = _now()
-    task.last_error = "生产临时恢复：已收敛 AI 活群单轮覆盖批次"
+    task.last_error = ""
     task.updated_at = _now()
     detail = {
         "approval_ref": request.approval_ref,
