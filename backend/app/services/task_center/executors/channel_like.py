@@ -6,6 +6,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from app.models import ChannelMessage, OperationTarget, ReactionFulfillmentObligation, Task
+from app.schemas.task_center import DEFAULT_CHANNEL_LIKE_ALLOWED_REACTIONS
 from app.services._common import _now
 
 from ..account_pacing_guard import (
@@ -70,7 +71,9 @@ def build_plan(session: Session, task: Task) -> int:
     if not messages:
         task.last_error = ""
         return 0
-    reactions = config.get("allowed_reactions") or ["👍"]
+    reactions = config.get("allowed_reactions") or list(
+        DEFAULT_CHANNEL_LIKE_ALLOWED_REACTIONS
+    )
     target_per_message = int(config.get("target_likes_per_message") or 1)
     accounts = _like_accounts(
         session, task, channel=channel, config=config, target=target_per_message,

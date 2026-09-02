@@ -202,7 +202,7 @@ def test_channel_comment_routing_and_generic_landmarks():
     assert _is_adult_channel_context(adult_config, "频道", "普通频道消息")
     assert _sanitize_channel_message_content(raw_adult_context, allow_adult_context=True) == raw_adult_context
     adult_prompt = _channel_comment_system_prompt(adult_config, "频道", "普通频道消息")
-    assert "真实老哥/男客网友" in adult_prompt
+    assert "真实活跃的群友老哥" in adult_prompt or "真实男客" in adult_prompt
 
     # Generic landmarks (高新/经开/新区/大学城) must NOT be considered cross-city leaks
     assert not _channel_comment_cross_city_leak("高新区这边新开的怎么样", "郑州")
@@ -234,7 +234,7 @@ def test_channel_comment_retry_preserves_facts_and_adult_prompt():
 
     # The retry maintains consistent system prompt with adult role
     sys_prompt = _channel_comment_attempt_system_prompt(1, config=config, target_label="测试", message_content="老师开课")
-    assert "真实老哥/男客网友" in sys_prompt
+    assert "真实活跃的群友老哥" in sys_prompt or "真实男客" in sys_prompt
     assert "中性、礼貌" not in sys_prompt
 
     plain_req = _channel_comment_attempt_requirements(

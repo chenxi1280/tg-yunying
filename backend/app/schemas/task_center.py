@@ -43,6 +43,18 @@ ActionStatusValue = Literal["pending", "executing", "success", "failed", "skippe
 ReviewStatusValue = Literal["pending", "approved", "rejected", "expired"]
 GROUP_AI_HARD_HOURLY_MIN_MESSAGES = 10
 CHANNEL_COUNT_JITTER_DEFAULT = 0.2
+DEFAULT_CHANNEL_LIKE_ALLOWED_REACTIONS = [
+    "👍",
+    "❤️",
+    "🔥",
+    "👏",
+    "🎉",
+    "🤩",
+    "👌",
+    "💯",
+    "🙌",
+    "✨",
+]
 MAX_TOTAL_COMMENT_JITTER = 0.3
 DEFAULT_CHANNEL_COMMENT_BUSINESS_MAX_PER_MESSAGE = 80
 DEFAULT_CHANNEL_COMMENT_PLANNED_FALLBACK_MAX_BPS = 2000
@@ -840,7 +852,9 @@ class ChannelLikeConfig(ChannelMessageScopeConfig):
     like_count_jitter: float = Field(default=CHANNEL_COUNT_JITTER_DEFAULT, ge=0, le=1)
     reaction_type: Literal["random", "specific"] = "random"
     reaction_scope: Literal["configured", "all_available"] = "all_available"
-    allowed_reactions: list[str] = Field(default_factory=lambda: ["👍"])
+    allowed_reactions: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_CHANNEL_LIKE_ALLOWED_REACTIONS)
+    )
     max_likes_per_account_per_hour: int = Field(default=1_000_000, ge=1, le=1_000_000)
 
 
@@ -2648,6 +2662,7 @@ __all__ = [
     "ChannelViewConfig",
     "ChannelViewTaskConfigUpdate",
     "ChannelViewTaskCreate",
+    "DEFAULT_CHANNEL_LIKE_ALLOWED_REACTIONS",
     "ExecutionAttemptOut",
     "FailurePolicy",
     "GenerateTaskPreviewOut",

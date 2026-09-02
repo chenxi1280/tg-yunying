@@ -25,7 +25,7 @@ pytestmark = pytest.mark.no_postgres
 
 
 def test_enrollment_activation_and_close_routes_are_exposed() -> None:
-    paths = {route.path for route in router.routes}
+    paths = {getattr(route, "path", "") for route in router.routes if hasattr(route, "path")}
     assert "/api/tasks/{task_id}/channel-comment-grounding-enrollment" in paths
     assert "/api/tasks/{task_id}/channel-comment-grounding-enrollment/close" in paths
 

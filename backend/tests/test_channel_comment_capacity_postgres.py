@@ -373,19 +373,20 @@ def _seed_plan(session, obligation_ids: list[str]) -> None:
     session.flush()
     _seed_obligations(session, obligation_ids)
     target = freeze_initial_quality_target(session, plan, source)
-    component = target.component_targets_json[0]
-    for ordinal, obligation_id in enumerate(obligation_ids, 1):
-        assignment = ChannelCommentGroundingAssignment(
-            id=f"pg-comment-grounding-{ordinal}",
-            tenant_id=TENANT_ID, plan_contract_id=PLAN_ID,
-            source_revision_id=source.id, target_ordinal=ordinal,
-            assignment_version=1, quality_target_revision_id=target.id,
-            quality_component_key=component["quality_component_key"],
-            **quality_assignment_content(source, component, ordinal),
-            assignment_state="active",
-        )
-        session.add(assignment)
-        session.get(CommentFulfillmentObligation, obligation_id).grounding_assignment_id = assignment.id
+    for component in target.component_targets_json:
+        for ordinal in component.get("grounding_ordinal_ids") or []:
+            obligation_id = obligation_ids[int(ordinal) - 1]
+            assignment = ChannelCommentGroundingAssignment(
+                id=f"pg-comment-grounding-{ordinal}",
+                tenant_id=TENANT_ID, plan_contract_id=PLAN_ID,
+                source_revision_id=source.id, target_ordinal=int(ordinal),
+                assignment_version=1, quality_target_revision_id=target.id,
+                quality_component_key=component["quality_component_key"],
+                **quality_assignment_content(source, component, int(ordinal)),
+                assignment_state="active",
+            )
+            session.add(assignment)
+            session.get(CommentFulfillmentObligation, obligation_id).grounding_assignment_id = assignment.id
 
 
 def _source_revision() -> ChannelMessageSourceRevision:

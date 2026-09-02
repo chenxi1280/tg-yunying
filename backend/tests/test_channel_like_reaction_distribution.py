@@ -501,9 +501,15 @@ def test_channel_like_config_accepts_all_available_scope_without_runtime_capabil
 
 
 def test_channel_like_config_defaults_to_all_available_reactions():
+    from app.schemas.task_center import DEFAULT_CHANNEL_LIKE_ALLOWED_REACTIONS
+
     config = ChannelLikeConfig(target_channel_id=1)
 
     assert config.reaction_scope == "all_available"
+    assert config.allowed_reactions == [
+        "👍", "❤️", "🔥", "👏", "🎉", "🤩", "👌", "💯", "🙌", "✨"
+    ]
+    assert config.allowed_reactions == DEFAULT_CHANNEL_LIKE_ALLOWED_REACTIONS
 
 
 def test_reaction_plan_matches_emoji_with_variation_selectors():

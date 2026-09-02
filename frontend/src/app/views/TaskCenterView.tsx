@@ -1500,7 +1500,7 @@ export default function TaskCenterView({
       return { ...base, ...channelScopePayload(values), ...channelViewProductionPayload(values) };
     }
     if (taskType === 'channel_like') {
-      return { ...base, ...channelScopePayload(values), target_likes_per_message: values.target_likes_per_message ?? 50, like_count_jitter: values.like_count_jitter ?? CHANNEL_COUNT_JITTER_DEFAULT, reaction_type: values.reaction_type ?? 'random', reaction_scope: values.reaction_scope ?? 'all_available', allowed_reactions: words(values.allowed_reactions || '👍'), max_likes_per_account_per_hour: 1000000 };
+      return { ...base, ...channelScopePayload(values), target_likes_per_message: values.target_likes_per_message ?? 50, like_count_jitter: values.like_count_jitter ?? CHANNEL_COUNT_JITTER_DEFAULT, reaction_type: values.reaction_type ?? 'random', reaction_scope: values.reaction_scope ?? 'all_available', allowed_reactions: words(values.allowed_reactions || '👍,❤️,🔥,👏,🎉,🤩,👌,💯,🙌,✨'), max_likes_per_account_per_hour: 1000000 };
     }
     return channelCommentPayload(values, base, true);
   }
@@ -1606,7 +1606,7 @@ export default function TaskCenterView({
       return { ...base, ...channelViewProductionPayload(values) };
     }
     if (type === 'channel_like') {
-      return { ...base, target_likes_per_message: values.target_likes_per_message ?? 50, like_count_jitter: values.like_count_jitter ?? CHANNEL_COUNT_JITTER_DEFAULT, reaction_type: values.reaction_type ?? 'random', reaction_scope: values.reaction_scope ?? 'all_available', allowed_reactions: words(values.allowed_reactions || '👍'), max_likes_per_account_per_hour: 1000000 };
+      return { ...base, target_likes_per_message: values.target_likes_per_message ?? 50, like_count_jitter: values.like_count_jitter ?? CHANNEL_COUNT_JITTER_DEFAULT, reaction_type: values.reaction_type ?? 'random', reaction_scope: values.reaction_scope ?? 'all_available', allowed_reactions: words(values.allowed_reactions || '👍,❤️,🔥,👏,🎉,🤩,👌,💯,🙌,✨'), max_likes_per_account_per_hour: 1000000 };
     }
     return channelCommentPayload(values, base, false);
   }

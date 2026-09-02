@@ -614,7 +614,7 @@ export function typeInitialValues(type: TaskCenterTaskType, setting?: Scheduling
       like_count_jitter: CHANNEL_COUNT_JITTER_DEFAULT,
       reaction_type: 'random',
       reaction_scope: 'all_available',
-      allowed_reactions: '👍,❤️,🔥',
+      allowed_reactions: '👍,❤️,🔥,👏,🎉,🤩,👌,💯,🙌,✨',
       max_likes_per_account_per_hour: 1000000,
     };
   }

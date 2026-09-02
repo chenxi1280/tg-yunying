@@ -1436,6 +1436,7 @@ def _channel_comment_action(action_id: str, comment_text: str, scheduled_at: dat
             "message_content": "招生信息",
             "comment_text": comment_text,
             "target_display": "天津音乐学院频道",
+            "ai_generation_status": "ready",
         },
         result={},
     )

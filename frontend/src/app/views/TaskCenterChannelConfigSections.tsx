@@ -49,7 +49,7 @@ export function ChannelLikeTypeConfig() {
         <Form.Item name="target_likes_per_message" label="预计每条点赞"><InputNumber min={1} /></Form.Item>
         <Form.Item name="reaction_type" label="Reaction 模式"><Select options={[{ value: 'random', label: '随机' }, { value: 'specific', label: '指定' }]} /></Form.Item>
         <Form.Item name="reaction_scope" label="随机范围"><Select options={[{ value: 'all_available', label: '频道可用全部 Reaction' }, { value: 'configured', label: '自定义 Reaction' }]} /></Form.Item>
-        <Form.Item name="allowed_reactions" label="自定义/指定 Reaction"><Input /></Form.Item>
+        <Form.Item name="allowed_reactions" label="自定义/指定 Reaction" extra="多个表情用逗号分隔，如：👍, ❤️, 🔥, 👏, 🎉, 🤩, 👌, 💯, 🙌, ✨"><Input placeholder="👍, ❤️, 🔥, 👏, 🎉, 🤩, 👌, 💯, 🙌, ✨" /></Form.Item>
       </div>
       <Collapse
         ghost
