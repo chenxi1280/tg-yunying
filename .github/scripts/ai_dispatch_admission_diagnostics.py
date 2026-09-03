@@ -468,6 +468,33 @@ WORKER_HEARTBEATS_QUERY = text("""
     ORDER BY last_seen_at DESC
 """)
 
+ZHENGDA_TASK_QUERY = text("""
+    SELECT t.id, t.name, t.status, t.task_lifecycle_epoch, t.fulfillment_contract_version,
+           t.next_run_at, t.updated_at, t.last_error, t.type_config, t.stats, t.account_config,
+           g.id AS group_id, g.title AS group_title, g.can_send, g.auth_status, g.member_count,
+           tgt.daily_target_messages, tgt.target_date
+    FROM tasks AS t
+    LEFT JOIN tg_groups AS g ON g.id = (t.type_config->>'target_group_id')::bigint
+    LEFT JOIN task_group_daily_targets AS tgt ON tgt.task_id = t.id AND tgt.target_date = CURRENT_DATE
+    WHERE t.name LIKE '%郑州大学%'
+""")
+
+ZHENGDA_ACTIONS_BREAKDOWN_QUERY = text("""
+    SELECT a.task_id, a.status, a.action_type, 
+           a.payload->>'ai_generation_status' AS gen_status,
+           COUNT(*) AS count,
+           MIN(a.scheduled_at) AS min_scheduled_at,
+           MAX(a.scheduled_at) AS max_scheduled_at,
+           MIN(a.created_at) AS min_created_at,
+           MAX(a.created_at) AS max_created_at,
+           COUNT(CASE WHEN a.payload->>'message_text' IS NOT NULL AND a.payload->>'message_text' <> '' THEN 1 END) AS has_text_count
+    FROM actions AS a
+    WHERE a.task_id IN (SELECT id FROM tasks WHERE name LIKE '%郑州大学%')
+    GROUP BY a.task_id, a.status, a.action_type, a.payload->>'ai_generation_status'
+    ORDER BY a.task_id, a.status, a.action_type
+""")
+
+
 def main() -> None:
     with SessionLocal() as session:
         classifications = _rows(session, ACTION_CLASSIFICATION_QUERY)
@@ -486,6 +513,8 @@ def main() -> None:
         gen_candidates = _rows(session, GENERATION_CANDIDATES_QUERY)
         gen_jobs = _rows(session, GENERATION_JOBS_QUERY)
         worker_hbs = _rows(session, WORKER_HEARTBEATS_QUERY)
+        zhengda_tasks = _rows(session, ZHENGDA_TASK_QUERY)
+        zhengda_actions = _rows(session, ZHENGDA_ACTIONS_BREAKDOWN_QUERY)
     _print_rows("AI_DISPATCH_ACTION_CLASS", classifications)
     _print_rows("AI_DISPATCH_ACTION_SAMPLE", samples)
     _print_rows("AI_DISPATCH_ACTION_RUNTIME_REASON", runtime_reasons)
@@ -502,6 +531,8 @@ def main() -> None:
     _print_rows("AI_GENERATION_PIPELINE_CANDIDATES", gen_candidates)
     _print_rows("AI_GENERATION_PIPELINE_JOBS", gen_jobs)
     _print_rows("AI_WORKER_HEARTBEATS", worker_hbs)
+    _print_rows("ZHENGDA_TASK_INFO", zhengda_tasks)
+    _print_rows("ZHENGDA_ACTIONS_BREAKDOWN", zhengda_actions)
 
 
 if __name__ == "__main__":
