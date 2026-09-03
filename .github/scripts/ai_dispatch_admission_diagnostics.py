@@ -682,6 +682,31 @@ TIANJIN_TASK_ACTIONS_QUERY = text("""
 """)
 
 
+ZHENGDA_COVERAGE_STATUS_QUERY = text("""
+    SELECT 
+        c.state, 
+        (c.reserved_action_id IS NOT NULL) AS has_reserved_action,
+        c.blocker_code,
+        COUNT(*) AS count
+    FROM task_account_daily_coverage AS c
+    WHERE c.task_id = 'a52e84f2-8663-4b00-bbbe-196fb626b28d'
+      AND c.coverage_date = CURRENT_DATE
+    GROUP BY c.state, (c.reserved_action_id IS NOT NULL), c.blocker_code
+    ORDER BY count DESC
+""")
+
+ZHENGDA_DAILY_TARGET_RECORD_QUERY = text("""
+    SELECT 
+        t.id, t.target_date, t.configured_message_target, t.effective_message_target,
+        t.planned_daily_target, t.due_message_count, t.confirmed_message_count,
+        t.daily_fulfillment_phase, t.scope_frozen_at, t.full_day_committed_at,
+        t.target_change_reason
+    FROM task_group_daily_targets AS t
+    WHERE t.task_id = 'a52e84f2-8663-4b00-bbbe-196fb626b28d'
+      AND t.target_date = CURRENT_DATE
+""")
+
+
 def main() -> None:
     with SessionLocal() as session:
         classifications = _rows(session, ACTION_CLASSIFICATION_QUERY)
@@ -713,6 +738,8 @@ def main() -> None:
         deep_dive_items = _rows(session, ZHENGDA_AND_TIANJIN_DEEP_DIVE_QUERY)
         luoyang_groups = _rows(session, LUOYANG_AND_TIANJIN_GROUPS_QUERY)
         tianjin_actions = _rows(session, TIANJIN_TASK_ACTIONS_QUERY)
+        zhengda_coverage = _rows(session, ZHENGDA_COVERAGE_STATUS_QUERY)
+        zhengda_target = _rows(session, ZHENGDA_DAILY_TARGET_RECORD_QUERY)
     _print_rows("AI_DISPATCH_ACTION_CLASS", classifications)
     _print_rows("AI_DISPATCH_ACTION_SAMPLE", samples)
     _print_rows("AI_DISPATCH_ACTION_RUNTIME_REASON", runtime_reasons)
@@ -742,6 +769,8 @@ def main() -> None:
     _print_rows("ZHENGDA_AND_TIANJIN_DEEP_DIVE", deep_dive_items)
     _print_rows("LUOYANG_AND_TIANJIN_GROUPS", luoyang_groups)
     _print_rows("TIANJIN_TASK_ACTIONS", tianjin_actions)
+    _print_rows("ZHENGDA_COVERAGE_STATUS", zhengda_coverage)
+    _print_rows("ZHENGDA_DAILY_TARGET_RECORD", zhengda_target)
 
 
 if __name__ == "__main__":
