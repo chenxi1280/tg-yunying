@@ -140,22 +140,26 @@ def _reaction_obligations(session, task: Task, since: datetime, now: datetime) -
 
 def _view_obligations(session, task: Task, since: datetime, now: datetime) -> dict[str, Any]:
     model = ViewFulfillmentObligation
-    ledger_id = session.scalar(
+    ledger_ids = list(session.scalars(
         select(TaskDayLedger.id)
         .where(TaskDayLedger.task_id == task.id)
-        .order_by(TaskDayLedger.period_start_at.desc(), TaskDayLedger.id.desc())
-        .limit(1)
-    )
-    scope = model.task_day_ledger_id == ledger_id
+    ))
+    scope = model.task_day_ledger_id.in_(ledger_ids) if ledger_ids else model.task_day_ledger_id.is_(None)
     post_release = int(session.scalar(
         select(func.count(ViewRemoteFact.id))
         .join(model, model.id == ViewRemoteFact.obligation_id)
         .where(scope, ViewRemoteFact.remote_confirmed_at >= since)
     ) or 0)
+    total_remote_facts = int(session.scalar(
+        select(func.count(ViewRemoteFact.id))
+        .join(model, model.id == ViewRemoteFact.obligation_id)
+        .where(scope)
+    ) or 0)
     return {
         "status_counts": _status_counts(session, model, scope),
         **_due_counts(session, model, scope, now),
         "post_release_remote_fact_count": post_release,
+        "total_remote_facts": total_remote_facts,
     }
 
 
@@ -189,19 +193,7 @@ def _action_snapshot(session, task: Task, since: datetime, now: datetime) -> dic
 
 
 def _action_scope(session, task: Task, action_type: str) -> tuple:
-    scope = (Action.task_id == task.id, Action.action_type == action_type)
-    if task.type != "channel_view":
-        return scope
-    ledger_id = session.scalar(
-        select(TaskDayLedger.id)
-        .where(TaskDayLedger.task_id == task.id)
-        .order_by(TaskDayLedger.period_start_at.desc(), TaskDayLedger.id.desc())
-        .limit(1)
-    )
-    current_obligations = select(ViewFulfillmentObligation.id).where(
-        ViewFulfillmentObligation.task_day_ledger_id == ledger_id
-    )
-    return (*scope, Action.obligation_id.in_(current_obligations))
+    return (Action.task_id == task.id, Action.action_type == action_type)
 
 
 def _claimability_snapshot(session, task: Task, action_type: str, now: datetime) -> dict[str, int]:
