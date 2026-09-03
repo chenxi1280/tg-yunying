@@ -111,13 +111,13 @@ jobs:
           ACTOR: ${{ inputs.actor }}
           APPROVAL_REF: ${{ inputs.approval_ref }}
         run: |
-          set -euo pipefail
+          set -euxo pipefail
           [[ "${EXPECTED_DEPLOYED_SHA}" =~ ^[0-9a-fA-F]{8,40}$ ]]
           BASE_DIR="${PRODUCTION_BASE_DIR:-/data/tgyunying}"
           EXPECTED_SHORT="${EXPECTED_DEPLOYED_SHA:0:8}"
           CURRENT_RELEASE="$(ssh silicon-valley-production-server "readlink -f '${BASE_DIR}/current'")"
           [[ "$(basename "${CURRENT_RELEASE}")" == *"${EXPECTED_SHORT}"* ]]
-          scp backend/scripts/recover_ai_generation_contract_coverage.py \
+          scp .github/scripts/recover_ai_generation_contract_coverage.py \
             silicon-valley-production-server:/tmp/recover_ai_generation_contract_coverage.py
           ssh silicon-valley-production-server \
             "docker cp /tmp/recover_ai_generation_contract_coverage.py tgyunying-backend:/tmp/recover_ai_generation_contract_coverage.py && \
