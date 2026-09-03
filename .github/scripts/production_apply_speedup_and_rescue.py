@@ -98,22 +98,24 @@ def rescue_zhengda_actions(session) -> dict:
     ).rowcount
     log.append(f"deleted_{del_intents}_intents")
 
-    # C. Reset daily coverage state
+    # C. Reset daily coverage state including pacing_plan_hash fields
     reset_cov = session.execute(
-        update(TaskAccountDailyCoverage)
-        .where(
-            TaskAccountDailyCoverage.task_id == task_id,
-            TaskAccountDailyCoverage.coverage_date == now_ts.date(),
-        )
-        .values(
-            state="ready",
-            reserved_action_id=None,
-            reservation_token=None,
-            blocker_code="",
-            updated_at=now_ts,
-        )
+        text("""
+            UPDATE task_account_daily_coverage
+            SET state = 'ready',
+                reserved_action_id = NULL,
+                reservation_token = NULL,
+                blocker_code = '',
+                pacing_plan_hash = NULL,
+                pacing_slot_ordinal = NULL,
+                pacing_due_at = NULL,
+                pacing_plan_total = NULL,
+                updated_at = NOW()
+            WHERE task_id = :task_id AND coverage_date = CURRENT_DATE
+        """),
+        {"task_id": task_id},
     ).rowcount
-    log.append(f"reset_{reset_cov}_coverage_records")
+    log.append(f"reset_{reset_cov}_coverage_records_and_pacing_hashes")
     session.commit()
 
     # D. Build fresh action plan for Zhengda
