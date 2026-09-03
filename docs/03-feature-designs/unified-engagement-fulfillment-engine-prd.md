@@ -26,6 +26,8 @@
 
 > **2026-09-03 执行所有权终审：** response 日计划只冻结 capacity window 与 tentative supply，不预判未来真人 `planned_call_at`；canonical turn 分类归公共单 owner，Task/adapter 只消费冻结结果。真人 owner 后先冻结 natural window，再在 compatible supply/Timeline 交集中原子建立 `InteractionServiceBinding + planned_call + effective reservation`。每个 binding 的调用上限与 Task/source-plan 总预算分离，数量义务 pre-Gateway 归还不会清零旧调用，也不会导致后续 binding 永久失去调用身份。materialization/latest-safe/release/protected slack 全部按冻结 `ExecutionTimingProfileRevision + path-start stage` 派生。
 
+> **2026-09-03 最终遗漏终审：** classification admission 现在必须为 Task candidate projection 与 peer claim finalize 预留尾部时间，不能把全部 3/5 秒 cutoff 都交给分类模型；response planned call 只从“完整准备链按 P95 可到达”的交集中抽样，并与 Provider permit、每 binding/Task 总预算同一 admission 事务冻结，预测上已迟到的 binding 不再创建。真人互动效果新增 event-level attribution claim：原生 reply 优先且不受语义推断窗限制，非原生续聊最多归因一条我方 fact，禁止一条真人消息重复抬高多条 AI 内容的互动率。owned unknown 则跨滚动窗口持续占用 O，直到有权威对账终态。
+
 ## 1. 为什么必须重做统一边界
 
 ### 1.1 当前不是一条链，而是“前半段四套、后半段一套”
@@ -239,12 +241,12 @@ flowchart LR
 | `TurnResponseCoordinator` | 在容量判断前对同 tenant、同会话、同逻辑 turn 的多个 Task 候选选出唯一响应 owner | 不按当前空闲容量挑 owner、不允许多个 Task 依次补答同一 turn |
 | `ConversationResponseAuthorityCoordinator` | 冻结同 tenant、同 peer/thread 的互动响应 writer kind，隔离 legacy listener/Campaign、静态 reply planner 与统一引擎 | 不阻断合法 proactive 内容，不让两个响应 writer 并存 |
 | `MaterializationCoordinator` | 到 JIT 窗口后调用类型 adapter；互动型生成内容，被动型生成操作 command | 不提前批量生成整日内容 |
-| `ProviderAdmissionCoordinator` | 按 deadline slack、测得延迟、并发和预算准入 GenerationJob | 不把来不及完成的 Job 排队到过期、不决定业务参与率 |
+| `ProviderAdmissionCoordinator` | 按 deadline slack、测得延迟、并发和预算原子冻结 Provider admission；classification 为下游 candidate/claim 留足尾部，response 只在完整准备链可命中 planned call 时准入 | 不把来不及完成的 Job 排队到过期、不决定业务参与率、不在 binding 后补记一个无并发守恒的预算 |
 | `WakeCoordinator` | 在业务状态提交时写 durable stage wake，并发送低延迟通知；worker 始终回读数据库 owner | 不把通知当真相、不靠固定全表轮询串联实时链 |
 | `GatePipeline` | 执行统一阶段顺序并记录 typed decision | 不使用通用文本相似度替代业务 identity |
 | `Dispatcher` | claim 已到期且 ready 的 Action，完成调用边界和结果持久化 | 不生成内容、不追赶数量、不更换账号 |
 | `FactCoordinator` | 落通用 fact envelope，再调用 typed projector 结算 | 不以公共信封替代专用事实表 |
-| `HumanEngagementProjector` | 把真人对我方 confirmed fact 的权威回复或可解释续聊投影为互动结果 | 不把推断关系冒充原生 reply，不结算发送数量 |
+| `HumanEngagementProjector` | 先对真人 event 建唯一正向归因 claim，再把对我方 confirmed fact 的权威回复或可解释续聊投影为互动结果 | 不把推断关系冒充原生 reply，不让同一真人 event 重复抬高多条 fact，不结算发送数量 |
 | `RecoveryCoordinator` | 回收 pre-call lease、处理 safely-not-executed、打开 unknown reconcile | 不推断 Telegram 未执行、不集中补发 |
 
 ### 5.2 适配器接口
@@ -341,12 +343,12 @@ Action 不再承担“未来可能要做的一整天计划”，也不允许以�
 | `ConversationAttentionState` | tenant、peer/thread、watermark、active blocker set、primary state、open human turn、admitted response、awaiting-human-response、human quiet-until、quiet-after、policy/profile/projection revision | `(tenant, peer/thread)` 一个 current projection；只由权威事件/claim/quality decision/typed fact 与有界 expiry 推进，控制低优先级内容是否应等待，不能用可无限续租的 worker lease 代替 |
 | `InteractionOpportunity` | turn、task/lifecycle、policy revision、opportunity class、eligibility、participation candidate decision、decision hash、freshness deadline、owner result、capacity/service-binding result、terminal reason/supersede evidence | `(task, lifecycle_epoch, turn_id, participation_policy_revision)`；先冻结 candidate，再做跨 Task owner claim，最后判断容量；不提前拥有 planned call，supersede 不删除 admitted identity |
 | `ConversationTurnClaim` | tenant、canonical peer/thread、turn family、current turn revision、decision round revision、subscription set revision/hash、expected/terminal candidate count、candidate decision cutoff、next eligible wake、candidate opportunity ids、winner task/lifecycle/opportunity、ordered required account hint set + precedence basis、required owner task hint set、selection basis、state/version | `(tenant, canonical_peer/thread, turn_family)` 最多一个 active/served owner；每个 decision round 的候选集关闭后不可追加，只有尚无 admitted owner 且未过 freshness deadline 才可 CAS 开下一 round；required hints 在 Task 路由前冻结，call-issued 后不得换 winner |
-| `TurnClassificationCapacityRevision` | tenant、provider route、surface/peer scope、planning period、ambiguous-turn arrival/sample/confidence、service P95、permits、call/token/cost budget、used/unknown、policy/effective revision | `(tenant, provider_route, surface_scope, planning_period, revision)`；canonical turn revision 最多消费一次共享调用，重叠 Task 只引用同一 readiness/result，不各自预留预算 |
-| `InteractionServiceBinding` | admitted opportunity、response quantity obligation、binding revision、account/relation/turn/source、turn natural window、slot service-window intersection、planned call、preparation-timing revision、provider call plan/used count、task-level budget reservation、state、unbind/terminal reason | `(admitted_opportunity)` 最多一个 active binding，`(response_obligation, binding_revision)` 唯一；planned call 只能在 turn/slot 交集中冻结，绑定后 account/relation/turn 不可换；每个 binding 最多 2 次 Provider 调用且 unknown 计数，pre-Gateway unbind 可为同一数量义务在后续 opportunity 建 successor binding，但绝不在同 turn 换号、重置已消费调用或任务级总预算；call-issued 后不可解绑/复用 |
+| `TurnClassificationCapacityRevision` | tenant、provider route、surface/peer scope、planning period、ambiguous-turn arrival/sample/confidence、service P95、最大 eligible-Task fanout projection P95、claim finalize P95、permits、call/token/cost budget、used/unknown、policy/effective revision | `(tenant, provider_route, surface_scope, planning_period, revision)`；canonical turn revision 最多消费一次共享调用，重叠 Task 只引用同一 readiness/result，不各自预留预算；分类预计完成必须早于扣除下游 candidate projection、claim finalize 与 margin 后的 latest-safe |
+| `InteractionServiceBinding` | admitted opportunity、response quantity obligation、binding revision、account/relation/turn/source、turn natural window、slot service-window intersection、timing-feasible call interval、planned call、preparation-timing revision、provider admission reservation、provider call plan/used count、task-level budget reservation、state、unbind/terminal reason | `(admitted_opportunity)` 最多一个 active binding，`(response_obligation, binding_revision)` 唯一；planned call 只能从 turn/slot/Timeline 与完整准备链 P95 都可到达的交集中冻结，绑定后 account/relation/turn 不可换；每个 binding 最多 2 次 Provider 调用且 unknown 计数，pre-Gateway unbind 可为同一数量义务在后续 opportunity 建 successor binding，但绝不在同 turn 换号、重置已消费调用或任务级总预算；call-issued 后不可解绑/复用 |
 | `ConversationResponseAuthority` | tenant、canonical peer/thread、surface、writer kind、route revision、enabled lifecycle set、cutover manifest、state/version | `(tenant, canonical_peer/thread, surface)` 最多一个 active writer kind；统一引擎接管前 legacy contextual writer 必须 retired 或 fenced |
 | `InteractionCapacityPlan` | task/day/source plan、peer forecast revision/confidence、replayed eligible/candidate/unique-owner/still-needed-owner/provider-requiring-owner P95、forecast superseded count、required service slots、valid response slots、shared classification-capacity revision、response binding/call budget、hour/validity window、total quantity、proactive floor、response reserved、released/consumed/shortfall、policy revision | `(task, lifecycle_epoch, task_day/source_plan, capacity_bucket, revision)`；需求回放发生在容量过滤之前，各类别之和始终等于冻结数量；重叠 Task 引用共享分类容量，所有本 Task successor response binding 共用冻结总预算 |
 | `ExecutionTimingProfileRevision` | adapter/lane、sample window/count、materialization/quality/dedupe/Gateway 各段 P95、按 path-start stage 索引的 remaining-path P95 map、materialization-through-Gateway P95、各 path safety margin、confidence、effective/version | `(tenant, adapter, lane, revision)`；只由批准 shadow/remote attempt 样本生成，冻结到 plan/slot，不允许运行 worker 自带不同常数；每个派生时点同时保存所用 path-start stage |
-| `OwnedFollowupAdmissionReservation` | task/source plan、parent fact、bound account、rolling-window/policy revision、confirmed-human fact set hash/count、owned exposure set hash/count、ratio after candidate、state/version | `(task, source plan, parent fact, policy revision)`；Task/policy 锁内只用 confirmed 真人目标回复作正向分母，owned 的 active/call-issued/unknown/confirmed 全作暴露分子后插入，unknown 保持占位 |
+| `OwnedFollowupAdmissionReservation` | task/source plan、parent fact、bound account、rolling-window/policy revision、confirmed-human fact set hash/count、owned exposure set hash/count、unresolved carryover set hash/count、ratio after candidate、state/version | `(task, source plan, parent fact, policy revision)`；Task/policy 锁内只用滚动窗内 confirmed 真人目标回复作正向分母，owned 的窗内 active/call-issued/unknown/confirmed 加所有窗外未终结 call-issued/unknown 一并作暴露分子后插入；unknown 不因滚动窗滑走而释放 |
 | `EngagementPacingSlot` | obligation projection、plan revision、ordinal、slot class、capacity window start/end、fixed proactive/operation due 或 null、response release cutoff、released-due revision、deadline、state/version | `(projection_id, plan_revision, ordinal)`；response-reserved 计划时只冻结 capacity window，不伪造未来 turn planned call；fixed/released due 不原地改写 |
 | `TimelineReservation` | domain、resource key、obligation/slot、priority class、reservation kind `tentative_supply|effective_service`、timeline-policy revision、resource-occupancy quantum duration、movable window、current reserved interval/anchor、effective claim、state、move revision | 同 resource 的 active interval 不重叠；response 计划时只占一个按该 domain 出站动作/自然间隔策略计算的 tentative resource quantum，不锁住整个 stratum，也不把 Provider 生成时长误算成账号占用；绑定时在 turn natural window 与 movable window 的交集内 CAS 移动并转 effective service |
 | `ConversationTempoProfile` | peer/thread、time-band、sample window、human interval quantiles、activity class、sample count、profile revision | `(tenant, peer/thread, time_band, revision)`；只由真人事件样本投影 |
@@ -357,9 +359,10 @@ Action 不再承担“未来可能要做的一整天计划”，也不允许以�
 | `CommentRealizationIntentAssignment` | intent reservation、binding kind/revision、turn/target、response intent、speech act、used evidence、compatibility decision、supersedes/state | `(reservation, binding_revision)` 一个；response 必须在真实 turn/relation 后建立，每个 reservation 最多一个 active assignment |
 | `CommentStyleReservation` | comment obligation/grounding/account-binding revision/ordinal、discussion peer、source cluster、account voice revision、profile eligibility cutoff、style policy revision、stable distribution rank、allowed set、seed、supersedes/state | 每个 comment obligation/grounding/account-binding/style policy revision 一个且只有一个 active；换号必须换 voice reservation，计划时仍不冻结尚未知上下文的具体语气 |
 | `CommentStyleAssignment` | style reservation、active realization-intent assignment、binding kind/revision、preparation-timing revision、relation/turn class/speech act、planned-call time band、profile/voice revision、length tier、voice style、seed、supersedes/state | `(style reservation, realization-intent assignment, preparation_timing_revision)` 一个；每个 reservation 最多一个 active assignment，必须晚于真实 intent/binding，同一 preparation 不重抽，Gateway-started 后不可替换 |
-| `ProviderCapacityReservation` | tenant、provider route、lane、job、estimated start/finish、deadline、token/cost budget、state/version | 一个 Job 最多一个 active reservation；预计完成越过 deadline 时禁止调用 |
+| `ProviderCapacityReservation` | tenant、provider route、lane、classification request 或 service binding work identity、capacity/budget revision、estimated start/finish、downstream-tail P95、planned-call/latest-safe、reserved calls/tokens/cost、state/version | 一个 classification request 或 response binding 最多一个 active admission；与共享 classification 或 Task/source-plan budget conditional CAS 同事务，预计完整路径越过 latest-safe 时禁止调用，取消只释放未发起部分且不抹除 used/unknown |
 | `PreparedCommand` | obligation、materialization revision、adapter kind、account、peer/source/reply identity、payload/content hash、request identity、due/deadline | `(obligation_id, materialization_revision)`；创建后不可原地换账号、关系、正文或目标 |
-| `HumanEngagementObservation` | originating typed fact、human event、peer/thread、relation kind、confidence/evidence、observed window、outcome class、classifier revision | `(originating_fact_id, human_event_id, relation_kind)`；原生 reply 与语义推断分列，不关闭任何 quantity/coverage obligation |
+| `HumanEngagementAttributionClaim` | human event/revision、peer/thread、author class、native parent fact 或 inferred candidate fact set、ordered evidence/score、winner fact、attribution kind、confidence、terminal reason、policy revision | `(tenant, peer/thread, human_event_revision, positive_outcome_family)` 最多一个正向 winner；native reply 精确父事实优先且不受 inference window 限制，非原生事件只有唯一高置信 winner 才可计 inferred positive，歧义保持 unattributed |
+| `HumanEngagementObservation` | attribution claim、originating typed fact nullable、human event、peer/thread、relation kind、confidence/evidence、inference window、outcome class、classifier revision | 正向 observation 必须引用唯一 attribution claim；同 event/native parent 不再追加 inferred positive。负向信号可保留全部显式 evidence，但 route/peer 指标按 human event 去重；不关闭任何 quantity/coverage obligation |
 
 状态变更统一带 `state_version` CAS；所有 business shortfall 必须保存 `reason_code + basis_revision + observed_at`。`PreparedCommand` 可以和 Action 共表，但必须在语义上满足上述不可变合同，不能重新让 Action 承担数量计划或生成草稿。
 
@@ -520,7 +523,7 @@ admitted 后上下文自然变化不能被粗暴全算成容量失败，也不�
 
 `TurnIntentClassifier` 只输出受限 `turn_class + confidence + evidence message ids`，不能输出发送账号、数量或 participate。结构化规则能确定点名、reply、服务通知时先确定性分类；只有语义不明确的候选才调用受 deadline/Provider budget 约束的分类模型。低置信度记 `turn_classification_uncertain` 并进入人工可审计 skipped，不静默套普通类。`participation_policy_v1` 冻结 candidate 比例：
 
-语义分类调用属于独立 `turn_classification` Provider lane，不得占用 response generation/reviewer permits，也不能藏在普通 worker 重试中。只有 frozen subscription index 表明至少一个 interaction Task 对该 peer/thread 有效时才进入分类；无订阅 turn 零调用。每个 canonical turn revision 最多一次语义分类调用，request identity、unknown 和成本永久保留；只有预计能在 candidate decision cutoff 前完成时才准入，来不及或结果 unknown 统一为 `turn_classification_uncertain` terminal decision，不以默认普通观点补位。tenant/provider/surface 共享的 `TurnClassificationCapacityRevision` 用历史 ambiguous-turn arrival P95 和分类服务 P95 冻结 permits/call budget；重叠 Task/adapter 只引用同一 classification readiness/result，不重复扣费。分类画像或容量未证明时只能进入显式 low-confidence canary，不能宣称实时互动 ready。
+语义分类调用属于独立 `turn_classification` Provider lane，不得占用 response generation/reviewer permits，也不能藏在普通 worker 重试中。只有 frozen subscription index 表明至少一个 interaction Task 对该 peer/thread 有效时才进入分类；无订阅 turn 零调用。每个 canonical turn revision 最多一次语义分类调用，request identity、unknown 和成本永久保留。分类不能把整个 candidate cutoff 当作自己的 deadline：`classification_latest_safe_at = candidate_decision_cutoff_at - max_eligible_task_fanout_projection_p95 - claim_finalize_p95 - execution_safety_margin(post_classification)`；这些 P95 与 margin 必须来自同一冻结 classification timing profile，并覆盖全部 expected Task 的并行投影收口、terminal decision 写入和唯一 owner finalize。只有预计分类完成不晚于该 latest-safe 才准入；否则或结果 unknown 一律形成 `turn_classification_uncertain` terminal decision，不以默认普通观点补位。tenant/provider/surface 共享的 `TurnClassificationCapacityRevision` 用历史 ambiguous-turn arrival P95、分类服务 P95 和上述下游 tail 冻结 permits/call budget；重叠 Task/adapter 只引用同一 classification readiness/result，不重复扣费。分类画像或容量未证明时只能进入显式 low-confidence canary，不能宣称实时互动 ready。
 
 | turn class | 活群 participation candidate 比例 | 评论 participation candidate 比例 |
 |---|---|---|
@@ -556,7 +559,7 @@ total_quantity
 - 以上 40%/30% 是 `interaction_capacity_policy_v1` 的冻结值；只在新 task/source revision 生效，页面必须显示计划数量、预测 admitted turns 和预计 capacity shortfall。
 - response-reserved slots 在全部小时 strata/source validity strata 中用稳定系统抽样均匀穿插，不能集中在小时开头、末尾或来源窗口最后一天。每个 flexible slot 的 `response_release_cutoff = window_end - complete proactive remaining-path P95(pre_materialization) - attention_quiet_window_P95 - execution_safety_margin(pre_materialization)`；全部时序量读取同一冻结 `ExecutionTimingProfileRevision`。只有 `cutoff > window_start` 且基于冻结 `ConversationAttentionForecastRevision`，cutoff 后仍有足够 quiet window 完成主动内容时才是合法 flexible slot。否则 Planner 必须稳定选择另一个可释放 stratum，不能冻结一个明知无法回收的 flexible slot；合法 strata 不足以承载目标 response-flexible 总池时，启动预览直接给出 `interaction_plan_unachievable`，任务不得宣称数量与高互动可同时完成。历史不足时 attention forecast 明确 low-confidence/canary unproven，不能把未知 quiet capacity 当 100%。`response_hard` 本来就不释放，但也必须在 source deadline 内存在足够完整 response 窗口，否则计划前 blocked。
 
-取得 `ConversationTurnClaim` 的真人 admitted turn 后，先按 tempo profile 冻结 turn natural window，但不先生成 planned call；再从 winner Task、同 task day/source plan、同 peer/thread、同账号 binding、与该 natural window/deadline 相交的 `tentative_supply` movable window 中选合法 response capacity，当前与相邻 hour/source stratum 均可参与但不得跨 task day/source deadline。claim、数量义务、slot/timeline 锁定后，必须在 `turn natural window ∩ slot capacity/movable window ∩ timeline legal free intervals` 内用持久 seed 冻结 planned call，并原子创建 `InteractionServiceBinding`、CAS 移动出站 resource quantum、把 supply 转成 `effective_service`；resource quantum 必须完整落入交集。随后 Provider admission 独立证明 `complete remaining preparation P95 + execution safety margin` 能在 binding/natural deadline 前完成，不能拿生成时长扩大账号/peer Timeline 占位。交集为空是 admitted capacity miss，准备路径来不及是 provider/deadline miss；两者都不改写 slot 成 now。binding 唯一拥有 relation/turn/account、交集、planned call、preparation-timing revision 和本次调用计划；quantity obligation 本身不被改写成 turn identity。一次绑定保留原 ordinal、数量身份、账号 coverage、cap reservation 和 slot audit；`sum(active + confirmed + terminal_shortfall)` 始终等于冻结总量。
+取得 `ConversationTurnClaim` 的真人 admitted turn 后，先按 tempo profile 冻结 turn natural window，但不先生成 planned call；再从 winner Task、同 task day/source plan、同 peer/thread、同账号 binding、与该 natural window/deadline 相交的 `tentative_supply` movable window 中选合法 response capacity，当前与相邻 hour/source stratum 均可参与但不得跨 task day/source deadline。对每个候选 supply，Provider admission 先按当前 permit 队列与冻结 timing profile计算 `estimated_candidate_ready_at`，再得到 `preparation_feasible_call_not_before_at = estimated_candidate_ready_at + gateway_prepare_p95 + execution_safety_margin(pre_provider)`。只有 `turn natural window ∩ slot capacity/movable window ∩ timeline legal free intervals ∩ [preparation_feasible_call_not_before_at, freshness/source deadline]` 能完整容纳出站 resource quantum 时才是 timing-feasible call interval；planned call 只能在该区间内用持久 seed 冻结。claim、数量义务、slot/timeline、`InteractionServiceBinding`、Task/source-plan binding/call budget conditional CAS 与 `ProviderCapacityReservation` 必须在同一 admission 事务提交，随后才把 tentative supply 转 `effective_service`；网络调用仍在事务外。这样 Provider P95 只裁剪可选 call interval，不扩大账号/peer Timeline 占位。原始 Timeline 交集为空是 admitted capacity miss；因完整准备链或 permit 队列导致 timing-feasible 区间为空则是 provider/deadline miss，此时不创建 active binding、不消费调用预算，并保留可供其他合法机会使用的 tentative supply。binding 唯一拥有 relation/turn/account、可行交集、planned call、preparation-timing revision、Provider admission 和本次调用计划；quantity obligation 本身不被改写成 turn identity。一次绑定保留原 ordinal、数量身份、账号 coverage、cap reservation 和 slot audit；`sum(active + confirmed + terminal_shortfall)` 始终等于冻结总量。
 
 真人 response 在 Provider/质量/去重/deadline 门失败且 Telegram 尚无 call-issued 时，当前 admitted opportunity 与 `InteractionServiceBinding` 按真实 blocker 记 missed，全部调用数/成本和失败证据保留；同一数量 obligation 只 append unbind revision 并回到原 `response_hard|response_flexible` 类别，不能在同一 turn 无限重生成，也不能把互动失败直接改成 quantity terminal。后续真人 turn 只能建立 successor binding：它有新的每-binding 调用上限，但必须从同一冻结 Task/source-plan 总 binding/call budget 继续扣减，旧调用绝不清零。hard 等下一合法 turn；flexible 在 cutoff 前继续等、cutoff 后才按既定 release policy 转主动内容；只有最终 source/slot deadline 到达仍未 confirmed 才形成数量 shortfall。具体 adapter 的单 binding 调用预算和 reply fallback 禁令继续生效。
 
@@ -574,7 +577,7 @@ service binding 建立后账号失效、persona/voice 不兼容或授权漂移�
 - 指标分别记录 `semantic_human_response` 和 `native_reply_to_owned_fact`，不得把 direct 接话伪报为远端 reply relation；
 - 平台消息提出问题后进入 `awaiting_human_response`，真人回答、明确转题或业务等待窗口结束前，其他平台账号不得自问自答接管。
 
-每条我方 confirmed normal contextual fact 都可打开一个只读互动观察窗；它不会创建发送义务。真人以 Telegram 原生 reply 指向该 remote message 时形成 `authoritative_human_reply`；没有原生关系但在同一未转题 turn 内延续其明确锚点时，可在群聊 10 分钟、评论 24 小时内形成带 evidence/confidence 的 `inferred_human_continuation`。两类必须分列，低置信度不得算互动成功。明确质疑机器人感、删除/撤回、真人已回答而平台仍抢答分别形成负向 outcome；所有 observation 只进入效果评估，不结算 quantity、coverage 或 reply relation。
+每条我方 confirmed normal contextual fact 都可进入只读互动观察；它不会创建发送义务。真人 Telegram 原生 reply 精确指向该 remote message 时形成 `authoritative_human_reply`，只要远端 parent relation 与保留的 typed fact 可核验，就不受 10 分钟/24 小时语义推断窗限制；观察发生日按真人 event 时间归档。没有原生关系时，才允许在同一未转题 turn 内按群聊 10 分钟、评论 24 小时窗口寻找明确锚点。`HumanEngagementAttributionClaim` 对每个真人 event revision 先应用 `native parent > structured mention/quoted anchor > unique semantic continuation` 的固定优先级；非原生候选只有唯一最高分且超过冻结置信阈值与 runner-up margin 时，才能把该 event 归因给一条我方 fact 并形成 `inferred_human_continuation`，否则记 `ambiguous_unattributed`。同一 event 已有 authoritative winner 后禁止再计 inferred positive，也不能同时给多条近期 AI 消息各加一次互动。明确质疑机器人感、删除/撤回、真人已回答而平台仍抢答分别形成负向 outcome；负向 evidence 可以关联多个显式目标，但 route/peer 比率按 human event 去重。所有 observation 只进入效果评估，不结算 quantity、coverage 或 reply relation。
 
 ### 8.5 评论关系义务与兼容矩阵
 
@@ -596,7 +599,7 @@ service binding 建立后账号失效、persona/voice 不兼容或授权漂移�
 
 所有转换必须保持同一 Task/lifecycle、source plan/revision、discussion/thread、ordinal、bound account、eligible snapshot、Daily Cap reservation、coverage binding 和 source deadline。`discussion_response` 使用 `discussion peer + reply_to(remote_comment_id)`；`grounded_top_level` 使用 `comment_to(source_id)`，两种 RPC 不可互换。目标正文与来源 grounding 冲突时只能谨慎求证或 shortfall，不能改成无关赞美。
 
-`owned_peer_followup` 不由真人事件唤醒，不创建 DiscussionCommentTurn，也不进入真人响应率。它只消费 `response_hard`，必须在无未回答真人目标时才能进入准备；同一父评论每 Plan 最多一个、系统链深最多 1。创建前按 `Task + 当前滚动 3 个任务日` 冻结 `H=confirmed human-target discussion_response facts` 与 `O=owned active admission/call-issued/unknown/confirmed exposures`，加入本候选后必须同时满足 `H/(H+O+1) >= 80%` 和 `(O+1)/(H+O+1) <= 20%`。只有 typed confirmed 真人回复能进入 H；planned/preparing/ready 真人回复不能提前垫高分母，owned unknown 不能从 O 删除。`H=0` 显示 `interaction_opportunity_unobserved`，不能先发一条 owned 再把它解释成允许的 20%。该判断必须在规范化 Task/policy 事务锁内重读 typed facts 与 active reservations，并同事务写唯一 `OwnedFollowupAdmissionReservation`；pre-Gateway 明确终结才释放，call-issued/unknown/confirmed 保持占位，双 worker 不能各自读取旧比例后同时放行。Provider 前与 Gateway Tx A 还要重读同 thread watermark/未回答真人目标和上述 H/O；call-issued 前出现新真人 target 或比例不再成立时 fence owned 工作、release admission，并把原 hard 义务归还真人 response 等待态。call-issued 后才出现时不撤销或重放，只记负向 observation。比例不允许时 `response_hard` 保持等待，source deadline 后显式 shortfall，不用自问自答补足。目标失效时只能在同 relation、同账号、同 source plan 内递增 target-attempt revision，不能降级顶层评论。
+`owned_peer_followup` 不由真人事件唤醒，不创建 DiscussionCommentTurn，也不进入真人响应率。它只消费 `response_hard`，必须在无未回答真人目标时才能进入准备；同一父评论每 Plan 最多一个、系统链深最多 1。创建前按 `Task + 当前滚动 3 个任务日` 冻结 `H=窗口内 confirmed human-target discussion_response facts` 与 `O=窗口内 owned active admission/call-issued/unknown/confirmed exposures + 窗外仍未终结的 owned call-issued/unknown carryover`，加入本候选后必须同时满足 `H/(H+O+1) >= 80%` 和 `(O+1)/(H+O+1) <= 20%`。只有 typed confirmed 真人回复能进入 H；planned/preparing/ready 真人回复不能提前垫高分母，owned call-issued/unknown 不能因为三日窗口滑走、TTL 或任务重启从 O 删除，只有权威 reconcile 终态才能结束 carryover。`H=0` 显示 `interaction_opportunity_unobserved`，不能先发一条 owned 再把它解释成允许的 20%。该判断必须在规范化 Task/policy 事务锁内重读 typed facts、active reservations 与 unresolved carryover，并同事务写唯一 `OwnedFollowupAdmissionReservation`；pre-Gateway 明确终结才释放，窗内 call-issued/unknown/confirmed 和窗外 unresolved carryover 保持占位，双 worker 不能各自读取旧比例后同时放行。Provider 前与 Gateway Tx A 还要重读同 thread watermark/未回答真人目标和上述 H/O；call-issued 前出现新真人 target 或比例不再成立时 fence owned 工作、release admission，并把原 hard 义务归还真人 response 等待态。call-issued 后才出现时不撤销或重放，只记负向 observation。比例不允许时 `response_hard` 保持等待，source deadline 后显式 shortfall，不用自问自答补足。目标失效时只能在同 relation、同账号、同 source plan 内递增 target-attempt revision，不能降级顶层评论。
 
 ### 8.6 基于真人节奏的发送时序
 
@@ -614,7 +617,7 @@ service binding 建立后账号失效、persona/voice 不兼容或授权漂移�
 | 评论普通观点回复 | 180～900 秒 | 900 秒 |
 | 自有异号 followup | 10～120 分钟 | source deadline |
 
-turn owner 冻结后立即以 `turn observed_at + tempo profile` 得到 `natural_window_start_at / natural_window_end_at`；随后按 §8.3 在 compatible response supply 的交集中用 stable seed 一次性冻结 `InteractionServiceBinding.planned_call_at`。因此 owner/opportunity 不预判未来账号时点，slot 也不伪造未来真人 planned call。Provider 完成早于 planned point 时等待，晚于 planned point 但仍在 binding 交集与 natural window 时以实际 ready/timeline 时点发送并记录 `planned_point_late`，越过交集、natural window end 或 freshness deadline则 shortfall，不重新抽一个更晚时点。真实 profile 可收窄或移动 natural window，但不得早于账号/peer 最小间隔，也不得晚于 freshness/source deadline。若在发送等待中出现真人已回答、转题、目标删除或新 revision，Gateway 前按 stale 终止；不为追求数量发送过时回复。
+turn owner 冻结后立即以 `turn observed_at + tempo profile` 得到 `natural_window_start_at / natural_window_end_at`；随后按 §8.3 先扣除冻结 permit 队列、完整准备链 P95、Gateway prepare 与 margin，再在 compatible response supply 的 timing-feasible call interval 内用 stable seed 一次性冻结 `InteractionServiceBinding.planned_call_at`。因此 owner/opportunity 不预判未来账号时点，slot 也不伪造未来真人 planned call；同时预测上已经赶不上 planned point 的 binding 不会被创建。Provider 完成早于 planned point 时等待；只有实际耗时超过冻结估计的 tail 才允许晚于 planned point、但仍在原 binding 交集与 natural/freshness window 内发送并记录 `planned_point_late_unexpected_tail`，不得把计划阶段已知的排队延迟伪装成 tail。越过交集、natural window end 或 freshness deadline则 shortfall，不重新抽一个更晚时点。真实 profile 可收窄或移动 natural window，但不得早于账号/peer 最小间隔，也不得晚于 freshness/source deadline。若在发送等待中出现真人已回答、转题、目标删除或新 revision，Gateway 前按 stale 终止；不为追求数量发送过时回复。
 
 链路 SLO 固定为：update 到事件持久化 P95 ≤3 秒；turn close 到 participation decision，群聊 P95 ≤1 秒、评论 P95 ≤3 秒；decision 到 accepted candidate，群聊 P95 ≤12 秒、评论 P95 ≤20 秒。call-issued 必须落入对应自然发送窗且不超过 freshness deadline，不能用单一 event-to-call P95 强迫所有场景秒回。
 
@@ -803,12 +806,15 @@ ConversationTurnClaim（如有）
 -> TimelineReservation domain rank:
    account -> peer -> conversation -> source_message -> task_obligation
 -> InteractionServiceBinding（如为 admitted response）
+-> InteractionCapacityPlan response budget counter
+   或 TurnClassificationCapacityRevision shared budget counter
+-> ProviderCapacityReservation
 -> late-bound adapter assignment（AI message style；评论 intent -> style）
 -> GenerationJob 或 immutable Action
 -> ExecutionAttempt / fact projection state
 ```
 
-同一 domain 内按规范化 resource key 的 UTF-8 byte 顺序取锁；一次需要多个 Task/source/Plan/policy parent 时也按 `parent kind rank + canonical UTF-8 key` 排序。类型 adapter 的 parent lock 可以位于最前，但取得公共对象后不得反向重取 parent；claim owner 选择只读已冻结 candidate，不在 claim 锁内临时追加无序 Task 锁。attention 必须在 claim 后、obligation/timeline 前，service binding 必须在 timeline 后、late-bound assignment 前，禁止先锁 Action/style 再反锁 attention/turn。worker 必须先无锁解析 IDs，再按上述顺序锁行，不能因为入口对象是 Action/GenerationJob 就先锁子对象。Provider/Telegram 调用永远在锁和数据库事务之外。
+同一 domain 内按规范化 resource key 的 UTF-8 byte 顺序取锁；一次需要多个 Task/source/Plan/policy parent 时也按 `parent kind rank + canonical UTF-8 key` 排序。类型 adapter 的 parent lock 可以位于最前，但取得公共对象后不得反向重取 parent；claim owner 选择只读已冻结 candidate，不在 claim 锁内临时追加无序 Task 锁。attention 必须在 claim 后、obligation/timeline 前，service binding 必须在 timeline 后、Provider budget/capacity 与 late-bound assignment 前。classification 路径没有 response binding，只能按 `TurnClassificationCapacityRevision counter -> ProviderCapacityReservation -> classification request` 顺序。activated plan 的运行事务不得先锁完整 Plan parent 再反锁 slot/timeline；只对冻结 budget counter 做 conditional CAS，失败则整笔 admission 回滚。禁止先锁 Action/style/GenerationJob/Provider reservation 再反锁 attention/turn/obligation/timeline。worker 必须先无锁解析 IDs，再按上述顺序锁行，不能因为入口对象是 Action/GenerationJob 就先锁子对象。Provider/Telegram 调用永远在锁和数据库事务之外。
 
 ### 13.3 Provider 容量与 deadline admission
 
@@ -830,22 +836,43 @@ response_binding_budget
 response_call_budget
   = response_binding_budget * max_provider_calls_per_binding
 
-estimated_finish_at
+classification_estimated_finish_at
+  = max(database_now, classification_permit_available_at)
+  + classification_service_p95
+
+classification_latest_safe_at
+  = candidate_decision_cutoff_at
+  - max_eligible_task_fanout_projection_p95
+  - claim_finalize_p95
+  - execution_safety_margin(post_classification)
+
+estimated_candidate_ready_at
   = max(database_now, provider_permit_available_at)
   + complete_remaining_provider_path_p95
   + remaining_deterministic_gate_p95
 
+preparation_feasible_call_not_before_at
+  = estimated_candidate_ready_at
+  + gateway_prepare_p95
+  + execution_safety_margin(pre_provider)
+
+timing_feasible_call_interval
+  = turn_natural_window
+  ∩ slot_movable_window
+  ∩ timeline_legal_free_intervals
+  ∩ [preparation_feasible_call_not_before_at, freshness_or_source_deadline]
+
 generation_latest_safe_at
-  = min(natural_window_end_at, freshness_deadline_at)
+  = planned_call_at
   - gateway_prepare_p95
   - execution_safety_margin(pre_provider)
 ```
 
-分类、生成、reviewer、确定性门和 Gateway prepare 的各段 P95 必须来自计划冻结的同一 `ExecutionTimingProfileRevision` 对应 lane/path-start stage，不能在本节另建本地估算。`complete_response_preparation_p95` 必须按 lane 覆盖 accepted candidate 前的完整串行路径，而不是只测第一次 realizer：活群包含主生成以及冻结策略允许的质量修复/备用 route 加权 tail；评论必须包含 1 次 realizer + 1 次独立 reviewer 及确定性门。admission 时同时预留完整路径的调用预算和相应 lane permits，不能先让 realizer 全部占满，再让 mandatory reviewer 排队过期。
+分类、生成、reviewer、确定性门、Task fanout/claim tail 和 Gateway prepare 的各段 P95 必须来自计划冻结的同一 `ExecutionTimingProfileRevision` 对应 lane/path-start stage，不能在本节另建本地估算。`complete_response_preparation_p95` 必须按 lane 覆盖 accepted candidate 前的完整串行路径，而不是只测第一次 realizer：活群包含主生成以及冻结策略允许的质量修复/备用 route 加权 tail；评论必须包含 1 次 realizer + 1 次独立 reviewer 及确定性门。classification 只有 `classification_estimated_finish_at <= classification_latest_safe_at` 才调用，不能用模型输出占满 cutoff 后再让 candidate/claim 超时。response 先以冻结 permit 队列计算 timing-feasible call interval，再在区间内抽 planned call；区间为空不创建 active binding。binding、Task/source-plan 总预算 conditional CAS 和完整路径 `ProviderCapacityReservation` 同事务提交，不能先创建 binding、后补预算，也不能先让 realizer 全部占满再让 mandatory reviewer 排队过期。
 
 30% 是 `provider_capacity_policy_v1` 的重试/波动 buffer，不是隐藏发送量。若配置 permits 小于 required concurrency，任务仍可完成主动数量，但 `interaction_readiness=capacity_blocked`，不得显示高互动已就绪。
 
-response jobs 先按 `generation_latest_safe_at - estimated_finish_at` 排序，再处理 proactive/top-level generation；群聊和评论不靠固定类型抢占，而是谁更接近自身可完成截止谁优先。每个 `InteractionServiceBinding` 最多 2 次 Provider 调用：活群为 1 次主生成加最多 1 次质量修复/批准备用 route；频道评论因独立 semantic reviewer 是硬门，固定为 1 次主生成加 1 次 reviewer，reject/unknown 不在该 binding 上继续重生成。Provider unknown 计入 binding 和 Task/source-plan 总预算。pre-Gateway 解绑后的 successor binding 可以重新拥有最多 2 次，但只有同一冻结总 binding/call budget 尚有余额时才准入；禁止借数量义务重绑清空旧调用或无限消耗。预计 `estimated_finish_at > generation_latest_safe_at` 时不调用 Provider，直接记录 `provider_capacity_missed`；不能错误地在生成完成后再叠加一次 natural minimum。proactive/grounded top-level 继续使用各 adapter 已冻结的非实时质量预算，不得借此占用 response permits 或越过自身 latest-safe。
+classification jobs 按 `classification_latest_safe_at - classification_estimated_finish_at`，response jobs 按 `generation_latest_safe_at - estimated_candidate_ready_at` 分别在各自 lane 内做 EDF；response 再先于 proactive/top-level generation。群聊和评论不靠固定类型抢占，而是谁更接近自身可完成截止谁优先。每个 `InteractionServiceBinding` 最多 2 次 Provider 调用：活群为 1 次主生成加最多 1 次质量修复/批准备用 route；频道评论因独立 semantic reviewer 是硬门，固定为 1 次主生成加 1 次 reviewer，reject/unknown 不在该 binding 上继续重生成。Provider unknown 计入 binding 和 Task/source-plan 总预算。pre-Gateway 解绑后的 successor binding 可以重新拥有最多 2 次，但只有同一冻结总 binding/call budget 尚有余额时才准入；禁止借数量义务重绑清空旧调用或无限消耗。预计 `estimated_candidate_ready_at > generation_latest_safe_at` 时不调用 Provider，直接记录 `provider_capacity_missed`；预测可命中 planned point、但真实未预测 tail 才允许在原 binding 窗内 late，不得把 admission 时已知排队伪装成 `planned_point_late`。proactive/grounded top-level 继续使用各 adapter 已冻结的非实时质量预算，不得借此占用 response permits 或越过自身 latest-safe。
 
 任务启动预览必须显示共享 classification 和本 Task response 各自的 estimated daily calls/tokens/cost、required/available concurrency、P95 queue delay，以及 classification call budget、response binding/call budget和预算不足的预计 missed turns。response 总预算按 replay 的 `provider_requiring_owner_demand_p95`、每 binding 最多 2 次及 30% buffer 冻结，不能只按 response slot 数计算；主动内容预算按 adapter 合同另列。预算或 permits 修改形成新 revision，只作用于尚未 admission 的 work/binding。
 
