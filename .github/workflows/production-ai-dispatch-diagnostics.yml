@@ -7,6 +7,11 @@ name: Production AI Dispatch Diagnostics
         description: Full or short SHA expected in the current production release
         required: true
         type: string
+      run_rescue:
+        description: Run rescue on Tianjin Music and Zhengda tasks
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -67,6 +72,7 @@ jobs:
         env:
           PRODUCTION_BASE_DIR: ${{ vars.SILICON_VALLEY_PRODUCTION_BASE_DIR }}
           EXPECTED_DEPLOYED_SHA: ${{ inputs.deployed_sha }}
+          RUN_RESCUE: ${{ inputs.run_rescue }}
         run: |
           set -euo pipefail
           set -x
@@ -76,8 +82,16 @@ jobs:
           CURRENT_RELEASE="$(ssh silicon-valley-production-server "readlink -f '${BASE_DIR}/current'")"
           echo "CURRENT_RELEASE=${CURRENT_RELEASE}"
           [[ "$(basename "${CURRENT_RELEASE}")" == *"${EXPECTED_SHORT}"* ]]
+          if [ "${RUN_RESCUE}" = "true" ]; then
+            scp .github/scripts/production_fast_rescue_tasks.py \
+              silicon-valley-production-server:/tmp/production_fast_rescue_tasks.py
+            ssh silicon-valley-production-server \
+              "docker cp /tmp/production_fast_rescue_tasks.py tgyunying-backend:/tmp/production_fast_rescue_tasks.py && \
+               docker exec -w /app -e PYTHONPATH=/app tgyunying-backend python /tmp/production_fast_rescue_tasks.py"
+          fi
           scp .github/scripts/ai_dispatch_admission_diagnostics.py \
             silicon-valley-production-server:/tmp/ai_dispatch_admission_diagnostics.py
           ssh silicon-valley-production-server \
             "docker cp /tmp/ai_dispatch_admission_diagnostics.py tgyunying-backend:/tmp/ai_dispatch_admission_diagnostics.py && \
              docker exec -w /app -e PYTHONPATH=/app tgyunying-backend python /tmp/ai_dispatch_admission_diagnostics.py"
+
