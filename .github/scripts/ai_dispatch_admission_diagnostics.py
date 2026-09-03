@@ -627,7 +627,7 @@ TASK_MEMBERSHIP_AND_COVERAGE_QUERY = text("""
 
 
 ZHENGDA_AND_TIANJIN_DEEP_DIVE_QUERY = text("""
-    SELECT
+    SELECT 
         t.id AS task_id,
         t.name AS task_name,
         t.status AS task_status,
@@ -649,6 +649,36 @@ ZHENGDA_AND_TIANJIN_DEEP_DIVE_QUERY = text("""
     LEFT JOIN tg_groups AS g ON g.id = (t.type_config->>'target_group_id')::bigint
     WHERE t.name LIKE '%郑州大学%' OR t.name LIKE '%天津音乐%' OR t.name LIKE '%逃学威龙%'
     ORDER BY t.created_at DESC
+""")
+
+LUOYANG_AND_TIANJIN_GROUPS_QUERY = text("""
+    SELECT id, tenant_id, tg_peer_id, title, group_type, member_count, auth_status, can_send,
+           listener_enabled, listener_last_polled_at, listener_last_error, listener_cursor_status,
+           topic_direction,
+           (SELECT COUNT(*) FROM tg_group_accounts WHERE group_id = tg_groups.id) AS joined_accounts_count,
+           (SELECT COUNT(*) FROM group_context_messages WHERE group_id = tg_groups.id) AS context_messages_count,
+           (SELECT COUNT(*) FROM group_context_messages WHERE group_id = tg_groups.id AND created_at >= CURRENT_DATE) AS today_context_messages_count
+    FROM tg_groups
+    WHERE tg_peer_id LIKE '%luoyangpiaoch%' 
+       OR tg_peer_id LIKE '%tjlove666%'
+       OR title LIKE '%天津音乐%' 
+       OR title LIKE '%逃学威龙%'
+       OR id IN (484, 5999) 
+       OR title LIKE '%洛阳%'
+    ORDER BY id
+""")
+
+TIANJIN_TASK_ACTIONS_QUERY = text("""
+    SELECT a.id, a.task_id, a.account_id, a.action_type, a.status, a.scheduled_at, a.created_at,
+           a.payload->>'ai_generation_status' AS gen_status,
+           a.payload->>'ai_generation_error' AS gen_error,
+           a.payload->>'message_text' AS message_text,
+           a.payload->>'is_generic_warmup' AS is_warmup,
+           a.result
+    FROM actions AS a
+    WHERE a.task_id = '7fd0bbb7-53dd-45ae-a7af-0c37bcc380d1'
+    ORDER BY a.created_at DESC
+    LIMIT 20
 """)
 
 
@@ -681,6 +711,8 @@ def main() -> None:
         account_attrs = _rows(session, ACCOUNT_ATTRIBUTES_BREAKDOWN_QUERY)
         task_scope_items = _rows(session, TASK_MEMBERSHIP_AND_COVERAGE_QUERY)
         deep_dive_items = _rows(session, ZHENGDA_AND_TIANJIN_DEEP_DIVE_QUERY)
+        luoyang_groups = _rows(session, LUOYANG_AND_TIANJIN_GROUPS_QUERY)
+        tianjin_actions = _rows(session, TIANJIN_TASK_ACTIONS_QUERY)
     _print_rows("AI_DISPATCH_ACTION_CLASS", classifications)
     _print_rows("AI_DISPATCH_ACTION_SAMPLE", samples)
     _print_rows("AI_DISPATCH_ACTION_RUNTIME_REASON", runtime_reasons)
@@ -708,6 +740,8 @@ def main() -> None:
     _print_rows("ACCOUNT_ATTRIBUTES_BREAKDOWN", account_attrs)
     _print_rows("TASK_MEMBERSHIP_AND_COVERAGE", task_scope_items)
     _print_rows("ZHENGDA_AND_TIANJIN_DEEP_DIVE", deep_dive_items)
+    _print_rows("LUOYANG_AND_TIANJIN_GROUPS", luoyang_groups)
+    _print_rows("TIANJIN_TASK_ACTIONS", tianjin_actions)
 
 
 if __name__ == "__main__":
