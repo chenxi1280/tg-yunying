@@ -73,19 +73,30 @@ def rescue_zhengda_actions(session) -> dict:
     now_ts = _now()
     log = []
 
-    # A. Delete failed actions for today so action_dedupe_key is completely released
+    # A. Delete failed and pending actions for today
     del_failed = session.execute(
         text("""
             DELETE FROM actions
             WHERE task_id = :task_id
-              AND status = 'failed'
               AND (scheduled_at >= CURRENT_DATE OR created_at >= CURRENT_DATE)
+              AND status IN ('failed', 'pending')
         """),
         {"task_id": task_id},
     ).rowcount
-    log.append(f"deleted_{del_failed}_failed_actions")
+    log.append(f"deleted_{del_failed}_failed_or_pending_actions")
 
-    # B. Delete stale intents
+    # B. Delete daily message slots that hold old pacing_plan_hash
+    del_slots = session.execute(
+        text("""
+            DELETE FROM task_group_daily_message_slots
+            WHERE task_id = :task_id
+              AND target_date = CURRENT_DATE
+        """),
+        {"task_id": task_id},
+    ).rowcount
+    log.append(f"deleted_{del_slots}_daily_slots")
+
+    # C. Delete stale intents
     del_intents = session.execute(
         text("""
             DELETE FROM ai_coverage_variation_intents
@@ -98,24 +109,22 @@ def rescue_zhengda_actions(session) -> dict:
     ).rowcount
     log.append(f"deleted_{del_intents}_intents")
 
-    # C. Reset daily coverage state including pacing_plan_hash fields
+    # D. Reset daily coverage state
     reset_cov = session.execute(
-        text("""
-            UPDATE task_account_daily_coverage
-            SET state = 'ready',
-                reserved_action_id = NULL,
-                reservation_token = NULL,
-                blocker_code = '',
-                pacing_plan_hash = NULL,
-                pacing_slot_ordinal = NULL,
-                pacing_due_at = NULL,
-                pacing_plan_total = NULL,
-                updated_at = NOW()
-            WHERE task_id = :task_id AND coverage_date = CURRENT_DATE
-        """),
-        {"task_id": task_id},
+        update(TaskAccountDailyCoverage)
+        .where(
+            TaskAccountDailyCoverage.task_id == task_id,
+            TaskAccountDailyCoverage.coverage_date == now_ts.date(),
+        )
+        .values(
+            state="ready",
+            reserved_action_id=None,
+            reservation_token=None,
+            blocker_code="",
+            updated_at=now_ts,
+        )
     ).rowcount
-    log.append(f"reset_{reset_cov}_coverage_records_and_pacing_hashes")
+    log.append(f"reset_{reset_cov}_coverage_records")
     session.commit()
 
     # D. Build fresh action plan for Zhengda
