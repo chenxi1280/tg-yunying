@@ -600,6 +600,32 @@ ACCOUNT_SEND_FREQUENCY_DISTRIBUTION_QUERY = text("""
 """)
 
 
+ACCOUNT_ATTRIBUTES_BREAKDOWN_QUERY = text("""
+    SELECT 
+        status, 
+        account_identity, 
+        (pool_id IS NOT NULL) AS has_pool,
+        (session_ciphertext IS NOT NULL AND session_ciphertext <> '') AS has_session,
+        (deleted_at IS NULL) AS is_not_deleted,
+        COUNT(*) AS account_count
+    FROM tg_accounts
+    GROUP BY status, account_identity, (pool_id IS NOT NULL), (session_ciphertext IS NOT NULL AND session_ciphertext <> ''), (deleted_at IS NULL)
+    ORDER BY account_count DESC
+""")
+
+TASK_MEMBERSHIP_AND_COVERAGE_QUERY = text("""
+    SELECT 
+        t.name AS task_name,
+        t.id AS task_id,
+        (SELECT COUNT(*) FROM task_membership_admission_items WHERE task_id = t.id) AS membership_items_count,
+        (SELECT COUNT(*) FROM task_account_daily_coverage WHERE task_id = t.id AND target_date = CURRENT_DATE) AS daily_coverage_items_count,
+        (SELECT COUNT(*) FROM tg_group_memberships WHERE group_id = (t.type_config->>'target_group_id')::bigint AND is_member = TRUE) AS actual_group_members_count
+    FROM tasks AS t
+    WHERE t.status = 'running' AND t.type = 'group_ai_chat'
+    ORDER BY t.name
+""")
+
+
 def main() -> None:
     with SessionLocal() as session:
         classifications = _rows(session, ACTION_CLASSIFICATION_QUERY)
@@ -626,6 +652,8 @@ def main() -> None:
         account_today_coverage = _rows(session, ACCOUNT_TODAY_SEND_COVERAGE_QUERY)
         account_task_coverage = _rows(session, ACCOUNT_TASK_COVERAGE_BREAKDOWN_QUERY)
         account_freq_dist = _rows(session, ACCOUNT_SEND_FREQUENCY_DISTRIBUTION_QUERY)
+        account_attrs = _rows(session, ACCOUNT_ATTRIBUTES_BREAKDOWN_QUERY)
+        task_scope_items = _rows(session, TASK_MEMBERSHIP_AND_COVERAGE_QUERY)
     _print_rows("AI_DISPATCH_ACTION_CLASS", classifications)
     _print_rows("AI_DISPATCH_ACTION_SAMPLE", samples)
     _print_rows("AI_DISPATCH_ACTION_RUNTIME_REASON", runtime_reasons)
@@ -650,6 +678,8 @@ def main() -> None:
     _print_rows("ACCOUNT_TODAY_SEND_COVERAGE", account_today_coverage)
     _print_rows("ACCOUNT_TASK_COVERAGE_BREAKDOWN", account_task_coverage)
     _print_rows("ACCOUNT_SEND_FREQUENCY_DISTRIBUTION", account_freq_dist)
+    _print_rows("ACCOUNT_ATTRIBUTES_BREAKDOWN", account_attrs)
+    _print_rows("TASK_MEMBERSHIP_AND_COVERAGE", task_scope_items)
 
 
 if __name__ == "__main__":
