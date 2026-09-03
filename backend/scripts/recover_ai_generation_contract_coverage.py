@@ -151,6 +151,43 @@ def recovery_snapshot(
     }
 
 
+def _ensure_task_policy_bindings(session: Session, tasks: list[Task]) -> int:
+    from app.models import TaskAiContentPolicyBinding
+    template_binding = session.scalar(
+        select(TaskAiContentPolicyBinding)
+        .order_by(TaskAiContentPolicyBinding.id.desc())
+    )
+    if not template_binding:
+        return 0
+        
+    synced_count = 0
+    for t in tasks:
+        existing = session.scalar(
+            select(TaskAiContentPolicyBinding).where(
+                TaskAiContentPolicyBinding.task_id == t.id,
+                TaskAiContentPolicyBinding.task_lifecycle_epoch == t.task_lifecycle_epoch,
+                TaskAiContentPolicyBinding.task_config_revision == t.config_revision,
+            )
+        )
+        if not existing:
+            new_binding = TaskAiContentPolicyBinding(
+                tenant_id=t.tenant_id,
+                task_id=t.id,
+                task_lifecycle_epoch=t.task_lifecycle_epoch,
+                task_config_revision=t.config_revision,
+                policy_version_id=template_binding.policy_version_id,
+                allowed_routes=template_binding.allowed_routes,
+                attestation_ids=template_binding.attestation_ids,
+                style_overlay_id=getattr(template_binding, "style_overlay_id", "") or "",
+                approved_by=template_binding.approved_by,
+                evidence_hash=template_binding.evidence_hash,
+            )
+            session.add(new_binding)
+            synced_count += 1
+    session.flush()
+    return synced_count
+
+
 def apply_recovery(session: Session, request: RecoveryRequest) -> tuple[dict, int]:
     snapshot = recovery_snapshot(session, request, lock=True)
     state_hash = snapshot_hash(snapshot)
@@ -180,12 +217,15 @@ def apply_recovery(session: Session, request: RecoveryRequest) -> tuple[dict, in
         )
         deleted_count = int(del_res.rowcount or 0)
 
-    # 2. Wake tasks
+    # 2. Sync TaskAiContentPolicyBindings
+    bindings_synced = _ensure_task_policy_bindings(session, tasks)
+
+    # 3. Wake tasks
     for task in tasks:
         task.next_run_at = timestamp
         task.updated_at = timestamp
 
-    # 3. Audit log
+    # 4. Audit log
     for task in tasks:
         session.add(AuditLog(
             tenant_id=task.tenant_id,
@@ -197,6 +237,7 @@ def apply_recovery(session: Session, request: RecoveryRequest) -> tuple[dict, in
                 "approval_ref": request.approval_ref,
                 "cutoff": TODAY_CUTOFF.isoformat(),
                 "deleted_count": deleted_count,
+                "bindings_synced": bindings_synced,
                 "preview_state_hash": state_hash,
             }, ensure_ascii=False, sort_keys=True),
         ))
@@ -216,7 +257,7 @@ def _readback(deleted_count: int, request: RecoveryRequest) -> dict:
                 func.min(Action.scheduled_at).label("min_sched"),
                 func.max(Action.scheduled_at).label("max_sched"),
             ).where(
-                Action.task_id.in_(request.task_ids),
+                Action.task_id.in_(request.task_ids if request.task_ids[0] != "all" else [t.id for t in tasks]),
                 Action.status == "pending",
                 Action.task_type == "group_ai_chat",
             )
@@ -262,10 +303,11 @@ def main() -> int:
     
     # Trigger AI generation drain immediately
     try:
-        drained = drain_ai_generation(SessionLocal, limit=50)
+        drained = drain_ai_generation(SessionLocal, limit=100)
         print(f"IMMEDIATE_AI_GENERATION_DRAIN_PROCESSED={drained}")
     except Exception as exc:
-        print(f"IMMEDIATE_AI_GENERATION_DRAIN_EXCEPTION={exc}")
+        import traceback
+        print(f"IMMEDIATE_AI_GENERATION_DRAIN_EXCEPTION={exc}\n{traceback.format_exc()}")
 
     return 0
 
