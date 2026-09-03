@@ -15,6 +15,7 @@ def main():
                     SELECT t.id,
                            t.name,
                            t.status,
+                           t.type_config->>'target_channel_id' AS target_channel_id,
                            t.type_config->>'target_comments_per_message' AS target_comments,
                            t.type_config->>'reply_min_per_message' AS reply_min,
                            t.type_config->>'rolling_window_days' AS rolling_days,
@@ -24,6 +25,7 @@ def main():
                            t.next_run_at,
                            t.last_error,
                            t.task_lifecycle_epoch,
+                           t.stats,
                            t.created_at,
                            t.updated_at,
                            ot.username AS channel_username,
@@ -36,25 +38,66 @@ def main():
             ).mappings()
         )
 
-        # 2. Obligations breakdown for each task
-        obligations = list(
+        # 2. Discussion group bindings for targeted channels
+        discussion_bindings = list(
             session.execute(
                 text("""
-                    SELECT o.task_id,
-                           t.name AS task_name,
-                           o.status,
-                           COUNT(*) AS count
-                    FROM comment_fulfillment_obligations AS o
-                    JOIN tasks AS t ON t.id = o.task_id
-                    WHERE t.deleted_at IS NULL
-                    GROUP BY o.task_id, t.name, o.status
-                    ORDER BY t.name, o.status
+                    SELECT b.id,
+                           b.channel_target_id,
+                           ot.username AS channel_username,
+                           ot.title AS channel_title,
+                           b.discussion_target_id,
+                           dot.username AS discussion_username,
+                           dot.title AS discussion_title,
+                           b.status,
+                           b.updated_at
+                    FROM channel_discussion_group_bindings AS b
+                    JOIN operation_targets AS ot ON ot.id = b.channel_target_id
+                    LEFT JOIN operation_targets AS dot ON dot.id = b.discussion_target_id
                 """)
             ).mappings()
         )
 
-        # 3. Actions breakdown for each task
-        actions_breakdown = list(
+        # 3. Channel messages count by channel and comment_available
+        channel_message_stats = list(
+            session.execute(
+                text("""
+                    SELECT cm.channel_target_id,
+                           ot.title AS channel_title,
+                           ot.username AS channel_username,
+                           COUNT(*) AS total_messages,
+                           COUNT(CASE WHEN cm.comment_available THEN 1 END) AS commentable_messages,
+                           MAX(cm.published_at) AS latest_published_at
+                    FROM channel_messages AS cm
+                    JOIN operation_targets AS ot ON ot.id = cm.channel_target_id
+                    GROUP BY cm.channel_target_id, ot.title, ot.username
+                    ORDER BY cm.channel_target_id
+                """)
+            ).mappings()
+        )
+
+        # 4. Membership actions created for channels / discussion groups (join_channel, join_group)
+        membership_actions = list(
+            session.execute(
+                text("""
+                    SELECT a.task_id,
+                           t.name AS task_name,
+                           a.action_type,
+                           a.status,
+                           COUNT(*) AS count,
+                           COUNT(DISTINCT a.account_id) AS distinct_accounts
+                    FROM actions AS a
+                    JOIN tasks AS t ON t.id = a.task_id
+                    WHERE t.type = 'channel_comment'
+                      AND a.action_type IN ('join_channel', 'join_group')
+                    GROUP BY a.task_id, t.name, a.action_type, a.status
+                    ORDER BY t.name, a.action_type, a.status
+                """)
+            ).mappings()
+        )
+
+        # 5. Comment actions breakdown
+        comment_actions = list(
             session.execute(
                 text("""
                     SELECT a.task_id,
@@ -72,7 +115,7 @@ def main():
             ).mappings()
         )
 
-        # 4. Success comments today
+        # 6. Today comments summary
         today_comments = list(
             session.execute(
                 text("""
@@ -91,112 +134,16 @@ def main():
             ).mappings()
         )
 
-        # 5. Recent 20 action execution attempts for comments (successes and failures)
-        recent_attempts = list(
-            session.execute(
-                text("""
-                    SELECT ea.id AS attempt_id,
-                           t.name AS task_name,
-                           ea.action_id,
-                           ea.status,
-                           ea.failure_type,
-                           ea.failure_detail,
-                           ea.remote_message_id,
-                           ea.created_at,
-                           acc.phone_masked,
-                           acc.tg_first_name
-                    FROM execution_attempts AS ea
-                    JOIN actions AS a ON a.id = ea.action_id
-                    JOIN tasks AS t ON t.id = a.task_id
-                    LEFT JOIN tg_accounts AS acc ON acc.id = a.account_id
-                    WHERE a.action_type = 'post_comment'
-                    ORDER BY ea.created_at DESC
-                    LIMIT 20
-                """)
-            ).mappings()
-        )
-
-        # 6. Latest 15 successfully posted comments
-        latest_comments = list(
-            session.execute(
-                text("""
-                    SELECT a.id AS action_id,
-                           t.name AS task_name,
-                           a.account_id,
-                           acc.phone_masked,
-                           acc.tg_first_name,
-                           a.payload->>'message_text' AS comment_text,
-                           a.payload->>'channel_message_id' AS channel_message_id,
-                           a.payload->>'reply_to_message_id' AS reply_to_id,
-                           a.executed_at,
-                           a.scheduled_at
-                    FROM actions AS a
-                    JOIN tasks AS t ON t.id = a.task_id
-                    LEFT JOIN tg_accounts AS acc ON acc.id = a.account_id
-                    WHERE a.action_type = 'post_comment'
-                      AND a.status IN ('success', 'confirmed')
-                    ORDER BY a.executed_at DESC NULLS LAST, a.created_at DESC
-                    LIMIT 15
-                """)
-            ).mappings()
-        )
-
-        # 7. Next 15 scheduled pending comment actions
-        next_pending = list(
-            session.execute(
-                text("""
-                    SELECT a.id AS action_id,
-                           t.name AS task_name,
-                           a.account_id,
-                           acc.phone_masked,
-                           acc.tg_first_name,
-                           a.scheduled_at,
-                           a.payload->>'channel_message_id' AS channel_message_id,
-                           a.payload->>'reply_to_message_id' AS reply_to_id
-                    FROM actions AS a
-                    JOIN tasks AS t ON t.id = a.task_id
-                    LEFT JOIN tg_accounts AS acc ON acc.id = a.account_id
-                    WHERE a.action_type = 'post_comment'
-                      AND a.status = 'pending'
-                    ORDER BY a.scheduled_at ASC
-                    LIMIT 15
-                """)
-            ).mappings()
-        )
-
-        # 8. Channel messages being targeted
-        messages = list(
-            session.execute(
-                text("""
-                    SELECT cm.id,
-                           cm.channel_target_id,
-                           ot.title AS channel_title,
-                           cm.message_id,
-                           cm.message_url,
-                           cm.content_preview,
-                           cm.comment_available,
-                           cm.published_at,
-                           cm.created_at
-                    FROM channel_messages AS cm
-                    JOIN operation_targets AS ot ON ot.id = cm.channel_target_id
-                    ORDER BY cm.created_at DESC
-                    LIMIT 20
-                """)
-            ).mappings()
-        )
-
         report = {
             "tasks": [dict(r) for r in tasks],
-            "obligations": [dict(r) for r in obligations],
-            "actions_breakdown": [dict(r) for r in actions_breakdown],
+            "discussion_bindings": [dict(r) for r in discussion_bindings],
+            "channel_message_stats": [dict(r) for r in channel_message_stats],
+            "membership_actions": [dict(r) for r in membership_actions],
+            "comment_actions": [dict(r) for r in comment_actions],
             "today_comments": [dict(r) for r in today_comments],
-            "recent_attempts": [dict(r) for r in recent_attempts],
-            "latest_success_comments": [dict(r) for r in latest_comments],
-            "next_pending_comments": [dict(r) for r in next_pending],
-            "channel_messages": [dict(r) for r in messages],
         }
 
-        print("CHANNEL_COMMENT_INSPECTION_REPORT=" + json.dumps(report, ensure_ascii=False, default=str, indent=2))
+        print("COMMENT_DIAGNOSTICS_COMPACT=" + json.dumps(report, ensure_ascii=False, default=str))
 
 
 if __name__ == "__main__":
