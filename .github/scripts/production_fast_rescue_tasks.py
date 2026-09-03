@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 import traceback
 from datetime import datetime, timezone
 from sqlalchemy import text, select, update
@@ -33,10 +34,18 @@ def diagnose_and_rescue_task(session, task_id: str, is_tianjin: bool = False) ->
     if is_tianjin:
         type_config = dict(task.type_config or {})
         target_group_id = 5999
-        if str(type_config.get("target_group_id")) != str(target_group_id):
-            type_config["target_group_id"] = str(target_group_id)
-            task.type_config = type_config
-            log.append("updated_target_group_id_to_5999")
+        type_config["target_group_id"] = str(target_group_id)
+        task.type_config = type_config
+        log.append("updated_task_target_group_id_to_5999")
+
+        # Synchronize target_operation_target if present
+        op_target_id = int(type_config.get("target_operation_target_id") or 0)
+        if op_target_id:
+            op_target = session.get(OperationTarget, op_target_id)
+            if op_target:
+                op_target.target_group_id = target_group_id
+                op_target.tg_peer_id = "@luoyangpiaoch"
+                log.append(f"synchronized_operation_target_{op_target_id}_to_group_5999")
         
         group_5999 = session.get(TgGroup, target_group_id)
         if group_5999:
@@ -77,46 +86,19 @@ def diagnose_and_rescue_task(session, task_id: str, is_tianjin: bool = False) ->
     log.append(f"reset_{orphaned_reset}_orphaned_coverage_rows")
     session.flush()
 
-    # Step-by-step trace of build_plan
-    facts = _load_plan_facts(session, task)
-    if isinstance(facts, PlanAbort):
-        log.append(f"facts_aborted: last_error={task.last_error}")
-        session.commit()
-        return {"task_name": task.name, "log": log, "created": 0}
-    
-    log.append(f"facts_loaded: group_id={facts.group.id}, due_debt={facts.coverage.due_debt}, required_new={facts.coverage.required_new}")
-
-    accounts = _load_plan_accounts(session, task, facts)
-    if isinstance(accounts, PlanAbort):
-        log.append(f"accounts_aborted: last_error={task.last_error}")
-        session.commit()
-        return {"task_name": task.name, "log": log, "created": 0}
-    
-    log.append(f"accounts_loaded: count={len(accounts.accounts)}")
-
-    context = _load_context_plan(session, task, facts)
-    if isinstance(context, PlanAbort):
-        log.append(f"context_aborted: last_error={task.last_error}")
-        session.commit()
-        return {"task_name": task.name, "log": log, "created": 0}
-    
-    log.append(f"context_loaded: usable_rows={len(context.usable_rows)}")
-
-    turn = _load_turn_plan(session, task, facts, accounts=accounts.accounts, context=context)
-    if isinstance(turn, PlanAbort):
-        log.append(f"turn_aborted: last_error={task.last_error}")
-        session.commit()
-        return {"task_name": task.name, "log": log, "created": 0}
-
-    log.append(f"turn_loaded: turn_count={turn.turn_count}")
-
-    # Now execute full build_plan
-    try:
-        created = build_group_ai_plan(session, task)
-        log.append(f"build_plan_succeeded: created={created}")
-    except Exception as exc:
-        log.append(f"build_plan_exception: {exc}\n{traceback.format_exc()}")
-        created = 0
+    # Now execute full build_plan with retry for pacing lock
+    created = 0
+    for attempt in range(1, 5):
+        try:
+            created = build_group_ai_plan(session, task)
+            log.append(f"build_plan_attempt_{attempt}_succeeded: created={created}")
+            break
+        except Exception as exc:
+            log.append(f"build_plan_attempt_{attempt}_failed: {exc}")
+            session.rollback()
+            # re-get task after rollback
+            task = session.get(Task, task_id)
+            time.sleep(1.0)
 
     session.commit()
     return {"task_name": task.name, "log": log, "created": created}
