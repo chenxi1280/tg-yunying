@@ -35,15 +35,17 @@ jobs:
           chmod 700 ~/.ssh
           printf '%s\n' "${SSH_PRIVATE_KEY}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
+          PORT="${DEPLOY_PORT:-22}"
+          CONNECT_TIMEOUT="${SSH_CONNECT_TIMEOUT:-60}"
           cat > ~/.ssh/config <<EOF
           Host silicon-valley-production-server
             HostName ${DEPLOY_HOST}
             User ${DEPLOY_USER}
-            Port ${DEPLOY_PORT:-22}
+            Port ${PORT}
             IdentityFile ~/.ssh/id_ed25519
             IdentitiesOnly yes
             StrictHostKeyChecking accept-new
-            ConnectTimeout ${SSH_CONNECT_TIMEOUT:-60}
+            ConnectTimeout ${CONNECT_TIMEOUT}
             ConnectionAttempts 3
             ServerAliveInterval 15
             ServerAliveCountMax 8
