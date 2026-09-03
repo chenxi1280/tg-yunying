@@ -141,11 +141,11 @@ jobs:
               "docker cp /tmp/resume_and_align_channel_comment_tasks.py tgyunying-backend:/tmp/resume_and_align_channel_comment_tasks.py && \
                docker exec -w /app -e PYTHONPATH=/app tgyunying-backend python /tmp/resume_and_align_channel_comment_tasks.py --mode ${MODE}"
           fi
-          scp .github/scripts/production_check_zhengda_1455.py \
-            silicon-valley-production-server:/tmp/production_check_zhengda_1455.py
+          scp .github/scripts/production_diagnose_evening_stall.py \
+            silicon-valley-production-server:/tmp/production_diagnose_evening_stall.py
           ssh silicon-valley-production-server \
-            "docker cp /tmp/production_check_zhengda_1455.py tgyunying-backend:/tmp/production_check_zhengda_1455.py && \
-             docker exec -w /app -e PYTHONPATH=/app tgyunying-backend python /tmp/production_check_zhengda_1455.py"
+            "docker cp /tmp/production_diagnose_evening_stall.py tgyunying-backend:/tmp/production_diagnose_evening_stall.py && \
+             docker exec -w /app -e PYTHONPATH=/app tgyunying-backend python /tmp/production_diagnose_evening_stall.py"
           scp .github/scripts/production_check_live_success.py \
             silicon-valley-production-server:/tmp/production_check_live_success.py
           ssh silicon-valley-production-server \
