@@ -510,13 +510,11 @@ TODAY_SUCCESS_QUERY = text("""
            a.result
     FROM actions AS a
     JOIN tasks AS t ON t.id = a.task_id
-    WHERE a.task_id = 'a52e84f2-8663-4b00-bbbe-196fb626b28d'
-      AND (
-        a.status IN ('success', 'confirmed') 
-        OR (a.scheduled_at >= CURRENT_DATE AND a.status = 'pending')
-      )
-    ORDER BY a.created_at DESC
-    LIMIT 20
+    WHERE t.status = 'running'
+      AND a.status IN ('success', 'confirmed')
+      AND (a.scheduled_at >= CURRENT_DATE OR a.executed_at >= CURRENT_DATE)
+    ORDER BY a.executed_at DESC NULLS LAST, a.created_at DESC
+    LIMIT 30
 """)
 
 
