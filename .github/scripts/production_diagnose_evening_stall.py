@@ -25,7 +25,7 @@ def main():
                 "name": t.name,
                 "id": t.id,
                 "status": t.status,
-                "daily_limit": t.daily_limit,
+                "daily_message_target": getattr(t, "daily_message_target", None),
                 "pacing_template": (t.pacing_config or {}).get("template"),
                 "max_hourly": (t.pacing_config or {}).get("max_actions_per_hour"),
                 "config_revision": t.config_revision,
