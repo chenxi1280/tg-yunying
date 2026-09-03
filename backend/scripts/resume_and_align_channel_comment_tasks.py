@@ -121,7 +121,7 @@ def execute_recovery(
             )
             .order_by(Task.name, Task.id)
         ))
-        
+
         before_snapshots = [snapshot_task(t) for t in tasks]
         actions_planned = [
             plan_task_action(
@@ -133,16 +133,16 @@ def execute_recovery(
             )
             for t in tasks
         ]
-        
+
         execution_logs = []
-        
+
         if apply:
             for plan in actions_planned:
                 task_id = plan["task_id"]
                 task = session.get(Task, task_id)
                 if not task:
                     continue
-                
+
                 # 1. Update config if needed
                 if plan["config_changes"]:
                     _apply_type_config_data(
@@ -158,7 +158,7 @@ def execute_recovery(
                         "action": "update_config",
                         "changes": plan["config_changes"],
                     })
-                
+
                 # 2. Resume if paused and not retired
                 if plan["should_resume"]:
                     resume_task(
@@ -173,10 +173,10 @@ def execute_recovery(
                         "from_status": "paused",
                         "to_status": "running",
                     })
-            
+
             session.commit()
             session.expire_all()
-        
+
         # Read back current state
         refreshed_tasks = list(session.scalars(
             select(Task)
@@ -187,7 +187,7 @@ def execute_recovery(
             .order_by(Task.name, Task.id)
         ))
         after_snapshots = [snapshot_task(t) for t in refreshed_tasks]
-        
+
         summary = {
             "mode": mode,
             "executed_at": datetime.now(tz=UTC).isoformat(),
@@ -197,7 +197,7 @@ def execute_recovery(
             "running_task_count": sum(1 for s in after_snapshots if s["status"] == "running"),
             "paused_task_count": sum(1 for s in after_snapshots if s["status"] == "paused"),
         }
-        
+
         return {
             "summary": summary,
             "actions_planned": actions_planned,
@@ -215,9 +215,9 @@ def main() -> None:
     parser.add_argument("--comment-mode", choices=["comment", "reply", "mixed"], default=DEFAULT_COMMENT_MODE, help="评论模式 (默认 mixed)")
     parser.add_argument("--message-scope", choices=["all", "latest_n", "dynamic_new"], default=DEFAULT_MESSAGE_SCOPE, help="消息监听范围 (默认 dynamic_new)")
     parser.add_argument("--actor", default=DEFAULT_ACTOR, help="操作人标识")
-    
+
     args = parser.parse_args()
-    
+
     result = execute_recovery(
         mode=args.mode,
         target_comments=args.target_comments,
@@ -226,7 +226,7 @@ def main() -> None:
         message_scope=args.message_scope,
         actor=args.actor,
     )
-    
+
     print("CHANNEL_COMMENT_RECOVERY_RESULT=" + json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2))
 
 
