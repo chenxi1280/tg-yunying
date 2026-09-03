@@ -69,10 +69,12 @@ jobs:
           EXPECTED_DEPLOYED_SHA: ${{ inputs.deployed_sha }}
         run: |
           set -euo pipefail
+          set -x
           [[ "${EXPECTED_DEPLOYED_SHA}" =~ ^[0-9a-fA-F]{8,40}$ ]]
           BASE_DIR="${PRODUCTION_BASE_DIR:-/data/tgyunying}"
           EXPECTED_SHORT="${EXPECTED_DEPLOYED_SHA:0:8}"
           CURRENT_RELEASE="$(ssh silicon-valley-production-server "readlink -f '${BASE_DIR}/current'")"
+          echo "CURRENT_RELEASE=${CURRENT_RELEASE}"
           [[ "$(basename "${CURRENT_RELEASE}")" == *"${EXPECTED_SHORT}"* ]]
           scp .github/scripts/ai_dispatch_admission_diagnostics.py \
             silicon-valley-production-server:/tmp/ai_dispatch_admission_diagnostics.py
