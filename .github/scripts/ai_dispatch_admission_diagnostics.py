@@ -634,7 +634,7 @@ ZHENGDA_AND_TIANJIN_DEEP_DIVE_QUERY = text("""
         t.type_config->>'target_group_id' AS configured_group_id,
         g.id AS actual_group_id,
         g.title AS group_title,
-        g.invite_link AS group_invite_link,
+        g.tg_peer_id AS group_tg_peer_id,
         g.auth_status AS group_auth_status,
         g.can_send AS group_can_send,
         g.listener_enabled AS group_listener_enabled,
