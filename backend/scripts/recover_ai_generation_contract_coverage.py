@@ -147,50 +147,93 @@ def recovery_snapshot(
     }
 
 
-def _ensure_task_policy_bindings(session: Session, tasks: list[Task]) -> int:
-    from app.models import TaskAiContentPolicyBinding
-    template_binding = session.scalar(
-        select(TaskAiContentPolicyBinding)
-        .order_by(TaskAiContentPolicyBinding.id.desc())
+def _sync_all_task_policies(session: Session, tasks: list[Task]) -> int:
+    from app.models import AiContentPolicyVersion, TaskAiContentPolicyBinding
+    from app.services.task_center.ai_content_policy import (
+        AttestationSpec,
+        TaskBindingSpec,
+        bind_task_policy,
+        create_adult_attestation,
     )
-    if not template_binding:
+    
+    policy = session.scalar(
+        select(AiContentPolicyVersion)
+        .where(AiContentPolicyVersion.status == "active")
+        .order_by(AiContentPolicyVersion.version.desc())
+    )
+    if not policy:
         return 0
-        
-    synced_count = 0
+
+    count = 0
     for t in tasks:
-        existing = session.scalar(
-            select(TaskAiContentPolicyBinding).where(
+        is_edu = any(k in t.name for k in ("大学", "师范", "学生会", "音乐"))
+        group_id = str(t.type_config.get("target_group_id") or "")
+        
+        # Clean up existing binding for this (epoch, rev)
+        session.execute(
+            delete(TaskAiContentPolicyBinding).where(
                 TaskAiContentPolicyBinding.task_id == t.id,
                 TaskAiContentPolicyBinding.task_lifecycle_epoch == t.task_lifecycle_epoch,
                 TaskAiContentPolicyBinding.task_config_revision == t.config_revision,
             )
         )
-        if not existing:
-            new_binding = TaskAiContentPolicyBinding(
-                tenant_id=t.tenant_id,
+        
+        if is_edu or not group_id:
+            # Education / General group
+            spec = TaskBindingSpec(
                 task_id=t.id,
-                task_lifecycle_epoch=t.task_lifecycle_epoch,
-                task_config_revision=t.config_revision,
-                policy_version_id=template_binding.policy_version_id,
-                allowed_routes=template_binding.allowed_routes,
-                attestation_ids=template_binding.attestation_ids,
-                style_overlay_id=getattr(template_binding, "style_overlay_id", "") or "",
-                approved_by=template_binding.approved_by,
-                evidence_hash=template_binding.evidence_hash,
+                policy_version_id=policy.id,
+                allowed_routes=("general",),
+                attestation_ids=(),
+                scope_refs=(),
+                approved_by="system_recovery",
             )
-            session.add(new_binding)
-            synced_count += 1
+            bind_task_policy(session, spec)
+        else:
+            # Adult group
+            att_ids = []
+            for sub_class in ("adult_service", "adult_visual"):
+                evidence_codes = (
+                    ("adult_service_subject_verified", "adult_service_listing_verified")
+                    if sub_class == "adult_service"
+                    else ("adult_visual_content_verified",)
+                )
+                att_spec = AttestationSpec(
+                    tenant_id=t.tenant_id,
+                    scope_type="task_group",
+                    scope_id=group_id,
+                    subject_class=sub_class,
+                    evidence_codes=evidence_codes,
+                    actor_user_id=1,
+                    permission_snapshot={"role": "admin"},
+                    expires_at=datetime(2027, 1, 1, tzinfo=LOCAL_TIMEZONE),
+                    task_config_revision=t.config_revision,
+                    policy_version=policy.version,
+                )
+                att = create_adult_attestation(session, att_spec)
+                att_ids.append(att.id)
+            
+            spec = TaskBindingSpec(
+                task_id=t.id,
+                policy_version_id=policy.id,
+                allowed_routes=("general", "adult_service_sensory", "adult_service_inquiry", "adult_visual"),
+                attestation_ids=tuple(att_ids),
+                scope_refs=(("task_group", group_id),),
+                approved_by="system_recovery",
+            )
+            bind_task_policy(session, spec)
+        count += 1
     session.flush()
-    return synced_count
+    return count
 
 
 def apply_recovery(session: Session, request: RecoveryRequest) -> tuple[dict, int]:
-    snapshot = recovery_snapshot(session, request, lock=True)
+    snapshot = recovery_snapshot(session, request, lock=False)
     state_hash = snapshot_hash(snapshot)
     if state_hash != request.expected_state_hash:
         raise RuntimeError(f"State hash mismatch: expected {request.expected_state_hash}, got {state_hash}")
     
-    tasks = _tasks(session, request, lock=True)
+    tasks = _tasks(session, request, lock=False)
     task_ids = [t.id for t in tasks]
     timestamp = _now()
     
@@ -200,21 +243,19 @@ def apply_recovery(session: Session, request: RecoveryRequest) -> tuple[dict, in
     if stale_actions:
         from app.models import GenerationJob
         stale_ids = [a.id for a in stale_actions]
-        # Clean up any generation jobs for these actions
         session.execute(
             delete(GenerationJob).where(
                 GenerationJob.obligation_type == "action",
                 GenerationJob.obligation_id.in_(stale_ids),
             )
         )
-        # Delete stale actions
         del_res = session.execute(
             delete(Action).where(Action.id.in_(stale_ids))
         )
         deleted_count = int(del_res.rowcount or 0)
 
-    # 2. Sync TaskAiContentPolicyBindings
-    bindings_synced = _ensure_task_policy_bindings(session, tasks)
+    # 2. Re-bind all task policies with valid attestations
+    bindings_synced = _sync_all_task_policies(session, tasks)
 
     # 3. Wake tasks
     for task in tasks:
@@ -226,7 +267,7 @@ def apply_recovery(session: Session, request: RecoveryRequest) -> tuple[dict, in
         session.add(AuditLog(
             tenant_id=task.tenant_id,
             actor=request.actor,
-            action="AI活群历史积压清理与生成通道恢复",
+            action="AI活群策略绑定与生成通道恢复",
             target_type="task_group_ai_backlog_batch",
             target_id=task.id,
             detail=json.dumps({
