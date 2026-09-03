@@ -7,21 +7,18 @@ from dataclasses import dataclass
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
 from app.models import Action, AuditLog, ExecutionAttempt, Task, TaskAccountDailyCoverage
 from app.services._common import _now
 from app.services.task_center.daily_coverage import release_generation_contract_blocker
-from app.services.task_center.ai_backlog_abandonment import abandon_ai_historical_backlog
 from app.services.task_center.fulfillment_activation import CURRENT_CONTRACT_VERSION
-from app.services.task_center.ai_generation_worker import drain_ai_generation
 
 
 LOCAL_TIMEZONE = ZoneInfo("Asia/Shanghai")
 TASK_TYPE = "group_ai_chat"
-TODAY_CUTOFF = datetime(2026, 9, 3, 0, 0, 0, tzinfo=LOCAL_TIMEZONE)
 RECOVERABLE_ACTION_STATUSES = frozenset({"failed", "skipped"})
 
 
@@ -55,7 +52,7 @@ def parse_request() -> RecoveryRequest:
         raise ValueError("AI_GENERATION_CONTRACT_RECOVERY_APPLY must be true or false")
     request = RecoveryRequest(
         task_ids=task_ids,
-        blocker_code=os.getenv("AI_GENERATION_CONTRACT_RECOVERY_BLOCKER_CODE", "historical_backlog").strip(),
+        blocker_code=_required_env("AI_GENERATION_CONTRACT_RECOVERY_BLOCKER_CODE"),
         apply=apply_value == "true",
         expected_state_hash=os.getenv(
             "AI_GENERATION_CONTRACT_RECOVERY_EXPECTED_STATE_HASH", "",
@@ -73,53 +70,86 @@ def snapshot_hash(snapshot: dict) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _tasks(session: Session, request: RecoveryRequest, *, lock: bool = False) -> list[Task]:
-    if len(request.task_ids) == 1 and request.task_ids[0].lower() == "all":
-        statement = (
-            select(Task)
-            .where(
-                Task.type == TASK_TYPE,
-                Task.status == "running",
-                Task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION,
-            )
-            .order_by(Task.id)
-        )
-        tasks = list(session.scalars(statement))
-        if not tasks:
-            raise ValueError("No active group_ai_chat tasks found for 'all'")
-        return tasks
-
+def _tasks(session: Session, request: RecoveryRequest, *, lock: bool) -> list[Task]:
     statement = select(Task).where(Task.id.in_(request.task_ids)).order_by(Task.id)
+    if lock:
+        statement = statement.with_for_update()
     tasks = list(session.scalars(statement))
-    found = {task.id for task in tasks}
-    missing = set(request.task_ids) - found
-    if missing:
-        raise ValueError(f"AI generation contract recovery task identity missing: {missing}")
+    if {task.id for task in tasks} != set(request.task_ids):
+        raise ValueError("AI generation contract recovery task identity mismatch")
     for task in tasks:
         if (
             task.type != TASK_TYPE
             or task.status != "running"
             or task.fulfillment_contract_version != CURRENT_CONTRACT_VERSION
         ):
-            raise ValueError(
-                f"AI generation contract recovery task state invalid: {task.id} (status={task.status}, type={task.type}, contract={task.fulfillment_contract_version})"
-            )
+            raise ValueError(f"AI generation contract recovery task state invalid:{task.id}")
     return tasks
 
 
-def _find_stale_actions(session: Session, task_ids: list[str]) -> list[Action]:
-    stmt = (
-        select(Action)
+def _coverage_rows(
+    session: Session,
+    request: RecoveryRequest,
+    *,
+    lock: bool,
+) -> list[TaskAccountDailyCoverage]:
+    local_date = datetime.now(LOCAL_TIMEZONE).date()
+    statement = (
+        select(TaskAccountDailyCoverage)
         .where(
-            Action.task_id.in_(task_ids),
-            Action.task_type == "group_ai_chat",
-            Action.action_type == "send_message",
-            Action.status == "pending",
-            Action.scheduled_at < TODAY_CUTOFF,
+            TaskAccountDailyCoverage.task_id.in_(request.task_ids),
+            TaskAccountDailyCoverage.coverage_date == local_date,
+            TaskAccountDailyCoverage.state == "blocked",
+            TaskAccountDailyCoverage.blocker_stage == "generation_contract",
+            TaskAccountDailyCoverage.blocker_code == request.blocker_code,
+            TaskAccountDailyCoverage.reserved_action_id.is_(None),
+            TaskAccountDailyCoverage.confirmed_count < TaskAccountDailyCoverage.target_count,
         )
-        .order_by(Action.scheduled_at, Action.id)
+        .order_by(TaskAccountDailyCoverage.task_id, TaskAccountDailyCoverage.id)
     )
-    return list(session.scalars(stmt))
+    if lock:
+        statement = statement.with_for_update()
+    return list(session.scalars(statement))
+
+
+def _gateway_started_count(session: Session, action_id: str) -> int:
+    return int(session.scalar(
+        select(func.count(ExecutionAttempt.id)).where(
+            ExecutionAttempt.action_id == action_id,
+            ExecutionAttempt.gateway_call_started_at.is_not(None),
+        )
+    ) or 0)
+
+
+def _row_snapshot(session: Session, row: TaskAccountDailyCoverage) -> tuple[dict, str]:
+    action = session.get(Action, row.last_action_id) if row.last_action_id else None
+    gateway_started_count = _gateway_started_count(session, action.id) if action else 0
+    conflict = ""
+    if action is None:
+        conflict = "last_action_missing"
+    elif action.status not in RECOVERABLE_ACTION_STATUSES:
+        conflict = f"last_action_status_invalid:{action.status}"
+    elif gateway_started_count:
+        conflict = "gateway_already_started"
+    result = dict(action.result or {}) if action is not None else {}
+    return {
+        "coverage_id": row.id,
+        "task_id": row.task_id,
+        "task_day_ledger_id": row.task_day_ledger_id,
+        "group_id": row.group_id,
+        "account_id": row.account_id,
+        "target_count": row.target_count,
+        "confirmed_count": row.confirmed_count,
+        "state": row.state,
+        "blocker_code": row.blocker_code,
+        "blocker_stage": row.blocker_stage,
+        "recovery_path": row.recovery_path,
+        "last_action_id": row.last_action_id,
+        "last_action_status": action.status if action is not None else "missing",
+        "last_action_error_code": str(result.get("error_code") or ""),
+        "gateway_started_count": gateway_started_count,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }, conflict
 
 
 def recovery_snapshot(
@@ -129,191 +159,105 @@ def recovery_snapshot(
     lock: bool = False,
 ) -> dict:
     tasks = _tasks(session, request, lock=lock)
-    task_ids = [t.id for t in tasks]
-    stale_actions = _find_stale_actions(session, task_ids)
-    
-    stale_by_task: dict[str, int] = {}
-    for a in stale_actions:
-        stale_by_task[a.task_id] = stale_by_task.get(a.task_id, 0) + 1
-
+    rows = _coverage_rows(session, request, lock=lock)
+    row_snapshots: list[dict] = []
+    conflicts: list[dict] = []
+    for row in rows:
+        item, conflict = _row_snapshot(session, row)
+        row_snapshots.append(item)
+        if conflict:
+            conflicts.append({"coverage_id": row.id, "reason": conflict})
     return {
-        "task_ids": task_ids,
+        "task_ids": [task.id for task in tasks],
         "task_names": [task.name for task in tasks],
         "blocker_code": request.blocker_code,
-        "cutoff": TODAY_CUTOFF.isoformat(),
-        "matched_count": len(stale_actions),
-        "backlog_summary": stale_by_task,
-        "sample_stale_ids": [a.id for a in stale_actions[:10]],
+        "matched_count": len(row_snapshots),
+        "rows": row_snapshots,
+        "conflicts": conflicts,
     }
 
 
-def _sync_all_task_policies(session: Session, tasks: list[Task]) -> int:
-    from app.models import AiContentPolicyVersion, TaskAiContentPolicyBinding
-    from app.services.task_center.ai_content_policy import (
-        AttestationSpec,
-        TaskBindingSpec,
-        bind_task_policy,
-        create_adult_attestation,
-    )
-    
-    policy = session.scalar(
-        select(AiContentPolicyVersion)
-        .where(AiContentPolicyVersion.status == "active")
-        .order_by(AiContentPolicyVersion.version.desc())
-    )
-    if not policy:
-        return 0
-
-    count = 0
-    for t in tasks:
-        is_edu = any(k in t.name for k in ("大学", "师范", "学生会", "音乐"))
-        group_id = str(t.type_config.get("target_group_id") or "")
-        
-        # Clean up existing binding for this (epoch, rev)
-        session.execute(
-            delete(TaskAiContentPolicyBinding).where(
-                TaskAiContentPolicyBinding.task_id == t.id,
-                TaskAiContentPolicyBinding.task_lifecycle_epoch == t.task_lifecycle_epoch,
-                TaskAiContentPolicyBinding.task_config_revision == t.config_revision,
-            )
-        )
-        
-        if is_edu or not group_id:
-            # Education / General group
-            spec = TaskBindingSpec(
-                task_id=t.id,
-                policy_version_id=policy.id,
-                allowed_routes=("general",),
-                attestation_ids=(),
-                scope_refs=(),
-                approved_by="system_recovery",
-            )
-            bind_task_policy(session, spec)
-        else:
-            # Adult group
-            att_ids = []
-            for sub_class in ("adult_service", "adult_visual"):
-                evidence_codes = (
-                    ("adult_service_subject_verified", "adult_service_listing_verified")
-                    if sub_class == "adult_service"
-                    else ("adult_visual_content_verified",)
-                )
-                att_spec = AttestationSpec(
-                    tenant_id=t.tenant_id,
-                    scope_type="task_group",
-                    scope_id=group_id,
-                    subject_class=sub_class,
-                    evidence_codes=evidence_codes,
-                    actor_user_id=1,
-                    permission_snapshot={"role": "admin"},
-                    expires_at=datetime(2027, 1, 1, tzinfo=LOCAL_TIMEZONE),
-                    task_config_revision=t.config_revision,
-                    policy_version=policy.version,
-                )
-                att = create_adult_attestation(session, att_spec)
-                att_ids.append(att.id)
-            
-            spec = TaskBindingSpec(
-                task_id=t.id,
-                policy_version_id=policy.id,
-                allowed_routes=("general", "adult_service_sensory", "adult_service_inquiry", "adult_visual"),
-                attestation_ids=tuple(att_ids),
-                scope_refs=(("task_group", group_id),),
-                approved_by="system_recovery",
-            )
-            bind_task_policy(session, spec)
-        count += 1
-    session.flush()
-    return count
-
-
-def apply_recovery(session: Session, request: RecoveryRequest) -> tuple[dict, int]:
-    snapshot = recovery_snapshot(session, request, lock=False)
-    state_hash = snapshot_hash(snapshot)
-    if state_hash != request.expected_state_hash:
-        raise RuntimeError(f"State hash mismatch: expected {request.expected_state_hash}, got {state_hash}")
-    
-    tasks = _tasks(session, request, lock=False)
-    task_ids = [t.id for t in tasks]
-    timestamp = _now()
-    
-    # 1. Clean up stale actions and associated jobs
-    stale_actions = _find_stale_actions(session, task_ids)
-    deleted_count = 0
-    if stale_actions:
-        from app.models import GenerationJob
-        stale_ids = [a.id for a in stale_actions]
-        session.execute(
-            delete(GenerationJob).where(
-                GenerationJob.obligation_type == "action",
-                GenerationJob.obligation_id.in_(stale_ids),
-            )
-        )
-        del_res = session.execute(
-            delete(Action).where(Action.id.in_(stale_ids))
-        )
-        deleted_count = int(del_res.rowcount or 0)
-
-    # 2. Re-bind all task policies with valid attestations
-    bindings_synced = _sync_all_task_policies(session, tasks)
-
-    # 3. Wake tasks
-    for task in tasks:
-        task.next_run_at = timestamp
-        task.updated_at = timestamp
-
-    # 4. Audit log
-    for task in tasks:
+def _write_audits(
+    session: Session,
+    request: RecoveryRequest,
+    snapshot: dict,
+    state_hash: str,
+) -> None:
+    rows_by_task: dict[str, list[str]] = {}
+    for row in snapshot["rows"]:
+        rows_by_task.setdefault(row["task_id"], []).append(row["coverage_id"])
+    for task_id, coverage_ids in rows_by_task.items():
+        task = session.get(Task, task_id)
         session.add(AuditLog(
-            tenant_id=task.tenant_id,
+            tenant_id=task.tenant_id if task else None,
             actor=request.actor,
-            action="AI活群策略绑定与生成通道恢复",
-            target_type="task_group_ai_backlog_batch",
-            target_id=task.id,
+            action="AI生成合同覆盖阻塞恢复",
+            target_type="task_account_daily_coverage_batch",
+            target_id=task_id,
             detail=json.dumps({
                 "approval_ref": request.approval_ref,
-                "cutoff": TODAY_CUTOFF.isoformat(),
-                "deleted_count": deleted_count,
-                "bindings_synced": bindings_synced,
+                "blocker_code": request.blocker_code,
+                "coverage_ids": coverage_ids,
                 "preview_state_hash": state_hash,
             }, ensure_ascii=False, sort_keys=True),
         ))
+
+
+def apply_recovery(session: Session, request: RecoveryRequest) -> tuple[dict, list[str]]:
+    snapshot = recovery_snapshot(session, request, lock=True)
+    state_hash = snapshot_hash(snapshot)
+    if state_hash != request.expected_state_hash:
+        raise RuntimeError("AI generation contract recovery state hash changed")
+    if snapshot["matched_count"] <= 0 or snapshot["conflicts"]:
+        raise RuntimeError("AI generation contract recovery preview is not safely applicable")
+    timestamp = _now()
+    recovered_ids: list[str] = []
+    for row in snapshot["rows"]:
+        changed = release_generation_contract_blocker(
+            session,
+            row["coverage_id"],
+            approved_reason=request.approval_ref,
+            now=timestamp,
+        )
+        if not changed:
+            raise RuntimeError(f"AI generation contract recovery CAS failed:{row['coverage_id']}")
+        recovered_ids.append(row["coverage_id"])
+    for task_id in request.task_ids:
+        task = session.get(Task, task_id)
+        task.next_run_at = timestamp
+        task.updated_at = timestamp
+    _write_audits(session, request, snapshot, state_hash)
     session.commit()
-    return snapshot, deleted_count
+    return snapshot, recovered_ids
 
 
-def _readback(deleted_count: int, request: RecoveryRequest) -> dict:
+def _readback(recovered_ids: list[str], request: RecoveryRequest) -> dict:
     with SessionLocal() as session:
-        tasks = _tasks(session, request, lock=False)
+        rows = list(session.scalars(
+            select(TaskAccountDailyCoverage)
+            .where(TaskAccountDailyCoverage.id.in_(recovered_ids))
+            .order_by(TaskAccountDailyCoverage.task_id, TaskAccountDailyCoverage.id)
+        ))
+        recovered = [{
+            "coverage_id": row.id,
+            "task_id": row.task_id,
+            "state": row.state,
+            "blocker_code": row.blocker_code,
+            "blocker_stage": row.blocker_stage,
+            "reserved_action_id": row.reserved_action_id,
+            "last_action_id": row.last_action_id,
+            "next_decision_at": row.next_decision_at,
+        } for row in rows]
         remaining = recovery_snapshot(session, request)
-        
-        # Check today's fresh pending actions
-        fresh_stats = dict(session.execute(
-            select(
-                func.count(Action.id).label("fresh_pending"),
-                func.min(Action.scheduled_at).label("min_sched"),
-                func.max(Action.scheduled_at).label("max_sched"),
-            ).where(
-                Action.task_id.in_(request.task_ids if request.task_ids[0] != "all" else [t.id for t in tasks]),
-                Action.status == "pending",
-                Action.task_type == "group_ai_chat",
-            )
-        ).mappings().first() or {})
-
         return {
-            "deleted_backlog_count": deleted_count,
-            "remaining_backlog_count": remaining["matched_count"],
-            "today_fresh_actions": {
-                "count": fresh_stats.get("fresh_pending", 0),
-                "min_sched": str(fresh_stats.get("min_sched", "")),
-                "max_sched": str(fresh_stats.get("max_sched", "")),
-            },
+            "recovered": recovered,
+            "remaining_matching_blocker_count": remaining["matched_count"],
             "task_states": [{
                 "task_id": task.id,
-                "name": task.name,
                 "status": task.status,
-                "next_run_at": str(task.next_run_at),
-            } for task in tasks],
+                "task_type": task.type,
+                "fulfillment_contract_version": task.fulfillment_contract_version,
+            } for task in _tasks(session, request, lock=False)],
         }
 
 
@@ -322,30 +266,21 @@ def main() -> int:
     if not request.apply:
         with SessionLocal() as session:
             snapshot = recovery_snapshot(session, request)
-        print("AI_GENERATION_CONTRACT_RECOVERY_PREVIEW=" + json.dumps({
+        print(json.dumps({
             "mode": "preview",
             "snapshot": snapshot,
             "state_hash": snapshot_hash(snapshot),
         }, ensure_ascii=False, sort_keys=True, default=str))
         return 0
     with SessionLocal() as session:
-        snapshot, deleted_count = apply_recovery(session, request)
-    readback_data = _readback(deleted_count, request)
-    print("AI_GENERATION_CONTRACT_RECOVERY_APPLY=" + json.dumps({
+        snapshot, recovered_ids = apply_recovery(session, request)
+    print(json.dumps({
         "mode": "apply",
         "preview_state_hash": snapshot_hash(snapshot),
-        "deleted_count": deleted_count,
-        "readback": readback_data,
+        "applied_count": len(recovered_ids),
+        "recovered_ids": recovered_ids,
+        "readback": _readback(recovered_ids, request),
     }, ensure_ascii=False, sort_keys=True, default=str))
-    
-    # Trigger AI generation drain immediately
-    try:
-        drained = drain_ai_generation(SessionLocal, limit=100)
-        print(f"IMMEDIATE_AI_GENERATION_DRAIN_PROCESSED={drained}")
-    except Exception as exc:
-        import traceback
-        print(f"IMMEDIATE_AI_GENERATION_DRAIN_EXCEPTION={exc}\n{traceback.format_exc()}")
-
     return 0
 
 
