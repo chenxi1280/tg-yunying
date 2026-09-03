@@ -122,6 +122,8 @@ jobs:
           ssh silicon-valley-production-server \
             "docker cp /tmp/recover_ai_generation_contract_coverage.py tgyunying-backend:/tmp/recover_ai_generation_contract_coverage.py && \
              docker exec \
+               -w /app \
+               -e PYTHONPATH=/app \
                -e AI_GENERATION_CONTRACT_RECOVERY_TASK_IDS='${TASK_IDS}' \
                -e AI_GENERATION_CONTRACT_RECOVERY_BLOCKER_CODE='historical_backlog' \
                -e AI_GENERATION_CONTRACT_RECOVERY_APPLY='${APPLY}' \
