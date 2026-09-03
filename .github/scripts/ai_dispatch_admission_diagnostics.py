@@ -502,6 +502,22 @@ ZHENGDA_ACTIONS_BREAKDOWN_QUERY = text("""
 """)
 
 
+RECENT_HOURLY_SEND_STATS_QUERY = text("""
+    SELECT t.id AS task_id, t.name AS task_name,
+           COUNT(CASE WHEN a.status IN ('success', 'confirmed') AND a.action_type = 'send_message' AND a.executed_at >= NOW() - INTERVAL '1 hour' THEN 1 END) AS sent_last_1h,
+           COUNT(CASE WHEN a.status IN ('success', 'confirmed') AND a.action_type = 'send_message' AND a.executed_at >= CURRENT_DATE THEN 1 END) AS sent_today,
+           MAX(CASE WHEN a.status IN ('success', 'confirmed') AND a.action_type = 'send_message' THEN a.executed_at END) AS latest_sent_at,
+           COUNT(CASE WHEN a.status = 'pending' AND a.action_type = 'send_message' AND a.payload->>'ai_generation_status' = 'ready' THEN 1 END) AS ready_to_send,
+           COUNT(CASE WHEN a.status = 'pending' AND a.action_type = 'send_message' AND a.payload->>'ai_generation_status' = 'pending' THEN 1 END) AS pending_generation,
+           MIN(CASE WHEN a.status = 'pending' AND a.action_type = 'send_message' THEN a.scheduled_at END) AS next_scheduled_at,
+           MAX(CASE WHEN a.status = 'pending' AND a.action_type = 'send_message' THEN a.scheduled_at END) AS max_scheduled_at
+    FROM tasks AS t
+    LEFT JOIN actions AS a ON a.task_id = t.id
+    WHERE t.status = 'running' AND t.type = 'group_ai_chat'
+    GROUP BY t.id, t.name
+    ORDER BY t.name
+""")
+
 TODAY_SUCCESS_QUERY = text("""
     SELECT a.id, a.task_id, t.name AS task_name, a.account_id, a.action_type, a.status,
            a.scheduled_at, a.created_at, a.executed_at,
@@ -539,6 +555,7 @@ def main() -> None:
         running_tasks = _rows(session, RUNNING_TASKS_DETAILED_QUERY)
         zhengda_actions = _rows(session, ZHENGDA_ACTIONS_BREAKDOWN_QUERY)
         today_success = _rows(session, TODAY_SUCCESS_QUERY)
+        recent_stats = _rows(session, RECENT_HOURLY_SEND_STATS_QUERY)
     _print_rows("AI_DISPATCH_ACTION_CLASS", classifications)
     _print_rows("AI_DISPATCH_ACTION_SAMPLE", samples)
     _print_rows("AI_DISPATCH_ACTION_RUNTIME_REASON", runtime_reasons)
@@ -558,6 +575,7 @@ def main() -> None:
     _print_rows("RUNNING_TASKS_DETAILED", running_tasks)
     _print_rows("ZHENGDA_ACTIONS_BREAKDOWN", zhengda_actions)
     _print_rows("ZHENGDA_TODAY_SUCCESS_OR_PENDING", today_success)
+    _print_rows("RECENT_HOURLY_SEND_STATS", recent_stats)
 
 
 if __name__ == "__main__":
