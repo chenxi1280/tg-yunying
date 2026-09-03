@@ -65,4 +65,4 @@ jobs:
             silicon-valley-production-server:/tmp/ai_dispatch_admission_diagnostics.py
           ssh silicon-valley-production-server \
             "docker cp /tmp/ai_dispatch_admission_diagnostics.py tgyunying-backend:/tmp/ai_dispatch_admission_diagnostics.py && \
-             docker exec tgyunying-backend python /tmp/ai_dispatch_admission_diagnostics.py"
+             docker exec -w /app -e PYTHONPATH=/app tgyunying-backend python /tmp/ai_dispatch_admission_diagnostics.py"
