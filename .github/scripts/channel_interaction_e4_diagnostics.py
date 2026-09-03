@@ -414,7 +414,8 @@ def _snapshot(
 
 
 def _print_view_deep_breakdown(session, task: Task, now: datetime) -> None:
-    config = dict(task.type_config or {})
+    from app.services.task_center.executors.channel_view import effective_channel_view_config
+    config = effective_channel_view_config(task)
     channel_id = config.get("target_channel_id")
     channel = session.get(OperationTarget, int(channel_id or 0)) if channel_id else None
 
