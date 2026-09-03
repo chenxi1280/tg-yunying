@@ -468,15 +468,22 @@ WORKER_HEARTBEATS_QUERY = text("""
     ORDER BY last_seen_at DESC
 """)
 
-ZHENGDA_TASK_QUERY = text("""
-    SELECT t.id, t.name, t.status, t.task_lifecycle_epoch, t.fulfillment_contract_version,
-           t.next_run_at, t.updated_at, t.last_error, t.type_config, t.stats, t.account_config,
-           g.id AS group_id, g.title AS group_title, g.can_send, g.auth_status, g.member_count,
-           tgt.effective_message_target, tgt.configured_message_target, tgt.target_date
+RUNNING_TASKS_DETAILED_QUERY = text("""
+    SELECT t.id, t.name, t.status, t.type, t.task_lifecycle_epoch, t.fulfillment_contract_version,
+           t.type_config->>'target_group_id' AS target_group_id,
+           t.type_config->>'daily_message_target' AS daily_message_target,
+           g.id AS actual_group_id, g.title AS group_title, g.can_send, g.auth_status,
+           tgt.effective_message_target, tgt.configured_message_target,
+           (SELECT COUNT(*) FROM actions WHERE task_id = t.id AND status = 'pending') AS pending_action_count,
+           (SELECT COUNT(*) FROM actions WHERE task_id = t.id AND status = 'confirmed' AND scheduled_at >= CURRENT_DATE) AS today_confirmed_count,
+           (SELECT COUNT(*) FROM actions WHERE task_id = t.id AND status = 'failed' AND scheduled_at >= CURRENT_DATE) AS today_failed_count,
+           (SELECT COUNT(*) FROM actions WHERE task_id = t.id AND payload->>'ai_generation_status' = 'ready' AND status = 'pending') AS ready_pending_count,
+           t.updated_at, t.last_error
     FROM tasks AS t
     LEFT JOIN tg_groups AS g ON g.id = (t.type_config->>'target_group_id')::bigint
     LEFT JOIN task_group_daily_targets AS tgt ON tgt.task_id = t.id AND tgt.target_date = CURRENT_DATE
-    WHERE t.name LIKE '%郑州大学%'
+    WHERE t.status = 'running'
+    ORDER BY t.name
 """)
 
 ZHENGDA_ACTIONS_BREAKDOWN_QUERY = text("""
@@ -489,7 +496,7 @@ ZHENGDA_ACTIONS_BREAKDOWN_QUERY = text("""
            MAX(a.created_at) AS max_created_at,
            COUNT(CASE WHEN a.payload->>'message_text' IS NOT NULL AND a.payload->>'message_text' <> '' THEN 1 END) AS has_text_count
     FROM actions AS a
-    WHERE a.task_id IN (SELECT id FROM tasks WHERE name LIKE '%郑州大学%')
+    WHERE a.task_id = 'a52e84f2-8663-4b00-bbbe-196fb626b28d'
     GROUP BY a.task_id, a.status, a.action_type, a.payload->>'ai_generation_status'
     ORDER BY a.task_id, a.status, a.action_type
 """)
@@ -513,7 +520,7 @@ def main() -> None:
         gen_candidates = _rows(session, GENERATION_CANDIDATES_QUERY)
         gen_jobs = _rows(session, GENERATION_JOBS_QUERY)
         worker_hbs = _rows(session, WORKER_HEARTBEATS_QUERY)
-        zhengda_tasks = _rows(session, ZHENGDA_TASK_QUERY)
+        running_tasks = _rows(session, RUNNING_TASKS_DETAILED_QUERY)
         zhengda_actions = _rows(session, ZHENGDA_ACTIONS_BREAKDOWN_QUERY)
     _print_rows("AI_DISPATCH_ACTION_CLASS", classifications)
     _print_rows("AI_DISPATCH_ACTION_SAMPLE", samples)
@@ -531,7 +538,7 @@ def main() -> None:
     _print_rows("AI_GENERATION_PIPELINE_CANDIDATES", gen_candidates)
     _print_rows("AI_GENERATION_PIPELINE_JOBS", gen_jobs)
     _print_rows("AI_WORKER_HEARTBEATS", worker_hbs)
-    _print_rows("ZHENGDA_TASK_INFO", zhengda_tasks)
+    _print_rows("RUNNING_TASKS_DETAILED", running_tasks)
     _print_rows("ZHENGDA_ACTIONS_BREAKDOWN", zhengda_actions)
 
 
