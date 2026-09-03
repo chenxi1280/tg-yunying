@@ -19,7 +19,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Configure production SSH
+      - name: Validate inputs and secrets
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SILICON_VALLEY_PRODUCTION_SSH_PRIVATE_KEY }}
+          DEPLOY_HOST: ${{ secrets.SILICON_VALLEY_PRODUCTION_HOST }}
+          DEPLOY_USER: ${{ secrets.SILICON_VALLEY_PRODUCTION_USER }}
+          EXPECTED_SHA: ${{ inputs.deployed_sha }}
+        run: |
+          set -euo pipefail
+          test -n "${SSH_PRIVATE_KEY}"
+          test -n "${DEPLOY_HOST}"
+          test -n "${DEPLOY_USER}"
+          [[ "${EXPECTED_SHA}" =~ ^[0-9a-fA-F]{8,40}$ ]]
+
+      - name: Configure SSH
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SILICON_VALLEY_PRODUCTION_SSH_PRIVATE_KEY }}
           DEPLOY_HOST: ${{ secrets.SILICON_VALLEY_PRODUCTION_HOST }}
@@ -35,27 +48,25 @@ jobs:
           chmod 700 ~/.ssh
           printf '%s\n' "${SSH_PRIVATE_KEY}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          PORT="${DEPLOY_PORT:-22}"
-          CONNECT_TIMEOUT="${SSH_CONNECT_TIMEOUT:-60}"
           cat > ~/.ssh/config <<EOF
           Host silicon-valley-production-server
             HostName ${DEPLOY_HOST}
             User ${DEPLOY_USER}
-            Port ${PORT}
+            Port ${DEPLOY_PORT:-22}
             IdentityFile ~/.ssh/id_ed25519
             IdentitiesOnly yes
             StrictHostKeyChecking accept-new
-            ConnectTimeout ${CONNECT_TIMEOUT}
+            ConnectTimeout ${SSH_CONNECT_TIMEOUT:-60}
             ConnectionAttempts 3
             ServerAliveInterval 15
             ServerAliveCountMax 8
           EOF
           chmod 600 ~/.ssh/config
 
-      - name: Verify immutable release and read dispatch facts
+      - name: Verify release and run diagnostics
         env:
-          EXPECTED_DEPLOYED_SHA: ${{ inputs.deployed_sha }}
           PRODUCTION_BASE_DIR: ${{ vars.SILICON_VALLEY_PRODUCTION_BASE_DIR }}
+          EXPECTED_DEPLOYED_SHA: ${{ inputs.deployed_sha }}
         run: |
           set -euo pipefail
           [[ "${EXPECTED_DEPLOYED_SHA}" =~ ^[0-9a-fA-F]{8,40}$ ]]
