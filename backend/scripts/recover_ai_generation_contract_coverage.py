@@ -74,19 +74,40 @@ def snapshot_hash(snapshot: dict) -> str:
 
 
 def _tasks(session: Session, request: RecoveryRequest, *, lock: bool) -> list[Task]:
+    if len(request.task_ids) == 1 and request.task_ids[0].lower() == "all":
+        statement = (
+            select(Task)
+            .where(
+                Task.type == TASK_TYPE,
+                Task.status == "running",
+                Task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION,
+            )
+            .order_by(Task.id)
+        )
+        if lock:
+            statement = statement.with_for_update()
+        tasks = list(session.scalars(statement))
+        if not tasks:
+            raise ValueError("No active group_ai_chat tasks found for 'all'")
+        return tasks
+
     statement = select(Task).where(Task.id.in_(request.task_ids)).order_by(Task.id)
     if lock:
         statement = statement.with_for_update()
     tasks = list(session.scalars(statement))
-    if {task.id for task in tasks} != set(request.task_ids):
-        raise ValueError("AI generation contract recovery task identity mismatch")
+    found = {task.id for task in tasks}
+    missing = set(request.task_ids) - found
+    if missing:
+        raise ValueError(f"AI generation contract recovery task identity missing: {missing}")
     for task in tasks:
         if (
             task.type != TASK_TYPE
             or task.status != "running"
             or task.fulfillment_contract_version != CURRENT_CONTRACT_VERSION
         ):
-            raise ValueError(f"AI generation contract recovery task state invalid:{task.id}")
+            raise ValueError(
+                f"AI generation contract recovery task state invalid: {task.id} (status={task.status}, type={task.type}, contract={task.fulfillment_contract_version})"
+            )
     return tasks
 
 

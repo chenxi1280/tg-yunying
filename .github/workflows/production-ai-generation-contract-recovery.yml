@@ -63,7 +63,7 @@ jobs:
           test -n "${DEPLOY_HOST}"
           test -n "${DEPLOY_USER}"
           [[ "${EXPECTED_SHA}" =~ ^[0-9a-fA-F]{8,40}$ ]]
-          [[ "${TASK_IDS}" =~ ^[0-9a-fA-F-]{36}(,[0-9a-fA-F-]{36})*$ ]]
+          [[ "${TASK_IDS}" == "all" || "${TASK_IDS}" =~ ^[0-9a-fA-F-]{36}(,[0-9a-fA-F-]{36})*$ ]]
           [[ "${ACTOR}" =~ ^[A-Za-z0-9._@+-]{1,100}$ ]]
           [[ "${APPROVAL_REF}" =~ ^[A-Za-z0-9._:/#-]{1,160}$ ]]
           if [[ "${APPLY}" == true ]]; then
