@@ -614,7 +614,7 @@ ACCOUNT_ATTRIBUTES_BREAKDOWN_QUERY = text("""
 """)
 
 TASK_MEMBERSHIP_AND_COVERAGE_QUERY = text("""
-    SELECT 
+    SELECT
         t.name AS task_name,
         t.id AS task_id,
         (SELECT COUNT(*) FROM task_membership_admission_items WHERE task_id = t.id) AS membership_items_count,
