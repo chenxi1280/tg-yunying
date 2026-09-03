@@ -425,6 +425,49 @@ AI_ROUTES_QUERY = text("""
 """)
 
 
+GENERATION_CANDIDATES_QUERY = text("""
+    SELECT t.id AS task_id, t.name AS task_name,
+           t.status AS task_status,
+           t.fulfillment_contract_version,
+           t.task_lifecycle_epoch AS current_task_epoch,
+           COUNT(a.id) AS total_pending_actions,
+           MIN(a.scheduled_at) AS min_scheduled_at,
+           MAX(a.scheduled_at) AS max_scheduled_at,
+           COUNT(CASE WHEN a.scheduled_at <= NOW() THEN 1 END) AS sched_past,
+           COUNT(CASE WHEN a.scheduled_at <= NOW() + INTERVAL '30 minutes' THEN 1 END) AS sched_due_in_30m,
+           COUNT(CASE WHEN a.task_lifecycle_epoch = t.task_lifecycle_epoch THEN 1 END) AS epoch_match_count,
+           COUNT(CASE WHEN a.task_lifecycle_epoch <> t.task_lifecycle_epoch THEN 1 END) AS epoch_mismatch_count,
+           COUNT(CASE WHEN a.account_id IS NOT NULL THEN 1 END) AS has_account_count,
+           COUNT(CASE WHEN a.account_id IS NULL THEN 1 END) AS no_account_count,
+           COUNT(CASE WHEN a.payload ->> 'ai_generation_status' = 'pending' THEN 1 END) AS gen_pending_count,
+           COUNT(CASE WHEN a.payload ->> 'ai_generation_status' = 'ready' THEN 1 END) AS gen_ready_count,
+           COUNT(CASE WHEN a.payload ->> 'ai_generation_status' NOT IN ('pending', 'ready') THEN 1 END) AS gen_other_count
+    FROM actions AS a
+    JOIN tasks AS t ON t.id = a.task_id
+    WHERE a.task_type = 'group_ai_chat'
+      AND a.action_type = 'send_message'
+      AND a.status = 'pending'
+    GROUP BY t.id, t.name, t.status, t.fulfillment_contract_version, t.task_lifecycle_epoch
+    ORDER BY t.name
+""")
+
+GENERATION_JOBS_QUERY = text("""
+    SELECT state, COUNT(*) AS job_count,
+           MIN(generation_not_before_at) AS min_not_before,
+           MAX(generation_not_before_at) AS max_not_before,
+           COUNT(CASE WHEN generation_not_before_at > NOW() THEN 1 END) AS future_not_before_count,
+           COUNT(CASE WHEN next_retry_at > NOW() THEN 1 END) AS future_retry_count
+    FROM generation_jobs
+    GROUP BY state
+    ORDER BY state
+""")
+
+WORKER_HEARTBEATS_QUERY = text("""
+    SELECT worker_role, worker_id, hostname, is_alive, last_heartbeat_at
+    FROM worker_heartbeats
+    ORDER BY last_heartbeat_at DESC
+""")
+
 def main() -> None:
     with SessionLocal() as session:
         classifications = _rows(session, ACTION_CLASSIFICATION_QUERY)
@@ -440,6 +483,9 @@ def main() -> None:
         ai_providers = _rows(session, AI_PROVIDERS_QUERY)
         ai_settings = _rows(session, AI_SETTINGS_QUERY)
         ai_routes = _rows(session, AI_ROUTES_QUERY)
+        gen_candidates = _rows(session, GENERATION_CANDIDATES_QUERY)
+        gen_jobs = _rows(session, GENERATION_JOBS_QUERY)
+        worker_hbs = _rows(session, WORKER_HEARTBEATS_QUERY)
     _print_rows("AI_DISPATCH_ACTION_CLASS", classifications)
     _print_rows("AI_DISPATCH_ACTION_SAMPLE", samples)
     _print_rows("AI_DISPATCH_ACTION_RUNTIME_REASON", runtime_reasons)
@@ -453,6 +499,9 @@ def main() -> None:
     _print_rows("AI_DISPATCH_AI_PROVIDERS", ai_providers)
     _print_rows("AI_DISPATCH_AI_SETTINGS", ai_settings)
     _print_rows("AI_DISPATCH_AI_ROUTES", ai_routes)
+    _print_rows("AI_GENERATION_PIPELINE_CANDIDATES", gen_candidates)
+    _print_rows("AI_GENERATION_PIPELINE_JOBS", gen_jobs)
+    _print_rows("AI_WORKER_HEARTBEATS", worker_hbs)
 
 
 if __name__ == "__main__":
