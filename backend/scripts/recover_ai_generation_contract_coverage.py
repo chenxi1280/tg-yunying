@@ -111,6 +111,21 @@ def _tasks(session: Session, request: RecoveryRequest, *, lock: bool) -> list[Ta
     return tasks
 
 
+def _find_stale_actions(session: Session, task_ids: list[str]) -> list[Action]:
+    stmt = (
+        select(Action)
+        .where(
+            Action.task_id.in_(task_ids),
+            Action.task_type == "group_ai_chat",
+            Action.action_type == "send_message",
+            Action.status == "pending",
+            Action.scheduled_at < TODAY_CUTOFF,
+        )
+        .order_by(Action.scheduled_at, Action.id)
+    )
+    return list(session.scalars(stmt))
+
+
 def recovery_snapshot(
     session: Session,
     request: RecoveryRequest,
@@ -118,34 +133,21 @@ def recovery_snapshot(
     lock: bool = False,
 ) -> dict:
     tasks = _tasks(session, request, lock=lock)
-    task_id_set = set(request.task_ids)
-
-    # 1. Historical backlog actions
-    backlog_res = abandon_ai_historical_backlog(
-        session,
-        cutoff=TODAY_CUTOFF,
-        apply=False,
-        actor=request.actor,
-        task_ids=task_id_set,
-    )
+    task_ids = [t.id for t in tasks]
+    stale_actions = _find_stale_actions(session, task_ids)
     
-    # 2. Coverage blocker rows if any
-    coverage_rows = list(session.scalars(
-        select(TaskAccountDailyCoverage)
-        .where(
-            TaskAccountDailyCoverage.task_id.in_(request.task_ids),
-            TaskAccountDailyCoverage.blocker_code == request.blocker_code,
-        )
-    ))
+    stale_by_task: dict[str, int] = {}
+    for a in stale_actions:
+        stale_by_task[a.task_id] = stale_by_task.get(a.task_id, 0) + 1
 
     return {
-        "task_ids": [task.id for task in tasks],
+        "task_ids": task_ids,
         "task_names": [task.name for task in tasks],
         "blocker_code": request.blocker_code,
         "cutoff": TODAY_CUTOFF.isoformat(),
-        "matched_count": backlog_res.get("candidate_count", 0),
-        "backlog_summary": backlog_res.get("task_counts", {}),
-        "coverage_blocker_count": len(coverage_rows),
+        "matched_count": len(stale_actions),
+        "backlog_summary": stale_by_task,
+        "sample_stale_ids": [a.id for a in stale_actions[:10]],
     }
 
 
@@ -153,53 +155,44 @@ def apply_recovery(session: Session, request: RecoveryRequest) -> tuple[dict, in
     snapshot = recovery_snapshot(session, request, lock=True)
     state_hash = snapshot_hash(snapshot)
     if state_hash != request.expected_state_hash:
-        raise RuntimeError("AI generation contract recovery state hash changed")
+        raise RuntimeError(f"State hash mismatch: expected {request.expected_state_hash}, got {state_hash}")
     
-    task_id_set = set(request.task_ids)
+    tasks = _tasks(session, request, lock=True)
+    task_ids = [t.id for t in tasks]
     timestamp = _now()
     
-    # 1. Abandon historical backlog
-    abandon_res = abandon_ai_historical_backlog(
-        session,
-        cutoff=TODAY_CUTOFF,
-        apply=True,
-        actor=request.actor,
-        task_ids=task_id_set,
-    )
-    deleted_count = abandon_res.get("deleted_action_count", 0)
-
-    # 2. Recover any coverage blockers
-    coverage_rows = list(session.scalars(
-        select(TaskAccountDailyCoverage)
-        .where(
-            TaskAccountDailyCoverage.task_id.in_(request.task_ids),
-            TaskAccountDailyCoverage.blocker_code == request.blocker_code,
+    # 1. Clean up stale actions and associated jobs
+    stale_actions = _find_stale_actions(session, task_ids)
+    deleted_count = 0
+    if stale_actions:
+        from app.models.task_center import GenerationJob
+        stale_ids = [a.id for a in stale_actions]
+        # Clean up any generation jobs for these actions
+        session.execute(
+            delete(GenerationJob).where(
+                GenerationJob.obligation_type == "action",
+                GenerationJob.obligation_id.in_(stale_ids),
+            )
         )
-    ))
-    for cov in coverage_rows:
-        release_generation_contract_blocker(
-            session,
-            cov.id,
-            approved_reason=request.approval_ref,
-            now=timestamp,
+        # Delete stale actions
+        del_res = session.execute(
+            delete(Action).where(Action.id.in_(stale_ids))
         )
+        deleted_count = int(del_res.rowcount or 0)
 
-    # 3. Wake tasks
-    for task_id in request.task_ids:
-        task = session.get(Task, task_id)
-        if task:
-            task.next_run_at = timestamp
-            task.updated_at = timestamp
+    # 2. Wake tasks
+    for task in tasks:
+        task.next_run_at = timestamp
+        task.updated_at = timestamp
 
-    # 4. Audit log
-    for task_id in request.task_ids:
-        task = session.get(Task, task_id)
+    # 3. Audit log
+    for task in tasks:
         session.add(AuditLog(
-            tenant_id=task.tenant_id if task else None,
+            tenant_id=task.tenant_id,
             actor=request.actor,
             action="AI活群历史积压清理与生成通道恢复",
             target_type="task_group_ai_backlog_batch",
-            target_id=task_id,
+            target_id=task.id,
             detail=json.dumps({
                 "approval_ref": request.approval_ref,
                 "cutoff": TODAY_CUTOFF.isoformat(),
