@@ -49,11 +49,13 @@ def main():
                            b.discussion_target_id,
                            dot.username AS discussion_username,
                            dot.title AS discussion_title,
-                           b.status,
-                           b.updated_at
+                           b.binding_status,
+                           b.is_current,
+                           b.created_at
                     FROM channel_discussion_group_bindings AS b
                     JOIN operation_targets AS ot ON ot.id = b.channel_target_id
                     LEFT JOIN operation_targets AS dot ON dot.id = b.discussion_target_id
+                    ORDER BY b.created_at DESC
                 """)
             ).mappings()
         )
