@@ -130,27 +130,11 @@ jobs:
               "docker cp /tmp/production_apply_speedup_and_rescue.py tgyunying-backend:/tmp/production_apply_speedup_and_rescue.py && \
                docker exec -w /app -e PYTHONPATH=/app tgyunying-backend python /tmp/production_apply_speedup_and_rescue.py"
           fi
-          if [ "${UPDATE_TARGETS}" = "true" ]; then
-            scp .github/scripts/production_update_daily_targets.py \
-              silicon-valley-production-server:/tmp/production_update_daily_targets.py
-            ssh silicon-valley-production-server \
-              "docker cp /tmp/production_update_daily_targets.py tgyunying-backend:/tmp/production_update_daily_targets.py && \
-               docker exec -w /app -e PYTHONPATH=/app tgyunying-backend python /tmp/production_update_daily_targets.py"
-          fi
-          if [ "${EXPAND_ALL}" = "true" ]; then
-            scp .github/scripts/production_expand_all_tasks.py \
-              silicon-valley-production-server:/tmp/production_expand_all_tasks.py
-            ssh silicon-valley-production-server \
-              "docker cp /tmp/production_expand_all_tasks.py tgyunying-backend:/tmp/production_expand_all_tasks.py && \
-               docker exec -w /app -e PYTHONPATH=/app tgyunying-backend python /tmp/production_expand_all_tasks.py"
-          fi
-          if [ "${RUN_RESCUE}" = "true" ]; then
-            scp .github/scripts/production_fast_rescue_tasks.py \
-              silicon-valley-production-server:/tmp/production_fast_rescue_tasks.py
-            ssh silicon-valley-production-server \
-              "docker cp /tmp/production_fast_rescue_tasks.py tgyunying-backend:/tmp/production_fast_rescue_tasks.py && \
-               docker exec -w /app -e PYTHONPATH=/app tgyunying-backend python /tmp/production_fast_rescue_tasks.py"
-          fi
+          scp .github/scripts/production_check_live_success.py \
+            silicon-valley-production-server:/tmp/production_check_live_success.py
+          ssh silicon-valley-production-server \
+            "docker cp /tmp/production_check_live_success.py tgyunying-backend:/tmp/production_check_live_success.py && \
+             docker exec -w /app -e PYTHONPATH=/app tgyunying-backend python /tmp/production_check_live_success.py"
           scp .github/scripts/ai_dispatch_admission_diagnostics.py \
             silicon-valley-production-server:/tmp/ai_dispatch_admission_diagnostics.py
           ssh silicon-valley-production-server \
