@@ -104,8 +104,8 @@ jobs:
           EXPECTED_SHA: ${{ inputs.deployed_sha }}
         run: |
           set -euo pipefail
-          CURRENT="$(ssh production "readlink -f '${BASE_DIR:-/data/tgyunying}/current'")"
-          [[ "$(basename "${CURRENT}")" == *_"${EXPECTED_SHA:0:8}" ]]
+          CURRENT="$(ssh production "readlink -f '${BASE_DIR:-/data/tgyunying}/current'" | tail -n 1)"
+          [[ "$(basename "${CURRENT}")" == *"${EXPECTED_SHA:0:8}"* ]]
           state="$(ssh production 'docker inspect --format "{{.State.Status}}/{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}" tgyunying-backend')"
           echo "AI_GENERATION_CONTRACT_RECOVERY_CONTAINER=tgyunying-backend:${state}"
           [[ "${state}" == running/healthy ]]
@@ -121,7 +121,7 @@ jobs:
           set -euo pipefail
           ssh production "timeout 180 docker exec -i \
             -e AI_GENERATION_CONTRACT_RECOVERY_TASK_IDS='${TASK_IDS}' \
-            -e AI_GENERATION_CONTRACT_RECOVERY_BLOCKER_CODE='ai_generation_slot_mapping_mismatch' \
+            -e AI_GENERATION_CONTRACT_RECOVERY_BLOCKER_CODE='historical_backlog' \
             -e AI_GENERATION_CONTRACT_RECOVERY_APPLY='${APPLY}' \
             -e AI_GENERATION_CONTRACT_RECOVERY_EXPECTED_STATE_HASH='${STATE_HASH}' \
             -e AI_GENERATION_CONTRACT_RECOVERY_ACTOR='${ACTOR}' \
