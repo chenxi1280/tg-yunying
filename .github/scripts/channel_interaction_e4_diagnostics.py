@@ -420,11 +420,11 @@ def _print_view_deep_breakdown(session, task: Task, now: datetime) -> None:
 
     channel_info = {
         "channel_id": channel_id,
-        "title": channel.title if channel else None,
-        "username": channel.username if channel else None,
-        "peer_id": channel.tg_peer_id if channel else None,
-        "auth_status": channel.auth_status if channel else None,
-        "has_invite_link": bool(channel.invite_link) if channel else False,
+        "title": getattr(channel, "title", None),
+        "username": getattr(channel, "username", None),
+        "peer_id": getattr(channel, "tg_peer_id", None),
+        "auth_status": getattr(channel, "auth_status", None),
+        "has_username": bool(getattr(channel, "username", "")),
     }
 
     all_msgs_count = session.scalar(
