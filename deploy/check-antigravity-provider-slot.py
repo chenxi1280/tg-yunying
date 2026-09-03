@@ -73,10 +73,13 @@ def _request(
                 if not isinstance(result, dict):
                     raise RuntimeError("antigravity_slot_invalid_response")
                 return result
-        except urllib.error.URLError:
+        except urllib.error.URLError as exc:
             if attempt == STARTUP_ATTEMPTS:
                 raise
-            time.sleep(STARTUP_INTERVAL_SECONDS)
+            if isinstance(exc, urllib.error.HTTPError) and exc.code == 429:
+                time.sleep(min(20, 2 ** attempt))
+            else:
+                time.sleep(STARTUP_INTERVAL_SECONDS)
     raise RuntimeError("antigravity_slot_probe_unreachable")
 
 
