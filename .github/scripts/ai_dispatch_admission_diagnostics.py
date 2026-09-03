@@ -534,6 +534,72 @@ TODAY_SUCCESS_QUERY = text("""
 """)
 
 
+ACCOUNT_OVERALL_SUMMARY_QUERY = text("""
+    SELECT 
+        COUNT(*) AS total_accounts,
+        COUNT(CASE WHEN status = 'active' THEN 1 END) AS active_accounts,
+        COUNT(CASE WHEN status = 'banned' THEN 1 END) AS banned_accounts,
+        COUNT(CASE WHEN status = 'pending_login' THEN 1 END) AS pending_login_accounts,
+        COUNT(CASE WHEN status NOT IN ('active', 'banned', 'pending_login') THEN 1 END) AS other_status_accounts,
+        COUNT(CASE WHEN health_score >= 80 THEN 1 END) AS high_health_accounts
+    FROM tg_accounts
+    WHERE deleted_at IS NULL
+""")
+
+ACCOUNT_TODAY_SEND_COVERAGE_QUERY = text("""
+    SELECT 
+        COUNT(DISTINCT a.account_id) AS distinct_senders_today,
+        COUNT(DISTINCT CASE WHEN a.executed_at >= NOW() - INTERVAL '1 hour' THEN a.account_id END) AS distinct_senders_last_1h,
+        COUNT(DISTINCT a.task_id) AS distinct_active_tasks,
+        COUNT(*) AS total_success_messages,
+        MIN(a.count_per_account) AS min_sends_per_sender,
+        ROUND(AVG(a.count_per_account), 2) AS avg_sends_per_sender,
+        MAX(a.count_per_account) AS max_sends_per_sender
+    FROM (
+        SELECT account_id, task_id, executed_at,
+               COUNT(*) OVER(PARTITION BY account_id) AS count_per_account
+        FROM actions
+        WHERE status IN ('success', 'confirmed')
+          AND action_type = 'send_message'
+          AND (scheduled_at >= CURRENT_DATE OR executed_at >= CURRENT_DATE)
+    ) AS a
+""")
+
+ACCOUNT_TASK_COVERAGE_BREAKDOWN_QUERY = text("""
+    SELECT t.name AS task_name,
+           COUNT(DISTINCT CASE WHEN a.status IN ('success', 'confirmed') THEN a.account_id END) AS distinct_senders_today,
+           COUNT(DISTINCT CASE WHEN a.status = 'pending' THEN a.account_id END) AS distinct_planned_accounts_pending,
+           COUNT(DISTINCT a.account_id) AS total_assigned_distinct_accounts,
+           COUNT(CASE WHEN a.status IN ('success', 'confirmed') THEN 1 END) AS total_sent_messages
+    FROM tasks AS t
+    LEFT JOIN actions AS a ON a.task_id = t.id AND (a.scheduled_at >= CURRENT_DATE OR a.executed_at >= CURRENT_DATE) AND a.action_type = 'send_message'
+    WHERE t.status = 'running' AND t.type = 'group_ai_chat'
+    GROUP BY t.id, t.name
+    ORDER BY t.name
+""")
+
+ACCOUNT_SEND_FREQUENCY_DISTRIBUTION_QUERY = text("""
+    SELECT sends_bucket, COUNT(*) AS account_count
+    FROM (
+        SELECT account_id,
+               CASE 
+                   WHEN COUNT(*) = 1 THEN '1_message'
+                   WHEN COUNT(*) = 2 THEN '2_messages'
+                   WHEN COUNT(*) = 3 THEN '3_messages'
+                   WHEN COUNT(*) BETWEEN 4 AND 5 THEN '4_5_messages'
+                   ELSE '6+_messages'
+               END AS sends_bucket
+        FROM actions
+        WHERE status IN ('success', 'confirmed')
+          AND action_type = 'send_message'
+          AND (scheduled_at >= CURRENT_DATE OR executed_at >= CURRENT_DATE)
+        GROUP BY account_id
+    ) AS sub
+    GROUP BY sends_bucket
+    ORDER BY sends_bucket
+""")
+
+
 def main() -> None:
     with SessionLocal() as session:
         classifications = _rows(session, ACTION_CLASSIFICATION_QUERY)
@@ -556,6 +622,10 @@ def main() -> None:
         zhengda_actions = _rows(session, ZHENGDA_ACTIONS_BREAKDOWN_QUERY)
         today_success = _rows(session, TODAY_SUCCESS_QUERY)
         recent_stats = _rows(session, RECENT_HOURLY_SEND_STATS_QUERY)
+        account_overall = _rows(session, ACCOUNT_OVERALL_SUMMARY_QUERY)
+        account_today_coverage = _rows(session, ACCOUNT_TODAY_SEND_COVERAGE_QUERY)
+        account_task_coverage = _rows(session, ACCOUNT_TASK_COVERAGE_BREAKDOWN_QUERY)
+        account_freq_dist = _rows(session, ACCOUNT_SEND_FREQUENCY_DISTRIBUTION_QUERY)
     _print_rows("AI_DISPATCH_ACTION_CLASS", classifications)
     _print_rows("AI_DISPATCH_ACTION_SAMPLE", samples)
     _print_rows("AI_DISPATCH_ACTION_RUNTIME_REASON", runtime_reasons)
@@ -576,6 +646,10 @@ def main() -> None:
     _print_rows("ZHENGDA_ACTIONS_BREAKDOWN", zhengda_actions)
     _print_rows("ZHENGDA_TODAY_SUCCESS_OR_PENDING", today_success)
     _print_rows("RECENT_HOURLY_SEND_STATS", recent_stats)
+    _print_rows("ACCOUNT_OVERALL_SUMMARY", account_overall)
+    _print_rows("ACCOUNT_TODAY_SEND_COVERAGE", account_today_coverage)
+    _print_rows("ACCOUNT_TASK_COVERAGE_BREAKDOWN", account_task_coverage)
+    _print_rows("ACCOUNT_SEND_FREQUENCY_DISTRIBUTION", account_freq_dist)
 
 
 if __name__ == "__main__":
