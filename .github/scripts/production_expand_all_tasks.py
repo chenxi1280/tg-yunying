@@ -31,7 +31,7 @@ def expand_all_running_tasks() -> list[dict]:
         for task in tasks:
             task_id = task.id
             task_name = task.name
-            
+
             # 1. Clean stale variation intents from failed actions for today
             deleted_intents = session.execute(
                 text("""

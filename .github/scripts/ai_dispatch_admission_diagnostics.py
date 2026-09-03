@@ -627,7 +627,7 @@ TASK_MEMBERSHIP_AND_COVERAGE_QUERY = text("""
 
 
 ZHENGDA_AND_TIANJIN_DEEP_DIVE_QUERY = text("""
-    SELECT 
+    SELECT
         t.id AS task_id,
         t.name AS task_name,
         t.status AS task_status,
@@ -659,11 +659,11 @@ LUOYANG_AND_TIANJIN_GROUPS_QUERY = text("""
            (SELECT COUNT(*) FROM group_context_messages WHERE group_id = tg_groups.id) AS context_messages_count,
            (SELECT COUNT(*) FROM group_context_messages WHERE group_id = tg_groups.id AND created_at >= CURRENT_DATE) AS today_context_messages_count
     FROM tg_groups
-    WHERE tg_peer_id LIKE '%luoyangpiaoch%' 
+    WHERE tg_peer_id LIKE '%luoyangpiaoch%'
        OR tg_peer_id LIKE '%tjlove666%'
-       OR title LIKE '%天津音乐%' 
+       OR title LIKE '%天津音乐%'
        OR title LIKE '%逃学威龙%'
-       OR id IN (484, 5999) 
+       OR id IN (484, 5999)
        OR title LIKE '%洛阳%'
     ORDER BY id
 """)
@@ -683,8 +683,8 @@ TIANJIN_TASK_ACTIONS_QUERY = text("""
 
 
 ZHENGDA_COVERAGE_STATUS_QUERY = text("""
-    SELECT 
-        c.state, 
+    SELECT
+        c.state,
         (c.reserved_action_id IS NOT NULL) AS has_reserved_action,
         c.blocker_code,
         COUNT(*) AS count
@@ -696,7 +696,7 @@ ZHENGDA_COVERAGE_STATUS_QUERY = text("""
 """)
 
 ZHENGDA_DAILY_TARGET_RECORD_QUERY = text("""
-    SELECT 
+    SELECT
         t.id, t.target_date, t.configured_message_target, t.effective_message_target,
         t.planned_daily_target, t.due_message_count, t.confirmed_message_count,
         t.daily_fulfillment_phase, t.scope_frozen_at, t.full_day_committed_at,

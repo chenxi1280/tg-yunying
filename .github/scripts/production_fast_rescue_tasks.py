@@ -16,7 +16,7 @@ def deep_diagnostics():
                 ).order_by(Task.name)
             )
         )
-        
+
         task_configs = []
         for t in tasks:
             task_configs.append({
