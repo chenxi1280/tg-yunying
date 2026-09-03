@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -12,12 +12,15 @@ from app.database import SessionLocal
 from app.models import (
     AccountPacingReservation,
     Action,
+    ChannelMessage,
     CommentFulfillmentObligation,
     ExecutionAttempt,
+    OperationTarget,
     ReactionFulfillmentObligation,
     ReactionRemoteFact,
     Task,
     TaskDayLedger,
+    TgAccount,
     ViewFulfillmentObligation,
     ViewRemoteFact,
 )
@@ -410,6 +413,106 @@ def _snapshot(
     }
 
 
+def _print_view_deep_breakdown(session, task: Task, now: datetime) -> None:
+    config = dict(task.type_config or {})
+    channel_id = config.get("target_channel_id")
+    channel = session.get(OperationTarget, int(channel_id or 0)) if channel_id else None
+
+    channel_info = {
+        "channel_id": channel_id,
+        "title": channel.title if channel else None,
+        "username": channel.username if channel else None,
+        "peer_id": channel.tg_peer_id if channel else None,
+        "auth_status": channel.auth_status if channel else None,
+        "has_invite_link": bool(channel.invite_link) if channel else False,
+    }
+
+    all_msgs_count = session.scalar(
+        select(func.count(ChannelMessage.id))
+        .where(ChannelMessage.channel_target_id == int(channel_id or 0))
+    ) or 0
+    active_days = int(config.get("message_active_days") or 3)
+    cutoff = now.replace(tzinfo=None) - timedelta(days=active_days)
+    active_msgs = list(session.scalars(
+        select(ChannelMessage)
+        .where(
+            ChannelMessage.channel_target_id == int(channel_id or 0),
+            ChannelMessage.published_at >= cutoff,
+        )
+        .order_by(ChannelMessage.published_at.desc())
+    ))
+    latest_msgs = list(session.scalars(
+        select(ChannelMessage)
+        .where(ChannelMessage.channel_target_id == int(channel_id or 0))
+        .order_by(ChannelMessage.published_at.desc().nullslast())
+        .limit(5)
+    ))
+    messages_info = {
+        "total_messages_in_db": all_msgs_count,
+        "active_messages_within_3d": len(active_msgs),
+        "latest_5_messages": [
+            {"id": m.id, "message_id": m.message_id, "published_at": _iso(m.published_at)}
+            for m in latest_msgs
+        ],
+    }
+
+    total_tenant_accounts = session.scalar(
+        select(func.count(TgAccount.id)).where(
+            TgAccount.tenant_id == task.tenant_id,
+            TgAccount.status.in_(["在线", "active"]),
+            TgAccount.deleted_at.is_(None),
+        )
+    ) or 0
+
+    from app.services.task_center.channel_membership import gate_channel_membership
+    membership_gate = None
+    if channel:
+        gate = gate_channel_membership(session, task, channel)
+        membership_gate = {
+            "ready": gate.ready,
+            "created": gate.created,
+            "waiting": gate.waiting,
+            "blocked": gate.blocked,
+            "blocker_reason": gate.blocker_reason,
+        }
+
+    from app.services.task_center.executors.channel_view import _view_accounts
+    try:
+        accounts = _view_accounts(
+            session,
+            task,
+            channel,
+            config=config,
+            target_per_message=int(config.get("per_message_daily_view_target") or 100),
+            identity_scan_floor=1,
+        ) if channel else []
+        candidate_accounts_count = len(accounts)
+    except Exception as exc:
+        candidate_accounts_count = f"error:{exc}"
+
+    unique_viewing_accounts = session.scalar(
+        select(func.count(func.distinct(Action.account_id)))
+        .where(Action.task_id == task.id, Action.status == "success")
+    ) or 0
+
+    print(
+        "CHANNEL_VIEW_DEEP_BREAKDOWN="
+        + json.dumps({
+            "task_id": task.id,
+            "task_name": task.name,
+            "channel": channel_info,
+            "messages": messages_info,
+            "tenant_online_accounts": total_tenant_accounts,
+            "task_candidate_accounts": candidate_accounts_count,
+            "unique_accounts_with_success_views": unique_viewing_accounts,
+            "membership_gate": membership_gate,
+            "account_config": dict(task.account_config or {}),
+            "effective_coverage_mode": config.get("account_coverage_mode"),
+        }, ensure_ascii=False, sort_keys=True),
+        flush=True,
+    )
+
+
 def main() -> None:
     since = _release_since()
     now = datetime.now(BEIJING)
@@ -435,6 +538,8 @@ def main() -> None:
                 + json.dumps(snapshot, ensure_ascii=False, sort_keys=True),
                 flush=True,
             )
+            if task.type == "channel_view":
+                _print_view_deep_breakdown(session, task, now)
         mismatch_rows = session.execute(LIFECYCLE_MISMATCH_QUERY).mappings()
         for row in mismatch_rows:
             print(
