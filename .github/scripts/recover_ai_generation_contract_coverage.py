@@ -168,6 +168,7 @@ def _sync_all_task_policies(session: Session, tasks: list[Task]) -> int:
     for t in tasks:
         is_edu = any(k in t.name for k in ("大学", "师范", "学生会", "音乐"))
         group_id = str(t.type_config.get("target_group_id") or "")
+        cfg = dict(t.type_config or {})
         
         # Clean up existing binding for this (epoch, rev)
         session.execute(
@@ -180,6 +181,9 @@ def _sync_all_task_policies(session: Session, tasks: list[Task]) -> int:
         
         if is_edu or not group_id:
             # Education / General group
+            cfg["ai_content_context_route"] = "general"
+            cfg["ai_content_route_v2_enabled"] = "true"
+            t.type_config = cfg
             spec = TaskBindingSpec(
                 task_id=t.id,
                 policy_version_id=policy.id,
@@ -191,6 +195,9 @@ def _sync_all_task_policies(session: Session, tasks: list[Task]) -> int:
             bind_task_policy(session, spec)
         else:
             # Adult group
+            cfg["ai_content_context_route"] = "adult_service_sensory"
+            cfg["ai_content_route_v2_enabled"] = "true"
+            t.type_config = cfg
             att_ids = []
             for sub_class in ("adult_service", "adult_visual"):
                 evidence_codes = (
