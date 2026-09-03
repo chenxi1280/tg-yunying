@@ -118,3 +118,15 @@ def test_ai_dispatch_today_success_query_uses_action_schema_columns() -> None:
 
     assert "a.executed_at" in success_query
     assert "a.completed_at" not in success_query
+
+
+def test_ai_dispatch_task_scope_query_uses_coverage_date_column() -> None:
+    text = AI_DISPATCH_DIAGNOSTIC.read_text()
+    task_scope_query = text.split("TASK_MEMBERSHIP_AND_COVERAGE_QUERY = text", maxsplit=1)[1].split(
+        "def main",
+        maxsplit=1,
+    )[0]
+
+    assert "coverage_date = CURRENT_DATE" in task_scope_query
+    assert "target_date = CURRENT_DATE" not in task_scope_query
+    assert "targeted_at = CURRENT_DATE" not in task_scope_query

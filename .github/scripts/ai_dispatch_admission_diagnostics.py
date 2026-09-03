@@ -618,7 +618,7 @@ TASK_MEMBERSHIP_AND_COVERAGE_QUERY = text("""
         t.name AS task_name,
         t.id AS task_id,
         (SELECT COUNT(*) FROM task_membership_admission_items WHERE task_id = t.id) AS membership_items_count,
-        (SELECT COUNT(*) FROM task_account_daily_coverage WHERE task_id = t.id AND targeted_at = CURRENT_DATE) AS daily_coverage_items_count,
+        (SELECT COUNT(*) FROM task_account_daily_coverage WHERE task_id = t.id AND coverage_date = CURRENT_DATE) AS daily_coverage_items_count,
         (SELECT COUNT(*) FROM tg_group_accounts WHERE group_id = (t.type_config->>'target_group_id')::bigint) AS actual_group_accounts_count
     FROM tasks AS t
     WHERE t.status = 'running' AND t.type = 'group_ai_chat'
@@ -684,4 +684,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
