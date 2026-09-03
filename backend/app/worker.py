@@ -195,9 +195,11 @@ def drain_once(limit: int = 100, *, role: str | None = None) -> int:
         return drain_material_cache(SessionLocal, limit)
     if selected_role == "metrics":
         return drain_task_metrics(SessionLocal, limit)
-    if selected_role == "legacy":
-        return _drain_legacy_once(limit)
-    return _drain_legacy_once(limit) + drain_task_center(SessionLocal, max(1, limit))
+    return (
+        _drain_legacy_once(limit)
+        + drain_task_center(SessionLocal, max(1, limit))
+        + drain_ai_generation(SessionLocal, max(1, limit))
+    )
 
 
 def _drain_legacy_once(limit: int = 100) -> int:
