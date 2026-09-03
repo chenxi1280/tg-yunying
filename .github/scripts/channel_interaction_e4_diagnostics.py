@@ -161,11 +161,35 @@ def _view_obligations(session, task: Task, since: datetime, now: datetime) -> di
         .join(model, model.id == ViewRemoteFact.obligation_id)
         .where(scope)
     ) or 0)
+    today_remote_facts = int(session.scalar(
+        select(func.count(ViewRemoteFact.id))
+        .join(model, model.id == ViewRemoteFact.obligation_id)
+        .where(scope, ViewRemoteFact.obligation_local_date == now.date())
+    ) or 0)
+    latest_confirmed = session.scalar(
+        select(func.max(ViewRemoteFact.remote_confirmed_at))
+        .join(model, model.id == ViewRemoteFact.obligation_id)
+        .where(scope)
+    )
+    recent_facts = session.execute(
+        select(
+            ViewRemoteFact.account_id,
+            ViewRemoteFact.channel_message_id,
+            ViewRemoteFact.remote_confirmed_at,
+        )
+        .join(model, model.id == ViewRemoteFact.obligation_id)
+        .where(scope)
+        .order_by(ViewRemoteFact.remote_confirmed_at.desc().nullslast())
+        .limit(3)
+    ).mappings()
     return {
         "status_counts": _status_counts(session, model, scope),
         **_due_counts(session, model, scope, now),
         "post_release_remote_fact_count": post_release,
         "total_remote_facts": total_remote_facts,
+        "today_remote_facts": today_remote_facts,
+        "latest_confirmed_at": _iso(latest_confirmed),
+        "recent_facts_samples": [_json_row(row) for row in recent_facts],
     }
 
 
@@ -376,6 +400,8 @@ def _snapshot(
         "contract": task.fulfillment_contract_version,
         "next_run_at": _iso(task.next_run_at),
         "last_error": str(task.last_error or "")[:240],
+        "type_config": dict(task.type_config or {}),
+        "pacing_config": dict(task.pacing_config or {}),
         "obligations": obligations,
         "actions": actions,
         "attempts": attempts,
