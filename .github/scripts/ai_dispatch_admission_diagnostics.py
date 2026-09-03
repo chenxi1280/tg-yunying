@@ -487,7 +487,7 @@ RUNNING_TASKS_DETAILED_QUERY = text("""
 """)
 
 ZHENGDA_ACTIONS_BREAKDOWN_QUERY = text("""
-    SELECT a.task_id, a.status, a.action_type, 
+    SELECT a.task_id, a.status, a.action_type,
            a.payload->>'ai_generation_status' AS gen_status,
            COUNT(*) AS count,
            MIN(a.scheduled_at) AS min_scheduled_at,
@@ -562,5 +562,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
 
