@@ -6,7 +6,7 @@ import sys
 import time
 import traceback
 from datetime import datetime, timezone
-from sqlalchemy import text, select, update
+from sqlalchemy import text, select, update, delete
 from app.database import SessionLocal
 from app.models import Task, TgGroup, TgAccount, Action, TaskAccountDailyCoverage, OperationTarget
 from app.services.task_center.executors.group_ai_chat import (
@@ -69,7 +69,23 @@ def diagnose_and_rescue_task(session, task_id: str, is_tianjin: bool = False) ->
         ).rowcount
         log.append(f"advanced_{advanced}_membership_actions_to_now")
 
-    # Release any broken reservations
+    # 1. Clean up stale variation intents from failed actions
+    deleted_intents = session.execute(
+        text("""
+            DELETE FROM ai_coverage_variation_intents
+            WHERE coverage_ledger_id IN (
+                SELECT id FROM task_account_daily_coverage
+                WHERE task_id = :task_id AND coverage_date = CURRENT_DATE
+            )
+            AND (action_id IS NULL OR action_id IN (
+                SELECT id FROM actions WHERE task_id = :task_id AND status = 'failed'
+            ))
+        """),
+        {"task_id": task_id},
+    ).rowcount
+    log.append(f"deleted_{deleted_intents}_stale_variation_intents")
+
+    # 2. Release any broken reservations
     orphaned_reset = session.execute(
         update(TaskAccountDailyCoverage)
         .where(
