@@ -79,12 +79,15 @@ jobs:
           SSH_CONNECT_TIMEOUT: ${{ vars.SSH_CONNECT_TIMEOUT }}
         run: |
           set -euo pipefail
+          test -n "${SSH_PRIVATE_KEY}"
+          test -n "${DEPLOY_HOST}"
+          test -n "${DEPLOY_USER}"
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
           printf '%s\n' "${SSH_PRIVATE_KEY}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           cat > ~/.ssh/config <<EOF
-          Host production
+          Host silicon-valley-production-server
             HostName ${DEPLOY_HOST}
             User ${DEPLOY_USER}
             Port ${DEPLOY_PORT:-22}
@@ -104,9 +107,9 @@ jobs:
           EXPECTED_SHA: ${{ inputs.deployed_sha }}
         run: |
           set -euo pipefail
-          CURRENT="$(ssh production "readlink -f '${BASE_DIR:-/data/tgyunying}/current'" | tail -n 1)"
-          [[ "$(basename "${CURRENT}")" == *"${EXPECTED_SHA:0:8}"* ]]
-          state="$(ssh production 'docker inspect --format "{{.State.Status}}/{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}" tgyunying-backend')"
+          CURRENT_RELEASE="$(ssh silicon-valley-production-server "readlink -f '${BASE_DIR:-/data/tgyunying}/current'")"
+          [[ "$(basename "${CURRENT_RELEASE}")" == *"${EXPECTED_SHA:0:8}"* ]]
+          state="$(ssh silicon-valley-production-server 'docker inspect --format "{{.State.Status}}/{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}" tgyunying-backend')"
           echo "AI_GENERATION_CONTRACT_RECOVERY_CONTAINER=tgyunying-backend:${state}"
           [[ "${state}" == running/healthy ]]
 
@@ -119,12 +122,15 @@ jobs:
           APPROVAL_REF: ${{ inputs.approval_ref }}
         run: |
           set -euo pipefail
-          ssh production "timeout 180 docker exec -i \
-            -e AI_GENERATION_CONTRACT_RECOVERY_TASK_IDS='${TASK_IDS}' \
-            -e AI_GENERATION_CONTRACT_RECOVERY_BLOCKER_CODE='historical_backlog' \
-            -e AI_GENERATION_CONTRACT_RECOVERY_APPLY='${APPLY}' \
-            -e AI_GENERATION_CONTRACT_RECOVERY_EXPECTED_STATE_HASH='${STATE_HASH}' \
-            -e AI_GENERATION_CONTRACT_RECOVERY_ACTOR='${ACTOR}' \
-            -e AI_GENERATION_CONTRACT_RECOVERY_APPROVAL_REF='${APPROVAL_REF}' \
-            tgyunying-backend python -" \
-            < backend/scripts/recover_ai_generation_contract_coverage.py
+          scp backend/scripts/recover_ai_generation_contract_coverage.py \
+            silicon-valley-production-server:/tmp/recover_ai_generation_contract_coverage.py
+          ssh silicon-valley-production-server \
+            "docker cp /tmp/recover_ai_generation_contract_coverage.py tgyunying-backend:/tmp/recover_ai_generation_contract_coverage.py && \
+             docker exec \
+               -e AI_GENERATION_CONTRACT_RECOVERY_TASK_IDS='${TASK_IDS}' \
+               -e AI_GENERATION_CONTRACT_RECOVERY_BLOCKER_CODE='historical_backlog' \
+               -e AI_GENERATION_CONTRACT_RECOVERY_APPLY='${APPLY}' \
+               -e AI_GENERATION_CONTRACT_RECOVERY_EXPECTED_STATE_HASH='${STATE_HASH}' \
+               -e AI_GENERATION_CONTRACT_RECOVERY_ACTOR='${ACTOR}' \
+               -e AI_GENERATION_CONTRACT_RECOVERY_APPROVAL_REF='${APPROVAL_REF}' \
+               tgyunying-backend python /tmp/recover_ai_generation_contract_coverage.py"
