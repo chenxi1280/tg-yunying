@@ -248,6 +248,23 @@ def _readback(deleted_count: int, request: RecoveryRequest) -> dict:
 
 def main() -> int:
     request = parse_request()
+    
+    # Deep candidate inspection
+    with SessionLocal() as session:
+        from app.services.task_center.ai_generation_parallel import _candidate_statement
+        statement = _candidate_statement(limit=10)
+        actions = list(session.scalars(statement))
+        candidate_debug = [{
+            "id": a.id,
+            "task_id": a.task_id,
+            "account_id": a.account_id,
+            "scheduled_at": str(a.scheduled_at),
+            "status": a.status,
+            "payload_status": str(a.payload.get("ai_generation_status") if a.payload else ""),
+            "has_text": bool(a.payload.get("message_text") if a.payload else ""),
+        } for a in actions]
+        print("AI_GENERATION_CANDIDATE_DEBUG=" + json.dumps(candidate_debug, ensure_ascii=False))
+
     if not request.apply:
         with SessionLocal() as session:
             snapshot = recovery_snapshot(session, request)
@@ -256,6 +273,17 @@ def main() -> int:
             "snapshot": snapshot,
             "state_hash": snapshot_hash(snapshot),
         }, ensure_ascii=False, sort_keys=True, default=str))
+        
+        # Test a single generation drain run
+        try:
+            import logging
+            logging.basicConfig(level=logging.INFO)
+            drained = drain_ai_generation(SessionLocal, limit=10)
+            print(f"PREVIEW_DRAIN_PROCESSED_COUNT={drained}")
+        except Exception as exc:
+            import traceback
+            print(f"PREVIEW_DRAIN_EXCEPTION={exc}\n{traceback.format_exc()}")
+            
         return 0
     with SessionLocal() as session:
         snapshot, deleted_count = apply_recovery(session, request)
