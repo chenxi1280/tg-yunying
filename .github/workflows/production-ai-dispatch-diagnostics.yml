@@ -124,6 +124,11 @@ jobs:
             ssh silicon-valley-production-server \
               "docker cp /tmp/production_update_channel_view_seven_days.py tgyunying-backend:/tmp/production_update_channel_view_seven_days.py && \
                docker exec -w /app -e PYTHONPATH=/app tgyunying-backend python /tmp/production_update_channel_view_seven_days.py"
+            scp .github/scripts/production_inspect_channel_view_plan.py \
+              silicon-valley-production-server:/tmp/production_inspect_channel_view_plan.py
+            ssh silicon-valley-production-server \
+              "docker cp /tmp/production_inspect_channel_view_plan.py tgyunying-backend:/tmp/production_inspect_channel_view_plan.py && \
+               docker exec -w /app -e PYTHONPATH=/app tgyunying-backend python /tmp/production_inspect_channel_view_plan.py"
           fi
           if [ "${RESUME_COMMENTS}" = "true" ]; then
             MODE="preview"
