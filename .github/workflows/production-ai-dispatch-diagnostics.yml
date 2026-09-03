@@ -130,6 +130,11 @@ jobs:
               "docker cp /tmp/production_apply_speedup_and_rescue.py tgyunying-backend:/tmp/production_apply_speedup_and_rescue.py && \
                docker exec -w /app -e PYTHONPATH=/app tgyunying-backend python /tmp/production_apply_speedup_and_rescue.py"
           fi
+          scp .github/scripts/production_investigate_actions_fate.py \
+            silicon-valley-production-server:/tmp/production_investigate_actions_fate.py
+          ssh silicon-valley-production-server \
+            "docker cp /tmp/production_investigate_actions_fate.py tgyunying-backend:/tmp/production_investigate_actions_fate.py && \
+             docker exec -w /app -e PYTHONPATH=/app tgyunying-backend python /tmp/production_investigate_actions_fate.py"
           scp .github/scripts/production_check_live_success.py \
             silicon-valley-production-server:/tmp/production_check_live_success.py
           ssh silicon-valley-production-server \
