@@ -472,7 +472,7 @@ ZHENGDA_TASK_QUERY = text("""
     SELECT t.id, t.name, t.status, t.task_lifecycle_epoch, t.fulfillment_contract_version,
            t.next_run_at, t.updated_at, t.last_error, t.type_config, t.stats, t.account_config,
            g.id AS group_id, g.title AS group_title, g.can_send, g.auth_status, g.member_count,
-           tgt.daily_target_messages, tgt.target_date
+           tgt.effective_message_target, tgt.configured_message_target, tgt.target_date
     FROM tasks AS t
     LEFT JOIN tg_groups AS g ON g.id = (t.type_config->>'target_group_id')::bigint
     LEFT JOIN task_group_daily_targets AS tgt ON tgt.task_id = t.id AND tgt.target_date = CURRENT_DATE
