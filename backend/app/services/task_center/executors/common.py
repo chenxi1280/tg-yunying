@@ -73,7 +73,7 @@ def channel_scope(session: Session, task: Task, config: dict, *, comment_availab
             task.last_error = f"channel_source_snapshot_{snapshot_status}"
             if next_probe_at is not None:
                 task.next_run_at = normalize_datetime(next_probe_at)
-            if task.type == "channel_view" and snapshot_status == "stale" and state_id is not None:
+            if task.type == "channel_view" and state_id is not None:
                 existing_messages = _stale_channel_view_messages(
                     session, task, config, state_id=state_id,
                     snapshot_revision=snapshot_revision,

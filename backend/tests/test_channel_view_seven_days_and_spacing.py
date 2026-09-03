@@ -206,3 +206,60 @@ def test_adjust_for_account_view_spacing_per_account_twelve_hours():
         assert adjusted_103 == today_early_schedule
     finally:
         session.close()
+
+
+def test_channel_view_uses_existing_messages_when_snapshot_collecting():
+    from app.models import OperationTarget, TaskSourceSubscription, ListenerSourceState
+    from app.services.task_center.executors.common import channel_scope
+    from app.services.task_center.channel_listener_runtime import ensure_channel_subscription
+
+    session = _setup_sqlite_session()
+    try:
+        now = beijing_now()
+        channel = OperationTarget(
+            id=20,
+            tenant_id=1,
+            target_type="channel",
+            tg_peer_id="peer20",
+            title="Test Channel",
+            username="testchan",
+        )
+        task = Task(
+            id="task-view-fallback",
+            tenant_id=1,
+            type="channel_view",
+            name="Fallback Task",
+            timezone="Asia/Shanghai",
+            type_config={"target_channel_id": 20, "message_active_days": 7},
+        )
+        state = ListenerSourceState(
+            id="state-collecting-1",
+            tenant_id=1,
+            source_type="channel",
+            source_peer_id="peer20",
+            snapshot_status="collecting",
+            snapshot_revision=1,
+        )
+        session.add_all([channel, task, state])
+        session.commit()
+
+        sub = ensure_channel_subscription(session, task, channel)
+        sub.listener_source_state_id = state.id
+        msg = ChannelMessage(
+            id=201,
+            tenant_id=1,
+            channel_target_id=20,
+            message_id=501,
+            published_at=(now - timedelta(days=2)).replace(tzinfo=None),
+        )
+        session.add(msg)
+        session.commit()
+
+        # channel_scope should not starve even though snapshot_status is collecting
+        scoped_channel, messages = channel_scope(session, task, dict(task.type_config or {}))
+        assert scoped_channel is not None
+        assert len(messages) >= 1
+        assert messages[0].id == 201
+    finally:
+        session.close()
+

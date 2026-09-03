@@ -137,6 +137,9 @@ def channel_snapshot_binding(
             return subscription.state, None, None, 0
         return "pending", None, None, 0
     timestamp = _wall(now_value or _now())
+    if state.snapshot_status == "collecting":
+        if state.lease_expires_at is None or _wall(state.lease_expires_at) < timestamp:
+            return "stale", state.next_probe_at, state.id, int(state.snapshot_revision or 0)
     if state.snapshot_status != "ready":
         return state.snapshot_status, state.next_probe_at, state.id, int(state.snapshot_revision or 0)
     if state.fresh_until_at is None or _wall(state.fresh_until_at) < timestamp:
