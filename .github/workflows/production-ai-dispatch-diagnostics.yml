@@ -123,6 +123,11 @@ jobs:
               "docker cp /tmp/resume_and_align_channel_comment_tasks.py tgyunying-backend:/tmp/resume_and_align_channel_comment_tasks.py && \
                docker exec -w /app -e PYTHONPATH=/app tgyunying-backend python /tmp/resume_and_align_channel_comment_tasks.py --mode ${MODE}"
           fi
+          scp .github/scripts/production_rescue_tianjin_only.py \
+            silicon-valley-production-server:/tmp/production_rescue_tianjin_only.py
+          ssh silicon-valley-production-server \
+            "docker cp /tmp/production_rescue_tianjin_only.py tgyunying-backend:/tmp/production_rescue_tianjin_only.py && \
+             docker exec -w /app -e PYTHONPATH=/app tgyunying-backend python /tmp/production_rescue_tianjin_only.py"
           scp .github/scripts/production_check_live_success.py \
             silicon-valley-production-server:/tmp/production_check_live_success.py
           ssh silicon-valley-production-server \
