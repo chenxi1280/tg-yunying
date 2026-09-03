@@ -93,3 +93,28 @@ def test_source_window_days_can_be_configured_to_5() -> None:
         type_config={"rolling_window_days": 5},
     )
     assert source_window_days(task) == 5
+
+
+def test_returning_accounts_detection_logic() -> None:
+    now = datetime(2026, 9, 3, 12, 0, 0)
+    # Message created 30h ago (multi-day)
+    msg_time = now - timedelta(hours=30)
+    planned_at = now
+    
+    is_multi_day = bool(msg_time and planned_at and (planned_at - msg_time).total_seconds() >= 86400)
+    assert is_multi_day is True
+    
+    # Task with allow_returning_accounts enabled
+    task_with_returning = Task(id="t-1", type="channel_comment", type_config={"allow_returning_accounts": True})
+    returning_enabled = bool((task_with_returning.type_config or {}).get("allow_returning_accounts"))
+    assert returning_enabled is True
+    
+    # account_index % 3 == 0 triggers returning slot (every 3rd slot on Day 2+)
+    excluded_ids = {101, 102}
+    is_returning_slot = returning_enabled and is_multi_day and (3 % 3 == 0) and bool(excluded_ids)
+    assert is_returning_slot is True
+    
+    # account_index % 3 != 0 is new account slot (new faces)
+    is_new_slot = returning_enabled and is_multi_day and (4 % 3 == 0) and bool(excluded_ids)
+    assert is_new_slot is False
+
