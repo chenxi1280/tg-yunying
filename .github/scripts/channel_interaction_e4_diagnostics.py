@@ -25,6 +25,7 @@ from app.models import (
 
 BEIJING = ZoneInfo("Asia/Shanghai")
 RELEASE_LIVE_AT_ENV = "TASK_FULFILLMENT_RELEASE_LIVE_AT"
+TASK_IDS_ENV = "TASK_FULFILLMENT_E4_TASK_IDS"
 TASK_TYPES = frozenset({"channel_comment", "channel_like", "channel_view"})
 ACTION_TYPES = {
     "channel_comment": "post_comment",
@@ -73,6 +74,11 @@ def _release_since() -> datetime:
     raw = os.environ[RELEASE_LIVE_AT_ENV].strip()
     value = datetime.fromisoformat(raw)
     return value.replace(tzinfo=BEIJING) if value.tzinfo is None else value.astimezone(BEIJING)
+
+
+def _task_ids_from_env() -> list[str]:
+    raw = os.getenv(TASK_IDS_ENV, "")
+    return list(dict.fromkeys(item.strip() for item in raw.split(",") if item.strip()))
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -383,14 +389,16 @@ def main() -> None:
     now = datetime.now(BEIJING)
     failed = False
     with SessionLocal() as session:
+        task_ids = _task_ids_from_env()
+        scope = [
+            Task.type.in_(TASK_TYPES),
+            Task.status.in_(("running", "paused", "completed")),
+            Task.deleted_at.is_(None),
+        ]
+        if task_ids:
+            scope.append(Task.id.in_(task_ids))
         tasks = list(session.scalars(
-            select(Task)
-            .where(
-                Task.type.in_(TASK_TYPES),
-                Task.status.in_(("running", "paused", "completed")),
-                Task.deleted_at.is_(None),
-            )
-            .order_by(Task.type, Task.name, Task.id)
+            select(Task).where(*scope).order_by(Task.type, Task.name, Task.id)
         ))
         print("CHANNEL_INTERACTION_TASK_COUNT=" + str(len(tasks)), flush=True)
         for task in tasks:

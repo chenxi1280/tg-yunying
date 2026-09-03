@@ -62,6 +62,13 @@ def test_due_counts_exclude_closed_expired_without_counting_it_as_confirmed() ->
     assert counts == {"due": 2, "due_confirmed": 1, "due_at_missing": 1}
 
 
+def test_task_ids_env_parses_unique_non_empty_values(monkeypatch) -> None:
+    module = load_module()
+    monkeypatch.setenv(module.TASK_IDS_ENV, " task-a,task-b, task-a ,,task-c ")
+
+    assert module._task_ids_from_env() == ["task-a", "task-b", "task-c"]
+
+
 def test_closed_expired_only_snapshot_is_missed_not_met() -> None:
     module = load_module()
     task = type("TaskSnapshot", (), {"status": "running"})()

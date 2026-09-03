@@ -44,6 +44,15 @@ def test_monitor_requires_explicit_incident_task_ids() -> None:
     assert "default:" not in task_ids_block
 
 
+def test_monitor_scopes_channel_interaction_diagnostics_to_incident_tasks() -> None:
+    text = WORKFLOW.read_text()
+    step = text.split("Read channel comment, like, and view E4 facts", maxsplit=1)[1]
+    step = step.split("Read search click recent solver epochs", maxsplit=1)[0]
+
+    assert "TASK_IDS: ${{ inputs.task_ids }}" in step
+    assert "TASK_FULFILLMENT_E4_TASK_IDS='${TASK_IDS}'" in step
+
+
 def test_target_tuning_requires_and_verifies_deployed_sha() -> None:
     text = TARGET_TUNING_WORKFLOW.read_text()
     deployed_sha_block = text.split("deployed_sha:", maxsplit=1)[1].split("target:", maxsplit=1)[0]

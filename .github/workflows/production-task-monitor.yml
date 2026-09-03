@@ -145,10 +145,12 @@ jobs:
         if: ${{ always() }}
         env:
           RELEASE_LIVE_AT: ${{ inputs.release_live_at }}
+          TASK_IDS: ${{ inputs.task_ids }}
         run: |
           set -euo pipefail
           ssh silicon-valley-production-server "timeout 180 docker exec \
             -e TASK_FULFILLMENT_RELEASE_LIVE_AT='${RELEASE_LIVE_AT}' \
+            -e TASK_FULFILLMENT_E4_TASK_IDS='${TASK_IDS}' \
             -i tgyunying-backend python -" \
             < .github/scripts/channel_interaction_e4_diagnostics.py
 
