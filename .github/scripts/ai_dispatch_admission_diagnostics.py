@@ -463,9 +463,9 @@ GENERATION_JOBS_QUERY = text("""
 """)
 
 WORKER_HEARTBEATS_QUERY = text("""
-    SELECT worker_role, worker_id, hostname, is_alive, last_heartbeat_at
+    SELECT worker_id, process_type, hostname, pid, status, last_seen_at
     FROM worker_heartbeats
-    ORDER BY last_heartbeat_at DESC
+    ORDER BY last_seen_at DESC
 """)
 
 def main() -> None:
