@@ -35,17 +35,24 @@ def diagnose_and_rescue_task(session, task_id: str, is_tianjin: bool = False) ->
         type_config = dict(task.type_config or {})
         target_group_id = 5999
         type_config["target_group_id"] = str(target_group_id)
-        task.type_config = type_config
-        log.append("updated_task_target_group_id_to_5999")
 
-        # Synchronize target_operation_target if present
-        op_target_id = int(type_config.get("target_operation_target_id") or 0)
-        if op_target_id:
-            op_target = session.get(OperationTarget, op_target_id)
-            if op_target:
-                op_target.target_group_id = target_group_id
-                op_target.tg_peer_id = "@luoyangpiaoch"
-                log.append(f"synchronized_operation_target_{op_target_id}_to_group_5999")
+        # Look up existing operation target for @luoyangpiaoch
+        existing_op = session.scalar(
+            select(OperationTarget).where(
+                OperationTarget.tenant_id == task.tenant_id,
+                OperationTarget.tg_peer_id == "@luoyangpiaoch",
+            )
+        )
+        if existing_op:
+            type_config["target_operation_target_id"] = str(existing_op.id)
+            if existing_op.target_group_id != target_group_id:
+                existing_op.target_group_id = target_group_id
+            log.append(f"bound_to_existing_operation_target_{existing_op.id}")
+        else:
+            type_config.pop("target_operation_target_id", None)
+            log.append("unlinked_old_operation_target_using_direct_group_5999")
+
+        task.type_config = type_config
         
         group_5999 = session.get(TgGroup, target_group_id)
         if group_5999:
@@ -96,7 +103,6 @@ def diagnose_and_rescue_task(session, task_id: str, is_tianjin: bool = False) ->
         except Exception as exc:
             log.append(f"build_plan_attempt_{attempt}_failed: {exc}")
             session.rollback()
-            # re-get task after rollback
             task = session.get(Task, task_id)
             time.sleep(1.0)
 
