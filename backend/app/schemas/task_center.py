@@ -856,6 +856,8 @@ class ChannelLikeConfig(ChannelMessageScopeConfig):
         default_factory=lambda: list(DEFAULT_CHANNEL_LIKE_ALLOWED_REACTIONS)
     )
     max_likes_per_account_per_hour: int = Field(default=1_000_000, ge=1, le=1_000_000)
+    message_active_days: int = Field(default=7, ge=1, le=365)
+    rolling_window_days: int | None = Field(default=None, ge=1, le=365)
 
 
 class ChannelCommentConfig(ChannelMessageScopeConfig):
@@ -1896,7 +1898,7 @@ class TaskSettingsUpdate(TaskUpdate):
         default=None, ge=0, le=MAX_TOTAL_COMMENT_JITTER
     )
     daily_comment_cap: int | None = Field(default=None, ge=0)
-    rolling_window_days: int | None = Field(default=None, ge=1, le=30)
+    rolling_window_days: int | None = Field(default=None, ge=1, le=365)
     comment_mode: Literal["comment", "reply", "mixed"] | None = None
     reply_to_message_ids: list[int] | None = None
     reply_min_per_message: int | None = Field(default=None, ge=0)

@@ -274,6 +274,7 @@ def schedule_due_times(
         deadline_at=deadline,
         hourly_curve=_operation_curve(config),
         seed_id=seed_id,
+        multi_day_rampup=bool(config.get("multi_day_rampup")),
     )
 
 

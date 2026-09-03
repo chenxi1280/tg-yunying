@@ -868,7 +868,7 @@ listener 处理可信群管提示时，禁止在已修改 `group_bot_admissions`
 ### 6.3 频道点赞
 
 1. reaction 只有远端成功才增加 `confirmed_count`。
-2. 监听器必须把 Telegram Reaction 能力持久化为 `unknown/all/some/none`；新建与存量任务默认 `all_available`，从频道声明且普通账号可执行的全部 active 标准 emoji Reaction 中选择，Premium-only Reaction 在没有逐账号能力事实前不进入公共池；`configured` 默认推荐 10 种高频互动表情（`👍, ❤️, 🔥, 👏, 🎉, 🤩, 👌, 💯, 🙌, ✨`），仅在 `allowed_reactions ∩ available_reactions` 中选择；specific 模式不得替换用户指定 Reaction。
+2. 监听器必须把 Telegram Reaction 能力持久化为 `unknown/all/some/none`；新建与存量任务默认 `all_available`，从频道声明且普通账号可执行的全部 active 标准 emoji Reaction 中选择，Premium-only Reaction 在没有逐账号能力事实前不进入公共池；`configured` 默认推荐 10 种高频互动表情（`👍, ❤️, 🔥, 👏, 🎉, 🤩, 👌, 💯, 🙌, ✨`），仅在 `allowed_reactions ∩ available_reactions` 中选择；支持 `message_active_days`（默认 7 天，支持 1~365 天）及 `rolling_window_days` 统一控制点赞有效窗口；specific 模式不得替换用户指定 Reaction。
 3. `REACTION_INVALID/EMPTY/NOT_AVAILABLE` 不占成功目标。该账号/消息的 attempt 保留；仍有其他合格账号或允许 reaction 时继续补欠额。
 4. 能力未知、有效集合为空或所有允许 Reaction 对该消息均不可用时，消息为 `reaction_capability_unavailable`，不得猜测默认 Reaction、关闭整任务或伪造完成。
 5. success 与 `unknown_after_send` 防止同账号同消息立即重复；明确失败只有在安全重试条件满足时重新选择。

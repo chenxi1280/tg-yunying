@@ -430,11 +430,19 @@ def _prepared_slot(
 ) -> PreparedCommentAction | None:
     reply_target = getattr(slot, "reply_target", None)
     relation_accounts = _relation_accounts(context.accounts, reply_target)
-    available_accounts = _available_accounts(
-        relation_accounts,
-        bound_account_id=int(slot.obligation.account_id or 0),
-        excluded=excluded_account_ids or set(),
-    )
+    msg_time = slot.message.published_at or slot.message.created_at
+    is_multi_day = bool(msg_time and planned_at and (planned_at - msg_time).total_seconds() >= 86400)
+    returning_enabled = bool((task.type_config or {}).get("allow_returning_accounts"))
+    is_returning_slot = returning_enabled and is_multi_day and (account_index % 3 == 0) and bool(excluded_account_ids)
+    if is_returning_slot:
+        returning_candidates = [acc for acc in relation_accounts if acc.id in (excluded_account_ids or set())]
+        available_accounts = returning_candidates or relation_accounts
+    else:
+        available_accounts = _available_accounts(
+            relation_accounts,
+            bound_account_id=int(slot.obligation.account_id or 0),
+            excluded=excluded_account_ids or set(),
+        )
     if not available_accounts:
         stats_inc(task, "distinct_account_capacity_shortfall")
         return None

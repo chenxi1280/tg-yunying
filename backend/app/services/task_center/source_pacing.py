@@ -49,7 +49,11 @@ class SourcePacingPoint:
 def source_window_days(task) -> int:
     pacing_config = getattr(task, "pacing_config", None) or {}
     type_config = getattr(task, "type_config", None) or {}
-    days = pacing_config.get("rolling_window_days") or type_config.get("rolling_window_days")
+    days = (
+        pacing_config.get("rolling_window_days")
+        or type_config.get("rolling_window_days")
+        or type_config.get("message_active_days")
+    )
     if days:
         try:
             return max(1, int(days))

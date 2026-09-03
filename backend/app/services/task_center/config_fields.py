@@ -232,6 +232,8 @@ TYPE_SETTINGS_FIELDS = {
         "reaction_scope",
         "allowed_reactions",
         "max_likes_per_account_per_hour",
+        "message_active_days",
+        "rolling_window_days",
     },
     "channel_comment": {
         "target_comments_per_message",

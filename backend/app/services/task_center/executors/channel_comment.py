@@ -309,15 +309,16 @@ def _planning_accounts(
     grounding_v1 = grounding_plan_enabled(task)
     target_per_message = int(config.get("target_comments_per_message") or 1)
     _lower, max_target_per_message = quantity_jitter_bounds(target_per_message, float(config.get("comment_count_jitter") or 0))
+    is_all_mode = (task.account_config or {}).get("selection_mode") == "all"
     account_scan_limit = max(max_target_per_message, int((task.account_config or {}).get("max_concurrent") or max_target_per_message))
     selected_accounts = select_task_accounts(
         session,
         task.tenant_id,
         task.account_config or {},
-        limit=account_scan_limit,
+        limit=None if is_all_mode else account_scan_limit,
         enforce_max_concurrent=False,
         enforce_capacity=not grounding_v1,
-        scan_all_candidates=grounding_v1,
+        scan_all_candidates=grounding_v1 or is_all_mode,
         daily_coverage_task_id=task.id,
         daily_coverage_action_types=("post_comment",),
     )

@@ -310,8 +310,14 @@ def _required_count(eligible_count: int, target_bps: int) -> int:
 
 
 def _business_max_comments(task: Task) -> int:
-    value = (task.type_config or {}).get("business_max_comments_per_message")
-    return int(value or DEFAULT_BUSINESS_MAX_COMMENTS_PER_MESSAGE)
+    cfg = task.type_config or {}
+    value = cfg.get("business_max_comments_per_message")
+    if value is not None:
+        return int(value)
+    target = cfg.get("target_comments_per_message")
+    if target:
+        return max(DEFAULT_BUSINESS_MAX_COMMENTS_PER_MESSAGE, int(target))
+    return DEFAULT_BUSINESS_MAX_COMMENTS_PER_MESSAGE
 
 
 def _planned_fallback_max_bps(task: Task) -> int:

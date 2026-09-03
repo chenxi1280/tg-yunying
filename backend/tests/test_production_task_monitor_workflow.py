@@ -123,7 +123,7 @@ def test_ai_dispatch_today_success_query_uses_action_schema_columns() -> None:
 def test_ai_dispatch_task_scope_query_uses_coverage_date_column() -> None:
     text = AI_DISPATCH_DIAGNOSTIC.read_text()
     task_scope_query = text.split("TASK_MEMBERSHIP_AND_COVERAGE_QUERY = text", maxsplit=1)[1].split(
-        "def main",
+        "ZHENGDA_AND_TIANJIN_DEEP_DIVE_QUERY",
         maxsplit=1,
     )[0]
 

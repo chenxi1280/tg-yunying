@@ -581,3 +581,20 @@ def test_message_reaction_plan_defaults_to_all_available_when_reaction_scope_is_
         # Since reaction_scope is None, it defaults to all_available, using all 5 channel reactions
         assert set(plan) == {"👍", "❤", "🔥", "🥰", "👏"}
 
+
+def test_channel_like_config_supports_message_active_days():
+    from app.services.task_center.source_pacing import source_window_days
+
+    config = ChannelLikeConfig(target_channel_id=1)
+    assert config.message_active_days == 7
+
+    task_default = Task(type="channel_like", type_config=config.model_dump())
+    assert source_window_days(task_default) == 7
+
+    config_custom = ChannelLikeConfig(target_channel_id=1, message_active_days=14)
+    assert config_custom.message_active_days == 14
+
+    task_custom = Task(type="channel_like", type_config=config_custom.model_dump())
+    assert source_window_days(task_custom) == 14
+
+

@@ -19,6 +19,7 @@ def stable_slot_due_times(
     deadline_at: datetime,
     hourly_curve: list[int],
     seed_id: str,
+    multi_day_rampup: bool = False,
 ) -> list[datetime]:
     """Return period-stable due times for an arbitrary subset of a frozen plan."""
     _validate_slots(plan_total, slot_keys, slot_ordinals)
@@ -27,6 +28,7 @@ def stable_slot_due_times(
         hourly_curve,
         period_start_at,
         deadline_at,
+        multi_day_rampup=multi_day_rampup,
     )
     if not buckets:
         return []
@@ -61,16 +63,44 @@ def stratified_hour_buckets(
     hourly_curve: list[int],
     period_start_at: datetime,
     deadline_at: datetime,
+    *,
+    multi_day_rampup: bool = False,
 ) -> list[DueBucket]:
-    spans = _weighted_hour_spans(hourly_curve, period_start_at, deadline_at)
-    if not spans:
-        return []
-    counts = _largest_remainder_counts(plan_total, [span[2] for span in spans])
-    return [
-        (start, end, count)
-        for (start, end, _weight), count in zip(spans, counts, strict=True)
-        if count > 0
+    total_seconds = (deadline_at - period_start_at).total_seconds()
+    if not multi_day_rampup or total_seconds <= 86400 * 1.5:
+        spans = _weighted_hour_spans(hourly_curve, period_start_at, deadline_at)
+        if not spans:
+            return []
+        counts = _largest_remainder_counts(plan_total, [span[2] for span in spans])
+        return [
+            (start, end, count)
+            for (start, end, _weight), count in zip(spans, counts, strict=True)
+            if count > 0
+        ]
+    # 多日阶梯爬坡分桶（日风控翻倍）：先分发每日配额，再分发到具体小时
+    day_spans: list[tuple[datetime, datetime]] = []
+    day_cursor = period_start_at
+    while day_cursor < deadline_at:
+        day_boundary = min(day_cursor + timedelta(days=1), deadline_at)
+        day_spans.append((day_cursor, day_boundary))
+        day_cursor = day_boundary
+    day_weights = [
+        _daily_ramp_factor(s, period_start_at, deadline_at) * (e - s).total_seconds()
+        for s, e in day_spans
     ]
+    day_counts = _largest_remainder_counts(plan_total, day_weights)
+    result_buckets: list[DueBucket] = []
+    for (day_start, day_end), count_for_day in zip(day_spans, day_counts, strict=True):
+        if count_for_day <= 0:
+            continue
+        hour_spans = _weighted_hour_spans(hourly_curve, day_start, day_end)
+        if not hour_spans:
+            continue
+        hour_counts = _largest_remainder_counts(count_for_day, [span[2] for span in hour_spans])
+        for (h_start, h_end, _w), h_cnt in zip(hour_spans, hour_counts, strict=True):
+            if h_cnt > 0:
+                result_buckets.append((h_start, h_end, h_cnt))
+    return result_buckets
 
 
 def _validate_slots(plan_total: int, slot_keys: list[str], slot_ordinals: list[int]) -> None:
@@ -82,6 +112,21 @@ def _validate_slots(plan_total: int, slot_keys: list[str], slot_ordinals: list[i
         raise ValueError("pacing_slot_ordinal_duplicate")
     if any(ordinal < 0 or ordinal >= plan_total for ordinal in slot_ordinals):
         raise ValueError("pacing_slot_ordinal_out_of_plan")
+
+
+def _daily_ramp_factor(cursor: datetime, start_at: datetime, deadline_at: datetime) -> float:
+    total_seconds = (deadline_at - start_at).total_seconds()
+    if total_seconds <= 86400 * 1.5:
+        return 1.0
+    day_index = max(0, int((cursor - start_at).total_seconds() // 86400))
+    # 3~5 天日风控翻倍与阶梯放量模型:
+    # Day 0 (0~24h): 1.0 首日低频试探 (~16%)
+    # Day 1 (24~48h): 2.0 次日翻倍放量 (~33%)
+    # Day 2 (48~72h): 3.0 峰值释放 (~50%)
+    # Day 3 (72~96h): 2.5
+    # Day 4 (96~120h): 1.5
+    ramp_factors = [1.0, 2.0, 3.0, 2.5, 1.5]
+    return ramp_factors[day_index] if day_index < len(ramp_factors) else 1.0
 
 
 def _weighted_hour_spans(

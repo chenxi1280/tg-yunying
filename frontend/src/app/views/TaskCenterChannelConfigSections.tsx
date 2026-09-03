@@ -133,6 +133,7 @@ function ChannelViewAdvancedFields() {
 function ChannelLikeAdvancedFields() {
   return (
     <div className="form-grid">
+      <Form.Item name="message_active_days" label="帖子有效期（天）"><InputNumber min={1} max={365} /></Form.Item>
       <Form.Item name="max_likes_per_account_per_hour" label="系统账号门禁（固定）"><InputNumber min={1000000} max={1000000} disabled /></Form.Item>
       <Form.Item name="like_count_jitter" label="点赞量随机抖动"><InputNumber min={0} max={1} step={0.01} /></Form.Item>
     </div>
