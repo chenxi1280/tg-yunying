@@ -45,8 +45,8 @@ def diagnose_and_rescue_task(session, task_id: str, is_tianjin: bool = False) ->
         )
         if existing_op:
             type_config["target_operation_target_id"] = str(existing_op.id)
-            if existing_op.target_group_id != target_group_id:
-                existing_op.target_group_id = target_group_id
+            existing_op.auth_status = "已授权运营"
+            existing_op.can_send = True
             log.append(f"bound_to_existing_operation_target_{existing_op.id}")
         else:
             type_config.pop("target_operation_target_id", None)
