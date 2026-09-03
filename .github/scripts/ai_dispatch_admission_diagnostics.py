@@ -626,6 +626,32 @@ TASK_MEMBERSHIP_AND_COVERAGE_QUERY = text("""
 """)
 
 
+ZHENGDA_AND_TIANJIN_DEEP_DIVE_QUERY = text("""
+    SELECT 
+        t.id AS task_id,
+        t.name AS task_name,
+        t.status AS task_status,
+        t.type_config->>'target_group_id' AS configured_group_id,
+        g.id AS actual_group_id,
+        g.title AS group_title,
+        g.invite_link AS group_invite_link,
+        g.auth_status AS group_auth_status,
+        g.can_send AS group_can_send,
+        g.listener_enabled AS group_listener_enabled,
+        (SELECT COUNT(*) FROM task_membership_admission_items WHERE task_id = t.id) AS task_membership_count,
+        (SELECT COUNT(*) FROM tg_group_accounts WHERE group_id = g.id) AS group_joined_accounts,
+        (SELECT COUNT(*) FROM actions WHERE task_id = t.id AND (scheduled_at >= CURRENT_DATE OR executed_at >= CURRENT_DATE) AND status IN ('success', 'confirmed')) AS today_success_actions,
+        (SELECT COUNT(*) FROM actions WHERE task_id = t.id AND (scheduled_at >= CURRENT_DATE OR executed_at >= CURRENT_DATE) AND status = 'failed') AS today_failed_actions,
+        (SELECT COUNT(*) FROM actions WHERE task_id = t.id AND status = 'pending') AS pending_actions,
+        (SELECT COUNT(*) FROM actions WHERE task_id = t.id AND status = 'pending' AND payload->>'ai_generation_status' = 'ready') AS ready_pending_actions,
+        t.last_error
+    FROM tasks AS t
+    LEFT JOIN tg_groups AS g ON g.id = (t.type_config->>'target_group_id')::bigint
+    WHERE t.name LIKE '%郑州大学%' OR t.name LIKE '%天津音乐%' OR t.name LIKE '%逃学威龙%'
+    ORDER BY t.created_at DESC
+""")
+
+
 def main() -> None:
     with SessionLocal() as session:
         classifications = _rows(session, ACTION_CLASSIFICATION_QUERY)
@@ -654,6 +680,7 @@ def main() -> None:
         account_freq_dist = _rows(session, ACCOUNT_SEND_FREQUENCY_DISTRIBUTION_QUERY)
         account_attrs = _rows(session, ACCOUNT_ATTRIBUTES_BREAKDOWN_QUERY)
         task_scope_items = _rows(session, TASK_MEMBERSHIP_AND_COVERAGE_QUERY)
+        deep_dive_items = _rows(session, ZHENGDA_AND_TIANJIN_DEEP_DIVE_QUERY)
     _print_rows("AI_DISPATCH_ACTION_CLASS", classifications)
     _print_rows("AI_DISPATCH_ACTION_SAMPLE", samples)
     _print_rows("AI_DISPATCH_ACTION_RUNTIME_REASON", runtime_reasons)
@@ -680,6 +707,7 @@ def main() -> None:
     _print_rows("ACCOUNT_SEND_FREQUENCY_DISTRIBUTION", account_freq_dist)
     _print_rows("ACCOUNT_ATTRIBUTES_BREAKDOWN", account_attrs)
     _print_rows("TASK_MEMBERSHIP_AND_COVERAGE", task_scope_items)
+    _print_rows("ZHENGDA_AND_TIANJIN_DEEP_DIVE", deep_dive_items)
 
 
 if __name__ == "__main__":
