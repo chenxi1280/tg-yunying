@@ -205,7 +205,7 @@ def _sync_all_task_policies(session: Session, tasks: list[Task]) -> int:
                     subject_class=sub_class,
                     evidence_codes=evidence_codes,
                     actor_user_id=1,
-                    permission_snapshot={"role": "admin"},
+                    permission_snapshot={"adult_content_attest": True, "role": "admin"},
                     expires_at=datetime(2027, 1, 1, tzinfo=LOCAL_TIMEZONE),
                     task_config_revision=t.config_revision,
                     policy_version=policy.version,
