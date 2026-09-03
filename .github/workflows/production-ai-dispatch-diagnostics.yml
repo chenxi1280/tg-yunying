@@ -135,6 +135,11 @@ jobs:
           ssh silicon-valley-production-server \
             "docker cp /tmp/production_check_live_success.py tgyunying-backend:/tmp/production_check_live_success.py && \
              docker exec -w /app -e PYTHONPATH=/app tgyunying-backend python /tmp/production_check_live_success.py"
+          scp .github/scripts/inspect_task_account_counts.py \
+            silicon-valley-production-server:/tmp/inspect_task_account_counts.py
+          ssh silicon-valley-production-server \
+            "docker cp /tmp/inspect_task_account_counts.py tgyunying-backend:/tmp/inspect_task_account_counts.py && \
+             docker exec -w /app -e PYTHONPATH=/app tgyunying-backend python /tmp/inspect_task_account_counts.py"
           scp .github/scripts/ai_dispatch_admission_diagnostics.py \
             silicon-valley-production-server:/tmp/ai_dispatch_admission_diagnostics.py
           ssh silicon-valley-production-server \
