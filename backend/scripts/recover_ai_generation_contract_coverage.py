@@ -73,7 +73,7 @@ def snapshot_hash(snapshot: dict) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _tasks(session: Session, request: RecoveryRequest, *, lock: bool) -> list[Task]:
+def _tasks(session: Session, request: RecoveryRequest, *, lock: bool = False) -> list[Task]:
     if len(request.task_ids) == 1 and request.task_ids[0].lower() == "all":
         statement = (
             select(Task)
@@ -84,16 +84,12 @@ def _tasks(session: Session, request: RecoveryRequest, *, lock: bool) -> list[Ta
             )
             .order_by(Task.id)
         )
-        if lock:
-            statement = statement.with_for_update()
         tasks = list(session.scalars(statement))
         if not tasks:
             raise ValueError("No active group_ai_chat tasks found for 'all'")
         return tasks
 
     statement = select(Task).where(Task.id.in_(request.task_ids)).order_by(Task.id)
-    if lock:
-        statement = statement.with_for_update()
     tasks = list(session.scalars(statement))
     found = {task.id for task in tasks}
     missing = set(request.task_ids) - found
