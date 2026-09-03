@@ -27,6 +27,16 @@ name: Production AI Dispatch Diagnostics
         required: false
         default: false
         type: boolean
+      resume_comments:
+        description: Run channel comment recovery and alignment (preview by default)
+        required: false
+        default: false
+        type: boolean
+      apply_comments:
+        description: Apply channel comment recovery (true for apply, false for preview)
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -91,6 +101,8 @@ jobs:
           UPDATE_TARGETS: ${{ inputs.update_targets }}
           EXPAND_ALL: ${{ inputs.expand_all }}
           RUN_SPEEDUP: ${{ inputs.run_speedup }}
+          RESUME_COMMENTS: ${{ inputs.resume_comments }}
+          APPLY_COMMENTS: ${{ inputs.apply_comments }}
         run: |
           set -euo pipefail
           set -x
@@ -100,6 +112,17 @@ jobs:
           CURRENT_RELEASE="$(ssh silicon-valley-production-server "readlink -f '${BASE_DIR}/current'")"
           echo "CURRENT_RELEASE=${CURRENT_RELEASE}"
           [[ "$(basename "${CURRENT_RELEASE}")" == *"${EXPECTED_SHORT}"* ]]
+          if [ "${RESUME_COMMENTS}" = "true" ]; then
+            MODE="preview"
+            if [ "${APPLY_COMMENTS}" = "true" ]; then
+              MODE="apply"
+            fi
+            scp .github/scripts/resume_and_align_channel_comment_tasks.py \
+              silicon-valley-production-server:/tmp/resume_and_align_channel_comment_tasks.py
+            ssh silicon-valley-production-server \
+              "docker cp /tmp/resume_and_align_channel_comment_tasks.py tgyunying-backend:/tmp/resume_and_align_channel_comment_tasks.py && \
+               docker exec -w /app -e PYTHONPATH=/app tgyunying-backend python /tmp/resume_and_align_channel_comment_tasks.py --mode ${MODE}"
+          fi
           if [ "${RUN_SPEEDUP}" = "true" ]; then
             scp .github/scripts/production_apply_speedup_and_rescue.py \
               silicon-valley-production-server:/tmp/production_apply_speedup_and_rescue.py
