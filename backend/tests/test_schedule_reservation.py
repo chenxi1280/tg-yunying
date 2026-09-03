@@ -218,6 +218,11 @@ def test_channel_view_skips_account_capacity_time_after_deadline(monkeypatch) ->
     )
     monkeypatch.setattr(
         channel_view,
+        "adjust_for_account_view_spacing",
+        lambda _session, _task, _account_id, scheduled_at, **_kwargs: scheduled_at,
+    )
+    monkeypatch.setattr(
+        channel_view,
         "adjust_for_account_hour_limit",
         lambda *_args, **_kwargs: local_deadline + timedelta(seconds=1),
     )
@@ -250,7 +255,12 @@ def _deadline_view_fixture(deadline: datetime):
         channel=SimpleNamespace(),
         config={},
         execution_date="2026-08-10",
-        ledger=SimpleNamespace(id="ledger-view", deadline_at=deadline),
+        ledger=SimpleNamespace(
+            id="ledger-view",
+            obligation_local_date=datetime(2026, 8, 10).date(),
+            period_start_at=datetime(2026, 8, 10),
+            deadline_at=deadline,
+        ),
         targets_by_message={
             901: SimpleNamespace(
                 daily_target_snapshot=10,
