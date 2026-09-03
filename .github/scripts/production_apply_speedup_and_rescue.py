@@ -25,8 +25,6 @@ def update_all_tasks_pacing(session) -> list[dict]:
         )
     )
 
-    # High throughput curve supporting 4,200 msgs/day
-    # 24h curve with peak hours having 25-35 rounds/h, quiet hours 8-12 rounds/h
     high_throughput_curve = [
         10, 8, 6, 6, 6, 8, 12, 18, 24, 28, 30, 30, 28, 28, 30, 32, 32, 35, 35, 35, 30, 25, 18, 12
     ]
@@ -47,7 +45,6 @@ def update_all_tasks_pacing(session) -> list[dict]:
 
         t.pacing_config = pacing
 
-        # Update type_config
         tc = dict(t.type_config or {})
         tc["daily_message_target"] = 4200
         tc["messages_per_round"] = 20
@@ -136,8 +133,7 @@ def rescue_zhengda_actions(session) -> dict:
             break
     log.append(f"new_actions_created_{created}")
 
-    # E. Ensure all pending send_message actions have valid ready message_text
-    # Pre-render high-quality campus discussion texts for Zhengda
+    # E. Pre-render campus discussion texts for Zhengda
     campus_texts = [
         "兄弟们，最近南区二楼那个黄焖鸡换老板了没，味道咋样？",
         "有今天在图书馆五楼自习的吗，空调开得贼大",
@@ -179,7 +175,6 @@ def rescue_zhengda_actions(session) -> dict:
         payload["ai_generation_status"] = "ready"
         payload["rendered_at"] = now_ts.isoformat()
         act.payload = payload
-        # Ensure scheduled_at is ready right now with smooth 20s spacing
         act.scheduled_at = now_ts
         session.add(act)
         rendered_count += 1
@@ -195,7 +190,7 @@ def rescue_zhengda_actions(session) -> dict:
 
 
 def rescue_tianjin_music_membership(session) -> dict:
-    """3. Unblock Tianjin Music group 5999: mark joined accounts and pre-render warmup messages."""
+    """3. Unblock Tianjin Music group 5999: activate can_send and pre-render warmup messages."""
     task_id = "7fd0bbb7-53dd-45ae-a7af-0c37bcc380d1"
     task = session.get(Task, task_id)
     if not task:
@@ -213,7 +208,6 @@ def rescue_tianjin_music_membership(session) -> dict:
         session.commit()
         log.append("group_5999_can_send_activated")
 
-    # Find accounts assigned to task and mark top 20 accounts as joined in group_accounts
     assigned_acc_ids = list(
         session.scalars(
             text("""
@@ -226,21 +220,19 @@ def rescue_tianjin_music_membership(session) -> dict:
     )
 
     if assigned_acc_ids:
-        # Mark these accounts as joined in tg_group_accounts
         for acc_id in assigned_acc_ids[:20]:
             session.execute(
                 text("""
-                    INSERT INTO tg_group_accounts (group_id, account_id, membership_status, can_send, updated_at)
-                    VALUES (:group_id, :account_id, 'joined', true, NOW())
+                    INSERT INTO tg_group_accounts (tenant_id, group_id, account_id, permission_label, can_send)
+                    VALUES (:tenant_id, :group_id, :account_id, '普通成员', true)
                     ON CONFLICT (group_id, account_id)
-                    DO UPDATE SET membership_status = 'joined', can_send = true, updated_at = NOW()
+                    DO UPDATE SET can_send = true
                 """),
-                {"group_id": group_id, "account_id": acc_id},
+                {"tenant_id": task.tenant_id, "group_id": group_id, "account_id": acc_id},
             )
         session.commit()
-        log.append(f"marked_{min(20, len(assigned_acc_ids))}_accounts_joined_can_send")
+        log.append(f"marked_{min(20, len(assigned_acc_ids))}_accounts_in_tg_group_accounts_can_send")
 
-    # Delete failed/unknown membership actions
     del_mem = session.execute(
         text("""
             DELETE FROM actions
@@ -252,7 +244,6 @@ def rescue_tianjin_music_membership(session) -> dict:
     ).rowcount
     log.append(f"cleaned_{del_mem}_stale_membership_actions")
 
-    # Reset coverage rows so planner can generate chat actions
     reset_cov = session.execute(
         update(TaskAccountDailyCoverage)
         .where(
@@ -270,7 +261,6 @@ def rescue_tianjin_music_membership(session) -> dict:
     log.append(f"reset_{reset_cov}_coverage_records")
     session.commit()
 
-    # Build fresh chat plan for Tianjin Music
     created = 0
     for _ in range(2):
         task = session.get(Task, task_id)
@@ -287,7 +277,6 @@ def rescue_tianjin_music_membership(session) -> dict:
             break
     log.append(f"new_chat_actions_created_{created}")
 
-    # Pre-render warmup texts for Tianjin Music
     music_texts = [
         "兄弟们，最近这新场子质量咋样，有人去踩过点没？",
         "刚进群，冒个泡，有老哥分享下经验不",
