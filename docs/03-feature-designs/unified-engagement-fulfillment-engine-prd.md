@@ -427,7 +427,7 @@ protected_slack
   = complete_remaining_path_p95(path_start_stage) + execution_safety_margin
 ```
 
-complete path 对互动内容包含从所存 `path_start_stage` 起当前 lane 仍需的 intent/style binding、Provider、强制 reviewer、确定性质量/去重与 Gateway preparation；对点赞/浏览包含从当前阶段起仍需的 identity/capability gate、Dispatcher/Attempt 与 Gateway preparation。`materialization_horizon` 固定使用 `pre_materialization` path，实时 Provider admission 使用 `pre_provider` path，ready Action 的 protected slack 使用 `ready_action` path；不得拿已完成阶段的耗时重复相加。每个 plan/slot 冻结同一 `ExecutionTimingProfileRevision`，每次派生值保存 `profile_revision + path_start_stage + derived_at`，后续样本只生成 successor。有效样本或批准 shadow profile 缺失时状态为 `execution_timing_profile_unproven`，新 unified route 不得激活，也不得临时回退固定 30 分钟、5 秒或 worker 本地估算。
+complete path 对互动内容包含从所存 `path_start_stage` 起当前 lane 仍需的 intent/style binding、Provider、强制 reviewer、确定性质量/去重与 Gateway preparation；classification lane 还必须包含模型后最大 eligible-Task fanout projection、terminal decision 持久化与 peer claim finalize tail；对点赞/浏览包含从当前阶段起仍需的 identity/capability gate、Dispatcher/Attempt 与 Gateway preparation。`materialization_horizon` 固定使用 `pre_materialization` path，实时 Provider admission 使用 `pre_provider` path，classification latest-safe 使用 `post_classification` path，ready Action 的 protected slack 使用 `ready_action` path；不得拿已完成阶段的耗时重复相加。每个 plan/slot 冻结同一 `ExecutionTimingProfileRevision`，每次派生值保存 `profile_revision + path_start_stage + derived_at`，后续样本只生成 successor。有效样本或批准 shadow profile 缺失时状态为 `execution_timing_profile_unproven`，新 unified route 不得激活，也不得临时回退固定 30 分钟、5 秒或 worker 本地估算。
 
 TimelineArbiter 的排序键固定为：
 
@@ -929,7 +929,7 @@ provider_capacity_policy_version
 - peer turn claim 的候选 Task、唯一 winner、selection basis，以及权威真人 reply/推断续聊/负向互动 observation；
 - current `ConversationAttentionState`、冻结 attention forecast/confidence、quiet-after、低优先级因真人 turn 延后/shortfall 与 call-issued 后 interruption；
 - 冻结 `ExecutionTimingProfileRevision`、各段/完整剩余链 P95、派生 materialization horizon/protected slack/safety margin 与 unproven blocker；
-- 共享 classification 与本 Task response Provider required/available concurrency、queue delay、classification call budget、每个 response service binding 及 Task/source-plan 总调用/Token/成本、successor 剩余预算、主动内容 adapter 预算和 deadline admission 结果；
+- 共享 classification 与本 Task response Provider required/available concurrency、queue delay、classification latest-safe/downstream tail、response timing-feasible call interval、每个 service binding 及 Task/source-plan 总调用/Token/成本、successor 剩余预算、主动内容 adapter 预算和 deadline admission 结果；
 - peer interaction forecast 的 replay window/sample/confidence、unique-owner/still-needed-owner demand P95、forecast superseded evidence、required service slots、valid response slots 与 unachievable 原因；
 - 操作型任务的 capability/identity gate；
 - quantity、task coverage、portfolio、speaking、interaction quality 五个独立状态；点赞、浏览的 speaking/interaction quality 显示为 `not_applicable`，不是 0 分或失败。
@@ -947,7 +947,7 @@ provider_capacity_policy_version
 ### 15.2 节奏
 
 - `due_at`、`effective_claim_at`、`gateway_call_issued_at` 三条时间线分别可观测；
-- response 的 `natural_window_start/planned_call/natural_window_end`、candidate ready 和 `planned_point_late` 分开可观测；
+- response 的 `natural_window_start/preparation_feasible_call_not_before/planned_call/natural_window_end`、candidate ready 和 `planned_point_late_unexpected_tail` 分开可观测；admission 时已知会晚于 planned call 的 binding 数必须为 0；
 - 各 stage 的 wake created/notified/claimed/delivered 与 delivery lag 分开可观测；通知不是完成事实；
 - 每小时 slot 数符合冻结整数配额；同小时每个 stratum 最多一个同 domain 主动义务；
 - 同账号跨类型最小间隔违规为 0；
@@ -1002,7 +1002,7 @@ provider_capacity_policy_version
 
 盲评由至少 3 名不知道 route 的人工评审做新旧版本成对比较。上下文贴合通过率 ≥90%，账号表达可区分通过率 ≥70%，新版“明显机器生成”票率 ≤30% 且相对批准旧基线至少下降 20 个百分点；任一事实矛盾、跨话题回复或模板批量复现直接计失败。活群按 group+time-band 外部真人 community profile 比较 planned、accepted、remote-confirmed 的长度、问句、标点与 emoji 分布；评论按 peer+time-band+content-cluster 比较 assigned、accepted、remote-confirmed 三阶段，并证明具体 style assignment 晚于真实 relation/turn/planned-call 绑定。两者都禁止固定比例、固定 ordinal 风格轮转或跨窗口重复同一序列；样本不足走 domain 级稳定宽区间 cold-start profile，并保持结果可重放，不得退回全局固定配比。账号层以冻结 persona/voice revision 验收同账号稳定性和跨账号可区分度，但固定口头禅、账号专属模板或从既有 AI 成稿自学习均直接失败。
 
-真人互动结果按 `HumanEngagementObservation` 比较同 peer/time-band 的批准旧基线：权威原生回复率、可解释语义续聊率不得下降，明确质疑机器人感、我方发言后删除/撤回和抢答负向率不得上升。原生与推断关系分列；每类 route 至少积累 30 条我方 confirmed fact 且至少观察满 24 小时才判定，样本不足显示 `interaction_outcome_unproven`，不能填 0、不能伪造通过，也不以单一真人行为决定某条文本质量。
+真人互动结果按 `HumanEngagementAttributionClaim + HumanEngagementObservation` 比较同 peer/time-band 的批准旧基线：权威原生回复率、唯一高置信语义续聊率不得下降，明确质疑机器人感、我方发言后删除/撤回和抢答负向率不得上升。原生与推断关系分列；native parent 优先且不受 inference window 截断，非原生正向 event 最多归因一条 fact，歧义进入 unattributed，负向率按 human event 去重。每类 route 至少积累 30 条我方 confirmed fact 且至少观察满 24 小时才判定，样本不足显示 `interaction_outcome_unproven`，不能填 0、不能伪造通过，也不以单一真人行为决定某条文本质量。
 
 点赞、浏览不参与本节分子、分母或评分；portfolio activity 也不能提高互动率。产品不承诺 100% 无法识别为 AI，只承诺上述可测指标改善。
 
@@ -1010,7 +1010,7 @@ provider_capacity_policy_version
 
 - response required/available concurrency 比值必须 ≥1；不足时 `interaction_readiness=capacity_blocked`；
 - peer-level `valid_response_slots / required_service_slots` 在 required>0 时必须 ≥1，required=0 时显示 `not_applicable` 而非除零通过；历史不足门槛时为 forecast unproven，只能进入预注册限量 cold-start canary，不能把固定 40%/30% 当作容量证明或扩大依据；
-- response queue delay、estimated finish、deadline admission rejection 按 provider route/lane 统计；
+- classification 的 model finish 与 downstream candidate/claim tail、response 的 estimated candidate ready、timing-feasible interval、planned-call latest-safe 和 deadline rejection 按 provider route/lane 分开统计；预测已晚于 planned call 却创建 active binding 的数量为 0；
 - 每个实时 `InteractionServiceBinding` Provider calls ≤2，unknown 也计入；successor binding 继续消耗同一 Task/source-plan 总 binding/call budget，主动内容按 adapter 冻结预算单列；
 - 每任务日实际 tokens/cost 不超过冻结预算；未发送候选和 stale regeneration 的 token 占比单独展示；
 - Provider capacity missed 必须计入 admitted interaction missed，不能改成普通 wait。
@@ -1077,11 +1077,12 @@ Task
 - response 的 Provider/质量/去重/deadline 失败按 blocker 结算当前 admitted miss并保留成本，pre-Gateway 只解绑并归还同一 hard/flexible 数量类别；同 turn 不突破 adapter 调用预算，reply 不转 fallback，source/slot 最终 deadline 前不提前形成 quantity terminal；
 - observed/eligible/ineligible/deferred-wait/deferred-expired/participation candidate/admitted/coalesced/served/validly-superseded/missed 漏斗可从事件重建；deferred wait 在 admission 前且到期不冒充 served，planned call 前真人解决才可 validly superseded，容量不足发生在 admitted owner 之后并计 missed；
 - deferred wait 是当前 decision round 的 terminal decision：已有 admitted owner 时后续 wake 只能 coalesced；没有 owner 时才可在 deadline 前 CAS 新 round 并重冻全部 expected decisions，旧 round 永不接收迟到 candidate；
-- 确定性规则无法分类的 turn revision 最多调用一次独立 classification lane；request unknown/成本不清零，来不及 candidate cutoff 时为 `turn_classification_uncertain` 而非默认普通观点。classification permits/call budget 与 response generation/reviewer 分列，uncertain rate 超过 5% 时高互动 Gate 不通过；
+- 确定性规则无法分类的 turn revision 最多调用一次独立 classification lane；request unknown/成本不清零。classification latest-safe 必须先从 candidate cutoff 扣除最大 eligible-Task fanout projection P95、claim finalize P95 和统一 margin，预计越过该时点即 `turn_classification_uncertain`，不能只证明模型在 cutoff 前返回；classification permits/call budget 与 response generation/reviewer 分列，uncertain rate 超过 5% 时高互动 Gate 不通过；
 - response reserve 消费或 release 后 quantity 总数守恒，coverage account、ordinal、cap reservation 和 source identity 不被偷换；
 - `top_level_fixed/response_hard/response_flexible` 严格通过兼容矩阵，hard reply 不转顶层，flexible 到 cutoff 才确定性释放；
 - 评论 response 继续满足参与比例、Daily Cap、source deadline、discussion thread、RPC relation 和 grounding；
-- 真人评论目标优先；owned peer followup 由我方 confirmed fact 和独立 pacing 触发，不产生真人 turn，必须异号、深度最多 1。比例 H 只计 typed confirmed 真人目标回复，真人 planned 不垫高；O 计 owned active/call-issued/unknown/confirmed。候选加入后的最坏情况仍须真人≥80%/owned≤20%，H=0 不允许先发 owned；
+- 真人评论目标优先；owned peer followup 由我方 confirmed fact 和独立 pacing 触发，不产生真人 turn，必须异号、深度最多 1。比例 H 只计滚动窗内 typed confirmed 真人目标回复，真人 planned 不垫高；O 计窗内 owned active/call-issued/unknown/confirmed，并额外携带窗外尚未终结的 call-issued/unknown。候选加入后的最坏情况仍须真人≥80%/owned≤20%，H=0 不允许先发 owned，unknown 不能靠窗口滑动释放；
+- 一个真人 event revision 的 native reply 或 inferred continuation 最多产生一个正向 attribution winner；native parent 不受语义推断窗限制，native 与 inferred 不双计，多条近期 AI fact 打分接近时必须 unattributed。负向 evidence 可以保留多目标，但互动率按 event 去重；
 - 群聊 semantic direct 和 native own-reply 分开结算；真人消息不得越过既定 reply authority 成为原生 reply target；
 - 真人对我方 confirmed fact 的原生 reply 与语义续聊分别形成 observation；低置信度推断、机器人质疑、删除/撤回和抢答负向结果不被过滤，且不增加 quantity/coverage；
 - tempo profile/冷启动窗口决定 call-issued 时点；不同 turn class 不形成统一固定秒回指纹；
@@ -1098,7 +1099,7 @@ Task
 - 点赞以任务日跨适用消息轮转未覆盖账号，但不增加 configured per-message target；aggregate slots 不足时 shortfall 且不 completed；
 - 浏览对每个 active source message×account×local-date 的 daily identity 分别完成，另一消息或另一 Task 的 view fact 不能替代；portfolio 只展示；
 - Provider required concurrency 由 arrival/完整 response preparation P95 和 30% buffer 可重算；评论的 mandatory reviewer、活群批准的修复 tail 都计入路径和 permit，预计来不及的 Job 在第一次调用前 shortfall；
-- 每个实时 `InteractionServiceBinding` 最多 2 次调用；同一数量义务 pre-Gateway 归还后建立 successor binding，但全部 successor 共用冻结 Task/source-plan 总 binding/call budget。response deadline slack 排序和预算扣减在并发 worker 下保持一致，主动内容预算不能挤占 classification/response permits；
+- 每个实时 `InteractionServiceBinding` 最多 2 次调用；同一数量义务 pre-Gateway 归还后建立 successor binding，但全部 successor 共用冻结 Task/source-plan 总 binding/call budget。active binding、总 budget conditional CAS 与 Provider capacity reservation 同事务；planned call 只能从包含完整准备链 P95 的 timing-feasible interval 抽取，预测已来不及的机会直接 missed 且不消费调用预算。response deadline slack 排序和预算扣减在并发 worker 下保持一致，主动内容预算不能挤占 classification/response permits；
 - 评论 source plan 对 response 只冻结 allowed intent/speech-act set 与 rank；真实 turn/relation 后的 intent assignment 必须实质回答 target，明确问题不能用 reaction/附和敷衍，纠错/投诉不能被无依据反问或调侃，无 compatible intent 显式 shortfall。随后才应用 2～6/7～17/18～35 无空洞长度分档；style reservation 可重放，top-level 只能在 source intent 与 `planned_call_at` 已冻结后、互动只能在真实 intent/turn/parent/relation 与 `planned_call_at` 已冻结后建立具体 style assignment；后继真人样本不改旧 reservation/assignment，Provider/清洗不得跨 tier，assigned/accepted/remote-confirmed 分布均能回贴同一 profile 与 binding revision；
 - 真人样本达合同门槛时使用 `human_observed` profile，样本不足使用每 source plan/time-band 稳定抽取的 cold-start simplex；受管账号不能训练 community profile，账号 voice 也不能从既有 AI 成稿自学习。新 route 不出现固定 20%/60%/20%、固定 style 序列或账号专属模板，也不以虚构经历制造账号差异；明确求助、事实纠正、负向投诉及直接提问不得为凑分布选择不兼容语气；
 - canary manifest、样本量和 §15.3 每项阈值均可机器或人工复核；capacity service 与 admitted resolution 两个分母分别可重建，容量 miss、失败样本和 unknown 不得从样本中剔除；真人互动结果不足 30 条或未满 24 小时只能 unproven。
@@ -1190,7 +1191,8 @@ Task
 | 评论兼容矩阵、真人优先回复、独立异号互评、关系 RPC 和数量/Cap 守恒闭合 | 通过 |
 | 活群/评论 late-bound intent/style、合法换号声线隔离、兼容矩阵、自适应 community style、无漏档长度分类、无固定配比/模板/序列和三阶段反指纹验收闭合 | 通过 |
 | 保留评论 grounding/比例/cap、点赞 capability、浏览 identity 边界 | 通过 |
-| 核心对象字段/唯一性、按 path-stage 的统一 execution timing profile、每-binding/总 Provider 预算、并发、事务、迁移和回滚闭合 | 通过 |
+| 核心对象字段/唯一性、按 path-stage 的统一 execution timing profile、classification 下游尾部、planned-call 可达区间、每-binding/总 Provider 原子预算、并发、事务、迁移和回滚闭合 | 通过 |
+| 真人互动正向 event 单归因、native 优先/不限推断窗、歧义不抬高互动率及负向 event 去重闭合 | 通过 |
 | 自然 tempo、量化阈值、样本 manifest、QA 和真实 Telegram E4 可验收 | 通过 |
 | 顶层、AI 活群和评论专项状态/决策一致，无开放业务决策 | 通过 |
 | 本轮未授权代码实现、迁移或发布 | 通过 |

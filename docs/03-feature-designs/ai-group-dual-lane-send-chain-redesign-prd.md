@@ -21,6 +21,8 @@
 
 > **2026-09-03 执行所有权终审：** response slot 在日计划时只有 capacity window/tentative supply，真实 planned call 只由 owner 后的 `InteractionServiceBinding` 在 turn natural window 与账号/群 Timeline 交集中冻结。canonical turn 语义分类为公共单调用 lane；每 binding 最多两次生成调用，pre-Gateway 归还后的 successor 继续扣同一任务日总预算。所有提前量、latest-safe 和安全余量统一读取冻结 `ExecutionTimingProfileRevision + path-start stage`，AI adapter 不再拥有私有 timing 常量。
 
+> **2026-09-03 最终遗漏终审：** semantic classification 必须在群聊 3 秒 candidate cutoff 前为 Task fanout/claim finalize 留出测得尾部；response planned call 只从完整生成链按 P95 可到达的 natural/slot/Timeline 交集内抽取，并与 Provider permit 和任务日总预算同事务 admission。真人反馈以 event-level attribution claim 单归因：原生 reply 优先，非原生续聊不能同时给多条 AI 消息记成功。该补正设计完成、尚未实现。
+
 本文提出一条新的 AI 活群 current 数据面。它不单独覆盖现行生产合同，不触发实现、迁移或发布；与顶层统一引擎冲突的内容以上述统一引擎 PRD 为准。
 
 确认后的目标 supersede 范围：
@@ -138,7 +140,7 @@ effective_group_daily_target
 
 40% 属于 `interaction_capacity_policy_v1`；目标大于 0 且预测存在真人活动时总池至少 1 个，但不得解释成“每个小时至少 1 个”。`PacingPlanner` 按真人活动预测在已有群日 strata 上做确定性加权系统抽样，每小时 `response_reserved_count <= hourly_quota`，其余为 proactive fixed；没有小时分布样本时可以使用 `natural_full_day_v1` active-window profile 并标记 pacing forecast confidence low，但这不能替代互动容量证明。达到统一引擎的 7 个完整 active 日/至少 50 个真人 turn replay 门槛后，必须证明 peer still-needed-owner demand P95 的 95% 不大于全部合法 response slots；planned point 前可证明由真人解决的 turn 单列 forecast superseded，不能用预计 wait 随意扣分母。此前只能使用显式低置信度 `cold_start_interaction_forecast_v1` 做预注册单 Task/群限量 canary，状态保持 `interaction_capacity_forecast_unproven`，不能宣称 capacity ready 或扩大。已证明但 valid slots 不足则为 `interaction_plan_unachievable`。启动预览显示群日总池、每小时固定主动/响应预留、replayed unique-owner/still-needed demand、forecast superseded evidence、required/valid response slots 和容量缺口。
 
-真人 turn 必须先取得统一引擎 `ConversationTurnClaim(tenant + canonical group + turn family)` 的唯一 Task owner；owner 后先按 tempo 冻结 turn natural window，再由响应路由 claim winner Task 同 task day、同 account binding、尚未开始 Generation/Action/Gateway，且 `capacity_window` 与 turn natural/freshness window 有交集的 response-reserved obligation。每个 tentative supply 只占一个按 account/peer Timeline policy 派生的出站资源量子，不锁住整个小时 stratum，也不把 Provider 生成 P95 当账号占用。候选可来自当前或相邻小时 stratum，避免整点边界把本来合法的响应判空；但不得跨 task-day deadline、不得把不相交的未来 slot 改成 now。绑定事务只在 `turn natural window ∩ slot movable window ∩ account/peer Timeline legal free interval` 内稳定冻结 `planned_call_at`，出站量子可完整容纳时才创建唯一 `InteractionServiceBinding(context turn/revision/watermark/tempo/account/slot)`，并 CAS 移动量子、把 tentative supply 转 effective service；完整内容准备 P95 与 margin 另由 execution timing/Provider admission 证明。日计划与 opportunity 在此之前都不得伪造 planned call。quantity identity、ordinal、coverage account 和原 slot audit 保持不变，不新建第二个数量义务。winner 无交集容量时显式 missed，禁止由同群第二个 Task 补答。
+真人 turn 必须先取得统一引擎 `ConversationTurnClaim(tenant + canonical group + turn family)` 的唯一 Task owner；owner 后先按 tempo 冻结 turn natural window，再由响应路由 claim winner Task 同 task day、同 account binding、尚未开始 Generation/Action/Gateway，且 `capacity_window` 与 turn natural/freshness window 有交集的 response-reserved obligation。每个 tentative supply 只占一个按 account/peer Timeline policy 派生的出站资源量子，不锁住整个小时 stratum，也不把 Provider 生成 P95 当账号占用。候选可来自当前或相邻小时 stratum，避免整点边界把本来合法的响应判空；但不得跨 task-day deadline、不得把不相交的未来 slot 改成 now。对每个候选先按冻结 permit 队列与完整准备链 P95 算 `preparation_feasible_call_not_before_at`；绑定事务只能从 `turn natural window ∩ slot movable window ∩ account/peer Timeline legal free interval ∩ [preparation_feasible_call_not_before_at, freshness deadline]` 内稳定抽取 `planned_call_at`。出站量子可完整容纳，且 `InteractionServiceBinding + Task-day binding/call budget conditional CAS + ProviderCapacityReservation` 能同事务提交时，才 CAS 移动量子并把 tentative supply 转 effective service；预测已赶不上 planned call 时不创建 active binding，也不消费调用预算。日计划与 opportunity 在此之前都不得伪造 planned call。quantity identity、ordinal、coverage account 和原 slot audit 保持不变，不新建第二个数量义务。winner 无交集容量时显式 missed，禁止由同群第二个 Task 补答。
 
 未使用预留在 `response_release_cutoff` 到达后转为 proactive preparation，并在原 stratum 剩余窗口内用持久 seed 计算新 due revision；释放不是 overdue catch-up。只有 cutoff 后仍容得下冻结 timing profile 的 proactive complete remaining-path P95(pre-materialization)、attention forecast quiet-window P95 与 `execution_safety_margin(pre_materialization)` 的 stratum 才能冻结 response-flexible；不合法时稳定换到其他 stratum，合法 strata 总量不足则计划前 `interaction_plan_unachievable`，不能明知无法回收还宣称数量和互动都可完成。历史不足时 attention capacity 必须 low-confidence/canary unproven，不能按全天都 quiet 计算。admitted turn 无预留时，只有统一 TimelineArbiter 能安全 reflow 尚未物化的柔性 slot；仍无容量记录 `interaction_capacity_missed`，保留在 admitted 分母，不得超量或挪用其他任务日。
 
@@ -377,6 +379,8 @@ Snapshot 在 GenerationJob claim 时冻结。生成完成后若 watermark 已变
 3. **peer turn owner**：多个 Task 同时为 candidate 时，按明确点名/自有 fact、relation hard、deadline slack、Task fairness 和稳定 hash 取得唯一 `ConversationTurnClaim`；loser 记 `peer_turn_coalesced`，winner 才是 admitted；
 4. **capacity service**：为 admitted owner 查找同 task day、自然发送窗与 turn freshness window 相交的 response-reserved account-bound obligation，再检查 TimelineArbiter 和 Provider permit；不能用“current hour”硬切断整点两侧本可服务的窗口。成功为 served；无容量、来不及 deadline 或账号不兼容均为 typed missed，不能把 owner 转给另一个 Task。
 
+canonical turn 的结构化规则无法确定语义时，只允许公共 `TurnIntentClassifier` 为该 turn revision 调一次共享 classification lane。其 admission deadline 不是完整 3 秒 candidate cutoff，而是 `classification_latest_safe_at = candidate_decision_cutoff_at - max_eligible_task_fanout_projection_p95 - claim_finalize_p95 - execution_safety_margin(post_classification)`；下游 tail 必须覆盖全部 expected Task 的候选投影与唯一 claim 持久化。预计分类完成晚于 latest-safe、unknown 或低置信度都写 `turn_classification_uncertain` terminal decision，不套默认普通观点。重叠 Task 只引用同一分类结果和共享预算，AI adapter 不得另调一次。
+
 真人仍在组织连续回答、平台刚提问等待真人或当前没有新增信息时，在 admission 前记 `deferred_wait + next_eligible_at`；它是当前 claim decision round 的 terminal decision，但不是整条 opportunity 的完成。当前 round 已有 admitted owner 时，后续 event/timer wake 只能结算 `peer_turn_coalesced_after_owner`；当前 round 无 owner 时，才允许在 freshness deadline 前 CAS 开启同一 claim 的下一 decision round、重冻 expected set 并重新判断，旧 round 永不追加迟到 candidate。超过 freshness deadline 仍不适合参与则终结为 `deferred_expired`，不进入 admitted 分母也不冒充 served。账号选择优先未完成当前群 coverage 且 persona 兼容者；不兼容账号留给后续 proactive slot，不为覆盖硬插话。
 
 真人明确 @/点名受管账号，或原生回复我方 confirmed fact 时，`ContextTurnBuilder` 在 Task 路由前从 canonical event/fact 冻结 `ordered_required_account_hint_set + required_owner_task_hint_set + precedence_basis`。结构化 mention 按实体位置优先，再追加未重复的 native-reply fact 作者；多个 addressee 仍只允许一个平台响应。候选关闭后只在已返回 candidate 的 required owners 中按该顺序选 winner；缺失/blocked required owner 永久封为本 turn 非 owner，不能迟到补答。若一个合法 required candidate 都没有才记 `required_candidate_decision_missed`，其他 Task 不得代答；明确 addressee decision coverage 的运行目标仍是 100%，部分缺失也使 observation integrity 失败。取得合法 claim 后只有胜出的 required account 的 compatible reserve 可响应，无容量即 missed，不得由 non-required 账号冒名接话。只有没有明确 addressee 时，才按未完成 coverage、persona 适配和稳定 rotation 选择账号。
@@ -419,13 +423,13 @@ Snapshot 在 GenerationJob claim 时冻结。生成完成后若 watermark 已变
 
 本适配器严格复用统一引擎 `conversation_attention_v1`，不得另写群聊本地计时器。真人活动等待窗为同群/time-band 外部真人消息间隔 P90，并限制在 60～300 秒；有效间隔不足 30 个时使用 300 秒且标 low confidence。`human_turn_open`、`human_recent_activity`、`admitted_response_inflight` 与 `awaiting_human_response` 可重叠，quiet-after 取 active blocker expiry 最大值。只有经质量门标记 `expects_human_reply=true` 且取得 typed confirmed fact 的平台消息才打开 awaiting，真人回应/带 evidence 转题可提前关闭；每个 expiry 都以 revision + `StageWakeOutbox` 收口，历史 backfill、AI/机器人消息和旧 wake 不得续期，因此既不会抢话，也不会永久锁住 proactive。attention 在 slot 尚未 preparing 时可合法 reflow；已 preparing/ready 但 pre-call 时必须原子 fence 当前 materialization、supersede style 并递增 preparation-timing revision 后在原 window 重新走完整链，不能直接延后旧候选；call-issued 后只记 observation。
 
-每条我方 confirmed normal contextual fact 都打开一个不产生发送义务的互动观察窗。真人原生 reply 形成权威 observation；同一未转题 turn 内 10 分钟内命中该消息明确语义锚点的续聊只能作为带 evidence/confidence 的推断 observation。低置信度不计互动成功；明确质疑机器人感、删除/撤回及真人已回答后平台仍抢答作为负向 outcome。该反馈只进入高互动基线比较，不结算 quantity、coverage 或 Telegram reply relation。
+每条我方 confirmed normal contextual fact 都进入不产生发送义务的互动观察。真人原生 reply 的远端 parent relation 与 typed fact 可核验时形成权威 observation，不受 10 分钟语义推断窗限制；只有无原生 relation 时，才在同一未转题 turn 的 10 分钟内寻找明确语义锚点。公共 `HumanEngagementAttributionClaim` 对同一真人 event revision 按 `native parent > structured mention/quoted anchor > unique semantic continuation` 选最多一个正向 winner；非原生候选必须唯一超过置信阈值和 runner-up margin，否则为 `ambiguous_unattributed`。已有 native winner 不再计 inferred，同一真人 event 不能同时给多条 AI 消息记成功。低置信度不计互动成功；明确质疑机器人感、删除/撤回及真人已回答后平台仍抢答作为负向 outcome，负向指标按 human event 去重。该反馈只进入高互动基线比较，不结算 quantity、coverage 或 Telegram reply relation。
 
 ### 6.7 真人节奏与分场景 freshness
 
 事件识别、turn close、参与决策和内容生成保持低延迟；实际发送由统一引擎 `ConversationTempoProfile` 决定。时间带直接复用统一 `time_band_v1`，只有外部真人消息进入间隔样本；样本达到 30 个真人间隔后，按同群、时间带、turn class 的真人 P25/P50/P75/P90 做稳定随机抽样；冷启动使用：明确问题/点名 8～35 秒且 deadline 45 秒，活跃话轮 12～60 秒且 deadline 90 秒，普通讨论 45～180 秒且 deadline 180 秒。
 
-owner 冻结后以 turn observed time 和 profile 先持久化 natural window；`planned_call_at` 只能在选定 compatible response supply 后，由 `InteractionServiceBinding` 在 natural window、slot capacity window 与账号/群 Timeline legal interval 的交集中用 stable seed 冻结一次。Provider 早完成等待 planned call；晚于 planned call 只可在原 binding 交集内发送并记 `planned_point_late`；预计完成越过 `min(binding_intersection_end, natural_window_end) - gateway_prepare_p95 - execution_safety_margin(pre_provider)` 时零调用，不能生成完成后再叠加 natural minimum 或重新抽更晚时点。profile 不得突破账号/群最小间隔。等待期间若真人已回答、转题或 turn revision 更新，Gateway 前终止旧候选；不得为了满足数量把 stale response 改成 proactive 立即发送。固定 2～8 秒只允许作为历史策略观测值，不再是 current 合同。
+owner 冻结后以 turn observed time 和 profile 先持久化 natural window；Provider admission 先按冻结 permit 队列与完整 response preparation P95 计算 `estimated_candidate_ready_at` 和 `preparation_feasible_call_not_before_at = estimated_candidate_ready_at + gateway_prepare_p95 + execution_safety_margin(pre_provider)`。`planned_call_at` 只能在 natural window、slot capacity window、账号/群 Timeline legal interval 与 `[preparation_feasible_call_not_before_at, freshness deadline]` 的交集中用 stable seed 冻结一次，并与 binding、任务日总预算 CAS、Provider reservation 同事务提交。Provider 早完成等待 planned call；只有真实耗时超过冻结 P95 的未预测 tail，才可在原 binding 交集内晚发并记 `planned_point_late_unexpected_tail`；admission 时已知会迟到则零 active binding/零调用，不能伪装成 planned late。越过交集/natural/freshness end 不发送，也不能重抽更晚时点。profile 不得突破账号/群最小间隔。等待期间若真人已回答、转题或 turn revision 更新，Gateway 前终止旧候选；不得为了满足数量把 stale response 改成 proactive 立即发送。固定 2～8 秒只允许作为历史策略观测值，不再是 current 合同。
 
 ## 7. 内容生成链路
 
@@ -632,18 +636,18 @@ future/pre-call -> retired             # target 下调、stop 或 scope 退出
 | `AiGroupSendObligation` | current 数量、时间、slot class、account/group coverage、当前 service-binding pointer 和状态 owner；不把 turn/relation/call budget 原地写成数量 identity |
 | `ConversationSourceCursor/GroupContextEvent/Outbox` | 单 owner 实时游标、幂等远端事件、gap/backfill 和 durable wake |
 | `ContextTurn/TurnClassificationCapacityRevision/InteractionOpportunity/ConversationTurnClaim/GroupConversationSnapshot` | canonical turn 单次分类与 tenant/provider/surface 共享 permits/预算、eligible/blocked subscription、observed/eligible/ineligible/deferred/candidate/admitted/coalesced/served/validly-superseded/missed 漏斗、同群跨 Task 唯一 owner、滚动群状态和 watermark |
-| `InteractionServiceBinding` | admitted turn 与既有 response 数量义务的 append-only 绑定；唯一拥有 relation/turn/planned-call/preparation revision、每 binding 调用上限与总预算 reservation，pre-Gateway 解绑不清零旧成本 |
+| `InteractionServiceBinding` | admitted turn 与既有 response 数量义务的 append-only 绑定；唯一拥有 relation/turn/timing-feasible interval/planned-call/preparation revision、Provider admission、每 binding 调用上限与总预算 reservation，pre-Gateway 解绑不清零旧成本 |
 | `ConversationTempoProfile` | 同群/时间带真人间隔 quantiles、样本量、tempo class 和 revision |
 | `ConversationAttentionState/ForecastRevision` | current blocker set、有界 quiet-after 与版本化 wake；真人 P90 历史只用于计划 forecast，不能覆盖运行时事件状态 |
 | `GroupCommunityStyleProfileRevision/MessageStyleReservation/MessageStyleAssignment` | 外部真人的群级非正文风格分布、cold-start 来源；日计划只冻结每义务当前 account-binding 的 profile cutoff/persona/distribution rank，主动 intent 或真实 turn binding 后才冻结长度/标点/emoji/register；quantity-only 合法换号必须 append 新 persona reservation，同 binding retry 不重抽，不保存或学习 AI 成稿 |
 | `AiGroupContentIntent/Variation` | 不可变内容要求与候选版本 |
 | `MessageBrief/GroupCandidateQualityDecision` | 冻结 context/task anchor allowlist、style/dedupe/deadline 输入，并记录 deterministic claim-to-source、semantic response-fit 与 accepted `expects_human_reply` 决策；Provider 自报 ID/问号不是通过证据 |
 | `GenerationJob` | Provider 请求、租约、预算和结果状态 |
-| `ProviderCapacityReservation` | route/lane permit、预计开始/完成、deadline、token/cost budget 和 admission 状态 |
+| `ProviderCapacityReservation` | classification request 或 service-binding work identity、route/lane permit、预计开始/完成、下游 tail、planned-call/latest-safe、冻结总预算 revision、calls/token/cost reservation 和 admission 状态；与预算 conditional CAS 同事务 |
 | `ContentDedupeReservation/AiGroupMessageMemory` | 候选并发占位、unknown hold、confirmed 历史和四道重复门依据 |
 | `Action/ExecutionAttempt` | 一次不可变 Telegram 命令及调用尝试 |
 | `FulfillmentRemoteFact` | Telegram 远端事实 |
-| `HumanEngagementObservation` | 真人对我方 confirmed fact 的权威 reply、推断续聊与负向结果；不结算数量 |
+| `HumanEngagementAttributionClaim/HumanEngagementObservation` | 真人 event-level 唯一正向归因、权威 reply、推断续聊与按 event 去重的负向结果；native 优先且不受 inference window 限制，不结算数量 |
 | `ProjectionState` | target、coverage、memory 和 read model 投影进度 |
 
 正常发送链不再以 `TaskGroupDailyMessageSlot`、`ContentMixCycleSlot` 或 Action 数量反推欠额。这些对象只在存量迁移和历史展示中保留。
@@ -709,7 +713,7 @@ PostgreSQL 持久队列/partial index 是事实源；Redis/pubsub 只降低唤�
 - `participation_policy_v1`：点名/直接问题 100%、开放问题 70%、实质讨论 40%、普通观点 20%、micro-ack 5%，先 admission 后判断容量；
 - `interaction_capacity_policy_v1`：每群每日目标的 40% 为 response flexible 总池，再稳定抽样到预测有人活动的小时；不是每小时至少 1 条；
 - `tempo_policy_v1`：question 8～35 秒、active 12～60 秒、ordinary 45～180 秒及对应 freshness deadline；
-- 每个实时 `InteractionServiceBinding` Provider calls 上限 2；successor binding 继续消耗同一任务日总 binding/call budget。classification permits/预算按 tenant/provider/surface 共享 revision 冻结，重叠 Task 只引用；response permits/预算按本 Task 测得 arrival 与完整 service P95 冻结。
+- 每个实时 `InteractionServiceBinding` Provider calls 上限 2；successor binding 继续消耗同一任务日总 binding/call budget。classification permits/预算按 tenant/provider/surface 共享 revision 冻结，并包含 candidate fanout/claim tail；response permits/预算按本 Task 测得 arrival 与完整 service P95 冻结。active binding、总预算 conditional CAS 与 Provider reservation 必须同事务，不能先绑后补预算。
 
 新增版本化系统策略，不作为隐藏常量：
 
@@ -747,7 +751,7 @@ PostgreSQL 持久队列/partial index 是事实源；Redis/pubsub 只降低唤�
 8. 历史尝试：Generation variation 和 Action attempt，与当前 backlog 分开。
 9. 内容质量：四道重复门的拒绝阶段/原因、context snapshot revision、截断原因、stale-before-Gateway 和自然度灰度指标。
    同时显示 community style profile 的 human-observed/cold-start、样本量/revision、每条 message style reservation/active assignment/binding revision，以及 assigned/accepted/remote-confirmed 的长度/问句/标点/emoji 分布；
-10. Provider：共享 classification 与本 Task response 各自 required/available concurrency、queue delay、estimated finish、每个 service binding 及任务日总 calls/tokens/cost、deadline admission 和 successor binding 剩余预算；同一 canonical turn 不因重叠 Task 重复计 classification 调用。
+10. Provider：共享 classification 与本 Task response 各自 required/available concurrency、queue delay、classification downstream tail/latest-safe、response estimated candidate ready/timing-feasible call interval、每个 service binding 及任务日总 calls/tokens/cost、deadline admission 和 successor binding 剩余预算；同一 canonical turn 不因重叠 Task 重复计 classification 调用。
 
 顶部总状态拆成 `day_operation_status / quality_evidence_status / product_acceptance_status`，不得用一个 completed 同时表示“数量完成”“账号全覆盖”和“自然度已验证”。
 
@@ -763,7 +767,7 @@ PostgreSQL 持久队列/partial index 是事实源；Redis/pubsub 只降低唤�
 - response turn binding 使用原 response-reserved obligation expected version + claim/slot active revision CAS，并 append service binding；不修改 proactive-fixed 义务，也不把 turn identity 写回数量 natural key；
 - coverage obligation 的 account identity 从 scope 到 remote fact 不可变；
 - ContentDedupeReservation 在群级 timeline 锁内原子写入，active/unknown/confirmed 均参与冲突判断；
-- AI adapter 不定义第二套锁序；所有 Planner/Generation/Dispatcher 严格复用统一公共顺序 `ConversationTurnClaim(if any) -> ConversationAttentionState -> obligation/projection -> EngagementPacingSlot -> TimelineReservation(account -> peer -> conversation -> task_obligation) -> InteractionServiceBinding(if response) -> active MessageStyleAssignment -> GenerationJob|Action -> Attempt/fact projection`；禁止先锁 Action/style/binding 再反锁 attention/turn/obligation/timeline；
+- AI adapter 不定义第二套锁序；所有 Planner/Generation/Dispatcher 严格复用统一公共顺序 `ConversationTurnClaim(if any) -> ConversationAttentionState -> obligation/projection -> EngagementPacingSlot -> TimelineReservation(account -> peer -> conversation -> task_obligation) -> InteractionServiceBinding(if response) -> InteractionCapacityPlan response budget counter or TurnClassificationCapacityRevision counter -> ProviderCapacityReservation -> active MessageStyleAssignment -> GenerationJob|Action -> Attempt/fact projection`；classification 无 response binding 时从共享 classification counter 开始。禁止先锁 Action/style/GenerationJob/Provider reservation/binding 再反锁 attention/turn/obligation/timeline；
 - remote mutation key + gateway request hash + fact kind 唯一；
 - projector 可重复执行，但每个 projection kind 对同 fact 只成功一次。
 
@@ -810,7 +814,7 @@ PostgreSQL 持久队列/partial index 是事实源；Redis/pubsub 只降低唤�
 - `admitted_resolution_ratio = (served + validly_superseded_before_planned_call) / admitted`，目标 ≥95%；
 - `interaction_capacity_service_ratio = served / (admitted - validly_superseded_before_planned_call)`，目标 ≥95% 或分母为 0；容量/Provider/deadline miss 均不得作为 superseded 删除；
 - `call_issued_inside_tempo_window_ratio`，目标 100%；
-- `planned_call_at / candidate_ready_at / planned_point_late_count`，planned point 不重抽，越过 natural window 的发送为 0；
+- `preparation_feasible_call_not_before_at / planned_call_at / candidate_ready_at / planned_point_late_unexpected_tail_count`，planned point 不重抽，admission 时已知会晚于 planned call 的 active binding 为 0，越过 natural window 的发送为 0；
 - `context_response_stale_before_gateway`；
 - `responses_per_peer_turn_across_tasks`，同 tenant、同 canonical group 必须 ≤ 1；
 - `ai_message_caused_recursive_response_count`，目标为 0。
@@ -829,7 +833,7 @@ PostgreSQL 持久队列/partial index 是事实源；Redis/pubsub 只降低唤�
 - `group_community_style_profile_source_count{human_observed,cold_start}`、style reservation/assignment/context-unallocatable/stale-superseded count、assigned/accepted/remote-confirmed style distribution distance、固定 ordinal/style sequence collision；
 - 同账号 persona 的 intra-account drift 与跨账号 distinguishability，只读取 remote-confirmed normal contextual facts，不以 Prompt 配置冒充；
 - 真人盲评的上下文贴合、自然度、模板感、账号可辨识度和事实一致性。
-- `authoritative_human_reply_rate / inferred_human_continuation_rate / robot_suspicion_signal_rate / post_ai_delete_or_withdraw_rate / platform_interruption_rate`，原生与推断分列，并与同 peer/time-band 基线比较。
+- `authoritative_human_reply_rate / inferred_human_continuation_rate / ambiguous_unattributed_rate / positive_event_multi_attribution_count / robot_suspicion_signal_rate / post_ai_delete_or_withdraw_rate / platform_interruption_rate`；native parent 优先且不限 inference window，非原生正向 event 最多一个 winner，负向率按 human event 去重，并与同 peer/time-band 基线比较。
 
 “无法识别为 AI”不作为可证明指标。正式质量 Gate 使用相对批准基线的盲评改善、确定性重复率和事实/安全不退化共同判定，不能只用一个 LLM Judge 给自己打分。
 
@@ -854,7 +858,7 @@ LLM 成本按以下公式在灰度前估算：
  + reviewer/retry token
 ```
 
-`required_classification_concurrency = ceil(ambiguous_turn_arrival_rate_p95_per_second * classification_service_p95_seconds * 1.30)`，`required_response_concurrency = ceil(arrival_rate_p95_per_second * complete_response_preparation_p95_seconds * 1.30)`；两者从统一 timing profile 对应 lane 取值并分列 permits。classification 由 tenant/provider/surface 共享 `TurnClassificationCapacityRevision` 负责，Task 启动只校验并引用，不为同一群重复预留。完整 response preparation P95 必须包含主生成、批准的质量修复/备用 tail 与确定性门，不能只量第一次 realizer。每个 canonical turn revision 最多 1 次语义分类调用；每个实时 `InteractionServiceBinding` 最多 2 次 Provider 调用（1 次主生成，加最多 1 次质量修复或批准的备用 route）。pre-Gateway 归还数量义务后建立的 successor binding 不继承旧 binding 的单次上限，但继续扣同一任务日总 binding/call budget，旧调用/unknown/成本不清零。共享分类池按去重后的 ambiguous canonical-turn demand P95 冻结；Task response 池按本 Task `provider_requiring_owner_demand_p95` 冻结。主动泳道继续使用独立质量预算。预计完整路径越过 `generation_latest_safe_at` 时第一次调用也不发起。三类 permits/预算不得互相挪用；预算含 30% 波动 buffer，不能以无限重生成保证成功率。
+`required_classification_concurrency = ceil(ambiguous_turn_arrival_rate_p95_per_second * classification_service_p95_seconds * 1.30)`，`required_response_concurrency = ceil(arrival_rate_p95_per_second * complete_response_preparation_p95_seconds * 1.30)`；两者从统一 timing profile 对应 lane 取值并分列 permits。classification 由 tenant/provider/surface 共享 `TurnClassificationCapacityRevision` 负责，Task 启动只校验并引用，不为同一群重复预留；它的 latest-safe 必须从 3 秒 candidate cutoff 扣除最大 eligible-Task fanout projection P95、claim finalize P95 与统一 margin。完整 response preparation P95 必须包含主生成、批准的质量修复/备用 tail 与确定性门，不能只量第一次 realizer。planned call 只从 `natural/slot/Timeline interval ∩ [estimated_candidate_ready + Gateway prepare + margin, freshness deadline]` 内抽取；active binding、任务日总预算 CAS 和 Provider reservation 同事务。每个 canonical turn revision 最多 1 次语义分类调用；每个实时 `InteractionServiceBinding` 最多 2 次 Provider 调用（1 次主生成，加最多 1 次质量修复或批准的备用 route）。pre-Gateway 归还数量义务后建立的 successor binding 不继承旧 binding 的单次上限，但继续扣同一任务日总 binding/call budget，旧调用/unknown/成本不清零。共享分类池按去重后的 ambiguous canonical-turn demand P95 冻结；Task response 池按本 Task `provider_requiring_owner_demand_p95` 冻结。主动泳道继续使用独立质量预算。预计完整路径越过 planned-call latest-safe 时第一次调用也不发起。三类 permits/预算不得互相挪用；预算含 30% 波动 buffer，不能以无限重生成保证成功率。
 
 ## 15. QA 与验收合同
 
@@ -887,19 +891,19 @@ LLM 成本按以下公式在灰度前估算：
 4. 同一 turn 多条真人消息、多个命中 Task 最多一个 peer-level 响应义务；各 Task candidate 与唯一 claim winner 可重建，loser coalesced，winner 无容量不得由其他 Task 补答；
 5. claim 等待冻结 eligible subscription set 全部 terminal decision 或群聊 3 秒 cutoff；首个 worker 不得抢先 owner，cutoff missing 可见且 terminal coverage≥99%；合同未就绪 Task 显式 blocked 而不抢 owner，当前容量不得用于排除 eligible Task；明确点名/原生回复的 required account/owner 在 Task 路由前冻结，其 decision coverage 必须 100%，缺失或 blocked 时非 required Task/账号零响应；
 6. 平台自己的消息不触发递归响应；
-7. response-reserved 日计划只冻结 capacity window/tentative supply，不含未来 turn 的 planned call；owner 后先冻结 natural window，再在 compatible supply/Timeline 交集中创建一个 active `InteractionServiceBinding` 和 planned call。响应只绑定一个原数量义务，quantity identity、ordinal、账号和 active target 数守恒；
+7. response-reserved 日计划只冻结 capacity window/tentative supply，不含未来 turn 的 planned call；owner 后先冻结 natural window，再扣除当前 permit 队列、完整准备链 P95、Gateway prepare 与 margin，只在 timing-feasible supply/Timeline 交集中原子创建 active `InteractionServiceBinding + planned call + Task-day budget reservation + ProviderCapacityReservation`。响应只绑定一个原数量义务，quantity identity、ordinal、账号和 active target 数守恒；
 8. reserve 未使用时只在 cutoff 后于原 stratum 剩余窗转 proactive；无容量时零 GenerationJob/Action/Telegram call，并把 miss 留在 admitted 分母；
-9. owner 后 natural window 稳定，service binding 后 planned call 稳定不重抽；Provider 早完成等待，晚完成只可在 binding 交集内发送并记 late；超过交集/window 或 45/90/180 秒 freshness deadline 后即使 candidate ready 也不得发送；
+9. owner 后 natural window 稳定，service binding 后 planned call 稳定不重抽；预测已赶不上 planned point 时零 active binding/零调用，Provider 早完成等待，只有未预测 tail 才可在 binding 交集内晚发并单独计数；超过交集/window 或 45/90/180 秒 freshness deadline 后即使 candidate ready 也不得发送；
 10. turn revision/watermark 过期时，pre-Gateway candidate 必须终结为 stale shortfall；
 11. planned call 前真人已解决/转题可记 validly superseded 并保留 admitted identity；planned call 后因 Provider/容量/时间线延迟失效必须按真实 blocker missed；
 12. 真人消息只作上下文，`reply_to_message_id` 仍只认我方 typed remote fact。
-13. 真人对我方 confirmed fact 的原生 reply 与推断续聊分别形成 observation；低置信度和负向结果不被过滤，且不增加数量或覆盖；
+13. 真人对我方 confirmed fact 的原生 reply 与推断续聊分别形成 observation；native parent 不受 inference window 限制且优先，非原生 event 只有唯一高置信 winner 才计正向，同 event 多 fact attribution 必须为 0。低置信度/歧义与负向结果不被过滤，负向率按 event 去重，且不增加数量或覆盖；
 14. admission 前 `deferred_wait` 可由 event/timer 重评，deadline 后只进 `deferred_expired`；stream gap、watermark stale、subscription decision 不完整或 response authority 双写时，哪怕 admitted 分母为 0，interaction observation integrity 也不能通过。
 15. deferred Task 迟到唤醒时，若同一 turn claim 已有 admitted owner 只能 coalesced；无 owner 才能 CAS 新 decision round 并重冻全部 expected decisions，旧 round 不接收追加 candidate，任何 turn 仍最多一个 owner。
 16. 多目标群 Task 必须逐群证明 observer coverage、gap、watermark 和 candidate decision integrity；任一 required group 缺失时 Task 不得用其他健康群的指标聚合成 met。
 17. planned call 前后发生的 pre-Gateway stale 都必须 fence preparing/ready 工作并归还同一 response-flexible 数量义务；前者互动 outcome 可为 validly superseded，后者仍为 blocker missed。cutoff 后按原 release policy，Gateway call-issued 后禁止归还或替换。
 18. 每个目标群扩大 response route 前用最近 30 天至少 7 个完整 active 日、50 个真人 turn 做 participation/跨 Task claim replay；先冻结 unique-owner demand 再比较合法 slots。样本不足仅可用显式 cold-start forecast 做预注册限量 canary且保持 unproven；valid slots 不足不得扩大，不能用固定 40% 宣称 capacity ready。
-19. 规则无法确定的 canonical turn revision 最多调用一次独立 classification lane；unknown/超时不套默认普通观点，分类 permits/call budget 不占 response generation permit。classifier-eligible ambiguous turn 的 uncertain 比例超过 5% 时高互动 Gate 不通过。
+19. 规则无法确定的 canonical turn revision 最多调用一次独立 classification lane；classification latest-safe 必须先从 3 秒 cutoff 扣除 Task fanout projection/claim finalize P95 与统一 margin，不能只要求模型本身在 cutoff 前返回。unknown/超时不套默认普通观点，分类 permits/call budget 不占 response generation permit。classifier-eligible ambiguous turn 的 uncertain 比例超过 5% 时高互动 Gate 不通过。
 
 ### 15.4 Generation 与 Action
 
@@ -910,7 +914,7 @@ LLM 成本按以下公式在灰度前估算：
 5. 新 context revision 只失效 pre-call Job/Action，不改 Gateway-started；
 6. 质量失败不发送 Stage 1、签到或 emoji 伪成功。
 7. context response 质量/去重/Provider deadline 失败按真实 blocker 结算当前 admitted miss，调用数/成本保留；pre-Gateway 同一 response-flexible obligation 解绑归还，cutoff 前等新 turn、cutoff 后按原规则释放 proactive，窗口结束前不提前形成 quantity terminal，且同 turn 总调用不超过 2。
-8. 每个 admitted turn 只有一个 `InteractionServiceBinding` 且 calls≤2；数量义务归还后的 successor binding 继续扣同一任务日冻结总 binding/call budget，旧调用、unknown 与成本不清零，并发扣减不能超预算。
+8. 每个 admitted turn 只有一个 `InteractionServiceBinding` 且 calls≤2；active binding、任务日冻结总 binding/call budget conditional CAS 与 Provider capacity reservation 同事务。数量义务归还后的 successor 继续扣同一总预算，旧调用、unknown 与成本不清零，并发扣减不能超预算。
 
 ### 15.5 重复与自然参与
 
@@ -1051,13 +1055,13 @@ LLM 成本按以下公式在灰度前估算：
 |---|---|
 | 用户原始需求 | 已覆盖回复慢、发送集中、小时内随机、数量完成、全账号活跃、降低 AI 感和只做设计 |
 | 产品目标与非目标 | 已定义主动/响应差异、数量守恒、三维完成和自然参与边界 |
-| 核心对象与状态机 | 已定义 quantity/coverage、response reserve、唯一 obligation、event/turn/opportunity、append-only service binding、tempo、conversation attention、account-binding community style/persona reservation/late-bound assignment、统一 execution timing profile、classification/response Provider budget、GenerationJob、Action 和 fact |
+| 核心对象与状态机 | 已定义 quantity/coverage、response reserve、唯一 obligation、event/turn/opportunity、append-only service binding、tempo、conversation attention、account-binding community style/persona reservation/late-bound assignment、统一 execution timing profile、classification 下游 tail、planned-call 可达区间、原子 Provider budget/reservation、GenerationJob、Action 和 fact |
 | 前端/API | 已定义配置语义、预览和详情状态 |
 | Worker/数据流 | 已定义日计划只冻结 response capacity window/tentative supply、单 owner 实时事件/outbox/gap reconcile、owner natural window、service-binding 交集内 planned call、生成、仲裁、发送和投影 |
 | 并发/幂等 | 已定义单 owner、CAS、群/账号锁序、换号与 persona reservation 原子切换、attention-preemption 的 materialization fence/preparation revision、attention revision/wake 和 remote mutation identity |
 | 失败/恢复 | 已定义 overdue、unknown、停机和 deadline，不集中补发 |
 | 权限/隐私 | 已保留 tenant/Task/group/account/reply authority 和日志边界 |
-| QA/E4 | 已定义确定性排期、逐群全账号覆盖、容量分母、自然 tempo、有界 attention、量化盲评、四道去重和 Telegram 远端验收 |
+| QA/E4 | 已定义确定性排期、逐群全账号覆盖、容量分母、自然 tempo、有界 attention、planned-call 可达性、真人 event 单归因、量化盲评、四道去重和 Telegram 远端验收 |
 | 迁移/灰度/回滚 | 已定义 additive schema、shadow、单 Task canary 和 route fence |
 | 开放产品决策 | 无；§18 已冻结为 v1 合同 |
 
