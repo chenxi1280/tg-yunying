@@ -504,7 +504,7 @@ ZHENGDA_ACTIONS_BREAKDOWN_QUERY = text("""
 
 TODAY_SUCCESS_QUERY = text("""
     SELECT a.id, a.task_id, t.name AS task_name, a.account_id, a.action_type, a.status,
-           a.scheduled_at, a.created_at, a.completed_at,
+           a.scheduled_at, a.created_at, a.executed_at,
            a.payload->>'ai_generation_status' AS gen_status,
            a.payload->>'message_text' AS message_text,
            a.result
@@ -564,6 +564,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
 
 

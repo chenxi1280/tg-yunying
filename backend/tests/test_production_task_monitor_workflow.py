@@ -107,3 +107,14 @@ def test_ai_route_diagnostic_uses_current_route_schema() -> None:
     assert "ri.model_name" in route_query
     assert "rs.name" not in route_query
     assert "ri.model_override" not in route_query
+
+
+def test_ai_dispatch_today_success_query_uses_action_schema_columns() -> None:
+    text = AI_DISPATCH_DIAGNOSTIC.read_text()
+    success_query = text.split("TODAY_SUCCESS_QUERY = text", maxsplit=1)[1].split(
+        "def main",
+        maxsplit=1,
+    )[0]
+
+    assert "a.executed_at" in success_query
+    assert "a.completed_at" not in success_query
