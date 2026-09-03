@@ -90,7 +90,6 @@ def rescue_zhengda_actions(session) -> dict:
         text("""
             DELETE FROM task_group_daily_message_slots
             WHERE task_id = :task_id
-              AND target_date = CURRENT_DATE
         """),
         {"task_id": task_id},
     ).rowcount
