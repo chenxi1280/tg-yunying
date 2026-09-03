@@ -502,6 +502,24 @@ ZHENGDA_ACTIONS_BREAKDOWN_QUERY = text("""
 """)
 
 
+TODAY_SUCCESS_QUERY = text("""
+    SELECT a.id, a.task_id, t.name AS task_name, a.account_id, a.action_type, a.status,
+           a.scheduled_at, a.created_at, a.updated_at,
+           a.payload->>'ai_generation_status' AS gen_status,
+           a.payload->>'message_text' AS message_text,
+           a.result
+    FROM actions AS a
+    JOIN tasks AS t ON t.id = a.task_id
+    WHERE a.task_id = 'a52e84f2-8663-4b00-bbbe-196fb626b28d'
+      AND (
+        a.status IN ('success', 'confirmed') 
+        OR (a.scheduled_at >= CURRENT_DATE AND a.status = 'pending')
+      )
+    ORDER BY a.created_at DESC
+    LIMIT 20
+""")
+
+
 def main() -> None:
     with SessionLocal() as session:
         classifications = _rows(session, ACTION_CLASSIFICATION_QUERY)
@@ -522,6 +540,7 @@ def main() -> None:
         worker_hbs = _rows(session, WORKER_HEARTBEATS_QUERY)
         running_tasks = _rows(session, RUNNING_TASKS_DETAILED_QUERY)
         zhengda_actions = _rows(session, ZHENGDA_ACTIONS_BREAKDOWN_QUERY)
+        today_success = _rows(session, TODAY_SUCCESS_QUERY)
     _print_rows("AI_DISPATCH_ACTION_CLASS", classifications)
     _print_rows("AI_DISPATCH_ACTION_SAMPLE", samples)
     _print_rows("AI_DISPATCH_ACTION_RUNTIME_REASON", runtime_reasons)
@@ -540,6 +559,7 @@ def main() -> None:
     _print_rows("AI_WORKER_HEARTBEATS", worker_hbs)
     _print_rows("RUNNING_TASKS_DETAILED", running_tasks)
     _print_rows("ZHENGDA_ACTIONS_BREAKDOWN", zhengda_actions)
+    _print_rows("ZHENGDA_TODAY_SUCCESS_OR_PENDING", today_success)
 
 
 if __name__ == "__main__":
