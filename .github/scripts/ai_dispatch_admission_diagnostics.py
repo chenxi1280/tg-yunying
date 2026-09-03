@@ -535,7 +535,7 @@ TODAY_SUCCESS_QUERY = text("""
 
 
 ACCOUNT_OVERALL_SUMMARY_QUERY = text("""
-    SELECT 
+    SELECT
         COUNT(*) AS total_accounts,
         COUNT(CASE WHEN status = 'active' THEN 1 END) AS active_accounts,
         COUNT(CASE WHEN status = 'banned' THEN 1 END) AS banned_accounts,
@@ -547,7 +547,7 @@ ACCOUNT_OVERALL_SUMMARY_QUERY = text("""
 """)
 
 ACCOUNT_TODAY_SEND_COVERAGE_QUERY = text("""
-    SELECT 
+    SELECT
         COUNT(DISTINCT a.account_id) AS distinct_senders_today,
         COUNT(DISTINCT CASE WHEN a.executed_at >= NOW() - INTERVAL '1 hour' THEN a.account_id END) AS distinct_senders_last_1h,
         COUNT(DISTINCT a.task_id) AS distinct_active_tasks,
@@ -582,7 +582,7 @@ ACCOUNT_SEND_FREQUENCY_DISTRIBUTION_QUERY = text("""
     SELECT sends_bucket, COUNT(*) AS account_count
     FROM (
         SELECT account_id,
-               CASE 
+               CASE
                    WHEN COUNT(*) = 1 THEN '1_message'
                    WHEN COUNT(*) = 2 THEN '2_messages'
                    WHEN COUNT(*) = 3 THEN '3_messages'
@@ -601,9 +601,9 @@ ACCOUNT_SEND_FREQUENCY_DISTRIBUTION_QUERY = text("""
 
 
 ACCOUNT_ATTRIBUTES_BREAKDOWN_QUERY = text("""
-    SELECT 
-        status, 
-        account_identity, 
+    SELECT
+        status,
+        account_identity,
         (pool_id IS NOT NULL) AS has_pool,
         (session_ciphertext IS NOT NULL AND session_ciphertext <> '') AS has_session,
         (deleted_at IS NULL) AS is_not_deleted,
@@ -614,7 +614,7 @@ ACCOUNT_ATTRIBUTES_BREAKDOWN_QUERY = text("""
 """)
 
 TASK_MEMBERSHIP_AND_COVERAGE_QUERY = text("""
-    SELECT 
+    SELECT
         t.name AS task_name,
         t.id AS task_id,
         (SELECT COUNT(*) FROM task_membership_admission_items WHERE task_id = t.id) AS membership_items_count,
