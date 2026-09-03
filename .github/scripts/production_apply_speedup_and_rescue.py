@@ -247,12 +247,33 @@ def rescue_tianjin_music_membership(session) -> dict:
         text("""
             DELETE FROM actions
             WHERE task_id = :task_id
-              AND action_type IN ('ensure_target_membership', 'invite_group_account')
-              AND status IN ('failed', 'unknown_after_send')
+              AND (scheduled_at >= CURRENT_DATE OR created_at >= CURRENT_DATE)
+              AND status IN ('failed', 'pending')
         """),
         {"task_id": task_id},
     ).rowcount
-    log.append(f"cleaned_{del_mem}_stale_membership_actions")
+    log.append(f"cleaned_{del_mem}_stale_actions")
+
+    del_slots = session.execute(
+        text("""
+            DELETE FROM task_group_daily_message_slots
+            WHERE task_id = :task_id
+        """),
+        {"task_id": task_id},
+    ).rowcount
+    log.append(f"deleted_{del_slots}_daily_slots")
+
+    del_intents = session.execute(
+        text("""
+            DELETE FROM ai_coverage_variation_intents
+            WHERE coverage_ledger_id IN (
+                SELECT id FROM task_account_daily_coverage
+                WHERE task_id = :task_id AND coverage_date = CURRENT_DATE
+            )
+        """),
+        {"task_id": task_id},
+    ).rowcount
+    log.append(f"deleted_{del_intents}_intents")
 
     reset_cov = session.execute(
         update(TaskAccountDailyCoverage)

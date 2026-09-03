@@ -123,13 +123,16 @@ jobs:
               "docker cp /tmp/resume_and_align_channel_comment_tasks.py tgyunying-backend:/tmp/resume_and_align_channel_comment_tasks.py && \
                docker exec -w /app -e PYTHONPATH=/app tgyunying-backend python /tmp/resume_and_align_channel_comment_tasks.py --mode ${MODE}"
           fi
-          if [ "${RUN_SPEEDUP}" = "true" ]; then
-            scp .github/scripts/production_apply_speedup_and_rescue.py \
-              silicon-valley-production-server:/tmp/production_apply_speedup_and_rescue.py
-            ssh silicon-valley-production-server \
-              "docker cp /tmp/production_apply_speedup_and_rescue.py tgyunying-backend:/tmp/production_apply_speedup_and_rescue.py && \
-               docker exec -w /app -e PYTHONPATH=/app tgyunying-backend python /tmp/production_apply_speedup_and_rescue.py"
-          fi
+          scp .github/scripts/production_fix_policy_bindings.py \
+            silicon-valley-production-server:/tmp/production_fix_policy_bindings.py
+          ssh silicon-valley-production-server \
+            "docker cp /tmp/production_fix_policy_bindings.py tgyunying-backend:/tmp/production_fix_policy_bindings.py && \
+             docker exec -w /app -e PYTHONPATH=/app tgyunying-backend python /tmp/production_fix_policy_bindings.py"
+          scp .github/scripts/production_apply_speedup_and_rescue.py \
+            silicon-valley-production-server:/tmp/production_apply_speedup_and_rescue.py
+          ssh silicon-valley-production-server \
+            "docker cp /tmp/production_apply_speedup_and_rescue.py tgyunying-backend:/tmp/production_apply_speedup_and_rescue.py && \
+             docker exec -w /app -e PYTHONPATH=/app tgyunying-backend python /tmp/production_apply_speedup_and_rescue.py"
           scp .github/scripts/production_investigate_actions_fate.py \
             silicon-valley-production-server:/tmp/production_investigate_actions_fate.py
           ssh silicon-valley-production-server \
