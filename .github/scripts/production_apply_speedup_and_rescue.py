@@ -223,8 +223,8 @@ def rescue_tianjin_music_membership(session) -> dict:
         for acc_id in assigned_acc_ids[:20]:
             session.execute(
                 text("""
-                    INSERT INTO tg_group_accounts (tenant_id, group_id, account_id, permission_label, can_send)
-                    VALUES (:tenant_id, :group_id, :account_id, '普通成员', true)
+                    INSERT INTO tg_group_accounts (tenant_id, group_id, account_id, permission_label, can_send, is_listener)
+                    VALUES (:tenant_id, :group_id, :account_id, '普通成员', true, false)
                     ON CONFLICT (group_id, account_id)
                     DO UPDATE SET can_send = true
                 """),
