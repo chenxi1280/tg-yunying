@@ -264,6 +264,24 @@ def apply_recovery(session: Session, request: RecoveryRequest) -> tuple[dict, in
     # 2. Re-bind all task policies with valid attestations
     bindings_synced = _sync_all_task_policies(session, tasks)
 
+    # 2.5 Ensure all today pending actions have non-empty topic_direction / evidence
+    today_pending = list(session.scalars(
+        select(Action).where(
+            Action.task_id.in_(task_ids),
+            Action.status == "pending",
+            Action.task_type == "group_ai_chat",
+        )
+    ))
+    topics_fixed = 0
+    for act in today_pending:
+        p = dict(act.payload or {})
+        history = str(p.get("ai_generation_history") or "").strip()
+        topic = p.get("topic_direction")
+        if not history and (not topic or not isinstance(topic, dict) or not topic.get("title")):
+            p["topic_direction"] = {"title": "日常交流与群聊互动"}
+            act.payload = p
+            topics_fixed += 1
+
     # 3. Wake tasks
     for task in tasks:
         task.next_run_at = timestamp
@@ -282,6 +300,7 @@ def apply_recovery(session: Session, request: RecoveryRequest) -> tuple[dict, in
                 "cutoff": TODAY_CUTOFF.isoformat(),
                 "deleted_count": deleted_count,
                 "bindings_synced": bindings_synced,
+                "topics_fixed": topics_fixed,
                 "preview_state_hash": state_hash,
             }, ensure_ascii=False, sort_keys=True),
         ))
