@@ -130,3 +130,14 @@ def test_ai_dispatch_task_scope_query_uses_coverage_date_column() -> None:
     assert "coverage_date = CURRENT_DATE" in task_scope_query
     assert "target_date = CURRENT_DATE" not in task_scope_query
     assert "targeted_at = CURRENT_DATE" not in task_scope_query
+
+
+def test_ai_dispatch_deep_dive_query_uses_group_schema_columns() -> None:
+    text = AI_DISPATCH_DIAGNOSTIC.read_text()
+    deep_dive_query = text.split("ZHENGDA_AND_TIANJIN_DEEP_DIVE_QUERY = text", maxsplit=1)[1].split(
+        "def main",
+        maxsplit=1,
+    )[0]
+
+    assert "g.tg_peer_id AS group_tg_peer_id" in deep_dive_query
+    assert "g.invite_link" not in deep_dive_query

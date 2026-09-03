@@ -627,7 +627,7 @@ TASK_MEMBERSHIP_AND_COVERAGE_QUERY = text("""
 
 
 ZHENGDA_AND_TIANJIN_DEEP_DIVE_QUERY = text("""
-    SELECT 
+    SELECT
         t.id AS task_id,
         t.name AS task_name,
         t.status AS task_status,
