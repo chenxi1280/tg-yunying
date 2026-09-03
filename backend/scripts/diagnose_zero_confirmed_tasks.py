@@ -7,9 +7,14 @@ from app.database import SessionLocal
 from app.models import Task, TgGroup
 
 ZERO_TASK_IDS = [
-    ("b6f0ebd6-880a-4d6e-9279-04709383486e", "成都怡红院"),
     ("a52e84f2-8663-4b00-bbbe-196fb626b28d", "郑州大学"),
-    ("7fd0bbb7-53dd-45ae-a7af-0c37bcc380d1", "天津音乐"),
+    ("b6f0ebd6-880a-4d6e-9279-04709383486e", "成都怡红院"),
+    ("6407d98f-e6af-4df8-a10b-806135bf24ff", "郑州楼凤"),
+    ("cb862a03-0dd1-432e-8854-7f89946bcf06", "西安天上人间"),
+    ("e8152470-c696-4ff0-82d5-650ae38c5bc7", "三亚"),
+    ("f77ebe14-9f9d-451a-9ca9-5c6292598bd7", "天津一品楼"),
+    ("f283***60-c7ef-4ec2-8055-8ff5262b4734", "郑州学生会"),
+    ("0361a7ac-ae51-48ae-aea4-ccea43df5f17", "郑州师范"),
 ]
 
 def main():
@@ -93,17 +98,37 @@ def main():
             for r in job_rows:
                 print(f"  - state: {r.get('state')}, count: {r.get('count')}, latest: {r.get('latest_created')}")
 
-            # Check group membership actions
-            sql_membership = f"""
-            SELECT status, count(*), max(created_at) as latest_created, max(executed_at) as latest_exec
+            # Check pending actions scheduled time distribution
+            sql_sched_dist = f"""
+            SELECT count(*) as total_pending,
+                   min(scheduled_at) as min_sched,
+                   max(scheduled_at) as max_sched,
+                   count(CASE WHEN scheduled_at <= NOW() THEN 1 END) as due_now,
+                   count(CASE WHEN scheduled_at <= NOW() + interval '30 minutes' THEN 1 END) as due_in_30m
             FROM actions
-            WHERE task_id = '{tid}' AND action_type IN ('ensure_target_membership', 'join_group')
-            GROUP BY status;
+            WHERE task_id = '{tid}' AND status = 'pending';
             """
-            m_rows = [dict(r) for r in session.execute(text(sql_membership)).mappings()]
-            print("\nMembership Actions Breakdown:")
-            for r in m_rows:
-                print(f"  - status: {r.get('status')}, count: {r.get('count')}, latest_exec: {r.get('latest_exec')}")
+            s_dist = [dict(r) for r in session.execute(text(sql_sched_dist)).mappings()]
+            print(f"Pending Sched Distribution: {s_dist}")
+
+        # Global diagnostics
+        print("\n==================================================")
+        print("GLOBAL SYSTEM DIAGNOSTICS")
+        print("==================================================")
+        print("Current DB NOW():", session.execute(text("SELECT NOW();")).scalar())
+        
+        # Worker heartbeats
+        hb_rows = [dict(r) for r in session.execute(text("SELECT worker_role, worker_id, hostname, last_heartbeat_at, is_alive FROM worker_heartbeats ORDER BY last_heartbeat_at DESC;")).mappings()]
+        print("\nWorker Heartbeats:")
+        for hb in hb_rows:
+            print(f"  {hb}")
+
+        # AI Provider state
+        try:
+            prov_rows = [dict(r) for r in session.execute(text("SELECT * FROM ai_provider_admissions;")).mappings()]
+            print(f"\nAI Provider Admissions: {prov_rows}")
+        except Exception as e:
+            print(f"\nAI Provider Admissions query: {e}")
 
     finally:
         session.close()
