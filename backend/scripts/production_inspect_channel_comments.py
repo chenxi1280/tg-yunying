@@ -100,7 +100,8 @@ def main():
                            ea.action_id,
                            ea.status,
                            ea.failure_type,
-                           ea.detail,
+                           ea.failure_detail,
+                           ea.remote_message_id,
                            ea.created_at,
                            acc.phone_masked,
                            acc.tg_first_name
