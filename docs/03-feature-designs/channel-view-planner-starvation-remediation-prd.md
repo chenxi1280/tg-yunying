@@ -5,6 +5,8 @@
 > `design_status=product_design_complete`：2026-08-10最终独立fresh复核确认本文件与主PRD、闭合PRD、数据流索引无实现/迁移/发布/E4阻断P0/P1；允许进入dev，但实现、QA、发布和生产E4仍未开始。
 > 本文只修复 `task_type=channel_view`；其合同优先于历史“最晚 future Action 作为新批锚点”和“按 Task 串行拟人间隔”的冲突描述。
 
+> **2026-09-03 统一引擎关系修正（Product Design Complete / 未实施）：** 本文继续拥有 `channel_view` 的 per-message daily target、`all_accounts_daily`、按日本地 identity、12 小时跨日间隔和 `ViewRemoteFact` 结算语义，但最终 due/strata、跨 Task/类型账号与 source-message 时间线、Action/Attempt/Gateway 生命周期由 `unified-engagement-fulfillment-engine-prd.md` 的公共 `PacingPlanner + TimelineArbiter` 拥有。浏览是 `passive_operation`，不创建 ContextTurn/GenerationJob。若 12 小时间隔使某个当日 identity 无法在本任务日 deadline 前执行，该 identity 当日形成 typed shortfall；绝不能把旧日 obligation 搬到次日。次日只按新的 `obligation_local_date` 建立自己的 daily identity。
+
 ## 1. 原始问题与生产事实
 
 用户要求修复线上“浏览任务仍堵、任务没有启动/没有完成”的问题，并由本任务完成设计、代码、发布及真实线上验证。
@@ -63,9 +65,9 @@
   - 排期在全天 24 小时内均匀离散打散，各小时均有合法浏览流量，模拟真实用户的自然访问分布；
 - **单账号跨日执行最小间隔 12 小时（Per-Account Cross-Day Spacing >= 12h）**：
   - **对象口径明确**：此 12 小时间隔是**针对单个具体账号（per-account）自身连续两次执行浏览动作的时间间隔**，绝不是任务级（task-level）执行间隔或频道间全局串行；
-  - **跨日冷却规则**：若账号 A 在昨天（或上一次）于该任务/频道执行了浏览动作（记录于 Action 的 `executed_at` 或 `ViewRemoteFact` 的 `remote_confirmed_at`，时间为 $T_{\text{prev}}$），则系统在今天为账号 A 排定的浏览时间 $T_{\text{today}}$ 必须严格满足：
+  - **跨日冷却规则**：若账号 A 在昨天（或上一次）于该任务/频道已有 confirmed `ViewRemoteFact.remote_confirmed_at`，或存在 Gateway call-issued/remote-unknown 的保守占位时间，取二者中最新者为 $T_{\text{prev}}$；普通 pre-Gateway Action 状态/`executed_at` 不能单独证明浏览已经发生，也不能在 safely-not-executed 后永久制造冷却。系统在今天为账号 A 排定的浏览时间 $T_{\text{today}}$ 必须严格满足：
     $$T_{\text{today}} \ge T_{\text{prev}} + 12\text{ hours}$$
-  - **动态安全顺延与保持分布**：如果今天初步生成的随机时间落在了 $T_{\text{prev}} + 12\text{h}$ 之前，系统自动将账号 A 今天的计划时间顺延至 $T_{\text{prev}} + 12\text{h}$ 之后，并在当天剩余有效窗口内保持离散排期；如果超出当日截止时间，则保留到次日合法窗口执行，确保单个账号绝不会在短时间内（例如昨晚 23:00 浏览、今晨 02:00 再次浏览）高频重复刷量，保障 Telegram 账号安全。
+  - **动态安全顺延与保持分布**：如果今天初步生成的随机时间落在了 $T_{\text{prev}} + 12\text{h}$ 之前，统一 TimelineArbiter 只能把该 identity 的 effective claim 顺延到 $T_{\text{prev}} + 12\text{h}$ 之后，并在当天剩余有效窗口内保持离散排期；若已经越过当日 deadline，则该日 identity 记 cross_day_spacing_deadline_shortfall，不得搬到次日、改写 local date 或与次日新义务同时执行。这样既避免昨晚 23:00 后今晨 02:00 再次浏览，也不制造跨日追赶和重复。
 
 ## 2. 产品合同优先级
 
