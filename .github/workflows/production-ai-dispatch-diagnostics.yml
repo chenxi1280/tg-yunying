@@ -12,6 +12,11 @@ name: Production AI Dispatch Diagnostics
         required: false
         default: false
         type: boolean
+      update_targets:
+        description: Update all group daily targets to 4200 per group
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -73,6 +78,7 @@ jobs:
           PRODUCTION_BASE_DIR: ${{ vars.SILICON_VALLEY_PRODUCTION_BASE_DIR }}
           EXPECTED_DEPLOYED_SHA: ${{ inputs.deployed_sha }}
           RUN_RESCUE: ${{ inputs.run_rescue }}
+          UPDATE_TARGETS: ${{ inputs.update_targets }}
         run: |
           set -euo pipefail
           set -x
@@ -82,6 +88,13 @@ jobs:
           CURRENT_RELEASE="$(ssh silicon-valley-production-server "readlink -f '${BASE_DIR}/current'")"
           echo "CURRENT_RELEASE=${CURRENT_RELEASE}"
           [[ "$(basename "${CURRENT_RELEASE}")" == *"${EXPECTED_SHORT}"* ]]
+          if [ "${UPDATE_TARGETS}" = "true" ]; then
+            scp .github/scripts/production_update_daily_targets.py \
+              silicon-valley-production-server:/tmp/production_update_daily_targets.py
+            ssh silicon-valley-production-server \
+              "docker cp /tmp/production_update_daily_targets.py tgyunying-backend:/tmp/production_update_daily_targets.py && \
+               docker exec -w /app -e PYTHONPATH=/app tgyunying-backend python /tmp/production_update_daily_targets.py"
+          fi
           if [ "${RUN_RESCUE}" = "true" ]; then
             scp .github/scripts/production_fast_rescue_tasks.py \
               silicon-valley-production-server:/tmp/production_fast_rescue_tasks.py
@@ -94,4 +107,5 @@ jobs:
           ssh silicon-valley-production-server \
             "docker cp /tmp/ai_dispatch_admission_diagnostics.py tgyunying-backend:/tmp/ai_dispatch_admission_diagnostics.py && \
              docker exec -w /app -e PYTHONPATH=/app tgyunying-backend python /tmp/ai_dispatch_admission_diagnostics.py"
+
 
