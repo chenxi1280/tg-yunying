@@ -11,15 +11,12 @@ from app.database import SessionLocal
 from app.models import Task, TgGroup, TgAccount, Action, TaskAccountDailyCoverage, OperationTarget
 from app.services.task_center.executors.group_ai_chat import (
     build_plan as build_group_ai_plan,
-    _load_plan_facts,
-    _load_plan_accounts,
-    _load_context_plan,
-    _load_turn_plan,
-    _load_profile_plan,
-    _load_generation_plan,
+    _prepare_plan_blueprint,
+    _prepare_action_slots,
+    _prepared_plan_is_blocked,
+    _create_reserved_actions,
     PlanAbort,
 )
-from app.services.task_center.daily_coverage import release_terminal_coverage_reservations
 from app.services._common import _now
 
 
@@ -36,7 +33,6 @@ def diagnose_and_rescue_task(session, task_id: str, is_tianjin: bool = False) ->
         target_group_id = 5999
         type_config["target_group_id"] = str(target_group_id)
 
-        # Look up existing operation target for @luoyangpiaoch
         existing_op = session.scalar(
             select(OperationTarget).where(
                 OperationTarget.tenant_id == task.tenant_id,
@@ -93,18 +89,25 @@ def diagnose_and_rescue_task(session, task_id: str, is_tianjin: bool = False) ->
     log.append(f"reset_{orphaned_reset}_orphaned_coverage_rows")
     session.flush()
 
-    # Now execute full build_plan with retry for pacing lock
+    blueprint = _prepare_plan_blueprint(session, task)
+    if isinstance(blueprint, PlanAbort):
+        log.append(f"blueprint_aborted: created={blueprint.created}, last_error={task.last_error}")
+        session.commit()
+        return {"task_name": task.name, "log": log, "created": 0}
+
+    log.append(f"blueprint_ready: turn_count={blueprint.turn.turn_count}, requested_reply={blueprint.generation.requested_reply_count}")
+
+    prepared = _prepare_action_slots(session, task, blueprint, None)
+    prepared_reply_count = sum(1 for slot in prepared.slots if slot.payload.reply_to_message_id)
+    log.append(f"prepared_ready: slot_count={len(prepared.slots)}, prepared_reply_count={prepared_reply_count}")
+
+    is_blocked = _prepared_plan_is_blocked(task, blueprint, prepared, prepared_reply_count=prepared_reply_count)
+    log.append(f"is_blocked={is_blocked}, last_error={task.last_error}")
+
     created = 0
-    for attempt in range(1, 5):
-        try:
-            created = build_group_ai_plan(session, task)
-            log.append(f"build_plan_attempt_{attempt}_succeeded: created={created}")
-            break
-        except Exception as exc:
-            log.append(f"build_plan_attempt_{attempt}_failed: {exc}")
-            session.rollback()
-            task = session.get(Task, task_id)
-            time.sleep(1.0)
+    if not is_blocked:
+        created = _create_reserved_actions(session, task, blueprint=blueprint, prepared=prepared)
+        log.append(f"create_reserved_actions: created={created}")
 
     session.commit()
     return {"task_name": task.name, "log": log, "created": created}
