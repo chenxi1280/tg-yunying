@@ -431,7 +431,9 @@ def _print_view_deep_breakdown(session, task: Task, now: datetime) -> None:
         select(func.count(ChannelMessage.id))
         .where(ChannelMessage.channel_target_id == int(channel_id or 0))
     ) or 0
-    active_days = int(config.get("message_active_days") or 3)
+    active_days = int(config.get("message_active_days") or 7)
+    if active_days <= 0:
+        active_days = 7
     cutoff = now.replace(tzinfo=None) - timedelta(days=active_days)
     active_msgs = list(session.scalars(
         select(ChannelMessage)
@@ -449,7 +451,8 @@ def _print_view_deep_breakdown(session, task: Task, now: datetime) -> None:
     ))
     messages_info = {
         "total_messages_in_db": all_msgs_count,
-        "active_messages_within_3d": len(active_msgs),
+        "active_days_window": active_days,
+        "active_messages_within_window": len(active_msgs),
         "latest_5_messages": [
             {"id": m.id, "message_id": m.message_id, "published_at": _iso(m.published_at)}
             for m in latest_msgs

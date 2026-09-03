@@ -1,17 +1,21 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import (
+    Action,
     ChannelMessage,
     ChannelViewDailyMessageTarget,
     OperationTarget,
     Task,
     TaskDayLedger,
     ViewFulfillmentObligation,
+    ViewRemoteFact,
 )
 from app.services._common import _now
 from app.timezone import as_beijing
@@ -51,6 +55,7 @@ from .channel_view_pacing import (
     ViewCreationContext,
     bind_view_action_pacing,
     create_current_view_actions,
+    effective_channel_view_pacing_config,
     record_view_deadline_capacity_blocker as _record_deadline_capacity_blocker,
     reserve_view_action_pacing,
 )
@@ -64,11 +69,14 @@ from .common import adjust_for_account_hour_limit, channel_message_payload, chan
 
 
 def effective_channel_view_config(task: Task) -> dict:
-    return apply_group_ai_account_coverage_defaults(
+    config = apply_group_ai_account_coverage_defaults(
         task.type,
         dict(task.type_config or {}),
         task.account_config or {},
     )
+    if int(config.get("message_active_days") or 0) in (0, 3):
+        config["message_active_days"] = 7
+    return config
 
 
 def build_plan(session: Session, task: Task) -> int:
@@ -237,7 +245,7 @@ def _refresh_view_target_capacity(
     refresh_channel_view_targets(
         scope.targets_by_message,
         scope.ledger,
-        task.pacing_config or {},
+        effective_channel_view_pacing_config(task),
         now=scope.now,
         candidate_account_count=account_pool_size,
         config=config,
@@ -337,10 +345,11 @@ def _view_schedule_times(
 ) -> list[datetime]:
     now_value = _now()
     local_deadline = _ledger_deadline_for_planned_at(deadline_at, now_value)
+    pacing_config = effective_channel_view_pacing_config(task)
     if getattr(task, "fulfillment_contract_version", "") == CURRENT_CONTRACT_VERSION:
         return schedule_due_times(
             count,
-            task.pacing_config or {},
+            pacing_config,
             start_at=now_value,
             deadline_at=local_deadline,
             timezone_name=task.timezone,
@@ -349,7 +358,7 @@ def _view_schedule_times(
         )
     times = schedule_times(
         count,
-        task.pacing_config or {},
+        pacing_config,
         start_at=now_value,
         deadline_at=local_deadline,
         preserve_minimum_spacing=False,
@@ -359,23 +368,130 @@ def _view_schedule_times(
         task,
         "view_message",
         times,
-        pacing_config=task.pacing_config or {},
+        pacing_config=pacing_config,
         deadline_at=local_deadline,
         enforce_task_spacing=False,
     )
 
 
+def adjust_for_account_view_spacing(
+    session: Session,
+    task: Task,
+    account_id: int,
+    scheduled_at: datetime,
+    deadline_at: datetime,
+    ledger: TaskDayLedger,
+    min_spacing_hours: int = 12,
+) -> datetime:
+    if min_spacing_hours <= 0:
+        return scheduled_at
+
+    last_view_at = _latest_prior_account_view_at(session, task, account_id, ledger)
+    if last_view_at is None:
+        return scheduled_at
+
+    min_allowed_bj = as_beijing(last_view_at) + timedelta(hours=min_spacing_hours)
+    scheduled_bj = as_beijing(scheduled_at)
+    if scheduled_bj >= min_allowed_bj:
+        return scheduled_at
+
+    adjusted_bj = _spread_after_minimum_spacing(
+        task,
+        account_id,
+        min_allowed_bj,
+        deadline_bj=as_beijing(deadline_at),
+    )
+    if scheduled_at.tzinfo is None:
+        return adjusted_bj.replace(tzinfo=None)
+    return adjusted_bj.astimezone(scheduled_at.tzinfo)
+
+
+def _latest_prior_account_view_at(
+    session: Session,
+    task: Task,
+    account_id: int,
+    ledger: TaskDayLedger,
+) -> datetime | None:
+    period_start_bj = as_beijing(ledger.period_start_at)
+    last_action_at = session.scalar(
+        select(func.max(Action.executed_at)).where(
+            Action.tenant_id == task.tenant_id,
+            Action.task_id == task.id,
+            Action.account_id == account_id,
+            Action.action_type == "view_message",
+            Action.status == "success",
+            Action.executed_at < period_start_bj,
+        )
+    )
+    last_fact_at = session.scalar(
+        select(func.max(ViewRemoteFact.remote_confirmed_at))
+        .join(
+            ViewFulfillmentObligation,
+            ViewFulfillmentObligation.id == ViewRemoteFact.obligation_id,
+        )
+        .join(
+            TaskDayLedger,
+            TaskDayLedger.id == ViewFulfillmentObligation.task_day_ledger_id,
+        )
+        .where(
+            TaskDayLedger.task_id == task.id,
+            ViewRemoteFact.account_id == account_id,
+            ViewRemoteFact.obligation_local_date < ledger.obligation_local_date,
+        )
+    )
+    candidates = [dt for dt in (last_action_at, last_fact_at) if dt is not None]
+    return max(candidates) if candidates else None
+
+
+def _spread_after_minimum_spacing(
+    task: Task,
+    account_id: int,
+    min_allowed_bj: datetime,
+    *,
+    deadline_bj: datetime,
+) -> datetime:
+    if min_allowed_bj < deadline_bj:
+        remaining_seconds = int((deadline_bj - min_allowed_bj).total_seconds())
+        if remaining_seconds > 60:
+            seed = f"{task.id}:{account_id}:{min_allowed_bj.date().isoformat()}"
+            h = int(hashlib.sha256(seed.encode("utf-8")).hexdigest()[:8], 16)
+            jitter_sec = h % remaining_seconds
+            adjusted_bj = min_allowed_bj + timedelta(seconds=jitter_sec)
+        else:
+            adjusted_bj = min_allowed_bj
+    else:
+        adjusted_bj = min_allowed_bj
+    return adjusted_bj
+
+
 def _create_scheduled_view_action(session: Session, request: "ViewActionRequest") -> int:
     context = request.context
+    initial_deadline_at = request.deadline_at or _ledger_deadline_for_planned_at(
+        context.ledger.deadline_at,
+        request.scheduled_at,
+    )
+    min_spacing_hours = int(context.config.get("min_account_view_interval_hours") or 12)
+    spaced_at = adjust_for_account_view_spacing(
+        session,
+        request.task,
+        request.account_id,
+        request.scheduled_at,
+        deadline_at=initial_deadline_at,
+        ledger=context.ledger,
+        min_spacing_hours=min_spacing_hours,
+    )
     planned_at = adjust_for_account_hour_limit(
         session,
         request.task,
         request.account_id,
         "view_message",
-        request.scheduled_at,
+        spaced_at,
         context.config,
     )
-    deadline_at = request.deadline_at or _ledger_deadline_for_planned_at(context.ledger.deadline_at, planned_at)
+    deadline_at = request.deadline_at or _ledger_deadline_for_planned_at(
+        context.ledger.deadline_at,
+        planned_at,
+    )
     if planned_at >= deadline_at:
         _record_deadline_capacity_blocker(request.task, planned_at, deadline_at)
         return 0
@@ -488,8 +604,10 @@ def _remaining_task_daily_capacity(daily_cap: int | None, planned_today: int) ->
 
 
 def _message_expired(message: ChannelMessage, config: dict) -> bool:
-    active_days = int(config.get("message_active_days") or 0)
-    if active_days <= 0 or not message.published_at:
+    active_days = int(config.get("message_active_days") or 7)
+    if active_days <= 0:
+        active_days = 7
+    if not message.published_at:
         return False
     published_at = as_beijing(message.published_at)
     return published_at < as_beijing(_now()) - timedelta(days=active_days)

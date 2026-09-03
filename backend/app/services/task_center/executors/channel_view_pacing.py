@@ -69,6 +69,18 @@ class ViewPlanItem:
     source_slot: SourcePacingSlot
 
 
+def effective_channel_view_pacing_config(task: Task) -> dict:
+    cfg = dict(task.pacing_config or {})
+    mode = cfg.get("mode") or "template"
+    if mode == "fixed":
+        return cfg
+    profile = dict(cfg.get("operation_profile") or {})
+    if not profile.get("manual_override"):
+        profile["hourly_activity_curve"] = [1] * 24
+        cfg["operation_profile"] = profile
+    return cfg
+
+
 def create_current_view_actions(
     session: Session,
     task: Task,
@@ -81,7 +93,7 @@ def create_current_view_actions(
     items = _attach_view_owner_history(session, task, items)
     points_by_slot = schedule_source_pacing_points(
         [item.source_slot for item in items],
-        task.pacing_config or {},
+        effective_channel_view_pacing_config(task),
         now_at=wall_datetime(_now()),
         timezone_name=task.timezone,
         seed_id=f"view:{task.id}",
@@ -333,6 +345,7 @@ __all__ = [
     "ViewCreationContext",
     "bind_view_action_pacing",
     "create_current_view_actions",
+    "effective_channel_view_pacing_config",
     "record_view_deadline_capacity_blocker",
     "reserve_view_action_pacing",
 ]

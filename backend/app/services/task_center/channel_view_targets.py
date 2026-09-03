@@ -335,8 +335,10 @@ def _insert_or_read(
 
 
 def _eligible_at(message: ChannelMessage, config: dict, now: datetime) -> bool:
-    active_days = int(config.get("message_active_days") or 0)
-    if active_days <= 0 or message.published_at is None:
+    active_days = int(config.get("message_active_days") or 7)
+    if active_days <= 0:
+        active_days = 7
+    if message.published_at is None:
         return True
     return not _at_or_after(now, message.published_at + timedelta(days=active_days))
 
@@ -346,8 +348,10 @@ def _active_until(
     config: dict,
     ledger: TaskDayLedger,
 ) -> datetime:
-    active_days = int(config.get("message_active_days") or 0)
-    if active_days <= 0 or message.published_at is None:
+    active_days = int(config.get("message_active_days") or 7)
+    if active_days <= 0:
+        active_days = 7
+    if message.published_at is None:
         return ledger.deadline_at
     expires = _same_timezone(
         message.published_at + timedelta(days=active_days),

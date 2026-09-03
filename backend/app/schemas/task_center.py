@@ -811,7 +811,7 @@ class ChannelViewConfig(ChannelMessageScopeConfig):
     account_coverage_mode: Literal["all_accounts_daily"] = "all_accounts_daily"
     per_message_daily_view_target: int | None = Field(default=None, ge=1, le=10000)
     per_message_total_view_target: int | None = Field(default=0, ge=0, le=100000)
-    message_active_days: int = Field(default=3, ge=1, le=365)
+    message_active_days: int = Field(default=7, ge=1, le=365)
     task_daily_view_safety_cap: int | None = Field(
         default=1_000_000, ge=1, le=1_000_000
     )

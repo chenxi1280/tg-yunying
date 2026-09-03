@@ -8,6 +8,7 @@ from app.services._common import _now
 
 from ..channel_view_capacity import record_unique_account_capacity
 from ..channel_view_targets import channel_view_target_due
+from .channel_view_pacing import effective_channel_view_pacing_config
 
 
 @dataclass(frozen=True)
@@ -227,7 +228,7 @@ def view_quantity_for_message(
     target = channel_view_target_due(
         target_row,
         inputs.ledger,
-        task.pacing_config or {},
+        effective_channel_view_pacing_config(task),
         now=inputs.now,
     )
     baseline = int(target_row.ledger_confirmed_at_attach or 0)

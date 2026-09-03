@@ -137,9 +137,9 @@ def _active_unbound_channel_messages(
         config,
         comment_available_only=comment_available_only,
     )
-    active_days = int(config.get("message_active_days") or 3)
+    active_days = int(config.get("message_active_days") or 7)
     if active_days <= 0:
-        active_days = 3
+        active_days = 7
     cutoff = _now().replace(tzinfo=None) - timedelta(days=active_days)
     return [
         message for message in messages
