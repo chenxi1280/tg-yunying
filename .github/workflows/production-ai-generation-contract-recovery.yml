@@ -101,20 +101,10 @@ jobs:
           EOF
           chmod 600 ~/.ssh/config
 
-      - name: Verify deployed release and runtime
+      - name: Verify release and run generation contract coverage recovery
         env:
-          BASE_DIR: ${{ vars.SILICON_VALLEY_PRODUCTION_BASE_DIR }}
-          EXPECTED_SHA: ${{ inputs.deployed_sha }}
-        run: |
-          set -euo pipefail
-          CURRENT_RELEASE="$(ssh silicon-valley-production-server "readlink -f '${BASE_DIR:-/data/tgyunying}/current'")"
-          [[ "$(basename "${CURRENT_RELEASE}")" == *"${EXPECTED_SHA:0:8}"* ]]
-          state="$(ssh silicon-valley-production-server 'docker inspect --format "{{.State.Status}}/{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}" tgyunying-backend')"
-          echo "AI_GENERATION_CONTRACT_RECOVERY_CONTAINER=tgyunying-backend:${state}"
-          [[ "${state}" == running/healthy ]]
-
-      - name: Preview or apply exact generation contract coverage recovery
-        env:
+          EXPECTED_DEPLOYED_SHA: ${{ inputs.deployed_sha }}
+          PRODUCTION_BASE_DIR: ${{ vars.SILICON_VALLEY_PRODUCTION_BASE_DIR }}
           TASK_IDS: ${{ inputs.task_ids }}
           APPLY: ${{ inputs.apply }}
           STATE_HASH: ${{ inputs.expected_state_hash }}
@@ -122,6 +112,11 @@ jobs:
           APPROVAL_REF: ${{ inputs.approval_ref }}
         run: |
           set -euo pipefail
+          [[ "${EXPECTED_DEPLOYED_SHA}" =~ ^[0-9a-fA-F]{8,40}$ ]]
+          BASE_DIR="${PRODUCTION_BASE_DIR:-/data/tgyunying}"
+          EXPECTED_SHORT="${EXPECTED_DEPLOYED_SHA:0:8}"
+          CURRENT_RELEASE="$(ssh silicon-valley-production-server "readlink -f '${BASE_DIR}/current'")"
+          [[ "$(basename "${CURRENT_RELEASE}")" == *"${EXPECTED_SHORT}"* ]]
           scp backend/scripts/recover_ai_generation_contract_coverage.py \
             silicon-valley-production-server:/tmp/recover_ai_generation_contract_coverage.py
           ssh silicon-valley-production-server \
