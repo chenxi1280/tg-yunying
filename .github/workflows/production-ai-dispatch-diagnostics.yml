@@ -123,26 +123,16 @@ jobs:
               "docker cp /tmp/resume_and_align_channel_comment_tasks.py tgyunying-backend:/tmp/resume_and_align_channel_comment_tasks.py && \
                docker exec -w /app -e PYTHONPATH=/app tgyunying-backend python /tmp/resume_and_align_channel_comment_tasks.py --mode ${MODE}"
           fi
-          scp .github/scripts/production_fix_policy_bindings.py \
-            silicon-valley-production-server:/tmp/production_fix_policy_bindings.py
-          ssh silicon-valley-production-server \
-            "docker cp /tmp/production_fix_policy_bindings.py tgyunying-backend:/tmp/production_fix_policy_bindings.py && \
-             docker exec -w /app -e PYTHONPATH=/app tgyunying-backend python /tmp/production_fix_policy_bindings.py"
-          scp .github/scripts/production_apply_speedup_and_rescue.py \
-            silicon-valley-production-server:/tmp/production_apply_speedup_and_rescue.py
-          ssh silicon-valley-production-server \
-            "docker cp /tmp/production_apply_speedup_and_rescue.py tgyunying-backend:/tmp/production_apply_speedup_and_rescue.py && \
-             docker exec -w /app -e PYTHONPATH=/app tgyunying-backend python /tmp/production_apply_speedup_and_rescue.py"
-          scp .github/scripts/production_investigate_actions_fate.py \
-            silicon-valley-production-server:/tmp/production_investigate_actions_fate.py
-          ssh silicon-valley-production-server \
-            "docker cp /tmp/production_investigate_actions_fate.py tgyunying-backend:/tmp/production_investigate_actions_fate.py && \
-             docker exec -w /app -e PYTHONPATH=/app tgyunying-backend python /tmp/production_investigate_actions_fate.py"
           scp .github/scripts/production_check_live_success.py \
             silicon-valley-production-server:/tmp/production_check_live_success.py
           ssh silicon-valley-production-server \
             "docker cp /tmp/production_check_live_success.py tgyunying-backend:/tmp/production_check_live_success.py && \
              docker exec -w /app -e PYTHONPATH=/app tgyunying-backend python /tmp/production_check_live_success.py"
+          scp .github/scripts/ai_dispatch_admission_diagnostics.py \
+            silicon-valley-production-server:/tmp/ai_dispatch_admission_diagnostics.py
+          ssh silicon-valley-production-server \
+            "docker cp /tmp/ai_dispatch_admission_diagnostics.py tgyunying-backend:/tmp/ai_dispatch_admission_diagnostics.py && \
+             docker exec -w /app -e PYTHONPATH=/app tgyunying-backend python /tmp/ai_dispatch_admission_diagnostics.py"
           scp .github/scripts/inspect_task_account_counts.py \
             silicon-valley-production-server:/tmp/inspect_task_account_counts.py
           ssh silicon-valley-production-server \
