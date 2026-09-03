@@ -165,7 +165,7 @@ def apply_recovery(session: Session, request: RecoveryRequest) -> tuple[dict, in
     stale_actions = _find_stale_actions(session, task_ids)
     deleted_count = 0
     if stale_actions:
-        from app.models.task_center import GenerationJob
+        from app.models import GenerationJob
         stale_ids = [a.id for a in stale_actions]
         # Clean up any generation jobs for these actions
         session.execute(
