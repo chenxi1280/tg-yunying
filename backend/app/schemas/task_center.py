@@ -882,6 +882,7 @@ class ChannelCommentConfig(ChannelMessageScopeConfig):
     )
     daily_comment_cap: int = Field(default=0, ge=0)
     rolling_window_days: int = Field(default=3, ge=1, le=30)
+    allow_returning_accounts: bool = True
     comment_mode: Literal["comment", "reply", "mixed"] = "mixed"
     reply_to_message_ids: list[int] = Field(default_factory=list)
     reply_min_per_message: int = Field(default=1, ge=0)

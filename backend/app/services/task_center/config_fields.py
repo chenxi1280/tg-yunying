@@ -244,6 +244,7 @@ TYPE_SETTINGS_FIELDS = {
         "max_total_comments_jitter",
         "daily_comment_cap",
         "rolling_window_days",
+        "allow_returning_accounts",
         "comment_mode",
         "reply_to_message_ids",
         "reply_min_per_message",
