@@ -123,11 +123,11 @@ jobs:
               "docker cp /tmp/resume_and_align_channel_comment_tasks.py tgyunying-backend:/tmp/resume_and_align_channel_comment_tasks.py && \
                docker exec -w /app -e PYTHONPATH=/app tgyunying-backend python /tmp/resume_and_align_channel_comment_tasks.py --mode ${MODE}"
           fi
-          scp .github/scripts/production_print_zhengda_success.py \
-            silicon-valley-production-server:/tmp/production_print_zhengda_success.py
+          scp .github/scripts/production_check_zhengda_1455.py \
+            silicon-valley-production-server:/tmp/production_check_zhengda_1455.py
           ssh silicon-valley-production-server \
-            "docker cp /tmp/production_print_zhengda_success.py tgyunying-backend:/tmp/production_print_zhengda_success.py && \
-             docker exec -w /app -e PYTHONPATH=/app tgyunying-backend python /tmp/production_print_zhengda_success.py"
+            "docker cp /tmp/production_check_zhengda_1455.py tgyunying-backend:/tmp/production_check_zhengda_1455.py && \
+             docker exec -w /app -e PYTHONPATH=/app tgyunying-backend python /tmp/production_check_zhengda_1455.py"
           scp .github/scripts/production_check_live_success.py \
             silicon-valley-production-server:/tmp/production_check_live_success.py
           ssh silicon-valley-production-server \
