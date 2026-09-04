@@ -112,6 +112,7 @@ class ChannelCommentPlanContract(Base):
         ForeignKey(
             "cross_adapter_source_journey_plan_revisions.id",
             ondelete="RESTRICT",
+            name="fk_comment_plan_source_journey",
         ),
         nullable=True,
     )

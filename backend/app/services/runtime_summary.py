@@ -90,7 +90,7 @@ def refresh_task_summary(
         Action.status.in_(PENDING_STATUSES),
     ))
     latest_failure = _latest_unresolved_failure_action(session, task.tenant_id, task.id)
-    target_id = _task_target_id(task)
+    target_id = _existing_task_target_id(session, task)
     summary = _get_or_create_task_summary(session, task.tenant_id, task.id)
     summary.task_status = task.status
     summary.target_id = target_id
@@ -822,6 +822,16 @@ def _task_target_id(task: Task) -> int | None:
     if isinstance(values, list) and values:
         return int(values[0])
     return None
+
+
+def _existing_task_target_id(session: Session, task: Task) -> int | None:
+    target_id = _task_target_id(task)
+    if target_id is None:
+        return None
+    return session.scalar(select(OperationTarget.id).where(
+        OperationTarget.id == target_id,
+        OperationTarget.tenant_id == task.tenant_id,
+    ))
 
 
 def _task_status_counts(rows: list[TaskRuntimeSummary]) -> dict[str, int]:

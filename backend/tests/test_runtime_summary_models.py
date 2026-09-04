@@ -1,10 +1,10 @@
 from datetime import timedelta
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import Action, AccountStatus, OperationTarget, Task, TaskRuntimeSummary, Tenant, TgAccount, TgAccountSecurityBatchItem, TgAccountSecuritySnapshot
+from app.models import Action, AccountStatus, OperationTarget, TargetRuntimeSummary, Task, TaskRuntimeSummary, Tenant, TgAccount, TgAccountSecurityBatchItem, TgAccountSecuritySnapshot
 from app.models.enums import FailureType
 from app.services._common import _now
 from app.services.runtime_summary import refresh_account_summary, refresh_target_summary, refresh_task_summary
@@ -392,6 +392,27 @@ def test_target_summary_does_not_match_target_id_by_json_substring() -> None:
 
         assert summary.failed_action_count == 0
         assert summary.latest_failure_at is None
+
+
+def test_task_summary_does_not_create_orphan_target_summary() -> None:
+    with _sqlite_session() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        task = Task(
+            id="task-missing-target-summary",
+            tenant_id=1,
+            name="目标已不存在",
+            type="channel_like",
+            status="running",
+            type_config={"target_channel_id": 999},
+        )
+        session.add(task)
+        session.commit()
+
+        summary = refresh_task_summary(session, task)
+        session.flush()
+
+        assert summary.target_id is None
+        assert session.scalar(select(func.count(TargetRuntimeSummary.id))) == 0
 
 
 def test_target_summary_ignores_deleted_task_runtime_summary() -> None:

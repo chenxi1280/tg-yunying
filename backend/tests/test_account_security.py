@@ -42,16 +42,17 @@ from app.services.tenant_two_fa_settings import set_tenant_fixed_two_fa_password
 from app.services.task_center.service import delete_task, get_task_detail, list_tasks
 
 
+pytestmark = pytest.mark.no_postgres
+
+
 def _session():
-    engine = create_engine(os.environ.get("TEST_DATABASE_URL", "sqlite:///:memory:"), future=True)
-    Base.metadata.drop_all(engine)
+    engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     return Session(engine)
 
 
 def _session_factory_no_autoflush():
-    engine = create_engine(os.environ.get("TEST_DATABASE_URL", "sqlite:///:memory:"), future=True)
-    Base.metadata.drop_all(engine)
+    engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     return sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
