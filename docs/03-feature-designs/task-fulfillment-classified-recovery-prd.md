@@ -398,6 +398,7 @@ gateway_started + result_unknown
 - 账号面具生成、账号登录和 AI 内容窗口等独立 Worker 从 PostgreSQL 读取 `timestamptz` 后，若仍需在 Python 内判断 lease 或 deadline，比较双方必须先归一为同一 aware 时区；单条历史记录的时区形态差异不得令整个队列反复崩溃。面具 Worker 的健康与故障只影响面具准备及依赖面具的活群账号，不得阻塞评论、点赞、浏览或其他任务通道。
 - coverage、数量槽、ContentMix 和 Action 绑定不一致时，以任务专用义务账本为准重建投影，不新增目标。
 - AI 内容窗口的 current-obligation 唯一冲突只终结并记录本次冲突 Job/Action，不得抛出到批次顶层而取消同批其他群的生成；未知异常仍向 worker 顶层暴露。若已有 `gateway_bound` owner，后继 `generation_contract_error` 不得把 coverage 重新释放为 ready 后循环建单，必须冻结为 `generation_contract_repair`，原 owner 保持只对账且禁止补发。
+- AI 生成事务在进入 Provider/Gateway 前遇到 PostgreSQL `40P01` deadlock 时，必须回滚本次事务并释放同一 Action/GenerationJob 的 claim 回到待领取状态；它是可重试的数据库竞争，不得误记为 `generation_contract_error`、不得永久阻断 coverage，也不得因单个 claim 终止同批其他 claim。非明确 `40P01` 的数据库异常继续向顶层暴露。
 - `reaction/view` 义务若仍指向 `failed|skipped|cancelled` Action 且不存在 typed remote fact，CAS 清空 `current_action_id` 并恢复 `open`；不得把旧日义务重新批量执行，也不得改写已 confirmed 义务。
 - 历史 `unknown_after_send` 缺 deadline 时，仅当最新 Attempt 已进入 Gateway 且仍无权威 remote outcome，才幂等追加 `remote_outcome_unknown` 事实并从修复时刻建立 reconcile deadline；deadline 到期只转 `closed_unknown/closed_with_unknown_shortfall`，禁止重发或记成功。
 - 每次状态修复写 `RecoveryAudit`，包含 before/after hash、义务身份、旧 Action 和原因。

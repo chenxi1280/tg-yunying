@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
 
 from sqlalchemy import and_, func, or_, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, aliased
 
 from app.models import Action, Task, TgAccount, TgGroup
@@ -54,6 +55,7 @@ from .payloads import SendMessagePayload
 
 GENERATABLE_STATUSES = ("pending", "ai_result_persist_unknown")
 DUE_CATCH_UP_MAX_PIPELINE_DEPTH = 4
+POSTGRES_DEADLOCK_SQLSTATE = "40P01"
 GenerateAction = Callable[[Session, Action, TgAccount], None]
 logger = logging.getLogger(__name__)
 
@@ -139,6 +141,10 @@ def _process_sequential_claim(
             generation_failure = exc
         except Exception as exc:
             session.rollback()
+            if _is_database_deadlock(exc):
+                release_unprepared_batch(session_factory, claim.owner, claim.token)
+                logger.warning("ai generation database deadlock deferred action_id=%s", claim.action_id)
+                return 1
             terminate_generation_contract_error(
                 session_factory,
                 GenerationContractErrorTarget(
@@ -236,6 +242,10 @@ def _process_parallel_claim(session_factory, processor, claim) -> int:
             raise
         except Exception as exc:
             session.rollback()
+            if _is_database_deadlock(exc):
+                settle_deferred_parallel_claim(session_factory, claim)
+                logger.warning("ai generation database deadlock deferred action_id=%s", claim.action_id)
+                return 1
             terminate_generation_contract_error(
                 session_factory,
                 GenerationContractErrorTarget(
@@ -253,6 +263,13 @@ def _process_parallel_claim(session_factory, processor, claim) -> int:
             raise
     outcome = GenerationOutcome(failure, deferred, provider_deferred)
     return settle_parallel_outcome(session_factory, claim, outcome)
+
+
+def _is_database_deadlock(error: Exception) -> bool:
+    return bool(
+        isinstance(error, OperationalError)
+        and str(getattr(error.orig, "sqlstate", "")) == POSTGRES_DEADLOCK_SQLSTATE
+    )
 
 
 def _generation_action_lifecycle_current(

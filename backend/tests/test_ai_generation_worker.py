@@ -4,6 +4,7 @@ from datetime import timedelta
 
 import pytest
 from sqlalchemy import create_engine, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app.database import Base
@@ -537,6 +538,38 @@ def test_generation_worker_isolates_persisted_content_contract_conflict(tmp_path
         assert action.status == "failed"
         assert action.result["error_code"] == "generation_contract_error"
         assert action.result["error_type"] == "AiContentRuntimeConflict"
+
+
+def test_generation_worker_retries_database_deadlock_without_blocking_coverage(tmp_path) -> None:
+    class DatabaseDeadlock(Exception):
+        sqlstate = "40P01"
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'database-deadlock.db'}", future=True)
+    Base.metadata.create_all(engine)
+    _seed_actions(engine)
+    with Session(engine) as session:
+        task = session.get(Task, "ai-task")
+        task.fulfillment_contract_version = "fact_first_v3"
+        session.commit()
+
+    def deadlock(*_args) -> None:
+        raise OperationalError("deadlock", {}, DatabaseDeadlock())
+
+    assert drain_ai_generation(
+        lambda: Session(engine),
+        limit=1,
+        generate_action=deadlock,
+    ) == 1
+
+    with Session(engine) as session:
+        action = session.get(Action, "pending-generation")
+        job = session.scalar(select(GenerationJob).where(
+            GenerationJob.obligation_id == action.obligation_id,
+        ))
+        assert action.status == "pending"
+        assert action.payload["ai_generation_status"] == "pending"
+        assert action.result.get("error_code") != "generation_contract_error"
+        assert job is not None and job.state == "pending"
 
 
 def test_generation_worker_defers_route_transport_without_failing_action(tmp_path) -> None:
