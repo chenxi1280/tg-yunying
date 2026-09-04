@@ -10,6 +10,7 @@ from app.services._common import _now, gateway, get_account_phone
 from app.services.accounts import login_error_from_exception
 from app.services.code_source_client import CodeSourceClient
 from app.services.developer_apps import credentials_for_account
+from app.timezone import as_beijing_aware
 
 from .contracts import BatchLoginError, LoginMaterials
 from .host_rate_policy import item_host_rate_policy
@@ -373,9 +374,19 @@ def _wait_or_timeout(session_factory, claim: PhaseClaim) -> None:
     with session_factory() as session:
         _, attempt = load_claim(session, claim)
         now = _now()
-        code_wait_due = attempt.code_wait_until_at and now >= attempt.code_wait_until_at
-        deadline_due = attempt.deadline_at and now >= attempt.deadline_at
-        if code_wait_due and (not deadline_due or attempt.code_wait_until_at <= attempt.deadline_at):
+        code_wait_due = attempt.code_wait_until_at and (
+            as_beijing_aware(now) >= as_beijing_aware(attempt.code_wait_until_at)
+        )
+        deadline_due = attempt.deadline_at and (
+            as_beijing_aware(now) >= as_beijing_aware(attempt.deadline_at)
+        )
+        code_timeout_first = (
+            attempt.code_wait_until_at
+            and attempt.deadline_at
+            and as_beijing_aware(attempt.code_wait_until_at)
+            <= as_beijing_aware(attempt.deadline_at)
+        )
+        if code_wait_due and (not deadline_due or code_timeout_first):
             fail_claim(session, claim, "code_timeout", "等待新验证码超过 120 秒")
         elif deadline_due:
             fail_claim(session, claim, "item_deadline_exceeded", "单行登录等待超过 300 秒")
@@ -405,7 +416,7 @@ def _schedule_rate_limit(session_factory, claim: PhaseClaim, exc: Exception, sta
         _, attempt = load_claim(session, claim)
         setattr(attempt, state_field, "confirmed")
         retry_at = _now() + timedelta(seconds=wait_seconds)
-        if attempt.deadline_at and retry_at >= attempt.deadline_at:
+        if attempt.deadline_at and as_beijing_aware(retry_at) >= as_beijing_aware(attempt.deadline_at):
             fail_claim(session, claim, "login_rate_limited", message)
         else:
             advance_claim(session, claim, claim.phase, status="waiting", next_retry_at=retry_at)

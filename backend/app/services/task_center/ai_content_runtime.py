@@ -163,7 +163,7 @@ def claim_window_slot(
     claimable = slot.state == "frozen" or (
         slot.state == "claimed"
         and slot.lease_expires_at is not None
-        and slot.lease_expires_at <= now_value
+        and is_after_or_equal(now_value, slot.lease_expires_at)
     )
     if not claimable:
         raise AiContentRuntimeConflict("ai_content_window_slot_not_claimable")

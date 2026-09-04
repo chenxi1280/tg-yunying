@@ -16,6 +16,7 @@ from app.models import (
     AuditLog,
 )
 from app.services._common import _now
+from app.timezone import as_beijing_aware
 
 from .account_voice_profile_generation_jobs import reconcile_missing_voice_profile_generation, refresh_generation_job
 from .account_voice_profile_generation import (
@@ -145,7 +146,9 @@ def _due_item_statement(session: Session, timestamp: datetime):
 
 def _recover_expired_claim(item: AiAccountVoiceProfileGenerationItem, timestamp: datetime) -> None:
     if item.status == "persist_unknown" or (
-        item.status == "generating" and item.lease_expires_at and item.lease_expires_at <= timestamp
+        item.status == "generating"
+        and item.lease_expires_at
+        and as_beijing_aware(item.lease_expires_at) <= as_beijing_aware(timestamp)
     ):
         item.status = "queued"
         item.lease_owner = ""

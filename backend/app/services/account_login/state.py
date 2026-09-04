@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from uuid import uuid4
 
 from sqlalchemy import or_, select
@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.models import TgAccountLoginBatch, TgAccountLoginBatchAttempt, TgAccountLoginBatchItem
 from app.services._common import _now, audit
+from app.timezone import as_beijing_aware
 
 from .batches import TERMINAL_ITEM_STATUSES, skip_cancellable_items
 from .notifications import finalize_batch_if_terminal
@@ -52,7 +53,7 @@ def claim_batch_phase(session: Session, batch_id: int) -> PhaseClaim | None:
     attempt = session.get(TgAccountLoginBatchAttempt, item.current_attempt_id)
     if not attempt or attempt.execution_generation != item.execution_generation:
         raise RuntimeError("batch login item current attempt is inconsistent")
-    if attempt.lease_expires_at and attempt.lease_expires_at > now:
+    if _lease_is_active(attempt.lease_expires_at, now):
         return None
     if _remote_call_started(attempt):
         _mark_stale_call_unknown(session, batch, item, attempt)
@@ -73,6 +74,13 @@ def claim_batch_phase(session: Session, batch_id: int) -> PhaseClaim | None:
     batch.last_claimed_at = now
     session.commit()
     return PhaseClaim(batch.id, item.id, attempt.id, item.tenant_id, item.execution_generation, attempt.phase, token)
+
+
+def _lease_is_active(expires_at: datetime | None, now: datetime) -> bool:
+    return bool(
+        expires_at
+        and as_beijing_aware(expires_at) > as_beijing_aware(now)
+    )
 
 
 def _next_claimable_item(session: Session, batch_id: int, now) -> TgAccountLoginBatchItem | None:

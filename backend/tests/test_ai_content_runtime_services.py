@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from urllib.error import HTTPError
 
 import pytest
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.models import (
+    AiContentWindowPlanSlot,
     AiProvider,
     GenerationJob,
     Task,
@@ -511,6 +512,24 @@ def test_context_revision_is_monotonic_and_window_slot_is_independent() -> None:
         )
         assert claimed.state == "gateway_bound"
         assert job.generation_stage == "gateway_bound"
+
+
+def test_window_slot_claim_normalizes_database_timezone() -> None:
+    now = datetime(2026, 8, 19, 10, 0, 0)
+    with Session(_engine()) as session:
+        freeze_window_plan(session, _scope(now), (_slot(now, 1),))
+        slot = session.scalar(select(AiContentWindowPlanSlot))
+        assert slot is not None
+        slot.state = "claimed"
+        slot.lease_expires_at = datetime(2026, 8, 19, 1, 59, tzinfo=timezone.utc)
+        job = _job(now)
+        session.add(job)
+        session.flush()
+
+        claimed = claim_window_slot(session, job, lease_duration=timedelta(minutes=2))
+
+        assert claimed.claimed_by_job_id == job.id
+        assert claimed.state == "claimed"
 
 
 def test_gateway_binding_rejects_newer_context_revision() -> None:

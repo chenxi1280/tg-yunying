@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import create_engine, func, select
@@ -28,6 +28,22 @@ from app.services._common import _now
 
 
 pytestmark = pytest.mark.no_postgres
+
+
+def test_expired_voice_profile_claim_normalizes_database_timezone() -> None:
+    worker = importlib.import_module("app.services.task_center.account_voice_profile_generation_worker")
+    timestamp = _now()
+    item = AiAccountVoiceProfileGenerationItem(
+        status="generating",
+        lease_owner="stale-worker",
+        lease_expires_at=datetime.now(timezone.utc) - timedelta(minutes=3),
+    )
+
+    worker._recover_expired_claim(item, timestamp)
+
+    assert item.status == "queued"
+    assert item.lease_owner == ""
+    assert item.lease_expires_at is None
 
 
 def _seed_operational_account(session: Session, account_id: int = 814) -> TgAccount:

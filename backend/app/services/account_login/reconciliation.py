@@ -20,6 +20,7 @@ from app.services._common import _now, gateway
 from app.services.account_profile_auto_init import queue_login_profile_initialization
 from app.services.account_usage_policy import sync_account_usage
 from app.services.developer_apps import credentials_for_account
+from app.timezone import as_beijing_aware
 
 from .notifications import finalize_batch_if_terminal, record_batch_correction
 from .rate_limit import RateLease, acquire_rate_lease, release_rate_lease
@@ -137,7 +138,7 @@ def _release_reconcile_lease(session_factory, lease: RateLease) -> None:
 
 
 def _reconcile_expired(session, item: TgAccountLoginBatchItem, attempt: TgAccountLoginBatchAttempt, now) -> bool:
-    if attempt.reconcile_until_at and now >= attempt.reconcile_until_at:
+    if attempt.reconcile_until_at and as_beijing_aware(now) >= as_beijing_aware(attempt.reconcile_until_at):
         was_notified = _batch_has_initial_notification(session, item.batch_id)
         item.status = "unresolved"
         item.phase = "unresolved"
@@ -158,7 +159,11 @@ def _reconcile_expired(session, item: TgAccountLoginBatchItem, attempt: TgAccoun
         else:
             finalize_batch_if_terminal(session, item.batch_id)
         return True
-    if item.status == "reconciling" and attempt.deadline_at and now >= attempt.deadline_at:
+    if (
+        item.status == "reconciling"
+        and attempt.deadline_at
+        and as_beijing_aware(now) >= as_beijing_aware(attempt.deadline_at)
+    ):
         item.status = "unresolved"
         item.phase = "unresolved"
         item.failure_type = "login_remote_unknown"

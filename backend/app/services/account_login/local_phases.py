@@ -9,6 +9,7 @@ from app.models import AccountPool, AccountStatus, TgAccount, TgAccountLoginBatc
 from app.services._common import _now, audit
 from app.services.account_usage_policy import sync_account_usage
 from app.services.developer_apps import credentials_for_account
+from app.timezone import as_beijing_aware
 
 from .binding import bind_account_code_source, bind_or_create_account
 from .contracts import BatchLoginError
@@ -105,7 +106,7 @@ def _acquire_flow(session, claim: PhaseClaim) -> None:
 
 def _wait_for_flow_owner(session, claim: PhaseClaim, item, attempt) -> None:
     now = _now()
-    if attempt.deadline_at and now >= attempt.deadline_at:
+    if attempt.deadline_at and as_beijing_aware(now) >= as_beijing_aware(attempt.deadline_at):
         raise BatchLoginError("item_deadline_exceeded", "等待其他登录流程超过单行预算")
     item.failure_type = "login_flow_conflict"
     item.failure_detail = "账号已有其他登录流程，等待其结束"

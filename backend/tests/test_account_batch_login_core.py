@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -35,6 +36,15 @@ from app.services.account_login.preview import precheck_login_batch
 
 
 pytestmark = pytest.mark.no_postgres
+
+
+def test_login_claim_lease_normalizes_database_timezone() -> None:
+    from app.services.account_login.state import _lease_is_active
+
+    now = datetime(2026, 9, 5, 10, 0)
+    expires_at = datetime(2026, 9, 5, 2, 1, tzinfo=timezone.utc)
+
+    assert _lease_is_active(expires_at, now) is True
 
 
 def _settings():

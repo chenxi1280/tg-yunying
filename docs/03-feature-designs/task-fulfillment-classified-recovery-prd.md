@@ -395,6 +395,7 @@ gateway_started + result_unknown
 - `active_action_id` 指向不存在或 terminal pre-Gateway Action：重开原义务并递增 materialization version。
 - Action open 但 lease owner heartbeat 过期：先以 `populate_existing=True` 或等价新 Session 强制重读 owner heartbeat 和 Action，再以旧 `owner_id + owner_fencing_epoch + action_version + lease_expires_at` 做单行 CAS，递增 fencing epoch 并接管；不显式锁两行。旧 owner 的续租、结果和终结提交都必须带原 epoch，不匹配写 `stale_owner_rejected`。未进 Gateway 可回收，已进 Gateway 转 `unknown_hold`。
 - heartbeat/lease 是否过期只使用同一 PostgreSQL 事务内的 `clock_timestamp()`，全部时间为 UTC-aware `timestamptz`；禁止用 worker 本地时钟、容器时区或 naive datetime 参与接管 CAS。
+- 账号面具生成、账号登录和 AI 内容窗口等独立 Worker 从 PostgreSQL 读取 `timestamptz` 后，若仍需在 Python 内判断 lease 或 deadline，比较双方必须先归一为同一 aware 时区；单条历史记录的时区形态差异不得令整个队列反复崩溃。面具 Worker 的健康与故障只影响面具准备及依赖面具的活群账号，不得阻塞评论、点赞、浏览或其他任务通道。
 - coverage、数量槽、ContentMix 和 Action 绑定不一致时，以任务专用义务账本为准重建投影，不新增目标。
 - AI 内容窗口的 current-obligation 唯一冲突只终结并记录本次冲突 Job/Action，不得抛出到批次顶层而取消同批其他群的生成；未知异常仍向 worker 顶层暴露。若已有 `gateway_bound` owner，后继 `generation_contract_error` 不得把 coverage 重新释放为 ready 后循环建单，必须冻结为 `generation_contract_repair`，原 owner 保持只对账且禁止补发。
 - `reaction/view` 义务若仍指向 `failed|skipped|cancelled` Action 且不存在 typed remote fact，CAS 清空 `current_action_id` 并恢复 `open`；不得把旧日义务重新批量执行，也不得改写已 confirmed 义务。
