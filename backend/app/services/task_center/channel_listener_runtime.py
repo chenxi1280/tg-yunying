@@ -40,6 +40,7 @@ from .planner_wake import wake_task_planner
 
 CHANNEL_TASK_TYPES = frozenset({"channel_comment", "channel_like", "channel_view"})
 CHANNEL_TASK_STATUSES = frozenset({"pending", "running"})
+LISTENER_ACCOUNT_CANDIDATE_LIMIT = 10
 
 
 @dataclass
@@ -235,22 +236,58 @@ def _source_for_task(
         session,
         task.tenant_id,
         task.account_config or {},
-        limit=1,
+        limit=LISTENER_ACCOUNT_CANDIDATE_LIMIT,
+        enforce_max_concurrent=False,
         enforce_capacity=False,
     )
     if not accounts:
         return None
+    account = _preferred_listener_account(
+        session,
+        channel_target_id=channel.id,
+        accounts=accounts,
+    )
     window = max(1, int(config.get("listener_interval_seconds") or 30))
     return ChannelListenerSource(
         tenant_id=task.tenant_id,
         channel_target_id=channel.id,
         source_peer_hash=_source_hash(channel.tg_peer_id),
-        account_id=accounts[0].id,
+        account_id=account.id,
         collect_window_seconds=window,
         fetch_limit=_fetch_limit(config),
         reaction_capability_required=task.type == "channel_like",
         task_ids=[task.id],
     )
+
+
+def _preferred_listener_account(
+    session: Session,
+    *,
+    channel_target_id: int,
+    accounts: list[TgAccount],
+) -> TgAccount:
+    account_ids = [account.id for account in accounts]
+    states = {
+        state.account_id: state
+        for state in session.scalars(select(ListenerSourceState).where(
+            ListenerSourceState.tenant_id == accounts[0].tenant_id,
+            ListenerSourceState.source_type == "channel",
+            ListenerSourceState.source_peer_id == str(channel_target_id),
+            ListenerSourceState.account_id.in_(account_ids),
+        ))
+    }
+    return min(
+        accounts,
+        key=lambda account: _listener_account_rank(states.get(account.id)),
+    )
+
+
+def _listener_account_rank(state: ListenerSourceState | None) -> int:
+    if state is None:
+        return 1
+    if state.snapshot_status == "ready":
+        return 0
+    return 2
 
 
 def _mark_subscription_unavailable(

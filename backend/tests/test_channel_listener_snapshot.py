@@ -127,6 +127,51 @@ def test_listener_owns_channel_fetch_and_publishes_fresh_snapshot(monkeypatch) -
         )
 
 
+def test_listener_prefers_prior_success_over_first_eligible_account() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    _seed_listener_task(
+        engine,
+        task_id="channel-listener-failover",
+        task_type="channel_view",
+        channel_id=31,
+        account_id=101,
+    )
+    with Session(engine) as session:
+        task = session.get(Task, "channel-listener-failover")
+        task.account_config = {
+            "selection_mode": "manual",
+            "account_ids": [101, 102],
+        }
+        session.add(TgAccount(
+            id=102,
+            tenant_id=1,
+            display_name="listener-backup",
+            phone_masked="***listener-backup",
+            status=AccountStatus.ACTIVE.value,
+            session_ciphertext="backup-session",
+        ))
+        session.add_all([
+            ListenerSourceState(
+                tenant_id=1, source_type="channel", source_peer_id="31",
+                account_id=101, snapshot_status="unavailable",
+            ),
+            ListenerSourceState(
+                tenant_id=1, source_type="channel", source_peer_id="31",
+                account_id=102, snapshot_status="ready",
+            ),
+        ])
+        session.flush()
+
+        source = channel_listener_runtime._source_for_task(
+            session,
+            task,
+            session.get(OperationTarget, 31),
+        )
+
+        assert source is not None and source.account_id == 102
+
+
 def test_listener_persists_exact_full_source_text_and_edit_identity(monkeypatch) -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
