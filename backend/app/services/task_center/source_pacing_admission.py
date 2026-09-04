@@ -11,6 +11,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from app.models import (
+    AccountPacingReservation,
     Action,
     CommentFulfillmentObligation,
     ExecutionAttempt,
@@ -172,7 +173,8 @@ def _source_admission_spec(session: Session, action: Action) -> SourceAdmissionS
     owner_plan_total = int(getattr(owner, "pacing_plan_total", 0) or 0)
     if release_at is None or not plan_hash or owner_plan_total <= 0:
         raise ValueError("pacing_source_identity_incomplete")
-    period_start, deadline, period_key = _source_period(session, owner, domain)
+    period_start, default_deadline, period_key = _source_period(session, owner, domain)
+    deadline = _frozen_source_deadline(session, action) or default_deadline
     peer = _source_peer(action)
     if not peer or deadline <= period_start:
         raise ValueError("pacing_source_period_invalid")
@@ -204,6 +206,21 @@ def _source_admission_spec(session: Session, action: Action) -> SourceAdmissionS
             math.floor((deadline - period_start).total_seconds() / plan_total),
         ),
     )
+
+
+def _frozen_source_deadline(
+    session: Session,
+    action: Action,
+) -> datetime | None:
+    deadline = session.scalar(
+        select(AccountPacingReservation.source_deadline_at)
+        .where(
+            AccountPacingReservation.action_id == action.id,
+            AccountPacingReservation.state.in_(("reserved", "bound")),
+        )
+        .limit(1)
+    )
+    return wall_datetime(deadline) if deadline is not None else None
 
 
 def _source_owner(session: Session, action: Action):

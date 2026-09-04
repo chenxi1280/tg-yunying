@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.models import (
+    AccountPacingReservation,
     Action,
     ChannelMessage,
     ExecutionAttempt,
@@ -26,6 +27,7 @@ from app.models import (
 from app.services.task_center.pacing import PACING_CONTRACT_VERSION
 from app.services.task_center.source_pacing_admission import (
     SourceAdmissionSpec,
+    _source_admission_spec,
     _source_period,
     admit_source_paced_attempt,
     align_source_gateway_call_started,
@@ -234,6 +236,87 @@ def test_reaction_source_period_uses_first_observed_time_not_publish_time(
     assert period_start == observed_at
     assert deadline == observed_at + timedelta(days=1)
     assert period_key == "message:101"
+
+
+def test_runtime_admission_uses_frozen_reservation_source_deadline(
+    session: Session,
+) -> None:
+    message, task, owner = _reaction_source_entities()
+    action, reservation, frozen_deadline = _reaction_action_and_reservation(task, owner)
+    session.add_all([message, task, owner, action, reservation])
+    session.flush()
+
+    spec = _source_admission_spec(session, action)
+
+    assert spec.deadline_at == frozen_deadline
+    assert spec.source_gap_seconds == 86400
+
+
+def _reaction_source_entities():
+    message = ChannelMessage(
+        id=102,
+        tenant_id=1,
+        channel_target_id=10,
+        message_id=5002,
+        created_at=NOW,
+        published_at=NOW,
+    )
+    task = Task(
+        id="reaction-frozen-deadline-task",
+        tenant_id=1,
+        name="reaction frozen deadline",
+        type="channel_like",
+        status="running",
+    )
+    owner = ReactionFulfillmentObligation(
+        id="reaction-frozen-deadline-owner",
+        tenant_id=1,
+        task_id=task.id,
+        channel_message_id=message.id,
+        account_id=1,
+        reaction_contract_version=1,
+        status="pending",
+        pacing_contract_version=PACING_CONTRACT_VERSION,
+        pacing_plan_hash="b" * 64,
+        pacing_plan_total=10,
+        release_not_before_at=NOW,
+    )
+    return message, task, owner
+
+
+def _reaction_action_and_reservation(task: Task, owner: ReactionFulfillmentObligation):
+    action = Action(
+        id="reaction-frozen-deadline-action",
+        tenant_id=1,
+        task_id=task.id,
+        task_type="channel_like",
+        action_type="like_message",
+        account_id=1,
+        status="claiming",
+        pacing_slot_key="reaction:frozen-deadline",
+        pacing_contract_version=PACING_CONTRACT_VERSION,
+        pacing_plan_hash="b" * 64,
+        release_not_before_at=NOW,
+        payload={
+            "reaction_fulfillment_obligation_id": owner.id,
+            "target_reference_snapshot": {"tg_peer_id": "-1009001"},
+        },
+    )
+    frozen_deadline = NOW + timedelta(days=10)
+    reservation = AccountPacingReservation(
+        tenant_id=1,
+        task_id=task.id,
+        account_id=1,
+        pacing_slot_key=action.pacing_slot_key,
+        policy_version="soft_pacing_v1",
+        due_at=NOW,
+        release_not_before_at=NOW,
+        effective_claim_at=NOW,
+        source_deadline_at=frozen_deadline,
+        action_id=action.id,
+        state="bound",
+    )
+    return action, reservation, frozen_deadline
 
 
 def test_gateway_marker_advances_next_source_gate_without_subsecond_leak(
