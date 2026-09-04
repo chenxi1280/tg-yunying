@@ -276,18 +276,28 @@ def _preferred_listener_account(
             ListenerSourceState.account_id.in_(account_ids),
         ))
     }
+    now_value = _wall(_now())
     return min(
         accounts,
-        key=lambda account: _listener_account_rank(states.get(account.id)),
+        key=lambda account: _listener_account_rank(
+            states.get(account.id),
+            now_value=now_value,
+        ),
     )
 
 
-def _listener_account_rank(state: ListenerSourceState | None) -> int:
+def _listener_account_rank(
+    state: ListenerSourceState | None,
+    *,
+    now_value: datetime,
+) -> tuple[int, datetime]:
     if state is None:
-        return 1
+        return 1, datetime.min
     if state.snapshot_status == "ready":
-        return 0
-    return 2
+        return 0, datetime.min
+    if state.next_probe_at is not None and _wall(state.next_probe_at) > now_value:
+        return 3, _wall(state.next_probe_at)
+    return 2, _wall(state.updated_at)
 
 
 def _mark_subscription_unavailable(

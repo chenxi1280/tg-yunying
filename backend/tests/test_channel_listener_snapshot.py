@@ -172,6 +172,62 @@ def test_listener_prefers_prior_success_over_first_eligible_account() -> None:
         assert source is not None and source.account_id == 102
 
 
+def test_listener_rotates_oldest_due_failure_after_all_candidates_fail(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr(channel_listener_runtime, "_now", lambda: NOW)
+    _seed_listener_task(
+        engine,
+        task_id="channel-listener-failure-rotation",
+        task_type="channel_view",
+        channel_id=31,
+        account_id=101,
+    )
+    with Session(engine) as session:
+        task = session.get(Task, "channel-listener-failure-rotation")
+        task.account_config = {
+            "selection_mode": "manual",
+            "account_ids": [101, 102, 103],
+        }
+        session.add_all([
+            TgAccount(
+                id=account_id,
+                tenant_id=1,
+                display_name=f"listener-{account_id}",
+                phone_masked=f"***{account_id}",
+                status=AccountStatus.ACTIVE.value,
+                session_ciphertext=f"session-{account_id}",
+            )
+            for account_id in (102, 103)
+        ])
+        session.add_all([
+            ListenerSourceState(
+                tenant_id=1, source_type="channel", source_peer_id="31",
+                account_id=101, snapshot_status="unavailable",
+                next_probe_at=NOW + timedelta(minutes=1), updated_at=NOW - timedelta(minutes=3),
+            ),
+            ListenerSourceState(
+                tenant_id=1, source_type="channel", source_peer_id="31",
+                account_id=102, snapshot_status="unavailable",
+                next_probe_at=NOW - timedelta(seconds=1), updated_at=NOW - timedelta(minutes=2),
+            ),
+            ListenerSourceState(
+                tenant_id=1, source_type="channel", source_peer_id="31",
+                account_id=103, snapshot_status="unavailable",
+                next_probe_at=NOW - timedelta(seconds=1), updated_at=NOW - timedelta(minutes=1),
+            ),
+        ])
+        session.flush()
+
+        source = channel_listener_runtime._source_for_task(
+            session,
+            task,
+            session.get(OperationTarget, 31),
+        )
+
+        assert source is not None and source.account_id == 102
+
+
 def test_listener_persists_exact_full_source_text_and_edit_identity(monkeypatch) -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
