@@ -228,6 +228,52 @@ def test_listener_rotates_oldest_due_failure_after_all_candidates_fail(monkeypat
         assert source is not None and source.account_id == 102
 
 
+def test_listener_keeps_disjoint_task_reader_accounts_isolated() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    _seed_listener_task(
+        engine,
+        task_id="isolated-like-task",
+        task_type="channel_like",
+        channel_id=31,
+        account_id=101,
+    )
+    with Session(engine) as session:
+        session.add_all([
+            TgAccount(
+                id=102,
+                tenant_id=1,
+                display_name="isolated-view-reader",
+                phone_masked="***isolated-view-reader",
+                status=AccountStatus.ACTIVE.value,
+                session_ciphertext="isolated-view-session",
+            ),
+            Task(
+                id="isolated-view-task",
+                tenant_id=1,
+                name="isolated-view-task",
+                type="channel_view",
+                status="running",
+                account_config={"selection_mode": "manual", "account_ids": [102]},
+                type_config={"target_channel_id": 31, "message_scope": "dynamic_new"},
+            ),
+        ])
+        session.flush()
+
+        sources = channel_listener_runtime._channel_sources(
+            session,
+            tenant_id=1,
+            limit=10,
+        )
+
+        assert [(source.account_id, source.task_ids) for source in sources] == [
+            (101, ["isolated-like-task"]),
+            (102, ["isolated-view-task"]),
+        ]
+        state_ids = set(session.scalars(select(TaskSourceSubscription.listener_source_state_id)))
+        assert len(state_ids) == 2
+
+
 def test_listener_persists_exact_full_source_text_and_edit_identity(monkeypatch) -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

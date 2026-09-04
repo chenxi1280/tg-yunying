@@ -194,7 +194,7 @@ def _channel_sources(
     tasks = session.scalars(
         select(Task).where(*conditions).order_by(Task.priority, Task.created_at).limit(limit * 3)
     )
-    sources: dict[tuple[int, int], ChannelListenerSource] = {}
+    sources: dict[tuple[int, int, int], ChannelListenerSource] = {}
     for task in tasks:
         channel = _channel_for_task(session, task)
         if channel is None:
@@ -203,7 +203,7 @@ def _channel_sources(
         if source is None:
             _mark_subscription_unavailable(session, task, channel)
             continue
-        key = (source.tenant_id, source.channel_target_id)
+        key = (source.tenant_id, source.channel_target_id, source.account_id)
         current = sources.setdefault(key, source)
         current.reaction_capability_required = (
             current.reaction_capability_required
