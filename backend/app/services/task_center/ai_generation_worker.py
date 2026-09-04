@@ -363,7 +363,7 @@ def _due_catch_up_pipeline_depth(session: Session, action: Action) -> int:
         and not str(config.get("ai_model") or "").strip()
         and not config.get("ai_two_stage_enabled")
         and not config.get("ai_content_route_v2_enabled")
-        and tenant_fallback_flags(task)["_ai_group_static_fallback_enabled"]
+        and tenant_fallback_flags(session, task)["_ai_group_static_fallback_enabled"]
         and not payload.reply_to_message_id
         and not payload.material_intent.strip()
         and action.primary_quantity_slot_id

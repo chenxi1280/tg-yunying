@@ -131,7 +131,12 @@ def test_peer_invalid_marks_group_account_not_sendable(monkeypatch):
         monkeypatch.setattr(
             dispatcher.gateway,
             "send_message",
-            lambda *args, **kwargs: SendResult(False, failure_type="目标无效", detail="目标实体无法解析"),
+            lambda *args, **kwargs: SendResult(
+                False,
+                failure_type="目标无效",
+                detail="目标实体无法解析",
+                remote_mutation_started=False,
+            ),
         )
 
         [claimed] = claim_actions(session, limit=1, worker_id="worker-test")

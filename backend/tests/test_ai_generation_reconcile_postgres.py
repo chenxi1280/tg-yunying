@@ -21,8 +21,8 @@ def test_expired_generation_job_has_one_reconcile_cas_winner(monkeypatch) -> Non
     barrier = Barrier(2, timeout=10)
     original = ai_generation_recovery._expired_job_ids
 
-    def synchronized_candidates(session, limit):
-        candidates = original(session, limit)
+    def synchronized_candidates(session, limit, *, task_type=None):
+        candidates = original(session, limit, task_type=task_type)
         barrier.wait()
         return candidates
 

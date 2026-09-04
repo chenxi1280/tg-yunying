@@ -5079,7 +5079,11 @@ def _invite_group_account_with_link(ctx: InviteGroupAccountContext) -> Operation
     if not joined.ok:
         if _invite_link_unusable(joined.detail):
             return _retry_invite_group_account_after_lifting_restrictions(ctx, target, joined.detail)
-        return _rescue_invite_link_join_failure(joined.detail, joined.failure_type)
+        return _rescue_invite_link_join_failure(
+            joined.detail,
+            joined.failure_type,
+            joined.remote_mutation_started,
+        )
     return OperationResult(True, "已处理", detail=f"invite_link_{joined.membership_status or 'joined'}")
 
 
@@ -5105,7 +5109,11 @@ def _retry_invite_group_account_after_lifting_restrictions(ctx: InviteGroupAccou
     )
     if joined.ok:
         return OperationResult(True, "已处理", detail=f"unban_invite_link_{joined.membership_status or 'joined'}")
-    return _rescue_invite_link_join_failure(joined.detail or first_detail, joined.failure_type)
+    return _rescue_invite_link_join_failure(
+        joined.detail or first_detail,
+        joined.failure_type,
+        joined.remote_mutation_started,
+    )
 
 
 def _invite_link_unusable(detail: str) -> bool:
@@ -5113,11 +5121,27 @@ def _invite_link_unusable(detail: str) -> bool:
     return "expired" in normalized and "not valid" in normalized
 
 
-def _rescue_invite_link_join_failure(detail: str, failure_type: str = "") -> OperationResult:
+def _rescue_invite_link_join_failure(
+    detail: str,
+    failure_type: str = "",
+    remote_mutation_started: bool | None = None,
+) -> OperationResult:
     text = detail or "被救援账号通过邀请链接入群失败"
     if _invite_link_unusable(text):
-        return OperationResult(False, "失败", "target_invite_link_unusable", f"邀请链接对目标账号不可用，疑似账号被群限制或群邀请策略拒绝：{text}")
-    return OperationResult(False, "失败", failure_type or FailureType.UNKNOWN.value, text)
+        return OperationResult(
+            False,
+            "失败",
+            "target_invite_link_unusable",
+            f"邀请链接对目标账号不可用，疑似账号被群限制或群邀请策略拒绝：{text}",
+            remote_mutation_started=remote_mutation_started,
+        )
+    return OperationResult(
+        False,
+        "失败",
+        failure_type or FailureType.UNKNOWN.value,
+        text,
+        remote_mutation_started=remote_mutation_started,
+    )
 
 
 def _mark_rescued_group_account_joined(session: Session, action: Action, payload: InviteGroupAccountPayload) -> None:
@@ -5437,7 +5461,15 @@ def _dispatch_channel_membership(session: Session, action: Action, account: TgAc
         _maybe_trigger_membership_rate_limit_rescue(runtime_ctx, result_detail)
     failure_type = _classify_membership_failure(result.failure_type, result_detail)
     _clear_group_bot_admission_window(action)
-    _apply_operation_result(action, account, result.ok, failure_type, result_detail, attempt=attempt)
+    _apply_operation_result(
+        action,
+        account,
+        result.ok,
+        failure_type,
+        result_detail,
+        attempt=attempt,
+        remote_mutation_started=_operation_mutation_state(result),
+    )
     if result.ok:
         membership_status = getattr(result, "membership_status", "") or "joined"
         action.result = {**(action.result or {}), "membership_status": membership_status}
@@ -9457,6 +9489,11 @@ def _apply_rank_deboost_result(
         action,
         failure_type=str(result.get("error_code") or result.get("execution_status") or ""),
         detail=str(result.get("error_message") or result.get("detail") or ""),
+        remote_mutation_started=(
+            None
+            if result.get("execution_status") == "unknown_after_click"
+            else bool(result.get("success"))
+        ),
     )
 
 

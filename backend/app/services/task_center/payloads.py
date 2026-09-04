@@ -123,6 +123,7 @@ class SendMessagePayload(BaseModel):
     reply_target_preview: str = ""
     reply_target_source: str = ""
     conversation_event_id: str = ""
+    conversation_event_revision: int = 0
     context_turn_id: str = ""
     context_turn_revision: int = 0
     interaction_opportunity_id: str = ""

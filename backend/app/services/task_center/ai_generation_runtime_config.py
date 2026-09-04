@@ -48,7 +48,7 @@ def build_runtime_config(
 
     for action, payload in batch:
         validate_content_intent_for_gateway(session, payload, action=action)
-    config = {**dict(task.type_config or {}), **tenant_fallback_flags(task)}
+    config = {**dict(task.type_config or {}), **tenant_fallback_flags(session, task)}
     _bind_fact_first_provider(session, task, config)
     config = _bind_legacy_provider_failover(session, task, config)
     _bind_legacy_attempt_job(config, batch)
@@ -147,16 +147,15 @@ def _bind_fact_first_provider(
         task.type_config = {**dict(task.type_config or {}), "ai_provider_id": provider_id}
 
 
-def tenant_fallback_flags(task: Task) -> dict:
+def tenant_fallback_flags(session: Session, task: Task) -> dict:
     config = dict(task.type_config or {})
     v2_quality = bool(
         config.get("ai_two_stage_enabled")
         or config.get("ai_content_route_v2_enabled")
     )
-    session = task._sa_instance_state.session
     setting = session.scalar(
         select(TenantAiSetting).where(TenantAiSetting.tenant_id == task.tenant_id)
-    ) if session is not None else None
+    )
     return {
         "_ai_group_model_fallback_enabled": bool(
             setting.ai_group_model_fallback_enabled if setting else True

@@ -39,8 +39,8 @@ def test_channel_comment_clean_rejects_provider_meta_content():
 def test_channel_city_name_does_not_select_adult_prompt_without_explicit_route():
     prompt = ai_generator._channel_comment_system_prompt({}, "郑州新闻频道", "本地天气转晴")
 
-    assert "真实订阅读者（男客老司机老群友）" not in prompt
-    assert "真实订阅读者" in prompt
+    assert "男客老司机老群友" not in prompt
+    assert "针对频道帖子中的具体事实和细节" in prompt
 
 
 def test_shared_local_landmark_is_not_rejected_as_cross_city():

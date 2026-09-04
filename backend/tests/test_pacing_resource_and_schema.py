@@ -30,7 +30,7 @@ from app.schemas.task_center import (
     PacingConfig,
     TaskSettingsUpdate,
 )
-from app.services.task_center import account_pacing_guard
+from app.services.task_center import account_pacing_guard, ai_generation_timing
 from app.services.task_center.account_pacing_guard import (
     _earliest_available_time,
     revalidate_action_pacing_before_claim,
@@ -292,6 +292,8 @@ def test_ai_slot_alignment_is_linear_in_available_slots() -> None:
             reads[0] += 1
             return self.coverage_id
 
+        continuity_claim_id = None
+
     total = 100
     available = [CountingSlot(f"coverage-{index}") for index in reversed(range(total))]
     coverage = {
@@ -299,7 +301,12 @@ def test_ai_slot_alignment_is_linear_in_available_slots() -> None:
         for index in range(total)
     }
 
-    selected = _align_quantity_slots(available, coverage, list(range(total)))
+    selected = _align_quantity_slots(
+        available,
+        coverage,
+        list(range(total)),
+        continuity_claim_ids=[""] * total,
+    )
 
     assert [slot.coverage_id for slot in selected] == [f"coverage-{index}" for index in range(total)]
     assert reads[0] <= total * 3
@@ -333,6 +340,7 @@ def test_ai_slot_query_fetches_only_current_batch_owners() -> None:
             task,
             "ledger-1",
             expected_coverage_ids=["coverage-current", ""],
+            expected_continuity_claim_ids=["", ""],
         )
 
     assert [row.id for row in rows] == ["specific", "unassigned-1"]
@@ -734,7 +742,9 @@ def test_generation_job_freezes_timing_context_and_revision_evidence() -> None:
 
         job = _generation_job(session, action)
 
-        assert job.generation_not_before_at == scheduled_at
+        assert job.generation_not_before_at == (
+            scheduled_at - ai_generation_timing.GENERATION_LOOKAHEAD
+        )
         assert len(job.context_snapshot_hash) == 64
         assert job.assignment_revision == 3
         assert job.intent_revision == 4

@@ -32,6 +32,9 @@ class _LookupSession:
     def scalar(self, _statement):
         return None
 
+    def scalars(self, _statement):
+        return []
+
 
 @pytest.mark.parametrize(
     "invalid_part",

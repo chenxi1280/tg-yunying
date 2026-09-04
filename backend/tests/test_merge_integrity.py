@@ -40,7 +40,7 @@ def test_alembic_versions_have_single_head():
 
     assert all(len(revision) <= 32 for revision in revisions)
     heads = sorted(set(revisions) - referenced)
-    assert heads == ["0196_comment_plan_safety"]
+    assert heads == ["0223_burst_negative_outcome"]
 
 
 

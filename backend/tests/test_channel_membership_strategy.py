@@ -1192,7 +1192,13 @@ def test_failed_membership_keeps_attempted_peer_reference(monkeypatch) -> None:
     monkeypatch.setattr(
         dispatcher.gateway,
         "ensure_channel_membership",
-        lambda *_args, **_kwargs: OperationResult(False, "失败", "peer_invalid", "目标实体无法解析"),
+        lambda *_args, **_kwargs: OperationResult(
+            False,
+            "失败",
+            "peer_invalid",
+            "目标实体无法解析",
+            remote_mutation_started=False,
+        ),
     )
 
     with Session(engine) as session:

@@ -6,7 +6,11 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.models import Action, Task, Tenant, TenantAiSetting
-from app.services.task_center import ai_generation_dispatch, ai_generation_worker
+from app.services.task_center import (
+    ai_generation_dispatch,
+    ai_generation_runtime_config,
+    ai_generation_worker,
+)
 
 
 pytestmark = pytest.mark.no_postgres
@@ -16,7 +20,7 @@ def test_v2_runtime_disables_tenant_static_fallback() -> None:
     with Session(_engine()) as session:
         task = _seed_v2_task(session)
 
-        flags = ai_generation_dispatch._tenant_fallback_flags(task)
+        flags = ai_generation_runtime_config.tenant_fallback_flags(session, task)
 
         assert flags["_ai_group_static_fallback_enabled"] is False
 

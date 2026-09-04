@@ -5,7 +5,7 @@ import pytest
 
 from app.models import ChannelMessage, Task
 from app.services.task_center import channel_view_targets
-from app.services.task_center.executors import channel_comment_budget, channel_like
+from app.services.task_center.executors import channel_comment_budget, channel_like_planning
 from app.services.task_center.executors.channel_comment_budget import MessageCommentPlanState
 from app.services.task_center.fulfillment_activation import CURRENT_CONTRACT_VERSION
 from app.services.task_center.pacing import cumulative_pacing_due
@@ -70,7 +70,7 @@ def test_comment_and_like_only_materialize_source_due_quantity() -> None:
         now=now,
     )
     task.type = "channel_like"
-    like_due = channel_like._paced_like_target(task, message, 80, now=now)
+    like_due = channel_like_planning._paced_target(task, message, 80, now)
 
     assert comment_due == 10
     assert like_due == 10

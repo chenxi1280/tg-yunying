@@ -370,6 +370,7 @@ def test_quantity_alignment_does_not_borrow_other_coverage_slot() -> None:
     other_slot = SimpleNamespace(
         id="quantity-other",
         task_account_daily_coverage_id="coverage-other",
+        continuity_claim_id=None,
     )
 
     selected = group_ai_chat._align_quantity_slots(
@@ -395,10 +396,12 @@ def test_repeated_account_uses_extra_after_own_coverage_slot() -> None:
     coverage_slot = SimpleNamespace(
         id="quantity-coverage",
         task_account_daily_coverage_id="coverage-own",
+        continuity_claim_id=None,
     )
     extra_slot = SimpleNamespace(
         id="quantity-extra",
         task_account_daily_coverage_id=None,
+        continuity_claim_id=None,
     )
 
     selected = group_ai_chat._align_quantity_slots(
@@ -413,10 +416,12 @@ def test_extra_volume_alignment_uses_uncovered_quantity_slot() -> None:
     coverage_slot = SimpleNamespace(
         id="quantity-coverage",
         task_account_daily_coverage_id="coverage-other",
+        continuity_claim_id=None,
     )
     extra_slot = SimpleNamespace(
         id="quantity-extra",
         task_account_daily_coverage_id=None,
+        continuity_claim_id=None,
     )
     blueprint = SimpleNamespace(
         profile=SimpleNamespace(coverage_rows={}),
@@ -451,6 +456,7 @@ def test_confirmed_coverage_slot_is_not_reused_as_open_coverage() -> None:
     confirmed_slot = SimpleNamespace(
         id="quantity-confirmed",
         task_account_daily_coverage_id="coverage-confirmed",
+        continuity_claim_id=None,
     )
 
     selected = group_ai_chat._align_quantity_slots(

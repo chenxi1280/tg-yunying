@@ -324,7 +324,7 @@ def test_channel_task_runs_membership_precondition_before_main_actions(monkeypat
                 TgAccount(id=12, tenant_id=1, display_name="待关注账号", phone_masked="+861***0012", status="在线"),
             ]
         )
-        channel = OperationTarget(id=501, tenant_id=1, target_type="channel", tg_peer_id="pytest_member_channel", title="pytest 前置频道", username="pytest_member_channel", auth_status="未确认", can_send=False)
+        channel = OperationTarget(id=501, tenant_id=1, target_type="channel", tg_peer_id="pytest_member_channel", title="pytest 前置频道", username="", auth_status="未确认", can_send=False)
         group = TgGroup(id=601, tenant_id=1, tg_peer_id=channel.tg_peer_id, title=channel.title, group_type="channel", auth_status="已授权运营", can_send=True)
         task = Task(
             id="task-membership",
@@ -435,7 +435,7 @@ def test_authorized_sendable_channel_still_checks_account_membership():
             session.add(Tenant(id=1, name="默认运营空间"))
             session.flush()
             session.add(TgAccount(id=25, tenant_id=1, display_name="未关注账号", phone_masked="+861***0025", status="在线"))
-            session.add(OperationTarget(id=525, tenant_id=1, target_type="channel", tg_peer_id="authorized-channel", title="已授权频道", username="authorized_channel", auth_status="已授权运营", can_send=True))
+            session.add(OperationTarget(id=525, tenant_id=1, target_type="channel", tg_peer_id="authorized-channel", title="已授权频道", username="", auth_status="已授权运营", can_send=True))
             task = Task(
                 id="task-authorized-channel-membership",
                 tenant_id=1,
@@ -482,7 +482,7 @@ def test_channel_main_action_runtime_guard_blocks_unjoined_account(monkeypatch):
         session.add(Tenant(id=1, name="默认运营空间"))
         session.flush()
         session.add(TgAccount(id=31, tenant_id=1, display_name="未关注账号", phone_masked="+861***0031", status="在线"))
-        session.add(OperationTarget(id=503, tenant_id=1, target_type="channel", tg_peer_id="guard-channel", title="运行时守卫频道", username="guard_channel", auth_status="已授权运营", can_send=False))
+        session.add(OperationTarget(id=503, tenant_id=1, target_type="channel", tg_peer_id="guard-channel", title="运行时守卫频道", username="", auth_status="已授权运营", can_send=False))
         task = Task(id="task-runtime-guard", tenant_id=1, name="runtime guard", type="channel_view", status="running", account_config={}, pacing_config={}, failure_policy={})
         session.add(task)
         session.flush()

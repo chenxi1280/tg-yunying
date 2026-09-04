@@ -55,7 +55,7 @@ def test_compose_maps_only_generation_consumers_to_resolved_gateway() -> None:
         "host.docker.internal:"
         "${ANTIGRAVITY_DOCKER_GATEWAY:?ANTIGRAVITY_DOCKER_GATEWAY is required}"
     )
-    assert compose.count(mapping) == 4
+    assert compose.count(mapping) == 5
     assert "host.docker.internal:host-gateway" not in compose
 
 

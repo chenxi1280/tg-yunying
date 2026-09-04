@@ -70,14 +70,14 @@ def _configure_concurrent_planners(monkeypatch) -> Barrier:
     fixed_profile(monkeypatch)
     start = Barrier(2)
     planning_ready = Barrier(2)
-    original_planning_accounts = channel_comment._planning_accounts
+    original_prepare_accounts = channel_comment.prepare_comment_accounts
 
-    def synchronized_planning_accounts(*args, **kwargs):
-        accounts = original_planning_accounts(*args, **kwargs)
+    def synchronized_prepare_accounts(*args, **kwargs):
+        accounts = original_prepare_accounts(*args, **kwargs)
         planning_ready.wait(timeout=5)
         return accounts
 
-    monkeypatch.setattr(channel_comment, "_planning_accounts", synchronized_planning_accounts)
+    monkeypatch.setattr(channel_comment, "prepare_comment_accounts", synchronized_prepare_accounts)
     monkeypatch.setattr(channel_comment, "tenant_learning_profile_preview", lambda *_args: _profile_preview())
     monkeypatch.setattr(channel_comment, "audit_learning_profile_use", lambda *_args: None)
     return start

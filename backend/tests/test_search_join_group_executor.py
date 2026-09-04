@@ -315,7 +315,12 @@ def test_search_join_records_one_execution_attempt_around_gateway(session: Sessi
     monkeypatch.setattr(
         dispatcher.gateway,
         "execute_search_join",
-        lambda *_args: {"success": False, "error_code": "target_not_in_results", "detail": "not found"},
+        lambda *_args: {
+            "success": False,
+            "error_code": "target_not_in_results",
+            "detail": "not found",
+            "remote_mutation_started": False,
+        },
         raising=False,
     )
 
@@ -498,6 +503,7 @@ def test_search_join_hot_list_reset_result_is_recorded_in_protocol_trace(
             "jisou_page_phase": "unknown_page",
             "jisou_recovery_kind": "hot_list_reset",
             "search_protocol_trace": {"page_phase": "unknown_page", "page": {"button_count": 0, "button_layout": []}},
+            "remote_mutation_started": False,
         },
         raising=False,
     )

@@ -144,6 +144,14 @@ def _freeze_grounding_obligations(
     reply_targets: list[dict],
     target_builder: Callable,
 ) -> list[CommentFulfillmentObligation]:
+    selected_account_ids = {
+        int(account_id)
+        for account_id in plan.account_by_ordinal.values()
+    }
+    ready_account_ids = set(plan.discussion_identity.membership_by_account)
+    if not selected_account_ids.issubset(ready_account_ids):
+        task.last_error = "等待讨论组账号准入完成后物化评论义务"
+        return []
     total = int(plan.contract.required_distinct_account_count)
     targets = target_builder(
         session, task, context=context, message=message,

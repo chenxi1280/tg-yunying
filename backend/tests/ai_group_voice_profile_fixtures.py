@@ -2,6 +2,8 @@ from __future__ import annotations
 
 
 def assume_default_ai_group_voice_profiles(monkeypatch) -> None:
+    from sqlalchemy import select
+
     from app.models import AiAccountVoiceProfile
     from app.services.task_center.account_voice_profile_cache import (
         VOICE_PROFILE_CONTRACT_VERSION,
@@ -17,7 +19,17 @@ def assume_default_ai_group_voice_profiles(monkeypatch) -> None:
             tenant_id=tenant_id,
             account_ids=account_ids,
         )
-        missing_ids = [int(account_id) for account_id in account_ids if int(account_id) not in persisted]
+        existing_ids = set(session.scalars(select(AiAccountVoiceProfile.account_id).where(
+            AiAccountVoiceProfile.tenant_id == tenant_id,
+            AiAccountVoiceProfile.account_id.in_(account_ids),
+            AiAccountVoiceProfile.status == "active",
+            AiAccountVoiceProfile.quality_status == "active",
+        )))
+        missing_ids = list(dict.fromkeys(
+            int(account_id)
+            for account_id in account_ids
+            if int(account_id) not in existing_ids
+        ))
         for account_id in missing_ids:
             session.add(
                 AiAccountVoiceProfile(

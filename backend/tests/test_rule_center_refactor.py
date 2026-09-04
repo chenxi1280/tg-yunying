@@ -2019,7 +2019,7 @@ def test_draft_rule_version_cannot_be_resolved_for_real_task_execution():
 
 @pytest.mark.no_postgres
 @pytest.mark.allow_missing_rule_binding
-def test_ai_group_requires_rule_binding_before_target_resolution():
+def test_ai_group_bootstraps_default_rule_binding_before_target_resolution():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
 
@@ -2031,10 +2031,10 @@ def test_ai_group_requires_rule_binding_before_target_resolution():
 
         created = build_ai_chat_plan(session, task)
 
+        assert bound_rule_version(session, task) is not None
+
     assert created == 0
-    assert task.last_error == "任务必须绑定已发布规则集版本"
-    assert task.stats["rule_binding_missing_count"] == 1
-    assert task.stats["last_plan_blocker"] == "rule_binding_missing"
+    assert task.last_error == "目标群不存在或未授权"
 
 
 @pytest.mark.no_postgres

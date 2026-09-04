@@ -21,7 +21,7 @@ from app.services.task_center.ai_generator import (
     ProviderRouteDeferred,
 )
 from app.services.task_center import ai_generation_pipeline
-from app.services.task_center import ai_generation_dispatch
+from app.services.task_center import ai_generation_runtime_config
 from app.services.task_center import ai_generator
 from app.services.task_center.payloads import SendMessagePayload
 from app.services.task_center.ai_group_prompt import GroupPromptBundle
@@ -95,7 +95,7 @@ def test_dispatcher_runtime_uses_tenant_fallback_switches() -> None:
         ])
         session.commit()
 
-        assert ai_generation_dispatch._tenant_fallback_flags(task) == {
+        assert ai_generation_runtime_config.tenant_fallback_flags(session, task) == {
             "_ai_group_model_fallback_enabled": False,
             "_ai_group_grok_fallback_enabled": True,
             "_ai_group_static_fallback_enabled": False,

@@ -53,7 +53,7 @@ def test_send_async_maps_generic_error_when_target_resolve_fails(monkeypatch) ->
     """target resolve 抛错必须返回映射后的 SendResult，而不是 UnboundLocalError。"""
     gateway = TelethonTelegramGateway()
 
-    async def fake_get_client(credentials, raw_session):  # noqa: ANN001 - mirrors gateway hook.
+    async def fake_get_client(credentials, raw_session, **_kwargs):  # noqa: ANN001 - mirrors gateway hook.
         return _FakeClient()
 
     async def fake_resolve(client, peer_id, *, group_id=0):  # noqa: ANN001
@@ -78,7 +78,7 @@ def test_send_async_maps_generic_error_when_target_resolve_fails(monkeypatch) ->
 def test_send_async_maps_peer_invalid_when_target_resolve_fails(monkeypatch) -> None:
     gateway = TelethonTelegramGateway()
 
-    async def fake_get_client(credentials, raw_session):  # noqa: ANN001
+    async def fake_get_client(credentials, raw_session, **_kwargs):  # noqa: ANN001
         return _FakeClient()
 
     async def fake_resolve(client, peer_id, *, group_id=0):  # noqa: ANN001
@@ -108,7 +108,7 @@ def test_send_async_keeps_unknown_when_first_send_response_is_lost(monkeypatch) 
         ):
             raise TimeoutError("response lost after send started")
 
-    async def fake_get_client(credentials, raw_session):  # noqa: ANN001
+    async def fake_get_client(credentials, raw_session, **_kwargs):  # noqa: ANN001
         return _ResponseLostClient()
 
     async def fake_resolve(client, peer_id, *, group_id=0):  # noqa: ANN001
@@ -150,7 +150,7 @@ def test_send_async_preserves_remote_identity_on_partial_segment_failure(monkeyp
 
     client = _SegClient()
 
-    async def fake_get_client(credentials, raw_session):  # noqa: ANN001
+    async def fake_get_client(credentials, raw_session, **_kwargs):  # noqa: ANN001
         return client
 
     async def fake_resolve(client_arg, peer_id, *, group_id=0):  # noqa: ANN001

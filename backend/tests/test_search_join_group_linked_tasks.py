@@ -446,9 +446,22 @@ def test_group_ai_dispatch_uses_direct_credentials_when_account_has_proxy(monkey
     session.commit()
     calls: list[int | None] = []
 
-    def send_message(_account_id, _group_id, _content, _segments, _session_ciphertext, _group_peer, credentials):
+    def send_message(
+        _account_id,
+        _group_id,
+        _content,
+        _segments,
+        _session_ciphertext,
+        _group_peer,
+        credentials,
+        **_kwargs,
+    ):
         calls.append(credentials.proxy_id)
-        return SendResult(ok=True, remote_message_id="123")
+        return SendResult(
+            ok=True,
+            remote_message_id="123",
+            remote_mutation_started=True,
+        )
 
     monkeypatch.setattr(dispatcher, "_group_bot_admission_gate_pass", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(dispatcher, "_speaker_rotation_gate_pass", lambda *_args, **_kwargs: True)
@@ -526,6 +539,7 @@ def test_search_join_dispatch_blocks_incomplete_environment_proxy_config(monkeyp
                 "success": False,
                 "error_code": "proxy_node_unreachable",
                 "error_message": "connect_timeout",
+                "remote_mutation_started": False,
             },
             "proxy_node_unreachable",
             "connect_timeout",
@@ -535,6 +549,7 @@ def test_search_join_dispatch_blocks_incomplete_environment_proxy_config(monkeyp
                 "success": False,
                 "error_code": "search_transport_unavailable",
                 "detail": "TimeoutError",
+                "remote_mutation_started": False,
             },
             "search_transport_unavailable",
             "TimeoutError",
@@ -668,6 +683,7 @@ def test_search_join_dispatch_records_admin_notice_when_runtime_failover_has_no_
             "success": False,
             "error_code": "proxy_node_unreachable",
             "error_message": "connect_timeout",
+            "remote_mutation_started": False,
         }
 
     monkeypatch.setattr(dispatcher.gateway, "execute_search_join", execute_search_join, raising=False)
@@ -691,7 +707,12 @@ def test_search_join_dispatch_creates_linked_records_after_membership_observed(m
     }
 
     def execute_search_join(*args, **kwargs):
-        return {"success": True, "join_status": "membership_observed", "target_group_id": 17}
+        return {
+            "success": True,
+            "join_status": "membership_observed",
+            "target_group_id": 17,
+            "remote_mutation_started": True,
+        }
 
     monkeypatch.setattr(dispatcher.gateway, "execute_search_join", execute_search_join, raising=False)
 
@@ -728,6 +749,7 @@ def test_search_join_dispatch_keeps_task_running_when_real_last_page_misses_targ
             "searched_pages": 4,
             "last_result_page": 4,
             "search_end_reason": "no_next_page",
+            "remote_mutation_started": False,
         }
 
     monkeypatch.setattr(dispatcher.gateway, "execute_search_join", execute_search_join, raising=False)

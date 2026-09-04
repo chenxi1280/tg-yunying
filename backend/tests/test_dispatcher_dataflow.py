@@ -5,6 +5,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.database import Base
+from app.models import Action
 from app.services.task_center import ai_generation_dispatch
 from app.services.task_center.payloads import SendMessagePayload
 
@@ -18,6 +19,19 @@ def _pending_send_payload() -> SendMessagePayload:
         target_display="测试群",
         ai_generation_id="batch-1",
         ai_generation_status="pending",
+    )
+
+
+def _pending_action(action_id: str, account_id: int) -> Action:
+    return Action(
+        id=action_id,
+        tenant_id=1,
+        task_id="task-runtime-config",
+        task_type="group_ai_chat",
+        action_type="send_message",
+        account_id=account_id,
+        status="pending",
+        payload={},
     )
 
 
@@ -37,8 +51,8 @@ def test_dispatcher_runtime_config_preserves_deferred_generation_slots():
     second.topic_direction = {"title": "主任最近约新妹子了"}
     second.teacher_target = {"name": "新人榜单妹子"}
     batch = [
-        (SimpleNamespace(account_id=11, primary_quantity_slot_id="", content_mix_cycle_slot_id=""), first),
-        (SimpleNamespace(account_id=12, primary_quantity_slot_id="", content_mix_cycle_slot_id=""), second),
+        (_pending_action("runtime-config-1", 11), first),
+        (_pending_action("runtime-config-2", 12), second),
     ]
 
     engine = create_engine("sqlite:///:memory:", future=True)
@@ -67,11 +81,7 @@ def test_dispatcher_runtime_config_preserves_deferred_generation_slots():
 def test_dispatcher_runtime_config_does_not_force_mimo_for_hard_hourly_without_model():
     payload = _pending_send_payload()
     payload.hard_hourly_target = True
-    batch = [(SimpleNamespace(
-        account_id=11,
-        primary_quantity_slot_id="",
-        content_mix_cycle_slot_id="",
-    ), payload)]
+    batch = [(_pending_action("runtime-config-hard-hourly", 11), payload)]
 
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

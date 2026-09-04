@@ -307,7 +307,13 @@ def test_dispatch_invite_group_account_records_rescue_admin_floodwait(monkeypatc
         action = _rescue_invite_action("rescue-invite-floodwait")
         session.add(action)
         session.commit()
-        limited = OperationResult(False, "失败", FailureType.FLOOD_WAIT.value, "FloodWait 123 秒")
+        limited = OperationResult(
+            False,
+            "失败",
+            FailureType.FLOOD_WAIT.value,
+            "FloodWait 123 秒",
+            remote_mutation_started=False,
+        )
         monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args, **_kwargs: object())
         monkeypatch.setattr(dispatcher.gateway, "invite_account_to_group", lambda *_args, **_kwargs: limited)
 
@@ -448,7 +454,13 @@ def test_dispatch_invite_group_account_joins_with_admin_invite_link_for_non_mutu
         monkeypatch.setattr(
             dispatcher.gateway,
             "invite_account_to_group",
-            lambda *_args, **_kwargs: OperationResult(False, "失败", FailureType.UNKNOWN.value, "The provided user is not a mutual contact"),
+            lambda *_args, **_kwargs: OperationResult(
+                False,
+                "失败",
+                FailureType.UNKNOWN.value,
+                "The provided user is not a mutual contact",
+                remote_mutation_started=False,
+            ),
         )
         monkeypatch.setattr(
             dispatcher.gateway,
@@ -503,7 +515,13 @@ def test_dispatch_invite_group_account_classifies_unusable_invite_link(monkeypat
         monkeypatch.setattr(
             dispatcher.gateway,
             "invite_account_to_group",
-            lambda *_args, **_kwargs: OperationResult(False, "失败", FailureType.UNKNOWN.value, "The provided user is not a mutual contact"),
+            lambda *_args, **_kwargs: OperationResult(
+                False,
+                "失败",
+                FailureType.UNKNOWN.value,
+                "The provided user is not a mutual contact",
+                remote_mutation_started=False,
+            ),
         )
         monkeypatch.setattr(
             dispatcher.gateway,
@@ -524,6 +542,7 @@ def test_dispatch_invite_group_account_classifies_unusable_invite_link(monkeypat
                 FailureType.UNKNOWN.value,
                 "The chat the user tried to join has expired and is not valid anymore",
                 "failed",
+                remote_mutation_started=False,
             ),
         )
 
@@ -532,6 +551,18 @@ def test_dispatch_invite_group_account_classifies_unusable_invite_link(monkeypat
         assert action.status == "failed"
         assert action.result["error_code"] == "target_invite_link_unusable"
         assert "疑似账号被群限制" in action.result["rescue_detail"]
+
+
+@pytest.mark.no_postgres
+def test_rescue_invite_link_join_preserves_unknown_remote_outcome() -> None:
+    result = dispatcher._rescue_invite_link_join_failure(
+        "transport disconnected",
+        FailureType.UNKNOWN.value,
+        None,
+    )
+
+    assert result.failure_type == FailureType.UNKNOWN.value
+    assert result.remote_mutation_started is None
 
 
 def test_dispatch_invite_group_account_lifts_restriction_then_joins(monkeypatch) -> None:
@@ -781,6 +812,7 @@ def test_dispatch_membership_floodwait_creates_rescue_action(monkeypatch) -> Non
             FailureType.FLOOD_WAIT.value,
             "FloodWait 40802 秒",
             "rate_limited",
+            remote_mutation_started=False,
         )
         monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args, **_kwargs: object())
         monkeypatch.setattr(dispatcher.gateway, "ensure_channel_membership", lambda *_args, **_kwargs: limited)

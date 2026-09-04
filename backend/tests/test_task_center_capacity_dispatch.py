@@ -2440,7 +2440,12 @@ def test_group_permission_denied_marks_group_account_not_sendable(monkeypatch):
         monkeypatch.setattr(
             dispatcher.gateway,
             "send_message",
-            lambda *args, **kwargs: SendResult(False, failure_type="群无权限", detail="群无权限或账号不可发言"),
+            lambda *args, **kwargs: SendResult(
+                False,
+                failure_type="群无权限",
+                detail="群无权限或账号不可发言",
+                remote_mutation_started=False,
+            ),
         )
 
         [claimed] = claim_actions(session, limit=1, worker_id="worker-test")
@@ -2890,7 +2895,13 @@ def test_target_membership_classifies_frozen_account_as_unavailable(monkeypatch)
         monkeypatch.setattr(
             dispatcher.gateway,
             "ensure_channel_membership",
-            lambda *args, **kwargs: OperationResult(False, "失败", "未知错误", frozen_detail),
+            lambda *args, **kwargs: OperationResult(
+                False,
+                "失败",
+                "未知错误",
+                frozen_detail,
+                remote_mutation_started=False,
+            ),
         )
 
         action = session.get(Action, "action-frozen-entry")

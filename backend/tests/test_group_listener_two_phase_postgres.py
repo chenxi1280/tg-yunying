@@ -9,6 +9,7 @@ from app.database import Base, SessionLocal, engine
 from app.integrations.telegram import GroupMessageSnapshot
 from app.models import (
     AccountStatus,
+    ContextTurn,
     ConversationSpeakerState,
     ConversationSpeakerTurn,
     GroupContextMessage,
@@ -118,6 +119,9 @@ def _seed() -> None:
 
 def _cleanup() -> None:
     with SessionLocal() as session:
+        session.execute(delete(ContextTurn).where(
+            ContextTurn.tenant_id == TENANT_ID,
+        ))
         session.execute(delete(GroupContextMessage).where(
             GroupContextMessage.tenant_id == TENANT_ID,
         ))

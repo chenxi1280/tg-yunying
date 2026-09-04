@@ -1541,7 +1541,13 @@ def test_channel_like_reaction_unavailable_keeps_message_siblings_open(monkeypat
         monkeypatch.setattr(
             dispatcher.gateway,
             "send_channel_reaction",
-            lambda *args, **kwargs: OperationResult(False, "失败", FailureType.REACTION_UNAVAILABLE.value, "频道消息不可点赞或消息ID无效"),
+            lambda *args, **kwargs: OperationResult(
+                False,
+                "失败",
+                FailureType.REACTION_UNAVAILABLE.value,
+                "频道消息不可点赞或消息ID无效",
+                remote_mutation_started=False,
+            ),
         )
         action = session.get(Action, "action-like-main")
         assert dispatcher.dispatch_action(session, action) is True
@@ -1588,7 +1594,12 @@ def test_post_comment_permission_denied_blocks_account_and_skips_account_sibling
         monkeypatch.setattr(
             dispatcher.gateway,
             "reply_channel_message",
-            lambda *args, **kwargs: SendResult(False, failure_type=FailureType.GROUP_PERMISSION_DENIED.value, detail="群无权限或账号不可发言"),
+            lambda *args, **kwargs: SendResult(
+                False,
+                failure_type=FailureType.GROUP_PERMISSION_DENIED.value,
+                detail="群无权限或账号不可发言",
+                remote_mutation_started=False,
+            ),
         )
         action = session.get(Action, "action-comment-main")
         assert dispatcher.dispatch_action(session, action) is True
@@ -1713,7 +1724,12 @@ def test_post_comment_unavailable_marks_message_and_skips_siblings(monkeypatch):
         monkeypatch.setattr(
             dispatcher.gateway,
             "reply_channel_message",
-            lambda *args, **kwargs: SendResult(False, failure_type=FailureType.COMMENT_UNAVAILABLE.value, detail="频道帖子无法解析到评论区"),
+            lambda *args, **kwargs: SendResult(
+                False,
+                failure_type=FailureType.COMMENT_UNAVAILABLE.value,
+                detail="频道帖子无法解析到评论区",
+                remote_mutation_started=False,
+            ),
         )
         action = session.get(Action, "action-comment-main")
         assert dispatcher.dispatch_action(session, action) is True
@@ -1967,7 +1983,16 @@ def test_task_center_dispatch_applies_default_failure_policy(monkeypatch):
         session.commit()
 
         monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
-        monkeypatch.setattr(dispatcher.gateway, "send_message", lambda *args, **kwargs: SendResult(False, failure_type=FailureType.ACCOUNT_LIMITED.value, detail="账号受限"))
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "send_message",
+            lambda *args, **kwargs: SendResult(
+                False,
+                failure_type=FailureType.ACCOUNT_LIMITED.value,
+                detail="账号受限",
+                remote_mutation_started=False,
+            ),
+        )
         action = session.get(Action, "action-account-limited")
         assert dispatcher.dispatch_action(session, action) is True
         task = session.get(Task, "task-failure-policy")
@@ -2006,7 +2031,16 @@ def test_task_center_dispatch_applies_default_failure_policy(monkeypatch):
         session.get(TgAccount, 11).status = "在线"
         session.commit()
         before = _now()
-        monkeypatch.setattr(dispatcher.gateway, "send_message", lambda *args, **kwargs: SendResult(False, failure_type=FailureType.FLOOD_WAIT.value, detail="FloodWait 120 秒"))
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "send_message",
+            lambda *args, **kwargs: SendResult(
+                False,
+                failure_type=FailureType.FLOOD_WAIT.value,
+                detail="FloodWait 120 秒",
+                remote_mutation_started=False,
+            ),
+        )
         flood_action = session.get(Action, "action-flood-wait")
         assert dispatcher.dispatch_action(session, flood_action) is True
 
@@ -2653,7 +2687,13 @@ def test_listener_runtime_empty_collect_does_not_wake_planner():
         session.add(Task(id="empty-listener", tenant_id=1, name="空采集", type="group_relay", status="running"))
         session.commit()
         task = session.get(Task, "empty-listener")
-        _mark_listener_runtime_success(session, [task.id], 7, 0, _now())
+        _mark_listener_runtime_success(
+            session,
+            task_ids=[task.id],
+            group_id=7,
+            inserted=0,
+            occurred_at=_now(),
+        )
         session.commit()
         assert session.scalar(select(func.count(TaskPlannerWakeState.id))) == 0
 
@@ -3994,7 +4034,7 @@ def test_channel_like_jitter_uses_available_accounts_without_false_capacity(monk
         session.commit()
 
         monkeypatch.setattr(
-            "app.services.task_center.executors.channel_like.deterministic_quantity_with_jitter",
+            "app.services.task_center.executors.channel_like_planning.deterministic_quantity_with_jitter",
             lambda *_args, **_kwargs: 4,
         )
 
@@ -4004,7 +4044,7 @@ def test_channel_like_jitter_uses_available_accounts_without_false_capacity(monk
         upper_groups, _upper_group_total = list_message_groups_page(session, 1, upper_task.id, page=1, page_size=20)
 
         monkeypatch.setattr(
-            "app.services.task_center.executors.channel_like.deterministic_quantity_with_jitter",
+            "app.services.task_center.executors.channel_like_planning.deterministic_quantity_with_jitter",
             lambda *_args, **_kwargs: 2,
         )
 
@@ -4071,9 +4111,14 @@ def test_channel_comment_reply_mode_requires_and_plans_reply_targets():
             _initialized_comment_account(102),
         ])
         session.add(OperationTarget(id=31, tenant_id=1, target_type="channel", tg_peer_id="-10031", title="频道目标", can_send=True, auth_status="已授权运营"))
+        session.add(TgGroup(id=31, tenant_id=1, tg_peer_id="-10031", title="频道目标", group_type="channel"))
+        session.add_all([
+            TgGroupAccount(tenant_id=1, group_id=31, account_id=101, can_send=True),
+            TgGroupAccount(tenant_id=1, group_id=31, account_id=102, can_send=True),
+        ])
         session.add(ChannelMessage(id=41, tenant_id=1, channel_target_id=31, message_id=9001, content_preview="频道消息"))
-        session.add(ChannelMessageComment(tenant_id=1, channel_target_id=31, channel_message_id=41, comment_message_id=8101, author_name="用户 A"))
-        session.add(ChannelMessageComment(tenant_id=1, channel_target_id=31, channel_message_id=41, comment_message_id=8102, author_name="用户 B"))
+        session.add(ChannelMessageComment(tenant_id=1, channel_target_id=31, channel_message_id=41, comment_message_id=8101, author_name="用户 A", content_preview="用户 A 的评论"))
+        session.add(ChannelMessageComment(tenant_id=1, channel_target_id=31, channel_message_id=41, comment_message_id=8102, author_name="用户 B", content_preview="用户 B 的评论"))
         task = Task(
             id="channel-reply-task",
             tenant_id=1,
@@ -4097,7 +4142,8 @@ def test_channel_comment_reply_mode_requires_and_plans_reply_targets():
         session.add(task)
         session.commit()
 
-        assert build_channel_comment_plan(session, task) == 2
+        created = build_channel_comment_plan(session, task)
+        assert created == 2, task.last_error
         actions = sorted(session.scalars(select(Action).where(Action.task_id == task.id)), key=lambda item: item.payload["reply_to_message_id"])
 
     assert [action.payload["comment_mode"] for action in actions] == ["reply", "reply"]

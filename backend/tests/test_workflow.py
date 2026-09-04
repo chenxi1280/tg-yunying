@@ -142,6 +142,8 @@ def assume_group_ai_voice_profiles_for_workflow_tests(monkeypatch):
 
 @pytest.fixture
 def immediate_account_pacing(monkeypatch):
+    from app.services.task_center.account_pacing_guard import PacingClaimDecision
+
     monkeypatch.setattr(
         "app.services.task_center.account_pacing_guard.account_policy_not_before",
         lambda *_args, **_kwargs: None,
@@ -149,6 +151,10 @@ def immediate_account_pacing(monkeypatch):
     monkeypatch.setattr(
         "app.services.task_center.account_pacing_guard.task_policy_not_before",
         lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "app.services.task_center.direct_action_claims.revalidate_action_pacing_before_claim",
+        lambda _session, action, **_kwargs: PacingClaimDecision(True, action.scheduled_at),
     )
 
 
@@ -406,6 +412,7 @@ def task_detail_after_metrics(client: TestClient, headers: dict[str, str], task_
 def dispatch_pending_task_actions(task_id: str, limit: int = 10) -> int:
     from app.services.task_center.dispatcher import claim_actions
     from app.services.task_center.ai_generation_worker import drain_ai_generation
+    from app.services.task_center.comment_generation_worker import drain_comment_generation
     from app.services.task_center.service import _dispatch_claimed_action, drain_task_planner
 
     with SessionLocal() as session:
@@ -421,6 +428,7 @@ def dispatch_pending_task_actions(task_id: str, limit: int = 10) -> int:
             _force_action_due(action, _now())
         session.commit()
     drain_ai_generation(SessionLocal, limit)
+    drain_comment_generation(SessionLocal, limit)
     with SessionLocal() as session:
         other_task_ids = set(session.scalars(select(Task.id).where(Task.id != task_id)))
         action_ids = [action.id for action in claim_actions(session, limit=limit, exclude_task_ids=other_task_ids)]
@@ -880,7 +888,7 @@ def test_worker_loop_can_stop_after_iterations(monkeypatch):
     monkeypatch.setattr(worker, "drain_once", lambda limit=100, **_kwargs: calls.append(limit) or 0)
     monkeypatch.setattr(worker.time, "sleep", lambda seconds: sleeps.append(seconds))
 
-    worker.run_worker(limit=5, interval_seconds=0.2, max_iterations=2)
+    worker.run_worker(limit=5, interval_seconds=0.2, max_iterations=2, role="planner")
 
     assert calls == [5, 5]
     assert sleeps == [0.2]
@@ -899,7 +907,7 @@ def test_worker_loop_can_stop_with_event(monkeypatch):
         return 0
 
     monkeypatch.setattr(worker, "drain_once", fake_drain_once)
-    worker.run_worker(limit=4, interval_seconds=5, stop_event=stop_event)
+    worker.run_worker(limit=4, interval_seconds=5, stop_event=stop_event, role="planner")
 
     assert calls == [4]
 
@@ -4702,10 +4710,10 @@ def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(
             inserted = collect_group_context(session, db_group, [account["id"]])
             _mark_listener_runtime_success(
                 session,
-                [task_id],
-                group["id"],
-                inserted,
-                datetime.now(UTC).replace(tzinfo=None),
+                task_ids=[task_id],
+                group_id=group["id"],
+                inserted=inserted,
+                occurred_at=datetime.now(UTC).replace(tzinfo=None),
             )
             session.commit()
         assert inserted >= 1
@@ -4796,7 +4804,7 @@ def test_task_center_group_ai_chat_does_not_plan_over_open_actions(monkeypatch):
         drain_task_center(SessionLocal, 1)
         with SessionLocal() as session:
             task = session.get(Task, task_id)
-            assert task.next_run_at.replace(tzinfo=None) == future.replace(tzinfo=None)
+            assert task.next_run_at == future
             assert session.query(Action).filter(Action.task_id == task_id).count() == 1
 
 
@@ -4951,7 +4959,7 @@ def test_task_center_channel_comment_capacity_check_accepts_comment_task_type():
 
 def test_task_center_channel_like_and_view_cap_per_message_by_unique_accounts(monkeypatch):
     monkeypatch.setattr(
-        "app.services.task_center.executors.channel_like.source_rolling_pacing_due",
+        "app.services.task_center.executors.channel_like_planning.source_rolling_pacing_due",
         lambda target, *_args, **_kwargs: target,
     )
     monkeypatch.setattr(
@@ -5343,7 +5351,10 @@ def test_task_center_channel_view_and_comment_default_dynamic_new_keep_collectin
         force_due_actions(task_id)
         if calls == []:
             dispatch_pending_task_actions(task_id)
-        assert calls == [5101]
+        assert calls == [5101], {
+            "task": compact_task_debug(client.get(f"/api/tasks/{task_id}", headers=headers).json()),
+            "actions": compact_action_debug(task_detail_actions(client, headers, task_id)),
+        }
 
         with SessionLocal() as session:
             task = session.get(Task, task_id)
@@ -5871,7 +5882,7 @@ def test_task_center_group_relay_auto_executes_and_dedupes(monkeypatch):
     target_group_id: int | None = None
     _disable_relay_context_collection(monkeypatch)
 
-    def fake_send_message(account_id, group_id, content, outbound_segments, account_session, peer_id=None, developer_credentials=None):
+    def fake_send_message(account_id, group_id, content, outbound_segments, account_session, peer_id=None, developer_credentials=None, **_kwargs):
         if target_group_id is not None and int(group_id) == target_group_id:
             sends.append(content)
         return SendResult(True, remote_message_id=f"relay-{len(sends)}")
@@ -5937,7 +5948,7 @@ def test_group_relay_waits_for_source_media_cache_and_preserves_album_order(monk
     target_group_id: int | None = None
     _disable_relay_context_collection(monkeypatch)
 
-    def fake_send_message(account_id, group_id, content, outbound_segments, account_session, peer_id=None, developer_credentials=None):
+    def fake_send_message(account_id, group_id, content, outbound_segments, account_session, peer_id=None, developer_credentials=None, **_kwargs):
         if target_group_id is not None and int(group_id) == target_group_id:
             send_calls.append([(segment.segment_type, segment.source, segment.caption) for segment in outbound_segments])
         return SendResult(True, remote_message_id=f"relay-media-{len(send_calls)}")
@@ -6056,7 +6067,7 @@ def test_task_center_group_relay_continues_for_new_source_messages(monkeypatch):
     target_group_id: int | None = None
     _disable_relay_context_collection(monkeypatch)
 
-    def fake_send_message(account_id, group_id, content, outbound_segments, account_session, peer_id=None, developer_credentials=None):
+    def fake_send_message(account_id, group_id, content, outbound_segments, account_session, peer_id=None, developer_credentials=None, **_kwargs):
         if target_group_id is not None and int(group_id) == target_group_id:
             sends.append(content)
             send_targets.append((int(group_id), str(peer_id)))
