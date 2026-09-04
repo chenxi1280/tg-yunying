@@ -121,9 +121,18 @@ def test_direct_group_bundle_preserves_identity_contract_and_slot(adult):
 def test_identity_contract_is_idempotent_and_keeps_override_as_input():
     original = "自然风格配置"
     prompt = with_automation_identity(original)
-    assert prompt == original
+    assert prompt == f"{original}\n\n{AUTOMATION_IDENTITY_SYSTEM_POLICY}"
     assert with_automation_identity(prompt) == prompt
-    assert with_automation_identity(None) == ""
+    assert with_automation_identity(None) == AUTOMATION_IDENTITY_SYSTEM_POLICY
+
+
+def test_announcement_disclosure_contract_is_nonempty_and_truthful():
+    assert AUTOMATION_IDENTITY_SYSTEM_POLICY
+    assert "不要求每条消息重复自报 AI" in AUTOMATION_IDENTITY_SYSTEM_POLICY
+    assert "身份被询问时如实说明自动化身份" in AUTOMATION_IDENTITY_SYSTEM_POLICY
+    assert "不编造亲历" in AUTOMATION_IDENTITY_SYSTEM_POLICY
+    assert "不要假定或声称公告已经发布" in AUTOMATION_IDENTITY_SYSTEM_POLICY
+    assert with_automation_identity("旧面具要求冒充真人").endswith(AUTOMATION_IDENTITY_SYSTEM_POLICY)
 
 
 @pytest.mark.parametrize("text", (
