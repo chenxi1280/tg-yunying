@@ -36,6 +36,7 @@ from app.services.task_center.daily_group_target import (
     refresh_task_group_daily_target,
 )
 from app.services.task_center.daily_ledgers import ensure_task_day_ledger
+from app.services.task_center.engagement_daily_quantity import group_ai_daily_quantity
 
 
 pytestmark = pytest.mark.no_postgres
@@ -129,6 +130,36 @@ def test_daily_target_keeps_larger_operator_total(session: Session) -> None:
     )
 
     assert target.effective_message_target == 5
+
+
+def test_unified_daily_target_freezes_seeded_jitter_for_task_day(
+    session: Session,
+) -> None:
+    task, group = _seed(session, configured=10, account_count=3)
+    task.type_config = {
+        **task.type_config,
+        "engagement_contract_version": "unified_engagement_v1",
+        "daily_target_jitter_bps": 3000,
+    }
+    target_date = date(2026, 7, 28)
+    expected = group_ai_daily_quantity(
+        task,
+        target_date,
+        required_account_count=3,
+        participation_plan=None,
+    )
+
+    target = ensure_task_group_daily_target(
+        session, task, group, target_date, now=datetime(2026, 7, 28, 10)
+    )
+    task.type_config = {**task.type_config, "daily_message_target": 99}
+    refresh_task_group_daily_target(session, target)
+
+    assert target.quantity_seed == expected.seed
+    assert target.sampled_jitter_bps == expected.sampled_jitter_bps
+    assert target.raw_quantity_target == expected.raw_target
+    assert target.configured_message_target == 10
+    assert target.planned_daily_target == expected.effective_target
 
 
 def test_daily_target_revision_tracks_current_task_day_scope(session: Session) -> None:
@@ -536,6 +567,56 @@ def test_daily_target_counts_only_success_attempt_with_remote_id(session: Sessio
     assert target.confirmed_message_count == 1
 
 
+def test_interaction_continuity_success_does_not_complete_daily_quantity(
+    session: Session,
+) -> None:
+    task, group = _seed(session, configured=1, account_count=1)
+    timestamp = datetime(2026, 7, 28, 12)
+    ledger = ensure_task_day_ledger(session, task, now=timestamp)
+    slot = session.query(TaskGroupDailyMessageSlot).filter_by(
+        task_day_ledger_id=ledger.id,
+    ).first()
+    slot.quantity_credit_eligible = False
+    slot.continuity_claim_id = "continuity-claim-1"
+    action = Action(
+        id="continuity-success", tenant_id=1, task_id=task.id,
+        task_type="group_ai_chat", action_type="send_message", account_id=1,
+        status="success", executed_at=timestamp,
+        primary_quantity_slot_id=slot.id,
+        payload={
+            "ai_message_memory_id": "continuity-memory",
+            "content_source": "account_mask", "account_mask_id": "mask-1",
+            "account_mask_version": 1,
+            "voice_profile_contract_version": "style_only_v2",
+            "account_mask_snapshot_hash": "mask-hash-1",
+            "conversation_turn_claim_id": "continuity-claim-1",
+        },
+    )
+    session.add(action)
+    session.flush()
+    session.add(AiGroupMessageMemory(
+        id="continuity-memory", tenant_id=1, group_id=group.id,
+        task_id=task.id, action_id=action.id, account_id=1,
+        raw_text="回复真人", normalized_text="回复真人",
+        text_fingerprint="continuity-memory", status="success",
+        planned_at=timestamp, account_mask_id="mask-1", account_mask_version=1,
+        mask_contract_version="style_only_v2", mask_snapshot_hash="mask-hash-1",
+        mask_status="active", content_source="account_mask",
+    ))
+    session.add(ExecutionAttempt(
+        tenant_id=1, action_id=action.id, account_id=1, attempt_no=1,
+        status="success", remote_message_id="remote-continuity-1",
+    ))
+    session.flush()
+
+    target = ensure_task_group_daily_target(
+        session, task, group, timestamp.date(), now=timestamp,
+    )
+
+    assert target.confirmed_message_count == 0
+    assert target.effective_message_target - target.confirmed_message_count == 1
+
+
 def test_planner_keeps_only_group_bot_ready_accounts_when_gate_is_required(
     session: Session,
 ) -> None:
@@ -803,6 +884,13 @@ def test_daily_planner_keeps_admission_driver_without_displacing_ready_volume(
         group_ai_chat,
         "_group_bot_ready_accounts_for_plan",
         lambda *_args: [],
+    )
+    monkeypatch.setattr(
+        group_ai_chat,
+        "voice_profile_prompt_details",
+        lambda *_args, **_kwargs: {
+            1: {"version": 1, "summary": "已验证面具"},
+        },
     )
     extras = [SimpleNamespace(id=extra_account_id)] if extra_account_id else []
     monkeypatch.setattr(

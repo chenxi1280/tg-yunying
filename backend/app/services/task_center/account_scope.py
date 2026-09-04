@@ -205,13 +205,19 @@ def _scope_account_ids(
     if selection_mode == "all":
         return eligible_ids
     if selection_mode == "group":
-        pool_id = int((task.account_config or {}).get("account_group_id") or 0)
-        if pool_id <= 0 or not eligible_ids:
+        account_config = task.account_config or {}
+        pool_ids = account_config.get("account_group_ids") or []
+        if not pool_ids and account_config.get("account_group_id"):
+            pool_ids = [account_config["account_group_id"]]
+        normalized_pool_ids = tuple(
+            sorted({int(pool_id) for pool_id in pool_ids if int(pool_id) > 0})
+        )
+        if not normalized_pool_ids or not eligible_ids:
             return []
         scoped_ids = set(session.scalars(
             select(TgAccount.id).where(
                 TgAccount.id.in_(eligible_ids),
-                TgAccount.pool_id == pool_id,
+                TgAccount.pool_id.in_(normalized_pool_ids),
             )
         ))
         return [account_id for account_id in eligible_ids if account_id in scoped_ids]

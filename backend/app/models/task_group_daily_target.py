@@ -31,9 +31,21 @@ class TaskGroupDailyTarget(Base):
         ForeignKey("task_day_ledgers.id", ondelete="CASCADE"),
         nullable=True,
     )
+    participation_plan_id: Mapped[str | None] = mapped_column(
+        ForeignKey("task_participation_unit_plans.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    planning_admission_snapshot_id: Mapped[str | None] = mapped_column(
+        ForeignKey("planning_admission_snapshots.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
     group_id: Mapped[int] = mapped_column(ForeignKey("tg_groups.id"))
     target_date: Mapped[date] = mapped_column(Date)
     configured_message_target: Mapped[int] = mapped_column(Integer)
+    quantity_policy_revision: Mapped[str] = mapped_column(String(64), default="legacy_fixed_v0")
+    quantity_seed: Mapped[str] = mapped_column(String(64), default="")
+    sampled_jitter_bps: Mapped[int] = mapped_column(Integer, default=0)
+    raw_quantity_target: Mapped[int] = mapped_column(Integer, default=0)
     frozen_account_count: Mapped[int] = mapped_column(Integer)
     effective_message_target: Mapped[int] = mapped_column(Integer)
     planned_target_revision: Mapped[int] = mapped_column(Integer, default=1)

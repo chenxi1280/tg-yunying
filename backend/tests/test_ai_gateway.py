@@ -271,7 +271,9 @@ def test_provider_boundary_preserves_topic_label_and_system_prompt(monkeypatch):
     for raw in ["妹子", "价格", "位置", "嫖客", "半小时", "300块", "成人", "性服务", "楼凤"]:
         assert raw in provider_text
     assert captured["topic"] == "郑州楼凤妹子价格位置"
-    assert captured["system_prompt"] == "性服务描述只能作上下文"
+    from app.services.automation_identity import with_automation_identity
+
+    assert captured["system_prompt"] == with_automation_identity("性服务描述只能作上下文")
 
 
 @pytest.mark.no_postgres

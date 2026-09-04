@@ -40,6 +40,7 @@ class AccountPacingReservation(Base):
     account_id: Mapped[int] = mapped_column(ForeignKey("tg_accounts.id", ondelete="CASCADE"))
     pacing_slot_key: Mapped[str] = mapped_column(String(255))
     policy_version: Mapped[str] = mapped_column(String(48))
+    action_class: Mapped[str] = mapped_column(String(32), default="", server_default="")
     due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     release_not_before_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     effective_claim_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

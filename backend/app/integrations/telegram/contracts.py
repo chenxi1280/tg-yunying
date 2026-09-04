@@ -219,6 +219,8 @@ class ChannelMessageSnapshot:
     source_type: str = "message_text"
     content_complete: bool = True
     comment_available: bool = True
+    grouped_id: str = ""
+    source_metadata: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

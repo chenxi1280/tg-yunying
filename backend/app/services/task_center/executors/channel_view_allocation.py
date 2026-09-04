@@ -21,6 +21,7 @@ class ViewPlanInputs:
     targets_by_message: dict[int, ChannelViewDailyMessageTarget]
     lifetime_ids_by_message: dict[int, set[int]]
     materialized_ids_by_message: dict[int, set[int]]
+    allowed_account_ids_by_message: dict[int, set[int]] | None
     now: datetime
 
 
@@ -101,8 +102,17 @@ def _eligible_accounts(
     return [
         account for account in inputs.accounts
         if account.id not in lifetime_ids
+        and _allowed_by_frozen_edge(inputs, message.id, account.id)
         and _account_has_view_daily_capacity(account.id, config, daily_counts)
     ]
+
+
+def _allowed_by_frozen_edge(
+    inputs: ViewPlanInputs, message_id: int, account_id: int
+) -> bool:
+    if inputs.allowed_account_ids_by_message is None:
+        return True
+    return account_id in inputs.allowed_account_ids_by_message.get(message_id, set())
 
 
 def _match_distinct_accounts_to_messages(

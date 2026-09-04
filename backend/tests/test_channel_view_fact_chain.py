@@ -32,10 +32,12 @@ from tests.channel_view_coverage_support import (
 pytestmark = pytest.mark.no_postgres
 
 
-def test_channel_view_fact_first_execution_chain(monkeypatch) -> None:
+@pytest.mark.parametrize("linked", [True, False])
+def test_channel_view_fact_first_execution_chain(monkeypatch, linked) -> None:
     now = datetime(2026, 8, 28, 0, 0, 10, tzinfo=BEIJING_TZ)
     with new_session() as session:
-        scenario = seed_channel_scenario(session, channel_id=106, account_count=3)
+        scenario = seed_channel_scenario(session, channel_id=106, account_count=3, linked=linked)
+        scenario.channel.can_send = linked
         message = add_message(
             session,
             channel=scenario.channel,

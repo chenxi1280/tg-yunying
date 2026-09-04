@@ -19,6 +19,7 @@ from app.models import (
 )
 from app.services.task_center import account_pacing_guard
 from app.services.task_center.account_pacing_guard import (
+    release_unbound_account_pacing_reservation,
     release_safe_task_account_pacing_reservations,
     reserve_account_pacing,
 )
@@ -174,3 +175,39 @@ def test_remote_bound_reservations_remain_immutable(session: Session) -> None:
         gateway_action.id,
         fact_action.id,
     ]
+
+
+def test_unbound_candidate_reservation_can_be_released_and_rearmed(
+    session: Session,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        account_pacing_guard,
+        "get_settings",
+        lambda: SimpleNamespace(account_soft_pacing_min_gap_seconds=20),
+    )
+    reservation = reserve_account_pacing(
+        session,
+        tenant_id=TENANT_ID,
+        task_id=TASK_ID,
+        account_id=ACCOUNT_ID,
+        slot_key="comment:candidate-slot",
+        due_at=NOW,
+        deadline_at=NOW + timedelta(hours=1),
+    )
+
+    release_unbound_account_pacing_reservation(reservation)
+    assert reservation.state == "released"
+    rearmed = reserve_account_pacing(
+        session,
+        tenant_id=TENANT_ID,
+        task_id=TASK_ID,
+        account_id=ACCOUNT_ID,
+        slot_key="comment:candidate-slot",
+        due_at=NOW + timedelta(minutes=1),
+        deadline_at=NOW + timedelta(hours=1),
+    )
+
+    assert rearmed.id == reservation.id
+    assert rearmed.state == "reserved"
+    assert rearmed.action_id is None

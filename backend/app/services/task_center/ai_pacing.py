@@ -44,6 +44,7 @@ def assign_ai_pacing_slots(
     effective_plan_total: int,
     coverage_by_account: dict[int, TaskAccountDailyCoverage],
     item_account_ids: list[int],
+    item_continuity_claim_ids: list[str] | None = None,
 ) -> list[AiPacingAssignment]:
     target = session.get(TaskGroupDailyTarget, daily_group_target_id)
     if target is None or not target.task_day_ledger_id:
@@ -52,13 +53,33 @@ def assign_ai_pacing_slots(
     if ledger is None:
         return []
     expected_ids = _coverage_expectations(coverage_by_account, item_account_ids)
+    claim_ids = item_continuity_claim_ids or [""] * len(item_account_ids)
     available = _available_quantity_slots(
         session,
         task,
         ledger.id,
         expected_coverage_ids=expected_ids,
+        expected_continuity_claim_ids=claim_ids,
     )
-    owners = _align_quantity_slots(available, coverage_by_account, item_account_ids)
+    owners = _align_quantity_slots(
+        available, coverage_by_account, item_account_ids,
+        continuity_claim_ids=claim_ids,
+    )
+    return _pacing_owner_assignments(
+        session, task, target=target, ledger=ledger, owners=owners,
+        effective_plan_total=effective_plan_total,
+    )
+
+
+def _pacing_owner_assignments(
+    session: Session,
+    task: Task,
+    *,
+    target: TaskGroupDailyTarget,
+    ledger: TaskDayLedger,
+    owners: list[TaskGroupDailyMessageSlot],
+    effective_plan_total: int,
+) -> list[AiPacingAssignment]:
     plan_total = max(
         effective_plan_total,
         max((row.pacing_plan_total or row.slot_ordinal for row in owners), default=0),
@@ -120,6 +141,7 @@ def _available_quantity_slots(
     ledger_id: str,
     *,
     expected_coverage_ids: list[str],
+    expected_continuity_claim_ids: list[str],
 ) -> list[TaskGroupDailyMessageSlot]:
     bound_action = select(Action.id).where(
         Action.primary_quantity_slot_id == TaskGroupDailyMessageSlot.id,
@@ -132,17 +154,30 @@ def _available_quantity_slots(
         ~bound_action,
     ).order_by(TaskGroupDailyMessageSlot.slot_ordinal.asc())
     specific_ids = sorted({coverage_id for coverage_id in expected_coverage_ids if coverage_id})
+    continuity_ids = sorted({claim_id for claim_id in expected_continuity_claim_ids if claim_id})
     rows: list[TaskGroupDailyMessageSlot] = []
+    if continuity_ids:
+        rows.extend(session.scalars(_lock_slots(
+            session,
+            statement.where(TaskGroupDailyMessageSlot.continuity_claim_id.in_(continuity_ids)),
+        )))
     if specific_ids:
         rows.extend(session.scalars(_lock_slots(
             session,
             statement.where(TaskGroupDailyMessageSlot.task_account_daily_coverage_id.in_(specific_ids)),
         )))
-    unassigned_count = expected_coverage_ids.count("")
+    unassigned_count = sum(
+        1 for coverage_id, claim_id in zip(
+            expected_coverage_ids, expected_continuity_claim_ids, strict=True,
+        ) if not coverage_id and not claim_id
+    )
     if unassigned_count:
         rows.extend(session.scalars(_lock_slots(
             session,
-            statement.where(TaskGroupDailyMessageSlot.task_account_daily_coverage_id.is_(None)).limit(unassigned_count),
+            statement.where(
+                TaskGroupDailyMessageSlot.task_account_daily_coverage_id.is_(None),
+                TaskGroupDailyMessageSlot.continuity_claim_id.is_(None),
+            ).limit(unassigned_count),
         )))
     return sorted(rows, key=lambda row: row.slot_ordinal)
 
@@ -157,20 +192,33 @@ def _align_quantity_slots(
     available: list[TaskGroupDailyMessageSlot],
     coverage_by_account: dict[int, TaskAccountDailyCoverage],
     item_account_ids: list[int],
+    *,
+    continuity_claim_ids: list[str],
 ) -> list[TaskGroupDailyMessageSlot]:
     expected_ids = _coverage_expectations(coverage_by_account, item_account_ids)
     coverage_slots: dict[str, TaskGroupDailyMessageSlot] = {}
+    continuity_slots: dict[str, TaskGroupDailyMessageSlot] = {}
     unassigned: list[TaskGroupDailyMessageSlot] = []
     for row in available:
         coverage_id = str(row.task_account_daily_coverage_id or "")
-        if coverage_id:
+        claim_id = str(row.continuity_claim_id or "")
+        if claim_id:
+            continuity_slots.setdefault(claim_id, row)
+        elif coverage_id:
             coverage_slots.setdefault(coverage_id, row)
         else:
             unassigned.append(row)
     unassigned_iter = iter(unassigned)
     selected: list[TaskGroupDailyMessageSlot] = []
-    for expected_id in expected_ids:
-        matched = coverage_slots.pop(expected_id, None) if expected_id else next(unassigned_iter, None)
+    for expected_id, claim_id in zip(
+        expected_ids, continuity_claim_ids, strict=True,
+    ):
+        if claim_id:
+            matched = continuity_slots.pop(claim_id, None)
+        elif expected_id:
+            matched = coverage_slots.pop(expected_id, None)
+        else:
+            matched = next(unassigned_iter, None)
         if matched is None:
             break
         selected.append(matched)

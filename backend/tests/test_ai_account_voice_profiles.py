@@ -10,7 +10,7 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import AccountPool, AccountStatus, AiAccountGroupStanceMemory, AiAccountVoiceProfile, AuditLog, TgAccount
+from app.models import AccountPool, AccountStatus, AiAccountGroupStanceMemory, AiAccountVoiceProfile, AuditLog, ExecutionResiliencePolicyRevision, TgAccount
 from app.schemas.ai_config import AiAccountVoiceProfileBatchStatusOut
 from app.services.task_center import account_stance_memory, account_voice_profile_cache
 from app.services.task_center.account_voice_profiles import (
@@ -276,6 +276,37 @@ def test_voice_profile_prompt_details_ignores_legacy_summary_only_cache(monkeypa
         assert fake_redis.setex_calls
 
 
+def test_voice_profile_prompt_details_rejects_stale_structured_cache(monkeypatch):
+    stale_payload = json.dumps(
+        {
+            "account_id": 101,
+            "id": "stale-profile-id",
+            "version": 2,
+            "summary": "已撤销的旧面具",
+            "mask_name": "旧面具",
+            "audience_archetype": "旧受众",
+            "identity_frame": "旧身份",
+            "preference_tags": ["旧标签"],
+            "contract_version": "style_only_v2",
+            "snapshot_hash": "stale-hash",
+        },
+        ensure_ascii=False,
+    )
+    fake_redis = FakeVoiceProfileRedis([stale_payload])
+    _enable_voice_profile_redis(monkeypatch, fake_redis)
+    with _session() as session:
+        _account(session, 101, "花花号")
+        session.add(_profile(101, "当前有效面具", version=3))
+        session.commit()
+
+        details = voice_profile_prompt_details(session, tenant_id=1, account_ids=[101])
+
+        assert details[101]["version"] == 3
+        assert details[101]["summary"] == "当前有效面具"
+        assert fake_redis.delete_calls == ["ai_group:voice_profile:1:101"]
+        assert fake_redis.setex_calls
+
+
 def test_voice_profile_patch_refreshes_redis_cache(monkeypatch):
     fake_redis = FakeVoiceProfileRedis()
     _enable_voice_profile_redis(monkeypatch, fake_redis)
@@ -343,25 +374,28 @@ def test_account_mask_fields_patch_and_projection_stay_compatible(monkeypatch):
         assert details[101]["summary"] == "男大短句，先接反馈再追问黑丝和避坑"
 
 
-def test_account_mask_patch_rejects_non_male_identity():
+def test_account_mask_patch_accepts_neutral_automation_role():
     with _session() as session:
         _account(session, 101, "花花号", username="huahua101")
         session.add(_profile(101, "男大短句，先问反馈再看照片", version=1))
         session.commit()
 
-        with pytest.raises(ValueError, match="account mask gender must be male"):
-            patch_voice_profile(
-                session,
-                tenant_id=1,
-                account_id=101,
-                patch={
-                    "mask_name": "女客闲聊号",
-                    "audience_archetype": "怕跑空的年轻客",
-                    "identity_frame": "女性账号，先看反馈再问细节",
-                    "short_prompt_summary": "青年短句，先看反馈再问细节",
-                },
-                actor="tester",
-            )
+        patch_voice_profile(
+            session,
+            tenant_id=1,
+            account_id=101,
+            patch={
+                "mask_name": "简短细节问答助手",
+                "audience_archetype": "需要了解细节的参与者",
+                "identity_frame": "AI 自动化问答助手",
+                "short_prompt_summary": "先读上下文再简短回答，只在缺少信息时追问一个细节",
+            },
+            actor="tester",
+        )
+        active = session.scalar(select(AiAccountVoiceProfile).where(
+            AiAccountVoiceProfile.account_id == 101, AiAccountVoiceProfile.status == "active",
+        ))
+        assert active.identity_frame == "AI 自动化问答助手"
 
 
 def test_account_mask_fields_feed_group_ai_prompt_details(monkeypatch):
@@ -380,7 +414,7 @@ def test_account_mask_fields_feed_group_ai_prompt_details(monkeypatch):
         assert details[101]["identity_frame"] == "男大，预算不高，喜欢先看反馈"
         assert details[101]["preference_tags"] == ["黑丝", "年轻", "别跑空"]
         assert "面具：黑丝偏好男大" in prompt_profiles["101"]
-        assert "身份：男大，预算不高，喜欢先看反馈" in prompt_profiles["101"]
+        assert "服务角色参考（非身份事实）：男大，预算不高，喜欢先看反馈" in prompt_profiles["101"]
         assert "偏好：黑丝、年轻、别跑空" in prompt_profiles["101"]
 
 
@@ -747,16 +781,15 @@ def test_parse_voice_profile_rejects_unclosed_think_wrapper():
         _parse_voice_profile_payloads(raw, [101], strict_lightweight=True)
 
 
-def test_parse_voice_profile_rejects_non_male_mask_identity():
+def test_parse_voice_profile_accepts_neutral_automation_role():
     raw = (
-        '{"id":101,"mask":"黑丝偏好女客","aud":"怕跑空的年轻客","frame":"年轻女性，先看反馈再问细节","tags":["黑丝","反馈"],'
-        '"age":"青年","px":["做过夜场熟客"],"cx":["常点花花老师"],"len":"短句",'
-        '"habits":["先问位置","爱追问照片","先接别人话"],"tone":"轻松","words":["我看看","别跑空"],'
-        '"emoji":"少用","ban":["确实不错","感觉挺靠谱","这个不错"],"summary":"青年短句先问位置和照片偶尔说别跑空"}'
+        '{"id":101,"mask":"简短细节问答助手","aud":"需要细节的参与者","frame":"AI 自动化问答助手","tags":["摄影","阅读"],'
+        '"habits":["先读上下文","只问一个问题","短句回答"],'
+        '"ban":["夸张承诺","冒充管理","外部联系"],"summary":"先读上下文再简短回答，只在缺少信息时追问一个细节"}'
     )
 
-    with pytest.raises(ValueError, match="account mask gender must be male"):
-        _parse_voice_profile_payloads(raw, [101])
+    profiles = _parse_voice_profile_payloads(raw, [101], strict_lightweight=True)
+    assert profiles[0]["identity_frame"] == "AI 自动化问答助手"
 
 
 def test_parse_voice_profile_rejects_sparse_actionable_fields():
@@ -789,6 +822,8 @@ def test_generate_voice_profiles_uses_compact_token_budget(monkeypatch):
         captured["prompt"] = prompt
         captured["max_tokens"] = max_tokens
         captured["reasoning_retry_max_tokens"] = kwargs.get("reasoning_retry_max_tokens")
+        captured["timeout"] = kwargs.get("timeout")
+        captured["system_prompt"] = kwargs.get("system_prompt")
         return (
             '{"id":101,"mask":"黑丝偏好男大","aud":"怕跑空的年轻男客","frame":"男大，先看反馈再问细节","tags":["黑丝","反馈"],'
             '"age":"青年","px":["做过夜场熟客"],"cx":["常点花花老师"],"len":"短句",'
@@ -812,24 +847,63 @@ def test_generate_voice_profiles_uses_compact_token_budget(monkeypatch):
     assert VOICE_PROFILE_INITIAL_MAX_TOKENS == 1024
     assert captured["max_tokens"] == VOICE_PROFILE_INITIAL_MAX_TOKENS
     assert captured["reasoning_retry_max_tokens"] is None
-    assert "所有账号面具必须体现成年男性日常社交身份" in str(captured["prompt"])
+    assert captured["timeout"] == 15
+    assert "不生成真人身份" not in str(captured["prompt"])
+    assert "disclosed_automation_v1" not in str(captured["system_prompt"])
     assert profiles[0]["account_id"] == 101
     assert profiles[0]["mask_name"] == "黑丝偏好男大"
 
 
-def test_voice_profile_prompt_requires_male_mask_identity():
+def test_generate_voice_profiles_uses_tenant_resilience_timeout(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_post(credentials, prompt, temperature, max_tokens, **kwargs):  # noqa: ANN001
+        captured["timeout"] = kwargs.get("timeout")
+        return (
+            '{"id":101,"mask":"谨慎男生","aud":"本地成年男士","frame":"男性日常社交账号，先看公开反馈再简短接话",'
+            '"tags":["数码","运动"],"habits":["先看上下文","简短接话","不抢话"],'
+            '"ban":["夸张承诺","冒充熟人","外部联系"],"summary":"成年男性日常社交账号，先看公开反馈再简短接话"}',
+            SimpleNamespace(total_tokens=120),
+        )
+
+    monkeypatch.setattr(
+        "app.services.task_center.account_voice_profile_generation.ai_gateway._post_openai_compatible",
+        fake_post,
+    )
+    with _session() as session:
+        _account(session, 101, "测试号")
+        session.add(
+            ExecutionResiliencePolicyRevision(
+                tenant_id=1,
+                llm_invocation_timeout_seconds=9,
+            )
+        )
+        session.flush()
+        _generate_voice_profile_payloads(
+            session,
+            1,
+            [101],
+            SimpleNamespace(model_name="deepseek-chat"),
+            SimpleNamespace(temperature=0.7, max_tokens=8192),
+            strict_lightweight=True,
+        )
+
+    assert captured["timeout"] == 9
+
+
+def test_voice_profile_prompt_supports_natural_persona():
     prompt = _voice_profile_prompt([SimpleNamespace(id=101, display_name="测试号", username="test101")])
 
-    assert "成年男性日常社交身份" in prompt
-    assert "不得生成女性或中性身份" in prompt
+    assert "AI/自动化服务角色" not in prompt
+    assert "各账号风格自然鲜明" in prompt
     assert "id,mask,aud,frame,tags,habits,ban,summary" in prompt
     assert "age,px,cx,len,tone,words,emoji" not in prompt
 
 
-def test_voice_profile_prompt_uses_safe_adult_male_social_wording():
+def test_voice_profile_prompt_bans_inappropriate_content():
     prompt = _voice_profile_prompt([SimpleNamespace(id=101, display_name="测试号", username="test101")])
 
-    assert "成年男性日常社交身份" in prompt
+    assert "不得从昵称和用户名推断身份" not in prompt
     assert "嫖客" not in prompt
     assert "色情" not in prompt
     assert "寻欢" not in prompt

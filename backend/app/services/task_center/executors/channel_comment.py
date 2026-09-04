@@ -10,12 +10,9 @@ from app.models import ChannelMessage, CommentFulfillmentObligation, OperationTa
 
 from app.services.rule_engine import bound_rule_version, evaluate_input_filter
 from ..account_voice_profiles import voice_profile_prompt_details
-from ..account_pool import daily_uncovered_account_count, select_task_accounts
-from ..channel_membership import channel_member_accounts, gate_channel_membership
-from ..comment_account_profiles import (
-    comment_account_profile_ready,
-    config_with_comment_profile as _config_with_comment_profile,
-)
+from ..account_pool import daily_uncovered_account_count
+from ..channel_membership import gate_channel_membership
+from ..comment_account_profiles import config_with_comment_profile as _config_with_comment_profile
 from ..comment_fulfillment import (
     bind_comment_obligation,
     clean_expired_comment_obligations,
@@ -32,6 +29,11 @@ from .channel_comment_budget import (
     reconcile_lifetime_cap,
     resolved_total_comment_limit as _resolved_total_comment_limit,
     total_comment_action_count as _total_comment_action_count,
+)
+from .channel_comment_accounts import (
+    PROFILE_ERROR as COMMENT_ACCOUNT_PROFILE_ERROR,
+    _profile_ready_accounts as _comment_ready_accounts,
+    prepare_comment_accounts,
 )
 from .channel_comment_targets import (
     message_reply_targets as _message_reply_targets,
@@ -53,18 +55,20 @@ from .channel_comment_preparation import (
 )
 from .common import (
     channel_messages,
-    quantity_jitter_bounds,
+    channel_scope,
     record_channel_capacity_warning,
     stats_inc,
 )
 
 CHANNEL_COMMENT_SCENE = "channel_comment"
-COMMENT_ACCOUNT_PROFILE_ERROR = "评论账号资料未初始化，请先在账号中心批量初始化中文昵称、username 和头像"
 POSTGRES_ADVISORY_LOCK_MASK = (1 << 63) - 1
 
 
 @dataclass(frozen=True)
 class CommentPlanContext:
+    ledger: object | None
+    participation_plan: object | None
+    admission_snapshot: object | None
     config: dict
     total_remaining: int
     rule_version: object
@@ -72,6 +76,7 @@ class CommentPlanContext:
     channel: OperationTarget
     messages: list[ChannelMessage]
     profile_preview: dict
+    policy_accounts: list
     accounts: list
     voice_profiles: dict
 
@@ -201,7 +206,12 @@ def _comment_plan_setup(session: Session, task: Task) -> CommentPlanSetup:
     if not channel or channel.tenant_id != task.tenant_id or channel.target_type != "channel":
         task.last_error = "目标频道不存在"
         return CommentPlanSetup(None)
-    gate = gate_channel_membership(session, task, channel, require_send=True)
+    gate = gate_channel_membership(
+        session,
+        task,
+        channel,
+        require_send=not grounding_plan_enabled(task),
+    )
     if not gate.ready:
         return CommentPlanSetup(None, gate.created)
     channel, messages = _persisted_channel_scope(session, task, config)
@@ -210,18 +220,21 @@ def _comment_plan_setup(session: Session, task: Task) -> CommentPlanSetup:
     profile_preview = tenant_learning_profile_preview(session, task.tenant_id, CHANNEL_COMMENT_SCENE)
     audit_learning_profile_use(session, task, profile_preview, "AI评论任务")
     config = _config_with_comment_profile(config, profile_preview)
-    accounts = _planning_accounts(
-        session, task, channel=channel, config=config,
+    account_setup = prepare_comment_accounts(
+        session, task, channel, config=config
     )
-    if not accounts:
+    if not account_setup.policy_accounts:
         return CommentPlanSetup(None)
     voices = voice_profile_prompt_details(
         session,
         tenant_id=task.tenant_id,
-        account_ids=[account.id for account in accounts],
+        account_ids=[account.id for account in account_setup.accounts],
     )
     return CommentPlanSetup(
         CommentPlanContext(
+            ledger=account_setup.ledger,
+            participation_plan=account_setup.participation_plan,
+            admission_snapshot=account_setup.admission_snapshot,
             config=config,
             total_remaining=total_remaining,
             rule_version=rule_version,
@@ -229,7 +242,8 @@ def _comment_plan_setup(session: Session, task: Task) -> CommentPlanSetup:
             channel=channel,
             messages=messages,
             profile_preview=profile_preview,
-            accounts=accounts,
+            policy_accounts=account_setup.policy_accounts,
+            accounts=account_setup.accounts,
             voice_profiles=voices,
         )
     )
@@ -245,6 +259,8 @@ def _persisted_channel_scope(
         task.last_error = "目标频道不存在"
         return None, []
     clean_expired_comment_obligations(session, task)
+    if config.get("engagement_contract_version") == "unified_engagement_v1":
+        return channel_scope(session, task, config, comment_available_only=True)
     messages = channel_messages(
         session,
         task.tenant_id,
@@ -297,38 +313,6 @@ def _merge_comment_messages(*groups: list[ChannelMessage]) -> list[ChannelMessag
         merged.append(message)
         seen.add(message.id)
     return merged
-
-
-def _planning_accounts(
-    session: Session,
-    task: Task,
-    *,
-    channel: OperationTarget,
-    config: dict,
-) -> list:
-    grounding_v1 = grounding_plan_enabled(task)
-    target_per_message = int(config.get("target_comments_per_message") or 1)
-    _lower, max_target_per_message = quantity_jitter_bounds(target_per_message, float(config.get("comment_count_jitter") or 0))
-    is_all_mode = (task.account_config or {}).get("selection_mode") == "all"
-    account_scan_limit = max(max_target_per_message, int((task.account_config or {}).get("max_concurrent") or max_target_per_message))
-    selected_accounts = select_task_accounts(
-        session,
-        task.tenant_id,
-        task.account_config or {},
-        limit=None if is_all_mode else account_scan_limit,
-        enforce_max_concurrent=False,
-        enforce_capacity=not grounding_v1,
-        scan_all_candidates=grounding_v1 or is_all_mode,
-        daily_coverage_task_id=task.id,
-        daily_coverage_action_types=("post_comment",),
-    )
-    ready_accounts = selected_accounts if grounding_v1 else channel_member_accounts(
-        session, task, channel, selected_accounts, require_send=True,
-    )
-    accounts = _comment_ready_accounts(task, ready_accounts)
-    if not accounts:
-        task.last_error = COMMENT_ACCOUNT_PROFILE_ERROR if ready_accounts else "没有可用账号，等待账号恢复后继续执行"
-    return accounts
 
 
 def _comment_plan_slots(
@@ -475,7 +459,9 @@ def _comment_slot_targets(
 ) -> list[dict | None] | None:
     mode = str(context.config.get("comment_mode") or "comment")
     if mode == "comment":
-        return [None] * quantity
+        return _unified_comment_interaction_targets(
+            session, task, context=context, message=message, quantity=quantity,
+        )
     pool = (
         [target for target in requested_targets if int(target.get("channel_message_id") or 0) == message.id]
         if mode == "reply"
@@ -495,6 +481,33 @@ def _comment_slot_targets(
     return [*pool[:required], *([None] * (quantity - required))]
 
 
+def _unified_comment_interaction_targets(
+    session: Session,
+    task: Task,
+    *,
+    context: CommentPlanContext,
+    message: ChannelMessage,
+    quantity: int,
+) -> list[dict | None]:
+    if str(
+        context.config.get("engagement_contract_version") or ""
+    ) != "unified_engagement_v1":
+        return [None] * quantity
+    candidates = [
+        target for target in _message_reply_targets(
+            session, task,
+            channel_target_id=context.channel.id, message=message,
+        )
+        if target.get("source") == "channel_comment"
+    ]
+    baseline = (max(0, quantity) * 30 + 99) // 100
+    required = min(quantity, max(
+        baseline, int(context.config.get("reply_min_per_message") or 0),
+    ))
+    replies = candidates[:required]
+    return [*replies, *([None] * max(0, quantity - len(replies)))]
+
+
 def _prepare_comment_actions(
     session: Session,
     task: Task,
@@ -510,22 +523,6 @@ def _prepare_comment_actions(
         slots=slots,
         payload_builder=build_comment_payload,
     )
-
-
-def _comment_ready_accounts(task: Task, accounts: list) -> list:
-    ready = [account for account in accounts if comment_account_profile_ready(account)]
-    blocked_count = len(accounts) - len(ready)
-    stats = dict(task.stats or {})
-    if blocked_count:
-        stats["comment_profile_blocked_account_count"] = blocked_count
-        stats["comment_profile_ready_account_count"] = len(ready)
-    else:
-        stats.pop("comment_profile_blocked_account_count", None)
-        stats.pop("comment_profile_ready_account_count", None)
-    if ready and task.last_error == COMMENT_ACCOUNT_PROFILE_ERROR:
-        task.last_error = ""
-    task.stats = stats
-    return ready
 
 
 __all__ = ["_resolved_total_comment_limit", "_total_comment_action_count", "build_plan"]

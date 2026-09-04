@@ -17,6 +17,7 @@ from app.integrations.telegram import (
 )
 from app.telethon_lifecycle import (
     TelethonClientLifecycle,
+    TelethonOperationTimeout,
     shutdown_telethon_lifecycle,
     shutdown_telethon_lifecycle_strict,
 )
@@ -108,6 +109,40 @@ def test_telethon_lifecycle_enforces_cache_limit(monkeypatch):
     assert first_client.disconnect_count == 1
     assert second_client.is_connected() is True
     assert len(TelethonClientLifecycle._cache) == 1
+
+
+def test_telethon_lifecycle_uses_attempt_connect_timeout_override(monkeypatch):
+    reset_lifecycle_state()
+    lifecycle = TelethonClientLifecycle(
+        Settings(telethon_client_connect_timeout_seconds=15),
+    )
+    credentials = DeveloperAppCredentials(
+        app_id=1,
+        api_id=123,
+        api_hash="hash",
+        credentials_version=1,
+    )
+    client = FakeTelethonClient("session-override")
+    observed: list[float] = []
+    original_wait_for = asyncio.wait_for
+
+    async def record_wait_for(awaitable, timeout):
+        observed.append(float(timeout))
+        return await original_wait_for(awaitable, timeout=timeout)
+
+    monkeypatch.setattr(lifecycle, "new_client", lambda *_args, **_kwargs: client)
+    monkeypatch.setattr("app.telethon_lifecycle.asyncio.wait_for", record_wait_for)
+
+    asyncio.run(
+        lifecycle.get_or_create_client(
+            credentials,
+            "session-override",
+            connect_timeout_seconds=5,
+        ),
+    )
+
+    assert observed == [5.0]
+    assert client.is_connected() is True
 
 
 def test_telethon_lifecycle_cache_key_includes_proxy(monkeypatch):
@@ -434,10 +469,35 @@ def test_telethon_lifecycle_cancels_coroutine_after_operation_timeout():
             cancelled.set()
             raise
 
-    with pytest.raises(FutureTimeoutError):
+    with pytest.raises(TelethonOperationTimeout) as captured:
         lifecycle.run(slow_operation(), timeout_seconds=0.01)
 
+    assert captured.value.transport_termination_acknowledged is True
     assert cancelled.wait(timeout=1)
+    shutdown_telethon_lifecycle(timeout_seconds=1)
+
+
+def test_telethon_timeout_reports_runner_that_ignores_initial_cancellation():
+    reset_lifecycle_state()
+    lifecycle = TelethonClientLifecycle(
+        Settings(telethon_operation_timeout_seconds=1)
+    )
+    finished = threading.Event()
+
+    async def cancellation_delayed_operation():
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            await asyncio.sleep(0.05)
+        finally:
+            finished.set()
+
+    with pytest.raises(TelethonOperationTimeout) as captured:
+        lifecycle.run(cancellation_delayed_operation(), timeout_seconds=0.01)
+
+    assert captured.value.transport_termination_acknowledged is False
+    assert finished.wait(timeout=1)
+    assert captured.value.termination_event.wait(timeout=1)
     shutdown_telethon_lifecycle(timeout_seconds=1)
 
 

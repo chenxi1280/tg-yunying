@@ -7,6 +7,7 @@ import re
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
+from app.services.automation_identity import with_automation_identity
 
 from app.models import (
     AccountStatus,
@@ -244,7 +245,7 @@ def _rewrite_mirror_content(
         raise RuntimeError("监听转发 AI 润色不可用：AI 未启用或没有健康供应商")
     prompt = (
         "请把源群消息改写成适合目标 Telegram 群发送的一条自然消息。\n"
-        "要求：保留原意，换一种表达；不要暴露转发、监听、AI、运营；不要 @ 用户；不要直接引用原消息；只输出 JSON。\n"
+        "要求：保留原意，换一种表达；保留来源归属；不要 @ 用户；只输出 JSON。\n"
         f"目标群：{target_group.title}\n"
         f"目标话题：{campaign.topic or target_group.topic_direction}\n"
         f"源消息发送者：{message.sender_name}\n"
@@ -258,9 +259,10 @@ def _rewrite_mirror_content(
             count=1,
             topic=campaign.topic or target_group.topic_direction,
             tone="自然、口语化、和原文不完全一样",
-            persona_set=["自然群友"],
+            persona_set=["群友分享"],
             temperature=tenant_setting.temperature,
             max_tokens=max(tenant_setting.max_tokens, 512),
+            system_prompt=with_automation_identity(None),
         )
         candidate = result.candidates[0]
         content = candidate.content.strip()

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -11,13 +11,10 @@ from app.models import (
     ContentMixCycleSlot,
     ContentMixObligation,
     Task,
-    TaskDayLedger,
     TaskGroupDailyTarget,
-    TaskGroupDailyMessageSlot,
     TenantAiSetting,
 )
 from app.services._common import _now
-from app.timezone import BEIJING_TZ
 
 from .ai_generator import AI_CONTENT_REQUEST_TIMEOUT_SECONDS, AiGenerationUnavailable
 from .ai_content_job_binding import (
@@ -32,6 +29,9 @@ from .ai_provider_routes import (
     route_config,
 )
 from .payloads import SendMessagePayload
+from .generation_deadlines import batch_latest_safe_send_at, latest_safe_send_at as _latest_safe_send_at
+from .generation_timing_binding import bind_generation_timing_config
+from .ai_generation_state import cached_generation_result
 
 
 GenerationSlotBuilder = Callable[..., dict]
@@ -48,7 +48,7 @@ def build_runtime_config(
 
     for action, payload in batch:
         validate_content_intent_for_gateway(session, payload, action=action)
-    config = dict(task.type_config or {})
+    config = {**dict(task.type_config or {}), **tenant_fallback_flags(task)}
     _bind_fact_first_provider(session, task, config)
     config = _bind_legacy_provider_failover(session, task, config)
     _bind_legacy_attempt_job(config, batch)
@@ -73,7 +73,7 @@ def build_runtime_config(
         for index, (action, payload) in enumerate(batch, 1)
     ]
     config["generation_slots"] = enrich_group_generation_slots(config, batch, slots)
-    deadline = _latest_safe_send_at(session, batch[0][0])
+    deadline = batch_latest_safe_send_at(session, (action for action, _payload in batch))
     if deadline:
         config["_ai_generation_latest_safe_send_at"] = deadline.isoformat()
     if _due_catch_up_required(session, batch[0][0], batch[0][1]):
@@ -83,7 +83,16 @@ def build_runtime_config(
         config["topic_thread"] = first.topic_thread
     if first.topic_plan:
         config["topic_plan"] = first.topic_plan
-    return config
+    return _bind_batch_timing(session, task, batch=batch, jobs=jobs, config=config, deadline=deadline)
+
+
+def _bind_batch_timing(session, task, *, batch, jobs, config, deadline):
+    work = tuple((job, "response" if payload.reply_to_message_id else "proactive")
+                 for job, (_action, payload) in zip(jobs, batch))
+    return bind_generation_timing_config(
+        session, task, work=work, config=config, deadline_at=deadline,
+        requires_provider=not all(cached_generation_result(payload) for _action, payload in batch),
+    )
 
 
 def _bind_legacy_attempt_job(config: dict, batch: list[tuple[Action, SendMessagePayload]]) -> None:
@@ -185,20 +194,6 @@ def _content_obligation_fallback_ready(session: Session, action: Action) -> bool
         ContentMixObligation.status == "pending",
     ))
     return int(pending_count or 0) == 0
-
-
-def _latest_safe_send_at(session: Session, action: Action) -> datetime | None:
-    quantity_slot_id = str(action.primary_quantity_slot_id or "")
-    if not quantity_slot_id:
-        return None
-    deadline = session.scalar(select(TaskDayLedger.deadline_at).join(
-        TaskGroupDailyMessageSlot,
-        TaskGroupDailyMessageSlot.task_day_ledger_id == TaskDayLedger.id,
-    ).where(TaskGroupDailyMessageSlot.id == quantity_slot_id))
-    if deadline is None:
-        return None
-    aware = deadline.replace(tzinfo=timezone.utc) if deadline.tzinfo is None else deadline
-    return aware.astimezone(BEIJING_TZ).replace(tzinfo=None)
 
 
 def _due_catch_up_required(

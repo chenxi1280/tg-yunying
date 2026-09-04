@@ -199,6 +199,7 @@ worker_containers=(
   tgyunying-worker-ai-generation
   tgyunying-worker-ai-generation-2
   tgyunying-worker-ai-generation-3
+  tgyunying-worker-comment-generation
   tgyunying-worker-dispatcher-1
   tgyunying-worker-dispatcher-2
   tgyunying-worker-search-dispatcher

@@ -33,6 +33,10 @@ from app.services.account_authorizations import attempt_primary_proxy_recovery, 
 from app.services.account_capacity import account_capacity_decision
 from app.services.content_filters import filter_outbound_content, rewrite_rejected_content
 from app.services.developer_apps import credentials_for_account, credentials_for_authorization, credentials_for_developer_app
+from app.services.account_runtime_transport import (
+    AccountRuntimeTransport,
+    task_account_runtime_transport,
+)
 from app.services.ai_config import get_scheduling_setting
 from app.services.membership_challenges import auto_resolve_image_verification, auto_resolve_text_verification, build_search_join_image_verification_solver, read_challenge_context_with_fallback, record_challenge_attempt
 from app.services.notifications import NotificationResult, send_telegram_bot_message
@@ -69,6 +73,7 @@ from .ai_generator import (
 )
 from .ai_message_memory import DuplicateMessageReservation, ensure_group_ai_message_sendable, mark_group_ai_message_result
 from .channel_membership import account_satisfies_authorized_target, linked_channel_group, mark_channel_membership_joined
+from .channel_access import public_channel_view
 from .channel_fulfillment import (
     RemoteFactAlreadyFulfilled,
     confirm_reaction_action,
@@ -125,6 +130,12 @@ from .group_bot_confirmation_refresh import (
 from .group_bot_claim_priority import group_bot_admission_claim_rank
 from .group_send_claim_slots import filter_ready_group_send_actions, lock_eligible_group_send_actions
 from .group_send_limits import GroupSendSlotBlock, group_send_slot_block, reserve_group_send_slot, settle_group_send_slot
+from .engagement_runtime_resources import (
+    RuntimeResourceBlocked,
+    mark_attempt_call_issued as mark_engagement_attempt_call_issued,
+    reserve_attempt_resources as reserve_engagement_attempt_resources,
+    settle_attempt_resources as settle_engagement_attempt_resources,
+)
 from .legacy_anchor_rewrite import reject_legacy_anchor_rewrite_before_send
 from .payloads import (
     GROUP_BOT_CHANNEL_FOLLOW_ACTION_TYPE,
@@ -349,6 +360,8 @@ REQUIRED_CHANNEL_ADMISSION_RETRY_SECONDS = 300
 GROUP_BOT_CONFIRMATION_SOURCE_RETRY_SECONDS = 15
 VERIFICATION_READER_CANDIDATE_LIMIT = 5
 GROUP_RESCUE_INFLIGHT_CONFLICT_BACKOFF_SECONDS = 30
+CONVERSATION_REMOTE_PROBE_TIMEOUT_SECONDS = 10.0
+CONVERSATION_REMOTE_PROBE_RETRY_SECONDS = 2
 _ACCOUNT_SESSION_FAILURE_MARKERS = (
     "session",
     "auth key",
@@ -410,6 +423,7 @@ class SendMessageDispatchContext:
     account: TgAccount
     credentials: object
     payload: SendMessagePayload
+    session_ciphertext: str | None = None
 
 
 @dataclass(frozen=True)
@@ -431,6 +445,7 @@ class CommentDispatchContext:
     account: TgAccount
     credentials: object
     payload: PostCommentPayload
+    session_ciphertext: str | None = None
 
 
 @dataclass(frozen=True)
@@ -457,6 +472,7 @@ class GroupSendGatewayContext:
     link: TgGroupAccount
     payload: SendMessagePayload
     content: str
+    session_ciphertext: str | None = None
 
 
 @dataclass(frozen=True)
@@ -565,6 +581,10 @@ def _fulfillment_route_allows_gateway(session: Session, action: Action) -> bool:
         != int(task.task_lifecycle_epoch or 1)
     ):
         return False
+    from .engagement_target_scope import has_current_task_target_scope_claim
+
+    if not has_current_task_target_scope_claim(session, task):
+        return False
     return gateway_task_allowed(session, task)
 
 
@@ -581,6 +601,29 @@ def _legacy_content_scope_takeover_pending(action: Action) -> bool:
     )
 
 
+def _release_dangling_engagement_leases(session: Session, action: Action) -> None:
+    from app.models import AccountPoolConcurrencyLease, ExecutionAttempt
+    from .engagement_runtime_resources import settle_attempt_resources
+
+    leases = list(
+        session.scalars(
+            select(AccountPoolConcurrencyLease).where(
+                AccountPoolConcurrencyLease.action_id == action.id,
+                AccountPoolConcurrencyLease.state.in_(("reserved", "call_issued", "remote_unknown")),
+            )
+        )
+    )
+    for lease in leases:
+        attempt = session.get(ExecutionAttempt, lease.attempt_id) if lease.attempt_id else None
+        if attempt is not None:
+            settle_attempt_resources(
+                attempt, action,
+                remote_mutation_started=bool(attempt.gateway_call_started_at),
+            )
+        else:
+            raise RuntimeError("engagement_lease_attempt_missing")
+
+
 def _finalize_dispatch_action(
     session: Session,
     action: Action,
@@ -589,12 +632,14 @@ def _finalize_dispatch_action(
     project_task_stats: bool = True,
 ) -> None:
     if _fact_first_action(session, action):
+        _release_dangling_engagement_leases(session, action)
         _finalize_fact_first_dispatch(session, action)
         return
     from .conversation_speaker_rotation import release_group_ai_speaker_reservation
 
     release_group_ai_speaker_reservation(session, action)
     _release_runtime_resources(action)
+    _release_dangling_engagement_leases(session, action)
     release_dispatch_claim(session, action)
     _sync_action_coverage_state(session, action)
     _sync_action_content_mix_state(session, action)
@@ -649,6 +694,9 @@ def _finalize_fact_first_dispatch(session: Session, action: Action) -> None:
             raise RuntimeError("remote_fact_missing_after_commit")
         project_remote_fact(session, fact)
     _project_fact_first_derived_reads(session, action)
+    from .engagement_fleet_activity import project_action_fleet_activity
+
+    project_action_fleet_activity(session, action)
     if fact_id:
         complete_derived_projections(session, fact_id)
     session.commit()
@@ -793,7 +841,12 @@ def _sync_comment_fulfillment_state(
                 obligation.status = "unknown"
                 return
             obligation.status = "confirmed"
-            obligation.telegram_discussion_peer_id = str(payload.get("channel_id") or "")
+            obligation.telegram_discussion_peer_id = str(
+                payload.get("actual_target_peer")
+                or payload.get("discussion_peer_id")
+                or payload.get("channel_id")
+                or ""
+            )
             obligation.remote_comment_id = remote_id
             obligation.remote_confirmed_at = attempt.after_call_at or _now()
             from .channel_comment_capacity import settle_comment_capacity
@@ -1218,6 +1271,9 @@ def _content_mix_coverage_binding_error(
     quantity: TaskGroupDailyMessageSlot,
 ) -> tuple[str, str] | None:
     payload = action.payload if isinstance(action.payload, dict) else {}
+    continuity_error = _continuity_slot_binding_error(quantity, payload)
+    if continuity_error is not None:
+        return continuity_error
     expected_coverage_id = str(quantity.task_account_daily_coverage_id or "")
     actual_coverage_id = str(payload.get("coverage_ledger_id") or "")
     if actual_coverage_id != expected_coverage_id:
@@ -1239,6 +1295,24 @@ def _content_mix_coverage_binding_error(
             "ContentMix 槽、数量槽、coverage 或账号归属不一致",
         )
     return None
+
+
+def _continuity_slot_binding_error(
+    quantity: TaskGroupDailyMessageSlot,
+    payload: dict,
+) -> tuple[str, str] | None:
+    slot_claim_id = str(getattr(quantity, "continuity_claim_id", None) or "")
+    payload_claim_id = str(payload.get("conversation_turn_claim_id") or "")
+    if slot_claim_id == payload_claim_id:
+        if slot_claim_id and bool(
+            getattr(quantity, "quantity_credit_eligible", True)
+        ):
+            return "continuity_quantity_credit_invalid", "互动回复槽不得计入日目标量"
+        return None
+    return (
+        "continuity_claim_binding_invalid",
+        "互动回复 claim 与专用发送槽不一致",
+    )
 
 
 def _dispatch_action(
@@ -1281,7 +1355,15 @@ def _dispatch_action(
         )
         detail = str(exc).strip() or type(exc).__name__
         if _gateway_call_started(session, action):
-            _mark_unknown_after_send(session, action, detail)
+            _mark_unknown_after_send(
+                session,
+                action,
+                detail,
+                transport_termination_acknowledged=bool(
+                    getattr(exc, "transport_termination_acknowledged", True)
+                ),
+                termination_event=getattr(exc, "termination_event", None),
+            )
         else:
             _fail(action, FailureType.UNKNOWN.value, detail)
         return True
@@ -1417,8 +1499,32 @@ def _dispatch_validated_action(
         channel_target_id=context.payload.channel_target_id,
     ):
         return True
-    credentials = credentials_for_account(session, context.account)
-    return _dispatch_credentialed_action(session, action, context, credentials=credentials)
+    transport = _action_runtime_transport(session, action, context.account)
+    return _dispatch_credentialed_action(
+        session,
+        action,
+        context,
+        credentials=transport.credentials,
+        session_ciphertext=transport.session_ciphertext,
+    )
+
+
+def _action_runtime_transport(
+    session: Session,
+    action: Action,
+    account: TgAccount,
+):
+    task = session.get(Task, action.task_id)
+    config = (task.type_config or {}) if task is not None else {}
+    if config.get("engagement_contract_version") == "unified_engagement_v1":
+        return task_account_runtime_transport(session, account, action.task_type)
+    return AccountRuntimeTransport(
+        account_id=account.id,
+        credentials=credentials_for_account(session, account),
+        session_ciphertext=str(account.session_ciphertext or ""),
+        authorization_id=None,
+        dependency_snapshot={},
+    )
 
 
 def _dispatch_credentialed_action(
@@ -1427,6 +1533,7 @@ def _dispatch_credentialed_action(
     context: ActionDispatchContext,
     *,
     credentials,
+    session_ciphertext: str | None = None,
 ) -> bool:
     if action.action_type in {"ensure_channel_membership", "ensure_target_membership"}:
         return _dispatch_channel_membership(session, action, context.account, credentials, context.payload)
@@ -1439,7 +1546,12 @@ def _dispatch_credentialed_action(
         return _dispatch_send_message(
             session,
             action,
-            SendMessageDispatchContext(context.account, credentials, context.payload),
+            SendMessageDispatchContext(
+                context.account,
+                credentials,
+                context.payload,
+                session_ciphertext,
+            ),
             generation_dependencies=context.generation_dependencies,
         )
     if action.action_type == "delete_message":
@@ -1448,7 +1560,11 @@ def _dispatch_credentialed_action(
         return _dispatch_invite_group_account(session, action, context.account, credentials, context.payload)
     if action.action_type in {"view_message", "like_message", "post_comment"}:
         return _dispatch_channel_engagement_action(
-            session, action, context=context, credentials=credentials,
+            session,
+            action,
+            context=context,
+            credentials=credentials,
+            session_ciphertext=session_ciphertext,
         )
     if action.action_type == GROUP_BOT_CHANNEL_FOLLOW_ACTION_TYPE:
         return _dispatch_group_bot_required_channel_follow(
@@ -1471,20 +1587,28 @@ def _dispatch_channel_engagement_action(
     *,
     context: ActionDispatchContext,
     credentials,
+    session_ciphertext: str | None = None,
 ) -> bool:
     if action.action_type == "view_message":
         return _dispatch_view(
             session, action, account=context.account,
             credentials=credentials, payload=context.payload,
+            session_ciphertext=session_ciphertext,
         )
     if action.action_type == "like_message":
         return _dispatch_like(
             session, action, account=context.account,
             credentials=credentials, payload=context.payload,
+            session_ciphertext=session_ciphertext,
         )
     return _dispatch_comment(
         session, action,
-        CommentDispatchContext(context.account, credentials, context.payload),
+        CommentDispatchContext(
+            context.account,
+            credentials,
+            context.payload,
+            session_ciphertext,
+        ),
     )
 
 
@@ -2811,16 +2935,15 @@ def recover_hard_hourly_delivery_credits(session: Session, limit: int = 100) -> 
 
 
 def _post_send_visibility_window_seconds(session: Session, action: Action) -> int:
-    """PRD §5.8: default 90, overridable per target via post_send_visibility_window_seconds (60-180)."""
-    default = 90
-    if not action.task_id:
-        return default
-    task = session.get(Task, action.task_id)
-    if not task:
-        return default
-    config = task.type_config if isinstance(task.type_config, dict) else {}
-    raw = int(config.get("post_send_visibility_window_seconds") or default)
-    return max(60, min(180, raw))
+    from .post_send_visibility import visibility_window_seconds
+
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    elevated = bool(
+        not _unified_post_send_visibility_required(session, action)
+        or payload.get("group_bot_post_follow_visibility_probe")
+        or payload.get("group_bot_admission_version")
+    )
+    return visibility_window_seconds(session, action, elevated=elevated)
 
 
 def recover_pending_visibility_credits(session: Session, limit: int = 100) -> int:
@@ -2860,6 +2983,7 @@ def recover_pending_visibility_credits(session: Session, limit: int = 100) -> in
         payload = action.payload if isinstance(action.payload, dict) else {}
         group_id = int(payload.get("group_id") or 0)
         account_id = int(action.account_id or 0)
+        target_peer = _post_send_visibility_target_peer(session, action)
         remote_id = str(hold.remote_message_id or result.get("telegram_msg_id") or "")
         admission = (
             get_admission(session, tenant_id=action.tenant_id, group_id=group_id, account_id=account_id)
@@ -2871,11 +2995,11 @@ def recover_pending_visibility_credits(session: Session, limit: int = 100) -> in
         window = _post_send_visibility_window_seconds(session, action)
         # A bot can accept the send and delete it seconds later. Only a complete
         # observation window can establish durable visibility.
-        if not visibility and age_seconds >= window and remote_id and group_id and account_id:
+        if not visibility and age_seconds >= window and remote_id and target_peer and account_id:
             probed = _probe_post_send_visibility(
                 session,
                 action=action,
-                group_id=group_id,
+                target_peer=target_peer,
                 remote_message_id=remote_id,
             )
             if probed:
@@ -2883,6 +3007,14 @@ def recover_pending_visibility_credits(session: Session, limit: int = 100) -> in
                 result = {**result, "visibility_status": probed, "visibility_probe": True}
                 action.result = result
         if visibility == "visible_confirmed":
+            from .post_send_visibility import settle_visibility_observation
+
+            settle_visibility_observation(
+                session,
+                action,
+                state="visible_confirmed",
+                terminal_reason="remote_message_visible",
+            )
             if admission is not None:
                 mark_visible_confirmed(session, admission=admission)
             close_pending_visibility_credit(session, action_id=action.id, status="visible_confirmed")
@@ -2896,6 +3028,14 @@ def recover_pending_visibility_credits(session: Session, limit: int = 100) -> in
             }
             _sync_action_coverage_state(session, action)
             _sync_action_content_mix_state(session, action)
+            _sync_comment_fulfillment_state(session, action)
+            _project_visibility_confirmed_remote_fact(session, action)
+            from .engagement_conversation import settle_conversation_turn_claim
+
+            settle_conversation_turn_claim(session, action, outcome="served")
+            from .engagement_fleet_activity import project_action_fleet_activity
+
+            project_action_fleet_activity(session, action)
             if continuity_enabled(session, action.tenant_id) and _is_hard_hourly_send_action(action):
                 outcome = credit_success_once(
                     session,
@@ -2908,6 +3048,14 @@ def recover_pending_visibility_credits(session: Session, limit: int = 100) -> in
             closed += 1
             continue
         if visibility in {"post_send_intercepted", "not_visible"}:
+            from .post_send_visibility import settle_visibility_observation
+
+            settle_visibility_observation(
+                session,
+                action,
+                state="post_send_intercepted",
+                terminal_reason=visibility,
+            )
             if admission is not None:
                 mark_post_send_intercepted(session, admission=admission)
             close_pending_visibility_credit(session, action_id=action.id, status="intercepted")
@@ -2921,15 +3069,39 @@ def recover_pending_visibility_credits(session: Session, limit: int = 100) -> in
             }
             _sync_action_coverage_state(session, action)
             _sync_action_content_mix_state(session, action)
+            _sync_comment_fulfillment_state(session, action)
+            from .engagement_conversation import settle_conversation_turn_claim
+
+            settle_conversation_turn_claim(
+                session, action, outcome="post_send_intercepted",
+            )
             closed += 1
             continue
-        # No evidence yet: leave open (unknown hold semantics). Optionally stamp age for ops.
+        # The observation deadline is terminal. Preserve the remote identity as
+        # unknown so no successor may replay the same mutation.
         if age_seconds >= window:
+            from .post_send_visibility import settle_visibility_observation
+
+            settle_visibility_observation(
+                session,
+                action,
+                state="visibility_observation_unknown",
+                terminal_reason="observer_no_conclusive_evidence",
+            )
+            close_pending_visibility_credit(
+                session,
+                action_id=action.id,
+                status="unknown",
+            )
             action.result = {
                 **result,
                 "pending_visibility_age_seconds": age_seconds,
-                "hold_reason": "unknown_after_send",
+                "pending_visibility": False,
+                "visibility_status": "visibility_observation_unknown",
+                "hold_reason": "visibility_observation_unknown",
             }
+            _sync_comment_fulfillment_state(session, action)
+            closed += 1
     return closed
 
 
@@ -2937,26 +3109,25 @@ def _probe_post_send_visibility(
     session: Session,
     *,
     action: Action,
-    group_id: int,
+    target_peer: str,
     remote_message_id: str,
 ) -> str:
     """Return visible_confirmed / not_visible / '' (unknown) via Gateway get_messages."""
     account = session.get(TgAccount, action.account_id) if action.account_id else None
-    group = session.get(TgGroup, group_id)
-    if account is None or group is None:
+    if account is None or not target_peer:
         return ""
     try:
         message_id = int(str(remote_message_id).strip())
     except (TypeError, ValueError):
         return ""
-    credentials = credentials_for_account(session, account)
     try:
+        transport = _action_runtime_transport(session, action, account)
         probe = gateway.probe_message_visible(
             account.id,
-            str(group.tg_peer_id or ""),
+            target_peer,
             message_id,
-            account.session_ciphertext,
-            credentials,
+            transport.session_ciphertext,
+            transport.credentials,
         )
     except Exception:  # noqa: BLE001 - visibility probe must not kill recovery
         return ""
@@ -2967,6 +3138,42 @@ def _probe_post_send_visibility(
     if getattr(probe, "ok", False) and getattr(probe, "visible", None) is False:
         return "not_visible"
     return ""
+
+
+def _post_send_visibility_target_peer(
+    session: Session,
+    action: Action,
+) -> str:
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    if action.action_type == "post_comment":
+        return str(
+            payload.get("actual_target_peer")
+            or payload.get("discussion_peer_id")
+            or payload.get("channel_id")
+            or ""
+        )
+    group_id = int(payload.get("group_id") or 0)
+    group = session.get(TgGroup, group_id) if group_id else None
+    return str(group.tg_peer_id or "") if group is not None else ""
+
+
+def _project_visibility_confirmed_remote_fact(
+    session: Session,
+    action: Action,
+) -> None:
+    if not _fact_first_action(session, action):
+        return
+    from .fulfillment_remote_facts import (
+        complete_derived_projections,
+        persist_remote_fact,
+        project_remote_fact,
+    )
+
+    fact = persist_remote_fact(session, action)
+    if fact is None:
+        raise RuntimeError("visibility_confirmed_remote_fact_missing")
+    project_remote_fact(session, fact)
+    complete_derived_projections(session, fact.fact_id)
 
 
 def recover_unreachable_hard_hourly_actions(session: Session, limit: int = 100) -> int:
@@ -3386,11 +3593,14 @@ def _prepare_group_send(
     # Speaker rotation may have changed action.account_id; reload account for the actual sender.
     account = context.account
     credentials = context.credentials
+    session_ciphertext = context.session_ciphertext
     if int(action.account_id or 0) and int(action.account_id) != int(context.account.id):
         rotated_account = session.get(TgAccount, int(action.account_id))
         if rotated_account:
             account = rotated_account
-            credentials = credentials_for_account(session, rotated_account) or context.credentials
+            transport = _action_runtime_transport(session, action, rotated_account)
+            credentials = transport.credentials
+            session_ciphertext = transport.session_ciphertext
             # Re-check admission gate for the rotated account.
             if not _group_bot_admission_gate_pass(
                 session, action, group_id=int(group.id), account_id=int(account.id)
@@ -3421,6 +3631,7 @@ def _prepare_group_send(
             link,
             payload,
             payload.message_text,
+            session_ciphertext,
         )
     if not link or not _defer_send_for_required_channel_admission(action, link):
         _fail_group_ai_send_before_gateway(
@@ -3502,6 +3713,7 @@ def _dispatch_target_send_message(
         None,
         gateway_request.session_ciphertext,
         gateway_request.credentials,
+        timeout_seconds=_engagement_gateway_timeout_seconds(attempt),
     )
     _lock_post_gateway_dispatch_prefix(session, action)
     _apply_send_result(
@@ -3638,6 +3850,8 @@ def _group_send_preconditions_pass(
         return False
     if not _group_send_context_fresh(session, action, context):
         return False
+    if not _group_send_attention_available(session, action, context):
+        return False
     if not _group_ai_account_online_ready(session, action, context.account, context.payload):
         _fail_offline_group_send(session, action, context.payload)
         return False
@@ -3700,6 +3914,134 @@ def _group_send_context_fresh(
         validation_stage="context_freshness",
     )
     return False
+
+
+def _conversation_turn_claim_current(
+    session: Session,
+    action: Action,
+    payload: SendMessagePayload,
+) -> bool:
+    if not payload.conversation_turn_claim_id:
+        return True
+    from .engagement_conversation import validate_conversation_turn_claim_for_gateway
+
+    allowed, reason = validate_conversation_turn_claim_for_gateway(session, action)
+    if allowed:
+        return True
+    _fail_group_ai_send_before_gateway(
+        session,
+        action,
+        payload,
+        reason,
+        "发送前对话 turn 已过期或回复所有权失效",
+        auto_check="拦截",
+        validation_stage="conversation_turn_claim",
+    )
+    return False
+
+
+def _group_send_attention_available(
+    session: Session,
+    action: Action,
+    context: GroupSendGatewayContext,
+) -> bool:
+    if context.payload.reply_to_message_id:
+        return True
+    task = session.get(Task, action.task_id)
+    if task is None:
+        return True
+    from .engagement_attention import latest_proactive_quiet_until
+
+    dynamic = latest_proactive_quiet_until(
+        session,
+        task,
+        context.group,
+        dict(task.type_config or {}),
+        identity=action.id,
+    )
+    frozen = context.payload.proactive_quiet_until_at
+    candidates = [_naive_datetime(value) for value in (dynamic, frozen) if value is not None]
+    if not candidates or max(candidates) <= _now():
+        return True
+    quiet_until = max(candidates)
+    _defer(
+        action,
+        quiet_until,
+        "attention_quiet_after",
+        "真人刚发言，主动消息等待自然对话段落结束后再进入",
+    )
+    action.result = {
+        **(action.result or {}),
+        "validation_stage": "attention_quiet_after",
+        "next_retry_at": quiet_until.isoformat(),
+    }
+    return False
+
+
+def _conversation_remote_context_current(
+    session: Session,
+    action: Action,
+    context: GroupSendGatewayContext,
+    attempt: ExecutionAttempt,
+) -> bool:
+    if not context.payload.conversation_turn_claim_id:
+        return True
+    from .engagement_conversation_remote import (
+        REMOTE_CONTEXT_WINDOW_LIMIT,
+        validate_remote_conversation_context,
+    )
+
+    try:
+        snapshots = gateway.fetch_group_messages(
+            context.account.id,
+            context.group.tg_peer_id,
+            getattr(context, "session_ciphertext", None)
+            or context.account.session_ciphertext,
+            context.credentials,
+            limit=REMOTE_CONTEXT_WINDOW_LIMIT,
+            timeout_seconds=CONVERSATION_REMOTE_PROBE_TIMEOUT_SECONDS,
+            connect_timeout_seconds=_engagement_connect_timeout_seconds(attempt),
+        )
+    except Exception as exc:  # noqa: BLE001 - typed as a retryable pre-Gateway probe.
+        _defer_conversation_remote_probe(action, context.payload, exc)
+        return False
+    decision = validate_remote_conversation_context(session, action, snapshots)
+    if decision.allowed:
+        # Probe RPC ran outside the reservation transaction. Re-lock and refresh
+        # the claim, holding it through the immediately following call-issued commit.
+        return _conversation_turn_claim_current(session, action, context.payload)
+    _fail_group_ai_send_before_gateway(
+        session,
+        action,
+        context.payload,
+        decision.reason,
+        "发送前 Telegram 实时上下文已变化",
+        auto_check="拦截",
+        validation_stage="conversation_remote_context",
+    )
+    return False
+
+
+def _defer_conversation_remote_probe(
+    action: Action,
+    payload: SendMessagePayload,
+    error: Exception,
+) -> None:
+    retry_at = _now() + timedelta(seconds=CONVERSATION_REMOTE_PROBE_RETRY_SECONDS)
+    deadline = payload.freshness_deadline_at
+    if deadline is not None:
+        retry_at = min(retry_at, _naive_datetime(deadline))
+    _defer(
+        action,
+        retry_at,
+        "conversation_remote_probe_failed",
+        str(error).strip() or type(error).__name__,
+    )
+    action.result = {
+        **(action.result or {}),
+        "validation_stage": "conversation_remote_context",
+        "retry_after_seconds": CONVERSATION_REMOTE_PROBE_RETRY_SECONDS,
+    }
 
 
 def _group_send_content_allowed(
@@ -3819,14 +4161,33 @@ def _send_group_message_via_gateway(
         group_id=context.group.id,
         content=context.content,
         segments=_outbound_segments(context.payload),
-        session_ciphertext=context.account.session_ciphertext,
+        session_ciphertext=(
+            getattr(context, "session_ciphertext", None)
+            or context.account.session_ciphertext
+        ),
         group_peer=context.group.tg_peer_id,
         credentials=context.credentials,
         reply_to_message_id=context.payload.reply_to_message_id,
     )
-    attempt = _reserve_group_send_attempt(session, action, context)
+    remote_probe_required = bool(context.payload.conversation_turn_claim_id)
+    attempt = _reserve_group_send_attempt(
+        session,
+        action,
+        context,
+        start_gateway_call=not remote_probe_required,
+    )
     if attempt is None:
         return True
+    if remote_probe_required:
+        if not _conversation_remote_context_current(
+            session,
+            action,
+            context,
+            attempt,
+        ):
+            _settle_group_send_preflight_attempt(session, action, attempt)
+            return True
+        _start_group_send_gateway_call(session, action, attempt)
     send_kwargs = (
         {"reply_to_message_id": gateway_request.reply_to_message_id}
         if gateway_request.reply_to_message_id
@@ -3840,6 +4201,8 @@ def _send_group_message_via_gateway(
         gateway_request.session_ciphertext,
         gateway_request.group_peer,
         gateway_request.credentials,
+        timeout_seconds=_engagement_gateway_timeout_seconds(attempt),
+        connect_timeout_seconds=_engagement_connect_timeout_seconds(attempt),
         **send_kwargs,
     )
     if _recover_send_message_required_channel(
@@ -3902,6 +4265,8 @@ def _reserve_group_send_attempt(
     session: Session,
     action: Action,
     context: GroupSendGatewayContext,
+    *,
+    start_gateway_call: bool = True,
 ) -> ExecutionAttempt | None:
     fact_first = _fact_first_action(session, action)
     target = _attempt_target(session, action, group=context.group)
@@ -3942,6 +4307,8 @@ def _reserve_group_send_attempt(
             GroupSendSlotBlock(gate_block.code, gate_block.detail, max(1, int(gate_block.retry_after_seconds or 60))),
         )
         return None
+    if not _conversation_turn_claim_current(session, action, context.payload):
+        return None
     block = group_send_slot_block(session, action=action, group=group)
     if block:
         _defer_group_send_for_limit(action, block)
@@ -3957,11 +4324,45 @@ def _reserve_group_send_attempt(
     if not admit_source_paced_attempt(session, action, attempt):
         session.commit()
         return None
+    if not _admit_engagement_attempt_resources(session, action, attempt):
+        session.commit()
+        return None
+    if start_gateway_call:
+        _start_group_send_gateway_call(session, action, attempt)
+    else:
+        session.commit()
+    return attempt
+
+
+def _start_group_send_gateway_call(
+    session: Session,
+    action: Action,
+    attempt: ExecutionAttempt,
+) -> None:
     _mark_gateway_call_started(session, attempt, commit=False)
     if action.pacing_contract_version == PACING_CONTRACT_VERSION:
         align_source_gateway_call_started(session, attempt)
+    _commit_attempt_for_gateway(session, attempt)
+
+
+def _settle_group_send_preflight_attempt(
+    session: Session,
+    action: Action,
+    attempt: ExecutionAttempt,
+) -> None:
+    result = dict(action.result or {})
+    attempt.after_call_at = _now()
+    attempt.status = "skipped_before_gateway"
+    attempt.failure_type = str(result.get("error_code") or "conversation_remote_context_rejected")
+    attempt.failure_detail = str(result.get("error_message") or "")
+    attempt.result_snapshot = {**dict(attempt.result_snapshot or {}), **result}
+    settle_engagement_attempt_resources(
+        attempt,
+        action,
+        remote_mutation_started=False,
+    )
+    settle_source_pacing_admission(action, attempt)
     session.commit()
-    return attempt
 
 
 def _reserve_target_send_attempt(
@@ -3985,8 +4386,11 @@ def _reserve_target_send_attempt(
         return None
     attempt = _begin_execution_attempt(session, action, account)
     _mark_executing(action)
+    if not _admit_engagement_attempt_resources(session, action, attempt):
+        session.commit()
+        return None
     _mark_gateway_call_started(session, attempt, commit=False)
-    session.commit()
+    _commit_attempt_for_gateway(session, attempt)
     return attempt
 
 
@@ -4017,12 +4421,15 @@ def _reserve_channel_action_attempt(
     if not admit_source_paced_attempt(session, action, attempt):
         session.commit()
         return None
+    if not _admit_engagement_attempt_resources(session, action, attempt):
+        session.commit()
+        return None
     if action.action_type == "view_message":
         mark_daily_identity_call_issued(session, action)
     _mark_gateway_call_started(session, attempt, commit=False)
     if action.pacing_contract_version == PACING_CONTRACT_VERSION:
         align_source_gateway_call_started(session, attempt)
-    session.commit()
+    _commit_attempt_for_gateway(session, attempt)
     return attempt
 
 
@@ -4212,6 +4619,13 @@ def _finalize_group_send(
         result=dict(action.result or {}),
     )
     if result.ok:
+        from .engagement_conversation import settle_conversation_turn_claim
+
+        outcome = (
+            "unknown_after_send"
+            if action.status == "unknown_after_send" else "served"
+        )
+        settle_conversation_turn_claim(session, action, outcome=outcome)
         _clear_conversation_quality_blocker(session, action)
         _update_group_ai_stance_memory(
             session,
@@ -4221,6 +4635,10 @@ def _finalize_group_send(
             result.remote_message_id or "",
         )
         context.link.last_sent_at = _now()
+    elif action.status == "unknown_after_send":
+        from .engagement_conversation import settle_conversation_turn_claim
+
+        settle_conversation_turn_claim(session, action, outcome="unknown_after_send")
 
 
 def _record_conversation_quality_event(
@@ -6793,6 +7211,7 @@ def _dispatch_view(
     account: TgAccount,
     credentials,
     payload: ViewMessagePayload,
+    session_ciphertext: str | None = None,
 ) -> bool:
     if not _ensure_channel_action_membership(
         session, action, account=account,
@@ -6800,7 +7219,7 @@ def _dispatch_view(
     ):
         return True
     account_id = account.id
-    session_ciphertext = account.session_ciphertext
+    session_ciphertext = session_ciphertext or account.session_ciphertext
     channel_peer = payload.channel_id
     message_id = payload.message_id
     if payload.channel_message_id and not _prepare_view_fulfillment(
@@ -6814,7 +7233,15 @@ def _dispatch_view(
         return True
     if not payload.view_fulfillment_obligation_id:
         ensure_view_action_contract(session, action, payload, now=_now())
-    result = gateway.view_channel_message(account_id, channel_peer, message_id, session_ciphertext, credentials)
+    result = gateway.view_channel_message(
+        account_id,
+        channel_peer,
+        message_id,
+        session_ciphertext,
+        credentials,
+        timeout_seconds=_engagement_gateway_timeout_seconds(attempt),
+        connect_timeout_seconds=_engagement_connect_timeout_seconds(attempt),
+    )
     _apply_operation_result(
         action,
         account,
@@ -6837,6 +7264,7 @@ def _dispatch_like(
     account: TgAccount,
     credentials,
     payload: LikeMessagePayload,
+    session_ciphertext: str | None = None,
 ) -> bool:
     if not _ensure_channel_action_membership(
         session, action, account=account,
@@ -6844,7 +7272,7 @@ def _dispatch_like(
     ):
         return True
     account_id = account.id
-    session_ciphertext = account.session_ciphertext
+    session_ciphertext = session_ciphertext or account.session_ciphertext
     channel_peer = payload.channel_id
     message_id = payload.message_id
     reaction = payload.reaction_emoji
@@ -6853,6 +7281,14 @@ def _dispatch_like(
         action,
         payload,
     ):
+        return True
+    reaction_gate = _reaction_final_gate(session, action, payload)
+    if reaction_gate:
+        _skip(
+            action,
+            reaction_gate,
+            "频道来源或可用表情能力已变化，旧点赞意图禁止发送",
+        )
         return True
     if not _platform_mutation_admitted(
         session, action,
@@ -6865,7 +7301,16 @@ def _dispatch_like(
         return True
     if not payload.reaction_fulfillment_obligation_id:
         ensure_reaction_action_contract(session, action, payload)
-    result = gateway.send_channel_reaction(account_id, channel_peer, message_id, reaction, session_ciphertext, credentials)
+    result = gateway.send_channel_reaction(
+        account_id,
+        channel_peer,
+        message_id,
+        reaction,
+        session_ciphertext,
+        credentials,
+        timeout_seconds=_engagement_gateway_timeout_seconds(attempt),
+        connect_timeout_seconds=_engagement_connect_timeout_seconds(attempt),
+    )
     _apply_operation_result(
         action,
         account,
@@ -6915,6 +7360,62 @@ def _prepare_reaction_fulfillment(
         return False
 
 
+def _reaction_final_gate(
+    session: Session,
+    action: Action,
+    payload: LikeMessagePayload,
+) -> str:
+    task = session.get(Task, action.task_id)
+    config = task.type_config if task and isinstance(task.type_config, dict) else {}
+    if config.get("engagement_contract_version") != "unified_engagement_v1":
+        return ""
+    revision = _current_reaction_source_revision(session, action, payload)
+    if revision is None:
+        return "reaction_source_revision_stale"
+    if revision.source_content_hash != payload.reaction_source_content_hash:
+        return "reaction_source_revision_stale"
+    message = session.get(ChannelMessage, payload.channel_message_id)
+    target = session.get(OperationTarget, message.channel_target_id) if message else None
+    if target is None or target.id != payload.channel_target_id:
+        return "reaction_capability_revision_stale"
+    from .executors.channel_like_capability import (
+        reaction_capability_revision,
+        target_accepts_reaction,
+    )
+
+    if reaction_capability_revision(target) != payload.reaction_capability_revision:
+        return "reaction_capability_revision_stale"
+    if not target_accepts_reaction(target, payload.reaction_emoji):
+        return "reaction_capability_blocked"
+    if not target_accepts_reaction(
+        target, payload.reaction_emoji, content_text=revision.source_text_snapshot,
+    ):
+        return "reaction_intent_no_match"
+    return ""
+
+
+def _current_reaction_source_revision(
+    session: Session,
+    action: Action,
+    payload: LikeMessagePayload,
+):
+    from app.models import ChannelMessageSourceRevision
+
+    if not payload.channel_message_id or not payload.source_revision_id:
+        return None
+    message = session.get(ChannelMessage, payload.channel_message_id)
+    if not message or message.tenant_id != action.tenant_id:
+        return None
+    if int(message.message_id) != int(payload.message_id):
+        return None
+    if str(message.current_source_revision_id or "") != payload.source_revision_id:
+        return None
+    revision = session.get(ChannelMessageSourceRevision, payload.source_revision_id)
+    if revision is None or revision.channel_message_id != message.id:
+        return None
+    return revision
+
+
 def _dispatch_comment(
     session: Session,
     action: Action,
@@ -6922,7 +7423,11 @@ def _dispatch_comment(
 ) -> bool:
     account = context.account
     account_id = int(account.id)
-    session_ciphertext = str(account.session_ciphertext)
+    session_ciphertext = str(
+        getattr(context, "session_ciphertext", None)
+        or account.session_ciphertext
+        or ""
+    )
     credentials = context.credentials
     prepared = _prepare_comment_send(
         session, action, context,
@@ -6941,6 +7446,8 @@ def _dispatch_comment(
         reply_to_message_id=payload.reply_to_message_id,
         rpc_mode=payload.rpc_mode or "legacy_channel_comment",
         thread_root_message_id=payload.thread_root_message_id,
+        timeout_seconds=_engagement_gateway_timeout_seconds(attempt),
+        connect_timeout_seconds=_engagement_connect_timeout_seconds(attempt),
     )
     _lock_post_gateway_dispatch_prefix(session, action)
     from .channel_comment_rpc_failure import project_comment_pre_mutation_failure
@@ -7166,6 +7673,8 @@ def _send_channel_comment(
     reply_to_message_id: int | None,
     rpc_mode: str,
     thread_root_message_id: int,
+    timeout_seconds: float | None,
+    connect_timeout_seconds: float | None,
 ):
     if media_segment:
         return gateway.reply_channel_media(
@@ -7175,6 +7684,8 @@ def _send_channel_comment(
             reply_to_message_id=reply_to_message_id,
             rpc_mode=rpc_mode,
             thread_root_message_id=thread_root_message_id,
+            timeout_seconds=timeout_seconds,
+            connect_timeout_seconds=connect_timeout_seconds,
         )
     return gateway.reply_channel_message(
         account_id, channel_peer,
@@ -7183,7 +7694,50 @@ def _send_channel_comment(
         reply_to_message_id=reply_to_message_id,
         rpc_mode=rpc_mode,
         thread_root_message_id=thread_root_message_id,
+        timeout_seconds=timeout_seconds,
+        connect_timeout_seconds=connect_timeout_seconds,
     )
+
+
+def _engagement_gateway_timeout_seconds(
+    attempt: ExecutionAttempt,
+) -> float | None:
+    cache_key = "_frozen_engagement_gateway_timeout_seconds"
+    if cache_key in attempt.__dict__:
+        return attempt.__dict__[cache_key]
+    raw = (attempt.result_snapshot or {}).get("telegram_gateway_timeout_seconds")
+    if raw is None:
+        return None
+    timeout_seconds = float(raw)
+    if timeout_seconds <= 0 or timeout_seconds > 10:
+        raise RuntimeError("engagement_gateway_timeout_policy_invalid")
+    return timeout_seconds
+
+
+def _engagement_connect_timeout_seconds(
+    attempt: ExecutionAttempt,
+) -> float | None:
+    cache_key = "_frozen_engagement_connect_timeout_seconds"
+    if cache_key in attempt.__dict__:
+        return attempt.__dict__[cache_key]
+    raw = (attempt.result_snapshot or {}).get("telegram_connect_timeout_seconds")
+    if raw is None:
+        return None
+    timeout_seconds = float(raw)
+    if timeout_seconds <= 0 or timeout_seconds > 5:
+        raise RuntimeError("engagement_connect_timeout_policy_invalid")
+    return timeout_seconds
+
+
+def _commit_attempt_for_gateway(
+    session: Session,
+    attempt: ExecutionAttempt,
+) -> None:
+    gateway_timeout = _engagement_gateway_timeout_seconds(attempt)
+    connect_timeout = _engagement_connect_timeout_seconds(attempt)
+    session.commit()
+    attempt.__dict__["_frozen_engagement_gateway_timeout_seconds"] = gateway_timeout
+    attempt.__dict__["_frozen_engagement_connect_timeout_seconds"] = connect_timeout
 
 
 def _comment_content_policy_group(session: Session, action: Action, payload: PostCommentPayload) -> TgGroup | None:
@@ -7426,6 +7980,8 @@ def _ensure_channel_action_membership(
         )
         return False
     channel = session.get(OperationTarget, int(channel_target_id))
+    if channel and channel.tenant_id == action.tenant_id and public_channel_view(action.task_type, channel):
+        return True
     if action.action_type == "post_comment":
         return _ensure_post_comment_membership(
             session, action, account=account, channel=channel,
@@ -7594,6 +8150,8 @@ def _classify_membership_failure(failure_type: str, detail: str) -> str:
 def _apply_send_result(action: Action, account: TgAccount, ok: bool, remote_id: str = "", failure_type: str = "", detail: str = "", *, attempt: ExecutionAttempt | None = None, remote_fact_id: str = "", typed_remote_fact: dict | None = None, remote_mutation_started: bool | None = None) -> None:
     if ok:
         _apply_success_send_result(action, account, remote_id)
+    elif _gateway_result_is_unknown(attempt, remote_mutation_started):
+        _apply_unknown_gateway_result(action, failure_type, detail)
     else:
         _apply_failed_send_result(action, account, failure_type, detail)
     action.executed_at = None if action.status == "pending" else _now()
@@ -7619,14 +8177,52 @@ def _apply_send_result(action: Action, account: TgAccount, ok: bool, remote_id: 
         typed_remote_fact=typed_remote_fact,
         remote_mutation_started=remote_mutation_started,
     )
-    if not ok:
+    if not ok and action.status != "unknown_after_send":
         _maybe_auto_mark_target_ref_invalid(action, account, detail or failure_type, attempt)
+    if action.status == "unknown_after_send":
+        session = object_session(action)
+        if session is not None:
+            _finalize_speaker_after_send(
+                session,
+                action,
+                outcome="unknown_after_send",
+                remote_id=remote_id,
+            )
     if ok:
         if not _maybe_hold_pending_visibility(action, attempt=attempt, remote_id=remote_id):
             _credit_hard_hourly_success(action, attempt=attempt, remote_id=remote_id)
             session = object_session(action)
             if session is not None:
                 _finalize_speaker_after_send(session, action, outcome="success", remote_id=remote_id)
+
+
+def _gateway_result_is_unknown(
+    attempt: ExecutionAttempt | None,
+    remote_mutation_started: bool | None,
+) -> bool:
+    return (
+        attempt is not None
+        and attempt.gateway_call_started_at is not None
+        and remote_mutation_started is None
+    )
+
+
+def _apply_unknown_gateway_result(
+    action: Action,
+    failure_type: str,
+    detail: str,
+) -> None:
+    action.status = "unknown_after_send"
+    _clear_action_lease(action)
+    action.result = {
+        **dict(action.result or {}),
+        "success": False,
+        "error_code": failure_type or "unknown_after_send",
+        "error_message": detail or "Telegram 调用结果未知，等待远端事实核对",
+        "auto_check": "结果未知",
+        "validation_stage": "telegram_api",
+    }
+    _release_runtime_resources(action)
 
 
 def _apply_success_send_result(
@@ -9175,7 +9771,14 @@ def _fail(action: Action, failure_type: str, detail: str, *, auto_check: str = "
     _release_runtime_resources(action)
 
 
-def _mark_unknown_after_send(session: Session, action: Action, detail: str) -> None:
+def _mark_unknown_after_send(
+    session: Session,
+    action: Action,
+    detail: str,
+    *,
+    transport_termination_acknowledged: bool | None = None,
+    termination_event=None,
+) -> None:
     if action.action_type == "search_rank_deboost":
         mark_reserved_reservation_unknown(session, action.id)
     action.status = "unknown_after_send"
@@ -9191,15 +9794,39 @@ def _mark_unknown_after_send(session: Session, action: Action, detail: str) -> N
     action.executed_at = _now()
     attempt = _latest_open_gateway_attempt(session, action)
     if attempt:
+        if termination_event is not None:
+            from .telegram_termination import register_termination
+
+            register_termination(attempt, termination_event)
+        termination_state = _transport_termination_state(
+            transport_termination_acknowledged
+        )
         attempt.after_call_at = _now()
         attempt.status = "result_unknown"
         attempt.failure_type = "unknown_after_send"
         attempt.failure_detail = detail or ""
-        attempt.result_snapshot = dict(action.result or {})
+        attempt.result_snapshot = {
+            **dict(attempt.result_snapshot or {}),
+            **dict(action.result or {}),
+            "transport_termination_state": termination_state,
+        }
+        settle_engagement_attempt_resources(
+            attempt,
+            action,
+            remote_mutation_started=None,
+        )
     _mark_group_ai_unknown_side_effects(session, action)
     # Keep speaker reservation occupied for unknown_after_send (rotation hold).
     _finalize_speaker_after_send(session, action, outcome="unknown_after_send", remote_id="")
     _release_runtime_resources(action)
+
+
+def _transport_termination_state(acknowledged: bool | None) -> str:
+    if acknowledged is True:
+        return "acknowledged"
+    if acknowledged is False:
+        return "cancellation_unconfirmed"
+    return "unproven"
 
 
 def _mark_group_ai_unknown_side_effects(session: Session, action: Action) -> None:
@@ -9963,7 +10590,11 @@ def _speaker_rotation_candidates(session: Session, action: Action, *, group_id: 
 
 
 def _action_needs_pending_visibility(session: Session, action: Action, *, remote_id: str) -> bool:
-    if action.task_type != "group_ai_chat" or not remote_id:
+    if not remote_id:
+        return False
+    if _unified_post_send_visibility_required(session, action):
+        return True
+    if action.task_type != "group_ai_chat":
         return False
     if _fact_first_action(session, action):
         return False
@@ -9992,6 +10623,28 @@ def _action_needs_pending_visibility(session: Session, action: Action, *, remote
         admission,
         action_admission_version=int(action_version) if action_version is not None else None,
     )
+
+
+def _unified_post_send_visibility_required(
+    session: Session, action: Action,
+) -> bool:
+    task = session.get(Task, action.task_id)
+    config = task.type_config if task and isinstance(task.type_config, dict) else {}
+    if str(config.get("engagement_contract_version") or "") != "unified_engagement_v1":
+        return False
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    if action.task_type == "group_ai_chat" and action.action_type == "send_message":
+        return bool(payload.get("group_id") and action.account_id)
+    if action.task_type == "channel_comment" and action.action_type == "post_comment":
+        return bool(
+            action.account_id
+            and (
+                payload.get("actual_target_peer")
+                or payload.get("discussion_peer_id")
+                or payload.get("channel_id")
+            )
+        )
+    return False
 
 
 def _finalize_speaker_after_send(
@@ -10702,6 +11355,17 @@ def _maybe_hold_pending_visibility(
         remote_message_id=remote_id,
         execution_attempt_id=str(attempt.id) if attempt and attempt.id else None,
     )
+    if attempt is not None:
+        from .post_send_visibility import open_visibility_observation
+
+        open_visibility_observation(
+            session,
+            action,
+            attempt=attempt,
+            remote_message_id=remote_id,
+            target_peer=_post_send_visibility_target_peer(session, action),
+            window_seconds=_post_send_visibility_window_seconds(session, action),
+        )
     action.status = "unknown_after_send"
     action.result = {
         **(action.result or {}),
@@ -10978,6 +11642,7 @@ def _begin_execution_attempt(session: Session, action: Action, account: TgAccoun
 
 
 def _mark_gateway_call_started(session: Session, attempt: ExecutionAttempt, *, commit: bool = True) -> None:
+    mark_engagement_attempt_call_issued(session, attempt)
     attempt.gateway_call_started_at = _now()
     attempt.status = "gateway_call_started"
     from .channel_comment_capacity import mark_comment_capacity_gateway_hold
@@ -11134,6 +11799,13 @@ def _finish_execution_attempt(
 ) -> None:
     if not attempt:
         return
+    _hold_uncertain_gateway_failure(
+        action,
+        attempt,
+        failure_type=failure_type,
+        detail=detail,
+        remote_mutation_started=remote_mutation_started,
+    )
     attempt.after_call_at = _now()
     attempt.remote_message_id = remote_id or ""
     attempt.failure_type = failure_type or ""
@@ -11145,6 +11817,10 @@ def _finish_execution_attempt(
         remote_fact_id=remote_fact_id,
     )
     if attempt.gateway_call_started_at is not None:
+        attempt.result_snapshot = {
+            **dict(attempt.result_snapshot or {}),
+            "transport_termination_state": "acknowledged",
+        }
         from .gateway_evidence_journal import (
             GatewayResultEvidence,
             persist_gateway_result_evidence,
@@ -11161,7 +11837,47 @@ def _finish_execution_attempt(
                 remote_mutation_started=remote_mutation_started,
             ),
         )
+    settle_engagement_attempt_resources(
+        attempt,
+        action,
+        remote_mutation_started=remote_mutation_started,
+    )
     settle_source_pacing_admission(action, attempt)
+
+
+def _hold_uncertain_gateway_failure(
+    action: Action,
+    attempt: ExecutionAttempt,
+    *,
+    failure_type: str,
+    detail: str,
+    remote_mutation_started: bool | None,
+) -> None:
+    if (
+        attempt.gateway_call_started_at is None
+        or action.status not in {"failed", "retryable_failed"}
+        or remote_mutation_started is not None
+    ):
+        return
+    _apply_unknown_gateway_result(action, failure_type, detail)
+
+
+def _admit_engagement_attempt_resources(
+    session: Session, action: Action, attempt: ExecutionAttempt
+) -> bool:
+    try:
+        reserve_engagement_attempt_resources(session, action, attempt)
+        return True
+    except RuntimeResourceBlocked as exc:
+        retry_at = _now() + timedelta(seconds=exc.retry_after_seconds)
+        _defer(action, retry_at, exc.code, exc.detail)
+        attempt.after_call_at = _now()
+        attempt.status = "skipped_before_gateway"
+        attempt.failure_type = exc.code
+        attempt.failure_detail = exc.detail
+        attempt.result_snapshot = {**(attempt.result_snapshot or {}), **(action.result or {})}
+        settle_source_pacing_admission(action, attempt)
+        return False
 
 
 def _merge_attempt_result_snapshot(
@@ -11301,6 +12017,8 @@ def _retry_after_seconds(detail: str) -> int:
 
 
 def _context_expired(session: Session, payload: SendMessagePayload) -> bool:
+    if payload.conversation_turn_claim_id:
+        return False
     if not _context_expiration_applies(payload):
         return False
     return _newer_context_count(session, payload) >= payload.context_expire_after_messages

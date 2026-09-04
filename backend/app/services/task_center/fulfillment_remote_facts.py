@@ -27,7 +27,12 @@ from .channel_remote_evidence import CHANNEL_REMOTE_ACTION_TYPES, action_remote_
 from .channel_remote_evidence import remote_mutation_state
 
 
-PROJECTION_KINDS = ("obligation", "action", "task_read_model")
+PROJECTION_KINDS = (
+    "obligation",
+    "action",
+    "task_read_model",
+    "fleet_activity",
+)
 UNKNOWN_RECONCILE_DEADLINE_SECONDS = 1800
 MEMBERSHIP_ACTION_TYPES = frozenset({
     "ensure_channel_membership",

@@ -23,6 +23,16 @@ class DeveloperAppCredentialsLike(Protocol):
     proxy_password: str
 
 
+class TelethonOperationTimeout(TimeoutError):
+    def __init__(self, *, transport_termination_acknowledged: bool,
+                 termination_event: threading.Event | None = None) -> None:
+        super().__init__("telethon_operation_timeout")
+        self.transport_termination_acknowledged = (
+            transport_termination_acknowledged
+        )
+        self.termination_event = termination_event
+
+
 @dataclass
 class _ClientCacheEntry:
     client: Any
@@ -77,13 +87,27 @@ class TelethonClientLifecycle:
                 coro.close()
             raise
         loop = self.get_or_create_loop()
-        future = asyncio.run_coroutine_threadsafe(coro, loop)
         timeout = self.settings.telethon_operation_timeout_seconds if timeout_seconds is None else timeout_seconds
+        terminated = threading.Event()
+
+        async def observed_runner():
+            try:
+                return await coro
+            finally:
+                terminated.set()
+
+        future = asyncio.run_coroutine_threadsafe(observed_runner(), loop)
+        grace = min(0.1, max(0.001, float(timeout) / 10))
+        result_timeout = max(0.001, float(timeout) - grace)
         try:
-            return future.result(timeout=timeout)
+            return future.result(timeout=result_timeout)
         except FutureTimeoutError:
             future.cancel()
-            raise
+            acknowledged = terminated.wait(timeout=grace)
+            raise TelethonOperationTimeout(
+                transport_termination_acknowledged=acknowledged,
+                termination_event=terminated,
+            ) from None
 
     def new_client(
         self,
@@ -111,6 +135,8 @@ class TelethonClientLifecycle:
         credentials: DeveloperAppCredentialsLike,
         raw_session: str,
         client_metadata: Mapping[str, str] | None = None,
+        *,
+        connect_timeout_seconds: float | None = None,
     ) -> Any:
         self._assert_remote_io_allowed()
         await self.prune_idle_clients()
@@ -138,8 +164,15 @@ class TelethonClientLifecycle:
                     self._cache.pop(cache_key, None)
 
         client = self.new_client(credentials, raw_session, client_metadata)
+        connect_timeout = (
+            self.settings.telethon_client_connect_timeout_seconds
+            if connect_timeout_seconds is None
+            else connect_timeout_seconds
+        )
+        if connect_timeout <= 0:
+            raise ValueError("telethon_connect_timeout_must_be_positive")
         try:
-            await asyncio.wait_for(client.connect(), timeout=self.settings.telethon_client_connect_timeout_seconds)
+            await asyncio.wait_for(client.connect(), timeout=connect_timeout)
         except Exception:
             await self._disconnect_quietly(client)
             raise

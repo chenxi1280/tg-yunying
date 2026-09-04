@@ -20,8 +20,9 @@ from tests.channel_view_coverage_support import (
 pytestmark = pytest.mark.no_postgres
 
 
-def test_channel_view_spreads_daily_coverage_across_messages() -> None:
+def test_channel_view_spreads_daily_coverage_across_messages(monkeypatch) -> None:
     now = datetime(2026, 8, 28, 10, 0)
+    _set_view_clock(monkeypatch, now)
     with new_session() as session:
         scenario = seed_channel_scenario(session, channel_id=103, account_count=10)
         messages = [
@@ -92,8 +93,9 @@ def _set_view_clock(monkeypatch, value: datetime) -> None:
     monkeypatch.setattr("app.services.task_center.daily_ledgers._now", lambda: value)
 
 
-def test_channel_view_uses_maximum_matching_for_uneven_identity_sets() -> None:
+def test_channel_view_uses_maximum_matching_for_uneven_identity_sets(monkeypatch) -> None:
     now = datetime(2026, 8, 28, 10, 0)
+    _set_view_clock(monkeypatch, now)
     with new_session() as session:
         scenario = seed_channel_scenario(session, channel_id=105, account_count=2)
         newest = add_message(

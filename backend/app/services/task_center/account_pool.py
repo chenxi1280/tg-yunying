@@ -131,10 +131,26 @@ def _account_query(session: Session, tenant_id: int, account_config: dict, *, en
         account_ids = [int(item) for item in account_config.get("account_ids") or []]
         return stmt.where(TgAccount.id.in_(account_ids)) if account_ids else None
     if mode == "group":
-        pool_id = account_config.get("account_group_id")
-        pool = session.get(AccountPool, int(pool_id)) if pool_id else None
-        return stmt.where(TgAccount.pool_id == pool.id) if pool and pool.tenant_id == tenant_id else None
+        pool_ids = _configured_pool_ids(account_config)
+        if not pool_ids:
+            return None
+        tenant_pool_ids = set(session.scalars(
+            select(AccountPool.id).where(
+                AccountPool.tenant_id == tenant_id,
+                AccountPool.id.in_(pool_ids),
+            )
+        ))
+        if tenant_pool_ids != set(pool_ids):
+            return None
+        return stmt.where(TgAccount.pool_id.in_(pool_ids))
     return stmt
+
+
+def _configured_pool_ids(account_config: dict) -> tuple[int, ...]:
+    raw_ids = account_config.get("account_group_ids") or []
+    if not raw_ids and account_config.get("account_group_id"):
+        raw_ids = [account_config["account_group_id"]]
+    return tuple(sorted({int(item) for item in raw_ids if int(item) > 0}))
 
 
 def _rescue_admin_account_id(session: Session, tenant_id: int) -> int:

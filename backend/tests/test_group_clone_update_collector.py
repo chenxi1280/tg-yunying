@@ -119,6 +119,128 @@ def test_active_foreign_owner_is_not_stolen(collector_runtime, monkeypatch) -> N
     assert called is False
 
 
+def test_active_channel_subscription_establishes_boundary_without_clone_stream(
+    collector_runtime,
+    monkeypatch,
+) -> None:
+    with collector_runtime() as session:
+        stream = session.scalar(select(CloneSourceStreamState))
+        session.delete(stream)
+        session.commit()
+    initial = TelegramDifferenceBatch(
+        scope="common",
+        status="empty",
+        cursor={"pts": 100, "qts": 0, "date": 1000, "seq": 1},
+    )
+    empty_channel = TelegramDifferenceBatch(
+        scope="channel",
+        status="live",
+        cursor={"pts": 701},
+    )
+    requested_pts: list[int] = []
+    monkeypatch.setattr(
+        "app.services.task_center.telegram_update_collector.gateway.fetch_raw_authorization_update_state",
+        lambda **_kwargs: initial,
+    )
+    monkeypatch.setattr(
+        "app.services.task_center.telegram_update_collector.gateway.fetch_raw_channel_boundary",
+        lambda *_args, **_kwargs: {"channel_pts": 700, "max_message_id": 20},
+    )
+
+    def fetch_channel(_peer_id, pts, **_kwargs):
+        requested_pts.append(pts)
+        return empty_channel
+
+    monkeypatch.setattr(
+        "app.services.task_center.telegram_update_collector.gateway.fetch_raw_channel_difference",
+        fetch_channel,
+    )
+
+    result = drain_telegram_update_collector(collector_runtime, tenant_id=1)
+
+    assert result.error_count == 0
+    assert requested_pts == [700]
+    with collector_runtime() as session:
+        state = session.scalar(select(TelegramAuthorizationUpdateState))
+        channel_cursor = state.difference_cursor["channels"]["-10011"]
+        assert channel_cursor["pts"] == 701
+
+
+def test_one_channel_boundary_failure_does_not_block_healthy_peer(
+    collector_runtime,
+    monkeypatch,
+) -> None:
+    with collector_runtime() as session:
+        stream = session.scalar(select(CloneSourceStreamState))
+        session.delete(stream)
+        state = session.scalar(select(TelegramAuthorizationUpdateState))
+        failed_task = session.get(Task, "clone-collector-task")
+        healthy_task = Task(
+            id="healthy-channel-task",
+            tenant_id=1,
+            name="healthy channel",
+            type="group_ai_chat",
+            status="running",
+            task_lifecycle_epoch=1,
+        )
+        session.add(healthy_task)
+        session.flush()
+        subscribe_task_to_updates(
+            session,
+            state.id,
+            healthy_task.id,
+            task_epoch=1,
+            source_peer_type="channel",
+            source_peer_id="-10022",
+        ).state = "active"
+        failed_task.type = "group_ai_chat"
+        session.commit()
+    initial = TelegramDifferenceBatch(
+        scope="common",
+        status="empty",
+        cursor={"pts": 100, "qts": 0, "date": 1000, "seq": 1},
+    )
+    requested: list[tuple[str, int]] = []
+    monkeypatch.setattr(
+        "app.services.task_center.telegram_update_collector.gateway.fetch_raw_authorization_update_state",
+        lambda **_kwargs: initial,
+    )
+
+    def boundary(peer_id, **_kwargs):
+        if peer_id == "-10011":
+            raise TimeoutError("first peer timeout")
+        return {"channel_pts": 800, "max_message_id": 30}
+
+    def fetch_channel(peer_id, pts, **_kwargs):
+        requested.append((peer_id, pts))
+        return TelegramDifferenceBatch(
+            scope="channel",
+            status="live",
+            cursor={"pts": pts},
+        )
+
+    monkeypatch.setattr(
+        "app.services.task_center.telegram_update_collector.gateway.fetch_raw_channel_boundary",
+        boundary,
+    )
+    monkeypatch.setattr(
+        "app.services.task_center.telegram_update_collector.gateway.fetch_raw_channel_difference",
+        fetch_channel,
+    )
+
+    result = drain_telegram_update_collector(collector_runtime, tenant_id=1)
+
+    assert result.error_count == 1
+    assert requested == [("-10022", 800)]
+    with collector_runtime() as session:
+        state = session.scalar(select(TelegramAuthorizationUpdateState))
+        failed_task = session.get(Task, "clone-collector-task")
+        healthy_task = session.get(Task, "healthy-channel-task")
+        assert state.state == "live"
+        assert failed_task.stats["telegram_update_channel_errors"]["-10011"]
+        assert "telegram_update_channel_errors" not in (healthy_task.stats or {})
+
+
 def test_channel_difference_recovers_failed_gap_stream(
     collector_runtime,
     monkeypatch,

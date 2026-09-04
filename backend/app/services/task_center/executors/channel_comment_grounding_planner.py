@@ -46,7 +46,15 @@ def build_grounding_comment_plan_slots(
     for message in context.messages:
         if not input_allowed(task, context, message):
             continue
-        plan = _safe_plan(session, task, message, accounts=context.accounts)
+        plan = _safe_plan(
+            session,
+            task,
+            message,
+            accounts=context.policy_accounts,
+            ledger=context.ledger,
+            participation_plan=context.participation_plan,
+            admission_snapshot=context.admission_snapshot,
+        )
         if plan is None:
             continue
         existing = _plan_obligations(session, plan.contract.id)
@@ -76,10 +84,19 @@ def _safe_plan(
     message: ChannelMessage,
     *,
     accounts: list,
+    ledger,
+    participation_plan,
+    admission_snapshot,
 ):
     try:
         return ensure_comment_plan_contract(
-            session, task, message, accounts=accounts,
+            session,
+            task,
+            message,
+            accounts=accounts,
+            ledger=ledger,
+            participation_plan=participation_plan,
+            admission_snapshot=admission_snapshot,
         )
     except ValueError as exc:
         stats_inc(task, str(exc))
@@ -133,12 +150,6 @@ def _freeze_grounding_obligations(
         quantity=total, requested_targets=reply_targets,
     )
     if targets is None:
-        return []
-    if any(
-        account_id not in plan.discussion_identity.membership_by_account
-        for account_id in plan.account_by_ordinal.values()
-    ):
-        task.last_error = "discussion_membership_pending"
         return []
     fallback_ordinals = _planned_fallback_ordinals(plan.quality_target)
     if not _fallback_contract_ready(

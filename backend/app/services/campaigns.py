@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.auth import CurrentUser
 from app.ai_gateway import AiUsage, mock_candidates
+from app.services.automation_identity import with_automation_identity
 from app.models import (
     AccountStatus,
     AiDraft,
@@ -393,9 +394,10 @@ def render_prompt(
         + "每条 drafts 必须包含 sequence_index、persona、content、risk_level，"
         + "可选 suggested_account_id、reply_to_sequence_index、material_id。"
         + "请按所选账号顺序从 A 账号开始轮流生成，suggested_account_id 必须优先使用对应账号 id。"
-        + "如果有真人上下文，要接住真人最新消息继续聊；不要暴露运营、脚本、AI、监听等内部信息。"
+        + "如果有真人上下文，要接住最新消息；不输出脚本或监听说明。"
         + f"\n\n所选账号：\n{account_text}\n{listener_text}\n真人上下文：\n{context_text}"
     )
+
 
 
 def prompt_template_label(template: PromptTemplate, decision: PromptDecision) -> str:
@@ -499,6 +501,7 @@ def generate_drafts(
                 max_tokens=tenant_setting.max_tokens,
                 material_ids=material_ids,
                 selected_account_ids=selected_account_ids,
+                system_prompt=with_automation_identity(None),
             )
             candidates = result.candidates
             usage = result.usage

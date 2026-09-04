@@ -122,6 +122,14 @@ class SendMessagePayload(BaseModel):
     reply_target_author: str = ""
     reply_target_preview: str = ""
     reply_target_source: str = ""
+    conversation_event_id: str = ""
+    context_turn_id: str = ""
+    context_turn_revision: int = 0
+    interaction_opportunity_id: str = ""
+    conversation_turn_claim_id: str = ""
+    response_not_before_at: datetime | None = None
+    freshness_deadline_at: datetime | None = None
+    proactive_quiet_until_at: datetime | None = None
     anchor_message_ids: list[int] = Field(default_factory=list)
     semantic_cluster: str = ""
     duplicate_risk: str = ""
@@ -218,6 +226,7 @@ class SendMessagePayload(BaseModel):
             "pending",
             "generating",
             "ai_result_persist_unknown",
+            "provider_result_unknown",
         }
         if (
             not self.message_text.strip()

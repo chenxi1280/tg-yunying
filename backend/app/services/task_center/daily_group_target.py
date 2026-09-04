@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -11,12 +11,18 @@ from app.models import (
     ExecutionAttempt,
     Task,
     TaskAccountDailyCoverage,
+    TaskGroupDailyMessageSlot,
     TaskGroupDailyTarget,
     TaskMembershipAdmissionItem,
+    TaskParticipationUnitPlan,
     TgGroup,
 )
 from app.services._common import _now
 from .pacing import cumulative_pacing_due, task_pacing_anchor
+from .engagement_daily_quantity import (
+    POLICY_REVISION as UNIFIED_QUANTITY_POLICY_REVISION,
+    group_ai_daily_quantity,
+)
 
 
 def effective_daily_message_target(configured: int, current_required: int) -> int:
@@ -55,9 +61,15 @@ def refresh_task_group_daily_target(
     task = session.get(Task, target.task_id)
     if task is None:
         raise ValueError("task_group_daily_target_task_missing")
-    configured = max(1, int((task.type_config or {}).get("daily_message_target") or 1))
     current_required = _current_required_account_count(session, target)
-    planned = effective_daily_message_target(configured, current_required)
+    if target.quantity_policy_revision == UNIFIED_QUANTITY_POLICY_REVISION:
+        configured = int(target.configured_message_target)
+        planned = effective_daily_message_target(
+            int(target.raw_quantity_target), current_required
+        )
+    else:
+        configured = max(1, int((task.type_config or {}).get("daily_message_target") or 1))
+        planned = effective_daily_message_target(configured, current_required)
     _apply_current_target(
         target,
         configured=configured,
@@ -139,7 +151,13 @@ def _new_target(
     timestamp: datetime,
 ) -> TaskGroupDailyTarget:
     frozen_accounts = _frozen_account_count(session, task, group, target_date)
-    configured = max(1, int((task.type_config or {}).get("daily_message_target") or 1))
+    participation = _daily_participation_plan(session, task, target_date)
+    quantity = group_ai_daily_quantity(
+        task,
+        target_date,
+        required_account_count=frozen_accounts,
+        participation_plan=participation,
+    )
     phase, committed_at = _fulfillment_phase(task, target_date)
     scope_frozen_at = _scope_frozen_at(
         task,
@@ -153,16 +171,36 @@ def _new_target(
         task_id=task.id,
         group_id=group.id,
         target_date=target_date,
-        configured_message_target=configured,
+        participation_plan_id=participation.id if participation else None,
+        configured_message_target=quantity.configured_target,
+        quantity_policy_revision=quantity.policy_revision,
+        quantity_seed=quantity.seed,
+        sampled_jitter_bps=quantity.sampled_jitter_bps,
+        raw_quantity_target=quantity.raw_target,
         frozen_account_count=frozen_accounts,
-        effective_message_target=effective_daily_message_target(configured, frozen_accounts),
-        planned_daily_target=effective_daily_message_target(configured, frozen_accounts),
+        effective_message_target=quantity.effective_target,
+        planned_daily_target=quantity.effective_target,
         planned_target_revision=1,
         target_changed_at=timestamp,
         target_change_reason="created_from_current_task_scope",
         daily_fulfillment_phase=phase,
         scope_frozen_at=scope_frozen_at,
         full_day_committed_at=committed_at,
+    )
+
+
+def _daily_participation_plan(
+    session: Session, task: Task, target_date: date
+) -> TaskParticipationUnitPlan | None:
+    return session.scalar(
+        select(TaskParticipationUnitPlan).where(
+            TaskParticipationUnitPlan.task_id == task.id,
+            TaskParticipationUnitPlan.task_lifecycle_epoch == task.task_lifecycle_epoch,
+            TaskParticipationUnitPlan.participation_kind == "group_daily_all",
+            TaskParticipationUnitPlan.participation_unit
+            == f"task_day:{target_date.isoformat()}",
+            TaskParticipationUnitPlan.state == "active",
+        )
     )
 
 
@@ -265,11 +303,19 @@ def _gateway_started_count(
     return int(session.scalar(
         select(func.count(func.distinct(Action.id)))
         .join(ExecutionAttempt, ExecutionAttempt.action_id == Action.id)
+        .outerjoin(
+            TaskGroupDailyMessageSlot,
+            TaskGroupDailyMessageSlot.id == Action.primary_quantity_slot_id,
+        )
         .where(
             Action.task_id == target.task_id,
             Action.status == "executing",
             ExecutionAttempt.gateway_call_started_at >= start,
             ExecutionAttempt.gateway_call_started_at < end,
+            or_(
+                TaskGroupDailyMessageSlot.id.is_(None),
+                TaskGroupDailyMessageSlot.quantity_credit_eligible.is_(True),
+            ),
         )
     ) or 0)
 
@@ -281,12 +327,23 @@ def _unknown_hold_count(
     start: datetime,
     end: datetime,
 ) -> int:
-    return int(session.scalar(select(func.count(Action.id)).where(
-        Action.task_id == target.task_id,
-        Action.status == "unknown_after_send",
-        Action.executed_at >= start,
-        Action.executed_at < end,
-    )) or 0)
+    return int(session.scalar(
+        select(func.count(Action.id))
+        .outerjoin(
+            TaskGroupDailyMessageSlot,
+            TaskGroupDailyMessageSlot.id == Action.primary_quantity_slot_id,
+        )
+        .where(
+            Action.task_id == target.task_id,
+            Action.status == "unknown_after_send",
+            Action.executed_at >= start,
+            Action.executed_at < end,
+            or_(
+                TaskGroupDailyMessageSlot.id.is_(None),
+                TaskGroupDailyMessageSlot.quantity_credit_eligible.is_(True),
+            ),
+        )
+    ) or 0)
 
 
 def _fulfillment_phase(task: Task, target_date: date) -> tuple[str, datetime]:
@@ -305,6 +362,10 @@ def _confirmed_message_count(
 ) -> int:
     actions = list(session.scalars(
         select(Action)
+        .outerjoin(
+            TaskGroupDailyMessageSlot,
+            TaskGroupDailyMessageSlot.id == Action.primary_quantity_slot_id,
+        )
         .where(
             Action.tenant_id == target.tenant_id,
             Action.task_id == target.task_id,
@@ -312,6 +373,10 @@ def _confirmed_message_count(
             Action.status == "success",
             Action.executed_at >= start,
             Action.executed_at < end,
+            or_(
+                TaskGroupDailyMessageSlot.id.is_(None),
+                TaskGroupDailyMessageSlot.quantity_credit_eligible.is_(True),
+            ),
             select(ExecutionAttempt.id).where(
                 ExecutionAttempt.action_id == Action.id,
                 ExecutionAttempt.status == "success",

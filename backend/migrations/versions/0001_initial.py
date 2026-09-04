@@ -11,6 +11,7 @@ from alembic import op
 
 from app import models  # noqa: F401
 from app.database import Base
+from migrations.legacy_bootstrap import legacy_bootstrap_metadata
 
 
 revision = "0001_initial"
@@ -20,8 +21,8 @@ depends_on = None
 
 
 def upgrade() -> None:
-    Base.metadata.create_all(bind=op.get_bind())
+    legacy_bootstrap_metadata(Base.metadata).create_all(bind=op.get_bind())
 
 
 def downgrade() -> None:
-    Base.metadata.drop_all(bind=op.get_bind())
+    legacy_bootstrap_metadata(Base.metadata).drop_all(bind=op.get_bind())

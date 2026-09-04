@@ -20,6 +20,7 @@ from ..channel_listener_runtime import (
     channel_snapshot_binding,
     ensure_channel_subscription,
 )
+from ..channel_source_intake import record_source_wait, unified_source_intake
 
 
 def quantity_with_jitter(quantity: int, jitter_ratio: float | int = 0.15) -> int:
@@ -61,7 +62,7 @@ def channel_scope(session: Session, task: Task, config: dict, *, comment_availab
     if _channel_scope_name(config) != "specific":
         if config.get("listen_new_messages") is False:
             existing_messages = channel_messages(session, task.tenant_id, config, comment_available_only=comment_available_only)
-            if existing_messages:
+            if existing_messages and config.get("engagement_contract_version") != "unified_engagement_v1":
                 return channel, existing_messages
         ensure_channel_subscription(session, task, channel)
         snapshot_status, next_probe_at, state_id, snapshot_revision = channel_snapshot_binding(
@@ -71,6 +72,8 @@ def channel_scope(session: Session, task: Task, config: dict, *, comment_availab
         )
         if snapshot_status != "ready":
             task.last_error = f"channel_source_snapshot_{snapshot_status}"
+            if config.get("engagement_contract_version") == "unified_engagement_v1":
+                record_source_wait(session, task)
             if next_probe_at is not None:
                 task.next_run_at = normalize_datetime(next_probe_at)
             if task.type == "channel_view" and state_id is not None:
@@ -80,6 +83,8 @@ def channel_scope(session: Session, task: Task, config: dict, *, comment_availab
                     comment_available_only=comment_available_only,
                 )
                 if existing_messages:
+                    existing_messages = unified_source_intake(session, task, existing_messages,
+                        config=config, observation_complete=False)
                     return channel, existing_messages
             return None, []
         messages = channel_messages(
@@ -97,6 +102,10 @@ def channel_scope(session: Session, task: Task, config: dict, *, comment_availab
             config,
             comment_available_only=comment_available_only,
         )
+    messages = unified_source_intake(session, task, messages, config=config,
+        observation_complete=_channel_scope_name(config) == "specific" or snapshot_status == "ready")
+    if comment_available_only:
+        messages = [message for message in messages if message.comment_available]
     if not messages:
         task.last_error = task.last_error or "未找到频道消息，等待下一轮采集"
         return None, []
@@ -187,6 +196,7 @@ def channel_message_payload(channel: OperationTarget, message: ChannelMessage) -
             "title": str(channel.title),
         },
         "channel_message_id": message.id,
+        "source_revision_id": str(message.current_source_revision_id or ""),
         "message_id": message.message_id,
         "target_display": channel.title,
         "message_content": message.content_preview,

@@ -38,6 +38,7 @@ from .channel_action_lifecycle import (
     release_channel_action_before_gateway,
 )
 from .channel_view_daily_identity import DailyIdentityClaim, claim_daily_identity, confirm_daily_identity
+from .album_reaction_facts import settle_album_participations
 TERMINAL_REPLAN_STATUSES = frozenset({"failed", "skipped", "cancelled"})
 LIFECYCLE_ACTION_TYPES = frozenset({"like_message", "view_message"})
 
@@ -67,6 +68,16 @@ def ensure_reaction_obligation(
         )
         session.add(obligation)
         session.flush()
+    _release_terminal_action(session, obligation)
+    return obligation
+
+
+def frozen_reaction_obligation(session, task, *, item):
+    obligation = session.get(ReactionFulfillmentObligation, item.obligation_id)
+    expected = (task.tenant_id, task.id, item.message.id, item.account_id)
+    if obligation is None or (obligation.tenant_id, obligation.task_id,
+            obligation.channel_message_id, obligation.account_id) != expected:
+        raise ValueError("album_child_obligation_identity_mismatch")
     _release_terminal_action(session, obligation)
     return obligation
 
@@ -272,6 +283,7 @@ def confirm_reaction_obligation(
         session.add(fact)
     assert_fact_owner(fact.obligation_id, obligation.id)
     obligation.status = "confirmed"
+    settle_album_participations(session, obligation)
     return fact
 
 

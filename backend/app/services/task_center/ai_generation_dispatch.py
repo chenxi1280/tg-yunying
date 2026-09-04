@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.models import Action, GenerationJob, GroupContextMessage, Task, TgAccount
 from app.services._common import _now
+from app.ai_transport_errors import AiProviderResultUnknown
 
 from .ai_generation_dependencies import GenerationDependencies
 from .ai_generation_commit import commit_generation_action, load_generation_batch
@@ -18,6 +19,7 @@ from .ai_generation_state import (
     cached_generation_result,
 )
 from .ai_generation_recovery import persist_generation_unknown
+from .generation_provider_unknown import persist_group_provider_unknown
 from .ai_content_runtime import AiContentRuntimeConflict, bind_candidate_to_gateway
 from .ai_generation_pipeline import SlotGenerationResult, generate_quality_results
 from .ai_generation_slots import generation_slot as _generation_slot
@@ -45,7 +47,6 @@ from .ai_generation_runtime_config import (
     build_runtime_config as _build_runtime_config,
     payload_map as _payload_map,
     quality_snapshot as _quality_snapshot,
-    tenant_fallback_flags as _tenant_fallback_flags,
 )
 from .ai_quality_stats import (
     clear_quality_blocker as _clear_quality_blocker,
@@ -307,7 +308,6 @@ def _generation_request(
         history=payload.ai_generation_history,
         config={
             **_runtime_config(session, task, batch),
-            **_tenant_fallback_flags(task),
             "_close_db_transaction_before_ai": True,
         },
         reply_targets=_reply_targets(batch),
@@ -377,6 +377,11 @@ def _generate_without_transaction(
     except ProviderRouteDeferred:
         session.rollback()
         raise
+    except AiProviderResultUnknown as exc:
+        session.rollback()
+        persist_group_provider_unknown(session, request, detail=str(exc))
+        session.commit()
+        raise AiGenerationUnavailable("provider_result_unknown") from exc
     except AiGenerationUnavailable as exc:
         code = str(exc) or AI_GENERATION_UNAVAILABLE_MESSAGE
         fail_generation_batch(

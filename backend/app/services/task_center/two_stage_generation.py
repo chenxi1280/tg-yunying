@@ -369,6 +369,7 @@ def _realizer_config(config: dict, brief: MessageBrief, attempt_index: int) -> d
     return {
         **config,
         "_ai_content_mode": content_mode,
+        "_provider_http_slot_ids": [brief.slot_id] if config.get("generation_slots") else None,
         "_ai_provider_invocation_key": invocation_key,
         "_ai_provider_realizer_contract": {
             "speech_act": brief.speech_act,
@@ -394,6 +395,7 @@ def _run_semantic_review(
 ) -> tuple[dict, int]:
     reviewer_config = {
         **config,
+        "_provider_http_slot_ids": [plan.slot_id] if config.get("generation_slots") else None,
         "_ai_provider_invocation_key": (
             f"reviewer:{plan.slot_id}:attempt:{realization_attempt}"
         ),

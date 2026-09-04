@@ -27,6 +27,7 @@ from app.models import (
     RuleSet,
     Task,
     TaskAccountDailyCoverage,
+    TaskDayLedger,
     TaskGroupBotAdmission,
     TaskGroupDailyMessageSlot,
     TaskGroupDailyTarget,
@@ -63,7 +64,10 @@ from ..ai_reply_allocation import reply_requirement_for_plan
 from ..account_voice_profile_generation_jobs import enqueue_voice_profile_generation
 from ..account_voice_profiles import group_stance_summaries, voice_profile_prompt_details
 from ..channel_membership import gate_channel_membership
-from ..config_normalization import apply_group_ai_account_coverage_defaults
+from ..config_normalization import (
+    apply_default_rule_binding,
+    apply_group_ai_account_coverage_defaults,
+)
 from ..content_mix_cycles import (
     ContentMixCycleSpec,
     ContentMixSlotSpec,
@@ -79,6 +83,7 @@ from ..daily_coverage import (
     backfill_daily_coverage_confirmations,
     bind_coverage_reservation,
     block_coverage_accounts,
+    block_voice_profile_coverage,
     ensure_task_daily_coverage,
     ready_coverage_rows,
     release_coverage_reservation,
@@ -96,7 +101,17 @@ from ..daily_coverage_planning import (
     ready_coverage_plan_batch,
 )
 from ..content_mix_replan_recovery import recover_stale_pending_content_mix_slots
-from ..daily_ledgers import ensure_task_day_ledger
+from ..daily_ledgers import (
+    bind_unowned_group_slots_to_coverage,
+    ensure_task_day_ledger,
+)
+from ..engagement_participation import (
+    ensure_daily_participation_plan,
+)
+from ..engagement_natural_opportunity import ensure_natural_opportunity_plan
+from ..engagement_portfolio import reserve_portfolio_units
+from ..engagement_group_scope import group_operation_target, sync_group_participation_scope
+from ..engagement_planning_admission import ensure_planning_admission_snapshot
 from ..daily_group_target import (
     daily_group_due_message_count,
     ensure_task_group_daily_target,
@@ -275,6 +290,7 @@ class PlanFacts:
     group: TgGroup
     coverage: CoveragePlanState
     target_label: str
+    continuity_reply_targets: tuple[dict, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -399,18 +415,10 @@ class QuantitySlotAlignmentError(RuntimeError):
 def _load_plan_facts(session: Session, task: Task) -> PlanFacts | PlanAbort:
     config = {**(task.type_config or {}), "pacing_config": task.pacing_config or {}}
     config = _canonicalized_task_config(session, task, config)
+    config = _bind_legacy_default_rules(session, task, config)
     progress: dict = {}
-    rule_version = bound_rule_version(session, task)
-    if not rule_version:
-        task.last_error = task.last_error or "AI 活群任务缺少已发布规则绑定"
-        stats = dict(task.stats or {})
-        stats["rule_binding_missing_count"] = int(
-            stats.get("rule_binding_missing_count") or 0
-        ) + 1
-        stats["last_plan_blocker"] = "rule_binding_missing"
-        task.stats = stats
-        if progress:
-            _mark_hard_blocked(task, progress, "rule_binding_missing")
+    rule_version = _required_group_rule_version(session, task, progress)
+    if rule_version is None:
         return PlanAbort()
     rule_set = session.get(RuleSet, rule_version.rule_set_id)
     target_id = int(config.get("target_operation_target_id") or 0)
@@ -438,10 +446,32 @@ def _load_plan_facts(session: Session, task: Task) -> PlanFacts | PlanAbort:
         progress=progress,
     )
     _record_daily_coverage_next_check(task, coverage.required_new > 0)
-    label = target.title if target and target.tenant_id == task.tenant_id else group.title
     active_config = _with_active_conversation_targets(session, task, config, group)
+    return _build_plan_facts(
+        session, task, group=group, target=target, config=active_config,
+        progress=progress, rule_version=rule_version, rule_set=rule_set,
+        coverage=coverage,
+    )
+
+
+def _build_plan_facts(
+    session: Session,
+    task: Task,
+    *,
+    group: TgGroup,
+    target: OperationTarget | None,
+    config: dict,
+    progress: dict,
+    rule_version: Any,
+    rule_set: RuleSet | None,
+    coverage: CoveragePlanState,
+) -> PlanFacts:
+    label = target.title if target and target.tenant_id == task.tenant_id else group.title
+    continuity_targets = _interaction_continuity_targets(
+        session, task, group, coverage, config, target,
+    )
     return PlanFacts(
-        config=active_config,
+        config=config,
         task_id=task.id,
         task_config_revision=int(task.config_revision or 1),
         hard_progress=progress,
@@ -451,7 +481,94 @@ def _load_plan_facts(session: Session, task: Task) -> PlanFacts | PlanAbort:
         group=group,
         coverage=coverage,
         target_label=label,
+        continuity_reply_targets=continuity_targets,
     )
+
+
+def _interaction_continuity_targets(
+    session: Session,
+    task: Task,
+    group: TgGroup,
+    coverage: CoveragePlanState,
+    config: dict,
+    target: OperationTarget | None,
+) -> tuple[dict, ...]:
+    if not _uses_unified_engagement(task):
+        return ()
+    daily_target = session.get(
+        TaskGroupDailyTarget, str(coverage.daily_group_target_id or ""),
+    )
+    ledger = (
+        session.get(TaskDayLedger, daily_target.task_day_ledger_id)
+        if daily_target and daily_target.task_day_ledger_id else None
+    )
+    operation_target_id = int(
+        target.id if target else config.get("target_operation_target_id") or 0
+    )
+    quantity_complete = bool(
+        daily_target
+        and int(daily_target.confirmed_message_count or 0)
+        >= int(daily_target.effective_message_target or 0)
+    )
+    if ledger is None or operation_target_id <= 0 or not quantity_complete:
+        return ()
+    depth = int(config.get("chat_history_depth") or 50)
+    rows = recent_context_messages(session, group, depth)
+    from ..engagement_conversation import interaction_reply_targets
+    from ..engagement_interaction_continuity import (
+        ensure_interaction_continuity_capacity,
+    )
+
+    targets = interaction_reply_targets(session, task, group, context_rows=rows)
+    if not targets:
+        return ()
+    decision = ensure_interaction_continuity_capacity(
+        session, task, ledger, group,
+        operation_target_id=operation_target_id,
+        reply_targets=targets,
+    )
+    return decision.admitted_targets
+
+
+def _required_group_rule_version(
+    session: Session,
+    task: Task,
+    progress: dict,
+):
+    rule_version = bound_rule_version(session, task)
+    if rule_version is not None:
+        return rule_version
+    task.last_error = task.last_error or "AI 活群任务缺少已发布规则绑定"
+    stats = dict(task.stats or {})
+    stats["rule_binding_missing_count"] = int(
+        stats.get("rule_binding_missing_count") or 0
+    ) + 1
+    stats["last_plan_blocker"] = "rule_binding_missing"
+    task.stats = stats
+    if progress:
+        _mark_hard_blocked(task, progress, "rule_binding_missing")
+    return None
+
+
+def _bind_legacy_default_rules(
+    session: Session,
+    task: Task,
+    config: dict,
+) -> dict:
+    if str(config.get("engagement_contract_version") or "legacy_v0") != "legacy_v0":
+        return config
+    if config.get("rule_set_id") or config.get("rule_set_version_id"):
+        return config
+    bound = apply_default_rule_binding(
+        session,
+        task.tenant_id,
+        task_type=task.type,
+        config=config,
+    )
+    task.type_config = {
+        key: value for key, value in bound.items() if key != "pacing_config"
+    }
+    return bound
 
 
 def _target_membership_abort(
@@ -557,12 +674,74 @@ def _load_plan_accounts(
         facts.hard_progress,
         planning_limit=session.info.get("daily_coverage_plan_limit"),
     )
+    if facts.continuity_reply_targets:
+        return _load_continuity_plan_accounts(
+            session, task, facts, account_limit,
+        )
     if _all_accounts_daily_coverage(facts.config):
         return _load_daily_coverage_plan_accounts(
             session, task, facts, account_limit,
             include_replan_accounts=include_replan_accounts,
         )
     return _load_regular_plan_accounts(session, task, facts, account_limit)
+
+
+def _load_continuity_plan_accounts(
+    session: Session,
+    task: Task,
+    facts: PlanFacts,
+    account_limit: int,
+) -> AccountPlanState | PlanAbort:
+    continuity_config = {
+        **facts.config,
+        "account_coverage_mode": "selected_accounts",
+        "_daily_coverage_enforced": False,
+    }
+    candidates = _select_accounts_for_plan(
+        session, task, facts.group, {}, continuity_config, coverage_rows=[],
+    )
+    candidates = _online_ready_accounts(session, task, candidates, {})
+    ready = _group_bot_ready_accounts_for_plan(
+        session, task, facts.group, candidates,
+    )
+    ready = _daily_voice_profile_ready_accounts(session, task, facts, ready)
+    admitted = _portfolio_continuity_accounts(
+        session, task, facts, ready[:account_limit],
+    )
+    if admitted:
+        return AccountPlanState(admitted)
+    task.last_error = "interaction_continuity_account_capacity_exhausted"
+    return PlanAbort()
+
+
+def _portfolio_continuity_accounts(
+    session: Session,
+    task: Task,
+    facts: PlanFacts,
+    candidates: list,
+) -> list:
+    target = session.get(
+        TaskGroupDailyTarget, str(facts.coverage.daily_group_target_id or ""),
+    )
+    ledger = (
+        session.get(TaskDayLedger, target.task_day_ledger_id)
+        if target and target.task_day_ledger_id else None
+    )
+    if ledger is None or not candidates:
+        return []
+    by_id = {int(account.id): account for account in candidates}
+    admitted_ids: list[int] = []
+    for reply_target in facts.continuity_reply_targets:
+        claim_id = str(reply_target.get("conversation_turn_claim_id") or "")
+        decision = reserve_portfolio_units(
+            session, task, ledger,
+            action_class="authored_message",
+            demand_identity=f"interaction_continuity:{claim_id}",
+            total_units=1,
+            candidate_account_ids=list(by_id),
+        )
+        admitted_ids.extend(decision.allocated_units_by_account)
+    return [by_id[account_id] for account_id in dict.fromkeys(admitted_ids)]
 
 
 def _load_regular_plan_accounts(
@@ -627,21 +806,11 @@ def _load_daily_coverage_plan_accounts(
         account_limit=account_limit,
         include_replan_accounts=include_replan_accounts,
     )
-    page_limit = _daily_coverage_scan_page_limit()
-    while len(selected) < account_limit:
-        rows = ready_coverage_plan_batch(
-            session, task, now=_now(), limit=page_limit,
-            exclude_account_ids=seen_account_ids,
-        ).rows
-        if not rows:
-            break
-        seen_account_ids.update(int(row.account_id) for row in rows)
-        ready_accounts, waiting = _daily_accounts_for_coverage_rows(
-            session, task, facts, rows,
-        )
-        admission_waiting.extend(waiting)
-        remaining = max(0, account_limit - len(selected))
-        selected.extend(ready_accounts[:remaining])
+    _scan_daily_coverage_accounts(
+        session, task, facts, selected=selected,
+        admission_waiting=admission_waiting,
+        seen_account_ids=seen_account_ids, account_limit=account_limit,
+    )
     selected.extend(
         _daily_group_extra_accounts(
             session,
@@ -652,7 +821,13 @@ def _load_daily_coverage_plan_accounts(
         )
     )
     if not selected and task.fulfillment_contract_version != "fact_first_v3":
-        selected.extend(admission_waiting[:account_limit])
+        legacy_ready = _daily_voice_profile_ready_accounts(
+            session,
+            task,
+            facts,
+            admission_waiting,
+        )
+        selected.extend(legacy_ready[:account_limit])
     _record_group_bot_admission_waiting(task, admission_waiting)
     _record_direct_check_in_capacity(task, len(selected))
     if selected:
@@ -662,6 +837,33 @@ def _load_daily_coverage_plan_accounts(
         return PlanAbort()
     _mark_account_shortage(session, task, facts)
     return PlanAbort()
+
+
+def _scan_daily_coverage_accounts(
+    session: Session,
+    task: Task,
+    facts: PlanFacts,
+    *,
+    selected: list,
+    admission_waiting: list,
+    seen_account_ids: set[int],
+    account_limit: int,
+) -> None:
+    page_limit = _daily_coverage_scan_page_limit()
+    while len(selected) < account_limit:
+        rows = ready_coverage_plan_batch(
+            session, task, now=_now(), limit=page_limit,
+            exclude_account_ids=seen_account_ids,
+        ).rows
+        if not rows:
+            return
+        seen_account_ids.update(int(row.account_id) for row in rows)
+        ready, waiting = _daily_accounts_for_coverage_rows(
+            session, task, facts, rows,
+        )
+        admission_waiting.extend(waiting)
+        remaining = max(0, account_limit - len(selected))
+        selected.extend(ready[:remaining])
 
 
 def _initial_replan_daily_accounts(
@@ -732,12 +934,56 @@ def _daily_accounts_for_coverage_rows(
     accounts = _online_ready_accounts(
         session, task, accounts, facts.hard_progress,
     )
-    ready = _group_bot_ready_accounts_for_plan(
+    admission_ready = _group_bot_ready_accounts_for_plan(
         session, task, facts.group, accounts,
     )
-    ready_ids = {account.id for account in ready}
-    waiting = [account for account in accounts if account.id not in ready_ids]
+    admission_ready_ids = {account.id for account in admission_ready}
+    waiting = [
+        account for account in accounts if account.id not in admission_ready_ids
+    ]
+    ready = _daily_voice_profile_ready_accounts(
+        session,
+        task,
+        facts,
+        admission_ready,
+    )
     return ready, waiting
+
+
+def _daily_voice_profile_ready_accounts(
+    session: Session,
+    task: Task,
+    facts: PlanFacts,
+    accounts: list,
+) -> list:
+    if not accounts:
+        return []
+    if bool(facts.config.get("allow_mask_missing_check_in", False)):
+        return accounts
+    profiles = voice_profile_prompt_details(
+        session,
+        tenant_id=task.tenant_id,
+        account_ids=[int(account.id) for account in accounts],
+    )
+    ready, missing_ids = _accounts_with_ready_voice_profiles(accounts, profiles)
+    if not missing_ids:
+        return ready
+    next_retry_at = _queue_missing_voice_profile_recovery(
+        session,
+        task,
+        facts.config,
+        missing_ids,
+    )
+    block_voice_profile_coverage(
+        session,
+        task=task,
+        account_ids=missing_ids,
+        next_retry_at=next_retry_at,
+        detail=VOICE_PROFILE_MISSING_MESSAGE,
+        now=_now(),
+    )
+    _record_missing_voice_profiles(session, task, missing_ids)
+    return ready
 
 
 def _replan_coverage_rows_for_plan(
@@ -1173,6 +1419,8 @@ def _load_turn_plan(
     context: ContextPlanState,
 ) -> TurnPlanState | PlanAbort:
     cycle_index = _next_cycle_index(session, task)
+    if facts.continuity_reply_targets:
+        return _continuity_turn_plan(facts, accounts, context, cycle_index)
     bounded_daily_coverage_batch = (
         task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION
         and _all_accounts_daily_coverage(facts.config)
@@ -1209,6 +1457,24 @@ def _load_turn_plan(
     selected = selected[: min(len(selected), turn_count)]
     history = _context_plan_history(facts, context)
     return TurnPlanState(cycle_index, round_config, selected, turn_count, history)
+
+
+def _continuity_turn_plan(
+    facts: PlanFacts,
+    accounts: list[Any],
+    context: ContextPlanState,
+    cycle_index: int,
+) -> TurnPlanState:
+    turn_count = len(facts.continuity_reply_targets)
+    selected = accounts[: min(len(accounts), turn_count)]
+    round_config = _coverage_round_config(
+        _hard_hourly_round_config(facts.config, facts.hard_progress),
+        facts.hard_progress,
+    )
+    return TurnPlanState(
+        cycle_index, {**round_config, "allow_account_repeat": True},
+        selected, turn_count, _context_plan_history(facts, context),
+    )
 
 
 def _select_turn_accounts(
@@ -1559,6 +1825,15 @@ def _current_ai_pacing_schedule(
     *,
     is_generic_warmup: bool,
 ) -> tuple[list[dict], list[datetime]]:
+    from ..engagement_attention import apply_proactive_quiet_windows
+
+    quality_items = apply_proactive_quiet_windows(
+        session,
+        task,
+        facts.group,
+        facts.config,
+        quality_items,
+    )
     assignments, points_by_slot, capacity_slots = _ai_source_capacity_schedule(
         session,
         task,
@@ -1593,6 +1868,10 @@ def _ai_source_capacity_schedule(
         effective_plan_total=facts.coverage.effective_daily_target,
         coverage_by_account=facts.coverage.rows_by_account,
         item_account_ids=[_quality_slot_account_id(item) for item in quality_items],
+        item_continuity_claim_ids=[
+            _reply_target_text(item, "conversation_turn_claim_id")
+            for item in quality_items
+        ],
     )
     points_by_slot = schedule_source_pacing_points(
         [item.source_slot for item in assignments],
@@ -1663,21 +1942,77 @@ def _materialize_ai_pacing_schedule(
         point = points_by_slot.get(assignment.source_slot.slot_key)
         if point is None:
             continue
+        item = quality_items[assignment.item_index]
+        timing = _ai_assignment_timing(item, assignment, point)
+        if timing is None:
+            continue
+        due_at, release_at, deadline_at, response_reflowed = timing
         _freeze_ai_pacing_assignment(
             task,
             assignment,
-            point.due_at,
-            point.release_not_before_at,
-            capacity_slot=capacity_by_key.get(assignment.source_slot.slot_key),
+            due_at,
+            release_at,
+            capacity_slot=(
+                None
+                if response_reflowed
+                else capacity_by_key.get(assignment.source_slot.slot_key)
+            ),
         )
         enriched.append({
-            **quality_items[assignment.item_index],
+            **item,
             "pacing_quantity_slot_id": assignment.owner.id,
             "pacing_slot_key": assignment.source_slot.slot_key,
-            "pacing_deadline_at": assignment.source_slot.deadline_at,
+            "pacing_deadline_at": deadline_at,
+            "response_reflowed": response_reflowed,
         })
-        due_times.append(point.release_not_before_at)
+        due_times.append(release_at)
     return enriched, due_times
+
+
+def _ai_assignment_timing(
+    item: dict,
+    assignment: AiPacingAssignment,
+    point,
+) -> tuple[datetime, datetime, datetime, bool] | None:
+    target = item.get("reply_target") if isinstance(item, dict) else None
+    source_deadline = wall_datetime(assignment.source_slot.deadline_at)
+    if not isinstance(target, dict) or not target.get("conversation_turn_claim_id"):
+        quiet_until = _reply_target_datetime(item, "proactive_quiet_until_at")
+        release_at = latest_wall_datetime(
+            wall_datetime(point.release_not_before_at),
+            quiet_until or wall_datetime(point.release_not_before_at),
+        )
+        if release_at >= source_deadline:
+            return None
+        return point.due_at, release_at, source_deadline, False
+    natural_at = _reply_target_datetime(target, "response_not_before_at")
+    freshness_at = _reply_target_datetime(target, "freshness_deadline_at")
+    if natural_at is None or freshness_at is None:
+        return None
+    deadline_at = min(source_deadline, freshness_at)
+    owner = assignment.owner
+    if owner.pacing_due_at is None:
+        call_at = latest_wall_datetime(wall_datetime(_now()), natural_at)
+        return (call_at, call_at, deadline_at, True) if call_at < deadline_at else None
+    due_at = wall_datetime(owner.pacing_due_at)
+    release_at = latest_wall_datetime(
+        wall_datetime(_now()),
+        natural_at,
+        wall_datetime(owner.release_not_before_at or owner.pacing_due_at),
+    )
+    if release_at >= deadline_at:
+        return None
+    return due_at, release_at, deadline_at, release_at != point.release_not_before_at
+
+
+def _reply_target_datetime(target: dict, key: str) -> datetime | None:
+    raw = target.get(key)
+    if isinstance(raw, datetime):
+        return wall_datetime(raw)
+    try:
+        return wall_datetime(datetime.fromisoformat(str(raw))) if raw else None
+    except ValueError:
+        return None
 
 
 def _freeze_ai_pacing_assignment(
@@ -1986,7 +2321,7 @@ def _slot_profile_payload(slot: SlotBuildInput) -> dict[str, Any]:
 
 def _slot_allocation_payload(slot: SlotBuildInput) -> dict[str, Any]:
     frozen = _quality_slot(slot.item)
-    return {
+    payload = {
         "allocation_plan_id": str(frozen.get("allocation_plan_id") or ""),
         "content_intent_id": str(frozen.get("content_intent_id") or ""),
         "content_intent_config_revision": int(
@@ -2016,6 +2351,13 @@ def _slot_allocation_payload(slot: SlotBuildInput) -> dict[str, Any]:
         "topic_ratio_scope_key": str(frozen.get("topic_ratio_scope_key") or ""),
         "content_task_day": str(frozen.get("task_day") or ""),
         "route_family": str(frozen.get("route_family") or ""),
+    }
+    payload.update(_slot_vocabulary_payload(frozen))
+    return payload
+
+
+def _slot_vocabulary_payload(frozen: dict) -> dict[str, Any]:
+    return {
         "daily_vocabulary_theme_id": int(
             frozen.get("daily_vocabulary_theme_id")
             if frozen.get("daily_vocabulary_theme_id") is not None
@@ -2081,6 +2423,7 @@ def _slot_conversation_payload(slot: SlotBuildInput) -> dict[str, Any]:
         "context_message_ids": message_ids,
         "context_snapshot_message_id": max(message_ids) if message_ids else None,
         "context_expire_after_messages": _context_expire_after_messages(blueprint.facts.config),
+        "proactive_quiet_until_at": item.get("proactive_quiet_until_at"),
     }
 
 
@@ -2131,6 +2474,7 @@ def _slot_rule_payload(slot: SlotBuildInput) -> dict[str, Any]:
         "reply_target_author": _reply_target_text(item, "author"),
         "reply_target_preview": _reply_target_text(item, "preview"),
         "reply_target_source": _reply_target_text(item, "source"),
+        **_reply_target_binding_payload(item),
         "rule_trace": {
             "material_policy": (rule_version.routing or {}).get("material_policy"),
             "material_action": "",
@@ -2243,6 +2587,7 @@ def _quantity_slot_alignment(
     missing_extra_count = 0
     for item in blueprint.generation.quality_items:
         account_id = _quality_slot_account_id(item)
+        claim_id = _reply_target_text(item, "conversation_turn_claim_id")
         coverage = blueprint.profile.coverage_rows.get(account_id)
         coverage_id = _incomplete_coverage_id(coverage)
         expected_coverage_id = (
@@ -2250,13 +2595,10 @@ def _quantity_slot_alignment(
             if not coverage_id or coverage_id in assigned_coverage_ids
             else coverage_id
         )
-        matched = next(
-            (
-                slot
-                for slot in remaining
-                if slot.task_account_daily_coverage_id == expected_coverage_id
-            ),
-            None,
+        matched = _matching_quantity_slot(
+            remaining,
+            claim_id=claim_id,
+            expected_coverage_id=expected_coverage_id,
         )
         if matched is None:
             if expected_coverage_id:
@@ -2278,6 +2620,23 @@ def _quantity_slot_alignment(
         missing_coverage_ids=tuple(missing_coverage_ids),
         missing_extra_count=missing_extra_count,
     )
+
+
+def _matching_quantity_slot(
+    available: list[TaskGroupDailyMessageSlot],
+    *,
+    claim_id: str,
+    expected_coverage_id: str | None,
+) -> TaskGroupDailyMessageSlot | None:
+    for slot in available:
+        if claim_id and str(slot.continuity_claim_id or "") == claim_id:
+            return slot
+        if not claim_id and (
+            slot.continuity_claim_id is None
+            and slot.task_account_daily_coverage_id == expected_coverage_id
+        ):
+            return slot
+    return None
 
 
 def _classified_quantity_slot_alignment(
@@ -2620,6 +2979,13 @@ def _reserve_ai_action_pacing(
                 planned_at,
             ),
             deadline_at=deadline_at,
+            engagement_contract_version=str(
+                (task.type_config or {}).get("engagement_contract_version") or ""
+            ),
+            action_class="authored_message",
+            allow_session_wake=bool(
+                _reply_target_text(item, "conversation_turn_claim_id")
+            ),
         )
     except AccountPacingDeadlineExceeded:
         _record_ai_pacing_shortfall(task, 1, 0)
@@ -2736,6 +3102,7 @@ def _create_reserved_action(session: Session, task: Task, slot: SlotSnapshot) ->
             payload,
         )
         _bind_ai_action_pacing(action, slot)
+        _bind_turn_claim(session, action)
         if task.fulfillment_contract_version != CURRENT_CONTRACT_VERSION:
             _bind_content_mix_action(session, action, payload)
         return action
@@ -2760,6 +3127,7 @@ def _create_reserved_action(session: Session, task: Task, slot: SlotSnapshot) ->
         _release_variation_conflict(session, coverage_id, reservation_token)
         return None
     _bind_ai_action_pacing(action, slot)
+    _bind_turn_claim(session, action)
     intent.action_id = action.id
     if not bind_coverage_reservation(session, coverage_id, reservation_token, action.id):
         raise RuntimeError("daily coverage reservation lost before action binding")
@@ -2767,6 +3135,12 @@ def _create_reserved_action(session: Session, task: Task, slot: SlotSnapshot) ->
         _bind_content_mix_action(session, action, payload)
     session.flush()
     return action
+
+
+def _bind_turn_claim(session: Session, action: Action) -> None:
+    from ..engagement_conversation import bind_conversation_turn_claim
+
+    bind_conversation_turn_claim(session, action)
 
 
 def _bind_ai_action_pacing(action: Action, slot: SlotSnapshot) -> None:
@@ -3428,15 +3802,21 @@ def _reply_targets_for_plan(
     daily_coverage_debt: bool = False,
     daily_group_target_id: str = "",
 ) -> tuple[list[dict] | None, bool]:
-    reply_min = reply_requirement_for_plan(
+    reply_target_pool = _group_reply_target_pool(
+        session, task, group, usable_context_rows,
+    )
+    continuity_count = sum(
+        1 for target in reply_target_pool
+        if target.get("conversation_turn_claim_id")
+    )
+    reply_min = max(continuity_count, reply_requirement_for_plan(
         session,
         turn_count=turn_count,
         config=config,
         daily_group_target_id=daily_group_target_id,
-    )
+    ))
     if reply_min <= 0:
         return [], False
-    reply_target_pool = _group_reply_target_pool(session, task, group, usable_context_rows)
     if reply_min > len(reply_target_pool):
         stats_inc(task, "reply_target_shortfall_count")
         if daily_coverage_debt or hard_progress:
@@ -3833,21 +4213,20 @@ def _coverage_plan_state(
     config: dict,
     progress: dict[str, object],
 ) -> CoveragePlanState:
-    del progress
     timestamp = _now()
     if not _all_accounts_daily_coverage(config):
         ensure_task_day_ledger(session, task, now=timestamp)
         return CoveragePlanState(rows=[], rows_by_account={}, due_debt=0)
-    bootstrap_missing_all_account_task_scope(session, task, now=timestamp)
-    ledger = ensure_task_day_ledger(session, task, now=timestamp)
+    ledger, participation, admission, account_ids = _coverage_scope(
+        session, task, group, timestamp=timestamp)
     ensure_task_daily_coverage(
-        session,
-        task,
-        now=timestamp,
-        target_group=group,
-        refresh_existing=True,
+        session, task, now=timestamp, account_ids=account_ids,
+        target_group=group, refresh_existing=True,
     )
-    release_voice_profile_coverage_for_check_in(session, task, now=timestamp)
+    ledger = ensure_task_day_ledger(session, task, now=timestamp)
+    bind_unowned_group_slots_to_coverage(session, task, ledger, group)
+    if bool(config.get("allow_mask_missing_check_in", False)):
+        release_voice_profile_coverage_for_check_in(session, task, now=timestamp)
     backfill_daily_coverage_confirmations(session, task, timestamp.date())
     totals = coverage_plan_totals(session, task, group, now=timestamp)
     target, due_message_count, volume_need = _daily_group_due_state(
@@ -3856,7 +4235,13 @@ def _coverage_plan_state(
         group,
         timestamp=timestamp,
     )
-    rows = _ready_coverage_rows_for_plan(session, task, timestamp=timestamp)
+    if admission is not None:
+        target.planning_admission_snapshot_id = admission.id
+    rows = _coverage_candidate_rows(
+        session, task, group=group, ledger=ledger, target=target,
+        participation=participation, admission=admission, timestamp=timestamp,
+        required_units=max(volume_need, totals.due_debt),
+    )
     effective_due_debt = _effective_coverage_due_debt(
         task,
         coverage_due_debt=totals.due_debt,
@@ -3871,6 +4256,91 @@ def _coverage_plan_state(
         effective_due_debt=effective_due_debt,
         deadline_at=ledger.deadline_at,
     )
+
+
+def _coverage_scope(
+    session: Session,
+    task: Task,
+    group: TgGroup,
+    *,
+    timestamp: datetime,
+):
+    ledger = ensure_task_day_ledger(session, task, now=timestamp)
+    if not _uses_unified_engagement(task):
+        bootstrap_missing_all_account_task_scope(session, task, now=timestamp)
+        return ledger, None, None, None
+    participation = ensure_daily_participation_plan(session, task, ledger)
+    account_ids = [int(item) for item in participation.selected_account_ids]
+    sync_group_participation_scope(session, task, group, account_ids=account_ids)
+    admission = ensure_planning_admission_snapshot(
+        session,
+        task,
+        participation,
+        planning_horizon=f"task_day:{ledger.obligation_local_date.isoformat()}",
+        target=group_operation_target(session, task, group),
+        require_send=True,
+    )
+    return ledger, participation, admission, account_ids
+
+
+def _coverage_candidate_rows(
+    session: Session,
+    task: Task,
+    *,
+    group: TgGroup,
+    ledger,
+    target: TaskGroupDailyTarget,
+    participation,
+    admission,
+    timestamp: datetime,
+    required_units: int,
+) -> list[TaskAccountDailyCoverage]:
+    rows = _ready_coverage_rows_for_plan(session, task, timestamp=timestamp)
+    if admission is not None:
+        admissible = {int(item) for item in admission.admissible_account_ids or []}
+        rows = [row for row in rows if int(row.account_id) in admissible]
+    rows = _portfolio_coverage_rows(
+        session, task, ledger=ledger, target=target,
+        participation=participation, rows=rows,
+    )
+    if participation is None or not _uses_unified_engagement(task):
+        return rows
+    opportunity = ensure_natural_opportunity_plan(
+        session, task, ledger, group=group, required_units=required_units,
+    )
+    return rows[:opportunity.guaranteed_now_capacity]
+
+
+def _uses_unified_engagement(task: Task) -> bool:
+    return str(
+        (task.type_config or {}).get("engagement_contract_version") or ""
+    ) == "unified_engagement_v1"
+
+
+def _portfolio_coverage_rows(
+    session: Session,
+    task: Task,
+    *,
+    ledger,
+    target: TaskGroupDailyTarget,
+    participation,
+    rows: list[TaskAccountDailyCoverage],
+) -> list[TaskAccountDailyCoverage]:
+    if participation is None or not _uses_unified_engagement(task):
+        return rows
+    decision = reserve_portfolio_units(
+        session,
+        task,
+        ledger,
+        action_class="authored_message",
+        demand_identity=f"group_daily:{target.id}",
+        total_units=int(target.effective_message_target or 0),
+        candidate_account_ids=[
+            int(item) for item in participation.selected_account_ids or []
+        ],
+    )
+    allowed = set(decision.allocated_units_by_account)
+    return [row for row in rows if int(row.account_id) in allowed]
 
 
 def _daily_group_due_state(
@@ -3987,6 +4457,7 @@ def _valid_open_daily_send_count(
         ).where(
             TaskGroupDailyMessageSlot.task_day_ledger_id == task_day_ledger_id,
             TaskGroupDailyMessageSlot.state.in_(("open", "unknown")),
+            TaskGroupDailyMessageSlot.quantity_credit_eligible.is_(True),
         )
         return int(session.scalar(statement) or 0)
     config = task.type_config if isinstance(task.type_config, dict) else {}
@@ -4228,7 +4699,7 @@ def _queue_missing_voice_profile_recovery(
     task: Task,
     config: dict,
     account_ids: list[int],
-) -> None:
+) -> datetime | None:
     result = enqueue_voice_profile_generation(
         session,
         tenant_id=task.tenant_id,
@@ -4239,6 +4710,7 @@ def _queue_missing_voice_profile_recovery(
     )
     if result.next_retry_at is not None:
         task.next_run_at = result.next_retry_at
+    return result.next_retry_at
 
 
 def _record_missing_voice_profiles(session: Session, task: Task, account_ids: list[int]) -> None:
@@ -4306,7 +4778,7 @@ def _voice_profile_prompt_text(profile: dict[str, Any]) -> str:
     parts = [
         f"面具：{profile['mask_name']}" if str(profile.get("mask_name") or "").strip() else "",
         f"人群：{profile['audience_archetype']}" if str(profile.get("audience_archetype") or "").strip() else "",
-        f"身份：{profile['identity_frame']}" if str(profile.get("identity_frame") or "").strip() else "",
+        f"服务角色参考（非身份事实）：{profile['identity_frame']}" if str(profile.get("identity_frame") or "").strip() else "",
         f"偏好：{'、'.join(tags)}" if tags else "",
         f"表达摘要：{profile['summary']}" if str(profile.get("summary") or "").strip() else "",
     ]
@@ -4673,10 +5145,15 @@ def _provider_generation_payload(item: dict) -> dict[str, object]:
 
 
 def _group_reply_target_pool(session: Session, task: Task, group: TgGroup, rows: list) -> list[dict]:
-    targets = [
-        *_listener_context_reply_targets(rows),
-        *_historical_group_reply_targets(session, task, group),
-    ]
+    if _uses_unified_engagement(task):
+        from ..engagement_conversation import interaction_reply_targets
+
+        listener_targets = _admitted_continuity_targets(
+            session, task, interaction_reply_targets(session, task, group, context_rows=rows),
+        )
+    else:
+        listener_targets = _listener_context_reply_targets(rows)
+    targets = [*listener_targets, *_historical_group_reply_targets(session, task, group)]
     deduped = _dedupe_reply_targets(targets)
     candidate_ids = _reply_message_ids(deduped)
     used_ids = _used_group_reply_target_ids(session, task, group, candidate_ids)
@@ -4688,6 +5165,27 @@ def _group_reply_target_pool(session: Session, task: Task, group: TgGroup, rows:
         candidate_ids=candidate_ids,
     )
     return _exclude_used_reply_targets(deduped, used_ids | invalid_ids)
+
+
+def _admitted_continuity_targets(
+    session: Session, task: Task, targets: list[dict],
+) -> list[dict]:
+    claim_ids = {
+        str(target.get("conversation_turn_claim_id") or "") for target in targets
+    } - {""}
+    if not claim_ids:
+        return []
+    admitted_ids = set(session.scalars(select(
+        TaskGroupDailyMessageSlot.continuity_claim_id,
+    ).where(
+        TaskGroupDailyMessageSlot.task_id == task.id,
+        TaskGroupDailyMessageSlot.continuity_claim_id.in_(claim_ids),
+        TaskGroupDailyMessageSlot.state.in_(("open", "unknown")),
+    )))
+    return [
+        target for target in targets
+        if str(target.get("conversation_turn_claim_id") or "") in admitted_ids
+    ]
 
 
 def _listener_context_reply_targets(rows: list) -> list[dict]:
@@ -4797,6 +5295,22 @@ def _reply_target_label(item: dict) -> str:
 def _reply_target_text(item: dict, key: str) -> str:
     target = item.get("reply_target") if isinstance(item, dict) else None
     return str(target.get(key) or "") if isinstance(target, dict) else ""
+
+
+def _reply_target_binding_payload(item: dict) -> dict[str, Any]:
+    target = item.get("reply_target") if isinstance(item, dict) else None
+    if not isinstance(target, dict):
+        return {}
+    return {
+        "conversation_event_id": str(target.get("conversation_event_id") or ""),
+        "conversation_event_revision": int(target.get("conversation_event_revision") or 0),
+        "context_turn_id": str(target.get("context_turn_id") or ""),
+        "context_turn_revision": int(target.get("context_turn_revision") or 0),
+        "interaction_opportunity_id": str(target.get("interaction_opportunity_id") or ""),
+        "conversation_turn_claim_id": str(target.get("conversation_turn_claim_id") or ""),
+        "response_not_before_at": target.get("response_not_before_at"),
+        "freshness_deadline_at": target.get("freshness_deadline_at"),
+    }
 
 
 def _choose_turn_account(available: list, selected: list, index: int, used_account_ids: set[int], allow_repeat: bool):

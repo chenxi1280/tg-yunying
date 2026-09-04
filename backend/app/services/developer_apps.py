@@ -391,7 +391,25 @@ def credentials_for_authorization(
 
 
 def credentials_for_task_account(session: Session, account: TgAccount, _task_type: str | None) -> DeveloperAppCredentials:
-    return credentials_for_account(session, account)
+    del _task_type
+    authorization = (
+        session.get(TgAccountAuthorization, account.current_authorization_id)
+        if account.current_authorization_id
+        else None
+    )
+    if (
+        authorization is not None
+        and authorization.account_id == account.id
+        and authorization.tenant_id == account.tenant_id
+        and authorization.is_current
+        and authorization.status == "active"
+    ):
+        return credentials_for_authorization(
+            session,
+            authorization,
+            use_proxy=True,
+        )
+    return credentials_for_account(session, account, use_proxy=True)
 
 
 def _proxy_credentials(proxy: AccountProxy | None) -> dict:

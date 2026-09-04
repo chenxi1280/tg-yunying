@@ -665,6 +665,7 @@ def test_generation_worker_defers_unproven_listener_watermark_without_spinning(
     monkeypatch,
 ) -> None:
     from app.services.task_center import ai_generation_worker
+    from app.services.task_center.ai_generation_timing import GENERATION_LOOKAHEAD
 
     monkeypatch.setattr(
         ai_generation_worker,
@@ -710,7 +711,7 @@ def test_generation_worker_defers_unproven_listener_watermark_without_spinning(
             for action in actions
         )
         assert all(not action.claim_owner and not action.lease_owner for action in actions)
-        assert all(action.scheduled_at > _now() + timedelta(minutes=30) for action in actions)
+        assert all(action.scheduled_at > _now() + GENERATION_LOOKAHEAD for action in actions)
 
 
 def _seed_actions(engine) -> None:

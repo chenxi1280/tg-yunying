@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.models import Action, GenerationJob
 
 from .ai_content_runtime import recover_terminal_pre_gateway_window_slots
+from .generation_recovery_scope import generation_task_filter
 
 
 ActionResolver = Callable[[Session, GenerationJob], Action | None]
@@ -18,10 +19,11 @@ def recover_pending_generation_residue(
     limit: int,
     *,
     action_resolver: ActionResolver,
+    task_type: str | None = None,
 ) -> int:
     bounded_limit = max(1, int(limit))
-    recovered = recover_terminal_pre_gateway_window_slots(session, bounded_limit)
-    for job in _candidate_jobs(session, bounded_limit - recovered):
+    recovered = recover_terminal_pre_gateway_window_slots(session, bounded_limit, task_type=task_type)
+    for job in _candidate_jobs(session, bounded_limit - recovered, task_type=task_type):
         action = action_resolver(session, job)
         if not _is_unowned_pending_residue(action, job):
             continue
@@ -29,7 +31,7 @@ def recover_pending_generation_residue(
     return recovered
 
 
-def _candidate_jobs(session: Session, limit: int) -> tuple[GenerationJob, ...]:
+def _candidate_jobs(session: Session, limit: int, *, task_type: str | None = None) -> tuple[GenerationJob, ...]:
     if limit <= 0:
         return ()
     residue_exists = select(Action.id).where(
@@ -50,6 +52,7 @@ def _candidate_jobs(session: Session, limit: int) -> tuple[GenerationJob, ...]:
         GenerationJob.state == "pending",
         GenerationJob.generation_owner_id == "",
         residue_exists,
+        generation_task_filter(task_type),
     ).order_by(GenerationJob.created_at, GenerationJob.id).limit(max(1, int(limit)))))
 
 

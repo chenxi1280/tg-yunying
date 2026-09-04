@@ -48,8 +48,6 @@ from .ai_quality_stats import record_provider_admission_unavailable
 from .ai_generation_timing import GENERATION_LOOKAHEAD
 from .direct_check_in import is_due_catch_up_check_in
 from .payloads import SendMessagePayload
-from .comment_generation_dispatch import PRODUCTION_COMMENT_GENERATION_DEPENDENCIES
-from .comment_generation_pipeline import CommentGenerationDependencies
 
 
 GENERATABLE_STATUSES = ("pending", "ai_result_persist_unknown")
@@ -68,21 +66,11 @@ def drain_ai_generation(
     *,
     generate_action: GenerateAction | None = None,
     dependencies: GenerationDependencies = PRODUCTION_GENERATION_DEPENDENCIES,
-    comment_dependencies: CommentGenerationDependencies = PRODUCTION_COMMENT_GENERATION_DEPENDENCIES,
 ) -> int:
     with session_factory() as session:
-        reconcile_generation_jobs(session, limit=max(1, int(limit)))
+        reconcile_generation_jobs(session, limit=max(1, int(limit)), task_type="group_ai_chat")
         session.commit()
-
-    from .comment_generation_worker import drain_comment_generation
-
-    processed = drain_comment_generation(
-        session_factory,
-        limit=max(1, int(limit)),
-        dependencies=comment_dependencies,
-    )
-    if processed >= max(1, int(limit)):
-        return processed
+    processed = 0
     processor = generate_action or _production_generate_action(dependencies)
     owner = f"ai-generation:{socket.gethostname()}:{uuid4()}"
     try:

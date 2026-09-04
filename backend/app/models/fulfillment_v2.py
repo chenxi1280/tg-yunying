@@ -180,6 +180,7 @@ class SearchClickAssignment(Base):
 class GenerationJob(Base):
     __tablename__ = "generation_jobs"
     __table_args__ = (
+        Index("ix_generation_job_provider_lineage", "tenant_id", "task_id", "obligation_type", "obligation_id"),
         Index(
             "ix_generation_jobs_claim_ready",
             "state",

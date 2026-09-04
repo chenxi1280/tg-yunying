@@ -108,7 +108,11 @@ def drain_account_online_keepalive(session_factory, limit: int = 100) -> int:
         if processed < batch_limit:
             processed += mark_stale_online_states(session, limit=batch_limit)
         session.commit()
-        return processed
+    from app.services.task_center.engagement_circuit_probe import (
+        drain_due_circuit_probes,
+    )
+
+    return processed + drain_due_circuit_probes(session_factory, limit=limit)
 
 
 def reconcile_runtime_online_sources(

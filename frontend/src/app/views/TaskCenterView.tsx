@@ -1144,6 +1144,22 @@ export default function TaskCenterView({
     };
   }
 
+  function engagementBindingPayload(values: any) {
+    return {
+      engagement_contract_version: 'unified_engagement_v1',
+      account_selection_mode: 'group',
+      account_group_ids: csvNumbers(values.account_group_ids),
+      concurrency_limit_per_group: values.concurrency_limit_per_group ?? 5,
+    };
+  }
+
+  function channelIntakePayload(values: any) {
+    return {
+      initial_historical_post_limit: values.initial_historical_post_limit ?? 5,
+      source_expectation_mode: values.source_expectation_mode ?? 'continuous_event_driven',
+    };
+  }
+
   function channelScopePayload(values: any) {
     const channel = channelTargets.find((item) => item.id === values.target_channel_id);
     return {
@@ -1152,6 +1168,7 @@ export default function TaskCenterView({
       target_input: values.target_input?.trim() || null,
       target_title: values.target_title?.trim() || '',
       target_channel_name: channel?.title ?? '',
+      ...channelIntakePayload(values),
       message_scope: values.message_scope ?? 'latest_n',
       message_count: ['latest_n', 'dynamic_new'].includes(values.message_scope) ? values.message_count ?? 10 : null,
       date_from: fromBeijingDateTimeLocalValue(values.date_from),
@@ -1163,7 +1180,10 @@ export default function TaskCenterView({
   function channelViewProductionPayload(values: any) {
     const dailyTarget = values.per_message_daily_view_target ?? values.target_views_per_message ?? null;
     return {
-      initial_message_scope: values.message_scope === 'dynamic_new' ? 'new_only' : values.message_scope ?? 'latest_n',
+      ...engagementBindingPayload(values),
+      initial_message_scope: values.message_scope === 'dynamic_new'
+        ? (values.initial_historical_post_limit === 0 ? 'new_only' : 'latest_n')
+        : values.message_scope ?? 'latest_n',
       latest_message_count: ['latest_n', 'dynamic_new'].includes(values.message_scope) ? values.message_count ?? 10 : null,
       listen_new_messages: values.listen_new_messages !== false,
       per_message_daily_view_target: dailyTarget,
@@ -1171,8 +1191,16 @@ export default function TaskCenterView({
       message_active_days: values.message_active_days ?? 3,
       task_daily_view_safety_cap: 1000000,
       max_views_per_account_per_day: 1000000,
-      view_count_jitter: values.view_count_jitter ?? CHANNEL_COUNT_JITTER_DEFAULT,
       target_views_per_message: dailyTarget,
+      account_ratio_min_bps: values.account_ratio_min_bps ?? 8000,
+      account_ratio_max_bps: values.account_ratio_max_bps ?? 9500,
+      rolling_participation_days: values.rolling_participation_days ?? 3,
+      view_exposure_mode: values.view_exposure_mode ?? 'natural_auto',
+      per_account_source_degree_min: values.per_account_source_degree_min ?? 2,
+      per_account_source_degree_max: values.per_account_source_degree_max ?? 4,
+      every_active_message: values.every_active_message === true,
+      per_source_exposure_target: values.per_source_exposure_target ?? null,
+      per_source_exposure_ratio_bps: values.per_source_exposure_ratio_bps ?? null,
       execution_mode: values.execution_mode ?? 'distribute',
     };
   }
@@ -1378,6 +1406,7 @@ export default function TaskCenterView({
       const target = groupTargets.find((item) => item.id === values.target_operation_target_id);
       return {
         ...base,
+        ...engagementBindingPayload(values),
         target_operation_target_id: values.target_operation_target_id ?? null,
         target_type: 'group',
         target_input: values.target_input?.trim() || null,
@@ -1413,11 +1442,14 @@ export default function TaskCenterView({
         reply_min_per_round: values.reply_min_per_round ?? 1,
         account_coverage_mode: values.account_coverage_mode ?? 'all_accounts_daily',
         daily_message_target: values.daily_message_target ?? 1,
+        daily_target_jitter_bps: values.daily_target_jitter_bps ?? 1500,
         history_fetch_account_id: values.history_fetch_account_id ?? null,
         ...membershipStrategyPayload(values),
         context_expire_after_messages: values.context_expire_after_messages ?? 10,
         idle_continuation_enabled: values.idle_continuation_enabled ?? true,
         idle_continuation_seconds: values.idle_continuation_seconds ?? 300,
+        attention_quiet_after_min_seconds: values.attention_quiet_after_min_seconds ?? 60,
+        attention_quiet_after_max_seconds: values.attention_quiet_after_max_seconds ?? 180,
       };
     }
     if (taskType === 'group_clone') {
@@ -1500,14 +1532,20 @@ export default function TaskCenterView({
       return { ...base, ...channelScopePayload(values), ...channelViewProductionPayload(values) };
     }
     if (taskType === 'channel_like') {
-      return { ...base, ...channelScopePayload(values), target_likes_per_message: values.target_likes_per_message ?? 50, like_count_jitter: values.like_count_jitter ?? CHANNEL_COUNT_JITTER_DEFAULT, reaction_type: values.reaction_type ?? 'random', reaction_scope: values.reaction_scope ?? 'all_available', allowed_reactions: words(values.allowed_reactions || '👍,❤️,🔥,👏,🎉,🤩,👌,💯,🙌,✨'), max_likes_per_account_per_hour: 1000000, message_active_days: values.message_active_days ?? 7 };
+      return { ...base, ...engagementBindingPayload(values), ...channelScopePayload(values), target_likes_per_message: values.target_likes_per_message ?? 50, daily_reaction_cap: values.daily_reaction_cap ?? 1000, like_count_jitter: values.like_count_jitter ?? CHANNEL_COUNT_JITTER_DEFAULT, reaction_type: values.reaction_type ?? 'random', reaction_scope: values.reaction_scope ?? 'all_available', allowed_reactions: words(values.allowed_reactions || '👍,❤️,🔥,👏,🎉,🤩,👌,💯,🙌,✨'), max_likes_per_account_per_hour: 1000000, message_active_days: values.message_active_days ?? 7 };
     }
-    return channelCommentPayload(values, base, true);
+    return {
+      ...channelCommentPayload(values, base, true),
+      ...engagementBindingPayload(values),
+      account_ratio_min_bps: values.account_ratio_min_bps ?? 5500,
+      account_ratio_max_bps: values.account_ratio_max_bps ?? 6500,
+    };
   }
 
   function settingsPayload(type: TaskCenterTaskType, values: any): Record<string, any> {
     if (isSimpleSearchClickTask(type)) return simpleSearchClickPayload(values, true, type);
     const base = {
+      ...(['channel_view', 'channel_like', 'channel_comment'].includes(type) ? channelIntakePayload(values) : {}),
       name: values.name,
       priority: values.priority ?? 3,
       timezone: values.timezone ?? 'Asia/Shanghai',
@@ -1522,6 +1560,7 @@ export default function TaskCenterView({
       const existingTypeConfig = detail?.task.type_config || {};
       return {
         ...base,
+        ...engagementBindingPayload(values),
         target_operation_target_id: values.target_operation_target_id ?? null,
         group_ai_prejoin_channel_ids: csvStrings(values.group_ai_prejoin_channel_ids),
         rule_set_id: values.rule_set_id ?? null,
@@ -1554,10 +1593,13 @@ export default function TaskCenterView({
         reply_min_per_round: values.reply_min_per_round ?? 1,
         account_coverage_mode: values.account_coverage_mode ?? 'all_accounts_daily',
         daily_message_target: values.daily_message_target ?? 1,
+        daily_target_jitter_bps: values.daily_target_jitter_bps ?? 1500,
         history_fetch_account_id: values.history_fetch_account_id ?? null,
         ...membershipStrategyPayload(values),
         idle_continuation_enabled: values.idle_continuation_enabled ?? true,
         idle_continuation_seconds: values.idle_continuation_seconds ?? 300,
+        attention_quiet_after_min_seconds: values.attention_quiet_after_min_seconds ?? 60,
+        attention_quiet_after_max_seconds: values.attention_quiet_after_max_seconds ?? 180,
         context_expire_after_messages: values.context_expire_after_messages ?? 10,
       };
     }
@@ -1606,9 +1648,14 @@ export default function TaskCenterView({
       return { ...base, ...channelViewProductionPayload(values) };
     }
     if (type === 'channel_like') {
-      return { ...base, target_likes_per_message: values.target_likes_per_message ?? 50, like_count_jitter: values.like_count_jitter ?? CHANNEL_COUNT_JITTER_DEFAULT, reaction_type: values.reaction_type ?? 'random', reaction_scope: values.reaction_scope ?? 'all_available', allowed_reactions: words(values.allowed_reactions || '👍,❤️,🔥,👏,🎉,🤩,👌,💯,🙌,✨'), max_likes_per_account_per_hour: 1000000, message_active_days: values.message_active_days ?? 7 };
+      return { ...base, ...engagementBindingPayload(values), target_likes_per_message: values.target_likes_per_message ?? 50, daily_reaction_cap: values.daily_reaction_cap ?? 1000, like_count_jitter: values.like_count_jitter ?? CHANNEL_COUNT_JITTER_DEFAULT, reaction_type: values.reaction_type ?? 'random', reaction_scope: values.reaction_scope ?? 'all_available', allowed_reactions: words(values.allowed_reactions || '👍,❤️,🔥,👏,🎉,🤩,👌,💯,🙌,✨'), max_likes_per_account_per_hour: 1000000, message_active_days: values.message_active_days ?? 7 };
     }
-    return channelCommentPayload(values, base, false);
+    return {
+      ...channelCommentPayload(values, base, false),
+      ...engagementBindingPayload(values),
+      account_ratio_min_bps: values.account_ratio_min_bps ?? 5500,
+      account_ratio_max_bps: values.account_ratio_max_bps ?? 6500,
+    };
   }
 
   function applyEditAiLimitRecommendations() {
@@ -2139,7 +2186,7 @@ export default function TaskCenterView({
       ),
     },
     { title: '动作', dataIndex: 'action_label', width: 100 },
-    { title: '目标', dataIndex: 'target_count', width: 80 },
+    { title: '目标', dataIndex: 'target_count', width: 80, render: (value, item) => item.target_count_proven === false ? '未证明' : value },
     { title: '直接评论', key: 'direct', width: 90, render: (_, item) => item.stats.direct ?? 0 },
     { title: '回复评论', key: 'reply', width: 90, render: (_, item) => item.stats.reply ?? 0 },
     { title: '文字 已发/已选', key: 'unicode_fallback', width: 120, render: (_, item) => `${item.stats.unicode_emoji_fallback_remote_confirmed ?? 0}/${item.stats.unicode_emoji_fallback_selected ?? 0}` },
@@ -2170,7 +2217,9 @@ export default function TaskCenterView({
     { title: '失败', dataIndex: 'failed_count', width: 80 },
     { title: '重复', dataIndex: 'duplicate_count', width: 80 },
     { title: '运行中', dataIndex: 'running_count', width: 90 },
-    { title: '账号覆盖', key: 'account_coverage', width: 100, render: (_, item) => localAccountCoverageLabel(item.actions, item.target_count) },
+    { title: '账号覆盖', key: 'account_coverage', width: 100, render: (_, item) => item.album_id
+      ? `${item.completed_count}/${item.target_count_proven === false ? '?' : item.target_count}`
+      : localAccountCoverageLabel(item.actions, item.target_count) },
     { title: '缺口', dataIndex: 'capacity_shortfall', width: 80 },
     { title: '状态', dataIndex: 'subtask_status', width: 100, render: (value) => <TaskStatusBadge status={value} /> },
     { title: '账号', key: 'accounts', width: 220, render: (_, item) => Array.from(new Set(item.actions.map((action) => actionAccountDisplay(action)).filter(Boolean))).join('、') || '-' },

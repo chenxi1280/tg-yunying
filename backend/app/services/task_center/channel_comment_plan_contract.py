@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 from dataclasses import dataclass, replace
 
 from sqlalchemy import select
@@ -18,9 +16,21 @@ from app.models import (
     ChannelMessage,
     ChannelMessageSourceRevision,
     Task,
+    TaskDayLedger,
+    TaskParticipationUnitPlan,
+    PlanningAdmissionSnapshot,
 )
 
 from .source_pacing import rolling_source_window
+from .engagement_comment_participation import (
+    CommentParticipationDecision,
+    POLICY_REVISION as QUANTITY_CONTRACT_VERSION,
+    account_ids_hash,
+    business_max_comments,
+    comment_participation_contract_fields,
+    planned_fallback_max_bps,
+    prepare_comment_participation,
+)
 from .channel_comment_quality_target import (
     build_quality_target_component,
     current_quality_target,
@@ -38,13 +48,6 @@ from .channel_comment_grounding_snapshot import (
     build_initial_grounding_draft,
     freeze_initial_grounding_snapshot,
 )
-
-
-QUANTITY_CONTRACT_VERSION = "channel_comment_business_grounding_v1_2"
-PARTICIPATION_MIN_BPS = 5500
-PARTICIPATION_MAX_BPS = 6500
-DEFAULT_BUSINESS_MAX_COMMENTS_PER_MESSAGE = 80
-DEFAULT_PLANNED_FALLBACK_MAX_BPS = 2000
 
 
 @dataclass(frozen=True)
@@ -66,6 +69,9 @@ def ensure_comment_plan_contract(
     message: ChannelMessage,
     *,
     accounts: list,
+    ledger: TaskDayLedger | None = None,
+    participation_plan: TaskParticipationUnitPlan | None = None,
+    admission_snapshot: PlanningAdmissionSnapshot | None = None,
 ) -> FrozenCommentPlan:
     existing = session.scalar(select(ChannelCommentPlanContract).where(
         ChannelCommentPlanContract.task_id == task.id,
@@ -76,7 +82,15 @@ def ensure_comment_plan_contract(
         return _frozen_plan(session, existing)
     try:
         with session.begin_nested():
-            return _create_comment_plan(session, task, message, accounts=accounts)
+            return _create_comment_plan(
+                session,
+                task,
+                message,
+                accounts=accounts,
+                ledger=ledger,
+                daily_participation_plan=participation_plan,
+                planning_admission_snapshot=admission_snapshot,
+            )
     except IntegrityError as exc:
         if not active_plan_conflict(exc):
             raise
@@ -96,48 +110,81 @@ def _create_comment_plan(
     message: ChannelMessage,
     *,
     accounts: list,
+    ledger: TaskDayLedger | None,
+    daily_participation_plan: TaskParticipationUnitPlan | None,
+    planning_admission_snapshot: PlanningAdmissionSnapshot | None,
 ) -> FrozenCommentPlan:
     source = _source_revision(session, task, message)
-    discussion = resolve_discussion_plan_identity(
-        session, task, source, accounts=accounts,
+    admitted = {int(item) for item in (
+            planning_admission_snapshot.admissible_account_ids
+            if planning_admission_snapshot is not None
+            else [account.id for account in accounts]
+        )}
+    accounts = [account for account in accounts if int(account.id) in admitted]
+    if not accounts:
+        raise ValueError("planning_admission_blocked")
+    discussion, participation = _participation_and_admission(
+        session,
+        task,
+        message,
+        source=source,
+        accounts=accounts,
+        ledger=ledger,
     )
-    eligible_ids = set(discussion.membership_by_account) | set(discussion.admission_candidate_ids)
-    eligible = [item for item in accounts if int(item.id) in eligible_ids]
-    ranked = _ranked_accounts(task, message, eligible)
-    bps = _participation_bps(task, message)
-    uncapped_required = _required_count(len(ranked), bps)
-    business_max = _business_max_comments(task)
-    required = min(uncapped_required, business_max)
-    discussion = _reserve_selected_admissions(
-        session, task, discussion=discussion,
-        ranked=ranked, required=required,
-    )
-    fallback_max_bps = _planned_fallback_max_bps(task)
+    ranked = participation.ranked_accounts
+    required = participation.required_count
+    fallback_max_bps = planned_fallback_max_bps(task)
     window_start, deadline = rolling_source_window(task, source.source_published_at)
     grounding_draft, component = _initial_grounding_component(
         task, source, required=required, fallback_max_bps=fallback_max_bps,
         latest_safe_send_at=deadline,
     )
     contract = _new_plan_contract(
-        task,
-        message,
-        source=source,
-        ranked=ranked,
-        bps=bps,
-        uncapped_required=uncapped_required,
-        business_max=business_max,
-        fallback_max_bps=fallback_max_bps,
-        required=required,
-        window_start=window_start,
-        deadline=deadline,
+        task, message, source=source, ranked=ranked,
+        participation=participation, fallback_max_bps=fallback_max_bps,
+        required=required, window_start=window_start, deadline=deadline,
         grounding_required=int(component["grounding_required_count"]),
-        discussion=discussion,
+        discussion=discussion, ledger=ledger,
+        daily_participation_plan=daily_participation_plan,
+        planning_admission_snapshot=planning_admission_snapshot,
     )
     return _persist_comment_plan(
         session, task, contract=contract, source=source, component=component,
         ranked=ranked, required=required, discussion=discussion,
         grounding_draft=grounding_draft,
     )
+
+
+def _participation_and_admission(
+    session: Session,
+    task: Task,
+    message: ChannelMessage,
+    *,
+    source: ChannelMessageSourceRevision,
+    accounts: list,
+    ledger: TaskDayLedger | None,
+) -> tuple[DiscussionPlanIdentity, CommentParticipationDecision]:
+    discussion = resolve_discussion_plan_identity(
+        session, task, source, accounts=accounts,
+    )
+    eligible_ids = set(discussion.membership_by_account) | set(discussion.admission_candidate_ids)
+    eligible = [item for item in accounts if int(item.id) in eligible_ids]
+    participation = prepare_comment_participation(
+        session,
+        task,
+        message,
+        source=source,
+        ledger=ledger,
+        accounts=eligible,
+        business_max=business_max_comments(task),
+    )
+    ranked = participation.ranked_accounts
+    required = participation.required_count
+    discussion = _reserve_selected_admissions(
+        session, task, discussion=discussion,
+        ranked=ranked, required=required,
+    )
+    return discussion, participation
 
 
 def _initial_grounding_component(
@@ -221,36 +268,36 @@ def _new_plan_contract(
     *,
     source: ChannelMessageSourceRevision,
     ranked: list,
-    bps: int,
-    uncapped_required: int,
-    business_max: int,
+    participation: CommentParticipationDecision,
     fallback_max_bps: int,
     required: int,
     window_start,
     deadline,
     grounding_required: int,
     discussion: DiscussionPlanIdentity,
+    ledger: TaskDayLedger | None,
+    daily_participation_plan: TaskParticipationUnitPlan | None,
+    planning_admission_snapshot: PlanningAdmissionSnapshot | None,
 ) -> ChannelCommentPlanContract:
     return ChannelCommentPlanContract(
         tenant_id=task.tenant_id,
         task_id=task.id,
+        **comment_participation_contract_fields(
+            participation, ledger=ledger, daily_plan=daily_participation_plan
+        ),
         channel_message_id=message.id,
+        planning_admission_snapshot_id=(
+            planning_admission_snapshot.id if planning_admission_snapshot else None
+        ),
         comment_plan_revision=1,
         source_revision_id=source.id,
+        source_journey_plan_id=participation.journey_plan_id or None,
         source_published_at=source.source_published_at,
         source_observed_at=source.source_observed_at,
         window_start_at=window_start,
         deadline_at=deadline,
-        eligible_account_count=len(ranked),
-        eligibility_snapshot_state=("ready" if ranked else "no_eligible_accounts"),
-        eligible_account_ids_hash=_account_ids_hash(ranked),
-        participation_seed=_participation_seed(task, message),
-        effective_participation_bps=bps,
-        uncapped_required_distinct_account_count=uncapped_required,
-        business_max_comments_per_message=business_max,
-        business_cap_state="business_cap_adjusted" if required < uncapped_required else "not_adjusted",
+        eligible_account_ids_hash=account_ids_hash(ranked),
         planned_fallback_max_bps=fallback_max_bps,
-        required_distinct_account_count=required,
         grounding_required_count=grounding_required,
         planned_fallback_count=required - grounding_required,
         grounding_enrollment_id=discussion.enrollment.id,
@@ -264,8 +311,6 @@ def _new_plan_contract(
         quantity_contract_version=QUANTITY_CONTRACT_VERSION,
         contract_state="open",
     )
-
-
 def _source_revision(
     session: Session,
     task: Task,
@@ -280,56 +325,6 @@ def _source_revision(
         task.last_error = "source_revision_unproven"
         raise ValueError("source_revision_unproven")
     return source
-
-
-def _ranked_accounts(task: Task, message: ChannelMessage, accounts: list) -> list:
-    seed = _participation_seed(task, message)
-    return sorted(
-        accounts,
-        key=lambda account: hashlib.sha256(f"{seed}:{account.id}".encode()).hexdigest(),
-    )
-
-
-def _participation_seed(task: Task, message: ChannelMessage) -> str:
-    return f"{task.tenant_id}:{task.id}:{message.id}:1:{QUANTITY_CONTRACT_VERSION}"
-
-
-def _participation_bps(task: Task, message: ChannelMessage) -> int:
-    digest = hashlib.sha256(_participation_seed(task, message).encode()).digest()
-    span = PARTICIPATION_MAX_BPS - PARTICIPATION_MIN_BPS + 1
-    return PARTICIPATION_MIN_BPS + int.from_bytes(digest[:4], "big") % span
-
-
-def _required_count(eligible_count: int, target_bps: int) -> int:
-    if eligible_count <= 0:
-        return 0
-    return min(
-        range(1, eligible_count + 1),
-        key=lambda count: (abs(count * 10000 / eligible_count - target_bps), count),
-    )
-
-
-def _business_max_comments(task: Task) -> int:
-    cfg = task.type_config or {}
-    value = cfg.get("business_max_comments_per_message")
-    if value is not None:
-        return int(value)
-    target = cfg.get("target_comments_per_message")
-    if target:
-        return max(DEFAULT_BUSINESS_MAX_COMMENTS_PER_MESSAGE, int(target))
-    return DEFAULT_BUSINESS_MAX_COMMENTS_PER_MESSAGE
-
-
-def _planned_fallback_max_bps(task: Task) -> int:
-    value = (task.type_config or {}).get("planned_fallback_max_bps")
-    if value is None:
-        return DEFAULT_PLANNED_FALLBACK_MAX_BPS
-    return int(value)
-
-
-def _account_ids_hash(accounts: list) -> str:
-    payload = json.dumps([int(account.id) for account in accounts], separators=(",", ":"))
-    return hashlib.sha256(payload.encode()).hexdigest()
 
 
 def _freeze_accounts(

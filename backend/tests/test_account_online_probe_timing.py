@@ -64,7 +64,7 @@ def test_probe_due_online_states_keeps_stale_window_after_next_probe(monkeypatch
 
         monkeypatch.setattr("app.services.account_online_probe.credentials_for_account", lambda *_args, **_kwargs: object())
         monkeypatch.setattr(
-            "app.services.account_online_probe.gateway.check_account_health",
+            "app.services.account_online_probe.gateway.check_account_health_isolated",
             lambda _session_ciphertext, _credentials: AccountHealth(status=AccountStatus.ACTIVE.value, health_score=96, detail="账号 session 可用"),
         )
 
@@ -100,7 +100,7 @@ def test_probe_due_online_states_uses_primary_regular_direct_credentials(monkeyp
         session.commit()
         monkeypatch.setattr("app.services.account_online_probe.credentials_for_account", credentials)
         monkeypatch.setattr(
-            "app.services.account_online_probe.gateway.check_account_health",
+            "app.services.account_online_probe.gateway.check_account_health_isolated",
             lambda _session_ciphertext, _credentials: AccountHealth(status=AccountStatus.ACTIVE.value, health_score=96, detail="账号 session 可用"),
         )
 
@@ -369,7 +369,7 @@ def test_health_probe_results_stream_as_completed(monkeypatch):
             results.append(result)
             first_received.set()
 
-    monkeypatch.setattr("app.services.account_online_probe.gateway.check_account_health", check_health)
+    monkeypatch.setattr("app.services.account_online_probe.gateway.check_account_health_isolated", check_health)
     consumer = threading.Thread(target=consume_results)
     consumer.start()
     assert slow_started.wait(timeout=1)

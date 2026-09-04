@@ -21,6 +21,7 @@ from .membership_projection import persisted_membership_summary
 from .pacing import schedule_times
 from .payloads import EnsureChannelMembershipPayload, create_membership_action
 from .targets import group_from_reference
+from .channel_access import public_channel_view
 
 
 ACTION_TYPE = "ensure_target_membership"
@@ -60,6 +61,9 @@ class MembershipGateResult:
 
 
 def gate_channel_membership(session: Session, task: Task, channel: OperationTarget, *, require_send: bool = False) -> MembershipGateResult:
+    if not require_send and public_channel_view(task.type, channel):
+        task.stats = {**dict(task.stats or {}), "membership_stage": "not_required_public_view"}
+        return MembershipGateResult(True)
     candidates = _task_membership_candidates(session, task)
     strategy_enabled, disabled_reason = _membership_action_strategy(task, channel)
     reactivated = _reactivate_auto_verification_memberships(
@@ -138,6 +142,8 @@ def gate_channel_membership(session: Session, task: Task, channel: OperationTarg
 
 
 def channel_member_accounts(session: Session, task: Task, channel: OperationTarget, accounts: list[TgAccount], *, require_send: bool = False) -> list[TgAccount]:
+    if not require_send and public_channel_view(task.type, channel):
+        return accounts
     if not require_send and not _target_requires_membership_for_candidates(channel, accounts):
         return accounts
     group = linked_channel_group(session, channel, create=False, prefer_send_ready=require_send)

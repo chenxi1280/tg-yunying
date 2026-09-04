@@ -235,6 +235,7 @@ WORKER_SERVICES=(
   worker-ai-generation
   worker-ai-generation-2
   worker-ai-generation-3
+  worker-comment-generation
   worker-dispatcher-1
   worker-dispatcher-2
   worker-search-dispatcher

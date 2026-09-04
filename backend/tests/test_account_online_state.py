@@ -396,7 +396,7 @@ def test_probe_due_online_states_marks_healthy_account_online(monkeypatch):
 
         monkeypatch.setattr("app.services.account_online_probe.credentials_for_account", _credentials)
         monkeypatch.setattr(
-            "app.services.account_online_probe.gateway.check_account_health",
+            "app.services.account_online_probe.gateway.check_account_health_isolated",
             lambda _session_ciphertext, _credentials: AccountHealth(status=AccountStatus.ACTIVE.value, health_score=96, detail="账号 session 可用"),
         )
 
@@ -441,7 +441,7 @@ def test_online_probe_releases_daily_offline_blocker_for_sendable_group(monkeypa
         session.commit()
         monkeypatch.setattr("app.services.account_online_probe.credentials_for_account", lambda *_args, **_kwargs: object())
         monkeypatch.setattr(
-            "app.services.account_online_probe.gateway.check_account_health",
+            "app.services.account_online_probe.gateway.check_account_health_isolated",
             lambda *_args: AccountHealth(status=AccountStatus.ACTIVE.value, health_score=96, detail="账号 session 可用"),
         )
 
@@ -468,7 +468,7 @@ def test_probe_due_online_states_marks_session_failure_login_required(monkeypatc
 
         monkeypatch.setattr("app.services.account_online_probe.credentials_for_account", lambda *_args, **_kwargs: object())
         monkeypatch.setattr(
-            "app.services.account_online_probe.gateway.check_account_health",
+            "app.services.account_online_probe.gateway.check_account_health_isolated",
             lambda _session_ciphertext, _credentials: AccountHealth(status=AccountStatus.SESSION_EXPIRED.value, health_score=40, detail="session 已失效"),
         )
 
@@ -500,7 +500,7 @@ def test_probe_due_online_states_retries_due_login_required_state(monkeypatch):
 
         monkeypatch.setattr("app.services.account_online_probe.credentials_for_account", lambda *_args, **_kwargs: object())
         monkeypatch.setattr(
-            "app.services.account_online_probe.gateway.check_account_health",
+            "app.services.account_online_probe.gateway.check_account_health_isolated",
             lambda *_args: AccountHealth(status=AccountStatus.ACTIVE.value, health_score=96, detail="账号 session 可用"),
         )
 
@@ -546,7 +546,7 @@ def test_probe_due_online_states_continues_after_auth_key_duplicate(monkeypatch)
         first.session_ciphertext = "session-duplicated"
         second.session_ciphertext = "session-ok"
         monkeypatch.setattr("app.services.account_online_probe.credentials_for_account", lambda *_args, **_kwargs: object())
-        monkeypatch.setattr("app.services.account_online_probe.gateway.check_account_health", _check_health)
+        monkeypatch.setattr("app.services.account_online_probe.gateway.check_account_health_isolated", _check_health)
 
         assert probe_due_online_states(session, limit=10, now=now) == 2
         session.commit()
@@ -595,7 +595,7 @@ def test_probe_due_online_states_runs_health_checks_concurrently(monkeypatch):
             lambda: SimpleNamespace(account_online_probe_concurrency=3),
         )
         monkeypatch.setattr("app.services.account_online_probe.credentials_for_account", lambda *_args, **_kwargs: object())
-        monkeypatch.setattr("app.services.account_online_probe.gateway.check_account_health", check_health)
+        monkeypatch.setattr("app.services.account_online_probe.gateway.check_account_health_isolated", check_health)
 
         timer = threading.Timer(0.1, release.set)
         timer.start()
@@ -654,7 +654,7 @@ def test_probe_due_online_states_retries_due_blocked_state(monkeypatch):
 
         monkeypatch.setattr("app.services.account_online_probe.credentials_for_account", lambda *_args, **_kwargs: object())
         monkeypatch.setattr(
-            "app.services.account_online_probe.gateway.check_account_health",
+            "app.services.account_online_probe.gateway.check_account_health_isolated",
             lambda _session_ciphertext, _credentials: AccountHealth(status=AccountStatus.ACTIVE.value, health_score=96, detail="账号 session 可用"),
         )
 
@@ -788,7 +788,7 @@ def test_low_frequency_only_to_active_requires_fresh_probe(monkeypatch):
         assert is_account_online_ready_for_planning(session, tenant_id=1, account_id=101, now=resumed_at) is False
         monkeypatch.setattr("app.services.account_online_probe.credentials_for_account", lambda *_args, **_kwargs: object())
         monkeypatch.setattr(
-            "app.services.account_online_probe.gateway.check_account_health",
+            "app.services.account_online_probe.gateway.check_account_health_isolated",
             lambda *_args: AccountHealth(status=AccountStatus.ACTIVE.value, health_score=96, detail="ok"),
         )
         assert probe_due_online_states(session, limit=10, now=resumed_at) == 1
@@ -838,7 +838,7 @@ def test_probe_due_online_states_uses_longer_interval_for_low_frequency_sources(
 
         monkeypatch.setattr("app.services.account_online_probe.credentials_for_account", lambda *_args, **_kwargs: object())
         monkeypatch.setattr(
-            "app.services.account_online_probe.gateway.check_account_health",
+            "app.services.account_online_probe.gateway.check_account_health_isolated",
             lambda _session_ciphertext, _credentials: AccountHealth(status=AccountStatus.ACTIVE.value, health_score=96, detail="账号 session 可用"),
         )
 

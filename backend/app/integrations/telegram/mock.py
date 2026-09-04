@@ -163,7 +163,11 @@ class TelegramGateway:
         peer_id: str | None = None,
         credentials: DeveloperAppCredentials | None = None,
         reply_to_message_id: int | None = None,
+        *,
+        timeout_seconds: float | None = None,
+        connect_timeout_seconds: float | None = None,
     ) -> SendResult:
+        del timeout_seconds, connect_timeout_seconds
         payload_parts = [content]
         for segment in segments or []:
             payload_parts.extend([segment.content, segment.caption, segment.source or ""])
@@ -319,7 +323,11 @@ class TelegramGateway:
         self,
         session_ciphertext: str | None,
         credentials: DeveloperAppCredentials | None = None,
+        *,
+        connect_timeout_seconds: float | None = None,
+        timeout_seconds: float | None = None,
     ) -> AccountHealth:
+        del connect_timeout_seconds, timeout_seconds
         return self.check_account_health(session_ciphertext, credentials)
 
     def list_groups(
@@ -360,8 +368,19 @@ class TelegramGateway:
         segments: list[OutboundSegment] | None = None,
         session_ciphertext: str | None = None,
         credentials: DeveloperAppCredentials | None = None,
+        *,
+        timeout_seconds: float | None = None,
     ) -> SendResult:
-        return self.send_message(account_id, 0, content, segments, session_ciphertext, target_peer_id, credentials)
+        return self.send_message(
+            account_id,
+            0,
+            content,
+            segments,
+            session_ciphertext,
+            target_peer_id,
+            credentials,
+            timeout_seconds=timeout_seconds,
+        )
 
     def delete_message(
         self,
@@ -384,7 +403,12 @@ class TelegramGateway:
         message_id: int,
         session_ciphertext: str | None = None,
         credentials: DeveloperAppCredentials | None = None,
+        *,
+        timeout_seconds: float | None = None,
+        connect_timeout_seconds: float | None = None,
     ) -> OperationResult:
+        del connect_timeout_seconds
+        del timeout_seconds
         return OperationResult(
             True,
             detail=f"viewed:{channel_peer_id}:{message_id}:{account_id}",
@@ -519,7 +543,12 @@ class TelegramGateway:
         reaction: str,
         session_ciphertext: str | None = None,
         credentials: DeveloperAppCredentials | None = None,
+        *,
+        timeout_seconds: float | None = None,
+        connect_timeout_seconds: float | None = None,
     ) -> OperationResult:
+        del connect_timeout_seconds
+        del timeout_seconds
         if reaction.lower() in {"blocked", "不可用"}:
             return OperationResult(
                 False,
@@ -546,7 +575,11 @@ class TelegramGateway:
         reply_to_message_id: int | None = None,
         rpc_mode: str = "legacy_channel_comment",
         thread_root_message_id: int = 0,
+        timeout_seconds: float | None = None,
+        connect_timeout_seconds: float | None = None,
     ) -> SendResult:
+        del connect_timeout_seconds
+        del timeout_seconds
         if "无评论" in content:
             return SendResult(
                 False,
@@ -596,8 +629,10 @@ class TelegramGateway:
         reply_to_message_id: int | None = None,
         rpc_mode: str = "legacy_channel_comment",
         thread_root_message_id: int = 0,
+        timeout_seconds: float | None = None,
+        connect_timeout_seconds: float | None = None,
     ) -> SendResult:
-        del session_ciphertext, credentials
+        del session_ciphertext, credentials, timeout_seconds, connect_timeout_seconds
         source = str(segment.get("source") or "")
         if not source:
             return SendResult(False, failure_type=FailureType.CONTENT_REJECTED.value, detail="媒体素材缺少来源", remote_mutation_started=False)
@@ -1007,6 +1042,8 @@ class TelegramGateway:
         *,
         control_only: bool = False,
         after_message_id: int | None = None,
+        timeout_seconds: float | None = None,
+        connect_timeout_seconds: float | None = None,
     ) -> list[GroupMessageSnapshot]:
         now_value = beijing_now()
         snapshots = [
@@ -1080,17 +1117,19 @@ class TelegramGateway:
         session_ciphertext: str | None = None,
         credentials: DeveloperAppCredentials | None = None,
         limit: int = 20,
+        offset_id: int = 0,
     ) -> list[ChannelMessageSnapshot]:
         now_value = beijing_now()
         return [
             ChannelMessageSnapshot(
-                message_id=100000 + index,
+                message_id=offset_id - index - 1 if offset_id else 100000 + index,
                 content_preview=f"mock channel {channel_peer_id} message {index + 1}",
                 content_text=f"mock channel {channel_peer_id} message {index + 1}",
                 message_url="",
                 published_at=now_value - timedelta(minutes=index),
+                source_metadata={"observed": True},
             )
-            for index in range(max(1, limit))
+            for index in range(min(limit, offset_id - 1) if offset_id else max(1, limit))
         ][:limit]
 
     def fetch_channel_message_deletions(

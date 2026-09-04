@@ -183,6 +183,8 @@ export type AccountPool = {
   disabled_by: string;
   disable_reason: string;
   account_count: number;
+  engagement_remote_inflight_limit?: number | null;
+  engagement_runtime_policy_revision?: number | null;
   rank_deboost_binding_status?: string;
   rank_deboost_runtime_proxy_id?: number | null;
   rank_deboost_observed_exit_ip?: string;

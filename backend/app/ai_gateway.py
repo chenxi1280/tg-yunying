@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from math import ceil
 from typing import Any
+from app.ai_http_transport import hard_deadline_options, read_http
 
 @dataclass(frozen=True)
 class AiProviderCredentials:
@@ -70,6 +71,11 @@ class AiEmptyFinalContentError(RuntimeError):
 
 class AiRequestDeadlineExceeded(RuntimeError):
     pass
+
+
+def _require_result_before_deadline(deadline: float | None) -> None:
+    if deadline is not None and time.monotonic() > deadline:
+        raise AiRequestDeadlineExceeded("ai_generation_result_after_deadline")
 
 
 class AiMalformedStructuredOutputError(RuntimeError):
@@ -320,6 +326,7 @@ class AiGateway:
         system_prompt: str | None = None,
         timeout: int = DEFAULT_AI_REQUEST_TIMEOUT_SECONDS,
         request_id: str = "",
+        request_deadline: float | None = None,
     ) -> AiGenerationResult:
         if credentials.base_url.startswith("mock://"):
             return _mock_generation_result(
@@ -332,6 +339,7 @@ class AiGateway:
                 credentials, prompt, count=count, persona_set=persona_set,
                 material_ids=material_ids, system_prompt=system_prompt,
                 timeout=timeout, request_id=request_id,
+                **hard_deadline_options(request_deadline),
             )
         if credentials.provider_type != "openai_compatible":
             raise RuntimeError(f"unsupported ai provider type: {credentials.provider_type}")
@@ -341,6 +349,7 @@ class AiGateway:
             credentials, prompt, count=count, persona_set=persona_set,
             material_ids=material_ids, temperature=temperature,
             max_tokens=max_tokens, system_prompt=system_prompt, timeout=timeout,
+            **hard_deadline_options(request_deadline),
         )
 
     def _generate_openai_drafts(
@@ -355,6 +364,7 @@ class AiGateway:
         max_tokens: int | None,
         system_prompt: str | None,
         timeout: int,
+        request_deadline: float | None = None,
     ) -> AiGenerationResult:
         raw, usage = self._post_openai_compatible(
             credentials,
@@ -365,6 +375,7 @@ class AiGateway:
             response_format_json=True,
             reasoning_retry_max_tokens=self._generation_retry_max_tokens(credentials, max_tokens, count),
             timeout=timeout,
+            **hard_deadline_options(request_deadline),
         )
         candidates, usage = self._parse_candidates_with_retry(
             credentials,
@@ -378,7 +389,9 @@ class AiGateway:
             max_tokens=max_tokens,
             system_prompt=system_prompt,
             timeout=timeout,
+            **hard_deadline_options(request_deadline),
         )
+        _require_result_before_deadline(request_deadline)
         return AiGenerationResult(candidates=candidates, usage=usage)
 
     def _generate_antigravity_drafts(
@@ -392,6 +405,7 @@ class AiGateway:
         system_prompt: str | None,
         timeout: int,
         request_id: str,
+        request_deadline: float | None = None,
     ) -> AiGenerationResult:
         response = self._post_antigravity(
             credentials,
@@ -400,6 +414,7 @@ class AiGateway:
             json_schema=_antigravity_draft_schema(prompt, count),
             timeout=timeout,
             request_id=request_id,
+            **hard_deadline_options(request_deadline),
         )
         candidates = self._parse_candidates_for_prompt(
             json.dumps(response.payload, ensure_ascii=False),
@@ -408,6 +423,7 @@ class AiGateway:
             persona_set,
             material_ids,
         )
+        _require_result_before_deadline(request_deadline)
         return AiGenerationResult(candidates=candidates, usage=response.usage)
 
     def generate_structured(
@@ -421,6 +437,7 @@ class AiGateway:
         timeout: int = DEFAULT_AI_REQUEST_TIMEOUT_SECONDS,
         request_id: str = "",
         json_schema: dict[str, Any] | None = None,
+        request_deadline: float | None = None,
     ) -> tuple[Any, AiUsage]:
         """两阶段生成（PRD §5.4）的结构化 provider 调用。
 
@@ -437,12 +454,23 @@ class AiGateway:
                 json_schema=json_schema or ANTIGRAVITY_STRUCTURED_SCHEMA,
                 timeout=timeout,
                 request_id=request_id,
+                **hard_deadline_options(request_deadline),
             )
+            _require_result_before_deadline(request_deadline)
             return response.payload, response.usage
         if credentials.provider_type != "openai_compatible":
             raise RuntimeError(f"unsupported ai provider type: {credentials.provider_type}")
         if temperature is None or max_tokens is None:
             raise RuntimeError("openai_provider_sampling_parameters_required")
+        return self._generate_openai_structured(
+            credentials, prompt, temperature=temperature, max_tokens=max_tokens,
+            system_prompt=system_prompt, timeout=timeout, request_deadline=request_deadline,
+        )
+
+    def _generate_openai_structured(
+        self, credentials: AiProviderCredentials, prompt: str, *, temperature: float, max_tokens: int,
+        system_prompt: str, timeout: float, request_deadline: float | None,
+    ) -> tuple[Any, AiUsage]:
         raw, usage = self._post_openai_compatible(
             credentials,
             prompt,
@@ -452,10 +480,13 @@ class AiGateway:
             response_format_json=True,
             reasoning_retry_max_tokens=self._generation_retry_max_tokens(credentials, max_tokens, 1),
             timeout=timeout,
+            **hard_deadline_options(request_deadline),
         )
         clean = _extract_json_payload(raw)
         try:
-            return json.loads(clean), usage
+            payload = json.loads(clean)
+            _require_result_before_deadline(request_deadline)
+            return payload, usage
         except json.JSONDecodeError as exc:
             raise AiMalformedStructuredOutputError(
                 "AI provider returned malformed structured JSON",
@@ -491,6 +522,7 @@ class AiGateway:
         max_tokens: int,
         system_prompt: str | None,
         timeout: int,
+        request_deadline: float | None = None,
     ) -> tuple[list[AiDraftCandidate], AiUsage]:
         retry_tokens = self._generation_retry_max_tokens(credentials, max_tokens, count)
         try:
@@ -508,6 +540,7 @@ class AiGateway:
                 system_prompt=system_prompt or "你是一个 Telegram 群运营话术助手，只输出用户要求的 JSON。",
                 response_format_json=True,
                 timeout=timeout,
+                **hard_deadline_options(request_deadline),
             )
             candidates = self._parse_candidates_for_prompt(
                 raw, prompt, count, persona_set, material_ids,
@@ -568,17 +601,21 @@ class AiGateway:
         json_schema: dict[str, Any],
         timeout: float,
         request_id: str,
+        request_deadline: float | None = None,
     ):
         from app.services.antigravity_provider_client import AntigravityProviderClient
 
         stable_id = request_id or str(uuid.uuid4())
-        return AntigravityProviderClient().generate(
+        transport = getattr(self, "_http_transport", None)
+        options = {"http_transport": transport} if transport is not None else {}
+        return AntigravityProviderClient(**options).generate(
             credentials,
             request_id=stable_id,
             system_prompt=system_prompt,
             user_prompt=prompt,
             json_schema=json_schema,
             timeout=timeout,
+            **hard_deadline_options(request_deadline),
         )
 
     def solve_image_verification(
@@ -644,13 +681,10 @@ class AiGateway:
         image_data_url: str | None = None,
         deadline_monotonic: float | None = None,
         retry_min_budget_seconds: float = 0,
+        request_deadline: float | None = None,
     ) -> tuple[str, AiUsage]:
-        url = self._chat_completions_url(credentials.base_url)
-        headers = {"Content-Type": "application/json"}
-        if credentials.api_key_header.lower() == "authorization":
-            headers["Authorization"] = f"Bearer {credentials.api_key}"
-        else:
-            headers[credentials.api_key_header] = credentials.api_key
+        if request_deadline is not None:
+            deadline_monotonic = min(value for value in (deadline_monotonic, request_deadline) if value is not None)
         attempt_tokens = [max_tokens]
         if reasoning_retry_max_tokens and reasoning_retry_max_tokens > max_tokens:
             attempt_tokens.append(reasoning_retry_max_tokens)
@@ -664,27 +698,13 @@ class AiGateway:
                 ),
             )
             payload = self._chat_payload(
-                credentials,
-                prompt,
-                system_prompt,
-                temperature,
-                token_budget,
-                response_format_json,
+                credentials, prompt, system_prompt, temperature, token_budget, response_format_json,
                 image_data_url=image_data_url,
             )
-            request = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
-            try:
-                with urllib.request.urlopen(request, timeout=request_timeout) as response:
-                    data = json.loads(response.read().decode("utf-8"))
-            except urllib.error.HTTPError as exc:
-                detail = exc.read().decode("utf-8", errors="ignore")
-                if exc.code == 429:
-                    raise AiProviderRateLimited(
-                        exc.code, detail, _retry_after_seconds(exc.headers)
-                    ) from exc
-                raise RuntimeError(f"AI provider HTTP {exc.code}: {detail[:300]}") from exc
+            data = self._read_openai_response(credentials, payload, timeout=request_timeout, request_deadline=request_deadline)
             content = self._extract_message_content(data)
             if content:
+                _require_result_before_deadline(request_deadline)
                 return content, self._usage_from_payload(data)
             last_empty_error = AiEmptyFinalContentError(
                 self._empty_content_detail(data),
@@ -695,6 +715,24 @@ class AiGateway:
         if last_empty_error:
             raise last_empty_error
         raise RuntimeError("AI provider returned no choices")
+
+    def _read_openai_response(self, credentials, payload, *, timeout, request_deadline):
+        url = self._chat_completions_url(credentials.base_url)
+        headers = {"Content-Type": "application/json"}
+        if credentials.api_key_header.lower() == "authorization":
+            headers["Authorization"] = f"Bearer {credentials.api_key}"
+        else:
+            headers[credentials.api_key_header] = credentials.api_key
+        request = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+        try:
+            transport = getattr(self, "_http_transport", None) or read_http
+            raw = transport(request, timeout=timeout, request_deadline=request_deadline)
+            return json.loads(raw.decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="ignore")
+            if exc.code == 429:
+                raise AiProviderRateLimited(exc.code, detail, _retry_after_seconds(exc.headers)) from exc
+            raise RuntimeError(f"AI provider HTTP {exc.code}: {detail[:300]}") from exc
 
     def _chat_payload(
         self,

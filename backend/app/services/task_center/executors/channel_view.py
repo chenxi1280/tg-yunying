@@ -16,6 +16,7 @@ from app.models import (
     TaskDayLedger,
     ViewFulfillmentObligation,
     ViewRemoteFact,
+    ViewAccountSourceAllocationPlan,
 )
 from app.services._common import _now
 from app.timezone import as_beijing
@@ -46,6 +47,16 @@ from ..channel_view_targets import (
 from ..daily_ledgers import ensure_task_day_ledger
 from ..datetime_compat import utc_storage_as_beijing_wall
 from ..fulfillment_activation import CURRENT_CONTRACT_VERSION
+from ..engagement_participation import (
+    ensure_daily_participation_plan,
+    selected_accounts_for_plan,
+)
+from ..engagement_view_allocation import (
+    allocation_account_ids_by_message,
+    apply_view_allocation_targets,
+    ensure_view_allocation_plan,
+)
+from ..engagement_planning_admission import ensure_planning_admission_snapshot
 from ..pacing import schedule_due_times, schedule_times
 from ..payloads import ViewMessagePayload, create_view_action
 from ..schedule_reservation import reserve_task_schedule_times
@@ -169,12 +180,15 @@ def _view_plan_inputs(
         return None
     task_daily_cap = int(config.get("task_daily_view_safety_cap") or 0)
     effective_daily_cap = task_daily_cap if task_daily_cap > 0 else None
-    accounts, account_ids_by_message, capacity_target = _view_account_plan(
+    accounts, account_ids_by_message, capacity_target, allocation_plan = _view_account_plan(
         session,
         task,
         scope,
         config=config,
     )
+    if allocation_plan is not None and allocation_plan.decision == "view_allocation_unachievable":
+        task.last_error = "view_allocation_unachievable"
+        return None
     if not accounts:
         task.last_error = "没有可用账号，等待账号恢复后继续执行"
         return None
@@ -184,6 +198,7 @@ def _view_plan_inputs(
         scope,
         config,
         account_pool_size=account_pool_size,
+        allocation_plan=allocation_plan,
     )
     record_channel_capacity_warning(task, "浏览", capacity_target, len(accounts))
     daily_counts = view_daily_counts(session, scope.ledger)
@@ -193,18 +208,44 @@ def _view_plan_inputs(
         return None
     materialized_ids_by_message = view_materialized_account_ids_for_messages(session, scope.ledger, scope.messages)
     completed_counts = view_confirmed_counts(session, task, scope.messages)
-    inputs = ViewPlanInputs(
+    inputs = _new_view_plan_inputs(
+        scope,
+        accounts=accounts,
+        allocation_plan=allocation_plan,
+        task_remaining_today=task_remaining_today,
+        daily_counts_by_account=daily_counts.by_account,
+        account_ids_by_message=account_ids_by_message,
+        materialized_ids_by_message=materialized_ids_by_message,
+    )
+    return inputs, completed_counts, total_target
+
+
+def _new_view_plan_inputs(
+    scope: "ViewTargetScope",
+    *,
+    accounts: list,
+    allocation_plan: ViewAccountSourceAllocationPlan | None,
+    task_remaining_today: int,
+    daily_counts_by_account: dict[int, int],
+    account_ids_by_message: dict[int, set[int]],
+    materialized_ids_by_message: dict[int, set[int]],
+) -> ViewPlanInputs:
+    return ViewPlanInputs(
         messages=scope.messages,
         accounts=accounts,
         task_remaining_today=task_remaining_today,
-        daily_counts_by_account=daily_counts.by_account,
+        daily_counts_by_account=daily_counts_by_account,
         ledger=scope.ledger,
         targets_by_message=scope.targets_by_message,
         lifetime_ids_by_message=account_ids_by_message,
         materialized_ids_by_message=materialized_ids_by_message,
+        allowed_account_ids_by_message=(
+            allocation_account_ids_by_message(allocation_plan, serviceable_only=True)
+            if allocation_plan is not None
+            else None
+        ),
         now=scope.now,
     )
-    return inputs, completed_counts, total_target
 
 
 def _view_account_plan(
@@ -213,12 +254,22 @@ def _view_account_plan(
     scope: "ViewTargetScope",
     *,
     config: dict,
-) -> tuple[list, dict[int, set[int]], int]:
+) -> tuple[list, dict[int, set[int]], int, ViewAccountSourceAllocationPlan | None]:
+    account_ids_by_message = view_account_ids_for_messages(session, task, scope.ledger, scope.messages)
+    participation_plan = ensure_daily_participation_plan(session, task, scope.ledger)
+    if participation_plan is not None:
+        return _unified_view_account_plan(
+            session,
+            task,
+            scope=scope,
+            participation_plan=participation_plan,
+            account_ids_by_message=account_ids_by_message,
+            config=config,
+        )
     capacity_target = max(
         (target.daily_target_snapshot for target in scope.targets_by_message.values()),
         default=1,
     )
-    account_ids_by_message = view_account_ids_for_messages(session, task, scope.ledger, scope.messages)
     identity_scan_floor = max(
         (capacity_target + len(account_ids) for account_ids in account_ids_by_message.values()),
         default=capacity_target,
@@ -231,7 +282,45 @@ def _view_account_plan(
         target_per_message=capacity_target,
         identity_scan_floor=identity_scan_floor,
     )
-    return accounts, account_ids_by_message, capacity_target
+    return accounts, account_ids_by_message, capacity_target, None
+
+
+def _unified_view_account_plan(
+    session: Session,
+    task: Task,
+    *,
+    scope: "ViewTargetScope",
+    participation_plan,
+    account_ids_by_message: dict[int, set[int]],
+    config: dict,
+) -> tuple[list, dict[int, set[int]], int, ViewAccountSourceAllocationPlan]:
+    admission = ensure_planning_admission_snapshot(
+        session,
+        task,
+        participation_plan,
+        planning_horizon=f"task_day:{scope.ledger.obligation_local_date.isoformat()}",
+        target=scope.channel,
+    )
+    allocation = ensure_view_allocation_plan(
+        session,
+        task,
+        ledger=scope.ledger,
+        participation_plan=participation_plan,
+        admission_snapshot=admission,
+        messages=scope.messages,
+        forbidden_account_ids_by_message=account_ids_by_message,
+        config=config,
+    )
+    apply_view_allocation_targets(allocation, scope.targets_by_message)
+    admissible_ids = {int(item) for item in admission.admissible_account_ids or []}
+    selected = selected_accounts_for_plan(session, task, participation_plan)
+    selected = [account for account in selected if account.id in admissible_ids]
+    accounts = channel_member_accounts(session, task, scope.channel, selected)
+    exposure = max(
+        (int(item["assigned_exposure"]) for item in allocation.source_exposures or []),
+        default=0,
+    )
+    return accounts, account_ids_by_message, exposure, allocation
 
 
 def _refresh_view_target_capacity(
@@ -240,6 +329,7 @@ def _refresh_view_target_capacity(
     config: dict,
     *,
     account_pool_size: int,
+    allocation_plan: ViewAccountSourceAllocationPlan | None,
 ) -> int:
     _daily_target, total_target = _view_target_limits(config, candidate_count=account_pool_size)
     refresh_channel_view_targets(
@@ -247,7 +337,7 @@ def _refresh_view_target_capacity(
         scope.ledger,
         effective_channel_view_pacing_config(task),
         now=scope.now,
-        candidate_account_count=account_pool_size,
+        candidate_account_count=None if allocation_plan is not None else account_pool_size,
         config=config,
     )
     return total_target

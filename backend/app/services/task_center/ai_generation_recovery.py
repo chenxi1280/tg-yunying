@@ -26,6 +26,8 @@ from .ai_generation_unknown_recovery import (
     reset_generation_job_for_cached_retry as _reset_generation_job_for_cached_retry,
 )
 from .runtime_resources import _release_runtime_resources
+from .generation_recovery_scope import generation_task_filter
+from .generation_pending_timing import refresh_pending_generation_timing
 
 
 logger = logging.getLogger(__name__)
@@ -136,11 +138,12 @@ def recover_stale_pre_gateway_generation(
     return True
 
 
-def reconcile_generation_jobs(session: Session, limit: int = 20) -> int:
+def reconcile_generation_jobs(session: Session, limit: int = 20, *, task_type: str | None = None) -> int:
     bounded_limit = max(1, int(limit))
+    refresh_pending_generation_timing(session, task_type=task_type, limit=bounded_limit)
     owner = f"generation-reconcile:{uuid4()}"
     reconciled = 0
-    for job_id in _expired_job_ids(session, bounded_limit):
+    for job_id in _expired_job_ids(session, bounded_limit, task_type=task_type):
         claim = _claim_expired_job(session, job_id, owner)
         if claim is None:
             continue
@@ -149,19 +152,21 @@ def reconcile_generation_jobs(session: Session, limit: int = 20) -> int:
     remaining = bounded_limit - reconciled
     if remaining > 0:
         reconciled += recover_pending_generation_residue(
-            session, remaining, action_resolver=_current_generation_action)
+            session, remaining, action_resolver=_current_generation_action, task_type=task_type)
     remaining = bounded_limit - reconciled
     if remaining > 0:
         reconciled += recover_cached_unknown_jobs(
             session, remaining, action_resolver=_current_generation_action,
+            task_type=task_type,
         )
     return reconciled
 
 
-def _expired_job_ids(session: Session, limit: int) -> tuple[str, ...]:
+def _expired_job_ids(session: Session, limit: int, *, task_type: str | None = None) -> tuple[str, ...]:
     return tuple(session.scalars(select(GenerationJob.id).where(
         GenerationJob.state == "generating",
         GenerationJob.lease_expires_at <= _now(),
+        generation_task_filter(task_type),
     ).order_by(GenerationJob.lease_expires_at, GenerationJob.id).limit(limit)))
 
 

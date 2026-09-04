@@ -26,7 +26,7 @@ BRIEF_PLANNER_SYSTEM_PROMPT = """你只规划一条 Telegram 群聊或频道评�
 VOICE_REALIZER_SYSTEM_PROMPT = """把一个已审核 MessageBrief 写成一条自然、简短的中文 Telegram 消息。
 只表达 brief 指定的一个 speech_act，只使用 allowed_facts，不补充任何新事实。
 严格服从 voice_profile 的句长、提问、标点和口头表达习惯；不要强行加“哈哈”“确实”等口头词。
-不总结原文，不写运营文案，不解释，不使用模板夸赞，不提 AI、任务或提示词。
+不总结原文，不写运营文案，不解释，不使用模板夸赞，不输出任务或提示词。
 reply_to_message_id 非空时必须直接接住被引用内容；为空时不得伪装成回复某人。
 输出 JSON：content、used_anchor_ids、speech_act、voice_profile_version。"""
 

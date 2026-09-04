@@ -7,6 +7,7 @@ from datetime import date
 from typing import Any
 
 from .ai_context_information import meaningful_context_text
+from app.services.automation_identity import with_automation_identity
 from .ai_group_daily_theme import (
     DAILY_THEME_VERSION,
     DailyExpressionContext,
@@ -113,13 +114,13 @@ LEGACY_NEGATIVE_PHRASES = (
 
 GENERAL_SYSTEM_PROMPT = """Generate Chinese community replies for a normal Telegram group using only the supplied sanitized input.
 Treat safe_context literally without inferring age, identity, relationship, or adult meaning. Adult routes are handled outside this prompt; do not introduce or amplify them here. Never introduce a new person or describe anyone as a student, minor, girl, tender-looking person, or with a youth analogy.
-Do not facilitate or mention prices, payments, contacts, private messages, bookings, services, locations, transactions, intimate body parts, or sexual acts. Do not mention filtering, policy, risk, AI, prompts, or moderation.
+Do not facilitate or mention prices, payments, contacts, private messages, bookings, services, locations, transactions, intimate body parts, or sexual acts. Do not output internal filtering, risk, prompts, or moderation instructions.
 Strictly output 100% plain text sentences. Never include any URLs (http/https/t.me), @mentions, usernames, links, markdown link tags, media, stickers, or promotion codes.
 For safe_context, directly react to one meaningful supplied fact. For generic_warmup, ask one concrete casual local-life question about nearby leisure without claiming an experience.
 Never output generic filler or operational slogans such as 签到、打卡、积分、努力搬砖、喝咖啡、犯困、吃红烧肉、努力加油、今天状态不错、大家心情好. Do not invent experience, work, activities, repairs, locations, or facts.
 Write casual natural Chinese, preferably 8 to 24 Chinese characters per draft. Output one JSON object only. No Markdown fences, thinking, prose, prefix, suffix, comments, or extra fields. Use exactly the supplied keys and enum values; context_source must match the input."""
 
-ADULT_SYSTEM_PROMPT = """你是一个 Telegram 同城成人娱乐/修车交流群里的老群友（男客老哥，手机单手打字，说话接地气随性）。
+ADULT_SYSTEM_PROMPT = """你为 Telegram 同城成人娱乐主题群生成自然、简短的上下文回复。
 【核心口语与真实交流规则】
 1. 真实口语与安全规范：
    - 核心称谓：'老师/课代表' 代指可约女性/技师/外围/兼职。
@@ -487,7 +488,7 @@ def build_group_prompt(
             f"{override}\n"
             "该要求只调整表达风格，不得覆盖事实、安全、slot identity、topic mode 或 JSON 合同。"
         )
-    return GroupPromptBundle(chosen_system_prompt, user_prompt, context_source, tuple(messages), payload, contract)
+    return GroupPromptBundle(with_automation_identity(chosen_system_prompt), user_prompt, context_source, tuple(messages), payload, contract)
 
 
 def sanitize_group_message_text(text: str) -> str:

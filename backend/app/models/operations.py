@@ -45,6 +45,8 @@ class ChannelMessage(Base):
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), default=1)
     channel_target_id: Mapped[int] = mapped_column(ForeignKey("operation_targets.id"))
     message_id: Mapped[int] = mapped_column(Integer)
+    grouped_id: Mapped[str] = mapped_column(String(64), default="")
+    source_metadata: Mapped[dict] = mapped_column(JSON, default=dict)
     message_url: Mapped[str] = mapped_column(String(300), default="")
     content_preview: Mapped[str] = mapped_column(Text, default="")
     comment_available: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -63,12 +65,20 @@ class ChannelMessage(Base):
 
 class ChannelMessageComment(Base):
     __tablename__ = "channel_message_comments"
-    __table_args__ = (UniqueConstraint("tenant_id", "channel_target_id", "channel_message_id", "comment_message_id"),)
+    __table_args__ = (UniqueConstraint(
+        "tenant_id",
+        "channel_target_id",
+        "channel_message_id",
+        "discussion_peer_id",
+        "comment_message_id",
+        name="uq_channel_message_comment_peer_identity",
+    ),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), default=1)
     channel_target_id: Mapped[int] = mapped_column(ForeignKey("operation_targets.id"))
     channel_message_id: Mapped[int] = mapped_column(ForeignKey("channel_messages.id"))
+    discussion_peer_id: Mapped[str] = mapped_column(String(160), default="")
     comment_message_id: Mapped[int] = mapped_column(Integer)
     parent_comment_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     author_peer_id: Mapped[str] = mapped_column(String(120), default="")

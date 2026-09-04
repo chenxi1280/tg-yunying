@@ -303,6 +303,16 @@ def _listener_context_account_error(account: TgAccount | None) -> str:
 
 
 def trigger_listener_auto_reply(session: Session, group: TgGroup) -> int:
+    from app.services.task_center.engagement_target_scope import (
+        active_unified_group_ai_owner,
+    )
+
+    if active_unified_group_ai_owner(
+        session,
+        tenant_id=group.tenant_id,
+        canonical_peer_id=group.tg_peer_id,
+    ):
+        return 0
     unprocessed = list(
         session.scalars(
             select(GroupContextMessage)

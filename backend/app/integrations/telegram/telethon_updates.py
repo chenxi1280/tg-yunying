@@ -136,8 +136,14 @@ def _normalize_container(
     envelopes: list[TelegramNormalizedUpdate] = []
     mappings: list[TelegramOutboundMessageMapping] = []
     sender_names = _sender_names(entities)
+    sender_bots = _sender_bot_flags(entities)
     message_items = [
-        _normalized_message(item, event_type="message_new", sender_names=sender_names)
+        _normalized_message(
+            item,
+            event_type="message_new",
+            sender_names=sender_names,
+            sender_bots=sender_bots,
+        )
         for item in messages
     ]
     message_items = [item for item in message_items if item is not None]
@@ -149,7 +155,9 @@ def _normalize_container(
             result_pts=result_pts,
         ))
     for update in updates:
-        envelope, mapping = _normalize_update(update, sender_names=sender_names)
+        envelope, mapping = _normalize_update(
+            update, sender_names=sender_names, sender_bots=sender_bots,
+        )
         if envelope is not None:
             envelopes.append(envelope)
         if mapping is not None:
@@ -170,7 +178,10 @@ def _message_groups(
 
 
 def _normalize_update(
-    update: Any, *, sender_names: dict[tuple[str, str], str],
+    update: Any,
+    *,
+    sender_names: dict[tuple[str, str], str],
+    sender_bots: dict[tuple[str, str], bool],
 ) -> tuple[TelegramNormalizedUpdate | None, TelegramOutboundMessageMapping | None]:
     name = type(update).__name__
     if name == "UpdateMessageID":
@@ -182,7 +193,10 @@ def _normalize_update(
     if name in {"UpdateNewChannelMessage", "UpdateNewMessage", "UpdateEditChannelMessage", "UpdateEditMessage"}:
         event_type = "message_edit" if "Edit" in name else "message_new"
         item = _normalized_message(
-            update.message, event_type=event_type, sender_names=sender_names,
+            update.message,
+            event_type=event_type,
+            sender_names=sender_names,
+            sender_bots=sender_bots,
         )
         return (_message_update_envelope(update, item) if item else None, None)
     if name == "UpdateDeleteChannelMessages":
@@ -235,7 +249,11 @@ def _minimal_update_envelope(update: Any) -> TelegramNormalizedUpdate:
 
 
 def _normalized_message(
-    message: Any, *, event_type: str, sender_names: dict[tuple[str, str], str] | None = None,
+    message: Any,
+    *,
+    event_type: str,
+    sender_names: dict[tuple[str, str], str] | None = None,
+    sender_bots: dict[tuple[str, str], bool] | None = None,
 ) -> dict[str, Any] | None:
     peer_type, peer_id = _peer_identity(getattr(message, "peer_id", None))
     if not peer_id or int(getattr(message, "id", 0) or 0) <= 0:
@@ -244,14 +262,17 @@ def _normalized_message(
     if action_item is not None:
         return action_item
     reply = getattr(message, "reply_to", None)
+    sender_identity = _peer_identity(getattr(message, "from_id", None))
+    sent_at = getattr(message, "date", None)
     return {
         "routing_peer_type": peer_type,
         "routing_peer_id": peer_id,
         "source_message_id": int(message.id),
         "event_type": event_type,
-        "sender_peer_type": _peer_identity(getattr(message, "from_id", None))[0],
-        "sender_peer_id": _peer_identity(getattr(message, "from_id", None))[1],
+        "sender_peer_type": sender_identity[0],
+        "sender_peer_id": sender_identity[1],
         "sender_name": _sender_name(message, sender_names or {}),
+        "sender_is_bot": bool((sender_bots or {}).get(sender_identity, False)),
         "reply_to_message_id": _optional_int(getattr(reply, "reply_to_msg_id", None)),
         "source_top_message_id": _optional_int(getattr(reply, "reply_to_top_id", None)),
         "grouped_id": str(message.grouped_id) if getattr(message, "grouped_id", None) else None,
@@ -261,6 +282,7 @@ def _normalized_message(
         "poll_snapshot": _poll_snapshot(getattr(message, "media", None)),
         "protected_content": bool(getattr(message, "noforwards", False)),
         "message_revision": _message_revision(message, event_type),
+        "sent_at": sent_at.isoformat() if isinstance(sent_at, datetime) else None,
     }
 
 
@@ -325,6 +347,7 @@ def _empty_item(message_id: int, *, event_type: str, pinned: bool | None) -> dic
         "sender_peer_type": None,
         "sender_peer_id": None,
         "sender_name": "",
+        "sender_is_bot": False,
         "reply_to_message_id": None,
         "source_top_message_id": None,
         "grouped_id": None,
@@ -334,6 +357,7 @@ def _empty_item(message_id: int, *, event_type: str, pinned: bool | None) -> dic
         "poll_snapshot": snapshot,
         "protected_content": False,
         "message_revision": 1,
+        "sent_at": None,
     }
 
 
@@ -371,6 +395,14 @@ def _sender_names(entities: Any) -> dict[tuple[str, str], str]:
         if identity[0] and identity[1] and name:
             result[(identity[0], identity[1])] = name
     return result
+
+
+def _sender_bot_flags(entities: Any) -> dict[tuple[str, str], bool]:
+    return {
+        ("user", str(int(entity.id))): bool(getattr(entity, "bot", False))
+        for entity in entities or ()
+        if type(entity).__name__ == "User" and int(getattr(entity, "id", 0) or 0)
+    }
 
 
 def _sender_name(message: Any, names: dict[tuple[str, str], str]) -> str:

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import hashlib
+import json
+
 from sqlalchemy.orm import Session
 
-from app.models import ChannelMessage, OperationTarget, Task
+from app.models import ChannelMessage, ChannelMessageSourceRevision, OperationTarget, Task
 
 from .channel_like_reactions import reaction_plan
 
@@ -25,12 +28,54 @@ def message_reaction_plan(
         reaction_scope=str(config.get("reaction_scope") or "all_available"),
         available_reactions=_available_reactions(session, message),
         reaction_capability_mode=_capability_mode(session, message),
+        content_text=reaction_source_text(session, message),
     )
     if plan:
         clear_reaction_capability_block(task, message.id)
     else:
-        _record_reaction_capability_block(session, task, message, config=config)
+        _record_reaction_capability_block(session, task, message, config=config, reactions=reactions)
     return plan
+
+
+def reaction_capability_revision(target: OperationTarget) -> str:
+    capability = {
+        "mode": str(target.reaction_capability_mode or "unknown"),
+        "available_reactions": sorted(
+            _normalized_reactions(list(target.available_reactions or []))
+        ),
+    }
+    encoded = json.dumps(
+        capability, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def target_accepts_reaction(target: OperationTarget, reaction: str, *, content_text: str = "") -> bool:
+    return bool(reaction_plan(
+        [reaction],
+        1,
+        "specific",
+        available_reactions=list(target.available_reactions or []),
+        reaction_capability_mode=str(target.reaction_capability_mode or "unknown"),
+        content_text=content_text,
+    ))
+
+
+def reaction_source_text(session: Session, message: ChannelMessage) -> str:
+    if not message.current_source_revision_id:
+        return str(message.content_preview or "")
+    revision = session.get(ChannelMessageSourceRevision, message.current_source_revision_id)
+    if revision is None or revision.channel_message_id != message.id:
+        raise RuntimeError("reaction_source_revision_stale")
+    return str(revision.source_text_snapshot or "")
+
+
+def _normalized_reactions(reactions: list[str]) -> list[str]:
+    return [
+        str(value).replace("\ufe0f", "").replace("\ufe0e", "").strip()
+        for value in reactions
+        if str(value).strip()
+    ]
 
 
 def clear_reaction_capability_block(task: Task, message_id: int) -> None:
@@ -56,21 +101,32 @@ def _record_reaction_capability_block(
     message: ChannelMessage,
     *,
     config: dict,
+    reactions: list[str],
 ) -> None:
     mode = _capability_mode(session, message)
+    capability_plan = reaction_plan(
+        reactions, 1,
+        str(config.get("reaction_type") or "random"),
+        reaction_scope=str(config.get("reaction_scope") or "all_available"),
+        available_reactions=_available_reactions(session, message),
+        reaction_capability_mode=mode,
+    )
+    reason = "reaction_intent_no_match" if capability_plan else "reaction_capability_unavailable"
     stats = dict(task.stats or {})
     message_ids = {int(value) for value in stats.get("reaction_capability_unavailable_message_ids", [])}
     message_ids.add(message.id)
     stats["reaction_capability_unavailable_message_ids"] = sorted(message_ids)
     stats["reaction_capability_unavailable"] = {
-        "reason_code": "reaction_capability_unavailable",
+        "reason_code": reason,
         "channel_message_id": message.id,
         "capability_mode": mode,
         "reaction_scope": str(config.get("reaction_scope") or "all_available"),
     }
     task.stats = stats
     probe = stats.get("reaction_capability_probe") or {}
-    if mode == "unknown" and probe.get("error_code"):
+    if reason == "reaction_intent_no_match":
+        task.last_error = f"Reaction 能力不可用或无有效交集：语义不匹配，message={message.id}"
+    elif mode == "unknown" and probe.get("error_code"):
         task.last_error = f"Reaction 能力探测失败：{probe['error_code']}"
     else:
         task.last_error = f"Reaction 能力不可用或无有效交集：message={message.id}, mode={mode}"

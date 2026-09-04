@@ -541,7 +541,7 @@ def test_new_account_event_reaches_online_daily_target_planner(session: Session,
     )
     monkeypatch.setattr("app.services.account_online_probe.credentials_for_account", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(
-        "app.services.account_online_probe.gateway.check_account_health",
+        "app.services.account_online_probe.gateway.check_account_health_isolated",
         lambda *_args: AccountHealth(status=AccountStatus.ACTIVE.value, health_score=96, detail="ok"),
     )
     recovered_at = datetime(2026, 7, 13, 4, 31)

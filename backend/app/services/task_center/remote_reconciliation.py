@@ -19,6 +19,7 @@ from app.models import (
 from app.services._common import _now
 
 from .dispatch_claim_ledger import for_update, lock_dispatch_claim_prefix
+from .engagement_runtime_resources import settle_attempt_resources
 from .remote_reconcile_business_facts import (
     apply_confirmed_business_fact,
     typed_remote_fact_id,
@@ -123,6 +124,11 @@ def apply_remote_reconcile_evidence(
             session, case, action, evidence_hash, actor, observed_at,
         )
     _apply_remote_result(action, attempt, evidence, observed_at)
+    settle_attempt_resources(
+        attempt,
+        action,
+        remote_mutation_started=evidence.remote_mutation_started,
+    )
     apply_confirmed_business_fact(
         session,
         action,

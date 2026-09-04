@@ -2,24 +2,30 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import AiProvider, AiProviderHealthStatus, TgAccount
+from app.models import (
+    AiProvider,
+    AiProviderHealthStatus,
+    ExecutionResiliencePolicyRevision,
+    TgAccount,
+)
 from app.services._common import ai_gateway
 from app.services.ai_config import ai_provider_credentials, get_tenant_ai_setting
+from app.services.automation_identity import with_automation_identity
 
 GENERIC_SUMMARY_TERMS = {"自然", "随意", "真实", "像真人"}
-VOICE_PROFILE_AI_TIMEOUT_SECONDS = 45
+VOICE_PROFILE_AI_TIMEOUT_SECONDS = 15
 VOICE_PROFILE_INITIAL_MAX_TOKENS = 1024
 ACTIONABLE_LIST_FIELDS = ("interaction_habits", "forbidden_expressions")
 MIN_ACTIONABLE_LIST_ITEMS = 3
 MAX_ACTIONABLE_LIST_ITEMS = 5
 MIN_LIGHTWEIGHT_SUMMARY_LENGTH = 18
 MAX_LIGHTWEIGHT_SUMMARY_LENGTH = 36
-MALE_MASK_TERMS = ("男", "男性", "男人", "男生", "男士", "老哥", "大哥", "老板", "先生")
 RESTRICTED_LIGHTWEIGHT_MASK_TERMS = ("色情", "性交易", "寻欢", "夜场", "楼凤", "外围", "招嫖", "嫖客")
 STRUCTURED_MASK_FIELDS = ("mask_name", "audience_archetype", "identity_frame")
 THINK_PREFIX_RE = re.compile(r"\A\s*<think>.*?</think>\s*", re.DOTALL)
@@ -55,7 +61,13 @@ def _generate_voice_profile_payloads(
     strict_lightweight: bool = False,
 ) -> list[dict[str, Any]]:
     accounts = _accounts_for_generation(session, tenant_id, account_ids)
-    profiles = _request_voice_profile_payloads(credentials, setting, accounts, strict_lightweight=strict_lightweight)
+    profiles = _request_voice_profile_payloads(
+        credentials,
+        setting,
+        accounts,
+        strict_lightweight=strict_lightweight,
+        timeout_seconds=_voice_profile_timeout_seconds(session, tenant_id),
+    )
     missing_ids = [account.id for account in accounts if account.id not in profiles]
     if missing_ids:
         raise RuntimeError(f"AI 面具缺少账号: {missing_ids}")
@@ -106,19 +118,8 @@ def _validate_summary(summary: str, account_id: int) -> None:
 def _validate_generated_profile(profile: dict[str, Any], account_id: int) -> None:
     summary = str(profile.get("short_prompt_summary") or "").strip()
     _validate_summary(summary, account_id)
-    _validate_male_mask(profile, account_id)
     for field in ACTIONABLE_LIST_FIELDS:
         _validate_actionable_list(field, profile.get(field), account_id)
-
-
-def _validate_male_mask(profile: dict[str, Any], account_id: int) -> None:
-    structured_values = [str(profile.get(field) or "").strip() for field in STRUCTURED_MASK_FIELDS]
-    if not any(structured_values):
-        return
-    identity_text = " ".join([*structured_values, str(profile.get("short_prompt_summary") or "")])
-    if any(term in identity_text for term in MALE_MASK_TERMS):
-        return
-    raise ValueError(f"account mask gender must be male for account {account_id}")
 
 
 def _validate_actionable_list(field: str, value: Any, account_id: int) -> None:
@@ -140,17 +141,36 @@ def _request_voice_profile_payloads(
     accounts: list[TgAccount],
     *,
     strict_lightweight: bool = False,
+    timeout_seconds: int = VOICE_PROFILE_AI_TIMEOUT_SECONDS,
 ) -> dict[int, dict[str, Any]]:
     raw, _usage = ai_gateway._post_openai_compatible(  # noqa: SLF001 - project adapter has no public JSON generation API yet.
         credentials,
         _voice_profile_prompt(accounts),
         setting.temperature,
         VOICE_PROFILE_INITIAL_MAX_TOKENS,
-        system_prompt="你是轻量账号面具生成器，只输出指定格式的单行 JSON，不解释。",
+        system_prompt=with_automation_identity("你是账号表达风格生成器，只输出指定格式的单行 JSON，不解释。"),
         response_format_json=strict_lightweight,
-        timeout=VOICE_PROFILE_AI_TIMEOUT_SECONDS,
+        timeout=timeout_seconds,
+        request_deadline=time.monotonic() + timeout_seconds,
     )
     return _parse_voice_profile_payload_map(raw, strict_lightweight=strict_lightweight)
+
+
+def _voice_profile_timeout_seconds(session: Session, tenant_id: int) -> int:
+    policy = session.scalar(
+        select(ExecutionResiliencePolicyRevision).where(
+            ExecutionResiliencePolicyRevision.tenant_id == tenant_id,
+            ExecutionResiliencePolicyRevision.state == "active",
+        )
+    )
+    timeout_seconds = int(
+        policy.llm_invocation_timeout_seconds
+        if policy is not None
+        else VOICE_PROFILE_AI_TIMEOUT_SECONDS
+    )
+    if timeout_seconds <= 0 or timeout_seconds > VOICE_PROFILE_AI_TIMEOUT_SECONDS:
+        raise RuntimeError("voice_profile_llm_timeout_policy_invalid")
+    return timeout_seconds
 
 
 def _accounts_for_generation(session: Session, tenant_id: int, account_ids: list[int]) -> list[TgAccount]:
@@ -172,13 +192,13 @@ def _accounts_for_generation(session: Session, tenant_id: int, account_ids: list
 def _voice_profile_prompt(accounts: list[TgAccount]) -> str:
     account_lines = "\n".join(f"- account_id={item.id}, name={item.display_name}, username={item.username or '-'}" for item in accounts)
     return (
-        f"为以下 {len(accounts)} 个 Telegram 运营账号生成互相差异明显的轻量独立账号面具。\n{account_lines}\n"
+        f"为以下 {len(accounts)} 个 Telegram 运营账号生成互相差异明显的表达风格与人设特征。\n{account_lines}\n"
         "每个账号只输出一行 JSON，不要输出数组、标题、解释、Markdown 或额外字段。\n"
         "每行字段固定为：id,mask,aud,frame,tags,habits,ban,summary。\n"
-        "mask 是 6-12 字面具名；aud 是目标受众原型；frame 是账号身份框架；tags 是 2-4 个偏好标签。\n"
-        "所有账号面具必须体现成年男性日常社交身份，mask/aud/frame/summary 至少一处写男性、男生、男士、老哥、大哥、老板或先生；不得生成女性或中性身份。\n"
+        "mask 是 6-12 字风格名；aud 是目标受众原型；frame 是表达风格角色；tags 是 2-4 个话题偏好标签。\n"
+        "各账号风格自然鲜明，符合社群运营定位，风格互不重合。\n"
         "habits 和 ban 必须各写 3-5 条短句；summary 必须具体可执行，写成 18-36 个汉字。\n"
-        "只写日常话题、兴趣和表达习惯，不写成人、交易或违规暗示；禁止冒充真实用户、管理员或指定个人；不得复用其他账号的面具内容。"
+        "只写日常话题、兴趣和表达习惯，不写成人、交易或违规暗示；不得复用其他账号的面具内容。"
     )
 
 

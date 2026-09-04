@@ -5,7 +5,7 @@ from datetime import timedelta
 import hashlib
 from typing import Any
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -26,6 +26,8 @@ from .channel_comment_discussion_contracts import (
 )
 from .channel_comment_content_revision import reconcile_channel_comment_source_edit
 from .channel_comment_source_delete import settle_channel_comment_source_deleted
+from .channel_source_pagination import advance_source_page
+from .channel_listener_claim import locked_source_state
 FRESHNESS_MULTIPLIER = 2
 
 
@@ -43,7 +45,7 @@ def persist_channel_snapshot(
     wake_subscribers: Callable[..., None],
 ) -> None:
     channel = session.get(OperationTarget, source.channel_target_id)
-    state = session.get(ListenerSourceState, state_id)
+    state = locked_source_state(session, source, state_id)
     if channel is None or state is None:
         raise RuntimeError("channel_listener_state_lost")
     if reaction_capability is not None:
@@ -72,7 +74,16 @@ def persist_channel_snapshot(
         session, source, channel,
         observations=deletion_observations or [], observed_at=now_value,
     )
+    progress = advance_source_page(session, source, state=state, snapshots=snapshots, observed_at=now_value)
     _mark_snapshot_ready(state, source, next_revision=next_revision, now_value=now_value)
+    if not progress.complete:
+        state.snapshot_status = "catching_up"
+        state.fresh_until_at = None
+    else:
+        state.observed_at = progress.observed_at
+        if getattr(source, "fetch_offset_id", 0):
+            state.fresh_until_at = progress.observed_at
+            state.next_probe_at = now_value
     wake_subscribers(session, source, state, reason="channel_source_snapshot_ready")
 
 
@@ -89,9 +100,11 @@ def _persist_snapshot_messages(
     probe_request_id: str,
     observed_at: Any,
 ) -> None:
-    session.execute(delete(ListenerChannelSnapshotItem).where(
-        ListenerChannelSnapshotItem.listener_source_state_id == state.id
-    ))
+    scope = ListenerChannelSnapshotItem.listener_source_state_id == state.id
+    if getattr(source, "fetch_offset_id", 0):
+        session.execute(update(ListenerChannelSnapshotItem).where(scope).values(snapshot_revision=snapshot_revision))
+    else:
+        session.execute(delete(ListenerChannelSnapshotItem).where(scope))
     for snapshot in snapshots:
         thread_root_id = _discussion_root_id(discussion_snapshot, snapshot.message_id)
         message, revision_created = _upsert_channel_message(
@@ -294,6 +307,7 @@ def _settle_deleted_messages(
             str(source.tenant_id), str(channel.id), str(observation.message_id),
             str(observation.evidence_kind),
         ))
+        message.source_metadata = {**dict(message.source_metadata or {}), "deleted": True}
         settle_channel_comment_source_deleted(
             session, message,
             occurred_at=_wall(observed_at),
@@ -336,6 +350,8 @@ def _upsert_channel_message(
     )
     message.message_url = snapshot.message_url or message.message_url or _message_url(channel, snapshot.message_id)
     message.content_preview = snapshot.content_preview or message.content_preview
+    message.grouped_id = str(getattr(snapshot, "grouped_id", "") or "")
+    message.source_metadata = dict(getattr(snapshot, "source_metadata", {}) or {})
     message.comment_available = bool(snapshot.comment_available)
     message.published_at = published_at or message.published_at
     if revision is not None:

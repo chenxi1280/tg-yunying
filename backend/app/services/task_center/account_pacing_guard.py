@@ -1,36 +1,53 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import select, union_all
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.models import (
     AccountPacingReservation,
     Action,
-    ExecutionAttempt,
-    FulfillmentRemoteFact,
     Task,
     TgAccount,
 )
-from app.services._common import _now
-from app.timezone import BEIJING_TZ
-
 from .source_pacing import latest_wall_datetime, wall_datetime
+from .account_pacing_timeline import (
+    OPEN_GUARD_STATUSES as _OPEN_GUARD_STATUSES,
+    account_timeline_points as _account_timeline_points,
+    earliest_available_time as _earliest_available_time,
+)
+from .account_pacing_policy import (
+    account_not_before as _account_not_before,
+    account_policy_not_before,
+    task_policy_not_before,
+    wall_time as _wall,
+)
+from .account_pacing_reservations import (
+    bind_account_pacing_reservation,
+    bind_account_pacing_reservation_for_slot,
+    release_unbound_account_pacing_reservation,
+    release_safe_task_account_pacing_reservations,
+    reservation_for_any_slot as _reservation_for_any_slot,
+    reservation_for_slot as _reservation_for_slot,
+)
+from .engagement_action_classes import action_class_for_type
+from .engagement_behavior_sessions import (
+    behavior_session_not_before,
+    behavior_session_wake_available,
+    reserve_behavior_session_wake,
+)
 
 
 ACCOUNT_SOFT_PACING_POLICY_VERSION = "account_soft_pacing_v1"
-TIMELINE_PAGE_SIZE = 128
-_OPEN_GUARD_STATUSES = ("pending", "claiming", "executing", "retryable_failed", "unknown_after_send")
-# claim 层只认在途/事实：pending 计划与预约不算已占发送点。2026-08-17 生产事故：
-# 积压 ready pending（含各自预约）排成每秒 1 条的密集计划队列，pending 互相把
-# claim 推到队尾形成互锁，发送坍塌；实际间隔由任务行锁 + claiming 在途点保证。
-_INFLIGHT_GUARD_STATUSES = ("claiming", "executing", "retryable_failed", "unknown_after_send")
+ACCOUNT_BEHAVIOR_SESSION_PACING_POLICY_VERSION = "account_soft_pacing_behavior_session_v1"
+ACCOUNT_BEHAVIOR_SESSION_WAKE_POLICY_VERSION = "account_soft_pacing_behavior_wake_v1"
+ACCOUNT_BEHAVIOR_SESSION_WAKE_CONSUMED_POLICY_VERSION = (
+    "account_soft_pacing_behavior_wake_consumed_v1"
+)
 _OPEN_RESERVATION_STATES = ("reserved", "bound")
-_REUSABLE_TERMINAL_ACTION_STATUSES = frozenset({"failed", "skipped"})
 
 
 class AccountPacingDeadlineExceeded(RuntimeError):
@@ -48,10 +65,10 @@ class PacingClaimDecision:
     reason_code: str = ""
 
 
-def _wall(value: datetime | None) -> datetime | None:
-    if value is None or value.tzinfo is None:
-        return value
-    return value.astimezone(BEIJING_TZ).replace(tzinfo=None)
+@dataclass(frozen=True)
+class ReservationTiming:
+    release_at: datetime
+    effective_at: datetime
 
 
 def lock_account_pacing(session: Session, account_id: int) -> None:
@@ -86,68 +103,6 @@ def lock_task_pacing(session: Session, task_id: str) -> None:
     raise AccountPacingLockUnavailable("task_pacing_lock_busy")
 
 
-def account_policy_not_before(
-    session: Session,
-    account_id: int,
-    *,
-    tenant_id: int,
-    now_value: datetime | None = None,
-    deadline_at: datetime | None = None,
-    exclude_action_id: str | None = None,
-    exclude_slot_key: str | None = None,
-    include_planned: bool = True,
-) -> datetime | None:
-    desired_at = _wall(now_value or _now())
-    if desired_at is None:
-        return None
-    gap = timedelta(seconds=max(1, int(get_settings().account_soft_pacing_min_gap_seconds)))
-    points = _account_timeline_points(
-        session,
-        tenant_id,
-        account_id,
-        desired_at=desired_at,
-        gap=gap,
-        deadline_at=deadline_at,
-        exclude_action_id=exclude_action_id,
-        exclude_slot_key=exclude_slot_key,
-        include_planned=include_planned,
-    )
-    return _earliest_available_time(desired_at, points, gap)
-
-
-def task_policy_not_before(
-    session: Session,
-    task_id: str,
-    *,
-    tenant_id: int,
-    desired_at: datetime,
-    gap: timedelta,
-    deadline_at: datetime | None = None,
-    exclude_action_id: str | None = None,
-    exclude_slot_key: str | None = None,
-    include_planned: bool = True,
-) -> datetime | None:
-    """任务级（≈群级）发送时间线：同一 Task 内所有账号共享的最小间隔。
-
-    2026-08-17 生产节奏诊断：账号级 pacing 只约束单账号，跨账号在同一个
-    claim 周期并行发送形成同秒 5-19 条突发；本门禁在 claim 时把同任务
-    最近的 open 发送点也纳入时间线。
-    """
-    points = _account_timeline_points(
-        session,
-        tenant_id,
-        None,
-        desired_at=desired_at,
-        gap=gap,
-        deadline_at=deadline_at,
-        exclude_action_id=exclude_action_id,
-        exclude_slot_key=exclude_slot_key,
-        task_id=task_id,
-        include_planned=include_planned,
-    )
-    return _earliest_available_time(desired_at, points, gap)
-
-
 def reserve_account_pacing(
     session: Session,
     *,
@@ -158,15 +113,13 @@ def reserve_account_pacing(
     due_at: datetime,
     deadline_at: datetime | None,
     release_not_before_at: datetime | None = None,
+    engagement_contract_version: str = "",
+    action_class: str = "",
+    allow_session_wake: bool = False,
 ) -> AccountPacingReservation:
-    due_at = wall_datetime(due_at)
-    deadline_at = wall_datetime(deadline_at) if deadline_at is not None else None
-    release_not_before_at = (
-        wall_datetime(release_not_before_at)
-        if release_not_before_at is not None
-        else due_at
+    due_at, release_at, deadline_at = _normalize_reservation_window(
+        due_at, release_not_before_at, deadline_at,
     )
-    release_at = latest_wall_datetime(due_at, release_not_before_at)
     lock_account_pacing(session, account_id)
     existing = _reservation_for_any_slot(session, tenant_id, account_id, slot_key)
     if existing is not None:
@@ -177,30 +130,174 @@ def reserve_account_pacing(
             release_at=release_at,
             deadline_at=deadline_at,
         )
-    not_before = account_policy_not_before(
+    timing, wake_reserved = _reservation_timing_with_optional_wake(
         session,
-        account_id,
         tenant_id=tenant_id,
-        now_value=release_at,
+        account_id=account_id,
+        engagement_contract_version=engagement_contract_version,
+        action_class=action_class,
+        release_at=release_at,
         deadline_at=deadline_at,
+        exclude_slot_key=None,
+        allow_session_wake=allow_session_wake,
     )
-    effective_at = effective_claim_at(release_at, not_before)
-    if deadline_at is not None and not _before_deadline(effective_at, deadline_at):
-        raise AccountPacingDeadlineExceeded("account_timeline_conflict")
-    reservation = AccountPacingReservation(
+    reservation = _new_reservation(
         tenant_id=tenant_id,
         task_id=task_id,
         account_id=account_id,
-        pacing_slot_key=slot_key,
-        policy_version=ACCOUNT_SOFT_PACING_POLICY_VERSION,
+        slot_key=slot_key,
         due_at=due_at,
-        release_not_before_at=release_at,
-        effective_claim_at=effective_at,
-        source_deadline_at=deadline_at,
+        timing=timing,
+        deadline_at=deadline_at,
+        engagement_contract_version=engagement_contract_version,
+        action_class=action_class,
+        session_wake_reserved=wake_reserved,
     )
     session.add(reservation)
     session.flush()
     return reservation
+
+
+def _reservation_timing_with_optional_wake(
+    session: Session,
+    *,
+    tenant_id: int,
+    account_id: int,
+    engagement_contract_version: str,
+    action_class: str,
+    release_at: datetime,
+    deadline_at: datetime | None,
+    exclude_slot_key: str | None,
+    allow_session_wake: bool,
+) -> tuple[ReservationTiming, bool]:
+    wake_allowed = (
+        allow_session_wake
+        and engagement_contract_version == "unified_engagement_v1"
+    )
+    if wake_allowed:
+        timing = _resolve_reservation_timing(
+            session,
+            tenant_id=tenant_id,
+            account_id=account_id,
+            engagement_contract_version=engagement_contract_version,
+            action_class=action_class,
+            release_at=release_at,
+            deadline_at=deadline_at,
+            exclude_slot_key=exclude_slot_key,
+            session_wake_reserved=True,
+        )
+        if behavior_session_wake_available(
+            session,
+            tenant_id=tenant_id,
+            account_id=account_id,
+            desired_at=release_at,
+            pending_policy_version=ACCOUNT_BEHAVIOR_SESSION_WAKE_POLICY_VERSION,
+        ):
+            return timing, True
+    timing = _resolve_reservation_timing(
+        session,
+        tenant_id=tenant_id,
+        account_id=account_id,
+        engagement_contract_version=engagement_contract_version,
+        action_class=action_class,
+        release_at=release_at,
+        deadline_at=deadline_at,
+        exclude_slot_key=exclude_slot_key,
+    )
+    return timing, False
+
+
+def _resolve_reservation_timing(
+    session: Session,
+    *,
+    tenant_id: int,
+    account_id: int,
+    engagement_contract_version: str,
+    action_class: str,
+    release_at: datetime,
+    deadline_at: datetime | None,
+    exclude_slot_key: str | None,
+    session_wake_reserved: bool = False,
+) -> ReservationTiming:
+    session_floor = release_at
+    if not session_wake_reserved:
+        session_floor = behavior_session_not_before(
+            session,
+            tenant_id=tenant_id,
+            engagement_contract_version=engagement_contract_version,
+            account_id=account_id,
+            desired_at=release_at,
+            deadline_at=deadline_at,
+        )
+    if session_floor is None:
+        raise AccountPacingDeadlineExceeded("account_behavior_session_unavailable")
+    adjusted_release = latest_wall_datetime(release_at, session_floor)
+    not_before = _account_not_before(
+        session,
+        tenant_id=tenant_id,
+        account_id=account_id,
+        action_class=action_class,
+        use_pair_policy=engagement_contract_version == "unified_engagement_v1",
+        now_value=adjusted_release,
+        deadline_at=deadline_at,
+        exclude_action_id=None,
+        exclude_slot_key=exclude_slot_key,
+        include_planned=True,
+    )
+    effective_at = effective_claim_at(adjusted_release, not_before)
+    if deadline_at is not None and not _before_deadline(effective_at, deadline_at):
+        raise AccountPacingDeadlineExceeded("account_timeline_conflict")
+    return ReservationTiming(adjusted_release, effective_at)
+
+
+def _new_reservation(
+    *,
+    tenant_id: int,
+    task_id: str,
+    account_id: int,
+    slot_key: str,
+    due_at: datetime,
+    timing: ReservationTiming,
+    deadline_at: datetime | None,
+    engagement_contract_version: str,
+    action_class: str,
+    session_wake_reserved: bool,
+) -> AccountPacingReservation:
+    return AccountPacingReservation(
+        tenant_id=tenant_id,
+        task_id=task_id,
+        account_id=account_id,
+        pacing_slot_key=slot_key,
+        policy_version=(
+            ACCOUNT_BEHAVIOR_SESSION_WAKE_POLICY_VERSION
+            if session_wake_reserved
+            else (
+                ACCOUNT_BEHAVIOR_SESSION_PACING_POLICY_VERSION
+                if engagement_contract_version == "unified_engagement_v1"
+                else ACCOUNT_SOFT_PACING_POLICY_VERSION
+            )
+        ),
+        action_class=action_class,
+        due_at=due_at,
+        release_not_before_at=timing.release_at,
+        effective_claim_at=timing.effective_at,
+        source_deadline_at=deadline_at,
+    )
+
+
+def _normalize_reservation_window(
+    due_at: datetime,
+    release_not_before_at: datetime | None,
+    deadline_at: datetime | None,
+) -> tuple[datetime, datetime, datetime | None]:
+    normalized_due = wall_datetime(due_at)
+    normalized_release = wall_datetime(release_not_before_at or due_at)
+    normalized_deadline = wall_datetime(deadline_at) if deadline_at is not None else None
+    return (
+        normalized_due,
+        latest_wall_datetime(normalized_due, normalized_release),
+        normalized_deadline,
+    )
 
 
 def _reuse_existing_reservation(
@@ -211,6 +308,14 @@ def _reuse_existing_reservation(
     release_at: datetime,
     deadline_at: datetime | None,
 ) -> AccountPacingReservation:
+    if reservation.state == "released" and reservation.action_id is None:
+        return _rearm_available_reservation(
+            session,
+            reservation,
+            due_at=due_at,
+            release_at=release_at,
+            deadline_at=deadline_at,
+        )
     if reservation.state not in _OPEN_RESERVATION_STATES:
         if reservation.state == "missed":
             raise AccountPacingDeadlineExceeded("pacing_slot_already_missed")
@@ -234,126 +339,27 @@ def _rearm_available_reservation(
     release_at: datetime,
     deadline_at: datetime | None,
 ) -> AccountPacingReservation:
-    not_before = account_policy_not_before(
+    unified = _uses_behavior_session_policy(reservation.policy_version)
+    timing = _resolve_reservation_timing(
         session,
-        reservation.account_id,
         tenant_id=reservation.tenant_id,
-        now_value=release_at,
+        account_id=reservation.account_id,
+        engagement_contract_version="unified_engagement_v1" if unified else "",
+        action_class=reservation.action_class or "",
+        release_at=release_at,
         deadline_at=deadline_at,
         exclude_slot_key=reservation.pacing_slot_key,
+        session_wake_reserved=(
+            reservation.policy_version == ACCOUNT_BEHAVIOR_SESSION_WAKE_POLICY_VERSION
+        ),
     )
-    effective_at = effective_claim_at(release_at, not_before)
-    if deadline_at is not None and not _before_deadline(effective_at, deadline_at):
-        raise AccountPacingDeadlineExceeded("account_timeline_conflict")
     reservation.state = "reserved"
     reservation.due_at = due_at
-    reservation.release_not_before_at = release_at
-    reservation.effective_claim_at = effective_at
+    reservation.release_not_before_at = timing.release_at
+    reservation.effective_claim_at = timing.effective_at
     reservation.source_deadline_at = deadline_at
     reservation.version = int(reservation.version or 1) + 1
     return reservation
-
-
-def release_safe_task_account_pacing_reservations(
-    session: Session,
-    task: Task,
-) -> int:
-    session.flush()
-    statement = select(AccountPacingReservation).where(
-        AccountPacingReservation.task_id == task.id,
-        AccountPacingReservation.state.in_(_OPEN_RESERVATION_STATES),
-        (
-            AccountPacingReservation.action_id.is_not(None)
-            | (AccountPacingReservation.state == "bound")
-        ),
-    )
-    if session.get_bind().dialect.name != "sqlite":
-        statement = statement.with_for_update(of=AccountPacingReservation)
-    reservations = list(session.scalars(statement))
-    action_ids = [row.action_id for row in reservations if row.action_id]
-    actions = (
-        {
-            row.id: row
-            for row in session.scalars(select(Action).where(Action.id.in_(action_ids)))
-        }
-        if action_ids
-        else {}
-    )
-    remote_bound = _remote_bound_action_ids(session, action_ids)
-    released = 0
-    for reservation in reservations:
-        action = actions.get(str(reservation.action_id or ""))
-        if not _reservation_reusable(action, remote_bound):
-            continue
-        reservation.action_id = None
-        reservation.state = "reserved"
-        reservation.version = int(reservation.version or 1) + 1
-        released += 1
-    return released
-
-
-def _remote_bound_action_ids(session: Session, action_ids: list[str]) -> set[str]:
-    if not action_ids:
-        return set()
-    attempts = set(
-        session.scalars(
-            select(ExecutionAttempt.action_id).where(
-                ExecutionAttempt.action_id.in_(action_ids),
-                (ExecutionAttempt.gateway_call_started_at.is_not(None))
-                | (ExecutionAttempt.remote_message_id != ""),
-            )
-        )
-    )
-    facts = set(
-        session.scalars(
-            select(FulfillmentRemoteFact.action_id).where(
-                FulfillmentRemoteFact.action_id.in_(action_ids),
-            )
-        )
-    )
-    return attempts | facts
-
-
-def _reservation_reusable(
-    action: Action | None,
-    remote_bound: set[str],
-) -> bool:
-    if action is None:
-        return True
-    if action.status not in _REUSABLE_TERMINAL_ACTION_STATUSES:
-        return False
-    result = dict(action.result or {})
-    return (
-        action.id not in remote_bound
-        and not result.get("gateway_call_started_at")
-        and not result.get("remote_message_id")
-    )
-
-
-def bind_account_pacing_reservation(
-    reservation: AccountPacingReservation,
-    action: Action,
-) -> None:
-    reservation.action_id = action.id
-    reservation.state = "bound"
-    reservation.version += 1
-    action.scheduled_at = reservation.effective_claim_at
-    action.release_not_before_at = reservation.release_not_before_at
-    action.effective_claim_at = reservation.effective_claim_at
-
-
-def bind_account_pacing_reservation_for_slot(
-    session: Session,
-    *,
-    tenant_id: int,
-    account_id: int,
-    slot_key: str,
-    action: Action,
-) -> None:
-    reservation = _reservation_for_slot(session, tenant_id, account_id, slot_key)
-    if reservation is None:
-        raise ValueError("account_pacing_reservation_missing")
-    bind_account_pacing_reservation(reservation, action)
 
 
 def effective_claim_at(due_at: datetime, account_not_before: datetime | None) -> datetime:
@@ -371,63 +377,150 @@ def revalidate_action_pacing_before_claim(
     try:
         lock_account_pacing(session, int(action.account_id))
     except AccountPacingLockUnavailable:
-        return PacingClaimDecision(
-            False,
-            action.scheduled_at,
-            "account_pacing_lock_busy",
-        )
-    desired_at = max(
-        value
-        for value in (
-            _wall(now_value),
-            _wall(action.pacing_due_at),
-            _wall(action.release_not_before_at),
-        )
-        if value is not None
+        return PacingClaimDecision(False, action.scheduled_at, "account_pacing_lock_busy")
+    desired_at, reservation = _claim_desired_and_reservation(
+        session, action, now_value,
     )
+    session_floor = _claim_session_floor(session, action, reservation, desired_at)
+    if session_floor is None:
+        return PacingClaimDecision(False, desired_at, "pacing_claim_deadline_exceeded")
+    desired_at = latest_wall_datetime(desired_at, session_floor)
+    not_before = _claim_account_not_before(session, action, reservation, desired_at)
+    try:
+        not_before, group_conflict = _claim_group_not_before(
+            session, action, reservation, desired_at, not_before,
+        )
+    except AccountPacingLockUnavailable:
+        return PacingClaimDecision(False, action.scheduled_at, "task_pacing_lock_busy")
+    return _settle_claim_pacing(
+        action, reservation, now_value, desired_at, not_before, group_conflict,
+    )
+
+
+def _claim_desired_and_reservation(
+    session: Session,
+    action: Action,
+    now_value: datetime,
+) -> tuple[datetime, AccountPacingReservation]:
+    desired_at = max(value for value in (
+        _wall(now_value),
+        _wall(action.pacing_due_at),
+        _wall(action.release_not_before_at),
+    ) if value is not None)
     reservation = _reservation_for_slot(
-        session,
-        action.tenant_id,
-        int(action.account_id),
-        str(action.pacing_slot_key),
+        session, action.tenant_id, int(action.account_id), str(action.pacing_slot_key),
     )
     if reservation is None:
         raise ValueError("account_pacing_reservation_missing")
-    not_before = account_policy_not_before(
+    return desired_at, reservation
+
+
+def _claim_session_floor(
+    session: Session,
+    action: Action,
+    reservation: AccountPacingReservation,
+    desired_at: datetime,
+) -> datetime | None:
+    if reservation.policy_version == ACCOUNT_BEHAVIOR_SESSION_WAKE_CONSUMED_POLICY_VERSION:
+        return desired_at
+    if reservation.policy_version == ACCOUNT_BEHAVIOR_SESSION_WAKE_POLICY_VERSION:
+        if reserve_behavior_session_wake(
+            session,
+            tenant_id=action.tenant_id,
+            account_id=int(action.account_id),
+            desired_at=desired_at,
+        ):
+            reservation.policy_version = (
+                ACCOUNT_BEHAVIOR_SESSION_WAKE_CONSUMED_POLICY_VERSION
+            )
+            reservation.version = int(reservation.version or 1) + 1
+            return desired_at
+    return behavior_session_not_before(
         session,
-        int(action.account_id),
         tenant_id=action.tenant_id,
+        engagement_contract_version=(
+            "unified_engagement_v1"
+            if _uses_behavior_session_policy(reservation.policy_version)
+            else ""
+        ),
+        account_id=int(action.account_id),
+        desired_at=desired_at,
+        deadline_at=reservation.source_deadline_at,
+    )
+
+
+def _claim_account_not_before(
+    session: Session,
+    action: Action,
+    reservation: AccountPacingReservation,
+    desired_at: datetime,
+) -> datetime | None:
+    return _account_not_before(
+        session,
+        tenant_id=action.tenant_id,
+        account_id=int(action.account_id),
+        action_class=(
+            reservation.action_class
+            or action_class_for_type(str(action.action_type or ""))
+        ),
+        use_pair_policy=(
+            _uses_behavior_session_policy(reservation.policy_version)
+        ),
         now_value=desired_at,
         deadline_at=reservation.source_deadline_at,
         exclude_action_id=action.id,
         exclude_slot_key=str(action.pacing_slot_key),
         include_planned=False,
     )
-    group_conflict = False
-    if str(action.task_type or "") == "group_ai_chat":
-        try:
-            lock_task_pacing(session, str(action.task_id))
-        except AccountPacingLockUnavailable:
-            return PacingClaimDecision(
-                False,
-                action.scheduled_at,
-                "task_pacing_lock_busy",
-            )
-        group_gap = timedelta(seconds=max(1, int(get_settings().ai_group_send_pacing_min_gap_seconds)))
-        group_not_before = task_policy_not_before(
-            session,
-            str(action.task_id),
-            tenant_id=action.tenant_id,
-            desired_at=desired_at,
-            gap=group_gap,
-            deadline_at=reservation.source_deadline_at,
-            exclude_action_id=action.id,
-            exclude_slot_key=str(action.pacing_slot_key),
-            include_planned=False,
-        )
-        if group_not_before is not None and (not_before is None or group_not_before > not_before):
-            not_before = group_not_before
-            group_conflict = True
+
+
+def _uses_behavior_session_policy(policy_version: str) -> bool:
+    return policy_version in {
+        ACCOUNT_BEHAVIOR_SESSION_PACING_POLICY_VERSION,
+        ACCOUNT_BEHAVIOR_SESSION_WAKE_POLICY_VERSION,
+        ACCOUNT_BEHAVIOR_SESSION_WAKE_CONSUMED_POLICY_VERSION,
+    }
+
+
+def _claim_group_not_before(
+    session: Session,
+    action: Action,
+    reservation: AccountPacingReservation,
+    desired_at: datetime,
+    account_not_before: datetime | None,
+) -> tuple[datetime | None, bool]:
+    if str(action.task_type or "") != "group_ai_chat":
+        return account_not_before, False
+    lock_task_pacing(session, str(action.task_id))
+    group_gap = timedelta(
+        seconds=max(1, int(get_settings().ai_group_send_pacing_min_gap_seconds))
+    )
+    group_not_before = task_policy_not_before(
+        session,
+        str(action.task_id),
+        tenant_id=action.tenant_id,
+        desired_at=desired_at,
+        gap=group_gap,
+        deadline_at=reservation.source_deadline_at,
+        exclude_action_id=action.id,
+        exclude_slot_key=str(action.pacing_slot_key),
+        include_planned=False,
+    )
+    if group_not_before is None or (
+        account_not_before is not None and group_not_before <= account_not_before
+    ):
+        return account_not_before, False
+    return group_not_before, True
+
+
+def _settle_claim_pacing(
+    action: Action,
+    reservation: AccountPacingReservation,
+    now_value: datetime,
+    desired_at: datetime,
+    not_before: datetime | None,
+    group_conflict: bool,
+) -> PacingClaimDecision:
     effective_at = effective_claim_at(desired_at, not_before)
     if reservation.source_deadline_at and not _before_deadline(
         effective_at, reservation.source_deadline_at,
@@ -479,155 +572,6 @@ def _sync_claim_time(
     reservation.version = int(reservation.version or 1) + 1
 
 
-def _reservation_for_slot(
-    session: Session,
-    tenant_id: int,
-    account_id: int,
-    slot_key: str,
-) -> AccountPacingReservation | None:
-    return session.scalar(select(AccountPacingReservation).where(
-        AccountPacingReservation.tenant_id == tenant_id,
-        AccountPacingReservation.account_id == account_id,
-        AccountPacingReservation.pacing_slot_key == slot_key,
-        AccountPacingReservation.state.in_(_OPEN_RESERVATION_STATES),
-    ))
-
-
-def _reservation_for_any_slot(
-    session: Session,
-    tenant_id: int,
-    account_id: int,
-    slot_key: str,
-) -> AccountPacingReservation | None:
-    return session.scalar(select(AccountPacingReservation).where(
-        AccountPacingReservation.tenant_id == tenant_id,
-        AccountPacingReservation.account_id == account_id,
-        AccountPacingReservation.pacing_slot_key == slot_key,
-    ))
-
-
-def _timeline_union(
-    *,
-    tenant_id: int,
-    account_id: int | None,
-    start_at: datetime,
-    end_at: datetime | None,
-    exclude_action_id: str | None,
-    exclude_slot_key: str | None,
-    task_id: str | None = None,
-    include_planned: bool = True,
-):
-    action_scope = (
-        Action.task_id == task_id if task_id is not None else Action.account_id == account_id
-    )
-    reservation_scope = (
-        AccountPacingReservation.task_id == task_id
-        if task_id is not None
-        else AccountPacingReservation.account_id == account_id
-    )
-    action_filters = [
-        Action.tenant_id == tenant_id,
-        action_scope,
-        Action.status.in_(_OPEN_GUARD_STATUSES if include_planned else _INFLIGHT_GUARD_STATUSES),
-        Action.scheduled_at.is_not(None),
-        Action.scheduled_at >= start_at,
-    ]
-    fact_filters = [
-        FulfillmentRemoteFact.tenant_id == tenant_id,
-        action_scope,
-        FulfillmentRemoteFact.fact_kind.in_((
-            "remote_message_observed",
-            "view_observed",
-            "reaction_observed",
-        )),
-        FulfillmentRemoteFact.observed_at >= start_at,
-    ]
-    reservation_filters = [
-        AccountPacingReservation.tenant_id == tenant_id,
-        reservation_scope,
-        AccountPacingReservation.state.in_(_OPEN_RESERVATION_STATES),
-        AccountPacingReservation.effective_claim_at >= start_at,
-    ]
-    if exclude_action_id:
-        action_filters.append(Action.id != exclude_action_id)
-        fact_filters.append(FulfillmentRemoteFact.action_id != exclude_action_id)
-    if exclude_slot_key:
-        reservation_filters.append(
-            AccountPacingReservation.pacing_slot_key != exclude_slot_key,
-        )
-    if end_at is not None:
-        action_filters.append(Action.scheduled_at < end_at)
-        fact_filters.append(FulfillmentRemoteFact.observed_at < end_at)
-        reservation_filters.append(AccountPacingReservation.effective_claim_at < end_at)
-    branches = [
-        select(Action.scheduled_at.label("timeline_at")).where(*action_filters),
-        select(FulfillmentRemoteFact.observed_at.label("timeline_at"))
-        .join(Action, Action.id == FulfillmentRemoteFact.action_id)
-        .where(*fact_filters),
-    ]
-    if include_planned:
-        branches.append(
-            select(AccountPacingReservation.effective_claim_at.label("timeline_at"))
-            .where(*reservation_filters)
-        )
-    return union_all(*branches).subquery()
-
-
-def _account_timeline_points(
-    session: Session,
-    tenant_id: int,
-    account_id: int | None,
-    *,
-    desired_at: datetime,
-    gap: timedelta,
-    deadline_at: datetime | None,
-    exclude_action_id: str | None,
-    exclude_slot_key: str | None,
-    task_id: str | None = None,
-    include_planned: bool = True,
-) -> Iterator[datetime]:
-    normalized_deadline = _wall(deadline_at)
-    timeline = _timeline_union(
-        tenant_id=tenant_id,
-        account_id=account_id,
-        start_at=desired_at - gap,
-        end_at=normalized_deadline + gap if normalized_deadline else None,
-        exclude_action_id=exclude_action_id,
-        exclude_slot_key=exclude_slot_key,
-        task_id=task_id,
-        include_planned=include_planned,
-    )
-    cursor: datetime | None = None
-    while True:
-        statement = select(timeline.c.timeline_at).distinct().order_by(timeline.c.timeline_at).limit(TIMELINE_PAGE_SIZE)
-        if cursor is not None:
-            statement = statement.where(timeline.c.timeline_at > cursor)
-        page = [point for value in session.scalars(statement) if (point := _wall(value)) is not None]
-        if not page:
-            return
-        yield from page
-        if len(page) < TIMELINE_PAGE_SIZE:
-            return
-        cursor = page[-1]
-
-
-def _earliest_available_time(
-    desired_at: datetime,
-    timeline: Iterable[datetime],
-    gap: timedelta,
-) -> datetime | None:
-    candidate = desired_at
-    seen = False
-    for point in timeline:
-        seen = True
-        if point + gap <= candidate:
-            continue
-        if candidate + gap <= point:
-            break
-        candidate = point + gap
-    return candidate if seen else None
-
-
 def _before_deadline(value: datetime, deadline: datetime) -> bool:
     normalized = _wall(deadline)
     return normalized is not None and value < normalized
@@ -635,6 +579,8 @@ def _before_deadline(value: datetime, deadline: datetime) -> bool:
 
 __all__ = [
     "ACCOUNT_SOFT_PACING_POLICY_VERSION",
+    "ACCOUNT_BEHAVIOR_SESSION_WAKE_CONSUMED_POLICY_VERSION",
+    "ACCOUNT_BEHAVIOR_SESSION_WAKE_POLICY_VERSION",
     "AccountPacingDeadlineExceeded",
     "AccountPacingLockUnavailable",
     "PacingClaimDecision",
@@ -643,6 +589,7 @@ __all__ = [
     "bind_account_pacing_reservation_for_slot",
     "effective_claim_at",
     "lock_account_pacing",
+    "release_unbound_account_pacing_reservation",
     "release_safe_task_account_pacing_reservations",
     "revalidate_action_pacing_before_claim",
     "reserve_account_pacing",

@@ -675,9 +675,16 @@ class TelethonTelegramGateway(TelegramGateway):
         credentials: DeveloperAppCredentials,
         raw_session: str,
         client_metadata: dict[str, str] | None = None,
+        *,
+        connect_timeout_seconds: float | None = None,
     ) -> Any:
         """Return a connected Telethon client from the cache, or create and connect a new one."""
-        return await self._lifecycle.get_or_create_client(credentials, raw_session, client_metadata)
+        return await self._lifecycle.get_or_create_client(
+            credentials,
+            raw_session,
+            client_metadata,
+            connect_timeout_seconds=connect_timeout_seconds,
+        )
 
     @staticmethod
     def _usable_phone(phone: str | None) -> str:
@@ -856,6 +863,8 @@ class TelethonTelegramGateway(TelegramGateway):
         self,
         session_ciphertext: str | None,
         credentials: DeveloperAppCredentials,
+        *,
+        connect_timeout_seconds: float | None = None,
     ) -> AccountHealth:
         raw_session = decrypt_session(session_ciphertext)
         if not raw_session:
@@ -863,7 +872,12 @@ class TelethonTelegramGateway(TelegramGateway):
         client = self._new_client(credentials, raw_session)
         operation_error: BaseException | None = None
         try:
-            await asyncio.wait_for(client.connect(), timeout=self.settings.telethon_client_connect_timeout_seconds)
+            connect_timeout = (
+                self.settings.telethon_client_connect_timeout_seconds
+                if connect_timeout_seconds is None
+                else connect_timeout_seconds
+            )
+            await asyncio.wait_for(client.connect(), timeout=connect_timeout)
             if not await client.is_user_authorized():
                 return AccountHealth(status="需重新登录", health_score=45, detail="session 已失效")
             await client.get_me()
@@ -887,8 +901,17 @@ class TelethonTelegramGateway(TelegramGateway):
         session_ciphertext: str | None,
         credentials: DeveloperAppCredentials,
         timeout_seconds: float,
+        *,
+        connect_timeout_seconds: float | None = None,
     ) -> AccountHealth:
-        return await asyncio.wait_for(self._health_async(session_ciphertext, credentials), timeout=timeout_seconds)
+        return await asyncio.wait_for(
+            self._health_async(
+                session_ciphertext,
+                credentials,
+                connect_timeout_seconds=connect_timeout_seconds,
+            ),
+            timeout=timeout_seconds,
+        )
 
     def check_account_health(
         self,
@@ -905,14 +928,22 @@ class TelethonTelegramGateway(TelegramGateway):
         self,
         session_ciphertext: str | None,
         credentials: DeveloperAppCredentials | None = None,
+        *,
+        connect_timeout_seconds: float | None = None,
+        timeout_seconds: float | None = None,
     ) -> AccountHealth:
-        probe_timeout = self.settings.account_online_probe_timeout_seconds
+        probe_timeout = (
+            self.settings.account_online_probe_timeout_seconds
+            if timeout_seconds is None
+            else timeout_seconds
+        )
         hard_timeout = probe_timeout + ACCOUNT_HEALTH_DISCONNECT_TIMEOUT_SECONDS
         return self._run_isolated_health(
             self._bounded_health_async(
                 session_ciphertext,
                 self._usable_credentials(credentials),
                 probe_timeout,
+                connect_timeout_seconds=connect_timeout_seconds,
             ),
             hard_timeout,
             ACCOUNT_HEALTH_RUN_GRACE_SECONDS,
@@ -1276,11 +1307,22 @@ class TelethonTelegramGateway(TelegramGateway):
     ) -> AccountSecurityOperationResult:
         return self._run(self._update_username_async(session_ciphertext, username, self._usable_credentials(credentials)))
 
-    async def _authorized_client(self, session_ciphertext: str | None, credentials: DeveloperAppCredentials, *, error_message: str) -> Any:
+    async def _authorized_client(
+        self,
+        session_ciphertext: str | None,
+        credentials: DeveloperAppCredentials,
+        *,
+        error_message: str,
+        connect_timeout_seconds: float | None = None,
+    ) -> Any:
         raw_session = decrypt_session(session_ciphertext)
         if not raw_session:
             raise RuntimeError(error_message)
-        client = await self._get_or_create_client(credentials, raw_session)
+        client = await self._get_or_create_client(
+            credentials,
+            raw_session,
+            connect_timeout_seconds=connect_timeout_seconds,
+        )
         if not await client.is_user_authorized():
             raise RuntimeError("session is not authorized")
         return client
@@ -1596,6 +1638,7 @@ class TelethonTelegramGateway(TelegramGateway):
         *,
         group_id: int = 0,
         reply_to_message_id: int | None = None,
+        connect_timeout_seconds: float | None = None,
     ) -> SendResult:
         raw_session = decrypt_session(session_ciphertext)
         if not raw_session:
@@ -1603,7 +1646,11 @@ class TelethonTelegramGateway(TelegramGateway):
         if not peer_id:
             return SendResult(False, failure_type=FailureType.PEER_INVALID.value, detail="缺少 TG peer id", remote_mutation_started=False)
 
-        client = await self._get_or_create_client(credentials, raw_session)
+        client = await self._get_or_create_client(
+            credentials,
+            raw_session,
+            connect_timeout_seconds=connect_timeout_seconds,
+        )
         if not await client.is_user_authorized():
             return SendResult(False, failure_type=FailureType.ACCOUNT_UNAVAILABLE.value, detail="session 已失效", remote_mutation_started=False)
         progress = SendProgress()
@@ -1641,6 +1688,9 @@ class TelethonTelegramGateway(TelegramGateway):
         peer_id: str | None = None,
         credentials: DeveloperAppCredentials | None = None,
         reply_to_message_id: int | None = None,
+        *,
+        timeout_seconds: float | None = None,
+        connect_timeout_seconds: float | None = None,
     ) -> SendResult:
         return self._run(
             self._send_async(
@@ -1651,7 +1701,9 @@ class TelethonTelegramGateway(TelegramGateway):
                 self._usable_credentials(credentials),
                 group_id=group_id,
                 reply_to_message_id=reply_to_message_id,
-            )
+                connect_timeout_seconds=connect_timeout_seconds,
+            ),
+            timeout_seconds=timeout_seconds,
         )
 
     async def _execute_search_join_async(
@@ -1897,6 +1949,8 @@ class TelethonTelegramGateway(TelegramGateway):
         channel_peer_id: str,
         message_id: int,
         credentials: DeveloperAppCredentials,
+        *,
+        connect_timeout_seconds: float | None = None,
     ) -> OperationResult:
         raw_session = decrypt_session(session_ciphertext)
         if not raw_session:
@@ -1904,7 +1958,11 @@ class TelethonTelegramGateway(TelegramGateway):
                 False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value,
                 "账号没有可用 session", remote_mutation_started=False,
             )
-        client = await self._get_or_create_client(credentials, raw_session)
+        client = await self._get_or_create_client(
+            credentials,
+            raw_session,
+            connect_timeout_seconds=connect_timeout_seconds,
+        )
         if not await client.is_user_authorized():
             return OperationResult(
                 False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value,
@@ -1941,8 +1999,20 @@ class TelethonTelegramGateway(TelegramGateway):
         message_id: int,
         session_ciphertext: str | None = None,
         credentials: DeveloperAppCredentials | None = None,
+        *,
+        timeout_seconds: float | None = None,
+        connect_timeout_seconds: float | None = None,
     ) -> OperationResult:
-        return self._run(self._view_channel_message_async(session_ciphertext, channel_peer_id, message_id, self._usable_credentials(credentials)))
+        return self._run(
+            self._view_channel_message_async(
+                session_ciphertext,
+                channel_peer_id,
+                message_id,
+                self._usable_credentials(credentials),
+                connect_timeout_seconds=connect_timeout_seconds,
+            ),
+            timeout_seconds=timeout_seconds,
+        )
 
     async def _ensure_channel_membership_async(
         self,
@@ -2408,11 +2478,17 @@ class TelethonTelegramGateway(TelegramGateway):
         message_id: int,
         reaction: str,
         credentials: DeveloperAppCredentials,
+        *,
+        connect_timeout_seconds: float | None = None,
     ) -> OperationResult:
         raw_session = decrypt_session(session_ciphertext)
         if not raw_session:
             return OperationResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "账号没有可用 session")
-        client = await self._get_or_create_client(credentials, raw_session)
+        client = await self._get_or_create_client(
+            credentials,
+            raw_session,
+            connect_timeout_seconds=connect_timeout_seconds,
+        )
         if not await client.is_user_authorized():
             return OperationResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "session 已失效")
         try:
@@ -2456,8 +2532,21 @@ class TelethonTelegramGateway(TelegramGateway):
         reaction: str,
         session_ciphertext: str | None = None,
         credentials: DeveloperAppCredentials | None = None,
+        *,
+        timeout_seconds: float | None = None,
+        connect_timeout_seconds: float | None = None,
     ) -> OperationResult:
-        return self._run(self._send_channel_reaction_async(session_ciphertext, channel_peer_id, message_id, reaction, self._usable_credentials(credentials)))
+        return self._run(
+            self._send_channel_reaction_async(
+                session_ciphertext,
+                channel_peer_id,
+                message_id,
+                reaction,
+                self._usable_credentials(credentials),
+                connect_timeout_seconds=connect_timeout_seconds,
+            ),
+            timeout_seconds=timeout_seconds,
+        )
 
     async def _reply_channel_message_async(
         self,
@@ -2470,6 +2559,7 @@ class TelethonTelegramGateway(TelegramGateway):
         reply_to_message_id: int | None = None,
         rpc_mode: str = "legacy_channel_comment",
         thread_root_message_id: int = 0,
+        connect_timeout_seconds: float | None = None,
     ) -> SendResult:
         raw_session = decrypt_session(session_ciphertext)
         if not raw_session:
@@ -2479,7 +2569,11 @@ class TelethonTelegramGateway(TelegramGateway):
                 detail="账号没有可用 session",
                 remote_mutation_started=False,
             )
-        client = await self._get_or_create_client(credentials, raw_session)
+        client = await self._get_or_create_client(
+            credentials,
+            raw_session,
+            connect_timeout_seconds=connect_timeout_seconds,
+        )
         if not await client.is_user_authorized():
             return SendResult(
                 False,
@@ -2518,6 +2612,8 @@ class TelethonTelegramGateway(TelegramGateway):
         reply_to_message_id: int | None = None,
         rpc_mode: str = "legacy_channel_comment",
         thread_root_message_id: int = 0,
+        timeout_seconds: float | None = None,
+        connect_timeout_seconds: float | None = None,
     ) -> SendResult:
         return self._run(self._reply_channel_message_async(
             session_ciphertext, channel_peer_id,
@@ -2525,7 +2621,8 @@ class TelethonTelegramGateway(TelegramGateway):
             credentials=self._usable_credentials(credentials),
             reply_to_message_id=reply_to_message_id,
             rpc_mode=rpc_mode, thread_root_message_id=thread_root_message_id,
-        ))
+            connect_timeout_seconds=connect_timeout_seconds,
+        ), timeout_seconds=timeout_seconds)
 
     async def _reply_channel_media_async(
         self,
@@ -2538,11 +2635,16 @@ class TelethonTelegramGateway(TelegramGateway):
         reply_to_message_id: int | None = None,
         rpc_mode: str = "legacy_channel_comment",
         thread_root_message_id: int = 0,
+        connect_timeout_seconds: float | None = None,
     ) -> SendResult:
         raw_session = decrypt_session(session_ciphertext)
         if not raw_session:
             return SendResult(False, failure_type=FailureType.ACCOUNT_UNAVAILABLE.value, detail="账号没有可用 session", remote_mutation_started=False)
-        client = await self._get_or_create_client(credentials, raw_session)
+        client = await self._get_or_create_client(
+            credentials,
+            raw_session,
+            connect_timeout_seconds=connect_timeout_seconds,
+        )
         if not await client.is_user_authorized():
             return SendResult(False, failure_type=FailureType.ACCOUNT_UNAVAILABLE.value, detail="session 已失效", remote_mutation_started=False)
         started = [False]
@@ -2590,6 +2692,8 @@ class TelethonTelegramGateway(TelegramGateway):
         reply_to_message_id: int | None = None,
         rpc_mode: str = "legacy_channel_comment",
         thread_root_message_id: int = 0,
+        timeout_seconds: float | None = None,
+        connect_timeout_seconds: float | None = None,
     ) -> SendResult:
         outbound = OutboundSegment(
             segment_type=str(segment.get("segment_type") or segment.get("type") or "表情包"),
@@ -2603,7 +2707,8 @@ class TelethonTelegramGateway(TelegramGateway):
             credentials=self._usable_credentials(credentials),
             reply_to_message_id=reply_to_message_id,
             rpc_mode=rpc_mode, thread_root_message_id=thread_root_message_id,
-        ))
+            connect_timeout_seconds=connect_timeout_seconds,
+        ), timeout_seconds=timeout_seconds)
 
     def send_message_to_target(
         self,
@@ -2614,8 +2719,19 @@ class TelethonTelegramGateway(TelegramGateway):
         segments: list[OutboundSegment] | None = None,
         session_ciphertext: str | None = None,
         credentials: DeveloperAppCredentials | None = None,
+        *,
+        timeout_seconds: float | None = None,
     ) -> SendResult:
-        return self.send_message(account_id, 0, content, segments, session_ciphertext, target_peer_id, credentials)
+        return self.send_message(
+            account_id,
+            0,
+            content,
+            segments,
+            session_ciphertext,
+            target_peer_id,
+            credentials,
+            timeout_seconds=timeout_seconds,
+        )
 
     async def _delete_message_async(
         self,
@@ -3331,8 +3447,14 @@ class TelethonTelegramGateway(TelegramGateway):
         *,
         control_only: bool = False,
         after_message_id: int | None = None,
+        connect_timeout_seconds: float | None = None,
     ) -> list[GroupMessageSnapshot]:
-        client = await self._authorized_client(session_ciphertext, credentials, error_message="listener fetch requires a valid session")
+        client = await self._authorized_client(
+            session_ciphertext,
+            credentials,
+            error_message="listener fetch requires a valid session",
+            connect_timeout_seconds=connect_timeout_seconds,
+        )
         return await telethon_content.fetch_group_messages(
             client,
             peer_id,
@@ -3361,6 +3483,8 @@ class TelethonTelegramGateway(TelegramGateway):
         *,
         control_only: bool = False,
         after_message_id: int | None = None,
+        timeout_seconds: float | None = None,
+        connect_timeout_seconds: float | None = None,
     ) -> list[GroupMessageSnapshot]:
         operation = self._fetch_group_messages_async(
             peer_id,
@@ -3369,8 +3493,13 @@ class TelethonTelegramGateway(TelegramGateway):
             limit,
             control_only=control_only,
             after_message_id=after_message_id,
+            connect_timeout_seconds=connect_timeout_seconds,
         )
-        timeout = max(1.0, float(self.settings.listener_fetch_timeout_seconds or 30))
+        configured_timeout = max(
+            1.0,
+            float(self.settings.listener_fetch_timeout_seconds or 30),
+        )
+        timeout = min(configured_timeout, timeout_seconds) if timeout_seconds else configured_timeout
         return self._run(asyncio.wait_for(operation, timeout=timeout))
 
     def fetch_group_message(
@@ -3539,9 +3668,11 @@ class TelethonTelegramGateway(TelegramGateway):
         session_ciphertext: str | None,
         credentials: DeveloperAppCredentials,
         limit: int,
+        *,
+        offset_id: int = 0,
     ) -> list[ChannelMessageSnapshot]:
         client = await self._authorized_client(session_ciphertext, credentials, error_message="channel message fetch requires a valid session")
-        return await telethon_content.fetch_channel_messages(client, channel_peer_id, limit)
+        return await telethon_content.fetch_channel_messages(client, channel_peer_id, limit, offset_id=offset_id)
 
     def fetch_channel_messages(
         self,
@@ -3551,8 +3682,10 @@ class TelethonTelegramGateway(TelegramGateway):
         session_ciphertext: str | None = None,
         credentials: DeveloperAppCredentials | None = None,
         limit: int = 20,
+        offset_id: int = 0,
     ) -> list[ChannelMessageSnapshot]:
-        return self._run(self._fetch_channel_messages_async(channel_peer_id, session_ciphertext, self._usable_credentials(credentials), limit))
+        return self._run(self._fetch_channel_messages_async(channel_peer_id, session_ciphertext,
+            self._usable_credentials(credentials), limit, offset_id=offset_id))
 
     async def _fetch_channel_discussion_identity_async(
         self,

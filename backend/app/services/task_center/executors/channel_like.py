@@ -1,11 +1,18 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import ChannelMessage, OperationTarget, ReactionFulfillmentObligation, Task
+from app.models import (
+    ChannelMessage,
+    ChannelMessageSourceRevision,
+    OperationTarget,
+    ReactionFulfillmentObligation,
+    Task,
+    TgAccount,
+)
 from app.schemas.task_center import DEFAULT_CHANNEL_LIKE_ALLOWED_REACTIONS
 from app.services._common import _now
 
@@ -18,14 +25,20 @@ from ..account_pool import select_task_accounts
 from ..channel_fulfillment import (
     bind_obligation_action,
     ensure_reaction_obligation,
+    frozen_reaction_obligation,
     obligation_accepts_new_action,
     reaction_account_ids_for_messages,
 )
 from ..channel_membership import channel_member_accounts, gate_channel_membership
+from ..daily_ledgers import ensure_task_day_ledger
+from ..engagement_reaction_capacity import (
+    allocated_account_ids_by_message,
+    ensure_reaction_capacity_epoch,
+    reaction_admissible_account_ids,
+)
 from ..fulfillment_activation import CURRENT_CONTRACT_VERSION
-from ..pacing import next_local_day_deadline, schedule_times, source_rolling_pacing_due
+from ..pacing import next_local_day_deadline, schedule_times
 from ..pacing_persistence import freeze_action_pacing, freeze_pacing_owner
-from ..pacing_quantity import deterministic_quantity_with_jitter, deterministic_rank
 from ..payloads import LikeMessagePayload, create_like_action
 from ..schedule_reservation import reserve_task_schedule_times
 from ..source_pacing import (
@@ -38,20 +51,13 @@ from ..source_pacing import (
 )
 from ..source_capacity_plans import apply_source_capacity_plan
 from ..source_owner_cursor import attach_owner_history, pacing_source_key_hash
-from .channel_like_capability import clear_reaction_capability_block as _clear_reaction_capability_block
-from .channel_like_capability import message_reaction_plan as _message_reaction_plan
 from .channel_like_expiration import active_like_messages, close_expired_like_obligations
+from .channel_like_capability import reaction_capability_revision
+from .channel_like_planning import like_actions_for_messages
 from .channel_like_reactions import reaction_plan as _reaction_plan
+from .channel_like_types import LikePlanItem, LikePlanningSpec
+from .channel_like_album import logical_like_messages
 from .common import adjust_for_account_hour_limit, channel_message_payload, channel_scope, quantity_jitter_bounds, record_channel_capacity_warning
-
-@dataclass(frozen=True)
-class LikePlanItem:
-    message: ChannelMessage
-    account_id: int
-    reaction: str
-    slot_ordinal: int
-    plan_total: int
-
 
 def build_plan(session: Session, task: Task) -> int:
     config = task.type_config or {}
@@ -66,47 +72,124 @@ def build_plan(session: Session, task: Task) -> int:
     if not channel or not messages:
         return 0
     now_value = _now()
+    ledger = ensure_task_day_ledger(session, task, now=now_value)
     close_expired_like_obligations(session, task, now_value=now_value)
     messages = active_like_messages(task, messages, now_value=now_value)
     if not messages:
         task.last_error = ""
         return 0
+    return _build_like_actions(
+        session,
+        task,
+        channel=channel,
+        messages=messages,
+        config=config,
+        ledger=ledger,
+        now_value=now_value,
+    )
+
+
+def _build_like_actions(
+    session: Session,
+    task: Task,
+    *,
+    channel: OperationTarget,
+    messages: list[ChannelMessage],
+    config: dict,
+    ledger,
+    now_value: datetime,
+) -> int:
+    prepared = _prepare_like_spec(
+        session,
+        task,
+        channel=channel,
+        messages=messages,
+        config=config,
+        ledger=ledger,
+        now_value=now_value,
+    )
+    if prepared is None:
+        return 0
+    spec, target_per_message, account_ids_by_message = prepared
+    actions = like_actions_for_messages(session, task, spec)
+    if not actions:
+        task.last_error = _empty_like_plan_message(
+            session, task, messages=messages, target_per_message=target_per_message,
+            account_ids_by_message=account_ids_by_message,
+        )
+        return 0
+    return _create_like_actions(
+        session, task, channel=channel, config=config, actions=actions
+    )
+
+
+def _prepare_like_spec(
+    session: Session,
+    task: Task,
+    *,
+    channel: OperationTarget,
+    messages: list[ChannelMessage],
+    config: dict,
+    ledger,
+    now_value: datetime,
+) -> tuple[LikePlanningSpec, int, dict[int, set[int]]] | None:
     reactions = config.get("allowed_reactions") or list(
         DEFAULT_CHANNEL_LIKE_ALLOWED_REACTIONS
     )
     target_per_message = int(config.get("target_likes_per_message") or 1)
-    accounts = _like_accounts(
-        session, task, channel=channel, config=config, target=target_per_message,
-    )
-    if not accounts:
-        task.last_error = "没有可用账号，等待账号恢复后继续执行"
-        return 0
-    record_channel_capacity_warning(task, "点赞", target_per_message, len(accounts))
     account_ids_by_message = reaction_account_ids_for_messages(
         session,
         task,
         messages,
     )
-    actions = _like_actions_for_messages(
+    epoch = ensure_reaction_capacity_epoch(
         session,
         task,
-        config,
-        messages,
-        accounts,
-        reactions,
-        target_per_message,
-        account_ids_by_message,
-        now=now_value,
+        ledger,
+        messages=logical_like_messages(messages) if config.get("engagement_contract_version") == "unified_engagement_v1" else messages,
+        target=channel,
     )
-    if not actions:
-        task.last_error = _empty_like_plan_message(task, messages, target_per_message, account_ids_by_message)
-        return 0
-    return _create_like_actions(
+    frozen_allocations = (
+        allocated_account_ids_by_message(epoch) if epoch is not None else None
+    )
+    required_ids = (
+        {
+            int(account_id)
+            for ids in frozen_allocations.values()
+            for account_id in ids
+        }
+        if frozen_allocations is not None
+        else None
+    )
+    admissible_ids = (
+        reaction_admissible_account_ids(session, epoch) if epoch is not None else None
+    )
+    accounts = _like_accounts(
         session,
         task,
         channel=channel,
         config=config,
-        actions=actions,
+        target=target_per_message,
+        required_ids=required_ids,
+        admissible_ids=admissible_ids,
+    )
+    if not accounts:
+        task.last_error = "没有可用账号，等待账号恢复后继续执行"
+        return None
+    record_channel_capacity_warning(task, "点赞", target_per_message, len(accounts))
+    return (
+        LikePlanningSpec(
+            config=config,
+            messages=messages,
+            accounts=accounts,
+            reactions=reactions,
+            target_per_message=target_per_message,
+            account_ids_by_message=account_ids_by_message,
+            allocated_ids_by_message=frozen_allocations,
+            now=now_value,
+        ),
+        target_per_message,
+        account_ids_by_message,
     )
 
 
@@ -117,7 +200,22 @@ def _like_accounts(
     channel: OperationTarget,
     config: dict,
     target: int,
+    required_ids: set[int] | None,
+    admissible_ids: set[int] | None,
 ) -> list:
+    if required_ids is not None:
+        rows = session.scalars(select(TgAccount).where(
+            TgAccount.tenant_id == task.tenant_id,
+            TgAccount.id.in_(required_ids),
+        ))
+        by_id = {row.id: row for row in rows}
+        candidates = [
+            by_id[account_id]
+            for account_id in sorted(required_ids)
+            if account_id in by_id
+            and (admissible_ids is None or account_id in admissible_ids)
+        ]
+        return channel_member_accounts(session, task, channel, candidates)
     _lower, maximum = quantity_jitter_bounds(
         target,
         float(config.get("like_count_jitter") or 0),
@@ -145,7 +243,8 @@ def _create_like_actions(
 ) -> int:
     now_value = _now()
     owners = {
-        _like_slot_key(task, item): ensure_reaction_obligation(
+        _like_slot_key(task, item): frozen_reaction_obligation(session, task, item=item)
+        if item.obligation_id else ensure_reaction_obligation(
             session, task, item.message, item.account_id,
         )
         for item in actions
@@ -264,11 +363,16 @@ def _create_one_like_action(
     if schedule is None:
         return 0
     planned_at, reservation = schedule
+    source_revision = _like_source_revision(session, item.message)
     payload = LikeMessagePayload(
         **channel_message_payload(channel, item.message),
         reaction_emoji=item.reaction,
         reaction_contract_version=obligation.reaction_contract_version,
         reaction_fulfillment_obligation_id=obligation.id,
+        reaction_source_content_hash=(
+            source_revision.source_content_hash if source_revision else ""
+        ),
+        reaction_capability_revision=reaction_capability_revision(channel),
     )
     action = create_like_action(session, task, item.account_id, planned_at, payload)
     if task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION:
@@ -276,6 +380,20 @@ def _create_one_like_action(
         bind_account_pacing_reservation(reservation, action)
     bind_obligation_action(obligation, action)
     return 1
+
+
+def _like_source_revision(
+    session: Session,
+    message: ChannelMessage,
+) -> ChannelMessageSourceRevision | None:
+    if not message.current_source_revision_id:
+        return None
+    revision = session.get(
+        ChannelMessageSourceRevision, str(message.current_source_revision_id)
+    )
+    if revision is None or revision.channel_message_id != message.id:
+        return None
+    return revision
 
 
 def _like_account_schedule(
@@ -315,6 +433,10 @@ def _like_account_schedule(
             due_at=due_at,
             release_not_before_at=latest_wall_datetime(release_at, planned_at),
             deadline_at=source.deadline_at,
+            engagement_contract_version=str(
+                (task.type_config or {}).get("engagement_contract_version") or ""
+            ),
+            action_class="reaction",
         )
     except AccountPacingDeadlineExceeded:
         _record_like_shortfall(task, 1, 0)
@@ -334,58 +456,6 @@ def _record_like_shortfall(task: Task, requested: int, scheduled: int) -> None:
     task.stats = stats
     if scheduled == 0:
         task.last_error = "来源滚动窗口内无合法节奏窗口可安排点赞义务，形成 pacing shortfall"
-
-
-def _like_actions_for_messages(
-    session: Session,
-    task: Task,
-    config: dict,
-    messages: list[ChannelMessage],
-    accounts: list,
-    reactions: list[str],
-    target_per_message: int,
-    account_ids_by_message: dict[int, set[int]],
-    *,
-    now: datetime,
-) -> list[LikePlanItem]:
-    actions: list[LikePlanItem] = []
-    for message in messages:
-        used_accounts = account_ids_by_message[message.id]
-        seed_id = f"like:{task.id}:{message.id}"
-        plan_total = deterministic_quantity_with_jitter(
-            target_per_message,
-            float(config.get("like_count_jitter") or 0),
-            seed_id=seed_id,
-        )
-        ranked = sorted(accounts, key=lambda account: deterministic_rank(seed_id, str(account.id)))
-        selected = ranked[: min(plan_total, len(ranked))]
-        plan_total = len(selected)
-        desired = min(plan_total, _paced_like_target(task, message, plan_total, now=now))
-        if len(used_accounts) >= desired:
-            _clear_reaction_capability_block(task, message.id)
-            continue
-        message_reactions = _message_reaction_plan(
-            session,
-            task,
-            message,
-            config=config,
-            reactions=reactions,
-            quantity=plan_total,
-            seed_id=seed_id,
-        )
-        if not message_reactions:
-            continue
-        for ordinal, account in enumerate(selected[:desired]):
-            if account.id in used_accounts:
-                continue
-            actions.append(LikePlanItem(
-                message,
-                account.id,
-                message_reactions[ordinal],
-                ordinal,
-                plan_total,
-            ))
-    return actions
 
 
 def _like_slot_key(task: Task, item: LikePlanItem) -> str:
@@ -427,30 +497,23 @@ def _like_source_slot(
     )
 
 
-def _paced_like_target(
-    task: Task,
-    message: ChannelMessage,
-    target: int,
-    *,
-    now: datetime,
-) -> int:
-    if task.fulfillment_contract_version != CURRENT_CONTRACT_VERSION:
-        return target
-    return source_rolling_pacing_due(
-        target,
-        task.pacing_config or {},
-        task=task,
-        source_observed_at=message.created_at,
-        now=now,
-    )
-
-
 def _empty_like_plan_message(
+    session: Session,
     task: Task,
+    *,
     messages: list[ChannelMessage],
     target_per_message: int,
     account_ids_by_message: dict[int, set[int]],
 ) -> str:
+    from ..album_reaction_facts import album_targets_confirmed
+
+    albums = {m.grouped_id for m in messages if m.grouped_id}
+    ordinary = [m for m in messages if not m.grouped_id]
+    if albums and (task.type_config or {}).get("engagement_contract_version") == "unified_engagement_v1":
+        albums_done = album_targets_confirmed(session, task, album_ids=albums)
+        ordinary_done = not ordinary or _all_like_targets_reached(ordinary, target_per_message, account_ids_by_message)
+        if albums_done and ordinary_done:
+            return ""
     unavailable_ids = {
         int(value)
         for value in (task.stats or {}).get(

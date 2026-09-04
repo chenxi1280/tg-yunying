@@ -9,6 +9,7 @@ from app.models import Action, GenerationJob
 
 from .ai_generation_state import cached_generation_result
 from .payloads import SendMessagePayload
+from .generation_recovery_scope import generation_task_filter
 
 
 ActionResolver = Callable[[Session, GenerationJob], Action | None]
@@ -47,9 +48,11 @@ def recover_cached_unknown_jobs(
     limit: int,
     *,
     action_resolver: ActionResolver,
+    task_type: str | None = None,
 ) -> int:
     jobs = list(session.scalars(select(GenerationJob).where(
         GenerationJob.state == "unknown",
+        generation_task_filter(task_type),
     ).order_by(GenerationJob.created_at, GenerationJob.id).limit(limit)))
     recovered = 0
     for job in jobs:

@@ -281,10 +281,11 @@ async def download_cached_material(client, cache_peer_id: str, cache_message_id:
         return CachedMediaResult(False, failure_type=mapped.failure_type or "cache_media_download_failed", detail=mapped.detail or str(exc))
 
 
-async def fetch_channel_messages(client, channel_peer_id: str, limit: int) -> list[ChannelMessageSnapshot]:
+async def fetch_channel_messages(client, channel_peer_id: str, limit: int, *, offset_id: int = 0) -> list[ChannelMessageSnapshot]:
     target: int | str = int(channel_peer_id) if channel_peer_id.lstrip("-").isdigit() else channel_peer_id
     entity = await client.get_entity(target)
-    messages_resp = await client.get_messages(entity, limit=limit)
+    page = {"offset_id": offset_id} if offset_id else {}
+    messages_resp = await client.get_messages(entity, limit=limit, **page)
     snapshots: list[ChannelMessageSnapshot] = []
     username = getattr(entity, "username", None)
     for message in list(messages_resp or []):
@@ -305,6 +306,16 @@ async def fetch_channel_messages(client, channel_peer_id: str, limit: int) -> li
                 source_type="caption" if getattr(message, "media", None) else "message_text",
                 content_complete=True,
                 comment_available=bool(replies and getattr(replies, "comments", False)),
+                grouped_id=str(getattr(message, "grouped_id", "") or ""),
+                source_metadata={
+                    "observed": True,
+                    "service_action": getattr(message, "action", None) is not None,
+                    "poll": getattr(message, "poll", None) is not None,
+                    "forwarded": getattr(message, "fwd_from", None) is not None,
+                    "forward_peer_id": str(getattr(getattr(message, "fwd_from", None), "from_id", "") or ""),
+                    "forwarded_external": getattr(getattr(getattr(message, "fwd_from", None), "from_id", None), "channel_id", None) != getattr(entity, "id", None),
+                    "photo": getattr(message, "photo", None) is not None,
+                },
             )
         )
     return snapshots

@@ -17,7 +17,7 @@ from app.services._common import _now
 from .ai_generation_claim_lifecycle import owns_generation_claim
 from .ai_generation_job_finish import finish_owned_job
 from .ai_dialogue_chain import resolve_waiting_dialogue_dependencies
-from .ai_generation_timing import GENERATION_LEASE, GENERATION_LOOKAHEAD
+from .ai_generation_timing import GENERATION_LEASE, GENERATION_LOOKAHEAD, generation_not_before, generation_send_time_expression
 from .datetime_compat import is_after_or_equal
 from .fulfillment_activation import CURRENT_CONTRACT_VERSION
 from .fulfillment_remote_facts import ensure_action_obligation
@@ -188,7 +188,7 @@ def _candidate_statement(limit: int):
             Action.action_type == "send_message",
             Action.status == "pending",
             Action.account_id.is_not(None),
-            Action.scheduled_at <= now_value + GENERATION_LOOKAHEAD,
+            generation_send_time_expression() <= now_value + GENERATION_LOOKAHEAD,
             Task.status == "running",
             Task.deleted_at.is_(None),
             Task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION,
@@ -253,11 +253,7 @@ def _generation_job(session: Session, action: Action) -> GenerationJob:
         "obligation_id": action.obligation_id,
         "generation_sequence": int(action.materialization_version or 1),
         "context_snapshot_version": _context_version(action),
-        "generation_not_before_at": (
-            action.effective_claim_at
-            or action.release_not_before_at
-            or action.scheduled_at
-        ),
+        "generation_not_before_at": generation_not_before(action),
         "latest_safe_send_at": latest_safe_send_at(session, action),
         "context_snapshot_hash": _context_hash(action),
         "assignment_revision": int(action.assignment_revision or 1),

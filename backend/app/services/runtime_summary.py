@@ -27,6 +27,7 @@ from app.models import (
 from app.models.enums import AccountStatus
 from app.models.enums import FailureType
 from app.services._common import _now, audit
+from app.timezone import as_beijing
 from app.services.account_capacity import account_capacity_decision
 from app.services.runtime_issue_queries import (
     UNRESOLVED_FAILURE_STATUSES,
@@ -1226,7 +1227,7 @@ def _account_security_next_retry_at(session: Session, tenant_id: int, account_id
         .order_by(TgAccountSecurityBatchItem.next_retry_at.desc())
         .limit(20)
     )
-    future_values = [_naive_datetime(value) for value in rows if value and _naive_datetime(value) > _now()]
+    future_values = [as_beijing(value) for value in rows if value and as_beijing(value) > _now()]
     return max(future_values) if future_values else None
 
 
@@ -1480,7 +1481,7 @@ def _parse_datetime(value: Any) -> datetime | None:
 
 
 def _naive_datetime(value: datetime) -> datetime:
-    return value.replace(tzinfo=None) if value.tzinfo else value
+    return as_beijing(value) if value else value
 
 
 def _safe_int(value: Any) -> int:

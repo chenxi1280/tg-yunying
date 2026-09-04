@@ -4,6 +4,7 @@ from datetime import date, datetime
 from uuid import uuid4
 
 from sqlalchemy import (
+    Boolean,
     Date,
     DateTime,
     ForeignKey,
@@ -61,6 +62,10 @@ class TaskGroupDailyMessageSlot(Base):
             "task_account_daily_coverage_id",
             name="uq_task_group_daily_message_slot_coverage",
         ),
+        UniqueConstraint(
+            "continuity_claim_id",
+            name="uq_task_group_daily_message_slot_continuity_claim",
+        ),
         Index(
             "ix_task_group_daily_message_slots_open",
             "task_day_ledger_id",
@@ -86,6 +91,11 @@ class TaskGroupDailyMessageSlot(Base):
         ),
         nullable=True,
     )
+    continuity_claim_id: Mapped[str | None] = mapped_column(
+        ForeignKey("conversation_turn_claims.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    quantity_credit_eligible: Mapped[bool] = mapped_column(Boolean, default=True)
     slot_kind: Mapped[str] = mapped_column(String(24))
     slot_ordinal: Mapped[int] = mapped_column(Integer)
     pacing_contract_version: Mapped[str | None] = mapped_column(String(48), nullable=True)

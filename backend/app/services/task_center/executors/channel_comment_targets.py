@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
@@ -7,6 +9,10 @@ from app.models import Action, ChannelMessage, ChannelMessageComment, ExecutionA
 
 
 REPLY_TARGET_CANDIDATE_MULTIPLIER = 5
+ACTIVE_REPLY_TARGET_ACTION_STATES = (
+    "pending", "claiming", "executing", "retryable_failed",
+    "unknown_after_send", "success",
+)
 
 
 def valid_reply_targets(
@@ -30,6 +36,7 @@ def valid_reply_targets(
             ChannelMessageComment.comment_message_id.in_(requested_ids),
             ChannelMessageComment.parent_comment_message_id.is_(None),
             ChannelMessageComment.is_bot.is_(False),
+            ChannelMessageComment.content_preview != "",
         )
     )
     by_id = {int(comment.comment_message_id): _target_from_comment(comment) for comment in comments}
@@ -58,7 +65,11 @@ def message_reply_targets(
         ChannelMessageComment.channel_message_id == message.id,
         ChannelMessageComment.parent_comment_message_id.is_(None),
         ChannelMessageComment.is_bot.is_(False),
+        ChannelMessageComment.content_preview != "",
     )
+    current_peer = _current_discussion_peer_id(session, task, message)
+    if current_peer:
+        query = query.where(ChannelMessageComment.discussion_peer_id == current_peer)
     if used_ids:
         query = query.where(~ChannelMessageComment.comment_message_id.in_(used_ids))
     comments = session.scalars(
@@ -114,6 +125,7 @@ def _used_reply_target_ids(
             Action.task_id == task.id,
             Action.task_type == "channel_comment",
             Action.action_type == "post_comment",
+            Action.status.in_(ACTIVE_REPLY_TARGET_ACTION_STATES),
         )
     )
     used_ids: set[int] = set()
@@ -132,6 +144,24 @@ def _same_channel_message(action: Action, message: ChannelMessage) -> bool:
     channel_message_id = _payload_int(action, "channel_message_id")
     message_id = _payload_int(action, "message_id")
     return channel_message_id == message.id or message_id == message.message_id
+
+
+def _current_discussion_peer_id(
+    session: Session,
+    task: Task,
+    message: ChannelMessage,
+) -> str:
+    if str((task.type_config or {}).get("engagement_contract_version") or "") != "unified_engagement_v1":
+        return ""
+    from app.models import ChannelDiscussionThreadBinding
+
+    return str(session.scalar(select(
+        ChannelDiscussionThreadBinding.discussion_peer_id,
+    ).where(
+        ChannelDiscussionThreadBinding.source_revision_id
+        == message.current_source_revision_id,
+        ChannelDiscussionThreadBinding.is_current.is_(True),
+    ).limit(1)) or "")
 
 
 def _payload_int(action: Action, key: str) -> int:
@@ -191,11 +221,13 @@ def _target_from_action(action: Action, remote_message_id: str) -> dict | None:
 
 
 def _target_from_comment(comment: ChannelMessageComment) -> dict:
+    content = str(comment.content_preview or "").strip()
     return {
         "message_id": int(comment.comment_message_id),
         "channel_message_id": int(comment.channel_message_id),
         "author": str(comment.author_name or "读者").strip(),
-        "preview": str(comment.content_preview or "").strip()[:120],
+        "preview": content[:120],
+        "content_hash": hashlib.sha256(content.encode()).hexdigest(),
         "source": "channel_comment",
         "reply_count": int(comment.reply_count or 0),
     }

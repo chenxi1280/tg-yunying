@@ -146,7 +146,7 @@ def enrich_group_generation_slots(
         contract = dict(contracts.get(job_id) or {})
         if not contract:
             raise AiContentJobBindingError("generation_job_contract_missing")
-        enriched.append({**slot, **contract})
+        enriched.append({**slot, **contract, "generation_job_id": job_id})
     return enriched
 
 

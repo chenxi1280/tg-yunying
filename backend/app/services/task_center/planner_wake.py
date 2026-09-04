@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.models import Task, TaskPlannerWakeState
 from app.services._common import _now
+from app.timezone import as_beijing
 
 
 def wake_task_planner(
@@ -110,12 +111,8 @@ def _earliest_not_before(
     proposed: datetime,
 ) -> datetime:
     if current is None:
-        return proposed
-    return min(_wall(current), _wall(proposed))
-
-
-def _wall(value: datetime) -> datetime:
-    return value.replace(tzinfo=None) if value.tzinfo else value
+        return as_beijing(proposed)
+    return min(as_beijing(current), as_beijing(proposed))
 
 
 __all__ = [

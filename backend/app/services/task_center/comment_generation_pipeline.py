@@ -6,7 +6,7 @@ from typing import Callable
 from sqlalchemy.orm import Session
 
 from app.models import Action, AiAccountVoiceProfile
-from app.services.antigravity_provider_client import AntigravityProviderResultUnknown
+from app.ai_transport_errors import AiProviderResultUnknown
 
 from .account_voice_profile_cache import (
     VOICE_PROFILE_CONTRACT_VERSION,
@@ -171,7 +171,7 @@ def _run_generation_stages(
             )
         except GenerationAttemptStale:
             raise
-        except AntigravityProviderResultUnknown:
+        except AiProviderResultUnknown:
             raise
         except Exception as exc:
             _close_failed_stage_transaction(session)

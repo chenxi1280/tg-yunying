@@ -27,6 +27,7 @@ from app.services.account_authorizations import (
     verify_standby_authorization_login,
 )
 from app.services.accounts import health_check_account
+from app.services.account_runtime_transport import task_account_runtime_transport
 from app.services.developer_apps import (
     credentials_for_account,
     credentials_for_authorization,
@@ -396,7 +397,12 @@ def test_authorization_refresh_marks_target_waiting_for_code_with_healthy_source
 
 
 @pytest.mark.no_postgres
-def test_standby_login_persists_developer_app_api_id_snapshot() -> None:
+def test_standby_login_persists_developer_app_api_id_snapshot(monkeypatch) -> None:
+    monkeypatch.setattr(
+        authorization_service,
+        "_current_authorization_hash_after_login",
+        lambda *_args, **_kwargs: "33001",
+    )
     with _sqlite_session() as session:
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(TelegramDeveloperApp(id=33, app_name="备用应用", api_id=33001, api_hash_ciphertext=encrypt_secret("hash")))
@@ -1063,14 +1069,14 @@ def test_credentials_for_account_can_explicitly_bypass_proxy() -> None:
 @pytest.mark.parametrize(
     ("task_type", "expected_proxy_id"),
     [
-        ("group_ai_chat", None),
-        ("channel_comment", None),
-        ("channel_view", None),
-        ("channel_like", None),
-        ("search_join_group", None),
+        ("group_ai_chat", 42),
+        ("channel_comment", 42),
+        ("channel_view", 42),
+        ("channel_like", 42),
+        ("search_join_group", 42),
     ],
 )
-def test_credentials_for_task_account_uses_direct_account_credentials(task_type: str, expected_proxy_id: int | None) -> None:
+def test_credentials_for_task_account_uses_bound_proxy_credentials(task_type: str, expected_proxy_id: int | None) -> None:
     with _sqlite_session() as session:
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(
@@ -1100,6 +1106,70 @@ def test_credentials_for_task_account_uses_direct_account_credentials(task_type:
         credentials = credentials_for_task_account(session, account, task_type)
 
         assert credentials.proxy_id == expected_proxy_id
+
+
+def test_task_runtime_transport_keeps_current_authorization_session_and_proxy_atomic() -> None:
+    with _sqlite_session() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(
+            TelegramDeveloperApp(
+                id=32,
+                app_name="主应用",
+                api_id=32001,
+                api_hash_ciphertext=encrypt_secret("hash"),
+                is_active=True,
+                health_status="健康",
+            )
+        )
+        session.add(
+            AccountProxy(
+                id=42,
+                tenant_id=1,
+                name="当前授权代理",
+                protocol="socks5",
+                host="10.0.0.42",
+                port=10042,
+                status="healthy",
+            )
+        )
+        account = TgAccount(
+            id=171,
+            tenant_id=1,
+            display_name="授权切换账号",
+            phone_masked="171",
+            status=AccountStatus.ACTIVE.value,
+            developer_app_id=32,
+            developer_app_version=1,
+            session_ciphertext="stale-account-session",
+        )
+        session.add(account)
+        session.flush()
+        authorization = TgAccountAuthorization(
+            tenant_id=1,
+            account_id=account.id,
+            role="primary",
+            logical_slot="primary",
+            developer_app_id=32,
+            proxy_id=42,
+            session_ciphertext="current-authorization-session",
+            status="active",
+            is_current=True,
+        )
+        session.add(authorization)
+        session.flush()
+        account.current_authorization_id = authorization.id
+        session.commit()
+
+        transport = task_account_runtime_transport(
+            session,
+            account,
+            "group_ai_chat",
+        )
+
+        assert transport.session_ciphertext == "current-authorization-session"
+        assert transport.credentials.proxy_id == 42
+        assert transport.authorization_id == authorization.id
+        assert transport.dependency_snapshot["proxy_id"] == 42
 
 
 @pytest.mark.no_postgres
@@ -1187,6 +1257,11 @@ def test_standby_authorization_login_can_use_primary_regular_direct(monkeypatch)
 @pytest.mark.no_postgres
 def test_verify_standby_authorization_login_saves_asset_without_overwriting_primary_session(monkeypatch) -> None:
     monkeypatch.setattr(authorization_service, "gateway", TelegramGateway())
+    monkeypatch.setattr(
+        authorization_service,
+        "_current_authorization_hash_after_login",
+        lambda *_args, **_kwargs: "32001",
+    )
     with _sqlite_session() as session:
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(

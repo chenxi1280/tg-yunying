@@ -301,6 +301,8 @@ class AccountPoolOut(ApiModel):
     disabled_by: str = ""
     disable_reason: str = ""
     account_count: int = 0
+    engagement_remote_inflight_limit: int | None = None
+    engagement_runtime_policy_revision: int | None = None
     rank_deboost_binding_status: str = ""
     rank_deboost_runtime_proxy_id: int | None = None
     rank_deboost_observed_exit_ip: str = ""

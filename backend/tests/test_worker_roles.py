@@ -122,6 +122,7 @@ def test_drain_once_all_keeps_legacy_and_task_center_compatibility(monkeypatch):
     calls: list[str] = []
     monkeypatch.setattr(worker, "_drain_legacy_once", lambda limit: calls.append(f"legacy:{limit}") or 4)
     monkeypatch.setattr(worker, "drain_task_center", lambda _factory, limit: calls.append(f"task_center:{limit}") or 6)
+    monkeypatch.setattr(worker, "drain_ai_generation", lambda _factory, limit: 0)
 
     assert worker.drain_once(5, role="all") == 10
     assert calls == ["legacy:5", "task_center:5"]
@@ -194,7 +195,8 @@ def test_worker_role_loader_targets_exist():
         for value in vars(worker_role_loaders).values()
         if callable(value) and getattr(value, "target_module", "")
     ]
-    assert len(loaders) == 29
+    assert len(loaders) == 30
+    assert worker_role_loaders.drain_comment_generation.target_function == "drain_comment_generation"
     for loader in loaders:
         module = __import__(loader.target_module, fromlist=[loader.target_function])
         assert callable(getattr(module, loader.target_function))

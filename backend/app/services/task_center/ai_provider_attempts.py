@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
+from functools import wraps
 from time import monotonic
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.ai_gateway import AiUsage
+from app.ai_transport_errors import AiProviderResultUnknown
 from app.models import AiProvider, AiProviderAttempt
+from .provider_http_exchanges import settle_provider_exchanges
 
 
 TOKENS_PER_PRICE_UNIT = 1000
@@ -26,6 +29,23 @@ class ProviderAttemptClock:
         return max(0, round((monotonic() - self.started_at) * 1000))
 
 
+def _preserve_unknown_after_call(record):
+    @wraps(record)
+    def wrapped(*args, **kwargs):
+        try:
+            return record(*args, **kwargs)
+        except AiProviderResultUnknown:
+            raise
+        except Exception as exc:
+            if kwargs.get("http_chain_id"):
+                raise AiProviderResultUnknown("provider_attempt_and_exchange_settlement_unproven") from exc
+            if kwargs.get("outcome") in {"success", "provider_result_unknown"}:
+                raise AiProviderResultUnknown("provider_attempt_persistence_unproven_after_call") from exc
+            raise
+    return wrapped
+
+
+@_preserve_unknown_after_call
 def record_provider_attempt(
     session: Session,
     config: dict,
@@ -40,6 +60,7 @@ def record_provider_attempt(
     error_code: str = "",
     latency_ms: int = 0,
     usage: AiUsage | None = None,
+    http_chain_id: str = "",
 ) -> AiProviderAttempt | None:
     job_id = str(config.get("_generation_job_id") or "")
     route_set_id = str(config.get("_ai_provider_route_set_id") or "")
@@ -47,10 +68,7 @@ def record_provider_attempt(
         return None
     if not job_id:
         raise RuntimeError("ai_provider_attempt_binding_incomplete")
-    attempt_index = int(session.scalar(select(func.count(AiProviderAttempt.id)).where(
-        AiProviderAttempt.generation_job_id == job_id,
-        AiProviderAttempt.purpose == purpose,
-    )) or 0) + 1
+    attempt_index = _next_attempt_index(session, job_id, purpose=purpose)
     current_usage = usage or AiUsage()
     cost_amount = _usage_cost(provider, current_usage)
     attempt = AiProviderAttempt(
@@ -74,8 +92,16 @@ def record_provider_attempt(
         currency=provider.currency,
     )
     session.add(attempt)
+    settle_provider_exchanges(session, config, provider_id=provider.id, request_id=provider_request_id,
+                              outcome=outcome, chain_id=http_chain_id)
     session.commit()
     return attempt
+
+
+def _next_attempt_index(session, job_id, *, purpose):
+    return int(session.scalar(select(func.count(AiProviderAttempt.id)).where(
+        AiProviderAttempt.generation_job_id == job_id, AiProviderAttempt.purpose == purpose,
+    )) or 0) + 1
 
 
 def _usage_cost(provider: AiProvider, usage: AiUsage) -> float:

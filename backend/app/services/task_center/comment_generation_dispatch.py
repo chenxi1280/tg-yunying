@@ -13,7 +13,7 @@ from app.models import (
     Task,
 )
 from app.services._common import _now
-from app.services.antigravity_provider_client import AntigravityProviderResultUnknown
+from app.ai_transport_errors import AiProviderResultUnknown
 
 from .ai_generator import AiGenerationUnavailable, ProviderRouteDeferred
 from .ai_generation_state import GenerationAttemptStale
@@ -22,6 +22,7 @@ from .ai_provider_routes import bind_generation_job_routes
 from .channel_payloads import PostCommentPayload
 from .comment_generation_job import (
     CommentGenerationJobConflict,
+    CommentGenerationProviderUnresolved,
     claim_comment_generation_job,
 )
 from .comment_generation_pipeline import (
@@ -43,6 +44,8 @@ from .comment_generation_persistence import (
 )
 from .comment_reply_target_authority import has_authoritative_own_history_target
 from .runtime_resources import _release_runtime_resources
+from .generation_deadlines import latest_safe_send_at
+from .generation_timing_binding import bind_generation_timing_config
 
 
 PRODUCTION_COMMENT_GENERATION_DEPENDENCIES = CommentGenerationDependencies()
@@ -116,7 +119,7 @@ def _generate_comment(
             tokens=exc.tokens,
         )
         raise AiGenerationUnavailable(exc.code) from exc
-    except AntigravityProviderResultUnknown as exc:
+    except AiProviderResultUnknown as exc:
         session.rollback()
         _persist_provider_result_unknown(session, request, detail=str(exc))
         raise AiGenerationUnavailable("provider_result_unknown") from exc
@@ -156,16 +159,7 @@ def prepare_comment_generation_request(
     request_id = str(uuid4())
     data = payload.model_dump(mode="json")
     cached = dict(data.get("ai_generation_result_cache") or {})
-    try:
-        job = claim_comment_generation_job(
-            session,
-            action,
-            payload,
-            owner=str(data.get("ai_generation_claim_owner") or ""),
-        )
-    except CommentGenerationJobConflict as exc:
-        session.rollback()
-        raise GenerationAttemptStale("comment_generation_job_conflict") from exc
+    job = _claim_request_job(session, action, payload)
     data["generation_job_id"] = job.id
     _mark_generating(action, data, attempt_id=attempt_id, request_id=request_id)
     request = CommentGenerationRequest(
@@ -174,22 +168,12 @@ def prepare_comment_generation_request(
         task_id=action.task_id,
         account_id=int(action.account_id or 0),
         payload=PostCommentPayload.model_validate(data),
-        config=_generation_config(session, task, action, payload, job=job),
+        config=_generation_config(session, task, action, payload=payload, job=job),
         attempt_id=attempt_id,
         request_id=request_id,
         claim_owner=str(data.get("ai_generation_claim_owner") or ""),
         claim_token=str(data.get("ai_generation_claim_token") or ""),
-        cached_content=str(cached.get("content") or "").strip(),
-        cached_tokens=int(cached.get("tokens") or 0),
-        cached_fallback_kind=str(cached.get("fallback_kind") or ""),
-        cached_fallback_reason=str(cached.get("fallback_reason") or ""),
-        cached_attempts=tuple(cached.get("attempts") or ()),
-        cached_media_segment=(
-            dict(cached.get("media_segment") or {}) or None
-        ),
-        cached_selection_metadata=(
-            dict(cached.get("selection_metadata") or {}) or None
-        ),
+        **_cached_request_fields(cached),
     )
     session.commit()
     _validate_comment_target(session, action, request=request)
@@ -197,12 +181,44 @@ def prepare_comment_generation_request(
     return request
 
 
+def _cached_request_fields(cache):
+    return {
+        "cached_content": str(cache.get("content") or "").strip(),
+        "cached_tokens": int(cache.get("tokens") or 0),
+        "cached_fallback_kind": str(cache.get("fallback_kind") or ""),
+        "cached_fallback_reason": str(cache.get("fallback_reason") or ""),
+        "cached_attempts": tuple(cache.get("attempts") or ()),
+        "cached_media_segment": dict(cache.get("media_segment") or {}) or None,
+        "cached_selection_metadata": dict(cache.get("selection_metadata") or {}) or None,
+    }
+
+
+def _claim_request_job(session, action, payload):
+    try:
+        return claim_comment_generation_job(session, action, payload,
+            owner=str(payload.ai_generation_claim_owner or ""))
+    except CommentGenerationProviderUnresolved as exc:
+        _retain_provider_unknown(action, job_id=exc.job_id)
+        session.commit()
+        raise AiGenerationUnavailable("provider_result_unknown") from exc
+    except CommentGenerationJobConflict as exc:
+        session.rollback()
+        raise GenerationAttemptStale("comment_generation_job_conflict") from exc
+
+
+def _retain_provider_unknown(action, *, job_id):
+    action.payload = {**dict(action.payload or {}), "ai_generation_status": "provider_result_unknown",
+                      "comment_lifecycle_state": "provider_result_unknown", "generation_job_id": job_id}
+    action.result = {**dict(action.result or {}), "error_code": "provider_result_unknown",
+                     "generation_stage": "provider_result_unknown", "generation_outcome": "provider_result_unknown"}
+
+
 def _generation_config(
     session: Session,
     task: Task,
     action: Action,
-    payload: PostCommentPayload,
     *,
+    payload: PostCommentPayload,
     job: GenerationJob,
 ) -> dict:
     config = dict(task.type_config or {})
@@ -221,11 +237,18 @@ def _generation_config(
         config=config,
         job=job,
     )
-    return bind_generation_job_routes(
+    config = bind_generation_job_routes(
         session,
         (job,),
         config,
         scope_type="comment",
+    )
+    lane = "response" if payload.reply_to_message_id else "proactive"
+    cached = dict(payload.ai_generation_result_cache or {})
+    has_cached_result = bool(str(cached.get("content") or "").strip() or cached.get("media_segment"))
+    return bind_generation_timing_config(
+        session, task, work=((job, lane),), config=config, deadline_at=latest_safe_send_at(session, action),
+        requires_provider=not has_cached_result,
     )
 
 

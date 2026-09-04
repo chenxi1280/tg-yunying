@@ -30,13 +30,14 @@ def build_comment_payload(
     source_payload = channel_message_payload(context.channel, slot.message)
     if assignment is not None:
         source_payload["message_content"] = str(assignment.evidence_text or "")
-    return PostCommentPayload(
+    contract_fields = {
         **source_payload,
         **_assignment_fields(assignment, slot),
         **_discussion_fields(task, slot.obligation),
-        **_generation_fields(
-            task, context, slot_id=slot_id, mask=mask,
-        ),
+        **_generation_fields(task, context, slot_id=slot_id, mask=mask),
+    }
+    return PostCommentPayload(
+        **contract_fields,
         comment_text="",
         comment_mode="reply" if reply_target else "comment",
         reply_to_message_id=reply_target_message_id(reply_target),
@@ -44,6 +45,7 @@ def build_comment_payload(
         reply_target_author=reply_target_text(reply_target, "author"),
         reply_target_preview=reply_target_text(reply_target, "preview"),
         reply_target_source=reply_target_text(reply_target, "source"),
+        reply_target_content_hash=reply_target_text(reply_target, "content_hash"),
         review_approved=False,
         slot_id=slot_id,
         comment_fulfillment_obligation_id=slot.obligation.id,

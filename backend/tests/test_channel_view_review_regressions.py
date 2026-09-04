@@ -26,7 +26,7 @@ def test_view_matching_never_exceeds_remaining_task_daily_budget(monkeypatch) ->
             created_at=now - timedelta(minutes=1),
         ),
     ]
-    inputs = SimpleNamespace(
+    inputs = channel_view_allocation.ViewPlanInputs(
         messages=messages,
         accounts=[SimpleNamespace(id=account_id) for account_id in range(1, 7)],
         task_remaining_today=5,
@@ -38,6 +38,7 @@ def test_view_matching_never_exceeds_remaining_task_daily_budget(monkeypatch) ->
         ledger=object(),
         lifetime_ids_by_message={message.id: set() for message in messages},
         materialized_ids_by_message={message.id: set() for message in messages},
+        allowed_account_ids_by_message=None,
         now=now,
     )
     monkeypatch.setattr(

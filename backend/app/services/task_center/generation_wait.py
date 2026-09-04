@@ -5,13 +5,10 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import (
-    AccountPacingReservation,
     Action,
-    FulfillmentObligationProjection,
     GenerationJob,
     Task,
 )
@@ -25,6 +22,7 @@ from .ai_content_runtime import (
 )
 from .datetime_compat import is_after_or_equal
 from .generation_shortfall_projection import project_generation_shortfall
+from .generation_deadlines import latest_safe_send_at, minimum_generation_deadline
 
 
 DEFAULT_GENERATION_RETRY_SECONDS = 60
@@ -41,21 +39,6 @@ class GenerationWaitSpec:
     retry_budget_exhausted: bool = False
 
 
-def latest_safe_send_at(session: Session, action: Action) -> datetime | None:
-    reservation = session.scalar(select(AccountPacingReservation).where(
-        AccountPacingReservation.action_id == action.id,
-    ))
-    if reservation is not None and reservation.source_deadline_at is not None:
-        return reservation.source_deadline_at
-    projection = session.scalar(select(FulfillmentObligationProjection).where(
-        FulfillmentObligationProjection.obligation_type == action.obligation_type,
-        FulfillmentObligationProjection.obligation_id == action.obligation_id,
-    ))
-    if projection is not None:
-        return projection.deadline_at
-    return _payload_deadline(action)
-
-
 def defer_generation_wait(
     session: Session,
     task: Task,
@@ -67,7 +50,7 @@ def defer_generation_wait(
     next_retry_at = spec.next_retry_at or (
         now_value + timedelta(seconds=_retry_seconds(task))
     )
-    deadline = job.latest_safe_send_at or latest_safe_send_at(session, action)
+    deadline = minimum_generation_deadline((job.latest_safe_send_at, latest_safe_send_at(session, action)))
     job.latest_safe_send_at = deadline
     job.candidate_hash = str(action.candidate_hash or "")
     job.evaluator_evidence = dict(spec.evaluator_evidence)
@@ -234,14 +217,6 @@ def _clear_claim(action: Action) -> None:
 def _retry_seconds(task: Task) -> int:
     value = dict(task.failure_policy or {}).get("retry_delay_seconds")
     return max(1, int(value if value is not None else DEFAULT_GENERATION_RETRY_SECONDS))
-
-
-def _payload_deadline(action: Action) -> datetime | None:
-    payload = dict(action.payload or {})
-    raw = payload.get("obligation_deadline_at") or payload.get("deadline_at")
-    if raw is None or isinstance(raw, datetime):
-        return raw
-    return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
 
 
 def _shortfall_period(job: GenerationJob, spec: GenerationWaitSpec) -> str:

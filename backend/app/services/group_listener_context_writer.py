@@ -63,6 +63,11 @@ def insert_context_snapshots(
             _ensure_source_media(session, group, account, snapshot, message)
         if track_ai_context:
             record_ai_context_message(session, group, message)
+        from app.services.task_center.engagement_conversation import (
+            project_group_context_message,
+        )
+
+        project_group_context_message(session, group, message)
         inserted += 1
     return inserted
 

@@ -13,10 +13,11 @@ from app.models import Action, GenerationJob
 from app.services._common import _now
 
 from .ai_generation_parallel import OPEN_GENERATION_JOB_PREDICATE
-from .ai_generation_timing import GENERATION_LEASE
+from .ai_generation_timing import GENERATION_LEASE, generation_not_before
 from .datetime_compat import is_after_or_equal
 from .ai_content_runtime import defer_generation_job
 from .generation_wait import latest_safe_send_at
+from .generation_provider_lineage import generation_lineage, unresolved_generation_lineages
 
 
 COMMENT_GENERATION_OBLIGATION_TYPE = "post_comment"
@@ -25,6 +26,14 @@ _FINISHABLE_STATES = ("ready", "failed", "unknown")
 
 class CommentGenerationJobConflict(RuntimeError):
     """open GenerationJob 被其他 owner 持有且租约未到期；按 typed 冲突上抛。"""
+
+
+class CommentGenerationProviderUnresolved(CommentGenerationJobConflict):
+    """The original Provider result must not become a new generation attempt."""
+
+    def __init__(self, job_id: str):
+        self.job_id = job_id
+        super().__init__(f"comment_generation_provider_unresolved:{job_id}")
 
 
 def comment_generation_obligation_id(action: Action, payload) -> str:
@@ -55,9 +64,32 @@ def claim_comment_generation_job(
     job = _open_generation_job(session, obligation_id)
     if job is None:
         raise RuntimeError("comment_generation_job_missing")
+    if job.state == "unknown" and not _cache_recovery_matches(action, payload, job):
+        raise CommentGenerationProviderUnresolved(job.id)
     _claim_generation_job(session, job, owner=owner)
     session.refresh(job)
     return job
+
+
+def _cache_recovery_matches(action, payload, job) -> bool:
+    same_owner = (job.tenant_id, job.task_id, job.task_lifecycle_epoch) == (
+        action.tenant_id, action.task_id, action.task_lifecycle_epoch)
+    if not same_owner or job.id != str(getattr(payload, "generation_job_id", "")):
+        return False
+    if (job.evaluator_evidence or {}).get("invalidation_reason"):
+        return False
+    if (action.result or {}).get("generation_outcome") != "ai_result_persist_unknown":
+        return False
+    return _complete_attempt_cache(payload)
+
+
+def _complete_attempt_cache(payload) -> bool:
+    cache = dict(getattr(payload, "ai_generation_result_cache", None) or {})
+    attempt_id = str(getattr(payload, "ai_generation_attempt_id", "") or "")
+    return bool(
+        attempt_id and cache.get("attempt_id") == attempt_id
+        and (str(cache.get("content") or "").strip() or cache.get("media_segment"))
+    )
 
 
 def _generation_job_values(
@@ -76,11 +108,7 @@ def _generation_job_values(
         "obligation_id": obligation_id,
         "generation_sequence": sequence,
         "context_snapshot_version": _context_version(payload),
-        "generation_not_before_at": (
-            action.effective_claim_at
-            or action.release_not_before_at
-            or action.scheduled_at
-        ),
+        "generation_not_before_at": generation_not_before(action),
         "latest_safe_send_at": latest_safe_send_at(session, action),
         "context_snapshot_hash": _context_hash(payload),
         "assignment_revision": int(action.assignment_revision or 1),
@@ -128,6 +156,11 @@ def _claim_generation_job(
     owner: str,
 ) -> None:
     now_value = _now()
+    if job.state == "pending" and any(
+        value is not None and not is_after_or_equal(now_value, value)
+        for value in (job.generation_not_before_at, job.next_retry_at)
+    ):
+        raise CommentGenerationJobConflict(f"generation_not_due:{job.id}")
     if job.state == "generating" and job.generation_owner_id and job.generation_owner_id != owner:
         if job.lease_expires_at is not None and not is_after_or_equal(now_value, job.lease_expires_at):
             raise CommentGenerationJobConflict(job.id)
@@ -222,23 +255,23 @@ def invalidate_comment_generation_jobs(
     reason: str,
 ) -> None:
     obligation_id = comment_generation_obligation_id(action, payload)
-    session.execute(
-        update(GenerationJob)
-        .where(
+    session.flush()
+    jobs = list(session.scalars(select(GenerationJob).where(
+            GenerationJob.tenant_id == action.tenant_id,
+            GenerationJob.task_id == action.task_id,
             GenerationJob.obligation_type == COMMENT_GENERATION_OBLIGATION_TYPE,
             GenerationJob.obligation_id == obligation_id,
             GenerationJob.state.in_(("pending", "generating", "unknown")),
-        )
-        .values(
-            state="failed",
-            generation_owner_id="",
-            lease_expires_at=None,
-            candidate_hash="",
-            evaluator_evidence={"invalidation_reason": reason},
-            job_version=GenerationJob.job_version + 1,
-        )
-        .execution_options(synchronize_session=False)
-    )
+        ).order_by(GenerationJob.id).with_for_update().execution_options(populate_existing=True)))
+    unresolved = unresolved_generation_lineages(session, jobs)
+    for job in jobs:
+        job.state = "unknown" if generation_lineage(job) in unresolved else "failed"
+        job.generation_owner_id = ""
+        job.lease_expires_at = None
+        job.candidate_hash = ""
+        job.evaluator_evidence = {**dict(job.evaluator_evidence or {}), "invalidation_reason": reason}
+        job.job_version = int(job.job_version or 1) + 1
+    session.flush()
 
 
 def _context_version(payload) -> int:

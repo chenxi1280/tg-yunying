@@ -6,6 +6,7 @@ import pytest
 from sqlalchemy.orm import Session
 
 from app.integrations.telegram import SendResult
+from app.ai_transport_errors import AiProviderResultUnknown
 from app.services.antigravity_provider_client import AntigravityProviderResultUnknown
 from app.services._common import _now
 from app.services.task_center import dispatcher
@@ -75,12 +76,13 @@ def test_generation_worker_freezes_content_before_dispatcher(monkeypatch) -> Non
         assert calls == {"provider": 1, "gateway": 1}
 
 
-def test_provider_unknown_is_fenced_and_not_called_again() -> None:
+@pytest.mark.parametrize("error_type", (AiProviderResultUnknown, AntigravityProviderResultUnknown))
+def test_provider_unknown_is_fenced_and_not_called_again(error_type) -> None:
     calls = {"provider": 0}
 
     def unknown(*_args, **_kwargs):
         calls["provider"] += 1
-        raise AntigravityProviderResultUnknown("antigravity_provider_result_unknown")
+        raise error_type("provider_result_unknown")
 
     dependencies = CommentGenerationDependencies(
         direct_generator=unknown,

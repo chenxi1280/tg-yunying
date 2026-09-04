@@ -10,9 +10,12 @@ from dataclasses import replace
 from typing import Any
 
 from app.ai_gateway import AiProviderCredentials, AiUsage
+from app.ai_transport_errors import AiProviderResultUnknown
+from app.ai_http_transport import hard_deadline_options, read_http
 
 
 ANTIGRAVITY_PROVIDER_TYPE = "antigravity_cli"
+LEGACY_HTTP_SLACK_SECONDS = 20
 ANTIGRAVITY_PRIMARY_MODEL = "gemini-3.6-flash-medium"
 ANTIGRAVITY_SECONDARY_MODEL = "gemini-3.1-pro-low"
 ANTIGRAVITY_MODELS = frozenset(
@@ -29,7 +32,7 @@ ANTIGRAVITY_PRE_CALL_CODES = frozenset({
 })
 
 
-class AntigravityProviderResultUnknown(RuntimeError):
+class AntigravityProviderResultUnknown(AiProviderResultUnknown):
     pass
 
 
@@ -44,6 +47,9 @@ class AntigravityResponse:
 
 
 class AntigravityProviderClient:
+    def __init__(self, *, http_transport=None):
+        self._http_transport = http_transport
+
     def generate(
         self,
         credentials: AiProviderCredentials,
@@ -53,6 +59,7 @@ class AntigravityProviderClient:
         user_prompt: str,
         json_schema: dict[str, Any],
         timeout: float,
+        request_deadline: float | None = None,
     ) -> AntigravityResponse:
         self._validate_model(credentials.model_name)
         body = {
@@ -68,7 +75,8 @@ class AntigravityProviderClient:
             "/internal/v1/generate",
             method="POST",
             payload=body,
-            timeout=timeout + 20,
+            timeout=timeout + LEGACY_HTTP_SLACK_SECONDS if request_deadline is None else timeout,
+            **hard_deadline_options(request_deadline),
         )
         state = str(data.get("state") or "")
         if state in {"started", "unknown"}:
@@ -151,6 +159,7 @@ class AntigravityProviderClient:
         method: str,
         payload: dict[str, Any] | None,
         timeout: float,
+        request_deadline: float | None = None,
     ) -> dict[str, Any]:
         url = f"{credentials.base_url.rstrip('/')}{path}"
         headers = {
@@ -160,8 +169,8 @@ class AntigravityProviderClient:
         raw = json.dumps(payload).encode("utf-8") if payload is not None else None
         request = urllib.request.Request(url, data=raw, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                return self._load_object(response.read())
+            transport = self._http_transport or read_http
+            return self._load_object(transport(request, timeout=timeout, request_deadline=request_deadline))
         except urllib.error.HTTPError as exc:
             data = self._load_error(exc)
             state = str(data.get("state") or "")

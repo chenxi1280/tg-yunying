@@ -24,6 +24,7 @@ from .operations_center import router as operations_center_router
 from .risk_control import router as risk_control_router
 from .system import router as system_router
 from .task_center import router as task_center_router
+from .negative_outcomes import router as negative_outcomes_router
 from .target_profile import router as target_profile_router
 from .telegram_bot import router as telegram_bot_router
 from app.routers.group_clone import router as group_clone_router
@@ -53,6 +54,7 @@ for sub_router in (
     groups_router,
     message_tasks_router,
     task_center_router,
+    negative_outcomes_router,
     group_clone_router,
     group_clone_operations_router,
     group_clone_cutover_router,

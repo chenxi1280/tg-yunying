@@ -6,6 +6,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from app.services._common import _now
+from app.timezone import as_beijing
 
 from .ai_adult_content_contract import validate_adult_content_contract
 from .ai_generation_dependencies import GenerationDependencies
@@ -22,7 +23,6 @@ from .ai_generation_support import (
     SlotGenerationResult,
     TwoStageRuntime as _TwoStageRuntime,
     legacy_negative_match,
-    naive_datetime,
 )
 from .ai_generation_stage_config import (
     fallback_stages as _fallback_stages,
@@ -421,6 +421,12 @@ def _has_fallback_quantity_slot(slot: dict) -> bool:
 
 
 def _require_provider_attempt_budget(request) -> None:
+    from .generation_invocation_budget import TIMING_CONFIG_KEY, provider_invocation_timeout
+
+    config = getattr(request, "config", {}) or {}
+    if TIMING_CONFIG_KEY in config or config.get("engagement_contract_version") == "unified_engagement_v1":
+        provider_invocation_timeout(config, legacy_timeout=AI_CONTENT_REQUEST_TIMEOUT_SECONDS, now_value=_now())
+        return
     raw_deadline = str(
         (getattr(request, "config", {}) or {}).get(
             "_ai_generation_latest_safe_send_at",
@@ -433,7 +439,7 @@ def _require_provider_attempt_budget(request) -> None:
         deadline = datetime.fromisoformat(raw_deadline)
     except ValueError as exc:
         raise AiGenerationUnavailable("ai_generation_deadline_invalid") from exc
-    remaining = (naive_datetime(deadline) - naive_datetime(_now())).total_seconds()
+    remaining = (as_beijing(deadline) - as_beijing(_now())).total_seconds()
     if remaining < AI_CONTENT_REQUEST_TIMEOUT_SECONDS:
         raise AiGenerationUnavailable(AI_GENERATION_DEADLINE_BUDGET_EXHAUSTED)
 

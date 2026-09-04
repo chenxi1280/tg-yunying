@@ -10,6 +10,8 @@
 | 开发交接 | `dev_handoff_ready=true` |
 | 发布状态 | 2026-08-13 性能修复已发布；AI 发送与一条有源频道浏览取得发布后 E4，另一条无源任务保持 `production_unproven` |
 
+> **2026-09-03 unified route 适用性补正：** 本文“仅引用我方消息”继续约束 legacy own-history reply pool 及其已发布查询/事实边界，不再限制统一互动履约引擎。unified `group_ai_chat` 允许 `semantic_direct|native_reply_external_human|native_reply_owned_fact`：external-human 必须由 canonical `ConversationEvent` 的 exact peer/thread/topic/message/revision、`author_class=external_human`、current 未删除和闭合 watermark 授权；owned 仍按本文 bound typed fact 边界授权。每个 response binding 的 `ConversationReplyAuthorityDecision` 由 Provider、Action 与 Gateway 共同复核；原始 `GroupContextMessage`、昵称、正文或 Action.result 仍不能授权。完整 current 合同见 `unified-engagement-fulfillment-engine-prd.md` §8.4 与 `ai-group-dual-lane-send-chain-redesign-prd.md` §6.5；当前仅设计，未实施、未发布。
+
 ## 0. 2026-08-13 生产查询压力事故补充
 
 ### 0.1 Incident / 分级

@@ -86,6 +86,10 @@ drain_ai_generation = _lazy_call(
     "app.services.task_center.ai_generation_worker",
     "drain_ai_generation",
 )
+drain_comment_generation = _lazy_call(
+    "app.services.task_center.comment_generation_worker",
+    "drain_comment_generation",
+)
 drain_voice_profile_generation = _lazy_call(
     "app.services.task_center.account_voice_profile_generation_worker",
     "drain_voice_profile_generation",

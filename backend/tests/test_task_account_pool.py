@@ -13,7 +13,6 @@ from app.services.account_pools import (
     ensure_code_receiver_account_pool,
     ensure_default_account_pool,
     move_account_pool,
-    seed_account_pools,
     set_account_identity,
     update_account_pool,
 )
@@ -137,7 +136,7 @@ def test_update_account_pool_rejects_promoting_disabled_pool_to_default() -> Non
         assert pool.is_enabled is False
 
 
-def test_ensure_default_pool_skips_disabled_default_and_seed_uses_enabled_pool() -> None:
+def test_explicit_backfill_skips_disabled_default_and_uses_enabled_pool() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     with Session(engine) as session:
@@ -152,7 +151,9 @@ def test_ensure_default_pool_skips_disabled_default_and_seed_uses_enabled_pool()
         assert selected.is_enabled is True
         assert selected.is_default is True
         assert disabled.is_default is False
-        seed_account_pools(session)
+        from app.services.account_pools import backfill_ungrouped_accounts_to_default_pool
+
+        assert backfill_ungrouped_accounts_to_default_pool(session, 1) == 1
         assert account.pool_id == enabled.id
 
 

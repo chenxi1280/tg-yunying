@@ -3,10 +3,12 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import (
+    Action,
+    ContentMixCycleSlot,
     Task,
     TaskAccountDailyCoverage,
     TaskDayLedger,
@@ -22,10 +24,12 @@ from app.services._common import _now
 
 from .daily_coverage import ensure_task_daily_coverage
 from .daily_group_target import ensure_task_group_daily_target
+from .engagement_binding import ENGAGEMENT_TASK_TYPES, activate_due_binding
 from .pacing import task_pacing_anchor
 from .search_click_revisions import apply_pending_search_click_revision
 from .search_click_target_progress import _active_click_quarantine_count
 from .targets import group_from_reference
+from .channel_source_observation import source_deadline_outcome, snapshot_source_expectation
 
 
 def ensure_task_day_ledger(
@@ -36,14 +40,17 @@ def ensure_task_day_ledger(
 ) -> TaskDayLedger:
     timestamp = now or _now()
     local_now, period_start, deadline = _day_bounds(timestamp, task.timezone)
+    if task.type in ENGAGEMENT_TASK_TYPES:
+        activate_due_binding(session, task, period_start=period_start)
+    _close_expired_ledgers(session, task, period_start)
     ledger = _find_ledger(session, task.id, period_start)
     if ledger is None:
-        _close_expired_ledgers(session, task, period_start)
         if task.type == "search_click":
             apply_pending_search_click_revision(task, period_start=period_start)
         ledger = _new_ledger(task, local_now, period_start, deadline)
         session.add(ledger)
         session.flush()
+        snapshot_source_expectation(session, task, ledger)
     if task.type == "group_ai_chat":
         _materialize_group_slots(session, task, ledger, local_now)
     if task.type == "search_click":
@@ -59,17 +66,19 @@ def _close_expired_ledgers(
     ledgers = session.scalars(
         select(TaskDayLedger).where(
             TaskDayLedger.task_id == task.id,
-            TaskDayLedger.lifecycle_status == "open",
+            TaskDayLedger.lifecycle_status.in_(("open", "closed_source_ingestion_unproven")),
             TaskDayLedger.deadline_at <= period_start,
-        )
+        ).with_for_update(skip_locked=True)
     )
     for ledger in ledgers:
         outcome = _ledger_deadline_outcome(session, task, ledger)
+        if ledger.lifecycle_status == f"closed_{outcome}":
+            continue
         ledger.lifecycle_status = f"closed_{outcome}"
         session.add(TaskDayLedgerLifecycleEvent(
             tenant_id=task.tenant_id,
             task_day_ledger_id=ledger.id,
-            event_type=f"deadline_{outcome}",
+            event_type="deadline_source_unproven" if outcome == "source_ingestion_unproven" else f"deadline_{outcome}",
             occurred_at=ledger.deadline_at,
             task_revision=task.config_revision,
         ))
@@ -80,6 +89,9 @@ def _ledger_deadline_outcome(
     task: Task,
     ledger: TaskDayLedger,
 ) -> str:
+    source_outcome = source_deadline_outcome(session, task, ledger)
+    if source_outcome is not None:
+        return source_outcome
     if task.type != "search_click":
         return "closed"
     obligations = list(session.scalars(
@@ -170,8 +182,6 @@ def _materialize_group_slots(
         now=local_now.replace(tzinfo=None),
     )
     target.task_day_ledger_id = ledger.id
-    if _slots_exist(session, ledger.id, target_id):
-        return
     ensure_task_daily_coverage(
         session,
         task,
@@ -179,6 +189,14 @@ def _materialize_group_slots(
         account_ids=[item.account_id for item in items],
         target_group=group,
     )
+    target = ensure_task_group_daily_target(
+        session,
+        task,
+        group,
+        ledger.obligation_local_date,
+        now=local_now.replace(tzinfo=None),
+    )
+    target.task_day_ledger_id = ledger.id
     rows = _coverage_rows(
         session,
         task.id,
@@ -187,15 +205,6 @@ def _materialize_group_slots(
     )
     _bind_coverage_rows(rows, ledger.id)
     _add_slots(session, task, ledger, group, target, items, rows)
-
-
-def _slots_exist(session: Session, ledger_id: str, target_id: int) -> bool:
-    return session.scalar(
-        select(TaskGroupDailyMessageSlot.id)
-        .where(TaskGroupDailyMessageSlot.task_day_ledger_id == ledger_id)
-        .where(TaskGroupDailyMessageSlot.target_operation_target_id == target_id)
-        .limit(1)
-    ) is not None
 
 
 def _materialize_search_click_obligations(
@@ -275,6 +284,62 @@ def _bind_coverage_rows(
         row.task_day_ledger_id = ledger_id
 
 
+def bind_unowned_group_slots_to_coverage(
+    session: Session,
+    task: Task,
+    ledger: TaskDayLedger,
+    group: TgGroup,
+) -> int:
+    items = _scope_items(session, task)
+    rows = _coverage_rows(
+        session,
+        task.id,
+        ledger.obligation_local_date,
+        group.id,
+    )
+    _bind_coverage_rows(rows, ledger.id)
+    bound_ids = set(session.scalars(select(
+        TaskGroupDailyMessageSlot.task_account_daily_coverage_id
+    ).where(
+        TaskGroupDailyMessageSlot.task_day_ledger_id == ledger.id,
+        TaskGroupDailyMessageSlot.task_account_daily_coverage_id.is_not(None),
+    )))
+    candidates = _unowned_group_slots(session, task.id, ledger.id)
+    unbound_rows = [
+        rows[item.account_id]
+        for item in items
+        if item.account_id in rows and rows[item.account_id].id not in bound_ids
+    ]
+    for slot, coverage in zip(candidates, unbound_rows):
+        slot.task_account_daily_coverage_id = coverage.id
+        slot.slot_kind = "account_coverage"
+    session.flush()
+    return min(len(candidates), len(unbound_rows))
+
+
+def _unowned_group_slots(
+    session: Session,
+    task_id: str,
+    ledger_id: str,
+) -> list[TaskGroupDailyMessageSlot]:
+    action_bound = select(Action.id).where(
+        Action.primary_quantity_slot_id == TaskGroupDailyMessageSlot.id,
+    ).exists()
+    content_bound = select(ContentMixCycleSlot.id).where(
+        ContentMixCycleSlot.primary_quantity_slot_id == TaskGroupDailyMessageSlot.id,
+    ).exists()
+    return list(session.scalars(
+        select(TaskGroupDailyMessageSlot).where(
+            TaskGroupDailyMessageSlot.task_id == task_id,
+            TaskGroupDailyMessageSlot.task_day_ledger_id == ledger_id,
+            TaskGroupDailyMessageSlot.state == "open",
+            TaskGroupDailyMessageSlot.task_account_daily_coverage_id.is_(None),
+            ~action_bound,
+            ~content_bound,
+        ).order_by(TaskGroupDailyMessageSlot.slot_ordinal.asc())
+    ))
+
+
 def _add_slots(
     session: Session,
     task: Task,
@@ -285,7 +350,13 @@ def _add_slots(
     rows: dict[int, TaskAccountDailyCoverage],
 ) -> None:
     target_id = _target_id(session, task, group, items)
-    for ordinal in range(1, target.effective_message_target + 1):
+    existing_max = int(session.scalar(
+        select(func.max(TaskGroupDailyMessageSlot.slot_ordinal)).where(
+            TaskGroupDailyMessageSlot.task_day_ledger_id == ledger.id,
+            TaskGroupDailyMessageSlot.target_operation_target_id == target_id,
+        )
+    ) or 0)
+    for ordinal in range(existing_max + 1, target.effective_message_target + 1):
         coverage = rows.get(items[ordinal - 1].account_id) if ordinal <= len(items) else None
         session.add(TaskGroupDailyMessageSlot(
             tenant_id=task.tenant_id,
@@ -336,4 +407,4 @@ def _target_id(
     return int(target.id)
 
 
-__all__ = ["ensure_task_day_ledger"]
+__all__ = ["bind_unowned_group_slots_to_coverage", "ensure_task_day_ledger"]

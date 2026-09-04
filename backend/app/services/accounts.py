@@ -48,7 +48,7 @@ from .dedicated_account_pools import validate_account_pool_admission
 from .tenants import ensure_account_quota_available
 from .telegram_group_identity import resolve_group_snapshot_identity
 from .verification import list_verification_tasks, create_verification_task
-from .account_pools import account_pool_snapshot, ensure_default_account_pool, seed_account_pools
+from .account_pools import account_pool_snapshot, ensure_default_account_pool
 
 ACCOUNT_SYNC_INTERVAL = timedelta(hours=1)
 ACCOUNT_SYNC_STAGGER_STEP = timedelta(seconds=3)
@@ -2152,7 +2152,6 @@ def account_detail(session: Session, account_id: int, actor: str, *, include_ver
 
 def _account_listing_stmt(session: Session, filters: AccountListFilters):
     require_tenant(session, filters.tenant_id)
-    seed_account_pools(session)
     stmt = select(TgAccount).where(TgAccount.tenant_id == filters.tenant_id)
     if not filters.include_deleted:
         stmt = stmt.where(TgAccount.deleted_at.is_(None))

@@ -24,7 +24,7 @@ from .dispatch_runtime_contract import (
 
 
 FENCED_WRITER_ROLES = frozenset(
-    {"all", "task_center", "planner", "dispatcher", "recovery", "ai-generation"}
+    {"all", "task_center", "planner", "dispatcher", "recovery", "ai-generation", "comment-generation"}
 )
 
 

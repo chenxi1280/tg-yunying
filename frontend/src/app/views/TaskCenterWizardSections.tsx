@@ -369,6 +369,9 @@ export function WizardTypeConfig({
           <Form.Item name="daily_message_target" label="该群每天发送总量" rules={[{ required: true, message: '请填写该群每天发送总量' }]}>
             <InputNumber min={1} precision={0} />
           </Form.Item>
+          <Form.Item name="daily_target_jitter_bps" label="每日目标抖动（万分比）">
+            <InputNumber min={0} max={3000} step={100} />
+          </Form.Item>
           <Form.Item name="account_coverage_mode" hidden><Input /></Form.Item>
           <div style={{ gridColumn: '1 / -1' }}>
             <Alert
@@ -396,6 +399,23 @@ export function WizardTypeConfig({
                   </Form.Item>
                   <Form.Item name="idle_continuation_enabled" label="无人发言续聊"><Select options={[{ value: true, label: '开启' }, { value: false, label: '关闭' }]} /></Form.Item>
                   <Form.Item name="idle_continuation_seconds" label="续聊间隔秒数"><InputNumber min={30} max={86400} /></Form.Item>
+                  <Form.Item name="attention_quiet_after_min_seconds" label="真人发言后最短避让秒数"><InputNumber min={0} max={1800} /></Form.Item>
+                  <Form.Item
+                    name="attention_quiet_after_max_seconds"
+                    label="真人发言后最长避让秒数"
+                    dependencies={['attention_quiet_after_min_seconds']}
+                    rules={[
+                      ({ getFieldValue }: any) => ({
+                        validator(_: unknown, value?: number) {
+                          const minimum = Number(getFieldValue('attention_quiet_after_min_seconds') ?? 60);
+                          if (Number(value ?? 180) >= minimum) return Promise.resolve();
+                          return Promise.reject(new Error('最长避让秒数不能小于最短避让秒数'));
+                        },
+                      }),
+                    ]}
+                  >
+                    <InputNumber min={0} max={1800} />
+                  </Form.Item>
                   <Form.Item name="context_expire_after_messages" label="上下文过期消息数"><InputNumber min={0} max={500} /></Form.Item>
                   <Form.Item name="system_prompt_override" label="System Prompt 覆盖">
                     <Input.TextArea rows={3} placeholder="为空则使用系统默认提示词" />
@@ -733,7 +753,12 @@ export function TaskRuntimeAdvancedFields({ taskType }: { taskType?: TaskCenterT
 
 function accountPoolSelectOptions(accountPools: AccountPool[], taskType: TaskCenterTaskType) {
   return accountPools.map((pool) => {
-    const baseLabel = `${pool.name} (${pool.account_count})`;
+    const policyLimit = pool.engagement_remote_inflight_limit ?? 5;
+    const baseLabel = `${pool.name} (${pool.account_count}) · 物理并发 ${policyLimit}`;
+    const engagementTask = ['group_ai_chat', 'channel_comment', 'channel_like', 'channel_view'].includes(taskType);
+    if (engagementTask && (pool.pool_purpose || 'normal') !== 'normal') {
+      return { value: pool.id, label: `${baseLabel} — 专用分组，不可参与互动任务`, disabled: true };
+    }
     if (taskType !== 'search_rank_deboost' && pool.pool_purpose === 'rank_deboost') {
       return { value: pool.id, label: `${baseLabel} — 排名观察专用，不可参与本任务`, disabled: true };
     }
@@ -742,6 +767,35 @@ function accountPoolSelectOptions(accountPools: AccountPool[], taskType: TaskCen
 }
 
 export function WizardAccounts({ accountMode, accounts, accountPools, taskType }: { accountMode: string; accounts: Account[]; accountPools: AccountPool[]; taskType: TaskCenterTaskType }) {
+  if (['group_ai_chat', 'channel_comment', 'channel_like', 'channel_view'].includes(taskType)) {
+    return (
+      <div className="form-grid">
+        <Form.Item name="account_group_ids" label="参与账号分组" rules={[{ required: true, message: '请选择至少一个普通运营账号分组' }]}>
+          <Select mode="multiple" options={accountPoolSelectOptions(accountPools, taskType)} />
+        </Form.Item>
+        <Form.Item
+          name="concurrency_limit_per_group"
+          label="每组任务并发份额"
+          dependencies={['account_group_ids']}
+          rules={[
+            { required: true },
+            ({ getFieldValue }) => ({
+              validator: async (_, value) => {
+                const selected = new Set<number>(getFieldValue('account_group_ids') || []);
+                const limits = accountPools
+                  .filter((pool) => selected.has(pool.id))
+                  .map((pool) => pool.engagement_remote_inflight_limit ?? 5);
+                if (!limits.length || Number(value) <= Math.min(...limits)) return;
+                throw new Error(`任务并发不能超过所选分组物理上限 ${Math.min(...limits)}`);
+              },
+            }),
+          ]}
+        >
+          <InputNumber min={1} max={50} />
+        </Form.Item>
+      </div>
+    );
+  }
   if (taskType === 'group_membership_admission') {
     return (
       <div className="form-grid">

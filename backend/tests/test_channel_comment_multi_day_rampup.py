@@ -4,7 +4,9 @@ from datetime import datetime, timedelta
 import pytest
 
 from app.models import ChannelMessage, Task
-from app.services.task_center.channel_comment_plan_contract import _business_max_comments
+from app.services.task_center.engagement_comment_participation import (
+    business_max_comments,
+)
 from app.services.task_center.pacing_stratified import (
     _daily_ramp_factor,
     _weighted_hour_spans,
@@ -65,7 +67,7 @@ def test_business_max_comments_expands_with_target() -> None:
         type="channel_comment",
         type_config={"target_comments_per_message": 150},
     )
-    assert _business_max_comments(task) == 150
+    assert business_max_comments(task) == 150
 
 
 def test_business_max_comments_defaults_at_least_80() -> None:
@@ -74,7 +76,7 @@ def test_business_max_comments_defaults_at_least_80() -> None:
         type="channel_comment",
         type_config={"target_comments_per_message": 20},
     )
-    assert _business_max_comments(task) == 80
+    assert business_max_comments(task) == 80
 
 
 def test_source_window_days_defaults_to_3_for_channel_comment() -> None:
@@ -117,4 +119,3 @@ def test_returning_accounts_detection_logic() -> None:
     # account_index % 3 != 0 is new account slot (new faces)
     is_new_slot = returning_enabled and is_multi_day and (4 % 3 == 0) and bool(excluded_ids)
     assert is_new_slot is False
-

@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.models import (
     AccountGroupProxyBinding,
     AccountPool,
+    AccountPoolConcurrencyPolicyRevision,
     AccountStatus,
     MessageTask,
     Task,
@@ -35,6 +36,7 @@ __all__ = [
     "account_pool_detail",
     "account_pool_snapshot",
     "assert_account_not_in_rank_deboost_conflict",
+    "backfill_ungrouped_accounts_to_default_pool",
     "create_account_pool",
     "create_rank_deboost_account_pool",
     "delete_account_pool",
@@ -50,6 +52,13 @@ __all__ = [
 
 def account_pool_snapshot(session: Session, pool: AccountPool) -> dict:
     binding = _active_rank_deboost_binding(session, pool)
+    engagement_policy = session.scalar(
+        select(AccountPoolConcurrencyPolicyRevision).where(
+            AccountPoolConcurrencyPolicyRevision.tenant_id == pool.tenant_id,
+            AccountPoolConcurrencyPolicyRevision.account_pool_id == pool.id,
+            AccountPoolConcurrencyPolicyRevision.state == "active",
+        )
+    )
     return {
         "id": pool.id,
         "tenant_id": pool.tenant_id,
@@ -64,6 +73,8 @@ def account_pool_snapshot(session: Session, pool: AccountPool) -> dict:
         "disabled_by": pool.disabled_by,
         "disable_reason": pool.disable_reason,
         "account_count": session.scalar(select(func.count(TgAccount.id)).where(TgAccount.pool_id == pool.id, TgAccount.deleted_at.is_(None))) or 0,
+        "engagement_remote_inflight_limit": engagement_policy.hard_remote_inflight_limit if engagement_policy else None,
+        "engagement_runtime_policy_revision": engagement_policy.revision if engagement_policy else None,
         "rank_deboost_binding_status": binding.status if binding else "",
         "rank_deboost_runtime_proxy_id": binding.runtime_proxy_id if binding else None,
         "rank_deboost_observed_exit_ip": binding.observed_exit_ip if binding else "",
@@ -242,17 +253,28 @@ def assert_account_not_in_rank_deboost_conflict(
 
 def seed_account_pools(session: Session) -> None:
     for tenant_id in session.scalars(select(Tenant.id)).all():
-        pool = ensure_default_account_pool(session, tenant_id)
+        ensure_default_account_pool(session, tenant_id)
         ensure_code_receiver_account_pool(session, tenant_id)
-        accounts = session.scalars(select(TgAccount).where(TgAccount.tenant_id == tenant_id, TgAccount.pool_id.is_(None), TgAccount.deleted_at.is_(None))).all()
-        for account in accounts:
-            account.pool_id = pool.id
+
+
+def backfill_ungrouped_accounts_to_default_pool(
+    session: Session, tenant_id: int
+) -> int:
+    pool = ensure_default_account_pool(session, tenant_id)
+    accounts = session.scalars(
+        select(TgAccount).where(
+            TgAccount.tenant_id == tenant_id,
+            TgAccount.pool_id.is_(None),
+            TgAccount.deleted_at.is_(None),
+        )
+    ).all()
+    for account in accounts:
+        account.pool_id = pool.id
+    return len(accounts)
 
 
 def list_account_pools(session: Session, tenant_id: int) -> list[dict]:
     require_tenant(session, tenant_id)
-    seed_account_pools(session)
-    session.flush()
     pools = session.scalars(select(AccountPool).where(AccountPool.tenant_id == tenant_id).order_by(AccountPool.is_default.desc(), AccountPool.id.asc())).all()
     return [account_pool_snapshot(session, pool) for pool in pools]
 

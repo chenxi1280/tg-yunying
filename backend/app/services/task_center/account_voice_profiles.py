@@ -14,6 +14,7 @@ from app.services.task_center.account_stance_memory import group_stance_summarie
 from app.services.task_center.account_voice_profile_cache import (
     VOICE_PROFILE_CONTRACT_VERSION,
     cached_voice_profile_prompt_details,
+    delete_voice_profile_cache,
     refresh_voice_profile_cache,
     refresh_voice_profile_cache_many,
     voice_profile_snapshot_hash,
@@ -194,6 +195,10 @@ def voice_profile_prompt_details(
     account_ids: list[int],
 ) -> dict[int, dict[str, Any]]:
     cached, missed_ids = cached_voice_profile_prompt_details(tenant_id, account_ids)
+    cached, stale_ids = _validated_cached_voice_profiles(
+        session, tenant_id=tenant_id, cached=cached,
+    )
+    missed_ids = list(dict.fromkeys([*missed_ids, *stale_ids]))
     if not missed_ids:
         return cached
     rows = session.scalars(
@@ -216,6 +221,45 @@ def voice_profile_prompt_details(
         backfill_rows.append(row)
     refresh_voice_profile_cache_many(backfill_rows)
     return result
+
+
+def _validated_cached_voice_profiles(
+    session: Session,
+    *,
+    tenant_id: int,
+    cached: dict[int, dict[str, Any]],
+) -> tuple[dict[int, dict[str, Any]], list[int]]:
+    if not cached:
+        return {}, []
+    rows = session.execute(
+        select(
+            AiAccountVoiceProfile.account_id,
+            AiAccountVoiceProfile.id,
+            AiAccountVoiceProfile.version,
+        ).where(
+            AiAccountVoiceProfile.tenant_id == tenant_id,
+            AiAccountVoiceProfile.account_id.in_(cached),
+            AiAccountVoiceProfile.status == "active",
+            AiAccountVoiceProfile.quality_status == "active",
+        ).order_by(
+            AiAccountVoiceProfile.account_id,
+            AiAccountVoiceProfile.version.desc(),
+            AiAccountVoiceProfile.id.desc(),
+        )
+    ).all()
+    latest: dict[int, tuple[str, int]] = {}
+    for account_id, profile_id, version in rows:
+        latest.setdefault(int(account_id), (str(profile_id), int(version or 0)))
+    valid: dict[int, dict[str, Any]] = {}
+    stale_ids: list[int] = []
+    for account_id, detail in cached.items():
+        identity = (str(detail.get("id") or ""), int(detail.get("version") or 0))
+        if latest.get(int(account_id)) == identity:
+            valid[int(account_id)] = detail
+            continue
+        stale_ids.append(int(account_id))
+        delete_voice_profile_cache(tenant_id, int(account_id))
+    return valid, stale_ids
 
 
 def _voice_profile_prompt_detail(row: AiAccountVoiceProfile) -> dict[str, Any]:

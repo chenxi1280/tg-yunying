@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+from .generation_invocation_budget import provider_invocation_options
+from .provider_http_tracking import scoped_provider_gateway
+
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from sqlalchemy.orm import Session
 
 from app.ai_gateway import AiProviderCredentials, AiUsage
 from app.models import AiProvider
+from app.ai_transport_errors import AiProviderResultUnknown
 from app.services._common import ai_gateway
+from app.services.automation_identity import with_automation_identity
 from app.services.task_center.ai_generation_contract import ProviderRouteDeferred
 from app.services.task_center.antigravity_schemas import antigravity_schema_for_purpose
 from app.services.task_center.ai_provider_attempts import (
@@ -102,6 +107,7 @@ def generate_structured_with_candidates(
     provider: AiProvider,
     request: StructuredProviderRequest,
 ) -> tuple[object, int]:
+    request = replace(request, system_prompt=with_automation_identity(request.system_prompt))
     providers, calls = structured_provider_calls(session, provider, request)
     failures = _StructuredFailures()
     for priority, (candidate, credentials) in enumerate(calls, 1):
@@ -161,6 +167,8 @@ def attempt_structured_candidate(
     provider_request_id = _candidate_request_id(
         request, candidate.id, priority, model_name,
     )
+    gateway, tracked_request = _tracked_structured_request(session, request, candidate=candidate,
+        credentials=credentials, provider_request_id=provider_request_id)
     try:
         lease = begin_provider_call(candidate)
     except ProviderAdmissionBlocked as exc:
@@ -170,21 +178,21 @@ def attempt_structured_candidate(
         )
     try:
         payload, usage = call_structured_provider(
-            lease, credentials, request, provider_request_id=provider_request_id,
+            lease, credentials, tracked_request, provider_request_id=provider_request_id, gateway=gateway,
         )
     except ProviderAdmissionBlocked as exc:
         return _structured_admission_blocked_outcome(
-            session, candidate, request=request, priority=priority,
+            session, candidate, request=tracked_request, priority=priority,
             model_name=model_name, clock=clock, error=exc,
             failover=route_bound(request) and has_more,
         )
     except Exception as exc:
         return _structured_failed_outcome(
-            session, candidate, request=request, priority=priority,
+            session, candidate, request=tracked_request, priority=priority,
             model_name=model_name, clock=clock, error=exc, has_more=has_more,
         )
     record_attempt(
-        session, request, candidate,
+        session, tracked_request, candidate,
         priority=priority, model_name=model_name, clock=clock,
         outcome="success", usage=usage,
     )
@@ -194,6 +202,15 @@ def attempt_structured_candidate(
         False,
         False,
     )
+
+
+def _tracked_structured_request(session, request, *, candidate, credentials, provider_request_id):
+    gateway = scoped_provider_gateway(ai_gateway, session, config=request.config, provider_id=candidate.id,
+        credentials=credentials, purpose=str(request.config.get("_ai_provider_route_purpose") or request.purpose),
+        request_id=provider_request_id)
+    tracked = replace(request, config={**request.config,
+        "_provider_http_chain_id": getattr(gateway, "_provider_http_chain_id", "")})
+    return gateway, tracked
 
 
 def _structured_admission_blocked_outcome(
@@ -244,9 +261,7 @@ def structured_failure_outcome(
     error: Exception,
     has_more: bool,
 ) -> StructuredAttemptOutcome:
-    from app.services.antigravity_provider_client import AntigravityProviderResultUnknown
-
-    if isinstance(error, AntigravityProviderResultUnknown):
+    if isinstance(error, AiProviderResultUnknown):
         return StructuredAttemptOutcome(None, error, False, False)
     if is_ai_provider_quota_exhausted(error):
         mark_provider_quota_exhausted(candidate, error)
@@ -282,10 +297,11 @@ def record_attempt(
         provider_request_id=_candidate_request_id(
             request, candidate.id, priority, model_name,
         ),
-        outcome=outcome,
+        outcome="provider_result_unknown" if isinstance(error, AiProviderResultUnknown) else outcome,
         error_code=type(error).__name__ if error else "",
         latency_ms=clock.latency_ms(),
         usage=usage,
+        http_chain_id=str(request.config.get("_provider_http_chain_id") or ""),
     )
 
 
@@ -295,18 +311,20 @@ def call_structured_provider(
     request: StructuredProviderRequest,
     *,
     provider_request_id: str,
+    gateway=None,
 ) -> tuple[object, AiUsage]:
     schema_purpose = str(
         request.config.get("_ai_provider_route_purpose") or request.purpose
     )
+    antigravity = getattr(credentials, "provider_type", "") == "antigravity_cli"
     try:
-        payload, usage = ai_gateway.generate_structured(
+        payload, usage = (gateway or ai_gateway).generate_structured(
             credentials,
             request.user_prompt,
-            temperature=None,
-            max_tokens=None,
+            temperature=None if antigravity else request.temperature,
+            max_tokens=None if antigravity else request.max_tokens,
             system_prompt=request.system_prompt,
-            timeout=AI_CONTENT_REQUEST_TIMEOUT_SECONDS,
+            **provider_invocation_options(request.config, legacy_timeout=AI_CONTENT_REQUEST_TIMEOUT_SECONDS),
             request_id=provider_request_id,
             json_schema=antigravity_schema_for_purpose(schema_purpose, request.config),
         )

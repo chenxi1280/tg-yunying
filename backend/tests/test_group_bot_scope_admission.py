@@ -9,11 +9,14 @@ from app.services.task_center import dispatcher
 from app.database import Base
 from app.models import (
     Action,
+    ChannelMessage,
+    CommentFulfillmentObligation,
     ExecutionAttempt,
     GroupBotAdmission,
     GroupContextMessage,
     OperationTarget,
     PendingVisibilityCredit,
+    PostSendVisibilityObservation,
     Task,
     TaskAccountDailyCoverage,
     TaskMembershipAdmissionItem,
@@ -237,6 +240,20 @@ def test_fact_first_action_does_not_open_legacy_visibility_hold() -> None:
         assert _action_needs_pending_visibility(session, action, remote_id="600") is False
 
 
+def test_unified_fact_first_action_requires_remote_visibility_fact() -> None:
+    with _session() as session:
+        _seed_scope(session)
+        task = session.get(Task, "task-ai")
+        task.fulfillment_contract_version = "fact_first_v3"
+        task.type_config = {
+            **(task.type_config or {}),
+            "engagement_contract_version": "unified_engagement_v1",
+        }
+        action = session.get(Action, "send-1")
+
+        assert _action_needs_pending_visibility(session, action, remote_id="600") is True
+
+
 def test_post_follow_probe_is_held_until_remote_visibility_confirms() -> None:
     with _session() as session:
         _seed_scope(session)
@@ -387,8 +404,10 @@ def test_pending_visibility_recovery_normalizes_aware_created_at() -> None:
         session.flush()
         hold.created_at = datetime.now(timezone.utc) - timedelta(minutes=10)
 
-        assert recover_pending_visibility_credits(session) == 0
+        assert recover_pending_visibility_credits(session) == 1
         assert action.result["pending_visibility_age_seconds"] >= 500
+        assert action.result["visibility_status"] == "visibility_observation_unknown"
+        assert hold.status == "unknown"
 
 
 def test_pending_visibility_does_not_confirm_before_full_window(monkeypatch) -> None:
@@ -501,6 +520,102 @@ def test_pending_visibility_intercept_uses_storage_safe_hold_status(monkeypatch)
         assert action.status == "failed"
         assert action.result["error_code"] == "post_send_intercepted"
         assert admission.state == "post_send_intercepted"
+
+
+def test_unified_comment_waits_for_visibility_before_confirming_obligation(
+    monkeypatch,
+) -> None:
+    with _session() as session:
+        _seed_scope(session)
+        task = Task(
+            id="task-comment",
+            tenant_id=1,
+            name="统一评论",
+            type="channel_comment",
+            status="running",
+            type_config={"engagement_contract_version": "unified_engagement_v1"},
+        )
+        message = ChannelMessage(
+            id=41,
+            tenant_id=1,
+            channel_target_id=8,
+            message_id=9001,
+            content_preview="来源消息",
+        )
+        action = Action(
+            id="comment-visibility-action",
+            tenant_id=1,
+            task_id=task.id,
+            task_type="channel_comment",
+            action_type="post_comment",
+            account_id=11,
+            status="success",
+            candidate_hash="a" * 64,
+            payload={
+                "channel_id": "-1008",
+                "actual_target_peer": "-1007",
+                "comment_fulfillment_obligation_id": "comment-obligation",
+            },
+        )
+        obligation = CommentFulfillmentObligation(
+            id="comment-obligation",
+            tenant_id=1,
+            task_id=task.id,
+            channel_message_id=message.id,
+            comment_plan_revision=1,
+            target_ordinal=1,
+            current_action_id=action.id,
+            status="pending",
+        )
+        attempt = ExecutionAttempt(
+            id="comment-visibility-attempt",
+            tenant_id=1,
+            action_id=action.id,
+            account_id=11,
+            status="success",
+            remote_message_id="700",
+            gateway_call_started_at=datetime.now(timezone.utc),
+        )
+        session.add_all([task, message, action, obligation, attempt])
+        session.flush()
+        assert dispatcher._maybe_hold_pending_visibility(
+            action,
+            attempt=attempt,
+            remote_id="700",
+        )
+        hold = session.scalar(
+            select(PendingVisibilityCredit).where(
+                PendingVisibilityCredit.action_id == action.id
+            )
+        )
+        observation = session.scalar(
+            select(PostSendVisibilityObservation).where(
+                PostSendVisibilityObservation.action_id == action.id
+            )
+        )
+        assert hold is not None
+        assert observation is not None
+        assert observation.target_peer == "-1007"
+        assert observation.accepted_content_hash == "a" * 64
+        assert observation.state == "visibility_pending"
+        hold.created_at = datetime.now(timezone.utc) - timedelta(seconds=100)
+        assert _action_needs_pending_visibility(session, action, remote_id="700")
+        monkeypatch.setattr(
+            dispatcher,
+            "_probe_post_send_visibility",
+            lambda *_args, **kwargs: (
+                "visible_confirmed"
+                if kwargs["target_peer"] == "-1007"
+                else ""
+            ),
+        )
+
+        assert recover_pending_visibility_credits(session) == 1
+        assert action.status == "success"
+        assert obligation.status == "confirmed"
+        assert obligation.remote_comment_id == "700"
+        assert obligation.telegram_discussion_peer_id == "-1007"
+        assert observation.state == "visible_confirmed"
 
 
 def _session() -> Session:

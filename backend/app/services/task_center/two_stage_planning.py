@@ -91,6 +91,7 @@ def _planner_config(config: dict, slot_infos: list[dict], attempt_index: int) ->
     return {
         **config,
         "_ai_provider_invocation_key": invocation_key,
+        "_provider_http_slot_ids": [item["slot_id"] for item in slot_infos] if config.get("generation_slots") else None,
         "_ai_provider_planner_slots": planner_slots,
     }
 

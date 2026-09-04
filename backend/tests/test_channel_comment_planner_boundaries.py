@@ -1,4 +1,5 @@
 from datetime import datetime
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import event, select
@@ -640,3 +641,56 @@ def test_same_message_never_materializes_two_slots_for_one_account(monkeypatch):
     assert created == 3
     assert len(account_ids) == len(set(account_ids)) == 3
     assert int((task.stats or {}).get("distinct_account_capacity_shortfall") or 0) == 1
+
+
+def test_comment_portfolio_rejection_releases_pacing_and_tries_next_account(
+    monkeypatch,
+):
+    planned_at = datetime(2030, 8, 2, 10, 0, 0)
+    task = SimpleNamespace(
+        fulfillment_contract_version="fact_first_v3",
+        type_config={"engagement_contract_version": "unified_engagement_v1"},
+        stats={},
+    )
+    context = SimpleNamespace(config={})
+    slot = SimpleNamespace(obligation=SimpleNamespace(id="comment-obligation"))
+    candidates = [SimpleNamespace(id=101), SimpleNamespace(id=102)]
+    reservations = {
+        account.id: SimpleNamespace(
+            state="reserved",
+            action_id=None,
+            version=1,
+            effective_claim_at=planned_at,
+        )
+        for account in candidates
+    }
+    monkeypatch.setattr(
+        channel_comment_preparation,
+        "pick_channel_account",
+        lambda _session, _task, accounts, *_args: accounts[0],
+    )
+    monkeypatch.setattr(
+        channel_comment_preparation,
+        "_comment_pacing_reservation",
+        lambda _session, _task, **kwargs: reservations[kwargs["account_id"]],
+    )
+    monkeypatch.setattr(
+        channel_comment_preparation,
+        "_reserve_comment_portfolio",
+        lambda _session, _task, **kwargs: kwargs["account_id"] == 102,
+    )
+
+    prepared = channel_comment_preparation._pick_schedulable_comment_account(
+        object(),
+        task,
+        context=context,
+        slot=slot,
+        planned_at=planned_at,
+        account_index=0,
+        candidates=candidates,
+        payload_builder=lambda *_args, **kwargs: {"account_id": kwargs["account_id"]},
+    )
+
+    assert prepared[0] == 102
+    assert reservations[101].state == "released"
+    assert reservations[102].state == "reserved"

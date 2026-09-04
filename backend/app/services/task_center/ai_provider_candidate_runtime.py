@@ -20,7 +20,11 @@ from app.ai_gateway import (
     normalize_ai_model_name,
 )
 from app.models import AiProvider, AiProviderHealthStatus
+from app.ai_transport_errors import AiProviderResultUnknown
 from app.services._common import _now, ai_gateway
+from app.services.automation_identity import with_automation_identity
+from .generation_invocation_budget import provider_invocation_options
+from .provider_http_tracking import scoped_provider_gateway
 from app.services.ai_config import ai_provider_credentials
 from app.services.task_center.ai_generation_contract import (
     AI_GENERATION_UNAVAILABLE_MESSAGE,
@@ -93,6 +97,7 @@ class DraftAttemptOutcome:
     error: Exception | None
     route_retryable: bool
     continue_candidates: bool
+    http_chain_id: str = ""
 
 
 def generate_with_provider_candidates(
@@ -102,6 +107,7 @@ def generate_with_provider_candidates(
     *,
     policy: ProviderCandidatePolicy,
 ) -> AiGenerationResult:
+    request = replace(request, system_prompt=with_automation_identity(request.system_prompt))
     providers, provider_calls = draft_provider_calls(session, provider, policy)
     failures = _CandidateFailures()
     attempts: list[dict] = []
@@ -158,8 +164,9 @@ def _record_draft_attempt(
         provider_request_id=_candidate_request_id(
             request, candidate.id, priority, credentials,
         ),
-        outcome="success" if outcome.result else "failed",
+        outcome="success" if outcome.result else _failure_outcome(outcome.error),
         error_code=_candidate_error_code(outcome.error), latency_ms=clock.latency_ms(), usage=usage,
+        http_chain_id=outcome.http_chain_id,
     )
 
 
@@ -171,7 +178,7 @@ def _candidate_attempt(
     return {
         "provider_id": provider.id,
         "model": str(getattr(credentials, "model_name", provider.model_name) or ""),
-        "outcome": "success" if error is None else "failed",
+        "outcome": "success" if error is None else _failure_outcome(error),
         "error_code": _candidate_error_code(error),
     }
 
@@ -180,6 +187,10 @@ def _candidate_error_code(error: Exception | None) -> str:
     if isinstance(error, ProviderAdmissionBlocked):
         return error.reason
     return type(error).__name__ if error is not None else ""
+
+
+def _failure_outcome(error: Exception | None) -> str:
+    return "provider_result_unknown" if isinstance(error, AiProviderResultUnknown) else "failed"
 
 
 @dataclass(frozen=True)
@@ -244,21 +255,27 @@ def attempt_provider_draft(
     priority: int = 1,
 ) -> DraftAttemptOutcome:
     route_bound = bool(policy.route_provider_ids)
+    gateway = scoped_provider_gateway(ai_gateway, session, config=policy.attempt_config,
+        provider_id=candidate.id, credentials=credentials, purpose=policy.purpose,
+        request_id=_candidate_request_id(request, candidate.id, priority, credentials))
+    chain_id = getattr(gateway, "_provider_http_chain_id", "")
     try:
         lease = begin_provider_call(candidate)
     except ProviderAdmissionBlocked as exc:
         return DraftAttemptOutcome(None, exc, route_bound, True)
     try:
         result = generate_provider_drafts(
-            candidate, credentials, request, lease=lease, priority=priority,
+            candidate, credentials, request, lease=lease, priority=priority, execution_config=policy.attempt_config,
+            gateway=gateway,
         )
-        return DraftAttemptOutcome(result, None, False, False)
+        return DraftAttemptOutcome(result, None, False, False, http_chain_id=chain_id)
     except ProviderAdmissionBlocked as exc:
-        return DraftAttemptOutcome(None, exc, route_bound, has_more)
+        return DraftAttemptOutcome(None, exc, route_bound, has_more, http_chain_id=chain_id)
     except Exception as exc:
-        return provider_draft_failure(
+        outcome = provider_draft_failure(
             session, candidate, error=exc, policy=policy, has_more=has_more,
         )
+        return replace(outcome, http_chain_id=chain_id)
 
 
 def provider_draft_failure(
@@ -269,9 +286,7 @@ def provider_draft_failure(
     policy: ProviderCandidatePolicy,
     has_more: bool,
 ) -> DraftAttemptOutcome:
-    from app.services.antigravity_provider_client import AntigravityProviderResultUnknown
-
-    if isinstance(error, AntigravityProviderResultUnknown):
+    if isinstance(error, AiProviderResultUnknown):
         return DraftAttemptOutcome(None, error, False, False)
     if is_ai_provider_quota_exhausted(error):
         mark_provider_quota_exhausted(candidate, error)
@@ -296,10 +311,12 @@ def generate_provider_drafts(
     *,
     lease: ProviderProbeLease | None,
     priority: int = 1,
+    execution_config: dict | None = None,
+    gateway=None,
 ) -> AiGenerationResult:
     antigravity = getattr(credentials, "provider_type", "") == "antigravity_cli"
     try:
-        result = ai_gateway.generate_drafts(
+        result = (gateway or ai_gateway).generate_drafts(
             credentials,
             request.prompt,
             count=request.count,
@@ -309,7 +326,7 @@ def generate_provider_drafts(
             temperature=None if antigravity else request.temperature,
             max_tokens=None if antigravity else request.max_tokens,
             system_prompt=request.system_prompt,
-            timeout=request.timeout,
+            **provider_invocation_options(execution_config, legacy_timeout=request.timeout),
             request_id=_candidate_request_id(
                 request, provider.id, priority, credentials,
             ),
@@ -427,11 +444,7 @@ def ordered_route_providers(session: Session, provider_ids: tuple[int, ...]) -> 
 
 
 def route_transport_failure(error: Exception) -> bool:
-    from app.services.antigravity_provider_client import (
-        AntigravityProviderResultUnknown,
-    )
-
-    if isinstance(error, AntigravityProviderResultUnknown):
+    if isinstance(error, AiProviderResultUnknown):
         return False
     if isinstance(error, urllib.error.HTTPError):
         return int(error.code or 0) >= 500
@@ -482,6 +495,8 @@ def mark_provider_quota_exhausted(provider: AiProvider, error: Exception) -> Non
 
 
 def raise_provider_generation_failure(error: Exception | None, purpose: str) -> None:
+    if isinstance(error, AiProviderResultUnknown):
+        raise error
     if isinstance(error, AiMalformedStructuredOutputError):
         raise AiGenerationUnavailable("malformed_output") from error
     if purpose in LONG_RUNNING_AI_PURPOSES:

@@ -183,8 +183,11 @@ def test_fresh_empty_snapshot_hides_messages_from_previous_revision(monkeypatch)
     monkeypatch.setattr(executor_common, "_now", lambda: current_time[0])
     monkeypatch.setattr(
         channel_listener_runtime,
-        "credentials_for_task_account",
-        lambda *_args: object(),
+        "task_account_runtime_transport",
+        lambda _session, account, _task_type: SimpleNamespace(
+            session_ciphertext=account.session_ciphertext,
+            credentials=object(),
+        ),
     )
     monkeypatch.setattr(
         channel_listener_runtime.gateway,
@@ -223,7 +226,12 @@ def test_listener_dispatches_source_edit_revision_operation(monkeypatch) -> None
     operations = []
     monkeypatch.setattr(channel_listener_runtime, "_now", lambda: current_time[0])
     monkeypatch.setattr(
-        channel_listener_runtime, "credentials_for_task_account", lambda *_args: object(),
+        channel_listener_runtime,
+        "task_account_runtime_transport",
+        lambda _session, account, _task_type: SimpleNamespace(
+            session_ciphertext=account.session_ciphertext,
+            credentials=object(),
+        ),
     )
     monkeypatch.setattr(
         channel_listener_runtime.gateway, "fetch_channel_messages",
@@ -266,7 +274,12 @@ def test_discussion_identity_creates_successor_without_mutating_source(monkeypat
     ]
     monkeypatch.setattr(channel_listener_runtime, "_now", lambda: current_time[0])
     monkeypatch.setattr(
-        channel_listener_runtime, "credentials_for_task_account", lambda *_args: object(),
+        channel_listener_runtime,
+        "task_account_runtime_transport",
+        lambda _session, account, _task_type: SimpleNamespace(
+            session_ciphertext=account.session_ciphertext,
+            credentials=object(),
+        ),
     )
     monkeypatch.setattr(
         channel_listener_runtime.gateway, "fetch_channel_messages",
@@ -489,8 +502,11 @@ def _stub_listener_fetch(monkeypatch, calls: list[tuple]) -> None:
     monkeypatch.setattr(channel_listener_runtime, "_now", lambda: NOW)
     monkeypatch.setattr(
         channel_listener_runtime,
-        "credentials_for_task_account",
-        lambda *_args: object(),
+        "task_account_runtime_transport",
+        lambda _session, account, _task_type: SimpleNamespace(
+            session_ciphertext=account.session_ciphertext,
+            credentials=object(),
+        ),
     )
     monkeypatch.setattr(
         channel_listener_runtime.gateway,
@@ -522,8 +538,11 @@ def test_channel_view_uses_snapshot_revision_messages_when_stale(monkeypatch) ->
     monkeypatch.setattr(executor_common, "_now", lambda: current_time[0])
     monkeypatch.setattr(
         channel_listener_runtime,
-        "credentials_for_task_account",
-        lambda *_args: object(),
+        "task_account_runtime_transport",
+        lambda _session, account, _task_type: SimpleNamespace(
+            session_ciphertext=account.session_ciphertext,
+            credentials=object(),
+        ),
     )
     monkeypatch.setattr(
         channel_listener_runtime.gateway,

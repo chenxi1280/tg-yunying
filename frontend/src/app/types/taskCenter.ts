@@ -168,7 +168,19 @@ export type TaskAccountCoverageItem = {
   completed_at: string | null;
 };
 
+export type TaskRecentSuccess = {
+  window_hours: number;
+  window_start: string;
+  window_end: string;
+  time_basis: 'original_call_confirmation';
+  metric_label: string;
+  success_count: number;
+  unassigned_count: number;
+  account_counts: { account_id: number; success_count: number }[];
+};
+
 export type TaskCenterStats = Record<string, any> & {
+  recent_success?: TaskRecentSuccess;
   account_coverage?: TaskAccountCoverage;
   search_click_target?: SearchClickTargetProgress;
   search_join_membership_target?: SearchClickTargetProgress;
@@ -553,6 +565,12 @@ export type TaskCenterDetail = {
     }>;
   };
   message_groups: Array<{
+    album_id?: string;
+    target_count_proven?: boolean;
+    planned_child_rpc?: number;
+    confirmed_child_reactions?: number;
+    materialized_accounts?: number;
+    unknown_accounts?: number;
     channel_target_id: number | null;
     channel_title: string;
     channel_username: string;

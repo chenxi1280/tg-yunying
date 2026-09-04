@@ -47,6 +47,7 @@ from .worker_role_loaders import (
     drain_account_security_batches,
     drain_account_sync_records,
     drain_ai_generation,
+    drain_comment_generation,
     drain_ai_message_memory_maintenance,
     drain_archives,
     drain_continuous_campaigns,
@@ -71,6 +72,7 @@ from .worker_periodic_heartbeat import (
     PeriodicHeartbeatThreads,
     start_periodic_heartbeats,
 )
+from .worker_independent_lanes import independent_comment_lane
 
 logger = logging.getLogger(__name__)
 LOCAL_HEALTHCHECK_FILE = "/tmp/tgyunying-worker-heartbeat"
@@ -183,6 +185,8 @@ def drain_once(limit: int = 100, *, role: str | None = None) -> int:
         return drain_ai_message_memory_maintenance(SessionLocal, limit)
     if selected_role == "ai-generation":
         return drain_ai_generation(SessionLocal, limit)
+    if selected_role == "comment-generation":
+        return drain_comment_generation(SessionLocal, limit)
     if selected_role == "voice-profile":
         settings = get_settings()
         return drain_voice_profile_generation(
@@ -408,6 +412,25 @@ def _periodic_heartbeat_loop(role: str, limit: int, stop_event: threading.Event)
 
 
 def run_worker(
+    *,
+    limit: int = 100,
+    interval_seconds: float = 2.0,
+    max_iterations: int | None = None,
+    stop_event: threading.Event | None = None,
+    role: str | None = None,
+    dispatcher_lifecycle: DispatcherLifecycle | None = None,
+) -> None:
+    selected_role = _normalize_role(role)
+    options = {"limit": limit, "interval_seconds": interval_seconds, "max_iterations": max_iterations}
+    with independent_comment_lane(
+        selected_role, stop_event=stop_event,
+        run=lambda event: _run_single_worker(**options, role="comment-generation", stop_event=event),
+    ) as shared_stop:
+        _run_single_worker(**options, role=selected_role, stop_event=shared_stop,
+                           dispatcher_lifecycle=dispatcher_lifecycle)
+
+
+def _run_single_worker(
     *,
     limit: int = 100,
     interval_seconds: float = 2.0,

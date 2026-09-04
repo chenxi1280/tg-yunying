@@ -144,6 +144,7 @@ from .dispatcher import (
     recover_pending_visibility_credits,
 )
 from .daily_coverage import recover_terminal_coverage_reservations
+from .engagement_fleet_activity import recover_fleet_activity_projections
 from .daily_coverage_planning import MAX_DAILY_COVERAGE_PLAN_BATCH
 from .daily_fulfillment import record_daily_fulfillment_decision
 from .executors import (
@@ -248,6 +249,7 @@ from .planner_wake import (
     mark_task_planner_started,
     wake_task_planner,
 )
+from .engagement_conversation_wake import drain_conversation_wake_transactions
 from .ai_generation_recovery import recover_stale_pre_gateway_generation
 from .ai_pacing_takeover import release_safe_ai_pacing_owners
 from .recovery_claims import (
@@ -354,6 +356,13 @@ from .config_fields import (
     GROUP_RELAY_LEGACY_CREATE_FIELDS,
     SEARCH_JOIN_PACING_FIELDS,
     TYPE_SETTINGS_FIELDS,
+)
+from .engagement_binding import (
+    freeze_initial_binding,
+    projected_account_config,
+    synchronize_task_binding,
+    validate_engagement_binding,
+    validate_engagement_timezone,
 )
 from .search_rank_deboost import (
     preselect_exempt_group,
@@ -572,6 +581,10 @@ def _new_task(session: Session, tenant_id: int, task_type: str, payload) -> Task
         task_type, raw_type_config, payload.account_config.model_dump(mode="json")
     )
     type_config = validated_type_config(task_type, raw_type_config)
+    validate_engagement_timezone(task_type, type_config, payload.timezone)
+    engagement_binding = validate_engagement_binding(
+        session, tenant_id, task_type, type_config
+    )
     _validate_channel_comment_fallback(
         session, tenant_id, task_type, type_config,
     )
@@ -613,7 +626,9 @@ def _new_task(session: Session, tenant_id: int, task_type: str, payload) -> Task
         scheduled_start=payload.scheduled_start,
         scheduled_end=payload.scheduled_end,
         max_duration_hours=payload.max_duration_hours,
-        account_config=payload.account_config.model_dump(mode="json"),
+        account_config=projected_account_config(
+            payload.account_config.model_dump(mode="json"), engagement_binding
+        ),
         pacing_config=pacing_config,
         failure_policy=payload.failure_policy.model_dump(mode="json"),
         type_config=type_config,
@@ -634,6 +649,7 @@ def _new_task(session: Session, tenant_id: int, task_type: str, payload) -> Task
     )
     session.add(task)
     session.flush()
+    freeze_initial_binding(session, task, engagement_binding)
     activate_task_ai_content_config(session, task)
     initialize_all_account_task_scope(session, task)
     return task
@@ -1332,6 +1348,8 @@ def update_task(
         previous_config=previous_config,
         previous_timezone=previous_timezone,
     )
+    validate_engagement_timezone(task.type, task.type_config or {}, task.timezone)
+    synchronize_task_binding(session, task)
     activate_task_ai_content_config(session, task)
     task.updated_at = _now()
     audit(
@@ -1467,6 +1485,8 @@ def update_task_settings(
         _validate_channel_comment_fallback(
             session, tenant_id, task.type, task.type_config,
         )
+    validate_engagement_timezone(task.type, task.type_config or {}, task.timezone)
+    synchronize_task_binding(session, task)
     incremented = increment_revision_for_continuity_change(
         task,
         previous_config=previous_config,
@@ -3202,6 +3222,7 @@ def start_task_in_transaction(
         except ValueError as exc:
             _record_rank_deboost_readiness_blocker(task, exc)
     _mark_task_started(session, task)
+    _ensure_target_scope_claims(session, task)
     activate_task_ai_content_config(session, task)
     _initialize_runtime_contracts(session, task)
     _set_runtime_projection(session, task)
@@ -3280,6 +3301,7 @@ def pause_task(session: Session, tenant_id: int, task_id: str, actor: str) -> Ta
             released_pacing_owners = _clear_unfinished_plan(session, task)
             cancelled_jobs = cancel_open_generation_jobs(session, task)
             cleanup_status = "complete"
+    _release_target_scope_claims(session, task, reason="task_paused")
     _advance_task_lifecycle_epoch(task, "paused")
     task.status = "paused"
     task.next_run_at = None
@@ -3352,6 +3374,7 @@ def stop_task(
         session.commit()
         session.refresh(task)
         return task
+    _release_target_scope_claims(session, task, reason="task_stopped")
     _advance_task_lifecycle_epoch(task, "stopped")
     task.status = "stopped"
     task.next_run_at = None
@@ -3398,6 +3421,7 @@ def delete_task(
 
         assert_group_clone_delete_safe(session, task)
     now = _now()
+    _release_target_scope_claims(session, task, reason="task_deleted")
     _advance_task_lifecycle_epoch(task, "deleted")
     task.status = "deleted"
     task.next_run_at = None
@@ -4688,6 +4712,10 @@ def _drain_task_recovery(
             session,
             limit=max(1, int(limit or 0)),
         )
+        processed += recover_fleet_activity_projections(
+            session,
+            limit=max(1, int(limit or 0)),
+        )
         from .unknown_deadline_closure import close_unknown_after_deadline
 
         processed += close_unknown_after_deadline(
@@ -4698,8 +4726,11 @@ def _drain_task_recovery(
         session.commit()
         processed += _recover_continuous_task_states(session)
         processed += channel_comment.wake_deferred_comment_replacements(session)
-        session.commit()
         processed += _recover_stale_executing_actions(session, limit=limit)
+        from .engagement_runtime_resources import recover_stale_concurrency_leases
+
+        processed += recover_stale_concurrency_leases(session, limit=limit)
+        session.commit()
         processed += expire_reviews(session)
         settings = get_settings()
         if settings.enable_runtime_retention_cleanup:
@@ -4753,7 +4784,7 @@ def drain_task_planner(session_factory, limit: int = 100) -> int:
 def _drain_task_planner(
     session_factory, *, limit: int, process_type: str | None
 ) -> tuple[int, set[str]]:
-    processed = 0
+    processed = drain_conversation_wake_transactions(session_factory, limit=limit)
     with session_factory() as session:
         if process_type:
             record_worker_heartbeat(
@@ -5102,6 +5133,9 @@ def _drain_task_dispatcher(
     process_type: str | None,
     execution_lane: str,
 ) -> int:
+    from .telegram_termination import drain_telegram_terminations
+
+    drain_telegram_terminations(session_factory)
     with session_factory() as session:
         dialect_name = session.bind.dialect.name if session.bind else ""
         effective_concurrency = _lane_concurrency(execution_lane)
@@ -5553,6 +5587,14 @@ def _commit_claimed_stale_recovery(
     now: datetime,
 ) -> None:
     from .dispatcher import _finalize_dispatch_action
+
+    if latest_attempt is not None:
+        from .engagement_runtime_resources import settle_attempt_resources
+
+        settle_attempt_resources(
+            latest_attempt, action,
+            remote_mutation_started=_attempt_gateway_started(latest_attempt),
+        )
 
     _finalize_dispatch_action(session, action, project_task_stats=False)
     release_recovery_claim(action, claim)
@@ -6960,16 +7002,34 @@ def _normal_planner_task_ids(
 
 def _check_stop_conditions(session: Session, task: Task) -> bool:
     now = _now()
-    scheduled_end = _naive_datetime(task.scheduled_end)
+    scheduled_end = as_beijing(task.scheduled_end) if task.scheduled_end else None
     if scheduled_end and scheduled_end <= now:
         if task.type in SEARCH_CLICK_TASK_TYPES:
             _clear_unfinished_plan(session, task)
+        _release_target_scope_claims(session, task, reason="task_completed")
         _advance_task_lifecycle_epoch(task, "completed")
         task.status = "completed"
         task.next_run_at = None
         refresh_task_stats(session, task)
         return True
     return False
+
+
+def _ensure_target_scope_claims(session: Session, task: Task) -> None:
+    from .engagement_target_scope import ensure_task_target_scope_claims
+
+    ensure_task_target_scope_claims(session, task)
+
+
+def _release_target_scope_claims(
+    session: Session,
+    task: Task,
+    *,
+    reason: str,
+) -> None:
+    from .engagement_target_scope import release_task_target_scope_claims
+
+    release_task_target_scope_claims(session, task, reason=reason)
 
 
 def _mark_task_started(session: Session, task: Task) -> None:
@@ -7813,9 +7873,7 @@ def _unknown_failure_diagnosis() -> dict[str, str]:
 
 
 def _naive_datetime(value):
-    if value and getattr(value, "tzinfo", None):
-        return value.replace(tzinfo=None)
-    return value
+    return as_beijing(value) if value else value
 
 
 def _open_actions_state(session: Session, task: Task) -> tuple[bool, bool]:
@@ -7832,7 +7890,7 @@ def _open_actions_state(session: Session, task: Task) -> tuple[bool, bool]:
         return False, False
     is_future = _scheduled_at_is_future(earliest)
     task.next_run_at = (
-        _absolute_naive_datetime(earliest)
+        as_beijing(earliest)
         if is_future
         else _now() + timedelta(seconds=OPEN_ACTION_PLANNER_RECHECK_SECONDS)
     )
@@ -7840,10 +7898,7 @@ def _open_actions_state(session: Session, task: Task) -> tuple[bool, bool]:
 
 
 def _scheduled_at_is_future(value: datetime) -> bool:
-    if value.tzinfo is not None:
-        absolute_now = datetime.now(UTC).replace(tzinfo=None)
-        return _absolute_naive_datetime(value) > absolute_now
-    return value > _now()
+    return as_beijing(value) > _now()
 
 
 def _absolute_naive_datetime(value: datetime) -> datetime:

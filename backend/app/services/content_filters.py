@@ -53,7 +53,7 @@ AI_META_MARKERS = (
 
 AI_META_PATTERNS = (
     re.compile(r"^\s*(?:好的|可以|明白)[，,\s]*(?:我会|我来|让我)", re.IGNORECASE),
-    re.compile(r"^\s*(?:as an ai|i need to analyze|let me analyze)\b", re.IGNORECASE),
+    re.compile(r"^\s*(?:as an ai[^,.\n]*[,.:]\s*)?(?:i need to analyze|let me analyze)\b", re.IGNORECASE),
     re.compile(r"^\s*这是?(?:一个|一段)?明显.*(?:色情|敏感|违规|请求|任务|频道|内容)"),
     re.compile(r"(?:这个)?请求要求我.*(?:生成|telegram|频道|评论区|短评)", re.IGNORECASE),
     re.compile(r"^\s*(?:我)?无法(?:为|协助|提供|支持).*(?:请求|内容|帮助|活动)"),

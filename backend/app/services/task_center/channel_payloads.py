@@ -13,6 +13,7 @@ class ViewMessagePayload(BaseModel):
     target_reference_revision: int | None = None
     target_reference_snapshot: dict[str, str] = Field(default_factory=dict)
     channel_message_id: int | None = None
+    source_revision_id: str = ""
     message_id: int = Field(ge=1)
     target_display: str = ""
     message_content: str = ""
@@ -27,6 +28,8 @@ class LikeMessagePayload(ViewMessagePayload):
     reaction_emoji: str = Field(default="👍", min_length=1, max_length=32)
     reaction_contract_version: int = 0
     reaction_fulfillment_obligation_id: str = ""
+    reaction_source_content_hash: str = ""
+    reaction_capability_revision: str = ""
 
 
 class PostCommentPayload(ViewMessagePayload):
@@ -43,6 +46,7 @@ class PostCommentPayload(ViewMessagePayload):
     reply_target_author: str = ""
     reply_target_preview: str = ""
     reply_target_source: str = ""
+    reply_target_content_hash: str = ""
     review_approved: bool = False
     slot_id: str = ""
     comment_fulfillment_obligation_id: str = ""

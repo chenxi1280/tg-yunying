@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 import hashlib
+import logging
 import os
 import socket
 
@@ -20,13 +21,16 @@ from app.models import (
 )
 from app.services._common import _now, gateway
 from app.services.channel_target_reference import channel_read_reference
-from app.services.developer_apps import credentials_for_task_account
+from app.services.account_runtime_transport import task_account_runtime_transport
 
 from .account_pool import select_task_accounts
 from .channel_listener_reactions import credential_task
 from .channel_listener_reactions import probe_reaction_capability
 from .channel_listener_reactions import record_reaction_probe_state
 from .channel_listener_snapshot_persistence import persist_channel_snapshot
+from .channel_source_pagination import source_page_offset
+from .channel_source_history import initial_history_ready
+from .channel_listener_claim import ChannelSourceClaimLost, locked_source_state
 from .channel_comment_listener_errors import (
     clear_owned_listener_errors,
     record_listener_error,
@@ -48,6 +52,9 @@ class ChannelListenerSource:
     fetch_limit: int
     reaction_capability_required: bool = False
     task_ids: list[str] = field(default_factory=list)
+    fetch_offset_id: int = 0
+    claim_owner: str = ""
+    claimed_revision: int | None = None
 
 
 @dataclass(frozen=True)
@@ -145,6 +152,8 @@ def channel_snapshot_binding(
     if state.fresh_until_at is None or _wall(state.fresh_until_at) < timestamp:
         return "stale", state.next_probe_at, state.id, int(state.snapshot_revision or 0)
     if int(state.snapshot_revision or 0) < int(subscription.required_snapshot_revision or 0):
+        return "pending", state.next_probe_at, state.id, int(state.snapshot_revision or 0)
+    if not initial_history_ready(session, task, state=state):
         return "pending", state.next_probe_at, state.id, int(state.snapshot_revision or 0)
     return "ready", state.next_probe_at, state.id, int(state.snapshot_revision or 0)
 
@@ -306,6 +315,8 @@ def _drain_channel_source(session_factory, source: ChannelListenerSource) -> str
         state = _claim_source(session, source)
         if state is None:
             return "skipped"
+        source = replace(source, fetch_offset_id=source_page_offset(session, state.id),
+            claim_owner=state.lease_owner, claimed_revision=state.snapshot_revision)
         fetch = _fetch_context(session, source)
         if fetch is None:
             _mark_error(
@@ -316,37 +327,36 @@ def _drain_channel_source(session_factory, source: ChannelListenerSource) -> str
             )
             session.commit()
             return "error"
-        channel_peer, session_ciphertext, credentials = fetch
         tracked_message_ids = _tracked_message_ids(session, source)
         session.commit()
         try:
-            observations = _fetch_source_observations(
-                source,
-                channel_peer=channel_peer,
-                session_ciphertext=session_ciphertext,
-                credentials=credentials,
-                tracked_message_ids=tracked_message_ids,
-            )
-        except Exception as exc:  # noqa: BLE001 - typed state remains visible to Planner.
+            _collect_and_persist_source_page(session, source, state_id=state.id,
+                fetch=fetch, tracked_message_ids=tracked_message_ids)
+            session.commit()
+        except ChannelSourceClaimLost:
             session.rollback()
-            state = _listener_state(session, source)
+            return "skipped"
+        except Exception as exc:  # noqa: BLE001 - typed state remains visible to Planner.
+            logging.getLogger(__name__).exception("Channel source page failed state_id=%s", state.id)
+            session.rollback()
+            try:
+                state = locked_source_state(session, source, state.id)
+            except ChannelSourceClaimLost:
+                return "skipped"
             _mark_error(session, source, state, code=type(exc).__name__)
             session.commit()
             return "error"
-        _persist_source_result(
-            session,
-            source,
-            state_id=state.id,
-            snapshots=observations[0],
-            channel_peer=channel_peer,
-            session_ciphertext=session_ciphertext,
-            credentials=credentials,
-            deletion_observations=observations[1],
-            discussion_snapshot=observations[2],
-            discussion_probe_error=observations[3],
-        )
-        session.commit()
         return "processed"
+
+
+def _collect_and_persist_source_page(session, source, *, state_id, fetch, tracked_message_ids):
+    channel_peer, session_ciphertext, credentials = fetch
+    observations = _fetch_source_observations(source, channel_peer=channel_peer,
+        session_ciphertext=session_ciphertext, credentials=credentials, tracked_message_ids=tracked_message_ids)
+    _persist_source_result(session, source, state_id=state_id, snapshots=observations[0],
+        channel_peer=channel_peer, session_ciphertext=session_ciphertext, credentials=credentials,
+        deletion_observations=observations[1], discussion_snapshot=observations[2],
+        discussion_probe_error=observations[3], source_observed_at=observations[4])
 
 
 def _fetch_source_observations(
@@ -357,13 +367,16 @@ def _fetch_source_observations(
     credentials,
     tracked_message_ids: list[int],
 ) -> tuple:
+    page = {"offset_id": source.fetch_offset_id} if source.fetch_offset_id else {}
     snapshots = gateway.fetch_channel_messages(
         source.account_id,
         channel_peer,
         session_ciphertext=session_ciphertext,
         credentials=credentials,
         limit=source.fetch_limit,
+        **page,
     )
+    source_observed_at = _now()
     discussion_snapshot, discussion_probe_error = _probe_channel_discussion(
         source, snapshots=snapshots, channel_peer=channel_peer,
         session_ciphertext=session_ciphertext, credentials=credentials,
@@ -373,7 +386,7 @@ def _fetch_source_observations(
         channel_peer=channel_peer, session_ciphertext=session_ciphertext,
         credentials=credentials,
     )
-    return snapshots, deletions, discussion_snapshot, discussion_probe_error
+    return snapshots, deletions, discussion_snapshot, discussion_probe_error, source_observed_at
 
 
 def _tracked_message_ids(
@@ -449,6 +462,7 @@ def _persist_source_result(
     deletion_observations,
     discussion_snapshot,
     discussion_probe_error: str,
+    source_observed_at: datetime | None = None,
 ) -> None:
     reaction_capability, probe_error = probe_reaction_capability(
         gateway.fetch_channel_reaction_capability,
@@ -467,7 +481,7 @@ def _persist_source_result(
         discussion_snapshot=discussion_snapshot,
         discussion_probe_error=discussion_probe_error,
         reaction_capability=reaction_capability,
-        now_value=_now(),
+        now_value=source_observed_at or _now(),
         wake_subscribers=_wake_subscribers,
     )
     record_reaction_probe_state(
@@ -483,13 +497,16 @@ def _claim_source(
     source: ChannelListenerSource,
 ) -> ListenerSourceState | None:
     state = _listener_state(session, source)
+    state = session.scalar(select(ListenerSourceState).where(ListenerSourceState.id == state.id)
+        .with_for_update(skip_locked=True).execution_options(populate_existing=True))
+    if state is None:
+        return None
     now_value = _now()
     if state.next_probe_at and _wall(state.next_probe_at) > _wall(now_value):
         return None
     owner = _listener_owner()
     if (
         state.lease_owner
-        and state.lease_owner != owner
         and state.lease_expires_at
         and _wall(state.lease_expires_at) > _wall(now_value)
     ):
@@ -509,10 +526,17 @@ def _fetch_context(session: Session, source: ChannelListenerSource):
         task_ids=source.task_ids,
         reaction_capability_required=source.reaction_capability_required,
     )
-    if channel is None or account is None or task is None or not account.session_ciphertext:
+    if channel is None or account is None or task is None:
         return None
-    credentials = credentials_for_task_account(session, account, task.type)
-    return channel_read_reference(channel), account.session_ciphertext, credentials
+    try:
+        transport = task_account_runtime_transport(session, account, task.type)
+    except ValueError:
+        return None
+    return (
+        channel_read_reference(channel),
+        transport.session_ciphertext,
+        transport.credentials,
+    )
 
 
 def _mark_error(
@@ -526,7 +550,6 @@ def _mark_error(
     state.snapshot_status = "unavailable"
     state.last_error_code = code[:80]
     state.last_error = code[:500]
-    state.observed_at = now_value
     state.fresh_until_at = None
     state.next_probe_at = now_value + timedelta(seconds=source.collect_window_seconds)
     state.lease_owner = ""

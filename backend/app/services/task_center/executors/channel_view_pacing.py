@@ -160,6 +160,10 @@ def reserve_view_action_pacing(
                 planned_at,
             ),
             deadline_at=deadline_at,
+            engagement_contract_version=str(
+                (request.task.type_config or {}).get("engagement_contract_version") or ""
+            ),
+            action_class="view",
         )
     except AccountPacingDeadlineExceeded:
         record_view_deadline_capacity_blocker(request.task, planned_at, deadline_at)

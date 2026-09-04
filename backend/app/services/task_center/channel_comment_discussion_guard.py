@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import (
     Action,
     ChannelCommentGroundingEnrollment,
+    ChannelMessageComment,
     ChannelDiscussionGroupBinding,
     ChannelDiscussionThreadBinding,
     ChannelMessageSourceRevision,
@@ -155,7 +158,11 @@ def discussion_send_blocker(
     blocker = _send_contract_blocker(
         session, action, payload=payload, now_value=observed_at,
     )
-    return blocker or _rpc_identity_blocker(payload)
+    return blocker or _rpc_identity_blocker(payload) or _reply_target_blocker(
+        session,
+        action,
+        payload,
+    )
 
 
 def _send_contract_blocker(
@@ -201,6 +208,26 @@ def _rpc_identity_blocker(payload) -> str:
         return "channel_comment_reply_identity_mismatch"
     if not payload.thread_root_message_id:
         return "discussion_thread_root_missing"
+    return ""
+
+
+def _reply_target_blocker(session: Session, action: Action, payload) -> str:
+    if not payload.reply_to_message_id or payload.reply_target_source != "channel_comment":
+        return ""
+    comment = session.scalar(select(ChannelMessageComment).where(
+        ChannelMessageComment.tenant_id == action.tenant_id,
+        ChannelMessageComment.channel_target_id == payload.channel_target_id,
+        ChannelMessageComment.channel_message_id == payload.channel_message_id,
+        ChannelMessageComment.comment_message_id == payload.reply_to_message_id,
+        ChannelMessageComment.parent_comment_message_id.is_(None),
+        ChannelMessageComment.is_bot.is_(False),
+    ))
+    if comment is None or not str(comment.content_preview or "").strip():
+        return "discussion_reply_target_missing"
+    content = str(comment.content_preview or "").strip()
+    content_hash = hashlib.sha256(content.encode()).hexdigest()
+    if not payload.reply_target_content_hash or content_hash != payload.reply_target_content_hash:
+        return "discussion_reply_target_edited"
     return ""
 
 

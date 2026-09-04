@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -96,6 +96,25 @@ class ChannelCommentPlanContract(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
     task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"))
+    task_day_ledger_id: Mapped[str | None] = mapped_column(
+        ForeignKey("task_day_ledgers.id", ondelete="RESTRICT"), nullable=True
+    )
+    daily_participation_plan_id: Mapped[str | None] = mapped_column(
+        ForeignKey("task_participation_unit_plans.id", ondelete="RESTRICT"), nullable=True
+    )
+    planning_admission_snapshot_id: Mapped[str | None] = mapped_column(
+        ForeignKey("planning_admission_snapshots.id", ondelete="RESTRICT"), nullable=True
+    )
+    source_participation_plan_id: Mapped[str | None] = mapped_column(
+        ForeignKey("task_participation_unit_plans.id", ondelete="RESTRICT"), nullable=True
+    )
+    source_journey_plan_id: Mapped[str | None] = mapped_column(
+        ForeignKey(
+            "cross_adapter_source_journey_plan_revisions.id",
+            ondelete="RESTRICT",
+        ),
+        nullable=True,
+    )
     channel_message_id: Mapped[int] = mapped_column(
         ForeignKey("channel_messages.id", ondelete="CASCADE"),
     )
@@ -114,6 +133,9 @@ class ChannelCommentPlanContract(Base):
     eligible_account_ids_hash: Mapped[str] = mapped_column(String(64))
     participation_seed: Mapped[str] = mapped_column(String(128))
     effective_participation_bps: Mapped[int] = mapped_column(Integer)
+    rounded_required_distinct_account_count: Mapped[int] = mapped_column(Integer, default=0)
+    realized_participation_bps: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    integer_quantization_adjustment: Mapped[bool] = mapped_column(Boolean, default=False)
     uncapped_required_distinct_account_count: Mapped[int] = mapped_column(Integer, default=0)
     business_max_comments_per_message: Mapped[int] = mapped_column(Integer, default=80)
     business_cap_state: Mapped[str] = mapped_column(String(32), default="not_adjusted")

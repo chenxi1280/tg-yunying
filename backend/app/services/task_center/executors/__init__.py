@@ -48,6 +48,9 @@ def build_task_plan(session: Session, task: Task) -> int:
         task.status = "failed"
         task.last_error = f"未知任务类型: {task.type}"
         return 0
+    from ..engagement_target_scope import ensure_task_target_scope_claims
+
+    ensure_task_target_scope_claims(session, task)
     if (
         task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION
         and task.type in {"channel_like", "channel_view"}

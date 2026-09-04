@@ -338,9 +338,13 @@ def invalidate_terminal_pre_gateway_obligation_slot(
 def recover_terminal_pre_gateway_window_slots(
     session: Session,
     limit: int,
+    *,
+    task_type: str | None = None,
 ) -> int:
+    from .generation_recovery_scope import generation_task_filter
     slots = session.scalars(
         _terminal_pre_gateway_slot_query()
+        .where(generation_task_filter(task_type))
         .order_by(AiContentWindowPlanSlot.created_at, AiContentWindowPlanSlot.id)
         .limit(max(1, int(limit)))
         .with_for_update(skip_locked=True)

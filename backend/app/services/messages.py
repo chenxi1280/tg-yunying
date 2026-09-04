@@ -1251,6 +1251,12 @@ def _evaluate_message_task_gate(
     )
     if block is not None or task.target_type == "private" or not peer_id:
         return block
+    response_owner = _unified_listener_response_owner(session, task, peer_id)
+    if response_owner:
+        return OutboundGateBlock(
+            "conversation_response_authority_denied",
+            f"统一活群任务 {response_owner} 已拥有该群响应写权限",
+        )
     peer_type = "channel" if (
         (group and group.group_type in {"supergroup", "channel"})
         or (target and target.target_type in {"channel", "supergroup"})
@@ -1266,6 +1272,27 @@ def _evaluate_message_task_gate(
     )
     return None if allowed else OutboundGateBlock(
         "group_mutation_authority_denied", reason,
+    )
+
+
+def _unified_listener_response_owner(
+    session: Session,
+    task: MessageTask,
+    peer_id: str,
+) -> str | None:
+    if not task.campaign_id:
+        return None
+    campaign = session.get(Campaign, task.campaign_id)
+    if campaign is None or campaign.campaign_type != "监听上下文续聊":
+        return None
+    from app.services.task_center.engagement_target_scope import (
+        active_unified_group_ai_owner,
+    )
+
+    return active_unified_group_ai_owner(
+        session,
+        tenant_id=task.tenant_id,
+        canonical_peer_id=peer_id,
     )
 
 

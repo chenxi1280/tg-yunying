@@ -20,6 +20,7 @@ from .channel_comment_acceptance import channel_comment_acceptance
 from .membership_recovery import classify_membership_recovery
 from .account_coverage import task_account_coverage
 from .dispatch_reservations import task_dispatch_claim_snapshot
+from .recent_success import recent_task_success
 from .search_join_protocol import task_search_join_protocol_snapshot
 from app.services._common import _now
 from app.services.task_runtime_stage import derive_task_runtime_stage
@@ -104,7 +105,10 @@ def _task_payload(
 
 
 def _stats_with_account_coverage(session: Session, task: Task, stats: dict[str, Any]) -> dict[str, Any]:
+    from .album_reaction_facts import album_reaction_summary
     result = dict(stats or {})
+    if task.type == "channel_like":
+        result["album_reactions"] = album_reaction_summary(session, task)
     if task.type == "group_ai_chat":
         result = hard_hourly_stats(session, task, _now(), result)
         result.update(ai_acceptance_statuses(session, task, result))
@@ -113,6 +117,11 @@ def _stats_with_account_coverage(session: Session, task: Task, stats: dict[str, 
     coverage = task_account_coverage(session, task)
     if coverage:
         result["account_coverage"] = coverage
+    recent = recent_task_success(session, task)
+    if recent is not None:
+        result["recent_success"] = recent
+    else:
+        result.pop("recent_success", None)
     return result
 
 
@@ -945,7 +954,9 @@ def _message_groups(session: Session, task: Task, actions: list[Action]) -> list
         item["stats"]["target"] = item["target_count"]
         item["capacity_shortfall"] = max(int(item.get("target_count") or 0) - total_actions, 0)
         item["subtask_status"] = _channel_subtask_status(item)
-    return sorted(groups.values(), key=lambda item: (item.get("channel_title") or "", -(item.get("message_id") or 0)))
+    from .album_reaction_progress import merge_album_message_groups
+    merged = merge_album_message_groups(session, task, list(groups.values()))
+    return sorted(merged, key=lambda item: (item.get("channel_title") or "", -(item.get("message_id") or 0)))
 
 
 def _new_message_group(

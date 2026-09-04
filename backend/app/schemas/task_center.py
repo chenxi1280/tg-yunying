@@ -13,6 +13,7 @@ from app.search_keywords import normalized_keyword_hash, strict_keyword_material
 from app.security import encrypt_secret
 
 from .api import ApiModel
+from .engagement_settings import EngagementSettingsUpdate
 from .operation_plans import OperationPlanTaskLinkOut
 from .runtime_summary import TaskRuntimeSummaryOut
 
@@ -452,7 +453,28 @@ def _normalize_teacher_targets(value: Any) -> Any:
     return value
 
 
-class GroupAIChatConfig(BaseModel):
+class EngagementAccountBindingConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    engagement_contract_version: Literal[
+        "legacy_v0", "unified_engagement_v1"
+    ] = "legacy_v0"
+    account_selection_mode: Literal["group"] = "group"
+    account_group_ids: list[int] = Field(default_factory=list)
+    concurrency_limit_per_group: int = Field(default=5, ge=1, le=50)
+
+    @model_validator(mode="after")
+    def validate_account_group_ids(self) -> "EngagementAccountBindingConfig":
+        group_ids = [int(item) for item in self.account_group_ids if int(item) > 0]
+        if len(group_ids) != len(set(group_ids)):
+            raise ValueError("account_group_ids 不得重复")
+        if self.engagement_contract_version == "unified_engagement_v1" and not group_ids:
+            raise ValueError("统一互动任务必须绑定至少一个账号分组")
+        self.account_group_ids = sorted(group_ids)
+        return self
+
+
+class GroupAIChatConfig(EngagementAccountBindingConfig):
     model_config = ConfigDict(extra="forbid")
 
     target_group_id: int | None = None
@@ -497,6 +519,7 @@ class GroupAIChatConfig(BaseModel):
     messages_per_round: int = Field(default=1, ge=1)
     reply_min_per_round: int = Field(default=1, ge=0)
     daily_message_target: int = Field(default=1, ge=1, le=100_000)
+    daily_target_jitter_bps: int = Field(default=1500, ge=0, le=3000)
     hard_hourly_target_enabled: bool | None = Field(default=None, exclude=True)
     hourly_min_messages: int | None = Field(default=None, ge=1, exclude=True)
     hard_hourly_strategy: str | None = Field(default=None, exclude=True)
@@ -514,6 +537,8 @@ class GroupAIChatConfig(BaseModel):
     membership_max_concurrent: int = Field(default=5, ge=1, le=50)
     idle_continuation_enabled: bool = True
     idle_continuation_seconds: int = Field(default=300, ge=30, le=86400)
+    attention_quiet_after_min_seconds: int = Field(default=60, ge=0, le=1800)
+    attention_quiet_after_max_seconds: int = Field(default=180, ge=0, le=1800)
     silent_mode_enabled: bool = True
     silent_start: str = "23:00"
     silent_end: str = "08:00"
@@ -584,6 +609,8 @@ class GroupAIChatConfig(BaseModel):
             )
         if self.reply_min_per_round > self.messages_per_round:
             raise ValueError("reply_min_per_round 不能大于 messages_per_round")
+        if self.attention_quiet_after_min_seconds > self.attention_quiet_after_max_seconds:
+            raise ValueError("attention quiet-after 最小秒数不能大于最大秒数")
         if not self.group_bot_admission_required:
             raise ValueError("AI 活跃群必须启用群管机器人准入")
         _validate_semantic_reviewer(self)
@@ -770,8 +797,11 @@ class GroupCloneConfig(BaseModel):
     )
 
 
-class ChannelMessageScopeConfig(BaseModel):
+class ChannelMessageScopeConfig(EngagementAccountBindingConfig):
     model_config = ConfigDict(extra="forbid")
+
+    initial_historical_post_limit: int = Field(default=5, ge=0, le=10)
+    source_expectation_mode: Literal["continuous_event_driven", "finite_existing_sources", "promised_daily_sources"] = "continuous_event_driven"
 
     target_channel_id: int | None = None
     target_type: Literal["channel"] = "channel"
@@ -809,6 +839,15 @@ class ChannelViewConfig(ChannelMessageScopeConfig):
     latest_message_count: int | None = Field(default=None, ge=1, le=500)
     listen_new_messages: bool = True
     account_coverage_mode: Literal["all_accounts_daily"] = "all_accounts_daily"
+    account_ratio_min_bps: int = Field(default=8000, ge=1, le=10000)
+    account_ratio_max_bps: int = Field(default=9500, ge=1, le=10000)
+    rolling_participation_days: int = Field(default=3, ge=1, le=30)
+    view_exposure_mode: Literal["natural_auto", "explicit_per_source"] = "natural_auto"
+    per_account_source_degree_min: int = Field(default=2, ge=1, le=100)
+    per_account_source_degree_max: int = Field(default=4, ge=1, le=100)
+    every_active_message: bool = False
+    per_source_exposure_target: int | None = Field(default=None, ge=1, le=10000)
+    per_source_exposure_ratio_bps: int | None = Field(default=None, ge=1, le=10000)
     per_message_daily_view_target: int | None = Field(default=None, ge=1, le=10000)
     per_message_total_view_target: int | None = Field(default=0, ge=0, le=100000)
     message_active_days: int = Field(default=7, ge=1, le=365)
@@ -819,7 +858,7 @@ class ChannelViewConfig(ChannelMessageScopeConfig):
         default=1_000_000, ge=1, le=1_000_000
     )
     target_views_per_message: int | None = Field(default=None, ge=1, le=10000)
-    view_count_jitter: float = Field(default=CHANNEL_COUNT_JITTER_DEFAULT, ge=0, le=1)
+    view_count_jitter: float = Field(default=0, ge=0, le=1)
     execution_mode: Literal["distribute", "burst"] = "distribute"
 
     @model_validator(mode="after")
@@ -841,7 +880,36 @@ class ChannelViewConfig(ChannelMessageScopeConfig):
         if self.per_message_total_view_target is None:
             self.per_message_total_view_target = 0
         self.target_views_per_message = self.per_message_daily_view_target
+        if self.account_ratio_min_bps > self.account_ratio_max_bps:
+            raise ValueError("account_ratio_min_bps 不能大于 account_ratio_max_bps")
+        if self.engagement_contract_version == "unified_engagement_v1":
+            if self.account_ratio_min_bps <= 5000:
+                raise ValueError("统一浏览任务的 account_ratio_min_bps 必须严格大于 5000")
+            if self.view_count_jitter != 0:
+                raise ValueError("统一浏览任务不得叠加 view_count_jitter")
+            self._validate_unified_exposure_mode()
+        if self.per_account_source_degree_min > self.per_account_source_degree_max:
+            raise ValueError(
+                "per_account_source_degree_min 不能大于 per_account_source_degree_max"
+            )
         return self
+
+    def _validate_unified_exposure_mode(self) -> None:
+        explicit_values = (
+            self.per_source_exposure_target,
+            self.per_source_exposure_ratio_bps,
+        )
+        configured_count = sum(value is not None for value in explicit_values)
+        if self.every_active_message:
+            if configured_count:
+                raise ValueError("逐帖全刷模式不得再配置每来源曝光目标")
+            return
+        if self.view_exposure_mode == "explicit_per_source":
+            if configured_count != 1:
+                raise ValueError("显式来源曝光模式必须且只能配置人数或比例之一")
+            return
+        if configured_count:
+            raise ValueError("自然曝光模式不得配置显式每来源曝光目标")
 
 
 class ChannelLikeConfig(ChannelMessageScopeConfig):
@@ -849,6 +917,7 @@ class ChannelLikeConfig(ChannelMessageScopeConfig):
         "all", "latest_n", "date_range", "specific", "dynamic_new"
     ] = "dynamic_new"
     target_likes_per_message: int = Field(default=50, ge=1, le=10000)
+    daily_reaction_cap: int = Field(default=1000, ge=1, le=1_000_000)
     like_count_jitter: float = Field(default=CHANNEL_COUNT_JITTER_DEFAULT, ge=0, le=1)
     reaction_type: Literal["random", "specific"] = "random"
     reaction_scope: Literal["configured", "all_available"] = "all_available"
@@ -881,6 +950,8 @@ class ChannelCommentConfig(ChannelMessageScopeConfig):
         default=0, ge=0, le=MAX_TOTAL_COMMENT_JITTER
     )
     daily_comment_cap: int = Field(default=0, ge=0)
+    account_ratio_min_bps: int = Field(default=5500, ge=1, le=10000)
+    account_ratio_max_bps: int = Field(default=6500, ge=1, le=10000)
     rolling_window_days: int = Field(default=3, ge=1, le=30)
     allow_returning_accounts: bool = False
     comment_mode: Literal["comment", "reply", "mixed"] = "mixed"
@@ -928,6 +999,8 @@ class ChannelCommentConfig(ChannelMessageScopeConfig):
             raise ValueError(
                 "reply_min_per_message 不能大于 target_comments_per_message"
             )
+        if self.account_ratio_min_bps > self.account_ratio_max_bps:
+            raise ValueError("account_ratio_min_bps 不能大于 account_ratio_max_bps")
         _validate_semantic_reviewer(self)
         _validate_ai_content_route_config(self)
         self._validate_comment_fallback_policy()
@@ -1771,7 +1844,7 @@ class TaskUpdate(BaseModel):
     failure_policy: FailurePolicy | None = None
 
 
-class TaskSettingsUpdate(TaskUpdate):
+class TaskSettingsUpdate(TaskUpdate, EngagementSettingsUpdate):
     model_config = ConfigDict(extra="forbid")
 
     topic_hint: str | None = None
@@ -2210,6 +2283,12 @@ class TaskDetailAccountOut(BaseModel):
 
 
 class TaskMessageGroupOut(BaseModel):
+    album_id: str = ""
+    target_count_proven: bool = True
+    planned_child_rpc: int = 0
+    confirmed_child_reactions: int = 0
+    materialized_accounts: int = 0
+    unknown_accounts: int = 0
     channel_target_id: int | None = None
     channel_title: str = ""
     channel_username: str = ""

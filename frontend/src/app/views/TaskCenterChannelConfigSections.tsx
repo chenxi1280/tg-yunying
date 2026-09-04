@@ -3,6 +3,7 @@ import { Alert, Checkbox, Collapse, Form, Input, InputNumber, Select, Space } fr
 import type { Rule } from 'antd/es/form';
 import type { MaterialGroup } from '../types';
 import { aiModelIdentity } from './taskCenterViewModel';
+import { ChannelIntakeFields } from './ChannelIntakeFields';
 
 type ChannelCommentTypeConfigProps = {
   replyMinPerMessageRules: Rule[];
@@ -13,12 +14,13 @@ type ChannelCommentTypeConfigProps = {
 export function ChannelViewTypeConfig() {
   return (
     <Space direction="vertical" style={{ width: '100%' }}>
-      <Alert type="info" showIcon message="频道浏览按帖子、日期和账号补量：同一天同一账号同一帖子只会规划一次浏览。" />
+      <ChannelIntakeFields />
+      <Alert type="info" showIcon message="频道浏览按帖子、日期和账号补量；每天从绑定分组按比例抖动抽取账号，并在滚动窗口内轮转覆盖。" />
       <div className="form-grid">
         <Form.Item
           name="per_message_daily_view_target"
           label="每条帖子每日浏览量"
-          extra="留空默认自动使用全部可用账号进行全量覆盖"
+          extra="留空时由当日账号比例、帖子分配边和安全容量共同决定"
         >
           <InputNumber min={1} max={10000} placeholder="全部可用账号" />
         </Form.Item>
@@ -32,6 +34,9 @@ export function ChannelViewTypeConfig() {
         <Form.Item name="listen_new_messages" valuePropName="checked">
           <Checkbox>持续监听任务启动后的新帖</Checkbox>
         </Form.Item>
+        <Form.Item name="account_ratio_min_bps" label="每日参与比例下限（万分比）"><InputNumber min={5001} max={10000} step={100} /></Form.Item>
+        <Form.Item name="account_ratio_max_bps" label="每日参与比例上限（万分比）"><InputNumber min={1} max={10000} step={100} /></Form.Item>
+        <Form.Item name="rolling_participation_days" label="账号轮转窗口（天）"><InputNumber min={1} max={30} /></Form.Item>
       </div>
       <Collapse
         ghost
@@ -44,9 +49,11 @@ export function ChannelViewTypeConfig() {
 export function ChannelLikeTypeConfig() {
   return (
     <Space direction="vertical" style={{ width: '100%' }}>
+      <ChannelIntakeFields />
       <Alert type="info" showIcon message="默认从频道当前全部可用标准 Reaction 中逐个随机分配，各表情数量不设固定比例。" />
       <div className="form-grid">
         <Form.Item name="target_likes_per_message" label="预计每条点赞"><InputNumber min={1} /></Form.Item>
+        <Form.Item name="daily_reaction_cap" label="任务每日 Reaction 上限"><InputNumber min={1} max={1000000} /></Form.Item>
         <Form.Item name="reaction_type" label="Reaction 模式"><Select options={[{ value: 'random', label: '随机' }, { value: 'specific', label: '指定' }]} /></Form.Item>
         <Form.Item name="reaction_scope" label="随机范围"><Select options={[{ value: 'all_available', label: '频道可用全部 Reaction' }, { value: 'configured', label: '自定义 Reaction' }]} /></Form.Item>
         <Form.Item name="allowed_reactions" label="自定义/指定 Reaction" extra="多个表情用逗号分隔，如：👍, ❤️, 🔥, 👏, 🎉, 🤩, 👌, 💯, 🙌, ✨"><Input placeholder="👍, ❤️, 🔥, 👏, 🎉, 🤩, 👌, 💯, 🙌, ✨" /></Form.Item>
@@ -62,6 +69,7 @@ export function ChannelLikeTypeConfig() {
 export function ChannelCommentTypeConfig({ replyMinPerMessageRules, ruleFields, materialGroups }: ChannelCommentTypeConfigProps) {
   return (
     <Space direction="vertical" style={{ width: '100%' }}>
+      <ChannelIntakeFields />
       <div style={{ gridColumn: '1 / -1' }}>
         <Alert type="info" showIcon message="AI 评论会按绑定规则集逐条做输出校验，单条失败不会废弃整批评论。" />
         <Alert type="info" showIcon message="任务总评论上限控制生命周期总量；每条评论/回复是单条消息累计目标；小时上限只控制发送节奏。" />
@@ -106,6 +114,8 @@ export function ChannelCommentTypeConfig({ replyMinPerMessageRules, ruleFields, 
         >
           <InputNumber min={0} />
         </Form.Item>
+        <Form.Item name="account_ratio_min_bps" label="公开参与比例下限（万分比）"><InputNumber min={1} max={10000} step={100} /></Form.Item>
+        <Form.Item name="account_ratio_max_bps" label="公开参与比例上限（万分比）"><InputNumber min={1} max={10000} step={100} /></Form.Item>
         <Form.Item name="rolling_window_days" label="滚动排期窗口（天）" extra="新合同固定从 Telegram 发布时间起 3 天"><InputNumber min={3} max={3} disabled /></Form.Item>
         <Form.Item name="comment_style" label="评论方向"><Select options={[{ value: 'mixed', label: '混合' }, { value: 'relevant', label: '相关' }, { value: 'question', label: '提问' }, { value: 'praise', label: '正向' }, { value: 'discussion', label: '讨论' }]} /></Form.Item>
         <Form.Item name="topic_hint" label="主题方向"><Input /></Form.Item>
@@ -124,7 +134,12 @@ function ChannelViewAdvancedFields() {
       <Form.Item name="message_active_days" label="帖子有效期（天）"><InputNumber min={1} max={365} /></Form.Item>
       <Form.Item name="task_daily_view_safety_cap" label="系统任务门禁（固定）"><InputNumber min={1000000} max={1000000} disabled /></Form.Item>
       <Form.Item name="max_views_per_account_per_day" label="系统账号门禁（固定）"><InputNumber min={1000000} max={1000000} disabled /></Form.Item>
-      <Form.Item name="view_count_jitter" label="浏览量随机抖动"><InputNumber min={0} max={1} step={0.01} /></Form.Item>
+      <Form.Item name="view_exposure_mode" label="浏览暴露模式"><Select options={[{ value: 'natural_auto', label: '自然自动分配' }, { value: 'explicit_per_source', label: '按帖子显式分配' }]} /></Form.Item>
+      <Form.Item name="per_account_source_degree_min" label="单账号每日帖子数下限"><InputNumber min={1} max={1000} /></Form.Item>
+      <Form.Item name="per_account_source_degree_max" label="单账号每日帖子数上限"><InputNumber min={1} max={1000} /></Form.Item>
+      <Form.Item name="per_source_exposure_target" label="每来源曝光账号数"><InputNumber min={1} max={10000} placeholder="仅显式模式填写" /></Form.Item>
+      <Form.Item name="per_source_exposure_ratio_bps" label="每来源曝光比例（万分比）"><InputNumber min={1} max={10000} placeholder="与曝光账号数二选一" /></Form.Item>
+      <Form.Item name="every_active_message" valuePropName="checked"><Checkbox>全部参与账号浏览每条有效帖子</Checkbox></Form.Item>
       <Form.Item name="execution_mode" label="执行模式"><Select options={[{ value: 'distribute', label: '均匀分配' }, { value: 'burst', label: '尽快完成' }]} /></Form.Item>
     </div>
   );

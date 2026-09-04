@@ -505,9 +505,26 @@ export function commonInitialValues(setting?: SchedulingSetting | null) {
   };
 }
 
+const ENGAGEMENT_TASK_TYPES: TaskCenterTaskType[] = [
+  'group_ai_chat',
+  'channel_comment',
+  'channel_like',
+  'channel_view',
+];
+
+function engagementInitialValues() {
+  return {
+    engagement_contract_version: 'unified_engagement_v1',
+    account_selection_mode: 'group',
+    account_group_ids: [],
+    concurrency_limit_per_group: 5,
+  };
+}
+
 export function typeInitialValues(type: TaskCenterTaskType, setting?: SchedulingSetting | null) {
   if (type === 'group_ai_chat') {
     return {
+      ...engagementInitialValues(),
       participation_rate: 0.6,
       allow_account_repeat: true,
       repeat_cooldown_rounds: 2,
@@ -523,6 +540,7 @@ export function typeInitialValues(type: TaskCenterTaskType, setting?: Scheduling
       group_bot_admission_required: true,
       account_coverage_mode: 'all_accounts_daily',
       daily_message_target: 1,
+      daily_target_jitter_bps: 1500,
       auto_join_target: true,
       auto_resolve_verification: true,
       ai_assisted_verification: true,
@@ -531,6 +549,8 @@ export function typeInitialValues(type: TaskCenterTaskType, setting?: Scheduling
       context_expire_after_messages: 10,
       idle_continuation_enabled: true,
       idle_continuation_seconds: 300,
+      attention_quiet_after_min_seconds: 60,
+      attention_quiet_after_max_seconds: 180,
       account_memory_depth: 3,
       account_personas: '',
       slang_prompt_template_id: null,
@@ -593,6 +613,7 @@ export function typeInitialValues(type: TaskCenterTaskType, setting?: Scheduling
   }
   if (type === 'channel_view') {
     return {
+      ...engagementInitialValues(),
       message_scope: 'dynamic_new',
       message_count: 10,
       target_views_per_message: null,
@@ -602,15 +623,25 @@ export function typeInitialValues(type: TaskCenterTaskType, setting?: Scheduling
       message_active_days: 3,
       task_daily_view_safety_cap: 1000000,
       max_views_per_account_per_day: 1000000,
-      view_count_jitter: CHANNEL_COUNT_JITTER_DEFAULT,
       execution_mode: 'distribute',
+      account_ratio_min_bps: 8000,
+      account_ratio_max_bps: 9500,
+      rolling_participation_days: 3,
+      view_exposure_mode: 'natural_auto',
+      per_account_source_degree_min: 2,
+      per_account_source_degree_max: 4,
+      every_active_message: false,
+      per_source_exposure_target: null,
+      per_source_exposure_ratio_bps: null,
     };
   }
   if (type === 'channel_like') {
     return {
+      ...engagementInitialValues(),
       message_scope: 'dynamic_new',
       message_count: 10,
       target_likes_per_message: 50,
+      daily_reaction_cap: 1000,
       like_count_jitter: CHANNEL_COUNT_JITTER_DEFAULT,
       reaction_type: 'random',
       reaction_scope: 'all_available',
@@ -623,10 +654,13 @@ export function typeInitialValues(type: TaskCenterTaskType, setting?: Scheduling
     return searchClickInitialValues('target_count');
   }
   return {
+    ...engagementInitialValues(),
     message_scope: 'dynamic_new',
     message_count: 10,
     rolling_window_days: 3,
     daily_comment_cap: 0,
+    account_ratio_min_bps: 5500,
+    account_ratio_max_bps: 6500,
     max_total_comments: 1000000,
     max_total_comments_jitter: 0,
     max_comments_per_account_per_hour: 1000000,
@@ -744,6 +778,9 @@ export function fieldsForStep(step: number, taskType: TaskCenterTaskType, messag
   if (step === 3 && isSimpleSearchClickTask(taskType)) return simpleSearchExecutionFields(taskType);
   if (step === 3 && taskType === 'group_clone') return [];
   if (step === 3 && taskType === 'group_membership_admission') return ['account_group_ids'];
+  if (step === 3 && ENGAGEMENT_TASK_TYPES.includes(taskType)) {
+    return ['account_group_ids', 'concurrency_limit_per_group'];
+  }
   if (step === 3) return accountSelectionFields(accountMode);
   return [];
 }
@@ -776,7 +813,10 @@ export function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: stri
   const commonFields = ['name', 'scheduled_end', 'operation_template_id', 'hourly_activity_curve', 'quiet_threshold', 'peak_threshold'];
   const hourlyFields = ['group_relay', 'group_membership_admission'].includes(taskType) ? ['max_actions_per_hour'] : [];
   const capacityFields = ['group_ai_chat', 'channel_comment', 'channel_like', 'channel_view'].includes(taskType) ? ['source_capacity_v2_enabled', 'source_capacity_policy_version_id'] : [];
-  const baseFields = [...commonFields, ...accountSelectionFields(accountMode), 'max_concurrent', 'cooldown_per_account_minutes', 'ban_policy', ...hourlyFields, ...capacityFields, 'max_retries'];
+  const accountFieldsForTask = ENGAGEMENT_TASK_TYPES.includes(taskType)
+    ? ['account_group_ids', 'concurrency_limit_per_group']
+    : [...accountSelectionFields(accountMode), 'max_concurrent', 'cooldown_per_account_minutes', 'ban_policy'];
+  const baseFields = [...commonFields, ...accountFieldsForTask, ...hourlyFields, ...capacityFields, 'max_retries'];
   if (taskType === 'group_ai_chat') {
     return [
       ...baseFields,
@@ -799,6 +839,7 @@ export function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: stri
       'group_bot_admission_required',
       'account_coverage_mode',
       'daily_message_target',
+      'daily_target_jitter_bps',
       'auto_join_target',
       'auto_resolve_verification',
       'ai_assisted_verification',
@@ -807,6 +848,8 @@ export function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: stri
       'account_memory_depth',
       'idle_continuation_enabled',
       'idle_continuation_seconds',
+      'attention_quiet_after_min_seconds',
+      'attention_quiet_after_max_seconds',
       'context_expire_after_messages',
       'ai_two_stage_enabled',
       'ai_semantic_reviewer_model',
@@ -866,12 +909,12 @@ export function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: stri
     ];
   }
   if (taskType === 'channel_view') {
-    return [...baseFields, ...channelScopeFields(messageScope), 'listen_new_messages', 'per_message_daily_view_target', 'per_message_total_view_target', 'message_active_days', 'task_daily_view_safety_cap', 'max_views_per_account_per_day', 'view_count_jitter', 'target_views_per_message'];
+    return [...baseFields, ...channelScopeFields(messageScope), 'listen_new_messages', 'per_message_daily_view_target', 'per_message_total_view_target', 'message_active_days', 'task_daily_view_safety_cap', 'max_views_per_account_per_day', 'target_views_per_message', 'account_ratio_min_bps', 'account_ratio_max_bps', 'rolling_participation_days', 'view_exposure_mode', 'per_account_source_degree_min', 'per_account_source_degree_max', 'every_active_message', 'per_source_exposure_target', 'per_source_exposure_ratio_bps'];
   }
   if (taskType === 'channel_like') {
-    return [...baseFields, ...channelScopeFields(messageScope), 'target_likes_per_message', 'like_count_jitter', 'reaction_type', 'reaction_scope', 'allowed_reactions', 'message_active_days'];
+    return [...baseFields, ...channelScopeFields(messageScope), 'target_likes_per_message', 'daily_reaction_cap', 'like_count_jitter', 'reaction_type', 'reaction_scope', 'allowed_reactions', 'message_active_days'];
   }
-  return [...baseFields, ...channelScopeFields(messageScope), 'target_comments_per_message', 'business_max_comments_per_message', 'planned_fallback_max_bps', 'max_total_comments', 'max_total_comments_jitter', 'comment_mode', 'reply_to_message_ids', 'reply_min_per_message', 'rule_set_id', 'rule_set_version_id', 'comment_style', 'topic_hint', 'ai_two_stage_enabled', 'ai_semantic_reviewer_model', 'ai_content_route_v2_enabled', 'ai_content_policy_version_id', 'ai_content_allowed_routes', 'ai_content_attestation_ids', ...commentFallbackFields()];
+  return [...baseFields, ...channelScopeFields(messageScope), 'target_comments_per_message', 'daily_comment_cap', 'account_ratio_min_bps', 'account_ratio_max_bps', 'business_max_comments_per_message', 'planned_fallback_max_bps', 'max_total_comments', 'max_total_comments_jitter', 'comment_mode', 'reply_to_message_ids', 'reply_min_per_message', 'rule_set_id', 'rule_set_version_id', 'comment_style', 'topic_hint', 'ai_two_stage_enabled', 'ai_semantic_reviewer_model', 'ai_content_route_v2_enabled', 'ai_content_policy_version_id', 'ai_content_allowed_routes', 'ai_content_attestation_ids', ...commentFallbackFields()];
 }
 
 export function editFieldsForSubmit(taskType: TaskCenterTaskType, accountMode: string, pacingMode: string): string[] {
@@ -879,7 +922,10 @@ export function editFieldsForSubmit(taskType: TaskCenterTaskType, accountMode: s
   if (isSimpleSearchClickTask(taskType)) return ['target_title', 'target_link', 'keywords', ...simpleSearchTargetFields(taskType), ...simpleSearchExecutionFields(taskType, true)];
   const hourlyFields = ['group_relay', 'group_membership_admission'].includes(taskType) ? ['max_actions_per_hour'] : [];
   const capacityFields = ['group_ai_chat', 'channel_comment', 'channel_like', 'channel_view'].includes(taskType) ? ['source_capacity_v2_enabled', 'source_capacity_policy_version_id'] : [];
-  const baseFields = ['name', 'scheduled_end', 'operation_template_id', 'hourly_activity_curve', 'quiet_threshold', 'peak_threshold', ...accountFields(accountMode), ...hourlyFields, ...capacityFields, 'max_retries'];
+  const accountFieldsForTask = ENGAGEMENT_TASK_TYPES.includes(taskType)
+    ? ['account_group_ids', 'concurrency_limit_per_group']
+    : accountFields(accountMode);
+  const baseFields = ['name', 'scheduled_end', 'operation_template_id', 'hourly_activity_curve', 'quiet_threshold', 'peak_threshold', ...accountFieldsForTask, ...hourlyFields, ...capacityFields, 'max_retries'];
   if (taskType === 'group_ai_chat') {
     return [
       ...baseFields,
@@ -909,6 +955,7 @@ export function editFieldsForSubmit(taskType: TaskCenterTaskType, accountMode: s
       'group_bot_admission_required',
       'account_coverage_mode',
       'daily_message_target',
+      'daily_target_jitter_bps',
       'history_fetch_account_id',
       'auto_join_target',
       'auto_resolve_verification',
@@ -917,6 +964,8 @@ export function editFieldsForSubmit(taskType: TaskCenterTaskType, accountMode: s
       'membership_max_concurrent',
       'idle_continuation_enabled',
       'idle_continuation_seconds',
+      'attention_quiet_after_min_seconds',
+      'attention_quiet_after_max_seconds',
       'context_expire_after_messages',
       'ai_two_stage_enabled',
       'ai_semantic_reviewer_model',
@@ -941,12 +990,12 @@ export function editFieldsForSubmit(taskType: TaskCenterTaskType, accountMode: s
     ];
   }
   if (taskType === 'channel_view') {
-    return [...baseFields, 'listen_new_messages', 'per_message_daily_view_target', 'per_message_total_view_target', 'message_active_days', 'task_daily_view_safety_cap', 'max_views_per_account_per_day', 'view_count_jitter', 'target_views_per_message', 'execution_mode'];
+    return [...baseFields, 'listen_new_messages', 'per_message_daily_view_target', 'per_message_total_view_target', 'message_active_days', 'task_daily_view_safety_cap', 'max_views_per_account_per_day', 'target_views_per_message', 'execution_mode', 'account_ratio_min_bps', 'account_ratio_max_bps', 'rolling_participation_days', 'view_exposure_mode', 'per_account_source_degree_min', 'per_account_source_degree_max', 'every_active_message', 'per_source_exposure_target', 'per_source_exposure_ratio_bps'];
   }
   if (taskType === 'channel_like') {
-    return [...baseFields, 'target_likes_per_message', 'like_count_jitter', 'reaction_type', 'reaction_scope', 'allowed_reactions', 'max_likes_per_account_per_hour', 'message_active_days'];
+    return [...baseFields, 'target_likes_per_message', 'daily_reaction_cap', 'like_count_jitter', 'reaction_type', 'reaction_scope', 'allowed_reactions', 'max_likes_per_account_per_hour', 'message_active_days'];
   }
-  return [...baseFields, 'target_comments_per_message', 'business_max_comments_per_message', 'planned_fallback_max_bps', 'max_total_comments', 'max_total_comments_jitter', 'comment_mode', 'reply_to_message_ids', 'reply_min_per_message', 'rule_set_id', 'rule_set_version_id', 'ai_model', 'comment_style', 'topic_hint', 'system_prompt_override', 'language', 'max_comment_length', 'max_comments_per_account_per_hour', 'ai_two_stage_enabled', 'ai_semantic_reviewer_model', 'ai_content_route_v2_enabled', 'ai_content_policy_version_id', 'ai_content_allowed_routes', 'ai_content_attestation_ids', ...commentFallbackFields()];
+  return [...baseFields, 'target_comments_per_message', 'daily_comment_cap', 'account_ratio_min_bps', 'account_ratio_max_bps', 'business_max_comments_per_message', 'planned_fallback_max_bps', 'max_total_comments', 'max_total_comments_jitter', 'comment_mode', 'reply_to_message_ids', 'reply_min_per_message', 'rule_set_id', 'rule_set_version_id', 'ai_model', 'comment_style', 'topic_hint', 'system_prompt_override', 'language', 'max_comment_length', 'max_comments_per_account_per_hour', 'ai_two_stage_enabled', 'ai_semantic_reviewer_model', 'ai_content_route_v2_enabled', 'ai_content_policy_version_id', 'ai_content_allowed_routes', 'ai_content_attestation_ids', ...commentFallbackFields()];
 }
 
 function commentFallbackFields(): string[] {

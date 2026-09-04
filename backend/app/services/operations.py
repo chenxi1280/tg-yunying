@@ -8,6 +8,7 @@ from uuid import uuid4
 from sqlalchemy import case, select
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
+from app.services.automation_identity import with_automation_identity
 
 from app.models import (
     AiProvider,
@@ -150,10 +151,10 @@ def _generate_operation_contents(
     setting = get_tenant_ai_setting(session, task.tenant_id)
     if task.task_type == "CHANNEL_REPLY":
         purpose = "频道消息评论区回复"
-        output_hint = "每条像不同真实账号写出的短回复，不要编号，不要暴露 AI 或运营任务。"
+        output_hint = "每条是自然短回复，不要编号，不输出后台任务说明。"
     else:
         purpose = "群聊或频道消息发送"
-        output_hint = "每条都要自然差异化，不要刷屏，不要暴露 AI 或运营任务。"
+        output_hint = "每条都要自然差异化，不要刷屏，不输出后台任务说明。"
     prompt = (
         f"请为 Telegram {purpose}生成 {count} 条内容。\n"
         f"目标：{target_label}\n"
@@ -168,10 +169,11 @@ def _generate_operation_contents(
         count=count,
         topic=task.content or task.title,
         tone="自然、口语化、不同账号表达不重复",
-        persona_set=["老用户", "新用户", "活跃成员", "路人"],
+        persona_set=["简短回复", "细节说明", "群友提问", "轻松接话"],
         temperature=setting.temperature,
         max_tokens=max(setting.max_tokens, 1024),
         selected_account_ids=_parse_account_ids(task.account_ids),
+        system_prompt=with_automation_identity(None),
     )
     contents = [candidate.content.strip() for candidate in result.candidates if candidate.content.strip()]
     if len(contents) < count:

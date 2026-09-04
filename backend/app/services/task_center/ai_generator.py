@@ -279,37 +279,30 @@ def generate_contents(
     required_model_family: str = "",
     close_transaction_before_external: bool = False,
     restrict_sensitive_trade: bool = False,
+    execution_config: dict | None = None,
 ) -> tuple[list[str], int]:
     topic = _sanitize_sensitive_context(topic)
     requirements = _sanitize_sensitive_context(requirements)
     target_label = _sanitize_sensitive_context(target_label)
     system_prompt = _sanitize_sensitive_context(system_prompt) if system_prompt is not None else None
-    provider, setting = _provider(session, tenant_id, provider_id, model_name, required_family=required_model_family)
+    provider, setting, execution_config, model_name = _content_generation_provider(
+        session, tenant_id, execution_config=execution_config, provider_id=provider_id,
+        model_name=model_name, required_model_family=required_model_family,
+    )
     if not provider or not setting:
         if purpose in LONG_RUNNING_AI_PURPOSES:
             raise AiGenerationUnavailable(f"{AI_GENERATION_UNAVAILABLE_MESSAGE}：{_unavailable_reason(setting, required_model_family)}")
         return _fallback_contents(topic, requirements, purpose, target_label, count), 0
-    prompt, persona_set, tone = _prompt_profile(
-        count=count,
-        purpose=purpose,
-        target_label=target_label,
-        topic=topic,
-        requirements=requirements,
-    )
-    prompt = _sanitize_sensitive_context(prompt)
-    request = _content_provider_request(
-        prompt,
-        count=count,
-        topic=topic or requirements,
-        tone=tone,
-        persona_set=persona_set,
-        setting=setting,
-        purpose=purpose,
-        system_prompt=system_prompt,
+    request = _prepare_content_provider_request(
+        count=count, purpose=purpose, target_label=target_label, topic=topic, requirements=requirements,
+        setting=setting, system_prompt=system_prompt,
     )
     policy = _ProviderCandidatePolicy(
         model_name, required_model_family, not provider_id,
         purpose, close_transaction_before_external,
+        route_provider_ids=tuple((execution_config or {}).get("_ai_provider_route_provider_ids") or ()),
+        route_models={int(key): str(value) for key, value in dict((execution_config or {}).get("_ai_provider_route_models") or {}).items()},
+        attempt_config=execution_config,
     )
     result = _generate_with_provider_candidates(
         session, provider, request, policy=policy,
@@ -320,6 +313,27 @@ def generate_contents(
         purpose=purpose,
         count=count,
         restrict_sensitive_trade=restrict_sensitive_trade,
+    )
+
+
+def _prepare_content_provider_request(*, count, purpose, target_label, topic, requirements, setting, system_prompt):
+    prompt, persona_set, tone = _prompt_profile(
+        count=count, purpose=purpose, target_label=target_label, topic=topic, requirements=requirements,
+    )
+    return _content_provider_request(
+        _sanitize_sensitive_context(prompt), count=count, topic=topic or requirements, tone=tone,
+        persona_set=persona_set, setting=setting, purpose=purpose, system_prompt=system_prompt,
+    )
+
+
+def _content_generation_provider(session, tenant_id, *, execution_config, provider_id, model_name, required_model_family):
+    if (execution_config or {}).get("engagement_contract_version") != "unified_engagement_v1":
+        provider, setting = _provider(session, tenant_id, provider_id, model_name, required_family=required_model_family)
+        return provider, setting, execution_config, model_name
+    setting = session.scalar(select(TenantAiSetting).where(TenantAiSetting.tenant_id == tenant_id))
+    return _structured_provider_binding(
+        session, tenant_id, execution_config, purpose=TWO_STAGE_REALIZE_PURPOSE,
+        setting=setting, model_name=model_name, stage="primary",
     )
 
 
@@ -433,23 +447,23 @@ def _prompt_profile(
 ) -> tuple[str, list[str], str]:
     if purpose == GROUP_CHAT_PURPOSE:
         prompt = _group_chat_prompt(count, target_label, topic, requirements)
-        persona_set = ["爱提问的群友", "补充细节的群友", "轻松接话的群友", "有经验的群友", "随口吐槽的群友"]
+        persona_set = ["群友提问", "细节补充", "轻松接话", "资料说明", "简短讨论"]
         tone = "像真实 Telegram 群成员聊天，短句、差异化、不要复读"
     elif purpose == GROUP_CHAT_REPLY_PURPOSE:
         prompt = _group_chat_reply_prompt(count, target_label, topic, requirements)
-        persona_set = ["直接回复的群友", "顺手补充的群友", "追问细节的群友", "轻松接话的群友"]
+        persona_set = ["直接回复", "细节补充", "细节追问", "轻松接话"]
         tone = "像真实 Telegram 群引用回复，必须贴合被引用消息"
     elif purpose == CHANNEL_COMMENT_PURPOSE:
         prompt = _channel_comment_prompt(
             count, target_label, topic=topic, requirements=requirements,
         )
-        persona_set = ["随手评论的读者", "追问细节的读者", "补充经验的读者", "轻松接话的读者"]
+        persona_set = ["读者短评", "细节追问", "资料补充", "轻松接话"]
         tone = "像真实 Telegram 频道评论区，短句、贴原文、不重复"
     elif purpose == CHANNEL_COMMENT_REPLY_PURPOSE:
         prompt = _channel_comment_reply_prompt(
             count, target_label, topic=topic, requirements=requirements,
         )
-        persona_set = ["回复评论的读者", "追问细节的读者", "补充经验的读者", "轻松接话的读者"]
+        persona_set = ["评论回复", "细节追问", "资料补充", "轻松接话"]
         tone = "像真实 Telegram 评论区引用回复，必须贴合被回复评论"
     else:
         prompt = (
@@ -457,10 +471,10 @@ def _prompt_profile(
             f"目标：{target_label}\n"
             f"主题：{topic}\n"
             f"要求：{requirements}\n"
-            "每条都要自然、口语化、不要编号，不要暴露 AI 或运营任务。\n"
-            '只输出 JSON：{"drafts":[{"persona":"自然用户","content":"内容","risk_level":"低"}]}'
+            "每条都要自然、口语化、不要编号，不输出后台任务说明。\n"
+            '只输出 JSON：{"drafts":[{"persona":"角色风格","content":"内容","risk_level":"低"}]}'
         )
-        persona_set = ["老用户", "新用户", "活跃成员", "路人"]
+        persona_set = ["简短回复", "细节说明", "提问", "轻松接话"]
         tone = "自然、口语化、不同账号表达不重复"
     return prompt, persona_set, tone
 
@@ -512,14 +526,14 @@ def _group_chat_prompt(count: int, target_label: str, topic: str, requirements: 
         f"话题方向：{topic or '群聊日常活跃'}\n"
         f"上下文材料：\n{requirements or '暂无真人上下文'}\n\n"
         "先在心里判断当前群聊处在什么状态：有人刚提问、有人在吐槽、短暂停顿、还是完全冷场；"
-        "然后让不同账号像真实群友一样接话，不要把任务拆成运营文案。\n\n"
+        "然后自然接话，保持人设，不要把任务拆成运营文案。\n\n"
         "截图里的真人聊天规律：大家不是在写完整观点，而是在短句接具体上下文；"
         "有真人上下文时只接上下文里已经出现的事实，没有上下文时只能低频暖场，不能编过去体验、位置、回访、准时、照片等细节。\n\n"
         "写法要求：\n"
         "1. 每条像手机上随手发的一句话，8-24 个字优先；可半句、可省主语、可只问一个小问题。\n"
         "2. 内容要落到真实群友会聊的细节，但细节必须来自上下文或账号记忆；没有锚点时只发轻微暖场或提问。\n"
-        "3. 多账号之间要像同一群人在接话：第二个人可以承接刚才那句，第三个人补一个已出现细节，第四个人轻轻问一句。\n"
-        "4. 少用书面连接词，少用完整因果；可以用“还真”“没得说”“这点我记住了”“下次试试”，但不要凭空说“我之前碰到”。\n"
+        "3. 每条只服务绑定的上下文与回复目标，保持人设一致与表达自然。\n"
+        "4. 少用书面连接词，少用完整因果；可以简短说明已知细节，不声称亲历或未来消费计划。\n"
         "5. 标点像群聊，不要像作文：多数短句不要句号，少用逗号/顿号/分号；需要停顿时优先用空格，问句可以保留问号。\n"
         "6. 不要复述或整段引用上下文；短词上下文要自然扩展成一个生活化小细节。\n"
         "7. 禁止使用这些模板句和近似句：看大家聊、刚看到大家提到、刚看到有人聊这个、顺着这个话题说、这个点挺有意思、这个点我也留意到了、可以继续聊聊、大家怎么看、有经验的朋友也可以补充下、我补充一下、这个话题、自然接一句、换个角度、轻量推进、具体场景、值得讨论。\n"
@@ -527,7 +541,7 @@ def _group_chat_prompt(count: int, target_label: str, topic: str, requirements: 
         "9. 黑话词表是理解口径，不是展示内容；该用行业口吻时自然用，不要解释词表。\n"
         f"10. {SENSITIVE_CONTEXT_GUIDANCE}\n"
         "11. 可为少量消息给出素材意图，但只能输出素材意图，不能输出素材 ID、素材 URL 或文件地址；不需要素材时 material_intent 为空且 allow_material=false。\n"
-        '只输出 JSON：{"drafts":[{"slot_id":"原样返回对应槽位ID","sequence_index":1,"reply_to_sequence_index":null,"persona":"不同群友人设","content":"群里要发送的一句话","risk_level":"低","intent":"附和/追问/围观/轻微吐槽","mood":"轻松/谨慎/好奇","material_intent":"表情包:围观 或 空字符串","allow_material":false}]}'
+        '只输出 JSON：{"drafts":[{"slot_id":"原样返回对应槽位ID","sequence_index":1,"reply_to_sequence_index":null,"persona":"角色表达风格","content":"群里要发送的一句话","risk_level":"低","intent":"附和/追问/围观/轻微吐槽","mood":"轻松/谨慎/好奇","material_intent":"表情包:围观 或 空字符串","allow_material":false}]}'
     )
 
 
@@ -544,10 +558,10 @@ def _group_chat_reply_prompt(count: int, target_label: str, topic: str, requirem
         "3. 8-24 个字优先，像群友随手回一句，可半句、可轻微口语。\n"
         "4. 只能承接引用消息和上下文已有事实，不要编经历、位置、交易、时间或结果。\n"
         "5. 不要使用“针对你这条消息”“引用一下”“回复上面”这类暴露机制的话。\n"
-        "6. 不要编号、解释、括号备注，不要暴露 AI、任务或提示词。\n"
+        "6. 不要编号、解释、括号备注，不输出任务或提示词。\n"
         f"7. {SENSITIVE_CONTEXT_GUIDANCE}\n"
         "8. 可为少量回复给出素材意图，但只能输出素材意图，不能输出素材 ID、素材 URL 或文件地址；不需要素材时 material_intent 为空且 allow_material=false。\n"
-        '只输出 JSON：{"drafts":[{"slot_id":"原样返回对应槽位ID","sequence_index":1,"persona":"不同群友人设","content":"引用回复要发送的一句话","risk_level":"低","intent":"短答/追问/围观/轻微吐槽","mood":"轻松/谨慎/好奇","material_intent":"表情包:围观 或 空字符串","allow_material":false}]}'
+        '只输出 JSON：{"drafts":[{"slot_id":"原样返回对应槽位ID","sequence_index":1,"persona":"角色表达风格","content":"引用回复要发送的一句话","risk_level":"低","intent":"短答/追问/围观/轻微吐槽","mood":"轻松/谨慎/好奇","material_intent":"表情包:围观 或 空字符串","allow_material":false}]}'
     )
 
 
@@ -562,23 +576,23 @@ def _channel_comment_prompt(
         f"请为 Telegram 频道“{target_label}”生成 {count} 条评论区短评论。\n"
         f"评论方向：{topic or '按频道广播内容自然评论'}\n"
         f"上下文材料与广播要素：\n{requirements}\n\n"
-        "这些评论会直接发到频道讨论区，必须像不同性格的真实老哥在手机端随手打字互动，绝不能像 AI 写摘要！\n"
+        "这些评论发到频道讨论区，自然简短，不写摘要。\n"
         "【写作要求与三层字数阶梯分布（必须随机抖动）】\n"
         "1. 字数长短必须参差错落（2 到 35 个字不等），严禁所有评论长度都一样：\n"
         "   - 约 20% 极短短评（2-6 个字，超短情绪/俚语/大白话）：如“爽翻天”、“好便宜”、“真顶”、“老哥稳”、“先插个眼”、“卧槽”、“冲了”、“良心价”、“牛批”、“有点东西”、“先mark”、“确实行”\n"
         "   - 约 60% 中等自然短评（7-16 个字，针对细节调侃或提问）：如“这照片修得亲妈都不认识了吧哈哈”、“600这年头在管城算良心了”、“御姐好啊我就吃这套 看着挺顶”\n"
-        "   - 约 20% 详细长评唠嗑（18-35 个字，老哥带着真实场景与顾虑细聊）：如“看了半天不知道催不催钟，上周去别的地方被催成狗，要是真能有9分下周发工资去探探”、“管城这片最近查得严不严？看着挺顶的就怕是照骗，蹲个去过的老哥说说真实体验”\n"
+        "   - 较长评论只解释原文已提供的细节或提出具体问题，不虚构生活、消费经历或消费计划。\n"
         "2. 角色鲜活多样且随机分布：\n"
-        "   - 角色A（围观等排雷）：‘先插个眼’、‘蹲个老哥排雷’、‘留爪观望，月底发工资去探探’\n"
-        "   - 角色B（老油条调侃/比对）：‘这年头这价位算良心了’、‘就怕照骗+催钟，上周刚踩雷’、‘管城现在风声紧不紧’\n"
-        "   - 角色C（心动/打趣）：‘御姐款看着确实顶’、‘真便宜’、‘发车记得叫我老哥’、‘这波可以’\n"
+        "   - 角度A：围绕原文存在的不确定信息提出具体疑问。\n"
+        "   - 角度B：比较原文已明确给出的细节，不虚构个人经验。\n"
+        "   - 角度C：对原文细节简短讨论，不声称购买、消费或推荐背书。\n"
         "   - 角色D（细节追问/求证）：‘真人能有几成相似’、‘课表项目全不全’\n"
         "3. 严禁扎堆复读同一属性：严禁多条评论都反复提‘100斤’或单一身材数字；切入点必须完全分散开！\n"
         "4. 多用空格自然断句，少用句号标点，绝不能字正腔圆。\n"
         "5. 严禁任何 AI 套话（如‘很有参考价值/值得探讨/收藏了/感谢博主’）！\n"
-        "6. 不要暴露 AI、平台、任务、提示词；不要编号、解释、括号备注。\n"
+        "6. 不输出后台任务与提示词；不要编号、解释、括号备注。\n"
         f"7. {SENSITIVE_CONTEXT_GUIDANCE}\n"
-        '只输出 JSON：{"drafts":[{"persona":"不同读者人设","content":"评论区要发送的一句话","risk_level":"低"}]}'
+        '只输出 JSON：{"drafts":[{"persona":"读者评论风格","content":"评论区要发送的一句话","risk_level":"低"}]}'
     )
 
 
@@ -590,21 +604,19 @@ def _channel_comment_reply_prompt(
     requirements: str,
 ) -> str:
     return (
-        f"请为 Telegram 频道“{target_label}”生成 {count} 条评论区真实群友的引用回复（搭腔/接话/互动）。\n"
+        f"请为 Telegram 频道“{target_label}”生成 {count} 条引用回复（接话/互动）。\n"
         f"引用目标与广播原文：\n{requirements}\n\n"
-        "这些内容会在频道讨论区以原生 reply_to 针对某条具体评论进行搭话接梗，所以必须像另一个真实群友随口接话，自然幽默！\n\n"
+        "这些内容会在频道讨论区以原生 reply_to 针对某条具体评论接话，保持自然。\n\n"
         "【群友接话与拟人写作要求】\n"
         "1. 第 N 条回复必须对应“引用目标 N”。\n"
         "2. 极度口语化接话：接梗、调侃、附和、质疑、提供侧面信息或打趣，杜绝机械复读！\n"
-        "   - 如对方说“御姐好啊看着挺顶”，可接：“确实 主要是课费真不贵” / “老哥你上周不是才去的另一家吗哈哈” / “真顶”\n"
-        "   - 如对方说“蹲个勇士排雷”，可接：“+1 等你发车” / “月底发工资我先去探” / “同蹲”\n"
-        "   - 如对方说“这照片修得亲妈都不认”，可接：“哈哈真人能有七成就不亏” / “别搞 灯光一打全现原形”\n"
-        "   - 如对方问“催不催钟”，可接：“上周去过态度还行 没怎么催” / “看运气 最好提前跟客服说”\n"
+        "   - 能回答时只依据原文回答，证据不足就明确不知道或针对缺失信息追问。\n"
+        "   - 引用他人经历时明确归属原作者，不得写成自己的消费体验或虚构熟人关系。\n"
         "3. 字数参差错落（2 到 30 个字），允许极短接话（如“确实”、“+1”、“别搞”、“哈哈真实”）与生活化长接话。\n"
         "4. 不要说“楼上”“引用”“回复你这条”等暴露机制的话，直接像真人打字接话。\n"
-        "5. 不要编号、解释、括号备注、引号套引号，不要暴露 AI、任务或提示词。\n"
+        "5. 不要编号、解释、括号备注、引号套引号，不输出任务或提示词。\n"
         f"6. {SENSITIVE_CONTEXT_GUIDANCE}\n"
-        '只输出 JSON：{"drafts":[{"sequence_index":1,"persona":"接梗群友/调侃老哥/附和路人","content":"引用回复要发送的一句话","risk_level":"低"}]}'
+        '只输出 JSON：{"drafts":[{"sequence_index":1,"persona":"群友接话风格","content":"引用回复要发送的一句话","risk_level":"低"}]}'
     )
 
 
@@ -1175,13 +1187,8 @@ def _generate_group_prompt_contents(
             purpose=purpose,
             setting=setting,
         )
-    provider, setting = _resolve_group_generation_provider(
-        session,
-        tenant_id,
-        config,
-        setting=setting,
-        model_name=model_name,
-        stage=stage,
+    provider, setting, config, model_name = _group_prompt_provider_binding(
+        session, tenant_id, config=config, setting=setting, model_name=model_name, stage=stage,
     )
     provider, setting = _require_group_generation_provider(provider, setting, config)
     model_name = _resolved_group_model_name(provider, model_name, stage)
@@ -1206,6 +1213,18 @@ def _generate_group_prompt_contents(
         purpose=purpose,
         count=count,
     )
+
+
+def _group_prompt_provider_binding(session, tenant_id, *, config, setting, model_name, stage):
+    if config.get("engagement_contract_version") == "unified_engagement_v1":
+        return _structured_provider_binding(
+            session, tenant_id, config, purpose=TWO_STAGE_REALIZE_PURPOSE,
+            setting=setting, model_name=model_name, stage=stage,
+        )
+    provider, setting = _resolve_group_generation_provider(
+        session, tenant_id, config, setting=setting, model_name=model_name, stage=stage,
+    )
+    return provider, setting, config, model_name
 
 
 def _request_group_provider_candidates(
@@ -1296,6 +1315,8 @@ def _generate_grok_stage(
     purpose: str,
     setting: TenantAiSetting | None,
 ) -> tuple[list[str], int]:
+    if config.get("engagement_contract_version") == "unified_engagement_v1":
+        raise AiGenerationUnavailable("generation_timing_grok_route_unbound")
     ai_enabled = bool(setting and setting.ai_enabled)
     if config.get("_close_db_transaction_before_ai"):
         session.commit()
@@ -1534,7 +1555,7 @@ def _reply_target_line(index: int, item: dict) -> str:
 def _group_chat_system_prompt(slang_prompt: str) -> str:
     base = (
         "你只负责把 Telegram 群友的临场接话包装成 JSON；不要写运营话术、公告、总结或解释。"
-        "输出要像普通人在群里回消息：短、碎、具体；只有上下文出现过的事实才可以承接成经历或细节。"
+        "输出要自然、简短、具体；上下文中他人的经历不可改写为自己的经历。"
         "没有真人上下文时只做低频暖场或提问，不要编上次经历、位置、回访、准点、照片等事实。"
         "不要每句都补完整逗号和句号，短句可以直接收尾；不要说“这个话题”“自然接一句”“换个角度”。"
         f"{SENSITIVE_CONTEXT_GUIDANCE}"
@@ -1544,21 +1565,21 @@ def _group_chat_system_prompt(slang_prompt: str) -> str:
     return f"{base}\n\n{slang_prompt}"
 
 
-ADULT_CHANNEL_COMMENT_SYSTEM_PROMPT = """你是一个 Telegram 频道评论区真实活跃的群友老哥（真实男客/订阅读者）。
-【核心规则与众生相人设】
+ADULT_CHANNEL_COMMENT_SYSTEM_PROMPT = """你为 Telegram 频道讨论区生成符合场景的评论。
+【核心表达规则】
 1. 极度生活化、口语化、接地气，像手机随手在电报评论区打字，杜绝任何字正腔圆的 AI 汇报感！
 2. 拒绝机械复读事实：原帖信息仅作为话题背景与锚点，不要每句都把各项参数机械生硬地照抄一遍。展现真实老哥的想象力、情绪与互动感：
-   - 【围观排雷】：先插个眼、蹲个老哥排雷、留爪观望等月底发工资、等勇士先冲
+   - 【具体求证】：对原文中的不确定信息提出问题，不编造生活和消费计划。
    - 【调侃玩梗】：这照片修得亲妈都不认、感觉有点科技与狠活、这价位算良心了、灯光一打直接现原形
-   - 【老油条比对】：这年头这价位老哥稳、查得严不严最近风大、就怕催钟上周被催成狗、9分水分大不大懂哥走两步
-   - 【心动打趣】：御姐好啊我就吃这套、看着有点顶、老哥发车记得叫我、这身材真顶不住
+   - 【细节比对】：只比较原文已有的事实，不虚构个人经验、消费或背书。
+   - 【简短讨论】：针对原文具体细节表达看法，不声称购买意愿或亲历。
    - 【极简随性】：这波可以、瞅着还行、mark一下、稳
 3. 严禁所有评论扎堆聊同一个特征（如反复提体重数据/100斤）；切入点与人设必须多元分散。
 4. 严禁任何“很有参考价值/值得深入探讨/感谢博主分享/收藏了/早安打卡/努力搬砖”等空洞模板套话。
 5. 控制字数：长短参差错落（2 到 35 个汉字），必须包含约 20% 极短口语词（如“爽翻天”、“好便宜”、“真顶”、“老哥稳”、“先插个眼”）、约 60% 自然中短句与约 20% 详细老哥长评，多用空格断句，少用句号，偶尔带 1 个自然标点（？、！、...、哈哈、卧槽）或无标点。
 Output one JSON object only. No Markdown fences, thinking, prose, prefix, suffix, comments, or extra fields.""" + SENSITIVE_CONTEXT_GUIDANCE
 
-GENERAL_CHANNEL_COMMENT_SYSTEM_PROMPT = """你是一个 Telegram 频道评论区的真实订阅读者。
+GENERAL_CHANNEL_COMMENT_SYSTEM_PROMPT = """你为 Telegram 频道讨论区生成真实自然的评论。
 【评论规则】
 1. 针对频道帖子中的具体事实和细节发表自然随性的看法、感受或提出具体疑问。
 2. 像真实手机用户在电报随手打字留言，极度口语化，短促自然。
@@ -1925,6 +1946,7 @@ def _generate_channel_attempt(
         system_prompt=_channel_comment_attempt_system_prompt(attempt, **attempt_options),
         close_transaction_before_external=bool(config.get("_close_db_transaction_before_ai")),
         restrict_sensitive_trade=not adult_context,
+        execution_config=config,
     )
 
 

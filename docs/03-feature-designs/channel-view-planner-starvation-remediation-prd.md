@@ -1,11 +1,19 @@
 # 频道浏览 Planner 饥饿与来源状态修复专项 PRD
 
+> **恢复实施授权：** 用户已确认解除披露限制并按统一引擎 §19.4 恢复经复核子合同开发。支持通过受管账号拟人化浏览制造频道用户热度与阅读量，并按真实远端操作事实对账。以下前次“仅 PRD”是历史范围；生产运行仍需 Release Gate 与实际验证。
+
+> **本轮仅 PRD 修订：** unified route 的公共业务合同以统一引擎 PRD §19.3 为准，`design_status=complete_for_review`、`product_design_complete=false`、`dev_handoff_ready=false`；以下旧日期的 Product Design Complete 是历史记录，不覆盖新增修订。支持通过自然分布的浏览操作制造频道真实用户热度与阅读量。每来源首日准入校验其完整曝光边集，不要求整个 day cohort；同日业务 identity 不含 source revision，帖子编辑不增加边/目标或绕过去重。北京墙钟、UTC 日界字段按各自编码转换；跨日迟到事实归原日且仍须满足冻结期限语义，不能直接算按时完成。已绑定坏组只隔离其分区；本轮不修改代码或线上状态。
+
 > 日期：2026-08-10
 > 分级：L3（生产履约阻断）
 > `design_status=product_design_complete`：2026-08-10最终独立fresh复核确认本文件与主PRD、闭合PRD、数据流索引无实现/迁移/发布/E4阻断P0/P1；允许进入dev，但实现、QA、发布和生产E4仍未开始。
 > 本文只修复 `task_type=channel_view`；其合同优先于历史“最晚 future Action 作为新批锚点”和“按 Task 串行拟人间隔”的冲突描述。
 
-> **2026-09-03 统一引擎关系修正（Product Design Complete / 未实施）：** 本文继续拥有 `channel_view` 的 per-message daily target、`all_accounts_daily`、按日本地 identity、12 小时跨日间隔和 `ViewRemoteFact` 结算语义，但最终 due/strata、跨 Task/类型账号与 source-message 时间线、Action/Attempt/Gateway 生命周期由 `unified-engagement-fulfillment-engine-prd.md` 的公共 `PacingPlanner + TimelineArbiter` 拥有。浏览是 `passive_operation`，不创建 ContextTurn/GenerationJob。若 12 小时间隔使某个当日 identity 无法在本任务日 deadline 前执行，该 identity 当日形成 typed shortfall；绝不能把旧日 obligation 搬到次日。次日只按新的 `obligation_local_date` 建立自己的 daily identity。
+> **2026-09-04 统一引擎关系终审（Product Design Complete / 未实施）：** unified route 不再以 `all_accounts_daily` 或“当时健康账号数”动态决定每日分母。Task 必须显式绑定 1..N 个账号分组，任务日从冻结 policy-eligible 成员并集中稳定选择 80%～95% shared cohort；再对当日同日准入的 active source messages 求解并冻结账号—来源二部图。每个 cohort 账号默认自然浏览 2～4 条来源（不足时按来源数收敛），每条来源获得冻结 distinct exposure；只有 `every_active_message=true` 才把全 cohort 分配给每条来源。每条已分配 edge 仍有独立 daily identity 与 `ViewRemoteFact`。首次附着来源只有在剩余自然窗口能容纳该来源冻结 exposure 且不压缩既有曲线时才进入当日，否则为 `pending_first_full_day`。三个连续且至少有一个适用来源的任务日，其 selected union 必须覆盖冻结组成员并集；实际完成另以 typed fact 结算。公共计划、Timeline 与执行链以统一 PRD §19.1～§19.2 为准；当同一 source 同时存在点赞/评论/浏览 Task 时，`CrossAdapterSourceJourneyPlanRevision` 在保持 cohort、每来源 exposure 和各 Task 数量不变的前提下联合选择本 source 的具体 view edges，防止同一大批账号机械完成三连。AccountPool global lease、账号跨 Task behavior budget 和未归属外发占用必须进入 view edge 可行性；它们只形成 waiting/shortfall，不能缩 cohort 或换边。本文继续拥有来源、每日 identity、12 小时跨日间隔与浏览事实语义。浏览是 `passive_operation`，不创建 ContextTurn/GenerationJob，不读取面具或调用 LLM。§1.2～§1.4 中 `all_accounts_daily/per_message_daily_view_target/view_count_jitter` 仅描述 legacy route；与 §1.7 冲突时以 §1.7 为准。
+
+> **2026-09-03 远端在途 fence 补正（Product Design Complete / 未实施）：** view hard timeout 只归还本地 Worker/stage/fair-share lease；未确认终止的 Telethon transport 必须由 durable `RemoteInvocationFence` 继续计入 account/group/proxy route/verified egress hard in-flight。TTL、Worker 重启、Future timeout 与 cancel-requested 均不能释放该占用。runner termination acknowledgement 只结束传输在途计数，call-issued view 的 daily identity/业务结果仍保持 unknown 并只对账，防止因“Worker 已返回”绕过账号 1 个 mutation、出口并发与每日防重。
+
+> **2026-09-03 统一生命周期与分母终审（Product Design Complete / 未实施）：** channel-view 的 start/update/pause/resume/stop/delete、固定北京时间 task-day、同 source-scope quantity writer、跨任务组合容量、结构化 FloodWait/SlowMode 和 operator safe-retry 服从 unified §7.6～§7.9。task-day shared cohort 一经 plan commit 就是当日参与分母；Session、代理、FloodWait 或运行时健康变化只形成该账号 waiting/shortfall，不能用 standby 换号、缩小 cohort 或把已有 due 改成 now。日内调小比例/目标只建下一完整任务日 successor，立即停止用 stop/`terminated_by_operator` 表达，不能把欠量改写为 completed。
 
 ## 1. 原始问题与生产事实
 
@@ -60,25 +68,121 @@
 - **消息有效时间窗口从 3 天延长为 7 天**：
   - 将频道浏览的活跃消息窗口 `message_active_days` 默认值从 3 天调整为 7 天；
   - 任务配置缺省或为 0 时统一兜底为 7 天。在动态新消息或存量消息过滤中，最近 7 天内发布的消息均认定为有效浏览目标，防止因频道更新频率较低（3~7 天未发帖）导致任务由于无活跃消息而停滞；
-- **排期时间全天 24 小时随机平滑分布**：
-  - 取消可能导致凌晨特定时段零排期的硬性死区曲线；在 24 小时自然日时间域内（`[period_start_at, deadline_at]`），为每个由于全账号覆盖产生的任务动作分配确定性分层随机 due 时间；
-  - 排期在全天 24 小时内均匀离散打散，各小时均有合法浏览流量，模拟真实用户的自然访问分布；
+- **排期时间覆盖完整任务日并按自然曲线分层随机**：
+  - 取消把整批动作集中在任务启动后、整点或日末的排期；在北京时间任务日的合法active window内，为冻结cohort产生的义务按 `natural_full_day_v1` 与任务日稳定seed分配 hour-stratum，再在stratum内离散抖动；
+  - 不要求24个小时机械等量或每小时必有动作；低活跃时段允许为0，高活跃时段可更密，但每个stratum配额、seed和slot在plan commit后不重抽。任务量不足时优先覆盖分散的hour strata，任务量较大时仍受同账号、跨任务、peer/source和代理容量共同约束；
 - **单账号跨日执行最小间隔 12 小时（Per-Account Cross-Day Spacing >= 12h）**：
   - **对象口径明确**：此 12 小时间隔是**针对单个具体账号（per-account）自身连续两次执行浏览动作的时间间隔**，绝不是任务级（task-level）执行间隔或频道间全局串行；
   - **跨日冷却规则**：若账号 A 在昨天（或上一次）于该任务/频道已有 confirmed `ViewRemoteFact.remote_confirmed_at`，或存在 Gateway call-issued/remote-unknown 的保守占位时间，取二者中最新者为 $T_{\text{prev}}$；普通 pre-Gateway Action 状态/`executed_at` 不能单独证明浏览已经发生，也不能在 safely-not-executed 后永久制造冷却。系统在今天为账号 A 排定的浏览时间 $T_{\text{today}}$ 必须严格满足：
     $$T_{\text{today}} \ge T_{\text{prev}} + 12\text{ hours}$$
   - **动态安全顺延与保持分布**：如果今天初步生成的随机时间落在了 $T_{\text{prev}} + 12\text{h}$ 之前，统一 TimelineArbiter 只能把该 identity 的 effective claim 顺延到 $T_{\text{prev}} + 12\text{h}$ 之后，并在当天剩余有效窗口内保持离散排期；若已经越过当日 deadline，则该日 identity 记 cross_day_spacing_deadline_shortfall，不得搬到次日、改写 local date 或与次日新义务同时执行。这样既避免昨晚 23:00 后今晨 02:00 再次浏览，也不制造跨日追赶和重复。
 
+### 1.7 2026-09-03 账号分组、每日多数参与与生产韧性合同
+
+#### 1.7.1 Task 账号范围与六层集合
+
+unified `channel_view` Task 的规范配置为：
+
+```json
+{
+  "account_selection_mode": "group",
+  "account_group_ids": [101, 102],
+  "concurrency_limit_per_group": 5,
+  "account_ratio_min_bps": 8000,
+  "account_ratio_max_bps": 9500,
+  "rolling_participation_days": 3
+}
+```
+
+- `account_group_ids` 必须包含 1..N 个同租户、enabled、用途一致的普通运营分组，接码/搜索降权等专用组直接拒绝；去重后形成 `TaskAccountGroupBindingSetRevision`。每组冻结 membership/group-state revision，规范化并集中的每个账号保留唯一 origin group。当前账号单分组归属模型下若快照仍出现跨组重复账号或用途/归属不一致，计划 blocked，不任意选择并发额度归属；
+- 分开保存 configured group-member union、policy eligible、planning admissible、task-day selected cohort、runtime admitted/sendable 与 confirmed fact 六层集合。cohort 数量只按 policy eligible 计算；`PlanningAdmissionSnapshot` 用当前有效 Session/代理/egress/capability/Timeline/日容量证据证明计划路径，不足时显示 `partially_serviceable` 或 `planning_admission_capacity_deficit`，但不得缩小 cohort。计划提交后临时故障只改变运行时集合；
+- legacy `selection_mode=all|manual|single group` 只按旧 route 收口。迁移到 unified 时，`all` 必须先按同一稳定规则冻结旧 policy-eligible scope，再绑定全部用途兼容普通组；只有这些组的 policy-eligible 并集 set/hash 与旧 scope 精确相等且无未分组 policy-eligible 账号时才可切换，禁止假定默认组等于全租户或以字段缺省继续动态扫描。
+
+#### 1.7.2 每日 shared cohort 与三日轮转
+
+任务日使用稳定、跨进程可重放的 seeded uniform 只抽一次比例：
+
+```text
+ratio_today_bps
+  = stable_uniform_int(task_id, task_day, binding_set_revision,
+                       participation_policy_revision,
+                       account_ratio_min_bps, account_ratio_max_bps)
+
+selected_count
+  = max(floor(policy_eligible_count / 2) + 1,
+        round_half_up(policy_eligible_count * ratio_today_bps / 10000))
+
+realized_ratio_bps
+  = round_half_up(selected_count * 10000 / policy_eligible_count)
+```
+
+配置必须满足 `5000 < min_bps <= max_bps <= 10000`，默认 sampled ratio 为 80%～95%。比例抽样值、fractional expected count、round-half-up 结果、strict-majority adjustment、selected count 与 realized ratio 必须分列保存；例如 3 个 eligible 账号无法严格形成 80%～95% 的整数比例，realized 可因 `integer_quantization_adjustment` 越出 sampled 区间，但不得重抽或静默改配置。selected 排序先偿还最近两个适用任务日的 selection debt，再按 last-selected day 与稳定 hash 决胜；worker 重启、多 Planner 或运行时故障不得重抽。当天 active source messages 引用同一 `TaskDayViewParticipantCohort`，但不会自动取得全 cohort。cohort 冻结时每账号以稳定 seed 得到 `degree_cap_i∈[2,4]`；对当前 `M>0` 条来源，每版累计 `assigned_degree_i∈[min(2,M),min(degree_cap_i,M)]`，每个纳入 target set 的来源 `e_j∈[source_min_exposure_j,selected_count]`（v1 floor=1），并满足 `Σassigned_degree_i=Σe_j=frozen_edge_count`。`natural_auto` 平衡派生 exposure；`explicit_per_source` 只有在 `selected_count×min(2,M)<=Σe_j<=Σ_i min(degree_cap_i,M)` 时可求解，否则 `view_allocation_unachievable`。任何 active target 无法取得 exposure floor 时也不可建立 0 目标伪完成。只有显式 `every_active_message=true` 时忽略 natural cap，冻结 `assigned_degree_i=M、e_j=selected_count`。禁止再叠加 legacy `view_count_jitter`。
+
+`policy_eligible_count=0` 时任务日计划为 `no_policy_eligible_accounts/blocked`，不能把 0/0 显示为 met；非零时 round-half-up 后至少选择 1 个账号。空 source 与空账号是两个不同状态，前者按来源合同 waiting/missed，后者按参与计划 blocked。
+
+“适用任务日”必须至少存在一个 active source message；无来源日不进入三日窗口。Task 启动前两个适用日整体为 `warming_up`；从第三日起，只有在该三日窗口内持续属于 policy-eligible member set 的账号才进入完整 rolling denominator，并要求 selected union 覆盖。新迁入账号从自身 membership effective day 开始单独计三个适用日，前两日为 account-level warming-up、第三日必须被 selected；移出账号不产生移出后的新义务，但历史 selected/fact 不改。若当日 ratio 上限不足以偿还 must-select debt，则在计划阶段形成 `rolling_participation_plan_unachievable`，不能突破 95%、伪造 fact 或把比例重抽得更高。selected coverage 与真实完成分开：到期账号的三日 selected coverage 达标但没有任何 `ViewRemoteFact` 时，`rolling_remote_fact_coverage` 仍为 shortfall。
+
+每个 `ViewAccountSourceAllocationPlan` edge 才建立固定 participation allocation 和 daily identity；最大匹配只能为这些冻结边选择时间槽，不能扩张为 cohort×sources，也不能从 cohort 外临时挑号。task-day cohort 和 edge set 一经 plan commit 均不可替换；Session、代理、FloodWait 或其他运行时故障只形成该 edge waiting/shortfall。standby 只参与下一任务日 selection-debt 公平轮转。
+
+#### 1.7.2A 首次附着来源的首个适用日
+
+Task 首次 bootstrap 的 initial source 和 `dynamic_new` 都不能等价于“无论几点开始或发现都把完整 cohort 塞进当天剩余时间”。每条首次附着 source 必须保存 `source_published_at/source_durably_observed_at/source_available_at/source_ingest_lag_seconds/effective_intake_at`，其中 `source_available_at=max(source_published_at, source_durably_observed_at)`，`effective_intake_at=max(source_available_at, task_day.planning_anchor_at)`；活动期限仍按权威发布时间计算，系统不得把晚采集或晚启动改写成晚发布。
+
+当日准入在 append target 前执行一次确定性 `FirstApplicableDayDecision`。它引用当日 cohort、source-policy revision、`ExecutionTimingProfileRevision`、当前已冻结的 Timeline allocations 与自然日 deadline，计算：
+
+```text
+latest_same_day_intake_at
+  = deadline_at
+    - max(min_source_distribution_span,
+          frozen_matcher_required_natural_span)
+
+same_day_applicable
+  = effective_intake_at <= latest_same_day_intake_at
+    AND full_cohort_has_legal_remaining_slots
+    AND no_existing_due_or_slot_is_compressed_or_rewritten
+```
+
+`min_source_distribution_span`、合法小时 strata 和 matcher 参数必须来自冻结且已验证的 timing policy，不接受代码默认值，也不读取此刻 Session/代理健康来缩短窗口。多条新来源按 durable observation sequence 串行做 CAS 决策；先到来源已占用的冻结 slot 参与后续匹配，禁止因并发 listener 顺序不同得到不同结果。
+
+- 决策为 true：append 当日 active target，引用同一 day cohort，并只在剩余合法 strata 中形成完整 DueSet；不得把过去小时权重重新归一到最后一小时、把 future 改成 now 或挪动既有 allocation；
+- 因 partial-day 时间不足或当日既有 source-slot 竞争而决策为 false：append `source_state=pending_first_full_day` 的当日审计 target，不创建当日 participation allocation/DueSet，不计入当日 active source、quantity denominator 或三日适用日窗口；该 row/decision 永久保留且不原地升级。下一自然日 bootstrap 把全部 predecessor-pending source 排在当日新来源之前做批量匹配；消息仍处于活动期且完整集合可规划时，才创建新 ledger active target、引用 predecessor decision，并以次日 cohort 建首个完整日义务；
+- 完整自然日仍无法为 pending + active source set 放下全部 cohort 义务时，状态是 `coverage_plan_unachievable`，不得继续逐日延后、按 observation 顺序偷偷丢后到来源或缩每消息人数。source 在获得首个完整适用日前已越过活动期时，冻结 `source_expired_before_first_full_day`；它不进入 quantity met，但必须在 source coverage 中可见，若由 listener 迟到造成仍同时保留 SLA failure；
+- 不提供“先突发一小批、次日再补整批”的隐式 partial cohort。若后续确需首发加速，应作为独立且有自己数量/事实合同的产品能力，不得冒充每日多数参与；
+- 因 `source_ingest_lag_seconds` 导致同日不再可行时，除 `pending_first_full_day` 外必须投影 `source_observation_sla_breached`，Listener 质量验收失败；延后首日不等于采集链健康，也不把未曾可规划的当前日伪造为 shortfall。
+
+#### 1.7.3 运行时准入、舱壁与断路器
+
+每次 materialization、claim 与 Gateway pre-call 使用统一运行时断言：
+
+```text
+RuntimeAdmissionEligible
+  = InBoundGroupSnapshot
+  AND BoundAccountGroupOperational
+  AND SessionValid
+  AND ProxyRouteAndEgressVerified
+  AND ProxyRouteAndEgressCircuitsClosed
+  AND AccountCircuitClosed
+  AND NotQuarantined
+  AND TargetViewAccessReady
+```
+
+`TargetViewAccessReady` 表示该账号能读取目标消息并执行 view capability；公开频道不要求账号先成为成员，私有/受限频道则按其权威访问事实判断。浏览不检查 account mask、Prompt、Provider 或 LLM。half-open 只运行独立无业务副作用 probe，业务 view 必须等待适用 circuit closed。本地 Worker/stage/fair-share 使用可及时归还的 `ExecutionBulkheadLease`；每个实际 Telegram invocation 另建 durable `RemoteInvocationFence`。每账号同一时刻最多一个 active Telegram fence；proxy binding route 与 canonical verified egress 默认各最多 2 个 active fences，两个不同 proxy IDs 观测到同一出口仍共享 egress cap。`concurrency_limit_per_group` 只限制本 Task 在分组上的 share ceiling；同一 AccountPool 跨 Task 的物理总并发由统一 `AccountPoolConcurrencyLease` 约束，实际可取容量是 Task share、pool remaining 与 account remaining 的最小值。共享池 Task 份额按当前 runnable Task 数自适应，1/2/3/4+ 个时单 Task 新 lease 上限为 100%/50%/约 33.34%/30%。Scheduler 先完成公平 quantum 再借当下不可用份额；waiter 重新 runnable 后借用方停止新增超额 lease但不取消 in-flight/call-issued。`passive_gateway` 与 `interactive_generation/health_probe` 使用独立舱壁，面具或 LLM 卡住不能占满浏览 Worker。
+
+Telegram connect ceiling 为 5 秒；已经提交 call-issued journal 的 view RPC ceiling 为 10 秒。前者超时可记 `safely_not_called`，释放本地 lease/pre-Gateway attempt 并让同一 allocation 以后重新准入；但底层 connect runner 未确认终止时，其 route/egress remote fence 仍在途。后者只能记 `telegram_remote_outcome_unknown`、释放本地 lease并保留 daily identity；remote fence 在当前隔离 runner termination acknowledgement 或权威终态前继续占全部适用 domain，transport 终止后 daily identity/业务 unknown 仍只 reconcile，严禁换号补发。账号、proxy route 或 verified egress 在 5 分钟内出现 2 次 qualifying failure 后默认 open/quarantine 15 分钟；route 熔断只接受明确节点/绑定错误，egress 熔断要求至少两个 distinct accounts 在同一 current verified exit 上相关失败。half-open 只允许一个低优先级探活 owner，旧 revision 的迟到成功不能关闭新 circuit。
+
+局部 account/proxy failure 只令相关 allocation 为 blocked，健康 proxy/group 分区继续，Task 聚合为 `running_partial`。只有所有当前到期 allocation 都无 sendable participant，或一个权威共享依赖阻断整个 Task 时才为 `blocked`；故障不得触发 cohort、ratio、due 或三日 debt 重抽。
+
 ## 2. 产品合同优先级
 
 频道浏览按以下顺序解释，低层规则不得覆盖高层规则：
 
-1. 每消息每日浏览目标、累计浏览软目标（支持具体数值或 0/无上限）、`TaskDayLedger` 边界和 distinct `ViewRemoteFact(date)` 是数量真相；有限累计目标允许按已冻结的当日批次粒度超额；
-2. Telegram daily source identity、防重复、账号授权/Session/代理、membership、FloodWait 和 Gateway 容量是硬安全边界；
-3. `due_by_now` 决定当前允许物化的最大业务量；future Action 只是一条 Action 的软排期，不是 Task 的容量预留；
-4. 浏览拟人节奏按独立账号的真实操作链解释。不同账号对同一消息的被动浏览不是必须按 Task 全局串行的副作用；
-5. 配置的 task 级 template/curve 只分布候选时间，不能把 1,000/消息隐式改成最多 480/日，不能减少 due、目标或事实成功数；
-6. 外部身份容量不足保持原目标并形成 typed structural shortfall，禁止降低目标、伪造 success 或 silent running。
+1. unified route 先冻结账号分组 binding set、成员快照、每日 80%～95% shared cohort 与三日 selection debt，再对通过 `FirstApplicableDayDecision` 的 active messages 联合求解 `ViewAccountSourceAllocationPlan`，只为冻结 edge 建 daily identity；晚启动 initial source 与晚到 dynamic source 等待首个完整适用日，legacy route 才解释固定 per-message/all-accounts 目标；
+2. `TaskDayLedger`、participant cohort、每消息 target/DueSet 和 distinct `ViewRemoteFact(date)` 共同构成数量真相；可选累计浏览软目标只决定后续任务日是否继续纳入 source，不改当天已冻结 cohort；
+3. Telegram daily source identity、防重复、账号授权/Session/代理、membership、FloodWait、Gateway unknown 和舱壁/circuit 是硬边界；运行时故障不得缩分母或重抽参与者；
+4. `due_by_now` 决定当前允许物化的最大业务量；future Action 只是一条 Action 的软排期，不是 Task 的容量预留；
+5. 浏览拟人节奏按独立账号的真实操作链解释。不同账号对同一消息的被动浏览不是必须按 Task 全局串行的副作用；
+6. 配置的 task 级 template/curve 只分布候选时间，不能减少 due、participant cohort 或事实成功数；
+7. 外部身份容量不足保持原目标并形成 typed structural shortfall，禁止降低目标、伪造 success 或 silent running。
 
 ## 3. 唯一身份与精确数量集合
 
@@ -98,14 +202,19 @@
 
 ```text
 tenant_id / task_id / task_day_ledger_id / target_operation_target_id / target_peer_id / channel_message_id
-source_revision / target_revision / pacing_anchor_at / active_until
+source_revision / target_revision / source_published_at / source_durably_observed_at / source_available_at
+source_ingest_lag_seconds / effective_intake_at / first_applicable_local_date
+first_applicable_day_decision_id / predecessor_first_applicable_day_decision_id
+pacing_anchor_at / active_until
 daily_target_count / cumulative_remaining_at_attach / effective_target_count
-source_state = active | expired | source_unresolved
-baseline_due_count / baseline_active_elapsed_us / accrual_stopped_active_elapsed_us
-accrual_stopped_at / accrued_due_count / next_due_ordinal / version / created_at / updated_at
+source_state = pending_first_full_day | active | expired | source_unresolved
+baseline_due_count / baseline_calendar_as_of / task_calendar_revision / calendar_deadline_at
+accrued_due_count / next_due_ordinal / execution_availability_clock_id / version / created_at / updated_at
 ```
 
-`channel_view`保持现有单`target_channel_id/target_input`合同；创建/PATCH必须恰好解析一个OperationTarget，禁止在同一Task内隐式混入多个peer。ledger首次规划时冻结initial selected source set；`dynamic_new/listen_new_messages`后续只append新target row，不删除或重排旧row。target创建时：当配置了有限总目标 `per_message_total_view_target > 0` 时，只用 attach 时累计按日 `ViewRemoteFact` 行数判断是否已经达到目标；跨日期重复使用同一账号会产生不同daily identity并分别计数，每条daily identity只计一次。未达到时仍冻结完整 `per_message_daily_view_target`，允许最终累计成功数按当日批次粒度超额；达到或超过后才令 `effective_target_count=0`。当总目标设为 0、None 或无上限时，`effective_target_count=per_message_daily_view_target`，不设跨日总量截断。一个`ViewRemoteFact`按日唯一记录；当日内已完成或被其他 Task Owner 占用的账号在当日排除，跨日后全库账号重新恢复可用。消息达到`message_active_days`时，只停止该row后续due增长并在同一CAS冻结`accrual_stopped_at/accrual_stopped_active_elapsed_us/accrued_due_count`；此前已经累计到期的分母不得消失。配置变更不改写current row，只影响满足PATCH生效期的新消息或下一ledger。
+`channel_view`保持现有单`target_channel_id/target_input`合同；创建/PATCH必须恰好解析一个OperationTarget，禁止在同一Task内隐式混入多个peer。ledger bootstrap 先冻结 `TaskAccountGroupBindingSetRevision + TaskDayViewParticipantCohort` 及每账号 `degree_cap_i`，再对 initial selected source set 逐 source 做 §1.7.2A 决策并联合求解 `ViewAccountSourceAllocationPlan`；`dynamic_new/listen_new_messages`只 append 新 target/decision。edge set 已 commit 后的新来源可以建立 append-only allocation successor，但只能新增边，已有边/账号/source target/slot 不变；每账号累计 `assigned_degree_i` 不得超过冻结 cap，新来源必须达到 exposure floor，并同时通过剩余 Behavior Session、Timeline、12 小时间隔和 natural span 校验，否则进入 `pending_first_full_day`。每个 active target 保存 `participant_cohort_id/allocation_plan_id/source_exposure_target/allocated_edge_set_hash`，每个冻结 edge 建稳定 allocation；DueSet ordinal 与 edge 一一映射。legacy route 才从 `per_message_daily_view_target/all_accounts_daily` 派生目标。
+
+当配置了有限总目标 `per_message_total_view_target > 0` 时，只在新任务日 source 纳入前以累计按日 `ViewRemoteFact` 判断是否已达到；未达到则冻结完整的当日 cohort，允许最终累计数按一个 cohort 批次粒度超额，达到或超过后下一任务日 target 可保留 `effective_target_count=0` 审计行。当总目标为 `0|None|unlimited` 时不设跨日总量截断。一个 `ViewRemoteFact` 按日唯一记录；当日内已完成或被其他 Task Owner 占用的账号在当日排除，跨日后只在新任务日 cohort 冻结时重新取得资格。消息达到 `message_active_days` 时，只停止该 row 后续 due 增长并在同一 CAS 冻结 `accrual_stopped_at/accrual_stopped_active_elapsed_us/accrued_due_count`；此前已累计 DueSet 不得消失。配置变更不改写 current row/cohort，只影响下一任务日，或仅影响合同明确允许的新 source-policy revision。
 
 `next_due_ordinal` 只在同一 target row 上以 `expected target/version/next ordinal` CAS 分配。`DueSet_m={1..due_m}`；Planner可以有界补建缺少的 obligation rows，但 E4 required始终来自 DueSet而不是现有行数。存量 current-ledger obligation按 `remote fact/Gateway evidence优先 -> scheduled_at -> created_at -> id` 规范排序分配ordinal；冲突、超出 target或证据错绑进入 migration blocker，不猜测覆盖。
 
@@ -116,10 +225,10 @@ accrual_stopped_at / accrued_due_count / next_due_ordinal / version / created_at
 registry冻结各类最小payload，任何新增业务字段若影响对应守恒必须先升级hash版本：
 
 - target-set：logical Task/ledger/route identity、period/deadline/timezone revision及排序后的`target_operation_target_id,target_peer_id,channel_message_id,source_revision,target_revision,effective_target_count,active_until`；
-- due-set/read-model：target-set hash、clock/segment-set version+hash、规范as-of、每target due count/ordinal边界、source projection与settlement版本；
+- due-set/read-model：target-set hash、冻结的 `TaskCalendarRevision`、规范wall-clock as-of、每target due count/ordinal边界、source projection与settlement版本；生命周期可用性segment只进审计投影，不得进入DueSet输入；
 - materialized/matching：每个gap due key；候选daily identity（含业务日期）及owner/fact version；账号slot identity/time/capacity revision；输出`due key -> peer-message-account-date-slot`映射及evidence class/version。heartbeat、lease、display name、进程ID和可重建stats明确排除；
 - source/expiry：logical source、collector epoch、observation/policy revision、event/delta/subscription/fanout identity+count+payload hash；target identity、active_until、schedule/activation operation version与expected/applied count；
-- settlement：target input version、clock deadline snapshot、SettledDue/OnTime/Late/Unproven/Unknown/KnownShortfall各identity set count+hash、projection barrier和最终status；post-settlement history排除；
+- settlement：target input version、冻结的TaskCalendar deadline snapshot、SettledDue/OnTime/Late/Unproven/Unknown/KnownShortfall各identity set count+hash、projection barrier和最终status；post-settlement history与生命周期可用性segment排除；
 - inventory/fleet：tenant policy/cutoff、每个logical Task membership identity、frozen/allowed Task lifecycle/config/domain versions和item state；runtime heartbeat排除；
 - takeover/manifest/checkpoint：inventory item、frozen class、Task/ledger/route/source-fence/static revision vector、规范manifest item identity+payload hash、chunk range/input/output count+hash；
 - fact/binding/observation/blocker/tombstone：canonical remote identity、logical owner/requested due identity、binding/occurrence/resolution revisions及归档identity sets/count；导航FK是否已SET NULL不改变logical identity。
@@ -128,29 +237,26 @@ route activation hashes、ReadModelRevision、SourceProjection/Event/Fanout、Ex
 
 ### 3.2 当前到期量
 
-每个current route同事务创建唯一`ChannelViewAccrualClock(route_id unique,task_day_ledger_id,state=running|paused|stopped|closed,imported_baseline_active_us,accumulated_active_us,current_segment_seq,segment_set_hash,version)`，并以append-only`ChannelViewAccrualClockSegment(clock_id,segment_seq,started_at,ended_at nullable,active_us nullable,stop_reason=paused|stopped|deadline|route_closed,version)`记录每段running区间；唯一`(clock_id,segment_seq)`且每clock至多一条`ended_at IS NULL`。只有Task/route从非running真实进入running时append新open segment；pause/stop/close的CAS winner以精确业务边界关闭当前segment并推进clock summary/hash。重复命令、Planner tick和进程时间都不能推进clock。`clock_elapsed_at(t)`的权威值是imported baseline加所有segment与`[-∞,t]`交集时长，summary只是可校验缓存；这样可在event/recovery延迟后仍精确回算deadline或message active_until，暂停/停止期间业务时间冻结，resume/start-after-stop继续原进度而不是按wall-clock追债。
+每个current route同事务创建唯一`ChannelViewAccrualClock(route_id unique,task_day_ledger_id,state=running|paused|stopped|closed,imported_baseline_active_us,accumulated_active_us,current_segment_seq,segment_set_hash,version)`，并以append-only`ChannelViewAccrualClockSegment(clock_id,segment_seq,started_at,ended_at nullable,active_us nullable,stop_reason=paused|stopped|deadline|route_closed,version)`记录每段**执行可用性**区间；唯一`(clock_id,segment_seq)`且每clock至多一条`ended_at IS NULL`。只有Task/route从非running真实进入running时append新open segment；pause/stop/close的CAS winner关闭当前segment并推进summary/hash。该clock只用于审计“任务实际允许执行了多久”、迁移守恒和生命周期readback，绝不是目标、due、deadline或完成率时钟。暂停不停止TaskCalendar业务时间，也不缩小已冻结目标/参与分母；重复命令、Planner tick和进程时间不能改写任何历史segment。
 
-对当前ledger的每个`ChannelViewDailyMessageTarget m`，唯一`ViewDueSnapshotAssembler`在同一数据库快照读取clock与target并计算：
+对当前ledger的每个`ChannelViewDailyMessageTarget m`，唯一`ViewDueSnapshotAssembler`在同一数据库快照读取冻结的TaskCalendar、target与数据库时间并计算；Assembler禁止读取AccrualClock/Segment决定due：
 
 ```text
 target_m = frozen effective_target_count
 effective_as_of_m = min(database_now, ledger.deadline_at, active_until when non-null)
-clock_elapsed_m = clock_elapsed_at(effective_as_of_m) from immutable segments
-stop_elapsed_m = accrual_stopped_active_elapsed_us when non-null else clock_elapsed_m
-active_elapsed_m = max(stop_elapsed_m - baseline_active_elapsed_us, 0)
+calendar_as_of_m = max(effective_as_of_m, baseline_calendar_as_of)
 remaining_m = max(target_m - baseline_due_count, 0)
-virtual_as_of_m = min(pacing_anchor_at + active_elapsed_m, ledger.deadline_at)
 
-if active_elapsed_m = 0 or remaining_m = 0:
+if calendar_as_of_m <= pacing_anchor_at or remaining_m = 0:
     due_m = baseline_due_count
 else:
     due_m = min(target_m,
                 baseline_due_count +
-                max(1, floor(remaining_m * curve_weight(pacing_anchor_at, virtual_as_of_m)
+                max(1, floor(remaining_m * curve_weight(pacing_anchor_at, calendar_as_of_m)
                                    / full_ledger_curve_weight)))
 ```
 
-浏览的period是ledger冻结的任务本地自然日，`full_ledger_curve_weight`仍取完整业务区间；晚启动或恢复不把整日目标压缩进剩余wall-clock窗口。正常新target的`baseline_due_count=0`，`baseline_active_elapsed_us`取创建事务clock as-of值；takeover target以manifest时权威DueSet作为baseline并冻结同一clock基线，因此激活不重算历史。baseline精确时刻严格不增长，只有Task处于running且数据库业务时间真实推进后才允许`max(1,...)`。pause/stop关闭segment，故停顿不累计due；resume/start-after-stop只开新segment，不能瞬间补齐停顿债务。expire fanout无论何时处理都按`active_until`回算并冻结elapsed/due；settlement无论何时恢复都按`ledger.deadline_at`回算、在final CAS保存clock version/segment-set hash/elapsed，并以deadline而非recovery now关闭旧route segment。过期row的`due_m`固定等于CAS冻结的`accrued_due_count`，不能因它不再出现在latest/active查询而归零。所有时间用数据库时间、ledger冻结时区和同一clock segment hash，不用E4进程本地日期。Assembler由Planner、详情读模型、settlement和E4共用，禁止四处复制公式。
+浏览的period是ledger冻结的北京时间自然日，`full_ledger_curve_weight`取完整业务区间；晚启动或恢复不把整日目标压缩进剩余wall-clock窗口。正常新target的`baseline_due_count=0`，`baseline_calendar_as_of`与`pacing_anchor_at`由创建事务按冻结TaskCalendar写入；takeover target以manifest时权威DueSet作为baseline并冻结同一calendar as-of，因此激活不重算历史。baseline精确时刻严格不增长；数据库业务时间越过anchor后才允许`max(1,...)`。pause只禁止新执行，不停止due曲线；暂停期间到期量继续增长并形成`missed_task_paused`风险，resume沿用原ledger/target/DueSet和deadline，不创建新anchor、不缩量，也不把全部欠量改成`scheduled_at=now`，而是由TimelineArbiter在剩余安全容量内重排，放不下的量按deadline结算shortfall。stop立即终结当前履约意图并以`terminated_by_operator`结算，不伪装成completed；start-after-stop只能创建未来合法successor，不能续开原任务日以抹除停顿。expire fanout无论何时处理都按`active_until`和冻结TaskCalendar回算due；settlement无论何时恢复都按`ledger.deadline_at`回算，在final CAS保存calendar revision/as-of与due hash，并以deadline而非recovery now关闭执行可用性segment。过期row的`due_m`固定等于CAS冻结的`accrued_due_count`，不能因它不再出现在latest/active查询而归零。所有时间用数据库时间和冻结的北京时间TaskCalendar，不用E4进程本地日期。Assembler由Planner、详情读模型、settlement和E4共用，禁止四处复制公式。
 
 对每个 message，在同一快照按 due ordinal、义务/Action/Attempt/fact anti-join 得到互斥集合：
 
@@ -235,7 +341,7 @@ listener每个受配置上限约束的poll事务先按规范顺序锁逻辑sourc
 
 每个active ledger有`ChannelViewSourceSubscription(logical_listener_source_id,task_day_ledger_id,observed_version,state,version)`，数据库唯一`(logical_listener_source_id,task_day_ledger_id)`；bootstrap/takeover按logical source ID的C序先锁当前`ChannelViewListenerSource`，读current observation version并提交subscription/projection后才解锁，因此event-before被初始快照吸收、event-after只能在subscription可见后提交。collector切换不重绑subscription，只由下一event携带新collector epoch。recovery按event keyset/lease创建`ChannelViewSourceFanoutItem(event_id,subscription_id,state=pending|processing|completed|blocked,delta_cursor,discovered_count,applied_count,retired_count,input_hash,result_hash,lease/version)`，数据库唯一`(event_id,subscription_id)`，并逐delta有界推进；item恒等式为`discovered_count=applied_count+retired_count`后才能completed，blocked不退出热守恒。单delta事务遵循§6.4全局顺序。若在deadline前、route可写且settlement仍pending，append新target必须同事务创建唯一SettlementTargetItem、CAS operation target-input version/hash并推进source projection/read-model；settlement已processing|blocked|completed或deadline已到时把delta计retired并留给下一合法ledger，不能让新target逃逸结算。event只有规范subscription集合的全部item completed、item/discovered/delta hash readback相等后才completed；期间新增subscription若observed已覆盖该version无需补item。必须有event/delta、subscription、fanout item的partial index、lease恢复、heartbeat、count/hash守恒、collector切换与三事务event-before并发测试。
 
-每个target创建时还必须同事务创建唯一`ChannelViewTargetExpirySchedule(daily_message_target_id unique,active_until,activation_ready,state=pending|processing|completed,next_retry_at,lease/version,result_hash)`；正常active bootstrap/dynamic target写`activation_ready=true,next_retry_at=active_until`。takeover apply固定写`activation_ready=false,next_retry_at=NULL`，并为route创建唯一`ChannelViewTargetExpiryActivationOperation(route_id unique,activation_ready=false,state=pending|processing|completed,schedule_cursor,expected_count/applied_count/schedule_set_hash,next_retry_at,lease/version,result_hash)`。class activation只需在常数级最终事务把该operation置`activation_ready=true,next_retry_at=database_now`；recovery按operation claim有界扫描manifest冻结的schedule keyset，逐行CAS schedule为ready并写`next_retry_at=max(active_until,database_now)`，全部count/hash相等才completed。它避免最终CAS无界更新所有message target，同时保证崩溃可续。schedule recovery只按`(next_retry_at,active_until,id) WHERE activation_ready=true AND state IN ('pending','processing')`领取，使用AccrualClock segments精确计算`active_until`时的elapsed/due，并按全局锁序CAS target expired、source projection/read-model与settlement input version/hash。activation operation/schedule字段与集合hash纳入bootstrap/takeover result、checkpoint/readback；preparing期不热循环也不改manifest。Task-specific unresolved由fanout应用target policy时写projection/blocker，不回写共享delta。expiry处理延迟、pause/resume、activation fan-out和settlement并发都只能有一个winner；deadline/settlement completed后schedule只记审计完成，不改immutable结果。
+每个target创建时还必须同事务创建唯一`ChannelViewTargetExpirySchedule(daily_message_target_id unique,active_until,activation_ready,state=pending|processing|completed,next_retry_at,lease/version,result_hash)`；正常active bootstrap/dynamic target写`activation_ready=true,next_retry_at=active_until`。takeover apply固定写`activation_ready=false,next_retry_at=NULL`，并为route创建唯一`ChannelViewTargetExpiryActivationOperation(route_id unique,activation_ready=false,state=pending|processing|completed,schedule_cursor,expected_count/applied_count/schedule_set_hash,next_retry_at,lease/version,result_hash)`。class activation只需在常数级最终事务把该operation置`activation_ready=true,next_retry_at=database_now`；recovery按operation claim有界扫描manifest冻结的schedule keyset，逐行CAS schedule为ready并写`next_retry_at=max(active_until,database_now)`，全部count/hash相等才completed。它避免最终CAS无界更新所有message target，同时保证崩溃可续。schedule recovery只按`(next_retry_at,active_until,id) WHERE activation_ready=true AND state IN ('pending','processing')`领取，使用冻结TaskCalendar与数据库as-of精确计算`active_until`时的due，AccrualClock segments仅作生命周期审计；随后按全局锁序CAS target expired、source projection/read-model与settlement input version/hash。activation operation/schedule字段与集合hash纳入bootstrap/takeover result、checkpoint/readback；preparing期不热循环也不改manifest。Task-specific unresolved由fanout应用target policy时写projection/blocker，不回写共享delta。expiry处理延迟、pause/resume、activation fan-out和settlement并发都只能有一个winner；deadline/settlement completed后schedule只记审计完成，不改immutable结果。
 
 投影判定优先级固定：不可解析事实→`source_unresolved`；freshness不满足→`listener_stalled`；存在继续累计due的target→`source_ready`；全部窗口结束且已有TargetSet/DueSet欠量→`source_window_expired_shortfall`；fresh-empty且允许动态追加→`waiting_for_source`；fresh-empty、finite selector且禁止dynamic append→`source_empty_terminal`；非空有限集合全部typed fact完成→`source_completed`。`obligation_open/execution_blocked`属于fulfillment state，不得混入source state。
 
@@ -247,12 +353,17 @@ listener每个受配置上限约束的poll事务先按规范顺序锁逻辑sourc
 
 ```text
 task_day_ledger_id / calculated_at / source_state
+account_group_binding_set_revision / group_membership_revision_set_hash
+configured_member_union_count / policy_eligible_count
+day_participation_ratio_bps / selected_cohort_count / selected_cohort_set_hash
+rolling_selected_coverage_status / rolling_remote_fact_coverage_status
+runtime_admitted_count / runtime_sendable_count / quarantined_count
 active_message_count / expired_message_count
 expected_due_count / materialized_count
 confirmed_count / unknown_hold_count / valid_open_count
 materializable_deficit_count / due_unmaterialized_count
 eligible_distinct_identity_count / structural_capacity_shortfall_count
-scheduling_capacity_shortfall_count / deadline_at
+scheduling_capacity_shortfall_count / circuit_open_domain_count / deadline_at
 ```
 
 `capacity_warning` 兼容字段保留展示，但不能替代 typed counts/codes。结构性不足时 Task 继续处理 `I_m` 中可执行身份，不能因目标大于池子就返回 0；耗尽后保持 `structural_capacity_shortfall`，账号事实变化会唤醒重评估。不得自动修改每日/累计目标。
@@ -289,10 +400,10 @@ bootstrap winner在一个事务内按§6.4创建或回读完全相同的：`Task
 
 ### 6.2 API、前端与生命周期
 
-- 不新增运营目标字段。创建/create-and-start继续使用现有单频道target、initial scope、listen-new、daily/total target与active days；结构合法即可创建，账号容量或fresh source不足只进入typed runtime状态；
-- 任务详情增加`source_state/source_reason/target_row_count/effective_target_total/expected_due/materialized/on_time/late/unproven/unknown/due_unmaterialized/structural_shortfall/settlement/route_epoch/read_model_version`，分别展示“等待新来源”“采集异常”“有到期量未物化”“账号身份不足”，不能都显示为运行中或普通失败消息；
+- unified 创建/create-and-start 保留单频道 target、initial scope、listen-new、可选 cumulative total target 与 active days，并新增 `account_selection_mode=group`、`account_group_ids[]`、`concurrency_limit_per_group`、`account_ratio_min_bps`、`account_ratio_max_bps`、`rolling_participation_days=3`、`view_exposure_mode=natural_auto|explicit_per_source`、可选 `per_source_exposure_target/ratio` 与 `every_active_message=false`；不新增 Prompt、模型、上下文或面具字段。legacy daily target/all-accounts 字段只在旧 route 展示和收口；
+- 任务详情增加 `account_group_binding_set_revision/group_memberships/configured_union/policy_eligible/planning_admissible/day_ratio/selected_cohort/allocation_plan/edge_count/per_source_exposure/per_account_source_count/admitted/sendable/confirmed/quarantined/circuit_domains/rolling_selected_coverage/rolling_remote_fact_coverage`，并与 `source_state/source_reason/target_row_count/effective_target_total/expected_due/materialized/on_time/late/unproven/unknown/due_unmaterialized/structural_shortfall/settlement/route_epoch/read_model_version` 分列；“等待新来源”“采集异常”“局部账号/代理隔离”“有到期量未物化”“账号身份不足”不能都显示为运行中或普通失败消息；
 - `GET /api/tasks/{task_id}/daily-fulfillment`沿用ledger summary并增加上述view聚合；新增`GET /api/tasks/{task_id}/channel-view/targets`与`.../due-units`作只读下钻，固定keyset分别为`target created_at,id`和`target_id,due_ordinal,id`。typed DTO/state filter必须包含闭集中的`remote_identity_conflict`，不能降为generic failed/unknown。cursor HMAC绑定tenant/task/ledger/enrollment/current route epoch/read-model version、规范化filters/state/reason/account、limit/order和last key；每一页在单个repeatable-read snapshot先校验cursor versions再查行，任一漂移返回409 `channel_view_snapshot_changed`，不能混页或OFFSET；
-- running/paused/stopped Task不得修改target channel或initial source selector；返回`409 channel_view_current_source_immutable`。`listen_new_messages`从PATCH提交后的source-policy revision生效，不删除旧target；per-message daily/total/active-days与软curve-jitter只影响PATCH提交后新append的message target和下一ledger，current target rows不改写；timezone、schedule与base curve只在下一ledger生效。固定技术cap低于1,000,000、试图启用Task级view间隔、`execution_mode=burst`或改current target返回422并写Audit；
+- running/paused/stopped Task不得修改target channel或initial source selector；返回`409 channel_view_current_source_immutable`。`listen_new_messages`从PATCH提交后的source-policy revision生效，不删除旧target；per-message daily/total/active-days与软curve-jitter只影响PATCH提交后新append的message target和下一ledger，current target rows不改写；schedule与base curve只在下一ledger生效，unified timezone 系统托管为 `Asia/Shanghai`，提交其他 timezone 返回 typed 422。固定技术cap低于1,000,000、试图启用Task级view间隔、`execution_mode=burst`或改current target返回422并写Audit；
 
 generic Task PATCH与`/group/channel-view`专用PATCH必须共同调用唯一field-family决策器，并以`ChannelViewTaskDomainRevision(task_id unique,next_ledger_revision/next_ledger_snapshot_hash,future_target_policy_revision/future_target_policy_hash,source_policy_revision/source_policy_hash,account_scope_revision/account_scope_hash,display_version,version)`持久分域；禁止把通用`Task.config_revision`同时冒充所有域。字段合同为：
 
@@ -304,11 +415,16 @@ HTTP/前端合同固定为`TaskOut.task_version=Task.version`必填；generic与
 | --- | --- |
 | `name/priority` | 只推进display/Task row version，不唤醒due/source |
 | `target_channel_id/target_input/message_scope/initial_message_scope/latest_message_count/message_count/date_from/date_to/message_ids` | first-start前可改并推进next-ledger；已有ledger或running/paused/stopped固定409，不能跨peer改绑历史，也不能用`latest_n`重排已冻结initial set |
-| `timezone/scheduled_start/scheduled_end/max_duration_hours/base curve/pacing_config` | current ledger/target/accrual clock不可变；只写规范next-ledger snapshot/revision，bootstrap原子消费。若请求声明current生效则409，不静默延后 |
-| `per_message_daily_view_target/per_message_total_view_target/message_active_days/view_count_jitter` | 推进future-target-policy revision；只由提交后新append target和下一ledger消费，既有target的effective target、active_until、DueSet与settlement input不改。`view_count_jitter`只作为同一curve bucket内的确定性软排期偏移，不改变target/DueSet cardinality、账号硬slot或deadline |
-| `target_views_per_message` legacy alias | 只在API规范化边界映射一次到`per_message_daily_view_target`；与canonical字段同请求且值不同返回422，值相同只推进一次future-target revision。不得覆盖total target或在持久层保留第二个可写真相 |
+| `timezone` | unified current 只读固定 `Asia/Shanghai`；非该值或试图 PATCH 均返回 typed 422。legacy timezone 只读收口并在旧 period 结束后切换无重叠北京时间 successor |
+| `scheduled_start/scheduled_end/max_duration_hours/base curve/pacing_config` | current ledger/target/accrual clock不可变；只写规范next-ledger snapshot/revision，bootstrap原子消费。若请求声明current生效则409，不静默延后 |
+| `account_selection_mode/account_group_ids/concurrency_limit_per_group` | unified 只接受 `group + 1..N enabled group IDs`；保存 successor binding-set revision，下一任务日冻结各组 membership 与成员并集。空/重复/跨租户/disabled group 或快照跨组重复账号返回422；不得回退 all。紧急 disable 只影响 runtime admission，不改 current cohort/事实 |
+| `account_ratio_min_bps/account_ratio_max_bps/rolling_participation_days` | unified 要求 `5000 < min <= max <= 10000` 且 rolling days 固定为3；只影响下一任务日 `TaskDayViewParticipantCohort`，current cohort、target、DueSet 与 debt history 不改。比例使用稳定 seeded uniform，不接受进程随机 |
+| `per_message_total_view_target/message_active_days` | 推进 future-target/source policy revision；只由提交后新 append target和下一 ledger 消费，既有 target 的 cumulative decision、active_until、DueSet 与 settlement input 不改 |
+| `view_exposure_mode/per_source_exposure_target/per_source_exposure_ratio/every_active_message` | 只影响下一未冻结 allocation plan；显式来源目标必须通过联合可行性方程。current edge set 不改；`every_active_message=true` 必须展示 cohort×sources 放大量 |
+| `per_message_daily_view_target/view_count_jitter/target_views_per_message/all_accounts_daily` | unified route 只读/拒绝写；legacy route 仅在 API 规范化边界沿旧 revision 收口，不得迁入 unified 双重控制数量 |
 | `listen_new_messages/dynamic source policy` | 只对提交后的observation生效，推进source-policy revision；不删旧target。关闭dynamic导致finite empty时同事务更新projection/settlement input为`source_empty_terminal` |
-| `account_config/account scope/admission` | 推进current account-scope revision，只影响后续最大匹配edge；不改DueSet、旧binding或fact |
+| `first-applicable-day timing policy` | `min_source_distribution_span`、hour-strata 与 matcher revision 作用于 initial/dynamic source 的首次附着；每条 source/day 的 `FirstApplicableDayDecision` 一经 CAS 冻结不可原地改写。partial day 无法放下完整 cohort 或会压缩既有 slot 时只能 `pending_first_full_day`，不得采用代码默认值或 partial burst；完整自然日仍不可行则显式 `coverage_plan_unachievable` |
+| `runtime account/session/proxy/membership/circuit/FloodWait observations` | 只推进 runtime admission projection、transport availability 和 typed domain blocker；不改 binding set、policy eligible、selected cohort、DueSet、旧 binding 或 fact。plan commit 后 selected cohort 零替换，故障账号保留自身 waiting/shortfall，健康账号继续 |
 | `execution_mode/task-global view gap/hard-hourly/legacy retry/backoff/failure_policy` | current合同只接受`execution_mode=distribute`；`burst`及其余字段422/409 typed拒绝，不得恢复180秒tail、压缩full-period DueSet、generic Action resurrection或覆盖typed recovery |
 | 技术batch/claim字段 | 只约束真实空闲槽且不得改变DueSet、target或删除structural shortfall；低于平台安全下限的旧cap拒绝 |
 
@@ -317,7 +433,7 @@ mixed PATCH先对全部字段做规范化、权限、来源状态和expected Tas
 - pause/stop只有Task状态真正变化的CAS winner在同事务推进lifecycle epoch、关闭唯一open accrual segment、把current route/clock改paused/stopped，并创建唯一`ChannelViewLifecycleAdoption(task/enrollment/route,from-to epoch,command,state=pending|draining|ready|blocked,discovery_complete,cursor/pending/processing/deferred/blocked/completed counts,next_item_seq,lease/version)`，数据库唯一`(task_id,to_epoch)`；命令事务不无界扫描。`ChannelViewLifecycleAdoptionItem(adoption_id,item_seq,trigger_kind,trigger_identity,obligation_id/action_binding_id nullable,state=pending|processing|deferred|blocked|completed,latest_safe_evidence_id nullable,lease/version)`同时唯一`(adoption_id,item_seq)`与`(adoption_id,trigger_kind,trigger_identity)`；item_seq由owner expected `next_item_seq/version` CAS分配，claim固定按`item_seq,id`。recovery initial discovery按old epoch keyset覆盖所有非终态unit：`unmaterialized`直接迁epoch；未call-issued active binding安全终结/释放后迁epoch；Gateway hold保留旧epoch只reconcile并记deferred；不存在“只扫Action而漏掉无Action义务”的分支。blocked item同事务打开enrollment-scope`lifecycle_conservation_blocked`。只有discovery complete且pending/processing/blocked均0才ready，deferred可大于0。
 
   同request后来取得safely-not-executed时，先append或回读`ChannelViewLifecycleSafeEvidence(deferred_item_id,evidence_identity,request_identity,evidence_hash,state=observed|accepted,result_hash)`；每个evidence identity永久唯一、每个deferred item至多一个accepted。winner按§6.4锁owner+原item，以expected versions将原item`deferred -> pending`并分配大于cursor的新item_seq，写evidence pointer，同时一次性`deferred_count-1,pending_count+1,ready->draining`（或保持pending/draining）。exact重放、双证据与crash不得重复改count或新建第二item；worker再按pending→processing→completed逐步同事务搬移owner counts并迁到current epoch，processing崩溃由同item lease恢复，最后重新判ready。重复pause/stop即使新command ID也只回读，不再次推进epoch或clock；
-- resume必须由lifecycle command、start-after-stop必须由one-current-row TaskStartOperation外层持有；两者都等待current epoch adoption ready（takeover paused/stopped同tx建立`imported_baseline ready`），并在Task/route/clock expected-version事务中要求当前无open segment，append下一`ClockSegment(started_at=database_now)`并推进clock seq/set hash后把writer/clock改running；pause/stop则以同一顺序关闭唯一open segment并推进summary/hash。在原deadline前沿用enrollment.current route及同ledger/target/due identity，停顿时长不进入Assembler。跨deadline先完成旧settlement、把旧route/clock closed，再原子bootstrap新ledger/route/clock并CAS enrollment pointer。持续running自然跨日由recovery持久bootstrap owner触发。generic retry/reset对current enrollment固定返回`409 channel_view_contract_managed_recovery_required`且零状态变化；只有fact conflict adjudication、projection poison resolution、safely-not-executed evidence及contract reopen等精确受保护owner可唤醒对应pre-Gateway unit。delete先归档所有identity再走全局202 operation。FleetPolicy、InventoryItem及enrollment/route最小审计tombstone不随Task级联；删除前item/enrollment CAS retired并保留fleet membership hash；
+- resume必须由lifecycle command持有并等待current epoch adoption ready；在原deadline前只恢复同一enrollment/current route与执行资格，沿用原ledger/target/cohort/DueSet、TaskCalendar和deadline，不创建新anchor、successor或缩量。事务可为执行可用性审计append下一`ClockSegment(started_at=database_now)`，但ViewDueSnapshotAssembler完全不读取该segment；暂停期间wall-clock due继续增长。恢复后的待履约量由TimelineArbiter按原截止时间与安全容量重排，禁止统一改成now。stop则关闭当前执行segment并终结当前履约意图；start-after-stop必须由one-current-row TaskStartOperation创建未来合法successor，不能重新打开已终结route。跨deadline先完成旧settlement、把旧route/clock closed；只有原本持续running的任务由recovery自动bootstrap下一ledger，paused任务恢复时不得为已过去任务日补建缩量ledger。generic retry/reset对current enrollment固定返回`409 channel_view_contract_managed_recovery_required`且零状态变化；只有fact conflict adjudication、projection poison resolution、safely-not-executed evidence及contract reopen等精确受保护owner可唤醒对应pre-Gateway unit。delete先归档所有identity再走全局202 operation。FleetPolicy、InventoryItem及enrollment/route最小审计tombstone不随Task级联；删除前item/enrollment CAS retired并保留fleet membership hash；
 - 普通创建/PATCH/start/pause/resume/stop沿用`tasks.manage`及tenant隔离；详情沿用现有`tasks.view`。takeover preview只读使用现有`system.view`，apply/route unblock/conflict adjudication使用现有`system.manage + approval_ref + expected manifest/blocker/version`，middleware和service双检，403/404与Audit必须覆盖；
 - `ChannelViewContractBlocker(enrollment_id,scope=enrollment|route,route_id nullable,kind,identity,state=open|resolved,first_occurrence_identity,snapshot_hash,resolution_id nullable,version)`由固定registry解释：`remote_fact_conflict|projection_poison|source_identity_conflict|lifecycle_conservation_blocked`只能是enrollment scope并跨日fence；`manifest_conflict`只能是尚未激活的preparing route scope。数据库分别以`UNIQUE(enrollment_id,kind,identity) WHERE scope='enrollment' AND state='open'`和`UNIQUE(route_id,kind,identity) WHERE scope='route' AND state='open'`收敛。append-only `ChannelViewContractBlockerOccurrence`保存owner/scope/kind/stable identity、`occurrence_identity=sha256(source_kind,source_identity,source_revision,snapshot_hash)`、source revision/snapshot、linked blocker与observed_at；enrollment/route scope分别以owner+kind+occurrence identity永久唯一。旧occurrence重放只回读原linked blocker，即使已resolved也不得重新加count；新source revision形成新occurrence，当前无同stable identity open行才新建blocker并加count，已有open行只链接occurrence。未登记kind/scope拒绝打开。所有open/resolve先按§6.4锁enrollment owner、route scope再锁route owner，之后才insert occurrence/blocker/resolution并在已持有owner锁下CAS count/revision；禁止blocker反锁owner。Planner/Dispatcher/bootstrap同时要求两层count=0。
 - resolution按kind使用append-only typed owner：remote conflict adjudication只确认真实overage；projection poison resolution只在修复SHA重投影及恒等式通过后生效；source identity resolution只接受权威peer/message证据；lifecycle conservation resolution只在原item安全收口并readback后生效；manifest conflict只能supersede同一takeover manifest，不能由runtime reopen激活。受保护`POST /api/ops/channel-view/enrollments/{id}/contract-reopen`使用`system.manage + 独立approval_ref + expected enrollment/route blocker revisions + source/read-model/settlement hashes`，只resolve已有typed resolution覆盖的runtime blocker；它不改fact/confirmed/due/settlement、不启动Task。并发新blocker赢则整笔失败，closed旧route的enrollment blocker仍可处理，preparing route blocker永远不能借reopen变active。普通retry/reset没有此权限或副作用。
@@ -355,6 +471,12 @@ Planner只读matching不写行；每edge物化短事务先CAS global DailyIdenti
 
 ```text
 target_row_count / effective_target_total / target_set_hash / expected_due_count / due_set_hash
+account_group_binding_set_revision / group_membership_revision_set_hash
+configured_member_union_count / policy_eligible_count
+day_participation_ratio_bps / selected_cohort_count / selected_cohort_set_hash
+rolling_selected_coverage_status / rolling_selected_missing_account_ids
+rolling_remote_fact_coverage_status / rolling_remote_fact_missing_account_ids
+runtime_admitted_count / runtime_sendable_count / quarantined_count / circuit_open_domains
 materialized_count / materialized_set_hash / due_unmaterialized_count
 on_time_confirmed_count / late_count / unproven_count
 gateway_inflight_count / unknown_hold_count / remote_identity_conflict_count / valid_open_count
@@ -378,24 +500,31 @@ each_owner_heartbeat_at / oldest_item_age / expired_lease_count
 - `channel_view_structural_capacity_shortfall`：distinct identity 不足；
 - `channel_view_waiting_for_source`：健康采集但无 active source；
 - `channel_view_listener_stalled|channel_view_source_unresolved`：来源链故障；
+- `channel_view_source_observation_sla_breached`：source 权威发布时间与 durable observation 差值导致错过同日自然分布窗口；首日延后不能掩盖 Listener 质量失败；
+- `channel_view_first_full_day_deferred`：新 source 无法在不压缩全天曲线的前提下容纳完整 cohort，已确定性冻结到下一合法任务日；这是显式 source 状态，不是成功、当日 shortfall 或运行时健康缩分母；
 - `channel_view_source_empty_terminal`：finite selector经fresh poll证明为空且禁止dynamic append，本ledger为missed_no_source；
 - `channel_view_remote_fact_missing`：confirmed 与 typed fact 不守恒；
+- `channel_view_group_binding_invalid`：unified binding set 为空、跨租户、disabled 或成员 origin group 歧义；
+- `channel_view_rolling_participation_plan_unachievable`：三适用任务日 selection debt 超过今日 ratio 上限可容纳人数；
+- `channel_view_rolling_remote_fact_shortfall`：selected union 已计划覆盖，但三日 typed fact union 仍缺账号；
+- `channel_view_dependency_partition_blocked`：账号、Session、proxy、membership 或 view capability 局部隔离；健康分区仍必须继续；
 - `channel_view_post_release_fact_missing`：发布后尚无真实远端闭环。
 
-`required_count`不再等于obligation count。短窗口只能通过Planner层/canary层：部署SHA/逐role capability一致、legacy writer在fence后增量0、对应任务`MaterializationGap=0`或只剩明确structural/source blocker、发布后出现`Task -> enrollment/route -> target/due unit -> ActionBinding/Action -> ExecutionAttempt(success) -> ViewRemoteFact -> unique bound on-time fact`、无invalid binding或同peer-message-account双发。source event/fanout、target expiry、bootstrap、adoption、settlement、fact projector任一owner缺heartbeat、超SLA oldest lag、expired lease未回收、count/hash不守恒或poison/blocked未解释时E4失败；fleet inventory/classification也必须闭合。自然日`production_fixed`要求Settlement completed/met、`OnTimeBoundSet=SettledDueSet`且unknown/late/unproven/shortfall/duplicate均0；动态等待下一来源是独立source state。短窗口一条full chain不能冒充自然日完成。
+`required_count`不再等于obligation count。短窗口只能通过Planner层/canary层：部署SHA/逐role capability一致、legacy writer在fence后增量0、对应任务`MaterializationGap=0`或只剩明确structural/source blocker、发布后出现`Task -> enrollment/route -> target/due unit -> ActionBinding/Action -> ExecutionAttempt(success) -> ViewRemoteFact -> unique bound on-time fact`、无invalid binding或同peer-message-account双发。source event/fanout、target expiry、bootstrap、adoption、settlement、fact projector任一owner缺heartbeat、超SLA oldest lag、expired lease未回收、count/hash不守恒或poison/blocked未解释时E4失败；fleet inventory/classification也必须闭合。自然日 `production_fixed` 要求 binding/cohort/allocation hash 可回放、每个 active source 的 DueSet 恰等于 `ViewAccountSourceAllocationPlan` 中该 source 的冻结 edge subset、全日 DueSet 并集恰等于完整 allocation edge set、Settlement completed/met、`OnTimeBoundSet=SettledDueSet` 且 unknown/late/unproven/shortfall/duplicate 均0；只有显式 `every_active_message=true` 才允许单 source DueSet 等于整日 cohort。从第三个适用任务日起还要求 rolling selected coverage 与 rolling remote-fact coverage 均 met。动态等待下一来源是独立 source state。短窗口一条 full chain、Action count 或当日某一消息完成不能冒充自然日/三日轮转完成。
 
 QA 必须包含：
 
 1. anchor精确时due=0，此后同revision的DueSet单调增长；
 2. `latest_n`初始集合冻结，新帖只按dynamic合同append，旧帖不被挤掉；expire只冻结accrued due；
-3. 已有 future Action 到 23:57 时第二轮仍能在各账号前/中/后合法空隙为distinct due unit建多条Action；
-4. 两批 curve 时间重叠不整体平移，旧 Action 时间/hash不变；
-5. 1,000/消息不会被task template 180秒隐式压成480/日；同账号跨消息仍满足account gap；
+3. Task 中途启动的 initial source，以及 dynamic source 在 `latest_same_day_intake_at` 前一微秒、恰等于、后一微秒到达：前两者只有完整 cohort 可自然匹配时进入当日，后一者固定 `pending_first_full_day`；三者均不得重抽 cohort、压缩旧 slot 或产生 partial burst。Listener 晚采集还必须留下 observation SLA failure；次日 pending 优先于新来源批量匹配，完整日仍不可行时必须 `coverage_plan_unachievable`，不能无限顺延；
+4. 已有 future Action 到 23:57 时第二轮仍能在各账号前/中/后合法空隙为distinct due unit建多条Action；
+5. 两批 curve 时间重叠不整体平移，旧 Action 时间/hash不变；
+6. legacy 1,000/消息不会被task template 180秒隐式压成480/日；unified 则以 shared cohort count 为每消息 DueSet；两条 route 的同账号跨消息都满足account gap；
 6. 同一due ordinal和同一peer-message-account-date并发Planner只有一个current绑定/可执行Action；
 7. fact/gateway/unknown/action互斥，future/failed/错version不抵扣当前due；
 8. active=0时成功空采集为waiting，采集失败为stalled，source unresolved与两者分开；
-9. 在冻结资格/Session/slot fixture确为eligible 869、due 1,000时物化869并报131 structural shortfall，不把该生产快照数字当永久产能且不清零整批；
-10. E4在31 obligations、due 1,370时必须失败，不得以31完成为绿；
+9. legacy 固定目标 fixture 在冻结资格/Session/slot确为eligible 869、due 1,000时物化869并报131 structural shortfall，不把该生产快照数字当永久产能且不清零整批；unified 对应 fixture 以冻结 cohort/DueSet 测同一守恒；
+10. legacy E4在31 obligations、due 1,370时必须失败；unified E4在31 obligations少于 cohort-derived DueSet时同样失败，不得以31完成为绿；
 11. current-day manifest/backfill/route CAS、pre/post-Gateway回滚边界用真实PostgreSQL强制交错；
 12. 真实PostgreSQL并发、partial unique、索引/EXPLAIN、deadline和跨日ledger回归；
 13. 生产canary至少一条发布后typed ViewRemoteFact，随后持续观察materialized/due与Attempt/fact增量。
@@ -406,7 +535,7 @@ QA 必须包含：
 18. same-identity owner conflict提交后Action/Attempt/Binding terminal、obligation=`remote_identity_conflict`且仍占R_m；无resolution不得重复物化。权威resolution在deadline前只释放同due到新materialization并永久排除旧identity，deadline后只进known shortfall；双resolution/contract-reopen/crash重放不双减blocker、不复用原账号或改canonical fact。
 19. 零obligation/部分物化仍由settlement计入完整DueSet；fact commit与projection/settlement、dynamic source append与deadline、late/unproven fact强制交错，结论不假绿也不改写immutable missed。
 20. pause/resume/stop/retry/reset/PATCH/delete与route blocker、ActionBinding、settlement并发；非法入口typed 409/422且Gateway后零倒退。
-21. pause跨多个segment后DueSet不增长，resume从原active progress继续；expiry/settlement晚处理仍分别按active_until/deadline回算，午夜后零新增due。
+21. pause跨多个segment时禁止新Gateway，但DueSet仍按冻结TaskCalendar wall-clock曲线增长；resume沿用原目标、分母与deadline，不建立新anchor、不瞬时run-now。expiry/settlement晚处理仍分别按active_until/deadline回算，未履约量归入`missed_task_paused`或其他typed shortfall，午夜后零新增due。
 22. 一个fact只能bound一个Task due unit；其他Task只失去daily identity。owner Task物理删除后fact/binding/observation logical key与global unique仍在，另一Task/Gateway无法重复view。
 23. Tx C缺任一required ProjectionState、额外kind或count/hash不等时settlement不能完成；poison走enrollment blocker及精确resolution/requeue。
 24. collector切换不换logical source/subscription；持续成功empty poll刷新cursor-verified并保持waiting，finite禁止dynamic则settle missed_no_source。
@@ -421,6 +550,15 @@ QA 必须包含：
 33. `channel_view_contract_hash_v1` golden vectors在不同进程、locale、timezone及API/worker/CLI入口产生相同canonical bytes/hash；打乱输入顺序不变，改变任一registry业务identity/version/count必变。未知version、同count不同identity、漏字段、float/local timestamp或旧hash混用必须使activation/settlement/replay/E4 fail-closed。
 34. 真PostgreSQL强制交错deadline settlement、Tx A、同Task Planner与其他Task争抢同一DailyIdentityOwner：可证未transport的pre_gateway identity只被owner-first drain释放一次，并在同事务终结Binding/Action/due unit；Tx A先赢、call-issued/unknown/fact identity记录永久保留，但占用只覆盖其`obligation_local_date`。`discovered=safe_released+issued_or_unknown_preserved`及set hash不成立、仍有pre_gateway owner或drain未完成时immutable settlement不得提交，任一输入顺序都无双占、identity泄漏或死锁。
 35. 真PostgreSQL强制把两个Task对同一identity的只读matching、owner CAS、due insert与另一Task/Tx A反序交错：只有owner-first事务winner能创建due binding/Action；due CAS失败时owner version随事务回滚为原状态，预建due事务不触达owner，任一顺序无Task/obligation→owner反锁、孤儿pre_gateway或双Action。
+36. unified 创建/PATCH 对 1 个和多个普通运营账号分组成功冻结 binding set、membership/group-state revision set、成员并集与 origin group；空、重复、跨租户、disabled/dedicated/non-normal 分组、用途/归属不一致及跨组重复成员稳定422。legacy `all` 只有在全部兼容组 policy-eligible 并集与旧 scope set/hash 精确相等时才迁移，不会隐式扫描租户账号或误用单个默认组。
+37. 相同 Task/day/binding/policy 在不同进程、重启、时区与 worker 顺序下得到相同 80%～95% sampled ratio、selected count、realized ratio、adjustment 与 cohort set/hash；eligible=1..10、配置边界 80%/95%、round-half-up 和 strict-majority clamp 均有 golden vectors，运行时健康变化不重抽，小组量化偏差不误判配置失败。
+38. 同一任务日 bootstrap target 引用同一 cohort 并冻结账号—来源 edge set；DueSet 必须与 edge set 完全相等而非 cohort×sources。90 人 cohort/1 个来源为 90 条边；90 人/10 个来源在默认模式下每号 2～4 条且 `Σ账号度数=Σ来源曝光=DueSet`，每个 active target exposure≥1。edge commit 后 dynamic-new 只有在 append-only successor 不改旧边、不越 k-max 且剩余自然容量可达时同日新增，否则等待首个完整适用日；显式 exposure 不满足联合方程时稳定 `view_allocation_unachievable`。
+39. 三个连续适用任务日以 selection debt 覆盖窗口内持续 policy-eligible 的完整成员集，无来源日不进入窗口；Task 和新迁入账号各自前两适用日为 warming_up，迁入账号最迟自身第三适用日被选，移出后不新增长期债务。ratio 上限无法容纳 must-select debt 时计划为 unachievable，不突破95%；selected coverage met 但任一到期账号无 typed fact 时 remote-fact coverage 仍 shortfall。
+40. task-day selected cohort 在首次远端身份前后都不可由 standby 整体替换；standby 只用于下一任务日公平轮转，当前任何账号故障均不能扩张、缩小或分裂 shared cohort。
+41. 一个账号 Session 失效、一个代理 open、另一个健康代理可用时，Task 为 running_partial 且健康分区持续产生 Attempt/ViewRemoteFact；planned cohort、DueSet、ratio 与三日 debt 均不变。全部到期 allocation 不可用时才 blocked。
+42. Telegram connect 5 秒超时形成 safely-not-called；view RPC 在 call-issued 后 10 秒超时形成 remote-outcome-unknown，daily identity 保留且零 replacement。timeout 只释放本地 worker/stage lease；忽略 cancellation 或仍未终止的 `RemoteInvocationFence` 持续计 account/group/route/egress hard in-flight，TTL/重启/cancel-requested 不释放。runner termination 后只释放远端在途计数，不释放 daily identity/业务 unknown；迟到结果只结算同一 invocation。
+43. account=1、proxy binding-route=2、canonical verified-egress=2、Task/group=configured、自适应 Task 份额（1/2/3/4+ 为 100%/50%/约 33.34%/30%）的舱壁在多 Task/多代理强制交错下守恒；两个 proxy IDs 同出口的合计 in-flight≤2，缺失/过期/代际不符的出口观察零准入，direct transport 不被虚假 proxy 条件阻断。先公平 quantum，后借当下不可用份额，waiter 恢复后停止新超额 lease，已 in-flight/call-issued 不取消。面具/LLM worker 永远不消耗 passive gateway lease。
+44. account/proxy-route/proxy-egress circuit 在5分钟2次 qualifying failure后 open 15分钟，half-open 只有一个 probe owner；单账号错误不能熔断 route/egress，明确节点错误只开 route，两个 distinct accounts 的同 verified-egress 相关失败才开 egress；proxy revision 漂移后的旧成功不能关闭新 circuit，健康真实出口不受影响。
 
 ## 8. 发布、存量处理与回滚
 
@@ -482,6 +620,7 @@ inventory由受保护builder而非Alembic创建：先验证全部writer/producer
 - `backend/app/services/task_center/schedule_reservation.py`：保留其他任务现合同；浏览不再走 append-after-latest路径，禁止用全局改动破坏评论/AI；
 - `backend/app/services/task_center/executors/common.py` 与 `listener_runtime.py`：持久 channel source observation；
 - `backend/app/services/task_center/channel_view_due.py`（新增、单一职责）：权威 due/materialized/capacity assembler；
+- 统一引擎公共 participation/resilience 模块：消费 `TaskAccountGroupBindingSetRevision`、各组 membership snapshot、`TaskDayViewParticipantCohort`、runtime admission、bulkhead lease、circuit 与 probe；浏览 executor 不再自行扫描 all accounts 或读取面具/Provider；
 - `backend/app/services/task_center/channel_view_contract_hash.py`（新增、单一职责）：唯一`channel_view_contract_hash_v1` registry/serializer与golden vectors；所有API/worker/CLI只能调用该helper；
 - `backend/app/models/fulfillment_facts.py`及按责任拆分的新channel-view模型、Alembic：peer-qualified message target、due-unit字段、legacy/current共用DailyIdentityOwner及其RESTRICT→SET NULL/tombstone保留、Action/fact binding、append-only RemoteFactObservation、source event/subscription/fanout、read-model、accrual clock、LifecycleAdoption/Item、settlement/bootstrap、TargetExpiryActivationOperation+Schedule、双scope ContractBlocker+Occurrence、fleet/inventory/enrollment/per-ledger route与partial unique；每个模型文件≤500行；
 - `backend/app/services/task_center/channel_view_takeover.py`（新增）：fleet inventory、manifest/preview/apply/readback、legacy Action binding与enrollment/route CAS；
@@ -490,4 +629,4 @@ inventory由受保护builder而非Alembic创建：先验证全部writer/producer
 - `.github/scripts/task_fulfillment_e4_diagnostics.py`：调用同一 Assembler，删除 obligation-as-required假设；
 - 定向 no-PostgreSQL纯函数测试、真实 PostgreSQL并发/唯一/查询测试和生产 E4。
 
-不新增目标配置、mock fact、自动降目标、silent fallback或“只要有 Action 就算启动”的完成路径。
+不新增浏览内容生成、mock fact、自动降目标、silent fallback 或“只要有 Action 就算启动”的完成路径；新增账号分组/参与比例字段只服务统一 participation plan，不能成为第二套 per-message 数量真相。

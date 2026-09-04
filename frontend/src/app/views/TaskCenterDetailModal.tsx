@@ -11,6 +11,8 @@ import { TaskAIQualityFunnelPanel } from './TaskAIQualityFunnelPanel';
 import { TaskMembershipPanel } from './TaskMembershipPanel';
 import { GroupCloneTaskPanel } from './GroupCloneTaskPanel';
 import { GroupCloneCutoverPanel } from './GroupCloneCutoverPanel';
+import { TaskRecentSuccessPanel } from './TaskRecentSuccessPanel';
+import { ChannelSourceProgressPanel } from './ChannelSourceProgressPanel';
 
 type DetailProfile = {
   hour: number;
@@ -1276,6 +1278,8 @@ export function TaskCenterDetailModal({
       >
         {detail && (
           <Space direction="vertical" size={16} style={{ width: '100%' }}>
+            <TaskRecentSuccessPanel stats={detail.stats.recent_success} />
+            <ChannelSourceProgressPanel stats={detail.stats} />
             {currentStage?.stage_code === 'paused' && (
               <Alert
                 type="error"
@@ -1311,6 +1315,7 @@ export function TaskCenterDetailModal({
                 ...(detail.task.type === 'group_ai_chat' ? [
                   { key: 'idle-enabled', label: '无人发言续聊', children: detail.task.type_config?.idle_continuation_enabled === false ? '关闭' : '开启' },
                   { key: 'idle-seconds', label: '续聊间隔', children: `${detail.task.type_config?.idle_continuation_seconds ?? 300} 秒` },
+                  { key: 'attention-quiet', label: '真人发言后避让', children: `${detail.task.type_config?.attention_quiet_after_min_seconds ?? 60}–${detail.task.type_config?.attention_quiet_after_max_seconds ?? 180} 秒` },
                   { key: 'context-mode', label: '上下文状态', children: detail.task.stats?.context_mode || '-' },
                 ] : []),
                 { key: 'capacity', label: '容量提示', span: 3, children: detail.stats.capacity_warning ? `${detail.stats.capacity_warning} 该提示不会停止任务。` : '无' },

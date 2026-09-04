@@ -31,6 +31,7 @@ class NormalizedCloneItem(BaseModel):
     sender_peer_type: str | None = None
     sender_peer_id: str | None = None
     sender_name: str = ""
+    sender_is_bot: bool = False
     reply_to_message_id: int | None = None
     source_top_message_id: int | None = None
     grouped_id: str | None = None
@@ -40,6 +41,7 @@ class NormalizedCloneItem(BaseModel):
     poll_snapshot: dict = Field(default_factory=dict)
     protected_content: bool = False
     message_revision: int = Field(default=1, ge=1)
+    sent_at: str | None = None
 
 
 def advance_group_clone_start(session: Session, task: Task) -> bool:
