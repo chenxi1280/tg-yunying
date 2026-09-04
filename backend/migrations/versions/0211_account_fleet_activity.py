@@ -4,7 +4,7 @@ Revision ID: 0211_account_fleet_activity
 Revises: 0210_cross_adapter_journey
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from alembic import op
@@ -15,6 +15,14 @@ revision = "0211_account_fleet_activity"
 down_revision = "0210_cross_adapter_journey"
 branch_labels = None
 depends_on = None
+
+
+FLEET_ACTIVITY_BACKFILL_WINDOW = timedelta(hours=72)
+FLEET_ACTIVITY_FACT_KINDS = (
+    "view_observed",
+    "reaction_observed",
+    "remote_message_observed",
+)
 
 
 def upgrade() -> None:
@@ -152,6 +160,7 @@ def _backfill_projection_states() -> None:
         "fulfillment_remote_facts",
         sa.column("fact_id", sa.String()),
         sa.column("fact_kind", sa.String()),
+        sa.column("observed_at", sa.DateTime(timezone=True)),
     )
     states = sa.table(
         "fulfillment_fact_projection_states",
@@ -159,21 +168,47 @@ def _backfill_projection_states() -> None:
         sa.column("projection_kind", sa.String()),
         sa.column("expected_target_version", sa.Integer()),
         sa.column("state", sa.String()),
+        sa.column("last_error", sa.Text()),
         sa.column("next_retry_at", sa.DateTime(timezone=True)),
         sa.column("updated_at", sa.DateTime(timezone=True)),
     )
-    eligible = bind.execute(sa.select(facts.c.fact_id).where(
-        facts.c.fact_kind.in_((
-            "view_observed", "reaction_observed", "remote_message_observed",
-        ))
-    )).scalars()
     now_value = datetime.now(timezone.utc)
-    for fact_id in eligible:
-        bind.execute(states.insert().values(
-            id=str(uuid4()), fact_id=fact_id, projection_kind="fleet_activity",
-            expected_target_version=0, state="pending",
-            next_retry_at=now_value, updated_at=now_value,
-        ))
+    state_id = _projection_state_id(bind, facts.c.fact_id)
+    already_queued = sa.exists().where(
+        states.c.fact_id == facts.c.fact_id,
+        states.c.projection_kind == "fleet_activity",
+    )
+    source = sa.select(
+        state_id,
+        facts.c.fact_id,
+        sa.literal("fleet_activity"),
+        sa.literal(0),
+        sa.literal("pending"),
+        sa.literal(""),
+        sa.literal(now_value),
+        sa.literal(now_value),
+    ).where(
+        facts.c.fact_kind.in_(FLEET_ACTIVITY_FACT_KINDS),
+        facts.c.observed_at >= now_value - FLEET_ACTIVITY_BACKFILL_WINDOW,
+        ~already_queued,
+    )
+    bind.execute(states.insert().from_select(
+        (
+            "id", "fact_id", "projection_kind", "expected_target_version",
+            "state", "last_error", "next_retry_at", "updated_at",
+        ),
+        source,
+    ))
+
+
+def _projection_state_id(bind, fact_id):
+    if bind.dialect.name == "postgresql":
+        return sa.func.md5(sa.literal("fleet_activity:") + fact_id)
+    if bind.dialect.name == "sqlite":
+        return sa.func.lower(sa.func.hex(sa.func.randomblob(16)))
+    raise RuntimeError(f"unsupported_fleet_activity_backfill_dialect:{bind.dialect.name}")
+
+
 def downgrade() -> None:
     op.drop_index("ix_fleet_activity_projection_timeline", table_name="account_fleet_activity_fact_projections")
     op.drop_table("account_fleet_activity_fact_projections")

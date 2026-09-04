@@ -1,4 +1,5 @@
 """Upgrade a populated pre-engine schema without touching the public QA schema."""
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from alembic import command
@@ -54,6 +55,32 @@ def _seed_legacy(database):
             id=901, tenant_id=901, target_type="channel", tg_peer_id="-100901", title="QA channel"))
         connection.execute(tables["channel_messages"].insert().values(
             id=901, tenant_id=901, channel_target_id=901, message_id=1, content_preview="retained source"))
+        facts = Base.metadata.tables["fulfillment_remote_facts"]
+        now_value = datetime.now(timezone.utc)
+        connection.execute(facts.insert(), (
+            _remote_fact_values("qa-recent-fact", now_value - timedelta(hours=2)),
+            _remote_fact_values("qa-stale-fact", now_value - timedelta(hours=73)),
+        ))
+
+
+def _remote_fact_values(fact_id: str, observed_at: datetime) -> dict:
+    return {
+        "fact_id": fact_id,
+        "tenant_id": 901,
+        "task_type": "group_ai_chat",
+        "task_id": "QA-legacy-task",
+        "obligation_type": "group_ai_send",
+        "obligation_id": f"obligation-{fact_id}",
+        "action_id": f"action-{fact_id}",
+        "attempt_id": f"attempt-{fact_id}",
+        "mutation_kind": "send_message",
+        "remote_mutation_key_hash": f"remote-{fact_id}",
+        "gateway_request_hash": f"gateway-{fact_id}",
+        "fact_kind": "remote_message_observed",
+        "fact_identity_hash": f"identity-{fact_id}",
+        "outcome": {"remote_message_id": 1},
+        "observed_at": observed_at,
+    }
 
 
 def test_populated_0196_upgrade_preserves_records_and_runs_backfills(upgrade_database):
@@ -67,6 +94,10 @@ def test_populated_0196_upgrade_preserves_records_and_runs_backfills(upgrade_dat
         assert connection.execute(text(
             "SELECT tenant_id, account_pool_id, rolling_window_days FROM account_fleet_activity_policy_revisions"
         )).one() == (901, 901, 3)
+        assert connection.execute(text(
+            "SELECT fact_id, state, last_error FROM fulfillment_fact_projection_states "
+            "WHERE projection_kind='fleet_activity' ORDER BY fact_id"
+        )).all() == [("qa-recent-fact", "pending", "")]
         assert connection.scalar(text("SELECT count(*) FROM provider_http_exchanges")) == 0
         assert connection.scalar(text("SELECT count(*) FROM execution_timing_profile_revisions")) == 0
         inspector = inspect(connection)
