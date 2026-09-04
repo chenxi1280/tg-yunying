@@ -18,8 +18,10 @@ from app.integrations.telegram import (
 from app.integrations.telegram.telethon_content import fetch_channel_message_deletions
 from app.models import (
     AccountStatus,
+    Action,
     ChannelMessage,
     ChannelMessageSourceRevision,
+    FulfillmentRemoteFact,
     ListenerChannelSnapshotItem,
     ListenerSourceState,
     OperationTarget,
@@ -31,6 +33,7 @@ from app.models import (
 )
 from app.services.channel_target_reference import channel_read_reference
 from app.services.task_center import channel_listener_runtime
+from app.services.task_center import channel_listener_accounts
 from app.services.task_center import channel_listener_snapshot_persistence
 from app.services.task_center.channel_listener_runtime import (
     channel_snapshot_state,
@@ -170,6 +173,60 @@ def test_listener_prefers_prior_success_over_first_eligible_account() -> None:
         )
 
         assert source is not None and source.account_id == 102
+
+
+def test_listener_prefers_recent_same_target_remote_success(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr(channel_listener_accounts, "_now", lambda: NOW)
+    _seed_listener_task(
+        engine,
+        task_id="channel-listener-current-task",
+        task_type="channel_like",
+        channel_id=31,
+        account_id=101,
+    )
+    with Session(engine) as session:
+        task = session.get(Task, "channel-listener-current-task")
+        task.account_config = {
+            "selection_mode": "manual",
+            "account_ids": [101, 102],
+        }
+        _add_same_target_view_success(session)
+        session.flush()
+
+        source = channel_listener_runtime._source_for_task(
+            session,
+            task,
+            session.get(OperationTarget, 31),
+        )
+
+        assert source is not None and source.account_id == 102
+
+
+def test_listener_does_not_borrow_same_target_account_outside_task_scope(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr(channel_listener_accounts, "_now", lambda: NOW)
+    _seed_listener_task(
+        engine,
+        task_id="channel-listener-scoped-task",
+        task_type="channel_like",
+        channel_id=31,
+        account_id=101,
+    )
+    with Session(engine) as session:
+        task = session.get(Task, "channel-listener-scoped-task")
+        _add_same_target_view_success(session)
+        session.flush()
+
+        source = channel_listener_runtime._source_for_task(
+            session,
+            task,
+            session.get(OperationTarget, 31),
+        )
+
+        assert source is not None and source.account_id == 101
 
 
 def test_listener_rotates_oldest_due_failure_after_all_candidates_fail(monkeypatch) -> None:
@@ -632,6 +689,60 @@ def _snapshot(message_id: int):
         comment_available=True,
         published_at=NOW,
     )
+
+
+def _remote_view_fact(action: Action) -> FulfillmentRemoteFact:
+    return FulfillmentRemoteFact(
+        fact_id="same-target-view-fact",
+        tenant_id=action.tenant_id,
+        task_type=action.task_type,
+        task_id=action.task_id,
+        obligation_type="view",
+        obligation_id="same-target-view-obligation",
+        action_id=action.id,
+        attempt_id="same-target-view-attempt",
+        mutation_kind="view_message",
+        remote_mutation_key_hash="same-target-view-mutation",
+        gateway_request_hash="same-target-view-request",
+        fact_kind="view_observed",
+        fact_identity_hash="same-target-view-identity",
+        observed_at=NOW,
+    )
+
+
+def _add_same_target_view_success(session: Session) -> None:
+    session.add_all([
+        TgAccount(
+            id=102,
+            tenant_id=1,
+            display_name="recent-target-reader",
+            phone_masked="***recent-target-reader",
+            status=AccountStatus.ACTIVE.value,
+            session_ciphertext="recent-target-session",
+        ),
+        Task(
+            id="same-target-view-task",
+            tenant_id=1,
+            name="same-target-view-task",
+            type="channel_view",
+            status="running",
+            account_config={"selection_mode": "manual", "account_ids": [102]},
+            type_config={"target_channel_id": 31},
+        ),
+    ])
+    action = Action(
+        id="same-target-view-action",
+        tenant_id=1,
+        task_id="same-target-view-task",
+        task_type="channel_view",
+        action_type="view_message",
+        account_id=102,
+        status="success",
+        scheduled_at=NOW,
+        executed_at=NOW,
+        payload={"channel_target_id": 31},
+    )
+    session.add_all([action, _remote_view_fact(action)])
 
 
 def _raise_reaction_probe_error(*_args, **_kwargs):

@@ -23,7 +23,7 @@ from app.services._common import _now, gateway
 from app.services.channel_target_reference import channel_read_reference
 from app.services.account_runtime_transport import task_account_runtime_transport
 
-from .account_pool import select_task_accounts
+from .channel_listener_accounts import select_channel_listener_accounts
 from .channel_listener_reactions import credential_task
 from .channel_listener_reactions import probe_reaction_capability
 from .channel_listener_reactions import record_reaction_probe_state
@@ -232,13 +232,11 @@ def _source_for_task(
     channel: OperationTarget,
 ) -> ChannelListenerSource | None:
     config = task.type_config if isinstance(task.type_config, dict) else {}
-    accounts = select_task_accounts(
+    accounts = select_channel_listener_accounts(
         session,
-        task.tenant_id,
-        task.account_config or {},
-        limit=LISTENER_ACCOUNT_CANDIDATE_LIMIT,
-        enforce_max_concurrent=False,
-        enforce_capacity=False,
+        task,
+        channel_target_id=channel.id,
+        fallback_limit=LISTENER_ACCOUNT_CANDIDATE_LIMIT,
     )
     if not accounts:
         return None
