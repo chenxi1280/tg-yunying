@@ -65,6 +65,23 @@ def reset_lifecycle_state() -> None:
     TelethonClientLifecycle.set_runtime_role("all")
 
 
+def _listener_credentials() -> DeveloperAppCredentials:
+    return DeveloperAppCredentials(
+        app_id=1,
+        api_id=123,
+        api_hash="hash",
+        credentials_version=1,
+    )
+
+
+def _recording_run(observed: dict[str, float]):
+    def run(coro, timeout_seconds=None):
+        observed["rpc_timeout"] = timeout_seconds
+        return asyncio.run(coro)
+
+    return run
+
+
 def test_planner_role_cannot_create_telethon_runtime() -> None:
     reset_lifecycle_state()
     lifecycle = TelethonClientLifecycle(Settings())
@@ -78,6 +95,68 @@ def test_planner_role_cannot_create_telethon_runtime() -> None:
 
     assert TelethonClientLifecycle._loop is None
     TelethonClientLifecycle.set_runtime_role("all")
+
+
+def test_channel_listener_fetch_caps_rpc_and_connect_timeouts(monkeypatch) -> None:
+    gateway = TelethonTelegramGateway(Settings(
+        listener_fetch_timeout_seconds=30,
+        telethon_client_connect_timeout_seconds=15,
+    ))
+    observed: dict[str, float] = {}
+
+    async def authorized(*_args, connect_timeout_seconds=None, **_kwargs):
+        observed["connect_timeout"] = connect_timeout_seconds
+        return object()
+
+    async def fetch(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(gateway, "_authorized_client", authorized)
+    monkeypatch.setattr(
+        "app.integrations.telegram.gateway.telethon_content.fetch_channel_messages",
+        fetch,
+    )
+    monkeypatch.setattr(gateway, "_run", _recording_run(observed))
+
+    assert gateway.fetch_channel_messages(
+        1,
+        "@channel",
+        session_ciphertext="session",
+        credentials=_listener_credentials(),
+    ) == []
+    assert observed == {"connect_timeout": 5.0, "rpc_timeout": 10.0}
+
+
+def test_group_listener_caller_cannot_expand_hard_timeouts(monkeypatch) -> None:
+    gateway = TelethonTelegramGateway(Settings(
+        listener_fetch_timeout_seconds=30,
+        telethon_client_connect_timeout_seconds=15,
+    ))
+    observed: dict[str, float] = {}
+
+    async def authorized(*_args, connect_timeout_seconds=None, **_kwargs):
+        observed["connect_timeout"] = connect_timeout_seconds
+        return object()
+
+    async def fetch(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(gateway, "_authorized_client", authorized)
+    monkeypatch.setattr(
+        "app.integrations.telegram.gateway.telethon_content.fetch_group_messages",
+        fetch,
+    )
+    monkeypatch.setattr(gateway, "_run", _recording_run(observed))
+
+    assert gateway.fetch_group_messages(
+        1,
+        "@group",
+        session_ciphertext="session",
+        credentials=_listener_credentials(),
+        timeout_seconds=60,
+        connect_timeout_seconds=60,
+    ) == []
+    assert observed == {"connect_timeout": 5.0, "rpc_timeout": 10.0}
 
 
 def test_telethon_lifecycle_enforces_cache_limit(monkeypatch):
