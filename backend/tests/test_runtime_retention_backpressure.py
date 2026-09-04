@@ -151,7 +151,7 @@ def test_runtime_retention_uses_status_specific_cutoffs_and_typed_summary() -> N
         }
 
 
-def test_runtime_retention_fails_closed_on_protected_attempt() -> None:
+def test_runtime_retention_skips_protected_attempt_without_poisoning_batch() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     old_at = datetime(2000, 1, 1, 10, 0)
@@ -159,6 +159,7 @@ def test_runtime_retention_fails_closed_on_protected_attempt() -> None:
         session.add(Tenant(id=1, name="tenant"))
         session.add(Task(id="task", tenant_id=1, name="task", type="group_relay", status="running"))
         session.add(_retention_action("inconsistent", "success", old_at))
+        session.add(_retention_action("expired-safe", "success", old_at))
         session.add(ExecutionAttempt(
             id="protected-attempt",
             tenant_id=1,
@@ -167,11 +168,16 @@ def test_runtime_retention_fails_closed_on_protected_attempt() -> None:
         ))
         session.commit()
 
-        with pytest.raises(RuntimeError, match="runtime_retention_protected_attempt"):
-            cleanup_runtime_details(session, today=date(2000, 1, 10), batch_size=10)
+        assert cleanup_runtime_details(
+            session,
+            today=date(2000, 1, 10),
+            batch_size=10,
+        ) == 1
+        session.commit()
 
         assert session.get(Action, "inconsistent") is not None
-        assert session.scalar(select(func.count()).select_from(ActionTerminalDailyStat)) == 0
+        assert session.get(Action, "expired-safe") is None
+        assert session.scalar(select(func.count()).select_from(ActionTerminalDailyStat)) == 1
 
 
 def _retention_action(

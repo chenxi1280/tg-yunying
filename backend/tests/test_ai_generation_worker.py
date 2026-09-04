@@ -14,6 +14,7 @@ from app.services.task_center.ai_generator import (
     GeneratedContent,
     ProviderRouteDeferred,
 )
+from app.services.task_center.ai_content_runtime import AiContentRuntimeConflict
 from app.services.task_center.ai_generation_quality import fail_generation_action
 from app.services.task_center.ai_generation_worker import (
     GenerationAdmissionDeferred,
@@ -515,6 +516,29 @@ def test_generation_worker_exposes_unpersisted_generation_failure() -> None:
             assert job.generation_owner_id == ""
 
 
+def test_generation_worker_isolates_persisted_content_contract_conflict(tmp_path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'contract-conflict.db'}", future=True)
+    Base.metadata.create_all(engine)
+    _seed_actions(engine)
+    with Session(engine) as session:
+        task = session.get(Task, "ai-task")
+        task.fulfillment_contract_version = "fact_first_v3"
+        session.commit()
+
+    processed = drain_ai_generation(
+        lambda: Session(engine),
+        limit=1,
+        generate_action=lambda *_args: (_raise_content_runtime_conflict()),
+    )
+
+    assert processed == 1
+    with Session(engine) as session:
+        action = session.get(Action, "pending-generation")
+        assert action.status == "failed"
+        assert action.result["error_code"] == "generation_contract_error"
+        assert action.result["error_type"] == "AiContentRuntimeConflict"
+
+
 def test_generation_worker_defers_route_transport_without_failing_action(tmp_path) -> None:
     engine = create_engine(f"sqlite:///{tmp_path / 'provider-deferred.db'}", future=True)
     Base.metadata.create_all(engine)
@@ -555,6 +579,10 @@ def _raise_generation_unavailable(code: str) -> None:
 
 def _raise_runtime_error(code: str) -> None:
     raise RuntimeError(code)
+
+
+def _raise_content_runtime_conflict() -> None:
+    raise AiContentRuntimeConflict("ai_content_window_concurrent_conflict")
 
 
 def test_production_generation_pipeline_returns_batch_to_pending_dispatch(

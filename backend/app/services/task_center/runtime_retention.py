@@ -236,6 +236,10 @@ def _runtime_detail_batch(
                 and_(Action.status == status, age < cutoff)
                 for status, cutoff in cutoffs.items()
             )),
+            ~select(ExecutionAttempt.id).where(
+                ExecutionAttempt.action_id == Action.id,
+                ExecutionAttempt.status.in_(PROTECTED_ATTEMPT_STATUSES),
+            ).exists(),
         )
         .order_by(age.asc(), Action.created_at.asc(), Action.id.asc())
         .limit(batch_size)

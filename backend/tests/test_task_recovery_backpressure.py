@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.database import Base
 from app.integrations.telegram import OperationResult
-from app.models import Action, ExecutionAttempt, OperationTarget, RemoteReconcileCase, TaskAccountDailyCoverage, Tenant, TgAccount, TgGroup, Task, WorkerHeartbeat
+from app.models import Action, ExecutionAttempt, OperationTarget, RemoteReconcileCase, RuntimeCleanupAudit, TaskAccountDailyCoverage, Tenant, TgAccount, TgGroup, Task, WorkerHeartbeat
 from app.services._common import _now
 from app.services.task_center import service as task_service
 from app.services.task_center.service import _recover_stale_executing_actions, drain_task_recovery
@@ -353,6 +353,37 @@ def test_recovery_does_not_run_removed_hard_hourly_stages(monkeypatch) -> None:
     monkeypatch.setattr(task_service, "get_settings", lambda: SimpleNamespace(enable_runtime_retention_cleanup=False))
 
     task_service._drain_task_recovery(SessionFactory, limit=10, process_type=None)
+
+
+def test_recovery_cleanup_failure_is_audited_without_blocking_next_category() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        failed = task_service._run_recovery_cleanup(
+            session,
+            "runtime_details",
+            lambda: (_raise_cleanup_error()),
+        )
+        continued = task_service._run_recovery_cleanup(
+            session,
+            "runtime_metric_snapshots",
+            lambda: 3,
+        )
+
+        audit = session.scalar(select(RuntimeCleanupAudit).where(
+            RuntimeCleanupAudit.summary["cleanup_kind"].as_string()
+            == "runtime_details",
+        ))
+
+    assert failed == 0
+    assert continued == 3
+    assert audit is not None
+    assert audit.summary["outcome"] == "failed"
+    assert audit.summary["error_type"] == "RuntimeError"
+
+
+def _raise_cleanup_error() -> None:
+    raise RuntimeError("retention batch failed")
 
 
 @pytest.mark.allow_missing_rule_binding

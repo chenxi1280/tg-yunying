@@ -28,6 +28,7 @@ from .targets import group_from_reference
 TERMINAL_PRECONFIRMATION_STATUSES = frozenset({"failed", "skipped", "retryable_failed"})
 RECOVERABLE_TERMINAL_COVERAGE_STATES = frozenset({"reserved", "sending", "unknown"})
 GENERATION_CONTRACT_ERROR_CODES = frozenset({
+    "generation_contract_error",
     "ai_generation_output_count_mismatch",
     "ai_generation_slot_mapping_invalid",
     "ai_generation_slot_mapping_mismatch",

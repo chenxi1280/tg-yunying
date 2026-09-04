@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 import hashlib
 import logging
 import re
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -29,6 +29,7 @@ from app.models import (
     OperationPlanTaskLink,
     OperationTarget,
     ReviewQueue,
+    RuntimeCleanupAudit,
     RuleSet,
     RuleSetVersion,
     SearchClickOpportunityAssignment,
@@ -4732,31 +4733,11 @@ def _drain_task_recovery(
         processed += recover_stale_concurrency_leases(session, limit=limit)
         session.commit()
         processed += expire_reviews(session)
+        session.commit()
         settings = get_settings()
         if settings.enable_runtime_retention_cleanup:
-            processed += cleanup_runtime_details_if_due(
-                session,
-                policy=configured_runtime_action_retention_policy(
-                    enabled=settings.enable_state_specific_action_retention,
-                    skipped_days=settings.runtime_action_skipped_retention_days,
-                    success_days=settings.runtime_action_success_retention_days,
-                    failed_days=settings.runtime_action_failed_retention_days,
-                ),
-                batch_size=getattr(
-                    settings,
-                    "runtime_detail_retention_batch_size",
-                    2000,
-                ),
-                interval_seconds=settings.runtime_detail_cleanup_interval_seconds,
-            )
-            processed += cleanup_runtime_metric_snapshots_if_due(
-                session,
-                retention_days=settings.runtime_metric_retention_days,
-                resource_raw_hours=settings.runtime_resource_raw_retention_hours,
-                resource_rollup_days=settings.runtime_resource_rollup_retention_days,
-                batch_size=settings.runtime_metric_retention_batch_size,
-                interval_seconds=settings.runtime_metric_cleanup_interval_seconds,
-            )
+            processed += _run_runtime_detail_cleanup(session, settings)
+            processed += _run_runtime_metric_cleanup(session, settings)
         processed += expire_waiting_source_media_actions(session, limit=max(10, limit))
         tenant_ids = list(
             session.scalars(
@@ -4772,6 +4753,68 @@ def _drain_task_recovery(
             )
         session.commit()
     return processed, touched_tenant_ids
+
+
+def _run_runtime_detail_cleanup(session: Session, settings) -> int:
+    return _run_recovery_cleanup(
+        session,
+        "runtime_details",
+        lambda: cleanup_runtime_details_if_due(
+            session,
+            policy=configured_runtime_action_retention_policy(
+                enabled=settings.enable_state_specific_action_retention,
+                skipped_days=settings.runtime_action_skipped_retention_days,
+                success_days=settings.runtime_action_success_retention_days,
+                failed_days=settings.runtime_action_failed_retention_days,
+            ),
+            batch_size=getattr(settings, "runtime_detail_retention_batch_size", 2000),
+            interval_seconds=settings.runtime_detail_cleanup_interval_seconds,
+        ),
+    )
+
+
+def _run_runtime_metric_cleanup(session: Session, settings) -> int:
+    return _run_recovery_cleanup(
+        session,
+        "runtime_metric_snapshots",
+        lambda: cleanup_runtime_metric_snapshots_if_due(
+            session,
+            retention_days=settings.runtime_metric_retention_days,
+            resource_raw_hours=settings.runtime_resource_raw_retention_hours,
+            resource_rollup_days=settings.runtime_resource_rollup_retention_days,
+            batch_size=settings.runtime_metric_retention_batch_size,
+            interval_seconds=settings.runtime_metric_cleanup_interval_seconds,
+        ),
+    )
+
+
+def _run_recovery_cleanup(
+    session: Session,
+    cleanup_kind: str,
+    operation: Callable[[], int],
+) -> int:
+    try:
+        processed = operation()
+        session.commit()
+        return processed
+    except Exception as exc:
+        session.rollback()
+        logger.exception("recovery cleanup failed kind=%s", cleanup_kind)
+        now_value = _now()
+        session.add(RuntimeCleanupAudit(
+            cleanup_date=now_value.date(),
+            status_counts={},
+            deleted_counts={},
+            summary={
+                "cleanup_kind": cleanup_kind,
+                "outcome": "failed",
+                "error_type": type(exc).__name__[:120],
+                "error_detail": str(exc)[:240],
+            },
+            created_at=now_value,
+        ))
+        session.commit()
+        return 0
 
 
 def drain_task_planner(session_factory, limit: int = 100) -> int:

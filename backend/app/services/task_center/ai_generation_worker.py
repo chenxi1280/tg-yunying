@@ -15,6 +15,8 @@ from app.services.developer_apps import credentials_for_account
 
 from .ai_generation_composition import PRODUCTION_GENERATION_DEPENDENCIES
 from .ai_generation_admission_gate import defer_generation_for_group_bot_admission
+from .ai_content_job_binding_error import AiContentJobBindingError
+from .ai_content_runtime import AiContentRuntimeConflict
 from .ai_generation_contract_errors import (
     GenerationContractErrorTarget,
     terminate_generation_contract_error,
@@ -144,6 +146,13 @@ def _process_sequential_claim(
                 ),
                 exc,
             )
+            if isinstance(exc, (AiContentJobBindingError, AiContentRuntimeConflict)):
+                logger.error(
+                    "ai generation contract rejected action_id=%s error=%s",
+                    claim.action_id,
+                    exc,
+                )
+                return 1
             raise
     outcome = GenerationOutcome(generation_failure, admission_deferred, provider_deferred)
     return settle_sequential_outcome(session_factory, claim, outcome)
@@ -234,6 +243,13 @@ def _process_parallel_claim(session_factory, processor, claim) -> int:
                 ),
                 exc,
             )
+            if isinstance(exc, (AiContentJobBindingError, AiContentRuntimeConflict)):
+                logger.error(
+                    "ai generation contract rejected action_id=%s error=%s",
+                    claim.action_id,
+                    exc,
+                )
+                return 1
             raise
     outcome = GenerationOutcome(failure, deferred, provider_deferred)
     return settle_parallel_outcome(session_factory, claim, outcome)

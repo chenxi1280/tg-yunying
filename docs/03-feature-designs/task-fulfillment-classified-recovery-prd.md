@@ -386,8 +386,9 @@ gateway_started + result_unknown
 
 - terminal Action 若被 takeover item、remote reconcile case、Gateway evidence journal 或其他持久业务事实引用，不进入物理删除。
 - 所有 `action_id` 持久引用建立精确索引；候选查询先用 `NOT EXISTS` 排除，不靠删除时报外键错误。
+- `ExecutionAttempt.status IN (pending,gateway_call_started,result_unknown)` 的 Action 属于受保护执行身份，必须在 retention 候选 SQL 中用 `NOT EXISTS` 排除；不得先把它取进有序批次后抛异常，否则队首一条 unknown 会永久毒化全部后续清理。
 - runtime detail、metric、Action 清理各自使用独立 checkpoint、batch 和短事务。
-- 单批失败记录精确表/Action/错误并停止该清理类别；不得回滚本轮已完成的准入、义务或 remote reconcile。
+- 单批失败记录精确表/Action/错误并停止该清理类别；该异常不得中断过期 claim、投影、unknown deadline、孤儿租约和其他清理类别，亦不得回滚本轮已完成的准入、义务或 remote reconcile。
 
 ### 10.2 义务恢复
 
@@ -395,6 +396,7 @@ gateway_started + result_unknown
 - Action open 但 lease owner heartbeat 过期：先以 `populate_existing=True` 或等价新 Session 强制重读 owner heartbeat 和 Action，再以旧 `owner_id + owner_fencing_epoch + action_version + lease_expires_at` 做单行 CAS，递增 fencing epoch 并接管；不显式锁两行。旧 owner 的续租、结果和终结提交都必须带原 epoch，不匹配写 `stale_owner_rejected`。未进 Gateway 可回收，已进 Gateway 转 `unknown_hold`。
 - heartbeat/lease 是否过期只使用同一 PostgreSQL 事务内的 `clock_timestamp()`，全部时间为 UTC-aware `timestamptz`；禁止用 worker 本地时钟、容器时区或 naive datetime 参与接管 CAS。
 - coverage、数量槽、ContentMix 和 Action 绑定不一致时，以任务专用义务账本为准重建投影，不新增目标。
+- AI 内容窗口的 current-obligation 唯一冲突只终结并记录本次冲突 Job/Action，不得抛出到批次顶层而取消同批其他群的生成；未知异常仍向 worker 顶层暴露。若已有 `gateway_bound` owner，后继 `generation_contract_error` 不得把 coverage 重新释放为 ready 后循环建单，必须冻结为 `generation_contract_repair`，原 owner 保持只对账且禁止补发。
 - `reaction/view` 义务若仍指向 `failed|skipped|cancelled` Action 且不存在 typed remote fact，CAS 清空 `current_action_id` 并恢复 `open`；不得把旧日义务重新批量执行，也不得改写已 confirmed 义务。
 - 历史 `unknown_after_send` 缺 deadline 时，仅当最新 Attempt 已进入 Gateway 且仍无权威 remote outcome，才幂等追加 `remote_outcome_unknown` 事实并从修复时刻建立 reconcile deadline；deadline 到期只转 `closed_unknown/closed_with_unknown_shortfall`，禁止重发或记成功。
 - 每次状态修复写 `RecoveryAudit`，包含 before/after hash、义务身份、旧 Action 和原因。

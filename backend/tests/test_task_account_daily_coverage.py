@@ -561,6 +561,41 @@ def test_recovery_worker_releases_terminal_reservations_without_planner_entry(se
     assert row.blocker_code == "duplicate_message"
 
 
+def test_recovery_worker_blocks_generic_generation_contract_error(session: Session) -> None:
+    task = _seed(session)
+    session.add(_account(1))
+    session.add(TgGroupAccount(tenant_id=1, group_id=21, account_id=1, can_send=True))
+    session.commit()
+    initialize_all_account_task_scope(session, task, now=datetime(2026, 7, 10, 10))
+    row = session.scalar(select(TaskAccountDailyCoverage))
+    action = Action(
+        id="generation-contract-error-action",
+        tenant_id=1,
+        task_id=task.id,
+        task_type=task.type,
+        action_type="send_message",
+        account_id=1,
+        status="failed",
+        result={"error_code": "generation_contract_error"},
+    )
+    session.add(action)
+    session.flush()
+    assert reserve_coverage_for_action(session, row.id, action.id) is True
+    session.commit()
+
+    assert recover_terminal_coverage_reservations(
+        session,
+        limit=10,
+        now=datetime(2026, 7, 10, 11),
+    ) == 1
+
+    session.refresh(row)
+    assert row.state == "blocked"
+    assert row.reserved_action_id is None
+    assert row.blocker_code == "generation_contract_error"
+    assert row.recovery_path == "generation_contract_repair"
+
+
 def test_recovery_worker_releases_terminal_legacy_overdue_unknown_reservation(session: Session) -> None:
     task = _seed(session)
     session.add(_account(1))
