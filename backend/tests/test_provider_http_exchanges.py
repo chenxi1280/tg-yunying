@@ -11,7 +11,7 @@ import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.ai_gateway import AiProviderCredentials
+from app.ai_gateway import AiGateway, AiProviderCredentials
 from app.ai_http_transport import AiHttpCallNotStarted, AiHttpResultUnknown, read_http
 from app.ai_transport_errors import AiProviderResultUnknown
 from app.database import Base
@@ -28,6 +28,8 @@ pytestmark = pytest.mark.no_postgres
 
 @pytest.fixture
 def environment(tmp_path, monkeypatch):
+    monkeypatch.setattr(drafts, "ai_gateway", AiGateway())
+    monkeypatch.setattr(structured, "ai_gateway", AiGateway())
     engine = create_engine(f"sqlite:///{tmp_path / 'provider-http-test.db'}")
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)

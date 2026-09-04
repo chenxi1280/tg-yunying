@@ -58,7 +58,7 @@ def test_draft_gateway_receives_identity_contract(monkeypatch, purpose):
     _patch_runtime(monkeypatch, drafts)
     monkeypatch.setattr(drafts, "draft_provider_calls", lambda *_: ([provider], [(provider, credentials)]))
     monkeypatch.setattr(drafts, "_record_draft_attempt", lambda *args, **kwargs: None)
-    monkeypatch.setattr(drafts.ai_gateway, "generate_drafts", gateway)
+    monkeypatch.setattr(drafts, "ai_gateway", SimpleNamespace(generate_drafts=gateway))
     policy = drafts.ProviderCandidatePolicy(
         model_name="qa-model", required_model_family="", allow_quota_rotation=False,
         purpose=purpose, close_transaction_before_external=False,
@@ -88,7 +88,11 @@ def test_structured_gateway_receives_identity_contract(monkeypatch, purpose):
     _patch_runtime(monkeypatch, structured)
     monkeypatch.setattr(structured, "structured_provider_calls", lambda *_: ([provider], [(provider, credentials)]))
     monkeypatch.setattr(structured, "record_attempt", lambda *args, **kwargs: None)
-    monkeypatch.setattr(structured.ai_gateway, "generate_structured", gateway)
+    monkeypatch.setattr(
+        structured,
+        "ai_gateway",
+        SimpleNamespace(generate_structured=gateway),
+    )
     structured.generate_structured_with_candidates(None, provider, request)
     assert captured == [with_automation_identity(request.system_prompt)]
     assert request.system_prompt == "只输出约定 JSON"
@@ -185,7 +189,11 @@ def test_legacy_operation_gateway_receives_identity_contract(monkeypatch, task_t
     monkeypatch.setattr(operations, "_pick_ai_provider", lambda *_: _provider())
     monkeypatch.setattr(operations, "ai_provider_credentials", lambda value: value)
     monkeypatch.setattr(operations, "get_tenant_ai_setting", lambda *_: SimpleNamespace(temperature=0.7, max_tokens=100))
-    monkeypatch.setattr(operations.ai_gateway, "generate_drafts", gateway)
+    monkeypatch.setattr(
+        operations,
+        "ai_gateway",
+        SimpleNamespace(generate_drafts=gateway),
+    )
     task = SimpleNamespace(tenant_id=1, task_type=task_type, title="QA", content="QA", account_ids="1")
     operations._generate_operation_contents(None, task, count=1, target_label="QA")
     assert captured[0][1] == AUTOMATION_IDENTITY_SYSTEM_POLICY
@@ -204,7 +212,11 @@ def test_mirror_rewrite_preserves_attribution_and_identity_contract(monkeypatch)
     monkeypatch.setattr(campaign_runs, "pick_ai_provider", lambda *_: SimpleNamespace(provider_type="qa-only"))
     monkeypatch.setattr(campaign_runs, "ai_provider_credentials", lambda value: value)
     monkeypatch.setattr(campaign_runs, "get_tenant_ai_setting", lambda *_: SimpleNamespace(ai_enabled=True, temperature=0.7, max_tokens=100))
-    monkeypatch.setattr(campaign_runs.ai_gateway, "generate_drafts", gateway)
+    monkeypatch.setattr(
+        campaign_runs,
+        "ai_gateway",
+        SimpleNamespace(generate_drafts=gateway),
+    )
     campaign_runs._rewrite_mirror_content(
         None, campaign=SimpleNamespace(tenant_id=1, topic="摄影"),
         target_group=SimpleNamespace(title="QA", topic_direction="摄影"),
