@@ -158,17 +158,6 @@ prune_static_releases() {
   done
 }
 
-prune_docker_pull_cache() {
-  echo "==> Docker disk usage before image pull"
-  docker system df || true
-  echo "==> Pruning stopped containers, build cache, and dangling images before image pull"
-  docker container prune -f
-  docker builder prune -af
-  docker image prune -f
-  echo "==> Docker disk usage after image cache prune"
-  docker system df || true
-}
-
 preserve_frontend_assets() {
   local current_link="$1"
   local tmp_dir="$2"
@@ -256,8 +245,6 @@ fi
 if verification_remote_enabled; then
   WORKER_SERVICES=(image-verification-worker "${WORKER_SERVICES[@]}")
 fi
-
-prune_docker_pull_cache
 
 echo "==> Pulling shared backend runtime image"
 compose pull "${BACKEND_SERVICES[@]}"

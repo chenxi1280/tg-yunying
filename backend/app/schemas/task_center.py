@@ -9,6 +9,10 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.ai_gateway import canonical_ai_model_identity
+from app.comment_fallback_policy import (
+    DEFAULT_PLANNED_FALLBACK_MAX_BPS as DEFAULT_CHANNEL_COMMENT_PLANNED_FALLBACK_MAX_BPS,
+    validate_comment_fallback_policy,
+)
 from app.search_keywords import normalized_keyword_hash, strict_keyword_materials
 from app.security import encrypt_secret
 
@@ -58,7 +62,6 @@ DEFAULT_CHANNEL_LIKE_ALLOWED_REACTIONS = [
 ]
 MAX_TOTAL_COMMENT_JITTER = 0.3
 DEFAULT_CHANNEL_COMMENT_BUSINESS_MAX_PER_MESSAGE = 80
-DEFAULT_CHANNEL_COMMENT_PLANNED_FALLBACK_MAX_BPS = 2000
 MAX_SEARCH_JOIN_SAFE_NAVIGATION = 3
 MAX_SEARCH_JOIN_PAGES = 70
 DEFAULT_SEARCH_JOIN_MAX_ACTIONS_PER_DAY = 100
@@ -1028,16 +1031,7 @@ class ChannelCommentConfig(ChannelMessageScopeConfig):
             raise ValueError("channel_comment_rolling_window_must_be_3_days")
         if self.daily_comment_cap <= 0:
             raise ValueError("channel_comment_daily_cap_required")
-        if not self.unicode_emoji_enabled and not self.image_meme_enabled:
-            raise ValueError("comment_fallback_type_required")
-        if self.unicode_emoji_weight_bps + self.image_meme_weight_bps != 10000:
-            raise ValueError("comment_fallback_weights_must_total_10000")
-        if self.unicode_emoji_weight_bps and not self.unicode_emoji_enabled:
-            raise ValueError("unicode_emoji_weight_requires_enabled_type")
-        if self.image_meme_weight_bps and not self.image_meme_enabled:
-            raise ValueError("image_meme_weight_requires_enabled_type")
-        if self.image_meme_weight_bps > 0 and not self.image_meme_material_group_id:
-            raise ValueError("image_meme_material_group_required")
+        validate_comment_fallback_policy(self.model_dump())
 
 
 def _validate_semantic_reviewer(

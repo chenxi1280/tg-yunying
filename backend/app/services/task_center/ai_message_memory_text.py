@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from difflib import SequenceMatcher
-from functools import lru_cache
 from hashlib import sha256
 
 
@@ -48,15 +48,23 @@ def text_similarity(left: str, right: str) -> float:
 
 
 def text_similarity_reaches(left: str, right: str, threshold: float) -> bool:
-    if not left or not right:
-        return 0.0 >= threshold
-    left_profile = _char_profile(left)
-    right_profile = _char_profile(right)
-    if _profile_jaccard(left_profile, right_profile) >= threshold:
-        return True
-    if _sequence_ratio_upper_bound(left_profile, right_profile) < threshold:
-        return False
-    return SequenceMatcher(None, left, right).ratio() >= threshold
+    return text_similarity_predicate(left, threshold)(right)
+
+
+def text_similarity_predicate(left: str, threshold: float) -> Callable[[str], bool]:
+    left_profile = _char_profile(left) if left else None
+
+    def matches(right: str) -> bool:
+        if left_profile is None or not right:
+            return 0.0 >= threshold
+        right_profile = _char_profile(right)
+        if _profile_jaccard(left_profile, right_profile) >= threshold:
+            return True
+        if _sequence_ratio_upper_bound(left_profile, right_profile) < threshold:
+            return False
+        return SequenceMatcher(None, left, right).ratio() >= threshold
+
+    return matches
 
 
 def text_fingerprint(normalized: str) -> str:
@@ -103,7 +111,6 @@ def _char_jaccard(left: str, right: str) -> float:
     return _profile_jaccard(_char_profile(left), _char_profile(right))
 
 
-@lru_cache(maxsize=65_536)
 def _char_profile(value: str) -> _CharProfile:
     return _CharProfile(frozenset(value), tuple(Counter(value).items()), len(value))
 
@@ -128,5 +135,6 @@ __all__ = [
     "template_shell_key",
     "text_fingerprint",
     "text_similarity",
+    "text_similarity_predicate",
     "text_similarity_reaches",
 ]

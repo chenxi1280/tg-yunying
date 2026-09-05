@@ -6,6 +6,7 @@ import json
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.comment_fallback_policy import validate_comment_fallback_policy
 from app.models import (
     ChannelCommentFallbackPoolSnapshot,
     CommentFallbackPolicySnapshot,
@@ -40,26 +41,9 @@ def validate_comment_fallback_config(
 ) -> None:
     if not config.get("channel_comment_grounding_v1_enabled"):
         return
-    _validate_policy_shape(config)
+    validate_comment_fallback_policy(config)
     if int(config.get("image_meme_weight_bps", 0) or 0) > 0:
         _require_ready_material_group(session, tenant_id, config)
-
-
-def _validate_policy_shape(config: dict) -> None:
-    unicode_enabled = bool(config.get("unicode_emoji_enabled", True))
-    image_enabled = bool(config.get("image_meme_enabled", False))
-    unicode_weight = int(config.get("unicode_emoji_weight_bps", 10000) or 0)
-    image_weight = int(config.get("image_meme_weight_bps", 0) or 0)
-    if not unicode_enabled and not image_enabled:
-        raise ValueError("comment_fallback_type_required")
-    if unicode_weight + image_weight != 10000:
-        raise ValueError("comment_fallback_weights_must_total_10000")
-    if not unicode_enabled and unicode_weight:
-        raise ValueError("unicode_emoji_weight_requires_enabled_type")
-    if not image_enabled and image_weight:
-        raise ValueError("image_meme_weight_requires_enabled_type")
-    if image_weight > 0 and not config.get("image_meme_material_group_id"):
-        raise ValueError("image_meme_material_group_required")
 
 
 def freeze_comment_fallback_contract(
@@ -82,6 +66,8 @@ def freeze_comment_fallback_contract(
         config,
         task_config_revision=comment_plan_revision,
     )
+    if policy is None:
+        return None
     assets = ready_image_assets(session, task.tenant_id, policy.image_meme_material_group_id)
     manifest = [asset_manifest(item) for item in assets]
     row = ChannelCommentFallbackPoolSnapshot(
@@ -196,7 +182,7 @@ def _policy_snapshot(
     config: dict,
     *,
     task_config_revision: int,
-) -> CommentFallbackPolicySnapshot:
+) -> CommentFallbackPolicySnapshot | None:
     revision = int(task_config_revision)
     existing = session.scalar(select(CommentFallbackPolicySnapshot).where(
         CommentFallbackPolicySnapshot.task_id == task.id,
@@ -208,7 +194,8 @@ def _policy_snapshot(
         raise CommentFallbackUnavailable(
             "fallback_policy_snapshot_missing_for_plan_revision"
         )
-    _validate_policy_shape(config)
+    if not validate_comment_fallback_policy(config):
+        return None
     row = CommentFallbackPolicySnapshot(
         tenant_id=task.tenant_id, task_id=task.id, task_config_revision=revision,
         fallback_policy_version=FALLBACK_POLICY_VERSION,

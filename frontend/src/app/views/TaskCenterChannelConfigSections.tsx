@@ -312,6 +312,7 @@ function ChannelCommentAdvancedFields({ materialGroups }: { materialGroups: Mate
 
 const fallbackPolicyFields = [
   'channel_comment_grounding_v1_enabled',
+  'planned_fallback_max_bps',
   'unicode_emoji_enabled',
   'image_meme_enabled',
   'unicode_emoji_weight_bps',
@@ -325,9 +326,13 @@ function fallbackWeightRules(): Rule[] {
         if (!getFieldValue('channel_comment_grounding_v1_enabled')) return Promise.resolve();
         const unicodeEnabled = Boolean(getFieldValue('unicode_emoji_enabled'));
         const imageEnabled = Boolean(getFieldValue('image_meme_enabled'));
-        const unicodeWeight = Number(getFieldValue('unicode_emoji_weight_bps') || 0);
-        const imageWeight = Number(getFieldValue('image_meme_weight_bps') || 0);
-        if (!unicodeEnabled && !imageEnabled) return Promise.reject(new Error('至少启用一种评论兜底'));
+        const unicodeWeight = Number(getFieldValue('unicode_emoji_weight_bps'));
+        const imageWeight = Number(getFieldValue('image_meme_weight_bps'));
+        if (!unicodeEnabled && !imageEnabled) {
+          const zeroFields = ['planned_fallback_max_bps', 'unicode_emoji_weight_bps', 'image_meme_weight_bps'];
+          if (zeroFields.every((field) => getFieldValue(field) === 0)) return Promise.resolve();
+          return Promise.reject(new Error('关闭全部兜底时，两项权重和计划兜底上限必须为 0'));
+        }
         if ((!unicodeEnabled && unicodeWeight) || (!imageEnabled && imageWeight)) {
           return Promise.reject(new Error('未启用的兜底类型权重必须为 0'));
         }

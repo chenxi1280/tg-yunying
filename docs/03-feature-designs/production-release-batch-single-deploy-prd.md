@@ -96,3 +96,11 @@ candidate guard -> 后端 3+2 分片 + frontend -> 三镜像 -> deploy -> runtim
 - [x] QA 与生产验收可由确定性 workflow 合同和 SHA readback 验证。
 
 `design_status=product_design_complete`，`dev_handoff_ready=true`。
+
+## 9. 正常发布移除全局 Docker 清理
+
+2026-09-05 Deploy33963567986在共享后端镜像拉取阶段两次TLS握手超时，尚未进入worker fence。第二轮从19:48:15的Docker磁盘统计到20:06:47的实际pull，相隔18分32秒；正常发布执行的全局system df、container prune、builder prune与image prune形成额外阻塞。20:33只读主机事实为磁盘仍余18.34GB、Docker本地API超时、daemon有132440kB换出页，不能将本次错误当作磁盘已满，也不能将清理完成当作性能恢复。
+
+正常compose-up直接执行既定的精确镜像pull，不运行全局Docker磁盘统计或自动prune。CI、镜像校验、pull错误退出、迁移、fence和全部运行验收保持原顺序与要求。若实际出现磁盘不足，原错误明确暴露，再按精确对象preview/授权apply/readback处理；不自动选择其他项目容器、构建缓存或镜像进行清理。本修订只删除已证明拖慢发布的前置工作，不增加重试、超时放宽或成功降级，也不声称已修复主机内存压力。
+
+本发布性能子项design_status=complete；QA验证bash语法、拉取先于fence、拉取失败明确退出、既有SSH编排回归和完整Release Gate。运行恢复必须另核Docker响应、实际SHA、容器健康及业务E4。

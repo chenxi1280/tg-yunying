@@ -2681,3 +2681,23 @@ QA覆盖接管前Action、接管后同旧义务的Action、同日后续绑定修
 本节仅闭合接管占用预览合同，`design_status=complete`；QA覆盖两种日期、日界、跨Task/类型共享账号、多份journal去重、unknown/ACK、确定未执行、已有reservation排重、tenant/account/epoch错配、缺日期、查询次数及真实PostgreSQL时区。它不是Task接管apply，也不单独证明旧工作已经进入共享准入；正式激活仍须完成存量资源归属、配置生效和同目标单写者核对。
 
 性能反查：19:06 线上单账号读取4.94秒、1633账号整批9.28秒；EXPLAIN显示先从未完成索引构造约12.2万行候选，再过滤账号。新增 `(tenant_id, account_id, gateway_call_started_at)` 部分索引，覆盖已进入Gateway或success/result_unknown的原Attempt。生产以CONCURRENTLY创建，迁移重试只修复本命名索引的invalid残留；旧Attempt、事实、配置和资源账本零回填。空库bootstrap不提前建立0224索引，正式增量负责创建，降级仅移除此性能索引。索引上线后须复查相同只读查询的执行计划与耗时，不能用成本估计值声称实际性能提升。
+
+### 19.37 评论明确关闭兜底的配置合同
+
+20:00 接管配置反查复现：统一评论按照§10.2只生成正常 grounded 内容，显式将两类兜底关闭、两项权重与planned_fallback_max_bps全部设为0时，Schema和运行配置校验仍报comment_fallback_type_required。该强制兜底要求与当前PRD冲突。
+
+API与运行校验共用同一纯配置规则：两类关闭、两项权重为0、planned_fallback_max_bps为0表示完整关闭，允许提交；缺少上述任一条件继续报明确配置错误，不代填类型、权重或预算。仅planned比例为0而仍启用兜底类型的legacy配置保持原emergency合同，不能被解释为完整关闭。已有grounding、两阶段、独立审核、滚动来源和每日容量校验继续生效。
+
+前端使用相同字段组合校验完整关闭，计划上限变化须触发两项权重的重新校验；错误提示说明三项均需为0。提交和回显沿现有nullish默认值规则保留显式0，不自动打开任何兜底类型。
+
+首次准备新评论时，完整关闭的当前配置不创建FallbackPolicySnapshot、Pool或shuffle cursor，也不查询图片素材。已经存在的原Pool与原配置revision的Policy仍按冻结身份复用；即使当前配置关闭兜底，旧revision延迟物化的Pool也必须使用其原Policy。旧revision缺少原Policy仍显式失败，不能按当前零兜底配置吞掉该缺口。所有旧selection、Attempt、Gateway unknown、数量与时间保持原值。正常生成失败仍沿现有质量shortfall路径，不能通过本校验修补恢复统一评论的表情降级。
+
+本切片design_status=complete；QA覆盖Schema与运行规则一致、完整关闭通过、残留预算/权重拒绝、新准备不写兜底数据、不读取素材、旧Pool/Policy延迟物化与unknown保留、缺失旧Policy明确失败及既有正常生成/legacy兜底回归。它只修正明确关闭的合法配置及冻结入口，不触发线上Task目标、日cap、grounding或统一绑定变更。
+
+### 19.38 去重字符结构只保留当前比较作用域
+
+生产AI生成worker常驻内存已从早期约350MB增长至390～407MB，dispatcher为427～437MB；主机仅余约276MB，Docker本地API超时。反查去重代码，进程级LRU允许长期持有65536个完整文本的frozenset与字符计数结构。本地12000条不同48字符中文历史的隔离实验中，缓存保留127.53MiB；首次扫描1.02秒，重复扫描0.28秒。仅保留当前候选结构的实验扫描0.82秒、保留0.02MiB。这是明确的代码内存成本证据，不代表已取得生产进程完整堆分析或确认它是主机压力的唯一原因。
+
+去重扫描为当前候选创建一次字符结构，历史文本结构逐项计算并在比较后释放，不再跨候选、账号或批次建立进程级LRU。比较完整原历史集合，保留原顺序、空文本语义、Jaccard/SequenceMatcher最大值、确定不达阈值的上界剪枝和首个命中；不降低阈值、不截断窗口、不忽略未知记录、不修改数据库去重事实。调用方结束后不保留候选或历史字符结构，不以定时清缓存、强制GC、worker重启或新增历史条数上限代替内存归属修补。
+
+本性能子项design_status=complete；QA覆盖数学结果等价、候选只准备一次、全部历史逐项比较、首个命中顺序、比较后对象可释放、账号/tenant/原时间窗口及真实PostgreSQL回归。保留缓存减少后的CPU取舍测量，发布后另验worker RSS、主机和Docker响应及正常生成后的真实消息。该变更不替代R1的共享预算和配置正式接管。

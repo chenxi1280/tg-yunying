@@ -331,3 +331,21 @@ PRD19.35。原实现以Task当前config revision读取政策后覆写已绑定�
 - QA：相关单元/迁移/归属/资源回归56 passed 12.68s；最终transport与journal审查后26 passed 5.94s。独立PG时区/0224合法索引/0196存量升级6 passed16.52s；受影响PG组合14通过、1项旧0192逆迁移因前置Provider测试保留的无历史binding而被0219保护拒绝，未放宽保护；该逆迁移独立新测试进程1 passed6.61s。初次从仓库根运行的1个测试因相对alembic.ini路径失败，按CI backend工作目录重跑通过。所有进程硬60秒。compile/diff检查、新文件500行及函数50行检查通过。
 - 线上访问：一次应用诊断在SQL前遭容器DNS临时失败；宿主DNS0.16秒成功，后续真实SQL已成功。宿主可用内存345400kB、load39.97，19:04 vmstat I/O wait51%～55%；19:13 backend只有uvicorn，无遗留诊断Python进程。重型EXPLAIN子进程一次120秒超时，无SQL成功证据；改用带远端30秒alarm、标记argv且只加载psycopg的只读探针后EXPLAIN成功0.008秒。没有修改DNS、重启/关闭服务或用这些访问现象推断数据库整体故障；整机内存压力仍未修复。
 - 发布候选待本节提交后形成；先检查原master/release仍73388、当前无进行中Deploy，再按master→release→Deploy Production发布。业务状态保持unproven；本索引/预览发布不能替代22个legacy任务正式接管或四类型E4。
+
+### 21:08 发布失败定位与评论、去重内存修补 Release Gate
+
+9e335fb79f3b5a488ef03f5fa0d3d6a36cf131cc对应Deploy33963567986已于20:10:47终态failure。全部CI分片和三镜像成功；生产日志两次在共享backend pull发生TLS handshake timeout，最后一次登录也报相同错误，未出现Stage A fence或migration。第二轮Docker统计/全局清理从19:48:15持续至20:06:47才开始pull，形成18分32秒额外前置耗时。不能把此次失败记为0224迁移失败或声称新索引已经上线。
+
+20:30只读host进程与Docker磁盘metadata独立确认current仍20260905101250_73388cd1，发布进程为0；backend和18个worker的release SHA均73388、对应PID存在。这一层不是fresh health或E4。主机可用内存282692kB、load约47～52，磁盘18.34GB可用；20:33dockerd PID1084/start_ticks1221为RSS22380kB/Swap132440kB，本地/_ping曾5秒超时。正常发布脚本之外未执行全局清理、停止其他项目或更改DNS。
+
+按Docker官方诊断接口，对上述精确PID/start_ticks复核后发送USR1，仅生成堆栈。首次Python探针外层超时无回执；后续轻量只读未见stack文件，不能算执行成功。最终shell内建操作取得明确preview/sent回执，20:51:17生成687035字节堆栈；20:59读回499个goroutine。只输出方法名与等待状态，不输出调用参数。此堆栈尚未证明daemon死锁；同次Docker/_ping已返回200/2.284秒，仅证明该采样可响应，未重启daemon。最初host健康脚本使用Python3.7的capture_output参数，被主机Python3.6拒绝；已修正临时探针，不能把这个本地工具兼容错误算成服务不健康。
+
+本批按既有L3 Intake分为三个明确根因：
+
+- 评论合法配置被拒：PRD19.37先补交接；Schema/运行校验对两类关闭、两权重0、计划预算0仍强制兜底，原实现3条反例失败、10条历史保护通过。共用纯配置规则并同步前端，完整关闭的新准备不创建兜底Policy/Pool/cursor或读素材；先保留原Pool/Policy归属，旧revision缺Policy仍报错，unknown不变。
+- 去重结构长期常驻：PRD19.38先补交接。原65536项LRU在12000条不同48字中文实验中保留127.53MiB，首次/重复扫描1.0185/0.2814秒；原实现对象释放、候选重复准备两个反例失败，43条判定测试通过。修补为每次扫描只保留一次候选结构，历史逐项释放；最终实现同数据两次0.8790/0.8914秒，保留0.0030/0.0031MiB、峰值0.0292/0.0326MiB，命中结果一致。这是本地实验，尚未证明生产各worker真实RSS降幅；明确保留重复扫描CPU取舍，未减少历史/阈值或数据库事实。
+- 发布前置全局清理：发布专项PRD§9闭合，删除compose-up的system df与自动container/builder/image prune。磁盘不足仍由真实pull错误暴露，后续精确清理独立处理；不延长超时、不重放业务、不跳过fence/迁移/验收。真实shell使用隔离Docker边界替身验证backend/frontend pull任一失败均原错误非零退出，未调用清理或worker stop。
+
+QA：评论、生成、数量与发布边界105 passed/9.67s；去重数学判定、对象释放、完整扫描、归一化、批次、账号/tenant/查询范围103 passed/7.06s；独立PostgreSQL原窗口及未知记录保护2 passed/9.59s。内存修补后再次执行关联生成/评论路径73 passed/5.70s。各后端进程硬60秒，隔离55439/tg_yunying_test与advisory lock。前端完整build通过，实际表单validator的明确0、残留预算/权重、legacy emergency与缺值5例通过；语法、compile、diff检查通过。
+
+正式发布前重新fetch：HEAD/master/release仍9e335fb7，工作区只有本批明确路径，无正在运行的Deploy。新候选将包含尚未上线的0224索引/占用读取和本批三项修补，一次冻结后正常master→release→Deploy Production。正式Task接管、共享legacy预算、配置successor、评论目标/cap/grounding仍未apply，四类型统一E4保持unproven。发布后必须分别验证current/SHA/health、0224有效索引与实际查询耗时、worker RSS/主机响应以及真实生成发送链。

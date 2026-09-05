@@ -1,5 +1,9 @@
 # 项目结构索引
 
+> **2026-09-05 去重字符结构归属：** `ai_message_memory_text.text_similarity_predicate` 只准备当前候选，`ai_message_memory._first_similar_memory` 按原顺序逐项比较历史；移除跨账号/批次的65536项进程LRU。窗口、SQL、数学判定与首个命中不变，回归入口 `test_ai_memory_similarity_lifetime.py`。
+
+> **2026-09-05 评论完整关闭兜底：** `app/comment_fallback_policy.py` 共用Schema与运行配置的类型/权重/计划预算规则；完整关闭合法，新准备不写兜底Policy/Pool/cursor，既有Pool与旧revision Policy继续保持原归属。`TaskCenterChannelConfigSections.tsx` 同步零配置及计划上限依赖校验。回归入口 `test_comment_fallback_disabled_policy.py`。
+
 > **2026-09-05 存量调用占用预览：** `engagement_legacy_occupancy.py` 对显式tenant/账号/北京时间任务日读取无预算reservation的原Attempt，以原TaskDayLedger或pacing_due_at和实际Gateway调用时间分别核算；批量journal证据、unknown/ACK和证据issue均按Attempt去重。`backend/scripts/preview_engagement_legacy_occupancy.py` 提供只读事务、精确账号清单/hash、占用清单hash与查询测量；不执行Task接管或写入历史资源。单元及PostgreSQL用例为 `test_engagement_legacy_occupancy*.py`。
 
 

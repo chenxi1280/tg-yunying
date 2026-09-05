@@ -90,6 +90,8 @@ Repository variables:
 
 正式生产部署只允许从 `release` ref 使用 `workflow_dispatch` 显式触发；push `release` 本身不再启动部署。日常修复先汇总到 `master`，本批代码、文档和定向 QA 收敛后只把 `release` 快进到最终 `master` HEAD 一次，再触发一次完整 `Deploy Production`。workflow 在任何测试、镜像或生产 environment 前必须确认 event/ref 合法，且 checkout SHA、远端 `release`、远端 `master` 完全一致；漂移时 fail-closed。完整合同见 `docs/03-feature-designs/production-release-batch-single-deploy-prd.md`。
 
+正常 `compose-up.sh` 不再执行全局Docker磁盘统计或自动container/builder/image prune；精确镜像pull失败继续非零退出，worker fence只在拉取全部成功后开始。磁盘不足时使用独立精确清理合同，不在发布中自动扩大删除范围。此删除前置清理的性能修补不替代主机资源与Docker响应检查。
+
 发布质量门不减少测试：`backend-no-postgres-checks` 使用 3 个确定性互斥 shard 执行完整 `-m no_postgres` 集合，`backend-postgres-checks` 使用 2 个确定性互斥 shard 执行完整 `-m "not no_postgres"` 集合；nodeid 的 shard 映射固定、非法或空 shard 显式失败，两类 marker 集合及各自 shard 并集必须完整且无重复。`frontend-checks` 独立并行执行 `npm ci` 和正式构建。`build-images` 必须等待 5 个后端 shard 和前端全部成功，并以 backend/frontend/image-verification 三项 matrix 并行构建；`deploy` 还必须等待全部镜像完成。生产服务器的大镜像 pull 继续串行，不能用并行 pull 放大磁盘和网络竞争。任何分区失败都阻止生产发布，不能通过删测试、增加 skip 或让某一分区 `continue-on-error` 缩短时长。空 PostgreSQL 测试库由 `0001_initial` 使用当前 metadata 建表，后续新增列迁移必须先检查真实列并保持幂等；reset/migration 失败必须输出底层异常，不能只保留笼统连接错误。
 
 `Deploy Production` 的 `workflow_dispatch` 常用诊断开关：

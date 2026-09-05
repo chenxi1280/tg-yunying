@@ -1,5 +1,9 @@
 # 项目数据流转索引
 
+> **2026-09-05 去重内存生命周期：** 原账号/tenant/时间窗口历史 → 当前候选一次字符准备 → 原顺序历史逐项Jaccard/上界/SequenceMatcher判定 → 原首个重复证据；比较后释放历史字符结构，扫描结束释放候选。数据库、重复阈值、unknown和窗口无变化，无新增历史截断或长期字符缓存。
+
+> **2026-09-05 评论零兜底配置：** 表单/Schema/运行配置验证两类关闭+两权重0+计划预算0 → grounding准备先查原Pool/Policy归属 → 仅当前revision且无冻结Policy的新准备跳过兜底数据创建；旧revision已有Policy继续创建原Pool，旧Policy缺失仍报错。旧selection与Attempt/unknown不修改，统一内容质量失败继续明确shortfall；本修补不自动改变生产Task配置或完成量。
+
 > **2026-09-05 R1存量占用核算：** 精确tenant/普通账号清单/任务日 → 原Action/ExecutionAttempt及原TaskDayLedger → 排除已有AccountBehaviorBudgetReservation → 批量Gateway journal确定未执行/已调用/未知 → 原任务日与实际调用日分列、所有日期transport未证明集合及issue → 只读接管预览。观察日期和当前Task配置不参与归账，原未知身份、账本和三件套均零写入；该预览不等于共享准入已接管或Telegram成功。
 
 
