@@ -1,5 +1,8 @@
 # 项目结构索引
 
+> **2026-09-05 存量调用占用预览：** `engagement_legacy_occupancy.py` 对显式tenant/账号/北京时间任务日读取无预算reservation的原Attempt，以原TaskDayLedger或pacing_due_at和实际Gateway调用时间分别核算；批量journal证据、unknown/ACK和证据issue均按Attempt去重。`backend/scripts/preview_engagement_legacy_occupancy.py` 提供只读事务、精确账号清单/hash、占用清单hash与查询测量；不执行Task接管或写入历史资源。单元及PostgreSQL用例为 `test_engagement_legacy_occupancy*.py`。
+
+
 > **2026-09-05 已开始生成的政策归属：** `ai_generation_policy_ownership.py` 批量读取Job原slot/plan与对应政策binding；`ai_content_job_binding.py` 为活群混合批次和独立评论入口逐Job选择原政策，未绑定新Job才用Task当前修订。上下文替换窗口与generation context证据保留原preparation config revision；缺失或错配明确报错，不覆盖历史。回归为 `test_ai_content_policy_ownership.py`、`test_ai_generation_policy_ownership_postgres.py` 及原生成/unknown测试。
 
 > **2026-09-05 存量 Action 运行合同读取：** `engagement_action_contract.py` 从原tenant/task/lifecycle首次正式分组绑定和Action/数量义务/计划创建时刻确定资源合同；`engagement_runtime_resources` 共用该读口径，当前Task标记不能重解释旧工作或解除已冻结统一工作的门禁。旧字段零回写；四类owner、跨账号/租户/任务/epoch、绑定successor及真实PostgreSQL时间读回测试位于 `test_engagement_action_contract*.py`。生成配置和legacy共享行为额度仍需另行接管。

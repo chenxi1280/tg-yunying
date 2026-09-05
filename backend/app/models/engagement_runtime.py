@@ -9,6 +9,14 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.database import Base
 
 from .enums import now
+from .task_center import ExecutionAttempt as _ExecutionAttempt
+
+
+# Shared-resource reads include issued and unknown legacy calls, not only success.
+Index("ix_execution_attempts_account_usage", _ExecutionAttempt.tenant_id,
+    _ExecutionAttempt.account_id, _ExecutionAttempt.gateway_call_started_at,
+    postgresql_where=text("gateway_call_started_at IS NOT NULL OR status IN ('success','result_unknown')"),
+    sqlite_where=text("gateway_call_started_at IS NOT NULL OR status IN ('success','result_unknown')"))
 
 
 def _new_uuid() -> str:

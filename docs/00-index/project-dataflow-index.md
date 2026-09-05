@@ -1,5 +1,8 @@
 # 项目数据流转索引
 
+> **2026-09-05 R1存量占用核算：** 精确tenant/普通账号清单/任务日 → 原Action/ExecutionAttempt及原TaskDayLedger → 排除已有AccountBehaviorBudgetReservation → 批量Gateway journal确定未执行/已调用/未知 → 原任务日与实际调用日分列、所有日期transport未证明集合及issue → 只读接管预览。观察日期和当前Task配置不参与归账，原未知身份、账本和三件套均零写入；该预览不等于共享准入已接管或Telegram成功。
+
+
 > **2026-09-05 生成政策归属：** 已绑定v2 Job → 原window plan的config revision/policy hash → 同tenant/task/lifecycle政策binding → 原route、prompt、example与审核合同；同批新Job另取当前修订。上下文替换slot仍属于同次preparation的原政策。读取按批次完成，保留slot引用避免ORM弱引用回收后逐Job重查；原unknown、窗口历史和任务配置不改写。legacy无窗口Job的完整切换仍属于后续R1接管。
 
 > **2026-09-05 存量执行合同归属：** Action原tenant/task/lifecycle → 同epoch首次正式binding的effective_from → 核对原Action及明确引用的数量owner/父计划创建时刻 → legacy原合同收口或统一资源reservation。后续binding和Task标记回退不移动首次边界；错owner显式失败，旧payload/数量/排期/Attempt/unknown不回写。该读口径不是完整来源入口或跨legacy额度迁移。

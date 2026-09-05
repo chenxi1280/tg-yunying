@@ -2664,3 +2664,20 @@ QA覆盖接管前Action、接管后同旧义务的Action、同日后续绑定修
 同一批活群Job可能横跨政策修订，必须逐Job对应原binding、route、prompt与example版本，并按distinct binding/scope做权限校验，窗口与政策读取须批量完成，不能退回逐Job查询。评论使用相同政策归属读取，保留评论独立的来源证据和权限作用域。若同一Job的上下文更新需要替换尚未过Gateway的slot，新slot仍携带该次preparation的原政策修订；真正新建的generation successor才消费新政策。原窗口、binding、policy与Job的作用域或hash不一致时明确报错，不回退当前政策覆盖历史。
 
 本切片不修改Task配置、目标、数量、调用预算、旧Provider unknown或Gateway事实，不声称已完成legacy无窗口Job的接管。设计自检覆盖原配置更新语义、group/comment入口、混合批次、上下文替换、tenant/task/epoch隔离、缺失证据、SQL数量和回滚。design_status=complete；QA须先复现当前政策覆盖旧Job，再验证原hash/窗口不变、新Job采用新政策，以及全部unknown隔离回归。
+
+### 19.36 接管前的存量调用占用核算
+
+2026-09-05 18:30 的只读事实样本中，当天观察到的37条评论有29条属于前一任务日；32条点赞全部属于更早冻结日期。因此观察日期不能用来回填履约日期，也不能假设旧工作收尾不消耗当前账号调用容量。
+
+接管预览增加只读的原Attempt占用投影，供正式接管与共享资源桥接核对：
+
+- 范围必须显式给出tenant、普通账号集合与北京时间任务日。仅核对活群发送、评论、点赞、浏览四种业务动作；入群、采集和其他业务不混入。当前配置、账号移组和Action的closed_unknown/skipped状态不能抹除原调用。
+- 一条Attempt最多产生一条占用。已有AccountBehaviorBudgetReservation的Attempt由原预算账本负责，预览不再次计数，不创建伪造的历史reservation/lease/fence。Gateway journal有多条证据时按原Attempt收敛，冲突显式列为未证明，不能挑一条有利证据释放。
+- `original_task_day`来自原TaskDayLedger；没有该引用时才使用原Action.pacing_due_at。实际调用日仅来自原ExecutionAttempt.gateway_call_started_at；不得用确认、观察、重试排期或当前时间补造。两种日期分别呈现。同一次跨日调用可以同时属于原日的履约预算占用和实际调用日的活动占用，但不能产生两份完成量或搬动原预算。
+- 已取得确定未变更证据的终态Attempt不占业务预算；确定已调用和结果未知分别呈现。成功、失败等Attempt状态本身不作为Telegram E4，投影只描述调用资源占用。Gateway已进入但没有确定非执行证据的失败不能自动当成未调用。缺少必要日期、所有权或相互矛盾的变更证据形成明确issue，不能补默认日期或以0占用通过接管。
+- 所有日期的未决远端调用都保留物理占用核对；只允许原Attempt的transport termination ACK或确定远端终态证明结束。unknown_deadline_closed、Action跳过、租约到期和记录年龄都不证明transport结束。ACK只释放物理占用判断，不释放unknown的原业务身份与预算。
+- 查询只读取必要标量和类型化证据，不加载完整Action payload、错误正文或聊天内容。按显式账号集合查询，批量读取journal，SQL次数不随候选Attempt数增长；上线前用真实只读样本记录行数、SQL次数和耗时。
+
+本节仅闭合接管占用预览合同，`design_status=complete`；QA覆盖两种日期、日界、跨Task/类型共享账号、多份journal去重、unknown/ACK、确定未执行、已有reservation排重、tenant/account/epoch错配、缺日期、查询次数及真实PostgreSQL时区。它不是Task接管apply，也不单独证明旧工作已经进入共享准入；正式激活仍须完成存量资源归属、配置生效和同目标单写者核对。
+
+性能反查：19:06 线上单账号读取4.94秒、1633账号整批9.28秒；EXPLAIN显示先从未完成索引构造约12.2万行候选，再过滤账号。新增 `(tenant_id, account_id, gateway_call_started_at)` 部分索引，覆盖已进入Gateway或success/result_unknown的原Attempt。生产以CONCURRENTLY创建，迁移重试只修复本命名索引的invalid残留；旧Attempt、事实、配置和资源账本零回填。空库bootstrap不提前建立0224索引，正式增量负责创建，降级仅移除此性能索引。索引上线后须复查相同只读查询的执行计划与耗时，不能用成本估计值声称实际性能提升。

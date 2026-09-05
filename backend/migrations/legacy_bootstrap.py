@@ -319,6 +319,9 @@ def legacy_bootstrap_metadata(source):
     generation_jobs = metadata.tables["generation_jobs"]
     generation_jobs.indexes.difference_update({index for index in generation_jobs.indexes
                                              if index.name == "ix_generation_job_provider_lineage"})
+    attempts = metadata.tables["execution_attempts"]
+    attempts.indexes.difference_update({index for index in attempts.indexes
+                                      if index.name == "ix_execution_attempts_account_usage"})
     for name, excluded in ENGINE_ADDED_COLUMNS.items():
         table = metadata.tables[name]
         constraints, indexes, foreign_keys = _later_objects(table, excluded)
