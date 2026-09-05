@@ -1,5 +1,7 @@
 # 项目数据流转索引
 
+> **2026-09-05 入群 RPC 边界：** session/建连/授权/目标解析失败 → 明确未执行结果 → 原失败结算；实际 JoinChannel/ImportChatInvite 已调用但响应不明 → 保留未知。该边界只描述单次入群调用，不将后续管理员审批失败倒推为整个流程未执行，也不重写历史 unknown。
+
 > **2026-09-05 终态未执行窗口：** 原终态Action/ready Job/gateway_bound slot → 全部Attempt已结束且无message_id → 每个远端尝试由精确safely_not_executed事实证明，其余明确未进Gateway → 仅invalidated旧slot。任一unknown、成功、孤立或跨身份事实保留窗口；原义务目标、时间和完整证据链不改。
 
 > **2026-09-05 结构化限流恢复：** 原Provider HTTP429事实 → 共享admission cooldown → 释放原probe → 原路由ProviderRouteDeferred；到期单probe真实请求成功才open。结构化调用不因临时429永久移除健康供应商，原凭据/模型/路由revision不变，unknown继续原身份对账。

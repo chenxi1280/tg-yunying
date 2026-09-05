@@ -2521,6 +2521,12 @@ QA：已有合法内部字段在设置规范化后原值保留，非法路由/�
 
 收口仍须锁定原Task/epoch/义务/Job/窗口对应的终态Action，仅invalidated旧slot并释放其claim。允许两类未执行证据：没有任何Attempt且无fact；或者全部Attempt均已结束、无remote_message_id，其中每个已进入Gateway的终态失败Attempt均由同tenant/task/Action/义务/mutation_kind/attempt_id的safely_not_executed事实证明，其余为明确skipped_before_gateway。任一未终结Attempt、未知/成功fact、事实身份不匹配或没有原Attempt的孤立fact均阻止收口。保留全部Action、Job、Attempt、fact和原时间/目标；不按错误文本、lease到期或“failed”单独推断未发送。本子合同design_status=complete；全量覆盖恢复需另有精确运营预览和自然发送验证。
 
+### 19.27 入群调用以实际变更 RPC 作为未知结果边界
+
+生产反查发现 `ensure_channel_membership` 在本地 session 校验、建连、授权或目标解析失败时也返回缺省未知变更状态。上述阶段尚未调用 `JoinChannelRequest` / `ImportChatInviteRequest`，必须显式记录 `remote_mutation_started=false`；不能仅因 Dispatcher 已进入 Gateway 方法就占住远端未知义务。
+
+调用实际变更 RPC 后，缺失可确认结果的异常仍保留 `remote_mutation_started=null`，不得据错误文案或等待时长重发。正常成功保留 joined 结果；Telegram 明确返回 already-participant 时保留 already_joined 结果。修补不重写任何历史 Attempt、journal、fact 或已关闭的 unknown，也不把后续审批/解禁失败反推为整个多阶段入群过程未执行。验收覆盖建连、授权、空地址、目标解析、邀请链接和公开群两条 RPC 路径，以及 RPC 后超时的未知保护。
+
 ## 20. Product Design Complete 自检
 
 - 当前范围以 §19.13 为准；§19.12 已撤销，历史文中的正式预算、回放审批和完整 Binding 待实现项不再阻塞本期交付。保留的实时链、最近三天计数和四类任务仍须逐项代码、测试和生产验证。

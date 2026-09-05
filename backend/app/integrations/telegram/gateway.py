@@ -2051,31 +2051,40 @@ class TelethonTelegramGateway(TelegramGateway):
     ) -> ChannelMembershipResult:
         raw_session = decrypt_session(session_ciphertext)
         if not raw_session:
-            return ChannelMembershipResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "账号没有可用 session", "failed")
-        client = await self._get_or_create_client(credentials, raw_session)
-        if not await client.is_user_authorized():
-            return ChannelMembershipResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "session 已失效", "failed")
+            return ChannelMembershipResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "账号没有可用 session", "failed", remote_mutation_started=False)
+        mutation_rpc_started = False
         try:
             from telethon import functions
             from telethon.errors import UserAlreadyParticipantError
 
+            client = await self._get_or_create_client(credentials, raw_session)
+            if not await client.is_user_authorized():
+                return ChannelMembershipResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "session 已失效", "failed", remote_mutation_started=False)
             target = (invite_link or channel_peer_id or "").strip()
             if not target:
-                return ChannelMembershipResult(False, "失败", FailureType.PEER_INVALID.value, "缺少频道地址", "failed")
+                return ChannelMembershipResult(False, "失败", FailureType.PEER_INVALID.value, "缺少频道地址", "failed", remote_mutation_started=False)
             invite_hash = _telegram_invite_hash(target)
             if invite_hash:
+                request = functions.messages.ImportChatInviteRequest(invite_hash)
                 try:
-                    await client(functions.messages.ImportChatInviteRequest(invite_hash))
+                    mutation_rpc_started = True
+                    await client(request)
                 except UserAlreadyParticipantError:
-                    return ChannelMembershipResult(True, detail="already_joined", membership_status="already_joined")
+                    return ChannelMembershipResult(True, detail="already_joined", membership_status="already_joined", remote_mutation_started=False)
             else:
                 entity_ref: int | str = int(target) if target.lstrip("-").isdigit() else target.lstrip("@")
                 entity = await client.get_entity(entity_ref)
-                await client(functions.channels.JoinChannelRequest(entity))
-            return ChannelMembershipResult(True, detail="joined", membership_status="joined")
+                request = functions.channels.JoinChannelRequest(entity)
+                mutation_rpc_started = True
+                await client(request)
+            return ChannelMembershipResult(True, detail="joined", membership_status="joined", remote_mutation_started=True)
         except Exception as exc:
             mapped = self._map_send_error(exc)
-            return ChannelMembershipResult(False, "失败", mapped.failure_type or FailureType.PEER_INVALID.value, mapped.detail or str(exc), "failed")
+            return ChannelMembershipResult(
+                False, "失败", mapped.failure_type or FailureType.PEER_INVALID.value,
+                mapped.detail or str(exc), "failed",
+                remote_mutation_started=None if mutation_rpc_started else False,
+            )
 
     def ensure_channel_membership(
         self,

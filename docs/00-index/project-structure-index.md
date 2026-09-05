@@ -1,5 +1,7 @@
 # 项目结构索引
 
+> **2026-09-05 入群变更证据：** `gateway.TelethonTelegramGateway._ensure_channel_membership_async` 在实际入群 RPC 前记录未执行，成功/已加入/请求后异常分别保留精确结果；`test_membership_gateway_mutation_boundary.py` 覆盖两类请求和全部前置阶段。Dispatcher 继续复用原结算与未知保护。
+
 > **2026-09-05 确认未执行的内容窗口：** `ai_content_window_evidence.py` 对旧终态Action加锁读取全部Attempt/fact，精确核对身份及类型化未执行证据；`ai_content_window_retirement.py` 仅在证据闭合后收口原窗口。零Attempt路径保留，任何unknown/不匹配/未终结证据继续占位。SQLite与PostgreSQL回归覆盖已进入Gateway但明确未执行的窗口，不删除旧结果。
 
 > **2026-09-05 结构化Provider限流补正：** `ai_structured_provider_runtime.call_structured_provider` 接收原候选Provider身份，类型化429复用 `ai_provider_candidate_runtime.defer_rate_limited_provider` 的共享冷却与probe释放；原候选记录admission_blocked，Job沿ProviderRouteDeferred延期。回归为 `test_structured_provider_rate_limit.py`，不改永久余额错误或unknown语义。

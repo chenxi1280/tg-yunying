@@ -180,3 +180,15 @@ target_account_capacity只读快照hash=2dcfa3c46aafeb1828531f20116c6593372947d4
 ## 类型化未执行窗口 Release Gate（12:44）
 
 成都覆盖0b46f312、e760aa74、22ebc69d的旧Action均failed/ready，其Gateway Attempt已终结且有同一attempt_id的safely_not_executed，其他仅skipped_before_gateway。PRD19.26允许该明确未执行子集收口，仍拒绝任意unknown/成功/孤立fact/身份不匹配/未结束Attempt。新evidence模块锁定并核对全部Attempt/fact，原Action/Job/目标/时间不改。反例2失败19通过；修补后窗口/legacy对账/fencing41项通过（8.31秒）及隔离PostgreSQL4项通过（6.05秒），每批硬上限60秒。无schema/API变更；下一轮发布后再做精确覆盖恢复与自然事实验收。
+
+## 窗口修补上线与独立读回（13:16）
+
+6564b5c6043e20d0bd99acb4a85c240426f181c0 / Deploy33945701455终态success；独立读回current=20260905050034_6564b5c6，RELEASE_SHA一致，backend/planner/三组生成/dispatcher健康。成都0b46f312完整lineage为29 Action、2 Attempt、1精确未执行fact；preview403b13e895500567d910f24dd4b8a8165255105deedb2c489ccf82f5887e26fe，审计989661已恢复ready，旧slot invalidated/version5。独立读回target1/confirmed0、原targeted_at04:19:29.117426与空next时刻均保留。尚无新发送事实；其他两项未应用。
+
+西安a611aa16的新Action6732bfbd于11:48再次generation_contract_error，旧slot已invalidated；因此该义务尚未恢复履约，需按新错误继续诊断，不能复用第一次窗口故障结论。
+
+## 入群 RPC 边界 Release Gate（13:24）
+
+PRD19.27。实际入群RPC前的session/连接/授权/解析失败遗漏remote_mutation_started=false，生产同类Action可能进入不必要的unknown。反例9失败2通过，修补后入群、浏览边界、搜索入群及现有成员策略共122项通过（9.14秒，硬60秒超时）。变更方法42个非空行，无schema/API变化；请求后异常仍unknown，历史未知记录不写。回退应用会恢复该证据缺口，不需要回退数据。
+
+天津音乐目标配置当前为5999/5980且已独立解析peer-1002262282745；519个成员进度仍指向旧目标485/peer-1003583171851。最新按账号查询有422个closed_unknown，新群59个可发言账号；500条历史未知样本中包含管理员限流、已提交入群申请与更早的探测失败。不能将这些多阶段/旧epoch历史行一律改为未执行；需分别以当前目标只读证据对账。成员投影目标不一致与存量全引擎接管仍未完成。
