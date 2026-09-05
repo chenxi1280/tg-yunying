@@ -27,6 +27,23 @@ UNSTARTED_ATTEMPT_STATES = frozenset({"before_call", "before_gateway"})
 PRECALL_TERMINAL_ACTION_STATES = frozenset({"failed", "retryable_failed", "cancelled", "stopped", "skipped"})
 
 
+def attempt_resources(session: Session, attempt_id: str):
+    lease = session.scalar(select(AccountPoolConcurrencyLease)
+        .where(AccountPoolConcurrencyLease.attempt_id == attempt_id)
+        .with_for_update().execution_options(populate_existing=True))
+    reservation = session.scalar(select(AccountBehaviorBudgetReservation)
+        .where(AccountBehaviorBudgetReservation.attempt_id == attempt_id)
+        .with_for_update().execution_options(populate_existing=True))
+    fence = session.scalar(select(RemoteInvocationFence)
+        .where(RemoteInvocationFence.attempt_id == attempt_id)
+        .with_for_update().execution_options(populate_existing=True))
+    if lease is None and reservation is None and fence is None:
+        return None, None, None
+    if lease is None or reservation is None or fence is None:
+        raise RuntimeError("engagement_runtime_resource_set_incomplete")
+    return lease, reservation, fence
+
+
 def settle_resource_set(
     session: Session,
     attempt: ExecutionAttempt,
@@ -116,7 +133,7 @@ def _already_settled(
         )
     return (
         lease.state == "released"
-        and reservation.state == "released"
+        and reservation.state == ("confirmed" if fence.business_outcome_state == "failed" else "released")
         and fence.state == "terminal"
     )
 
@@ -237,7 +254,9 @@ def _settle_failed(
     lease.state = "released"
     lease.released_at = _now()
     lease.release_reason = "remote_terminal_failed"
-    _transition_reservation(session, reservation, "released")
+    # Confirmed budget consumption is independent of the failed business result.
+    budget_state = "confirmed" if remote_mutation_started is True else "released"
+    _transition_reservation(session, reservation, budget_state)
     reservation.settled_at = _now()
     fence.state = "terminal"
     fence.transport_termination_state = "acknowledged"

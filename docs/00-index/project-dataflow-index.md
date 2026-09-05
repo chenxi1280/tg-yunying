@@ -1514,3 +1514,5 @@ legacy-only A 冷启动分支固定为 `frozen legacy A -> 原 A Session 只读 
 - V2原Job/window冻结route → generation slot → 单槽质量过滤：general/general只走普通内容门，Task成人提示不覆盖槽归属；成人和legacy原边界不变。独立reviewer返回 → 原严格解析 → 失败保留typed code与schema_validation字段类型/数量，拒绝结果和已发生review用量传到原quality_wait/shortfall；不保存候选或审核正文、不重放旧Job。
 
 > **2026-09-06 C 历史执行归属隔离：** stopped post-login C unknown + 已清租约 + 原节点在 unknown 后新鲜上报 ready/零客户端 → 含历史 owner/epoch/节点镜像和空闲证据的 preview → 节点锁内重验并 apply → 原 C deferred_reconcile/unknown/quarantined，owner/epoch/Session 保留；原 B 成功和请求 reconcile_unknown 保留，无 Gateway。
+
+- 共享账号准入：账号行锁 → 原ledger计数加无reservation旧调用的原日占用、实际调用日的跨ledger调用/待调用及当天unowned分别核算 → 原class/total门 → 原lease/reservation/fence；call-start用同一时间重验当天余额并排除自己的预约，旧ledger/date不移动。发前拒绝只释放当前未调用预约，旧unknown继续保留；确定发生变更的失败确认的是原调用成本，Attempt和fence业务失败不变。旧pool/proxy整体物理证明及正式Task接管仍独立验收。

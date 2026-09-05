@@ -11,11 +11,17 @@ from app.models import (
     ExecutionResiliencePolicyRevision, TaskAccountGroupBindingSetRevision, TgAccount,
 )
 from app.services._common import _now
+from app.timezone import as_beijing
 
 from .engagement_activity_scope import ActivityScope, action_activity_scope
 from .engagement_runtime_circuit import circuit_blocker
 from .engagement_runtime_domains import ACTIVE_DOMAIN_LEASE_STATES, proxy_capacity_blocker
 from .engagement_runtime_error import RuntimeResourceBlocked
+from .engagement_shared_usage import (
+    SharedUsageScope, activity_budget_occupancy, activity_budget_source,
+    assert_shared_evidence, behavior_occupancy, original_budget_occupancy,
+    read_shared_account_usage,
+)
 
 if TYPE_CHECKING:
     from .engagement_runtime_resources import RuntimeResourceContext
@@ -34,7 +40,7 @@ def _assert_pool_capacity(
 ) -> None:
     if pool_id not in {int(item) for item in binding.account_group_ids or []}:
         raise RuntimeResourceBlocked("account_outside_frozen_binding", "账号不属于冻结任务绑定")
-    if _lease_count(session, pool_id, account_id=account.id) >= 1:
+    if _account_lease_count(session, action.tenant_id, account.id) >= 1:
         raise RuntimeResourceBlocked("account_remote_inflight", "账号已有远端调用在途", 5)
     if _lease_count(session, pool_id) >= policy.hard_remote_inflight_limit:
         raise RuntimeResourceBlocked("account_pool_remote_inflight_full", "账号组物理并发已满", 5)
@@ -43,19 +49,24 @@ def _assert_pool_capacity(
         raise RuntimeResourceBlocked("task_group_share_full", "任务在该账号组的并发份额已满", 5)
 
 
+def _account_lease_count(session, tenant_id, account_id):
+    return int(session.scalar(select(func.count(AccountPoolConcurrencyLease.id)).where(
+        AccountPoolConcurrencyLease.tenant_id == tenant_id,
+        AccountPoolConcurrencyLease.account_id == account_id,
+        AccountPoolConcurrencyLease.state.in_(ACTIVE_LEASE_STATES),
+    )) or 0)
+
+
 def _lease_count(
     session: Session,
     pool_id: int,
     *,
-    account_id: int | None = None,
     task_id: str | None = None,
 ) -> int:
     query = select(func.count(AccountPoolConcurrencyLease.id)).where(
         AccountPoolConcurrencyLease.account_pool_id == pool_id,
         AccountPoolConcurrencyLease.state.in_(ACTIVE_LEASE_STATES),
     )
-    if account_id is not None:
-        query = query.where(AccountPoolConcurrencyLease.account_id == account_id)
     if task_id is not None:
         query = query.where(AccountPoolConcurrencyLease.task_id == task_id)
     return int(session.scalar(query) or 0)
@@ -135,7 +146,7 @@ def _assert_negative_outcome_circuit(
 
 
 def _assert_behavior_capacity(
-    ledger: AccountBehaviorBudgetLedger, action_class: str
+    ledger: AccountBehaviorBudgetLedger, action_class: str, *, occupied_by_class=None,
 ) -> None:
     budgets = dict(ledger.action_budgets or {})
     limit = int(budgets.get(action_class) or 0)
@@ -144,9 +155,8 @@ def _assert_behavior_capacity(
             "behavior_budget_action_class_unconfigured",
             f"行为预算未配置动作类型:{action_class}",
         )
-    states = dict((ledger.counters or {}).get(action_class) or {})
-    occupied_states = ("reserved", "call_issued", "unknown", "confirmed", "unowned")
-    occupied = sum(int(states.get(key) or 0) for key in occupied_states)
+    occupancy = behavior_occupancy(ledger) if occupied_by_class is None else occupied_by_class
+    occupied = int(occupancy.get(action_class) or 0)
     if occupied >= limit:
         raise RuntimeResourceBlocked(
             "account_behavior_budget_exhausted",
@@ -156,7 +166,7 @@ def _assert_behavior_capacity(
         budgets.get("total")
         or sum(int(value or 0) for key, value in budgets.items() if key != "total")
     )
-    total_occupied = _total_behavior_occupancy(ledger)
+    total_occupied = sum(occupancy.values())
     if total_occupied >= total_limit:
         raise RuntimeResourceBlocked(
             "account_behavior_total_budget_exhausted",
@@ -223,13 +233,24 @@ def _external_hold_collides(
     return not held_source or not action_source or held_source == action_source
 
 
-def _total_behavior_occupancy(ledger: AccountBehaviorBudgetLedger) -> int:
-    occupied_states = ("reserved", "call_issued", "unknown", "confirmed", "unowned")
-    return sum(
-        sum(int(states.get(state) or 0) for state in occupied_states)
-        for states in (ledger.counters or {}).values()
-        if isinstance(states, dict)
-    )
+def _assert_shared_account_capacity(session, action, context):
+    scope = SharedUsageScope(action.tenant_id, context.account.id,
+        context.ledger.task_day, as_beijing(_now()).date())
+    usage = read_shared_account_usage(session, scope)
+    assert_shared_evidence(usage)
+    _assert_behavior_capacity(context.ledger, context.action_class,
+        occupied_by_class=original_budget_occupancy(context.ledger, usage))
+    source = activity_budget_source(session, scope, context.budget_policy)
+    _assert_behavior_capacity(source, context.action_class,
+        occupied_by_class=activity_budget_occupancy(source, usage))
+
+
+def _assert_call_activity_capacity(session, scope, policy, *, reservation):
+    usage = read_shared_account_usage(session, scope, excluded_attempt_id=reservation.attempt_id)
+    assert_shared_evidence(usage)
+    source = activity_budget_source(session, scope, policy)
+    _assert_behavior_capacity(source, reservation.action_class,
+        occupied_by_class=activity_budget_occupancy(source, usage))
 
 
 def _assert_portfolio_capacity(

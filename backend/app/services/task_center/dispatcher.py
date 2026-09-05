@@ -1341,6 +1341,9 @@ def _dispatch_action(
                 comment_generation_dependencies,
             ),
         )
+    except RuntimeResourceBlocked as exc:
+        _defer_engagement_gateway_admission(session, action, exc)
+        return True
     except (ValidationError, ValueError) as exc:
         _update_reply_payload_error_stats(action)
         _fail(action, FailureType.UNKNOWN.value, payload_error_message(exc))
@@ -1348,25 +1351,29 @@ def _dispatch_action(
     except SQLAlchemyError:
         raise
     except Exception as exc:  # noqa: BLE001 - worker must keep draining.
-        logger.exception(
-            "task center action dispatch failed before completion action_id=%s action_type=%s",
-            action.id,
-            action.action_type,
+        return _handle_dispatch_exception(session, action, exc)
+
+
+def _handle_dispatch_exception(session, action, exc):
+    logger.exception(
+        "task center action dispatch failed before completion action_id=%s action_type=%s",
+        action.id,
+        action.action_type,
+    )
+    detail = str(exc).strip() or type(exc).__name__
+    if _gateway_call_started(session, action):
+        _mark_unknown_after_send(
+            session,
+            action,
+            detail,
+            transport_termination_acknowledged=bool(
+                getattr(exc, "transport_termination_acknowledged", True)
+            ),
+            termination_event=getattr(exc, "termination_event", None),
         )
-        detail = str(exc).strip() or type(exc).__name__
-        if _gateway_call_started(session, action):
-            _mark_unknown_after_send(
-                session,
-                action,
-                detail,
-                transport_termination_acknowledged=bool(
-                    getattr(exc, "transport_termination_acknowledged", True)
-                ),
-                termination_event=getattr(exc, "termination_event", None),
-            )
-        else:
-            _fail(action, FailureType.UNKNOWN.value, detail)
-        return True
+    else:
+        _fail(action, FailureType.UNKNOWN.value, detail)
+    return True
 
 
 def _action_pre_dispatch_handled(
@@ -11679,8 +11686,9 @@ def _begin_execution_attempt(session: Session, action: Action, account: TgAccoun
 
 
 def _mark_gateway_call_started(session: Session, attempt: ExecutionAttempt, *, commit: bool = True) -> None:
-    mark_engagement_attempt_call_issued(session, attempt)
-    attempt.gateway_call_started_at = _now()
+    call_started_at = _now()
+    mark_engagement_attempt_call_issued(session, attempt, call_started_at=call_started_at)
+    attempt.gateway_call_started_at = call_started_at
     attempt.status = "gateway_call_started"
     from .channel_comment_capacity import mark_comment_capacity_gateway_hold
 
@@ -11906,15 +11914,28 @@ def _admit_engagement_attempt_resources(
         reserve_engagement_attempt_resources(session, action, attempt)
         return True
     except RuntimeResourceBlocked as exc:
-        retry_at = _now() + timedelta(seconds=exc.retry_after_seconds)
-        _defer(action, retry_at, exc.code, exc.detail)
-        attempt.after_call_at = _now()
-        attempt.status = "skipped_before_gateway"
-        attempt.failure_type = exc.code
-        attempt.failure_detail = exc.detail
-        attempt.result_snapshot = {**(attempt.result_snapshot or {}), **(action.result or {})}
-        settle_source_pacing_admission(action, attempt)
+        _defer_engagement_resource_attempt(action, attempt, exc)
         return False
+
+
+def _defer_engagement_resource_attempt(action, attempt, error):
+    retry_at = _now() + timedelta(seconds=error.retry_after_seconds)
+    _defer(action, retry_at, error.code, error.detail)
+    attempt.after_call_at = _now()
+    attempt.status = "skipped_before_gateway"
+    attempt.failure_type = error.code
+    attempt.failure_detail = error.detail
+    attempt.result_snapshot = {**(attempt.result_snapshot or {}), **(action.result or {})}
+    settle_source_pacing_admission(action, attempt)
+
+
+def _defer_engagement_gateway_admission(session, action, error):
+    attempt = session.scalar(select(ExecutionAttempt).where(ExecutionAttempt.action_id == action.id)
+        .order_by(ExecutionAttempt.attempt_no.desc()).limit(1))
+    if attempt is None or attempt.gateway_call_started_at is not None or attempt.status != "before_call":
+        raise RuntimeError("engagement_gateway_defer_requires_uncalled_attempt") from error
+    _defer_engagement_resource_attempt(action, attempt, error)
+    settle_engagement_attempt_resources(attempt, action, remote_mutation_started=False)
 
 
 def _merge_attempt_result_snapshot(

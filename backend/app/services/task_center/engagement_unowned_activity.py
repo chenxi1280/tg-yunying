@@ -311,7 +311,8 @@ def _charge_behavior_budget(
     observed_at: datetime,
     action_class: str,
 ) -> None:
-    account = session.get(TgAccount, account_id)
+    account = session.scalar(select(TgAccount).where(TgAccount.id == account_id)
+        .with_for_update().execution_options(populate_existing=True))
     if account is None:
         raise RuntimeError("external_activity_account_missing")
     policy = session.scalar(select(AccountBehaviorBudgetPolicyRevision).where(

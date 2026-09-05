@@ -453,3 +453,12 @@ d6d637aa51251ca4040ebcb82b757e2157fd647d已按master/release冻结并触发Deplo
 - 发布日志仅一条Installing release，末尾明确`preserved_unchanged`、model_probe_performed=false及原quota_limited/degraded。独立systemd读取正确unit `tgyunying-antigravity-slot-01.service`证明MainPID仍3058744、active/running、启动仍01:07:46，bridge current仍73388。初次探针对不存在的provider@slot-01名称返回inactive，纠正为部署脚本生成的真实unit后核对；该探针名称错误不作为服务故障。
 - 以02:37:56发布完成探针为业务观察锚，02:41:17主业务取得7条view_observed、3条safely_not_executed、1条view remote_outcome_unknown；新binding的活群生成17次规划、34次正文及18次独立审核成功，但新消息typed fact仍空，大量quality shortfall。评论/点赞本窗无新typed成功。回执`ac50_post_release_facts.jsonl`；unknown保持原状态。
 - 预备发布adb2普通质量修补时，发现远端master/release已由独立授权任务推进到b375b9bf，Deploy33984749491正在运行。完整保留该7文件提交，合并为a515edca；仅两索引末尾追加冲突，逐项保留双方文字，diff检查通过。原100项质量QA的代码未改变；不取消、覆盖或并发触发当前发布。后续候选无新迁移，变化只影响生成后的过滤与失败证据，需在当前run终态后再以不可变SHA走完整CI和部署；旧bridge四文件未改，仍执行保留观测分支。
+
+### 2026-09-06 03:12 共享账号用量与调用成本本地验收
+
+- b375发布已终态success，02:57:15独立确认19/19服务同SHA且healthy、APIok，available839480kB、swap占用314588kB。之后仅将已验收的质量候选8f85409c99108b0215b202dcbc049af085f0f7ff顺序快进master/release并独立读回，一次dispatch Deploy33985760102（03:00:05）；本地新共享准入代码未进入该候选。不得修改运行中候选或将b375健康当作8f已部署。
+- PRD19.50先补设计后实现：原日账本加旧调用与实际调用日跨账本占用独立校验；单账号物理lease不再被pool筛选遗漏；unowned和reserve共用账号锁，call-start排除自己的预约并重验日界。旧日期/身份不转移，读取不补历史三件套。发前余额不足沿原延期分支释放本Attempt且零Gateway。补充生产autoflush=False反例，避免populate_existing覆盖未flush计数；同Attempt禁止二次call-start。初始反例8失败/3对照通过，其中一项先纠正缺参与计划的夹具，随后独立复现真实额度缺口；autoflush和重复标记2项单独红测后修补。
+- PRD19.51反查并复现已知调用失败被退回预算（1失败/1未执行对照通过，2.79秒），修补只确认原调用成本，保留Attempt failed与fence业务failed、原ledger/date。两次结算仅扣一次，unknown到明确不存在的原语义保留。没有回填生产历史。
+- 最终定向92 passed/15.36秒，包含成本修补及Dispatcher异常helper等价提取后的回归；真实PG10 passed/11.27秒，覆盖UTC日界、跨日成本及pg_blocking_pids确认的unowned与发前预约竞争。PG夹具先补显式flush，再按真实非级联FK顺序清理本测试tenant，未改变生产实现来通过夹具。全部后端硬60秒，仅55439/tg_yunying_test及advisory lock；新模块小于500行、修改函数不超过50非空行、编译和diff检查通过。原12k行Dispatcher只修改相关入口并抽出通用异常体，AST证明原异常行为完全一致。
+- 02:59:51在b375中以临时Python进程只读加载候选两reader源码试算，生产文件、数据库、Gateway均无修改；每账号2SELECT。三个当天活跃普通账号的耗时为0.7236/0.0804/0.0932秒，分别明确保留2/2/3条历史物理未证明占用，第三个另有original_task_day_unproven；原日/实际日用量逐类输出。回执shared_usage_candidate_readonly_probe.jsonl保留源码hash，不是候选已经安装或统一Task已激活的证据。
+- 后续历史物理证据反查：03:08有25条非success Attempt对应recorded/true journal且带remote_message_id，但仅16条可匹配原request/target指纹，当前算法重算result/evidence hash均不符。此为未闭合线索，尚须核对历史结构版本与独立journal owner；不能据ID存在释放物理占用或改写unknown。完整R1仍需pool/proxy历史物理证明、规划期组合预算、配置/来源单写者与正式初始cutover。

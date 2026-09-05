@@ -24,6 +24,7 @@ class LegacyOccupancyScope:
     tenant_id: int
     account_ids: tuple[int, ...]
     task_day: date
+    additional_task_days: tuple[date, ...] = ()
 
     def __post_init__(self):
         if self.tenant_id <= 0 or not self.account_ids:
@@ -62,8 +63,6 @@ def _project_rows(rows):
 
 
 def _candidate_query(scope):
-    start = datetime.combine(scope.task_day, time.min, tzinfo=BEIJING_TZ)
-    end = start + timedelta(days=1)
     snapshot = ExecutionAttempt.result_snapshot
     ledger_ref = Action.payload["task_day_ledger_id"].as_string()
     columns = _candidate_columns(ledger_ref, snapshot)
@@ -80,14 +79,21 @@ def _candidate_query(scope):
                 AccountBehaviorBudgetReservation.attempt_id == ExecutionAttempt.id).exists(),
             or_(ExecutionAttempt.gateway_call_started_at.is_not(None),
                 ExecutionAttempt.status.in_(("success", "result_unknown"))),
-            or_(TaskDayLedger.obligation_local_date == scope.task_day,
-                and_(Action.pacing_due_at >= start, Action.pacing_due_at < end),
-                and_(ExecutionAttempt.gateway_call_started_at >= start,
-                    ExecutionAttempt.gateway_call_started_at < end),
+            or_(_requested_days(scope),
                 and_(ExecutionAttempt.status != "success",
                     or_(snapshot["transport_termination_state"].as_string().is_(None),
                         snapshot["transport_termination_state"].as_string() != "acknowledged"))))
         .order_by(ExecutionAttempt.id))
+
+
+def _requested_days(scope):
+    dates = frozenset((scope.task_day, *scope.additional_task_days))
+    periods = tuple((datetime.combine(day, time.min, tzinfo=BEIJING_TZ),
+        datetime.combine(day + timedelta(days=1), time.min, tzinfo=BEIJING_TZ)) for day in dates)
+    return or_(TaskDayLedger.obligation_local_date.in_(dates),
+        *(and_(Action.pacing_due_at >= start, Action.pacing_due_at < end) for start, end in periods),
+        *(and_(ExecutionAttempt.gateway_call_started_at >= start,
+            ExecutionAttempt.gateway_call_started_at < end) for start, end in periods))
 
 
 def _candidate_columns(ledger_ref, snapshot):

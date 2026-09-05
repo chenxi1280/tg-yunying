@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, object_session
@@ -10,7 +10,6 @@ from app.models import (
     AccountBehaviorBudgetLedger,
     AccountBehaviorBudgetPolicyRevision,
     AccountBehaviorBudgetReservation,
-    AccountPoolConcurrencyLease,
     AccountPoolConcurrencyPolicyRevision,
     Action,
     ExecutionAttempt,
@@ -40,13 +39,16 @@ from .engagement_runtime_capacity import (
     _assert_behavior_capacity, _assert_circuit_available, _assert_external_use_hold,
     _assert_negative_outcome_circuit, _assert_pool_capacity, _assert_portfolio_capacity,
     _assert_proxy_capacity,
+    _assert_call_activity_capacity, _assert_shared_account_capacity,
 )
 from .engagement_runtime_error import RuntimeResourceBlocked
 from .engagement_runtime_settlement import (
+    attempt_resources as _attempt_resources,
     locked_ledger_by_id,
     move_counter,
     settle_resource_set,
 )
+from .engagement_shared_usage import SharedUsageScope
 
 
 ACTIVE_LEASE_STATES = ACTIVE_DOMAIN_LEASE_STATES
@@ -58,6 +60,7 @@ class RuntimeResourceContext:
     pool_policy: AccountPoolConcurrencyPolicyRevision
     resilience: ExecutionResiliencePolicyRevision
     ledger: AccountBehaviorBudgetLedger
+    budget_policy: AccountBehaviorBudgetPolicyRevision
     action_class: str
     proxy_route_key: str
     proxy_egress_key: str
@@ -69,6 +72,7 @@ def reserve_attempt_resources(
     context = _admitted_resource_context(session, action, attempt)
     if context is None:
         return
+    session.flush()
     _assert_runtime_capacity(session, action, context)
     lease = new_pool_lease(
         action,
@@ -158,6 +162,7 @@ def _runtime_resource_context(
         pool_policy=pool_policy,
         resilience=resilience,
         ledger=ledger,
+        budget_policy=budget_policy,
         action_class=action_class,
         proxy_route_key=proxy_route_key,
         proxy_egress_key=proxy_egress_key,
@@ -184,7 +189,7 @@ def _assert_runtime_capacity(
         proxy_route_key=context.proxy_route_key,
         proxy_egress_key=context.proxy_egress_key,
     )
-    _assert_behavior_capacity(context.ledger, context.action_class)
+    _assert_shared_account_capacity(session, action, context)
     _assert_external_use_hold(
         session,
         action,
@@ -218,15 +223,29 @@ def _uses_unified_engagement_contract(session: Session, action: Action) -> bool:
         raise RuntimeResourceBlocked(str(exc), "互动动作的原运行合同无法核对") from exc
 
 
-def mark_attempt_call_issued(session: Session, attempt: ExecutionAttempt) -> None:
+def mark_attempt_call_issued(
+    session: Session, attempt: ExecutionAttempt, *, call_started_at: datetime | None = None,
+) -> None:
+    session.flush()
     lease, reservation, fence = _attempt_resources(session, attempt.id)
     if lease is None:
         return
+    if (attempt.gateway_call_started_at is not None or attempt.status != "before_call"
+            or (lease.state, reservation.state, fence.state) != ("reserved", "reserved", "reserved")):
+        raise RuntimeResourceBlocked("engagement_attempt_already_called", "原调用已开始或预约已结算，禁止再次发起")
+    call_started_at = call_started_at or _now()
+    action = session.get(Action, attempt.action_id)
+    account = _locked_account(session, action)
+    policy = _active_budget_policy(session, attempt.tenant_id, account.account_identity)
+    ledger = locked_ledger_by_id(session, reservation.ledger_id)
+    scope = SharedUsageScope(attempt.tenant_id, account.id, ledger.task_day,
+        as_beijing(call_started_at).date())
+    _assert_call_activity_capacity(session, scope, policy, reservation=reservation)
     lease.state = "call_issued"
     reservation.state = "call_issued"
     fence.state = "active"
-    fence.started_at = _now()
-    ledger = locked_ledger_by_id(session, reservation.ledger_id)
+    fence.started_at = call_started_at
+    attempt.gateway_call_started_at = call_started_at
     move_counter(
         ledger,
         reservation.action_class,
@@ -438,32 +457,6 @@ def _record_resource_ids(
             resilience.telegram_connect_timeout_seconds
         ),
     }
-
-
-def _attempt_resources(session: Session, attempt_id: str):
-    lease = session.scalar(
-        select(AccountPoolConcurrencyLease)
-        .where(AccountPoolConcurrencyLease.attempt_id == attempt_id)
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    )
-    reservation = session.scalar(
-        select(AccountBehaviorBudgetReservation)
-        .where(AccountBehaviorBudgetReservation.attempt_id == attempt_id)
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    )
-    fence = session.scalar(
-        select(RemoteInvocationFence)
-        .where(RemoteInvocationFence.attempt_id == attempt_id)
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    )
-    if lease is None and reservation is None and fence is None:
-        return None, None, None
-    if lease is None or reservation is None or fence is None:
-        raise RuntimeError("engagement_runtime_resource_set_incomplete")
-    return lease, reservation, fence
 
 
 def recover_stale_concurrency_leases(
