@@ -446,3 +446,10 @@ d6d637aa51251ca4040ebcb82b757e2157fd647d已按master/release冻结并触发Deplo
 - 02:26真实M2.5与生产semantic Prompt对普通产品讨论进行零DB写入/零Telegram调用的解析验证，6.954秒/841 tokens、真实解析通过。该结果不解释生产全部schema失败；将后续失败的根容器、已知字段类型、枚举有效性及容器数量记录到schema_validation，不保存正文或任意字段名、不宽松解包。
 - PRD19.48/19.49与质量专项先更新后dev。真实过滤反例和结构/用量反例在旧实现7失败、成人/legacy对照2通过（2.01秒；先修正测试用普通str而非实际GeneratedContent的夹具错误）。修改后普通槽不继承Task成人长度，成人和legacy门不变，解析失败拒绝不变；原过滤/解析按职责移出超长文件。最终普通/混合缓存/重复、共享group/comment两阶段、基础质量、词频与Provider unknown共100 passed/2.95秒，所有后端进程硬60秒。首次回归仅测试预期duplicate_message与实际duplicate_risk不符，纠正断言后通过，未改重复判断。
 - 本地新切片尚未包含在已冻结ac50发布；不追加或取消当前run。成人mode的历史长度合同交集、其他审核失败和R1正式共享资源/配置/来源接管仍未完成，不更改已失败或unknown历史。
+
+### 2026-09-06 02:45 ac50独立生产验收与并行发布合并
+
+- Deploy33983952007已终态success。02:40:04独立读回current为`20260905183345_ac50b2af`，19/19容器SHA均ac50b2afb244c8204cae7117256f829c521a0c61、running/healthy、MemorySwappiness=60、无OOM/restart，APIok；MemAvailable899708kB、swap占用307984kB、load1.89/3.25/2.60。回执`ac50_runtime_release_verify.jsonl`。这是单时刻运行证据，不等于全天性能验收。
+- 发布日志仅一条Installing release，末尾明确`preserved_unchanged`、model_probe_performed=false及原quota_limited/degraded。独立systemd读取正确unit `tgyunying-antigravity-slot-01.service`证明MainPID仍3058744、active/running、启动仍01:07:46，bridge current仍73388。初次探针对不存在的provider@slot-01名称返回inactive，纠正为部署脚本生成的真实unit后核对；该探针名称错误不作为服务故障。
+- 以02:37:56发布完成探针为业务观察锚，02:41:17主业务取得7条view_observed、3条safely_not_executed、1条view remote_outcome_unknown；新binding的活群生成17次规划、34次正文及18次独立审核成功，但新消息typed fact仍空，大量quality shortfall。评论/点赞本窗无新typed成功。回执`ac50_post_release_facts.jsonl`；unknown保持原状态。
+- 预备发布adb2普通质量修补时，发现远端master/release已由独立授权任务推进到b375b9bf，Deploy33984749491正在运行。完整保留该7文件提交，合并为a515edca；仅两索引末尾追加冲突，逐项保留双方文字，diff检查通过。原100项质量QA的代码未改变；不取消、覆盖或并发触发当前发布。后续候选无新迁移，变化只影响生成后的过滤与失败证据，需在当前run终态后再以不可变SHA走完整CI和部署；旧bridge四文件未改，仍执行保留观测分支。
