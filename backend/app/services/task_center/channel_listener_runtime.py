@@ -22,6 +22,7 @@ from app.models import (
 from app.services._common import _now, gateway
 from app.services.channel_target_reference import channel_read_reference
 from app.services.account_runtime_transport import task_account_runtime_transport
+from app.timezone import as_beijing as _wall
 
 from .channel_listener_accounts import select_channel_listener_accounts
 from .channel_listener_reactions import credential_task
@@ -658,10 +659,6 @@ def _source_hash(peer: str) -> str:
 
 def _listener_owner() -> str:
     return f"{socket.gethostname()}:{os.getpid()}:channel-listener"
-
-
-def _wall(value: datetime) -> datetime:
-    return value.replace(tzinfo=None) if value.tzinfo else value
 
 
 __all__ = [

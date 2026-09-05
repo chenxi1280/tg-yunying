@@ -1,5 +1,7 @@
 # 项目数据流转索引
 
+> **2026-09-05 频道来源观察接管排序：** 原Task账号范围与业务资格过滤 → 同tenant/channel/account的ready、未探测、到期失败、等待状态排序 → SQL候选截断与原健康/冷却筛选 → 合并原近期同目标成功候选 → 原listener claim/fetch/persist。失败后可选中首批之外的合法观察者；不修改成员范围、旧错误状态或业务Action/unknown，不把只读候选变化视为成功采集。
+
 > **2026-09-05 DF-363 来源时间规范化：** `authoritative Telegram aware date -> Asia/Shanghai same-instant normalization -> exact legacy stripped-offset comparison -> current ChannelMessage timestamp projection + correction provenance -> append-only SourceRevision(timestamp_corrected or real edited) -> existing source intake`。旧 naive 内部值仍为北京时间语义；非已知去时区冲突明确失败，缺时间不造 source revision。旧 frozen plan/Action/Attempt/fact/unknown/排期截止不回写，后续相同快照的 offset 表示变化不制造新 hash 或伪编辑。
 
 > **2026-09-05 DF-363 评论准入读取性能：** `frozen account IDs -> tenant/peer/binding-scoped current membership batch -> existing freshness/status predicates -> ready slots / explicit admission debt`；准入候选额外一次读取原 dedupe identity 的既有 Action。未绑定数量义务的账号、比例与 ordinal 不变，已绑定 Action 与 unknown 不改；创建入群操作仍通过原锁定写路径。本次优化不触发入群或修改任务配置。

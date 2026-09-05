@@ -52,11 +52,13 @@ def select_task_accounts(
     daily_coverage_statuses: tuple[str, ...] = DAILY_COVERAGE_STATUSES,
     candidate_account_ids: list[int] | None = None,
     scan_all_candidates: bool = False,
+    candidate_order_by: tuple = (),
 ) -> list[TgAccount]:
     max_concurrent = int(account_config.get("max_concurrent") or 20)
     requested = int(limit or max_concurrent)
     wanted = min(requested, max_concurrent) if enforce_max_concurrent else requested
-    stmt = _account_query(session, tenant_id, account_config, enforce_shard=enforce_shard)
+    stmt = _account_query(session, tenant_id, account_config,
+        enforce_shard=enforce_shard, candidate_order_by=candidate_order_by)
     if stmt is None:
         return []
     if candidate_account_ids is not None:
@@ -77,6 +79,17 @@ def select_task_accounts(
             statuses=daily_coverage_statuses,
         )
     accounts = _candidate_accounts(session, stmt, account_config, wanted, scan_all_candidates)
+    return _select_available_candidates(
+        session, tenant_id, accounts, scheduled_at=scheduled_at,
+        enforce_capacity=enforce_capacity, wanted=wanted,
+        scan_all_candidates=scan_all_candidates,
+    )
+
+
+def _select_available_candidates(
+    session: Session, tenant_id: int, accounts: list[TgAccount], *,
+    scheduled_at, enforce_capacity: bool, wanted: int, scan_all_candidates: bool,
+) -> list[TgAccount]:
     available = (
         available_accounts_by_capacity(
             session,
@@ -100,7 +113,8 @@ def _candidate_accounts(session: Session, stmt, account_config: dict, wanted: in
     return _cooldown_filtered_accounts(session, accounts, account_config, len(accounts) if scan_all else scan_limit)
 
 
-def _account_query(session: Session, tenant_id: int, account_config: dict, *, enforce_shard: bool):
+def _account_query(session: Session, tenant_id: int, account_config: dict, *,
+                   enforce_shard: bool, candidate_order_by: tuple = ()):
     stmt = (
         select(TgAccount)
         .outerjoin(
@@ -116,6 +130,7 @@ def _account_query(session: Session, tenant_id: int, account_config: dict, *, en
             TgAccount.status == AccountStatus.ACTIVE.value,
         )
         .order_by(
+            *candidate_order_by,
             func.coalesce(AccountRuntimeSummary.health_score, TgAccount.health_score).desc(),
             TgAccount.id.asc(),
         )

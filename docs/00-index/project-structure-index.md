@@ -1,5 +1,7 @@
 # 项目结构索引
 
+> **2026-09-05 频道观察账号候选排序：** `account_pool.select_task_accounts` 接收仅供内部SQL使用的候选排序表达式，在原分组/资格查询的LIMIT前生效；`channel_listener_accounts._listener_candidate_order` 按完整tenant/频道/账号的监听状态排序，使用同一SQL的关联子查询，不按账号发起独立查询。`channel_listener_runtime` 的freshness/重试/租约时间统一按北京时间真实时刻比较。回归为 `test_channel_listener_candidate_order.py`、`test_channel_listener_candidate_postgres.py` 和原账号池/监听测试。
+
 > **2026-09-05 来源真实时间修补：** `channel_source_message_persistence.py` 从 listener snapshot 模块分离消息/SourceRevision 的持久化、观察 hash 和编辑判定，使用 `as_beijing/as_beijing_aware` 保持同一真实时刻；`_publication_correction` 只识别当前权威快照能证明的旧去时区错误。`operations_channel_snapshot.py` 接收手动频道采集快照并复用同一纠正记录，`operations.py` 保留调度入口，后续 listener 追加 `timestamp_corrected` revision。历史 revision 和 Action/Job/unknown 不修改。回归为 `test_channel_source_time_normalization.py`、`test_channel_source_time_postgres.py` 及原 listener/source intake 测试。
 
 > **2026-09-05 评论成员查询批量化：** `channel_comment_discussion_contracts.current_membership_facts` 提供同租户、讨论组、binding 的集合读取；discussion guard、admission 与原计划重读共用它。准入 Action 候选按原 dedupe key 批量读取，写入锁与 unknown 保护不变。`test_comment_membership_batching.py` 验证 100 个候选 SELECT 100→1、原判定一致及未知操作不再入队。
