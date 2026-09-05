@@ -32,6 +32,10 @@ from .generation_pending_timing import refresh_pending_generation_timing
 
 logger = logging.getLogger(__name__)
 
+
+class GenerationRecoveryClaimLost(RuntimeError):
+    """The generation job advanced after stale-action recovery was claimed."""
+
 @dataclass(frozen=True)
 class _ReconcileClaim:
     job_id: str
@@ -392,7 +396,7 @@ def _transition_job(
         job_version=version + 1,
     ).execution_options(synchronize_session=False)).rowcount
     if changed != 1:
-        raise RuntimeError("generation_recovery_job_claim_lost")
+        raise GenerationRecoveryClaimLost("generation_recovery_job_claim_lost")
     session.expire(job)
 
 
@@ -502,4 +506,9 @@ def _is_generating_ai_action(action: Action, data: dict) -> bool:
     return generation_action and data.get("ai_generation_status") == "generating"
 
 
-__all__ = ["persist_generation_unknown", "reconcile_generation_jobs", "recover_stale_pre_gateway_generation"]
+__all__ = [
+    "GenerationRecoveryClaimLost",
+    "persist_generation_unknown",
+    "reconcile_generation_jobs",
+    "recover_stale_pre_gateway_generation",
+]

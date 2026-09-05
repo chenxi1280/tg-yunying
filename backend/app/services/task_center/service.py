@@ -251,7 +251,10 @@ from .planner_wake import (
     wake_task_planner,
 )
 from .engagement_conversation_wake import drain_conversation_wake_transactions
-from .ai_generation_recovery import recover_stale_pre_gateway_generation
+from .ai_generation_recovery import (
+    GenerationRecoveryClaimLost,
+    recover_stale_pre_gateway_generation,
+)
 from .ai_pacing_takeover import release_safe_ai_pacing_owners
 from .recovery_claims import (
     RecoveryClaim,
@@ -5592,12 +5595,16 @@ def _recover_claimed_stale_action(
     if not recovery_claim_owned(action, claim):
         session.rollback()
         return 0
-    if (
-        recovered is None
-        and not gateway_started
-        and recover_stale_pre_gateway_generation(action, session=session)
-    ):
-        recovered = 1
+    if recovered is None and not gateway_started:
+        generation_recovered = _recover_pre_gateway_generation(
+            session,
+            action=action,
+            claim=claim,
+        )
+        if generation_recovered is None:
+            return 0
+        if generation_recovered:
+            recovered = 1
     projection = None
     if recovered is None:
         projection = _mark_stale_executing_action(
@@ -5617,6 +5624,27 @@ def _recover_claimed_stale_action(
         now=now,
     )
     return recovered
+
+
+def _recover_pre_gateway_generation(
+    session: Session,
+    *,
+    action: Action,
+    claim: RecoveryClaim,
+) -> bool | None:
+    try:
+        return recover_stale_pre_gateway_generation(action, session=session)
+    except GenerationRecoveryClaimLost:
+        session.rollback()
+        current = session.get(Action, claim.action_id)
+        if recovery_claim_owned(current, claim):
+            release_recovery_claim(current, claim)
+            session.commit()
+        logger.info(
+            "generation_recovery_claim_lost action_id=%s",
+            claim.action_id,
+        )
+        return None
 
 
 def _commit_claimed_stale_recovery(
