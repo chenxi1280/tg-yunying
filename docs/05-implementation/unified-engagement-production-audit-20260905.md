@@ -349,3 +349,9 @@ PRD19.35。原实现以Task当前config revision读取政策后覆写已绑定�
 QA：评论、生成、数量与发布边界105 passed/9.67s；去重数学判定、对象释放、完整扫描、归一化、批次、账号/tenant/查询范围103 passed/7.06s；独立PostgreSQL原窗口及未知记录保护2 passed/9.59s。内存修补后再次执行关联生成/评论路径73 passed/5.70s。各后端进程硬60秒，隔离55439/tg_yunying_test与advisory lock。前端完整build通过，实际表单validator的明确0、残留预算/权重、legacy emergency与缺值5例通过；语法、compile、diff检查通过。
 
 正式发布前重新fetch：HEAD/master/release仍9e335fb7，工作区只有本批明确路径，无正在运行的Deploy。新候选将包含尚未上线的0224索引/占用读取和本批三项修补，一次冻结后正常master→release→Deploy Production。正式Task接管、共享legacy预算、配置successor、评论目标/cap/grounding仍未apply，四类型统一E4保持unproven。发布后必须分别验证current/SHA/health、0224有效索引与实际查询耗时、worker RSS/主机响应以及真实生成发送链。
+
+### 21:29 d6 候选完整CI的合同测试遗漏修正
+
+d6d637aa51251ca4040ebcb82b757e2157fd647d已按master/release冻结并触发Deploy33968252586。候选、前端、两个PostgreSQL分片和两个no-PostgreSQL分片通过；no-PostgreSQL shard1为1 failed/1901 passed，唯一失败是原`test_deploy_prunes_only_dangling_images_before_pull`仍要求脚本包含`docker image prune -f`。本批删除自动清理时漏同步了这条旧合同测试；未恢复已取消的全局清理，也未跳过该门槛。
+
+按已经通过设计自检的发布PRD§9，将原测试更新为正常发布不包含全局system df、container/builder/image prune。继续验证完整CI依赖、三镜像、先pull后fence、OCR重启策略收口与运行身份，以及真实shell在backend/frontend拉取错误时非零退出、不进入清理或stop。三份部署定向测试14 passed/4.18s（硬60秒）。该修正仅测试与本审计，应用/迁移实现不变。33968252586终态failure且images/deploy均skipped；d6和0224仍未有生产上线证据，须形成新的不可变候选再完成全套CI与部署。

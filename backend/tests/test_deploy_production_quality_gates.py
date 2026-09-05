@@ -76,11 +76,14 @@ def test_python_images_cache_dependencies_before_copying_application(dockerfile:
     assert "python -m pip install -e . --no-deps --no-build-isolation" in content
 
 
-def test_deploy_prunes_only_dangling_images_before_pull() -> None:
+def test_deploy_keeps_shared_docker_cleanup_outside_release() -> None:
     script = COMPOSE_UP.read_text()
 
-    assert "docker image prune -f" in script
-    assert "docker image prune -af" not in script
+    for command in (
+        "docker system df", "docker container prune",
+        "docker builder prune", "docker image prune",
+    ):
+        assert command not in script
 
 
 def test_deploy_pulls_large_runtime_images_sequentially() -> None:
