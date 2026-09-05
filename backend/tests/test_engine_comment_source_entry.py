@@ -13,6 +13,14 @@ from engine_source_test_support import NOW, message, seed_source_session
 pytestmark = pytest.mark.no_postgres
 
 
+@pytest.fixture(autouse=True)
+def source_clock(monkeypatch):
+    clock = SimpleNamespace(now=NOW)
+    for module in ("channel_listener_runtime", "channel_source_intake", "daily_ledgers"):
+        monkeypatch.setattr(f"app.services.task_center.{module}._now", lambda: clock.now)
+    return clock
+
+
 def _ready_source(session, task, rows):
     source = ListenerSourceState(id="source", tenant_id=task.tenant_id, source_type="channel",
         source_peer_id="1", snapshot_status="ready", snapshot_revision=1,
@@ -30,7 +38,7 @@ def _ready_source(session, task, rows):
     session.commit()
 
 
-def test_comment_actual_scope_uses_frozen_initial_and_all_dynamic_sources():
+def test_comment_actual_scope_uses_frozen_initial_and_all_dynamic_sources(source_clock):
     session, task, _, _ = seed_source_session(task_type="channel_comment")
     with session:
         rows = [message(session, i, at=NOW-timedelta(minutes=20-i)) for i in range(1, 11)]
@@ -44,6 +52,7 @@ def test_comment_actual_scope_uses_frozen_initial_and_all_dynamic_sources():
             row = message(session, i, at=NOW+timedelta(minutes=i), metadata={"poll": i == 22})
             row.comment_available = True
         session.commit()
+        source_clock.now = NOW + timedelta(minutes=30)
         _, second = _persisted_channel_scope(session, task, task.type_config)
         assert {row.id for row in second} == set(range(6, 22))
         assert task.stats["source_intake"]["counts"]["source_filtered_non_content"] == 1
@@ -68,3 +77,14 @@ def test_closed_comments_are_capability_blocked_not_missing_posts():
         assert _persisted_channel_scope(session, task, task.type_config) == (None, [])
         assert task.stats["source_intake"]["state"] == "source_capability_blocked"
         assert task.stats["source_intake"]["capability_blocked_count"] == 1
+
+
+def test_comment_actual_scope_requires_refresh_after_snapshot_expiry(source_clock):
+    session, task, _, _ = seed_source_session(task_type="channel_comment")
+    with session:
+        row = message(session, 1)
+        row.comment_available = True
+        _ready_source(session, task, [row])
+        source_clock.now = NOW + timedelta(days=1, seconds=1)
+        assert _persisted_channel_scope(session, task, task.type_config) == (None, [])
+        assert task.stats["source_intake"]["state"] == "source_ingestion_unproven"
