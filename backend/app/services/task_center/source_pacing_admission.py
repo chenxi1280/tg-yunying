@@ -32,7 +32,7 @@ from .source_pacing_admission_settlement import (
 from .source_pacing_capacity import source_plan_total
 from .source_pacing_reservation import SourceAdmissionSpec, lock_or_create_admission
 from .source_pacing import wall_datetime
-from .source_pacing_recovery import late_admission_not_before
+from .source_pacing_cursor import admission_not_before as _admission_not_before
 from .source_pacing_period import source_period as _source_period
 
 
@@ -86,8 +86,7 @@ def admit_source_paced_attempt(
         state,
         admission,
         attempt,
-        timestamp=timestamp,
-        gap_seconds=spec.source_gap_seconds,
+        timestamp=timestamp, gap_seconds=spec.source_gap_seconds,
     )
     return True
 
@@ -131,39 +130,6 @@ def _reserve_source_admission(
         return None
     return spec, state, admission, created
 
-
-def _admission_not_before(
-    action: Action,
-    state: SourcePacingState,
-    *,
-    admission: SourcePacingAdmission,
-    spec: SourceAdmissionSpec,
-    created: bool,
-    timestamp: datetime,
-) -> datetime:
-    not_before = _call_not_before(action, state, spec) if created else _reused_not_before(
-        state,
-        admission=admission,
-        spec=spec,
-    )
-    if created and not_before <= timestamp and action.status not in {
-        "failed",
-        "retryable_failed",
-    }:
-        recovery_at = late_admission_not_before(
-            action_id=action.id,
-            release_at=spec.release_at,
-            now_at=timestamp,
-            gap_seconds=spec.source_gap_seconds,
-            deadline_at=spec.deadline_at,
-        )
-        not_before = max(not_before, recovery_at)
-    admission.call_not_before_at = not_before
-    if created:
-        state.next_call_not_before_at = not_before + timedelta(
-            seconds=spec.source_gap_seconds
-        )
-    return not_before
 
 
 def _source_admission_spec(session: Session, action: Action) -> SourceAdmissionSpec:
@@ -343,34 +309,6 @@ def align_source_gateway_call_started(
         next_after_marker,
     )
 
-
-def _call_not_before(
-    action: Action,
-    state: SourcePacingState,
-    spec: SourceAdmissionSpec,
-) -> datetime:
-    candidates = [spec.release_at]
-    if action.effective_claim_at is not None:
-        candidates.append(wall_datetime(action.effective_claim_at))
-    if state.next_call_not_before_at is not None:
-        candidates.append(wall_datetime(state.next_call_not_before_at))
-    if state.last_call_started_at is not None:
-        gap = max(int(state.last_source_gap_seconds or 0), spec.source_gap_seconds)
-        candidates.append(wall_datetime(state.last_call_started_at) + timedelta(seconds=gap))
-    return max(candidates)
-
-
-def _reused_not_before(
-    state: SourcePacingState,
-    *,
-    admission: SourcePacingAdmission,
-    spec: SourceAdmissionSpec,
-) -> datetime:
-    candidates = [wall_datetime(admission.call_not_before_at)]
-    if state.last_call_started_at is not None:
-        gap = max(int(state.last_source_gap_seconds or 0), spec.source_gap_seconds)
-        candidates.append(wall_datetime(state.last_call_started_at) + timedelta(seconds=gap))
-    return max(candidates)
 
 
 def _mark_call_started(

@@ -2451,6 +2451,18 @@ pre-Gateway 编辑可以在原 obligation、原账号、原窗口和原预算内
 
 评论恢复补正：生产旧评论 Action 的通用 `obligation_type/id` 为空，但 payload 持有精确 `generation_job_id` 与 `comment_fulfillment_obligation_id`；其 Job 使用 `post_comment + comment obligation` 身份。通用恢复错误地只按 Action 通用列查找，导致实际存在的 Action 被判 `action_missing`、Job cancelled、Action 仍 executing。恢复解析必须复用评论生成的稳定身份（有评论义务用义务ID，原有无义务旧入口用Action ID），同时核对 tenant/task/epoch、精确Job ID和类型；活群仍严格使用其通用义务列，不放宽为只看payload Job ID。Provider已开始且未有结果时只转unknown并释放本地过期领取，不调用Provider/Telegram；历史已错误cancelled的记录必须另做精确preview/CAS纠正，不能普通扫描重开所有cancelled Job。验收须有两类评论身份、跨tenant/task/epoch/义务隔离、Provider开始后unknown、未开始pending及重复恢复幂等。本恢复子合同 `design_status=complete`。
 
+### 19.18 生产来源排期重领修补（2026-09-05）
+
+10:20 只读证据：阿哥日记浏览同一 Action 的原 admission 从 08:23 保留至 10:14 成功，其间每轮被移动到新的 `last_call_started_at + 43s`；同一来源还有 27 个 reserved/pending。已过期预约重用时只读 last-call 间隔、却不推进共享预约游标，使多个等待者反复得到同一释放点，产生大量无 Gateway 的 Attempt 与数据库写入。
+
+- 继续以来源行锁串行分配调用时刻。若既有预约仍满足真实 last-call 间隔，原时刻不变；若真实调用使它失效，使用既有共享尾游标重新安排一个独占时刻，并推进游标一次。重领该时刻不会重复排到队尾，其他等待者取得后续时刻。
+- 不改变业务数量、来源间隔、原始 pacing due、截止时间、Action/obligation/admission 身份；不引入次数上限、随机退避或补发突刺。超出原窗口继续按现有 period_exhausted 如实处理。call_started/remote_unknown 不进入重排。
+- QA 必须复现三个以上逾期预约被压到同一时刻，验证修补后释放点依次分散、再次领取不滑动、实际调用最小间隔与 unknown 防重仍成立。线上比较相同时间窗的 `pacing_source_not_before / Gateway调用` 和成功量，分别报告性能与业务结果。
+
+规划性能补正：生产只读调用 `_planning_paths` 检查 100 个账号时执行 221 次 SELECT、耗时 3.539 秒，其中成员关系与代理在逐账号路径内重复读取。改为单次批量成员准入与账号/代理联表读取，仍使用同一 `channel_member_accounts` 语义；保持账号顺序、缺失账号、分母、逐项阻断原因和 dependency revision 完全一致。一次快照内复用读取结果，不新增跨请求缓存或跳过实时检查。QA 比较逐账号参考结果，并用 SQL 计数证明查询次数不随账号数线性增长。
+
+本切片 design_status=complete；修补 R4 的预约竞争及接管规划 N+1，不代替 R1 存量统一接管及四类型真实验收。
+
 ## 20. Product Design Complete 自检
 
 - 当前范围以 §19.13 为准；§19.12 已撤销，历史文中的正式预算、回放审批和完整 Binding 待实现项不再阻塞本期交付。保留的实时链、最近三天计数和四类任务仍须逐项代码、测试和生产验证。

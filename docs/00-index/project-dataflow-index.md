@@ -1,5 +1,7 @@
 # 项目数据流转索引
 
+> **2026-09-05 排期与规划性能：** SourcePacingState 行锁 → 对失效 reserved admission 分配独占后续时刻 → 同步原 owner/Action release → 到期重新领取；未知调用不参加重排。PlanningAdmissionSnapshot 对全账号一次读取成员准入与代理，逐账号证据、分母和阻断口径保持不变。
+
 > **2026-09-05 生产反查修补：** 评论 `expired GenerationJob -> exact payload Job/评论义务 identity -> existing Action -> Provider已开始则unknown，未开始则pending`，不能仅因旧Action通用义务列为空取消Job。浏览 `get_entity -> GetMessagesViewsRequest(increment=True)` 分别记录调用前失败与调用后未知，解析失败不进入假remote unknown。历史未知不得批量重放。线上23个运行任务尚无unified binding；程序发布与route接管分列，见统一引擎PRD §19.17和生产审计记录。
 
 > **2026-09-05 深层停摆修复链路：** close-turn outbox → LIMIT前排除锁忙turn → 独立逐条事务 → turn/outbox复核 → 单turn opportunity/claim → Planner wake；锁忙或异常不记delivered、不污染正常Planner事务。Telegram timeout → 原runner Event → tenant/action/attempt receipt → Dispatcher轮询真实终止 → Action/Attempt SKIP LOCKED → ACK提交成功后移除receipt → 既有lease recovery → 物理占位released、业务unknown和dedupe保留。DB失败保留receipt并显式记录，进程崩溃不补造ACK。资源准入/结算均按resilience→账号日预算顺序，本轮没有新增历史回放、费用预算或远端重试。

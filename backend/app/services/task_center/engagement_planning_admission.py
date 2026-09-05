@@ -5,7 +5,7 @@ import json
 from datetime import datetime, timedelta
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.models import (
     AccountStatus,
@@ -112,6 +112,11 @@ def _planning_paths(
     authorizations = _authorizations_by_account(session, task, account_ids)
     memberships = _memberships_by_account(session, task, account_ids)
     masks = _masks_by_account(session, task, account_ids)
+    ready_ids = {
+        account.id for account in channel_member_accounts(
+            session, task, target, list(accounts.values()), require_send=require_send
+        )
+    } if target is not None else set()
     return [
         _account_path(
             task,
@@ -121,8 +126,7 @@ def _planning_paths(
             membership=memberships.get(account_id),
             mask=masks.get(account_id),
             target=target,
-            require_send=require_send,
-            session=session,
+            membership_ready=account_id in ready_ids,
         )
         for account_id in account_ids
     ]
@@ -166,20 +170,16 @@ def _account_path(
     membership: TaskMembershipAdmissionItem | None,
     mask: AiAccountVoiceProfile | None,
     target: OperationTarget | None,
-    require_send: bool,
-    session: Session,
+    membership_ready: bool,
 ) -> dict:
     checks = [
         _account_check(account),
         _session_check(account, authorization),
         _proxy_check(account),
         _membership_check(
-            session,
-            task,
             target,
-            account=account,
             membership=membership,
-            require_send=require_send,
+            ready=membership_ready,
         ),
         _comment_profile_check(task, account),
         _mask_check(task, mask),
@@ -244,19 +244,13 @@ def _proxy_check(account: TgAccount | None) -> dict:
 
 
 def _membership_check(
-    session: Session,
-    task: Task,
     target: OperationTarget | None,
     *,
-    account: TgAccount | None,
     membership: TaskMembershipAdmissionItem | None,
-    require_send: bool,
+    ready: bool,
 ) -> dict:
     if target is None:
         return _check("target_membership", True, "target_not_applicable", revision=None)
-    ready = bool(account and channel_member_accounts(
-        session, task, target, [account], require_send=require_send
-    ))
     revision = {
         "target_id": target.id,
         "target_reference_revision": target.reference_revision,
@@ -319,7 +313,8 @@ def _check(kind: str, ready: bool, reason: str, *, revision) -> dict:
 
 
 def _accounts_by_id(session: Session, task: Task, account_ids: list[int]) -> dict[int, TgAccount]:
-    rows = session.scalars(select(TgAccount).where(TgAccount.tenant_id == task.tenant_id, TgAccount.id.in_(account_ids)))
+    rows = session.scalars(select(TgAccount).options(joinedload(TgAccount.proxy)).where(
+        TgAccount.tenant_id == task.tenant_id, TgAccount.id.in_(account_ids)))
     return {row.id: row for row in rows}
 
 
