@@ -578,3 +578,7 @@ Release Gate：本候选只新增上述退出证明服务/CLI/测试和PRD、两
 9个旧活群的topic_participation_rate仍全部为空，先前已提出的首次启用值问题尚未收到用户回复。待确认spec没有填入示例0.3，不能作为完整正式cutover preview或apply输入；直接切换与四类任务的质量、数量、远端事实验收仍未完成。临时配置采集脚本首次因输出路径变量未定义而非零退出，修正该采集脚本后07:45:19只读配置检查通过；两次均未写数据库或调用Telegram，失败输出另留存，不计为通过证据。
 
 07:51:41进一步反查成员增长来源：组15在07:39:51、07:42:02、07:44:13由`account-login-worker`以`batch_login_account_created`正式入口从revision2推进到4，成员数依次101、102、103；三条对应StageWakeOutbox均一次投递为delivered。该变化有完整版本和wake，不是未记录漂移，也不改变话题比例的显式确认要求。批量登录可能继续改变成员集合，正式cutover必须重新生成spec与preview，并由tenant锁、成员hash和Task配置hash在创建/退役同一事务拒绝等待期间的变化。
+
+07:53:36以退出对账审计提交时间07:37:25为锚点读取旧Task后续执行：旧路由新建62条浏览pending Action；活群新建1 executing、20 failed、213 pending、11 skipped Action。新Attempt中活群28 success/61 skipped_before_gateway、浏览39 success/57 failed/217 skipped_before_gateway、点赞2 failed/3 skipped_before_gateway；typed fact为活群28条remote_message_observed、浏览39条view_observed与33条safely_not_executed、点赞2条safely_not_executed。该窗口没有新的Gateway已调用但transport未证明结束记录，说明本次2391条ACK后没有立即增加同类未知物理占用；它同时证明22个旧Task仍在继续履约，不能把ACK称为已切换。评论无本窗Action或typed fact，四类完整数量/质量仍未通过。
+
+07:54:21读回9个旧活群的当前`daily_message_target`均为2000且`topic_participation_rate`均为空。30%表示每个任务日最多约600条普通正文主动采用任务配置话题，9任务合计上限约5400；10%分别约200/合计1800；0%禁止主动采用任务配置话题但不停止词库日常主题。运行时实际分母按普通正文、已确认及unknown保护规则冻结，以上仅供用户确认配置影响，不是完成量或保证发送量。
