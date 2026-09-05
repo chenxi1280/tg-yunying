@@ -2645,6 +2645,8 @@ QA：UTC跨北京日界、同一时刻不同offset的观察hash一致、编辑�
 
 此修补只改变观察账号排序，不触发发送、入群、审批、加入新账号组或重置旧Action/unknown；所有原错误状态继续可见。排序时间、采集freshness和租约比较按§19.32的同一真实时刻转换。QA覆盖首批全部失败后选择后续未探测账号、批次外既有ready账号、全失败的最旧到期账号、其他tenant/目标/组不影响排序、SQL数量不随账号数增长。此局部接管缺口design_status=complete，不代表完整ConversationObservationRoute或全引擎接管已经验收。
 
+2026-09-05候选质量补正：轮换已越过原首批后，仍可能按静态账号ID逐个尝试没有当前可读性证据的账号。在本目标尚未探测的候选内部，优先使用同tenant、同原Task账号范围内，在另一频道有ready且observed_at不晚于当前时刻、fresh_until_at仍有效的账号；之后才是其余未探测账号。同目标既有ready继续最高优先，同目标已失败/等待仍保留原失败和重试顺序，不能因另一频道成功而抹掉。另一频道可读仅用于选择下一位观察者，不能证明当前频道权限、membership或采集成功。此顺序同时用于SQL LIMIT之前和最终候选合并之后；不得跨租户、账号范围借号，过期、缺失、未来时刻或非channel的观察不得提升优先级。QA覆盖两个排序边界及SQL数量恒定；本排序补正design_status=complete。
+
 ### 19.34 存量 Action 的运行合同读取
 
 发前资源合同不能只读Task当前engagement标记：该标记切换会让存量Action突然要求新参与计划，反向切换又会让已冻结的统一工作绕过资源门禁。首个正式TaskAccountGroupBindingSetRevision是同tenant/task/lifecycle首次统一绑定的持久边界，其effective_from在正式激活事务中与新入口同时生效；后续分组successor不能移动此边界。

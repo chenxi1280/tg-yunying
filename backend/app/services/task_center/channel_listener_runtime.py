@@ -7,7 +7,7 @@ import logging
 import os
 import socket
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -24,7 +24,15 @@ from app.services.channel_target_reference import channel_read_reference
 from app.services.account_runtime_transport import task_account_runtime_transport
 from app.timezone import as_beijing as _wall
 
-from .channel_listener_accounts import select_channel_listener_accounts
+from .channel_listener_accounts import (
+    DUE_OBSERVER_PRIORITY,
+    KNOWN_READER_PRIORITY,
+    READY_OBSERVER_PRIORITY,
+    UNTRIED_OBSERVER_PRIORITY,
+    WAITING_OBSERVER_PRIORITY,
+    fresh_channel_read_predicates,
+    select_channel_listener_accounts,
+)
 from .channel_listener_reactions import credential_task
 from .channel_listener_reactions import probe_reaction_capability
 from .channel_listener_reactions import record_reaction_probe_state
@@ -266,21 +274,26 @@ def _preferred_listener_account(
     accounts: list[TgAccount],
 ) -> TgAccount:
     account_ids = [account.id for account in accounts]
-    states = {
-        state.account_id: state
-        for state in session.scalars(select(ListenerSourceState).where(
-            ListenerSourceState.tenant_id == accounts[0].tenant_id,
-            ListenerSourceState.source_type == "channel",
-            ListenerSourceState.source_peer_id == str(channel_target_id),
-            ListenerSourceState.account_id.in_(account_ids),
-        ))
-    }
     now_value = _wall(_now())
+    rows = list(session.scalars(select(ListenerSourceState).where(
+        ListenerSourceState.tenant_id == accounts[0].tenant_id,
+        ListenerSourceState.source_type == "channel",
+        ListenerSourceState.account_id.in_(account_ids),
+        or_(
+            ListenerSourceState.source_peer_id == str(channel_target_id),
+            and_(*fresh_channel_read_predicates(accounts[0].tenant_id, now_value)),
+        ),
+    )))
+    states = {row.account_id: row for row in rows
+              if row.source_peer_id == str(channel_target_id)}
+    known_readers = {row.account_id for row in rows
+                     if row.source_peer_id != str(channel_target_id)}
     return min(
         accounts,
         key=lambda account: _listener_account_rank(
             states.get(account.id),
             now_value=now_value,
+            known_reader=account.id in known_readers,
         ),
     )
 
@@ -289,14 +302,16 @@ def _listener_account_rank(
     state: ListenerSourceState | None,
     *,
     now_value: datetime,
+    known_reader: bool = False,
 ) -> tuple[int, datetime]:
     if state is None:
-        return 1, datetime.min
+        priority = KNOWN_READER_PRIORITY if known_reader else UNTRIED_OBSERVER_PRIORITY
+        return priority, datetime.min
     if state.snapshot_status == "ready":
-        return 0, datetime.min
+        return READY_OBSERVER_PRIORITY, datetime.min
     if state.next_probe_at is not None and _wall(state.next_probe_at) > now_value:
-        return 3, _wall(state.next_probe_at)
-    return 2, _wall(state.updated_at)
+        return WAITING_OBSERVER_PRIORITY, _wall(state.next_probe_at)
+    return DUE_OBSERVER_PRIORITY, _wall(state.updated_at)
 
 
 def _mark_subscription_unavailable(

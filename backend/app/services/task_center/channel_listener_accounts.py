@@ -16,9 +16,10 @@ CHANNEL_TASK_TYPES = frozenset({"channel_comment", "channel_like", "channel_view
 RECENT_READER_FACT_WINDOW_HOURS = 72
 RECENT_READER_CANDIDATE_LIMIT = 32
 READY_OBSERVER_PRIORITY = 0
-UNTRIED_OBSERVER_PRIORITY = 1
-DUE_OBSERVER_PRIORITY = 2
-WAITING_OBSERVER_PRIORITY = 3
+KNOWN_READER_PRIORITY = 1
+UNTRIED_OBSERVER_PRIORITY = 2
+DUE_OBSERVER_PRIORITY = 3
+WAITING_OBSERVER_PRIORITY = 4
 
 
 def select_channel_listener_accounts(
@@ -48,20 +49,39 @@ def select_channel_listener_accounts(
 
 def _listener_candidate_order(tenant_id: int, channel_target_id: int) -> tuple:
     state = ListenerSourceState
+    now_value = as_beijing_aware(_now())
     scope = (
         state.tenant_id == tenant_id,
         state.source_type == "channel",
         state.source_peer_id == str(channel_target_id),
         state.account_id == TgAccount.id,
     )
-    waiting = state.next_probe_at > as_beijing_aware(_now())
+    waiting = state.next_probe_at > now_value
     ready = state.snapshot_status == "ready"
     priority = case((ready, READY_OBSERVER_PRIORITY),
         (waiting, WAITING_OBSERVER_PRIORITY), else_=DUE_OBSERVER_PRIORITY)
     retry_order = case((ready, None), (waiting, state.next_probe_at), else_=state.updated_at)
     priority_query = select(priority).where(*scope).correlate(TgAccount).scalar_subquery()
     retry_query = select(retry_order).where(*scope).correlate(TgAccount).scalar_subquery()
-    return func.coalesce(priority_query, UNTRIED_OBSERVER_PRIORITY), retry_query
+    known_reader = select(state.id).where(
+        *fresh_channel_read_predicates(tenant_id, now_value),
+        state.account_id == TgAccount.id,
+    ).correlate(TgAccount).exists()
+    untried_priority = case((known_reader, KNOWN_READER_PRIORITY),
+                           else_=UNTRIED_OBSERVER_PRIORITY)
+    return func.coalesce(priority_query, untried_priority), retry_query
+
+
+def fresh_channel_read_predicates(tenant_id: int, now_value) -> tuple:
+    state = ListenerSourceState
+    now_value = as_beijing_aware(now_value)
+    return (
+        state.tenant_id == tenant_id,
+        state.source_type == "channel",
+        state.snapshot_status == "ready",
+        state.observed_at <= now_value,
+        state.fresh_until_at > now_value,
+    )
 
 
 def _recent_target_account_ids(
