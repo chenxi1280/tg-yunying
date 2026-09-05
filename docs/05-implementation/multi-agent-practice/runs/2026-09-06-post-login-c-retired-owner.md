@@ -9,5 +9,7 @@
 - locked_paths：`backend/app/services/authorization_dr/post_login_exception.py`；`backend/tests/test_post_login_abc_exception.py`；上述专项 PRD、两个项目索引、本运行记录与状态板。
 - merge_owner：当前 Codex 主任务；隔离 worktree `codex/post-login-c-retired-owner-20260906`；主工作区其他未提交改动保留。
 - QA：红测确认原 C 历史 owner 被拒绝；修复后单账号隔离、post-login 和 frozen-N sweep 共 44 项通过（9.00 秒），每组使用 backend/.venv 并限制 60 秒。审查覆盖节点行锁、apply 心跳重验、不可变 owner/epoch/Session、零 Gateway、重复 key 幂等与审计证据。
-- Release Gate：定向 QA 与自审通过；等待当前其他发布结束，随后按 master → release → Deploy Production 验证。本修复和 1794 的对账尚未上线。
+- Release Gate：候选 `b375b9bf072422e11ec9d78a1907e12e97adf8fc` 经 master → release 发布，Actions `33984749491` 全部检查、镜像与 deploy 成功；独立读回 current 与 19 个应用容器均为该 SHA 且 healthy，本地 health HTTP 200。
 - 产品验收：1794 保留未完成并被准确隔离；后续账号能通过各自原审批继续，且新账号取得真实 ABC/E4；代码或部署通过不等于 1794 恢复。
+
+- 生产验收（2026-09-06 02:57）：正式 preview/apply/readback 将 1794 原 C operation 收口为 `deferred_reconcile / unknown / quarantined`，operation version 4→5，保留历史 owner/epoch、原 A=4312 和成功 B；没有新发码、新登录或改写远端结果。后续账号 1795 原 request 294 通过同一 supervisor 完成 B/C/E4，canonical strict complete=true，E4 operation `29199cba-6e93-4868-afa8-b1d29ec549b8`。这证明本次隔离阻塞修复已在线生效；1794 的 C 仍未恢复，128 账号总任务继续进行。
