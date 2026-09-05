@@ -591,3 +591,10 @@ code-source凭据过期或binding漂移时停在 `two_fa_candidate_refresh_requi
 - eligibility/reset waiting 期间同一 owner先完成 profile；若 reset 已经发起就代表当前密码未知，只能对 ABC 做 evidence readback或创建 `waiting_prerequisite` request，不得物化新的 B challenge。各自到期后同一 owner继续对应 RPC；只有 Telegram 返回 `resetPasswordOk` 或权威读回 2FA missing 才设置租户固定密码，然后激活原 ABC request。reset RPC 或本地提交 unknown 必须先用 `account.getPassword.pending_reset_date` 对账，禁止直接重放。
 - API/UI 仅在 `two_fa_current_password_unavailable/two_fa_manual_required` 暴露“发起 2FA 重置”，要求 `accounts.security.credential_manage`、expected version 与原因；等待时间显示 Telegram 返回的绝对日期，不写死 24 小时或 7 天，并明确系统通知及可撤销影响。不得回显密码、Session、邮箱或账号标识。
 - 验收：首次请求只产生一个远端 reset 与确定等待时间；等待期 reset 零调用但 profile 可完成、ABC request 可准备；到期 `resetPasswordOk -> 2FA missing -> fixed password set -> fixed evidence -> 原 ABC request审批/执行`；进程崩溃/超时可由读回收口；父 item/batch 在等待、完成和失败状态下计数守恒；exact-two 必须继续原 owner/batch。
+# 2026-09-05：单账号 ABC 未知结果隔离
+
+批量登录的 `post_login_exact` 批次发生 B/C/E4 结果未知并停止后，可通过独立 preview/apply 入口隔离该账号，继续其他已批准范围内的账号。该入口只接受一个账号、一个 stopped item、原请求/批次审批一致、A 冻结事实未漂移、无 owner/有效 lease、runtime off/scope 空、MY client=0、没有其他活动敏感操作的状态。preview 固定批次/item/operation/slot/A 版本、原执行版本和当前运行版本，apply 逐项重验并审计。
+
+隔离保留同一 operation 的 `remote_call_state=unknown`，只转为 `deferred_reconcile / quarantined`，item 为 deferred_reconcile，单账号批次为 completed_with_exceptions。ABC 请求仍为 reconcile_unknown，不能计为成功；不重发消息、不重新登录、不改 A/B/C Session 或原执行版本。与原批次不同的当前运行版本只用于无远端写入的隔离审计，不授予旧批次重跑权限。同账号后续恢复仍需对账，不能因全局 unknown 门槛释放而自动重试。
+
+验收必须覆盖：原 A/B/C 不变、原未知 operation 保留、另一敏感操作/活动租约/A 漂移/错误审批/错误账号或非单账号批次/指纹变化均零写入、同 key 重复 apply 不产生第二次审计、不触发 Gateway。
