@@ -23,6 +23,7 @@ from app.services.task_center.daily_ledgers import ensure_task_day_ledger
 from app.services.task_center.channel_membership import mark_channel_membership_joined
 from app.services.task_center.engagement_reaction_capacity import (
     ensure_reaction_capacity_epoch,
+    reaction_admissible_account_ids,
 )
 from app.services.task_center.channel_payloads import LikeMessagePayload
 from app.services.task_center.dispatcher import _reaction_final_gate
@@ -173,6 +174,59 @@ def test_daily_cap_is_shared_fairly_across_sources_and_idempotent() -> None:
                 allocation["allocated_account_ids"]
             )
         assert session.scalars(select(ReactionCapacityAllocationEpoch)).all() == [first]
+
+
+@pytest.mark.parametrize("offline_ids", [(11, 12, 13, 14), (11, 12)])
+def test_health_does_not_shrink_reaction_source_allocation(offline_ids) -> None:
+    with _session() as session:
+        task, channel = _seed(session)
+        messages = _messages(session, channel, count=1)
+        ledger = ensure_task_day_ledger(
+            session, task, now=datetime(2026, 9, 4, 3, tzinfo=timezone.utc)
+        )
+        for account_id in offline_ids:
+            session.get(TgAccount, account_id).session_ciphertext = None
+        session.flush()
+
+        epoch = ensure_reaction_capacity_epoch(
+            session, task, ledger, messages=messages, target=channel
+        )
+
+        assert epoch.allocated_count == 3
+        assert epoch.source_allocations[0]["required_count"] == 3
+        assert len(epoch.source_allocations[0]["allocated_account_ids"]) == 3
+        assert reaction_admissible_account_ids(session, epoch, task=task, ledger=ledger, target=channel).isdisjoint(offline_ids)
+
+
+def test_frozen_reaction_allocation_observes_recovery_and_new_failure() -> None:
+    with _session() as session:
+        task, channel = _seed(session)
+        messages = _messages(session, channel, count=1)
+        ledger = ensure_task_day_ledger(
+            session, task, now=datetime(2026, 9, 4, 3, tzinfo=timezone.utc)
+        )
+        for account_id in range(11, 15):
+            session.get(TgAccount, account_id).session_ciphertext = None
+        session.flush()
+        first = ensure_reaction_capacity_epoch(
+            session, task, ledger, messages=messages, target=channel
+        )
+        original = list(first.source_allocations)
+        assert reaction_admissible_account_ids(session, first, task=task, ledger=ledger, target=channel) == set()
+        for account_id in range(11, 15):
+            session.get(TgAccount, account_id).session_ciphertext = f"session-{account_id}"
+        session.flush()
+
+        second = ensure_reaction_capacity_epoch(
+            session, task, ledger, messages=messages, target=channel
+        )
+        assert second is first
+        assert second.source_allocations == original
+        assert reaction_admissible_account_ids(session, second, task=task, ledger=ledger, target=channel) == {11, 12, 13, 14}
+        session.get(TgAccount, 11).session_ciphertext = None
+        session.flush()
+        assert reaction_admissible_account_ids(session, second, task=task, ledger=ledger, target=channel) == {12, 13, 14}
+        assert second.source_allocations == original
 
 
 def test_late_source_cannot_revoke_capacity_already_frozen() -> None:

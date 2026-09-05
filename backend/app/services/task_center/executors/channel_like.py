@@ -162,7 +162,9 @@ def _prepare_like_spec(
         else None
     )
     admissible_ids = (
-        reaction_admissible_account_ids(session, epoch) if epoch is not None else None
+        reaction_admissible_account_ids(
+            session, epoch, task=task, ledger=ledger, target=channel,
+        ) if epoch is not None else None
     )
     accounts = _like_accounts(
         session,

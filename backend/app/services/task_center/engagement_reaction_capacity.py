@@ -127,10 +127,14 @@ def reaction_allocations_for_messages(
 
 
 def reaction_admissible_account_ids(
-    session: Session, epoch: ReactionCapacityAllocationEpoch
+    session: Session, epoch: ReactionCapacityAllocationEpoch, *,
+    task: Task, ledger: TaskDayLedger, target: OperationTarget,
 ) -> set[int]:
+    _, _, snapshot_ids = _reaction_candidates(
+        session, task, ledger, demands=list(epoch.source_demands or []), target=target,
+    )
     rows = session.scalars(select(PlanningAdmissionSnapshot).where(
-        PlanningAdmissionSnapshot.id.in_(epoch.planning_admission_snapshot_ids or [])
+        PlanningAdmissionSnapshot.id.in_(snapshot_ids)
     ))
     return {
         int(account_id)
@@ -229,7 +233,7 @@ def _reaction_candidates(
         message_id = int(demand["channel_message_id"])
         plans[message_id] = plan
         candidates[message_id] = [
-            int(item) for item in admission.admissible_account_ids or []
+            int(item) for item in plan.policy_eligible_account_ids or []
         ]
         admission_ids.append(admission.id)
     return plans, candidates, admission_ids

@@ -1,5 +1,7 @@
 # 项目数据流转索引
 
+> **2026-09-05 点赞分配与准入分离：** 冻结稳定业务集合 → 日上限/联合来源分配 → 不变的 allocated accounts；每次物化另用原参与计划核验当前账号/Session/代理/成员准入。健康变化不缩分配、不中途换号，恢复只继续原账号的原义务；首次 admission 不再充当全日缓存。
+
 > **2026-09-05 入群 RPC 边界：** session/建连/授权/目标解析失败 → 明确未执行结果 → 原失败结算；实际 JoinChannel/ImportChatInvite 已调用但响应不明 → 保留未知。该边界只描述单次入群调用，不将后续管理员审批失败倒推为整个流程未执行，也不重写历史 unknown。
 
 > **2026-09-05 终态未执行窗口：** 原终态Action/ready Job/gateway_bound slot → 全部Attempt已结束且无message_id → 每个远端尝试由精确safely_not_executed事实证明，其余明确未进Gateway → 仅invalidated旧slot。任一unknown、成功、孤立或跨身份事实保留窗口；原义务目标、时间和完整证据链不改。
