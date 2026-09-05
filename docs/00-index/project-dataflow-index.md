@@ -1506,3 +1506,7 @@ legacy-only A 冷启动分支固定为 `frozen legacy A -> 原 A Session 只读 
 ### 2026-09-06 生成路由切换与原绑定配置恢复
 
 `已验证M3/M2.5 Provider身份 + 10条旧route/item/revision快照 -> 原tenant锁/CAS -> M3生成与M2.5审核新route revision + audit -> 新Job首次冻结新route`；旧route item及旧Job/Provider unknown不重写。`Task配置与本revision正式binding不一致 -> 原policy/作用域/授权有效期校验 + 精确差异preview -> 单Task行锁/CAS -> 保留原期限的授权successor + Task新revision + 正式新binding + audit -> 独立readback`。原binding和授权保持原值；历史坏摘要只在新版本重算，不覆盖旧hash。新生成继续经过独立质检与真实Gateway，不以配置持久化代替E4。
+
+### 2026-09-06 独立runtime不随无关应用修改重复重启
+
+`候选四文件 + 当前root-owned runtime内容/保护属性 + enabled slot实际active -> 内容一致时认证GET health -> 输出retained runtime路径、application候选SHA、原provider status/quota/模型可见性`。该分支不写symlink/ledger、不重启、不生成模型请求；原unknown身份不变。代码变化或inactive才进入原完整安装/双模型真实探针与失败回滚。观测成功只证明保留进程的结构与可读性，不能把provider degraded、业务短缺或四类E4改写为通过。

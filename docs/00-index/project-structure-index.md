@@ -1506,3 +1506,7 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 - `backend/scripts/switch_generation_to_minimax_m3.py`以精确10条路由、Provider探针hash与部署SHA完成原路由retire/新revision、M3生成/M2.5独立审核及audit；不修改原Job或unknown。
 - `backend/scripts/repair_group_two_stage_config.py`从当前Task/epoch/revision正式binding恢复两阶段、允许内容路由与授权引用；使用原授权作用域/证据/有效期生成新revision记录，再经正式激活验证。单Task配置、授权、binding与audit原子提交；原摘要不一致显式报告并保留旧记录，已正确配置拒绝重复修复。
 - `ai_generation_runtime_config.py::_bind_fact_first_provider`只修改本次请求配置，删除对持久Task.type_config的隐式回写。测试为`test_generation_provider_config_readonly.py`、`test_repair_group_two_stage_config.py`与`test_switch_generation_to_minimax_m3.py`；事务测试显式采用生产的autoflush=False。
+
+### 2026-09-06 保留未变更的独立Provider进程
+
+`deploy/antigravity-runtime-files.sh`共用独立runtime四文件清单；安装与发布检查共同读取。`restart-antigravity-provider-slots.sh`在文件/owner/mode等价且enabled slots均active时保留原runtime与进程，只调用`check-antigravity-provider-slot.py --observe-runtime`认证GET；原quota/degraded状态完整输出。代码变化或inactive继续原安装、重启及双模型schema验证。`test_antigravity_runtime_preservation.py`覆盖相同内容零安装/重启、观测失败不转安装、变化/inactive完整发布和真实health分类。

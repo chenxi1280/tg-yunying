@@ -112,3 +112,13 @@ candidate guard -> 后端 3+2 分片 + frontend -> 三镜像 -> deploy -> runtim
 本修订design_status=complete。QA须执行真实release.sh与隔离的SSH/SCP边界替身，验证业务失败1、SSH未知255、等待超时124均只派发一次安装、保留退出码且无完成输出；连接前置失败仍可按原次数重试。该变更只修复发布重复执行，不声称解决外部模型额度不足或本轮四类E4。
 
 本发布性能子项design_status=complete；QA验证bash语法、拉取先于fence、拉取失败明确退出、既有SSH编排回归和完整Release Gate。运行恢复必须另核Docker响应、实际SHA、容器健康及业务E4。
+
+## 11. 未变更的独立Provider运行时保持原进程
+
+02:04实机比对证明Antigravity当前73388cd1的四个独立runtime文件与本候选逐字节一致，均root:root/0644；服务active，认证只读health可达，CLI正常，但明确degraded/quota_limited。应用已将新生成切换到用户选择的M3，原Gemini未知请求仍由原bridge保存。每次应用发布重装相同bridge、重启进程并重新调用两模型，增加无必要的中断和请求，不会恢复外部周额度。
+
+发布先按同一份runtime文件清单比较候选与当前独立运行目录。只有四文件内容一致、原保护的owner/mode/非软链接文件条件成立且所有enabled slot均active，才保留原runtime symlink、原进程、原ledger和请求；以认证GET读取每个slot的health，核对slot身份、bridge版本、CLI二进制及版本可用性，并原样报告provider status、quota和模型可见性。输出明确区分application candidate SHA与retained runtime SHA。该路径不调用generate、不创建模型探针、不重置模型健康，也不能输出双模型已通过。
+
+如果runtime内容变化、没有当前运行目录或有enabled但未active的slot，继续原完整安装、restart及双模型真实探测；探测失败仍非零退出并按原方式回滚slot。相同runtime的认证GET失败或运行结构不可用直接使发布检查失败，不转成静默安装或假健康。disabled/active漂移、slot操作锁、先pull后fence、迁移和应用health检查保持原规则。
+
+本修订design_status=complete，仅改变独立组件没有代码变化时的部署动作，不把既有外部quota故障宣称为修复，不覆盖四类业务E4。QA须执行真实shell编排验证相同文件且active时安装/重启/POST均为0、原symlink与进程状态保留、degraded/quota被明确输出；变更文件与inactive仍走完整安装/模型探针，读回失败不能转入安装，原失败回滚和锁竞争继续回归。

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import time
@@ -12,12 +13,19 @@ MODELS = ("gemini-3.6-flash-medium", "gemini-3.1-pro-low")
 STARTUP_ATTEMPTS = 10
 STARTUP_INTERVAL_SECONDS = 1
 CALL_TIMEOUT_SECONDS = 180
+SUPPORTED_BRIDGE_VERSION = "2"
 
 
-def main() -> None:
+def main(argv=None) -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--observe-runtime", action="store_true")
+    options = parser.parse_args(argv)
     base_url = os.environ["ANTIGRAVITY_BRIDGE_URL"].rstrip("/")
     token = os.environ["ANTIGRAVITY_BRIDGE_TOKEN"]
     release_sha = os.environ["RELEASE_SHA"]
+    if options.observe_runtime:
+        _observe_runtime(base_url, token, release_sha)
+        return
     for model in MODELS:
         _probe_model(base_url, token, release_sha, model)
     health = _request(base_url, token, "/internal/v1/health")
@@ -31,6 +39,22 @@ def main() -> None:
         "slot_id": health.get("slot_id"),
         "confirmed_models": health.get("confirmed_models"),
         "release_sha": release_sha,
+    }, sort_keys=True))
+
+
+def _observe_runtime(base_url: str, token: str, release_sha: str) -> None:
+    health = _request(base_url, token, "/internal/v1/health")
+    if (health.get("bridge_version") != SUPPORTED_BRIDGE_VERSION
+            or health.get("slot_id") != os.environ["ANTIGRAVITY_SLOT_ID"]
+            or health.get("binary_ready") is not True
+            or health.get("cli_version") in {None, "", "missing", "unavailable"}
+            or health.get("status") not in {"ready", "degraded"}):
+        raise RuntimeError(f"antigravity_existing_runtime_invalid:{health}")
+    print(json.dumps({
+        "deployment_action": "preserved_unchanged",
+        "application_release_sha": release_sha,
+        "model_probe_performed": False,
+        "provider_health": health,
     }, sort_keys=True))
 
 

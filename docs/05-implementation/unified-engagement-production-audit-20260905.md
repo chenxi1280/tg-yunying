@@ -430,3 +430,10 @@ d6d637aa51251ca4040ebcb82b757e2157fd647d已按master/release冻结并触发Deplo
 - 当前bridge仍73388cd1；02:04实机4个runtime源文件SHA256与本候选全部一致、root:root/0644，服务MainPID3058744自01:07:46运行。只读health明确degraded/quota_limited、CLI1.1.22、inflight=false、confirmed_models=[]；不代表Gemini恢复。重复安装未变化bridge的发布修订尚在设计，未执行新发布。
 
 - 本轮最终组合55项通过12.60秒（含生产autoflush=False、重复运行拒绝、原unknown lineage和原window policy保留）；git diff --check通过。02:07:50首次新binding工作样本已出现M3规划34次成功、正文64次成功，M2.5审核32成功/1结构化输出失败；大量Job进入quality_wait_shortfall，尚待逐原因反查，不能将Provider调用成功当成质量合格。新binding且新route链取得1条真实send_message/remote_message_observed（f77ebe14），同观察窗全部主业务为活群16成功/2确定未执行、浏览9成功/1确定未执行；评论与点赞未出现本窗新事实。数据见post_group_generation_repair_facts.jsonl。
+
+### 2026-09-06 02:19 保留未变更bridge的发布修补
+
+- 发布专项§11完成设计及本地实现：安装/检查共用四文件清单；当前受保护runtime与候选内容一致且enabled slots全部active时，只进行认证GET并保留symlink/进程/ledger。输出保留实际provider health/degraded/quota状态，明确model_probe_performed=false；变化或inactive仍执行原完整安装、双模型探针和失败回滚。
+- 真实旧restart脚本在隔离环境中使用相同文件与active slot，仍发生runtime-installed及systemctl restart；反例回执antigravity_preserve_original_behavior.json。新脚本与既有deploy、Docker gateway及单次安装回归共39项通过20.97秒，bash -n、git diff --check通过。观测失败原错误退出且不转成安装；没有新增模型或跳过发生代码变化时的schema验证。
+- 候选只读checker已在真实服务上以host Python3.11 -E -s执行：认证GET成功、bridge2/CLI1.1.22、degraded/quota_limited=true、confirmed_models=[]、无模型调用。回执antigravity_preserve_readonly_probe.json中的application_release_sha参数dc68仅是本地QA基线，生产应用仍14d、bridge仍733；尚未执行这批新代码的发布。
+- 新生成拒绝分类的首次手写SQL用了不存在的Action错误列，改为result JSON后宽JOIN达到12秒statement_timeout，均已明确失败且无写入。改用必要GenerationJob标量后02:17:22成功：28个coverage和1个quantity的quality shortfall尚无evaluator内容，23个为lexical sensory_intent_missing，10个通过语义审核后仍被后续门禁拒绝，另有小量上下文失效及明确语义拒绝。精确后续拒绝原因和原生业务质量仍待反查，不据此下调审核或宣布数量通过。回执post_group_generation_quality_reasons_nested.json。

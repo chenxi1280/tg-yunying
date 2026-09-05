@@ -9,12 +9,8 @@ RUNTIME_CURRENT="${RUNTIME_ROOT}/current"
 PYTHON_BIN="${ANTIGRAVITY_RUNTIME_PYTHON_BIN:-/usr/bin/python3.11}"
 EXPECTED_DIRECTORY_MODE="755"
 EXPECTED_FILE_MODE="644"
-RUNTIME_FILES=(
-  antigravity_provider_server.py
-  antigravity_provider_ledger.py
-  antigravity_provider_protocol.py
-  antigravity_provider_schema.py
-)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/antigravity-runtime-files.sh"
 
 if [[ ! "${RELEASE_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
   echo "full lowercase RELEASE_SHA is required" >&2
