@@ -1512,3 +1512,5 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 `deploy/antigravity-runtime-files.sh`共用独立runtime四文件清单；安装与发布检查共同读取。`restart-antigravity-provider-slots.sh`在文件/owner/mode等价且enabled slots均active时保留原runtime与进程，只调用`check-antigravity-provider-slot.py --observe-runtime`认证GET；原quota/degraded状态完整输出。代码变化或inactive继续原安装、重启及双模型schema验证。`test_antigravity_runtime_preservation.py`覆盖相同内容零安装/重启、观测失败不转安装、变化/inactive完整发布和真实health分类。
 
 - 2026-09-06 02:35：`ai_generation_quality_filters.py`承接逐槽/批量质量过滤与词频载荷，V2普通槽按自身冻结route排除任务级成人长度误套；`semantic_review_contract.py`承接原共享审核解析及不含正文的失败结构证据。原pipeline/two_stage导出保持，见统一PRD§19.48–19.49。
+
+> **2026-09-06 post-login C 历史 owner：** `post_login_exception.py` 在单账号 C unknown 分支核验租约清除、原 MY 节点新鲜且覆盖 unknown 的零客户端心跳；保留 owner/epoch 并隔离未决结果。apply 锁节点并重验，空闲心跳续报不导致指纹漂移；既有 frozen-N/B/E4 边界不变。

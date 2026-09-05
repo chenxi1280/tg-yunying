@@ -593,11 +593,21 @@ code-source凭据过期或binding漂移时停在 `two_fa_candidate_refresh_requi
 - 验收：首次请求只产生一个远端 reset 与确定等待时间；等待期 reset 零调用但 profile 可完成、ABC request 可准备；到期 `resetPasswordOk -> 2FA missing -> fixed password set -> fixed evidence -> 原 ABC request审批/执行`；进程崩溃/超时可由读回收口；父 item/batch 在等待、完成和失败状态下计数守恒；exact-two 必须继续原 owner/batch。
 # 2026-09-05：单账号 ABC 未知结果隔离
 
-批量登录的 `post_login_exact` 批次发生 B/C/E4 结果未知并停止后，可通过独立 preview/apply 入口隔离该账号，继续其他已批准范围内的账号。该入口只接受一个账号、一个 stopped item、原请求/批次审批一致、A 冻结事实未漂移、无 owner/有效 lease、runtime off/scope 空、MY client=0、没有其他活动敏感操作的状态。preview 固定批次/item/operation/slot/A 版本、原执行版本和当前运行版本，apply 逐项重验并审计。
+批量登录的 `post_login_exact` 批次发生 B/C/E4 结果未知并停止后，可通过独立 preview/apply 入口隔离该账号，继续其他已批准范围内的账号。该入口只接受一个账号、一个 stopped item、原请求/批次审批一致、A 冻结事实未漂移、无活动 owner/有效 lease（C 历史 owner 见下节）、runtime off/scope 空、MY client=0、没有其他活动敏感操作的状态。preview 固定批次/item/operation/slot/A 版本、原执行版本和当前运行版本，apply 逐项重验并审计。
 
 隔离保留同一 operation 的 `remote_call_state=unknown`，只转为 `deferred_reconcile / quarantined`，item 为 deferred_reconcile，单账号批次为 completed_with_exceptions。ABC 请求仍为 reconcile_unknown，不能计为成功；不重发消息、不重新登录、不改 A/B/C Session 或原执行版本。与原批次不同的当前运行版本只用于无远端写入的隔离审计，不授予旧批次重跑权限。同账号后续恢复仍需对账，不能因全局 unknown 门槛释放而自动重试。
 
 验收必须覆盖：原 A/B/C 不变、原未知 operation 保留、另一敏感操作/活动租约/A 漂移/错误审批/错误账号或非单账号批次/指纹变化均零写入、同 key 重复 apply 不产生第二次审计、不触发 Gateway。
+
+### 2026-09-06：C unknown 的历史执行节点归属
+
+生产账号 1794 的 C 登录连接超时后，原 operation 已进入 `provision_reconcile_unknown/unknown`，租约已清除，MY 节点退出并重新上报 ready/零客户端；`owner_node_id` 保留了历史执行来源。这个历史字段不能单独证明还有活动执行者。现有单账号隔离入口因此拒绝该 C，使其余已批准账号无法继续。
+
+仅 `post_login_exact` 的 `provision_standby_2` unknown 增加已结束执行的证据分支：原 owner 节点必须存在，属于 MY 灾备用途、ready、客户端为零；使用现有 MY 心跳新鲜度标准，并要求该零客户端心跳不早于 operation 的 unknown 更新时间。原 operation 必须没有 lease token 或 lease expiry。其他 B/E4 owner、仍在执行的 C、无法证明节点空闲、过期/缺失/早于 unknown 的心跳均沿用拒绝行为；历史 frozen-N 接口不变。
+
+preview 继续冻结全部原审批、A、batch/item/slot/request/operation/global 事实，并额外冻结历史 owner ID/epoch、MY 节点用途/区域/运行镜像、ready/零客户端及“心跳已覆盖 unknown”这一证据条件。正常空闲心跳续报的时间戳/version 不属于业务变更，不进入 fingerprint；apply 仍必须重新验证最新心跳的时序和新鲜度，锁住对应节点行直到提交。节点变忙、镜像/归属/epoch 漂移或证据失效时零写入。
+
+apply 只走原 `deferred_reconcile/unknown/quarantined` 投影，保留历史 owner/epoch、B 成功事实、所有 Session、C 未决事实和原执行版本；不登录、不发码、不新增或撤销授权。请求仍是 `reconcile_unknown`，不能记作 ABC 成功。产品、数据、安全检查完成；前端/API 表面不变，沿用现有未决展示。定向验收覆盖 C 历史 owner 的成功隔离、节点时序/新鲜度/客户端/租约/版本漂移拒绝、空闲心跳推进可接受、原 A/B/C/owner 保持和同 key 幂等。
 
 ## 2026-09-05：单账号 C 双副本提交后的租约中断恢复
 

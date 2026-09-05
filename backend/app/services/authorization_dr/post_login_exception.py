@@ -1,17 +1,21 @@
 from __future__ import annotations
 
+from datetime import timedelta
+import json
+
 from sqlalchemy import select
 
 from app.models import (
-    AuditLog, TgAccount, TgAccountAuthorization, TgAuthorizationDrOperation,
+    AuditLog, AuthorizationDrExecutionNode, TgAccount, TgAccountAuthorization, TgAuthorizationDrOperation,
     TgAuthorizationOnlineAbcBatch, TgAuthorizationOnlineAbcItem, TgPostLoginAbcRequest,
 )
-from app.services._common import audit
+from app.services._common import _now, audit
 
 from . import online_abc_exception_queue as exceptions
 from .contracts import AuthorizationDrError
 from .online_abc import UNKNOWN_OPERATION_STATUSES
 from .online_abc_operations import online_abc_item_operations
+from .readiness import MY_NODE_STALE_SECONDS
 
 
 ACTION = "隔离 post-login 单账号 ABC 未知结果"
@@ -23,7 +27,7 @@ def preview_post_login_abc_exception(session, batch_id: str, *, account_id: int,
     identity = exceptions._approval(context.batch, **_identity(approval))
     key = exceptions._key(approval["idempotency_key"])
     release = exceptions._release_sha(approval["runtime_release_sha"])
-    classification, operation = exceptions._classify(session, context, key)
+    classification, operation, retired_owner = _classify_unknown(session, context, key)
     if (classification != exceptions.CLASS_DEFERRED_RECONCILE
             or operation.status not in UNKNOWN_OPERATION_STATUSES or operation.remote_call_state != "unknown"):
         raise AuthorizationDrError("post_login_exception_not_unknown", "Only an unknown operation can be isolated")
@@ -34,6 +38,8 @@ def preview_post_login_abc_exception(session, batch_id: str, *, account_id: int,
     )
     payload.update(request_id=request.id, request_version=request.request_version,
                    request_status=request.status)
+    if retired_owner:
+        payload["retired_c_owner"] = retired_owner
     return {**payload, "fingerprint": exceptions._fingerprint(payload)}
 
 
@@ -51,6 +57,11 @@ def apply_post_login_abc_exception(
     list(session.scalars(select(TgAuthorizationDrOperation).where(
         TgAuthorizationDrOperation.id.in_(operation_ids),
     ).with_for_update().execution_options(populate_existing=True)))
+    c_operation = context.operations["c"]
+    if c_operation and c_operation.status == "provision_reconcile_unknown" and c_operation.owner_node_id:
+        session.scalar(select(AuthorizationDrExecutionNode).where(
+            AuthorizationDrExecutionNode.id == c_operation.owner_node_id,
+        ).with_for_update().execution_options(populate_existing=True))
     preview = preview_post_login_abc_exception(session, batch_id, account_id=account_id, **approval)
     if preview["fingerprint"] != expected_fingerprint:
         raise AuthorizationDrError("migration_fingerprint_conflict", "Exception preview changed")
@@ -65,9 +76,55 @@ def apply_post_login_abc_exception(
           detail=(f"approval_ref={preview['approval_ref']}; idempotency_key={preview['idempotency_key']}; "
                   f"fingerprint={preview['fingerprint']}; operation={preview['operation_id']}; "
                   f"previous_release={preview['previous_execution_release_sha']}; "
-                  f"runtime_release={preview['runtime_release_sha']}; no_replay=true"))
+                  f"runtime_release={preview['runtime_release_sha']}; no_replay=true"
+                  f"{_retired_owner_audit(preview)}"))
     session.commit()
     return {**_readback(context, request), "fingerprint": expected_fingerprint, "already_applied": False}
+
+
+def _retired_owner_audit(preview):
+    owner = preview.get("retired_c_owner")
+    return f"; retired_c_owner={json.dumps(owner, sort_keys=True)}" if owner else ""
+
+
+def _classify_unknown(session, context, key):
+    operation = exceptions._uncertain_operation(context.operations)
+    if not operation or not operation.owner_node_id:
+        classification, operation = exceptions._classify(session, context, key)
+        return classification, operation, {}
+    retired_c = (
+        operation is context.operations["c"]
+        and operation.operation_type == "provision_standby_2"
+        and operation.status == "provision_reconcile_unknown"
+        and operation.remote_call_state == "unknown"
+        and not operation.lease_token and operation.lease_expires_at is None
+    )
+    if not retired_c:
+        raise AuthorizationDrError("online_abc_exception_owner_active", "Operation owner or lease is active")
+    owner = _retired_owner_snapshot(session, operation)
+    exceptions._require_primary_frozen(context)
+    return exceptions.CLASS_DEFERRED_RECONCILE, operation, owner
+
+
+def _retired_owner_snapshot(session, operation):
+    node = session.scalar(select(AuthorizationDrExecutionNode).where(
+        AuthorizationDrExecutionNode.id == operation.owner_node_id,
+    ).execution_options(populate_existing=True))
+    idle = (node and node.region_code == "my" and node.purpose == "standby_session_dr"
+            and node.status == "ready" and node.active_client_count == 0)
+    cutoff = _now() - timedelta(seconds=MY_NODE_STALE_SECONDS)
+    retired = (idle and node.last_heartbeat_at and operation.updated_at
+               and node.last_heartbeat_at >= operation.updated_at and node.last_heartbeat_at > cutoff)
+    if not retired:
+        raise AuthorizationDrError("online_abc_exception_owner_active", "MY owner retirement is not proven")
+    # Idle heartbeat renewal is revalidated at apply, but is not a business-state change.
+    return {
+        "node_id": node.id, "owner_epoch": operation.owner_epoch,
+        "region_code": node.region_code, "purpose": node.purpose,
+        "runtime_image_sha": node.runtime_image_sha, "status": node.status,
+        "active_client_count": node.active_client_count,
+        "unknown_updated_at": str(operation.updated_at), "heartbeat_covers_unknown": True,
+    }
 
 
 def _context(session, batch_id: str, account_id: int, *, lock: bool = False):
