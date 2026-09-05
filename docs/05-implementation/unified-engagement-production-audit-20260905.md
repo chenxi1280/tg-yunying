@@ -534,3 +534,11 @@ QA证据：direct_cutover_release_verified_qa.log为285 passed/53.57秒；直接
 9个旧活群topic_participation_rate均为空，按日轮换专项PRD的首次启用条款已向用户请求明确比例，尚未收到值。只读容量探针中的0.3仅为配置可行性参数，未写生产、不当作用户授权；正式retire/create/activate须使用确认后的输入。统一点赞保留原每帖数量及schema默认20%抖动、显式0保持0；评论和浏览不叠加旧数量抖动。原派生pacing字段由创建入口重新生成，内部rolling_window_days/multi_day_rampup经类型校验保留原值。
 
 Release Gate：L3，release_mode=github_actions，owner/rollback_owner=当前Codex执行者。范围为§19.58代码、0226、PRD/两份索引/生产运行合同及定向QA；0226仅加空列和约束，部署不自动停旧Task或启动新Task。发布仍为master→release→Deploy Production，全部额外诊断/APPLY默认关闭；前端无本次改动但依旧经过正式CI。发布前发现origin/master新增e39d19cc，内容仅为另一任务ABC恢复的三份运行记录，与本次写入路径无重叠；快进保留，不替换并行工作。上线后独立检查current、实际服务SHA/健康、schema0226，再按新鲜配置preview→retire→cleanup→activate及独立读回继续。已有退役证据时禁止降级删列；修补前向发布，不以旧路由恢复作为回退。四类数量/质量/性能和typed远端事实仍待新引擎实际运行验收，当前不写production_fixed。
+
+## 2026-09-06 06:22 切换候选CI结果与两处迁移期望修复
+
+83ea8a8b562ec6b1d8a774db00d304008d94ec9c的Deploy33995222572已终态failure；candidate、frontend、全部三组no-PG和PG(1)均通过，PG(0)为2 failed/375 passed/7 skipped/1 xfailed/238.65秒，build-images/deploy均skipped。两个失败分别为账号批量登录空库迁移检查和0192评论质量往返迁移检查，实际版本已正确到0226，断言仍为0225。仅将这两处期望更新为0226，不更改迁移、生产实现或其他断言；全测试目录确认剩余0225引用只有专门测试该迁移文件的路径。两文件定向真实PG验证2 passed/23.13秒（83ea_migration_head_repair_qa.log），backend/.venv、硬60秒、显式本地tg_yunying_test与原advisory lock。新固定SHA重新走完整发布，不能将83ea失败记成已部署。
+
+06:13:37同一生产READ ONLY/REPEATABLE READ快照下，用原reader分别按64与32个账号分组读取全部1512个有历史调用的账号。两者原始6888行的canonical hash完全相同，3453条占用投影也相同；保留2766条物理在途、403个原任务日未证明和9个journal结果未证明。64分组24 SELECT读取15.899秒，32分组48 SELECT读取9.041秒；存在缓存与顺序影响，不作优化收益承诺。随后原全量单SELECT在10.115秒被终止，返回AdminShutdown/57P01，未完成结果对照；不能混同之前的statement timeout/57014。回执legacy_scope_partition_readonly.jsonl/.stderr留存，未修改reader、数据库索引或任何旧调用证据。
+
+06:14:42独立current仍20dfc23b，10个核心服务同SHA且healthy、APIok；06:16:06数据库postmaster启动时间仍2026-08-13且非恢复态，未发现数据库重启。连接被终止的具体来源仍未证明，不以单个诊断连接错误宣称全站故障。后续运行验证将明确检查20个已观察到的后端/执行角色及missing_required集合，避免仅看还存活的服务而漏掉角色。正式生产切换仍等待任务话题占比上限的明确值；本次CI修复不改变该配置、旧Task状态或调用行为。
