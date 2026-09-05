@@ -170,3 +170,13 @@ provider5恢复后12:10:58–12:18采样：58个新ready Job，8个活群29条re
 ## 账号额度接管核算（12:27）
 
 target_account_capacity只读快照hash=2dcfa3c46aafeb1828531f20116c6593372947d47dd953eb83488d9e3b4814df。稳定分母为all1632、成都1631、pool5=304、pool14=536；9任务目标37800，15%正浮动上界43470。逐Task保守均分再按同账号叠加，上界分布37条304号、31条536号、21条791号、18条1号。按用户授权为tenant1初始策略采用authored_message=37，total仍60。当前完整准入统计不能用于缩减分母：天津音乐仅59号通过、477号目标成员未就绪，部分同时有账号/面具问题；需单独诊断，不以额度配置冒充容量或业务完成。
+
+## 发布与账号策略读回（12:38）
+
+8d3e5712的Deploy33944231231已成功，独立docker RELEASE_SHA读回一致；能力解析/JIT修补已随其上线。结构化限流候选0cf56254在Deploy33944918876执行中。
+
+账号策略preview hash=6d5f91e87f2ebd327abd6e823909398edc02e5783ab784340854df3e674d321e，原策略0行、9Task/普通组/稳定账号快照均匹配。首次FOR UPDATE在Tenant处2秒锁等待退出，事务未写数据；改用FOR NO KEY UPDATE避免与普通外键引用锁冲突，重新只读预览hash不变后应用。审计984368，policy7f6fa346-ddfd-45d1-9081-462e4a0343fd revision1 active，effective_from12:38:15.454330；独立读回authored_message37、total60、其余分类/Session/pair-gap/wake值均符合PRD19.25，Task/目标/历史义务未改。策略落库不代表22个存量Task已接管。
+
+## 类型化未执行窗口 Release Gate（12:44）
+
+成都覆盖0b46f312、e760aa74、22ebc69d的旧Action均failed/ready，其Gateway Attempt已终结且有同一attempt_id的safely_not_executed，其他仅skipped_before_gateway。PRD19.26允许该明确未执行子集收口，仍拒绝任意unknown/成功/孤立fact/身份不匹配/未结束Attempt。新evidence模块锁定并核对全部Attempt/fact，原Action/Job/目标/时间不改。反例2失败19通过；修补后窗口/legacy对账/fencing41项通过（8.31秒）及隔离PostgreSQL4项通过（6.05秒），每批硬上限60秒。无schema/API变更；下一轮发布后再做精确覆盖恢复与自然事实验收。

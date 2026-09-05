@@ -76,3 +76,54 @@ def test_unproven_or_wrong_owner_keeps_window(state, case):
     version = slot.version
     assert not _retire(session, job)
     assert (slot.state, slot.claimed_by_job_id, slot.version) == ("gateway_bound", job.id, version)
+
+
+def _failed_attempt_with_fact(session, action, job):
+    attempt = ExecutionAttempt(id="failed-attempt", tenant_id=action.tenant_id, action_id=action.id,
+        task_lifecycle_epoch=action.task_lifecycle_epoch, status="failed",
+        gateway_call_started_at=_now(), after_call_at=_now())
+    fact = FulfillmentRemoteFact(tenant_id=action.tenant_id, task_id=action.task_id,
+        task_type=action.task_type, action_id=action.id, obligation_type=job.obligation_type,
+        obligation_id=job.obligation_id, fact_kind="safely_not_executed", attempt_id=attempt.id,
+        mutation_kind=action.action_type, remote_mutation_key_hash="m" * 64,
+        gateway_request_hash="g" * 64, fact_identity_hash="f" * 64, observed_at=_now())
+    session.add_all([attempt, fact])
+    return attempt, fact
+
+
+@pytest.mark.parametrize("called", [False, True])
+def test_terminal_nonexecution_evidence_releases_only_window(state, called):
+    session, action, job, slot = state
+    if called:
+        _failed_attempt_with_fact(session, action, job)
+    else:
+        session.add(ExecutionAttempt(action_id=action.id, tenant_id=action.tenant_id,
+            task_lifecycle_epoch=action.task_lifecycle_epoch, status="skipped_before_gateway", after_call_at=_now()))
+    session.commit()
+    assert _retire(session, job)
+    assert slot.state == "invalidated"
+    assert (action.status, job.state) == ("failed", "ready")
+
+
+@pytest.mark.parametrize("case", ["tenant", "task", "obligation", "mutation", "orphan", "unknown_fact",
+                                  "unfinished", "unknown_attempt", "remote_id", "another_attempt"])
+def test_incomplete_or_mismatched_nonexecution_evidence_preserves_window(state, case):
+    session, action, job, slot = state
+    attempt, fact = _failed_attempt_with_fact(session, action, job)
+    mismatches = {"tenant": ("tenant_id", 2), "task": ("task_id", "another-task"),
+        "obligation": ("obligation_id", "another-obligation"), "mutation": ("mutation_kind", "view_message"),
+        "orphan": ("attempt_id", "another-attempt"), "unknown_fact": ("fact_kind", "remote_outcome_unknown")}
+    if case in mismatches:
+        key, value = mismatches[case]
+        setattr(fact, key, value)
+    if case == "unfinished":
+        attempt.after_call_at = None
+    if case == "unknown_attempt":
+        attempt.status = "unknown_after_send"
+    if case == "remote_id":
+        attempt.remote_message_id = "remote-message"
+    if case == "another_attempt":
+        session.add(ExecutionAttempt(action_id=action.id, tenant_id=action.tenant_id, attempt_no=2))
+    session.commit()
+    assert not _retire(session, job)
+    assert slot.state == "gateway_bound"

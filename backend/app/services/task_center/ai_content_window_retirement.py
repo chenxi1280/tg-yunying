@@ -1,9 +1,11 @@
-"""Retire content bindings only when the original execution never began."""
+"""Retire terminal content bindings only with proven nonexecution."""
 from sqlalchemy import and_, select
 from sqlalchemy.orm import Session
 
 from app.models import Action, AiContentWindowPlan, AiContentWindowPlanSlot
-from app.models import ExecutionAttempt, FulfillmentRemoteFact, GenerationJob
+from app.models import GenerationJob
+
+from .ai_content_window_evidence import content_action_proven_unsent
 
 
 TERMINAL_UNSENT_ACTION_STATES = ("failed", "skipped", "cancelled")
@@ -21,11 +23,14 @@ def terminal_pre_gateway_slot_query(slot_states, job_states):
 def retire_pre_gateway_bound_slot(
     session: Session, *, obligation_type: str, obligation_id: str,
 ) -> bool:
-    slot = session.scalar(_unexecuted_bound_slot_query().where(
+    owner = session.execute(_unexecuted_bound_slot_query().where(
         AiContentWindowPlanSlot.obligation_type == obligation_type,
         AiContentWindowPlanSlot.obligation_id == obligation_id,
-    ).with_for_update())
-    if slot is None:
+    ).with_for_update()).one_or_none()
+    if owner is None:
+        return False
+    slot, action = owner
+    if not content_action_proven_unsent(session, action):
         return False
     slot.state = "invalidated"
     slot.claimed_by_job_id = None
@@ -36,9 +41,7 @@ def retire_pre_gateway_bound_slot(
 
 
 def _unexecuted_bound_slot_query():
-    any_attempt = select(ExecutionAttempt.id).where(ExecutionAttempt.action_id == Action.id).exists()
-    any_fact = select(FulfillmentRemoteFact.fact_id).where(FulfillmentRemoteFact.action_id == Action.id).exists()
-    return select(AiContentWindowPlanSlot).join(
+    return select(AiContentWindowPlanSlot, Action).join(
         GenerationJob, GenerationJob.id == AiContentWindowPlanSlot.claimed_by_job_id,
     ).join(AiContentWindowPlan, AiContentWindowPlan.id == AiContentWindowPlanSlot.plan_id).join(
         Action, and_(
@@ -60,7 +63,7 @@ def _unexecuted_bound_slot_query():
         GenerationJob.state == "ready",
         GenerationJob.generation_stage == "gateway_bound",
         Action.task_type == "group_ai_chat",
+        Action.action_type == "send_message",
         Action.status.in_(TERMINAL_UNSENT_ACTION_STATES),
         Action.payload["ai_generation_status"].as_string() == "ready",
-        ~any_attempt, ~any_fact,
     )

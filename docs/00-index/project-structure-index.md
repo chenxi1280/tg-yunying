@@ -1,5 +1,7 @@
 # 项目结构索引
 
+> **2026-09-05 确认未执行的内容窗口：** `ai_content_window_evidence.py` 对旧终态Action加锁读取全部Attempt/fact，精确核对身份及类型化未执行证据；`ai_content_window_retirement.py` 仅在证据闭合后收口原窗口。零Attempt路径保留，任何unknown/不匹配/未终结证据继续占位。SQLite与PostgreSQL回归覆盖已进入Gateway但明确未执行的窗口，不删除旧结果。
+
 > **2026-09-05 结构化Provider限流补正：** `ai_structured_provider_runtime.call_structured_provider` 接收原候选Provider身份，类型化429复用 `ai_provider_candidate_runtime.defer_rate_limited_provider` 的共享冷却与probe释放；原候选记录admission_blocked，Job沿ProviderRouteDeferred延期。回归为 `test_structured_provider_rate_limit.py`，不改永久余额错误或unknown语义。
 
 > **2026-09-05 生产能力与 JIT 时钟补正：** `telethon_content.fetch_channel_reaction_capability` 区分完整响应的缺省反应（none）、非法响应及未识别类型；`channel_like_capability` 明确显示未开放点赞表情。`ai_generation_timing` 对 scheduled/release/effective 三项发送限制取最晚值，活群和评论候选 SQL 与 Job 准备点共用同一语义。回归入口新增 `test_generation_deferred_send_time.py`，并有真实 PostgreSQL 双队列反例。

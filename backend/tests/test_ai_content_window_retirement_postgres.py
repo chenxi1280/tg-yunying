@@ -2,7 +2,7 @@ import pytest
 
 from app.database import SessionLocal
 from app.models import Action, AiContentWindowPlan, AiContentWindowPlanSlot
-from app.models import ExecutionAttempt, GenerationJob, Task, Tenant, TgAccount
+from app.models import ExecutionAttempt, FulfillmentRemoteFact, GenerationJob, Task, Tenant, TgAccount
 from app.services._common import _now
 from app.services.task_center.ai_content_runtime import invalidate_terminal_pre_gateway_obligation_slot
 
@@ -24,6 +24,28 @@ def test_postgres_retirement_requires_no_execution_attempt(has_attempt):
         assert changed is not has_attempt
         assert slot.state == ("gateway_bound" if has_attempt else "invalidated")
         assert job.state == "ready" and action.status == "failed"
+        session.rollback()
+
+
+@pytest.mark.parametrize("fact_kind", ["safely_not_executed", "remote_outcome_unknown"])
+def test_postgres_retirement_distinguishes_terminal_remote_evidence(fact_kind):
+    with SessionLocal() as session:
+        action, job, slot = _seed(session)
+        attempt = ExecutionAttempt(id="retirement-attempt", tenant_id=TENANT_ID, action_id=action.id,
+            task_lifecycle_epoch=1, status="failed", gateway_call_started_at=_now(), after_call_at=_now())
+        fact = FulfillmentRemoteFact(tenant_id=TENANT_ID, task_id=TASK_ID, task_type=action.task_type,
+            action_id=action.id, attempt_id=attempt.id, mutation_kind=action.action_type,
+            obligation_type=job.obligation_type, obligation_id=job.obligation_id, fact_kind=fact_kind,
+            remote_mutation_key_hash="m" * 64, gateway_request_hash="g" * 64,
+            fact_identity_hash="f" * 64, observed_at=_now())
+        session.add_all([attempt, fact])
+        session.flush()
+        changed = invalidate_terminal_pre_gateway_obligation_slot(session,
+            obligation_type=job.obligation_type, obligation_id=job.obligation_id)
+        assert changed is (fact_kind == "safely_not_executed")
+        assert slot.state == ("invalidated" if changed else "gateway_bound")
+        assert session.get(ExecutionAttempt, attempt.id).status == "failed"
+        assert session.get(FulfillmentRemoteFact, fact.fact_id).fact_kind == fact_kind
         session.rollback()
 
 

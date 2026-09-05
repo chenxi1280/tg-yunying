@@ -2515,6 +2515,12 @@ QA：已有合法内部字段在设置规范化后原值保留，非法路由/�
 
 运营apply前核对线上SHA、策略0行、9个Task配置版本/hash与普通组稳定成员hash，事务内锁Tenant/Task/组成员，写审计并独立读回。此策略修订design_status=complete，Task接管与四类E4另验。
 
+### 19.26 类型化未执行事实允许旧内容窗口收口
+
+§19.21只处理零Attempt子集。12:35反查成都三个窗口，旧Action均failed、GenerationJob为ready/gateway_bound；每条进入Gateway的Attempt已终结，并有精确attempt_id的safely_not_executed事实，其余Attempt为skipped_before_gateway。旧窗口因“存在任何Attempt/fact”一直被保留，后续同一覆盖义务触发唯一约束冲突。
+
+收口仍须锁定原Task/epoch/义务/Job/窗口对应的终态Action，仅invalidated旧slot并释放其claim。允许两类未执行证据：没有任何Attempt且无fact；或者全部Attempt均已结束、无remote_message_id，其中每个已进入Gateway的终态失败Attempt均由同tenant/task/Action/义务/mutation_kind/attempt_id的safely_not_executed事实证明，其余为明确skipped_before_gateway。任一未终结Attempt、未知/成功fact、事实身份不匹配或没有原Attempt的孤立fact均阻止收口。保留全部Action、Job、Attempt、fact和原时间/目标；不按错误文本、lease到期或“failed”单独推断未发送。本子合同design_status=complete；全量覆盖恢复需另有精确运营预览和自然发送验证。
+
 ## 20. Product Design Complete 自检
 
 - 当前范围以 §19.13 为准；§19.12 已撤销，历史文中的正式预算、回放审批和完整 Binding 待实现项不再阻塞本期交付。保留的实时链、最近三天计数和四类任务仍须逐项代码、测试和生产验证。
