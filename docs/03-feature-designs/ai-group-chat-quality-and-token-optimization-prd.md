@@ -175,7 +175,7 @@
 
 - 普通与成人 Prompt 都必须要求 100% 纯文本，不生成 URL、裸域名、IP 链接、Markdown 链接或 `@username`；Provider 输出仍必须在质量过滤入口统一清洗，不能只依赖 Prompt。
 - 清洗顺序为：Markdown 链接保留可见文案并移除链接目标，再移除协议 URL、`t.me`、裸域名/IP 和 `@mention`，最后规范空白。清洗后为空或不足两个字符时以 `link_restricted_or_empty` 显式拒绝，不用静态内容、emoji 或原始脏文本兜底。
-- Telegram 文本发送先发 `SetTypingRequest(SendMessageTypingAction)`，按正文长度等待 1.0～2.5 秒，再把发送调用标为已开始并执行 `send_message(link_preview=false)`。typing 失败发生在消息发送 Gateway 边界前，必须返回 `remote_mutation_started=false`；发送调用开始后的异常继续按既有 unknown/partial 语义处理，禁止自动重发。
+- Telegram 文本发送先发 `SetTypingRequest(SendMessageTypingAction)`，按正文长度等待 1.0～2.5 秒，再把发送调用标为已开始并执行 `send_message(link_preview=false)`。明确解析为当前账号自身的 Saved Messages（`User.is_self=true` / `InputPeerSelf`）直接发送，不发 typing；Telegram 对自身 typing 返回目标无效，且该目标没有对方输入状态展示语义。typing 失败发生在消息发送 Gateway 边界前，必须返回 `remote_mutation_started=false`；发送调用开始后的异常继续按既有 unknown/partial 语义处理，禁止自动重发。
 - 分段发送中的文本段执行同一 typing 与 `link_preview=false` 合同；显式链接段不生成预览但不改写其业务正文。媒体段沿用既有 Gateway 事实边界。
 
 ---

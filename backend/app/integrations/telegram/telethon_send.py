@@ -78,6 +78,8 @@ async def _send_text_message(
 async def send_typing_action(client: Any, target: Any, content: str) -> None:
     from telethon import functions, types
 
+    if isinstance(target, types.InputPeerSelf) or (isinstance(target, types.User) and target.is_self):
+        return
     await client(
         functions.messages.SetTypingRequest(
             peer=target,
