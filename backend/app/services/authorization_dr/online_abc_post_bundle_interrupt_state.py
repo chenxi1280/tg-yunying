@@ -32,6 +32,7 @@ from .online_abc_c_precode_interrupt_state import (
 from .online_abc_manifest import ACTIVE_OPERATION_STATUSES
 from .online_abc_manual_outcome import MANUAL_OUTCOME, _items, _primary_snapshot
 from .online_abc_operations import online_abc_item_operations
+from .post_login_post_bundle_state import post_login_request_snapshot, require_post_login_batch
 from .readiness import MY_NODE_STALE_SECONDS
 from .wake_bundle import valid_copy_kinds
 
@@ -81,7 +82,7 @@ def require_post_bundle_boundary(
     session, context: PostBundleContext, release_sha: str,
 ) -> Counter:
     counts = Counter(row.status for row in _items(session, context.interrupt.batch))
-    _require_batch(context.interrupt, counts, release_sha)
+    _require_batch(session, context.interrupt, counts, release_sha=release_sha)
     _require_operation(session, context)
     _require_artifacts(session, context)
     _require_global(session, context)
@@ -92,6 +93,7 @@ def require_post_bundle_boundary(
 def lock_post_bundle_context(session, batch_id: str, account_id: int) -> None:
     lock_interrupt_context(session, batch_id, account_id)
     context = load_post_bundle_context(session, batch_id, account_id)
+    post_login_request_snapshot(session, context.interrupt, lock=True)
     rows = (
         (TgAccountAuthorization, context.candidate.id),
         (TgAuthorizationWakeBundle, context.bundle.id),
@@ -106,7 +108,10 @@ def lock_post_bundle_context(session, batch_id: str, account_id: int) -> None:
     ).with_for_update().execution_options(populate_existing=True)))
 
 
-def _require_batch(context: InterruptContext, counts: Counter, release_sha: str) -> None:
+def _require_batch(session, context: InterruptContext, counts: Counter, *, release_sha: str) -> None:
+    if context.batch.selection_mode == "post_login_exact":
+        require_post_login_batch(session, context, counts, release_sha=release_sha)
+        return
     valid = all((
         context.batch.selection_mode == "all_online_accounts",
         context.batch.status == "running",

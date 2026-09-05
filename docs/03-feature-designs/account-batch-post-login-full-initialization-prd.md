@@ -598,3 +598,15 @@ code-source凭据过期或binding漂移时停在 `two_fa_candidate_refresh_requi
 隔离保留同一 operation 的 `remote_call_state=unknown`，只转为 `deferred_reconcile / quarantined`，item 为 deferred_reconcile，单账号批次为 completed_with_exceptions。ABC 请求仍为 reconcile_unknown，不能计为成功；不重发消息、不重新登录、不改 A/B/C Session 或原执行版本。与原批次不同的当前运行版本只用于无远端写入的隔离审计，不授予旧批次重跑权限。同账号后续恢复仍需对账，不能因全局 unknown 门槛释放而自动重试。
 
 验收必须覆盖：原 A/B/C 不变、原未知 operation 保留、另一敏感操作/活动租约/A 漂移/错误审批/错误账号或非单账号批次/指纹变化均零写入、同 key 重复 apply 不产生第二次审计、不触发 Gateway。
+
+## 2026-09-05：单账号 C 双副本提交后的租约中断恢复
+
+账号 1723 已有 C 登录确认、两份有效加密副本和中央回执，但 MY 在 restore-probe 上收到 HTTP 422 后退出；原租约已过期、MY 客户端为 0。主机内存紧张及 I/O 等待同时存在。该状态不是登录失败，也不能重新创建 C。
+
+现有 post-bundle preview/apply 增加明确的 `post_login_exact` 分支：仅原审批对应的一账号、一 running item、一 running request，request 与 batch 的 tenant/account/审批和部署基线一致；没有下游 restore probe 或 slot decision。继续复用完整 A/B/C 产物、阶段顺序、过期 owner、零客户端、唯一敏感操作、runtime 精确 scope 的校验。请求 ID/version/status 纳入预览指纹并在 apply 加锁回读；当前版本由运维入口校验。原 all_online_accounts 的发布中断边界保持原样。
+
+若修复发布先使原单账号批次因 `runtime_image_mismatch` 停止，允许精确的 stopped/runner_blocked item 分支，但必须同时有原 post-login supervisor 停批审计、原 execution release 与当前 release 不同、相同审批的 running/manual_required request，以及完全相同的 C 产物和运行时边界。其他 stopped 原因不接受；不能借此恢复任意失败批次。
+
+apply 只批准同一 operation 的 `central_bundle_restore_forward`，停止原 item/batch，释放精确 runtime scope，保留 confirmed 结果、candidate、双副本和原审批；不调用 Telegram。随后现有 MY artifact recovery 从原加密副本恢复校验并完成 slot commit；现有 runner 从 post-C checkpoint 继续 E4。若后置初始化已投影 manual，只有完整 ABC 证据成立后才请求官方 reconciliation 更新原 owner。原请求不是新登录授权。
+
+验收：同一 C operation/candidate/副本无变化；活跃租约、请求审批或版本漂移、非一账号、下游产物、A 漂移均拒绝；完整恢复使用原 C 并到达 E4；幂等 apply 不重复审计；禁止用扩大租约或重置状态代替恢复。
