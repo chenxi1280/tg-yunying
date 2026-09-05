@@ -1,5 +1,7 @@
 # 项目数据流转索引
 
+> **2026-09-05 生成政策归属：** 已绑定v2 Job → 原window plan的config revision/policy hash → 同tenant/task/lifecycle政策binding → 原route、prompt、example与审核合同；同批新Job另取当前修订。上下文替换slot仍属于同次preparation的原政策。读取按批次完成，保留slot引用避免ORM弱引用回收后逐Job重查；原unknown、窗口历史和任务配置不改写。legacy无窗口Job的完整切换仍属于后续R1接管。
+
 > **2026-09-05 存量执行合同归属：** Action原tenant/task/lifecycle → 同epoch首次正式binding的effective_from → 核对原Action及明确引用的数量owner/父计划创建时刻 → legacy原合同收口或统一资源reservation。后续binding和Task标记回退不移动首次边界；错owner显式失败，旧payload/数量/排期/Attempt/unknown不回写。该读口径不是完整来源入口或跨legacy额度迁移。
 
 > **2026-09-05 频道来源观察接管排序：** 原Task账号范围与业务资格过滤 → 本目标ready、在其他频道刚验证可读的本目标未探测账号、其余未探测、到期失败、等待状态排序 → SQL候选截断与原健康/冷却筛选 → 合并原近期同目标成功候选并保持同一优先级 → 原listener claim/fetch/persist。其他频道证据须同tenant、channel类型、ready、observed_at已发生且fresh_until_at仍有效；只帮助选人，不证明本频道采集成功。失败后可选中首批之外的合法观察者；不修改成员范围、旧错误状态或业务Action/unknown，不把只读候选变化视为成功采集。

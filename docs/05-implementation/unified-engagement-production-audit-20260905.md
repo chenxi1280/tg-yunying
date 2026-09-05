@@ -292,3 +292,17 @@ Deploy33955707992终态success；17:03独立current=20260905084503_705fe390，ba
 真实反例2失败10通过（4.45秒），分别覆盖SQL候选截断和最终候选合并。修补后21项通过（5.54秒），扩展监听、账号池、来源时间共77项通过（12.53秒）；独立PostgreSQL UTC会话的本频道ready、其他频道fresh与已过期3项通过（5.81秒）。各进程硬60秒。SQL数量随45/1045账号保持一致，compileall、diff check和代码自审通过；无schema/API或生产任务配置修改。
 
 17:10生产repeatable-read只读对比（运行3027f1e0，候选函数仅载入独立诊断进程）：原逻辑选择89，新逻辑选择当前已验证可读的940，958/1103/1402也进入原Task范围的候选。两侧均12次SELECT；原0.1584/0.1319秒，新0.1533/0.1828秒，仅为两次样本，不是全链P95。零数据库写入、零Provider/Telegram调用。等待正常服务发布和真实来源采集读回，R1仍未启用。
+
+## 观察账号修补上线与正常来源采集
+
+9e3b2d01合并并行ABC修补3027f1e0为6c59cab99b142b5b4da8da4905c91819cb0b9c5e，合并QA21项通过（6.93秒）。Deploy33957633761终态success；17:41独立current=20260905092725_6c59cab9，10个核心容器均running healthy、SHA一致，宿主API健康ok。主机load4.79/4.46、可用495MB，仍只作为该时刻资源采样。
+
+正常listener在17:30:19已更新819来源5977/5981/5984的真实发布时间投影；5977和5984追加timestamp_corrected，5981有真实edit因此按edited追加。17:41当前观察者437为ready/snapshot18，Ago966为ready/snapshot15；两者均持续有新观察时刻。Ago先前两条时间纠正revision及历史revision不变，819的5973样本尚未纠正。这个结果证明来源采集恢复，不是统一评论发送验收。unified Task和binding仍均为0。
+
+## 已开始生成的政策归属 Release Gate
+
+PRD19.35。原实现以Task当前config revision读取政策后覆写已绑定旧window的Job hash，违反new_preparation范围。初次10条失败中存在政策active唯一约束和来源信息不足的测试夹具问题，先修正夹具；再在独立进程载入未修改HEAD原实现，10条业务反例全部失败（1.72秒），覆盖group/comment、当前binding缺失、混合批次、上下文替换和原scope/hash不一致。
+
+修补批量读取原window/binding/policy，已开始Job保留原preparation政策、route和config revision；新Job读取当前修订。强引用原slot避免SQLAlchemy弱引用回收后逐Job重新查询，2与25条批次均仅1次window与1次policy读取。原16项binding测试与新增12项合计28项通过（6.58秒）；扩大生成及Provider unknown回归118项通过（14.20秒）。独立PostgreSQL原revision读取、仅两次SELECT和unknown/gateway_bound不改写1项通过（5.41秒）。每个测试进程硬60秒，隔离55439/tg_yunying_test/advisory lock；代码函数及文件限界、compile和diff check纳入审查。
+
+17:49只读全量历史诊断中，正在generating的5个与pending中17个已有窗口Job均引用一致；ready历史中2062个、unknown中45个存在旧引用不一致，不自动覆盖。17:59进一步限定为当前pending/generating或被未完成Action引用的483个已有窗口Job，在独立只读诊断进程调用候选政策读取：9个活群全部matched，逐Task查询耗时0.0112～0.0923秒。零数据库写入、Provider或Telegram调用。该预检不替代上线或真实生成结果；legacy无窗口Job、旧来源入口与共享行为预算仍属于完整R1的剩余边界。

@@ -20,6 +20,7 @@ def freeze_generation_context_contract(
     route: str,
     prompt_version: str,
     gate_config: dict,
+    config_revision: int,
 ) -> dict:
     payload = dict(action.payload or {})
     anchor_ids = _anchor_ids(payload)
@@ -40,7 +41,7 @@ def freeze_generation_context_contract(
         "context_mode": context_mode,
         "allowed_facts": dict(evidence),
         "forbidden_claims": list(gate_config.get("forbidden_claim_categories") or ()),
-        "task_topic_revision": int(payload.get("content_intent_config_revision") or task.config_revision or 1),
+        "task_topic_revision": int(payload.get("content_intent_config_revision") or config_revision),
         "content_route": route,
         "route_reason": _route_reason(route, context_mode=context_mode),
         "voice_contract_version": str(payload.get("voice_profile_contract_version") or ""),

@@ -2656,3 +2656,11 @@ QA：UTC跨北京日界、同一时刻不同offset的观察hash一致、编辑�
 QA覆盖接管前Action、接管后同旧义务的Action、同日后续绑定修订、当前标记回退、tenant/task/epoch错配及已有unknown不修改。本运行合同读口径子项design_status=complete；它不替代旧来源的新工作入口收口、生成配置归属和legacy与统一工作共用行为额度的接管实现，不能据此单独启用全部Task。
 
 来源诊断读模型同样按真实时刻比较：远端UTC与本地北京时间的同一发布时间/编辑时间统一输出+08:00，不因ISO字符串offset不同误报listener_lag；listener lease与观察时刻先做相同时区换算，UTC租约仍在有效期时零诊断RPC。该修正只读，不改变lease或触发采集。
+
+### 19.35 已开始生成的内容政策归属
+
+按§7.6的new_preparation边界，已经绑定内容窗口的v2 GenerationJob必须从原AiContentWindowPlan的tenant/task/lifecycle/config revision和policy hash读取TaskAiContentPolicyBinding及AiContentPolicyVersion。不能在重领同一Job时读取Task当前revision，再把新政策hash写到旧窗口之下；当前Task尚未建立新政策binding，也不能阻断具有完整原binding的旧Job收口。尚未绑定窗口的新preparation才读取Task当前政策修订。
+
+同一批活群Job可能横跨政策修订，必须逐Job对应原binding、route、prompt与example版本，并按distinct binding/scope做权限校验，窗口与政策读取须批量完成，不能退回逐Job查询。评论使用相同政策归属读取，保留评论独立的来源证据和权限作用域。若同一Job的上下文更新需要替换尚未过Gateway的slot，新slot仍携带该次preparation的原政策修订；真正新建的generation successor才消费新政策。原窗口、binding、policy与Job的作用域或hash不一致时明确报错，不回退当前政策覆盖历史。
+
+本切片不修改Task配置、目标、数量、调用预算、旧Provider unknown或Gateway事实，不声称已完成legacy无窗口Job的接管。设计自检覆盖原配置更新语义、group/comment入口、混合批次、上下文替换、tenant/task/epoch隔离、缺失证据、SQL数量和回滚。design_status=complete；QA须先复现当前政策覆盖旧Job，再验证原hash/窗口不变、新Job采用新政策，以及全部unknown隔离回归。

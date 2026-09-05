@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -27,6 +26,7 @@ from .ai_context_information import meaningful_group_evidence
 from .ai_context_revision_binding import synchronize_generation_context
 from .ai_generation_timing import GENERATION_LEASE
 from .ai_generation_context_contract import freeze_generation_context_contract
+from .ai_generation_policy_ownership import GenerationPolicySnapshot, generation_policy_snapshots
 from .ai_negative_lexicon import enabled_negative_phrases
 from .ai_provider_routes import route_v2_enabled
 from .message_brief import fact_id_map
@@ -49,6 +49,7 @@ class _GroupContractRequest:
     scope_id: str
     evidence_lines: tuple[str, ...]
     route: str
+    snapshot: GenerationPolicySnapshot
 
 
 _ROUTE_MARKERS = {
@@ -75,20 +76,20 @@ def bind_group_generation_contracts(
 ) -> dict:
     if not route_v2_enabled(config):
         return config
-    binding, policy = _policy_binding(session, task)
     bound_jobs = jobs or generation_jobs_for_batch(session, batch)
     if len(bound_jobs) != len(batch):
         raise AiContentJobBindingError("generation_job_batch_size_mismatch")
-    requests = _group_contract_requests(batch, bound_jobs, config=config, binding=binding)
-    _authorize_group_requests(session, binding, requests)
+    snapshots = generation_policy_snapshots(session, task, bound_jobs)
+    requests = _group_contract_requests(batch, bound_jobs, config=config, snapshots=snapshots)
+    _authorize_group_requests(session, requests)
     contracts = {
         request.job.id: _bind_job_contract(
             session,
             task,
             request.action,
             job=request.job,
-            binding=binding,
-            policy=policy,
+            binding=request.snapshot.binding,
+            policy=request.snapshot.policy,
             scope_type="group",
             scope_id=request.scope_id,
             evidence_lines=request.evidence_lines,
@@ -111,19 +112,19 @@ def bind_comment_generation_contract(
 ) -> dict:
     if not route_v2_enabled(config):
         return config
-    binding, policy = _policy_binding(session, task)
+    snapshot = generation_policy_snapshots(session, task, (job,))[job.id]
     evidence = (
         str(getattr(payload, "message_content", "") or ""),
         str(getattr(payload, "reply_target_preview", "") or ""),
     )
-    route = _context_route(config, binding, evidence)
+    route = snapshot.frozen_route or _context_route(config, snapshot.binding, evidence)
     contract = _bind_job_contract(
         session,
         task,
         action,
         job=job,
-        binding=binding,
-        policy=policy,
+        binding=snapshot.binding,
+        policy=snapshot.policy,
         scope_type="comment_source",
         scope_id=str(getattr(payload, "channel_target_id", "") or ""),
         evidence_lines=evidence,
@@ -182,10 +183,12 @@ def _bind_job_contract(
         policy_hash=policy.policy_hash,
         prompt_version=prompt_version,
         evidence_hash=_hash({"facts": evidence, "context": job.context_snapshot_hash}),
+        config_revision=binding.task_config_revision,
     )
     freeze_generation_context_contract(
         session, task, action, job=job, evidence=evidence, evidence_lines=evidence_lines,
         route=route, prompt_version=prompt_version, gate_config=dict(policy.gate_config or {}),
+        config_revision=binding.task_config_revision,
     )
     _bind_job_policy(job, binding.evidence_hash, policy.policy_hash,
                      example_version=example_version)
@@ -203,10 +206,10 @@ def _group_contract_requests(
     jobs: tuple[GenerationJob, ...],
     *,
     config: dict,
-    binding: TaskAiContentPolicyBinding,
+    snapshots: dict[str, GenerationPolicySnapshot],
 ) -> tuple[_GroupContractRequest, ...]:
     return tuple(
-        _group_contract_request(action, payload, job, config=config, binding=binding)
+        _group_contract_request(action, payload, job, config=config, snapshot=snapshots[job.id])
         for (action, payload), job in zip(batch, jobs, strict=True)
     )
 
@@ -217,7 +220,7 @@ def _group_contract_request(
     job: GenerationJob,
     *,
     config: dict,
-    binding: TaskAiContentPolicyBinding,
+    snapshot: GenerationPolicySnapshot,
 ) -> _GroupContractRequest:
     evidence = meaningful_group_evidence(
         str(getattr(payload, "ai_generation_history", "") or ""),
@@ -228,22 +231,25 @@ def _group_contract_request(
         job=job,
         scope_id=str(getattr(payload, "group_id", "") or ""),
         evidence_lines=evidence,
-        route=_context_route(
+        route=snapshot.frozen_route or _context_route(
             config,
-            binding,
+            snapshot.binding,
             evidence,
             selector=int(action.pacing_slot_ordinal or job.generation_sequence or 0),
         ),
+        snapshot=snapshot,
     )
 
 
 def _authorize_group_requests(
     session: Session,
-    binding: TaskAiContentPolicyBinding,
     requests: tuple[_GroupContractRequest, ...],
 ) -> None:
-    scopes = {(request.route, request.scope_id) for request in requests}
-    for route, scope_id in scopes:
+    scopes = {
+        (request.snapshot.binding.id, request.route, request.scope_id): request.snapshot.binding
+        for request in requests
+    }
+    for (_binding_id, route, scope_id), binding in scopes.items():
         _assert_scope(
             session,
             binding,
@@ -251,23 +257,6 @@ def _authorize_group_requests(
             scope_type="group",
             scope_id=scope_id,
         )
-
-
-def _policy_binding(
-    session: Session,
-    task: Task,
-) -> tuple[TaskAiContentPolicyBinding, AiContentPolicyVersion]:
-    binding = session.scalar(select(TaskAiContentPolicyBinding).where(
-        TaskAiContentPolicyBinding.task_id == task.id,
-        TaskAiContentPolicyBinding.task_lifecycle_epoch == task.task_lifecycle_epoch,
-        TaskAiContentPolicyBinding.task_config_revision == task.config_revision,
-    ))
-    if binding is None:
-        raise AiContentJobBindingError("task_ai_content_policy_binding_missing")
-    policy = session.get(AiContentPolicyVersion, binding.policy_version_id)
-    if policy is None or policy.policy_hash == "":
-        raise AiContentJobBindingError("ai_content_policy_snapshot_missing")
-    return binding, policy
 
 
 def _context_route(
@@ -326,6 +315,7 @@ def _ensure_window_slot(
     policy_hash: str,
     prompt_version: str,
     evidence_hash: str,
+    config_revision: int,
 ) -> AiContentWindowPlanSlot:
     if job.window_slot_id:
         slot = session.get(AiContentWindowPlanSlot, job.window_slot_id)
@@ -346,6 +336,7 @@ def _ensure_window_slot(
         policy_hash=policy_hash,
         context_revision=job.context_snapshot_version,
         generation_sequence=job.generation_sequence,
+        config_revision=config_revision,
     )
     spec = _window_slot_spec(
         action,
@@ -375,6 +366,7 @@ def _window_scope(
     policy_hash: str,
     context_revision: int,
     generation_sequence: int,
+    config_revision: int,
 ) -> WindowScope:
     return WindowScope(
         tenant_id=task.tenant_id,
@@ -391,7 +383,7 @@ def _window_scope(
         ),
         window_start_at=due_at,
         window_end_at=due_at + timedelta(hours=1),
-        task_config_revision=int(task.config_revision or 1),
+        task_config_revision=config_revision,
         content_policy_hash=policy_hash,
     )
 
