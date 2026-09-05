@@ -24,6 +24,7 @@ from .online_abc_post_bundle_interrupt_state import (
     lock_post_bundle_context,
     require_post_bundle_boundary,
 )
+from .post_login_post_bundle_state import post_login_request_snapshot
 from .runtime_scope import disarm_scoped_runtime
 
 
@@ -53,6 +54,9 @@ def preview_post_bundle_interrupt(
         approval_ref=approval_ref,
     )
     release_sha = _release_sha(runtime_release_sha)
+    exact = context.interrupt.batch.selection_mode == "post_login_exact"
+    if exact and approval[2] != context.interrupt.batch.approval_ref:
+        raise AuthorizationDrError("post_login_post_bundle_approval_invalid", "Original approval reference is required")
     counts = require_post_bundle_boundary(session, context, release_sha)
     payload = _payload(
         session,
@@ -63,6 +67,8 @@ def preview_post_bundle_interrupt(
         approval=approval,
         interruption_ref=_interruption_ref(interruption_ref),
     )
+    if exact:
+        payload["post_login_request"] = post_login_request_snapshot(session, context.interrupt)
     return {**payload, "fingerprint": _fingerprint(payload)}
 
 

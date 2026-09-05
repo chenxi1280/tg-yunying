@@ -1481,3 +1481,5 @@ legacy-only A 冷启动分支固定为 `frozen legacy A -> 原 A Session 只读 
 
 `account-online typed login_required(A)` -> `local_activate preview 即时 probe B=session is not authorized` -> `primary-manual preview 冻结 A/B/C/bundle/E4/runtime/审批/release` -> `异人 fingerprint/CAS apply` -> `B authorization=invalid/needs_repair + B slot/item=manual_required` -> `batch running 后续 frozen item`。A/current/Session/generation、C/MY bundle/双副本/restore probe、既有 operations 与 Telegram 零写入；最终守恒把该账号计入 manual debt，不得声明 A 已恢复、双 SV 可用或三槽健康。
 > **2026-09-05 post-login ABC 隔离流：** stopped exact batch + 原 ABC request -> `post_login_exception.preview_post_login_abc_exception` 冻结批次/item/operation/slot/A/request/global 状态 -> 同指纹 apply -> 原 operation deferred_reconcile/unknown/quarantined + item deferred_reconcile + batch completed_with_exceptions + request reconcile_unknown + AuditLog。全程无 Gateway；旧批次执行版本不重绑，其他账号只能通过各自原审批入口继续。
+
+> **2026-09-05 post-login C 产物恢复：** exact request + running 或有原版本停批审计的 stopped item + C confirmed 双副本 + expired lease + MY client0 -> 原 post-bundle preview/apply 冻结 request/version -> 同 operation artifact recovery -> post-C resume -> E4 -> 原 owner reconciliation。无新 C 登录。
