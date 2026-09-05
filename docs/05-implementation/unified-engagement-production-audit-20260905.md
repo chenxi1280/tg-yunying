@@ -116,3 +116,17 @@ R2以PRD §19.17为开发合同；变更限定Gateway浏览边界和针对性回
 - local_gate：新增候选/未知保护/Provider 准入 31 passed；真实生成 worker 与 fact-first 52 passed；配置/绑定/资格前置两批 37+45 passed；PostgreSQL 候选公平性与 partial unique index 2 passed。每批后端测试硬超时 60 秒，PG 使用隔离的 tg_yunying_test / 55439 与 advisory lock。
 - code_review：候选 SQL 与既有 _job_available 状态语义相同，排序与批次上限不变；Job/Action CAS 未改，未知行不写；内部字段无新增公开输入入口；成员快照不删减。无迁移、前端、目标地址或业务数量改动。
 - release_path：master -> release -> Deploy Production；回退应用会恢复队列饥饿，数据格式兼容。发布后必须验证候选有可领取工作、Job 推进和新的活群发送事实；22 个存量 Task 接管仍为未完成。
+
+## 生成队列生产验证（11:18）
+
+- 1bf1098f1e1141dc034f832400e83b158c5251ad / Actions 33940727172 终态 success；独立读回 current=/data/tgyunying/releases/20260905031034_1bf1098f，三组 ai-generation 与 Dispatcher running/healthy。
+- 相同候选查询由 60 unknown/0 available 变为 23 pending Job + 37 尚无开放 Job，60/60 available；新生成 Job 持续推进至 ready/reviewing/gateway_bound。滚动30分钟中出现14个发送 remote_message_observed；该窗口前段处于上一版本，后续须按11:12锚点再分任务确认。
+- 到期 generation pending 仍1091，另有100个ready pending；队列首部阻塞已消除，不代表积压、内容质量或日目标已完成。
+
+## 内容窗口残留 Release Gate
+
+- 精确链：西安任务 cb862a03 的 coverage a611aa16-f93c-4d85-ae2b-ff3935642b81；旧 Action 3f16b7d0-16b7-4c93-a0fa-76ce2b3f90d0 已 failed/context_freshness_unproven，ExecutionAttempt 总数0、fact0；Job 239d4c43-da5d-4f91-96c5-d5c234e01134 ready/gateway_bound；窗口 ff8b8f49-dccd-4bc5-bcc1-29059cf706e7 仍 gateway_bound。后续6次 generation_contract_error 指纹准确匹配 ai_content_window_concurrent_conflict。
+- PRD19.21；仅允许原已终结且零执行证据的内容绑定收口。原 Action/Job/义务不改写；已存在任何 Attempt、fact、错身份或未知继续保护。无 schema、API、前端或目标数量变更。
+- 本地反例1 failed/8 passed，修补后新增与原窗口/恢复测试37 passed，隔离 PostgreSQL 2 passed。每批硬超时60秒；PG包括真实 FOR UPDATE 关联查询以及存在 before_call Attempt 时拒绝回收。
+- code_review：SQL关联 tenant/task/epoch/义务/Job/窗口，并在同事务锁定；只修改窗口状态/claim/version。批量旧恢复逻辑保持原范围；新模块66行，原 runtime 491行，无超长函数。
+- release_path：master -> release -> Deploy Production；应用回退可恢复旧行为，原窗口历史不回写。发布后检查新物化是否继续、是否仍产生同指纹失败；历史已经阻断的 coverage 如需恢复，须另外精确 preview/CAS，不批量重试。

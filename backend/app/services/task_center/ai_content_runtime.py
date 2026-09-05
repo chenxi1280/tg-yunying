@@ -21,6 +21,7 @@ from app.models import (
 from app.services._common import _now
 
 from .datetime_compat import is_after_or_equal
+from .ai_content_window_retirement import retire_pre_gateway_bound_slot, terminal_pre_gateway_slot_query
 
 
 CURRENT_SLOT_STATES = ("frozen", "claimed", "candidate_ready", "gateway_bound")
@@ -325,14 +326,18 @@ def invalidate_terminal_pre_gateway_obligation_slot(
     obligation_id: str,
 ) -> bool:
     slot = session.scalar(
-        _terminal_pre_gateway_slot_query()
+        terminal_pre_gateway_slot_query(PRE_GATEWAY_SLOT_STATES, TERMINAL_JOB_STATES)
         .where(
             AiContentWindowPlanSlot.obligation_type == obligation_type,
             AiContentWindowPlanSlot.obligation_id == obligation_id,
         )
         .with_for_update()
     )
-    return bool(slot and invalidate_pre_gateway_window_slot(slot))
+    if slot is not None:
+        return invalidate_pre_gateway_window_slot(slot)
+    return retire_pre_gateway_bound_slot(
+        session, obligation_type=obligation_type, obligation_id=obligation_id,
+    )
 
 
 def recover_terminal_pre_gateway_window_slots(
@@ -343,27 +348,13 @@ def recover_terminal_pre_gateway_window_slots(
 ) -> int:
     from .generation_recovery_scope import generation_task_filter
     slots = session.scalars(
-        _terminal_pre_gateway_slot_query()
+        terminal_pre_gateway_slot_query(PRE_GATEWAY_SLOT_STATES, TERMINAL_JOB_STATES)
         .where(generation_task_filter(task_type))
         .order_by(AiContentWindowPlanSlot.created_at, AiContentWindowPlanSlot.id)
         .limit(max(1, int(limit)))
         .with_for_update(skip_locked=True)
     )
     return sum(invalidate_pre_gateway_window_slot(slot) for slot in slots)
-
-
-def _terminal_pre_gateway_slot_query():
-    return (
-        select(AiContentWindowPlanSlot)
-        .join(
-            GenerationJob,
-            GenerationJob.id == AiContentWindowPlanSlot.claimed_by_job_id,
-        )
-        .where(
-            AiContentWindowPlanSlot.state.in_(PRE_GATEWAY_SLOT_STATES),
-            GenerationJob.state.in_(TERMINAL_JOB_STATES),
-        )
-    )
 
 
 def settle_shortfall(

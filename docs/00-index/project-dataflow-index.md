@@ -1,5 +1,7 @@
 # 项目数据流转索引
 
+> **2026-09-05 内容窗口收口：** 同一义务新物化前 → 锁定旧 Action/ready Job/gateway_bound 窗口 → 核对完整身份、终态且无任何 Attempt/fact → 仅 invalidated 窗口并清除 claim → 新物化沿原义务身份继续；旧 Action、Job、结果及时间不改写。任一远端/未知证据仍交原结算链，不经此入口回收。
+
 > **2026-09-05 生成候选与存量资格：** 活群 pending Action → SQL 排除关联 unknown/未到期 Job → 排序/LIMIT → 原 Job/Action 版本 CAS → 原生成提交；未知只经原对账链收口，不阻塞其他义务。组成员快照 → 排除租户/Task 专用救援账号 → 冻结参与分母 → 独立健康准入，保留暂时不可用账号的欠量。设置规范化保留受正式服务控制的内容路由及救援字段，接管需另做原日目标与在途身份验证。
 
 > **2026-09-05 排期与规划性能：** SourcePacingState 行锁 → 对失效 reserved admission 分配独占后续时刻 → 同步原 owner/Action release → 到期重新领取；未知调用不参加重排。PlanningAdmissionSnapshot 对全账号一次读取成员准入与代理，逐账号证据、分母和阻断口径保持不变。

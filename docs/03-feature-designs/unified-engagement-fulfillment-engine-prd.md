@@ -2479,6 +2479,14 @@ QA：已有合法内部字段在设置规范化后原值保留，非法路由/�
 
 此修补不改写未知 Action/Job，不释放其义务，不扩大批量上限，不调整业务目标或 JIT 提前量。QA 须复现未知条目超过候选窗口、后方存在正常工作的混合队列，证明正常工作可见且未知身份/版本未变；覆盖未来 pending、到期 pending、有效/到期 generating 租约和无 Job 的新工作，并在 PostgreSQL 验证查询。design_status=complete；生产验收是发布后队列恢复领取及新的发送事实，仍不能用生成数替代四类型数量/质量验收。
 
+### 19.21 生成窗口的发送前终态收口
+
+西安活群生产链路确认：旧 Action `3f16b7d0` 已因 `context_freshness_unproven` 失败，ExecutionAttempt=0、remote fact=0，模型 Job 已 ready，但窗口仍停在 `gateway_bound`；后续同一 coverage 六次生成遭遇 current-obligation 唯一冲突。这里的 gateway_bound 是内容候选绑定阶段，不能单凭该名称推断真实 Telegram 已调用，也不能忽略它已有的远端占位保护。
+
+新一轮物化前，允许在同事务锁定准确 Action/Job/窗口后收口这类窗口：必须证明原 Job 为 ready/gateway_bound，原 Action 为 failed/skipped/cancelled 且生成 ready，tenant/task/epoch/义务/Job/窗口身份均一致，并且该 Action 从未建立任何 ExecutionAttempt 或类型化远端事实。仅将窗口置 invalidated 并清除其旧 claim；原 Action/Job/义务、数量、时间和历史结果不改写。存在任何 Attempt、fact、进行中或未知状态的旧 owner 都保持原保护，继续由既有对账/结算链处理。
+
+此规则只补足已证明没有进入执行入口的终态收口，不将 lease 到期或错误字符串作为无副作用证明。QA 覆盖零 Attempt 终态可收口、Action/Job unknown、已存在 before_call 或真实调用 Attempt、remote fact、错 epoch/Job 的拒绝，以及旧状态和版本保持。design_status=complete。
+
 ## 20. Product Design Complete 自检
 
 - 当前范围以 §19.13 为准；§19.12 已撤销，历史文中的正式预算、回放审批和完整 Binding 待实现项不再阻塞本期交付。保留的实时链、最近三天计数和四类任务仍须逐项代码、测试和生产验证。

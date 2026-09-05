@@ -1,5 +1,7 @@
 # 项目结构索引
 
+> **2026-09-05 内容窗口终态收口：** `ai_content_window_retirement.py` 集中窗口候选查询及“内容已绑定但原 Action 在任何 ExecutionAttempt 之前终结”的精确收口；`ai_content_runtime.invalidate_terminal_pre_gateway_obligation_slot` 在同一物化事务复用。Action/Job/窗口身份、终态和零 Attempt/零 fact 均需证明，带远端证据或未知的窗口保持原保护。回归为 `test_ai_content_window_retirement.py` 与 PostgreSQL 同名边界测试，合同见 PRD 19.21。
+
 > **2026-09-05 活群生成与接管前置修补：** `ai_generation_parallel._unavailable_generation_job` 在候选 LIMIT 前排除既有不可领取 Job，保留 unknown 原身份与领取 CAS。`group_internal_config.py` 校验并保留正式服务仍在使用的内容路由/救援账号字段；`engagement_policy_scope.py` 在参与计划中排除既有租户/Task 救援号，不改变成员快照或按健康缩小分母。回归为 `test_ai_generation_candidate_fairness.py`、`test_engagement_cutover_prerequisites.py`，合同为统一引擎 PRD 19.19–19.20。
 
 > **2026-09-05 规划性能修补：** `source_pacing_cursor.py` 在既有来源行锁内分配失效预约的独占后续时刻；`source_pacing_admission.py` 复用该入口。`engagement_planning_admission.py` 批量读取成员准入与代理，消除逐账号重复 SQL。回归为 `test_source_pacing_rebooking.py`、`test_engagement_admission_batching.py`，不改变目标、分母或 unknown 身份。
