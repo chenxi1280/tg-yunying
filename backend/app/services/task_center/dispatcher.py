@@ -604,6 +604,7 @@ def _legacy_content_scope_takeover_pending(action: Action) -> bool:
 def _release_dangling_engagement_leases(session: Session, action: Action) -> None:
     from app.models import AccountPoolConcurrencyLease, ExecutionAttempt
     from .engagement_runtime_resources import settle_attempt_resources
+    from .engagement_recovery_outcome import recovered_mutation_state
 
     leases = list(
         session.scalars(
@@ -618,7 +619,7 @@ def _release_dangling_engagement_leases(session: Session, action: Action) -> Non
         if attempt is not None:
             settle_attempt_resources(
                 attempt, action,
-                remote_mutation_started=bool(attempt.gateway_call_started_at),
+                remote_mutation_started=recovered_mutation_state(session, attempt, action),
             )
         else:
             raise RuntimeError("engagement_lease_attempt_missing")

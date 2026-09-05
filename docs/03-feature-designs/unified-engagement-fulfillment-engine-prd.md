@@ -2838,3 +2838,23 @@ M2.5切换后正式审核出现dict/list但缺全部审核字段。03:23普通�
 MiniMax的既有OpenAI兼容请求显式启用reasoning_split=true，继续读取message.content作为最终结果，reasoning_details不参与草稿、brief、正文、审核或质量判定。不关闭M2.5思考、不变更M3既有thinking配置、模型与路由、温度/token设置、质量阈值或严格审核schema，不通过截取多个JSON择优、补字段或放行refusal来掩盖错误。非MiniMax请求不增加该扩展参数，Antigravity继续原独立结构化协议。
 
 本协议修订design_status=complete：已反查从正式reviewer到路由、实际HTTP payload、content提取与严格review parser；QA先以含中间JSON的已知协议响应复现原错误，再检查最终pass/fail保持、推理与正文隔离、MiniMax M2.5/M3真实参数兼容和其他Provider请求不变。独立探针只用普通内容，不落库或发Telegram；旧Job、未知请求和历史审核结果不修改。发布后仍须按新生成实际schema/质量/远端链验收。
+
+### 19.54 组合规划容量读取不得按账号与动作类型重复查库
+
+点赞/浏览的reserve_portfolio_units在每个候选账号读取active policy，然后为当前class及total所列的每个class分别查询相同portfolio与behavior ledger。查询数随候选账号数和class数量相乘，未复用同一规划事务中的账号/日范围；1632账号和多个来源会反复付出数据库往返成本。
+
+本性能修订把一次容量读取收敛为最多四次有界SELECT：同tenant候选账号、相关account class的active policy、该tenant/task-day/candidate集合中active portfolio按account/class汇总、同日behavior counters。active policy仍以原FOR UPDATE语义锁定，批量按稳定class顺序取得；不缓存跨请求、跨事务、跨日或其他账号的数据，生产autoflush=False调用约定及原提交点保持。缺策略继续原显式错误，缺失/删除/跨tenant账号仍按原不可分配结果处理，依靠已有active policy唯一约束而非额外fallback。
+
+此子项只重排读取与纯计算，逐class max(planned, actual)及class/total余量、固定分配、轮转顺序、冻结输入hash、原reservation幂等和缺量投影均保持原数值；不会用四次查询作为共享占用全口径已闭合的证据。§19.50的历史/实际调用日占用进入完整规划的语义仍独立验收。代码按容量读取、确定性分配、计划持久化拆分，避免大模块与复制公式。
+
+反查resync：原入口通过ORM读取，Session中已有的未flush账号class、策略和counter修改对后续分配可见；批量改为纯列查询会忽略这些变更。批量读取保留ORM身份映射及原autoflush设置，用load_only限定实际所需字段，不以强制flush或populate_existing覆盖调用方状态。三种生产autoflush=False反例须分别验证，SQL次数仍不随候选增长。
+
+Product Design Complete：本性能子项design_status=complete；QA先记录真实原入口的查询数随候选增长的反例，再对不同tenant/day/state、多个class、planned与actual各自占优、总额、无策略/账号和原冻结幂等做结果对照；1/32/128候选时容量读取不得超过四条SELECT。真实PostgreSQL验证实际分组与锁及查询时延，发布后另验worker/规划性能和实际履约；不更改生产配置或激活Task。
+
+### 19.55 恢复结算不得用调用开始时间推断结果
+
+88030496的CI在恢复租约用例暴露§19.51的旧断言；反查同时发现Recovery与Dispatcher收尾均用bool(gateway_call_started_at)传递remote_mutation_started，把调用开始误当成确定变更。开始时间只证明进入调用，不证明成功、失败消耗或确定未执行。
+
+恢复失败Attempt时，只使用该Attempt原Gateway journal的typed mutation。必须核对Attempt与Action的tenant/account/epoch、journal owner、原请求三字段、观察时间及已发布格式的双hash，复用§19.52验证；冲突、不完整或unknown回执明确报告且保留三件套，不能改从较弱快照放行。无journal时，仅接受有after_call_at的原终态快照中的严格boolean；字符串、数字和调用前false不能作为完成证据。原调用未开始的释放仍按现有unissued/reserved合同办理。unknown继续原unknown与transport ACK规则，不按新结果重新分类。
+
+确定true的业务失败保留confirmed调用成本；确定false释放成本；缺证据的called failed保持原状态并暴露engagement_recovery_outcome_unproven，不能写成safely_not_called或transport acknowledged。直接结算同样不能把called failed的None当确定未执行。此为原未知结果与调用成本合同的缺口修补，不增加额度或重放路径。Product Design Complete：已反查两个恢复入口、正式finish/journal写入和结算顺序；QA覆盖true/false、真实journal优先于调用前快照、原身份/双hash损坏、无结果/非boolean、未调用、unknown及事务隔离、重复结算。此次CI先完成修补和定向回归，再用新固定SHA重新走完整发布。

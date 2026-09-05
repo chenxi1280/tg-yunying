@@ -1520,3 +1520,6 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 - `engagement_gateway_return.py`核对旧Gateway返回回执的原请求、时间和两种已发布哈希格式；`engagement_legacy_occupancy.py`仅在归属与mutation证据一致时据此解除物理在途投影，保留原预算和业务unknown。`test_engagement_gateway_return.py`及共享用量PostgreSQL用例覆盖真实格式与损坏/冲突对照，见统一PRD§19.52。
 
 - `AiGateway._chat_payload`为MiniMax显式请求reasoning_split，现行content读取和各调用方严格schema继续只接收最终内容；原thinking/温度/token及非MiniMax请求保持。协议反例见`test_minimax_reasoning_response_contract.py`，统一PRD§19.53。
+
+- `engagement_portfolio_capacity.py`以四次tenant/day/candidate范围查询读取容量，保留ORM可见性与active policy锁；`engagement_portfolio_allocation.py`承接原确定性分配/hash，`engagement_portfolio.py`保留计划与预约持久化。1,632账号真实PG对比结果等价，查询11,425→4，测试为`test_engagement_portfolio_query_scaling.py`与`test_engagement_portfolio_query_postgres.py`，见统一PRD§19.54。
+- `engagement_recovery_outcome.py`为Recovery和Dispatcher提供原失败调用结果读取，复用`engagement_gateway_return.py`的请求/时间/双hash验证；called failed缺证据时结算保留三件套并报错。原journal优先于调用前快照，不从call-start推断typed mutation，见统一PRD§19.55及`test_engagement_recovery_outcome.py`、`test_engagement_recovery_outcome_postgres.py`。

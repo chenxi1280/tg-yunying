@@ -19,6 +19,7 @@ from .engagement_runtime_circuit import (
     record_failed,
     record_unknown,
 )
+from .engagement_recovery_outcome import OUTCOME_UNPROVEN
 
 SETTLEABLE_ATTEMPT_STATES = frozenset({
     "success", "failed", "result_unknown", "skipped_before_gateway", "call_not_started",
@@ -251,6 +252,9 @@ def _settle_failed(
     fence: RemoteInvocationFence,
     remote_mutation_started: bool | None,
 ) -> None:
+    if (type(remote_mutation_started) is not bool
+            and (attempt.gateway_call_started_at is not None or fence.started_at is not None)):
+        raise RuntimeError(OUTCOME_UNPROVEN)
     lease.state = "released"
     lease.released_at = _now()
     lease.release_reason = "remote_terminal_failed"

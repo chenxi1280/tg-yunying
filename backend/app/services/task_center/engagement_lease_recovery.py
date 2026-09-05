@@ -8,6 +8,7 @@ from app.models import (Action, ExecutionAttempt, AccountPoolConcurrencyLease,
 from .engagement_runtime_settlement import (
     SETTLEABLE_ATTEMPT_STATES, UNSTARTED_ATTEMPT_STATES, PRECALL_TERMINAL_ACTION_STATES,
 )
+from .engagement_recovery_outcome import recovered_mutation_state
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +73,7 @@ def _settle_one(session, identity, *, settle):
         .where(AccountPoolConcurrencyLease.attempt_id == attempt_id)
         .with_for_update().execution_options(populate_existing=True))
     before = _resource_state(session, attempt_id)
-    settle(attempt, action, remote_mutation_started=bool(attempt.gateway_call_started_at))
+    settle(attempt, action, remote_mutation_started=recovered_mutation_state(session, attempt, action))
     session.flush()
     return int(_resource_state(session, attempt_id) != before)
 

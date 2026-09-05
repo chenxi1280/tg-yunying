@@ -8,6 +8,12 @@ def journal_proves_gateway_return(row, journal):
     if (journal["journal_state"] != "recorded" or journal["journal_mutation"] != "true"
             or not (journal["journal_message_id"] or journal["journal_fact_id"])):
         return False
+    return journal_matches_original_call(row, journal)
+
+
+def journal_matches_original_call(row, journal):
+    if journal["journal_state"] != "recorded":
+        return False
     if (row["call_at"] is None or journal["journal_observed_at"] is None
             or as_beijing(journal["journal_observed_at"]) < as_beijing(row["call_at"])):
         return False

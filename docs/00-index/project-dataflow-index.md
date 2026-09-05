@@ -1520,3 +1520,6 @@ legacy-only A 冷启动分支固定为 `frozen legacy A -> 原 A Session 只读 
 - 原Gateway已返回的历史回执 → 原Attempt request/target冻结指纹、owner/epoch、call-start时间和result/evidence双hash验证 → 仅解除旧物理在途投影；原任务日/调用日预算与unknown保留，不写ACK、不补成功、不触发重放。旧四字段格式只在typed fact为空且原双hash匹配时识别。
 
 - MiniMax请求reasoning_split=true → 推理留在独立reasoning_details → 最终message.content → 原结构化JSON解析及调用方brief/正文/审核schema。推理不作为候选或审核决定，旧结果不重写，失败仍按原typed路径暴露。
+
+- 组合容量读取：同tenant候选账号 → 稳定class顺序锁active policy → 同day的active portfolio按account/class汇总 → 同day behavior counters → 原class/total公式及分配。四次查询不随账号数增长；ORM未flush变更按原约定可见，计划冻结/hash/缺量含义不变，历史/跨日共享规划口径另行验收。
+- 恢复失败Attempt：原Action/Attempt归属 → 原journal owner/request/time/双hash与typed mutation；无journal才读取带after_call_at的严格boolean终态快照 → true确认调用成本、false释放成本。调用开始时间不作结果，缺失或冲突保持原三件套并报告错误；unknown仍按原业务状态与transport ACK结算，不制造成功或重放许可。

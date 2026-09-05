@@ -54,11 +54,14 @@ def test_held_unknown_does_not_starve_following_terminal_lease():
         held.id = "000-held"
         other, terminal = _inflight(session, task, 12)
         other.status = terminal.status = "failed"
+        terminal.after_call_at = _now()
+        terminal.result_snapshot = {**terminal.result_snapshot, "remote_mutation_started": True}
         last, budget, fence = _resources(session, terminal)
         last.id = "zzz-ready"
         assert runtime.recover_stale_concurrency_leases(session, limit=1) == 1
         assert held.state == "remote_unknown"
-        assert (last.state, budget.state, fence.state) == ("released", "released", "terminal")
+        assert (last.state, budget.state, fence.state) == ("released", "confirmed", "terminal")
+        assert fence.business_outcome_state == "failed" and terminal.status == "failed"
         assert runtime.recover_stale_concurrency_leases(session, limit=1) == 0
 
 
@@ -96,6 +99,9 @@ def test_recovery_error_rolls_back_only_one_attempt_and_is_not_counted(caplog):
         first, failed = _inflight(session, task, 11)
         second, healthy = _inflight(session, task, 12)
         first.status = second.status = failed.status = healthy.status = "failed"
+        for attempt in (failed, healthy):
+            attempt.after_call_at = _now()
+            attempt.result_snapshot = {**attempt.result_snapshot, "remote_mutation_started": False}
         session.commit()
         def settlement(attempt, action, **kwargs):
             runtime.settle_attempt_resources(attempt, action, **kwargs)

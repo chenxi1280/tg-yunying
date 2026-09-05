@@ -1,25 +1,21 @@
 from __future__ import annotations
 
-import hashlib
-import json
 from dataclasses import dataclass
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import (
-    AccountBehaviorBudgetLedger,
-    AccountBehaviorBudgetPolicyRevision,
     AccountPortfolioLoadReservation,
     PortfolioFeasibilityPlanRevision,
     Task,
     TaskDayLedger,
-    TgAccount,
 )
 
-
-POLICY_REVISION = "portfolio_account_budget_v1"
-ACTIVE_RESERVATION_STATE = "active"
+from .engagement_portfolio_allocation import (
+    _allocation_for_request, _demand_hash, _distribute, _hash, _normalized_request, _positive,
+)
+from .engagement_portfolio_capacity import ACTIVE_RESERVATION_STATE, read_portfolio_capacities
 
 
 @dataclass(frozen=True)
@@ -113,24 +109,6 @@ def _create_portfolio_decision(
     return _allocation_decision(plan, allocation, request)
 
 
-def _demand_hash(
-    task: Task,
-    ledger: TaskDayLedger,
-    *,
-    action_class: str,
-    demand_identity: str,
-    request: dict,
-) -> str:
-    return _hash({
-        "policy": POLICY_REVISION,
-        "task": task.id,
-        "day": str(ledger.obligation_local_date),
-        "class": action_class,
-        "identity": demand_identity,
-        **request,
-    })
-
-
 def _existing_portfolio_decision(
     session: Session,
     task: Task,
@@ -189,32 +167,6 @@ def _frozen_input_change_decision(
     return PortfolioAllocationDecision(
         plan, allocation, requested, allocated, deficit,
     )
-
-
-def _allocation_for_request(
-    rows: list[AccountPortfolioLoadReservation],
-    request: dict,
-) -> dict[int, int]:
-    frozen = {row.account_id: int(row.reserved_units) for row in rows}
-    fixed = {
-        int(key): int(value)
-        for key, value in request["requested_units_by_account"].items()
-    }
-    if fixed:
-        return _positive({
-            account_id: min(units, frozen.get(account_id, 0))
-            for account_id, units in fixed.items()
-        })
-    candidates = {int(item) for item in request["candidate_account_ids"]}
-    remaining = int(request["requested_units"])
-    allocation: dict[int, int] = {}
-    for account_id in sorted(frozen):
-        if account_id not in candidates or remaining <= 0:
-            continue
-        units = min(frozen[account_id], remaining)
-        allocation[account_id] = units
-        remaining -= units
-    return allocation
 
 
 def _persist_new_plan(
@@ -330,25 +282,6 @@ def task_account_portfolio_allowance(
     return int(allowance or 0), int(task_total or 0)
 
 
-def _normalized_request(
-    total_units: int,
-    candidate_ids: list[int] | None,
-    requested_by_account: dict[int, int] | None,
-) -> dict:
-    fixed = {
-        int(account_id): max(0, int(units))
-        for account_id, units in (requested_by_account or {}).items()
-        if int(units) > 0
-    }
-    candidates = sorted({int(item) for item in (candidate_ids or fixed.keys())})
-    requested = sum(fixed.values()) if fixed else max(0, int(total_units))
-    return {
-        "requested_units": requested,
-        "candidate_account_ids": candidates,
-        "requested_units_by_account": {str(key): value for key, value in fixed.items()},
-    }
-
-
 def _allocate_request(
     session: Session,
     task: Task,
@@ -358,31 +291,10 @@ def _allocate_request(
     request: dict,
 ) -> tuple[dict[int, int], dict[int, int], list[str]]:
     account_ids = [int(item) for item in request["candidate_account_ids"]]
-    accounts = _accounts(session, task, account_ids)
-    capacities: dict[int, int] = {}
-    policy_ids: set[str] = set()
-    for account_id in account_ids:
-        account = accounts.get(account_id)
-        if account is None:
-            capacities[account_id] = 0
-            continue
-        policy = _budget_policy(session, task.tenant_id, account.account_identity)
-        policy_ids.add(policy.id)
-        budgets = dict(policy.action_budgets or {})
-        class_remaining = int(budgets.get(action_class) or 0) - _occupied_capacity(
-            session,
-            task,
-            ledger,
-            account_id=account_id,
-            action_class=action_class,
-        )
-        total_limit = int(budgets.get("total") or sum(
-            int(value or 0) for key, value in budgets.items() if key != "total"
-        ))
-        total_remaining = total_limit - _occupied_total_capacity(
-            session, task, ledger, account_id=account_id, budgets=budgets,
-        )
-        capacities[account_id] = max(0, min(class_remaining, total_remaining))
+    capacities, policy_ids = read_portfolio_capacities(
+        session, task.tenant_id, ledger.obligation_local_date,
+        account_ids=account_ids, action_class=action_class,
+    )
     fixed = {
         int(key): int(value)
         for key, value in request["requested_units_by_account"].items()
@@ -400,125 +312,6 @@ def _allocate_request(
         int(request["requested_units"]),
     )
     return allocation, capacities, sorted(policy_ids)
-
-
-def _distribute(
-    task_id: str,
-    request: dict,
-    capacities: dict[int, int],
-    requested: int,
-) -> dict[int, int]:
-    ordered = sorted(
-        capacities,
-        key=lambda account_id: _hash(
-            {"task": task_id, "request": request, "account": account_id}
-        ),
-    )
-    allocation = {account_id: 0 for account_id in ordered}
-    remaining = requested
-    while remaining > 0:
-        progressed = False
-        for account_id in ordered:
-            if allocation[account_id] >= capacities[account_id]:
-                continue
-            allocation[account_id] += 1
-            remaining -= 1
-            progressed = True
-            if remaining == 0:
-                break
-        if not progressed:
-            break
-    return _positive(allocation)
-
-
-def _occupied_capacity(
-    session: Session,
-    task: Task,
-    ledger: TaskDayLedger,
-    *,
-    account_id: int,
-    action_class: str,
-) -> int:
-    planned = int(
-        session.scalar(
-            select(func.sum(AccountPortfolioLoadReservation.reserved_units)).where(
-                AccountPortfolioLoadReservation.tenant_id == task.tenant_id,
-                AccountPortfolioLoadReservation.task_day == ledger.obligation_local_date,
-                AccountPortfolioLoadReservation.account_id == account_id,
-                AccountPortfolioLoadReservation.action_class == action_class,
-                AccountPortfolioLoadReservation.state == ACTIVE_RESERVATION_STATE,
-            )
-        )
-        or 0
-    )
-    behavior = session.scalar(
-        select(AccountBehaviorBudgetLedger).where(
-            AccountBehaviorBudgetLedger.tenant_id == task.tenant_id,
-            AccountBehaviorBudgetLedger.account_id == account_id,
-            AccountBehaviorBudgetLedger.task_day == ledger.obligation_local_date,
-        )
-    )
-    states = dict((behavior.counters or {}).get(action_class) or {}) if behavior else {}
-    actual = sum(
-        int(states.get(key) or 0)
-        for key in ("reserved", "call_issued", "unknown", "confirmed", "unowned")
-    )
-    return max(planned, actual)
-
-
-def _occupied_total_capacity(
-    session: Session,
-    task: Task,
-    ledger: TaskDayLedger,
-    *,
-    account_id: int,
-    budgets: dict,
-) -> int:
-    return sum(
-        _occupied_capacity(
-            session,
-            task,
-            ledger,
-            account_id=account_id,
-            action_class=action_class,
-        )
-        for action_class in budgets
-        if action_class != "total"
-    )
-
-
-def _budget_policy(
-    session: Session,
-    tenant_id: int,
-    account_class: str,
-) -> AccountBehaviorBudgetPolicyRevision:
-    policy = session.scalar(
-        select(AccountBehaviorBudgetPolicyRevision)
-        .where(
-            AccountBehaviorBudgetPolicyRevision.tenant_id == tenant_id,
-            AccountBehaviorBudgetPolicyRevision.account_class == account_class,
-            AccountBehaviorBudgetPolicyRevision.state == "active",
-        )
-        .with_for_update()
-    )
-    if policy is None:
-        raise RuntimeError("account_behavior_budget_policy_missing")
-    return policy
-
-
-def _accounts(
-    session: Session,
-    task: Task,
-    account_ids: list[int],
-) -> dict[int, TgAccount]:
-    rows = session.scalars(
-        select(TgAccount).where(
-            TgAccount.tenant_id == task.tenant_id,
-            TgAccount.id.in_(account_ids),
-            TgAccount.deleted_at.is_(None),
-        )
-    )
-    return {row.id: row for row in rows}
 
 
 def _existing_reservations(
@@ -690,21 +483,6 @@ def _project_task(task: Task, plan: PortfolioFeasibilityPlanRevision) -> None:
         task.last_error = "portfolio_capacity_insufficient"
     elif task.last_error == "portfolio_capacity_insufficient":
         task.last_error = ""
-
-
-def _positive(values: dict[int, int]) -> dict[int, int]:
-    return {key: value for key, value in values.items() if value > 0}
-
-
-def _hash(value) -> str:
-    payload = json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    ).encode()
-    return hashlib.sha256(payload).hexdigest()
 
 
 __all__ = [
