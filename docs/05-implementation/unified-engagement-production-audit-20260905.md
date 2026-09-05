@@ -560,3 +560,19 @@ QA：worker_exit_second_qa.log为28 passed/23.86秒；worker_exit_legacy_regress
 06:47:57在28bb的一次独立READ ONLY进程加载候选源码，按正式服务逻辑验证全部2391条，8.11388秒，preview hash=5f5b5bcc7d96416e9bf37cfcc9ab51ac0397fe1df48e1f1eeb2b6ec8598b2140；完整回执legacy_worker_exit_candidate_readonly.json保存候选源码hash、运行SHA及原状态。此探针没有安装候选代码、没有写生产，也不是正式apply输入；正式发布后重新取得原状态/hash。候选条数不等于物理容量实际已释放，更不等于Telegram成功。
 
 Release Gate：本候选只新增上述退出证明服务/CLI/测试和PRD、两份索引、运行说明/审计，无新迁移和自动数据修改。准备期间master被另一任务快进到7c9c8830，差异仅两份ABC运行文档且与本次路径不重叠，原样保留。正常master→release→Deploy Production后独立验证SHA/runtime，再重新preview并沿当前用户“全量放弃旧工作、切换新引擎”的授权范围执行精确ACK和读回；不启用额外部署诊断或重试。ACK后的账号可用集合、全日组合容量与读取性能必须重新测量；缺退出证明的旧调用、22任务正式替代、四类质量/数量/E4仍独立待验收，未声明production_fixed。
+
+## 2026-09-06 07:46 原进程退出对账提交与独立读回
+
+0b646f05703378f80bcedd03ed079cd0de839a42的Deploy33997259500已终态success，五组后端、前端、三镜像及部署全部通过。07:35:32独立核验current=20260905230518_0b646f05，20个规定服务全部存在、版本匹配、running/healthy、无重启/OOM，APIok；图片识别服务继续按完整SHA镜像标签及实际image ID核验。07:35:38 schema为0226，退役约束有效。回执runtime_all_roles_0b64_verify.json、runtime_schema_0b64_verify.json及空stderr保存。
+
+正式已部署CLI重新preview精确2391条，hash=9e9d28b37dcedd100252748caeb48c1d82c9dc11b5ed6f94e240f6b456bab926；完整预览在apply前复制本地并设0600。正式apply只提交一次，actor=codex、audit_reference=user-direct-cutover-20260906；客户端在120秒等待后超时，不能据此认定事务失败或重试。独立只读查询找到已提交AuditLog 1047263，created_at=07:37:25.533061，目标hash与预览一致；原apply进程随后已不存在。
+
+从容器取回正式receipt并保存为legacy_worker_exit_0b64_formal_receipt.json（0600，1655800字节，SHA256=135005831425f5e1a4cf3334c8ea433add5b57fef6d134658a53a69be7a2e0c9）。回执中精确Attempt集合、全部before字段和预览hash与原preview完全相同，2391份snapshot各自增加transport证据。独立再次执行正式readback于07:40:57完成：acknowledged=2391、business_fields_preserved=true，耗时21.305秒、stderr为空；结果保存在legacy_worker_exit_0b64_official_readback.json。原状态仍为2273 failed、117 result_unknown、1 gateway_call_started，不把物理退出改成Telegram业务成功，也未重复apply。
+
+07:41:59重新读取当前全部22任务范围：业务成员集合已由早先1632变为1633，原reader投影1370条，占用读取19.588秒；物理在途账号83、证据问题账号74、并集90，1543个账号不受这两项历史问题阻塞。剩余证据问题为357条original_task_day_unproven，保留原未知和原日期，不按同批已证明的容器外推。与06:24的779个受阻账号是两个不同时间的集合观察，不把成员增加或自然执行变化归入ACK的精确收益。该可用数尚未包含其他账号健康、全日总预算及来源条件，不等于完整组合可行性或E4。回执direct_cutover_legacy_availability_after_ack.json/.stderr保存。
+
+同一固定32账号实际共享准入读取抽样：ACK前07:35:21为64 SELECT，中位0.04131秒、P95 0.21061秒、最大1.27759秒，32个有旧物理占用、11个有证据问题；ACK后07:41:24仍64 SELECT，中位0.08983秒、P95 0.39607秒、最大1.59676秒，分别降为6/6账号。此抽样没有证明提速，保留原测量，不宣称ACK带来吞吐改善。源码反查确认全范围分组reader仅用于此次诊断，生产共享准入实际按单账号调用；此前组合容量11,425→4 SELECT优化继续由已发布代码承载，生产任务吞吐仍待新引擎运行后测量。前后回执shared_usage_hotpath_before_ack.json、shared_usage_hotpath_after_ack.json及同一脚本保存。
+
+07:43:15再查成员基础：12组均无漂移，组15成员版本已推进到3，其余仍为1，state hash=6374d84d3b22ee4bc5a3651205aeed01937c682270239f8623081dd7f0753bdc。22个Task仍全部旧路由running，retired=0、unified_running=0，未执行retire/create/activate。07:45:19重新准备配置时成员继续增至1635（天津音乐536、天津一品楼304、成都1634）；评论保留55%–65%，显式每帖容量上限1063、日容量16350，浏览保留80%–95%与new_only。完整待确认spec已受保护保存，正式执行时仍须按当时集合重新preview/CAS。
+
+9个旧活群的topic_participation_rate仍全部为空，先前已提出的首次启用值问题尚未收到用户回复。待确认spec没有填入示例0.3，不能作为完整正式cutover preview或apply输入；直接切换与四类任务的质量、数量、远端事实验收仍未完成。临时配置采集脚本首次因输出路径变量未定义而非零退出，修正该采集脚本后07:45:19只读配置检查通过；两次均未写数据库或调用Telegram，失败输出另留存，不计为通过证据。
