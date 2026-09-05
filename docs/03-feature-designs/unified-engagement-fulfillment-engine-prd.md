@@ -2645,4 +2645,12 @@ QA：UTC跨北京日界、同一时刻不同offset的观察hash一致、编辑�
 
 此修补只改变观察账号排序，不触发发送、入群、审批、加入新账号组或重置旧Action/unknown；所有原错误状态继续可见。排序时间、采集freshness和租约比较按§19.32的同一真实时刻转换。QA覆盖首批全部失败后选择后续未探测账号、批次外既有ready账号、全失败的最旧到期账号、其他tenant/目标/组不影响排序、SQL数量不随账号数增长。此局部接管缺口design_status=complete，不代表完整ConversationObservationRoute或全引擎接管已经验收。
 
+### 19.34 存量 Action 的运行合同读取
+
+发前资源合同不能只读Task当前engagement标记：该标记切换会让存量Action突然要求新参与计划，反向切换又会让已冻结的统一工作绕过资源门禁。首个正式TaskAccountGroupBindingSetRevision是同tenant/task/lifecycle首次统一绑定的持久边界，其effective_from在正式激活事务中与新入口同时生效；后续分组successor不能移动此边界。
+
+读取Action时核对原tenant/task/lifecycle的首次绑定，并比较原Action及其明确引用的数量义务/原计划创建时刻。首次绑定之前的工作与其后续同义务重建继续按legacy运行合同收口；首次绑定之后的新工作继续使用统一资源合同，即使Task当前标记被回退。比较使用同一真实时刻，不改写Action、payload、义务、绑定历史、未知结果或排期。缺少首次绑定且当前同epoch明确请求统一合同的工作仍沿原缺绑定错误退出，不能以本次兼容判断绕过激活检查。
+
+QA覆盖接管前Action、接管后同旧义务的Action、同日后续绑定修订、当前标记回退、tenant/task/epoch错配及已有unknown不修改。本运行合同读口径子项design_status=complete；它不替代旧来源的新工作入口收口、生成配置归属和legacy与统一工作共用行为额度的接管实现，不能据此单独启用全部Task。
+
 来源诊断读模型同样按真实时刻比较：远端UTC与本地北京时间的同一发布时间/编辑时间统一输出+08:00，不因ISO字符串offset不同误报listener_lag；listener lease与观察时刻先做相同时区换算，UTC租约仍在有效期时零诊断RPC。该修正只读，不改变lease或触发采集。

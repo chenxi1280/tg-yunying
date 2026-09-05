@@ -1,5 +1,7 @@
 # 项目数据流转索引
 
+> **2026-09-05 存量执行合同归属：** Action原tenant/task/lifecycle → 同epoch首次正式binding的effective_from → 核对原Action及明确引用的数量owner/父计划创建时刻 → legacy原合同收口或统一资源reservation。后续binding和Task标记回退不移动首次边界；错owner显式失败，旧payload/数量/排期/Attempt/unknown不回写。该读口径不是完整来源入口或跨legacy额度迁移。
+
 > **2026-09-05 频道来源观察接管排序：** 原Task账号范围与业务资格过滤 → 同tenant/channel/account的ready、未探测、到期失败、等待状态排序 → SQL候选截断与原健康/冷却筛选 → 合并原近期同目标成功候选 → 原listener claim/fetch/persist。失败后可选中首批之外的合法观察者；不修改成员范围、旧错误状态或业务Action/unknown，不把只读候选变化视为成功采集。
 
 > **2026-09-05 DF-363 来源时间规范化：** `authoritative Telegram aware date -> Asia/Shanghai same-instant normalization -> exact legacy stripped-offset comparison -> current ChannelMessage timestamp projection + correction provenance -> append-only SourceRevision(timestamp_corrected or real edited) -> existing source intake`。旧 naive 内部值仍为北京时间语义；非已知去时区冲突明确失败，缺时间不造 source revision。旧 frozen plan/Action/Attempt/fact/unknown/排期截止不回写，后续相同快照的 offset 表示变化不制造新 hash 或伪编辑。

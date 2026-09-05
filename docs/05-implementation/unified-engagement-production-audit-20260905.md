@@ -262,3 +262,13 @@ PRD19.32先闭合当前权威观测下的精确纠错，不全表加8小时。�
 PRD19.33。反例4失败1通过（3.32秒）：批次外未探测、ready、最旧失败均被排除，runtime _wall另有去时区问题。修补将同tenant/channel/account观察状态排序表达式传入原候选SQL，在LIMIT之前生效，仍保留原Task范围/健康/冷却/近期目标事实。27项初步回归通过（6.15秒）；扩大至账号池与来源分页63项通过（10.92秒），45与1045账号的SELECT数一致；真实隔离PostgreSQL的UTC会话排序与来源时刻修补2项通过（6.01秒）。所有测试硬60秒，PG显式55439/tg_yunying_test并使用advisory lock。
 
 15:46生产只读对比在独立诊断进程内载入候选函数，不改变服务进程或数据库：原选择41，候选选择此前未探测的17；两侧均12次SELECT。两次原耗时0.3092/0.4192秒，候选0.2049/0.1860秒，仅是该样本，不视为全链P95。零Provider/Telegram调用、零数据变更。代码审查及compileall/diff check通过；账号选择函数49非空行、账号池文件495行。无schema/API/Task目标变化，等待发布与正式采集证据。
+
+## 来源时间上线与真实采集读回
+
+cfc563363818e7f16cce01593214ec68f6fe7621 / Deploy33952867854终态success。独立current=20260905074149_cfc56336，backend/planner/三组生成/comment-generation/双dispatcher/listener/recovery均running healthy且RELEASE_SHA一致，容器API健康status=ok。15:57读回：正常listener在15:50:58将Ago133/134当前发布时间纠正为9月5日01:10:20/21，并分别追加bd1bc0b6/0e538a9c的timestamp_corrected来源；current采集账号958/snapshot14为ready。819仍unavailable，其四个样本仍旧时间；候选排序47894f88尚未发布。该证据证明Ago时间纠正，不是统一评论发送E4。
+
+## 存量 Action 合同 Release Gate
+
+PRD19.34。3项真实反例均失败（2.83秒）：当前Task切成unified会把绑定前Action和同旧义务的新Action重解释；反向改回legacy又会跳过新统一Action资源门禁。修补只读首次正式binding边界和四类原数量owner/父计划时间，校验tenant/task/epoch/account，不写任何旧业务记录。初步19项通过（5.52秒），扩展47项通过（8.75秒）。
+
+最终单元组50项通过（9.83秒），独立PostgreSQL UTC会话/等于生效边界/标记回退/unknown不动1项通过（5.75秒），每个进程硬60秒。中间同进程混跑结果50通过1失败（13.55秒），失败为既有recovery的caplog日志断言：PG迁移初始化调用fileConfig影响已有logger；按CI的no-postgres/PG分进程方式重跑后两组通过。未改恢复代码或放宽日志断言。compileall/diff check及代码自审通过；无schema/API/配置修改。完整R1仍需要旧来源入口、生成配置归属和跨legacy行为额度，不能单靠本切片开启全部Task。

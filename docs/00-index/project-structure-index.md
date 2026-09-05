@@ -1,5 +1,7 @@
 # 项目结构索引
 
+> **2026-09-05 存量 Action 运行合同读取：** `engagement_action_contract.py` 从原tenant/task/lifecycle首次正式分组绑定和Action/数量义务/计划创建时刻确定资源合同；`engagement_runtime_resources` 共用该读口径，当前Task标记不能重解释旧工作或解除已冻结统一工作的门禁。旧字段零回写；四类owner、跨账号/租户/任务/epoch、绑定successor及真实PostgreSQL时间读回测试位于 `test_engagement_action_contract*.py`。生成配置和legacy共享行为额度仍需另行接管。
+
 > **2026-09-05 频道观察账号候选排序：** `account_pool.select_task_accounts` 接收仅供内部SQL使用的候选排序表达式，在原分组/资格查询的LIMIT前生效；`channel_listener_accounts._listener_candidate_order` 按完整tenant/频道/账号的监听状态排序，使用同一SQL的关联子查询，不按账号发起独立查询。`channel_listener_runtime` 的freshness/重试/租约时间统一按北京时间真实时刻比较。回归为 `test_channel_listener_candidate_order.py`、`test_channel_listener_candidate_postgres.py` 和原账号池/监听测试。
 
 > **2026-09-05 来源真实时间修补：** `channel_source_message_persistence.py` 从 listener snapshot 模块分离消息/SourceRevision 的持久化、观察 hash 和编辑判定，使用 `as_beijing/as_beijing_aware` 保持同一真实时刻；`_publication_correction` 只识别当前权威快照能证明的旧去时区错误。`operations_channel_snapshot.py` 接收手动频道采集快照并复用同一纠正记录，`operations.py` 保留调度入口，后续 listener 追加 `timestamp_corrected` revision。历史 revision 和 Action/Job/unknown 不修改。回归为 `test_channel_source_time_normalization.py`、`test_channel_source_time_postgres.py` 及原 listener/source intake 测试。

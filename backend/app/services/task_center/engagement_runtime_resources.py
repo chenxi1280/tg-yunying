@@ -17,7 +17,6 @@ from app.models import (
     ExecutionAttempt,
     ExecutionResiliencePolicyRevision,
     RemoteInvocationFence,
-    Task,
     TaskAccountGroupBindingSetRevision,
     TaskDayLedger,
     TgAccount,
@@ -25,7 +24,7 @@ from app.models import (
 from app.services._common import _now
 from app.timezone import as_beijing
 
-from .engagement_binding import ENGAGEMENT_TASK_TYPES
+from .engagement_action_contract import action_uses_unified_contract
 from .engagement_action_classes import ACTION_CLASS_BY_TYPE
 from .engagement_account_origin import (
     FrozenAccountOrigin,
@@ -200,15 +199,10 @@ def _assert_runtime_capacity(
 
 
 def _uses_unified_engagement_contract(session: Session, action: Action) -> bool:
-    if action.task_type not in ENGAGEMENT_TASK_TYPES:
-        return False
-    task = session.get(Task, action.task_id)
-    if task is None:
-        raise RuntimeResourceBlocked("engagement_task_missing", "互动任务不存在")
-    return (
-        (task.type_config or {}).get("engagement_contract_version")
-        == "unified_engagement_v1"
-    )
+    try:
+        return action_uses_unified_contract(session, action)
+    except ValueError as exc:
+        raise RuntimeResourceBlocked(str(exc), "互动动作的原运行合同无法核对") from exc
 
 
 def mark_attempt_call_issued(session: Session, attempt: ExecutionAttempt) -> None:
