@@ -20,6 +20,9 @@ from app.services.task_center.engagement_runtime_resources import (
     mark_attempt_call_issued, reserve_attempt_resources, settle_attempt_resources,
 )
 from app.services.task_center.engagement_shared_usage import SharedUsageScope, read_shared_account_usage
+from app.services.task_center.gateway_evidence_journal import (
+    GatewayResultEvidence, bind_gateway_request_identity, record_gateway_result_evidence,
+)
 from app.services.task_center.engagement_unowned_activity import _charge_behavior_budget
 from app.timezone import as_beijing
 
@@ -119,6 +122,29 @@ def test_failed_business_result_retains_confirmed_cost_on_original_ledger():
         assert ledger.task_day == as_beijing(action.pacing_due_at).date()
         assert ledger.task_day != as_beijing(attempt.gateway_call_started_at).date()
         assert attempt.status == "failed" and fence.business_outcome_state == "failed"
+        session.rollback()
+
+
+def test_original_gateway_return_keeps_unknown_cost_and_releases_physical_projection():
+    with SessionLocal() as session:
+        action, attempt = _seed(session)
+        action.status = "closed_unknown"
+        attempt.status = "result_unknown"
+        attempt.gateway_call_started_at = _now()
+        attempt.after_call_at = _now()
+        bind_gateway_request_identity(action, attempt)
+        session.flush()
+        journal = record_gateway_result_evidence(session, action, attempt,
+            GatewayResultEvidence(remote_message_id="original-return", remote_mutation_started=True))
+        session.flush()
+        scope = SharedUsageScope(TENANT_ID, ACCOUNT_ID, as_beijing(action.pacing_due_at).date(),
+            as_beijing(attempt.gateway_call_started_at).date())
+        usage = read_shared_account_usage(session, scope)
+        assert dict(usage.original_extra) == dict(usage.activity_occupied) == {"reaction": 1}
+        assert usage.legacy_inflight == usage.issues == ()
+        assert attempt.status == "result_unknown" and action.status == "closed_unknown"
+        assert "transport_termination_state" not in attempt.result_snapshot
+        assert journal.state == "recorded"
         session.rollback()
 
 

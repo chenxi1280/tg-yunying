@@ -12,6 +12,7 @@ from app.timezone import BEIJING_TZ, as_beijing
 
 from .engagement_action_classes import ACTION_CLASS_BY_TYPE
 from .engagement_binding import ENGAGEMENT_TASK_TYPES
+from .engagement_gateway_return import journal_proves_gateway_return
 
 TERMINAL_ATTEMPT_STATES = frozenset({
     "success", "failed", "result_unknown", "skipped_before_gateway", "call_not_started",
@@ -107,6 +108,9 @@ def _candidate_columns(ledger_ref, snapshot):
         ExecutionAttempt.remote_message_id.label("remote_message_id"),
         snapshot["remote_mutation_started"].as_boolean().label("mutation_started"),
         snapshot["transport_termination_state"].as_string().label("termination"),
+        snapshot["gateway_request_identity"].as_string().label("attempt_request"),
+        snapshot["gateway_request_fingerprint"].as_string().label("attempt_request_hash"),
+        snapshot["gateway_target_fingerprint"].as_string().label("attempt_target_hash"),
         Action.tenant_id.label("action_tenant"), Action.task_id, Action.action_type,
         Action.account_id.label("action_account"),
         Action.task_lifecycle_epoch.label("action_epoch"), Action.pacing_due_at,
@@ -120,7 +124,22 @@ def _candidate_columns(ledger_ref, snapshot):
         GatewayRequestEvidenceJournal.account_id.label("journal_account"),
         GatewayRequestEvidenceJournal.remote_mutation_state.label("journal_mutation"),
         GatewayRequestEvidenceJournal.state.label("journal_state"),
+        *_journal_return_columns(),
     )
+
+
+def _journal_return_columns():
+    journal = GatewayRequestEvidenceJournal
+    return (journal.gateway_request_identity.label("journal_request"),
+        journal.request_fingerprint.label("journal_request_hash"),
+        journal.target_fingerprint.label("journal_target_hash"),
+        journal.result_fingerprint.label("journal_result_hash"),
+        journal.evidence_hash.label("journal_evidence_hash"),
+        journal.remote_message_id.label("journal_message_id"),
+        journal.remote_fact_id.label("journal_fact_id"),
+        journal.typed_remote_fact.label("journal_typed_fact"),
+        journal.failure_code.label("journal_failure_code"),
+        journal.observed_at.label("journal_observed_at"))
 
 
 def _project_attempt(row, journals):
@@ -136,6 +155,8 @@ def _project_attempt(row, journals):
         issues.append("actual_call_day_unproven")
     terminated = row["termination"] == "acknowledged"
     terminated = terminated or (row["attempt_state"] == "success" and mutation == "true")
+    if not (_owner_issues(row) or mutation_issues):
+        terminated = terminated or any(journal_proves_gateway_return(row, item) for item in journals)
     return LegacyAttemptOccupancy(
         attempt_id=row["attempt_id"], action_id=row["action_id"], task_id=row["task_id"],
         account_id=row["account_id"], action_class=ACTION_CLASS_BY_TYPE[row["action_type"]],

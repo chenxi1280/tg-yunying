@@ -462,3 +462,12 @@ d6d637aa51251ca4040ebcb82b757e2157fd647d已按master/release冻结并触发Deplo
 - 最终定向92 passed/15.36秒，包含成本修补及Dispatcher异常helper等价提取后的回归；真实PG10 passed/11.27秒，覆盖UTC日界、跨日成本及pg_blocking_pids确认的unowned与发前预约竞争。PG夹具先补显式flush，再按真实非级联FK顺序清理本测试tenant，未改变生产实现来通过夹具。全部后端硬60秒，仅55439/tg_yunying_test及advisory lock；新模块小于500行、修改函数不超过50非空行、编译和diff检查通过。原12k行Dispatcher只修改相关入口并抽出通用异常体，AST证明原异常行为完全一致。
 - 02:59:51在b375中以临时Python进程只读加载候选两reader源码试算，生产文件、数据库、Gateway均无修改；每账号2SELECT。三个当天活跃普通账号的耗时为0.7236/0.0804/0.0932秒，分别明确保留2/2/3条历史物理未证明占用，第三个另有original_task_day_unproven；原日/实际日用量逐类输出。回执shared_usage_candidate_readonly_probe.jsonl保留源码hash，不是候选已经安装或统一Task已激活的证据。
 - 后续历史物理证据反查：03:08有25条非success Attempt对应recorded/true journal且带remote_message_id，但仅16条可匹配原request/target指纹，当前算法重算result/evidence hash均不符。此为未闭合线索，尚须核对历史结构版本与独立journal owner；不能据ID存在释放物理占用或改写unknown。完整R1仍需pool/proxy历史物理证明、规划期组合预算、配置/来源单写者与正式初始cutover。
+
+### 2026-09-06 03:18 质量发布独立读回与旧Gateway返回证明
+
+- Deploy33985760102已终态success，单次安装且Antigravity输出preserved_unchanged、model_probe_performed=false，保留733独立runtime和原quota/degraded。03:12:36处于安装末尾时19容器已经8f但current仍b375，首次matched=false如实保留；03:15:19独立再次读回current=20260905190914_8f85409c、19/19同8f且healthy、APIok、无OOM/重启，全部swappiness60，MemAvailable821900kB、swap占用286428kB。回执8f_runtime_release_verify_final.jsonl及完整部署日志。
+- 03:10:33之后至03:16:37，远端事实有11次view_observed、5次safely_not_executed、一条group remote_message_observed和32条group remote_outcome_unknown。唯一新群消息对应03:12:50新Job、03:14:30原Attempt、正式binding与policy均匹配，config_revision=3；不能据此证明九群2000/日或完整质量达成。评论/点赞此区间无新完成事实。未知调用聚合29条群无权限、3条FloodWait另单独核对；不重放。首次schema聚合因JSON无equality operator失败，显式转jsonb后成功，不将失败探针计通过。
+- 新审核失败形状已实际落盘：2个dict及列表项数5/2各1例，首项的全部7个已知审核字段缺失，其中一个列表属于general；保留schema_invalid，尚未判明是Provider输出还是路由/解析问题。回执8f_post_release_facts_fixed.jsonl，不含生成/审核正文。
+- 修正历史SQL重复字段别名后03:12实测25/25 journal owner一致；25/25精确符合3dfa060d之前四字段result/evidence hash，记录时间8月1～24日；16/25匹配原冻结request/request hash/target hash。PRD19.52先闭合两种已发布格式的验证，再实现只读物理返回投影，非空typed字段不能按旧格式忽略，业务unknown/日期/预算不改变。
+- 真实写入口构造回执的红测2失败、12对照通过/4.17秒；修补后与旧占用、共享准入、termination联合66 passed/11.27秒，真实PG11 passed/11.09秒，均硬60秒、55439测试库和advisory lock。新代码/测试文件小于500行且函数不超过50非空行，编译及diff检查通过。
+- 03:16:22在8f临时只读进程中加载本地候选与3c5旧reader，24账号共57份预算投影完全相同，仅16份物理在途由true转false；38份仍未证明结束。源码hash与只读回执gateway_return_candidate_readonly_probe.jsonl留存，未安装候选、未写生产记录、未创建ACK或激活Task。其他R1项继续未通过。

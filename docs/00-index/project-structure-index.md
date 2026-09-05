@@ -1516,3 +1516,5 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 > **2026-09-06 post-login C 历史 owner：** `post_login_exception.py` 在单账号 C unknown 分支核验租约清除、原 MY 节点新鲜且覆盖 unknown 的零客户端心跳；保留 owner/epoch 并隔离未决结果。apply 锁节点并重验，空闲心跳续报不导致指纹漂移；既有 frozen-N/B/E4 边界不变。
 
 - 2026-09-06：`engagement_shared_usage.py`按原日与实际调用日投影账号共享用量，复用`engagement_legacy_occupancy.py`的双日期查询；`engagement_runtime_capacity.py`消费两份独立视图并跨pool核验单账号lease。`engagement_runtime_resources.py`在reserve/call-start执行准入并保留原ledger，资源锁读取按职责移至`engagement_runtime_settlement.py`；unowned写入口共用账号锁。Dispatcher将发前资源拒绝沿原延期路径收口，通用异常体仅等价移入helper以满足函数长度。详见统一PRD§19.50–19.51。
+
+- `engagement_gateway_return.py`核对旧Gateway返回回执的原请求、时间和两种已发布哈希格式；`engagement_legacy_occupancy.py`仅在归属与mutation证据一致时据此解除物理在途投影，保留原预算和业务unknown。`test_engagement_gateway_return.py`及共享用量PostgreSQL用例覆盖真实格式与损坏/冲突对照，见统一PRD§19.52。
