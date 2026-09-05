@@ -20,6 +20,7 @@ from .engagement_binding import (
     UNIFIED_ENGAGEMENT_CONTRACT_VERSION,
     freeze_membership_snapshot,
 )
+from .engagement_policy_scope import policy_eligible_member_ids
 
 
 POLICY_REVISION = "engagement_participation_v2_fleet_debt"
@@ -215,7 +216,8 @@ def _ensure_plan(
     snapshot = freeze_membership_snapshot(
         session, task, participation_unit=participation_unit
     )
-    eligible = _eligible_ids(snapshot.member_account_ids or [], eligible_account_ids)
+    policy_members = policy_eligible_member_ids(session, task, snapshot.member_account_ids or [])
+    eligible = _eligible_ids(policy_members, eligible_account_ids)
     sampled_ratio = _sample_ratio(task.id, participation_unit, ratio_range)
     count = _participation_count(
         len(eligible), sampled_ratio, requested=required_count,

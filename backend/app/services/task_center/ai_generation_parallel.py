@@ -171,15 +171,6 @@ def _candidate_statement(limit: int):
     now_value = _now()
     payload_status = Action.payload["ai_generation_status"].as_string()
     message_text = Action.payload["message_text"].as_string()
-    deferred_job = select(GenerationJob.id).where(
-        GenerationJob.obligation_type == Action.obligation_type,
-        GenerationJob.obligation_id == Action.obligation_id,
-        GenerationJob.state.in_(("pending", "generating", "unknown")),
-        or_(
-            GenerationJob.generation_not_before_at > now_value,
-            GenerationJob.next_retry_at > now_value,
-        ),
-    ).exists()
     return (
         select(Action)
         .join(Task, Task.id == Action.task_id)
@@ -195,11 +186,36 @@ def _candidate_statement(limit: int):
             Action.task_lifecycle_epoch == Task.task_lifecycle_epoch,
             payload_status.in_(GENERATABLE_STATUSES),
             func.coalesce(message_text, "") == "",
-            ~deferred_job,
+            ~_unavailable_generation_job(now_value),
         )
         .order_by(Action.scheduled_at, Action.task_id, Action.id)
         .limit(max(1, limit * 3))
     )
+
+
+def _unavailable_generation_job(now_value: datetime):
+    return select(GenerationJob.id).where(
+        GenerationJob.obligation_type == Action.obligation_type,
+        GenerationJob.obligation_id == Action.obligation_id,
+        GenerationJob.state.in_(("pending", "generating", "unknown")),
+        or_(
+            GenerationJob.state == "unknown",
+            and_(
+                GenerationJob.state == "pending",
+                or_(
+                    GenerationJob.generation_not_before_at > now_value,
+                    GenerationJob.next_retry_at > now_value,
+                ),
+            ),
+            and_(
+                GenerationJob.state == "generating",
+                or_(
+                    GenerationJob.lease_expires_at.is_(None),
+                    GenerationJob.lease_expires_at > now_value,
+                ),
+            ),
+        ),
+    ).exists()
 
 
 def _claim_one(

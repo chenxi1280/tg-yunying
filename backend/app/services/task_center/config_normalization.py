@@ -31,6 +31,7 @@ from .config_fields import (
     SEARCH_JOIN_PACING_FIELDS,
     TYPE_CONFIG_MODELS,
 )
+from .group_internal_config import separate_group_internal_config
 from .account_coverage_config import (
     apply_group_ai_account_coverage_defaults,
     normalize_ai_daily_target,
@@ -172,6 +173,7 @@ def validated_type_config(task_type: str, data: dict[str, Any]) -> dict[str, Any
     if not model:
         raise ValueError(f"unknown task type: {task_type}")
     data = _normalize_legacy_group_ai_config(task_type, dict(data or {}))
+    data, group_internal = separate_group_internal_config(task_type, data)
     content_policy_internal = {
         field: data.pop(field)
         for field in (
@@ -197,6 +199,7 @@ def validated_type_config(task_type: str, data: dict[str, Any]) -> dict[str, Any
         normalized.pop("strict_daily_target", None)
     if task_type == "group_ai_chat":
         normalized.update(content_policy_internal)
+        normalized.update(group_internal)
         for field in GROUP_AI_LEGACY_RUNTIME_FIELDS:
             normalized.pop(field, None)
     if task_type == "channel_view":

@@ -1,5 +1,7 @@
 # 项目结构索引
 
+> **2026-09-05 活群生成与接管前置修补：** `ai_generation_parallel._unavailable_generation_job` 在候选 LIMIT 前排除既有不可领取 Job，保留 unknown 原身份与领取 CAS。`group_internal_config.py` 校验并保留正式服务仍在使用的内容路由/救援账号字段；`engagement_policy_scope.py` 在参与计划中排除既有租户/Task 救援号，不改变成员快照或按健康缩小分母。回归为 `test_ai_generation_candidate_fairness.py`、`test_engagement_cutover_prerequisites.py`，合同为统一引擎 PRD 19.19–19.20。
+
 > **2026-09-05 规划性能修补：** `source_pacing_cursor.py` 在既有来源行锁内分配失效预约的独占后续时刻；`source_pacing_admission.py` 复用该入口。`engagement_planning_admission.py` 批量读取成员准入与代理，消除逐账号重复 SQL。回归为 `test_source_pacing_rebooking.py`、`test_engagement_admission_batching.py`，不改变目标、分母或 unknown 身份。
 
 > **2026-09-05 生产审计修补：** `generation_action_identity.py` 集中解析恢复使用的 Task/epoch/Job/adapter义务身份：评论按既有 payload 评论义务或旧 Action ID，活群保持通用义务列；`ai_generation_recovery.py` 复用该解析，避免旧评论被误判 action_missing。Telegram Gateway 浏览入口按真实 GetMessagesViewsRequest 调用边界区分解析失败与远端未知。回归为 `test_comment_generation_recovery_identity.py`、`test_channel_view_mutation_boundary.py`；线上23个运行任务仍为legacy，统一引擎接管与E4未完成。详见 `docs/05-implementation/unified-engagement-production-audit-20260905.md`。

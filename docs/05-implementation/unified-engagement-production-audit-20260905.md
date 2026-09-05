@@ -102,3 +102,17 @@ R2以PRD §19.17为开发合同；变更限定Gateway浏览边界和针对性回
 - Code review：新/失效预约均在既有 source row lock 内推进尾游标；已有有效预约不移动；call_started/unknown 在进入游标前被原 guard 拒绝；批量成员关系仍复用同一判定，代理同一查询预取，不建立跨请求缓存。
 - 发布路径：master -> release -> Deploy Production。应用代码可回退至 94e386e2，预约状态与库结构兼容，回退会恢复性能缺陷；不对 unknown 执行恢复。
 - 生产验收待办：相同 100 账号只读规划查询数/耗时；自然运行的等待 Attempt/Gateway/成功比率；全引擎接管与四类型 E4 仍未完成。
+
+## 性能候选生产读回与生成积压根因（11:05）
+
+- 880dad5e952d76328033561666969df6bcd76ff0 / Actions 33939632437 终态 success；current=/data/tgyunying/releases/20260905024628_880dad5e，已独立核对 backend、planner、ai-generation、dispatcher-1 的启动与健康状态。
+- 相同 100 账号生产只读探针：221 SELECT / 3.539 秒 → 6 SELECT / 0.129 秒，可用账号均为 92。该单次对照证明重复查询消除，不外推为全系统吞吐提升。来源排期仍需后续窗口核验。
+- 10:55 的真实候选查询总匹配 1105、返回 60，全部 Job state=unknown / available=false。最早项为 acfecf38-78a6-48fa-99cf-ac447dd3ca26（03:55），解释了近千条到期生成工作长期排不上；不是以 worker healthy 推断模型工作正常。
+
+## 生成队列与接管前置 Release Gate
+
+- 合同：PRD 19.19–19.20。候选 LIMIT 前排除不可领取 Job；未知继续原身份对账。配置规范化保留正式内容路由及救援字段；统一参与范围沿用租户/Task 救援号排除，暂时离线成员仍保留欠量。
+- 反例：未知项占满候选窗口以及有效/缺失 generating 租约，修补前 4 failed / 4 passed，修补后通过。最初测试 fixture 缺必填列、PG 测试 ID 过长已纠正，不属于生产缺陷。
+- local_gate：新增候选/未知保护/Provider 准入 31 passed；真实生成 worker 与 fact-first 52 passed；配置/绑定/资格前置两批 37+45 passed；PostgreSQL 候选公平性与 partial unique index 2 passed。每批后端测试硬超时 60 秒，PG 使用隔离的 tg_yunying_test / 55439 与 advisory lock。
+- code_review：候选 SQL 与既有 _job_available 状态语义相同，排序与批次上限不变；Job/Action CAS 未改，未知行不写；内部字段无新增公开输入入口；成员快照不删减。无迁移、前端、目标地址或业务数量改动。
+- release_path：master -> release -> Deploy Production；回退应用会恢复队列饥饿，数据格式兼容。发布后必须验证候选有可领取工作、Job 推进和新的活群发送事实；22 个存量 Task 接管仍为未完成。
