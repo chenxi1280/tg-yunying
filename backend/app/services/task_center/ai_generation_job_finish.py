@@ -3,10 +3,10 @@ from __future__ import annotations
 import hashlib
 from typing import Protocol
 
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from app.models import Action, GenerationJob
+from app.models import Action, GenerationJob, Task
 
 from .ai_content_runtime import invalidate_job_pre_gateway_slot
 
@@ -35,6 +35,7 @@ def finish_owned_job(
     ):
         return
     if state == "ready":
+        _require_not_retired(session, job)
         _require_ready_action(job, action)
     expected_job_version = int(job.job_version or 1)
     if expected_job_version < claim.job_version:
@@ -56,6 +57,13 @@ def finish_owned_job(
     session.refresh(job)
     if state in {"failed", "cancelled"}:
         invalidate_job_pre_gateway_slot(session, job)
+
+
+def _require_not_retired(session: Session, job: GenerationJob) -> None:
+    retired_at = session.scalar(select(Task.retired_at).where(Task.id == job.task_id,
+        Task.tenant_id == job.tenant_id).with_for_update(read=True, nowait=True))
+    if retired_at is not None:
+        raise RuntimeError("generation_result_task_retired")
 
 
 def _terminal_finish_already_persisted(

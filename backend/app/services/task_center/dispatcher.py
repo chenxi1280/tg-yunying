@@ -136,6 +136,7 @@ from .engagement_runtime_resources import (
     reserve_attempt_resources as reserve_engagement_attempt_resources,
     settle_attempt_resources as settle_engagement_attempt_resources,
 )
+from .task_retirement import TaskGatewayFenced, guard_attempt_call_start
 from .legacy_anchor_rewrite import reject_legacy_anchor_rewrite_before_send
 from .payloads import (
     GROUP_BOT_CHANNEL_FOLLOW_ACTION_TYPE,
@@ -1323,7 +1324,7 @@ def _dispatch_action(
     generation_dependencies: GenerationDependencies,
     comment_generation_dependencies: CommentGenerationDependencies,
 ) -> bool:
-    if _legacy_review_enabled() and has_pending_review(session, action.id):
+    if _awaiting_legacy_review(session, action):
         return False
     if _action_pre_dispatch_handled(session, action):
         return True
@@ -1342,6 +1343,9 @@ def _dispatch_action(
                 comment_generation_dependencies,
             ),
         )
+    except TaskGatewayFenced as exc:
+        _skip(action, "task_lifecycle_gateway_fenced", str(exc))
+        return True
     except RuntimeResourceBlocked as exc:
         _defer_engagement_gateway_admission(session, action, exc)
         return True
@@ -1353,6 +1357,10 @@ def _dispatch_action(
         raise
     except Exception as exc:  # noqa: BLE001 - worker must keep draining.
         return _handle_dispatch_exception(session, action, exc)
+
+
+def _awaiting_legacy_review(session, action):
+    return _legacy_review_enabled() and has_pending_review(session, action.id)
 
 
 def _handle_dispatch_exception(session, action, exc):
@@ -11687,6 +11695,7 @@ def _begin_execution_attempt(session: Session, action: Action, account: TgAccoun
 
 
 def _mark_gateway_call_started(session: Session, attempt: ExecutionAttempt, *, commit: bool = True) -> None:
+    guard_attempt_call_start(session, attempt)
     call_started_at = _now()
     mark_engagement_attempt_call_issued(session, attempt, call_started_at=call_started_at)
     attempt.gateway_call_started_at = call_started_at

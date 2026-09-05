@@ -61,16 +61,8 @@ def _start_exchange(session_factory, scope, *, chain_id, request_hash):
 
 
 def _lock_jobs(session, scope):
-    if not scope.job_bindings or not scope.logical_request_id or len(scope.logical_request_id) > 200:
-        raise ValueError("provider_http_scope_missing")
-    ids = tuple(sorted(item["generation_job_id"] for item in scope.job_bindings))
-    if len(set(ids)) != len(ids):
-        raise ValueError("provider_http_duplicate_job_scope")
-    first = scope.job_bindings[0]
-    owner = (first.get("tenant_id"), first.get("task_id"), first.get("task_lifecycle_epoch"))
-    task = session.scalar(select(Task).where(Task.id == owner[1]).with_for_update(read=True, nowait=True))
-    if task is None or (task.tenant_id, task.id, task.task_lifecycle_epoch) != owner or task.status != "running":
-        raise ValueError("provider_http_task_owner_stale")
+    ids = _http_scope_job_ids(scope)
+    owner = _lock_task_owner(session, scope.job_bindings[0])
     jobs = list(session.scalars(select(GenerationJob).where(GenerationJob.id.in_(ids)).order_by(GenerationJob.id).with_for_update(nowait=True)))
     if len(jobs) != len(ids):
         raise ValueError("provider_http_job_missing")
@@ -80,6 +72,24 @@ def _lock_jobs(session, scope):
     for job in jobs:
         _validate_job(job, binding=bindings.get(job.id), expected=expected[job.id], owner=owner)
     return jobs
+
+
+def _http_scope_job_ids(scope):
+    if not scope.job_bindings or not scope.logical_request_id or len(scope.logical_request_id) > 200:
+        raise ValueError("provider_http_scope_missing")
+    ids = tuple(sorted(item["generation_job_id"] for item in scope.job_bindings))
+    if len(set(ids)) != len(ids):
+        raise ValueError("provider_http_duplicate_job_scope")
+    return ids
+
+
+def _lock_task_owner(session, first):
+    owner = (first.get("tenant_id"), first.get("task_id"), first.get("task_lifecycle_epoch"))
+    task = session.scalar(select(Task).where(Task.id == owner[1]).with_for_update(read=True, nowait=True))
+    if (task is None or (task.tenant_id, task.id, task.task_lifecycle_epoch) != owner
+            or task.status != "running" or task.retired_at is not None):
+        raise ValueError("provider_http_task_owner_stale")
+    return owner
 
 
 def _validate_job(job, *, binding, expected, owner):

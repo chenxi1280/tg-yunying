@@ -40,7 +40,9 @@ def _session() -> Session:
 
 def _seed(session: Session) -> None:
     session.add(Tenant(id=1, name="默认运营空间"))
+    session.flush()
     _seed_pools(session)
+    session.flush()
     _seed_accounts(session)
     session.add(
         OperationTarget(

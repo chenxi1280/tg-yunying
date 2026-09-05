@@ -84,15 +84,22 @@ def _intake(session, task, messages, config):
     channel_id = int(config["target_channel_id"])
     raw_anchor = (task.stats or {}).get("started_at")
     anchor = as_beijing(datetime.fromisoformat(raw_anchor)) if raw_anchor else as_beijing(task.scheduled_start or task.created_at)
+    keys, limit = initial_source_keys(task, messages, config, anchor=anchor)
+    intake = ChannelTaskIntake(tenant_id=task.tenant_id, task_id=task.id, lifecycle_epoch=task.task_lifecycle_epoch,
+        channel_target_id=channel_id, anchor_at=anchor, initial_source_keys=keys, historical_limit=limit)
+    session.add(intake)
+    session.flush()
+    return intake
+
+
+def initial_source_keys(task, messages, config, *, anchor):
     limit = int(config.get("initial_historical_post_limit", DEFAULT_HISTORICAL_LIMIT))
     if not 0 <= limit <= MAX_HISTORICAL_LIMIT:
         raise ValueError("initial_historical_post_limit_invalid")
     if config.get("initial_message_scope") == "new_only":
         limit = 0
     all_keys = list(dict.fromkeys(logical_source_key(m) for m in messages
-        if m.published_at and as_beijing(m.published_at) <= anchor
-        and not source_filter_reason(m, task_type=task.type)
-        and not (m.source_metadata or {}).get("deleted")))
+        if _is_initial_source(task, m, anchor=anchor)))
     is_finite = (
         config.get("source_expectation_mode") == "finite_existing_sources"
         or config.get("message_scope") == "specific"
@@ -101,11 +108,13 @@ def _intake(session, task, messages, config):
         keys = all_keys
     else:
         keys = all_keys[:limit]
-    intake = ChannelTaskIntake(tenant_id=task.tenant_id, task_id=task.id, lifecycle_epoch=task.task_lifecycle_epoch,
-        channel_target_id=channel_id, anchor_at=anchor, initial_source_keys=keys, historical_limit=limit)
-    session.add(intake)
-    session.flush()
-    return intake
+    return keys, limit
+
+
+def _is_initial_source(task, message, *, anchor):
+    return (message.published_at and as_beijing(message.published_at) <= anchor
+        and not source_filter_reason(message, task_type=task.type)
+        and not (message.source_metadata or {}).get("deleted"))
 
 
 def _existing_intake(session, task, config):

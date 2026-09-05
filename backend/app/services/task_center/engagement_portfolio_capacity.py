@@ -15,12 +15,12 @@ from .engagement_shared_usage import OCCUPIED_BUDGET_STATES
 ACTIVE_RESERVATION_STATE = "active"
 
 
-def read_portfolio_capacities(session, tenant_id, task_day, *, account_ids, action_class):
+def read_portfolio_capacities(session, tenant_id, task_day, *, account_ids, action_class, lock_policies=True):
     rows = session.scalars(select(TgAccount).options(load_only(TgAccount.id, TgAccount.account_identity)).where(
         TgAccount.tenant_id == tenant_id, TgAccount.id.in_(account_ids),
         TgAccount.deleted_at.is_(None)))
     accounts = {row.id: row.account_identity for row in rows}
-    policies = _policies(session, tenant_id, tuple(sorted(set(accounts.values()))))
+    policies = _policies(session, tenant_id, tuple(sorted(set(accounts.values()))), lock=lock_policies)
     planned = _planned_usage(session, tenant_id, task_day, account_ids=account_ids)
     rows = session.scalars(select(AccountBehaviorBudgetLedger).options(load_only(
         AccountBehaviorBudgetLedger.account_id, AccountBehaviorBudgetLedger.counters)).where(
@@ -42,12 +42,13 @@ def read_portfolio_capacities(session, tenant_id, task_day, *, account_ids, acti
     return capacities, sorted(policy_ids)
 
 
-def _policies(session, tenant_id, account_classes):
+def _policies(session, tenant_id, account_classes, *, lock):
     policy = AccountBehaviorBudgetPolicyRevision
-    rows = session.scalars(select(policy).options(load_only(
+    query = select(policy).options(load_only(
         policy.id, policy.account_class, policy.action_budgets)).where(
         policy.tenant_id == tenant_id, policy.account_class.in_(account_classes),
-        policy.state == "active").order_by(policy.account_class).with_for_update())
+        policy.state == "active").order_by(policy.account_class)
+    rows = session.scalars(query.with_for_update() if lock else query)
     return {row.account_class: row for row in rows}
 
 

@@ -370,6 +370,7 @@ from .engagement_binding import (
     validate_engagement_binding,
     validate_engagement_timezone,
 )
+from .task_retirement import lock_task_for_planning, require_task_not_retired
 from .search_rank_deboost import (
     preselect_exempt_group,
     require_rank_observation_gateway,
@@ -1312,30 +1313,13 @@ def update_task(
     session: Session, tenant_id: int, task_id: str, payload: TaskUpdate, actor: str
 ) -> Task:
     task = _get_task(session, tenant_id, task_id)
+    require_task_not_retired(session, task)
     previous_config = dict(task.type_config or {})
     previous_timezone = str(task.timezone or "")
     raw_data = payload.model_dump(exclude_unset=True)
     _require_search_click_dedicated_update(task, raw_data)
     data = payload.model_dump(exclude_unset=True, mode="json")
-    for field in [
-        "name",
-        "priority",
-        "timezone",
-        "scheduled_start",
-        "scheduled_end",
-        "max_duration_hours",
-    ]:
-        if field in raw_data:
-            setattr(task, field, raw_data[field])
-    for field in ["account_config", "pacing_config", "failure_policy"]:
-        if field in data and data[field] is not None:
-            setattr(
-                task,
-                field,
-                _pacing_payload_for_task(task, raw_data[field])
-                if field == "pacing_config"
-                else data[field],
-            )
+    _apply_common_task_update(task, raw_data, data)
     validate_source_capacity_config(
         session,
         tenant_id,
@@ -1371,72 +1355,7 @@ def update_task(
     return task
 
 
-def _requeue_updated_task(task: Task) -> None:
-    if task.status in {"completed", "failed"}:
-        return
-    now = _now()
-    scheduled_start = _naive_datetime(task.scheduled_start)
-    task.status = "pending" if scheduled_start and scheduled_start > now else "running"
-    task.next_run_at = scheduled_start if task.status == "pending" else now
-    task.last_error = ""
-
-
-def update_task_settings(
-    session: Session,
-    tenant_id: int,
-    task_id: str,
-    payload: TaskSettingsUpdate,
-    actor: str,
-) -> Task:
-    task = _get_task(session, tenant_id, task_id)
-    change_observed_at = _now()
-    previous_config = dict(task.type_config or {})
-    previous_timezone = str(task.timezone or "")
-    previous_revision = int(task.config_revision or 1)
-    previous_target_identity = _task_target_identity(previous_config)
-    previous_prejoin_refs = list(task.group_ai_prejoin_channel_ids or [])
-    prejoin_field = "group_ai_prejoin_channel_ids"
-    prejoin_supplied = prejoin_field in payload.model_fields_set
-    if prejoin_supplied and task.type != "group_ai_chat":
-        raise ValueError("预关注频道仅支持 AI 活群任务")
-    if prejoin_supplied:
-        task.group_ai_prejoin_channel_ids = list(
-            payload.group_ai_prejoin_channel_ids or []
-        )
-    raw_data = payload.model_dump(exclude_unset=True)
-    _require_search_click_dedicated_update(task, raw_data)
-    data = payload.model_dump(exclude_unset=True, mode="json")
-    type_fields = TYPE_SETTINGS_FIELDS.get(task.type)
-    if type_fields is None:
-        raise ValueError(f"unknown task type: {task.type}")
-    type_updates = {
-        key: value for key, value in data.items() if key not in COMMON_SETTINGS_FIELDS
-    }
-    invalid = sorted(set(type_updates) - type_fields)
-    if invalid:
-        raise ValueError(f"这些字段不能用于 {task.type} 任务: {', '.join(invalid)}")
-    if task.type == "group_ai_chat" and "topic_participation_rate" in type_updates:
-        from .ai_group_topic_policy import stage_topic_rate_update
-
-        requested_rate = type_updates.pop("topic_participation_rate")
-        staged = stage_topic_rate_update(
-            task.type_config or {},
-            requested_rate,
-            task_status=task.status,
-            today=_task_local_date(task),
-            has_current_task_day_plan=_has_current_ai_group_plan(session, task),
-        )
-        type_updates.update(
-            {
-                "topic_participation_rate": staged.get("topic_participation_rate"),
-                "topic_participation_rate_next": staged.get(
-                    "topic_participation_rate_next"
-                ),
-                "topic_participation_rate_effective_date": staged.get(
-                    "topic_participation_rate_effective_date"
-                ),
-            }
-        )
+def _apply_common_task_update(task, raw_data, data):
     for field in [
         "name",
         "priority",
@@ -1456,106 +1375,140 @@ def update_task_settings(
                 if field == "pacing_config"
                 else data[field],
             )
-    validate_source_capacity_config(
-        session,
-        tenant_id,
-        task.type,
-        dict(task.pacing_config or {}),
-    )
-    if (
-        task.type == "group_ai_chat"
-        and {"account_config", "pacing_config"} & set(data)
-        and not type_updates
-    ):
-        next_config = dict(task.type_config or {})
-        for field in GROUP_AI_LEGACY_RUNTIME_FIELDS:
-            next_config.pop(field, None)
-        next_config = apply_group_ai_account_coverage_defaults(
-            task.type, next_config, task.account_config or {}
-        )
-        task.type_config = validated_type_config(task.type, next_config)
-    if type_updates:
-        next_config = dict(task.type_config or {})
-        next_config.update(type_updates)
-        if task.type == "group_ai_chat":
-            for field in GROUP_AI_LEGACY_RUNTIME_FIELDS:
-                if field not in type_updates:
-                    next_config.pop(field, None)
-        next_config = normalize_operation_target_references(
-            session, tenant_id, task.type, next_config
-        )
-        next_config = apply_group_ai_account_coverage_defaults(
-            task.type, next_config, task.account_config or {}
-        )
-        task.type_config = validated_type_config(task.type, next_config)
-        _validate_channel_comment_fallback(
-            session, tenant_id, task.type, task.type_config,
-        )
+
+
+def _requeue_updated_task(task: Task) -> None:
+    if task.status in {"completed", "failed"}:
+        return
+    now = _now()
+    scheduled_start = _naive_datetime(task.scheduled_start)
+    task.status = "pending" if scheduled_start and scheduled_start > now else "running"
+    task.next_run_at = scheduled_start if task.status == "pending" else now
+    task.last_error = ""
+
+
+def update_task_settings(
+    session: Session,
+    tenant_id: int,
+    task_id: str,
+    payload: TaskSettingsUpdate,
+    actor: str,
+) -> Task:
+    task = _get_task(session, tenant_id, task_id)
+    require_task_not_retired(session, task)
+    previous = _task_settings_snapshot(task)
+    changes = _task_settings_changes(session, task, payload)
+    _apply_common_task_update(task, changes["raw"], changes["data"])
+    _apply_settings_type_config(session, task, changes)
     validate_engagement_timezone(task.type, task.type_config or {}, task.timezone)
     synchronize_task_binding(session, task)
-    incremented = increment_revision_for_continuity_change(
-        task,
-        previous_config=previous_config,
-        previous_timezone=previous_timezone,
-    )
-    increment_revision_for_content_policy_change(
-        task,
-        previous_config=previous_config,
-        previous_revision=previous_revision,
-        observed_at=change_observed_at,
-    )
-    prejoin_changed = previous_prejoin_refs != list(
-        task.group_ai_prejoin_channel_ids or []
-    )
-    if (
-        prejoin_changed
-        and not incremented
-        and task.config_revision == previous_revision
-    ):
-        task.config_revision += 1
+    prejoin_changed = _advance_settings_revisions(task, previous)
     activate_task_ai_content_config(session, task)
     initialize_all_account_task_scope(session, task)
-    content_policy_only = (
-        is_content_policy_only_change(
-            task,
-            previous_config=previous_config,
-        )
-        and not (set(raw_data) - AI_GROUP_CONTENT_POLICY_FIELDS)
-        and not prejoin_changed
-    )
+    _apply_settings_plan_effects(session, task, previous, changes=changes, prejoin_changed=prejoin_changed)
+    _requeue_updated_task(task)
+    task.last_error = ""
+    task.updated_at = previous["observed_at"]
+    audit(session, tenant_id=tenant_id, actor=actor, action="更新任务中心任务配置",
+        target_type="task", target_id=task.id,
+        detail=_content_policy_change_detail(task, previous["config"]))
+    refresh_task_stats(session, task)
+    session.commit()
+    session.refresh(task)
+    return task
+
+
+def _task_settings_snapshot(task):
+    return {"observed_at": _now(), "config": dict(task.type_config or {}),
+        "timezone": str(task.timezone or ""), "revision": int(task.config_revision or 1),
+        "target_identity": _task_target_identity(task.type_config or {}),
+        "prejoin_refs": list(task.group_ai_prejoin_channel_ids or [])}
+
+
+def _task_settings_changes(session, task, payload):
+    prejoin_supplied = "group_ai_prejoin_channel_ids" in payload.model_fields_set
+    if prejoin_supplied and task.type != "group_ai_chat":
+        raise ValueError("预关注频道仅支持 AI 活群任务")
+    if prejoin_supplied:
+        task.group_ai_prejoin_channel_ids = list(payload.group_ai_prejoin_channel_ids or [])
+    raw_data = payload.model_dump(exclude_unset=True)
+    _require_search_click_dedicated_update(task, raw_data)
+    data = payload.model_dump(exclude_unset=True, mode="json")
+    type_fields = TYPE_SETTINGS_FIELDS.get(task.type)
+    if type_fields is None:
+        raise ValueError(f"unknown task type: {task.type}")
+    updates = {key: value for key, value in data.items() if key not in COMMON_SETTINGS_FIELDS}
+    invalid = sorted(set(updates) - type_fields)
+    if invalid:
+        raise ValueError(f"这些字段不能用于 {task.type} 任务: {', '.join(invalid)}")
+    return {"raw": raw_data, "data": data, "type": _stage_topic_rate_config_updates(session, task, updates)}
+
+
+def _stage_topic_rate_config_updates(session, task, updates):
+    if task.type != "group_ai_chat" or "topic_participation_rate" not in updates:
+        return dict(updates)
+    from .ai_group_topic_policy import stage_topic_rate_update
+
+    staged = stage_topic_rate_update(task.type_config or {}, updates["topic_participation_rate"],
+        task_status=task.status, today=_task_local_date(task),
+        has_current_task_day_plan=_has_current_ai_group_plan(session, task))
+    fields = ("topic_participation_rate", "topic_participation_rate_next", "topic_participation_rate_effective_date")
+    return {**updates, **{field: staged.get(field) for field in fields}}
+
+
+def _apply_settings_type_config(session, task, changes):
+    data, type_updates = changes["data"], changes["type"]
+    validate_source_capacity_config(session, task.tenant_id, task.type, dict(task.pacing_config or {}))
+    if task.type == "group_ai_chat" and {"account_config", "pacing_config"} & set(data) and not type_updates:
+        task.type_config = _settings_group_coverage_config(task)
+    if not type_updates:
+        return
+    next_config = _settings_type_updates(task, type_updates)
+    next_config = normalize_operation_target_references(session, task.tenant_id, task.type, next_config)
+    next_config = apply_group_ai_account_coverage_defaults(task.type, next_config, task.account_config or {})
+    task.type_config = validated_type_config(task.type, next_config)
+    _validate_channel_comment_fallback(session, task.tenant_id, task.type, task.type_config)
+
+
+def _settings_group_coverage_config(task):
+    next_config = {key: value for key, value in dict(task.type_config or {}).items()
+        if key not in GROUP_AI_LEGACY_RUNTIME_FIELDS}
+    next_config = apply_group_ai_account_coverage_defaults(task.type, next_config, task.account_config or {})
+    return validated_type_config(task.type, next_config)
+
+
+def _settings_type_updates(task, type_updates):
+    next_config = {**dict(task.type_config or {}), **type_updates}
+    if task.type == "group_ai_chat":
+        for field in GROUP_AI_LEGACY_RUNTIME_FIELDS:
+            if field not in type_updates:
+                next_config.pop(field, None)
+    return next_config
+
+
+def _advance_settings_revisions(task, previous):
+    incremented = increment_revision_for_continuity_change(task,
+        previous_config=previous["config"], previous_timezone=previous["timezone"])
+    increment_revision_for_content_policy_change(task, previous_config=previous["config"],
+        previous_revision=previous["revision"], observed_at=previous["observed_at"])
+    prejoin_changed = previous["prejoin_refs"] != list(task.group_ai_prejoin_channel_ids or [])
+    if prejoin_changed and not incremented and task.config_revision == previous["revision"]:
+        task.config_revision += 1
+    return prejoin_changed
+
+
+def _apply_settings_plan_effects(session, task, previous, *, changes, prejoin_changed):
+    content_policy_only = (is_content_policy_only_change(task, previous_config=previous["config"])
+        and not (set(changes["raw"]) - AI_GROUP_CONTENT_POLICY_FIELDS) and not prejoin_changed)
     if not content_policy_only:
         _clear_unfinished_plan(session, task)
-    target_changed = previous_target_identity != _task_target_identity(
-        task.type_config or {}
-    )
+    target_changed = previous["target_identity"] != _task_target_identity(task.type_config or {})
     if task.type == "group_ai_chat" and target_changed:
         from .account_scope import reset_all_account_scope_for_target_change
 
         task.task_lifecycle_epoch = int(task.task_lifecycle_epoch or 1) + 1
         reset_all_account_scope_for_target_change(session, task)
         initialize_all_account_task_scope(session, task)
-    if task.status not in {"completed", "failed"}:
-        now = _now()
-        scheduled_start = _naive_datetime(task.scheduled_start)
-        task.status = (
-            "pending" if scheduled_start and scheduled_start > now else "running"
-        )
-        task.next_run_at = scheduled_start if task.status == "pending" else now
-    task.last_error = ""
-    task.updated_at = change_observed_at
-    audit(
-        session,
-        tenant_id=tenant_id,
-        actor=actor,
-        action="更新任务中心任务配置",
-        target_type="task",
-        target_id=task.id,
-        detail=_content_policy_change_detail(task, previous_config),
-    )
-    refresh_task_stats(session, task)
-    session.commit()
-    session.refresh(task)
-    return task
 
 
 def _validate_channel_comment_fallback(
@@ -1722,6 +1675,7 @@ def update_group_ai_chat_config(
     field = "group_ai_prejoin_channel_ids"
     update_data = payload.model_dump(mode="json", exclude_unset=True)
     task = _get_task(session, tenant_id, task_id)
+    require_task_not_retired(session, task)
     previous_refs = list(task.group_ai_prejoin_channel_ids or [])
     previous_revision = int(task.config_revision or 1)
     if field in payload.model_fields_set:
@@ -3187,6 +3141,8 @@ def start_task_in_transaction(
     actor: str,
 ) -> StartExecutionResult:
     tenant_id = task.tenant_id
+    require_task_not_retired(session, task)
+    first_start = task.status == "draft"
     validate_task_membership_foundation(session, task)
     if task.type == "group_clone":
         return _start_group_clone_in_transaction(session, task, actor)
@@ -3196,19 +3152,8 @@ def start_task_in_transaction(
         ) or _search_click_task_completed_on_start(session, task):
             return _start_execution_result(session, task)
     takeover_task(session, task)
-    if task.type == "channel_comment":
-        channel_comment.reconcile_lifetime_cap(session, task)
-        if task.status == "completed":
-            audit(
-                session,
-                tenant_id=tenant_id,
-                actor=actor,
-                action="启动任务中心任务",
-                target_type="task",
-                target_id=task.id,
-                detail="评论任务已达到生命周期总上限",
-            )
-            return _start_execution_result(session, task)
+    if _comment_start_already_complete(session, task, actor):
+        return _start_execution_result(session, task)
     if task.type == "search_rank_deboost":
         if task.status in {"running", "pending"}:
             return _start_execution_result(session, task)
@@ -3218,6 +3163,8 @@ def start_task_in_transaction(
         except ValueError as exc:
             _record_rank_deboost_readiness_blocker(task, exc)
     _mark_task_started(session, task)
+    if first_start:
+        synchronize_task_binding(session, task)
     _ensure_target_scope_claims(session, task)
     activate_task_ai_content_config(session, task)
     _initialize_runtime_contracts(session, task)
@@ -3231,6 +3178,17 @@ def start_task_in_transaction(
         target_id=task.id,
     )
     return _start_execution_result(session, task)
+
+
+def _comment_start_already_complete(session, task, actor):
+    if task.type != "channel_comment":
+        return False
+    channel_comment.reconcile_lifetime_cap(session, task)
+    if task.status != "completed":
+        return False
+    audit(session, tenant_id=task.tenant_id, actor=actor, action="启动任务中心任务",
+        target_type="task", target_id=task.id, detail="评论任务已达到生命周期总上限")
+    return True
 
 
 def _start_group_clone_in_transaction(session, task, actor):
@@ -3599,6 +3557,7 @@ def retry_task(
     actor: str,
 ) -> Task:
     task = _get_task(session, tenant_id, task_id)
+    require_task_not_retired(session, task)
     retry_slots: int | None = None
     if task.type in {"search_click", "search_join_group", "search_rank_deboost"}:
         if task.type == "search_rank_deboost":
@@ -3888,22 +3847,9 @@ def reset_task(
     session: Session, tenant_id: int, task_id: str, actor: str, reason: str = ""
 ) -> Task:
     task = _get_task(session, tenant_id, task_id)
+    require_task_not_retired(session, task)
     if task.type == "group_clone":
-        from .group_clone_runtime_lifecycle import reset_group_clone_runtime
-
-        reset_group_clone_runtime(session, task)
-        audit(
-            session,
-            tenant_id=tenant_id,
-            actor=actor,
-            action="重置任务中心任务",
-            target_type="task",
-            target_id=task.id,
-            detail=reason,
-        )
-        session.commit()
-        session.refresh(task)
-        return task
+        return _reset_group_clone_task(session, task, actor=actor, reason=reason)
     now = _now()
     stats = empty_stats()
     if task.type != "search_rank_deboost":
@@ -3916,10 +3862,29 @@ def reset_task(
     _invalidate_task_listener_cache(task)
     if task.type in {"channel_view", "channel_like", "channel_comment"}:
         request_channel_snapshot_refresh(session, task)
+    _reset_task_schedule(session, task, actor, now=now)
+    task.last_error = ""
+    task.updated_at = now
+    refresh_task_stats(session, task)
+    audit(
+        session,
+        tenant_id=tenant_id,
+        actor=actor,
+        action="重置任务中心任务",
+        target_type="task",
+        target_id=task.id,
+        detail=reason,
+    )
+    session.commit()
+    session.refresh(task)
+    return task
+
+
+def _reset_task_schedule(session, task, actor, *, now):
     if task.type == "search_rank_deboost":
         preselect_exempt_group(
             session,
-            tenant_id=tenant_id,
+            tenant_id=task.tenant_id,
             task_id=task.id,
             operator=actor,
             my_target_ids=_rank_deboost_target_tokens(
@@ -3937,18 +3902,14 @@ def reset_task(
             else "running"
         )
         task.next_run_at = task.scheduled_start if task.status == "pending" else now
-    task.last_error = ""
-    task.updated_at = now
-    refresh_task_stats(session, task)
-    audit(
-        session,
-        tenant_id=tenant_id,
-        actor=actor,
-        action="重置任务中心任务",
-        target_type="task",
-        target_id=task.id,
-        detail=reason,
-    )
+
+
+def _reset_group_clone_task(session, task, *, actor, reason):
+    from .group_clone_runtime_lifecycle import reset_group_clone_runtime
+
+    reset_group_clone_runtime(session, task)
+    audit(session, tenant_id=task.tenant_id, actor=actor, action="重置任务中心任务",
+        target_type="task", target_id=task.id, detail=reason)
     session.commit()
     session.refresh(task)
     return task
@@ -4998,25 +4959,16 @@ def _plan_due_task_batch(
         )
         session.info["daily_coverage_plan_limit"] = max(1, plan_limit)
         _refresh_planner_heartbeat(session, process_type, limit, task_id=task_id)
-        task = session.get(Task, task_id)
-        if not task or task.status != "running":
+        task = lock_task_for_planning(session, task_id)
+        if task is None:
             return 0, 0, False, current_global_pending
         mark_task_planner_started(session, task)
         if _check_stop_conditions(session, task):
             session.commit()
             return 0, 0, False, current_global_pending
-        current_global_pending = _takeover_before_retry(
-            session,
-            task,
-            current_global_pending=current_global_pending,
+        task, processed, has_open_actions, open_actions_are_future, current_global_pending = (
+            _prepare_due_task_actions(session, task, limit=limit, current_global_pending=current_global_pending)
         )
-        retried = retry_failed_actions(session, task, limit=max(1, limit))
-        processed = retried
-        current_global_pending += max(0, int(retried))
-        task, prepared, has_open_actions, open_actions_are_future = (
-            _prepare_task_planning_transaction(session, task)
-        )
-        processed += prepared
         if task is None:
             return processed, 0, False, current_global_pending
         open_actions_allow_planning = (
@@ -5039,6 +4991,22 @@ def _plan_due_task_batch(
         current_global_pending += max(0, int(planned))
         _commit_planned_task(session, task)
         return processed, planned, False, current_global_pending
+
+
+def _prepare_due_task_actions(session, task, *, limit, current_global_pending):
+    current_global_pending = _takeover_before_retry(
+        session,
+        task,
+        current_global_pending=current_global_pending,
+    )
+    retried = retry_failed_actions(session, task, limit=max(1, limit))
+    processed = retried
+    current_global_pending += max(0, int(retried))
+    task, prepared, has_open_actions, open_actions_are_future = (
+        _prepare_task_planning_transaction(session, task)
+    )
+    processed += prepared
+    return task, processed, has_open_actions, open_actions_are_future, current_global_pending
 
 
 def _commit_planned_task(session: Session, task: Task) -> None:
@@ -5067,8 +5035,8 @@ def _prepare_task_planning_transaction(
         return task, prepared, has_open_actions, open_actions_are_future
     task_id = task.id
     session.commit()
-    reloaded = session.get(Task, task_id, populate_existing=True)
-    if reloaded is None or reloaded.status != "running":
+    reloaded = lock_task_for_planning(session, task_id)
+    if reloaded is None:
         return None, prepared, False, False
     mark_task_planner_started(session, reloaded)
     has_open_actions, open_actions_are_future = _open_actions_state(session, reloaded)
@@ -7237,52 +7205,15 @@ def _apply_type_config_data(
 ) -> Task:
     update_data = dict(update_data)
     task = _get_task(session, tenant_id, task_id)
+    require_task_not_retired(session, task)
     change_observed_at = _now()
     if task.type != expected_type:
         raise ValueError(f"任务类型不匹配，当前任务是 {task.type}")
     previous_config = dict(task.type_config or {})
     previous_revision = int(task.config_revision or 1)
-    if expected_type == "group_ai_chat" and "topic_participation_rate" in update_data:
-        from .ai_group_topic_policy import stage_topic_rate_update
-
-        requested_rate = update_data.pop("topic_participation_rate")
-        staged = stage_topic_rate_update(
-            previous_config,
-            requested_rate,
-            task_status=task.status,
-            today=_task_local_date(task),
-            has_current_task_day_plan=_has_current_ai_group_plan(session, task),
-        )
-        update_data.update(
-            {
-                "topic_participation_rate": staged.get("topic_participation_rate"),
-                "topic_participation_rate_next": staged.get(
-                    "topic_participation_rate_next"
-                ),
-                "topic_participation_rate_effective_date": staged.get(
-                    "topic_participation_rate_effective_date"
-                ),
-            }
-        )
+    update_data = _stage_topic_rate_config_updates(session, task, update_data)
     previous_timezone = str(task.timezone or "")
-    next_config = {**(task.type_config or {}), **update_data}
-    for field in remove_fields:
-        next_config.pop(field, None)
-    next_config = normalize_operation_target_references(
-        session, tenant_id, expected_type, next_config
-    )
-    next_config = apply_default_rule_binding(
-        session, tenant_id, task_type=expected_type, config=next_config
-    )
-    next_config = apply_group_ai_account_coverage_defaults(
-        expected_type, next_config, task.account_config or {}
-    )
-    next_config = validated_type_config(expected_type, next_config)
-    _validate_channel_comment_fallback(
-        session, tenant_id, expected_type, next_config,
-    )
-    validate_rule_binding(session, tenant_id, next_config)
-    task.type_config = next_config
+    _apply_validated_type_config(session, task, update_data, remove_fields=remove_fields)
     increment_revision_for_continuity_change(
         task,
         previous_config=previous_config,
@@ -7297,13 +7228,7 @@ def _apply_type_config_data(
     activate_task_ai_content_config(session, task)
     if not is_content_policy_only_change(task, previous_config=previous_config):
         _clear_unfinished_plan(session, task)
-    if task.status not in {"completed", "failed"}:
-        now = _now()
-        scheduled_start = _naive_datetime(task.scheduled_start)
-        task.status = (
-            "pending" if scheduled_start and scheduled_start > now else "running"
-        )
-        task.next_run_at = scheduled_start if task.status == "pending" else now
+    _requeue_updated_task(task)
     task.last_error = ""
     task.updated_at = change_observed_at
     audit(
@@ -7316,6 +7241,27 @@ def _apply_type_config_data(
         detail=_content_policy_change_detail(task, previous_config),
     )
     return task
+
+
+def _apply_validated_type_config(session, task, update_data, *, remove_fields):
+    next_config = {**(task.type_config or {}), **update_data}
+    for field in remove_fields:
+        next_config.pop(field, None)
+    next_config = normalize_operation_target_references(
+        session, task.tenant_id, task.type, next_config
+    )
+    next_config = apply_default_rule_binding(
+        session, task.tenant_id, task_type=task.type, config=next_config
+    )
+    next_config = apply_group_ai_account_coverage_defaults(
+        task.type, next_config, task.account_config or {}
+    )
+    next_config = validated_type_config(task.type, next_config)
+    _validate_channel_comment_fallback(
+        session, task.tenant_id, task.type, next_config,
+    )
+    validate_rule_binding(session, task.tenant_id, next_config)
+    task.type_config = next_config
 
 
 def _pacing_payload_for_task(task: Task, pacing_config: Any) -> dict[str, Any]:

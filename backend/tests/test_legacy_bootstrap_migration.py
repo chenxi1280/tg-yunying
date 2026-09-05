@@ -59,5 +59,5 @@ def test_revision_chain_fits_real_alembic_version_column():
     config = Config(str(BACKEND_DIR / "alembic.ini"))
     config.set_main_option("script_location", str(BACKEND_DIR / "migrations"))
     script = ScriptDirectory.from_config(config)
-    assert script.get_heads() == ["0225_account_group_revisions"]
+    assert script.get_heads() == ["0226_task_retirement"]
     assert all(len(item.revision) <= ALEMBIC_REVISION_MAX_LENGTH for item in script.walk_revisions())

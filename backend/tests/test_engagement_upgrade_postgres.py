@@ -88,7 +88,7 @@ def test_populated_0196_upgrade_preserves_records_and_runs_backfills(upgrade_dat
     _seed_legacy(upgrade_database)
     _upgrade("head")
     with upgrade_database.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0225_account_group_revisions"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0226_task_retirement"
         assert connection.scalar(text("SELECT name FROM tenants WHERE id=901")) == "QA legacy tenant"
         assert connection.scalar(text("SELECT status FROM tasks WHERE id='QA-legacy-task'")) == "paused"
         assert connection.execute(text(
@@ -141,7 +141,7 @@ def test_0218_upgrade_keeps_old_binding_and_accepts_unapproved_new_job(upgrade_d
         policy = ExecutionResiliencePolicyRevision(tenant_id=1, effective_from=NOW)
         session.add(policy)
         session.flush()
-        task, job = _job(session, identity="legacy-binding")
+        task, job = _legacy_timing_job(session, NOW)
         profile, _ = _approve(session, task, job)
         session.add(GenerationTimingBinding(
             generation_job_id=job.id, tenant_id=1, task_id=task.id, task_lifecycle_epoch=1,
@@ -160,3 +160,22 @@ def test_0218_upgrade_keeps_old_binding_and_accepts_unapproved_new_job(upgrade_d
         assert _bind(session, task, job)["provider_calls_allowed"] is True
         assert session.get(GenerationTimingBinding, job.id).timing_profile_id is None
         session.commit()
+
+
+def _legacy_timing_job(session, timestamp):
+    from app.models import GenerationJob
+    from app.services.task_center.ai_provider_routes import GROUP_REVIEW_PURPOSE, GROUP_ROUTE_PURPOSE, REALIZE_PURPOSE_BY_MODE
+
+    task = SimpleNamespace(id="group_ai_chat", tenant_id=1, type="group_ai_chat")
+    tasks = legacy_bootstrap_metadata(Base.metadata).tables["tasks"]
+    session.execute(tasks.insert().values(id=task.id, tenant_id=1, name="QA legacy timing", type=task.type))
+    purposes = (GROUP_ROUTE_PURPOSE, REALIZE_PURPOSE_BY_MODE["general"], GROUP_REVIEW_PURPOSE)
+    job = GenerationJob(id="legacy-binding", tenant_id=1, task_id=task.id,
+        obligation_type="QA", obligation_id="legacy-binding", generation_sequence=1, context_snapshot_version=1,
+        content_mode="general", prompt_contract_version="QA-prompt-v1", example_set_version="QA-example-v1",
+        voice_profile_version="QA-voice-v1", latest_safe_send_at=timestamp + timedelta(seconds=60),
+        provider_route_snapshots={purpose: {"route_set_id": purpose, "revision": 1, "content_hash": "a" * 64}
+            for purpose in purposes})
+    session.add(job)
+    session.flush()
+    return task, job

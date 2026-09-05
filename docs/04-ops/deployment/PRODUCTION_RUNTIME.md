@@ -1,5 +1,25 @@
 # TG 运营管理平台生产部署说明
 
+## 统一引擎全量旧任务退役与替代任务启动
+
+统一引擎PRD §19.58 的直接切换使用 `backend/scripts/switch_unified_engagement_tasks.py`，与仅改变fact_first路由的旧v3切换分开。先通过 `master -> release -> Deploy Production` 部署0226及全部worker调用前检查，独立确认current/SHA、迁移和运行角色；迁移不自动停Task、不创建替代Task、不自动启动。0225账号组成员基础须已按整租户preview/hash/apply/readback完成。2026-09-06 05:32在20dfc23b上完成tenant 1全部12组的版本初始化，具体证据见当前生产审计；后续操作仍以新鲜读回为准。
+
+操作输入为受保护JSON，包含tenant_id、完整deployed_sha及精确旧Task ID到新type_config覆盖值的replacements。只纳入当前running的活群、评论、点赞和浏览；保留暂停任务。确认缺失的活群topic_participation_rate后再形成正式配置，按真实成员数计算评论55%–65%数量和日容量。每个命令都必须提供 `--expected-deployed-sha`，与容器RELEASE_SHA一致。preview/readback使用REPEATABLE READ READ ONLY；单条SQL20秒、锁等待2秒。运行示例（参数文件已完成当前范围审核）：
+
+```sh
+python -m scripts.switch_unified_engagement_tasks --mode preview --input /tmp/unified-cutover-spec.json --output /tmp/unified-cutover-preview.json --expected-deployed-sha <sha>
+python -m scripts.switch_unified_engagement_tasks --mode retire --input /tmp/unified-cutover-preview.json --output /tmp/unified-cutover-receipt.json --expected-deployed-sha <sha> --actor <actor> --audit-reference <current-session-reference>
+python -m scripts.switch_unified_engagement_tasks --mode cleanup --input /tmp/unified-cutover-receipt.json --expected-deployed-sha <sha> --actor <actor> --audit-reference <current-session-reference>
+python -m scripts.switch_unified_engagement_tasks --mode activate --input /tmp/unified-cutover-receipt.json --expected-deployed-sha <sha> --actor <actor> --audit-reference <current-session-reference>
+python -m scripts.switch_unified_engagement_tasks --mode readback --input /tmp/unified-cutover-receipt.json --expected-deployed-sha <sha>
+```
+
+retire先锁成员tenant，再锁精确Task集合并重验原配置/状态/epoch/授权/hash；正式创建全部新draft与退役旧Task在同一事务。失败全部回滚；同一preview/reference重复执行从审计取回原映射，不创建第二套。cleanup每批默认100条，只处理有正面未调用证明的旧工作；已skipped/failed但仍占未调用资源的Action也须完成释放，所有called/unknown/success保留。每批独立提交与读回，remaining各项为0后才能activate。activate用正式启动入口同步最终epoch binding和内容授权，失败回滚新任务启动，旧任务保持退役；后续修复使用同一映射。所有输出文件权限0600，容器替换前复制preview/receipt到受保护审计位置。
+
+退役约束禁止旧Task重新running或设置next_run_at；配置修改、start/resume、retry/reset明确报task_retired。不能删除旧Action/计划，也不能把unknown当未执行。调用前Task锁忙走原未调用等待路径；退役已提交则终结本次未调用Attempt。已提交call-issued仍可能收到迟到结果，保留原调用证据。0226存在退役证据时禁止downgrade；不以回滚旧应用恢复旧路由。
+
+发布、退役、清理、启动及业务验收分别记录：检查旧22停止、新22映射唯一与unified绑定；以新Task身份核对日账本、来源/数量计划、Action、Attempt和typed远端事实，并逐类检查质量、数量及性能。初始容量预览不冻结计划，不把future source当已有机会，也不覆盖历史调用预算。未确认全部业务证据时保持未验收。
+
 ## AI V2 单任务受保护 bootstrap
 
 生产入口为 `Production AI V2 Canary Bootstrap` workflow，仅允许 `preview/apply/readback`。

@@ -186,22 +186,34 @@ def validated_type_config(task_type: str, data: dict[str, Any]) -> dict[str, Any
     topic_rate_next = data.get("topic_participation_rate_next")
     topic_rate_effective_date = data.get("topic_participation_rate_effective_date")
     normalized = model(**(data or {})).model_dump(mode="json", exclude_none=True)
-    if task_type == "group_ai_chat" and _as_int(target_reference_revision):
+    if task_type == "group_ai_chat":
+        normalized = _restore_group_config(normalized, group_internal, content_policy_internal,
+            target_reference_revision=target_reference_revision, topic_rate_next=topic_rate_next,
+            topic_rate_effective_date=topic_rate_effective_date)
+    return _apply_type_contract_defaults(task_type, normalized)
+
+
+def _restore_group_config(config, group_internal, content_policy_internal, *,
+        target_reference_revision, topic_rate_next, topic_rate_effective_date):
+    normalized = dict(config)
+    if _as_int(target_reference_revision):
         normalized["target_reference_revision"] = _as_int(target_reference_revision)
-    if task_type == "group_ai_chat" and topic_rate_next is not None:
+    if topic_rate_next is not None:
         if topic_rate_effective_date is None:
             raise ValueError("topic_participation_rate_effective_date_required")
         normalized["topic_participation_rate_next"] = float(topic_rate_next)
         normalized["topic_participation_rate_effective_date"] = str(
             topic_rate_effective_date
         )
+    normalized.update(content_policy_internal)
+    normalized.update(group_internal)
+    return {key: value for key, value in normalized.items() if key not in GROUP_AI_LEGACY_RUNTIME_FIELDS}
+
+
+def _apply_type_contract_defaults(task_type, config):
+    normalized = dict(config)
     if task_type == "search_join_group" and not normalized.get("strict_daily_target"):
         normalized.pop("strict_daily_target", None)
-    if task_type == "group_ai_chat":
-        normalized.update(content_policy_internal)
-        normalized.update(group_internal)
-        for field in GROUP_AI_LEGACY_RUNTIME_FIELDS:
-            normalized.pop(field, None)
     if task_type == "channel_view":
         normalized["task_daily_view_safety_cap"] = UNIFIED_TASK_GATE_LIMIT
         normalized["max_views_per_account_per_day"] = UNIFIED_TASK_GATE_LIMIT
@@ -212,11 +224,17 @@ def validated_type_config(task_type: str, data: dict[str, Any]) -> dict[str, Any
         normalized["max_total_comments"] = UNIFIED_TASK_GATE_LIMIT
         normalized["max_total_comments_jitter"] = 0
         normalized["max_comments_per_account_per_hour"] = UNIFIED_TASK_GATE_LIMIT
-    for field in CHANNEL_JITTER_FIELDS.get(task_type, set()):
-        normalized.pop(field, None)
+    normalized = _without_legacy_quantity_jitter(task_type, normalized)
     if task_type in {"group_relay", "channel_comment"}:
         normalized["require_review"] = False
     return normalized
+
+
+def _without_legacy_quantity_jitter(task_type, config):
+    if task_type == "channel_like" and config.get("engagement_contract_version") == "unified_engagement_v1":
+        return config
+    excluded = CHANNEL_JITTER_FIELDS.get(task_type, set())
+    return {key: value for key, value in config.items() if key not in excluded}
 
 
 def _has_rule_binding(config: dict[str, Any]) -> bool:

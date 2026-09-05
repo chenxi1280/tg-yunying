@@ -296,6 +296,7 @@ LEGACY_BOOTSTRAP_TABLES = frozenset((
 ))
 
 ENGINE_ADDED_COLUMNS = {
+    "tasks": frozenset(("retired_at", "replaced_by_task_id")),
     "channel_messages": frozenset(("grouped_id", "source_metadata")),
     "account_pacing_reservations": frozenset(("action_class",)),
     "task_group_daily_message_slots": frozenset(("continuity_claim_id", "quantity_credit_eligible")),
@@ -322,6 +323,9 @@ def legacy_bootstrap_metadata(source):
     attempts = metadata.tables["execution_attempts"]
     attempts.indexes.difference_update({index for index in attempts.indexes
                                       if index.name == "ix_execution_attempts_account_usage"})
+    tasks = metadata.tables["tasks"]
+    tasks.constraints.difference_update({item for item in tasks.constraints
+                                        if item.name == "ck_tasks_retirement_terminal"})
     for name, excluded in ENGINE_ADDED_COLUMNS.items():
         table = metadata.tables[name]
         constraints, indexes, foreign_keys = _later_objects(table, excluded)

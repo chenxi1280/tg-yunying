@@ -193,6 +193,8 @@ def test_call_start_rechecks_actual_day_after_reservation_crosses_midnight(monke
 def test_late_budget_rejection_defers_only_uncalled_attempt_and_never_reaches_gateway(monkeypatch):
     with _session() as session:
         task = _seed(session)
+        task.status = "running"
+        session.flush()
         _budget(session)
         action, attempt = _attempt(session, task, 11)
         resources.reserve_attempt_resources(session, action, attempt)

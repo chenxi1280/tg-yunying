@@ -2900,4 +2900,34 @@ Intake：L3，目标为当前运行中的活群、评论、点赞、浏览任务
 
 已call-issued/unknown的旧调用保留原身份、结果与证据，只允许对账；作废业务计划不等于证明远端没有执行，也不生成重放权限。已成功事实保留为历史。旧未call-issued资源按原正式释放入口终结，Provider已发起的调用和成本保留，迟到结果不能重新唤醒旧工作。切换后旧Task/source writer不能再产生正常派发；新工作由新binding、成员版本与统一数量/节奏/质量/资源合同生成。
 
-执行合同待反查补齐：冻结全部目标Task与旧工作集合；选择不会复用旧day/source/quantity唯一键的新任务或新epoch身份；定义原子停止旧writer、旧工作终结、新配置/绑定建立、旧新映射及幂等CAS；核对group/comment真实内容授权与来源、like/view完整覆盖、新路由pre-call门与迟到回调、现有占用的物理结束证据、同目标单写者和切换后逐类E4。当前design_status=partial，缺口只用于完成切换实现，不能继续把“沿用旧任务执行”作为最终状态。
+#### 19.58.1 新旧身份与退役事务
+
+每个旧Task对应一个新Task，使用新UUID、config_revision=1和正式创建入口；不复制stats、日账本、来源计划、Action、GenerationJob或完成量。新配置保留原业务名称、目标、授权、规则及账号组范围，并按本PRD正式启用统一账号绑定、数量、节奏和质量合同。当前快照为22个running任务（活群9、评论2、点赞6、浏览5）；原paused评论保持暂停，不纳入本次新任务集合。原all账号范围展开为本tenant全部普通账号组，原单组范围保留该组，不能缩成默认组。
+
+创建输入移除旧pacing_config中服务端派生的daily_message_target和fulfillment_soft_pacing_version，由正式新建流程按type_config重新生成；业务日目标保留原值。原内部运行字段rolling_window_days和multi_day_rampup不冒充公共创建参数，在新Task创建后按原正整数/布尔类型校验后原值绑定，纳入原配置CAS和新配置hash，不丢失原多日节奏。旧活群topic_participation_rate为空时不能从旧路由还原新合同的比例，必须按日轮换专项PRD由用户明确首次启用值；已有非空比例原值保留，不把空值自动填成0、5%或30%。预览必须明示原空值与确认后的新值，不改词库、老师场景或内容路线。退役事务先取得既有成员写事务使用的tenant锁，再锁精确Task并重算预览，避免成员在配置CAS与新建之间发生漂移。
+
+Task新增retired_at和replaced_by_task_id，后者引用新Task并唯一；退役记录独立于可重置的stats。数据库约束要求退役Task始终stopped、next_run_at为空且替代Task存在，防止迟到的旧ORM对象把旧Task重新写成running。新Task和退役映射在同一事务建立：锁定精确旧Task集合并重新核对配置/状态/epoch/hash，按正式创建校验建立新draft，再将旧Task退役并递增epoch。事务不锁旧Action/Job，以免与执行器Action→Task锁顺序相反。任一创建、授权、成员基础或CAS失败全部回滚。审计保存actor、当前会话授权引用、部署SHA、原配置hash、新旧UUID映射和操作阶段；不存消息正文或凭据。
+
+退役后start/resume、reset、retry和配置修改明确拒绝旧Task，读取及历史证据仍保留。Planner每次事务开始及活群中途提交后的继续规划，都重新取得Task行锁并检查running及未退役；退役事务与规划提交串行化。Task级退役覆盖该Task下全部旧计划、未物化义务及未来排期：它们均已失去执行资格，原数量分母、来源、due和历史证据保持原值，不能把作废数量投影成fulfilled。新Task按新身份重新建账。
+
+#### 19.58.2 真正发出前的并发边界
+
+四类任务在统一_mark_gateway_call_started之前，从数据库重新读Task的retired_at、status、deleted_at、epoch，取得FOR SHARE NOWAIT并持有至call-issued提交；不使用session缓存Task。退役事务先取得Task锁时，该调用明确未发出；call-issued先提交时，该旧Attempt属于已调用集合并保留。锁竞争在savepoint内暴露为既有资源准入等待，不能把未发出误写成result_unknown。退役/epoch不符则记录skipped_before_gateway及明确原因，释放本次尚未调用的正式资源。该边界不承诺已提交call-issued的远端请求可以撤销。
+
+Provider新请求继续使用已有Task共享锁、epoch和generation owner校验，并同时检查retired_at。旧已开始的Provider exchange/成本/unknown原样保留；未决lineage不被改成成功或可重试。清理阶段终结旧Job的owner/version，使迟到结果无法回写ready或重新唤醒旧Action；业务退役不等于Provider transport terminated。
+
+#### 19.58.3 可恢复清理与正式启动
+
+退役事务提交并独立读回后，按精确旧Task集合分批清理未调用Action和生成owner。只有无Gateway调用时间、无远端ID、无unknown/success、无相反typed fact/journal的Action才终结为skipped，原因task_retired；所有已调用、未知和成功证据不修改。资源仅按既有非执行证明释放：尚未发出的预算/并发/调用fence结算为未执行，未绑定或安全已终结Action的账号排期释放，调用占用与unknown预算继续由原事实承担。任何旧动作锁竞争留待同一清理阶段继续，不扩大目标、不抹除证据。各批清理及完成计数有审计；仅按Task状态认定旧计划退役，不伪造逐行fulfilled。
+
+新draft的首次正式启动必须把账号binding同步到启动后的epoch，旧draft binding成为superseded，新revision保留相同成员组合同与hash；这仅处理从未运行、没有冻结计划的新Task首次启动，不通过同hash自动迁移已运行任务的旧计划。启动同时校验正式内容policy/授权、成员版本和目标单写者。新任务集合全部通过配置/基础预检、旧Task退役和清理读回后，按正式start_task_in_transaction激活。任何启动失败回滚本次启动事务，新draft保留、旧Task继续退役，修复后沿原映射继续；不得恢复旧路由作为兜底。
+
+#### 19.58.4 数量、来源与验收
+
+活群保留每群当前正式目标及质量路线；评论采用原已批准55%–65%参与比例，按真实稳定成员数显式调整business_max_per_message和日总容量，启用原评论grounding、两阶段、独立审核及零兜底合同，不能继续保留旧30/100/50/80/日10对新比例的截断。点赞保留各频道原每帖目标；浏览按80%–95%账号参与、自然覆盖及每账号2–4来源边的新合同，保留new_only来源边界，不拿历史帖子或旧完成量充数。配置预览逐Task列出差异、原目标与新目标，并用现有portfolio容量组件列出分类共享容量与缺口；完整组合可行性仍由正式规划的账号分配、总预算与历史调用占用共同验证。
+
+配置反查确认旧normalizer会删除like_count_jitter，导致新引擎按0抖动执行。统一点赞创建/更新必须保留其唯一每帖数量抖动（缺省使用现有schema的20%，显式0仍为0）；评论和浏览继续只用各自参与比例，不叠加旧数量抖动。只读容量预览复用正式initial source选择、相册合并、有效窗口和portfolio分类预算读取；已知初始来源与未来条件来源分列，不把message_count直接当作已接纳来源数。容量预览不冻结新计划，不将分类可用额度相加当作总预算，也不免除正式规划和Gateway前对历史调用占用、总预算及共享账号的验证；其观察结果不进入配置CAS hash。
+
+验收覆盖真实PG两个session的退役与call-issued先后竞争、缓存旧Task、首次启动binding epoch、四类未调用/已调用/unknown分区、旧身份不能恢复、成员/授权/SHA/配置漂移零写、全事务回滚、重复执行不生成第二套新Task、迟到Provider结果和新目标单写者。部署后独立确认22个旧Task退役、新旧映射唯一、新任务走unified_engagement_v1、没有退役后新call-issued；随后逐类核对Task→新账本/计划→Action→Attempt→typed远端事实与正式数量、质量和性能。配置成功、清理成功和发布成功分别报告，不能替代E4。
+
+本切换合同design_status=complete；已反查正式创建/启动、账号binding、Planner事务边界、Dispatcher call-issued、Provider exchange、目标单写者、排期/预算资源及既有v3切换入口。既有v3切换CLI面向fact_first合同且绕过本次统一binding/内容激活，因此本次使用专门的preview/retire/cleanup/activate服务和CLI，不复用旧计划承接路径。

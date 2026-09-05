@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from uuid import uuid4
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, text
+from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -23,6 +23,13 @@ class Task(Base):
             "create_task_type",
             "client_request_id",
             name="uq_tasks_create_idempotency",
+        ),
+        UniqueConstraint("replaced_by_task_id", name="uq_tasks_retirement_replacement"),
+        CheckConstraint(
+            "(retired_at IS NULL AND replaced_by_task_id IS NULL) OR "
+            "(retired_at IS NOT NULL AND replaced_by_task_id IS NOT NULL "
+            "AND replaced_by_task_id != id AND status = 'stopped' AND next_run_at IS NULL)",
+            name="ck_tasks_retirement_terminal",
         ),
     )
 
@@ -56,6 +63,10 @@ class Task(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     deleted_by: Mapped[str] = mapped_column(String(100), default="")
     delete_reason: Mapped[str] = mapped_column(String(255), default="")
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    replaced_by_task_id: Mapped[str | None] = mapped_column(
+        ForeignKey("tasks.id", ondelete="RESTRICT", name="fk_tasks_retirement_replacement"), nullable=True
+    )
     task_lifecycle_epoch: Mapped[int] = mapped_column(Integer, default=1)
     fulfillment_contract_version: Mapped[str] = mapped_column(
         String(40), default="legacy_v1"

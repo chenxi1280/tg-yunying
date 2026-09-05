@@ -177,7 +177,8 @@ def replace_active_binding(
         )
         .with_for_update()
     )
-    if current is not None and current.binding_set_hash == spec.binding_set_hash:
+    if (current is not None and current.binding_set_hash == spec.binding_set_hash
+            and current.task_lifecycle_epoch == task.task_lifecycle_epoch):
         return current
     if current is not None:
         current.state = "superseded"
