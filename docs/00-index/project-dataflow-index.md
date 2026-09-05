@@ -1510,3 +1510,5 @@ legacy-only A 冷启动分支固定为 `frozen legacy A -> 原 A Session 只读 
 ### 2026-09-06 独立runtime不随无关应用修改重复重启
 
 `候选四文件 + 当前root-owned runtime内容/保护属性 + enabled slot实际active -> 内容一致时认证GET health -> 输出retained runtime路径、application候选SHA、原provider status/quota/模型可见性`。该分支不写symlink/ledger、不重启、不生成模型请求；原unknown身份不变。代码变化或inactive才进入原完整安装/双模型真实探针与失败回滚。观测成功只证明保留进程的结构与可读性，不能把provider degraded、业务短缺或四类E4改写为通过。
+
+> **2026-09-06 C 历史执行归属隔离：** stopped post-login C unknown + 已清租约 + 原节点在 unknown 后新鲜上报 ready/零客户端 → 含历史 owner/epoch/节点镜像和空闲证据的 preview → 节点锁内重验并 apply → 原 C deferred_reconcile/unknown/quarantined，owner/epoch/Session 保留；原 B 成功和请求 reconcile_unknown 保留，无 Gateway。
