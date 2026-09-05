@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from itertools import groupby
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import (AccountBehaviorBudgetReservation, Action, ExecutionAttempt,
@@ -12,7 +12,7 @@ from app.timezone import BEIJING_TZ, as_beijing
 
 from .engagement_action_classes import ACTION_CLASS_BY_TYPE
 from .engagement_binding import ENGAGEMENT_TASK_TYPES
-from .engagement_gateway_return import journal_proves_gateway_return
+from .engagement_gateway_return import journal_matches_original_call, journal_proves_gateway_return
 
 TERMINAL_ATTEMPT_STATES = frozenset({
     "success", "failed", "result_unknown", "skipped_before_gateway", "call_not_started",
@@ -54,7 +54,8 @@ def read_legacy_attempt_occupancy(
     session: Session, scope: LegacyOccupancyScope,
 ) -> tuple[LegacyAttemptOccupancy, ...]:
     with session.no_autoflush:
-        rows = tuple(session.execute(_candidate_query(scope)).mappings())
+        rows = tuple(session.execute(_candidate_query(scope,
+            dialect_name=session.get_bind().dialect.name)).mappings())
     projected = (_project_rows(tuple(group)) for _, group in groupby(rows, key=lambda r: r["attempt_id"]))
     return tuple(item for item in projected if item is not None)
 
@@ -63,10 +64,10 @@ def _project_rows(rows):
     return _project_attempt(rows[0], tuple(row for row in rows if row["journal_id"] is not None))
 
 
-def _candidate_query(scope):
+def _candidate_query(scope, *, dialect_name):
     snapshot = ExecutionAttempt.result_snapshot
     ledger_ref = Action.payload["task_day_ledger_id"].as_string()
-    columns = _candidate_columns(ledger_ref, snapshot)
+    columns = _candidate_columns(ledger_ref, snapshot, dialect_name=dialect_name)
     return (select(*columns)
         .join(Action, Action.id == ExecutionAttempt.action_id)
         .outerjoin(TaskDayLedger, TaskDayLedger.id == ledger_ref)
@@ -97,7 +98,7 @@ def _requested_days(scope):
             ExecutionAttempt.gateway_call_started_at < end) for start, end in periods))
 
 
-def _candidate_columns(ledger_ref, snapshot):
+def _candidate_columns(ledger_ref, snapshot, *, dialect_name):
     return (
         ExecutionAttempt.id.label("attempt_id"), ExecutionAttempt.action_id,
         ExecutionAttempt.tenant_id, ExecutionAttempt.account_id,
@@ -106,7 +107,8 @@ def _candidate_columns(ledger_ref, snapshot):
         ExecutionAttempt.gateway_call_started_at.label("call_at"),
         ExecutionAttempt.after_call_at,
         ExecutionAttempt.remote_message_id.label("remote_message_id"),
-        snapshot["remote_mutation_started"].as_boolean().label("mutation_started"),
+        snapshot["remote_mutation_started"].label("mutation_started"),
+        _mutation_type_column(snapshot, dialect_name).label("mutation_json_type"),
         snapshot["transport_termination_state"].as_string().label("termination"),
         snapshot["gateway_request_identity"].as_string().label("attempt_request"),
         snapshot["gateway_request_fingerprint"].as_string().label("attempt_request_hash"),
@@ -126,6 +128,12 @@ def _candidate_columns(ledger_ref, snapshot):
         GatewayRequestEvidenceJournal.state.label("journal_state"),
         *_journal_return_columns(),
     )
+
+
+def _mutation_type_column(snapshot, dialect_name):
+    if dialect_name == "sqlite":
+        return func.json_type(snapshot, "$.remote_mutation_started")
+    return func.json_typeof(snapshot["remote_mutation_started"])
 
 
 def _journal_return_columns():
@@ -181,6 +189,22 @@ def _owner_issues(row):
 
 
 def _mutation_state(row, journals):
+    states, issues = _journal_mutation_states(row, journals)
+    # The journal is the durable Gateway outcome; a pre-call snapshot can be older.
+    if not journals:
+        observed, snapshot_issues = _snapshot_mutation(row)
+        issues.extend(snapshot_issues)
+        if _snapshot_is_terminal_evidence(row, observed):
+            states.add("true" if observed else "false")
+    if row["remote_message_id"] or row["attempt_state"] == "success":
+        states.add("true")
+    if len(states) > 1:
+        issues.append("remote_mutation_evidence_conflict")
+        return "unknown", tuple(issues)
+    return next(iter(states), "unknown"), tuple(issues)
+
+
+def _journal_mutation_states(row, journals):
     states = set()
     issues = []
     for journal in journals:
@@ -191,21 +215,35 @@ def _mutation_state(row, journals):
             issues.append("gateway_journal_evidence_conflict")
         if journal["journal_mutation"] in {"true", "false"}:
             states.add(journal["journal_mutation"])
-    # The journal is the durable Gateway outcome; a pre-call snapshot can be older.
-    if not states and _snapshot_is_terminal_evidence(row):
-        states.add("true" if row["mutation_started"] else "false")
-    if row["remote_message_id"] or row["attempt_state"] == "success":
-        states.add("true")
-    if len(states) > 1:
-        issues.append("remote_mutation_evidence_conflict")
-        return "unknown", tuple(issues)
-    return next(iter(states), "unknown"), tuple(issues)
+            if not _journal_result_is_proven(row, journal):
+                issues.append("gateway_journal_result_unproven")
+    return states, issues
 
 
-def _snapshot_is_terminal_evidence(row):
-    if row["mutation_started"] is True:
+def _journal_result_is_proven(row, journal):
+    if journal["journal_mutation"] == "false" and (
+            journal["journal_message_id"] or journal["journal_fact_id"]):
+        return False
+    return journal_matches_original_call(row, journal)
+
+
+def _snapshot_mutation(row):
+    kind, value = row["mutation_json_type"], row["mutation_started"]
+    if kind in {None, "null"}:
+        return None, ()
+    if kind in {"true", "false"}:
+        return kind == "true", ()
+    if kind == "boolean" and type(value) is bool:
+        return value, ()
+    return None, ("remote_mutation_snapshot_invalid",)
+
+
+def _snapshot_is_terminal_evidence(row, observed):
+    if observed is True:
         return True
-    return (row["mutation_started"] is False and row["after_call_at"] is not None
+    return (observed is False and row["after_call_at"] is not None
+        and row["call_at"] is not None
+        and as_beijing(row["after_call_at"]) >= as_beijing(row["call_at"])
         and row["attempt_state"] in TERMINAL_ATTEMPT_STATES)
 
 

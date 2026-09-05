@@ -1523,3 +1523,4 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 
 - `engagement_portfolio_capacity.py`以四次tenant/day/candidate范围查询读取容量，保留ORM可见性与active policy锁；`engagement_portfolio_allocation.py`承接原确定性分配/hash，`engagement_portfolio.py`保留计划与预约持久化。1,632账号真实PG对比结果等价，查询11,425→4，测试为`test_engagement_portfolio_query_scaling.py`与`test_engagement_portfolio_query_postgres.py`，见统一PRD§19.54。
 - `engagement_recovery_outcome.py`为Recovery和Dispatcher提供原失败调用结果读取，复用`engagement_gateway_return.py`的请求/时间/双hash验证；called failed缺证据时结算保留三件套并报错。原journal优先于调用前快照，不从call-start推断typed mutation，见统一PRD§19.55及`test_engagement_recovery_outcome.py`、`test_engagement_recovery_outcome_postgres.py`。
+- `engagement_legacy_occupancy.py`在原单SELECT中保留mutation节点的JSON类型，unknown journal不回退旧快照；定态回执复用原请求/时间/双hash验证，false快照须终态且完成时间不早于调用。`test_engagement_legacy_mutation_types.py`及原PostgreSQL用例覆盖类型、弱快照和损坏回执，见统一PRD§19.56。

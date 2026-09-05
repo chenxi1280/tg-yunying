@@ -8,6 +8,8 @@ from app.models import (AccountPool, Action, ExecutionAttempt, GatewayRequestEvi
     Task, Tenant, TgAccount)
 from app.services.task_center.engagement_legacy_occupancy import (
     LegacyOccupancyScope, read_legacy_attempt_occupancy)
+from app.services.task_center.gateway_evidence_journal import (
+    GatewayResultEvidence, bind_gateway_request_identity, record_gateway_result_evidence)
 
 
 TENANT_ID = 951_101
@@ -85,3 +87,60 @@ def test_postgres_migrated_account_index_is_valid_and_contains_unknown_calls():
         assert valid
         assert "tenant_id, account_id, gateway_call_started_at" in definition
         assert "result_unknown" in definition and "gateway_call_started_at IS NOT NULL" in definition
+
+
+@pytest.mark.parametrize("journal_state,value", [
+    ("unknown", False), (None, 0), (None, 1), (None, "false"),
+    (None, "true"), (None, None), (None, False), (None, True),
+])
+def test_postgres_preserves_original_json_type_and_unknown_journal(journal_state, value):
+    with SessionLocal() as session:
+        action, attempt = _seed(session, BEIJING_MIDNIGHT)
+        attempt.status = "failed"
+        attempt.after_call_at = BEIJING_MIDNIGHT + timedelta(seconds=1)
+        attempt.result_snapshot = {"remote_mutation_started": value}
+        if journal_state:
+            session.add(GatewayRequestEvidenceJournal(tenant_id=TENANT_ID, action_id=action.id,
+                execution_attempt_id=attempt.id, account_id=ACCOUNT_ID,
+                gateway_request_identity=attempt.id, request_fingerprint="r" * 64,
+                target_fingerprint="t" * 64, result_fingerprint="s" * 64,
+                evidence_hash="e" * 64, remote_mutation_state=journal_state))
+        session.flush()
+        rows = read_legacy_attempt_occupancy(session, LegacyOccupancyScope(
+            tenant_id=TENANT_ID, account_ids=(ACCOUNT_ID,), task_day=date(2026, 9, 5)))
+        if value is False and journal_state is None:
+            assert rows == ()
+        else:
+            row, = rows
+            assert row.remote_inflight
+            invalid = journal_state is None and value is not None and type(value) is not bool
+            assert row.issues == (("remote_mutation_snapshot_invalid",) if invalid else ())
+        session.rollback()
+
+
+@pytest.mark.parametrize("damage", [None, "request", "hash", "time", "remote_fact"])
+def test_postgres_false_journal_requires_original_result_proof(damage):
+    with SessionLocal() as session:
+        action, attempt = _seed(session, BEIJING_MIDNIGHT)
+        attempt.status = "failed"
+        attempt.result_snapshot = {}
+        bind_gateway_request_identity(action, attempt)
+        journal = record_gateway_result_evidence(session, action, attempt,
+            GatewayResultEvidence(remote_mutation_started=False))
+        if damage == "request":
+            journal.request_fingerprint = "x" * 64
+        elif damage == "hash":
+            journal.evidence_hash = "x" * 64
+        elif damage == "time":
+            journal.observed_at = BEIJING_MIDNIGHT - timedelta(seconds=1)
+        elif damage == "remote_fact":
+            journal.remote_fact_id = "contradictory-fact"
+        session.flush()
+        rows = read_legacy_attempt_occupancy(session, LegacyOccupancyScope(
+            tenant_id=TENANT_ID, account_ids=(ACCOUNT_ID,), task_day=date(2026, 9, 5)))
+        if damage is None:
+            assert rows == ()
+        else:
+            row, = rows
+            assert row.remote_inflight and "gateway_journal_result_unproven" in row.issues
+        session.rollback()

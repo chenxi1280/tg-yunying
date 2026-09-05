@@ -7,6 +7,7 @@ from app.models import (AccountBehaviorBudgetLedger, AccountBehaviorBudgetReserv
     GatewayRequestEvidenceJournal, TaskDayLedger)
 from app.services.task_center.engagement_legacy_occupancy import (
     LegacyOccupancyScope, read_legacy_attempt_occupancy)
+from app.services.task_center.runtime_state_hash import canonical_state_hash
 from tests.test_engagement_runtime_resources import _attempt, _seed, _session
 
 
@@ -27,11 +28,22 @@ def _call(session, task, *, when=None, state="success", action_type="like_messag
 
 
 def _journal(session, action, attempt, *, state="true", suffix="", account_id=11):
+    request = f"{attempt.id}{suffix}"
+    snapshot = dict(attempt.result_snapshot or {})
+    snapshot.setdefault("gateway_request_identity", request)
+    snapshot.setdefault("gateway_request_fingerprint", "r" * 64)
+    snapshot.setdefault("gateway_target_fingerprint", "t" * 64)
+    attempt.result_snapshot = snapshot
+    result = {"remote_message_id": "", "remote_fact_id": "",
+        "typed_remote_fact": {}, "failure_code": "", "remote_mutation_state": state}
+    proof = {"gateway_request_identity": request, "request_fingerprint": "r" * 64,
+        "result": result}
     row = GatewayRequestEvidenceJournal(tenant_id=1, action_id=action.id,
         execution_attempt_id=attempt.id, account_id=account_id,
-        gateway_request_identity=f"{attempt.id}{suffix}", request_fingerprint="r" * 64,
-        target_fingerprint="t" * 64, result_fingerprint="s" * 64, evidence_hash="e" * 64,
-        remote_mutation_state=state)
+        gateway_request_identity=request, request_fingerprint="r" * 64,
+        target_fingerprint="t" * 64, result_fingerprint=canonical_state_hash(result),
+        evidence_hash=canonical_state_hash(proof), remote_mutation_state=state,
+        observed_at=attempt.after_call_at)
     session.add(row)
     session.flush()
     return row

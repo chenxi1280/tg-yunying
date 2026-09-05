@@ -1523,3 +1523,4 @@ legacy-only A 冷启动分支固定为 `frozen legacy A -> 原 A Session 只读 
 
 - 组合容量读取：同tenant候选账号 → 稳定class顺序锁active policy → 同day的active portfolio按account/class汇总 → 同day behavior counters → 原class/total公式及分配。四次查询不随账号数增长；ORM未flush变更按原约定可见，计划冻结/hash/缺量含义不变，历史/跨日共享规划口径另行验收。
 - 恢复失败Attempt：原Action/Attempt归属 → 原journal owner/request/time/双hash与typed mutation；无journal才读取带after_call_at的严格boolean终态快照 → true确认调用成本、false释放成本。调用开始时间不作结果，缺失或冲突保持原三件套并报告错误；unknown仍按原业务状态与transport ACK结算，不制造成功或重放许可。
+- 旧占用投影：一次查询原JSON节点/类型与journal → 有journal时保留其优先级并验证定态原请求/时间/双hash → 无journal才接受严格boolean；false仅在原终态及正确完成时序下解除占用。unknown、非boolean、矛盾remote id/fact或损坏回执保留占用并输出相应issue，旧日期/业务结果不写回。
