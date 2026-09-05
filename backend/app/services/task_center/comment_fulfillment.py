@@ -372,7 +372,7 @@ def _obligation_discussion_fields(
     binding = discussion_identity.group_binding
     thread = discussion_identity.thread_binding
     membership = discussion_identity.membership_by_account.get(int(account_id or 0))
-    if membership is None:
+    if membership is None and not discussion_identity.freeze_pending_memberships:
         raise ValueError("channel_comment_membership_fact_not_frozen")
     return {
         "grounding_enrollment_id": enrollment.id,
@@ -387,7 +387,7 @@ def _obligation_discussion_fields(
         "discussion_peer_id": thread.discussion_peer_id,
         "source_remote_message_id": message.message_id,
         "thread_root_message_id": thread.thread_root_message_id,
-        "membership_fact_id": membership.id,
+        "membership_fact_id": membership.id if membership is not None else None,
         "task_lifecycle_epoch": task.task_lifecycle_epoch,
         "task_config_revision": task.config_revision,
     }

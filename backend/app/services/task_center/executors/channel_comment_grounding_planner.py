@@ -74,6 +74,7 @@ def build_grounding_comment_plan_slots(
             obligations,
             plan.assignment_by_ordinal,
             quality_target=plan.quality_target,
+            memberships=plan.discussion_identity.membership_by_account,
         ))
     return slots
 
@@ -149,7 +150,8 @@ def _freeze_grounding_obligations(
         for account_id in plan.account_by_ordinal.values()
     }
     ready_account_ids = set(plan.discussion_identity.membership_by_account)
-    if not selected_account_ids.issubset(ready_account_ids):
+    if (not plan.discussion_identity.freeze_pending_memberships
+            and not selected_account_ids.issubset(ready_account_ids)):
         task.last_error = "等待讨论组账号准入完成后物化评论义务"
         return []
     total = int(plan.contract.required_distinct_account_count)
@@ -238,11 +240,16 @@ def _open_plan_slots(
     assignments: dict[int, object],
     *,
     quality_target: object,
+    memberships: dict,
 ) -> list[CommentPlanSlot]:
     slots = []
     for item in obligations:
         if item.status not in {"open", "replan_required"} or item.current_action_id:
             continue
+        membership = memberships.get(item.account_id)
+        if membership is None:
+            continue
+        item.membership_fact_id = membership.id
         ordinal = int(item.target_ordinal)
         assignment = assignments.get(ordinal)
         component = target_component_for_ordinal(quality_target, ordinal)

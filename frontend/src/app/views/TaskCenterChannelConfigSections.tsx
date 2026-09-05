@@ -79,7 +79,7 @@ export function ChannelCommentTypeConfig({ replyMinPerMessageRules, ruleFields, 
         <div style={{ gridColumn: '1 / -1' }}>{ruleFields}</div>
         <Form.Item name="max_total_comments" label="系统任务门禁（固定）"><InputNumber min={1000000} max={1000000} disabled /></Form.Item>
         <Form.Item name="target_comments_per_message" label="预计每条评论/回复"><InputNumber min={1} /></Form.Item>
-        <Form.Item name="business_max_comments_per_message" label="单帖业务评论上限" extra="55%～65% 需求量超过此值时按上限冻结，并显示业务 cap 已调整。"><InputNumber min={1} max={1000} /></Form.Item>
+        <Form.Item name="business_max_comments_per_message" label="单帖业务评论上限" extra="55%～65% 需求量超过此值时按上限冻结，并显示业务 cap 已调整。"><InputNumber min={1} /></Form.Item>
         <Form.Item name="planned_fallback_max_bps" label="计划兜底上限（万分比）" extra="2000 表示最多 20%；兜底只允许用于顶层评论。"><InputNumber min={0} max={10000} step={100} /></Form.Item>
         <Form.Item name="comment_mode" label="评论关系模式">
           <Select options={[{ value: 'comment', label: '仅顶层评论' }, { value: 'mixed', label: '顶层评论 + 引用回复' }, { value: 'reply', label: '仅引用回复' }]} />

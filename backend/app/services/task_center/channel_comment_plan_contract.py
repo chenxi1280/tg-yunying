@@ -115,12 +115,9 @@ def _create_comment_plan(
     planning_admission_snapshot: PlanningAdmissionSnapshot | None,
 ) -> FrozenCommentPlan:
     source = _source_revision(session, task, message)
-    admitted = {int(item) for item in (
-            planning_admission_snapshot.admissible_account_ids
-            if planning_admission_snapshot is not None
-            else [account.id for account in accounts]
-        )}
-    accounts = [account for account in accounts if int(account.id) in admitted]
+    if ledger is None and planning_admission_snapshot is not None:
+        admitted = set(planning_admission_snapshot.admissible_account_ids or [])
+        accounts = [account for account in accounts if int(account.id) in admitted]
     if not accounts:
         raise ValueError("planning_admission_blocked")
     discussion, participation = _participation_and_admission(
@@ -168,7 +165,7 @@ def _participation_and_admission(
         session, task, source, accounts=accounts,
     )
     eligible_ids = set(discussion.membership_by_account) | set(discussion.admission_candidate_ids)
-    eligible = [item for item in accounts if int(item.id) in eligible_ids]
+    eligible = accounts if ledger is not None else [item for item in accounts if item.id in eligible_ids]
     participation = prepare_comment_participation(
         session,
         task,
@@ -358,7 +355,8 @@ def _freeze_accounts(
                     else (
                         "admission_reserved"
                         if int(account.id) in discussion.admission_action_by_account
-                        else "admission_candidate"
+                        else "admission_candidate" if int(account.id) in discussion.admission_candidate_ids
+                        else "membership_blocked"
                     )
                 ),
             },
@@ -470,6 +468,7 @@ def _discussion_identity_for_contract(
     )
     return DiscussionPlanIdentity(
         enrollment, binding, thread, facts, admissions, candidate_ids,
+        freeze_pending_memberships=contract.task_day_ledger_id is not None,
     )
 
 

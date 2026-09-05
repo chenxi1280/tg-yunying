@@ -200,3 +200,21 @@ PRD19.27。实际入群RPC前的session/连接/授权/解析失败遗漏remote_m
 代码审查：Task/source/日上限相同仍复用原epoch及allocation hash；只在物化时经原准入服务生成新的短期观察，旧快照不覆盖；Gateway执行门禁与unknown保护不变。无schema/API、目标数量或生产Task配置修改。该修补是R1接管前的本地缺口修复，尚未证明线上统一点赞履约。
 
 天津音乐对8个最新未知账号进行真实只读权限探测，全部解析到同一peer-1002262282745且can_send=false；零入群/审批/发送操作，未把历史unknown改为成功。13:28读回确认成都0b46f312仍ready、target1/confirmed0且无新Action；西安a611aa16的新错误指纹5d003936精确对应已修补的审核路由为空，原窗口保持invalidated，并非窗口再次占用。
+
+## 配置接管预览与评论数量裁决（13:37）
+
+05f016bf62dc31c35cf8fed4f5dd259cbe5ed8d6 / Deploy33946724141终态success，独立current=20260905052425_05f016bf，容器RELEASE_SHA一致，backend/planner/三组生成/dispatcher健康。点赞修补adc2d6ad在Deploy33947578479，尚待终态和独立读回。
+
+normalized_engagement_cutover_errors只读校验显示8个活群在baseline阶段即拒绝，固定错误为“AI内容路由v2必须启用两阶段生成”：既有v2=true、ai_two_stage_enabled=false。运行时tenant_fallback_flags已按任一flag开启v2质量，不能将此元数据错误误诊为没有执行审核。正在验证显式对齐质量标记后的候选，不删除策略字段或更换模型。
+
+评论候选仍保留旧目标：819b4b75每帖30/日上限10，16c8bbc2每帖100/日上限0。用户明确选择按PRD55%～65%参与并调整目标和日上限，合同见19.29。仍须处理默认business_max80及schema1000上界、稳定分母与共享账号容量；尚未写生产配置。三个显式浏览任务规范化后仍为natural_auto但保留旧daily1000/1111字段，必须确认实际曝光规划是否读取目标，不能仅以字段保留宣布目标守恒。
+
+## 评论稳定数量 Release Gate 与生产容量反查
+
+点赞修补adc2d6ad4cc46ae2c16701e8578b97bd4ebeeea3 / Deploy33947578479终态success；独立current=20260905054407_adc2d6ad，RELEASE_SHA一致，backend/planner/生成/dispatcher健康。仍无Task启用统一引擎，不把该发布计为统一点赞E4。
+
+PRD19.29已明确下一批统一评论按稳定成员冻结比例。真实规划代码的admissible过滤与membership过滤会缩小分母；全部候选短时不可用则不冻结数量。修补仅对带统一日账本的新计划保留稳定集合，将缺少membership事实的原账号义务持久保留，逐个账号取得有效事实后进入准备链；已绑定Action/unknown不更新。无统一日账本的旧计划继续收口。API和表单移除固定1000上界，保留正整数和业务上限。最初测试复现4个有效缺陷反例，另一个为新测试缺少channel的fixture错误，已修正；不能将fixture失败计入产品缺陷。
+
+定向QA：稳定数量/原grounding计划/配置更新44项通过（10.02秒）；进一步讨论组准入、事实合同、dispatch冲突及真实PostgreSQL31项通过（10.81秒，两批有10项重叠），每批硬60秒并显式隔离测试库。前端tsc --noEmit通过。代码审查确认null membership只代表等待，不创建发送Action；恢复前仍从原binding查询有效fact，原source/账号/ordinal不变。无数据库迁移。此切片等待发布，不能替代整个评论接管验收。
+
+13:56:51只读容量：两个评论Task稳定分母均1632/hash798acb5fb48d897a251f6b9d755d9e3c7ebbf2a324ed35564ac49663aea8aa16，每帖比例范围898～1061。819当前业务上限实际50，16c实际80；最近72小时可评论来源分别7个和1个，按自然日峰值为3个和1个。当前共享策略authored_comment10/total60。所有comment用途active Provider route均为空，两个Task的two-stage/v2/grounding均false；接管还需要真实评论质量路由与讨论组事实，不能仅改比例字段宣称完成。未改变生产评论配置、路由、来源或旧义务。

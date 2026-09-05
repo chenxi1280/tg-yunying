@@ -31,6 +31,7 @@ class DiscussionPlanIdentity:
     membership_by_account: dict[int, DiscussionMembershipFact]
     admission_action_by_account: dict[int, Action]
     admission_candidate_ids: frozenset[int] = frozenset()
+    freeze_pending_memberships: bool = False
 
 
 def resolve_discussion_plan_identity(

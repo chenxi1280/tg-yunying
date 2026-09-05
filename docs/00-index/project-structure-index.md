@@ -1,5 +1,7 @@
 # 项目结构索引
 
+> **2026-09-05 评论稳定数量修补：** `channel_comment_plan_contract.py` 以统一日账本区分新稳定参与集合与旧计划；`DiscussionPlanIdentity.freeze_pending_memberships` 将未具备准入事实的数量义务保留给原账号。`comment_fulfillment.py` 持久化完整数量，`executors/channel_comment_grounding_planner.py` 仅为有有效讨论组事实的未绑定义务提供发送槽位，已绑定 Action 不改写。评论 API 与表单移除固定 1000 上界，仍要求正整数和显式业务上限。回归入口为 `test_unified_comment_quantity.py`。
+
 > **2026-09-05 点赞准入恢复：** `engagement_reaction_capacity._reaction_candidates` 用 participation 的稳定 eligible 集合求联合分配；`reaction_admissible_account_ids` 重新核验当前短期准入；`executors/channel_like.py` 传入原 Task/ledger/target。`test_engagement_reaction_capacity.py` 覆盖首次离线、原分配恢复和再失效，不改 epoch 分配内容。
 
 > **2026-09-05 入群变更证据：** `gateway.TelethonTelegramGateway._ensure_channel_membership_async` 在实际入群 RPC 前记录未执行，成功/已加入/请求后异常分别保留精确结果；`test_membership_gateway_mutation_boundary.py` 覆盖两类请求和全部前置阶段。Dispatcher 继续复用原结算与未知保护。

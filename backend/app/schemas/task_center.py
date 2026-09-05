@@ -933,11 +933,10 @@ class ChannelCommentConfig(ChannelMessageScopeConfig):
     message_scope: Literal[
         "all", "latest_n", "date_range", "specific", "dynamic_new"
     ] = "dynamic_new"
-    target_comments_per_message: int = Field(default=10, ge=1, le=1000)
+    target_comments_per_message: int = Field(default=10, ge=1)
     business_max_comments_per_message: int = Field(
         default=DEFAULT_CHANNEL_COMMENT_BUSINESS_MAX_PER_MESSAGE,
         ge=1,
-        le=1000,
     )
     planned_fallback_max_bps: int = Field(
         default=DEFAULT_CHANNEL_COMMENT_PLANNED_FALLBACK_MAX_BPS,
@@ -1963,8 +1962,8 @@ class TaskSettingsUpdate(TaskUpdate, EngagementSettingsUpdate):
         default=1_000_000, ge=1, le=1_000_000
     )
 
-    target_comments_per_message: int | None = Field(default=None, ge=1, le=1000)
-    business_max_comments_per_message: int | None = Field(default=None, ge=1, le=1000)
+    target_comments_per_message: int | None = Field(default=None, ge=1)
+    business_max_comments_per_message: int | None = Field(default=None, ge=1)
     planned_fallback_max_bps: int | None = Field(default=None, ge=0, le=10000)
     comment_count_jitter: float | None = Field(default=None, ge=0, le=1)
     max_total_comments: int | None = Field(default=1_000_000, ge=1, le=1_000_000)
