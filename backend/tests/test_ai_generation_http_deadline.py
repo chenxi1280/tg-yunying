@@ -7,6 +7,7 @@ import pytest
 from app import ai_gateway
 from app.ai_gateway import AiGateway, AiProviderCredentials, AiRequestDeadlineExceeded
 from app.ai_http_transport import AiHttpResultUnknown
+from app.models import AiProvider
 from app.services.antigravity_provider_client import AntigravityProviderClient, ANTIGRAVITY_PRIMARY_MODEL
 from app.services.task_center import ai_structured_provider_runtime as structured
 from app.services.task_center import generation_invocation_budget as budget
@@ -77,7 +78,8 @@ def test_actual_structured_runtime_supplies_openai_parameters_and_hard_deadline(
         "candidate_ready_deadline_at": (datetime.now(timezone.utc) + timedelta(seconds=20)).isoformat()}}
     request = structured.StructuredProviderRequest("QA", "QA", config, 0.7, 512, 1, "QA", "mimo-v2.5", "primary", "")
     with local_http_server() as (url, observed):
-        result, _ = structured.call_structured_provider(None, _credentials(url + "/gateway"), request, provider_request_id="qa")
+        result, _ = structured.call_structured_provider(None, _credentials(url + "/gateway"), request,
+            provider=AiProvider(id=1, base_url=url, model_name="mimo-v2.5"), provider_request_id="qa")
     assert result["drafts"][0]["content"] == "QA 自动化测试回复"
     assert len(observed) == 1
 

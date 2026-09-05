@@ -8,7 +8,7 @@ from dataclasses import dataclass, replace
 
 from sqlalchemy.orm import Session
 
-from app.ai_gateway import AiProviderCredentials, AiUsage
+from app.ai_gateway import AiProviderCredentials, AiProviderRateLimited, AiUsage
 from app.models import AiProvider
 from app.ai_transport_errors import AiProviderResultUnknown
 from app.services._common import ai_gateway
@@ -21,6 +21,7 @@ from app.services.task_center.ai_provider_attempts import (
 )
 from app.services.task_center.ai_provider_candidate_runtime import (
     PROVIDER_ROUTE_RETRY_SECONDS,
+    defer_rate_limited_provider,
     is_ai_provider_quota_exhausted,
     mark_provider_quota_exhausted,
     provider_calls,
@@ -178,7 +179,8 @@ def attempt_structured_candidate(
         )
     try:
         payload, usage = call_structured_provider(
-            lease, credentials, tracked_request, provider_request_id=provider_request_id, gateway=gateway,
+            lease, credentials, tracked_request, provider=candidate,
+            provider_request_id=provider_request_id, gateway=gateway,
         )
     except ProviderAdmissionBlocked as exc:
         return _structured_admission_blocked_outcome(
@@ -310,6 +312,7 @@ def call_structured_provider(
     credentials: AiProviderCredentials,
     request: StructuredProviderRequest,
     *,
+    provider: AiProvider,
     provider_request_id: str,
     gateway=None,
 ) -> tuple[object, AiUsage]:
@@ -328,6 +331,8 @@ def call_structured_provider(
             request_id=provider_request_id,
             json_schema=antigravity_schema_for_purpose(schema_purpose, request.config),
         )
+    except AiProviderRateLimited as exc:
+        defer_rate_limited_provider(provider, lease, exc)
     except ProviderAdmissionBlocked:
         raise
     except Exception:

@@ -1,5 +1,7 @@
 # 项目数据流转索引
 
+> **2026-09-05 结构化限流恢复：** 原Provider HTTP429事实 → 共享admission cooldown → 释放原probe → 原路由ProviderRouteDeferred；到期单probe真实请求成功才open。结构化调用不因临时429永久移除健康供应商，原凭据/模型/路由revision不变，unknown继续原身份对账。
+
 > **2026-09-05 能力与准备时钟：** Telegram 完整频道响应的可选 available_reactions 缺省值 → none → 点赞能力阻断；结构错误/网络失败仍是探测失败，不创建点赞操作。Action 的 scheduled_at/release_not_before_at/effective_claim_at 最晚时刻 → 提前10秒的生成入口与 Job not-before；较旧的 effective 字段不能使已推迟工作提前生成。既有 ready/unknown 不重放，发送截止不延长。
 
 

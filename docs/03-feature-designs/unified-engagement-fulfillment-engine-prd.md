@@ -2501,6 +2501,20 @@ QA：已有合法内部字段在设置规范化后原值保留，非法路由/�
 
 两类内容生成的候选 SQL 和 Job generation_not_before 计算必须统一采用 scheduled_at、release_not_before_at、effective_claim_at 三者的最晚非空时刻，再减去原10秒准备量；不改写三项原值、不提前发送、不改变最终截止点。缺少可选字段沿用必需 scheduled_at。尚未开始的 Job 按原领取/CAS路径更新时机；已经开始、ready或unknown的模型工作不因该计算而重发。QA 用来源延期但账号有效时刻旧、账号后延、release后延、空字段和活群/评论两个真实候选查询复现，验证 PostgreSQL 结果一致。本切片 design_status=complete，仅修正准备时钟选择；已生成后遭遇新的来源竞争仍需发前新鲜度检查，不能将该局部修补称为全部 JIT 验收。
 
+### 19.24 结构化模型请求遵守共享限流恢复路径
+
+12:10生产反查确认：group_semantic_review唯一供应商遇到HTTP429后被结构化生成路径永久标为异常，路由快照随即变空；真实文本与结构化健康探测恢复后才重新产生新Job。普通draft路径已把同类429写入共享Provider admission cooldown，结构化路径漏接了此处理。[MiniMax官方错误码](https://platform.minimaxi.com/docs/api-reference/errorcode)说明2056是可等待资源释放后再试的Token Plan限制，不能仅按错误文字把它归为永久凭据失效。
+
+结构化Provider HTTP取得类型化AiProviderRateLimited时，必须与draft调用同样先持久共享cooldown，再释放原probe并返回明确ProviderAdmissionBlocked/ProviderRouteDeferred；原Provider健康状态、凭据、模型和路由revision保持不变。cooldown到期只允许既有单probe机制发起真实请求，只有真实成功才能转open；不把时间流逝计为恢复，不增加旁路模型或请求。HTTP失败事实仍记录在原物理调用账本。非429的永久余额/凭据错误沿用原分类；Provider result unknown继续保持不可重放。QA覆盖Token Plan 429、普通429、冷却期禁止网络调用、到期单probe及成功恢复、unknown保持原异常。本切片design_status=complete。
+
+### 19.25 保留任务目标的账号额度修订
+
+用户明确选择保留线上9个活群各4200条/天目标，并授权按目标修订账号发言上限。本次tenant1接管的初始normal行为策略将authored_message由默认10修订为37；total=60、评论/点赞/浏览分类额度及其余策略字段保留。仅在本租户尚无行为策略且精确Task/普通组/稳定成员快照一致时创建revision1；后续已有策略须用successor，不覆盖全局默认或原地修改不可变revision。
+
+核算使用GroupAiChatConfig默认1500bps浮动，上界每任务4830：7个all任务各号上界份额ceil(4830/1631或1632)=3；pool5的304号额外承担ceil(4830/304)=16，总37；pool14的536号额外承担10，总31。scope排除租户/Task救援号，账号临时健康不缩减参与分母。该计算用于消除默认额度与目标的确定矛盾，不证明实时可用容量；12:26只读完整准入中天津音乐仅59号，窗口/成员/账号问题仍须修补，不能将瞬时127条的重分配估算直接提高为日上限或抹掉欠量。原4200目标、截止点、参与覆盖与unknown身份保持。
+
+运营apply前核对线上SHA、策略0行、9个Task配置版本/hash与普通组稳定成员hash，事务内锁Tenant/Task/组成员，写审计并独立读回。此策略修订design_status=complete，Task接管与四类E4另验。
+
 ## 20. Product Design Complete 自检
 
 - 当前范围以 §19.13 为准；§19.12 已撤销，历史文中的正式预算、回放审批和完整 Binding 待实现项不再阻塞本期交付。保留的实时链、最近三天计数和四类任务仍须逐项代码、测试和生产验证。

@@ -94,7 +94,8 @@ def _invocation(kind, credentials, config):
                                                       lease="QA-lease", execution_config=config)
     request = structured.StructuredProviderRequest(config=config, system_prompt="QA", user_prompt="QA", temperature=0.7,
         max_tokens=100, count=1, purpose="QA", model_name="QA", stage="primary", required_model_family="")
-    return lambda: structured.call_structured_provider("QA-lease", credentials, request, provider_request_id="QA")
+    return lambda: structured.call_structured_provider("QA-lease", credentials, request,
+                                                       provider=SimpleNamespace(id=1), provider_request_id="QA")
 
 
 def test_pipeline_uses_remaining_candidate_budget_not_legacy_120_seconds(monkeypatch):

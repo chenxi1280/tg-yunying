@@ -53,7 +53,7 @@ def test_structured_provider_schema_uses_effective_route_purpose(monkeypatch):
         api_key="bridge-token",
     )
     ai_structured_provider_runtime.call_structured_provider(
-        object(), credentials, request, provider_request_id="request-1",
+        object(), credentials, request, provider=SimpleNamespace(id=1), provider_request_id="request-1",
     )
 
     schema = captured["json_schema"]

@@ -160,3 +160,13 @@ PRD19.23复现来源延期但effective_claim_at旧导致两类候选提前入队
 bcd7e120的Deploy33943380817因两项来源入口测试失败而跳过部署，线上仍25a0cef8。本地复现为2失败/1通过：测试固定快照在9月4日12点、fresh_until在9月5日12点，却读取真实时钟，过期后正确返回source_ingestion_unproven。固定测试内监听、来源摄取和任务日时钟，并显式推进动态来源时刻；新增跨越快照期限后继续阻止生成的用例，生产新鲜度校验不变。来源入口/新鲜度/摄取/分页/JIT定向35项通过（7.81秒，60秒硬超时）。
 
 用户已明确选择保留9个活群各4200条/天目标，并允许按任务目标修订账号发言上限；核算须覆盖固定账号池与共享账号池的叠加需求，不能仅以总目标除以1633设上限。
+
+## 结构化限流修补 Release Gate（12:27）
+
+结构化HTTP请求漏接draft已有的AiProviderRateLimited共享冷却，导致临时Token Plan限制被标记永久异常。PRD19.24补齐合同；原候选Provider显式传入RPC边界，共用现有cooldown/单probe/延期路径，不变更模型、路由或unknown保护。反例2失败/1通过，修补并同步直接调用测试后6个文件51项通过（8.98秒、60秒硬超时），包含本机真实HTTP截止、配额、admission、调用时限与Antigravity schema。无schema/API/前端变更，git diff check通过。
+
+provider5恢复后12:10:58–12:18采样：58个新ready Job，8个活群29条remote_message_observed，三个浏览任务16条view_observed；新generation_contract_error仅5条内容窗口冲突，无新路由空错误。这是legacy自然运行恢复证据，仍不代表统一引擎或完整日目标验收。
+
+## 账号额度接管核算（12:27）
+
+target_account_capacity只读快照hash=2dcfa3c46aafeb1828531f20116c6593372947d47dd953eb83488d9e3b4814df。稳定分母为all1632、成都1631、pool5=304、pool14=536；9任务目标37800，15%正浮动上界43470。逐Task保守均分再按同账号叠加，上界分布37条304号、31条536号、21条791号、18条1号。按用户授权为tenant1初始策略采用authored_message=37，total仍60。当前完整准入统计不能用于缩减分母：天津音乐仅59号通过、477号目标成员未就绪，部分同时有账号/面具问题；需单独诊断，不以额度配置冒充容量或业务完成。
