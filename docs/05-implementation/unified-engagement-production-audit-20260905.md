@@ -355,3 +355,26 @@ QA：评论、生成、数量与发布边界105 passed/9.67s；去重数学判�
 d6d637aa51251ca4040ebcb82b757e2157fd647d已按master/release冻结并触发Deploy33968252586。候选、前端、两个PostgreSQL分片和两个no-PostgreSQL分片通过；no-PostgreSQL shard1为1 failed/1901 passed，唯一失败是原`test_deploy_prunes_only_dangling_images_before_pull`仍要求脚本包含`docker image prune -f`。本批删除自动清理时漏同步了这条旧合同测试；未恢复已取消的全局清理，也未跳过该门槛。
 
 按已经通过设计自检的发布PRD§9，将原测试更新为正常发布不包含全局system df、container/builder/image prune。继续验证完整CI依赖、三镜像、先pull后fence、OCR重启策略收口与运行身份，以及真实shell在backend/frontend拉取错误时非零退出、不进入清理或stop。三份部署定向测试14 passed/4.18s（硬60秒）。该修正仅测试与本审计，应用/迁移实现不变。33968252586终态failure且images/deploy均skipped；d6和0224仍未有生产上线证据，须形成新的不可变候选再完成全套CI与部署。
+
+
+### 22:12 921 发布终态与主机压力证据
+
+92109309ce2311fc7744370ceb3eecfecc5d71aa / Deploy33969123685：完整CI和三镜像通过，部署于21:59:45终态failure。三次都在docker login ghcr.io发生TLS handshake timeout，未出现pull、Stage A fence或migration；本次已经不再运行全局Docker清理。21:58:41 current仍73388，19容器磁盘metadata均旧SHA，authorization-abc-sweep的PID已不存在，其余18个PID存在；这是磁盘metadata层，不能称全容器healthy。22:01发布进程快照为空。22:03附近独立runtime读取current仍73388、APIok，Dockerinspect未在探针总时间内返回，仍未验证新版本。
+
+22:10修正探针读取了实际/proc数据：总内存7653896kB，可用256248kB，Swap占用约581MiB，load57.39/60.21/62.28；2.003秒CPU计数中I/O等待698/799约87.4%，pgmajfault1503，pswpin1381页、pswpout2779页。三个AI-generation RSS分别424588/409828/423684kB，两个dispatcher为499596/485120kB。最初探针假定旧内核存在allocstall总字段导致KeyError，已改为读取实际allocstall分项；没有据失败探针推断零压力。继续区分GHCR网络和资源拥塞，未重启daemon、手工停止业务worker、重复dispatch或改Task。
+
+
+22:20:55完成一次有保护的运行调度修正：vm.swappiness 0→60，boot04062f92/current733/SwapTotal4194300kB匹配；ops审计`/data/tgyunying/shared/logs/ops-swappiness-20260905-1417.jsonl`先记录preview再applied，/etc/sysctl.conf SHA64708410…及其他三个VM参数未变。22:21:53独立读回运行60、持久仍0；暂未持久化。此时短时I/O wait仍约75%，22:26APIok但Dockerinspect超时，未称恢复。
+
+22:28反查发现已有Docker memory cgroup保留0：生成2为容器6a88752d…/PID2617817/start23828998，dispatcher1为67e59812…/PID2618837，主机60不会覆盖它们。生成2HostConfig未显式设置MemorySwappiness，三个memory限额均9223372036854771712；可证明原容器创建时的继承口径与新的主机运行值分离。PRD19.39补resync，准备只对生成2原cgroup将0→60，通过boot/containerID/name/release/PIDstart/cgroup/HostConfighash/原值/limits完整比较后执行，并独立审计读回。不通过重启、手工修改Docker磁盘metadata、改内存硬限或修改其他项目容器达成。
+
+
+### 容器回收设置修正及正式配置 Release Gate
+
+22:30:21生成2精确cgroup 0→60成功，独立读回PID/start/release/HostConfighash/三限额不变，审计`ops-generation-cgroup-swap-20260905-1428.jsonl`。22:33:28负载35.24/50.07/57.33、可用332008kB，生成2开始换出匿名页但PID不变；22:34:46 Docker一次list在5.073秒成功，该副本healthy、APIok；两个dispatcher已可明确观察为unhealthy。
+
+22:37:23精确预览剩余18个本项目容器，均为原733 SHA和cgroup0；22:40:17～19逐容器CAS纠正为60，审计`ops-runtime-cgroup-swap-20260905-1437.jsonl`，18/18取得applied回执。22:41:43独立读回18/18全部精确匹配（仅swappiness不同）；当时load16.75/25.04/41.32，可用520716kB，2秒I/O等待122/795约15.3%，page-in12772kB、swap-out0。相较前述87.4%仅描述两个真实采样，不作为全天P95。
+
+23:37:56最新完整Dockerinspect已正常返回：current和十核心容器仍733，APIok，八个healthy而两个dispatcher unhealthy，后者仍需独立定位。主机load5.75/3.65/4.46、可用743396kB，swap约1.59GiB；原容器StartedAt不变。控制面和资源响应有改善，但两个dispatcher及业务事实未验收，不能称production_fixed或统一接管。
+
+本批正式代码仅给Compose中共用backend镜像的19个服务显式添加mem_swappiness=60，通过命名标量统一维护，避免重建继承旧0。新旧YAML结构比较证明恰好19个字段增加、其余映射完全一致；22个发布/拉取失败/fence/OCR gate测试4.00秒通过，后端硬60秒。PRD19.39、运行文档与结构索引同步；无新数据库迁移或Task配置。候选继承921中尚未上线的0224索引、评论零兜底和去重内存修补。master/release远端均921，三个近期Deploy均terminal failure，无活跃发布；待形成新不可变候选走全套CI。

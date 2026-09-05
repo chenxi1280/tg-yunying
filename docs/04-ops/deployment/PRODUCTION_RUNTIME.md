@@ -190,6 +190,12 @@ account-online 主线程冻结本批账号和凭证后必须先提交并结束�
 
 Dispatcher 若一次 claim 包含共享 `ai_generation_claim_token` 的 normal pending `send_message`，该 worker 会按领取顺序串行推进这一个 claim 批次，避免多个线程同时加载并更新重叠 Action 集合。生产验收必须检查 PostgreSQL 日志在发布后不再新增 `UPDATE actions ... deadlock detected`，并同时确认覆盖继续增长；该串行边界不是 action、账号或任务总量限制。
 
+### 统一互动运行时的内存回收配置
+
+2026-09-05实际主机与已有应用cgroup的swappiness均为0，运行值覆盖不会更新旧容器cgroup。内存紧张时出现大量程序页重复读取、I/O等待与Docker/GHCR TLS超时。按统一引擎PRD§19.39，对精确19个应用容器的原cgroup将memory.swappiness从0改为60，保留PID、release、内存限额和HostConfig文件；采用每容器preview、原值/身份/hash保护、ops审计与独立读回。该运行修正不重启服务、不修改其他项目cgroup、不改变Task/unknown。
+
+`docker-compose.server.yml`的backend与18个worker实例通过`x-runtime-swappiness`统一显式设置`mem_swappiness: 60`，使后续创建沿用已验证的回收口径；独立OCR override与其他资源参数保持原合同。2026-08-16记录的主机swappiness10仅为当时历史事实；本次发现/etc/sysctl.conf实际0，临时将主机运行值改为60但未覆盖该持久文件。swap增长仍为容量退化信号，不能代替代码内存优化或正常业务验收。
+
 ### Dispatcher/OCR 内存治理
 
 2026-08-16 planner 全局 OOM 事故：自 08-15 16:31 起 planner 容器（无 memory limit）因 channel_like future 物化（单 Task 2109 条 pending、排至 2027-01）RSS 冲至 ~900MB，被全局 OOM killer 循环杀 29+ 次（RestartCount 最高 43），load 一度 516+，规划角色停摆。经用户批准按 `production-stability-and-fulfillment-remediation-prd.md` RC-0b/O0 执行三段止血：① 5 个 running channel_like Task、② 3 个 channel_comment Task 经 `pause_task` 服务受控暂停（actor=`prod-c0b-planner-oom-mitigation`，AuditLog 齐全，Action/在途未动）；③ like/comment 暂停后剩余物化源为 group_ai_chat 规划装载（AI lane 不可暂停），按 O0 加 4GiB `/swapfile`（`vm.swappiness=10`，fstab 与 `/etc/sysctl.d/99-tgyunying-swap.conf` 持久化）。02:06:25 后 OOM 停止、planner 存活、AI 活群规划恢复产出。硬边界：未部署 T2（source JIT + future 回收）前不得 resume 这 8 个 Task；禁止手工/定时重启掩盖；swap 使用持续超 512MiB 或持续 swap-in/out 按 `resource_capacity_degraded` 处置。事故基线与执行 artifact 见该 PRD §2.2/§2.3。

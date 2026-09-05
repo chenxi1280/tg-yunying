@@ -2701,3 +2701,14 @@ API与运行校验共用同一纯配置规则：两类关闭、两项权重为0�
 去重扫描为当前候选创建一次字符结构，历史文本结构逐项计算并在比较后释放，不再跨候选、账号或批次建立进程级LRU。比较完整原历史集合，保留原顺序、空文本语义、Jaccard/SequenceMatcher最大值、确定不达阈值的上界剪枝和首个命中；不降低阈值、不截断窗口、不忽略未知记录、不修改数据库去重事实。调用方结束后不保留候选或历史字符结构，不以定时清缓存、强制GC、worker重启或新增历史条数上限代替内存归属修补。
 
 本性能子项design_status=complete；QA覆盖数学结果等价、候选只准备一次、全部历史逐项比较、首个命中顺序、比较后对象可释放、账号/tenant/原时间窗口及真实PostgreSQL回归。保留缓存减少后的CPU取舍测量，发布后另验worker RSS、主机和Docker响应及正常生成后的真实消息。该变更不替代R1的共享预算和配置正式接管。
+
+
+### 19.39 本次主机换页调度恢复验证
+
+两次发布停在GHCR TLS阶段，生产API仍可响应；主机无认证curl在0.221秒取得GHCR预期401。真实/proc采样显示可用内存约183～250MiB、I/O wait87.4%、2秒1503次major fault，systemd-journal、mihomo和dockerd均反复读取程序页；3个生成worker与2个dispatcher合计约2.2GiB RSS。当前运行和持久swappiness均为0，2026-08-16文档记录的10不能作为当前事实。此证据支持检验文件缓存反复回收的影响，不宣称已证明唯一根因。
+
+运营修补先只将本次启动的vm.swappiness从0调整至Linux默认60，允许回收冷匿名页；不是增加业务并发、放宽超时或用swap作为目标容量验收。按启动标识、当前release路径、原值和既有4GiB swap逐项校验，写前留存非敏感ops审计、原值和回滚值，写后独立读回；不修改Task/未知结果、其他VM参数或持久sysctl文件。若响应或业务指标恶化，以同启动标识和期望60为条件恢复0；不swapoff、不drop_caches、不重启主机/daemon/业务worker。先比较真实major fault、I/O等待、Docker和API，再决定是否保留和持久化，未测量前不能称恢复。该操作自检design_status=complete，四类统一履约仍按原E4分别验收。内核语义参考 https://docs.kernel.org/admin-guide/sysctl/vm.html#swappiness 。
+
+22:28反向检查触发本节resync：主机60已独立读回但Docker仍超时，生成2与dispatcher1实际memory cgroup的swappiness仍为0；前者HostConfig未显式设置此项，容器保留创建时继承值。仅改主机运行值不足以修正已有cgroup。先将精确生成2容器6a88752d…（PID2617817/start_ticks23828998）的memory.swappiness从0调整为60，核对container ID/name/release/boot/PID start/cgroup路径/原值/HostConfig hash及三个内存限额，其他配置和进程不动；使用内核公开memory controller接口，独立ops审计与读回。只允许原cgroup存续期间按期望60回滚0，新容器不得沿用旧PID或路径。观察真实换页、I/O、Docker响应及该worker自然工作；取得改善证据后才将同一精确预览流程扩到本项目其他仍为0的运行容器，其他项目cgroup不在范围。此次是临时运行调度纠正，尚未持久化；不能写入Docker磁盘metadata伪造配置生效，也不能用swap量上升证明业务恢复。补正后的本运营子项design_status=complete。
+
+持久化交接：本项目共用backend镜像的API与18个worker实例在Compose中显式声明memory swappiness为60，采用一个命名YAML标量统一维护，避免重建后重新继承Docker父cgroup的旧0；这不是内存上限、swap容量或业务并发限制。独立image-verification镜像与其他项目不在本配置变更集合。主机/etc/sysctl.conf保留原文件，应用的运行合同由Compose显式项承载；主机临时60是否保留另按恢复测量结算。QA解析新旧Compose全部服务，证明恰好19项增加同一字段、其他映射与已有override保持一致；正常发布继续先拉取成功再fence，部署后实际HostConfig及cgroup读回必须为60，不能只读YAML。

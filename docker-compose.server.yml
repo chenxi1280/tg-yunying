@@ -126,9 +126,13 @@ x-default-logging: &default-logging
     max-size: "50m"
     max-file: "3"
 
+# Keep existing runtime cgroups from disabling anonymous-page reclaim under pressure.
+x-runtime-swappiness: &runtime-swappiness 60
+
 services:
   backend:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
+    mem_swappiness: *runtime-swappiness
     container_name: tgyunying-backend
     logging: *default-logging
     restart: unless-stopped
@@ -152,6 +156,7 @@ services:
 
   worker-authorization-abc-sweep:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
+    mem_swappiness: *runtime-swappiness
     container_name: tgyunying-worker-authorization-abc-sweep
     logging: *default-logging
     restart: unless-stopped
@@ -176,6 +181,7 @@ services:
 
   worker-planner:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
+    mem_swappiness: *runtime-swappiness
     container_name: tgyunying-worker-planner
     logging: *default-logging
     restart: unless-stopped
@@ -196,6 +202,7 @@ services:
 
   worker-ai-generation:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
+    mem_swappiness: *runtime-swappiness
     container_name: tgyunying-worker-ai-generation
     logging: *default-logging
     restart: unless-stopped
@@ -218,6 +225,7 @@ services:
 
   worker-ai-generation-2:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
+    mem_swappiness: *runtime-swappiness
     container_name: tgyunying-worker-ai-generation-2
     logging: *default-logging
     restart: unless-stopped
@@ -240,6 +248,7 @@ services:
 
   worker-ai-generation-3:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
+    mem_swappiness: *runtime-swappiness
     container_name: tgyunying-worker-ai-generation-3
     logging: *default-logging
     restart: unless-stopped
@@ -262,6 +271,7 @@ services:
 
   worker-comment-generation:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
+    mem_swappiness: *runtime-swappiness
     container_name: tgyunying-worker-comment-generation
     logging: *default-logging
     restart: unless-stopped
@@ -284,6 +294,7 @@ services:
 
   worker-dispatcher-1:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
+    mem_swappiness: *runtime-swappiness
     container_name: tgyunying-worker-dispatcher-1
     logging: *default-logging
     restart: unless-stopped
@@ -306,6 +317,7 @@ services:
 
   worker-dispatcher-2:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
+    mem_swappiness: *runtime-swappiness
     container_name: tgyunying-worker-dispatcher-2
     logging: *default-logging
     restart: unless-stopped
@@ -328,6 +340,7 @@ services:
 
   worker-search-dispatcher:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
+    mem_swappiness: *runtime-swappiness
     container_name: tgyunying-worker-search-dispatcher
     logging: *default-logging
     restart: unless-stopped
@@ -348,6 +361,7 @@ services:
 
   worker-listener:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
+    mem_swappiness: *runtime-swappiness
     container_name: tgyunying-worker-listener
     logging: *default-logging
     restart: unless-stopped
@@ -366,6 +380,7 @@ services:
 
   worker-recovery:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
+    mem_swappiness: *runtime-swappiness
     container_name: tgyunying-worker-recovery
     logging: *default-logging
     restart: unless-stopped
@@ -385,6 +400,7 @@ services:
 
   worker-account-security:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
+    mem_swappiness: *runtime-swappiness
     container_name: tgyunying-worker-account-security
     logging: *default-logging
     restart: unless-stopped
@@ -403,6 +419,7 @@ services:
 
   worker-account-login:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
+    mem_swappiness: *runtime-swappiness
     container_name: tgyunying-worker-account-login
     logging: *default-logging
     restart: unless-stopped
@@ -421,6 +438,7 @@ services:
 
   worker-material-cache:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
+    mem_swappiness: *runtime-swappiness
     container_name: tgyunying-worker-material-cache
     logging: *default-logging
     restart: unless-stopped
@@ -439,6 +457,7 @@ services:
 
   worker-voice-profile:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
+    mem_swappiness: *runtime-swappiness
     container_name: tgyunying-worker-voice-profile
     logging: *default-logging
     restart: unless-stopped
@@ -461,6 +480,7 @@ services:
 
   worker-account-online:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
+    mem_swappiness: *runtime-swappiness
     container_name: tgyunying-worker-account-online
     logging: *default-logging
     restart: unless-stopped
@@ -481,6 +501,7 @@ services:
 
   worker-ai-memory:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
+    mem_swappiness: *runtime-swappiness
     container_name: tgyunying-worker-ai-memory
     logging: *default-logging
     restart: unless-stopped
@@ -501,6 +522,7 @@ services:
 
   worker-metrics:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
+    mem_swappiness: *runtime-swappiness
     container_name: tgyunying-worker-metrics
     logging: *default-logging
     restart: unless-stopped
