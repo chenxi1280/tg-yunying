@@ -28,6 +28,10 @@ from .ai_generation_unknown_recovery import (
 from .runtime_resources import _release_runtime_resources
 from .generation_recovery_scope import generation_task_filter
 from .generation_pending_timing import refresh_pending_generation_timing
+from .generation_action_identity import (
+    current_generation_action as _current_generation_action,
+    job_matches_action as _job_matches_action,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -332,21 +336,6 @@ def _remote_boundary_exists(
     ).limit(1)) is not None
 
 
-def _current_generation_action(
-    session: Session,
-    job: GenerationJob,
-) -> Action | None:
-    job_id = Action.payload["generation_job_id"].as_string()
-    return session.scalar(select(Action).where(
-        Action.tenant_id == job.tenant_id,
-        Action.task_id == job.task_id,
-        Action.task_lifecycle_epoch == job.task_lifecycle_epoch,
-        Action.obligation_type == job.obligation_type,
-        Action.obligation_id == job.obligation_id,
-        job_id == job.id,
-    ).order_by(Action.action_version.desc(), Action.id.desc()).limit(1))
-
-
 def _find_generation_job(
     session: Session,
     action: Action,
@@ -415,21 +404,6 @@ def _mark_action_generation_unknown(
 
 def _payload_claim_owner(data: dict) -> str:
     return str(data.get("ai_generation_claim_owner") or "")
-
-
-def _job_matches_action(job: GenerationJob, action: Action) -> bool:
-    core_matches = bool(
-        job.tenant_id == action.tenant_id
-        and job.task_id == action.task_id
-        and int(job.task_lifecycle_epoch or 1) == int(action.task_lifecycle_epoch or 1)
-    )
-    if action.task_type != "group_ai_chat":
-        return core_matches
-    return bool(
-        core_matches
-        and job.obligation_type == action.obligation_type
-        and job.obligation_id == action.obligation_id
-    )
 
 
 def _mark_action_generation_pending(

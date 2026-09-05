@@ -2441,6 +2441,16 @@ pre-Gateway 编辑可以在原 obligation、原账号、原窗口和原预算内
 
 本地验收记录：当前79个相关测试文件共807个不同用例通过（13个真实隔离 PostgreSQL 用例），前端构建、语法/新增模块度量及 diff check 通过。评论独立查询入口已实际接入 intake，评论能力受限与无帖子分开显示；评论生命周期沿用发布时间，不能从迟到采集重新延长。详见 `docs/05-implementation/unified-engagement-local-acceptance-20260904.md`。本轮不部署、不验证真实 Telegram、线上时延或公告，`production_status` 保持 unproven。
 
+### 19.17 2026-09-05 生产反查与浏览调用边界修补
+
+本轮 Intake `intake-20260905-engagement-production-audit`，L3，用户授权检查线上并修补；以 §19.13 的轻量范围为准。09:40 北京时间只读核实生产为 `f869375f`、数据库为 `0223_burst_negative_outcome`。23 个运行中任务（活群9、评论3、点赞6、浏览5）的 `type_config.engagement_contract_version` 均未启用 `unified_engagement_v1`，正式 binding 表为空。21 个旧 all、2 个旧单组仍由 legacy 分支执行；发布新程序不能证明存量 Task 已被统一引擎接管。本文历史“本地未发布”记录只描述当时验收，不再用于判断当前 SHA。
+
+本轮已复现的最小开发交接：浏览 Gateway 的 `get_entity` 抛错发生在 `GetMessagesViewsRequest(increment=True)` 之前，原实现却仅凭错误类型未知返回 `remote_mutation_started=None`，生产因此新增 `result_unknown`。必须按实际 RPC 边界记录：解析阶段失败为明确未调用；进入浏览 RPC 后未获明确结果继续 unknown。目标不存在仍是失败，不把它改为成功，不切换目标，不重放历史 unknown。错误类别与是否已经调用是两项独立事实，不能用错误文本猜调用是否发生。验收分别覆盖解析 ValueError/非预期错误零 mutation RPC、成功一次 RPC、RPC 内未知错误保留 unknown，以及既有明确 Telegram 拒绝的行为。
+
+统一接管沿用 §17 的账户集合等价、同类型目标单写者和在途身份核对；§19.13 已撤销的历史画像/预算不再作为迁移门槛。旧任务成功只证明 legacy 履约，不作为 unified E4。当前不通过批量改配置绕过迁移，也不修改未决结果。生产审计、根因分组、修补和发布证据记录在 `docs/05-implementation/unified-engagement-production-audit-20260905.md`；本条浏览子合同 `design_status=complete`，全引擎 `production_status=unproven`。
+
+评论恢复补正：生产旧评论 Action 的通用 `obligation_type/id` 为空，但 payload 持有精确 `generation_job_id` 与 `comment_fulfillment_obligation_id`；其 Job 使用 `post_comment + comment obligation` 身份。通用恢复错误地只按 Action 通用列查找，导致实际存在的 Action 被判 `action_missing`、Job cancelled、Action 仍 executing。恢复解析必须复用评论生成的稳定身份（有评论义务用义务ID，原有无义务旧入口用Action ID），同时核对 tenant/task/epoch、精确Job ID和类型；活群仍严格使用其通用义务列，不放宽为只看payload Job ID。Provider已开始且未有结果时只转unknown并释放本地过期领取，不调用Provider/Telegram；历史已错误cancelled的记录必须另做精确preview/CAS纠正，不能普通扫描重开所有cancelled Job。验收须有两类评论身份、跨tenant/task/epoch/义务隔离、Provider开始后unknown、未开始pending及重复恢复幂等。本恢复子合同 `design_status=complete`。
+
 ## 20. Product Design Complete 自检
 
 - 当前范围以 §19.13 为准；§19.12 已撤销，历史文中的正式预算、回放审批和完整 Binding 待实现项不再阻塞本期交付。保留的实时链、最近三天计数和四类任务仍须逐项代码、测试和生产验证。

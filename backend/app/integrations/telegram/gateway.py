@@ -1993,12 +1993,15 @@ class TelethonTelegramGateway(TelegramGateway):
                 False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value,
                 "session 已失效", remote_mutation_started=False,
             )
+        view_rpc_started = False
         try:
             from telethon import functions
 
             target: int | str = int(channel_peer_id) if channel_peer_id.lstrip("-").isdigit() else channel_peer_id
             entity = await client.get_entity(target)
-            await client(functions.messages.GetMessagesViewsRequest(peer=entity, id=[message_id], increment=True))
+            request = functions.messages.GetMessagesViewsRequest(peer=entity, id=[message_id], increment=True)
+            view_rpc_started = True
+            await client(request)
             return OperationResult(
                 True,
                 detail=f"message_id={message_id}",
@@ -2013,7 +2016,7 @@ class TelethonTelegramGateway(TelegramGateway):
                 failure,
                 mapped.detail or str(exc),
                 remote_mutation_started=(
-                    None if failure == FailureType.UNKNOWN.value else False
+                    None if view_rpc_started and failure == FailureType.UNKNOWN.value else False
                 ),
             )
 

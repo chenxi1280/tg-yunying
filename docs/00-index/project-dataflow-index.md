@@ -1,5 +1,7 @@
 # 项目数据流转索引
 
+> **2026-09-05 生产反查修补：** 评论 `expired GenerationJob -> exact payload Job/评论义务 identity -> existing Action -> Provider已开始则unknown，未开始则pending`，不能仅因旧Action通用义务列为空取消Job。浏览 `get_entity -> GetMessagesViewsRequest(increment=True)` 分别记录调用前失败与调用后未知，解析失败不进入假remote unknown。历史未知不得批量重放。线上23个运行任务尚无unified binding；程序发布与route接管分列，见统一引擎PRD §19.17和生产审计记录。
+
 > **2026-09-05 深层停摆修复链路：** close-turn outbox → LIMIT前排除锁忙turn → 独立逐条事务 → turn/outbox复核 → 单turn opportunity/claim → Planner wake；锁忙或异常不记delivered、不污染正常Planner事务。Telegram timeout → 原runner Event → tenant/action/attempt receipt → Dispatcher轮询真实终止 → Action/Attempt SKIP LOCKED → ACK提交成功后移除receipt → 既有lease recovery → 物理占位released、业务unknown和dedupe保留。DB失败保留receipt并显式记录，进程崩溃不补造ACK。资源准入/结算均按resilience→账号日预算顺序，本轮没有新增历史回放、费用预算或远端重试。
 
 > **2026-09-05 停摆修复数据流（覆盖下文历史恢复缺口）：** Attempt终态/未调用证明 -> 原lease/reservation/fence一致结算；TTL或Action失败不制造远端终态。待结算差异SQL -> SKIP LOCKED -> 逐行事务 -> 实际变化计数，held unknown保留但不饿死后续回收。缺active policy -> 首次初始化或继承retired配置的新revision -> 唯一约束仲裁，disabled显式拒绝。`GET /api/negative-outcomes` -> 当前scope/version/事件 -> `POST /api/negative-outcomes/{id}/review`（expected_version、reason、evidence）-> CAS核对 -> 当前scope恢复 + 事件标已复核保留去重 + AuditLog；新事件可重新升级，不补发、不重抽、不改变目标。使用现有认证/租户解析，不新建前端页面。

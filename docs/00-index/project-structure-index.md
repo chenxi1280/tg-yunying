@@ -1,5 +1,7 @@
 # 项目结构索引
 
+> **2026-09-05 生产审计修补：** `generation_action_identity.py` 集中解析恢复使用的 Task/epoch/Job/adapter义务身份：评论按既有 payload 评论义务或旧 Action ID，活群保持通用义务列；`ai_generation_recovery.py` 复用该解析，避免旧评论被误判 action_missing。Telegram Gateway 浏览入口按真实 GetMessagesViewsRequest 调用边界区分解析失败与远端未知。回归为 `test_comment_generation_recovery_identity.py`、`test_channel_view_mutation_boundary.py`；线上23个运行任务仍为legacy，统一引擎接管与E4未完成。详见 `docs/05-implementation/unified-engagement-production-audit-20260905.md`。
+
 > **2026-09-05 三个深层停摆缺陷修复（本地）：** `engagement_conversation_wake.py` 新增 `drain_conversation_wake_transactions`，Planner 维护事务外逐wake处理，候选在LIMIT前跳过锁忙turn，关联写锁等待有界且退出恢复原值；`engagement_conversation.materialize_turn` 只物化已领取轮次。`telethon_lifecycle.TelethonOperationTimeout` 携带真实runner终止信号，`telegram_termination.py` 按tenant/action/attempt暂存receipt，由Dispatcher下一轮非阻塞持久化迟到ACK，既有回收结算仅释放物理容量。`engagement_runtime_settlement` 在预算账本前锁原fence的resilience revision，与准入一致。新增终止确认/wake隔离回归，未新增迁移、未部署；receipt落盘前进程崩溃仍按unproven处理。
 
 > **2026-09-05 停摆复审修复（覆盖下文“负反馈恢复入口未闭合”的历史状态）：** `engagement_runtime_settlement.py` 以Attempt终态或严格未调用证据结算，transport ACK 单调保留。`engagement_lease_recovery.py` 按待结算差异筛选后取批次，Action/Attempt 锁序与 SKIP LOCKED、逐行 savepoint/错误日志，unknown不占用扫描前缀。`engagement_policy_initialization.py` 用唯一约束UPSERT初始化/承接retired版本，不自动重开disabled。`negative_outcome_review.py` 与 `api/routers/negative_outcomes.py` 提供列表/人工复核API，版本校验、理由/证据、审计及旧事件去重，不要求先发一条消息；本切片不新增管理页面。无新增数据库迁移，未部署。
