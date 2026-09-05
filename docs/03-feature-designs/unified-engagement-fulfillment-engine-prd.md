@@ -2487,6 +2487,20 @@ QA：已有合法内部字段在设置规范化后原值保留，非法路由/�
 
 此规则只补足已证明没有进入执行入口的终态收口，不将 lease 到期或错误字符串作为无副作用证明。QA 覆盖零 Attempt 终态可收口、Action/Job unknown、已存在 before_call 或真实调用 Attempt、remote fact、错 epoch/Job 的拒绝，以及旧状态和版本保持。design_status=complete。
 
+历史残留的运维修复还须单独核对整个 coverage lineage：准确 Task/epoch、所有 Action/Job、原窗口，确认无任何 ExecutionAttempt、remote fact 或未决 Provider exchange；在当前任务日内按预览指纹加锁纠正。仅收口原窗口并清除该 coverage 的 generation_contract 阻断，保留 target/confirmed 数量、targeted_at、next_eligible_at、next_decision_at 及 Task.next_run_at。不能调用会将原排期重设为 now 的批量恢复入口；旧 Action/Job 和其他 coverage 保持原样。审计记录 SHA、前后状态和零直接 Provider/Telegram 调用，之后由正常 Planner 路径决定新工作，独立观察业务事实。
+
+### 19.22 完整频道能力响应的缺省反应语义
+
+西安点赞只读探测已获得 GetFullChannelRequest 的完整成功响应，peer 为 -1001104990279，available_reactions 为 None；它不同于网络失败或未取得频道能力。[Telegram 官方 TDLib ChatReactions 构造器](https://github.com/tdlib/td/blob/master/td/telegram/ChatReactions.cpp) 把缺省字段与 chatReactionsNone 都初始化为空反应集合。当前适配器把前者映射为 unknown，造成已探测但长期“未知”的错误诊断。
+
+正式 Gateway 只有取得完整响应及其 available_reactions 字段后，才把合法缺省值映射为 none。响应缺少 full_chat/能力字段必须显式报错，未识别的能力类型继续 unknown；网络错误继续记录 probe_failed，不能映射为 none。some/all 的普通可执行表情交集保持原规则。none 不创建点赞工作，不改变频道设置、不换目标、不发送试探点赞；任务应明确展示没有可用反应而非把它计为成功。QA 覆盖真实可选字段缺省、显式 none、陌生类型、响应结构错误和探测网络失败。此解析子合同 design_status=complete，外部频道能力仍单独验收。
+
+### 19.23 生成准备时机采用实际最晚发送限制
+
+生产评论 Action 在来源排期延期后，scheduled_at/release_not_before_at 已延后数小时，effective_claim_at 仍保留原值。当前生成 JIT 用 coalesce 优先取旧 effective_claim_at，不能表达多个发送限制的共同约束；未开始的生成可能按已失效的早时刻准备。
+
+两类内容生成的候选 SQL 和 Job generation_not_before 计算必须统一采用 scheduled_at、release_not_before_at、effective_claim_at 三者的最晚非空时刻，再减去原10秒准备量；不改写三项原值、不提前发送、不改变最终截止点。缺少可选字段沿用必需 scheduled_at。尚未开始的 Job 按原领取/CAS路径更新时机；已经开始、ready或unknown的模型工作不因该计算而重发。QA 用来源延期但账号有效时刻旧、账号后延、release后延、空字段和活群/评论两个真实候选查询复现，验证 PostgreSQL 结果一致。本切片 design_status=complete，仅修正准备时钟选择；已生成后遭遇新的来源竞争仍需发前新鲜度检查，不能将该局部修补称为全部 JIT 验收。
+
 ## 20. Product Design Complete 自检
 
 - 当前范围以 §19.13 为准；§19.12 已撤销，历史文中的正式预算、回放审批和完整 Binding 待实现项不再阻塞本期交付。保留的实时链、最近三天计数和四类任务仍须逐项代码、测试和生产验证。

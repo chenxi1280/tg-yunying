@@ -1,5 +1,8 @@
 # 项目结构索引
 
+> **2026-09-05 生产能力与 JIT 时钟补正：** `telethon_content.fetch_channel_reaction_capability` 区分完整响应的缺省反应（none）、非法响应及未识别类型；`channel_like_capability` 明确显示未开放点赞表情。`ai_generation_timing` 对 scheduled/release/effective 三项发送限制取最晚值，活群和评论候选 SQL 与 Job 准备点共用同一语义。回归入口新增 `test_generation_deferred_send_time.py`，并有真实 PostgreSQL 双队列反例。
+
+
 > **2026-09-05 内容窗口终态收口：** `ai_content_window_retirement.py` 集中窗口候选查询及“内容已绑定但原 Action 在任何 ExecutionAttempt 之前终结”的精确收口；`ai_content_runtime.invalidate_terminal_pre_gateway_obligation_slot` 在同一物化事务复用。Action/Job/窗口身份、终态和零 Attempt/零 fact 均需证明，带远端证据或未知的窗口保持原保护。回归为 `test_ai_content_window_retirement.py` 与 PostgreSQL 同名边界测试，合同见 PRD 19.21。
 
 > **2026-09-05 活群生成与接管前置修补：** `ai_generation_parallel._unavailable_generation_job` 在候选 LIMIT 前排除既有不可领取 Job，保留 unknown 原身份与领取 CAS。`group_internal_config.py` 校验并保留正式服务仍在使用的内容路由/救援账号字段；`engagement_policy_scope.py` 在参与计划中排除既有租户/Task 救援号，不改变成员快照或按健康缩小分母。回归为 `test_ai_generation_candidate_fairness.py`、`test_engagement_cutover_prerequisites.py`，合同为统一引擎 PRD 19.19–19.20。

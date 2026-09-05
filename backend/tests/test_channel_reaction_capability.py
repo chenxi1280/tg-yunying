@@ -74,7 +74,7 @@ async def test_fetch_channel_reaction_capability_distinguishes_none_from_unknown
     client.get_entity.return_value = SimpleNamespace(id=1)
     client.side_effect = [
         SimpleNamespace(full_chat=SimpleNamespace(available_reactions=types.ChatReactionsNone())),
-        SimpleNamespace(full_chat=SimpleNamespace(available_reactions=None)),
+        SimpleNamespace(full_chat=SimpleNamespace(available_reactions=object())),
     ]
 
     none_capability = await fetch_channel_reaction_capability(client, "-1001")
@@ -108,3 +108,47 @@ def _load_reaction_capability_migration():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.mark.anyio
+async def test_successful_full_channel_without_reactions_is_none() -> None:
+    client = AsyncMock()
+    client.get_entity.return_value = SimpleNamespace(id=1)
+    client.return_value = SimpleNamespace(full_chat=SimpleNamespace(available_reactions=None))
+    capability = await fetch_channel_reaction_capability(client, "-1001")
+    assert capability.mode == "none"
+    assert capability.available_reactions == ()
+    assert client.await_count == 1
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("response", [SimpleNamespace(), SimpleNamespace(full_chat=None),
+                                      SimpleNamespace(full_chat=SimpleNamespace())])
+async def test_malformed_full_channel_is_not_a_disabled_capability(response) -> None:
+    client = AsyncMock()
+    client.get_entity.return_value = SimpleNamespace(id=1)
+    client.return_value = response
+    with pytest.raises(RuntimeError, match="channel_reaction_capability_response_invalid"):
+        await fetch_channel_reaction_capability(client, "-1001")
+
+
+@pytest.mark.anyio
+async def test_reaction_capability_network_error_remains_an_error() -> None:
+    client = AsyncMock()
+    client.get_entity.return_value = SimpleNamespace(id=1)
+    client.side_effect = TimeoutError("capability probe timed out")
+    with pytest.raises(TimeoutError):
+        await fetch_channel_reaction_capability(client, "-1001")
+
+
+def test_disabled_capability_is_visible_in_task_failure_reason() -> None:
+    from app.services.task_center.executors.channel_like_capability import message_reaction_plan
+
+    channel = SimpleNamespace(reaction_capability_mode="none", available_reactions=[])
+    session = SimpleNamespace(get=lambda *_args: channel)
+    task = SimpleNamespace(stats={}, last_error="")
+    message = SimpleNamespace(id=1, channel_target_id=1, current_source_revision_id=None, content_preview="")
+    result = message_reaction_plan(session, task, message, config={}, reactions=["👍"], quantity=30, seed_id="source")
+    assert result == []
+    assert task.stats["reaction_capability_unavailable"]["capability_mode"] == "none"
+    assert "频道未开放点赞表情" in task.last_error

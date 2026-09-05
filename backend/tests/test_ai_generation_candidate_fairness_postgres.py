@@ -1,5 +1,6 @@
 from datetime import timedelta
 
+import pytest
 from sqlalchemy import select
 
 from app.database import SessionLocal
@@ -49,3 +50,28 @@ def _seed_candidates(session):
                 task_lifecycle_epoch=1, obligation_type="coverage", obligation_id=identity,
                 state="unknown", generation_sequence=1, context_snapshot_version=1))
     session.flush()
+
+
+@pytest.mark.parametrize("task_type", ["group_ai_chat", "channel_comment"])
+def test_postgres_deferred_schedule_overrides_stale_effective_claim(task_type):
+    from app.services.task_center.ai_generation_timing import generation_send_time_expression
+    from app.services.task_center.comment_generation_worker import _comment_candidate_statement
+    from app.timezone import as_beijing
+
+    with SessionLocal() as session:
+        _seed_candidates(session)
+        task = session.get(Task, TASK_ID)
+        task.type = task_type
+        action = session.get(Action, f"{TASK_ID}-ready")
+        action.task_type = task_type
+        action.action_type = "post_comment" if task_type == "channel_comment" else "send_message"
+        action.effective_claim_at = _now() - timedelta(minutes=30)
+        deferred_until = _now() + timedelta(hours=2)
+        action.scheduled_at = deferred_until
+        action.release_not_before_at = deferred_until
+        session.flush()
+        query = _comment_candidate_statement(session) if task_type == "channel_comment" else _candidate_statement(1)
+        assert list(session.scalars(query)) == []
+        actual = session.scalar(select(generation_send_time_expression()).where(Action.id == action.id))
+        assert as_beijing(actual) == deferred_until
+        session.rollback()

@@ -130,3 +130,21 @@ R2以PRD §19.17为开发合同；变更限定Gateway浏览边界和针对性回
 - 本地反例1 failed/8 passed，修补后新增与原窗口/恢复测试37 passed，隔离 PostgreSQL 2 passed。每批硬超时60秒；PG包括真实 FOR UPDATE 关联查询以及存在 before_call Attempt 时拒绝回收。
 - code_review：SQL关联 tenant/task/epoch/义务/Job/窗口，并在同事务锁定；只修改窗口状态/claim/version。批量旧恢复逻辑保持原范围；新模块66行，原 runtime 491行，无超长函数。
 - release_path：master -> release -> Deploy Production；应用回退可恢复旧行为，原窗口历史不回写。发布后检查新物化是否继续、是否仍产生同指纹失败；历史已经阻断的 coverage 如需恢复，须另外精确 preview/CAS，不批量重试。
+
+## 内容窗口发布与精确恢复预览（11:46）
+
+25a0cef8 / Actions 33941734205 终态成功，独立读回 current=20260905033245_25a0cef8，backend、生成、Planner、Dispatcher healthy。11:12–11:38 的增量事实覆盖全部 9 个活群，选定评论任务 819b4b75 于11:36确认发出一条；仍为原 legacy 路由证据。
+
+coverage a611aa16 的完整 lineage 仅2个 failed Action、ready/failed 两个 Job，无任何 ExecutionAttempt、remote fact、Provider HTTP exchange。精确预览指纹 e355bfe50876088811e94ed18e4fa350d547a1dd18763248de8fb90d2a1a197a。拟在同一事务调用已发布窗口收口服务，并只把该 coverage 从 blocked 改为 ready、清除对应阻断；原数量、计划时间和 Task.next_run_at 不改写。脚本对准确集合、版本和哈希加锁校验，审计并读回；脚本无模型或 Telegram 调用。
+
+西安点赞全部历史 Action/Attempt/fact/Job/ReactionObligation 均0。只读 GetFullChannelRequest 解析到 peer -1001104990279，但真实 available_reactions 为空（NoneType），当前映射 unknown。没有伪造可用 reactions，也未更换目标或发送试探点赞。
+
+历史 coverage 运维应用成功，AuditLog=981647；独立读回 state=ready、原slot invalidated/version5，targeted_at仍04:14:29.017432、next_eligible/next_decision仍null、target1/confirmed0。没有直接生成或发送；尚待自然链路的新事实。
+
+## 频道能力与生成时钟 Release Gate（11:58）
+
+PRD19.22以Telegram官方TDLib对缺省ChatReactions的处理为依据；完整能力缺省映射none、陌生类型仍unknown、非法响应与网络失败显式报错，none显示频道未开放点赞表情。初始4失败/5通过，修补后能力/点赞/监听46通过。
+
+PRD19.23复现来源延期但effective_claim_at旧导致两类候选提前入队；SQL与Job准备点改为三项发送限制的最晚值。初始4失败/3通过，修补后JIT、任务类型隔离、待处理Job、候选公平性34通过，真实PostgreSQL3通过。三组共83个不同用例，无schema/API/前端变更，不改已有Action时刻/数量/unknown，不开启外部频道反应。
+
+接管容量只读检查另见：AccountBehaviorBudgetPolicyRevision当前0行；按现有默认值启用时，每普通号authored_message=10，总行为60。9个活群配置日目标均4200，普通账号并集1633；理论发言上限16330低于总目标37800。此处已请用户选择任务目标与历史账号上限的修订口径，未擅自削减任务数量或提高上限。

@@ -1,5 +1,8 @@
 # 项目数据流转索引
 
+> **2026-09-05 能力与准备时钟：** Telegram 完整频道响应的可选 available_reactions 缺省值 → none → 点赞能力阻断；结构错误/网络失败仍是探测失败，不创建点赞操作。Action 的 scheduled_at/release_not_before_at/effective_claim_at 最晚时刻 → 提前10秒的生成入口与 Job not-before；较旧的 effective 字段不能使已推迟工作提前生成。既有 ready/unknown 不重放，发送截止不延长。
+
+
 > **2026-09-05 内容窗口收口：** 同一义务新物化前 → 锁定旧 Action/ready Job/gateway_bound 窗口 → 核对完整身份、终态且无任何 Attempt/fact → 仅 invalidated 窗口并清除 claim → 新物化沿原义务身份继续；旧 Action、Job、结果及时间不改写。任一远端/未知证据仍交原结算链，不经此入口回收。
 
 > **2026-09-05 生成候选与存量资格：** 活群 pending Action → SQL 排除关联 unknown/未到期 Job → 排序/LIMIT → 原 Job/Action 版本 CAS → 原生成提交；未知只经原对账链收口，不阻塞其他义务。组成员快照 → 排除租户/Task 专用救援账号 → 冻结参与分母 → 独立健康准入，保留暂时不可用账号的欠量。设置规范化保留受正式服务控制的内容路由及救援字段，接管需另做原日目标与在途身份验证。

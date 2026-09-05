@@ -128,6 +128,8 @@ def _record_reaction_capability_block(
         task.last_error = f"Reaction 能力不可用或无有效交集：语义不匹配，message={message.id}"
     elif mode == "unknown" and probe.get("error_code"):
         task.last_error = f"Reaction 能力探测失败：{probe['error_code']}"
+    elif mode == "none":
+        task.last_error = "Reaction 能力不可用或无有效交集：频道未开放点赞表情"
     else:
         task.last_error = f"Reaction 能力不可用或无有效交集：message={message.id}, mode={mode}"
 

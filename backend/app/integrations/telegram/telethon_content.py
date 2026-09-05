@@ -349,8 +349,10 @@ async def fetch_channel_reaction_capability(
     target: int | str = int(channel_peer_id) if channel_peer_id.lstrip("-").isdigit() else channel_peer_id
     entity = await client.get_entity(target)
     full = await client(functions.channels.GetFullChannelRequest(channel=entity))
-    capability = getattr(getattr(full, "full_chat", None), "available_reactions", None)
-    return await resolve_channel_reaction_capability(client, capability)
+    full_chat = getattr(full, "full_chat", None)
+    if full_chat is None or not hasattr(full_chat, "available_reactions"):
+        raise RuntimeError("channel_reaction_capability_response_invalid")
+    return await resolve_channel_reaction_capability(client, full_chat.available_reactions)
 
 
 async def fetch_channel_discussion_identity(
@@ -408,7 +410,7 @@ async def resolve_channel_reaction_capability(
 ) -> ChannelReactionCapabilitySnapshot:
     from telethon import types
 
-    if isinstance(capability, types.ChatReactionsNone):
+    if capability is None or isinstance(capability, types.ChatReactionsNone):
         return ChannelReactionCapabilitySnapshot(mode="none")
     if isinstance(capability, types.ChatReactionsSome):
         configured = _standard_reaction_emojis(capability.reactions)
