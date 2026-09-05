@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -30,6 +30,7 @@ class FrozenAccountOrigin:
     binding: TaskAccountGroupBindingSetRevision
     provenance: str
     participation_plan_id: str = ""
+    membership_snapshot_set_id: str = field(default="", kw_only=True)
 
 
 def resolve_frozen_account_origin(
@@ -196,7 +197,8 @@ def _origin_from_plan(
     )
     if binding is None or pool_id not in {int(item) for item in binding.account_group_ids or []}:
         raise ValueError("engagement_account_origin_binding_invalid")
-    return FrozenAccountOrigin(pool_id, binding, "frozen_participation_plan", plan.id)
+    return FrozenAccountOrigin(pool_id, binding, "frozen_participation_plan", plan.id,
+        membership_snapshot_set_id=snapshot.id)
 
 
 def _has_frozen_membership(session: Session, action: Action) -> bool:

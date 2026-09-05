@@ -22,13 +22,12 @@ from app.services.task_center.ai_provider_attempts import (
 from app.services.task_center.ai_provider_candidate_runtime import (
     PROVIDER_ROUTE_RETRY_SECONDS,
     defer_rate_limited_provider,
-    is_ai_provider_quota_exhausted,
-    mark_provider_quota_exhausted,
     provider_calls,
     provider_candidates,
     raise_provider_generation_failure,
     route_transport_failure,
 )
+from .ai_provider_quota import observe_provider_quota_failure
 from app.services.task_center.provider_admission import (
     ProviderAdmissionBlocked,
     ProviderProbeLease,
@@ -263,13 +262,13 @@ def structured_failure_outcome(
     error: Exception,
     has_more: bool,
 ) -> StructuredAttemptOutcome:
+    quota_limited = observe_provider_quota_failure(
+        session, candidate, error,
+        commit=bool(request.config.get("_close_db_transaction_before_ai")),
+    )
     if isinstance(error, AiProviderResultUnknown):
         return StructuredAttemptOutcome(None, error, False, False)
-    if is_ai_provider_quota_exhausted(error):
-        mark_provider_quota_exhausted(candidate, error)
-        if bool(request.config.get("_close_db_transaction_before_ai")):
-            session.add(candidate)
-            session.commit()
+    if quota_limited:
         return StructuredAttemptOutcome(None, error, route_bound(request), has_more)
     if route_bound(request) and route_transport_failure(error):
         return StructuredAttemptOutcome(None, error, True, True)

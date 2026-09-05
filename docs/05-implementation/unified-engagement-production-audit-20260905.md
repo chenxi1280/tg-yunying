@@ -402,3 +402,20 @@ d6d637aa51251ca4040ebcb82b757e2157fd647d已按master/release冻结并触发Deplo
 00:40:19 DB只读RR独立确认：九群Task两处配置均2000，2026-09-06九条daily target的configured/effective/planned均2000；2026-09-05九条仍4200、冻结人数和原原因保持历史值，没有误改前一天。target脚本新增的target_update_bound政策binding计数为0。九群仍fact_first_v3、无engagement_contract_version，2000持久化不是统一引擎接管或当日履约。最后补齐来源筛选时钟后原浏览PG文件5 passed/20.59s，避免今后真实日期漂移污染固定日界回归。
 
 最终候选以2079为父提交，包含本批明确路径及诊断入口修正；此前Release Gate的“master/release均16d”仅表示发现并行提交前的快照。所有运行中的本地测试已结束、工作区其余用户文件保持不动；发布必须以新commit和新的完整CI run为证据。
+
+### 2026-09-06 01:24 发布终态及R1/Provider修补进展
+
+- Deploy33978775792（14d0941493c45d1b3ada72a954564df19dcf9fce）已终态failure；全部CI和3镜像通过。三次安装分别已激活dispatch-rebuild-v3，末尾Antigravity双模型探测均在gemini-3.6-flash-medium返回HTTP202 unknown/antigravity_quota_limited，并记录slot rollback complete。外层把该错误按SSH重试完整安装三次，引发两轮额外stop/fence；没有把unknown回放为业务成功。原log在本次/tmp审计目录的deploy_33978775792_failed.log。
+- 01:09:48独立读回current=/data/tgyunying/releases/20260905165256_14d09414；19/19 backend-image容器SHA一致、running/healthy、HostConfig.MemorySwappiness=60，APIok，available1042600kB，swap占用402944kB，load1.98/2.91/3.64。01:13 DB的dispatch scope已active。不能把这些证据改称整条发布成功；Antigravity回滚后的独立runtime SHA/模型可用性仍待验证。
+- 01:02索引0224已真实安装且valid。Sep5同口径单账号只读占用查询1SELECT/0.0341s/9行；1633账号1SELECT/16.415s/11041行，仍403缺原日期、2782物理占用未证明。单号EXPLAIN实际采用新索引，全量耗时未改善；未将unknown或缺日期行改写，也未把该只读查询称正式共享准入。
+- 00:59:52到01:04:54期间没有新四类typed业务事实；该窗口处于安装重试和fence之中，需以最后一次稳定runtime后的新anchor重验。01:13读取01:05后Provider记录：3.6有50条provider_result_unknown、474条probe_in_flight，健康仍是9月3日旧值；MiniMax-M2.5有10次生成success。这些是Provider结果，不是Telegram完成。
+- R1资源身份子项按统一PRD19.44完成本地实现：显式legacy_cutover首binding快照、原日期及移组归属，新旧动作共用完整lease/reservation/fence；历史Attempt不回填，缺原证据明确失败。12反例原实现全部失败；修补56关联回归、增加原Attempt/跨epoch/first-binding successor后68回归通过，独立PG2项通过7.82s。容量函数10项AST逐项等价移出超长模块；新/改模块均500行以内。尚未创建生产cutover快照或激活统一Task，历史调用与实际调用日共享占用、配置/来源接管仍待完成。
+- 发布脚本单次安装修订见发布PRD§10：真实release.sh边界替身复现业务1/SSH255/等待124均重复安装3次；修补后与SSH/Antigravity/release gate共30项通过14.62s。保留连接前置及上传重试，保留模型检查失败，不吞错。
+- Provider quota修订见Antigravity专项§18和统一PRD19.45：HTTP202保留typed quota code，draft/structured独立记录该Provider不可用，当前unknown仍不继续候选，后续独立工作只用原已配健康路由。原6反例失败/2普通unknown对照通过；修补39项通过3.68s。追加健康提交失败必须保留原unknown异常链的两反例后，quota、unknown传播、原Provider lineage和HTTP exchange共62项通过19.55s。本段各代码仍未commit/push，未部署为14d的一部分。
+
+### 01:30 稳定窗口及共享周额度核实
+
+- 01:24:41独立runtime再次确认19/19 healthy、current/SHA仍14d，APIok、available988524kB、swap占用626548kB、load3.66/2.51/2.91。两个dispatcher分别RSS264548/266200kB，未发生新OOM或容器restart。此样本距其最近一次启动约21分钟，仍不是全天容量验收。
+- 以01:09:48为稳定锚点，01:24:41取得2条view_observed，活群有43条remote_outcome_unknown和9条safely_not_executed。01:27按具体action_type重新核对：活群未知均为ensure_target_membership，另有invite_group_account失败；不能把这些计入send_message未知或成功。新GenerationJob到消息的成功链仍为空。两次探针先遇到不存在的Action.reason_code列，修正为实际status/action_type后只读成功；该工具查询错误不作为业务故障。
+- 生产slot-01服务独立读回active，bridge current仍73388，确认此前release末尾执行的是bridge回滚、应用14d并未回滚。用服务原OS用户和当前root-owned bridge目录启动原生CLI 1.1.22，/usage读到Gemini Flash/Pro共用周额度剩余0%，约120h53m后刷新，5小时窗口因周额度耗尽而disabled。未调用模型、未改登录账号或请求账本；初次在/tmp遇到trust提示后退出，最终只信任现有bridge代码目录。
+- 现有MiniMax-M3独立结构化连通性调用通过：2.216秒、266 tokens、指定JSON字段匹配、DB写入0、Telegram调用0。该结果仅证明基础调用可用，不代表八条生成路由的业务质量或四类Telegram履约已通过。临时将六条活群生成路由与两条评论生成路由的后续新工作改为该模型已向用户征求选择；未修改路由或旧unknown。其余既定修补不依赖该选择。

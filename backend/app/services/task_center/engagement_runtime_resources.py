@@ -3,21 +3,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session, object_session
 
 from app.models import (
     AccountBehaviorBudgetLedger,
     AccountBehaviorBudgetPolicyRevision,
     AccountBehaviorBudgetReservation,
-    AccountExternalUseHold,
     AccountPoolConcurrencyLease,
     AccountPoolConcurrencyPolicyRevision,
     Action,
     ExecutionAttempt,
     ExecutionResiliencePolicyRevision,
     RemoteInvocationFence,
-    TaskAccountGroupBindingSetRevision,
     TaskDayLedger,
     TgAccount,
 )
@@ -26,18 +24,24 @@ from app.timezone import as_beijing
 
 from .engagement_action_contract import action_uses_unified_contract
 from .engagement_action_classes import ACTION_CLASS_BY_TYPE
+from .engagement_legacy_resource_origin import (
+    assert_legacy_attempt_uncalled, legacy_cutover_origin, legacy_original_task_day,
+)
 from .engagement_account_origin import (
     FrozenAccountOrigin,
     resolve_frozen_account_origin,
 )
-from .engagement_activity_scope import ActivityScope, action_activity_scope
 from .engagement_runtime_domains import (
     ACTIVE_DOMAIN_LEASE_STATES,
     new_pool_lease,
-    proxy_capacity_blocker,
     proxy_domain_keys,
 )
-from .engagement_runtime_circuit import circuit_blocker
+from .engagement_runtime_capacity import (
+    _assert_behavior_capacity, _assert_circuit_available, _assert_external_use_hold,
+    _assert_negative_outcome_circuit, _assert_pool_capacity, _assert_portfolio_capacity,
+    _assert_proxy_capacity,
+)
+from .engagement_runtime_error import RuntimeResourceBlocked
 from .engagement_runtime_settlement import (
     locked_ledger_by_id,
     move_counter,
@@ -47,14 +51,6 @@ from .engagement_runtime_settlement import (
 
 ACTIVE_LEASE_STATES = ACTIVE_DOMAIN_LEASE_STATES
 ACTIVE_FENCE_STATES = ("reserved", "active", "remote_unknown")
-DEFAULT_RESOURCE_RETRY_SECONDS = 30
-@dataclass(frozen=True)
-class RuntimeResourceBlocked(Exception):
-    code: str
-    detail: str
-    retry_after_seconds: int = DEFAULT_RESOURCE_RETRY_SECONDS
-
-
 @dataclass(frozen=True)
 class RuntimeResourceContext:
     account: TgAccount
@@ -70,9 +66,9 @@ class RuntimeResourceContext:
 def reserve_attempt_resources(
     session: Session, action: Action, attempt: ExecutionAttempt
 ) -> None:
-    if not _uses_unified_engagement_contract(session, action):
+    context = _admitted_resource_context(session, action, attempt)
+    if context is None:
         return
-    context = _runtime_resource_context(session, action)
     _assert_runtime_capacity(session, action, context)
     lease = new_pool_lease(
         action,
@@ -114,13 +110,30 @@ def reserve_attempt_resources(
     )
 
 
+def _admitted_resource_context(session: Session, action: Action, attempt: ExecutionAttempt):
+    try:
+        if _uses_unified_engagement_contract(session, action):
+            return _runtime_resource_context(session, action)
+        origin = legacy_cutover_origin(session, action)
+        if origin is None:
+            return None
+        assert_legacy_attempt_uncalled(action, attempt)
+        task_day = legacy_original_task_day(session, action)
+        return _runtime_resource_context(session, action, origin=origin, task_day=task_day)
+    except ValueError as exc:
+        raise RuntimeResourceBlocked(str(exc), "存量动作的原资源归属无法核对") from exc
+
+
 def _runtime_resource_context(
     session: Session,
     action: Action,
+    *,
+    origin: FrozenAccountOrigin | None = None,
+    task_day: date | None = None,
 ) -> RuntimeResourceContext:
     account = _locked_account(session, action)
     try:
-        origin = resolve_frozen_account_origin(session, action, account)
+        origin = origin or resolve_frozen_account_origin(session, action, account)
     except ValueError as exc:
         raise RuntimeResourceBlocked(str(exc), "账号缺少可证明的冻结分组归属") from exc
     pool_policy = _active_pool_policy(
@@ -137,7 +150,7 @@ def _runtime_resource_context(
         action,
         account=account,
         policy=budget_policy,
-        task_day=_task_day(session, action),
+        task_day=task_day or _task_day(session, action),
     )
     return RuntimeResourceContext(
         account=account,
@@ -358,255 +371,6 @@ def _task_day(session: Session, action: Action) -> date:
     return as_beijing(_now()).date()
 
 
-def _assert_pool_capacity(
-    session: Session,
-    action: Action,
-    *,
-    account: TgAccount,
-    binding: TaskAccountGroupBindingSetRevision,
-    policy: AccountPoolConcurrencyPolicyRevision,
-    pool_id: int,
-) -> None:
-    if pool_id not in {int(item) for item in binding.account_group_ids or []}:
-        raise RuntimeResourceBlocked("account_outside_frozen_binding", "账号不属于冻结任务绑定")
-    if _lease_count(session, pool_id, account_id=account.id) >= 1:
-        raise RuntimeResourceBlocked("account_remote_inflight", "账号已有远端调用在途", 5)
-    if _lease_count(session, pool_id) >= policy.hard_remote_inflight_limit:
-        raise RuntimeResourceBlocked("account_pool_remote_inflight_full", "账号组物理并发已满", 5)
-    task_count = _lease_count(session, pool_id, task_id=action.task_id)
-    if task_count >= binding.concurrency_limit_per_group:
-        raise RuntimeResourceBlocked("task_group_share_full", "任务在该账号组的并发份额已满", 5)
-
-
-def _lease_count(
-    session: Session,
-    pool_id: int,
-    *,
-    account_id: int | None = None,
-    task_id: str | None = None,
-) -> int:
-    query = select(func.count(AccountPoolConcurrencyLease.id)).where(
-        AccountPoolConcurrencyLease.account_pool_id == pool_id,
-        AccountPoolConcurrencyLease.state.in_(ACTIVE_LEASE_STATES),
-    )
-    if account_id is not None:
-        query = query.where(AccountPoolConcurrencyLease.account_id == account_id)
-    if task_id is not None:
-        query = query.where(AccountPoolConcurrencyLease.task_id == task_id)
-    return int(session.scalar(query) or 0)
-
-
-def _assert_proxy_capacity(
-    session: Session,
-    action: Action,
-    policy: ExecutionResiliencePolicyRevision,
-    *,
-    proxy_route_key: str,
-    proxy_egress_key: str,
-) -> None:
-    blocker = proxy_capacity_blocker(
-        session,
-        tenant_id=action.tenant_id,
-        policy=policy,
-        route_key=proxy_route_key,
-        egress_key=proxy_egress_key,
-    )
-    if blocker is not None:
-        raise RuntimeResourceBlocked(blocker[0], blocker[1], 5)
-
-
-def _assert_circuit_available(
-    session: Session,
-    action: Action,
-    *,
-    proxy_route_key: str,
-    proxy_egress_key: str,
-) -> None:
-    blocker = circuit_blocker(
-        session,
-        tenant_id=action.tenant_id,
-        account_id=int(action.account_id or 0),
-        route_key=proxy_route_key,
-        egress_key=proxy_egress_key,
-    )
-    if blocker is not None:
-        raise RuntimeResourceBlocked(blocker[0], blocker[1], 30)
-
-
-def _assert_negative_outcome_circuit(
-    session: Session,
-    action: Action,
-    *,
-    context: RuntimeResourceContext,
-) -> None:
-    from .negative_outcome_circuit import (
-        NegativeOutcomeBlocked,
-        assert_negative_outcome_circuit_clear,
-    )
-
-    scope = action_activity_scope(session, action)
-    if action.task_type not in {"group_ai_chat", "channel_comment"}:
-        return
-    if not scope.canonical_peer_id:
-        return
-    try:
-        assert_negative_outcome_circuit_clear(
-            session,
-            tenant_id=action.tenant_id,
-            peer_id=scope.canonical_peer_id,
-            account_id=context.account.id,
-            route=action.task_type,
-            action_kind=(
-                "response" if (action.payload or {}).get("conversation_turn_claim_id")
-                or ((action.payload or {}).get("comment_mode") == "reply"
-                    and (action.payload or {}).get("reply_target_source") == "channel_comment")
-                else "proactive"
-            ),
-        )
-    except NegativeOutcomeBlocked as exc:
-        raise RuntimeResourceBlocked(
-            "negative_outcome_policy_blocked", exc.details or exc.reason, 30
-        )
-
-
-def _assert_behavior_capacity(
-    ledger: AccountBehaviorBudgetLedger, action_class: str
-) -> None:
-    budgets = dict(ledger.action_budgets or {})
-    limit = int(budgets.get(action_class) or 0)
-    if limit <= 0:
-        raise RuntimeResourceBlocked(
-            "behavior_budget_action_class_unconfigured",
-            f"行为预算未配置动作类型:{action_class}",
-        )
-    states = dict((ledger.counters or {}).get(action_class) or {})
-    occupied_states = ("reserved", "call_issued", "unknown", "confirmed", "unowned")
-    occupied = sum(int(states.get(key) or 0) for key in occupied_states)
-    if occupied >= limit:
-        raise RuntimeResourceBlocked(
-            "account_behavior_budget_exhausted",
-            f"账号当日 {action_class} 行为预算已满",
-        )
-    total_limit = int(
-        budgets.get("total")
-        or sum(int(value or 0) for key, value in budgets.items() if key != "total")
-    )
-    total_occupied = _total_behavior_occupancy(ledger)
-    if total_occupied >= total_limit:
-        raise RuntimeResourceBlocked(
-            "account_behavior_total_budget_exhausted",
-            "账号当日跨任务总行为预算已满",
-        )
-
-    # Active floor reserve: prevent passive likes/views from starving high-priority active conversation
-    if action_class in ("passive_operation", "visible_reaction"):
-        active_floor_reserve = int(budgets.get("authored_content") or 10)
-        max_passive_allowed = max(0, total_limit - active_floor_reserve)
-        if total_occupied >= max_passive_allowed:
-            raise RuntimeResourceBlocked(
-                "account_behavior_passive_budget_exhausted",
-                f"被动操作已达安全水位({total_occupied}/{max_passive_allowed})，保留 {active_floor_reserve} 次额度供主动发言使用",
-            )
-
-
-def _assert_external_use_hold(
-    session: Session,
-    action: Action,
-    *,
-    account_id: int,
-    action_class: str,
-) -> None:
-    holds = list(session.scalars(select(AccountExternalUseHold).where(
-        AccountExternalUseHold.tenant_id == action.tenant_id,
-        AccountExternalUseHold.account_id == account_id,
-        AccountExternalUseHold.state == "active",
-        AccountExternalUseHold.expires_at > _now(),
-    ).order_by(AccountExternalUseHold.expires_at.desc())))
-    if not holds:
-        return
-    scope = action_activity_scope(session, action)
-    if not scope.canonical_peer_id:
-        raise RuntimeResourceBlocked(
-            "account_external_use_scope_unproven",
-            "动作缺少 peer，无法证明不与账号外部使用冲突",
-            30,
-        )
-    hold = next(
-        (item for item in holds if _external_hold_collides(item, action_class, scope)),
-        None,
-    )
-    if hold is None:
-        return
-    raise RuntimeResourceBlocked(
-        "account_external_use_hold",
-        f"账号刚发生未归属的 {action_class} 外发，自动化暂停至 {hold.expires_at.isoformat()}",
-        30,
-    )
-
-
-def _external_hold_collides(
-    hold: AccountExternalUseHold,
-    action_class: str,
-    scope: ActivityScope,
-) -> bool:
-    if action_class not in set(hold.collision_action_classes or []):
-        return False
-    if hold.canonical_peer_id != scope.canonical_peer_id:
-        return False
-    held_source = str(hold.canonical_source_identity or "")
-    action_source = str(scope.canonical_source_identity or "")
-    return not held_source or not action_source or held_source == action_source
-
-
-def _total_behavior_occupancy(ledger: AccountBehaviorBudgetLedger) -> int:
-    occupied_states = ("reserved", "call_issued", "unknown", "confirmed", "unowned")
-    return sum(
-        sum(int(states.get(state) or 0) for state in occupied_states)
-        for states in (ledger.counters or {}).values()
-        if isinstance(states, dict)
-    )
-
-
-def _assert_portfolio_capacity(
-    session: Session,
-    action: Action,
-    ledger: AccountBehaviorBudgetLedger,
-    *,
-    account_id: int,
-    action_class: str,
-) -> None:
-    from .engagement_portfolio import task_account_portfolio_allowance
-
-    allowance = task_account_portfolio_allowance(
-        session,
-        task_id=action.task_id,
-        task_day=ledger.task_day,
-        account_id=account_id,
-        action_class=action_class,
-    )
-    if allowance is None:
-        return
-    account_allowance, _task_total = allowance
-    used = int(
-        session.scalar(
-            select(func.sum(AccountBehaviorBudgetReservation.amount)).where(
-                AccountBehaviorBudgetReservation.ledger_id == ledger.id,
-                AccountBehaviorBudgetReservation.task_id == action.task_id,
-                AccountBehaviorBudgetReservation.action_class == action_class,
-                AccountBehaviorBudgetReservation.state.in_(
-                    ("reserved", "call_issued", "unknown", "confirmed")
-                ),
-            )
-        )
-        or 0
-    )
-    if used >= account_allowance:
-        raise RuntimeResourceBlocked(
-            "task_account_portfolio_capacity_exhausted",
-            f"任务在账号 {account_id} 的 {action_class} 组合预算已满",
-        )
-
-
 def _action_class(action: Action) -> str:
     action_class = ACTION_CLASS_BY_TYPE.get(action.action_type)
     if action_class is None:
@@ -665,6 +429,8 @@ def _record_resource_ids(
         "engagement_account_pool_id": origin.account_pool_id,
         "engagement_account_pool_provenance": origin.provenance,
         "engagement_participation_plan_id": origin.participation_plan_id,
+        "engagement_binding_set_revision_id": origin.binding.id,
+        "engagement_membership_snapshot_set_id": origin.membership_snapshot_set_id,
         "telegram_gateway_timeout_seconds": int(
             resilience.telegram_gateway_timeout_seconds
         ),

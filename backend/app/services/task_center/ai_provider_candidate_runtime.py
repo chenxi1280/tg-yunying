@@ -21,7 +21,7 @@ from app.ai_gateway import (
 )
 from app.models import AiProvider, AiProviderHealthStatus
 from app.ai_transport_errors import AiProviderResultUnknown
-from app.services._common import _now, ai_gateway
+from app.services._common import ai_gateway
 from app.services.automation_identity import with_automation_identity
 from .generation_invocation_budget import provider_invocation_options
 from .provider_http_tracking import scoped_provider_gateway
@@ -41,6 +41,7 @@ from app.services.task_center.provider_admission import (
     release_provider_probe,
     settle_provider_success,
 )
+from .ai_provider_quota import is_ai_provider_quota_exhausted, observe_provider_quota_failure
 from app.services.task_center.ai_provider_attempts import (
     ProviderAttemptClock,
     record_provider_attempt,
@@ -48,20 +49,6 @@ from app.services.task_center.ai_provider_attempts import (
 
 
 PROVIDER_ROUTE_RETRY_SECONDS = 30
-AI_PROVIDER_QUOTA_EXHAUSTED_MARKERS = (
-    "quota exhausted",
-    "insufficient quota",
-    "insufficient balance",
-    "quota_exhausted",
-    "余额不足",
-    "配额不足",
-    "配额耗尽",
-    "用量上限",
-    "token plan",
-    "购买积分补充用量",
-    "token_limit_exceeded",
-    "antigravity_quota_limited",
-)
 
 
 
@@ -286,13 +273,12 @@ def provider_draft_failure(
     policy: ProviderCandidatePolicy,
     has_more: bool,
 ) -> DraftAttemptOutcome:
+    quota_limited = observe_provider_quota_failure(
+        session, candidate, error, commit=policy.close_transaction_before_external,
+    )
     if isinstance(error, AiProviderResultUnknown):
         return DraftAttemptOutcome(None, error, False, False)
-    if is_ai_provider_quota_exhausted(error):
-        mark_provider_quota_exhausted(candidate, error)
-        if policy.close_transaction_before_external:
-            session.add(candidate)
-            session.commit()
+    if quota_limited:
         return DraftAttemptOutcome(
             None,
             error,
@@ -482,16 +468,8 @@ def provider_matches_family(provider: AiProvider, required_family: str) -> bool:
     return required_family == "mimo" and "mimo" in model_name.lower()
 
 
-def is_ai_provider_quota_exhausted(error: Exception) -> bool:
-    detail = str(error).lower()
-    return any(marker in detail for marker in AI_PROVIDER_QUOTA_EXHAUSTED_MARKERS)
 
 
-def mark_provider_quota_exhausted(provider: AiProvider, error: Exception) -> None:
-    provider.health_status = AiProviderHealthStatus.UNHEALTHY.value
-    provider.last_check_at = _now()
-    provider.last_error = f"AI provider quota exhausted: {str(error)[:300]}"
-    provider.updated_at = _now()
 
 
 def raise_provider_generation_failure(error: Exception | None, purpose: str) -> None:

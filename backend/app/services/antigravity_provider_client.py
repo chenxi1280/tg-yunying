@@ -81,7 +81,7 @@ class AntigravityProviderClient:
         state = str(data.get("state") or "")
         if state in {"started", "unknown"}:
             raise AntigravityProviderResultUnknown(
-                "antigravity_provider_result_unknown"
+                str(data.get("error_code") or "antigravity_provider_result_unknown")
             )
         if state != "confirmed":
             code = str(data.get("error_code") or "antigravity_cli_exit_nonzero")

@@ -26,7 +26,7 @@ def action_uses_unified_contract(session: Session, action: Action) -> bool:
         raise ValueError("engagement_task_missing")
     if (task.tenant_id, task.type) != (action.tenant_id, action.task_type):
         raise ValueError("engagement_task_owner_mismatch")
-    binding = _first_binding(session, action)
+    binding = first_engagement_binding(session, action)
     if binding is None:
         return (
             int(task.task_lifecycle_epoch or 1) == int(action.task_lifecycle_epoch or 1)
@@ -37,7 +37,7 @@ def action_uses_unified_contract(session: Session, action: Action) -> bool:
     return created_at >= as_beijing(binding.effective_from)
 
 
-def _first_binding(session: Session, action: Action):
+def first_engagement_binding(session: Session, action: Action):
     return session.scalar(select(TaskAccountGroupBindingSetRevision).where(
         TaskAccountGroupBindingSetRevision.tenant_id == action.tenant_id,
         TaskAccountGroupBindingSetRevision.task_id == action.task_id,

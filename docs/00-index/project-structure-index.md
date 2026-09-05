@@ -1494,3 +1494,9 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 - `backend/app/services/task_center/runtime_resources.py::dispatch_runtime_reservation_scope`按创建上下文记录Action id和对象身份，精确释放尚存本地登记及原token；不以扫描当前全部登记、Action终态或时长清理其他所有者，不改durable lease/budget/fence/unknown。
 - `backend/app/services/task_center/pacing.py::_fit_before_deadline`将相等日界纳入既有初始fit，半开deadline前保留新排期数量；固定中午/23:50的真实浏览planner回归覆盖此差异，current冻结排期不变。
 - `backend/tests/test_dispatcher_recycle_admission.py`、`backend/tests/test_dispatch_runtime_reservation_lifetime.py`覆盖租约竞争、人工stop、续租丢失、异常finally、并行future和本地/durable资源边界。设计合同见统一PRD19.40—19.42及Dispatcher专项5.1/5.5；此条为本地实现，发布和E4另验。
+
+### 2026-09-06 存量资源归属、quota观察与发布重复执行
+
+- `engagement_legacy_resource_origin.py`从首binding的显式cutover快照读取原账号组及原TaskDayLedger/pacing日期；`engagement_runtime_resources.py`仅为接管后的新未调用Attempt建立完整资源，保存binding/snapshot证据。`engagement_runtime_capacity.py`承接原10项容量函数，`engagement_runtime_error.py`共用错误类型；旧函数行为保持等价。
+- `ai_provider_quota.py`共用现有额度识别/健康投影，draft/structured在保留当前unknown的同时记录Provider不可用；`antigravity_provider_client.py`保留202响应typed code，数据库投影失败也以异常链保留原unknown。
+- `deploy/release.sh`远端安装只派发一次；前置SSH和上传保留原重试。测试入口为`test_engagement_legacy_resource_origin*.py`、`test_antigravity_quota_unknown_observation.py`、`test_release_install_single_execution.py`，均不表示生产Task已经接管。

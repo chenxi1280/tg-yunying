@@ -85,7 +85,7 @@ Repository variables:
 - `TGYUNYING_CHECK_HOST_NGINX`，默认 `true`
 - `TGYUNYING_CHECK_PUBLIC_URLS`，默认 `true`
 - `SSH_CONNECT_TIMEOUT`，默认 `60` 秒，控制 Actions 到服务器 SSH/SCP 建连等待时间
-- `RELEASE_SSH_ATTEMPTS`，默认 `3`，控制发布脚本 SSH/SCP 重试次数
+- `RELEASE_SSH_ATTEMPTS`，默认 `3`，只控制安装前的只读 SSH 连通性检查和 SCP 上传重试次数；远端安装只派发一次，业务错误、SSH 断开或等待超时均须先查原执行状态，不自动重装
 - `RELEASE_SSH_RETRY_DELAY`，默认 `10` 秒，控制发布脚本 SSH/SCP 重试间隔
 
 正式生产部署只允许从 `release` ref 使用 `workflow_dispatch` 显式触发；push `release` 本身不再启动部署。日常修复先汇总到 `master`，本批代码、文档和定向 QA 收敛后只把 `release` 快进到最终 `master` HEAD 一次，再触发一次完整 `Deploy Production`。workflow 在任何测试、镜像或生产 environment 前必须确认 event/ref 合法，且 checkout SHA、远端 `release`、远端 `master` 完全一致；漂移时 fail-closed。完整合同见 `docs/03-feature-designs/production-release-batch-single-deploy-prd.md`。

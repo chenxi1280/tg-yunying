@@ -2748,3 +2748,18 @@ Product Handoff：design_status=complete，已核对生产唯一claim_actions入
 并行主干提交2079dead及Production AI Dispatch Diagnostics run33976702434已先于本任务确认执行；其回执显示九群Task配置及2026-09-06的日目标均4200→2000，没有回执涉及过去任务日。该回执仍需独立DB核对，不作为2000条已完成或统一接管的证据。持久目标、旧已物化Action/未决窗口和后续新计划须各自核验所属，不能重复执行同一批修改。
 
 该并行提交将2000修改脚本无条件接入诊断workflow，会使纯诊断运行重复写生产。本次dev恢复原只读入口，移除这段无条件调用并保留已有一次性脚本和执行历史；不在部署或诊断中追加批量目标修改。后续实际需调整目标仍用既有窄范围preview/apply与audit/readback合同。此修订标记product resync，design_status=complete；QA须证明默认诊断命令不含该修改脚本，发布候选包含并行提交的明确审阅结果，当前2000配置以真实读回为准。
+
+### 19.44 存量动作接管后的资源归属
+
+R1资源接管必须区分原工作合同与现在发起的真实调用。§19.34保留旧Action/义务的legacy身份，不能因此永久跳过共享资源准入。首次正式接管在同一激活事务中为首个TaskAccountGroupBindingSetRevision冻结显式`legacy_cutover:<binding.id>`成员快照；快照只表示接管时已核对的原账号集合与origin group，不创建参与计划、补写历史成功或重抽账号。后续binding successor不能移动此边界或覆盖此快照。
+
+- 只有已生效的首个binding及其同tenant/task/epoch的显式cutover快照共同存在，才启用该Task旧动作的新Attempt资源入口；尚未正式接管的Task继续原合同，统一新动作继续使用其原参与计划。正式接管apply必须先验证集合等价、target单写者和全部必要入口，不允许仅写Task标志或绑定而缺少快照。
+- 旧动作从此冻结快照取得origin，账号随后移组不能改记到新组。账号不在快照、分组归属缺失、快照内容hash不一致或引用作用域不符时明确拒绝本次发前准入。错误不改变Action原数量、pacing、义务或旧Attempt；其他健康账号继续正常运行。
+- 每个之后新发起的旧动作Attempt仍创建完整AccountPoolConcurrencyLease、AccountBehaviorBudgetReservation和RemoteInvocationFence，使用现行共享策略及原分组，并在原Attempt保存binding/snapshot/provenance。失败回滚与成功/unknown结算复用同一套资源逻辑；不能只建立budget row或为已存在历史Attempt补造三件套。
+- 原行为账本日期优先取同tenant/task的Action.task_day_ledger_id；无该引用时仅取Action.pacing_due_at的北京时间日期。引用失效、作用域不符或缺原排期明确报告，不能改记到当前日期；这不代替实际调用日的跨日占用核算。既有unknown与其身份、预算和transport termination条件不变。
+
+本资源身份子合同`design_status=complete`，已反查Dispatcher三种业务资源入口、原工作分类、成员快照、日账本及资源结算代码；QA覆盖四类旧工作、旧义务延迟物化、跨日/移组、首binding successor、缺失/伪造归属、未接管Task及unknown三件套保留。共享历史调用占用、实际调用日准入、配置与来源接管仍须单独完成后才能执行正式R1激活；本子项不直接修改生产Task或创建快照。
+
+### 19.45 生成额度故障不抹除未知结果
+
+Antigravity额度故障的typed error必须贯穿HTTP202、draft/structured与Provider健康投影。当前unknown保持原请求且不能继续候选；已观察到quota的Provider按现有规则标异常，只影响后续独立工作选取原已配置路由。详细交接及QA见`antigravity-cli-server-provider-design.md`§18，design_status=complete。本修订不扩大fallback列表，不把发布模型探测失败改为成功，也不以新健康状态清理原未知Job或发送身份。

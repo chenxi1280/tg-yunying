@@ -464,3 +464,13 @@ Mini Bug Card 冻结为：将正式第一模型从已下架的 3.5 精确替换�
 代码合同必须同步 Gateway alias、Provider 客户端 allowlist、Provider API 边界、host bridge allowlist、发布双模型探针以及 guarded Provider/route 配置脚本。定向 QA 覆盖上述常量一致性、bridge 双模型确认、Provider 创建/检查边界、route 顺序与部署 rollback。生产发布成功必须再次取得 3.6 和 3.1 的 release probe confirmed、`/health=ready`、Antigravity runtime SHA 等于候选 SHA、主应用 current/容器/迁移/公网健康；生产 Provider/route 从旧 3.5 配置迁移到 3.6 仍必须使用 guarded preview/apply/readback，普通 release 不得隐式改写生产配置。Telegram 业务完成继续要求独立 Action、ExecutionAttempt 与 typed remote fact。
 
 本轮设计同步与代码实现已完成；Antigravity、Provider、结构化 route、配置脚本和部署生命周期聚焦回归为 95 passed，compileall、Bash 语法与 diff check 通过，`qa_status=pass`、`product_status=accepted`。新候选 SHA 的完整 Actions、3.6/3.1 真实发布探针和生产 runtime 回读完成前，`production_status=blocked`。
+
+## 18. quota 故障与原请求 unknown 分别结算
+
+2026-09-06真实发布探针返回HTTP202、`state=unknown/error_code=antigravity_quota_limited`。客户端在正常202响应分支把typed code覆盖为通用unknown；draft和structured运行入口又在unknown时提前返回，未按既有quota规则记录当前Provider不可用。01:13只读证据显示3.6仍保留9月3日的healthy，01:05后已有50条provider_result_unknown和474条probe_in_flight失败，不能据此重复领取或回放原Job。
+
+客户端必须保留响应中的error_code，同时继续抛出AntigravityProviderResultUnknown；HTTP202和HTTPError两种外壳不能产生不同的故障语义。draft/structured共用既有quota识别和健康投影：观察到quota失败即标记该Provider异常并保存原故障码，但当前unknown请求仍停止候选链，保持原Job、HTTP exchange/request identity和全部未决保护。只有之后独立的新工作才可按原已配置route选择其他healthy Provider，不能把当前unknown伪造成pre-call来换模型。非quota的unknown不推断为额度耗尽，也不修改其他Provider的健康状态、模型顺序或语义审核路由。
+
+本修订不增加兜底模型、冷却阈值或自动恢复策略，不改CLI quota判断、原请求终态或release双模型验收；额度恢复仍需真实检查。Product Handoff：design_status=complete；QA须先复现202错误码丢失及两入口健康投影缺失，再验证当前unknown零继续、后续独立候选排除该Provider、普通unknown不误标记、健康状态提交读回及原Provider HTTP lineage保护。
+
+健康投影数据库提交失败也不能把原unknown改成可重试的普通数据库错误；必须继续抛原unknown，并以异常链保留提交失败原因。不得用catch-and-pass隐藏持久化错误，或因健康标记失败继续下一模型。两类真实生成入口均已设置close-db-before-AI，健康标记沿其原提交边界落库。

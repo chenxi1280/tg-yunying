@@ -284,8 +284,7 @@ run_with_retries "Uploading image env" \
   scp "${SSH_OPTS[@]}" "$image_env_path" "${USER_NAME}@${HOST}:${remote_image_env}"
 
 echo "==> Installing release ${release_id} on ${HOST}"
-run_with_retries "Installing remote release" \
-  timeout "$REMOTE_INSTALL_TIMEOUT_SECONDS" ssh "${SSH_OPTS[@]}" "${USER_NAME}@${HOST}" "\
+timeout "$REMOTE_INSTALL_TIMEOUT_SECONDS" ssh "${SSH_OPTS[@]}" "${USER_NAME}@${HOST}" "\
 set -euo pipefail && \
 mkdir -p '${BASE_DIR}/incoming' '${BASE_DIR}/releases' && \
 existing_image_env='' && \

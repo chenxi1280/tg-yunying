@@ -1497,3 +1497,8 @@ legacy-only A 冷启动分支固定为 `frozen legacy A -> 原 A Session 只读 
 ### 2026-09-06 Dispatcher回收与本地资源所属修订
 
 `批次资源作用域 -> claim/本地登记 -> 分组future -> 全部future返回 -> finally按原对象释放本批次本地登记 -> 自动阈值检查/争用rolling lease -> 胜者停止claim并drain，败者保持active下一批`。claim、Action读取或finalization异常仍沿原错误路径上抛/记录；其他线程/批次及同Action的新对象不受清理。finally只处理进程登记及已有Redis token，durable Action/Attempt/预算/并发lease/RemoteInvocationFence/transport ACK保持原事务与对账入口，不由本地计数变化推导远端结果。已进入drain的续租丢失继续阻塞安全退出，人工stop与严格Gateway断连保持原合同。旧流程先stop后争租约的顺序由本修订覆盖。统一PRD19.40/19.42和Dispatcher专项5.1/5.5为产品口径。
+
+### 2026-09-06 R1旧动作资源与Provider quota
+
+- 原工作合同仍由首binding/原Action及义务创建边界确定；显式`legacy_cutover:<first-binding-id>`成员快照将之后新Attempt导入同一资源准入和结算，原数量/排期/日期不变。尚未正式接管的Task不自动生成快照；历史调用只读占用与实际调用日桥接仍待接线，不能以此入口修补宣布全R1激活。
+- Antigravity typed quota code与请求unknown分别流转：202保留错误码→Provider健康投影异常；原Job/HTTP lineage继续unknown且当前候选链停止，后续独立工作使用原路由里的健康候选。健康写入失败保留原unknown及数据库错误原因，不放行重试。
