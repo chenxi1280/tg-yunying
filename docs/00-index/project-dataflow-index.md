@@ -1518,3 +1518,5 @@ legacy-only A 冷启动分支固定为 `frozen legacy A -> 原 A Session 只读 
 - 共享账号准入：账号行锁 → 原ledger计数加无reservation旧调用的原日占用、实际调用日的跨ledger调用/待调用及当天unowned分别核算 → 原class/total门 → 原lease/reservation/fence；call-start用同一时间重验当天余额并排除自己的预约，旧ledger/date不移动。发前拒绝只释放当前未调用预约，旧unknown继续保留；确定发生变更的失败确认的是原调用成本，Attempt和fence业务失败不变。旧pool/proxy整体物理证明及正式Task接管仍独立验收。
 
 - 原Gateway已返回的历史回执 → 原Attempt request/target冻结指纹、owner/epoch、call-start时间和result/evidence双hash验证 → 仅解除旧物理在途投影；原任务日/调用日预算与unknown保留，不写ACK、不补成功、不触发重放。旧四字段格式只在typed fact为空且原双hash匹配时识别。
+
+- MiniMax请求reasoning_split=true → 推理留在独立reasoning_details → 最终message.content → 原结构化JSON解析及调用方brief/正文/审核schema。推理不作为候选或审核决定，旧结果不重写，失败仍按原typed路径暴露。

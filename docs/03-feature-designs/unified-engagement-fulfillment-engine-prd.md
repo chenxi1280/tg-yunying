@@ -2830,3 +2830,11 @@ Product Design Complete：本共享账号准入子项design_status=complete，�
 旧调用的物理占用投影增加这一种既有证据入口：原Attempt与Action归属及epoch一致；journal同tenant/action/account、state=recorded、remote_mutation_state=true且有remote_message_id或remote_fact_id；journal观察时间不早于原call-start；原Attempt冻结的三个请求字段非空并与journal一致；result hash和包含原request的evidence hash均通过。只识别代码实际发布过的两种确定格式：现行含typed_remote_fact的格式，及typed_remote_fact为空且精确匹配旧四字段哈希的格式。非空typed fact不能按旧格式忽略，缺失/冲突/损坏/其他版本保持物理unproven，不猜测错误文本或调用年龄。
 
 这是读取时确认原Gateway已返回，不创建transport ACK、remote fact或业务成功，不修改Action/Attempt、日归属、原预算和unknown，也不给重放权限。旧调用仍在它原任务日与实际调用日各自参与预算；只有物理在途从投影中解除。Product Design Complete：本证据子项design_status=complete，已反查历史与当前journal写入口和原请求冻结逻辑；QA覆盖两种真实格式、身份与时间、哈希/非空typed字段损坏、冲突、多回执及未决无证据对照，并以真实只读候选核对证明范围。其他历史pool/proxy归属和完整R1接管仍须继续闭合。
+
+### 19.53 MiniMax结构化结果必须使用协议中的最终内容
+
+M2.5切换后正式审核出现dict/list但缺全部审核字段。03:23普通产品话题真实探针确认生产M2.5默认把完整闭合think段放在content中；该单例当前解析恰好成功，并不能证明全部线上schema错误由此引起。代码反查显示结构化通道对整段content取首个JSON，推理段含对象/数组时即可误取中间材料。[MiniMax官方OpenAI兼容协议](https://platform.minimax.io/docs/api-reference/text-openai-api)明确提供reasoning_split，将推理放入reasoning_details、最终内容保留在content。
+
+MiniMax的既有OpenAI兼容请求显式启用reasoning_split=true，继续读取message.content作为最终结果，reasoning_details不参与草稿、brief、正文、审核或质量判定。不关闭M2.5思考、不变更M3既有thinking配置、模型与路由、温度/token设置、质量阈值或严格审核schema，不通过截取多个JSON择优、补字段或放行refusal来掩盖错误。非MiniMax请求不增加该扩展参数，Antigravity继续原独立结构化协议。
+
+本协议修订design_status=complete：已反查从正式reviewer到路由、实际HTTP payload、content提取与严格review parser；QA先以含中间JSON的已知协议响应复现原错误，再检查最终pass/fail保持、推理与正文隔离、MiniMax M2.5/M3真实参数兼容和其他Provider请求不变。独立探针只用普通内容，不落库或发Telegram；旧Job、未知请求和历史审核结果不修改。发布后仍须按新生成实际schema/质量/远端链验收。

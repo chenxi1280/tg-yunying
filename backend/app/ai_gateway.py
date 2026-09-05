@@ -763,6 +763,8 @@ class AiGateway:
         }
         if self._should_disable_thinking(credentials):
             payload["thinking"] = {"type": "disabled"}
+        if self._is_minimax(credentials):
+            payload["reasoning_split"] = True
         if response_format_json and self._is_deepseek(credentials):
             payload["response_format"] = {"type": "json_object"}
         return payload

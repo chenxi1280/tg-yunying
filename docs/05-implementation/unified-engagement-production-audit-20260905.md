@@ -471,3 +471,11 @@ d6d637aa51251ca4040ebcb82b757e2157fd647d已按master/release冻结并触发Deplo
 - 修正历史SQL重复字段别名后03:12实测25/25 journal owner一致；25/25精确符合3dfa060d之前四字段result/evidence hash，记录时间8月1～24日；16/25匹配原冻结request/request hash/target hash。PRD19.52先闭合两种已发布格式的验证，再实现只读物理返回投影，非空typed字段不能按旧格式忽略，业务unknown/日期/预算不改变。
 - 真实写入口构造回执的红测2失败、12对照通过/4.17秒；修补后与旧占用、共享准入、termination联合66 passed/11.27秒，真实PG11 passed/11.09秒，均硬60秒、55439测试库和advisory lock。新代码/测试文件小于500行且函数不超过50非空行，编译及diff检查通过。
 - 03:16:22在8f临时只读进程中加载本地候选与3c5旧reader，24账号共57份预算投影完全相同，仅16份物理在途由true转false；38份仍未证明结束。源码hash与只读回执gateway_return_candidate_readonly_probe.jsonl留存，未安装候选、未写生产记录、未创建ACK或激活Task。其他R1项继续未通过。
+
+### 2026-09-06 03:26 MiniMax最终内容协议修补与发布候选
+
+- 对03:18记录补充动作类型后，03:20:12事实为20次view_message/view_observed、11次view_message/safely_not_executed、1次send_message/remote_message_observed、43次ensure_target_membership/remote_outcome_unknown。此前Task级聚合中的group unknown全部属于入群准备，不能称为正文发送未知；更正已同步用户。权限、冻结和FloodWait的补偿探针结果继续与正文分开。回执8f_post_release_action_typed_facts.jsonl。
+- M2.5的03:23:03及03:23:59两个普通内容真实探针均返回content内完整think段，分别7.225/6.819秒、875/930tokens，原解析恰好取到最终pass/fail，两例不证明已复现全部线上schema错误。代码中首JSON提取遇到推理中的数组/对象可复现误取；测试4失败/1对照通过/2.06秒。PRD19.53按官方reasoning_split协议闭合后仅在MiniMax请求增加这一参数，不关闭M2.5思考或改变审核标准、原请求身份和失败处理。
+- 使用本地候选实际_chat_payload方法，在生产临时Python进程做零DB/Telegram写普通内容探针：03:25:21，M2.5一次HTTP/6.625秒/760tokens，reasoning_details存在且content无think、原审核parser pass；M3另一次HTTP/2.519秒/212tokens，原thinking disabled保留、content无think且请求schema通过。回执minimax_reasoning_split_candidate_probe.jsonl中的M3 http_calls=2是整个探针累积值，不是M3调用重试。未保存正文/推理，仅结构、hash和用量。
+- 新协议、schema证据、结构化路由和AiGateway相关82项分两组全部通过：56 no_postgres/4.71秒，另26项/10.78秒；后者仅55439/tg_yunying_test与既有advisory lock，全部硬60秒。修改函数34非空行、测试文件度量/编译、diff检查通过。原共享资源与返回证明的独立QA继续保留；此候选包含本地3c5/e96，未执行正式Task接管或数据回填。
+- Release Gate：生产当前8f已独立验证；MiniMax协议和共享资源候选经过设计、反查、代码自审、定向/PG及真实只读/模型探针。发布仅走master→release→Deploy Production，默认诊断/APPLY选项全部关闭；发布后必须再验SHA、runtime、新schema、四类型实际Action与E4，完整R1及日数量仍未接受。
