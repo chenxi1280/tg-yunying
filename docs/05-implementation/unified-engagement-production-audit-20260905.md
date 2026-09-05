@@ -411,7 +411,7 @@ d6d637aa51251ca4040ebcb82b757e2157fd647d已按master/release冻结并触发Deplo
 - 00:59:52到01:04:54期间没有新四类typed业务事实；该窗口处于安装重试和fence之中，需以最后一次稳定runtime后的新anchor重验。01:13读取01:05后Provider记录：3.6有50条provider_result_unknown、474条probe_in_flight，健康仍是9月3日旧值；MiniMax-M2.5有10次生成success。这些是Provider结果，不是Telegram完成。
 - R1资源身份子项按统一PRD19.44完成本地实现：显式legacy_cutover首binding快照、原日期及移组归属，新旧动作共用完整lease/reservation/fence；历史Attempt不回填，缺原证据明确失败。12反例原实现全部失败；修补56关联回归、增加原Attempt/跨epoch/first-binding successor后68回归通过，独立PG2项通过7.82s。容量函数10项AST逐项等价移出超长模块；新/改模块均500行以内。尚未创建生产cutover快照或激活统一Task，历史调用与实际调用日共享占用、配置/来源接管仍待完成。
 - 发布脚本单次安装修订见发布PRD§10：真实release.sh边界替身复现业务1/SSH255/等待124均重复安装3次；修补后与SSH/Antigravity/release gate共30项通过14.62s。保留连接前置及上传重试，保留模型检查失败，不吞错。
-- Provider quota修订见Antigravity专项§18和统一PRD19.45：HTTP202保留typed quota code，draft/structured独立记录该Provider不可用，当前unknown仍不继续候选，后续独立工作只用原已配健康路由。原6反例失败/2普通unknown对照通过；修补39项通过3.68s。追加健康提交失败必须保留原unknown异常链的两反例后，quota、unknown传播、原Provider lineage和HTTP exchange共62项通过19.55s。本段各代码仍未commit/push，未部署为14d的一部分。
+- Provider quota修订见Antigravity专项§18和统一PRD19.45：HTTP202保留typed quota code，draft/structured独立记录该Provider不可用，当前unknown仍不继续候选，后续独立工作只用原已配健康路由。原6反例失败/2普通unknown对照通过；修补39项通过3.68s。追加健康提交失败必须保留原unknown异常链的两反例后，quota、unknown传播、原Provider lineage和HTTP exchange共62项通过19.55s。本段代码后来提交为f58f4f21109f3750d6564ea910ac04a322770a2e，尚未push或部署为14d的一部分。
 
 ### 01:30 稳定窗口及共享周额度核实
 
@@ -419,3 +419,14 @@ d6d637aa51251ca4040ebcb82b757e2157fd647d已按master/release冻结并触发Deplo
 - 以01:09:48为稳定锚点，01:24:41取得2条view_observed，活群有43条remote_outcome_unknown和9条safely_not_executed。01:27按具体action_type重新核对：活群未知均为ensure_target_membership，另有invite_group_account失败；不能把这些计入send_message未知或成功。新GenerationJob到消息的成功链仍为空。两次探针先遇到不存在的Action.reason_code列，修正为实际status/action_type后只读成功；该工具查询错误不作为业务故障。
 - 生产slot-01服务独立读回active，bridge current仍73388，确认此前release末尾执行的是bridge回滚、应用14d并未回滚。用服务原OS用户和当前root-owned bridge目录启动原生CLI 1.1.22，/usage读到Gemini Flash/Pro共用周额度剩余0%，约120h53m后刷新，5小时窗口因周额度耗尽而disabled。未调用模型、未改登录账号或请求账本；初次在/tmp遇到trust提示后退出，最终只信任现有bridge代码目录。
 - 现有MiniMax-M3独立结构化连通性调用通过：2.216秒、266 tokens、指定JSON字段匹配、DB写入0、Telegram调用0。该结果仅证明基础调用可用，不代表八条生成路由的业务质量或四类Telegram履约已通过。临时将六条活群生成路由与两条评论生成路由的后续新工作改为该模型已向用户征求选择；未修改路由或旧unknown。其余既定修补不依赖该选择。
+
+### 2026-09-06 02:05 M3路由及九群原绑定恢复
+
+- 用户已明确选择“改用 MiniMax M3”。01:37:00.370361按预览aa9c32c0…完成8条生成purpose唯一M3、2条独立审核purpose唯一M2.5的新revision，审计1027918。M2.5真实结构化探针成功后恢复健康；Gemini7/8按原生CLI共享周额度0的事实标异常。01:40:16独立读回新10路由正确、旧10 route/item保持精确原值（仅route retired）、抽样5旧unknown整行hash不变。详细回执：minimax_m3_cutover_apply.json / minimax_m3_cutover_readback_utc.json。
+- 切换后M3规划、正文及M2.5审核均有真实成功调用，但8个group任务仍two_stage=false/缺失。进一步证明全部9个Task的allowed_routes/attestation_ids被旧配置覆盖；当前正式binding仍保存四群general、五群原授权，10份有效原授权均截止2027-01-01。天津音乐原binding的旧摘要与原字段重算不符，其余8份相符。按PRD19.47恢复当前正式范围，未延长或扩大授权。
+- 9任务统一reviewed配置快照4a9b0e6d80b234e94b6e4a0da4b11881d4a68d6a4ff8065e3a696a906d97b84f。最初整批FOR UPDATE因运行事务行锁退出，fresh preview证明零写、同hash；逐Task分开应用。02:01:44第1项audit1028383；第二项首次因生产SessionLocal的autoflush=False暴露授权PK尚未flush而校验失败，整项回滚。以相同会话配置本地复现后显式flush，再通过原正式激活。02:03:36—37完成audit1028422—1028428；6407当时被锁而零写，fresh单项preview/CAS后02:04:49完成audit1028454。没有重启/暂停worker、终止DB事务或修改旧Job。
+- 02:05:28独立readback逐项确认9/9配置与预期hash一致、正式激活校验通过、两阶段true、每群日目标2000、账号配置/epoch/状态不变；9份旧binding与10份旧授权整行不变，新授权仅id/revision/摘要变化、原attested_at/expiry保留。抽样5旧unknown仍全部整行hash相同。回执group_generation_repair_final_readback.json；此为persisted_verified，四类统一引擎及最终数量/质量E4仍未验收。
+- `_bind_fact_first_provider`非法回写Task配置的反例已复现，候选删除该副作用，只影响请求内默认Provider解析；生产14d尚未包含此代码。配置恢复脚本新增已正确Task拒绝重复revision/授权旋转的反例，避免再次运行产生无必要修改。
+- 当前bridge仍73388cd1；02:04实机4个runtime源文件SHA256与本候选全部一致、root:root/0644，服务MainPID3058744自01:07:46运行。只读health明确degraded/quota_limited、CLI1.1.22、inflight=false、confirmed_models=[]；不代表Gemini恢复。重复安装未变化bridge的发布修订尚在设计，未执行新发布。
+
+- 本轮最终组合55项通过12.60秒（含生产autoflush=False、重复运行拒绝、原unknown lineage和原window policy保留）；git diff --check通过。02:07:50首次新binding工作样本已出现M3规划34次成功、正文64次成功，M2.5审核32成功/1结构化输出失败；大量Job进入quality_wait_shortfall，尚待逐原因反查，不能将Provider调用成功当成质量合格。新binding且新route链取得1条真实send_message/remote_message_observed（f77ebe14），同观察窗全部主业务为活群16成功/2确定未执行、浏览9成功/1确定未执行；评论与点赞未出现本窗新事实。数据见post_group_generation_repair_facts.jsonl。

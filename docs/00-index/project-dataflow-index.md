@@ -1502,3 +1502,7 @@ legacy-only A 冷启动分支固定为 `frozen legacy A -> 原 A Session 只读 
 
 - 原工作合同仍由首binding/原Action及义务创建边界确定；显式`legacy_cutover:<first-binding-id>`成员快照将之后新Attempt导入同一资源准入和结算，原数量/排期/日期不变。尚未正式接管的Task不自动生成快照；历史调用只读占用与实际调用日桥接仍待接线，不能以此入口修补宣布全R1激活。
 - Antigravity typed quota code与请求unknown分别流转：202保留错误码→Provider健康投影异常；原Job/HTTP lineage继续unknown且当前候选链停止，后续独立工作使用原路由里的健康候选。健康写入失败保留原unknown及数据库错误原因，不放行重试。
+
+### 2026-09-06 生成路由切换与原绑定配置恢复
+
+`已验证M3/M2.5 Provider身份 + 10条旧route/item/revision快照 -> 原tenant锁/CAS -> M3生成与M2.5审核新route revision + audit -> 新Job首次冻结新route`；旧route item及旧Job/Provider unknown不重写。`Task配置与本revision正式binding不一致 -> 原policy/作用域/授权有效期校验 + 精确差异preview -> 单Task行锁/CAS -> 保留原期限的授权successor + Task新revision + 正式新binding + audit -> 独立readback`。原binding和授权保持原值；历史坏摘要只在新版本重算，不覆盖旧hash。新生成继续经过独立质检与真实Gateway，不以配置持久化代替E4。

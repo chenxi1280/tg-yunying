@@ -1500,3 +1500,9 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 - `engagement_legacy_resource_origin.py`从首binding的显式cutover快照读取原账号组及原TaskDayLedger/pacing日期；`engagement_runtime_resources.py`仅为接管后的新未调用Attempt建立完整资源，保存binding/snapshot证据。`engagement_runtime_capacity.py`承接原10项容量函数，`engagement_runtime_error.py`共用错误类型；旧函数行为保持等价。
 - `ai_provider_quota.py`共用现有额度识别/健康投影，draft/structured在保留当前unknown的同时记录Provider不可用；`antigravity_provider_client.py`保留202响应typed code，数据库投影失败也以异常链保留原unknown。
 - `deploy/release.sh`远端安装只派发一次；前置SSH和上传保留原重试。测试入口为`test_engagement_legacy_resource_origin*.py`、`test_antigravity_quota_unknown_observation.py`、`test_release_install_single_execution.py`，均不表示生产Task已经接管。
+
+### 2026-09-06 M3路由与活群生成配置恢复
+
+- `backend/scripts/switch_generation_to_minimax_m3.py`以精确10条路由、Provider探针hash与部署SHA完成原路由retire/新revision、M3生成/M2.5独立审核及audit；不修改原Job或unknown。
+- `backend/scripts/repair_group_two_stage_config.py`从当前Task/epoch/revision正式binding恢复两阶段、允许内容路由与授权引用；使用原授权作用域/证据/有效期生成新revision记录，再经正式激活验证。单Task配置、授权、binding与audit原子提交；原摘要不一致显式报告并保留旧记录，已正确配置拒绝重复修复。
+- `ai_generation_runtime_config.py::_bind_fact_first_provider`只修改本次请求配置，删除对持久Task.type_config的隐式回写。测试为`test_generation_provider_config_readonly.py`、`test_repair_group_two_stage_config.py`与`test_switch_generation_to_minimax_m3.py`；事务测试显式采用生产的autoflush=False。

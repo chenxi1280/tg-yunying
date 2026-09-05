@@ -143,8 +143,6 @@ def _bind_fact_first_provider(
         raise ValueError("fact_first_ai_provider_required")
     config["ai_provider_id"] = provider_id
     config["provider_binding_policy"] = "single_provider_key"
-    if int(dict(task.type_config or {}).get("ai_provider_id") or 0) != provider_id:
-        task.type_config = {**dict(task.type_config or {}), "ai_provider_id": provider_id}
 
 
 def tenant_fallback_flags(session: Session, task: Task) -> dict:
