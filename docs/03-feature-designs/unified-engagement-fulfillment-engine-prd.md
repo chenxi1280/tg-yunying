@@ -2638,3 +2638,5 @@ QA：已有合法内部字段在设置规范化后原值保留，非法路由/�
 正常采集仅可纠正可证明的旧去时区错误：当前远端快照带时区，已有naive发布时间精确等于该快照直接去tzinfo的值，且转换后的真实北京时间不同；若有current revision，其发布时间也必须与原存量值一致。其他时间漂移继续明确source_published_at_conflict。合法纠正仅更新ChannelMessage的当前时间投影并追加新的SourceRevision；原revision、已冻结的Plan/Action/Job/义务数量和全部排期/截止、Attempt/unknown/fact不更新。记录原值、新值、原revision和转换版本；纯时间纠正使用timestamp_corrected，不伪报正文编辑；同时有真实正文/编辑变化仍沿原edited处理。后续相同真实快照幂等复用新revision。此为真实采集边界纠错，不是全表加8小时或重放历史任务。
 
 QA：UTC跨北京日界、同一时刻不同offset的观察hash一致、编辑时间不误报、精确旧去时区错误可追溯纠正、其他冲突拒绝、已冻结历史引用与unknown不动、重复采集不追加revision、缺时间仍unproven。以真实远端新观察触发精确纠正并独立读回；代码发布、时间纠正与新业务E4分开验收。本切片design_status=complete，未取消完整接管的旧义务/共享额度核对。
+
+来源诊断读模型同样按真实时刻比较：远端UTC与本地北京时间的同一发布时间/编辑时间统一输出+08:00，不因ISO字符串offset不同误报listener_lag；listener lease与观察时刻先做相同时区换算，UTC租约仍在有效期时零诊断RPC。该修正只读，不改变lease或触发采集。

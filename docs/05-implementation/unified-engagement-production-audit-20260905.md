@@ -250,3 +250,5 @@ PRD19.32先闭合当前权威观测下的精确纠错，不全表加8小时。�
 扩展来源/grounding回归76项通过（13.88秒）。随后将operations的单条频道快照持久化分离为operations_channel_snapshot.py，URL生成器显式传入；调度/计数与既有评论快照入口保持原行为，同一规范化函数复用。重跑来源/监听/入口/计划66项通过（14.19秒）；新增完整operations写入口与时区纠正用例12项通过（4.25秒）。各测试进程硬60秒，PG仅127.0.0.1:55439/tg_yunying_test/advisory lock。
 
 代码自审：current权威snapshot的raw datetime与原存储值精确匹配才允许时区纠正，并核对原source revision时间；非已知偏差拒绝。append-only revision采用显式aware时刻，metadata保留原值/新值/原revision/转换版本；相同UTC/BJ时刻幂等，真实edit仍走原invalidate入口，纯时间纠正不伪报edit。原Action/unknown payload和scheduled_at读回一致；未写任何旧Plan、Job、Attempt、fact或截止字段。新消息持久化模块约234行，listener模块降为316行；无schema/API/前端状态变更。回退程序不能假设已纠正当前时间投影仍是旧UTC墙钟，若回退需保留本规范化兼容修补，不能将历史时间统一减8小时。
+
+来源诊断另复现2失败2通过：同一时刻UTC/BJ字符串不同误报listener_lag，UTC租约被当作过期而可能发起诊断RPC。按19.32统一ISO输出和租约比较后，诊断/时间写入口16项通过（4.56秒），无数据库写入或新采集。

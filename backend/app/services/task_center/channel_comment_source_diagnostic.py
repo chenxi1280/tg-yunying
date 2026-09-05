@@ -7,6 +7,7 @@ from typing import Callable
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from app.timezone import as_beijing, as_beijing_aware
 
 from app.models import (
     ChannelMessage,
@@ -173,11 +174,11 @@ def _result(state: str, request: LatestSourceDiagnosticRequest, **values) -> dic
 
 
 def _iso(value: datetime | None) -> str | None:
-    return value.isoformat() if value else None
+    return as_beijing_aware(value).isoformat() if value else None
 
 
 def _wall(value: datetime) -> datetime:
-    return value.replace(tzinfo=None) if value.tzinfo else value
+    return as_beijing(value)
 
 
 __all__ = [
