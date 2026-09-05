@@ -1,5 +1,17 @@
 # TG 运营管理平台生产部署说明
 
+## 历史 Telegram 原进程退出对账
+
+统一引擎PRD §19.59 的 `backend/scripts/reconcile_legacy_telegram_workers.py` 只确认旧调用的原Docker PID 1已经退出，不能把当前进程缺失、旧心跳或业务failed改称退出证明。输入JSON包含tenant、完整deployed_sha、精确attempt_ids/expected_attempt_count，以及从生产宿主只读采集的同完整容器ID的Docker exitStatus和TaskDelete原文、SHA256、source_host/source_ref、采集时间。宿主完整原件保存在权限0600的审计位置；preview再按数据库原worker/call时间/身份核对。实际调用必须早于实际exitStatus时间，旧缺失request/day保持缺失。
+
+```sh
+python -m scripts.reconcile_legacy_telegram_workers --mode preview --input /tmp/worker-exit-spec.json --output /tmp/worker-exit-preview.json --expected-deployed-sha <sha>
+python -m scripts.reconcile_legacy_telegram_workers --mode apply --input /tmp/worker-exit-preview.json --output /tmp/worker-exit-receipt.json --expected-deployed-sha <sha> --actor <actor> --audit-reference <current-session-reference>
+python -m scripts.reconcile_legacy_telegram_workers --mode readback --input /tmp/worker-exit-receipt.json --output /tmp/worker-exit-readback.json --expected-deployed-sha <sha>
+```
+
+正式发布代码后重新preview，不把临时只读候选探针当正式apply输入。apply在精确Action/Attempt锁后重验全部hash，只改Attempt的transport元数据并审计；任何漂移整批零写。已接入统一budget/lease/fence的Attempt仍使用原正式结算路径，不纳入此旧调用入口。同一preview重复执行读回原receipt，提交后独立Session核对原业务字段和新snapshot hash。每个阶段分别保存证据；ACK后的可用账号数和性能必须重新实测，不能从候选数量估算业务已经恢复。该入口不重启服务、不调用Telegram、不重发unknown，也不替代22任务退役与新任务激活。
+
 ## 统一引擎全量旧任务退役与替代任务启动
 
 统一引擎PRD §19.58 的直接切换使用 `backend/scripts/switch_unified_engagement_tasks.py`，与仅改变fact_first路由的旧v3切换分开。先通过 `master -> release -> Deploy Production` 部署0226及全部worker调用前检查，独立确认current/SHA、迁移和运行角色；迁移不自动停Task、不创建替代Task、不自动启动。0225账号组成员基础须已按整租户preview/hash/apply/readback完成。2026-09-06 05:32在20dfc23b上完成tenant 1全部12组的版本初始化，具体证据见当前生产审计；后续操作仍以新鲜读回为准。

@@ -1,5 +1,7 @@
 # 项目数据流转索引
 
+> **2026-09-06 原容器退出证明（统一引擎 §19.59，候选）：** 宿主只读原Docker exitStatus + 同容器TaskDelete → 同宿主/完整ID/原时间/摘要校验 → 精确旧Attempt与Action身份及原snapshot hash预览 → Action→Attempt锁后CAS → 仅追加transport ACK/退出时间/证据引用 + 同事务AuditLog → 独立读回业务字段保持 → 原legacy occupancy读取规则重新投影物理占用。原unknown、账本、预算、source/day/due及remote事实不改；缺正面退出证据继续保持原占用，当前查不到容器和旧心跳均不充当退出证明。2391条只读候选不代表已经写入ACK，也不代表四类任务已切换或完成。
+
 > **2026-09-06 全量直接切换（统一引擎 §19.58，待发布）：** 当前running四类精确集合 + 原配置/成员/授权hash → 只读新配置与分类容量预览 → tenant成员锁/旧Task锁后CAS → 正式新建全体draft + 旧Task独立retirement/epoch/唯一替代关系 + AuditLog同事务提交 → 独立读回 → 仅未调用Action/生成owner/安全预约分批终结 → 清理零剩余 → 全体新Task正式start与最终epoch binding/content policy → 新日账本/来源/数量计划 → Action/Attempt → typed远端事实。旧计划以Task退役失去执行资格，原分母、due、success/call-issued/unknown及成本证据不改写，不迁入新任务完成量。Planner重新锁Task；Gateway call-issued前最新Task FOR SHARE NOWAIT与退役互斥，缓存旧Task不得触发重规划；Provider迟到ready受退役与owner约束。原all保持全部普通组、原单组保持原组，配置接口拒绝退役Task，read model仍保留旧历史。容量预览是未冻结观察，未来帖子与历史调用占用仍由正式规划/准入处理，不能当作E4。
 
 > **2026-09-06 账号组版本基础（统一引擎 §19.57，本地）：** 正式成员/组写入 → tenant先锁（批量登录先于phone指纹锁）→ 组和账号原归属锁后重读 → 原成员/状态版本核对 → 同事务追加变化版本与StageWakeOutbox → 独立投递事务锁当前同tenant/epoch的四类运行Task并唤醒planner。新binding和Task启动/恢复先验证已有成员基础，失败不改运行态；计划冻结只消费已存在且hash吻合的成员/组状态证据；禁用组保留稳定业务分母与真实disabled状态，临时在线/代理/Session状态不改变成员版本，旧snapshot/selected/Action/unknown不回写。首次全量基础通过显式READ ONLY preview → 完整hash/版本与deployed SHA核对 → 只初始化缺失版本 → 审计+独立读回完成，Task配置和激活仍是独立接管。删除检查读取正式绑定关系（含旧epoch未结工作）与未释放物理租约，不因任务JSON改写而丢失引用。

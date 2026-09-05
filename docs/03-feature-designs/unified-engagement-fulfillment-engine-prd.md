@@ -2931,3 +2931,21 @@ Provider新请求继续使用已有Task共享锁、epoch和generation owner校�
 验收覆盖真实PG两个session的退役与call-issued先后竞争、缓存旧Task、首次启动binding epoch、四类未调用/已调用/unknown分区、旧身份不能恢复、成员/授权/SHA/配置漂移零写、全事务回滚、重复执行不生成第二套新Task、迟到Provider结果和新目标单写者。部署后独立确认22个旧Task退役、新旧映射唯一、新任务走unified_engagement_v1、没有退役后新call-issued；随后逐类核对Task→新账本/计划→Action→Attempt→typed远端事实与正式数量、质量和性能。配置成功、清理成功和发布成功分别报告，不能替代E4。
 
 本切换合同design_status=complete；已反查正式创建/启动、账号binding、Planner事务边界、Dispatcher call-issued、Provider exchange、目标单写者、排期/预算资源及既有v3切换入口。既有v3切换CLI面向fact_first合同且绕过本次统一binding/内容激活，因此本次使用专门的preview/retire/cleanup/activate服务和CLI，不复用旧计划承接路径。
+
+### 19.59 历史 Telegram 调用的原容器退出对账
+
+Intake：L3，直接切换预检发现旧引擎未保留 transport ACK 的历史调用仍占用全局物理并发。2026-09-06 06:24 的只读快照中，1632 个业务成员有 779 个因历史物理调用或证据问题被阻塞，余下 853 个不足以达到评论和浏览的最低参与目标。任务退役不释放已调用证据，因此本项是新引擎履约的实际前置修复；不恢复或继续旧规划。
+
+只确认原执行进程已经结束。正式入口为 `reconcile_legacy_telegram_workers.py` 的 preview/apply/readback，接受经生产宿主只读采集的原始 Docker 日志和明确的 Attempt 集合。已有 `telegram_termination` 的 threading.Event 只代表本进程真实 runner，不能用人工 set Event 代替历史证据。worker 心跳可能覆盖旧 hostname/pid 并保留旧 lifecycle metadata；心跳 stopped、安全标记、Action failed、after_call_at、容器当前查不到或时间已过去，均不能单独作为 ACK。
+
+当前可验证的原执行合同是 `docker_pid1_local_telethon_v1`：原 Attempt.worker_id 精确为 Docker 默认 12 位容器 hostname 加 `:1`，Gateway 在该 Python 进程内经 TelethonClientLifecycle 执行。已反查 2026-08-14 保存的 Gateway 源码和当前源码均为此调用方式，Compose 不设置自定义 hostname、host PID、特权模式或外部 Telegram 代理执行服务。PID 1 退出即该原进程及其线程退出；后续容器重启产生的新进程不能延续原内存中的 coroutine。本操作只接收这个已核实的进程合同，其他 owner 形式保留未证明状态，不推断远端 Telegram 结果。
+
+每个采纳的容器必须有同一宿主、同一完整 64 位容器 ID 的两项正面日志：Docker `ShouldRestart failed, container will not be restarted` 中的真实 exitStatus/退出时间，以及 containerd `/tasks/delete` 的 TaskDelete 事件。日志原文和 SHA256、来源引用、采集时间与宿主标识纳入证据 hash；12 位前缀与完整 ID 必须唯一对应。原调用时间必须严格早于 Docker 的实际退出时间，不以日志到达时间替代退出时间。退出码只证明进程结束，无论 0 或非 0 均不推断业务成功或失败。对当前两个生产宿主的 Docker 全容器和 /proc cgroup 只读观察作为补充审计，不用缺失观察替代正面退出事实。
+
+preview 冻结 tenant、精确 Attempt ID/数量、Action/Attempt 原身份与 epoch、worker、call timestamp、状态和原 snapshot hash，以及对应退出证据。只处理四类任务尚未接入统一预算/lease/fence 的旧调用；已确认成功、已 ACK、未调用、跨租户/账号/epoch 或证据不符明确拒绝。原 request identity 缺失仍保持缺失：PID 1 退出证明该进程内调用已结束，不补造 request、task day 或业务事实。预览不连接 Telegram、不改行，也不把缺证据的其余 Attempt 纳入 apply。
+
+apply 要求精确部署 SHA、原 preview hash、actor 和当前会话审计引用，按 Action→Attempt 顺序锁定并重读同一集合。任一状态、调用身份、snapshot 或证据 hash 漂移整批失败。只在 ExecutionAttempt.result_snapshot 追加 transport_termination_state=acknowledged、实际退出时间、证据来源/hash 和操作引用，原 status、after_call_at、failure、remote ID、Action、原任务日、due、账本、预算、Gateway journal 及业务 unknown 全部保留。完整前后 hash 和证据写入既有 AuditLog；同一 preview 重入从该审计验证已提交结果，不重复补写。提交后通过独立 Session 验证每条 ACK 与原业务字段未变。
+
+ACK 后继续使用原全局占用读取规则：仍属于所查业务日的旧 unknown 保留原业务预算；已经过去的原业务日不转入今天，也不伪造缺失日期。只消除已证明结束的物理调用占用。对没有原进程退出证据的历史调用保持当前 unknown/占用状态，不能按同批其他容器已退出外推。
+
+design_status=complete。反查已覆盖原 Gateway/worker owner 生成、当前本地 runner ACK、legacy occupancy 的查询和投影、原始调用字段及统一资源结算。QA 必须覆盖实际退出时间早于调用、容器/前缀/宿主/摘要错配、空证据、无调用和已成功、精确集合变化、真实 PostgreSQL 并发锁/CAS、事务回滚、重复 apply、unknown/日期/预算保持及独立读回。发布、ACK 持久化、可用容量变化和四类任务的 E4 各自验收，不把进程退出写成 Telegram 成功。
