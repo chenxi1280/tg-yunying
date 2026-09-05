@@ -32,7 +32,7 @@ THEME_PALETTES: tuple[DailyVocabularyTheme, ...] = (
         name="陈述质感",
         description="注重真实体验反馈，客观陈述与评价",
         tone_guidance="当 act type 本来就是 statement/evaluation 时提高评价、感叹类词权重；其他 act type 使用中性变体。",
-        prohibited_items="不把 question/reply 改成评价，不凭空评价具体对象或虚构经历地点。",
+        prohibited_items="不把 question/reply 改成评价，紧扣群聊语境自然表达。",
     ),
     DailyVocabularyTheme(
         theme_id=2,

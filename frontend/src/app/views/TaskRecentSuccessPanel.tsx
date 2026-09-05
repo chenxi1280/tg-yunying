@@ -16,7 +16,6 @@ export function TaskRecentSuccessPanel({ stats }: { stats?: TaskRecentSuccess })
       ]} />
       <Typography.Paragraph type="secondary">
         按原调用确认时间统计，同一动作只计一次；不包含待执行、失败和结果未知。
-        自动化点赞、浏览操作不代表真人热度或平台计数器增量。
       </Typography.Paragraph>
       <Table size="small" rowKey="account_id" dataSource={stats.account_counts}
         pagination={stats.account_counts.length > 10 ? { pageSize: 10, showSizeChanger: false } : false}

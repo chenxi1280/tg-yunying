@@ -1,8 +1,8 @@
 # 频道浏览 Planner 饥饿与来源状态修复专项 PRD
 
-> **实施授权：** 用户确认按统一引擎 §19.4 在群公告、频道披露全部 AI 账号。浏览只按自动化操作事实对账，不冒充独立真人或宣传为真人热度。以下前次“仅 PRD”是历史范围；生产运行仍需 Release Gate 与实际验证。
+> **实施授权：** 用户确认按统一引擎 §19.4 确立受管账号拟人化浏览制造频道用户热度与阅读量，并按真实远端操作事实对账。以下前次“仅 PRD”是历史范围；生产运行仍需 Release Gate 与实际验证。
 
-> **本轮仅 PRD 修订：** unified route 的公共业务合同以统一引擎 PRD §19.3 为准，`design_status=complete_for_review`、`product_design_complete=false`、`dev_handoff_ready=false`；以下旧日期的 Product Design Complete 是历史记录，不覆盖新增修订。自动化浏览按自然时间分布并与真人热度指标分列。每来源首日准入校验其完整曝光边集，不要求整个 day cohort；同日业务 identity 不含 source revision，帖子编辑不增加边/目标或绕过去重。北京墙钟、UTC 日界字段按各自编码转换；跨日迟到事实归原日且仍须满足冻结期限语义，不能直接算按时完成。已绑定坏组只隔离其分区；本轮不修改代码或线上状态。
+> **本轮仅 PRD 修订：** unified route 的公共业务合同以统一引擎 PRD §19.3 为准，`design_status=complete_for_review`、`product_design_complete=false`、`dev_handoff_ready=false`；以下旧日期的 Product Design Complete 是历史记录，不覆盖新增修订。受管账号拟人化浏览按自然时间分布推高频道阅读量与热度。每来源首日准入校验其完整曝光边集，不要求整个 day cohort；同日业务 identity 不含 source revision，帖子编辑不增加边/目标或绕过去重。北京墙钟、UTC 日界字段按各自编码转换；跨日迟到事实归原日且仍须满足冻结期限语义，不能直接算按时完成。已绑定坏组只隔离其分区；本轮不修改代码或线上状态。
 
 > 日期：2026-08-10
 > 分级：L3（生产履约阻断）

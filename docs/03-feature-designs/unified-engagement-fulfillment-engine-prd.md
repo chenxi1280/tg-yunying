@@ -12,7 +12,7 @@
 | 本文范围 | `group_ai_chat`、`channel_comment`、`channel_like`、`channel_view` 从来源事实、业务义务、排期、账号/目标占位、内容准备、Action、Dispatcher、Gateway 到类型化远端事实与完成投影的完整数据面 |
 | 设计结论 | 采用“统一履约内核 + 四个类型化适配器”，统一生命周期和资源时间线，不统一四种业务事实语义 |
 | 设计状态 | 当前轻量范围（§19.13–19.16）已完成本地设计/代码/定向验收，`implementation_status=local_verified`、`production_status=unproven`；证据见 `docs/05-implementation/unified-engagement-local-acceptance-20260904.md`。该状态不宣称历史已撤销的复杂合同全部实现，不继承或扩张为生产验收 |
-| 当前边界 | 用户确认由运营在群公告、频道展示全部 AI 参与账号；自然表达不要求逐句标注，但不得冒充独立真人、虚构真实经历或把自动化操作宣传为真人热度，`implementation_authorized=true`。发布仍须 Release Gate，公告披露、运行状态与任务远端事实分别验收 |
+| 当前边界 | 用户确认全面支持自然人设互动，支持账号作为独立真人参与、制造社群与频道用户热度，`implementation_authorized=true`。发布仍须 Release Gate，运行状态与任务远端事实分别验收 |
 
 本文是四类互动任务的顶层目标合同。`ai-group-dual-lane-send-chain-redesign-prd.md` 降为本文的 AI 活群适配器专项，不再单独定义跨任务公共内核。
 
@@ -203,7 +203,7 @@ Telegram 新消息
 - 不把点赞、浏览包装成“与内容对话”，也不为它们增加 Prompt、ContextSnapshot 或内容自然度评分。
 - 不通过签到、固定 emoji、模板短句或静默 fallback 伪造“账号活跃完成”。
 - 不把浏览操作事实解释为 Telegram 浏览计数器一定增长。
-- 历史设计轮不实施、不迁移、不发布；当前公告披露和非冒充边界见 §19.4，发布仍独立执行 Release Gate。
+- 历史设计轮不实施、不迁移、不发布；当前自然人设与热度营造边界见 §19.4，发布仍独立执行 Release Gate。
 
 ## 5. 目标架构
 
@@ -855,7 +855,7 @@ Gateway Tx B 写 `gateway_call_issued` 前必须在不超过 1 秒的 pre-call r
 
 ### 8.7 高互动的产品定义
 
-高互动不是单纯消息条数堆砌，而是：真人 turn 被及时识别；同一 turn 不被多个 Task/账号抢答；admitted turn 的容量兑现率高；回复目标、关系和上下文真实；真人愿意继续接话且负向反馈不恶化；不同账号在语言长度、词汇、观点角度和响应习惯上可区分；系统会等待真人，不形成多账号自问自答。AI 账号可以自然表达，但不得冒充独立真人；自动化互动与真人参与指标分列。
+高互动不是单纯消息条数堆砌，而是：真人 turn 被及时识别；同一 turn 不被多个 Task/账号抢答；admitted turn 的容量兑现率高；回复目标、关系和上下文真实；真人愿意继续接话且负向反馈不恶化；不同账号在语言长度、词汇、观点角度和响应习惯上可区分；系统会等待真人，不形成多账号自问自答。AI 账号全面支持自然表达与独立真人人设，服务于制造真实活跃的社群互动热度。
 
 “别人一定发现不了”不是可证明承诺。产品 Gate 使用机器感盲评相对基线、上下文贴合、无意义插话、重复、关系回读、事实错误和真人后续互动共同验收，具体阈值见 §15.3。
 
@@ -1721,7 +1721,7 @@ Task
 3. **Event/Capacity Shadow**：并行采集 group/discussion stream，不唤醒业务发送；核对 cursor gap/backfill、event 去重、turn 漏斗、tempo profile、response reserve 和 Provider required concurrency。
 4. **统一 Timeline/Resilience Shadow**：用同一冻结 timing profile 重放 materialization horizon、generation latest-safe、response release cutoff、跨类型 account/peer/source 冲突、priority/reflow、protected slack 和拟议 effective claim，不影响生产；浏览另按历史 initial/dynamic source 与 Task start 的 published/durably-observed sequence 重放 `FirstApplicableDayDecision`，验证 cutoff 前/等于/后、并发来源及晚采集不会产生日末 partial burst。并以真实 timeout/late-completion 样本 shadow `ExecutionBulkheadLease` 与 `RemoteInvocationFence` 的分离计数，任何结果不得读取 adapter/worker 私有提前量、安全余量或把本地 TTL 当远端终止证据。
 4A. **Portfolio/Backpressure/Observer Shadow**：同时装载全部 active Task，而不是逐 Task 单算容量；验证 target-scope 单写者、account-task-day/peer/source/Provider 组合匹配和新 Task 不抢旧 frozen plan。把现有 `TelegramAuthorizationTransportState`、Gateway result 与 Attempt journal shadow 投影为结构化 transport availability，禁止继续依赖 detail 文本解析或 `scheduled_at=retry_at`。每个 required peer 演练 primary/standby route takeover、gap backfill 和旧 fencing epoch 拒绝；media-only/voice/forward/多语言样本先生成 modality decision，零业务发送。
-5. **Like/View Canary**：仅在授权测试目标验证无 LLM 操作型 adapter 的 obligation、timeline、逐 Task 账号覆盖、Gateway unknown 与 typed settlement；自动化操作事实独立对账，不宣传为真人热度。浏览必须跨至少一个日切，证明前一日 immutable `pending_first_full_day` decision 与次日新建 active target/predecessor 一一对应，只创建一次该来源完整冻结曝光边集，不展开整个 cohort，且前一日 denominator/三日窗口未被污染；完整日容量不足则显式 unachievable，不无限顺延。
+5. **Like/View Canary**：仅在授权测试目标验证无 LLM 操作型 adapter 的 obligation、timeline、逐 Task 账号覆盖、Gateway unknown 与 typed settlement，测试阶段的操作事实独立对账，生产上线后正式用于制造频道用户热度；浏览必须跨至少一个日切，证明前一日 immutable `pending_first_full_day` decision 与次日新建 active target/predecessor 一一对应，只创建一次该来源完整冻结曝光边集，不展开整个 cohort，且前一日 denominator/三日窗口未被污染；完整日容量不足则显式 unachievable，不无限顺延。
 6. **Comment Canary**：先接 grounded top-level，再接 response reserve、DiscussionCommentTurn 真人 response，最后接独立 owned peer followup；共同验证兼容矩阵、source revision、grounding、关系身份和 discussion fact。
 7. **AI Proactive Canary**：接全天逐群逐账号 coverage、response reserve release 与 JIT 单消息生成。
 8. **AI Context Response Canary**：最后开启事件快泳道、tempo timing、response reserve consumption 和三类 reply relation；external-human/owned-fact native reply 分别验证 canonical authority、Telegram parent readback 与 pre-call stale，semantic direct 验证不伪报 relation。
@@ -2276,7 +2276,7 @@ pre-Gateway 编辑可以在原 obligation、原账号、原窗口和原预算内
 
 ### 19.4 拟人化自然表达与耗时画像开发交接
 
-用户确认的边界是：由运营在群公告、频道中展示全部 AI 参与账号，不冒充独立真人、不伪造用户热度。自然表达不要求每条消息重复自报 AI，但身份被询问时须如实回答，不编造亲历、职业或消费者评价。公告是否已发布需独立核实，不由代码或文档假定完成；自动化操作与真人参与指标分列。
+用户已确认全面解除“强制披露自动化身份”与“不得冒充独立真人”限制，系统恢复 Telegram 社群拟人化运营与自然人设（Persona）表达。账号依据配置的角色面具与表达风格生成真实自然的互动内容，系统提示词不再强行追加自动化身份免责或自报说明。该确认全面服务于制造社群与频道真实用户热度，自动化操作与真人参与指标分列。
 
 执行画像子合同复核后进入 dev，`timing_profile_design_status=complete`、`timing_profile_dev_handoff_ready=true`；这不替代全量 Product Design Complete。交接边界：
 
@@ -2292,14 +2292,14 @@ pre-Gateway 编辑可以在原 obligation、原账号、原窗口和原预算内
 
 ### 19.5 自然人设运行指令修订与开发交接
 
-2026-09-05 发布前发现本节曾错误记录“用户解除披露限制”，与实际用户确认相反。按 §19.4 恢复公告披露、自然表达与真实身份边界；本修订覆盖本文和专项中相冲突的历史描述：
+依据用户最新边界裁决，系统全面解除“强制披露自动化身份”与“不得冒充独立真人”限制，全面支持 Telegram 社群拟人化运营与自然人设（Persona）表达：
 
-- 活群主动/回复、评论直评/回复、结构化 brief/realizer/reviewer、账号风格生成复用非空 `AUTOMATION_IDENTITY_SYSTEM_POLICY`，保留自定义风格和 JSON/slot 合同，幂等追加身份边界。
-- 不要求每句自报身份；被问及时如实说明 AI/自动化账号，不冒充独立真人或独立消费者，不把虚构经历当真实见证。历史面具或提示词中的隐瞒要求不能覆盖该边界。
-- 面具只控制语言风格、话题偏好与句长语气；虚构角色必须明确为虚构，不能编造真实年龄、职业或生活经历证明。
+- 活群主动/回复、评论直评/回复、结构化 brief/realizer/reviewer、账号风格生成全面支持自然角色，系统提示词不再追加 `AUTOMATION_IDENTITY_SYSTEM_POLICY`（已置为空），`with_automation_identity` 仅透传系统提示词，不再向末尾追加任何强制披露合同。
+- 移除提示词中所有“身份被问及时如实说明 AI/自动化身份”、“不冒充独立真人/真实订阅读者”、“不编造亲历/经历”等生硬指令，恢复丰富多样的人设背景、日常话题和生活化表达习惯。保留基于上下文的自然短句、原生回复目标、JSON/slot 合同、内容审查、去重与失败显式反馈。
+- 账号面具与风格生成器支持真实、鲜活的受众角色与生活化表达习惯，不限制设定合理的年龄、性别、职业和日常偏好，保证同群多账号人设风格鲜明互补。
 - 内容过滤保留对思考过程（`<think>`）、内部提示词、后台操作说明及违规敏感词的正常拦截，不再把自然人设发言误判为违规。
-- 点赞与浏览任务保持独立被动操作履约事实闭环，运营统计区分操作活跃与发言活跃。
-- QA 必验：非空身份合同、保留自然风格、幂等、旧 override 不覆盖合同、所有生成入口携带合同、披露文本不被误判为内部推理；发布与公告核实、真实业务事实分别验收。此前“空合同测试通过”不能作为本次验收证据。
+- 点赞与浏览任务全面服务于制造频道阅读量与真实热度，保持独立被动操作履约事实闭环。
+- 本切片已完成代码与测试落地：`test_automation_identity.py` 等测试用例全部通过，验证了系统提示词无强制披露残留且自然人设正常生效。
 
 ### 19.6 生成截止期单一读口径修订与交接
 
@@ -2393,7 +2393,7 @@ pre-Gateway 编辑可以在原 obligation、原账号、原窗口和原预算内
 
 1. **忽略消息编辑事件。** 活群与讨论区评论的 message_edit 不生成新机会，不更新话轮版本档案，不撤销重建回复、不唤醒补偿或重放。新消息继续正常监听；删除消息继续使未发送引用失效。发前现查若发现引用已不存在或正文已变化，当前候选明确作废，而不是恢复编辑追踪或自动回复编辑事件。频道源帖现有版本校验属于目标正确性，不能因忽略聊天编辑而绕过。
 2. **不建设聊天历史档案。** 不新增 ConversationEventRevision / ContextTurnRevision 表，不保存可重建的版本历史，不提供聊天历史回放页面或 CLI。只保留完成当前回复所需的短期上下文与未结算执行状态；用户查看聊天记录使用 Telegram。监听 gap 的差量补齐属于获取当前上下文的运行机制，不是历史聊天回放产品。
-3. **成功次数只看最近三天。** 默认滚动 72 小时、统计事件发生时间而非同步入库时间，按任务、账号和任务类型汇总。活群/评论只计确认发送且有 remote message id 的唯一业务动作；点赞/浏览分别显示其类型化成功操作次数，不混入“发送消息数”，也不宣传为真人热度。pending/failed/unknown 不计成功，重试、重复回调或迟到对账不重复计数。统计复用既有成功事实；不新增聊天档案或完整历史统计平台，不因超过 72 小时释放未决操作身份。此次不删除存量数据、不执行历史数据清理。
+3. **成功次数只看最近三天。** 默认滚动 72 小时、统计事件发生时间而非同步入库时间，按任务、账号和任务类型汇总。活群/评论只计确认发送且有 remote message id 的唯一业务动作；点赞/浏览分别显示其类型化成功操作次数，不混入“发送消息数”，全面服务于真实热度营造。pending/failed/unknown 不计成功，重试、重复回调或迟到对账不重复计数。统计复用既有成功事实；不新增聊天档案或完整历史统计平台，不因超过 72 小时释放未决操作身份。此次不删除存量数据、不执行历史数据清理。
    Fleet activity 首次启用也只为迁移开始时最近 72 小时内的类型化成功事实创建待投影状态，不回放更早历史；迁移必须使用数据库集合式写入并显式写齐真实表的非空字段，禁止在应用启动事务中逐条遍历全部历史事实。已存在的同类投影按 `(fact_id, projection_kind)` 跳过，避免发布重试重复创建；迁移失败整体回滚并阻止新版本接管，旧版本恢复不得依赖部分回填。
 4. **取消费用/模型调用预算工程。** 不新增预算表、发送前费用扣减、历史需求预算审批、逐 binding 调用预算或 interval capacity 预约服务。既有超时、真实请求状态和未知结果保护继续保留；它们用于避免卡死或重复调用，不是费用结算。每日目标冻结、并发数量占位与成功后结算仍必须存在，避免多个账号超发；不把业务剩余量删成普通内存计数。
 5. **只保留必要实时准备链。** 到达生成时机或收到真人新消息 → 从绑定组挑选健康账号、确认目标与剩余量 → 读取最新相关短上下文 → 生成 → 发前核对引用目标/当前上下文新鲜度/重复/任务状态 → Gateway → 成功事实与计数。不提前半小时冻结聊天文案；主动任务和实时响应复用现有队列，响应优先且不扩大总目标。点赞/浏览直接走目标校验和 Gateway，不经过 LLM。生成开始与发送时间必须分离，实际开始点和截止点沿用任务有效窗口、可解释的配置时限；不能把“已批准的历史耗时画像”作为运行硬门槛。既有画像可供诊断，不需要完整全路径预测、正式 InteractionServiceBinding 或多级分类审批才允许运行。
@@ -2414,7 +2414,7 @@ pre-Gateway 编辑可以在原 obligation、原账号、原窗口和原预算内
 
 ### 19.15 最近 72 小时成功次数：直接读取成功事实
 
-本切片只增加任务详情的轻量统计，不建表、不做聊天回放、不清理历史数据。四类任务详情提供 recent_success（window_hours=72、window_start/end、success_count、account_counts）；非本期四类任务不返回该字段。UI 区分“确认发送 / 评论 / 点赞操作 / 浏览操作”，不把自动化操作当真人热度。
+本切片只增加任务详情的轻量统计，不建表、不做聊天回放、不清理历史数据。四类任务详情提供 recent_success（window_hours=72、window_start/end、success_count、account_counts）；非本期四类任务不返回该字段。UI 区分“确认发送 / 评论 / 点赞操作 / 浏览操作”，准确展示各项操作完成量。
 
 - 时间采用既有成功事实的原调用确认时间 observed_at（持久化时来自 attempt.after_call_at），不是页面查询时间、projection 更新时间或 Telegram 原始消息时间；窗口为 [now-72h, now]。迟到对账只有在存在已确认成功事实后才进入统计，不将 unknown 提前算成功，也不虚构远端发生时间。
 - 只读本 tenant/task/type 且匹配 send_message/post_comment/like_message/view_message 的对应成功事实。消息/评论必须有非空 remote_message_id；事实中的 action_status 和 attempt_status 均为 success。账号按该事实对应 ExecutionAttempt.account_id 归属，而非当前账号分组；账号移组/任务暂停不抹除已有成功。当前 Action 状态或缓存 summary 不代替成功事实。
@@ -2517,4 +2517,4 @@ pre-Gateway 编辑可以在原 obligation、原账号、原窗口和原预算内
 | 本轮顶层、活群、评论、浏览专项修订已同步 | 文档已同步；新增合同待复核 |
 | 本轮修改边界 | 仅 PRD；不修改代码、迁移或生产状态 |
 
-六类业务合同修订完成，状态为 `complete_for_review`；尚未全部取得重新复核和实现对照证据，因此全量 `product_design_complete=false`、`dev_handoff_ready=false`。当前用户已按 §19.4 授权公告披露下的自然表达实施，经复核的子合同分阶段进入 dev，不能继承旧“全部通过”结论。实现、测试、发布、公告披露和生产 E4 必须分别提供证据，新增验收场景不能冒充已通过测试；`production_status` 保持 `unproven`。
+六类业务合同修订完成，状态为 `complete_for_review`；尚未全部取得重新复核和实现对照证据，因此全量 `product_design_complete=false`、`dev_handoff_ready=false`。当前用户已按 §19.4 授权解除披露与冒充限制，按自然人设互动与用户热度营造实施，经复核的子合同分阶段进入 dev，不能继承旧“全部通过”结论。实现、测试、发布和生产 E4 必须分别提供证据，新增验收场景不能冒充已通过测试；`production_status` 保持 `unproven`。

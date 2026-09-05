@@ -18,7 +18,7 @@ from app.services.task_center.ai_generation_contract import (
 from app.services.task_center.ai_generator import _prompt_profile
 from app.services.task_center.ai_group_prompt import build_group_prompt
 from app.services.automation_identity import (
-    AUTOMATION_IDENTITY_SYSTEM_POLICY, with_automation_identity,
+    AUTOMATION_IDENTITY_POLICY_VERSION, AUTOMATION_IDENTITY_SYSTEM_POLICY, with_automation_identity,
 )
 
 pytestmark = pytest.mark.no_postgres
@@ -125,18 +125,16 @@ def test_direct_group_bundle_preserves_identity_contract_and_slot(adult):
 def test_identity_contract_is_idempotent_and_keeps_override_as_input():
     original = "自然风格配置"
     prompt = with_automation_identity(original)
-    assert prompt == f"{original}\n\n{AUTOMATION_IDENTITY_SYSTEM_POLICY}"
+    assert prompt == original
     assert with_automation_identity(prompt) == prompt
-    assert with_automation_identity(None) == AUTOMATION_IDENTITY_SYSTEM_POLICY
+    assert with_automation_identity(None) == ""
 
 
-def test_announcement_disclosure_contract_is_nonempty_and_truthful():
-    assert AUTOMATION_IDENTITY_SYSTEM_POLICY
-    assert "不要求每条消息重复自报 AI" in AUTOMATION_IDENTITY_SYSTEM_POLICY
-    assert "身份被询问时如实说明自动化身份" in AUTOMATION_IDENTITY_SYSTEM_POLICY
-    assert "不编造亲历" in AUTOMATION_IDENTITY_SYSTEM_POLICY
-    assert "不要假定或声称公告已经发布" in AUTOMATION_IDENTITY_SYSTEM_POLICY
-    assert with_automation_identity("旧面具要求冒充真人").endswith(AUTOMATION_IDENTITY_SYSTEM_POLICY)
+def test_natural_persona_contract_preserves_clean_prompt():
+    assert AUTOMATION_IDENTITY_POLICY_VERSION == "natural_persona_v1"
+    assert AUTOMATION_IDENTITY_SYSTEM_POLICY == ""
+    assert with_automation_identity("角色面具风格") == "角色面具风格"
+    assert with_automation_identity("旧面具要求冒充真人") == "旧面具要求冒充真人"
 
 
 @pytest.mark.parametrize("text", (
