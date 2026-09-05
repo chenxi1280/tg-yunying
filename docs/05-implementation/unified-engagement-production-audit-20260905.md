@@ -507,3 +507,12 @@ d6d637aa51251ca4040ebcb82b757e2157fd647d已按master/release冻结并触发Deplo
 - 全部后台测试使用backend/.venv、单次硬60秒；PG显式55439/tg_yunying_test并持原advisory lock。已有0196/0218增量升级、旧表/记录保留、新表为空及迁移图已验证。剩余Provider/账号登录/评论质量迁移共11 passed/12.18秒；旧评论测试曾跨共享库降级被0219的历史证据保护正确拒绝，现改为独立schema重建/降升级，生产保护未放松。0225两张表的非空证据降级保护、PG事务/唯一约束与评论迁移共5 passed/22.16秒（membership_downgrade_evidence_qa.log），PG迁移也使用独立schema，非空时原表/记录保留。
 - 04:55:04只读生产仍为01d95307：9活群、2评论、6点赞、5浏览运行且unified=0，正式binding/lease/budget/fence均0，新成员表尚未部署。最近30分钟69次view_observed跨3任务、5次send_message/remote_message_observed跨2任务；44次view safely_not_executed、101次入群unknown及1次群验证按钮unknown单列，另1次membership_observed。评论和点赞无本窗新完成事实。回执current_engine_inventory_0455.jsonl/.stderr；没有生产DB修改或Task激活。
 - Release Gate范围为已提交68d5c2a9历史结果证明修补与本成员基础候选。源码/PRD/索引和定向QA已形成可审查结果；固定SHA通过master→release→Deploy Production后仍需独立current/全部服务SHA、0225 schema和Task/typed fact读回。迁移不自动回填，bootstrap需新版本下重新preview与exact hash/SHA校验，不能夹带Task切换。非空成员证据不得downgrade删表；发布路径按现行生产合同执行，失败前向修复，不自动重放unknown。完整目标状态仍为未验收。
+
+
+## 2026-09-06 05:13 全量切换裁决与成员基础CI修复
+
+用户明确要求放弃旧Action、旧规划和旧路由，直接将全部运行任务切换到新引擎，已写入PRD§19.58；不再沿旧计划继续执行。05:07:08只读生产快照确认实际SHA仍为01d95307，22个运行目标为活群9、评论2、点赞6、浏览5，全部unified=0；另1个暂停评论不自动恢复。新切换采用对应的新Task身份，防止沿用旧Task/day/source唯一键后重新捡起旧工作；旧调用结果与证据保留，只对账、不重放。本段不代表已执行切换。
+
+c50edee的Deploy Production 33991742066终态failure，build-images/deploy均skipped。三条失败shard共有38项失败：PG一条缺成员基础用例，加同一workflow测试直接禁用账号造成后续34项共享分组漂移；两条降权组迁组fixture绕过已存在的成员版本；一个到期binding fixture缺tenant/pool/真实binding hash。修复只调整这些测试的正式fixture准备，不放宽生产缺失/漂移校验、不过滤失败测试。定向实际验证5 passed/15.96s（PG合同归属及产生漂移前后的真实API用例）、13 passed/3.93s（全部降权隔离用例）、7 passed/3.09s（韧性与到期binding）；均backend/.venv、每次60秒硬超时，PG显式本地tg_yunying_test且由conftest持advisory lock。语法与diff check通过。当前候选应用代码与c50相同，新固定SHA重新走完整CI和部署。
+
+历史占用查询只读设计实验没有写入产品代码或生产数据：1512账号原query预估cost 96000.97，UNION/CTE变体更差；原排序及取消排序的全量读取分别在10.59/10.10秒收到PostgreSQL57014，因此未采纳这两个方案，也不声明全量结果对照或性能优化通过。最新用户裁决之后优先完成旧工作退休与全量新引擎切换，不继续以旧任务执行承接作为目标。

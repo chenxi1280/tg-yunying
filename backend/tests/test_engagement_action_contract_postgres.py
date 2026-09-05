@@ -7,6 +7,7 @@ from app.database import SessionLocal
 from app.models import AccountPool, Action, Task, Tenant
 from app.services.task_center.engagement_action_contract import action_uses_unified_contract
 from app.services.task_center.engagement_binding import freeze_initial_binding, validate_engagement_binding
+from tests.account_group_revision_test_support import bootstrap_groups
 
 
 pytestmark = pytest.mark.allow_missing_rule_binding
@@ -23,6 +24,7 @@ def test_postgres_action_contract_boundary_survives_utc_readback_and_flag_change
         session.flush()
         session.add(AccountPool(id=POOL_ID, tenant_id=TENANT_ID, name="普通组"))
         session.flush()
+        bootstrap_groups(session, TENANT_ID, (POOL_ID,))
         config = {"engagement_contract_version": "unified_engagement_v1",
                   "account_selection_mode": "group", "account_group_ids": [POOL_ID]}
         task = Task(tenant_id=TENANT_ID, type="channel_like", name="合同边界", type_config=config)

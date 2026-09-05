@@ -242,6 +242,18 @@ def test_stale_recovery_exposes_incomplete_resource_set(session: Session):
 
 
 def test_activate_due_binding_without_active_binding(session: Session):
+    from app.models import AccountPool
+    from app.services.task_center.engagement_binding import validate_engagement_binding
+    from tests.account_group_revision_test_support import bootstrap_groups
+
+    session.add(Tenant(id=1, name="Binding tenant"))
+    session.flush()
+    session.add(AccountPool(id=101, tenant_id=1, name="Binding group"))
+    bootstrap_groups(session, 1, (101,))
+    config = {"engagement_contract_version": "unified_engagement_v1",
+        "account_selection_mode": "group", "account_group_ids": [101],
+        "concurrency_limit_per_group": 2}
+    spec = validate_engagement_binding(session, 1, "group_ai_chat", config)
     task = Task(
         id="task-binding",
         tenant_id=1,
@@ -258,8 +270,8 @@ def test_activate_due_binding_without_active_binding(session: Session):
         effective_from=_now() - timedelta(minutes=5),
         account_group_ids=[101],
         concurrency_limit_per_group=2,
-        group_contracts=[],
-        binding_set_hash="hash1",
+        group_contracts=list(spec.group_contracts),
+        binding_set_hash=spec.binding_set_hash,
     )
     session.add_all([task, scheduled_binding])
     session.flush()

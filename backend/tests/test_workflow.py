@@ -128,6 +128,7 @@ def force_channel_listener_due(task_id: str) -> None:
             state.next_probe_at = _now()
         session.commit()
 from tests.ai_group_voice_profile_fixtures import assume_default_ai_group_voice_profiles
+from tests.account_group_revision_test_support import set_account_status
 
 
 _workspace_phone_suffix = 1000
@@ -1275,7 +1276,7 @@ def test_manual_group_restriction_confirm_does_not_restore_sendability():
         account, group = ensure_test_workspace(client, headers)
         with SessionLocal() as session:
             db_account = session.get(TgAccount, account["id"])
-            db_account.status = AccountStatus.DISABLED.value
+            set_account_status(session, db_account, status=AccountStatus.DISABLED.value)
             db_group = session.get(TgGroup, group["id"])
             db_group.can_send = False
             link = session.query(TgGroupAccount).filter_by(group_id=group["id"], account_id=account["id"]).first()
@@ -3747,7 +3748,7 @@ def test_account_pool_clone_plan_and_verification_tasks():
             source_account = session.get(TgAccount, source["id"])
             source_account.status = AccountStatus.ACTIVE.value
             target_account = session.get(TgAccount, account["id"])
-            target_account.status = AccountStatus.DISABLED.value
+            set_account_status(session, target_account, status=AccountStatus.DISABLED.value)
             session.commit()
         campaign = client.post(
             "/api/campaigns",

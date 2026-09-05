@@ -27,6 +27,7 @@ from app.services.account_pools import (
     move_account_pool,
 )
 from app.services.task_center.account_pool import select_task_accounts
+from app.services.account_group_revisions import begin_membership_change, finish_membership_change
 
 
 pytestmark = pytest.mark.no_postgres
@@ -227,7 +228,10 @@ def test_move_account_to_normal_pool_syncs_usage(session: Session) -> None:
         status=AccountStatus.ACTIVE.value,
         account_identity=RANK_DEBOOST_POOL_KEY,
     )
+    token = begin_membership_change(session, 1, (rank_deboost_pool.id,),
+        actor="test_fixture", reason="explicit_fixture_member")
     session.add(account)
+    finish_membership_change(session, token)
     session.commit()
 
     moved = move_account_pool(session, account.id, normal_pool.id, "tester")
@@ -286,7 +290,10 @@ def test_move_account_between_rank_deboost_pools_succeeds(session: Session) -> N
         status=AccountStatus.ACTIVE.value,
         account_identity=RANK_DEBOOST_POOL_KEY,
     )
+    token = begin_membership_change(session, 1, (pool_a.id,),
+        actor="test_fixture", reason="explicit_fixture_member")
     session.add(account)
+    finish_membership_change(session, token)
     session.commit()
 
     moved = move_account_pool(session, account.id, pool_b.id, "tester")
