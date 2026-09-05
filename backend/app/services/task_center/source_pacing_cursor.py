@@ -75,4 +75,3 @@ def _reused_not_before(
     # A displaced reservation needs its own slot, not the shared last-call edge.
     next_slot = wall_datetime(state.next_call_not_before_at) if state.next_call_not_before_at else after_call
     return max(after_call, next_slot)
-
