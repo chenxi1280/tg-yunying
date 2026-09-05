@@ -18,7 +18,7 @@ from app.models import (
     Task,
 )
 
-from .channel_comment_discussion_contracts import current_membership_fact, membership_ready
+from .channel_comment_discussion_contracts import current_membership_facts, membership_ready
 from .channel_comment_discussion_freshness import group_binding_fresh, thread_binding_fresh
 from .channel_comment_grounding_enrollment import active_grounding_enrollment
 
@@ -127,18 +127,12 @@ def _ready_memberships(
     accounts: list,
     now_value: datetime,
 ) -> dict[int, DiscussionMembershipFact]:
-    facts: dict[int, DiscussionMembershipFact] = {}
-    for account in accounts:
-        fact = current_membership_fact(
-            session,
-            tenant_id=task.tenant_id,
-            account_id=int(account.id),
-            discussion_peer_id=str(binding.discussion_peer_id),
-            group_binding_id=binding.id,
-        )
-        if membership_ready(fact, now_value):
-            facts[int(account.id)] = fact
-    return facts
+    facts = current_membership_facts(
+        session, tenant_id=task.tenant_id,
+        account_ids=[int(account.id) for account in accounts],
+        discussion_peer_id=str(binding.discussion_peer_id), group_binding_id=binding.id,
+    )
+    return {account_id: fact for account_id, fact in facts.items() if membership_ready(fact, now_value)}
 
 
 def discussion_send_blocker(
@@ -242,14 +236,12 @@ def discussion_membership_counts(
 ) -> dict[str, int]:
     observed_at = now_value or datetime.now(timezone.utc)
     ready = forbidden = unknown = admission = 0
+    facts = current_membership_facts(
+        session, tenant_id=task.tenant_id, account_ids=account_ids,
+        discussion_peer_id=str(binding.discussion_peer_id), group_binding_id=binding.id,
+    )
     for account_id in account_ids:
-        fact = current_membership_fact(
-            session,
-            tenant_id=task.tenant_id,
-            account_id=account_id,
-            discussion_peer_id=str(binding.discussion_peer_id),
-            group_binding_id=binding.id,
-        )
+        fact = facts.get(account_id)
         if membership_ready(fact, observed_at):
             ready += 1
         elif fact is None or fact.membership_status == "not_participant":

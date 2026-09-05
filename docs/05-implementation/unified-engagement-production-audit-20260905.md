@@ -218,3 +218,13 @@ PRD19.29已明确下一批统一评论按稳定成员冻结比例。真实规划
 定向QA：稳定数量/原grounding计划/配置更新44项通过（10.02秒）；进一步讨论组准入、事实合同、dispatch冲突及真实PostgreSQL31项通过（10.81秒，两批有10项重叠），每批硬60秒并显式隔离测试库。前端tsc --noEmit通过。代码审查确认null membership只代表等待，不创建发送Action；恢复前仍从原binding查询有效fact，原source/账号/ordinal不变。无数据库迁移。此切片等待发布，不能替代整个评论接管验收。
 
 13:56:51只读容量：两个评论Task稳定分母均1632/hash798acb5fb48d897a251f6b9d755d9e3c7ebbf2a324ed35564ac49663aea8aa16，每帖比例范围898～1061。819当前业务上限实际50，16c实际80；最近72小时可评论来源分别7个和1个，按自然日峰值为3个和1个。当前共享策略authored_comment10/total60。所有comment用途active Provider route均为空，两个Task的two-stage/v2/grounding均false；接管还需要真实评论质量路由与讨论组事实，不能仅改比例字段宣称完成。未改变生产评论配置、路由、来源或旧义务。
+
+## 评论数量上线与成员查询 Release Gate（14:34）
+
+0747e5a83205507f08d27929b90f87f642019b2a / Deploy33948911285终态success；独立current=20260905061501_0747e5a8，RELEASE_SHA一致，backend/planner/comment-generation/三组活群生成/dispatcher健康。两个评论Task仍legacy，此处仅证明修补已部署。
+
+PRD19.30的批量成员读取保持完整tenant/peer/binding/current谓词，准入Action仍使用原dedupe identity；锁定创建路径不变。100个候选（3条真实成员事实、97个缺失）单项读取100次SELECT，批量1次且结果ID一致；ready/expired/banned/missing分类与unknown隔离均通过。定向49项通过（13.22秒），PostgreSQL7项通过（7.36秒），每批硬60秒。首次联合测试触及60秒终止，之后发现并修正新夹具的Task过期隐式查询和缺display_name，修正后的完整同组通过；不将夹具错误算产品缺陷。新服务无schema/API变化。
+
+补充纠正：8个活群的ai_content_route_v2_enabled原值为字符串true；规范化为Boolean解释了changed key，不是原路由关闭。tenant_fallback_flags的OR只证明静态fallback关闭，不能单独证明所有Job均执行审核。实际审核须读具体Job/Provider事实。
+
+14:13成都0b46f312仍ready，当前Task原选择器在enforce_capacity开/关均能选中账号98；首批20个更早ready coverage尚未轮到该项。其Projection仍open、QuantitySlot仍open且无ContentMixCycleSlot，旧cycle排除的假设已被否定。评论源帖只读远端预览两个目标均TimeoutError、零变更，不能据此声称Telegram无新来源。

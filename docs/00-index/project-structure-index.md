@@ -1,5 +1,7 @@
 # 项目结构索引
 
+> **2026-09-05 评论成员查询批量化：** `channel_comment_discussion_contracts.current_membership_facts` 提供同租户、讨论组、binding 的集合读取；discussion guard、admission 与原计划重读共用它。准入 Action 候选按原 dedupe key 批量读取，写入锁与 unknown 保护不变。`test_comment_membership_batching.py` 验证 100 个候选 SELECT 100→1、原判定一致及未知操作不再入队。
+
 > **2026-09-05 评论稳定数量修补：** `channel_comment_plan_contract.py` 以统一日账本区分新稳定参与集合与旧计划；`DiscussionPlanIdentity.freeze_pending_memberships` 将未具备准入事实的数量义务保留给原账号。`comment_fulfillment.py` 持久化完整数量，`executors/channel_comment_grounding_planner.py` 仅为有有效讨论组事实的未绑定义务提供发送槽位，已绑定 Action 不改写。评论 API 与表单移除固定 1000 上界，仍要求正整数和显式业务上限。回归入口为 `test_unified_comment_quantity.py`。
 
 > **2026-09-05 点赞准入恢复：** `engagement_reaction_capacity._reaction_candidates` 用 participation 的稳定 eligible 集合求联合分配；`reaction_admissible_account_ids` 重新核验当前短期准入；`executors/channel_like.py` 传入原 Task/ledger/target。`test_engagement_reaction_capacity.py` 覆盖首次离线、原分配恢复和再失效，不改 epoch 分配内容。

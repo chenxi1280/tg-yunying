@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.models import Action, ChannelDiscussionGroupBinding, OperationTarget, Task
 
-from .channel_comment_discussion_contracts import current_membership_fact, membership_ready
+from .channel_comment_discussion_contracts import current_membership_facts, membership_ready
 
 
 OPEN_ADMISSION_ACTION_STATUSES = frozenset({
@@ -93,21 +93,24 @@ def _joinable_accounts(
     config: dict,
 ) -> list:
     authorized = {int(value) for value in config.get("discussion_join_account_ids") or []}
+    account_ids = [int(account.id) for account in accounts if int(account.id) in authorized]
+    facts = current_membership_facts(
+        session, tenant_id=task.tenant_id, account_ids=account_ids,
+        discussion_peer_id=str(binding.discussion_peer_id), group_binding_id=binding.id,
+    )
+    keys = [_membership_dedupe_key(task, binding, account_id) for account_id in account_ids]
+    actions = {row.action_dedupe_key: row for row in session.scalars(select(Action).where(
+        Action.tenant_id == task.tenant_id, Action.action_dedupe_key.in_(keys),
+    ))} if keys else {}
     eligible = []
     for account in accounts:
         account_id = int(account.id)
         if account_id not in authorized:
             continue
-        fact = current_membership_fact(
-            session, tenant_id=task.tenant_id, account_id=account_id,
-            discussion_peer_id=str(binding.discussion_peer_id),
-            group_binding_id=binding.id,
-        )
+        fact = facts.get(account_id)
         if not _membership_requires_admission(fact, now_value):
             continue
-        existing = _membership_action(
-            session, task, binding, account_id=account_id,
-        )
+        existing = actions.get(_membership_dedupe_key(task, binding, account_id))
         if existing is not None and existing.status not in OPEN_ADMISSION_ACTION_STATUSES:
             continue
         eligible.append(account)

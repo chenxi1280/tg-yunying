@@ -353,6 +353,26 @@ def current_membership_fact(
     ))
 
 
+def current_membership_facts(
+    session: Session,
+    *,
+    tenant_id: int,
+    account_ids: list[int],
+    discussion_peer_id: str,
+    group_binding_id: str,
+) -> dict[int, DiscussionMembershipFact]:
+    if not account_ids:
+        return {}
+    rows = session.scalars(select(DiscussionMembershipFact).where(
+        DiscussionMembershipFact.tenant_id == tenant_id,
+        DiscussionMembershipFact.account_id.in_(account_ids),
+        DiscussionMembershipFact.discussion_peer_id == discussion_peer_id,
+        DiscussionMembershipFact.group_binding_id == group_binding_id,
+        DiscussionMembershipFact.is_current.is_(True),
+    ))
+    return {row.account_id: row for row in rows}
+
+
 def membership_ready(
     fact: DiscussionMembershipFact | None,
     now_value: datetime,
@@ -399,6 +419,7 @@ __all__ = [
     "ThreadProbeObservation",
     "current_group_binding",
     "current_membership_fact",
+    "current_membership_facts",
     "current_thread_binding",
     "membership_ready",
     "record_group_probe",

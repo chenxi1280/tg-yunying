@@ -474,21 +474,15 @@ def _discussion_identity_for_contract(
 
 def _current_plan_memberships(session: Session, binding, rows: list) -> dict:
     from datetime import datetime, timezone
-    from .channel_comment_discussion_contracts import current_membership_fact, membership_ready
+    from .channel_comment_discussion_contracts import current_membership_facts, membership_ready
 
     now_value = datetime.now(timezone.utc)
-    facts = {}
-    for row in rows:
-        fact = current_membership_fact(
-            session,
-            tenant_id=row.tenant_id,
-            account_id=row.account_id,
-            discussion_peer_id=str(binding.discussion_peer_id),
-            group_binding_id=binding.id,
-        )
-        if membership_ready(fact, now_value):
-            facts[row.account_id] = fact
-    return facts
+    facts = current_membership_facts(
+        session, tenant_id=binding.tenant_id,
+        account_ids=[row.account_id for row in rows],
+        discussion_peer_id=str(binding.discussion_peer_id), group_binding_id=binding.id,
+    )
+    return {account_id: fact for account_id, fact in facts.items() if membership_ready(fact, now_value)}
 
 
 __all__ = [

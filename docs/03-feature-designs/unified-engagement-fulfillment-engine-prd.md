@@ -2620,3 +2620,7 @@ QA：已有合法内部字段在设置规范化后原值保留，非法路由/�
 | 本轮修改边界 | 仅 PRD；不修改代码、迁移或生产状态 |
 
 六类业务合同修订完成，状态为 `complete_for_review`；尚未全部取得重新复核和实现对照证据，因此全量 `product_design_complete=false`、`dev_handoff_ready=false`。当前用户已按 §19.4 授权解除披露与冒充限制，按自然人设互动与用户热度营造实施，经复核的子合同分阶段进入 dev，不能继承旧“全部通过”结论。实现、测试、发布和生产 E4 必须分别提供证据，新增验收场景不能冒充已通过测试；`production_status` 保持 `unproven`。
+
+### 19.30 评论准入批量读取
+
+落实19.29的稳定大集合后，评论计划创建、计划重读、准入候选与成员计数不得逐账号重复读取同一类事实。按tenant、discussion peer、group binding和有界账号集合一次查询current membership facts；过期、缺失、禁言、unknown仍分别沿原判断处理。准入候选对应的既有Action按原完整dedupe identity批量读取；真正创建入群Action时保留原行锁/唯一约束与未知保护。原计划的账号/比例/ordinal、Action身份、准入结论均不变。QA验证SQL次数不随集合线性增长、跨租户/旧binding/过期事实不混入及真实既有合同回归。本切片design_status=complete，不授权或触发任何新入群操作。
