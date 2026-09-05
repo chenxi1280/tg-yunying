@@ -2786,3 +2786,20 @@ preview冻结Task配置/账号配置/状态/epoch/revision、原binding与policy
 生成入口_bind_fact_first_provider只能为本次请求解析默认Provider，不能回写Task.type_config。运行中的旧ORM对象未经config_revision比较回写整份配置会覆盖并行配置变更，并绕过正式激活入口；删除这个副作用，不改本次请求实际解析、Provider路由或unknown规则。旧window/Job仍取原binding、policy及route snapshot，已经缓存的正文不重生成；未决Provider请求不重置、不换模型。修复后的新生成调用执行原V2要求的两阶段与独立审核，原冻结Gemini工作仍按原可用性与unknown规则停止或对账。
 
 本配置修复design_status=complete。QA覆盖请求配置正确而Task无UPDATE、原绑定与跨群坏字段的优先级、精确字段恢复、一般/原授权群、授权有效期不延长、新revision与原记录保留、SHA/配置/binding/授权漂移及失败事务回滚；生产质量仍以实际两阶段链及Telegram事实分别验证。
+
+
+### 19.48 普通内容槽不得继承任务级成人长度规则
+
+02:29按新binding的真实Job与Action精确关联，8个context_route/content_mode均为general的候选已通过独立semantic review，却被adult_content_length_out_of_range拒绝。当前_filter_slot把整Task配置交给成人合同，adult_prompt_enabled先于当前内容槽路由生效；这违反质量专项§4.1/4.4中“普通route不套用成人边界”的既有合同。
+
+V2候选及其缓存复核使用服务端已冻结到generation slot的context_route和content_mode；两者均为general时不适用成人长度/成人空上下文合同，仍执行原brief长度与标点、事实、语义审核、重复、负面词、声线和发前校验。任务级adult_prompt_enabled或默认content_route不能改变该槽的普通话题归属。该精确修补不更改成人槽的现行8～20汉字门，不修改Task、policy、旧Job或已存在shortfall，也不通过模板补字、截断或自动重放旧内容。V2其他槽、缺失/不一致槽仍由原完整生成合同校验，不能用伪造普通字段绕过规划绑定。
+
+QA先复现真实过滤路径的普通短句误拒绝，再验证混合槽逐项隔离、缓存与新生成共用相同scope，以及成人/legacy长度边界、重复和质量拒绝保留。本子项design_status=complete；两份历史成人mode长度要求的交集问题仍须另行核对，不能把本普通路由修补解释为统一放宽成人内容。
+
+### 19.49 结构化审核失败须保留可诊断结构
+
+02:24新绑定样本23个semantic_review_schema_invalid的evaluator_evidence为空；02:26使用同一线上M2.5与生产审核Prompt对普通产品讨论进行独立只读结构探针，6.954秒返回符合真实解析器的pass JSON。这只证明基础审核协议可用，尚不能将线上失败归因于模型、内容或字段映射。
+
+解析失败保留原typed错误及拒绝结果，增加不含正文的schema_validation：根容器类型/列表项数、已知协议字段是否存在及值类型、decision是否属于允许枚举、evidence/codes容器项数。不得保存原文、任意返回字段名、审核理由、Prompt或外部标识；不修补/补默认字段、不解包未知包裹结构、不把refusal/unknown改为pass。该次真实review token用量随异常保留，原HTTP账本不改。group/comment共用同一解析合同，字段和阈值保持不变；成功/失败/uncertain、grounding维度和Provider unknown回归必须继续通过。
+
+本诊断子项design_status=complete；只增强后续失败证据，不声称已修复现有schema失败或改变质量判定。按职责将现有解析器及错误类型移出超过500行的两阶段模块，原导出保持一致。

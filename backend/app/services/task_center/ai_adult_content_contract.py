@@ -34,7 +34,11 @@ def validate_adult_content_contract(
     *,
     content: str,
     history: str,
+    slot: dict | None = None,
 ) -> AdultContentViolation | None:
+    if (config.get("ai_content_route_v2_enabled") and slot
+            and slot.get("context_route") == slot.get("content_mode") == "general"):
+        return None
     if not is_adult_content_config(config):
         return None
     chinese_count = len(CHINESE_CHARACTER.findall(content))

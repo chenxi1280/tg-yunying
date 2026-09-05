@@ -136,6 +136,7 @@
 - **目标**：成人 route 的 Prompt 规则必须由发送前的确定性质量门落实，不能把模型服从当成验收证据。
 - **规则调整**：
   - 清洗后的成人候选按 Unicode 汉字计数，必须为闭区间 8～20；emoji、数字、空格和标点不计入汉字数。越界以 `adult_content_length_out_of_range` 显式拒绝，普通 route 不套用该边界；
+  - V2已冻结的单槽context_route/content_mode均为general时，任务级adult_prompt_enabled或默认成人content_route不得使它继承成人长度/空上下文合同；仍按原brief、语义、事实与通用质量门检查。成人槽及legacy的原边界保持，见统一引擎PRD§19.48。
   - `generic_warmup` 只允许问句，并拒绝附和、推荐、具体人物、地点、服务和个人经历词；不生成静态短句兜底；
   - `safe_context` 中的经历、地点和服务陈述必须在清洗后的上下文中存在同类事实锚点；无锚点以 `adult_content_fact_unanchored` 拒绝；
   - 问句可以围绕已有上下文追问，但显式成人 route、行业词表或非空 `anchor_message_ids` 本身都不能替代正文事实锚点。

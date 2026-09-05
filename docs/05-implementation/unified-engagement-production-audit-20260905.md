@@ -437,3 +437,12 @@ d6d637aa51251ca4040ebcb82b757e2157fd647d已按master/release冻结并触发Deplo
 - 真实旧restart脚本在隔离环境中使用相同文件与active slot，仍发生runtime-installed及systemctl restart；反例回执antigravity_preserve_original_behavior.json。新脚本与既有deploy、Docker gateway及单次安装回归共39项通过20.97秒，bash -n、git diff --check通过。观测失败原错误退出且不转成安装；没有新增模型或跳过发生代码变化时的schema验证。
 - 候选只读checker已在真实服务上以host Python3.11 -E -s执行：认证GET成功、bridge2/CLI1.1.22、degraded/quota_limited=true、confirmed_models=[]、无模型调用。回执antigravity_preserve_readonly_probe.json中的application_release_sha参数dc68仅是本地QA基线，生产应用仍14d、bridge仍733；尚未执行这批新代码的发布。
 - 新生成拒绝分类的首次手写SQL用了不存在的Action错误列，改为result JSON后宽JOIN达到12秒statement_timeout，均已明确失败且无写入。改用必要GenerationJob标量后02:17:22成功：28个coverage和1个quantity的quality shortfall尚无evaluator内容，23个为lexical sensory_intent_missing，10个通过语义审核后仍被后续门禁拒绝，另有小量上下文失效及明确语义拒绝。精确后续拒绝原因和原生业务质量仍待反查，不据此下调审核或宣布数量通过。回执post_group_generation_quality_reasons_nested.json。
+
+
+### 2026-09-06 02:35 新发布及普通路由质量误拒绝修补
+
+- ac50b2afb244c8204cae7117256f829c521a0c61已顺序快进远端master/release，精确读回两ref一致；只dispatch一次Deploy33983952007，候选闸已通过。02:33快照前端与两个PG分片成功，三个no-postgres分片仍执行，尚无新部署证明。原部署33978775792失败及生产14d/bridge733证据继续保留。
+- 02:24:58通过tenant/task/type/executed_at索引缩小Action后以Job主键关联，查得29个sensory_intent_missing、23个semantic_review_schema_invalid、16个realizer_length_band_mismatch、11个语义pass后的adult_content_length_out_of_range；同一观测有6条send_message成功。02:29再按冻结route/mode分组，其中8个general/general槽被成人长度误拒绝，另4个成人槽的同码独立保留。回执group_quality_final_rejections.jsonl及group_quality_final_rejections_by_mode.json，不把该样本当整个目标完成率。
+- 02:26真实M2.5与生产semantic Prompt对普通产品讨论进行零DB写入/零Telegram调用的解析验证，6.954秒/841 tokens、真实解析通过。该结果不解释生产全部schema失败；将后续失败的根容器、已知字段类型、枚举有效性及容器数量记录到schema_validation，不保存正文或任意字段名、不宽松解包。
+- PRD19.48/19.49与质量专项先更新后dev。真实过滤反例和结构/用量反例在旧实现7失败、成人/legacy对照2通过（2.01秒；先修正测试用普通str而非实际GeneratedContent的夹具错误）。修改后普通槽不继承Task成人长度，成人和legacy门不变，解析失败拒绝不变；原过滤/解析按职责移出超长文件。最终普通/混合缓存/重复、共享group/comment两阶段、基础质量、词频与Provider unknown共100 passed/2.95秒，所有后端进程硬60秒。首次回归仅测试预期duplicate_message与实际duplicate_risk不符，纠正断言后通过，未改重复判断。
+- 本地新切片尚未包含在已冻结ac50发布；不追加或取消当前run。成人mode的历史长度合同交集、其他审核失败和R1正式共享资源/配置/来源接管仍未完成，不更改已失败或unknown历史。
