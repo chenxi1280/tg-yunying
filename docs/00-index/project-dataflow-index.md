@@ -1,5 +1,7 @@
 # 项目数据流转索引
 
+> **2026-09-05 DF-363 来源时间规范化：** `authoritative Telegram aware date -> Asia/Shanghai same-instant normalization -> exact legacy stripped-offset comparison -> current ChannelMessage timestamp projection + correction provenance -> append-only SourceRevision(timestamp_corrected or real edited) -> existing source intake`。旧 naive 内部值仍为北京时间语义；非已知去时区冲突明确失败，缺时间不造 source revision。旧 frozen plan/Action/Attempt/fact/unknown/排期截止不回写，后续相同快照的 offset 表示变化不制造新 hash 或伪编辑。
+
 > **2026-09-05 DF-363 评论准入读取性能：** `frozen account IDs -> tenant/peer/binding-scoped current membership batch -> existing freshness/status predicates -> ready slots / explicit admission debt`；准入候选额外一次读取原 dedupe identity 的既有 Action。未绑定数量义务的账号、比例与 ordinal 不变，已绑定 Action 与 unknown 不改；创建入群操作仍通过原锁定写路径。本次优化不触发入群或修改任务配置。
 
 > **2026-09-05 评论稳定分母与局部准入：** 统一日账本稳定成员 → 冻结每帖参与比例、账号与全部数量义务 → 每个未绑定义务核验当前讨论组 membership fact → 就绪账号进入原发送准备链。未就绪账号保留原欠量，恢复时补齐同一绑定下的 fact；已绑定 Action/未知结果不重写。旧无统一日账本的计划维持原合同，API/表单不再以固定 1000 截断合法比例上界。

@@ -43,6 +43,7 @@ from app.schemas import (
 )
 
 from ._common import _now, ai_gateway, audit, gateway
+from .operations_channel_snapshot import _normalize_snapshot_datetime, persist_channel_message_snapshot
 from .ai_config import ai_provider_credentials, get_tenant_ai_setting
 from .channel_target_reference import channel_read_reference
 from .developer_apps import credentials_for_account
@@ -1438,16 +1439,6 @@ def _learning_preview_for_detail(
     return {}
 
 
-def _normalize_snapshot_datetime(value) -> datetime | None:
-    if not value:
-        return None
-    if isinstance(value, datetime):
-        return value.replace(tzinfo=None) if value.tzinfo else value
-    try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        return parsed.replace(tzinfo=None) if parsed.tzinfo else parsed
-    except ValueError:
-        return None
 
 
 def _channel_sync_account(session: Session, tenant_id: int) -> TgAccount | None:
@@ -1463,6 +1454,8 @@ def _channel_sync_account(session: Session, tenant_id: int) -> TgAccount | None:
     )
 
 
+
+
 def _sync_channel_target_messages(session: Session, target: OperationTarget, *, limit: int = 50) -> int:
     account = _channel_sync_account(session, target.tenant_id)
     if not account:
@@ -1474,37 +1467,9 @@ def _sync_channel_target_messages(session: Session, target: OperationTarget, *, 
         credentials=credentials_for_account(session, account),
         limit=limit,
     )
-    inserted = 0
-    for snapshot in snapshots:
-        message_id = int(snapshot.message_id or 0)
-        if message_id <= 0:
-            continue
-        existing = session.scalar(
-            select(ChannelMessage).where(
-                ChannelMessage.tenant_id == target.tenant_id,
-                ChannelMessage.channel_target_id == target.id,
-                ChannelMessage.message_id == message_id,
-            )
-        )
-        published_at = _normalize_snapshot_datetime(snapshot.published_at)
-        if existing:
-            existing.content_preview = snapshot.content_preview or existing.content_preview
-            existing.message_url = snapshot.message_url or existing.message_url or _channel_message_url(target, message_id)
-            existing.comment_available = bool(snapshot.comment_available)
-            existing.published_at = published_at or existing.published_at
-            continue
-        session.add(
-            ChannelMessage(
-                tenant_id=target.tenant_id,
-                channel_target_id=target.id,
-                message_id=message_id,
-                message_url=snapshot.message_url or _channel_message_url(target, message_id),
-                content_preview=snapshot.content_preview,
-                comment_available=bool(snapshot.comment_available),
-                published_at=published_at,
-            )
-        )
-        inserted += 1
+    inserted = sum(persist_channel_message_snapshot(
+        session, target, snapshot, message_url=_channel_message_url,
+    ) for snapshot in snapshots)
     target.last_sync_at = _now()
     target.updated_at = _now()
     session.flush()

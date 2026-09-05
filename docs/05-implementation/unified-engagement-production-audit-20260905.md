@@ -228,3 +228,25 @@ PRD19.30的批量成员读取保持完整tenant/peer/binding/current谓词，准
 补充纠正：8个活群的ai_content_route_v2_enabled原值为字符串true；规范化为Boolean解释了changed key，不是原路由关闭。tenant_fallback_flags的OR只证明静态fallback关闭，不能单独证明所有Job均执行审核。实际审核须读具体Job/Provider事实。
 
 14:13成都0b46f312仍ready，当前Task原选择器在enforce_capacity开/关均能选中账号98；首批20个更早ready coverage尚未轮到该项。其Projection仍open、QuantitySlot仍open且无ContentMixCycleSlot，旧cycle排除的假设已被否定。评论源帖只读远端预览两个目标均TimeoutError、零变更，不能据此声称Telegram无新来源。
+
+## 评论性能上线、质量路由与西安恢复读回
+
+f09b2b25合并另一任务的b88e8024后候选9599fb45f1c529df0232114795dce03086418f67，只有结构索引说明冲突且双方保留，合并定向7项通过（3.73秒）。Deploy33950351075终态success；独立current=20260905064720_9599fb45，backend/planner/三组活群生成/comment-generation/两组dispatcher均running healthy且RELEASE_SHA一致。
+
+PRD19.31的comment路由初始化preview b133a67a6080c4abf1b8ea9d42a0a3da36f75288ec5ea61622fae20df7b760ef，audit1000136。独立读回comment_context_route287b75e3、comment_realize_general2f9fbdbf均revision1/provider8,7,6/hash432bae31；comment_semantic_reviewbe8975eb revision1/provider5/hash8330265c，正式独立审核校验通过。两个Task原epoch/revision/v2false和全部旧Job不变；零Provider/Telegram调用。
+
+西安a611aa16三个Action/三个Job保持终态，无Attempt/fact或未决Provider lineage；最新错误指纹5d003936匹配已恢复的group_semantic_review。preview f72a3356062d3dd7a815d9032aff783ea2bbf2db0170e9f34c40b05b7d8b8e66；第一次apply因部署切换触发SHA保护，在写入前退出。新SHA下重新预览相同指纹，audit1002536已清除该coverage阻断。独立读回ready、target1/confirmed0、原targeted_at04:14:29.017432与空next时刻均不变，原slot仍invalidated/version5；尚无新发送事实。
+
+## 真实源帖与8小时时间偏差（15:00）
+
+账号8对两个评论频道、账号334对Ago的探测均在授权连接阶段10秒超时，零频道读取/零变更；不能当作来源不存在。近期真实可连接的普通账号1408通过同一正式transport完成真实只读采集，Ago用时2.035秒，郑州0.665秒。Ago peer=-1003380751215/linked discussion=-1003913489284；郑州peer=-1001648379400/linked discussion=-1001109329547。后者与活群Task6407d98f同群，后续接管须核对共享Timeline及回复归属。
+
+真实消息133为2026-09-04T17:10:20Z（北京时间9月5日01:10:20），数据库ChannelMessage=9月4日17:10:20、SourceRevision=同值+08:00；5977/5981等另五项同样相差8小时，六个来源当前comment plan均0。Gateway保留UTC，但listener _wall与operations _normalize_snapshot_datetime直接去掉时区；本文此前基于DB自然日分组的来源峰值不能继续作为精确cap依据，需纠正后重算。
+
+PRD19.32先闭合当前权威观测下的精确纠错，不全表加8小时。初次新测试因私有函数名写错在collection退出（夹具/接线错误）；改名后6失败1通过复现真实偏差。修补分离消息持久化模块、规范化同一真实时刻，保留旧SourceRevision并记录time correction。初步回归28项通过（5.49秒）；PostgreSQL首次新fixture漏flush Tenant导致FK失败，修正fixture后UTC会话时区/同瞬间幂等及讨论事实回归3项通过（6.01秒）。扩展来源/grounding回归仍在执行；当前尚未发布本时间修补。
+
+## 来源时间修补 Release Gate
+
+扩展来源/grounding回归76项通过（13.88秒）。随后将operations的单条频道快照持久化分离为operations_channel_snapshot.py，URL生成器显式传入；调度/计数与既有评论快照入口保持原行为，同一规范化函数复用。重跑来源/监听/入口/计划66项通过（14.19秒）；新增完整operations写入口与时区纠正用例12项通过（4.25秒）。各测试进程硬60秒，PG仅127.0.0.1:55439/tg_yunying_test/advisory lock。
+
+代码自审：current权威snapshot的raw datetime与原存储值精确匹配才允许时区纠正，并核对原source revision时间；非已知偏差拒绝。append-only revision采用显式aware时刻，metadata保留原值/新值/原revision/转换版本；相同UTC/BJ时刻幂等，真实edit仍走原invalidate入口，纯时间纠正不伪报edit。原Action/unknown payload和scheduled_at读回一致；未写任何旧Plan、Job、Attempt、fact或截止字段。新消息持久化模块约234行，listener模块降为316行；无schema/API/前端状态变更。回退程序不能假设已纠正当前时间投影仍是旧UTC墙钟，若回退需保留本规范化兼容修补，不能将历史时间统一减8小时。

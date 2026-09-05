@@ -34,7 +34,7 @@ from app.models import (
 from app.services.channel_target_reference import channel_read_reference
 from app.services.task_center import channel_listener_runtime
 from app.services.task_center import channel_listener_accounts
-from app.services.task_center import channel_listener_snapshot_persistence
+from app.services.task_center import channel_source_message_persistence
 from app.services.task_center.channel_listener_runtime import (
     channel_snapshot_state,
     drain_channel_listener_runtime,
@@ -442,7 +442,7 @@ def test_listener_dispatches_source_edit_revision_operation(monkeypatch) -> None
         lambda *_args, **_kwargs: snapshots.pop(0),
     )
     monkeypatch.setattr(
-        channel_listener_snapshot_persistence,
+        channel_source_message_persistence,
         "reconcile_channel_comment_source_edit",
         lambda _session, _message, source, **_kwargs: operations.append(source.id),
     )

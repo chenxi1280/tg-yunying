@@ -2624,3 +2624,17 @@ QA：已有合法内部字段在设置规范化后原值保留，非法路由/�
 ### 19.30 评论准入批量读取
 
 落实19.29的稳定大集合后，评论计划创建、计划重读、准入候选与成员计数不得逐账号重复读取同一类事实。按tenant、discussion peer、group binding和有界账号集合一次查询current membership facts；过期、缺失、禁言、unknown仍分别沿原判断处理。准入候选对应的既有Action按原完整dedupe identity批量读取；真正创建入群Action时保留原行锁/唯一约束与未知保护。原计划的账号/比例/ordinal、Action身份、准入结论均不变。QA验证SQL次数不随集合线性增长、跨租户/旧binding/过期事实不混入及真实既有合同回归。本切片design_status=complete，不授权或触发任何新入群操作。
+
+### 19.31 评论独立质量路由初始化
+
+存量两个评论Task缺少全部comment用途路由，开启v2会立即在生成前失败。为tenant1新增comment_context_route、comment_realize_general、comment_semantic_review的初始revision1：两个生成用途复用当前group对应路由中已启用且健康的provider8/7/6及其顺序、模型和运行参数，审核复用group_semantic_review的provider5/MiniMax-M3；两者使用各自comment purpose和既有评论Schema，不复用活群任务/上下文/数量身份。未知结果继续沿原调用合同处理，不能据健康标记声称真实评论质量已通过。
+
+精确preview要求comment路由全零、两个Task仍原revision/epoch及v2关闭、来源route/item完整hash和四个Provider当前hash匹配；apply同事务加锁、重新比较、建立路由、执行正式独立审核路由校验和AuditLog，之后独立读回。任一漂移整体退出。此步不改Task配置/绑定/既有Job/历史事实，不调用Provider或Telegram；真正启用评论需另验grounding、来源与旧义务收口。本初始化design_status=complete，不引入新的预算或模型回放平台。
+
+### 19.32 频道来源时间按同一真实时刻规范化
+
+15:00反查Telegram源帖133/5977/5981，远端UTC时刻与当前ChannelMessage/SourceRevision相差8小时；两个采集写入口直接去掉tzinfo，违反固定北京时间合同。带时区的发布时间、编辑时间和观察时间须先转换Asia/Shanghai；naive内部时间继续按既有北京时间语义，来源观察hash与编辑比较使用同一规范化结果。来源持久化的aware字段显式带北京时间，不依赖数据库会话时区。
+
+正常采集仅可纠正可证明的旧去时区错误：当前远端快照带时区，已有naive发布时间精确等于该快照直接去tzinfo的值，且转换后的真实北京时间不同；若有current revision，其发布时间也必须与原存量值一致。其他时间漂移继续明确source_published_at_conflict。合法纠正仅更新ChannelMessage的当前时间投影并追加新的SourceRevision；原revision、已冻结的Plan/Action/Job/义务数量和全部排期/截止、Attempt/unknown/fact不更新。记录原值、新值、原revision和转换版本；纯时间纠正使用timestamp_corrected，不伪报正文编辑；同时有真实正文/编辑变化仍沿原edited处理。后续相同真实快照幂等复用新revision。此为真实采集边界纠错，不是全表加8小时或重放历史任务。
+
+QA：UTC跨北京日界、同一时刻不同offset的观察hash一致、编辑时间不误报、精确旧去时区错误可追溯纠正、其他冲突拒绝、已冻结历史引用与unknown不动、重复采集不追加revision、缺时间仍unproven。以真实远端新观察触发精确纠正并独立读回；代码发布、时间纠正与新业务E4分开验收。本切片design_status=complete，未取消完整接管的旧义务/共享额度核对。
