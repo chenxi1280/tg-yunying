@@ -228,6 +228,12 @@ verified current password + A Session
 
 ### 9.3 unknown 复用
 
+#### 2026-09-05 ABC E4 Saved Messages 修正
+
+线上账号1370已完成B/SV与C/MY，但E4消息在发送前的`SetTypingRequest`返回`PeerIdInvalidError`。使用当前A只读解析确认目标为`User.is_self=true`且输入实体为`InputPeerSelf`；再次仅执行typing重现同一异常，消息发送尚未开始。Saved Messages没有向对方展示正在输入的语义，网关应在明确识别self目标时直接进入真实消息发送，不调用typing；普通用户/群/频道仍保持原typing与失败边界。不能捕获typing异常后继续发送，也不能通过假remote ID完成E4。
+
+本次变更不改ABC审批、账号集合、A授权或B/C资产。验收须覆盖真实self类型识别、self发送成功与真实message ID、普通目标typing失败仍为`remote_mutation_started=false`、消息发送开始后未知结果仍不可重放。账号1370原E4是明确pre-send失败；修复发布后使用新审批引用绑定的新E4 operation验证，不重建已成功B/C。完整E4证据读回前仍未完成。
+
 - B pre-challenge Timeout 严格复用 `fde29376` 的 `stopped_b_prechallenge_unknown`：原 operation、纯 DB preview、异人批准、CAS manual debt、A 零写入；禁止第二次登录。
 - B/C/E4 的其他 unknown 继续复用现有 ABC reconcile、deferred/manual contracts。
 - SSH 断连视为 unknown；先读回 operation、runtime、bundle、inventory 和 E4，再决定状态。
