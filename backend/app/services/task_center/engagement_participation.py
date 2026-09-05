@@ -216,7 +216,7 @@ def _ensure_plan(
     snapshot = freeze_membership_snapshot(
         session, task, participation_unit=participation_unit
     )
-    policy_members = policy_eligible_member_ids(session, task, snapshot.member_account_ids or [])
+    policy_members = policy_eligible_member_ids(session, task, snapshot)
     eligible = _eligible_ids(policy_members, eligible_account_ids)
     sampled_ratio = _sample_ratio(task.id, participation_unit, ratio_range)
     count = _participation_count(

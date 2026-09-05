@@ -47,6 +47,8 @@ def _session() -> Session:
 
 
 def _seed(session: Session):
+    from tests.account_group_revision_test_support import bootstrap_groups
+
     session.add(Tenant(id=1, name="默认运营空间"))
     session.add(AccountPool(id=1, tenant_id=1, name="点赞组"))
     session.add_all(_account(account_id) for account_id in range(11, 15))
@@ -58,6 +60,7 @@ def _seed(session: Session):
         title="测试频道",
     )
     session.add(channel)
+    bootstrap_groups(session, 1, (1,))
     session.commit()
     task = create_channel_like_task(
         session,

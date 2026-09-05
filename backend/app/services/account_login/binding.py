@@ -24,6 +24,8 @@ from app.services.account_phone_aliases import (
 )
 from app.security import decrypt_secret, encrypt_secret
 from app.services._common import _now, audit
+from app.services.account_group_revision_snapshot import lock_membership_tenant
+from app.services.account_group_revisions import begin_membership_change, finish_membership_change
 from app.services.dedicated_account_pools import validate_account_pool_admission
 from app.services.developer_apps import first_assignable_developer_app
 from app.services.tenants import ensure_account_quota_available
@@ -53,6 +55,7 @@ def bind_or_create_account(
     phone = decrypt_secret(item.phone_ciphertext)
     if not phone:
         raise BatchLoginError("account_create_failed", "手机号凭据不可用", line_no=item.line_no)
+    lock_membership_tenant(session, item.tenant_id)
     fingerprints = phone_fingerprints(item.tenant_id, phone, accepted_phone_fingerprint_versions())
     lock_phone_fingerprints(session, item.tenant_id, fingerprints)
     existing = _batch_account_for_fingerprints(session, item.tenant_id, fingerprints)
@@ -72,16 +75,22 @@ def _create_account(
     phone: str,
     actor: str,
 ) -> TgAccount:
+    lock_membership_tenant(session, item.tenant_id)
     ensure_account_quota_available(session, item.tenant_id)
     pool = session.get(AccountPool, pool_id)
     if not pool or pool.tenant_id != item.tenant_id:
         raise BatchLoginError("pool_admission_rejected", "目标分组不存在", line_no=item.line_no)
     try:
+        from app.services.account_group_revision_snapshot import locked_membership_pools
+
+        pool, = locked_membership_pools(session, item.tenant_id, (pool_id,))
         validate_account_pool_admission(pool)
     except ValueError as exc:
         raise BatchLoginError("pool_admission_rejected", "目标分组不可用", line_no=item.line_no) from exc
     if not first_assignable_developer_app(session):
         raise BatchLoginError("developer_app_unavailable", "没有可用的 Telegram 开发者应用", line_no=item.line_no)
+    membership_change = begin_membership_change(session, item.tenant_id, (pool.id,),
+        actor=actor, reason="batch_login_account_created")
     account = TgAccount(
         tenant_id=item.tenant_id,
         pool_id=pool.id,
@@ -92,6 +101,7 @@ def _create_account(
     )
     session.add(account)
     session.flush()
+    finish_membership_change(session, membership_change)
     audit(session, tenant_id=item.tenant_id, actor=actor, action="批量登录创建TG账号", target_type="tg_account", target_id=str(account.id), detail=f"batch_item_id={item.id}")
     return account
 

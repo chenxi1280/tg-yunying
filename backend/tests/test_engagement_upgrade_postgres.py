@@ -88,7 +88,7 @@ def test_populated_0196_upgrade_preserves_records_and_runs_backfills(upgrade_dat
     _seed_legacy(upgrade_database)
     _upgrade("head")
     with upgrade_database.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0224_legacy_account_occupancy"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0225_account_group_revisions"
         assert connection.scalar(text("SELECT name FROM tenants WHERE id=901")) == "QA legacy tenant"
         assert connection.scalar(text("SELECT status FROM tasks WHERE id='QA-legacy-task'")) == "paused"
         assert connection.execute(text(
@@ -100,6 +100,8 @@ def test_populated_0196_upgrade_preserves_records_and_runs_backfills(upgrade_dat
         )).all() == [("qa-recent-fact", "pending", "")]
         assert connection.scalar(text("SELECT count(*) FROM provider_http_exchanges")) == 0
         assert connection.scalar(text("SELECT count(*) FROM execution_timing_profile_revisions")) == 0
+        assert connection.scalar(text("SELECT count(*) FROM account_group_membership_revisions")) == 0
+        assert connection.scalar(text("SELECT count(*) FROM account_group_state_revisions")) == 0
         inspector = inspect(connection)
         assert connection.execute(text(
             "SELECT content_preview, grouped_id, source_metadata FROM channel_messages WHERE id=901"

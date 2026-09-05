@@ -16,7 +16,7 @@ def test_revision_graph_fits_alembic_version_column():
     script = ScriptDirectory.from_config(Config("alembic.ini"))
     capacity = MigrationContext.configure(dialect_name="postgresql")._version.c.version_num.type.length
     assert all(len(revision.revision) <= capacity for revision in script.walk_revisions())
-    assert script.get_current_head() == "0224_legacy_account_occupancy"
+    assert script.get_current_head() == "0225_account_group_revisions"
 
 
 def test_0223_upgrade_downgrade_and_model_parity(monkeypatch):

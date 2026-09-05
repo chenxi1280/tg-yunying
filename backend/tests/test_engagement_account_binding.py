@@ -25,6 +25,8 @@ from app.services.task_center.engagement_binding import (
     validate_engagement_binding,
 )
 from app.services.task_center.service import create_channel_like_task
+from app.services.account_group_revisions import begin_membership_change, finish_membership_change
+from tests.account_group_revision_test_support import bootstrap_groups
 
 
 pytestmark = pytest.mark.no_postgres
@@ -49,6 +51,7 @@ def _seed(session: Session) -> None:
             title="测试频道",
         )
     )
+    bootstrap_groups(session, 1, (1, 2, 3))
     session.commit()
 
 
@@ -182,6 +185,7 @@ def test_membership_is_frozen_per_participation_unit_not_in_binding() -> None:
         assert binding is not None
         binding_hash = binding.binding_set_hash
         first = freeze_membership_snapshot(session, task, participation_unit="2026-09-04")
+        change = begin_membership_change(session, 1, (2,), actor="test", reason="account_created")
         session.add(
             TgAccount(
                 id=22,
@@ -192,7 +196,7 @@ def test_membership_is_frozen_per_participation_unit_not_in_binding() -> None:
                 status="在线",
             )
         )
-        session.flush()
+        finish_membership_change(session, change)
         second = freeze_membership_snapshot(session, task, participation_unit="2026-09-05")
 
         assert isinstance(first, AccountGroupMembershipSnapshotSet)

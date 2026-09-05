@@ -167,6 +167,9 @@ __all__ = [
 
 def create_account(session: Session, payload: TgAccountCreate, actor: str = "普通用户") -> TgAccount:
     require_tenant(session, payload.tenant_id)
+    from .account_group_revision_snapshot import lock_membership_tenant
+    from .account_group_revisions import begin_membership_change, finish_membership_change
+    lock_membership_tenant(session, payload.tenant_id)
     data, phone_number = _account_creation_data(payload)
     existing = _existing_account_for_create(session, payload.tenant_id, data["phone_masked"])
     if existing:
@@ -175,6 +178,8 @@ def create_account(session: Session, payload: TgAccountCreate, actor: str = "普
     if not first_assignable_developer_app(session):
         raise ValueError("请先在开发者应用中配置可用的 Telegram api_id/api_hash，再新增 TG 账号")
     pool = _account_creation_pool(session, payload.tenant_id, data.get("pool_id"))
+    membership_change = begin_membership_change(session, payload.tenant_id, (pool.id,),
+        actor=actor, reason="account_created")
     data["pool_id"] = pool.id
     data["account_identity"] = pool.pool_purpose
     data["display_name"] = _account_display_name(session, payload.tenant_id, data.get("display_name") or "", phone_number or data.get("phone_masked") or "")
@@ -193,6 +198,7 @@ def create_account(session: Session, payload: TgAccountCreate, actor: str = "普
             [NameClaimRequest(account.tenant_id, account.id, account.display_name, "registration", actor)],
         )
     _emit_account_eligibility_event(session, account.id, "account_created")
+    finish_membership_change(session, membership_change)
     audit(session, tenant_id=account.tenant_id, actor=actor, action="添加TG账号", target_type="tg_account", target_id=str(account.id))
     session.commit()
     session.refresh(account)
@@ -221,11 +227,11 @@ def _existing_account_for_create(session: Session, tenant_id: int, phone_masked:
 
 
 def _account_creation_pool(session: Session, tenant_id: int, pool_id: int | None) -> AccountPool:
+    from .account_group_revision_snapshot import locked_membership_pools
+
     if pool_id is None:
         pool_id = ensure_default_account_pool(session, tenant_id).id
-    pool = session.scalar(select(AccountPool).where(AccountPool.id == pool_id).with_for_update())
-    if pool is None or pool.tenant_id != tenant_id:
-        raise ValueError("account pool not found")
+    pool, = locked_membership_pools(session, tenant_id, (pool_id,))
     validate_account_pool_admission(pool)
     return pool
 
@@ -264,25 +270,7 @@ def _account_display_name(session: Session, tenant_id: int, display_name: str, p
     return f"导入{now_value:%m%d}-{tail}-{imported_today + 1:03d}-{uuid4().hex[:6]}"
 
 
-def soft_delete_account(session: Session, account_id: int, actor: str = "普通用户", reason: str = "用户移除") -> TgAccount:
-    account = session.get(TgAccount, account_id)
-    if not account:
-        raise ValueError("account not found")
-    if account.deleted_at is None:
-        account.deleted_at = _now()
-        account.deleted_by = actor
-        account.delete_reason = reason
-        account.status = AccountStatus.DISABLED.value
-        deactivate_account_phone_aliases(session, account)
-        audit(
-            session,
-            tenant_id=account.tenant_id,
-            actor=actor,
-            action="移除TG账号",
-            target_type="tg_account",
-            target_id=str(account.id),
-            detail=reason,
-        )
+def _cancel_deleted_account_work(session, account, reason):
     for link in session.scalars(select(TgGroupAccount).where(TgGroupAccount.account_id == account.id)):
         link.can_send = False
         link.is_listener = False
@@ -319,7 +307,32 @@ def soft_delete_account(session: Session, account_id: int, actor: str = "普通�
     ):
         flow.status = "已取消"
         flow.code_preview = None
+
+
+def soft_delete_account(session: Session, account_id: int, actor: str = "普通用户", reason: str = "用户移除") -> TgAccount:
+    from .account_group_revision_snapshot import lock_membership_account
+    from .account_group_revisions import begin_membership_change, finish_membership_change
+    account = lock_membership_account(session, account_id)
+    membership_change = begin_membership_change(session, account.tenant_id,
+        (account.pool_id,) if account.pool_id is not None else (), actor=actor, reason="account_deleted")
+    if account.deleted_at is None:
+        account.deleted_at = _now()
+        account.deleted_by = actor
+        account.delete_reason = reason
+        account.status = AccountStatus.DISABLED.value
+        deactivate_account_phone_aliases(session, account)
+        audit(
+            session,
+            tenant_id=account.tenant_id,
+            actor=actor,
+            action="移除TG账号",
+            target_type="tg_account",
+            target_id=str(account.id),
+            detail=reason,
+        )
+    _cancel_deleted_account_work(session, account, reason)
     _emit_account_eligibility_event(session, account.id, "account_deleted")
+    finish_membership_change(session, membership_change)
     session.commit()
     session.refresh(account)
     return account

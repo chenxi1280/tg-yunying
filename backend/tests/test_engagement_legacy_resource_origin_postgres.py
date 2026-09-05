@@ -15,6 +15,7 @@ from app.services.task_center.engagement_binding import (
 from app.services.task_center.engagement_runtime_resources import (
     mark_attempt_call_issued, reserve_attempt_resources, settle_attempt_resources,
 )
+from tests.account_group_revision_test_support import bootstrap_groups
 
 
 pytestmark = pytest.mark.allow_missing_rule_binding
@@ -36,6 +37,7 @@ def _seed(session):
     task = Task(tenant_id=TENANT_ID, type="channel_like", name="存量接管", type_config=config)
     session.add(task)
     session.flush()
+    bootstrap_groups(session, TENANT_ID, (POOL_ID,))
     binding = freeze_initial_binding(session, task,
         validate_engagement_binding(session, TENANT_ID, task.type, config))
     binding.effective_from = BOUNDARY

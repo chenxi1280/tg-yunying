@@ -1,5 +1,7 @@
 # 项目数据流转索引
 
+> **2026-09-06 账号组版本基础（统一引擎 §19.57，本地）：** 正式成员/组写入 → tenant先锁（批量登录先于phone指纹锁）→ 组和账号原归属锁后重读 → 原成员/状态版本核对 → 同事务追加变化版本与StageWakeOutbox → 独立投递事务锁当前同tenant/epoch的四类运行Task并唤醒planner。新binding和Task启动/恢复先验证已有成员基础，失败不改运行态；计划冻结只消费已存在且hash吻合的成员/组状态证据；禁用组保留稳定业务分母与真实disabled状态，临时在线/代理/Session状态不改变成员版本，旧snapshot/selected/Action/unknown不回写。首次全量基础通过显式READ ONLY preview → 完整hash/版本与deployed SHA核对 → 只初始化缺失版本 → 审计+独立读回完成，Task配置和激活仍是独立接管。删除检查读取正式绑定关系（含旧epoch未结工作）与未释放物理租约，不因任务JSON改写而丢失引用。
+
 > **2026-09-05 去重内存生命周期：** 原账号/tenant/时间窗口历史 → 当前候选一次字符准备 → 原顺序历史逐项Jaccard/上界/SequenceMatcher判定 → 原首个重复证据；比较后释放历史字符结构，扫描结束释放候选。数据库、重复阈值、unknown和窗口无变化，无新增历史截断或长期字符缓存。
 
 > **2026-09-05 评论零兜底配置：** 表单/Schema/运行配置验证两类关闭+两权重0+计划预算0 → grounding准备先查原Pool/Policy归属 → 仅当前revision且无冻结Policy的新准备跳过兜底数据创建；旧revision已有Policy继续创建原Pool，旧Policy缺失仍报错。旧selection与Attempt/unknown不修改，统一内容质量失败继续明确shortfall；本修补不自动改变生产Task配置或完成量。

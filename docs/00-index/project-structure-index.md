@@ -1,5 +1,7 @@
 # 项目结构索引
 
+> **2026-09-06 账号组成员版本基础（统一引擎 §19.57，本地）：** `models/account_group_revisions.py` 与迁移 `0225_account_group_revisions` 保存成员/组状态两个独立版本；`account_group_revision_snapshot.py` 批量读取与锁后重验，`account_group_revisions.py` 供普通/批量创建、迁组、身份、软删除、显式补组和组维护共用同事务 successor/wake。`account_pool_deletion.py` 检查正式 current/unsettled binding 与物理租约；`engagement_binding.py` 在新建/替换/到期绑定和Task启动/恢复前验证成员基础，`engagement_membership_snapshot.py` 将既有版本/id/hash与真实组状态冻结到原参与单元，`engagement_policy_scope.py` 读取冻结启用/生命周期资格。`engagement_membership_wake.py` 在 Planner 主维护事务外投递到当前有效绑定，失败回滚整次投递。`account_group_revision_bootstrap.py` / `scripts/bootstrap_account_group_revisions.py` 提供整租户只读预览、hash/版本/SHA保护的显式初始化及独立读回。公共 canonical hash 原算法原样移至 `common/state_hash.py`，避免账号基础服务经 task_center 包形成循环导入。测试入口 `test_account_group_revision*.py`、`test_account_group_revisions*.py`、`test_engagement_membership_foundation.py`、`test_engagement_membership_activation.py` 与原账号/引擎测试；本条不代表已部署、初始接管或线上 E4。
+
 > **2026-09-05 去重字符结构归属：** `ai_message_memory_text.text_similarity_predicate` 只准备当前候选，`ai_message_memory._first_similar_memory` 按原顺序逐项比较历史；移除跨账号/批次的65536项进程LRU。窗口、SQL、数学判定与首个命中不变，回归入口 `test_ai_memory_similarity_lifetime.py`。
 
 > **2026-09-05 评论完整关闭兜底：** `app/comment_fallback_policy.py` 共用Schema与运行配置的类型/权重/计划预算规则；完整关闭合法，新准备不写兜底Policy/Pool/cursor，既有Pool与旧revision Policy继续保持原归属。`TaskCenterChannelConfigSections.tsx` 同步零配置及计划上限依赖校验。回归入口 `test_comment_fallback_disabled_policy.py`。

@@ -7,6 +7,8 @@ from sqlalchemy import Select, and_, exists, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import AccountPool, TgAccount
+from .account_group_revision_snapshot import lock_membership_account
+from .account_group_revisions import begin_membership_change, finish_membership_change
 
 
 AccountUsage = Literal["normal", "code_receiver", "rank_deboost", "mismatch"]
@@ -142,8 +144,11 @@ def sync_account_usage(
     target_pool: AccountPool,
     actor: str,
 ) -> AccountUsageSyncSummary:
-    locked_account = _lock_account(session, account.id)
-    locked_pool = _lock_pool(session, target_pool.id)
+    locked_account = lock_membership_account(session, account.id)
+    pool_ids = tuple(item for item in (locked_account.pool_id, target_pool.id) if item is not None)
+    membership_change = begin_membership_change(session, locked_account.tenant_id,
+        pool_ids, actor=actor, reason="account_usage_changed")
+    locked_pool = session.get(AccountPool, target_pool.id)
     _validate_usage_target(locked_account, locked_pool)
     previous_pool = _current_pool(session, locked_account)
     summary = AccountUsageSyncSummary(
@@ -157,22 +162,8 @@ def sync_account_usage(
     )
     locked_account.pool_id = locked_pool.id
     locked_account.account_identity = locked_pool.pool_purpose
-    session.flush()
+    finish_membership_change(session, membership_change)
     return summary
-
-
-def _lock_account(session: Session, account_id: int) -> TgAccount:
-    account = session.scalar(select(TgAccount).where(TgAccount.id == account_id).with_for_update())
-    if account is None:
-        raise ValueError("account not found")
-    return account
-
-
-def _lock_pool(session: Session, pool_id: int) -> AccountPool:
-    pool = session.scalar(select(AccountPool).where(AccountPool.id == pool_id).with_for_update())
-    if pool is None:
-        raise ValueError("account pool not found")
-    return pool
 
 
 def _validate_usage_target(account: TgAccount, pool: AccountPool) -> None:

@@ -251,6 +251,7 @@ from .planner_wake import (
     wake_task_planner,
 )
 from .engagement_conversation_wake import drain_conversation_wake_transactions
+from .engagement_membership_wake import drain_membership_wake_transactions
 from .ai_generation_recovery import (
     GenerationRecoveryClaimLost,
     recover_stale_pre_gateway_generation,
@@ -365,6 +366,7 @@ from .engagement_binding import (
     freeze_initial_binding,
     projected_account_config,
     synchronize_task_binding,
+    validate_task_membership_foundation,
     validate_engagement_binding,
     validate_engagement_timezone,
 )
@@ -3185,19 +3187,9 @@ def start_task_in_transaction(
     actor: str,
 ) -> StartExecutionResult:
     tenant_id = task.tenant_id
+    validate_task_membership_foundation(session, task)
     if task.type == "group_clone":
-        from .group_clone_runtime_lifecycle import start_existing_group_clone
-
-        start_existing_group_clone(session, task)
-        audit(
-            session,
-            tenant_id=tenant_id,
-            actor=actor,
-            action="启动任务中心任务",
-            target_type="task",
-            target_id=task.id,
-        )
-        return _start_execution_result(session, task)
+        return _start_group_clone_in_transaction(session, task, actor)
     if task.type in {"search_click", "search_join_group", "search_rank_deboost"}:
         if _check_stop_conditions(
             session, task
@@ -3238,6 +3230,15 @@ def start_task_in_transaction(
         target_type="task",
         target_id=task.id,
     )
+    return _start_execution_result(session, task)
+
+
+def _start_group_clone_in_transaction(session, task, actor):
+    from .group_clone_runtime_lifecycle import start_existing_group_clone
+
+    start_existing_group_clone(session, task)
+    audit(session, tenant_id=task.tenant_id, actor=actor,
+        action="启动任务中心任务", target_type="task", target_id=task.id)
     return _start_execution_result(session, task)
 
 
@@ -4831,6 +4832,7 @@ def _drain_task_planner(
     session_factory, *, limit: int, process_type: str | None
 ) -> tuple[int, set[str]]:
     processed = drain_conversation_wake_transactions(session_factory, limit=limit)
+    processed += drain_membership_wake_transactions(session_factory, limit=limit)
     with session_factory() as session:
         if process_type:
             record_worker_heartbeat(

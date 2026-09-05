@@ -7,6 +7,10 @@ from sqlalchemy.orm import Session
 from app.models import AccountPool, Tenant
 
 from ._common import audit
+from .account_group_revision_snapshot import lock_membership_tenant
+from .account_group_revisions import (
+    begin_membership_change, finish_membership_change, initialize_group_revisions,
+)
 from .account_usage_policy import DEDICATED_ACCOUNT_USAGES, VALID_ACCOUNT_USAGES
 
 CODE_RECEIVER_POOL_KEY = "code_receiver"
@@ -15,6 +19,7 @@ RANK_DEBOOST_SYSTEM_POOL_NAME = "降权任务专用分组"
 
 
 def ensure_code_receiver_account_pool(session: Session, tenant_id: int) -> AccountPool:
+    lock_membership_tenant(session, tenant_id)
     pool = session.scalar(
         select(AccountPool)
         .where(
@@ -27,7 +32,8 @@ def ensure_code_receiver_account_pool(session: Session, tenant_id: int) -> Accou
         pool = _new_code_receiver_pool(tenant_id)
         session.add(pool)
         session.flush()
-    _mark_system_pool(pool, CODE_RECEIVER_POOL_KEY)
+        initialize_group_revisions(session, tenant_id, (pool.id,), actor="system", reason="pool_created")
+    _record_system_pool_markers(session, pool, CODE_RECEIVER_POOL_KEY)
     return pool
 
 
@@ -47,7 +53,7 @@ def ensure_rank_deboost_account_pool(session: Session, tenant_id: int) -> Accoun
     if len(pools) > 1:
         raise ValueError("同租户最多一个 rank_deboost 系统默认组")
     pool = pools[0] if pools else _create_system_rank_pool(session, tenant_id)
-    _mark_system_pool(pool, RANK_DEBOOST_POOL_KEY)
+    _record_system_pool_markers(session, pool, RANK_DEBOOST_POOL_KEY)
     return pool
 
 
@@ -73,6 +79,7 @@ def create_rank_deboost_account_pool(
         )
         session.add(pool)
         session.flush()
+        initialize_group_revisions(session, tenant_id, (pool.id,), actor=actor, reason="pool_created")
         _audit_rank_pool_creation(session, pool, actor)
         session.commit()
         session.refresh(pool)
@@ -128,17 +135,26 @@ def _create_system_rank_pool(session: Session, tenant_id: int) -> AccountPool:
     )
     session.add(pool)
     session.flush()
+    initialize_group_revisions(session, tenant_id, (pool.id,), actor="system", reason="pool_created")
     return pool
 
 
-def _mark_system_pool(pool: AccountPool, purpose: str) -> None:
+def _record_system_pool_markers(session, pool, purpose):
+    from .account_group_revision_snapshot import locked_membership_pools
+
+    pool, = locked_membership_pools(session, pool.tenant_id, (pool.id,))
+    if (pool.pool_purpose, pool.is_system, pool.system_key) == (purpose, True, purpose):
+        return
+    token = begin_membership_change(session, pool.tenant_id, (pool.id,),
+        actor="system", reason="system_pool_markers_updated")
     pool.pool_purpose = purpose
     pool.is_system = True
     pool.system_key = purpose
+    finish_membership_change(session, token)
 
 
 def _lock_tenant(session: Session, tenant_id: int) -> Tenant:
-    tenant = session.scalar(select(Tenant).where(Tenant.id == tenant_id).with_for_update())
+    tenant = session.scalar(select(Tenant).where(Tenant.id == tenant_id).with_for_update(key_share=True))
     if tenant is None:
         raise ValueError("tenant not found")
     return tenant

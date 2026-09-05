@@ -30,6 +30,7 @@ from app.permission_middleware import permission_middleware
 from app.schemas import AccountPoolUpdate, TgAccountCreate
 from app.security import encrypt_secret
 from app.services.accounts import create_account
+from app.services.account_group_revisions import begin_membership_change, finish_membership_change
 from app.services.account_pools import (
     create_rank_deboost_account_pool,
     delete_account_pool,
@@ -102,6 +103,7 @@ def _rank_pool(session: Session, name: str = "降权专用一组") -> AccountPoo
 
 
 def _account(session: Session, pool: AccountPool, identity: str) -> TgAccount:
+    change = begin_membership_change(session, 1, (pool.id,), actor="test", reason="fixture_account_created")
     account = TgAccount(
         tenant_id=1,
         pool_id=pool.id,
@@ -110,6 +112,7 @@ def _account(session: Session, pool: AccountPool, identity: str) -> TgAccount:
         account_identity=identity,
     )
     session.add(account)
+    finish_membership_change(session, change)
     session.commit()
     return account
 

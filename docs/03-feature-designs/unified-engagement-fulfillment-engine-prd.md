@@ -2868,3 +2868,25 @@ Product Design Complete：本性能子项design_status=complete；QA先记录真
 定态journal沿§19.52/19.55复用原请求三字段、观察时间和两种已发布格式双hash校验；false但带remote id/fact的矛盾记录不可释放。验证失败产生gateway_journal_result_unproven并保留预算及物理占用。unknown journal本身只证明未知，不因缺少确定结果hash而另作结果推断；不得绕过既有owner/conflict检查。此次修订不补造旧请求字段或回执。
 
 本读取修订design_status=complete，已反查原投影、journal优先级、SQLAlchemy JSON读取和共享账号入口。QA先复现unknown回执被false覆盖及非boolean被转换，再验证true/false/null、未知/冲突、单SELECT、无flush、两种数据库和原日期/预算不变；不包含主机退出记录持久化或历史状态apply。
+
+### 19.57 账号组成员版本基础的写入与冻结合同
+
+§17.1的初始成员基础落到两个独立append-only对象：AccountGroupMembershipRevision保存tenant/pool/revision、canonical member ids及set hash、成员稳定用途/启用/生命周期合同及hash、原版本、采集时间、actor/reason；AccountGroupStateRevision保存相同pool身份下的用途、system marker、enabled/deleted状态及其hash。成员归属和组状态分别推进；改名、描述、默认组标记、在线/代理/Session短时状态不产生成员版本。硬删除空组后保留版本中的原pool identity，不以级联删除抹去历史。
+
+正式成员写入口包括普通创建账号、批量登录创建、用途/迁组、软删除和显式未分组补组；组写入口包括普通/专用/系统默认组创建、启停/用途marker修订及删除。它们在同一事务先锁tenant，再按pool id锁定涉及的组；在任何成员字段修改前记录原快照，修改后追加变化版本及StageWakeOutbox。原组与新组一起提交，不在事务提交后补事件，不在读取接口建立版本或补组。当前list_account_pools与seed_account_pools已不再隐式移动未分组账号，此已有行为保持。每个mutation token冻结本次expected revision/hash，完成阶段重验；显式preview/apply另携带操作者看到的expected版本，两个相同expected的并发修改只能有一个winner，另一方原事务回滚并明确冲突。
+
+锁后必须重读组的用途/启停和账号原归属，不能复用等待前的ORM缓存；创建账号、批量登录、迁组及初始Task绑定均重新验证。批量登录的tenant锁前移到手机号指纹锁之前，与普通创建和软删除同序，避免同手机号创建在tenant/phone锁之间互等。纯名称等待提交字段保持，已在token开始前改动稳定字段则明确暴露调用顺序错误。
+
+tenant作为不改主键的序列化对象统一使用PostgreSQL `FOR NO KEY UPDATE`，既互斥成员writer，又允许新Task的外键KEY SHARE；不得用FOR UPDATE造成两个新Task持外键锁后互相升级死锁。组删除所需pool锁仍保持FOR UPDATE。依据[PostgreSQL行锁冲突矩阵](https://www.postgresql.org/docs/current/explicit-locking.html#LOCKING-ROWS)，并以两个真实Session在Task插入后同步建立初始binding的用例验证；该用例在修补前实际返回40P01，不以自动重试隐藏。
+
+版本首次建立只表示当时的一致性快照，不推定过去成员变更。正式初始接管以显式只读preview列出全部pool/member/用途与状态及版本；受保护apply创建尚缺的revision1并读回，不能由Task激活暗中补造。未建基础的既有组遇到正式成员修改时，可以在该次写事务中先记录明确reason=mutation_baseline的修改前快照，再追加变更版本；仍不能据此声称已完成全部组的接管核对。
+
+`bootstrap_account_group_revisions.py` 的 preview 使用 PostgreSQL READ ONLY/REPEATABLE READ，覆盖该tenant全部组和成员，输出版本、用途/启停、稳定成员合同、漂移问题和完整state hash。apply必须携带该preview文件、相同deployed SHA、actor及audit reference，在tenant锁下重新核对全部组和hash，只初始化缺失的成对版本；新组、成员变化、部分版本缺失或已有证据漂移均明确失败。该事务同时留下版本wake与审计记录，提交后独立读回；它不修改Task配置或运行状态。
+
+0225仅创建空证据表，不回填历史。downgrade只允许两张表都为空；已有任何原成员/状态证据时明确拒绝删除，保留原表与记录并走前向修复。PostgreSQL检查前锁定两张证据表，防止检查后写入再被DROP；应用版本回退不能顺带抹除已产生的冻结依据。
+
+计划冻结读取已存在的成员与状态版本，在相同tenant锁下核验当前数据库集合和稳定合同的hash，再将每组两种revision/id/hash写入AccountGroupMembershipSnapshotSet；缺失、漂移或用途错配明确失败，不自动选择当前名单重建证据。旧frozen snapshot和已选账号、原义务、due、Action/unknown不改写。已激活binding的组禁用按§19.3.6记录真实状态并保留既定业务分母；恢复只唤醒原期限内工作。每次版本变更的durable wake由独立消费事务投递到当前正式绑定Task的planner，避免成员事务持tenant锁再抢Task锁；重复投递不重复推进已交付事件。
+
+成员基础校验必须早于新的正式binding写入和Task启动/恢复的状态修改；缺失、漂移、成员用途错配时原事务失败，不允许先写running再等planner报错。该基础校验读取已存在的正式binding与成员版本，不自动生成binding或初始成员版本；跨lifecycle epoch的继承仍须通过§17.1.2A的正式生命周期合同，不能用成员hash一致代替。新建、替换和到期生效的binding重新验证组可选状态；已有active binding的禁用组仍可保留原绑定和分母，其真实禁用状态交由资源层明确阻塞，不能据此缩小旧计划。
+
+此基础子合同design_status=complete，反查已覆盖正式创建/迁组/删除入口、专用组和启动初始化、现行只读列表、StageWakeOutbox及当前freeze_membership_snapshot。QA覆盖canonical/hash、rename/no-op、跨组同事务、rollback、旧快照不变、组禁用分区、无基础与漂移、current/unsettled绑定删除保护、真实PG两个session相同expected竞争及迁移。实现与验收同时包含全部正式writer和wake消费接线；只建表或只有新的快照helper不能通过本子项。它不代替历史调用物理证明、组合容量和Task配置/来源正式接管。

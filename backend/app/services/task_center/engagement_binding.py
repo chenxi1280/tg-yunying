@@ -13,10 +13,10 @@ from app.models import (
     AccountPool,
     Task,
     TaskAccountGroupBindingSetRevision,
-    TgAccount,
 )
 from app.services._common import _now
 from app.timezone import BEIJING_TZ
+from .engagement_membership_snapshot import capture_membership_groups
 
 
 ENGAGEMENT_TASK_TYPES = frozenset(
@@ -88,22 +88,6 @@ def _load_pools(
     return pools
 
 
-def _member_rows(
-    session: Session, tenant_id: int, group_ids: tuple[int, ...]
-) -> tuple[tuple[int, int], ...]:
-    rows = session.execute(
-        select(TgAccount.id, TgAccount.pool_id)
-        .where(
-            TgAccount.tenant_id == tenant_id,
-            TgAccount.pool_id.in_(group_ids),
-            TgAccount.deleted_at.is_(None),
-            TgAccount.account_identity == "normal",
-        )
-        .order_by(TgAccount.id.asc())
-    )
-    return tuple((int(account_id), int(pool_id)) for account_id, pool_id in rows)
-
-
 def validate_engagement_binding(
     session: Session, tenant_id: int, task_type: str, config: dict
 ) -> EngagementBindingSpec | None:
@@ -160,6 +144,7 @@ def freeze_initial_binding(
 ) -> TaskAccountGroupBindingSetRevision | None:
     if spec is None:
         return None
+    _lock_binding_spec(session, task.tenant_id, spec)
     _ensure_runtime_policies(session, task.tenant_id, spec)
     revision = TaskAccountGroupBindingSetRevision(
         tenant_id=task.tenant_id,
@@ -183,6 +168,7 @@ def replace_active_binding(
     *,
     effective_from: datetime,
 ) -> TaskAccountGroupBindingSetRevision:
+    _lock_binding_spec(session, task.tenant_id, spec)
     current = session.scalar(
         select(TaskAccountGroupBindingSetRevision)
         .where(
@@ -209,6 +195,7 @@ def synchronize_task_binding(
     )
     if spec is None:
         return None
+    _lock_binding_spec(session, task.tenant_id, spec)
     _ensure_runtime_policies(session, task.tenant_id, spec)
     current = session.scalar(
         select(TaskAccountGroupBindingSetRevision).where(
@@ -264,6 +251,7 @@ def activate_due_binding(
     )
     if due is None:
         return None
+    _lock_binding_spec(session, task.tenant_id, _spec_from_binding(due))
     current = session.scalar(
         select(TaskAccountGroupBindingSetRevision).where(
             TaskAccountGroupBindingSetRevision.task_id == task.id,
@@ -343,13 +331,27 @@ def _apply_binding_config(
     task.type_config = config
     task.account_config = projected_account_config(
         task.account_config or {},
-        EngagementBindingSpec(
-            group_ids=tuple(binding.account_group_ids),
-            group_contracts=tuple(binding.group_contracts),
-            concurrency_limit_per_group=binding.concurrency_limit_per_group,
-            binding_set_hash=binding.binding_set_hash,
-        ),
+        _spec_from_binding(binding),
     )
+
+
+def _spec_from_binding(binding):
+    return EngagementBindingSpec(
+        group_ids=tuple(binding.account_group_ids),
+        group_contracts=tuple(binding.group_contracts),
+        concurrency_limit_per_group=binding.concurrency_limit_per_group,
+        binding_set_hash=binding.binding_set_hash,
+    )
+
+
+def validate_task_membership_foundation(session, task):
+    config = task.type_config or {}
+    if task.type not in ENGAGEMENT_TASK_TYPES:
+        return
+    if config.get("engagement_contract_version") != UNIFIED_ENGAGEMENT_CONTRACT_VERSION:
+        return
+    binding = _active_binding(session, task)
+    capture_membership_groups(session, task.tenant_id, tuple(binding.account_group_ids))
 
 
 def freeze_membership_snapshot(
@@ -371,9 +373,9 @@ def freeze_membership_snapshot(
         return existing
     binding = _active_binding(session, task)
     group_ids = tuple(int(item) for item in binding.account_group_ids)
-    _load_pools(session, task.tenant_id, group_ids)
-    rows = _member_rows(session, task.tenant_id, group_ids)
-    memberships = _group_memberships(group_ids, rows)
+    memberships = capture_membership_groups(session, task.tenant_id, group_ids)
+    rows = sorted((account_id, group["group_id"]) for group in memberships
+        for account_id in group["member_account_ids"])
     members = tuple(account_id for account_id, _ in rows)
     origins = {str(account_id): group_id for account_id, group_id in rows}
     snapshot = AccountGroupMembershipSnapshotSet(
@@ -398,6 +400,7 @@ def _active_binding(
 ) -> TaskAccountGroupBindingSetRevision:
     binding = session.scalar(
         select(TaskAccountGroupBindingSetRevision).where(
+            TaskAccountGroupBindingSetRevision.tenant_id == task.tenant_id,
             TaskAccountGroupBindingSetRevision.task_id == task.id,
             TaskAccountGroupBindingSetRevision.state == "active",
         )
@@ -405,20 +408,6 @@ def _active_binding(
     if binding is None:
         raise ValueError("engagement_binding_missing")
     return binding
-
-
-def _group_memberships(
-    group_ids: tuple[int, ...], rows: tuple[tuple[int, int], ...]
-) -> list[dict]:
-    return [
-        {
-            "group_id": group_id,
-            "member_account_ids": [
-                account_id for account_id, origin in rows if origin == group_id
-            ],
-        }
-        for group_id in group_ids
-    ]
 
 
 def _ensure_runtime_policies(
@@ -431,6 +420,22 @@ def _ensure_runtime_policies(
         tenant_id=tenant_id,
         binding=spec,
     )
+
+
+def _lock_binding_spec(session, tenant_id, spec):
+    groups = capture_membership_groups(session, tenant_id, spec.group_ids)
+    contracts = tuple(_binding_contract_from_snapshot(group) for group in groups)
+    if _stable_hash({"groups": contracts, "limit": spec.concurrency_limit_per_group}) != spec.binding_set_hash:
+        raise ValueError("engagement_binding_group_state_changed")
+
+
+def _binding_contract_from_snapshot(group):
+    state = group["group_state"]
+    if not state["is_enabled"]:
+        raise ValueError(f"account_group_disabled:{group['group_id']}")
+    return {"group_id": group["group_id"],
+        "pool_purpose": str(state["pool_purpose"] or NORMAL_POOL_PURPOSE),
+        "system_key": str(state["system_key"] or ""), "is_system": bool(state["is_system"])}
 
 
 __all__ = [
@@ -446,4 +451,5 @@ __all__ = [
     "synchronize_task_binding",
     "validate_engagement_binding",
     "validate_engagement_timezone",
+    "validate_task_membership_foundation",
 ]

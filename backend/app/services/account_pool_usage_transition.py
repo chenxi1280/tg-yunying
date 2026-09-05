@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.models import AccountPool, Action, MessageTask, TaskStatus, TgAccount
 
 from ._common import audit
+from .account_group_revision_snapshot import lock_membership_account, locked_membership_pools
 from .account_usage_policy import AccountUsageSyncSummary, sync_account_usage
 from .dedicated_account_pools import RANK_DEBOOST_POOL_KEY
 
@@ -28,8 +29,8 @@ def locked_account_and_pool(
     account_id: int,
     pool_id: int,
 ) -> tuple[TgAccount, AccountPool]:
-    account = session.scalar(select(TgAccount).where(TgAccount.id == account_id).with_for_update())
-    pool = session.scalar(select(AccountPool).where(AccountPool.id == pool_id).with_for_update())
+    account = lock_membership_account(session, account_id)
+    pool, = locked_membership_pools(session, account.tenant_id, (pool_id,))
     if not account or account.deleted_at is not None or not pool or account.tenant_id != pool.tenant_id:
         raise ValueError("account or pool not found")
     return account, pool

@@ -54,6 +54,7 @@ from .telegram_updates import *  # noqa: F401,F403
 from .telegram_authorities import *  # noqa: F401,F403
 from .group_clone import *  # noqa: F401,F403
 from .engagement_binding import *  # noqa: F401,F403
+from .account_group_revisions import *  # noqa: F401,F403
 from .engagement_runtime import *  # noqa: F401,F403
 from .engagement_planning import *  # noqa: F401,F403
 from .engagement_target_scope import *  # noqa: F401,F403

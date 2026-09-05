@@ -10,7 +10,6 @@ from app.models import (
     AccountPoolConcurrencyPolicyRevision,
     AccountStatus,
     MessageTask,
-    Task,
     Tenant,
     TgAccount,
     TgContact,
@@ -19,6 +18,11 @@ from app.models import (
 from app.schemas import AccountPoolCreate, AccountPoolUpdate
 
 from ._common import _now, audit, require_tenant
+from .account_pool_deletion import assert_pool_can_be_deleted
+from .account_group_revision_snapshot import lock_membership_account, lock_membership_tenant
+from .account_group_revisions import (
+    begin_membership_change, finish_membership_change, initialize_group_revisions,
+)
 from .account_pool_usage_transition import locked_account_and_pool, migrate_account_usage
 from .dedicated_account_pools import (
     CODE_RECEIVER_POOL_KEY,
@@ -97,6 +101,7 @@ def _active_rank_deboost_binding(session: Session, pool: AccountPool) -> Account
 
 
 def ensure_default_account_pool(session: Session, tenant_id: int) -> AccountPool:
+    lock_membership_tenant(session, tenant_id)
     pool = session.scalar(
         select(AccountPool)
         .where(
@@ -127,6 +132,7 @@ def ensure_default_account_pool(session: Session, tenant_id: int) -> AccountPool
         pool = AccountPool(tenant_id=tenant_id, name="默认账号池", description="系统默认账号分组", is_default=True)
         session.add(pool)
         session.flush()
+        initialize_group_revisions(session, tenant_id, (pool.id,), actor="system", reason="pool_created")
     _mark_default_account_pool(session, pool)
     return pool
 
@@ -163,6 +169,8 @@ def delete_account_pool(session: Session, pool_id: int, actor: str) -> None:
     pool = session.get(AccountPool, pool_id)
     if not pool:
         raise ValueError("account pool not found")
+    membership_change = begin_membership_change(session, pool.tenant_id, (pool.id,),
+        actor=actor, reason="pool_deleted")
     if is_rank_deboost_pool(pool):
         raise ValueError("rank_deboost 分组不可删除，只能禁用")
     if is_code_receiver_pool(pool):
@@ -179,8 +187,7 @@ def delete_account_pool(session: Session, pool_id: int, actor: str) -> None:
     ) or 0
     if account_count > 0:
         raise ValueError(f"分组非空（{account_count} 个账号），请先迁移账号再删除")
-    _assert_pool_has_no_active_binding(session, pool)
-    _assert_pool_has_no_running_task(session, pool)
+    assert_pool_can_be_deleted(session, pool)
     audit(
         session,
         tenant_id=pool.tenant_id,
@@ -190,42 +197,8 @@ def delete_account_pool(session: Session, pool_id: int, actor: str) -> None:
         target_id=str(pool.id),
     )
     session.delete(pool)
+    finish_membership_change(session, membership_change)
     session.commit()
-
-
-def _assert_pool_has_no_active_binding(session: Session, pool: AccountPool) -> None:
-    binding_id = session.scalar(
-        select(AccountGroupProxyBinding.id).where(
-            AccountGroupProxyBinding.tenant_id == pool.tenant_id,
-            AccountGroupProxyBinding.account_pool_id == pool.id,
-            AccountGroupProxyBinding.status == "active",
-            AccountGroupProxyBinding.unbound_at.is_(None),
-        )
-    )
-    if binding_id:
-        raise ValueError("账号组存在 active 分组绑定，不能删除")
-
-
-def _assert_pool_has_no_running_task(session: Session, pool: AccountPool) -> None:
-    tasks = session.scalars(
-        select(Task).where(
-            Task.tenant_id == pool.tenant_id,
-            Task.status.in_(("running", "paused")),
-        )
-    )
-    if any(_task_references_pool(task, pool.id) for task in tasks):
-        raise ValueError("账号组仍被 running/paused 任务引用，不能删除")
-
-
-def _task_references_pool(task: Task, pool_id: int) -> bool:
-    configs = (task.account_config or {}, task.type_config or {})
-    keys = ("account_group_id", "account_pool_id", "pool_id")
-    return any(_config_pool_id(config, key) == pool_id for config in configs for key in keys)
-
-
-def _config_pool_id(config: dict, key: str) -> int | None:
-    value = config.get(key)
-    return int(value) if value is not None else None
 
 
 def assert_account_not_in_rank_deboost_conflict(
@@ -261,6 +234,8 @@ def backfill_ungrouped_accounts_to_default_pool(
     session: Session, tenant_id: int
 ) -> int:
     pool = ensure_default_account_pool(session, tenant_id)
+    membership_change = begin_membership_change(session, tenant_id, (pool.id,),
+        actor="system", reason="explicit_ungrouped_account_backfill")
     accounts = session.scalars(
         select(TgAccount).where(
             TgAccount.tenant_id == tenant_id,
@@ -270,6 +245,7 @@ def backfill_ungrouped_accounts_to_default_pool(
     ).all()
     for account in accounts:
         account.pool_id = pool.id
+    finish_membership_change(session, membership_change)
     return len(accounts)
 
 
@@ -350,6 +326,7 @@ def account_pool_detail(session: Session, pool_id: int) -> dict:
 
 def create_account_pool(session: Session, payload: AccountPoolCreate, actor: str) -> dict:
     require_tenant(session, payload.tenant_id)
+    lock_membership_tenant(session, payload.tenant_id)
     _assert_default_pool_enabled(payload.is_default, payload.is_enabled)
     pool = AccountPool(
         tenant_id=payload.tenant_id,
@@ -372,6 +349,7 @@ def create_account_pool(session: Session, payload: AccountPoolCreate, actor: str
     )
     if pool.is_default or (pool.is_enabled and not enabled_default_exists):
         _mark_default_account_pool(session, pool)
+    initialize_group_revisions(session, pool.tenant_id, (pool.id,), actor=actor, reason="pool_created")
     audit(session, tenant_id=pool.tenant_id, actor=actor, action="新增账号池", target_type="account_pool", target_id=str(pool.id))
     session.commit()
     session.refresh(pool)
@@ -382,6 +360,8 @@ def update_account_pool(session: Session, pool_id: int, payload: AccountPoolUpda
     pool = session.get(AccountPool, pool_id)
     if not pool:
         raise ValueError("account pool not found")
+    membership_change = begin_membership_change(session, pool.tenant_id, (pool.id,),
+        actor=actor, reason="pool_updated")
     data = payload.model_dump(exclude_unset=True)
     _validate_pool_update_lifecycle(pool, data)
     if data.get("name") is not None:
@@ -404,6 +384,7 @@ def update_account_pool(session: Session, pool_id: int, payload: AccountPoolUpda
     elif data.get("disable_reason") is not None:
         pool.disable_reason = str(data["disable_reason"]).strip()
     pool.updated_at = _now()
+    finish_membership_change(session, membership_change)
     audit(session, tenant_id=pool.tenant_id, actor=actor, action="更新账号池", target_type="account_pool", target_id=str(pool.id))
     try:
         session.commit()
@@ -447,7 +428,7 @@ def move_account_pool(session: Session, account_id: int, pool_id: int, actor: st
 def set_account_identity(session: Session, account_id: int, identity: str, actor: str) -> TgAccount:
     if identity not in {"normal", CODE_RECEIVER_POOL_KEY}:
         raise ValueError("unsupported account identity")
-    account = session.scalar(select(TgAccount).where(TgAccount.id == account_id).with_for_update())
+    account = lock_membership_account(session, account_id)
     if not account or account.deleted_at is not None:
         raise ValueError("account not found")
     target_pool = _identity_target_pool(session, account, identity)

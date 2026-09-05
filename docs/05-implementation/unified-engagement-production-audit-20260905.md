@@ -493,6 +493,17 @@ d6d637aa51251ca4040ebcb82b757e2157fd647d已按master/release冻结并触发Deplo
 
 - 固定01d95307c4292e22bb239d0bee104577c9c59814的Deploy33988077680已终态success，全部CI、三镜像及部署通过。03:59:32独立读取current=20260905195505_01d95307，19/19服务同SHA、running/healthy、swappiness60、无OOM/重启，APIok；available931476kB、swap占用290864kB。回执01d_runtime_release_verify_initial.jsonl。组合容量的11,425→4查询优化及原恢复结果修补已进入该版本，不以单点健康证明业务完成。
 - 从新dispatcher启动后的03:56:30到03:59:53：3条view_observed、1条view safely_not_executed、1条send_message/remote_message_observed，以及8条ensure_target_membership/remote_outcome_unknown。新群消息对应03:59:12创建Job、03:59:43调用，原policy/binding与config_revision=3匹配；审核schema异常样本为空仅代表该短窗口。评论、点赞本窗无新完成事实。回执01d_post_release_action_typed_facts_initial.jsonl，完整R1和日目标仍未接受。
-- PRD19.56先闭合旧reader的JSON类型及journal优先级，再扩展到原结果证明：unknown journal不能被旧false快照覆盖；非boolean不由数据库CAST伪装；false快照完成时间必须不早于调用；定态journal复用原请求/时间/两种hash验证，false与remote id/fact矛盾时保留占用。首轮5失败/3对照通过，进一步原时间/回执反例6失败/8对照通过；在夹具使用正式空字符串结果格式与双hash后重复红测仍6失败，确认不是夹具差异掩盖缺陷。
+- PRD19.56先闭合旧reader的JSON类型及journal优先级，再扩展到原结果证明：unknown journal不能被旧false快照覆盖；非boolean不由数据库CAST伪装；false快照完成时间必须不早于调用；定态journal复用原请求/时间/两种hash验证，false与remote id/fact矛盾时保留占用。首轮5失败/3对照通过，进一步原时间/回执反例6失败/8对照通过；夹具补齐原请求与双hash后重复红测仍6失败。后续按正式写入口把夹具结果的None校正为默认空字符串，再执行修补后的完整回归。
 - 修补及原共享准入、恢复、Gateway返回等91 passed/17.31秒；真实PostgreSQL28 passed/8.14秒，包含原写入口生成的有效false回执与损坏请求/hash/时间/remote fact对照。末尾为控制复杂度拆出journal投影helper，相关52 passed/10.81秒。全部backend/.venv、硬60秒、显式55439/tg_yunying_test与advisory lock；新/改模块和测试小于500行、函数不超过50非空行，编译与diff检查通过。
 - 04:01:55在01d临时只读进程加载候选源码，32账号87份投影全部相同、46份旧物理占用仍保留，9份original_task_day_unproven未抹除。回执legacy_strict_candidate_readonly_sample.jsonl记录源码hash。全1,512账号对照先遇到数据库操作错误，未获得完整对照；该次stderr输出只留尾部，原因不能据此确认，后续需单独检查查询计划与开销。抽样的先旧后新耗时有缓存影响，不用作性能收益结论。此代码尚为本地候选，无生产DB写、历史ACK或正式Task接管。
+
+
+### 2026-09-06 04:58 成员版本基础与启动入口校验
+
+- 继续原L3统一引擎Intake，完成PRD19.57的成员基础子合同：两个独立append-only模型/0225空表迁移、全部正式成员与组写入口、锁后重读、原事务版本+durable wake、冻结证据消费、稳定参与资格、正式绑定/物理租约删除保护及显式bootstrap。此子项不替代完整R1接管、历史调用终止证明、全租户组合容量或四类任务数量/质量E4。
+- 真实PostgreSQL反例分别复现同手机号batch先拿phone锁再等tenant，以及两个新Task持外键KEY SHARE再升级tenant FOR UPDATE导致40P01。统一tenant先于phone、tenant使用FOR NO KEY UPDATE后，同expected只有一方成功；缓存disabled组不得进入创建/迁组，新Task并发可正常提交。成员写入/快照/唤醒与迁移等20项PG通过/12.10秒（membership_foundation_postgres_verified_qa.log）；启动校验接线后再次11项PG通过/7.29秒（membership_activation_postgres_qa.log）。
+- 新建绑定、Task启动/恢复和到期绑定生效增加原成员基础核验；真实目标夹具下6个缺失/漂移/生效反例均复现旧入口不报错，修补后不会先修改运行态或自动补造版本。原7项红测中另1项是生命周期epoch继承缺口：start/pause会推进Task epoch但无正式binding继承，直接增加epoch拒绝会破坏合法恢复；该试验未纳入本成员基础修补，完整生命周期仍按17.1.2A继续实现，不能将其写成已修复。原冻结记录始终保留，不以本次启动校验宣称跨epoch计划复用已完成。
+- 本地最终成员/启动/绑定/运行资源61 passed/11.40秒；正式账号writer、手机号与batch、rank组等72 passed/13.10秒；完整36个引擎测试文件三组76/144/135 passed，共355项，分别12.17/23.07/20.59秒（membership_engine_activation_shard_0/1/2.log）。启动、group_clone既有分支和Planner角色边界47 passed/14.92秒；只抽出原group_clone启动分支使改动函数保持50非空行内，行为不变。
+- 全部后台测试使用backend/.venv、单次硬60秒；PG显式55439/tg_yunying_test并持原advisory lock。已有0196/0218增量升级、旧表/记录保留、新表为空及迁移图已验证。剩余Provider/账号登录/评论质量迁移共11 passed/12.18秒；旧评论测试曾跨共享库降级被0219的历史证据保护正确拒绝，现改为独立schema重建/降升级，生产保护未放松。0225两张表的非空证据降级保护、PG事务/唯一约束与评论迁移共5 passed/22.16秒（membership_downgrade_evidence_qa.log），PG迁移也使用独立schema，非空时原表/记录保留。
+- 04:55:04只读生产仍为01d95307：9活群、2评论、6点赞、5浏览运行且unified=0，正式binding/lease/budget/fence均0，新成员表尚未部署。最近30分钟69次view_observed跨3任务、5次send_message/remote_message_observed跨2任务；44次view safely_not_executed、101次入群unknown及1次群验证按钮unknown单列，另1次membership_observed。评论和点赞无本窗新完成事实。回执current_engine_inventory_0455.jsonl/.stderr；没有生产DB修改或Task激活。
+- Release Gate范围为已提交68d5c2a9历史结果证明修补与本成员基础候选。源码/PRD/索引和定向QA已形成可审查结果；固定SHA通过master→release→Deploy Production后仍需独立current/全部服务SHA、0225 schema和Task/typed fact读回。迁移不自动回填，bootstrap需新版本下重新preview与exact hash/SHA校验，不能夹带Task切换。非空成员证据不得downgrade删表；发布路径按现行生产合同执行，失败前向修复，不自动重放unknown。完整目标状态仍为未验收。

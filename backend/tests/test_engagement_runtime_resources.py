@@ -48,6 +48,7 @@ from app.services.task_center.engagement_unowned_activity import (
     observe_managed_outbound,
 )
 from app.services.task_center.service import create_channel_like_task
+from tests.account_group_revision_test_support import bootstrap_groups
 
 
 pytestmark = pytest.mark.no_postgres
@@ -71,6 +72,7 @@ def _seed(
     session.add_all([_account(11), _account(12), _account(13)])
     session.add(OperationTarget(id=101, tenant_id=1, target_type="channel", tg_peer_id="-100101", title="测试频道"))
     session.commit()
+    bootstrap_groups(session, 1, (1,))
     _seed_policies(session, pool_limit, proxy_limit)
     task = create_channel_like_task(
         session,
