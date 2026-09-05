@@ -490,11 +490,18 @@ def test_daily_cap_applies_per_continuous_period_without_shrinking_obligations(m
 
     assert created == len(action_rows) == 2
     assert obligations == 2
-    assert len(reservations) == len(periods) == 2
+    assert len(reservations) == 2
     assert {period.capacity_limit for period in periods} == {1}
-    assert {row.capacity_period_id for row in reservations} == {
-        period.id for period in periods
-    }
+    periods_by_id = {period.id: period for period in periods}
+    assert len({row.capacity_period_id for row in reservations}) == 2
+    for row in reservations:
+        period = periods_by_id[row.capacity_period_id]
+        assert period.period_start_at <= row.scheduled_for_at < period.period_end_at
+        assert row.capacity_units == period.capacity_limit
+    ordered_periods = sorted(periods, key=lambda period: period.period_start_at)
+    assert all(left.period_end_at == right.period_start_at for left, right in zip(
+        ordered_periods, ordered_periods[1:], strict=False,
+    ))
     assert {row.reservation_state for row in reservations} == {"action_reserved"}
 
 
