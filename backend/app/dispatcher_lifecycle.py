@@ -1,20 +1,19 @@
 from __future__ import annotations
 
-import json
 import logging
 import os
 import resource
 import socket
 import threading
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 from time import monotonic
-from typing import Callable, Protocol
+from typing import Callable
 from uuid import uuid4
 
 from sqlalchemy import func, or_, select
 
+from app.dispatcher_recycle_lease import RecycleLease, RedisRecycleLease
 from app.models import Action, ExecutionAttempt
 from app.services.image_verification_runtime import ImageVerificationRuntime
 
@@ -26,29 +25,6 @@ PROC_STATUS_PATH = Path("/proc/self/status")
 RUNNING_ATTEMPT_STATUSES = frozenset(
     {"before_call", "before_gateway", "gateway_call_started"}
 )
-RECYCLE_LEASE_KEY = "tgyunying:dispatcher:rolling-recycle"
-LEASE_RENEW_LUA = """
-if redis.call('GET', KEYS[1]) == ARGV[1] then
-  return redis.call('EXPIRE', KEYS[1], ARGV[2])
-end
-return 0
-"""
-LEASE_RELEASE_LUA = """
-if redis.call('GET', KEYS[1]) == ARGV[1] then
-  return redis.call('DEL', KEYS[1])
-end
-return 0
-"""
-
-
-class RecycleLease(Protocol):
-    def acquire(self) -> bool: ...
-
-    def renew(self) -> bool: ...
-
-    def release(self) -> bool: ...
-
-    def acknowledge_successor(self) -> bool | None: ...
 
 
 @dataclass(frozen=True)
@@ -83,107 +59,6 @@ class DispatcherSafetySnapshot:
         if self.probe_error:
             blockers.append("safety_probe_error")
         return tuple(blockers)
-
-
-class RedisRecycleLease:
-    def __init__(
-        self,
-        client: object,
-        *,
-        worker_instance_id: str,
-        shard_index: int,
-        ttl_seconds: int,
-    ) -> None:
-        self._client = client
-        self._ttl_seconds = ttl_seconds
-        self._worker_instance_id = worker_instance_id
-        self._shard_index = shard_index
-        self._next_renew_at = 0.0
-        now = datetime.now(UTC)
-        self._value = json.dumps(
-            {
-                "token": str(uuid4()),
-                "worker_instance_id": worker_instance_id,
-                "shard_index": shard_index,
-                "requested_at": now.isoformat(),
-            },
-            sort_keys=True,
-        )
-
-    def acquire(self) -> bool:
-        try:
-            acquired = bool(
-                self._client.set(
-                    RECYCLE_LEASE_KEY,
-                    self._value,
-                    nx=True,
-                    ex=self._ttl_seconds,
-                )
-            )
-            if acquired:
-                self._next_renew_at = monotonic() + (
-                    self._ttl_seconds / 3
-                )
-            return acquired
-        except Exception:  # noqa: BLE001 - unavailable is a drain blocker.
-            return False
-
-    def renew(self) -> bool:
-        if monotonic() < self._next_renew_at:
-            return True
-        try:
-            renewed = bool(
-                self._client.eval(
-                    LEASE_RENEW_LUA,
-                    1,
-                    RECYCLE_LEASE_KEY,
-                    self._value,
-                    self._ttl_seconds,
-                )
-            )
-            if renewed:
-                self._next_renew_at = monotonic() + (
-                    self._ttl_seconds / 3
-                )
-            return renewed
-        except Exception:  # noqa: BLE001 - unavailable is a drain blocker.
-            return False
-
-    def release(self) -> bool:
-        try:
-            return bool(
-                self._client.eval(
-                    LEASE_RELEASE_LUA,
-                    1,
-                    RECYCLE_LEASE_KEY,
-                    self._value,
-                )
-            )
-        except Exception:  # noqa: BLE001 - release failure must stay visible.
-            return False
-
-    def acknowledge_successor(self) -> bool | None:
-        try:
-            raw = self._client.get(RECYCLE_LEASE_KEY)
-            value = raw.decode() if isinstance(raw, bytes) else str(raw or "")
-            payload = json.loads(value) if value else {}
-            is_predecessor = (
-                int(payload.get("shard_index", -1)) == self._shard_index
-                and str(payload.get("worker_instance_id") or "")
-                != self._worker_instance_id
-            )
-            if not is_predecessor:
-                return False
-            return bool(
-                self._client.eval(
-                    LEASE_RELEASE_LUA,
-                    1,
-                    RECYCLE_LEASE_KEY,
-                    value,
-                )
-            )
-        except Exception:  # noqa: BLE001 - caller retries transient ack failure.
-            return None
 
 
 class DispatcherSafetyProbe:
@@ -257,17 +132,36 @@ class DispatcherLifecycle:
         self.trigger = ""
         self.automatic = False
         self.gateway_open = True
+        self._has_recycle_lease = False
+        self._waiting_recycle_trigger = ""
         self._successor_checked = False
         self.instance_id = instance_id or str(uuid4())
         self.shard_index = shard_index
 
     def request_stop(self, trigger: str, *, automatic: bool) -> None:
+        if self.state != "active":
+            return
+        if automatic and not self._lease.acquire():
+            if self._waiting_recycle_trigger != trigger:
+                logger.warning(
+                    "dispatcher lifecycle recycle deferred trigger=%s "
+                    "reason=recycle_lease_unavailable state=active",
+                    trigger,
+                )
+                self._waiting_recycle_trigger = trigger
+            return
         with self._lock:
-            if self.state != "active":
-                return
-            self.state = "recycle_requested"
-            self.trigger = trigger
-            self.automatic = automatic
+            accepted = self.state == "active"
+            if accepted:
+                self._has_recycle_lease = automatic
+                self._waiting_recycle_trigger = ""
+                self.state = "recycle_requested"
+                self.trigger = trigger
+                self.automatic = automatic
+        if not accepted:
+            if automatic and not self._lease.release():
+                logger.warning("dispatcher lifecycle unused recycle lease release failed")
+            return
         logger.info("dispatcher lifecycle recycle_requested trigger=%s", trigger)
 
     def observe_after_batch(self) -> None:
@@ -299,6 +193,7 @@ class DispatcherLifecycle:
         self.state = "draining"
         while True:
             if self.automatic and not self._lease.renew():
+                self._has_recycle_lease = False
                 self.state = "drain_blocked"
                 self._acquire_automatic_lease(
                     heartbeat,
@@ -345,7 +240,7 @@ class DispatcherLifecycle:
         heartbeat: Callable[[dict[str, object]], None],
         stop_event: threading.Event | None,
     ) -> bool:
-        if not self.automatic:
+        if not self.automatic or self._has_recycle_lease:
             return False
         while not self._lease.acquire():
             self.state = "drain_blocked"
@@ -354,6 +249,7 @@ class DispatcherLifecycle:
                 self.metadata(blocker="recycle_lease_unavailable"),
             )
             _wait(stop_event)
+        self._has_recycle_lease = True
         return True
 
     def _close_gateway(self) -> None:

@@ -5179,6 +5179,26 @@ def _drain_task_dispatcher(
     process_type: str | None,
     execution_lane: str,
 ) -> int:
+    from .runtime_resources import dispatch_runtime_reservation_scope
+
+    with dispatch_runtime_reservation_scope():
+        return _run_dispatcher_batch(
+            session_factory,
+            limit=limit,
+            exclude_task_ids=exclude_task_ids,
+            process_type=process_type,
+            execution_lane=execution_lane,
+        )
+
+
+def _run_dispatcher_batch(
+    session_factory,
+    *,
+    limit: int,
+    exclude_task_ids: set[str] | None,
+    process_type: str | None,
+    execution_lane: str,
+) -> int:
     from .telegram_termination import drain_telegram_terminations
 
     drain_telegram_terminations(session_factory)

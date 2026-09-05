@@ -1492,3 +1492,8 @@ legacy-only A 冷启动分支固定为 `frozen legacy A -> 原 A Session 只读 
 > **2026-09-05 post-login ABC 隔离流：** stopped exact batch + 原 ABC request -> `post_login_exception.preview_post_login_abc_exception` 冻结批次/item/operation/slot/A/request/global 状态 -> 同指纹 apply -> 原 operation deferred_reconcile/unknown/quarantined + item deferred_reconcile + batch completed_with_exceptions + request reconcile_unknown + AuditLog。全程无 Gateway；旧批次执行版本不重绑，其他账号只能通过各自原审批入口继续。
 
 > **2026-09-05 post-login C 产物恢复：** exact request + running 或有原版本停批审计的 stopped item + C confirmed 双副本 + expired lease + MY client0 -> 原 post-bundle preview/apply 冻结 request/version -> 同 operation artifact recovery -> post-C resume -> E4 -> 原 owner reconciliation。无新 C 登录。
+
+
+### 2026-09-06 Dispatcher回收与本地资源所属修订
+
+`批次资源作用域 -> claim/本地登记 -> 分组future -> 全部future返回 -> finally按原对象释放本批次本地登记 -> 自动阈值检查/争用rolling lease -> 胜者停止claim并drain，败者保持active下一批`。claim、Action读取或finalization异常仍沿原错误路径上抛/记录；其他线程/批次及同Action的新对象不受清理。finally只处理进程登记及已有Redis token，durable Action/Attempt/预算/并发lease/RemoteInvocationFence/transport ACK保持原事务与对账入口，不由本地计数变化推导远端结果。已进入drain的续租丢失继续阻塞安全退出，人工stop与严格Gateway断连保持原合同。旧流程先stop后争租约的顺序由本修订覆盖。统一PRD19.40/19.42和Dispatcher专项5.1/5.5为产品口径。

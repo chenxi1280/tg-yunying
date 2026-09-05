@@ -2712,3 +2712,39 @@ API与运行校验共用同一纯配置规则：两类关闭、两项权重为0�
 22:28反向检查触发本节resync：主机60已独立读回但Docker仍超时，生成2与dispatcher1实际memory cgroup的swappiness仍为0；前者HostConfig未显式设置此项，容器保留创建时继承值。仅改主机运行值不足以修正已有cgroup。先将精确生成2容器6a88752d…（PID2617817/start_ticks23828998）的memory.swappiness从0调整为60，核对container ID/name/release/boot/PID start/cgroup路径/原值/HostConfig hash及三个内存限额，其他配置和进程不动；使用内核公开memory controller接口，独立ops审计与读回。只允许原cgroup存续期间按期望60回滚0，新容器不得沿用旧PID或路径。观察真实换页、I/O、Docker响应及该worker自然工作；取得改善证据后才将同一精确预览流程扩到本项目其他仍为0的运行容器，其他项目cgroup不在范围。此次是临时运行调度纠正，尚未持久化；不能写入Docker磁盘metadata伪造配置生效，也不能用swap量上升证明业务恢复。补正后的本运营子项design_status=complete。
 
 持久化交接：本项目共用backend镜像的API与18个worker实例在Compose中显式声明memory swappiness为60，采用一个命名YAML标量统一维护，避免重建后重新继承Docker父cgroup的旧0；这不是内存上限、swap容量或业务并发限制。独立image-verification镜像与其他项目不在本配置变更集合。主机/etc/sysctl.conf保留原文件，应用的运行合同由Compose显式项承载；主机临时60是否保留另按恢复测量结算。QA解析新旧Compose全部服务，证明恰好19项增加同一字段、其他映射与已有override保持一致；正常发布继续先拉取成功再fence，部署后实际HostConfig及cgroup读回必须为60，不能只读YAML。
+
+
+### 19.40 自动回收竞争必须保持另一 dispatcher 接单
+
+2026-09-05 23:51:58只读生产证据：73388cd1的dispatcher-1为drain_blocked/recycle_lease_unavailable，dispatcher-2持租约且draining；两者此前均因RSS阈值停止主循环。dispatcher-2快照的active_operations、owned_actions、unfinished_attempts均为0，runtime_reservations为6且Gateway仍open。此计数不等于6个真实RPC，不能按终态数量或等待时间清空。现代码observe_after_batch先request_stop、drain_until_safe才acquire，与另一副本必须继续接单的合同冲突。
+
+本次L3根因修补先修正专项PRD§5.1/5.5：自动请求必须在当前批次已返回后先取得原owner-token租约，成功才停止下一次claim；未取得继续正常工作，明确记录回收等待。进入drain复用已取得的租约，续租丢失继续安全阻塞。SIGTERM保持人工停机优先和完整安全排空。不得为解决6个本地reservation计数而跳过未知结果、Gateway断连或durable事实要求。local reservation的具体泄漏路径另行通过真实调用边界反例定位后修补。
+
+Product Handoff：design_status=complete仅覆盖租约竞争顺序；现有状态/配置/DB模型可承载，无Task数量/质量/权限/UI改动。QA须复现双实例同时超过阈值但只有租约胜者停止，败者继续下一批；胜者drain不再次SET NX；人工停机和租约续租丢失继续按安全条件处理。发布前做单元及真实worker loop接线验证，发布后分别读回两个副本的instance、状态、heartbeat和新Attempt/typed fact。资源恢复与四类引擎E4分别验收，当前均不能写production_fixed。
+
+
+### 19.41 存量浏览初始排期的日界相等缺口
+
+16d4f2ed的完整CI暴露了真实legacy排期边界缺口。固定北京时间12:50的两个新浏览点为12:50/13:00；23:50时原curve产生23:50/次日00:00。TaskDayLedger使用次日00:00作为半开deadline，_fit_before_deadline却把等于deadline视为已合法，随后reserve_task_schedule_times按正确的<deadline筛掉第二项，因此原测试2变1。独立调用原生产排期函数及隔离PG planner均已复现，不能仅把测试固定到中午掩盖此缺口。
+
+本次设计保持既有legacy初始排期适配规则，将max(times)==deadline纳入原有fit分支，使新点全部位于[start,deadline)。无剩余时段仍返回空；不改变保留minimum spacing的截断路径，不移动任何已冻结Action/pacing owner，也不改变unified/current的来源排期、目标或安全容量。固定中午与23:50的真实planner回归都应创建原目标2个并严格早于日界。design_status=complete，dev仅修改该相等判断并保留确定性日界用例；发布后typed view事实仍独立验收。
+
+
+### 19.42 dispatch本地资源登记必须覆盖整个批次生命周期
+
+代码反查和故障注入确认，claim已登记本地reservation后抛出数据库异常、Action在进入执行前已消失/不再executing、dispatch finalization抛异常等路径会绕过现有释放点；future已返回后本地计数仍留存。此为可复现的资源生命周期缺口，不能据此断言生产现存6项逐一来自同一路径。
+
+修订范围是进程内本批次资源登记：从进入claim前建立所属作用域，在所有本批次futures实际返回后以finally释放尚留存的本批次登记；ThreadPoolExecutor仍先等待其已启动futures退出，任何一项抛错不能提前释放另一项运行中的登记。作用域保存创建时的Action id与reservation对象身份，仅在当前对象仍为原对象时释放；同id的新登记、其他批次和其他线程的登记不得被清除。资源获取中间态也要登记，异常不能遗留本地账号占位。错误按原路径继续上抛/记录，不以finally伪造执行成功。
+
+本地释放沿用原Redis token compare-and-release，绝不更新durable Action、Attempt、obligation、AccountPoolConcurrencyLease、预算、RemoteInvocationFence、unknown或transport termination。批次函数结束不等于远端调用已取消；生命周期仍检查实际active operations、owned Action/unfinished Attempt和严格Gateway断连，unknown仍只能由原reconcile收口。无需迁移、新阈值、超时、旁路或计数清零脚本；不回补当前进程的未知登记。
+
+Product Handoff：design_status=complete，已核对生产唯一claim_actions入口是service的dispatcher批次；同时覆盖普通及search lane，保持分批执行/公平性/账号并发。QA覆盖claim失败、Action消失/终态、finalization异常、并行future待退出、其他批次和同id successor保护；与租约前移、Gateway原子性、角色drain和unknown终止证据联合回归。发布后需用新instance真实生命周期和typed业务链验收，不能把计数归零或容器健康冒充四类履约通过。
+
+
+### 19.43 2026-09-06 用户确认活群日目标改为2000
+
+本任务用户明确确认“每群每天2000条”，覆盖先前19.29及本次生产验收中九个活群4200/日的后续目标。九群合计18000/日；质量、账号覆盖、不同任务类型、原未知结果和真实消息证据口径不变。不得因数量降低而改变评论、点赞或浏览目标，也不得回写过去任务日或重算已冻结的历史成功/未知身份。
+
+并行主干提交2079dead及Production AI Dispatch Diagnostics run33976702434已先于本任务确认执行；其回执显示九群Task配置及2026-09-06的日目标均4200→2000，没有回执涉及过去任务日。该回执仍需独立DB核对，不作为2000条已完成或统一接管的证据。持久目标、旧已物化Action/未决窗口和后续新计划须各自核验所属，不能重复执行同一批修改。
+
+该并行提交将2000修改脚本无条件接入诊断workflow，会使纯诊断运行重复写生产。本次dev恢复原只读入口，移除这段无条件调用并保留已有一次性脚本和执行历史；不在部署或诊断中追加批量目标修改。后续实际需调整目标仍用既有窄范围preview/apply与audit/readback合同。此修订标记product resync，design_status=complete；QA须证明默认诊断命令不含该修改脚本，发布候选包含并行提交的明确审阅结果，当前2000配置以真实读回为准。

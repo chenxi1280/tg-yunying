@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import threading
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from uuid import uuid4
 
@@ -16,6 +18,9 @@ def _setting(settings, name: str, default):
 _IN_FLIGHT_LOCK = threading.Lock()
 _IN_FLIGHT_ACCOUNTS: set[int] = set()
 _ACTION_RESERVATIONS: dict[str, "_RuntimeReservation"] = {}
+_BATCH_RESERVATIONS: ContextVar[tuple[tuple[str, "_RuntimeReservation"], ...] | None] = (
+    ContextVar("dispatcher_batch_reservations", default=None)
+)
 _TERMINAL_LOCK_HOLDER_STATUSES = frozenset({"success", "failed", "skipped", "unknown_after_send"})
 _RELEASE_IF_OWNER_LUA = "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end"
 
@@ -35,10 +40,40 @@ class _RateBucket:
     cost: float = 1.0
 
 
+@contextmanager
+def dispatch_runtime_reservation_scope():
+    token = _BATCH_RESERVATIONS.set(())
+    try:
+        yield
+    finally:
+        reservations = _BATCH_RESERVATIONS.get() or ()
+        _BATCH_RESERVATIONS.reset(token)
+        for action_id, reservation in reservations:
+            _release_owned_runtime_reservation(action_id, reservation)
+
+
+def _record_runtime_reservation(action_id: str, reservation: _RuntimeReservation) -> None:
+    # The caller holds _IN_FLIGHT_LOCK; capture only this context's new owners.
+    _ACTION_RESERVATIONS[action_id] = reservation
+    owned = _BATCH_RESERVATIONS.get()
+    if owned is not None:
+        _BATCH_RESERVATIONS.set((*owned, (action_id, reservation)))
+
+
+def _release_owned_runtime_reservation(action_id: str, reservation: _RuntimeReservation) -> None:
+    with _IN_FLIGHT_LOCK:
+        if _ACTION_RESERVATIONS.get(action_id) is not reservation:
+            return
+        del _ACTION_RESERVATIONS[action_id]
+        if reservation.account_id is not None:
+            _IN_FLIGHT_ACCOUNTS.discard(reservation.account_id)
+    _release_reservation_tokens(reservation)
+
+
 def _reserve_runtime_resources(action: Action) -> bool:
     if _uses_fact_first_contract(action):
         with _IN_FLIGHT_LOCK:
-            _ACTION_RESERVATIONS[action.id] = _RuntimeReservation(account_id=None)
+            _record_runtime_reservation(action.id, _RuntimeReservation(account_id=None))
         return True
     account_id = int(action.account_id) if action.account_id is not None else None
     if account_id is not None:
@@ -60,7 +95,7 @@ def _reserve_runtime_resources(action: Action) -> bool:
                 }
                 return False
             _IN_FLIGHT_ACCOUNTS.add(account_id)
-            _ACTION_RESERVATIONS[action.id] = _RuntimeReservation(account_id=account_id)
+            _record_runtime_reservation(action.id, _RuntimeReservation(account_id=account_id))
     redis_reservation = _reserve_redis_token(action)
     if redis_reservation is False:
         _release_runtime_resources(action)
@@ -73,11 +108,11 @@ def _reserve_runtime_resources(action: Action) -> bool:
         _release_runtime_resources(action)
         return False
     with _IN_FLIGHT_LOCK:
-        _ACTION_RESERVATIONS[action.id] = _RuntimeReservation(
+        _record_runtime_reservation(action.id, _RuntimeReservation(
             account_id=account_id,
             redis_reservations=redis_reservation if redis_reservation else (),
             redis_account_lock=redis_account_lock if redis_account_lock else None,
-        )
+        ))
     return True
 
 
@@ -97,10 +132,14 @@ def _release_runtime_resources(action: Action) -> None:
         if reservation and reservation.account_id is not None:
             _IN_FLIGHT_ACCOUNTS.discard(reservation.account_id)
     if reservation:
-        for redis_key, redis_token in reservation.redis_reservations:
-            _release_redis_reservation(redis_key, redis_token)
-        if reservation.redis_account_lock:
-            _release_redis_reservation(*reservation.redis_account_lock)
+        _release_reservation_tokens(reservation)
+
+
+def _release_reservation_tokens(reservation: _RuntimeReservation) -> None:
+    for redis_key, redis_token in reservation.redis_reservations:
+        _release_redis_reservation(redis_key, redis_token)
+    if reservation.redis_account_lock:
+        _release_redis_reservation(*reservation.redis_account_lock)
 
 
 def _recover_stale_local_inflight_reservation(action: Action, account_id: int) -> bool:

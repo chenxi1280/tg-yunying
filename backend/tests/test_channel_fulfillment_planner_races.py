@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import pytest
 from sqlalchemy import create_engine, select
@@ -15,8 +15,9 @@ from app.services.task_center.account_pacing_guard import (
     AccountPacingLockUnavailable,
     reserve_account_pacing,
 )
-from app.services.task_center.executors import channel_like, channel_view
+from app.services.task_center.executors import channel_like, channel_view, common
 from app.services.task_center.pacing import next_local_day_deadline
+from app.timezone import BEIJING_TZ
 
 
 @pytest.fixture
@@ -160,14 +161,20 @@ def test_like_planner_skips_source_confirmed_after_candidate_snapshot(
     assert actions[0].payload["channel_message_id"] == message.id
 
 
+@pytest.mark.parametrize("hour", [12, 23])
 def test_view_planner_does_not_append_after_latest_future_action(
     session: Session,
     monkeypatch,
+    hour: int,
 ) -> None:
+    now_value = datetime(2026, 9, 5, hour, 50, tzinfo=BEIJING_TZ)
+    monkeypatch.setattr(channel_view, "_now", lambda: now_value)
+    monkeypatch.setattr(common, "_now", lambda: now_value)
     task, _channel, _message = _scope(
         session,
         task_id="view-future-tail-task",
         task_type="channel_view",
+        now_value=now_value,
         type_config={
             "target_channel_id": 901,
             "message_scope": "specific",
@@ -177,7 +184,6 @@ def test_view_planner_does_not_append_after_latest_future_action(
             "view_count_jitter": 0,
         },
     )
-    now_value = _now()
     task.pacing_config = {"mode": "template", "template": "moderate_6h"}
     session.add(Action(
         id="future-tail-action",
@@ -197,7 +203,7 @@ def test_view_planner_does_not_append_after_latest_future_action(
         lambda target, *_args, **_kwargs: target,
     )
 
-    assert channel_view.build_plan(session, task) == 2
+    assert channel_view.build_plan(session, task) == 2, (task.stats, task.last_error)
     created = [
         action for action in _main_actions(session, task.id, "view_message")
         if action.id != "future-tail-action"
@@ -216,8 +222,9 @@ def _scope(
     task_id: str,
     task_type: str,
     type_config: dict,
+    now_value: datetime | None = None,
 ) -> tuple[Task, OperationTarget, ChannelMessage]:
-    now_value = _now()
+    now_value = now_value or _now()
     session.add_all([
         TgAccount(
             id=31,
@@ -262,6 +269,7 @@ def _scope(
         name=task_id,
         type=task_type,
         status="running",
+        created_at=now_value,
         next_run_at=now_value,
         account_config={
             "selection_mode": "manual",

@@ -1347,7 +1347,7 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 
 | 计划入口 | 计划职责 | 当前状态 |
 | --- | --- | --- |
-| `backend/app/worker.py`、`backend/app/dispatcher_lifecycle.py`、`backend/app/telethon_lifecycle.py` | P0 stop/drain event、`active -> recycle_requested -> draining -> safe_to_exit`、DB/attempt/future safe probe、严格 Telethon shutdown 与 successor-heartbeat rolling lease；整轮 futures 返回、下一次 claim 前检查，SIGTERM 不新增 Action/session 锁，断连失败保持 `drain_blocked` | implemented；本地测试通过，待 release/E4 |
+| `backend/app/worker.py`、`backend/app/dispatcher_lifecycle.py`、`backend/app/dispatcher_recycle_lease.py`、`backend/app/telethon_lifecycle.py` | 自动回收先取得owner-token租约才停止claim，败者保持active；Redis实现按职责独立，drain复用原租约；P0 stop/drain event、`active -> recycle_requested -> draining -> safe_to_exit`、DB/attempt/future safe probe、严格 Telethon shutdown 与 successor-heartbeat rolling lease；整轮 futures 返回、下一次 claim 前检查，SIGTERM 不新增 Action/session 锁，断连失败保持 `drain_blocked` | implemented；本地测试通过，待 release/E4 |
 | `backend/app/integrations/telegram/search_join.py`、`backend/app/services/{membership_challenges,image_verification_runtime,image_verification_sources,search_join_image_solver}.py`、`backend/app/ai_gateway.py` | P0 固定 OCR 槽、本地优先单模型 hedge、统一 remaining budget、message identity/deadline audit、callback 前同 fingerprint 复读；无新验证码表 | implemented；本地测试通过，待 release/E4 |
 | `backend/app/image_verification_ocr.py`、`backend/app/image_verification_worker.py`、`backend/app/image_verification_worker_app.py`、`backend/app/image_verification_worker_{contract,config}.py`、`backend/app/services/image_verification_client.py`、`docker-compose.image-verification.yml` | P1 私网单实例 OCR runtime；核心 OCR generation 与 FastAPI/lifespan 装配分离；RapidOCR 对整图验证码只构造 3.9.2 `TextRecognizer`，不常驻 det/cls 模型，ddddOCR 与双源合同不变；partial timeout 保留已完成 source、显式 timeout source、generation draining、新请求拒绝、双 source timeout fail closed；启动预热与 authenticated `/ready`；deterministic POST/GET、请求数/soft RSS 回收、remote no-native-fallback 与容器隔离 | 2026-08-18 recognizer-only 本地 QA 通过；Actions/生产 RSS 与真实 challenge E4 待验收 |
 | `deploy/{docker-env,compose-up,check-web}.sh`、`.github/workflows/deploy-production.yml`、`docker-compose.{server,dispatcher-runtime,image-verification}.yml` | 按 contract/remote 开关加载资源 override；未校准时不启用，启用时强制 memory/stop grace/token/payload/deadline 配置；OCR healthcheck 调用带 token `/ready`，发布 gate 继续 POST 合成图片并要求 RapidOCR、ddddOCR 双 source 均完成；全量 takeover 仅由 `compose-up.sh` 在 Stage B 执行，workflow 在 `release.sh` 后只做有界只读 gate | 2026-08-18 recognizer-only functional gate 已实现；待 Actions/生产 E3/E4 |
@@ -1486,3 +1486,11 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 > **2026-09-05 post-login ABC 异常隔离：** `services/authorization_dr/post_login_exception.py` 提供单账号 stopped 批次的 preview/apply，复用历史异常队列的未知分类与隔离投影，独立校验原 post-login 请求审批、当前/原执行版本指纹与单账号边界；保留 unknown，不重登/重发，不改变历史 full sweep 接口。定向回归 `tests/test_post_login_abc_exception.py`。
 
 > **2026-09-05 post-login C post-bundle：** `authorization_dr/post_login_post_bundle_state.py` 校验单账号原请求、审批、版本与发布停批审计，由现有 `online_abc_post_bundle_interrupt` 共用产物/owner/runtime 校验及恢复转换；定向测试 `tests/test_post_login_abc_post_bundle.py`。
+
+
+### 2026-09-06 dispatch批次资源生命周期与浏览日界修补
+
+- `backend/app/services/task_center/service.py::_drain_task_dispatcher`在claim前建立批次本地资源作用域，`_run_dispatcher_batch`保留原领取、批次分组和future等待；退出finally发生在全部已启动future返回后。
+- `backend/app/services/task_center/runtime_resources.py::dispatch_runtime_reservation_scope`按创建上下文记录Action id和对象身份，精确释放尚存本地登记及原token；不以扫描当前全部登记、Action终态或时长清理其他所有者，不改durable lease/budget/fence/unknown。
+- `backend/app/services/task_center/pacing.py::_fit_before_deadline`将相等日界纳入既有初始fit，半开deadline前保留新排期数量；固定中午/23:50的真实浏览planner回归覆盖此差异，current冻结排期不变。
+- `backend/tests/test_dispatcher_recycle_admission.py`、`backend/tests/test_dispatch_runtime_reservation_lifetime.py`覆盖租约竞争、人工stop、续租丢失、异常finally、并行future和本地/durable资源边界。设计合同见统一PRD19.40—19.42及Dispatcher专项5.1/5.5；此条为本地实现，发布和E4另验。

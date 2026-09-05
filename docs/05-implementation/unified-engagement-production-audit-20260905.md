@@ -378,3 +378,27 @@ d6d637aa51251ca4040ebcb82b757e2157fd647d已按master/release冻结并触发Deplo
 23:37:56最新完整Dockerinspect已正常返回：current和十核心容器仍733，APIok，八个healthy而两个dispatcher unhealthy，后者仍需独立定位。主机load5.75/3.65/4.46、可用743396kB，swap约1.59GiB；原容器StartedAt不变。控制面和资源响应有改善，但两个dispatcher及业务事实未验收，不能称production_fixed或统一接管。
 
 本批正式代码仅给Compose中共用backend镜像的19个服务显式添加mem_swappiness=60，通过命名标量统一维护，避免重建继承旧0。新旧YAML结构比较证明恰好19个字段增加、其余映射完全一致；22个发布/拉取失败/fence/OCR gate测试4.00秒通过，后端硬60秒。PRD19.39、运行文档与结构索引同步；无新数据库迁移或Task配置。候选继承921中尚未上线的0224索引、评论零兜底和去重内存修补。master/release远端均921，三个近期Deploy均terminal failure，无活跃发布；待形成新不可变候选走全套CI。
+
+
+### 2026-09-06 00:33 调度回收与日界缺口修补 Release Gate
+
+16d4f2ed / Deploy33975796261已终态failure：唯一失败PG shard0的test_view_planner_does_not_append_after_latest_future_action，1 failed/358 passed/7 skipped/1 xfailed；其余CI通过，镜像和部署未执行。生产仍733。23:51:58两dispatcher均因RSS停止主循环；副本1已drain_blocked等待另一个的rolling租约，副本2draining且local reservation计数6，Gateway open，active operations/owned Action/unfinished Attempt均0。后续只读快照仍为原instance和原6项，heartbeat时间已滞后，不能把查询成功写成worker健康。没有清理计数、未知结果或直接重启进程。
+
+按既有L3 Intake/Root Cause Grouping更新PRD19.40—19.42及Dispatcher专项5.1/5.5后进入dev：
+
+- 自动回收先争租约再停止claim；竞争失败保留active和下批工作，胜者将原租约带入drain，续租失效继续阻塞，竞争期间SIGTERM保留人工停止。原实现5项反例全部失败；修补后worker loop/heartbeat/role/lifecycle共52 passed/6.52s。Redis租约实现按职责从491行生命周期模块移至独立文件，键/token/TTL/renew/release/successor协议不变。
+- 日界是业务缺口而非只需固定测试时间：真实curve在23:50排出23:50与次日00:00，legacy fit误将等于deadline视为合法，后续半开预约筛掉第二项。固定12:50通过、23:50原测试失败；修补相等判断后6个真实PG planner/quiet-hour用例23.31s通过，保留原2目标和严格日界，不移动冻结排期。
+- claim之后数据库异常、读取到不存在/终态Action、finalization抛错会留下本地登记，6个异常反例在原实现失败。批次作用域从claim前登记新对象，在所有已启动future返回后finally精确释放仍属于本批次的对象；不清其他线程/批次或同id successor，不改durable业务记录。36个异常/claim/Gateway原子性用例6.16s通过；合并租约丢失、角色drain、节奏与termination回归100 passed/8 deselected/9.08s。额外真实数据库unknown保护先纠正测试中fence状态名unknown为实际remote_unknown，最终34个runtime/termination回归6.08s通过：本地登记已释放，durable unknown预算、remote_unknown lease/fence与cancellation_unconfirmed均保留。
+
+所有后端进程硬60秒；PG只使用55439/tg_yunying_test且有advisory lock。新增/拆分模块与测试均小于500行、函数不超过50非空行，diff检查通过。结构和数据流索引同步。新候选将继承16d及其祖先尚未上线的内存/Compose/0224索引/零兜底修补。最新fetch证明master/release均16d，五次近期Deploy均终态，无活跃发布；冻结候选后按master→release→完整Actions检查发布。不得把本地清理或排期测试说成线上6项已解决、dispatcher已健康或统一接管已完成。
+
+发布验收继续独立检查current/全部worker SHA与health、0224索引有效性及读查询耗时、swap/RSS/控制面耗时、新dispatcher本地心跳/生命周期/新Attempt和各类型远端事实；未知历史保留。R1共享legacy资源、配置successor和四类统一Task接管仍未实现/未apply，完整目标保持unproven。
+
+
+### 00:42 并行目标提交 resync 与最终验收输入
+
+冻结前发现主干已由其他工作推进到2079dead088d92c98e17315476e6986aa575042e，release仍16d。该提交只新增2000目标脚本及诊断workflow的无条件执行；已独立读代码和run33976702434回执，本任务用户随后明确“每群每天2000条”，PRD19.43据此覆盖后续4200验收输入。保留该并行提交和已经修改的正确配置，只移除诊断入口的无条件再执行；workflow字节级恢复16d版，YAML解析和真实shell bash -n通过。未修改一次性脚本、未重跑生产目标更新。
+
+00:40:19 DB只读RR独立确认：九群Task两处配置均2000，2026-09-06九条daily target的configured/effective/planned均2000；2026-09-05九条仍4200、冻结人数和原原因保持历史值，没有误改前一天。target脚本新增的target_update_bound政策binding计数为0。九群仍fact_first_v3、无engagement_contract_version，2000持久化不是统一引擎接管或当日履约。最后补齐来源筛选时钟后原浏览PG文件5 passed/20.59s，避免今后真实日期漂移污染固定日界回归。
+
+最终候选以2079为父提交，包含本批明确路径及诊断入口修正；此前Release Gate的“master/release均16d”仅表示发现并行提交前的快照。所有运行中的本地测试已结束、工作区其余用户文件保持不动；发布必须以新commit和新的完整CI run为证据。

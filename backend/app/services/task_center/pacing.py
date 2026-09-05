@@ -408,7 +408,7 @@ def _fit_before_deadline(
     start_at: datetime,
     deadline_at: datetime | None,
 ) -> list[datetime]:
-    if not times or deadline_at is None or max(times) <= deadline_at:
+    if not times or deadline_at is None or max(times) < deadline_at:
         return times
     if deadline_at <= start_at:
         return []

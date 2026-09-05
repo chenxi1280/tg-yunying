@@ -227,8 +227,8 @@ Dispatcher（Telegram 与业务事实 owner）
 
 | 状态 | 进入条件 | 允许行为 | 离开条件 |
 | --- | --- | --- | --- |
-| `active` | worker 启动并取得 shard 身份 | heartbeat、claim、执行 | 达到回收触发条件 |
-| `recycle_requested` | 自动阈值或 SIGTERM | 本轮已 claim 项继续执行；拒绝下一轮 claim | 自动回收取得最小 rolling-recycle lease；发布停机直接进入 draining |
+| `active` | worker 启动并取得 shard 身份 | heartbeat、claim、执行；自动回收租约竞争失败仍保持接单 | 达到自动阈值且取得回收租约，或收到 SIGTERM |
+| `recycle_requested` | 自动阈值且已取得 rolling-recycle lease，或 SIGTERM | 本轮已 claim 项继续执行；拒绝下一轮 claim | 持原租约进入 draining；发布停机直接进入 draining |
 | `draining` | 自动回收已取得 lease；或计划停机已收到 SIGTERM | 维持 heartbeat，等待 futures/业务边界收口 | 全部安全条件通过或出现 blocker |
 | `drain_blocked` | 安全条件在观测窗内不能闭合 | 不新 claim，持续暴露 blocker 和告警 | blocker 被事实性收口后回到 draining；不自动回 active |
 | `safe_to_exit` | 安全谓词全部为真 | 关闭 Telethon/client、连接与 executor，写退出审计 | 正常退出码 0 |
@@ -284,7 +284,8 @@ soft_recycle_threshold
 
 - 自动阈值回收复用 Redis 实现一个最小 rolling-recycle lease，保证同一时刻最多一个 Dispatcher 处于 `draining|safe_to_exit`；lease 使用 owner token 做 compare-and-renew/release，TTL 大于 canary p99 drain 并在 draining 期间续租。该 lease 不参与 Action claim、账号/session 所有权或 callback。
 - lease 只需要 worker instance UUID、shard、requested_at、expires_at；新实例不得复用旧 instance ID。
-- lease 不可用、续租失败或 owner token 不匹配时，当前 worker 保持停止新 claim 并写 `drain_blocked=recycle_lease_unavailable|lost`，不得把自己记为 safe-to-exit；恢复 lease 事实后再继续。计划发布的 SIGTERM drain 不依赖该运行时自动回收 lease。
+- 自动阈值检查先竞争租约，再离开 `active`。竞争失败或 Redis 不可用时继续本 shard 的正常 heartbeat、claim 和执行，明确记录回收等待原因；不能先停止接单再等待租约。已经取得的租约直接带入 drain，不能对自己的 SET NX 租约重复 acquire 而自锁。
+- 已进入 drain 后续租失败或 owner token 不匹配时，当前 worker 保持停止新 claim 并写 `drain_blocked=recycle_lease_unavailable|lost`，不得把自己记为 safe-to-exit；恢复租约事实后再继续。计划发布的 SIGTERM drain 不依赖该运行时自动回收 lease。自动竞争期间收到人工停机时，以人工 stop 为准，不能覆盖为 automatic；只释放本实例刚取得但未用于自动 drain 的租约。
 - 一个 Dispatcher drain 期间，另一个保持原公平份额和安全并发；不得把全部搜索或 AI 业务强行迁移到单 shard。
 - 第二个 Dispatcher 只能在第一个新实例 heartbeat 稳定、shard identity 正确、回收 lease 已释放后开始回收。
 

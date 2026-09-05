@@ -107,7 +107,7 @@ def test_threshold_requests_automatic_recycle() -> None:
 
 
 @pytest.mark.no_postgres
-def test_automatic_drain_waits_for_lease_and_active_operation() -> None:
+def test_automatic_recycle_waits_while_active_then_drains_current_operations() -> None:
     lease = _Lease([False, True])
     probe = _Probe([1, 0, 0])
     disconnects: list[float] = []
@@ -120,6 +120,8 @@ def test_automatic_drain_waits_for_lease_and_active_operation() -> None:
         metrics_reader=_metrics,
     )
     lifecycle.request_stop("rss", automatic=True)
+    assert lifecycle.state == "active"
+    lifecycle.observe_after_batch()
 
     snapshot = lifecycle.drain_until_safe(heartbeats.append)
 
@@ -128,10 +130,7 @@ def test_automatic_drain_waits_for_lease_and_active_operation() -> None:
     assert lease.acquire_calls == 2
     assert lease.release_calls == 0
     assert disconnects == [2]
-    assert any(
-        item.get("drain_blocker") == "recycle_lease_unavailable"
-        for item in heartbeats
-    )
+    assert any(item["safety"].get("active_operations") == 1 for item in heartbeats)
 
 
 @pytest.mark.no_postgres
