@@ -76,7 +76,7 @@ def channel_scope(session: Session, task: Task, config: dict, *, comment_availab
                 record_source_wait(session, task)
             if next_probe_at is not None:
                 task.next_run_at = normalize_datetime(next_probe_at)
-            if task.type in ("channel_view", "channel_like", "channel_comment") and state_id is not None:
+            if task.type in ("channel_view", "channel_like") and state_id is not None:
                 existing_messages = _stale_channel_view_messages(
                     session, task, config, state_id=state_id,
                     snapshot_revision=snapshot_revision,
