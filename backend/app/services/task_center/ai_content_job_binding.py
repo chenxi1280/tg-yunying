@@ -277,9 +277,7 @@ def _context_route(
     )
     if matched:
         return matched[selector % len(matched)]
-    if not matched and "general" in allowed and not any(
-        marker in evidence for marker in _ADULT_CONTEXT_MARKERS
-    ):
+    if not matched and "general" in allowed:
         return "general"
     raise AiContentJobBindingError("context_route_unproven")
 

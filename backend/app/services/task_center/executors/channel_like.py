@@ -423,6 +423,9 @@ def _like_account_schedule(
         release_not_before_at=release_at,
         source_identity=source.owner_identity,
     )
+    if planned_at and source.deadline_at and wall_datetime(planned_at) >= wall_datetime(source.deadline_at):
+        _record_like_shortfall(task, 1, 0)
+        return None
     try:
         reservation = reserve_account_pacing(
             session, tenant_id=task.tenant_id, task_id=task.id,
@@ -436,6 +439,9 @@ def _like_account_schedule(
             action_class="reaction",
         )
     except (AccountPacingDeadlineExceeded, AccountPacingLockUnavailable):
+        _record_like_shortfall(task, 1, 0)
+        return None
+    if reservation.effective_claim_at and source.deadline_at and wall_datetime(reservation.effective_claim_at) >= wall_datetime(source.deadline_at):
         _record_like_shortfall(task, 1, 0)
         return None
     return reservation.effective_claim_at, reservation

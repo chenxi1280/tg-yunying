@@ -20,7 +20,9 @@ TIMING_POLICY = "deadline_only_v1"
 def bind_generation_timing_config(session, task, *, work: tuple, config: dict, deadline_at, requires_provider: bool = True) -> dict:
     if config.get("engagement_contract_version") != "unified_engagement_v1":
         return config
-    if not work or not config.get("ai_content_route_v2_enabled"):
+    if not config.get("ai_content_route_v2_enabled"):
+        return config
+    if not work:
         raise ValueError("generation_timing_frozen_jobs_or_routes_missing")
     now_value = as_beijing(_now())
     with session.begin_nested():

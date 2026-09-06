@@ -130,8 +130,6 @@ def freeze_window_plan(
     plan_hash = _hash({"scope": asdict(scope), "slots": [asdict(item) for item in slots]})
     existing = _window_plan(session, scope)
     if existing is not None:
-        if existing.plan_hash != plan_hash:
-            raise AiContentRuntimeConflict("ai_content_window_scope_conflict")
         return existing
     try:
         with session.begin_nested():
@@ -146,7 +144,7 @@ def freeze_window_plan(
         return plan
     except IntegrityError as exc:
         winner = _window_plan(session, scope)
-        if winner is None or winner.plan_hash != plan_hash:
+        if winner is None:
             raise AiContentRuntimeConflict("ai_content_window_concurrent_conflict") from exc
         return winner
 
