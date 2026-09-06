@@ -69,8 +69,28 @@ def _uncalled_actions(ids):
     fact = select(FulfillmentRemoteFact.fact_id).where(FulfillmentRemoteFact.action_id == Action.id).exists()
     journal = select(GatewayRequestEvidenceJournal.id).where(GatewayRequestEvidenceJournal.action_id == Action.id).exists()
     result = Action.result
+    pacing_action_ids = select(AccountPacingReservation.action_id).where(
+        AccountPacingReservation.task_id.in_(ids),
+        AccountPacingReservation.state.in_(("reserved", "bound")),
+        AccountPacingReservation.action_id.is_not(None),
+    )
+    lease_action_ids = select(AccountPoolConcurrencyLease.action_id).where(
+        AccountPoolConcurrencyLease.state == "reserved",
+        AccountPoolConcurrencyLease.action_id.is_not(None),
+    )
+    comment_action_ids = select(TaskCommentCapacityReservation.action_id).where(
+        TaskCommentCapacityReservation.task_id.in_(ids),
+        TaskCommentCapacityReservation.reservation_state.in_(("plan_reserved", "action_reserved")),
+        TaskCommentCapacityReservation.action_id.is_not(None),
+    )
+    view_action_ids = select(ChannelViewDailyIdentityOwner.action_id).where(
+        ChannelViewDailyIdentityOwner.logical_task_id.in_(ids),
+        ChannelViewDailyIdentityOwner.state == "pre_gateway",
+        ChannelViewDailyIdentityOwner.action_id.is_not(None),
+    )
+    unreleased_action_ids = pacing_action_ids.union(lease_action_ids, comment_action_ids, view_action_ids)
     eligible = or_(Action.status.in_(OPEN_ACTION_STATES),
-        and_(Action.status.in_(("skipped", "failed", "cancelled")), _has_unreleased_resources()))
+        and_(Action.status.in_(("skipped", "failed", "cancelled")), Action.id.in_(unreleased_action_ids)))
     return select(Action).where(Action.task_id.in_(ids), eligible,
         ~unsafe_attempt, ~fact, ~journal,
         func.coalesce(result["remote_message_id"].as_string(), "") == "",
@@ -78,18 +98,6 @@ def _uncalled_actions(ids):
         func.coalesce(result["remote_mutation_started"].as_boolean(), False).is_(False),
         func.coalesce(result["callback_mutation_started"].as_boolean(), False).is_(False),
         func.coalesce(result["success"].as_boolean(), False).is_(False))
-
-
-def _has_unreleased_resources():
-    pacing = select(AccountPacingReservation.id).where(AccountPacingReservation.action_id == Action.id,
-        AccountPacingReservation.state.in_(("reserved", "bound"))).exists()
-    lease = select(AccountPoolConcurrencyLease.id).where(AccountPoolConcurrencyLease.action_id == Action.id,
-        AccountPoolConcurrencyLease.state == "reserved").exists()
-    comment = select(TaskCommentCapacityReservation.id).where(TaskCommentCapacityReservation.action_id == Action.id,
-        TaskCommentCapacityReservation.reservation_state.in_(("plan_reserved", "action_reserved"))).exists()
-    view = select(ChannelViewDailyIdentityOwner.id).where(ChannelViewDailyIdentityOwner.action_id == Action.id,
-        ChannelViewDailyIdentityOwner.state == "pre_gateway").exists()
-    return or_(pacing, lease, comment, view)
 
 
 def _retire_action(session, action):
@@ -141,13 +149,17 @@ def _open_jobs(ids):
 
 
 def _job_has_issued_action():
-    matching = or_(Action.payload["generation_job_id"].as_string() == GenerationJob.id,
-        and_(Action.obligation_id != "", Action.obligation_type == GenerationJob.obligation_type,
-            Action.obligation_id == GenerationJob.obligation_id))
     issued = select(ExecutionAttempt.id).where(ExecutionAttempt.action_id == Action.id,
         or_(ExecutionAttempt.gateway_call_started_at.is_not(None), ExecutionAttempt.status.in_(("success", "result_unknown")))).exists()
-    return select(Action.id).where(Action.task_id == GenerationJob.task_id, matching,
-        or_(issued, Action.status.in_(("success", "unknown_after_send")))).exists()
+    issued_or_done = or_(issued, Action.status.in_(("success", "unknown_after_send")))
+    by_job_id = select(Action.id).where(Action.task_id == GenerationJob.task_id,
+        Action.payload["generation_job_id"].as_string() == GenerationJob.id,
+        issued_or_done).exists()
+    by_obligation = select(Action.id).where(Action.task_id == GenerationJob.task_id,
+        Action.obligation_id != "", Action.obligation_type == GenerationJob.obligation_type,
+        Action.obligation_id == GenerationJob.obligation_id,
+        issued_or_done).exists()
+    return or_(by_job_id, by_obligation)
 
 
 def _retire_jobs(session, ids, *, batch_size):
@@ -156,6 +168,9 @@ def _retire_jobs(session, ids, *, batch_size):
     if not jobs:
         return 0
     unresolved = unresolved_generation_lineages(session, jobs)
+    slot_ids = tuple(dict.fromkeys(job.window_slot_id for job in jobs if job.window_slot_id))
+    slots = {slot.id: slot for slot in session.scalars(select(AiContentWindowPlanSlot).where(
+        AiContentWindowPlanSlot.id.in_(slot_ids)))} if slot_ids else {}
     for job in jobs:
         job.state = "unknown" if generation_lineage(job) in unresolved else "cancelled"
         job.generation_owner_id = ""
@@ -163,7 +178,7 @@ def _retire_jobs(session, ids, *, batch_size):
         job.job_version = int(job.job_version or 1) + 1
         job.generation_lease_epoch = int(job.generation_lease_epoch or 0) + 1
         job.evaluator_evidence = {**dict(job.evaluator_evidence or {}), "invalidation_reason": RETIREMENT_REASON}
-        slot = session.get(AiContentWindowPlanSlot, job.window_slot_id) if job.window_slot_id else None
+        slot = slots.get(job.window_slot_id) if job.window_slot_id else None
         if slot is not None and slot.state != "gateway_bound":
             invalidate_pre_gateway_window_slot(slot)
     return len(jobs)

@@ -120,7 +120,7 @@ def test_listener_owns_channel_fetch_and_publishes_fresh_snapshot(monkeypatch) -
         assert channel.available_reactions == ["👍", "❤️", "🔥", "👏"]
         assert state is not None and state.snapshot_status == "ready"
         assert state.snapshot_revision == 1
-        assert state.fresh_until_at == NOW + timedelta(seconds=60)
+        assert state.fresh_until_at == NOW + timedelta(seconds=600)
         assert subscription is not None and subscription.listener_source_state_id == state.id
         assert wake is not None and wake.reason_code == "channel_source_snapshot_ready"
         assert wake.not_before_at == NOW
@@ -810,8 +810,8 @@ def test_channel_view_uses_snapshot_revision_messages_when_stale(monkeypatch) ->
 
     drain_channel_listener_runtime(lambda: Session(engine), limit=10)
 
-    # Fast-forward time past fresh_until_at (60s) so snapshot becomes stale
-    current_time[0] = NOW + timedelta(seconds=120)
+    # Fast-forward time past fresh_until_at (600s) so snapshot becomes stale
+    current_time[0] = NOW + timedelta(seconds=700)
 
     with Session(engine) as session:
         session.query(ListenerChannelSnapshotItem).delete()

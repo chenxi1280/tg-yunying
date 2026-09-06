@@ -8,8 +8,13 @@ from collections import Counter
 
 from sqlalchemy import select
 
-from app.models import ChannelMessageSourceRevision, CrossAdapterSourceJourneyPlanRevision
+from app.models import (
+    ChannelMessage,
+    ChannelMessageSourceRevision,
+    CrossAdapterSourceJourneyPlanRevision,
+)
 
+from .channel_source_message_persistence import ensure_channel_message_source_revision
 from .engagement_bipartite_matching import match_bipartite_capacity
 from .engagement_source_journey import JourneyDemand, register_source_journey_demand
 from .engagement_view_allocation_solver import UNACHIEVABLE, rebuild_allocation_draft
@@ -40,6 +45,15 @@ def compile_view_source_journeys(
 
 
 def _source_revisions(session, task, sources):
+    for source in sources:
+        rev_id = source.get("source_revision_id")
+        msg_id = int(source["message_id"])
+        row = session.get(ChannelMessageSourceRevision, rev_id) if rev_id else None
+        if row is None or row.channel_message_id != msg_id:
+            msg = session.get(ChannelMessage, msg_id)
+            if msg is not None:
+                rev = ensure_channel_message_source_revision(session, msg)
+                source["source_revision_id"] = rev.id
     source_ids = {str(source.get("source_revision_id") or "") for source in sources}
     rows = list(session.scalars(select(ChannelMessageSourceRevision).where(
         ChannelMessageSourceRevision.id.in_(source_ids),
@@ -104,8 +118,21 @@ def _match_joint_graph(draft, sources, *, candidates, plans, frozen_edges, seed)
 
 
 def _edge_objective_costs(available, sources, *, plans, seed):
+    plan_classes: dict[tuple[str, int], list[str]] = {}
+    for rev_id, plan in plans.items():
+        for item in (plan.edge_set or []):
+            if item.get("action_class") != "view":
+                acc_id = int(item["account_id"])
+                plan_classes.setdefault((rev_id, acc_id), []).append(item["action_class"])
+
     ranked = sorted(available, key=lambda edge: _hash([seed, *edge]))
-    loads = {edge: _edge_load(edge, sources, plans=plans) for edge in ranked}
+    loads = {}
+    for edge in ranked:
+        account_id, identity = edge
+        rev_id = sources[identity].get("source_revision_id")
+        classes = plan_classes.get((rev_id, account_id), [])
+        loads[edge] = (int("authored_comment" in classes and "reaction" in classes), len(classes))
+
     # Each weight exceeds the maximum summed cost of every lower priority.
     rank_weight = len(ranked) ** 2 + 1
     load_weight = (sum(load for _, load in loads.values()) + 1) * rank_weight

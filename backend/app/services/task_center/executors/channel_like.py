@@ -18,9 +18,11 @@ from app.services._common import _now
 
 from ..account_pacing_guard import (
     AccountPacingDeadlineExceeded,
+    AccountPacingLockUnavailable,
     bind_account_pacing_reservation,
     reserve_account_pacing,
 )
+from ..channel_source_message_persistence import ensure_channel_message_source_revision
 from ..account_pool import select_task_accounts
 from ..channel_fulfillment import (
     bind_obligation_action,
@@ -388,14 +390,7 @@ def _like_source_revision(
     session: Session,
     message: ChannelMessage,
 ) -> ChannelMessageSourceRevision | None:
-    if not message.current_source_revision_id:
-        return None
-    revision = session.get(
-        ChannelMessageSourceRevision, str(message.current_source_revision_id)
-    )
-    if revision is None or revision.channel_message_id != message.id:
-        return None
-    return revision
+    return ensure_channel_message_source_revision(session, message)
 
 
 def _like_account_schedule(
@@ -440,7 +435,7 @@ def _like_account_schedule(
             ),
             action_class="reaction",
         )
-    except AccountPacingDeadlineExceeded:
+    except (AccountPacingDeadlineExceeded, AccountPacingLockUnavailable):
         _record_like_shortfall(task, 1, 0)
         return None
     return reservation.effective_claim_at, reservation

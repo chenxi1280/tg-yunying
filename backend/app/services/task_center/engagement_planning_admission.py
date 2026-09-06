@@ -238,7 +238,9 @@ def _proxy_check(account: TgAccount | None) -> dict:
         "proxy_id": proxy.id,
         "status": proxy.status,
         "alert_status": proxy.alert_status,
-        "last_check_at": proxy.last_check_at,
+        "last_check_at": (
+            proxy.last_check_at.isoformat() if proxy.last_check_at else None
+        ),
     }
     return _check("proxy", ready, "proxy_unhealthy_or_unproven", revision=revision)
 
@@ -280,7 +282,11 @@ def _comment_profile_check(task: Task, account: TgAccount | None) -> dict:
     ready = bool(account and comment_account_profile_ready(account))
     revision = None if account is None else {
         "profile_sync_status": account.profile_sync_status,
-        "profile_synced_at": account.profile_synced_at,
+        "profile_synced_at": (
+            account.profile_synced_at.isoformat()
+            if account.profile_synced_at
+            else None
+        ),
         "has_username": bool(account.username),
         "has_avatar": bool(account.avatar_object_key),
     }

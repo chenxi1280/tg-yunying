@@ -49,6 +49,7 @@ from app.services.rule_engine import bound_rule_version, evaluate_input_filter
 
 from ..account_pacing_guard import (
     AccountPacingDeadlineExceeded,
+    AccountPacingLockUnavailable,
     bind_account_pacing_reservation,
     reserve_account_pacing,
 )
@@ -2989,6 +2990,8 @@ def _reserve_ai_action_pacing(
         )
     except AccountPacingDeadlineExceeded:
         _record_ai_pacing_shortfall(task, 1, 0)
+        return None
+    except AccountPacingLockUnavailable:
         return None
     return reservation.effective_claim_at, owner, slot_key, reservation
 

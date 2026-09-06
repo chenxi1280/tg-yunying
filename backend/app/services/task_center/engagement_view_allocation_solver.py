@@ -33,7 +33,12 @@ def initial_allocation_draft(
         return AllocationDraft([], [], [], [], "no_active_sources")
     caps = _degree_caps(task_id, account_ids, len(sources), config=config)
     desired = _desired_source_exposures(
-        len(account_ids), len(sources), caps, config=config
+        len(account_ids),
+        len(sources),
+        caps,
+        config=config,
+        sources=sources,
+        account_ids=account_ids,
     )
     if desired is None:
         return _unachievable_draft(caps, sources, "joint_capacity_infeasible")
@@ -125,28 +130,85 @@ def _desired_source_exposures(
     degrees: list[dict],
     *,
     config: dict,
+    sources: list[dict] | None = None,
+    account_ids: list[int] | None = None,
 ) -> list[int] | None:
+    account_id_set = (
+        set(account_ids)
+        if account_ids is not None
+        else {int(item["account_id"]) for item in degrees}
+    )
+    forbidden_by_source = (
+        {
+            s["source_identity"]: set(s.get("forbidden_account_ids") or []).intersection(account_id_set)
+            for s in sources
+        }
+        if sources
+        else {}
+    )
+    source_avail = (
+        [
+            len(account_id_set) - len(forbidden_by_source.get(s["source_identity"], set()))
+            for s in sources
+        ]
+        if sources
+        else [account_count] * source_count
+    )
+    account_avail = (
+        {
+            acc: sum(acc not in forbidden_by_source.get(s["source_identity"], set()) for s in sources)
+            for acc in account_id_set
+        }
+        if sources
+        else {int(item["account_id"]): source_count for item in degrees}
+    )
+
+    if any(avail == 0 for avail in account_avail.values()):
+        return None
+
     if allocation_mode(config) == EVERY_MESSAGE_MODE:
-        return [account_count] * source_count
+        return source_avail
+
+    min_degree_cfg = int(config.get("per_account_source_degree_min") or 2)
+    bounded_caps = [
+        min(account_avail.get(int(item["account_id"]), source_count), int(item["degree_cap"]))
+        for item in degrees
+    ]
+    bounded_mins = [
+        min(account_avail.get(int(item["account_id"]), source_count), min_degree_cfg)
+        for item in degrees
+    ]
+    minimum = sum(bounded_mins)
+    capacity = sum(bounded_caps)
+
     if config.get("view_exposure_mode") == "explicit_per_source":
         target = _explicit_source_target(account_count, config)
-        total = target * source_count
+        if any(avail < target for avail in source_avail):
+            return None
+        desired = [target] * source_count
+        total = sum(desired)
     else:
         total = sum(
             min(source_count, int(item["degree_cap"])) for item in degrees
         )
-    minimum = account_count * min(
-        source_count, int(config.get("per_account_source_degree_min") or 2)
-    )
-    capacity = sum(
-        min(source_count, int(item["degree_cap"])) for item in degrees
-    )
+        total = min(total, capacity, sum(source_avail))
+        desired = [0] * source_count
+        remaining = total
+        while remaining > 0:
+            allocated = False
+            for index in range(source_count):
+                if remaining > 0 and desired[index] < source_avail[index]:
+                    desired[index] += 1
+                    remaining -= 1
+                    allocated = True
+            if not allocated:
+                break
+        if remaining > 0:
+            return None
+
     if total < max(source_count, minimum) or total > capacity:
         return None
-    exposures = [0] * source_count
-    for index in range(total):
-        exposures[index % source_count] += 1
-    return exposures if max(exposures, default=0) <= account_count else None
+    return desired if all(d <= a for d, a in zip(desired, source_avail)) else None
 
 
 def _allocate_edges(
@@ -158,11 +220,22 @@ def _allocate_edges(
     desired: list[int],
     minimum_degree: int,
 ) -> list[dict]:
+    forbidden_by_source = {
+        s["source_identity"]: set(s.get("forbidden_account_ids") or [])
+        for s in sources
+    }
+    account_avail = {
+        acc: sum(acc not in forbidden_by_source.get(s["source_identity"], set()) for s in sources)
+        for acc in account_ids
+    }
     caps = {
-        int(item["account_id"]): min(len(sources), int(item["degree_cap"]))
+        int(item["account_id"]): min(account_avail.get(int(item["account_id"]), len(sources)), int(item["degree_cap"]))
         for item in degrees
     }
-    row_minimums = {account_id: minimum_degree for account_id in account_ids}
+    row_minimums = {
+        account_id: min(minimum_degree, account_avail.get(account_id, len(sources)))
+        for account_id in account_ids
+    }
     return _solve_edges(
         task_id,
         account_ids,
@@ -190,9 +263,19 @@ def _dynamic_edges(
         int(item["account_id"]): int(item.get("assigned_degree") or 0)
         for item in degrees
     }
+    forbidden_by_source = {
+        s["source_identity"]: set(s.get("forbidden_account_ids") or [])
+        for s in new_sources
+    }
+    account_avail = {
+        acc: sum(acc not in forbidden_by_source.get(s["source_identity"], set()) for s in new_sources)
+        for acc in account_ids
+    }
     caps = {
-        int(item["account_id"]): int(item["degree_cap"])
-        - assigned[int(item["account_id"])]
+        int(item["account_id"]): min(
+            account_avail.get(int(item["account_id"]), len(new_sources)),
+            max(0, int(item["degree_cap"]) - assigned[int(item["account_id"])])
+        )
         for item in degrees
     }
     minimum = min(
@@ -200,7 +283,10 @@ def _dynamic_edges(
         int(config.get("per_account_source_degree_min") or 2),
     )
     row_minimums = {
-        account_id: max(0, minimum - assigned[account_id])
+        account_id: min(
+            account_avail.get(account_id, len(new_sources)),
+            max(0, minimum - assigned[account_id])
+        )
         for account_id in account_ids
     }
     desired = _dynamic_exposures(
@@ -209,6 +295,8 @@ def _dynamic_edges(
         row_minimums=row_minimums,
         caps=caps,
         config=config,
+        sources=new_sources,
+        account_ids=account_ids,
     )
     if desired is None:
         return None
@@ -231,21 +319,61 @@ def _dynamic_exposures(
     row_minimums: dict[int, int],
     caps: dict[int, int],
     config: dict,
+    sources: list[dict] | None = None,
+    account_ids: list[int] | None = None,
 ) -> list[int] | None:
+    account_id_set = (
+        set(account_ids)
+        if account_ids is not None
+        else set(caps)
+    )
+    forbidden_by_source = (
+        {
+            s["source_identity"]: set(s.get("forbidden_account_ids") or []).intersection(account_id_set)
+            for s in sources
+        }
+        if sources
+        else {}
+    )
+    source_avail = (
+        [
+            len(account_id_set) - len(forbidden_by_source.get(s["source_identity"], set()))
+            for s in sources
+        ]
+        if sources
+        else [account_count] * source_count
+    )
+
     if allocation_mode(config) == EVERY_MESSAGE_MODE:
-        desired = [account_count] * source_count
+        desired = list(source_avail)
     elif config.get("view_exposure_mode") == "explicit_per_source":
-        desired = [_explicit_source_target(account_count, config)] * source_count
+        target = _explicit_source_target(account_count, config)
+        if any(avail < target for avail in source_avail):
+            return None
+        desired = [target] * source_count
     else:
-        total = max(source_count, sum(row_minimums.values()))
+        max_source_capacity = sum(source_avail)
+        total = min(sum(caps.values()), max(source_count, sum(row_minimums.values())))
+        total = min(total, max_source_capacity)
         desired = [0] * source_count
-        for index in range(total):
-            desired[index % source_count] += 1
-    if sum(desired) < sum(row_minimums.values()):
+        remaining = total
+        while remaining > 0:
+            allocated = False
+            for index in range(source_count):
+                if remaining > 0 and desired[index] < source_avail[index]:
+                    desired[index] += 1
+                    remaining -= 1
+                    allocated = True
+            if not allocated:
+                break
+        if remaining > 0:
+            return None
+    if sum(desired) < min(sum(row_minimums.values()), sum(source_avail)):
         return None
     if sum(desired) > sum(caps.values()):
         return None
-    return desired if max(desired, default=0) <= account_count else None
+    return desired if all(d <= a for d, a in zip(desired, source_avail)) else None
+
 
 
 def _solve_edges(

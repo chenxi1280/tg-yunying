@@ -30,6 +30,7 @@ from .channel_comment_source_delete import settle_channel_comment_source_deleted
 from .channel_source_pagination import advance_source_page
 from .channel_listener_claim import locked_source_state
 FRESHNESS_MULTIPLIER = 2
+MIN_SNAPSHOT_FRESHNESS_SECONDS = 600
 
 
 def persist_channel_snapshot(
@@ -123,7 +124,7 @@ def _persist_snapshot_messages(
             revision_created=revision_created,
             probe_request_id=probe_request_id,
             observed_at=observed_at,
-            freshness_seconds=source.collect_window_seconds * FRESHNESS_MULTIPLIER,
+            freshness_seconds=max(source.collect_window_seconds * FRESHNESS_MULTIPLIER, MIN_SNAPSHOT_FRESHNESS_SECONDS),
         )
         session.flush()
         session.add(ListenerChannelSnapshotItem(
@@ -143,9 +144,11 @@ def _mark_snapshot_ready(
     state.snapshot_revision = next_revision
     state.snapshot_status = "ready"
     state.observed_at = now_value
-    state.fresh_until_at = now_value + timedelta(
-        seconds=source.collect_window_seconds * FRESHNESS_MULTIPLIER
+    freshness_seconds = max(
+        source.collect_window_seconds * FRESHNESS_MULTIPLIER,
+        MIN_SNAPSHOT_FRESHNESS_SECONDS,
     )
+    state.fresh_until_at = now_value + timedelta(seconds=freshness_seconds)
     state.next_probe_at = now_value + timedelta(seconds=source.collect_window_seconds)
     state.last_error = ""
     state.last_error_code = ""
@@ -169,6 +172,10 @@ def _persist_discussion_binding(
         discussion_peer=discussion_peer,
         discussion_title=str(getattr(snapshot, "discussion_title", "") or ""),
     )
+    freshness_seconds = max(
+        source.collect_window_seconds * FRESHNESS_MULTIPLIER,
+        MIN_SNAPSHOT_FRESHNESS_SECONDS,
+    )
     observation = GroupProbeObservation(
         tenant_id=source.tenant_id,
         channel_target_id=channel.id,
@@ -181,7 +188,7 @@ def _persist_discussion_binding(
         probe_stage=AUTHORITATIVE_GROUP_STAGE,
         account_id=source.account_id,
         observed_at=_wall(observed_at),
-        fresh_until_at=_wall(observed_at) + timedelta(seconds=source.collect_window_seconds * FRESHNESS_MULTIPLIER),
+        fresh_until_at=_wall(observed_at) + timedelta(seconds=freshness_seconds),
         error_code=error_code,
     )
     return record_group_probe(session, observation)

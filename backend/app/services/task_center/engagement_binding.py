@@ -393,6 +393,7 @@ def freeze_membership_snapshot(
         ),
     )
     session.add(snapshot)
+    session.flush()
     return snapshot
 
 

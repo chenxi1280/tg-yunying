@@ -23,6 +23,23 @@ def test_view_graph_reassigns_earlier_choice_to_cover_restricted_account() -> No
     assert {row["assigned_degree"] for row in draft.account_degrees} == {1}
 
 
+def test_view_graph_converges_degree_when_account_forbidden_on_sources() -> None:
+    sources = [
+        {"source_identity": "0", "message_id": 0, "forbidden_account_ids": [1]},
+        {"source_identity": "1", "message_id": 1, "forbidden_account_ids": []},
+    ]
+    draft = initial_allocation_draft(
+        "test_converge", [1, 2, 3], sources,
+        config={"per_account_source_degree_min": 2, "per_account_source_degree_max": 2},
+    )
+    assert draft.decision == "achievable"
+    assert len(draft.edges) == 5
+    degree_map = {row["account_id"]: row["assigned_degree"] for row in draft.account_degrees}
+    assert degree_map[1] == 1  # account 1 cannot view source 0, so degree converges to 1
+    assert degree_map[2] == 2
+    assert degree_map[3] == 2
+
+
 def test_all_three_by_three_graphs_match_exhaustive_feasibility_oracle() -> None:
     all_edges = [(account, source) for account in range(3) for source in ("a", "b", "c")]
     for mask in range(1 << len(all_edges)):

@@ -328,6 +328,10 @@ def _demand_key(item) -> tuple[str, str]:
 
 
 def _persist_decisions(session, plan) -> None:
+    sorted_edges = sorted(
+        plan.edge_set or [],
+        key=lambda edge: (int(edge["account_id"]), str(edge.get("task_id", "")), str(edge.get("action_class", ""))),
+    )
     session.add_all(
         SourceJourneyDecision(
             tenant_id=plan.tenant_id,
@@ -337,7 +341,7 @@ def _persist_decisions(session, plan) -> None:
             action_class=edge["action_class"],
             journey_class=edge["journey_class"],
         )
-        for edge in plan.edge_set
+        for edge in sorted_edges
     )
     session.flush()
 

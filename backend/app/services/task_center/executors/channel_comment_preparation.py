@@ -16,6 +16,7 @@ from app.services._common import _now
 
 from ..account_pacing_guard import (
     AccountPacingDeadlineExceeded,
+    AccountPacingLockUnavailable,
     bind_account_pacing_reservation_for_slot,
     release_unbound_account_pacing_reservation,
     reserve_account_pacing,
@@ -684,7 +685,7 @@ def _comment_pacing_reservation(
             ),
             action_class="authored_comment",
         )
-    except AccountPacingDeadlineExceeded:
+    except (AccountPacingDeadlineExceeded, AccountPacingLockUnavailable):
         stats_inc(task, "account_timeline_conflict")
         return None
 

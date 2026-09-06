@@ -7,6 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import ChannelDiscussionGroupBinding, ChannelMessage, ChannelMessageSourceRevision, OperationTarget
+from app.services._common import _now
 from app.timezone import as_beijing as _wall, as_beijing_aware
 from .channel_comment_content_revision import reconcile_channel_comment_source_edit
 
@@ -231,3 +232,80 @@ def _message_url(channel: OperationTarget, message_id: int) -> str:
     if peer.startswith("-100") and peer[4:].isdigit():
         return f"https://t.me/c/{peer[4:]}/{message_id}"
     return ""
+
+
+def ensure_channel_message_source_revision(
+    session: Session,
+    message: ChannelMessage,
+) -> ChannelMessageSourceRevision:
+    if message.current_source_revision_id:
+        existing = session.get(ChannelMessageSourceRevision, message.current_source_revision_id)
+        if existing is not None and existing.channel_message_id == message.id:
+            return existing
+
+    existing = session.scalar(
+        select(ChannelMessageSourceRevision)
+        .where(
+            ChannelMessageSourceRevision.channel_message_id == message.id,
+            ChannelMessageSourceRevision.tenant_id == message.tenant_id,
+        )
+        .order_by(ChannelMessageSourceRevision.source_revision.desc())
+    )
+    if existing is not None:
+        message.current_source_revision_id = existing.id
+        session.flush()
+        return existing
+
+    published_at = _wall(message.published_at or message.created_at or _now())
+    text = str(message.content_preview or "")
+    content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    identity = _source_observation_hash(
+        message.tenant_id,
+        channel_target_id=message.channel_target_id,
+        remote_message_id=int(message.message_id),
+        published_at=published_at,
+        edited_at=None,
+        content_hash=content_hash,
+        binding=None,
+        thread_root_id=0,
+    )
+    existing_by_hash = session.scalar(
+        select(ChannelMessageSourceRevision).where(
+            ChannelMessageSourceRevision.observation_identity_hash == identity
+        )
+    )
+    if existing_by_hash is not None:
+        message.current_source_revision_id = existing_by_hash.id
+        session.flush()
+        return existing_by_hash
+
+    revision = ChannelMessageSourceRevision(
+        tenant_id=message.tenant_id,
+        channel_target_id=message.channel_target_id,
+        channel_message_id=message.id,
+        source_revision=1,
+        source_remote_message_id=int(message.message_id),
+        source_published_at=as_beijing_aware(published_at),
+        source_published_at_fact_id=(
+            f"telegram_message_date:{message.channel_target_id}:{int(message.message_id)}"
+        ),
+        telegram_edit_date=None,
+        source_observed_at=as_beijing_aware(message.created_at or published_at),
+        source_type="message_text",
+        source_text_snapshot=text,
+        source_content_hash=content_hash,
+        observation_identity_hash=identity,
+        source_length=len(text),
+        captured_length=len(text),
+        truncation_state="complete",
+        source_operation="observed",
+        discussion_group_binding_id=None,
+        discussion_group_binding_revision=None,
+        discussion_group_identity_hash="",
+    )
+    session.add(revision)
+    session.flush()
+    message.current_source_revision_id = revision.id
+    session.flush()
+    return revision
+

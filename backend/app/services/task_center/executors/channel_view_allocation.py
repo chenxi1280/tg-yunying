@@ -134,7 +134,10 @@ def _match_distinct_accounts_to_messages(
         ),
     )
 
-    def find_path(account, visited_messages: set[int]) -> bool:
+    def find_path(account, visited_messages: set[int], visited_accounts: set[int]) -> bool:
+        if account.id in visited_accounts:
+            return False
+        visited_accounts.add(account.id)
         for message, _ in messages_with_quotas:
             if message.id in visited_messages or account.id not in eligible_ids[message.id]:
                 continue
@@ -143,13 +146,13 @@ def _match_distinct_accounts_to_messages(
                 matched[message.id].append(account)
                 return True
             for index, matched_account in enumerate(list(matched[message.id])):
-                if find_path(matched_account, visited_messages):
+                if find_path(matched_account, visited_messages, visited_accounts):
                     matched[message.id][index] = account
                     return True
         return False
 
     for account in sorted_accounts:
-        find_path(account, set())
+        find_path(account, set(), set())
     return matched
 
 

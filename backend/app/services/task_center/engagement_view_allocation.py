@@ -24,6 +24,7 @@ from .engagement_view_allocation_solver import (
     rebuild_allocation_draft,
     successor_allocation_draft,
 )
+from .channel_source_message_persistence import ensure_channel_message_source_revision
 from .engagement_portfolio import reserve_portfolio_units
 from .engagement_view_journey import compile_view_source_journeys
 
@@ -39,6 +40,9 @@ def ensure_view_allocation_plan(
     forbidden_account_ids_by_message: dict[int, set[int]],
     config: dict,
 ) -> ViewAccountSourceAllocationPlan:
+    for message in messages:
+        if not message.current_source_revision_id:
+            ensure_channel_message_source_revision(session, message)
     sources = _sources(messages, forbidden_account_ids_by_message)
     existing = _active_plan(session, task, ledger)
     sources, reusable = _merge_plan_sources(existing, sources)
@@ -78,7 +82,7 @@ def ensure_view_allocation_plan(
 
 
 def _merge_plan_sources(existing, sources: list[dict]) -> tuple[list[dict], bool]:
-    if existing is None:
+    if existing is None or getattr(existing, "decision", None) != "achievable" or not (existing.edge_set or []):
         return sources, False
     merged, changed = _merge_new_sources(existing.source_set or [], sources)
     journey_wired = all(
@@ -97,14 +101,17 @@ def _allocation_draft(
     participation: TaskParticipationUnitPlan,
     config: dict,
 ):
-    if existing is None:
+    if existing is None or getattr(existing, "decision", None) != "achievable" or not (existing.edge_set or []):
         draft = initial_allocation_draft(
             task.id,
             [int(item) for item in participation.selected_account_ids or []],
             sources,
             config=config,
         )
-        return draft, 1
+        if existing is not None:
+            existing.state = "superseded"
+            session.flush()
+        return draft, (existing.allocation_revision + 1) if existing else 1
     draft = successor_allocation_draft(
         task.id,
         existing.account_degrees or [],

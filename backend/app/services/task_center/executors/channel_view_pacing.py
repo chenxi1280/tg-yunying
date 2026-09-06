@@ -21,6 +21,7 @@ from app.services._common import _now
 
 from ..account_pacing_guard import (
     AccountPacingDeadlineExceeded,
+    AccountPacingLockUnavailable,
     bind_account_pacing_reservation,
     reserve_account_pacing,
 )
@@ -167,6 +168,8 @@ def reserve_view_action_pacing(
         )
     except AccountPacingDeadlineExceeded:
         record_view_deadline_capacity_blocker(request.task, planned_at, deadline_at)
+        return None
+    except AccountPacingLockUnavailable:
         return None
     return reservation.effective_claim_at, reservation
 

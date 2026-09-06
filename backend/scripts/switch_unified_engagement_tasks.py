@@ -20,8 +20,8 @@ from app.services.task_center.engagement_retirement_cleanup import (
 from app.services.task_center.service import _new_task, start_task_in_transaction
 
 
-STATEMENT_TIMEOUT_SECONDS = 20
-LOCK_TIMEOUT_SECONDS = 2
+DEFAULT_STATEMENT_TIMEOUT_SECONDS = 120
+DEFAULT_LOCK_TIMEOUT_SECONDS = 5
 
 
 def _arguments():
@@ -33,14 +33,16 @@ def _arguments():
     parser.add_argument("--actor")
     parser.add_argument("--audit-reference")
     parser.add_argument("--batch-size", type=int, default=CLEANUP_BATCH_SIZE)
+    parser.add_argument("--statement-timeout", type=int, default=DEFAULT_STATEMENT_TIMEOUT_SECONDS)
+    parser.add_argument("--lock-timeout", type=int, default=DEFAULT_LOCK_TIMEOUT_SECONDS)
     return parser.parse_args()
 
 
-def _transaction(session, *, readonly):
+def _transaction(session, *, readonly, statement_timeout=DEFAULT_STATEMENT_TIMEOUT_SECONDS, lock_timeout=DEFAULT_LOCK_TIMEOUT_SECONDS):
     if readonly:
         session.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"))
-    session.execute(text(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT_SECONDS}s'"))
-    session.execute(text(f"SET LOCAL lock_timeout = '{LOCK_TIMEOUT_SECONDS}s'"))
+    session.execute(text(f"SET LOCAL statement_timeout = '{statement_timeout}s'"))
+    session.execute(text(f"SET LOCAL lock_timeout = '{lock_timeout}s'"))
 
 
 def _build(session, old, payload):
@@ -92,7 +94,8 @@ def main():
     payload = json.loads(args.input.read_text())
     operation = CutoverOperation(args.actor or "", args.audit_reference or "", deployed)
     with SessionLocal() as session:
-        _transaction(session, readonly=args.mode in {"preview", "readback"})
+        _transaction(session, readonly=args.mode in {"preview", "readback"},
+                     statement_timeout=args.statement_timeout, lock_timeout=args.lock_timeout)
         result = _execute(session, args, payload, operation=operation)
         if args.mode not in {"preview", "readback"}:
             session.commit()
@@ -100,7 +103,8 @@ def main():
     if args.mode in {"retire", "activate", "cleanup"}:
         receipt = result if args.mode == "retire" else payload
         with SessionLocal() as verification:
-            _transaction(verification, readonly=True)
+            _transaction(verification, readonly=True,
+                         statement_timeout=args.statement_timeout, lock_timeout=args.lock_timeout)
             result = {**result, "readback": _readback(verification, receipt)}
     if args.mode == "preview":
         result = {"state_hash": result["state_hash"], "task_count": len(result["state"]["tasks"]),

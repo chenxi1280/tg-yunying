@@ -21,6 +21,7 @@ from app.models import (
     PlanningAdmissionSnapshot,
 )
 
+from .channel_source_message_persistence import ensure_channel_message_source_revision
 from .source_pacing import rolling_source_window
 from .engagement_comment_participation import (
     CommentParticipationDecision,
@@ -313,11 +314,7 @@ def _source_revision(
     task: Task,
     message: ChannelMessage,
 ) -> ChannelMessageSourceRevision:
-    source = (
-        session.get(ChannelMessageSourceRevision, message.current_source_revision_id)
-        if message.current_source_revision_id
-        else None
-    )
+    source = ensure_channel_message_source_revision(session, message)
     if source is None or source.channel_message_id != message.id:
         task.last_error = "source_revision_unproven"
         raise ValueError("source_revision_unproven")
