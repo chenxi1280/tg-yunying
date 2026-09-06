@@ -85,7 +85,8 @@ def channel_scope(session: Session, task: Task, config: dict, *, comment_availab
                 if existing_messages:
                     existing_messages = unified_source_intake(session, task, existing_messages,
                         config=config, observation_complete=False)
-                    return channel, existing_messages
+                    if existing_messages:
+                        return channel, existing_messages
             return None, []
         messages = channel_messages(
             session,
