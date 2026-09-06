@@ -582,3 +582,7 @@ Release Gate：本候选只新增上述退出证明服务/CLI/测试和PRD、两
 07:53:36以退出对账审计提交时间07:37:25为锚点读取旧Task后续执行：旧路由新建62条浏览pending Action；活群新建1 executing、20 failed、213 pending、11 skipped Action。新Attempt中活群28 success/61 skipped_before_gateway、浏览39 success/57 failed/217 skipped_before_gateway、点赞2 failed/3 skipped_before_gateway；typed fact为活群28条remote_message_observed、浏览39条view_observed与33条safely_not_executed、点赞2条safely_not_executed。该窗口没有新的Gateway已调用但transport未证明结束记录，说明本次2391条ACK后没有立即增加同类未知物理占用；它同时证明22个旧Task仍在继续履约，不能把ACK称为已切换。评论无本窗Action或typed fact，四类完整数量/质量仍未通过。
 
 07:54:21读回9个旧活群的当前`daily_message_target`均为2000且`topic_participation_rate`均为空。30%表示每个任务日最多约600条普通正文主动采用任务配置话题，9任务合计上限约5400；10%分别约200/合计1800；0%禁止主动采用任务配置话题但不停止词库日常主题。运行时实际分母按普通正文、已确认及unknown保护规则冻结，以上仅供用户确认配置影响，不是完成量或保证发送量。
+
+08:00–08:02继续以READ ONLY执行计划核对共享旧占用读取。重账号当前返回约262–265条；原单SELECT首次execution 792.657毫秒、重复318.148毫秒，主要为265次Gateway journal索引探测产生315/312个shared read block，Action与TaskDayLedger关联本身为几十毫秒。关闭Nested Loop的对照计划扫描约146806条Action和69520条journal，读取36933个block并耗时5411.926毫秒，明确更差。生产表估算为438490条Attempt/831MB heap、248458条Action/572MB heap（总索引约5GB）、68518条journal/83MB heap；不能因单次抖动改成全表Hash Join。
+
+临时候选把journal改为第二次批量读取，两账号输出count/hash与原reader逐条一致，但查询数由1增为2。重账号两轮候选分别1.403/1.071秒，对照在候选预热后0.198/0.206秒；零结果账号候选0.267/0.055秒，对照0.097/0.024秒。随后完全热缓存下候选base执行计划仅33.552毫秒，确认样本差异主要受随机冷读和顺序预热影响，未证明拆分更快。该候选不满足§19.56不增加查询次数的原合同且无生产收益，故不写正式代码、不加索引、不发布；只读临时脚本`legacy_occupancy_split_candidate.py`及执行计划保留为负向证据。
