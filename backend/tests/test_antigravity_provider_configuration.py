@@ -76,13 +76,13 @@ def test_brief_schema_rejects_invalid_enums_and_extra_fields():
     ("mode", "expected_categories", "expected_lengths"),
     [
         ("general", {"grounded_reaction", "fact_question", "agreement"}, {"micro", "short", "medium"}),
-        ("adult_visual", {"adult_visual_reaction", "adult_visual_question"}, {"micro", "short"}),
-        ("adult_product", {"adult_product_reaction", "adult_product_question"}, {"micro", "short"}),
+        ("adult_visual", {"adult_visual_reaction", "adult_visual_question"}, {"short"}),
+        ("adult_product", {"adult_product_reaction", "adult_product_question"}, {"short"}),
         ("adult_service_inquiry", {
             "price_question", "region_question", "availability_question",
             "service_question", "duration_question", "identity_question", "booking_question",
-        }, {"micro", "short"}),
-        ("adult_service_sensory", {"sensory_reaction", "sensory_question"}, {"micro", "short"}),
+        }, {"short"}),
+        ("adult_service_sensory", {"sensory_reaction", "sensory_question"}, {"short"}),
     ],
 )
 def test_planner_schema_freezes_each_mode_contract(mode, expected_categories, expected_lengths):

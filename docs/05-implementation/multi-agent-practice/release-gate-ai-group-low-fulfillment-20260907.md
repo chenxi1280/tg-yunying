@@ -26,3 +26,7 @@ PostgreSQL 索引使用 CONCURRENTLY 创建，重复执行保留 valid 索引；
 ## 线上验收与监督
 
 以正式发布完成时刻为锚，逐个运行 AI 活群读取任务日目标/due/confirmed、生成状态、到期 ready、Attempt/Gateway、同账号/同 ledger typed message fact。核对词频/上下文 EXPLAIN 与实际队列推进，记录每个任务的首个阻塞点。频道 like/view/comment 分别读取正确类型事实及关注关系，不以 healthy 或 Action success 自证完成。首次恢复少量发送只能称路径恢复，完整日目标与剩余欠量仍需监督。只读监控不自动清理、重试、改配置或伪造业务完成。
+
+## 首轮 CI 回流
+
+候选 2fc598cb、Actions 34126399484：PG 两分片和前端通过；非 PG 分片暴露 Provider schema 四个旧参数化用例仍期望已移除的 micro 档。修正断言与现有 MessageBrief/结构化 schema 一致，保留 general 的 micro/short/medium 三档及原质量硬门。首轮未构建镜像、未操作生产。重新定向验证后形成下一候选，仍需完整 CI。
