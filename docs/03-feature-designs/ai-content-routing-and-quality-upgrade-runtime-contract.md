@@ -254,3 +254,12 @@ shadow preview 只能走独立只读生成路径：不得写 `GenerationJob/Wind
 任务运营可选择已批准 policy/binding，但不能编辑全局 Prompt、example set 或 Provider secret。`manage` 与 `approve` 对 policy/route-set 分权；同一高风险 revision 的创建者不能自批。成人证明管理者只能在其 task/group/source 数据权限内操作，且不能通过修改证明绕过 policy approve。
 
 ---
+
+
+### 2026-09-07 生产回流：已终结未发送 Action 的 ready 内容槽
+
+正式发布 d7ba60d 后仍出现 `ai_content_window_concurrent_conflict`。只读核验的 20 个样本均为旧 Action 因 `pacing_claim_deadline_exceeded` 进入 skipped，Attempt 已结束且未进入 Gateway，typed fact 为 `safely_not_executed`；但旧 Job 保持 ready/reviewing，slot 保持 candidate_ready，阻挡同一 obligation 的后续序列。现有 terminal-Job 分支及 gateway_bound 分支遗漏这一状态组合。
+
+Product Design Complete：将已存在的“终态 Action + 正面未执行证据”回收合同覆盖至 `candidate_ready + Job ready/reviewing`，与原 `gateway_bound + Job ready/gateway_bound` 采用同等 owner/tenant/task/epoch/obligation/window/job 绑定及全部 Attempt/typed fact 检查。按行锁串行使旧 slot invalidated 并释放 owner/lease；保留 Job/Action/Attempt/fact 和所有远端去重身份，不修改状态或完成量，不放宽 current-obligation 唯一约束。只在后续正式生成绑定原 obligation 时回收，不直接批量改生产数据。active/unknown/身份漂移、未结束 Attempt、已调用却无正确未执行事实、已有 remote ID 均不得回收。
+
+QA 必须先复现 ready/reviewing/candidate_ready + skipped 的冲突，确认回收后同 obligation 的新窗口能够冻结；覆盖原 gateway_bound 及所有证据反例，真实 PostgreSQL 验证 partial unique 和行锁路径。该修复不绕过行为 Session/来源 deadline，过期积压仍按原合同结算。

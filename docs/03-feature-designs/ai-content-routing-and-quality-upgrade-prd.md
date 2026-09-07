@@ -590,3 +590,12 @@ static fallback，也不得通过 general route 消化被拒绝或不确定的�
 - 生成结果通过现有内容政策后、进入 ready Action 前，新增同租户同群 5 分钟跨账号精确去重；归一化指纹相同即写 `duplicate_message`，不进入 Gateway。同账号跨群 10 天精确/相似/语义/模板壳句规则保持不变。
 - 同群并发精确去重的 reservation key 以 `tenant + group + fingerprint + 5m bucket` 为原子边界；不同群不同账号仍可独立发送相同自然短语。
 - 本补正不修改任务目标、pacing slot、obligation、失败补量或 Telegram unknown 合同；发布验收必须同时观察新 `context_superseded_requeue` 为 0、drift 证据增长、duplicate gate、Token/E4、小时目标和发送分布。
+
+
+### 2026-09-07 生产回流：已终结未发送 Action 的 ready 内容槽
+
+正式发布 d7ba60d 后仍出现 `ai_content_window_concurrent_conflict`。只读核验的 20 个样本均为旧 Action 因 `pacing_claim_deadline_exceeded` 进入 skipped，Attempt 已结束且未进入 Gateway，typed fact 为 `safely_not_executed`；但旧 Job 保持 ready/reviewing，slot 保持 candidate_ready，阻挡同一 obligation 的后续序列。现有 terminal-Job 分支及 gateway_bound 分支遗漏这一状态组合。
+
+Product Design Complete：将已存在的“终态 Action + 正面未执行证据”回收合同覆盖至 `candidate_ready + Job ready/reviewing`，与原 `gateway_bound + Job ready/gateway_bound` 采用同等 owner/tenant/task/epoch/obligation/window/job 绑定及全部 Attempt/typed fact 检查。按行锁串行使旧 slot invalidated 并释放 owner/lease；保留 Job/Action/Attempt/fact 和所有远端去重身份，不修改状态或完成量，不放宽 current-obligation 唯一约束。只在后续正式生成绑定原 obligation 时回收，不直接批量改生产数据。active/unknown/身份漂移、未结束 Attempt、已调用却无正确未执行事实、已有 remote ID 均不得回收。
+
+QA 必须先复现 ready/reviewing/candidate_ready + skipped 的冲突，确认回收后同 obligation 的新窗口能够冻结；覆盖原 gateway_bound 及所有证据反例，真实 PostgreSQL 验证 partial unique 和行锁路径。该修复不绕过行为 Session/来源 deadline，过期积压仍按原合同结算。

@@ -11,12 +11,12 @@ from tests.test_ai_generation_reconcile_fencing import _action, _engine, _job, _
 pytestmark = pytest.mark.no_postgres
 
 
-@pytest.fixture
-def state():
+@pytest.fixture(params=[("gateway_bound", "gateway_bound"), ("candidate_ready", "reviewing")])
+def state(request):
     with Session(_engine()) as session:
         _seed_scope(session)
         job = _job("job-old", "obligation", state="ready")
-        job.generation_stage = "gateway_bound"
+        job.generation_stage = request.param[1]
         action = _action("action-old", job.obligation_id, job.id,
                          status="failed", generation_status="ready")
         action.result = {"error_code": "context_freshness_unproven"}
@@ -27,7 +27,7 @@ def state():
             plan_hash="h" * 64, state="frozen")
         session.add_all([job, action, plan])
         session.flush()
-        slot = _owned_slot("slot-old", plan.id, job, state="gateway_bound", ordinal=1)
+        slot = _owned_slot("slot-old", plan.id, job, state=request.param[0], ordinal=1)
         session.add(slot)
         session.flush()
         job.window_slot_id = slot.id
@@ -74,8 +74,9 @@ def test_unproven_or_wrong_owner_keeps_window(state, case):
             fact_identity_hash="f" * 64, observed_at=_now()))
     session.commit()
     version = slot.version
+    original_state = slot.state
     assert not _retire(session, job)
-    assert (slot.state, slot.claimed_by_job_id, slot.version) == ("gateway_bound", job.id, version)
+    assert (slot.state, slot.claimed_by_job_id, slot.version) == (original_state, job.id, version)
 
 
 def _failed_attempt_with_fact(session, action, job):
@@ -126,4 +127,30 @@ def test_incomplete_or_mismatched_nonexecution_evidence_preserves_window(state, 
         session.add(ExecutionAttempt(action_id=action.id, tenant_id=action.tenant_id, attempt_no=2))
     session.commit()
     assert not _retire(session, job)
-    assert slot.state == "gateway_bound"
+    assert slot.state in {"gateway_bound", "candidate_ready"}
+
+
+def test_skipped_candidate_ready_owner_releases_unique_obligation(state):
+    from dataclasses import fields
+    from app.models import AiContentWindowPlanSlot
+    from app.services.task_center.ai_content_runtime import WindowScope, WindowSlotSpec, freeze_window_plan
+
+    session, action, job, slot = state
+    action.status = "skipped"
+    action.result = {"error_code": "pacing_claim_deadline_exceeded"}
+    attempt, _ = _failed_attempt_with_fact(session, action, job)
+    attempt.gateway_call_started_at = None
+    session.commit()
+    old_plan = session.get(AiContentWindowPlan, slot.plan_id)
+    scope = {field.name: getattr(old_plan, field.name) for field in fields(WindowScope)}
+    scope["period_key"] = "replacement-window"
+    spec = {field.name: getattr(slot, field.name) for field in fields(WindowSlotSpec)}
+    spec["generation_sequence"] += 1
+
+    assert _retire(session, job)
+    replacement = freeze_window_plan(session, WindowScope(**scope), (WindowSlotSpec(**spec),))
+    session.flush()
+    assert replacement.id != old_plan.id
+    assert slot.state == "invalidated"
+    assert session.query(AiContentWindowPlanSlot).filter_by(state="frozen").count() == 1
+    assert action.status == "skipped" and job.state == "ready"

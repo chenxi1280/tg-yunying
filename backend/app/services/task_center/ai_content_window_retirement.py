@@ -1,5 +1,5 @@
 """Retire terminal content bindings only with proven nonexecution."""
-from sqlalchemy import and_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import Action, AiContentWindowPlan, AiContentWindowPlanSlot
@@ -53,7 +53,16 @@ def _unexecuted_bound_slot_query():
             Action.payload["generation_job_id"].as_string() == GenerationJob.id,
         ),
     ).where(
-        AiContentWindowPlanSlot.state == "gateway_bound",
+        or_(
+            and_(
+                AiContentWindowPlanSlot.state == "gateway_bound",
+                GenerationJob.generation_stage == "gateway_bound",
+            ),
+            and_(
+                AiContentWindowPlanSlot.state == "candidate_ready",
+                GenerationJob.generation_stage == "reviewing",
+            ),
+        ),
         AiContentWindowPlanSlot.obligation_type == GenerationJob.obligation_type,
         AiContentWindowPlanSlot.obligation_id == GenerationJob.obligation_id,
         AiContentWindowPlan.tenant_id == GenerationJob.tenant_id,
@@ -61,7 +70,6 @@ def _unexecuted_bound_slot_query():
         AiContentWindowPlan.task_lifecycle_epoch == GenerationJob.task_lifecycle_epoch,
         GenerationJob.window_slot_id == AiContentWindowPlanSlot.id,
         GenerationJob.state == "ready",
-        GenerationJob.generation_stage == "gateway_bound",
         Action.task_type == "group_ai_chat",
         Action.action_type == "send_message",
         Action.status.in_(TERMINAL_UNSENT_ACTION_STATES),

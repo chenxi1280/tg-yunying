@@ -24,3 +24,12 @@
 ## 开发与 QA 回读
 
 词频 3 个新增反例先红后绿，原 5 项保持通过；两个索引的 SQLite/真实 PG 检查通过。受影响场景 170 项、升级/迁移图组合 15 项、生成质量与 pacing/真实 PG 并发 84 项、最终来源/相册 8 项通过（各组合有少量重叠，不相加作独立总数）。已更新产品合同和结构/数据流索引，进入 Release Gate。线上尚待正式部署与新事实验证。
+
+
+### 2026-09-07 生产回流：已终结未发送 Action 的 ready 内容槽
+
+正式发布 d7ba60d 后仍出现 `ai_content_window_concurrent_conflict`。只读核验的 20 个样本均为旧 Action 因 `pacing_claim_deadline_exceeded` 进入 skipped，Attempt 已结束且未进入 Gateway，typed fact 为 `safely_not_executed`；但旧 Job 保持 ready/reviewing，slot 保持 candidate_ready，阻挡同一 obligation 的后续序列。现有 terminal-Job 分支及 gateway_bound 分支遗漏这一状态组合。
+
+Product Design Complete：将已存在的“终态 Action + 正面未执行证据”回收合同覆盖至 `candidate_ready + Job ready/reviewing`，与原 `gateway_bound + Job ready/gateway_bound` 采用同等 owner/tenant/task/epoch/obligation/window/job 绑定及全部 Attempt/typed fact 检查。按行锁串行使旧 slot invalidated 并释放 owner/lease；保留 Job/Action/Attempt/fact 和所有远端去重身份，不修改状态或完成量，不放宽 current-obligation 唯一约束。只在后续正式生成绑定原 obligation 时回收，不直接批量改生产数据。active/unknown/身份漂移、未结束 Attempt、已调用却无正确未执行事实、已有 remote ID 均不得回收。
+
+QA 必须先复现 ready/reviewing/candidate_ready + skipped 的冲突，确认回收后同 obligation 的新窗口能够冻结；覆盖原 gateway_bound 及所有证据反例，真实 PostgreSQL 验证 partial unique 和行锁路径。该修复不绕过行为 Session/来源 deadline，过期积压仍按原合同结算。
