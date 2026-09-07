@@ -33,3 +33,10 @@
 Product Design Complete：将已存在的“终态 Action + 正面未执行证据”回收合同覆盖至 `candidate_ready + Job ready/reviewing`，与原 `gateway_bound + Job ready/gateway_bound` 采用同等 owner/tenant/task/epoch/obligation/window/job 绑定及全部 Attempt/typed fact 检查。按行锁串行使旧 slot invalidated 并释放 owner/lease；保留 Job/Action/Attempt/fact 和所有远端去重身份，不修改状态或完成量，不放宽 current-obligation 唯一约束。只在后续正式生成绑定原 obligation 时回收，不直接批量改生产数据。active/unknown/身份漂移、未结束 Attempt、已调用却无正确未执行事实、已有 remote ID 均不得回收。
 
 QA 必须先复现 ready/reviewing/candidate_ready + skipped 的冲突，确认回收后同 obligation 的新窗口能够冻结；覆盖原 gateway_bound 及所有证据反例，真实 PostgreSQL 验证 partial unique 和行锁路径。该修复不绕过行为 Session/来源 deadline，过期积压仍按原合同结算。
+
+
+### 2026-09-07 频道成员前置多账号组合同补正
+
+线上 13 个 running 频道任务（2 评论、6 点赞、5 浏览）均为 selection_mode=group、account_group_ids 含 11 组、旧 account_group_id 为空。成员前置候选读取仅识别单组，导致配置合法但候选为空。多组列表是当前账号范围合同：非空 account_group_ids 优先；只有缺失/空列表时兼容已保存的单组字段；均为空返回空范围，禁止扩大至 all。保留 tenant、active、未删除、普通运营用途与救援管理员排除条件及原排序；manual/all 行为不变。
+
+Product Design Complete：修复候选范围读取，不改变账号组配置、成员版本、原义务/Action/Attempt、关注前置规则或数量目标。抽出成员候选选择模块保留旧公开导入入口；多组、单组兼容、优先级、空范围和用途/租户边界由定向测试覆盖。上线后只读复查候选数和成员前置推进，再以三类 typed 远端事实验收；候选增加不等于关注或履约完成。

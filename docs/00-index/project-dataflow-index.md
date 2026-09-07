@@ -1538,3 +1538,6 @@ legacy-only A 冷启动分支固定为 `frozen legacy A -> 原 A Session 只读 
 
 
 > **2026-09-07 AI ready 窗口残留修复：** `ai_content_job_binding._ensure_window_slot -> ai_content_window_retirement -> content_action_proven_unsent` 在替代生成绑定时，统一检查旧 `candidate_ready/Job ready+reviewing` 与 `gateway_bound/Job ready+gateway_bound`。只有精确终态未发送 Action 及全部 Attempt/fact 正面证据通过才释放旧 slot；保留历史 owner 记录、结果未知及已发送事实。SQLite/PG 回归位于 `test_ai_content_window_retirement*.py`。
+
+
+> **2026-09-07 频道成员候选多组修复：** `channel_membership.candidate_accounts_for_config` 保留公开入口，查询实现位于 `channel_membership_candidates.py`；按非空 account_group_ids 优先、旧单组兼容读取配置范围，保留 tenant/active/用途/救援管理员过滤及排序。修复 13 个已配置 11 组但旧代码读取为零候选的频道任务；候选只读对照 0 -> 1554，不代表关注或业务完成。测试：`test_channel_membership_candidates.py`。

@@ -2949,3 +2949,10 @@ apply 要求精确部署 SHA、原 preview hash、actor 和当前会话审计引
 ACK 后继续使用原全局占用读取规则：仍属于所查业务日的旧 unknown 保留原业务预算；已经过去的原业务日不转入今天，也不伪造缺失日期。只消除已证明结束的物理调用占用。对没有原进程退出证据的历史调用保持当前 unknown/占用状态，不能按同批其他容器已退出外推。
 
 design_status=complete。反查已覆盖原 Gateway/worker owner 生成、当前本地 runner ACK、legacy occupancy 的查询和投影、原始调用字段及统一资源结算。QA 必须覆盖实际退出时间早于调用、容器/前缀/宿主/摘要错配、空证据、无调用和已成功、精确集合变化、真实 PostgreSQL 并发锁/CAS、事务回滚、重复 apply、unknown/日期/预算保持及独立读回。发布、ACK 持久化、可用容量变化和四类任务的 E4 各自验收，不把进程退出写成 Telegram 成功。
+
+
+### 2026-09-07 频道成员前置多账号组合同补正
+
+线上 13 个 running 频道任务（2 评论、6 点赞、5 浏览）均为 selection_mode=group、account_group_ids 含 11 组、旧 account_group_id 为空。成员前置候选读取仅识别单组，导致配置合法但候选为空。多组列表是当前账号范围合同：非空 account_group_ids 优先；只有缺失/空列表时兼容已保存的单组字段；均为空返回空范围，禁止扩大至 all。保留 tenant、active、未删除、普通运营用途与救援管理员排除条件及原排序；manual/all 行为不变。
+
+Product Design Complete：修复候选范围读取，不改变账号组配置、成员版本、原义务/Action/Attempt、关注前置规则或数量目标。抽出成员候选选择模块保留旧公开导入入口；多组、单组兼容、优先级、空范围和用途/租户边界由定向测试覆盖。上线后只读复查候选数和成员前置推进，再以三类 typed 远端事实验收；候选增加不等于关注或履约完成。
