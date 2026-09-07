@@ -47,7 +47,7 @@ def test_planner_creates_stable_pending_comment_blueprints_without_ai(
 
         created = channel_comment.build_plan(session, task)
         actions = sorted(
-            session.scalars(select(Action).where(Action.task_id == task.id)).all(),
+            session.scalars(select(Action).where(Action.action_type == "post_comment", Action.task_id == task.id)).all(),
             key=lambda action: action.payload["slot_id"],
         )
 
@@ -184,7 +184,7 @@ def test_two_planner_runs_do_not_duplicate_pending_comment_blueprints(monkeypatc
         first_created = channel_comment.build_plan(session, task)
         session.commit()
         second_created = channel_comment.build_plan(session, task)
-        count = session.scalar(select(func.count(Action.id)).where(Action.task_id == task.id))
+        count = session.scalar(select(func.count(Action.id)).where(Action.action_type == "post_comment", Action.task_id == task.id))
 
     assert first_created == 2
     assert second_created == 0
@@ -204,7 +204,7 @@ def test_reply_shortfall_does_not_degrade_to_direct_comments(monkeypatch):
         session.flush()
 
         created = channel_comment.build_plan(session, task)
-        actions = list(session.scalars(select(Action).where(Action.task_id == task.id)).all())
+        actions = list(session.scalars(select(Action).where(Action.action_type == "post_comment", Action.task_id == task.id)).all())
 
     # PRD §1.2.4 mixed shortfall: keep plan with available replies + normal comments.
     assert created == 3

@@ -11,6 +11,7 @@ from app.database import SessionLocal, engine, get_session
 from app.main import app
 from app.integrations.telegram import ChannelCommentSnapshot, ChannelMessageSnapshot, DeveloperAppCredentials, GroupMessageSnapshot, GroupSnapshot, OperationResult, SendResult, VerificationCodeSnapshot
 from app.models import AccountStatus, Action, AiAccountVoiceProfile, AiDraft, AiGroupMessageMemory, AiUsageLedger, AuditLog, Campaign, DeveloperAppHealthStatus, FailureType, GroupBotAdmission, GroupContextMessage, ListenerSourceState, ManualOperationRecord, Material, MessageFingerprint, MessageTask, OperationTarget, OperationTaskAttempt, ReviewQueue, RuntimeMetricSnapshot, SchedulingSetting, SourceMediaAsset, TargetRuntimeSummary, Task, TaskGroupBotAdmission, TaskPlannerWakeState, TaskRuntimeSummary, TaskStatus, TelegramDeveloperApp, Tenant, TgAccount, TgAccountAuthorization, TgAccountOnlineState, TgAccountProfileSyncRecord, TgAccountSyncRecord, TgGroup, TgGroupAccount, TgLoginFlow, VerificationTask
+from tests.channel_membership_fixture import seed_joined_channel
 from app.services._common import _now
 from app.services.notifications import NotificationResult
 from app.services.task_center.listener_runtime import reset_listener_runtime_cache
@@ -5009,6 +5010,9 @@ def test_task_center_channel_like_and_view_cap_per_message_by_unique_accounts(mo
                 "auth_status": "已授权运营",
             },
         ).json()
+        with SessionLocal() as session:
+            seed_joined_channel(session, channel_target["id"], account_ids)
+            session.commit()
         channel_message = client.post(
             "/api/channel-messages",
             headers=headers,
@@ -5065,7 +5069,7 @@ def test_task_center_channel_like_and_view_cap_per_message_by_unique_accounts(mo
             force_due_actions(task_id)
             client.post("/api/worker/drain-once", headers=headers, json={"reason": "测试手动 drain"})
             detail = task_detail_after_metrics(client, headers, task_id)
-            rows = task_detail_actions(client, headers, task_id)
+            rows = task_detail_actions(client, headers, task_id, action_type=("like_message" if endpoint.endswith("channel-like") else "view_message"))
             assert len(rows) == 2
             assert len({row["account_id"] for row in rows}) == 2
             assert "当前参与账号 2 个" in detail["task"]["stats"]["capacity_warning"]
@@ -5077,7 +5081,7 @@ def test_task_center_channel_like_and_view_cap_per_message_by_unique_accounts(mo
         drain_task_center(SessionLocal, 10)
         with SessionLocal() as session:
             for task_id in task_ids:
-                assert session.query(Action).filter(Action.task_id == task_id).count() == 2
+                assert session.query(Action).filter(Action.action_type != "ensure_target_membership", Action.task_id == task_id).count() == 2
 
 
 def test_task_center_channel_comment_allows_multiple_replies_per_account(monkeypatch):
@@ -5210,6 +5214,9 @@ def test_task_center_channel_like_auto_collects_dynamic_new_messages(monkeypatch
                 "auth_status": "已授权运营",
             },
         ).json()
+        with SessionLocal() as session:
+            seed_joined_channel(session, channel_target["id"], [account["id"]])
+            session.commit()
         created = client.post(
             "/api/tasks/channel-like",
             headers=headers,
@@ -5420,6 +5427,9 @@ def test_task_center_reset_channel_like_rebuilds_from_latest_messages(monkeypatc
                 "auth_status": "已授权运营",
             },
         ).json()
+        with SessionLocal() as session:
+            seed_joined_channel(session, channel_target["id"], [account["id"]])
+            session.commit()
         created = client.post(
             "/api/tasks/channel-like",
             headers=headers,
@@ -5447,9 +5457,9 @@ def test_task_center_reset_channel_like_rebuilds_from_latest_messages(monkeypatc
         assert reactions == [4101]
 
         with SessionLocal() as session:
-            old_action_count = session.query(Action).filter(Action.task_id == task_id).count()
+            old_action_count = session.query(Action).filter(Action.action_type != "ensure_target_membership", Action.task_id == task_id).count()
             assert old_action_count == 1
-            action = session.query(Action).filter(Action.task_id == task_id).one()
+            action = session.query(Action).filter(Action.action_type != "ensure_target_membership", Action.task_id == task_id).one()
             action.status = "failed"
             action.result = {"success": False, "error_message": "old failure"}
             session.add(
@@ -5468,7 +5478,7 @@ def test_task_center_reset_channel_like_rebuilds_from_latest_messages(monkeypatc
         reset = client.post(f"/api/tasks/{task_id}/reset", headers=headers, json={"reason": "测试重置任务"})
         assert reset.status_code == 200, reset.text
         detail_after_reset = client.get(f"/api/tasks/{task_id}", headers=headers).json()
-        actions_after_reset = task_detail_actions(client, headers, task_id)
+        actions_after_reset = task_detail_actions(client, headers, task_id, action_type="like_message")
         assert len(actions_after_reset) == 1
         assert actions_after_reset[0]["status"] == "failed"
         assert "reviews" not in detail_after_reset
@@ -5478,7 +5488,7 @@ def test_task_center_reset_channel_like_rebuilds_from_latest_messages(monkeypatc
         drain_task_center(SessionLocal, 10)
         detail = task_detail_after_metrics(client, headers, task_id)
         assert reactions == [4101]
-        actions = task_detail_actions(client, headers, task_id)
+        actions = task_detail_actions(client, headers, task_id, action_type="like_message")
         assert len(actions) == 2
         replacement = next(action for action in actions if action["payload"]["message_id"] == 4202)
         assert replacement["status"] == "pending"
@@ -5525,6 +5535,9 @@ def test_task_center_reset_channel_view_rebuilds_from_latest_messages(
                 "auth_status": "已授权运营",
             },
         ).json()
+        with SessionLocal() as session:
+            seed_joined_channel(session, channel_target["id"], [account["id"]])
+            session.commit()
         created = client.post(
             "/api/tasks/channel-view",
             headers=headers,
@@ -5553,7 +5566,7 @@ def test_task_center_reset_channel_view_rebuilds_from_latest_messages(
         reset = client.post(f"/api/tasks/{task_id}/reset", headers=headers, json={"reason": "测试重置任务"})
         assert reset.status_code == 200, reset.text
         detail_after_reset = client.get(f"/api/tasks/{task_id}", headers=headers).json()
-        actions_after_reset = task_detail_actions(client, headers, task_id)
+        actions_after_reset = task_detail_actions(client, headers, task_id, action_type="view_message")
         assert len(actions_after_reset) == 1
         assert actions_after_reset[0]["status"] == "success"
         assert "reviews" not in detail_after_reset
@@ -5563,7 +5576,7 @@ def test_task_center_reset_channel_view_rebuilds_from_latest_messages(
         drain_task_center(SessionLocal, 10)
         detail = task_detail_after_metrics(client, headers, task_id)
         assert views == [4301, 4302]
-        actions = task_detail_actions(client, headers, task_id)
+        actions = task_detail_actions(client, headers, task_id, action_type="view_message")
         assert len(actions) == 2
         assert all(action["action_type"] == "view_message" for action in actions)
         replacement = next(action for action in actions if action["payload"]["message_id"] == 4302)
@@ -5608,6 +5621,9 @@ def test_task_center_reset_channel_comment_rebuilds_auto_plan(monkeypatch):
                 "auth_status": "已授权运营",
             },
         ).json()
+        with SessionLocal() as session:
+            seed_joined_channel(session, channel_target["id"], [account["id"]])
+            session.commit()
         prepare_test_comment_message(client, headers, channel_target, account_ids=[account["id"]], message_id=fetched_ids[-1])
         created = client.post(
             "/api/tasks/channel-comment",
@@ -5634,7 +5650,7 @@ def test_task_center_reset_channel_comment_rebuilds_auto_plan(monkeypatch):
         force_due_actions(task_id)
         dispatch_pending_task_actions(task_id)
         old_detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
-        old_actions = task_detail_actions(client, headers, task_id)
+        old_actions = task_detail_actions(client, headers, task_id, action_type="post_comment")
         assert len(old_actions) == 1
         assert "reviews" not in old_detail
         assert old_actions[0]["payload"]["message_id"] == 4401
@@ -5644,14 +5660,14 @@ def test_task_center_reset_channel_comment_rebuilds_auto_plan(monkeypatch):
         reset = client.post(f"/api/tasks/{task_id}/reset", headers=headers, json={"reason": "测试重置任务"})
         assert reset.status_code == 200, reset.text
         detail_after_reset = client.get(f"/api/tasks/{task_id}", headers=headers).json()
-        actions_after_reset = task_detail_actions(client, headers, task_id)
+        actions_after_reset = task_detail_actions(client, headers, task_id, action_type="post_comment")
         assert len(actions_after_reset) == 1
         assert actions_after_reset[0]["status"] == "success"
         assert "reviews" not in detail_after_reset
 
         drain_task_center(SessionLocal, 10)
         detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
-        actions = task_detail_actions(client, headers, task_id)
+        actions = task_detail_actions(client, headers, task_id, action_type="post_comment")
         assert len(actions) == 2
         assert any(action["action_type"] == "post_comment" and action["payload"]["message_id"] == 4402 for action in actions)
         assert "reviews" not in detail
@@ -5855,7 +5871,7 @@ def test_task_center_channel_task_reports_no_collect_account():
 
         detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()["task"]
         assert detail["status"] == "running"
-        assert detail["last_error"] == "channel_source_snapshot_unavailable"
+        assert detail["last_error"] == "没有匹配账号，无法准备目标频道关注"
 
 
 def _clear_relay_source_context(session, group_id: int) -> None:
@@ -6568,6 +6584,9 @@ def test_task_center_channel_failure_replans_same_obligation_before_task_failed(
                 "auth_status": "已授权运营",
             },
         ).json()
+        with SessionLocal() as session:
+            seed_joined_channel(session, channel_target["id"], [account["id"]])
+            session.commit()
         channel_message = client.post(
             "/api/channel-messages",
             headers=headers,
@@ -6606,7 +6625,7 @@ def test_task_center_channel_failure_replans_same_obligation_before_task_failed(
         drain_task_center(SessionLocal, 1000)
         with SessionLocal() as session:
             task = session.get(Task, task_id)
-            action = session.query(Action).filter(Action.task_id == task_id).one()
+            action = session.query(Action).filter(Action.action_type != "ensure_target_membership", Action.task_id == task_id).one()
             assert task.status == "running"
             assert action.status == "skipped"
             assert action.retry_count == 0
@@ -6643,7 +6662,7 @@ def test_task_center_channel_failure_replans_same_obligation_before_task_failed(
         with SessionLocal() as session:
             task = session.get(Task, task_id)
             actions = list(
-                session.query(Action).filter(Action.task_id == task_id)
+                session.query(Action).filter(Action.action_type != "ensure_target_membership", Action.task_id == task_id)
             )
             assert task.status == "running"
             # 失败义务最终成功：replacement 路径产出 skipped+success 两条；
@@ -6676,6 +6695,9 @@ def test_task_center_channel_like_normalizes_account_hour_limit_to_system_gate(m
                 "auth_status": "已授权运营",
             },
         ).json()
+        with SessionLocal() as session:
+            seed_joined_channel(session, channel_target["id"], [account["id"]])
+            session.commit()
         channel_messages = [
             client.post(
                 "/api/channel-messages",
@@ -6711,7 +6733,7 @@ def test_task_center_channel_like_normalizes_account_hour_limit_to_system_gate(m
         client.post("/api/worker/drain-once", headers=headers, json={"reason": "测试手动 drain"})
         with SessionLocal() as session:
             task = session.get(Task, task_id)
-            rows = list(session.query(Action).filter(Action.task_id == task_id).order_by(Action.scheduled_at.asc(), Action.id.asc()))
+            rows = list(session.query(Action).filter(Action.action_type != "ensure_target_membership", Action.task_id == task_id).order_by(Action.scheduled_at.asc(), Action.id.asc()))
         assert task.type_config["max_likes_per_account_per_hour"] == 1_000_000
         assert len(rows) == 3
         # deterministic_stratified_v1：3 条 due 分层随机分布在来源滚动窗口内，
@@ -6829,7 +6851,7 @@ def test_task_center_no_available_accounts_warns_without_failing():
         with SessionLocal() as session:
             task = session.get(Task, task_id)
             assert task.status == "running"
-            assert task.last_error == "channel_source_snapshot_unavailable"
+            assert task.last_error == "没有匹配账号，无法准备目标频道关注"
 
 
 def test_task_center_settings_updates_config_and_rebuilds_unfinished_plan():

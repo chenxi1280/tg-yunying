@@ -19,6 +19,7 @@ from app.models import (
     Tenant,
     TgAccount,
 )
+from tests.channel_membership_fixture import seed_joined_channel
 from app.services import group_listeners
 from app.services.grok_cli_bridge import GrokCliBridge
 from app.services.task_center import ai_generator
@@ -172,6 +173,7 @@ def seed_comment_task(
 ) -> Task:
     _seed_comment_channel(session)
     _seed_comment_accounts(session)
+    seed_joined_channel(session, 31, [101, 102, 103])
     task = _comment_task(
         mode,
         reply_min=reply_min,

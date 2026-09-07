@@ -9,9 +9,10 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.integrations.telegram import ChannelMembershipResult
-from app.models import Action, ChannelMessage, OperationTarget, OperationTask, OperationTaskAttempt, Task, Tenant, TgAccount, TgGroup, TgGroupAccount
+from app.models import Action, ChannelMessage, ExecutionAttempt, OperationTarget, OperationTask, OperationTaskAttempt, Task, Tenant, TgAccount, TgGroup, TgGroupAccount
 from app.schemas.operations import OperationTargetCreate
 from app.schemas.task_center import ChannelViewTaskCreate, TaskPrecheckRequest
+from tests.channel_membership_fixture import seed_joined_channel
 from app.services._common import _now
 from app.services.operations import create_operation_target
 from app.services.operations import _execute_operation_attempt
@@ -289,6 +290,7 @@ def test_channel_view_planner_uses_post_daily_target_and_task_safety_cap(monkeyp
                 ChannelMessage(id=704, tenant_id=1, channel_target_id=503, message_id=9104, content_preview="第二条帖子", published_at=now_value),
             ]
         )
+        seed_joined_channel(session, 503, [31, 32, 33])
         session.commit()
 
         assert build_task_plan(session, task) == 3
@@ -501,8 +503,10 @@ def test_channel_main_action_runtime_guard_blocks_unjoined_account(monkeypatch):
         session.commit()
 
         dispatch_action(session, action)
-        assert action.status == "failed"
-        assert action.result["validation_stage"] == "account_channel_membership"
+        assert action.status == "pending"
+        assert action.result["error_code"] == "channel_membership_required"
+        assert session.query(ExecutionAttempt).filter(ExecutionAttempt.action_id == action.id).count() == 0
+        assert session.query(Action).filter(Action.task_id == task.id, Action.action_type == "ensure_target_membership").count() == 1
 
 
 def _add_unjoined_like_action(session: Session, now_value) -> Action:

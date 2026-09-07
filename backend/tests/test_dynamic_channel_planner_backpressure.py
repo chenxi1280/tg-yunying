@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.models import AccountStatus, Action, ChannelMessage, OperationTarget, Task, Tenant, TgAccount
+from tests.channel_membership_fixture import seed_joined_channel
 from app.services._common import _now
 from app.services.task_center import stats
 from app.services.task_center.executors import common
@@ -245,6 +246,7 @@ def test_channel_like_planner_reads_fulfillment_facts_in_batches() -> None:
             ),
         ])
         session.commit()
+        seed_joined_channel(session, channel.id, [account.id])
         takeover_task(session, task, now=_now(), write_audit=False)
         session.commit()
         statements.clear()

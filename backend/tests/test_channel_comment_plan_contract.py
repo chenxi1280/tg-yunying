@@ -289,7 +289,7 @@ def test_grounding_plan_freezes_distinct_target_and_survives_config_revision(mon
             select(ChannelCommentGroundingAssignment)
             .order_by(ChannelCommentGroundingAssignment.target_ordinal)
         ))
-        actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
+        actions = list(session.scalars(select(Action).where(Action.action_type == "post_comment", Action.task_id == task.id)))
 
         task.config_revision = 2
         task.type_config = {**task.type_config, "target_comments_per_message": 1}
@@ -326,7 +326,7 @@ def test_zero_eligible_accounts_freezes_blocked_plan(monkeypatch):
         created = channel_comment.build_plan(session, task)
         plan = session.scalar(select(ChannelCommentPlanContract))
         acceptance = channel_comment_acceptance(session, task)
-        actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
+        actions = list(session.scalars(select(Action).where(Action.action_type == "post_comment", Action.task_id == task.id)))
 
     assert created == 0
     assert plan is not None, (task.last_error, task.stats)
@@ -372,7 +372,7 @@ def test_empty_source_blocks_when_planned_fallback_exceeds_business_cap(monkeypa
 
         created = channel_comment.build_plan(session, task)
         plan = session.scalar(select(ChannelCommentPlanContract))
-        actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
+        actions = list(session.scalars(select(Action).where(Action.action_type == "post_comment", Action.task_id == task.id)))
         obligations = list(session.scalars(select(CommentFulfillmentObligation)))
         acceptance = channel_comment_acceptance(session, task)
 
@@ -396,7 +396,7 @@ def test_planned_fallback_action_keeps_exact_grounding_snapshot_identity(monkeyp
 
         created = channel_comment.build_plan(session, task)
         snapshot = session.scalar(select(ChannelCommentGroundingSnapshot))
-        actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
+        actions = list(session.scalars(select(Action).where(Action.action_type == "post_comment", Action.task_id == task.id)))
 
     assert created == 2
     assert snapshot.source_state == "insufficient"
@@ -443,7 +443,7 @@ def test_grounding_mixed_reply_shortfall_blocks_without_direct_downgrade(monkeyp
         session.flush()
 
         created = channel_comment.build_plan(session, task)
-        actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
+        actions = list(session.scalars(select(Action).where(Action.action_type == "post_comment", Action.task_id == task.id)))
         obligations = list(session.scalars(select(CommentFulfillmentObligation)))
 
     assert created == 0
@@ -465,7 +465,7 @@ def test_grounding_reply_slot_rejects_planned_fallback(monkeypatch):
         _enable_grounding_plan(session, task, source_text="", fallback_max_bps=10000)
 
         created = channel_comment.build_plan(session, task)
-        actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
+        actions = list(session.scalars(select(Action).where(Action.action_type == "post_comment", Action.task_id == task.id)))
         obligations = list(session.scalars(select(CommentFulfillmentObligation)))
 
     assert created == 0
@@ -484,7 +484,7 @@ def test_daily_cap_applies_per_continuous_period_without_shrinking_obligations(m
 
         created = channel_comment.build_plan(session, task)
         obligations = session.scalar(select(func.count(CommentFulfillmentObligation.id)))
-        action_rows = list(session.scalars(select(Action).where(Action.task_id == task.id)))
+        action_rows = list(session.scalars(select(Action).where(Action.action_type == "post_comment", Action.task_id == task.id)))
         reservations = list(session.scalars(select(TaskCommentCapacityReservation)))
         periods = list(session.scalars(select(TaskCommentCapacityPeriod)))
 
@@ -512,7 +512,7 @@ def test_capacity_reservation_advances_through_gateway_and_remote_fact(monkeypat
         task = seed_comment_task(session, mode="comment", target_count=3)
         _enable_grounding_plan(session, task)
         channel_comment.build_plan(session, task)
-        action = session.scalar(select(Action).where(Action.task_id == task.id))
+        action = session.scalar(select(Action).where(Action.action_type == "post_comment", Action.task_id == task.id))
 
         mark_comment_capacity_gateway_hold(session, action.id)
         reservation = session.scalar(select(TaskCommentCapacityReservation).where(
@@ -923,7 +923,7 @@ def _new_edited_source(session, message) -> ChannelMessageSourceRevision:
 def _prepare_source_edit_case(session, task):
     channel_comment.build_plan(session, task)
     actions = sorted(
-        session.scalars(select(Action).where(Action.task_id == task.id)),
+        session.scalars(select(Action).where(Action.action_type == "post_comment", Action.task_id == task.id)),
         key=lambda row: int(row.payload["target_ordinal"]),
     )
     action, held_action = actions
@@ -1020,7 +1020,7 @@ def test_source_delete_terminates_only_pre_gateway_owner(
         _enable_grounding_plan(session, task)
         channel_comment.build_plan(session, task)
         actions = sorted(
-            session.scalars(select(Action).where(Action.task_id == task.id)),
+            session.scalars(select(Action).where(Action.action_type == "post_comment", Action.task_id == task.id)),
             key=lambda row: int(row.payload["target_ordinal"]),
         )
         movable, held_action = actions
@@ -1080,7 +1080,7 @@ def test_task_pause_releases_only_pre_gateway_comment_owner(monkeypatch) -> None
         _enable_grounding_plan(session, task)
         channel_comment.build_plan(session, task)
         actions = sorted(
-            session.scalars(select(Action).where(Action.task_id == task.id)),
+            session.scalars(select(Action).where(Action.action_type == "post_comment", Action.task_id == task.id)),
             key=lambda row: int(row.payload["target_ordinal"]),
         )
         movable, held_action = actions
@@ -1132,7 +1132,7 @@ def test_task_pause_preserves_gateway_started_and_settles_expired(monkeypatch) -
         _enable_grounding_plan(session, task)
         channel_comment.build_plan(session, task)
         actions = sorted(
-            session.scalars(select(Action).where(Action.task_id == task.id)),
+            session.scalars(select(Action).where(Action.action_type == "post_comment", Action.task_id == task.id)),
             key=lambda row: int(row.payload["target_ordinal"]),
         )
         gateway_action, expired_action = actions
@@ -1312,7 +1312,7 @@ def test_released_capacity_blocks_frozen_action_before_gateway(monkeypatch) -> N
         task = seed_comment_task(session, mode="comment", target_count=3)
         _enable_grounding_plan(session, task)
         channel_comment.build_plan(session, task)
-        action = session.scalar(select(Action).where(Action.task_id == task.id))
+        action = session.scalar(select(Action).where(Action.action_type == "post_comment", Action.task_id == task.id))
         reservation = session.scalar(select(TaskCommentCapacityReservation).where(
             TaskCommentCapacityReservation.action_id == action.id,
         ))

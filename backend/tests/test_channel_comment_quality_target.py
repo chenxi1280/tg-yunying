@@ -53,7 +53,7 @@ def test_initial_quality_target_is_immutable_across_task_config_edit(monkeypatch
             plan.current_quality_target_revision_id,
         )
         assignments = list(session.scalars(select(ChannelCommentGroundingAssignment)))
-        actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
+        actions = list(session.scalars(select(Action).where(Action.action_type == "post_comment", Action.task_id == task.id)))
         task.config_revision = 2
         task.type_config = {**task.type_config, "grounding_quality_target_bps": 10000}
         session.commit()
@@ -111,7 +111,7 @@ def test_source_edit_revises_only_pre_gateway_quality_component(monkeypatch) -> 
         plan = session.scalar(select(ChannelCommentPlanContract))
         initial_target_id = plan.current_quality_target_revision_id
         actions = sorted(
-            session.scalars(select(Action).where(Action.task_id == task.id)),
+            session.scalars(select(Action).where(Action.action_type == "post_comment", Action.task_id == task.id)),
             key=lambda row: int(row.payload["target_ordinal"]),
         )
         obligations = _ordered_obligations(session)
@@ -187,7 +187,7 @@ def test_source_edit_can_promote_planned_fallback_before_gateway(monkeypatch) ->
         task = seed_comment_task(session, mode="comment", target_count=3)
         _enable_grounding_plan(session, task, source_text="")
         channel_comment.build_plan(session, task)
-        old_actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
+        old_actions = list(session.scalars(select(Action).where(Action.action_type == "post_comment", Action.task_id == task.id)))
         edited = _edited_source(session, text="活动", source_id="quality-rich-source-2")
         edited_id = edited.id
         reconcile_channel_comment_source_edit(
@@ -198,7 +198,7 @@ def test_source_edit_can_promote_planned_fallback_before_gateway(monkeypatch) ->
             ChannelCommentGroundingAssignment.assignment_state == "active",
         )))
         new_actions = list(session.scalars(select(Action).where(
-            Action.task_id == task.id, Action.status != "cancelled",
+            Action.action_type == "post_comment", Action.task_id == task.id, Action.status != "cancelled",
         )))
         plan = session.scalar(select(ChannelCommentPlanContract))
         target = session.get(

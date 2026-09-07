@@ -30,6 +30,7 @@ from app.schemas import (
     TaskPrecheckRequest,
     TaskSettingsUpdate,
 )
+from tests.channel_membership_fixture import seed_joined_channel
 from app.services.task_center import dispatcher
 from app.services.task_center.executors import channel_comment, channel_comment_budget
 from app.services.task_center.ai_generator import AiGenerationUnavailable, generate_group_reply_messages
@@ -279,6 +280,7 @@ def _add_channel(session: Session, message_count: int, account_count: int, comme
                 health_score=100,
             )
         )
+    seed_joined_channel(session, channel.id, range(101, 101 + account_count))
     return channel
 
 
@@ -419,7 +421,7 @@ def test_channel_comment_planner_respects_task_total_comment_limit():
         session.commit()
 
         created = build_channel_comment_plan(session, task)
-        total_actions = session.scalar(select(func.count(Action.id)).where(Action.task_id == task.id))
+        total_actions = session.scalar(select(func.count(Action.id)).where(Action.action_type != "ensure_target_membership", Action.task_id == task.id))
 
     assert created == 2
     assert total_actions == 80
@@ -1222,9 +1224,9 @@ def test_channel_comment_takeover_replaces_operator_hour_budget_with_system_gate
 
         takeover_task(session, task, now=NOW)
         created = build_channel_comment_plan(session, task)
-        total_actions = session.scalar(select(func.count(Action.id)).where(Action.task_id == task.id))
+        total_actions = session.scalar(select(func.count(Action.id)).where(Action.action_type != "ensure_target_membership", Action.task_id == task.id))
         per_message = [
-            session.scalar(select(func.count(Action.id)).where(Action.task_id == task.id, Action.payload["channel_message_id"].as_integer() == message_id))
+            session.scalar(select(func.count(Action.id)).where(Action.action_type != "ensure_target_membership", Action.task_id == task.id, Action.payload["channel_message_id"].as_integer() == message_id))
             for message_id in [41, 42]
         ]
 
@@ -1268,7 +1270,7 @@ def test_channel_comment_takeover_does_not_preserve_operator_hour_consumption(mo
 
         takeover_task(session, task, now=NOW)
         created = build_channel_comment_plan(session, task)
-        total_actions = session.scalar(select(func.count(Action.id)).where(Action.task_id == task.id))
+        total_actions = session.scalar(select(func.count(Action.id)).where(Action.action_type != "ensure_target_membership", Action.task_id == task.id))
 
     assert created == 8
     assert total_actions == 104
@@ -1289,7 +1291,7 @@ def test_channel_comment_planner_stops_when_collected_comments_reach_target():
         session.commit()
 
         created = build_channel_comment_plan(session, task)
-        total_actions = session.scalar(select(func.count(Action.id)).where(Action.task_id == task.id))
+        total_actions = session.scalar(select(func.count(Action.id)).where(Action.action_type != "ensure_target_membership", Action.task_id == task.id))
 
     assert created == 0
     assert total_actions == 0
@@ -1309,7 +1311,7 @@ def test_channel_comment_planner_excludes_uninitialized_profile_accounts():
         session.commit()
 
         created = build_channel_comment_plan(session, task)
-        action_accounts = session.scalars(select(Action.account_id).where(Action.task_id == task.id)).all()
+        action_accounts = session.scalars(select(Action.account_id).where(Action.action_type != "ensure_target_membership", Action.task_id == task.id)).all()
 
     assert created == 1
     assert action_accounts == [102]
@@ -1333,7 +1335,7 @@ def test_channel_comment_plans_minimum_auto_replies():
         session.commit()
 
         created = build_channel_comment_plan(session, task)
-        actions = session.scalars(select(Action).where(Action.task_id == task.id).order_by(Action.created_at)).all()
+        actions = session.scalars(select(Action).where(Action.action_type != "ensure_target_membership", Action.task_id == task.id).order_by(Action.created_at)).all()
 
     assert created == 3
     assert all(action.payload["comment_text"] == "" for action in actions)
@@ -1360,7 +1362,7 @@ def test_channel_comment_comment_mode_ignores_stale_reply_minimum():
         session.commit()
 
         created = build_channel_comment_plan(session, task)
-        actions = session.scalars(select(Action).where(Action.task_id == task.id)).all()
+        actions = session.scalars(select(Action).where(Action.action_type != "ensure_target_membership", Action.task_id == task.id)).all()
 
     assert created == 4
     assert len(actions) == 4
@@ -1383,7 +1385,7 @@ def test_channel_comment_does_not_reuse_reply_targets_when_pool_is_short():
         session.commit()
 
         created = build_channel_comment_plan(session, task)
-        actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
+        actions = list(session.scalars(select(Action).where(Action.action_type != "ensure_target_membership", Action.task_id == task.id)))
 
     # Mixed shortfall keeps normal comments; only one reply target is available.
     assert created == 4
@@ -1433,7 +1435,7 @@ def test_channel_comment_excludes_already_used_reply_targets_across_rounds():
 
         takeover_task(session, task, now=NOW)
         created = build_channel_comment_plan(session, task)
-        actions = session.scalars(select(Action).where(Action.task_id == task.id, Action.id != "used-channel-reply-action")).all()
+        actions = session.scalars(select(Action).where(Action.action_type != "ensure_target_membership", Action.task_id == task.id, Action.id != "used-channel-reply-action")).all()
 
     assert created == 1
     assert [action.payload["reply_to_message_id"] for action in actions] == [8102]
@@ -1489,7 +1491,7 @@ def test_channel_comment_finds_unused_reply_target_beyond_initial_window():
 
         takeover_task(session, task, now=NOW)
         created = build_channel_comment_plan(session, task)
-        actions = session.scalars(select(Action).where(Action.task_id == task.id, Action.id.not_like("used-channel-reply-action-%"))).all()
+        actions = session.scalars(select(Action).where(Action.action_type != "ensure_target_membership", Action.task_id == task.id, Action.id.not_like("used-channel-reply-action-%"))).all()
 
     assert created == 1
     assert [action.payload["reply_to_message_id"] for action in actions] == [8121]
@@ -1512,7 +1514,7 @@ def test_channel_comment_reserves_reply_minimum_before_generation():
         session.commit()
 
         created = build_channel_comment_plan(session, task)
-        total_actions = session.scalar(select(func.count(Action.id)).where(Action.task_id == task.id))
+        total_actions = session.scalar(select(func.count(Action.id)).where(Action.action_type != "ensure_target_membership", Action.task_id == task.id))
 
     assert created == 3
     assert total_actions == 3
@@ -1538,7 +1540,7 @@ def test_channel_comment_defers_output_filtering_until_after_generation():
         session.commit()
 
         created = build_channel_comment_plan(session, task)
-        total_actions = session.scalar(select(func.count(Action.id)).where(Action.task_id == task.id))
+        total_actions = session.scalar(select(func.count(Action.id)).where(Action.action_type != "ensure_target_membership", Action.task_id == task.id))
 
     assert created == 3
     assert total_actions == 3
@@ -1568,7 +1570,7 @@ def test_channel_comment_skips_messages_without_comment_thread():
         session.commit()
 
         created = build_channel_comment_plan(session, task)
-        payloads = session.scalars(select(Action.payload).where(Action.task_id == task.id)).all()
+        payloads = session.scalars(select(Action.payload).where(Action.action_type != "ensure_target_membership", Action.task_id == task.id)).all()
 
     assert created == 1
     assert [payload["channel_message_id"] for payload in payloads] == [42]

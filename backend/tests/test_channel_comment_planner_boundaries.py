@@ -202,7 +202,7 @@ def test_reply_replan_refreshes_missing_target_for_same_ordinal(monkeypatch):
             target_count=1,
         )
         assert channel_comment.build_plan(session, task) == 1
-        first = session.scalar(select(Action).where(Action.task_id == task.id))
+        first = session.scalar(select(Action).where(Action.action_type == "post_comment", Action.task_id == task.id))
         obligation_id = first.payload["comment_fulfillment_obligation_id"]
         stale_target = first.payload["reply_to_message_id"]
         stale = session.scalar(select(ChannelMessageComment).where(
@@ -216,7 +216,7 @@ def test_reply_replan_refreshes_missing_target_for_same_ordinal(monkeypatch):
         assert channel_comment.build_plan(session, task) == 1
         replacements = list(session.scalars(
             select(Action).where(
-                Action.task_id == task.id,
+                Action.action_type == "post_comment", Action.task_id == task.id,
                 Action.id != first.id,
             )
         ))
@@ -238,7 +238,7 @@ def test_reply_replan_waits_when_only_direct_target_is_available(monkeypatch):
             target_count=1,
         )
         assert channel_comment.build_plan(session, task) == 1
-        first = session.scalar(select(Action).where(Action.task_id == task.id))
+        first = session.scalar(select(Action).where(Action.action_type == "post_comment", Action.task_id == task.id))
         obligation_id = first.payload["comment_fulfillment_obligation_id"]
         for comment in session.scalars(select(ChannelMessageComment)):
             session.delete(comment)
@@ -248,7 +248,7 @@ def test_reply_replan_waits_when_only_direct_target_is_available(monkeypatch):
 
         assert channel_comment.build_plan(session, task) == 0
         obligation = session.get(CommentFulfillmentObligation, obligation_id)
-        actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
+        actions = list(session.scalars(select(Action).where(Action.action_type == "post_comment", Action.task_id == task.id)))
 
     assert len(actions) == 1
     assert obligation.relation_kind == "reply"
@@ -262,7 +262,7 @@ def test_comment_replan_claims_only_current_hour_budget(monkeypatch):
     with planner_session() as session:
         task = seed_comment_task(session, mode="comment", target_count=3)
         assert channel_comment.build_plan(session, task) == 3
-        first_actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
+        first_actions = list(session.scalars(select(Action).where(Action.action_type == "post_comment", Action.task_id == task.id)))
         for action in first_actions:
             action.status = "failed"
             dispatcher._sync_comment_fulfillment_state(session, action)
@@ -271,7 +271,7 @@ def test_comment_replan_claims_only_current_hour_budget(monkeypatch):
 
         assert channel_comment.build_plan(session, task) == 1
         replacements = list(session.scalars(select(Action).where(
-            Action.task_id == task.id,
+            Action.action_type == "post_comment", Action.task_id == task.id,
             Action.id.not_in([action.id for action in first_actions]),
         )))
 
@@ -285,7 +285,7 @@ def test_released_comment_action_is_replanned_instead_of_retried(monkeypatch):
         task = seed_comment_task(session, mode="comment", target_count=1)
         task.failure_policy = {"max_retries": 3, "retry_delay_seconds": 30}
         assert channel_comment.build_plan(session, task) == 1
-        action = session.scalar(select(Action).where(Action.task_id == task.id))
+        action = session.scalar(select(Action).where(Action.action_type == "post_comment", Action.task_id == task.id))
         action.status = "failed"
         dispatcher._sync_comment_fulfillment_state(session, action)
         session.commit()
@@ -320,7 +320,7 @@ def test_reply_first_attempt_materializes_only_inside_context_window(monkeypatch
         }
 
         created = channel_comment.build_plan(session, task)
-        actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
+        actions = list(session.scalars(select(Action).where(Action.action_type == "post_comment", Action.task_id == task.id)))
 
     assert created == 1
     assert len(actions) == 1
@@ -336,7 +336,7 @@ def test_reply_replan_is_scheduled_immediately(monkeypatch):
     with planner_session() as session:
         task = seed_comment_task(session, mode="mixed", reply_min=1, target_count=1)
         assert channel_comment.build_plan(session, task) == 1
-        first = session.scalar(select(Action).where(Action.task_id == task.id))
+        first = session.scalar(select(Action).where(Action.action_type == "post_comment", Action.task_id == task.id))
         stale = session.scalar(select(ChannelMessageComment).where(
             ChannelMessageComment.comment_message_id == first.payload["reply_to_message_id"],
         ))
@@ -352,7 +352,7 @@ def test_reply_replan_is_scheduled_immediately(monkeypatch):
 
         assert channel_comment.build_plan(session, task) == 1
         replacement = session.scalar(select(Action).where(
-            Action.task_id == task.id,
+            Action.action_type == "post_comment", Action.task_id == task.id,
             Action.id != first.id,
         ))
 
@@ -367,7 +367,7 @@ def test_reply_replan_keeps_source_message_after_scope_rolls_forward(monkeypatch
     with planner_session() as session:
         task = seed_comment_task(session, mode="mixed", reply_min=1, target_count=1)
         assert channel_comment.build_plan(session, task) == 1
-        first = session.scalar(select(Action).where(Action.task_id == task.id))
+        first = session.scalar(select(Action).where(Action.action_type == "post_comment", Action.task_id == task.id))
         obligation_id = first.payload["comment_fulfillment_obligation_id"]
         session.add(ChannelMessage(
             id=42,
@@ -384,7 +384,7 @@ def test_reply_replan_keeps_source_message_after_scope_rolls_forward(monkeypatch
 
         channel_comment.build_plan(session, task)
         replacement = session.scalar(select(Action).where(
-            Action.task_id == task.id,
+            Action.action_type == "post_comment", Action.task_id == task.id,
             Action.id != first.id,
             Action.payload["comment_fulfillment_obligation_id"].as_string() == obligation_id,
         ))
@@ -402,7 +402,7 @@ def test_future_comment_replacement_is_accelerated_before_planning(monkeypatch):
     with planner_session() as session:
         task = seed_comment_task(session, mode="mixed", reply_min=1, target_count=1)
         assert channel_comment.build_plan(session, task) == 1
-        action = session.scalar(select(Action).where(Action.task_id == task.id))
+        action = session.scalar(select(Action).where(Action.action_type == "post_comment", Action.task_id == task.id))
         action.payload = {**action.payload, "comment_action_attempt_no": 2}
         action.scheduled_at = datetime(2026, 8, 2, 12, 0, 0)
         task.next_run_at = action.scheduled_at
@@ -428,7 +428,7 @@ def test_recovery_wakes_task_with_future_comment_replacement(monkeypatch):
     with planner_session() as session:
         task = seed_comment_task(session, mode="mixed", reply_min=1, target_count=1)
         assert channel_comment.build_plan(session, task) == 1
-        action = session.scalar(select(Action).where(Action.task_id == task.id))
+        action = session.scalar(select(Action).where(Action.action_type == "post_comment", Action.task_id == task.id))
         action.payload = {**action.payload, "comment_action_attempt_no": 2}
         action.scheduled_at = datetime(2026, 8, 2, 12, 0, 0)
         task.next_run_at = action.scheduled_at
@@ -457,7 +457,7 @@ def test_released_comment_actions_are_replenished_with_monotonic_slots(monkeypat
 
         first_created = channel_comment.build_plan(session, task)
         session.commit()
-        first_actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
+        first_actions = list(session.scalars(select(Action).where(Action.action_type == "post_comment", Action.task_id == task.id)))
         first_action_ids = {action.id for action in first_actions}
         for action in first_actions:
             action.status = status
@@ -465,7 +465,7 @@ def test_released_comment_actions_are_replenished_with_monotonic_slots(monkeypat
 
         replenished = channel_comment.build_plan(session, task)
         session.commit()
-        all_actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
+        all_actions = list(session.scalars(select(Action).where(Action.action_type == "post_comment", Action.task_id == task.id)))
         new_actions = [action for action in all_actions if action.id not in first_action_ids]
         capped = channel_comment.build_plan(session, task)
 
@@ -505,7 +505,7 @@ def test_reserved_comment_action_holds_message_capacity_and_stable_slot(monkeypa
         created = channel_comment.build_plan(session, task)
         actions = list(
             session.scalars(
-                select(Action).where(Action.task_id == task.id, Action.id != f"existing-{status}")
+                select(Action).where(Action.action_type == "post_comment", Action.task_id == task.id, Action.id != f"existing-{status}")
             )
         )
 
@@ -611,7 +611,7 @@ def test_planner_batches_message_state_with_legacy_and_tenant_isolation(monkeypa
 
         state_select_count = _select_count(session, load_states)
         created = channel_comment.build_plan(session, task)
-        actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
+        actions = list(session.scalars(select(Action).where(Action.action_type == "post_comment", Action.task_id == task.id)))
         new_actions = [action for action in actions if action.id not in existing_action_ids]
 
     assert state_select_count == 1
@@ -635,7 +635,7 @@ def test_same_message_never_materializes_two_slots_for_one_account(monkeypatch):
 
         created = channel_comment.build_plan(session, task)
         account_ids = list(session.scalars(
-            select(Action.account_id).where(Action.task_id == task.id)
+            select(Action.account_id).where(Action.action_type == "post_comment", Action.task_id == task.id)
         ))
 
     assert created == 3

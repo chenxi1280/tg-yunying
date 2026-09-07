@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from app.integrations.telegram.contracts import OperationResult
 from app.models import (
+    Action,
     ChannelViewDailyIdentityOwner,
     ExecutionAttempt,
     TgAccount,
@@ -58,6 +59,9 @@ def test_channel_view_fact_first_execution_chain(monkeypatch, linked) -> None:
         session.commit()
 
         _set_clock(monkeypatch, now)
+        if not linked:
+            _assert_unjoined_account_precondition(session, task)
+            return
         assert build_view(session, task) == 3
         actions = view_actions(session, task)
         _install_gateway_success(monkeypatch)
@@ -78,6 +82,19 @@ def test_channel_view_fact_first_execution_chain(monkeypatch, linked) -> None:
         assert len(owners) == 3
         assert {owner.state for owner in owners} == {"confirmed"}
         assert task_account_coverage(session, task)["coverage_percent"] == 100
+
+
+def _assert_unjoined_account_precondition(session, task):
+    assert build_view(session, task) == 3
+    assert view_actions(session, task) == []
+    membership = list(session.scalars(select(Action).where(
+        Action.task_id == task.id,
+        Action.action_type == "ensure_target_membership",
+    )))
+    assert len(membership) == 3
+    assert all(action.status == "pending" for action in membership)
+    assert session.query(ExecutionAttempt).count() == 0
+    assert session.query(ViewRemoteFact).count() == 0
 
 
 def _pacing_config() -> dict:

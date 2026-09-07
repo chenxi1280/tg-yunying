@@ -16,7 +16,10 @@ from app.models import (
     Task,
     Tenant,
     TgAccount,
+    TgGroup,
+    TgGroupAccount,
 )
+from tests.channel_membership_fixture import seed_joined_channel
 from app.services.task_center.executors import channel_comment
 from channel_comment_planner_test_support import fixed_profile
 
@@ -108,7 +111,7 @@ def _run_two_planners(start: Barrier) -> tuple[list[int], float]:
 
 def _task_actions() -> list[Action]:
     with SessionLocal() as session:
-        return list(session.scalars(select(Action).where(Action.task_id == TASK_ID)))
+        return list(session.scalars(select(Action).where(Action.task_id == TASK_ID, Action.action_type == "post_comment")))
 
 
 def _seed_rule_scope(session) -> None:
@@ -230,6 +233,7 @@ def _seed_scope(
         _seed_rule_scope(session)
         _seed_channel_scope(session, resolved_message_ids)
         _seed_accounts(session)
+        seed_joined_channel(session, TENANT_ID, [TENANT_ID + 1, TENANT_ID + 2], tenant_id=TENANT_ID)
         session.add(
             _postgres_task(
                 message_ids=resolved_message_ids,
@@ -248,6 +252,8 @@ def _cleanup() -> None:
         session.execute(delete(OperationTarget).where(OperationTarget.tenant_id == TENANT_ID))
         session.execute(delete(RuleSetVersion).where(RuleSetVersion.tenant_id == TENANT_ID))
         session.execute(delete(RuleSet).where(RuleSet.tenant_id == TENANT_ID))
+        session.execute(delete(TgGroupAccount).where(TgGroupAccount.tenant_id == TENANT_ID))
+        session.execute(delete(TgGroup).where(TgGroup.tenant_id == TENANT_ID))
         session.execute(delete(TgAccount).where(TgAccount.tenant_id == TENANT_ID))
         session.execute(delete(SchedulingSetting).where(SchedulingSetting.tenant_id == TENANT_ID))
         remaining = session.scalar(select(func.count()).select_from(Action).where(Action.task_id == TASK_ID))

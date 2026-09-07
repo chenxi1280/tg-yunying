@@ -48,7 +48,7 @@ def test_resume_reuses_paused_identity_and_remaining_curve(monkeypatch) -> None:
         _enable_grounding_plan(session, task)
         channel_comment.build_plan(session, task)
         actions = sorted(
-            session.scalars(select(Action).where(Action.task_id == task.id)),
+            session.scalars(select(Action).where(Action.action_type == "post_comment", Action.task_id == task.id)),
             key=lambda row: int(row.payload["target_ordinal"]),
         )
         movable_action, held_action = actions
@@ -95,7 +95,7 @@ def test_resume_never_reopens_deadline_missed_or_gateway_identity(monkeypatch) -
         _enable_grounding_plan(session, task)
         channel_comment.build_plan(session, task)
         actions = sorted(
-            session.scalars(select(Action).where(Action.task_id == task.id)),
+            session.scalars(select(Action).where(Action.action_type == "post_comment", Action.task_id == task.id)),
             key=lambda row: int(row.payload["target_ordinal"]),
         )
         gateway_action, expiring_action = actions

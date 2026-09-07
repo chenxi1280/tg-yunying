@@ -129,7 +129,7 @@ def test_view_fact_survives_obligation_deletion_with_null_navigation(monkeypatch
         session.connection().exec_driver_sql("PRAGMA foreign_keys=ON")
         first, _second = _seed_two_tasks(session, channel_id=77, current=current)
         assert build_plan(session, first) == 1
-        action = session.scalar(select(Action).where(Action.task_id == first.id))
+        action = session.scalar(select(Action).where(Action.action_type == "view_message", Action.task_id == first.id))
         obligation = _view_obligation(session, first)
         owner = session.scalar(select(ChannelViewDailyIdentityOwner))
         assert action is not None and owner is not None
@@ -161,7 +161,7 @@ def test_task_stop_releases_pre_gateway_daily_identity(monkeypatch):
         stop_task(session, 1, first.id, "test")
 
         owner = session.scalar(select(ChannelViewDailyIdentityOwner))
-        action = session.scalar(select(Action).where(Action.task_id == first.id))
+        action = session.scalar(select(Action).where(Action.action_type == "view_message", Action.task_id == first.id))
         obligation = _view_obligation(session, first)
         assert owner is not None and owner.state == "available"
         assert owner.obligation_id is None and owner.action_id is None
@@ -177,7 +177,7 @@ def test_task_stop_releases_retryable_failed_daily_identity(monkeypatch):
     with new_session() as session:
         first, second = _seed_two_tasks(session, channel_id=781, current=current)
         assert build_plan(session, first) == 1
-        action = session.scalar(select(Action).where(Action.task_id == first.id))
+        action = session.scalar(select(Action).where(Action.action_type == "view_message", Action.task_id == first.id))
         assert action is not None
         action.status = "retryable_failed"
         session.commit()
@@ -198,7 +198,7 @@ def test_task_stop_releases_bound_pacing_reservation_once(monkeypatch):
     with new_session() as session:
         first, second = _seed_two_tasks(session, channel_id=782, current=current)
         assert build_plan(session, first) == 1
-        action = session.scalar(select(Action).where(Action.task_id == first.id))
+        action = session.scalar(select(Action).where(Action.action_type == "view_message", Action.task_id == first.id))
         assert action is not None
         reservation = _bind_pacing_reservation(session, action, current=current)
         session.commit()
@@ -220,7 +220,7 @@ def test_task_delete_releases_pre_gateway_daily_identity(monkeypatch):
         delete_task(session, 1, first.id, "test")
 
         owner = session.scalar(select(ChannelViewDailyIdentityOwner))
-        action = session.scalar(select(Action).where(Action.task_id == first.id))
+        action = session.scalar(select(Action).where(Action.action_type == "view_message", Action.task_id == first.id))
         assert owner is not None and owner.state == "available"
         assert action is not None
         _assert_safe_fact(session, action)
@@ -240,7 +240,7 @@ def test_lifecycle_supersede_releases_pre_gateway_daily_identity(monkeypatch):
         assert cancel_superseded_channel_actions(session, first) == 1
 
         owner = session.scalar(select(ChannelViewDailyIdentityOwner))
-        action = session.scalar(select(Action).where(Action.task_id == first.id))
+        action = session.scalar(select(Action).where(Action.action_type == "view_message", Action.task_id == first.id))
         assert owner is not None and owner.state == "available"
         assert action is not None
         _assert_safe_fact(session, action)
@@ -254,7 +254,7 @@ def test_lifecycle_supersede_releases_retryable_failed_daily_identity(monkeypatc
     with new_session() as session:
         first, second = _seed_two_tasks(session, channel_id=801, current=current)
         assert build_plan(session, first) == 1
-        action = session.scalar(select(Action).where(Action.task_id == first.id))
+        action = session.scalar(select(Action).where(Action.action_type == "view_message", Action.task_id == first.id))
         assert action is not None
         action.status = "retryable_failed"
         first.task_lifecycle_epoch += 1
@@ -273,7 +273,7 @@ def test_lifecycle_supersede_releases_bound_pacing_reservation_once(monkeypatch)
     with new_session() as session:
         first, second = _seed_two_tasks(session, channel_id=802, current=current)
         assert build_plan(session, first) == 1
-        action = session.scalar(select(Action).where(Action.task_id == first.id))
+        action = session.scalar(select(Action).where(Action.action_type == "view_message", Action.task_id == first.id))
         assert action is not None
         reservation = _bind_pacing_reservation(session, action, current=current)
         first.task_lifecycle_epoch += 1
@@ -292,7 +292,7 @@ def test_task_stop_preserves_gateway_started_daily_identity(monkeypatch):
     with new_session() as session:
         first, second = _seed_two_tasks(session, channel_id=81, current=current)
         assert build_plan(session, first) == 1
-        action = session.scalar(select(Action).where(Action.task_id == first.id))
+        action = session.scalar(select(Action).where(Action.action_type == "view_message", Action.task_id == first.id))
         assert action is not None
         mark_daily_identity_call_issued(session, action)
         action.status = "executing"
@@ -325,7 +325,7 @@ def test_task_stop_releases_call_issued_with_authoritative_no_mutation(monkeypat
     with new_session() as session:
         first, second = _seed_two_tasks(session, channel_id=82, current=current)
         assert build_plan(session, first) == 1
-        action = session.scalar(select(Action).where(Action.task_id == first.id))
+        action = session.scalar(select(Action).where(Action.action_type == "view_message", Action.task_id == first.id))
         assert action is not None
         mark_daily_identity_call_issued(session, action)
         action.status = "executing"
@@ -358,7 +358,7 @@ def test_task_stop_preserves_older_unsafe_attempt_over_latest_false(monkeypatch)
     with new_session() as session:
         first, second = _seed_two_tasks(session, channel_id=83, current=current)
         assert build_plan(session, first) == 1
-        action = session.scalar(select(Action).where(Action.task_id == first.id))
+        action = session.scalar(select(Action).where(Action.action_type == "view_message", Action.task_id == first.id))
         assert action is not None
         mark_daily_identity_call_issued(session, action)
         action.status = "executing"
@@ -410,7 +410,7 @@ def test_finalizer_preserves_older_unsafe_attempt_over_latest_pre_gateway(monkey
     with new_session() as session:
         first, second = _seed_two_tasks(session, channel_id=84, current=current)
         assert build_plan(session, first) == 1
-        action = session.scalar(select(Action).where(Action.task_id == first.id))
+        action = session.scalar(select(Action).where(Action.action_type == "view_message", Action.task_id == first.id))
         assert action is not None
         mark_daily_identity_call_issued(session, action)
         action.status = "failed"
@@ -455,7 +455,7 @@ def test_safe_settlement_replay_reads_committed_result(monkeypatch):
     with new_session() as session:
         first, _second = _seed_two_tasks(session, channel_id=85, current=current)
         assert build_plan(session, first) == 1
-        action = session.scalar(select(Action).where(Action.task_id == first.id))
+        action = session.scalar(select(Action).where(Action.action_type == "view_message", Action.task_id == first.id))
         assert action is not None
         reservation = _bind_pacing_reservation(session, action, current=current)
         stop_task(session, 1, first.id, "test")

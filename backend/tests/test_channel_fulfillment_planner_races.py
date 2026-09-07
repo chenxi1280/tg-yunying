@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.models import Action, ChannelMessage, OperationTarget, Task, Tenant, TgAccount
+from tests.channel_membership_fixture import seed_joined_channel
 from app.services._common import _now
 from app.services.task_center import channel_fulfillment, channel_view_targets
 from app.services.task_center.account_pacing_guard import (
@@ -290,6 +291,7 @@ def _scope(
     session.add(channel)
     session.flush()
     session.add_all([message, task])
+    seed_joined_channel(session, channel.id, [31, 32])
     session.commit()
     return task, channel, message
 

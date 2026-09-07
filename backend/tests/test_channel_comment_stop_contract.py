@@ -52,7 +52,7 @@ def test_stop_terminates_only_pre_gateway_comment_owner(
         _enable_grounding_plan(session, task)
         channel_comment.build_plan(session, task)
         actions = sorted(
-            session.scalars(select(Action).where(Action.task_id == task.id)),
+            session.scalars(select(Action).where(Action.action_type == "post_comment", Action.task_id == task.id)),
             key=lambda row: int(row.payload["target_ordinal"]),
         )
         movable_action, held_action = actions

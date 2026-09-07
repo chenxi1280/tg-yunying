@@ -20,6 +20,7 @@ from app.schemas.operations_center import RuleSetVersionCreate
 from app.schemas.risk_control import RiskControlGlobalPolicyUpdate
 from app.security import encrypt_secret
 import app.services.accounts as account_service
+from tests.channel_membership_fixture import seed_joined_channel
 from app.services._common import _now
 from app.services.audit import audit_logs_csv, filter_audit_logs
 from app.services.archives import create_archive
@@ -1535,6 +1536,7 @@ def test_channel_like_reaction_unavailable_keeps_message_siblings_open(monkeypat
                 _channel_like_action("action-like-sibling", 12, now_value),
             ]
         )
+        seed_joined_channel(session, 31, [11, 12])
         session.commit()
 
         monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
@@ -4031,6 +4033,7 @@ def test_channel_like_jitter_uses_available_accounts_without_false_capacity(monk
             "message_ids": [lower_message.id],
         }
         session.add_all([*accounts, channel, message, lower_message, upper_task, lower_task])
+        seed_joined_channel(session, 21, range(101, 106))
         session.commit()
 
         monkeypatch.setattr(
@@ -4040,7 +4043,7 @@ def test_channel_like_jitter_uses_available_accounts_without_false_capacity(monk
 
         assert build_channel_like_plan(session, upper_task) == 4
         upper_detail = get_task_detail(session, 1, upper_task.id)
-        upper_actions, _upper_action_total = list_actions_page(session, 1, upper_task.id, page=1, page_size=20)
+        upper_actions, _upper_action_total = list_actions_page(session, 1, upper_task.id, page=1, page_size=20, action_type="like_message")
         upper_groups, _upper_group_total = list_message_groups_page(session, 1, upper_task.id, page=1, page_size=20)
 
         monkeypatch.setattr(
@@ -4050,7 +4053,7 @@ def test_channel_like_jitter_uses_available_accounts_without_false_capacity(monk
 
         assert build_channel_like_plan(session, lower_task) == 2
         lower_detail = get_task_detail(session, 1, lower_task.id)
-        lower_actions, _lower_action_total = list_actions_page(session, 1, lower_task.id, page=1, page_size=20)
+        lower_actions, _lower_action_total = list_actions_page(session, 1, lower_task.id, page=1, page_size=20, action_type="like_message")
         lower_groups, _lower_group_total = list_message_groups_page(session, 1, lower_task.id, page=1, page_size=20)
 
     upper_group = upper_groups[0]
@@ -4140,11 +4143,12 @@ def test_channel_comment_reply_mode_requires_and_plans_reply_targets():
             stats={},
         )
         session.add(task)
+        seed_joined_channel(session, 31, [101, 102])
         session.commit()
 
         created = build_channel_comment_plan(session, task)
         assert created == 2, task.last_error
-        actions = sorted(session.scalars(select(Action).where(Action.task_id == task.id)), key=lambda item: item.payload["reply_to_message_id"])
+        actions = sorted(session.scalars(select(Action).where(Action.action_type != "ensure_target_membership", Action.task_id == task.id)), key=lambda item: item.payload["reply_to_message_id"])
 
     assert [action.payload["comment_mode"] for action in actions] == ["reply", "reply"]
     assert [action.payload["reply_to_message_id"] for action in actions] == [8101, 8102]
@@ -4182,11 +4186,12 @@ def test_channel_comment_reply_targets_must_belong_to_selected_messages():
             stats={},
         )
         session.add(task)
+        seed_joined_channel(session, 31, [101])
         session.commit()
 
         assert build_channel_comment_plan(session, task) == 0
         assert "回复对象不属于当前频道消息" in task.last_error
-        assert session.scalars(select(Action).where(Action.task_id == task.id)).all() == []
+        assert session.scalars(select(Action).where(Action.action_type != "ensure_target_membership", Action.task_id == task.id)).all() == []
 
 
 def test_channel_comment_planner_defers_template_and_duplicate_filtering():
@@ -4231,10 +4236,11 @@ def test_channel_comment_planner_defers_template_and_duplicate_filtering():
                 payload={"comment_text": "这个内容挺有参考价值，先收藏一下。"},
             )
         )
+        seed_joined_channel(session, 31, range(101, 105))
         session.commit()
 
         created = build_channel_comment_plan(session, task)
-        pending = session.scalars(select(Action).where(Action.task_id == task.id, Action.status == "pending")).all()
+        pending = session.scalars(select(Action).where(Action.action_type != "ensure_target_membership", Action.task_id == task.id, Action.status == "pending")).all()
 
     assert created == 4
     assert len(pending) == 4
@@ -4248,11 +4254,12 @@ def test_channel_comment_planner_defers_same_message_text_dedupe():
     base_time = datetime(2026, 5, 24, 12, 0, 0)
     with Session(engine) as session:
         task = _seed_channel_comment_history_window(session, base_time)
+        seed_joined_channel(session, 31, [101])
         session.commit()
 
         takeover_task(session, task, now=base_time)
         assert build_channel_comment_plan(session, task) == 0
-        pending = session.scalars(select(Action).where(Action.task_id == task.id, Action.status == "pending")).all()
+        pending = session.scalars(select(Action).where(Action.action_type != "ensure_target_membership", Action.task_id == task.id, Action.status == "pending")).all()
 
     assert pending == []
 
