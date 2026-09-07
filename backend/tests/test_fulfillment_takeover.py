@@ -692,7 +692,7 @@ def test_like_takeover_does_not_preserve_legacy_sibling_closure(
 def test_view_takeover_deduplicates_successes_pending_in_same_transaction(
     session: Session,
 ) -> None:
-    now_value = _now()
+    now_value = _now().replace(hour=12, minute=0, second=0, microsecond=0)
     channel = OperationTarget(
         id=41,
         tenant_id=1,

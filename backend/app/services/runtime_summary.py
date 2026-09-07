@@ -795,6 +795,9 @@ def _get_or_create_task_summary(session: Session, tenant_id: int, task_id: str) 
 
 
 def _get_or_create_target_summary(session: Session, tenant_id: int, target_id: int) -> TargetRuntimeSummary:
+    for pending in session.new:
+        if isinstance(pending, TargetRuntimeSummary) and pending.tenant_id == tenant_id and pending.target_id == target_id:
+            return pending
     summary = session.scalar(select(TargetRuntimeSummary).where(TargetRuntimeSummary.tenant_id == tenant_id, TargetRuntimeSummary.target_id == target_id))
     if summary:
         return summary

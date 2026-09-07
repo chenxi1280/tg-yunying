@@ -375,3 +375,7 @@ AI 活跃群发送动作规划时必须使用目标群过滤账号：
 - Product Design Complete：创建/启动事务、完整账号范围、0/1/大批量、无帖子、已关注、草稿/定时/暂停/旧 epoch、去重重放、随机边界、废弃配置回显及回滚均覆盖；无新增表或生产迁移，前端删除旧窗口输入并展示新只读排程。design_status=complete，进入 dev。
 - 审查回流 / resync：长窗口内暂停后恢复必须继续未调用关注动作。只重绑本任务先前启动 epoch、当前账号范围及同目标引用版本的 pending 行；要求零 Attempt、零 Gateway journal、零远端 fact、executed_at 为空，锁行后核对。保留 Action ID、原随机间隔及审计；若最早时间已过，整批等量顺延到当前时间，不压缩、不重新抽样。已有调用/unknown/失败/其他目标/移出范围的动作不重放，仍由原恢复合同处理。补充暂停恢复及证据排除回归后重新验收。
 - 本地验收：263 项无 PostgreSQL 依赖定向用例全部通过（36.90 秒），覆盖三类任务正式创建/启动、草稿、无帖子、完整分组账号范围、幂等排程、定时任务成员阶段、生命周期拒绝、启动事务回滚、暂停恢复、调用证据排除、随机窗口/最小间隔/容量边界及评论原路径。另在独立本地 PostgreSQL `tg_yunying_test` 通过 6 项真实事务/并发用例（6.20 秒），包括定时成员 Claim/Gateway、并发暂停、恢复行锁阻止迟到 Attempt、退役最终锁；实例仅 Unix socket 访问并已停止。前端 TypeScript/Vite 构建与 `git diff --check` 通过。`local_qa=passed`，未提交或发布，`production_status=unproven`。原 §14.1 的 2 小时窗口验收为历史记录，当前策略以本节及 §7 为准。
+
+### 14.7 启动与生命周期目标汇总事务身份
+
+创建/启动/删除在同一事务中多次刷新同一 tenant/target 的运行汇总时，必须复用事务内尚未 flush 的 TargetRuntimeSummary，避免关闭 autoflush 时重复 INSERT 违反唯一键。不得吞掉唯一键异常或伪造汇总成功；事务仍由既有生命周期提交边界管理。回归以同一 Session 两次刷新对象身份一致、最终仅一行及真实 PostgreSQL 并发删除验证。

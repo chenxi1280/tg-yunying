@@ -1547,3 +1547,5 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 
 
 > **2026-09-07 频道成员候选多组修复：** `channel_membership.candidate_accounts_for_config` 保留公开入口，查询实现位于 `channel_membership_candidates.py`；按非空 account_group_ids 优先、旧单组兼容读取配置范围，保留 tenant/active/用途/救援管理员过滤及排序。修复 13 个已配置 11 组但旧代码读取为零候选的频道任务；候选只读对照 0 -> 1554，不代表关注或业务完成。测试：`test_channel_membership_candidates.py`。
+
+- 2026-09-08 频道启动发布回流：`runtime_summary._get_or_create_target_summary` 复用事务内未 flush 的同租户目标汇总；回归 `test_target_runtime_summary_identity.py` 与 PostgreSQL 评论并发删除。

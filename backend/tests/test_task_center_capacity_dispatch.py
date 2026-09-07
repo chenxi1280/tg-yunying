@@ -223,6 +223,7 @@ def _dispatch_planned_ai_actions(
     now_value = dispatch_now or _now()
     monkeypatch.setattr(dispatcher, "_now", lambda: now_value)
     monkeypatch.setattr("app.services.task_center.ai_generation_dispatch._now", lambda: now_value)
+    monkeypatch.setattr("app.services.task_center.ai_generation_worker._now", lambda: now_value)
     monkeypatch.setattr("app.services.task_center.ai_generation_pipeline._now", lambda: now_value)
     monkeypatch.setattr("app.services.task_center.ai_generation_runtime_config._now", lambda: now_value)
     dependencies = _configure_capacity_ai_dispatch(

@@ -34,3 +34,7 @@
 ## 完整 CI 回流
 
 Actions 34139514685 暴露 4 个旧启动/恢复测试缺少目标频道或未将目标写入 Task 配置，触发 channel_membership_start_target_invalid。测试夹具补齐真实目标，目标汇总按外键顺序清理；生产启动校验保持。重新在独立 tg_yunying_test PostgreSQL 环境执行 AI 任务限额、频道启动、评论容量与生命周期测试：79 passed、2 原有 xfailed（17.70 秒，60 秒硬超时）。未运行生产清理；该流水线没有部署。
+
+## 二轮 CI 回流与目标汇总修复
+
+Actions 34140609106 未部署。有效目标配置暴露同一 autoflush=False 事务重复创建目标汇总的问题，新增 identity 回归稳定复现，修复为复用 session.new 中同租户同目标的汇总对象；真实 PostgreSQL 生命周期/并发删除等 82 passed、2 原有 xfailed（16.78 秒）。两条 AI 单测固定 00:20 却未同步生成 worker 时钟、浏览去重单测相隔一分钟跨日，已修正测试时间前提；4 项定向回归通过（3.92 秒）。三条临近午夜失败的 workflow AI 集成测试在独立 PostgreSQL 环境复测 3 passed（9.78 秒），未修改其生产逻辑，原失败证据保留；仍须新候选完整 CI 通过。
