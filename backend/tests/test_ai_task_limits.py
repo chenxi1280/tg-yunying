@@ -517,6 +517,7 @@ def test_channel_comment_lifetime_cap_waits_for_open_actions():
 def test_channel_comment_resume_replaces_legacy_low_cap_with_system_gate():
     with _session() as session:
         _add_tenant(session)
+        _add_channel(session, message_count=0, account_count=0)
         task = _add_comment_task(session)
         task.status = "paused"
         task.type_config = {**task.type_config, "max_total_comments": 1, "max_total_comments_jitter": 0}
@@ -534,6 +535,7 @@ def test_channel_comment_resume_replaces_legacy_low_cap_with_system_gate():
 def test_channel_comment_public_start_idempotently_applies_system_gate(starter):
     with _session() as session:
         _add_tenant(session)
+        _add_channel(session, message_count=0, account_count=0)
         task = _add_comment_task(session)
         task.status = "paused"
         task.type_config = {**task.type_config, "max_total_comments": 2, "max_total_comments_jitter": 0}

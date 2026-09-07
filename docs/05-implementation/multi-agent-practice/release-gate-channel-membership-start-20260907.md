@@ -30,3 +30,7 @@
 ## 合并发布复核
 
 用户在主发布任务明确要求合并上线。基于 585e2a0c 合并创建关注、新版评论关注检查和 account_group_ids 的预检/在线托管/监听/降权账号选择修复。复核 263 项定向测试通过（37.32 秒）、6 项隔离 PostgreSQL 事务并发测试通过（5.80 秒），前端构建通过，git diff --check 通过。无数据库迁移；保留既有冻结 Action 排程。未验收的 abandon_channel_historical_backlog.py 保留本地，本次不发布也不执行。发布后独立记录 CI、部署版本与运行健康，真实关注与互动按各自远端事实验收。
+
+## 完整 CI 回流
+
+Actions 34139514685 暴露 4 个旧启动/恢复测试缺少目标频道或未将目标写入 Task 配置，触发 channel_membership_start_target_invalid。测试夹具补齐真实目标，目标汇总按外键顺序清理；生产启动校验保持。重新在独立 tg_yunying_test PostgreSQL 环境执行 AI 任务限额、频道启动、评论容量与生命周期测试：79 passed、2 原有 xfailed（17.70 秒，60 秒硬超时）。未运行生产清理；该流水线没有部署。

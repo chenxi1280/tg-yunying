@@ -23,6 +23,7 @@ from app.models import (
     Task,
     TaskCommentCapacityReservation,
     TaskRuntimeSummary,
+    TargetRuntimeSummary,
     Tenant,
 )
 from app.services.task_center.channel_comment_capacity import reserve_comment_capacity
@@ -334,7 +335,7 @@ def _seed_scope() -> list[str]:
             type="channel_comment",
             status="running",
             fulfillment_contract_version="fact_first_v3",
-            type_config={"daily_comment_cap": 1},
+            type_config={"daily_comment_cap": 1, "target_channel_id": TENANT_ID},
         ))
         session.flush()
         session.add(ChannelMessage(
@@ -485,6 +486,7 @@ def _cleanup() -> None:
         ))
         session.execute(delete(Task).where(Task.id == TASK_ID))
         session.execute(delete(ChannelMessage).where(ChannelMessage.id == MESSAGE_ID))
+        session.execute(delete(TargetRuntimeSummary).where(TargetRuntimeSummary.target_id == TENANT_ID))
         session.execute(delete(OperationTarget).where(OperationTarget.id == TENANT_ID))
         session.execute(delete(AuditLog).where(AuditLog.tenant_id == TENANT_ID))
         session.execute(delete(Tenant).where(Tenant.id == TENANT_ID))
