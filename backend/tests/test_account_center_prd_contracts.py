@@ -739,7 +739,7 @@ def test_code_receiver_is_excluded_from_direct_task_candidate_queries() -> None:
     required_files = [
         PROJECT_ROOT / "app/services/task_center/listener_runtime.py",
         PROJECT_ROOT / "app/services/task_center/membership_admission.py",
-        PROJECT_ROOT / "app/services/task_center/channel_membership.py",
+        PROJECT_ROOT / "app/services/task_center/channel_membership_candidates.py",
         PROJECT_ROOT / "app/services/account_online_projection.py",
         PROJECT_ROOT / "app/services/account_online_state.py",
     ]
