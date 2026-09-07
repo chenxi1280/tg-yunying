@@ -53,6 +53,17 @@ AI 与浏览已经先计算 `due_by_now`，但当前批次再次调用 6 小时�
 
 频道浏览当前 Action 均有 lifetime identity；本次不批量改写既有 future `scheduled_at`，避免绕过账号时隙和远端唯一性。新代码只保证新增当前 due 不再二次摊速；存量在 deadline 内按原排期继续，deadline 后由专项 settlement/接管而非通用脚本处理。
 
+### RC-4：未生成历史积压动作在 Dispatcher 认领路径上的死锁与大模型资源空耗（2026-09-08 增量）
+
+1. **Dispatcher 认领死锁**：历史未生成的积压动作因 `_group_generation_ready` 强依赖 `message_text != ""`，导致即使该动作的时间线截止时间 `source_deadline_at <= now` 已经彻底超期，Dispatcher 也无法认领它执行安全跳过结算（`settle_fact_first_action_before_gateway`），动作永久滞留队列。
+2. **大模型算力与调度资源空耗**：AI 并行生成 Worker 按 `scheduled_at.asc()` 顺序捞取候选，未过滤截止已过期的动作，持续调用昂贵的大模型 API 为废弃动作生成文本，挤占当日合法动作生成配额。
+3. **维护下线工具代际断层**：旧版维护脚本采用硬删（`delete(Action)`），违反当前 `fact_first_v3` 规范与审计事实合同。
+
+止血与治理规则：
+- **Dispatcher 认领解耦**：在 `_group_generation_ready(now)` 与 `_comment_generation_ready(now)` 中引入 `_deadline_exhausted_action(now)`，截止已过期的动作无需生成即可被 Dispatcher 认领；在 `_candidate_order(now)` 中将截止用尽动作置顶为 0 优先清理，通过 `settle_fact_first_action_before_gateway` 落地 `skipped` 终态与 `safely_not_executed` 事实，并将 `AccountPacingReservation` 状态推进为 `missed`。
+- **Worker 候选过滤与防御结算**：AI 并行生成在 `_candidate_statement` 中通过 `~_deadline_expired_action(now_value)` 过滤过期动作；在 `_claim_one` 认领时通过 `_is_deadline_expired` 实施防御性安全结算，就地标记 `skipped`，零外呼大模型 API。
+- **合规维护工具**：`abandon_channel_historical_backlog.py` 扩充 `--include-ai-group` 与 `--task-type group_ai_chat`，统一按 `fact_first_v3` 审计标准安全下线积压。
+
 ## 3. 功能、前端与 API
 
 - 不新增用户配置、不改任务目标、不静默降低 1000 浏览目标，也不新增前端按钮。
@@ -81,7 +92,9 @@ AI 与浏览已经先计算 `due_by_now`，但当前批次再次调用 6 小时�
 
 ### 4.4 Generation / Dispatcher / Gateway
 
-不增加 worker、不放宽同群 pipeline、不跳过质量/准入。Generation 只会因新 Action 不再排到数小时后而及时看见当前 due；Dispatcher/Gateway 继续执行现有 claim、账号安全和 typed remote fact 合同。
+- **Dispatcher 截止用尽认领**：`_ranked_candidate_query` 允许 `_deadline_exhausted_action(now)` 的动作被选中并以 `rank 0` 优先处理；无需检查生成文本即可被认领，直接调用 `settle_fact_first_action_before_gateway` 完成安全跳过结算与账号预约释放。
+- **AI 并行生成 Worker 过滤与防御**：`_candidate_statement` 过滤 `~_deadline_expired_action(now_value)`，彻底避免为过期动作发起 LLM 任务；`_claim_one` 实施防御性检查，若认领时已超期则就地安全结算，不发起模型调用与网关请求。
+- **Gateway 与事实合同**：保持现有网关幂等防护、账号安全与 typed remote fact 合同不变。所有前置跳过动作均写入 `FulfillmentRemoteFact(fact_kind="safely_not_executed")`。
 
 ### 4.5 坏账号、过期执行与频道实体解析失败
 

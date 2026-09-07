@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from uuid import uuid4
 
-from sqlalchemy import case, func, or_, select, update
+from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -112,7 +112,7 @@ def _candidate_rows(
 
 def _ranked_candidate_query(now: datetime):
     rank = func.row_number().over(
-        partition_by=Action.task_id, order_by=_candidate_order(),
+        partition_by=Action.task_id, order_by=_candidate_order(now),
     ).label("task_rank")
     return (
         select(
@@ -125,45 +125,55 @@ def _ranked_candidate_query(now: datetime):
         .join(Task, Task.id == Action.task_id)
         .where(
             Action.status == "pending",
-            or_(Action.scheduled_at <= now, _deadline_exhausted_action()),
+            or_(Action.scheduled_at <= now, _deadline_exhausted_action(now)),
             _has_claimable_account_reservation(),
             task_action_execution_condition(),
             Task.deleted_at.is_(None),
             Task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION,
             Action.task_lifecycle_epoch == Task.task_lifecycle_epoch,
-            _group_generation_ready(),
-            _comment_generation_ready(),
+            _group_generation_ready(now),
+            _comment_generation_ready(now),
         )
     )
 
 
-def _group_generation_ready():
+def _group_generation_ready(now: datetime | None = None):
     return or_(
         Action.task_type != "group_ai_chat",
         Action.action_type != "send_message",
+        _deadline_exhausted_action(now),
         func.coalesce(Action.payload["message_text"].as_string(), "") != "",
         func.coalesce(Action.payload["ai_generation_status"].as_string(), "") == "",
     )
 
 
-def _comment_generation_ready():
+def _comment_generation_ready(now: datetime | None = None):
     status = func.coalesce(
         Action.payload["ai_generation_status"].as_string(), "",
     )
     return or_(
         Action.task_type != "channel_comment",
         Action.action_type != "post_comment",
+        _deadline_exhausted_action(now),
         status.in_(("", "ready")),
     )
 
 
-def _deadline_exhausted_action():
+def _deadline_exhausted_action(now: datetime | None = None):
+    deadline_condition = and_(
+        Action.release_not_before_at.is_not(None),
+        AccountPacingReservation.source_deadline_at <= Action.release_not_before_at,
+    )
+    if now is not None:
+        deadline_condition = or_(
+            deadline_condition,
+            AccountPacingReservation.source_deadline_at <= now,
+        )
     return select(AccountPacingReservation.id).where(
         AccountPacingReservation.action_id == Action.id,
         AccountPacingReservation.state.in_(("reserved", "bound")),
         AccountPacingReservation.source_deadline_at.is_not(None),
-        Action.release_not_before_at.is_not(None),
-        AccountPacingReservation.source_deadline_at <= Action.release_not_before_at,
+        deadline_condition,
     ).exists()
 
 
@@ -182,9 +192,9 @@ def _has_claimable_account_reservation():
     )
 
 
-def _candidate_order():
+def _candidate_order(now: datetime | None = None):
     return (
-        case((_deadline_exhausted_action(), 0), else_=1),
+        case((_deadline_exhausted_action(now), 0), else_=1),
         Action.scheduled_at,
         Action.id,
     )
@@ -405,12 +415,36 @@ def release_fact_first_action_reservations(
 ) -> set[str]:
     if fact_kind != "safely_not_executed":
         return set()
-    return release_channel_action_resources_before_gateway(
+    state_ids = release_channel_action_resources_before_gateway(
         session,
         action,
         remote_mutation_state=remote_mutation_state,
         replan_same_obligation=replan_same_obligation,
     )
+    _settle_action_pacing_reservation(
+        session,
+        action.id,
+        replan_same_obligation=replan_same_obligation,
+    )
+    return state_ids
+
+
+def _settle_action_pacing_reservation(
+    session: Session,
+    action_id: str,
+    *,
+    replan_same_obligation: bool,
+) -> None:
+    reservation = session.scalar(select(AccountPacingReservation).where(
+        AccountPacingReservation.action_id == action_id,
+    ))
+    if reservation is None or reservation.state == "missed":
+        return
+    if reservation.state in {"reserved", "bound"}:
+        reservation.state = "reserved" if replan_same_obligation else "missed"
+        if replan_same_obligation:
+            reservation.action_id = None
+        reservation.version = int(reservation.version or 1) + 1
 
 
 def _safe_settlement_result(

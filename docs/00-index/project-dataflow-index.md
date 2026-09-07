@@ -1,5 +1,10 @@
 # 项目数据流转索引
 
+> **2026-09-08 AI活群历史过期积压治理与调度死锁解除：**
+> 1. Dispatcher 认领门禁解耦：`_group_generation_ready(now)` / `_comment_generation_ready(now)` 加入 `_deadline_exhausted_action(now)` 判定，对于账号时间线已过截止时间（`source_deadline_at <= now` 或 `release_not_before_at` 超限）的未生成积压动作，允许无需等到大模型生成即可被 Dispatcher 认领；`_candidate_order(now)` 将其置顶（rank 0）优先处理，直接进入 `settle_fact_first_action_before_gateway` 安全结算为 `skipped` + `safely_not_executed` 事实，释放时间线时隙与账号预约（missed）。
+> 2. AI 并行生成 Worker 阻断：在 `_candidate_statement` 中增加 `~_deadline_expired_action(now_value)` 过滤，并在 `_claim_one` 认领时校验 `_is_deadline_expired`；若截止时间已过则直接就地安全结算，彻底阻止过期废弃动作外呼大模型 API，避免算力浪费与阻塞当日合法动作。
+> 3. 历史维护工具扩展：`abandon_channel_historical_backlog.py` 扩充 `--include-ai-group` 与 `--task-type` 参数，支持对 `group_ai_chat` 执行基于 `fact_first_v3` 规范的批量安全下线，记录 `safely_not_executed` 审计事实。
+
 > **2026-09-07 创建并启动全量关注与拟人排程：** 草稿零动作；正式启动成功事务 → 当前 Task epoch/目标 scope → 全部有效候选账号 → 未关注 pending / 已关注 skipped → 每批 10～24 小时随机窗口与非固定间隔落库 → Worker 到期执行 → 逐账号确认关注后主互动。定时任务仅当前启动 epoch 的成员动作可提前，主互动仍等待原计划时间；暂停/退役/旧 epoch 的 Claim 和 Gateway 检查保持。明确恢复时只锁后重绑零 Attempt/journal/fact 的未调用成员行，整体顺延过期排程并保持间隔；未知和已有调用不重放。启动失败回滚成员动作，创建记录仍按正式创建/启动合同保留。
 
 > **2026-09-07 多分组账号配置 account_group_ids 全链路支持：** 针对 `selection_mode: "group"` 的任务，候选账号解析支持多账号分组列表 `account_group_ids: list[int]`（兼容回退单数 `account_group_id`）。覆盖范围包括任务预检（precheck）、在线状态托管（account_online_state）、运营中心监听（operations_center_listener）、降权任务（search_rank_deboost_planner）与频道关注准入（channel_membership）。

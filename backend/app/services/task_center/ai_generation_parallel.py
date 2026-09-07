@@ -11,7 +11,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
-from app.models import Action, GenerationJob, Task
+from app.models import Action, AccountPacingReservation, GenerationJob, Task
 from app.services._common import _now
 
 from .ai_generation_claim_lifecycle import owns_generation_claim
@@ -167,8 +167,8 @@ def defer_parallel_generation(
         session.commit()
 
 
-def _candidate_statement(limit: int):
-    now_value = _now()
+def _candidate_statement(limit: int, now: datetime | None = None):
+    now_value = now if now is not None else _now()
     payload_status = Action.payload["ai_generation_status"].as_string()
     message_text = Action.payload["message_text"].as_string()
     return (
@@ -187,10 +187,20 @@ def _candidate_statement(limit: int):
             payload_status.in_(GENERATABLE_STATUSES),
             func.coalesce(message_text, "") == "",
             ~_unavailable_generation_job(now_value),
+            ~_deadline_expired_action(now_value),
         )
         .order_by(Action.scheduled_at, Action.task_id, Action.id)
         .limit(max(1, limit * 3))
     )
+
+
+def _deadline_expired_action(now_value: datetime):
+    return select(AccountPacingReservation.id).where(
+        AccountPacingReservation.action_id == Action.id,
+        AccountPacingReservation.state.in_(("reserved", "bound")),
+        AccountPacingReservation.source_deadline_at.is_not(None),
+        AccountPacingReservation.source_deadline_at <= now_value,
+    ).exists()
 
 
 def _unavailable_generation_job(now_value: datetime):
@@ -218,15 +228,47 @@ def _unavailable_generation_job(now_value: datetime):
     ).exists()
 
 
+def _is_deadline_expired(deadline: datetime | None, now_value: datetime) -> bool:
+    if deadline is None:
+        return False
+    if deadline.tzinfo is None and now_value.tzinfo is not None:
+        deadline = deadline.replace(tzinfo=now_value.tzinfo)
+    elif deadline.tzinfo is not None and now_value.tzinfo is None:
+        deadline = deadline.replace(tzinfo=None)
+    elif deadline.tzinfo is not None and now_value.tzinfo is not None:
+        deadline = deadline.astimezone(now_value.tzinfo)
+    return deadline <= now_value
+
+
 def _claim_one(
     session: Session,
     action: Action,
     owner: str,
+    now: datetime | None = None,
 ) -> ParallelGenerationClaim | None:
+    now_value = now if now is not None else _now()
+    reservation = session.scalar(select(AccountPacingReservation).where(
+        AccountPacingReservation.action_id == action.id,
+        AccountPacingReservation.state.in_(("reserved", "bound")),
+    ))
+    if (
+        reservation is not None
+        and _is_deadline_expired(reservation.source_deadline_at, now_value)
+    ):
+        from .direct_action_claims import settle_fact_first_action_before_gateway
+
+        settle_fact_first_action_before_gateway(
+            session,
+            action,
+            now=now_value,
+            reason_code="pacing_claim_deadline_exceeded",
+            detail="AI生成前检测到账号时间线已过截止时间，未调用模型生成与网关",
+        )
+        return None
+
     if not ensure_action_obligation(session, action):
         return None
     job = _generation_job(session, action)
-    now_value = _now()
     if not _job_available(job, now_value):
         raise _ClaimConflict(action.id)
     token = str(uuid4())

@@ -19,6 +19,7 @@ from app.services.task_center.direct_action_claims import (
 DEFAULT_BATCH_SIZE = 100
 MAX_BATCH_SIZE = 500
 CHANNEL_TASK_TYPES = frozenset({"channel_view", "channel_like", "channel_comment"})
+ALL_HISTORICAL_TASK_TYPES = CHANNEL_TASK_TYPES | {"group_ai_chat"}
 
 
 def abandon_channel_historical_backlog(
@@ -28,9 +29,12 @@ def abandon_channel_historical_backlog(
     apply: bool,
     batch_size: int = DEFAULT_BATCH_SIZE,
     task_ids: set[str] | None = None,
+    task_types: set[str] | None = None,
 ) -> dict:
     if cutoff.tzinfo is None:
         cutoff = cutoff.replace(tzinfo=ZoneInfo("Asia/Shanghai"))
+
+    effective_task_types = task_types if task_types is not None else CHANNEL_TASK_TYPES
 
     gateway_started = select(ExecutionAttempt.id).where(
         ExecutionAttempt.action_id == Action.id,
@@ -38,7 +42,7 @@ def abandon_channel_historical_backlog(
     ).exists()
 
     stmt = select(Action.id).where(
-        Action.task_type.in_(CHANNEL_TASK_TYPES),
+        Action.task_type.in_(effective_task_types),
         Action.status.in_(("pending", "retryable_failed")),
         Action.scheduled_at < cutoff,
         ~gateway_started,
@@ -78,12 +82,17 @@ def _settle_batch(session: Session, stmt) -> int:
     all_state_ids: set[str] = set()
     now = _now()
     for action in actions:
+        detail = (
+            "历史积压AI活群动作按截止时间安全下线"
+            if action.task_type == "group_ai_chat"
+            else "历史积压频道动作按截止时间安全下线"
+        )
         state_ids = settle_fact_first_action_before_gateway(
             session,
             action,
             now=now,
             reason_code="pacing_claim_deadline_exceeded",
-            detail="历史积压频道动作按截止时间安全下线",
+            detail=detail,
         )
         all_state_ids.update(state_ids)
     if all_state_ids:
@@ -94,13 +103,21 @@ def _settle_batch(session: Session, stmt) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Preview or abandon pre-cutoff channel historical backlog.",
+        description="Preview or abandon pre-cutoff channel and AI historical backlog.",
     )
     parser.add_argument("--cutoff", required=True, type=datetime.fromisoformat)
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
     parser.add_argument("--task-id", action="append", default=[])
+    parser.add_argument("--task-type", action="append", default=[])
+    parser.add_argument("--include-ai-group", action="store_true")
     args = parser.parse_args()
+
+    effective_task_types = None
+    if args.task_type:
+        effective_task_types = set(args.task_type)
+    elif args.include_ai_group:
+        effective_task_types = set(ALL_HISTORICAL_TASK_TYPES)
 
     with SessionLocal() as session:
         result = abandon_channel_historical_backlog(
@@ -109,6 +126,7 @@ def main() -> int:
             apply=args.apply,
             batch_size=args.batch_size,
             task_ids=set(args.task_id) if args.task_id else None,
+            task_types=effective_task_types,
         )
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
