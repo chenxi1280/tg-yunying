@@ -2860,8 +2860,10 @@ class TelethonTelegramGateway(TelegramGateway):
         try:
             target = await resolve_telethon_target(client, target_peer_id, group_id=0)
             messages = await client.get_messages(target, ids=[message_id])
-            message = messages[0] if isinstance(messages, list) else messages
-            if message is None:
+            from telethon.tl.types import MessageEmpty
+
+            message = (messages[0] if messages else None) if isinstance(messages, list) else messages
+            if message is None or isinstance(message, MessageEmpty):
                 return MessageVisibilityResult(
                     True,
                     "已完成",

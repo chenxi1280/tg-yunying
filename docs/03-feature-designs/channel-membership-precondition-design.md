@@ -325,3 +325,18 @@ AI 活跃群发送动作规划时必须使用目标群过滤账号：
 - 2026-09-07 首轮发布 CI 揭示旧场景把频道级授权当作账号级关注。验证评论、点赞、浏览下游行为的测试必须显式写入对应账号的频道成员关系；不得恢复生产授权旁路或以 mock 代替准入。
 - 已关注账号产生的 `ensure_target_membership/skipped/already_joined` 是前置审计记录。业务主动作的数量、重置、义务和事实链测试按 `post_comment`、`like_message`、`view_message` 查询，不把成员前置动作误认为主互动。
 - 未关注场景单独验收：只生成关注前置动作，主互动延后；主互动没有 ExecutionAttempt、Gateway 调用和远端事实。PostgreSQL 测试清理包含本场景建立的成员关系与频道镜像，按外键顺序回收。
+
+### 14.3 Antigravity 增量审查回流（2026-09-07）
+
+- Intake / L2：修复评论可见性目标错配、探测异常误判不存在、来源间隔强制压缩、未结束预约无证据自动释放四项问题。账号来源跨日匹配及文案长度改动不属于本轮修复范围。
+- 评论探测沿用冻结的 `actual_target_peer`，其次为 `discussion_peer_id`，仅在二者缺失时沿用历史 `channel_id`。Gateway 只查询传入的精确 peer/message identity，禁止以同 ID 猜测当前关联讨论组；错误与未知必须返回失败/未知，不能生成不存在或可见的肯定事实。空消息列表及 Telegram MessageEmpty 为指定身份不存在。
+- 来源间隔继续使用原周期/计划数量及已冻结预约值，禁止点赞 30 秒、评论 180 秒封顶，来源尾部也不得统一截断为 180 秒。
+- 查询 `call_started/remote_unknown` 的前次预约只读业务状态，不自动改为 finished；缺少 Gateway 时间不构成未执行证明。合法 pre-Gateway 终止由原正常结算流程关闭；Action unknown 或 Attempt result_unknown 均保持 remote_unknown，不受缺失时间字段影响。保留 autoflush=False 下先 flush 后查询的修正，使正常结算能够读到刚建立的预约。
+- 反向检查：可见性肯定结果会更新 Action、履约及远端事实；否定结果会结算为被拦截。来源预约在重试入口检查并可能复用，因此错误释放会影响后续执行。不得用修改测试期望值接受与上述合同冲突的行为。
+- Product Design Complete：四项触发条件、正常与失败路径、存量 unknown、前端无契约变化、无迁移、QA 和发布影响均已核对，design_status=complete。验证覆盖双 peer 同 ID 冲突、探测异常、空消息、原间隔/预约尾部、缺时间戳的 unknown 与仍在执行的预约、正常 pre-Gateway 结算与重试。
+
+- 本地验收：145 项定向测试通过（主回归 131 项、来源复用/延后/重排 14 项），Python 编译与 `git diff --check` 通过；新增回归文件 145 行、函数不超过 50 行。三组审查反例已转为自动断言，另覆盖 Telegram MessageEmpty 不得误判可见。账号来源/文案长度代码经原快照 hash 核对未改动。此记录仅证明本地修复，未提交或发布；此前生产并发操作协调状态尚未解除。
+
+### 14.4 汇总发布时的账号来源日归属修正（2026-09-07）
+
+复核待提交的来源修复时发现，按 `release_not_before_at/created_at/scheduled_at` 枚举多个日期再选择含账号的 participation plan 会把延迟后的发送混入其他任务日。发布合同改为：优先使用 Action 显式绑定并通过 tenant/Task 校验的 TaskDayLedger；点赞无显式 ledger 时使用义务冻结的 pacing_due_at，再使用 Action 冻结 pacing_due_at；仅无冻结日的原兼容记录保留 scheduled_at 解析。可变 release 时间不改变来源日，不跨日搜索“能匹配账号”的计划。义务 tenant/Task/epoch 不匹配显式失败，不能借其他 source/day 的成员计划放行。专项测试须证明跨午夜推迟仍选原日、另日计划不能填补原日缺失、伪造 ledger/义务归属被拒绝。此前同一来源相册子消息匹配合同保持。Product Design Complete 后进入 dev；此修正属于本次汇总发布的账号来源修复，不修改业务配置。

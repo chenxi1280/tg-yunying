@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import Action, FulfillmentRemoteFact
@@ -18,7 +18,6 @@ VOCABULARY_WINDOW = 100
 PHRASE_WINDOW = 20
 MAX_TERM_OCCURRENCES = 5
 MAX_PHRASE_OCCURRENCES = 2
-QUERY_LIMIT = 500
 
 
 def vocabulary_frequency_violation(
@@ -79,44 +78,36 @@ def _eligible_history(
     action: Action,
     surface_scope_key: str,
 ) -> list[dict]:
-    statement = (
-        select(Action, FulfillmentRemoteFact.fact_id)
-        .outerjoin(
-            FulfillmentRemoteFact,
-            (FulfillmentRemoteFact.action_id == Action.id)
-            & (FulfillmentRemoteFact.fact_kind == REMOTE_MESSAGE_FACT_KIND),
+    return list(session.scalars(_history_statement(action, surface_scope_key)))
+
+
+def _history_statement(action: Action, surface_scope_key: str):
+    observed_at = (
+        select(func.max(FulfillmentRemoteFact.observed_at))
+        .where(
+            FulfillmentRemoteFact.tenant_id == Action.tenant_id,
+            FulfillmentRemoteFact.action_id == Action.id,
+            FulfillmentRemoteFact.fact_kind == REMOTE_MESSAGE_FACT_KIND,
         )
+        .correlate(Action)
+        .scalar_subquery()
+    )
+    return (
+        select(Action.payload)
         .where(
             Action.tenant_id == action.tenant_id,
             Action.task_type == "group_ai_chat",
             Action.id != action.id,
             Action.payload["surface_scope_key"].as_string() == surface_scope_key,
+            func.coalesce(Action.payload["allocation_plan_id"].as_string(), "") != "",
+            or_(Action.status.in_(ACTIVE_RESERVATION_STATUSES), observed_at.is_not(None)),
         )
         .order_by(
-            func.coalesce(
-                FulfillmentRemoteFact.observed_at,
-                Action.executed_at,
-                Action.created_at,
-            ).desc(),
+            func.coalesce(observed_at, Action.executed_at, Action.created_at).desc(),
             Action.id.desc(),
         )
-        .limit(QUERY_LIMIT)
+        .limit(VOCABULARY_WINDOW - 1)
     )
-    result: list[dict] = []
-    seen: set[str] = set()
-    for historical, fact_id in session.execute(statement):
-        if historical.id in seen:
-            continue
-        seen.add(historical.id)
-        if not fact_id and historical.status not in ACTIVE_RESERVATION_STATUSES:
-            continue
-        historical_payload = dict(historical.payload or {})
-        if not historical_payload.get("allocation_plan_id"):
-            continue
-        result.append(historical_payload)
-        if len(result) >= VOCABULARY_WINDOW - 1:
-            break
-    return result
 
 
 def _strings(value) -> list[str]:

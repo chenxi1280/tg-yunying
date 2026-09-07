@@ -1,5 +1,8 @@
 # 项目数据流转索引
 
+> **2026-09-07 AI 词频与上下文读取修复：** 同 tenant/surface 的有效 open/unknown 或 typed remote history -> 按 Action 聚合最新远端观察时间 -> 排序取最近 99 个不同 Action -> 原词项/短语阈值。失败无事实和无 allocation 记录在 LIMIT 前排除；表达式索引阻止每次校验全扫 Action JSON。Listener/生成的完整上下文读取保留真人与机器人过滤语义，并使用全量时间索引。延迟发送的账号来源按已绑定任务日/冻结 due 解析，可变 release/scheduled 不跨日挑选来源计划。索引迁移不变更任何数量、身份或结果事实。
+
+
 > **2026-09-07 本地五项审查修复（本地验证通过，生产未验证）：** 频道任务创建/修改 -> membership_schedule_window_hours（严格整数 1~6，默认 2）-> type_config -> 窗口内首次关注排程；Dispatcher -> tenant/peer + account 锁 -> 未结束 Membership Attempt 计数/账号冷却 -> Gateway-started 同事务提交 -> 真实准入结果。来源预约恢复：显式 tenant/state -> 只读 preview/hash/预计游标 -> Action/State/Admission/Attempt 锁和重新比较 -> 精确取消终止且未调用网关的预约 -> source cursor readback + AuditLog；无效预约回收不得压缩来源节奏。
 
 > **2026-09-06 原容器退出证明（统一引擎 §19.59，已完成2391条精确ACK）：** 宿主只读原Docker exitStatus + 同容器TaskDelete → 同宿主/完整ID/原时间/摘要校验 → 精确旧Attempt与Action身份及原snapshot hash预览 → Action→Attempt锁后CAS → 仅追加transport ACK/退出时间/证据引用 + 同事务AuditLog → 独立读回业务字段保持 → 原legacy occupancy读取规则重新投影物理占用。0b646f05上的正式apply以hash `9e9d28b…b926`提交一次，客户端超时后先查审计而未重试，随后正式readback确认2391条且`business_fields_preserved=true`。原unknown、账本、预算、source/day/due及remote事实不改；117条结果未知与缺正面退出证据的其余调用继续保留。该ACK不代表四类任务已切换或完成。

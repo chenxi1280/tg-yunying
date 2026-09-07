@@ -274,3 +274,12 @@ def test_probe_message_visible_mock_paths():
     assert visible.visible is True
     missing = gw.probe_message_visible(1, "missing-peer", 10)
     assert missing.visible is False
+
+
+def test_probe_message_visible_telethon_does_not_guess_linked_chat(monkeypatch):
+    from tests.test_channel_review_regressions import visibility_probe
+
+    result, client = visibility_probe(monkeypatch, [], broadcast=True)
+    assert result.ok is True and result.visible is False
+    assert client.lookups == [(100, [863])]
+    assert client.extra_requests == []

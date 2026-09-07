@@ -39,6 +39,9 @@ def resolve_frozen_account_origin(
     account: TgAccount,
 ) -> FrozenAccountOrigin:
     plan = _lineage_plan(session, action)
+    if plan is None and (action.payload or {}).get("reaction_fulfillment_obligation_id"):
+        if _has_frozen_membership(session, action):
+            raise ValueError("engagement_account_origin_plan_missing")
     if plan is None:
         plan = _unique_matching_plan(session, action, account.id)
     if plan is not None:
@@ -112,26 +115,58 @@ def _reaction_plan(
 ) -> TaskParticipationUnitPlan | None:
     obligation_id = str(payload.get("reaction_fulfillment_obligation_id") or "")
     obligation = session.get(ReactionFulfillmentObligation, obligation_id) if obligation_id else None
+    if obligation is not None:
+        _validate_reaction_owner(action, obligation)
     message = session.get(ChannelMessage, obligation.channel_message_id) if obligation else None
     if message is None:
         return None
     source = _reaction_source_identity(message)
-    return _matching_source_plan(session, action, source)
+    return _matching_source_plan(session, action, source, obligation=obligation)
 
 
 def _matching_source_plan(
     session: Session,
     action: Action,
     source_identity: str,
+    *,
+    obligation: ReactionFulfillmentObligation | None = None,
 ) -> TaskParticipationUnitPlan | None:
-    task_day = as_beijing(action.scheduled_at).date()
+    task_day = _origin_task_day(session, action, obligation=obligation)
     unit = f"task_day:{task_day.isoformat()}:source:{source_identity}"
     return session.scalar(select(TaskParticipationUnitPlan).where(
+        TaskParticipationUnitPlan.tenant_id == action.tenant_id,
         TaskParticipationUnitPlan.task_id == action.task_id,
         TaskParticipationUnitPlan.task_lifecycle_epoch == action.task_lifecycle_epoch,
         TaskParticipationUnitPlan.participation_unit == unit,
         TaskParticipationUnitPlan.state == "active",
     ))
+
+
+def _origin_task_day(session: Session, action: Action, *, obligation=None):
+    payload = dict(action.payload or {})
+    ledger_id = str(payload.get("task_day_ledger_id") or "")
+    if ledger_id:
+        ledger = session.get(TaskDayLedger, ledger_id)
+        if ledger is None or (ledger.tenant_id, ledger.task_id) != (action.tenant_id, action.task_id):
+            raise ValueError("engagement_origin_ledger_owner_mismatch")
+        return ledger.obligation_local_date
+    obligation_id = str(payload.get("reaction_fulfillment_obligation_id") or "")
+    if obligation is None and obligation_id:
+        obligation = session.get(ReactionFulfillmentObligation, obligation_id)
+        if obligation is None:
+            raise ValueError("engagement_origin_obligation_missing")
+    if obligation is not None:
+        _validate_reaction_owner(action, obligation)
+        if obligation.pacing_due_at is not None:
+            return as_beijing(obligation.pacing_due_at).date()
+    return as_beijing(action.pacing_due_at or action.scheduled_at).date()
+
+
+def _validate_reaction_owner(action: Action, obligation: ReactionFulfillmentObligation) -> None:
+    if (obligation.tenant_id, obligation.task_id) != (action.tenant_id, action.task_id):
+        raise ValueError("engagement_origin_obligation_owner_mismatch")
+    if obligation.task_lifecycle_epoch is not None and obligation.task_lifecycle_epoch != action.task_lifecycle_epoch:
+        raise ValueError("engagement_origin_obligation_owner_mismatch")
 
 
 def _unique_matching_plan(
@@ -168,7 +203,7 @@ def _validate_plan_owner(
 
 
 def _task_day_plans(session: Session, action: Action) -> list[TaskParticipationUnitPlan]:
-    task_day = as_beijing(action.scheduled_at).date()
+    task_day = _origin_task_day(session, action)
     return list(session.scalars(
         select(TaskParticipationUnitPlan)
         .join(TaskDayLedger, TaskDayLedger.id == TaskParticipationUnitPlan.task_day_ledger_id)

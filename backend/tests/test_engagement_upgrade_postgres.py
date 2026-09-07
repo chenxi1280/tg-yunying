@@ -88,7 +88,7 @@ def test_populated_0196_upgrade_preserves_records_and_runs_backfills(upgrade_dat
     _seed_legacy(upgrade_database)
     _upgrade("head")
     with upgrade_database.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0226_task_retirement"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0227_ai_group_history_indexes"
         assert connection.scalar(text("SELECT name FROM tenants WHERE id=901")) == "QA legacy tenant"
         assert connection.scalar(text("SELECT status FROM tasks WHERE id='QA-legacy-task'")) == "paused"
         assert connection.execute(text(

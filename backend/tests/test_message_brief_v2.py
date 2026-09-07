@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import pytest
 
+from app.services.task_center.antigravity_schemas import _brief_variant
 from app.services.task_center.message_brief_v2 import (
+    ADULT_MODES,
     MessageBriefV2,
     V2BriefContract,
+    _mode_length_bands,
     build_v2_planner_prompt,
     parse_brief_v2_item,
     v2_candidate_failure,
@@ -40,7 +43,7 @@ def _item(*, category: str = "sensory_question", speech_act: str = "question") -
         "slot_id": "slot-1",
         "speech_act": speech_act,
         "stance": "curious",
-        "length_band": "micro",
+        "length_band": "short",
         "punctuation_profile": "question" if speech_act == "question" else "none",
         "anchor_ids": ["f1"],
         "brief_contract_version": "message_brief_v2",
@@ -300,3 +303,54 @@ def test_v2_rejects_anchor_outside_route_evidence() -> None:
         valid_fact_ids=("f1", "f2"),
         contract=_contract(),
     ) is None
+
+
+def test_adult_modes_restrict_length_bands_to_short() -> None:
+    for mode in ADULT_MODES:
+        assert _mode_length_bands(mode) == ("short",)
+    assert _mode_length_bands("general") == ("micro", "short", "medium")
+
+
+def test_v2_adult_mode_rejects_micro_and_medium() -> None:
+    item_micro = _item()
+    item_micro["length_band"] = "micro"
+    assert parse_brief_v2_item(
+        item_micro,
+        slot_id="slot-1",
+        valid_fact_ids=("f1",),
+        contract=_contract(),
+    ) is None
+
+    item_medium = _item()
+    item_medium["length_band"] = "medium"
+    assert parse_brief_v2_item(
+        item_medium,
+        slot_id="slot-1",
+        valid_fact_ids=("f1",),
+        contract=_contract(),
+    ) is None
+
+    item_short = _item()
+    item_short["length_band"] = "short"
+    brief = parse_brief_v2_item(
+        item_short,
+        slot_id="slot-1",
+        valid_fact_ids=("f1",),
+        contract=_contract(),
+    )
+    assert brief is not None
+    assert brief.length_band == "short"
+    prompt = v2_realizer_system_prompt(brief)
+    assert "正文9到20字（含8到20个汉字）" in prompt
+
+
+def test_antigravity_schema_restricts_adult_length_bands() -> None:
+    slot = {
+        "slot_id": "slot-1",
+        "route_evidence_ids": ["f1"],
+    }
+    variant = _brief_variant(slot, "adult_service_sensory", "sensory_question")
+    assert variant["properties"]["length_band"]["enum"] == ["short"]
+
+    variant_general = _brief_variant(slot, "general", "grounded_reaction")
+    assert variant_general["properties"]["length_band"]["enum"] == ["micro", "short", "medium"]

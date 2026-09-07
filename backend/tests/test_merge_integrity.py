@@ -40,7 +40,7 @@ def test_alembic_versions_have_single_head():
 
     assert all(len(revision) <= 32 for revision in revisions)
     heads = sorted(set(revisions) - referenced)
-    assert heads == ["0226_task_retirement"]
+    assert heads == ["0227_ai_group_history_indexes"]
 
 
 

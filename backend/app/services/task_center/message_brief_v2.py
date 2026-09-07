@@ -259,7 +259,7 @@ def _planner_output_slot(slot: dict) -> dict:
 
 
 def _mode_length_bands(mode: str) -> tuple[str, ...]:
-    return ("micro", "short") if mode in ADULT_MODES else LENGTH_BANDS
+    return ("short",) if mode in ADULT_MODES else LENGTH_BANDS
 
 
 def v2_planner_system_prompt() -> str:
@@ -280,11 +280,14 @@ def v2_realizer_system_prompt(brief: MessageBriefV2) -> str:
         "adult_service_sensory": _sensory_realizer_rule(brief),
     }
     claim_rule = _service_claim_realizer_rule(brief)
-    length_rule = {
-        "micro": "正文1到8字",
-        "short": "正文9到24字",
-        "medium": "正文至少25字",
-    }[brief.length_band]
+    if brief.content_mode in ADULT_MODES:
+        length_rule = "正文9到20字（含8到20个汉字）"
+    else:
+        length_rule = {
+            "micro": "正文1到8字",
+            "short": "正文9到24字",
+            "medium": "正文至少25字",
+        }[brief.length_band]
     punctuation_rule = _punctuation_realizer_rule(brief)
     return (
         "把已审核 brief 写成一条自然中文 Telegram 消息。"
@@ -446,7 +449,7 @@ def _brief_shape_matches(
         return False
     if any(evidence not in brief.anchor_ids for claim in claims for evidence in claim.evidence_ids):
         return False
-    if contract.content_mode in ADULT_MODES and brief.length_band not in {"micro", "short"}:
+    if contract.content_mode in ADULT_MODES and brief.length_band != "short":
         return False
     return True
 

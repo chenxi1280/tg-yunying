@@ -59,7 +59,7 @@ def _brief_slot_variants(slot: dict) -> list[dict[str, Any]]:
 def _brief_variant(slot: dict, mode: str, category: str) -> dict[str, Any]:
     speech_act = CLAIM_SPEECH_ACTS[category]
     evidence = [str(item) for item in (slot.get("route_evidence_ids") or ())]
-    length_bands = ("micro", "short") if mode in ADULT_MODES else LENGTH_BANDS
+    length_bands = ("short",) if mode in ADULT_MODES else LENGTH_BANDS
     punctuation = ("question",) if speech_act == "question" else ("none", "pause")
     return {
         "type": "object",

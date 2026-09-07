@@ -683,3 +683,20 @@ def _forbidden_generation(*_args, **_kwargs):
 
 def _forbidden_gateway(*_args, **_kwargs):
     pytest.fail("invalid or unknown generation must not call Telegram")
+
+
+def test_post_send_visibility_target_peer_prioritizes_actual_discussion() -> None:
+    from app.services.task_center.dispatcher import _post_send_visibility_target_peer
+    from app.models.task_center import Action
+
+    action = Action(
+        id="act-1",
+        task_type="channel_comment",
+        action_type="post_comment",
+        payload={
+            "channel_id": "test_channel",
+            "actual_target_peer": "actual-discussion",
+            "discussion_peer_id": "linked-discussion",
+        },
+    )
+    assert _post_send_visibility_target_peer(None, action) == "actual-discussion"

@@ -810,3 +810,19 @@ dev/qa 至少新增或更新：
 ---
 
 *本 PRD 已有本地实现与定向测试证据，但 CI、release、runtime 和 Telegram 业务效果仍须分别取证；不得由本地 QA 推导为生产完成。*
+
+## 2026-09-07 低完成量修复：词频历史与上下文读取
+
+Intake `AI-GROUP-LOW-FULFILLMENT-20260907`，L3/P1；线上诊断显示 10 个运行任务当日已到期 15470 条、typed remote message confirmed 3 条。词频查询 `ai_group_vocabulary_frequency._eligible_history` 在多个 worker 中同时运行超过 80 秒；只读 EXPLAIN 证明按 JSON surface 筛选时并行全扫 actions，关联事实的租户约束缺失。等待过程中持有群上下文事务锁，导致生成和 Listener 排队。部分账号活动窗口被错过；截止检查仍必须保留，不能用延长截止或压缩随机间隔修复。
+
+产品/设计合同：
+
+1. 词频基线仍取同 tenant、同 surface 最近 99 个不同 Action；有匹配远端消息事实的 Action 按最新 observed_at 排序，没有事实的仅当前 open/unknown reservation 参与。数量、词项和二元短语阈值保持不变。
+2. 终态且无事实、缺失 allocation plan 的记录先排除再取窗口，不允许 500 条无效历史遮蔽旧的有效基线；同一 Action 多条事实只占一条。跨租户事实不赋予成功历史资格。
+3. 查询仅投影基线需要的 payload，事实取同 tenant/action/type 的最新时间；数据库增加与 surface 谓词一致的表达式索引，避免每次生成/发送扫描全量 Action JSON。
+4. 当前上下文读取需要包含真人与机器人。为 tenant/group/coalesce(sent_at,created_at)/id 增加完整时间索引，保留现有仅真人的 partial index；不改变上下文过滤与排序。
+5. 迁移只增加上述索引，PostgreSQL 并发构建并处理本迁移同名 invalid 残留，SQLite 使用对应 JSON 表达式。不会重写 Task/Action/Attempt、消息、数量分母或未知结果。发布必须验证迁移、索引 valid 及实际查询计划。
+
+Product Design Complete：原始低完成量需求、输入/输出语义、worker/数据库查询、租户隔离、重复事实、失败历史淹没窗口及迁移回滚边界已闭合；本阶段交接 dev 实现索引与查询回归。页面/API 合同不变。后续若线上仍有独立阻塞，回到诊断/产品阶段修复，不以此局部优化宣告整体恢复。
+
+QA：覆盖跨 Task 同 surface、跨租户、500 条无效历史、同 Action 多事实、remote observed 时间优先和原频率阈值；真实 PostgreSQL 验证升级/重复升级、索引查询计划。发布后逐 Task 记录新远端发送事实、到期欠量变化和当前 blocker；服务 healthy 不等于 production_fixed。

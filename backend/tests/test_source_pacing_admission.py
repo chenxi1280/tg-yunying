@@ -608,3 +608,59 @@ def test_finished_pre_gateway_admission_can_retry_same_reservation(
         now_value=NOW + timedelta(seconds=864),
     )
     assert session.scalar(select(func.count(SourcePacingAdmission.id))) == 1
+
+
+def test_settle_source_pacing_admission_with_autoflush_false(
+    session: Session,
+) -> None:
+    session.autoflush = False
+    action, attempt = _paced_action(
+        session,
+        task_id="autoflush-task",
+        slot_id="autoflush-slot",
+        action_id="autoflush-action",
+    )
+    assert admit_source_paced_attempt(session, action, attempt, now_value=NOW)
+    adm = session.scalar(select(SourcePacingAdmission).where(SourcePacingAdmission.action_id == action.id))
+    assert adm.state == "call_started"
+
+    # Pre-gateway deferral
+    action.status = "pending"
+    settle_source_pacing_admission(action, attempt)
+    assert adm.state == "finished"
+
+
+def test_unsettled_prior_admission_blocks_active_uncalled_attempt(
+    session: Session,
+) -> None:
+    action, first_attempt = _paced_action(
+        session,
+        task_id="uncalled-task",
+        slot_id="uncalled-slot",
+        action_id="uncalled-action",
+    )
+    assert admit_source_paced_attempt(session, action, first_attempt, now_value=NOW)
+    adm = session.scalar(select(SourcePacingAdmission).where(SourcePacingAdmission.action_id == action.id))
+    assert adm.state == "call_started"
+    # A missing Gateway timestamp does not finish this still-active attempt.
+
+    second_attempt = ExecutionAttempt(
+        tenant_id=1,
+        action_id=action.id,
+        account_id=1,
+        attempt_no=2,
+        status="before_call",
+    )
+    session.add(second_attempt)
+    session.flush()
+
+    # Keep the original reservation until the first attempt is explicitly settled.
+    allowed = admit_source_paced_attempt(
+        session,
+        action,
+        second_attempt,
+        now_value=NOW + timedelta(seconds=864),
+    )
+    assert allowed is False
+    assert adm.state == "call_started"
+    assert adm.attempt_id == first_attempt.id

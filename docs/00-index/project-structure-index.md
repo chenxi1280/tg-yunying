@@ -1,5 +1,8 @@
 # 项目结构索引
 
+> **2026-09-07 AI 活群历史查询修复：** `ai_group_vocabulary_frequency._history_statement` 在数据库内按 tenant/surface 过滤有效 reservation/typed fact，取同 Action 最新 remote observed 时间并去重后截取 99 条；`models/ai_group_runtime_indexes.py` 和 `0227_ai_group_history_indexes` 提供 surface 与全量上下文时间索引。测试入口为 `test_ai_group_vocabulary_frequency.py`、`test_ai_group_history_indexes{,_postgres}.py`。`engagement_account_origin._origin_task_day` 按显式 ledger/冻结 pacing_due_at 保持跨午夜来源身份；回归 `test_engagement_origin_task_day.py`。本地测试不代表线上履约。
+
+
 > **2026-09-07 本地五项审查修复（本地验证通过，生产未验证）：** 频道关注窗口纯算法位于 `channel_membership_schedule.py`；`channel_membership_runtime.py` 在 Dispatcher 成员准入 Gateway 前按 tenant/peer 与账号锁核对未结束 Attempt 和 60 秒冷却；`stale_source_admissions.py` 提供只读快照和受控回收，CLI 为 `backend/scripts/reconcile_stale_source_admissions.py`。配置由 `ChannelMessageScopeConfig`、settings 字段、TaskCenter 高级设置统一保存。
 
 > **2026-09-06 历史原进程退出对账（统一引擎 §19.59，已部署并完成精确ACK）：** `telegram_worker_exit_evidence.py` 验证同宿主、同完整容器ID的 Docker实际退出状态和TaskDelete原日志及摘要，将证据绑定到原worker PID 1/调用时间；`telegram_worker_exit_reconcile.py` 提供精确旧Attempt集合的只读预览、锁后CAS、AuditLog、幂等ACK和独立业务字段保持读回。`scripts/reconcile_legacy_telegram_workers.py` 提供preview/apply/readback、SHA及actor/reference校验、受保护JSON输出；不调用Telegram、不改旧计划或业务unknown。测试为 `test_telegram_worker_exit_reconcile*.py`，含真实PG行锁、迟到证据冲突、UTC/北京时间和回滚。原本地Event ACK与统一三件套恢复路径保持独立。0b646f05已通过完整CI并在20个运行服务独立核验；正式preview/hash/apply后，2391条原调用于07:40独立读回`business_fields_preserved=true`。117条业务结果未知继续保持，22任务切换尚未执行，详见当前生产审计。

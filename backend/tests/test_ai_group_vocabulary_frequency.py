@@ -195,3 +195,51 @@ def test_confirmed_history_is_ordered_by_remote_observed_time() -> None:
         assert rows[1]["vocabulary_used_ids"] == ["created-latest"]
     finally:
         session.close()
+
+
+def test_terminal_history_cannot_hide_valid_vocabulary_reservations() -> None:
+    with _session() as session:
+        anchor = datetime(2026, 9, 7, tzinfo=timezone.utc)
+        for index in range(5):
+            historical = _action(index, {"vocabulary_used_ids": ["unit-1"]})
+            historical.created_at = anchor
+            session.add(historical)
+        for index in range(500):
+            failed = _action(1000 + index, {})
+            failed.status = "failed"
+            failed.created_at = anchor + timedelta(seconds=index + 1)
+            session.add(failed)
+        current = _action(9999, {})
+        session.add(current)
+        session.flush()
+        assert vocabulary_frequency_violation(
+            session, current, _payload(), data={"vocabulary_used_ids": ["unit-1"]}
+        ) == "vocabulary_id:unit-1"
+
+
+def test_foreign_tenant_fact_cannot_make_failed_history_eligible() -> None:
+    with _session() as session:
+        historical = _action(1, {"vocabulary_used_ids": ["foreign"]})
+        historical.status = "failed"
+        fact = _fact(historical, 1, datetime(2026, 9, 7, tzinfo=timezone.utc))
+        fact.tenant_id = 2
+        current = _action(9, {})
+        session.add_all([historical, fact, current])
+        session.flush()
+        assert vocabulary_frequency_baseline(session, current, _payload()) == []
+
+
+def test_duplicate_facts_do_not_consume_history_window() -> None:
+    with _session() as session:
+        anchor = datetime(2026, 9, 7, tzinfo=timezone.utc)
+        older = _action(1, {"vocabulary_used_ids": ["older"]})
+        older.created_at = anchor
+        latest = _action(2, {"vocabulary_used_ids": ["latest"]})
+        latest.status = "success"
+        current = _action(9, {})
+        session.add_all([older, latest, current])
+        for index in range(500):
+            session.add(_fact(latest, index, anchor + timedelta(seconds=index + 1)))
+        session.flush()
+        rows = vocabulary_frequency_baseline(session, current, _payload())
+        assert [row["vocabulary_used_ids"] for row in rows] == [["latest"], ["older"]]

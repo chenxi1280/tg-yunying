@@ -10,6 +10,7 @@ def unsettled_prior_admission(
     session: Session,
     action: Action,
 ) -> SourcePacingAdmission | None:
+    session.flush()
     return session.scalar(
         select(SourcePacingAdmission)
         .where(
@@ -39,6 +40,7 @@ def settle_source_pacing_admission(
     session = object_session(action)
     if session is None or attempt is None:
         return
+    session.flush()
     admission = session.scalar(select(SourcePacingAdmission).where(
         SourcePacingAdmission.action_id == action.id,
         SourcePacingAdmission.attempt_id == attempt.id,
@@ -46,9 +48,12 @@ def settle_source_pacing_admission(
     ))
     if admission is None:
         return
-    admission.state = (
-        "remote_unknown" if action.status == "unknown_after_send" else "finished"
+    is_unknown = (
+        action.status == "unknown_after_send"
+        or attempt.status == "result_unknown"
     )
+    admission.state = "remote_unknown" if is_unknown else "finished"
+    admission.version = int(admission.version or 1) + 1
 
 
 __all__ = [
