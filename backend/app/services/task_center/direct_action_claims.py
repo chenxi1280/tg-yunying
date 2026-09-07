@@ -421,11 +421,17 @@ def release_fact_first_action_reservations(
         remote_mutation_state=remote_mutation_state,
         replan_same_obligation=replan_same_obligation,
     )
-    _settle_action_pacing_reservation(
-        session,
-        action.id,
-        replan_same_obligation=replan_same_obligation,
+    result = dict(action.result or {})
+    terminal = (
+        action.status == "skipped"
+        or result.get("account_task_disposition") == "abandoned"
     )
+    if terminal:
+        _settle_action_pacing_reservation(
+            session,
+            action.id,
+            replan_same_obligation=replan_same_obligation,
+        )
     return state_ids
 
 
