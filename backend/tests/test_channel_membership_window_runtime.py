@@ -1,5 +1,4 @@
 from datetime import datetime, timedelta
-from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
@@ -18,47 +17,58 @@ NOW = datetime(2026, 9, 7, 10)
 MODELS = (ChannelLikeConfig, ChannelViewConfig, ChannelCommentConfig)
 
 
-@pytest.mark.parametrize("count", [0, 1, 2, 10, 100, 481])
+@pytest.mark.parametrize("count", [0, 1, 2, 10, 100, 481, 2402, 5760, 5761])
 @pytest.mark.parametrize("endpoint", ["low", "high"])
-def test_membership_schedule_preserves_window_and_gap(monkeypatch, count, endpoint):
-    monkeypatch.setattr("app.services.task_center.channel_membership_schedule.random.uniform",
+def test_membership_schedule_preserves_humanized_window_and_gap(monkeypatch, count, endpoint):
+    monkeypatch.setattr("app.services.task_center.channel_membership_schedule.random.randint",
                         lambda low, high: low if endpoint == "low" else high)
-    times = channel_membership_schedule(SimpleNamespace(type_config={}), count, NOW)
+    times = channel_membership_schedule(count, NOW)
     assert len(times) == count
-    assert all(NOW <= time <= NOW + timedelta(hours=2) for time in times)
+    if not times:
+        return
+    assert times[0] == NOW
+    if count > 1:
+        assert timedelta(hours=10) <= times[-1] - times[0] <= timedelta(hours=24)
     assert all(right - left >= timedelta(seconds=15) for left, right in zip(times, times[1:]))
 
 
-@pytest.mark.parametrize("count", [2, 100, 240, 479, 480, 481])
+@pytest.mark.parametrize("count", [2, 100, 240, 479, 480, 481, 2402, 5760, 5761])
 def test_opposite_jitter_extremes_do_not_reduce_minimum_gap(monkeypatch, count):
     calls = iter(range(count))
-    monkeypatch.setattr("app.services.task_center.channel_membership_schedule.random.uniform",
+    monkeypatch.setattr("app.services.task_center.channel_membership_schedule.random.randint",
                         lambda low, high: high if next(calls) % 2 == 0 else low)
-    times = channel_membership_schedule(SimpleNamespace(type_config={}), count, NOW)
+    times = channel_membership_schedule(count, NOW)
     assert all(right - left >= timedelta(seconds=15) for left, right in zip(times, times[1:]))
 
 
 def test_membership_window_capacity_error_is_explicit():
     with pytest.raises(ValueError, match="membership_schedule_capacity_exceeded"):
-        channel_membership_schedule(SimpleNamespace(type_config={}), 482, NOW)
+        channel_membership_schedule(5762, NOW)
+
+
+def test_membership_intervals_are_not_a_fixed_cadence(monkeypatch):
+    calls = iter(range(10))
+    monkeypatch.setattr("app.services.task_center.channel_membership_schedule.random.randint",
+                        lambda low, high: high if next(calls) % 2 == 0 else low)
+    times = channel_membership_schedule(10, NOW)
+    assert len({right - left for left, right in zip(times, times[1:])}) > 1
 
 
 @pytest.mark.parametrize("hours", [1, 2, 6])
-def test_configured_window_is_used(monkeypatch, hours):
-    monkeypatch.setattr("app.services.task_center.channel_membership_schedule.random.uniform", lambda lo, hi: hi)
-    task = SimpleNamespace(type_config={"membership_schedule_window_hours": hours})
-    assert channel_membership_schedule(task, 2, NOW)[-1] == NOW + timedelta(hours=hours)
+def test_retired_window_is_explicitly_deprecated_and_not_serialized(hours):
+    for model in (*MODELS, TaskSettingsUpdate):
+        target = {} if model is TaskSettingsUpdate else {"target_channel_id": 1}
+        config = model(membership_schedule_window_hours=hours, **target)
+        assert model.model_fields["membership_schedule_window_hours"].deprecated
+        assert "membership_schedule_window_hours" not in config.model_dump(exclude_unset=True)
 
 
 @pytest.mark.parametrize("hours", [0, 7, -1, 1.5, "2", True])
-def test_invalid_window_rejected_by_create_update_and_scheduler(hours):
-    for model in MODELS:
+def test_invalid_retired_window_rejected_by_create_and_update(hours):
+    for model in (*MODELS, TaskSettingsUpdate):
+        target = {} if model is TaskSettingsUpdate else {"target_channel_id": 1}
         with pytest.raises(ValidationError):
-            model(target_channel_id=1, membership_schedule_window_hours=hours)
-    with pytest.raises(ValidationError):
-        TaskSettingsUpdate(membership_schedule_window_hours=hours)
-    with pytest.raises(ValueError, match="membership_schedule_window_hours"):
-        channel_membership_schedule(SimpleNamespace(type_config={"membership_schedule_window_hours": hours}), 1, NOW)
+            model(membership_schedule_window_hours=hours, **target)
 
 
 @pytest.fixture

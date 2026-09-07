@@ -18,6 +18,7 @@ from app.models import (
 )
 
 from .fulfillment_activation import CURRENT_CONTRACT_VERSION
+from .channel_membership_execution import task_action_execution_condition
 from .account_pacing_guard import revalidate_action_pacing_before_claim
 from .channel_action_lifecycle import (
     release_channel_action_resources_before_gateway,
@@ -126,7 +127,7 @@ def _ranked_candidate_query(now: datetime):
             Action.status == "pending",
             or_(Action.scheduled_at <= now, _deadline_exhausted_action()),
             _has_claimable_account_reservation(),
-            Task.status == "running",
+            task_action_execution_condition(),
             Task.deleted_at.is_(None),
             Task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION,
             Action.task_lifecycle_epoch == Task.task_lifecycle_epoch,

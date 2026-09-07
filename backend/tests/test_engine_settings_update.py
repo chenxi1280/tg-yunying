@@ -12,6 +12,7 @@ pytestmark = pytest.mark.no_postgres
 BINDING = dict(engagement_contract_version="unified_engagement_v1",
     account_selection_mode="group", account_group_ids=[1, 2], concurrency_limit_per_group=4)
 SOURCE = dict(initial_historical_post_limit=0, source_expectation_mode="promised_daily_sources")
+RETIRED_WINDOW_FIELD = "membership_schedule_window_hours"
 UPDATES = {
     "group_ai_chat": dict(daily_message_target=12, daily_target_jitter_bps=1000,
         attention_quiet_after_min_seconds=20, attention_quiet_after_max_seconds=40),
@@ -28,8 +29,10 @@ UPDATES = {
 def test_engine_patch_fields_are_accepted_by_schema_and_allowlist(task_type):
     data = {**BINDING, **UPDATES[task_type]}
     payload = schemas.TaskSettingsUpdate.model_validate(data)
-    assert payload.model_dump(exclude_unset=True) == data
-    assert not set(data) - TYPE_SETTINGS_FIELDS[task_type] - COMMON_SETTINGS_FIELDS
+    expected = {key: value for key, value in data.items() if key != RETIRED_WINDOW_FIELD}
+    assert payload.model_dump(exclude_unset=True) == expected
+    assert not set(expected) - TYPE_SETTINGS_FIELDS[task_type] - COMMON_SETTINGS_FIELDS
+    assert RETIRED_WINDOW_FIELD not in TYPE_SETTINGS_FIELDS[task_type]
 
 
 @pytest.mark.parametrize("task_type", UPDATES)
@@ -49,6 +52,9 @@ def test_engine_settings_edit_persists_and_partial_edit_keeps_fields(task_type):
             schemas.TaskSettingsUpdate(name="edited", **BINDING, **UPDATES[task_type]), "test")
         assert updated.name == "edited"
         for key, value in {**BINDING, **UPDATES[task_type]}.items():
+            if key == RETIRED_WINDOW_FIELD:
+                assert key not in updated.type_config
+                continue
             assert updated.type_config.get(key) == value
         expected = dict(updated.type_config)
         partial = service.update_task_settings(session, 1, task.id,

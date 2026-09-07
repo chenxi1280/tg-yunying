@@ -411,10 +411,13 @@ def _configured_task_account_ids(session: Session, tenant_id: int, account_confi
         TgAccount.id.asc(),
     )
     if mode == "group":
-        pool_id = as_int(account_config.get("account_group_id"))
-        if not pool_id:
+        raw_ids = account_config.get("account_group_ids") or []
+        if not raw_ids and account_config.get("account_group_id"):
+            raw_ids = [account_config["account_group_id"]]
+        pool_ids = [as_int(item) for item in raw_ids if as_int(item)]
+        if not pool_ids:
             return []
-        stmt = stmt.where(TgAccount.pool_id == pool_id)
+        stmt = stmt.where(TgAccount.pool_id.in_(pool_ids))
     if target_group_id:
         stmt = stmt.join(TgGroupAccount, TgGroupAccount.account_id == TgAccount.id).where(
             TgGroupAccount.group_id == target_group_id,

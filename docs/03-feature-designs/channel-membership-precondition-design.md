@@ -16,10 +16,10 @@
 - 支持通过 `@username`、公开频道链接、邀请链接或已知 peer id 手动添加频道目标。
 - 邀请链接包含用户从 Telegram 频道“加入/邀请”入口复制的 `https://t.me/+...`、`https://t.me/joinchat/...`、`telegram.me/+...` 等链接。
 - 频道目标可以先进入运营目标库，不要求所有账号已经关注。
-- 启动频道浏览、点赞、评论或回复任务时，全部目标频道均要求任务账号范围内的账号先完成关注；未关注账号自动生成 `ensure_target_membership` 前置关注动作。
+- 创建并启动频道浏览、点赞、评论或回复任务时，在启动事务内一次性为任务完整有效账号范围生成 `ensure_target_membership` 前置关注动作，不等待 Planner、来源帖子或 AI 内容；保存草稿不创建、不执行关注动作。
 - 彻底废弃公开频道浏览免关注豁免（`not_required_public_view`）与已授权频道免关注豁免：所有频道互动任务必须严格基于已确认关注的账号执行。
 - 关注频道动作必须按随机打散、时间步长分摊、均匀抖动和限速排程执行，避免账号集中操作触发 Telegram 风控。
-- 明确频道关注排程时间窗口：**频道互动任务默认在 2 小时（可配置 1~6 小时）内排完候选账号首次关注动作**；验证、审批、FloodWait 和运行期并发等待单独展示，不承诺远端在排程窗口内完成。
+- 明确频道关注排程时间窗口：**频道互动任务每批随机选取 10～24 小时的总排程窗口，创建并启动时全量落库后逐步执行**；验证、审批、FloodWait 和运行期并发等待单独展示，不承诺远端在排程窗口内完成。
 - 主互动阶段（浏览、点赞、评论、回复）只使用已确认关注成功或原本已关注的账号。
 - 频道浏览 / 点赞 / 评论 / 回复在运行时再次发现账号未关注、未加入或无法进入关联讨论区时，必须自动生成准入动作并延后当前互动，严禁未关注账号直连网关。
 - 任务详情能追踪每个账号的前置关注状态、失败原因、重试状态和对主任务容量的影响。
@@ -41,10 +41,11 @@
   -> 选择或手动添加频道目标
   -> 选择账号范围
   -> 仅校验输入与目标引用结构
-  -> 直接保存草稿或创建并启动
-  -> 解析频道目标并核验候选账号成员关系
-  -> 发现未关注账号：生成 ensure_target_membership 前置动作
-  -> 按抖动和限速执行关注频道
+  -> 保存草稿：仅保存，不执行关注；以下流程在创建并启动或显式启动时执行
+  -> 启动事务读取频道目标和完整候选账号成员关系，不调用远端预检
+  -> 为全部未关注账号生成 ensure_target_membership；已关注账号记跳过审计
+  -> 同事务冻结随机 10～24 小时排程，重复请求复用原动作
+  -> Worker 按冻结排程、抖动和限速逐步执行关注频道
   -> 汇总关注结果
   -> 仅已关注账号进入浏览 / 点赞 / 评论 / 回复主互动阶段
   -> 调度执行时运行时复验成员关系，未关注账号自动延后等待准入
@@ -131,9 +132,9 @@ AI 活跃群目标群准入流程：
 为在**任务启动时效性**与**Telegram 防风控安全**之间取得最佳平衡，系统制定分级时间窗口策略：
 
 1. **频道互动任务（浏览 / 点赞 / 评论 / 回复）**：
-   - **默认准入排程总窗口：2 小时（7200 秒）**。
+   - **准入排程总窗口：每批在 10～24 小时之间随机选取，并冻结到每个 Action 的 scheduled_at**。
    - **设计依据**：该窗口用于打散首次尝试；私有频道可能需要审批，FloodWait、验证和网关等待可能使实际完成时间超出窗口。排程和真实准入结果分别展示，不保证规避 Telegram 风控。
-   - **可配置性**：支持在任务高级配置中通过 `membership_schedule_window_hours` 覆盖，取值范围为 `1 ~ 6` 小时，默认值为 `2` 小时。
+   - **统一策略**：取消原 1～6 小时配置入口。旧请求/存量配置的 `membership_schedule_window_hours` 仅作为明确废弃字段接收并从新序列化配置排除，不能覆盖新策略；既有 Action 的排程不自动重写。
 
 2. **AI 活跃群与群聊转发任务**：
    - **默认准入排程总窗口：4 小时（14400 秒）**。
@@ -141,20 +142,21 @@ AI 活跃群目标群准入流程：
 
 ### 7.2 抖动与打散算法（Jitter & Distribution Algorithm）
 
-当 Planner 检测到 $N$ 个候选账号尚未关注目标频道时，按以下算法生成执行时间序列：
+创建并启动时为全部候选账号规划；Planner 后续仅补新出现的缺失账号。每批 $N$ 个未关注账号按以下算法生成执行时间序列：
 
 ```text
-输入：N 个未关注账号，窗口 W 秒，最小间隔 G=15 秒，开始时间 S
-N=0：返回空序列；N=1：返回 [S]
-若 (N-1)*G > W：显式报 membership_schedule_capacity_exceeded，展示数量及窗口；
-不丢弃账号、不缩短间隔、不自动延长窗口，由运营调整账号范围或 1~6 小时配置。
-N>=2：step=W/(N-1)，jitter=min(step*0.3, (step-G)/2)
-先随机打散账号；第 i 个时间=S+i*step+uniform(-jitter,+jitter)，
-首账号 offset 范围 [0,jitter]，末账号 offset 范围 [-jitter,0]。
-由构造保证全部时间在 [S,S+W] 内，相邻时间至少 G；无需后推修正。
+输入：N 个未关注账号，最小间隔 G=15 秒，开始时间 S
+N=0：返回空序列；N=1：返回 [S]。
+N>=2：最短窗口 L=max(10小时,(N-1)*G)，最长窗口 H=24小时。
+若 L>H：显式报 membership_schedule_capacity_exceeded；不丢弃账号、不压缩间隔。
+按整秒随机选择 W=randint(L,H)，step=floor(W/(N-1))，jitter=min(floor(step*0.3),floor((step-G)/2))。
+先随机打散账号；首账号时间=S，末账号时间=S+W；
+其余第 i 个时间=S+floor(W*i/(N-1))+randint(-jitter,+jitter)。
+相邻间隔至少 G，首末实际跨度在 10～24 小时内，窗口内时间不均匀；
+重复启动/Planner不得重新抽取或提前既有 Action。
 ```
 
-`membership_schedule_window_hours` 是频道三类任务共同的严格整数配置，默认 2，范围 1~6；创建、修改、任务详情回显和高级设置统一使用此字段。未配置的历史任务使用默认值；非法已存配置明确报错。修改只影响以后创建的准入动作，不重写既有排程。
+任务统计记录本批实际排程跨度 `membership_schedule_window_hours`（可为小数）及 `membership_schedule_policy=humanized_10_24h`；它是只读结果，不是可写配置。0/1 个未关注账号不强行等待 10 小时。审批、验证、FloodWait、跨任务并发可能推迟真实完成时间。
 
 ### 7.3 并发控制与账号级冷却
 
@@ -229,7 +231,7 @@ AI 活跃群发送动作规划时必须使用目标群过滤账号：
 
 ## 10. 创建后运行就绪摘要
 
-任务创建不调用频道 membership 预检。创建成功并进入启动/运行阶段后，详情读模型需要持续提供：
+保存草稿不调用频道 membership 预检或生成动作；创建并启动成功返回时，全部有效候选账号的前置动作已经同事务保存。此阶段只读取本地成员关系，不调用 Telegram 或 AI，详情读模型需要持续提供：
 
 - 目标频道解析状态。
 - 账号范围内已关注账号数。
@@ -269,7 +271,7 @@ AI 活跃群发送动作规划时必须使用目标群过滤账号：
 
 - 运营目标：手动添加频道目标时保存原始输入、解析状态和可加入凭据。
 - 任务中心详情：补充频道 membership 运行就绪和容量摘要。
-- Planner：频道互动任务启动后先生成 `ensure_channel_membership` 前置动作。
+- 创建/启动：共享启动入口同事务生成全部 `ensure_target_membership`，随后由 Worker 执行；Planner 只补缺失账号。
 - Planner：AI 活跃群在 `send_message` 规划前先生成 / 复用 `ensure_target_membership`，硬目标缺口不能绕过准入。
 - Dispatcher：执行关注频道动作，写入账号与频道目标关联状态。
 - Dispatcher：执行目标群准入动作，记录加入、验证读取、多模态视觉识别、加减验证提交、必需频道关注和 `can_send` 复检结果。
@@ -279,10 +281,10 @@ AI 活跃群发送动作规划时必须使用目标群过滤账号：
 
 ## 13. 验收标准
 
-- 所有账号都未关注频道时，可以创建频道互动任务；启动后先执行关注频道前置阶段。
+- 所有账号都未关注频道时，创建并启动成功返回前已保存全部关注动作；无需帖子、AI 内容或第一轮 Planner。保存草稿没有动作。
 - 部分账号已关注频道时，已关注账号跳过前置关注，未关注账号按抖动执行关注。
 - 频道互动任务（浏览 / 点赞 / 评论 / 回复）严格要求账号完成关注，严禁因频道目标已授权或可发送而绕过前置关注阶段。
-- 频道互动任务的未关注账号排程默认在 2 小时窗口内完成抖动生成，相邻账号调度间隔满足最小安全间隔（$\ge 15\text{s}$）。
+- 频道互动任务未关注账号随机打散，首末排程跨度随机落在 10～24 小时，相邻账号至少 15 秒；创建重放和后续 Planner 保持原时间。
 - 前置阶段 0 个账号成功时，浏览、点赞、评论和回复动作不会被规划。
 - 前置阶段部分成功时，主互动阶段只使用成功账号，并展示容量缺口。
 - 关注动作具备随机顺序、抖动间隔、批次限速和 FloodWait 单账号延后。
@@ -340,3 +342,36 @@ AI 活跃群发送动作规划时必须使用目标群过滤账号：
 ### 14.4 汇总发布时的账号来源日归属修正（2026-09-07）
 
 复核待提交的来源修复时发现，按 `release_not_before_at/created_at/scheduled_at` 枚举多个日期再选择含账号的 participation plan 会把延迟后的发送混入其他任务日。发布合同改为：优先使用 Action 显式绑定并通过 tenant/Task 校验的 TaskDayLedger；点赞无显式 ledger 时使用义务冻结的 pacing_due_at，再使用 Action 冻结 pacing_due_at；仅无冻结日的原兼容记录保留 scheduled_at 解析。可变 release 时间不改变来源日，不跨日搜索“能匹配账号”的计划。义务 tenant/Task/epoch 不匹配显式失败，不能借其他 source/day 的成员计划放行。专项测试须证明跨午夜推迟仍选原日、另日计划不能填补原日缺失、伪造 ledger/义务归属被拒绝。此前同一来源相册子消息匹配合同保持。Product Design Complete 后进入 dev；此修正属于本次汇总发布的账号来源修复，不修改业务配置。
+
+### 14.5 新版评论频道关注旁路修复（2026-09-07）
+
+- Intake / L2：本地审查发现 grounding 评论账号选择及执行前校验跳过频道关注。修复范围为这两个入口，保留讨论组准入合同及用户已有多账号分组改动。
+- 产品合同：频道关注和讨论组可发送分别验收。新版评论候选账号必须已关注频道，频道 `can_send=false` 不代表讨论组不可发；非 unified 账号选择同样按频道成员关系过滤，使用 `require_send=false`。
+- 执行合同：`grounding_enrollment_id` 不能豁免频道成员检查。已排队账号的频道成员关系缺失时，复用进行中的关注动作或创建 `ensure_target_membership(require_send=false)`，当前评论明确 pending 等待，不能创建评论 Attempt 或进入评论 Gateway；恢复成员关系后再次进入独立的讨论组权限校验。
+- 反向检查：Planner 的任务级 gate 只证明至少一个账号可用；不能替代逐账号过滤。现有 `discussion_send_blocker` 验证讨论组事实，不能替代频道关注。旧评论 `require_send=true` 行为保持，租户和频道身份校验保持，关注动作沿用已有去重和运行期并发控制。
+- Product Design Complete：原始触发、部分已关注、排队后成员关系移除、重复调度、关注恢复、讨论组不可发、旧路径兼容均纳入 QA；无 API、前端和数据迁移变化。`design_status=complete`，进入 dev。本轮仅本地修复验证；生产状态须经独立 Release Gate 和真实成员/评论事实验证。
+- 本地 QA：新增 7 项回归在修复前暴露候选过滤及执行前放行问题，修复后全部通过；新版评论计划/讨论组准入共 43 项通过。最终合并回归 183 passed / 1 failed；唯一失败为并发新增的 `test_account_online_state_task_accounts_supports_account_group_ids` 导入不存在的 `_task_accounts`，不属于本轮评论修改，未修改该测试或在线状态代码。本轮变更 Python 编译、修改函数不超过 50 行和定向 `git diff --check` 均通过。`local_comment_qa=passed`，整体工作区未全绿，未提交、未发布，`production_status=unproven`。
+
+### 14.6 多分组账号配置 account_group_ids 全链路补齐与积压下线工具（2026-09-07）
+
+- **背景与根因**：线上频道任务（点赞、浏览、评论）统一使用多分组配置 `{'selection_mode': 'group', 'account_group_ids': [1, 2, ...]}`。然而 `candidate_accounts_for_config`、`precheck._precheck_candidate_accounts`、`account_online_state._configured_online_accounts`、`operations_center_listener._listener_accounts_for_group`、`search_rank_deboost_planner._apply_rank_account_selection`、`service._rank_deboost_selected_pool_ids` 以及 `AccountConfig` / `RecommendTaskAccountsRequest` 只检查单数 `account_group_id`。导致：
+  1. 所有多分组任务候选账号计算返回 0，触发 `membership_blocked`；
+  2. 队列头部堆积了数千条旧的过期 Action，Dispatcher 优先按照 scheduled_at 扫描历史过期动作，导致大面积 `pacing_claim_deadline_exceeded` 进而饿死当前正常时间窗口的任务。
+- **修复措施**：
+  1. `schemas/task_center.py`：`AccountConfig` 与 `RecommendTaskAccountsRequest` 增加 `account_group_ids: list[int] = Field(default_factory=list)`，并在 validator 中放行 `account_group_ids` 非空的分组模式。
+  2. `channel_membership.py`、`precheck.py`、`account_online_state.py`、`operations_center_listener.py`、`search_rank_deboost_planner.py`、`service.py`：统一支持 `account_group_ids` 列表，兼容回退 `account_group_id`，筛选满足任意指定分组的有效账号。
+  3. `scripts/abandon_channel_historical_backlog.py`：提供安全下线频道历史积压的维护脚本，按截止时间通过 `settle_fact_first_action_before_gateway` 进行合规安全下线（标记为 skipped 并同步冲销/对账），释放被历史锁定的账号容量与调度窗口。
+- **QA 验收**：
+  - `backend/tests/test_task_account_pool.py` 新增 4 个针对性单测覆盖 schema 校验、precheck 候选账号匹配、在线状态多分组账号提取，全部通过。
+  - 全量 120 项回归测试 100% 通过。
+
+### 14.6 创建并启动即全量关注排程（2026-09-07）
+
+- Intake / L2：用户确认草稿不执行；创建并启动时全量安排关注。最新指令使用拟人化 10～24 小时随机排程，覆盖此前“尽快连续执行”和 2 小时窗口。
+- 全量指现有业务资格和账号选择合同内的全部账号，不按 max_concurrent、每日参与抽样或帖子数量截断；未关注逐账号 pending，已关注逐账号 skipped 审计。无匹配账号保留 membership_blocked，不伪造完成。失效会话/限流仍走原明确失败及恢复合同。
+- 创建并启动 API、显式启动共用启动事务；在当前生命周期和目标 scope 确定后生成动作。幂等创建重放不复制、不重排；启动失败回滚动作，保留创建成功/启动失败的正式合同。旧评论按原 require_send 合同准备，新版评论只要求频道成员关系，讨论组权限独立验证。
+- 定时任务创建并启动后也先排关注；仅带本次启动 epoch 标记的频道 membership Action 可在 Task pending 时执行，主互动仍等 scheduled_start。草稿、暂停、停止、删除、退役和旧 epoch 不放行。Claim、确认及最终 Gateway 共享此精确判断；不能把所有 pending 动作放开。
+- 反向检查：当前启动仅建账本，关注依赖 Planner；当前运行状态门禁会拦住定时任务关注。需同时补启动物化和精确准入判断，保留 route、账号来源、目标身份、租约、unknown 和最终生命周期锁。
+- Product Design Complete：创建/启动事务、完整账号范围、0/1/大批量、无帖子、已关注、草稿/定时/暂停/旧 epoch、去重重放、随机边界、废弃配置回显及回滚均覆盖；无新增表或生产迁移，前端删除旧窗口输入并展示新只读排程。design_status=complete，进入 dev。
+- 审查回流 / resync：长窗口内暂停后恢复必须继续未调用关注动作。只重绑本任务先前启动 epoch、当前账号范围及同目标引用版本的 pending 行；要求零 Attempt、零 Gateway journal、零远端 fact、executed_at 为空，锁行后核对。保留 Action ID、原随机间隔及审计；若最早时间已过，整批等量顺延到当前时间，不压缩、不重新抽样。已有调用/unknown/失败/其他目标/移出范围的动作不重放，仍由原恢复合同处理。补充暂停恢复及证据排除回归后重新验收。
+- 本地验收：263 项无 PostgreSQL 依赖定向用例全部通过（36.90 秒），覆盖三类任务正式创建/启动、草稿、无帖子、完整分组账号范围、幂等排程、定时任务成员阶段、生命周期拒绝、启动事务回滚、暂停恢复、调用证据排除、随机窗口/最小间隔/容量边界及评论原路径。另在独立本地 PostgreSQL `tg_yunying_test` 通过 6 项真实事务/并发用例（6.20 秒），包括定时成员 Claim/Gateway、并发暂停、恢复行锁阻止迟到 Attempt、退役最终锁；实例仅 Unix socket 访问并已停止。前端 TypeScript/Vite 构建与 `git diff --check` 通过。`local_qa=passed`，未提交或发布，`production_status=unproven`。原 §14.1 的 2 小时窗口验收为历史记录，当前策略以本节及 §7 为准。

@@ -963,3 +963,96 @@ def test_select_task_accounts_bulk_primes_capacity_for_full_pool_scan():
 
     assert len(selected) == 120
     assert select_count <= 10
+
+
+def test_account_config_schema_supports_account_group_ids():
+    from app.schemas.task_center import AccountConfig, RecommendTaskAccountsRequest
+
+    cfg = AccountConfig(selection_mode="group", account_group_ids=[1, 2, 3])
+    assert cfg.account_group_ids == [1, 2, 3]
+
+    req = RecommendTaskAccountsRequest(selection_mode="group", account_group_ids=[4, 5])
+    assert req.account_group_ids == [4, 5]
+
+
+def test_precheck_query_candidate_accounts_supports_account_group_ids():
+    from app.services.task_center.precheck import _precheck_candidate_accounts
+
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        for pid in (10, 20, 30):
+            session.add(
+                AccountPool(
+                    id=pid,
+                    tenant_id=1,
+                    name=f"分组{pid}",
+                    pool_purpose="normal",
+                    is_enabled=True,
+                )
+            )
+        for aid, pid in [(1, 10), (2, 20), (3, 30)]:
+            session.add(
+                TgAccount(
+                    id=aid,
+                    tenant_id=1,
+                    pool_id=pid,
+                    display_name=f"账号{aid}",
+                    phone_masked=str(aid),
+                    status=AccountStatus.ACTIVE.value,
+                    account_identity="normal",
+                    health_score=90,
+                )
+            )
+        session.commit()
+
+        accounts = _precheck_candidate_accounts(
+            session,
+            1,
+            {"selection_mode": "group", "account_group_ids": [10, 20]},
+        )
+        assert {a.id for a in accounts} == {1, 2}
+
+
+def test_account_online_state_task_accounts_supports_account_group_ids():
+    from app.services.account_online_state import _configured_online_accounts
+
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        for pid in (10, 20, 30):
+            session.add(
+                AccountPool(
+                    id=pid,
+                    tenant_id=1,
+                    name=f"分组{pid}",
+                    pool_purpose="normal",
+                    is_enabled=True,
+                )
+            )
+        for aid, pid in [(1, 10), (2, 20), (3, 30)]:
+            session.add(
+                TgAccount(
+                    id=aid,
+                    tenant_id=1,
+                    pool_id=pid,
+                    display_name=f"账号{aid}",
+                    phone_masked=str(aid),
+                    status=AccountStatus.ACTIVE.value,
+                    account_identity="normal",
+                    health_score=90,
+                    session_ciphertext="encrypted_session",
+                )
+            )
+        session.commit()
+
+        accounts = _configured_online_accounts(
+            session,
+            1,
+            {"selection_mode": "group", "account_group_ids": [10, 20]},
+        )
+        assert {a.id for a in accounts} == {1, 2}

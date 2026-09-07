@@ -235,6 +235,7 @@ class AccountConfig(BaseModel):
 
     selection_mode: Literal["all", "group", "manual"] = "all"
     account_group_id: int | None = None
+    account_group_ids: list[int] = Field(default_factory=list)
     account_ids: list[int] = Field(default_factory=list)
     max_concurrent: int = Field(default=20, ge=1, le=500)
     cooldown_per_account_minutes: int = Field(default=5, ge=0, le=1440)
@@ -242,8 +243,8 @@ class AccountConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_selection(self) -> "AccountConfig":
-        if self.selection_mode == "group" and not self.account_group_id:
-            raise ValueError("selection_mode=group 时 account_group_id 必填")
+        if self.selection_mode == "group" and not self.account_group_id and not self.account_group_ids:
+            raise ValueError("selection_mode=group 时 account_group_id 或 account_group_ids 必填")
         if self.selection_mode == "manual" and not self.account_ids:
             raise ValueError("selection_mode=manual 时 account_ids 必填")
         return self
@@ -803,7 +804,10 @@ class GroupCloneConfig(BaseModel):
 class ChannelMessageScopeConfig(EngagementAccountBindingConfig):
     model_config = ConfigDict(extra="forbid")
 
-    membership_schedule_window_hours: int = Field(default=2, ge=1, le=6, strict=True)
+    membership_schedule_window_hours: int | None = Field(
+        default=None, ge=1, le=6, strict=True, exclude=True, deprecated=True,
+        description="已废弃：频道关注统一使用随机 10～24 小时排程，旧值不再生效。",
+    )
 
     initial_historical_post_limit: int = Field(default=5, ge=0, le=10)
     source_expectation_mode: Literal["continuous_event_driven", "finite_existing_sources", "promised_daily_sources"] = "continuous_event_driven"
@@ -1889,7 +1893,10 @@ class TaskSettingsUpdate(TaskUpdate, EngagementSettingsUpdate):
     ai_assisted_verification: bool | None = None
     captcha_failure_policy: Literal["manual"] | None = None
     membership_max_concurrent: int | None = Field(default=None, ge=1, le=50)
-    membership_schedule_window_hours: int | None = Field(default=None, ge=1, le=6, strict=True)
+    membership_schedule_window_hours: int | None = Field(
+        default=None, ge=1, le=6, strict=True, exclude=True, deprecated=True,
+        description="已废弃：频道关注统一使用随机 10～24 小时排程，旧值不再生效。",
+    )
     idle_continuation_enabled: bool | None = None
     idle_continuation_seconds: int | None = Field(default=None, ge=30, le=86400)
     context_expire_after_messages: int | None = Field(default=None, ge=0, le=500)
@@ -2696,6 +2703,7 @@ class RecommendTaskAccountsRequest(BaseModel):
 
     selection_mode: Literal["all", "group", "manual"] = "all"
     account_group_id: int | None = None
+    account_group_ids: list[int] = Field(default_factory=list)
     account_ids: list[int] = Field(default_factory=list)
     target_group_id: int | None = None
     limit: int = Field(default=50, ge=1, le=200)

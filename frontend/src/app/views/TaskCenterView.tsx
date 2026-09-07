@@ -110,11 +110,14 @@ function MembershipTaskSummary({ task }: { task: TaskCenterVisibleTask }) {
   const pending = Number(stats.membership_need_join_count ?? stats.membership_summary?.need_join_account_count ?? 0);
   const failed = Number(stats.membership_failed_count ?? stats.membership_summary?.failed_account_count ?? 0);
   const windowHours = Number(stats.membership_schedule_window_hours ?? stats.membership_summary?.schedule_window_hours ?? 0);
+  const humanized = stats.membership_schedule_policy === 'humanized_10_24h';
   if (!ready && !pending && !failed && !windowHours) return null;
-  const windowLabel = windowHours > 0 ? `，${windowHours} 小时内排完` : '';
+  const windowLabel = humanized
+    ? (windowHours > 0 ? `，随机错峰排程约 ${windowHours.toFixed(1)} 小时（10～24 小时范围）` : '，关注动作已安排')
+    : (windowHours > 0 ? `，${windowHours} 小时内排完` : '');
   return (
     <Typography.Text type="secondary">
-      加入账号前置任务：已可发 {ready}，待准备 {pending}，失败 {failed}
+      加入账号前置任务：已就绪 {ready}，待准备 {pending}，失败 {failed}
       {windowLabel}
     </Typography.Text>
   );
@@ -1037,7 +1040,6 @@ export default function TaskCenterView({
       source_operation_target_ids: Array.isArray(config.source_groups)
         ? config.source_groups.map((item: any) => item?.operation_target_id).filter(Boolean)
         : [],
-      membership_schedule_window_hours: config.membership_schedule_window_hours ?? 2,
       account_personas: formatKeyValueMap(config.account_personas),
       topic_directions: formatTopicDirectionLines(config.topic_directions),
       topic_participation_percent: config.topic_participation_rate == null
@@ -1156,7 +1158,6 @@ export default function TaskCenterView({
 
   function channelIntakePayload(values: any) {
     return {
-      membership_schedule_window_hours: values.membership_schedule_window_hours ?? 2,
       initial_historical_post_limit: values.initial_historical_post_limit ?? 5,
       source_expectation_mode: values.source_expectation_mode ?? 'continuous_event_driven',
     };

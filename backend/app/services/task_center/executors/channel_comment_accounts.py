@@ -57,8 +57,8 @@ def prepare_comment_accounts(
             task.last_error = PROFILE_ERROR if executable else "planning_admission_blocked"
         return CommentAccountSetup(ledger, plan, admission, candidates, accounts)
     grounding_v1 = grounding_plan_enabled(task)
-    ready = candidates if grounding_v1 else channel_member_accounts(
-        session, task, channel, candidates, require_send=True
+    ready = channel_member_accounts(
+        session, task, channel, candidates, require_send=not grounding_v1
     )
     accounts = _profile_ready_accounts(task, ready)
     if not accounts:

@@ -521,7 +521,8 @@ def _membership_phase_from_stats(stats: dict[str, Any]) -> dict[str, Any]:
         "failed_account_count": failed,
         "unknown_after_send_count": unknown,
         "blocked_account_count": int(summary.get("blocked_account_count") or 0) + unknown,
-        "schedule_window_hours": int(stats.get("membership_schedule_window_hours") or summary.get("schedule_window_hours") or 0),
+        "schedule_window_hours": float(stats.get("membership_schedule_window_hours") or summary.get("schedule_window_hours") or 0),
+        "schedule_policy": str(stats.get("membership_schedule_policy") or ""),
         "estimated_finish_at": summary.get("estimated_finish_at"),
     }
 

@@ -415,6 +415,7 @@ from .continuity_config import (
     is_content_policy_only_change,
 )
 from .creation_operations import StartExecutionResult
+from .channel_membership_start import prepare_channel_membership_on_start
 from .search_click_revisions import (
     pending_search_click_revision,
     store_pending_search_click_revision,
@@ -3072,10 +3073,13 @@ def _rank_deboost_selected_pool_ids(
         AccountPool.is_enabled.is_(True),
     )
     if mode == "group":
-        pool_id = int(account_config.get("account_group_id") or 0)
-        if pool_id <= 0:
+        raw_ids = account_config.get("account_group_ids") or []
+        if not raw_ids and account_config.get("account_group_id"):
+            raw_ids = [account_config["account_group_id"]]
+        pool_ids = [int(item) for item in raw_ids if int(item) > 0]
+        if not pool_ids:
             raise ValueError("搜索排名观察任务缺少黑账号组")
-        stmt = stmt.where(AccountPool.id == pool_id)
+        stmt = stmt.where(AccountPool.id.in_(pool_ids))
     elif mode == "manual":
         account_ids = [
             int(item)
@@ -3168,6 +3172,7 @@ def start_task_in_transaction(
     _ensure_target_scope_claims(session, task)
     activate_task_ai_content_config(session, task)
     _initialize_runtime_contracts(session, task)
+    prepare_channel_membership_on_start(session, task)
     _set_runtime_projection(session, task)
     audit(
         session,

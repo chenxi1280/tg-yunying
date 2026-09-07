@@ -2387,7 +2387,7 @@ def test_channel_view_runtime_guard_defers_unjoined_account(monkeypatch):
         assert membership_action.payload["require_send"] is False
 
 
-def test_channel_view_membership_actions_default_to_two_hour_window_with_jitter():
+def test_channel_view_membership_actions_use_humanized_window_with_jitter():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
 
@@ -2398,7 +2398,7 @@ def test_channel_view_membership_actions_default_to_two_hour_window_with_jitter(
             tenant_id=1,
             target_type="channel",
             tg_peer_id="-100701",
-            title="两小时抖动频道",
+            title="拟人排程频道",
             username="jitter_channel",
             auth_status="已授权运营",
             can_send=True,
@@ -2409,7 +2409,7 @@ def test_channel_view_membership_actions_default_to_two_hour_window_with_jitter(
         task = Task(
             id="task-view-jitter-window",
             tenant_id=1,
-            name="频道浏览两小时抖动",
+            name="频道浏览拟人排程",
             type="channel_view",
             status="running",
             account_config={"selection_mode": "all"},
@@ -2423,15 +2423,15 @@ def test_channel_view_membership_actions_default_to_two_hour_window_with_jitter(
 
     assert result.created == 10
     assert len(rows) == 10
-    assert task.stats["membership_schedule_window_hours"] == 2
-    # Scheduled window is within 2 hours (plus small tolerance for min gap)
-    assert rows[-1].scheduled_at - rows[0].scheduled_at <= timedelta(hours=2, minutes=5)
+    assert task.stats["membership_schedule_policy"] == "humanized_10_24h"
+    assert 10 <= task.stats["membership_schedule_window_hours"] <= 24
+    assert timedelta(hours=10) <= rows[-1].scheduled_at - rows[0].scheduled_at <= timedelta(hours=24)
     # Adjacent gap between consecutive actions is at least 15 seconds
     for i in range(1, len(rows)):
         assert rows[i].scheduled_at - rows[i-1].scheduled_at >= timedelta(seconds=15)
 
 
-def test_channel_membership_schedule_window_configurable():
+def test_retired_channel_membership_window_cannot_shorten_new_schedule():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
 
@@ -2467,7 +2467,8 @@ def test_channel_membership_schedule_window_configurable():
 
     assert result.created == 5
     assert len(rows) == 5
-    assert task.stats["membership_schedule_window_hours"] == 1
-    assert rows[-1].scheduled_at - rows[0].scheduled_at <= timedelta(hours=1, minutes=5)
+    assert task.stats["membership_schedule_policy"] == "humanized_10_24h"
+    assert 10 <= task.stats["membership_schedule_window_hours"] <= 24
+    assert timedelta(hours=10) <= rows[-1].scheduled_at - rows[0].scheduled_at <= timedelta(hours=24)
     for i in range(1, len(rows)):
         assert rows[i].scheduled_at - rows[i-1].scheduled_at >= timedelta(seconds=15)

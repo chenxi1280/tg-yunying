@@ -1,5 +1,11 @@
 # 项目结构索引
 
+> **2026-09-07 创建并启动全量关注与 10～24 小时拟人排程：** `channel_membership_start.py` 接入共享启动事务，独立于帖子/AI/Planner 生成全范围成员动作；`channel_membership_schedule.py` 冻结整秒随机窗口和非固定间隔。`channel_membership_execution.py` 供 Claim、确认及最终生命周期锁共用，只允许带当前启动 epoch 的精确频道成员动作提前于定时主任务执行。`channel_membership_resume.py` 锁后复验零 Attempt/journal/fact，恢复未调用行并保留原间隔。Schema 显式废弃旧窗口输入，前端只展示新随机排程。验收入口：`test_channel_membership_start{,_postgres}.py`、`test_channel_membership_window_runtime.py`。
+
+> **2026-09-07 多分组账号配置 account_group_ids 支持：** `schemas/task_center.py`（`AccountConfig`, `RecommendTaskAccountsRequest`）、`precheck.py`、`account_online_state.py`、`operations_center_listener.py`、`executors/search_rank_deboost_planner.py`、`service.py` 均支持 `account_group_ids: list[int]`。测试回归：`backend/tests/test_task_account_pool.py`。
+>
+> **2026-09-07 新版评论频道关注校验：** `executors/channel_comment_accounts.py` 对非 unified grounding 候选同样调用 `channel_member_accounts(require_send=false)`；`dispatcher._ensure_post_comment_membership` 在 grounding 分支验证频道成员关系，缺失时沿用关注动作与 pending 延后流程，讨论组发送权限仍由原独立合同校验。回归入口：`backend/tests/test_grounded_comment_channel_membership.py`。
+
 > **2026-09-07 AI 活群历史查询修复：** `ai_group_vocabulary_frequency._history_statement` 在数据库内按 tenant/surface 过滤有效 reservation/typed fact，取同 Action 最新 remote observed 时间并去重后截取 99 条；`models/ai_group_runtime_indexes.py` 和 `0227_ai_group_history_indexes` 提供 surface 与全量上下文时间索引。测试入口为 `test_ai_group_vocabulary_frequency.py`、`test_ai_group_history_indexes{,_postgres}.py`。`engagement_account_origin._origin_task_day` 按显式 ledger/冻结 pacing_due_at 保持跨午夜来源身份；回归 `test_engagement_origin_task_day.py`。本地测试不代表线上履约。
 
 

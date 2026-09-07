@@ -383,8 +383,11 @@ def _apply_rank_account_selection(stmt, account_config: dict):
         account_ids = [int(item) for item in account_config.get("account_ids") or [] if int(item) > 0]
         return stmt.where(TgAccount.id.in_(account_ids)) if account_ids else None
     if mode == "group":
-        pool_id = int(account_config.get("account_group_id") or 0)
-        return stmt.where(TgAccount.pool_id == pool_id) if pool_id > 0 else None
+        raw_ids = account_config.get("account_group_ids") or []
+        if not raw_ids and account_config.get("account_group_id"):
+            raw_ids = [account_config["account_group_id"]]
+        pool_ids = [int(item) for item in raw_ids if int(item) > 0]
+        return stmt.where(TgAccount.pool_id.in_(pool_ids)) if pool_ids else None
     return stmt
 
 

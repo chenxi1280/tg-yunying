@@ -470,10 +470,13 @@ def _precheck_candidate_accounts(session: Session, tenant_id: int, account_confi
             return []
         stmt = stmt.where(TgAccount.id.in_(account_ids))
     elif mode == "group":
-        pool_id = _as_int(account_config.get("account_group_id"))
-        if not pool_id:
+        raw_ids = account_config.get("account_group_ids") or []
+        if not raw_ids and account_config.get("account_group_id"):
+            raw_ids = [account_config["account_group_id"]]
+        pool_ids = [int(item) for item in raw_ids if str(item).isdigit() and int(item) > 0]
+        if not pool_ids:
             return []
-        stmt = stmt.where(TgAccount.pool_id == pool_id)
+        stmt = stmt.where(TgAccount.pool_id.in_(pool_ids))
     return list(session.scalars(stmt))
 
 

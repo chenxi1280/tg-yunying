@@ -73,6 +73,7 @@ from .ai_generator import (
 )
 from .ai_message_memory import DuplicateMessageReservation, ensure_group_ai_message_sendable, mark_group_ai_message_result
 from .channel_membership import linked_channel_group, mark_channel_membership_joined
+from .channel_membership_execution import task_action_execution_condition, task_allows_action_execution
 from .channel_fulfillment import (
     RemoteFactAlreadyFulfilled,
     confirm_reaction_action,
@@ -575,7 +576,7 @@ def _fulfillment_route_allows_gateway(session: Session, action: Action) -> bool:
     from .fulfillment_activation import gateway_task_allowed
 
     if task.fulfillment_contract_version in {"fact_first_v3", "v2_group_clone"} and (
-        task.status != "running"
+        not task_allows_action_execution(task, action)
         or task.deleted_at is not None
         or int(action.task_lifecycle_epoch or 1)
         != int(task.task_lifecycle_epoch or 1)
@@ -1949,7 +1950,7 @@ def due_actions(session: Session, limit: int = 100, *, exclude_task_ids: set[str
     filters = [
         Action.status == "pending",
         Action.scheduled_at <= _now(),
-        Task.status == "running",
+        task_action_execution_condition(),
     ]
     if exclude_task_ids:
         filters.append(Action.task_id.not_in(exclude_task_ids))
@@ -2095,7 +2096,7 @@ def _claim_base_filters(
     filters = [
         Action.status == "pending",
         Action.scheduled_at <= now_value,
-        Task.status == "running",
+        task_action_execution_condition(),
         Task.deleted_at.is_(None),
         Task.fulfillment_contract_version != "fact_first_v3",
     ]
@@ -2343,7 +2344,7 @@ def _locked_claim_plan_candidates(
             Action.id.in_(action_ids),
             Action.status == "pending",
             Action.scheduled_at <= now_value,
-            Task.status == "running",
+            task_action_execution_condition(),
             Task.deleted_at.is_(None),
         )
         .order_by(
@@ -3276,7 +3277,7 @@ def _confirm_claim(
     if task is None or (
         task.fulfillment_contract_version == "fact_first_v3"
         and (
-            task.status != "running"
+            not task_allows_action_execution(task, action)
             or int(action.task_lifecycle_epoch or 1)
             != int(task.task_lifecycle_epoch or 1)
         )
@@ -8086,7 +8087,15 @@ def _ensure_post_comment_membership(
         return False
     payload = action.payload if isinstance(action.payload, dict) else {}
     if payload.get("grounding_enrollment_id"):
-        return True
+        if _channel_action_has_membership_link(session, action, account, channel):
+            return True
+        _defer_channel_action_for_membership(
+            session, action, account, channel,
+            "账号未关注目标频道，等待准入后继续评论",
+            error_code="comment_membership_required",
+            require_send=False,
+        )
+        return False
     group = linked_channel_group(session, channel, create=False)
     link = _channel_account_link(session, action.tenant_id, group.id, account.id) if group else None
     if link and link.can_send:

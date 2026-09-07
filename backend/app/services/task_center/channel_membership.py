@@ -19,8 +19,8 @@ from .datetime_compat import parse_zone, to_zone
 from .membership_recovery import AUTO_RETRY_BUCKET, VERIFICATION_BUCKET, classify_membership_recovery
 from .membership_projection import persisted_membership_summary
 from .channel_membership_schedule import (
+    SECONDS_PER_HOUR,
     channel_membership_schedule as _channel_membership_schedule,
-    membership_window_hours,
 )
 from .pacing import schedule_times
 from .payloads import EnsureChannelMembershipPayload, create_membership_action
@@ -106,8 +106,8 @@ def gate_channel_membership(session: Session, task: Task, channel: OperationTarg
         stats["membership_stage"] = "membership_running"
         stats["membership_created_actions"] = int(stats.get("membership_created_actions") or 0) + created
         if channel.target_type == "channel":
-            window_hours = membership_window_hours(task.type_config or {})
-            stats["membership_schedule_window_hours"] = window_hours
+            stats["membership_schedule_window_hours"] = task.stats["membership_schedule_window_hours"]
+            stats["membership_schedule_policy"] = "humanized_10_24h"
         elif _uses_four_hour_membership_window(task, channel, require_send=require_send):
             stats["membership_schedule_window_hours"] = AI_GROUP_MEMBERSHIP_SCHEDULE_WINDOW_HOURS
         _record_fast_tracked_memberships(stats, fast_tracked)
@@ -421,6 +421,7 @@ def _create_membership_actions_for_accounts(
 ) -> int:
     pending_count = len([account for account in missing if account.id not in joined_ids])
     scheduled_times = _membership_schedule_times(task, channel, pending_count, now_value, require_send=require_send)
+    _record_channel_membership_schedule(task, channel, scheduled_times)
     scheduled_index = 0
     created = 0
     with session.no_autoflush:
@@ -458,6 +459,13 @@ def _create_membership_actions_for_accounts(
     if created:
         session.flush()
     return created
+
+
+def _record_channel_membership_schedule(task: Task, channel: OperationTarget, times: list) -> None:
+    if channel.target_type != "channel":
+        return
+    span = (times[-1] - times[0]).total_seconds() / SECONDS_PER_HOUR if len(times) > 1 else 0
+    task.stats = {**dict(task.stats or {}), "membership_schedule_window_hours": span}
 
 
 def _bind_membership_scope_item(
@@ -874,7 +882,7 @@ def _membership_schedule_times(
     if _hard_hourly_membership_fast_track_enabled(task):
         return _hard_hourly_membership_schedule(pending_count, now_value)
     if channel.target_type == "channel":
-        return _channel_membership_schedule(task, pending_count, now_value)
+        return _channel_membership_schedule(pending_count, now_value)
     if _uses_four_hour_membership_window(task, channel, require_send=require_send):
         return _four_hour_membership_schedule(pending_count, now_value)
     return schedule_times(pending_count, _membership_pacing_config(task), start_at=now_value)

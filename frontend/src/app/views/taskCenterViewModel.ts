@@ -614,7 +614,6 @@ export function typeInitialValues(type: TaskCenterTaskType, setting?: Scheduling
   if (type === 'channel_view') {
     return {
       ...engagementInitialValues(),
-      membership_schedule_window_hours: 2,
       message_scope: 'dynamic_new',
       message_count: 10,
       target_views_per_message: null,
@@ -639,7 +638,6 @@ export function typeInitialValues(type: TaskCenterTaskType, setting?: Scheduling
   if (type === 'channel_like') {
     return {
       ...engagementInitialValues(),
-      membership_schedule_window_hours: 2,
       message_scope: 'dynamic_new',
       message_count: 10,
       target_likes_per_message: 50,
@@ -657,7 +655,6 @@ export function typeInitialValues(type: TaskCenterTaskType, setting?: Scheduling
   }
   return {
     ...engagementInitialValues(),
-    membership_schedule_window_hours: 2,
     message_scope: 'dynamic_new',
     message_count: 10,
     rolling_window_days: 3,
@@ -819,8 +816,7 @@ export function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: stri
   const accountFieldsForTask = ENGAGEMENT_TASK_TYPES.includes(taskType)
     ? ['account_group_ids', 'concurrency_limit_per_group']
     : [...accountSelectionFields(accountMode), 'max_concurrent', 'cooldown_per_account_minutes', 'ban_policy'];
-  const membershipFields = ['channel_view', 'channel_like', 'channel_comment'].includes(taskType) ? ['membership_schedule_window_hours'] : [];
-  const baseFields = [...membershipFields, ...commonFields, ...accountFieldsForTask, ...hourlyFields, ...capacityFields, 'max_retries'];
+  const baseFields = [...commonFields, ...accountFieldsForTask, ...hourlyFields, ...capacityFields, 'max_retries'];
   if (taskType === 'group_ai_chat') {
     return [
       ...baseFields,
@@ -929,8 +925,7 @@ export function editFieldsForSubmit(taskType: TaskCenterTaskType, accountMode: s
   const accountFieldsForTask = ENGAGEMENT_TASK_TYPES.includes(taskType)
     ? ['account_group_ids', 'concurrency_limit_per_group']
     : accountFields(accountMode);
-  const membershipFields = ['channel_view', 'channel_like', 'channel_comment'].includes(taskType) ? ['membership_schedule_window_hours'] : [];
-  const baseFields = [...membershipFields, 'name', 'scheduled_end', 'operation_template_id', 'hourly_activity_curve', 'quiet_threshold', 'peak_threshold', ...accountFieldsForTask, ...hourlyFields, ...capacityFields, 'max_retries'];
+  const baseFields = ['name', 'scheduled_end', 'operation_template_id', 'hourly_activity_curve', 'quiet_threshold', 'peak_threshold', ...accountFieldsForTask, ...hourlyFields, ...capacityFields, 'max_retries'];
   if (taskType === 'group_ai_chat') {
     return [
       ...baseFields,

@@ -260,10 +260,13 @@ def _configured_online_accounts(
         by_id = {account.id: account for account in rows}
         return [by_id[account_id] for account_id in account_ids if account_id in by_id]
     if mode == "group":
-        pool_id = _as_int(account_config.get("account_group_id"))
-        if not pool_id:
+        raw_ids = account_config.get("account_group_ids") or []
+        if not raw_ids and account_config.get("account_group_id"):
+            raw_ids = [account_config["account_group_id"]]
+        pool_ids = [_as_int(item) for item in raw_ids if _as_int(item)]
+        if not pool_ids:
             return []
-        stmt = stmt.where(TgAccount.pool_id == pool_id)
+        stmt = stmt.where(TgAccount.pool_id.in_(pool_ids))
     return _accounts_for_stmt(session, stmt.order_by(TgAccount.health_score.desc(), TgAccount.id.asc()), target_group_id)
 
 

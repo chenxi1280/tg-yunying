@@ -1,5 +1,11 @@
 # 项目数据流转索引
 
+> **2026-09-07 创建并启动全量关注与拟人排程：** 草稿零动作；正式启动成功事务 → 当前 Task epoch/目标 scope → 全部有效候选账号 → 未关注 pending / 已关注 skipped → 每批 10～24 小时随机窗口与非固定间隔落库 → Worker 到期执行 → 逐账号确认关注后主互动。定时任务仅当前启动 epoch 的成员动作可提前，主互动仍等待原计划时间；暂停/退役/旧 epoch 的 Claim 和 Gateway 检查保持。明确恢复时只锁后重绑零 Attempt/journal/fact 的未调用成员行，整体顺延过期排程并保持间隔；未知和已有调用不重放。启动失败回滚成员动作，创建记录仍按正式创建/启动合同保留。
+
+> **2026-09-07 多分组账号配置 account_group_ids 全链路支持：** 针对 `selection_mode: "group"` 的任务，候选账号解析支持多账号分组列表 `account_group_ids: list[int]`（兼容回退单数 `account_group_id`）。覆盖范围包括任务预检（precheck）、在线状态托管（account_online_state）、运营中心监听（operations_center_listener）、降权任务（search_rank_deboost_planner）与频道关注准入（channel_membership）。
+>
+> **2026-09-07 新版评论频道关注校验：** 候选账号范围 → 逐账号频道成员过滤（grounding 不要求频道可发送）→ 原讨论组事实/计划合同 → Dispatcher 再查频道成员关系。成员关系缺失时复用或生成 `ensure_target_membership(require_send=false)`，评论明确 pending 且无评论 Attempt/Gateway；成员关系恢复后继续原讨论组发送权限校验。`grounding_enrollment_id` 不再豁免频道关注，无迁移及前端/API变化。
+
 > **2026-09-07 AI 词频与上下文读取修复：** 同 tenant/surface 的有效 open/unknown 或 typed remote history -> 按 Action 聚合最新远端观察时间 -> 排序取最近 99 个不同 Action -> 原词项/短语阈值。失败无事实和无 allocation 记录在 LIMIT 前排除；表达式索引阻止每次校验全扫 Action JSON。Listener/生成的完整上下文读取保留真人与机器人过滤语义，并使用全量时间索引。延迟发送的账号来源按已绑定任务日/冻结 due 解析，可变 release/scheduled 不跨日挑选来源计划。索引迁移不变更任何数量、身份或结果事实。
 
 
