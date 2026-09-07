@@ -220,6 +220,7 @@ TYPE_SETTINGS_FIELDS = {
         "test_message",
     },
     "channel_view": {
+        "membership_schedule_window_hours",
         "initial_historical_post_limit",
         "source_expectation_mode",
         "engagement_contract_version",
@@ -248,6 +249,7 @@ TYPE_SETTINGS_FIELDS = {
         "execution_mode",
     },
     "channel_like": {
+        "membership_schedule_window_hours",
         "initial_historical_post_limit",
         "source_expectation_mode",
         "engagement_contract_version",
@@ -265,6 +267,7 @@ TYPE_SETTINGS_FIELDS = {
         "rolling_window_days",
     },
     "channel_comment": {
+        "membership_schedule_window_hours",
         "initial_historical_post_limit",
         "source_expectation_mode",
         "engagement_contract_version",

@@ -742,6 +742,11 @@ export function TaskRuntimeAdvancedFields({ taskType }: { taskType?: TaskCenterT
   const operatorHourlyLimit = ['group_relay', 'group_membership_admission'].includes(taskType || '');
   return (
     <>
+      {['channel_view', 'channel_like', 'channel_comment'].includes(taskType || '') && (
+        <Form.Item name="membership_schedule_window_hours" label="首次关注排程窗口（小时）" rules={[{ required: true, type: 'integer', min: 1, max: 6 }]} extra="默认 2 小时，范围 1～6 小时；验证、审批或限流可能延后实际完成时间。">
+          <InputNumber min={1} max={6} precision={0} />
+        </Form.Item>
+      )}
       <Form.Item name="max_concurrent" label="账号并发上限（账号数）"><InputNumber min={1} max={500} /></Form.Item>
       <Form.Item name="cooldown_per_account_minutes" label="账号冷却分钟"><InputNumber min={0} /></Form.Item>
       <Form.Item name="ban_policy" label="异常账号处理"><Select options={[{ value: 'skip', label: '跳过账号' }, { value: 'pause_task', label: '暂停任务' }, { value: 'alert', label: '只告警' }]} /></Form.Item>

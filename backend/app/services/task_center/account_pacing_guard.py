@@ -543,6 +543,13 @@ def _defer_action_claim(
 ) -> None:
     action.scheduled_at = effective_at
     action.effective_claim_at = effective_at
+    if action.release_not_before_at is not None:
+        action.release_not_before_at = max(
+            _wall(action.release_not_before_at),
+            effective_at,
+        )
+    else:
+        action.release_not_before_at = effective_at
     action.action_version = int(action.action_version or 1) + 1
     action.result = {
         **(action.result or {}),

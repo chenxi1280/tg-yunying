@@ -1037,6 +1037,7 @@ export default function TaskCenterView({
       source_operation_target_ids: Array.isArray(config.source_groups)
         ? config.source_groups.map((item: any) => item?.operation_target_id).filter(Boolean)
         : [],
+      membership_schedule_window_hours: config.membership_schedule_window_hours ?? 2,
       account_personas: formatKeyValueMap(config.account_personas),
       topic_directions: formatTopicDirectionLines(config.topic_directions),
       topic_participation_percent: config.topic_participation_rate == null
@@ -1155,6 +1156,7 @@ export default function TaskCenterView({
 
   function channelIntakePayload(values: any) {
     return {
+      membership_schedule_window_hours: values.membership_schedule_window_hours ?? 2,
       initial_historical_post_limit: values.initial_historical_post_limit ?? 5,
       source_expectation_mode: values.source_expectation_mode ?? 'continuous_event_driven',
     };

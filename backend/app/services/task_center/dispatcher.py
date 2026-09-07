@@ -72,8 +72,7 @@ from .ai_generator import (
     AiGenerationUnavailable,
 )
 from .ai_message_memory import DuplicateMessageReservation, ensure_group_ai_message_sendable, mark_group_ai_message_result
-from .channel_membership import account_satisfies_authorized_target, linked_channel_group, mark_channel_membership_joined
-from .channel_access import public_channel_view
+from .channel_membership import linked_channel_group, mark_channel_membership_joined
 from .channel_fulfillment import (
     RemoteFactAlreadyFulfilled,
     confirm_reaction_action,
@@ -4473,6 +4472,13 @@ def _reserve_channel_membership_attempt(
     if gate_block is not None:
         _skip_for_target_gate(session, action, gate_block.code, gate_block.detail)
         return None
+    from .channel_membership_runtime import membership_runtime_wait
+
+    wait = membership_runtime_wait(session, action, target=target, now=_now())
+    if wait is not None:
+        _defer(action, wait.retry_at, wait.code, wait.detail)
+        session.commit()
+        return None
     attempt = _begin_execution_attempt(session, action, account)
     _mark_executing(action)
     _mark_gateway_call_started(session, attempt, commit=False)
@@ -8028,23 +8034,20 @@ def _ensure_channel_action_membership(
         )
         return False
     channel = session.get(OperationTarget, int(channel_target_id))
-    if channel and channel.tenant_id == action.tenant_id and public_channel_view(action.task_type, channel):
-        return True
     if action.action_type == "post_comment":
         return _ensure_post_comment_membership(
             session, action, account=account, channel=channel,
         )
-    if channel and channel.tenant_id == action.tenant_id and channel.target_type == "channel" and account_satisfies_authorized_target(channel, account):
-        return True
     if _channel_action_has_membership_link(session, action, account, channel):
         return True
-    if action.action_type == "like_message" and channel and channel.tenant_id == action.tenant_id and channel.target_type == "channel":
+    if action.action_type in {"like_message", "view_message"} and channel and channel.tenant_id == action.tenant_id and channel.target_type == "channel":
+        detail = "账号未关注目标频道，等待准入后继续点赞" if action.action_type == "like_message" else "账号未关注目标频道，等待准入后继续浏览"
         _defer_channel_action_for_membership(
             session,
             action,
             account,
             channel,
-            "账号未关注目标频道，等待准入后继续点赞",
+            detail,
             error_code="channel_membership_required",
             require_send=False,
         )

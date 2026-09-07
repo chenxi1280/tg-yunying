@@ -134,7 +134,12 @@ def _reserve_source_admission(
 
 def _source_admission_spec(session: Session, action: Action) -> SourceAdmissionSpec:
     owner, domain = _source_owner(session, action)
-    release_at = getattr(owner, "release_not_before_at", None) or action.release_not_before_at
+    owner_release = getattr(owner, "release_not_before_at", None)
+    action_release = action.release_not_before_at
+    candidates = [
+        wall_datetime(v) for v in (owner_release, action_release) if v is not None
+    ]
+    release_at = max(candidates) if candidates else None
     plan_hash = str(getattr(owner, "pacing_plan_hash", None) or action.pacing_plan_hash or "")
     owner_plan_total = int(getattr(owner, "pacing_plan_total", 0) or 0)
     if release_at is None or not plan_hash or owner_plan_total <= 0:

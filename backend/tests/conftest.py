@@ -166,6 +166,19 @@ def _release_test_database_session_lock() -> None:
         _TEST_DATABASE_LOCK_ENGINE = None
 
 
+@pytest.fixture
+def postgres_test_session_lock():
+    """Share the session guard with isolated-schema tests in mixed CI runs."""
+    owns_lock = _TEST_DATABASE_LOCK_CONNECTION is None
+    if owns_lock:
+        _acquire_test_database_session_lock(_postgres_test_database_url())
+    try:
+        yield
+    finally:
+        if owns_lock:
+            _release_test_database_session_lock()
+
+
 def _reset_test_database(database_url: str) -> None:
     if _TEST_DATABASE_LOCK_CONNECTION is None:
         raise RuntimeError("PostgreSQL test database reset requires the pytest session lock")

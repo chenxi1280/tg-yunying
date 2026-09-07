@@ -238,6 +238,10 @@ def _claim_rows(
                     now=now,
                     effective_at=pacing.effective_claim_at,
                 ))
+            else:
+                from .source_pacing_release import release_source_pacing_admissions_before_gateway
+
+                release_source_pacing_admissions_before_gateway(session, action)
             session.flush()
             continue
         changed = session.execute(

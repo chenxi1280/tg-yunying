@@ -1,5 +1,7 @@
 # 项目数据流转索引
 
+> **2026-09-07 本地五项审查修复（本地验证通过，生产未验证）：** 频道任务创建/修改 -> membership_schedule_window_hours（严格整数 1~6，默认 2）-> type_config -> 窗口内首次关注排程；Dispatcher -> tenant/peer + account 锁 -> 未结束 Membership Attempt 计数/账号冷却 -> Gateway-started 同事务提交 -> 真实准入结果。来源预约恢复：显式 tenant/state -> 只读 preview/hash/预计游标 -> Action/State/Admission/Attempt 锁和重新比较 -> 精确取消终止且未调用网关的预约 -> source cursor readback + AuditLog；无效预约回收不得压缩来源节奏。
+
 > **2026-09-06 原容器退出证明（统一引擎 §19.59，已完成2391条精确ACK）：** 宿主只读原Docker exitStatus + 同容器TaskDelete → 同宿主/完整ID/原时间/摘要校验 → 精确旧Attempt与Action身份及原snapshot hash预览 → Action→Attempt锁后CAS → 仅追加transport ACK/退出时间/证据引用 + 同事务AuditLog → 独立读回业务字段保持 → 原legacy occupancy读取规则重新投影物理占用。0b646f05上的正式apply以hash `9e9d28b…b926`提交一次，客户端超时后先查审计而未重试，随后正式readback确认2391条且`business_fields_preserved=true`。原unknown、账本、预算、source/day/due及remote事实不改；117条结果未知与缺正面退出证据的其余调用继续保留。该ACK不代表四类任务已切换或完成。
 
 > **2026-09-06 全量直接切换（统一引擎 §19.58，运行代码已部署、操作待执行）：** 当前running四类精确集合 + 原配置/成员/授权hash → 只读新配置与分类容量预览 → tenant成员锁/旧Task锁后CAS → 正式新建全体draft + 旧Task独立retirement/epoch/唯一替代关系 + AuditLog同事务提交 → 独立读回 → 仅未调用Action/生成owner/安全预约分批终结 → 清理零剩余 → 全体新Task正式start与最终epoch binding/content policy → 新日账本/来源/数量计划 → Action/Attempt → typed远端事实。旧计划以Task退役失去执行资格，原分母、due、success/call-issued/unknown及成本证据不改写，不迁入新任务完成量。Planner重新锁Task；Gateway call-issued前最新Task FOR SHARE NOWAIT与退役互斥，缓存旧Task不得触发重规划；Provider迟到ready受退役与owner约束。原all保持全部普通组、原单组保持原组，配置接口拒绝退役Task，read model仍保留旧历史。当前22个旧Task仍running、无retired或unified running；9个活群的任务话题占比上限为空且新合同要求显式确认，正式切换未开始。容量预览是未冻结观察，未来帖子与历史调用占用仍由正式规划/准入处理，不能当作E4。

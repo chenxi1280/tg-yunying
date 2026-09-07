@@ -15,9 +15,9 @@ SOURCE = dict(initial_historical_post_limit=0, source_expectation_mode="promised
 UPDATES = {
     "group_ai_chat": dict(daily_message_target=12, daily_target_jitter_bps=1000,
         attention_quiet_after_min_seconds=20, attention_quiet_after_max_seconds=40),
-    "channel_like": dict(**SOURCE, daily_reaction_cap=80),
-    "channel_comment": dict(**SOURCE, account_ratio_min_bps=5600, account_ratio_max_bps=6400),
-    "channel_view": dict(**SOURCE, account_ratio_min_bps=8100, account_ratio_max_bps=9400,
+    "channel_like": dict(**SOURCE, membership_schedule_window_hours=3, daily_reaction_cap=80),
+    "channel_comment": dict(**SOURCE, membership_schedule_window_hours=4, account_ratio_min_bps=5600, account_ratio_max_bps=6400),
+    "channel_view": dict(**SOURCE, membership_schedule_window_hours=6, account_ratio_min_bps=8100, account_ratio_max_bps=9400,
         rolling_participation_days=4, view_exposure_mode="explicit_per_source",
         per_account_source_degree_min=1, per_account_source_degree_max=3,
         every_active_message=False, per_source_exposure_target=2, per_source_exposure_ratio_bps=None),

@@ -88,19 +88,10 @@ def test_comment_job_rejects_future_preparation_without_db_write(monkeypatch):
         _claim_generation_job(None, job, owner="test")
 
 
-def test_public_view_skips_membership_queries_but_not_other_tasks():
-    target = NS(target_type="channel", username="public", can_send=False)
-    task = NS(type="channel_view", stats={})
-    accounts = [NS(id=1)]
-    assert gate_channel_membership(None, task, target).ready
-    assert channel_member_accounts(None, task, target, accounts) == accounts
-    assert task.stats["membership_stage"] == "not_required_public_view"
-
-
-@pytest.mark.parametrize("task_type,username,expected", [
-    ("channel_view", "public", True), ("channel_view", "", False),
-    ("channel_comment", "public", False), ("channel_like", "public", False),
+@pytest.mark.parametrize("task_type,username", [
+    ("channel_view", "public"), ("channel_view", ""),
+    ("channel_comment", "public"), ("channel_like", "public"),
 ])
-def test_public_view_rule_is_operation_specific(task_type, username, expected):
+def test_public_view_rule_always_requires_membership(task_type, username):
     from app.services.task_center.channel_access import public_channel_view
-    assert public_channel_view(task_type, NS(target_type="channel", username=username)) is expected
+    assert public_channel_view(task_type, NS(target_type="channel", username=username)) is False

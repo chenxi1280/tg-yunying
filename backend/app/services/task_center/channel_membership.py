@@ -18,10 +18,13 @@ from .account_pool import select_task_accounts
 from .datetime_compat import parse_zone, to_zone
 from .membership_recovery import AUTO_RETRY_BUCKET, VERIFICATION_BUCKET, classify_membership_recovery
 from .membership_projection import persisted_membership_summary
+from .channel_membership_schedule import (
+    channel_membership_schedule as _channel_membership_schedule,
+    membership_window_hours,
+)
 from .pacing import schedule_times
 from .payloads import EnsureChannelMembershipPayload, create_membership_action
 from .targets import group_from_reference
-from .channel_access import public_channel_view
 
 
 ACTION_TYPE = "ensure_target_membership"
@@ -61,9 +64,6 @@ class MembershipGateResult:
 
 
 def gate_channel_membership(session: Session, task: Task, channel: OperationTarget, *, require_send: bool = False) -> MembershipGateResult:
-    if not require_send and public_channel_view(task.type, channel):
-        task.stats = {**dict(task.stats or {}), "membership_stage": "not_required_public_view"}
-        return MembershipGateResult(True)
     candidates = _task_membership_candidates(session, task)
     strategy_enabled, disabled_reason = _membership_action_strategy(task, channel)
     reactivated = _reactivate_auto_verification_memberships(
@@ -105,7 +105,10 @@ def gate_channel_membership(session: Session, task: Task, channel: OperationTarg
     if created:
         stats["membership_stage"] = "membership_running"
         stats["membership_created_actions"] = int(stats.get("membership_created_actions") or 0) + created
-        if _uses_four_hour_membership_window(task, channel, require_send=require_send):
+        if channel.target_type == "channel":
+            window_hours = membership_window_hours(task.type_config or {})
+            stats["membership_schedule_window_hours"] = window_hours
+        elif _uses_four_hour_membership_window(task, channel, require_send=require_send):
             stats["membership_schedule_window_hours"] = AI_GROUP_MEMBERSHIP_SCHEDULE_WINDOW_HOURS
         _record_fast_tracked_memberships(stats, fast_tracked)
         task.stats = stats
@@ -142,8 +145,6 @@ def gate_channel_membership(session: Session, task: Task, channel: OperationTarg
 
 
 def channel_member_accounts(session: Session, task: Task, channel: OperationTarget, accounts: list[TgAccount], *, require_send: bool = False) -> list[TgAccount]:
-    if not require_send and public_channel_view(task.type, channel):
-        return accounts
     if not require_send and not _target_requires_membership_for_candidates(channel, accounts):
         return accounts
     group = linked_channel_group(session, channel, create=False, prefer_send_ready=require_send)
@@ -350,12 +351,12 @@ def channel_requires_membership_gate(channel: OperationTarget) -> bool:
 
 
 def target_requires_membership_gate(target: OperationTarget, *, require_send: bool = False) -> bool:
+    if target.target_type == "channel":
+        return True
     if target.auth_status not in _AUTHORIZED_TARGET_VALUES:
         return True
     if require_send and target.target_type == "group" and not bool(target.can_send):
         return True
-    if target.target_type == "channel":
-        return not bool(target.can_send)
     return False
 
 
@@ -363,14 +364,7 @@ _AUTHORIZED_TARGET_VALUES = {GroupAuthStatus.AUTHORIZED.value, "已授权", "授
 
 
 def account_satisfies_authorized_target(target: OperationTarget, account: TgAccount, *, require_send: bool = False) -> bool:
-    if target.auth_status not in _AUTHORIZED_TARGET_VALUES:
-        return False
-    if require_send and not target.can_send:
-        return False
-    if target.target_type != "channel":
-        return False
-    peer_id = str(target.tg_peer_id or "")
-    return bool(target.can_send and (account.session_ciphertext or peer_id.startswith("-100")))
+    return False
 
 
 def _target_requires_membership_for_candidates(target: OperationTarget, candidates: list[TgAccount], *, require_send: bool = False) -> bool:
@@ -918,6 +912,8 @@ def _membership_schedule_times(
 ) -> list:
     if _hard_hourly_membership_fast_track_enabled(task):
         return _hard_hourly_membership_schedule(pending_count, now_value)
+    if channel.target_type == "channel":
+        return _channel_membership_schedule(task, pending_count, now_value)
     if _uses_four_hour_membership_window(task, channel, require_send=require_send):
         return _four_hour_membership_schedule(pending_count, now_value)
     return schedule_times(pending_count, _membership_pacing_config(task), start_at=now_value)

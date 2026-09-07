@@ -803,6 +803,8 @@ class GroupCloneConfig(BaseModel):
 class ChannelMessageScopeConfig(EngagementAccountBindingConfig):
     model_config = ConfigDict(extra="forbid")
 
+    membership_schedule_window_hours: int = Field(default=2, ge=1, le=6, strict=True)
+
     initial_historical_post_limit: int = Field(default=5, ge=0, le=10)
     source_expectation_mode: Literal["continuous_event_driven", "finite_existing_sources", "promised_daily_sources"] = "continuous_event_driven"
 
@@ -1887,6 +1889,7 @@ class TaskSettingsUpdate(TaskUpdate, EngagementSettingsUpdate):
     ai_assisted_verification: bool | None = None
     captcha_failure_policy: Literal["manual"] | None = None
     membership_max_concurrent: int | None = Field(default=None, ge=1, le=50)
+    membership_schedule_window_hours: int | None = Field(default=None, ge=1, le=6, strict=True)
     idle_continuation_enabled: bool | None = None
     idle_continuation_seconds: int | None = Field(default=None, ge=30, le=86400)
     context_expire_after_messages: int | None = Field(default=None, ge=0, le=500)

@@ -67,9 +67,10 @@ def _reused_not_before(
 ) -> datetime:
     reserved_at = wall_datetime(admission.call_not_before_at)
     if state.last_call_started_at is None:
-        return reserved_at
+        return max(reserved_at, spec.release_at)
     gap = max(int(state.last_source_gap_seconds or 0), spec.source_gap_seconds)
     after_call = wall_datetime(state.last_call_started_at) + timedelta(seconds=gap)
+    reserved_at = max(reserved_at, spec.release_at)
     if after_call <= reserved_at:
         return reserved_at
     # A displaced reservation needs its own slot, not the shared last-call edge.

@@ -506,3 +506,6 @@ speech_act + length_band + opening_function_pattern + punctuation_profile + synt
 | 待产品决策 | 默认合同已落地；任务 flag 启用、shadow/canary 和生产扩容待产品验收 |
 
 当前结论：`product_design_complete_v8 / local_first_phase_complete / targeted_qa_pass / production_fixed=unproven`。本地 pacing QA 不能证明生产跨 Task 总容量、curve-aware Gateway gap、headroom、逐 slot AI 守恒或 current v2 无静态补量；在 PostgreSQL 压力、shadow/canary、数量守恒和 typed remote fact E4 前不得声明生产修复。
+
+
+2026-09-07 来源预约修复约束：失效预约由显式 tenant/state preview 和版本校验回收，不得将所有 pre-Gateway reserved 预约视为 stale。正常未来预约、未结束 Attempt、unknown 与任何远端调用证据保持原位；不得使用点赞 30 秒、评论 180 秒上限压缩来源间隔或恢复延迟。具体审计合同见 `channel-membership-precondition-design.md` §14。

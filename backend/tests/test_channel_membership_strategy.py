@@ -20,7 +20,9 @@ from app.services.task_center.channel_membership import (
     _reactivate_auto_verification_memberships,
     _should_create_membership_attempt,
     channel_membership_summary,
+    channel_member_accounts,
     gate_channel_membership,
+    mark_channel_membership_joined,
 )
 from app.services.task_center.membership_recovery import AUTO_RETRY_BUCKET, classify_membership_recovery
 from app.services.task_center.payloads import EnsureChannelMembershipPayload
@@ -2225,3 +2227,247 @@ def test_group_rescue_admin_rate_limit_accepts_aware_stats_datetime() -> None:
         assert action.status == "pending"
         assert action.scheduled_at.tzinfo is None
         assert action.result["error_code"] == "FloodWait"
+
+
+def test_channel_view_mandatory_membership_planner_creates_actions_and_filters_members():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        channel = OperationTarget(
+            id=601,
+            tenant_id=1,
+            target_type="channel",
+            tg_peer_id="-100601",
+            title="测试公开频道",
+            username="test_public_channel",
+            auth_status="已授权运营",
+            can_send=True,
+        )
+        session.add(channel)
+        accounts = [
+            TgAccount(id=1, tenant_id=1, display_name="账号1", phone_masked="1", status="在线", session_ciphertext="session1"),
+            TgAccount(id=2, tenant_id=1, display_name="账号2", phone_masked="2", status="在线", session_ciphertext="session2"),
+        ]
+        session.add_all(accounts)
+        task = Task(
+            id="task-view-mandatory-membership",
+            tenant_id=1,
+            name="频道浏览强制关注",
+            type="channel_view",
+            status="running",
+            account_config={"selection_mode": "all"},
+            type_config={"target_channel_id": 601},
+        )
+        session.add(task)
+        session.commit()
+
+        # Planner gate must create membership actions for unjoined accounts
+        gate = gate_channel_membership(session, task, channel)
+        assert gate.ready is False
+        assert gate.created == 2
+        assert gate.waiting is True
+        assert task.stats["membership_stage"] == "membership_running"
+
+        # Member filter must return empty list before join
+        ready_accounts = channel_member_accounts(session, task, channel, accounts)
+        assert ready_accounts == []
+
+        # Mark account 1 as joined
+        mark_channel_membership_joined(session, 1, 601, 1)
+        session.commit()
+
+        # Member filter now returns only account 1
+        ready_accounts_after = channel_member_accounts(session, task, channel, accounts)
+        assert [a.id for a in ready_accounts_after] == [1]
+
+
+def test_channel_like_mandatory_membership_planner_creates_actions_and_filters_members():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        channel = OperationTarget(
+            id=602,
+            tenant_id=1,
+            target_type="channel",
+            tg_peer_id="-100602",
+            title="点赞测试频道",
+            username="test_like_channel",
+            auth_status="已授权运营",
+            can_send=True,
+        )
+        session.add(channel)
+        accounts = [
+            TgAccount(id=11, tenant_id=1, display_name="账号11", phone_masked="11", status="在线", session_ciphertext="session11"),
+            TgAccount(id=12, tenant_id=1, display_name="账号12", phone_masked="12", status="在线", session_ciphertext="session12"),
+        ]
+        session.add_all(accounts)
+        task = Task(
+            id="task-like-mandatory-membership",
+            tenant_id=1,
+            name="频道点赞强制关注",
+            type="channel_like",
+            status="running",
+            account_config={"selection_mode": "all"},
+            type_config={"target_channel_id": 602},
+        )
+        session.add(task)
+        session.commit()
+
+        gate = gate_channel_membership(session, task, channel)
+        assert gate.ready is False
+        assert gate.created == 2
+        assert gate.waiting is True
+
+        ready_accounts = channel_member_accounts(session, task, channel, accounts)
+        assert ready_accounts == []
+
+
+def test_channel_view_runtime_guard_defers_unjoined_account(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        dispatcher.gateway,
+        "view_channel_message",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unjoined account must not reach gateway")),
+    )
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        account = TgAccount(id=21, tenant_id=1, display_name="浏览未关注账号", phone_masked="21", status="在线", session_ciphertext="session21")
+        channel = OperationTarget(
+            id=603,
+            tenant_id=1,
+            target_type="channel",
+            tg_peer_id="-100603",
+            title="运行时频道",
+            username="runtime_channel",
+            auth_status="已授权运营",
+            can_send=True,
+        )
+        task = Task(
+            id="task-runtime-view",
+            tenant_id=1,
+            name="运行时浏览任务",
+            type="channel_view",
+            status="running",
+            type_config={"target_channel_id": 603},
+        )
+        action = Action(
+            id="action-runtime-view-1",
+            tenant_id=1,
+            task_id=task.id,
+            task_type=task.type,
+            action_type="view_message",
+            account_id=account.id,
+            status="pending",
+            scheduled_at=_now(),
+            payload={
+                "channel_target_id": channel.id,
+                "channel_id": channel.tg_peer_id,
+                "message_id": 100,
+                "channel_message_id": None,
+            },
+        )
+        session.add_all([account, channel, task, action])
+        session.commit()
+
+        dispatcher.dispatch_action(session, action)
+
+        membership_action = session.query(Action).filter(Action.action_type == "ensure_target_membership").one()
+        assert action.status == "pending"
+        assert action.result["error_code"] == "channel_membership_required"
+        assert action.result["validation_stage"] == "account_channel_membership"
+        assert membership_action.account_id == 21
+        assert membership_action.payload["channel_target_id"] == 603
+        assert membership_action.payload["require_send"] is False
+
+
+def test_channel_view_membership_actions_default_to_two_hour_window_with_jitter():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        channel = OperationTarget(
+            id=701,
+            tenant_id=1,
+            target_type="channel",
+            tg_peer_id="-100701",
+            title="两小时抖动频道",
+            username="jitter_channel",
+            auth_status="已授权运营",
+            can_send=True,
+        )
+        session.add(channel)
+        for i in range(1, 11):
+            session.add(TgAccount(id=i, tenant_id=1, display_name=f"账号{i}", phone_masked=str(i), status="在线", session_ciphertext="session"))
+        task = Task(
+            id="task-view-jitter-window",
+            tenant_id=1,
+            name="频道浏览两小时抖动",
+            type="channel_view",
+            status="running",
+            account_config={"selection_mode": "all"},
+            type_config={"target_channel_id": 701},
+        )
+        session.add(task)
+        session.commit()
+
+        result = gate_channel_membership(session, task, channel)
+        rows = session.query(Action).filter(Action.task_id == task.id, Action.action_type == "ensure_target_membership").order_by(Action.scheduled_at.asc()).all()
+
+    assert result.created == 10
+    assert len(rows) == 10
+    assert task.stats["membership_schedule_window_hours"] == 2
+    # Scheduled window is within 2 hours (plus small tolerance for min gap)
+    assert rows[-1].scheduled_at - rows[0].scheduled_at <= timedelta(hours=2, minutes=5)
+    # Adjacent gap between consecutive actions is at least 15 seconds
+    for i in range(1, len(rows)):
+        assert rows[i].scheduled_at - rows[i-1].scheduled_at >= timedelta(seconds=15)
+
+
+def test_channel_membership_schedule_window_configurable():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        channel = OperationTarget(
+            id=702,
+            tenant_id=1,
+            target_type="channel",
+            tg_peer_id="-100702",
+            title="自定义窗口频道",
+            username="custom_window_channel",
+            auth_status="已授权运营",
+            can_send=True,
+        )
+        session.add(channel)
+        for i in range(101, 106):
+            session.add(TgAccount(id=i, tenant_id=1, display_name=f"账号{i}", phone_masked=str(i), status="在线", session_ciphertext="session"))
+        task = Task(
+            id="task-like-custom-window",
+            tenant_id=1,
+            name="点赞自定义一小时窗口",
+            type="channel_like",
+            status="running",
+            account_config={"selection_mode": "all"},
+            type_config={"target_channel_id": 702, "membership_schedule_window_hours": 1},
+        )
+        session.add(task)
+        session.commit()
+
+        result = gate_channel_membership(session, task, channel)
+        rows = session.query(Action).filter(Action.task_id == task.id, Action.action_type == "ensure_target_membership").order_by(Action.scheduled_at.asc()).all()
+
+    assert result.created == 5
+    assert len(rows) == 5
+    assert task.stats["membership_schedule_window_hours"] == 1
+    assert rows[-1].scheduled_at - rows[0].scheduled_at <= timedelta(hours=1, minutes=5)
+    for i in range(1, len(rows)):
+        assert rows[i].scheduled_at - rows[i-1].scheduled_at >= timedelta(seconds=15)
