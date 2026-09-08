@@ -26,7 +26,7 @@
 ## Release Gate
 
 - release_mode：github_actions，master -> release -> Deploy Production。
-- status：local_qa_pass；待GitHub Actions和生产验证。
+- status：release_passed；production_partial，六项真实业务验收尚未全部闭合。
 - backend_tests / migration：pass，见下方；static：修改路径编译及新增模块定向检查通过。
 - frontend_build：不涉及前端，沿部署既有构建。
 - worker_impact：候选、文本验证、Task准入与恢复；复用持续Dispatcher。
@@ -40,4 +40,18 @@
 - 最终迁移批次74通过（32.26秒）：旧建库、版本图、存量升级、账号批登录、Provider HTTP证据、评论质量目标及新增真实PostgreSQL观察失败/CAS/迁移回归。测试库为本次独占localhost:54688的tg_yunying_test，每个pytest进程硬超时60秒。
 - 迁移反向检查发现0001/0137从当前ORM提前建入新列，已resync：legacy bootstrap排除新字段，0137准入表使用相同历史基线，真实0229负责加列；完整建库及升级回归通过。
 - 修改路径compileall、新增解析/状态模块与测试的F821/F401、git diff --check通过。dispatcher既有group_clone路径存在HEAD已含的TelegramGatewayMutationIdentity未定义告警，不属于此次六项修改，未把全文件静态检查声明为通过。
-- product_accepted：本地六项修复合同和定向证据通过；release_passed、production_fixed待独立发布证据。设计§17.2主动探测方案不在此次六项修复实现范围。
+- product_accepted：本地六项修复合同和定向证据通过。设计§17.2主动探测方案不在此次六项修复实现范围。
+
+
+## 发布与独立读回
+
+- 代码完整SHA：`0c5e5dc58ce5dd7aa38ecd5b63397a96e1fd9957`；master -> release均fast-forward，无维护apply或旧Action重放。
+- [Prepare Production 34244923838](https://github.com/chenxi1280/tg-yunying/actions/runs/34244923838)：全部通过，含后端8个测试分片、前端检查及三个镜像。
+- [Deploy Production 34245679954](https://github.com/chenxi1280/tg-yunying/actions/runs/34245679954)：success；终态时间2026-09-08 23:39:12北京时间，作为保守业务验收起点。
+- 独立SSH：current=`/data/tgyunying/releases/20260908153537_0c5e5dc5`；backend+18业务worker完整RELEASE_SHA均为上述代码SHA且全部healthy；图形验证worker也healthy，使用预构建digest（该容器不提供RELEASE_SHA环境字段）。`127.0.0.1:18090/api/health`返回ok。
+- 数据库只读：head=`0229_admission_gap_count`，新列integer、NOT NULL、default 0。所有查询事务READ ONLY，statement_timeout=10s，lock_timeout=1s。
+- 23:44:07读回分母：10个running AI活群Task、5913条准入记录。互斥分类：ready且计数0为5503；observing且计数0为41；observation_gap_limit_reached且计数3为369。后者全部记录ChannelPrivateError、abandoned_for_day、terminal_date=2026-09-08。23:40前次读回曾有计数1为360、计数2为9，证明独立计数与当天终止已实际触发。
+- 发布后新增AI正文Attempt：success 1；Gateway前跳过42（account_legacy_remote_inflight 3、account_shared_usage_unproven 2、execution_circuit_open 13、execution_circuit_probe_pending 2、pacing_source_not_before 22）。完整Task→ledger→Action→Attempt→typed fact联结得到1条remote_message_observed，Task=`caed73c4-16d6-440e-8d0d-109c6fa1f184`，对应1个Action、1个Attempt、1个日账本；仅证明该Task新增1条真实发送，不代表10个Task全量履约，也不能归因于算术修复。
+- 发布后救援Attempt新增1条result_unknown/unknown_after_send；未重放、未当作救援成功。真实算术验证新增0条。
+- 验收边界：独立计数及三次失败当天终止已有线上证据；跨日恢复、真实算术题完整解答和连续五条真实救援成功尚无完整线上样本，保留unproven。ChannelPrivateError及既有执行/节奏阻塞仍存在。`production_fixed`未声明。
+- 本节为发布后证据文档，文档提交不改变上述已部署代码SHA。

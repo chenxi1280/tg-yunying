@@ -1,6 +1,6 @@
 # 项目数据流转索引
 
-> **2026-09-08 本地修复二次审查resync（待发布）：** 文本挑战→完整表达式/精确有理数→最终整数→原Gateway提交与权限复检；非法题干进入明确人工状态且不退回局部数字。观察读取失败→独立`consecutive_observation_gaps`与版本CAS→第三次当日`c2_observation_evidence_missing`→次日Planner/执行门复核并重开同Task/account/group；正常读取/新观察清零，旧日coverage与unknown保留。legacy救援pending候选→跳过忙管理员/同管理员一条→原资源认领→持久executor→释放预约/完成事件→下一条，其他慢任务不形成整批屏障。具体合同为频道成员前置设计§17.3–17.6。
+> **2026-09-08 本地修复二次审查resync（0c5e5dc5已发布，业务部分验证）：** 文本挑战→完整表达式/精确有理数→最终整数→原Gateway提交与权限复检；非法题干进入明确人工状态且不退回局部数字。观察读取失败→独立`consecutive_observation_gaps`与版本CAS→第三次当日`c2_observation_evidence_missing`→次日Planner/执行门复核并重开同Task/account/group；正常读取/新观察清零，旧日coverage与unknown保留。legacy救援pending候选→跳过忙管理员/同管理员一条→原资源认领→持久executor→释放预约/完成事件→下一条，其他慢任务不形成整批屏障。具体合同为频道成员前置设计§17.3–17.6。
 
 > **2026-09-08 晚间静默等待修复：** `engagement_attention.bounded_proactive_quiet_until` 按统一PRD§19.67冻结首次实际等待的配置上限；dispatcher在同一Action事务保存`result.attention_wait.started_at/horizon_deadline_at`，后续真人消息、重新领取与重启不延长截止时间，自然静默可提前结束。期限结束仅通过attention检查，原发送资格、节奏、scope、reply与内容校验继续。
 
