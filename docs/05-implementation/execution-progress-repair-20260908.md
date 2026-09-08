@@ -17,7 +17,7 @@
 
 ## Product Design Complete
 
-合同见统一引擎PRD§19.66。原需求、状态流、当前数据库可实施性、幂等/并发、资格和远端证据边界、期限、错误可见性、QA与发布均已补齐；不增加外部队列、API或业务成功通道。`design_status=complete`，`resync=true`。以上五组已完成最小实现、审查与定向QA；`implementation_status=implemented`，`production_status=unproven`。
+合同见统一引擎PRD§19.66。原需求、状态流、当前数据库可实施性、幂等/并发、资格和远端证据边界、期限、错误可见性、QA与发布均已补齐；不增加外部队列、API或业务成功通道。`design_status=complete`，`resync=true`。以上五组已完成最小实现、审查与定向QA；`implementation_status=implemented`，`production_status=not_met`；最终运行观察见文末。
 
 只读D5证据：Action 5173a2be-1726-4b42-a7f6-68493733525f 的daily owner call_issued，4条Attempt均为未调用的skipped_before_gateway，其中一条task_lifecycle_admission_busy；资源fence为terminal、started_at=NULL、safely_not_called；Gateway journal和通用远端fact为0。正式修复仍需每次锁内复核，不以此快照作为未来任意释放依据。
 
@@ -48,15 +48,15 @@
 
 ## Release Gate
 
-- message_id/intake_id：execution-progress-repair-20260908；level=L3；release_mode=github_actions；release_owner/rollback_owner=本会话；status=pending。
+- message_id/intake_id：execution-progress-repair-20260908；level=L3；release_mode=github_actions；release_owner/rollback_owner=本会话；status=deployed_business_not_met。
 - 本地定向QA已通过；编译、diff检查及完整CI按候选提交记录。
 - frontend/API：无代码改动，Actions仍执行既有前端build；Schema无变化，现有0228迁移不变。
 - worker影响：Planner预算恢复与成员唤醒，Dispatcher账号锁序与浏览未调用结算；正常worker消费新代码，不执行额外生产维护apply或重试unknown。
 - 外部平台：仅原合法Action经过全部原准入后调用Telegram；本批无新增消息/探针或测试账号操作。
 - rollback_plan：不回退0226/0228。新增Outbox子事件须由理解该stage的代码交付，故优先向前修复；不能未经读回直接回滚到忽略expanded/子事件的旧应用。
 - observe_window：以真实部署完成时间锚定，读取current SHA、runtime、锁/领取错误、原问题Action安全终态与后续实际工作；按四类Task分别读取Attempt/Gateway/typed fact。
-- immutable candidate / Actions / deployed SHA：待发布记录。
-- runtime / 四类业务事实：待发布后只读核对；当前production_unproven。
+- immutable candidate / deployed SHA：9d32d5a9777a1ca8be2333c553ec3f0dd42d2ad9；Actions34215174261全部success，部署完成2026-09-08 18:38:47+08:00。
+- runtime：current指向20260908103409_9d32d5a9，20应用容器同候选镜像且healthy、19个RELEASE_SHA一致、内外health200；四类业务验收not_met，禁止写production_fixed。
 
 ## 首轮完整CI修正
 
@@ -97,4 +97,18 @@ a49b5087 Actions34210057986全部通过并于17:42:52部署；current=/data/tgyu
 
 /tmp/execution-lock-graph-067.jsonl的tick17/18捕获真实互等：监听73320持群更新等待Task，Planner76711持Task等待群。按§19.66.9将群面改为显式非阻塞资源认领，沿既有Planner事务回滚/错误重试和Gateway未调用路径。旧代码真实PG复现1 failed/1 passed（/tmp/content-surface-progress-before.log）；修复后12项PG通过（/tmp/content-surface-progress-after.log），证明监听统计与wake落库、原任务恢复及外键引用/数量守恒。
 
-内容分配、共享资源与冻结准入69项回归通过（/tmp/content-surface-progress-unit.log）。审查确认群内容复核位于_reserve_group_send_attempt之前，RuntimeResourceBlocked由既有_dispatch_action捕获并延期，不新建called/unknown事实；群锁函数496行所在文件未超过500行，编译与diff检查通过。设计/结构/数据流已resync，重新进入完整CI与发布验证。
+内容分配、共享资源与冻结准入69项回归通过（/tmp/content-surface-progress-unit.log）。审查确认群内容复核位于_reserve_group_send_attempt之前，RuntimeResourceBlocked由既有_dispatch_action捕获并延期，不新建called/unknown事实；群锁所在代码文件496行，未超过500行，编译与diff检查通过。设计/结构/数据流已resync，重新进入完整CI与发布验证。
+
+
+## 最终发布与只读业务验收（18:44）
+
+- 最终代码候选：9d32d5a9777a1ca8be2333c553ec3f0dd42d2ad9；[Actions34215174261](https://github.com/chenxi1280/tg-yunying/actions/runs/34215174261)全流程成功。完整CI：7084 passed、14 skipped、2 xfailed；前端build和三个镜像通过。部署18:38:47完成，18:39:00独立运行核验通过。日志/tmp/execution-progress-9d-ci-*.log、/tmp/execution-progress-deploy-9d.log、/tmp/execution-progress-runtime-9d.jsonl。
+- 观察窗口：18:38:47–18:44:23。数据库deadlocks在18:39:20、18:42:15和18:44:23均为1887，未新增；最后快照阻塞事务0。全部worker/backend新日志未见40P01，原浏览daily identity安全释放错误为0。群面发生显式ai_group_surface_busy，沿原事务回滚/重试处理；其异常链仍含底层55P03，不能把所有LockNotAvailable字符串宣称为0。
+- 原D5问题Action保持skipped，唯一safely_not_executed事实、原未调用Attempt均保留；daily owner保持available且action_id=NULL。该修复由正常worker生效，没有维护apply或历史重放。
+- 主任务实际执行：部署后AI发送14次Attempt（13过期、1未到来源时刻）、浏览38次Attempt（36过期、2未到来源时刻）、点赞1次Attempt（来源周期耗尽）；上述Gateway调用均0。四类主互动新增有效typed成功事实均0。10个AI任务当日目标19272、到期14430、confirmed=0。
+- 正式频道只读E4：精确13个现行Task，PGOPTIONS强制只读、20秒statement_timeout/2秒lock_timeout；13/13 goal_status=not_met，脚本按未达标退出1，无执行异常。可见阻塞包括来源快照未就绪、点赞合法节奏窗口不足、浏览排期越过当日截止、频道未开放点赞。结果/tmp/execution-progress-channel-e4-9d.log。
+- 额外未解决边界：Planner仍出现journey_participation_selection_invalid，调用链为reaction capacity → source journey → apply_journey_participation_selection，发生在Portfolio预约/恢复之前。该组源分配与参与选择代码自50ecee24起本批未改动；保留校验，不扩大候选或改写历史身份绕过。该错误及上述业务期限/供给问题不纳入本批已完成声明。
+- D2预算恢复与D4子唤醒已由真实PG/单元测试验证；本观察窗口没有新Portfolio plan和新的成员分组事件，不能把历史230条delivered当成本版本新增业务证明。
+- 验收结论：本批实现、代码审查、QA及发布运行核验完成；已观测死锁/浏览领取缺陷在有限窗口内未复发。四类完成量恢复验收未通过，production_status=not_met。§19.65未实施条款保持原边界，called/unknown、原目标及生产配置未做人工改写。
+
+本节是部署后的证据记录；后续文档提交不改变上述实际部署代码SHA，不以文档HEAD替代运行版本。
