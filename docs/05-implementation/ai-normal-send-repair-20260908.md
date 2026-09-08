@@ -44,3 +44,5 @@
 - candidate/deployed SHA：`2d53107da91285533442757a61f4934185160bbe`；Prepare `34223267310`全通过；Deploy `34223952247`成功，live anchor `2026-09-08T20:06:34+08:00`；current目录及19应用容器RELEASE_SHA一致，全部健康。
 - 20:16回读：三亚有1条新调用及有效`remote_message_observed`；郑州大学3个Attempt success带远端message ID，但Action为failed、仅unknown事实，仍需查清收口；其余任务未通过。完整正常发送未恢复，production_fixed=false。
 - 美美备用：时限缺失错误已解除，暴露非V2 slot没有generation_job_id导致HTTP scope KeyError。正式builder测试移除slot enrichment替身后复现同形失败；unified槽沿原payload传递Job身份，V2内容合同验证保持。相关52项测试通过（20.92秒）。该修正待下一轮完整CI和发布。
+
+- 20:20–20:23根因补正：八个任务被context_stale终结的327个样本全为普通非回复且有原generation identity；其他仍pending的候选除1条外同样revision已前进。AI内容PRD§4.1、DF-347已规定自然漂移只观察，实际`ai_content_runtime`却无条件终结，故修正为普通冻结候选记录drift后沿原hash绑定；reply/turn/policy仍拒绝。经正式group binding入口的反例先复现失败，修复后与原runtime服务22项通过（4.95秒）；scope及生成阶段、capacity dispatch/记忆回归在专用PG上186项通过（38.32秒）；最终上下文矩阵23项通过。测试保护曾拒绝默认非测试库后，改用独立tg_yunying_test完成回归，未触碰线上库。郑州大学3条均为post-send probe not_visible，不能计正常消息；并非事实投影丢失。

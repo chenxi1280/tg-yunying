@@ -215,6 +215,7 @@ def bind_candidate_to_gateway(
     *,
     candidate_hash: str,
     task_config_revision: int,
+    allow_context_drift: bool = False,
 ) -> None:
     slot = _claimed_slot(session, job)
     if slot.state == "gateway_bound" and job.candidate_hash == candidate_hash:
@@ -225,7 +226,7 @@ def bind_candidate_to_gateway(
     if plan is None:
         raise AiContentRuntimeConflict("ai_content_window_plan_missing")
     stale_reason = _gateway_stale_reason(
-        session, plan, job, task_config_revision=task_config_revision,
+        session, plan, job, task_config_revision=task_config_revision, allow_context_drift=allow_context_drift,
     )
     if stale_reason:
         _mark_gateway_candidate_stale(slot, job, stale_reason)
@@ -243,6 +244,7 @@ def _gateway_stale_reason(
     job: GenerationJob,
     *,
     task_config_revision: int,
+    allow_context_drift: bool,
 ) -> str:
     revision = session.scalar(select(ContextScopeRevision).where(
         ContextScopeRevision.tenant_id == plan.tenant_id,
@@ -250,7 +252,12 @@ def _gateway_stale_reason(
         ContextScopeRevision.scope_id == plan.scope_id,
     ))
     if revision and revision.context_scope_revision > job.context_snapshot_version:
-        return "context_stale"
+        if not allow_context_drift:
+            return "context_stale"
+        # Accepted ordinary content keeps its frozen identity when new human messages arrive.
+        job.evaluator_evidence = {**dict(job.evaluator_evidence or {}), "gateway_context_drift": {
+            "frozen_revision": job.context_snapshot_version, "observed_revision": revision.context_scope_revision,
+        }}
     contract = dict(job.evaluator_evidence or {}).get("generation_contract") or {}
     frozen_topic_revision = int(dict(contract).get("task_topic_revision") or 0)
     if frozen_topic_revision and frozen_topic_revision != task_config_revision:

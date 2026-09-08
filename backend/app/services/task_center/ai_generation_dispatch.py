@@ -35,6 +35,7 @@ from .group_ai_scope import REMOTE_REPLY_TARGET_OBSERVATION
 from .ai_generation_guards import (
     latest_context_rows as _latest_context_rows,
     observe_normal_generation_context_drift,
+    is_normal_frozen_candidate,
     prepare_generation_guards as _prepare_generation_guards,
     ready_generation_payload as _ready_generation_payload,
     record_should_speak_shadow as _record_should_speak_shadow,
@@ -155,6 +156,7 @@ def _bind_ready_candidate_to_gateway(
             session,
             job,
             candidate_hash=str(action.candidate_hash or ""),
+            allow_context_drift=is_normal_frozen_candidate(payload),
             task_config_revision=int(
                 payload.content_intent_config_revision or task.config_revision or 1
             ),

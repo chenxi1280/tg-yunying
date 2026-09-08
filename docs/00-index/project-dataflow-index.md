@@ -1,5 +1,8 @@
 # 项目数据流转索引
 
+> **2026-09-08 晚间普通候选自然漂移修复：** 原Job ready候选→正式group binding→普通非回复/非turn候选保留正文、原hash和context snapshot，记录当前/冻结revision drift→原scope/reply/policy/attestation及其他发前校验→Telegram→可见性确认。严格reply/turn候选仍拒绝context_stale；不复活历史terminal或重放unknown。non-V2 unified槽携带逐Job身份进入HTTP exchange跟踪。修复依据AI内容PRD§4.1和统一PRD§19.67，线上恢复待新版本逐Task回执验证。
+
+
 > **2026-09-08 晚间正常发送恢复resync（本地实现与QA，待发布）：** 统一PRD§19.67；`dispatch_session_priority.py`在LIMIT前排序当前Session及关闭时刻；`continuous_dispatcher.py`/worker/service持久executor按完成补领，`runtime_resources.py`逐Action转交原预约；`legacy_generation_timing.py`与generation runtime/binding覆盖unified非V2；group planner解析群后即取得群互斥再进入准入/日覆盖。交接见`docs/05-implementation/ai-normal-send-repair-20260908.md`。原19.60完整保护份额/持久cursor不据此宣称完成，实际发布与逐Task消息事实待验收。
 
 > **2026-09-08 执行前进性resync（代码9d32d5a9已发布，业务验收未通过）：** 批量资格逐账号busy/有效/失效 → 原参与分母与待核实摘要 → 健康分配；成员运行gate局部等待、全busy不写无人可用，显式启动仍全量资格锁；原Portfolio deficit → 当前资格/容量与原plan锁 → 唯一successor补原缺口；实际Attempt先账号NO KEY UPDATE NOWAIT再资格共享锁；群面内容分配采用NO KEY UPDATE NOWAIT，与外键引用兼容并在监听反序竞争时显式回滚本次规划；账号分组事件 → 持久Task子交付 → 独立唤醒；Planner在savepoint联合非阻塞认领Task/已有wake，竞争时释放Task不消耗wake；浏览daily identity在全部Gateway准入通过后随call-start提交，原未调用投影按全链证据安全结算。合同统一§19.66，交接`docs/05-implementation/execution-progress-repair-20260908.md`。运行核验通过；四类完成量验收not_met，见交接文档18:44证据。

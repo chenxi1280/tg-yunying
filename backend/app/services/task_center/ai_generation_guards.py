@@ -210,6 +210,15 @@ def _latest_platform_question(
     return next((row for row in rows if str((row.payload or {}).get("message_text") or "").strip().endswith(("?", "？"))), None)
 
 
+def is_normal_frozen_candidate(payload: SendMessagePayload) -> bool:
+    return bool(
+        payload.message_text.strip() and payload.ai_generation_status == "ready"
+        and payload.ai_generation_id and not payload.reply_to_message_id
+        and not payload.conversation_turn_claim_id and not payload.interaction_opportunity_id
+        and not is_due_catch_up_check_in(payload.model_dump(mode="json"))
+    )
+
+
 def observe_normal_generation_context_drift(
     session: Session,
     task: Task,
@@ -217,9 +226,7 @@ def observe_normal_generation_context_drift(
     *,
     payload: SendMessagePayload,
 ) -> bool:
-    if payload.reply_to_message_id or not payload.message_text.strip() or payload.ai_generation_status != "ready" or not payload.ai_generation_id:
-        return False
-    if is_due_catch_up_check_in(payload.model_dump(mode="json")):
+    if not is_normal_frozen_candidate(payload):
         return False
     rows = latest_context_rows(session, payload, task)
     if not rows:
@@ -329,6 +336,7 @@ def _naive(value: datetime) -> datetime:
 
 
 __all__ = [
+    "is_normal_frozen_candidate",
     "observe_normal_generation_context_drift",
     "latest_context_rows",
     "prepare_generation_guards",
