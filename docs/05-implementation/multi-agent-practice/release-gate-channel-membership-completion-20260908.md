@@ -15,3 +15,8 @@
 ## 发布前审查回流
 
 首候选324572e9的流水线34174438309在部署前主动取消：追加原Attempt请求/终止字段优先保护，以及stale成员恢复路径；退出CLI扩展同四类Task的两种成员Action，所有原退出证据与资源/CAS门禁保持。更新后125项定向测试通过（12.64秒），8项真实PostgreSQL退出对账测试通过（14.07秒），覆盖成员/主动作的锁冲突、缓存漂移、回滚、幂等和UTC读回；每轮60秒硬超时，临时实例已停止。生产67条旧调用的10个原容器均采到双退出证据，正式apply仍须新版本preview。
+
+## 第二轮生产回流与调度修复
+6f4ec237发布流水线34174871413终态success；current、backend和全部worker镜像为同SHA。67条旧调用正式preview/apply/readback成功，业务字段不变；审计目录channel-membership-completion-20260908保留manifest与回执。09:09:59冻结1554账号分母下六频道实际关注为1259/3/1259/710/1258/0，总新增3，尚未补齐。
+发现已确认评论的遗留pending Action f832f594-a89b-4df0-b75f-93ebb96aab62无Attempt，同obligation赢家3342b158-30eb-4730-9763-c823cd0e0286已有remote_message_observed；过期结算将正式obligation拒绝误当异常导致批次回滚。按§14.9修复：保留显式拒绝结果、只释放本Action资源、不追加事实、不覆盖赢家。为遵守500行限制，将原安全结算记录及资源验证原样按职责提取。
+定向QA 62 passed（5.85秒，60秒硬超时），覆盖confirmed/unknown/open赢家、危险远端证据拒绝、输家自身节奏释放，以及原成员窗口、来源容量、浏览安全重排与履约ledger回归；diff检查通过。新候选仍需全量CI和上线独立回读，不能声明production_fixed。

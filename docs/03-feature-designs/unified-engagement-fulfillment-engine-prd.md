@@ -2960,3 +2960,6 @@ Product Design Complete：修复候选范围读取，不改变账号组配置、
 ### 19.59 补充：频道关注的历史准入调用（2026-09-08）
 
 六频道补齐排障发现，同四类Task的ensure_target_membership/ensure_channel_membership原调用也使用docker_pid1_local_telethon_v1，可能因未知复检覆盖ACK而阻塞频道账号。原容器退出对账入口增加这两类准入Action，其他资格限制和全套原进程/身份/精确集合/资源/CAS/审计/独立读回规则不变。ACK只恢复物理结束证明，不改Action/Attempt业务unknown，不给同账号同目标重新加入的许可。禁止将ensure类型加入互动成本类别表；只是退出证据操作的合法类型扩展。已反查原Gateway和worker归属，design_status=complete；QA覆盖准入Action原unknown保持、锁冲突、漂移零写、事务回滚与幂等读回。
+
+#### 2026-09-08 过期输家动作结算补充
+已关闭或重复obligation的未远端执行输家必须沿正式obligation拒绝结果结束，并释放自身前置资源。不得将已确认/未知的赢家履约投影改成短缺，不得为输家伪造远端或安全未执行事实。适用频道关注补齐设计§14.9；其余真实远端未知仍保持不可重放。

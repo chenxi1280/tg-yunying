@@ -10,19 +10,21 @@ from sqlalchemy.orm import Session
 from app.models import (
     AccountPacingReservation,
     Action,
-    ExecutionAttempt,
     FulfillmentRemoteFact,
     SourcePacingAdmission,
     SourcePacingState,
     Task,
 )
 
+from .safe_settlement_resources import (
+    _settle_action_pacing_reservation, _validate_safe_settlement_replay,
+)
+from .safe_settlement_records import _safe_settlement_result, _safe_shortfall_attempt
 from .fulfillment_activation import CURRENT_CONTRACT_VERSION
 from .channel_membership_execution import task_action_execution_condition
 from .account_pacing_guard import revalidate_action_pacing_before_claim
 from .channel_action_lifecycle import (
     release_channel_action_resources_before_gateway,
-    validate_channel_action_resources_released,
 )
 from .channel_remote_evidence import action_remote_mutation_evidence
 from .fulfillment_remote_facts import (
@@ -325,7 +327,9 @@ def settle_fact_first_action_before_gateway(
         return set()
     if action.status not in SAFE_SETTLEMENT_ACTION_STATUSES:
         raise RuntimeError(f"pre_gateway_safe_settlement_status_invalid:{action.status}")
-    remote_mutation_state = _prepare_safe_settlement_action(session, action)
+    remote_mutation_state, obligation_available = _prepare_safe_settlement_action(session, action)
+    if not obligation_available:
+        return _release_rejected_obligation_action(session, action, remote_mutation_state)
     action.status = "skipped"
     action.executed_at = action.executed_at or now
     action.action_version = int(action.action_version or 1) + 1
@@ -358,7 +362,19 @@ def settle_fact_first_action_before_gateway(
     )
 
 
-def _prepare_safe_settlement_action(session: Session, action: Action) -> str | None:
+def _release_rejected_obligation_action(session, action, remote_mutation_state):
+    from .source_pacing_release import release_source_pacing_admissions_before_gateway
+
+    action.action_version = int(action.action_version or 1) + 1
+    state_ids = release_fact_first_action_reservations(
+        session, action, fact_kind="safely_not_executed",
+        remote_mutation_state=remote_mutation_state,
+    )
+    release_source_pacing_admissions_before_gateway(session, action)
+    return state_ids
+
+
+def _prepare_safe_settlement_action(session: Session, action: Action) -> tuple[str | None, bool]:
     ledger_alignment = align_view_ledger_for_safe_settlement(session, action)
     if ledger_alignment:
         action.result = {
@@ -371,9 +387,7 @@ def _prepare_safe_settlement_action(session: Session, action: Action) -> str | N
             f"pre_gateway_safe_settlement_remote_evidence_unsafe:{evidence.state}"
         )
     remote_mutation_state = evidence.state
-    if not ensure_action_obligation(session, action):
-        raise RuntimeError("pre_gateway_safe_settlement_obligation_unavailable")
-    return remote_mutation_state
+    return remote_mutation_state, ensure_action_obligation(session, action)
 
 
 def _safe_settlement_fact(
@@ -388,20 +402,6 @@ def _safe_settlement_fact(
         )
         .order_by(FulfillmentRemoteFact.observed_at.desc())
         .limit(1)
-    )
-
-
-def _validate_safe_settlement_replay(
-    session: Session,
-    action: Action,
-    replan_same_obligation: bool,
-) -> None:
-    if action.status != "skipped":
-        raise RuntimeError("safe_settlement_replay_action_not_skipped")
-    validate_channel_action_resources_released(
-        session,
-        action,
-        replan_same_obligation=replan_same_obligation,
     )
 
 
@@ -433,46 +433,6 @@ def release_fact_first_action_reservations(
             replan_same_obligation=replan_same_obligation,
         )
     return state_ids
-
-
-def _settle_action_pacing_reservation(
-    session: Session,
-    action_id: str,
-    *,
-    replan_same_obligation: bool,
-) -> None:
-    reservation = session.scalar(select(AccountPacingReservation).where(
-        AccountPacingReservation.action_id == action_id,
-    ))
-    if reservation is None or reservation.state == "missed":
-        return
-    if reservation.state in {"reserved", "bound"}:
-        reservation.state = "reserved" if replan_same_obligation else "missed"
-        if replan_same_obligation:
-            reservation.action_id = None
-        reservation.version = int(reservation.version or 1) + 1
-
-
-def _safe_settlement_result(
-    action: Action,
-    *,
-    reason_code: str,
-    detail: str,
-    effective_at: datetime | None,
-) -> dict:
-    result = {
-        **(action.result or {}),
-        "success": False,
-        "error_code": reason_code,
-        "error_message": detail,
-        "remote_mutation_started": False,
-        "pre_gateway_safe_settlement": {"reason_code": reason_code},
-    }
-    if reason_code == "pacing_claim_deadline_exceeded":
-        result[reason_code] = {
-            "effective_claim_at": effective_at.isoformat() if effective_at else None,
-        }
-    return result
 
 
 def reconcile_source_pacing_states(
@@ -519,32 +479,6 @@ def _reserved_source_tails(
         )
         tails[state_id] = max(tails.get(state_id, tail), tail)
     return tails
-
-
-def _safe_shortfall_attempt(
-    session: Session,
-    action: Action,
-    now: datetime,
-    *,
-    reason_code: str,
-    detail: str,
-) -> ExecutionAttempt:
-    attempt_no = session.scalar(select(func.max(ExecutionAttempt.attempt_no)).where(
-        ExecutionAttempt.action_id == action.id,
-    )) or 0
-    return ExecutionAttempt(
-        tenant_id=action.tenant_id,
-        action_id=action.id,
-        task_lifecycle_epoch=int(action.task_lifecycle_epoch or 1),
-        account_id=action.account_id,
-        attempt_no=int(attempt_no) + 1,
-        status="failed",
-        before_call_at=now,
-        after_call_at=now,
-        failure_type=reason_code,
-        failure_detail=detail,
-        result_snapshot={"remote_mutation_started": False},
-    )
 
 
 __all__ = [
