@@ -17,5 +17,5 @@ def prepare_channel_membership_on_start(session: Session, task: Task) -> None:
         raise ValueError("channel_membership_start_target_invalid")
     resume_uncalled_channel_memberships(session, task, target)
     require_send = task.type == "channel_comment" and not config.get("channel_comment_grounding_v1_enabled")
-    gate_channel_membership(session, task, target, require_send=require_send)
+    gate_channel_membership(session, task, target, require_send=require_send, require_all_eligible=True)
     task.stats = {**dict(task.stats or {}), START_EPOCH_KEY: int(task.task_lifecycle_epoch or 1)}

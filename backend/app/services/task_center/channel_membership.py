@@ -66,8 +66,8 @@ class MembershipGateResult:
     blocker_reason: str = ""
 
 
-def gate_channel_membership(session: Session, task: Task, channel: OperationTarget, *, require_send: bool = False) -> MembershipGateResult:
-    candidates = _task_membership_candidates(session, task)
+def gate_channel_membership(session: Session, task: Task, channel: OperationTarget, *, require_send: bool = False, require_all_eligible: bool = False) -> MembershipGateResult:
+    candidates = _task_membership_candidates(session, task, skip_busy=not require_all_eligible)
     strategy_enabled, disabled_reason = _membership_action_strategy(task, channel)
     reactivated = _reactivate_auto_verification_memberships(
         session,
@@ -81,9 +81,7 @@ def gate_channel_membership(session: Session, task: Task, channel: OperationTarg
     if reactivated:
         stats["membership_reactivated_verification_actions"] = int(stats.get("membership_reactivated_verification_actions") or 0) + reactivated
     if not candidates and (task.type_config or {}).get("engagement_contract_version") == UNIFIED_CONTRACT:
-        task.last_error = "no_eligible_accounts"
-        task.stats = {**stats, "membership_stage": "no_eligible_accounts"}
-        return MembershipGateResult(False, blocked=True, blocker_reason="no_eligible_accounts")
+        return _empty_eligible_membership_gate(task, stats)
     if not _target_requires_membership_for_candidates(channel, candidates, require_send=require_send):
         stats["membership_stage"] = "membership_ready"
         task.stats = stats
@@ -259,11 +257,11 @@ def channel_membership_summary(
     }
 
 
-def _task_membership_candidates(session: Session, task: Task) -> list[TgAccount]:
+def _task_membership_candidates(session: Session, task: Task, *, skip_busy=True) -> list[TgAccount]:
     if not _uses_persisted_all_account_scope(task):
         return _eligible_membership_candidates(session, task,
             candidate_accounts_for_config(session, task.tenant_id, task.account_config or {},
-                include_unavailable=(task.type_config or {}).get("engagement_contract_version") == UNIFIED_CONTRACT))
+                include_unavailable=(task.type_config or {}).get("engagement_contract_version") == UNIFIED_CONTRACT), skip_busy=skip_busy)
     statement = select(TgAccount, TaskMembershipAdmissionItem)
     if (task.type_config or {}).get("engagement_contract_version") == UNIFIED_CONTRACT:
         statement = apply_operational_account_scope_filters(statement)
@@ -286,7 +284,7 @@ def _task_membership_candidates(session: Session, task: Task) -> list[TgAccount]
     selected_at = _now()
     for _account, item in rows:
         item.planner_last_selected_at = selected_at
-    return _eligible_membership_candidates(session, task, [account for account, _item in rows])
+    return _eligible_membership_candidates(session, task, [account for account, _item in rows], skip_busy=skip_busy)
 
 
 def linked_channel_group(session: Session, channel: OperationTarget, *, create: bool, prefer_send_ready: bool = False) -> TgGroup | None:
@@ -1103,12 +1101,20 @@ def _target_noun(target: OperationTarget) -> str:
     return "频道关注" if target.target_type == "channel" else "群聊加入"
 
 
-def _eligible_membership_candidates(session, task, accounts):
+def _eligible_membership_candidates(session, task, accounts, *, skip_busy=True):
     if (task.type_config or {}).get("engagement_contract_version") != UNIFIED_CONTRACT:
         return accounts
-    decisions = assignment_decisions(session, task.tenant_id, [account.id for account in accounts])
+    decisions = assignment_decisions(session, task.tenant_id, [account.id for account in accounts], skip_busy=skip_busy)
     publish_assignment_summary(task, decisions)
     return [account for account in accounts if not decisions[account.id]]
+
+
+def _empty_eligible_membership_gate(task, stats):
+    pending = bool((stats.get("account_assignment_eligibility") or {}).get("pending_count"))
+    reason = "account_eligibility_busy" if pending else "no_eligible_accounts"
+    task.last_error = reason
+    task.stats = {**stats, "membership_stage": "eligibility_pending" if pending else reason}
+    return MembershipGateResult(False, waiting=pending, blocked=not pending, blocker_reason=reason)
 
 
 def _created_membership_gate(task, channel, *, stats, created, ready_count, fast_tracked, require_send):

@@ -63,3 +63,9 @@
 候选3490844f的Actions 34206131377在backend-postgres-checks (0)失败，未进入镜像/部署。旧共享预算并发测试仍断言阻塞锁，现改为锁占用时account_execution_busy、提交释放后重新准入仍拒绝超预算，保留原预算守恒验收。新增唤醒并发测试暴露UTC数据库连接下naive北京时间被解释为UTC的问题；父事件生产与drain当前时刻改用显式Asia/Shanghai aware时刻，新增UTC/Asia/Shanghai连接参数化回归。没有修改/放宽业务数量或资格。
 
 修正后定向QA：24项真实PG（共享预算、执行前进性、组版本）通过，日志/tmp/execution-progress-ci-repair-pg.log；32项成员版本/基础/唤醒通过，日志/tmp/execution-progress-ci-repair-unit.log。
+
+## 生产反查再次resync（17:11）
+
+fae502c5已通过Actions 34207051818全部检查并于17:09:25完成部署；current/SHA、19应用容器healthy及内外health均通过。原浏览Action已skipped，daily owner available，新增一条safely_not_executed且原4条未调用Attempt保留。新版本没有重复浏览领取释放错误，但Planner仍有channel_membership._eligible_membership_candidates的整批NOWAIT失败，D3尚有运行成员前置入口未改到；日志链路覆盖AI活群/点赞/浏览。回到§19.66.2补齐：运行前置候选skip-busy，全busy保留等待；启动全量路径显式strict。补真实PG成员gate/恢复/严格启动回归后重新发布，当前不可写production_fixed。
+
+成员gate补修QA：6项真实PG通过（新增健康继续/全busy等待/严格启动、原启动PG），日志/tmp/execution-progress-membership-gate-pg.log；92项启动/资格/原覆盖回归通过，日志/tmp/execution-progress-membership-gate-unit.log；编译与diff检查通过。
