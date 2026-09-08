@@ -151,6 +151,11 @@ jobs:
           ssh silicon-valley-production-server \
             "docker cp /tmp/production_diagnose_admission_and_rescue.py tgyunying-backend:/tmp/production_diagnose_admission_and_rescue.py && \
              docker exec -w /app -e PYTHONPATH=/app tgyunying-backend python /tmp/production_diagnose_admission_and_rescue.py"
+          scp .github/scripts/production_inspect_admin_fallback_records.py \
+            silicon-valley-production-server:/tmp/production_inspect_admin_fallback_records.py
+          ssh silicon-valley-production-server \
+            "docker cp /tmp/production_inspect_admin_fallback_records.py tgyunying-backend:/tmp/production_inspect_admin_fallback_records.py && \
+             docker exec -w /app -e PYTHONPATH=/app tgyunying-backend python /tmp/production_inspect_admin_fallback_records.py"
           scp .github/scripts/ai_dispatch_admission_diagnostics.py \
             silicon-valley-production-server:/tmp/ai_dispatch_admission_diagnostics.py
           ssh silicon-valley-production-server \
