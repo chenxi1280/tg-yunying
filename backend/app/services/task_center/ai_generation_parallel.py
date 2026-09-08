@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from .account_assignment_eligibility import action_assignment_predicate, require_action_assignment_account
+from .engagement_runtime_error import RuntimeResourceBlocked
+
 import hashlib
 import json
 from dataclasses import dataclass
@@ -72,7 +75,7 @@ def claim_parallel_generation(
                     claim = _claim_one(session, action, owner)
                     if claim is not None:
                         claims.append(claim)
-            except _ClaimConflict:
+            except (_ClaimConflict, RuntimeResourceBlocked):
                 continue
         session.commit()
         return tuple(claims)
@@ -175,6 +178,7 @@ def _candidate_statement(limit: int, now: datetime | None = None):
         select(Action)
         .join(Task, Task.id == Action.task_id)
         .where(
+            action_assignment_predicate(),
             Action.task_type == "group_ai_chat",
             Action.action_type == "send_message",
             Action.status == "pending",
@@ -240,13 +244,7 @@ def _is_deadline_expired(deadline: datetime | None, now_value: datetime) -> bool
     return deadline <= now_value
 
 
-def _claim_one(
-    session: Session,
-    action: Action,
-    owner: str,
-    now: datetime | None = None,
-) -> ParallelGenerationClaim | None:
-    now_value = now if now is not None else _now()
+def _expire_generation_pacing(session, action, now_value) -> bool:
     reservation = session.scalar(select(AccountPacingReservation).where(
         AccountPacingReservation.action_id == action.id,
         AccountPacingReservation.state.in_(("reserved", "bound")),
@@ -264,8 +262,21 @@ def _claim_one(
             reason_code="pacing_claim_deadline_exceeded",
             detail="AI生成前检测到账号时间线已过截止时间，未调用模型生成与网关",
         )
-        return None
+        return True
 
+    return False
+
+
+def _claim_one(
+    session: Session,
+    action: Action,
+    owner: str,
+    now: datetime | None = None,
+) -> ParallelGenerationClaim | None:
+    now_value = now if now is not None else _now()
+    if _expire_generation_pacing(session, action, now_value):
+        return None
+    require_action_assignment_account(session, action)
     if not ensure_action_obligation(session, action):
         return None
     job = _generation_job(session, action)

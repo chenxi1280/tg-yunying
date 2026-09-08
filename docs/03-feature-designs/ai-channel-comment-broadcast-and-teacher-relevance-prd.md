@@ -1,5 +1,12 @@
 # 频道 AI 评论：广播事实锚定、老师相关性与多评论分散专项 PRD
 
+> **2026-09-08 账号分配资格resync：** [统一引擎PRD](unified-engagement-fulfillment-engine-prd.md) §19.64为当前合同：Session失效、Telegram冻结及其他明确失效账号先从新计划候选排除，再计算人数/覆盖与分配工作；已有selected不授予后续新分配资格。运行中失效立即停止新分配和未调用派发，健康账号继续；历史已分配/unknown/confirmed证据保留。临时网络/资源等待与账号失效分开。§19.64账号资格入口已完成本地实现与定向QA，尚未发布；不代表§19.60/§19.61等其他设计已经实现，生产验收见该节独立记录。
+
+
+> **2026-09-08 二轮对照修订（设计态）：** 统一引擎 §19.13–19.15/§19.63 优先于本专项历史复杂准备合同：当前运行不要求历史P95画像审批、逐binding模型预算、完整InteractionServiceBinding或聊天事件版本档案；复用原义务/Job/回复身份、绝对deadline与未知结果防重。§19.61应急不重建这些已撤销前置；历史QA与本地实现状态不代表新切片已验收。
+
+> **2026-09-08 用户裁决 / emergency resync（设计完成，尚未实施）：** 统一引擎 §19.61允许current emergency：顶层/回复评论使用随机表情，保留source/thread/reply和原quantity owner；§12.11旧20表情与稳定随机能力可复用，legacy ContentMix不能复活。旧reply绝对禁令、current只允许normal数量和planned=0关闭应急的条款被覆盖，grounding质量继续分账。 本切片代码/生产状态仍为未实施、未验收；旧事件记录保留。
+
 > **最新范围以统一引擎 §19.13 为准：** 讨论区聊天编辑不触发重建回复，取消历史回放/内容版本档案，统计只要求最近 72 小时成功次数。频道源帖身份与发前目标检查保留；不新增调用费用预算或将历史耗时画像审批、完整 ServiceBinding 作为运行前提。上下文、生成、发前复核和成功事实为必要轻量链；下文冲突的旧要求不再阻塞本期交付，不代表代码已全部简化或上线。
 
 > **实施授权：** 用户确认按统一引擎 §19.4 支持账号以独立读者、真实群友人设参与评论互动，结合人设表达真实生活化语境，制造频道讨论区热度。以下前次“仅 PRD”描述保留为历史记录，不再阻断经复核子合同的代码开发；不代表全量设计已验收、公告已披露或生产已生效。
@@ -42,7 +49,7 @@
 
 第二十七轮账号分组、工业韧性与 JIT 终审（2026-09-03）：unified `channel_comment` Task 必须显式绑定 1..N 个 `AccountPool`，以 `TaskAccountGroupBindingSetRevision + AccountGroupMembershipSnapshotSet` 冻结各组 revision、规范化成员并集、origin group 与 per-group concurrency；legacy `all|manual|single group` 只读收口。任务日 selected 覆盖与单帖 55%～65% distinct selection 分层，runtime Session/proxy/quarantine/discussion membership/voice/Provider readiness 不得缩小冻结分母；grounded top-level 的 source ordinal 仅可在 Generation/Action/Gateway identity 前、任务日 selected 集内部重绑本条发送账号，不得替换 task-day selected、转移 coverage 或使用组外 standby。执行复用统一 5/10/15 秒 hard timeout、proxy/Task-group/workload 舱壁、自适应 Task 公平份额和 closed/open/half-open circuit；Telegram call-issued timeout 永远进入 unknown。评论 JIT 从完整 realizer+reviewer+门禁+Gateway P95 倒推，不硬编码 5～10 秒；discussion response snapshot 固定 parent/turn/grounding 后选择最新 10～20 条相关评论，call-issued 前 1 秒做 relation/source/turn revision CAS。该补正设计完成、尚未实现。
 
-第二十八轮统一生命周期终审（2026-09-03）：unified `channel_comment` 的 start/update/pause/resume/stop/delete、固定北京时间 task-day、同 source-scope quantity writer、跨任务组合容量、结构化 FloodWait/SlowMode、discussion observer primary/standby 接管、非文本/语言 eligibility 和 operator safe-retry 全部服从统一引擎 §7.6～§7.9、§8.1～§8.2。日目标、Daily Cap、账号组、参与比例和 pacing 修改只影响下一未冻结 source unit/下一完整 task day；当前分母、due、事实不改，立即停止使用 `terminated_by_operator`，不得把欠量调小成 completed。新 unified route 禁止 Unicode、图片、模板短句等 fallback 结算 grounded normal comment；Provider/质量/重复无法通过时显示真实 shortfall。旧任意 timezone 与 fallback 只按 legacy identity 收口，不得进入 unified current。
+第二十八轮统一生命周期终审（2026-09-03）：unified `channel_comment` 的 start/update/pause/resume/stop/delete、固定北京时间 task-day、同 source-scope quantity writer、跨任务组合容量、结构化 FloodWait/SlowMode、discussion observer primary/standby 接管、非文本/语言 eligibility 和 operator safe-retry 全部服从统一引擎 §7.6～§7.9、§8.1～§8.2。日目标、Daily Cap、账号组、参与比例和 pacing 修改只影响下一未冻结 source unit/下一完整 task day；当前分母、due、事实不改，立即停止使用 `terminated_by_operator`，不得把欠量调小成 completed。新 unified route 按统一引擎 §19.61允许 Unicode/已批准图片应急完成原评论数量，不能结算 grounded normal comment；Provider/质量/重复故障及语义缺口独立展示。旧任意 timezone 和 legacy planned fallback仍按原identity收口，当前emergency使用独立policy与统一owner。
 
 第二十九轮最终业务补正（2026-09-04）：本 adapter 完整继承统一引擎 §19.1。任务日 selected 固定为绑定组全部 policy-eligible 账号，单来源仍只选 55%～65% distinct accounts，并以 selection debt 跨来源轮转；`PlanningAdmissionSnapshot` 只证明计划路径，不缩小全员业务分母，部分健康时 `running_partial` 且健康分区继续。账号可见动作受 `AccountBehaviorSessionPlan` 约束，但 Telegram 连接、discussion Listener 和只读探活可常驻；明确点名只可有限 wake。评论只要求 `SourceContentReadEvidence`，不强迫账号先 reaction 或产生远端 view。所有 normal grounded/response comment 均经过统一 15 秒普通、90 秒准入/风险 visibility gate；Observer gap 为 unknown 且不补发。跨午夜 discussion turn 经 `CrossDayConversationCarryover` 绑定次日新义务，负反馈按分类/滞回驱动 scope circuit，互动 topology 还须通过单故障域失效模拟。该补正设计完成、尚未实现。
 
@@ -292,7 +299,7 @@ TaskCommentDailyCapacityReservation
 11. 初始账号绑定与 PlanContract 一起冻结。unified top-level 绑定账号在 candidate/Action 前不可用时，只能 append 下一 `binding_attempt`，从同一任务日 selected 集中、尚未被本 source 绑定/确认且 stable rank 最前的账号接替，并同步遵守 §12.1 voice/style successor；不得从组外或 task-day selected 外扩张分母。legacy 只从其冻结 eligible pool 接替。旧 binding 终结但不删除。interaction `discussion_response/owned_peer_followup` 按 §12.8 的 service/admission binding 禁止同 turn/同 admission 原地换号。Gateway-started/unknown/success 后所有 relation 均禁止换号；冻结池已无可替代账号时形成 `distinct_account_capacity_shortfall`。
 12. unified current Task 时区固定为 `Asia/Shanghai`；legacy 非北京时间 Plan 按 §4.6 只读收口到首尾相接且绝不重叠的北京时间 UTC capacity ledger，禁止借接管获得第二份 Daily Cap。
 13. 只有 Attempt/Gateway 的 typed remote comment fact 和 `remote_message_id` 才确认 distinct-account participation；正常 AI 正文、`comment_unicode_emoji_fallback` 和 `comment_image_meme_fallback` 均须取得该事实，Action ready/success 投影、兜底计划或 unknown 都不确认。
-14. 每个 Task 任务日冻结全部 selected 账号的 `TaskCommentAccountDailyCoverage`。unified route 中途发生分组成员变化只生成 membership/binding successor 并从下一任务日参与，既有任务日和 source plan 不扩张；legacy route 已有的 effective-at successor 只按旧 revision 收口。紧急 disable/移出只令账号 runtime blocked，不能删除当前分母。若没有足够新 source ordinal 或 Daily Cap，则缺失账号保持 coverage shortfall。只有 grounded normal top-level 或有效 discussion response 的 typed fact 可以关闭该账号覆盖；Unicode/图片 fallback、owned followup 和其他 Task 的评论/点赞/浏览不能代替。
+14. 每个 Task 任务日冻结全部 selected 账号的 `TaskCommentAccountDailyCoverage`。unified route 中途发生分组成员变化只生成 membership/binding successor 并从下一任务日参与，既有任务日和 source plan 不扩张；legacy route 已有的 effective-at successor 只按旧 revision 收口。紧急 disable/移出只令账号 runtime blocked，不能删除当前分母。若没有足够新 source ordinal 或 Daily Cap，则缺失账号保持 coverage shortfall。基础覆盖由该账号同 Task 的合法评论 typed fact 确认，允许 §19.61 emergency；normal grounded/semantic coverage 仍只认适用正常内容，不被表情或其他 Task 的评论/点赞/浏览代替。
 15. 单帖仍严格保持 55%～65% distinct-account 合同；“所有账号每天活跃”通过跨 source plan 优先未覆盖账号实现，不得把单帖比例提高到 100%。若当日预计适用 source ordinal 总数或 Daily Cap 小于 coverage 分母，预览与运行状态为 `task_account_coverage_capacity_shortfall`，任务不能显示 completed。
 16. 评论任务日完成要求消息级 quantity/cap 合同、逐账号 coverage、speaking participation、hard reply relation、`interaction_observation_integrity=met`、`interaction_service_status=met` 和 Gateway unknown=0 同时成立；后两者要求每个 required linked-discussion peer 的 observer coverage≥99%、stream gap 收口、watermark 新鲜、candidate decision coverage≥99%、无 response 双写，且 admitted resolution/still-needed response capacity service 均≥95%（或各自无分母）。一个健康 discussion peer 不能掩盖另一个断流 peer；planned call 前真人已解决可作为 validly superseded，容量/Provider/deadline 延迟不能冒充；监听或订阅未就绪时也不能借 admitted 零分母完成。portfolio activity 只展示。
 17. 某任务日没有任何适用且仍在三天窗口内的 source plan 时，逐账号覆盖状态为 `coverage_source_unavailable`，不是 `not_applicable`；该日不能 completed，也不能由 portfolio activity 或 owned followup 补足。
@@ -389,7 +396,7 @@ ChannelCommentQualityTargetRevision
 | `missed` | deadline 后仍未 met；late fact 保留但不改写历史 missed |
 | `terminated` | 来源删除或 Task 显式 stop/delete 终止未进 Gateway 义务；不是 met，不伪装成系统自然完成 |
 
-以下 `content_mix_status/fallback_eligible/Unicode/image_meme` 合同仅用于存量 legacy v1.2 Plan 按原 identity 收口。unified current 的三类评论 lane 都只允许通过当前 grounding/intent/style/质量门的正常内容，任何 fallback 都不确认 unified quantity、grounding 或 speaking participation。legacy ContentMix 首次冻结时标记每个槽 `fallback_eligible`：plain direct/reply 评论槽允许 `comment_unicode_emoji_fallback` 或 `comment_image_meme_fallback` 替代，并在远端保留原 relation 后视为 legacy 槽 settled。图片表情包不得冒充普通 campaign image、sticker、animated/video sticker 或 custom emoji；显式要求正常 AI 正文、普通图片或其他专用素材的 legacy 槽也不能由任一兜底类型冒充。专用槽在 Gateway 前生成失败时，可通过 append-only `ContentMixReallocationRevision` 把该专用义务转给同 legacy Plan 尚未进入 Gateway 的 fallback-eligible plain 槽；没有合法接替槽才形成 content shortfall。两类兜底只有远端实际保留 `reply_to_message_id` 才确认 legacy reply。
+以下 `content_mix_status/fallback_eligible/Unicode/image_meme` 合同仅用于存量 legacy v1.2 Plan 按原 identity 收口。unified current 的三类评论 lane 正常内容继续通过 grounding/intent/style/质量门；§19.61 独立 emergency policy 以原 unified owner 确认真实 quantity/基础 speaking participation，不确认 grounding/semantic quality，不依赖 legacy ContentMix。legacy ContentMix 首次冻结时标记每个槽 `fallback_eligible`：plain direct/reply 评论槽允许 `comment_unicode_emoji_fallback` 或 `comment_image_meme_fallback` 替代，并在远端保留原 relation 后视为 legacy 槽 settled。图片表情包不得冒充普通 campaign image、sticker、animated/video sticker 或 custom emoji；显式要求正常 AI 正文、普通图片或其他专用素材的 legacy 槽也不能由任一兜底类型冒充。专用槽在 Gateway 前生成失败时，可通过 append-only `ContentMixReallocationRevision` 把该专用义务转给同 legacy Plan 尚未进入 Gateway 的 fallback-eligible plain 槽；没有合法接替槽才形成 content shortfall。两类兜底只有远端实际保留 `reply_to_message_id` 才确认 legacy reply。
 
 每个消息 revision 和 Task 聚合均新增 `grounding_quality_status`：
 
@@ -493,7 +500,7 @@ Task 级读模型不得再把所有历史消息取最差状态作为当前状态
 4. **无证据不补想象**：内容不足暴露为状态，不用默认方向伪装成功。
 5. **老师和属性成组**：多老师帖子只有能证明关联的属性才能与老师组合。
 6. **关系义务优先**：reply 必须先回答引用目标，不能因强调广播亮点变成 direct。
-7. **质量与数量分账**：unified current 只有通过绑定质量门的正常正文 typed fact 才确认 quantity/grounding；Unicode 或图片表情包只可按存量 legacy v1.2 identity 确认 legacy quantity，绝不计 unified speaking/interaction。
+7. **质量与数量分账**：unified current 的正常正文 typed fact确认quantity/grounding；§19.61合法emergency typed fact确认原quantity与基础发言/实际reply，不计grounding/语义回答。旧v1.2仍按原identity独立收口。
 8. **unknown 不重放**：Gateway 已开始且结果未知时保持 unknown，不能换内容补发。
 9. **显式失败，无静默降级**：不偷偷切通用 Prompt、不偷偷换老师、不偷偷换亮点。
 10. **发布时间决定窗口**：`source_published_at` 决定适用性、三天 deadline 与相对时间；采集延迟只产生风险/短缺，不延长业务窗口。
@@ -537,11 +544,11 @@ flowchart LR
 
 1. Listener 先 append 或幂等回读带 Telegram `source_published_at` 的 `ChannelMessageSourceRevision`，不得用会原地覆盖的 preview 充当来源版本；
 2. Planner 先按 Task/enrollment 在发布时间的生命周期判断消息是否适用，再锁定 Task、来源消息和计划唯一键，解析 canonical route、稳定 eligible 账号事实、参与整数、发布时间起三天 deadline 与容量日历；
-3. Planner 在一个短事务创建唯一数量 PlanContract、全部 obligation/ordinal、direct/reply 关系、首个 Grounding Snapshot、语义容量与全部首版 Assignment；unified current 的证据不足 ordinal 显式 shortfall，存量 legacy v1.2 才读取其既有 ContentMix/fallback identity，禁止缩小原始分母；
+3. Planner 在一个短事务创建唯一数量 PlanContract、全部 obligation/ordinal、direct/reply 关系、首个 Grounding Snapshot、语义容量与全部首版 Assignment；unified current 的正常证据不足记 normal quality shortfall，同时在原 ordinal 上保留 §19.61 的合法 emergency preparation；仅存量 legacy v1.2 读取其既有 ContentMix/fallback identity，禁止缩小原始分母；
 4. Task-wide allocation epoch 在所有 open 消息间公平分配 future `plan_reserved`；interaction v1 的专用生成 worker 在 frozen preparation window 到达且持有当前有效 Daily Cap/timeline reservation 后，为 obligation 建立/领取 GenerationJob，Provider 调用不持有数据库事务或发送 claim；只有 legacy v1.2 fallback 可直接冻结其旧 selection；
 5. 质量门通过后同事务冻结 accepted content/hash 与 quality audit，并在重读 obligation/assignment/source-or-turn revision 后首次创建 immutable ready Action；无 interaction version 的存量 v1.2 Plan 才继续原 Action-first 身份收口；
-6. unified Dispatcher 只领取 `quality_accepted` Action；`fallback_ready` 仅供存量 legacy v1.2 收口。两者都不调用 Provider、不改写正文；Gateway 前按 content source 复核 snapshot/assignment/route/temporal identity 并重算正文 hash；
-7. 远端成功后以 Attempt 的 `remote_message_id + outbound_content_or_media_identity + content_source` 写 typed remote comment fact；unified current 只有正常正文确认 quantity/grounding，Unicode/图片表情包只按 legacy route 确认 legacy quantity；
+6. unified Dispatcher 分别领取正常 `quality_accepted` 和 §19.61经确定性校验的 `fallback_ready`，共享同一obligation当前发送owner；legacy v1.2按原identity收口。两者都不调用 Provider、不改写正文；Gateway 前按 content source 复核 snapshot/assignment/route/temporal identity 并重算正文 hash；
+7. 远端成功后以 Attempt 的 `remote_message_id + outbound_content_or_media_identity + content_source` 写 typed remote comment fact；unified current 正常正文确认 quantity/grounding；§19.61合法emergency确认原quantity/基础覆盖，不计grounding，legacy独立收口；
 8. 来源编辑、删除和 Task lifecycle event 在新 claim 前 fence 旧 active pointer：编辑按 §9.4 追加内容 successor，删除/停止终结，暂停 release future capacity；任何路径都不重开已进入 Gateway 的 identity。
 
 ---
@@ -1148,7 +1155,7 @@ owned 比例门必须原子化：worker 先取得规范化 `tenant + Task + owne
 - 真人明确 @/点名一个或多个受管账号或回复我方 confirmed comment 时，ContextTurnBuilder 在 Task 路由前从 canonical event/fact 冻结 ordered required account set、required owner Task set 与 precedence basis；结构化 mention 按实体位置优先，再追加未重复的 native-reply fact 作者，多个 addressee 仍只允许一个平台响应。候选关闭后只在已返回 candidate 的 required owners 中按该顺序选 winner，缺失/blocked owner 永久封为本 turn 非 owner。一个合法 required candidate 都没有时才记 required-candidate miss，non-required Task/账号零响应；明确 addressee decision coverage 目标仍为 100%，部分缺失也使 observation integrity 失败。取得合法 claim 后也只有胜出的 required account 可响应，无 compatible reserve 时 missed，不能由 non-required 自有账号冒名接话；
 - 引用目标与来源帖子冲突时，只能谨慎求证或进入 `reply_grounding_conflict`，不能补造事实；
 - 引用目标在 Gateway 前失效时，只能在同 relation、同账号、同 source plan 内递增 `reply_target_attempt_revision`；旧目标历史保留，不降级 direct；Gateway 已开始后保持原 attempt unknown，禁止换目标重放；
-- reply 不允许 Unicode/图片表情兜底；正文无法同时回答目标和满足来源 grounding 时为 `reply_quality_shortfall`；
+- reply 正常正文无法同时回答目标和满足来源 grounding 时记录 `reply_quality_shortfall`；原窗口/关系有效且满足 §19.61时可回复随机表情，真实回复数量与语义质量分账，禁止改投direct；
 - owned followup 的发送窗为 parent confirmed 后 10～120 分钟，并继续服从讨论串真人 tempo、账号/peer 时间线和 source deadline；不得使用固定短延迟制造自问自答感；
 - Comment Reaction 继续属于非本期 `passive_operation`：不读取语义、不调用 LLM、不创建 turn，也不补足 reply、发言覆盖或互动质量。
 
@@ -1181,11 +1188,11 @@ event/turn candidate、GenerationJob 和 immutable ready Action 分别与 `Stage
 | 只有链接/@用户名/联系方式 | 安全过滤后无事实则 `grounding_insufficient` |
 | evidence 已全部被质量门拒绝 | `grounding_quality_exhausted`，不得发送万能评论 |
 
-允许的同槽数量兜底统一记为 `comment_fallback`，并以 `fallback_content_kind=unicode_emoji|image_meme` 区分文字表情和图片表情包。远端内容来源必须分别写成 `content_source=comment_unicode_emoji_fallback|comment_image_meme_fallback`，同时保存 `fallback_kind=planned|emergency`、`fallback_reason`、生成尝试摘要和冻结选择结果；两类兜底都不计入 `grounded_comment_rate`、正常正文、老师或亮点成功分子，也不能宣称实现相关性。只有 direct 槽可冻结 planned fallback；reply 槽内容不足时形成 reply shortfall，禁止发送文字/图片表情、禁止降级 direct。planned fallback 仅在 §4.3 比例 cap 内按 §4.4 参与 settlement；emergency fallback 只保 quantity并阻断质量达标。
+允许的同槽数量兜底统一记为 `comment_fallback`，并以 `fallback_content_kind=unicode_emoji|image_meme` 区分文字表情和图片表情包。远端内容来源必须分别写成 `content_source=comment_unicode_emoji_fallback|comment_image_meme_fallback`，同时保存 `fallback_kind=planned|emergency`、`fallback_reason`、生成尝试摘要和冻结选择结果；两类兜底都不计入 `grounded_comment_rate`、正常正文、老师或亮点成功分子，也不能宣称实现相关性。只有 direct 槽可冻结 planned fallback；reply 槽正常内容不足时保留语义shortfall，按统一引擎 §19.61允许同关系emergency表情，禁止降级 direct。planned fallback 仅在 §4.3 比例 cap 内按 §4.4 参与 settlement；emergency fallback 只保 quantity并阻断质量达标。
 
 ### 12.11 存量 legacy v1.2：20 个文字表情与图片表情包随机合同
 
-本节仅用于已冻结 legacy v1.2 Plan 的兼容收口和历史审计；unified current 不创建、选择或结算本节 fallback，也不得把本节行为带入新的 source plan。
+本节的20表情、grapheme完整性、批准图片池和稳定随机能力由统一引擎 §19.61继承给current emergency；旧ContentMix/Plan/cursor键仅服务legacy冻结identity。新emergency绑定统一obligation/policy，不新建legacy owner；planned分配与应急触发分开。
 
 #### 12.11.1 文字表情白名单
 
@@ -1283,9 +1290,9 @@ CommentFallbackSelection
 2. 到达某槽 JIT preparation window 后，top-level 先冻结 intent/planned call/style；discussion response 在唯一 owner 后先冻结 natural window，再于 compatible supply/Timeline 交集中把 admitted opportunity 与既有 response 数量义务原子写成带 planned call 的 `InteractionServiceBinding`，随后冻结 intent/style；owned followup 则先取得 confirmed parent 与 admission reservation，再冻结 intent/planned call/style。最后以 `obligation_id + service_or_parent_binding_revision + grounding_assignment_version + intent_binding_revision + style_assignment_revision + preparation_revision` 幂等创建 `GenerationJob`；planned fallback 槽无需 Provider，冻结 selection 后直接创建 immutable ready Action；
 3. GenerationJob 记录 request identity、claim/fence token、lane、Provider route、prompt/schema/model/rule version 与每次 variation/rejection；Provider 网络调用必须在数据库事务之外；
 4. Provider 明确失败或质量拒绝只能在同一 Job/obligation/grounding/intent/style assignment 和对应 lane 预算内递增 attempt；不得创建 Action 占位、替代 obligation、换 evidence/turn/intent/style 或占用 Gateway send claim；
-5. Provider 结果未知时原 Job 进入 `provider_result_unknown` 并按 request identity reconcile；没有明确未发生证明前不得重调，也不得创建 fallback Action；
+5. Provider 结果未知时原 Job 进入 `provider_result_unknown` 并按 request identity reconcile，不重放原调用；纯内容调用按 §19.61.6 CAS 封住 late normal 发布权后可创建同义务 emergency Action，原 unknown 成本/transport fence 不清除；Telegram unknown 禁止替代；
 6. 质量接受后，在一个短事务重读 obligation、grounding assignment、active intent/style assignment、source/turn/binding revision、Daily Cap/timeline reservation 和 accepted hash，再创建唯一 `quality_accepted` immutable Action；Dispatcher 不读取 `GenerationJob` pending 状态，也不现场调用 Provider；
-7. 本条只适用于存量 legacy v1.2：非实时合法 direct 槽在生成/审查耗尽或 latest-safe 到达后，可在同一 obligation 上冻结 emergency `CommentFallbackSelection` 并创建唯一 `fallback_ready` Action；该 Action 只确认 legacy quantity。unified current 的全部关系均禁止该转换并形成 typed shortfall；
+7. 存量 legacy 已冻结 fallback 按原身份收口；unified current 按 §19.61 在同一原 obligation/current binding 下允许 direct/reply emergency，确定性选择并创建唯一 `fallback_ready` Action，只计真实数量/基础覆盖或 ack，不计 normal grounding/语义质量；
 8. `quality_wait` 释放 GenerationJob 运行 claim，但保留 obligation、grounding/intent/style reservation 与当前合法 assignment、数量/容量 reservation，不存在待生成 Action；恢复只重领同一 preparation identity。turn stale 时按 §12.1 append supersede，而不是在旧 Job 内换上下文。
 
 current JIT 不使用固定 5～10 秒或 30 分钟：`jit_start_at = planned_call_at - complete_remaining_path_p95(pre_materialization) - safety_margin`，完整路径必须包含 realizer、强制 reviewer、确定性质量/去重和 Gateway prepare。只有批准 profile 证明整条链可达时，才可能在 planned call 前 5～10 秒启动；否则更早 admission 或显式 shortfall。discussion snapshot 固定 source grounding、target parent、active turn/reply chain/unresolved anchors，再选择最新 10～20 条同 thread 相关真人评论；噪声不占配额，精确 parent 即使更早也保留。
@@ -1296,13 +1303,13 @@ call-issued 前不超过 1 秒的 pre-call review window 必须把 `PreGatewayCo
 
 ### 13.2 调用、时限与成本预算
 
-非实时 `grounded_top_level` 与 `owned_peer_followup` 继续复用公共评估合同：单槽 route transport attempts ≤2、realizer 总 attempts ≤2、reviewer transport attempts ≤2、Provider calls 总数 ≤6，并在 Task revision 冻结非空 `max_cost_per_slot` 与任务日预算。legacy v1.2 可继续按其既有 `max_generation_latency_seconds=90` 收口；unified route 的 latest-safe/materialization 时限只从冻结 `ExecutionTimingProfileRevision` 派生，不继承该常数。实时 `discussion_response` 使用独立 `response_generation_budget_v1`：每个 `InteractionServiceBinding` 固定 1 次 realizer + 1 次独立 semantic reviewer，总 Provider calls≤2，decision 到 accepted candidate P95≤20 秒；Provider admission 的 `complete_response_preparation_p95` 必须包含两次串行调用、两段排队和确定性门，并预留 reviewer 所需 permit，不能只按 realizer latency 准入。active binding、source-plan/Task 总 binding/call budget conditional CAS 与完整路径 `ProviderCapacityReservation` 同事务；planned call 只从完整链按 P95 可到达的 interval 抽取。两次调用先记 reserved，各调用边界转 used/unknown；binding terminal 只释放从未发起部分，binding identity、used/unknown 和成本不归还，重复 terminal 不二次释放。reviewer reject/unknown、任一调用来不及 planned-call latest-safe 或 freshness deadline时直接形成 typed response quality/provider shortfall，不转 top-level、不发 fallback，也不在该 binding 上继续重生成。pre-Gateway 归还数量义务后的 successor binding 可获得自己的两次调用计划，但所有 successor 继续扣同一 source-plan/Task 冻结的 binding/call budget。classification、response 与非实时预算/permits 三者分列，修改必须形成新 policy revision，不能运行时加次数或互相挤占。
+非实时 `grounded_top_level` 与 `owned_peer_followup` 继续复用公共评估合同：单槽 route transport attempts ≤2、realizer 总 attempts ≤2、reviewer transport attempts ≤2、Provider calls 总数 ≤6，并在 Task revision 冻结非空 `max_cost_per_slot` 与任务日预算。legacy v1.2 可继续按其既有 `max_generation_latency_seconds=90` 收口；unified route 的 latest-safe/materialization 时限只从冻结 `ExecutionTimingProfileRevision` 派生，不继承该常数。实时 `discussion_response` 使用独立 `response_generation_budget_v1`：每个 `InteractionServiceBinding` 固定 1 次 realizer + 1 次独立 semantic reviewer，总 Provider calls≤2，decision 到 accepted candidate P95≤20 秒；Provider admission 的 `complete_response_preparation_p95` 必须包含两次串行调用、两段排队和确定性门，并预留 reviewer 所需 permit，不能只按 realizer latency 准入。active binding、source-plan/Task 总 binding/call budget conditional CAS 与完整路径 `ProviderCapacityReservation` 同事务；planned call 只从完整链按 P95 可到达的 interval 抽取。两次调用先记 reserved，各调用边界转 used/unknown；binding terminal 只释放从未发起部分，binding identity、used/unknown 和成本不归还，重复 terminal 不二次释放。reviewer reject/unknown 或正常链来不及时，保留 typed normal quality/provider failure，不在该 binding 上继续模型重生成；在释放 binding 前按 §19.61 判断独立应急路径，仍有合法实际发送窗口则同原关系准备表情，否则形成真实 shortfall，不转无关 top-level。pre-Gateway 归还数量义务后的 successor binding 可获得自己的两次调用计划，但所有 successor 继续扣同一 source-plan/Task 冻结的 binding/call budget。classification、response 与非实时预算/permits 三者分列，修改必须形成新 policy revision，不能运行时加次数或互相挤占。
 
 所有调用复用统一 `ExecutionResiliencePolicyRevision`：Telegram connect ceiling 5 秒；已写 call-issued 的 post-comment RPC ceiling 10 秒，超时必须 `unknown_after_send` 并保留 relation/outbound identity；单次 realizer/reviewer/voice-profile invocation ceiling 15 秒，超时计 Provider used/unknown budget。超时只立即释放本地 `ExecutionBulkheadLease`；未由当前隔离 runner 证明 transport 终止的 `RemoteInvocationFence` 仍占 account/group/proxy route/verified egress 或 Provider route/lane hard in-flight，TTL/重启/cancel-requested 不释放。transport 后续终止只结束在途计数，不清 post-comment 业务 unknown。proxy binding route 与 canonical verified egress 的 active fences 默认均≤2，同一真实出口不能因多个 proxy IDs 绕过；Task-group active Telegram fences≤配置 `concurrency_limit_per_group`。共享池按 1/2/3/4+ 个 runnable Task 将单 Task 新 lease 上限自适应为 100%/50%/约 33.34%/30%，先公平 quantum 再借当下不可用份额，waiter 恢复后停止新增超额 lease。account/proxy-route/proxy-egress circuit 默认 5 分钟 2 次 qualifying failure后 open 15 分钟，期满仅单 owner half-open probe；route 明确错误和两个账号同 verified-egress 相关失败分开归因，单账号错误不得误开共享 circuit。mask/classification/response/proactive/reviewer 子舱壁共同服从 Provider 父真配额，response/classification 保留保护份额；passive gateway 完全独立，业务主链不原地等待 probe。
 
-质量失败后的互动 outcome 与数量 owner 必须分账。`discussion_response` 在 pre-Gateway 失败时把当前 admitted opportunity/service binding 按真实 quality/provider/dedupe blocker 记 missed，保留全部调用数与成本，并以 append-only unbind 把同一 obligation 归还原类别：`response_hard` 继续等下一合法真人 turn，`response_flexible` 在 cutoff 前继续等、cutoff 后才按既定规则转 grounded top-level；successor binding 只有总 binding/call budget 尚有余额才可进入 Provider，source deadline 前不得提前形成 quantity terminal。`owned_peer_followup` 可在同 parent/relation 和非实时预算内重生成，预算耗尽或 parent window 结束时释放 admission、记录 owned relation shortfall 并把 hard 归还真人等待态。unified current 的 grounded top-level、discussion response 与 owned followup 均不得转 Unicode/image/template fallback 结算 normal comment；Gateway call-issued 后一律不解绑、不归还、不 replacement。legacy 已冻结 fallback identity 只按原合同收口，不迁入 unified。
+质量失败后的互动 outcome 与数量 owner 必须分账。`discussion_response`、`owned_peer_followup` 和 grounded top-level 的正常内容失败后，先保留当前原 obligation/relation/binding，按 §19.61 判断 emergency：仍有合法目标、发送窗口和权限时，同 owner CAS 选择表情，保留正常质量失败及全部调用/成本，只有真实表情远端事实才计数量/基础覆盖或 ack。应急已选择或等待其发送时不得同时 unbind、归还数量或创建其他回复。仅没有合法应急路径时，原 admitted opportunity 按真实 blocker 记 missed，以 append-only unbind 归还原类别；hard 继续等合法真人 turn，flexible 在 cutoff 后才按原规则转 grounded top-level。successor Provider 调用仍扣同一 source-plan/Task 总预算。Gateway call-issued 后一律不解绑、不归还、不 replacement；legacy frozen identity 按原合同收口。
 
-GenerationJob 必须持久化 `lane / service_binding_id|null / next_retry_at / latest_safe_send_at / calls_by_purpose / elapsed_generation_ms / accrued_cost / binding_budget_revision / task_budget_revision`。只有非实时 top-level/owned lane 的明确 pre-call/pre-accept 失败可在剩余预算和 latest-safe 内创建 successor；Provider 返回未知时先按 request identity reconcile，迟到结果只能结算同一 invocation。unified current 在预计下一次调用无法赶上 latest-safe、成本不足或次数耗尽时形成 typed provider/quality shortfall，不创建 `fallback_ready` Action；discussion response 继续按每-binding 两次硬预算和 source-plan/Task 总预算结束。legacy fallback 只按既有 frozen route/identity 收口。
+GenerationJob 必须持久化 `lane / service_binding_id|null / next_retry_at / latest_safe_send_at / calls_by_purpose / elapsed_generation_ms / accrued_cost / binding_budget_revision / task_budget_revision`。只有非实时 top-level/owned lane 的明确 pre-call/pre-accept 失败可在剩余预算和 latest-safe 内创建 successor；Provider 返回未知时先按 request identity reconcile，迟到结果只能结算同一 invocation。unified current 在下一次正常调用无法赶上 latest-safe、成本不足或次数耗尽时，保留正常 provider/quality 失败并按 §19.61 在同 owner 下创建合法 `fallback_ready`；若真实发送窗口/关系/安全不允许应急，才形成相应数量 shortfall；discussion response 继续按每-binding 两次硬预算和 source-plan/Task 总预算结束。legacy fallback 只按既有 frozen route/identity 收口。
 
 ### 13.3 Prompt 分层
 
@@ -1419,9 +1426,9 @@ unified route 的 evaluation 以 `obligation + GenerationJob + preparation_timin
 3. **同 peer 跨受管账号 30 天 exact 门**：所有受管账号的 `normal grounded` 规范化 exact 重复为硬拒绝；Gateway unknown 持续占位，不因普通 TTL 释放；
 4. **同 peer 最近表达窗口**：最近 100 条受管 normal comment 检查 template shell、speech act/length/emoji 组合和 normalized term cluster，最近 20 条另检查非 stop-word 2-gram 与四字开头。只有“语义主张/问题与 grounding anchor class+value 都相同”才判跨 source semantic duplicate；不同 source 的不同可验证事实不能仅因都在问价格、地点或服务就被误拒绝。
 
-四层决策在生成前形成禁用摘要、候选后完整检查、并发 reservation 和 Gateway 前最新窗口复核中使用同一 policy revision。合法 2～6 字短评也不豁免 exact/template/开头频率；确实无足够非重复表达时形成 quality shortfall，不用固定表情或同义词替换绕过。
+正常正文四层决策在生成前、候选后、并发 reservation 和 Gateway 前使用同一 policy revision，正常 2～6 字短评也不豁免。无足够非重复表达时保留 normal quality shortfall；§19.61 的独立 emergency 类型使用每义务/关系防重及稳定随机池，不受普通正文重复门限制，也不伪造正常质量通过。
 
-质量结果表中的“重生成/quality wait/兜底”只描述各 lane 在上一节允许的后续：`discussion_response` 任一 reject/unknown 直接结算本 turn missed 后归还原 response 类别，不重生成或 fallback；`owned_peer_followup` 可在同 parent/relation 预算内重生成但绝不 fallback，耗尽后释放 admission 并归还 hard；只有合法 `grounded_top_level` direct 可以进入冻结兜底。
+质量结果表按 §13.2/统一引擎 §19.61 分流：正常重生成仍受各 lane 原预算约束；正常失败时先保留 direct/reply 关系和当前 binding，判断独立 emergency。合法应急可用时冻结同义务表情并单独记录正常质量失败/实际 ack；只有没有合法应急路径时才 missed/unbind 归还原数量类别，避免已选择兜底又产生 successor 双重履约。
 
 | code | 含义 | lane 约束内后续 |
 | --- | --- | --- |
@@ -1429,14 +1436,14 @@ unified route 的 evaluation 以 `obligation + GenerationJob + preparation_timin
 | `unsupported_teacher` | 老师无证据或不匹配 | 按上段 lane 分流；允许重生成时仍保持同 assignment |
 | `unsupported_claim` | 出现无证据具体断言 | 按上段 lane 分流；允许重生成时仍保持同 assignment |
 | `assigned_aspect_missing` | 未命中主亮点 | 按上段 lane 分流；允许重生成时仍保持同 assignment |
-| `cross_teacher_leak` | 跨老师拼属性 | 拒绝并记录 P0 指标；reply 按上段归还 |
-| `reply_semantic_miss` | 未回答引用目标 | discussion 本 turn missed/归还；owned 仅同 parent 预算内重生成 |
-| `generic_filler` | 万能水评 | 按上段 lane 分流，不以 fallback 冒充 reply |
+| `cross_teacher_leak` | 跨老师拼属性 | 拒绝正常正文并记录 P0 指标；按上段判断应急或归还 |
+| `reply_semantic_miss` | 未回答引用目标 | 正常语义回答失败；按上段判断同关系应急 ack 或归还 |
+| `generic_filler` | 万能水评 | 按上段 lane 分流，应急 ack 不冒充语义回答 |
 | `duplicate_rejected` | 同帖或跨 source/账号命中版本化 exact/semantic/template/表达窗口 | 按上段 lane 分流；Gateway unknown 占位不释放 |
-| `semantic_review_unknown` | reviewer 超时、解析失败或无法判定 | direct 可按预算 wait/兜底；两类 reply 按上段归还且零 fallback |
-| `temporal_evidence_expired` | 分配证据已过有效期 | 禁止换 evidence；仅合法 direct 可兜底，reply 按上段归还 |
+| `semantic_review_unknown` | reviewer 超时、解析失败或无法判定 | 正常候选不放行；direct/reply 按上段判定应急，无需模型再审核固定表情 |
+| `temporal_evidence_expired` | 分配证据已过有效期 | 禁止使用过期事实生成正文；原 source/parent 仍有效时按上段应急，业务目标本身过期则不可发 |
 | `grounding_contract_stale` | snapshot/assignment 漂移 | 停止，回 Planner 复核 |
-| `quality_exhausted` | 合同内候选均失败 | 仅合法 direct 同槽兜底；owned 释放 admission/归还 hard；discussion 归还原类别 |
+| `quality_exhausted` | 合同内候选均失败 | direct/reply 优先按上段判断同关系应急；不合法时才归还原类别或短缺 |
 
 ### 14.3 接受正文与 Gateway 哈希闭环
 
@@ -1488,11 +1495,11 @@ unresolved
 - 抽取前失败：可以对同一 `source_revision_id` 重试，不创建半个 snapshot；
 - snapshot 已冻结、generation 未开始：普通重试复用同 snapshot/assignment；只有新的 Telegram source revision 可追加 successor；
 - Provider 明确 pre-call 失败：主备 Provider 可按既有路线切换，assignment 不变；
-- Provider 结果未知：按 Provider request identity reconcile，不重复调用；unified current 到 latest-safe 后以 fence 终结 Job 并形成 typed shortfall，零 fallback Action；存量 legacy v1.2 仅可在相同 obligation 上按其既有 frozen policy 建一个 fallback Action，迟到 Provider 结果只审计、不能覆盖；
+- Provider 结果未知：原 request identity reconcile、不重复调用；仅证明是纯内容调用时可按 §19.61.6 CAS 撤销 normal 发布权并准备同义务 emergency，晚到结果只审计/计费，remote hard fence 保留到 transport 真正结束。Telegram unknown 禁止替代发送；
 - 单 account voice/Session/discussion membership failure：只阻断该 allocation/relation，Task 为 `running_partial`，其他 selected/standby 和 source plans 继续；不得用 Task `last_error` 暂停全部评论；
 - 单 proxy route open/quarantined：只阻断使用该 binding revision 的账号；其他 proxy/direct 和其他绑定账号组继续。grounded top-level ratio ordinal 仅在 Generation/Action/Gateway identity 前、task-day selected 内部重绑本条账号并重建 voice/style；不得替换 task-day selected、转移 coverage 或从组外/participation standby 接替，required count 不变；
-- Provider/comment generation circuit：只阻断相应 interactive lane；不得占用或暂停 like/view passive gateway。open 期只等独立 probe wake，不在 Planner/Generation worker 内 sleep；
-- 质量拒绝/reviewer unknown：unified 非实时 grounded top-level/owned lane 只在公共次数/成本/latest-safe 合同内定向生成 successor，不能换证据绕过；预算耗尽后形成 typed quality shortfall，owned reply 释放 admission 并归还 hard，零表情兜底。实时 discussion response 的 reviewer reject/unknown 直接结算本 turn typed interaction shortfall，pre-Gateway 归还原 hard/flexible 数量类别，不重生成、不转 direct、不发表情；legacy v1.2 仅按其冻结 fallback 合同收口；
+- Provider/comment generation circuit：阻断相应正常内容 lane，§19.61 的确定性 emergency 选择和发送不等待 Provider probe；like/view passive gateway 独立。open 期正常路线只等独立 probe wake，不在业务 worker 内 sleep；
+- 质量拒绝/reviewer unknown：正常非实时 lane 仅在原次数/成本/latest-safe 内重试；实时 response 仍不追加本 binding 的模型调用。无有效正常候选时优先按 §13.2/§19.61 判断应急，保留真实 reply/binding 发批准表情；只有应急不合法时才 missed/unbind 归还数量，不转无关 direct，不重复计数；
 - Gateway 前 Action 明确失败：按既有同 slot attempt 恢复，relation/assignment 不变；
 - `unknown_after_send`：占用原 slot，等待远端 reconciliation；禁止创建替代；
 - Task pause/resume/stop/delete：严格复用 §4.5；pause release future capacity 且不顺延 deadline，resume 只用剩余曲线，stop/delete 终止而不伪装 met；
@@ -1930,7 +1937,7 @@ Phase 0 开始前必须对最近 30 天真实来源做只读基线：可取时�
 - [ ] 安全规则、联系方式、URL、@用户名、跨城市回归通过；
 - [ ] 未成年人/年龄不明、胁迫/非自愿、剥削/贩运、隐私侵害输入输出均类型化拒绝且 Gateway zero-call；
 - [ ] deterministic claim extractor 能发现 Provider 未申报的姓名、数字、地点和经历断言；
-- [ ] semantic reviewer 超时、解析失败和 unknown 均不能覆盖 deterministic reject；只有非实时 lane 可在各自预算内等待/重试，耗尽后也只有 fallback-eligible grounded top-level direct 可按冻结 policy 进入表情兜底。discussion response 本 turn missed 后归还原 hard/flexible 类别，owned followup 释放 admission 并归还 hard，两类 reply 均零 fallback；
+- [ ] semantic reviewer 超时、解析失败和 unknown 不能放行拒绝的正常正文；direct/reply 按 §19.61 的独立确定性检查走 emergency，无需再次调用模型审核。必须验证先做应急选择再决定是否 unbind，保留真实关系、原正常失败和 unknown 成本；
 - [ ] 时效证据在 Provider 前与 Gateway 前过期均阻断；
 - [ ] `unicode_emoji_allowlist_v2` 精确包含 §12.11 的 20 个唯一 grapheme；`❤️` 不被截断，任何项均不附加文字、标点或第二个表情；
 - [ ] planned fallback 无 Provider 调用，先按冻结 bps 确定 Unicode/image_meme，再按稳定 seed 选择具体内容并可在 fallback-eligible plain/relation 槽验收；
@@ -1947,8 +1954,8 @@ Phase 0 开始前必须对最近 30 天真实来源做只读基线：可取时�
 - [ ] Telegram 成功后主事务失败时，独立 journal 保留完整 comment typed fact；reconcile 恢复相同 fact 后 obligation confirmed，缺 typed fact 时保持 unknown；
 - [ ] 任务详情分别展示 selected/remote-confirmed 与 planned/emergency，pending/failed/unknown selection 不计 remote confirmed；
 - [ ] 专用 normal AI/普通 image/sticker/custom emoji 槽不能被 Unicode 或 image_meme 兜底冒充；合法 ContentMix reallocation 必须 append revision，没有接替槽形成 shortfall；
-- [ ] reply 槽禁止 Unicode 或图片表情包兜底；没有合法替代引用或正常回答正文时形成 shortfall，成功远端事实必须读回相同 `reply_to_message_id`；
-- [ ] discussion response 严格为 1 次 realizer + 1 次 reviewer，总调用≤2；required concurrency/admission 使用包含两次串行调用、排队和门禁的 complete preparation P95，并给 mandatory reviewer 保留 permit；候选 P95≤20 秒且拒绝/unknown 不重生成或 fallback。非实时 lane 的 route/realizer/reviewer/总调用、90 秒、单槽成本、任务日预算和 `latest_safe_send_at` 分别执行硬门；
+- [ ] reply emergency 允许批准的随机 Unicode 表情及显式启用的 ready 图片；远端事实读回相同 `reply_to_message_id`，真实引用无效时明确 shortfall，不改 direct，不计 semantic answer 成功；
+- [ ] 正常 discussion response 最多 1 次 realizer + 1 次 reviewer，总调用≤2；正常 admission 使用完整两次调用链 P95并预留 reviewer permit。明确 Provider 不可用时 emergency 零模型调用，不必先耗尽预算；reject/unknown 不追加 response 模型调用，可按 §19.61 准备应急。非实时正常调用与成本/时间门保持原版本合同；
 - [ ] Provider unknown 在 fence 后迟到不能覆盖 `fallback_ready`；
 - [ ] 质量接受后任何正文变换都必须重新验收，过滤器不能发送另一版本；
 - [ ] accepted/action/outbound hash 一致才允许 Gateway，mismatch 为零远端调用。
@@ -2062,7 +2069,7 @@ E4 样本必须至少包含：
 - [x] Daily Cap 跨消息公平分配、连续 UTC 时区周期和容量预测已定义。
 - [x] stable eligible/readiness、零/小账号池、semantic capacity、老师自然分布和 planned/emergency 兜底验收已定义。
 - [x] current execution、recent SLA 与 lifetime outcome 已分离。
-- [x] 单帖业务 cap、planned fallback cap、reply 禁止兜底及 reply shortfall 不降级 direct 已定义。
+- [x] 单帖业务 cap、planned fallback cap 与独立 emergency policy 已区分；reply emergency 保留引用，真实关系不可用时 shortfall 不降级 direct。
 - [x] paused/expired/idle/met 监控语义与业务效果独立指标已定义。
 - [x] 20 个唯一 Unicode 表情、图片表情包素材版本池、显式权重和稳定随机 owner 已定义。
 - [x] 图片失效顺延、跨类型兜底、Gateway/unknown 不换内容、ContentMix 和 typed remote media fact 已闭合。

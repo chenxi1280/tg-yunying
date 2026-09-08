@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .account_assignment_eligibility import assignment_account_predicate
+
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
@@ -801,6 +803,7 @@ def _ready_coverage_stmt(task: Task, timestamp: datetime):
     return (
         select(TaskAccountDailyCoverage)
         .where(
+            assignment_account_predicate(task, TaskAccountDailyCoverage.account_id),
             TaskAccountDailyCoverage.task_id == task.id,
             TaskAccountDailyCoverage.coverage_date == timestamp.date(),
             TaskAccountDailyCoverage.state == "ready",

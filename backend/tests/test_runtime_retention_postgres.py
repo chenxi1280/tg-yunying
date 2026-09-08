@@ -65,8 +65,8 @@ def test_two_cleanup_workers_claim_disjoint_batches_and_atomically_accumulate(mo
         barrier = Barrier(2, timeout=5)
         original_batch = runtime_retention._runtime_detail_batch
 
-        def synchronized_batch(session, cutoffs, batch_size):  # noqa: ANN001
-            rows = original_batch(session, cutoffs, batch_size)
+        def synchronized_batch(session, cutoffs, batch_size, *, as_of):  # noqa: ANN001
+            rows = original_batch(session, cutoffs, batch_size, as_of=as_of)
             barrier.wait()
             return rows
 

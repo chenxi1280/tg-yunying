@@ -6,7 +6,7 @@ from app.models import (
     AccountGroupMembershipRevision, AccountGroupStateRevision, AccountPool, AccountPoolConcurrencyLease,
     AccountPoolConcurrencyPolicyRevision, Action,
     ExecutionAttempt, StageWakeOutbox, Task, TaskAccountGroupBindingSetRevision,
-    TaskPlannerWakeState, TgAccount,
+    TaskPlannerWakeState, TgAccount, TgAccountOnlineState,
 )
 from app.services._common import _now
 from app.services.account_group_revisions import begin_membership_change, finish_membership_change
@@ -16,11 +16,19 @@ from app.services.task_center.engagement_binding import (
 )
 from app.services.task_center import engagement_membership_wake as wakes
 from app.services.task_center.engagement_policy_scope import policy_eligible_member_ids
-from tests.test_account_group_revisions import _initialize, _seed
+from tests.test_account_group_revisions import _initialize, _seed as _seed_membership
 from tests.test_engagement_runtime_resources import _session
 
 
 pytestmark = pytest.mark.no_postgres
+
+
+def _seed(session):
+    _seed_membership(session)
+    for account in session.scalars(select(TgAccount)):
+        account.session_ciphertext = "QA-current-session"
+        account.status = "在线"
+    session.flush()
 
 
 def _task(session, *, pool_id=1, status="running", task_type="channel_like"):
@@ -85,19 +93,19 @@ def test_new_unit_exposes_membership_drift_while_old_snapshot_remains_frozen():
         assert first.member_account_ids == [11, 12]
 
 
-def test_eligibility_uses_frozen_enabled_state_and_keeps_transient_offline_members():
+def test_eligibility_uses_current_recovery_and_keeps_disconnected_valid_members():
     with _session() as session:
         _seed(session)
         _initialize(session)
         change = begin_membership_change(session, 1, (1,), actor="test", reason="disable_account")
         session.get(TgAccount, 11).status = "禁用"
-        session.get(TgAccount, 12).status = "离线"
+        session.add(TgAccountOnlineState(tenant_id=1, account_id=12, online_status="offline"))
         finish_membership_change(session, change)
         task = _task(session)
         snapshot = freeze_membership_snapshot(session, task, participation_unit="first")
         session.get(TgAccount, 11).status = "在线"
         assert snapshot.member_account_ids == [11, 12]
-        assert policy_eligible_member_ids(session, task, snapshot) == (12,)
+        assert policy_eligible_member_ids(session, task, snapshot) == (11, 12)
 
 
 def test_wrong_member_purpose_is_not_silently_removed_from_denominator():

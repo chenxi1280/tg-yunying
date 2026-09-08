@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
+
+from .account_assignment_eligibility import action_assignment_reason
 
 from sqlalchemy.orm import Session
 
@@ -77,6 +80,11 @@ def _persist_generation_result(
     tokens: int,
     duplicate_batch: DuplicateMemoryBatch,
 ) -> None:
+    reason = action_assignment_reason(session, action)
+    if reason:
+        result = replace(result, rejection_code=reason, rejection_detail="账号失效，晚到内容不取得发送资格",
+            evaluator_evidence={**result.evaluator_evidence, "candidate_hash": hashlib.sha256(
+                result.content.encode("utf-8")).hexdigest(), "account_ineligible": reason, "tokens": tokens})
     if result.rejection_code:
         _persist_generation_rejection(session, request, action=action, result=result)
         return

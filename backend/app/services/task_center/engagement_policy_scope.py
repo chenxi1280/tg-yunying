@@ -3,16 +3,20 @@ from sqlalchemy.orm import Session
 
 from app.models import Task, Tenant
 
+from .account_assignment_eligibility import assignment_decisions, publish_assignment_summary
+
 
 def policy_eligible_member_ids(session: Session, task: Task, snapshot) -> tuple[int, ...]:
-    contracts = _frozen_contracts(snapshot)
+    _frozen_contracts(snapshot)
     tenant = session.get(Tenant, task.tenant_id)
     excluded = {int(tenant.group_rescue_admin_account_id or 0)} if tenant else set()
     if task.type == "group_ai_chat":
         excluded.add(int((task.type_config or {}).get("group_rescue_admin_account_id") or 0))
-    return tuple(account_id for account_id in snapshot.member_account_ids
-        if account_id not in excluded and contracts[account_id]["enabled"] is True
-        and contracts[account_id]["lifecycle"] == "business_active")
+    candidates = tuple(account_id for account_id in snapshot.member_account_ids
+        if account_id not in excluded)
+    decisions = assignment_decisions(session, task.tenant_id, candidates)
+    publish_assignment_summary(task, decisions)
+    return tuple(account_id for account_id in candidates if not decisions[account_id])
 
 
 def _frozen_contracts(snapshot):

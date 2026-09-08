@@ -178,3 +178,27 @@ def test_business_success_does_not_close_an_open_circuit() -> None:
         session.flush()
 
         assert circuit is not None and circuit.state == "open"
+
+
+@pytest.mark.parametrize("domain_kind,domain_key", [
+    ("account", "account:11"), ("proxy_route", "route:1"), ("proxy_egress", "egress:1"),
+])
+def test_frozen_account_cannot_bypass_daily_recheck_through_circuit(monkeypatch, domain_kind, domain_key):
+    engine = _database()
+    with Session(engine) as session:
+        account = session.get(TgAccount, 11)
+        account.telegram_frozen = True
+        circuit = session.scalar(select(ExecutionCircuitState))
+        circuit.domain_kind, circuit.domain_key = domain_kind, domain_key
+        session.commit()
+    monkeypatch.setattr(probes, "proxy_domain_keys", lambda *_: ("route:1", "egress:1"))
+    monkeypatch.setattr(probes.gateway, "check_account_health_isolated",
+        lambda *_args, **_kwargs: pytest.fail("frozen account must use its daily recheck"))
+
+    assert probes.drain_due_circuit_probes(_session_factory(engine)) == 1
+    with Session(engine) as session:
+        attempt = session.scalar(select(HealthProbeAttempt))
+        assert attempt.state == "superseded"
+        assert attempt.outcome_code == "probe_dependency_changed"
+        assert attempt.evidence == {"detail": "circuit_probe_account_unavailable"}
+        assert session.scalar(select(ExecutionCircuitState)).state == "open"

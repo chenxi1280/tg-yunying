@@ -1,5 +1,8 @@
 # Telegram 冻结账号执行资格修复
 
+> **2026-09-08 账号分配资格resync：** [统一引擎PRD](unified-engagement-fulfillment-engine-prd.md) §19.64为当前合同：Session失效、Telegram冻结及其他明确失效账号先从新计划候选排除，再计算人数/覆盖与分配工作；已有selected不授予后续新分配资格。运行中失效立即停止新分配和未调用派发，健康账号继续；历史已分配/unknown/confirmed证据保留。临时网络/资源等待与账号失效分开。§19.64账号资格入口已完成本地实现与定向QA，尚未发布；不代表§19.60/§19.61等其他设计已经实现，生产验收见该节独立记录。
+
+
 ## Intake / 产品交接
 
 - intake_id: frozen-account-eligibility-20260908；级别 L3；production_related=true。
@@ -11,7 +14,7 @@
 ## 合同
 
 1. Telegram `FROZEN_METHOD_INVALID`、`FROZEN_PARTICIPANT_MISSING`及对应SDK类/明确英文错误统一识别为账号冻结，优先于群权限、FloodWait和内容错误；普通群禁言/权限错误不冻结账号。
-2. `TgAccount.telegram_frozen`和`telegram_freeze_observed_at`保存独立账号事实。冻结后status投影为疑似封禁，健康分不超过20；操作任务候选和执行前均检查冻结事实，其他流程将status写回在线也不能放行。历史分母、成员归属、任务配置与unknown证据不删除或改写。
+2. `TgAccount.telegram_frozen`和`telegram_freeze_observed_at`保存独立账号事实。冻结后status投影为疑似封禁，健康分不超过20；操作任务候选和执行前均检查冻结事实，其他流程将status写回在线也不能放行。历史已分配分母、成员归属、任务配置与unknown证据不删除或改写；新计划先排除冻结/Session失效等账号，不把历史分母保留理解为继续分配。统一入口与已有计划后续工作的具体规则以统一§19.64为准。
 3. 健康检查授权/get_me成功后必须调用`help.getAppConfig(hash=0)`，读取完整配置中的`freeze_since_date`。非零为冻结；完整响应缺失/零为非冻结。NotModified/畸形配置/RPC失败不能当作已解冻或健康成功。读取只发生在正式健康检查，不用发送消息、加群测试可用性。
 4. 只有带权威冻结检查及其开始时间的健康结果可清除冻结事实。按观测时间单调CAS：晚返回的旧健康检查不能覆盖更新的冻结拒绝，晚返回的旧冻结观察不能覆盖更新的完整检查。健康应用同时核对账号授权与连接代次，旧身份结果不得覆盖当前账号。
 5. 冻结错误必须在membership群权限处理之前记录并终止本次业务路径，禁止针对冻结错误启动群权限救援。已经进入Gateway但缺少精确无变更证明的动作仍保留unknown；冻结资格和动作结果分别处理，不因账号冻结而重放、改写远端事实或批量终结存量动作。
@@ -78,3 +81,13 @@ CI34181916380：前端、两个PostgreSQL与两个no_postgres分片通过；剩�
 - 同窗口其他账号正常产生44次业务Gateway调用，排除全系统停止导致的零调用假象。既有unknown和已开始的调用未因本修复改写。
 - 结论：`release_status=release_passed`，`product_accepted=true`，`production_fixed`适用于“已确认冻结账号继续分配/执行”以及“探测失败且无冻结观测的存量动作绕过”两个修复入口。当前Telegram冻结事实确认范围315；11个探测失败账号的当前冻结状态仍unproven，维持等待，不代表已解冻或其业务已履约。
 - 本验收记录为文档归档，生产代码仍为上述d26a562b，不因文档归档触发重复部署。
+
+
+### 2026-09-08 引擎分配资格补正（本地实现/未发布）
+
+本文件之前的E4适用于所列当时运行版本和调用入口。本次修复前统一参与者选择 `engagement_policy_scope` 只看成员enabled/business_active，`engagement_participation`会直接复用既有selected；这些路径不能仅凭本文件历史“新增Action=0”记录宣称已满足新合同。Session失效和冻结均须在参与人数、账号覆盖义务与GenerationJob/Action分配前排除；调用前冻结检查继续保留。分配提交与当前账号失效事实同一锁/代次边界校验，已有计划失效账号不再获得新来源或补量工作。详见统一§19.64的反查、状态表与QA，`design_status=complete`、`implementation_status=implemented_local_qa`、`production_status=unproven`；本地实现记录见统一§19.64.6，不借用本文件历史E4证明新入口已在生产生效。
+
+
+### 每日复查频率resync（2026-09-08）
+
+按统一§19.64.7：已知冻结、Session失效/需重新登录自动只读复查间隔改为24小时；复查暂时失败仍保持每日间隔。封禁/禁用保持退出自动保活且不自动恢复。正常保活与业务实时失效落库不变；分配资格只读当前数据库事实，不重复触发RPC。批次next_probe_at和历史短deadline均须遵守新间隔。本地已实现，频率/冻结/资格/circuit等131项定向测试通过；尚未发布，历史E4不证明本次频率已上线。

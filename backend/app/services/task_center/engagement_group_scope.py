@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .account_assignment_eligibility import eligible_assignment_account_ids
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -29,7 +31,7 @@ def sync_group_participation_scope(
     account_ids: list[int],
 ) -> int:
     target = group_operation_target(session, task, target_group)
-    normalized = sorted({int(account_id) for account_id in account_ids})
+    normalized = eligible_assignment_account_ids(session, task.tenant_id, account_ids)
     existing = set(
         session.scalars(
             select(TaskMembershipAdmissionItem.account_id).where(

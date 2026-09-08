@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .account_assignment_eligibility import action_assignment_reason
+
 import hashlib
 import json
 from datetime import timedelta
@@ -116,17 +118,9 @@ def persist_comment_generation_result(
     tokens: int = 0,
 ) -> None:
     action = load_attempt_action(session, request)
-    result = (
-        generated
-        if isinstance(generated, GeneratedCommentResult)
-        else evaluate_legacy_generated_comment(
-            session,
-            action,
-            payload=request.payload,
-            content=generated,
-            tokens=tokens,
-        )
-    )
+    result = _comment_result(session, action, request=request, generated=generated, tokens=tokens)
+    if _reject_ineligible_result(session, request, action=action, result=result):
+        return
     decision = generated_comment_decision(result)
     if not decision.allowed:
         if decision.code in COMMENT_QUALITY_WAIT_CODES:
@@ -475,3 +469,31 @@ __all__ = [
     "persist_generation_failure",
     "persist_generation_unknown",
 ]
+
+
+def _reject_ineligible_result(session, request, *, action, result) -> bool:
+    reason = action_assignment_reason(session, action)
+    if not reason:
+        return False
+    _fail_before_generation(action, reason, "账号失效，晚到评论不取得发送资格", stage="account_eligibility")
+    action.result = {**dict(action.result or {}), "account_ineligible": reason,
+        "rejected_candidate_hash": hashlib.sha256(result.content.encode("utf-8")).hexdigest(),
+        "generated_tokens": result.tokens, "comment_quality_audit": result.quality_audit or {}}
+    with session.no_autoflush:
+        finish_comment_generation_job(session, action, request.payload, state="failed", owner=request.claim_owner)
+    _cas_write_action(session, request, action)
+    return True
+
+
+def _comment_result(session, action, *, request, generated, tokens):
+    return (
+        generated
+        if isinstance(generated, GeneratedCommentResult)
+        else evaluate_legacy_generated_comment(
+            session,
+            action,
+            payload=request.payload,
+            content=generated,
+            tokens=tokens,
+        )
+    )

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .account_assignment_eligibility import require_action_assignment_account
+
 import hashlib
 import json
 from datetime import datetime
@@ -49,6 +51,7 @@ def claim_comment_generation_job(
     *,
     owner: str,
 ) -> GenerationJob:
+    require_action_assignment_account(session, action)
     obligation_id = comment_generation_obligation_id(action, payload)
     sequence = _next_generation_sequence(session, obligation_id)
     _upsert_generation_job(

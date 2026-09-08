@@ -124,7 +124,7 @@ def is_content_policy_only_change(
         if not key.startswith("_ai_group_content_policy_")
         and previous_config.get(key) != (task.type_config or {}).get(key)
     }
-    return bool(changed) and changed <= AI_GROUP_CONTENT_POLICY_FIELDS
+    return changed <= AI_GROUP_CONTENT_POLICY_FIELDS
 
 
 def _changed_content_policy_fields(

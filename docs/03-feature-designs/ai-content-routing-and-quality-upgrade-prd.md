@@ -1,5 +1,9 @@
 # AI 活群上下文路由、成人方向与多 Provider 内容质量升级 PRD
 
+> **2026-09-08 二轮对照修订（设计态）：** 统一引擎 §19.13–19.15/§19.63 优先于本专项历史复杂准备合同：当前运行不要求历史P95画像审批、逐binding模型预算、完整InteractionServiceBinding或聊天事件版本档案；复用原义务/Job/回复身份、绝对deadline与未知结果防重。§19.61应急不重建这些已撤销前置；历史QA与本地实现状态不代表新切片已验收。
+
+> **2026-09-08 用户裁决 / emergency resync（设计完成，尚未实施）：** 统一引擎 §19.61允许显式emergency policy下的签到/随机表情与基础业务结算；旧current v2静态内容绝对禁令只约束未授权fallback，不能阻断本次获准应急。禁止在原normal结果上暗改正文，必须同owner CAS选择新内容revision。 本切片代码/生产状态仍为未实施、未验收；旧事件记录保留。
+
 ## 0. 文档状态与真相源边界
 
 | 项 | 结论 |
@@ -14,7 +18,7 @@
 | 本文优先级 | 本文补正上位合同中 AI 内容的 task direction、context route、window mode、短 Prompt、多 Provider 与评测细则 |
 | 生产结论 | `shadow_generation_pass / reviewer_comparison_unproven / production_fixed=unproven` |
 
-v1.2 在 v1.1 上补齐拟人发送与达量的共同合同：使用真实任务字段和单调上下文 revision，修正 WindowPlanSlot pre-Gateway replacement，引入逐 slot 生成/替代与 typed shortfall，并明确 current v2 禁止固定“签到”或其他静态内容补量；仍不代表代码已实现或线上已修复。
+v1.2 在 v1.1 上补齐拟人发送与达量合同：真实任务字段、单调上下文 revision、pre-Gateway replacement、逐 slot 生成及 typed shortfall。2026-09-08 起，旧 current v2 禁止静态补量条款由统一引擎 §19.61 替代为独立 emergency policy；正常质量与真实兜底数量/基础覆盖分账，尚不代表代码或线上已修复。
 
 本文只定义产品与技术合同，不授权修改线上 Provider、任务配置、数据库或发送 Telegram。任何实现都必须沿用 current 履约链，不得用独立脚本或旁路发送器替代：
 
@@ -60,7 +64,7 @@ stable obligation
 
 - 不把成人内容开关做成全租户默认放开。
 - 不根据账号面具、账号昵称或单个弱词推断成人主题。
-- 不在 Provider 返回后用模板、字符串替换、emoji、随机短句或固定“签到”改写正文或冲抵 quantity owner。
+- 不在 Provider 返回后改写并冒充审核通过的正常正文；合法签到/表情由 §19.61 独立 emergency selection 冻结，通过同一 quantity owner 的 CAS 交接发送权；
 - 不把“好润”“水多不？”写成所有成人消息的固定模板。
 - 不把 transport fallback 当作内容质量修复；有效但低质的候选不能换模型重试到“评审通过”。
 - 不在 Phase 1 同时重写频道评论 reply authority、AI 数量 owner 或 Dispatcher/Gateway。
@@ -522,8 +526,8 @@ Provider response 解析后抽取的 canonical UTF-8 `message_text` 字节及 ha
 
 - `ai_content_route_v2_enabled=true` 必须同时满足 `ai_two_stage_enabled=true`；保存事务在任何 policy/binding 写入前拒绝半配置。
 - active policy、task binding、allowed routes、全部 purpose route snapshots、MessageBrief v2、voice contract v3 与独立 reviewer canonical identity 必须在同一 task revision 冻结。
-- V2 runtime 必须把 tenant legacy static fallback 视为 false；AI 活群不得进入 due-catch-up check-in pipeline，不得产生精确“签到”、签到变体、Stage 1 正文、emoji fallback 或其他静态补量。频道评论是唯一显式例外：沿用评论专项/全任务合同保留原 ordinal/direct-reply、冻结 fallback hash 和原因后，允许 `👍 / 🙂 / 👏` 单表情 `post_comment` 兜底；启用 grounding v1 时，该事实只确认 quantity，不计 grounding/老师/亮点质量。
-- reviewer 不可用、429、route unavailable、fail 或 uncertain 均保持同一 GenerationJob/Action 为 `quality_wait`。AI 活群达到 latest-safe 后写 typed shortfall且绝不转 ready Action；频道评论达到公共预算/latest-safe 后允许按评论专项把同一 Action 转为单表情 `fallback_ready`，不得标记 quality accepted。
+- V2 runtime 不继承 tenant legacy static fallback 开关；采用独立 `emergency_fallback_v1`。活群主动义务用精确“签到”，群回复和频道 direct/reply 评论用批准池的随机表情；原账号、义务、引用和数量不变，真实确认后计基础业务，不计正常内容/grounding/语义回答质量。不恢复旧 due-catch-up 旁路，不发布 Stage 1 或签到变体。
+- reviewer 不可用、429、route unavailable、fail 或 uncertain 按 §19.61 分类；可用正常候选优先，正常链无法服务时在同原 owner 下准备 deterministic `fallback_ready`。明确额度/模型不可用无需等到 latest-safe；纯 Provider unknown 先 CAS 撤销晚到正文发布权，Telegram unknown 只对账，不得冒充 quality accepted。
 - generator 与 reviewer 的全部 canonical provider/model identity 集合必须不相交；只看首候选不同不够。
 - 只允许显式选中的一个 Task revision 作为 canary；实现和发布不得自动批改或同时打开现有 7 个生产任务。
 
@@ -534,8 +538,8 @@ Provider response 解析后抽取的 canonical UTF-8 `message_text` 字节及 ha
 | activation | `route_v2=true/two_stage=false` 保存失败且零 binding；完整配置继续冻结 policy/binding |
 | runtime | V2/two-stage 下 tenant static flag 不进入普通 fallback或 due-catch-up pipeline |
 | MessageBrief/voice | 每个 job 有 v2 brief、context/policy/prompt/example 与 voice snapshot |
-| reviewer | canonical identity 独立；不可用/429/fail/uncertain -> quality_wait；AI 活群无 ready Action，频道评论预算/latest-safe 后仅可同槽 `fallback_ready` |
-| deterministic gates | 精确/近义/结构重复、相同开头/speech act/length collapse、签到/emoji/Stage 1 均拒绝 |
+| reviewer | 正常候选要求 canonical identity 独立；不可用/429/fail/uncertain 保留正常失败，合法活群/回复/评论按 §19.61 独立准备同 owner emergency，不依赖 reviewer 恢复 |
+| deterministic gates | 正常正文检查重复/结构/风格，拒绝 Stage 1；emergency 单独检查批准的精确签到/表情、原关系/权限/时间/owner，不冒充正常质量 |
 | 兼容 | flag-off legacy 行为不在本提交中迁移；频道评论按公共评估合同 Phase D 与 `ai-channel-comment-broadcast-and-teacher-relevance-prd.md` 独立验收 |
 
 Release Gate 仍执行不少于 120 条分层离线评测；单任务生产 canary 至少连续 3 天、100 条 typed remote fact、30 条盲审、3 个上下文簇与 10 个 voice 账号。每条发送事实必须可追到 task/config revision、ledger/slot、GenerationJob、policy/brief/voice/provider/reviewer snapshot、Action、Attempt/Gateway、typed remote ID 与受控正文 hash。切换 provider、route readback、发送数量和五类任务履约均不能替代质量验收。
@@ -543,6 +547,8 @@ Release Gate 仍执行不少于 120 条分层离线评测；单任务生产 cana
 Product Design Complete 自检：用户截图症状、连续窗口、设计激活缺口、配置/UI、后端 activation/runtime、生成与 reviewer、并发/冻结、quality_wait、静态旁路、兼容边界、QA/canary/E4 均已覆盖。当前只授权本地实现与测试，不授权生产任务开关、重生成、补发、配置 apply 或发布；`production_fixed=unproven`。
 
 ### 7.4 受保护 policy/bootstrap 与单任务 canary 配置合同
+
+> 本节 `ai_group_v2_canary_policy_v1` 是旧正常内容 canary 的冻结配置流程；它的零静态内容、全部 voice 就绪和全部 Provider 健康要求不得用于拒绝 §19.61 的 emergency policy successor 或降级运行。新应急的迁移、配置 readback、兼容边界与四类 E4 使用统一引擎 §19.61.7–19.61.9，不能按旧 bootstrap 重置独立 emergency 开关。
 
 新增 `ai_group_v2_canary_policy_v1` 代码清单，只固化本文已经批准的合同：
 `message_brief_v2`、`voice_contract_v3`、mode-specific Prompt contract、

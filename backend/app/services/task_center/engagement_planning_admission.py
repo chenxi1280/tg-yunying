@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .account_assignment_eligibility import assignment_decisions
+
 import hashlib
 import json
 from datetime import datetime, timedelta
@@ -108,6 +110,7 @@ def _planning_paths(
     target: OperationTarget | None,
     require_send: bool,
 ) -> list[dict]:
+    qualifications = assignment_decisions(session, task.tenant_id, account_ids)
     accounts = _accounts_by_id(session, task, account_ids)
     authorizations = _authorizations_by_account(session, task, account_ids)
     memberships = _memberships_by_account(session, task, account_ids)
@@ -127,6 +130,7 @@ def _planning_paths(
             mask=masks.get(account_id),
             target=target,
             membership_ready=account_id in ready_ids,
+            qualification_reason=qualifications[account_id],
         )
         for account_id in account_ids
     ]
@@ -171,8 +175,10 @@ def _account_path(
     mask: AiAccountVoiceProfile | None,
     target: OperationTarget | None,
     membership_ready: bool,
+    qualification_reason: str = "",
 ) -> dict:
     checks = [
+        _check("assignment_eligibility", not qualification_reason, qualification_reason, revision=None),
         _account_check(account),
         _session_check(account, authorization),
         _proxy_check(account),
@@ -226,7 +232,8 @@ def _session_check(
         "fact_version": authorization.fact_version,
         "health_status": authorization.health_status,
     }
-    return _check("session", account_session or auth_session, "session_unavailable", revision=revision)
+    ready = auth_session if account and account.current_authorization_id is not None else account_session
+    return _check("session", ready, "session_unavailable", revision=revision)
 
 
 def _proxy_check(account: TgAccount | None) -> dict:

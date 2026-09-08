@@ -1,5 +1,14 @@
 # 统一互动履约引擎 PRD
 
+> **2026-09-08 失效账号不分配任务（本次用户裁决，已本地实现/未发布）：** §19.64为当前账号分配资格合同。Session失效、需重新登录、Telegram冻结及其他明确无业务资格的账号，必须在参与人数/覆盖分母和账号任务分配之前排除；不能先选入计划再只靠Gateway拒绝。已冻结计划只保留历史事实，不授予失效账号继续获得新工作资格。运行中失效立即停止新分配与未调用派发，健康账号继续。本节优先于§10.5/§11/§19.1.2/§19.3.6/§19.63中把已知失效与短时资源等待混为一类的旧表述；本次实现与定向QA见§19.64.6，尚未取得生产验收证据。
+
+
+> **2026-09-08 二轮旧 PRD 对照审查：** §19.63 修正轻量范围被重新加重、72 小时统计与明细清理、业务外键级联、内容配置继承及新旧生命周期/账号口径冲突。§19.13–19.15 的简化裁决继续有效，§19.60–19.61 不恢复已撤销的模型预算、历史画像或正式回复编排。设计修订未实现、未发布。
+
+> **2026-09-08 用户裁决 / emergency resync（设计完成，尚未实施）：** 本文 §19.61为AI故障应急唯一当前合同，§19.62为旧能力继承审计。活群签到、真实回复/评论随机表情默认应急可用，真实数量/基础覆盖与正常质量分账；覆盖旧统一引擎禁用fallback、零兜底配置及相关自动停Task口径。 本切片代码/生产状态仍为未实施、未验收；旧事件记录保留。
+
+> **2026-09-08 准入与主互动独立推进设计修订：** 本次产品交接见 §19.60；逐动作持续补领替代 §19.42 的批次执行组织，精确资源归属、真实在途互斥和 unknown 防重保持。群验证补齐见 `channel-membership-precondition-design.md` §15。`resync=true`，本切片设计完成、尚未实施或生产验收。
+
 > **当前范围裁决（用户最新简化要求，优先于下文历史合同）：** 见 §19.13。忽略聊天编辑，不做历史回放/内容版本档案，只要求最近 72 小时成功次数；取消新增模型费用/调用预算持久化与发前扣减，取消历史样本审批和完整实时准备编排作为交付门槛。保留当前上下文、轻量生成/发前复核、数量并发占位、未知结果防重与故障隔离。该范围调整不等于相关代码已全部简化或上线。
 
 ## 0. 文档状态
@@ -201,7 +210,7 @@ Telegram 新消息
 - 不让 LLM 决定精确数量、发送时间、重试权限、账号安全容量或远端成功。
 - 不要求每条真人消息都回复；但进入冻结参与策略的 turn 必须获得响应、明确 wait，或计入可见 missed，不得用容量条件把它排除出统计。
 - 不把点赞、浏览包装成“与内容对话”，也不为它们增加 Prompt、ContextSnapshot 或内容自然度评分。
-- 不通过签到、固定 emoji、模板短句或静默 fallback 伪造“账号活跃完成”。
+- 正常内容与 §19.61 显式故障兜底分账；真实签到/表情可完成原数量和基础覆盖，不能伪造 normal contextual、grounded 或语义回答质量。
 - 不把浏览操作事实解释为 Telegram 浏览计数器一定增长。
 - 历史设计轮不实施、不迁移、不发布；当前自然人设与热度营造边界见 §19.4，发布仍独立执行 Release Gate。
 
@@ -586,7 +595,7 @@ pause 不冻结业务时间，也不顺延 deadline。暂停跨过 window/deadli
 
 配置字段必须分四种生效范围：
 
-1. `runtime_safety`：账号/组紧急 disable、Session/代理/权限失效只更新 runtime projection，立即阻断相关新调用，但不改 planned denominator、due 或 fact；
+1. `runtime_safety`：账号/组紧急disable、Session/代理/权限失效立即阻断相关新调用；其中§19.64账号失效还同步阻断后续新分配与物化，不等下一任务日。已冻结历史denominator、due和fact保持，未来新计划按当前有效资格计算；
 2. `new_preparation`：内容政策、Prompt、persona/voice successor 只影响尚未开始的 preparation；已准备内容若违反新硬内容政策可在 pre-Gateway 被显式 fence，但必须在原数量、窗口和调用预算内重建，不能借编辑增加数量；
 3. `next_unfrozen_unit/next_full_task_day`：账号分组、参与比例、数量、节奏和 Daily Cap 等只影响下一未冻结 source unit 或下一完整任务日；calendar 由系统固定为北京时间，只有 legacy timezone 接管可生成无重叠 successor；当前 plan 不清空、不重抽；
 4. `new_lifecycle_target`：canonical target/source scope 变化必须创建新 lifecycle epoch 与 target-scope claim；旧 epoch 只收口已存在/unknown，不能把旧 Action 改发到新目标。
@@ -682,7 +691,7 @@ Telegram group / linked discussion update
 4. eligibility 只判断上下文是否适合参与；冻结参与策略和稳定 hash 只产生 `participation_candidate`，随后由 `ConversationTurnClaim` 在全部候选中选出唯一 admitted owner；账号、时间线、Provider 和 response reserve 容量只能影响 owner 的 `served/missed`，不能把 admitted turn 从分母删除；
 5. 真人仍在连续回答、平台问题正等待真人回应、候选没有新增信息时，在 admission 前记 `deferred_wait + next_eligible_at`；新事件或定时 wake 只推进同一 opportunity revision，达到 freshness deadline 仍不适合参与则终结为 `deferred_expired`，两者都不进入 admitted 服务分母、也不冒充 served；
 6. 生成前读取最新 snapshot，Gateway Tx A 再校验 turn revision/watermark、上下文新鲜度和引用目标；转题、已被真人回答或目标删除时禁止发送，并按下述时点区分 `validly_superseded` 与 typed missed；
-7. 互动失败不能降级成签到、表情、无关 proactive 或无关顶层评论。
+7. 互动内容失败按 §19.61 可使用随机表情应急，保留原真实回复/turn/owner；不得改成签到、无关 proactive 或无关顶层评论冒充回复。
 
 每个 turn revision 在业务 eligibility 前必须形成 `ContextModalityDecision`：
 
@@ -742,7 +751,7 @@ total_quantity
 
 取得 `ConversationTurnClaim` 的真人 admitted turn 后，先按 tempo profile 冻结 turn natural window，但不先生成 planned call；再从 winner Task、同 task day/source plan、同 peer/thread、同账号 binding、与该 natural window/deadline 相交的 `tentative_supply` movable window 中选合法 response capacity，当前与相邻 hour/source stratum 均可参与但不得跨 task day/source deadline。对每个候选 supply，Provider admission 先按当前 permit 队列与冻结 timing profile计算 `estimated_candidate_ready_at`，再得到 `preparation_feasible_call_not_before_at = estimated_candidate_ready_at + gateway_prepare_p95 + execution_safety_margin(pre_provider)`。只有 `turn natural window ∩ slot capacity/movable window ∩ timeline legal free intervals ∩ [preparation_feasible_call_not_before_at, freshness/source deadline]` 能完整容纳出站 resource quantum 时才是 timing-feasible call interval；planned call 只能在该区间内用持久 seed 冻结。claim、数量义务、slot/timeline、`InteractionServiceBinding`、Task/source-plan binding/call budget conditional CAS 与 `ProviderCapacityReservation` 必须在同一 admission 事务提交，随后才把 tentative supply 转 `effective_service`；网络调用仍在事务外。这样 Provider P95 只裁剪可选 call interval，不扩大账号/peer Timeline 占位。原始 Timeline 交集为空是 admitted capacity miss；因完整准备链或 permit 队列导致 timing-feasible 区间为空则是 provider/deadline miss，此时不创建 active binding、不消费调用预算，并保留可供其他合法机会使用的 tentative supply。binding 唯一拥有 relation/turn/account、可行交集、planned call、preparation-timing revision、Provider admission 和本次调用计划；quantity obligation 本身不被改写成 turn identity。一次绑定保留原 ordinal、数量身份、账号 coverage、cap reservation 和 slot audit；`sum(active + confirmed + terminal_shortfall)` 始终等于冻结总量。
 
-真人 response 在 Provider/质量/去重/deadline 门失败且 Telegram 尚无 call-issued 时，当前 admitted opportunity 与 `InteractionServiceBinding` 按真实 blocker 记 missed，全部调用数/成本和失败证据保留；同一数量 obligation 只 append unbind revision 并回到原 `response_hard|response_flexible` 类别，不能在同一 turn 无限重生成，也不能把互动失败直接改成 quantity terminal。后续真人 turn 只能建立 successor binding：它有新的每-binding 调用上限，但必须从同一冻结 Task/source-plan 总 binding/call budget 继续扣减，旧调用绝不清零。hard 等下一合法 turn；flexible 在 cutoff 前继续等、cutoff 后才按既定 release policy 转主动内容；只有最终 source/slot deadline 到达仍未 confirmed 才形成数量 shortfall。具体 adapter 的单 binding 调用预算和 reply fallback 禁令继续生效。
+真人 response 在 Provider/质量/去重/deadline 门失败且 Telegram 尚无 call-issued 时，当前 admitted opportunity 与 `InteractionServiceBinding` 按真实 blocker 记 missed，全部调用数/成本和失败证据保留；同一数量 obligation 只 append unbind revision 并回到原 `response_hard|response_flexible` 类别，不能在同一 turn 无限重生成，也不能把互动失败直接改成 quantity terminal。后续真人 turn 只能建立 successor binding：它有新的每-binding 调用上限，但必须从同一冻结 Task/source-plan 总 binding/call budget 继续扣减，旧调用绝不清零。hard 等下一合法 turn；flexible 在 cutoff 前继续等、cutoff 后才按既定 release policy 转主动内容；只有最终 source/slot deadline 到达仍未 confirmed 才形成数量 shortfall。具体 adapter 的正常单 binding 调用预算保持；reply emergency 表情例外以 §19.61 为准，语义质量失败与实际回复数量分列。
 
 service binding 建立后账号失效、persona/voice 不兼容或授权漂移也按当前 admitted blocker missed + pre-Gateway unbind 处理，不允许同一 turn 内换另一个账号继续生成/发送。只有数量义务回到池后，后续新的真人 opportunity 才能按其 required hints 和 compatible supply 建 successor binding。普通 proactive/grounded top-level 的合法 pre-materialization 换号继续由 adapter 处理，但不得套到 `discussion_response/context_response`；owned followup 的 bound-account admission 失效时必须先释放 admission 并归还 hard 义务，不能原地换账号维持自有回复。
 
@@ -865,7 +874,7 @@ Gateway Tx B 写 `gateway_call_issued` 前必须在不超过 1 秒的 pre-call r
 
 | 阶段 | 公共动作 | 内容型 adapter | 操作型 adapter |
 |---|---|---|---|
-| G0 来源幂等 | 对 source event/revision 建稳定 identity | 同一 context turn/帖子修订只处理一次 | 同一 peer/message capability revision 只处理一次 |
+| G0 来源幂等 | 对 source event/revision 建稳定 identity；账号分配前已通过§19.64有效资格，后续各阶段再复核 | 同一 context turn/帖子修订只处理一次 | 同一 peer/message capability revision 只处理一次 |
 | G1 意图幂等 | obligation identity 唯一、最多一个 active materialization | proactive/top-level 在 JIT preparation 冻结 topic/intent；response 只在真实 turn/relation/target 和 `InteractionServiceBinding` 成立后冻结 speech-act/reply target，生成前排除近窗已用意图 | 冻结 message/account/reaction 或 local-date identity |
 | G2 候选质量 | 持久 decision 与版本 | exact/similar/semantic/template/grounding/persona/content-policy | 校验业务 identity 与当前 capability，无文本相似度 |
 | G3 并发 reservation | 唯一索引/CAS，覆盖 pending 到 unknown | reserve content fingerprint/semantic intent | reserve remote mutation key |
@@ -891,7 +900,7 @@ Gateway Tx B 写 `gateway_call_issued` 前必须在不超过 1 秒的 pre-call r
 2. **候选后硬判**：对 accepted candidate 计算 canonical exact/similar/semantic/template signature。semantic 重复必须同时命中相同主张/问题、speech act 与 context/grounding anchor，单纯讨论同一话题不能拒绝；复制真人原句、不同账号换皮复述和固定开头则拒绝；
 3. **原子 reservation**：候选通过后，按账号长窗与 peer 跨账号短/长窗写唯一 reservation；并发两个 worker 只能一个 winner。reservation 从 ready 一直覆盖 call-issued/unknown，不能因 worker lease 过期释放；
 4. **Gateway 前复核**：在 Tx B 的 pre-call context review 中重读候选生成后新增的受管/远端内容与 reservation revision。若出现真正 duplicate，尚未 call-issued 的候选被 fence；只在原 natural/source window、原 quantity obligation 和剩余 Provider 预算允许时生成 successor，否则 typed shortfall。call-issued 后不因重复观察另发替代消息；
-5. **去重/质检损耗防范与语境偏置（Topic Shift Bias）**：若候选生成因高相似或模板重复被 G2 拒绝，且原 natural/source window、冻结意图和单 binding/Task 总 Provider 预算仍允许 successor，则新的 GenerationSpec 必须使用不同的 topic-advance/speech-act/claim 组合并保留 predecessor evidence，禁止原样重试导致连续撞墙。预算或窗口耗尽后显式形成 duplicate/quality shortfall；主动内容与真人响应都禁止用静态确认句、模板短句、场景化表情或其他确定性 fallback 伪造 normal contextual coverage/评论数量。这样宁可暴露真实可生成性缺口，也不以高重复、无语义内容完成数字目标。
+5. **去重/质检损耗防范与语境偏置（Topic Shift Bias）**：若候选生成因高相似或模板重复被 G2 拒绝，且原 natural/source window、冻结意图和单 binding/Task 总 Provider 预算仍允许 successor，则新的 GenerationSpec 必须使用不同的 topic-advance/speech-act/claim 组合并保留 predecessor evidence，禁止原样重试导致连续撞墙。正常预算耗尽但原发送窗口仍有效时，按 §19.61 进入显式 emergency；窗口确已耗尽按原 shortfall。签到/表情真实发送可计原数量和基础覆盖，duplicate/quality缺口独立展示，不伪造 normal contextual/grounded/语义成功。
 
 typed remote fact 落地后把同一 accepted/outbound signature 单调推进为 confirmed；unknown 保持占位直到权威 reconcile。这样过滤既能覆盖“数据库里 AI 已计划但还没发”的撞稿，也能覆盖“刚刚由别的账号发出”的竞态，而不会为了去重把不同事实锚点下的正常讨论全部压成沉默。
 
@@ -934,7 +943,7 @@ typed remote fact 落地后把同一 accepted/outbound signature 单调推进为
   4. 目标帖子已发布但关闭评论区或权限受限：结算为 `source_capability_blocked`（目标能力受阻，独立归档）；
 - 讨论组能力与发言准入前置核验：创建 source plan 前，必须通过 Gateway 确认频道具备权威 `linked_chat_id`、目标帖子未关闭评论、且讨论组未开启 `CHAT_GUEST_SEND_FORBIDDEN`（若开启，账号必须先具备讨论组成员资格）。讨论组缺失、单帖禁评或权限不足时，该帖子标记为 `source_comment_capability_blocked`，作为来源不可用归档，不盲目创建 Action 浪费配额，不计入任务履约失败分；
 - 三个 relation purpose：`grounded_top_level`、真人触发的 `discussion_response`、我方 confirmed fact 独立 pacing 触发的受限 `owned_peer_followup`；只有 `discussion_response` 进入真人互动分母；
-- 保留 3 天/配置化滚动来源、60%±5% 参与、Daily Cap、distinct account 与 grounding/老师相关性；fallback 仅供存量 legacy 评论 identity 收口，不进入 unified current。来源不可用时按上述来源预期模式分流结算；
+- 保留 3 天/配置化滚动来源、60%±5% 参与、Daily Cap、distinct account 与 grounding/老师相关性；计划内 legacy fallback 保留原 identity；unified current 的故障表情按 §19.61 显式 emergency policy 进入同一数量 owner，不恢复旧 ContentMix。来源不可用时按上述来源预期模式分流结算；
 - preparation：到 source slot JIT 生成，不在整日提前生成；每个 source plan 对 response ordinal 只冻结 evidence、allowed intent/speech-act set/rank 与 `CommentStyleReservation`，不预选具体回应。top-level 在 source intent 与 `planned_call_at` 已冻结后、互动在真实 turn/parent/relation 与 `planned_call_at` 已冻结后先 append `CommentRealizationIntentAssignment`、再 append `CommentStyleAssignment`。统一内核只传递当前 binding 对应的不可变身份，不预判也不重算具体意图/风格；
 - Gateway：top-level discussion comment 或受控 reply；
 - typed fact 与发送后可见性确认：执行与活群相同的 `delivery_confirmed -> visibility_pending -> visible_confirmed | post_send_intercepted | visibility_observation_unknown`，只有 `visible_confirmed` 且 accepted content hash 匹配才 confirmed；Observer gap/不可用的 unknown 保留原 identity 且禁止补发。
@@ -1008,13 +1017,13 @@ AccountPool 运行中被 disable 时不得从已冻结分母删除：该组立�
 | 集合 | 所有者 | 是否可在运行时变化 | 用途 |
 |---|---|---|---|
 | `configured_group_members` | AccountGroupMembershipSnapshotSet | 否；新 revision 才变化 | Task 所绑各组的规范化成员并集及 origin group |
-| `policy_eligible_members` | TaskParticipationUnitPlan | 否 | 在计划时满足业务资格且进入公平排序的成员 |
+| `policy_eligible_members` | TaskParticipationUnitPlan | 每个新计划按当前资格生成并冻结；旧快照不覆盖 | 配置成员先排除§19.64已失效/资格未确认账号，剩余成员才进入人数计算与公平排序 |
 | `planning_admissible_participants` | PlanningAdmissionSnapshot | 否；新 snapshot 才变化 | 计划 horizon 内具有完整、有效、可解释执行路径的候选供给；不改变业务分母 |
 | `planned_selected_participants` | TaskParticipationUnitPlan | 否 | 当前参与单元必须完成的账号分母 |
-| `runtime_sendable_participants` | TaskParticipantRuntimeProjection | 是；只做状态投影 | 此刻哪些 frozen selected 能合法执行；standby 不能执行当前已冻结 allocation |
+| `runtime_sendable_participants` | TaskParticipantRuntimeProjection | 是；同步阻断后续分配和调用 | 当前selected与最新有效账号资格的交集，再检查临时资源/目标条件；历史selected不是继续分配许可 |
 | `confirmed_participants` | typed remote facts + qualification/visibility evidence | 按证据版本投影；事实 append-only，不等于 credit 永不纠正 | 谁在当前 as-of 满足完成条件；迟到反证按 §19.3.5 修订，不自动补发 |
 
-`policy_eligible_members` 只允许使用任务日可冻结的稳定业务资格，例如租户/分组归属、账号启用与用途、非永久撤销/删除和 adapter 的静态范围规则。在线状态、Session freshness、代理健康、quarantine、目标 peer membership/capability、面具和 Provider/Listener 健康不得缩小 eligible/selected，但必须在计划冻结前进入 `PlanningAdmissionSnapshot`：缺少有效证据不算供给，required 分母全部有完整路径才为 achievable，部分有路径则从启动起为 partially-serviceable/running-partial，零路径才 blocked。materialization/claim/pre-call 仍重算 runtime admission；计划门与执行门不能互相替代。
+`policy_eligible_members` 由配置成员、用途/生命周期与§19.64当前账号有效资格共同决定。已知Session失效、冻结等账号在人数、比例、coverage floor和selected计算前排除，不为其创建业务义务或待执行工作。Session字符串存在、status在线或旧成员快照enabled不能覆盖权威失效事实。纯代理/网络、FloodWait、面具、Provider/Listener等暂时不可服务仍由 `PlanningAdmissionSnapshot` 和运行时准入表达，不冒充账号失效；局部等待不重抽已有计划。新分配、materialization、claim与pre-call均复核当前资格，计划门与执行门不能互相替代。
 
 绑定组成员并集非空但 `policy_eligible_members=0` 时 participation plan 必须是 `no_policy_eligible_accounts/blocked`，不能因 selected/required 都为0显示 met；空来源则使用 adapter 自己的 source waiting/missed 状态，不能与空账号合并成一个 generic “无任务”。
 
@@ -1074,10 +1083,10 @@ Task 不再提供通用 `coverage_mode=ratio_per_task|portfolio_daily|portfolio_
 ### 11.2 规则与四类覆盖关系矩阵
 
 1. `TaskFulfillmentPlanRevision` 在义务与 pacing 前联合冻结 membership snapshot、eligible、selected、standby、数量、比例、coverage/cap adjustment 与稳定 seed；相同输入重放 hash 必须一致，严禁使用进程 `random.uniform/randint`；
-2. 需要选择子集的 adapter（点赞的 source quantity、浏览 cohort/edge、评论的 per-source allocation）按 `selection_debt DESC -> last_selected_task_day ASC -> stable hash` 排序，先选择长期未参与账号；所有 participation unit 都写 selection history，不能因为账号当天不可发送就永远不累积选择公平性。未覆盖账号从全天第一批 strata/source plans 开始稳定交错，不留到日末；
-3. 全员与子集 adapter 都在 participation plan 原子提交前完成 eligibility、planning admission 与 selected/standby 求解；提交后 selected account 即成为当前 participation unit 的业务分母，不因 Session、代理、FloodWait、面具或 Provider 故障换号、缩分母或重抽。blocked 成员形成自己的 waiting/shortfall，健康成员继续；standby 只参与下一 participation unit 的 selection-debt 公平轮转；
+2. 需要选择子集的 adapter（点赞的 source quantity、浏览 cohort/edge、评论的 per-source allocation）先按§19.64排除已失效账号，再按 `selection_debt DESC -> last_selected_task_day ASC -> stable hash` 排序，先选择长期未参与账号；所有 participation unit 都写 selection history，不能因为账号当天不可发送就永远不累积选择公平性。未覆盖账号从全天第一批 strata/source plans 开始稳定交错，不留到日末；
+3. 全员与子集adapter先按§19.64排除失效账号，再计算人数/比例并提交参与计划。提交后的selected保留历史身份；账号后来失效时立即停止其新分配、生成和未调用派发，不继续为它新建覆盖欠量。原已分配义务按失效原因单独结算，原数量/due/事实不重写，健康成员继续；短时资源故障仍按原等待规则，不随机换号；
 4. 一个 remote fact 可同时结算所属 Task quantity、task coverage 和 portfolio activity，但不能结算其他账号、群、source identity 或 Task；
-5. 签到、静态 fallback、Unicode/图片表情、被质量降级的占位内容不能完成 speaking participation；评论只有正常 grounded top-level 或有效 discussion response 可以；缺少 active account mask 时，该账号互动内容 blocked，禁止用通用模板冒充完成；
+5. 正常 speaking quality 仅由正常 contextual/grounded 内容或有效 semantic response 完成；§19.61 的合法签到/表情在真实远端确认后可完成原数量与基础 speaking participation，质量分账。缺 active account mask 时正常内容 blocked，但固定应急内容不依赖面具，不冒充正常人设内容；
 6. 四类覆盖 identity 与数量关系固定如下：
 
 | Task 类型 | task coverage identity | 与 typed quantity 的关系 |
@@ -1681,14 +1690,14 @@ Task
 - 新 unified Task 必须显式绑定一个或多个 enabled、用途一致的普通运营 `AccountPool`；空/重复/跨租户/dedicated/non-normal group IDs、purpose marker 不一致、账号用途/归属不一致或跨组重复成员不能回退全租户。Task 分组集合/并发上限变化生成 binding-set successor，组内成员变化生成 membership successor，下一未冻结 plan 引用新的 snapshot set；已冻结 participation unit 不被原地改写，新成员默认次任务日生效，账号或组紧急 disable 只改变 runtime projection；
 - legacy `all` 迁移必须证明“全部兼容 normal groups 按同一稳定规则得到的 policy-eligible 并集 set/hash = 冻结 legacy policy-eligible scope”；单个默认组映射、未分组 eligible 账号、漏组/多组或用途不一致均阻断自动切换。组 disable 后其他组继续且新 plan blocked，re-enable 只恢复原 deadline 内工作；被 current/unsettled binding 引用的组不能 hard-delete；
 - AccountPool 初始 member set backfill 的 count/hash 必须可读回；账号创建/迁组/移出/disable/delete 的每个正式 writer 都与 membership successor revision + durable wake 同事务。漏 writer、直接 `pool_id` 更新或并发双 current revision 时 unified activation fail-closed；
-- 六层集合边界可验证：configured members、policy eligible、planning admissible、planned selected、runtime sendable、confirmed 各有独立 set hash；规划/运行时 blocked 都不缩 selected 分母；
-- 活群每个 task+group+day 的 selected 账号各有自己的 normal contextual remote fact；默认 selected 是绑定组全部 policy-eligible 成员，多群 effective target 使用 group-account pair 数逐群计算，跨群事实不能代替；
+- 六层集合边界可验证：configured members、policy eligible、planning admissible、planned selected、runtime sendable、confirmed 各有独立 set hash；已知失效在新计划selected之前排除；运行时失效停止新分配，历史selected保留且排除/已分配影响分列，纯资源blocked不重抽；
+- 活群每个 task+group+day 的 selected 账号各需自己的 typed remote fact：normal 或 §19.61 合法 emergency 可完成基础覆盖，normal contextual coverage 独立验收；默认 selected 是绑定组全部 policy-eligible 成员，多群 effective target 使用 group-account pair 数逐群计算，跨群事实不能代替；
 - 评论任务日 selected 默认是绑定组全部 policy-eligible 成员；在不突破单帖 55%～65% 和 Daily Cap 的前提下跨来源公平轮转，容量不足在 preflight 可见且任务不伪 completed；
 - 点赞每消息最终 quantity 与 distinct selected count 相同；浏览每日 shared cohort 的 sampled ratio 默认 80%～95%，整数 count 经 round-half-up 与 strict-majority clamp 后冻结，sampled/realized/量化调整可回放；所有同日准入 active messages 共同进入 `ViewAccountSourceAllocationPlan`，DueSet 只等于冻结账号—来源 edge set，默认每账号 2～4 条来源，只有 `every_active_message=true` 才逐帖全刷，`view_count_jitter` 不得二次应用；initial/dynamic source 必须取得可重放 `FirstApplicableDayDecision`，edge commit 后的新来源延后首个完整适用日；三日滚动 selection/fact coverage 分别闭合；
 - selection debt/last-selected 使长期参与机会收敛；相同稳定 hash 不能让同一批账号长期占满 selected；standby 只影响 plan commit 前求解和后续 participation unit，当前已冻结 selected 分母零替换；
 - 四类 participation plan 都用 coverage-to-legal-slot 确定性匹配证明可行；required units 超过全天合法 Timeline/source/relation 容量时为 `coverage_plan_unachievable`，不能通过日末集中、缩间隔、隐藏增量、重抽或缩分母解决；
 - 单账号面具/Session/membership、单 proxy route/verified egress 或单 Provider lane 失败产生 `running_partial`，健康账号/真实出口/被动任务继续产生 due、Action 和 typed fact；只有所有当前到期工作不可服务或真实共享依赖阻断整个 Task 才 blocked；
-- 无 active mask 的账号不能用签到/模板完成互动覆盖；已有 active 且版本匹配的 mask 不因重建 lane 故障失效。mask generation、turn classification、interaction response、proactive/reviewer 使用独立子舱壁并共同服从父 Provider 真配额，response/classification 有保护份额；点赞、浏览完全不读取 mask，面具 worker/Provider lane 卡住时其吞吐不下降；
+- 无 active mask 时正常人设内容不可生成；§19.61 合法固定签到/表情可确认基础覆盖，不能确认 normal contextual quality。已有 active 且版本匹配的 mask 不因重建 lane 故障失效。mask generation、turn classification、interaction response、proactive/reviewer 使用独立子舱壁并共同服从父 Provider 真配额，response/classification 有保护份额；应急选择与点赞、浏览均不依赖面具生成；
 - Telegram connect 在 5 秒 ceiling 前超时且未 call-issued 时为 safely-not-called；四类 Gateway RPC 在 10 秒 ceiling 后若已 call-issued 必须进入 remote unknown 且零 replacement；Provider invocation 在 15 秒 ceiling 后计 used/unknown budget，三者不能共用失败状态。三者超时只立即释放本地 lease，未终止 transport 的 active remote fence 仍计入 hard in-flight；
 - proxy binding route 与 canonical verified egress 的 active remote fences 默认各不超过 2，两个 proxy IDs 指向同一出口也共享 egress cap；Task-group active Telegram fences 不超过配置 cap。Task 竞争份额按 runnable Task 数自适应为 100%/50%/约 33.34%/30%（1/2/3/4+ 个），先完成公平 quantum 再借当下不可用份额，竞争恢复后只停止新超额 lease、不取消 in-flight/call-issued。一个爆量 Task/慢代理时其他 Task/真实出口仍取得可运行份额；
 - circuit 在 5 分钟 2 次 qualifying failure 后 open 15 分钟，open 期间业务零原地等待，期满只有一个无业务副作用 half-open probe；业务 Action 等适用 circuit CAS closed 后才恢复。单账号失败不能误开 proxy-route/egress circuit；route 明确错误与两个 distinct accounts 的同 verified-egress 相关失败分别归因，旧 dependency revision 的迟到 probe success 不能关闭 current circuit；
@@ -1857,11 +1866,11 @@ configured_group_union
   -> confirmed_participants
 ```
 
-1. `policy_eligible` 是业务分母，只处理稳定业务资格：在显式绑定组内、用途正确、Task/target 允许参与。短时 Session、代理、Provider、Listener、mask、quarantine 与 circuit 状态不得从该分母中删除账号；
+1. `policy_eligible` 先要求显式组归属、用途及Task/target范围合法，再按§19.64检查当前账号/授权/Session/冻结资格；已知失效账号不进入新计划分母。纯短时资源或网络故障仍与账号失效分开，不能根据一次timeout随意缩分母；
 2. `PlanningAdmissionSnapshot` 在计划冻结前，以统一 horizon 对每个候选记录 Session/授权、代理 route 与 verified egress、target membership/capability、mask、Provider/Listener、Timeline、日安全容量和 observation `valid_until`。没有有效证据等同 `unproven`，不得当作健康供给；
-3. adapter 先按 `policy_eligible` 计算必需人数，再从 `planning_admissible` 求解可服务路径。比例型任务不得因健康人数不足而缩小比例；全员型活群/评论不得丢掉已知坏号后伪装全员；
+3. adapter以排除失效后的 `policy_eligible` 计算人数，比例参数保持原值；全员表示本计划全部有效账号，不包含明确失效账号。配置总人数、排除人数/原因和本计划有效人数分别展示，这属于分配资格正确性，不是伪造全员完成；
 4. 所有必需 allocation 均有完整路径才是 `plan_feasibility=achievable`。部分可服务时允许以 `partially_serviceable/running_partial` 激活健康分区并继续为阻断账号等待恢复，但必须从启动页起显示预计 shortfall；零可服务分区才是 `blocked`。这保证一个坏号不会拖停全部健康账号，同时不把不可能完成伪装为可完成；
-5. plan commit 后的故障只更新 runtime projection，不换号、不缩分母、不重抽 due。恢复只允许原账号在原 obligation/deadline 内继续；未恢复项按原分母结算；
+5. plan commit后确认账号失效，按§19.64即时撤销后续新分配/未调用执行资格；原plan与已存在义务保留历史并显示失效影响，不重抽due、不把取消算成功。恢复凭当前身份有效证据重新获得新工作资格；原窗口内尚未终结的义务按原owner复核，已终结/过期/unknown不自动重开；
 6. `PlanningAdmissionSnapshot` 的唯一身份是 `(task, lifecycle_epoch, participation_unit, planning_horizon, dependency_revision_set_hash)`，保存每账号 path、缺口、有效期和计划决策；开始 materialization 前仍必须再次执行 runtime admission，两道门不能互相替代。
 
 #### 19.1.3 浏览的联合可行分配，不做 cohort × sources 笛卡尔积
@@ -2264,6 +2273,8 @@ pre-Gateway 编辑可以在原 obligation、原账号、原窗口和原预算内
 
 原 §11 “同一 binding set 不再创建新 participation plan”会让双组任务在其中一组停用后，下一日连健康组也无法规划，与局部隔离目标冲突。
 
+本节组级disable合同不覆盖§19.64账号级失效排除：即使保留组成员归属与旧分母，也不得将Session失效/冻结账号列为新的有效参与者或创建业务工作。
+
 首次创建/激活仍要求显式绑定 enabled、用途正确的组。已激活 binding 中某组后续 disabled 时，其下一日快照记录真实 disabled 状态，不伪造 enabled；只要 membership/用途证据仍完整，就保留该组按稳定资格定义的业务分母，将 disable 作为组级不可服务原因。联合计划按既有全员/比例规则冻结完整人数要求，不能删掉该组账号后再计算目标；健康 allocation 可提交并运行，坏组 allocation 留作对应 shortfall，Task 为 running_partial。
 
 对比例型任务，候选选择仍遵守原比例和公平债务，不能因禁用组缩小 `E`；对全员型任务，不能遗漏该组必需成员。若连该组 membership/用途都无法证明，必须先显式标记计划分母 unproven；健康独立分区可继续已冻结工作，但不得凭残缺分母新造“完整计划”。比例型联合计划无法在未知分母下求解时明确等待，不能冒充同一种纯 runtime disable 故障。
@@ -2661,7 +2672,7 @@ QA覆盖接管前Action、接管后同旧义务的Action、同日后续绑定修
 
 按§7.6的new_preparation边界，已经绑定内容窗口的v2 GenerationJob必须从原AiContentWindowPlan的tenant/task/lifecycle/config revision和policy hash读取TaskAiContentPolicyBinding及AiContentPolicyVersion。不能在重领同一Job时读取Task当前revision，再把新政策hash写到旧窗口之下；当前Task尚未建立新政策binding，也不能阻断具有完整原binding的旧Job收口。尚未绑定窗口的新preparation才读取Task当前政策修订。
 
-同一批活群Job可能横跨政策修订，必须逐Job对应原binding、route、prompt与example版本，并按distinct binding/scope做权限校验，窗口与政策读取须批量完成，不能退回逐Job查询。评论使用相同政策归属读取，保留评论独立的来源证据和权限作用域。若同一Job的上下文更新需要替换尚未过Gateway的slot，新slot仍携带该次preparation的原政策修订；真正新建的generation successor才消费新政策。原窗口、binding、policy与Job的作用域或hash不一致时明确报错，不回退当前政策覆盖历史。
+同一批活群Job可能横跨政策修订，必须逐Job对应原binding、route、prompt与example版本，并按distinct binding/scope做权限校验，窗口与政策读取须批量完成，不能退回逐Job查询。评论使用相同政策归属读取，保留评论独立的来源证据和权限作用域。若同一Job的上下文更新需要替换尚未过Gateway的slot，新slot仍携带该次preparation的原政策修订；真正新建的generation successor才消费适用的新政策；其旧内容intent已冻结的topic/teacher/词库选择仍保留原内容revision，不能用新Task配置重选旧intent。只有原owner已按合同终结并获准创建新的内容选择时，才消费该字段的新配置，见§19.63.4。原窗口、binding、policy与Job的作用域或hash不一致时明确报错，不回退当前政策覆盖历史。
 
 本切片不修改Task配置、目标、数量、调用预算、旧Provider unknown或Gateway事实，不声称已完成legacy无窗口Job的接管。设计自检覆盖原配置更新语义、group/comment入口、混合批次、上下文替换、tenant/task/epoch隔离、缺失证据、SQL数量和回滚。design_status=complete；QA须先复现当前政策覆盖旧Job，再验证原hash/窗口不变、新Job采用新政策，以及全部unknown隔离回归。
 
@@ -2684,13 +2695,15 @@ QA覆盖接管前Action、接管后同旧义务的Action、同日后续绑定修
 
 ### 19.37 评论明确关闭兜底的配置合同
 
+> **2026-09-08 局部 supersede：** 本节的旧类型/权重/planned比例零值继续表示旧planned/legacy配置关闭；不再禁止 §19.61 的独立 emergency policy。下述“不能恢复统一评论表情降级”仅记录当时合同，本次用户裁决已允许新版本应急表情及真实数量结算。旧冻结数据不改，存量适用新policy须正式successor。
+
 20:00 接管配置反查复现：统一评论按照§10.2只生成正常 grounded 内容，显式将两类兜底关闭、两项权重与planned_fallback_max_bps全部设为0时，Schema和运行配置校验仍报comment_fallback_type_required。该强制兜底要求与当前PRD冲突。
 
 API与运行校验共用同一纯配置规则：两类关闭、两项权重为0、planned_fallback_max_bps为0表示完整关闭，允许提交；缺少上述任一条件继续报明确配置错误，不代填类型、权重或预算。仅planned比例为0而仍启用兜底类型的legacy配置保持原emergency合同，不能被解释为完整关闭。已有grounding、两阶段、独立审核、滚动来源和每日容量校验继续生效。
 
 前端使用相同字段组合校验完整关闭，计划上限变化须触发两项权重的重新校验；错误提示说明三项均需为0。提交和回显沿现有nullish默认值规则保留显式0，不自动打开任何兜底类型。
 
-首次准备新评论时，完整关闭的当前配置不创建FallbackPolicySnapshot、Pool或shuffle cursor，也不查询图片素材。已经存在的原Pool与原配置revision的Policy仍按冻结身份复用；即使当前配置关闭兜底，旧revision延迟物化的Pool也必须使用其原Policy。旧revision缺少原Policy仍显式失败，不能按当前零兜底配置吞掉该缺口。所有旧selection、Attempt、Gateway unknown、数量与时间保持原值。正常生成失败仍沿现有质量shortfall路径，不能通过本校验修补恢复统一评论的表情降级。
+首次准备新评论时，完整关闭的当前配置不创建FallbackPolicySnapshot、Pool或shuffle cursor，也不查询图片素材。已经存在的原Pool与原配置revision的Policy仍按冻结身份复用；即使当前配置关闭兜底，旧revision延迟物化的Pool也必须使用其原Policy。旧revision缺少原Policy仍显式失败，不能按当前零兜底配置吞掉该缺口。所有旧selection、Attempt、Gateway unknown、数量与时间保持原值。本节仅修补当时的 legacy/planned 配置解释；2026-09-08 §19.61 的独立 emergency policy 不由这些旧开关关闭，正常失败可按新合同创建同义务应急 successor。
 
 本切片design_status=complete；QA覆盖Schema与运行规则一致、完整关闭通过、残留预算/权重拒绝、新准备不写兜底数据、不读取素材、旧Pool/Policy延迟物化与unknown保留、缺失旧Policy明确失败及既有正常生成/legacy兜底回归。它只修正明确关闭的合法配置及冻结入口，不触发线上Task目标、日cap、grounding或统一绑定变更。
 
@@ -2732,6 +2745,8 @@ Product Handoff：design_status=complete仅覆盖租约竞争顺序；现有状�
 
 ### 19.42 dispatch本地资源登记必须覆盖整个批次生命周期
 
+> **2026-09-08 局部 supersede：** 以下批次作用域是旧实现合同；持续调度改为 §19.60.3–19.60.4 的逐动作显式移交/释放和 instance drain。原对象、owner-token、其他在途动作及 durable unknown 的保护仍有效，不能把旧 batch finally 直接提前执行。
+
 代码反查和故障注入确认，claim已登记本地reservation后抛出数据库异常、Action在进入执行前已消失/不再executing、dispatch finalization抛异常等路径会绕过现有释放点；future已返回后本地计数仍留存。此为可复现的资源生命周期缺口，不能据此断言生产现存6项逐一来自同一路径。
 
 修订范围是进程内本批次资源登记：从进入claim前建立所属作用域，在所有本批次futures实际返回后以finally释放尚留存的本批次登记；ThreadPoolExecutor仍先等待其已启动futures退出，任何一项抛错不能提前释放另一项运行中的登记。作用域保存创建时的Action id与reservation对象身份，仅在当前对象仍为原对象时释放；同id的新登记、其他批次和其他线程的登记不得被清除。资源获取中间态也要登记，异常不能遗留本地账号占位。错误按原路径继续上抛/记录，不以finally伪造执行成功。
@@ -2761,6 +2776,8 @@ R1资源接管必须区分原工作合同与现在发起的真实调用。§19.3
 本资源身份子合同`design_status=complete`，已反查Dispatcher三种业务资源入口、原工作分类、成员快照、日账本及资源结算代码；QA覆盖四类旧工作、旧义务延迟物化、跨日/移组、首binding successor、缺失/伪造归属、未接管Task及unknown三件套保留。共享历史调用占用、实际调用日准入、配置与来源接管仍须单独完成后才能执行正式R1激活；本子项不直接修改生产Task或创建快照。
 
 ### 19.45 生成额度故障不抹除未知结果
+
+> **2026-09-08 精确化：** §19.61.6允许已证明纯Provider unknown的内容发布权CAS转交应急；原请求、成本和transport unknown保留。下述“不能继续候选”不再禁止该独立应急路径；Telegram unknown仍禁止任何替代发送。
 
 Antigravity额度故障的typed error必须贯穿HTTP202、draft/structured与Provider健康投影。当前unknown保持原请求且不能继续候选；已观察到quota的Provider按现有规则标异常，只影响后续独立工作选取原已配置路由。详细交接及QA见`antigravity-cli-server-provider-design.md`§18，design_status=complete。本修订不扩大fallback列表，不把发布模型探测失败改为成功，也不以新健康状态清理原未知Job或发送身份。
 
@@ -2924,7 +2941,7 @@ Provider新请求继续使用已有Task共享锁、epoch和generation owner校�
 
 #### 19.58.4 数量、来源与验收
 
-活群保留每群当前正式目标及质量路线；评论采用原已批准55%–65%参与比例，按真实稳定成员数显式调整business_max_per_message和日总容量，启用原评论grounding、两阶段、独立审核及零兜底合同，不能继续保留旧30/100/50/80/日10对新比例的截断。点赞保留各频道原每帖目标；浏览按80%–95%账号参与、自然覆盖及每账号2–4来源边的新合同，保留new_only来源边界，不拿历史帖子或旧完成量充数。配置预览逐Task列出差异、原目标与新目标，并用现有portfolio容量组件列出分类共享容量与缺口；完整组合可行性仍由正式规划的账号分配、总预算与历史调用占用共同验证。
+活群保留每群当前正式目标及质量路线；评论采用原已批准55%–65%参与比例，按真实稳定成员数显式调整business_max_per_message和日总容量，启用原评论 grounding、两阶段、独立审核；本节原“零兜底”切换口径已由 §19.61 修订为 planned 比例保持原配置、独立 emergency 默认可用，不能继续保留旧30/100/50/80/日10对新比例的截断。点赞保留各频道原每帖目标；浏览按80%–95%账号参与、自然覆盖及每账号2–4来源边的新合同，保留new_only来源边界，不拿历史帖子或旧完成量充数。配置预览逐Task列出差异、原目标与新目标，并用现有portfolio容量组件列出分类共享容量与缺口；完整组合可行性仍由正式规划的账号分配、总预算与历史调用占用共同验证。
 
 配置反查确认旧normalizer会删除like_count_jitter，导致新引擎按0抖动执行。统一点赞创建/更新必须保留其唯一每帖数量抖动（缺省使用现有schema的20%，显式0仍为0）；评论和浏览继续只用各自参与比例，不叠加旧数量抖动。只读容量预览复用正式initial source选择、相册合并、有效窗口和portfolio分类预算读取；已知初始来源与未来条件来源分列，不把message_count直接当作已接纳来源数。容量预览不冻结新计划，不将分类可用额度相加当作总预算，也不免除正式规划和Gateway前对历史调用占用、总预算及共享账号的验证；其观察结果不进入配置CAS hash。
 
@@ -2963,3 +2980,399 @@ Product Design Complete：修复候选范围读取，不改变账号组配置、
 
 #### 2026-09-08 过期输家动作结算补充
 已关闭或重复obligation的未远端执行输家必须沿正式obligation拒绝结果结束，并释放自身前置资源。不得将已确认/未知的赢家履约投影改成短缺，不得为输家伪造远端或安全未执行事实。适用频道关注补齐设计§14.9；其余真实远端未知仍保持不可重放。
+
+### 19.60 准入与主互动独立推进、持续调度及积压恢复（2026-09-08）
+
+#### 19.60.1 Intake、证据与变更边界
+
+- `intake_id=intake-2026-09-08-admission-dispatch-independence`；L3；`route=prod-diagnosis -> product -> dev -> qa -> product -> prod-diagnosis`；需要 Release Gate。
+- 用户原始要求：线上 AI 已使用 MiniMax；机器人加群应支持验证和加减乘除；加群、关注、活群、点赞、评论、浏览应异步独立推进，不能因加群把后续业务全部阻塞。当前授权为修改对应 PRD 设计。
+- 本切片 `design_status=complete`、`design_review_status=self_reviewed`、`resync=true`、`dev_handoff_ready=true`、`implementation_status=not_started_for_this_slice`、`qa_status=not_run_for_this_slice`、`production_status=unproven`。这些状态只属于本节，不覆盖其他切片的实现或历史验收。
+- 本会话 2026-09-08 10:35—10:38（Asia/Shanghai）生产只读证据锚点为 `89d837b822d557fd27610ba237baf7f746a0f932`：正式活群/评论路由为 M3 生成、M2.5 审核；普通 dispatcher 在线程池内并发，但整批 future 返回后才再次 claim；运行中四类任务在所查最近一小时没有新增正文/评论/点赞/浏览成功远端事实，准入仍有 `membership_observed`。10:35 快照中浏览 405 次、活群 266 次 Attempt 因 `pacing_claim_deadline_exceeded` 在 Gateway 前失败；10:37 快照中 1,648 条已到期频道准入 Action 记录 `account_membership_inflight_wait`。这是带时点的事故证据，不能作为开发或发布时的当前库存。
+- 已证实机制为批次屏障与验证入口缺口；尚未逐 Action 证明全部节奏超期均由加群造成。Provider unknown、C2 observation gap、目标/权限错误和来源约束独立归因；评论当时 11 条待执行 Action 尚未到期，不能判为同一阻塞或提前执行。
+- 本节替代 §19.42 的“批次完成才补领/统一释放”执行组织方式；保留其精确 owner、Redis token、原对象身份、异常显式暴露与 durable 事实保护。停机合同同步到 `dispatcher-ocr-memory-isolation-and-graceful-recycle-prd.md` §5.2。群准入验证见 `channel-membership-precondition-design.md` §15。
+- 保留 interaction/search 独立 lane；不恢复已废弃的中央 Window/TaskAllocation 共享容量方案。搜索验证码继续执行既有双 OCR、协议换题与 unknown 合同，AI/VLM 调用数为 0；群准入图片路由不改变搜索。
+
+#### 19.60.2 业务依赖与资源占用范围
+
+| 状态或故障 | 阻塞范围 | 其他工作 |
+| --- | --- | --- |
+| 某账号未通过某群验证/等待审批 | 同 tenant、账号、canonical target 与当前 admission 世代所依赖的动作 | 其他已就绪账号与目标继续；不能把 Task 全体或全部类型置 blocked |
+| 某账号尚未关注某频道 | 该账号在该频道的关注前置及依赖它的互动 | 同频道已关注账号继续，未关注账号继续原冻结关注排程 |
+| 某个正文/审核 Provider 等待 | 对应 generation job、purpose/route 及真实共享 Provider 资源 | 无该依赖的点赞、浏览、准入和其他可用路由继续 |
+| Telegram 调用仍真实在途 | 原 invocation 适用的 account hard fence、pool/share、peer/route/egress 等真实占用域 | 不持有无关 workload 的本地执行名额；其他未冲突账号/域继续 |
+| transport 已证明结束而业务 unknown | 原业务 identity/dedupe 与原预算归属继续保留 | 只按正式结束证据释放相应物理占用；不因此重放同一加入、确认或发送 |
+| 来源、时间、权限或安全容量不足 | 明确的 source/account/target/policy domain | 展示局部缺口；不缩减原任务分母，不归因成全局加群等待 |
+
+同一账号仍遵守统一引擎 account hard fence；“独立推进”不授权同账号绕过互斥并发发 Telegram RPC。target 级业务等待与 account 级真实在途必须分开，不把有未知结果直接等同于所有目标永远不可执行。复用既有 membership transport/business 双层判断及 §19.59，不建立另一套 unknown 解除规则。
+
+#### 19.60.3 持续调度、公平性与容量
+
+1. 每个现有 dispatcher/shard 持有持续 executor 和执行注册表；正常运行以空闲名额、完成事件及既有 due/wake 驱动 claim。一个动作完成并完成自己的结果处理即可补领；不能等待本轮其他 future、不能为等全部返回而关闭再创建 executor。空队列沿用 worker 的既有唤醒机制，禁止 busy-spin；所有本地名额繁忙时控制循环仍按原生命周期观测节拍处理 stop/回收信号，不以 future 返回作为检查的必要条件。
+2. 领取上限按当前真实可用本地容量计算，claim 与登记之间使用 owner/token CAS；不预领超出可执行容量的工作。名额按真实占用线程/本地阶段计数，不能只因数据库写了 waiting/timeout 就把仍被同步调用占住的 executor 线程算为空闲；隔离 runner 的调用必须按原终止合同单独追踪。Session、事务和 ORM 对象不得跨线程共用，只传稳定身份与冻结版本。调度控制、heartbeat、renew、termination/reconcile 不能排在被业务 future 占满的同一线程池后面。
+3. 普通 lane 内按实际 Action 责任区分加群、频道关注、活群发送、评论、点赞、浏览 workload；`ensure_target_membership` 必须按已解析目标类型和依赖用途分类，不能只看父 Task.type。验证读取/提交归属原准入工作，图片计算归属独立生成资源。未解析身份显式报错，不猜测类别。
+4. 复用现有 `ExecutionResiliencePolicyRevision` workload 隔离及 Task/group share 合同，把这些 workload 的实际执行名额、等待和占用全部接入同一容量守恒。普通总量不增加；有运行任务的独立 workload 必须具有正的受保护执行份额，准入不能占满其份额。真实在途、不能即时归还的调用不得借用其他 workload 的保护份额；否则新到的健康业务仍会被慢准入占满。无独立容量的部署必须在容量 preview 中报告缺口，不默认为“已实现隔离”。实际份额来自已审批策略，发布时冻结策略 revision 和实际可用容量，不新增硬编码并发数。
+5. 各 workload 内按 Task 持久公平 cursor 轮转；同 Task 内沿用合法 due、来源与节奏顺序。worker/shard 重启不能把 cursor 重置为固定 Task 优先；多 worker 对 cursor 和 Action 的提交需 CAS/短事务一致。同一局部资源不足的候选本轮退出 ready 集，带明确 blocker/wake 继续下一独立候选，不能在同账号或同群原地排空历史 backlog。
+6. 公平验收对象是有到期、依赖就绪且有可用资源的 Task。已得到份额的 Task 不得在另一持续就绪 Task 尚未轮到之前重复独占；到期输家清理使用其所属工作预算，不无限先清理过期 Action 耗尽健康动作机会。不提前执行 future，不以全量历史扫描作为每次补领前置。
+7. 已处理异常应按本 Action 原合同持久化并从执行注册表移除，其他动作继续；单项异常不能回滚其他动作已提交结果。控制循环/数据库整体不可用须明确暴露 worker 故障，不捕获为成功。取消已启动 future 或本地超时不构成 transport 结束证明。
+
+#### 19.60.4 逐动作资源生命周期与停机
+
+- claim 前创建领取临时作用域；领取成功后将每个已取得资源的所有权显式移交给 `(worker_instance, action_id, claim_token, attempt/invocation identity)`。失败或提交不明时按原事实恢复，只释放能证明由本领取拥有、可释放的本地登记。不能依赖 `ContextVar` 自动穿过 ThreadPoolExecutor；不能把原批次 finally 直接提前执行。
+- 每个动作完成/失败后的 finally 仅处理该动作原对象、原 token 的本地资源。相同 Action 的 successor、其他线程、其他 shard 的新 owner 不得被旧 finally 清除。局部释放失败需明确记录并保留所有权证据，不清零全局计数。
+- 验证观察窗、机器人审批、关注依赖、FloodWait、Provider 等待以现有 Action/Job/准入投影中的阶段、版本、reason 和 next_eligible_at/wake 持久化。该阶段当前本地工作结束后释放本地执行名额，不在线程里 sleep 到下一阶段；已启动远端调用按 §19.1 的硬超时/隔离 runner/termination 路径继续处理，未收到结束证据不释放 remote hard in-flight。
+- 群准入内 join、读 challenge、关注、确认、权限复检使用各自可审计调用边界；任何短事务不得跨外部网络等待。一个阶段完成不能提前确认整个 admission；下一阶段重新 CAS 当前 identity/version，并取得所需资源。
+- 自动回收在每次补领前检查既有 lifecycle 条件，先取得原 rolling-recycle lease，再原子关闭新 claim；SIGTERM 立即关闭新 claim。关闭与 claim 竞争时，已经取得的 work 纳入 drain，未取得的不再领取。drain 等整个 instance 的所有真实 active futures/operations、owned claims、未收口 Attempt、资源和严格断连，不依赖“最后一个批次”存在；租约获取失败继续 active，进入 drain 后丢租约遵守原 blocked 合同。
+- 本地 future 完成、worker 排空、transport 结束和业务确认分别记录。停机、新部署或 lease TTL 不能写成功、删除 unknown 或允许重复副作用。
+
+#### 19.60.5 节奏超期归因与积压恢复
+
+每个 `pacing_claim_deadline_exceeded` 必须能沿同一 Task/ledger/obligation/Action 查询 `source_observed_at`、原 due/release、内容就绪、准入就绪、claim、Gateway start 与 deadline，附原 timezone 和 policy revision。区分 `dispatch_queue_delay`、`generation_delay`、`admission_wait`、合法 future/source not-before、账号作息/容量不相交、时间换算缺陷；缺证据标 `unproven`，不从错误码反推唯一根因。
+
+| 积压类别 | 正式处理 | 不允许 |
+| --- | --- | --- |
+| 明确未调用、原来源和时间窗仍有效 | 按原身份/版本重新评估依赖和公平领取，保留 due 与预算合同 | 全量改 scheduled_at=now、取消节奏和关注前置 |
+| 明确未调用、已过期/上下文失效 | 原 typed shortfall/safe settlement；可重规划时仅原义务合法 successor，deadline/来源必须满足该适配器合同 | 发送陈旧正文、复制数量义务、改写赢家或旧远端事实 |
+| called/unknown/closed_unknown | 同一 invocation 正式 reconcile；有独立 transport 结束证据时只结算对应物理占用 | 普通 retry、删除 Action/Attempt、以失败状态或进程缺失推断未发送 |
+| 未到计划时间或尚无可用来源 | 保持 scheduled/waiting source；按原合同展示缺口 | 当成阻塞去补发，或为验收伪造来源 |
+
+代码发布与存量 apply 分开。恢复前必须重新只读采集精确 Task/Action/Attempt 集合、SHA、owner/epoch/hash、Gateway/journal/fact、原账本/预算和当前归属；正式 preview → 有范围授权的 apply → 独立 readback，任一漂移整批零写并重新 preview。历史证据未确认的项维持 unknown，不把其他项恢复当全量成功。沿用已审计入口；不存在适用入口时先实现相同合同，禁止临时 SQL 更新生产。
+
+#### 19.60.6 详情/API 与观测
+
+反向检查确认：当前 `ExecutionResiliencePolicyRevision` 只有部分超时/域限额，`DispatchFairnessCursor` 只有 tenant 级 last_claim_class/reason，不能假称六类保护份额和 Task cursor 已经落库。开发交接的数据增量限定如下：
+
+- 在原不可变 resilience policy revision 上 additive 增加版本化 workload 分配内容，保存 workload key、受保护名额、适用 lane、policy hash；总份额不得超过原部署实际可用容量，相关 workload 的份额按 §19.60.3 校验。新策略通过配置 preview/审批发布为 successor，旧 revision 不原地覆盖，不用迁移默认值擅自开启隔离。缺失分配只表示本切片隔离尚未激活/不可验收，不停止旧合同下其他可运行业务。
+- 在现有 tenant fairness cursor 上 additive 扩展按 `(lane, shard, workload)` 的 last_task_id 与 cursor version 投影；短事务 CAS 同时提交合法 claim 与 cursor 进度，跨 shard 不争同一逻辑游标。旧字段保留历史，首轮初始化由当前合法 Task 稳定排序形成并持久化，此后不得逐批重置。worker instance registry 只存本进程未结束项，不能代替持久 claim/token 或用 JSON 无限追加历史。
+- 原 Action/Job/VerificationTask/Attempt 存储承担阶段与唤醒，新增数据必须具备 schema/version 和类型校验；统一 detail DTO 输出本节语义字段，不用展示字段覆盖远端证据。Provider 图片 purpose 沿用 route set/item，无需新供应商表或第二套密钥配置。
+- migration/兼容 fence/策略 preview 的具体文件由 dev 形成并登记结构索引；Release Gate 检查上述字段和旧数据兼容，不允许只改 Python 内存变量后声称多 worker 公平或保护份额成立。
+
+不新增业务任务类型或操作入口。现有任务详情分别展示准入总数/已就绪/等待/失败、主业务 due/eligible/claimed/Gateway/confirmed/shortfall，以及每个 blocker 的账号、目标、workload/资源域、起始时间、下次检查条件和最后进展时间。只有某任务所有当前到期且有业务输入的候选都不可执行，才可汇总为 blocked；部分可执行为 running_partial，future 和无输入明确分列。
+
+同一 snapshot 的统计携带 captured_at、task epoch、policy revision；“AI生成成功”“答案已提交”“已关注”和“正文可见确认”分别计数。观测增加各 workload 空闲/占用名额、due→claim 延迟、最老可执行等待、阶段等待与实际在途数；不能用 worker healthy 推导业务健康。复用现有详情读模型和权限控制，底层存储字段映射由 dev 同步结构索引，不把设计字段写成已存在 API。
+
+#### 19.60.7 Product Handoff、QA 与 Release Gate
+
+反向检查入口：`service._run_dispatcher_batch`（整批屏障）、`direct_action_claims`（Task 排序/先过期结算）、`runtime_resources.dispatch_runtime_reservation_scope`（批次 ContextVar 与原对象）、`worker.py` 与 `dispatcher_lifecycle`（after-batch 检查点）、`channel_membership_runtime/attempts`（在途与目标 unknown）、`account_pacing_guard`、`safe_settlement_*`、`membership_challenges`、`verification` 和 `dispatcher._try_auto_group_send_verification`。已有测试入口包括 `test_dispatch_fairness.py`、`test_dispatcher_lifecycle.py`、`test_channel_membership_window_runtime.py`、`test_membership_challenges_image_solver*.py`、`test_source_pacing_late_admission.py`；现有通过状态不能替代下列新增反例；其中旧 image solver 用例仍包含模型投票，只能作为历史路径参考，不能将其原预期重新接入当前纯搜索链。
+
+| 验收项 | 必须证明的结果 |
+| --- | --- |
+| 批次屏障反例 | 用真实 dispatcher 编排和可控阻塞依赖保持 A 加群未返回；B 完成后 C 在 A 返回前已被领取并完成，执行名额未超原容量 |
+| workload 隔离 | 大量慢加群/关注、Provider 卡顿同时存在时，独立健康账号的活群/评论/点赞/浏览均可领取；无来源/尚未到期类只报告未具备验证条件 |
+| 公平与规模 | 多 Task、多账号组、多 shard 和高历史积压下，持久 cursor 无重启偏置；候选查询使用现有索引/有界领取，不让失败候选或过期清理形成新饥饿 |
+| 资源归属 | claim 前后失败、提交不明、Action 消失/终态、finalization 抛错、同 ID successor、其他 future 仍运行均不误释放；原 token/对象保护有效 |
+| 等待与 unknown | 等待阶段不占本地槽；真实在途继续保留原硬占用；原进程退出 ACK 只释放对应物理占用，不重放原业务 |
+| 停机竞争 | SIGTERM/自动 lease 与补领竞争，停止新 claim 后全部已获工作可追踪，断连失败不写 safe_to_exit；无“持续补领导致永不 drain” |
+| 数据并发 | 真实 PostgreSQL 双 worker claim/CAS、固定锁序、短事务、单项失败隔离、Redis token 归属；跨租户/epoch/source 错配拒绝且零副作用 |
+| 节奏与恢复 | 单独复现队列等待、生成晚、准入晚、source not-before、日界；只恢复原合同允许项，已确认/unknown 赢家和数量预算不变 |
+| 验证接通 | §15 的文本四则、图片显式路由、可信提示、一次提交与权限/可见性复检全部通过；搜索 AI/VLM 请求仍为 0 |
+
+后端定向测试用 `backend/.venv` 且每次命令硬超时 60 秒；并发、锁/CAS 和资源归属必须用真实 PostgreSQL/Redis 验证，不能以 SQLite 或模拟 Telegram 的成功替代生产 E4。测试中的受控阻塞用于验证执行机制，不计业务成功。
+
+发布仍走 master → release → GitHub Actions Deploy Production，精确读回 current/全部相关 worker SHA、实际 workload 策略与归属、迁移和 runtime。跨版本资源所有权不兼容时使用现有 release fence/drain，新旧 writer 不混跑；迁移仅 additive，旧 Action/Attempt/facts 保留。回滚也先停止新 claim 并按 instance drain，不能为回滚重放新版本已调用或 unknown 的动作。
+
+生产按每个 Task 独立验证 Task → ledger/coverage → Action → Attempt/Gateway → typed fact，并记录真实仍在等待的准入身份与另一健康账号主业务调用的时间重叠。活群/评论需新 `remote_message_observed` 且符合既有可见性合同，点赞需 `reaction_observed`，浏览需 `view_observed`；单条样本仅证明链路恢复，数量/质量/性能仍按原 Task 业务周期验收。各 workload 没有可用输入或账号时保持 unproven；发布成功、日志无错、关注增长和生成成功均不能写 production_fixed。
+
+PDC 自检覆盖用户原话、依赖范围、验证路由、容量/公平、持续补领、异常/停机、UI/API 投影、幂等/安全、历史恢复、迁移回滚和逐类 E4；已显式解决 §19.42/旧 after-batch 生命周期与搜索 OCR 合同冲突。开发若发现字段、拓扑或真实证据不满足本合同，应标本切片 resync 并回产品修正，不能以静默 fallback 收口。
+
+### 19.61 AI 故障兜底与正常质量分账（2026-09-08 用户裁决）
+
+#### 19.61.1 Intake、优先级与产品范围
+
+- `intake_id=intake-2026-09-08-emergency-fallback`；L3；用户明确要求：AI 模型没有额度或出现其他问题时，活群使用“签到”兜底，回复使用随机表情，评论使用表情；修复新旧 PRD 中阻止这套机制生效的设计，并审查类似遗漏。
+- 本切片 `design_status=complete`、`design_review_status=self_reviewed`、`resync=true`、`dev_handoff_ready=true`、`implementation_status=not_started_for_this_slice`、`qa_status=not_run_for_this_slice`、`production_status=unproven`。本会话继续修订产品设计；这不是已修改生产开关、代码发布或真实兜底发送的声明。
+- 本节为 unified/current 内容故障兜底唯一上位合同，覆盖本文 §4.2、§8、§9、§10.2、§19.37、§19.45/19.46/19.58 与活群、评论、内容路由/运行/评测等专项中“新引擎禁止签到/表情”“只支持 legacy”“额度不足不许签到”“reply 永远禁止表情”“兜底发送率必须为 0”的冲突条款。历史快照/成功记录不重写；旧槽按原冻结身份收口，新版本和合法未发送 successor 才执行本节。
+- 内容故障采用显式 `emergency_fallback_v1`，不恢复旧固定多模型拓扑、模型投票、中央 Window、自动换目标或发送后补发。正常内容继续完整生成/审核；故障兜底有独立 deterministic 验证，不伪造正常审核通过。
+- 本轮保证的是：原业务义务合法、到期、有真实目标/回复对象、账号和传输满足发送条件时，AI 额度/模型/生成链故障不会阻止使用指定兜底。Telegram 不可用、真实权限不足、业务窗口已过或 Telegram 是否已发送不明仍须真实展示，不承诺在这些情况下远端一定成功。
+
+#### 19.61.2 三类输出及功能继承
+
+| 原业务 | 故障兜底内容与 RPC | 关系与统计 |
+| --- | --- | --- |
+| 活群主动/direct 数量或基础覆盖义务 | 精确正文 `签到`；仍为 `send_message`，`content_source=check_in`，绑定 emergency policy revision | 同账号同目标、原数量义务；未覆盖时可同时完成该账号基础覆盖，不伪造人设、主题内容或语义回答 |
+| 群内原生回复/明确互动回复 | 从批准的 Unicode 池随机选择一个完整表情，`content_source=reply_unicode_emoji_fallback`；仍为原 `send_message` | 保留真实 reply_to/turn/owner/账号绑定，不改成 direct，不发签到冒充回答；只计实际回复/互动确认，不计问题已解决 |
+| 频道顶层评论或回复评论 | 默认一个随机 Unicode 表情，`content_source=comment_unicode_emoji_fallback`；仍为 `post_comment` | 顶层保留原 source/thread；reply 保留原父评论与讨论组绑定。表情消息不是 `like_message` 或 reaction，不冲抵点赞数量 |
+
+语义 direct response 原来没有 native reply 时，不凭空加引用；保留原 response relation/turn，使用回复表情类型，并标记为 acknowledgment。一个 turn 的平台响应 owner 规则保持；不能让全部账号用表情重复回答同一 turn。
+
+继承评论旧 §12.11 的 20 个 Unicode 表情池、grapheme 完整性与稳定随机能力，作用于新 emergency 分支；不只保留历史 3 个表情。可选图片表情包只继承已经显式启用、审核/缓存就绪的版本化素材能力，不自动开启 planned 图片/表情配比。图片缓存/媒体能力不可用且尚未调用 Telegram 时，按本 policy 明确的 Unicode 应急分支建 selection successor，记录原因；不调用 AI 生成 caption。图片已调用/unknown 不换文字重发。
+
+#### 19.61.3 AI 故障分类与进入时机
+
+| 证据化触发 | 进入 emergency 的规则 |
+| --- | --- |
+| `quota_exhausted`、余额不足、模型停用/不存在、Provider 凭据不可用、无可用 route | 已有明确配置/typed adapter 证据时立即形成故障决定，不为证明耗尽而发送无意义请求，不等 3+3 六轮或 quota 重置 |
+| 429/rate limit、连接失败、5xx、服务不可用 | 可用正常路线在原 latest-safe 内立即可执行时沿原批准策略；否则当前义务转 emergency，不阻塞到服务恢复。保留服务端重试时间供后续健康探测，不在线程 sleep |
+| 生成/审核超时或结果不明 | 先按 §19.61.6 区分纯 Provider 调用和 Telegram 副作用；仅纯内容调用 unknown 可以封住晚到正文发布权后走 emergency；原 Provider unknown/计费/transport 占用保留 |
+| JSON/schema 失败、无有效正文、质量/grounding/重复失败或审核失败 | 在原允许的正常尝试预算/时间内仍无法得到可发内容时进入 emergency；不新增无限重试、不发布 Stage 1、不把拒绝的正文拼接成模板 |
+| 未有可用面具/声线/生成上下文，或前置语义分类不可用 | 正常生成等待按原原因保留；合法 direct 义务可签到，已确定真实回复对象的义务可用表情。正常内容依赖不成为固定兜底的必要条件；账号身份禁用、原目标不明或安全域不明不在此列 |
+
+“其他问题”不作为吞异常的泛化 catch-all。必须保留原异常类/阶段与 typed reason；Task/tenant/账号/target/epoch/hash 错配、未经授权内容或真实发送边界不可证明时为合同/安全问题，不能以 emoji 绕过。Provider 拒答与源内容不允许分别判断：源/目标已通过原出站范围和权限校验时可发批准静态内容，原业务不被允许时保持明确阻塞。
+
+若已有正常候选通过审核且仍有效，优先完成原正常输出；不能仅因随后发生 quota 告警覆盖它。若模型恢复发生在 emergency 已提交选择之后，本义务仍使用冻结兜底，恢复只影响后续未选择的义务；禁止 normal/emergency 来回摇摆或同槽双发。
+
+#### 19.61.4 不依赖 AI 的完整执行路径
+
+`原有效 due obligation → 正常内容可用性/typed 故障 → emergency eligibility → 同 owner 内容选择 CAS → 确定性内容与关系校验 → fallback_ready → 原 Dispatcher/Telegram Gateway → typed remote fact + 原可见性核验 → 原数量/基础覆盖投影`。
+
+1. Task 创建/启动和义务规划允许 `normal_ai_unavailable + emergency_available` 的降级运行；Provider route 健康、生成 permit、normal quality capacity 或面具缺失不能把所有内容义务挡在 emergency 选择之前。Task 结构、目标/账号授权、原 due/数量合同仍须合法。
+2. emergency 内容选择及检查不调用 realizer、classifier、reviewer、声线生成或 AI 图片模型，不申请上述 Provider lease；不能以正文模型健康检查作为 fallback_ready 条件。使用已批准固定文本/表情池、类型校验、静态出站规则与当前 target/relation 权威事实，不标 `quality_accepted=normal`。
+3. 已有回复义务直接继承原真实关系与发送 owner，不要求新增正式 InteractionServiceBinding。classifier/intent 模型先失败时，只对现有可信新消息或当前短期上下文中已核验的 native reply/mention 等确定性关系使用 `fallback_ack` preparation；沿用现有原义务/回复去重身份与 Task 数量规则，不新建历史 ConversationEvent/Revision 或逐 binding 调用预算。不靠模型再证明 emoji 语义，不创建假 classifier 成功；没有真实可归属对象的普通语义机会保持未证明，不乱回历史消息。
+4. 正常生成需要的 topic/grounding/voice/style/normal semantic-capacity 字段按原失败证据保留，emergency preparation 将这些质量依赖标为不适用或失败，并冻结自己的 content hash/policy/关系；不得伪填正常 Assignment 以骗过校验。源消息和回复对象身份、删除/过期、可见性与出站安全仍是必需依赖。
+5. 排期使用原 Task/source 的 due/release/deadline、真实账号和 Telegram 容量；发送时限沿用 §19.14 的原 Job/义务真实截止点和既有发前复核余量；不要求历史画像、完整链 P95、Provider permit 或正式 response binding 才能获得原可发 slot，也不新建 fallback timing profile 审批。资格就绪后进入 §19.60 持续 dispatcher，并有独立于 generation 的可用领取入口；不能依赖已停摆的 ai-generation worker 才能发现 quota 和创建签到。
+6. emergency success 后不补发晚到的正常正文；normal 成功后也不补签到。人工重试、recovery、计费对账和重新规划都只认统一的当前内容 owner 与远端副作用身份。
+
+#### 19.61.5 保证覆盖、频率、随机与数量守恒
+
+- 明确取消 current emergency 的“coverage 必须先完成才允许生成失败签到”“缺面具只能第一条签到”和“同账号同群同 Task 日只能签到一次”限制；这些旧内容策略不能在模型长期无额度时把其余合法原义务全部变成短缺。正常账号用途/有效身份仍必需，面具缺失不等于身份禁用。
+- 改为每个原数量/回复/评论义务最多一份获准的 emergency 输出，仍受原 Task 总量、账号行为预算、并发、时间间隔、FloodWait/SlowMode 与现行安全策略约束。不能为兜底新增原计划外义务或提高原数量，不设额外任意签到日上限或 fallback 比例上限。连续运行不等于集中抢发或无真人目标时制造假回复。
+- 精确 `签到` 和批准的单表情不会因普通正文 10/30 天 exact、semantic cluster、模板/风格频率去重而永久不可用；这些检查只评估正常内容。emergency 防重由原义务、当前内容选择、同一 reply/turn 单 owner、Gateway invocation 和 typed fact 完成；原实际频率/风险/目标限制仍独立执行并展示。
+- 随机选择沿用稳定 shuffle-bag：以 tenant、Task、当前原 source/peer scope、emergency policy revision 和内容类型冻结 pool/seed/顺序；当前义务首次 CAS 分配 rank 并保存 emoji/grapheme/hash，此后 claim/retry/重启不重抽。一个袋内按原稳定随机次序取用，袋用完可进入新 cycle，不因 20 个表情用完而停止兜底。多 worker 共享相同持久 cursor/CAS；不同 Task/source 不强制同序列，不能用全局相同默认 seed 同步刷屏。
+- 评论旧 `planned_fallback_max_bps` 仅控制正常计划阶段主动分配的 fallback，0 不能关闭 emergency；旧 direct-only planned 范围不禁止 reply emergency。正常业务默认仍生成正常内容，用户要求的应急机制不变成常态随机表情规划。
+
+#### 19.61.6 原义务 CAS、Provider unknown 与 Telegram unknown
+
+| 当前事实 | 内容切换/发送权限 |
+| --- | --- |
+| 尚无发送 Action/Attempt；纯内容 Job 明确失败 | 同原 obligation/current binding 版本 CAS 选择 emergency，由原类型唯一物化 owner 创建 ready 输出 |
+| 有 pre-Gateway Action，全部证据明确未发 | 原 owner 锁内封住旧发送资格，append content/materialization successor 并冻结兜底；旧 Action/失败证据保留，不删除或复制数量 |
+| 只有纯 Provider unknown，未进入任何 Telegram 可见操作 | 原 Provider 请求不重放/不清账；在发送 owner CAS 中撤销旧 candidate/job 发布权并记录 superseded-for-output，emergency 可取得原发送资格；late provider result 仅审计/计费，不再生成 ready normal Action |
+| Telegram call-issued、journal/remote effect 不明、业务 unknown/closed_unknown | 禁止内容切换或替代发送，只按原 invocation 对账；timeout、cancel 或 worker 退出不能当作未发送 |
+| 已有 normal 或 emergency typed confirmed | 只幂等投影原完成，不创建新输出；generation 晚到也不得补量 |
+
+原调用类别必须由冻结的请求身份和实际 adapter 边界证明是纯内容 Provider；无法证明不含可见副作用时不套用 Provider 例外。内容发布权的 CAS 不释放 Provider remote hard in-flight、不抹除既有 token/费用证据或原 unknown；不新增费用账本或发前扣费，也不更改 Telegram/账号物理 fence。
+
+Generation、fallback selector、Dispatcher、Recovery、late-result handler 都必须检查同一 `obligation current content/materialization revision`。已领取但尚未 call-issued 的旧 Action 必须先被同一锁/CAS 证明无法越过发前检查，再交接新 owner；任一已开始或漂移则拒绝切换。原赢家、数量 owner、账号 coverage owner、评论 ordinal/来源/关系及原业务数量不移动；发送权 CAS 复用现有 owner/version，不以创建完整历史准备编排为前置。
+
+#### 19.61.7 配置、持久化与迁移
+
+- Task 内容 policy 增加不可变 `emergency_fallback_v1` 部分及 binding：`enabled`、适用 group-direct/group-reply/comment-direct/comment-reply 映射、Unicode allowlist version/hash、可选图片池及显式转 Unicode 规则、trigger classifier version。新配置默认开启本节三类应急行为；沿用上述固定内容，不接受任意模板字符串。UI 显示 AI 故障兜底与计划内 fallback 两个不同概念。
+- 旧 `static_safe_fallback`、comment 类型/权重/比例全部为 0、或旧 v2“忽略 legacy”不能自动映射成新 emergency=false。本次产品裁决要求纳入范围的存量 Task 建新 emergency policy successor；实际 Task 集合和 config/epoch/source/owner 差异须重新 preview。若今后运营明确关闭独立 emergency 开关，保存审计并展示“AI不可用时会短缺”，不能静默重新开启。
+- 当前 comment policy/pool/selection/cursor 表仍绑定 legacy ContentMix，不能直接伪造 legacy owner 给 unified 使用。开发以原 unified obligation owner additive 扩展 policy binding、选择事实和 cursor 作用域；保留 legacy 路径兼容，唯一选择键为 `(tenant, obligation identity, content revision)`，并由 current pointer 保证同时只有一份可发送输出。不新建第二套 Task 数量账本或重复 GenerationJob 管线。
+- 最小选择证据为原 Task/epoch/ledger/obligation、账号/target/source/reply binding、normal job/attempt 与故障摘要引用、emergency policy revision、content kind/hash、selection seed/rank、前后版本、sender ownership 与 created_at。Provider 请求/凭据/推理不复制进 Task stats；使用现有审计与受控证据引用。
+- 旧 check-in `(task,group,account,day)` 唯一索引不能继续约束新 emergency；需要 additive policy-version 字段及替代索引，分别保留 legacy 原日唯一性和新版本 obligation/current-owner 唯一性。旧行不能批量改成新版本来逃避约束；发布 fence 内完成兼容校验，旧 writer 不得创建新 emergency 行。真实 PG 回归必须覆盖同日同账号两个不同原义务可以签到、同一义务竞争只能一个，以及混合历史行无重复投影。
+- 旧 ready/unknown/confirmed 行保持原冻结合同；仅对明确未执行且仍有效的剩余原义务通过审计 CAS 建 successor，不能把已结算历史短缺重新打开或把旧质量事实重命名。当前已冻结 source/day 的数量和预算不变，变更只增加获准的应急内容路径并留下授权 revision。
+- 停用/回滚只影响尚未选择的新工作；已选内容、已调用/unknown 的新 owner 继续前向收口。出现新版本同日多条合法签到后，不能直接重建旧日唯一索引或回滚到不识别该类型的 worker；Release Gate 必须证明旧读取兼容，否则用兼容前向修补/现有 fence 停止新增，保留对账，禁止删新行迁就回滚。
+
+#### 19.61.8 完成口径、质量和前端
+
+同一 typed sent fact 按原唯一 owner 最多计一次：`quantity_confirmed = normal_confirmed + emergency_confirmed`（两集合互斥）。原任务基础参与/账号覆盖允许 normal 或合法 emergency 确认，不能把新引擎的 normal-only 基础覆盖门保留成永远无法完成；另外保留 `normal_contextual_coverage` 作为独立质量指标，不以基础覆盖完成伪造正常语义覆盖。
+
+- 签到计原群日数量与其账号基础覆盖；回复表情计实际回复/acknowledgment 的存在性，不能计 semantic answer/问题解决；continuity-only 义务仍只计 continuity，不增加日数量。
+- 评论表情计原 source/ordinal 下的评论数量、distinct-account 基础参与与真实发言覆盖；不计 grounded/老师/亮点/正常正文或语义响应质量。原来源需求、Daily Cap 和 distinct-account 分母不缩小。
+- 远端 message ID、内容类型/哈希、reply/source identity 与既有 post-send visibility 通过才确认；答案/内容选择、Action ready、Provider 失败、已发送但被删、待可见性或 remote unknown 都不算 completed。
+- 主任务可显示“数量已完成（含兜底），AI 内容质量降级”；未完成时分列等待兜底、发送阻塞和原欠量。不能把质量降低当成数量 0，也不能把 quantity met 标成全部产品质量通过。normal/emergency 数量、基础覆盖/normal 覆盖、降级原因与时长、fallback pending/confirmed/failed/unknown、Provider 与 Telegram 健康分别展示。
+- 监控废止“合法 static fallback sent > 0 就停止 Task”的规则。合法 emergency 只标质量降级/Provider 故障，独立任务继续；没有 policy/触发证据、违规类型/关系、重复发送或越权内容才按相应真实异常处理。旧质量盲评、grounding 与互动目标仍保留真实分母，不能把故障期样本悄悄排除后宣称整体高质量。
+
+#### 19.61.9 反向检查、QA 与发布验收
+
+代码反查显示：`comment_generation_pipeline._emoji_fallback_result` 仍直接拒绝 grounding reply；现存 `CommentFallbackSelection` 依赖 ContentMix；旧 check-in scoped claim/handoff 及 v2 Job binding 路径不能因本 PRD 修改就视为已具备新能力。实施面包括 Task/schema/policy binding、Planner due/fallback eligibility、Provider typed adapter/candidate 发布权、deterministic selector、Dispatcher claim/Gateway 发前版本检查、fact projector、quality/quantity read models、监控和安全恢复。结构索引仅在 dev 按真实模块同步。
+
+| QA 场景 | 必须验证 |
+| --- | --- |
+| 全部 AI quota=0 / key不可用 / route不可用 | 三类合法到期原义务可产生对应 fallback_ready；不发额外 LLM 请求，不等 3+3 或恢复额度 |
+| classifier/realizer/reviewer 各自停止或失败 | 确定性 fallback 入口独立存在；已有真实 reply 身份不因 classifier 不可用丢失，正常候选有效时优先正常输出 |
+| normal 失败及缺面具 | 未完成覆盖与已完成覆盖的合法数量义务都可兜底；无账号身份/目标权限时仍明确阻塞 |
+| 同日多义务、同义务竞争 | 原每义务一次、群日/账号预算守恒；两个不同原义务不被每日一次索引或普通文本去重误伤 |
+| 随机选择/媒体失效 | 20 个完整表情、袋耗尽续 cycle、多个 worker CAS、重启/重试不重抽；图片未发送可明确转 Unicode，已发送/unknown 不换内容 |
+| Provider unknown + 晚到成功 | 原请求不重放、不释放未结束 Provider 硬占用；normal/emergency 发布权竞争只有一个赢家，晚到正文不补发 |
+| Telegram unknown/可见性待定 | emergency 与 normal 同样只对账，无重复消息、无假成功 |
+| 计划比例0/旧完全关闭配置 | 新 emergency policy 按显式 successor 生效，planned 仍为0；明确独立 emergency=false 时准确显示禁用 |
+| 排期/来源/回复/安全 | 不提前执行、不跨目标、不造 reply、不对已删源评论、不绕过账号用途/准入/Telegram约束；固定输出不再等待 normal LLM quality gate |
+| 投影与监控 | quantity/base coverage 计合法真实兜底，normal/grounded/semantic success 不被污染；合法 fallback 不触发旧自动停 Task |
+| PG/并发/回滚 | 唯一索引、owner CAS、claim/Gateway竞态、跨 epoch/source变更、晚结果、double projection、mixed legacy 与新版本可重复验证 |
+
+后端用 `backend/.venv` 定向验证，每次命令硬超时 60 秒；PG/Redis 资源与并发使用真实隔离测试库，测试 fake Provider/Gateway 仅验证机制，不作为生产 E4。发布经 master → release → GitHub Actions，独立读回 deployed SHA、schema/policy revision、实际 Task binding 与兼容 reader。
+
+真实生产验收逐 Task 留存“Provider 明确不可用或该次生成失败 → deterministic selection → 原 Action/Attempt → Telegram typed fact/可见性 → quantity/base coverage/quality readback”证据；活群 direct、群回复、频道 direct、频道 reply 分别验收。不得擅自消耗完真实 Provider 额度来制造场景，使用已存在 typed 故障或另行批准的受控 canary；无真实样本的分支保持 unproven。至少覆盖原业务完整周期的持续故障和恢复，避免只证明第一条签到后全部剩余义务卡住。
+
+PDC 自检：本节闭合了触发、三类输出、AI 前置门绕行、无模型执行、关系、随机/重复、数量/质量、配置迁移、Provider/Telegram unknown、晚到结果、停机/回滚和逐类 E4。修改后的 PRD 不等于实现已经具备；dev 发现新字段/旧索引/原型事实不符时回本切片 resync，不降低用户要求来通过验收。
+
+### 19.62 旧 PRD 能力继承与相似冲突审计（2026-09-08）
+
+本轮扫描 `docs/03-feature-designs/` 中包含签到/兜底/Provider降级的设计入口，并对下表与本次引擎直接相关的条款逐项反向核对；本表是设计差异审计，不是其他项目、登录、账号安全或全部历史功能的实现验收。本文 §19.60 的异步/准入修订保留，§19.61 是以下内容故障项的单一决议来源。
+
+| 旧设计/当前冲突 | 影响 | 本轮决议及落点 |
+| --- | --- | --- |
+| Provider fallback 设计 §4：quota/key 故障不许签到 | 正好在用户最需要兜底时失效 | §19.61.3 typed quota/key/route 故障可立即应急；Provider故障仍如实展示 |
+| generation-failure-churn §4.4/§4.7 签到 handoff/claim：主备各3轮、只限已覆盖 extra-volume | 全模型停机反复烧请求，未覆盖账号永远缺量 | §19.61.3–19.61.4；明确不可用直接交回原义务，未覆盖/已覆盖统一处理 |
+| daily-group-target §7.4/closure §12：每日每账号仅一次签到 | 只恢复第一条，其余合法计划无法继续 | §19.61.5/19.61.7；新 policy 按原义务防重，替代索引保留 legacy 约束 |
+| mask initialization / all-account coverage：缺面具只能首条，extra-volume必须有面具 | 固定文本仍被 AI 人设生成故障阻断 | 正常人设要求保持，合法 emergency 不依赖面具；基础覆盖与正常质量分账 |
+| unified/dual-lane：所有 fallback 禁止计数量/coverage | 真实发送仍显示未完成或直接不发 | §19.61.8；真实应急计基础业务，不伪造高质量 |
+| comment §12.11：20表情/图片/稳定随机仅供legacy，reply禁止 | 新引擎丢失旧可用能力；回复无连续性 | 保留20表情/稳定选择和可选ready图片，reply只换内容不换引用；新 owner 不复活 ContentMix |
+| unified §19.37/评论 planned cap=0 与 emergency混用 | 默认零兜底配置阻止应急 | planned 与 emergency独立，明确新 policy successor；旧0不自动解释为新开关false |
+| 内容路由 runtime §6.5：只让 normal quality accepted 建 ready Action | 配置有兜底仍卡在 normal reviewer/模型前置门 | 加 deterministic fallback_ready 与同一 owner CAS；不伪填 normal 质检通过 |
+| 内容路由评测合同 static fallback sent 必须0、任一停Task | 第一条合法应急发送触发自停 | §19.61.8 正常/应急分账，合法应急提示降级不自停 |
+| Provider result_unknown 与 Telegram unknown 统一阻塞 | 纯文本 HTTP未知也可能让数量义务永远不能兜底 | §19.61.6 保留计费/transport unknown，CAS撤销候选发布权；真实Telegram未知仍不可重放 |
+| 普通正文10/30天去重、normal风格/grounding门套用固定签到表情 | 兜底被静态内容必然重复或无语义证据拒绝 | §19.61.4–19.61.5 类型化校验和基础统计；安全/目标/物理频率约束保留 |
+| 图片素材缓存等待与表情池耗尽 | 非AI依赖也把应急完全阻塞 | 可用Unicode保障分支、明确pre-Gateway选择successor、稳定随机袋续cycle；不对已调用图片重发 |
+| 旧“签到不受活动窗口/硬小时限制”、全量due立即执行 | 恢复兜底可能形成集中抢发 | 不恢复；§19.61.4–19.61.5仍消费原due/节奏/安全容量 |
+| 旧Provider多级切换/第二key/搜索AI投票 | 内容应急被误扩为模型/凭据与搜索重构 | 不恢复；现行MiniMax正常路由和纯搜索双OCR保持，供应商切换另按正式路由合同 |
+| 旧引用丢失转direct、正文被删后关注并补发 | 假回复或重复消息 | 不恢复；原reply authority、post-send visibility与Telegram unknown防重保持 |
+| 旧批次资源释放/after-batch停机与全账号准入等待 | 无关健康任务被慢工作拖住 | 本会话§19.60已修订设计，仍须代码/真实业务验收，不能因本次兜底宣称已恢复 |
+
+新 feature/adapter 接管必须附“旧能力 → 新路径/明确退休 → 配置与统计 → QA/E4”的继承矩阵。仅写 superseded 或质量提高不能自动删除用户仍要求的业务能力；反之不能把旧已废弃实现、成功口径或不安全重放当成应恢复能力。对本表范围外发现的旧条款保留原状态，不顺带修改生产或扩大开发边界。
+
+### 19.63 二轮旧 PRD 对照审查与范围收敛（2026-09-08）
+
+#### 19.63.1 Intake 与证据层级
+
+`intake_id=intake-2026-09-08-legacy-prd-second-review`；L3 设计审查，沿当前 PRD-only 授权继续。范围为统一引擎承接的活群/评论/点赞/浏览及其内容、统计、清理、账号与生命周期专项；不是所有账号授权、抽奖或转发产品的全量验收。本轮只读对照了专项 PRD、真实模型/清理/统计/内容入口及现有测试覆盖，不运行生产操作或业务代码。设计修正已写回；`implementation_status=not_started_for_this_slice`、`qa_status=document_checked_only`、`production_status=unproven`。
+
+| 编号/级别 | 对照证据与问题 | 当前决议 | 必需验收 |
+| --- | --- | --- | --- |
+| R1 / P1 | §19.13–19.14 已取消模型预算表、全链 P95/画像审批、正式 InteractionServiceBinding；上轮 §19.61.4 又要求 fallback timing profile successor，专项运行段仍有逐 binding 预算准入 | §19.60–19.61 仅补执行独立性和应急内容，不撤销轻量范围；沿原义务/Job/回复身份及真实 deadline 做 CAS，不为应急新增模型费用/预算/画像/历史事件表 | 无历史画像、无新增预算表、无正式 response binding 时，四类当前链及合法应急仍可运行；旧未决请求不重放 |
+| R2 / P1 | §19.15 要滚动72小时，但 retention §3.2 允许 success 两个完整自然日清理；`recent_success._ranked_successes` 内联 Action/ExecutionAttempt，清理器直接删这两表 | 72小时内有效成功的查询依赖必须保留，普通清理不能使窗口内真实成功消失；具体保护口径见 §19.63.3 | 同一 as_of 清理前后四类总数、逐账号数相同；窗口边界/迟到对账/重复事实/跨日均覆盖 |
+| R3 / P1 | `fulfillment_facts.py` 中 comment/reaction/view obligation 的 current_action_id 及部分搜索事实导航使用 CASCADE；retention 只列旧引用释放，没有业务依赖闭包合同 | Action 明细过期不等于原业务义务/事实可删；按 §19.63.3 保护业务 owner 与事实，不把数据库级联当作合法业务清理 | 真实PG带业务引用的清理前后 obligation、typed fact、unknown/防重、覆盖及后续重规划结果守恒；模型和迁移真实FK一致 |
+| R4 / P1 | 每日词库专项保留0～30%话题上限、teacher独立比例、current/next-day生效与不可变intent；统一引擎只在退役配置中点名比例，缺少新owner如何承接的明确合同 | 继承已有内容分配能力及逐字段生效边界，见 §19.63.4；不能因旧数量owner退休而丢弃内容配置，也不能复制旧数量账本 | 配置/intent/Job/Gateway/读模型贯通；0%、非零、空值、日内改动及应急混合可解释且不增欠量 |
+| R5 / P1 | 旧群日专项/README称账号资格动态增减、abandoned可缩分母；统一§7.6/§11要求已冻结selected不缩、不换号 | 按§19.64修订：新计划先排除明确失效账号；已冻结selected仅保留历史，失效立即阻断后续分配。普通成员变动仍按下一未冻结单元/下一任务日生效，不把“分母稳定”解释为继续分配失效账号 | Session失效/冻结在新计划前排除，日中失效后新增来源/补量不再分配；历史selected/事实不抹除；普通成员版本变化仍按原生效边界 |
+| R6 / P1 | 旧closure/群日发布流程包含prepared canary、物理删除旧Task；§19.58已改为新draft映射、retire/cleanup/activate且保留旧Task读证据 | 本次统一切换只按§19.58；退役不是用户删除，不调用旧物理删除链、不因目录“当前闭合合同”误选旧CLI。显式用户删除仍按其独立操作合同 | 退役后旧Task仍可读、映射不丢、不能start/retry；unknown继续原身份对账；没有额外物理删除 |
+| R7 / P2 | README仍称current禁止签到、runtime禁止static、群日动态coverage与旧prepared切换为当前入口；容易把旧内容当开发验收依据 | 同步导航行的route/version与新合同落点；旧代码/QA完成状态不自动覆盖新切片 | 从主PRD和目录进入同一范围裁决；正文、运行与QA使用相同版本，不凭顶部一条新公告猜下文适用性 |
+
+2026-09-08后续开发记录：用户已追加授权修复R1–R6。R2/R3落地共享成功判定、受保护依赖候选排除与Action/Attempt锁内重查；R4修复两个纯内容更新入口的重启/重排/同值清计划问题；R1/R5/R6按当前实现定向反查，不恢复旧画像门、动态分母或物理删除流程。详细证据见 `docs/05-implementation/legacy-prd-p1-repair-20260908.md`。本批次不等于§19.60/§19.61整套新应急/异步能力已实现；其尚未实现的分支仍维持原开发状态。
+
+#### 19.63.2 轻量范围不得被后续补充隐式撤销
+
+§19.13–19.15 是当前功能范围，§19.60 的公平/资源生命周期与 §19.61 的应急是其增量。后者所写的“budget”只可指仍有效的任务数量、实际 Telegram 行为额度/并发或已经存在的请求状态；不能由该词重新引入逐 binding 模型预算表、成本扣减、interval capacity 服务或历史画像审批。现存 Provider 请求身份、真实 transport占用、绝对超时、正常内容生成/独立审核和晚到结果防重继续保留；既有计费证据不删除，但不是新增计费平台。
+
+canonical event/turn/binding 在当前切片表示已有可核验的消息、回复关系和发送归属。复用现有当前上下文/原义务/Action/Job及owner/version；只补应急所需类型与当前选择CAS。不得要求新增历史 ConversationEventRevision、完整 InteractionCapacityPlan 或多级classifier成功记录，才允许真实回复与固定表情。聊天编辑仍不触发新机会/重生成；发前检查发现当前引用变化或删除时明确作废，频道源帖的目标版本正确性仍需校验。
+
+#### 19.63.3 统计与清理的共同保留合同
+
+- 例：北京时间9月8日12:00查看最近72小时，9月5日18:00的成功仍在窗口内；成功明细按两个完整自然日可于9月8日被选中清理。即便 FulfillmentRemoteFact 保留，当前内联查询也会因Action/Attempt被删而漏计。因此不能只证明fact表数量不变。
+- 保持既有统计查询口径，不新增统计平台。本切片要求普通retention候选排除仍被72小时有效最早成功事实所依赖的Action及必要Attempt；Action终态不是success也不能绕过此保护，因为统计依赖冻结fact而非当前Action状态。preview/apply使用同一as_of、同一正式选择器，并在原锁/CAS中重查新增确认事实；时间窗外仍执行原分类TTL，不把所有日志永久保留。
+- 按Action唯一身份先取最早有效成功，再判断滚动窗口；清理保护及读模型都不使用最后投影时间、状态修改时间或日汇总估算成功。以后若读模型改为完全从受保护fact取得必要账号归属等字段，必须先证明与现行明细查询等价，再收缩其依赖保留，不能先删依赖再悄悄显示0。
+- 具有关联业务义务、未结算owner、远端事实或防重引用的Action，不因日志TTL到期自动取得业务级联删除资格。retention preview列明受保护引用类型与数量；apply只删除已证明不影响业务真相的明细。合法导航释放必须按原owner合同保留稳定身份、状态和确认依据；未定义导航释放的引用保持原行，不以统一CASCADE或机械SET NULL修补所有表。
+- 开发需检查comment/reaction/view obligation和搜索事实的真实FK、删除路径与后续Planner/Recovery读法，补业务引用守恒的PG回归；本轮本地模型读查不等于已核验生产schema或发生了数据丢失。清理本身不会成为业务重规划触发，不能删掉已结算owner后再次生成相同义务。
+- QA必须包含48～72小时成功、精确72小时边界、北京日界、迟到确认、同Action多个事实、成功后Action状态改变、账号移组、unknown、跨租户以及明细关联业务对象；先取得清理前统计/owner快照，再清理、重新查询和运行正式只读规划判定，确认数量/归属/防重均不变。
+
+#### 19.63.4 内容能力继承与配置生效
+
+2026-09-08 开发反查 `resync`：两个公开内容更新入口虽跳过清空计划，仍调用 `_requeue_updated_task` 把 paused/stopped改为running并设置next_run_at=now；同值内容保存还会因“无changed字段”落入清空计划分支。本项明确修复为纯内容或同值内容保存均保留原status/next_run_at/lifecycle、待发Action和当前日计划；只推进真正变化的内容字段revision。
+
+- 每日词库专项的 `topic_participation_rate` 0～0.30 是任务配置话题在正常正文中的上限，不是必须达成的目标；每日词库主题与teacher不混入该比例。词库每日轮换、兼容词汇、现有冷却和老师独立统计继续保留；不能因旧ContentMix/数量owner退休而抹除这些内容能力。
+- 复用现有 `AiGroupContentAllocationPlan/AiGroupContentIntent` 的内容选择数据及其真实调用入口，把内容identity绑定到唯一unified原义务；旧数量分配权不恢复，不并行创建另一份发送量。代码已存在 `freeze_content_intents` 及生成/Gateway校验，故本项是新旧合同归属需明确，不宣称功能完全缺失或要求重写整套词库。
+- 比例修改沿现有current/next_task_day语义，话题/teacher/tone/persona/词库内容调整仅作用于后续尚未冻结的内容选择；已冻结intent/已开始Job继续用原内容revision/hash，不能因Task.config_revision改变就被整批清空。若新硬内容政策使旧候选不再允许发送，按原安全失效/CAS处理；普通编辑不等同于硬政策撤销。
+- 前端与Bot返回逐字段effective_scope/effective_at/revision；保存暂停任务不启动它，运行中纯内容修改不重建日数量、selected、due或排期。结构性改动遵守统一§7.6的successor，旧专项“reset/clear unfinished plan”不能用于unified。
+- 应急签到/表情不计normal body、任务话题/teacher成功分子或正常分母；原configured-topic候选未发送时不得保留为已用词汇/已完成话题。应急夺取发送权后在同owner交接中释放明确未发送的内容reservation，保留原失败、选择与unknown证据；Gateway已调用不释放或换内容。真实normal结果与应急结果互斥后才能更新各自比例，不能用大量签到稀释话题比例。
+- 内容不足时继续原专项的兼容非话题正常内容；明确AI故障才按§19.61走应急，话题上限0不等于模型不可用。兼容词汇池为空按原已批准的无词汇样本状态展示，不新增模型重试/新发布门槛。
+
+本轮闭合的是七组对照发现的设计口径；R2/R3所指代码风险、内容接管与最新应急/调度实现均需dev/QA分别验证。未执行生产扫描，不能从PRD和代码静态证据写production_fixed，也不以本轮审查宣称全部历史功能都已覆盖。
+
+
+### 19.64 失效账号不分配业务任务（2026-09-08 用户需求修订）
+
+#### 19.64.1 Intake、范围与本地反向检查
+
+用户原意：Session失效、冻结等失效账号不会被分配任务。首轮完成PRD设计后，按用户“你来修复问题”进入开发与QA；未修改生产账号状态或数据。L3修复；`design_status=complete`、`implementation_status=implemented_local_qa`、`production_status=unproven`。此前R5“冻结分母”仅保证历史可追溯，不能覆盖本节分配前排除规则。
+
+适用统一引擎活群、评论、点赞、浏览，以及它们触发的关注/入群/验证前置业务。这里的“分配”包含选为参与者、账号绑定的coverage/source/回复义务、GenerationJob、Action和后续补量/retry；只在调用前拒绝不算满足需求。正式只读健康检查、人工重新登录和既有授权恢复仍走各自流程，不作为业务任务分配，也不由业务Planner拿发送/加群来测试账号是否有效。
+
+| 修复前本地入口 | 实现前反查结果 | 设计要求 |
+| --- | --- | --- |
+| `account_group_revision_snapshot.current_member_contracts` | enabled仅表达status不是禁用；成员合同没有Session/冻结有效资格 | 保留成员归属快照；另读当前账号资格，不把enabled当可分配 |
+| `engagement_policy_scope.policy_eligible_member_ids` | 只排救援账号并检查enabled/business_active | 新计划在这里对应的统一资格决策中排除失效账号，再交参与者选择 |
+| `engagement_participation._ensure_plan` / `selected_accounts_for_plan` | 新计划消费上述集合；已存在计划直接返回，读取selected只查tenant/id | 新计划、已有计划的后续来源/账号绑定和物化都复核资格；旧selected不是放行凭据 |
+| `engagement_planning_admission._account_check/_session_check` | 账号状态与生命周期在后置admission；Session检查为账号密文或active授权密文存在 | 不能仅用密文存在、两个来源OR或旧授权证明current Session有效；与分配入口共用资格口径 |
+| `account_usage_policy` / `account_freeze` | 已有普通候选冻结过滤、调用前冻结锁及blocked且无观测等待 | 保留已有保护并前移到计划分配；既有冻结专项生产记录不证明统一参与分母已经排除 |
+| `account_online_projection/readiness` | 已有session_invalid/relogin分类；在线readiness主要比较session_id/proxy，非完整授权代次资格 | 复用现有事实并核对current授权/Session代次，不能只消费展示bucket或online字符串 |
+
+#### 19.64.2 账号资格判定
+
+先从Task所绑定普通账号组得到成员集，再按当前持久事实作批量资格判断。复用现有账号、current授权、在线/冻结观测及其时间/代次字段；不新增健康平台、模型调用、全量同步探测或任意等待时长。
+
+| 情况 | 新业务分配 | 判定与恢复 |
+| --- | --- | --- |
+| `SESSION_EXPIRED`（Session失效）、`NEED_RELOGIN`，当前身份的session_invalid/login_required/relogin_required或权威授权撤销事实 | 排除，`session_invalid/relogin_required` | 正式重新登录/授权恢复后，同一current身份的新有效结果才能恢复；旧密文非空不能放行 |
+| `telegram_frozen=true`，即使status显示在线 | 排除，`account_frozen` | 沿冻结专项完整AppConfig、观测时间CAS及授权/连接代次校验；普通get_me/连接成功不解冻 |
+| 已封禁、疑似封禁且尚未恢复业务资格、已删除/禁用、非business_active、待登录/验证码/扫码/2FA | 排除并保留准确原因 | 只由各状态正式恢复流程恢复，不为补量修改状态 |
+| 没有可用current Session/授权，current指针与授权归属、状态或generation不一致 | 排除，`session_unavailable/authorization_unproven` | 等正式身份流程明确当前可用授权；旧standby、旧generation成功不能兜底冒充current |
+| 在线探测blocked且冻结观测缺失，或资格证据无法证明属于current身份 | 待资格确认，不分配业务；不标成已确认冻结 | 进入既有只读健康/授权核验；某账号待确认不等待全组，不挡健康账号 |
+| 仅代理/网络抖动、FloodWait/SlowMode、Provider/面具/Listener暂不可用，且无账号失效事实 | 继续按原资源/目标准入等待 | 不凭短时失败推断Session无效或冻结；不重抽已冻结计划、不绕过资源限制 |
+
+权威失效事实优先于缓存online、enabled、Session密文非空与历史成功。否定事实不因缓存过期自动失效，必须有同一当前身份、时间更新的合法恢复证据。正常未保持连接不等于Session失效，不要求为每个Task同步重新登录/探测。只读健康探测的失败与“确认已冻结”分开显示。
+
+资格决策最少携带account id、current authorization id、现有授权/连接/事实代次、冻结观测时间、适用状态/原因、observed_at与decision hash。原成员快照不因短时健康写入被反复重建；计划附当前资格依据与排除集合，新增工作提交前重新核对，不把snapshot缓存长期当真。
+
+#### 19.64.3 先过滤，再计算与分配
+
+```text
+Task显式账号组成员
+  -> 当前账号/Session/冻结资格
+  -> 有效候选 + 排除/待确认原因
+  -> adapter人数、比例、coverage floor与公平排序
+  -> selected/义务/原数量计划
+  -> 新绑定或GenerationJob/Action物化前复核
+  -> claim与Gateway call-issued前再次复核
+```
+
+- 活群/评论的“全部账号”指本计划全部有效候选。例：组内100个账号，20个Session失效、10个冻结且两集不重叠，新计划按70个有效账号计算基础覆盖，不为另外30个创建账号义务或签到/表情兜底任务。
+- 浏览80%～95% cohort从上述70个有效候选中按既有稳定算法选择；评论单帖参与比例同样以本次合法候选为基础，原比例参数不变。点赞distinct数量只能分配给有效候选。各类型原数量目标、Daily Cap、唯一身份和节奏约束继续有效，不能把失效账号填入空位凑人数。
+- 固定业务数量与有效账号覆盖人数分开。排除失效账号只纠正新分配资格；固定数量供给不足须显示`eligible_account_capacity_shortfall`及真实缺口，不自动调低已冻结数量或提高健康账号频率。比例/全员人数在冻结前由正确有效集合推导，不继承错误的旧分母。
+- 全部失效/待确认时不创建账号义务、GenerationJob、Action或业务Attempt；Task显示`no_eligible_accounts/awaiting_account_recovery`与原因汇总，不能以0/0宣称完成，也不反复创建skipped Action制造工作量。
+- 失效期间不记录虚构的参与分配，也不累积恢复后必须补跑的业务债务；历史轮转依据保留，恢复后的新机会仍遵守原公平排序与实际频率。
+- 身份依赖的回复只从其required account集合里的有效账号选择；唯一被点名账号失效时记录不可服务，不让其他账号冒名接话。应急签到/表情仅处理AI内容故障，不恢复账号资格。
+
+#### 19.64.4 分配后失效、并发与恢复
+
+1. 账号失效观测生效后，所有相关Task的后续新参与/来源绑定、覆盖补齐、生成、物化、retry及入群前置工作都立即排除该账号；不等下一任务日。已有selected/coverage行只保留历史身份，不得被“补齐所有selected”循环重新生成工作。
+2. 对已分配且明确未调用的工作，原owner记录`account_ineligible`及具体原因，撤销未调用发送/生成资格并按已有入口释放未使用资源；原plan、due、账号归属和事件保留。取消/失效不算confirmed。尚无工作时仅记录资格排除，不为证明排除创建一条失败Action。
+3. 已开始纯Provider请求的结果/成本保留，晚到内容不能为失效账号发布可发送Action；Telegram call-issued/unknown保持原身份只做对账，冻结/Session失效不是未执行证明，禁止换号重放。已有成功事实不因后来账号失效被撤销。
+4. 新分配提交与失效/恢复观测使用现有账号锁、expected identity/generation与版本CAS串行化。失效先提交则不得提交新账号工作；分配先提交属于历史已分配，但在物化/claim/call-issued阶段仍须被阻断。锁竞争沿既有未调用等待语义，不把不确定写成成功或unknown调用。
+5. 健康账号继续原合法计划；本节不授权重抽整日selected、扩大其他账号份额或复制原义务。尚未冻结的新参与单元按当前有效集合规划；已绑定账号的历史欠量单列失效影响，不能静默转给另一账号或抹掉。原adapter若已有合法未绑定数量分配路径，仍只能在原数量/来源/时间/唯一owner内选择有效账号。
+6. 恢复后只参与新的合法工作，或经原owner复核继续仍开放、明确未调用且未过期的原工作；不自动启动paused/stopped/retired Task，不复活已终结义务，不补跑失效期间未分配的历史任务，不追赶过期due。
+
+#### 19.64.5 展示、接管与验收
+
+页面/任务读模型分列：配置成员数、当前有效候选、Session失效、冻结、其他失效、待资格确认、计划选中、当前可执行、已确认、历史已分配后失效影响及固定数量缺口。排除集合按account去重，允许一个账号有多个原因但不重复扣人数。全员覆盖完成只针对本计划有效分母；历史原分母及失效影响同时保留，不能隐藏原欠量或把排除计成功。批次/当前日健康分区完成不等于全部历史业务已完成。
+
+现有Task增量采用本规则：当前账号资格即时用于后续新工作，旧plan/snapshot/unknown/confirmed不批量删除或改写。既有包含失效账号的计划不重建整天、不重抽due；在新分配和执行入口过滤，旧未调用工作按原owner显式收口。新计划保存资格版本/排除依据，缺依据的旧快照不自动视为已通过新规则。
+
+| QA场景 | 验收要求 |
+| --- | --- |
+| 四类任务混合在线、Session失效、冻结、登录中、禁用、非业务账号 | 失效账号不进入新selected/账号义务/GenerationJob/Action/业务Attempt；人数与覆盖先过滤再计算 |
+| 冻结=true但status在线，Session密文非空但权威session_invalid | 否定事实胜出；既有通用候选和统一参与选择结果一致 |
+| current授权失效、旧standby有效、旧generation健康晚到 | 不OR放行、不自动换授权，旧结果不能恢复当前资格 |
+| 已有日计划，账号失效后新增来源、覆盖补齐、retry、membership前置 | 无失效后新分配；历史selected保留但不能再次物化，健康账号继续 |
+| 失效观测与计划提交/物化/call-issued竞争 | 真实PG验证提交顺序与锁/CAS；失效先提交时新增分配/调用为0，之前call-issued单列 |
+| 全部不可用、少量可用、恢复、纯代理/FloodWait/Provider故障 | 零有效账号不显示成功；恢复不重启已停Task；暂时资源失败不误报账号失效 |
+| 失效前confirmed、call-issued、unknown与未调用四种工作 | 完成事实保留，unknown不重放，未调用工作可审计收口，无假成功或重复分配 |
+| 100人中20个Session失效、10个冻结及多原因重叠变体 | 去重后计算有效集合；活群/评论基础覆盖、浏览比例、点赞distinct与固定数量缺口可复算 |
+
+PDC自检已覆盖原话、分配定义、四adapter、Session/冻结事实来源、临时故障区分、当前授权、已有计划、新来源、前置任务、恢复、并发、数量与历史、UI和迁移。开发交接应修复共同资格入口及所有新分配消费者，再跑真实入口/PG定向测试；不能只加Gateway测试后声明完成。本次仅PRD修改，现有代码通过过的旧测试及冻结专项历史E4不作为本节已实现证据。
+
+
+#### 19.64.6 本地实现、复核与发布边界（2026-09-08）
+
+- 统一资格入口为`account_assignment_eligibility.py`：批量读取当前账号、current授权和在线/冻结事实，SQL按tenant/account/current指针校验；分配事务锁定账号、current授权和在线行。现有有效current授权不要求冗余旧Session密文；无current指针的既有账号仍沿`account_runtime_transport`主会话合同，有指针时绝不使用旧主密文或standby绕过失效current授权。`在线`是账号业务状态；正常未连接由online_state表达，不把非枚举的旧测试字符串“离线”当有效身份。
+- 新参与计划先过滤再计算；`account_assignment_snapshot.py`以`PlanningAdmissionSnapshot.planning_horizon=account_assignment_eligibility_v1`保存资格代次、current授权、观测、原因、决策hash与创建时间。成员快照仅证明归属；已恢复账号的新计划读取当前合法状态，不被旧成员enabled值永久冻结。旧参与计划不重抽或删除。
+- coverage候选及retry在SQL LIMIT之前排除失效账号；群scope、浏览新来源、点赞候选与新增portfolio分配只使用当前有效身份。物化前使用同一规则，既有计划/资源/confirmed/unknown记录保留。全部候选失效时不建立0人参与计划，前置准入显示`no_eligible_accounts`，等待恢复而非0/0完成。
+- 除通用Action工厂，还复核讨论组入群、救援邀请、旧epoch准入重建和恢复替代Action；救援邀请同时检查管理员与被邀请账号。GenerationJob认领、Provider持久HTTP call-start、ExecutionAttempt创建和Gateway call-issued边界再次检查。
+- Provider已返回的群消息/评论结果保留候选hash、Token/质量审计，失效账号不进入ready。Provider unknown与Telegram call-issued/unknown沿既有对账身份；本修复不推断未执行、不换号重放、不改写成功事实。
+- 回归以实际service/工厂、SQL候选、生成Phase C和本地真实PostgreSQL验证；旧“Session缺失是临时离线”的fixture改为真实代理/online_state故障，另有Session缺失排除用例。Python上下文管理器需写Exception traceback，原冻结`RuntimeResourceBlocked`数据类会遮蔽阻断原因，已解除异常对象冻结以保留原typed失败。
+- 实现、测试批次与Release Gate详见`docs/05-implementation/account-assignment-eligibility-20260908.md`。当前仅本地`qa_pass`，未提交/发布，未执行生产数据修复或Telegram写请求；不能标记`production_fixed`。§19.60独立调度及§19.61应急内容兜底的整套实现不在本批次完成声明内。
+
+
+#### 19.64.7 已知异常账号每日自动复查（2026-09-08 用户修订）
+
+用户原话：“Session 失效、需重新登录、冻结、封禁、禁用 应该每天检查一次就行”。本次resync只调整后台自动健康复查频率，不把分配资格事实缓存一天。
+
+1. Session失效、需重新登录、已确认Telegram冻结账号，自动只读健康复查按上次检查完成后24小时一次；已有5/30分钟的next_probe_at也必须遵守该间隔。异常账号复查遇到网络/凭据失败仍保持每日频率，不退回5分钟重试。首次尚无检查记录可进入检查。
+2. 已封禁、禁用、删除账号保持既有退出自动在线保活的合同；后台读取保存状态，不主动连接Telegram，也不自动解除封禁/禁用。即使残留desired_online=true，也不能因此发起健康RPC。
+3. 正常账号保留既有5分钟在线保活、15分钟低频保活；单纯临时网络/代理错误仍沿既有5分钟恢复间隔。冻结是独立事实，不能靠status被覆盖为在线绕过每日复查。
+4. 每次任务分配、生成和派发只读取当前持久事实，不发起额外Telegram健康检查；已确认失效立即排除。真实业务新返回失效/冻结也立即保存并阻断，不等到次日。
+5. 人工健康检查、重新登录、明确授权切换等现有恢复流程不受后台自动复查间隔约束；恢复后须当前身份的新有效事实，不能仅因24小时已到而恢复资格。业务circuit复检不能选用已失效/冻结账号绕过每日检查。
+6. QA：五类状态、旧deadline、重复worker轮询、批次完成时间、异常复查再失败、冻结与status冲突、来源重算、正常账号/网络恢复不变、手动恢复入口和资格即时排除。无Schema迁移；发布必须单独核对运行版本及24小时调度字段，不借用此前E4。
+
+PDC反向检查：实际入口为account_online_probe及freeze结果guard，批次完成时会覆盖单条next_probe_at，因此单条与批次调度必须统一24小时；每日约束放在候选LIMIT之前，防止旧短间隔行抢占健康候选。已封禁/禁用已有global来源排除，不新增自动启用行为。design_status=complete，implementation_status=implemented_local_qa，production_status=unproven。定向7个测试文件131项通过（17.36秒，每次60秒硬超时），覆盖每日边界、旧deadline、网络/凭据再次失败、批次完成调度、来源重算、正常保活、授权切换立即验证、三类circuit入口和42项分配资格回归。无生产调用或发布。
+
+
+#### 19.64.8 审查回归修复resync（2026-09-08）
+
+用户授权修复未提交更改审查发现的两项回归。PDC反查：`include_unavailable`目前连同分组/用途过滤一起跳过；新建Attempt之前的资格拒绝会把历史Attempt误认为本轮Attempt。
+
+1. 前置候选和账号覆盖范围必须始终保留普通运营用途、相同租户、用途标记一致及分组启用限制；`include_unavailable`只放开用于统计的账号状态/冻结过滤。已冻结计划与历史分母保留，不让禁用组/用途不符账号进入新工作候选；持久化scope与直接配置候选使用同一范围合同。
+2. 每轮派发在执行分支开始前记录已有最新Attempt身份；资格/资源拒绝时读取最新Attempt并比较。如果尚无本轮Attempt，只延后Action，历史失败、已调用或unknown尝试不因此改写。只有本轮明确未调用的before_call Attempt可结算skipped_before_gateway；本轮已经call-issued仍拒绝误记为未调用，沿原远端结果合同处理。
+3. QA覆盖分组运行中禁用、账号用途不符、配置候选/覆盖范围/持久scope、冻结与Session失效计数保留；历史失败/已调用/unknown及历史before_call不被篡改、本轮新before_call正确释放、本轮已调用拒绝未调用结算。原资格、保活、Gateway证据与退役合同回归。
+
+`design_status=complete`；`implementation_status=implemented_local_qa`；`production_status=unproven`。本次不新增Schema，不清理或重放历史Attempt，不改变每日复查频率。18项正式审查回归修复前13失败/5通过，修复后通过；连同账号用途、scope、membership、资格、每日检查、Gateway证据、退役共9个文件176项通过（25.34秒，60秒硬超时）。本次6个Python文件编译、改动函数度量和diff-check通过；未提交、未发布，生产仍unproven。

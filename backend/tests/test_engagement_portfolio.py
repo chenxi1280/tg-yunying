@@ -55,6 +55,7 @@ def _account(account_id: int) -> TgAccount:
         display_name=f"账号{account_id}",
         phone_masked=str(account_id),
         status="在线",
+        session_ciphertext="QA-current-session",
     )
 
 

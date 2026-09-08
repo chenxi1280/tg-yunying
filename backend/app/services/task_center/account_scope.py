@@ -19,8 +19,9 @@ from app.models import (
     TgGroup,
 )
 from app.services._common import _now
-from app.services.account_usage_policy import apply_operational_account_filters
+from app.services.account_usage_policy import apply_operational_account_filters, apply_operational_account_scope_filters
 
+from .account_assignment_eligibility import assignment_account_predicate, eligible_assignment_account_ids, UNIFIED_CONTRACT
 from .config_normalization import apply_group_ai_account_coverage_defaults
 from .targets import group_from_reference
 
@@ -189,11 +190,7 @@ def _scope_account_ids(
     *,
     eligible_ids: list[int] | None = None,
 ) -> list[int]:
-    eligible_ids = (
-        eligible_account_ids(session, task.tenant_id)
-        if eligible_ids is None
-        else eligible_ids
-    )
+    eligible_ids = _scope_candidate_ids(session, task, eligible_ids)
     task_rescue_admin_id = _task_rescue_admin_id(task)
     if task_rescue_admin_id:
         eligible_ids = [
@@ -203,7 +200,7 @@ def _scope_account_ids(
         ]
     selection_mode = str((task.account_config or {}).get("selection_mode") or "all")
     if selection_mode == "all":
-        return eligible_ids
+        return _qualified_scope_ids(session, task, eligible_ids)
     if selection_mode == "group":
         account_config = task.account_config or {}
         pool_ids = account_config.get("account_group_ids") or []
@@ -220,13 +217,13 @@ def _scope_account_ids(
                 TgAccount.pool_id.in_(normalized_pool_ids),
             )
         ))
-        return [account_id for account_id in eligible_ids if account_id in scoped_ids]
+        return _qualified_scope_ids(session, task, [account_id for account_id in eligible_ids if account_id in scoped_ids])
     configured_ids = {
         int(account_id)
         for account_id in (task.account_config or {}).get("account_ids", [])
         if str(account_id).isdigit()
     }
-    return [account_id for account_id in eligible_ids if account_id in configured_ids]
+    return _qualified_scope_ids(session, task, [account_id for account_id in eligible_ids if account_id in configured_ids])
 
 
 def _task_rescue_admin_id(task: Task) -> int:
@@ -580,3 +577,21 @@ __all__ = [
     "reconcile_tenant_all_account_scopes",
     "sync_account_to_all_tasks",
 ]
+
+
+def _scope_candidate_ids(session, task, supplied):
+    if supplied is not None:
+        return supplied
+    if (task.type_config or {}).get("engagement_contract_version") != UNIFIED_CONTRACT:
+        return eligible_account_ids(session, task.tenant_id)
+    return list(session.scalars(select(TgAccount.id).where(TgAccount.tenant_id == task.tenant_id,
+        assignment_account_predicate(task, TgAccount.id)).order_by(TgAccount.id)))
+
+
+def _qualified_scope_ids(session, task, ids):
+    if (task.type_config or {}).get("engagement_contract_version") != UNIFIED_CONTRACT:
+        return ids
+    scoped = set(session.scalars(apply_operational_account_scope_filters(select(TgAccount.id)).where(
+        TgAccount.tenant_id == task.tenant_id, TgAccount.id.in_(ids))))
+    return list(eligible_assignment_account_ids(session, task.tenant_id,
+        [identity for identity in ids if identity in scoped]))

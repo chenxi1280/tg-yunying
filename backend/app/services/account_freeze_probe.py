@@ -2,7 +2,7 @@
 from app.integrations.telegram.account_freeze import FROZEN_DETAIL, is_account_frozen_error
 from app.models import AccountStatus
 from app.services.account_freeze import apply_freeze_observation, lock_account_freeze_state
-from app.services.account_online_constants import ONLINE_PROBE_FAILURE_RETRY_AFTER
+from app.services.account_online_constants import ONLINE_PROBE_FAILURE_RETRY_AFTER, ONLINE_UNAVAILABLE_PROBE_INTERVAL
 
 
 def guard_probe_freeze_result(session, account, *, state, result, now) -> bool:
@@ -35,5 +35,10 @@ def _block(state, now, *, code, detail) -> None:
     state.failure_type = code
     state.failure_detail = detail
     state.last_probe_at = now
-    state.next_probe_at = now + ONLINE_PROBE_FAILURE_RETRY_AFTER
+    interval = (
+        ONLINE_UNAVAILABLE_PROBE_INTERVAL
+        if code in {"account_frozen", "account_unavailable"}
+        else ONLINE_PROBE_FAILURE_RETRY_AFTER
+    )
+    state.next_probe_at = now + interval
     state.updated_at = now

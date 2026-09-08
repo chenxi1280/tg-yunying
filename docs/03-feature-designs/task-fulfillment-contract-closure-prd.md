@@ -1,5 +1,9 @@
 # 生产任务履约合同闭合专项 PRD
 
+> **2026-09-08 二轮对照修订（设计态）：** 统一引擎切换以§19.58的retire/cleanup/activate及保留旧Task为准，退役不等于用户显式删除；旧prepared/物理删除发布路径不适用。当前轻量范围以§19.13–19.15为准，跨专项复核见§19.63；独立用户删除合同未被本次审查启动。
+
+> **2026-09-08 用户裁决 / emergency resync（设计完成，尚未实施）：** 新emergency签到的资格/去重/投影以统一引擎 §19.61为准，本文旧同账号同群每日一次索引及QA只用于legacy；迁移不得抹除旧identity。新current Provider路由不受本文旧唯一active key叙述反向覆盖，现行路由仍独立审批；搜索OCR与Telegram unknown防重不变。 本切片代码/生产状态仍为未实施、未验收；旧事件记录保留。
+
 > **2026-08-10 current scope supersede：** 本文继续提供不冲突的Telegram/Gateway/Task删除/C2-C8闭合合同；但AI活群的quantity ordinal、typed obligation/content intent/wake、fleet inventory/in-place takeover、lifecycle/bootstrap/blocker、fact binding/timeliness/deadline settlement以`ai-group-generation-failure-churn-remediation-prd.md`为唯一交接，频道浏览的message target+due ordinal、账号slot匹配、source event、Action/fact binding、settlement与原地route以`channel-view-planner-starvation-remediation-prd.md`为唯一交接。本文中“不分配ordinal”“prepared新Task从0”“只迁移running”“无规范跨表锁序”“confirmed>=planned即可E4”等冲突表述均为`historical_do_not_implement`。
 
 ## 1. 文档状态与优先级

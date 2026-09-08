@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .account_assignment_eligibility import eligible_assignment_account_ids
+
 import hashlib
 import json
 
@@ -232,9 +234,8 @@ def _reaction_candidates(
         )
         message_id = int(demand["channel_message_id"])
         plans[message_id] = plan
-        candidates[message_id] = [
-            int(item) for item in plan.policy_eligible_account_ids or []
-        ]
+        candidates[message_id] = list(eligible_assignment_account_ids(
+            session, task.tenant_id, plan.policy_eligible_account_ids or []))
         admission_ids.append(admission.id)
     return plans, candidates, admission_ids
 

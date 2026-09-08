@@ -1,5 +1,9 @@
 # AI 内容升级运行、Provider 与数据合同
 
+> **2026-09-08 二轮对照修订（设计态）：** 统一引擎 §19.13–19.15/§19.63 优先于本专项历史复杂准备合同：当前运行不要求历史P95画像审批、逐binding模型预算、完整InteractionServiceBinding或聊天事件版本档案；复用原义务/Job/回复身份、绝对deadline与未知结果防重。§19.61应急不重建这些已撤销前置；历史QA与本地实现状态不代表新切片已验收。
+
+> **2026-09-08 用户裁决 / emergency resync（设计完成，尚未实施）：** 统一引擎 §19.61的current emergency可独立于Provider/normal reviewer生成fallback_ready；不回落legacy路由，normal/emergency通过同一发送owner CAS。旧“current v2永久禁止固定输出”被覆盖；Provider unknown与Telegram unknown按§19.61.6区分。 本切片代码/生产状态仍为未实施、未验收；旧事件记录保留。
+
 > 规范性附录。与 `ai-content-routing-and-quality-upgrade-prd.md` v1.2 共同生效；冲突时以主 PRD 的业务目标和本附录更具体的运行合同为准。
 
 ## 5. 多 Provider purpose route
@@ -36,7 +40,7 @@
 
 GenerationJob 冻结 `route_set_id/revision/hash`。任何 reorder、模型或策略修改都创建新 draft revision，审批并 CAS 激活；回滚只重新绑定上一不可变 revision。
 
-v2 task 只能读取 frozen route set；旧 `ai_model/ai_semantic_reviewer_model` 和 tenant `model/static fallback` flags 仅服务尚未迁移的 legacy task。一个 obligation 只能由一种 selection contract 接管，禁止 route-set 失败后回到 legacy 模型或固定“签到”补量。
+v2 task 只能读取 frozen route set；旧 `ai_model/ai_semantic_reviewer_model` 和 tenant `model/static fallback` flags 仅服务尚未迁移的 legacy task。一个 obligation 同时只能有一个获准内容 owner，不能回到 legacy 模型旁路；route-set 失败后按统一引擎 §19.61 的独立 emergency policy，通过同 owner CAS 交接为精确签到/真实回复评论随机表情，不依赖旧 static fallback flag。
 
 选择顺序：
 
@@ -142,7 +146,7 @@ pending -> generating -> ready | failed | unknown | cancelled
 ### 6.5 质量与数量结算
 
 - candidate、Provider attempt、quality wait 都不算完成；数量只认 quantity owner 对应 typed remote fact。
-- current v2 永久忽略 legacy static fallback，禁止 Stage 1、emoji、随机短句或固定“签到”创建 ready Action。
+- current v2 不读取legacy static标志作为应急授权；按统一引擎 §19.61 的独立 emergency policy创建确定性 fallback_ready，禁止发布 Stage 1/任意模板。正常候选和应急共享原发送owner，不能双发。
 - 同批 slot 独立推进；一个 slot 失败不回滚已 ready 的其他 slot，也不得用其他 slot 的成功冲抵该 owner。
 - deadline 前允许使用预先通过容量准入的 replacement headroom；deadline 后按 owner CAS 写一个最终 shortfall fact，其 kind 只能是 `quality|provider_capacity|context_stale` 之一。
 - `Task.stats` 只投影 shortfall fact，不得作为结算真相源或重复累加缺口。

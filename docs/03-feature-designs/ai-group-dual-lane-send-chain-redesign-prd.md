@@ -1,5 +1,12 @@
 # AI 活群双泳道发送调度与执行链路重构 PRD
 
+> **2026-09-08 账号分配资格resync：** [统一引擎PRD](unified-engagement-fulfillment-engine-prd.md) §19.64为当前合同：Session失效、Telegram冻结及其他明确失效账号先从新计划候选排除，再计算人数/覆盖与分配工作；已有selected不授予后续新分配资格。运行中失效立即停止新分配和未调用派发，健康账号继续；历史已分配/unknown/confirmed证据保留。临时网络/资源等待与账号失效分开。§19.64账号资格入口已完成本地实现与定向QA，尚未发布；不代表§19.60/§19.61等其他设计已经实现，生产验收见该节独立记录。
+
+
+> **2026-09-08 二轮对照修订（设计态）：** 统一引擎 §19.13–19.15/§19.63 优先于本专项历史复杂准备合同：当前运行不要求历史P95画像审批、逐binding模型预算、完整InteractionServiceBinding或聊天事件版本档案；复用原义务/Job/回复身份、绝对deadline与未知结果防重。§19.61应急不重建这些已撤销前置；历史QA与本地实现状态不代表新切片已验收。
+
+> **2026-09-08 用户裁决 / emergency resync（设计完成，尚未实施）：** AI故障时direct签到、真实回复随机表情及其原义务/基础覆盖结算以统一引擎 §19.61为准；本文“签到/emoji不许发、不计任何quantity/coverage”和缺面具永久阻塞的冲突条款只保留历史解释。正常质量要求保持。 本切片代码/生产状态仍为未实施、未验收；旧事件记录保留。
+
 > **最新范围以统一引擎 §19.13 为准：** 聊天编辑不触发新回复或重建，取消历史回放与内容版本档案；最近成功统计默认滚动 72 小时。无需历史样本/耗时画像审批、新增调用费用预算或完整 ServiceBinding 才能运行；保留最新上下文→生成→发前复核的轻量链、数量并发占位、未决结果防重和故障隔离。下文冲突的旧要求作为历史记录，不再是开发前置条件；代码落地与线上验收另计。
 
 ## 0. 文档状态
@@ -267,7 +274,7 @@ expected_admitted_turns / interaction_capacity_shortfall
 1. configured group members、policy eligible、planning admissible、planned selected、runtime sendable、confirmed 六层集合分别持久化/投影；分母固定为全部 policy-eligible/planned selected。planning admissible 只证明当前计划路径，不允许因为 `can_send=false`、面具缺失、准入中、Session、proxy 或 Provider 阻断临时缩小并显示 100%；
 2. 每个 selected account 每天、每个 canonical group 至少创建一个 account-bound coverage obligation；第二条及以上只属于额外数量，除非配置更高的每账号覆盖目标；
 3. coverage obligation 从 intent 到 candidate、Action、Attempt 和 remote fact 始终绑定同一账号，禁止换号结算；`all_group_members_daily` 没有组外 substitute；
-4. 一条带非空 `remote_message_id`、且 `content_quality_class=normal_contextual` 的 typed success fact可同时完成一个 quantity obligation 和该账号的 coverage obligation；Action success、unknown、本地生成成功、签到、静态 fallback 或纯占位短句都不能计 coverage；
+4. 一条带非空 `remote_message_id` 且满足可见性合同的正常或 §19.61 合法 emergency typed fact可同时完成原 quantity 与账号基础 coverage；normal_contextual coverage 独立统计，签到/表情不能计正常语义质量，Action success/unknown/本地生成仍不能计完成；
 5. 全部绑定组 membership revisions 在 Task day 开始由独立 membership snapshot set 冻结；任务日内新迁入账号默认下一任务日进入，紧急 disable/迁出只让该账号 runtime blocked，不删除当天既有分母或事实。Task 增删分组/改 per-group concurrency 建 binding-set successor，账号迁组只建 AccountPool membership successor，均不能原地改当日 plan；
 6. selected account 按 selection debt、last selected day、最近发言、稳定 hash 跨全天 strata 交错；具体内容 slot 再考虑 persona/当前上下文兼容。不能为了覆盖让不适合当前话题的账号强行插话，未匹配账号保留到后续主动 slot并在 deadline 后形成显式 shortfall；
 7. 额外数量 obligation 只能填充 coverage 已分散后的剩余 slot，不得把 coverage obligation 挤到最后一小时；
@@ -532,7 +539,7 @@ Provider 的结构化结果除正文外必须返回 `response_mode + used_contex
 - 同群最近 20 条：非 stop 2-gram、四字开头和连续 speech act 高频门；
 - 同一个 context turn：最多一个 response obligation，天然消除多人对同一 turn 的同义连发。
 
-版本化 `micro_ack/reaction` 不得借短文本规避 30 天正文去重：它使用独立的近 20 条频率门，不计 `normal_contextual` 质量目标，也不能关闭新合同的数量或账号覆盖义务。首版不启用 micro-ack fallback。
+正常规划的版本化 `micro_ack/reaction` 不得借短文本规避 30 天正文去重，仍使用独立的近 20 条频率门且不计 `normal_contextual` 质量目标。§19.61 的故障回复表情采用独立 emergency 类型和每义务防重，可计原数量/基础覆盖与应急 ack，不套用普通正文或 micro-ack 内容频率门；原 Task/账号实际发送频率与安全预算保持。
 
 窗口以 Telegram 远端顺序/确认时间为主要顺序，active 与 unknown 作为最坏占用插入当前窗口。`Gateway unknown` 的正文 fingerprint、semantic cluster 和词汇占用不能过 TTL 自动释放；只有权威 safely-not-executed 或远端对账结果才能释放。confirmed 后由 FactProjector 把 reservation 转成 `AiGroupMessageMemory=confirmed`。失败候选可以释放自己的 candidate reservation，但不能释放其他 Action 或 unknown 的占用。
 
@@ -542,9 +549,9 @@ Provider 的结构化结果除正文外必须返回 `response_mode + used_contex
 
 - 主动消息只可在统一 materialization horizon 内 JIT 提前生成，不能恢复整小时/整日批量成稿；它允许使用完整两阶段生成和 reviewer；
 - 上下文响应优先采用一次结构化生成加确定性硬闸，以满足时延；如启用第二模型 reviewer，必须计入当前 turn class 的 45/90/180 秒 freshness deadline；
-- 质量失败不发送 Stage 1、不改成固定签到、不改成 emoji；
+- 质量失败不发送 Stage 1；原窗口内按统一引擎 §19.61 将 direct 内容转精确签到、真实回复转随机表情，保留原关系并单独记录质量降级；
 - 响应 deadline 内允许的生成尝试预算必须显式版本化；v1 固定为主生成一次、质量修复或批准备用 route 一次，总 Provider 调用不超过 2，已经是实现合同；
-- context response 在预算耗尽、质量/去重/Provider deadline 失败且 Telegram 尚无 call-issued 时，当前 admitted opportunity 按真实 blocker 结算 missed，并原子 fence 当前 preparation、supersede turn/style binding、保留全部调用数与成本，再把同一 response-flexible obligation 以 append-only unbind revision 归还原池；cutoff 前可等待新的真人 turn，cutoff 后只按既定 release policy 转 proactive。不能在同一 turn 上突破 2 次调用，也不能把互动 miss 改写成 quantity terminal；只有原 slot/window 最终放不下才形成 quantity shortfall；
+- context response 正常生成在预算/质量/去重/Provider 失败且 Telegram 尚无 call-issued 时，先按 §19.61 判断同关系 emergency；合法则保留 binding，同 owner CAS 准备随机表情，normal semantic outcome 失败与真实 ack 分账。仅无合法应急路径时才原子 fence preparation、保留全部调用数/成本并 append-only unbind 归还 response-flexible；cutoff 前等新真人 turn，cutoff 后按原 release policy 转 proactive。同 turn 不突破 2 次模型调用，应急已选择不得同时归还数量；
 - 所有 retry 复用同一 obligation，variation sequence 单调递增，不创建新的数量单位。
 
 ## 8. Action、发送仲裁与 Gateway
@@ -722,12 +729,12 @@ PostgreSQL 持久队列/partial index 是事实源；Redis/pubsub 只降低唤�
 | Planner/Generation 停机 | 保留原 pacing slot；恢复后仅处理仍在 `latest_send_at` 前的单元 |
 | 主动 slot 已过 latest_send_at | terminal pacing shortfall，不移动到 now，不跨小时追赶 |
 | 响应超过 45 秒 deadline | terminal response shortfall，不发送旧上下文 |
-| Provider 暂不可用 | waiting_dependency，Provider revision/health wake；不创建空 Action |
-| Provider request unknown | 先对账同 invocation；unknown 结果不可成为 candidate，也不得重放同 invocation。只有显式 generation budget 仍允许、deadline 尚未到且使用新的 invocation identity 时，才可尝试备用 route；unknown 成本仍计入预算，不创建新 obligation |
+| Provider 暂不可用 | 按 §19.61 判定当前原义务的 emergency eligibility；可用时确定性准备签到/回复表情，无可发原义务时保留真实 waiting/shortfall，正常路线独立等待 health wake |
+| Provider request unknown | 原 invocation 只对账、不重放；仅纯内容调用可按 §19.61.6 CAS 撤销晚到正文发布权后准备 emergency，保留 unknown 成本和 transport hard fence；不创建新 obligation |
 | Action prepared 未 call-issued | 可证明未调用 Telegram，可安全回到同 obligation 新 materialization |
 | Gateway call-issued 无结果 | unknown/reconcile-only，禁止 replacement |
 | Telegram 明确 safely-not-executed | 同 obligation 可在原 latest_send_at 前再物化 |
-| 单账号面具不可用 | 只阻断该账号互动内容 preparation；仍 active 且版本匹配的旧 mask 继续合法使用，无 active mask 时禁止模板/签到替代。其他账号、群和被动任务继续 |
+| 单账号面具不可用 | 阻断该账号正常人设 preparation；仍 active 且版本匹配的旧 mask 可用，无 active mask 时合法固定 emergency 不依赖面具。其他账号、群和被动任务继续 |
 | 单账号 Session/成员资格不可用 | 只阻断该 account 或 account+peer；coverage-bound obligation 永不换号，等待恢复或形成 typed coverage shortfall；其他 selected account 继续，Task 聚合为 `running_partial` |
 | 单 proxy route 不可用 | 只阻断使用该 proxy binding revision 的账号；其他 proxy/direct 账号与其他 Task 分组继续。仅当本 Task 全部当前工作都落在该失败 domain 才可 Task blocked |
 | 账号不可用时的 quantity-only 绑定 | 仅未绑定真人 turn 的 quantity-only proactive obligation 可在 Generation 前、当前 task-day 已冻结 selected 集内部重绑本条发送账号并重新取得 TimelineReservation，同时 append 新 account-binding/persona 的 `MessageStyleReservation` 并 supersede 旧风格；不得使用 participation standby、替换 selected 或转移 coverage。`InteractionServiceBinding` 建立后账号失效只结算当前 admitted miss并在 pre-Gateway 归还数量义务，同 turn 不换号，candidate/Action/Gateway identity 已建立后同样不得换号 |
@@ -946,7 +953,7 @@ LLM 成本按以下公式在灰度前估算：
 2. 默认 selected 为全部绑定 AccountPool 成员快照的规范化 policy-eligible 并集，每个 selected account 在每个 canonical group 都必须有自己的 normal contextual fact；
 3. 一个账号缺面具、Session、peer membership 或一个 proxy route 失败时，健康账号仍继续产生 obligation/Action/fact，Task 显示 `running_partial` 而不是全局暂停；
 4. 单个目标群选择 10 个账号、配置群日 raw target 6 条时，该群 effective target 必须提升到至少 10，每个账号生成一个独立 coverage obligation；同一 Task 有 3 个目标群时必须形成 30 个 group-account coverage units，不能只用 10 条跨群结算；
-5. 一个账号发送两条不能替代另一个账号的零条；只有各自 `content_quality_class=normal_contextual` typed remote fact 能关闭各自 coverage，签到/静态 fallback/纯占位短句不能关闭；
+5. 一个账号发送两条不能替代另一个账号的零条；各自正常或 §19.61 合法 emergency typed fact可关闭各自基础 coverage，normal_contextual质量覆盖必须独立计算；
 6. blocked/unknown 账号保留在 required 分母并展示原因，不缩小分母制造 100%；
 7. Task day 冻结后新迁入成员默认下一任务日生效；紧急 disable/迁出只改变 runtime blocker，不移动已有 slot、不删除分母，剩余容量不足显式 shortfall；
 8. 数量已达标但 coverage 未达标时，任务状态必须为 `quantity_met_coverage_partial`，不能 completed；
@@ -982,18 +989,18 @@ LLM 成本按以下公式在灰度前估算：
 
 1. Planner/ResponseRouter 不调用 Provider；
 2. 每个 Job 只生成一个义务的一条候选；
-3. accepted candidate 前 Action 数为 0；
+3. normal accepted candidate 或独立 deterministic emergency selection 就绪前 Action 数为 0；两种内容共用唯一 obligation materialization owner；
 4. Action 创建后正文、账号、group、reply、obligation 和时间身份不可变；
 5. 新 context revision 只失效 pre-call Job/Action，不改 Gateway-started；
-6. 质量失败不发送 Stage 1、签到或 emoji 伪成功。
-7. context response 质量/去重/Provider deadline 失败按真实 blocker 结算当前 admitted miss，调用数/成本保留；pre-Gateway 同一 response-flexible obligation 解绑归还，cutoff 前等新 turn、cutoff 后按原规则释放 proactive，窗口结束前不提前形成 quantity terminal，且同 turn 总调用不超过 2。
+6. 质量失败不发送 Stage 1 或拒绝的正文；按 §19.61 选择合法签到/回复表情，只确认真实数量/基础覆盖与 ack，不伪造正常质量通过。
+7. context response 质量/去重/Provider 失败先保留 binding 并判定 §19.61 应急资格；合法时同 owner CAS 选择表情并保留原 reply/turn，正常 semantic outcome 记失败、真实 ack 单独计数。仅应急不合法或无剩余真实发送窗口时，按原 blocker 结算 admitted miss并在 pre-Gateway 解绑归还 response-flexible：cutoff 前等新 turn、cutoff 后按原规则释放 proactive；已选应急不得同时归还数量，同 turn 总 Provider 调用仍不超过 2。
 8. 每个 admitted turn 只有一个 `InteractionServiceBinding` 且 calls≤2；active binding、任务日冻结总 binding/call budget conditional CAS 与 Provider capacity reservation 同事务。数量义务归还后的 successor 继续扣同一总预算；terminal 只释放未发起 call reservation，binding identity、旧调用、unknown 与成本不清零，重复 terminal 不二次释放，并发扣减不能超预算。
 9. current route 不存在固定 30 分钟预生成；`generation_not_before_at` 必须由完整链 P95+margin 倒推，只有实测可达才允许计划点前 5～10 秒 JIT，不能因硬等最后 5 秒让 reviewer/Provider 必然过期。
 10. 单次 LLM invocation 15 秒 hard ceiling 后必须形成 typed provider timeout/unknown 并释放本地 worker lease；Provider `RemoteInvocationFence` 在响应或当前隔离 runner 的 transport termination acknowledgement 前继续占父 route/lane 并发，调用/成本预算不归还，禁止吞错后返回模板成功。
 
 ### 15.5 重复与自然参与
 
-1. 同群 `normal_contextual` 30 天 exact、同账号 10 天 exact/similar/semantic/template、群级 100/20 条窗口均按 policy 得到确定性结果；micro-ack 走独立频率门且不能结算数量/coverage；
+1. 同群 `normal_contextual` 30 天 exact、同账号 10 天 exact/similar/semantic/template、群级 100/20 条窗口均按 policy 得到确定性结果；正常规划 micro-ack 走其独立频率门；故障 emergency ack 按 §19.61 确认原数量/基础 coverage、每义务防重，不套普通正文重复门；
 2. 两个并发 GenerationJob 生成相同正文时，只有一个 ContentDedupeReservation 成功，另一个不得创建 Action；
 3. candidate accepted 后若另一条正文先确认，Gateway Tx A 必须阻断旧候选并记录 `stale_duplicate_before_gateway`；
 4. Gateway unknown 持续占用 dedupe window，普通 reservation TTL 不得释放；
@@ -1102,7 +1109,7 @@ LLM 成本按以下公式在灰度前估算：
 - 为降低 AI 感编造账号的具体身份、经历、地点、消费或关系事实；
 - Provider/Telegram 网络调用持有数据库事务；
 - 对 Gateway-started/unknown 自动重试；
-- 用签到、emoji、旧正文或 mock success 填补质量/容量 shortfall；
+- 用签到/emoji 冒充正常语义质量、用旧正文或 mock success 伪造履约，或以内容兜底绕过真实发送容量；合法 emergency 按 §19.61 独立确认基础业务；
 - 用 Action success 或 UI completed 替代 typed Telegram fact。
 
 ## 18. 已冻结的 v1 产品决策

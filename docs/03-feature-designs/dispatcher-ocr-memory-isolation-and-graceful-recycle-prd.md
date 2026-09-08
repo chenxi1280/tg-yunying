@@ -1,5 +1,7 @@
 # Dispatcher / OCR 内存隔离与优雅回收专项 PRD
 
+> **2026-09-08 生命周期设计 resync：** 持续 dispatcher 的 stop-new-claim 检查点与逐动作资源归属见 §5.2、§5.3 及统一引擎 §19.60.4；原“整批完成后才能检查回收”不适用于新设计。严格排空、原租约归属、断连及 unknown 事实要求保持。本修订尚未实施。
+
 > **2026-08-03 partial supersede：** 本文仅“固定 OCR 进程槽、内存上限、无业务持久队列、Dispatcher drain/recycle、无数据库长事务”仍可用于当前双 OCR资源隔离。所有 AI/VLM、模型 key、模型投票/共识、供应商 fallback，以及“B失败后抽象 policy refresh”的描述统一为 `historical_do_not_implement`；现行识别/换题/unknown 合同只认 `task-fulfillment-contract-closure-prd.md` §9，搜索 AI/VLM 调用数固定为 0。
 
 ## 0. 文档状态
@@ -228,7 +230,7 @@ Dispatcher（Telegram 与业务事实 owner）
 | 状态 | 进入条件 | 允许行为 | 离开条件 |
 | --- | --- | --- | --- |
 | `active` | worker 启动并取得 shard 身份 | heartbeat、claim、执行；自动回收租约竞争失败仍保持接单 | 达到自动阈值且取得回收租约，或收到 SIGTERM |
-| `recycle_requested` | 自动阈值且已取得 rolling-recycle lease，或 SIGTERM | 本轮已 claim 项继续执行；拒绝下一轮 claim | 持原租约进入 draining；发布停机直接进入 draining |
+| `recycle_requested` | 自动阈值且已取得 rolling-recycle lease，或 SIGTERM | 本 instance 已 claim 项继续执行；拒绝下一次补领 | 持原租约进入 draining；发布停机直接进入 draining |
 | `draining` | 自动回收已取得 lease；或计划停机已收到 SIGTERM | 维持 heartbeat，等待 futures/业务边界收口 | 全部安全条件通过或出现 blocker |
 | `drain_blocked` | 安全条件在观测窗内不能闭合 | 不新 claim，持续暴露 blocker 和告警 | blocker 被事实性收口后回到 draining；不自动回 active |
 | `safe_to_exit` | 安全谓词全部为真 | 关闭 Telethon/client、连接与 executor，写退出审计 | 正常退出码 0 |
@@ -238,7 +240,7 @@ Dispatcher（Telegram 与业务事实 owner）
 
 ### 5.2 唯一安全检查点
 
-自动回收检查只允许发生在 `drain_task_dispatcher` 本轮已 claim futures 全部返回之后、下一次 claim 之前。任何 Action future、model future 或 OCR 调用仍在运行时都不能进入 `safe_to_exit`。
+**2026-09-08 resync，持续 dispatcher 的当前设计：** 以统一引擎 §19.60.4 为准。控制循环在既有生命周期观测节拍以及每次补领前检查自动回收，不能因所有名额繁忙而停止检查；取得原 rolling-recycle lease 后原子关闭新 claim，再等待整个 worker instance 的已登记工作排空；不能等待“整批全部结束”才有机会停止补领。SIGTERM 同样立即停止新 claim。关闭与领取竞争时，已取得的 work 纳入 drain；未取得的不再领取。任何 Action future、model future、OCR 或原隔离 runner 调用仍真实运行时不能进入 `safe_to_exit`；§5.3 的全部安全谓词仍须通过。旧批次实现仅在尚未切换的版本按原合同运行，不据此认定持续调度已经上线。
 
 ### 5.3 `safe_to_exit` 必须同时满足
 
@@ -246,7 +248,7 @@ Dispatcher（Telegram 与业务事实 owner）
 - 当前进程内 Action futures、模型 futures、OCR 调用均为 0。
 - 数据库中没有 `claim_owner/worker_id` 属于该 worker instance 的 `claiming|executing` Action。
 - 没有该 worker 发起且仍处于 `gateway_call_started/callback_submitting`、结果尚未持久化的 Attempt。
-- 所有本轮 dispatch reservation 已按统一 `finally` 释放或绑定到明确的 durable Action/unknown 事实。
+- 所有本 instance dispatch reservation 已按逐动作原对象/owner-token 的 `finally` 释放，或绑定到明确的 durable Action/unknown 事实；其他仍在执行的动作和同 ID successor 不被误释放。
 - 图片验证 fingerprint、deadline、逐源票和 callback/unknown 事实已写入现有 Action/result 或 ExecutionAttempt；没有把只存在进程内的“已点击”当成已提交事实。
 - Telethon clients 已完成断连；`disconnect()` 返回 coroutine、Future 或其他 awaitable 时都必须等待其完成，断连错误必须显式记录并阻止“安全退出成功”审计。
 - 现有 WorkerHeartbeat metadata/结构化退出日志已写 trigger、RSS、处理量和安全检查快照；P0 不新增 lifecycle audit 表。
@@ -291,9 +293,9 @@ soft_recycle_threshold
 
 ### 5.6 SIGTERM 与发布停机
 
-- worker 收到 SIGTERM 后立即设置进程级 stop/drain event；主循环不再进入下一轮 claim，当前 `drain_task_dispatcher` 按原业务结果完成后执行 `safe_to_exit` 检查。
+- worker 收到 SIGTERM 后立即设置进程级 stop/drain event；持续调度控制循环不再补领，将本 instance 的全部已获工作按原业务结果收口后执行 `safe_to_exit` 检查。
 - Compose `stop_grace_period` 必须大于 production-like canary 测得的当前轮 p99 drain + client disconnect headroom；超过 grace 被容器终止只能写 `abnormal_exit`，不能写 graceful recycle。
-- 运行时自动回收必须逐 shard；计划发布可以在现有全 worker fence 窗口内让两个 Dispatcher 同时停止领取，但仍必须分别完成自己的 current batch/unknown 边界，不能把发布 stop 当作自动滚动回收成功证据。
+- 运行时自动回收必须逐 shard；计划发布可以在现有全 worker fence 窗口内让两个 Dispatcher 同时停止领取，但仍必须分别完成自己 instance 全部已获 work/unknown 边界，不能把发布 stop 当作自动滚动回收成功证据。
 - 逐 Action 重启、固定时间 cron restart 和“超时后 kill 记成功”均不进入 P0。
 
 ## 6. P1：独立 image-verification-worker

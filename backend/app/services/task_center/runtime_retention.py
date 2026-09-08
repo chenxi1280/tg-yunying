@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 import math
 from uuid import uuid4
-from sqlalchemy import and_, delete, func, or_, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
@@ -40,6 +40,9 @@ from app.services.task_center.runtime_retention_summary import (
     upsert_daily_stats,
     upsert_terminal_stats,
 )
+
+from .runtime_retention_selection import runtime_detail_batch as _runtime_detail_batch
+from .runtime_retention_protection import require_unprotected_batch
 
 RUNTIME_DETAIL_CLEANUP_KIND = "runtime_details"
 RUNTIME_DETAIL_BATCH_KIND = "runtime_detail_batch"
@@ -100,7 +103,7 @@ def _prepare_retention_batch(
     expected_fingerprint: str,
 ) -> _RetentionBatch | None:
     cutoffs = policy.cutoffs(as_of)
-    rows = _runtime_detail_batch(session, cutoffs, batch_size)
+    rows = _runtime_detail_batch(session, cutoffs, batch_size, as_of=as_of)
     if not rows:
         return None
     reasons, protected_attempts = _attempt_analysis(session, rows)
@@ -122,6 +125,7 @@ def _apply_retention_batch(
     audit_context: dict | None,
 ) -> int:
     action_ids = [row.id for row in batch.rows]
+    require_unprotected_batch(session, action_ids, as_of=batch.as_of)
     terminal_stats = summarize_terminal_actions(batch.rows, batch.reasons)
     upsert_daily_stats(session, summarize_actions(batch.rows))
     upsert_terminal_stats(session, terminal_stats)
@@ -198,55 +202,6 @@ def cleanup_runtime_details_if_due(
         )
     )
     return deleted
-
-
-def _runtime_detail_batch(
-    session: Session,
-    cutoffs: dict[str, datetime],
-    batch_size: int,
-    *,
-    lock: bool = True,
-) -> list:
-    age = func.coalesce(Action.executed_at, Action.scheduled_at, Action.created_at)
-    target_dimension = func.coalesce(
-        Action.payload["operation_target_id"].as_string(),
-        Action.payload["target_operation_target_id"].as_string(),
-        Action.payload["group_id"].as_string(),
-        Action.payload["channel_target_id"].as_string(),
-        Action.payload["chat_id"].as_string(),
-        "",
-    ).label("target_dimension")
-    statement = (
-        select(
-            Action.id,
-            Action.task_id,
-            Action.account_id,
-            Action.task_type,
-            Action.action_type,
-            Action.status,
-            Action.result,
-            Action.executed_at,
-            Action.scheduled_at,
-            Action.created_at,
-            age.label("age_at"),
-            target_dimension,
-        )
-        .where(
-            or_(*(
-                and_(Action.status == status, age < cutoff)
-                for status, cutoff in cutoffs.items()
-            )),
-            ~select(ExecutionAttempt.id).where(
-                ExecutionAttempt.action_id == Action.id,
-                ExecutionAttempt.status.in_(PROTECTED_ATTEMPT_STATUSES),
-            ).exists(),
-        )
-        .order_by(age.asc(), Action.created_at.asc(), Action.id.asc())
-        .limit(batch_size)
-    )
-    if lock:
-        statement = statement.with_for_update(of=Action, skip_locked=True)
-    return list(session.execute(statement))
 
 
 def _attempt_analysis(session: Session, rows: list) -> tuple[dict[str, str], list[str]]:

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from typing import Protocol
+from datetime import timedelta
+from app.services._common import _now
+from ..engagement_runtime_error import RuntimeResourceBlocked
 
 from sqlalchemy.orm import Session
 
@@ -58,7 +61,14 @@ def build_task_plan(session: Session, task: Task) -> int:
         from ..channel_fulfillment import cancel_superseded_channel_actions
 
         cancel_superseded_channel_actions(session, task)
-    return executor.build_plan(session, task)
+    try:
+        return executor.build_plan(session, task)
+    except RuntimeResourceBlocked as error:
+        if error.code != "no_eligible_accounts":
+            raise
+        task.last_error = error.code
+        task.next_run_at = _now() + timedelta(seconds=error.retry_after_seconds)
+        return 0
 
 
 def prepare_open_actions_for_planning(session: Session, task: Task) -> int:

@@ -9,6 +9,7 @@ from app.models import Action, ExecutionAttempt, Task, TaskMembershipAdmissionIt
 from app.services._common import _now, audit
 
 from .targets import group_from_reference
+from .account_assignment_eligibility import action_assignment_reason
 
 
 ADMISSION_ACTION_TYPES = frozenset({
@@ -26,7 +27,7 @@ def replan_stale_admission_actions(session: Session, *, task: Task) -> int:
     actions = list(session.scalars(_stale_action_statement(task)))
     replacements = 0
     for old_action in actions:
-        if _has_attempt(session, old_action.id):
+        if _has_attempt(session, old_action.id) or action_assignment_reason(session, old_action):
             continue
         if not _action_target_is_current(old_action, task):
             continue

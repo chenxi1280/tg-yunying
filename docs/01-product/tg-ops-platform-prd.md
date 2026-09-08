@@ -1,5 +1,15 @@
 # TG 运营管理平台 PRD
 
+> **2026-09-08 异常账号每日复查resync：** 已知Session失效/需重新登录/冻结账号的后台健康复查改为每24小时一次；封禁/禁用继续退出自动保活。任务分配读取当前保存事实，真实失效立即排除；正常账号保活和人工恢复入口沿既有流程。具体合同见统一引擎§19.64.7；本次频率调整尚未发布。
+
+> **2026-09-08 用户需求：失效账号不分配任务。** 统一引擎§19.64要求Session失效/需重新登录/Telegram冻结等账号在新计划人数、覆盖和任务分配之前排除；活群/评论“全账号”是本计划有效账号，比例型任务先过滤再计算。运行中失效立即停止新分配和未调用派发，保留原历史/unknown，不拖停健康账号。前序“冻结分母”仅指历史，不表示必须给失效账号继续分配。账号资格入口已完成本地实现与定向QA，尚未发布；实现与生产验收边界见统一§19.64.6。
+
+> **2026-09-08 旧PRD二轮对照补正（仅设计）：** 统一§19.63补齐轻量范围不回退、72小时统计依赖与清理保护、业务FK级联边界、词库/话题/teacher配置继承、冻结账号分母和旧Task退役保留；主范围仍按§19.13–19.15，不重新增加模型预算表或历史画像审批。详细问题/代码反查/QA见该节，代码与生产均未在本轮修改。
+
+> **2026-09-08 AI故障兜底保证（设计修订，未实施）：** 模型无额度、route/key不可用或生成/审核异常时，合法到期的活群direct使用精确“签到”，真实回复及频道评论使用随机表情；默认启用独立emergency policy，不等六轮、不依赖故障AI、不受旧planned=0或每日一次签到限制。真实兜底完成原数量/基础覆盖，normal/grounded/语义质量独立展示；原目标、回复、时间、账号容量与Telegram unknown防重不变。唯一合同见 `docs/03-feature-designs/unified-engagement-fulfillment-engine-prd.md` §19.61，旧能力继承审计见§19.62；覆盖本页后续历史禁fallback/仅extra-volume/零应急描述，存量需正式policy successor与readback。
+
+> **2026-09-08 准入与主互动独立推进（设计完成，未实施）：** 加群、关注、活群、评论、点赞和浏览按自身依赖/时间/容量独立推进；普通 dispatcher 改为逐动作完成即补领及 workload 公平隔离，不能被慢准入的批次屏障拖住。业务验证等待只影响对应账号/目标，真实在途仍保留原 account/pool/egress fence；unknown 只对账。群准入补齐文本加减乘除及显式 MiniMax 图片验证路由，答案提交后仍须确认和权限/观察复检；纯搜索保持双 OCR、AI/VLM=0。主合同为 `docs/03-feature-designs/unified-engagement-fulfillment-engine-prd.md` §19.60 与 `channel-membership-precondition-design.md` §15；本切片 `resync=true`，存量恢复需新鲜 preview/授权/apply/readback，生产验收必须逐类 typed fact。
+
 > **统一引擎最新简化范围：** 以统一互动履约引擎 PRD §19.13 为当前裁决，覆盖下文历史版本的复杂准备/回放/预算要求。聊天编辑不触发任务；不建设聊天历史回放或版本档案；只要求最近 72 小时成功操作统计。取消新增模型调用预算持久化/发前费用扣减及历史耗时画像审批硬门槛，保留最新上下文→生成→发前复核→真实操作事实的轻量链、任务数量占位、分组与故障隔离。恢复拟人化与自然人设运营，通过多账号拟人化互动、点赞与浏览全面服务于制造社群与频道真实用户热度；本地范围修改不代表发布或验收完成。
 
 > **2026-09-04 深层组合二次闭合（Product Design Complete / 未实施，补充统一引擎 §19.2）：** 自然机会的外部真人供给不按原始消息条数计算，只认去重 `ExternalHumanUnlockUnit`，排除受管账号、bot/service、edit/replay/duplicate，并限制单 actor/time-band 贡献和要求 actor diversity，防止一人刷屏解锁整批 AI 发言。跨 adapter 联合旅程将数量/eligibility/行为预算/存在感/hard-deny 作为硬约束，将自然 overlap/稀疏度作为版本化优化目标；仅优化目标不可达时提交最接近解并显式 `journey_diversity_degraded`，不能连坐阻塞本来可履约的任务。真人 direct/native 续答拥有受保护 Provider/Gateway 份额和高于 proactive 的优先级，所有合法 observed demand 均进入不可缩服务分母，容量拒绝必须可见。账号外发 Observer gap 只在受影响 account-peer/source 建立无超时自动清除的 scoped hold，不能假定无人工动作，也不能扩散为全局停摆。LLM Provider 生成使用独立 lease，不占 AccountPool 的 account-bound Telegram 物理并发。

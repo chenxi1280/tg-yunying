@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .account_assignment_eligibility import action_assignment_predicate, require_action_assignment_account
+
 import socket
 from dataclasses import dataclass
 from uuid import uuid4
@@ -73,6 +75,7 @@ def _claim_comment_generation(
         action = session.scalar(statement)
         if action is None:
             return None
+        require_action_assignment_account(session, action)
         token = str(uuid4())
         mark_generation_claim(action, owner, token)
         session.commit()
@@ -97,6 +100,7 @@ def _comment_candidate_statement(session: Session):
         .join(Task, Task.id == Action.task_id)
         .where(
             Action.task_type == "channel_comment",
+            action_assignment_predicate(),
             Action.action_type == "post_comment",
             Action.status == "pending",
             Action.account_id.is_not(None),

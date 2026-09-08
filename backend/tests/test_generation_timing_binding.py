@@ -5,7 +5,7 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import GenerationJob, GenerationTimingBinding, Task, Tenant
+from app.models import Action, TgAccount, GenerationJob, GenerationTimingBinding, Task, Tenant
 from app.services.task_center import generation_timing_binding as binding
 from app.services.task_center.ai_provider_routes import (
     COMMENT_REALIZE_PURPOSE, COMMENT_REVIEW_PURPOSE, COMMENT_ROUTE_PURPOSE,
@@ -50,6 +50,14 @@ def _job(session, *, adapter="group_ai_chat", identity="one"):
         provider_route_snapshots={purpose: {"route_set_id": purpose, "revision": 1, "content_hash": "a" * 64} for purpose in purposes},
     )
     session.add(job)
+    if session.get(TgAccount, 91001) is None:
+        session.add(TgAccount(id=91001, tenant_id=1, phone_masked="QA-91001", display_name="QA", username="QA", status="在线",
+            account_lifecycle_status="business_active", session_ciphertext="QA-test-session"))
+    session.flush()
+    session.add(Action(id=identity, tenant_id=1, task_id=task.id,
+        task_type=adapter, action_type="send_message", account_id=91001,
+        status="executing", scheduled_at=NOW, obligation_type=job.obligation_type,
+        obligation_id=job.obligation_id, payload={"generation_job_id": job.id}))
     session.flush()
     return task, job
 

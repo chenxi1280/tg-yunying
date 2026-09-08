@@ -1,5 +1,7 @@
 # 运行历史存储保留、清理与物理回收专项 PRD
 
+> **2026-09-08 二轮对照修订（设计态）：** 统一引擎 §19.63.3 补充72小时成功查询依赖与业务FK闭包保护，优先于本文件单独按Action终态TTL的普通候选规则。不得因删Action/Attempt漏计窗口内成功，或级联删除原业务义务/事实。本轮仅修订PRD，代码与生产清理未修改。
+
 > 状态：2026-08-30 Product Design Complete；本地实现、62 项无 PostgreSQL 回归、隔离 PostgreSQL 全迁移/并发清理/索引演练通过；待发布与生产 preview/apply/readback。
 >
 > 适用范围：`actions`、`execution_attempts`、Action 关联审核队列、运行汇总、明确命名的运行历史索引。Telegram 远端事实、未决状态、账号会话与业务主数据不在普通保留清理范围内。
@@ -56,6 +58,8 @@
 保留期是代码默认值和可部署配置，但配置不得把任何状态加入允许集合；允许集合只能由版本化代码合同变化。配置必须满足 `skipped >= 1`、`success >= 2`、`failed >= 7`，更长保留允许，更短必须走新的产品合同、迁移与验收。
 
 ### 3.3 关联 Attempt 保护
+
+普通候选还必须满足统一引擎 §19.63.3：72小时有效成功事实依赖的Action/Attempt不删除，业务义务/远端事实/防重引用无合法释放合同的不进入日志清理。preview/apply共用选择器并在原并发边界重查，日志TTL不授权业务级联。
 
 即使 Action 状态表面可清理，只要关联 `ExecutionAttempt` 存在 `pending`、`gateway_call_started` 或 `result_unknown`，整次 apply 必须在删除前失败关闭。不得只跳过异常行后继续，也不得删除 Attempt 来消除冲突。运维需要先按既有 reconcile 合同处理状态不一致，再重新 preview。
 

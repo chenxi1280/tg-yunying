@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import Action, RuntimeCleanupAudit
+from .runtime_retention_selection import preview_protected_dependencies
 from app.services.task_center.runtime_retention import (
     _attempt_analysis,
     _candidate_fingerprint,
@@ -45,7 +46,7 @@ def preview_runtime_details(
     batch_size: int = 100,
 ) -> dict:
     cutoffs = policy.cutoffs(as_of)
-    rows = _runtime_detail_batch(session, cutoffs, max(1, int(batch_size)), lock=False)
+    rows = _runtime_detail_batch(session, cutoffs, max(1, int(batch_size)), as_of=as_of, lock=False)
     reasons, protected_attempts = _attempt_analysis(session, rows)
     return {
         "policy_version": policy.version,
@@ -58,6 +59,9 @@ def preview_runtime_details(
         "status_counts": dict(Counter(str(row.status) for row in rows)),
         "protected_attempts": protected_attempts,
         "apply_allowed": not protected_attempts,
+        "protected_dependencies": preview_protected_dependencies(
+            session, cutoffs, as_of=as_of, batch_size=max(1, int(batch_size)),
+        ),
     }
 
 

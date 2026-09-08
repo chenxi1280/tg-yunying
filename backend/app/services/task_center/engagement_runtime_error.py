@@ -4,7 +4,8 @@ from dataclasses import dataclass
 DEFAULT_RESOURCE_RETRY_SECONDS = 30
 
 
-@dataclass(frozen=True)
+# Exception tracebacks are assigned by Python transaction context managers.
+@dataclass
 class RuntimeResourceBlocked(Exception):
     code: str
     detail: str

@@ -9,19 +9,24 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.models import AccountStatus, TgAccount, TgAccountAuthorization, TgAccountOnlineState
 from app.services._common import _now, gateway
 from app.services.account_online_constants import (
-    ONLINE_LOGIN_REQUIRED_RETRY_AFTER,
+    ONLINE_UNAVAILABLE_PROBE_INTERVAL,
     ONLINE_LOW_FREQUENCY_PROBE_INTERVAL,
     ONLINE_PROBE_FAILURE_RETRY_AFTER,
     ONLINE_PROBE_INTERVAL,
     ONLINE_STALE_AFTER,
     ONLINE_STALE_GRACE,
+)
+from app.services.account_online_probe_policy import (
+    AUTOMATIC_PROBE_EXCLUDED_STATUSES,
+    automatic_probe_due_condition,
+    requires_daily_probe,
 )
 from app.services.developer_apps import credentials_for_account
 from app.services.account_freeze_probe import guard_probe_freeze_result
@@ -68,7 +73,7 @@ def probe_due_online_states(
             account = session.get(TgAccount, state.account_id)
             if not account or account.deleted_at is not None:
                 _mark_probe_blocked(state, current_time, "account_missing", "账号不存在或已删除")
-                schedules.append(_probe_schedule(state))
+                schedules.append(_probe_schedule(state, account))
                 _commit_probe_progress(session, commit_each)
                 continue
             accounts[account.id] = account
@@ -76,7 +81,7 @@ def probe_due_online_states(
                 credentials = credentials_for_account(session, account)
             except ValueError as exc:
                 _mark_probe_blocked(state, current_time, "developer_app_unavailable", str(exc))
-                schedules.append(_probe_schedule(state))
+                schedules.append(_probe_schedule(state, account))
                 _commit_probe_progress(session, commit_each)
                 continue
             jobs.append(OnlineProbeJob(account.id, account.session_ciphertext, credentials,
@@ -86,7 +91,7 @@ def probe_due_online_states(
             completed_at = current_time if fixed_time else max(current_time, result.completed_at or _now())
             state = states_by_account[result.account_id]
             _apply_probe_result(session, accounts[result.account_id], state, completed_at, result)
-            schedules.append(_probe_schedule(state))
+            schedules.append(_probe_schedule(state, accounts[result.account_id]))
             batch_completed_at = max(batch_completed_at, completed_at)
             _commit_probe_progress(session, commit_each)
         if schedules and not fixed_time:
@@ -107,8 +112,8 @@ def _preserve_probe_objects_across_commits(session: Session, *, enabled: bool) -
         session.expire_on_commit = previous
 
 
-def _probe_schedule(state: TgAccountOnlineState) -> tuple[str, timedelta, timedelta | None]:
-    retry_interval = _probe_retry_interval(state)
+def _probe_schedule(state: TgAccountOnlineState, account: TgAccount | None) -> tuple[str, timedelta, timedelta | None]:
+    retry_interval = _probe_retry_interval(state, account)
     stale_interval = None
     if state.online_status == "online":
         baseline = state.last_probe_at or _now()
@@ -139,9 +144,9 @@ def _apply_batch_probe_schedules(
         )
 
 
-def _probe_retry_interval(state: TgAccountOnlineState) -> timedelta:
-    if state.online_status == "login_required":
-        return ONLINE_LOGIN_REQUIRED_RETRY_AFTER
+def _probe_retry_interval(state: TgAccountOnlineState, account: TgAccount | None) -> timedelta:
+    if requires_daily_probe(account, state):
+        return ONLINE_UNAVAILABLE_PROBE_INTERVAL
     if state.online_status == "online":
         return _probe_interval_for_state(state)
     return ONLINE_PROBE_FAILURE_RETRY_AFTER
@@ -209,7 +214,10 @@ def _due_probe_states(session: Session, *, limit: int, now: datetime) -> list[Tg
     return list(
         session.scalars(
             select(TgAccountOnlineState)
+            .outerjoin(TgAccount, TgAccount.id == TgAccountOnlineState.account_id)
             .where(
+                or_(TgAccount.id.is_(None), TgAccount.status.not_in(AUTOMATIC_PROBE_EXCLUDED_STATUSES)),
+                automatic_probe_due_condition(now),
                 TgAccountOnlineState.desired_online.is_(True),
                 TgAccountOnlineState.online_status.in_(["warming", "offline", "recovering", "online", "blocked", "login_required"]),
                 (TgAccountOnlineState.next_probe_at.is_(None) | (TgAccountOnlineState.next_probe_at <= now)),
@@ -292,11 +300,10 @@ def _mark_probe_unavailable(account: TgAccount, state: TgAccountOnlineState, now
     account.health_score = health_score
     if status in {AccountStatus.NEED_RELOGIN.value, AccountStatus.SESSION_EXPIRED.value}:
         state.online_status = "login_required"
-        state.next_probe_at = now + ONLINE_LOGIN_REQUIRED_RETRY_AFTER
     else:
         state.online_status = "blocked"
-        state.next_probe_at = now + ONLINE_PROBE_FAILURE_RETRY_AFTER
     state.failure_type = "account_unavailable"
+    state.next_probe_at = now + _probe_retry_interval(state, account)
     state.failure_detail = detail
     state.last_probe_at = now
     state.updated_at = now

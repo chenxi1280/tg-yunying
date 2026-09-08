@@ -1,5 +1,11 @@
 # 项目数据流转索引
 
+> **2026-09-08 审查回归resync：** 新工作候选先保留普通运营用途/分组启用范围，再统计并排除账号健康失效；配置、覆盖和持久membership入口一致。单轮派发开始前的latest Attempt ID → 资格/资源拒绝 → 对比本轮latest身份：未产生新Attempt只延后Action，产生新before_call才结算未调用等待；已调用和历史unknown保持原证据。实现/QA见统一§19.64.8，尚未发布。
+
+> **2026-09-08 异常账号每日复查resync：** 已知Session失效/需重新登录/冻结账号的后台健康复查改为每24小时一次；封禁/禁用继续退出自动保活。任务分配读取当前保存事实，真实失效立即排除；正常账号保活和人工恢复入口沿既有流程。具体合同见统一引擎§19.64.7；本次频率调整尚未发布。
+
+> **2026-09-08 失效账号分配前排除（本地实现/未发布）：** Task绑定组成员 → current账号/授权/Session/冻结资格 → 有效候选与排除/待确认原因 → adapter人数/比例/coverage floor → selected及业务义务 → 新绑定/物化/claim/call-issued复核。失效观测生效后不再给该账号新建来源、覆盖补量、GenerationJob、Action或membership前置工作；历史计划/远端事实保留，健康账号继续。统一§19.64覆盖旧“仅runtime状态阻断、不改变新计划资格”的条款；新计划资格依据写入PlanningAdmissionSnapshot(account_assignment_eligibility_v1)，coverage/retry候选在LIMIT前过滤；原HTTP/Telegram unknown只对账。实现与生产验收边界见§19.64.6。
+
 > **2026-09-08 冻结账号资格修复：** Telegram明确冻结错误/完整help.getAppConfig冻结检查 → TgAccount.telegram_frozen + telegram_freeze_observed_at单调行锁观测 → 状态投影与候选过滤/持久范围入群准入/调用前FOR SHARE NOWAIT复核。旧健康结果与旧授权/连接代次不能解冻；普通在线投影不覆盖独立事实；新完整非冻结检查才能恢复资格。Action unknown保持原证据，冻结错误不进入群权限救援。迁移0228不批量推断历史状态；见专项account-freeze-execution-eligibility-prd.md，线上验收待发布后读回。
 
 > **2026-09-08 关注占用证据：** 频道关注准入读取原 Action/Attempt → 原 Gateway result journal 的身份、时间和双 hash → 物理返回证明；unknown 的同账号同目标业务身份继续占位，不能重放。补偿复检合并 Attempt snapshot 保留终止/请求证据，不回填或改变历史 unknown 结果。
@@ -1560,3 +1566,30 @@ legacy-only A 冷启动分支固定为 `frozen legacy A -> 原 A Session 只读 
 - 2026-09-08 生命周期重复刷新目标汇总：同一事务内 pending TargetRuntimeSummary → 按 tenant/target 复用 → 最终一次提交；不吞唯一键错误，不改业务事实。
 
 - 2026-09-08：direct_action_claims过期安全结算尊重正式obligation拒绝结果；未执行输家仅释放自身前置资源，不追加事实或修改赢家投影。safe_settlement_records承载原安全结算记录，safe_settlement_resources承载原节奏预留释放；见频道成员设计§14.9。
+
+### 2026-09-08 准入与主互动独立推进（设计态 / resync）
+
+真相源：`docs/03-feature-designs/unified-engagement-fulfillment-engine-prd.md` §19.60；`channel-membership-precondition-design.md` §15。下列为待实现合同，不代表当前代码入口或 API 已存在；dev 完成后按真实模块同步结构索引。
+
+- 调度：合法 due/依赖就绪 + workload 保护份额 → Task 持久公平 cursor/CAS → 空闲名额内 claim → 逐 Action owner-token/原对象资源移交 → 独立 execute/finalize → 释放该动作可释放的本地名额 → 立即补领；慢 future 不形成整批屏障。既有 interaction/search lane 与 account/pool/egress 总容量不变。
+- 准入：原 Task/账号/canonical target/requirement 世代 → join/可信 challenge 分类 → 文本确定性四则或明确 `group_admission_image_verification` route → 同题 CAS/Attempt/Gateway 提交 → 原 bot 确认 + 必需关注/观察/权限复检 → account-scoped fact → Task admission projection → 符合来源与时间的主动作。搜索不进入群图片模型路由。
+- 等待：阶段结果/typed reason/wake 条件持久化 → 当前本地工作结束 → 释放本地执行资源；真实未结束 invocation 仍持硬占用；transport ACK 与业务 unknown 分别结算。收到原事件/到期复查后从原阶段继续，不重做已确认副作用。
+- 停机：补领前自动租约或 SIGTERM → 原子停止新 claim → drain instance 全部已获 work/真实 runner/claims/Attempt → 严格断连与资源归属核对 → safe_to_exit；不再依赖批次返回。
+- 恢复：原 due/ready/claim/deadline 与原 identity 归因 → 新鲜精确 preview/hash → 授权范围 apply → 独立 readback → 逐 Task typed E4；future、不具备来源、未证明结束、called/unknown、已确认赢家分别按原合同处理，不能清库/改 now/重放。
+- 展示：同一 captured_at/epoch/policy 下的准入 ready/wait 与主业务 due/eligible/Gateway/confirmed/shortfall 独立聚合；partial/blocked 按当前到期且有输入的候选判定，生成/提交/关注成功不代替主业务完成。
+
+### 2026-09-08 AI故障应急与旧能力继承（设计态 / resync）
+
+上位合同：`unified-engagement-fulfillment-engine-prd.md` §19.61–19.62。新代码/API/字段尚未实现，不将既有legacy ContentMix选择器误写为current能力。
+
+- 原有效due/quantity/coverage/reply义务 → 当前normal可用性或typed quota/key/route/generation/review错误 → emergency policy eligibility → 原obligation/current content revision CAS → direct签到/同关系回复表情/原source评论表情 → deterministic fallback_ready → 原Dispatcher/Gateway → typed message/visibility fact → 同原数量/基础覆盖计数，normal/grounded/semantic质量分账。
+- 纯Provider unknown → 保留原request/费用/transport fence → CAS撤销normal candidate发布权 → 新emergency内容owner；晚到结果仅审计计费。Telegram已调用/unknown则原identity只对账，没有替代发送分支。
+- 新emergency policy snapshot + stable Unicode pool/可选ready图片 + 原义务selection/cursor → 一次冻结选择；pre-Gateway图片不可用可显式Unicode successor，已调用不切换；planned比例0不关闭emergency。
+- 旧每日一次check-in/ContentMix selection → additive版本归属/兼容索引及统一obligation选择 → 精确preview/授权successor/readback；不复制义务、删unknown、重开历史短缺或回滚到不兼容旧索引。
+- normal/emergency confirmed、基础/normal覆盖、grounding/semantic outcome、Provider故障与发送阻塞分列；合法fallback不触发旧“发送率必须0”的自动停Task；基础业务完成不能冒充高质量完成。
+
+### 2026-09-08 旧能力二轮对照补正（设计态）
+
+统一引擎 §19.63：当前原义务/Job/短期回复身份 → 原绝对deadline → 正常或应急唯一内容CAS → typed事实；不恢复§19.13已撤销的模型费用/逐binding预算、历史画像与聊天版本表。词库/话题/teacher沿既有内容intent绑定唯一unified数量owner，配置分别按new-content/next-task-day生效，纯内容修改不清日计划；应急不进入normal比例分母。
+
+最近72小时最早有效成功fact → 所需Action/Attempt查询依赖保护 → retention正式候选排除 → 原锁内重查并删除无业务依赖的明细 → 清理前后统计/义务/事实/防重守恒。旧Task切换是retired映射保留，物理删除仅由另一个明确用户删除操作发起；当前selected分母不采用legacy动态缩减。2026-09-08后续P1开发已落地共享 `success_fact_query` → `runtime_retention_protection` → `runtime_retention_selection` → 锁内复核/原汇总清理；纯内容保存保留任务生命周期与原计划。当前为本地实现与定向验证，生产状态仍为unproven。

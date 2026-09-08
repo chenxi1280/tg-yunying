@@ -1,5 +1,7 @@
 # AI 活群生成失败风暴整体修复 PRD
 
+> **2026-09-08 用户裁决 / emergency resync（设计完成，尚未实施）：** 新emergency沿统一引擎 §19.61：明确quota/route/key不可用不等待六轮；解除仅已覆盖extra-volume可handoff及每日一次签到的旧内容限制，采用统一owner内容交接。本文legacy handoff/scoped claim和历史恢复只对其原冻结identity有效，不作为新emergency实现捷径。 本切片代码/生产状态仍为未实施、未验收；旧事件记录保留。
+
 ## 1. 文档状态
 
 | 项目 | 内容 |

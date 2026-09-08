@@ -249,7 +249,10 @@ def test_temporary_admission_failure_does_not_shrink_view_cohort_or_degree() -> 
         )
         participation = ensure_daily_participation_plan(session, task, ledger)
         blocked_id = int(participation.selected_account_ids[0])
-        session.get(TgAccount, blocked_id).session_ciphertext = None
+        proxy = AccountProxy(tenant_id=1, name="temporary outage", host="127.0.0.1", port=1080, status="failed")
+        session.add(proxy)
+        session.flush()
+        session.get(TgAccount, blocked_id).proxy_id = proxy.id
         plan = _view_allocation(
             session, task, _messages(session, 5),
             per_account_source_degree_min=2, per_account_source_degree_max=2,
@@ -507,7 +510,8 @@ def test_planning_admission_reuses_only_unexpired_observation() -> None:
 
         assert within_ttl.id == first.id
         assert refreshed.id != first.id
-        assert session.query(PlanningAdmissionSnapshot).count() == 2
+        assert session.query(PlanningAdmissionSnapshot).filter(
+            PlanningAdmissionSnapshot.planning_horizon != "account_assignment_eligibility_v1").count() == 2
 
 
 def test_comment_participation_uses_full_policy_denominator_while_ready_partition_runs() -> None:

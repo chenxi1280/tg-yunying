@@ -1,5 +1,9 @@
 # AI 群聊、频道评论真人化与群管机器人准入专项 PRD
 
+> **2026-09-08 用户裁决 / emergency resync（设计完成，尚未实施）：** 内容应急唯一合同为统一引擎 §19.61：群主动签到，群回复/频道评论随机表情；本文件旧“唯一签到/六轮后仅extra-volume/纯表情禁令”的冲突范围被覆盖。可信准入、可见性、原生回复和unknown防重保持。 本切片代码/生产状态仍为未实施、未验收；旧事件记录保留。
+
+> **2026-09-08 准入验证补齐 resync：** 当前群准入文本四则、图片 purpose 路由、同题提交幂等和等待恢复以 `channel-membership-precondition-design.md` §15 为准；主互动持续调度见 `unified-engagement-fulfillment-engine-prd.md` §19.60。本文保留可信 bot/收件人/原消息绑定与确认/可见性原则；不恢复下述历史 GroupBotAdmission 模型或串行 admission，不改变纯搜索 OCR 合同。本补充尚未实施。
+
 ## 1. 文档状态
 
 > **2026-08-23 当前合同边界：** 本文只保留真人化内容、可信提示识别和历史事故取证。本文所有 C2 数据模型、hard-hourly/冻结分母、迁移、ClaimClass、Task 内远端事实所有权、串行 admission 和旧签到配额/重试规则均为 `historical_do_not_implement`。当前 C2 必须使用：`tasks.group_ai_prejoin_channel_ids` 独立 JSON 字段持久化 0～3 个由公开 `t.me` 地址或 username 归一化得到的频道引用并并发关注；Task 专属 `TaskGroupBotAdmission` 仅做投影；`account_group_admission_facts` 以无 `task_id` 的四类远端事实 `configured_channel_follow|dynamic_channel_follow|requirement_confirmation|post_follow_visibility` 供多个 Task 引用；展示名+要求链接精确绑定；不同可信 action 按依赖图并发。签到统一为 `content_source=check_in`。完整唯一合同见 `task-fulfillment-classified-recovery-prd.md`、`task-fulfillment-contract-closure-prd.md` 与 `ai-group-daily-group-target-redesign-prd.md`。

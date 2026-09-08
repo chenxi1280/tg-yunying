@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .account_assignment_eligibility import require_action_assignment_account
+
 from collections.abc import Callable, Mapping
 from typing import Any
 import hashlib
@@ -1327,6 +1329,8 @@ def _dispatch_action(
     account = _dispatch_account(session, action)
     if account is None:
         return True
+    previous_attempt = _latest_execution_attempt(session, action.id)
+    previous_attempt_id = previous_attempt.id if previous_attempt is not None else None
     try:
         payload = validate_action_payload(action.action_type, action.payload or {})
         return _dispatch_validated_action(
@@ -1347,7 +1351,7 @@ def _dispatch_action(
         _skip(action, "task_lifecycle_gateway_fenced", str(exc))
         return True
     except RuntimeResourceBlocked as exc:
-        _defer_engagement_gateway_admission(session, action, exc)
+        _defer_engagement_gateway_admission(session, action, exc, previous_attempt_id=previous_attempt_id)
         return True
     except (ValidationError, ValueError) as exc:
         _update_reply_payload_error_stats(action)
@@ -11698,6 +11702,7 @@ def _lease_owner() -> str:
 
 
 def _begin_execution_attempt(session: Session, action: Action, account: TgAccount) -> ExecutionAttempt:
+    require_action_assignment_account(session, action)
     attempt_no = (
         session.scalar(select(func.max(ExecutionAttempt.attempt_no)).where(ExecutionAttempt.action_id == action.id))
         or 0
@@ -11724,6 +11729,9 @@ def _begin_execution_attempt(session: Session, action: Action, account: TgAccoun
 def _mark_gateway_call_started(session: Session, attempt: ExecutionAttempt, *, commit: bool = True) -> None:
     guard_attempt_call_start(session, attempt)
     guard_account_call_start(session, attempt)
+    action = session.get(Action, attempt.action_id)
+    if action is not None:
+        require_action_assignment_account(session, action)
     call_started_at = _now()
     mark_engagement_attempt_call_issued(session, attempt, call_started_at=call_started_at)
     attempt.gateway_call_started_at = call_started_at
@@ -11967,10 +11975,12 @@ def _defer_engagement_resource_attempt(action, attempt, error):
     settle_source_pacing_admission(action, attempt)
 
 
-def _defer_engagement_gateway_admission(session, action, error):
-    attempt = session.scalar(select(ExecutionAttempt).where(ExecutionAttempt.action_id == action.id)
-        .order_by(ExecutionAttempt.attempt_no.desc()).limit(1))
-    if attempt is None or attempt.gateway_call_started_at is not None or attempt.status != "before_call":
+def _defer_engagement_gateway_admission(session, action, error, *, previous_attempt_id=None):
+    attempt = _latest_execution_attempt(session, action.id)
+    if attempt is None or attempt.id == previous_attempt_id:
+        _defer(action, _now() + timedelta(seconds=error.retry_after_seconds), error.code, error.detail)
+        return
+    if attempt.gateway_call_started_at is not None or attempt.status != "before_call":
         raise RuntimeError("engagement_gateway_defer_requires_uncalled_attempt") from error
     _defer_engagement_resource_attempt(action, attempt, error)
     settle_engagement_attempt_resources(attempt, action, remote_mutation_started=False)

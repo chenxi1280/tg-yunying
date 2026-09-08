@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from ..account_assignment_eligibility import eligible_assignment_account_ids
+
 import hashlib
 import json
 import random
@@ -4273,7 +4275,8 @@ def _coverage_scope(
         bootstrap_missing_all_account_task_scope(session, task, now=timestamp)
         return ledger, None, None, None
     participation = ensure_daily_participation_plan(session, task, ledger)
-    account_ids = [int(item) for item in participation.selected_account_ids]
+    account_ids = list(eligible_assignment_account_ids(
+        session, task.tenant_id, participation.selected_account_ids))
     sync_group_participation_scope(session, task, group, account_ids=account_ids)
     admission = ensure_planning_admission_snapshot(
         session,

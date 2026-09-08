@@ -1,5 +1,7 @@
 # AI 活跃群安全 Prompt 与多模型回退设计
 
+> **2026-09-08 用户裁决 / emergency resync（设计完成，尚未实施）：** 内容应急按统一引擎 §19.61，不同于Provider/model failover。本文件旧“quota/key故障不能签到”、必须耗尽固定轮数的限制不适用于新emergency；纯Provider unknown保留调用与费用，但可在发送权CAS后走静态应急。正常模型路由、凭据与安全边界保持各自现行合同。 本切片代码/生产状态仍为未实施、未验收；旧事件记录保留。
+
 > **2026-08-04 current contract：** 本文只保留输入安全、统一输出契约和 Provider adapter 原则。全系统只允许一个 active `ai_provider_key_version`；所有文本模型共享这一把 key 和总额度，每个 GenerationJob 独立调用、direct 结果独立提交。固定 M3→M2.5→Grok 拓扑、Grok CLI Bridge、按模型/配置复制 key 额度、验证码 AI/VLM、ContentMix 数量槽和旧双签到均为 `historical_do_not_implement`。当前并发、key 轮换和签到合同以 `task-fulfillment-contract-closure-prd.md` §8 与 `ai-group-daily-group-target-redesign-prd.md` §7.4 为准；搜索验证码只走 RapidOCR→ddddOCR。
 
 > **2026-08-31 scoped supersede：** 本文 §1、§3.1、§3.2 中对地点、服务和行业黑话的全面禁止只适用于普通 route。任务经 `is_adult_content_config()` 明确授权为成人 route 后，其行业词汇、Prompt、8～20 汉字质量门和事实锚定以 `ai-group-chat-quality-and-token-optimization-prd.md` v2.3 §4.1、§4.2、§4.4、§4.8 为准。该授权不放宽未成年人、联系方式、引流、露骨内容和无依据事实等绝对红线。

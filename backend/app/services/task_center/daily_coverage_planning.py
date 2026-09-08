@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .account_assignment_eligibility import assignment_account_predicate
+
 from dataclasses import dataclass
 from datetime import datetime
 from uuid import uuid4
@@ -206,6 +208,7 @@ def _ready_rows_after_cursor(
     exclude_account_ids: set[int] | None,
 ) -> list[TaskAccountDailyCoverage]:
     filters = [
+        assignment_account_predicate(task, TaskAccountDailyCoverage.account_id),
         TaskAccountDailyCoverage.tenant_id == task.tenant_id,
         TaskAccountDailyCoverage.task_id == task.id,
         TaskAccountDailyCoverage.coverage_date == timestamp.date(),
@@ -256,6 +259,7 @@ def _ready_rows_without_cursor(
     exclude_account_ids: set[int] | None,
 ) -> list[TaskAccountDailyCoverage]:
     filters = [
+        assignment_account_predicate(task, TaskAccountDailyCoverage.account_id),
         TaskAccountDailyCoverage.tenant_id == task.tenant_id,
         TaskAccountDailyCoverage.task_id == task.id,
         TaskAccountDailyCoverage.coverage_date == timestamp.date(),

@@ -60,7 +60,7 @@ def test_runtime_retention_batch_orders_by_indexed_age() -> None:
         / "app"
         / "services"
         / "task_center"
-        / "runtime_retention.py"
+        / "runtime_retention_selection.py"
     ).read_text()
 
     assert ".order_by(age.asc(), Action.created_at.asc(), Action.id.asc())" in source

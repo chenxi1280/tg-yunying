@@ -21,6 +21,9 @@ from .engagement_binding import (
     freeze_membership_snapshot,
 )
 from .engagement_policy_scope import policy_eligible_member_ids
+from .account_assignment_eligibility import eligible_assignment_account_ids
+from .account_assignment_snapshot import record_assignment_snapshot
+from .engagement_runtime_error import RuntimeResourceBlocked
 
 
 POLICY_REVISION = "engagement_participation_v2_fleet_debt"
@@ -102,7 +105,8 @@ def ensure_source_participation_plan(
 def selected_accounts_for_plan(
     session: Session, task: Task, plan: TaskParticipationUnitPlan
 ) -> list[TgAccount]:
-    ids = [int(item) for item in plan.selected_account_ids or []]
+    ids = eligible_assignment_account_ids(
+        session, task.tenant_id, [int(item) for item in plan.selected_account_ids or []])
     if not ids:
         return []
     rows = session.scalars(
@@ -216,8 +220,7 @@ def _ensure_plan(
     snapshot = freeze_membership_snapshot(
         session, task, participation_unit=participation_unit
     )
-    policy_members = policy_eligible_member_ids(session, task, snapshot)
-    eligible = _eligible_ids(policy_members, eligible_account_ids)
+    eligible = _qualified_participation_ids(session, task, snapshot, requested=eligible_account_ids)
     sampled_ratio = _sample_ratio(task.id, participation_unit, ratio_range)
     count = _participation_count(
         len(eligible), sampled_ratio, requested=required_count,
@@ -244,6 +247,7 @@ def _ensure_plan(
     )
     session.add(plan)
     session.flush()
+    record_assignment_snapshot(session, task, plan)
     return plan
 
 
@@ -421,3 +425,10 @@ __all__ = [
     "ensure_source_participation_plan",
     "selected_accounts_for_plan",
 ]
+
+
+def _qualified_participation_ids(session, task, snapshot, *, requested):
+    eligible = _eligible_ids(policy_eligible_member_ids(session, task, snapshot), requested)
+    if not eligible:
+        raise RuntimeResourceBlocked("no_eligible_accounts", "当前无有效账号，等待账号恢复")
+    return eligible

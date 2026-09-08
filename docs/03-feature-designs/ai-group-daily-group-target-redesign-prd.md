@@ -1,5 +1,12 @@
 # AI 活群“群日目标 + 全账号必达 + 账号面具内容记忆”重构 PRD
 
+> **2026-09-08 账号分配资格resync：** [统一引擎PRD](unified-engagement-fulfillment-engine-prd.md) §19.64为当前合同：Session失效、Telegram冻结及其他明确失效账号先从新计划候选排除，再计算人数/覆盖与分配工作；已有selected不授予后续新分配资格。运行中失效立即停止新分配和未调用派发，健康账号继续；历史已分配/unknown/confirmed证据保留。临时网络/资源等待与账号失效分开。§19.64账号资格入口已完成本地实现与定向QA，尚未发布；不代表§19.60/§19.61等其他设计已经实现，生产验收见该节独立记录。
+
+
+> **2026-09-08 二轮对照修订（设计态）：** 本文动态资格可增减/abandoned缩分母及旧prepared切换仅用于相应legacy身份；unified已冻结selected不缩不换，成员变动按统一§7.6/§11生效。当前切换以§19.58退役映射及保留证据为准，不调用旧物理删除链；内容能力按§19.61/§19.63继承。
+
+> **2026-09-08 用户裁决 / emergency resync（设计完成，尚未实施）：** 新emergency以统一引擎 §19.61为准：未完成/已完成基础覆盖的合法原义务均可签到，单日一次签到限制及extra-volume必须有面具不再适用新policy，按原义务/远端身份防重。旧日唯一索引与历史行必须按§19.61.7兼容迁移，不能直接删除约束或重写旧事实。 本切片代码/生产状态仍为未实施、未验收；旧事件记录保留。
+
 > **2026-08-09 current failure-state supersede：** 本文的群日目标、动态 coverage、内容质量和统一 check-in 业务要求继续有效；但 current `fact_first_v3` 的 ledger-bound quantity ordinal/due、aggregate allocation/assignment、current intent pointer/variation、dirty-clock wake/projector、scoped claim、fleet inventory item+task enrollment+task-day route/lifecycle fence、原子 ledger bootstrap/takeover activate、Gateway call-issued、ledger-level read-model API、存量 preparing→quiescence→readback 接管和失败 UI 以 `ai-group-generation-failure-churn-remediation-prd.md` 为准。本文中“所有开放义务立即执行”不得覆盖主 PRD 2026-08-07 `natural_full_day due_by_now`；“质量失败释放后继续补”只允许复用同一稳定 due unit 且 external basis 改变，禁止立即创建新 Action 身份或重置 3+3；legacy quantity slot/ContentMix 不得恢复为 current 发送真相源。本文原 `product_design_complete` 只描述未冲突的历史业务设计，不是 current dev handoff 状态。
 
 ## 1. 文档状态

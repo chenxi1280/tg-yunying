@@ -5,20 +5,22 @@ from sqlalchemy import case, select
 from sqlalchemy.orm import Session
 
 from app.models import AccountStatus, Tenant, TgAccount
-from app.services.account_usage_policy import apply_operational_account_filters
+from app.services.account_usage_policy import apply_operational_account_filters, apply_operational_account_scope_filters
 
 
-def candidate_accounts_for_config(session: Session, tenant_id: int, account_config: dict[str, Any]) -> list[TgAccount]:
+def candidate_accounts_for_config(session: Session, tenant_id: int, account_config: dict[str, Any], *, include_unavailable: bool = False) -> list[TgAccount]:
     stmt = (
         select(TgAccount)
         .where(
             TgAccount.tenant_id == tenant_id,
             TgAccount.deleted_at.is_(None),
-            TgAccount.status == AccountStatus.ACTIVE.value,
         )
         .order_by(TgAccount.health_score.desc(), TgAccount.id.asc())
     )
-    stmt = apply_operational_account_filters(stmt)
+    if include_unavailable:
+        stmt = apply_operational_account_scope_filters(stmt)
+    else:
+        stmt = apply_operational_account_filters(stmt.where(TgAccount.status == AccountStatus.ACTIVE.value))
     rescue_admin_id = _rescue_admin_account_id(session, tenant_id)
     if rescue_admin_id:
         stmt = stmt.where(TgAccount.id != rescue_admin_id)

@@ -1,5 +1,12 @@
 # 生产任务分类履约恢复 PRD（产品确认稿）
 
+> **2026-09-08 账号分配资格resync：** [统一引擎PRD](unified-engagement-fulfillment-engine-prd.md) §19.64为当前合同：Session失效、Telegram冻结及其他明确失效账号先从新计划候选排除，再计算人数/覆盖与分配工作；已有selected不授予后续新分配资格。运行中失效立即停止新分配和未调用派发，健康账号继续；历史已分配/unknown/confirmed证据保留。临时网络/资源等待与账号失效分开。§19.64账号资格入口已完成本地实现与定向QA，尚未发布；不代表§19.60/§19.61等其他设计已经实现，生产验收见该节独立记录。
+
+
+> **2026-09-08 用户裁决 / emergency resync（设计完成，尚未实施）：** 统一引擎 §19.61控制新内容emergency，§19.62记录旧能力继承；正常/应急数量与质量分账，旧签到资格与统一v2禁fallback条款不能覆盖新policy。搜索OCR、账号/target边界和各类型真实事实合同保持。 本切片代码/生产状态仍为未实施、未验收；旧事件记录保留。
+
+> **2026-09-08 调度/准入交叉合同 resync：** §9 的 interaction/search 独立 lane 保持；普通 lane 内准入、活群、评论、点赞、浏览的持续补领与 workload 隔离以 `unified-engagement-fulfillment-engine-prd.md` §19.60 为准。本文历史“同账号任意并行 RPC”不能覆盖统一引擎现行 account hard fence；群图片/文本验证遵守 `channel-membership-precondition-design.md` §15，搜索继续双 OCR 且 AI/VLM=0。本次是设计交接，不代表已发布。
+
 > **2026-08-10 current scope supersede：** 本文继续提供不冲突的任务类型节奏、Telegram事实与C1-C8分类；AI活群数量/内容/生命周期/接管/settlement以`ai-group-generation-failure-churn-remediation-prd.md`为唯一交接，频道浏览target/due/账号slot/source/settlement/原地route以`channel-view-planner-starvation-remediation-prd.md`为唯一交接。本文中“prepared新Task从0”“旧Task不迁移”“只切running”“无quantity/due ordinal”及只按confirmed计E4的残留全部是`historical_do_not_implement`；当前两类Task必须原地additive fence/manifest/readback接管并保持原lifecycle。
 
 ## 1. 文档状态

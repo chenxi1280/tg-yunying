@@ -17,6 +17,7 @@ from app.models import (
     ViewRemoteFact,
 )
 from app.services._common import _now
+from .account_assignment_eligibility import require_assignment_account
 from .channel_fulfillment_identity import RemoteFactAlreadyFulfilled
 from .channel_fulfillment_identity import assert_existing_view_obligation_identity
 from .channel_fulfillment_identity import assert_fact_owner
@@ -59,6 +60,7 @@ def ensure_reaction_obligation(
         )
     )
     if obligation is None:
+        require_assignment_account(session, task, account_id)
         obligation = ReactionFulfillmentObligation(
             tenant_id=task.tenant_id,
             task_id=task.id,
@@ -96,6 +98,7 @@ def ensure_view_obligation(
         )
     )
     if obligation is None:
+        require_assignment_account(session, session.get(Task, ledger.task_id), account_id)
         obligation = ViewFulfillmentObligation(
             tenant_id=ledger.tenant_id,
             task_day_ledger_id=ledger.id,

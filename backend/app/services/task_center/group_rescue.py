@@ -10,6 +10,7 @@ from app.models import AccountStatus, Action, FailureType, OperationTarget, Task
 from app.services._common import _now
 from app.services.task_center.payloads import InviteGroupAccountPayload
 from app.timezone import as_beijing
+from .account_assignment_eligibility import require_assignment_account
 
 
 GROUP_RESCUE_FAILURE_THRESHOLD = 3
@@ -149,6 +150,7 @@ def refresh_group_rescue_action(
         payload = _rescue_payload(session, tenant, task, group, trigger_account_id, trigger_reason, operation_target_id)
     except ValueError as exc:
         return GroupRescueResult(RESCUE_STATUS_UNCONFIGURED, str(exc))
+    _require_rescue_accounts(session, task, trigger_account_id)
     action.account_id = rescue_admin_account_id_for_task(session, task)
     action.action_type = "invite_group_account"
     action.task_lifecycle_epoch = int(task.task_lifecycle_epoch or 1)
@@ -175,6 +177,7 @@ def _create_rescue_action(
     operation_target_id: int | None,
 ) -> Action:
     payload = _rescue_payload(session, tenant, task, group, trigger_account_id, trigger_reason, operation_target_id)
+    _require_rescue_accounts(session, task, trigger_account_id)
     action = Action(
         tenant_id=task.tenant_id,
         task_id=task.id,
@@ -376,3 +379,8 @@ def _action_rescue_status(action: Action) -> str:
 def _action_rescue_detail(action: Action) -> str:
     result = action.result if isinstance(action.result, dict) else {}
     return str(result.get("error_message") or result.get("detail") or result.get("rescue_detail") or "")
+
+
+def _require_rescue_accounts(session, task, target_account_id):
+    require_assignment_account(session, task, target_account_id)
+    require_assignment_account(session, task, rescue_admin_account_id_for_task(session, task))

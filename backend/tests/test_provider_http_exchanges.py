@@ -302,3 +302,32 @@ def test_real_slow_http_records_unknown_and_prevents_second_network_call(environ
     rows = _rows(environment)
     assert len(rows) == 1 and rows[0].outcome == "unknown"
     assert rows[0].local_termination_confirmed
+
+
+@pytest.mark.parametrize("invalid", ("freeze", "session"))
+def test_account_invalidated_after_job_claim_cannot_start_provider_http(environment, invalid):
+    from app.models import TgAccount
+    from app.services.task_center.engagement_runtime_error import RuntimeResourceBlocked
+    with environment.factory() as session:
+        account = session.get(TgAccount, 91001)
+        if invalid == "freeze":
+            account.telegram_frozen = True
+        else:
+            account.status = "Session失效"
+        session.commit()
+    calls = []
+    with pytest.raises(RuntimeResourceBlocked):
+        _request(_tracker(environment, transport=lambda *args, **kwargs: calls.append(True)))
+    assert calls == [] and _rows(environment) == []
+
+
+def test_same_obligation_successor_cannot_authorize_an_old_generation_job(environment):
+    from app.models import Action
+    with environment.factory() as session:
+        action = session.get(Action, environment.jobs[0])
+        action.payload = {**action.payload, "generation_job_id": "new-job-owner"}
+        session.commit()
+    calls = []
+    with pytest.raises(ValueError, match="generation_account_assignment_unproven"):
+        _request(_tracker(environment, transport=lambda *args, **kwargs: calls.append(True)))
+    assert calls == [] and _rows(environment) == []

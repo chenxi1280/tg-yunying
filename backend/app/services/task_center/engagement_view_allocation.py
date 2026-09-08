@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .account_assignment_eligibility import eligible_assignment_account_ids
+
 import hashlib
 import json
 
@@ -40,10 +42,8 @@ def ensure_view_allocation_plan(
     forbidden_account_ids_by_message: dict[int, set[int]],
     config: dict,
 ) -> ViewAccountSourceAllocationPlan:
-    for message in messages:
-        if not message.current_source_revision_id:
-            ensure_channel_message_source_revision(session, message)
-    sources = _sources(messages, forbidden_account_ids_by_message)
+    sources = _eligible_view_sources(session, task, messages, participation=participation_plan,
+        forbidden=forbidden_account_ids_by_message)
     existing = _active_plan(session, task, ledger)
     sources, reusable = _merge_plan_sources(existing, sources)
     if reusable:
@@ -104,7 +104,8 @@ def _allocation_draft(
     if existing is None or getattr(existing, "decision", None) != "achievable" or not (existing.edge_set or []):
         draft = initial_allocation_draft(
             task.id,
-            [int(item) for item in participation.selected_account_ids or []],
+            list(eligible_assignment_account_ids(session, task.tenant_id,
+                [int(item) for item in participation.selected_account_ids or []])),
             sources,
             config=config,
         )
@@ -310,3 +311,14 @@ __all__ = [
     "apply_view_allocation_targets",
     "ensure_view_allocation_plan",
 ]
+
+
+def _eligible_view_sources(session, task, messages, *, participation, forbidden):
+    for message in messages:
+        if not message.current_source_revision_id:
+            ensure_channel_message_source_revision(session, message)
+    selected_ids = set(map(int, participation.selected_account_ids or []))
+    valid_ids = set(eligible_assignment_account_ids(session, task.tenant_id, sorted(selected_ids)))
+    exclusions = {message.id: set(forbidden.get(message.id, set())) | (selected_ids - valid_ids)
+        for message in messages}
+    return _sources(messages, exclusions)

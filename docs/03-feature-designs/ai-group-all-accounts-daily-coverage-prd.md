@@ -1,5 +1,10 @@
 # AI 活跃群“全部账号”每日发言履约专项 PRD
 
+> **2026-09-08 账号分配资格resync：** [统一引擎PRD](unified-engagement-fulfillment-engine-prd.md) §19.64为当前合同：Session失效、Telegram冻结及其他明确失效账号先从新计划候选排除，再计算人数/覆盖与分配工作；已有selected不授予后续新分配资格。运行中失效立即停止新分配和未调用派发，健康账号继续；历史已分配/unknown/confirmed证据保留。临时网络/资源等待与账号失效分开。§19.64账号资格入口已完成本地实现与定向QA，尚未发布；不代表§19.60/§19.61等其他设计已经实现，生产验收见该节独立记录。
+
+
+> **2026-09-08 用户裁决 / emergency resync（设计完成，尚未实施）：** 统一引擎 §19.61覆盖签到只能首条coverage、缺面具禁止额外合法数量及normal-only基础覆盖等旧限制；真实应急可完成原数量/基础覆盖，normal_contextual覆盖独立记。旧无条件签到主路径、伪reaction完成、跨目标/unknown重放不恢复。 本切片代码/生产状态仍为未实施、未验收；旧事件记录保留。
+
 > **状态：`historical_do_not_implement`（2026-08-04）。** 本文只保留历史事故、旧数据字段和迁移取证。当前账号范围是任务内、群内、任务日内动态 scope，不冻结不可缩小分母；当前实现合同以 `task-fulfillment-classified-recovery-prd.md`、`task-fulfillment-contract-closure-prd.md` 和 `ai-group-daily-group-target-redesign-prd.md` 为准。本文后续冲突内容不得开发、测试或回填。
 
 ## 1. 文档状态

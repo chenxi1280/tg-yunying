@@ -10,6 +10,7 @@ from app.models import GenerationJob, GenerationTimingBinding, ProviderHttpExcha
 from app.services._common import _now
 from app.timezone import as_beijing
 from .provider_admission import ProviderAdmissionBlocked
+from .generation_account_eligibility import require_generation_accounts
 from .generation_provider_lineage import UNRESOLVED_EXCHANGE_STATES, unresolved_exchange_statement
 
 
@@ -45,6 +46,7 @@ def _start_exchange(session_factory, scope, *, chain_id, request_hash):
         )
         if session.scalar(conflicts.limit(1)):
             raise AiProviderResultUnknown("provider_http_previous_exchange_unresolved")
+        require_generation_accounts(session, jobs)
         exchange_id = str(uuid4())
         first = jobs[0]
         session.add(ProviderHttpExchange(

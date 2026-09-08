@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .account_assignment_eligibility import action_assignment_reason, action_assignment_predicate
+
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -47,7 +49,7 @@ def retry_failed_actions(
     actions = session.scalars(_retry_query(task, max_retries, limit))
     count = 0
     for action in actions:
-        if _action_retry_is_blocked(task, action):
+        if _action_retry_is_blocked(task, action) or action_assignment_reason(session, action):
             continue
         _schedule_retry(
             action,
@@ -62,7 +64,9 @@ def retry_failed_actions(
 def _retry_query(task: Task, max_retries: int, limit: int):
     return (
         select(Action)
+        .join(Task, Task.id == Action.task_id)
         .where(
+            action_assignment_predicate(),
             Action.tenant_id == task.tenant_id,
             Action.task_id == task.id,
             Action.status.in_(_auto_retry_statuses(task)),

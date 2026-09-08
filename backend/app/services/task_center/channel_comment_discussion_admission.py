@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .account_assignment_eligibility import assignment_account_predicate, require_assignment_account, UNIFIED_CONTRACT
+
 import hashlib
 import json
 from datetime import datetime, timedelta
@@ -7,7 +9,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Action, ChannelDiscussionGroupBinding, OperationTarget, Task
+from app.models import Action, ChannelDiscussionGroupBinding, OperationTarget, Task, TgAccount
 
 from .channel_comment_discussion_contracts import current_membership_facts, membership_ready
 
@@ -93,6 +95,10 @@ def _joinable_accounts(
     config: dict,
 ) -> list:
     authorized = {int(value) for value in config.get("discussion_join_account_ids") or []}
+    if (task.type_config or {}).get("engagement_contract_version") == UNIFIED_CONTRACT:
+        authorized &= set(session.scalars(select(TgAccount.id).where(
+            TgAccount.id.in_(authorized), TgAccount.tenant_id == task.tenant_id,
+            assignment_account_predicate(task, TgAccount.id))))
     account_ids = [int(account.id) for account in accounts if int(account.id) in authorized]
     facts = current_membership_facts(
         session, tenant_id=task.tenant_id, account_ids=account_ids,
@@ -161,6 +167,7 @@ def _ensure_membership_action(
     target = session.get(OperationTarget, binding.discussion_target_id)
     if target is None:
         raise ValueError("discussion_operation_target_missing")
+    require_assignment_account(session, task, account_id)
     action = Action(
         tenant_id=task.tenant_id,
         task_id=task.id,

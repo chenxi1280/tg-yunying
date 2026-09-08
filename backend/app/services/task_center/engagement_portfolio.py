@@ -12,6 +12,7 @@ from app.models import (
     TaskDayLedger,
 )
 
+from .account_assignment_eligibility import eligible_assignment_account_ids, UNIFIED_CONTRACT
 from .engagement_portfolio_allocation import (
     _allocation_for_request, _demand_hash, _distribute, _hash, _normalized_request, _positive,
 )
@@ -291,6 +292,8 @@ def _allocate_request(
     request: dict,
 ) -> tuple[dict[int, int], dict[int, int], list[str]]:
     account_ids = [int(item) for item in request["candidate_account_ids"]]
+    if (task.type_config or {}).get("engagement_contract_version") == UNIFIED_CONTRACT:
+        account_ids = list(eligible_assignment_account_ids(session, task.tenant_id, account_ids))
     capacities, policy_ids = read_portfolio_capacities(
         session, task.tenant_id, ledger.obligation_local_date,
         account_ids=account_ids, action_class=action_class,

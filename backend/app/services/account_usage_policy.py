@@ -95,8 +95,11 @@ def _action_allowed(usage: AccountUsage, action_kind: str) -> bool:
 
 
 def apply_operational_account_filters(stmt: Select) -> Select:
+    return apply_operational_account_scope_filters(stmt).where(TgAccount.telegram_frozen.is_(False))
+
+
+def apply_operational_account_scope_filters(stmt: Select) -> Select:
     return stmt.where(
-        TgAccount.telegram_frozen.is_(False),
         TgAccount.account_identity == "normal",
         or_(TgAccount.pool_id.is_(None), _matching_enabled_pool_exists("normal")),
     )
@@ -191,6 +194,7 @@ __all__ = [
     "AccountUsageSyncSummary",
     "account_usage",
     "apply_operational_account_filters",
+    "apply_operational_account_scope_filters",
     "apply_consistent_enabled_account_filters",
     "apply_rank_deboost_account_filters",
     "assert_account_action_allowed",

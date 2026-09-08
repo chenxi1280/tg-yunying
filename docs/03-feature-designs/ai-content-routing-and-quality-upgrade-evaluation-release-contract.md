@@ -1,5 +1,9 @@
 # AI 内容升级评测、灰度与发布合同
 
+> **2026-09-08 二轮对照修订（设计态）：** 统一引擎 §19.13–19.15/§19.63 优先于本专项历史复杂准备合同：当前运行不要求历史P95画像审批、逐binding模型预算、完整InteractionServiceBinding或聊天事件版本档案；复用原义务/Job/回复身份、绝对deadline与未知结果防重。§19.61应急不重建这些已撤销前置；历史QA与本地实现状态不代表新切片已验收。
+
+> **2026-09-08 用户裁决 / emergency resync（设计完成，尚未实施）：** 统一引擎 §19.61.8覆盖“合法static fallback>0即停Task”与normal-only数量/基础覆盖口径；应急真实完成、正常语义质量、Provider故障分别报告。合法降级不伪造质量通过，也不自动停掉可执行业务。 本切片代码/生产状态仍为未实施、未验收；旧事件记录保留。
+
 > 规范性附录。与 `ai-content-routing-and-quality-upgrade-prd.md` v1.2 共同生效；本附录只定义可重复验收，不代表代码、发布或 Telegram E4 已完成。
 
 ## 8. 评测与质量门
@@ -88,7 +92,7 @@ adult_visual/adult_product 若真实样本不足，不允许用合成样本凑 R
 | general forced-adult / unsafe-minor send / sensory wrong-object | 对应违规 typed sent facts / 对应 typed sent facts 抽检 | 必须为 0；任一立即停止并按风险处理 |
 | Provider 429/timeout | 对应 typed transport attempts / Provider+purpose attempts | 超预注册 baseline 时处理 admission/容量，不改内容 gate |
 | quantity completion | confirmed quantity owners / due quantity owners | 分任务/群/period 报告；未完成必须与唯一 typed shortfall 一一对应 |
-| static fallback sent | `签到`/emoji/静态短句 fallback typed sent facts / AI typed sent facts | current v2 必须为 0；任一即停止该 task 新生成 |
+| emergency fallback sent | §19.61合法签到/表情 typed confirmed / 全部正常与应急 typed confirmed，附policy/trigger/quantity/quality | 合法应急标记AI降级并保持任务运行；无policy/无触发或非法输出才报对应违规，不再以合法fallback>0自动停Task |
 | context freshness | Gateway 前 context revision/hash/age 一致的 typed sent facts / AI typed sent facts | 必须 100%；不一致不得调用 Gateway |
 
 生产阈值只有在预注册最小分母满足后用于扩容/回滚；不足时一律标 `insufficient_data/unproven`，不能按零事件通过。监控必须同时保留 count、denominator、policy/route-set revision 和观察窗口。
@@ -196,7 +200,7 @@ adult_visual/adult_product 若真实样本不足，不允许用合成样本凑 R
 - route/mode/policy/voice/prompt revision 改变会失效 pre-Gateway candidate。
 - Action lookahead 早于 `GenerationJob.generation_not_before_at` 时不能 claim；candidate 后出现新真人消息/reply change 会递增 context revision，只替换该 pre-Gateway slot。
 - 一个 slot 无 pacing point、Provider 或合法候选时，同批其他合法 slot 仍可 ready；失败 owner 只能写一次 typed shortfall。
-- current v2 在 tenant legacy static fallback=true、two-stage flag 任意组合下都不得产生固定“签到”或其他静态补量。
+- current v2 的 emergency policy 独立于 tenant legacy static fallback 和正常两阶段 flags；新 policy 开启且原义务合法时，额度/生成故障可发精确签到或真实回复/评论表情，正常配置半启用仍拒绝。显式关闭 emergency 时准确展示短缺，不借 legacy flag 偷发。
 
 ### 11.2 PostgreSQL 并发测试
 
@@ -235,7 +239,7 @@ adult_visual/adult_product 若真实样本不足，不允许用合成样本凑 R
 5. canary 同时满足至少 3 天、100 typed remote facts、30 人工抽检和预注册 strata/context/account 数量；不足只能延长。
 6. 真实 Telegram E4 有 successful Attempt + nonempty remote message fact，并与 obligation/account/candidate hash 对齐。
 7. 回滚演练证明 pre-Gateway candidate 前向失效，unknown 不重发。
-8. current v2 static fallback typed sent fact=0；due quantity owner 与 confirmed/唯一 typed shortfall 完全守恒，单 slot 失败不取消同批合法 slot。
+8. 合法 emergency typed sent fact 允许大于 0，normal/emergency 与 due quantity owner、唯一 typed shortfall 守恒；基础覆盖与正常质量分列。无授权 policy、重复 owner 或异常内容必须可见；合法应急不自动停 Task，单 slot 失败不取消其他合法 slot。
 
 ### 11.5 状态口径
 
@@ -299,7 +303,7 @@ adult_visual/adult_product 若真实样本不足，不允许用合成样本凑 R
 | GenerationJob 时间权威、ContextScopeRevision、durable state/open predicate、并发、幂等、invalidation | 已覆盖 |
 | API endpoint、CAS/error、前端、权限分离、审计与 retention | 已覆盖 |
 | route-aware claim gate、绝对/相对评测、样本量、指标分母、成本与延迟 | 已覆盖 |
-| failure、quality_wait、禁止 static fallback、逐 owner typed shortfall、unknown、回滚 | 已覆盖 |
+| failure、quality_wait、独立 emergency policy、逐 owner 数量/质量分账、Provider/Telegram unknown、回滚 | 已覆盖 |
 | shadow、sampling manifest、canary、数量守恒、Release Gate、Telegram E4 | 已覆盖 |
 | Phase 1 活群与 Phase 2 评论边界 | 已覆盖 |
 

@@ -1407,8 +1407,10 @@ def update_task_settings(
     prejoin_changed = _advance_settings_revisions(task, previous)
     activate_task_ai_content_config(session, task)
     initialize_all_account_task_scope(session, task)
-    _apply_settings_plan_effects(session, task, previous, changes=changes, prejoin_changed=prejoin_changed)
-    _requeue_updated_task(task)
+    content_only = _apply_settings_plan_effects(
+        session, task, previous, changes=changes, prejoin_changed=prejoin_changed)
+    if not content_only:
+        _requeue_updated_task(task)
     task.last_error = ""
     task.updated_at = previous["observed_at"]
     audit(session, tenant_id=tenant_id, actor=actor, action="更新任务中心任务配置",
@@ -1511,6 +1513,7 @@ def _apply_settings_plan_effects(session, task, previous, *, changes, prejoin_ch
         task.task_lifecycle_epoch = int(task.task_lifecycle_epoch or 1) + 1
         reset_all_account_scope_for_target_change(session, task)
         initialize_all_account_task_scope(session, task)
+    return content_policy_only
 
 
 def _validate_channel_comment_fallback(
@@ -7237,7 +7240,7 @@ def _apply_type_config_data(
     activate_task_ai_content_config(session, task)
     if not is_content_policy_only_change(task, previous_config=previous_config):
         _clear_unfinished_plan(session, task)
-    _requeue_updated_task(task)
+        _requeue_updated_task(task)
     task.last_error = ""
     task.updated_at = change_observed_at
     audit(

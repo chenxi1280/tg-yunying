@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from app.services.account_usage_policy import apply_operational_account_scope_filters
+from .account_assignment_eligibility import (assignment_account_predicate, assignment_decisions, publish_assignment_summary, UNIFIED_CONTRACT)
+
 import random
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -77,6 +80,10 @@ def gate_channel_membership(session: Session, task: Task, channel: OperationTarg
     stats = _merge_membership_stats(task, summary)
     if reactivated:
         stats["membership_reactivated_verification_actions"] = int(stats.get("membership_reactivated_verification_actions") or 0) + reactivated
+    if not candidates and (task.type_config or {}).get("engagement_contract_version") == UNIFIED_CONTRACT:
+        task.last_error = "no_eligible_accounts"
+        task.stats = {**stats, "membership_stage": "no_eligible_accounts"}
+        return MembershipGateResult(False, blocked=True, blocker_reason="no_eligible_accounts")
     if not _target_requires_membership_for_candidates(channel, candidates, require_send=require_send):
         stats["membership_stage"] = "membership_ready"
         task.stats = stats
@@ -89,7 +96,13 @@ def gate_channel_membership(session: Session, task: Task, channel: OperationTarg
         task.stats = stats
         return MembershipGateResult(False, blocked=True, blocker_reason="account_unavailable")
 
-    ready_count = int(summary.get("joined_account_count") or 0)
+    return _gate_membership_work(session, task, channel, candidates=candidates, stats=stats,
+        ready_count=int(summary.get("joined_account_count") or 0), strategy_enabled=strategy_enabled,
+        disabled_reason=disabled_reason, require_send=require_send, reactivated=reactivated)
+
+
+def _gate_membership_work(session, task, channel, *, candidates, stats, ready_count, strategy_enabled, disabled_reason, require_send, reactivated):
+    stats = dict(stats)
     open_count = _open_membership_action_count(session, task)
     if not strategy_enabled:
         stats["membership_stage"] = "membership_partial" if ready_count > 0 else "membership_blocked"
@@ -103,21 +116,8 @@ def gate_channel_membership(session: Session, task: Task, channel: OperationTarg
     created = _create_missing_membership_actions(session, task, channel, candidates, require_send=require_send)
     fast_tracked = _fast_track_hard_hourly_membership_actions(session, task, channel)
     if created:
-        stats["membership_stage"] = "membership_running"
-        stats["membership_created_actions"] = int(stats.get("membership_created_actions") or 0) + created
-        if channel.target_type == "channel":
-            stats["membership_schedule_window_hours"] = task.stats["membership_schedule_window_hours"]
-            stats["membership_schedule_policy"] = "humanized_10_24h"
-        elif _uses_four_hour_membership_window(task, channel, require_send=require_send):
-            stats["membership_schedule_window_hours"] = AI_GROUP_MEMBERSHIP_SCHEDULE_WINDOW_HOURS
-        _record_fast_tracked_memberships(stats, fast_tracked)
-        task.stats = stats
-        if ready_count > 0:
-            if task.last_error in {"正在执行关注频道前置阶段", "没有账号成功关注目标频道", "正在执行目标准入前置阶段", "没有账号成功准备目标"}:
-                task.last_error = ""
-            return MembershipGateResult(True, created=created, waiting=True)
-        task.last_error = "正在执行目标准入前置阶段"
-        return MembershipGateResult(False, created=created, waiting=True)
+        return _created_membership_gate(task, channel, stats=stats, created=created,
+            ready_count=ready_count, fast_tracked=fast_tracked, require_send=require_send)
     if open_count:
         stats["membership_stage"] = "membership_running"
         _record_fast_tracked_memberships(stats, fast_tracked)
@@ -129,6 +129,10 @@ def gate_channel_membership(session: Session, task: Task, channel: OperationTarg
         task.last_error = "正在执行目标准入前置阶段"
         return MembershipGateResult(False, created=reactivated, waiting=True)
 
+    return _settled_membership_gate(session, task, channel, candidates=candidates, require_send=require_send)
+
+
+def _settled_membership_gate(session, task, channel, *, candidates, require_send):
     refreshed = channel_membership_summary(session, task.tenant_id, channel, task.account_config or {}, candidates=candidates, task_id=task.id, require_send=require_send)
     stats = _merge_membership_stats(task, refreshed)
     if refreshed["joined_account_count"] <= 0:
@@ -257,13 +261,18 @@ def channel_membership_summary(
 
 def _task_membership_candidates(session: Session, task: Task) -> list[TgAccount]:
     if not _uses_persisted_all_account_scope(task):
-        return candidate_accounts_for_config(session, task.tenant_id, task.account_config or {})
+        return _eligible_membership_candidates(session, task,
+            candidate_accounts_for_config(session, task.tenant_id, task.account_config or {},
+                include_unavailable=(task.type_config or {}).get("engagement_contract_version") == UNIFIED_CONTRACT))
+    statement = select(TgAccount, TaskMembershipAdmissionItem)
+    if (task.type_config or {}).get("engagement_contract_version") == UNIFIED_CONTRACT:
+        statement = apply_operational_account_scope_filters(statement)
     rows = list(
         session.execute(
-            select(TgAccount, TaskMembershipAdmissionItem)
-            .join(TaskMembershipAdmissionItem, TaskMembershipAdmissionItem.account_id == TgAccount.id)
+            statement.join(TaskMembershipAdmissionItem, TaskMembershipAdmissionItem.account_id == TgAccount.id)
             .where(
                 TaskMembershipAdmissionItem.task_id == task.id,
+                assignment_account_predicate(task, TgAccount.id),
                 TgAccount.tenant_id == task.tenant_id,
             )
             .order_by(
@@ -277,7 +286,7 @@ def _task_membership_candidates(session: Session, task: Task) -> list[TgAccount]
     selected_at = _now()
     for _account, item in rows:
         item.planner_last_selected_at = selected_at
-    return [account for account, _item in rows]
+    return _eligible_membership_candidates(session, task, [account for account, _item in rows])
 
 
 def linked_channel_group(session: Session, channel: OperationTarget, *, create: bool, prefer_send_ready: bool = False) -> TgGroup | None:
@@ -1092,3 +1101,30 @@ def _merge_membership_stats(task: Task, summary: dict[str, Any]) -> dict[str, An
 
 def _target_noun(target: OperationTarget) -> str:
     return "频道关注" if target.target_type == "channel" else "群聊加入"
+
+
+def _eligible_membership_candidates(session, task, accounts):
+    if (task.type_config or {}).get("engagement_contract_version") != UNIFIED_CONTRACT:
+        return accounts
+    decisions = assignment_decisions(session, task.tenant_id, [account.id for account in accounts])
+    publish_assignment_summary(task, decisions)
+    return [account for account in accounts if not decisions[account.id]]
+
+
+def _created_membership_gate(task, channel, *, stats, created, ready_count, fast_tracked, require_send):
+    stats = dict(stats)
+    stats["membership_stage"] = "membership_running"
+    stats["membership_created_actions"] = int(stats.get("membership_created_actions") or 0) + created
+    if channel.target_type == "channel":
+        stats["membership_schedule_window_hours"] = task.stats["membership_schedule_window_hours"]
+        stats["membership_schedule_policy"] = "humanized_10_24h"
+    elif _uses_four_hour_membership_window(task, channel, require_send=require_send):
+        stats["membership_schedule_window_hours"] = AI_GROUP_MEMBERSHIP_SCHEDULE_WINDOW_HOURS
+    _record_fast_tracked_memberships(stats, fast_tracked)
+    task.stats = stats
+    if ready_count > 0:
+        if task.last_error in {"正在执行关注频道前置阶段", "没有账号成功关注目标频道", "正在执行目标准入前置阶段", "没有账号成功准备目标"}:
+            task.last_error = ""
+        return MembershipGateResult(True, created=created, waiting=True)
+    task.last_error = "正在执行目标准入前置阶段"
+    return MembershipGateResult(False, created=created, waiting=True)

@@ -336,6 +336,7 @@ def _probe_account(
             TgAccount.tenant_id == circuit.tenant_id,
             TgAccount.deleted_at.is_(None),
             TgAccount.status == AccountStatus.ACTIVE.value,
+            TgAccount.telegram_frozen.is_(False),
         )
         .order_by(TgAccount.id)
     )
@@ -361,6 +362,7 @@ def _account_usable(account: TgAccount | None, tenant_id: int) -> bool:
         and account.tenant_id == tenant_id
         and account.deleted_at is None
         and account.status == AccountStatus.ACTIVE.value
+        and not account.telegram_frozen
     )
 
 

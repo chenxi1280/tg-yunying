@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .account_assignment_eligibility import require_assignment_account
+
 import hashlib
 import json
 from datetime import datetime
@@ -707,6 +709,7 @@ def _create_action(
     existing = _existing_action(session, task.tenant_id, action_dedupe_key)
     if existing:
         return existing
+    require_assignment_account(session, task, account_id)
     action = Action(
         **({"id": action_id} if action_id else {}),
         tenant_id=task.tenant_id,

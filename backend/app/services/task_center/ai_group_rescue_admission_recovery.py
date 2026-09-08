@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .account_assignment_eligibility import require_assignment_account
+
 from dataclasses import dataclass
 
 from sqlalchemy import select
@@ -366,6 +368,8 @@ def _create_replacement(
     admin_id = rescue_admin_account_id_for_task(session, task)
     if not admin_id:
         raise ValueError("admission_recovery_admin_missing")
+    require_assignment_account(session, task, admin_id)
+    require_assignment_account(session, task, observation.target_account_id)
     replacement = Action(
         tenant_id=task.tenant_id,
         task_id=task.id,
