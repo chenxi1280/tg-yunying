@@ -63,7 +63,7 @@ def diagnose_tasks_sync() -> dict:
                 group_info = {
                     "id": group.id,
                     "title": group.title,
-                    "username": group.username,
+                    "group_type": group.group_type,
                     "tg_peer_id": group.tg_peer_id,
                     "can_send": group.can_send,
                     "auth_status": group.auth_status,
