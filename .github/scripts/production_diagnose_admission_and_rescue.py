@@ -32,7 +32,7 @@ def diagnose_tasks_sync() -> dict:
                 "phone_masked": admin_acc.phone_masked,
                 "status": admin_acc.status,
                 "has_session": bool(admin_acc.session_ciphertext),
-                "tg_id": admin_acc.tg_id,
+                "display_name": admin_acc.display_name,
                 "username": admin_acc.username,
             }
         else:
