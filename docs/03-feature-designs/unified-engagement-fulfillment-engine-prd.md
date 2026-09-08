@@ -3580,3 +3580,5 @@ Planner初始认领及AI规划commit后的重新认领，必须在同一个savep
 本次Product Design Complete：用户正常发送要求、线上断点、worker/生成/锁设计、无新增前端配置、数据身份、事务/停机/权限、定向测试、发布与实际消息验收均覆盖，design_status=complete，resync=true。完整workload保护份额及跨重启持久公平cursor仍属于§19.60独立能力；本节不以不存在的策略字段声称已完成它们，但本次有效消息被阻塞必须继续修到真实恢复。
 
 开发前只读候选反查补正：仅区分Session开放仍会让无需普通Session的旧准入排在即将关闭时段的正文前。本次在Task内先考虑当前Session关闭时间，再按原due；Task间先保留轮次公平，再比较当前Session关闭时间。无Session截止的动作不伪造截止，继续原来源期限和真实准入，不新增并发上限或任意工作类型禁发。当前时段关闭时间只是队列紧迫度，最终发送仍按实际时钟复验。
+
+20:13生产反查与resync：非V2合法时限已绑定，但`generation_slots`仍因没有V2内容合同而提前返回，HTTP exchange身份选择抛出`KeyError(generation_job_id)`。所有unified生成槽必须从同批已校验payload携带原GenerationJob ID，并与时限绑定逐槽匹配；仅V2要求额外内容合同。不得通过跳过HTTP跟踪或伪造Job身份解除错误。QA必须使用正式runtime builder与正式slot enrichment，验证HTTP scope中的Job集合和逐槽选择。设计补正完成后继续dev，design_status=complete。

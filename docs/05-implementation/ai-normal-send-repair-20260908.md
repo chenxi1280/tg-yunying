@@ -38,3 +38,9 @@
 - 回退边界：已有正常调用/unknown/事实不能回放或清理；代码切回旧版本不能被当成业务补发方式。
 - 部署核验：Actions终态、current目录SHA、各角色镜像/RELEASE_SHA、健康。
 - 业务验收：从新部署实际完成时刻开始，逐Task核对ready/claim/Gateway/成功remote_message_observed/confirmed持续增量；本地QA与候选回读不代表发送成功。若出现下一个首断点，继续定位修复，不终止于部署成功。
+
+## 第一轮发布后回读与继续修复
+
+- candidate/deployed SHA：`2d53107da91285533442757a61f4934185160bbe`；Prepare `34223267310`全通过；Deploy `34223952247`成功，live anchor `2026-09-08T20:06:34+08:00`；current目录及19应用容器RELEASE_SHA一致，全部健康。
+- 20:16回读：三亚有1条新调用及有效`remote_message_observed`；郑州大学3个Attempt success带远端message ID，但Action为failed、仅unknown事实，仍需查清收口；其余任务未通过。完整正常发送未恢复，production_fixed=false。
+- 美美备用：时限缺失错误已解除，暴露非V2 slot没有generation_job_id导致HTTP scope KeyError。正式builder测试移除slot enrichment替身后复现同形失败；unified槽沿原payload传递Job身份，V2内容合同验证保持。相关52项测试通过（20.92秒）。该修正待下一轮完整CI和发布。

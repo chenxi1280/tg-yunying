@@ -49,8 +49,13 @@ def test_real_group_runtime_builder_loads_jobs_when_v2_is_disabled(session, monk
     action = session.get(Action, job.id)
     payload = SendMessagePayload(group_id=7, generation_job_id=job.id, ai_generation_status="pending")
     monkeypatch.setattr(ai_group_content_allocation, "validate_content_intent_for_gateway", lambda *a, **k: None)
-    monkeypatch.setattr(runtime, "enrich_group_generation_slots", lambda _c, _b, slots: slots)
     result = runtime.build_runtime_config(session, task, [(action, payload)],
-        generation_slot_builder=lambda *args, **kwargs: {})
+        generation_slot_builder=lambda *args, **kwargs: {"slot_id": "qa-slot"})
     assert result[binding.TIMING_CONFIG_KEY]["bindings"][0]["generation_job_id"] == job.id
     assert provider_invocation_timeout(result, legacy_timeout=90, now_value=NOW) == 15
+
+    from app.services.task_center.provider_http_tracking import _scope_bindings
+
+    assert result["generation_slots"][0]["generation_job_id"] == job.id
+    selected = {**result, "_provider_http_slot_ids": ["qa-slot"]}
+    assert [item["generation_job_id"] for item in _scope_bindings(selected)] == [job.id]

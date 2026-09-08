@@ -139,14 +139,17 @@ def enrich_group_generation_slots(
     slots: list[dict],
 ) -> list[dict]:
     contracts = dict(config.get("_ai_content_contracts") or {})
-    if not contracts:
+    unified = config.get("engagement_contract_version") == "unified_engagement_v1"
+    if not contracts and not unified:
         return slots
     enriched = []
     for (_action, payload), slot in zip(batch, slots, strict=True):
         job_id = str(getattr(payload, "generation_job_id", "") or "")
         contract = dict(contracts.get(job_id) or {})
-        if not contract:
+        if contracts and not contract:
             raise AiContentJobBindingError("generation_job_contract_missing")
+        if not job_id:
+            raise AiContentJobBindingError("generation_job_slot_identity_missing")
         enriched.append({**slot, **contract, "generation_job_id": job_id})
     return enriched
 
