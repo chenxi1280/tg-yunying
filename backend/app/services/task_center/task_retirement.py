@@ -1,4 +1,6 @@
 """Fresh lifecycle checks that serialize retirement with planning and call issuance."""
+import logging
+
 from sqlalchemy import select
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
@@ -8,11 +10,13 @@ from app.services._common import _now
 
 from .engagement_runtime_error import RuntimeResourceBlocked
 from .channel_membership_execution import task_allows_action_execution
+from .planner_wake import _locked_wake_state
 
 
 ENGAGEMENT_TYPES = frozenset({"group_ai_chat", "channel_comment", "channel_like", "channel_view"})
 RETIREMENT_REASON = "task_retired"
 RETIREMENT_DETAIL = "旧任务已退役，请使用对应的新任务"
+logger = logging.getLogger(__name__)
 
 
 class TaskGatewayFenced(ValueError):
@@ -30,11 +34,19 @@ def require_task_not_retired(session: Session, task: Task) -> None:
 
 
 def lock_task_for_planning(session: Session, task_id: str) -> Task | None:
-    task = session.scalar(select(Task).where(Task.id == task_id)
-        .with_for_update(skip_locked=True).execution_options(populate_existing=True))
-    if task is None or task.status != "running" or task.retired_at is not None:
+    try:
+        with session.begin_nested():
+            task = session.scalar(select(Task).where(Task.id == task_id)
+                .with_for_update(skip_locked=True).execution_options(populate_existing=True))
+            if task is None or task.status != "running" or task.retired_at is not None:
+                return None
+            _locked_wake_state(session, task, nowait=True)
+            return task
+    except DBAPIError as error:
+        if getattr(error.orig, "sqlstate", None) != "55P03":
+            raise
+        logger.info("planner_wake_busy task_id=%s", task_id)
         return None
-    return task
 
 
 def guard_attempt_call_start(session: Session, attempt: ExecutionAttempt) -> None:

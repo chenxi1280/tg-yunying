@@ -3550,3 +3550,10 @@ QA必须使用真实服务函数及隔离PostgreSQL：双执行者同账号、�
 17:09发布后的真实错误栈进一步发现两类40P01：内容分配`_lock_group_surface`在本事务已建立群外键引用后，升级TgGroup FOR UPDATE，与其他持有该群外键KEY SHARE的事务互等；覆盖INSERT也在tg_accounts外键引用处参与死锁，实际执行的账号FOR UPDATE会阻断该引用。
 
 账号执行序列化与内容分配群面序列化不修改主键，使用FOR NO KEY UPDATE（账号仍NOWAIT），允许外键KEY SHARE，仍与另一个执行者、资格FOR SHARE及失效/删除写入冲突。不能移除账号/群面互斥，不能通过捕获40P01后假成功或缩减义务绕过；覆盖分母和历史引用保持。真实PG需验证两个已写群外键的内容分配者可串行完成、账号实际执行锁持有时其他外键引用可提交、另一个执行者仍busy且冻结写入仍互斥。
+
+
+#### 19.66.8 Planner的Task与唤醒行联合认领
+
+a49b5087发布后，实际错误栈在`mark_task_planner_started -> _locked_wake_state`出现40P01，涉及task_planner_wake_states：Planner先持有Task再阻塞等wake，唤醒事务持有wake后回写Task形成互等。
+
+Planner初始认领及AI规划commit后的重新认领，必须在同一个savepoint中取得当前running且未退役Task的既有SKIP LOCKED锁，并对已有wake状态执行NOWAIT锁定。wake忙则回滚该savepoint，释放本次取得的Task锁，明确记录planner_wake_busy，原wake_revision/planned_revision/not_before和数量义务保持；继续健康Task，下一轮重新认领。锁后强制刷新已有wake ORM对象，不能使用commit前缓存的revision覆盖新事件。两把锁取得后才允许mark_started和规划，不能把锁忙记成规划完成，也不能在仍持有Task锁时阻塞等待该wake。真正数据库错误继续暴露，缺失wake仍沿原bootstrap合同。真实PG验证wake被占时Task锁确实释放、健康Task可认领、竞争解除后原wake只完成一次、AI commit边界重新取得两把锁、退休检查仍有效。

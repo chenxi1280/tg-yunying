@@ -71,6 +71,8 @@ def mark_task_planner_started(session: Session, task: Task) -> None:
 def _locked_wake_state(
     session: Session,
     task: Task,
+    *,
+    nowait: bool = False,
 ) -> TaskPlannerWakeState | None:
     return session.scalar(
         select(TaskPlannerWakeState)
@@ -78,7 +80,7 @@ def _locked_wake_state(
             TaskPlannerWakeState.tenant_id == task.tenant_id,
             TaskPlannerWakeState.task_id == task.id,
         )
-        .with_for_update()
+        .with_for_update(nowait=nowait).execution_options(populate_existing=True)
     )
 
 
