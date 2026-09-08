@@ -1,5 +1,7 @@
 # 项目数据流转索引
 
+> **2026-09-08 晚间静默等待修复：** `engagement_attention.bounded_proactive_quiet_until` 按统一PRD§19.67冻结首次实际等待的配置上限；dispatcher在同一Action事务保存`result.attention_wait.started_at/horizon_deadline_at`，后续真人消息、重新领取与重启不延长截止时间，自然静默可提前结束。期限结束仅通过attention检查，原发送资格、节奏、scope、reply与内容校验继续。
+
 > **2026-09-08 晚间普通候选自然漂移修复：** 原Job ready候选→正式group binding→普通非回复/非turn候选保留正文、原hash和context snapshot，记录当前/冻结revision drift→原scope/reply/policy/attestation及其他发前校验→Telegram→可见性确认。严格reply/turn候选仍拒绝context_stale；不复活历史terminal或重放unknown。non-V2 unified槽携带逐Job身份进入HTTP exchange跟踪。修复依据AI内容PRD§4.1和统一PRD§19.67，线上恢复待新版本逐Task回执验证。
 
 

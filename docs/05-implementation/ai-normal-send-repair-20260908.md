@@ -46,3 +46,11 @@
 - 美美备用：时限缺失错误已解除，暴露非V2 slot没有generation_job_id导致HTTP scope KeyError。正式builder测试移除slot enrichment替身后复现同形失败；unified槽沿原payload传递Job身份，V2内容合同验证保持。相关52项测试通过（20.92秒）。该修正待下一轮完整CI和发布。
 
 - 20:20–20:23根因补正：八个任务被context_stale终结的327个样本全为普通非回复且有原generation identity；其他仍pending的候选除1条外同样revision已前进。AI内容PRD§4.1、DF-347已规定自然漂移只观察，实际`ai_content_runtime`却无条件终结，故修正为普通冻结候选记录drift后沿原hash绑定；reply/turn/policy仍拒绝。经正式group binding入口的反例先复现失败，修复后与原runtime服务22项通过（4.95秒）；scope及生成阶段、capacity dispatch/记忆回归在专用PG上186项通过（38.32秒）；最终上下文矩阵23项通过。测试保护曾拒绝默认非测试库后，改用独立tg_yunying_test完成回归，未触碰线上库。郑州大学3条均为post-send probe not_visible，不能计正常消息；并非事实投影丢失。
+
+
+## 第二轮发布与静默等待修复
+
+- `deda8aa9222e4d2fb763cd7b4ffae7d694671c4b`：Prepare `34226201223`成功，Deploy `34226938035`成功，实际完成北京时间20:38:44；current及19应用容器一致，OCR和全部应用健康。
+- 21:01只读回读：10个Task仍running，三亚当日confirmed=2，其他9个=0；本轮完成时刻后有效消息事实为0。郑州大学3次API调用成功但可见性复核不通过，天津一品楼1个unknown仍待核对。未执行历史任务重试或数据修复。
+- 连续新真人消息使attention_quiet_after无限顺延，违反既有§19.4有界deadline。已补正§19.67实施合同：首次实际等待冻结当前配置max，持久保存于同一Action；后续只截断此项静默等待，全部其他校验保持，原候选/Job不变。
+- 正式dispatcher入口持久提交并重载测试先复现缺少固定deadline；修复后attention与conversation 15项通过（4.17秒），包含连续新事件、重复领取、重新加载、提前静默结束与明确回复例外。design_status=complete，code_review=pass，qa_pass；production_fixed=false，待本轮完整CI/发布及真实逐Task验证。

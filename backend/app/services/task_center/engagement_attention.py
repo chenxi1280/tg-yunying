@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.models import ConversationEvent, Task, TgGroup
 from app.services._common import _now
+from app.timezone import as_beijing
 
 
 DEFAULT_QUIET_MIN_SECONDS = 60
@@ -46,6 +47,28 @@ def latest_proactive_quiet_until(
         return None
     return _quiet_until(task, event, config, identity)
 
+
+
+def bounded_proactive_quiet_until(
+    task: Task,
+    quiet_until: datetime,
+    previous_wait: dict | None,
+    *,
+    now_value: datetime,
+) -> tuple[datetime, dict | None]:
+    if not _unified_group_task(task):
+        return quiet_until, previous_wait
+    current = as_beijing(now_value)
+    quiet_until = as_beijing(quiet_until)
+    if previous_wait is not None:
+        deadline = as_beijing(datetime.fromisoformat(previous_wait["horizon_deadline_at"]))
+        return min(quiet_until, deadline), previous_wait
+    if quiet_until <= current:
+        return quiet_until, None
+    _, maximum = _quiet_range(dict(task.type_config or {}))
+    deadline = current + timedelta(seconds=maximum)
+    wait = {"started_at": current.isoformat(), "horizon_deadline_at": deadline.isoformat()}
+    return min(quiet_until, deadline), wait
 
 def _with_quiet_window(
     task: Task,
@@ -119,4 +142,8 @@ def _naive(value: datetime) -> datetime:
     return value.replace(tzinfo=None) if value.tzinfo else value
 
 
-__all__ = ["apply_proactive_quiet_windows", "latest_proactive_quiet_until"]
+__all__ = [
+    "apply_proactive_quiet_windows",
+    "bounded_proactive_quiet_until",
+    "latest_proactive_quiet_until",
+]

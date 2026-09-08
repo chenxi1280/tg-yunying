@@ -96,3 +96,50 @@ def test_gateway_gate_rechecks_new_human_attention(session: Session, monkeypatch
     assert action.status == "pending"
     assert action.scheduled_at > NOW
     assert action.result["error_code"] == "attention_quiet_after"
+
+
+def test_attention_deadline_survives_new_events_and_reload(session: Session, monkeypatch) -> None:
+    task = session.get(Task, "group-task")
+    task.type_config = {**task.type_config, "attention_quiet_after_min_seconds": 180,
+                        "attention_quiet_after_max_seconds": 180}
+    group = session.get(TgGroup, 10)
+    action = Action(id="bounded-attention", tenant_id=1, task_id=task.id,
+                    task_type=task.type, action_type="send_message", account_id=11,
+                    status="claiming", task_lifecycle_epoch=task.task_lifecycle_epoch, payload={})
+    session.add(action)
+    context = SimpleNamespace(group=group, payload=SimpleNamespace(
+        reply_to_message_id=None, proactive_quiet_until_at=None))
+    monkeypatch.setattr(dispatcher, "_release_runtime_resources", lambda *_args: None)
+    for index, elapsed in enumerate((0, 120, 180)):
+        current = NOW + timedelta(seconds=elapsed)
+        monkeypatch.setattr(dispatcher, "_now", lambda: current)
+        message = _message(session, 210 + index, 610 + index, current, "还有一个问题")
+        project_group_context_message(session, group, message)
+        allowed = dispatcher._group_send_attention_available(session, action, context)
+        assert allowed is (elapsed == 180)
+        assert action.result["attention_wait"]["horizon_deadline_at"] == (
+            NOW + timedelta(seconds=180)).isoformat()
+        session.commit()
+        session.expire_all()
+        action = session.get(Action, "bounded-attention")
+
+
+def test_attention_can_finish_before_horizon_and_explicit_reply_bypasses(session: Session, monkeypatch) -> None:
+    task = session.get(Task, "group-task")
+    group = session.get(TgGroup, 10)
+    action = Action(id="early-attention", tenant_id=1, task_id=task.id,
+                    task_type=task.type, action_type="send_message", account_id=11,
+                    status="claiming", payload={})
+    context = SimpleNamespace(group=group, payload=SimpleNamespace(
+        reply_to_message_id=None, proactive_quiet_until_at=None))
+    monkeypatch.setattr(dispatcher, "_now", lambda: NOW)
+    monkeypatch.setattr(dispatcher, "_release_runtime_resources", lambda *_args: None)
+    monkeypatch.setattr("app.services.task_center.engagement_attention.latest_proactive_quiet_until",
+                        lambda *_args, **_kwargs: NOW + timedelta(seconds=20))
+    assert not dispatcher._group_send_attention_available(session, action, context)
+    assert action.scheduled_at == NOW + timedelta(seconds=20)
+    monkeypatch.setattr(dispatcher, "_now", lambda: NOW + timedelta(seconds=20))
+    assert dispatcher._group_send_attention_available(session, action, context)
+    context.payload.reply_to_message_id = 611
+    monkeypatch.setattr(dispatcher, "_now", lambda: NOW)
+    assert dispatcher._group_send_attention_available(session, action, context)

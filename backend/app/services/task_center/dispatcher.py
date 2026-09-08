@@ -3970,7 +3970,7 @@ def _group_send_attention_available(
     task = session.get(Task, action.task_id)
     if task is None:
         return True
-    from .engagement_attention import latest_proactive_quiet_until
+    from .engagement_attention import bounded_proactive_quiet_until, latest_proactive_quiet_until
 
     dynamic = latest_proactive_quiet_until(
         session,
@@ -3981,9 +3981,15 @@ def _group_send_attention_available(
     )
     frozen = context.payload.proactive_quiet_until_at
     candidates = [_naive_datetime(value) for value in (dynamic, frozen) if value is not None]
-    if not candidates or max(candidates) <= _now():
+    if not candidates:
         return True
-    quiet_until = max(candidates)
+    quiet_until, wait = bounded_proactive_quiet_until(
+        task, max(candidates), (action.result or {}).get("attention_wait"), now_value=_now(),
+    )
+    if wait is not None:
+        action.result = {**(action.result or {}), "attention_wait": wait}
+    if quiet_until <= _now():
+        return True
     _defer(
         action,
         quiet_until,
