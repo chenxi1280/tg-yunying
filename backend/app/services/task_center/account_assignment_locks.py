@@ -45,11 +45,12 @@ def lock_identities(session, tenant_id, ids, *, skip_busy=False):
 
 
 def lock_execution_account(session, tenant_id, account_id):
+    # NO KEY UPDATE serializes execution without blocking new foreign-key references.
     try:
         with session.begin_nested():
             return session.scalar(select(TgAccount).where(
                 TgAccount.id == account_id, TgAccount.tenant_id == tenant_id,
-            ).with_for_update(nowait=True).execution_options(populate_existing=True))
+            ).with_for_update(nowait=True, key_share=True).execution_options(populate_existing=True))
     except DBAPIError as error:
         if getattr(error.orig, "sqlstate", None) != "55P03":
             raise

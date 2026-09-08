@@ -1,6 +1,6 @@
 # 项目数据流转索引
 
-> **2026-09-08 执行前进性resync（本地QA通过，发布待验证）：** 批量资格逐账号busy/有效/失效 → 原参与分母与待核实摘要 → 健康分配；成员运行gate局部等待、全busy不写无人可用，显式启动仍全量资格锁；原Portfolio deficit → 当前资格/容量与原plan锁 → 唯一successor补原缺口；实际Attempt先账号排他锁再资格共享锁；账号分组事件 → 持久Task子交付 → 独立唤醒；浏览daily identity在全部Gateway准入通过后随call-start提交，原未调用投影按全链证据安全结算。合同统一§19.66，交接`docs/05-implementation/execution-progress-repair-20260908.md`。未完成发布验收。
+> **2026-09-08 执行前进性resync（本地QA通过，发布待验证）：** 批量资格逐账号busy/有效/失效 → 原参与分母与待核实摘要 → 健康分配；成员运行gate局部等待、全busy不写无人可用，显式启动仍全量资格锁；原Portfolio deficit → 当前资格/容量与原plan锁 → 唯一successor补原缺口；实际Attempt先账号NO KEY UPDATE NOWAIT再资格共享锁；群面内容分配采用NO KEY UPDATE与外键引用兼容；账号分组事件 → 持久Task子交付 → 独立唤醒；浏览daily identity在全部Gateway准入通过后随call-start提交，原未调用投影按全链证据安全结算。合同统一§19.66，交接`docs/05-implementation/execution-progress-repair-20260908.md`。未完成发布验收。
 
 > **2026-09-08 线上资格锁修复：** `account_assignment_eligibility._lock_identities`将账号资格读取改为FOR SHARE NOWAIT，允许普通读取及Action/Attempt外键并发，仍阻断失效UPDATE；组合预算仍由policy锁串行化。合同统一§19.64.10；真实PG覆盖双读取、外键、冻结及预算竞争。
 

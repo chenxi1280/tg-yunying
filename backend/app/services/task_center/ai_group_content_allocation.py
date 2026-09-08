@@ -184,7 +184,8 @@ def _lock_daily_target(session: Session, target_id: str) -> None:
 def _lock_group_surface(session: Session, group_id: int) -> None:
     statement = select(TgGroup).where(TgGroup.id == group_id)
     if session.bind and session.bind.dialect.name != "sqlite":
-        statement = statement.with_for_update()
+        # NO KEY UPDATE remains exclusive while allowing existing FK KEY SHARE locks.
+        statement = statement.with_for_update(key_share=True)
     if session.scalar(statement) is None:
         raise ValueError("ai_group_surface_group_missing")
 

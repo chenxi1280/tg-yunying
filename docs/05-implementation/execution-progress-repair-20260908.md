@@ -69,3 +69,9 @@
 fae502c5已通过Actions 34207051818全部检查并于17:09:25完成部署；current/SHA、19应用容器healthy及内外health均通过。原浏览Action已skipped，daily owner available，新增一条safely_not_executed且原4条未调用Attempt保留。新版本没有重复浏览领取释放错误，但Planner仍有channel_membership._eligible_membership_candidates的整批NOWAIT失败，D3尚有运行成员前置入口未改到；日志链路覆盖AI活群/点赞/浏览。回到§19.66.2补齐：运行前置候选skip-busy，全busy保留等待；启动全量路径显式strict。补真实PG成员gate/恢复/严格启动回归后重新发布，当前不可写production_fixed。
 
 成员gate补修QA：6项真实PG通过（新增健康继续/全busy等待/严格启动、原启动PG），日志/tmp/execution-progress-membership-gate-pg.log；92项启动/资格/原覆盖回归通过，日志/tmp/execution-progress-membership-gate-unit.log；编译与diff检查通过。
+
+## 外键锁反查补充
+
+17:20新快照的数据库deadlocks从发布后首次1846增至1852。全部worker只读日志定位Planner的ai_group_content_allocation._lock_group_surface与daily_coverage.ensure_task_daily_coverage flush，涉及tg_groups/tg_accounts。按§19.66.7补NO KEY UPDATE序列化及真实FK并发验证。66bcf9e9的Actions 34208990716尚未部署，已取消并由包含这次修复的完整候选取代；生产仍为fae502c5，不能把该取消写成部署失败或业务修复完成。
+
+真实复现：/tmp/execution-reference-locks-before.log中旧代码2项失败，分别为40P01和FK lock timeout。修复后20项PG并发/资格/成员gate通过（/tmp/execution-reference-locks-after.log），69项内容分配/运行资源/共享准入/冻结回归通过（/tmp/execution-reference-locks-unit.log）。原两个事务的群member_count最终2、两条FK引用均提交，证明保留序列化而非并发丢写。
