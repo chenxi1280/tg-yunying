@@ -34,11 +34,18 @@ def require_task_not_retired(session: Session, task: Task) -> None:
 
 
 def lock_task_for_planning(session: Session, task_id: str) -> Task | None:
+    task = lock_task_with_planner_wake(session, task_id)
+    if task is None or task.status != "running" or task.retired_at is not None:
+        return None
+    return task
+
+
+def lock_task_with_planner_wake(session: Session, task_id: str) -> Task | None:
     try:
         with session.begin_nested():
             task = session.scalar(select(Task).where(Task.id == task_id)
                 .with_for_update(skip_locked=True).execution_options(populate_existing=True))
-            if task is None or task.status != "running" or task.retired_at is not None:
+            if task is None:
                 return None
             _locked_wake_state(session, task, nowait=True)
             return task

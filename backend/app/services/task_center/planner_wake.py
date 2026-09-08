@@ -74,6 +74,7 @@ def _locked_wake_state(
     *,
     nowait: bool = False,
 ) -> TaskPlannerWakeState | None:
+    session.flush()
     return session.scalar(
         select(TaskPlannerWakeState)
         .where(

@@ -371,7 +371,7 @@ from .engagement_binding import (
     validate_engagement_binding,
     validate_engagement_timezone,
 )
-from .task_retirement import lock_task_for_planning, require_task_not_retired
+from .task_retirement import lock_task_for_planning, lock_task_with_planner_wake, require_task_not_retired
 from .search_rank_deboost import (
     preselect_exempt_group,
     require_rank_observation_gateway,
@@ -4845,7 +4845,7 @@ def _drain_task_planner(
 
 def _record_planner_pacing_retry(session_factory, task_id: str) -> None:
     with session_factory() as session:
-        task = session.get(Task, task_id)
+        task = lock_task_with_planner_wake(session, task_id)
         if task is None or task.status != "running":
             return
         stats = dict(task.stats or {})
@@ -4866,7 +4866,7 @@ def _record_planner_pacing_conflict(
     exc: Exception,
 ) -> None:
     with session_factory() as session:
-        task = session.get(Task, task_id)
+        task = lock_task_with_planner_wake(session, task_id)
         if task is None:
             return
         stats = dict(task.stats or {})
@@ -4890,7 +4890,7 @@ def _record_planner_runtime_error(
     exc: Exception,
 ) -> None:
     with session_factory() as session:
-        task = session.get(Task, task_id)
+        task = lock_task_with_planner_wake(session, task_id)
         if task is None:
             return
         stats = dict(task.stats or {})

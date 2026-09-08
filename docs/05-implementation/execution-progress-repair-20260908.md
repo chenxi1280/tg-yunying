@@ -81,3 +81,8 @@ fae502c5已通过Actions 34207051818全部检查并于17:09:25完成部署；cur
 a49b5087 Actions34210057986全部通过并于17:42:52部署；current=/data/tgyunying/releases/20260908093820_a49b5087，19容器healthy，内外健康200，schema0228。17:43:15至17:44:43数据库deadlocks从1865增至1867，原账号资格LockNotAvailable及浏览释放错误均为0，但新增两次Planner mark_task_planner_started等待wake行的死锁；这是独立的Task/wake锁反序。按§19.66.8将初始及commit后Planner认领改为savepoint联合非阻塞认领，不能写整体死锁已清零。当前13频道任务正式只读E4均not_met，主互动成功fact为0，部署成功不等于业务恢复。
 
 联合认领QA：16项PG（新联合认领、原规划并发、执行竞争、退役）通过（/tmp/planner-joint-claim-pg.log），41项唤醒/退役/成员回归通过（/tmp/planner-joint-claim-unit.log）；补充非过期ORM缓存下新wake revision的读回/确认，最后4项联合认领PG全部通过（/tmp/planner-joint-claim-final.log）。锁后populate_existing防止陈旧revision覆盖新唤醒。
+
+
+生产Session审查：SessionLocal配置autoflush=False，锁后populate_existing之前必须显式flush自己尚未持久化的wake变更，避免同事务连续唤醒/mark/complete丢revision；新增生产配置PG回归。错误/节奏冲突的三条记录事务也必须联合认领Task/wake，防止在错误处理时再次发生反序等待。65e0bf41的Actions34212562262已在部署前取消，由完整修正候选取代。
+
+生产Session与错误记录补修最终QA：14项PG通过（/tmp/planner-joint-claim-final-combined.log），51项单元/边界回归通过（/tmp/planner-joint-claim-final-unit.log），编译与diff检查通过。

@@ -1,12 +1,13 @@
 """A busy wake must not leave the planner holding the Task needed by its writer."""
 import pytest
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.models import Task, TaskPlannerWakeState
 from app.services.task_center.planner_wake import (
     complete_task_planner_wake, mark_task_planner_started, wake_task_planner,
 )
+from app.services.task_center import service
 from app.services.task_center.service import _prepare_task_planning_transaction
 from app.services.task_center.task_retirement import lock_task_for_planning
 from tests.test_engagement_assignment_postgres import _seed
@@ -92,3 +93,38 @@ def test_joint_claim_refreshes_a_cached_wake_before_acknowledging_latest_revisio
         complete_task_planner_wake(planner, task, next_run_at=None)
         planner.commit()
         assert cached.wake_revision == cached.planned_revision == 2
+
+
+def test_production_autoflush_disabled_preserves_repeated_wakes_and_acknowledgment(database):
+    with Session(database, autoflush=False) as session:
+        task = _seed(session)
+        wake_task_planner(session, task, reason_code="first")
+        wake_task_planner(session, task, reason_code="second")
+        mark_task_planner_started(session, task)
+        complete_task_planner_wake(session, task, next_run_at=None)
+        session.commit()
+        state = session.scalar(select(TaskPlannerWakeState))
+        assert state.wake_revision == state.planned_revision == 2
+        assert state.planning_revision == 0
+
+
+@pytest.mark.parametrize("recorder_name,stats_key", [
+    ("_record_planner_pacing_retry", "planner_pacing_lock_busy"),
+    ("_record_planner_pacing_conflict", "planner_pacing_target_conflict"),
+    ("_record_planner_runtime_error", "planner_runtime_error"),
+])
+def test_error_recording_uses_the_same_joint_claim(database, recorder_name, stats_key):
+    _seed_tasks(database)
+    factory = sessionmaker(bind=database, autoflush=False)
+    recorder = getattr(service, recorder_name)
+    arguments = (factory, "qa-task") if recorder_name.endswith("retry") else (factory, "qa-task", RuntimeError("QA"))
+    with Session(database) as writer:
+        wake = _hold_wake(writer)
+        recorder(*arguments)
+        task = writer.scalar(select(Task).where(Task.id == "qa-task").with_for_update(nowait=True))
+        assert stats_key not in (task.stats or {})
+        assert wake.wake_revision == 1 and wake.planned_revision == 0
+        writer.rollback()
+    recorder(*arguments)
+    with Session(database) as check:
+        assert stats_key in check.get(Task, "qa-task").stats
