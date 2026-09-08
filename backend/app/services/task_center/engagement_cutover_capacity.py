@@ -54,7 +54,7 @@ def _scope(session, old, overrides, *, groups):
     task = SimpleNamespace(id=old["id"], tenant_id=old.get("tenant_id", selected[0]["state"]["tenant_id"]),
         type=old["type"], type_config=config, pacing_config=old["pacing_config"],
         stats={}, scheduled_start=None, created_at=_now())
-    return task, policy_eligible_member_ids(session, task, snapshot)
+    return task, policy_eligible_member_ids(session, task, snapshot, lock=False)
 
 
 def _quantity_row(session, task, members, *, now, capacities):

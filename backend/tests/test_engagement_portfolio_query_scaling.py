@@ -11,6 +11,8 @@ from tests.test_engagement_portfolio import TASK_DAY, _account, _session
 
 pytestmark = pytest.mark.no_postgres
 MAX_CAPACITY_READ_QUERIES = 4
+QUALIFICATION_QUERIES = 5
+PENDING_FLUSH_QUERIES = 1
 
 
 def _query_allocation(session, account_ids):
@@ -26,7 +28,8 @@ def _query_allocation(session, account_ids):
         result = _allocate_request(session, task, ledger, action_class="reaction", request=request)
     finally:
         event.remove(connection, "before_cursor_execute", record)
-    assert all(statement.lstrip().upper().startswith("SELECT") for statement in statements)
+    assert all(statement.lstrip().upper().startswith(("SELECT", "SAVEPOINT", "RELEASE", "UPDATE"))
+               for statement in statements)
     return result, len(statements)
 
 
@@ -39,7 +42,7 @@ def test_portfolio_capacity_query_count_does_not_grow_with_candidate_accounts(ac
         (allocation, capacities, policy_ids), queries = _query_allocation(session, account_ids)
         assert allocation == capacities == {key: 2 for key in account_ids}
         assert len(policy_ids) == 1
-        assert queries <= MAX_CAPACITY_READ_QUERIES, queries
+        assert queries <= MAX_CAPACITY_READ_QUERIES + QUALIFICATION_QUERIES + PENDING_FLUSH_QUERIES, queries
 
 
 def test_batch_capacity_keeps_day_and_class_totals_separate():
@@ -56,14 +59,14 @@ def test_batch_capacity_keeps_day_and_class_totals_separate():
         assert capacities == allocation == {11: 1, 12: 2}
 
 
-def test_absent_and_deleted_candidates_keep_zero_capacity():
+def test_absent_and_deleted_candidates_are_excluded_from_new_capacity():
     with _session() as session:
         account = session.get(TgAccount, 12)
         account.deleted_at = datetime.now()
         session.flush()
         (allocation, capacities, _), _ = _query_allocation(session, [11, 12, 99])
         assert allocation == {11: 2}
-        assert capacities == {11: 2, 12: 0, 99: 0}
+        assert capacities == {11: 2}
 
 
 @pytest.mark.parametrize("changed", ["ledger", "policy", "account_class"])
@@ -86,7 +89,7 @@ def test_autoflush_disabled_keeps_existing_session_updates_visible(changed):
             account.account_identity = "secondary"
         (allocation, capacities, _), queries = _query_allocation(session, [11])
         assert allocation == capacities == {11: 1}
-        assert queries <= MAX_CAPACITY_READ_QUERIES
+        assert queries <= MAX_CAPACITY_READ_QUERIES + QUALIFICATION_QUERIES + PENDING_FLUSH_QUERIES
 
 
 def test_released_plans_do_not_consume_capacity_and_other_tenant_has_no_candidates():
@@ -100,8 +103,8 @@ def test_released_plans_do_not_consume_capacity_and_other_tenant_has_no_candidat
         session.add(TgAccount(id=99, tenant_id=2, display_name="不属于本任务", phone_masked="test"))
         session.flush()
         (allocation, capacities, _), queries = _query_allocation(session, [11, 99])
-        assert allocation == {11: 2} and capacities == {11: 2, 99: 0}
-        assert queries <= MAX_CAPACITY_READ_QUERIES
+        assert allocation == {11: 2} and capacities == {11: 2}
+        assert queries <= MAX_CAPACITY_READ_QUERIES + QUALIFICATION_QUERIES + PENDING_FLUSH_QUERIES
 
 
 def test_missing_class_policy_keeps_explicit_failure():

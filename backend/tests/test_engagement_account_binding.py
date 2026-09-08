@@ -83,7 +83,7 @@ def _seed_accounts(session: Session) -> None:
                 pool_id=1,
                 display_name="账号11",
                 phone_masked="11",
-                status="在线",
+                status="在线", session_ciphertext="QA-current-session",
             ),
             TgAccount(
                 id=21,
@@ -91,7 +91,7 @@ def _seed_accounts(session: Session) -> None:
                 pool_id=2,
                 display_name="账号21",
                 phone_masked="21",
-                status="在线",
+                status="在线", session_ciphertext="QA-current-session",
             ),
             TgAccount(
                 id=31,
@@ -99,7 +99,7 @@ def _seed_accounts(session: Session) -> None:
                 pool_id=3,
                 display_name="账号31",
                 phone_masked="31",
-                status="在线",
+                status="在线", session_ciphertext="QA-current-session",
                 account_identity="code_receiver",
             ),
         ]
@@ -195,7 +195,7 @@ def test_membership_is_frozen_per_participation_unit_not_in_binding() -> None:
                 pool_id=2,
                 display_name="账号22",
                 phone_masked="22",
-                status="在线",
+                status="在线", session_ciphertext="QA-current-session",
             )
         )
         finish_membership_change(session, change)

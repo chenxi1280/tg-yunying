@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from app.models import AccountGroupMembershipSnapshotSet, Tenant, TgAccount
+from app.models import AccountGroupMembershipSnapshotSet, Tenant, TgAccountOnlineState
 from app.services.task_center.config_normalization import validated_type_config
 from app.services.task_center.daily_ledgers import ensure_task_day_ledger
 from app.services.task_center.engagement_participation import ensure_daily_participation_plan
@@ -39,7 +39,8 @@ def test_participation_excludes_rescue_owners_without_hiding_unhealthy_members()
         ledger = ensure_task_day_ledger(session, task,
                      now=datetime(2026, 9, 5, 3, tzinfo=timezone.utc))
         session.get(Tenant, 1).group_rescue_admin_account_id = 11
-        session.get(TgAccount, 13).status = "离线"
+        session.add(TgAccountOnlineState(tenant_id=1, account_id=13, online_status="offline",
+            failure_type="proxy_unavailable"))
         task.type = "group_ai_chat"
         task.type_config = {**task.type_config, "group_rescue_admin_account_id": 12}
         plan = ensure_daily_participation_plan(session, task, ledger)

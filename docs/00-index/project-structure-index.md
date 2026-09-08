@@ -1,5 +1,7 @@
 # 项目结构索引
 
+> **2026-09-08 发布CI回归修复：** `engagement_cutover_capacity`调用`policy_eligible_member_ids(lock=False)`复用当前资格谓词，只读预览不获取账号行锁或发布摘要；真实分配保持默认锁。统一合同§19.64.9，真实PG只读与锁竞争回归。
+
 > **2026-09-08 审查回归修复（本地QA/未发布）：** `account_usage_policy.apply_operational_account_scope_filters`分离分组/用途范围与冻结健康条件，统一配置membership、持久membership和coverage范围复用；`dispatcher._dispatch_action`捕获本轮开始前Attempt身份，资源拒绝时与最新Attempt比较，历史尝试不被本轮等待结算覆盖。正式回归入口`test_account_assignment_review_regressions.py`；统一合同§19.64.8，本轮176项定向QA通过。
 
 > **2026-09-08 异常账号每日复查（本地QA/未发布）：** `account_online_probe_policy.py`定义已知失效/冻结的每日候选条件，在LIMIT前约束旧检查时间；`account_online_constants.py`提供24小时间隔；`account_online_probe.py`统一单条与批次完成后的调度；`account_freeze_probe.py`同步冻结结果间隔；`engagement_circuit_probe.py`不再选冻结账号进行复检。`test_account_online_daily_recheck.py`验证频率、旧排期、失败续期、恢复与候选不饥饿；合同见统一§19.64.7。

@@ -97,7 +97,7 @@ def _account(account_id: int) -> TgAccount:
         pool_id=1,
         display_name=f"账号{account_id}",
         phone_masked=str(account_id),
-        status="在线",
+        status="在线", session_ciphertext="QA-current-session",
     )
 
 

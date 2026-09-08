@@ -129,6 +129,7 @@ def test_dispatch_exception_forwards_runner_signal(monkeypatch):
     monkeypatch.setattr(dispatcher, "_dispatch_account", lambda *_: object())
     monkeypatch.setattr(dispatcher, "validate_action_payload", lambda *_: object())
     monkeypatch.setattr(dispatcher, "_dispatch_validated_action", dispatch)
+    monkeypatch.setattr(dispatcher, "_latest_execution_attempt", lambda *_: None)
     monkeypatch.setattr(dispatcher, "_gateway_call_started", lambda *_: True)
     monkeypatch.setattr(dispatcher, "_mark_unknown_after_send", lambda *args, **kwargs: received.append(kwargs))
     action = SimpleNamespace(id="action", action_type="like_message", payload={})

@@ -3376,3 +3376,9 @@ PDC反向检查：实际入口为account_online_probe及freeze结果guard，批�
 3. QA覆盖分组运行中禁用、账号用途不符、配置候选/覆盖范围/持久scope、冻结与Session失效计数保留；历史失败/已调用/unknown及历史before_call不被篡改、本轮新before_call正确释放、本轮已调用拒绝未调用结算。原资格、保活、Gateway证据与退役合同回归。
 
 `design_status=complete`；`implementation_status=implemented_local_qa`；`production_status=unproven`。本次不新增Schema，不清理或重放历史Attempt，不改变每日复查频率。18项正式审查回归修复前13失败/5通过，修复后通过；连同账号用途、scope、membership、资格、每日检查、Gateway证据、退役共9个文件176项通过（25.34秒，60秒硬超时）。本次6个Python文件编译、改动函数度量和diff-check通过；未提交、未发布，生产仍unproven。
+
+#### 19.64.9 发布CI反查：只读预览与分配锁（2026-09-08）
+
+首次候选CI发现只读切换容量预览复用了分配写事务的账号锁。resync：预览使用同一当前资格谓词，但不获取行锁、不写资格摘要或冻结计划；真正新分配仍必须锁定账号/current授权/在线事实。不得为使预览通过而取消分配锁。
+
+组合容量读取的原四条批量SQL之外，统一新分配需要固定数量的资格锁/查询，查询次数仍不随候选数增长。QA账号必须具备有效业务身份和Session；同账号并发新分配遇到NOWAIT锁竞争返回`account_eligibility_busy`，提交后重试必须看到已占用容量，不超分配。真实PostgreSQL验证只读预览、批量查询和并发后重试；发布前重新走候选CI。`design_status=complete`，`production_status=unproven`。

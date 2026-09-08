@@ -17,7 +17,7 @@ def seed_source_session(*, task_type="channel_like", accounts=3):
     session.add(Tenant(id=1, name="test"))
     session.add(OperationTarget(id=1, tenant_id=1, target_type="channel", tg_peer_id="-1001",
         title="channel", username="public", reaction_capability_mode="all", available_reactions=["👍"]))
-    members = [TgAccount(id=i, tenant_id=1, display_name=f"account {i}", phone_masked="***", status="在线") for i in range(1, accounts + 1)]
+    members = [TgAccount(id=i, tenant_id=1, display_name=f"account {i}", phone_masked="***", status="在线", session_ciphertext="QA-current-session") for i in range(1, accounts + 1)]
     session.add_all(members)
     task = Task(id="task", tenant_id=1, name="test", type=task_type, status="running",
         created_at=NOW, task_lifecycle_epoch=1, config_revision=1,

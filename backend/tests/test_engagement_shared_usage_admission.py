@@ -7,7 +7,7 @@ from app.models import (
     AccountBehaviorBudgetLedger, AccountBehaviorBudgetPolicyRevision,
     AccountBehaviorBudgetReservation, AccountPool, AccountPoolConcurrencyLease,
     AccountPoolConcurrencyPolicyRevision, RemoteInvocationFence,
-    TaskAccountGroupBindingSetRevision, TgAccount,
+    ExecutionAttempt, TaskAccountGroupBindingSetRevision, TgAccount,
 )
 from app.services.task_center import engagement_runtime_resources as resources
 from app.services.task_center import dispatcher
@@ -197,11 +197,18 @@ def test_late_budget_rejection_defers_only_uncalled_attempt_and_never_reaches_ga
         session.flush()
         _budget(session)
         action, attempt = _attempt(session, task, 11)
-        resources.reserve_attempt_resources(session, action, attempt)
-        old = _historical_call(session, task)
-        calls = []
+        session.delete(attempt)
+        session.flush()
+        calls, old = [], []
 
         def dispatch_to_gateway(current_session, _action, _context):
+            nonlocal attempt
+            attempt = ExecutionAttempt(tenant_id=1, action_id=action.id, account_id=11,
+                attempt_no=1, status="before_call")
+            current_session.add(attempt)
+            current_session.flush()
+            resources.reserve_attempt_resources(current_session, action, attempt)
+            old.append(_historical_call(session, task))
             dispatcher._mark_gateway_call_started(current_session, attempt)
             calls.append("gateway")
 
@@ -221,7 +228,7 @@ def test_late_budget_rejection_defers_only_uncalled_attempt_and_never_reaches_ga
         assert session.scalar(select(AccountPoolConcurrencyLease)).state == "released"
         assert session.scalar(select(AccountBehaviorBudgetReservation)).state == "released"
         assert session.scalar(select(RemoteInvocationFence)).started_at is None
-        assert old[1].status == "success"
+        assert old[0][1].status == "success"
 
 
 @pytest.mark.parametrize("count", [1, 25])

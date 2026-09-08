@@ -38,3 +38,11 @@
 - 业务只读取证：候选SHA及精确时间窗口下，失效账号新增Action/GenerationJob/Attempt/Gateway，健康账号typed远端事实；异常账号last_probe_at/next_probe_at的24小时调度；新旧Attempt处理报错是否出现；存量unknown保持。配置保存和物理清理不以生产试写验证。
 - 无新增Schema；保留既有0228冻结事实和0226退役约束，不执行数据库downgrade。不自动退回会重新派发失效账号或删除业务证据的旧应用；若发现回归，依当前证据走前向修复并重跑闸门。
 - 本文件记录提交时的Release Gate：local_gate=passed；ci/deployment/business=pending。最终结论以本候选Actions终态、线上版本独立读回及发布后业务证据为准，禁止仅由本地QA写production_fixed。
+
+## 首次CI失败后的修复与复验
+
+- 首次候选`fe15fd731b9a8e97c36d9cb523b3fe3db0085e13`，Actions run `34193137652`：前端/候选校验通过，后端共27项失败，镜像构建及部署均skipped，生产未切换。
+- 实际回归：只读切换容量预览误用账号FOR UPDATE；按统一§19.64.9复用资格谓词但显式不加锁、不发布摘要，真实分配仍默认锁。其余失败来自旧fixture缺Session/错误离线枚举、旧四查询预算、模拟当前Attempt却在派发前创建、纯异常转发测试未替换新增DB读。
+- 固定查询预算覆盖资格锁与读取，1/32/128候选不出现N+1；真实PG并发竞争返回account_eligibility_busy，原事务提交后重试看到已占用容量且不超分配。没有跳过失败测试或放宽生产资格。
+- 修复复验：原失败相关7文件69 passed / 13.48s；共用fixture及资格/分配消费者14文件162 passed / 23.82s；历史调用/恢复8文件115 passed / 20.85s；真实PG只读切换、组合容量与资格并发9项通过。普通测试与PG分开执行，避免迁移fileConfig影响caplog的进程内日志配置；混跑时12项仅日志断言失败，隔离复跑115项全通过。
+- 2个生产模块为最小修复，PRD与两项索引同步；Python AST和diff-check通过。随后将补充提交快进master/release并重新运行完整候选CI；最终上线证据仍待新流水线终态。

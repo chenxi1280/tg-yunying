@@ -9,6 +9,7 @@ from tests.test_engagement_participation import _account, _seed, _session
 
 pytestmark = pytest.mark.no_postgres
 MAX_ADMISSION_QUERIES = 7
+QUALIFICATION_QUERIES = 5
 ACCOUNT_COUNT = 20
 
 
@@ -45,6 +46,6 @@ def test_admission_batches_queries_and_preserves_per_account_results():
             event.remove(connection, "before_cursor_execute", record)
         assert actual == expected
         assert [row["account_id"] for row in actual] == ids
-        assert len(statements) <= MAX_ADMISSION_QUERIES + 2  # expired Task and target
+        assert len(statements) <= MAX_ADMISSION_QUERIES + QUALIFICATION_QUERIES + 2  # expired Task and target
         ready = [row["account_id"] for row in actual if row["admissible"]]
         assert ready == [account_id for account_id in ids if account_id < 999 and account_id % 2 == 0]

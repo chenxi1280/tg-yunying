@@ -1,15 +1,14 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
-from queue import Queue
-from time import monotonic, sleep
 
 import pytest
-from sqlalchemy import delete, event, text
+from sqlalchemy import delete, event
 
 from app.database import SessionLocal
 from app.models import (
-    AccountBehaviorBudgetLedger, AccountBehaviorBudgetPolicyRevision, Task, TaskDayLedger, Tenant, TgAccount,
+    AccountStatus, AccountBehaviorBudgetLedger, AccountBehaviorBudgetPolicyRevision, Task, TaskDayLedger, Tenant, TgAccount,
 )
+from app.services.task_center.engagement_runtime_error import RuntimeResourceBlocked
 from app.services.task_center.engagement_portfolio import _allocate_request, reserve_portfolio_units
 
 
@@ -17,9 +16,8 @@ pytestmark = pytest.mark.allow_missing_rule_binding
 TENANT_ID = 954_510
 FIRST_ACCOUNT_ID = 954_520
 CANDIDATE_COUNT = 32
-MAX_CAPACITY_READ_QUERIES = 4
-LOCK_WAIT_SECONDS = 3
-LOCK_POLL_SECONDS = .01
+CAPACITY_READ_QUERIES = 4
+QUALIFICATION_QUERIES = 5
 RESULT_WAIT_SECONDS = 6
 PERIOD_START = datetime(2026, 9, 5, 16, tzinfo=timezone.utc)
 
@@ -32,7 +30,8 @@ def _seed(session):
     session.add(policy)
     account_ids = list(range(FIRST_ACCOUNT_ID, FIRST_ACCOUNT_ID + CANDIDATE_COUNT))
     session.add_all([TgAccount(id=key, tenant_id=TENANT_ID, display_name="容量测试",
-        phone_masked="test") for key in account_ids])
+        phone_masked="test", status=AccountStatus.ACTIVE.value,
+        session_ciphertext="test-session", account_lifecycle_status="business_active") for key in account_ids])
     tasks = [Task(tenant_id=TENANT_ID, name=name, type="channel_like", status="running",
         type_config={"engagement_contract_version": "unified_engagement_v1"}) for name in ("先规划", "后规划")]
     session.add_all(tasks)
@@ -46,7 +45,7 @@ def _seed(session):
     return tasks, ledgers, account_ids, policy
 
 
-def test_postgres_batch_reads_classes_and_day_in_four_queries():
+def test_postgres_batch_reads_capacity_and_qualification_in_constant_queries():
     with SessionLocal() as session:
         tasks, ledgers, account_ids, policy = _seed(session)
         session.add(AccountBehaviorBudgetLedger(tenant_id=TENANT_ID, account_id=account_ids[0],
@@ -65,32 +64,22 @@ def test_postgres_batch_reads_classes_and_day_in_four_queries():
                 action_class="reaction", request=request)
         finally:
             event.remove(connection, "before_cursor_execute", record)
-        assert len(statements) == MAX_CAPACITY_READ_QUERIES
+        assert len(statements) == CAPACITY_READ_QUERIES + QUALIFICATION_QUERIES
         assert allocation == capacities == {key: 1 if key == account_ids[0] else 2 for key in account_ids}
         assert policy_ids == [policy.id]
         session.rollback()
 
 
-def _reserve_other_task(ids, started):
+def _reserve_other_task(ids):
     with SessionLocal() as session:
         task, ledger = session.get(Task, ids[0]), session.get(TaskDayLedger, ids[1])
-        started.put(session.scalar(text("select pg_backend_pid()")))
         result = reserve_portfolio_units(session, task, ledger, action_class="reaction",
             demand_identity="second-source", requested_units_by_account={FIRST_ACCOUNT_ID: 1})
         session.commit()
         return result.allocated_units, result.deficit_units
 
 
-def _wait_for_policy_lock(session, waiter, owner):
-    deadline = monotonic() + LOCK_WAIT_SECONDS
-    while monotonic() < deadline:
-        if owner in session.scalar(text("select pg_blocking_pids(:pid)"), {"pid": waiter}):
-            return True
-        sleep(LOCK_POLL_SECONDS)
-    return False
-
-
-def test_concurrent_plans_still_serialize_before_reading_reserved_capacity():
+def test_concurrent_plans_reject_busy_identity_then_read_committed_capacity():
     with SessionLocal() as session:
         tasks, ledgers, _, _ = _seed(session)
         ids = ((tasks[0].id, ledgers[0].id), (tasks[1].id, ledgers[1].id))
@@ -101,15 +90,11 @@ def test_concurrent_plans_still_serialize_before_reading_reserved_capacity():
                 writer.get(TaskDayLedger, ids[0][1]), action_class="reaction",
                 demand_identity="first-source", requested_units_by_account={FIRST_ACCOUNT_ID: 2})
             assert first.allocated_units == 2
-            owner = writer.scalar(text("select pg_backend_pid()"))
-            started = Queue()
-            future = executor.submit(_reserve_other_task, ids[1], started)
-            try:
-                blocked = _wait_for_policy_lock(writer, started.get(timeout=LOCK_WAIT_SECONDS), owner)
-            finally:
-                writer.commit()
-            assert blocked
-            assert future.result(timeout=RESULT_WAIT_SECONDS) == (0, 1)
+            future = executor.submit(_reserve_other_task, ids[1])
+            with pytest.raises(RuntimeResourceBlocked, match="account_eligibility_busy"):
+                future.result(timeout=RESULT_WAIT_SECONDS)
+            writer.commit()
+            assert _reserve_other_task(ids[1]) == (0, 1)
     finally:
         _cleanup()
 
