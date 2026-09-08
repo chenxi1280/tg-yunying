@@ -1,12 +1,11 @@
 """Select existing worker container IDs from this Compose project's inventory."""
-from __future__ import annotations
 
 import json
 import re
 import sys
 
 
-def worker_ids(content: str) -> tuple[str, ...]:
+def worker_ids(content):
     if not content.strip():
         return ()
     rows = json.loads(content) if content.lstrip().startswith("[") else [

@@ -58,3 +58,5 @@
 - 调度激活证据只证明该切换阶段已完成，公网验证、整体部署和 Telegram E4 仍单独判定。
 - 预构建失败重跑使用 rerun all jobs；每个 image artifact 和汇总 manifest 绑定同一 attempt。
 - 退出耗时保持原配置，不把 120 秒观测值当成已证明的代码缺陷。改为按冻结 ID 同时停止 worker，避免 Compose 依赖造成部分角色延后停止。
+
+- 首轮部署实测发现主机 Python 不支持 postponed annotations；主机侧清单解析保持 Python 3.6 兼容，不能假定它与镜像内 Python 3.12 相同。失败发生于 worker stop 前，原进程保持运行；重发前核对实际状态，不自动重放安装。
