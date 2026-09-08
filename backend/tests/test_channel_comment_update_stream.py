@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 import pytest
 from sqlalchemy import create_engine, func, select
@@ -59,7 +59,7 @@ def _session() -> Session:
 
 
 def _seed(session: Session):
-    observed = datetime(2026, 9, 5, 10, 0)
+    observed = _now() - timedelta(minutes=1)
     session.add(Tenant(id=1, name="comment stream"))
     account = TgAccount(
         id=11,
@@ -250,7 +250,7 @@ def _ingest(session, state, *, remote_id, content, event_type="message_new", sen
                 "source_top_message_id": 900,
                 "media_type": "text",
                 "content": content,
-                "sent_at": datetime(2026, 9, 5, 10, 0).isoformat(),
+                "sent_at": _now().isoformat(),
             },),
         ),
         owner_id="comment-test",

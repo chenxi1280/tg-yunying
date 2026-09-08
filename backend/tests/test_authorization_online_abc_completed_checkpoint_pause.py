@@ -250,3 +250,10 @@ def _latest_batch_audit(session, batch_id: str) -> AuditLog:
         AuditLog.target_type == "tg_authorization_online_abc_batches",
         AuditLog.target_id == batch_id,
     ).order_by(AuditLog.id.desc()).limit(1))
+
+
+def test_fixture_does_not_treat_e4_prefixed_batch_as_e4_operation(db_session) -> None:
+    operation = abc_tests._add_operation(
+        db_session, abc_tests.ACCOUNT_IDS[0], "abc:e4abcdef-batch:101:b", "succeeded",
+    )
+    assert operation.operation_type == "provision_standby_1"
