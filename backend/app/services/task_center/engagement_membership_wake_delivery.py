@@ -9,7 +9,7 @@ from app.models import (
     Task, TaskAccountGroupBindingSetRevision,
 )
 from app.services.account_group_revisions import MEMBERSHIP_WAKE_STAGE
-from app.timezone import as_beijing
+from app.timezone import as_beijing, as_beijing_aware
 from .engagement_binding import ENGAGEMENT_TASK_TYPES, UNIFIED_ENGAGEMENT_CONTRACT_VERSION
 from .planner_wake import wake_task_planner
 
@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 def consume_membership_wake(session, wake_id, current):
+    current = as_beijing_aware(current)
     wake = _locked_wake(session, wake_id)
     if not _due(wake, MEMBERSHIP_WAKE_STAGE, current):
         return 0
@@ -43,6 +44,7 @@ def consume_membership_wake(session, wake_id, current):
 
 
 def consume_task_membership_wake(session, wake_id, current):
+    current = as_beijing_aware(current)
     wake = _locked_wake(session, wake_id)
     if not _due(wake, TASK_MEMBERSHIP_WAKE_STAGE, current):
         return 0
@@ -65,6 +67,7 @@ def consume_task_membership_wake(session, wake_id, current):
 
 
 def settle_membership_wake(session, wake_id, current):
+    current = as_beijing_aware(current)
     parent = _locked_wake(session, wake_id)
     if parent is None or parent.state != "expanded":
         return 0

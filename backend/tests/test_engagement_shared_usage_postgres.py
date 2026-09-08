@@ -1,7 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from queue import Queue
-from time import monotonic, sleep
 
 import pytest
 from sqlalchemy import delete, select, text
@@ -30,8 +29,6 @@ from tests.account_group_revision_test_support import bootstrap_groups
 
 pytestmark = pytest.mark.allow_missing_rule_binding
 TENANT_ID, POOL_ID, ACCOUNT_ID = 954_401, 954_402, 954_403
-LOCK_OBSERVATION_SECONDS = 3
-LOCK_POLL_SECONDS = 0.01
 THREAD_RESULT_SECONDS = 6
 BEIJING_MIDNIGHT = datetime(2026, 9, 4, 16, tzinfo=timezone.utc)
 
@@ -150,16 +147,6 @@ def test_original_gateway_return_keeps_unknown_cost_and_releases_physical_projec
         session.rollback()
 
 
-def _wait_for_account_lock(session, waiter_pid, owner_pid):
-    deadline = monotonic() + LOCK_OBSERVATION_SECONDS
-    while monotonic() < deadline:
-        owners = session.scalar(text("select pg_blocking_pids(:pid)"), {"pid": waiter_pid})
-        if owner_pid in owners:
-            return True
-        sleep(LOCK_POLL_SECONDS)
-    return False
-
-
 def test_concurrent_unowned_charge_and_old_day_reservation_share_account_lock():
     with SessionLocal() as session:
         action, attempt = _seed(session)
@@ -167,19 +154,16 @@ def test_concurrent_unowned_charge_and_old_day_reservation_share_account_lock():
         session.commit()
     try:
         with SessionLocal() as writer, ThreadPoolExecutor(max_workers=1) as executor:
-            owner_pid = writer.scalar(text("select pg_backend_pid()"))
             _charge_behavior_budget(writer, account_id=ACCOUNT_ID,
                 observed_at=_now(), action_class="view")
             writer.flush()
             started = Queue()
             future = executor.submit(_reserve_in_other_session, ids, started)
             try:
-                pid = started.get(timeout=LOCK_OBSERVATION_SECONDS)
-                blocked = _wait_for_account_lock(writer, pid, owner_pid)
+                assert future.result(timeout=THREAD_RESULT_SECONDS) == "account_execution_busy"
             finally:
                 writer.commit()
-            assert blocked
-            assert future.result(timeout=THREAD_RESULT_SECONDS) == "account_behavior_total_budget_exhausted"
+            assert _reserve_in_other_session(ids, Queue()) == "account_behavior_total_budget_exhausted"
         with SessionLocal() as session:
             ledger = session.scalar(select(AccountBehaviorBudgetLedger).where(
                 AccountBehaviorBudgetLedger.account_id == ACCOUNT_ID))

@@ -57,3 +57,9 @@
 - observe_window：以真实部署完成时间锚定，读取current SHA、runtime、锁/领取错误、原问题Action安全终态与后续实际工作；按四类Task分别读取Attempt/Gateway/typed fact。
 - immutable candidate / Actions / deployed SHA：待发布记录。
 - runtime / 四类业务事实：待发布后只读核对；当前production_unproven。
+
+## 首轮完整CI修正
+
+候选3490844f的Actions 34206131377在backend-postgres-checks (0)失败，未进入镜像/部署。旧共享预算并发测试仍断言阻塞锁，现改为锁占用时account_execution_busy、提交释放后重新准入仍拒绝超预算，保留原预算守恒验收。新增唤醒并发测试暴露UTC数据库连接下naive北京时间被解释为UTC的问题；父事件生产与drain当前时刻改用显式Asia/Shanghai aware时刻，新增UTC/Asia/Shanghai连接参数化回归。没有修改/放宽业务数量或资格。
+
+修正后定向QA：24项真实PG（共享预算、执行前进性、组版本）通过，日志/tmp/execution-progress-ci-repair-pg.log；32项成员版本/基础/唤醒通过，日志/tmp/execution-progress-ci-repair-unit.log。

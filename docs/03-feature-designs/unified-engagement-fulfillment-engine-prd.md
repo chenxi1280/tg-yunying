@@ -3530,7 +3530,7 @@ V2关闭但unified配置合法时，仍为当前Job冻结轻量timing。此分�
 
 账号分组revision唤醒先在自身事务中确定当前绑定Task并形成持久子交付，复用StageWakeOutbox，原事件处于expanded；每个子交付使用独立事务，重新检查Task当前binding/running/epoch再唤醒。一个Task锁忙只推迟对应子交付，已成功的交付不回滚、不重复增加wake revision；暂停、退役或不再绑定者记superseded。父事件只在全部子交付终结后结算，存在失败不能标为全部成功。
 
-无效revision显式invalid，意外消费错误显式failed并保留日志中的事件身份与原因；不能标delivered或吞掉异常。暂态锁忙沿既有短等待周期更新available_at并保留pending/尝试次数，使队列能越过失败前缀；不新增重试次数上限。父子身份/唯一键确保重启或重复消费不产生重复交付，不增加表或外部队列。
+无效revision显式invalid，意外消费错误显式failed并保留日志中的事件身份与原因；不能标delivered或吞掉异常。暂态锁忙沿既有短等待周期更新available_at并保留pending/尝试次数，使队列能越过失败前缀；不新增重试次数上限。父子身份/唯一键确保重启或重复消费不产生重复交付，不增加表或外部队列。 所有父子available_at与交付时间使用带Asia/Shanghai时区的绝对时刻写入和查询；数据库连接为UTC或北京时间时均不得将即时唤醒偏移八小时。
 
 #### 19.66.5 浏览call-issued投影与领取失败根因
 

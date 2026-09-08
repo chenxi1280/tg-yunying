@@ -6,7 +6,7 @@ from threading import Barrier, Event
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import func, select, text
+from sqlalchemy import event, func, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.models import (
@@ -147,7 +147,13 @@ def test_two_recovery_transactions_create_one_successor_and_one_reservation(data
         assert len(rows) == 1 and rows[0].reserved_units == 1
 
 
-def test_busy_task_cannot_rollback_healthy_membership_wake_delivery(database, monkeypatch):
+@pytest.mark.parametrize("database_timezone", ["UTC", "Asia/Shanghai"])
+def test_busy_task_cannot_rollback_healthy_membership_wake_delivery(database, monkeypatch, database_timezone):
+    def set_timezone(connection, _record):
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT set_config('TimeZone', %s, false)", (database_timezone,))
+    event.listen(database, "connect", set_timezone)
+    database.dispose()
     with Session(database) as seed:
         seed_membership(seed)
         _initialize(seed)

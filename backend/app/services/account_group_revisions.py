@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 
 from app.models import AccountGroupMembershipRevision, AccountGroupStateRevision, AccountPool, StageWakeOutbox
+from app.timezone import as_beijing_aware
 from ._common import _now
 from .account_group_revision_snapshot import (
     GroupRevisionPair, assert_group_revision_matches, current_group_revisions,
@@ -112,4 +113,4 @@ def _state_successor(pair, state, *, actor, reason):
 def _add_wake(session, revision, aggregate_type):
     session.add(StageWakeOutbox(tenant_id=revision.tenant_id, aggregate_type=aggregate_type,
         aggregate_id=revision.id, aggregate_revision=revision.revision,
-        stage=MEMBERSHIP_WAKE_STAGE, available_at=_now()))
+        stage=MEMBERSHIP_WAKE_STAGE, available_at=as_beijing_aware(_now())))

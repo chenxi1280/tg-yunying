@@ -6,6 +6,7 @@ from sqlalchemy import select, text
 
 from app.models import StageWakeOutbox
 from app.services._common import _now
+from app.timezone import as_beijing_aware
 from app.services.account_group_revisions import MEMBERSHIP_WAKE_STAGE
 from .engagement_membership_wake_delivery import (
     TASK_MEMBERSHIP_WAKE_STAGE, consume_membership_wake, consume_task_membership_wake,
@@ -18,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 def drain_membership_wake_transactions(session_factory, *, limit=100):
-    current = _now()
+    current = as_beijing_aware(_now())
     for stage, consumer in ((MEMBERSHIP_WAKE_STAGE, consume_membership_wake),
             (TASK_MEMBERSHIP_WAKE_STAGE, consume_task_membership_wake)):
         with session_factory() as session:
