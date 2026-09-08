@@ -68,3 +68,13 @@ CI34181916380：前端、两个PostgreSQL与两个no_postgres分片通过；剩�
 补正合同：`telegram_frozen=false`且观测时间为空代表尚未观测，不代表检查通过。在线探测已blocked且尚无完整冻结观测的账号，在业务Gateway调用前必须沿既有RuntimeResourceBlocked未调用等待路径返回明确`account_freeze_observation_required`；不得通过membership恢复绕过。正常只读在线探测仍可运行；成功取得完整配置后按已定义冻结/非冻结流程恢复或隔离。该规则仅补齐此次探测失败、存量动作的入口，无历史错误批量推断、无手工冻结/重放。已确认冻结优先于未观测等待。QA覆盖失败探测后旧membership不进入Gateway、完整健康观测解除此等待、已有冻结仍隔离。设计已反向复核，design_status=complete，进入dev补正。
 
 补正QA：60项冻结/在线状态/时序测试通过，2项真实PostgreSQL锁顺序与迁移测试通过。新增用例从真实失败probe投影，经dispatcher调用前入口验证无gateway_call_started_at；再验证完整非冻结观测允许通过该冻结检查。代码自检确认先判断已冻结，再判断blocked且未观测，保持账号行锁与探测写入互斥；不改unknown与业务历史。第二轮release_status=pending，最终业务验收等待新版本回读。
+
+### 最终发布与业务验收（2026-09-08 11:57，北京时间）
+
+- 最终运行版本：`d26a562bfadc09a3c2af960b9c0c438111aaad8d`；Deploy Production [34184216138](https://github.com/chenxi1280/tg-yunying/actions/runs/34184216138) 全部CI、镜像和部署成功。生产current为`/data/tgyunying/releases/20260908034913_d26a562b`，数据库`0228_account_freeze`。后端、planner、dispatcher-1/2、account-online的RELEASE_SHA逐一一致且healthy，公网API health为200。
+- 固定观测窗口：11:52:49.808351—11:56:59.381410。固定315个已由完整Telegram AppConfig确认冻结的账号，新版窗口内全部再次取得冻结观测，冻结但status在线为0；新增Action=0，新增业务Gateway调用=0。已报告的账号1263包含在此范围。
+- 11个历史有冻结拒绝、但本轮完整配置请求仍失败的账号：当前blocked、无新的冻结观测；窗口内新增Action=0，新增业务Gateway调用=0。不能把这11个算作本轮已确认冻结，也不能算作恢复可用。存量动作存在在途占用/节奏等既有等待，未人工清理或重放。
+- 新入口真实证据：账号1850的正式业务Attempt记录`skipped_before_gateway / account_freeze_observation_required`，`gateway_call_started_at=NULL`。说明未观测且探测失败时，业务入口实际执行了显式等待，并非仅测试断言。
+- 同窗口其他账号正常产生44次业务Gateway调用，排除全系统停止导致的零调用假象。既有unknown和已开始的调用未因本修复改写。
+- 结论：`release_status=release_passed`，`product_accepted=true`，`production_fixed`适用于“已确认冻结账号继续分配/执行”以及“探测失败且无冻结观测的存量动作绕过”两个修复入口。当前Telegram冻结事实确认范围315；11个探测失败账号的当前冻结状态仍unproven，维持等待，不代表已解冻或其业务已履约。
+- 本验收记录为文档归档，生产代码仍为上述d26a562b，不因文档归档触发重复部署。
