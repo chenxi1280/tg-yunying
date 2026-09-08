@@ -1,5 +1,7 @@
 # 项目结构索引
 
+> **2026-09-08 执行前进性修复（本地QA通过，发布待验证）：** `account_assignment_locks.py`区分批量资格共享锁与实际执行账号排他NOWAIT锁；`account_assignment_eligibility.py`/`account_assignment_snapshot.py`保留busy摘要与待核实分母。`engagement_portfolio_recovery.py`锁原计划、按当前资格/预算追加原未分配缺口，`engagement_portfolio_records.py`集中持久化原计划与预约。`engagement_membership_wake_delivery.py`持久化父子事件并独立交付Task，`engagement_membership_wake.py`负责有序领取与显式错误结算。`channel_view_uncalled_identity.py`证明全部历史Attempt未调用，`dispatcher.py`在最终准入后原子提交daily identity与call-start。回归入口`test_execution_progress_postgres.py`及`test_engagement_portfolio_recovery.py`、`test_engagement_membership_wake_progress.py`、`test_channel_view_uncalled_identity.py`；合同统一§19.66，证据见`docs/05-implementation/execution-progress-repair-20260908.md`。
+
 > **2026-09-08 线上资格锁修复：** `account_assignment_eligibility._lock_identities`将账号资格读取改为FOR SHARE NOWAIT，允许普通读取及Action/Attempt外键并发，仍阻断失效UPDATE；组合预算仍由policy锁串行化。合同统一§19.64.10；真实PG覆盖双读取、外键、冻结及预算竞争。
 
 > **2026-09-08 发布CI回归修复：** `engagement_cutover_capacity`调用`policy_eligible_member_ids(lock=False)`复用当前资格谓词，只读预览不获取账号行锁或发布摘要；真实分配保持默认锁。统一合同§19.64.9，真实PG只读与锁竞争回归。

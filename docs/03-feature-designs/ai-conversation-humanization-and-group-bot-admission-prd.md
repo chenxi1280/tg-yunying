@@ -1,5 +1,7 @@
 # AI 群聊、频道评论真人化与群管机器人准入专项 PRD
 
+> **2026-09-08 全操作与救活合同同步：** 当前公共节奏/数量可行性/合法重排见统一引擎§19.65；配置频道先关注、逐账号群准入和验证会话见`channel-membership-precondition-design.md`§16；管理员按当前原因恢复、解除限制与回接发言见`ai-group-membership-epoch-and-target-recovery-prd.md`§14。本文件旧全串行准入、固定小窗不可恢复、仅邀请型救援等解释不得用于新实现。可信来源/收件人/原题绑定、原生回复、可见性和unknown防重保持；本次只修设计，`resync=true`、未实施/未生产验收。
+
 > **2026-09-08 用户裁决 / emergency resync（设计完成，尚未实施）：** 内容应急唯一合同为统一引擎 §19.61：群主动签到，群回复/频道评论随机表情；本文件旧“唯一签到/六轮后仅extra-volume/纯表情禁令”的冲突范围被覆盖。可信准入、可见性、原生回复和unknown防重保持。 本切片代码/生产状态仍为未实施、未验收；旧事件记录保留。
 
 > **2026-09-08 准入验证补齐 resync：** 当前群准入文本四则、图片 purpose 路由、同题提交幂等和等待恢复以 `channel-membership-precondition-design.md` §15 为准；主互动持续调度见 `unified-engagement-fulfillment-engine-prd.md` §19.60。本文保留可信 bot/收件人/原消息绑定与确认/可见性原则；不恢复下述历史 GroupBotAdmission 模型或串行 admission，不改变纯搜索 OCR 合同。本补充尚未实施。

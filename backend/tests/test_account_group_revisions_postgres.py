@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
 from queue import Queue
 from threading import Barrier
 from time import monotonic, sleep
@@ -23,6 +24,7 @@ from app.services.task_center.engagement_binding import (
     freeze_initial_binding, freeze_membership_snapshot, validate_engagement_binding,
 )
 from app.services.task_center.engagement_membership_wake import drain_membership_wake_transactions
+from app.services.task_center import engagement_membership_wake as membership_wakes
 
 
 pytestmark = pytest.mark.allow_missing_rule_binding
@@ -219,8 +221,10 @@ def test_snapshot_waits_for_original_membership_transaction_before_freezing(seed
         assert future.result(timeout=RESULT_WAIT_SECONDS) == ([], 2)
 
 
-def test_task_lock_contention_keeps_wake_pending_until_atomic_delivery(seeded):
+def test_task_lock_contention_preserves_pending_child_delivery(seeded, monkeypatch):
     task_id, wake_id = seeded
+    current = membership_wakes._now()
+    monkeypatch.setattr(membership_wakes, "_now", lambda: current)
     with SessionLocal() as session:
         session.execute(delete(StageWakeOutbox).where(StageWakeOutbox.id != wake_id,
             StageWakeOutbox.tenant_id == TENANT_ID))
@@ -230,8 +234,10 @@ def test_task_lock_contention_keeps_wake_pending_until_atomic_delivery(seeded):
         assert drain_membership_wake_transactions(SessionLocal) == 0
         owner.rollback()
     with SessionLocal() as session:
-        assert session.get(StageWakeOutbox, wake_id).state == "pending"
+        assert session.get(StageWakeOutbox, wake_id).state == "expanded"
         assert session.scalar(select(TaskPlannerWakeState).where(TaskPlannerWakeState.task_id == task_id)) is None
+    monkeypatch.setattr(membership_wakes, "_now",
+        lambda: current + timedelta(seconds=membership_wakes.WAKE_RETRY_SECONDS + 1))
     assert drain_membership_wake_transactions(SessionLocal) == 1
     assert drain_membership_wake_transactions(SessionLocal) == 0
     with SessionLocal() as session:

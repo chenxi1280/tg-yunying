@@ -15,6 +15,7 @@ from app.services.task_center.engagement_binding import (
     freeze_initial_binding, freeze_membership_snapshot, validate_engagement_binding,
 )
 from app.services.task_center import engagement_membership_wake as wakes
+from app.services.task_center import engagement_membership_wake_delivery as delivery
 from app.services.task_center.engagement_policy_scope import policy_eligible_member_ids
 from tests.test_account_group_revisions import _initialize, _seed as _seed_membership
 from tests.test_engagement_runtime_resources import _session
@@ -40,6 +41,15 @@ def _task(session, *, pool_id=1, status="running", task_type="channel_like"):
     freeze_initial_binding(session, task, validate_engagement_binding(session, 1, task.type, config))
     session.flush()
     return task
+
+
+def _consume_wake(session, wake):
+    delivery.consume_membership_wake(session, wake.id, _now())
+    for identity in session.scalars(select(StageWakeOutbox.id).where(
+            StageWakeOutbox.stage == delivery.TASK_MEMBERSHIP_WAKE_STAGE,
+            StageWakeOutbox.aggregate_id.like(wake.id + ":%"))):
+        delivery.consume_task_membership_wake(session, identity, _now())
+    return delivery.settle_membership_wake(session, wake.id, _now())
 
 
 def test_freeze_requires_existing_revisions_and_does_not_bootstrap():
@@ -131,8 +141,8 @@ def test_membership_wake_reaches_current_owner_once(task_type):
         snapshot = freeze_membership_snapshot(session, task, participation_unit="first")
         wake = session.scalar(select(StageWakeOutbox).where(
             StageWakeOutbox.aggregate_id == pair.membership.id))
-        assert wakes.consume_membership_wake(session, wake.id, _now()) == 1
-        assert wakes.consume_membership_wake(session, wake.id, _now()) == 0
+        assert _consume_wake(session, wake) == 1
+        assert _consume_wake(session, wake) == 0
         state = session.scalar(select(TaskPlannerWakeState).where(TaskPlannerWakeState.task_id == task.id))
         assert state.wake_revision == 1 and state.lifecycle_epoch == task.task_lifecycle_epoch
         assert session.scalar(select(TaskPlannerWakeState).where(
@@ -140,28 +150,29 @@ def test_membership_wake_reaches_current_owner_once(task_type):
         assert snapshot.member_account_ids == [11, 12] and wake.state == "delivered"
 
 
-def test_wake_transaction_rolls_back_all_delivery_when_one_task_fails(monkeypatch):
+def test_wake_keeps_healthy_task_delivery_when_another_task_fails(monkeypatch):
     with _session() as session:
         _seed(session)
         _initialize(session)
-        _task(session)
-        _task(session)
+        healthy = _task(session)
+        broken = _task(session)
+        broken_id = broken.id
         session.commit()
         factory = sessionmaker(bind=session.get_bind())
-        original = wakes.wake_task_planner
-        calls = []
-        def fail_second(db, task, **options):
-            calls.append(task.id)
-            if len(calls) % 2 == 0:
+        original = delivery.wake_task_planner
+        def fail_broken(db, task, **options):
+            if task.id == broken_id:
                 raise ValueError("test delivery failure")
             return original(db, task, **options)
-        monkeypatch.setattr(wakes, "wake_task_planner", fail_second)
+        monkeypatch.setattr(delivery, "wake_task_planner", fail_broken)
         wakes.drain_membership_wake_transactions(factory)
         session.expire_all()
-        assert session.scalar(select(func.count(TaskPlannerWakeState.id))) == 0
-        pool_one_events = session.scalars(select(StageWakeOutbox).where(
-            StageWakeOutbox.state == "pending")).all()
-        assert len(pool_one_events) == 2
+        assert session.scalar(select(TaskPlannerWakeState.wake_revision).where(
+            TaskPlannerWakeState.task_id == healthy.id)) == 2
+        assert session.scalar(select(TaskPlannerWakeState.id).where(TaskPlannerWakeState.task_id == broken_id)) is None
+        failed = session.scalars(select(StageWakeOutbox).where(StageWakeOutbox.state == "failed")).all()
+        assert len(failed) == 4
+        assert wakes.drain_membership_wake_transactions(factory) == 0
 
 
 @pytest.mark.parametrize("binding_state", ["active", "scheduled"])
@@ -248,5 +259,5 @@ def test_group_wake_does_not_revive_deleted_or_old_epoch_tasks():
         stale.task_lifecycle_epoch += 1
         session.flush()
         wake = session.scalar(select(StageWakeOutbox).where(StageWakeOutbox.aggregate_id == pair.state.id))
-        assert wakes.consume_membership_wake(session, wake.id, _now()) == 1
+        assert _consume_wake(session, wake) == 1
         assert session.scalar(select(func.count(TaskPlannerWakeState.id))) == 0

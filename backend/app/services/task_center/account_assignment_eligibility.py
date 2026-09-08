@@ -2,11 +2,11 @@
 from collections import Counter
 
 from sqlalchemy import String, and_, case, cast, func, or_, select, true
-from sqlalchemy.exc import DBAPIError
 
 from app.models import AccountStatus, Action, Task, TgAccount, TgAccountAuthorization, TgAccountOnlineState
 
 from .engagement_runtime_error import RuntimeResourceBlocked
+from .account_assignment_locks import ELIGIBILITY_BUSY, lock_execution_account, lock_identities as _lock_identities
 
 INVALID_SESSION_FAILURES = ("session_invalid", "login_required", "relogin_required")
 INVALID_AUTHORIZATION_STATES = ("invalid", "revoked", "expired")
@@ -46,52 +46,37 @@ def _qualification_query():
         TgAccountOnlineState.account_id == TgAccount.id))
 
 
-def assignment_decisions(session, tenant_id, account_ids, *, lock=True) -> dict[int, str]:
+def assignment_decisions(session, tenant_id, account_ids, *, lock=True, skip_busy=False) -> dict[int, str]:
     ids = tuple(sorted(set(map(int, account_ids))))
     if not ids:
         return {}
     session.flush()
-    if lock:
-        _lock_identities(session, tenant_id, ids)
-    rows = session.execute(_qualification_query().where(
+    identities = _lock_identities(session, tenant_id, ids, skip_busy=skip_busy) if lock else None
+    rows = session.execute(_qualification_query().add_columns(
+        TgAccount.current_authorization_id, TgAccountOnlineState.account_id.label("online_account_id"),
+    ).where(
         TgAccount.tenant_id == tenant_id, TgAccount.id.in_(ids),
     )).all()
-    reasons = {int(row.id): str(row.reason) for row in rows}
+    reasons = {int(row.id): str(row.reason) or (
+        ELIGIBILITY_BUSY if identities is not None and not identities.covers(row) else "") for row in rows}
     return {account_id: reasons.get(account_id, "account_missing") for account_id in ids}
 
 
-def _lock_identities(session, tenant_id, ids):
-    try:
-        with session.begin_nested():
-            authorizations = session.scalars(select(TgAccount.current_authorization_id).where(
-                TgAccount.tenant_id == tenant_id, TgAccount.id.in_(ids),
-            ).order_by(TgAccount.id).with_for_update(read=True, nowait=True)).all()
-            current_ids = sorted({value for value in authorizations if value is not None})
-            if current_ids:
-                session.execute(select(TgAccountAuthorization.id).where(
-                    TgAccountAuthorization.id.in_(current_ids),
-                ).order_by(TgAccountAuthorization.id).with_for_update(read=True, nowait=True)).all()
-            session.execute(select(TgAccountOnlineState.account_id).where(
-                TgAccountOnlineState.tenant_id == tenant_id, TgAccountOnlineState.account_id.in_(ids),
-            ).order_by(TgAccountOnlineState.account_id).with_for_update(read=True, nowait=True)).all()
-    except DBAPIError as error:
-        if getattr(error.orig, "sqlstate", None) != "55P03":
-            raise
-        raise RuntimeResourceBlocked("account_eligibility_busy", "账号资格更新中，等待当前事务完成") from error
-
-
 def eligible_assignment_account_ids(session, tenant_id, account_ids) -> tuple[int, ...]:
-    decisions = assignment_decisions(session, tenant_id, account_ids)
+    decisions = assignment_decisions(session, tenant_id, account_ids, skip_busy=True)
     return tuple(account_id for account_id in account_ids if not decisions[int(account_id)])
 
 
 def publish_assignment_summary(task, decisions):
-    excluded = {str(account_id): reason for account_id, reason in decisions.items() if reason}
+    excluded = {str(account_id): reason for account_id, reason in decisions.items() if reason and reason != ELIGIBILITY_BUSY}
+    pending = {str(account_id): reason for account_id, reason in decisions.items() if reason == ELIGIBILITY_BUSY}
+    eligible_count = len(decisions) - len(excluded) - len(pending)
     task.stats = {**dict(task.stats or {}), "account_assignment_eligibility": {
-        "candidate_count": len(decisions), "eligible_count": len(decisions) - len(excluded),
+        "candidate_count": len(decisions), "eligible_count": eligible_count,
         "excluded_count": len(excluded), "excluded_reasons": dict(Counter(excluded.values())),
         "excluded_accounts": excluded,
-        "state": "eligible" if len(decisions) > len(excluded) else "no_eligible_accounts",
+        "pending_count": len(pending), "pending_accounts": pending,
+        "state": "eligibility_pending" if pending else ("eligible" if eligible_count else "no_eligible_accounts"),
     }}
 
 
@@ -120,7 +105,10 @@ def action_assignment_reason(session, action) -> str:
     return next((reasons[identity] for identity in ids if reasons[identity]), "")
 
 
-def require_action_assignment_account(session, action) -> None:
+def require_action_assignment_account(session, action, *, for_execution=False) -> None:
+    task = session.get(Task, action.task_id)
+    if for_execution and task is not None and (task.type_config or {}).get("engagement_contract_version") == UNIFIED_CONTRACT:
+        lock_execution_account(session, action.tenant_id, action.account_id)
     reason = action_assignment_reason(session, action)
     if reason:
         raise RuntimeResourceBlocked(reason, "账号无有效业务资格，不生成或派发新工作")

@@ -49,6 +49,7 @@ from .engagement_runtime_settlement import (
     settle_resource_set,
 )
 from .engagement_shared_usage import SharedUsageScope
+from .account_assignment_locks import lock_execution_account
 
 
 ACTIVE_LEASE_STATES = ACTIVE_DOMAIN_LEASE_STATES
@@ -279,11 +280,7 @@ def settle_attempt_resources(
 
 
 def _locked_account(session: Session, action: Action) -> TgAccount:
-    account = session.scalar(
-        select(TgAccount)
-        .where(TgAccount.id == action.account_id, TgAccount.tenant_id == action.tenant_id)
-        .with_for_update()
-    )
+    account = lock_execution_account(session, action.tenant_id, action.account_id)
     if account is None or account.pool_id is None:
         raise RuntimeResourceBlocked("engagement_account_pool_missing", "账号未归属绑定分组")
     return account

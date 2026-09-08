@@ -1,5 +1,7 @@
 # AI 活群准入 epoch、远端事实与目标错绑修复 PRD
 
+> **2026-09-08 管理员救活设计修复：** §14为当前原因分类、触发、权限处置、真实actor和回接发言合同；保留§13受保护配置/历史unknown恢复。本切片仅修改设计，`resync=true`、尚未实现或生产验收。
+
 > 日期：2026-08-28
 > 分级：L3 / 线上多任务准入未履约
 > 流程：`prod-diagnosis -> product -> dev -> qa -> product -> prod-diagnosis`
@@ -293,3 +295,60 @@ listener 选择不能只相信 `TgGroupAccount.can_send/is_listener` 和账号�
 - 已覆盖救援配置、重复身份、本地 open Action、目标解析、listener、旧 unknown、replacement 幂等、并发/CAS、FloodWait、审计、敏感信息、回滚和 E4。
 - 已明确旧 unknown 不原地重试、不修改账号初始化、不扩大其他任务。
 - `design_status=product_design_complete` 保持成立；可进入 dev，但必须先更新数据流索引并按本节 Product Handoff 实现。
+
+## 14. 管理员救活按当前原因闭合（2026-09-08）
+
+### 14.1 Intake、授权与状态
+
+共享统一引擎§19.65的`intake-20260908-throughput-humanization-design-repair`，L3，用户本轮授权修复PRD设计。`design_status=complete`、`resync=true`、`implementation_status=not_started_for_this_slice`、`production_status=unproven`。本节优先于主PRD§3.4.1“所有权限失败累积四次再邀请”“管理员只能是全局值”的旧解释；保留本文件§13的target绑定、远端rights、旧unknown防重和受保护恢复。
+
+代码已有邀请、导出邀请链接、解除限制、普通账号通过链接加入能力，但解除限制目前仅在非互相联系人后的特定链接失败分支触发；“已在群”直接投影invite_success。本节补齐原因分支和调用所有权，不把既有RPC函数存在当作救活已完成。
+
+### 14.2 管理员范围与授权事实
+
+- 解析顺序固定为本Task的`type_config.group_rescue_admin_account_id`优先，否则使用Tenant默认值。Tenant默认专职管理员按原合同从普通业务池排除；仅Task指定的管理员只在对应Task/target被保留，不从整个租户或其他Task分母移除。同一远端self的重复本地行不能充当第二个可并发actor或覆盖身份。
+- 系统配置仍用原`system.manage`保存救援开关/管理员；Task覆盖只经现有受保护恢复入口修改，本轮不新增公开写API。关闭救援时只记录原因/等待，不调用管理员。已启用救援按原已授权的任务账号和目标执行本节可恢复动作，不要求每次常规救援再次点确认。
+- 执行前以真实Session核验self、canonical peer、当前管理员rights及authorization generation；邀请需要invite_users，解除目标账号限制需要ban_users，审批需要对应管理权限。在线/本地“管理员”标签不能替代远端证明。管理员失效或丢权限仅阻断使用该管理员的当前步骤，健康普通账号和无此依赖的Task继续。
+- 自动解除只处理授权救援范围内的账号/目标限制；有现存运营明确禁止恢复标记或明确人工禁言决定时沿原人工处置状态，不因救援优先级覆盖它。来源或限制性质不明先只读核实，不从普通GROUP_PERMISSION_DENIED猜测需要解除。
+
+### 14.3 原因、动作和返回路径
+
+| 当前权威事实 | 正常处理 | 完成/后续判定 |
+| --- | --- | --- |
+| 未加入，当前无未决申请/调用且普通加入可用 | 原正常加入；确需管理员邀请时创建对应救援步骤 | 成员事实→当前群管要求→权限复检 |
+| 未加入且当前限制阻止加入，可由已授权管理员恢复 | 有ban_users则解除该账号限制，再按当前合法邀请/加入协议 | 每步各自回读；解除成功不计成员成功 |
+| 已在群但账号被限制发言，确认属于可自动救援范围 | 有ban_users则执行解除限制，不重复邀请已在群账号 | 当前权限回读→原bot确认/观察→ready |
+| 待管理员审批且有当前申请事实 | 使用当前管理员有权审批的原申请；不重复提交加入申请 | 审批回执后仍核对成员与群管准入 |
+| 已入群但未过bot验证/必需关注 | 转频道成员设计§15–§16的题目/依赖处理 | 当前题目通过+权限复检；不靠重复邀请或解除绕过bot |
+| 本地can_send=false，远端当前权限正常 | 用当前权威事实修复投影，核对bot/观察要求 | 满足全部条件才ready，不调用无必要的邀请/解除 |
+| 非互相联系人导致邀请被明确拒绝 | 管理员按既有授权导出邀请链接，被救账号自行加入 | 两个actor各自占用/回执；链接不可用先核查原因，不能只按错误字符串决定解除 |
+| 管理员不在群/无权、目标错绑、账号失效或运营明确禁止 | 保存具体原因及相应受保护配置/人工恢复条件 | 不创建假成功或重复权限探测业务动作 |
+| 已调用但结果unknown | 同一原invocation只读对账，保持原owner | 有权威终态再决定下一阶段；失败状态/TTL不是重放许可 |
+
+已在群的邀请幂等成功只更新`invite_success/member observed`，不得清掉仍有效的禁言、bot要求或失败原因。救援总完成定义为该账号当前准入ready；“已恢复发言”还要求原合法主业务产生可见远端消息。没有到期主业务或来源时显示“准入已恢复、发言待验证”，不发送额外测试消息凑验收。
+
+### 14.4 触发、连续失败与恢复事件
+
+1. 当前正式准入或发送失败带明确账号/目标权限事实时立即进入原因分类，已有足够证据且可恢复就创建唯一对应步骤，不必制造四次相同失败。连续失败数继续作观测字段；同一Action/Attempt只计一次，重复页面刷新、Planner扫描和监听事件不能增加次数。
+2. 模糊网络/权限字符串、Listener私有/不可读只触发所属对象的只读核查，不算普通账号发送失败；Listener自身失去成员资格走其授权范围的恢复并重新证明GetHistory/watermark，不能把换listener等同全部任务账号已准入。unknown不计为已确定权限失败。
+3. 触发身份为tenant、Task/current epoch、canonical target、target account/auth generation及当前失败事实/准入requirement version；同一当前恢复原因只允许一个active救援owner。事件新增不能在已有未决副作用旁创建第二条邀请/解除；新权威题目/新限制事件才能开启新的合法阶段。
+4. 已有普通业务不继续对已确认不能发言账号制造失败；健康账号继续。相关成员/权限/验证通过事件在持久投影提交时唤醒原准入和Task，由正常Planner重算合法剩余供给；原发言调用unknown保持原义务对账，不因ready恢复重发。
+5. 管理员切换只改变未调用、经版本CAS确认的后续处置身份。旧管理员的Gateway-started Action/Attempt/journal保留；旧unknown依据§13.3精确当前成员对账，不能把改配置当旧调用未发生证明。
+
+### 14.5 步骤、真实actor与限流
+
+- 复用现有救援Action关联、payload版本化阶段、Attempt/journal和account-scoped facts，不另建总任务引擎。每个副作用步骤冻结独立Action/command身份、实际actor和request hash，同一执行Action不得中途换account_id或用管理员Attempt包住普通账号调用。原invite_group_account保留管理员邀请职责；解除/导出/审批按明确step purpose形成独立标准Action，普通账号加入复用ensure_target_membership并绑定被救账号。各步骤payload引用同一source_rescue_action_id、当前原因版本和唯一step key，CAS只创建一个后继，使用既有Action唯一性/审计机制；根救援状态由各步骤事实投影，不能由其中一个Action.success直接宣布完成。
+- 下一阶段只在前一阶段的必要权威结果已提交后开始。数据库事务不跨网络；阶段完成即释放可释放的本地执行名额，bot等待/审批/冷却持久化并退出线程。管理员操作占管理员资源，被救账号自行加入占被救账号资源；切换actor必须重新取得资格/账号互斥/池/出口资源，不沿用管理员令牌覆盖被救账号调用。
+- 救援使用既有管理/准入操作类别容量，不消耗普通发言quantity或伪造普通发言额度；不能以`group_rescue_capacity_override`绕过真实账号/Session并发、既有适用行为节奏或Telegram背压。某管理操作不适用普通发言额度时，明确记为not_applicable而不是跳过全部容量检查。
+- FloodWait以原Gateway结构化返回及实际受限authorization/session/方法或peer作用域持久化，由同actor跨Task共享；Task.stats只做展示，不是限流唯一真相。不得从展示文本猜全局冻结范围或只冻结一个Task；未知范围沿既有Gateway保守合同处理，保持其他不冲突actor工作。
+- 同invocation未知只对账；明确未调用步骤才能安全重试。物理transport结束证据与业务终态分开，崩溃/超时/管理员切换不解除同操作防重。多个步骤部分成功时从未完成的当前步骤恢复，不从第一步重新邀请/导出/解除。
+
+### 14.6 界面、存量、回滚与QA
+
+界面沿原账号准入明细展示当前原因、当前步骤、管理员范围/可用性、等待条件与下一复检时间，并分列“处置已执行”“准入已恢复”“发言已验证”。保留原失败证据，不把已经邀请成功覆盖仍失败的can_send；不展示凭据、邀请链接明文或无权限访问的验证材料。
+
+存量只读preview冻结部署SHA、Task/目标/管理员世代、原Action/Attempt/journal、当前成员/权限/题目和替代owner集合；本轮不apply。明确未调用项经既有受保护入口迁移阶段，已有unknown/成功只补权威投影，不原地重置pending。没有当前权限/题目证据时报告缺失，不批量重试；回滚停止新阶段，已开始步骤由原版本对账，不清除部分成功证据。
+
+QA必须包含：在群禁言直接解除而非重复邀请、未入群受限先解除再加入、bot要求不被解除替代、当前审批、非联系人双actor流程、管理员丢权限/跨Task共用FloodWait、普通业务资源仍独立、重复事件只一条owner、步骤成功后DB失败/unknown、换管理员/目标/epoch、暂停/删除、ready回接及已有发言unknown不重放。无真实权限恢复或对应可见发言样本时保持该层unproven；程序发布不等于救活。
+
+Product Design Complete：触发事实、原因表、现有能力继承、权限范围、所有权、真实actor、资源与时间、界面、幂等并发、旧unknown/回滚和逐层验收均已闭合，转dev交接但不在本轮实施。

@@ -1,5 +1,7 @@
 # AI 活群双泳道发送调度与执行链路重构 PRD
 
+> **2026-09-08 完成量设计修复同步：** 当前公共合同以统一引擎§19.65为准：真实时间与准入容量、账号+peer Slow Mode、随机小窗后的合法successor、按剩余生成/审核步骤准备、独立任务分配。冷群主动允许量与未来真人条件量分列，保留已批准“不自嗨”政策；不把目标不足扩为全Task停摆。群准入见频道成员设计§16，救活见群成员恢复设计§14。本切片仅设计修订，`resync=true`、未实施/未生产验收。
+
 > **2026-09-08 账号分配资格resync：** [统一引擎PRD](unified-engagement-fulfillment-engine-prd.md) §19.64为当前合同：Session失效、Telegram冻结及其他明确失效账号先从新计划候选排除，再计算人数/覆盖与分配工作；已有selected不授予后续新分配资格。运行中失效立即停止新分配和未调用派发，健康账号继续；历史已分配/unknown/confirmed证据保留。临时网络/资源等待与账号失效分开。§19.64账号资格入口已完成本地实现与定向QA，尚未发布；不代表§19.60/§19.61等其他设计已经实现，生产验收见该节独立记录。
 
 
@@ -464,7 +466,7 @@ canonical turn 的结构化规则无法确定语义时，只允许公共 `TurnIn
 
 事件识别、turn close、参与决策和内容生成保持低延迟；实际发送由统一引擎 `ConversationTempoProfile` 决定。时间带直接复用统一 `time_band_v1`，只有外部真人消息进入间隔样本；样本达到 30 个真人间隔后，按同群、时间带、turn class 的真人 P25/P50/P75/P90 做稳定随机抽样；冷启动使用：明确问题/点名 8～35 秒且 deadline 45 秒，活跃话轮 12～60 秒且 deadline 90 秒，普通讨论 45～180 秒且 deadline 180 秒。
 
-owner 冻结后以 turn observed time 和 profile 先持久化 natural window；Provider admission 先按冻结 permit 队列与完整 response preparation P95 计算 `estimated_candidate_ready_at` 和 `preparation_feasible_call_not_before_at = estimated_candidate_ready_at + gateway_prepare_p95 + execution_safety_margin(pre_provider)`。`planned_call_at` 只能在 natural window、slot capacity window、账号/群 Timeline legal interval 与 `[preparation_feasible_call_not_before_at, freshness deadline]` 的交集中用 stable seed 冻结一次，并与 binding、任务日总预算 CAS、Provider reservation 同事务提交。Provider 早完成等待 planned call；只有真实耗时超过冻结 P95 的未预测 tail，才可在原 binding 交集内晚发并记 `planned_point_late_unexpected_tail`；admission 时已知会迟到则零 active binding/零调用，不能伪装成 planned late。越过交集/natural/freshness end 不发送，也不能重抽更晚时点。profile 不得突破账号/群最小间隔。等待期间若真人已回答、转题或 turn revision 更新，Gateway 前终止旧候选；不得为了满足数量把 stale response 改成 proactive 立即发送。固定 2～8 秒只允许作为历史策略观测值，不再是 current 合同。
+owner冻结后先确定当前turn的natural window及真实freshness/source期限，再在原数量供给与账号/peer合法时间线交集中冻结planned_call_at。当前轻量路径不要求P95画像、正式ServiceBinding或新增模型预算平台，按统一引擎§19.65.5的实际剩余router/生成/审核步骤准备。Provider早完成仍等待合法发送点；晚于计划点但尚在原natural/freshness交集内时，记录真实排队/准备原因并重新核验当前可发时刻，不以预测迟到直接取消仍可服务机会。越过真实有效期、真人已回答、转题或目标失效则终止旧候选；不延长回复期限、不把stale回复偷换成主动内容。原账号互斥、数量owner、请求unknown和发前新鲜度检查保持。
 
 ## 7. 内容生成链路
 

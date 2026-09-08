@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from app.models import Task, Tenant
 
 from .account_assignment_eligibility import assignment_decisions, publish_assignment_summary
+from .account_assignment_locks import ELIGIBILITY_BUSY
 
 
 def policy_eligible_member_ids(session: Session, task: Task, snapshot, *, lock=True) -> tuple[int, ...]:
@@ -14,10 +15,10 @@ def policy_eligible_member_ids(session: Session, task: Task, snapshot, *, lock=T
         excluded.add(int((task.type_config or {}).get("group_rescue_admin_account_id") or 0))
     candidates = tuple(account_id for account_id in snapshot.member_account_ids
         if account_id not in excluded)
-    decisions = assignment_decisions(session, task.tenant_id, candidates, lock=lock)
+    decisions = assignment_decisions(session, task.tenant_id, candidates, lock=lock, skip_busy=True)
     if lock:
         publish_assignment_summary(task, decisions)
-    return tuple(account_id for account_id in candidates if not decisions[account_id])
+    return tuple(account_id for account_id in candidates if decisions[account_id] in ("", ELIGIBILITY_BUSY))
 
 
 def _frozen_contracts(snapshot):

@@ -110,7 +110,7 @@ def _planning_paths(
     target: OperationTarget | None,
     require_send: bool,
 ) -> list[dict]:
-    qualifications = assignment_decisions(session, task.tenant_id, account_ids)
+    qualifications = assignment_decisions(session, task.tenant_id, account_ids, skip_busy=True)
     accounts = _accounts_by_id(session, task, account_ids)
     authorizations = _authorizations_by_account(session, task, account_ids)
     memberships = _memberships_by_account(session, task, account_ids)

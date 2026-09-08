@@ -4444,8 +4444,6 @@ def _reserve_channel_action_attempt(
     if not _admit_engagement_attempt_resources(session, action, attempt):
         session.commit()
         return None
-    if action.action_type == "view_message":
-        mark_daily_identity_call_issued(session, action)
     _mark_gateway_call_started(session, attempt, commit=False)
     if action.pacing_contract_version == PACING_CONTRACT_VERSION:
         align_source_gateway_call_started(session, attempt)
@@ -11702,7 +11700,7 @@ def _lease_owner() -> str:
 
 
 def _begin_execution_attempt(session: Session, action: Action, account: TgAccount) -> ExecutionAttempt:
-    require_action_assignment_account(session, action)
+    require_action_assignment_account(session, action, for_execution=True)
     attempt_no = (
         session.scalar(select(func.max(ExecutionAttempt.attempt_no)).where(ExecutionAttempt.action_id == action.id))
         or 0
@@ -11732,13 +11730,17 @@ def _mark_gateway_call_started(session: Session, attempt: ExecutionAttempt, *, c
     action = session.get(Action, attempt.action_id)
     if action is not None:
         require_action_assignment_account(session, action)
-    call_started_at = _now()
-    mark_engagement_attempt_call_issued(session, attempt, call_started_at=call_started_at)
-    attempt.gateway_call_started_at = call_started_at
-    attempt.status = "gateway_call_started"
-    from .channel_comment_capacity import mark_comment_capacity_gateway_hold
+    with session.begin_nested():
+        call_started_at = _now()
+        mark_engagement_attempt_call_issued(session, attempt, call_started_at=call_started_at)
+        if action is not None and action.action_type == "view_message":
+            mark_daily_identity_call_issued(session, action)
+        attempt.gateway_call_started_at = call_started_at
+        attempt.status = "gateway_call_started"
+        from .channel_comment_capacity import mark_comment_capacity_gateway_hold
 
-    mark_comment_capacity_gateway_hold(session, attempt.action_id)
+        mark_comment_capacity_gateway_hold(session, attempt.action_id)
+        session.flush()
     if commit:
         session.commit()
     else:

@@ -1,5 +1,7 @@
 # 项目数据流转索引
 
+> **2026-09-08 执行前进性resync（本地QA通过，发布待验证）：** 批量资格逐账号busy/有效/失效 → 原参与分母与待核实摘要 → 健康分配；原Portfolio deficit → 当前资格/容量与原plan锁 → 唯一successor补原缺口；实际Attempt先账号排他锁再资格共享锁；账号分组事件 → 持久Task子交付 → 独立唤醒；浏览daily identity在全部Gateway准入通过后随call-start提交，原未调用投影按全链证据安全结算。合同统一§19.66，交接`docs/05-implementation/execution-progress-repair-20260908.md`。未完成发布验收。
+
 > **2026-09-08 线上资格锁修复：** `account_assignment_eligibility._lock_identities`将账号资格读取改为FOR SHARE NOWAIT，允许普通读取及Action/Attempt外键并发，仍阻断失效UPDATE；组合预算仍由policy锁串行化。合同统一§19.64.10；真实PG覆盖双读取、外键、冻结及预算竞争。
 
 > **2026-09-08 发布CI回归修复：** 只读切换容量预览 → 当前资格只读查询 → 有效人数/共享预算；分配事务 → 当前身份锁 → 资格摘要 → 新计划，预览不冻结或占用资源。统一合同§19.64.9，真实PG只读与锁竞争回归。
@@ -1573,10 +1575,10 @@ legacy-only A 冷启动分支固定为 `frozen legacy A -> 原 A Session 只读 
 
 ### 2026-09-08 准入与主互动独立推进（设计态 / resync）
 
-真相源：`docs/03-feature-designs/unified-engagement-fulfillment-engine-prd.md` §19.60；`channel-membership-precondition-design.md` §15。下列为待实现合同，不代表当前代码入口或 API 已存在；dev 完成后按真实模块同步结构索引。
+真相源：`docs/03-feature-designs/unified-engagement-fulfillment-engine-prd.md` §19.60/§19.65；`channel-membership-precondition-design.md` §15–§16；管理员恢复见`ai-group-membership-epoch-and-target-recovery-prd.md`§14。下列为待实现合同，不代表当前代码入口或 API 已存在；dev 完成后按真实模块同步结构索引。
 
 - 调度：合法 due/依赖就绪 + workload 保护份额 → Task 持久公平 cursor/CAS → 空闲名额内 claim → 逐 Action owner-token/原对象资源移交 → 独立 execute/finalize → 释放该动作可释放的本地名额 → 立即补领；慢 future 不形成整批屏障。既有 interaction/search lane 与 account/pool/egress 总容量不变。
-- 准入：原 Task/账号/canonical target/requirement 世代 → join/可信 challenge 分类 → 文本确定性四则或明确 `group_admission_image_verification` route → 同题 CAS/Attempt/Gateway 提交 → 原 bot 确认 + 必需关注/观察/权限复检 → account-scoped fact → Task admission projection → 符合来源与时间的主动作。搜索不进入群图片模型路由。
+- 准入：原Task/账号/canonical target/requirement世代 → 该账号配置频道关注事实 → join/可信challenge分类 → 文本确定性四则或明确 `group_admission_image_verification` route → 同题 CAS/Attempt/Gateway 提交 → 原 bot 确认 + 必需关注/观察/权限复检 → account-scoped fact → Task admission projection → 符合来源与时间的主动作。搜索不进入群图片模型路由。
 - 等待：阶段结果/typed reason/wake 条件持久化 → 当前本地工作结束 → 释放本地执行资源；真实未结束 invocation 仍持硬占用；transport ACK 与业务 unknown 分别结算。收到原事件/到期复查后从原阶段继续，不重做已确认副作用。
 - 停机：补领前自动租约或 SIGTERM → 原子停止新 claim → drain instance 全部已获 work/真实 runner/claims/Attempt → 严格断连与资源归属核对 → safe_to_exit；不再依赖批次返回。
 - 恢复：原 due/ready/claim/deadline 与原 identity 归因 → 新鲜精确 preview/hash → 授权范围 apply → 独立 readback → 逐 Task typed E4；future、不具备来源、未证明结束、called/unknown、已确认赢家分别按原合同处理，不能清库/改 now/重放。
@@ -1597,3 +1599,18 @@ legacy-only A 冷启动分支固定为 `frozen legacy A -> 原 A Session 只读 
 统一引擎 §19.63：当前原义务/Job/短期回复身份 → 原绝对deadline → 正常或应急唯一内容CAS → typed事实；不恢复§19.13已撤销的模型费用/逐binding预算、历史画像与聊天版本表。词库/话题/teacher沿既有内容intent绑定唯一unified数量owner，配置分别按new-content/next-task-day生效，纯内容修改不清日计划；应急不进入normal比例分母。
 
 最近72小时最早有效成功fact → 所需Action/Attempt查询依赖保护 → retention正式候选排除 → 原锁内重查并删除无业务依赖的明细 → 清理前后统计/义务/事实/防重守恒。旧Task切换是retired映射保留，物理删除仅由另一个明确用户删除操作发起；当前selected分母不采用legacy动态缩减。2026-09-08后续P1开发已落地共享 `success_fact_query` → `runtime_retention_protection` → `runtime_retention_selection` → 锁内复核/原汇总清理；纯内容保存保留任务生命周期与原计划。当前为本地实现与定向验证，生产状态仍为unproven。
+
+
+### 2026-09-08 完成量与全操作设计修复（设计态 / resync）
+
+真相源：统一引擎§19.65、频道成员设计§16、群成员恢复设计§14；Intake和问题矩阵见`docs/05-implementation/throughput-humanization-design-repair-20260908.md`。仅产品设计，以下新增语义不是已经存在的代码字段/API或线上能力；实现后由dev同步结构索引。
+
+- 分配：完整Task目标/剩余义务 + 当前账号资格/Session/准入就绪/来源/共享容量 → 可行匹配与公平分配 → 最小依赖单元CAS → 每Task合法allocation与独立deficit；同源评论不足不撤销点赞/浏览分配，原caller/unknown/confirmed保持。
+- 时间：原due/随机window + adapter真实deadline来源 → 明确未调用/仍开放义务 → 剩余合法Session分层successor → 原owner安全移交/新release → 到期主动作；真实reply/source/task-day过期、旧赢家与unknown不重放。原目标和due不改，存量terminal不自动重开。
+- 准备：真实task type/contract + 剩余必要生成/审核步骤 → 轻量path/timing binding与按实际剩余步骤派生的准备提前量（含router的三步路径46秒、两步31秒、一步16秒、仅复核1秒） → 原真实候选截止/单次HTTP上限 → 当前上下文复核 → Telegram；V2开关不能造成binding缺失，提前量不是新的最坏耗时准入门。
+- 准入：逐账号配置关注 → 加入 → 当前可信题目/动态关注DAG → 同题一次提交/权威确认 → 观察与can_send → 持久ready唤醒 → 原Task剩余合法义务。成员事实可以跨Task引用，远端主动作不能重复记量。
+- 救援：当前账号/目标失败事实 → 原因分类 → Task指定/租户默认管理员解析及实际rights → 独立步骤/真实actor资源与回执 → 成员/权限/群管复检 → ready → 可见主消息；邀请成功/解除成功/准入恢复/发言验证分别展示。跨Task同管理员真实限流共享，局部等待不占无关执行份额。
+- 状态：requested、confirmed、已就绪可安排、外部条件量、不可安排量与原因按同snapshot分列；计划/执行份额与整日完成量分别验收。结构无解不缩目标，冷群条件量不冒充必达。
+
+
+- 2026-09-08完成量二次对齐：统一引擎§7.8/§11/§14/§16.1的组合不足整Task禁用改为拒绝超卖边并继续合法分区；§8.6.1/§19.23的JIT与QA统一按实际剩余路径，§13.3撤销的P95/模型预算平台明确历史边界。实际Task.engagement配置、fact_first履约版本、V2/两阶段开关与逐能力实施/部署/远端证据映射见§19.65.9；完整周期数量守恒及可控缺量归因见§19.65.10。

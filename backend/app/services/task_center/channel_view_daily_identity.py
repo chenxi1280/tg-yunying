@@ -14,6 +14,7 @@ from app.models import (
     ViewFulfillmentObligation,
     ViewRemoteFact,
 )
+from .channel_view_uncalled_identity import identity_is_proven_uncalled
 
 
 @dataclass(frozen=True)
@@ -92,11 +93,13 @@ def release_daily_identity(
     *,
     remote_mutation_state: str | None = None,
 ) -> bool:
+    session.execute(select(Action.id).where(Action.id == action.id).with_for_update()).scalar_one()
     owner = _owner_for_action(session, action, required=False)
     if owner is None:
         return False
     call_issued_safe = (
-        owner.state == "call_issued" and remote_mutation_state == "false"
+        owner.state == "call_issued" and (remote_mutation_state == "false"
+            or (remote_mutation_state is None and identity_is_proven_uncalled(session, action, owner)))
     )
     if owner.state != "pre_gateway" and not call_issued_safe:
         return False

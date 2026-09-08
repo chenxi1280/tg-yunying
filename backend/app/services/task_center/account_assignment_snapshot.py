@@ -12,7 +12,7 @@ POLICY = "account_assignment_eligibility_v1"
 
 def record_assignment_snapshot(session, task, plan):
     summary = dict((task.stats or {}).get("account_assignment_eligibility") or {})
-    reasons = summary.get("excluded_accounts") or {}
+    reasons = {**(summary.get("excluded_accounts") or {}), **(summary.get("pending_accounts") or {})}
     ids = sorted(set(plan.policy_eligible_account_ids or []) | set(map(int, reasons)))
     fields = (TgAccount.id, TgAccount.current_authorization_id, TgAccount.authorization_generation,
         TgAccount.authorization_fact_generation, TgAccount.connection_generation,
@@ -32,6 +32,7 @@ def record_assignment_snapshot(session, task, plan):
         task_lifecycle_epoch=task.task_lifecycle_epoch, participation_plan_id=plan.id,
         participation_unit=plan.participation_unit, planning_horizon=POLICY,
         dependency_revision_set_hash=digest, account_paths=paths,
-        admissible_account_ids=list(plan.policy_eligible_account_ids), deficit_account_ids=list(map(int, reasons)),
-        decision="eligible" if plan.policy_eligible_account_ids else "no_eligible_accounts",
+        admissible_account_ids=[identity for identity in plan.policy_eligible_account_ids if str(identity) not in reasons],
+        deficit_account_ids=list(map(int, reasons)),
+        decision=summary.get("state") or ("eligible" if plan.policy_eligible_account_ids else "no_eligible_accounts"),
         decision_hash=digest, created_at=_now()))
