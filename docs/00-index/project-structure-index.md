@@ -1571,3 +1571,5 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 - 2026-09-08 频道启动发布回流：`runtime_summary._get_or_create_target_summary` 复用事务内未 flush 的同租户目标汇总；回归 `test_target_runtime_summary_identity.py` 与 PostgreSQL 评论并发删除。
 
 - 2026-09-08：direct_action_claims过期安全结算尊重正式obligation拒绝结果；未执行输家仅释放自身前置资源，不追加事实或修改赢家投影。safe_settlement_records承载原安全结算记录，safe_settlement_resources承载原节奏预留释放；见频道成员设计§14.9。
+
+> **2026-09-08 预构建发布与全量切换：** `.github/workflows/prepare-production.yml` 负责 6+2 全量测试分片、前端、三镜像及 manifest；`prepared_release_manifest.py` 与 `resolve_prepared_release.py` 绑定 SHA/run/attempt/digest；`deploy-production.yml` 仅冻结候选并部署成功制品。`deploy/worker-cutover.sh` / `worker-inventory.py` 冻结实际旧 worker 容器并一起停机；`backend/scripts/release_worker_cutover.py` 负责准备/恢复/升级或复用/激活；`release_cutover.py` 管理审计证据，`release_cutover_fingerprint.py` 定义升级输入。 当前合同：`docs/03-feature-designs/prepared-release-worker-cutover-prd.md`。

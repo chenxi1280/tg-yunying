@@ -21,19 +21,12 @@ def test_server_compose_uses_one_26_slot_two_shard_contract() -> None:
 
 def test_release_runs_preparing_readiness_takeover_then_activation() -> None:
     script = (ROOT / "deploy" / "compose-up.sh").read_text()
-    ordered_markers = (
-        "manage_shared_dispatch_contract stage",
-        "Starting new workers in fenced readiness",
-        "manage_shared_dispatch_contract verify-ready",
-        "manage_shared_dispatch_contract reconcile-ledger",
-        "takeover_ai_content_scope preview",
-        "takeover_ai_content_scope apply",
-        "manage_shared_dispatch_contract activate",
-        "manage_shared_dispatch_contract verify-active",
-    )
-    positions = [script.index(marker) for marker in ordered_markers]
-    assert positions == sorted(positions)
-    assert "--takeover-head-batch-id" in script
+    prepare = script.index("release_worker_cutover prepare")
+    start = script.index("Starting new workers in fenced readiness")
+    complete = script.index("release_worker_cutover complete")
+    assert prepare < start < complete
+    assert "--plan-id" in script
+    assert "|| true" not in script[complete:script.index("if verification_remote_enabled", complete)]
 
 
 def test_post_deploy_requires_active_contract_verification() -> None:

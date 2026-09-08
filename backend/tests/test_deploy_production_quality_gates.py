@@ -6,6 +6,7 @@ import yaml
 
 pytestmark = pytest.mark.no_postgres
 WORKFLOW = Path(__file__).resolve().parents[2] / ".github/workflows/deploy-production.yml"
+PREPARE = WORKFLOW.with_name("prepare-production.yml")
 COMPOSE_UP = Path(__file__).resolve().parents[2] / "deploy/compose-up.sh"
 COMPOSE = Path(__file__).resolve().parents[2] / "docker-compose.server.yml"
 RELEASE = Path(__file__).resolve().parents[2] / "deploy/release.sh"
@@ -31,29 +32,32 @@ def test_production_deploy_requires_one_frozen_manual_release_candidate() -> Non
     assert "checkout SHA does not match the dispatched candidate SHA" in guard_script
     assert "dispatched candidate is not the current release HEAD" in guard_script
     assert "release candidate is not the complete master HEAD" in guard_script
-    for job_name in ("backend-no-postgres-checks", "backend-postgres-checks", "frontend-checks"):
-        assert jobs[job_name]["needs"] == "validate-release-candidate"
+    assert jobs["resolve-prepared-release"]["needs"] == "validate-release-candidate"
+    assert jobs["deploy"]["needs"] == "resolve-prepared-release"
+    assert "backend-no-postgres-checks" not in jobs
 
 
 def test_production_checks_run_complete_backend_partitions_and_frontend_in_parallel() -> None:
-    jobs = yaml.safe_load(WORKFLOW.read_text())["jobs"]
+    jobs = yaml.safe_load(PREPARE.read_text())["jobs"]
     no_postgres = jobs["backend-no-postgres-checks"]
     postgres = jobs["backend-postgres-checks"]
 
-    assert no_postgres["strategy"]["matrix"]["shard_index"] == [0, 1, 2]
+    assert no_postgres["strategy"]["matrix"]["shard_index"] == [0, 1, 2, 3, 4, 5]
     assert postgres["strategy"]["matrix"]["shard_index"] == [0, 1]
-    assert no_postgres["steps"][-1]["env"]["PYTEST_SHARD_TOTAL"] == "3"
+    assert no_postgres["steps"][-1]["env"]["PYTEST_SHARD_TOTAL"] == "6"
     assert postgres["steps"][-1]["env"]["PYTEST_SHARD_TOTAL"] == "2"
     assert "-m no_postgres -p scripts.pytest_shard" in _combined_run_script(no_postgres)
     assert '-m "not no_postgres" -p scripts.pytest_shard' in _combined_run_script(postgres)
     assert "frontend-checks" in jobs
     expected_needs = {"backend-no-postgres-checks", "backend-postgres-checks", "frontend-checks"}
-    assert set(jobs["build-images"]["needs"]) == expected_needs
-    assert set(jobs["deploy"]["needs"]) == expected_needs | {"build-images"}
+    assert jobs["build-images"]["needs"] == "validate-preparation"
+    assert set(jobs["prepared-release"]["needs"]) == expected_needs | {"build-images"}
+    for job_name in expected_needs:
+        assert jobs[job_name]["needs"] == "validate-preparation"
 
 
 def test_production_images_build_as_three_independent_matrix_entries() -> None:
-    jobs = yaml.safe_load(WORKFLOW.read_text())["jobs"]
+    jobs = yaml.safe_load(PREPARE.read_text())["jobs"]
     image_matrix = jobs["build-images"]["strategy"]["matrix"]["include"]
 
     assert {entry["dockerfile"] for entry in image_matrix} == {
@@ -112,7 +116,7 @@ def test_release_sha_is_injected_into_backend_runtime() -> None:
 def test_deploy_fences_self_recycling_ocr_worker_and_verifies_runtime_identity() -> None:
     script = COMPOSE_UP.read_text()
     fence = "fence_image_verification_restart"
-    stop = 'compose stop "${WORKER_SERVICES[@]}"'
+    stop = 'stop_all_release_workers'
     restore = "restore_image_verification_restart"
     ready = "wait_for_container_ready \\\n    tgyunying-image-verification-worker"
     inventory = "assert_single_image_verification_runtime"

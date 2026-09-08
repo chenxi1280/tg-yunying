@@ -127,7 +127,9 @@ Repository variables:
 
 正常 `compose-up.sh` 不再执行全局Docker磁盘统计或自动container/builder/image prune；精确镜像pull失败继续非零退出，worker fence只在拉取全部成功后开始。磁盘不足时使用独立精确清理合同，不在发布中自动扩大删除范围。此删除前置清理的性能修补不替代主机资源与Docker响应检查。
 
-发布质量门不减少测试：`backend-no-postgres-checks` 使用 3 个确定性互斥 shard 执行完整 `-m no_postgres` 集合，`backend-postgres-checks` 使用 2 个确定性互斥 shard 执行完整 `-m "not no_postgres"` 集合；nodeid 的 shard 映射固定、非法或空 shard 显式失败，两类 marker 集合及各自 shard 并集必须完整且无重复。`frontend-checks` 独立并行执行 `npm ci` 和正式构建。`build-images` 必须等待 5 个后端 shard 和前端全部成功，并以 backend/frontend/image-verification 三项 matrix 并行构建；`deploy` 还必须等待全部镜像完成。生产服务器的大镜像 pull 继续串行，不能用并行 pull 放大磁盘和网络竞争。任何分区失败都阻止生产发布，不能通过删测试、增加 skip 或让某一分区 `continue-on-error` 缩短时长。空 PostgreSQL 测试库由 `0001_initial` 使用当前 metadata 建表，后续新增列迁移必须先检查真实列并保持幂等；reset/migration 失败必须输出底层异常，不能只保留笼统连接错误。
+发布质量门不减少测试：`Prepare Production` 在 master push/手工触发，执行完整 no-postgres 6 个确定性互斥 shard、PostgreSQL 2 shard 和 frontend；三镜像与测试并行，全部成功才上传绑定 SHA/run/attempt 的 prepared-release manifest。`Deploy Production` 保留手工 release 和 checkout=master=release 校验，查找同 SHA 的成功准备 run，验证来源与制品身份后按三个固定 GHCR image digest 部署，不重复测试/构建。准备未完成或 artifact 不可用时明确报错；准备流程需要重跑时使用 rerun all jobs，避免跨 attempt 混合制品。部署没有自动 CI fallback。生产镜像 pull 继续串行。详见 `docs/03-feature-designs/prepared-release-worker-cutover-prd.md`。
+
+全量 worker 切换先冻结当前 Compose 项目的实际 worker container IDs（含新配置已禁用的旧 worker），同时停止并确认全部退出，再启动本次 worker 集合。新后端用 `release_worker_cutover prepare/complete` 记录审计计划，在 preparing 下恢复本次在途 Action/ledger；首次/接管源码或 model/migration fingerprint/运行合同变化执行完整接管，普通更新复用上次已核实的真实 takeover chain。两种路径都经过原 activate/verify-active，不改 Gateway 未知结果的不可重放语义。首次发布建立证据，后续同合同发布才减少历史接管耗时；不为测速重复上线。
 
 `Deploy Production` 的 `workflow_dispatch` 常用诊断开关：
 

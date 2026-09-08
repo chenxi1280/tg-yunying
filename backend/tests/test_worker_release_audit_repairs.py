@@ -119,7 +119,9 @@ def test_production_rejects_embedded_worker() -> None:
 
 def test_release_retires_stopped_writers_before_stage() -> None:
     script = (ROOT / "deploy" / "compose-up.sh").read_text()
-    assert script.index("retire-stopped-writers") < script.index("manage_shared_dispatch_contract stage")
+    cutover = (ROOT / "backend/scripts/release_worker_cutover.py").read_text()
+    assert cutover.index('"retire-stopped-writers"') < cutover.index("plan = prepare_cutover")
+    assert "release_worker_cutover prepare" in script
     assert "workers_stopped_before=\"$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)\"" in script
     compose = (ROOT / "docker-compose.server.yml").read_text()
     for worker_name in ("planner", "ai-generation", "dispatcher-1", "dispatcher-2", "recovery"):

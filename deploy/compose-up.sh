@@ -5,6 +5,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/docker-env.sh"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/worker-cutover.sh"
 
 ensure_runtime_env
 
@@ -263,7 +265,7 @@ publish_frontend_static "$TGYUNYING_FRONTEND_IMAGE"
 echo "==> Fencing old workers before migration and contract-version switch"
 fence_image_verification_restart
 trap restore_image_verification_restart EXIT
-compose stop "${WORKER_SERVICES[@]}"
+stop_all_release_workers
 assert_fenced_image_verification_stopped
 restore_image_verification_restart
 trap - EXIT
@@ -277,18 +279,14 @@ release_version="${STATIC_RELEASE_ID:-$(basename "$APP_DIR")}"
 release_actor="${SHARED_DISPATCH_RELEASE_ACTOR:-github-actions-deploy}"
 approval_ref="${SHARED_DISPATCH_APPROVAL_REF:-release:${release_version}}"
 
-echo "==> Retiring heartbeats for compose workers confirmed stopped"
-docker exec -i tgyunying-backend \
-  python -m scripts.manage_shared_dispatch_contract retire-stopped-writers \
+echo "==> Preparing all-worker release and selecting contract takeover mode"
+cutover_plan="$(docker exec -i tgyunying-backend \
+  python -m scripts.release_worker_cutover prepare \
   --actor "$release_actor" \
   --approval-ref "$approval_ref" \
-  --stopped-before "$workers_stopped_before"
-
-echo "==> Staging shared dispatch candidate contract"
-docker exec -i tgyunying-backend \
-  python -m scripts.manage_shared_dispatch_contract stage \
-  --actor "$release_actor" \
-  --approval-ref "$approval_ref"
+  --stopped-before "$workers_stopped_before")"
+echo "$cutover_plan"
+cutover_plan_id="$(printf '%s' "$cutover_plan" | python3 -c 'import json,sys; print(json.load(sys.stdin)["plan_id"])')"
 
 echo "==> Starting new workers in fenced readiness"
 compose up -d --no-build --remove-orphans "${WORKER_SERVICES[@]}"
@@ -301,53 +299,14 @@ wait_for_container_ready \
 wait_for_container_ready \
   tgyunying-worker-search-dispatcher \
   "${TGYUNYING_WORKER_READY_TIMEOUT_SECONDS:-180}"
+# Recover this switch's claims in preparing state, then reuse the verified
+# historical takeover or perform an explicit contract upgrade before activation.
+echo "==> Completing all-worker cutover, recovering claims and verifying activation"
 docker exec -i tgyunying-backend \
-  python -m scripts.manage_shared_dispatch_contract verify-ready
-
-# ===== Stage B: zero-business-writer window — contract staged but NOT active; recover claims, then all-task fulfillment takeover (sole automatic owner) and AI content scope takeover must complete here =====
-echo "==> Recovering fenced claims and reconciling dispatch ledgers"
-docker exec -i tgyunying-backend \
-  python -m scripts.manage_shared_dispatch_contract reconcile-ledger \
+  python -m scripts.release_worker_cutover complete \
+  --plan-id "$cutover_plan_id" \
   --actor "$release_actor" \
   --approval-ref "$approval_ref"
-
-echo "==> Taking over active tasks while all business writers remain fenced"
-docker exec -i tgyunying-backend \
-  python -m scripts.takeover_all_task_fulfillment
-docker exec -i tgyunying-backend \
-  python -m scripts.takeover_all_task_fulfillment --apply
-
-echo "==> Previewing and applying AI content scope takeover"
-takeover_preview="$(docker exec -i tgyunying-backend \
-  python -m scripts.takeover_ai_content_scope preview \
-  --actor "$release_actor" \
-  --approval-ref "$approval_ref" \
-  --release-version "$release_version" \
-  --config-version "$DISPATCH_REBUILD_CONTRACT_VERSION")"
-echo "$takeover_preview"
-takeover_fields="$(printf '%s' "$takeover_preview" | docker exec -i tgyunying-backend \
-  python -c 'import json,sys; value=json.load(sys.stdin); print(value["batch_id"], value["classification_hash"], json.dumps(value["classification_counts"], separators=(",", ":")))')"
-read -r takeover_batch_id takeover_hash takeover_counts <<< "$takeover_fields"
-docker exec -i tgyunying-backend \
-  python -m scripts.takeover_ai_content_scope apply \
-  --batch-id "$takeover_batch_id" \
-  --classification-hash "$takeover_hash" \
-  --expected-counts-json "$takeover_counts" \
-  --actor "$release_actor" \
-  --approval-ref "$approval_ref" || true
-
-
-# ===== Stage C: activate dispatch contract and verify — business writers resume; post-release jobs may only run read-only verify-active =====
-echo "==> Activating shared dispatch contract after takeover closure"
-docker exec -i tgyunying-backend \
-  python -m scripts.manage_shared_dispatch_contract activate \
-  --actor "$release_actor" \
-  --approval-ref "$approval_ref" \
-  --takeover-head-batch-id "$takeover_batch_id"
-
-echo "==> Verifying active shared dispatch contract and ledgers"
-docker exec -i tgyunying-backend \
-  python -m scripts.manage_shared_dispatch_contract verify-active
 
 if verification_remote_enabled; then
   wait_for_container_ready \
