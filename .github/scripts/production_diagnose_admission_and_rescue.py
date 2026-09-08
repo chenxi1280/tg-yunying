@@ -149,7 +149,7 @@ def diagnose_tasks_sync() -> dict:
                 session.execute(
                     text("""
                         SELECT att.id, att.action_id, att.account_id, att.status,
-                               att.failure_type, att.detail, att.created_at
+                               att.failure_type, att.failure_detail, att.created_at
                         FROM execution_attempts att
                         JOIN actions a ON a.id = att.action_id
                         WHERE a.task_id = :task_id
