@@ -4300,10 +4300,12 @@ def _coverage_candidate_rows(
     timestamp: datetime,
     required_units: int,
 ) -> list[TaskAccountDailyCoverage]:
-    rows = _ready_coverage_rows_for_plan(session, task, timestamp=timestamp)
-    if admission is not None:
-        admissible = {int(item) for item in admission.admissible_account_ids or []}
-        rows = [row for row in rows if int(row.account_id) in admissible]
+    admissible = (
+        {int(item) for item in admission.admissible_account_ids or []}
+        if admission is not None else None
+    )
+    rows = _ready_coverage_rows_for_plan(session, task, timestamp=timestamp,
+        admissible_account_ids=admissible)
     rows = _portfolio_coverage_rows(
         session, task, ledger=ledger, target=target,
         participation=participation, rows=rows,
@@ -4390,6 +4392,7 @@ def _ready_coverage_rows_for_plan(
     task: Task,
     *,
     timestamp: datetime,
+    admissible_account_ids: set[int] | None = None,
 ) -> list[TaskAccountDailyCoverage]:
     configured_limit = int(getattr(get_settings(), "daily_coverage_plan_batch_limit", 20) or 20)
     return ready_coverage_plan_batch(
@@ -4397,6 +4400,7 @@ def _ready_coverage_rows_for_plan(
         task,
         now=timestamp,
         limit=configured_limit,
+        admissible_account_ids=admissible_account_ids,
     ).rows
 
 

@@ -4928,6 +4928,9 @@ def _plan_due_task(
     limit: int,
     global_pending: int | None = None,
 ) -> tuple[int, bool, int]:
+    from .ai_group_planner_day import prepare_ai_group_task_day
+
+    prepare_ai_group_task_day(session_factory, task_id, now=_now())
     round_goal, yield_after_batch = _coverage_round_goal(session_factory, task_id)
     processed = 0
     planned = 0

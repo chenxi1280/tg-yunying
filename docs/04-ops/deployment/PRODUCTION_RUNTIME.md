@@ -1,5 +1,9 @@
 # TG 运营管理平台生产部署说明
 
+## 2026-09-09 活群独立推进修复
+
+统一引擎PRD§19.68：正式Planner独立提交当前任务日基础；成员批次空和coverage分页不可阻塞其他已准入账号；可证明未调用的受阻正文Action跳过并释放本次名额，原义务保留。无迁移、配置切换或存量数据维护；随正常Planner/Dispatcher生效，不重放unknown。发布后分别核对完整SHA/runtime、两任务当前日ledger/target/slot、旧日身份保持、跳过动作的未执行事实与新消息远端事实。Release Gate见`docs/05-implementation/ai-group-independent-progress-20260909.md`，没有新消息证据不能标记production_fixed。
+
 ## 2026-09-08 观察连续失败计数发布
 
 频道成员前置设计§17修复包含迁移`0229_admission_gap_count`，0001/0137历史建库基线排除该新列，由0229只为Task准入增加默认0的`consecutive_observation_gaps`，不从历史观察版本推断失败次数，也不运行存量重试/维护apply。发布后核对迁移head、字段默认值及current/backend/worker完整SHA；只读统计观察计数、当日终止原因和发布后真实验证/救援Attempt及远端事实。普通读取成功（含空列表）清零；次日由正式Planner入口重开当天已过期的观察终止，历史unknown不重放。存在非零失败计数时迁移downgrade拒绝删除证据，采用兼容前向修复。Release Gate见`docs/05-implementation/local-review-fixes-20260908.md`。

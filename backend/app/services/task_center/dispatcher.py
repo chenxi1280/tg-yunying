@@ -12005,8 +12005,17 @@ def _admit_engagement_attempt_resources(
 
 
 def _defer_engagement_resource_attempt(action, attempt, error):
+    from .ai_group_pre_gateway_discard import can_discard_blocked_action, release_blocked_coverage
+
+    session = object_session(action)
     retry_at = _now() + timedelta(seconds=error.retry_after_seconds)
-    _defer(action, retry_at, error.code, error.detail)
+    if can_discard_blocked_action(session, action, error):
+        _skip(action, error.code, error.detail)
+        action.result = {**(action.result or {}), "remote_mutation_started": False,
+            "pre_gateway_discarded": True}
+        release_blocked_coverage(session, action, error, retry_at=retry_at, now=_now())
+    else:
+        _defer(action, retry_at, error.code, error.detail)
     attempt.after_call_at = _now()
     attempt.status = "skipped_before_gateway"
     attempt.failure_type = error.code

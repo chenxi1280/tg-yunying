@@ -3586,3 +3586,31 @@ Planner初始认领及AI规划commit后的重新认领，必须在同一个savep
 20:20生产反查再次resync：大量普通非回复ready候选仅因ContextScopeRevision前进在`bind_candidate_to_gateway`被终结为context_stale，与AI内容质量PRD§4.1及DF-347“生成后自然漂移只观察、不清空/重生成”冲突。普通已冻结的非回复正文沿原Job/hash继续绑定，同时记录冻结/当前revision drift；精确回复和绑定真人turn的候选继续严格revision校验，policy/scope/attestation/目标存在性与其他发前合同保持。不得把此修复用于重放已经发送、unknown或terminal历史动作。QA经正式group binding入口验证普通漂移可绑定且原hash不变，reply/turn候选与policy变化仍明确拒绝。该设计补正完成，进入dev并继续真实消息验证。
 
 20:55静默等待resync：实测普通候选不再因自然漂移作废后，多个活跃群在发前反复命中attention_quiet_after；当前实现以每次最新真人消息重新计算60–180秒，未保存本轮等待的截止身份。按§19.4中有界attention要求，本次普通已冻结候选在首次真实等待时保存Action作用域的started_at与horizon_deadline_at，horizon沿Task已配置quiet最大值（当前10任务为180秒）冻结；后续动态quiet与原冻结quiet共同检查，但本轮等待不能越过该horizon，重复领取和重启不重置。自然安静可提前结束，截止到达后继续原账号/来源pacing及全部发前资格、内容、scope与真实回复校验，不转成reply、不创造成功或重放历史。普通冻结正文沿内容PRD§4.1保留原身份，等待不额外调用Provider；本切片不宣称完整共享ConversationAttentionState/Blocker/CAS wake模型已经实现。明确回复仍走原回复路径，本轮仅修普通等待无限后推。QA覆盖首次等待、连续新真人消息、重复领取/重启读取同一截止、提前quiet、原发送间隔和到期/未知规则保持。已向用户提供有界等待与严格连续安静的可选偏好，尚未回复，按现有有界PRD与正常发送要求推进该可复核修复。
+
+### 19.68 已入群账号独立推进与任务跨日（2026-09-09）
+
+Intake：`intake-20260909-ai-group-independent-progress`，L3。用户要求发送前受阻直接跳过、未入群账号不得影响已入群账号发送，并修复天津音乐/郑州学生会跨日未推进。0c5e5dc5只读反查：9月8日十任务19272目标仅45条真实确认，新发布后3条；发送前仍有熔断、旧调用占用和节奏截止。两个任务9月8日ledger过期仍open，9月9日一个目标未绑ledger、另一个目标缺失。该证据不证明所有短缺来自同一根因。
+
+#### 19.68.1 本轮跳过与账号隔离
+
+“抛弃”按本轮跳过受阻账号/动作处理：受阻账号不能占住本轮候选位置或令整批健康账号回滚；继续同Task已入群、可发送且当前合法的账号。记录原typed blocker与应发缺口，不把跳过记成功、不删除原义务、不改用另一账号抵扣原账号覆盖。实际调用已发生或结果未知的记录保留原归属与对账路径，不能凭等待/超时释放其物理占用或重发。已到真实task-day/source截止的未调用工作沿既有未调用结算，不提前执行未来pacing。当前fact-first unified活群的 `execution_circuit_open/half_open/probe_pending`、`account_shared_usage_unproven`、`account_legacy_remote_inflight` 只终结本次有正面未调用证明的Action。全历史Attempt须未调用且无远端消息/写入标记、无Gateway日志或非未执行事实；否则保留原处理。Action/Attempt明确记 `skipped/skipped_before_gateway`、`remote_mutation_started=false` 及原blocker，正式结算写 `safely_not_executed` 并保持义务open。仅释放同租户/Task/账号/Action的reserved或sending coverage，沿用原blocker重查时间，候选排到当前时间，给其他就绪账号机会。正常 `pacing_source_not_before` 保留原节奏等待。
+
+#### 19.68.2 入群规划不是正文规划的全Task门槛
+
+入群轮次的候选批次、资格竞争及创建结果，只描述该批次入群工作。已有其他账号的有效成员/可发送事实时，批次候选为空不得直接返回整个Task不可发送。Task可以继续进入正文候选选择；正文仍逐账号检查当前资格、成员事实与发送权限，历史completed摘要本身不授予执行资格。
+
+正文的可发送账号集合必须在coverage查询的LIMIT之前参与过滤；不能先拿满20条pending_admission/不满足当前准入的记录再过滤，从而永远看不到队列后方的ready账号。空准入集合就是零正文候选，不能回退全账号扫描；未入群记录仍保留给独立入群流程。完整参与/日目标分母和已冻结组合容量请求不因临时成员可用性改变，原未分配数量继续按既有恢复路径处理。数据库故障、载荷错误和未知异常原样暴露；成员业务unknown不自动复活。
+
+#### 19.68.3 跨日初始化独立提交
+
+正式Planner在当前unified活群Task的重试、开放Action准备、backlog门与正文规划之前，先以原Task/wake联合锁串行初始化当前北京时间任务日。关闭可取得的旧到期ledger并写原生命周期事件；幂等创建当前ledger、目标、coverage/数量槽及它们的日期引用，然后独立提交。已有完整当日初始化不重复物化；尚有旧open ledger或目标缺链时正式入口补齐。后续入群/正文生成/资源竞争回滚不能撤销已提交的新日基础。
+
+初始化不生成正文或调用Telegram，不搬动旧Action/Attempt/fact/unknown，不把昨天未完成量转到今天；今日量仍按原数量算法和当前合法分母冻结。两个初始化者通过现有Task/wake锁串行，锁忙继续其他Task；停止/退役任务不初始化。初始化失败明确暴露，不以空ledger或成功投影掩盖。后续正文事务仍重新取得原Task/wake锁，保持停止/配置/事件版本检查。
+
+#### 19.68.4 QA、产品交接与Release Gate
+
+先用真实服务和隔离数据库复现：成员候选批次为空但另一账号已就绪；超过批次上限的pending_admission或当前准入不合格前缀不饿死后方ready账号；空集合不回退；Planner在初始化后被资源拒绝、入群全等待或backlog阻止时今日ledger/目标/槽仍持久；重复与并发初始化唯一、旧unknown及消息事实留在原日、停止/退役保持。PG验证原Task/wake联合锁和事务回滚边界，每个后端测试进程硬超时60秒。
+
+无新增用户表单/API，无迁移或人工生产数据清理。既有摘要/日志展示具体失败和欠量；开发同步数据流/结构索引。按master→release→GitHub Actions发布，独立核对SHA/runtime，从完成部署时刻检查两个Task新日链路、已入群账号Action/Attempt/remote_message_observed和受阻候选隔离。只有新增消息不等于全日完成；无真实发送证据继续production_unproven。
+
+Product Design Complete：原话三项、现有代码的早退/整批异常/事务回滚、账号与日期归属、unknown保留、幂等并发、QA及上线边界已覆盖。`design_status=complete`、`resync=true`，交dev实现；本节不宣称已完成代码或生产验收。

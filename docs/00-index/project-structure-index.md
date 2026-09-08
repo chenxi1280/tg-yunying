@@ -1,5 +1,7 @@
 # 项目结构索引
 
+> **2026-09-09 活群独立推进设计resync（§19.68，待发布）：** `ai_group_planner_day.py`负责正式Planner当前日初始化的独立事务，复用`daily_ledgers.py`与Task/wake锁；`daily_coverage_planning.py`在LIMIT之前应用当前准入账号集合；`group_ai_chat._coverage_candidate_rows`传递该集合；`channel_membership.py`区分入群候选批次空与Task已有成员。`ai_group_pre_gateway_discard.py`负责仅未调用的受阻Action判定和精确coverage释放，dispatcher走原事实结算。回归覆盖坏前缀、空集合、后续事务回滚及日初始化幂等；证据见`docs/05-implementation/ai-group-independent-progress-20260909.md`。
+
 > **2026-09-08 本地修复二次审查（0c5e5dc5已发布，业务部分验证）：** `verification_arithmetic.py` 提供完整四则表达式与中文万位精确计算，`membership_challenges.py` 保留验证入口并禁止非法算术退回普通验证码；`task_group_bot_admission_state.py` 收敛观察CAS、独立连续失败计数和当天终止，`task_group_bot_admission_recovery.py` 连接次日Planner重开；模型字段由迁移`0229_admission_gap_count`增加。`runtime_resources.account_has_live_reservation`与`dispatcher._claimable_candidates`在认领前跳过忙管理员，持久执行器完成通知续领。QA与Release Gate见`docs/05-implementation/local-review-fixes-20260908.md`。
 
 > **2026-09-08 晚间静默等待修复：** `engagement_attention.bounded_proactive_quiet_until` 按统一PRD§19.67冻结首次实际等待的配置上限；dispatcher在同一Action事务保存`result.attention_wait.started_at/horizon_deadline_at`，后续真人消息、重新领取与重启不延长截止时间，自然静默可提前结束。期限结束仅通过attention检查，原发送资格、节奏、scope、reply与内容校验继续。

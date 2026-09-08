@@ -52,23 +52,30 @@ def ready_coverage_plan_batch(
     now: datetime | None = None,
     limit: int = MAX_DAILY_COVERAGE_PLAN_BATCH,
     exclude_account_ids: set[int] | None = None,
+    admissible_account_ids: set[int] | None = None,
 ) -> CoveragePlanBatch:
     timestamp = now or _now()
     batch_limit = min(MAX_DAILY_COVERAGE_PLAN_BATCH, max(1, int(limit)))
     if task.fulfillment_contract_version == "fact_first_v3":
         rows = _ready_rows_without_cursor(
-            session, task, timestamp, batch_limit, exclude_account_ids,
+            session, task, timestamp=timestamp, limit=batch_limit,
+            exclude_account_ids=exclude_account_ids,
+            admissible_account_ids=admissible_account_ids,
         )
         return CoveragePlanBatch(rows=rows, wrapped=False)
     cursor = _locked_cursor(session, task, timestamp)
     rows = _ready_rows_after_cursor(
-        session, task, cursor, timestamp, batch_limit, exclude_account_ids,
+        session, task, cursor, timestamp=timestamp, limit=batch_limit,
+        exclude_account_ids=exclude_account_ids,
+        admissible_account_ids=admissible_account_ids,
     )
     if rows or not cursor.last_coverage_id:
         return CoveragePlanBatch(rows=rows, wrapped=False)
     _rewind_cursor(cursor, timestamp)
     rows = _ready_rows_after_cursor(
-        session, task, cursor, timestamp, batch_limit, exclude_account_ids,
+        session, task, cursor, timestamp=timestamp, limit=batch_limit,
+        exclude_account_ids=exclude_account_ids,
+        admissible_account_ids=admissible_account_ids,
     )
     return CoveragePlanBatch(rows=rows, wrapped=True)
 
@@ -203,24 +210,14 @@ def _ready_rows_after_cursor(
     session: Session,
     task: Task,
     cursor: TaskDailyCoveragePlanCursor,
+    *,
     timestamp: datetime,
     limit: int,
     exclude_account_ids: set[int] | None,
+    admissible_account_ids: set[int] | None,
 ) -> list[TaskAccountDailyCoverage]:
-    filters = [
-        assignment_account_predicate(task, TaskAccountDailyCoverage.account_id),
-        TaskAccountDailyCoverage.tenant_id == task.tenant_id,
-        TaskAccountDailyCoverage.task_id == task.id,
-        TaskAccountDailyCoverage.coverage_date == timestamp.date(),
-        TaskAccountDailyCoverage.state == "ready",
-        TaskAccountDailyCoverage.confirmed_count < TaskAccountDailyCoverage.target_count,
-        TaskAccountDailyCoverage.targeted_at <= timestamp,
-        or_(
-            TaskAccountDailyCoverage.next_eligible_at.is_(None),
-            TaskAccountDailyCoverage.next_eligible_at <= timestamp,
-        ),
-        has_no_terminal_shortfall_projection(),
-    ]
+    filters = _ready_row_filters(task, timestamp, states=("ready",),
+        exclude_account_ids=exclude_account_ids, admissible_account_ids=admissible_account_ids)
     if cursor.last_targeted_at is not None and cursor.last_account_id is not None:
         filters.append(
             tuple_(
@@ -234,8 +231,6 @@ def _ready_rows_after_cursor(
                 cursor.last_coverage_id,
             )
         )
-    if exclude_account_ids:
-        filters.append(TaskAccountDailyCoverage.account_id.not_in(exclude_account_ids))
     statement = (
         select(TaskAccountDailyCoverage)
         .where(*filters)
@@ -254,26 +249,14 @@ def _ready_rows_after_cursor(
 def _ready_rows_without_cursor(
     session: Session,
     task: Task,
+    *,
     timestamp: datetime,
     limit: int,
     exclude_account_ids: set[int] | None,
+    admissible_account_ids: set[int] | None,
 ) -> list[TaskAccountDailyCoverage]:
-    filters = [
-        assignment_account_predicate(task, TaskAccountDailyCoverage.account_id),
-        TaskAccountDailyCoverage.tenant_id == task.tenant_id,
-        TaskAccountDailyCoverage.task_id == task.id,
-        TaskAccountDailyCoverage.coverage_date == timestamp.date(),
-        TaskAccountDailyCoverage.state.in_(("ready", "pending_admission")),
-        TaskAccountDailyCoverage.confirmed_count < TaskAccountDailyCoverage.target_count,
-        TaskAccountDailyCoverage.targeted_at <= timestamp,
-        or_(
-            TaskAccountDailyCoverage.next_eligible_at.is_(None),
-            TaskAccountDailyCoverage.next_eligible_at <= timestamp,
-        ),
-        has_no_terminal_shortfall_projection(),
-    ]
-    if exclude_account_ids:
-        filters.append(TaskAccountDailyCoverage.account_id.not_in(exclude_account_ids))
+    filters = _ready_row_filters(task, timestamp, states=("ready", "pending_admission"),
+        exclude_account_ids=exclude_account_ids, admissible_account_ids=admissible_account_ids)
     statement = (
         select(TaskAccountDailyCoverage)
         .where(*filters)
@@ -285,6 +268,28 @@ def _ready_rows_without_cursor(
         .limit(limit)
     )
     return list(session.scalars(statement))
+
+
+def _ready_row_filters(task, timestamp, *, states, exclude_account_ids, admissible_account_ids):
+    filters = [
+        assignment_account_predicate(task, TaskAccountDailyCoverage.account_id),
+        TaskAccountDailyCoverage.tenant_id == task.tenant_id,
+        TaskAccountDailyCoverage.task_id == task.id,
+        TaskAccountDailyCoverage.coverage_date == timestamp.date(),
+        TaskAccountDailyCoverage.state.in_(states),
+        TaskAccountDailyCoverage.confirmed_count < TaskAccountDailyCoverage.target_count,
+        TaskAccountDailyCoverage.targeted_at <= timestamp,
+        or_(
+            TaskAccountDailyCoverage.next_eligible_at.is_(None),
+            TaskAccountDailyCoverage.next_eligible_at <= timestamp,
+        ),
+        has_no_terminal_shortfall_projection(),
+    ]
+    if exclude_account_ids:
+        filters.append(TaskAccountDailyCoverage.account_id.not_in(exclude_account_ids))
+    if admissible_account_ids is not None:
+        filters.append(TaskAccountDailyCoverage.account_id.in_(admissible_account_ids))
+    return filters
 
 
 def has_no_terminal_shortfall_projection():

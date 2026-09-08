@@ -1110,6 +1110,11 @@ def _eligible_membership_candidates(session, task, accounts, *, skip_busy=True):
 
 
 def _empty_eligible_membership_gate(task, stats):
+    if int(stats.get("membership_joined_count") or 0) > 0:
+        task.stats = {**stats, "membership_stage": "membership_partial"}
+        if task.last_error in {"account_eligibility_busy", "no_eligible_accounts"}:
+            task.last_error = ""
+        return MembershipGateResult(True, waiting=True)
     pending = bool((stats.get("account_assignment_eligibility") or {}).get("pending_count"))
     reason = "account_eligibility_busy" if pending else "no_eligible_accounts"
     task.last_error = reason
