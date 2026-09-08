@@ -14,4 +14,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    raise RuntimeError("Account freeze observations must be preserved; deploy a compatible forward fix")
+    observed = op.get_bind().scalar(sa.text(
+        "SELECT count(*) FROM tg_accounts WHERE telegram_freeze_observed_at IS NOT NULL OR telegram_frozen"))
+    if observed:
+        raise RuntimeError("Account freeze observations must be preserved; deploy a compatible forward fix")
+    op.drop_column("tg_accounts", "telegram_freeze_observed_at")
+    op.drop_column("tg_accounts", "telegram_frozen")

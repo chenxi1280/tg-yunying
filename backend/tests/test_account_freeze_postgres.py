@@ -81,8 +81,12 @@ def test_call_issuance_serializes_before_freeze_and_migration_preserves_rows(eng
     migration = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(migration)
     with engine.begin() as connection:
-        connection.execute(text("ALTER TABLE tg_accounts DROP COLUMN telegram_frozen, DROP COLUMN telegram_freeze_observed_at"))
         migration.op = Operations(MigrationContext.configure(connection))
+        with pytest.raises(RuntimeError, match="observations must be preserved"):
+            migration.downgrade()
+        connection.execute(text("ALTER TABLE tg_accounts DROP COLUMN telegram_frozen, DROP COLUMN telegram_freeze_observed_at"))
+        migration.upgrade()
+        migration.downgrade()
         migration.upgrade()
         row = connection.execute(text("SELECT id, telegram_frozen, telegram_freeze_observed_at FROM tg_accounts")).one()
         assert tuple(row) == (1, False, None)

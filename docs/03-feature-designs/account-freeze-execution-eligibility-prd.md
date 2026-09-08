@@ -54,3 +54,5 @@ Telegram异常/完整AppConfig → 账号冻结观测CAS → TgAccount冻结事�
 - 发布包含已在master的b72c4d9f诊断脚本提交（仅.github诊断文件，不改变运行业务），以及本次修复。迁移0228为添加账号事实字段；无前端变更。
 - 生产发布前只读检查：current=89d837b8；Alembic=0227；authorization runtime=off；ABC无running批次。
 - release_status=pending；production_fixed=unproven；发布后复核SHA、迁移和冻结账号新调用，不把上线当作业务验收。
+
+发布前迁移反查补正：0001通过当前模型生成legacy bootstrap，必须排除本次新增两列，避免空库升级0228重复加列。7处迁移head断言同步0228。已补跑13项真实PostgreSQL空库/旧版本升级及round-trip、12项迁移图/合并完整性；最终定向累计216项通过。0228仅在不存在任何冻结观测时允许schema downgrade，有观测则拒绝删除事实；生产继续只采用兼容前向修复。第一轮发布34181003934在部署前主动取消，未触及生产。

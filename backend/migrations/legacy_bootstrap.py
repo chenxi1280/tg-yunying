@@ -296,6 +296,7 @@ LEGACY_BOOTSTRAP_TABLES = frozenset((
 ))
 
 ENGINE_ADDED_COLUMNS = {
+    "tg_accounts": frozenset(("telegram_frozen", "telegram_freeze_observed_at")),
     "tasks": frozenset(("retired_at", "replaced_by_task_id")),
     "channel_messages": frozenset(("grouped_id", "source_metadata")),
     "account_pacing_reservations": frozenset(("action_class",)),
