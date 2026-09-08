@@ -1,5 +1,7 @@
 # 项目结构索引
 
+> **2026-09-08 线上资格锁修复：** `account_assignment_eligibility._lock_identities`将账号资格读取改为FOR SHARE NOWAIT，允许普通读取及Action/Attempt外键并发，仍阻断失效UPDATE；组合预算仍由policy锁串行化。合同统一§19.64.10；真实PG覆盖双读取、外键、冻结及预算竞争。
+
 > **2026-09-08 发布CI回归修复：** `engagement_cutover_capacity`调用`policy_eligible_member_ids(lock=False)`复用当前资格谓词，只读预览不获取账号行锁或发布摘要；真实分配保持默认锁。统一合同§19.64.9，真实PG只读与锁竞争回归。
 
 > **2026-09-08 审查回归修复（本地QA/未发布）：** `account_usage_policy.apply_operational_account_scope_filters`分离分组/用途范围与冻结健康条件，统一配置membership、持久membership和coverage范围复用；`dispatcher._dispatch_action`捕获本轮开始前Attempt身份，资源拒绝时与最新Attempt比较，历史尝试不被本轮等待结算覆盖。正式回归入口`test_account_assignment_review_regressions.py`；统一合同§19.64.8，本轮176项定向QA通过。

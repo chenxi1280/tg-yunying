@@ -3382,3 +3382,11 @@ PDC反向检查：实际入口为account_online_probe及freeze结果guard，批�
 首次候选CI发现只读切换容量预览复用了分配写事务的账号锁。resync：预览使用同一当前资格谓词，但不获取行锁、不写资格摘要或冻结计划；真正新分配仍必须锁定账号/current授权/在线事实。不得为使预览通过而取消分配锁。
 
 组合容量读取的原四条批量SQL之外，统一新分配需要固定数量的资格锁/查询，查询次数仍不随候选数增长。QA账号必须具备有效业务身份和Session；同账号并发新分配遇到NOWAIT锁竞争返回`account_eligibility_busy`，提交后重试必须看到已占用容量，不超分配。真实PostgreSQL验证只读预览、批量查询和并发后重试；发布前重新走候选CI。`design_status=complete`，`production_status=unproven`。
+
+#### 19.64.10 生产反查：资格读取共享锁与并发履约（2026-09-08）
+
+`49214fdc`上线后只读观测发现四类Task反复`account_eligibility_busy`，并出现一次Planner数据库deadlock。反向代码检查确认：资格读取对全部候选账号获取FOR UPDATE，互相串行化正常Planner/Dispatcher，也与新Action/Attempt的账号外键KEY SHARE锁冲突。此为本次发布回归，不能以服务健康或无失效账号调用宣称业务通过。
+
+PDC resync：资格读取使用FOR SHARE NOWAIT锁定账号、当前授权和在线事实。多个合法读取者及外键引用可共存；冻结、授权或在线否定事实的UPDATE仍与共享锁互斥，从而保留“失效先提交则不分配，分配先持锁则之后call-start复核”的合同。不得用删除资格检查、放开冻结账号或自动重放历史unknown解决竞争。组合预算仍由原policy锁串行化，资格共享锁不能替代容量锁。§19.64.9的`account_eligibility_busy`仅适用于资格写入/观测竞争，不应出现在两个纯资格读取者之间。
+
+QA：真实PG双会话同时读取同账号资格、读取期间另一事务创建带账号FK的合法Action/Attempt不被阻塞、并发预算第二事务等待原policy锁且提交后不超分配、共享资格锁仍阻断冻结UPDATE、冻结先提交仍排除；四类资格与Gateway回归。`design_status=complete`，修复后重新代码审查、定向测试、master→release→Actions并从新SHA重新只读验收。

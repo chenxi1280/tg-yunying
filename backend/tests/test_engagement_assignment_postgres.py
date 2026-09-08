@@ -87,3 +87,30 @@ def test_assignment_lock_serializes_following_freeze_observation(database):
         observer.get(TgAccount, 11).telegram_frozen = True
         observer.commit()
         assert assignment_decisions(planner, 1, [11]) == {11: "account_frozen"}
+
+
+def test_concurrent_qualification_readers_share_identity_locks(database):
+    with Session(database) as seed:
+        _seed(seed)
+        seed.commit()
+    with Session(database) as first, Session(database) as second:
+        assert assignment_decisions(first, 1, [11, 12]) == {11: "", 12: ""}
+        assert assignment_decisions(second, 1, [11, 12]) == {11: "", 12: ""}
+
+
+def test_qualification_read_does_not_block_action_or_attempt_account_foreign_keys(database):
+    from app.models import ExecutionAttempt
+
+    with Session(database) as seed:
+        _seed(seed)
+        seed.commit()
+    with Session(database) as reader, Session(database) as writer:
+        assert assignment_decisions(reader, 1, [11]) == {11: ""}
+        writer.execute(text("SET LOCAL lock_timeout = '100ms'"))
+        action = Action(task_id="qa-task", tenant_id=1, task_type="channel_view",
+            action_type="view_message", account_id=11)
+        writer.add(action)
+        writer.flush()
+        writer.add(ExecutionAttempt(tenant_id=1, action_id=action.id, account_id=11))
+        writer.commit()
+        assert reader.scalar(select(Action.id)) == action.id

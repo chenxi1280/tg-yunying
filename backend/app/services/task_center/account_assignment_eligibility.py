@@ -65,7 +65,7 @@ def _lock_identities(session, tenant_id, ids):
         with session.begin_nested():
             authorizations = session.scalars(select(TgAccount.current_authorization_id).where(
                 TgAccount.tenant_id == tenant_id, TgAccount.id.in_(ids),
-            ).order_by(TgAccount.id).with_for_update(nowait=True)).all()
+            ).order_by(TgAccount.id).with_for_update(read=True, nowait=True)).all()
             current_ids = sorted({value for value in authorizations if value is not None})
             if current_ids:
                 session.execute(select(TgAccountAuthorization.id).where(

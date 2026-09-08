@@ -46,3 +46,11 @@
 - 固定查询预算覆盖资格锁与读取，1/32/128候选不出现N+1；真实PG并发竞争返回account_eligibility_busy，原事务提交后重试看到已占用容量且不超分配。没有跳过失败测试或放宽生产资格。
 - 修复复验：原失败相关7文件69 passed / 13.48s；共用fixture及资格/分配消费者14文件162 passed / 23.82s；历史调用/恢复8文件115 passed / 20.85s；真实PG只读切换、组合容量与资格并发9项通过。普通测试与PG分开执行，避免迁移fileConfig影响caplog的进程内日志配置；混跑时12项仅日志断言失败，隔离复跑115项全通过。
 - 2个生产模块为最小修复，PRD与两项索引同步；Python AST和diff-check通过。随后将补充提交快进master/release并重新运行完整候选CI；最终上线证据仍待新流水线终态。
+
+## 第二次发布线上反查与共享资格锁修复
+
+- 候选`49214fdca46a9e8d63608945719e593bd1940a54`的Actions run `34194192661`于2026-09-08 14:35:17北京时间成功。CI合计7037 passed、14 skipped、2 xfailed；生产current、backend及18个业务worker SHA一致，服务/内外网health通过；共享合同active，Alembic0228，授权runtime off、ABC无running。
+- 业务验收未通过：23个实际Task逐项读回无完整新远端成功链；多个新Planner错误为account_eligibility_busy，另有一次PostgreSQL deadlock。前述服务健康、异常账号零调用不能替代业务通过。
+- 根因：资格读取对候选TgAccount使用FOR UPDATE，与正常读取者及Action/Attempt账号FK KEY SHARE冲突。统一§19.64.10修订为FOR SHARE NOWAIT；current授权/online事实仍使用共享锁，冻结UPDATE仍互斥，预算仍由原policy锁防超分配。生产修复仅此一处锁模式变更，无数据清理或unknown重试。
+- 新增2项真实PG反例：修复前2 failed / 6 passed（12.01s），修复后连同资格失效先后顺序、观测写锁、预算policy竞争及冻结专项12 passed（19.51s）。普通资格/审查回归/组合容量/批量读取/共享使用/每日检查/冻结合同/membership等10文件161 passed（22.07s）。AST与diff-check通过。
+- 需将本修复重新提交、快进release并通过完整CI，使用新部署锚点验证正常读取不再持续互斥、失效账号仍排除及健康账号真实执行。完整24小时复查周期及未实现的§19.60/61仍不得声称已验收。
