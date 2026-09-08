@@ -239,13 +239,21 @@ def test_group_v2_general_fallback_when_unauthorized_adult_markers_present() -> 
         assert config["_ai_content_contracts"][job.id]["content_mode"] == "general"
 
 
-def test_generation_timing_binding_bypassed_when_route_v2_disabled() -> None:
+def test_unified_generation_timing_does_not_bypass_provider_when_v2_disabled() -> None:
     from app.services.task_center.generation_timing_binding import bind_generation_timing_config
     with Session(_engine()) as session:
         task, action, job = _seed(session, routes=["general"])
         cfg = {"engagement_contract_version": "unified_engagement_v1", "ai_content_route_v2_enabled": False}
-        res = bind_generation_timing_config(session, task, work=((job, "proactive"),), config=cfg, deadline_at=datetime(2026, 8, 19, 11, 0))
-        assert res == cfg
+        with pytest.raises(ValueError, match="generation_timing_legacy_provider_missing:realizer"):
+            bind_generation_timing_config(session, task, work=((job, "proactive"),),
+                config=cfg, deadline_at=datetime(2026, 8, 19, 11, 0))
+
+
+def test_legacy_generation_timing_still_uses_legacy_provider_timeout() -> None:
+    from app.services.task_center.generation_timing_binding import bind_generation_timing_config
+
+    config = {"ai_content_route_v2_enabled": False}
+    assert bind_generation_timing_config(None, None, work=(), config=config, deadline_at=None) == config
 
 
 def test_group_v2_alternates_inquiry_and_sensory_when_both_are_grounded() -> None:

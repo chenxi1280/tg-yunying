@@ -32,7 +32,8 @@
 ## Release Gate
 
 - release_authorized：用户要求修复正常发送，沿本项目既有master→release→Deploy Production闭环。
-- candidate_sha / workflow / deployed_sha / live_anchor：pending。
+- 首轮候选9a803ef9 / Prepare run34222594372：仅旧测试`test_generation_timing_binding_bypassed_when_route_v2_disabled`失败，它要求保留本次被修复的unified跳过时限行为。已按§19.67更新为unified不得跳过配置校验，新增legacy合同保留验证；合法non-V2正式builder已有成功用例。47项相关回归通过（7.75秒），其余首轮CI分片及镜像全部成功，部署未触发。
+- 修正测试后的candidate_sha / workflow / deployed_sha / live_anchor：pending。
 - migration：not_applicable；生产配置变更/维护apply：not_applicable。
 - 回退边界：已有正常调用/unknown/事实不能回放或清理；代码切回旧版本不能被当成业务补发方式。
 - 部署核验：Actions终态、current目录SHA、各角色镜像/RELEASE_SHA、健康。
