@@ -395,3 +395,4 @@ AI 活跃群发送动作规划时必须使用目标群过滤账号：
 - 复检写回必须合并保留原Attempt的请求/终止证据，不再用Action结果整体替换。当前只修复未知成员复检的成功释放、失败、超时和连接错误路径；不回填历史ACK或伪造远端事实。
 - 反向验证：读取正式channel_membership_runtime、Gateway journal writer、_finish_execution_attempt及复检路径；原journal可作为调用返回证据但不能证明加入成功。同目标unknown继续阻塞；无回执旧调用单独通过原退出证据或对账路径处理，不删除未知记录。
 - Product Design Complete：完整范围、物理/业务分离、同目标unknown、跨目标、租户/账号/epoch、请求三字段、双hash、时间、显式取消、0/1/并发上限、ACK丢失、原冷却和排程、无schema/API/前端变化均已纳入定向QA；design_status=complete，进入dev。发布遵循master→release→Deploy Production，发布与真实关注分别验收。
+- 审查回流：复检Action可能携带旧请求/终止字段，合并时原Attempt请求三字段及transport_termination_*必须优先；stale成员执行恢复同样保留这些原证据，其他类型的stale逻辑不改动。生产67条缺证据均取得10个原容器正面退出日志，但旧退出CLI仅接收四类主动作。将同四类Task下的ensure_target_membership/ensure_channel_membership加入同一退出证明入口；所有原身份、原进程、精确集合、SHA/hash、无统一资源、审计和读回门禁保持。此扩展只追加结束证据，不改原unknown、成员关系或排程。同步统一引擎§19.59与运行手册后再次QA，design_status=complete。

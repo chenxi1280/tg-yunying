@@ -14,11 +14,12 @@ from tests.test_engagement_upgrade_postgres import upgrade_database
 from tests.test_telegram_worker_exit_reconcile import OPERATION, _legacy, _spec
 
 
-@pytest.fixture
-def original_call(upgrade_database):
+@pytest.fixture(params=["like_message", "ensure_target_membership"])
+def original_call(upgrade_database, request):
     Base.metadata.create_all(upgrade_database)
     with Session(upgrade_database) as session:
         action, attempt = _legacy(session)
+        action.action_type = request.param
         session.commit()
         preview = preview_worker_exits(session, _spec(attempt))
         ids = action.id, attempt.id

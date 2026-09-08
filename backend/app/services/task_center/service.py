@@ -123,6 +123,7 @@ from .task_pause_cleanup import (
     lock_and_has_ambiguous_group_ai_work,
 )
 from .source_capacity_activation import validate_source_capacity_config
+from .channel_membership_attempts import membership_reprobe_snapshot
 from .channel_membership import (
     ACTION_TYPE as TARGET_MEMBERSHIP_ACTION_TYPE,
     LEGACY_ACTION_TYPE as LEGACY_MEMBERSHIP_ACTION_TYPE,
@@ -5862,7 +5863,10 @@ def _mark_stale_executing_action(
             "result_unknown" if gateway_started else "call_not_started"
         )
         latest_attempt.after_call_at = now
-        latest_attempt.result_snapshot = dict(action.result or {})
+        latest_attempt.result_snapshot = (
+            membership_reprobe_snapshot(latest_attempt, action.result)
+            if action.action_type in MEMBERSHIP_ACTION_TYPES else dict(action.result or {})
+        )
     return {
         "previous_lease_owner": previous_lease_owner,
         "recovery_reason": recovery_reason,
@@ -6923,7 +6927,7 @@ def _mark_unknown_membership_reprobe_timeout(
         latest_attempt.status = "result_unknown"
         latest_attempt.failure_type = "telegram_probe_timeout"
         latest_attempt.after_call_at = now
-        latest_attempt.result_snapshot = {**dict(latest_attempt.result_snapshot or {}), **dict(action.result)}
+        latest_attempt.result_snapshot = membership_reprobe_snapshot(latest_attempt, action.result)
 
 
 def _mark_unknown_membership_reprobe_failed(
@@ -6950,7 +6954,7 @@ def _mark_unknown_membership_reprobe_failed(
         latest_attempt.status = "result_unknown"
         latest_attempt.failure_type = error_code
         latest_attempt.after_call_at = now
-        latest_attempt.result_snapshot = {**dict(latest_attempt.result_snapshot or {}), **dict(action.result)}
+        latest_attempt.result_snapshot = membership_reprobe_snapshot(latest_attempt, action.result)
 
 
 def _mark_unknown_membership_reprobe_connection_error(
@@ -6979,7 +6983,7 @@ def _mark_unknown_membership_reprobe_connection_error(
         latest_attempt.status = "result_unknown"
         latest_attempt.failure_type = "telegram_probe_connection_error"
         latest_attempt.after_call_at = now
-        latest_attempt.result_snapshot = {**dict(latest_attempt.result_snapshot or {}), **dict(action.result)}
+        latest_attempt.result_snapshot = membership_reprobe_snapshot(latest_attempt, action.result)
 
 
 def _release_unknown_membership_reprobe_result(
@@ -6996,7 +7000,7 @@ def _release_unknown_membership_reprobe_result(
     if latest_attempt:
         latest_attempt.status = "result_unknown"
         latest_attempt.after_call_at = now
-        latest_attempt.result_snapshot = {**dict(latest_attempt.result_snapshot or {}), **dict(action.result or {})}
+        latest_attempt.result_snapshot = membership_reprobe_snapshot(latest_attempt, action.result)
     task.last_error = str(
         (action.result or {}).get("error_message") or task.last_error or ""
     )

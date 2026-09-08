@@ -119,17 +119,22 @@ def test_finished_unknowns_free_channel_slots_for_other_accounts(session):
     assert wait_for_target(session, target_id=1, account_id=3) is None
 
 
-@pytest.mark.parametrize("kind", ["failed", "timeout", "connection_error", "release"])
+@pytest.mark.parametrize("kind", ["failed", "timeout", "connection_error", "release", "stale"])
 def test_membership_reprobe_preserves_original_transport_and_identity(kind):
     from app.services.task_center import service
     from app.integrations.telegram.contracts import OperationResult
 
     original = {"transport_termination_state": "acknowledged", "gateway_request_identity": "original"}
-    attempt = SimpleNamespace(result_snapshot=dict(original))
-    action = SimpleNamespace(result={"error_message": "probe result"})
+    attempt = SimpleNamespace(result_snapshot=dict(original), gateway_call_started_at=NOW, status="result_unknown")
+    action = SimpleNamespace(result={"error_message": "probe result",
+        "gateway_request_identity": "stale-action-identity", "transport_termination_state": "unproven"},
+        action_type="ensure_target_membership", lease_owner="dead:1", lease_expires_at=NOW)
     task = SimpleNamespace(last_error="")
     kwargs = dict(action=action, task=task, latest_attempt=attempt, now=NOW)
-    if kind == "release":
+    if kind == "stale":
+        service._mark_stale_executing_action(action=action, latest_attempt=attempt,
+            stale_worker_ids={"dead:1"}, now=NOW)
+    elif kind == "release":
         service._release_unknown_membership_reprobe_result(**kwargs)
     elif kind == "failed":
         service._mark_unknown_membership_reprobe_failed(**kwargs, result=OperationResult(False))

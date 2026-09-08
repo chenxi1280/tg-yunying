@@ -8,6 +8,15 @@ from .engagement_gateway_return import journal_matches_original_call
 
 
 UNKNOWN_ATTEMPT_STATES = ("result_unknown", "unknown_after_send", "remote_unknown")
+REQUEST_FIELDS = ("gateway_request_identity", "gateway_request_fingerprint", "gateway_target_fingerprint")
+
+
+def membership_reprobe_snapshot(attempt, action_result):
+    frozen = dict(attempt.result_snapshot or {})
+    merged = {**frozen, **dict(action_result or {})}
+    protected = {key: value for key, value in frozen.items()
+        if key in REQUEST_FIELDS or key.startswith("transport_termination_")}
+    return {**merged, **protected}
 
 
 def membership_attempt_rows(session, query):

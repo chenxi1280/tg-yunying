@@ -2956,3 +2956,7 @@ design_status=complete。反查已覆盖原 Gateway/worker owner 生成、当前
 线上 13 个 running 频道任务（2 评论、6 点赞、5 浏览）均为 selection_mode=group、account_group_ids 含 11 组、旧 account_group_id 为空。成员前置候选读取仅识别单组，导致配置合法但候选为空。多组列表是当前账号范围合同：非空 account_group_ids 优先；只有缺失/空列表时兼容已保存的单组字段；均为空返回空范围，禁止扩大至 all。保留 tenant、active、未删除、普通运营用途与救援管理员排除条件及原排序；manual/all 行为不变。
 
 Product Design Complete：修复候选范围读取，不改变账号组配置、成员版本、原义务/Action/Attempt、关注前置规则或数量目标。抽出成员候选选择模块保留旧公开导入入口；多组、单组兼容、优先级、空范围和用途/租户边界由定向测试覆盖。上线后只读复查候选数和成员前置推进，再以三类 typed 远端事实验收；候选增加不等于关注或履约完成。
+
+### 19.59 补充：频道关注的历史准入调用（2026-09-08）
+
+六频道补齐排障发现，同四类Task的ensure_target_membership/ensure_channel_membership原调用也使用docker_pid1_local_telethon_v1，可能因未知复检覆盖ACK而阻塞频道账号。原容器退出对账入口增加这两类准入Action，其他资格限制和全套原进程/身份/精确集合/资源/CAS/审计/独立读回规则不变。ACK只恢复物理结束证明，不改Action/Attempt业务unknown，不给同账号同目标重新加入的许可。禁止将ensure类型加入互动成本类别表；只是退出证据操作的合法类型扩展。已反查原Gateway和worker归属，design_status=complete；QA覆盖准入Action原unknown保持、锁冲突、漂移零写、事务回滚与幂等读回。

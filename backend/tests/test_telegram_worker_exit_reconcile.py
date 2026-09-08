@@ -113,6 +113,23 @@ def test_original_missing_day_and_request_are_not_filled():
         assert verify_worker_exits(session, receipt)["acknowledged"] == 1
 
 
+@pytest.mark.parametrize("action_type", ["ensure_target_membership", "ensure_channel_membership"])
+def test_membership_original_exit_ack_does_not_resolve_or_replay_unknown(action_type):
+    with _session() as session:
+        action, attempt = _legacy(session)
+        action.action_type = action_type
+        action.status = "closed_unknown"
+        session.commit()
+        before = (dict(action.payload), dict(action.result), attempt.after_call_at)
+        preview = preview_worker_exits(session, _spec(attempt))
+        receipt = apply_worker_exits(session, preview, OPERATION)
+        session.commit()
+        assert action.status == "closed_unknown" and attempt.status == "result_unknown"
+        assert before == (action.payload, action.result, attempt.after_call_at)
+        with Session(session.get_bind()) as verification:
+            assert verify_worker_exits(verification, receipt)["acknowledged"] == 1
+
+
 @pytest.mark.parametrize("field,value", [
     ("worker_id", "someone:1"), ("worker_id", f"{CONTAINER[:12]}:2"),
     ("status", "success"), ("gateway_call_started_at", None),

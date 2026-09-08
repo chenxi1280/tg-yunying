@@ -2,6 +2,9 @@
 
 ## 历史 Telegram 原进程退出对账
 
+2026-09-08：同四类Task的 `ensure_target_membership` / `ensure_channel_membership` 也使用此原进程退出入口；仅允许相同原调用资格与完整退出证据，ACK不修改成员业务unknown，不重发关注。频道关注物理容量读取可使用原ACK，仍保留同账号同目标业务防重。
+
+
 统一引擎PRD §19.59 的 `backend/scripts/reconcile_legacy_telegram_workers.py` 只确认旧调用的原Docker PID 1已经退出，不能把当前进程缺失、旧心跳或业务failed改称退出证明。输入JSON包含tenant、完整deployed_sha、精确attempt_ids/expected_attempt_count，以及从生产宿主只读采集的同完整容器ID的Docker exitStatus和TaskDelete原文、SHA256、source_host/source_ref、采集时间。宿主完整原件保存在权限0600的审计位置；preview再按数据库原worker/call时间/身份核对。实际调用必须早于实际exitStatus时间，旧缺失request/day保持缺失。
 
 ```sh

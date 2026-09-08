@@ -23,6 +23,7 @@ ACK_SCHEMA = 1
 TRANSPORT_FIELDS = frozenset({"transport_termination_state", "transport_termination_observed_at",
     "transport_termination_exited_at", "transport_termination_evidence"})
 ISSUED_STATES = frozenset({"gateway_call_started", "result_unknown", "failed", "permanent_failed"})
+EXIT_ACTION_TYPES = frozenset(ACTION_CLASS_BY_TYPE) | {"ensure_target_membership", "ensure_channel_membership"}
 
 
 @dataclass(frozen=True)
@@ -94,7 +95,7 @@ def _preview_row(action, attempt, proofs):
 
 
 def _require_issued_original(action, attempt):
-    if (action.task_type not in ENGAGEMENT_TYPES or action.action_type not in ACTION_CLASS_BY_TYPE
+    if (action.task_type not in ENGAGEMENT_TYPES or action.action_type not in EXIT_ACTION_TYPES
             or attempt.status not in ISSUED_STATES or attempt.remote_message_id):
         raise ValueError("worker_exit_legacy_attempt_ineligible")
     if (action.tenant_id, action.account_id, action.task_lifecycle_epoch) != (
