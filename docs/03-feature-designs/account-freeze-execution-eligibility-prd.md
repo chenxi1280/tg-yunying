@@ -58,3 +58,5 @@ Telegram异常/完整AppConfig → 账号冻结观测CAS → TgAccount冻结事�
 发布前迁移反查补正：0001通过当前模型生成legacy bootstrap，必须排除本次新增两列，避免空库升级0228重复加列。7处迁移head断言同步0228。已补跑13项真实PostgreSQL空库/旧版本升级及round-trip、12项迁移图/合并完整性；最终定向累计216项通过。0228仅在不存在任何冻结观测时允许schema downgrade，有观测则拒绝删除事实；生产继续只采用兼容前向修复。第一轮发布34181003934在部署前主动取消，未触及生产。
 
 CI批次34181196467：两个PostgreSQL分片和前端通过，三个no_postgres分片遇到四个断言失败，均分组定位为测试夹具问题。Mini Bug Card：评论update-stream固定2026-09-05来源在9月8日越过三天有效期，改为当前场景时间；ABC fixture用`:e4 in key`将e4开头的随机batch误作E4操作，新增确定性反例先复现再改为末尾阶段精确匹配。仅测试变更，保留所有业务断言和生产合同；相关43项通过。该CI未构建或部署生产。
+
+CI34181916380：前端、两个PostgreSQL与两个no_postgres分片通过；剩余ABC completed recovery用例暴露fixture的E4重试键`e4:retry:1`被末尾匹配漏掉。测试helper改为冒号分段后的完整e4阶段匹配，新增重试回归，与批次前缀反例一起验证；ABC主流程/checkpoint/completed recovery/C orphan及评论update-stream合计50项通过。业务代码未变，此轮仍未部署。

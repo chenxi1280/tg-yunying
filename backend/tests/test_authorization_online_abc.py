@@ -719,7 +719,7 @@ def _add_operation(
     operation_type: str = "",
 ):
     resolved_type = operation_type or (
-        "abc_e4_primary_send" if key.endswith(":e4") else "provision_standby_1"
+        "abc_e4_primary_send" if "e4" in key.split(":") else "provision_standby_1"
     )
     account = session.get(TgAccount, account_id)
     operation = TgAuthorizationDrOperation(
