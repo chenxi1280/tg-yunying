@@ -5,6 +5,7 @@ import json
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -47,6 +48,7 @@ from .ai_group_content_projection import (
     topic_capacity_projection,
 )
 from .ai_pacing import AiPacingAssignment
+from .engagement_runtime_error import RuntimeResourceBlocked
 
 
 RECENT_VOCABULARY_WINDOW = 100
@@ -184,9 +186,16 @@ def _lock_daily_target(session: Session, target_id: str) -> None:
 def _lock_group_surface(session: Session, group_id: int) -> None:
     statement = select(TgGroup).where(TgGroup.id == group_id)
     if session.bind and session.bind.dialect.name != "sqlite":
-        # NO KEY UPDATE remains exclusive while allowing existing FK KEY SHARE locks.
-        statement = statement.with_for_update(key_share=True)
-    if session.scalar(statement) is None:
+        # FK-compatible exclusion must not wait on listeners that are writing this Task.
+        statement = statement.with_for_update(key_share=True, nowait=True)
+    try:
+        with session.begin_nested():
+            group = session.scalar(statement)
+    except DBAPIError as error:
+        if getattr(error.orig, "sqlstate", None) != "55P03":
+            raise
+        raise RuntimeResourceBlocked("ai_group_surface_busy", "群内容状态正在更新，当前事务未取得内容互斥") from error
+    if group is None:
         raise ValueError("ai_group_surface_group_missing")
 
 

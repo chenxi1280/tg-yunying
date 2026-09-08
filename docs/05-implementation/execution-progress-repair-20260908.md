@@ -86,3 +86,15 @@ a49b5087 Actions34210057986全部通过并于17:42:52部署；current=/data/tgyu
 生产Session审查：SessionLocal配置autoflush=False，锁后populate_existing之前必须显式flush自己尚未持久化的wake变更，避免同事务连续唤醒/mark/complete丢revision；新增生产配置PG回归。错误/节奏冲突的三条记录事务也必须联合认领Task/wake，防止在错误处理时再次发生反序等待。65e0bf41的Actions34212562262已在部署前取消，由完整修正候选取代。
 
 生产Session与错误记录补修最终QA：14项PG通过（/tmp/planner-joint-claim-final-combined.log），51项单元/边界回归通过（/tmp/planner-joint-claim-final-unit.log），编译与diff检查通过。
+
+## 完整候选CI
+
+候选067ae7bc08e2a0b3dd1b02c155fbb9bf1485ab78，Actions34212961666。五组后端检查全部通过：PG两组404/420 passed、各7 skipped和1 xfailed；非PG三组2043/2109/2106 passed，合计7082 passed、14 skipped、2 xfailed。前端build与三个镜像构建均通过。2026-09-08 18:09:04开始deploy；CI和镜像证据不作为生产恢复结论。
+
+## 群面与监听Task反序继续resync
+
+067ae7bc Actions34212961666于18:13:40成功部署，18:14:52独立读回current=/data/tgyunying/releases/20260908100909_067ae7bc，19个带RELEASE_SHA应用容器一致且healthy，验证码worker镜像也匹配且healthy；内外health均200、schema0228。新日志原资格/浏览释放/Task-wake错误未见，仍发现群内容分配40P01。18:14:54快照deadlocks1873、主互动typed fact仍0，不能写production_fixed。
+
+/tmp/execution-lock-graph-067.jsonl的tick17/18捕获真实互等：监听73320持群更新等待Task，Planner76711持Task等待群。按§19.66.9将群面改为显式非阻塞资源认领，沿既有Planner事务回滚/错误重试和Gateway未调用路径。旧代码真实PG复现1 failed/1 passed（/tmp/content-surface-progress-before.log）；修复后12项PG通过（/tmp/content-surface-progress-after.log），证明监听统计与wake落库、原任务恢复及外键引用/数量守恒。
+
+内容分配、共享资源与冻结准入69项回归通过（/tmp/content-surface-progress-unit.log）。审查确认群内容复核位于_reserve_group_send_attempt之前，RuntimeResourceBlocked由既有_dispatch_action捕获并延期，不新建called/unknown事实；群锁函数496行所在文件未超过500行，编译与diff检查通过。设计/结构/数据流已resync，重新进入完整CI与发布验证。
