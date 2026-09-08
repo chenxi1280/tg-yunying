@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import timedelta
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
@@ -31,15 +30,16 @@ from .task_group_bot_admission_surface import (
 from .task_group_bot_admission_facts import record_fact as _record_fact
 from .task_group_bot_admission_insert import find_observation, persist_unique_observation
 from .task_group_bot_admission_prompts import record_control_facts as _record_control_facts
-OBSERVATION_SECONDS = 30
+from .task_group_bot_admission_state import (
+    AdmissionDecision, OBSERVATION_SECONDS, MAX_OBSERVATION_GAP_RETRIES,
+    OBSERVATION_GAP_LIMIT_REASON,
+    abandon as _abandon, decision as _decision,
+    restart_with_gap as _restart_with_gap, restart_surface as _restart_surface,
+    task_day_terminal_expired as _task_day_terminal_expired,
+    start_post_follow_observation as _start_post_follow_observation,
+)
 
-@dataclass(frozen=True)
-class AdmissionDecision:
-    allowed: bool
-    code: str
-    admission_id: str
-    version: int
-    terminal_reason: str = ""
+
 def evaluate_task_admission(
     session: Session,
     *,
@@ -75,26 +75,32 @@ def evaluate_task_admission(
     if admission.state == "requirements_pending":
         return _requirements_decision(session, admission)
     if admission.state == "abandoned":
-        if admission.terminal_reason == "current_authorization_missing":
-            from .task_group_bot_admission_recovery import restart_unproven_admission
-
-            if restart_unproven_admission(session, admission):
-                return _decision(admission, False, "c2_observation_restarted")
-        if _target_entity_terminal_expired(admission):
-            from .task_group_bot_admission_recovery import restart_task_day_admission
-
-            if restart_task_day_admission(session, admission):
-                return _decision(
-                    admission,
-                    False,
-                    "c2_observation_restarted_for_task_day",
-                )
-        return _decision(admission, False, "c2_account_abandoned")
+        return _abandoned_admission_decision(session, admission)
     if admission.observation_gap:
-        return _decision(admission, False, "c2_observation_gap")
+        if int(admission.consecutive_observation_gaps or 0) >= MAX_OBSERVATION_GAP_RETRIES:
+            return _abandon(session, admission, OBSERVATION_GAP_LIMIT_REASON)
+        return _restart_with_gap(session, admission, "persisted_observation_gap")
     if as_beijing(admission.no_prompt_pass_at) > _now():
         return _decision(admission, False, "c2_observing_30s")
     return _probe_due_observation(session, admission)
+
+
+def _abandoned_admission_decision(session: Session, admission: TaskGroupBotAdmission) -> AdmissionDecision:
+    if admission.terminal_reason == "current_authorization_missing":
+        from .task_group_bot_admission_recovery import restart_unproven_admission
+
+        if restart_unproven_admission(session, admission):
+            return _decision(admission, False, "c2_observation_restarted")
+    if _task_day_terminal_expired(admission):
+        from .task_group_bot_admission_recovery import restart_task_day_admission
+
+        if restart_task_day_admission(session, admission):
+            return _decision(
+                admission,
+                False,
+                "c2_observation_restarted_for_task_day",
+            )
+    return _decision(admission, False, "c2_account_abandoned")
 
 
 def ensure_task_admission_observation(
@@ -148,6 +154,7 @@ def _probe_due_observation(
             account=probe.account,
             authorization=current_authorization,
         )
+    admission.consecutive_observation_gaps = 0
     end_cursor = _max_cursor(messages, probe.start_cursor)
     if messages and _record_control_facts(
         session,
@@ -477,120 +484,6 @@ def _record_requirement_success_facts(
             "action_status": action.status,
             "result": dict(action.result or {}),
         })
-
-
-def _start_post_follow_observation(admission: TaskGroupBotAdmission) -> None:
-    now_value = _now()
-    identity = dict(admission.surface_identity or {})
-    identity["observed_start_cursor"] = identity.get("observed_end_cursor", "1")
-    identity["listener_instance_epoch"] = int(admission.observation_version or 1) + 1
-    admission.state = "observing"
-    admission.observation_version = int(admission.observation_version or 1) + 1
-    admission.observation_started_at = now_value
-    admission.no_prompt_pass_at = now_value + timedelta(seconds=OBSERVATION_SECONDS)
-    admission.surface_identity = identity
-    admission.surface_identity_hash = _hash(identity)
-    admission.version = int(admission.version or 1) + 1
-
-
-def _restart_with_gap(
-    session: Session,
-    admission: TaskGroupBotAdmission,
-    reason: str,
-) -> AdmissionDecision:
-    now_value = _now()
-    _record_fact(session, admission, "post_follow_visibility", outcome={
-        "outcome": "observation_gap",
-        "reason": reason,
-    })
-    admission.observation_gap = False
-    admission.state = "observing"
-    admission.observation_version = int(admission.observation_version or 1) + 1
-    admission.version = int(admission.version or 1) + 1
-    admission.observation_started_at = now_value
-    admission.no_prompt_pass_at = now_value + timedelta(seconds=OBSERVATION_SECONDS)
-    identity = dict(admission.surface_identity or {})
-    identity["listener_instance_epoch"] = admission.observation_version
-    identity["gap_reason"] = reason
-    admission.surface_identity = identity
-    admission.surface_identity_hash = _hash(identity)
-    return _decision(admission, False, "c2_observation_gap")
-
-
-def _restart_surface(
-    session,
-    *,
-    admission,
-    group,
-    account,
-    authorization,
-) -> AdmissionDecision:
-    if account is None or not account.session_ciphertext:
-        return _abandon(session, admission, "session_unavailable")
-    now_value = _now()
-    cursor = _latest_group_cursor(session, group.id)
-    identity = _surface_identity(
-        group,
-        authorization=authorization,
-        account_id=admission.account_id,
-        session_ciphertext=str(account.session_ciphertext),
-        start_cursor=cursor,
-        end_cursor=cursor,
-        observation_version=int(admission.observation_version or 1) + 1,
-    )
-    _record_fact(session, admission, "post_follow_visibility", outcome={
-        "outcome": "observation_surface_changed",
-        "previous_surface_identity_hash": admission.surface_identity_hash,
-    })
-    admission.state = "observing"
-    admission.observation_version = int(admission.observation_version or 1) + 1
-    admission.observation_started_at = now_value
-    admission.no_prompt_pass_at = now_value + timedelta(seconds=OBSERVATION_SECONDS)
-    admission.surface_identity = identity
-    admission.surface_identity_hash = _hash(identity)
-    admission.terminal_reason = ""
-    admission.terminal_evidence = {}
-    admission.version = int(admission.version or 1) + 1
-    return _decision(admission, False, "c2_observation_surface_changed")
-
-
-def _abandon(
-    session: Session,
-    admission: TaskGroupBotAdmission,
-    reason: str,
-) -> AdmissionDecision:
-    admission.state = "abandoned"
-    admission.terminal_reason = reason[:80]
-    admission.terminal_evidence = {
-        "outcome": "abandoned_for_task",
-        "detail": reason[:160],
-        "terminal_date": _now().date().isoformat(),
-    }
-    admission.version = int(admission.version or 1) + 1
-    return _decision(admission, False, "c2_account_abandoned")
-
-
-def _target_entity_terminal_expired(admission: TaskGroupBotAdmission) -> bool:
-    if admission.terminal_reason != "target_entity_unresolvable":
-        return False
-    terminal_date = date.fromisoformat(
-        str((admission.terminal_evidence or {}).get("terminal_date") or "")
-    )
-    return terminal_date < _now().date()
-
-
-def _decision(
-    admission: TaskGroupBotAdmission,
-    allowed: bool,
-    code: str,
-) -> AdmissionDecision:
-    return AdmissionDecision(
-        allowed,
-        code,
-        admission.id,
-        int(admission.version or 1),
-        str(admission.terminal_reason or ""),
-    )
 
 
 __all__ = [

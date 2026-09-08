@@ -1,6 +1,7 @@
 """Pre-engine bootstrap boundary for the legacy ORM-based initial migration.
 
-Only 0001 uses this copy. New engine schema must be built by its real revisions.
+0001 and the 0137 admission baseline use this copy. Later columns are added
+by their real revisions.
 Existing legacy migrations retain their pre-0197 create/check compatibility.
 """
 from sqlalchemy import MetaData, UniqueConstraint
@@ -296,6 +297,7 @@ LEGACY_BOOTSTRAP_TABLES = frozenset((
 ))
 
 ENGINE_ADDED_COLUMNS = {
+    "task_group_bot_admissions": frozenset(("consecutive_observation_gaps",)),
     "tg_accounts": frozenset(("telegram_frozen", "telegram_freeze_observed_at")),
     "tasks": frozenset(("retired_at", "replaced_by_task_id")),
     "channel_messages": frozenset(("grouped_id", "source_metadata")),

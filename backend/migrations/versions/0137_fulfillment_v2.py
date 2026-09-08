@@ -12,6 +12,7 @@ import sqlalchemy as sa
 
 from app.database import Base
 from app import models  # noqa: F401
+from migrations.legacy_bootstrap import legacy_bootstrap_metadata
 
 
 revision = "0137_fulfillment_v2"
@@ -96,8 +97,10 @@ SERVER_DEFAULTS = {
 
 def upgrade() -> None:
     bind = op.get_bind()
+    admissions = legacy_bootstrap_metadata(Base.metadata).tables["task_group_bot_admissions"]
     for table_name in NEW_TABLES:
-        Base.metadata.tables[table_name].create(bind, checkfirst=True)
+        table = admissions if table_name == admissions.name else Base.metadata.tables[table_name]
+        table.create(bind, checkfirst=True)
     for table_name, column_names in MODEL_COLUMNS.items():
         for column_name in column_names:
             _add_model_column(table_name, column_name)

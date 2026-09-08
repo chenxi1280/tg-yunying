@@ -4053,11 +4053,7 @@ def _ready_coverage_rows(
 ) -> list[TaskAccountDailyCoverage]:
     if not _daily_coverage_enforced(config) or coverage_rows is None:
         return []
-    plannable_states = (
-        {"ready", "pending_admission"}
-        if task.fulfillment_contract_version == "fact_first_v3"
-        else {"ready"}
-    )
+    plannable_states = {"ready"}
     return [
         row for row in coverage_rows
         if row.state in plannable_states and row.confirmed_count < row.target_count

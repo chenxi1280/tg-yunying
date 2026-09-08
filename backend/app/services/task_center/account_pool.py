@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from sqlalchemy import and_, case, func, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -69,6 +69,11 @@ def select_task_accounts(
         stmt = stmt.join(TgGroupAccount, TgGroupAccount.account_id == TgAccount.id).where(
             TgGroupAccount.group_id == target_group_id,
             TgGroupAccount.can_send.is_(True),
+            or_(
+                TgGroupAccount.permission_label.is_(None),
+                TgGroupAccount.permission_label == "",
+                ~TgGroupAccount.permission_label.like("%无权限%"),
+            ),
         )
     if daily_coverage_task_id and daily_coverage_action_types:
         stmt = _daily_coverage_ordered_query(

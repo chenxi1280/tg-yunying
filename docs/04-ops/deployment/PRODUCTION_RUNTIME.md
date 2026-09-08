@@ -1,5 +1,9 @@
 # TG 运营管理平台生产部署说明
 
+## 2026-09-08 观察连续失败计数发布
+
+频道成员前置设计§17修复包含迁移`0229_admission_gap_count`，0001/0137历史建库基线排除该新列，由0229只为Task准入增加默认0的`consecutive_observation_gaps`，不从历史观察版本推断失败次数，也不运行存量重试/维护apply。发布后核对迁移head、字段默认值及current/backend/worker完整SHA；只读统计观察计数、当日终止原因和发布后真实验证/救援Attempt及远端事实。普通读取成功（含空列表）清零；次日由正式Planner入口重开当天已过期的观察终止，历史unknown不重放。存在非零失败计数时迁移downgrade拒绝删除证据，采用兼容前向修复。Release Gate见`docs/05-implementation/local-review-fixes-20260908.md`。
+
 ## 历史 Telegram 原进程退出对账
 
 2026-09-08：同四类Task的 `ensure_target_membership` / `ensure_channel_membership` 也使用此原进程退出入口；仅允许相同原调用资格与完整退出证据，ACK不修改成员业务unknown，不重发关注。频道关注物理容量读取可使用原ACK，仍保留同账号同目标业务防重。

@@ -40,7 +40,7 @@ def test_0192_backfills_legacy_quality_target_and_round_trips(upgrade_database, 
         )
         _migrate(database, "upgrade", "head")
         assert _scalar(database, text("select version_num from alembic_version")) == (
-            "0228_account_freeze"
+            "0229_admission_gap_count"
         )
         assert _scalar(database, select(func.count()).select_from(
             ChannelCommentPlanContract,

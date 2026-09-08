@@ -29,6 +29,9 @@ from app.models import (
 
 from ._common import _now, ai_gateway, gateway
 from .ai_config import ai_provider_credentials
+from .verification_arithmetic import (
+    _arithmetic_answer, _extract_arithmetic_expression,
+)
 from app import image_verification_ocr
 from .image_verification_runtime import (
     ImageVerificationPolicy,
@@ -42,10 +45,7 @@ IMAGE_VERIFICATION_CONSENSUS_COUNT = 2
 IMAGE_VERIFICATION_PROVIDER_SOURCES = ("mimo", "minimax")
 MIMO_V25_MODEL_MARKERS = ("mimo-v2.5", "mino-v2.5")
 MINIMAX_M3_MODEL_MARKERS = ("minimax-m3", "minimax m3")
-CN_NUMBER_CHARS = "零〇一二两三四五六七八九十"
-ARITHMETIC_PATTERN = re.compile(rf"(?P<left>\d{{1,3}}|[{CN_NUMBER_CHARS}]{{1,4}})\s*(?P<op>[+\-＋－]|加|减)\s*(?P<right>\d{{1,3}}|[{CN_NUMBER_CHARS}]{{1,4}})")
 CODE_PATTERN = re.compile(r"(?:验证码|code|captcha|请输入)[^\d]{0,16}(?P<code>\d{3,8})", re.IGNORECASE)
-CN_DIGITS = {"零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
 
 # PRD §2.19.2: 候选只在服务端校验，不进入模型 prompt。
 SEARCH_JOIN_IMAGE_VERIFICATION_PROMPT = (
@@ -385,34 +385,9 @@ def _text_verification_answer(task: VerificationTask, context: dict[str, Any]) -
     texts = [task.detected_reason or "", task.failure_detail or ""]
     texts.extend(str(message.get("text") or "") for message in context.get("messages") or [] if isinstance(message, dict))
     combined = "\n".join(text for text in texts if text)
-    return _arithmetic_answer(combined) or _code_answer(combined)
-
-
-def _arithmetic_answer(text: str) -> str:
-    match = ARITHMETIC_PATTERN.search(text)
-    if not match:
-        return ""
-    left = _number_value(match.group("left"))
-    right = _number_value(match.group("right"))
-    if left is None or right is None:
-        return ""
-    result = left + right if match.group("op") in {"+", "＋", "加"} else left - right
-    return str(result) if 0 <= result <= 9999 else ""
-
-
-def _number_value(raw: str) -> int | None:
-    if raw.isdigit():
-        return int(raw)
-    if raw == "十":
-        return 10
-    if "十" in raw:
-        left, _, right = raw.partition("十")
-        tens = CN_DIGITS.get(left, 1 if left == "" else None)
-        ones = CN_DIGITS.get(right, 0 if right == "" else None)
-        return tens * 10 + ones if tens is not None and ones is not None else None
-    if len(raw) == 1:
-        return CN_DIGITS.get(raw)
-    return None
+    if _extract_arithmetic_expression(combined) is not None:
+        return _arithmetic_answer(combined)
+    return _code_answer(combined)
 
 
 def _code_answer(text: str) -> str:

@@ -311,6 +311,7 @@ class TaskGroupBotAdmission(Base):
     state: Mapped[str] = mapped_column(String(32), default="observing")
     requirement_set_version: Mapped[int] = mapped_column(Integer, default=1)
     observation_version: Mapped[int] = mapped_column(Integer, default=1)
+    consecutive_observation_gaps: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     observation_started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     no_prompt_pass_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     observation_gap: Mapped[bool] = mapped_column(Boolean, default=False)

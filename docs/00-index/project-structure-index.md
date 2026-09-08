@@ -1,5 +1,7 @@
 # 项目结构索引
 
+> **2026-09-08 本地修复二次审查（待发布）：** `verification_arithmetic.py` 提供完整四则表达式与中文万位精确计算，`membership_challenges.py` 保留验证入口并禁止非法算术退回普通验证码；`task_group_bot_admission_state.py` 收敛观察CAS、独立连续失败计数和当天终止，`task_group_bot_admission_recovery.py` 连接次日Planner重开；模型字段由迁移`0229_admission_gap_count`增加。`runtime_resources.account_has_live_reservation`与`dispatcher._claimable_candidates`在认领前跳过忙管理员，持久执行器完成通知续领。QA与Release Gate见`docs/05-implementation/local-review-fixes-20260908.md`。
+
 > **2026-09-08 晚间静默等待修复：** `engagement_attention.bounded_proactive_quiet_until` 按统一PRD§19.67冻结首次实际等待的配置上限；dispatcher在同一Action事务保存`result.attention_wait.started_at/horizon_deadline_at`，后续真人消息、重新领取与重启不延长截止时间，自然静默可提前结束。期限结束仅通过attention检查，原发送资格、节奏、scope、reply与内容校验继续。
 
 > **2026-09-08 晚间正常发送恢复resync（本地实现与QA，待发布）：** 统一PRD§19.67；`dispatch_session_priority.py`在LIMIT前排序当前Session及关闭时刻；`continuous_dispatcher.py`/worker/service持久executor按完成补领，`runtime_resources.py`逐Action转交原预约；`legacy_generation_timing.py`与generation runtime/binding覆盖unified非V2；`ai_content_job_binding.py`为unified非V2槽逐个传递原Job身份到HTTP跟踪；`ai_generation_guards.is_normal_frozen_candidate`统一普通已冻结候选判定，generation dispatch→content runtime按§4.1记录revision drift后绑定，reply/turn/policy硬门保持；group planner解析群后即取得群互斥再进入准入/日覆盖。交接见`docs/05-implementation/ai-normal-send-repair-20260908.md`。原19.60完整保护份额/持久cursor不据此宣称完成，实际发布与逐Task消息事实待验收。

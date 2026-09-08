@@ -132,6 +132,16 @@ def _reserve_runtime_resources(action: Action) -> bool:
     return True
 
 
+def account_has_live_reservation(action: Action) -> bool:
+    """Skip busy rescue candidates without changing their due time or claim state."""
+    if action.account_id is None:
+        return False
+    account_id = int(action.account_id)
+    with _IN_FLIGHT_LOCK:
+        inflight = account_id in _IN_FLIGHT_ACCOUNTS
+    return inflight and not _recover_stale_local_inflight_reservation(action, account_id)
+
+
 def _uses_fact_first_contract(action: Action) -> bool:
     from sqlalchemy.orm import object_session
 

@@ -51,7 +51,7 @@ from app.services.required_channel_prompts import (
     required_channel_references,
 )
 from app.services.verification import create_verification_task
-from app.timezone import as_beijing
+from app.timezone import as_beijing, beijing_day_bounds
 
 from .account_pool import account_matches_current_shard, current_account_shard, select_task_accounts
 from . import account_pacing_guard as _account_pacing_guard
@@ -306,6 +306,10 @@ _GROUP_SEND_TEXT_VERIFICATION_MARKERS = (
     "算数",
     "算术",
     "加减",
+    "乘",
+    "除",
+    "四则",
+    "数学",
     "计算",
     "结果",
     "等于",
@@ -2632,7 +2636,7 @@ def _claimable_candidates(candidates: list[Action]) -> list[Action]:
             selected.append(action)
             continue
         account_id = int(action.account_id)
-        if account_id in rescue_admins:
+        if account_id in rescue_admins or _runtime_resources.account_has_live_reservation(action):
             continue
         rescue_admins.add(account_id)
         selected.append(action)
@@ -8550,18 +8554,30 @@ def _terminalize_fact_first_target(
     )
 
 
-def _abandon_pending_account_actions(session: Session, failed_action: Action) -> None:
-    rows = list(session.scalars(select(Action).where(
+def _abandon_pending_account_actions(
+    session: Session, failed_action: Action, *, observation_gap: bool = False,
+) -> None:
+    statement = select(Action).where(
         Action.task_id == failed_action.task_id,
         Action.account_id == failed_action.account_id,
         Action.status == "pending",
         Action.id != failed_action.id,
-    )))
+    )
+    if observation_gap:
+        start, end = beijing_day_bounds(_now())
+        statement = statement.where(
+            Action.action_type == "send_message",
+            Action.payload["group_id"].as_integer() == int((failed_action.payload or {}).get("group_id") or 0),
+            Action.scheduled_at >= start, Action.scheduled_at < end,
+        )
+    rows = list(session.scalars(statement.with_for_update()))
+    if observation_gap:
+        rows = [row for row in rows if action_remote_mutation_evidence(session, row).gateway_attempt_count == 0]
     _settle_pending_fact_first_channel_actions(
         session,
         rows,
-        reason_code="account_task_abandoned",
-        detail="该账号在当前任务内已确认无法完成 Telegram 远端操作",
+        reason_code="c2_observation_evidence_missing" if observation_gap else "account_task_abandoned",
+        detail="当前任务日观察连续失败，停止尚未调用的正文" if observation_gap else "该账号在当前任务内已确认无法完成 Telegram 远端操作",
     )
 
 
@@ -10368,22 +10384,21 @@ def _abandon_fact_first_account_for_task(
 ) -> None:
     if action.account_id is None:
         return
-    _abandon_pending_account_actions(session, action)
+    observation_gap = reason == "observation_gap_limit_reached"
+    _abandon_pending_account_actions(session, action, observation_gap=observation_gap)
     blocker_code = {
         "target_entity_unresolvable": "target_entity_unresolvable",
         "target_resolution_unverified": "target_resolution_unverified",
+        "observation_gap_limit_reached": "c2_observation_evidence_missing",
     }.get(reason, "account_task_abandoned")
-    rows = session.scalars(select(TaskAccountDailyCoverage).where(
-        TaskAccountDailyCoverage.task_id == action.task_id,
-        TaskAccountDailyCoverage.account_id == action.account_id,
-        TaskAccountDailyCoverage.coverage_date == _now().date(),
-        TaskAccountDailyCoverage.state.in_(("pending_admission", "ready", "reserved", "unknown")),
-    ))
+    rows = _account_abandonment_coverages(session, action, observation_gap=observation_gap)
     for row in rows:
         row.state = "abandoned_for_day"
         row.blocker_code = blocker_code
         row.blocker_stage = "admission"
         row.blocker_detail = (
+            "当前任务日观察连续失败，次日重新观察"
+            if observation_gap else
             "当前授权无法解析目标实体，当前任务日放弃"
             if blocker_code in {
                 "target_entity_unresolvable",
@@ -10393,6 +10408,23 @@ def _abandon_fact_first_account_for_task(
         )
         row.recovery_path = "next_task_day_recheck"
         row.next_eligible_at = None
+
+
+def _account_abandonment_coverages(session, action, *, observation_gap):
+    statement = select(TaskAccountDailyCoverage).where(
+        TaskAccountDailyCoverage.task_id == action.task_id,
+        TaskAccountDailyCoverage.account_id == action.account_id,
+        TaskAccountDailyCoverage.coverage_date == _now().date(),
+        TaskAccountDailyCoverage.state.in_(
+            ("pending_admission", "ready", "reserved") if observation_gap
+            else ("pending_admission", "ready", "reserved", "unknown")
+        ),
+    )
+    if observation_gap:
+        statement = statement.where(
+            TaskAccountDailyCoverage.group_id == int((action.payload or {}).get("group_id") or 0),
+        )
+    return session.scalars(statement)
 
 
 def _apply_allowed_group_bot_admission(action: Action, payload: dict, decision) -> bool:
