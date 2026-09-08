@@ -386,3 +386,12 @@ AI 活跃群发送动作规划时必须使用目标群过滤账号：
 - 反向检查：既有脚本复用正式 safely_not_executed 结算，但候选查询后等待行锁期间 scheduled_at 可能变化；锁定查询必须重复任务类型、状态、截止时间、任务范围和 Gateway 未开始条件，并刷新 ORM 对象。远端 unknown 由正式结算函数显式拒绝。
 - 产品合同：默认 preview 零写；apply 按批事务，已提交批次保留，当前批失败回滚并显式报错；输出候选数与实际结算数，锁冲突跳过不计完成。无自动调度、无 Telegram 调用、无迁移。
 - QA：覆盖 preview 零写、真实结算 fact/状态、重复 apply、截止边界及 Gateway 已开始排除、候选后重新排程排除。design_status=complete，进入 dev；部署验收为脚本存在、CLI 可加载和生产 SHA/运行健康，不将发布等同积压清理完成。
+
+### 14.8 关注补齐与历史准入物理占用修复（2026-09-08）
+
+- Intake / L3：用户要求把线上六频道账号关注补齐完成。08:31只读生产d3559c27显示，当前关注Action大量等待account_membership_inflight_wait；历史群准入约2.4万条result_unknown/closed_unknown被一律计作在途。原Gateway结果journal仍在，但补偿复检用Action结果覆盖Attempt快照，丢失原transport ACK。基线范围为tenant1频道6、19、2765、2806、5911、5981及其当前运行浏览/点赞/评论任务；完整账号范围按正式资格与分组合同计算，不减少分母验收。
+- 设计修正：物理调用是否结束与业务结果是否已知分别判断。原Attempt明确transport ACK，或同tenant/action/attempt/account/epoch及冻结请求身份/目标hash匹配、观察时间不早于call-issued、双结果hash有效的原recorded Gateway结果回执，可证明该原调用已返回；该回执来自同步Gateway返回后的结果保存路径，remote_mutation_state=unknown不等于transport仍运行。显式未确认取消且没有后续终止证明、缺失/冲突回执、归属或hash不一致时仍占物理容量，不能凭after_call_at、closed_unknown、租约过期或worker缺失释放。
+- 业务防重：同账号同目标的原unknown即使transport结束仍等待原权威对账，禁止重放；其他目标只解除已证实结束的物理占用，旧Action/Attempt状态、结果、账本和业务去重不改写。目标身份缺失仍阻塞，不能按名称推断不同目标。成功后60秒账号冷却、同频道两个物理调用上限及冻结10～24小时排程保持。
+- 复检写回必须合并保留原Attempt的请求/终止证据，不再用Action结果整体替换。当前只修复未知成员复检的成功释放、失败、超时和连接错误路径；不回填历史ACK或伪造远端事实。
+- 反向验证：读取正式channel_membership_runtime、Gateway journal writer、_finish_execution_attempt及复检路径；原journal可作为调用返回证据但不能证明加入成功。同目标unknown继续阻塞；无回执旧调用单独通过原退出证据或对账路径处理，不删除未知记录。
+- Product Design Complete：完整范围、物理/业务分离、同目标unknown、跨目标、租户/账号/epoch、请求三字段、双hash、时间、显式取消、0/1/并发上限、ACK丢失、原冷却和排程、无schema/API/前端变化均已纳入定向QA；design_status=complete，进入dev。发布遵循master→release→Deploy Production，发布与真实关注分别验收。

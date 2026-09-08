@@ -1,5 +1,7 @@
 # 项目数据流转索引
 
+> **2026-09-08 关注占用证据：** 频道关注准入读取原 Action/Attempt → 原 Gateway result journal 的身份、时间和双 hash → 物理返回证明；unknown 的同账号同目标业务身份继续占位，不能重放。补偿复检合并 Attempt snapshot 保留终止/请求证据，不回填或改变历史 unknown 结果。
+
 > **2026-09-08 AI活群历史过期积压治理与调度死锁解除：**
 > 1. Dispatcher 认领门禁解耦：`_group_generation_ready(now)` / `_comment_generation_ready(now)` 加入 `_deadline_exhausted_action(now)` 判定，对于账号时间线已过截止时间（`source_deadline_at <= now` 或 `release_not_before_at` 超限）的未生成积压动作，允许无需等到大模型生成即可被 Dispatcher 认领；`_candidate_order(now)` 将其置顶（rank 0）优先处理，直接进入 `settle_fact_first_action_before_gateway` 安全结算为 `skipped` + `safely_not_executed` 事实，释放时间线时隙与账号预约（missed）。
 > 2. AI 并行生成 Worker 阻断：在 `_candidate_statement` 中增加 `~_deadline_expired_action(now_value)` 过滤，并在 `_claim_one` 认领时校验 `_is_deadline_expired`；若截止时间已过则直接就地安全结算，彻底阻止过期废弃动作外呼大模型 API，避免算力浪费与阻塞当日合法动作。

@@ -9,13 +9,16 @@ from sqlalchemy.orm import Session
 from app.models import Action, ExecutionAttempt, OperationTarget
 
 from .channel_membership_schedule import MIN_MEMBERSHIP_GAP_SECONDS
+from .channel_membership_attempts import (
+    UNKNOWN_ATTEMPT_STATES, membership_attempt_rows, membership_transport_ended,
+    unknown_membership_blocks_target,
+)
 from .source_pacing import wall_datetime
 
 
 CHANNEL_MEMBERSHIP_MAX_CONCURRENT = 2
 ACCOUNT_MEMBERSHIP_COOLDOWN_SECONDS = 60
 MEMBERSHIP_ACTION_TYPES = ("ensure_channel_membership", "ensure_target_membership")
-UNKNOWN_ATTEMPT_STATES = ("result_unknown", "unknown_after_send", "remote_unknown")
 
 
 @dataclass(frozen=True)
@@ -39,7 +42,7 @@ def membership_runtime_wait(
     if not peer or target.tenant_id != action.tenant_id:
         raise ValueError("membership_runtime_target_identity_missing")
     _lock_scopes(session, action, peer=peer)
-    account_wait = _account_wait(session, action, now=now)
+    account_wait = _account_wait(session, action, target=target, now=now)
     if account_wait is not None:
         return account_wait
     peer_targets = select(OperationTarget.id).where(
@@ -47,10 +50,12 @@ def membership_runtime_wait(
         OperationTarget.target_type == "channel",
         OperationTarget.tg_peer_id == peer,
     )
-    running = session.scalar(_membership_attempts(action.tenant_id).where(
+    pending = _membership_attempts(action.tenant_id).where(
         Action.payload["channel_target_id"].as_integer().in_(peer_targets),
         _unsettled_attempt(),
-    ).with_only_columns(func.count()))
+    )
+    running = sum(not membership_transport_ended(previous, attempt, journal)
+        for previous, attempt, journal, _target in membership_attempt_rows(session, pending))
     if running >= CHANNEL_MEMBERSHIP_MAX_CONCURRENT:
         return MembershipRuntimeWait(
             now + timedelta(seconds=MIN_MEMBERSHIP_GAP_SECONDS),
@@ -90,13 +95,16 @@ def _unsettled_attempt():
     )
 
 
-def _account_wait(session: Session, action: Action, *, now: datetime) -> MembershipRuntimeWait | None:
+def _account_wait(session: Session, action: Action, *, target: OperationTarget, now: datetime) -> MembershipRuntimeWait | None:
     attempts = _membership_attempts(action.tenant_id).where(
         ExecutionAttempt.account_id == action.account_id,
     )
-    active = session.scalar(attempts.where(
-        _unsettled_attempt(),
-    ).with_only_columns(ExecutionAttempt.id).limit(1))
+    active = any(
+        unknown_membership_blocks_target(attempt, previous_target, target)
+        or not membership_transport_ended(previous, attempt, journal)
+        for previous, attempt, journal, previous_target
+        in membership_attempt_rows(session, attempts.where(_unsettled_attempt()))
+    )
     if active:
         return MembershipRuntimeWait(
             now + timedelta(seconds=MIN_MEMBERSHIP_GAP_SECONDS),

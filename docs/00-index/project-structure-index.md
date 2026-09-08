@@ -1,5 +1,7 @@
 # 项目结构索引
 
+> **2026-09-08 频道关注历史占用修复：** `channel_membership_attempts.py` 校验原 Gateway 回执归属、冻结身份和双 hash，区分物理调用结束与业务 unknown；`channel_membership_runtime.py` 保留同账号同目标 unknown 防重，仅解除已证实结束的跨目标物理占用。`service.py` 未知成员复检保留 Attempt 原始证据。回归入口 `test_channel_membership_transport_return.py`，发布与六频道真实关注验收分别记录。
+
 > **2026-09-08 AI活群历史过期积压治理与调度死锁解除：** `direct_action_claims.py` 在 `_ranked_candidate_query`、`_group_generation_ready` 与 `_candidate_order` 中集成 `_deadline_exhausted_action(now)`，并在 `release_fact_first_action_reservations` 引入 `_settle_action_pacing_reservation`，将过期未生成动作安全结算为 `skipped` 并释放账号预约（missed）；`ai_generation_parallel.py` 在 `_candidate_statement` 过滤 `_deadline_expired_action` 并在 `_claim_one` 中通过 `_is_deadline_expired` 执行防御性提前安全结算；`scripts/abandon_channel_historical_backlog.py` 扩充 `--include-ai-group` 与 `--task-type`，测试入口位于 `backend/tests/test_due_backlog_containment.py` 与 `backend/tests/test_abandon_channel_historical_backlog.py`。
 
 > **2026-09-07 创建并启动全量关注与 10～24 小时拟人排程：** `channel_membership_start.py` 接入共享启动事务，独立于帖子/AI/Planner 生成全范围成员动作；`channel_membership_schedule.py` 冻结整秒随机窗口和非固定间隔。`channel_membership_execution.py` 供 Claim、确认及最终生命周期锁共用，只允许带当前启动 epoch 的精确频道成员动作提前于定时主任务执行。`channel_membership_resume.py` 锁后复验零 Attempt/journal/fact，恢复未调用行并保留原间隔。Schema 显式废弃旧窗口输入，前端只展示新随机排程。验收入口：`test_channel_membership_start{,_postgres}.py`、`test_channel_membership_window_runtime.py`。
