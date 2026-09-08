@@ -137,6 +137,8 @@ def _readiness_from_records(
 ) -> tuple[str, str, str]:
     if account is None or account.deleted_at is not None:
         return _terminal("account_deleted", "账号已删除", terminal_abandon)
+    if account.telegram_frozen:
+        return _terminal("account_frozen", "Telegram 已冻结此账号", terminal_abandon)
     if account.status != AccountStatus.ACTIVE.value:
         return _terminal(
             _status_blocker(account.status),

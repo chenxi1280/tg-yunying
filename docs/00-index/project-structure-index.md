@@ -1,5 +1,7 @@
 # 项目结构索引
 
+> **2026-09-08 冻结账号资格：** integrations/telegram/account_freeze.py负责SDK/错误识别与完整AppConfig读取；services/account_freeze.py负责账号观测序列化和Gateway资格锁；account_freeze_probe.py负责探测代次/时序复核。gateway/dispatcher优先传递与处理冻结，account_usage_policy/channel_membership/daily_coverage_readiness过滤当前冻结资格；models/accounts.py与0228迁移保存独立事实。测试test_account_freeze_contract.py/test_account_freeze_postgres.py覆盖协议、状态、迁移与真实并发。
+
 > **2026-09-08 频道关注历史占用修复：** `channel_membership_attempts.py` 校验原 Gateway 回执归属、冻结身份和双 hash，区分物理调用结束与业务 unknown；`channel_membership_runtime.py` 保留同账号同目标 unknown 防重，仅解除已证实结束的跨目标物理占用。`service.py` 未知成员复检保留 Attempt 原始证据。回归入口 `test_channel_membership_transport_return.py`，发布与六频道真实关注验收分别记录。
 
 > **2026-09-08 AI活群历史过期积压治理与调度死锁解除：** `direct_action_claims.py` 在 `_ranked_candidate_query`、`_group_generation_ready` 与 `_candidate_order` 中集成 `_deadline_exhausted_action(now)`，并在 `release_fact_first_action_reservations` 引入 `_settle_action_pacing_reservation`，将过期未生成动作安全结算为 `skipped` 并释放账号预约（missed）；`ai_generation_parallel.py` 在 `_candidate_statement` 过滤 `_deadline_expired_action` 并在 `_claim_one` 中通过 `_is_deadline_expired` 执行防御性提前安全结算；`scripts/abandon_channel_historical_backlog.py` 扩充 `--include-ai-group` 与 `--task-type`，测试入口位于 `backend/tests/test_due_backlog_containment.py` 与 `backend/tests/test_abandon_channel_historical_backlog.py`。

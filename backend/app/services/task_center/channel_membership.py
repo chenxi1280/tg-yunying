@@ -375,13 +375,14 @@ def _membership_retry_candidates(
     return [
         account
         for account in candidates
-        if (not _uses_persisted_all_account_scope(task) or _account_can_attempt_membership(account))
+        if not account.telegram_frozen
+        and (not _uses_persisted_all_account_scope(task) or _account_can_attempt_membership(account))
         and _should_create_membership_attempt_for_account(account.id, existing.get(account.id), joined_ids, task, now_value)
     ]
 
 
 def _account_can_attempt_membership(account: TgAccount) -> bool:
-    if account.deleted_at is not None or account.status != AccountStatus.ACTIVE.value:
+    if account.deleted_at is not None or account.telegram_frozen or account.status != AccountStatus.ACTIVE.value:
         return False
     try:
         return bool(decrypt_session(account.session_ciphertext))

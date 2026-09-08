@@ -24,6 +24,7 @@ from app.services.account_online_constants import (
     ONLINE_STALE_GRACE,
 )
 from app.services.developer_apps import credentials_for_account
+from app.services.account_freeze_probe import guard_probe_freeze_result
 
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,7 @@ class OnlineProbeJob:
     account_id: int
     session_ciphertext: str | None
     credentials: Any
+    generations: tuple[int, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -43,6 +45,7 @@ class OnlineProbeResult:
     health: Any = None
     error: Exception | None = None
     completed_at: datetime | None = None
+    generations: tuple[int, int] | None = None
 
 
 def probe_due_online_states(
@@ -76,7 +79,8 @@ def probe_due_online_states(
                 schedules.append(_probe_schedule(state))
                 _commit_probe_progress(session, commit_each)
                 continue
-            jobs.append(OnlineProbeJob(account.id, account.session_ciphertext, credentials))
+            jobs.append(OnlineProbeJob(account.id, account.session_ciphertext, credentials,
+                (account.authorization_generation, account.connection_generation)))
         _commit_probe_progress(session, commit_each and bool(jobs))
         for result in _run_health_probes(jobs):
             completed_at = current_time if fixed_time else max(current_time, result.completed_at or _now())
@@ -156,9 +160,9 @@ def _run_health_probes(jobs: list[OnlineProbeJob]) -> Iterator[OnlineProbeResult
 def _run_health_probe(job: OnlineProbeJob) -> OnlineProbeResult:
     try:
         health = gateway.check_account_health_isolated(job.session_ciphertext, job.credentials)
-        return OnlineProbeResult(account_id=job.account_id, health=health, completed_at=_now())
+        return OnlineProbeResult(account_id=job.account_id, health=health, completed_at=_now(), generations=job.generations)
     except Exception as exc:
-        return OnlineProbeResult(account_id=job.account_id, error=exc, completed_at=_now())
+        return OnlineProbeResult(account_id=job.account_id, error=exc, completed_at=_now(), generations=job.generations)
 
 
 def _apply_probe_result(
@@ -169,6 +173,8 @@ def _apply_probe_result(
     result: OnlineProbeResult,
 ) -> None:
     if _restore_authoritative_phone_ban(session, account, state):
+        return
+    if guard_probe_freeze_result(session, account, state=state, result=result, now=now):
         return
     if isinstance(result.error, ValueError):
         _mark_probe_blocked(state, now, "developer_app_unavailable", str(result.error))

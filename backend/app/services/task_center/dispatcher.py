@@ -137,6 +137,8 @@ from .engagement_runtime_resources import (
     settle_attempt_resources as settle_engagement_attempt_resources,
 )
 from .task_retirement import TaskGatewayFenced, guard_attempt_call_start
+from app.services.account_freeze import AccountFrozenBeforeGateway, guard_account_call_start, mark_account_frozen
+from app.integrations.telegram.account_freeze import is_account_frozen_error
 from .legacy_anchor_rewrite import reject_legacy_anchor_rewrite_before_send
 from .payloads import (
     GROUP_BOT_CHANNEL_FOLLOW_ACTION_TYPE,
@@ -382,12 +384,6 @@ _ACCOUNT_PROXY_FAILURE_MARKERS = (
     "unreachable",
     "network",
 )
-_ACCOUNT_FROZEN_FAILURE_MARKERS = (
-    "frozen account",
-    "frozen accounts",
-    "not available for frozen accounts",
-)
-FROZEN_ACCOUNT_HEALTH_SCORE = 20
 
 
 @dataclass(frozen=True)
@@ -1343,6 +1339,10 @@ def _dispatch_action(
                 comment_generation_dependencies,
             ),
         )
+    except AccountFrozenBeforeGateway as exc:
+        _fail(action, FailureType.ACCOUNT_UNAVAILABLE.value, str(exc))
+        _release_runtime_resources(action)
+        return True
     except TaskGatewayFenced as exc:
         _skip(action, "task_lifecycle_gateway_fenced", str(exc))
         return True
@@ -1448,7 +1448,7 @@ def _skip_expired_ai_task_day_action(
 
 def _dispatch_account(session: Session, action: Action) -> TgAccount | None:
     account = session.get(TgAccount, action.account_id) if action.account_id else None
-    if not account or account.deleted_at is not None or account.status != AccountStatus.ACTIVE.value:
+    if not account or account.deleted_at is not None or account.telegram_frozen or account.status != AccountStatus.ACTIVE.value:
         _fail_with_policy(
             action,
             FailureType.ACCOUNT_UNAVAILABLE.value,
@@ -3323,7 +3323,7 @@ def _release_claim(action: Action, *, delay_seconds: int, reason: str) -> None:
 
 def _apply_claim_account_policy(session: Session, action: Action) -> bool:
     account = session.get(TgAccount, action.account_id) if action.account_id else None
-    if not account or account.deleted_at is not None or account.status != AccountStatus.ACTIVE.value:
+    if not account or account.deleted_at is not None or account.telegram_frozen or account.status != AccountStatus.ACTIVE.value:
         _fail_with_policy(action, FailureType.ACCOUNT_UNAVAILABLE.value, "账号不可用", auto_check="拦截", validation_stage="account")
         return False
     if not _apply_claim_account_usage_policy(session, action, account):
@@ -5462,6 +5462,8 @@ def _dispatch_channel_membership(session: Session, action: Action, account: TgAc
     result, payload, fallback_ref = _ensure_membership_with_peer_candidates(ctx)
     runtime_ctx = MembershipDispatchContext(session, action, account, credentials, payload, attempt)
     _record_membership_peer_ref(action, payload, fallback_ref)
+    if _apply_frozen_membership_result(runtime_ctx, result):
+        return True
     if result.ok:
         probe_result = _probe_joined_group_send_permission(session, action, account, credentials, payload)
         if probe_result is not None and not probe_result.ok:
@@ -5986,6 +5988,8 @@ def _dispatch_existing_membership(
         _apply_operation_result(action, account, True, "", "already_joined", attempt=attempt)
         action.result = {**(action.result or {}), "membership_status": "already_joined"}
         return True
+    if _apply_frozen_membership_result(ctx, result):
+        return True
     handled, result = _handle_existing_membership_probe_denied(ctx, result)
     if handled:
         return True
@@ -6401,6 +6405,8 @@ def _handle_group_send_permission_denied(
     membership_status: str,
     skip_on_failure: bool,
 ) -> bool:
+    if _apply_frozen_membership_result(ctx, probe_result):
+        return True
     recovered = _recover_group_send_permission_with_linked_channel(
         ctx.session,
         ctx.action,
@@ -8201,6 +8207,15 @@ def _apply_operation_result(
     )
 
 
+def _apply_frozen_membership_result(ctx: MembershipDispatchContext, result) -> bool:
+    if result.ok or not is_account_frozen_error(result.failure_type, result.detail):
+        return False
+    _clear_group_bot_admission_window(ctx.action)
+    _apply_operation_result(ctx.action, ctx.account, False, FailureType.ACCOUNT_UNAVAILABLE.value,
+        result.detail, attempt=ctx.attempt, remote_mutation_started=_operation_mutation_state(result))
+    return True
+
+
 def _classify_membership_failure(failure_type: str, detail: str) -> str:
     if _is_account_frozen_failure(failure_type, detail):
         return FailureType.ACCOUNT_UNAVAILABLE.value
@@ -8208,6 +8223,8 @@ def _classify_membership_failure(failure_type: str, detail: str) -> str:
 
 
 def _apply_send_result(action: Action, account: TgAccount, ok: bool, remote_id: str = "", failure_type: str = "", detail: str = "", *, attempt: ExecutionAttempt | None = None, remote_fact_id: str = "", typed_remote_fact: dict | None = None, remote_mutation_started: bool | None = None) -> None:
+    if not ok and is_account_frozen_error(failure_type, detail):
+        mark_account_frozen(account)
     if ok:
         _apply_success_send_result(action, account, remote_id)
     elif _gateway_result_is_unknown(attempt, remote_mutation_started):
@@ -8437,13 +8454,11 @@ def _is_account_session_failure(failure_type: str, detail: str) -> bool:
 
 
 def _is_account_frozen_failure(failure_type: str, detail: str) -> bool:
-    text = f"{failure_type} {detail}".lower()
-    return any(marker in text for marker in _ACCOUNT_FROZEN_FAILURE_MARKERS)
+    return is_account_frozen_error(failure_type, detail)
 
 
 def _mark_account_frozen(account: TgAccount) -> None:
-    account.status = AccountStatus.SUSPECTED_BANNED.value
-    account.health_score = min(account.health_score, FROZEN_ACCOUNT_HEALTH_SCORE)
+    mark_account_frozen(account)
 
 
 def _is_account_proxy_failure(failure_type: str, detail: str) -> bool:
@@ -11708,6 +11723,7 @@ def _begin_execution_attempt(session: Session, action: Action, account: TgAccoun
 
 def _mark_gateway_call_started(session: Session, attempt: ExecutionAttempt, *, commit: bool = True) -> None:
     guard_attempt_call_start(session, attempt)
+    guard_account_call_start(session, attempt)
     call_started_at = _now()
     mark_engagement_attempt_call_issued(session, attempt, call_started_at=call_started_at)
     attempt.gateway_call_started_at = call_started_at

@@ -906,7 +906,9 @@ class TelethonTelegramGateway(TelegramGateway):
             if not await client.is_user_authorized():
                 return AccountHealth(status="需重新登录", health_score=45, detail="session 已失效")
             await client.get_me()
-            return AccountHealth(status="在线", health_score=95, detail="账号 session 可用")
+            from .account_freeze import read_account_freeze_health
+
+            return await read_account_freeze_health(client)
         except BaseException as exc:
             operation_error = exc
             raise
@@ -1573,7 +1575,11 @@ class TelethonTelegramGateway(TelegramGateway):
     def _map_send_error(exc: Exception) -> SendResult:
         from telethon import errors
 
+        from .account_freeze import is_account_frozen_error
+
         detail = str(exc) or exc.__class__.__name__
+        if is_account_frozen_error(exc.__class__.__name__, detail):
+            return SendResult(False, failure_type=FailureType.ACCOUNT_UNAVAILABLE.value, detail=detail)
         invalid_entity_markers = (
             "Could not find the input entity",
             "Cannot cast InputPeerUser to any kind of InputChannel",
@@ -2969,6 +2975,10 @@ class TelethonTelegramGateway(TelegramGateway):
             )
         except Exception as exc:  # Telethon exposes many RPC subclasses; map them at the adapter boundary.
             mapped = self._map_send_error(exc)
+            from .account_freeze import is_account_frozen_error
+
+            if is_account_frozen_error(mapped.detail):
+                return OperationResult(False, "失败", mapped.failure_type, mapped.detail)
             detail = (
                 await self._permission_detail_from_probe_exception(client, target, mapped)
                 if target is not None
@@ -2994,6 +3004,10 @@ class TelethonTelegramGateway(TelegramGateway):
             permissions = await client.get_permissions(target, "me")
         except Exception as exc:
             mapped = self._map_send_error(exc)
+            from .account_freeze import is_account_frozen_error
+
+            if is_account_frozen_error(mapped.detail):
+                return OperationResult(False, "失败", mapped.failure_type, mapped.detail)
             detail = await self._permission_detail_from_probe_exception(
                 client, target, mapped,
             )

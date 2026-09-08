@@ -741,6 +741,11 @@ def test_account_health_uses_ephemeral_client_and_disconnects(monkeypatch):
         async def get_me(self):
             calls.append("get_me")
 
+        async def __call__(self, request):
+            from telethon import types as tl_types
+            calls.append("get_app_config")
+            return tl_types.help.AppConfig(1, tl_types.JsonObject([]))
+
         async def disconnect(self):
             calls.append("disconnect")
 
@@ -756,7 +761,7 @@ def test_account_health_uses_ephemeral_client_and_disconnects(monkeypatch):
     health = asyncio.run(gateway._health_async("encrypted-session", credentials))
 
     assert health.status == "在线"
-    assert calls == ["connect", "authorized", "get_me", "disconnect"]
+    assert calls == ["connect", "authorized", "get_me", "get_app_config", "disconnect"]
 
 
 @pytest.mark.no_postgres
@@ -820,6 +825,11 @@ def test_account_health_isolated_runs_on_calling_thread(monkeypatch):
         async def get_me(self):
             observed_threads.append(threading.get_ident())
 
+        async def __call__(self, request):
+            from telethon import types as tl_types
+            observed_threads.append(threading.get_ident())
+            return tl_types.help.AppConfig(1, tl_types.JsonObject([]))
+
         async def disconnect(self):
             observed_threads.append(threading.get_ident())
 
@@ -833,7 +843,7 @@ def test_account_health_isolated_runs_on_calling_thread(monkeypatch):
     credentials = DeveloperAppCredentials(app_id=1, api_id=123, api_hash="hash", credentials_version=1)
 
     assert gateway.check_account_health_isolated("encrypted-session", credentials).status == "在线"
-    assert observed_threads == [caller_thread] * 4
+    assert observed_threads == [caller_thread] * 5
 
 
 @pytest.mark.no_postgres

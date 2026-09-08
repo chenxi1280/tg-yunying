@@ -92,6 +92,8 @@ class AccountHealth:
     status: str
     health_score: float
     detail: str
+    telegram_frozen: bool | None = field(default=None, kw_only=True)
+    freeze_observed_at: datetime | None = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True)

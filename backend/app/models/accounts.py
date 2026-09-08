@@ -129,6 +129,8 @@ class TgAccount(Base):
     developer_app_version: Mapped[int] = mapped_column(Integer, default=1)
     account_identity: Mapped[str] = mapped_column(String(40), default="normal")
     status: Mapped[str] = mapped_column(String(30), default=AccountStatus.PENDING_LOGIN.value)
+    telegram_frozen: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    telegram_freeze_observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     health_score: Mapped[float] = mapped_column(Float, default=100)
     last_active_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     session_ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)

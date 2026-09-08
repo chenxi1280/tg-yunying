@@ -74,6 +74,8 @@ def pool_markers_consistent(purpose: str, system_key: str) -> bool:
 
 
 def assert_account_action_allowed(account: TgAccount, pool: AccountPool | None, action_kind: str) -> AccountUsage:
+    if account.telegram_frozen and action_kind not in AUTHORIZATION_ASSET_ACTIONS:
+        raise ValueError("account_frozen")
     usage = account_usage(account, pool)
     if usage == "mismatch":
         raise ValueError("account_purpose_mismatch")
@@ -94,6 +96,7 @@ def _action_allowed(usage: AccountUsage, action_kind: str) -> bool:
 
 def apply_operational_account_filters(stmt: Select) -> Select:
     return stmt.where(
+        TgAccount.telegram_frozen.is_(False),
         TgAccount.account_identity == "normal",
         or_(TgAccount.pool_id.is_(None), _matching_enabled_pool_exists("normal")),
     )
@@ -101,6 +104,7 @@ def apply_operational_account_filters(stmt: Select) -> Select:
 
 def apply_rank_deboost_account_filters(stmt: Select) -> Select:
     return stmt.where(
+        TgAccount.telegram_frozen.is_(False),
         TgAccount.account_identity == "rank_deboost",
         _matching_enabled_pool_exists("rank_deboost"),
     )

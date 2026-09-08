@@ -292,7 +292,10 @@ def test_probe_batch_does_not_reload_expired_probe_objects_between_results(monke
         statement for statement in statements_after_probe_start
         if "FROM tg_accounts" in statement or "FROM tg_account_online_state" in statement
     ]
-    assert lazy_probe_selects == []
+    # One narrow current-state lock per result prevents stale health overwrites.
+    assert len(lazy_probe_selects) == 2
+    assert all("telegram_freeze_observed_at" in statement for statement in lazy_probe_selects)
+    assert all("session_ciphertext" not in statement for statement in lazy_probe_selects)
 
 
 def test_mark_stale_online_states_requeues_probe_immediately():

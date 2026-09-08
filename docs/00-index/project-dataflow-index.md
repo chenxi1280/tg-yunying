@@ -1,5 +1,7 @@
 # 项目数据流转索引
 
+> **2026-09-08 冻结账号资格修复：** Telegram明确冻结错误/完整help.getAppConfig冻结检查 → TgAccount.telegram_frozen + telegram_freeze_observed_at单调行锁观测 → 状态投影与候选过滤/持久范围入群准入/调用前FOR SHARE NOWAIT复核。旧健康结果与旧授权/连接代次不能解冻；普通在线投影不覆盖独立事实；新完整非冻结检查才能恢复资格。Action unknown保持原证据，冻结错误不进入群权限救援。迁移0228不批量推断历史状态；见专项account-freeze-execution-eligibility-prd.md，线上验收待发布后读回。
+
 > **2026-09-08 关注占用证据：** 频道关注准入读取原 Action/Attempt → 原 Gateway result journal 的身份、时间和双 hash → 物理返回证明；unknown 的同账号同目标业务身份继续占位，不能重放。补偿复检合并 Attempt snapshot 保留终止/请求证据，不回填或改变历史 unknown 结果。
 
 > **2026-09-08 AI活群历史过期积压治理与调度死锁解除：**
