@@ -632,6 +632,9 @@ def _resolve_plan_group(
         require_authorized=False,
     )
     if group:
+        from ..ai_group_content_allocation import _lock_group_surface
+
+        _lock_group_surface(session, group.id)
         return group
     mismatch = _configured_target_group_mismatch(session, task, config)
     blocker = "target_identity_mismatch" if mismatch else "target_permission"

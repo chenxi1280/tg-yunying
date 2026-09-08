@@ -52,7 +52,8 @@ def build_runtime_config(
     _bind_fact_first_provider(session, task, config)
     config = _bind_legacy_provider_failover(session, task, config)
     _bind_legacy_attempt_job(config, batch)
-    jobs = generation_jobs_for_batch(session, batch) if config.get("ai_content_route_v2_enabled") else ()
+    needs_jobs = config.get("ai_content_route_v2_enabled") or config.get("engagement_contract_version") == "unified_engagement_v1"
+    jobs = generation_jobs_for_batch(session, batch) if needs_jobs else ()
     config = bind_group_generation_contracts(session, task, batch, config=config, jobs=jobs)
     config = bind_generation_job_routes(
         session,

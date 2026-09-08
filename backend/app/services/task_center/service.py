@@ -5159,7 +5159,18 @@ def _drain_task_dispatcher(
     execution_lane: str,
 ) -> int:
     from .runtime_resources import dispatch_runtime_reservation_scope
+    from .continuous_dispatcher import active_dispatcher, DispatcherCallbacks
 
+    continuous = active_dispatcher()
+    if continuous is not None:
+        callbacks = DispatcherCallbacks(
+            claim=lambda available: _claim_dispatcher_ids(session_factory,
+                limit=available, exclude_task_ids=exclude_task_ids,
+                process_type=process_type, execution_lane=execution_lane),
+            dispatch=lambda action_id: _dispatch_claimed_action(session_factory, action_id),
+        )
+        return continuous.drain(callbacks,
+            capacity=_lane_concurrency(execution_lane), limit=max(1, limit))
     with dispatch_runtime_reservation_scope():
         return _run_dispatcher_batch(
             session_factory,
@@ -5168,6 +5179,19 @@ def _drain_task_dispatcher(
             process_type=process_type,
             execution_lane=execution_lane,
         )
+
+
+def _claim_dispatcher_ids(session_factory, *, limit, exclude_task_ids, process_type, execution_lane):
+    from .telegram_termination import drain_telegram_terminations
+
+    drain_telegram_terminations(session_factory)
+    with session_factory() as session:
+        if process_type:
+            record_worker_heartbeat(session, process_type=process_type, metadata={"limit": limit})
+            session.commit()
+        claimed = claim_actions(session, limit=limit,
+            exclude_task_ids=exclude_task_ids, execution_lane=execution_lane)
+        return tuple(action.id for action in claimed)
 
 
 def _run_dispatcher_batch(

@@ -478,6 +478,14 @@ def _run_worker_loop(
     stop_event: threading.Event | None,
     lifecycle: DispatcherLifecycle | None,
 ) -> None:
+    from .services.task_center.continuous_dispatcher import continuous_dispatcher_scope
+
+    with continuous_dispatcher_scope(enabled=role == "dispatcher"):
+        _run_worker_iterations(role=role, limit=limit, interval_seconds=interval_seconds,
+            max_iterations=max_iterations, stop_event=stop_event, lifecycle=lifecycle)
+
+
+def _run_worker_iterations(*, role, limit, interval_seconds, max_iterations, stop_event, lifecycle):
     iterations = 0
     while _worker_loop_active(iterations, max_iterations, stop_event):
         if not _drain_worker_iteration(role, limit, lifecycle):
@@ -549,6 +557,12 @@ def _wait_for_worker_iteration(
     stop_event: threading.Event | None,
     wait_seconds: float,
 ) -> bool:
+    from .services.task_center.continuous_dispatcher import active_dispatcher
+
+    dispatcher = active_dispatcher()
+    if dispatcher is not None:
+        dispatcher.completed.wait(wait_seconds)
+        return bool(stop_event and stop_event.is_set())
     if stop_event is not None:
         return stop_event.wait(wait_seconds)
     time.sleep(wait_seconds)

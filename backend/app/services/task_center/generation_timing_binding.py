@@ -20,8 +20,6 @@ TIMING_POLICY = "deadline_only_v1"
 def bind_generation_timing_config(session, task, *, work: tuple, config: dict, deadline_at, requires_provider: bool = True) -> dict:
     if config.get("engagement_contract_version") != "unified_engagement_v1":
         return config
-    if not config.get("ai_content_route_v2_enabled"):
-        return config
     if not work:
         raise ValueError("generation_timing_frozen_jobs_or_routes_missing")
     now_value = as_beijing(_now())
@@ -45,7 +43,7 @@ def _bind_job(session, task, *, job, lane, config, now_value, deadline_at, requi
     deadline = minimum_generation_deadline((locked.latest_safe_send_at, deadline_at))
     if deadline is None:
         raise ValueError("generation_timing_deadline_missing")
-    path = generation_execution_path(locked, adapter=task.type, config=config)
+    path = _execution_path(session, task, job=locked, config=config)
     path_hash = timing_hash(path.snapshot(adapter=task.type, lane=lane))
     binding = session.get(GenerationTimingBinding, job.id)
     if binding is None and not requires_provider:
@@ -69,6 +67,14 @@ def _bind_job(session, task, *, job, lane, config, now_value, deadline_at, requi
     session.flush()
     return {**result, "generation_sequence": locked.generation_sequence,
             "generation_lease_epoch": locked.generation_lease_epoch, "generation_owner_id": locked.generation_owner_id}
+
+
+def _execution_path(session, task, *, job, config):
+    if config.get("ai_content_route_v2_enabled"):
+        return generation_execution_path(job, adapter=task.type, config=config)
+    from .legacy_generation_timing import legacy_generation_execution_path
+
+    return legacy_generation_execution_path(session, task, job=job, config=config)
 
 
 def _deadline_snapshot(binding, *, deadline, now_value) -> dict:

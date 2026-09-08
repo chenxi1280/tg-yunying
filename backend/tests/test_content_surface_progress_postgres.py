@@ -12,6 +12,7 @@ from app.services.task_center.ai_group_content_allocation import _lock_group_sur
 from app.services.task_center.engagement_runtime_error import RuntimeResourceBlocked
 from app.services.task_center.listener_runtime import _mark_listener_runtime_success
 from app.services.task_center.task_retirement import lock_task_for_planning
+from app.services.task_center.executors.group_ai_chat import _resolve_plan_group
 from tests.test_execution_reference_locks_postgres import GROUP_ID, WAIT_SECONDS, _seed_group
 from tests.test_runtime_retention_protection_postgres import database
 
@@ -57,3 +58,21 @@ def test_missing_content_surface_keeps_explicit_error(database):
     with Session(database) as session:
         with pytest.raises(ValueError, match="ai_group_surface_group_missing"):
             _lock_group_surface(session, GROUP_ID + 1)
+
+
+def test_planner_acquires_surface_before_membership_and_coverage_flush(database):
+    _seed_group(database)
+    group_locked = Event()
+    with Session(database, autoflush=False) as planner, ThreadPoolExecutor(max_workers=1) as executor:
+        task = lock_task_for_planning(planner, "qa-task")
+        writer = executor.submit(_listener_write, database, group_locked)
+        assert group_locked.wait(timeout=WAIT_SECONDS)
+        try:
+            with pytest.raises(RuntimeResourceBlocked, match="ai_group_surface_busy"):
+                _resolve_plan_group(planner, task, {"target_group_id": GROUP_ID}, progress={})
+        finally:
+            planner.rollback()
+            writer.result(timeout=WAIT_SECONDS)
+        task = lock_task_for_planning(planner, "qa-task")
+        group = _resolve_plan_group(planner, task, {"target_group_id": GROUP_ID}, progress={})
+        assert group.id == GROUP_ID

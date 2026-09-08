@@ -60,6 +60,22 @@ def _record_runtime_reservation(action_id: str, reservation: _RuntimeReservation
         _BATCH_RESERVATIONS.set((*owned, (action_id, reservation)))
 
 
+def transfer_dispatch_reservations(action_ids):
+    """Move this claim scope's exact owners to an already identified execution."""
+    owned = _BATCH_RESERVATIONS.get()
+    if owned is None:
+        raise RuntimeError("dispatch_reservation_transfer_scope_missing")
+    identifiers = frozenset(action_ids)
+    captured = tuple(item for item in owned if item[0] in identifiers)
+    _BATCH_RESERVATIONS.set(tuple(item for item in owned if item[0] not in identifiers))
+    return captured
+
+
+def release_transferred_dispatch_reservations(captured):
+    for action_id, reservation in captured:
+        _release_owned_runtime_reservation(action_id, reservation)
+
+
 def _release_owned_runtime_reservation(action_id: str, reservation: _RuntimeReservation) -> None:
     with _IN_FLIGHT_LOCK:
         if _ACTION_RESERVATIONS.get(action_id) is not reservation:

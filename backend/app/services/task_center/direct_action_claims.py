@@ -34,6 +34,7 @@ from .fulfillment_remote_facts import (
 )
 from .fulfillment_ledger_owners import align_view_ledger_for_safe_settlement
 from .source_pacing import wall_datetime
+from .dispatch_session_priority import current_session_priority, current_session_end
 
 
 SAFE_SETTLEMENT_ACTION_STATUSES = frozenset({
@@ -98,7 +99,7 @@ def _candidate_rows(
     shard_total: int = 1,
     shard_index: int = 0,
 ) -> list[tuple[str, str, int]]:
-    ranked = _ranked_candidate_query(now)
+    ranked = _ranked_candidate_query(now, dialect_name=session.bind.dialect.name)
     if exclude_task_ids:
         ranked = ranked.where(Action.task_id.not_in(exclude_task_ids))
     ranked = _filter_execution_lane(ranked, execution_lane)
@@ -106,15 +107,21 @@ def _candidate_rows(
     rows = ranked.subquery()
     statement = (
         select(rows.c.action_id, rows.c.task_id, rows.c.action_version)
-        .order_by(rows.c.task_rank, rows.c.scheduled_at, rows.c.task_id, rows.c.action_id)
+        .order_by(rows.c.deadline_rank, rows.c.session_rank, rows.c.task_rank,
+                  rows.c.session_end.asc().nulls_last(),
+                  rows.c.scheduled_at, rows.c.task_id, rows.c.action_id)
         .limit(max(1, limit))
     )
     return list(session.execute(statement))
 
 
-def _ranked_candidate_query(now: datetime):
+def _ranked_candidate_query(now: datetime, *, dialect_name="postgresql"):
+    deadline_rank = case((_deadline_exhausted_action(now), 1), else_=0)
+    session_rank = current_session_priority(now, dialect_name=dialect_name)
+    session_end = current_session_end(now, dialect_name=dialect_name)
     rank = func.row_number().over(
-        partition_by=Action.task_id, order_by=_candidate_order(now),
+        partition_by=Action.task_id,
+        order_by=(deadline_rank, session_rank, session_end.asc().nulls_last(), Action.scheduled_at, Action.id),
     ).label("task_rank")
     return (
         select(
@@ -122,6 +129,9 @@ def _ranked_candidate_query(now: datetime):
             Action.task_id.label("task_id"),
             Action.action_version.label("action_version"),
             Action.scheduled_at.label("scheduled_at"),
+            deadline_rank.label("deadline_rank"),
+            session_rank.label("session_rank"),
+            session_end.label("session_end"),
             rank,
         )
         .join(Task, Task.id == Action.task_id)
@@ -191,14 +201,6 @@ def _has_claimable_account_reservation():
         Action.pacing_slot_key == "",
         Action.account_id.is_(None),
         open_reservation,
-    )
-
-
-def _candidate_order(now: datetime | None = None):
-    return (
-        case((_deadline_exhausted_action(now), 0), else_=1),
-        Action.scheduled_at,
-        Action.id,
     )
 
 
