@@ -54,3 +54,15 @@
 - 21:01只读回读：10个Task仍running，三亚当日confirmed=2，其他9个=0；本轮完成时刻后有效消息事实为0。郑州大学3次API调用成功但可见性复核不通过，天津一品楼1个unknown仍待核对。未执行历史任务重试或数据修复。
 - 连续新真人消息使attention_quiet_after无限顺延，违反既有§19.4有界deadline。已补正§19.67实施合同：首次实际等待冻结当前配置max，持久保存于同一Action；后续只截断此项静默等待，全部其他校验保持，原候选/Job不变。
 - 正式dispatcher入口持久提交并重载测试先复现缺少固定deadline；修复后attention与conversation 15项通过（4.17秒），包含连续新事件、重复领取、重新加载、提前静默结束与明确回复例外。design_status=complete，code_review=pass，qa_pass；production_fixed=false，待本轮完整CI/发布及真实逐Task验证。
+
+
+## 第三轮发布与精确数据恢复预览
+
+- 本轮代码SHA `e4fce79d204ed34ad41dfdfd7e3919983fcc0240`；Prepare `34229528061`全成功；Deploy `34230307017`成功，部署Job完成21:13:13，workflow终态更新时间21:13:14，后续业务回读使用21:13:14作为保守anchor。current目录为`20260908131036_e4fce79d`，19应用容器RELEASE_SHA一致且healthy，OCR healthy，API HTTP 200。
+- 21:15–21:16回读：新anchor后已获得三亚1条有效`remote_message_observed`（调用21:14:32、可见事实21:14:35）；固定attention等待均180秒，尚未证明所有群持续发送。其他任务仍有source pacing、账号忙、topic容量合同及熔断阻塞。
+- 美美备用仅3个已准入账号的日覆盖被`generation_contract_error / generation_contract_repair`永久阻塞，账号ID 29/39/346；同义务全部历史Attempt=0、remote facts=0、open Actions=0；旧Job/Action failed，quantity与projection仍open，原错误均是已修复的non-V2 generation_job_id KeyError。
+- 只读预览的coverage IDs：`751d7670-5781-43b7-8b7d-9b7fea02aad3`、`898e5485-ea20-4d6b-bc57-223cc66ad9b5`、`e7c0cb5d-6410-45d3-9a93-4d85a2a91983`。预览摘要`10be7c31b404146236ef2076ba5f8c335bb3dd3257c8b7078650e141060b45aa`。
+- 精确恢复工具已准备，默认preview；apply要求操作者、明确批准引用、预览摘要、线上SHA、同日/Task身份状态/epoch/coverage旧值和无reserved/inflight/fact复核；锁定Task/coverage/历史Action后只将3条coverage转ready并写AuditLog。原Job/Action保留failed，配置与其他记录不改。仅本地事务验证和生产只读预览已执行，apply尚未获明确批准，persistence_status=preview_only。§5.3要求运营确认合同修复并审计，因此已向用户提出精确确认，等待答复。
+- 熔断回读：20:38:44至21:09期间40次独立健康探测全部超时，15个proxy route和5个account处于probe_transport_failed open；还有1个proxy route为unknown_after_send open。此为探测结果，尚未定位为某个网络设备或代理根因；没有绕过熔断或修改代理配置。
+
+- 21:18新回读：新anchor后三亚与西安天上人间各1条有效远端消息事实。西安该Action有固定attention deadline并最终success，证明有界等待后完整发送链实际通过。21:18:59回读三亚当日confirmed=4、西安=2，其余8任务当日confirmed=0；其他群多条Action已越过attention进入来源节奏、账号使用证据或容量检查。该结果只能证明部分链路恢复，不能声明10任务production_fixed。
