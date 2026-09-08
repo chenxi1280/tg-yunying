@@ -200,6 +200,24 @@ def test_current_freeze_fences_existing_pending_work(session):
     assert attempt.result_snapshot["remote_mutation_started"] is False
 
 
+def test_failed_probe_without_freeze_observation_fences_existing_membership(session):
+    from app.models import Task
+    from app.services.task_center.engagement_runtime_error import RuntimeResourceBlocked
+
+    session.add(Task(id="task", tenant_id=1, name="freeze regression", type="group_ai_chat", status="running"))
+    account = session.get(TgAccount, 1)
+    state = session.get(TgAccountOnlineState, "state")
+    _apply_probe_result(session, account, state, NOW, OnlineProbeResult(
+        account_id=1, error=ValueError("Request was unsuccessful 6 time(s)"), completed_at=NOW))
+    _, attempt = _attempt(session)
+    with pytest.raises(RuntimeResourceBlocked, match="account_freeze_observation_required"):
+        dispatcher._mark_gateway_call_started(session, attempt, commit=False)
+    assert attempt.gateway_call_started_at is None
+    assert account.telegram_freeze_observed_at is None
+    apply_freeze_observation(account, frozen=False, observed_at=NOW + timedelta(seconds=1))
+    guard_account_call_start(session, attempt)
+
+
 def test_frozen_membership_bypasses_group_rescue_and_preserves_unknown(session, monkeypatch):
     from types import SimpleNamespace
 

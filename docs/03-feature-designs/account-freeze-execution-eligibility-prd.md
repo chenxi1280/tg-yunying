@@ -60,3 +60,11 @@ Telegram异常/完整AppConfig → 账号冻结观测CAS → TgAccount冻结事�
 CI批次34181196467：两个PostgreSQL分片和前端通过，三个no_postgres分片遇到四个断言失败，均分组定位为测试夹具问题。Mini Bug Card：评论update-stream固定2026-09-05来源在9月8日越过三天有效期，改为当前场景时间；ABC fixture用`:e4 in key`将e4开头的随机batch误作E4操作，新增确定性反例先复现再改为末尾阶段精确匹配。仅测试变更，保留所有业务断言和生产合同；相关43项通过。该CI未构建或部署生产。
 
 CI34181916380：前端、两个PostgreSQL与两个no_postgres分片通过；剩余ABC completed recovery用例暴露fixture的E4重试键`e4:retry:1`被末尾匹配漏掉。测试helper改为冒号分段后的完整e4阶段匹配，新增重试回归，与批次前缀反例一起验证；ABC主流程/checkpoint/completed recovery/C orphan及评论update-stream合计50项通过。业务代码未变，此轮仍未部署。
+
+### 2026-09-08 11:35 生产反向验收补正
+
+9103ef7f已完成CI与部署，315个完整AppConfig确认冻结账号均被隔离，11:27:46至11:35:13新增Action/业务Gateway调用均为0；同期其他账号102次调用。然而11个历史冻结错误账号AppConfig探测失败，尚无任何冻结观测，在线状态blocked；其中2个存量membership仍进入Gateway并失败。不能据此宣称全部修复。
+
+补正合同：`telegram_frozen=false`且观测时间为空代表尚未观测，不代表检查通过。在线探测已blocked且尚无完整冻结观测的账号，在业务Gateway调用前必须沿既有RuntimeResourceBlocked未调用等待路径返回明确`account_freeze_observation_required`；不得通过membership恢复绕过。正常只读在线探测仍可运行；成功取得完整配置后按已定义冻结/非冻结流程恢复或隔离。该规则仅补齐此次探测失败、存量动作的入口，无历史错误批量推断、无手工冻结/重放。已确认冻结优先于未观测等待。QA覆盖失败探测后旧membership不进入Gateway、完整健康观测解除此等待、已有冻结仍隔离。设计已反向复核，design_status=complete，进入dev补正。
+
+补正QA：60项冻结/在线状态/时序测试通过，2项真实PostgreSQL锁顺序与迁移测试通过。新增用例从真实失败probe投影，经dispatcher调用前入口验证无gateway_call_started_at；再验证完整非冻结观测允许通过该冻结检查。代码自检确认先判断已冻结，再判断blocked且未观测，保持账号行锁与探测写入互斥；不改unknown与业务历史。第二轮release_status=pending，最终业务验收等待新版本回读。

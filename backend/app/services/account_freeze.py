@@ -7,7 +7,7 @@ from sqlalchemy.orm import object_session
 from sqlalchemy.orm.attributes import set_committed_value
 
 from app.integrations.telegram.account_freeze import FROZEN_HEALTH_SCORE
-from app.models import AccountStatus, TgAccount
+from app.models import AccountStatus, TgAccount, TgAccountOnlineState
 
 class AccountFrozenBeforeGateway(ValueError):
     pass
@@ -49,7 +49,7 @@ def guard_account_call_start(session, attempt) -> None:
 
     try:
         with session.begin_nested():
-            row = session.execute(select(TgAccount.telegram_frozen).where(
+            row = session.execute(select(TgAccount.telegram_frozen, TgAccount.telegram_freeze_observed_at).where(
                 TgAccount.id == attempt.account_id, TgAccount.tenant_id == attempt.tenant_id,
             ).with_for_update(read=True, nowait=True)).one()
     except DBAPIError as exc:
@@ -57,6 +57,7 @@ def guard_account_call_start(session, attempt) -> None:
             raise
         raise RuntimeResourceBlocked("account_freeze_admission_busy", "账号资格观测正在更新") from exc
     if not row.telegram_frozen:
+        _guard_unobserved_blocked_account(session, attempt, row.telegram_freeze_observed_at)
         return
     if attempt.gateway_call_started_at is not None:
         raise RuntimeError("account_freeze_guard_attempt_already_called")
@@ -65,6 +66,21 @@ def guard_account_call_start(session, attempt) -> None:
     attempt.failure_type = "account_frozen"
     attempt.result_snapshot = {**dict(attempt.result_snapshot or {}), "remote_mutation_started": False}
     raise AccountFrozenBeforeGateway("account_frozen: Telegram 已冻结此账号，本次调用未发出")
+
+
+def _guard_unobserved_blocked_account(session, attempt, observed_at) -> None:
+    from app.services.task_center.engagement_runtime_error import RuntimeResourceBlocked
+
+    if observed_at is not None:
+        return
+    online_status = session.scalar(select(TgAccountOnlineState.online_status).where(
+        TgAccountOnlineState.account_id == attempt.account_id,
+        TgAccountOnlineState.tenant_id == attempt.tenant_id,
+    ))
+    if online_status == "blocked":
+        raise RuntimeResourceBlocked(
+            "account_freeze_observation_required", "账号健康探测失败，尚未取得Telegram冻结状态观测",
+        )
 
 
 def _aware(value: datetime) -> datetime:
