@@ -62,3 +62,5 @@ b3406f7ec385ace2b0e06a404e9d5dd66d07f1c5：Prepare34391580370全部通过，7725
 03:28:33追加只读检查证实西安6条应急真实发送却未计日数量（typed15、缓存/重算9）；发送结果覆盖memory.content_hash审计副本。已按专项PRD补齐不可变选择事实为计数权威、memory冻结审计保留、历史正确事实自然计入的修正合同，需修复后重走QA/Prepare/发布/基本数量E4。
 
 第五轮定向QA：写侧真实mark结果保留审计、读侧历史缺哈希/冲突拒绝、原应急/日数量/相似度/维护共6文件96 passed（14.43s，UTC，硬60秒）；读侧25新用例含错误归属、版本、内容及quantity资格反例。历史回计只读不可变selection证据，不补造memory、不重发。git diff --check通过；需完整Prepare后发布。
+
+Prepare34396262075发现4项旧版本对齐回归，根因是新memory校验过早要求Action版本一致，阻断原精确旧版CAS。已将content_binding保留为内容身份核对，Gateway最终校验与数量计数仍严格验证版本；没有放宽发送或计数。包含完整projection-repair的7文件119 passed（18.12s，UTC，硬60秒）。此Prepare失败不豁免，修正提交重新运行完整Prepare。

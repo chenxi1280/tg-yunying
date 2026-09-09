@@ -176,16 +176,19 @@ def validate_emergency_content_binding(session, action, payload):
             or current.get("ai_message_memory_id") != payload.ai_message_memory_id):
         raise ValueError("emergency_selection_publication_stale")
     memory = session.get(AiGroupMessageMemory, payload.ai_message_memory_id)
-    if not emergency_memory_matches(session, action, memory):
+    # Content binding is also checked before the audited legacy revision alignment.
+    if not emergency_memory_matches(session, action, memory, check_materialization=False):
         raise ValueError("emergency_message_memory_invalid")
     return row
 
 
-def emergency_memory_matches(session, action, memory) -> bool:
+def emergency_memory_matches(session, action, memory, *, check_materialization=True) -> bool:
     data = dict(action.payload or {})
     selection_id = str(data.get("emergency_selection_id") or "")
     selection = session.get(AiGroupEmergencySelection, selection_id) if selection_id else None
     if not selection or not memory:
+        return False
+    if check_materialization and selection.materialization_version != action.materialization_version:
         return False
     if not _memory_selection_identity_matches(action, selection, data=data):
         return False
@@ -210,7 +213,6 @@ def _memory_selection_identity_matches(action, selection, *, data) -> bool:
         return False
     if (selection.policy_version != POLICY_VERSION or data.get("generation_source") != POLICY_VERSION
             or selection.source not in EMERGENCY_SOURCES
-            or selection.materialization_version != action.materialization_version
             or selection.generation_job_id != data.get("generation_job_id")):
         return False
     try:
