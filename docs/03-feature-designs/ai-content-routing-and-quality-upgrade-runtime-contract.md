@@ -267,3 +267,7 @@ shadow preview 只能走独立只读生成路径：不得写 `GenerationJob/Wind
 Product Design Complete：将已存在的“终态 Action + 正面未执行证据”回收合同覆盖至 `candidate_ready + Job ready/reviewing`，与原 `gateway_bound + Job ready/gateway_bound` 采用同等 owner/tenant/task/epoch/obligation/window/job 绑定及全部 Attempt/typed fact 检查。按行锁串行使旧 slot invalidated 并释放 owner/lease；保留 Job/Action/Attempt/fact 和所有远端去重身份，不修改状态或完成量，不放宽 current-obligation 唯一约束。只在后续正式生成绑定原 obligation 时回收，不直接批量改生产数据。active/unknown/身份漂移、未结束 Attempt、已调用却无正确未执行事实、已有 remote ID 均不得回收。
 
 QA 必须先复现 ready/reviewing/candidate_ready + skipped 的冲突，确认回收后同 obligation 的新窗口能够冻结；覆盖原 gateway_bound 及所有证据反例，真实 PostgreSQL 验证 partial unique 和行锁路径。该修复不绕过行为 Session/来源 deadline，过期积压仍按原合同结算。
+
+### 2026-09-09 拒绝消耗与形状诊断
+
+Provider 已返回的 tokens 在 realizer 解析或 grounding 身份拒绝时继续计入消耗；只有长度/标点错误追加规范化后字符数、目标/实际档位和候选 hash，不记录正文或 Provider 任意字段。沿原 evaluator_evidence 通道传递，质量耗尽保留末次证据及所有调用的累计消耗。不将这些证据拼入重试提示，不改变生成、质量或发送行为。统一引擎 §19.71 和低完成量实施记录 B1 为本地实现合同；其余自动等待/纠错提案未实现、未部署。

@@ -828,3 +828,7 @@ Intake `AI-GROUP-LOW-FULFILLMENT-20260907`，L3/P1；线上诊断显示 10 个�
 Product Design Complete：原始低完成量需求、输入/输出语义、worker/数据库查询、租户隔离、重复事实、失败历史淹没窗口及迁移回滚边界已闭合；本阶段交接 dev 实现索引与查询回归。页面/API 合同不变。后续若线上仍有独立阻塞，回到诊断/产品阶段修复，不以此局部优化宣告整体恢复。
 
 QA：覆盖跨 Task 同 surface、跨租户、500 条无效历史、同 Action 多事实、remote observed 时间优先和原频率阈值；真实 PostgreSQL 验证升级/重复升级、索引查询计划。发布后逐 Task 记录新远端发送事实、到期欠量变化和当前 blocker；服务 healthy 不等于 production_fixed。
+
+## 2026-09-09 旧意图容量诊断（未修复）
+
+本次只读诊断发现历史配置话题 intent 在真实确认比例不足时仍触发容量合同失败。等待/恢复方案仅为未实现提案，本轮未改变意图、容量分配、生成或发送状态。独立的 B1 拒绝消耗/诊断证据修复见统一引擎 §19.71；全部根因和生产验收状态见 `docs/05-implementation/ai-group-low-fulfillment-repair-20260909.md`，不能以 B1 的本地测试宣称容量问题或生产目标已解决。

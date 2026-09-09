@@ -1634,3 +1634,5 @@ legacy-only A 冷启动分支固定为 `frozen legacy A -> 原 A Session 只读 
 - 2026-09-08完成量二次对齐：统一引擎§7.8/§11/§14/§16.1的组合不足整Task禁用改为拒绝超卖边并继续合法分区；§8.6.1/§19.23的JIT与QA统一按实际剩余路径，§13.3撤销的P95/模型预算平台明确历史边界。实际Task.engagement配置、fact_first履约版本、V2/两阶段开关与逐能力实施/部署/远端证据映射见§19.65.9；完整周期数量守恒及可控缺量归因见§19.65.10。
 
 > **2026-09-08 DF-358 修订：** `master SHA -> Prepare Production(完整 6+2 shards/frontend/images) -> verified manifest(run/attempt/digests) -> release 冻结 -> Deploy Production exact-SHA resolver -> pull -> frozen worker IDs stop/readback -> prepare AuditLog + scope preparing -> all workers start -> in-flight recovery/ledger -> upgrade takeover or verified chain reuse -> activate/verify-active -> activation evidence -> runtime/E4 readback`。准备无生产副作用；普通切换不新建历史 takeover batch；未知 Gateway 请求保持原 reconcile。 当前合同：`docs/03-feature-designs/prepared-release-worker-cutover-prd.md`。
+
+- 2026-09-09 B1：Provider 返回 payload/tokens → realizer 解析或 grounding 拒绝 → TwoStageRealizeError 保留 tokens，形状拒绝附带计数/档位/hash → 既有 SlotGenerationResult.evaluator_evidence 与质量耗尽累计消耗。证据不进入后续纠错提示、不含正文；无表结构、状态机或发送行为变更。当前仅本地验证，见 `docs/05-implementation/ai-group-low-fulfillment-repair-20260909.md`。

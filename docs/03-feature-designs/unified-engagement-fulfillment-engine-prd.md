@@ -3633,3 +3633,9 @@ Intake `intake-20260909-ai-group-target-completion`，L3/P1。用户要求各个
 Intake `intake-20260909-local-review-fixes`，L2。恢复 §19.2.2 和连续系统发言合同：`guaranteed_now_capacity=0` 时正文 coverage 候选必须为空，`idle_continuation_enabled` 的缺省、启用或关闭均不能增加容量；即使 required_units 为零也不得凭 max(1, ...) 创建候选。正容量仍取该容量以内的已准入候选，账号隔离与数量义务保持。
 
 新租户 presence policy 沿现有 ORM 默认值：连续 2、每日 authored 20、managed/external 10000 bps、bootstrap 2，不在初始化路径另设宽松参数。已有 active revision 原样返回，不隐式迁移或覆盖已有值。该修复不新增限制，而是恢复已批准合同；现有策略如需修订须单独审计。QA 覆盖真实已占用两条的冷群、idle 开关组合、正常正容量、新建与已有策略。design_status=complete，resync=true；本地验证和生产边界见 `docs/05-implementation/local-review-fixes-20260909.md`。
+
+### 19.71 低完成量诊断与拒绝消耗记账（2026-09-09）
+
+Intake `intake-20260909-ai-group-low-fulfillment`，L3/P1。用户要求修复并经真实生产检查达到各任务目标。当前仅 B1「失败消耗与诊断证据」完成本地实现：所有 realizer 解析/grounding 拒绝保留已返回 tokens；长度/标点错误复用现有规范化和分类函数记录字符数、目标/实际档位和候选 SHA-256，不含正文。既有质量耗尽结果累计每次拒绝消耗，保留末次证据。
+
+本变更不改变提示、纠错输入、尝试次数、质量判定或发送合同。旧话题容量、调度内存、传输和发送后可见性仍未修复闭环；自动等待/纠错为实施记录中的未实现提案。B1 的 69 项定向测试通过仅证明本地记账/诊断合同，尚未 CI、部署或生产验收，不能标记 production_fixed。详细状态及生产边界见 `docs/05-implementation/ai-group-low-fulfillment-repair-20260909.md`。

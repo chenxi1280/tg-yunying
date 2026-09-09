@@ -27,6 +27,7 @@ from .message_brief import (
     voice_contract_v3,
 )
 from .message_brief_v2 import MessageBriefV2, v2_realizer_system_prompt
+from .realizer_rejection_evidence import realizer_rejection_evidence
 from .two_stage_planning import TwoStagePlan, plan_message_briefs_with
 from .semantic_grounding import lexical_grounding_evidence
 from .semantic_review_contract import (
@@ -288,7 +289,10 @@ def _realize_draft(
         content, meta = parse_realizer_response(item, plan.brief)
         meta.update(_grounding_realizer_identity(item, config, plan.brief))
     except ValueError as exc:
-        raise TwoStageRealizeError(str(exc)) from exc
+        raise TwoStageRealizeError(
+            str(exc), evidence=realizer_rejection_evidence(str(exc), item, plan.brief),
+            tokens=int(tokens or 0),
+        ) from exc
     return content, meta, int(tokens or 0), voice, facts
 
 
