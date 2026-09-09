@@ -1651,3 +1651,4 @@ legacy-only A 冷启动分支固定为 `frozen legacy A -> 原 A Session 只读 
 - Clone启动数据流：pending/start_from_now → listener Collector → 每Task锁定并读取Telegram起始boundary → stream/subscription/running/PlannerWake同事务提交 → Planner物化；Planner不执行boundary RPC，失败保留start_failed及零发送事实。
 
 - 2026-09-09 E4统计：同tenant/Task/ledger全量coverage（含abandoned/unknown）→历史总数、按unified/legacy合同的必达数、记录数与独立去重账号数分列；Action/Attempt回执→同身份及发布时间的remote_message_observed精确关联→按Action去重→E4消息证据判定。unified历史分母不随账号冻结或当前可执行性缩小，legacy动态scope保留，回执不冒充业务事实；全流程只读。合同`docs/03-feature-designs/production-e4-reporting-integrity-prd.md`，独立分支本地验证，未部署。
+- E4范围补正：PostgreSQL REPEATABLE READ READ ONLY事务及局部查询/锁超时 → 全量未删除channel_view自动范围或原显式ID范围 → 同事务读取Task/ledger/事实 → task_deleted与业务缺口 → 摘要；设置/查询失败中止，无通过摘要、无降级、无写库。

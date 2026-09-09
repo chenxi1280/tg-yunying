@@ -26,6 +26,8 @@ def _common_blockers(snapshot: dict[str, Any]) -> list[str]:
         blockers.append("task_missing")
     elif snapshot.get("task_status") not in {"running", "completed"}:
         blockers.append("task_not_active")
+    if snapshot.get("task_deleted"):
+        blockers.append("task_deleted")
     if not snapshot.get("ledger_id"):
         blockers.append("task_day_ledger_missing")
     if snapshot.get("planner_runtime_error"):
@@ -105,4 +107,3 @@ def _view_blockers(snapshot: dict[str, Any]) -> list[str]:
     if int(view.get("post_release_remote_fact_count") or 0) <= 0:
         blockers.append("channel_view_post_release_fact_missing")
     return blockers
-
