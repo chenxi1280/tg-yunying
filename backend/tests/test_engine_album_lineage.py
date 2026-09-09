@@ -52,10 +52,12 @@ def test_one_source_never_receives_more_accounts_than_its_target():
 def test_album_adapter_materializes_exact_frozen_children_with_real_pacing(monkeypatch):
     from app.services.task_center.executors import channel_like
     from app.services.task_center.fulfillment_activation import CURRENT_CONTRACT_VERSION
-    now = datetime(2026, 9, 4, 3, tzinfo=timezone.utc)
+    # SQLite reloads naive times: keep the Task and source on one Beijing wall clock.
+    now = datetime(2026, 9, 4, 11)
     monkeypatch.setattr(channel_like, "_now", lambda: now)
     with _session() as session:
         task, channel = _seed(session)
+        task.created_at = now
         task.fulfillment_contract_version = CURRENT_CONTRACT_VERSION
         channel.reaction_capability_mode = "all"
         channel.available_reactions = ["👍"]
