@@ -31,6 +31,7 @@ design_status=complete，resync=true，进入 dev。无新 API、表结构、wor
 - dev：四个生产代码文件最小修改。删除零容量放行分支；初始化复用现有 ORM 默认；补齐相册模型导入；评论结构性异常沿已有 CommentGenerationBlocked 传播。
 - 红测：容量/初始化 6 个反例、评论 6 个字段缺失反例失败；相册测试先修正测试数据的 UTC 截止时间，随后两个正式 dispatch 用例均在缺失模型名处失败。未把夹具时间错误算作生产缺陷。
 - 最终互不重叠回归：容量/隔离/主题/behavior/continuity 80 passed（12.11 秒）；群克隆 lifecycle/review/update collector/双媒体 28 passed（9.78 秒）；评论 pipeline/job/unknown/recovery/phases 53 passed（7.34 秒）。合计 161 项，均为本地隔离测试，各进程硬超时 60 秒。
+- 夹具与回归对齐：结构性异常不再被静默吞掉后，`test_channel_comment_fallback_selection.py` 中的 `_enable_v2` 补齐了合法 grounding 字段，确保兜底选择测试在调用生成器失败后能顺利进入兜底链路；后端测试分片 5 全部 1108 项测试本地运行通过。
 - 首轮聚焦 32 passed（7.42 秒）与上述批次重叠，不相加。相册 fixture 导入静态清理后另重跑双媒体测试，2 passed（4.32 秒），不重复计入独立用例数。
 - 定向 F821/F822/F823、三个新增/扩展回归文件的 F 类静态检查、修改路径 compileall、git diff --check 通过。代码审查核对新旧策略不被静默覆盖、零容量未扩大账号集合、相册原 random_id/义务归属及评论错误不落入 provider_failed。
 - PRD：统一引擎 §19.70、群克隆和评论专项审查修订已同步；既有入口/API/表结构无变化，结构索引不变。验收规则已在本记录和专项 PRD 明确。

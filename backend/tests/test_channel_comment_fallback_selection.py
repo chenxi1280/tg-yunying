@@ -601,6 +601,15 @@ def _enable_v2(
         "allow_image_reselection_before_gateway": True,
         "allow_cross_kind_fallback_to_unicode": True,
     }
+    action.payload = {
+        **action.payload,
+        "grounding_snapshot_id": action.payload.get("grounding_snapshot_id") or "snap-fallback-1",
+        "grounding_assignment_id": action.payload.get("grounding_assignment_id") or "assignment-fallback-1",
+        "grounding_primary_evidence_id": action.payload.get("grounding_primary_evidence_id") or "evidence-fallback-1",
+        "grounding_primary_aspect_code": action.payload.get("grounding_primary_aspect_code") or "aspect-detail",
+        "grounding_primary_aspect_text": action.payload.get("grounding_primary_aspect_text") or "细节追问",
+        "grounding_speech_act": action.payload.get("grounding_speech_act") or "ask_detail",
+    }
     session.commit()
     return task
 
