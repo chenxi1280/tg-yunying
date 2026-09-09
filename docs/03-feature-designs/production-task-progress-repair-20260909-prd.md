@@ -25,6 +25,7 @@
 2. 不写Task配置，不指定新Provider/model，不创建假V2路由，不放宽单次15秒/真实发送期限；既有timing binding不可被重写以绕过path hash冲突。
 3. 评论worker领取已提交后，payload验证、准备、生成、持久化任何异常都必须在原事务退出后释放本次owner/token仍拥有的领取。预期生成失败沿既有持久化语义；未预期异常继续向外抛出，不吞错、不返回成功。释放独立事务锁定Action后检查owner/token，不能覆盖新worker的领取。
 4. 已持久unknown/cache/失败状态不得被finally重置为可重试；释放只改仍属于本次领取的状态，既有unknown Job及成本不变。
+   R1异常边界反查补正：若Provider-start已持久化而结果持久化再次异常，finally不得把generating直接改为普通pending。复用既有generation recovery的原Job CAS转unknown，同时Action进入provider_result_unknown并清理本次owner/token；原异常继续暴露，下个worker不重领Provider。该路径不是缓存成功，不删除旧调用身份；对应真实领取入口失败回归为dev前验收口径，design_status=complete/resync=true。
 5. 历史领取使用已有stale recovery合同，不能仅凭租约到期推断远端未调用。若原入口无法处理，需要另行形成精确证据驱动的恢复切片，不直接SQL重置。
 
 ### 自检和验收

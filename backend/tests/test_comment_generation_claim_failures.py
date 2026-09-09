@@ -105,3 +105,33 @@ def test_old_finally_cannot_release_new_owner_or_its_resources(monkeypatch):
         assert action.status == "executing"
         assert action.claim_owner == "new-owner" and action.claim_token == "new-token"
         assert releases == []
+
+
+def test_exception_after_durable_provider_start_preserves_unknown(monkeypatch):
+    with comment_dispatch_session() as session:
+        action = seed_dispatch_scope(session)
+        claim = worker.CommentGenerationClaim(action.id, "QA-owner", "QA-token")
+        mark_generation_claim(action, claim.owner, claim.token)
+        job = GenerationJob(tenant_id=1, task_id=action.task_id, task_lifecycle_epoch=action.task_lifecycle_epoch,
+            obligation_type="post_comment", obligation_id=action.payload["comment_fulfillment_obligation_id"],
+            generation_sequence=1, context_snapshot_version=1, state="generating", generation_owner_id=claim.owner)
+        session.add(job)
+        session.flush()
+        action.payload = {**action.payload, "generation_job_id": job.id}
+        session.commit()
+
+        def fail_after_provider_started(current, item, **kwargs):
+            item.result = {"ai_provider_call_started_at": _now().isoformat()}
+            current.commit()
+            raise RuntimeError("QA-result-persistence-failed")
+
+        monkeypatch.setattr(worker, "ensure_post_comment_content", fail_after_provider_started)
+        factory = lambda: Session(session.get_bind())
+        with pytest.raises(RuntimeError, match="QA-result-persistence-failed"):
+            worker._process_comment_generation(factory, claim,
+                dependencies=worker.PRODUCTION_COMMENT_GENERATION_DEPENDENCIES)
+        session.expire_all()
+        assert action.payload["ai_generation_status"] == "provider_result_unknown"
+        assert job.state == "unknown"
+        assert action.claim_owner == action.claim_token == ""
+        assert worker._claim_comment_generation(factory, owner="next-worker", excluded_action_ids=set()) is None

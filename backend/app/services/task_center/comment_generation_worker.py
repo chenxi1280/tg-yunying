@@ -19,11 +19,12 @@ from .ai_generation_claim_lifecycle import (
 )
 from .ai_generation_state import GenerationAttemptStale
 from .ai_generation_timing import GENERATION_LOOKAHEAD, generation_send_time_expression
-from .ai_generation_recovery import reconcile_generation_jobs
+from .ai_generation_recovery import reconcile_generation_jobs, recover_stale_pre_gateway_generation
 from .ai_generator import AiGenerationUnavailable, ProviderRouteDeferred
 from .channel_payloads import PostCommentPayload
 from .comment_generation_dispatch import (
     PRODUCTION_COMMENT_GENERATION_DEPENDENCIES,
+    _retain_provider_unknown,
     ensure_post_comment_content,
 )
 from .comment_generation_pipeline import CommentGenerationDependencies
@@ -158,6 +159,10 @@ def _release_comment_generation_claim(
         ).with_for_update())
         if not owns_generation_claim(action, claim.owner, claim.token):
             return
+        payload = dict(action.payload or {})
+        if payload.get("ai_generation_status") == "generating" and (action.result or {}).get("ai_provider_call_started_at"):
+            recover_stale_pre_gateway_generation(action, session)
+            _retain_provider_unknown(action, job_id=str(payload.get("generation_job_id") or ""))
         release_generation_claim(action, dict(action.payload or {}))
         _release_runtime_resources(action)
         session.commit()

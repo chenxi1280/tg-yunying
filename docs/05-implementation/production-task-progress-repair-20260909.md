@@ -33,6 +33,13 @@
 - 新增生产代码及测试ruff F类通过，既有修改文件F821/F822/F823通过；compileall、git diff --check通过。新增模块均小于500行，函数非空小于50行，分支复杂度自检≤10。
 - local_qa_pass/product_accepted仅针对R1/R3/R4代码与维护合同。整体生产business仍unproven，R2/R5不能据此写已修复。
 
+### 发布等待期间的最终审查
+
+- 首代码提交aa670b976027fcca301a6c00e06a033454736055，parent为Clone的d5af1229；仅推送本任务分支，未推进master/release。
+- R1深检增加“Provider-start已经提交，但保存失败状态又报错”的反例：finally原先会把generating降为普通pending。已用真实worker领取入口复现失败，改为先调用既有generation recovery对原Job CAS到unknown，再保留Action provider_result_unknown并释放自己领取；新worker不能重新调用Provider，错误仍向外抛出。
+- R1领取/unknown lineage/原身份恢复最终29 passed / 6.42秒；既有评论phases/job/unknown/恢复扩展40 passed / 8.27秒（有重叠，不与其他集合相加）。R4最终21 passed / 5.06秒；PostgreSQL最终3 passed / 9.52秒。
+- 新增scope task hash还覆盖config_revision、account/pacing/failure配置、时间区间；readback允许正常新Action接管后按合法时间线前进，但检查原Task/account绑定不漂移。
+
 ## Release Gate
 
 - release_mode：github_actions；release_owner/rollback_owner：本任务Codex。
