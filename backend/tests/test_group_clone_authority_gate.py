@@ -103,8 +103,10 @@ def test_verify_gateway_admission(db_session: Session):
     assert "已被独占克隆锁定" in reason2
 
 
-def test_release_authority(db_session: Session):
-    check_and_claim_exclusive_authority(
+@pytest.mark.parametrize("autoflush", [True, False])
+def test_release_authority(db_session: Session, autoflush):
+    db_session.autoflush = autoflush
+    _, _, authority = check_and_claim_exclusive_authority(
         session=db_session,
         tenant_id=1,
         target_peer_type="channel",
@@ -124,6 +126,14 @@ def test_release_authority(db_session: Session):
         writer_id="task-clone-1",
     )
     assert released
+    db_session.commit()
+    db_session.expire_all()
+    assert authority.mode == "vacant"
+    assert authority.gateway_admission_side == "none"
+    holder = db_session.query(TelegramGroupMutationAuthorityHolder).filter_by(
+        authority_id=authority.id, writer_id="task-clone-1",
+    ).one()
+    assert holder.state == "released"
 
     # 释放后，Task 2 可以成功申请
     claimed2, _, _ = check_and_claim_exclusive_authority(
@@ -169,6 +179,30 @@ def test_platform_writer_bootstraps_shared_but_cannot_bypass_clone(db_session: S
     )
     assert not blocked
     assert "独占克隆" in reason
+
+
+@pytest.mark.parametrize("autoflush", [True, False])
+def test_release_preserves_another_active_holder(db_session, autoflush):
+    db_session.autoflush = autoflush
+    _, _, authority = check_and_claim_exclusive_authority(
+        db_session, 1, target_peer_type="channel", target_peer_id="-100778",
+        writer_kind="group_clone", writer_id="clone-owner", route_hash="route",
+    )
+    authority.mode = "handoff"
+    other = TelegramGroupMutationAuthorityHolder(
+        authority_id=authority.id, writer_kind="group_relay", writer_id="old-owner",
+        route_hash="old-route", holder_role="old_handoff", state="active", version=1,
+    )
+    db_session.add(other)
+    db_session.commit()
+    assert release_exclusive_authority(
+        db_session, 1, target_peer_type="channel", target_peer_id="-100778",
+        writer_kind="group_clone", writer_id="clone-owner",
+    )
+    db_session.commit()
+    db_session.expire_all()
+    assert authority.mode == "handoff"
+    assert other.state == "active" and other.version == 1
 
 
 def test_shared_one_shot_writer_can_release_and_reactivate(db_session: Session):

@@ -1063,3 +1063,9 @@ ffc08a3d发布后的真实测试发现：listener先注册AI订阅并锁定共�
 本修订 `design_status=complete/resync=true`：两类订阅的候选发现/选路均先完成，之后才执行AI与评论订阅的既有锁定、创建/改绑及事务提交，最后执行Collector与Clone启动。保留现有FOR UPDATE、订阅边界、租户/epoch、错误隔离和fencing，不引入无锁复用、增加租约或取消生产事务。候选发现不得隐含持有共享authorization state锁；已有订阅的Collector在评论选路阶段可独立领取。原长周期的总耗时仍单独评估，本次仅消除已证实的跨阶段持锁。
 
 QA通过真实PostgreSQL双连接及正式drain入口，验证评论选路期间另一连接可以NOWAIT锁定/领取已有共享state，旧顺序必须失败；选路失败前不得写入AI订阅投影，成功时保留订阅与Collector/Clone启动顺序。无迁移、无UI/API状态变化、无unknown重放。发布后对原受控Task重新执行前置检查、Start和Telegram事实读回，E4仍独立验收。
+
+### 2026-09-09 失败启动后的独占权限释放修订
+
+真实预检证明，零发送失败任务的唯一holder已released/version2，但authority仍exclusive_clone/version2，阻断原任务Start。反向检查发现生产SessionLocal关闭autoflush，release_exclusive_authority修改holder后查询剩余active holder前未flush，误把尚未落库的自己计入剩余集合。
+
+本修订 `design_status=complete/resync=true`：在查询剩余holder前显式flush已授权释放变更，继续持有原authority锁；只有真实不存在其他active holder时才设vacant/none，其他holder不得被释放。QA必须同时覆盖autoflush开启与生产关闭配置、commit/expire后读回、原holder released及下一writer可重新领取；存在其他active holder仍不得清空模式。对本次精确失败Task的历史残留，可在复核Task错误/零Action、authority旧mode/version、唯一released holder及writer身份后，调用同一既有release服务补全状态并记录审计，独立读回后再走通用Start；不修改源边界或重放未知请求。无需schema/API/UI变化。

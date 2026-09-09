@@ -165,6 +165,7 @@ def release_exclusive_authority(
     if holder:
         holder.state = "released"
         holder.version += 1
+        session.flush()
 
     # 检查是否还有其他活动 holder
     remaining_stmt = select(TelegramGroupMutationAuthorityHolder).where(

@@ -102,3 +102,11 @@ Prepare 34339633174全量success；聚合候选ffc08a3d97e05ec6fa51092ff946c8d85
 真实本机PostgreSQL双连接回归：旧代码2 failed，分别为评论选路阶段第二连接FOR UPDATE NOWAIT报LockNotAvailable，以及选路失败前已提前执行订阅准备；调整后2 passed /4.04秒，验证正式drain、真实锁和正式Collector claim。最初夹具的本地端口配置与SQLite seed外键顺序问题已先修正，不计作产品失败证据。Clone全部120项加AI/评论共享流12项，132 passed /23.10秒；所有pytest进程硬超时60秒。新增测试ruff F、生产入口静态未定义名与diff-check通过。
 
 本次修复只消除已证明的跨阶段持锁，listener总体周期与完整Clone E4仍待新发布后的独立验证。发布候选由统一owner协调，维护CLI运行期间不切换runtime。
+
+## 失败启动权限残留修复
+
+第二个受控Collector完整退出输出显示，长事务提交后3轮已把source/target都追到live，随后自有进程正常受控停止。为并行利用Prepare等待时间，再次运行同范围Collector，在两端live后正式precheck发现权限阻断：authority 24c4a568-3b64-47bf-8c16-48a66db9cdc6为exclusive_clone/v2，唯一holder为本任务ce341c64的released/v2；原Task仍failed及零Action。
+
+根因是release_exclusive_authority修改holder.state后直接查询剩余active holder，而生产SessionLocal配置autoflush=False。已修改的自己尚未落库仍被查询计入remaining，authority未转vacant。原定向测试默认autoflush=True未覆盖该差异。先更新PRD，再添加生产配置反例：旧代码1 failed/6 passed，失败精确为commit/expire后mode仍exclusive_clone；修复在查询remaining前显式flush，另加其他active holder必须保留的反例。最终Clone123项21.56秒全通过，静态未定义名与diff-check通过。新生产变更仅一行flush，原锁与权限校验不变。
+
+历史残留仅按本次原测试授权，以当前runtime SHA、精确Task错误和零Action、authority mode/version、唯一released holder身份/version作窄范围guard，调用既有release_exclusive_authority补全为vacant/v3并审计；独立读回后再经通用Start。无手工删除holder、无重置epoch、无未知发送重放。
