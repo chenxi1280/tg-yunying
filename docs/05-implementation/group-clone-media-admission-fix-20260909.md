@@ -51,3 +51,21 @@
 - 当前总定向证据为118个不重叠用例；各后端pytest进程硬超时60秒。
 - 首候选fcda17d0的Prepare Production 34331833229完整通过，但未Deploy；最终候选合并本轮修复后重新Prepare，不以旧SHA的通过代替新候选检查。
 - 用户已授权指定群测试，原“未提供范围”状态更新为“范围已明确，进行前置配置与正式任务链验收”。本次未授权给源群插入测试消息；Clone从启动后自然事件开始，完成后暂停测试任务，保留映射/unknown证据。
+
+## 发布目录复验与测试配置读回
+
+- 最终候选：42627281e22e8d4708e27fd46dcceea161049592；独立master工作树 `/tmp/tgyunying-clone-release-20260909`。主工作区其他AI任务修复未纳入候选。
+- 独立目录112项回归全部通过（43 + 41 + 17 + 5 + 6）；较大批次曾触发60秒硬超时，拆分后所有用例通过，无断言失败。生命周期单独5项耗时9.72秒、Sequencer/Ingress6项9.88秒。未放宽60秒限制。
+- 本机GitHub HTTPS出现SSL_ERROR_SYSCALL/EOF，使用现有生产SSH的临时SOCKS转发访问GitHub，TLS认证和GitHub Actions发布路径保持不变；未修改全局代理配置。
+- master已推送最终候选，Prepare Production 34334139596进行中。
+- 用户指定目标经实时resolve及creator权限复核后，用现有 `_upsert_group_target_from_snapshot` 仅登记该群：OperationTarget=6106、TgGroup=6167、账号437关联=37791；独立读回can_send=true。使用现有目标账号策略服务把可发言标签更新为实时确认的群主，保留业务审计。
+- 使用现有规则服务创建专用规则集2/v1/published，限定group_clone，无内容改写。源内容仍受Clone自身protected/unsupported/entities准入约束。
+- 本次配置审计actor前缀为 `Codex/user-authorized-clone-test-20260909`，审批来源为本任务用户指定源/目标和管理员；未修改其他群或账号关系。
+- 预检的source/target均resolved=true；剩余hard blocks仅为旧版共享Ingress无live owner/lease。预检已提交授权状态供正常Collector领取，未手工修正gap或PTS。
+- 发送池只有指定管理员的一个Telegram身份；多源发言人会出现waiting_binding，不能当作完整多账号克隆验收。本次目标先验证真实正式链路，观察到结果后暂停任务并保留事实。
+
+## CI 测试隔离修复
+
+Prepare 34334139596的两个PostgreSQL分片各有1项失败，均为新增租约测试向已有public schema自动插入Tenant时撞上预置id=1；普通分片、前端与镜像通过。修复仅把新增测试切换到仓库现有isolated_postgres/database夹具，每项使用独立schema及其序列，避免公共数据/执行顺序依赖；生产代码和验收合同不变。
+
+本机专用PostgreSQL中先写入public Tenant(id=1)，再运行修订后6项租约持久化/读回测试：6 passed / 9.55秒；保留真实PostgreSQL及60秒硬超时，没有mock数据库。修复后提交新候选并重新执行完整Prepare。
