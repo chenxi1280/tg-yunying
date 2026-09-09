@@ -50,16 +50,13 @@ def check_remote_topic_capacity(
     confirmed_topic_count: int,
     unknown_topic_count: int = 0,
     active_reservations: int = 0,
-    active_normal_count: int | None = None,
     topic_rate_bps: int,
 ) -> bool:
     if topic_rate_bps <= 0:
         return False
-    active_normal = (
-        active_reservations if active_normal_count is None else active_normal_count
-    )
     num = confirmed_topic_count + unknown_topic_count + active_reservations + 1
-    den = confirmed_normal_count + unknown_topic_count + active_normal + 1
+    # Unsent non-topic work cannot guarantee the next visible topic's capacity.
+    den = confirmed_normal_count + unknown_topic_count + active_reservations + 1
     return num * 10000 <= den * topic_rate_bps
 
 
@@ -73,7 +70,6 @@ def decide_topic_mode(
     confirmed_topic_count: int,
     unknown_topic_count: int = 0,
     active_reservations: int = 0,
-    active_normal_count: int | None = None,
     chosen_topic_direction: dict[str, Any] | None = None,
 ) -> TopicAllocationDecision:
     if has_human_context:
@@ -88,7 +84,6 @@ def decide_topic_mode(
         confirmed_topic_count=confirmed_topic_count,
         unknown_topic_count=unknown_topic_count,
         active_reservations=active_reservations,
-        active_normal_count=active_normal_count,
         topic_rate_bps=topic_rate_bps,
     )
     if not has_capacity:

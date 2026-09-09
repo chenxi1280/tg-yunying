@@ -3614,3 +3614,15 @@ Intake：`intake-20260909-ai-group-independent-progress`，L3。用户要求发�
 无新增用户表单/API，无迁移或人工生产数据清理。既有摘要/日志展示具体失败和欠量；开发同步数据流/结构索引。按master→release→GitHub Actions发布，独立核对SHA/runtime，从完成部署时刻检查两个Task新日链路、已入群账号Action/Attempt/remote_message_observed和受阻候选隔离。只有新增消息不等于全日完成；无真实发送证据继续production_unproven。
 
 Product Design Complete：原话三项、现有代码的早退/整批异常/事务回滚、账号与日期归属、unknown保留、幂等并发、QA及上线边界已覆盖。`design_status=complete`、`resync=true`，交dev实现；本节不宣称已完成代码或生产验收。
+
+### 19.69 活群任务话题不得因虚增容量形成发送欠量（2026-09-09）
+
+Intake `intake-20260909-ai-group-target-completion`，L3/P1。用户要求各个群聊完成自己的发送目标。生产只读复现：天津一品楼同一 intent 的两个失败 Action，计划 C/T/U=0、active topic=63、active normal=210；scope 与计划比例通过但 Gateway 报 `topic_capacity_contract_invalid`。当前分配代码把尚未发送的 non-topic 预约计入远端分母，词库每日轮换 PRD 第四轮第2项又与其 §4.5 冲突，必须先统一合同。
+
+新 configured-topic intent 的计划 ordinal 资格不变，创建前必须按同锁内最新 C（真实已确认普通正文）、T（其中任务话题）、U（任务话题 unknown）、R（未结束任务话题预约）计算 `(T+U+R+1)*10000 <= (C+U+R+1)*topic_rate_bps`。active non-topic 和 non-topic unknown 不提供远端容量。同一批次新增 topic 立即进入 R；后续批次沿既有群/目标/plan 锁串行，不能重复花费同一真实分母。容量不足在新 intent 冻结前选择现有 `human_context/group_free_chat`，同一数量/覆盖义务继续；不等待新额度、不挪用其他账号覆盖、不创造话题欠账。新消息没有话题不等于内容质量豁免。
+
+既有 immutable intent、Action、Attempt、typed fact 和未知结果保持原身份与生命周期；不进行存量清理或换正文重放。旧超配 intent 继续受原 Gateway 真实可见前缀检查，其他合法 non-topic 获得真实确认后才可能发送；本修复不把未执行或 unknown 视作确认。生成前的计划一致性检查与 Gateway 最终硬比例守卫继续存在。跨 task day、目标、route/plan 的统计边界沿原合同，不扩大新预约权限。
+
+无表结构、API、表单、任务配置或业务分母变更；不新增运行限制。专项 PRD、结构/数据流索引与 Release Gate 同步 resync，开发仅修正新话题预约公式及移除其错误的 active-normal 参数链。QA 要求零确认跨批次不分配 topic、真实三条 non-topic 后可分配一条、active/unknown topic 保守占用、新预约不依赖未发送 non-topic 即可过 Gateway、旧超配记录不被改写及全链路 scope 回归。
+
+`design_status=complete`：原话/上下游、正常和失败路径、前端不变、数据/幂等/并发/权限、历史状态与发布风险已反查；交 dev → qa → product → prod-diagnosis。发布仍按 master→release→Actions，验收逐群记录原目标/到期数/真实确认/未知/剩余缺口；凌晨未来排期不能算执行失败，少量新消息与发布成功均不能代替各群完整目标。证据与阶段状态见 `docs/05-implementation/ai-group-target-completion-20260909.md`。

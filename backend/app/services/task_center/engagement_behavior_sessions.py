@@ -30,6 +30,8 @@ CHRONOTYPES = (
     ("morning", 7, 22),
     ("balanced", 9, 23),
     ("evening", 11, 24),
+    ("night_owl", 0, 8),
+    ("flexible", 0, 24),
 )
 
 

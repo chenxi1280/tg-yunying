@@ -780,7 +780,7 @@ dev/qa 至少新增或更新：
 2026-09-01 第四轮业务闭环修正合同：
 
 1. 通用暖场只在**当前 slot 没有真人 reply/material/topic/teacher 等业务上下文**时成立；planner 必须在冻结前直接把该 slot 的 act 选为 `question`，不能先冻结普通 act 再由下游整批拒绝。仍有历史真人 reply target 的 slot 继续按 `human_context` 处理，不得因当前批次 `usable_rows` 为空而误判为 generic warmup。
-2. 分配期容量与 Telegram 发送期容量使用两个明确投影。分配期把 active configured-topic reservation 纳入最坏分子，并可用 active normal reservation 证明计划前缀；Gateway 在目标群行锁内只使用 remote-confirmed normal、configured-topic unknown hold 与本次 configured-topic candidate 计算远端可见前缀，**尚未发送的 active normal 永远不能充当 Telegram 分母**。因此任何真实可见前缀都不得超过配置值和 30%。
+2. 分配期计划比例与远端容量使用两个明确口径（2026-09-09 resync）。ordinal/已分配普通 intent 只能证明计划比例；申请 configured-topic 远端预约必须同时通过 §4.5 的 `(T+U+R+1)/(C+U+R+1)`，不能以 active non-topic 证明尚不存在的远端容量。Gateway 在目标群行锁内只使用 remote-confirmed normal、configured-topic unknown hold 与本次 configured-topic candidate 计算远端可见前缀。未发送的 active non-topic 在生成前及发送前均不提供远端容量；无容量的新 assignment 在冻结前选择兼容 non-topic，不得生成后再因容量失败制造数量欠量。
 3. source/material/reply 容量裁剪必须发生在 intent 冻结前，未进入可执行 schedule 的 assignment 不得创建幽灵 reservation。intent 生命周期以 quantity obligation 为主：数量槽仍为 open/reserved/replan-required 时，即使旧 Action 已明确失败，intent 仍为 active 且 replacement 复用同一 identity；只有数量槽合法终止且无 typed remote fact 时才 released，禁止 release 后再以同一 slot 重复占额。
 4. canonical generation slot 的 `stance` 为必填冻结字段；缺失或不在 manifest 的 stance 必须在 intent/Provider 前显式失败，不能以空值绕过 compatibility cell。generic question 使用冻结的中性 stance，克制分歧使用 reserved stance，其他 act 使用确定性 stance 映射。
 5. vocabulary sampler 必须同时消费 `topic_mode` 和可引用事实证据。`context_bound` 单元只有在 reply/topic/material 中存在其规范化事实锚点时才可候选；没有证据的 `group_free_chat` 与 generic warmup 只能使用 `expression_only` 单元或空样本。general/adult 两条 route 都必须发布足够的自然 `expression_only` compatibility cells；配置俚语只提供释义，不是强制输出通道，也不得绕过 act/stance/事实/冷却合同。

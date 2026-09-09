@@ -127,7 +127,6 @@ def _freeze_assignment_intents(
 ) -> list[dict]:
     updated = list(quality_items)
     active_topic_in_batch = 0
-    active_normal_in_batch = 0
     for assignment in assignments:
         source = quality_items[assignment.item_index]
         intent, created = _locked_or_new_intent(
@@ -138,7 +137,6 @@ def _freeze_assignment_intents(
             item=source,
             projection=projection,
             active_topic_in_batch=active_topic_in_batch,
-            active_normal_in_batch=active_normal_in_batch,
             recent_intents=recent_intents,
             recent_question_intents=recent_question_intents,
             recent_vocabulary_messages=recent_vocabulary_messages,
@@ -147,7 +145,6 @@ def _freeze_assignment_intents(
         if created and intent.topic_mode == "configured_topic":
             active_topic_in_batch += 1
         if created:
-            active_normal_in_batch += 1
             recent_intents.insert(0, intent)
             recent_question_intents.insert(0, intent)
             recent_vocabulary_messages.insert(0, active_history_message(intent))
@@ -283,7 +280,6 @@ def _locked_or_new_intent(
     item: dict,
     projection: TopicCapacityProjection,
     active_topic_in_batch: int,
-    active_normal_in_batch: int,
     recent_intents: list[AiGroupContentIntent],
     recent_question_intents: list[AiGroupContentIntent],
     recent_vocabulary_messages: list[ContentHistoryMessage],
@@ -305,7 +301,6 @@ def _locked_or_new_intent(
             item=item,
             projection=projection,
             active_topic_in_batch=active_topic_in_batch,
-            active_normal_in_batch=active_normal_in_batch,
             recent_intents=recent_intents,
             recent_question_intents=recent_question_intents,
             recent_vocabulary_messages=recent_vocabulary_messages,
@@ -324,7 +319,6 @@ def _create_intent(
     item: dict,
     projection: TopicCapacityProjection,
     active_topic_in_batch: int,
-    active_normal_in_batch: int,
     recent_intents: list[AiGroupContentIntent],
     recent_question_intents: list[AiGroupContentIntent],
     recent_vocabulary_messages: list[ContentHistoryMessage],
@@ -338,7 +332,6 @@ def _create_intent(
         item=item,
         projection=projection,
         active_topic_in_batch=active_topic_in_batch,
-        active_normal_in_batch=active_normal_in_batch,
         recent_intents=recent_intents,
         recent_question_intents=recent_question_intents,
         recent_vocabulary_messages=recent_vocabulary_messages,
@@ -384,7 +377,6 @@ def _prepare_intent_values(
     item: dict,
     projection: TopicCapacityProjection,
     active_topic_in_batch: int,
-    active_normal_in_batch: int,
     recent_intents: list[AiGroupContentIntent],
     recent_question_intents: list[AiGroupContentIntent],
     recent_vocabulary_messages: list[ContentHistoryMessage],
@@ -399,12 +391,11 @@ def _prepare_intent_values(
     decision = _topic_decision(
         task.type_config or {},
         plan,
-        ordinal,
-        relation_kind,
-        projection,
-        active_topic_in_batch,
-        active_normal_in_batch,
-        recent_intents,
+        ordinal=ordinal,
+        relation_kind=relation_kind,
+        projection=projection,
+        active_topic_in_batch=active_topic_in_batch,
+        recent_intents=recent_intents,
     )
     sampled = sample_vocabulary_for_intent(
         task,
@@ -458,11 +449,11 @@ def _assignment_persona(
 def _topic_decision(
     config: dict[str, Any],
     plan: AiGroupContentAllocationPlan,
+    *,
     ordinal: int,
     relation_kind: str,
     projection: TopicCapacityProjection,
     active_topic_in_batch: int,
-    active_normal_in_batch: int,
     recent_intents: list[AiGroupContentIntent],
 ):
     topics = [
@@ -481,9 +472,6 @@ def _topic_decision(
         unknown_topic_count=projection.unknown_topic_count,
         active_reservations=(
             projection.active_topic_reservations + active_topic_in_batch
-        ),
-        active_normal_count=(
-            projection.active_normal_reservations + active_normal_in_batch
         ),
         chosen_topic_direction=chosen,
     )

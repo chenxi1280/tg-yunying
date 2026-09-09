@@ -1771,10 +1771,15 @@ def _finalize_generation_schedule(
     )
     if task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION and len(times) < requested_count:
         if task.last_error.startswith("generic_warmup_"):
-            _record_generic_warmup_shortfall(task, requested_count)
-            return None
-        _record_ai_pacing_shortfall(task, requested_count, len(times))
-        return None
+            if not times:
+                _record_generic_warmup_shortfall(task, requested_count)
+                return None
+            quality_items = quality_items[:len(times)]
+        else:
+            _record_ai_pacing_shortfall(task, requested_count, len(times))
+            if not times:
+                return None
+            quality_items = quality_items[:len(times)]
     quality_items, times = _limit_context_bound_quality_schedule(
         task,
         facts.config,
@@ -4315,6 +4320,10 @@ def _coverage_candidate_rows(
     opportunity = ensure_natural_opportunity_plan(
         session, task, ledger, group=group, required_units=required_units,
     )
+    if opportunity.guaranteed_now_capacity > 0:
+        return rows[:opportunity.guaranteed_now_capacity]
+    if (task.type_config or {}).get("idle_continuation_enabled", True):
+        return rows[:max(1, required_units)]
     return rows[:opportunity.guaranteed_now_capacity]
 
 
@@ -5629,9 +5638,10 @@ def _idle_continuation_decision(session: Session, task: Task, config: dict) -> d
     if config.get("idle_continuation_enabled") is False:
         return {"due": False, "next_run_at": None}
     last_success_at = _last_successful_ai_action_at(session, task)
-    if not last_success_at:
+    anchor_at = last_success_at or _task_datetime(task, task.scheduled_start or task.created_at)
+    if not anchor_at:
         return {"due": False, "next_run_at": None}
-    next_run_at = _task_datetime(task, last_success_at) + timedelta(seconds=_idle_continuation_seconds(config))
+    next_run_at = _task_datetime(task, anchor_at) + timedelta(seconds=_idle_continuation_seconds(config))
     return {"due": _task_datetime(task, _now()) >= next_run_at, "next_run_at": next_run_at}
 
 

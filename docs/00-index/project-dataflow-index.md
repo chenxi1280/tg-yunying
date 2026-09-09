@@ -1,5 +1,7 @@
 # 项目数据流转索引
 
+> **2026-09-09 任务话题预约 resync（统一§19.69）：** 同群/Task/任务日计划锁 → ordinal 计划资格 → 已确认普通正文 C、话题 T、话题 unknown U、话题预约 R → `(T+U+R+1)/(C+U+R+1)` 容量检查 → immutable topic 或现有 non-topic intent → Provider/Action → 原 Gateway 可见比例检查 → typed message fact。active non-topic 不再给新 topic 预约提供远端分母；历史 intent/unknown 不变，数量与 coverage 仍按原目标验收。
+
 > **2026-09-09 活群独立推进设计resync（§19.68，待发布）：** 正式Planner先独立提交当前任务日ledger/目标/coverage/槽，再进入原重试与正文事务；后续准入/内容竞争不得回滚日初始化。成员批次空只影响该批次；正文PlanningAdmissionSnapshot的可发送集合必须在coverage SQL LIMIT之前过滤，超过20条未入群/不可发送前缀不得饿死后方ready账号。完整目标、旧日unknown/fact及冻结容量身份保留。`ai_group_pre_gateway_discard.py`按全历史未调用证据跳过受阻Action、释放精确coverage名额；正式fact结算保留open义务。交接见`docs/05-implementation/ai-group-independent-progress-20260909.md`。
 
 > **2026-09-08 本地修复二次审查resync（0c5e5dc5已发布，业务部分验证）：** 文本挑战→完整表达式/精确有理数→最终整数→原Gateway提交与权限复检；非法题干进入明确人工状态且不退回局部数字。观察读取失败→独立`consecutive_observation_gaps`与版本CAS→第三次当日`c2_observation_evidence_missing`→次日Planner/执行门复核并重开同Task/account/group；正常读取/新观察清零，旧日coverage与unknown保留。legacy救援pending候选→跳过忙管理员/同管理员一条→原资源认领→持久executor→释放预约/完成事件→下一条，其他慢任务不形成整批屏障。具体合同为频道成员前置设计§17.3–17.6。

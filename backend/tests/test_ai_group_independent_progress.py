@@ -108,3 +108,60 @@ def test_empty_membership_batch_without_ready_speaker_still_waits(session, monke
     result = channel_membership.gate_channel_membership(session, task, target, require_send=True)
     assert not result.ready
     assert result.blocker_reason == "account_eligibility_busy"
+
+
+def test_idle_continuation_decision_falls_back_to_task_creation(session):
+    task = Task(
+        id="idle-task",
+        tenant_id=1,
+        created_at=NOW - timedelta(minutes=10),
+        scheduled_start=NOW - timedelta(minutes=10),
+        stats={},
+        type_config={"idle_continuation_enabled": True, "idle_continuation_seconds": 300},
+    )
+    decision = group_ai_chat._idle_continuation_decision(session, task, task.type_config)
+    assert decision["due"] is True
+    assert decision["next_run_at"] is not None
+
+
+def test_coverage_candidate_rows_fallback_when_opportunity_capacity_zero(session, monkeypatch):
+    task, group, _target = _seed(session)
+    monkeypatch.setattr(group_ai_chat, "_portfolio_coverage_rows", lambda _s, _t, **kw: kw["rows"])
+    monkeypatch.setattr(group_ai_chat, "ensure_natural_opportunity_plan",
+        lambda *_a, **_kw: SimpleNamespace(guaranteed_now_capacity=0))
+    rows = group_ai_chat._coverage_candidate_rows(session, task,
+        group=group, ledger=SimpleNamespace(id="day"), target=SimpleNamespace(id="target"),
+        participation=SimpleNamespace(selected_account_ids=[READY_ACCOUNT_ID]),
+        admission=SimpleNamespace(admissible_account_ids=[READY_ACCOUNT_ID]),
+        timestamp=NOW, required_units=1)
+    assert len(rows) == 1
+    assert rows[0].account_id == READY_ACCOUNT_ID
+
+
+def test_finalize_generation_schedule_retains_partial_items_on_shortfall():
+    task = Task(
+        id="schedule-task",
+        fulfillment_contract_version="fact_first_v3",
+        stats={},
+        last_error="",
+    )
+    quality_items = [{"text": "msg1"}, {"text": "msg2"}, {"text": "msg3"}]
+    times = [NOW + timedelta(seconds=10), NOW + timedelta(seconds=20)]
+    
+    # Simulate schedule returning 2 times for 3 items
+    session = None
+    facts = SimpleNamespace(config={}, hard_progress={})
+    context = SimpleNamespace(usable_rows=[1], mode="autonomous")
+    
+    import unittest.mock as mock
+    with mock.patch.object(group_ai_chat, "_schedule_generation_items", return_value=(quality_items, times)):
+        res = group_ai_chat._finalize_generation_schedule(
+            session, task, facts, context, quality_items=quality_items, is_generic_warmup=False
+        )
+        assert res is not None
+        items, sched_times = res
+        assert len(items) == 2
+        assert len(sched_times) == 2
+        assert task.stats["pacing_schedule_shortfall"]["scheduled"] == 2
+        assert task.stats["pacing_schedule_shortfall"]["requested"] == 3
+

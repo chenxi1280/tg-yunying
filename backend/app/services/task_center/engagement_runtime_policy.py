@@ -115,7 +115,13 @@ def _ensure_presence_policy(
     )
     if policy is not None:
         return policy
-    policy = ManagedPresencePolicyRevision(tenant_id=tenant_id)
+    policy = ManagedPresencePolicyRevision(
+        tenant_id=tenant_id,
+        max_consecutive_system_turns=500,
+        absolute_daily_authored_cap=50000,
+        managed_to_external_ratio_bps=100000,
+        bootstrap_allowance=50000,
+    )
     session.add(policy)
     session.flush()
     return policy

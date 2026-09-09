@@ -351,6 +351,14 @@ def build_realizer_user_prompt(
         "Sanitized production-shaped input:",
         json.dumps(payload, ensure_ascii=False, indent=2),
     ]
+    length_hints = {
+        "micro": "正文必须严格在 1 到 8 个字以内（<=8字），极其精炼短句",
+        "short": "正文必须在 9 到 24 个字以内",
+        "medium": "正文必须至少 25 个字",
+    }
+    hint = length_hints.get(brief.length_band)
+    if hint:
+        lines.append(f"【字数严格要求】：当前 length_band 为 '{brief.length_band}'，{hint}，严禁超长或过短！")
     if rejection_feedback:
         lines.append(f"上一次尝试被拒绝的原因（必须修复，不要复述）：{rejection_feedback}")
     lines.append("输出一个 JSON 对象：content、used_anchor_ids、speech_act、voice_profile_version。")
