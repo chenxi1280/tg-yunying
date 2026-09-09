@@ -122,3 +122,5 @@ Clone候选5303df14的Prepare34342302164、06680053的Prepare34342683075均全�
 实际消费者入口+真实PostgreSQL双连接对照：旧代码3 failed，AI/评论精确报共享state LockNotAvailable，Clone精确报订阅FK FOR KEY SHARE lock timeout。修复后3项全部通过，处理当前delivery期间第二消费者NOWAIT仍报55P03，但正式Collector可claim授权、写入新Event并为同Subscription提交第二条Delivery；原消费者继续真实处理并提交终态。连同准备阶段2项，5 passed /7.96秒，使用生产autoflush=False；本机专用PG schema隔离，所有pytest进程硬超时60秒。自有受控进程PID140按cmdline/start_ticks6546672/env精确核对后停止，未取消持锁worker事务；原Task仍未Start、无新增发送。
 
 Clone123项加AI/评论共享流12项：135 passed /23.01秒。新增PG测试ruff F、三处生产入口静态未定义名与diff-check通过；修改只涉及三条既有查询锁范围，未拆分或重构无关业务。
+
+发布审查补充并发改绑边界：真实comment consumer持有delivery时，原ensure_task_peer_update_subscription改绑在UPDATE pending delivery处55P03，证明没有越过正在消费的工作；consumer提交后相同改绑成功，已consumed delivery保留，第二条pending变skipped且订阅指向新peer。新增1 passed /3.36秒，autoflush=False、真实PG与既有业务服务，生产代码未追加改动。

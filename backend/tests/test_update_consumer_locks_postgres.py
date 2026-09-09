@@ -3,7 +3,7 @@ from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -12,6 +12,7 @@ from app.models.group_clone import CloneSourceStreamState
 from app.models.telegram_updates import (
     TelegramAuthorizationUpdateDelivery as Delivery,
     TelegramAuthorizationUpdateState as State,
+    TelegramAuthorizationUpdateSubscription as Subscription,
 )
 from app.services._common import _now
 from app.services.task_center import (
@@ -20,6 +21,7 @@ from app.services.task_center import (
     group_clone_source_stream as clone,
 )
 from app.services.task_center.telegram_update_collector import _claim_state
+from app.services.task_center.engagement_update_subscriptions import ensure_task_peer_update_subscription
 from app.services.task_center.telegram_update_ingress import (
     NormalizedUpdateIngress, ingest_normalized_update,
 )
@@ -114,3 +116,36 @@ def test_consumer_allows_collector_claim_and_fanout_but_serializes_delivery(data
     with factory() as readback:
         assert readback.get(Delivery, ids[3]).delivery_state in {"consumed", "skipped"}
         assert readback.scalar(select(func.count()).select_from(Delivery)) == 2
+
+
+def _rebind(session, task_id):
+    return ensure_task_peer_update_subscription(
+        session, session.get(Task, task_id), listener_account_id=11, source_peer_id="-1008",
+    )
+
+
+def test_rebind_serializes_with_inflight_delivery_and_skips_only_pending(database, monkeypatch):
+    ids = _seed(database, "comment")
+    factory = sessionmaker(bind=database, autoflush=False)
+
+    def probe():
+        _probe_collector(factory, ids)
+        with factory() as rebind:
+            rebind.execute(text("SET LOCAL lock_timeout = '100ms'"))
+            with pytest.raises(DBAPIError) as failure:
+                _rebind(rebind, ids[0])
+            assert failure.value.orig.sqlstate == "55P03"
+            assert "UPDATE telegram_authorization_update_deliveries" in failure.value.statement
+
+    _observe_processing(monkeypatch, "comment", probe)
+    with factory() as consumer:
+        _consume(consumer, ids, "comment")
+        consumer.commit()
+    with factory() as rebind:
+        assert _rebind(rebind, ids[0]).route_changed
+        rebind.commit()
+    with factory() as readback:
+        assert readback.get(Delivery, ids[3]).delivery_state == "consumed"
+        remaining = readback.scalar(select(Delivery).where(Delivery.id != ids[3]))
+        assert remaining.delivery_state == "skipped"
+        assert readback.scalar(select(Subscription)).source_peer_id == "-1008"
