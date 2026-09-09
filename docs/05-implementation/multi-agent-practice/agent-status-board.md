@@ -173,6 +173,13 @@
 
 | 2026-08-22-ai-group-fulfillment-recovery-001 | intake-2026-08-22-ai-group-fulfillment-recovery-001 | batch-2026-08-22-ai-group-fulfillment-recovery | bug-2026-08-22-ai-group-slot-mapping-and-direct-claim-shard | L3 | ai-group/generation-mapping/dispatch-shard/production-recovery | prod-diagnosis | qa | dev_implemented_qa_in_progress | E2 | ready | not_done | product | true | acknowledged | current-thread | 2026-08-22-ai-group-fulfillment-recovery-001 |  | 0 | independent_qa_then_product_acceptance_and_release | backend/app/services/task_center/ai_generation_pipeline.py; backend/app/services/task_center/direct_action_claims.py; backend/app/services/task_center/dispatcher.py; backend/tests/test_two_stage_pipeline_integration.py; backend/tests/test_fulfillment_fact_first_v3.py; .github/scripts/ai_dispatch_admission_diagnostics.py; .github/workflows/production-task-monitor.yml; docs/05-implementation/multi-agent-practice/runs/2026-08-22-ai-group-fulfillment-recovery.md; docs/05-implementation/multi-agent-practice/agent-status-board.md | intake-2026-08-22-ai-provider-failover |  | pending | 2026-08-22 | 生产六个 current AI 活群任务无 typed remote fact，ready backlog 约 2200；只读诊断确认 lifecycle/contract/account reservation 可 claim、双 dispatcher shard live，但 fact-first 直领查询未按 worker account shard 过滤，执行阶段才退回错分片。另有 two-stage rejection 占位漏 slot_id，合法 quality_wait 被误报 slot mapping mismatch。实现已保留 fail-closed 映射并在 claim 前过滤分片；本地相关 82 passed，独立 QA、product acceptance、master/release、部署 SHA 与真实 E4 均待完成，禁止 production_fixed。 |
 
+## 2026-09-09 AI活群窗口修复所有权
+
+- intake_id: AI-GROUP-WINDOW-SHORTFALL-20260909；当前product→dev(W1)，W2/W3反查；done_status=not_done，release_gate=pending。
+- merge_owner: 当前“排查线上AI活群任务”Codex；独立branch codex/ai-group-window-shortfall-20260909，起点fa26ddbd。Clone当前部署和受控测试结束前不移动master/release。
+- locked_paths: backend/app/services/task_center/account_pacing_guard.py；新增account_pacing_window.py/account_pacing_claim_outcome.py；backend/tests/test_account_pacing_window_intersection.py；docs/03-feature-designs/ai-group-window-shortfall-repair-20260909-prd.md。后续W2/W3经证据闭合后追加精确路径。
+- 索引/统一PRD仅由merge_owner在切片设计闭合后追加本节引用，保留其他任务段落。E4报告独立提交88046287/d77a853d只在后续统一候选审查后纳入。
+
 ## 状态约束
 
 - `ready_status` 只能是 `missing_inputs`、`ready`、`blocked`。

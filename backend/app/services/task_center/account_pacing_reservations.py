@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -12,8 +14,71 @@ from app.models import (
 )
 
 
+from .account_pacing_window import ReservationTiming
+from .source_pacing import latest_wall_datetime, wall_datetime
+
+
+ACCOUNT_SOFT_PACING_POLICY_VERSION = "account_soft_pacing_v1"
+ACCOUNT_BEHAVIOR_SESSION_PACING_POLICY_VERSION = "account_soft_pacing_behavior_session_v1"
+ACCOUNT_BEHAVIOR_SESSION_WAKE_POLICY_VERSION = "account_soft_pacing_behavior_wake_v1"
+ACCOUNT_BEHAVIOR_SESSION_WAKE_CONSUMED_POLICY_VERSION = (
+    "account_soft_pacing_behavior_wake_consumed_v1"
+)
+
 OPEN_RESERVATION_STATES = ("reserved", "bound")
 REUSABLE_TERMINAL_ACTION_STATUSES = frozenset({"failed", "skipped"})
+
+
+def new_account_pacing_reservation(
+    *,
+    tenant_id: int,
+    task_id: str,
+    account_id: int,
+    slot_key: str,
+    due_at: datetime,
+    timing: ReservationTiming,
+    deadline_at: datetime | None,
+    engagement_contract_version: str,
+    action_class: str,
+    session_wake_reserved: bool,
+) -> AccountPacingReservation:
+    return AccountPacingReservation(
+        tenant_id=tenant_id,
+        task_id=task_id,
+        account_id=account_id,
+        pacing_slot_key=slot_key,
+        policy_version=(
+            ACCOUNT_BEHAVIOR_SESSION_WAKE_POLICY_VERSION
+            if session_wake_reserved
+            else (
+                ACCOUNT_BEHAVIOR_SESSION_PACING_POLICY_VERSION
+                if engagement_contract_version == "unified_engagement_v1"
+                else ACCOUNT_SOFT_PACING_POLICY_VERSION
+            )
+        ),
+        action_class=action_class,
+        due_at=due_at,
+        release_not_before_at=timing.release_at,
+        effective_claim_at=timing.effective_at,
+        source_deadline_at=deadline_at,
+    )
+
+
+
+def normalize_reservation_window(
+    due_at: datetime,
+    release_not_before_at: datetime | None,
+    deadline_at: datetime | None,
+) -> tuple[datetime, datetime, datetime | None]:
+    normalized_due = wall_datetime(due_at)
+    normalized_release = wall_datetime(release_not_before_at or due_at)
+    normalized_deadline = wall_datetime(deadline_at) if deadline_at is not None else None
+    return (
+        normalized_due,
+        latest_wall_datetime(normalized_due, normalized_release),
+        normalized_deadline,
+    )
+
 
 
 def reservation_for_slot(
