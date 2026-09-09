@@ -1670,3 +1670,5 @@ legacy-only A 冷启动分支固定为 `frozen legacy A -> 原 A Session 只读 
 应急选取的数据权威顺序为Task→Action→正式FOP注册/锁定→GenerationJob→追加selection及FOP/Action同版本提交。历史同activeAction的未调用选择经精确旧版本CAS对齐并记录audit；发送边界不修复数据。安全失败后的原义务新materialization保留旧选择历史，旧Action不重新获取owner。
 
 - 2026-09-10 活群topic_only补充：批次chat_mode=reply不能代表slot已绑定真实回复；普通无reply_to/interaction/turn的数量仍按主题输入模式处理，真实引用与ContentIntent relation保持。见供给与兜底专项PRD第二次生产反查。
+
+- 2026-09-10 topic_only配置主题按既有规则提取不到输入证据时，在Provider前记录topic_only_topic_evidence_missing并保留原数量交接已授权应急；scope/route授权/policy/window错误不归并。详见供给与兜底专项PRD第三次生产反查。

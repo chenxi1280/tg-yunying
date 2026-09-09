@@ -50,3 +50,7 @@ Prepare34386451703全部通过：7718 passed、14 skipped、2 xfailed；Deploy34
 02:21复核发现成都两条chat_mode=reply但没有真实reply_to的普通slot被主题入口误排除，仍context_freshness阻塞。已按源代码与真实payload补齐专项PRD，再进入最小入口修复、定向QA、完整Prepare和生产验证；不得把该状态声明为production_fixed。
 
 批次模式修复QA：主题/冻结binding24 passed（5.38s），根扩大到真实生成worker与content_scope的4文件67 passed（11.10s，UTC，硬60秒）；实际reply、跨群引用、互动身份和ready正文反例保留。最小实现仅删1个错误模式条件，完整Prepare仍为发布前置。
+
+第三轮Prepare34388949742全部通过（7719 passed、14 skipped、2 xfailed），Deploy34389993368于02:39:07成功，current/backend18worker均726b61f5healthy/API正常。成都原两条通过chat_mode入口后暴露context_route_evidence_missing；02:45只读分类证实是既有无真人证据主题过滤，非旧Job绑定冲突。专项PRD已resync，仅增加该明确内容不可用原因的Provider前应急交接，不修改权限与证据规则；需再次QA/Prepare/发布/E4。
+
+V2主题证据不可用交接QA：三文件54 passed（9.22s）；根6文件扩大回归120 passed（19.88s，UTC，硬60秒）。真实ensure→worker签到Provider零调用，原Action/quantity/coverage/Job与原generation_contract保留；关闭应急不产生selection/正文，nonV2保持原合同；新代码函数长度符合限制。进入完整Prepare。

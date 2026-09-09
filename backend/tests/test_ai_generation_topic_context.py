@@ -124,6 +124,23 @@ def test_missing_configured_topic_is_explicit():
         prepare_topic_payload(session, task, action, payload=payload)
 
 
+@pytest.mark.parametrize("title", ["写真话题", "嗯", "abc"])
+def test_v2_configured_topic_without_evidence_is_explicit_before_rebinding(title):
+    session, task, action, payload = _fixture(listener_error=True)
+    task.type_config = {**task.type_config, "ai_content_route_v2_enabled": True,
+                        "topic_directions": [{"title": title}]}
+    original = dict(action.payload)
+    with pytest.raises(AiGenerationUnavailable, match="topic_only_topic_evidence_missing"):
+        prepare_topic_payload(session, task, action, payload=payload)
+    assert action.payload == original
+
+
+def test_non_v2_topic_preparation_retains_original_contract():
+    session, task, action, payload = _fixture(listener_error=True)
+    task.type_config = {**task.type_config, "topic_directions": [{"title": "写真话题"}]}
+    assert prepare_topic_payload(session, task, action, payload=payload).ai_generation_context_mode == "topic_only"
+
+
 def test_low_information_context_uses_topic_only():
     session, task, action, payload = _fixture(listener_error=True)
     session.get(TgGroup, 8).listener_last_error = ""

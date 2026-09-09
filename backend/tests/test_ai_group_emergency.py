@@ -175,6 +175,55 @@ def test_missing_topic_before_provider_enters_emergency_without_losing_quantity(
     assert action.payload["message_text"] == "签到"
 
 
+@pytest.mark.parametrize("enabled", [True, False])
+def test_unusable_topic_evidence_hands_original_job_to_emergency_without_provider(session, enabled):
+    from app.models import TgAccount, TgGroup
+    from app.services.task_center.ai_generation_dependencies import GenerationDependencies
+    from app.services.task_center.ai_generation_worker import drain_ai_generation
+    from app.services.task_center.ai_generator import AiGenerationUnavailable
+
+    task, actions, coverages, _ = seed_emergency_batch(session)
+    task.type_config = {**task.type_config, "topic_directions": [{"title": "写真话题"}],
+                        "emergency_fallback_enabled": enabled}
+    session.get(TgGroup, 7).listener_last_error = "no usable reader"
+    action = actions[0]
+    action.payload = {**action.payload, "chat_mode": "reply"}
+    job = session.get(GenerationJob, action.payload["generation_job_id"])
+    previous_evidence = {"generation_contract": {"context_mode": "history", "allowed_facts": {"f1": "旧上下文"}}}
+    job.evaluator_evidence = previous_evidence
+    session.commit()
+    original_owner = (action.id, action.primary_quantity_slot_id, job.id, coverages[0].id)
+    calls = []
+
+    def provider(*args, **kwargs):
+        calls.append(True)
+        raise AssertionError("topic evidence rejection must precede provider invocation")
+
+    dependencies = GenerationDependencies(provider, provider, provider, provider,
+                                          brief_planner=provider, brief_realizer=provider, semantic_reviewer=provider)
+    with pytest.raises(AiGenerationUnavailable, match="topic_only_topic_evidence_missing"):
+        ensure_send_message_content(session, action, session.get(TgAccount, 11),
+            payload=SendMessagePayload.model_validate(action.payload), dependencies=dependencies)
+    assert calls == [] and job.evaluator_evidence["generation_contract"] == previous_evidence["generation_contract"]
+    assert coverages[0].reserved_action_id == action.id and coverages[0].state == "reserved"
+    if not enabled:
+        assert not action.payload.get("emergency_selection_id") and not action.payload.get("message_text")
+        assert action.payload["ai_generation_status"] != "emergency_pending"
+        assert job.state == "generating"
+        return
+    assert action.payload["ai_generation_status"] == "emergency_pending" and job.state == "failed"
+    assert job.generation_stage == "topic_only_topic_evidence_missing"
+    assert drain_ai_generation(lambda: Session(session.get_bind(), autoflush=False), limit=1,
+                               dependencies=dependencies) == 1
+    session.refresh(action)
+    session.refresh(job)
+    assert action.payload["message_text"] == "签到" and calls == []
+    assert (action.id, action.primary_quantity_slot_id, job.id, coverages[0].id) == original_owner
+    assert action.payload["generation_job_id"] == job.id
+    assert job.evaluator_evidence["generation_contract"] == previous_evidence["generation_contract"]
+    assert coverages[0].reserved_action_id == action.id and coverages[0].state == "reserved"
+
+
 def test_quality_exhaustion_preserves_owners_through_parallel_worker_settlement(session):
     from app.services.task_center.ai_generation_persistence import _persist_generation_rejection
     from app.services.task_center.ai_generation_pipeline import SlotGenerationResult

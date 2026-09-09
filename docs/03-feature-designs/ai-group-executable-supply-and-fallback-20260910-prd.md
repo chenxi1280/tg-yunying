@@ -99,3 +99,9 @@
 2026-09-10 02:21:12只读生产验证：成都两条普通数量Action在新版本仍反复`context_freshness_unproven`；scope完整且同群，`chat_mode=reply`但`reply_to_message_id`为空、无interaction/turn claim。源码`_chat_mode`仅因规划批次存在context_rows就返回reply，`_slot_conversation_payload`将同一模式复制给包括无reply_target的普通slot；实际引用及ContentIntent relation另由每条slot的真实reply_to决定。主题入口错误地把批次会话模式当作真实回复身份，属于原要求覆盖缺口。
 
 本子切片resync，修正合同（design_status=complete）：普通数量能否进入topic_only按真实`reply_to_message_id`、interaction/turn claim及原scope判定，不能仅以`chat_mode=reply`拒绝。没有真实回复身份且无可用上下文的普通slot按已配置主题继续；保留批次历史模式、原ContentIntent/quantity/账号/目标及其direct relation，清空不可信history/anchor，不创造回复对象。真实reply_to、interaction/turn claim、已ready正文、跨群引用及legacy继续原校验。本次只删除错误模式门槛，不改监听账号、不修改真实回复合同。QA需用`chat_mode=reply`但无reply_to的真实ensure生成入口复现，再证明topic_only正文ready及空真人引用，保留真实reply不转换反例。
+
+## 第三次生产反查：没有可用主题证据时保留数量并进入应急
+
+2026-09-10 02:40–02:45只读生产反查：成都两条原Action越过批次chat_mode误判后，触发`AiContentJobBindingError/context_route_evidence_missing`，被worker终结为generation_contract_error。两条配置主题均非空且有有效文本，但命中现有成人证据关键词；`meaningful_group_evidence`在无真人历史时按既有合同不将该配置主题当真人事实，因此返回空证据。旧Job general/adult路线四组合实验复现，无证据不是路由权限失效。
+
+本子切片resync，设计已闭合：启用V2内容路线且无可靠上下文的普通数量先按现有`meaningful_group_evidence`口径检查配置主题是否提供允许的主题输入；nonV2不新增这项V2证据门槛。提取为空时显式记录`topic_only_topic_evidence_missing`，在Provider之前走现有`persist_pre_request_emergency`，保留原quantity/coverage/Job审计并交接到已授权签到；不存在配置主题继续`topic_only_topic_missing`。这仅分类已证明的topic_only输入不可用，不把后续scope、授权、policy、窗口绑定、真实reply等错误归并为应急。原真人证据/成人关键词约束不放开，不将配置话题伪装成真人事实。开关关闭时保持显式生成不可用，不调用Provider也不发应急。已经失败的历史Action保持终态，只有正式数量后继可以继续。QA覆盖有效主题正常生成、无效/无证据主题Provider零调用→应急保留原义务、真实reply不转换、开关关闭、旧冻结Job和真实worker选择。

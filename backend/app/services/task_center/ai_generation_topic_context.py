@@ -36,6 +36,7 @@ def prepare_topic_payload(
     topic = _configured_topic(task, payload)
     if not topic:
         raise AiGenerationUnavailable("topic_only_topic_missing")
+    _require_topic_evidence(task, topic)
     updated = payload.model_copy(update={
         "ai_generation_context_mode": "topic_only",
         "ai_generation_context_reason": reason,
@@ -122,11 +123,20 @@ def _configured_topic(task: Task, payload: SendMessagePayload) -> dict:
                  if isinstance(item, dict) and str(item.get("title") or "").strip()), {})
 
 
+def _require_topic_evidence(task, topic) -> None:
+    from .ai_content_job_binding import _ADULT_CONTEXT_MARKERS
+    from .ai_context_information import meaningful_group_evidence
+    from .ai_provider_routes import route_v2_enabled
+
+    if route_v2_enabled(task.type_config) and not meaningful_group_evidence("", topic, _ADULT_CONTEXT_MARKERS):
+        raise AiGenerationUnavailable("topic_only_topic_evidence_missing")
+
+
 def prepare_topic_or_emergency(session, task, action, *, payload):
     try:
         return prepare_topic_payload(session, task, action, payload=payload)
     except AiGenerationUnavailable as exc:
-        if str(exc) == "topic_only_topic_missing":
+        if str(exc) in {"topic_only_topic_missing", "topic_only_topic_evidence_missing"}:
             from .ai_group_emergency_pending import persist_pre_request_emergency
 
             persist_pre_request_emergency(session, task, action, reason=str(exc))
