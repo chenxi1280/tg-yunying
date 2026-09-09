@@ -21,10 +21,11 @@ def test_group_drain_never_enters_comment_queue(monkeypatch):
     calls = []
     monkeypatch.setattr(group_worker, "reconcile_generation_jobs", lambda *a, **kw: calls.append(kw["task_type"]))
     monkeypatch.setattr(comment_worker, "drain_comment_generation", lambda *a, **kw: pytest.fail("cross-adapter drain"))
+    monkeypatch.setattr("app.services.task_center.ai_group_emergency_worker.drain_emergency_content", lambda *a, **kw: calls.append("group_emergency") or 0)
     monkeypatch.setattr(group_worker, "_drain_parallel_generation", lambda *a, **kw: 20)
     factory = lambda: nullcontext(NS(commit=lambda: None))
     assert group_worker.drain_ai_generation(factory, limit=20) == 20
-    assert calls == ["group_ai_chat"]
+    assert calls == ["group_ai_chat", "group_emergency"]
 
 
 def test_comment_role_does_not_call_group(monkeypatch):

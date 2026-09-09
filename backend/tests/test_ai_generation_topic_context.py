@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import timedelta
+
+from app.services._common import _now
 
 import pytest
 
@@ -30,13 +32,13 @@ def _fixture(*, listener_error: bool = False):
         TenantAiSetting(tenant_id=1, default_provider_id=1, ai_enabled=True),
         GenerationJob(id="topic-job", tenant_id=1, task_id=task.id, obligation_type="quantity",
                       obligation_id="topic-obligation", generation_sequence=1, context_snapshot_version=1,
-                      latest_safe_send_at=datetime.now() + timedelta(hours=1)),
+                      latest_safe_send_at=_now() + timedelta(hours=1)),
     ])
     group = session.get(TgGroup, 8)
     group.auth_status = "已授权运营"
     group.listener_enabled = True
     group.listener_cursor_status = "contiguous"
-    group.listener_last_polled_at = datetime.now() + timedelta(seconds=1)
+    group.listener_last_polled_at = _now() + timedelta(seconds=1)
     group.listener_last_error = "poll failed" if listener_error else ""
     if not listener_error:
         session.delete(session.get(GroupContextMessage, 801))

@@ -29,3 +29,5 @@
 - 逐 Task 输出 post-release typed 消息、独立主题/应急选择与已送达事实、未准入与 unknown 缺口。历史错绑成员记录不自动视为当前事实。
 
 最终补充：模型切换71项非PG与4项PG通过；canonical membership74项及helper调整后91项通过；主题Gateway正/负例6项通过；typed独立质量计数11项通过，含缺fact/unknown/未call/wrong account/tenant/obligation/旧fact/错日/错mutation反例。
+
+Prepare 34381205676（6a68f685）首轮：两个PostgreSQL分片、前端及镜像全部通过；4个no-postgres分片发现旧自然机会合同断言、UTC fixture及不完整测试替身。已修正测试真实合同，不削弱生产门槛；UTC下5个相关文件49 passed（6.93s），自然机会真实落库回归27 passed。候选需重新完整Prepare，首轮失败不豁免。

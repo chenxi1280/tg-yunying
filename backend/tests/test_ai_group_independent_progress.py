@@ -9,7 +9,8 @@ from sqlalchemy.orm import Session
 from app.database import Base
 from app.models import (
     AccountProxyBinding, ExecutionCircuitState, ExecutionResiliencePolicyRevision,
-    OperationTarget, Task, TaskAccountDailyCoverage, TaskMembershipAdmissionItem,
+    ManagedPresencePlan, ManagedPresencePolicyRevision, NaturalOpportunitySupplyPlanRevision,
+    OperationTarget, Task, TaskAccountDailyCoverage, TaskDayLedger, TaskMembershipAdmissionItem,
     Tenant, TgAccount, TgGroup, TgGroupAccount,
 )
 from app.services.task_center import channel_membership
@@ -198,23 +199,50 @@ def test_idle_continuation_decision_falls_back_to_task_creation(session):
     assert decision["next_run_at"] is not None
 
 
+def _zero_natural_opportunity_ledger(session, task):
+    period_start = NOW.replace(hour=0)
+    ledger = TaskDayLedger(id="zero-opportunity-day", tenant_id=task.tenant_id,
+        task_id=task.id, timezone_snapshot="Asia/Shanghai", timezone_revision=1,
+        obligation_local_date=NOW.date(), period_start_at=period_start,
+        deadline_at=period_start + timedelta(days=1), day_phase="full_day",
+        planning_anchor_at=period_start)
+    session.add_all([ledger, ManagedPresencePolicyRevision(
+        tenant_id=task.tenant_id, bootstrap_allowance=0,
+    )])
+    session.flush()
+    return ledger
+
+
 @pytest.mark.parametrize("idle_enabled", [None, True, False])
 @pytest.mark.parametrize("required_units", [0, 1])
-def test_zero_opportunity_capacity_never_returns_candidates(
-    session, monkeypatch, *, idle_enabled, required_units,
+@pytest.mark.parametrize("previous_error", ["natural_opportunity_plan_unproven", "account_eligibility_busy"])
+def test_zero_natural_opportunity_preserves_admitted_quantity_supply_and_quality_evidence(
+    session, monkeypatch, *, idle_enabled, required_units, previous_error,
 ):
     task, group, _target = _seed(session)
+    ledger = _zero_natural_opportunity_ledger(session, task)
+    task.last_error = previous_error
     if idle_enabled is not None:
         task.type_config = {**task.type_config, "idle_continuation_enabled": idle_enabled}
     monkeypatch.setattr(group_ai_chat, "_portfolio_coverage_rows", lambda _s, _t, **kw: kw["rows"])
-    monkeypatch.setattr(group_ai_chat, "ensure_natural_opportunity_plan",
-        lambda *_a, **_kw: SimpleNamespace(guaranteed_now_capacity=0))
+
     rows = group_ai_chat._coverage_candidate_rows(session, task,
-        group=group, ledger=SimpleNamespace(id="day"), target=SimpleNamespace(id="target"),
+        group=group, ledger=ledger, target=SimpleNamespace(id="target"),
         participation=SimpleNamespace(selected_account_ids=[READY_ACCOUNT_ID]),
         admission=SimpleNamespace(admissible_account_ids=[READY_ACCOUNT_ID]),
         timestamp=NOW, required_units=required_units)
-    assert rows == []
+
+    assert [row.account_id for row in rows] == [READY_ACCOUNT_ID]
+    assert session.query(TaskAccountDailyCoverage).count() == READY_ACCOUNT_ID
+    assert session.get(TaskAccountDailyCoverage, "coverage-1").state == "pending_admission"
+    presence = session.scalar(select(ManagedPresencePlan))
+    opportunity = session.scalar(select(NaturalOpportunitySupplyPlanRevision))
+    assert presence.external_human_turn_count == presence.remaining_capacity == 0
+    assert opportunity.guaranteed_now_capacity == 0
+    assert opportunity.deficit == required_units
+    assert task.stats["natural_opportunity"]["effect"] == "quality_observation_only"
+    assert task.stats["natural_opportunity"]["deficit"] == required_units
+    assert task.last_error == ("" if previous_error == "natural_opportunity_plan_unproven" else previous_error)
 
 
 def test_finalize_generation_schedule_retains_partial_items_on_shortfall():

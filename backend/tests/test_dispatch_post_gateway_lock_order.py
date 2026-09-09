@@ -22,7 +22,7 @@ def test_group_send_locks_dispatch_prefix_before_business_finalize(
             "telegram_connect_timeout_seconds": 5,
         },
     )
-    payload = SimpleNamespace(
+    payload = dispatcher.SendMessagePayload(
         message_text="hello",
         media_segments=[],
         reply_to_message_id=None,
@@ -95,7 +95,7 @@ def test_conversation_probe_runs_inside_reserved_bulkhead_before_call_issued(
         task_type="group_ai_chat",
     )
     attempt = SimpleNamespace(id="attempt-1")
-    payload = SimpleNamespace(
+    payload = dispatcher.SendMessagePayload(
         message_text="reply",
         media_segments=[],
         reply_to_message_id=42,
