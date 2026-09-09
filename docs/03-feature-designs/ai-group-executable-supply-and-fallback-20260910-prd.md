@@ -63,7 +63,7 @@
 - 来源空隙与窗口交集、失效尾部、并发同群、未来预约不碰撞、真实gap不缩短、原deadline/半开边界/已调用未知不变。
 - 发布后独立SHA/backend+worker/API/迁移，再逐10Task核对当天ledger/可发队列/模型路径/主题及签到选择→真实typed消息；仍有准入/Telegramunknown等外部缺口分项报告。
 
-当前design_status=complete：原始需求、具体集成点、作用域、并发/幂等、权限、UI/API、迁移、正常/应急数量与质量分账及QA合同已闭合，各子切片均先完成产品反查再进入dev。当前implementation_status=complete、qa_status=targeted_pass_full_prepare_pending、production_status=unproven；发布和真实业务结果必须另行验证。
+当前design_status=complete：原始需求、具体集成点、作用域、并发/幂等、权限、UI/API、迁移、正常/应急数量与质量分账及QA合同已闭合，各子切片均先完成产品反查再进入dev。当前implementation_status=complete、qa_status=full_prepare_pass、release_status=pass、production_status=partially_verified；最新b3406f7e已正式部署，真实送达与未闭合条件见`docs/05-implementation/ai-group-supply-fallback-e4-20260910.md`，不标记10Task整体production_fixed。
 
 ## 应急与模型交接实现合同（design_status=complete）
 
@@ -105,3 +105,9 @@
 2026-09-10 02:40–02:45只读生产反查：成都两条原Action越过批次chat_mode误判后，触发`AiContentJobBindingError/context_route_evidence_missing`，被worker终结为generation_contract_error。两条配置主题均非空且有有效文本，但命中现有成人证据关键词；`meaningful_group_evidence`在无真人历史时按既有合同不将该配置主题当真人事实，因此返回空证据。旧Job general/adult路线四组合实验复现，无证据不是路由权限失效。
 
 本子切片resync，设计已闭合：启用V2内容路线且无可靠上下文的普通数量先按现有`meaningful_group_evidence`口径检查配置主题是否提供允许的主题输入；nonV2不新增这项V2证据门槛。提取为空时显式记录`topic_only_topic_evidence_missing`，在Provider之前走现有`persist_pre_request_emergency`，保留原quantity/coverage/Job审计并交接到已授权签到；不存在配置主题继续`topic_only_topic_missing`。这仅分类已证明的topic_only输入不可用，不把后续scope、授权、policy、窗口绑定、真实reply等错误归并为应急。原真人证据/成人关键词约束不放开，不将配置话题伪装成真人事实。开关关闭时保持显式生成不可用，不调用Provider也不发应急。已经失败的历史Action保持终态，只有正式数量后继可以继续。QA覆盖有效主题正常生成、无效/无证据主题Provider零调用→应急保留原义务、真实reply不转换、开关关闭、旧冻结Job和真实worker选择。
+
+## 第四次生产反查：应急发送后的不可变证据与基本数量
+
+03:28:33西安只读逐Action验收：15条typed可见消息、daily缓存9、直接只读重算也9；6条应急均Action/同账号Attempt成功、quantity_credit_eligible=true、FOP confirmed、memory正文/身份/状态正确，但发送结果同步用`memory.result=result`覆盖原content_hash，导致`emergency_memory_matches`拒绝日数量计入。target刷新时间晚于最新成功事实，因此不是普通异步延迟。其它Task差额仍须分别核验，不按差值猜测。
+
+本子切片resync，修正合同（design_status=complete）：消息记忆更新执行结果时保留应急选择ID与content_hash这两个冻结审计字段，不能被后续普通结果替换/擦除。计数和发送校验以不可变AiGroupEmergencySelection事实的content_hash及原Action/tenant/task/quantity/account/group/materialization/source身份为权威，不能仅依赖可替换的memory.result副本。历史已成功且丢失memory hash的记录按现存选择事实、memory完整身份/正文及原成功/可计数量门槛验证后自然计入，禁止补造选择事实、伪造hash或重发消息；不做生产手工数据回填。选择事实缺失、选择错绑、正文变化或身份不一致仍拒绝。现有普通消息、quantity_credit_eligible、同账号成功Attempt、质量独立分账保持。QA必须覆盖真实mark_group_ai_message_result成功同步后仍计数量，以及已有副本hash丢失可由原选择事实核验的历史路径；错hash/错owner/无选择/不可计slot/未知或无成功Attempt必须不计。

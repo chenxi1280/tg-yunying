@@ -4,7 +4,7 @@
 - level: L3 / P1
 - release_mode: github_actions
 - release_owner / rollback_owner: 本任务
-- status: pending（本地定向 QA 已通过；完整 Prepare 与生产 E4 待核验）
+- status: pending_quantity_credit_prepare（计数修复代码审查及定向QA通过，等待完整Prepare）
 
 ## 上线范围
 
@@ -54,3 +54,11 @@ Prepare34386451703全部通过：7718 passed、14 skipped、2 xfailed；Deploy34
 第三轮Prepare34388949742全部通过（7719 passed、14 skipped、2 xfailed），Deploy34389993368于02:39:07成功，current/backend18worker均726b61f5healthy/API正常。成都原两条通过chat_mode入口后暴露context_route_evidence_missing；02:45只读分类证实是既有无真人证据主题过滤，非旧Job绑定冲突。专项PRD已resync，仅增加该明确内容不可用原因的Provider前应急交接，不修改权限与证据规则；需再次QA/Prepare/发布/E4。
 
 V2主题证据不可用交接QA：三文件54 passed（9.22s）；根6文件扩大回归120 passed（19.88s，UTC，硬60秒）。真实ensure→worker签到Provider零调用，原Action/quantity/coverage/Job与原generation_contract保留；关闭应急不产生selection/正文，nonV2保持原合同；新代码函数长度符合限制。进入完整Prepare。
+
+## 最新候选正式发布结果
+
+b3406f7ec385ace2b0e06a404e9d5dd66d07f1c5：Prepare34391580370全部通过，7725 passed、14 skipped、2 xfailed，前端/镜像通过；Deploy34393132564于2026-09-10 03:12:09 CST成功。03:12:56独立current、backend+18worker全部该SHA且healthy，API正常；0231 head及唯一约束正确。最终逐Task业务证据在`ai-group-supply-fallback-e4-20260910.md`收口，不将本Gate的发布通过写成全部Task恢复。
+
+03:28:33追加只读检查证实西安6条应急真实发送却未计日数量（typed15、缓存/重算9）；发送结果覆盖memory.content_hash审计副本。已按专项PRD补齐不可变选择事实为计数权威、memory冻结审计保留、历史正确事实自然计入的修正合同，需修复后重走QA/Prepare/发布/基本数量E4。
+
+第五轮定向QA：写侧真实mark结果保留审计、读侧历史缺哈希/冲突拒绝、原应急/日数量/相似度/维护共6文件96 passed（14.43s，UTC，硬60秒）；读侧25新用例含错误归属、版本、内容及quantity资格反例。历史回计只读不可变selection证据，不补造memory、不重发。git diff --check通过；需完整Prepare后发布。

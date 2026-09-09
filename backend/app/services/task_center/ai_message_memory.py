@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import Action, AiGroupMessageMemory
+from .ai_message_memory_evidence import merge_memory_execution_result
 from app.services._common import _now
 from app.timezone import as_beijing
 from app.services.task_center.ai_message_memory_queries import (
@@ -227,13 +228,14 @@ def mark_group_ai_message_result(
     memory = session.get(AiGroupMessageMemory, memory_id)
     if not memory:
         raise ValueError(f"ai group message memory not found: {memory_id}")
+    merged_result = merge_memory_execution_result(memory.result or {}, result) if result is not None else None
     memory.status = status
     if action_id is not None:
         memory.action_id = action_id
     if sent_at is not None:
         memory.sent_at = sent_at
-    if result is not None:
-        memory.result = result
+    if merged_result is not None:
+        memory.result = merged_result
     memory.updated_at = _now()
     return memory
 

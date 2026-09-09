@@ -1623,3 +1623,5 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 活群独立内容的 Gateway 候选验证入口为 `ai_generation_gateway_candidate.py`；`ai_group_independent_quality.py` 只从同原义务成功 Attempt 与 typed 可见消息事实读取应急/独立主题分账，接口与页面沿原任务详情汇总。
 
 2026-09-10 生产版本一致性修正：`ai_group_emergency_projection.py` 在选取事务中同步原FOP与Action内容版本；`ai_group_emergency_projection_repair.py` 在正式义务注册/批量维护入口精确对齐同一未调用旧选择，Gateway只校验。0231将历史选择唯一性按原数量+materialization版本记录，当前owner仍由FOP决定。
+
+- 2026-09-10 `ai_message_memory_evidence.py`：执行结果合并时保留应急selection/hash不可变审计字段；`ai_group_emergency`/`daily_group_target`从原选择事实核验应急基本数量，详见供给与兜底专项PRD第四次反查。

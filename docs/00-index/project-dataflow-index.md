@@ -1672,3 +1672,5 @@ legacy-only A 冷启动分支固定为 `frozen legacy A -> 原 A Session 只读 
 - 2026-09-10 活群topic_only补充：批次chat_mode=reply不能代表slot已绑定真实回复；普通无reply_to/interaction/turn的数量仍按主题输入模式处理，真实引用与ContentIntent relation保持。见供给与兜底专项PRD第二次生产反查。
 
 - 2026-09-10 topic_only配置主题按既有规则提取不到输入证据时，在Provider前记录topic_only_topic_evidence_missing并保留原数量交接已授权应急；scope/route授权/policy/window错误不归并。详见供给与兜底专项PRD第三次生产反查。
+
+- 2026-09-10 应急数量证据：发送memory结果更新保留冻结selection/hash；基本数量用原AiGroupEmergencySelection权威事实核验，历史memory副本hash缺失不改写事实、不重发。见供给与兜底专项PRD第四次生产反查。

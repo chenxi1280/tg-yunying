@@ -3,6 +3,7 @@ from datetime import timedelta
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
+from pydantic import ValidationError
 from sqlalchemy import select
 
 from app.models import (
@@ -175,16 +176,44 @@ def validate_emergency_content_binding(session, action, payload):
             or current.get("ai_message_memory_id") != payload.ai_message_memory_id):
         raise ValueError("emergency_selection_publication_stale")
     memory = session.get(AiGroupMessageMemory, payload.ai_message_memory_id)
-    if not emergency_memory_matches(action, memory):
+    if not emergency_memory_matches(session, action, memory):
         raise ValueError("emergency_message_memory_invalid")
     return row
 
 
-def emergency_memory_matches(action, memory) -> bool:
+def emergency_memory_matches(session, action, memory) -> bool:
     data = dict(action.payload or {})
-    return bool(memory and memory.action_id == action.id and memory.tenant_id == action.tenant_id
-                and memory.account_id == action.account_id and memory.group_id == data.get("group_id")
-                and memory.content_source in EMERGENCY_SOURCES and memory.content_source == data.get("content_source")
-                and memory.raw_text == data.get("message_text") and memory.status in MEMORY_SENDABLE_STATES
-                and (memory.result or {}).get("emergency_selection_id") == data.get("emergency_selection_id")
-                and (memory.result or {}).get("content_hash") == digest(memory.raw_text))
+    selection_id = str(data.get("emergency_selection_id") or "")
+    selection = session.get(AiGroupEmergencySelection, selection_id) if selection_id else None
+    if not selection or not memory:
+        return False
+    if not _memory_selection_identity_matches(action, selection, data=data):
+        return False
+    evidence = dict(memory.result or {})
+    return bool(
+        memory.id == data.get("ai_message_memory_id")
+        and (memory.tenant_id, memory.task_id, memory.action_id, memory.account_id, memory.group_id)
+        == (action.tenant_id, action.task_id, action.id, action.account_id, data.get("group_id"))
+        and memory.reservation_key == f"emergency:{selection.id}"
+        and memory.content_source == selection.source == data.get("content_source")
+        and memory.raw_text == data.get("message_text")
+        and digest(memory.raw_text) == selection.content_hash == action.candidate_hash
+        and memory.status in MEMORY_SENDABLE_STATES
+        and evidence.get("emergency_selection_id", selection.id) == selection.id
+        and evidence.get("content_hash", selection.content_hash) == selection.content_hash
+    )
+
+
+def _memory_selection_identity_matches(action, selection, *, data) -> bool:
+    owner = (action.tenant_id, action.task_id, action.id, action.primary_quantity_slot_id)
+    if (selection.tenant_id, selection.task_id, selection.action_id, selection.primary_quantity_slot_id) != owner:
+        return False
+    if (selection.policy_version != POLICY_VERSION or data.get("generation_source") != POLICY_VERSION
+            or selection.source not in EMERGENCY_SOURCES
+            or selection.materialization_version != action.materialization_version
+            or selection.generation_job_id != data.get("generation_job_id")):
+        return False
+    try:
+        return selection.identity == selection_identity(action, data)
+    except ValidationError:
+        return False

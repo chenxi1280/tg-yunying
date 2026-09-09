@@ -401,6 +401,7 @@ def _confirmed_message_count(
         if _content_evidence_valid(
             action,
             memories.get(str((action.payload or {}).get("ai_message_memory_id") or "")),
+            session=session,
         )
     )
 
@@ -408,6 +409,8 @@ def _confirmed_message_count(
 def _content_evidence_valid(
     action: Action,
     memory: AiGroupMessageMemory | None,
+    *,
+    session: Session,
 ) -> bool:
     payload = action.payload or {}
     if not memory or memory.action_id != action.id or memory.account_id != action.account_id:
@@ -416,7 +419,7 @@ def _content_evidence_valid(
     if payload.get("emergency_selection_id"):
         from .ai_group_emergency import emergency_memory_matches
 
-        return emergency_memory_matches(action, memory)
+        return emergency_memory_matches(session, action, memory)
     if source == "mask_missing_check_in":
         return bool(
             payload.get("coverage_ledger_id")
