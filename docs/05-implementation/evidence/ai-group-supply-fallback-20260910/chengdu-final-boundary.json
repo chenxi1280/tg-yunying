@@ -1,0 +1,326 @@
+{
+  "observed_at": "2026-09-10 03:40:21.667783+08:00",
+  "readonly": "on",
+  "isolation": "repeatable read",
+  "release_sha": "b3406f7ec385ace2b0e06a404e9d5dd66d07f1c5",
+  "scope": {
+    "action_id": "0d335a8c-e577-43ff-9d7a-cf929b652ef6",
+    "job_id": "70583f0d-f7dc-42f5-a522-3baf08a86ab4",
+    "account_id": 213,
+    "task_id": "e5882928-35b3-41c2-88e0-fa6520df83e8",
+    "tenant_id": 1,
+    "group_id": 5997
+  },
+  "task": {
+    "id": "e5882928-35b3-41c2-88e0-fa6520df83e8",
+    "status": "running",
+    "type": "group_ai_chat",
+    "task_lifecycle_epoch": 2,
+    "config_revision": 1,
+    "fulfillment_contract_version": "fact_first_v3",
+    "unified": true,
+    "emergency_enabled": true
+  },
+  "action": {
+    "id": "0d335a8c-e577-43ff-9d7a-cf929b652ef6",
+    "status": "skipped",
+    "scheduled_at": "2026-09-10 03:34:33.574365+08:00",
+    "executed_at": "2026-09-10 03:34:29.459349+08:00",
+    "release_not_before_at": "2026-09-10 03:28:00+08:00",
+    "primary_quantity_slot_id": "c966eade-87d6-4f19-8dbc-f44bd4bf6086",
+    "account_id": 213,
+    "materialization_version": 1,
+    "action_version": 6,
+    "task_lifecycle_epoch": 2,
+    "obligation_type": "coverage",
+    "obligation_id": "efb02d44-5790-43e2-936e-c40fa3af91c1",
+    "result": {
+      "error_code": "c2_account_abandoned"
+    },
+    "payload": {
+      "ai_generation_status": "generating",
+      "ai_generation_context_mode": "",
+      "ai_generation_context_reason": "",
+      "chat_mode": "reply",
+      "relation_kind": "direct",
+      "emergency_selection_id": "",
+      "generation_job_id": "70583f0d-f7dc-42f5-a522-3baf08a86ab4",
+      "message_present": false,
+      "history_length": 1000,
+      "reply_present": false,
+      "interaction_present": false,
+      "turn_present": false
+    }
+  },
+  "job": {
+    "id": "70583f0d-f7dc-42f5-a522-3baf08a86ab4",
+    "state": "failed",
+    "generation_stage": "routing",
+    "generation_sequence": 1,
+    "generation_lease_epoch": 5,
+    "job_version": 11,
+    "created_at": "2026-09-10 03:32:53.359634+08:00",
+    "lease_expires_at": null,
+    "generation_not_before_at": "2026-09-10 03:32:50+08:00",
+    "latest_safe_send_at": "2026-09-11 00:00:00+08:00",
+    "next_retry_at": null,
+    "context_route": "",
+    "content_mode": "",
+    "window_slot_id": null,
+    "owner_present": false,
+    "evaluator_keys": [
+      "reviewer"
+    ],
+    "candidate_present": false
+  },
+  "admission": {
+    "id": "47eda03b-2f88-4b8e-b824-f1efdc9277b4",
+    "state": "abandoned",
+    "task_lifecycle_epoch": 2,
+    "observation_version": 1551,
+    "consecutive_observation_gaps": 3,
+    "observation_started_at": "2026-09-10 03:34:29.362110+08:00",
+    "no_prompt_pass_at": "2026-09-10 03:34:59.362110+08:00",
+    "observation_gap": false,
+    "terminal_reason": "observation_gap_limit_reached",
+    "version": 1551,
+    "terminal_evidence": {
+      "outcome": "abandoned_for_day",
+      "detail": "ChannelPrivateError",
+      "blocker_code": "c2_observation_evidence_missing",
+      "terminal_date": "2026-09-10",
+      "consecutive_observation_gaps": 3
+    }
+  },
+  "admission_facts": [
+    {
+      "id": "9c7322f1-6e4b-4e3a-a79f-1496c98ebd47",
+      "fact_kind": "post_follow_visibility",
+      "observed_at": "2026-09-10 03:34:29.366889+08:00",
+      "fact_version": 1551,
+      "outcome": {
+        "outcome": "observation_gap",
+        "reason": "ChannelPrivateError",
+        "consecutive_observation_gaps": 3,
+        "observation_version": 1551,
+        "task_id": "e5882928-35b3-41c2-88e0-fa6520df83e8"
+      }
+    },
+    {
+      "id": "946c8f5a-a6cc-41e7-bb02-cd0052907008",
+      "fact_kind": "post_follow_visibility",
+      "observed_at": "2026-09-10 03:33:41.850707+08:00",
+      "fact_version": 1550,
+      "outcome": {
+        "outcome": "observation_gap",
+        "reason": "ChannelPrivateError",
+        "consecutive_observation_gaps": 2,
+        "observation_version": 1550,
+        "task_id": "e5882928-35b3-41c2-88e0-fa6520df83e8"
+      }
+    },
+    {
+      "id": "88c6fad7-1095-40f3-ad24-a09570eb6148",
+      "fact_kind": "post_follow_visibility",
+      "observed_at": "2026-09-10 03:32:54.952774+08:00",
+      "fact_version": 1549,
+      "outcome": {
+        "outcome": "observation_gap",
+        "reason": "ChannelPrivateError",
+        "consecutive_observation_gaps": 1,
+        "observation_version": 1549,
+        "task_id": "e5882928-35b3-41c2-88e0-fa6520df83e8"
+      }
+    },
+    {
+      "id": "893fb8ee-60fc-4954-9fea-b38ed63469e3",
+      "fact_kind": "post_follow_visibility",
+      "observed_at": "2026-09-10 00:26:55.070120+08:00",
+      "fact_version": 1548,
+      "outcome": {
+        "outcome": "admission_recheck_on_new_task_day"
+      }
+    },
+    {
+      "id": "88888718-2239-410c-bf21-e014097840aa",
+      "fact_kind": "post_follow_visibility",
+      "observed_at": "2026-09-09 12:54:33.079352+08:00",
+      "fact_version": 1547,
+      "outcome": {
+        "outcome": "observation_gap",
+        "reason": "ChannelPrivateError",
+        "consecutive_observation_gaps": 3,
+        "observation_version": 1547,
+        "task_id": "e5882928-35b3-41c2-88e0-fa6520df83e8"
+      }
+    },
+    {
+      "id": "79c21aae-4a4f-4ca2-b1d0-0e7b423f07de",
+      "fact_kind": "post_follow_visibility",
+      "observed_at": "2026-09-09 12:53:27.612311+08:00",
+      "fact_version": 1546,
+      "outcome": {
+        "outcome": "observation_gap",
+        "reason": "ChannelPrivateError",
+        "consecutive_observation_gaps": 2,
+        "observation_version": 1546,
+        "task_id": "e5882928-35b3-41c2-88e0-fa6520df83e8"
+      }
+    },
+    {
+      "id": "3ee44c3b-8777-4552-96c2-49f746781688",
+      "fact_kind": "post_follow_visibility",
+      "observed_at": "2026-09-09 12:52:53.554146+08:00",
+      "fact_version": 1545,
+      "outcome": {
+        "outcome": "observation_gap",
+        "reason": "ChannelPrivateError",
+        "consecutive_observation_gaps": 1,
+        "observation_version": 1545,
+        "task_id": "e5882928-35b3-41c2-88e0-fa6520df83e8"
+      }
+    },
+    {
+      "id": "b46e4cd6-e7b8-4628-acf0-cb7b17818eb2",
+      "fact_kind": "post_follow_visibility",
+      "observed_at": "2026-09-09 00:40:29.393255+08:00",
+      "fact_version": 1544,
+      "outcome": {
+        "outcome": "admission_recheck_on_new_task_day"
+      }
+    },
+    {
+      "id": "78925d79-7087-4aeb-b02a-0e8ae8c0157e",
+      "fact_kind": "post_follow_visibility",
+      "observed_at": "2026-09-08 23:41:44.054711+08:00",
+      "fact_version": 1543,
+      "outcome": {
+        "outcome": "observation_gap",
+        "reason": "ChannelPrivateError",
+        "consecutive_observation_gaps": 3,
+        "observation_version": 1543,
+        "task_id": "e5882928-35b3-41c2-88e0-fa6520df83e8"
+      }
+    },
+    {
+      "id": "bb3e1716-7cba-4169-b362-daca571aba26",
+      "fact_kind": "post_follow_visibility",
+      "observed_at": "2026-09-08 23:40:36.754176+08:00",
+      "fact_version": 1542,
+      "outcome": {
+        "outcome": "observation_gap",
+        "reason": "ChannelPrivateError",
+        "consecutive_observation_gaps": 2,
+        "observation_version": 1542,
+        "task_id": "e5882928-35b3-41c2-88e0-fa6520df83e8"
+      }
+    },
+    {
+      "id": "d8ab3898-8a93-4e65-9d14-284b4a6d693a",
+      "fact_kind": "post_follow_visibility",
+      "observed_at": "2026-09-08 23:39:21.150295+08:00",
+      "fact_version": 1541,
+      "outcome": {
+        "outcome": "observation_gap",
+        "reason": "ChannelPrivateError",
+        "consecutive_observation_gaps": 1,
+        "observation_version": 1541,
+        "task_id": "e5882928-35b3-41c2-88e0-fa6520df83e8"
+      }
+    },
+    {
+      "id": "e5c19323-3e41-4cf2-9aff-e6e7da39ec96",
+      "fact_kind": "post_follow_visibility",
+      "observed_at": "2026-09-08 13:44:39.825403+08:00",
+      "fact_version": 1045,
+      "outcome": {
+        "outcome": "observation_gap",
+        "reason": "FloodWaitError"
+      }
+    }
+  ],
+  "account": {
+    "id": 213,
+    "status": "在线",
+    "telegram_frozen": false,
+    "telegram_freeze_observed_at": "2026-09-10 03:37:20.874484+08:00",
+    "account_lifecycle_status": "business_active",
+    "business_runtime_status": "degraded",
+    "authorization_generation": 2,
+    "authorization_fact_generation": 5,
+    "deleted": false,
+    "session_present": true,
+    "authorization_present": true
+  },
+  "group": {
+    "id": 5997,
+    "listener_enabled": true,
+    "listener_cursor_status": "contiguous",
+    "listener_last_polled_at": "2026-09-10 03:33:38.058650",
+    "listener_error_present": true
+  },
+  "link": {
+    "id": 25770,
+    "can_send": true
+  },
+  "slot": {
+    "id": "c966eade-87d6-4f19-8dbc-f44bd4bf6086",
+    "state": "open",
+    "task_day_ledger_id": "acf89411-3b1d-4522-8027-5a97564120de",
+    "task_account_daily_coverage_id": "efb02d44-5790-43e2-936e-c40fa3af91c1",
+    "slot_kind": "account_coverage",
+    "slot_ordinal": 200
+  },
+  "ledger": {
+    "id": "acf89411-3b1d-4522-8027-5a97564120de",
+    "lifecycle_status": "open",
+    "obligation_local_date": "2026-09-10",
+    "deadline_at": "2026-09-11 00:00:00+08:00"
+  },
+  "coverages": [
+    {
+      "id": "efb02d44-5790-43e2-936e-c40fa3af91c1",
+      "state": "abandoned_for_day",
+      "reserved_action_id": "0d335a8c-e577-43ff-9d7a-cf929b652ef6",
+      "blocker_code": "c2_observation_evidence_missing",
+      "blocker_stage": "admission",
+      "recovery_path": "next_task_day_recheck",
+      "coverage_date": "2026-09-10",
+      "next_eligible_at": null
+    }
+  ],
+  "fop": {
+    "id": "cda04ba9-f3a0-442c-93f0-1abbf18db7bf",
+    "state": "open",
+    "active_action_id": "0d335a8c-e577-43ff-9d7a-cf929b652ef6",
+    "materialization_version": 1,
+    "version": 1
+  },
+  "attempts": [],
+  "remote_facts": [],
+  "emergency_selection_count": 0,
+  "provider_exchanges": [],
+  "related_actions": [
+    {
+      "id": "81685ad9-8ee0-410d-b8da-e387445e5503",
+      "action_type": "ensure_target_membership",
+      "status": "skipped",
+      "created_at": "2026-09-10 00:32:09.654916+08:00",
+      "executed_at": "2026-09-10 00:32:08.154067+08:00",
+      "result": {
+        "detail": "non_code_redacted"
+      }
+    }
+  ],
+  "assessment": {
+    "status": "blocked",
+    "first_blocker": "account_target_visibility_c2_admission",
+    "root_cause": "Three current-day typed post_follow_visibility observation gaps with ChannelPrivateError caused observation_gap_limit_reached and abandoned_for_day.",
+    "emergency_reachable_for_this_action": false,
+    "generation_or_emergency_defect_proven": false,
+    "telegram_message_fulfillment": "unproven",
+    "limitation": "ChannelPrivateError proves this account cannot observe the target through the current authorization. It does not distinguish removed membership, ban, or another target permission change. A stored can_send link is not fresh remote visibility evidence.",
+    "production_mutations": false,
+    "manual_telegram_calls": false
+  }
+}

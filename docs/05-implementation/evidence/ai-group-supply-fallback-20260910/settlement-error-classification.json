@@ -1,0 +1,1 @@
+{"classes": ["psycopg.errors.LockNotAvailable", "sqlalchemy.exc.OperationalError"], "lock_not_available": 2, "retired_code": 0, "emergency_invalid": 0, "claim_lost": 0, "uuid_ids": []}

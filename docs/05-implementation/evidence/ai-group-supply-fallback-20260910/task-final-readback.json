@@ -1,0 +1,512 @@
+{
+  "snapshot_at": "2026-09-10T04:07:39.410306+08:00",
+  "release_anchor": "2026-09-10T03:59:54+08:00",
+  "tasks": [
+    {
+      "task_id": "11f3591a-cbcb-410a-a90e-0752ef5659dd",
+      "name": "郑州大学",
+      "status": "running",
+      "ledger_id": "09b423b1-287b-4e3e-ac1f-fd6bb76802d4",
+      "daily": {
+        "target_row_count": 1,
+        "due_message_count": 103,
+        "confirmed_message_count": 0,
+        "coverage_required_count": 1833,
+        "coverage_total_count": 1833,
+        "coverage_confirmed_count": 0,
+        "coverage_active_count": 923,
+        "coverage_abandoned_count": 910,
+        "post_release_remote_fact_count": 0
+      },
+      "today_typed": 0,
+      "independent_quality": {
+        "remote_emergency_count": 0,
+        "remote_topic_only_count": 0
+      },
+      "deployment_emergency": [
+        {
+          "reason": "provider_route_exhausted",
+          "source": "emergency_check_in",
+          "status": "failed",
+          "count": 1
+        },
+        {
+          "reason": "provider_route_exhausted",
+          "source": "emergency_check_in",
+          "status": "skipped",
+          "count": 1
+        },
+        {
+          "reason": "quality_wait",
+          "source": "emergency_check_in",
+          "status": "failed",
+          "count": 1
+        }
+      ],
+      "recent30_failure_groups": [
+        {
+          "status": "success",
+          "failure_type": "",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "task_id": "1c20106a-1ed8-4df3-a67e-da88789e329e",
+      "name": "天津音乐",
+      "status": "running",
+      "ledger_id": "6e892249-083c-4f6c-a7c2-db8b5bfe038b",
+      "daily": {
+        "target_row_count": 1,
+        "due_message_count": 108,
+        "confirmed_message_count": 0,
+        "coverage_required_count": 536,
+        "coverage_total_count": 536,
+        "coverage_confirmed_count": 0,
+        "coverage_active_count": 177,
+        "coverage_abandoned_count": 359,
+        "post_release_remote_fact_count": 0
+      },
+      "today_typed": 0,
+      "independent_quality": {
+        "remote_emergency_count": 0,
+        "remote_topic_only_count": 0
+      },
+      "deployment_emergency": [
+        {
+          "reason": "provider_route_exhausted",
+          "source": "emergency_check_in",
+          "status": "failed",
+          "count": 1
+        }
+      ],
+      "recent30_failure_groups": []
+    },
+    {
+      "task_id": "4a5d721a-ea09-49ac-95ea-dae1508a0b22",
+      "name": "美美备用",
+      "status": "running",
+      "ledger_id": "345e89cb-4657-4519-8a60-0aeeec7d1df5",
+      "daily": {
+        "target_row_count": 1,
+        "due_message_count": 57,
+        "confirmed_message_count": 3,
+        "coverage_required_count": 563,
+        "coverage_total_count": 563,
+        "coverage_confirmed_count": 2,
+        "coverage_active_count": 411,
+        "coverage_abandoned_count": 152,
+        "post_release_remote_fact_count": 0
+      },
+      "today_typed": 3,
+      "independent_quality": {
+        "remote_emergency_count": 0,
+        "remote_topic_only_count": 0
+      },
+      "deployment_emergency": [],
+      "recent30_failure_groups": []
+    },
+    {
+      "task_id": "5063e30f-9094-4c9f-8635-641626372bfe",
+      "name": "西安天上人间",
+      "status": "running",
+      "ledger_id": "2ff00174-d944-4e92-ba5a-fbc286faf8e4",
+      "daily": {
+        "target_row_count": 1,
+        "due_message_count": 130,
+        "confirmed_message_count": 17,
+        "coverage_required_count": 1833,
+        "coverage_total_count": 1833,
+        "coverage_confirmed_count": 17,
+        "coverage_active_count": 1188,
+        "coverage_abandoned_count": 645,
+        "post_release_remote_fact_count": 0
+      },
+      "today_typed": 17,
+      "independent_quality": {
+        "remote_emergency_count": 7,
+        "remote_topic_only_count": 0
+      },
+      "deployment_emergency": [
+        {
+          "reason": "provider_result_unknown",
+          "source": "reply_unicode_emoji_fallback",
+          "status": "failed",
+          "count": 1
+        },
+        {
+          "reason": "provider_route_exhausted",
+          "source": "emergency_check_in",
+          "status": "success",
+          "count": 2
+        },
+        {
+          "reason": "quality_wait",
+          "source": "emergency_check_in",
+          "status": "success",
+          "count": 5
+        },
+        {
+          "reason": "quality_wait",
+          "source": "reply_unicode_emoji_fallback",
+          "status": "failed",
+          "count": 1
+        }
+      ],
+      "recent30_failure_groups": []
+    },
+    {
+      "task_id": "562662d2-45e3-42b6-a58a-04899944b9d5",
+      "name": "三亚",
+      "status": "running",
+      "ledger_id": "95f8c92a-b27a-4ad1-9c8b-ff02a5c50841",
+      "daily": {
+        "target_row_count": 1,
+        "due_message_count": 128,
+        "confirmed_message_count": 16,
+        "coverage_required_count": 1833,
+        "coverage_total_count": 1833,
+        "coverage_confirmed_count": 16,
+        "coverage_active_count": 979,
+        "coverage_abandoned_count": 854,
+        "post_release_remote_fact_count": 0
+      },
+      "today_typed": 16,
+      "independent_quality": {
+        "remote_emergency_count": 4,
+        "remote_topic_only_count": 0
+      },
+      "deployment_emergency": [
+        {
+          "reason": "ai_generation_failed",
+          "source": "reply_unicode_emoji_fallback",
+          "status": "failed",
+          "count": 1
+        },
+        {
+          "reason": "malformed_output",
+          "source": "emergency_check_in",
+          "status": "pending",
+          "count": 1
+        },
+        {
+          "reason": "malformed_output",
+          "source": "emergency_check_in",
+          "status": "success",
+          "count": 1
+        },
+        {
+          "reason": "provider_result_unknown",
+          "source": "emergency_check_in",
+          "status": "skipped",
+          "count": 1
+        },
+        {
+          "reason": "provider_result_unknown",
+          "source": "emergency_check_in",
+          "status": "success",
+          "count": 1
+        },
+        {
+          "reason": "provider_result_unknown",
+          "source": "reply_unicode_emoji_fallback",
+          "status": "failed",
+          "count": 1
+        },
+        {
+          "reason": "provider_route_exhausted",
+          "source": "reply_unicode_emoji_fallback",
+          "status": "pending",
+          "count": 1
+        },
+        {
+          "reason": "quality_wait",
+          "source": "emergency_check_in",
+          "status": "failed",
+          "count": 1
+        },
+        {
+          "reason": "quality_wait",
+          "source": "emergency_check_in",
+          "status": "success",
+          "count": 2
+        }
+      ],
+      "recent30_failure_groups": [
+        {
+          "status": "success",
+          "failure_type": "",
+          "count": 3
+        }
+      ]
+    },
+    {
+      "task_id": "894d6924-8484-4650-b56e-b4003b852633",
+      "name": "郑州楼凤",
+      "status": "running",
+      "ledger_id": "4b6baee9-2db1-495b-91e6-69c40cf83f0e",
+      "daily": {
+        "target_row_count": 1,
+        "due_message_count": 112,
+        "confirmed_message_count": 7,
+        "coverage_required_count": 1833,
+        "coverage_total_count": 1833,
+        "coverage_confirmed_count": 7,
+        "coverage_active_count": 1016,
+        "coverage_abandoned_count": 817,
+        "post_release_remote_fact_count": 0
+      },
+      "today_typed": 7,
+      "independent_quality": {
+        "remote_emergency_count": 1,
+        "remote_topic_only_count": 1
+      },
+      "deployment_emergency": [
+        {
+          "reason": "ai_generation_failed",
+          "source": "reply_unicode_emoji_fallback",
+          "status": "failed",
+          "count": 1
+        },
+        {
+          "reason": "ai_generation_failed",
+          "source": "reply_unicode_emoji_fallback",
+          "status": "skipped",
+          "count": 1
+        },
+        {
+          "reason": "provider_route_exhausted",
+          "source": "emergency_check_in",
+          "status": "failed",
+          "count": 1
+        },
+        {
+          "reason": "provider_route_exhausted",
+          "source": "reply_unicode_emoji_fallback",
+          "status": "pending",
+          "count": 1
+        },
+        {
+          "reason": "quality_wait",
+          "source": "emergency_check_in",
+          "status": "success",
+          "count": 1
+        }
+      ],
+      "recent30_failure_groups": [
+        {
+          "status": "success",
+          "failure_type": "",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "task_id": "8d64449d-994e-4d46-969e-9349f49066ba",
+      "name": "郑州学生会",
+      "status": "running",
+      "ledger_id": "d4161690-1fcd-42c3-901a-853988c863f3",
+      "daily": {
+        "target_row_count": 1,
+        "due_message_count": 114,
+        "confirmed_message_count": 8,
+        "coverage_required_count": 1833,
+        "coverage_total_count": 1833,
+        "coverage_confirmed_count": 9,
+        "coverage_active_count": 735,
+        "coverage_abandoned_count": 1098,
+        "post_release_remote_fact_count": 1
+      },
+      "today_typed": 9,
+      "independent_quality": {
+        "remote_emergency_count": 3,
+        "remote_topic_only_count": 0
+      },
+      "deployment_emergency": [
+        {
+          "reason": "provider_result_unknown",
+          "source": "emergency_check_in",
+          "status": "failed",
+          "count": 1
+        },
+        {
+          "reason": "provider_route_exhausted",
+          "source": "emergency_check_in",
+          "status": "success",
+          "count": 3
+        },
+        {
+          "reason": "provider_route_exhausted",
+          "source": "reply_unicode_emoji_fallback",
+          "status": "failed",
+          "count": 1
+        },
+        {
+          "reason": "quality_wait",
+          "source": "emergency_check_in",
+          "status": "skipped",
+          "count": 1
+        },
+        {
+          "reason": "quality_wait",
+          "source": "reply_unicode_emoji_fallback",
+          "status": "failed",
+          "count": 2
+        }
+      ],
+      "recent30_failure_groups": [
+        {
+          "status": "success",
+          "failure_type": "",
+          "count": 2
+        }
+      ]
+    },
+    {
+      "task_id": "8d6cfb4d-9d39-45fc-80bc-102d989d0bfe",
+      "name": "天津一品楼",
+      "status": "running",
+      "ledger_id": "72bf0899-714c-46ca-a96c-1e9118b57135",
+      "daily": {
+        "target_row_count": 1,
+        "due_message_count": 129,
+        "confirmed_message_count": 16,
+        "coverage_required_count": 304,
+        "coverage_total_count": 304,
+        "coverage_confirmed_count": 16,
+        "coverage_active_count": 201,
+        "coverage_abandoned_count": 103,
+        "post_release_remote_fact_count": 0
+      },
+      "today_typed": 16,
+      "independent_quality": {
+        "remote_emergency_count": 4,
+        "remote_topic_only_count": 0
+      },
+      "deployment_emergency": [
+        {
+          "reason": "ai_generation_failed",
+          "source": "reply_unicode_emoji_fallback",
+          "status": "failed",
+          "count": 1
+        },
+        {
+          "reason": "malformed_output",
+          "source": "emergency_check_in",
+          "status": "success",
+          "count": 1
+        },
+        {
+          "reason": "provider_result_unknown",
+          "source": "reply_unicode_emoji_fallback",
+          "status": "pending",
+          "count": 1
+        },
+        {
+          "reason": "quality_wait",
+          "source": "emergency_check_in",
+          "status": "failed",
+          "count": 1
+        },
+        {
+          "reason": "quality_wait",
+          "source": "emergency_check_in",
+          "status": "pending",
+          "count": 1
+        },
+        {
+          "reason": "quality_wait",
+          "source": "emergency_check_in",
+          "status": "success",
+          "count": 3
+        }
+      ],
+      "recent30_failure_groups": []
+    },
+    {
+      "task_id": "caed73c4-16d6-440e-8d0d-109c6fa1f184",
+      "name": "郑州师范",
+      "status": "running",
+      "ledger_id": "59f5985f-2545-45cd-885e-b3f43b3c8cf6",
+      "daily": {
+        "target_row_count": 1,
+        "due_message_count": 103,
+        "confirmed_message_count": 3,
+        "coverage_required_count": 1833,
+        "coverage_total_count": 1833,
+        "coverage_confirmed_count": 3,
+        "coverage_active_count": 1190,
+        "coverage_abandoned_count": 643,
+        "post_release_remote_fact_count": 0
+      },
+      "today_typed": 3,
+      "independent_quality": {
+        "remote_emergency_count": 1,
+        "remote_topic_only_count": 0
+      },
+      "deployment_emergency": [
+        {
+          "reason": "ai_generation_failed",
+          "source": "emergency_check_in",
+          "status": "pending",
+          "count": 1
+        },
+        {
+          "reason": "ai_generation_failed",
+          "source": "reply_unicode_emoji_fallback",
+          "status": "failed",
+          "count": 1
+        },
+        {
+          "reason": "provider_route_exhausted",
+          "source": "emergency_check_in",
+          "status": "pending",
+          "count": 2
+        },
+        {
+          "reason": "provider_route_exhausted",
+          "source": "reply_unicode_emoji_fallback",
+          "status": "closed_unknown",
+          "count": 1
+        },
+        {
+          "reason": "provider_route_exhausted",
+          "source": "reply_unicode_emoji_fallback",
+          "status": "failed",
+          "count": 3
+        },
+        {
+          "reason": "quality_wait",
+          "source": "reply_unicode_emoji_fallback",
+          "status": "success",
+          "count": 1
+        }
+      ],
+      "recent30_failure_groups": []
+    },
+    {
+      "task_id": "e5882928-35b3-41c2-88e0-fa6520df83e8",
+      "name": "成都怡红院",
+      "status": "running",
+      "ledger_id": "acf89411-3b1d-4522-8027-5a97564120de",
+      "daily": {
+        "target_row_count": 1,
+        "due_message_count": 101,
+        "confirmed_message_count": 0,
+        "coverage_required_count": 1833,
+        "coverage_total_count": 1833,
+        "coverage_confirmed_count": 0,
+        "coverage_active_count": 1083,
+        "coverage_abandoned_count": 750,
+        "post_release_remote_fact_count": 0
+      },
+      "today_typed": 0,
+      "independent_quality": {
+        "remote_emergency_count": 0,
+        "remote_topic_only_count": 0
+      },
+      "deployment_emergency": [],
+      "recent30_failure_groups": []
+    }
+  ]
+}

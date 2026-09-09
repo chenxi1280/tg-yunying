@@ -4,7 +4,7 @@
 - level: L3 / P1
 - release_mode: github_actions
 - release_owner / rollback_owner: 本任务
-- status: pending_quantity_credit_prepare（计数修复代码审查及定向QA通过，等待完整Prepare）
+- status: released_partially_verified（最终版972597a4代码/QA/发布通过，计数/主题/应急/成员投影有真实E4；3个Task仍无可见消息，整体不标production_fixed）
 
 ## 上线范围
 
@@ -64,3 +64,9 @@ b3406f7ec385ace2b0e06a404e9d5dd66d07f1c5：Prepare34391580370全部通过，7725
 第五轮定向QA：写侧真实mark结果保留审计、读侧历史缺哈希/冲突拒绝、原应急/日数量/相似度/维护共6文件96 passed（14.43s，UTC，硬60秒）；读侧25新用例含错误归属、版本、内容及quantity资格反例。历史回计只读不可变selection证据，不补造memory、不重发。git diff --check通过；需完整Prepare后发布。
 
 Prepare34396262075发现4项旧版本对齐回归，根因是新memory校验过早要求Action版本一致，阻断原精确旧版CAS。已将content_binding保留为内容身份核对，Gateway最终校验与数量计数仍严格验证版本；没有放宽发送或计数。包含完整projection-repair的7文件119 passed（18.12s，UTC，硬60秒）。此Prepare失败不豁免，修正提交重新运行完整Prepare。
+
+## 最终发布及生产复核
+
+972597a4e67d09a52061caa4123ea29b12f6453b：Prepare34397099232全部通过（7755 passed、14 skipped、2 xfailed），前端/三个镜像/两个真实PostgreSQL分片通过；Deploy34397929804于03:59:54成功。04:00:45独立current/backend+18worker全部同SHA且healthy、API正常；head0231/唯一约束正常。
+
+04:00:57西安历史漏计6条原签到全部通过原不可变选择证据核验，缓存=重算=typed=17；未手工回填或补发。最终版学生会新签到04:02:29调用、04:02:35typed可见，成功memory保留hash，身份和计数有效；04:09:03全10Task缓存与重算全部一致。04:07:39当日71条可见消息、20条应急、1条独立主题；大学/天津音乐/成都0，保留blocked/unproven。生成结算NOWAIT锁争用日志及未到期租约边界保留，不冒充已定位/恢复。完整证据与分轮锚点见`ai-group-supply-fallback-e4-20260910.md`。

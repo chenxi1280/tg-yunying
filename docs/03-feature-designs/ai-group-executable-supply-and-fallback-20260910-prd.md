@@ -63,7 +63,7 @@
 - 来源空隙与窗口交集、失效尾部、并发同群、未来预约不碰撞、真实gap不缩短、原deadline/半开边界/已调用未知不变。
 - 发布后独立SHA/backend+worker/API/迁移，再逐10Task核对当天ledger/可发队列/模型路径/主题及签到选择→真实typed消息；仍有准入/Telegramunknown等外部缺口分项报告。
 
-当前design_status=complete：原始需求、具体集成点、作用域、并发/幂等、权限、UI/API、迁移、正常/应急数量与质量分账及QA合同已闭合，各子切片均先完成产品反查再进入dev。当前implementation_status=complete、qa_status=full_prepare_pass、release_status=pass、production_status=partially_verified；最新b3406f7e已正式部署，真实送达与未闭合条件见`docs/05-implementation/ai-group-supply-fallback-e4-20260910.md`，不标记10Task整体production_fixed。
+当前design_status=complete：原始需求、具体集成点、作用域、并发/幂等、权限、UI/API、迁移、正常/应急数量与质量分账及QA合同已闭合，各子切片均先完成产品反查再进入dev。当前implementation_status=complete、qa_status=full_prepare_pass、release_status=pass、production_status=partially_verified；最新972597a4已正式部署，04:09全10Task基本数量缓存与实时重算一致，历史6条签到与最终版新签到均通过不可变证据/真实可见消息核验，真实送达与未闭合条件见`docs/05-implementation/ai-group-supply-fallback-e4-20260910.md`，不标记10Task整体production_fixed。
 
 ## 应急与模型交接实现合同（design_status=complete）
 
