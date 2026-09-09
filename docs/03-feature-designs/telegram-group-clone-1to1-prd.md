@@ -1097,3 +1097,5 @@ QA必须从实际 _plan_due_task_batch 入口，在超过旧global阈值且生�
 只读生产样本：原Task首条DifferenceMessages为pts5605573/count5，恰接start5605568；下一UpdateDeleteChannelMessages为同pts5605573/count=null（adapter将0归一为None），涉及起始边界以前消息。现有count<=0直接判gap，甚至未进入边界skip。
 
 `design_status=complete/resync=true`：遵循[Telegram Updates协议](https://core.telegram.org/api/updates)，无计数按0处理；既有连续性式pts-count<=当前channel_pts仍必须成立，且pts必须为正、count不得为负。零/空count仅可消费已被当前PTS覆盖的事件，不允许以0跨越未来PTS缺口；不手改游标、不删除durable记录。QA用真实消费入口覆盖0/None同PTS、0/None未来PTS仍gap、负count拒绝，结合正式Planner入口回归。
+
+反向检查补齐证据来源：后续durable ingress748为pts5605574/count0，单凭任务游标5605573不能确认；共享Collector已完成该channel的difference并原子持久化全部delivery和channel cursor。因此无计数更新采用明确的两类连续性证据：已消费Task PTS覆盖，或同authorization update state、同peer的正式Collector `state=live`、channel `status=live/empty`、`final=true` 且完成PTS覆盖该事件。后一依据只用于count=0，不把未知缺口当连续、不使用其他群/common PTS、过期generation或too_long/slice证明完整。消费仍按durable ingress顺序逐项推进实际event PTS，不直接跳到Collector尾部；旧快照无需改写。QA须从正式_apply_channel_batch提交证据，并覆盖其他peer/authorization、未完成、too_long、缺失与不足PTS拒绝。该证据合同替代仅按单条pts_count复核difference的错误假设，resync=true。

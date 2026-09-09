@@ -164,7 +164,7 @@ def _apply_start_boundary(session, task, boundary) -> None:
 
 def _consume_delivery(session, task, *, stream, delivery, envelope) -> bool:
     item = NormalizedCloneItem.model_validate(delivery.normalized_payload or {})
-    if not _pts_continuous(stream, envelope):
+    if not _pts_continuous(session, stream, envelope):
         stream.state = "gap"
         task.status = "failed"
         task.last_error = "group_clone_source_pts_gap"
@@ -251,12 +251,30 @@ def _promote_live_if_caught_up(session, task, stream) -> None:
     task.stats = {**dict(task.stats or {}), "clone_start_state": "running"}
 
 
-def _pts_continuous(stream, envelope) -> bool:
+def _pts_continuous(session, stream, envelope) -> bool:
     pts = int(envelope.pts_evidence or 0)
     count = int(envelope.pts_count_evidence or 0)
     if pts <= 0 or count < 0:
         return False
-    return pts - count <= int(stream.channel_pts or 0)
+    if pts - count <= int(stream.channel_pts or 0):
+        return True
+    return count == 0 and pts <= _completed_channel_pts(session, stream, envelope)
+
+
+def _completed_channel_pts(session, stream, envelope) -> int:
+    if (
+        envelope.authorization_update_state_id != stream.authorization_update_state_id
+        or envelope.routing_peer_type != stream.source_peer_type
+        or envelope.routing_peer_id != stream.source_peer_id
+    ):
+        return 0
+    state = session.get(TelegramAuthorizationUpdateState, stream.authorization_update_state_id)
+    if state is None or state.state != "live" or state.authorization_id != stream.authorization_id:
+        return 0
+    channel = (state.difference_cursor or {}).get("channels", {}).get(stream.source_peer_id, {})
+    if channel.get("status") not in {"live", "empty"} or channel.get("final") is not True:
+        return 0
+    return int(channel.get("pts") or 0)
 
 
 def _before_boundary(stream, item) -> bool:

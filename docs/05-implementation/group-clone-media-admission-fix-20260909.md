@@ -146,3 +146,12 @@ cb2dc7f4 Prepare34348843029期间读取原暂停Task首批消息：DifferenceMes
 PRD先按Telegram官方Updates协议补齐0计数语义，真实消费入口反例2 failed/5 passed；修复一处count<=0改为count<0，仍要求正pts和pts-count<=当前PTS。新增5例验证0/None已覆盖可消费、0/None未来PTS仍gap、负count拒绝。无cursor重置/阈值放宽/未知请求重放；发布候选必须包含该补丁并重新完整Prepare。
 
 补丁后Clone133项全部通过/31.75秒，60秒硬超时；静态未定义名及diff-check通过。原AI/评论12项仍为上一轮已通过证据，本次不涉及其代码。
+
+
+## 仅生命周期更新的完整 difference 证据
+
+对全部92条pending delivery只读推演，ingress748的UpdateDeleteChannelMessages为pts5605574/count0，超出Task5605573；仅同PTS放行不足。共享Collector快照明确记录同peer完成的channel difference（pts5605889/statuslive/finaltrue），而_task消费错误要求每一条恢复更新都有单独正计数。
+
+按PRD再次resync：count0可用已提交的同state/同peer完整channel difference证明覆盖，要求state live、status live/empty、finaltrue、completed PTS>=该event PTS；正计数缺口仍不豁免，游标仍按逐条实际event推进。独立helper验证envelope授权状态与peer、stream授权一致，不改任何持久历史记录或Collector游标。
+
+新增正式_apply_channel_batch→commit/expire→consume入口7例：旧代码1 failed/13 passed，补丁14 passed /4.04秒；覆盖complete、missing、otherpeer、slice、too_long、behind和state_gap。最终Clone140项27.82秒全通过，60秒硬超时；生产及测试静态未定义名和diff-check通过。cb2dc7f4的完整Prepare34348843029已success，eb514504的Prepare34349417309继续运行，但两者都不替代最终新候选的完整Prepare。
