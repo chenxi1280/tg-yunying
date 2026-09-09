@@ -3073,6 +3073,22 @@ def recover_pending_visibility_credits(session: Session, limit: int = 100) -> in
             closed += 1
             continue
         if visibility in {"post_send_intercepted", "not_visible"}:
+            recovery = None
+            if _fact_first_action(session, action):
+                recovery = _recover_fact_first_post_send_admission(
+                    session,
+                    action=action,
+                    target_peer=target_peer,
+                    remote_message_id=remote_id,
+                )
+                result = {
+                    **result,
+                    "post_send_admission_recovery_status": recovery.status,
+                    "post_send_admission_recovery_reason": recovery.reason,
+                }
+                action.result = result
+                if recovery.status == "retry":
+                    continue
             from .post_send_visibility import settle_visibility_observation
 
             settle_visibility_observation(
@@ -3163,6 +3179,36 @@ def _probe_post_send_visibility(
     if getattr(probe, "ok", False) and getattr(probe, "visible", None) is False:
         return "not_visible"
     return ""
+
+
+def _recover_fact_first_post_send_admission(
+    session: Session,
+    *,
+    action: Action,
+    target_peer: str,
+    remote_message_id: str,
+):
+    from .task_group_bot_admission_prompts import PostSendControlRecovery
+    from .task_group_bot_post_send_recovery import recover_post_send_interception
+
+    account = session.get(TgAccount, action.account_id) if action.account_id else None
+    if account is None or not target_peer:
+        return PostSendControlRecovery("blocked", "post_send_recovery_scope_missing")
+    try:
+        transport = _action_runtime_transport(session, action, account)
+    except Exception as exc:  # noqa: BLE001 - keep the visibility hold until transport recovers.
+        return PostSendControlRecovery(
+            "retry",
+            f"post_send_control_transport_failed:{type(exc).__name__}",
+        )
+    return recover_post_send_interception(
+        session,
+        action,
+        target_peer=target_peer,
+        remote_message_id=remote_message_id,
+        transport=transport,
+        fetcher=gateway.fetch_group_messages,
+    )
 
 
 def _post_send_visibility_target_peer(

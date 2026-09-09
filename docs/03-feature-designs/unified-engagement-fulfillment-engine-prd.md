@@ -3639,3 +3639,15 @@ Intake `intake-20260909-local-review-fixes`，L2。恢复 §19.2.2 和连续系�
 Intake `intake-20260909-ai-group-low-fulfillment`，L3/P1。用户要求修复并经真实生产检查达到各任务目标。当前仅 B1「失败消耗与诊断证据」完成本地实现：所有 realizer 解析/grounding 拒绝保留已返回 tokens；长度/标点错误复用现有规范化和分类函数记录字符数、目标/实际档位和候选 SHA-256，不含正文。既有质量耗尽结果累计每次拒绝消耗，保留末次证据。
 
 本变更不改变提示、纠错输入、尝试次数、质量判定或发送合同。旧话题容量、调度内存、传输和发送后可见性仍未修复闭环；自动等待/纠错为实施记录中的未实现提案。B1 的 69 项定向测试通过仅证明本地记账/诊断合同，尚未 CI、部署或生产验收，不能标记 production_fixed。详细状态及生产边界见 `docs/05-implementation/ai-group-low-fulfillment-repair-20260909.md`。
+
+### 19.72 断路账号隔离与 fact-first 发送后拦截恢复（2026-09-09）
+
+Intake `intake-20260909-ai-group-low-fulfillment`，L3/P1。生产只读复核确认当前低完成量还有两个独立缺口：账号/代理路由断路 900 秒时，未进 Gateway 的 coverage Action 虽可安全释放，但旧实现统一只回填 30 秒 `next_eligible_at`，同一账号随后反复占用前 20 个规划候选并重建；`fact_first_v3` 的正文取得远端 message id 后若被群管删除，旧恢复只撤销 legacy `GroupBotAdmission`，没有把同一 Task/account/group 的 `TaskGroupBotAdmission` 带回要求频道链。
+
+断路隔离合同：只要同 tenant 的账号、当前授权代理 route 或已观察出口任一 `ExecutionCircuitState.state != closed`，该账号必须在 SQL `LIMIT` 前从本轮 coverage 候选排除；不得删除、放弃或转派其账号级 coverage 义务，也不得借别的账号完成该账号覆盖。未进 Gateway Action 被安全释放时，`next_eligible_at` 必须使用当前阻塞域的真实 `opened_until` 或 half-open probe lease deadline，而不是固定 30 秒。独立探活关闭全部相关断路后账号自动恢复候选资格；其他已准入且无断路账号继续规划，单账号/单 route 故障不得阻塞同目标其余账号。
+
+发送后拦截合同：`fact_first_v3` 的可见性探针确定 `not_visible/post_send_intercepted` 后，必须先用该 Action 冻结的账号 transport、同一目标群、被删远端 message id 之后的 `control_only` 实时窗口做一次强归因恢复。合法来源须同时满足：发送者是 admin/owner bot 且 peer 非空；若 admission 已冻结 bot peer 则必须一致；正文明确收件人并唯一匹配当前账号的 `viewer_peer_id`、username 或 display name；存在至少一个可解析频道引用且每个引用都有同源公开 `t.me` URL；存在 callback 确认按钮。满足时对同一 `TaskGroupBotAdmission` 做 version CAS，写新 requirement fingerprint，物化 account-scoped `group_bot_channel_follow` 与 `group_bot_confirmation_button`，状态进入 `requirements_pending`。
+
+远端拉取异常时保持原 `pending_visibility` 占位并重试观察，不关闭 hold、不释放 coverage；成功拉取但来源错误、收件人模糊/未归属、缺频道 URL 或 callback 时，admission 进入 `post_send_intercepted`，停止后续正文且不自动重试发送。合法恢复后原 Action 仍以 intercepted 失败终结且无 credit；只有 follow、精确 callback 与 post-follow visibility 重新把 admission 变为 ready，后续 planner 才可为仍开放义务建立新 Action。任何路径都不得改写或重放原 Gateway identity。
+
+本轮不新增表、API 或前端字段。QA 必须覆盖：断路前缀大于 batch limit 仍选中后方健康账号；account/route/egress 三域和 open/half-open/probe-pending 均被排除；精确 wake deadline；断路关闭自动恢复；同账号管理员 bot 强归因成功；错误 bot、同名歧义、viewer 不匹配、缺 URL/callback 和拉取异常；原 Action/remote id 不重放、coverage 只在合法状态释放。`design_status=complete`，发布仍须 master→release→Actions，并以 10 个运行任务各自的 ledger/Action/Attempt/typed remote fact 验收。

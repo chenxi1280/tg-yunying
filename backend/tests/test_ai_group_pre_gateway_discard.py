@@ -1,5 +1,5 @@
 """An uncalled blocked speaker must release its slot for other speakers."""
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 from sqlalchemy import create_engine
@@ -78,6 +78,19 @@ def test_normal_pacing_wait_is_not_discarded(rows):
         RuntimeResourceBlocked("pacing_source_not_before", "test"))
     assert action.status == "pending"
     assert coverage.reserved_action_id == action.id
+
+
+def test_circuit_discard_uses_blocking_domain_deadline(rows):
+    session, action, attempt, coverage = rows
+    dispatcher._defer_engagement_resource_attempt(
+        action,
+        attempt,
+        RuntimeResourceBlocked("execution_circuit_open", "test", 900),
+    )
+    session.flush()
+    session.refresh(coverage)
+
+    assert coverage.next_eligible_at == NOW + timedelta(seconds=900)
 
 
 def test_finalizer_records_nonexecution_and_keeps_obligation_open(rows):

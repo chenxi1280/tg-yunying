@@ -8,10 +8,12 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.models import (
+    AccountProxyBinding, ExecutionCircuitState, ExecutionResiliencePolicyRevision,
     OperationTarget, Task, TaskAccountDailyCoverage, TaskMembershipAdmissionItem,
     Tenant, TgAccount, TgGroup, TgGroupAccount,
 )
 from app.services.task_center import channel_membership
+from app.services.task_center.ai_group_circuit_eligibility import blocked_coverage_account_ids
 from app.services.task_center.executors import group_ai_chat
 
 
@@ -83,6 +85,78 @@ def test_admitted_speaker_after_full_rejected_prefix_is_selected(session, monkey
 def test_empty_admission_selects_no_speaker_without_widening_scope(session, monkeypatch):
     task, group, _target = _seed(session)
     assert _candidate_rows(session, task, group, admitted=[], monkeypatch=monkeypatch) == []
+
+
+def test_circuit_blocked_prefix_is_filtered_before_batch_limit(session, monkeypatch):
+    task, group, _target = _seed(session, prefix_state="ready")
+    policy = ExecutionResiliencePolicyRevision(tenant_id=1)
+    session.add(policy)
+    session.flush()
+    for account_id in range(1, READY_ACCOUNT_ID):
+        session.add(ExecutionCircuitState(
+            tenant_id=1,
+            resilience_policy_revision_id=policy.id,
+            domain_kind="account",
+            domain_key=f"account:{account_id}",
+            state="open",
+            opened_until=NOW + timedelta(minutes=15),
+        ))
+    session.commit()
+
+    rows = _candidate_rows(
+        session,
+        task,
+        group,
+        admitted=list(range(1, READY_ACCOUNT_ID + 1)),
+        monkeypatch=monkeypatch,
+    )
+
+    assert [row.account_id for row in rows] == [READY_ACCOUNT_ID]
+
+
+def test_all_circuit_domains_block_and_closed_domains_restore(session):
+    task, _group, _target = _seed(session, prefix_state="ready")
+    policy = ExecutionResiliencePolicyRevision(tenant_id=1)
+    session.add(policy)
+    session.flush()
+    for account_id, proxy_id, exit_ip in ((1, 101, "1.1.1.1"), (2, 102, "2.2.2.2")):
+        account = session.get(TgAccount, account_id)
+        account.proxy_id = proxy_id
+        session.add(AccountProxyBinding(
+            tenant_id=1,
+            account_id=account_id,
+            proxy_id=proxy_id,
+            observed_exit_ip=exit_ip,
+        ))
+    session.add_all([
+        ExecutionCircuitState(
+            tenant_id=1, resilience_policy_revision_id=policy.id,
+            domain_kind="proxy_route", domain_key="proxy:101", state="open",
+            opened_until=NOW + timedelta(minutes=15),
+        ),
+        ExecutionCircuitState(
+            tenant_id=1, resilience_policy_revision_id=policy.id,
+            domain_kind="proxy_egress", domain_key="exit:2.2.2.2", state="half_open",
+            probe_lease_until=NOW + timedelta(minutes=1),
+        ),
+        ExecutionCircuitState(
+            tenant_id=1, resilience_policy_revision_id=policy.id,
+            domain_kind="account", domain_key="account:3", state="open",
+            opened_until=NOW - timedelta(seconds=1),
+        ),
+        ExecutionCircuitState(
+            tenant_id=1, resilience_policy_revision_id=policy.id,
+            domain_kind="account", domain_key="account:4", state="closed",
+        ),
+    ])
+    session.commit()
+
+    assert blocked_coverage_account_ids(session, task) == {1, 2, 3}
+
+    for circuit in session.scalars(select(ExecutionCircuitState)):
+        circuit.state = "closed"
+    session.flush()
+    assert blocked_coverage_account_ids(session, task) == set()
 
 
 def test_empty_membership_batch_does_not_block_existing_ready_speaker(session, monkeypatch):
@@ -169,4 +243,3 @@ def test_finalize_generation_schedule_retains_partial_items_on_shortfall():
         assert len(sched_times) == 2
         assert task.stats["pacing_schedule_shortfall"]["scheduled"] == 2
         assert task.stats["pacing_schedule_shortfall"]["requested"] == 3
-

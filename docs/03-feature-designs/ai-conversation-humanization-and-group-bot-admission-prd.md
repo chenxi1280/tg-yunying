@@ -333,12 +333,14 @@ not_joined -> joining
 | 开始条件 | Gateway 返回非空 `remote_message_id`；Attempt 可先记调用边界成功，但 Action 进入 **`pending_visibility`（待可见性核验）** 子态，**不算**已确认业务成功 |
 | 手段 | 无正文：同群增量监听或按 message id 查询；禁止再发第二条试探 |
 | 成功 | 到达完整核验窗口后按精确 message id 仍可见，才写 `visible_confirmed`，并允许覆盖确认与 **正式** hard-hourly credit（见 §5.8.1 / §5.8.3）；窗口内瞬时可见不得提前成功 |
-| 拦截 | 可信 bot 删除/拒绝，或可靠证明不存在 → `post_send_intercepted`：撤回 ready、停止该账号后续未进 Gateway action、覆盖/硬小时**不计**成功、**不**自动关注重发；该 Action **明确失败**，不占 `planning_reservation`；可在准入重新 ready 后由下一 tick 受控重建**新** Action；若永久无法 ready 见 §5.8.2 |
+| 拦截 | 可信 bot 删除/拒绝，或可靠证明不存在 → `post_send_intercepted`：撤回 ready、停止该账号后续未进 Gateway action、覆盖/硬小时**不计**成功、**不重发原 Action**；仅可按下文“同账号实时强归因”物化准入 follow/callback，该 Action 仍明确失败且不占 `planning_reservation`；准入重新 ready 后由下一 tick 受控重建**新** Action；若永久无法 ready 见 §5.8.2 |
 | 未知 | 核验窗口内无法判定 → 保持 / 转入 `unknown_after_send`，占位语义见 §5.8.1 |
 | 核验窗口 | 默认 `post_send_visibility_window_seconds=90`（60–180 可目标覆盖）；窗口结束仍未知 → 保持 unknown + 告警，走 continuity 人工/只读裁决，**无**超时当成功/失败 |
 | 人工/只读核验 | 与 continuity unknown 裁决入口复用：确认可见则落正式 credit；确认未发送/已删则按证据记失败或 `post_send_intercepted` |
 
 空/无证据 admission 的兼容探针一旦确认不可见，必须把该账号 admission 写为 `post_send_intercepted`，后续正文进入准入门禁，不得继续逐条试发。listener 若同时观察到 unknown-role bot 的频道要求，只能在以下证据全部成立时把它提升为受限的 `post_send_intercept_rule`：同一 bot peer 至少两条不同 source message；频道 URL 集合和 callback 位置/文本签名完全相同；正文是明确“关注/订阅后发言”控制语义；当前同群存在尚未关闭的 `pending_visibility`，且 bot 消息 ID 在被观察正文之后、创建时间不超过该任务最大 180 秒核验窗口。该信任只用于当前 group 的运行中 membership scope，必须保留 bot peer、两条 source message 与 pending Action/remote id 证据；普通推广、单条提示、无 callback、无开放 hold 或顺序不成立时仍只审计。
+
+`fact_first_v3` 另允许一条不依赖旧 fuzzy listener 的账号级恢复路径：精确可见性探针已证明正文不可见后，恢复器使用原 Action 的账号 transport，从同一群读取被删 message id 之后的实时 `control_only` 窗口。单条控制提示只有在 admin/owner bot peer 非空、与 admission 已冻结 bot peer 不冲突、明确收件人唯一命中当前 viewer peer/username/display name、至少一个频道引用均有同源公开 URL、且存在 callback 时，才可对同一 `TaskGroupBotAdmission` 做 version CAS 并物化 follow/callback。拉取异常保持 pending hold；错误 bot、无/模糊收件人、缺 URL/callback 进入 `post_send_intercepted`，不放行新正文。该路径只恢复准入，不确认原正文、不复用其 remote id，也不把 follow 成功等价为消息成功。
 
 #### 5.8.1 「待可见性核验」与 `planning_reservation`（P0，强制）
 

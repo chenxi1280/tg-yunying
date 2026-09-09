@@ -106,7 +106,7 @@ def _assert_circuit_available(
         egress_key=proxy_egress_key,
     )
     if blocker is not None:
-        raise RuntimeResourceBlocked(blocker[0], blocker[1], 30)
+        raise RuntimeResourceBlocked(blocker[0], blocker[1], blocker[2])
 
 
 def _assert_negative_outcome_circuit(

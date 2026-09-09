@@ -60,3 +60,13 @@ B1 `design_status=complete`、`resync=true`，仅 B1 进入 dev。A 和 B 的自
 `compileall`、`git diff --check` 和修改范围的文件/函数长度检查通过；新模块 31 行、新回归 126 行、既有入口 480 行，本次修改函数 41 个非空行。结构索引与数据流索引已同步。B1 只修复失败消耗传递和无正文诊断，未证明模型质量或发送量改善。
 
 未执行 CI、发布或生产数据修改；生产目标仍未达到。A 及 B 的自动纠错、C/D/E 未关闭，不能将本分支视为全部问题修复完成或可直接发布的 Release Gate。
+
+## 2026-09-09 断路隔离与发送后拦截恢复增量
+
+13:24–13:41 北京时间只读生产复核：10 个运行任务当日 due 8,238、typed confirmed 78；10 个 account circuit 与 21 个 proxy-route circuit 反复处于 open/half-open。数据库代理健康标签不代表 Telegram 可用：代理 1、20、48、52、58 的原绑定账号在 5/10 秒与部分 15/25 秒受控健康探针均于 MTProto 建连阶段超时；当前 37 个 `tgyunying-mihomo-*` 容器通过 SOCKS5H 访问独立 HTTPS 出口全部失败。该结果证明代理上游/节点基础设施当前不可用，不证明账号 Session 失效。
+
+代码缺口已反查为：断路错误总用 30 秒释放 coverage，导致 900 秒 open 期间同一义务反复重建；coverage 候选只在 SQL `LIMIT` 前过滤 membership admission，未过滤 runtime circuit；fact-first 可见性恢复只处理 legacy admission，导致 33 条已确认 `post_send_intercepted` 不能进入 Task-scoped follow/callback 链。对应产品合同已补入统一引擎 §19.72 与真人化 §5.8。
+
+开发交接固定为两个最小模块：`ai_group_circuit_eligibility.py` 只读生成 account/route/egress 非 closed 的账号集合并在候选 limit 前应用，`engagement_runtime_circuit` 向调用方返回真实 wake deadline；`task_group_bot_post_send_recovery.py` 只对同账号实时强归因窗口恢复同一 Task admission。生产代理恢复须另走现有受审计 preview/apply/readback，先从当前订阅构造隔离 Mihomo candidate 并真实出口探测；在候选全失败时不得清断路器、直连或换绑。
+
+实现后定向 QA 覆盖 19 个 admission/coverage/circuit/visibility 文件：254 passed、3 个既有 SQLite 表达式索引反射 warning，38.29 秒；`ruff check` 对本次改动模块和回归全通过，`compileall`、`git diff --check` 通过。新增模块分别 86/111 行，本次修改函数均不超过 50 行。上述结果只证明本地合同，不替代 CI、部署 SHA、运行健康或 Telegram typed remote fact。

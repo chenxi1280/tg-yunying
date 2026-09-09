@@ -57,3 +57,31 @@ def test_circuit_gate_returns_typed_blocker_for_database_aware_time(monkeypatch,
     blocker = circuits.circuit_blocker(None, tenant_id=1, account_id=11, route_key="", egress_key="")
 
     assert blocker[0] == ("execution_circuit_probe_pending" if expired else "execution_circuit_open")
+
+
+def test_circuit_gate_waits_for_latest_blocking_domain_deadline(monkeypatch):
+    deadlines = {
+        "account": NOW + timedelta(seconds=20),
+        "proxy_route": NOW + timedelta(seconds=500),
+        "proxy_egress": NOW + timedelta(seconds=100),
+    }
+    monkeypatch.setattr(circuits, "_now", lambda: NOW)
+    monkeypatch.setattr(
+        circuits,
+        "_locked_state",
+        lambda *_args, **kwargs: SimpleNamespace(
+            state="open",
+            opened_until=deadlines[kwargs["kind"]],
+            probe_lease_until=None,
+        ),
+    )
+
+    blocker = circuits.circuit_blocker(
+        None,
+        tenant_id=1,
+        account_id=11,
+        route_key="proxy:1",
+        egress_key="exit:1",
+    )
+
+    assert blocker[2] == 500

@@ -19,6 +19,7 @@ from app.models import (
     PostSendVisibilityObservation,
     Task,
     TaskAccountDailyCoverage,
+    TaskGroupBotAdmission,
     TaskMembershipAdmissionItem,
     Tenant,
     TgAccount,
@@ -37,6 +38,7 @@ from app.services.task_center.group_bot_admission import (
     mark_channel_follow_completed,
     mark_visible_confirmed,
 )
+from app.services.task_center.task_group_bot_admission_prompts import PostSendControlRecovery
 
 
 pytestmark = pytest.mark.no_postgres
@@ -520,6 +522,67 @@ def test_pending_visibility_intercept_uses_storage_safe_hold_status(monkeypatch)
         assert action.status == "failed"
         assert action.result["error_code"] == "post_send_intercepted"
         assert admission.state == "post_send_intercepted"
+
+
+def test_fact_first_intercept_keeps_visibility_hold_when_control_fetch_retries(monkeypatch) -> None:
+    with _session() as session:
+        _seed_scope(session)
+        task = session.get(Task, "task-ai")
+        task.fulfillment_contract_version = "fact_first_v3"
+        task.type_config = {**task.type_config, "engagement_contract_version": "unified_engagement_v1"}
+        action = session.get(Action, "send-1")
+        action.status = "unknown_after_send"
+        admission = TaskGroupBotAdmission(
+            id="task-admission-retry",
+            tenant_id=1,
+            task_id=task.id,
+            account_id=11,
+            target_group_id=7,
+            state="ready",
+            no_prompt_pass_at=datetime.now(timezone.utc),
+            surface_identity_hash="a" * 64,
+            surface_identity={},
+        )
+        action.payload = {**action.payload, "task_group_bot_admission_id": admission.id}
+        hold = PendingVisibilityCredit(tenant_id=1, action_id=action.id, remote_message_id="600")
+        session.add_all([admission, hold])
+        session.flush()
+        hold.created_at = datetime.now(timezone.utc) - timedelta(seconds=100)
+        monkeypatch.setattr(dispatcher, "_probe_post_send_visibility", lambda *_a, **_kw: "not_visible")
+        monkeypatch.setattr(
+            dispatcher,
+            "_recover_fact_first_post_send_admission",
+            lambda *_a, **_kw: PostSendControlRecovery("retry", "transport_failed"),
+        )
+
+        assert recover_pending_visibility_credits(session) == 0
+        assert hold.status == "open"
+        assert action.status == "unknown_after_send"
+        assert action.result["post_send_admission_recovery_status"] == "retry"
+
+
+def test_fact_first_intercept_closes_original_after_strict_recovery(monkeypatch) -> None:
+    with _session() as session:
+        _seed_scope(session)
+        task = session.get(Task, "task-ai")
+        task.fulfillment_contract_version = "fact_first_v3"
+        action = session.get(Action, "send-1")
+        action.status = "unknown_after_send"
+        hold = PendingVisibilityCredit(tenant_id=1, action_id=action.id, remote_message_id="600")
+        session.add(hold)
+        session.flush()
+        hold.created_at = datetime.now(timezone.utc) - timedelta(seconds=100)
+        monkeypatch.setattr(dispatcher, "_probe_post_send_visibility", lambda *_a, **_kw: "not_visible")
+        monkeypatch.setattr(
+            dispatcher,
+            "_recover_fact_first_post_send_admission",
+            lambda *_a, **_kw: PostSendControlRecovery("matched", "strict_same_view_prompt", "601"),
+        )
+
+        assert recover_pending_visibility_credits(session) == 1
+        assert hold.status == "intercepted"
+        assert action.status == "failed"
+        assert action.result["post_send_admission_recovery_status"] == "matched"
 
 
 def test_unified_comment_waits_for_visibility_before_confirming_obligation(

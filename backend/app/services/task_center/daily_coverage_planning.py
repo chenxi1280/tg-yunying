@@ -54,19 +54,23 @@ def ready_coverage_plan_batch(
     exclude_account_ids: set[int] | None = None,
     admissible_account_ids: set[int] | None = None,
 ) -> CoveragePlanBatch:
+    from .ai_group_circuit_eligibility import blocked_coverage_account_ids
+
     timestamp = now or _now()
     batch_limit = min(MAX_DAILY_COVERAGE_PLAN_BATCH, max(1, int(limit)))
+    runtime_blocked = blocked_coverage_account_ids(session, task)
+    excluded = set(exclude_account_ids or ()) | runtime_blocked
     if task.fulfillment_contract_version == "fact_first_v3":
         rows = _ready_rows_without_cursor(
             session, task, timestamp=timestamp, limit=batch_limit,
-            exclude_account_ids=exclude_account_ids,
+            exclude_account_ids=excluded,
             admissible_account_ids=admissible_account_ids,
         )
         return CoveragePlanBatch(rows=rows, wrapped=False)
     cursor = _locked_cursor(session, task, timestamp)
     rows = _ready_rows_after_cursor(
         session, task, cursor, timestamp=timestamp, limit=batch_limit,
-        exclude_account_ids=exclude_account_ids,
+        exclude_account_ids=excluded,
         admissible_account_ids=admissible_account_ids,
     )
     if rows or not cursor.last_coverage_id:
@@ -74,7 +78,7 @@ def ready_coverage_plan_batch(
     _rewind_cursor(cursor, timestamp)
     rows = _ready_rows_after_cursor(
         session, task, cursor, timestamp=timestamp, limit=batch_limit,
-        exclude_account_ids=exclude_account_ids,
+        exclude_account_ids=excluded,
         admissible_account_ids=admissible_account_ids,
     )
     return CoveragePlanBatch(rows=rows, wrapped=True)

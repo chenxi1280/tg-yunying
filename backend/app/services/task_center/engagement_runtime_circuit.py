@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from math import ceil
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -40,17 +41,42 @@ def circuit_blocker(
     account_id: int,
     route_key: str,
     egress_key: str,
-) -> tuple[str, str] | None:
+) -> tuple[str, str, int] | None:
+    blockers: list[tuple[str, str, int]] = []
     for kind, key in _domain_keys(account_id, route_key, egress_key):
         state = _locked_state(session, tenant_id, kind=kind, key=key)
         if state is None or state.state == "closed":
             continue
         if state.state == "half_open":
-            return "execution_circuit_half_open", f"{kind} 熔断探活调用仍在执行"
+            blockers.append((
+                "execution_circuit_half_open",
+                f"{kind} 熔断探活调用仍在执行",
+                _deadline_retry_seconds(state.probe_lease_until),
+            ))
+            continue
         if state.opened_until and as_beijing(state.opened_until) > as_beijing(_now()):
-            return "execution_circuit_open", f"{kind} 熔断至 {state.opened_until.isoformat()}"
-        return "execution_circuit_probe_pending", f"{kind} 熔断等待独立健康探测"
-    return None
+            blockers.append((
+                "execution_circuit_open",
+                f"{kind} 熔断至 {state.opened_until.isoformat()}",
+                _deadline_retry_seconds(state.opened_until),
+            ))
+            continue
+        blockers.append((
+            "execution_circuit_probe_pending",
+            f"{kind} 熔断等待独立健康探测",
+            30,
+        ))
+    if not blockers:
+        return None
+    code, detail, _retry = blockers[0]
+    return code, detail, max(item[2] for item in blockers)
+
+
+def _deadline_retry_seconds(deadline: datetime | None) -> int:
+    if deadline is None:
+        return 30
+    remaining = (as_beijing(deadline) - as_beijing(_now())).total_seconds()
+    return max(1, int(ceil(remaining)))
 
 
 def record_unknown(

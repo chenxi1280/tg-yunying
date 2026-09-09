@@ -74,6 +74,8 @@ def evaluate_task_admission(
         return _decision(admission, True, "c2_ready")
     if admission.state == "requirements_pending":
         return _requirements_decision(session, admission)
+    if admission.state == "post_send_intercepted":
+        return _decision(admission, False, "c2_post_send_intercepted")
     if admission.state == "abandoned":
         return _abandoned_admission_decision(session, admission)
     if admission.observation_gap:

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import dataclass
 
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.models import Task, TaskGroupBotAdmission, TgAccount
@@ -11,6 +12,7 @@ from app.services._common import _now
 from .task_group_bot_admission_facts import record_fact
 from .task_group_bot_admission_surface import fact_hash
 from .group_bot_admission import (
+    attribute_prompt_to_account,
     confirmation_button,
     is_group_bot_control_prompt,
     parse_channel_refs,
@@ -25,6 +27,131 @@ from .payloads import (
 
 
 OBSERVATION_SECONDS = 30
+
+
+@dataclass(frozen=True)
+class PostSendControlRecovery:
+    status: str
+    reason: str
+    source_message_id: str = ""
+
+
+def record_post_send_control_facts(
+    session: Session,
+    admission: TaskGroupBotAdmission,
+    messages: list,
+) -> PostSendControlRecovery:
+    candidates = _task_group_candidate_accounts(session, admission)
+    last_reason = "post_send_control_missing"
+    for message in messages:
+        reason = _strict_post_send_rejection(admission, message, candidates)
+        if reason:
+            last_reason = reason
+            continue
+        message_id = str(getattr(message, "remote_message_id", "") or "")
+        content = str(getattr(message, "content", "") or "")
+        controls = tuple(getattr(message, "control_buttons", ()) or ())
+        bot_peer_id = str(getattr(message, "sender_peer_id", "") or "")
+        task = session.get(Task, admission.task_id)
+        if task is None or not _materialize_task_requirements(
+            session,
+            task=task,
+            admission=admission,
+            message_id=message_id,
+            content=content,
+            controls=controls,
+            bot_peer_id=bot_peer_id,
+        ):
+            return PostSendControlRecovery("retry", "c2_observation_version_conflict")
+        _record_post_send_control_fact(session, admission, message)
+        return PostSendControlRecovery("matched", "strict_same_view_prompt", message_id)
+    return PostSendControlRecovery("blocked", last_reason)
+
+
+def _task_group_candidate_accounts(
+    session: Session,
+    admission: TaskGroupBotAdmission,
+) -> list[TgAccount]:
+    return list(session.scalars(
+        select(TgAccount)
+        .join(TaskGroupBotAdmission, TaskGroupBotAdmission.account_id == TgAccount.id)
+        .where(
+            TaskGroupBotAdmission.tenant_id == admission.tenant_id,
+            TaskGroupBotAdmission.task_id == admission.task_id,
+            TaskGroupBotAdmission.target_group_id == admission.target_group_id,
+            TaskGroupBotAdmission.state != "abandoned",
+        )
+        .distinct()
+    ))
+
+
+def _strict_post_send_rejection(
+    admission: TaskGroupBotAdmission,
+    message,
+    candidates: list[TgAccount],
+) -> str:
+    message_id = str(getattr(message, "remote_message_id", "") or "").strip()
+    bot_peer_id = str(getattr(message, "sender_peer_id", "") or "").strip()
+    if not message_id:
+        return "post_send_control_message_id_missing"
+    sender_role = str(getattr(message, "sender_role", ""))
+    if not getattr(message, "is_bot", False) or sender_role not in {"admin", "owner"}:
+        return "post_send_control_source_untrusted"
+    if not bot_peer_id or not _expected_bot_matches(admission, bot_peer_id):
+        return "post_send_control_bot_mismatch"
+    content = str(getattr(message, "content", "") or "")
+    controls = tuple(getattr(message, "control_buttons", ()) or ())
+    if not is_group_bot_control_prompt(content, controls):
+        return "post_send_control_semantics_missing"
+    if confirmation_button(controls) is None:
+        return "post_send_control_callback_missing"
+    refs = parse_channel_refs(content, controls)
+    if not refs or any(not source_channel_url_for_ref(controls, ref, content) for ref in refs):
+        return "post_send_control_channel_url_missing"
+    return _recipient_rejection(admission, message, candidates)
+
+
+def _expected_bot_matches(admission: TaskGroupBotAdmission, bot_peer_id: str) -> bool:
+    identity = admission.surface_identity if isinstance(admission.surface_identity, dict) else {}
+    expected = str(identity.get("requirement_bot_peer_id") or "").strip()
+    return not expected or expected == bot_peer_id
+
+
+def _recipient_rejection(
+    admission: TaskGroupBotAdmission,
+    message,
+    candidates: list[TgAccount],
+) -> str:
+    account_id, attribution = attribute_prompt_to_account(
+        text=str(getattr(message, "content", "") or ""),
+        waiting_account_ids=[int(item.id) for item in candidates],
+        account_usernames={int(item.id): str(item.username or "") for item in candidates},
+        account_display_names={int(item.id): str(item.display_name or "") for item in candidates},
+        account_peer_ids={
+            int(admission.account_id): str(getattr(message, "viewer_peer_id", "") or "")
+        },
+    )
+    if account_id != int(admission.account_id):
+        return f"post_send_control_{attribution}"
+    if attribution not in {"explicit_recipient_match", "text_match"}:
+        return f"post_send_control_{attribution}"
+    return ""
+
+
+def _record_post_send_control_fact(
+    session: Session,
+    admission: TaskGroupBotAdmission,
+    message,
+) -> None:
+    record_fact(session, admission, "dynamic_channel_follow", outcome={
+        "recovery_source": "post_send_same_view",
+        "remote_message_id": str(getattr(message, "remote_message_id", "") or ""),
+        "sender_peer_id": str(getattr(message, "sender_peer_id", "") or ""),
+        "source_fingerprint": source_fingerprint(message),
+        "content_hash": hashlib.sha256(
+            str(getattr(message, "content", "") or "").encode()
+        ).hexdigest(),
+    })
 
 
 def record_control_facts(
@@ -252,4 +379,9 @@ def _source_fingerprint_values(
     ).hexdigest()
 
 
-__all__ = ["record_control_facts", "source_fingerprint"]
+__all__ = [
+    "PostSendControlRecovery",
+    "record_control_facts",
+    "record_post_send_control_facts",
+    "source_fingerprint",
+]
