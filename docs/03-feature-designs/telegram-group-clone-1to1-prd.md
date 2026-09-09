@@ -1090,3 +1090,10 @@ QA必须从实际 _plan_due_task_batch 入口，在超过旧global阈值且生�
 入口回归反向检查补充：生产autoflush=False时，每条成功消费的delivery及SourceEvent须在同一事务显式flush，使下一条重投去重、live判断与随后物化都读到当前进度；不提前commit，失败仍整批事务回滚。QA同时验证一个入口周期形成Action以及同批重复事件只形成一条领域事件/义务。
 
 同一真实入口随后复现物化循环读取到尚未flush的observed义务，重复建立同义务Action并撞唯一键；每次物化结果也必须在继续查询下一义务前flush，保持单一Action唯一约束，不以捕获/忽略唯一键错误代替正确状态推进。
+
+
+### 2026-09-09 已覆盖 PTS 的零计数更新
+
+只读生产样本：原Task首条DifferenceMessages为pts5605573/count5，恰接start5605568；下一UpdateDeleteChannelMessages为同pts5605573/count=null（adapter将0归一为None），涉及起始边界以前消息。现有count<=0直接判gap，甚至未进入边界skip。
+
+`design_status=complete/resync=true`：遵循[Telegram Updates协议](https://core.telegram.org/api/updates)，无计数按0处理；既有连续性式pts-count<=当前channel_pts仍必须成立，且pts必须为正、count不得为负。零/空count仅可消费已被当前PTS覆盖的事件，不允许以0跨越未来PTS缺口；不手改游标、不删除durable记录。QA用真实消费入口覆盖0/None同PTS、0/None未来PTS仍gap、负count拒绝，结合正式Planner入口回归。

@@ -137,3 +137,12 @@ PRD和两索引先补独立合同路由，仅type=group_clone且持久版本v2_g
 新增5项真实入口/合同边界测试通过4.21秒，含同批重复来源事件只能生成一个SourceEvent和typed obligation/Action。初次测试夹具误用dataclass.model_copy已修正为replace，不算产品故障。保持原发送准入、Sequencer、权限及unknown阻塞，无迁移或配置修改。
 
 定向QA：Clone128项+AI/评论共享流12项，140 passed /24.04秒，backend/.venv、60秒硬超时；新增测试ruff F、生产静态未定义名、git diff-check通过。既有materializer未使用导入未扩大清理。Release Gate：仅上述Planner合同路由/事务可见性及对应文档测试，无schema/配置/前端变化，未知发送不重放；完整Prepare通过后按master→release→Deploy发布，再同Task Resume及Telegram独立读回。
+
+
+## 发布等待时零计数 PTS 反向检查
+
+cb2dc7f4 Prepare34348843029期间读取原暂停Task首批消息：DifferenceMessages pts5605573/count5从start5605568合法推进，紧随的UpdateDeleteChannelMessages pts5605573/count=null。adapter明确把Telegram计数0映射为None；旧连续性函数却要求正count，必然在边界跳过前报gap。仅以此持久记录和源码确认风险，未把预测写为已实际运行失败。
+
+PRD先按Telegram官方Updates协议补齐0计数语义，真实消费入口反例2 failed/5 passed；修复一处count<=0改为count<0，仍要求正pts和pts-count<=当前PTS。新增5例验证0/None已覆盖可消费、0/None未来PTS仍gap、负count拒绝。无cursor重置/阈值放宽/未知请求重放；发布候选必须包含该补丁并重新完整Prepare。
+
+补丁后Clone133项全部通过/31.75秒，60秒硬超时；静态未定义名及diff-check通过。原AI/评论12项仍为上一轮已通过证据，本次不涉及其代码。

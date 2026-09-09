@@ -156,3 +156,16 @@ def _write_ingress(session, state, ingress):
         owner_id=state.owner_id,
         owner_fencing_epoch=state.owner_fencing_epoch,
     )
+
+
+@pytest.mark.parametrize("count,pts,consumed", [(0, 100, 1), (None, 100, 1), (0, 101, 0), (None, 101, 0), (-1, 100, 0)])
+def test_zero_count_update_must_already_be_covered(clone_ingress_session, count, *, pts, consumed):
+    from dataclasses import replace
+    session, state = clone_ingress_session
+    task = session.get(Task, "clone-ingress-task")
+    ingress = replace(_ingress("zero-count", message_id=11, pts=pts), pts_count_evidence=count)
+    _write_ingress(session, state, ingress)
+    assert consume_clone_deliveries(session, task) == consumed
+    stream = session.scalar(select(CloneSourceStreamState).where(CloneSourceStreamState.task_id == task.id))
+    assert stream.channel_pts == 100
+    assert stream.state == ("live" if consumed else "gap")

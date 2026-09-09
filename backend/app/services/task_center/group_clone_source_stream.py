@@ -254,7 +254,7 @@ def _promote_live_if_caught_up(session, task, stream) -> None:
 def _pts_continuous(stream, envelope) -> bool:
     pts = int(envelope.pts_evidence or 0)
     count = int(envelope.pts_count_evidence or 0)
-    if pts <= 0 or count <= 0:
+    if pts <= 0 or count < 0:
         return False
     return pts - count <= int(stream.channel_pts or 0)
 
