@@ -1602,3 +1602,5 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 - 2026-09-09：`realizer_rejection_evidence.py` 复用 MessageBrief 的规范化及分类函数，生成不含正文的形状拒绝证据；`two_stage_generation._realize_draft` 保留解析/grounding 拒绝的 tokens。回归 `test_realizer_rejection_accounting.py`。仅本地 B1 诊断/记账修复，未部署；详见低完成量实施记录。
 
 - 群克隆启动阶段：`group_clone_start_worker.py` 在listener Collector之后按Task独立事务建立起始boundary并唤醒Planner；Planner pending激活跳过Clone，避免其远端I/O禁令与起始读取冲突。
+
+- 2026-09-09 E4报告完整性：`.github/scripts/task_fulfillment_e4_diagnostics.py` 保留CLI入口；`production_e4_attempts.py`读取执行回执，`production_e4_group.py`读取全量历史、分组/全量去重账号和精确关联的发布后typed消息事实，`production_e4_blockers.py`判定验收缺口。成功Attempt不再替代消息事实，unified必达分母保留abandoned，legacy保持动态active必达口径。测试`test_production_e4_reporting_integrity.py`及原E4测试；合同见`docs/03-feature-designs/production-e4-reporting-integrity-prd.md`。仅诊断读模型，无执行状态或发送行为变更；独立分支本地验证，未部署。

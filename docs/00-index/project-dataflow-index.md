@@ -1649,3 +1649,5 @@ legacy-only A 冷启动分支固定为 `frozen legacy A -> 原 A Session 只读 
 - 2026-09-09 B1：Provider 返回 payload/tokens → realizer 解析或 grounding 拒绝 → TwoStageRealizeError 保留 tokens，形状拒绝附带计数/档位/hash → 既有 SlotGenerationResult.evaluator_evidence 与质量耗尽累计消耗。证据不进入后续纠错提示、不含正文；无表结构、状态机或发送行为变更。当前仅本地验证，见 `docs/05-implementation/ai-group-low-fulfillment-repair-20260909.md`。
 
 - Clone启动数据流：pending/start_from_now → listener Collector → 每Task锁定并读取Telegram起始boundary → stream/subscription/running/PlannerWake同事务提交 → Planner物化；Planner不执行boundary RPC，失败保留start_failed及零发送事实。
+
+- 2026-09-09 E4统计：同tenant/Task/ledger全量coverage（含abandoned/unknown）→历史总数、按unified/legacy合同的必达数、记录数与独立去重账号数分列；Action/Attempt回执→同身份及发布时间的remote_message_observed精确关联→按Action去重→E4消息证据判定。unified历史分母不随账号冻结或当前可执行性缩小，legacy动态scope保留，回执不冒充业务事实；全流程只读。合同`docs/03-feature-designs/production-e4-reporting-integrity-prd.md`，独立分支本地验证，未部署。
