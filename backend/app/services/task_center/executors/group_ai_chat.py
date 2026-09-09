@@ -4320,10 +4320,6 @@ def _coverage_candidate_rows(
     opportunity = ensure_natural_opportunity_plan(
         session, task, ledger, group=group, required_units=required_units,
     )
-    if opportunity.guaranteed_now_capacity > 0:
-        return rows[:opportunity.guaranteed_now_capacity]
-    if (task.type_config or {}).get("idle_continuation_enabled", True):
-        return rows[:max(1, required_units)]
     return rows[:opportunity.guaranteed_now_capacity]
 
 

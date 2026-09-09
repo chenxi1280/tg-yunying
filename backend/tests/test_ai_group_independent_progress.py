@@ -124,8 +124,14 @@ def test_idle_continuation_decision_falls_back_to_task_creation(session):
     assert decision["next_run_at"] is not None
 
 
-def test_coverage_candidate_rows_fallback_when_opportunity_capacity_zero(session, monkeypatch):
+@pytest.mark.parametrize("idle_enabled", [None, True, False])
+@pytest.mark.parametrize("required_units", [0, 1])
+def test_zero_opportunity_capacity_never_returns_candidates(
+    session, monkeypatch, *, idle_enabled, required_units,
+):
     task, group, _target = _seed(session)
+    if idle_enabled is not None:
+        task.type_config = {**task.type_config, "idle_continuation_enabled": idle_enabled}
     monkeypatch.setattr(group_ai_chat, "_portfolio_coverage_rows", lambda _s, _t, **kw: kw["rows"])
     monkeypatch.setattr(group_ai_chat, "ensure_natural_opportunity_plan",
         lambda *_a, **_kw: SimpleNamespace(guaranteed_now_capacity=0))
@@ -133,9 +139,8 @@ def test_coverage_candidate_rows_fallback_when_opportunity_capacity_zero(session
         group=group, ledger=SimpleNamespace(id="day"), target=SimpleNamespace(id="target"),
         participation=SimpleNamespace(selected_account_ids=[READY_ACCOUNT_ID]),
         admission=SimpleNamespace(admissible_account_ids=[READY_ACCOUNT_ID]),
-        timestamp=NOW, required_units=1)
-    assert len(rows) == 1
-    assert rows[0].account_id == READY_ACCOUNT_ID
+        timestamp=NOW, required_units=required_units)
+    assert rows == []
 
 
 def test_finalize_generation_schedule_retains_partial_items_on_shortfall():

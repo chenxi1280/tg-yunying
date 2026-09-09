@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine, select
@@ -20,6 +21,8 @@ from app.models import (
 from app.services.task_center.engagement_natural_opportunity import (
     ensure_natural_opportunity_plan,
 )
+from app.services.task_center.engagement_runtime_policy import _ensure_presence_policy
+from app.services.task_center.executors import group_ai_chat
 
 
 pytestmark = pytest.mark.no_postgres
@@ -104,3 +107,66 @@ def test_open_actions_consume_presence_before_gateway_and_append_successor() -> 
             select(NaturalOpportunitySupplyPlanRevision)
         ).all()) == 2
         assert len(session.scalars(select(ManagedPresencePlan)).all()) == 1
+
+
+def test_exhausted_presence_stays_exhausted_when_idle_continuation_is_enabled(monkeypatch):
+    with _session() as session:
+        task = session.get(Task, "group-presence")
+        task.type_config = {**task.type_config, "idle_continuation_enabled": True}
+        ledger = session.get(TaskDayLedger, "group-presence-day")
+        group = session.get(TgGroup, 21)
+        session.add_all([_pending_action("occupied-1", 1), _pending_action("occupied-2", 2)])
+        session.flush()
+        candidate = SimpleNamespace(account_id=1)
+        monkeypatch.setattr(group_ai_chat, "_ready_coverage_rows_for_plan",
+            lambda *_args, **_kwargs: [candidate])
+        monkeypatch.setattr(group_ai_chat, "_portfolio_coverage_rows",
+            lambda *_args, **kwargs: kwargs["rows"])
+
+        rows = group_ai_chat._coverage_candidate_rows(
+            session, task, group=group, ledger=ledger, target=None,
+            participation=SimpleNamespace(), admission=None,
+            timestamp=DAY_START, required_units=1,
+        )
+
+        assert rows == []
+        presence = session.scalar(select(ManagedPresencePlan))
+        assert presence.remaining_capacity == 0
+        assert presence.planned_managed_authored_count == 2
+        assert task.last_error == "natural_opportunity_plan_unproven"
+
+
+def test_new_presence_policy_preserves_approved_cold_group_capacity():
+    with _session() as session:
+        original = session.scalar(select(ManagedPresencePolicyRevision))
+        session.delete(original)
+        session.flush()
+        policy = _ensure_presence_policy(session, 1)
+        assert policy.max_consecutive_system_turns == 2
+        assert policy.absolute_daily_authored_cap == 20
+        assert policy.managed_to_external_ratio_bps == 10000
+        assert policy.bootstrap_allowance == 2
+
+        decision = ensure_natural_opportunity_plan(
+            session, session.get(Task, "group-presence"),
+            session.get(TaskDayLedger, "group-presence-day"),
+            group=session.get(TgGroup, 21), required_units=3,
+        )
+        assert decision.guaranteed_now_capacity == 2
+        assert decision.deficit == 1
+
+
+def test_presence_initialization_preserves_existing_revision():
+    with _session() as session:
+        original = session.scalar(select(ManagedPresencePolicyRevision))
+        original.max_consecutive_system_turns = 1
+        original.absolute_daily_authored_cap = 10
+        original.bootstrap_allowance = 1
+        session.commit()
+
+        policy = _ensure_presence_policy(session, 1)
+
+        assert policy.id == original.id
+        assert policy.max_consecutive_system_turns == 1
+        assert policy.absolute_daily_authored_cap == 10
+        assert policy.bootstrap_allowance == 1

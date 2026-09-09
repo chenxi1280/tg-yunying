@@ -1030,3 +1030,8 @@ worker/container healthy 不能证明克隆健康。任务健康至少同时观�
 - [x] QA、Release Gate、E4 与失败边界。
 
 结论：设计合同仍为 `design_status=complete`，且项目真相源已完成 resync。当前实现仅为 `partial_local_validation`；18.2 所列 Release Gate 硬阻塞全部闭合前，不得声称实现完成、QA 通过、已发布或生产已恢复。
+
+
+## 本地审查修订：相册逐项发送身份绑定（2026-09-09）
+
+Intake `intake-20260909-local-review-fixes`。两个及以上媒体项必须通过已有 TelegramGatewayMutationIdentity 模型逐一校验并绑定原 random_id/obligation；第二项不得因未导入模型在 Gateway 前发生 NameError。修复不分拆相册、不生成替代身份、不重放 unknown，不改变原权限和结算。QA 使用真实 planner/dispatch、仅替换 Telegram 边界，验证合法双媒体进入调用并按两条远端 ID 结算，以及第二项身份不匹配仍零外呼。该缺陷修订 design_status=complete、resync=true，不改变 §18.2 的整体实现与发布闸门状态；证据见本地四项审查修复记录。

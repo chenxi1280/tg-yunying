@@ -2563,3 +2563,8 @@ flowchart TD
 7. **Step 6（逐 Task 恢复）**：使用新的 expected SHA/revision/binding readback 逐一决定【阿哥日记】单 Task Resume 与【郑州楼凤】Successor；每个 Task 独立授权、独立观察窗口，前一 Task 未出现业务 E4/稳定性证据时不批量恢复下一 Task。
 
 任何阶段失败都只关闭尚未创建的新 enrollment/join/comment writer；已进入 Gateway、unknown、success 或 typed fact 的身份保持并 reconcile。发布成功、容器健康、Action 数量、单条 smoke 或成都阿楠恢复均不能单独声明三频道 `production_fixed`。
+
+
+## 本地审查修订：缺失 grounding 字段的错误归属（2026-09-09）
+
+Intake `intake-20260909-local-review-fixes`。传统生成路径组装 grounding assignment 时，snapshot_id、assignment_id、primary_evidence_id、primary_aspect_code、primary_aspect_text 或 speech_act 缺失，沿现有 CommentGenerationBlocked 明确返回 `channel_comment_grounding_assignment_incomplete`。阶段循环原样传出结构性失败，外层 dispatch 持久化该 code；不调用 Provider、不按 provider_failed 重试、不转入 fallback。完整字段继续原生成合同，两阶段与已缓存内容路径不变。此处修正原已存在的字段验证和错误传播，不新增字段要求或失败降级。QA 逐字段覆盖缺失、完整字段生成器入参及外层持久化 code。design_status=complete、resync=true；不改变专项 PRD 既有上线验收边界，证据见本地四项审查修复记录。

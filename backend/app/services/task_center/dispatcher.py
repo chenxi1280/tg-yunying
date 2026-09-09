@@ -25,6 +25,7 @@ from app.integrations.telegram import DeveloperAppCredentials, OperationResult, 
 from app.config import get_settings
 from app.models import AccountStatus, Action, AiAccountVoiceProfile, AiGroupMessageMemory, ChannelMessage, CommentFulfillmentObligation, ConsistencyQuarantine, ContentMixCycle, ContentMixCycleSlot, ContentMixObligation, DispatchClaimReservation, DispatchClaimShardAllocation, DispatchClaimWindow, ExecutionAttempt, FailureType, GroupAuthStatus, GroupContextMessage, OperationTarget, ReviewQueue, SearchClickAssignment, SearchClickFulfillmentObligation, SearchClickOpportunityAssignment, SearchProtocolSession, Task, TaskAccountDailyCoverage, TaskDayLedger, TaskGroupBotAdmission, TaskGroupDailyMessageSlot, TaskMembershipAdmissionItem, Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
 from app.models import AccountEnvironmentBinding, AccountProxy, AccountProxyBinding, TelegramDeveloperApp, TgAccountAuthorization
+from app.models.group_clone import TelegramGatewayMutationIdentity
 from app.search_keywords import normalized_keyword_hash
 from app.security import decrypt_secret
 from app.search_join_protocol import is_jisou_bot, protocol_profile_is_approved

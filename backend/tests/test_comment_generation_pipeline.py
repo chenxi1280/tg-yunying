@@ -155,3 +155,92 @@ def test_planned_fallback_skips_normal_generation(monkeypatch) -> None:
         )
 
     assert result is expected
+
+
+GROUNDING_FIELDS = (
+    "grounding_snapshot_id", "grounding_assignment_id", "grounding_primary_evidence_id",
+    "grounding_primary_aspect_code", "grounding_primary_aspect_text", "grounding_speech_act",
+)
+
+
+def _grounding_request():
+    return SimpleNamespace(
+        tenant_id=1, config={"channel_comment_grounding_v1_enabled": True},
+        payload=SimpleNamespace(
+            **{field: "test-value" for field in GROUNDING_FIELDS},
+            reply_to_message_id=0, message_content="测试通知", target_display="测试频道",
+        ),
+    )
+
+
+@pytest.mark.parametrize("missing_field", GROUNDING_FIELDS)
+def test_incomplete_grounding_is_blocked_without_provider_retry_or_fallback(
+    monkeypatch, missing_field,
+):
+    request = _grounding_request()
+    setattr(request.payload, missing_field, "")
+
+    def unexpected_call(*_args, **_kwargs):
+        pytest.fail("incomplete grounding must not call Provider or fallback")
+
+    monkeypatch.setattr(comment_generation_pipeline, "_emoji_fallback_result", unexpected_call)
+    dependencies = CommentGenerationDependencies(
+        direct_generator=unexpected_call, reply_generator=unexpected_call,
+    )
+    engine = create_engine("sqlite:///:memory:")
+    with Session(engine) as session:
+        with pytest.raises(comment_generation_pipeline.CommentGenerationBlocked) as error:
+            comment_generation_pipeline._run_generation_stages(
+                session, request, dependencies, action_loader=unexpected_call,
+            )
+    engine.dispose()
+    assert error.value.code == "channel_comment_grounding_assignment_incomplete"
+
+
+def test_complete_grounding_reaches_generator_with_original_assignment():
+    request = _grounding_request()
+    calls = []
+
+    def generate(_session, _tenant_id, config, **_kwargs):
+        calls.append(config["_comment_grounding_assignment"])
+        return ["收到通知"], 3
+
+    result = comment_generation_pipeline._call_generator(
+        None, request, CommentGenerationDependencies(direct_generator=generate),
+        stage="primary_m3",
+    )
+    assert result == (["收到通知"], 3)
+    assert len(calls) == 1
+    assert calls[0]["snapshot_id"] == request.payload.grounding_snapshot_id
+    assert calls[0]["assignment_id"] == request.payload.grounding_assignment_id
+    assert calls[0]["relation_kind"] == "direct"
+
+
+def test_dispatch_passes_incomplete_grounding_code_to_failure_persistence(monkeypatch):
+    from app.services.task_center import comment_generation_dispatch as dispatch
+    from app.services.task_center.ai_generator import AiGenerationUnavailable
+
+    request = _grounding_request()
+    request.has_cached_result = False
+    request.payload.comment_fallback_intent_kind = ""
+    request.payload.grounding_primary_evidence_id = ""
+    persisted = []
+    monkeypatch.setattr(dispatch, "_mark_provider_call_started", lambda *_args: None)
+    monkeypatch.setattr(comment_generation_pipeline, "_comment_mask_fallback_reason",
+        lambda *_args: "")
+    monkeypatch.setattr(comment_generation_pipeline, "two_stage_enabled", lambda *_args: False)
+    monkeypatch.setattr(dispatch, "_persist_generation_failure",
+        lambda *_args, **kwargs: persisted.append(kwargs))
+
+    def unexpected_provider(*_args, **_kwargs):
+        pytest.fail("missing grounding must fail before Provider")
+
+    engine = create_engine("sqlite:///:memory:")
+    with Session(engine) as session:
+        with pytest.raises(AiGenerationUnavailable,
+                match="channel_comment_grounding_assignment_incomplete"):
+            dispatch._generate_comment(session, request,
+                CommentGenerationDependencies(direct_generator=unexpected_provider))
+    engine.dispose()
+    assert len(persisted) == 1
+    assert persisted[0]["code"] == "channel_comment_grounding_assignment_incomplete"

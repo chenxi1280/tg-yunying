@@ -173,6 +173,8 @@ def _run_generation_stages(
             raise
         except AiProviderResultUnknown:
             raise
+        except CommentGenerationBlocked:
+            raise
         except Exception as exc:
             _close_failed_stage_transaction(session)
             attempts.append(_provider_failure(stage, exc))
@@ -347,7 +349,10 @@ def _grounding_assignment_payload(payload: object) -> dict:
         "snapshot_id", "assignment_id", "primary_evidence_id",
         "primary_aspect_code", "primary_aspect_text", "speech_act",
     )):
-        raise AiGenerationUnavailable("channel_comment_grounding_assignment_incomplete")
+        raise CommentGenerationBlocked(
+            "channel_comment_grounding_assignment_incomplete",
+            "channel comment grounding assignment is incomplete",
+        )
     return required
 
 

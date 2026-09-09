@@ -3626,3 +3626,10 @@ Intake `intake-20260909-ai-group-target-completion`，L3/P1。用户要求各个
 无表结构、API、表单、任务配置或业务分母变更；不新增运行限制。专项 PRD、结构/数据流索引与 Release Gate 同步 resync，开发仅修正新话题预约公式及移除其错误的 active-normal 参数链。QA 要求零确认跨批次不分配 topic、真实三条 non-topic 后可分配一条、active/unknown topic 保守占用、新预约不依赖未发送 non-topic 即可过 Gateway、旧超配记录不被改写及全链路 scope 回归。
 
 `design_status=complete`：原话/上下游、正常和失败路径、前端不变、数据/幂等/并发/权限、历史状态与发布风险已反查；交 dev → qa → product → prod-diagnosis。发布仍按 master→release→Actions，验收逐群记录原目标/到期数/真实确认/未知/剩余缺口；凌晨未来排期不能算执行失败，少量新消息与发布成功均不能代替各群完整目标。证据与阶段状态见 `docs/05-implementation/ai-group-target-completion-20260909.md`。
+
+
+### 19.70 本地审查：零容量与策略初始化一致性（2026-09-09）
+
+Intake `intake-20260909-local-review-fixes`，L2。恢复 §19.2.2 和连续系统发言合同：`guaranteed_now_capacity=0` 时正文 coverage 候选必须为空，`idle_continuation_enabled` 的缺省、启用或关闭均不能增加容量；即使 required_units 为零也不得凭 max(1, ...) 创建候选。正容量仍取该容量以内的已准入候选，账号隔离与数量义务保持。
+
+新租户 presence policy 沿现有 ORM 默认值：连续 2、每日 authored 20、managed/external 10000 bps、bootstrap 2，不在初始化路径另设宽松参数。已有 active revision 原样返回，不隐式迁移或覆盖已有值。该修复不新增限制，而是恢复已批准合同；现有策略如需修订须单独审计。QA 覆盖真实已占用两条的冷群、idle 开关组合、正常正容量、新建与已有策略。design_status=complete，resync=true；本地验证和生产边界见 `docs/05-implementation/local-review-fixes-20260909.md`。
