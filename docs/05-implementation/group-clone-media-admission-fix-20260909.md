@@ -124,3 +124,16 @@ Clone候选5303df14的Prepare34342302164、06680053的Prepare34342683075均全�
 Clone123项加AI/评论共享流12项：135 passed /23.01秒。新增PG测试ruff F、三处生产入口静态未定义名与diff-check通过；修改只涉及三条既有查询锁范围，未拆分或重构无关业务。
 
 发布审查补充并发改绑边界：真实comment consumer持有delivery时，原ensure_task_peer_update_subscription改绑在UPDATE pending delivery处55P03，证明没有越过正在消费的工作；consumer提交后相同改绑成功，已consumed delivery保留，第二条pending变skipped且订阅指向新peer。新增1 passed /3.36秒，autoflush=False、真实PG与既有业务服务，生产代码未追加改动。
+
+
+## 5088d001 发布、真实启动与 Planner 入口闭环
+
+Prepare34346104324与Deploy34346803384 success，后者于2026-09-09 19:43:44北京时间完成。独立current=/data/tgyunying/releases/20260909114103_5088d001，backend+18workers完整SHA5088d0015524fa378bc1eefadfd6bd92bc710435一致且healthy。正式受控Collector36轮正常退出，多数循环6–8秒，无lease_expired；两授权live后原生Start成功，同Task/epoch1于19:45:46由listener启动running/live，boundary message3068569/PTS5605568。
+
+正常Planner19:51:13确实处理该Task，但旧global pending16612在build前阻断；本Task零Action、69条durable delivery待消费、零typed fact。原生Pause保留同epoch及消息日记，未调用伪造global_pending=0的生产Planner或清理其他任务。
+
+PRD和两索引先补独立合同路由，仅type=group_clone且持久版本v2_group_clone走自己的义务/Sequencer；旧合同、借用版本的其他类型、仅stats标记不豁免。实际_plan_due_task_batch入口+生产autoflush=False回归先精确复现backlog_blocked。修复后继续暴露源事件未flush导致同轮物化不可见，以及义务状态未flush导致循环重复Action撞唯一键；分别在每条成功消费及每次物化后显式flush，仍同一事务、不吞异常、不改变唯一约束。
+
+新增5项真实入口/合同边界测试通过4.21秒，含同批重复来源事件只能生成一个SourceEvent和typed obligation/Action。初次测试夹具误用dataclass.model_copy已修正为replace，不算产品故障。保持原发送准入、Sequencer、权限及unknown阻塞，无迁移或配置修改。
+
+定向QA：Clone128项+AI/评论共享流12项，140 passed /24.04秒，backend/.venv、60秒硬超时；新增测试ruff F、生产静态未定义名、git diff-check通过。既有materializer未使用导入未扩大清理。Release Gate：仅上述Planner合同路由/事务可见性及对应文档测试，无schema/配置/前端变化，未知发送不重放；完整Prepare通过后按master→release→Deploy发布，再同Task Resume及Telegram独立读回。

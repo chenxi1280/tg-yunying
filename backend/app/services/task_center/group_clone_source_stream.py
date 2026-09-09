@@ -130,6 +130,7 @@ def consume_clone_deliveries(session: Session, task: Task, *, limit: int = 200) 
     for delivery, envelope in rows:
         if not _consume_delivery(session, task, stream=stream, delivery=delivery, envelope=envelope):
             break
+        session.flush()
         consumed += 1
     _promote_live_if_caught_up(session, task, stream)
     return consumed

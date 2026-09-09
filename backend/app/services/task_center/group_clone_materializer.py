@@ -55,6 +55,7 @@ def materialize_ready_clone_events(session: Session, task: Task) -> int:
                 raise RuntimeError("group_clone_waiting_source_event_missing")
             config = _event_config(task, event)
             created += int(_materialize_event(session, task, config=config, route=route, event=event, obligation=waiting))
+            session.flush()
             if waiting.state not in {"action_bound", "filtered", "cancelled", "superseded"}:
                 return created
             continue
@@ -64,6 +65,7 @@ def materialize_ready_clone_events(session: Session, task: Task) -> int:
         config = _event_config(task, event)
         obligation = _new_obligation(session, task, config=config, route=route, event=event)
         created += int(_materialize_event(session, task, config=config, route=route, event=event, obligation=obligation))
+        session.flush()
         if obligation.state not in {"action_bound", "filtered", "cancelled", "superseded"}:
             return created
 

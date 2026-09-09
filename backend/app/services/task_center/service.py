@@ -5375,6 +5375,7 @@ def _planning_backlog_blocked(session: Session, task: Task) -> bool:
     if (
         task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION
         or stats.get("fulfillment_contract_version") == FULFILLMENT_CONTRACT_VERSION
+        or (task.type == "group_clone" and task.fulfillment_contract_version == "v2_group_clone")
     ):
         task.stats = clear_planner_backlog_stats(stats)
         return False

@@ -1608,3 +1608,5 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 - 群克隆启动阶段：`group_clone_start_worker.py` 在listener Collector之后按Task独立事务建立起始boundary并唤醒Planner；Planner pending激活跳过Clone，避免其远端I/O禁令与起始读取冲突。
 - 共享订阅准备：`listener_runtime.py` 先发现AI/评论两类订阅候选，再锁定并持久化订阅，避免共享authorization state锁跨入后续慢选路；Collector与Clone启动顺序不变。
 - 共享消费锁：`group_ai_update_stream.py`、`channel_comment_update_stream.py` 与 `group_clone_source_stream.py` 的关联消费查询仅锁Delivery，不把只读共享父行带入领域业务长事务。
+
+2026-09-09 Clone Planner 合同路由：`service._planning_backlog_blocked`仅对持久类型group_clone/版本v2_group_clone使用独立领域规划，不让旧全局积压阻断durable delivery；原Clone Sequencer/发送准入不变。入口回归：`test_group_clone_planner_entry.py`。

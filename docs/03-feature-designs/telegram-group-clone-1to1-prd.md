@@ -1077,3 +1077,16 @@ QA通过真实PostgreSQL双连接及正式drain入口，验证评论选路期间
 本修订 `design_status=complete/resync=true`：消费领取仅FOR UPDATE OF当前Delivery，保留同delivery的互斥和任务/epoch/active订阅筛选；共享Event、AuthorizationState、Subscription仅作为读依据，不在消费查询中锁定。Clone自身stream锁继续保护PTS及顺序。新增/改绑与Stop对pending delivery的修改仍与正在消费的同delivery锁串行化，不改变原事件/订阅边界、权限、任务状态或重放规则。Collector可在旧delivery处理期间继续领取授权、落入新事件并为同订阅新增delivery，不得被共享父行或订阅FK锁连带阻塞。
 
 QA须用真实PostgreSQL双连接覆盖AI、评论及Clone实际查询/消费路径：消费者持有delivery期间Collector授权锁可独立领取、新事件fanout可提交，而第二消费者NOWAIT领取相同delivery仍失败；原代码必须复现锁冲突。保留现有业务消费回归、60秒测试硬超时和发布后E4。无需新增worker、配置、schema或放宽租约。
+
+
+### 2026-09-09 独立 Clone Planner 积压路由修订
+
+现场：5088d001 发布后受控 Collector 连续36轮无租约异常，原 Task 已经由正式 Start/listener 转 running/live；69条 durable delivery 等待消费，Task自身零Action，却被其他任务16612条全局积压在 Planner 入口阻断。
+
+本修订 `design_status=complete/resync=true`：仅 Task.type=group_clone 且持久 fulfillment_contract_version=v2_group_clone 的独立合同绕过旧全局/任务积压启发式，消费自己的持久消息和推进Clone义务；不借用stats标记、不推广到其他类型或旧Clone合同。Clone原Sequencer、绑定槽、transport、authority、发送准入和unknown阻塞继续生效，旧任务积压阈值不变。恢复只走同一epoch的原生Resume，不清理其他任务Action、不改全局配置。
+
+QA必须从实际 _plan_due_task_batch 入口，在超过旧global阈值且生产autoflush=False下验证durable delivery形成CloneSourceEvent及typed obligation/Action；验证旧Clone、错误类型借用Clone版本、仅stats标记仍被原门槛阻断。无需迁移/API/UI变化；E4仍以正式调度后的Telegram消息和typed fact为准。
+
+入口回归反向检查补充：生产autoflush=False时，每条成功消费的delivery及SourceEvent须在同一事务显式flush，使下一条重投去重、live判断与随后物化都读到当前进度；不提前commit，失败仍整批事务回滚。QA同时验证一个入口周期形成Action以及同批重复事件只形成一条领域事件/义务。
+
+同一真实入口随后复现物化循环读取到尚未flush的observed义务，重复建立同义务Action并撞唯一键；每次物化结果也必须在继续查询下一义务前flush，保持单一Action唯一约束，不以捕获/忽略唯一键错误代替正确状态推进。
