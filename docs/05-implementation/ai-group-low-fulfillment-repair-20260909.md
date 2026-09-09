@@ -70,3 +70,21 @@ B1 `design_status=complete`、`resync=true`，仅 B1 进入 dev。A 和 B 的自
 开发交接固定为两个最小模块：`ai_group_circuit_eligibility.py` 只读生成 account/route/egress 非 closed 的账号集合并在候选 limit 前应用，`engagement_runtime_circuit` 向调用方返回真实 wake deadline；`task_group_bot_post_send_recovery.py` 只对同账号实时强归因窗口恢复同一 Task admission。生产代理恢复须另走现有受审计 preview/apply/readback，先从当前订阅构造隔离 Mihomo candidate 并真实出口探测；在候选全失败时不得清断路器、直连或换绑。
 
 实现后定向 QA 覆盖 19 个 admission/coverage/circuit/visibility 文件：254 passed、3 个既有 SQLite 表达式索引反射 warning，38.29 秒；`ruff check` 对本次改动模块和回归全通过，`compileall`、`git diff --check` 通过。新增模块分别 86/111 行，本次修改函数均不超过 50 行。上述结果只证明本地合同，不替代 CI、部署 SHA、运行健康或 Telegram typed remote fact。
+
+## Release Gate、部署与生产事实
+
+候选 `8fc01975` 已通过 Prepare Production workflow `34316839587`：6 组非 PG、2 组 PG、前端、3 个镜像构建和 prepared-release 全部成功。`master -> release` 快进后，Deploy Production workflow `34317349723` 已将同一 SHA 部署到 `/data/tgyunying/releases/20260909060318_8fc01975`；随后同 SHA 的只读/preview 重跑将 `current` 指向 `/data/tgyunying/releases/20260909061103_8fc01975`。2026-09-09 14:35 北京时间回读仍为该 release；backend、两个 dispatcher、search dispatcher 和 image verification worker 均为 healthy。
+
+部署 workflow 的最终状态为 failed，不能记为 Release Gate 全通过：实际上传、切换、服务启动、共享调度校验和 planner drain 已完成，其中 drain 处理 47 个到期 planner；随后真实 AI 活群质量闸门发现当时 10/10 运行任务均未满足日目标。通用 E4 步骤还固定引用 5 个旧任务 ID（4 个不存在、1 个已删除），不适用于本次运行任务；本次事故以当前 10 个运行任务的人工只读 typed-fact 回读替代，但该 workflow 证据缺口仍保留为未修复问题。workflow `34317904876` 再次确认同 SHA 部署与运行健康后，在代理订阅 preview 的 prepare 阶段因 GitHub Secret 中订阅域名 DNS 解析失败而退出，`apply=false`，没有数据库变更。
+
+生产中当前 10 个 `group_ai_chat` 运行任务均使用 `fact_first_v3` 与 `unified_engagement_v1`。发布后 readback 证明本次隔离合同生效：每个任务的 `blocked_coverage_account_ids` 都返回 832 个当前断路账号，14:05 北京时间之后这些账号没有新建 send Action，未再于断路 open 窗口内反复重建同一义务。抽样的 7 个 `remote_message_observed` 均可关联到 Action `success`、`PendingVisibilityCredit.visible_confirmed` 与 `PostSendVisibilityObservation.visible_confirmed`，不是 provider ack 或本地模拟。
+
+14:35 北京时间最新汇总为：10 个运行任务当日累计应发 9,414、有效确认 98；14:05 之后共有 10 条新的 `remote_message_observed`，仅覆盖 5/10 个任务，各任务新增事实数为 `0/0/1/0/0/3/3/1/0/2`。这些消息来自当前可用的无代理既有路由，证明发送链仍能形成 Telegram 可见事实，但远低于全部任务和全部账号义务，故状态为 `production_partial`，不得写 `production_fixed`。
+
+## 代理供应侧穷尽性验证与当前阻断
+
+现有 37 个 `tgyunying-mihomo-*` 容器逐一通过 SOCKS5H 访问 HTTPS 出口时全部以 TLS `unexpected EOF` 失败；原绑定账号在代理 1、20、48、52、58 的受控 `get_me` 探针失败后，又补测剩余候选 25、28、62，均在 MTProto 握手阶段 `TimeoutError`。`AccountProxy` 中所有在用代理均为 Mihomo，没有遗漏的其他 provider 类型或未测试静态候选。
+
+订阅 1、4 的当前 URL 无法解析；订阅 5 可拉取并解析 46 个节点，订阅 6 可拉取并解析 2 个节点。使用数据库内加密 URL 在隔离临时 Mihomo 容器中执行 preview，不输出 URL、不写数据库，并在结束后清理容器与配置：订阅 5 的 46/46、订阅 6 的 2/2 节点访问 `https://api.ipify.org` 和 `https://api.telegram.org` 均失败，主要表现为 TLS `unexpected EOF`。未通过关闭证书校验制造假健康。
+
+因此，代码层能够修复的断路隔离、真实 wake deadline、发送后 bot admission 恢复和拒绝 token 记账均已实现、测试并部署；但当前全部现有/可刷新 provider 节点中可验证的 Telegram 出口为 0，无法让 832 个绑定代理的账号正常承担各自覆盖义务。未清空断路器、未将账号切换为直连、未跨账号代发、未换绑代理，也未重放任何已进入 Gateway 或结果 unknown 的 Action。完成“正常发送我们的所有消息”仍需要一个实际可用且受支持的代理订阅/出口；获得候选后必须沿现有审计流程执行隔离 probe -> 精确 preview -> old-value/hash CAS apply -> 账号原绑定 `get_me` -> typed remote fact readback，不能由本次代码发布越权替代。
