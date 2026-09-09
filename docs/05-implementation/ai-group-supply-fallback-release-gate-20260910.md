@@ -40,3 +40,5 @@ Prepare 34381205676（6a68f685）首轮：两个PostgreSQL分片、前端及镜�
 - 回归已先红测复现1!=2，再通过真实ensure入口、原义务安全后继、关闭投影拒绝及原事实流回归69项。真实PG/迁移6项通过，包含并发materialization、选择后正式登记不回拨、0196→0231及新唯一约束。最终精确修复/维护QA和重新完整Prepare待收口。
 
 版本修正收口：UTC环境10文件130 passed（18.12s），历史对齐/正式登记争用等真实PG2 passed（4.41s）；发送前不repair的反例通过。准备重新完整CI并发布。
+
+Prepare 34385730019 的普通测试仅发现旧 `_CaptureSession` 未提供新增锁步骤使用的 `no_autoflush/scalar`。已将该测试更新为明确记录并断言Task→Action锁顺序，同时保留五个Action查询的SKIP LOCKED合同；3文件37 passed（7.28s）。该失败不改生产实现，新提交仍须完整Prepare。

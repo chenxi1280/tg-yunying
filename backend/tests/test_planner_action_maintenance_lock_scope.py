@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
@@ -17,8 +18,17 @@ pytestmark = pytest.mark.no_postgres
 class _CaptureSession:
     def __init__(self) -> None:
         self.statements = []
+        self.owner_statements = []
+        self.lock_order = []
+        self.no_autoflush = nullcontext()
+
+    def scalar(self, statement):
+        self.owner_statements.append(statement)
+        self.lock_order.append("task")
+        return "task-ai"
 
     def scalars(self, statement):
+        self.lock_order.append("actions")
         self.statements.append(statement)
         return []
 
@@ -48,6 +58,10 @@ def test_planner_action_maintenance_skips_dispatcher_locked_rows() -> None:
         ))
         for statement in session.statements
     ]
+    owner_sql = [str(statement.compile(dialect=postgresql.dialect())) for statement in session.owner_statements]
+    assert len(owner_sql) == 2
+    assert all("FROM tasks" in statement and "FOR UPDATE" in statement for statement in owner_sql)
+    assert session.lock_order[:4] == ["task", "actions", "task", "actions"]
     assert len(sql) == 5
     assert all("FOR UPDATE OF actions SKIP LOCKED" in statement for statement in sql)
     assert all("'claiming'" not in statement for statement in sql)
