@@ -42,6 +42,20 @@
 
 ## Release Gate
 
+### 生产运行记录（执行中）
+
+- 最终候选ffc08a3d97e05ec6fa51092ff946c8d852c6a32d，Prepare34339633174全部通过，Deploy34340363767于2026-09-09 18:31:24完成；独立current/backend+18workers同SHA且healthy，API ok，alembic0229_admission_gap_count(head)。
+- R4新runtime预览hash147578db528fcc98609a0b253f0459c9fcd2f4cb18e709a01b9c6e6c67f97185，共359（115/79/165），352有效/7过期。两次apply均在Task锁后、账号锁阶段NOWAIT冲突而退出，未到结算/审计写入；第二份fresh preview与原hash完全相同、全体仍无任何Attempt/typed事实。
+- 原清单含225账号；按照同一已发布CLI精确范围合同按账号分批，使用固定母清单、不扩大IDs，子批独立预览/原子apply/读回。成功批不重新预览或重发，仅对未成功锁忙子批复核后继续。审计目录/data/tgyunying/shared/action-backlog-repair-20260909.Du3q0E（0700，产物0600）。
+- 18:59独立REPEATABLE READ/READ ONLY合并57份receipt：原359中300已skipped，59仍pending；293有效义务open、7过期closed_expired；三Task仍running、核心配置hash全部不变，新绑定Action=0。部分完成不能称整批完成；未成功部分继续同原清单fresh preview。
+
+### R4 发布后重建链路二次修复
+
+- 18:53真实只读候选复算：当时已释放的228个有效原义务中，176原due尚未来到；其来源点全部为0。同来源其他义务cursor已排至deadline附近/等于deadline，旧Planner将已有冻结位置作为新供给追加其后，形成错误shortfall。此复算仅原候选集，不虚称完整Planner准入或E4。
+- 产品合同先resync，真实_create_like_actions回归RED：0 != 1（2.45秒）；修复后原维护退役→原冻结预约复用→新Action ID/原义务绑定GREEN。来源节奏责任拆到channel_like_pacing.py，原channel_like.py缩至437行，未修改无关物化逻辑。来源容量仍经过原apply_source_capacity_plan，账号仍走原reserve/rearm、活动窗/间隔/期限，unknown与expired不重新开放。
+- 定向31 passed/6.18秒（新10+原维护21）；相册物化+新回归14 passed/4.01秒；来源owner/cursor/rebooking/账号接管/点赞分配/准入容量51 passed/13.65秒。扩展首命令未显式指定测试PG库被保护拒绝，零测试执行；随后明确127.0.0.1:55432/tg_yunying_test通过，未修改测试数据库保护。全部后端进程60秒硬超时内退出。
+- 已审查协同Clone补丁5303df14（路由读查询移到共享订阅锁前）与06680053（autoflush=False释放holder前flush），未在点赞维护CLI运行时部署。新R4候选还须重新完整Prepare，不能复用5303/0668制品。
+
 ### 完整Prepare第一轮反查补正
 
 - 01edd500推送master后Prepare `34337268213`：其余7个后端分片、frontend、三个镜像全部通过；no-postgres shard0的既有`test_stale_comment_generation_releases_runtime_reservation_without_overwriting_new_claim`失败，本地单例1 failed/2.92秒复现，未绕过失败发布。

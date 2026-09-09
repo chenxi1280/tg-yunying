@@ -75,5 +75,16 @@ R3反向检查补正：仅过滤新计划不足以收口旧ready超配；上述�
 - R4反向检查补正：单纯skipped仍可能占原action_dedupe_key；相同due/载荷的正常物化会返回旧Action。仅本批全历史零调用证明通过并完成typed未执行结算后，将旧非空dedupe key移至`retired_uncalled:<旧Action ID>`墓碑空间，原key进入快照与审计。新Action沿正常原key生成；旧Action/Attempt/fact不删，called/unknown绝不释放dedupe。须以真实create_like_action同due/同payload回归验证新ID。design_status=complete/resync=true。
 - AuditLog同事务保留原preview/hash、精确目标/旧新状态版本、actor/reference/SHA；相同preview重复apply只返回已有receipt，不能再次转换预约或重复建Action。readback独立Session检查旧Action退出、typed未执行事实、义务/预约已释放或已由不同新Action接管、Task仍running。持久化通过不等于reaction_observed。
 - QA覆盖tenant/count、sha/hash、状态/版本/配置漂移、Attempt/journal/fact/unknown、owner/epoch、原时间线保持、有效与已过期分流、同preview幂等、replacement接管后重放不改新owner、真实PostgreSQL锁竞争整批零写。
+- 运行补正（resync=true，代码入口不变）：冻结母清单在正常worker行锁竞争下可按账号划成互不重叠的精确子批，子批并集必须等于原359 IDs且不得新增账号/Action。每批独立调用同一已发布CLI的preview/apply/readback并携带母hash/子批序号审计引用；每批原子，成功批保留receipt，锁忙批零写并显式报告，仅对未成功子批fresh preview后继续。该运行批次不是发送容量上限，不改产品数量/活动窗，不停worker、不移除锁或跳过旧值校验。整体完成必须逐批审计并证明成功结果并集恰为母清单；不能将部分成功称为整批完成。
+
+### R4 发布后反查：冻结预约重建合同补正
+
+- 18:53只读原候选复算（不是完整Planner资格证明）：已释放且来源有效的228个义务，源节奏全部返回0点，其中176个原due仍在未来。其他同来源义务的历史cursor已排到来源deadline附近或等于deadline；重建把原冻结位置误当新增供给，继续排在cursor之后，出现虚假的pacing shortfall。
+- 原义务open/current_action=None，存在同tenant/task/account/slot、reserved/action=None的原预约，且义务已有冻结due/release时，Planner物化应使用原义务冻结SourcePacingPoint；不能作为新来源数量追加到其他义务cursor之后。原账号预约仍由reserve_account_pacing重新核验账号/任务当前合法间隔、活动窗和来源期限，不提前发送、不延长期限、不跳过锁/准入。
+- 只有仍有效的既有未绑定预约可复用；bound、missed、cancelled、缺少冻结时间或非open义务继续原路径或明确拒绝，不释放unknown/held/confirmed身份。复用不改变义务冻结due/release；账号执行effective可按既有正式rearm规则向后调整，不把维护时的时间线快照当成永不可推进。维护CLI本身仍不改原时间线。
+- QA必须经_create_like_actions真实入口，先安全退役旧Action，再设置同来源后序义务cursor接近deadline，证明新Action不同ID、绑定原义务、原冻结due不变；验证过期预约不复用、bound/非open不复用、原账号节奏仍有效。不能只测底层create_like_action去重。
+- design_status=complete；resync=true。此缺口属于R4重建链路，补正后重新dev/QA/完整Prepare/上线验证。
+
+运行执行补正：十账号子批仍频繁因单账号忙而整批零写时，可将未成功子批继续拆成单账号子批；从母清单减去已有成功receipt精确集合生成，不以实时扩大查询替换母清单。运维编排可在同一Python进程顺序调用已发布CLI main，各次preview/apply/readback仍使用CLI创建的独立Session、SHA/hash校验和事务；只有明确55P03锁冲突可记录失败后继续其他账号，任何非锁异常立即停止。全部CLI退出后将所有层级receipt统一并集读回并保存到容器外，之后才能替换容器。该补正不修改生产业务代码或弱化锁/审计合同。
 
 design_status=complete；resync=true。该合同替代已撤回的“恢复原Action预约继续执行”方案；用户明确的清理重建授权已具备，无需重复索要同一授权。R2可信控制与可见性、R5的15秒及unknown合同保持；没有证据时不能承诺全部24任务已恢复。

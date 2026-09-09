@@ -1,5 +1,7 @@
 # 项目数据流转索引
 
+> **2026-09-09 点赞原义务复用 resync：** 全历史未调用旧Action退役 → 原义务open/原预约reserved且均未绑定 → Planner复用原冻结due/release，不重新排在同来源后序cursor之后 → 原来源容量、账号活动窗/节奏rearm → 新Action绑定 → Dispatcher/typed reaction事实；expired/unknown不重新开放。维护时不改时间线，后续正式账号rearm可按原规则向后推进effective。
+
 > **2026-09-09 评论领取资源 resync：** 处理入口捕获旧本地reservation身份 → 生成/DB owner-token CAS收口 → finally按对象身份仅释放原reservation；DB owner已换仍清理原本地占位，本地对象已替换则保持新资源。与R1领取/unknown合同分别验证，不能以新owner保护为由遗留旧资源。
 
 > **2026-09-09 DF 卡死点赞重建：** 精确当前Task/Action/取消预约/原Reaction义务 → 全历史未调用与零远端资源证据 → snapshot/hash → 稳定顺序锁后复验 → 旧Action safely_not_executed/skipped → 原有效义务open及预约脱离旧Action → 正式Planner新Action。expired预约missed；审计与旧执行证据保留，不物理级联删除Task/义务、不重放unknown。专项合同`production-task-progress-repair-20260909-prd.md` R4。

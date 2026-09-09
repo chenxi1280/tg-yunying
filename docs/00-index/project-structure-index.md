@@ -1,5 +1,7 @@
 # 项目结构索引
 
+> **2026-09-09 点赞冻结预约重建 resync：** `executors/channel_like_pacing.py`承接点赞来源slot/节奏计算，原open义务与同身份reserved未绑定预约复用冻结SourcePacingPoint，再走来源容量与账号rearm；避免把既有位置重新追加到历史cursor末端。`channel_like.py`保留原物化/绑定流程，文件拆分仅对应此节奏责任；`test_channel_like_reserved_replan.py`覆盖真实Planner安全清理后新ID及过期/已绑定/漂移/容量保护。
+
 > **2026-09-09 评论领取本地资源补正：** `runtime_resources.action_runtime_reservation_scope`捕获本次Action已有reservation对象并复用identity-checked释放；`comment_generation_worker`确认本次DB owner后在生成处理周围使用该scope，分别保护新DB owner与新本地reservation。CI旧claim-loss回归及新替换/原无资源用例共同验收。
 
 > **2026-09-09 精确点赞积压重建：** `reaction_backlog_snapshot.py`解析精确范围、检查身份/未调用证据、生成非敏感hash；`reaction_backlog_replan.py`原子调用既有未执行结算及审计/独立读回；`scripts/replan_cancelled_reaction_backlog.py`提供受SHA约束的preview/apply/readback。测试`test_reaction_backlog_replan.py`及`test_task_progress_repair_postgres.py`覆盖重建接管、漂移、过期分流、锁冲突和幂等。

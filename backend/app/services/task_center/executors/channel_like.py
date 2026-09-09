@@ -9,7 +9,6 @@ from app.models import (
     ChannelMessage,
     ChannelMessageSourceRevision,
     OperationTarget,
-    ReactionFulfillmentObligation,
     Task,
     TgAccount,
 )
@@ -39,25 +38,20 @@ from ..engagement_reaction_capacity import (
     reaction_admissible_account_ids,
 )
 from ..fulfillment_activation import CURRENT_CONTRACT_VERSION
-from ..pacing import next_local_day_deadline, schedule_times
 from ..pacing_persistence import freeze_action_pacing, freeze_pacing_owner
 from ..payloads import LikeMessagePayload, create_like_action
-from ..schedule_reservation import reserve_task_schedule_times
 from ..source_pacing import (
-    SourcePacingSlot,
     latest_wall_datetime,
-    rolling_source_window,
-    schedule_source_pacing_points,
     source_pacing_plan_hash,
     wall_datetime,
 )
-from ..source_capacity_plans import apply_source_capacity_plan
-from ..source_owner_cursor import attach_owner_history, pacing_source_key_hash
+from ..source_owner_cursor import pacing_source_key_hash
 from .channel_like_expiration import active_like_messages, close_expired_like_obligations
 from .channel_like_capability import reaction_capability_revision
 from .channel_like_planning import like_actions_for_messages
 from .channel_like_reactions import reaction_plan as _reaction_plan
 from .channel_like_types import LikePlanItem, LikePlanningSpec
+from .channel_like_pacing import _like_due_by_slot, _like_slot_key, _like_source_slot
 from .channel_like_album import logical_like_messages
 from .common import adjust_for_account_hour_limit, channel_message_payload, channel_scope, quantity_jitter_bounds, record_channel_capacity_warning
 
@@ -281,69 +275,6 @@ def _create_like_actions(
     return created
 
 
-def _like_due_by_slot(
-    session: Session,
-    task: Task,
-    *,
-    channel: OperationTarget,
-    actions: list[LikePlanItem],
-    owners: dict[str, object],
-    now_at,
-) -> dict[str, object]:
-    if task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION:
-        source_hash = pacing_source_key_hash(channel.tg_peer_id)
-        slots = [
-            _like_source_slot(
-                task,
-                item,
-                owner=owners[_like_slot_key(task, item)],
-                source_hash=source_hash,
-            )
-            for item in actions
-        ]
-        slots = attach_owner_history(
-            session,
-            task,
-            slots,
-            owner_model=ReactionFulfillmentObligation,
-            config=task.pacing_config or {},
-            seed_id=f"like:{task.id}",
-            allow_plan_total_overrun=True,
-        )
-        points = schedule_source_pacing_points(
-            slots,
-            task.pacing_config or {},
-            now_at=wall_datetime(now_at),
-            timezone_name=task.timezone,
-            seed_id=f"like:{task.id}",
-        )
-        points, slots = apply_source_capacity_plan(
-            session,
-            task,
-            slots,
-            points=points,
-            pacing_domain="reaction",
-        )
-        for slot in slots:
-            owner = owners[slot.slot_key]
-            owner.source_capacity_plan_hash = slot.source_capacity_plan_hash
-            owner.source_capacity_slot_ordinal = slot.source_capacity_slot_ordinal
-        return points
-    deadline = next_local_day_deadline(now_at, task.timezone)
-    times = schedule_times(
-        len(actions), task.pacing_config or {}, start_at=now_at,
-        deadline_at=deadline, preserve_minimum_spacing=True,
-    )
-    times = reserve_task_schedule_times(
-        session, task, "like_message", times,
-        pacing_config=task.pacing_config or {}, deadline_at=deadline,
-    )
-    return {
-        _like_slot_key(task, item): due_at
-        for item, due_at in zip(actions, times, strict=False)
-    }
-
-
 def _create_one_like_action(
     session: Session,
     task: Task,
@@ -459,45 +390,6 @@ def _record_like_shortfall(task: Task, requested: int, scheduled: int) -> None:
     task.stats = stats
     if scheduled == 0:
         task.last_error = "来源滚动窗口内无合法节奏窗口可安排点赞义务，形成 pacing shortfall"
-
-
-def _like_slot_key(task: Task, item: LikePlanItem) -> str:
-    return f"like:{task.id}:{item.message.id}:{item.account_id}"
-
-
-def _like_source_slot(
-    task: Task,
-    item: LikePlanItem,
-    *,
-    owner: ReactionFulfillmentObligation,
-    source_hash: str,
-) -> SourcePacingSlot:
-    period_start, deadline = rolling_source_window(task, item.message.created_at)
-    pacing_ordinal = (
-        int(owner.pacing_slot_ordinal)
-        if owner.pacing_slot_ordinal is not None
-        else item.slot_ordinal
-    )
-    return SourcePacingSlot(
-        source_key=str(item.message.id),
-        slot_key=_like_slot_key(task, item),
-        slot_ordinal=pacing_ordinal,
-        plan_total=(
-            int(owner.pacing_plan_total)
-            if owner.pacing_due_at is not None and owner.pacing_plan_total
-            else item.plan_total
-        ),
-        period_start_at=period_start,
-        deadline_at=deadline,
-        release_not_before_at=owner.release_not_before_at,
-        frozen_due_at=owner.pacing_due_at,
-        owner_id=owner.id,
-        task_lifecycle_epoch=int(task.task_lifecycle_epoch or 1),
-        pacing_period_key=f"message:{item.message.id}",
-        pacing_source_key_hash=source_hash,
-        source_capacity_plan_hash=owner.source_capacity_plan_hash,
-        source_capacity_slot_ordinal=owner.source_capacity_slot_ordinal,
-    )
 
 
 def _empty_like_plan_message(

@@ -1,6 +1,6 @@
 # 统一互动履约引擎 PRD
 
-> **2026-09-09 卡死积压修复 resync：** `production-task-progress-repair-20260909-prd.md` R1/R3/R4为本次已授权实现合同：合法单阶段评论冻结实际调用角色；extra在LIMIT前扣同Task/day预算与待发工作；§19.68全历史未调用收口包含`task_account_portfolio_capacity_exhausted`。明确取消预约残留以精确preview/hash/apply/readback退出旧Action、保留Task/义务并由正常Planner物化新Action；过期来源不延时。无called/unknown删除或重放，无活动窗/15秒/内容审核限制放宽。发布及业务E4独立验收，不覆盖其他未实施设计。
+> **2026-09-09 卡死积压修复 resync：** `production-task-progress-repair-20260909-prd.md` R1/R3/R4为本次已授权实现合同：合法单阶段评论冻结实际调用角色；extra在LIMIT前扣同Task/day预算与待发工作；§19.68全历史未调用收口包含`task_account_portfolio_capacity_exhausted`。明确取消预约残留以精确preview/hash/apply/readback退出旧Action、保留Task/义务并由正常Planner物化新Action；原open义务及reserved未绑定预约复用冻结due/release，不追加到后序历史cursor，仍走来源容量/账号节奏rearm；过期来源不延时。无called/unknown删除或重放，无活动窗/15秒/内容审核限制放宽。发布及业务E4独立验收，不覆盖其他未实施设计。
 
 > **2026-09-08 完成量与全操作设计修复（当前产品合同）：** §19.65统一本轮两份审查的问题处置：独立任务部分可服务、Slow Mode账号作用域、真实时间容量、随机小窗后的合法重排、轻量准备路径、六类操作及验证/救援节奏。准入细节见频道成员设计§16，管理员救活见群成员恢复设计§14。本切片仅获设计修订授权，`design_status=complete`、`resync=true`、`implementation_status=not_started_for_this_slice`、`production_status=unproven`；下文旧切片的实现授权和验收记录不延伸到本切片。
 
