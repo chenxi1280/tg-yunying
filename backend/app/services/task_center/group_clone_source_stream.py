@@ -8,6 +8,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.timezone import as_beijing
+
 from app.models import AccountStatus, Task, TgAccount, TgAccountAuthorization
 from app.models.group_clone import CloneSourceEvent, CloneSourceStreamState
 from app.models.telegram_updates import (
@@ -146,7 +148,7 @@ def _apply_start_boundary(session, task, boundary) -> None:
         or update_state.state != "live"
         or not update_state.owner_id
         or update_state.lease_expires_at is None
-        or update_state.lease_expires_at <= _now()
+        or as_beijing(update_state.lease_expires_at) <= _now()
     ):
         raise RuntimeError("group_clone_shared_ingress_not_live")
     stream.channel_pts = channel_pts

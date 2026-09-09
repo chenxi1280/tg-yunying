@@ -3,6 +3,8 @@ from __future__ import annotations
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
+from app.timezone import as_beijing
+
 from app.models import Action, ExecutionAttempt, RemoteReconcileCase, Task
 from app.models.fulfillment_v2 import FulfillmentObligationProjection, FulfillmentRemoteFact
 from app.models.group_clone import (
@@ -134,7 +136,7 @@ def update_ingress_status(session: Session, task: Task) -> dict:
             TelegramAuthorizationUpdateDelivery.subscription_id == subscription.id,
             TelegramAuthorizationUpdateDelivery.delivery_state == "pending",
         )) or 0
-    lease_healthy = bool(state and state.owner_id and state.lease_expires_at and state.lease_expires_at > _now())
+    lease_healthy = bool(state and state.owner_id and state.lease_expires_at and as_beijing(state.lease_expires_at) > _now())
     return {
         "state_id": state.id if state else None,
         "session_generation": state.session_generation if state else None,

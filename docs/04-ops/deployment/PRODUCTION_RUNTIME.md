@@ -2,6 +2,8 @@
 
 ## 2026-09-09 独立群克隆媒体准入修复
 
+真实测试预检同时修复共享Ingress写入、Clone precheck/start/read-model对timestamptz的naive/aware比较；统一使用既有as_beijing，原租约到期与owner/fence门禁不变。发布后原Collector自行重试gap，不手工改游标或重放历史发送。
+
 `group_clone/v2_group_clone` 保留单媒体输入/输出拒绝结果，并逐项检查相册内容保护和规则拒绝；合法空 Caption 沿用媒体发送。无迁移、配置切换、任务激活或旧 Action/unknown 数据恢复。补丁随后续正式 Planner 生效，不能据此重放历史发送。Release Gate 见 `docs/05-implementation/group-clone-media-admission-fix-20260909.md`；部署后独立核对完整 SHA/runtime，并只读盘点 Clone Task/事件/义务/Action/映射。无真实测试范围时业务 E4 保持 unproven，不能以本地反例修复解除 Clone 专项 PRD §18.2 的完整交付闸门。
 
 ## 2026-09-09 入群申请私聊验证与文本筛查

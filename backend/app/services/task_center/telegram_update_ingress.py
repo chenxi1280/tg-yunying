@@ -10,6 +10,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.timezone import as_beijing
+
 from app.models.telegram_updates import (
     TelegramAuthorizationUpdateDelivery,
     TelegramAuthorizationUpdateEvent,
@@ -169,7 +171,7 @@ def _validate_collector_owner(state, owner_id, owner_fencing_epoch) -> None:
         raise ValueError("telegram_update_collector_state_not_writable")
     if state.owner_id != owner_id or state.owner_fencing_epoch != owner_fencing_epoch:
         raise ValueError("telegram_update_collector_fenced")
-    if state.lease_expires_at is None or state.lease_expires_at <= _now():
+    if state.lease_expires_at is None or as_beijing(state.lease_expires_at) <= _now():
         raise ValueError("telegram_update_collector_lease_expired")
 
 

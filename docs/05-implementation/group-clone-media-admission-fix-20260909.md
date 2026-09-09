@@ -38,3 +38,16 @@
 - rollback_plan：无schema变化；不以回滚恢复有缺陷发送逻辑，优先前向修复。任何回滚仍需新鲜生产状态核对，不重放unknown。
 - observe_window：部署完成时间为锚点；独立核对current/backend/worker SHA、health、CloneTask与领域计数。生产无CloneTask，已向用户请求受控源群/目标群/账号或现有Task ID，未明确前不能做真实写入验收。
 - 完整Clone PRD §18.2的历史交付缺口不在本次两个缺陷补丁内，保持原状态。
+
+## 用户指定真实测试与第二轮闭环
+
+用户补充真实测试范围：`https://t.me/zzxshxc` → `https://t.me/t01ces`，目标管理员 `@yangyuyan`。只读解析得到source peer=-1003298633687（OperationTarget 2801 / TgGroup 2821）、target peer=-1003987149407（平台尚未登记）；106/437两条平台账号均匹配该username，实时读取均为目标群creator且delete/pin/manage_topics=true。选用437作为控制账号，不把同一Telegram身份的两个平台记录当成两个不同发送人。
+
+运行前置发现：生产8个AuthorizationUpdateState均为gap，last_error为naive/aware datetime比较失败。按项目闭环返回产品阶段，新增专项PRD租约时区修订；修复Ingress写入校验、Clone precheck、start boundary、领域read model四处比较，使用既有as_beijing转换，不改租约时长、不手工重置gap。
+
+- 修复前36项时区反例：24 failed、12 passed，失败均为带时区数据库时间。
+- 修复后群克隆回归：112 passed / 31.20秒，包含76项媒体/既有用例及36项租约用例。
+- 独立本机PostgreSQL16实例：127.0.0.1:55456，专用tg_yunying_test数据库；完成blank schema迁移到0229，再执行6项真实timestamptz持久化/expire/readback/Ingress测试，6 passed / 8.88秒；测试事务回滚。未连接生产数据库执行单元测试。
+- 当前总定向证据为118个不重叠用例；各后端pytest进程硬超时60秒。
+- 首候选fcda17d0的Prepare Production 34331833229完整通过，但未Deploy；最终候选合并本轮修复后重新Prepare，不以旧SHA的通过代替新候选检查。
+- 用户已授权指定群测试，原“未提供范围”状态更新为“范围已明确，进行前置配置与正式任务链验收”。本次未授权给源群插入测试消息；Clone从启动后自然事件开始，完成后暂停测试任务，保留映射/unknown证据。

@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.timezone import as_beijing
+
 from app.models import (
     Action,
     OperationTarget,
@@ -434,7 +436,7 @@ def _update_ingress_ready(state) -> bool:
         and state.state == "live"
         and state.owner_id
         and state.lease_expires_at
-        and state.lease_expires_at > _now()
+        and as_beijing(state.lease_expires_at) > _now()
     )
 
 

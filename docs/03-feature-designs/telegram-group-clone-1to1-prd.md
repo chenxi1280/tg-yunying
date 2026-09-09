@@ -1043,3 +1043,7 @@ Intake `intake-20260909-local-review-fixes`。两个及以上媒体项必须通�
 Intake `intake-20260909-group-clone-audit`，L3/P1，用户已授权修复。反向检查已用真实 Planner/Dispatcher 复现三个发送边界越过反例：单图过滤、相册第二项过滤、相册第二项受保护。按 §7.1 保留规则拒绝语义，并对相册逐项执行既有内容保护合同；不新增任务类型、配置、人工审批流程或静默降级。`design_status=complete/resync=true` 仅指此次两个缺陷的修复设计。
 
 自检：API/UI沿用既有 filtered 与 waiting_manual_review 状态；原事件/config_snapshot不改写；过滤/保护检查先于发送 identity 与 Action 创建，不释放旧 unknown、不重放旧 Action；规则使用各事件冻结的版本，租户与路由身份继续沿用既有校验。定向 QA 必须覆盖单媒体输入和输出拒绝、相册首/后项拒绝与保护、合法无 Caption、实体变换人工审核、重复规划以及 typed fact/消息映射零新增。无需迁移或生产数据修改。此修复可以作为既有功能的缺陷补丁发布，不激活 Clone 任务，也不解除 §18.2 的完整群克隆交付门槛；生产 E4 仍须独立验证。
+
+### 真实测试预检修订：共享 Ingress 租约时区
+
+用户指定 `zzxshxc → t01ces`，管理员 `@yangyuyan`。当前生产8个共享Ingress状态均为gap，读取到naive/aware时间比较异常；反向检查发现Ingress写入校验、Clone precheck、start boundary、领域只读状态四处直接比较PostgreSQL timestamptz与平台北京时间naive clock。`design_status=complete/resync=true`：四处均通过项目`as_beijing`归一化后比较同一时刻，未来租约有效，到期相等即失效，缺owner/fence或已过期仍拒绝；不得直接去掉UTC时区或扩大租约。无需表迁移、手工改gap或重放事件，修复后由原Collector/任务生命周期推进。QA覆盖北京naive、北京aware、UTCaware的有效/过期/边界租约，以及真实PostgreSQL时间类型读回；此修订只修复测试暴露的运行前置缺陷，不替代完整Clone E4。
