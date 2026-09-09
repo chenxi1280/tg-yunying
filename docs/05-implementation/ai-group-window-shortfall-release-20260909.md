@@ -26,6 +26,8 @@
 
 ## 发布后填写
 
+- 首次Prepare 34361033434（2ceca87a）失败且未部署：新增PG窗口测试把tenant=1提交到共享public schema，后续test_account_profile_identity_postgres发生主键冲突。顺序本地反例1 failed/1 passed（8.66s）复现。修复仅测试：窗口与E4并发回归改用独立随机schema及原测试库会话锁，用完回收该schema；不改生产代码、不删除共享测试行、不跳检查。修复后含后继账号测试的顺序回归77 passed/20.01s；Ruff/diff通过，新SHA必须重新完整Prepare。
+
 - Prepare/Deploy run及候选完整SHA：
 - current/backend/18worker完整SHA、健康、API与迁移：
 - 逐Task新typed事实、当前日目标/coverage、窗口错位数量及首个阻断：

@@ -1,8 +1,8 @@
 from datetime import timedelta
 
+import pytest
 from sqlalchemy import select
 
-from app.database import SessionLocal
 from app.models import AccountBehaviorBudgetPolicyRevision, Action, Task, Tenant, TgAccount
 from app.services.task_center.engagement_behavior_sessions import ensure_behavior_session_plan
 from app.services.task_center.account_pacing_guard import (
@@ -11,6 +11,10 @@ from app.services.task_center.account_pacing_guard import (
 from tests.test_account_pacing_window_intersection import (
     DAY, DEADLINE, FIRST_END, FIRST_START, NEXT_START, _block, _reserve,
 )
+from tests.postgres_pacing_e4_fixture import factory as factory
+
+
+pytestmark = [pytest.mark.isolated_postgres, pytest.mark.allow_missing_rule_binding]
 
 
 def _setup_postgres(session):
@@ -35,8 +39,8 @@ def _setup_postgres(session):
     return task
 
 
-def test_window_claim_keeps_account_and_task_locks_until_commit():
-    with SessionLocal() as session:
+def test_window_claim_keeps_account_and_task_locks_until_commit(factory):
+    with factory() as session:
         task = _setup_postgres(session)
         reservation = _reserve(session, task, due=FIRST_START)
         mine = _block(session, task, at=FIRST_START)
@@ -46,7 +50,7 @@ def test_window_claim_keeps_account_and_task_locks_until_commit():
         _block(session, task, at=FIRST_END - timedelta(minutes=2), status="executing")
         action_id, task_id = mine.id, task.id
         session.commit()
-    with SessionLocal() as owner, SessionLocal() as contender:
+    with factory() as owner, factory() as contender:
         mine = owner.get(Action, action_id)
         decision = revalidate_action_pacing_before_claim(
             owner, mine, now_value=FIRST_END - timedelta(minutes=1),
