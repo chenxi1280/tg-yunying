@@ -6,6 +6,7 @@ from typing import Any
 from pydantic import BaseModel, Field, model_validator
 
 from .api import ApiModel
+from .screened_content import ScreenedContentOut
 
 
 class OperationTargetCreate(BaseModel):
@@ -181,7 +182,7 @@ class ChannelMessageCreate(BaseModel):
     published_at: datetime | None = None
 
 
-class ChannelMessageOut(ApiModel):
+class ChannelMessageOut(ScreenedContentOut):
     id: int
     tenant_id: int
     channel_target_id: int
@@ -193,7 +194,7 @@ class ChannelMessageOut(ApiModel):
     created_at: datetime
 
 
-class ChannelMessageCommentOut(ApiModel):
+class ChannelMessageCommentOut(ScreenedContentOut):
     id: int
     tenant_id: int
     channel_target_id: int
@@ -256,7 +257,7 @@ class OperationTargetInviteLinkExportOut(BaseModel):
     attempted_account_count: int
 
 
-class OperationTargetGroupMessageOut(BaseModel):
+class OperationTargetGroupMessageOut(ScreenedContentOut):
     id: int
     listener_account_id: int
     sender_name: str
@@ -295,7 +296,7 @@ class OperationTargetTaskHistoryOut(BaseModel):
     updated_at: datetime
 
 
-class OperationTargetSendRecordOut(BaseModel):
+class OperationTargetSendRecordOut(ScreenedContentOut):
     id: int
     content: str
     status: str
@@ -335,6 +336,7 @@ class OperationTargetDetailOut(BaseModel):
     sync_error: str = ""
     stats: dict[str, Any] = {}
     admission_retry: dict[str, Any] = Field(default_factory=dict)
+
 
 
 class OperationTargetMessageSyncOut(BaseModel):

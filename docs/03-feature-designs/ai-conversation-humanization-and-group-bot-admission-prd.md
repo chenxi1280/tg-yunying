@@ -889,3 +889,30 @@ target_admission_retry
 7. 为覆盖“Action 终态已提交、reservation 释放事务未提交”之间的进程退出，下一次锁定同一会话 speaker state 时必须检查不同 `reserved_action_id` 的 holder；holder 不存在或已终态时先清 reservation，再依据真实 `last_platform_*` 选择账号。当前同一 pending/executing Action 的 reservation 不得被该恢复误清。
 
 `speaker_rebind_fulfillment_repair_design_status=complete`。本节只补账号改绑幂等和资源释放，不改变话术策略、数量义务、准入或 Gateway 安全门。
+
+
+## 2026-09-09 入群审批私聊验证协议补充
+
+`design_status=complete`，`resync=true`。本节仅补充新发起的公开群入群申请在加入前的验证；§5.3中私聊消息不得直接改变既有群内admission或直接ready的规则仍成立。用户明确授权使用未加入账号验证通用引擎，测试正文为普通活群内容。
+
+### 只读反向检查与真实协议
+
+本轮账号515在2026-09-09 13:30:03前后的单次诊断调用收到Telegram“已提交入群申请”。目标peer 3298633687的当前管理员机器人peer 7996185880随后向同账号私聊发送“来自『目标群标题』的申请入群验证”，正文为数学二项式选择题，callback选项，明确60秒有效期。只读成员复查仍未加入。人工核对期间过期，未点击过期按钮、未重发申请。该证据证明私聊挑战存在，不证明验证已通过。无需用户事先知道机器人名称。
+
+### 开发合同
+
+- 正式ensure_target_membership/ensure_channel_membership对group且auto_resolve_verification启用时进入新协议；关闭开关继续返回明确待审批事实，不自动答题。默认沿用任务已有开关，不增加隐式外部来源。
+- 新申请前，使用原执行账号/原transport读取目标的管理员bot和各私聊最新message ID，冻结稳定群peer、标题、bot peer和游标。仅对公开可解析审批群采集此表面；读取失败明确暴露，不能用非管理员bot替代。
+- 明确捕获InviteRequestSentError，记录join_request_submitted与pending_approval，不写joined。响应丢失仍unknown，不推断申请已经成功。
+- 在该申请的60秒协议窗口内，只读等待冻结管理员bot向同账号发来的新私聊。要求sender精确匹配、ID高于申请前游标、时间不早于申请、模板精确指向冻结群标题、题目声明有效期且未过期。普通消息、旧题、其他群题、非管理员bot、多个冲突候选不驱动按钮。
+- 本次真实协议支持二整数加减乘整除选择题；确定性计算、不调用模型、不执行文本代码。只能提交当前题目中唯一匹配答案的callback按钮，不点击URL、不发任意私聊文字或关注频道。未知题型明确留待处理，不假装通过。
+- 提交前重新读取原题及当前管理员身份，内容/按钮hash变化或过期则不提交。一次原题callback最多调用一次；进程退出/timeout或回执未知留原Action不重放，不重发JoinChannel。
+- callback回执与成员事实分别记录。只有GetParticipant读取到本账号确实属于冻结群才返回membership_status=joined；dispatcher继续原发言权限检查和入群后C2观察，私聊答案不直接赋予can_send或ready。
+- Gateway返回结构化join_request_evidence（群peer、bot peer、题目ID/hash、callback hash、回执和成员事实），写入原Action/Attempt；不输出私聊全文、回调字节或账号秘密。
+- 未完成的申请保持业务待审批和现有不可重放状态，明确join_request_pending，不按普通权限失败触发反复入群/拉人/解禁组合。申请及callback结果明确时仍保留原已配置救援管理员审批入口，独立权限读回成功后进入正常准入；callback结果未知时不能接着审批。历史unknown不自动迁移；原申请的独立成员只读对账保持现有合同。
+
+### QA与线上验收
+
+隔离测试覆盖：真实Telethon异常类型、普通群不读私聊、开关关闭、旧题/错群/非管理员/重复答案/变更/过期均零callback、回执丢失不重试、callback ACK不等于成员、成员确认后仍检查发言。新函数控制50行内，独立协议模块不超过500行。
+
+生产验收须依次记录原Task/Action/Attempt、申请、bot挑战、callback、成员和权限；本轮首次诊断证据不能代替新版本E4。无数据库迁移，正常master→release→Deploy Production；独立复核SHA和runtime后，以无未决申请的单账号测试或原请求只读对账验证。整群/关联任务不因第三方广告命中而隔离。

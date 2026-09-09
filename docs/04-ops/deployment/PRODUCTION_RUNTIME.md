@@ -1,5 +1,12 @@
 # TG 运营管理平台生产部署说明
 
+## 2026-09-09 入群申请私聊验证与文本筛查
+
+公开审批群的新入群申请沿用Task的`auto_resolve_verification`开关；新协议在申请前冻结管理员bot私聊游标，处理同账号当前申请的新数学callback题，独立读回成员后继续既有发言权限和C2。未知题型/过期/回执未知不重试原申请，Action保留不可重放状态并显示`membership_status=pending_approval`；结构化`join_request_evidence`保存在原Action/Attempt。无数据库迁移，不自动恢复历史unknown或既有过期申请。实际协议及验收合同见群管准入PRD末节。
+
+来源/上下文/学习/最终发送入口和公开正文序列化拒绝确定性规则命中的性交易广告文本；不因第三方消息命中而隔离整群、暂停任务或改变既有测试配置。规则不覆盖全部纯媒体/隐语，不承诺完整语义检出。发布Gate见`docs/05-implementation/group-join-private-verification-20260909.md`；独立核对部署SHA/runtime后再做真实单账号准入验证，按钮ACK不算成员成功。
+
+
 ## 2026-09-09 活群独立推进修复
 
 统一引擎PRD§19.68：正式Planner独立提交当前任务日基础；成员批次空和coverage分页不可阻塞其他已准入账号；可证明未调用的受阻正文Action跳过并释放本次名额，原义务保留。无迁移、配置切换或存量数据维护；随正常Planner/Dispatcher生效，不重放unknown。发布后分别核对完整SHA/runtime、两任务当前日ledger/target/slot、旧日身份保持、跳过动作的未执行事实与新消息远端事实。Release Gate见`docs/05-implementation/ai-group-independent-progress-20260909.md`，没有新消息证据不能标记production_fixed。

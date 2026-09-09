@@ -9,6 +9,7 @@ from typing import Any
 from urllib.parse import quote
 
 from app.config import Settings, get_settings
+from app.content_safety import CONTENT_BLOCK_REASON, outbound_segments_blocked
 from app.image_fingerprint import image_avatar_perceptual_hash
 from . import telethon_content, telethon_updates
 from .authorization_fingerprint import authorization_fingerprint_digest
@@ -1671,6 +1672,8 @@ class TelethonTelegramGateway(TelegramGateway):
         reply_to_message_id: int | None = None,
         connect_timeout_seconds: float | None = None,
     ) -> SendResult:
+        if outbound_segments_blocked(content, segments):
+            return SendResult(False, failure_type=CONTENT_BLOCK_REASON, detail="性交易广告内容已屏蔽", remote_mutation_started=False)
         raw_session = decrypt_session(session_ciphertext)
         if not raw_session:
             return SendResult(False, failure_type=FailureType.ACCOUNT_UNAVAILABLE.value, detail="账号没有可用 session", remote_mutation_started=False)
@@ -2054,43 +2057,27 @@ class TelethonTelegramGateway(TelegramGateway):
         channel_peer_id: str,
         credentials: DeveloperAppCredentials,
         invite_link: str = "",
+        *,
+        verify_join_request: bool = False,
     ) -> ChannelMembershipResult:
+        from .channel_membership_gateway import ensure_membership
+
         raw_session = decrypt_session(session_ciphertext)
         if not raw_session:
             return ChannelMembershipResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "账号没有可用 session", "failed", remote_mutation_started=False)
-        mutation_rpc_started = False
         try:
-            from telethon import functions
-            from telethon.errors import UserAlreadyParticipantError
-
             client = await self._get_or_create_client(credentials, raw_session)
             if not await client.is_user_authorized():
                 return ChannelMembershipResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "session 已失效", "failed", remote_mutation_started=False)
             target = (invite_link or channel_peer_id or "").strip()
             if not target:
                 return ChannelMembershipResult(False, "失败", FailureType.PEER_INVALID.value, "缺少频道地址", "failed", remote_mutation_started=False)
-            invite_hash = _telegram_invite_hash(target)
-            if invite_hash:
-                request = functions.messages.ImportChatInviteRequest(invite_hash)
-                try:
-                    mutation_rpc_started = True
-                    await client(request)
-                except UserAlreadyParticipantError:
-                    return ChannelMembershipResult(True, detail="already_joined", membership_status="already_joined", remote_mutation_started=False)
-            else:
-                entity_ref: int | str = int(target) if target.lstrip("-").isdigit() else target.lstrip("@")
-                entity = await client.get_entity(entity_ref)
-                request = functions.channels.JoinChannelRequest(entity)
-                mutation_rpc_started = True
-                await client(request)
-            return ChannelMembershipResult(True, detail="joined", membership_status="joined", remote_mutation_started=True)
         except Exception as exc:
             mapped = self._map_send_error(exc)
-            return ChannelMembershipResult(
-                False, "失败", mapped.failure_type or FailureType.PEER_INVALID.value,
-                mapped.detail or str(exc), "failed",
-                remote_mutation_started=None if mutation_rpc_started else False,
-            )
+            return ChannelMembershipResult(False, "失败", mapped.failure_type or FailureType.UNKNOWN.value,
+                mapped.detail or str(exc), "failed", remote_mutation_started=False)
+        return await ensure_membership(client, target, invite_hash=_telegram_invite_hash(target),
+                                       verify_join_request=verify_join_request, map_error=self._map_send_error)
 
     def ensure_channel_membership(
         self,
@@ -2100,8 +2087,9 @@ class TelethonTelegramGateway(TelegramGateway):
         credentials: DeveloperAppCredentials | None = None,
         *,
         invite_link: str = "",
+        verify_join_request: bool = False,
     ) -> ChannelMembershipResult:
-        return self._run(self._ensure_channel_membership_async(session_ciphertext, channel_peer_id, self._usable_credentials(credentials), invite_link))
+        return self._run(self._ensure_channel_membership_async(session_ciphertext, channel_peer_id, self._usable_credentials(credentials), invite_link, verify_join_request=verify_join_request))
 
     async def _follow_group_bot_required_channel_async(
         self,
@@ -2604,6 +2592,8 @@ class TelethonTelegramGateway(TelegramGateway):
         thread_root_message_id: int = 0,
         connect_timeout_seconds: float | None = None,
     ) -> SendResult:
+        if outbound_segments_blocked(content):
+            return SendResult(False, failure_type=CONTENT_BLOCK_REASON, detail="性交易广告内容已屏蔽", remote_mutation_started=False)
         raw_session = decrypt_session(session_ciphertext)
         if not raw_session:
             return SendResult(
@@ -2680,6 +2670,8 @@ class TelethonTelegramGateway(TelegramGateway):
         thread_root_message_id: int = 0,
         connect_timeout_seconds: float | None = None,
     ) -> SendResult:
+        if outbound_segments_blocked("", [segment]):
+            return SendResult(False, failure_type=CONTENT_BLOCK_REASON, detail="性交易广告内容已屏蔽", remote_mutation_started=False)
         raw_session = decrypt_session(session_ciphertext)
         if not raw_session:
             return SendResult(False, failure_type=FailureType.ACCOUNT_UNAVAILABLE.value, detail="账号没有可用 session", remote_mutation_started=False)
@@ -3934,6 +3926,8 @@ class TelethonTelegramGateway(TelegramGateway):
         session_ciphertext: str | None,
         credentials: DeveloperAppCredentials,
     ) -> SendResult:
+        if outbound_segments_blocked(content):
+            return SendResult(False, failure_type=CONTENT_BLOCK_REASON, detail="性交易广告内容已屏蔽", remote_mutation_started=False)
         from telethon import functions, types
         client = await self._authorized_client(session_ciphertext, credentials, error_message="raw send requires a valid session")
         target = await resolve_telethon_target(client, peer_id)

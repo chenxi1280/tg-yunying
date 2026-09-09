@@ -5475,19 +5475,28 @@ def _dispatch_channel_membership(session: Session, action: Action, account: TgAc
     result, payload, fallback_ref = _ensure_membership_with_peer_candidates(ctx)
     runtime_ctx = MembershipDispatchContext(session, action, account, credentials, payload, attempt)
     _record_membership_peer_ref(action, payload, fallback_ref)
-    if _apply_frozen_membership_result(runtime_ctx, result):
+    return _apply_channel_membership_result(runtime_ctx, result)
+
+
+def _apply_channel_membership_result(ctx, result) -> bool:
+    session, action, account = ctx.session, ctx.action, ctx.account
+    credentials, payload, attempt = ctx.credentials, ctx.payload, ctx.attempt
+    _record_join_request_evidence(action, result)
+    if _hold_pending_join_request(ctx, result):
+        return True
+    if _apply_frozen_membership_result(ctx, result):
         return True
     if result.ok:
         probe_result = _probe_joined_group_send_permission(session, action, account, credentials, payload)
         if probe_result is not None and not probe_result.ok:
             _clear_group_bot_admission_window(action)
-            return _handle_group_send_permission_denied(runtime_ctx, probe_result, membership_status="joined", skip_on_failure=False)
+            return _handle_group_send_permission_denied(ctx, probe_result, membership_status="joined", skip_on_failure=False)
         _mark_membership_joined(session, action, account, payload)
     elif result.failure_type == FailureType.GROUP_PERMISSION_DENIED.value:
         _clear_group_bot_admission_window(action)
-        return _handle_group_send_permission_denied(runtime_ctx, result, membership_status="joined", skip_on_failure=True)
+        return _handle_group_send_permission_denied(ctx, result, membership_status="joined", skip_on_failure=True)
     elif _membership_requires_admin_rescue(result):
-        rescued = _try_admin_lift_restriction_and_join(runtime_ctx, _membership_result_detail(result))
+        rescued = _try_admin_lift_restriction_and_join(ctx, _membership_result_detail(result))
         if rescued.ok:
             _clear_group_bot_admission_window(action)
             _apply_operation_result(action, account, True, "", rescued.detail or "admin_rescue_joined", attempt=attempt)
@@ -5496,7 +5505,7 @@ def _dispatch_channel_membership(session: Session, action: Action, account: TgAc
         result = rescued
     result_detail = _membership_result_detail(result)
     if result.failure_type == FailureType.FLOOD_WAIT.value:
-        _maybe_trigger_membership_rate_limit_rescue(runtime_ctx, result_detail)
+        _maybe_trigger_membership_rate_limit_rescue(ctx, result_detail)
     failure_type = _classify_membership_failure(result.failure_type, result_detail)
     _clear_group_bot_admission_window(action)
     _apply_operation_result(
@@ -5718,6 +5727,44 @@ def _join_after_admin_restriction_lift(
     return OperationResult(True, "已处理", detail=f"admin_rescue_{joined.membership_status or 'joined'}")
 
 
+def _record_join_request_evidence(action, result) -> None:
+    evidence = getattr(result, "join_request_evidence", None)
+    if evidence:
+        action.result = {**dict(action.result or {}), "join_request_evidence": evidence}
+
+
+def _hold_pending_join_request(ctx, result) -> bool:
+    if getattr(result, "membership_status", "") != "pending_approval":
+        return False
+    _clear_group_bot_admission_window(ctx.action)
+    if _complete_pending_join_admin_approval(ctx, result):
+        return True
+    _apply_unknown_gateway_result(ctx.action, "join_request_pending", result.detail)
+    ctx.action.executed_at = _now()
+    ctx.action.result = {**dict(ctx.action.result or {}), "membership_status": "pending_approval",
+                         "auto_check": "等待审批", "validation_stage": "join_request_approval"}
+    _finish_execution_attempt(ctx.attempt, ctx.action, failure_type="join_request_pending",
+                              detail=result.detail, remote_mutation_started=_operation_mutation_state(result))
+    return True
+
+
+def _complete_pending_join_admin_approval(ctx, result) -> bool:
+    if _operation_mutation_state(result) is not True:
+        return False
+    approved = _try_admin_approve_join_request(ctx, result.detail)
+    if not approved.ok:
+        return False
+    _mark_membership_joined(ctx.session, ctx.action, ctx.account, ctx.payload)
+    evidence = dict((ctx.action.result or {}).get("join_request_evidence") or {})
+    ctx.action.result = {**dict(ctx.action.result or {}), "membership_status": "joined",
+                         "join_request_approved": True, "join_request_approval_permission_observed": True,
+                         "join_request_evidence": {**evidence, "membership_observed": True,
+                             "membership_observation_source": "administrator_approval_permission_probe"}}
+    _apply_operation_result(ctx.action, ctx.account, True, detail=approved.detail, attempt=ctx.attempt,
+                            remote_mutation_started=True)
+    return True
+
+
 def _ensure_membership_with_peer_candidates(ctx: MembershipDispatchContext):
     if _capture_group_bot_join_baseline(ctx):
         ctx.session.commit()
@@ -5809,6 +5856,7 @@ def _ensure_membership_refs(
             ctx.account.session_ciphertext,
             ctx.credentials,
             invite_link=_membership_invite_for_ref(ctx.payload, ref),
+            verify_join_request=(candidate.target_type == "group" and _auto_verification_enabled(ctx.session, ctx.action)),
         )
         selected_payload = candidate
         fallback_ref = fallback_ref or (ref if ref != ctx.payload.channel_id else "")

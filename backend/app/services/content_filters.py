@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import ContentKeywordRule, TgGroup
+from app.content_safety import content_screening_reason
 
 
 GENERATED_TEMPLATE_MARKERS = (
@@ -200,6 +201,9 @@ def filter_outbound_content(
     cleaned = re.sub(r"\s+", " ", str(content or "")).strip()
     if not cleaned:
         return ContentFilterResult(False, "", "内容为空")
+    safety_reason = content_screening_reason(cleaned)
+    if safety_reason:
+        return ContentFilterResult(False, "", safety_reason)
     if _looks_like_internal_prompt(cleaned):
         return ContentFilterResult(False, "", "拦截内部提示词")
     if looks_like_ai_meta_content(cleaned):
@@ -235,6 +239,8 @@ def filter_outbound_content(
 
 
 def rewrite_rejected_content(session: Session, *, tenant_id: int, group: TgGroup, content: str) -> ContentFilterResult:
+    if content_screening_reason(content):
+        return ContentFilterResult(False, "", content_screening_reason(content))
     cleaned = re.sub(r"\s+", " ", str(content or "")).strip()
     for rule in tenant_keyword_rules(session, tenant_id):
         keyword = rule.keyword.strip()

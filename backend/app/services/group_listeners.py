@@ -87,7 +87,9 @@ def apply_group_listener_accounts(session: Session, group: TgGroup, account_ids:
 
 
 def recent_context_messages(session: Session, group: TgGroup, limit: int | None = None) -> list[GroupContextMessage]:
-    return list(
+    from app.content_safety import content_screening_reason
+
+    rows = list(
         session.scalars(
             select(GroupContextMessage)
             .where(GroupContextMessage.tenant_id == group.tenant_id, GroupContextMessage.group_id == group.id)
@@ -95,6 +97,7 @@ def recent_context_messages(session: Session, group: TgGroup, limit: int | None 
             .limit(limit or group.listener_context_limit)
         )
     )
+    return [row for row in rows if not content_screening_reason(row.content)]
 
 
 def listener_account_summaries(session: Session, group: TgGroup) -> list[dict]:

@@ -423,6 +423,7 @@ class TelegramGateway:
         credentials: DeveloperAppCredentials | None = None,
         *,
         invite_link: str = "",
+        verify_join_request: bool = False,
     ) -> ChannelMembershipResult:
         target = channel_peer_id or invite_link
         if "blocked" in target.lower():

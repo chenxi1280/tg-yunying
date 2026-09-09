@@ -3,6 +3,7 @@ import re
 from datetime import timedelta
 
 from app.timezone import as_beijing
+from app.content_safety import content_screening_reason
 from .source_pacing import rolling_source_window
 
 
@@ -25,6 +26,9 @@ def source_window_end(task, message):
 
 
 def source_filter_reason(message, *, task_type: str) -> str:
+    safety_reason = content_screening_reason(message.content_preview or "")
+    if safety_reason:
+        return safety_reason
     if task_type not in {"channel_comment", "channel_like"}:
         return ""
     metadata = dict(message.source_metadata or {})

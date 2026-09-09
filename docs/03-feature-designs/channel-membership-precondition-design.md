@@ -554,3 +554,8 @@ QA 使用真实入口证明“可信提示识别 → handler → 持久阶段 �
 ### 17.6 本地修复审查与验收（2026-09-08 resync）
 
 六项修复分为候选筛选（缺失or_导入）、算术完整性/中文数字、观察失败计数/当天终止，以及救援完成补领。无前端/API变更；既有状态展示消费明确blocker。§17.2主动测试消息属于原设计范围，本次六项修复不据此宣称已实现或已通过真实主动探测。开发交接、测试和Release Gate见 `docs/05-implementation/local-review-fixes-20260908.md`；设计已反查真实候选、Gateway提交、观察、Planner恢复和持续执行器入口，`design_status=complete`，进入dev。
+
+
+## 2026-09-09 审批群私聊验证补充
+
+公开group的新入群申请接入管理员机器人私聊数学callback协议，精确合同见`ai-conversation-humanization-and-group-bot-admission-prd.md`末节。InviteRequestSentError是已提交申请、尚未成为成员，不能标joined或按普通权限失败重发申请。新题绑定原账号/目标/管理员bot/申请前游标；一次callback后独立GetParticipant确认，再走发言权限与C2。未确认保留不可重放状态和pending_approval业务事实；历史unknown不重试。无迁移，resync=true。

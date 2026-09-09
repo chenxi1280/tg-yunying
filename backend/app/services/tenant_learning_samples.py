@@ -22,6 +22,7 @@ from app.models import (
 )
 from app.services._common import _now
 from app.services.content_filters import contains_coarse_language
+from app.content_safety import content_screening_reason
 from app.services.tenant_target_profile import ensure_quality_rule
 
 
@@ -227,6 +228,9 @@ def _classify_sample(
     is_media: bool = False,
 ) -> tuple[str, int, str, TenantLearningQualityRule]:
     rule = ensure_quality_rule(session, tenant_id)
+    safety_reason = content_screening_reason(text)
+    if safety_reason:
+        return "rejected", 0, safety_reason, rule
     identity = rule.identity_filters or {}
     text_filters = rule.text_filters or {}
     forbidden = rule.forbidden_patterns or {}

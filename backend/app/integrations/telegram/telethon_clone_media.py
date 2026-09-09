@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from app.content_safety import CONTENT_BLOCK_REASON, content_screening_reason
 
 from .contracts import SendResult
 from .telethon_utils import resolve_telethon_target
@@ -16,6 +17,9 @@ async def send_clone_media(
     reply_to_message_id: int | None,
     target_top_message_id: int | None,
 ) -> SendResult:
+    if content_screening_reason("\n".join(str(item.get("content") or "") for item in items)):
+        return SendResult(False, failure_type=CONTENT_BLOCK_REASON,
+                          detail="性交易广告内容已屏蔽", remote_mutation_started=False)
     from telethon import functions, types
 
     try:

@@ -60,6 +60,7 @@ class OperationResult:
 @dataclass(frozen=True)
 class ChannelMembershipResult(OperationResult):
     membership_status: str = "joined"
+    join_request_evidence: dict = field(default_factory=dict, kw_only=True)
 
 
 @dataclass(frozen=True)

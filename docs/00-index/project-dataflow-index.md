@@ -1,5 +1,10 @@
 # 项目数据流转索引
 
+> **2026-09-09 审批群准入 resync：** Task/Action/Attempt → 原账号transport → 申请前管理员bot游标 → JoinChannel → InviteRequestSent → 新私聊数学题 → 原题单次callback → GetParticipant → 原发言权限/C2。join_request_evidence逐阶段区分回执和成员事实；待审批保留不可重放状态。无历史unknown自动重发。
+
+
+> **2026-09-09 内容筛查 resync：** 用户澄清发送内容为正常活群与引擎测试。仅筛查实际广告内容，不因第三方历史消息命中而自动隔离整群或暂停任务。来源/上下文/学习/最终发送与公开正文序列化采用文本筛查；历史审计保持。详见 `docs/03-feature-designs/sexual-commerce-content-screening-design.md`。本地实现待发布，入群验证协议尚待闭合。
+
 > **2026-09-09 任务话题预约 resync（统一§19.69）：** 同群/Task/任务日计划锁 → ordinal 计划资格 → 已确认普通正文 C、话题 T、话题 unknown U、话题预约 R → `(T+U+R+1)/(C+U+R+1)` 容量检查 → immutable topic 或现有 non-topic intent → Provider/Action → 原 Gateway 可见比例检查 → typed message fact。active non-topic 不再给新 topic 预约提供远端分母；历史 intent/unknown 不变，数量与 coverage 仍按原目标验收。
 
 > **2026-09-09 活群独立推进设计resync（§19.68，待发布）：** 正式Planner先独立提交当前任务日ledger/目标/coverage/槽，再进入原重试与正文事务；后续准入/内容竞争不得回滚日初始化。成员批次空只影响该批次；正文PlanningAdmissionSnapshot的可发送集合必须在coverage SQL LIMIT之前过滤，超过20条未入群/不可发送前缀不得饿死后方ready账号。完整目标、旧日unknown/fact及冻结容量身份保留。`ai_group_pre_gateway_discard.py`按全历史未调用证据跳过受阻Action、释放精确coverage名额；正式fact结算保留open义务。交接见`docs/05-implementation/ai-group-independent-progress-20260909.md`。

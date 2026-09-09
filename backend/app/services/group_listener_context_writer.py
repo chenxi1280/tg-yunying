@@ -10,6 +10,7 @@ from app.models import GroupBotAdmission, GroupContextMessage, TgAccount, TgGrou
 from .group_context_messages import try_insert_context_message
 from .required_channel_prompts import apply_required_channel_prompt_admission
 from .source_media import ensure_source_media_asset
+from .content_screening import reject_unsafe_snapshot
 from .tenant_learning_samples import record_group_learning_sample as record_tenant_group_learning_sample
 
 
@@ -29,6 +30,8 @@ def insert_context_snapshots(
     track_ai_context = ai_context_tracking_enabled(session, group)
     inserted = 0
     for snapshot in snapshots:
+        if reject_unsafe_snapshot(session, group, snapshot):
+            continue
         # Control-event path runs before context dedupe / ignore / learning filters.
         _process_group_bot_control_event(session, group, snapshot)
         _refresh_existing_control_buttons(session, group, snapshot)
