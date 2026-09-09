@@ -124,7 +124,7 @@ def consume_clone_deliveries(session: Session, task: Task, *, limit: int = 200) 
             TelegramAuthorizationUpdateDelivery.normalized_item_index,
         )
         .limit(limit)
-        .with_for_update()
+        .with_for_update(of=TelegramAuthorizationUpdateDelivery)
     ).all()
     consumed = 0
     for delivery, envelope in rows:

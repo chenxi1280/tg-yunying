@@ -167,7 +167,7 @@ def _delivery_statement(task: Task, limit: int):
             TelegramAuthorizationUpdateDelivery.normalized_item_index,
         )
         .limit(max(1, int(limit)))
-        .with_for_update()
+        .with_for_update(of=TelegramAuthorizationUpdateDelivery)
     )
 
 

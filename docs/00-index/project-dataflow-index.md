@@ -1652,3 +1652,4 @@ legacy-only A 冷启动分支固定为 `frozen legacy A -> 原 A Session 只读 
 
 - Clone启动数据流：pending/start_from_now → listener Collector → 每Task锁定并读取Telegram起始boundary → stream/subscription/running/PlannerWake同事务提交 → Planner物化；Planner不执行boundary RPC，失败保留start_failed及零发送事实。
 - 共享订阅准备事务：AI源发现 → 评论选路 → AI/评论订阅既有锁定与持久化 → commit → Collector；共享authorization state锁不得跨入后续慢选路，现有订阅边界与fencing不变。
+- 共享更新消费：关联读取Event/Subscription/AuthorizationState → 仅锁当前Delivery → 领域消费与delivery终态同事务提交；Collector可并行领取授权和fanout新delivery，同一delivery仍互斥，Clone stream锁继续保护PTS顺序。
