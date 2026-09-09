@@ -1,5 +1,11 @@
 # E4报告完整性修复与验证
 
+## 最终整合状态（2026-09-09 23:13）
+
+以下独立分支阶段记录保留历史语境。用户随后授权统一修复部署，root已整合本切片，并补齐真实PostgreSQL快照/拒写回归及规范primary quantity slot身份关联。最终158项定向、Prepare34366995665完整14项、Deploy34367948474均通过；生产backend+18worker完整SHA839c7b19c419592e9c41b7b8e3a66c80511f300c一致且健康。
+
+已部署正式只读CLI以23:08:38最终发布锚点读到6条新typed消息；以22:41窗口修复锚点另读到37条，不混加。当前开放队列及样本日账本关联正常，原payload字段缺失导致漏计的问题已修正。10个Task全日数量/覆盖仍未通过，不将报告修复当成业务全部恢复。完整证据与逐Task矩阵见ai-group-window-shortfall-release-20260909.md最终章节。
+
 - intake_id: production-e4-reporting-integrity-20260909；L3/P1。
 - PRD: `docs/03-feature-designs/production-e4-reporting-integrity-prd.md`，先完成产品合同与反向检查，再实施。
 - 基线2839c10f；独立分支codex/e4-reporting-integrity-20260909。

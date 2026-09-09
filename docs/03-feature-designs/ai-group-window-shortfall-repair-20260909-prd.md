@@ -4,7 +4,7 @@
 
 - intake_id: AI-GROUP-WINDOW-SHORTFALL-20260909；L3/P1。
 - 用户原话：“你来把问题修复好后统一部署测试”。范围为本任务已经只读定位的AI活群低履约；代码修复、定向测试、统一候选和正式发布已获授权。
-- 当前阶段：dev→qa→product；W1/W5 design_status=complete；全量业务恢复仍unproven。W2保留现行来源间隔/独占预约合同，W3本次反查没有证实新分配回归，W4外部准入及unknown不得伪造闭合。
+- 当前阶段：prod-diagnosis；W1/W5 design_status=complete，实现/158定向/完整CI及正式部署通过，生产SHA839c7b19。全量10任务仍未达标；W2保留现行来源间隔/独占预约合同，W3本次反查没有证实新分配回归，W4外部准入及unknown不得伪造闭合。最终逐Task证据见统一Release Gate末节。
 - 原生产锚点5088d001：21:33:14全部10个未删除running活群，当前日投影应完成17979、确认720；最近30分typed消息65、来源节奏推迟277次。21:34:54独立快照到时ready1087，1059不在既有必需活动窗，release未来0。两快照不混算。
 - 主工作树存在其他任务变更；本切片在独立worktree `codex/ai-group-window-shortfall-20260909` 基于fa26ddbd实现。Clone当前候选部署/受控验收期间不移动master/release；后续统一候选另行审查。
 
@@ -25,12 +25,12 @@
 
 ## Product Design Complete待验证清单
 
-- [ ] 当前生产精确样本及其原预约/窗口/Attempt链。
-- [ ] W1/W2真实入口可复现反例及当前产品合同兼容性。
-- [ ] 窗口与时间线交集算法、终止条件、deadline半开边界及无解显式状态。
-- [ ] 原准备/已调用/unknown及跨日身份不变；锁序与幂等无额外副作用。
-- [ ] QA反例、并发PG、旧legacy与其他adapter回归。
-- [ ] 发布Gate、独立SHA/runtime、逐任务typed事实与日目标缺口读回。
+- [x] 当前生产精确样本及其原预约/窗口/Attempt链。
+- [x] W1/W2真实入口可复现反例及当前产品合同兼容性。
+- [x] 窗口与时间线交集算法、终止条件、deadline半开边界及无解显式状态。
+- [x] 原准备/已调用/unknown及跨日身份不变；锁序与幂等无额外副作用。
+- [x] QA反例、并发PG、旧legacy与其他adapter回归。
+- [x] 发布Gate、独立SHA/runtime、逐任务typed事实与日目标缺口读回；已完成读回不等于业务通过，10任务仍未达标，新建预约线上样本未出现。
 
 每个切片设计闭合前不实施其生产代码。上线后有部分新增消息不等于全日达标；无法在原窗口弥补的历史缺口仍如实记录。
 
