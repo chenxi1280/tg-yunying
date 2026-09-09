@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.models import GenerationJob, Task
 from app.services._common import _now
-from app.services.task_center import ai_generator, comment_generation_worker as worker
+from app.services.task_center import ai_generator, comment_generation_worker as worker, runtime_resources
 from app.services.task_center.ai_generation_claim_lifecycle import mark_generation_claim
 from app.services.task_center.legacy_generation_timing import legacy_generation_execution_path
 from app.services.task_center.generation_timing_binding import bind_generation_timing_config, TIMING_CONFIG_KEY
@@ -97,14 +97,47 @@ def test_old_finally_cannot_release_new_owner_or_its_resources(monkeypatch):
         claim = worker.CommentGenerationClaim(action.id, "old-owner", "old-token")
         mark_generation_claim(action, "new-owner", "new-token")
         session.commit()
-        releases = []
-        monkeypatch.setattr(worker, "_release_runtime_resources", lambda item: releases.append(item.id))
+        reservation = runtime_resources._RuntimeReservation(account_id=action.account_id)
+        monkeypatch.setitem(runtime_resources._ACTION_RESERVATIONS, action.id, reservation)
         factory = lambda: Session(session.get_bind())
         worker._release_comment_generation_claim(factory, claim)
         session.expire_all()
         assert action.status == "executing"
         assert action.claim_owner == "new-owner" and action.claim_token == "new-token"
-        assert releases == []
+        assert runtime_resources._ACTION_RESERVATIONS[action.id] is reservation
+        with pytest.raises(RuntimeError, match="comment_generation_action_claim_lost"):
+            worker._process_comment_generation(factory, claim,
+                dependencies=worker.PRODUCTION_COMMENT_GENERATION_DEPENDENCIES)
+        assert runtime_resources._ACTION_RESERVATIONS[action.id] is reservation
+
+
+@pytest.mark.parametrize("initial_reservation", [False, True])
+def test_processing_preserves_replacement_runtime_reservation(monkeypatch, initial_reservation):
+    with comment_dispatch_session() as session:
+        action = seed_dispatch_scope(session)
+        claim = worker.CommentGenerationClaim(action.id, "old-owner", "old-token")
+        mark_generation_claim(action, claim.owner, claim.token)
+        session.commit()
+        reservations = {}
+        if initial_reservation:
+            reservations[action.id] = runtime_resources._RuntimeReservation(account_id=action.account_id)
+        monkeypatch.setattr(runtime_resources, "_ACTION_RESERVATIONS", reservations)
+        replacement = runtime_resources._RuntimeReservation(account_id=action.account_id)
+
+        def replace_owner(current, item, **kwargs):
+            mark_generation_claim(item, "new-owner", "new-token")
+            current.commit()
+            reservations[item.id] = replacement
+            raise ValueError("QA-owner-replaced")
+
+        monkeypatch.setattr(worker, "ensure_post_comment_content", replace_owner)
+        factory = lambda: Session(session.get_bind())
+        with pytest.raises(ValueError, match="QA-owner-replaced"):
+            worker._process_comment_generation(factory, claim,
+                dependencies=worker.PRODUCTION_COMMENT_GENERATION_DEPENDENCIES)
+        session.expire_all()
+        assert action.claim_owner == "new-owner"
+        assert runtime_resources._ACTION_RESERVATIONS[action.id] is replacement
 
 
 def test_exception_after_durable_provider_start_preserves_unknown(monkeypatch):

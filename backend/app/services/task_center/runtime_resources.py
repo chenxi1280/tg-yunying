@@ -86,6 +86,17 @@ def _release_owned_runtime_reservation(action_id: str, reservation: _RuntimeRese
     _release_reservation_tokens(reservation)
 
 
+@contextmanager
+def action_runtime_reservation_scope(action_id: str):
+    with _IN_FLIGHT_LOCK:
+        reservation = _ACTION_RESERVATIONS.get(action_id)
+    try:
+        yield
+    finally:
+        if reservation is not None:
+            _release_owned_runtime_reservation(action_id, reservation)
+
+
 def _reserve_runtime_resources(action: Action) -> bool:
     if _uses_fact_first_contract(action):
         with _IN_FLIGHT_LOCK:

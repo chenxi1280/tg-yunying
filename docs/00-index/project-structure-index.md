@@ -1,5 +1,7 @@
 # 项目结构索引
 
+> **2026-09-09 评论领取本地资源补正：** `runtime_resources.action_runtime_reservation_scope`捕获本次Action已有reservation对象并复用identity-checked释放；`comment_generation_worker`确认本次DB owner后在生成处理周围使用该scope，分别保护新DB owner与新本地reservation。CI旧claim-loss回归及新替换/原无资源用例共同验收。
+
 > **2026-09-09 精确点赞积压重建：** `reaction_backlog_snapshot.py`解析精确范围、检查身份/未调用证据、生成非敏感hash；`reaction_backlog_replan.py`原子调用既有未执行结算及审计/独立读回；`scripts/replan_cancelled_reaction_backlog.py`提供受SHA约束的preview/apply/readback。测试`test_reaction_backlog_replan.py`及`test_task_progress_repair_postgres.py`覆盖重建接管、漂移、过期分流、锁冲突和幂等。
 
 > **2026-09-09 活群extra组合供给：** `executors/group_ai_extra_portfolio.py`批量聚合同Task/day额度、行为预算与原主数量槽/目标下待发投影；`group_ai_extra_candidates.py`在LIMIT前应用并显式flush本事务计划。`test_group_ai_extra_portfolio.py`覆盖不双扣、unknown/释放、跨日与跨Task、零分配和分页不饥饿。

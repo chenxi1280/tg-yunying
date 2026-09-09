@@ -42,6 +42,12 @@
 
 ## Release Gate
 
+### 完整Prepare第一轮反查补正
+
+- 01edd500推送master后Prepare `34337268213`：其余7个后端分片、frontend、三个镜像全部通过；no-postgres shard0的既有`test_stale_comment_generation_releases_runtime_reservation_without_overwriting_new_claim`失败，本地单例1 failed/2.92秒复现，未绕过失败发布。
+- 根因：R1旧owner不覆盖新DB领取的保护遗漏旧进程本地reservation释放。PRD先resync补正DB owner与进程内reservation身份分离；确认当前领取owner后捕获旧reservation，通过既有identity-checked释放，只清旧对象，不清新对象；进入时已失去owner不捕获任何资源。
+- 保留旧回归断言，补充同Action本地reservation替换、入口无旧reservation、处理前已失去owner反例。16 passed/4.47秒；资源生命周期/评论phases/unknown/身份恢复扩展42 passed/6.06秒；全部进程60秒硬超时内退出0。下一候选须重新完整Prepare，不能复用失败run或跨attempt拼接制品。
+
 - release_mode：github_actions；release_owner/rollback_owner：本任务Codex。
 - source/candidate：当前共享源码基线包含已提交Clone补丁；只stage本任务明确路径，不包含其他任务未提交改动。Clone当前先行发布窗口与本任务错开；不操作其他任务占用的master目录。
 - local_gate：passed；ci_or_build：pending；release_status：pending；production_status：unproven。

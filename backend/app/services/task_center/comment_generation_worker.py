@@ -28,7 +28,7 @@ from .comment_generation_dispatch import (
     ensure_post_comment_content,
 )
 from .comment_generation_pipeline import CommentGenerationDependencies
-from .runtime_resources import _release_runtime_resources
+from .runtime_resources import action_runtime_reservation_scope
 
 
 COMMENT_GENERATABLE_STATUSES = ("pending", "ai_result_persist_unknown")
@@ -138,15 +138,16 @@ def _run_claimed_comment_generation(session_factory, claim, *, dependencies) -> 
         action = session.get(Action, claim.action_id)
         if not owns_generation_claim(action, claim.owner, claim.token):
             raise RuntimeError("comment_generation_action_claim_lost")
-        payload = PostCommentPayload.model_validate(action.payload or {})
-        try:
-            ensure_post_comment_content(
-                session, action, payload=payload, dependencies=dependencies,
-            )
-        except (AiGenerationUnavailable, ProviderRouteDeferred, GenerationAttemptStale):
-            session.rollback()
-        else:
-            session.commit()
+        with action_runtime_reservation_scope(claim.action_id):
+            payload = PostCommentPayload.model_validate(action.payload or {})
+            try:
+                ensure_post_comment_content(
+                    session, action, payload=payload, dependencies=dependencies,
+                )
+            except (AiGenerationUnavailable, ProviderRouteDeferred, GenerationAttemptStale):
+                session.rollback()
+            else:
+                session.commit()
 
 
 def _release_comment_generation_claim(
@@ -164,7 +165,6 @@ def _release_comment_generation_claim(
             recover_stale_pre_gateway_generation(action, session)
             _retain_provider_unknown(action, job_id=str(payload.get("generation_job_id") or ""))
         release_generation_claim(action, dict(action.payload or {}))
-        _release_runtime_resources(action)
         session.commit()
 
 

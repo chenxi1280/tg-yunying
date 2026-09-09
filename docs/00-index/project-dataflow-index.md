@@ -1,5 +1,7 @@
 # 项目数据流转索引
 
+> **2026-09-09 评论领取资源 resync：** 处理入口捕获旧本地reservation身份 → 生成/DB owner-token CAS收口 → finally按对象身份仅释放原reservation；DB owner已换仍清理原本地占位，本地对象已替换则保持新资源。与R1领取/unknown合同分别验证，不能以新owner保护为由遗留旧资源。
+
 > **2026-09-09 DF 卡死点赞重建：** 精确当前Task/Action/取消预约/原Reaction义务 → 全历史未调用与零远端资源证据 → snapshot/hash → 稳定顺序锁后复验 → 旧Action safely_not_executed/skipped → 原有效义务open及预约脱离旧Action → 正式Planner新Action。expired预约missed；审计与旧执行证据保留，不物理级联删除Task/义务、不重放unknown。专项合同`production-task-progress-repair-20260909-prd.md` R4。
 
 > **2026-09-09 活群额外量组合供给：** 原Task/day/account组合额度 → 扣同日行为预算占用及未被预算表示的待发Action → 在公平游标/LIMIT前过滤extra候选 → 原身份/活动窗/来源/内容门。主数量槽/日目标提供原日身份，不按当前扫描时间移日；不删除既有超配或unknown。专项合同`production-task-progress-repair-20260909-prd.md` R3。

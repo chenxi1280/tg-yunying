@@ -27,6 +27,7 @@
 4. 已持久unknown/cache/失败状态不得被finally重置为可重试；释放只改仍属于本次领取的状态，既有unknown Job及成本不变。
    R1异常边界反查补正：若Provider-start已持久化而结果持久化再次异常，finally不得把generating直接改为普通pending。复用既有generation recovery的原Job CAS转unknown，同时Action进入provider_result_unknown并清理本次owner/token；原异常继续暴露，下个worker不重领Provider。该路径不是缓存成功，不删除旧调用身份；对应真实领取入口失败回归为dev前验收口径，design_status=complete/resync=true。
 5. 历史领取使用已有stale recovery合同，不能仅凭租约到期推断远端未调用。若原入口无法处理，需要另行形成精确证据驱动的恢复切片，不直接SQL重置。
+6. 完整CI反查补正（resync=true）：DB领取owner与进程本地runtime reservation身份分别管理。处理入口冻结当时已有的本地reservation对象；finally只通过既有identity-checked释放机制清理该对象，即使DB领取已换owner也不遗留旧资源；本地reservation已被新对象替换时保持新对象不动。没有捕获到旧reservation时不释放后来新建的资源。对应旧claim-loss回归和新reservation替换反例均须通过，不得通过删改原回归断言掩盖泄漏。
 
 ### 自检和验收
 
