@@ -1668,3 +1668,5 @@ legacy-only A 冷启动分支固定为 `frozen legacy A -> 原 A Session 只读 
 - 2026-09-10 活群内容/发送链：`ai_generation_topic_context.py` → `ai_group_topic_binding.py` 冻结配置主题证据；`ai_group_emergency_pending.py` → `ai_group_emergency_worker.py`/`ai_group_emergency.py` → `ai_group_emergency_selections` 追加原义务内容选择；Gateway与旧合同维护共用验证器；`ai_group_independent_quality.py` 只读typed消息分账。`provider_http_failover.py`保留未知HTTP并核验批准后继候选；`source_pacing_gap.py`在来源锁内选择原窗口中的合法空隙。详见[专项修复PRD](../03-feature-designs/ai-group-executable-supply-and-fallback-20260910-prd.md)。
 
 应急选取的数据权威顺序为Task→Action→正式FOP注册/锁定→GenerationJob→追加selection及FOP/Action同版本提交。历史同activeAction的未调用选择经精确旧版本CAS对齐并记录audit；发送边界不修复数据。安全失败后的原义务新materialization保留旧选择历史，旧Action不重新获取owner。
+
+- 2026-09-10 活群topic_only补充：批次chat_mode=reply不能代表slot已绑定真实回复；普通无reply_to/interaction/turn的数量仍按主题输入模式处理，真实引用与ContentIntent relation保持。见供给与兜底专项PRD第二次生产反查。

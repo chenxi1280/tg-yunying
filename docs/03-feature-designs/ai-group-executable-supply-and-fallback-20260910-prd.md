@@ -93,3 +93,9 @@
 选择历史与当前所有权补充（design_status=complete）：`UNIQUE(primary_quantity_slot_id)`误把历史选择当永久发送所有权，阻断原义务安全失败后正式重排。0231迁移仅替换为 `UNIQUE(primary_quantity_slot_id, materialization_version)`，保留每Action唯一、全部历史事实不改写；唯一当前owner仍为同原FOP.active_action_id和materialization版本。后继仅能在旧Action终态、整个原slot无Gateway/远端不确定证据且FOP仍open时，经正式rebind取得更高版本后追加选择。旧选择不获得新Action发布权。已上线但仍为同activeAction且未调用的pending选择，只在完整selection/current身份、内容hash、旧FOP版本恰为selection版本减1、同epoch/同原slot且FOP open时允许原子对齐；记录该选择ID及前后版本，不能对terminal/已换owner/已Gateway调用的历史选择自动对齐。
 
 版本修正最终本地QA：10文件UTC环境130 passed（18.12s）；真实PG原始选择/旧token CAS/注册回拨与历史对齐竞争2 passed（4.41s）；另原FOP并发及0196→0231迁移6 passed（10.81s，部分用例重叠不累加）。所有后端进程硬超时60秒。正式发送前入口对不一致版本仍只读拒绝，批量维护与正式义务注册负责精确对齐并审计。再次完整Prepare与生产E4待执行。
+
+## 第二次生产反查：批次会话模式不等于真实回复身份
+
+2026-09-10 02:21:12只读生产验证：成都两条普通数量Action在新版本仍反复`context_freshness_unproven`；scope完整且同群，`chat_mode=reply`但`reply_to_message_id`为空、无interaction/turn claim。源码`_chat_mode`仅因规划批次存在context_rows就返回reply，`_slot_conversation_payload`将同一模式复制给包括无reply_target的普通slot；实际引用及ContentIntent relation另由每条slot的真实reply_to决定。主题入口错误地把批次会话模式当作真实回复身份，属于原要求覆盖缺口。
+
+本子切片resync，修正合同（design_status=complete）：普通数量能否进入topic_only按真实`reply_to_message_id`、interaction/turn claim及原scope判定，不能仅以`chat_mode=reply`拒绝。没有真实回复身份且无可用上下文的普通slot按已配置主题继续；保留批次历史模式、原ContentIntent/quantity/账号/目标及其direct relation，清空不可信history/anchor，不创造回复对象。真实reply_to、interaction/turn claim、已ready正文、跨群引用及legacy继续原校验。本次只删除错误模式门槛，不改监听账号、不修改真实回复合同。QA需用`chat_mode=reply`但无reply_to的真实ensure生成入口复现，再证明topic_only正文ready及空真人引用，保留真实reply不转换反例。

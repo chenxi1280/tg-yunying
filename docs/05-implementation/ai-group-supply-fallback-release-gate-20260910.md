@@ -42,3 +42,11 @@ Prepare 34381205676（6a68f685）首轮：两个PostgreSQL分片、前端及镜�
 版本修正收口：UTC环境10文件130 passed（18.12s），历史对齐/正式登记争用等真实PG2 passed（4.41s）；发送前不repair的反例通过。准备重新完整CI并发布。
 
 Prepare 34385730019 的普通测试仅发现旧 `_CaptureSession` 未提供新增锁步骤使用的 `no_autoflush/scalar`。已将该测试更新为明确记录并断言Task→Action锁顺序，同时保留五个Action查询的SKIP LOCKED合同；3文件37 passed（7.28s）。该失败不改生产实现，新提交仍须完整Prepare。
+
+## 第二轮发布与第三个入口缺口
+
+Prepare34386451703全部通过：7718 passed、14 skipped、2 xfailed；Deploy34387308779完成于02:15:13，current/后端+18worker均为7c725b8b且healthy，API正常，head0231及两项唯一约束独立核验通过。切换期间西安真实签到Action1c48c16f（选择/Action/FOP版本均2）Gateway02:15:08、typed可见事实02:15:13.956628，证明新实现真实发送；因call早于Deploy完成，严格post-release计数不纳入。02:19快照天津一品楼另有1条严格post-release消息。两条旧pending应急版本已精确对齐且留audit，原failed/unknown保留。
+
+02:21复核发现成都两条chat_mode=reply但没有真实reply_to的普通slot被主题入口误排除，仍context_freshness阻塞。已按源代码与真实payload补齐专项PRD，再进入最小入口修复、定向QA、完整Prepare和生产验证；不得把该状态声明为production_fixed。
+
+批次模式修复QA：主题/冻结binding24 passed（5.38s），根扩大到真实生成worker与content_scope的4文件67 passed（11.10s，UTC，硬60秒）；实际reply、跨群引用、互动身份和ready正文反例保留。最小实现仅删1个错误模式条件，完整Prepare仍为发布前置。

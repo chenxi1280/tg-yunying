@@ -90,7 +90,7 @@ def test_topic_history_cannot_be_restored_by_prompt_rebuild():
 
 
 @pytest.mark.parametrize("updates", [
-    {"reply_to_message_id": 8001}, {"chat_mode": "reply"},
+    {"reply_to_message_id": 8001},
     {"message_text": "已冻结正文", "ai_generation_status": "ready"},
     {"interaction_opportunity_id": "interaction"}, {"conversation_turn_claim_id": "claim"},
 ])
@@ -98,6 +98,17 @@ def test_topic_preparation_preserves_reply_interaction_and_ready_identity(update
     session, task, action, payload = _fixture(listener_error=True)
     original = payload.model_copy(update=updates)
     assert prepare_topic_payload(session, task, action, payload=original) is original
+
+
+def test_batch_reply_mode_without_reply_identity_uses_configured_topic():
+    session, task, action, payload = _fixture(listener_error=True)
+    original = payload.model_copy(update={"chat_mode": "reply"})
+    updated = prepare_topic_payload(session, task, action, payload=original)
+    assert updated.ai_generation_context_mode == "topic_only"
+    assert updated.ai_generation_context_reason == "listener_error"
+    assert updated.ai_generation_history == ""
+    assert updated.reply_to_message_id is None
+    assert updated.chat_mode == "reply"
 
 
 def test_foreign_context_is_not_laundered_into_topic_mode():
@@ -128,10 +139,14 @@ def test_legacy_context_contract_is_not_changed():
     assert prepare_topic_payload(session, task, action, payload=payload) is payload
 
 
-def test_topic_only_normal_content_can_become_ready_without_human_reference():
+@pytest.mark.parametrize("chat_mode", ["idle_warmup", "reply"])
+def test_topic_only_normal_content_can_become_ready_without_human_reference(chat_mode):
     session, _task, action, payload = _fixture(listener_error=True)
+    payload = payload.model_copy(update={"chat_mode": chat_mode})
+    action.payload = payload.model_dump(mode="json")
 
     def generate(_session, _tenant, config, **kwargs):
+        assert kwargs["history"] == ""
         slot = config["generation_slots"][0]
         return [GeneratedContent("周末运动更喜欢跑步还是骑车？", slot_id=slot["slot_id"], sequence_index=1)], 1
 
@@ -143,3 +158,6 @@ def test_topic_only_normal_content_can_become_ready_without_human_reference():
     assert ready.ai_generation_context_mode == "topic_only"
     assert ready.message_text == "周末运动更喜欢跑步还是骑车？"
     assert ready.reply_to_message_id is None
+    assert ready.context_message_ids == [] and ready.anchor_message_ids == []
+    assert ready.context_snapshot_message_id is None
+    assert ready.ai_generation_history == ""

@@ -59,7 +59,7 @@ def prepare_topic_payload(
 def _ordinary_direct(action: Action, payload: SendMessagePayload) -> bool:
     return bool(
         action.task_type == "group_ai_chat" and action.action_type == "send_message"
-        and not payload.message_text.strip() and payload.chat_mode != "reply"
+        and not payload.message_text.strip()
         and not payload.reply_to_message_id and not payload.interaction_opportunity_id
         and not payload.conversation_turn_claim_id
         and not requires_direct_check_in(payload)
