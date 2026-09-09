@@ -48,6 +48,7 @@ def test_group_daily_snapshot_requires_due_coverage_and_new_remote_fact():
             "confirmed_message_count": 3,
             "coverage_required_count": 2,
             "coverage_confirmed_count": 2,
+            "post_release_remote_fact_count": 1,
         },
     }
 
@@ -55,13 +56,14 @@ def test_group_daily_snapshot_requires_due_coverage_and_new_remote_fact():
 
     snapshot["group_daily"]["confirmed_message_count"] = 2
     snapshot["attempts"]["post_release_remote_success_count"] = 0
+    snapshot["group_daily"]["post_release_remote_fact_count"] = 0
     assert module.e4_blockers(snapshot) == [
         "ai_daily_due_unmet",
         "ai_post_release_remote_fact_missing",
     ]
 
 
-def test_group_daily_snapshot_excludes_released_abandoned_coverage() -> None:
+def test_legacy_group_daily_snapshot_keeps_active_scope_and_exposes_history() -> None:
     module = load_module()
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -117,7 +119,11 @@ def test_group_daily_snapshot_excludes_released_abandoned_coverage() -> None:
         "due_message_count": 1,
         "confirmed_message_count": 1,
         "coverage_required_count": 2,
+        "coverage_total_count": 3,
         "coverage_confirmed_count": 1,
+        "coverage_active_count": 2,
+        "coverage_abandoned_count": 1,
+        "post_release_remote_fact_count": 0,
     }
 
 

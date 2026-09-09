@@ -5717,3 +5717,5 @@ canary 通过后，激活 manifest 以单行 `route_epoch` CAS 一次切换 `old
   远端事实；健康检查、待执行 Action 和空 remote ID 不能替代业务完成证据。
 - AI 群日 due/coverage、纯搜索 click evidence、频道 view remote fact 任一欠额时，
   结论保持 `production_blocked`，不得写 `production_fixed`。
+
+2026-09-09 活群窗口修补：账号活动窗与跨账号/群时间线必须对最终effective同时成立，原窗口外不得形成成功预约；Source合法推迟后正常claim重验，不缩数量或放宽时间约束。E4报告统一保留unified历史必达分母并要求发布后真实Gateway及消息事实。专项合同ai-group-window-shortfall-repair-20260909-prd.md；W1/W5代码与报告修复不代替全日达标。

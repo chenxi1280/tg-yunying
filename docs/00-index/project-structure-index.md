@@ -1610,3 +1610,8 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 - 共享消费锁：`group_ai_update_stream.py`、`channel_comment_update_stream.py` 与 `group_clone_source_stream.py` 的关联消费查询仅锁Delivery，不把只读共享父行带入领域业务长事务。
 
 2026-09-09 Clone Planner 合同路由：`service._planning_backlog_blocked`仅对持久类型group_clone/版本v2_group_clone使用独立领域规划，不让旧全局积压阻断durable delivery；原Clone Sequencer/发送准入不变。入口回归：`test_group_clone_planner_entry.py`。
+
+- 2026-09-09 E4报告完整性：`.github/scripts/task_fulfillment_e4_diagnostics.py` 保留CLI入口；`production_e4_attempts.py`读取执行回执，`production_e4_group.py`读取全量历史、分组/全量去重账号和精确关联的发布后typed消息事实，`production_e4_blockers.py`判定验收缺口。成功Attempt不再替代消息事实，unified必达分母保留abandoned，legacy保持动态active必达口径。测试`test_production_e4_reporting_integrity.py`及原E4测试；合同见`docs/03-feature-designs/production-e4-reporting-integrity-prd.md`。仅诊断读模型，无执行状态或发送行为变更；独立分支本地验证，未部署。
+- 同切片二次检查：`production_e4_scope.py`负责未删除channel_view全量发现及PostgreSQL一致只读事务；CLI显式软删除任务仍输出历史快照并标记task_deleted，blocker禁止历史证据误通过。回归`test_production_e4_scope.py`覆盖超过10条、稳定排序、显式范围及事务失败路径。
+- 2026-09-09 窗口求交：account_pacing_window.py承载纯时间求交，account_pacing_guard.py保留账号→Task锁与真实预约/claim入口，account_pacing_claim_outcome.py承载原claim状态结算，account_pacing_reservations.py承载原工厂/时间规范化。test_account_pacing_window_intersection.py与test_account_pacing_window_postgres.py验证错位、原deadline及真实行锁；test_production_e4_snapshot_postgres.py验证一致只读快照；postgres_pacing_e4_fixture.py仅为本切片PG测试提供独立schema，防止跨测试污染。
+- 2026-09-09 E4真实结构补正：production_e4_identity.py统一Action.primary_quantity_slot_id→真实数量槽→同tenant/Task/ledger谓词；production_e4_group和production_e4_diagnostics共用于消息事实、开放队列及样本身份。unified不依赖缺省payload任务日，legacy无规范槽保留原payload合同，错误规范槽不得降级。

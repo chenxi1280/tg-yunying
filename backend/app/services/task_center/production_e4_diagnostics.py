@@ -15,6 +15,7 @@ from app.models import (
     TaskDayLedger,
     ViewFulfillmentObligation,
 )
+from .production_e4_identity import action_ledger_scope
 
 
 SAMPLE_LIMIT = 8
@@ -27,13 +28,19 @@ def ai_open_action_details(
     actions: list[Action],
 ) -> dict[str, Any]:
     ordered = sorted(actions, key=_action_schedule_key)[:SAMPLE_LIMIT]
+    matched_ids = set(session.scalars(select(Action.id).where(
+        Action.id.in_([action.id for action in ordered]),
+        Action.tenant_id == ledger.tenant_id,
+        Action.task_id == ledger.task_id,
+        action_ledger_scope(session, ledger),
+    )))
     error_counts = Counter(_action_error_code(action) for action in actions)
     stage_counts = Counter(_action_generation_stage(action) for action in actions)
     return {
         "error_code_counts": _nonempty_counts(error_counts),
         "generation_stage_counts": _nonempty_counts(stage_counts),
         "oldest_open_action_samples": [
-            _ai_action_row(ledger, action) for action in ordered
+            _ai_action_row(action, ledger_matches=action.id in matched_ids) for action in ordered
         ],
     }
 
@@ -97,7 +104,7 @@ def view_open_details(
     }
 
 
-def _ai_action_row(ledger: TaskDayLedger, action: Action) -> dict[str, Any]:
+def _ai_action_row(action: Action, *, ledger_matches: bool) -> dict[str, Any]:
     payload = dict(action.payload or {})
     result = dict(action.result or {})
     return {
@@ -114,7 +121,7 @@ def _ai_action_row(ledger: TaskDayLedger, action: Action) -> dict[str, Any]:
         "context_snapshot_message_id": payload.get("context_snapshot_message_id"),
         "latest_context_message_id": result.get("latest_context_message_id"),
         "speaker_rotation_reason": result.get("speaker_rotation_reason"),
-        "ledger_matches": str(payload.get("task_day_ledger_id") or "") == ledger.id,
+        "ledger_matches": ledger_matches,
     }
 
 
