@@ -44,6 +44,10 @@ MEMBERSHIP_CONFIRMED_STATUSES = frozenset({"joined", "already_joined"})
 
 
 def ensure_action_obligation(session: Session, action: Action) -> bool:
+    if (action.payload or {}).get("emergency_selection_id"):
+        from .ai_group_emergency_projection_repair import align_existing_emergency_projection
+
+        align_existing_emergency_projection(session, action)
     obligation_type, obligation_id = _obligation_identity(action)
     duplicate = _duplicate_open_action(
         session,

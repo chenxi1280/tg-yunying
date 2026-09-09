@@ -13,7 +13,8 @@ class AiGroupEmergencySelection(Base):
     __tablename__ = "ai_group_emergency_selections"
     __table_args__ = (
         UniqueConstraint("action_id", name="uq_ai_group_emergency_action"),
-        UniqueConstraint("primary_quantity_slot_id", name="uq_ai_group_emergency_quantity"),
+        UniqueConstraint("primary_quantity_slot_id", "materialization_version",
+                         name="uq_ai_group_emergency_quantity_version"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))

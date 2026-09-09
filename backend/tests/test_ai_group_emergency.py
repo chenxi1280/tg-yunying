@@ -193,3 +193,58 @@ def test_quality_exhaustion_preserves_owners_through_parallel_worker_settlement(
         GenerationOutcome(failure=AiGenerationUnavailable("emergency_pending"))) == 1
     assert action.status == "pending" and action.payload["ai_generation_status"] == "emergency_pending"
     assert coverages[0].state == "reserved" and coverages[0].reserved_action_id == action.id
+
+
+def test_emergency_version_survives_formal_obligation_registration(session):
+    from app.services.task_center.fulfillment_remote_facts import ensure_action_obligation
+
+    task, actions, _, _ = _pending(session)
+    action = actions[0]
+    assert ensure_action_obligation(session, action)
+    assert select_emergency_content(session, task, action)
+    selected_version = action.materialization_version
+    assert ensure_action_obligation(session, action)
+    assert action.materialization_version == selected_version
+    validate_emergency_selection(session, action, SendMessagePayload.model_validate(action.payload))
+
+
+def test_safe_failed_selection_keeps_history_and_new_materialization_owns_send(session):
+    from app.services.task_center.fulfillment_remote_facts import ensure_action_obligation
+
+    task, actions, coverages, _ = _pending(session)
+    old = actions[0]
+    original = dict(old.payload)
+    assert select_emergency_content(session, task, old)
+    old_payload = SendMessagePayload.model_validate(old.payload)
+    old.status = "failed"
+    successor = Action(id="safe-emergency-successor", tenant_id=old.tenant_id, task_id=old.task_id,
+        task_type=old.task_type, action_type=old.action_type, account_id=old.account_id,
+        task_lifecycle_epoch=old.task_lifecycle_epoch, primary_quantity_slot_id=old.primary_quantity_slot_id,
+        obligation_type=old.obligation_type, obligation_id=old.obligation_id, status="pending",
+        scheduled_at=_now(), payload=original, result={"error_code": "provider_route_exhausted"})
+    session.add(successor)
+    coverages[0].reserved_action_id = successor.id
+    session.flush()
+    assert ensure_action_obligation(session, successor)
+    assert select_emergency_content(session, task, successor)
+    assert successor.materialization_version > old.materialization_version
+    assert session.scalar(select(func.count(AiGroupEmergencySelection.id)).where(
+        AiGroupEmergencySelection.primary_quantity_slot_id == old.primary_quantity_slot_id)) == 2
+    validate_emergency_selection(session, successor, SendMessagePayload.model_validate(successor.payload))
+    with pytest.raises(ValueError, match="emergency_obligation_projection_binding_invalid"):
+        validate_emergency_selection(session, old, old_payload)
+
+
+def test_closed_obligation_cannot_receive_emergency_selection(session):
+    from app.models import FulfillmentObligationProjection
+    from app.services.task_center.fulfillment_remote_facts import ensure_action_obligation
+
+    task, actions, _, _ = _pending(session)
+    action = actions[0]
+    assert ensure_action_obligation(session, action)
+    projection = session.scalar(select(FulfillmentObligationProjection).where(
+        FulfillmentObligationProjection.obligation_id == action.obligation_id))
+    projection.state = "confirmed"
+    session.flush()
+    assert not select_emergency_content(session, task, action)
+    assert session.scalar(select(func.count(AiGroupEmergencySelection.id))) == 0

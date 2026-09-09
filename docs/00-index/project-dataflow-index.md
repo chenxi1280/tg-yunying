@@ -1666,3 +1666,5 @@ legacy-only A 冷启动分支固定为 `frozen legacy A -> 原 A Session 只读 
 - E4身份以实际结构反查补正：unified Action.primary_quantity_slot_id → 同tenant/Task/ledger数量槽 → 原Attempt与typed消息事实；相同谓词用于开放Action和样本ledger_matches。payload任务日缺省不是失败，显式矛盾与错误槽仍拒绝；不补写历史payload、不影响发送。
 
 - 2026-09-10 活群内容/发送链：`ai_generation_topic_context.py` → `ai_group_topic_binding.py` 冻结配置主题证据；`ai_group_emergency_pending.py` → `ai_group_emergency_worker.py`/`ai_group_emergency.py` → `ai_group_emergency_selections` 追加原义务内容选择；Gateway与旧合同维护共用验证器；`ai_group_independent_quality.py` 只读typed消息分账。`provider_http_failover.py`保留未知HTTP并核验批准后继候选；`source_pacing_gap.py`在来源锁内选择原窗口中的合法空隙。详见[专项修复PRD](../03-feature-designs/ai-group-executable-supply-and-fallback-20260910-prd.md)。
+
+应急选取的数据权威顺序为Task→Action→正式FOP注册/锁定→GenerationJob→追加selection及FOP/Action同版本提交。历史同activeAction的未调用选择经精确旧版本CAS对齐并记录audit；发送边界不修复数据。安全失败后的原义务新materialization保留旧选择历史，旧Action不重新获取owner。

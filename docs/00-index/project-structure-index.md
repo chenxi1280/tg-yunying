@@ -1621,3 +1621,5 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 - 2026-09-10 活群内容/发送链：`ai_generation_topic_context.py` → `ai_group_topic_binding.py` 冻结配置主题证据；`ai_group_emergency_pending.py` → `ai_group_emergency_worker.py`/`ai_group_emergency.py` → `ai_group_emergency_selections` 追加原义务内容选择；Gateway与旧合同维护共用验证器；`ai_group_independent_quality.py` 只读typed消息分账。`provider_http_failover.py`保留未知HTTP并核验批准后继候选；`source_pacing_gap.py`在来源锁内选择原窗口中的合法空隙。详见[专项修复PRD](../03-feature-designs/ai-group-executable-supply-and-fallback-20260910-prd.md)。
 
 活群独立内容的 Gateway 候选验证入口为 `ai_generation_gateway_candidate.py`；`ai_group_independent_quality.py` 只从同原义务成功 Attempt 与 typed 可见消息事实读取应急/独立主题分账，接口与页面沿原任务详情汇总。
+
+2026-09-10 生产版本一致性修正：`ai_group_emergency_projection.py` 在选取事务中同步原FOP与Action内容版本；`ai_group_emergency_projection_repair.py` 在正式义务注册/批量维护入口精确对齐同一未调用旧选择，Gateway只校验。0231将历史选择唯一性按原数量+materialization版本记录，当前owner仍由FOP决定。

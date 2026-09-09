@@ -69,9 +69,47 @@ def test_selector_lock_keeps_one_publication_and_old_generation_cas_cannot_overw
             commit_generation_action(late, request, action)
         late.rollback()
     with factory() as check:
+        from app.services.task_center.fulfillment_remote_facts import ensure_action_obligation
+
         action = check.get(Action, "action")
+        selected_version = action.materialization_version
+        assert ensure_action_obligation(check, action)
+        assert action.materialization_version == selected_version
         assert action.payload["message_text"] == "签到"
         validate_emergency_selection(check, action, SendMessagePayload.model_validate(action.payload))
         assert check.scalar(select(func.count(AiGroupEmergencySelection.id))) == 1
         assert check.get(GenerationJob, "job").state == "failed"
     assert drain_emergency_content(factory, 20) == 0
+
+
+def test_legacy_projection_alignment_serializes_with_formal_registration(factory):
+    from sqlalchemy import text
+    from sqlalchemy.exc import OperationalError
+    from app.models import FulfillmentObligationProjection
+    from app.services.task_center.fulfillment_remote_facts import ensure_action_obligation
+
+    with factory() as session:
+        _seed(session)
+        action = session.get(Action, "action")
+        assert select_emergency_content(session, session.get(Task, "task"), action)
+        projection = session.scalar(select(FulfillmentObligationProjection))
+        projection.materialization_version = action.materialization_version - 1
+        session.commit()
+    with factory() as repair:
+        action = repair.get(Action, "action")
+        assert ensure_action_obligation(repair, action)
+        with factory() as contender:
+            contender.execute(text("SET LOCAL lock_timeout = '100ms'"))
+            with pytest.raises(OperationalError, match="lock timeout"):
+                ensure_action_obligation(contender, contender.get(Action, "action"))
+            contender.rollback()
+        repair.commit()
+    with factory() as check:
+        action = check.get(Action, "action")
+        projection = check.scalar(select(FulfillmentObligationProjection))
+        before_version = projection.version
+        assert ensure_action_obligation(check, action)
+        assert action.materialization_version == projection.materialization_version
+        assert projection.version == before_version
+        assert projection.active_action_id == action.id
+        validate_emergency_selection(check, action, SendMessagePayload.model_validate(action.payload))

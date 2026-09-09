@@ -20,6 +20,9 @@ from .ai_group_emergency_contract import (
 from .ai_message_memory_text import message_identity
 from .generation_deadlines import latest_safe_send_at
 from .payloads import SendMessagePayload
+from .ai_group_emergency_projection import (
+    advance_emergency_projection, lock_emergency_projection, validate_emergency_projection,
+)
 
 
 MEMORY_RETENTION = timedelta(days=30)
@@ -34,6 +37,9 @@ def select_emergency_content(session, task, action) -> bool:
         return False
     if not _action_eligible(session, task, action):
         return False
+    projection = lock_emergency_projection(session, action)
+    if projection is None:
+        return False
     job = session.scalar(select(GenerationJob).where(
         GenerationJob.id == str(data.get("generation_job_id") or ""),
     ).with_for_update())
@@ -47,6 +53,7 @@ def select_emergency_content(session, task, action) -> bool:
     memory = _new_memory(action, selection, content=content)
     session.add(memory)
     session.flush()
+    advance_emergency_projection(action, projection, selection=selection)
     _publish_selection(action, selection, memory=memory, content=content)
     session.flush()
     return True
@@ -143,6 +150,13 @@ def _publish_selection(action, selection, *, memory, content):
 
 
 def validate_emergency_selection(session, action, payload) -> None:
+    row = validate_emergency_content_binding(session, action, payload)
+    if row.materialization_version != action.materialization_version:
+        raise ValueError("emergency_selection_binding_invalid")
+    validate_emergency_projection(session, action, selection=row)
+
+
+def validate_emergency_content_binding(session, action, payload):
     row = session.get(AiGroupEmergencySelection, payload.emergency_selection_id)
     task = session.get(Task, action.task_id)
     data = payload.model_dump(mode="json")
@@ -150,7 +164,6 @@ def validate_emergency_selection(session, action, payload) -> None:
             or task.task_lifecycle_epoch != action.task_lifecycle_epoch
             or row.policy_version != POLICY_VERSION or row.identity != selection_identity(action, data)
             or row.content_hash != digest(payload.message_text) or row.content_hash != action.candidate_hash
-            or row.materialization_version != action.materialization_version
             or payload.content_source != row.source or payload.generation_source != POLICY_VERSION
             or payload.media_segments or payload.material_intent):
         raise ValueError("emergency_selection_binding_invalid")
@@ -164,6 +177,7 @@ def validate_emergency_selection(session, action, payload) -> None:
     memory = session.get(AiGroupMessageMemory, payload.ai_message_memory_id)
     if not emergency_memory_matches(action, memory):
         raise ValueError("emergency_message_memory_invalid")
+    return row
 
 
 def emergency_memory_matches(action, memory) -> bool:

@@ -68,7 +68,7 @@
 ## 应急与模型交接实现合同（design_status=complete）
 
 - 配置API `GroupAIChatConfig.emergency_fallback_enabled` 默认true，仅 `unified_engagement_v1` 活群启用；任务配置可显式false，旧legacy保持原合同。选择事实冻结 `emergency_fallback_v1`，关闭后未发送应急不再进入Gateway。
-- `ai_group_emergency_selections`按原Action和primary_quantity_slot双唯一，记录原payload哈希、Action版本、materialization版本、原Job、账号/群/真实reply/coverage/day身份及纯内容证据。新迁移0230只新增事实表，不修改存量业务记录；已存在事实时禁止drop降级。
+- `ai_group_emergency_selections`按原Action唯一、primary_quantity_slot+materialization版本联合唯一，记录原payload哈希、Action版本、materialization版本、原Job、账号/群/真实reply/coverage/day身份及纯内容证据。迁移0230新增事实表，0231仅调整历史唯一约束，不修改存量业务记录；已存在事实时禁止drop降级。
 - worker在正常生成前按当前开放日账本筛选pending且无claim的provider_result_unknown/emergency_pending，锁Task→Action→原Job。任何已调用Attempt、未知远端身份、Journal或typed消息均禁止交接。只有未到原deadline、原coverage仍绑定Action的数量义务可选择。
 - Provider unknown必须有同原Job、同tenant/task/epoch的HTTP unknown且local_termination_confirmed=true，所有未决物理调用均已本地终止；不修改这些HTTP或Job未知。配置路由的下一不同provider/model可在原候选截止前独立调用，旧未知保留费用与硬占用；没有可证明结束的调用继续显式阻塞。 真实入口为draft/structured候选循环→scoped Provider transport→`_start_exchange`，候选循环仅在内部`_ai_group_emergency_enabled=true`及显式route时继续考虑候选，物理调用在原Task/Job锁内再次校验Task.type、unified合同与当前开关。按稳定obligation lineage查询全部未决HTTP及其全部Job关联，必须均属于本批当前Job、相同tenant/task/epoch与execution_path_hash，且均为本地终止已确认的unknown；started/response_received、旧Job/旧epoch和混合关联仍阻塞。新provider/model必须存在于各Job冻结的当前purpose route候选，route ID/revision/hash一致，禁止同logical_request_id重放；同purpose只能按冻结priority向后转到不同provider/model，后续不同purpose的独立阶段可按该阶段冻结route继续。每次调用仍受原15秒上限与原candidate deadline，物理准入再次核对原binding/Job截止。成功返回普通结果；所有候选失败时优先抛出最早unknown，不能被后续普通错误或路由暂缓覆盖，旧HTTP/费用/硬占用与Job未知不改。
 - 正常生成在模型候选耗尽、明确provider不可用或结构/质量尝试耗尽后只交接内容权，保存错误。权限/作用域/配置绑定/真实reply失效不转换为应急。quality_wait的耗尽路径保留原义务，不提前落数量shortfall。
@@ -83,3 +83,13 @@
 主题/应急四项独立复核45 passed；新增 Gateway 冻结主题与当前 payload 负例、同日同租户同账号同原义务 typed 质量计数11项通过。membership canonical专项74 passed，helper调整后91 passed；模型 draft/structured真实HTTP与既有回归71 passed，PG当前Job/旧lineage/行锁4 passed。根广覆盖297 passed、前端production build通过；结果分组保留，不累计重复运行冒充独立用例。Release Gate位于 `docs/05-implementation/ai-group-supply-fallback-release-gate-20260910.md`。
 
 只读准入补充：10Task自动入群/自动验证均启用，正式管理员解析为租户账号515且本地在线、未冻结、有Session；远端群成员及邀请权限仍须单列验证。成都显式历史监听账号63失效覆盖了群内可用账号14，导致“没有可用监听账号”；本切片的主动主题分支不再因该错误停生成，真实回复/监听恢复不伪装成功。历史membership别名错投影中67项同引用已证明，另7项不足以证明同引用，均未做生产回填；历史远端未知继续原对账。
+
+## 生产反查修正：义务内容版本必须原子推进
+
+2026-09-10 01:35 生产反查：两条应急 Action 在0 Attempt/0 Gateway时因 `emergency_selection_binding_invalid` 失败。选择事实版本为2，而正式 `ensure_action_obligation → rebind_projection` 将Action版本从2同步回原 `FulfillmentObligationProjection.materialization_version=1`。原设计只推进Action、漏掉权威义务投影；本切片标记resync，进入原设计/实现/QA闭环，首版发布不能声明应急发送恢复。
+
+修正合同（design_status=complete）：selector在原Task→Action锁内先经正式义务注册入口确认/建立原投影并锁定同一FOP，再锁原GenerationJob。投影必须为同tenant/task/epoch/obligation、open、active_action_id为原Action；原Action与投影旧materialization必须一致。选择事实、原Action内容版本、FOP内容版本及投影乐观锁版本在同事务推进；active_action_id、原义务数量/期限/远端身份不变。Gateway同时核验选择、当前Action与投影版本，正式重注册不得回拨。QA必须通过真实 `ensure_action_obligation` 在选择前后执行的入口反例，及原投影非open/foreign owner拒绝场景。已失败存量与其后继Action按当前独立事实单列，不能改写原失败或未知记录来伪造恢复。
+
+选择历史与当前所有权补充（design_status=complete）：`UNIQUE(primary_quantity_slot_id)`误把历史选择当永久发送所有权，阻断原义务安全失败后正式重排。0231迁移仅替换为 `UNIQUE(primary_quantity_slot_id, materialization_version)`，保留每Action唯一、全部历史事实不改写；唯一当前owner仍为同原FOP.active_action_id和materialization版本。后继仅能在旧Action终态、整个原slot无Gateway/远端不确定证据且FOP仍open时，经正式rebind取得更高版本后追加选择。旧选择不获得新Action发布权。已上线但仍为同activeAction且未调用的pending选择，只在完整selection/current身份、内容hash、旧FOP版本恰为selection版本减1、同epoch/同原slot且FOP open时允许原子对齐；记录该选择ID及前后版本，不能对terminal/已换owner/已Gateway调用的历史选择自动对齐。
+
+版本修正最终本地QA：10文件UTC环境130 passed（18.12s）；真实PG原始选择/旧token CAS/注册回拨与历史对齐竞争2 passed（4.41s）；另原FOP并发及0196→0231迁移6 passed（10.81s，部分用例重叠不累加）。所有后端进程硬超时60秒。正式发送前入口对不一致版本仍只读拒绝，批量维护与正式义务注册负责精确对齐并审计。再次完整Prepare与生产E4待执行。

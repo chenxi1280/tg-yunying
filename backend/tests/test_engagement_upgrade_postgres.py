@@ -88,7 +88,7 @@ def test_populated_0196_upgrade_preserves_records_and_runs_backfills(upgrade_dat
     _seed_legacy(upgrade_database)
     _upgrade("head")
     with upgrade_database.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0230_ai_group_emergency"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0231_ai_group_emergency_history"
         assert connection.scalar(text("SELECT name FROM tenants WHERE id=901")) == "QA legacy tenant"
         assert connection.scalar(text("SELECT status FROM tasks WHERE id='QA-legacy-task'")) == "paused"
         assert connection.execute(text(
@@ -107,6 +107,8 @@ def test_populated_0196_upgrade_preserves_records_and_runs_backfills(upgrade_dat
             "SELECT content_preview, grouped_id, source_metadata FROM channel_messages WHERE id=901"
         )).one() == ("retained source", "", {})
         _assert_channel_engine_schema(inspector)
+        assert {c["name"] for c in inspector.get_unique_constraints("ai_group_emergency_selections")} == {
+            "uq_ai_group_emergency_action", "uq_ai_group_emergency_quantity_version"}
         assert "action_class" in {c["name"] for c in inspector.get_columns("account_pacing_reservations")}
         names = {c["name"] for c in inspector.get_unique_constraints("channel_message_comments")}
         assert "uq_channel_message_comment_peer_identity" in names

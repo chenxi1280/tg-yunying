@@ -83,7 +83,7 @@ def _settle(session, scope, *, chain="QA-chain"):
 
 def test_full_migration_head_and_new_table_orm_parity(scope):
     with engine.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0230_ai_group_emergency"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0231_ai_group_emergency_history"
         assert connection.scalar(text("SELECT current_database()")) == "tg_yunying_test"
         for model in (GenerationTimingBinding, ProviderHttpExchange, ProviderHttpExchangeJob):
             actual = {c["name"]: c["nullable"] for c in inspect(connection).get_columns(model.__tablename__)}

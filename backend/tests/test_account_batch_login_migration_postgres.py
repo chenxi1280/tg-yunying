@@ -107,5 +107,5 @@ def test_account_batch_login_schema_migrates_from_blank_postgres() -> None:
     _assert_ai_schema(inspector)
     with engine.connect() as connection:
         assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
-            "0230_ai_group_emergency"
+            "0231_ai_group_emergency_history"
         )

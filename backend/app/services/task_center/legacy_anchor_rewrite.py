@@ -40,7 +40,7 @@ def expire_legacy_anchor_rewritten_actions(session: Session, task: Task) -> int:
     for action in _maintenance_candidates(session, task, _requires_contract_replan_expression()):
         if expired >= ACTION_MAINTENANCE_BATCH_LIMIT:
             break
-        emergency = _emergency_maintenance_result(session, action)
+        emergency = _emergency_maintenance_result(session, action, allow_projection_repair=True)
         if emergency is not None:
             expired += emergency
             continue
@@ -61,7 +61,7 @@ def expire_incomplete_daily_contract_actions(session: Session, task: Task) -> in
     for action in _maintenance_candidates(session, task, _incomplete_daily_contract_expression()):
         if expired >= ACTION_MAINTENANCE_BATCH_LIMIT:
             break
-        emergency = _emergency_maintenance_result(session, action)
+        emergency = _emergency_maintenance_result(session, action, allow_projection_repair=True)
         if emergency is not None:
             expired += emergency
             continue
@@ -83,6 +83,8 @@ def expire_incomplete_daily_contract_actions(session: Session, task: Task) -> in
 
 
 def _maintenance_candidates(session: Session, task: Task, predicate):
+    with session.no_autoflush:
+        session.scalar(select(Task.id).where(Task.id == task.id).with_for_update())
     cursor = ""
     while True:
         rows = list(session.scalars(select(Action).where(
@@ -97,7 +99,7 @@ def _maintenance_candidates(session: Session, task: Task, predicate):
         yield from rows
 
 
-def _emergency_maintenance_result(session: Session, action: Action) -> int | None:
+def _emergency_maintenance_result(session: Session, action: Action, *, allow_projection_repair=False) -> int | None:
     from .ai_group_emergency import validate_emergency_selection
     from .ai_group_emergency_contract import EMERGENCY_SOURCES, telegram_unattempted
     from .payloads import SendMessagePayload
@@ -109,6 +111,10 @@ def _emergency_maintenance_result(session: Session, action: Action) -> int | Non
             or payload.get("content_source") in EMERGENCY_SOURCES):
         return None
     try:
+        if allow_projection_repair and payload.get("emergency_selection_id"):
+            from .ai_group_emergency_projection_repair import align_existing_emergency_projection
+
+            align_existing_emergency_projection(session, action)
         validate_emergency_selection(session, action, SendMessagePayload.model_validate(payload))
     except ValueError as exc:
         error_code = str(exc)
