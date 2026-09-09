@@ -42,7 +42,8 @@ def rows(monkeypatch):
 
 
 @pytest.mark.parametrize("code", ["execution_circuit_open", "execution_circuit_half_open",
-    "execution_circuit_probe_pending", "account_shared_usage_unproven", "account_legacy_remote_inflight"])
+    "execution_circuit_probe_pending", "account_shared_usage_unproven", "account_legacy_remote_inflight",
+    "task_account_portfolio_capacity_exhausted"])
 def test_blocked_uncalled_action_is_skipped_and_coverage_released(rows, code):
     session, action, attempt, coverage = rows
     dispatcher._defer_engagement_resource_attempt(action, attempt, RuntimeResourceBlocked(code, "test"))
@@ -60,13 +61,14 @@ def test_blocked_uncalled_action_is_skipped_and_coverage_released(rows, code):
     assert coverage.next_eligible_at > NOW
 
 
-def test_old_unknown_attempt_cannot_be_discarded(rows):
+@pytest.mark.parametrize("code", ["execution_circuit_open", "task_account_portfolio_capacity_exhausted"])
+def test_old_unknown_attempt_cannot_be_discarded(rows, code):
     session, action, attempt, coverage = rows
     session.add(ExecutionAttempt(id="unknown", tenant_id=1, action_id=action.id,
         attempt_no=1, status="result_unknown", gateway_call_started_at=NOW))
     session.flush()
     dispatcher._defer_engagement_resource_attempt(action, attempt,
-        RuntimeResourceBlocked("execution_circuit_open", "test"))
+        RuntimeResourceBlocked(code, "test"))
     assert action.status == "pending"
     assert coverage.reserved_action_id == action.id
     assert session.get(ExecutionAttempt, "unknown").status == "result_unknown"
@@ -93,7 +95,8 @@ def test_circuit_discard_uses_blocking_domain_deadline(rows):
     assert coverage.next_eligible_at == NOW + timedelta(seconds=900)
 
 
-def test_finalizer_records_nonexecution_and_keeps_obligation_open(rows):
+@pytest.mark.parametrize("code", ["execution_circuit_open", "task_account_portfolio_capacity_exhausted"])
+def test_finalizer_records_nonexecution_and_keeps_obligation_open(rows, code):
     from app.services.task_center.fulfillment_remote_facts import ensure_action_obligation
 
     session, action, attempt, coverage = rows
@@ -105,7 +108,7 @@ def test_finalizer_records_nonexecution_and_keeps_obligation_open(rows):
     session.flush()
     assert ensure_action_obligation(session, action)
     dispatcher._defer_engagement_resource_attempt(action, attempt,
-        RuntimeResourceBlocked("execution_circuit_open", "test"))
+        RuntimeResourceBlocked(code, "test"))
     dispatcher._finalize_dispatch_action(session, action)
     session.refresh(coverage)
     fact = session.query(FulfillmentRemoteFact).one()

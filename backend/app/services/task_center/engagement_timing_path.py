@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 TIMING_MEASUREMENT_REVISION = "elapsed_boundaries_v1"
@@ -11,10 +11,12 @@ class TimingExecutionPath:
     preparation_policy_revision: str
     provider_routes: tuple[tuple[str, str], ...]
     measurement_revision: str = TIMING_MEASUREMENT_REVISION
+    requires_semantic_review: bool = field(default=True, kw_only=True)
 
     def snapshot(self, *, adapter: str, lane: str) -> dict:
-        stages = path_stages(adapter, lane)
-        validate_provider_roles(adapter, lane, self.provider_routes)
+        stages = path_stages(adapter, lane, requires_semantic_review=self.requires_semantic_review)
+        validate_provider_roles(adapter, lane, self.provider_routes,
+                                requires_semantic_review=self.requires_semantic_review)
         if not self.preparation_policy_revision.strip() or any(not route.strip() for _, route in self.provider_routes):
             raise ValueError("execution_timing_path_revision_missing")
         if self.measurement_revision != TIMING_MEASUREMENT_REVISION:
@@ -27,9 +29,10 @@ class TimingExecutionPath:
         }
 
 
-def validate_provider_roles(adapter: str, lane: str, routes: tuple[tuple[str, str], ...]) -> None:
+def validate_provider_roles(adapter: str, lane: str, routes: tuple[tuple[str, str], ...],
+                            *, requires_semantic_review: bool = True) -> None:
     roles = [role for role, _ in routes]
-    required = required_provider_roles(adapter, lane)
+    required = required_provider_roles(adapter, lane, requires_semantic_review=requires_semantic_review)
     optional = _optional_provider_roles(adapter, lane)
     if len(set(roles)) != len(roles) or not required <= set(roles) or set(roles) - required - optional:
         raise ValueError("execution_timing_provider_roles_invalid")
@@ -41,19 +44,19 @@ def _optional_provider_roles(adapter: str, lane: str) -> set[str]:
     return {"router", "repair", "reviewer"} if adapter == "group_ai_chat" else {"router"}
 
 
-def required_provider_roles(adapter: str, lane: str) -> set[str]:
+def required_provider_roles(adapter: str, lane: str, *, requires_semantic_review: bool = True) -> set[str]:
     if adapter in PASSIVE_ADAPTERS:
         return set()
     if lane == "classification":
         return {"classification"}
-    return {"realizer", "reviewer"} if adapter == "channel_comment" else {"realizer"}
+    return {"realizer", "reviewer"} if adapter == "channel_comment" and requires_semantic_review else {"realizer"}
 
 
-def path_stages(adapter: str, lane: str) -> tuple[str, ...]:
+def path_stages(adapter: str, lane: str, *, requires_semantic_review: bool = True) -> tuple[str, ...]:
     if adapter in CONTENT_ADAPTERS and lane == "classification":
         return ("pre_materialization", "pre_provider", "post_classification", "claim_finalized")
     if adapter in CONTENT_ADAPTERS and lane in {"response", "proactive"}:
-        if adapter == "channel_comment":
+        if adapter == "channel_comment" and requires_semantic_review:
             return ("pre_materialization", "pre_provider", "reviewer_started", "ready_action", "gateway_call_issued")
         return ("pre_materialization", "pre_provider", "ready_action", "gateway_call_issued")
     if adapter in PASSIVE_ADAPTERS and lane == "passive":

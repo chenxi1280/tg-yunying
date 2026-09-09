@@ -1,5 +1,11 @@
 # 项目结构索引
 
+> **2026-09-09 精确点赞积压重建：** `reaction_backlog_snapshot.py`解析精确范围、检查身份/未调用证据、生成非敏感hash；`reaction_backlog_replan.py`原子调用既有未执行结算及审计/独立读回；`scripts/replan_cancelled_reaction_backlog.py`提供受SHA约束的preview/apply/readback。测试`test_reaction_backlog_replan.py`及`test_task_progress_repair_postgres.py`覆盖重建接管、漂移、过期分流、锁冲突和幂等。
+
+> **2026-09-09 活群extra组合供给：** `executors/group_ai_extra_portfolio.py`批量聚合同Task/day额度、行为预算与原主数量槽/目标下待发投影；`group_ai_extra_candidates.py`在LIMIT前应用并显式flush本事务计划。`test_group_ai_extra_portfolio.py`覆盖不双扣、unknown/释放、跨日与跨Task、零分配和分页不饥饿。
+
+> **2026-09-09 评论生成路径与领取：** `legacy_generation_timing.py`冻结实际单/双阶段角色；`engagement_timing_path.py`显式承载是否需要语义审核，默认保持旧完整审核合同；`comment_generation_worker.py`用finally和行锁后的owner/token核对收口领取。回归`test_comment_generation_claim_failures.py`覆盖完整绑定、异常释放与新owner保护，unknown沿已有回归。批次合同`production-task-progress-repair-20260909-prd.md`。
+
 > **2026-09-09 入群协议入口：** `integrations/telegram/channel_membership_gateway.py`分离新申请、待审批与丢失回执；`join_request_verification.py`冻结管理员bot游标、校验私聊题目并读取成员事实；dispatcher沿用任务开关、原Action/Attempt及发言权限/C2。无新表。
 
 

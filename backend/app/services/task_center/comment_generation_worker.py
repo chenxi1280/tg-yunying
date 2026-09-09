@@ -126,7 +126,13 @@ def _process_comment_generation(
     *,
     dependencies: CommentGenerationDependencies,
 ) -> None:
-    expected_failure = False
+    try:
+        _run_claimed_comment_generation(session_factory, claim, dependencies=dependencies)
+    finally:
+        _release_comment_generation_claim(session_factory, claim)
+
+
+def _run_claimed_comment_generation(session_factory, claim, *, dependencies) -> None:
     with session_factory() as session:
         action = session.get(Action, claim.action_id)
         if not owns_generation_claim(action, claim.owner, claim.token):
@@ -138,12 +144,8 @@ def _process_comment_generation(
             )
         except (AiGenerationUnavailable, ProviderRouteDeferred, GenerationAttemptStale):
             session.rollback()
-            expected_failure = True
         else:
             session.commit()
-    _release_comment_generation_claim(session_factory, claim)
-    if expected_failure:
-        return
 
 
 def _release_comment_generation_claim(
@@ -151,13 +153,14 @@ def _release_comment_generation_claim(
     claim: CommentGenerationClaim,
 ) -> None:
     with session_factory() as session:
-        action = session.get(Action, claim.action_id)
+        action = session.scalar(select(Action).where(
+            Action.id == claim.action_id,
+        ).with_for_update())
         if not owns_generation_claim(action, claim.owner, claim.token):
-            _release_runtime_resources(action)
             return
         release_generation_claim(action, dict(action.payload or {}))
-        session.commit()
         _release_runtime_resources(action)
+        session.commit()
 
 
 __all__ = ["drain_comment_generation"]

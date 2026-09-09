@@ -19,7 +19,6 @@ def legacy_generation_execution_path(session, task, *, job, config):
     roles = {"realizer": config}
     if config.get("ai_two_stage_enabled"):
         roles["router"] = config
-    if task.type == "channel_comment" or config.get("ai_two_stage_enabled"):
         roles["reviewer"] = {**config, "ai_model": config.get("ai_semantic_reviewer_model")}
     routes = []
     for role, selection in sorted(roles.items()):
@@ -37,7 +36,8 @@ def legacy_generation_execution_path(session, task, *, job, config):
         "prompt": job.prompt_contract_version, "examples": job.example_set_version,
         "voice": job.voice_profile_version, "two_stage": bool(config.get("ai_two_stage_enabled")),
         "fallback_stages": list(fallback_stages(config))}
-    return TimingExecutionPath(f"legacy_generation_job:{timing_hash(policy)}", tuple(routes))
+    return TimingExecutionPath(f"legacy_generation_job:{timing_hash(policy)}", tuple(routes),
+                               requires_semantic_review=bool(config.get("ai_two_stage_enabled")))
 
 
 def _selection_identity(session, provider, *, model, config):

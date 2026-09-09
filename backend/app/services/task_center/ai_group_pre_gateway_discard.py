@@ -11,6 +11,7 @@ DISCARDABLE_BLOCKERS = frozenset({
     "execution_circuit_open", "execution_circuit_half_open",
     "execution_circuit_probe_pending", "account_shared_usage_unproven",
     "account_legacy_remote_inflight",
+    "task_account_portfolio_capacity_exhausted",
 })
 UNCALLED_STATES = frozenset({"before_call", "skipped_before_gateway", "call_not_started"})
 

@@ -1,5 +1,13 @@
 # TG 运营管理平台生产部署说明
 
+## 2026-09-09 卡死Action清理与重建
+
+专项合同`production-task-progress-repair-20260909-prd.md`：先发布R1评论领取/实际生成路径、R3活群extra组合供给修复；正常worker恢复既有未调用工作。R4仅用于当前running点赞Task的精确取消预约残留，不删除Task、不调用Provider/Telegram、不重放未知。
+
+正式代码部署后输入受保护JSON（tenant_id、task_ids、action_ids、expected_count、deployed_sha）。使用`python -m scripts.replan_cancelled_reaction_backlog --mode preview|apply|readback --input <对应输入JSON> --output <独立输出JSON> --expected-deployed-sha <完整SHA>`；apply还需`--actor <执行身份> --audit-reference <本次授权来源>`。preview输出为apply输入、receipt为readback输入。CLI校验实际RELEASE_SHA，apply锁后重验hash、同事务AuditLog；重复apply返回同receipt。文件权限0600，容器替换前保留审计文件。
+
+清理使用可审计逻辑退役：旧Action skipped并保留typed safely_not_executed；有效原义务释放后由正式Planner建新Action，过期原预约missed，不延长来源期限。不能运行旧“abandon AI backlog”脚本替代，它会将coverage放弃且不重建。readback证明旧Action退出/新绑定/Task保留；只有之后的reaction_observed、评论/活群remote_message_observed才能证明真实业务恢复。未知发送、Provider unknown、窗口外/未来等待不混入维护范围。
+
 ## 2026-09-09 独立群克隆媒体准入修复
 
 真实测试预检同时修复共享Ingress写入、Clone precheck/start/read-model对timestamptz的naive/aware比较；统一使用既有as_beijing，原租约到期与owner/fence门禁不变。发布后原Collector自行重试gap，不手工改游标或重放历史发送。

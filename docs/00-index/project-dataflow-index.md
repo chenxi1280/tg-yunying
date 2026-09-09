@@ -1,5 +1,11 @@
 # 项目数据流转索引
 
+> **2026-09-09 DF 卡死点赞重建：** 精确当前Task/Action/取消预约/原Reaction义务 → 全历史未调用与零远端资源证据 → snapshot/hash → 稳定顺序锁后复验 → 旧Action safely_not_executed/skipped → 原有效义务open及预约脱离旧Action → 正式Planner新Action。expired预约missed；审计与旧执行证据保留，不物理级联删除Task/义务、不重放unknown。专项合同`production-task-progress-repair-20260909-prd.md` R4。
+
+> **2026-09-09 活群额外量组合供给：** 原Task/day/account组合额度 → 扣同日行为预算占用及未被预算表示的待发Action → 在公平游标/LIMIT前过滤extra候选 → 原身份/活动窗/来源/内容门。主数量槽/日目标提供原日身份，不按当前扫描时间移日；不删除既有超配或unknown。专项合同`production-task-progress-repair-20260909-prd.md` R3。
+
+> **2026-09-09 评论生成路径与领取 resync：** 原配置的实际单/双阶段 → 对应耗时绑定 → 原生成/质量门 → 结果持久化；异常退出 → 独立事务锁后核对本次owner/token → 释放领取并保留原错误/unknown。不得构造额外reviewer路由或重写历史binding；专项合同见`production-task-progress-repair-20260909-prd.md` R1。
+
 > **2026-09-09 DF-360 媒体准入修复 resync：** 独立 `group_clone/v2_group_clone` 的单媒体规则拒绝保持 `filtered`，规则通过的空 Caption 才允许无文字媒体；相册按冻结事件逐项检查，任一项保护进入既有 `waiting_manual_review/protected_content`，任一项规则拒绝过滤整组，不生成发送身份/Action。完整合法集合才进入原 Planner/Dispatcher/typed fact 链，不改变旧 unknown 或不完整相册策略。专项 PRD §7.1 和本次修订为准。
 
 > **2026-09-09 审批群准入 resync：** Task/Action/Attempt → 原账号transport → 申请前管理员bot游标 → JoinChannel → InviteRequestSent → 新私聊数学题 → 原题单次callback → GetParticipant → 原发言权限/C2。join_request_evidence逐阶段区分回执和成员事实；待审批保留不可重放状态。无历史unknown自动重发。

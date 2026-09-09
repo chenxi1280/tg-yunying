@@ -11,6 +11,7 @@ from app.services._common import _now
 from app.timezone import beijing_day_bounds
 
 from ..daily_coverage_planning import MAX_DAILY_COVERAGE_PLAN_BATCH
+from .group_ai_extra_portfolio import with_extra_portfolio_capacity
 
 
 DAILY_GROUP_EXTRA_CANDIDATE_LIMIT = MAX_DAILY_COVERAGE_PLAN_BATCH
@@ -33,6 +34,7 @@ def daily_group_extra_candidate_ids(
     now: datetime | None = None,
 ) -> list[int]:
     timestamp = now or _now()
+    session.flush()
     success_counts = _daily_success_count_subquery(spec)
     statement = (
         select(TaskMembershipAdmissionItem)
@@ -54,7 +56,7 @@ def daily_group_extra_candidate_ids(
         )
         .limit(DAILY_GROUP_EXTRA_CANDIDATE_LIMIT)
     )
-    items = list(session.scalars(statement))
+    items = list(session.scalars(with_extra_portfolio_capacity(statement, spec)))
     for item in items:
         item.planner_last_selected_at = timestamp
     return [int(item.account_id) for item in items]
