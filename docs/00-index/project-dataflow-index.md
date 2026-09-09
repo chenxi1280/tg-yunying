@@ -1647,3 +1647,5 @@ legacy-only A 冷启动分支固定为 `frozen legacy A -> 原 A Session 只读 
 > **2026-09-08 DF-358 修订：** `master SHA -> Prepare Production(完整 6+2 shards/frontend/images) -> verified manifest(run/attempt/digests) -> release 冻结 -> Deploy Production exact-SHA resolver -> pull -> frozen worker IDs stop/readback -> prepare AuditLog + scope preparing -> all workers start -> in-flight recovery/ledger -> upgrade takeover or verified chain reuse -> activate/verify-active -> activation evidence -> runtime/E4 readback`。准备无生产副作用；普通切换不新建历史 takeover batch；未知 Gateway 请求保持原 reconcile。 当前合同：`docs/03-feature-designs/prepared-release-worker-cutover-prd.md`。
 
 - 2026-09-09 B1：Provider 返回 payload/tokens → realizer 解析或 grounding 拒绝 → TwoStageRealizeError 保留 tokens，形状拒绝附带计数/档位/hash → 既有 SlotGenerationResult.evaluator_evidence 与质量耗尽累计消耗。证据不进入后续纠错提示、不含正文；无表结构、状态机或发送行为变更。当前仅本地验证，见 `docs/05-implementation/ai-group-low-fulfillment-repair-20260909.md`。
+
+- Clone启动数据流：pending/start_from_now → listener Collector → 每Task锁定并读取Telegram起始boundary → stream/subscription/running/PlannerWake同事务提交 → Planner物化；Planner不执行boundary RPC，失败保留start_failed及零发送事实。

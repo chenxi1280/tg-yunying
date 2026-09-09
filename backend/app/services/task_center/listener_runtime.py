@@ -33,6 +33,7 @@ from .hard_hourly import enabled as hard_hourly_enabled
 from .planner_wake import wake_task_planner
 from .targets import group_from_reference
 from .telegram_update_collector import drain_telegram_update_collector
+from .group_clone_start_worker import advance_pending_group_clones
 
 
 _LOCK = Lock()
@@ -106,9 +107,10 @@ def drain_listener_runtime(session_factory, *, tenant_id: int | None = None, lim
         tenant_id=tenant_id,
         limit=limit,
     )
+    clone_starts = advance_pending_group_clones(session_factory, tenant_id=tenant_id, limit=limit)
     result = ListenerRuntimeDrainResult(
         source_count=len(sources) + collector_result.source_count,
-        collected_count=collector_result.batch_count + collector_result.reconciled_count,
+        collected_count=collector_result.batch_count + collector_result.reconciled_count + clone_starts,
         error_count=collector_result.error_count + stream_setup_errors,
     )
     _consume_group_ai_streams(session_factory, stream_bindings, result)

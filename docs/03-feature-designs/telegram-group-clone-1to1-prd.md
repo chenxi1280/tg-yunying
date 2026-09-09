@@ -1047,3 +1047,11 @@ Intake `intake-20260909-group-clone-audit`，L3/P1，用户已授权修复。反
 ### 真实测试预检修订：共享 Ingress 租约时区
 
 用户指定 `zzxshxc → t01ces`，管理员 `@yangyuyan`。当前生产8个共享Ingress状态均为gap，读取到naive/aware时间比较异常；反向检查发现Ingress写入校验、Clone precheck、start boundary、领域只读状态四处直接比较PostgreSQL timestamptz与平台北京时间naive clock。`design_status=complete/resync=true`：四处均通过项目`as_beijing`归一化后比较同一时刻，未来租约有效，到期相等即失效，缺owner/fence或已过期仍拒绝；不得直接去掉UTC时区或扩大租约。无需表迁移、手工改gap或重放事件，修复后由原Collector/任务生命周期推进。QA覆盖北京naive、北京aware、UTCaware的有效/过期/边界租约，以及真实PostgreSQL时间类型读回；此修订只修复测试暴露的运行前置缺陷，不替代完整Clone E4。
+
+### 2026-09-09 真实启动阶段边界修订
+
+真实受控任务 `ce341c64-878e-482a-8b91-598346d5b885` 在 d5af1229 上证明：Planner 调用 `advance_group_clone_start` 读取 Telegram boundary，被既有 `planner_remote_io_forbidden` 拦截，任务进入 start_failed，SourceEvent/Action/Attempt/RemoteFact 均为0。
+
+Product Design Complete（本修订）：Clone保持独立v2_group_clone；起始boundary必须由listener在正式Collector完成之后建立，按Task分别锁定、分别提交，成功后提交running/next_run_at/PlannerWake。Planner只消费已完成启动的Clone，不能执行远端boundary读取，也不能把pending Clone直接标记running。仅领取当前租户、未删除、scheduled_start已到期且pending的Clone；暂停、未来启动、其他类型及已running任务不重复处理。RPC失败维持既有start_failed及错误证据；不得放开Planner远端IO禁令、不得清空旧游标或重放unknown。失败任务恢复仍经通用Start复核后复用安全的当前epoch启动记录。
+
+QA必须覆盖真实runtime-role禁令：planner角色执行pending activation不发生RPC，listener角色执行边界获取、持久化起始点并创建wake；重复listener drain不重复读取边界/推进wake；未来启动与暂停任务不领取；远端错误明确失败。发布后重新对固定源/目标验证正式源事件→义务→Action→Attempt→clone_message_observed→消息映射及目标消息。共享listener超长周期/租约间歇过期仍须单独报告，不得从受控Collector测试推断常态调度恢复。

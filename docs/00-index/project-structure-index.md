@@ -1600,3 +1600,5 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 > **2026-09-08 预构建发布与全量切换：** `.github/workflows/prepare-production.yml` 负责 6+2 全量测试分片、前端、三镜像及 manifest；`prepared_release_manifest.py` 与 `resolve_prepared_release.py` 绑定 SHA/run/attempt/digest；`deploy-production.yml` 仅冻结候选并部署成功制品。`deploy/worker-cutover.sh` / `worker-inventory.py` 冻结实际旧 worker 容器并一起停机；`backend/scripts/release_worker_cutover.py` 负责准备/恢复/升级或复用/激活；`release_cutover.py` 管理审计证据，`release_cutover_fingerprint.py` 定义升级输入。 当前合同：`docs/03-feature-designs/prepared-release-worker-cutover-prd.md`。
 
 - 2026-09-09：`realizer_rejection_evidence.py` 复用 MessageBrief 的规范化及分类函数，生成不含正文的形状拒绝证据；`two_stage_generation._realize_draft` 保留解析/grounding 拒绝的 tokens。回归 `test_realizer_rejection_accounting.py`。仅本地 B1 诊断/记账修复，未部署；详见低完成量实施记录。
+
+- 群克隆启动阶段：`group_clone_start_worker.py` 在listener Collector之后按Task独立事务建立起始boundary并唤醒Planner；Planner pending激活跳过Clone，避免其远端I/O禁令与起始读取冲突。

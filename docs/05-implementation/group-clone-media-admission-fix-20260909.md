@@ -69,3 +69,24 @@
 Prepare 34334139596的两个PostgreSQL分片各有1项失败，均为新增租约测试向已有public schema自动插入Tenant时撞上预置id=1；普通分片、前端与镜像通过。修复仅把新增测试切换到仓库现有isolated_postgres/database夹具，每项使用独立schema及其序列，避免公共数据/执行顺序依赖；生产代码和验收合同不变。
 
 本机专用PostgreSQL中先写入public Tenant(id=1)，再运行修订后6项租约持久化/读回测试：6 passed / 9.55秒；保留真实PostgreSQL及60秒硬超时，没有mock数据库。修复后提交新候选并重新执行完整Prepare。
+
+## 最终候选发布
+
+- candidate_sha：d5af1229ae1f0d4b37f11f7debd058e7fbf7401c。
+- Prepare Production 34335284023：全部质量分片及镜像构建success。
+- release从8fc01975快进到d5af1229，master/release/dispatch三者SHA一致；未纳入另一个任务的aa670b97/01edd500修复。
+- Deploy Production 34336057503：2026-09-09北京时间17:40后触发，已通过candidate/prepared校验；以下以实际结束时间和独立线上读回为最终锚点。
+
+## d5af1229 线上读回与第三轮闭环
+
+Deploy 34336057503于2026-09-09 17:43:58北京时间success；current=/data/tgyunying/releases/20260909094124_d5af1229。backend+18 workers完整SHA一致且healthy；本机/public API健康200，Alembic head=0229_admission_gap_count。
+
+正式listener仍有独立调度限制：最近一轮305529ms，超过共享授权90秒租约，状态追赶及租约间歇失效。为用户指定测试，使用正式Collector的原claim/fencing/_drain_claim路径，仅驱动authorization 1/2398；不改PTS、不强制领取未过期lease、不重放unknown，不调用其他任务的reconcile。审计动作“运行受控克隆Collector验收”。4轮后两授权live，正式precheck passed。
+
+随后用现有create_and_start服务创建唯一测试Task ce341c64-878e-482a-8b91-598346d5b885，epoch=1。正常Planner将其置failed/start_failed，last_error=planner_remote_io_forbidden；SourceEvent/obligation/Action/Attempt/RemoteFact/mapping全部0。受控Collector检测Task失败后自动退出；测试Task保持failed及原始错误，不伪装暂停成功，无远端消息可回滚。
+
+根因：_activate_pending_tasks在planner runtime role内调用advance_group_clone_start→fetch_raw_channel_boundary，违反既有Planner IO禁令。按标准闭环返回产品阶段，更新专项PRD和两索引；新增group_clone_start_worker在listener Collector后按Task独立事务执行boundary、running及PlannerWake，Planner跳过pending Clone。保留原权限/租约/远端禁令、失败语义和起始边界。
+
+修复前真实runtime role回归：1 failed，复现planner_remote_io_forbidden。修复后群克隆回归120 passed /21.74秒，含新增8项启动阶段、正常listener调用链、幂等、scope和失败用例。ruff F/静态未定义名与diff-check通过。一次额外role-drains选择触发测试库安全检查而拒绝非测试库名，未重置或写入该数据库；随后只运行正确标记的Clone测试。新代码是两个阶段调用点和独立启动模块，未扩大拆分现有巨大service/listener文件。
+
+下一次发布后需由通用Start重新复核该失败任务；它仍是零发送、旧epoch安全启动记录，不授权重放unknown。共享listener长周期的问题仍独立unproven，受控Collector结果不代表常态调度恢复。

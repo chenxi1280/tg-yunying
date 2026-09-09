@@ -7044,11 +7044,7 @@ def _activate_pending_tasks(session: Session) -> None:
         )
     ):
         if task.type == "group_clone":
-            from .group_clone_source_stream import advance_group_clone_start
-
-            advance_group_clone_start(session, task)
-            if task.status != "running":
-                continue
+            continue
         task.status = "running"
         task.next_run_at = _now()
         wake_task_planner(
