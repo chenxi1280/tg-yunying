@@ -1,7 +1,7 @@
 from datetime import timedelta
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from app.models import AccountBehaviorBudgetPolicyRevision, Action, Task, Tenant, TgAccount
 from app.services.task_center.engagement_behavior_sessions import ensure_behavior_session_plan
@@ -41,6 +41,7 @@ def _setup_postgres(session):
 
 def test_window_claim_keeps_account_and_task_locks_until_commit(factory):
     with factory() as session:
+        assert session.scalar(text('SHOW timezone')) == 'Asia/Shanghai'
         task = _setup_postgres(session)
         reservation = _reserve(session, task, due=FIRST_START)
         mine = _block(session, task, at=FIRST_START)

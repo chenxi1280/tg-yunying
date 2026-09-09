@@ -27,6 +27,7 @@
 ## 发布后填写
 
 - 首次Prepare 34361033434（2ceca87a）失败且未部署：新增PG窗口测试把tenant=1提交到共享public schema，后续test_account_profile_identity_postgres发生主键冲突。顺序本地反例1 failed/1 passed（8.66s）复现。修复仅测试：窗口与E4并发回归改用独立随机schema及原测试库会话锁，用完回收该schema；不改生产代码、不删除共享测试行、不跳检查。修复后含后继账号测试的顺序回归77 passed/20.01s；Ruff/diff通过，新SHA必须重新完整Prepare。
+- 第二次Prepare 34362509365（b6a3551d）仅窗口PG用例失败，422 passed：独立schema连接遗漏应用的Asia/Shanghai设置，CI默认UTC将夹具10:00入库解释为北京时间18:00。本地显式UTC复现同一断言（1 failed/3.92s），修复为复用app.database.connect_args并断言实际SHOW timezone；无生产代码变更。修复后窗口/后继账号/Session/E4顺序88 passed/21.64s，Ruff/diff通过。前一候选完整152定向也通过27.13s，但不能替代新候选完整CI；第三次继续全量Prepare。
 
 - Prepare/Deploy run及候选完整SHA：
 - current/backend/18worker完整SHA、健康、API与迁移：

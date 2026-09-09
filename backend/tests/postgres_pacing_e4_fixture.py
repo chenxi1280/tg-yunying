@@ -7,7 +7,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 
-from app.database import Base
+from app.database import Base, connect_args as application_connect_args
 
 
 @pytest.fixture
@@ -19,7 +19,7 @@ def factory(postgres_test_session_lock):
     with admin.connect().execution_options(isolation_level="AUTOCOMMIT") as connection:
         connection.execute(text(f'CREATE SCHEMA "{schema}"'))
         engine = create_engine(url, connect_args={
-            "options": f"-csearch_path={schema} -clock_timeout=1000"})
+            "options": f"{application_connect_args['options']} -csearch_path={schema} -clock_timeout=1000"})
         try:
             Base.metadata.create_all(engine)
             yield sessionmaker(bind=engine, autoflush=False)
