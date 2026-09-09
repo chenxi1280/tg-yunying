@@ -1,5 +1,18 @@
 # 群克隆媒体准入修复与 Release Gate（2026-09-09）
 
+## 当前验收结论（2026-09-09 21:45后）
+
+修复已发布；指定范围的受控文本Clone E4通过，完整群克隆仍未整体验收。最终运行SHA为fa26ddbd90d75bb8a28817919ef36ede4da6c1eb，Prepare34349775118全部success，Deploy34357858364于21:37:31北京时间success。backend+18workers独立SHA/healthy验证全部通过，本机API health=ok，公网 https://tgyunying.telema.cn/api/health 独立读回HTTP200/statusok。
+
+真实链路：Task ce341c64-878e-482a-8b91-598346d5b885 / epoch2 → source3069213 → obligation4b0ba745-c9a9-4623-bc63-6784a33c58d1 → Action a897a2a7-a224-4778-8f41-c8a6500eac92 → Attempt f8bf72ca-047d-4d92-af97-1dea04d1d061 → fact4e219193-ea19-4f3d-a19d-4e553da932f0/clone_message_observed（21:43:47.792693）→ target消息2。独立Telegram读取确认目标消息可见、类型text、正文与冻结发送payload一致；未输出正文。目标链接：https://t.me/t01ces/2。
+
+最终原生Pause及只读读回：Task paused/epoch2，8个SourceEvent（6new+2delete）、1succeeded义务、1waiting_binding义务、1success Action、1success Attempt、1typed fact/消息映射，无unknown。发送账号仅437；第二个源发言人因sender_pool_exhausted等待，不冒充完整多人克隆成功。受控Collector36轮正常退出，无自有测试进程残留。
+
+证据边界：Collector为指定authorization1/2398的受控正式驱动；启动经正式Start/listener，规划与发送由常态Planner/Dispatcher完成。曾准备精确Task的受控Planner调用，但真实调用在零Action断言处退出（正常Planner已抢先创建Action），未执行第二次规划。常态Collector长期无人干预的调度时效、媒体/相册与编辑删除/Topic/unknown/cutover全场景E4仍未验证；最新Clone140项定向回归通过，完整Prepare通过不代替这些业务边界。
+
+旧epoch1因暂停期间channel_difference_too_long失败，零SourceEvent/Action/Attempt/事实。没有将这段历史声明恢复：核对精确错误、epoch1及零Action后用原生Stop归档，epoch推进为2，原生Start建立新boundary message3069212/PTS5606976，只验新边界后自然消息。审计记录保留错误与换epoch原因；没有给源群插入测试消息、手改PTS或重放未知请求。
+
+
 ## Intake / Bug Batch Plan
 
 - intake_id：intake-20260909-group-clone-audit；L3/P1；用户已明确“你来修复问题”。
