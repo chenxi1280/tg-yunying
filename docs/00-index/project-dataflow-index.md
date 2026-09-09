@@ -1661,3 +1661,4 @@ legacy-only A 冷启动分支固定为 `frozen legacy A -> 原 A Session 只读 
 - 2026-09-09 E4统计：同tenant/Task/ledger全量coverage（含abandoned/unknown）→历史总数、按unified/legacy合同的必达数、记录数与独立去重账号数分列；Action/Attempt回执→同身份及发布时间的remote_message_observed精确关联→按Action去重→E4消息证据判定。unified历史分母不随账号冻结或当前可执行性缩小，legacy动态scope保留，回执不冒充业务事实；全流程只读。合同`docs/03-feature-designs/production-e4-reporting-integrity-prd.md`，独立分支本地验证，未部署。
 - E4范围补正：PostgreSQL REPEATABLE READ READ ONLY事务及局部查询/锁超时 → 全量未删除channel_view自动范围或原显式ID范围 → 同事务读取Task/ledger/事实 → task_deleted与业务缺口 → 摘要；设置/查询失败中止，无通过摘要、无降级、无写库。
 - 2026-09-09 AI窗口交集：原due/release → 原账号Session窗口 → 账号/群时间线 → 最终时刻再次窗口求交 → 合法effective或原deadline失败。Source推迟保留原release，下次正常claim重新求交；原Source独占预约与unknown不改写。合同见ai-group-window-shortfall-repair-20260909-prd.md。
+- E4身份以实际结构反查补正：unified Action.primary_quantity_slot_id → 同tenant/Task/ledger数量槽 → 原Attempt与typed消息事实；相同谓词用于开放Action和样本ledger_matches。payload任务日缺省不是失败，显式矛盾与错误槽仍拒绝；不补写历史payload、不影响发送。

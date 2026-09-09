@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.database import Base
 from app.models import (
     Action, ExecutionAttempt, FulfillmentRemoteFact, Task, TaskAccountDailyCoverage,
-    TaskDayLedger, TgAccount,
+    TaskDayLedger, TaskGroupDailyMessageSlot, TgAccount,
 )
 from tests.test_task_fulfillment_e4_diagnostics import load_module
 
@@ -35,9 +35,12 @@ def scope():
 
 
 def _message(session, *, suffix="one", **overrides):
+    slot = TaskGroupDailyMessageSlot(id=f"slot-{suffix}", tenant_id=1, task_id="task",
+        task_day_ledger_id="ledger", target_operation_target_id=1,
+        slot_kind="extra", slot_ordinal=len(session.new) + 1)
     action = Action(id=f"action-{suffix}", tenant_id=1, task_id="task", account_id=1,
         task_type="group_ai_chat", action_type="send_message", scheduled_at=SINCE,
-        status="success", payload={"task_day_ledger_id": "ledger"})
+        status="success", primary_quantity_slot_id=slot.id, payload={})
     attempt = ExecutionAttempt(id=f"attempt-{suffix}", tenant_id=1,
         action_id=action.id, account_id=1, status="success", remote_message_id="123",
         gateway_call_started_at=SINCE, after_call_at=OBSERVED)
@@ -48,7 +51,7 @@ def _message(session, *, suffix="one", **overrides):
         fact_kind="remote_message_observed", fact_identity_hash=suffix, observed_at=OBSERVED,
         outcome={"remote_message_id": "123"})
     fact = FulfillmentRemoteFact(**{**values, **overrides})
-    session.add_all([action, attempt, fact])
+    session.add_all([slot, action, attempt, fact])
     session.flush()
     return action, attempt, fact
 
@@ -123,7 +126,8 @@ def test_fact_requires_original_successful_post_release_attempt(scope, changes):
 @pytest.mark.parametrize("changes", [
     {"tenant_id": 2}, {"task_id": "other-task"}, {"task_type": "channel_comment"},
     {"action_type": "ensure_target_membership"}, {"account_id": None},
-    {"payload": {"task_day_ledger_id": "other-ledger"}}, {"payload": {}},
+    {"payload": {"task_day_ledger_id": "other-ledger"}},
+    {"primary_quantity_slot_id": None}, {"primary_quantity_slot_id": "missing"},
 ])
 def test_fact_requires_matching_action_identity(scope, changes):
     session, _, ledger = scope
@@ -177,3 +181,37 @@ def test_coverage_scope_excludes_other_owners(scope, changes):
     module = load_module()
     assert module._group_daily_snapshot(session, ledger)["coverage_required_count"] == 0
     assert module._group_runtime_snapshot(session, ledger)["coverage_distinct_account_count"] == 0
+
+
+def test_canonical_slot_without_payload_day_is_in_open_queue(scope):
+    session, _, ledger = scope
+    action, _, _ = _message(session)
+    action.status = "pending"
+    session.flush()
+    runtime = load_module()._group_runtime_snapshot(session, ledger)
+    assert sum(runtime["open_action_counts"].values()) == 1
+    assert runtime["oldest_open_action_samples"][0]["ledger_matches"] is True
+
+
+@pytest.mark.parametrize("changes", [
+    {"tenant_id": 2}, {"task_id": "other"}, {"task_day_ledger_id": "old"},
+])
+def test_wrong_canonical_slot_cannot_use_matching_payload_as_fallback(scope, changes):
+    session, _, ledger = scope
+    action, _, _ = _message(session)
+    action.payload = {"task_day_ledger_id": ledger.id}
+    slot = session.get(TaskGroupDailyMessageSlot, action.primary_quantity_slot_id)
+    for key, value in changes.items():
+        setattr(slot, key, value)
+    session.flush()
+    assert load_module()._group_daily_snapshot(session, ledger, since=SINCE)["post_release_remote_fact_count"] == 0
+
+
+def test_legacy_without_primary_slot_keeps_payload_ledger_contract(scope):
+    session, task, ledger = scope
+    task.type_config = {}
+    action, _, _ = _message(session)
+    action.primary_quantity_slot_id = None
+    action.payload = {"task_day_ledger_id": ledger.id}
+    session.flush()
+    assert load_module()._group_daily_snapshot(session, ledger, since=SINCE)["post_release_remote_fact_count"] == 1

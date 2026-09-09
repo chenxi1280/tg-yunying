@@ -21,7 +21,7 @@
 
 - 保留原 `post_release_remote_success_count` 作为发送回执诊断，不据此判定AI活群E4通过。
 - 增加 `group_daily.post_release_remote_fact_count`，仅统计同tenant、Task、当前ledger、task_type=group_ai_chat、fact_kind=remote_message_observed、mutation_kind=send_message的事实，并关联原Action和Attempt。
-- 关联必须满足 fact.attempt_id 对应 Attempt、fact.action_id 对应 Action、Attempt.action_id 与 Action相同、tenant一致，Action的Task/类型/payload任务日与事实相同、Action.account_id 与 Attempt.account_id 相同、Action为send_message、Attempt.status=success、非空remote_message_id与fact.outcome记录一致。Attempt没有独立task_id，由原Action建立Task关联。
+- 关联必须满足 fact.attempt_id 对应 Attempt、fact.action_id 对应 Action、Attempt.action_id 与 Action相同、tenant一致，Action的Task/类型/规范数量槽任务日与事实相同、Action.account_id 与 Attempt.account_id 相同、Action为send_message、Attempt.status=success、非空remote_message_id与fact.outcome记录一致。Attempt没有独立task_id，由原Action建立Task关联；当前unified Action通过primary_quantity_slot_id关联同tenant/Task/ledger的真实TaskGroupDailyMessageSlot，不能要求并不存在的payload.task_day_ledger_id。
 - 事实 observed_at 与原 Gateway call-start 均不早于输入发布锚点，且观察不得早于调用。旧调用迟到回填不冒充发布后的新执行。没有Gateway时间不得推断已执行。
 - 相同Action的重复观察只计一次。成员事实、unknown、其它任务日、其它租户、错误账号/Attempt关联均不能贡献本次新消息数量。
 - 没有该字段或计数为零时，既有 `ai_post_release_remote_fact_missing` 明确保留；不从旧回执字段降级补值。typed fact是既有可见性合同的结果，本切片不新增远端探测。
@@ -54,7 +54,17 @@
 
 设计自检：原请求、证据层、历史目标、字段兼容、租户/身份、unknown、发布时间、重复观察、无写库及冲突隔离已覆盖。`design_status=complete`、`resync=true`；进入本切片dev。部署和生产验收独立记录，不以本地测试声称production_fixed。
 
-## 2026-09-09 二次检查：验收范围与一致只读快照
+## 2026-09-09 发布后真实身份反查补正（22:44 / resync=true）
+
+2712d437发布后6条真实消息均存在匹配的Fact/Action/Attempt/remote id和发布后Gateway，Action.primary_quantity_slot_id连接正确日账本，但payload不包含任务日字段。此前设计把非规范payload当作必要身份，造成所有新消息和开放Action漏计；必须修正设计再实施，不以真实成功回执直接补数。
+
+- unified必须按Action.primary_quantity_slot_id存在且对应slot的tenant/task/ledger严格匹配；缺槽、错槽、跨租户/任务/日拒绝。payload缺任务日是当前正常结构；若显式存在但矛盾仍拒绝。
+- legacy且无primary slot时才保留原payload任务日合同；已存在却错误的primary slot不能降级用payload匹配。不得改变发送或补写历史payload。
+- 事实统计、开放Action过滤和样本ledger_matches共用同一个规范身份谓词；不只修正总数而留下错误的空队列/样本标识。
+- QA必须使用与真实结构一致的无payload日字段+有效primary slot反例，验证typed事实与开放队列均计入；分别覆盖槽缺失/错误身份、显式矛盾payload、legacy合法结构、旧Gateway/unknown/空远端ID保持拒绝。发布后按原22:41锚点核对报告修正及新部署锚点核对新执行，两者不混算。
+- 本补正只读模型，无表结构、调度、配置、预算、Task/Action状态变更；design_status=complete，进入dev。
+
+## 2026-09-09 二次检查：验收范围与一致只读快照（此前记录）
 
 - `resync=true`：本节补充同一诊断切片；locked_paths增加`production_e4_scope.py`及`test_production_e4_scope.py`。两个并行任务已确认不修改这些路径，当前Prepare/Deploy窗口由“确认克隆任务引擎更新”持有，本提交另行交接。
 - 代码发现：默认channel_view发现查询带固定10条上限且未排除软删除；这是代码反例，不是线上第11条任务漏检的观测结论。

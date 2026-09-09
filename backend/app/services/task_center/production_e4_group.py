@@ -10,6 +10,7 @@ from app.models import (
     Task, TaskDayLedger, TaskGroupDailyMessageSlot, TaskGroupDailyTarget,
 )
 from .production_e4_diagnostics import ai_open_action_details
+from .production_e4_identity import action_ledger_scope
 
 UNIFIED_CONTRACT = "unified_engagement_v1"
 
@@ -80,7 +81,7 @@ def _group_runtime_snapshot(session, ledger: TaskDayLedger) -> dict[str, Any]:
         Action.task_id == ledger.task_id,
         Action.tenant_id == ledger.tenant_id,
         Action.action_type == "send_message",
-        Action.payload["task_day_ledger_id"].as_string() == ledger.id,
+        action_ledger_scope(session, ledger),
         Action.status.in_(("pending", "claiming", "executing")),
     )))
     return {
@@ -157,7 +158,7 @@ def _post_release_message_facts(session, ledger, *, since):
             action.task_id == ledger.task_id,
             action.task_type == "group_ai_chat",
             action.action_type == "send_message",
-            action.payload["task_day_ledger_id"].as_string() == ledger.id,
+            action_ledger_scope(session, ledger),
             attempt.tenant_id == ledger.tenant_id,
             attempt.account_id == action.account_id,
             attempt.status == "success",

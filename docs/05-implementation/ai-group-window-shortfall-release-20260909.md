@@ -33,3 +33,11 @@
 - current/backend/18worker完整SHA、健康、API与迁移：
 - 逐Task新typed事实、当前日目标/coverage、窗口错位数量及首个阻断：
 - 最终状态：production_unproven，禁止提前写production_fixed。
+
+## 首次部署与真实反查（22:41–22:50）
+
+- 2712d4377fc5a7065ce412ac3643e6d2ce59f755：Prepare34363868460完整14项成功，Deploy34364859426于22:41:00完成。独立current=20260909143813_2712d437；backend+18worker全部完整SHA一致且healthy，API本地18090和公网健康，迁移0229_admission_gap_count。
+- 22:42:02发布后更新的23条开放Session预约全部在合法窗口且deadline前；新创建预约0，不能以该快照证明新建排期的线上验收。
+- E4报告发现实际关联缺陷：真实Action不含payload任务日字段，使用primary_quantity_slot_id关联ledger。发布后6条真实事实链确认该结构，旧报告全部漏为0且开放队列为空。先补PRD再修只读查询/样本身份；真实结构测试原代码5 failed/39 passed，修复后71 passed/11.49s。
+- 候选代码只在独立只读诊断进程内加载，未改生产文件/worker；同22:41锚点已读到5个Task共15条真实新消息，开放队列不再漏空，全部样本ledger_matches为true。日目标仍未达标，CLI保持E4 gate failed。这是候选只读验证，不是补丁已部署；后续新候选仍须完整Prepare/Deploy。
+- 最终整合定向158 passed/27.75s，含全部窗口、Source、E4及真实PG隔离/锁/快照；Ruff与diff通过。该补丁只改E4只读身份关联，不改变已上线窗口和发送行为。
