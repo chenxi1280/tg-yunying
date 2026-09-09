@@ -1649,3 +1649,4 @@ legacy-only A 冷启动分支固定为 `frozen legacy A -> 原 A Session 只读 
 - 2026-09-09 B1：Provider 返回 payload/tokens → realizer 解析或 grounding 拒绝 → TwoStageRealizeError 保留 tokens，形状拒绝附带计数/档位/hash → 既有 SlotGenerationResult.evaluator_evidence 与质量耗尽累计消耗。证据不进入后续纠错提示、不含正文；无表结构、状态机或发送行为变更。当前仅本地验证，见 `docs/05-implementation/ai-group-low-fulfillment-repair-20260909.md`。
 
 - Clone启动数据流：pending/start_from_now → listener Collector → 每Task锁定并读取Telegram起始boundary → stream/subscription/running/PlannerWake同事务提交 → Planner物化；Planner不执行boundary RPC，失败保留start_failed及零发送事实。
+- 共享订阅准备事务：AI源发现 → 评论选路 → AI/评论订阅既有锁定与持久化 → commit → Collector；共享authorization state锁不得跨入后续慢选路，现有订阅边界与fencing不变。

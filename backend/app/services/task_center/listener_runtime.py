@@ -91,12 +91,12 @@ def drain_listener_runtime(session_factory, *, tenant_id: int | None = None, lim
     with session_factory() as session:
         sources = _listener_sources(session, tenant_id=tenant_id, limit=limit)
         stream_bindings = _group_ai_stream_bindings(session, sources)
-        stream_setup_errors = _ensure_group_ai_streams(session, stream_bindings)
         comment_bindings = _channel_comment_stream_bindings(
             session,
             tenant_id=tenant_id,
             limit=limit,
         )
+        stream_setup_errors = _ensure_group_ai_streams(session, stream_bindings)
         stream_setup_errors += _ensure_channel_comment_streams(
             session,
             comment_bindings,

@@ -1602,3 +1602,4 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 - 2026-09-09：`realizer_rejection_evidence.py` 复用 MessageBrief 的规范化及分类函数，生成不含正文的形状拒绝证据；`two_stage_generation._realize_draft` 保留解析/grounding 拒绝的 tokens。回归 `test_realizer_rejection_accounting.py`。仅本地 B1 诊断/记账修复，未部署；详见低完成量实施记录。
 
 - 群克隆启动阶段：`group_clone_start_worker.py` 在listener Collector之后按Task独立事务建立起始boundary并唤醒Planner；Planner pending激活跳过Clone，避免其远端I/O禁令与起始读取冲突。
+- 共享订阅准备：`listener_runtime.py` 先发现AI/评论两类订阅候选，再锁定并持久化订阅，避免共享authorization state锁跨入后续慢选路；Collector与Clone启动顺序不变。

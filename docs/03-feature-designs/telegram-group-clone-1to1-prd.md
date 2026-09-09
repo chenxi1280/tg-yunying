@@ -1055,3 +1055,11 @@ Intake `intake-20260909-group-clone-audit`，L3/P1，用户已授权修复。反
 Product Design Complete（本修订）：Clone保持独立v2_group_clone；起始boundary必须由listener在正式Collector完成之后建立，按Task分别锁定、分别提交，成功后提交running/next_run_at/PlannerWake。Planner只消费已完成启动的Clone，不能执行远端boundary读取，也不能把pending Clone直接标记running。仅领取当前租户、未删除、scheduled_start已到期且pending的Clone；暂停、未来启动、其他类型及已running任务不重复处理。RPC失败维持既有start_failed及错误证据；不得放开Planner远端IO禁令、不得清空旧游标或重放unknown。失败任务恢复仍经通用Start复核后复用安全的当前epoch启动记录。
 
 QA必须覆盖真实runtime-role禁令：planner角色执行pending activation不发生RPC，listener角色执行边界获取、持久化起始点并创建wake；重复listener drain不重复读取边界/推进wake；未来启动与暂停任务不领取；远端错误明确失败。发布后重新对固定源/目标验证正式源事件→义务→Action→Attempt→clone_message_observed→消息映射及目标消息。共享listener超长周期/租约间歇过期仍须单独报告，不得从受控Collector测试推断常态调度恢复。
+
+### 2026-09-09 共享订阅准备事务修订
+
+ffc08a3d发布后的真实测试发现：listener先注册AI订阅并锁定共享authorization state，随后在同一事务内执行频道评论选路查询，持锁超过308秒；受控Collector等待该行锁并因90秒租约过期失败，任务仍零发送。第二轮出现相同等待，不得靠反复重试宣称恢复。
+
+本修订 `design_status=complete/resync=true`：两类订阅的候选发现/选路均先完成，之后才执行AI与评论订阅的既有锁定、创建/改绑及事务提交，最后执行Collector与Clone启动。保留现有FOR UPDATE、订阅边界、租户/epoch、错误隔离和fencing，不引入无锁复用、增加租约或取消生产事务。候选发现不得隐含持有共享authorization state锁；已有订阅的Collector在评论选路阶段可独立领取。原长周期的总耗时仍单独评估，本次仅消除已证实的跨阶段持锁。
+
+QA通过真实PostgreSQL双连接及正式drain入口，验证评论选路期间另一连接可以NOWAIT锁定/领取已有共享state，旧顺序必须失败；选路失败前不得写入AI订阅投影，成功时保留订阅与Collector/Clone启动顺序。无迁移、无UI/API状态变化、无unknown重放。发布后对原受控Task重新执行前置检查、Start和Telegram事实读回，E4仍独立验收。

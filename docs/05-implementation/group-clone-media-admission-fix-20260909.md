@@ -90,3 +90,15 @@ Deploy 34336057503于2026-09-09 17:43:58北京时间success；current=/data/tgyu
 修复前真实runtime role回归：1 failed，复现planner_remote_io_forbidden。修复后群克隆回归120 passed /21.74秒，含新增8项启动阶段、正常listener调用链、幂等、scope和失败用例。ruff F/静态未定义名与diff-check通过。一次额外role-drains选择触发测试库安全检查而拒绝非测试库名，未重置或写入该数据库；随后只运行正确标记的Clone测试。新代码是两个阶段调用点和独立启动模块，未扩大拆分现有巨大service/listener文件。
 
 下一次发布后需由通用Start重新复核该失败任务；它仍是零发送、旧epoch安全启动记录，不授权重放unknown。共享listener长周期的问题仍独立unproven，受控Collector结果不代表常态调度恢复。
+
+## ffc08a3d 发布与共享订阅持锁闭环
+
+Prepare 34339633174全量success；聚合候选ffc08a3d97e05ec6fa51092ff946c8d852c6a32d包含Clone启动修复及另一个任务已经审查的AI/评论修复。Deploy 34340363767于2026-09-09 18:31:24北京时间success。独立读回current=/data/tgyunying/releases/20260909102839_ffc08a3d，backend与18个worker的完整SHA一致且healthy，本机health=ok。
+
+随后仅运行authorization 1/2398的受控Collector。生产pg_stat_activity证明：现有listener事务86252在持有共享authorization state锁后继续执行大量选路查询，事务达308秒，测试Collector等待307秒；提交后测试明确抛出telegram_update_collector_lease_expired。第二次正式领取又被同worker的新事务阻塞（事务113秒，等待77秒）。未取消worker事务、改租约、改PTS或重放unknown。第二个自有受控进程以pid/start_ticks/cmdline/测试环境变量四项核对后SIGTERM退出，现场Task仍failed、零SourceEvent/Action/Attempt/RemoteFact/mapping。
+
+代码反向检查定位：drain_listener_runtime先_ensure_group_ai_streams获取授权状态FOR UPDATE，再_channel_comment_stream_bindings做较长查询，最后才commit。回到product更新专项PRD与两索引；修复仅将AI订阅持久化移到评论候选发现之后，使两类发现均先于共享状态锁定。原FOR UPDATE、订阅边界、改绑、租户/epoch、错误隔离及Collector/Clone启动顺序不变；不采用无锁复用、不扩大租约、不改生产调度资源。
+
+真实本机PostgreSQL双连接回归：旧代码2 failed，分别为评论选路阶段第二连接FOR UPDATE NOWAIT报LockNotAvailable，以及选路失败前已提前执行订阅准备；调整后2 passed /4.04秒，验证正式drain、真实锁和正式Collector claim。最初夹具的本地端口配置与SQLite seed外键顺序问题已先修正，不计作产品失败证据。Clone全部120项加AI/评论共享流12项，132 passed /23.10秒；所有pytest进程硬超时60秒。新增测试ruff F、生产入口静态未定义名与diff-check通过。
+
+本次修复只消除已证明的跨阶段持锁，listener总体周期与完整Clone E4仍待新发布后的独立验证。发布候选由统一owner协调，维护CLI运行期间不切换runtime。
