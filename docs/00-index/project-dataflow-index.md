@@ -1,5 +1,7 @@
 # 项目数据流转索引
 
+> **2026-09-09 点赞重建代次：** 原义务open/currentNone → 现有action_attempt_no的下一值进入Like稳定payload去重 → 新pending Action → 原bind递增计数；同代去重、下一合法代新ID。旧终态Action/审计/远端事实不删，pending/unknown/confirmed不创建下一代；按created_at区分历史别名与真实新建。
+
 > **2026-09-09 点赞原义务复用 resync：** 全历史未调用旧Action退役 → 原义务open/原预约reserved且均未绑定 → Planner复用原冻结due/release，不重新排在同来源后序cursor之后 → 原来源容量、账号活动窗/节奏rearm → 新Action绑定 → Dispatcher/typed reaction事实；expired/unknown不重新开放。维护时不改时间线，后续正式账号rearm可按原规则向后推进effective。
 
 > **2026-09-09 评论领取资源 resync：** 处理入口捕获旧本地reservation身份 → 生成/DB owner-token CAS收口 → finally按对象身份仅释放原reservation；DB owner已换仍清理原本地占位，本地对象已替换则保持新资源。与R1领取/unknown合同分别验证，不能以新owner保护为由遗留旧资源。

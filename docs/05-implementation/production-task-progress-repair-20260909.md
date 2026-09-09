@@ -58,6 +58,16 @@
 
 ### 完整Prepare第一轮反查补正
 
+### R4 历史终态别名补正与下一候选
+
+- 4d947aa89cb47624d9c63cf0c2fda54accf678a5完整Prepare34343254785通过，Deploy34343942728于19:13:05完成；独立current/backend+18workers同SHA且healthy、API ok、alembic0229 head。该结果不等于业务恢复。
+- 19:20只读反查，原义务绑定的非原清单ID中有3条实际创建于9月6日且已skipped；不得将“不同于359个旧ID”直接称作发布后新建。另两条真实新建分别为19:00:53（早于4d发布）和19:15:42，均尚无Attempt/typed事实。
+- 真实维护→Planner→正式未调用结算→Planner回归复现同一历史终态ID被重绑（RED，2.57秒）。产品先resync：沿原义务action_attempt_no生成下一物化序号并进入稳定payload去重；同代幂等、合法下一代新pending，既有payload缺省0且不回填。不修改未知事实/账号消息全局防重/来源容量/活动窗/账号节奏。
+- 生产改动仅LikeMessagePayload新增字段与Planner赋值两行；核心41 passed/7.48秒，真实PG与消息payload/内容/reaction扩展14 passed/19.00秒；所有后端进程60秒硬超时内退出。额外验证同代幂等、pending/unknown/confirmed不新建、历史payload解析。
+- 本候选合入协同Clone49691885/460953b0：三个update consumer将JOIN裸FOR UPDATE限定到Delivery行，不再持有只读State/Event/Subscription锁；保留同Delivery串行及绑定更新互斥。协同方真实PG旧3失败/新5通过（7.96秒）、相关135通过（23.01秒）、额外真实绑定并发1通过（3.36秒），本任务审查生产diff。与本修复合并后必须重新完整Prepare，不能复用4d制品。
+
+### 完整Prepare历史反查记录
+
 - 01edd500推送master后Prepare `34337268213`：其余7个后端分片、frontend、三个镜像全部通过；no-postgres shard0的既有`test_stale_comment_generation_releases_runtime_reservation_without_overwriting_new_claim`失败，本地单例1 failed/2.92秒复现，未绕过失败发布。
 - 根因：R1旧owner不覆盖新DB领取的保护遗漏旧进程本地reservation释放。PRD先resync补正DB owner与进程内reservation身份分离；确认当前领取owner后捕获旧reservation，通过既有identity-checked释放，只清旧对象，不清新对象；进入时已失去owner不捕获任何资源。
 - 保留旧回归断言，补充同Action本地reservation替换、入口无旧reservation、处理前已失去owner反例。16 passed/4.47秒；资源生命周期/评论phases/unknown/身份恢复扩展42 passed/6.06秒；全部进程60秒硬超时内退出0。下一候选须重新完整Prepare，不能复用失败run或跨attempt拼接制品。

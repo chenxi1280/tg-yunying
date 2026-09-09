@@ -85,6 +85,17 @@ R3反向检查补正：仅过滤新计划不足以收口旧ready超配；上述�
 - QA必须经_create_like_actions真实入口，先安全退役旧Action，再设置同来源后序义务cursor接近deadline，证明新Action不同ID、绑定原义务、原冻结due不变；验证过期预约不复用、bound/非open不复用、原账号节奏仍有效。不能只测底层create_like_action去重。
 - design_status=complete；resync=true。此缺口属于R4重建链路，补正后重新dev/QA/完整Prepare/上线验证。
 
+### R4 历史终态别名去重补正
+
+- 19:20按created_at核验：非原359的绑定不能全部算新Action；三个绑定为9月6日创建、skipped/distorted_far_future_schedule_rebalanced的历史记录。已有物化去重只含稳定payload/plan batch，正常未调用结算后的再次物化仍可能返回上一轮终态Action；不能通过移除本批359个key就宣称所有历史别名解决。
+- 新LikeMessagePayload增加非负reaction_action_attempt_no，缺省0明确表示兼容既有已持久化payload；不回填旧Action、不修改其执行/unknown身份。正常Planner仅在原义务open且current_action=None时，从该义务现有action_attempt_no生成下一序号，作为payload稳定去重字段；bind沿现有合同递增该义务计数，不创建另一套计数器。
+- 同一原义务/同一次合法重建仍取同一去重身份；正式未调用结算后下一次重建使用下一身份，必须创建新pending Action，不能返回任何旧终态Action。pending/held/unknown/confirmed义务没有创建新代的权限；不改变原RemoteFact/账号消息全局防重复、Gateway证据与unknown reconcile合同。
+- Gateway执行仍只使用原reaction参数，不把内部序号发送给Telegram。无数据库迁移、Task配置/API/frontend变化；兼容仅用于已有payload，不是绕过真实执行的fallback。
+- QA经真实维护→Planner物化→正式未调用结算→Planner再次物化，验证第二个新ID、pending、原义务/预约绑定、序号递增且不覆盖旧事实；并验证同一序号去重、未知持有不产生新Action、既有payload0仍可解析。验收按created_at/序号和远端事实区分真实新建与历史别名。
+- design_status=complete；resync=true，重新进入dev/QA/发布，保留已执行维护审计。
+
 运行执行补正：十账号子批仍频繁因单账号忙而整批零写时，可将未成功子批继续拆成单账号子批；从母清单减去已有成功receipt精确集合生成，不以实时扩大查询替换母清单。运维编排可在同一Python进程顺序调用已发布CLI main，各次preview/apply/readback仍使用CLI创建的独立Session、SHA/hash校验和事务；只有明确55P03锁冲突可记录失败后继续其他账号，任何非锁异常立即停止。全部CLI退出后将所有层级receipt统一并集读回并保存到容器外，之后才能替换容器。该补正不修改生产业务代码或弱化锁/审计合同。
+
+跨发布续作（resync=true）：若正常执行的长事务持续阻止剩余子批，而完整候选已修复相关监听锁持有/重建问题，可在全部维护CLI退出、成功receipt与精确剩余IDs独立读回并归档容器外后，先执行正式Deploy；不为维护杀事务或重启单worker。新runtime续作只能取原母359减去已成功receipt集合，使用新完整deployed SHA重新生成子scope/fresh preview，仍经过原全部校验。旧母清单/preview/receipt/SHA不改写；新阶段文件放独立runtime目录、审计引用保留原母hash，跨阶段成功集合必须互斥且最终恰等原359。独立总读回使用当前部署同一verify服务验证各阶段原receipt，不改审计内旧SHA。
 
 design_status=complete；resync=true。该合同替代已撤回的“恢复原Action预约继续执行”方案；用户明确的清理重建授权已具备，无需重复索要同一授权。R2可信控制与可见性、R5的15秒及unknown合同保持；没有证据时不能承诺全部24任务已恢复。

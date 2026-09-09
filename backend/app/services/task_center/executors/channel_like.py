@@ -304,6 +304,7 @@ def _create_one_like_action(
         reaction_emoji=item.reaction,
         reaction_contract_version=obligation.reaction_contract_version,
         reaction_fulfillment_obligation_id=obligation.id,
+        reaction_action_attempt_no=int(obligation.action_attempt_no or 0) + 1,
         reaction_source_content_hash=(
             source_revision.source_content_hash if source_revision else ""
         ),

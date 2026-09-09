@@ -28,6 +28,7 @@ class LikeMessagePayload(ViewMessagePayload):
     reaction_emoji: str = Field(default="👍", min_length=1, max_length=32)
     reaction_contract_version: int = 0
     reaction_fulfillment_obligation_id: str = ""
+    reaction_action_attempt_no: int = Field(default=0, ge=0)
     reaction_source_content_hash: str = ""
     reaction_capability_revision: str = ""
 

@@ -14,6 +14,10 @@ from app.services.task_center.reaction_backlog_snapshot import preview_reaction_
 from app.services.task_center.source_owner_cursor import pacing_source_key_hash
 from app.services.task_center.source_pacing import source_pacing_plan_hash, wall_datetime
 from app.services.task_center.source_capacity_plans import SourceCapacityConflict
+from app.services.task_center.direct_action_claims import settle_fact_first_action_before_gateway
+from app.services.task_center.channel_payloads import LikeMessagePayload
+from app.services.task_center.payloads import create_like_action
+from app.services.task_center.executors.channel_like import _create_one_like_action
 from tests import test_reaction_backlog_replan as backlog_fixtures
 
 
@@ -105,3 +109,50 @@ def test_rebuilt_reservation_does_not_bypass_source_capacity_policy(session):
     with pytest.raises(SourceCapacityConflict, match="source_capacity_policy_missing"):
         _create_like_actions(session, task, channel=session.get(OperationTarget, 1),
             config=task.type_config, actions=[item])
+
+
+def test_safe_settlement_then_replan_never_rebinds_a_historical_terminal_action(session):
+    task, item, _ = prepare_frozen_replan(session)
+    channel = session.get(OperationTarget, 1)
+    assert _create_like_actions(session, task, channel=channel, config=task.type_config, actions=[item]) == 1
+    owner = session.get(ReactionFulfillmentObligation, "obligation")
+    previous = session.get(Action, owner.current_action_id)
+    settle_fact_first_action_before_gateway(session, previous, now=_now(),
+        reason_code="distorted_far_future_schedule_rebalanced", detail="QA safe replan",
+        replan_same_obligation=True)
+    session.commit()
+    assert _create_like_actions(session, task, channel=channel, config=task.type_config, actions=[item]) == 1
+    session.commit()
+    replacement = session.get(Action, owner.current_action_id)
+    assert replacement.id != previous.id
+    assert replacement.status == "pending" and previous.status == "skipped"
+    assert replacement.payload["reaction_action_attempt_no"] == owner.action_attempt_no
+    assert replacement.payload["reaction_action_attempt_no"] == previous.payload["reaction_action_attempt_no"] + 1
+
+
+def test_same_generation_remains_idempotent(session):
+    task, item, _ = prepare_frozen_replan(session)
+    assert _create_like_actions(session, task, channel=session.get(OperationTarget, 1),
+        config=task.type_config, actions=[item]) == 1
+    owner = session.get(ReactionFulfillmentObligation, "obligation")
+    action = session.get(Action, owner.current_action_id)
+    payload = LikeMessagePayload.model_validate(action.payload)
+    same = create_like_action(session, task, item.account_id, action.scheduled_at, payload)
+    assert same.id == action.id
+    assert payload.reaction_action_attempt_no == owner.action_attempt_no
+
+
+@pytest.mark.parametrize("state", ["pending", "unknown", "confirmed"])
+def test_non_open_owner_cannot_start_another_generation(session, state):
+    task, item, due = prepare_frozen_replan(session)
+    owner = session.get(ReactionFulfillmentObligation, "obligation")
+    owner.status = state
+    previous_attempt_no = owner.action_attempt_no
+    assert _create_one_like_action(session, task, channel=session.get(OperationTarget, 1),
+        config=task.type_config, item=item, obligation=owner, due_at=due, release_at=due) == 0
+    assert owner.action_attempt_no == previous_attempt_no
+
+
+def test_existing_payload_without_generation_keeps_legacy_zero():
+    payload = LikeMessagePayload.model_validate({"channel_id": "-1001", "message_id": 1})
+    assert payload.reaction_action_attempt_no == 0

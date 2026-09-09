@@ -1,5 +1,7 @@
 # 项目结构索引
 
+> **2026-09-09 点赞重建身份 resync：** `channel_payloads.LikeMessagePayload.reaction_action_attempt_no`沿用Reaction义务的action_attempt_no作为下一次合法物化稳定身份，`channel_like._create_one_like_action`仅对open/unbound义务生成下一序号；历史payload兼容0，不回填、不覆盖unknown。`test_channel_like_reserved_replan.py`经正式未调用结算再次物化验证新pending ID和同代幂等，避免取回其他历史skipped别名。
+
 > **2026-09-09 点赞冻结预约重建 resync：** `executors/channel_like_pacing.py`承接点赞来源slot/节奏计算，原open义务与同身份reserved未绑定预约复用冻结SourcePacingPoint，再走来源容量与账号rearm；避免把既有位置重新追加到历史cursor末端。`channel_like.py`保留原物化/绑定流程，文件拆分仅对应此节奏责任；`test_channel_like_reserved_replan.py`覆盖真实Planner安全清理后新ID及过期/已绑定/漂移/容量保护。
 
 > **2026-09-09 评论领取本地资源补正：** `runtime_resources.action_runtime_reservation_scope`捕获本次Action已有reservation对象并复用identity-checked释放；`comment_generation_worker`确认本次DB owner后在生成处理周围使用该scope，分别保护新DB owner与新本地reservation。CI旧claim-loss回归及新替换/原无资源用例共同验收。
