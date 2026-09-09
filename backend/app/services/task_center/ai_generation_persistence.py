@@ -103,6 +103,9 @@ def _persist_generation_result(
     action.candidate_hash = hashlib.sha256(
         data["message_text"].encode("utf-8")
     ).hexdigest()
+    from .ai_group_topic_binding import bind_topic_only_candidate
+
+    bind_topic_only_candidate(session, action, payload)
     _mark_v2_candidate_ready(session, action)
     action.result = {
         **(action.result or {}),
@@ -132,6 +135,13 @@ def _persist_generation_rejection(
     action,
     result: SlotGenerationResult,
 ) -> None:
+    from .ai_group_emergency_pending import mark_emergency_pending
+
+    if not result.evaluator_evidence.get("account_ineligible") and mark_emergency_pending(
+            session, request, action=action, reason=result.rejection_code,
+            evidence=dict(result.evaluator_evidence)):
+        commit_generation_action(session, request, action)
+        return
     if result.rejection_code == QUALITY_WAIT:
         _persist_quality_wait(session, request, action=action, result=result)
         return

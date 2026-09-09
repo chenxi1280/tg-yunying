@@ -108,6 +108,9 @@ def persisted_generation_outcome(session_factory, action_id: str) -> str:
         if ((action.payload or {}).get("ai_generation_status") == "provider_result_unknown"
                 and result.get("generation_outcome") == "provider_result_unknown"):
             return "provider_result_unknown"
+        if ((action.payload or {}).get("ai_generation_status") == "emergency_pending"
+                and result.get("generation_outcome") == "emergency_pending"):
+            return "emergency_pending"
         if action.status in {"failed", "skipped"}:
             _release_failed_action_reservations(session, action)
             return "failed"

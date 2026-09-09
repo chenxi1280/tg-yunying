@@ -5719,3 +5719,7 @@ canary 通过后，激活 manifest 以单行 `route_epoch` CAS 一次切换 `old
   结论保持 `production_blocked`，不得写 `production_fixed`。
 
 2026-09-09 活群窗口修补：账号活动窗与跨账号/群时间线必须对最终effective同时成立，原窗口外不得形成成功预约；Source合法推迟后正常claim重验，不缩数量或放宽时间约束。E4报告统一保留unified历史必达分母并要求发布后真实Gateway及消息事实。专项合同ai-group-window-shortfall-repair-20260909-prd.md；W1/W5代码与报告修复不代替全日达标。
+
+### 2026-09-10 AI活群执行供给与应急行为同步
+
+已入群账号独立发送，待入群减少当前正文供给而不缩冻结义务；无上下文使用配置主题；模型故障按批准候选和独立签到/回复表情策略处理；来源发送时间与原账号窗口求交。产品、运行和验收合同见[专项修复PRD](../03-feature-designs/ai-group-executable-supply-and-fallback-20260910-prd.md)，普通质量与实际数量分账，生产结论以发布后真实消息证据为准。

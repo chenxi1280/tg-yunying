@@ -46,7 +46,7 @@ def settle_sequential_outcome(
 
 def _settle_sequential_failure(session_factory, claim, failure: Exception) -> None:
     persisted = persisted_generation_outcome(session_factory, claim.action_id)
-    if persisted == "provider_result_unknown":
+    if persisted in {"provider_result_unknown", "emergency_pending"}:
         return
     if not persisted:
         terminate_generation_contract_error(
@@ -79,7 +79,7 @@ def settle_parallel_outcome(session_factory, claim, outcome: GenerationOutcome) 
 
 def _settle_failed_outcome(session_factory, claim, failure: Exception) -> None:
     persisted = persisted_generation_outcome(session_factory, claim.action_id)
-    if persisted == "provider_result_unknown":
+    if persisted in {"provider_result_unknown", "emergency_pending"}:
         return
     if not persisted:
         terminate_generation_contract_error(

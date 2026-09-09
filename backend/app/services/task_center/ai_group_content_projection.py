@@ -23,6 +23,9 @@ INTENT_STATE_PRECEDENCE = {
     "active": 1,
     "unknown": 2,
     "confirmed": 3,
+    "independent_active": 1,
+    "independent_unknown": 2,
+    "independent_confirmed": 3,
 }
 
 
@@ -107,6 +110,14 @@ def intent_remote_state(
     action: Action | None,
     fact_id: str | None,
 ) -> str:
+    payload = dict(action.payload or {}) if action is not None else {}
+    independent = payload.get("emergency_selection_id") or payload.get("ai_generation_context_mode") == "topic_only"
+    if independent:
+        if fact_id:
+            return "independent_confirmed"
+        if action.status == TOPIC_UNKNOWN_ACTION_STATUS:
+            return "independent_unknown"
+        return "independent_active" if action.status in ACTIVE_TOPIC_ACTION_STATUSES else "released"
     if fact_id:
         return "confirmed"
     if action is not None and action.status == TOPIC_UNKNOWN_ACTION_STATUS:

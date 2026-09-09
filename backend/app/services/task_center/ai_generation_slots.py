@@ -28,8 +28,7 @@ def generation_slot(
         "reply_to_message_id": payload.reply_to_message_id,
         "reply_to_content": payload.reply_target_preview,
         "reply_to_sequence_index": index if payload.reply_to_message_id else None,
-        "topic_direction": dict(payload.topic_direction),
-        "teacher_target": dict(payload.teacher_target),
+        **_topic_generation_fields(payload),
         "allocation_plan_id": payload.allocation_plan_id,
         "content_intent_id": payload.content_intent_id,
         "content_intent_config_revision": payload.content_intent_config_revision,
@@ -64,3 +63,14 @@ def reply_targets(batch: list[tuple[Action, SendMessagePayload]]) -> list[dict]:
         "preview": payload.reply_target_preview,
         "source": payload.reply_target_source,
     } for _action, payload in batch]
+
+
+def _topic_generation_fields(payload: SendMessagePayload) -> dict:
+    return {
+        "topic_direction": dict(payload.topic_direction),
+        "ai_generation_context_mode": payload.ai_generation_context_mode,
+        "ai_generation_topic_direction": dict(payload.ai_generation_topic_direction),
+        "content_guidance": ("当前无可用真人上下文；只主动开启配置主题，不引用、不续接或声称群友说过任何内容"
+                             if payload.ai_generation_context_mode == "topic_only" else ""),
+        "teacher_target": dict(payload.teacher_target),
+    }

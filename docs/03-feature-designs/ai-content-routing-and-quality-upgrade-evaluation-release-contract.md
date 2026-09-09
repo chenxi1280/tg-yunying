@@ -325,3 +325,7 @@ production_fixed=unproven
 Product Design Complete：将已存在的“终态 Action + 正面未执行证据”回收合同覆盖至 `candidate_ready + Job ready/reviewing`，与原 `gateway_bound + Job ready/gateway_bound` 采用同等 owner/tenant/task/epoch/obligation/window/job 绑定及全部 Attempt/typed fact 检查。按行锁串行使旧 slot invalidated 并释放 owner/lease；保留 Job/Action/Attempt/fact 和所有远端去重身份，不修改状态或完成量，不放宽 current-obligation 唯一约束。只在后续正式生成绑定原 obligation 时回收，不直接批量改生产数据。active/unknown/身份漂移、未结束 Attempt、已调用却无正确未执行事实、已有 remote ID 均不得回收。
 
 QA 必须先复现 ready/reviewing/candidate_ready + skipped 的冲突，确认回收后同 obligation 的新窗口能够冻结；覆盖原 gateway_bound 及所有证据反例，真实 PostgreSQL 验证 partial unique 和行锁路径。该修复不绕过行为 Session/来源 deadline，过期积压仍按原合同结算。
+
+## 2026-09-10 活群修复合同同步
+
+新增验收必须覆盖主模型本地终止但远端未知后尝试下一批准候选、结构/质量耗尽到原义务签到、真实 reply 表情保留身份、旧维护路径保留合法应急，以及真实 PostgreSQL 并发选择。普通主题/teacher/grounding 质量与 topic_only/emergency 真实发送数量分账。 具体实现、开关、测试与发布证据以[AI活群可执行供给、主题与故障兜底修复](ai-group-executable-supply-and-fallback-20260910-prd.md)为准；本条为本切片 `resync`，不改写历史验收记录，也不扩展评论路径。

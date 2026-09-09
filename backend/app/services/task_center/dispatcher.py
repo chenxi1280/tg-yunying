@@ -3965,6 +3965,11 @@ def _group_send_context_fresh(
     action: Action,
     context: GroupSendGatewayContext,
 ) -> bool:
+    if context.payload.emergency_selection_id and context.payload.content_source == "emergency_check_in":
+        from .ai_group_emergency import validate_emergency_selection
+
+        validate_emergency_selection(session, action, context.payload)
+        return True
     if not _context_expired(session, context.payload):
         return True
     task = session.get(Task, action.task_id)
@@ -4197,6 +4202,9 @@ def _send_group_message_via_gateway(
     from .ai_group_content_allocation import validate_content_intent_for_gateway
 
     try:
+        independent = context.payload.emergency_selection_id or context.payload.ai_generation_context_mode == "topic_only"
+        if independent and context.content != context.payload.message_text:
+            raise ValueError("independent_outbound_content_changed")
         validate_content_intent_for_gateway(
             session,
             context.payload,
@@ -4881,6 +4889,15 @@ def _group_ai_account_online_ready(
 
 def _group_ai_message_memory_sendable(session: Session, action: Action, payload: SendMessagePayload) -> bool:
     if action.task_type != "group_ai_chat":
+        return True
+    if payload.emergency_selection_id:
+        from .ai_group_emergency import validate_emergency_selection
+
+        try:
+            validate_emergency_selection(session, action, payload)
+        except ValueError as exc:
+            _fail(action, str(exc), str(exc), auto_check="拦截", validation_stage="emergency_selection")
+            return False
         return True
     if not payload.ai_message_memory_id:
         result = {
@@ -6820,7 +6837,8 @@ def _membership_group_for_payload(
 ) -> TgGroup:
     group_peer = _membership_group_peer(target, payload)
     group = session.scalar(select(TgGroup).where(TgGroup.tenant_id == target.tenant_id, TgGroup.tg_peer_id == group_peer))
-    preferred_group = _send_ready_title_group(session, target, payload)
+    canonical_group = payload.target_type == "group" and group_peer == str(target.tg_peer_id or "").strip()
+    preferred_group = None if canonical_group else _send_ready_title_group(session, target, payload)
     if create and preferred_group and (group is None or not group.can_send):
         return preferred_group
     if group or not create:
@@ -6861,6 +6879,8 @@ def _membership_group_peer(target: OperationTarget, payload: EnsureChannelMember
     ref = str(payload.channel_id or "").strip()
     target_peer = str(target.tg_peer_id or "").strip()
     public_ref = _public_group_ref(ref) if payload.target_type == "group" else ""
+    if target_peer and (ref == target_peer or (public_ref and public_ref == _public_group_ref(target_peer))):
+        return target_peer
     if public_ref:
         return public_ref
     if _is_join_link_ref(ref) and target_peer:

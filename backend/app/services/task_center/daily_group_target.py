@@ -413,6 +413,10 @@ def _content_evidence_valid(
     if not memory or memory.action_id != action.id or memory.account_id != action.account_id:
         return False
     source = str(payload.get("content_source") or "")
+    if payload.get("emergency_selection_id"):
+        from .ai_group_emergency import emergency_memory_matches
+
+        return emergency_memory_matches(action, memory)
     if source == "mask_missing_check_in":
         return bool(
             payload.get("coverage_ledger_id")

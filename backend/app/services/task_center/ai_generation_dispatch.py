@@ -5,10 +5,13 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Action, GenerationJob, GroupContextMessage, Task, TgAccount
+from app.models import Action, GroupContextMessage, Task, TgAccount
 from app.services._common import _now
 from app.ai_transport_errors import AiProviderResultUnknown
 
+from .ai_group_emergency_pending import persist_emergency_batch
+from .ai_generation_gateway_candidate import bind_ready_candidate_to_gateway as _bind_ready_candidate_to_gateway
+from .ai_generation_topic_context import prepare_topic_or_emergency
 from .ai_generation_dependencies import GenerationDependencies
 from .ai_generation_commit import commit_generation_action, load_generation_batch
 from .ai_generation_persistence import persist_generation_results as _persist_generation_results
@@ -20,7 +23,6 @@ from .ai_generation_state import (
 )
 from .ai_generation_recovery import persist_generation_unknown
 from .generation_provider_unknown import persist_group_provider_unknown
-from .ai_content_runtime import AiContentRuntimeConflict, bind_candidate_to_gateway
 from .ai_generation_pipeline import SlotGenerationResult, generate_quality_results
 from .ai_generation_slots import generation_slot as _generation_slot
 from .ai_generation_slots import reply_targets as _reply_targets
@@ -35,7 +37,6 @@ from .group_ai_scope import REMOTE_REPLY_TARGET_OBSERVATION
 from .ai_generation_guards import (
     latest_context_rows as _latest_context_rows,
     observe_normal_generation_context_drift,
-    is_normal_frozen_candidate,
     prepare_generation_guards as _prepare_generation_guards,
     ready_generation_payload as _ready_generation_payload,
     record_should_speak_shadow as _record_should_speak_shadow,
@@ -104,6 +105,7 @@ def ensure_send_message_content(
     task = session.get(Task, action.task_id) if action.task_id else None
     if not task:
         raise AiGenerationUnavailable("AI 生成缺少任务配置")
+    payload = prepare_topic_or_emergency(session, task, action, payload=payload)
     guarded = _prepare_generation_guards(
         session,
         task,
@@ -139,32 +141,6 @@ def ensure_send_message_content(
         credentials=credentials,
         dependencies=dependencies,
     )
-
-
-def _bind_ready_candidate_to_gateway(
-    session: Session,
-    task: Task,
-    action: Action,
-    payload: SendMessagePayload,
-) -> None:
-    job_id = str(payload.generation_job_id or "")
-    job = session.get(GenerationJob, job_id) if job_id else None
-    if job is None or not job.window_slot_id:
-        return
-    try:
-        bind_candidate_to_gateway(
-            session,
-            job,
-            candidate_hash=str(action.candidate_hash or ""),
-            allow_context_drift=is_normal_frozen_candidate(payload),
-            task_config_revision=int(
-                payload.content_intent_config_revision or task.config_revision or 1
-            ),
-        )
-    except AiContentRuntimeConflict as exc:
-        code = str(exc)
-        fail_generation_action(action, code, code, stage=code)
-        raise AiGenerationUnavailable(code) from exc
 
 
 def _generate_normal_content(
@@ -378,6 +354,9 @@ def _generate_without_transaction(
         return generate_quality_results(session, request, dependencies)
     except ProviderRouteDeferred:
         session.rollback()
+        if persist_emergency_batch(session, request, reason="provider_route_exhausted"):
+            session.commit()
+            raise AiGenerationUnavailable("emergency_pending")
         raise
     except AiProviderResultUnknown as exc:
         session.rollback()
@@ -386,6 +365,10 @@ def _generate_without_transaction(
         raise AiGenerationUnavailable("provider_result_unknown") from exc
     except AiGenerationUnavailable as exc:
         code = str(exc) or AI_GENERATION_UNAVAILABLE_MESSAGE
+        if _emergency_generation_failure(code) and persist_emergency_batch(
+                session, request, reason=_generation_failure_code(code)):
+            session.commit()
+            raise
         fail_generation_batch(
             session,
             request,
@@ -394,6 +377,13 @@ def _generate_without_transaction(
         )
         session.commit()
         raise
+
+
+def _emergency_generation_failure(code: str) -> bool:
+    return code.startswith(AI_GENERATION_UNAVAILABLE_MESSAGE) or code in {
+        "malformed_output", "ai_generation_deadline_budget_exhausted",
+        "generation_timing_invocation_budget_exhausted",
+    }
 
 
 def _generation_failure_code(code: str) -> str:
@@ -473,7 +463,7 @@ def _refresh_normal_context(
     task: Task,
     batch: list[tuple[Action, SendMessagePayload]],
 ) -> list[tuple[Action, SendMessagePayload]]:
-    if not batch or batch[0][1].reply_to_message_id:
+    if not batch or batch[0][1].reply_to_message_id or batch[0][1].ai_generation_context_mode == "topic_only":
         return batch
     rows = _latest_context_rows(session, batch[0][1], task)
     if not rows:

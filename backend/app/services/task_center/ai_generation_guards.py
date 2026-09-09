@@ -93,6 +93,9 @@ def require_normal_context_watermark(
 ) -> None:
     if payload.reply_to_message_id or payload.message_text.strip():
         return
+    if payload.ai_generation_context_mode == "topic_only":
+        _clear_context_freshness_blocker(task, action)
+        return
     group = session.get(TgGroup, payload.group_id)
     snapshot = session.get(GroupContextMessage, payload.context_snapshot_message_id) if payload.context_snapshot_message_id else None
     if _normal_context_watermark_proven(group, snapshot):

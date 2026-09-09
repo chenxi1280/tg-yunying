@@ -12,6 +12,7 @@ from app.timezone import as_beijing
 from .provider_admission import ProviderAdmissionBlocked
 from .generation_account_eligibility import require_generation_accounts
 from .generation_provider_lineage import UNRESOLVED_EXCHANGE_STATES, unresolved_exchange_statement
+from .provider_http_failover import allow_group_unknown_failover
 
 
 EXCHANGE_ADMISSION_RETRY_SECONDS = 1
@@ -24,6 +25,10 @@ class ExchangeScope:
     model_name: str
     purpose: str
     logical_request_id: str
+    emergency_enabled: bool = False
+    route_set_id: str = ""
+    route_set_revision: int = 0
+    route_set_hash: str = ""
 
 
 def start_exchange(session_factory, scope: ExchangeScope, *, chain_id: str, request_hash: str) -> str:
@@ -44,7 +49,8 @@ def _start_exchange(session_factory, scope, *, chain_id, request_hash):
             (ProviderHttpExchange.chain_id != chain_id) | (ProviderHttpExchange.outcome != "response_received")
             | ProviderHttpExchangeJob.generation_job_id.not_in(job_ids),
         )
-        if session.scalar(conflicts.limit(1)):
+        conflict_ids = tuple(set(session.scalars(conflicts)))
+        if conflict_ids and not allow_group_unknown_failover(session, scope, jobs=jobs, conflict_ids=conflict_ids):
             raise AiProviderResultUnknown("provider_http_previous_exchange_unresolved")
         require_generation_accounts(session, jobs)
         exchange_id = str(uuid4())

@@ -77,6 +77,8 @@ def recover_cached_unknown_jobs(
 
 def _has_same_attempt_cache(action: Action, job: GenerationJob) -> bool:
     data = dict(action.payload or {})
+    if data.get("emergency_selection_id"):
+        return False
     if str(data.get("generation_job_id") or "") != job.id:
         return False
     try:

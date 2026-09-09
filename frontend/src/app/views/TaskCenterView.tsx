@@ -1046,6 +1046,7 @@ export default function TaskCenterView({
         ? null
         : Number(config.topic_participation_rate) * 100,
       topic_participation_confirmed: config.topic_participation_rate != null,
+      emergency_fallback_enabled: config.emergency_fallback_enabled !== false,
       teacher_targets: formatChatTargetLines(config.teacher_targets),
       group_ai_prejoin_channel_ids: task.group_ai_prejoin_channel_ids ?? [],
       slang_terms: formatKeyValueMap(config.slang_terms),
@@ -1419,6 +1420,7 @@ export default function TaskCenterView({
         rule_set_version_id: values.rule_set_version_id ?? null,
         target_group_name: target?.title ?? '',
         topic_directions: parseTopicDirectionLines(values.topic_directions),
+        emergency_fallback_enabled: values.emergency_fallback_enabled !== false,
         topic_participation_rate: Number(values.topic_participation_percent) / 100,
         teacher_targets: parseChatTargetLines(values.teacher_targets),
         chat_history_depth: values.chat_history_depth ?? 50,
@@ -1570,6 +1572,7 @@ export default function TaskCenterView({
         rule_set_version_id: values.rule_set_version_id ?? null,
         target_group_name: target?.title ?? '',
         topic_directions: parseTopicDirectionLines(values.topic_directions, existingTypeConfig.topic_directions),
+        emergency_fallback_enabled: values.emergency_fallback_enabled !== false,
         topic_participation_rate: Number(values.topic_participation_percent) / 100,
         teacher_targets: parseChatTargetLines(values.teacher_targets, existingTypeConfig.teacher_targets),
         chat_history_depth: values.chat_history_depth ?? 50,

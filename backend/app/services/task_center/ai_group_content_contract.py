@@ -37,7 +37,8 @@ def validate_content_intent_contract(
     bound_action = action or _action_for_slot(session, payload.primary_quantity_slot_id)
     _validate_scope(session, plan, intent, payload, bound_action)
     _validate_topic(plan, intent, payload)
-    if intent.topic_mode == "configured_topic":
+    independent_content = payload.emergency_selection_id or payload.ai_generation_context_mode == "topic_only"
+    if intent.topic_mode == "configured_topic" and not independent_content:
         _validate_topic_capacity(
             plan,
             capacity_projection(session, plan.id),

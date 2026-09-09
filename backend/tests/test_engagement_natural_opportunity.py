@@ -109,10 +109,11 @@ def test_open_actions_consume_presence_before_gateway_and_append_successor() -> 
         assert len(session.scalars(select(ManagedPresencePlan)).all()) == 1
 
 
-def test_exhausted_presence_stays_exhausted_when_idle_continuation_is_enabled(monkeypatch):
+@pytest.mark.parametrize("idle_continuation", [False, True])
+def test_exhausted_presence_does_not_block_committed_active_topic_supply(monkeypatch, idle_continuation):
     with _session() as session:
         task = session.get(Task, "group-presence")
-        task.type_config = {**task.type_config, "idle_continuation_enabled": True}
+        task.type_config = {**task.type_config, "idle_continuation_enabled": idle_continuation}
         ledger = session.get(TaskDayLedger, "group-presence-day")
         group = session.get(TgGroup, 21)
         session.add_all([_pending_action("occupied-1", 1), _pending_action("occupied-2", 2)])
@@ -129,11 +130,13 @@ def test_exhausted_presence_stays_exhausted_when_idle_continuation_is_enabled(mo
             timestamp=DAY_START, required_units=1,
         )
 
-        assert rows == []
+        assert rows == [candidate]
         presence = session.scalar(select(ManagedPresencePlan))
         assert presence.remaining_capacity == 0
         assert presence.planned_managed_authored_count == 2
-        assert task.last_error == "natural_opportunity_plan_unproven"
+        assert task.last_error == ""
+        assert task.stats["natural_opportunity"]["effect"] == "quality_observation_only"
+        assert task.stats["natural_opportunity"]["deficit"] == 1
 
 
 def test_new_presence_policy_preserves_approved_cold_group_capacity():

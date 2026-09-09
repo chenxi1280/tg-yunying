@@ -3,7 +3,7 @@ from __future__ import annotations
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
-from app.models import Action, AiGroupMessageMemory, Task
+from app.models import Action, AiGroupEmergencySelection, AiGroupMessageMemory, Task
 from app.services._common import _now
 
 from .ai_message_memory import mark_group_ai_message_result
@@ -36,21 +36,14 @@ DIRECT_CHECK_IN_GENERATION_SOURCES = frozenset(
 
 
 def expire_legacy_anchor_rewritten_actions(session: Session, task: Task) -> int:
-    actions = session.scalars(
-        select(Action)
-        .where(
-            Action.tenant_id == task.tenant_id,
-            Action.task_id == task.id,
-            Action.task_type == "group_ai_chat",
-            Action.action_type == "send_message",
-            Action.status.in_(LEGACY_ANCHOR_OPEN_STATUSES),
-            _requires_contract_replan_expression(),
-        )
-        .limit(ACTION_MAINTENANCE_BATCH_LIMIT)
-        .with_for_update(skip_locked=True, of=Action)
-    )
     expired = 0
-    for action in actions:
+    for action in _maintenance_candidates(session, task, _requires_contract_replan_expression()):
+        if expired >= ACTION_MAINTENANCE_BATCH_LIMIT:
+            break
+        emergency = _emergency_maintenance_result(session, action)
+        if emergency is not None:
+            expired += emergency
+            continue
         if not _requires_contract_replan(action):
             continue
         _expire_action(session, action)
@@ -64,21 +57,14 @@ def expire_legacy_anchor_rewritten_actions(session: Session, task: Task) -> int:
 
 
 def expire_incomplete_daily_contract_actions(session: Session, task: Task) -> int:
-    actions = session.scalars(
-        select(Action)
-        .where(
-            Action.tenant_id == task.tenant_id,
-            Action.task_id == task.id,
-            Action.task_type == "group_ai_chat",
-            Action.action_type == "send_message",
-            Action.status.in_(LEGACY_ANCHOR_OPEN_STATUSES),
-            _incomplete_daily_contract_expression(),
-        )
-        .limit(ACTION_MAINTENANCE_BATCH_LIMIT)
-        .with_for_update(skip_locked=True, of=Action)
-    )
     expired = 0
-    for action in actions:
+    for action in _maintenance_candidates(session, task, _incomplete_daily_contract_expression()):
+        if expired >= ACTION_MAINTENANCE_BATCH_LIMIT:
+            break
+        emergency = _emergency_maintenance_result(session, action)
+        if emergency is not None:
+            expired += emergency
+            continue
         if _has_current_daily_content_contract(action):
             continue
         _expire_action_with_reason(
@@ -94,6 +80,46 @@ def expire_incomplete_daily_contract_actions(session: Session, task: Task) -> in
         stats[key] = int(stats.get(key) or 0) + expired
         task.stats = stats
     return expired
+
+
+def _maintenance_candidates(session: Session, task: Task, predicate):
+    cursor = ""
+    while True:
+        rows = list(session.scalars(select(Action).where(
+            Action.tenant_id == task.tenant_id, Action.task_id == task.id,
+            Action.task_type == "group_ai_chat", Action.action_type == "send_message",
+            Action.status.in_(LEGACY_ANCHOR_OPEN_STATUSES), Action.id > cursor, predicate,
+        ).order_by(Action.id).limit(ACTION_MAINTENANCE_BATCH_LIMIT)
+            .with_for_update(skip_locked=True, of=Action)))
+        if not rows:
+            return
+        cursor = rows[-1].id
+        yield from rows
+
+
+def _emergency_maintenance_result(session: Session, action: Action) -> int | None:
+    from .ai_group_emergency import validate_emergency_selection
+    from .ai_group_emergency_contract import EMERGENCY_SOURCES, telegram_unattempted
+    from .payloads import SendMessagePayload
+
+    payload = dict(action.payload or {})
+    has_selection = session.scalar(select(AiGroupEmergencySelection.id).where(
+        AiGroupEmergencySelection.action_id == action.id).limit(1))
+    if not (has_selection or payload.get("emergency_selection_id")
+            or payload.get("content_source") in EMERGENCY_SOURCES):
+        return None
+    try:
+        validate_emergency_selection(session, action, SendMessagePayload.model_validate(payload))
+    except ValueError as exc:
+        error_code = str(exc)
+        if telegram_unattempted(session, action):
+            _expire_action_with_reason(session, action, error_code=error_code,
+                                       message="应急内容选择事实校验失败")
+        else:
+            action.result = {**dict(action.result or {}), "error_code": error_code,
+                             "message": "应急内容选择失配；原义务已有Telegram证据，保留待对账"}
+        return 1
+    return 0
 
 
 def _has_current_daily_content_contract(action: Action) -> bool:
@@ -185,6 +211,9 @@ def reject_legacy_anchor_rewrite_before_send(
     session: Session,
     action: Action,
 ) -> bool:
+    emergency = _emergency_maintenance_result(session, action)
+    if emergency is not None:
+        return bool(emergency)
     if not _requires_contract_replan(action):
         return False
     _expire_action(session, action)

@@ -27,6 +27,10 @@ class SendMessagePayload(BaseModel):
     target_reference_snapshot: dict[str, str] = Field(default_factory=dict)
     task_config_revision: int = 1
     target_display: str = ""
+    ai_generation_context_mode: Literal["", "topic_only"] = ""
+    ai_generation_context_reason: str = ""
+    ai_generation_topic_direction: dict = Field(default_factory=dict)
+    emergency_selection_id: str = ""
     message_text: str = ""
     original_text: str = ""
     review_approved: bool = False
@@ -230,6 +234,7 @@ class SendMessagePayload(BaseModel):
             "generating",
             "ai_result_persist_unknown",
             "provider_result_unknown",
+            "emergency_pending",
         }
         if (
             not self.message_text.strip()

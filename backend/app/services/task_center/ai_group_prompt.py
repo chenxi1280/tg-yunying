@@ -290,7 +290,10 @@ def _safe_slot(slot: dict[str, Any], *, allow_adult_context: bool = False) -> di
         clauses = safe_clauses(slot.get(key), allow_adult_context=allow_adult_context)
         if clauses:
             result[key] = "；".join(clauses[:3])
-    topic = _safe_target(slot.get("topic_direction"), "title", allow_adult_context=allow_adult_context)
+    topic_input = (slot.get("ai_generation_topic_direction")
+                   if slot.get("ai_generation_context_mode") == "topic_only"
+                   else slot.get("topic_direction"))
+    topic = _safe_target(topic_input, "title", allow_adult_context=allow_adult_context)
     teacher = _safe_target(slot.get("teacher_target"), "name", allow_adult_context=allow_adult_context)
     if topic:
         result["topic_direction"] = topic

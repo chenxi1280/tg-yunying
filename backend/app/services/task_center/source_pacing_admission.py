@@ -66,13 +66,14 @@ def admit_source_paced_attempt(
     not_before = _admission_not_before(
         action,
         state,
+        session=session,
         admission=admission,
         spec=spec,
         created=created,
         timestamp=timestamp,
     )
     admission.attempt_id = attempt.id
-    if timestamp < not_before:
+    if timestamp < not_before or (spec.pacing_domain == "ai_send" and not_before >= spec.deadline_at):
         _defer_until(
             session,
             action=action,
@@ -83,9 +84,7 @@ def admit_source_paced_attempt(
         )
         return False
     _mark_call_started(
-        state,
-        admission,
-        attempt,
+        state, admission, attempt,
         timestamp=timestamp, gap_seconds=spec.source_gap_seconds,
     )
     return True

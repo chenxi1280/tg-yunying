@@ -40,7 +40,7 @@ def test_alembic_versions_have_single_head():
 
     assert all(len(revision) <= 32 for revision in revisions)
     heads = sorted(set(revisions) - referenced)
-    assert heads == ["0229_admission_gap_count"]
+    assert heads == ["0230_ai_group_emergency"]
 
 
 

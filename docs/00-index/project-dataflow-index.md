@@ -1,5 +1,7 @@
 # 项目数据流转索引
 
+> **2026-09-10 活群准入与数量供给 resync（本地QA/待发布）：** 当前 PlanningAdmissionSnapshot 的可发送账号集合 → 日覆盖首次候选、后续分页及未物化重排 SQL LIMIT 前过滤 → 原账号/目标/频率检查 → 正文生成与发送时刻。冻结 portfolio 需求保持全账号/日总量，首次预算分配及原 deficit 恢复只使用当前准入集合；加入后追加原未分配量，旧预算预约/unknown身份不移动。natural-opportunity/presence 保留原质量证据并标记 quality_observation_only，普通数量主题供给不因零真人或连续系统发言归零；真实互动续接门不变。membership实际引用与目标引用相同或公开用户名规范化相等时，成员/机器人观察投影保留原目标对应的canonical群，不被URL剥前缀或同名群改绑；不同实际引用不强制归并，旧事实不回填。合同与QA见 [AI活群可执行供给专项PRD](../03-feature-designs/ai-group-executable-supply-and-fallback-20260910-prd.md) 产品口径1/2/4。
+
 > **2026-09-09 点赞重建代次：** 原义务open/currentNone → 现有action_attempt_no的下一值进入Like稳定payload去重 → 新pending Action → 原bind递增计数；同代去重、下一合法代新ID。旧终态Action/审计/远端事实不删，pending/unknown/confirmed不创建下一代；按created_at区分历史别名与真实新建。
 
 > **2026-09-09 点赞原义务复用 resync：** 全历史未调用旧Action退役 → 原义务open/原预约reserved且均未绑定 → Planner复用原冻结due/release，不重新排在同来源后序cursor之后 → 原来源容量、账号活动窗/节奏rearm → 新Action绑定 → Dispatcher/typed reaction事实；expired/unknown不重新开放。维护时不改时间线，后续正式账号rearm可按原规则向后推进effective。
@@ -1662,3 +1664,5 @@ legacy-only A 冷启动分支固定为 `frozen legacy A -> 原 A Session 只读 
 - E4范围补正：PostgreSQL REPEATABLE READ READ ONLY事务及局部查询/锁超时 → 全量未删除channel_view自动范围或原显式ID范围 → 同事务读取Task/ledger/事实 → task_deleted与业务缺口 → 摘要；设置/查询失败中止，无通过摘要、无降级、无写库。
 - 2026-09-09 AI窗口交集：原due/release → 原账号Session窗口 → 账号/群时间线 → 最终时刻再次窗口求交 → 合法effective或原deadline失败。Source推迟保留原release，下次正常claim重新求交；原Source独占预约与unknown不改写。合同见ai-group-window-shortfall-repair-20260909-prd.md。
 - E4身份以实际结构反查补正：unified Action.primary_quantity_slot_id → 同tenant/Task/ledger数量槽 → 原Attempt与typed消息事实；相同谓词用于开放Action和样本ledger_matches。payload任务日缺省不是失败，显式矛盾与错误槽仍拒绝；不补写历史payload、不影响发送。
+
+- 2026-09-10 活群内容/发送链：`ai_generation_topic_context.py` → `ai_group_topic_binding.py` 冻结配置主题证据；`ai_group_emergency_pending.py` → `ai_group_emergency_worker.py`/`ai_group_emergency.py` → `ai_group_emergency_selections` 追加原义务内容选择；Gateway与旧合同维护共用验证器；`ai_group_independent_quality.py` 只读typed消息分账。`provider_http_failover.py`保留未知HTTP并核验批准后继候选；`source_pacing_gap.py`在来源锁内选择原窗口中的合法空隙。详见[专项修复PRD](../03-feature-designs/ai-group-executable-supply-and-fallback-20260910-prd.md)。

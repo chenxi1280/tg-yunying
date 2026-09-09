@@ -1157,3 +1157,7 @@ LLM 成本按以下公式在灰度前估算：
 | 开放产品决策 | 无；§18 已冻结为 v1 合同 |
 
 当前结论：`design_status=complete_for_review`、`product_design_complete=true`、`dev_handoff_ready=true`、`implementation_authorized=false`。本文已作为统一引擎的 AI 活群 adapter 正式产品合同；本轮仍未授权业务代码、数据库、迁移、发布或生产变更。
+
+## 2026-09-10 活群修复合同同步
+
+普通主动数量供给不再依赖真人先发言或 natural-opportunity 数量上限；无上下文走明确配置主题，真实互动仍保留原 turn、reply、freshness、attention 权限。已入群与待入群发送供给独立，冻结日义务不缩小。 具体实现、开关、测试与发布证据以[AI活群可执行供给、主题与故障兜底修复](ai-group-executable-supply-and-fallback-20260910-prd.md)为准；本条为本切片 `resync`，不改写历史验收记录，也不扩展评论路径。

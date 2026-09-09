@@ -228,7 +228,7 @@ def test_replan_coverage_is_loaded_before_normal_keyset(
     session.add(target)
     session.flush()
     plan_facts = SimpleNamespace(
-        coverage=SimpleNamespace(daily_group_target_id=target.id),
+        coverage=SimpleNamespace(daily_group_target_id=target.id, admissible_account_ids=None),
     )
 
     rows = group_ai_chat._replan_coverage_rows_for_plan(
@@ -298,7 +298,7 @@ def test_bound_pending_coverage_is_excluded_from_normal_keyset(
     session.add(target)
     session.flush()
     plan_facts = SimpleNamespace(
-        coverage=SimpleNamespace(daily_group_target_id=target.id),
+        coverage=SimpleNamespace(daily_group_target_id=target.id, admissible_account_ids=None),
     )
 
     excluded = group_ai_chat._bound_coverage_account_ids_for_plan(

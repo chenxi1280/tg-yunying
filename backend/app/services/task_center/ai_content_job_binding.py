@@ -225,9 +225,12 @@ def _group_contract_request(
     config: dict,
     snapshot: GenerationPolicySnapshot,
 ) -> _GroupContractRequest:
+    topic_only = (config.get("engagement_contract_version") == "unified_engagement_v1"
+                  and getattr(payload, "ai_generation_context_mode", "") == "topic_only")
     evidence = meaningful_group_evidence(
-        str(getattr(payload, "ai_generation_history", "") or ""),
-        getattr(payload, "topic_direction", {}), _ADULT_CONTEXT_MARKERS,
+        "" if topic_only else str(getattr(payload, "ai_generation_history", "") or ""),
+        getattr(payload, "ai_generation_topic_direction" if topic_only else "topic_direction", {}),
+        _ADULT_CONTEXT_MARKERS,
     )
     return _GroupContractRequest(
         action=action,

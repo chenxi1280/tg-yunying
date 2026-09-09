@@ -10,7 +10,9 @@ from .engagement_portfolio_capacity import read_portfolio_capacities
 from .engagement_portfolio_records import _new_plan, _persist_reservations
 
 
-def recover_portfolio_deficit(session, task, ledger, *, plan, request):
+def recover_portfolio_deficit(
+    session, task, ledger, *, plan, request, allocatable_account_ids=None,
+):
     if not _can_recover(task, ledger, plan):
         return plan
     plan = _lock_current_plan(session, plan)
@@ -22,6 +24,8 @@ def recover_portfolio_deficit(session, task, ledger, *, plan, request):
     if remaining <= 0:
         return plan
     candidates = set(request["candidate_account_ids"]) - {row.account_id for row in rows if row.state != "active"}
+    if allocatable_account_ids is not None:
+        candidates &= set(allocatable_account_ids)
     qualifications = assignment_decisions(session, task.tenant_id, candidates, skip_busy=True)
     capacities, policies = read_portfolio_capacities(session, task.tenant_id, ledger.obligation_local_date,
         account_ids=sorted(key for key in candidates if not qualifications[key]), action_class=plan.trigger_kind)

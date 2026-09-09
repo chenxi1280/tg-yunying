@@ -25,6 +25,7 @@ from app.services._common import ai_gateway
 from app.services.automation_identity import with_automation_identity
 from .generation_invocation_budget import provider_invocation_options
 from .provider_http_tracking import scoped_provider_gateway
+from .provider_http_failover import consider_unknown_candidate
 from app.services.ai_config import ai_provider_credentials
 from app.services.task_center.ai_generation_contract import (
     AI_GENERATION_UNAVAILABLE_MESSAGE,
@@ -183,6 +184,7 @@ def _failure_outcome(error: Exception | None) -> str:
 @dataclass(frozen=True)
 class _CandidateFailures:
     last_error: Exception | None = None
+    unknown_error: AiProviderResultUnknown | None = None
     blocked_error: ProviderAdmissionBlocked | None = None
     route_retryable: int = 0
     retry_seconds: int = PROVIDER_ROUTE_RETRY_SECONDS
@@ -191,12 +193,15 @@ class _CandidateFailures:
         blocked = outcome.error if isinstance(outcome.error, ProviderAdmissionBlocked) else None
         return _CandidateFailures(
             last_error=outcome.error,
+            unknown_error=self.unknown_error or (outcome.error if isinstance(outcome.error, AiProviderResultUnknown) else None),
             blocked_error=blocked or self.blocked_error,
             route_retryable=self.route_retryable + int(outcome.route_retryable),
             retry_seconds=max(self.retry_seconds, blocked.wait_seconds if blocked else 0),
         )
 
     def raise_final(self, policy: ProviderCandidatePolicy, provider_count: int) -> None:
+        if self.unknown_error is not None:
+            raise self.unknown_error
         if policy.route_provider_ids and self.route_retryable == provider_count:
             detail = self.last_error or self.blocked_error or "all_route_candidates_temporarily_unavailable"
             raise ProviderRouteDeferred(
@@ -277,7 +282,9 @@ def provider_draft_failure(
         session, candidate, error, commit=policy.close_transaction_before_external,
     )
     if isinstance(error, AiProviderResultUnknown):
-        return DraftAttemptOutcome(None, error, False, False)
+        return DraftAttemptOutcome(None, error, False, consider_unknown_candidate(
+            policy.attempt_config, route_bound=bool(policy.route_provider_ids), has_more=has_more,
+        ))
     if quota_limited:
         return DraftAttemptOutcome(
             None,

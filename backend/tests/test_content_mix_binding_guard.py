@@ -267,7 +267,7 @@ def test_fact_first_replan_prioritizes_plannable_task_admissions() -> None:
     session.scalars = lambda statement: _capture_statement(session, statement)
     task = SimpleNamespace(id="task-ai", fulfillment_contract_version="fact_first_v3")
     facts = SimpleNamespace(
-        coverage=SimpleNamespace(daily_group_target_id="target-1"),
+        coverage=SimpleNamespace(daily_group_target_id="target-1", admissible_account_ids=None),
     )
 
     rows = group_ai_chat._replan_coverage_rows_for_plan(session, task, facts)

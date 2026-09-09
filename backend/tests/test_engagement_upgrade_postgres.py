@@ -88,7 +88,7 @@ def test_populated_0196_upgrade_preserves_records_and_runs_backfills(upgrade_dat
     _seed_legacy(upgrade_database)
     _upgrade("head")
     with upgrade_database.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0229_admission_gap_count"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0230_ai_group_emergency"
         assert connection.scalar(text("SELECT name FROM tenants WHERE id=901")) == "QA legacy tenant"
         assert connection.scalar(text("SELECT status FROM tasks WHERE id='QA-legacy-task'")) == "paused"
         assert connection.execute(text(
@@ -120,8 +120,8 @@ def test_populated_0196_upgrade_preserves_records_and_runs_backfills(upgrade_dat
 
 
 def _assert_channel_engine_schema(inspector):
-    from app.models import AlbumReactionParticipation, ChannelSourceDecision, ChannelSourcePageCursor, ChannelTaskIntake
-    for model in (AlbumReactionParticipation, ChannelSourceDecision, ChannelSourcePageCursor, ChannelTaskIntake):
+    from app.models import AiGroupEmergencySelection, AlbumReactionParticipation, ChannelSourceDecision, ChannelSourcePageCursor, ChannelTaskIntake
+    for model in (AiGroupEmergencySelection, AlbumReactionParticipation, ChannelSourceDecision, ChannelSourcePageCursor, ChannelTaskIntake):
         actual = {c["name"]: c["nullable"] for c in inspector.get_columns(model.__tablename__)}
         assert actual == {c.name: c.nullable for c in model.__table__.columns}
         assert inspector.get_foreign_keys(model.__tablename__)

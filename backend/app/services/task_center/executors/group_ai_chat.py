@@ -225,6 +225,7 @@ class CoveragePlanState:
     confirmed_message_count: int = 0
     volume_need_now: int = 0
     deadline_at: datetime | None = None
+    admissible_account_ids: frozenset[int] | None = None
 
 
 CHAT_MODE_REPLY = "reply"
@@ -790,6 +791,14 @@ def _load_regular_plan_accounts(
     return PlanAbort()
 
 
+def _reopen_daily_coverages(session: Session, task: Task, group: TgGroup, *, account_limit: int) -> None:
+    if task.fulfillment_contract_version != "fact_first_v3":
+        return
+    from ..task_group_bot_admission_recovery import reopen_unproven_task_coverages
+
+    reopen_unproven_task_coverages(session, task, group, limit=account_limit)
+
+
 def _load_daily_coverage_plan_accounts(
     session: Session,
     task: Task,
@@ -798,15 +807,7 @@ def _load_daily_coverage_plan_accounts(
     *,
     include_replan_accounts: bool,
 ) -> AccountPlanState | PlanAbort:
-    if task.fulfillment_contract_version == "fact_first_v3":
-        from ..task_group_bot_admission_recovery import reopen_unproven_task_coverages
-
-        reopen_unproven_task_coverages(
-            session,
-            task,
-            facts.group,
-            limit=account_limit,
-        )
+    _reopen_daily_coverages(session, task, facts.group, account_limit=account_limit)
     selected, admission_waiting, seen_account_ids = _initial_replan_daily_accounts(
         session, task, facts,
         account_limit=account_limit,
@@ -860,6 +861,7 @@ def _scan_daily_coverage_accounts(
         rows = ready_coverage_plan_batch(
             session, task, now=_now(), limit=page_limit,
             exclude_account_ids=seen_account_ids,
+            admissible_account_ids=facts.coverage.admissible_account_ids,
         ).rows
         if not rows:
             return
@@ -1007,6 +1009,10 @@ def _replan_coverage_rows_for_plan(
         target.task_day_ledger_id,
         fact_first=fact_first,
     )
+    if facts.coverage.admissible_account_ids is not None:
+        statement = statement.where(
+            TaskAccountDailyCoverage.account_id.in_(facts.coverage.admissible_account_ids),
+        )
     if fact_first:
         statement = _prioritize_fact_first_replan_coverages(statement)
     else:
@@ -4214,6 +4220,21 @@ def _coverage_capacity_blocker(
     return {}
 
 
+def _refresh_daily_coverage_scope(
+    session: Session, task: Task, group: TgGroup, *, config: dict, account_ids, timestamp: datetime,
+):
+    ensure_task_daily_coverage(
+        session, task, now=timestamp, account_ids=account_ids,
+        target_group=group, refresh_existing=True,
+    )
+    ledger = ensure_task_day_ledger(session, task, now=timestamp)
+    bind_unowned_group_slots_to_coverage(session, task, ledger, group)
+    if bool(config.get("allow_mask_missing_check_in", False)):
+        release_voice_profile_coverage_for_check_in(session, task, now=timestamp)
+    backfill_daily_coverage_confirmations(session, task, timestamp.date())
+    return ledger
+
+
 def _coverage_plan_state(
     session: Session,
     task: Task,
@@ -4228,15 +4249,9 @@ def _coverage_plan_state(
         return CoveragePlanState(rows=[], rows_by_account={}, due_debt=0)
     ledger, participation, admission, account_ids = _coverage_scope(
         session, task, group, timestamp=timestamp)
-    ensure_task_daily_coverage(
-        session, task, now=timestamp, account_ids=account_ids,
-        target_group=group, refresh_existing=True,
+    ledger = _refresh_daily_coverage_scope(
+        session, task, group, config=config, account_ids=account_ids, timestamp=timestamp,
     )
-    ledger = ensure_task_day_ledger(session, task, now=timestamp)
-    bind_unowned_group_slots_to_coverage(session, task, ledger, group)
-    if bool(config.get("allow_mask_missing_check_in", False)):
-        release_voice_profile_coverage_for_check_in(session, task, now=timestamp)
-    backfill_daily_coverage_confirmations(session, task, timestamp.date())
     totals = coverage_plan_totals(session, task, group, now=timestamp)
     target, due_message_count, volume_need = _daily_group_due_state(
         session,
@@ -4264,6 +4279,10 @@ def _coverage_plan_state(
         volume_need=volume_need,
         effective_due_debt=effective_due_debt,
         deadline_at=ledger.deadline_at,
+        admissible_account_ids=(
+            frozenset(int(item) for item in admission.admissible_account_ids or [])
+            if admission is not None else None
+        ),
     )
 
 
@@ -4314,13 +4333,23 @@ def _coverage_candidate_rows(
     rows = _portfolio_coverage_rows(
         session, task, ledger=ledger, target=target,
         participation=participation, rows=rows,
+        allocatable_account_ids=frozenset(admissible) if admissible is not None else None,
     )
     if participation is None or not _uses_unified_engagement(task):
         return rows
-    opportunity = ensure_natural_opportunity_plan(
+    previous_error = task.last_error
+    ensure_natural_opportunity_plan(
         session, task, ledger, group=group, required_units=required_units,
     )
-    return rows[:opportunity.guaranteed_now_capacity]
+    stats = dict(task.stats or {})
+    stats["natural_opportunity"] = {
+        **stats.get("natural_opportunity", {}), "effect": "quality_observation_only",
+    }
+    task.stats = stats
+    task.last_error = (
+        "" if previous_error == "natural_opportunity_plan_unproven" else previous_error
+    )
+    return rows
 
 
 def _uses_unified_engagement(task: Task) -> bool:
@@ -4337,6 +4366,7 @@ def _portfolio_coverage_rows(
     target: TaskGroupDailyTarget,
     participation,
     rows: list[TaskAccountDailyCoverage],
+    allocatable_account_ids: frozenset[int] | None = None,
 ) -> list[TaskAccountDailyCoverage]:
     if participation is None or not _uses_unified_engagement(task):
         return rows
@@ -4350,6 +4380,7 @@ def _portfolio_coverage_rows(
         candidate_account_ids=[
             int(item) for item in participation.selected_account_ids or []
         ],
+        allocatable_account_ids=allocatable_account_ids,
     )
     allowed = set(decision.allocated_units_by_account)
     return [row for row in rows if int(row.account_id) in allowed]
@@ -4418,6 +4449,7 @@ def _build_coverage_plan_state(
     volume_need: int,
     effective_due_debt: int,
     deadline_at: datetime,
+    admissible_account_ids: frozenset[int] | None = None,
 ) -> CoveragePlanState:
     return CoveragePlanState(
         rows=rows,
@@ -4437,6 +4469,7 @@ def _build_coverage_plan_state(
         confirmed_message_count=target.confirmed_message_count,
         volume_need_now=volume_need,
         deadline_at=deadline_at,
+        admissible_account_ids=admissible_account_ids,
     )
 
 

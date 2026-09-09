@@ -393,3 +393,7 @@ required_new = max(volume_need_now, coverage_need_now)
 - 全局 Planner 无槽位时，`service.py` 对当日 ready debt 写 `planner_capacity_insufficient`、`next_decision_at` 和追加式 `TaskDailyFulfillmentDecision`，日履约不再静默显示 feasible。
 - 迁移 `0121_daily_fulfillment_contracts.py` 持久化覆盖扩展列、variation intent、每日决定和 generation contract audit；自动化回归覆盖 intent 顺序、重复拒绝、overdue 与 backlog。
 - `daily_coverage_planning.py` 对已有 `TaskDailyCoveragePlanCursor` 只执行游标行锁；首次创建通过唯一键冲突收敛后再锁定同一游标，消除 Planner 在 Action 处理之后反向锁 `tasks` 行造成的生产死锁。
+
+## 2026-09-10 活群修复合同同步
+
+待入群保留冻结目标和加入义务，但不参与新增正文预算与正文排期；入群后恢复原未分配欠供。生成故障通过原未调用 Action 内容选择继任完成签到/回复表情，数量确认仍以真实成功 Attempt 与 typed remote fact 为准。 具体实现、开关、测试与发布证据以[AI活群可执行供给、主题与故障兜底修复](ai-group-executable-supply-and-fallback-20260910-prd.md)为准；本条为本切片 `resync`，不改写历史验收记录，也不扩展评论路径。

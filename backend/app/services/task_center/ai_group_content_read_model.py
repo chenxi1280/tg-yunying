@@ -49,7 +49,10 @@ def ai_group_content_allocation_summary(session: Session, task: Task) -> dict[st
     if plans and plans[0].task_day == today:
         current_rate = plans[0].topic_rate_bps / 10000
     next_rate = effective_topic_rate(config, today + timedelta(days=1))
-    summary = _base_summary(config, current_rate, next_rate, today)
+    from .ai_group_independent_quality import independent_quality_summary
+
+    summary = {**_base_summary(config, current_rate, next_rate, today),
+               **independent_quality_summary(session, task, today)}
     if not plans:
         return summary
     effective_target = _effective_target_for_plan(session, plans[0])

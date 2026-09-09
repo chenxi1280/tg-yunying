@@ -31,6 +31,7 @@ def freeze_generation_context_contract(
         if all(line.startswith("群话题：") for line in evidence_lines)
         else "history"
     )
+    topic_only = payload.get("ai_generation_context_mode") == "topic_only"
     contract = {
         "context_revision": int(job.context_snapshot_version or 0),
         "context_hash": str(job.context_snapshot_hash or ""),
@@ -38,12 +39,14 @@ def freeze_generation_context_contract(
         "context_age_ms": _context_age_ms(captured_at, rows),
         "anchor_message_ids": anchor_ids,
         "anchor_author_ids": list(dict.fromkeys(row.sender_peer_id for row in rows if row.sender_peer_id)),
-        "context_mode": context_mode,
+        "context_mode": "topic_only" if topic_only else context_mode,
+        "configured_topic_snapshot": dict(payload.get("ai_generation_topic_direction") or {}) if topic_only else {},
+        "evidence_source": "configured_topic" if topic_only else "human_context_or_frozen_topic",
         "allowed_facts": dict(evidence),
         "forbidden_claims": list(gate_config.get("forbidden_claim_categories") or ()),
         "task_topic_revision": int(payload.get("content_intent_config_revision") or config_revision),
         "content_route": route,
-        "route_reason": _route_reason(route, context_mode=context_mode),
+        "route_reason": "configured_topic_without_human_context" if topic_only else _route_reason(route, context_mode=context_mode),
         "voice_contract_version": str(payload.get("voice_profile_contract_version") or ""),
         "prompt_version": prompt_version,
     }

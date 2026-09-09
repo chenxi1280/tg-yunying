@@ -161,6 +161,18 @@ def validate_content_intent_for_gateway(
 ) -> None:
     from .ai_group_content_contract import validate_content_intent_contract
 
+    if payload.emergency_selection_id:
+        from .ai_group_emergency import validate_emergency_selection
+
+        if action is None:
+            raise ValueError("emergency_action_missing")
+        validate_emergency_selection(session, action, payload)
+    if remote_boundary and payload.ai_generation_context_mode == "topic_only" and not payload.emergency_selection_id:
+        from .ai_group_topic_binding import validate_topic_only_candidate
+
+        if action is None:
+            raise ValueError("topic_only_action_missing")
+        validate_topic_only_candidate(session, action, payload)
     if remote_boundary:
         _lock_group_surface(session, payload.group_id)
     validate_content_intent_contract(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from .generation_invocation_budget import provider_invocation_options
 from .provider_http_tracking import scoped_provider_gateway
+from .provider_http_failover import consider_unknown_candidate
 
 import hashlib
 from dataclasses import dataclass, replace
@@ -76,6 +77,7 @@ class StructuredAttemptOutcome:
 @dataclass(frozen=True)
 class _StructuredFailures:
     last_error: Exception | None = None
+    unknown_error: AiProviderResultUnknown | None = None
     blocked_error: ProviderAdmissionBlocked | None = None
     route_retryable: int = 0
     retry_seconds: int = PROVIDER_ROUTE_RETRY_SECONDS
@@ -84,12 +86,15 @@ class _StructuredFailures:
         blocked = outcome.error if isinstance(outcome.error, ProviderAdmissionBlocked) else None
         return _StructuredFailures(
             last_error=outcome.error,
+            unknown_error=self.unknown_error or (outcome.error if isinstance(outcome.error, AiProviderResultUnknown) else None),
             blocked_error=blocked or self.blocked_error,
             route_retryable=self.route_retryable + int(outcome.route_retryable),
             retry_seconds=max(self.retry_seconds, blocked.wait_seconds if blocked else 0),
         )
 
     def raise_final(self, request: StructuredProviderRequest, provider_count: int) -> None:
+        if self.unknown_error is not None:
+            raise self.unknown_error
         if route_bound(request) and self.route_retryable == provider_count:
             detail = self.last_error or self.blocked_error or "all_route_candidates_temporarily_unavailable"
             raise ProviderRouteDeferred(
@@ -267,7 +272,9 @@ def structured_failure_outcome(
         commit=bool(request.config.get("_close_db_transaction_before_ai")),
     )
     if isinstance(error, AiProviderResultUnknown):
-        return StructuredAttemptOutcome(None, error, False, False)
+        return StructuredAttemptOutcome(None, error, False, consider_unknown_candidate(
+            request.config, route_bound=route_bound(request), has_more=has_more,
+        ))
     if quota_limited:
         return StructuredAttemptOutcome(None, error, route_bound(request), has_more)
     if route_bound(request) and route_transport_failure(error):

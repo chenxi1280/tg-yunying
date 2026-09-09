@@ -54,7 +54,14 @@ def scoped_provider_gateway(source, session, *, config, provider_id, credentials
         return source
     from app.ai_gateway import read_http
 
-    scope = ExchangeScope(_scope_bindings(config), provider_id, credentials.model_name, purpose, request_id)
+    scope = ExchangeScope(
+        _scope_bindings(config), provider_id, credentials.model_name,
+        str(config.get("_ai_provider_route_purpose") or purpose), request_id,
+        emergency_enabled=config.get("_ai_group_emergency_enabled") is True,
+        route_set_id=str(config.get("_ai_provider_route_set_id") or ""),
+        route_set_revision=int(config.get("_ai_provider_route_set_revision") or 0),
+        route_set_hash=str(config.get("_ai_provider_route_set_hash") or ""),
+    )
     factory = sessionmaker(bind=session.get_bind(), autoflush=False, expire_on_commit=False)
     transport = TrackedProviderHttp(factory, scope, read_http, str(uuid4()))
     gateway = copy(source)

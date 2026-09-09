@@ -375,7 +375,7 @@ def test_existing_reservation_keeps_its_slot_after_later_reservations(
         slot_id="reserved-slot-b",
         action_id="reserved-action-b",
     )
-    assert not admit_source_paced_attempt(session, second, second_attempt, now_value=NOW)
+    assert admit_source_paced_attempt(session, second, second_attempt, now_value=NOW)
     first_admission = session.scalar(select(SourcePacingAdmission).where(
         SourcePacingAdmission.action_id == first.id,
     ))

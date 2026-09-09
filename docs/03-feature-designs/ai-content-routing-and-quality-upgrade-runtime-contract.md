@@ -271,3 +271,7 @@ QA 必须先复现 ready/reviewing/candidate_ready + skipped 的冲突，确认�
 ### 2026-09-09 拒绝消耗与形状诊断
 
 Provider 已返回的 tokens 在 realizer 解析或 grounding 身份拒绝时继续计入消耗；只有长度/标点错误追加规范化后字符数、目标/实际档位和候选 hash，不记录正文或 Provider 任意字段。沿原 evaluator_evidence 通道传递，质量耗尽保留末次证据及所有调用的累计消耗。不将这些证据拼入重试提示，不改变生成、质量或发送行为。统一引擎 §19.71 和低完成量实施记录 B1 为本地实现合同；其余自动等待/纠错提案未实现、未部署。
+
+## 2026-09-10 活群修复合同同步
+
+主题证据在同 GenerationJob 冻结并绑定候选 hash，Gateway 复核同 Task/epoch/obligation 与空真人锚点；普通生成和应急内容复用原 Action/quantity slot，通过 claim CAS 与追加选择事实隔离晚到结果。纯 Provider unknown 保留费用、HTTP 和硬占用；Telegram unknown 不替代、不重放。 具体实现、开关、测试与发布证据以[AI活群可执行供给、主题与故障兜底修复](ai-group-executable-supply-and-fallback-20260910-prd.md)为准；本条为本切片 `resync`，不改写历史验收记录，也不扩展评论路径。

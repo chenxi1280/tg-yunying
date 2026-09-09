@@ -352,3 +352,7 @@ listener 选择不能只相信 `TgGroupAccount.can_send/is_listener` 和账号�
 QA必须包含：在群禁言直接解除而非重复邀请、未入群受限先解除再加入、bot要求不被解除替代、当前审批、非联系人双actor流程、管理员丢权限/跨Task共用FloodWait、普通业务资源仍独立、重复事件只一条owner、步骤成功后DB失败/unknown、换管理员/目标/epoch、暂停/删除、ready回接及已有发言unknown不重放。无真实权限恢复或对应可见发言样本时保持该层unproven；程序发布不等于救活。
 
 Product Design Complete：触发事实、原因表、现有能力继承、权限范围、所有权、真实actor、资源与时间、界面、幂等并发、旧unknown/回滚和逐层验收均已闭合，转dev交接但不在本轮实施。
+
+## 2026-09-10 活群修复合同同步
+
+加入和发送按账号/目标独立；正文候选在 SQL LIMIT 前过滤当前准入账号。加入结果投影必须与实际 Gateway 使用的群引用及 Task canonical 目标身份一致，不能依群名猜测或把同名其它群的成功计给本群；历史未知不重放，已有加入事实也不能伪造 C2 ready。 具体实现、开关、测试与发布证据以[AI活群可执行供给、主题与故障兜底修复](ai-group-executable-supply-and-fallback-20260910-prd.md)为准；本条为本切片 `resync`，不改写历史验收记录，也不扩展评论路径。

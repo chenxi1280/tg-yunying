@@ -127,6 +127,7 @@ SEARCH_RANK_DEBOOST_CONFIG_FIELDS = {
 
 TYPE_SETTINGS_FIELDS = {
     "group_ai_chat": {
+        "emergency_fallback_enabled",
         "engagement_contract_version",
         "account_selection_mode",
         "account_group_ids",

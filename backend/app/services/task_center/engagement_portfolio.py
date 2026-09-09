@@ -44,6 +44,7 @@ def reserve_portfolio_units(
     total_units: int = 0,
     candidate_account_ids: list[int] | None = None,
     requested_units_by_account: dict[int, int] | None = None,
+    allocatable_account_ids: frozenset[int] | None = None,
 ) -> PortfolioAllocationDecision:
     request = _normalized_request(
         total_units,
@@ -65,6 +66,7 @@ def reserve_portfolio_units(
         demand_identity=demand_identity,
         demand_hash=demand_hash,
         request=request,
+        allocatable_account_ids=allocatable_account_ids,
     )
     if existing is not None:
         return existing
@@ -76,6 +78,7 @@ def reserve_portfolio_units(
         demand_identity=demand_identity,
         demand_hash=demand_hash,
         request=request,
+        allocatable_account_ids=allocatable_account_ids,
     )
 
 
@@ -88,6 +91,7 @@ def _create_portfolio_decision(
     demand_identity: str,
     demand_hash: str,
     request: dict,
+    allocatable_account_ids: frozenset[int] | None = None,
 ) -> PortfolioAllocationDecision:
     allocation, capacities, policy_ids = _allocate_request(
         session,
@@ -95,6 +99,7 @@ def _create_portfolio_decision(
         ledger,
         action_class=action_class,
         request=request,
+        allocatable_account_ids=allocatable_account_ids,
     )
     plan = _persist_new_plan(
         session,
@@ -121,6 +126,7 @@ def _existing_portfolio_decision(
     demand_identity: str,
     demand_hash: str,
     request: dict,
+    allocatable_account_ids: frozenset[int] | None = None,
 ) -> PortfolioAllocationDecision | None:
     plan = _existing_plan(
         session, task, ledger,
@@ -132,7 +138,10 @@ def _existing_portfolio_decision(
             rows = _existing_reservations(session, task, ledger, action_class=action_class,
                 demand_identity=demand_identity)
             return _frozen_input_change_decision(session, task, rows, request=request, plan=plan)
-        plan = recover_portfolio_deficit(session, task, ledger, plan=plan, request=request)
+        plan = recover_portfolio_deficit(
+            session, task, ledger, plan=plan, request=request,
+            allocatable_account_ids=allocatable_account_ids,
+        )
         return _decision_for_plan(session, plan, request)
     rows = _existing_reservations(
         session, task, ledger,
@@ -271,8 +280,11 @@ def _allocate_request(
     *,
     action_class: str,
     request: dict,
+    allocatable_account_ids: frozenset[int] | None = None,
 ) -> tuple[dict[int, int], dict[int, int], list[str]]:
     account_ids = [int(item) for item in request["candidate_account_ids"]]
+    if allocatable_account_ids is not None:
+        account_ids = [item for item in account_ids if item in allocatable_account_ids]
     if (task.type_config or {}).get("engagement_contract_version") == UNIFIED_CONTRACT:
         account_ids = list(eligible_assignment_account_ids(session, task.tenant_id, account_ids))
     capacities, policy_ids = read_portfolio_capacities(

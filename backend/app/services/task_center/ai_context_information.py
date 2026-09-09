@@ -63,8 +63,20 @@ def general_topic_lines(slots: list[dict]) -> list[str]:
         f"群话题：{title}"
         for slot in slots
         if str(slot.get("content_mode") or "") == "general"
-        if (title := _topic_title(slot.get("topic_direction")))
+        if (title := _topic_title(slot.get(
+            "ai_generation_topic_direction" if slot.get("ai_generation_context_mode") == "topic_only"
+            else "topic_direction",
+        )))
     ]
+
+
+def topic_only_evidence_lines(config: dict) -> list[str]:
+    if config.get("engagement_contract_version") != "unified_engagement_v1":
+        return []
+    slots = list(config.get("generation_slots") or [])
+    if not any(slot.get("ai_generation_context_mode") == "topic_only" for slot in slots):
+        return []
+    return general_topic_lines(slots)
 
 
 def _topic_title(value: object) -> str:
@@ -77,4 +89,5 @@ __all__ = [
     "meaningful_context_lines",
     "meaningful_context_text",
     "meaningful_group_evidence",
+    "topic_only_evidence_lines",
 ]

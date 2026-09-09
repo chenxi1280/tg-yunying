@@ -48,12 +48,18 @@ def build_runtime_config(
 
     for action, payload in batch:
         validate_content_intent_for_gateway(session, payload, action=action)
+    from .ai_group_emergency_contract import emergency_enabled
+
     config = {**dict(task.type_config or {}), **tenant_fallback_flags(session, task)}
+    config["_ai_group_emergency_enabled"] = emergency_enabled(task)
     _bind_fact_first_provider(session, task, config)
     config = _bind_legacy_provider_failover(session, task, config)
     _bind_legacy_attempt_job(config, batch)
     needs_jobs = config.get("ai_content_route_v2_enabled") or config.get("engagement_contract_version") == "unified_engagement_v1"
     jobs = generation_jobs_for_batch(session, batch) if needs_jobs else ()
+    from .ai_group_topic_binding import freeze_topic_only_batch
+
+    freeze_topic_only_batch(task, batch, jobs=jobs)
     config = bind_group_generation_contracts(session, task, batch, config=config, jobs=jobs)
     config = bind_generation_job_routes(
         session,

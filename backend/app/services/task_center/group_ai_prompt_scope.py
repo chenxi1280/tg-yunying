@@ -102,6 +102,8 @@ def _voice_payload(voice: dict) -> dict:
 
 
 def _scoped_history(session: Session, task: Task, payload: SendMessagePayload) -> str:
+    if payload.ai_generation_context_mode == "topic_only":
+        return ""
     context_ids = [int(value) for value in payload.context_message_ids if int(value) > 0]
     if not context_ids:
         return ""

@@ -481,6 +481,8 @@ class EngagementAccountBindingConfig(BaseModel):
 class GroupAIChatConfig(EngagementAccountBindingConfig):
     model_config = ConfigDict(extra="forbid")
 
+    emergency_fallback_enabled: bool = True
+
     target_group_id: int | None = None
     target_operation_target_id: int | None = None
     target_reference_revision: int | None = Field(default=None, ge=1, exclude=True)
@@ -1845,6 +1847,8 @@ class TaskUpdate(BaseModel):
 
 class TaskSettingsUpdate(TaskUpdate, EngagementSettingsUpdate):
     model_config = ConfigDict(extra="forbid")
+
+    emergency_fallback_enabled: bool | None = None
 
     topic_hint: str | None = None
     topic_directions: list[GroupAITopicDirection] | None = None

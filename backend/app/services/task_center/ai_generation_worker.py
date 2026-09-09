@@ -74,7 +74,11 @@ def drain_ai_generation(
     with session_factory() as session:
         reconcile_generation_jobs(session, limit=max(1, int(limit)), task_type="group_ai_chat")
         session.commit()
-    processed = 0
+    from .ai_group_emergency_worker import drain_emergency_content
+
+    processed = drain_emergency_content(session_factory, max(1, int(limit)))
+    if processed >= max(1, int(limit)):
+        return processed
     processor = generate_action or _production_generate_action(dependencies)
     owner = f"ai-generation:{socket.gethostname()}:{uuid4()}"
     try:

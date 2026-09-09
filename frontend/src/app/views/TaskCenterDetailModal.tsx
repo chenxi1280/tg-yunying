@@ -939,6 +939,16 @@ export function TaskCenterDetailModal({
             items={[
               { key: 'topic_directions', label: '话题方向', children: topicDirectionTags(detail.task.type_config?.topic_directions) },
               {
+                key: 'emergency_fallback',
+                label: '任务应急兜底',
+                children: `${detail.task.type_config?.emergency_fallback_enabled !== false ? '开启' : '关闭'}；${detail.task.type_config?.engagement_contract_version === 'unified_engagement_v1' ? '统一引擎 · emergency_fallback_v1' : '当前任务未使用统一引擎，不生效'}`,
+              },
+              {
+                key: 'emergency_fallback_explanation',
+                label: '应急执行与计数',
+                children: '正常生成无法完成时，主动发送使用签到，真实回复保留引用并使用批准表情。主题或签到需真实发送才计数量；无上下文主题与应急内容单独统计，不计入普通质量完成，独立于租户计划兜底开关。',
+              },
+              {
                 key: 'topic_participation_rate',
                 label: '任务话题占比上限',
                 children: contentAllocation.current_task_day_rate == null
@@ -976,6 +986,11 @@ export function TaskCenterDetailModal({
                 key: 'teacher_ratio',
                 label: '老师内容（独立统计）',
                 children: `计划 ${Number(contentAllocation.planned_teacher_count || 0)}/${Number(contentAllocation.planned_normal_count || 0)}；远端确认 ${Number(contentAllocation.remote_teacher_count || 0)}/${Number(contentAllocation.remote_normal_count || 0)}`,
+              },
+              {
+                key: 'independent_content',
+                label: '独立内容实际发送',
+                children: `无上下文主题 ${Number(contentAllocation.remote_topic_only_count || 0)}；应急签到/表情 ${Number(contentAllocation.remote_emergency_count || 0)}（不计普通质量完成）`,
               },
               {
                 key: 'daily_vocabulary_theme',

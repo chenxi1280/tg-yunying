@@ -3069,7 +3069,7 @@ PDC 自检覆盖用户原话、依赖范围、验证路由、容量/公平、持
 #### 19.61.1 Intake、优先级与产品范围
 
 - `intake_id=intake-2026-09-08-emergency-fallback`；L3；用户明确要求：AI 模型没有额度或出现其他问题时，活群使用“签到”兜底，回复使用随机表情，评论使用表情；修复新旧 PRD 中阻止这套机制生效的设计，并审查类似遗漏。
-- 本切片 `design_status=complete`、`design_review_status=self_reviewed`、`resync=true`、`dev_handoff_ready=true`、`implementation_status=not_started_for_this_slice`、`qa_status=not_run_for_this_slice`、`production_status=unproven`。本会话继续修订产品设计；这不是已修改生产开关、代码发布或真实兜底发送的声明。
+- 本节原设计状态保持 `design_status=complete`。2026-09-10 活群 direct/reply 子切片已按[AI活群可执行供给、主题与故障兜底修复](ai-group-executable-supply-and-fallback-20260910-prd.md)进入实现和定向QA；评论子切片仍 `implementation_status=not_started_for_this_slice`。发布与真实发送验收以该专项证据为准，当前不得将本节整体声明为生产恢复。
 - 本节为 unified/current 内容故障兜底唯一上位合同，覆盖本文 §4.2、§8、§9、§10.2、§19.37、§19.45/19.46/19.58 与活群、评论、内容路由/运行/评测等专项中“新引擎禁止签到/表情”“只支持 legacy”“额度不足不许签到”“reply 永远禁止表情”“兜底发送率必须为 0”的冲突条款。历史快照/成功记录不重写；旧槽按原冻结身份收口，新版本和合法未发送 successor 才执行本节。
 - 内容故障采用显式 `emergency_fallback_v1`，不恢复旧固定多模型拓扑、模型投票、中央 Window、自动换目标或发送后补发。正常内容继续完整生成/审核；故障兜底有独立 deterministic 验证，不伪造正常审核通过。
 - 本轮保证的是：原业务义务合法、到期、有真实目标/回复对象、账号和传输满足发送条件时，AI 额度/模型/生成链故障不会阻止使用指定兜底。Telegram 不可用、真实权限不足、业务窗口已过或 Telegram 是否已发送不明仍须真实展示，不承诺在这些情况下远端一定成功。
@@ -3078,7 +3078,7 @@ PDC 自检覆盖用户原话、依赖范围、验证路由、容量/公平、持
 
 | 原业务 | 故障兜底内容与 RPC | 关系与统计 |
 | --- | --- | --- |
-| 活群主动/direct 数量或基础覆盖义务 | 精确正文 `签到`；仍为 `send_message`，`content_source=check_in`，绑定 emergency policy revision | 同账号同目标、原数量义务；未覆盖时可同时完成该账号基础覆盖，不伪造人设、主题内容或语义回答 |
+| 活群主动/direct 数量或基础覆盖义务 | 精确正文 `签到`；仍为 `send_message`，`content_source=emergency_check_in`，绑定 emergency policy revision | 同账号同目标、原数量义务；未覆盖时可同时完成该账号基础覆盖，不伪造人设、主题内容或语义回答 |
 | 群内原生回复/明确互动回复 | 从批准的 Unicode 池随机选择一个完整表情，`content_source=reply_unicode_emoji_fallback`；仍为原 `send_message` | 保留真实 reply_to/turn/owner/账号绑定，不改成 direct，不发签到冒充回答；只计实际回复/互动确认，不计问题已解决 |
 | 频道顶层评论或回复评论 | 默认一个随机 Unicode 表情，`content_source=comment_unicode_emoji_fallback`；仍为 `post_comment` | 顶层保留原 source/thread；reply 保留原父评论与讨论组绑定。表情消息不是 `like_message` 或 reaction，不冲抵点赞数量 |
 

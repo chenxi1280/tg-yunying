@@ -1252,3 +1252,7 @@ backend/tests/test_worker_roles.py
 | QA/E4 | 单测、PostgreSQL、前端、迁移、真实远端链路与结论分级已定义 |
 
 `design_status=product_design_complete`；2026-08-10最终独立fresh复核确认当前冻结快照无阻断实现、迁移、发布或生产E4的P0/P1。开发、迁移、QA、发布和生产E4仍尚未开始，设计通过不得解释为修复完成。任何把waiting留在open热索引、用固定次数停止重试、恢复legacy ContentMix真相源、或只给extra-volume填随机variation字符串的实现都不满足交接。
+
+## 2026-09-10 活群修复合同同步
+
+对本切片统一活群，纯内容故障不继续无效重复生成：保留原错误/Provider unknown审计并通过原 Action 的唯一内容选择交接；新应急选择不删除旧 Job、Attempt、Journal，也不改变原 deadline。旧 quality_wait/shortfall 的正常质量账保持独立，原数量可由明确应急完成。 具体实现、开关、测试与发布证据以[AI活群可执行供给、主题与故障兜底修复](ai-group-executable-supply-and-fallback-20260910-prd.md)为准；本条为本切片 `resync`，不改写历史验收记录，也不扩展评论路径。

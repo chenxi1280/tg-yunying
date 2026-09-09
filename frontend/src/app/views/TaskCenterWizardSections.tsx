@@ -323,6 +323,14 @@ export function WizardTypeConfig({
         <Alert type="info" showIcon message="AI 回复会按绑定规则集先过滤输入上下文，再逐条校验候选回复。" />
         <Alert type="info" showIcon message="发送目标按单个群的当天总量计算；当天所有可发账号都必须至少成功发送 1 条。" />
         {ruleFields}
+        <Form.Item
+          name="emergency_fallback_enabled"
+          label="任务应急兜底"
+          valuePropName="checked"
+          extra="仅统一引擎任务生效。正常生成无法完成时，主动发送使用签到，真实回复保留引用并使用批准表情。与租户的计划签到/表情开关独立；主题或签到仍需真实发送才计数量，无上下文主题与应急内容单独统计，不计入普通质量完成。"
+        >
+          <Checkbox>启用任务应急兜底</Checkbox>
+        </Form.Item>
         <div className="form-grid">
           <Form.Item name="topic_directions" label="话题方向（每行一个）">
             <Input.TextArea rows={5} placeholder={'郑州楼凤妹子怎么样\n主任最近约新妹子了\n精品榜的妹子真好'} />
@@ -911,6 +919,7 @@ export function WizardReview({ taskType, values, accounts, accountPools, targets
       { key: 'account', label: '账号摘要', children: `${account.label}，候选 ${account.total} 个，当前在线 ${account.online} 个，受限/离线 ${account.limited} 个` },
       { key: 'voice-profile', label: '账号面具覆盖', children: taskType === 'group_ai_chat' ? '启动后按冻结账号范围检查；缺面具按签到兜底' : '仅 AI 活群任务使用' },
       { key: 'prejoin-channels', label: '预关注频道', children: taskType === 'group_ai_chat' ? csvStrings(values.group_ai_prejoin_channel_ids).join('、') || '未配置' : '不适用' },
+      { key: 'emergency-fallback', label: '任务应急兜底', children: taskType === 'group_ai_chat' ? (values.emergency_fallback_enabled !== false ? '开启；仅统一引擎生效' : '关闭') : '不适用' },
       { key: 'membership', label: '准入前置', children: taskType === 'group_ai_chat' ? '启动后逐账号执行入群、群管机器人关注频道与 can_send 复检' : '启动后按目标实时复检' },
       { key: 'targetAbility', label: '目标能力', children: '创建阶段仅校验引用结构；能力在启动后复检' },
       { key: 'estimate', label: '预计动作量', children: '启动后按义务欠额生成，不以预测量阻止创建' },

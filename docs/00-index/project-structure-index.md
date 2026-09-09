@@ -1,5 +1,7 @@
 # 项目结构索引
 
+> **2026-09-10 活群准入供给入口（本地QA/待发布）：** `executors/group_ai_chat.py` 的 CoveragePlanState 携带当前准入集合，`_scan_daily_coverage_accounts` 与 `_replan_coverage_rows_for_plan` 在 LIMIT 前应用；数量候选保留 natural-opportunity 质量观测但不按其容量截断。`engagement_portfolio.py`/`engagement_portfolio_recovery.py` 的 allocatable_account_ids 只筛选当前新分配与原 deficit 恢复，不进入冻结需求哈希。`dispatcher._membership_group_peer/_membership_group_for_payload`对同一实际目标引用保留canonical本地投影，`test_membership_canonical_projection.py`验证公开URL别名、权限拒绝、独立机器人观察和不同真实引用不冒充目标。测试 `test_ai_group_admitted_supply.py`、`test_ai_group_portfolio_admission.py`、`test_ai_group_portfolio_admission_postgres.py` 覆盖未加入不进正文、后续加入原义务续供及真实PG并发唯一successor。合同见 [AI活群可执行供给专项PRD](../03-feature-designs/ai-group-executable-supply-and-fallback-20260910-prd.md) 产品口径1/2/4。
+
 > **2026-09-09 点赞重建身份 resync：** `channel_payloads.LikeMessagePayload.reaction_action_attempt_no`沿用Reaction义务的action_attempt_no作为下一次合法物化稳定身份，`channel_like._create_one_like_action`仅对open/unbound义务生成下一序号；历史payload兼容0，不回填、不覆盖unknown。`test_channel_like_reserved_replan.py`经正式未调用结算再次物化验证新pending ID和同代幂等，避免取回其他历史skipped别名。
 
 > **2026-09-09 点赞冻结预约重建 resync：** `executors/channel_like_pacing.py`承接点赞来源slot/节奏计算，原open义务与同身份reserved未绑定预约复用冻结SourcePacingPoint，再走来源容量与账号rearm；避免把既有位置重新追加到历史cursor末端。`channel_like.py`保留原物化/绑定流程，文件拆分仅对应此节奏责任；`test_channel_like_reserved_replan.py`覆盖真实Planner安全清理后新ID及过期/已绑定/漂移/容量保护。
@@ -1615,3 +1617,7 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 - 同切片二次检查：`production_e4_scope.py`负责未删除channel_view全量发现及PostgreSQL一致只读事务；CLI显式软删除任务仍输出历史快照并标记task_deleted，blocker禁止历史证据误通过。回归`test_production_e4_scope.py`覆盖超过10条、稳定排序、显式范围及事务失败路径。
 - 2026-09-09 窗口求交：account_pacing_window.py承载纯时间求交，account_pacing_guard.py保留账号→Task锁与真实预约/claim入口，account_pacing_claim_outcome.py承载原claim状态结算，account_pacing_reservations.py承载原工厂/时间规范化。test_account_pacing_window_intersection.py与test_account_pacing_window_postgres.py验证错位、原deadline及真实行锁；test_production_e4_snapshot_postgres.py验证一致只读快照；postgres_pacing_e4_fixture.py仅为本切片PG测试提供独立schema，防止跨测试污染。
 - 2026-09-09 E4真实结构补正：production_e4_identity.py统一Action.primary_quantity_slot_id→真实数量槽→同tenant/Task/ledger谓词；production_e4_group和production_e4_diagnostics共用于消息事实、开放队列及样本身份。unified不依赖缺省payload任务日，legacy无规范槽保留原payload合同，错误规范槽不得降级。
+
+- 2026-09-10 活群内容/发送链：`ai_generation_topic_context.py` → `ai_group_topic_binding.py` 冻结配置主题证据；`ai_group_emergency_pending.py` → `ai_group_emergency_worker.py`/`ai_group_emergency.py` → `ai_group_emergency_selections` 追加原义务内容选择；Gateway与旧合同维护共用验证器；`ai_group_independent_quality.py` 只读typed消息分账。`provider_http_failover.py`保留未知HTTP并核验批准后继候选；`source_pacing_gap.py`在来源锁内选择原窗口中的合法空隙。详见[专项修复PRD](../03-feature-designs/ai-group-executable-supply-and-fallback-20260910-prd.md)。
+
+活群独立内容的 Gateway 候选验证入口为 `ai_generation_gateway_candidate.py`；`ai_group_independent_quality.py` 只从同原义务成功 Attempt 与 typed 可见消息事实读取应急/独立主题分账，接口与页面沿原任务详情汇总。

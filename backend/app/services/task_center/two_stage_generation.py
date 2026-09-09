@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.ai_gateway import canonical_ai_model_identity
 from app.models import AiAccountVoiceProfile
 
-from .ai_context_information import general_topic_lines
+from .ai_context_information import general_topic_lines, topic_only_evidence_lines
 from .ai_provider_routes import route_v2_enabled
 from .ai_generator import (
     TWO_STAGE_BRIEF_PURPOSE,
@@ -265,7 +265,7 @@ def _realize_draft(
     realizer: BriefRealizer,
 ) -> tuple[str, dict, int, dict, dict[str, str]]:
     voice = load_voice_profile(session, tenant_id, plan.account_id)
-    facts = fact_id_map(history_lines)
+    facts = fact_id_map(history_lines or topic_only_evidence_lines(config))
     user_prompt = build_realizer_user_prompt(
         plan.brief,
         voice,

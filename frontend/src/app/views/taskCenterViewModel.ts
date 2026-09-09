@@ -525,6 +525,7 @@ export function typeInitialValues(type: TaskCenterTaskType, setting?: Scheduling
   if (type === 'group_ai_chat') {
     return {
       ...engagementInitialValues(),
+      emergency_fallback_enabled: true,
       participation_rate: 0.6,
       allow_account_repeat: true,
       repeat_cooldown_rounds: 2,

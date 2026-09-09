@@ -6,6 +6,7 @@ export type HardHourlyStrategy = 'force_planning';
 export type HardHourlyStatus = 'disabled' | 'met' | 'catching_up' | 'blocked' | 'missed' | 'awaiting_confirmation';
 
 export type GroupAIChatDailyTargetConfig = {
+  emergency_fallback_enabled?: boolean;
   daily_message_target?: number | null;
   account_coverage_mode?: 'all_accounts_daily';
 };
