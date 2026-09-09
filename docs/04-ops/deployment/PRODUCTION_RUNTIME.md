@@ -1,5 +1,9 @@
 # TG 运营管理平台生产部署说明
 
+## 2026-09-09 AI活动窗口与E4报告统一修复
+
+合同ai-group-window-shortfall-repair-20260909-prd.md与production-e4-reporting-integrity-prd.md：预约/claim在账号与群时间线推迟后重新与原Session窗口求交；不增加活动窗、不改原due/日目标/来源间隔。无迁移、配置切换和存量维护apply，旧工作随正常claim重新校验。统一候选包含E4只读报告修复：以发布完成时间为锚点同时核对Gateway和typed消息时间，unified abandoned保留在必达分母。先完整Prepare再master→release→Deploy；部署后独立核对SHA、backend及18worker健康、0229 head、API，以及10个运行活群逐项目标/coverage/新消息/窗口约束。来源等待、准入和unknown分别报告，部署成功不能称全量production_fixed。Gate见docs/05-implementation/ai-group-window-shortfall-release-20260909.md。
+
 ## 2026-09-09 卡死Action清理与重建
 
 专项合同`production-task-progress-repair-20260909-prd.md`：先发布R1评论领取/实际生成路径、R3活群extra组合供给修复；正常worker恢复既有未调用工作。R4仅用于当前running点赞Task的精确取消预约残留，不删除Task、不调用Provider/Telegram、不重放未知。

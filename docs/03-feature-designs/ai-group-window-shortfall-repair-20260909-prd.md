@@ -4,7 +4,7 @@
 
 - intake_id: AI-GROUP-WINDOW-SHORTFALL-20260909；L3/P1。
 - 用户原话：“你来把问题修复好后统一部署测试”。范围为本任务已经只读定位的AI活群低履约；代码修复、定向测试、统一候选和正式发布已获授权。
-- 当前阶段：product / reverse_check；design_status=partial，尚未进入生产代码实现。
+- 当前阶段：dev→qa→product；W1/W5 design_status=complete；全量业务恢复仍unproven。W2保留现行来源间隔/独占预约合同，W3本次反查没有证实新分配回归，W4外部准入及unknown不得伪造闭合。
 - 原生产锚点5088d001：21:33:14全部10个未删除running活群，当前日投影应完成17979、确认720；最近30分typed消息65、来源节奏推迟277次。21:34:54独立快照到时ready1087，1059不在既有必需活动窗，release未来0。两快照不混算。
 - 主工作树存在其他任务变更；本切片在独立worktree `codex/ai-group-window-shortfall-20260909` 基于fa26ddbd实现。Clone当前候选部署/受控验收期间不移动master/release；后续统一候选另行审查。
 
@@ -32,7 +32,7 @@
 - [ ] QA反例、并发PG、旧legacy与其他adapter回归。
 - [ ] 发布Gate、独立SHA/runtime、逐任务typed事实与日目标缺口读回。
 
-设计闭合前不实施生产代码。上线后有部分新增消息不等于全日达标；无法在原窗口弥补的历史缺口仍如实记录。
+每个切片设计闭合前不实施其生产代码。上线后有部分新增消息不等于全日达标；无法在原窗口弥补的历史缺口仍如实记录。
 
 ## W1 Product Handoff（design_status=complete / resync=true）
 
@@ -55,3 +55,12 @@
 - 生产分别核对新建预约是否落在原窗口、正常claim后的effective是否仍合法、来源后续推迟是否造成新的交集缺口，以及实际typed消息；W1通过不等于W2/W3/W4或全日目标完成。
 
 本节仅W1允许进入dev；W2/W3仍反查，W4外部控制事实缺口保持unproven。后续如改变本节合同必须再次resync。
+
+## 统一候选反查结论与范围冻结（21:58）
+
+- W2：统一引擎§19.18明确采用共享尾游标分配失效预约的独占时刻。当前source_pacing_cursor实现与该条一致；不得为了降低等待数字删除预约、跳过last-call间隔、开启未配置capacity v2或改成空隙插队。Source推迟后再次领取必须满足原release及合法账号窗口，本切片W1入口回归覆盖这一交接；仍不保证来源和账号窗口在原deadline前必有交集。无解保留原shortfall，不计完成。
+- W3：21:57:03在fa26ddbd只读查询10个running活群最近2小时的task_account_portfolio_capacity_exhausted，22个Action全部创建于11:04–15:56，早于已发布R3。新创建分配同类失败未在该范围检出；继续现有额度与正式未调用收口，不以存量超配失败推断需要提高预算。
+- W4：pending_admission、原Provider unknown、结果不可见继续原类型化事实合同。不清除unknown、不重放原发送、不绕过群管要求。本候选不宣称这部分已经修复。
+- W5：独立提交88046287/d77a853d逐文件审查后整合为4e3628b0/2dc85657；索引追加冲突保留双方内容。验收脚本只读事务先于首个查询，真实消息必须同tenant/task/ledger/account及remote id，且Gateway与fact均在新发布锚点之后；unified abandoned不移出必达分母。
+- 迁移/API/前端/生产配置：无。正常Planner/claim生效；无历史数据批量apply，无清理Task/Action。原due/day/数量/间隔/未知身份保持。
+- 发布准入仅覆盖W1/W5已闭合切片；发布后逐Task区分窗口一致性、真实新增消息、日目标与准入/unknown阻断，任一必达缺口存在不得写production_fixed。

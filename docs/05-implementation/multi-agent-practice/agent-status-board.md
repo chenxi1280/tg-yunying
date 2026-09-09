@@ -175,9 +175,9 @@
 
 ## 2026-09-09 AI活群窗口修复所有权
 
-- intake_id: AI-GROUP-WINDOW-SHORTFALL-20260909；当前product→dev(W1)，W2/W3反查；done_status=not_done，release_gate=pending。
-- merge_owner: 当前“排查线上AI活群任务”Codex；独立branch codex/ai-group-window-shortfall-20260909，起点fa26ddbd。Clone当前部署和受控测试结束前不移动master/release。
-- locked_paths: backend/app/services/task_center/account_pacing_guard.py；新增account_pacing_window.py/account_pacing_claim_outcome.py；backend/tests/test_account_pacing_window_intersection.py；docs/03-feature-designs/ai-group-window-shortfall-repair-20260909-prd.md。后续W2/W3经证据闭合后追加精确路径。
+- intake_id: AI-GROUP-WINDOW-SHORTFALL-20260909；当前qa(W1/W5)，W2现行合同保留/W3新超配未检出/W4外部证据缺口；done_status=not_done，release_gate=pending。
+- merge_owner: 当前Codex；独立branch codex/ai-group-window-shortfall-20260909，起点fa26ddbd。Clone已完成其部署/受控测试并释放发布窗口，root负责本统一候选。
+- locked_paths: backend/app/services/task_center/account_pacing_guard.py/account_pacing_reservations.py/account_pacing_window.py/account_pacing_claim_outcome.py；backend/tests/test_account_pacing_window_intersection.py/test_account_pacing_window_postgres.py/test_production_e4_snapshot_postgres.py；docs/03-feature-designs/ai-group-window-shortfall-repair-20260909-prd.md及本次Release Gate。E4报告已审查整合，root拥有统一候选QA和发布。
 - 索引/统一PRD仅由merge_owner在切片设计闭合后追加本节引用，保留其他任务段落。E4报告独立提交88046287/d77a853d只在后续统一候选审查后纳入。
 
 ## 状态约束
