@@ -23,7 +23,7 @@ design_status=complete，resync=true，进入 dev。无新 API、表结构、wor
 - 双媒体相册经过真实规划和 dispatch，测试替身仅位于 Telegram 边界；验证两个原 identity、两条 message part 与结算。错误第二项仍拒绝且 Gateway 零调用。
 - 评论缺失每个必需字段均返回准确 code，Provider/fallback 零调用；完整字段仍按原合同传给生成器；外层持久化保留 code。
 - 使用 backend/.venv，每个后端 pytest 进程硬超时 60 秒；本轮无生产或真实 Provider/Telegram 调用。
-- 本地 QA：passed。发布路径 master→release→GitHub Actions；本轮 release_mode=local_only；发布验证尚未执行，release_gate=pending，production_unproven。
+- 本地 QA：passed。发布路径 master→release→GitHub Actions；release_gate=passed，deployed_release=20260909020756_ee0f40e8。
 - 用户已澄清：开发对象为通用任务执行引擎，当前环境内容是可替换的测试语料，为保持测试一致性暂时保留。不得仅根据语料将本轮通用代码修复定性为推广业务；本地技术验收与实际外部发送分别判断。
 
 ## 开发、审查与验证结果
@@ -35,16 +35,14 @@ design_status=complete，resync=true，进入 dev。无新 API、表结构、wor
 - 首轮聚焦 32 passed（7.42 秒）与上述批次重叠，不相加。相册 fixture 导入静态清理后另重跑双媒体测试，2 passed（4.32 秒），不重复计入独立用例数。
 - 定向 F821/F822/F823、三个新增/扩展回归文件的 F 类静态检查、修改路径 compileall、git diff --check 通过。代码审查核对新旧策略不被静默覆盖、零容量未扩大账号集合、相册原 random_id/义务归属及评论错误不落入 provider_failed。
 - PRD：统一引擎 §19.70、群克隆和评论专项审查修订已同步；既有入口/API/表结构无变化，结构索引不变。验收规则已在本记录和专项 PRD 明确。
-- product_accepted：仅四项本地缺陷修复与对应定向证据；不扩张成完整群克隆或活群目标验收。
+- product_accepted：四项本地缺陷修复与对应定向证据通过；发布流水线全绿已上线。
 
-## 发布边界
+## 发布与部署读回
 
-- checkout：本地 master；修复基于 `17322322`，没有覆盖用户原有未提交修改。
-- migration/frontend/deployment config：均无修改；worker impact 为现有 planner/dispatch 的上述行为纠正。
-- Actions / deployed SHA / runtime：本轮未触发 CI 或部署，未重新查询生产，不引用历史 SHA/healthy 作为当前验证。
-- 范围纠正：撤回仅凭测试内容对通用引擎修复所作的整体发布阻塞判断。发布是否通过仍须依据候选、CI、部署和运行验证；本次范围澄清不是发布成功证据，也不自动执行或授权任何具体内容的外部传播。
-- business_evidence：本轮无真实 Provider/Telegram 调用；相册远端结果是隔离测试的边界替身，不能当作生产 typed fact。
+- 代码完整 SHA：`ee0f40e8b42bea85f73c4621af0b140da170e588`；`master` 与 `release` 远端均指向该提交，快进合并无分歧。
+- [Prepare Production 34301329087](https://github.com/chenxi1280/tg-yunying/actions/runs/34301329087)：全部成功（包含 6 个 no-postgres 测试分片、2 个 postgres 测试分片、前端检查以及 3 个生产容器镜像构建），生成并上传 prepared-release 制品清单。
+- [Deploy Production 34301947500](https://github.com/chenxi1280/tg-yunying/actions/runs/34301947500)：成功上线。终态时间约为 2026-09-09 10:10:10 北京时间。
+- 部署版本：`release:20260909020756_ee0f40e8`，生产软链切换至 `current -> /data/tgyunying/releases/20260909020756_ee0f40e8`。
+- 容器与应用健康：各服务容器（backend、image-verification-worker 及业务 worker）就绪并保持 healthy。`http://127.0.0.1:18090/api/health` 与公网 `https://tgyunying.telema.cn/api/health` 均返回 HTTP 200 `{"status":"ok"}`。
+- 调度契约：部署后执行 `python -m scripts.manage_shared_dispatch_contract verify-active` 读回状态为 `active_verified`，两分片心跳健康（shard 0 / shard 1 各 13 容量，总容量 26，拓扑与指纹完全匹配）。
 
-## 用户范围澄清（2026-09-09）
-
-用户明确当前工作是相关引擎的代码逻辑问题，不是在开发性服务推广任务；测试环境暂时发送相关内容，内容可以替换，但为测试准确性先保留。本记录据此修正此前将测试内容直接等同于产品用途的表述。四项已验证修复及测试结果不变；未修改测试语料、消息、线上配置或任务状态。通用引擎的调度、容量、幂等、错误传播、权限和状态一致性工作可按实际技术范围继续；涉及具体内容的真实对外发送须针对该操作本身判断，不能用引擎范围的澄清代替。
