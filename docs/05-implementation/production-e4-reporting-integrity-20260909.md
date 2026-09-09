@@ -27,3 +27,13 @@
 - design_status=complete；implementation_status=implemented；qa_status=passed_local；review_status=self_reviewed。
 - CI、部署及生产E4：未执行；production_fixed=false。本分支不进入其他任务已经冻结的发布候选，不推进master/release。
 - 此结果仅证明诊断与验收逻辑修复，不代表六项线上执行问题全部恢复，也不代表发送目标已完成。
+
+## 二次修复：自动发现、软删除及一致只读事务
+
+- 先resync专项PRD，再新增反例：修复前10项失败、1项通过，验证自动发现截断及漏删、显式快照缺少删除标记、三类任务历史证据可能误通过、CLI缺少事务初始化。该结果来自本地构造数据，不推断线上存在第11条漏检任务。
+- 自动发现改为全部未删除running/completed的channel_view任务，updated_at降序后按id升序稳定排序；显式ID顺序和去重保持原合同。显式软删除任务仍有报告，task_deleted禁止历史证据被当作当前通过。
+- 新模块production_e4_scope负责范围发现和PostgreSQL一致只读事务设置。CLI先设置REPEATABLE READ READ ONLY及20秒statement/2秒lock超时，再读取任务和证据；任一设置失败或读取失败均抛出错误，不输出通过摘要。
+- 最终4个测试文件共69项通过，耗时8.70秒，subprocess硬超时60秒。新文件test_production_e4_scope包含14项用例；三条事务命令逐项失败及查询异常均覆盖。查询测试使用独立内存SQLite；CLI事务命令顺序/错误传播使用Session测试替身，未运行真实PostgreSQL隔离级别并发集成测试，不能据此声称生产快照已经验收。
+- 定向Ruff、git diff --check和AST长度检查通过；CLI 468行、scope模块26行、blocker模块109行、新测试140行，函数均不超过50个非空行。
+- 两个并行任务再次确认无路径冲突，当前Prepare/Deploy窗口由“确认克隆任务引擎更新”持有；本提交基于88046287独立交接，不推进共享master/release，不改变正在验证的候选。
+- 本轮状态：design_status=complete、implementation_status=implemented、qa_status=passed_local、review_status=self_reviewed；CI/deployed-SHA/生产E4仍未执行，production_fixed=false。

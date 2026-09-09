@@ -1659,3 +1659,4 @@ legacy-only A 冷启动分支固定为 `frozen legacy A -> 原 A Session 只读 
 2026-09-09 Clone Planner 合同路由：`service._planning_backlog_blocked`仅对持久类型group_clone/版本v2_group_clone使用独立领域规划，不让旧全局积压阻断durable delivery；原Clone Sequencer/发送准入不变。入口回归：`test_group_clone_planner_entry.py`。
 
 - 2026-09-09 E4统计：同tenant/Task/ledger全量coverage（含abandoned/unknown）→历史总数、按unified/legacy合同的必达数、记录数与独立去重账号数分列；Action/Attempt回执→同身份及发布时间的remote_message_observed精确关联→按Action去重→E4消息证据判定。unified历史分母不随账号冻结或当前可执行性缩小，legacy动态scope保留，回执不冒充业务事实；全流程只读。合同`docs/03-feature-designs/production-e4-reporting-integrity-prd.md`，独立分支本地验证，未部署。
+- E4范围补正：PostgreSQL REPEATABLE READ READ ONLY事务及局部查询/锁超时 → 全量未删除channel_view自动范围或原显式ID范围 → 同事务读取Task/ledger/事实 → task_deleted与业务缺口 → 摘要；设置/查询失败中止，无通过摘要、无降级、无写库。

@@ -42,6 +42,9 @@ from app.services.task_center.production_e4_group import (
     _group_daily_snapshot, _group_runtime_snapshot,
 )
 from app.services.task_center.production_e4_blockers import e4_blockers
+from app.services.task_center.production_e4_scope import (
+    configure_readonly_snapshot, discover_channel_view_task_ids,
+)
 
 
 BEIJING = ZoneInfo("Asia/Shanghai")
@@ -56,17 +59,7 @@ def parse_task_ids(session) -> list[str]:
     task_ids = list(dict.fromkeys(value for value in values if value))
     if task_ids and task_ids != [DISCOVER_CHANNEL_VIEW]:
         return task_ids
-    return list(
-        session.scalars(
-            select(Task.id)
-            .where(
-                Task.type == "channel_view",
-                Task.status.in_(("running", "completed")),
-            )
-            .order_by(Task.updated_at.desc())
-            .limit(10)
-        )
-    )
+    return discover_channel_view_task_ids(session)
 
 def parse_release_since() -> datetime:
     raw = os.getenv(RELEASE_LIVE_AT_ENV, "").strip()
@@ -432,6 +425,7 @@ def _base_task_snapshot(session, task: Task, ledger: TaskDayLedger | None, since
         "name": task.name,
         "task_type": task.type,
         "task_status": task.status,
+        "task_deleted": task.deleted_at is not None,
         "last_error": task.last_error,
         "next_run_at": iso(task.next_run_at),
         "search_click_runtime_blocker": (
@@ -454,6 +448,7 @@ def main() -> None:
     since = parse_release_since()
     rows: list[dict[str, Any]] = []
     with SessionLocal() as session:
+        configure_readonly_snapshot(session)
         task_ids = parse_task_ids(session)
         if not task_ids:
             raise ValueError("no active channel_view tasks discovered")

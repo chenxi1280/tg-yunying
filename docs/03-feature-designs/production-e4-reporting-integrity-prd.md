@@ -53,3 +53,13 @@
 6. 新查询不产生UPDATE/DELETE/INSERT，输入对象不被修改；后端测试单次硬超时60秒。
 
 设计自检：原请求、证据层、历史目标、字段兼容、租户/身份、unknown、发布时间、重复观察、无写库及冲突隔离已覆盖。`design_status=complete`、`resync=true`；进入本切片dev。部署和生产验收独立记录，不以本地测试声称production_fixed。
+
+## 2026-09-09 二次检查：验收范围与一致只读快照
+
+- `resync=true`：本节补充同一诊断切片；locked_paths增加`production_e4_scope.py`及`test_production_e4_scope.py`。两个并行任务已确认不修改这些路径，当前Prepare/Deploy窗口由“确认克隆任务引擎更新”持有，本提交另行交接。
+- 代码发现：默认channel_view发现查询带固定10条上限且未排除软删除；这是代码反例，不是线上第11条任务漏检的观测结论。
+- 未指定任务或只指定`__discover_channel_view__`时，发现全部未软删除、状态为running/completed的channel_view任务；不截断，以updated_at降序、id升序稳定排序。显式ID仍按输入顺序去重，不扩展或替换范围。
+- 显式指定的软删除任务必须保留在报告，输出`task_deleted=true`并产生`task_deleted`验收缺口；保留原status和历史证据用于说明，不能因历史ledger/事实齐全而通过。未删除任务输出false；缺失任务保留既有missing口径。
+- PostgreSQL CLI必须在任何发现或Task读取前建立REPEATABLE READ READ ONLY事务，同一事务内读取整份报告；设置既有只读排障规范的statement_timeout=20s、lock_timeout=2s。事务设置或查询失败直接暴露，不生成通过摘要、不退回普通事务、不写入业务表；会话退出回滚并释放连接。不会改变业务执行边界。
+- QA新增：11条合格任务全部被发现、软删除/不合格类型及状态排除、同更新时间排序稳定、显式ID顺序/去重不变、显式软删除Task快照及三种已支持类型均不可通过；验证事务命令先于发现/读取、设置失败不继续读取或输出通过摘要。
+- Product Design Complete复核：无需迁移、前端或执行链变更；自动范围与显式范围、历史证据语义、并发读取一致性和失败路径均闭合，`design_status=complete`，进入dev。
