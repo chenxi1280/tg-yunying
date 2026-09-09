@@ -13,6 +13,12 @@ class CloneContentReviewRequired(RuntimeError):
     pass
 
 
+def filter_clone_obligation(obligation) -> None:
+    obligation.state = "filtered"
+    obligation.error_code = ""
+    obligation.resolved_at = datetime.now(timezone.utc)
+
+
 def sanitize_clone_content(session, task, *, config, event):
     version = session.scalar(select(RuleSetVersion).where(
         RuleSetVersion.tenant_id == task.tenant_id,
@@ -37,6 +43,8 @@ def sanitize_clone_content(session, task, *, config, event):
         raise CloneContentReviewRequired(
             "group_clone_entity_rebuild_required_after_transform"
         )
+    if event.media_type != "text" and not output.content.strip():
+        return ""
     target_group = session.get(TgGroup, config.target.internal_group_id)
     filtered = filter_outbound_content(
         session, tenant_id=task.tenant_id,
@@ -86,6 +94,7 @@ def clone_content_entities(event, content: str) -> list[dict]:
 __all__ = [
     "CloneContentReviewRequired",
     "clone_content_entities",
+    "filter_clone_obligation",
     "sanitize_clone_content",
     "sanitize_clone_edit",
 ]

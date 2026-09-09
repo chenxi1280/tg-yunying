@@ -27,6 +27,7 @@ from .group_clone_binding import CloneSenderBindingManager
 from .group_clone_content import (
     CloneContentReviewRequired,
     clone_content_entities,
+    filter_clone_obligation,
     sanitize_clone_content,
 )
 from .group_clone_media_materializer import (
@@ -174,7 +175,7 @@ def _materialize_new_event(session, task, *, config, route, event, obligation):
     quote_prefix, fallback_parent_sender = reply_fallback
     sanitized = _new_event_content(
         session, task, config=config, event=event,
-        media_events=media_events, obligation=obligation,
+        obligation=obligation,
     )
     if sanitized is None:
         return False
@@ -203,7 +204,7 @@ def _materialize_new_event(session, task, *, config, route, event, obligation):
     )
 
 
-def _new_event_content(session, task, *, config, event, media_events, obligation):
+def _new_event_content(session, task, *, config, event, obligation):
     try:
         sanitized = sanitize_clone_content(
             session, task, config=config, event=event,
@@ -213,10 +214,7 @@ def _new_event_content(session, task, *, config, event, media_events, obligation
         return None
     if sanitized is not None:
         return sanitized
-    if any(item.media_type != "text" for item in media_events):
-        return ""
-    obligation.state = "filtered"
-    obligation.resolved_at = datetime.now(timezone.utc)
+    filter_clone_obligation(obligation)
     return None
 
 
@@ -321,6 +319,9 @@ def _bind_send_action(
         )
     except CloneContentReviewRequired as exc:
         return _block(obligation, str(exc))
+    if media_items is None:
+        filter_clone_obligation(obligation)
+        return False
     identity = _primary_identity(
         session, task, route=route, execution=execution, event=event,
         obligation=obligation, content=content, media_items=media_items,

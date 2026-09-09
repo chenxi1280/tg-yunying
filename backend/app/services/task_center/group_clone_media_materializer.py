@@ -25,6 +25,9 @@ MAX_ALBUM_ITEMS = 10
 def admit_media_events(events, obligation, *, policy):
     if events is None or not events:
         return events
+    if any(event.protected_content for event in events):
+        _block_media(obligation, "protected_content")
+        return None
     if len(events) > MAX_ALBUM_ITEMS:
         _block_media(obligation, "album_batch_limit_exceeded")
         return None
@@ -47,12 +50,14 @@ def _block_media(obligation, code) -> None:
 
 def materialize_media_items(
     session, task, *, route, execution, obligation, events, primary_content,
-):
+) -> list[GroupCloneMediaItem] | None:
     result = []
     mutation_kind = "sendMultiMedia" if len(events) > 1 else "sendMedia"
     contents = _media_contents(
         session, task, events=events, primary_content=primary_content,
     )
+    if any(content is None for content in contents):
+        return None
     for index, (event, content) in enumerate(zip(events, contents, strict=True)):
         identity = allocate_send_identity(
             session, task, route=route, execution=execution, event=event,
@@ -76,7 +81,7 @@ def _media_contents(session, task, *, events, primary_content):
         primary_content if index == 0 else (
             sanitize_clone_content(
                 session, task, config=_event_config(event), event=event,
-            ) or ""
+            )
         )
         for index, event in enumerate(events)
     ]

@@ -517,6 +517,8 @@ immutable source snapshot
 - quote fallback 必须重新经过同一冻结 `sanitization_revision`；不得把已过滤父消息内容重新带回目标群。
 - 清洗失败显式进入 `failed_terminal(content_transform_invalid)` 或 manual review，不允许退化成原文直发。
 - 配置修改只影响修改后新观测事件；已冻结 sanitized snapshot 保持不变。
+- 允许的空 Caption（空字符串）与输入/输出规则拒绝（无允许内容）是不同结果。单媒体被规则拒绝时义务记为 `filtered`，不得仅清空 Caption 后继续下载或发送媒体。
+- 相册冻结集合中的每一项都必须通过内容保护、媒体能力和冻结规则检查。任一项 `protected_content=true` 时整组进入现有 `waiting_manual_review/protected_content`；任一项被输入/输出规则拒绝时整组 `filtered`，不创建发送 Action、mutation identity 或消息映射。`incomplete_album_policy` 仅处理采集不完整，不授权删除被拒绝项后发送剩余部分。合法空 Caption 相册照常发送，格式实体变换仍走现有人工审核路径。
 
 ### 7.2 媒体能力矩阵
 
@@ -1035,3 +1037,9 @@ worker/container healthy 不能证明克隆健康。任务健康至少同时观�
 ## 本地审查修订：相册逐项发送身份绑定（2026-09-09）
 
 Intake `intake-20260909-local-review-fixes`。两个及以上媒体项必须通过已有 TelegramGatewayMutationIdentity 模型逐一校验并绑定原 random_id/obligation；第二项不得因未导入模型在 Gateway 前发生 NameError。修复不分拆相册、不生成替代身份、不重放 unknown，不改变原权限和结算。QA 使用真实 planner/dispatch、仅替换 Telegram 边界，验证合法双媒体进入调用并按两条远端 ID 结算，以及第二项身份不匹配仍零外呼。该缺陷修订 design_status=complete、resync=true，不改变 §18.2 的整体实现与发布闸门状态；证据见本地四项审查修复记录。
+
+## 媒体拒绝语义与相册保护修订（2026-09-09）
+
+Intake `intake-20260909-group-clone-audit`，L3/P1，用户已授权修复。反向检查已用真实 Planner/Dispatcher 复现三个发送边界越过反例：单图过滤、相册第二项过滤、相册第二项受保护。按 §7.1 保留规则拒绝语义，并对相册逐项执行既有内容保护合同；不新增任务类型、配置、人工审批流程或静默降级。`design_status=complete/resync=true` 仅指此次两个缺陷的修复设计。
+
+自检：API/UI沿用既有 filtered 与 waiting_manual_review 状态；原事件/config_snapshot不改写；过滤/保护检查先于发送 identity 与 Action 创建，不释放旧 unknown、不重放旧 Action；规则使用各事件冻结的版本，租户与路由身份继续沿用既有校验。定向 QA 必须覆盖单媒体输入和输出拒绝、相册首/后项拒绝与保护、合法无 Caption、实体变换人工审核、重复规划以及 typed fact/消息映射零新增。无需迁移或生产数据修改。此修复可以作为既有功能的缺陷补丁发布，不激活 Clone 任务，也不解除 §18.2 的完整群克隆交付门槛；生产 E4 仍须独立验证。

@@ -1,5 +1,7 @@
 # 项目数据流转索引
 
+> **2026-09-09 DF-360 媒体准入修复 resync：** 独立 `group_clone/v2_group_clone` 的单媒体规则拒绝保持 `filtered`，规则通过的空 Caption 才允许无文字媒体；相册按冻结事件逐项检查，任一项保护进入既有 `waiting_manual_review/protected_content`，任一项规则拒绝过滤整组，不生成发送身份/Action。完整合法集合才进入原 Planner/Dispatcher/typed fact 链，不改变旧 unknown 或不完整相册策略。专项 PRD §7.1 和本次修订为准。
+
 > **2026-09-09 审批群准入 resync：** Task/Action/Attempt → 原账号transport → 申请前管理员bot游标 → JoinChannel → InviteRequestSent → 新私聊数学题 → 原题单次callback → GetParticipant → 原发言权限/C2。join_request_evidence逐阶段区分回执和成员事实；待审批保留不可重放状态。无历史unknown自动重发。
 
 

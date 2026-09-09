@@ -1,5 +1,9 @@
 # TG 运营管理平台生产部署说明
 
+## 2026-09-09 独立群克隆媒体准入修复
+
+`group_clone/v2_group_clone` 保留单媒体输入/输出拒绝结果，并逐项检查相册内容保护和规则拒绝；合法空 Caption 沿用媒体发送。无迁移、配置切换、任务激活或旧 Action/unknown 数据恢复。补丁随后续正式 Planner 生效，不能据此重放历史发送。Release Gate 见 `docs/05-implementation/group-clone-media-admission-fix-20260909.md`；部署后独立核对完整 SHA/runtime，并只读盘点 Clone Task/事件/义务/Action/映射。无真实测试范围时业务 E4 保持 unproven，不能以本地反例修复解除 Clone 专项 PRD §18.2 的完整交付闸门。
+
 ## 2026-09-09 入群申请私聊验证与文本筛查
 
 公开审批群的新入群申请沿用Task的`auto_resolve_verification`开关；新协议在申请前冻结管理员bot私聊游标，处理同账号当前申请的新数学callback题，独立读回成员后继续既有发言权限和C2。未知题型/过期/回执未知不重试原申请，Action保留不可重放状态并显示`membership_status=pending_approval`；结构化`join_request_evidence`保存在原Action/Attempt。无数据库迁移，不自动恢复历史unknown或既有过期申请。实际协议及验收合同见群管准入PRD末节。
