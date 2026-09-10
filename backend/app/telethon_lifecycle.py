@@ -4,7 +4,7 @@ import asyncio
 import inspect
 import threading
 import time
-from concurrent.futures import TimeoutError as FutureTimeoutError
+from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from collections.abc import Mapping
 from typing import Any, Protocol
@@ -38,6 +38,9 @@ class _ClientCacheEntry:
     client: Any
     created_at: float
     last_used_at: float
+    credential_fingerprint: str = ""
+    metadata_fingerprint: str = ""
+    ready: bool = True
 
 
 class TelethonClientLifecycle:
@@ -45,7 +48,9 @@ class TelethonClientLifecycle:
 
     _loop: asyncio.AbstractEventLoop | None = None
     _loop_thread: threading.Thread | None = None
-    _cache: dict[tuple[int, str, str], _ClientCacheEntry] = {}
+    _cache: dict[tuple[int, str, str, str], _ClientCacheEntry] = {}
+    _creating: dict[tuple, Future] = {}
+    _active_keys: dict[tuple, int] = {}
     _lock: threading.Lock = threading.Lock()
     _runtime_role: str = "all"
 
@@ -55,7 +60,7 @@ class TelethonClientLifecycle:
     @classmethod
     def connected_client_count(cls) -> int:
         with cls._lock:
-            return len(cls._cache)
+            return sum(bool(entry.client.is_connected()) for entry in cls._cache.values())
 
     @classmethod
     def set_runtime_role(cls, role: str) -> None:
@@ -116,6 +121,8 @@ class TelethonClientLifecycle:
         client_metadata: Mapping[str, str] | None = None,
     ) -> Any:
         self._assert_remote_io_allowed()
+        if self.settings.telegram_owner_mode == "client":
+            raise RuntimeError("telegram_client_requires_connection_owner")
         self._proxy_config(credentials)
         try:
             from telethon import TelegramClient
@@ -140,47 +147,101 @@ class TelethonClientLifecycle:
         connect_timeout_seconds: float | None = None,
     ) -> Any:
         self._assert_remote_io_allowed()
+        if self.settings.telegram_owner_mode == "client":
+            raise RuntimeError("telegram_client_requires_connection_owner")
         self._proxy_config(credentials)
-        await self.prune_idle_clients()
-        cache_key = self._cache_key(credentials, raw_session, client_metadata)
-        now = time.monotonic()
-
+        key = self._cache_key(credentials, raw_session, client_metadata)
         with self._lock:
-            entry = self._cache.get(cache_key)
-            if entry is not None:
-                entry.last_used_at = now
-                client = entry.client
-            else:
-                client = None
-
-        if client is not None:
-            try:
-                if client.is_connected():
-                    return client
-            except Exception:
-                pass
-            await self._disconnect_quietly(client)
-            with self._lock:
-                current = self._cache.get(cache_key)
-                if current and current.client is client:
-                    self._cache.pop(cache_key, None)
-
-        client = self.new_client(credentials, raw_session, client_metadata)
-        connect_timeout = (
-            self.settings.telethon_client_connect_timeout_seconds
-            if connect_timeout_seconds is None
-            else connect_timeout_seconds
-        )
-        if connect_timeout <= 0:
-            raise ValueError("telethon_connect_timeout_must_be_positive")
+            flight = self._creating.get(key)
+            creator = flight is None
+            if creator:
+                flight = Future()
+                self._creating[key] = flight
+        if not creator:
+            return await self._await_creation(flight, credentials, raw_session=raw_session, metadata=client_metadata)
         try:
-            await asyncio.wait_for(client.connect(), timeout=connect_timeout)
-        except Exception:
-            await self._disconnect_quietly(client)
+            result = await self._connect_or_reuse(
+                credentials, raw_session, client_metadata,
+                connect_timeout_seconds=connect_timeout_seconds,
+            )
+            flight.set_result((result, self._credential_fingerprint(credentials),
+                               self._client_metadata_fingerprint(client_metadata)))
+            return result
+        except BaseException as exc:
+            flight.set_exception(exc)
             raise
-        await self.remember_connected_client(credentials, raw_session, client, client_metadata=client_metadata)
+        finally:
+            with self._lock:
+                self._creating.pop(key, None)
+
+    async def _await_creation(self, flight, credentials, *, raw_session, metadata):
+        result = await asyncio.shield(asyncio.wrap_future(flight))
+        if result is None:  # Eviction completed; acquire a new shared creation flight.
+            return await self.get_or_create_client(credentials, raw_session, metadata)
+        client, credential_fingerprint, metadata_fingerprint = result
+        if credential_fingerprint != self._credential_fingerprint(credentials):
+            raise ValueError("telegram_authorization_app_identity_conflict")
+        requested = self._client_metadata_fingerprint(metadata)
+        if requested.strip("|") and requested != metadata_fingerprint:
+            raise ValueError("telegram_metadata_change_requires_owner_serialization")
+        return client
+
+    async def _connect_or_reuse(self, credentials, raw_session, client_metadata, *, connect_timeout_seconds):
+        key = self._cache_key(credentials, raw_session)
+        with self._lock:
+            entry = self._cache.get(key)
+        if entry is not None:
+            if entry.credential_fingerprint != self._credential_fingerprint(credentials):
+                raise ValueError("telegram_authorization_app_identity_conflict")
+            metadata = self._client_metadata_fingerprint(client_metadata)
+            unchanged = not metadata.strip("|") or metadata == entry.metadata_fingerprint
+            if entry.ready and unchanged and entry.client.is_connected():
+                entry.last_used_at = time.monotonic()
+                return entry.client
+            await self._remove_after_disconnect(key, entry)
+        await self.prune_idle_clients()
+        return await self._connect_new(
+            credentials, raw_session, client_metadata,
+            connect_timeout_seconds=connect_timeout_seconds,
+        )
+
+    async def _connect_new(self, credentials, raw_session, client_metadata, *, connect_timeout_seconds):
+        timeout = (self.settings.telethon_client_connect_timeout_seconds
+                   if connect_timeout_seconds is None else connect_timeout_seconds)
+        if timeout <= 0:
+            raise ValueError("telethon_connect_timeout_must_be_positive")
+        client = self.new_client(credentials, raw_session, client_metadata)
+        key = self._cache_key(credentials, raw_session)
+        entry = self._entry(credentials, client, client_metadata, ready=False)
+        with self._lock:
+            self._cache[key] = entry
+        try:
+            await asyncio.wait_for(client.connect(), timeout=timeout)
+        except BaseException:
+            await self._remove_after_disconnect(key, entry)
+            raise
+        entry.ready = True
         await self.enforce_cache_limit()
         return client
+
+    async def _remove_after_disconnect(self, key, entry):
+        entry.ready = False
+        await self._disconnect(entry.client)
+        with self._lock:
+            if self._cache.get(key) is entry:
+                self._cache.pop(key)
+
+    def _entry(self, credentials, client, metadata, *, ready=True):
+        now = time.monotonic()
+        return _ClientCacheEntry(client, now, now, self._credential_fingerprint(credentials),
+                                 self._client_metadata_fingerprint(metadata), ready)
+
+    @staticmethod
+    def _credential_fingerprint(credentials):
+        import hashlib
+
+        value = f"{credentials.api_id}:{credentials.api_hash}"
+        return hashlib.sha256(value.encode()).hexdigest()
 
     async def remember_connected_client(
         self,
@@ -190,60 +251,89 @@ class TelethonClientLifecycle:
         *,
         client_metadata: Mapping[str, str] | None = None,
     ) -> None:
-        cache_key = self._cache_key(credentials, raw_session, client_metadata)
-        now = time.monotonic()
+        key = self._cache_key(credentials, raw_session)
         with self._lock:
-            self._cache[cache_key] = _ClientCacheEntry(client=client, created_at=now, last_used_at=now)
-
-    async def invalidate_client(self, credentials: DeveloperAppCredentialsLike, raw_session: str) -> int:
-        """按 (api_id, raw_session, proxy fingerprint) 失效该 session 的全部 metadata 变体缓存条目。
-
-        缓存 key 包含 client metadata fingerprint；只按单一 key pop 会漏掉带 metadata 创建的
-        条目，导致 stale session 客户端继续被复用。不同 session/api_id/proxy 的客户端不受影响。
-        """
-        prefix = (int(credentials.api_id), raw_session, self._proxy_fingerprint(credentials))
+            prior = self._cache.get(key)
+        if prior is not None and prior.client is not client:
+            await self._remove_after_disconnect(key, prior)
         with self._lock:
-            entries = [
-                self._cache.pop(key)
-                for key in list(self._cache)
-                if key[:3] == prefix
-            ]
-        for entry in entries:
-            await self._disconnect_quietly(entry.client)
-        return len(entries)
+            self._cache[key] = self._entry(credentials, client, client_metadata)
+
+    async def invalidate_client(self, credentials, raw_session) -> int:
+        key = self._cache_key(credentials, raw_session)
+        with self._lock:
+            entry = self._cache.get(key)
+        if entry is None:
+            return 0
+        await self._remove_after_disconnect(key, entry)
+        return 1
 
     async def prune_idle_clients(self) -> int:
-        idle_seconds = self.settings.telethon_client_idle_seconds
-        if idle_seconds <= 0:
+        idle = self.settings.telethon_client_idle_seconds
+        if idle <= 0:
             return 0
-        cutoff = time.monotonic() - idle_seconds
-        expired: list[_ClientCacheEntry] = []
+        cutoff = time.monotonic() - idle
         with self._lock:
-            for cache_key, entry in list(self._cache.items()):
-                if entry.last_used_at <= cutoff:
-                    expired.append(self._cache.pop(cache_key))
-        await self._disconnect_entries(expired)
-        return len(expired)
+            expired = [(key, entry) for key, entry in self._cache.items()
+                       if entry.last_used_at <= cutoff and key not in self._active_keys
+                       and key not in self._creating]
+        return await self._evict_unused(expired)
 
     async def enforce_cache_limit(self) -> int:
-        max_clients = self.settings.telethon_client_cache_size
-        if max_clients <= 0:
+        limit = self.settings.telethon_client_cache_size
+        if limit <= 0:
             return 0
-        evicted: list[_ClientCacheEntry] = []
         with self._lock:
-            while len(self._cache) > max_clients:
-                oldest_key = min(self._cache, key=lambda item: self._cache[item].last_used_at)
-                evicted.append(self._cache.pop(oldest_key))
-        await self._disconnect_entries(evicted)
-        return len(evicted)
+            candidates = sorted(((key, entry) for key, entry in self._cache.items()
+                                 if key not in self._active_keys and key not in self._creating),
+                                key=lambda row: row[1].last_used_at)
+            evicted = candidates[:max(0, len(self._cache) - limit)]
+        return await self._evict_unused(evicted)
 
-    def _cache_key(
-        self,
-        credentials: DeveloperAppCredentialsLike,
-        raw_session: str,
-        client_metadata: Mapping[str, str] | None = None,
-    ) -> tuple[int, str, str, str]:
-        return (int(credentials.api_id), raw_session, self._proxy_fingerprint(credentials), self._client_metadata_fingerprint(client_metadata))
+    async def _evict_unused(self, candidates):
+        removed = 0
+        for key, entry in candidates:
+            with self._lock:
+                if (key in self._active_keys or key in self._creating
+                        or self._cache.get(key) is not entry):
+                    continue
+                flight = Future()
+                self._creating[key] = flight
+            try:
+                await self._remove_after_disconnect(key, entry)
+                flight.set_result(None)
+                removed += 1
+            except BaseException as exc:
+                flight.set_exception(exc)
+                raise
+            finally:
+                with self._lock:
+                    self._creating.pop(key, None)
+        return removed
+
+    @staticmethod
+    def _cache_key(credentials, raw_session, client_metadata=None) -> tuple:
+        from .telegram_owner.session_identity import authorization_identity
+
+        return (0, authorization_identity(raw_session), "", "")
+
+    @classmethod
+    def pin_authorizations(cls, identities):
+        with cls._lock:
+            for identity in identities:
+                key = (0, identity, "", "")
+                cls._active_keys[key] = cls._active_keys.get(key, 0) + 1
+
+    @classmethod
+    def unpin_authorizations(cls, identities):
+        with cls._lock:
+            for identity in identities:
+                key = (0, identity, "", "")
+                count = cls._active_keys[key] - 1
+                if count:
+                    cls._active_keys[key] = count
+                else:
+                    cls._active_keys.pop(key)
 
     @staticmethod
     def _client_metadata_options(client_metadata: Mapping[str, str] | None) -> dict[str, str]:

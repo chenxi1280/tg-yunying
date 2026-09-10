@@ -10,6 +10,8 @@ x-backend-env: &backend-env
   SESSION_SECRET_KEY: ${SESSION_SECRET_KEY:?SESSION_SECRET_KEY is required}
   CORS_ORIGINS: ${CORS_ORIGINS:?CORS_ORIGINS is required}
   TG_GATEWAY_MODE: ${TG_GATEWAY_MODE:-telethon}
+  TELEGRAM_OWNER_MODE: client
+  TELEGRAM_OWNER_SOCKET: /run/tgyunying-telegram/owner.sock
   TG_API_ID: ${TG_API_ID:-}
   LOGIN_CODE_TTL_SECONDS: ${LOGIN_CODE_TTL_SECONDS:-300}
   TG_API_HASH: ${TG_API_HASH:-}
@@ -130,6 +132,30 @@ x-default-logging: &default-logging
 x-runtime-swappiness: &runtime-swappiness 60
 
 services:
+  telegram-owner:
+    image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
+    mem_swappiness: *runtime-swappiness
+    container_name: tgyunying-telegram-owner
+    logging: *default-logging
+    restart: unless-stopped
+    stop_grace_period: 90s
+    command: ["python", "-m", "app.telegram_owner.server"]
+    environment:
+      <<: *backend-env
+      TELEGRAM_OWNER_MODE: server
+      WORKER_ROLE: telegram-owner
+    volumes:
+      - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
+      - "${TGYUNYING_TELEGRAM_OWNER_DIR:-/data/tgyunying/shared/telegram-owner}:/run/tgyunying-telegram"
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.telegram_owner.health"]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 8
+    networks:
+      - infra_default
+
   backend:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
     mem_swappiness: *runtime-swappiness
@@ -142,7 +168,11 @@ services:
       - "${TGYUNYING_BACKEND_BIND_HOST:-127.0.0.1}:${TGYUNYING_BACKEND_HOST_PORT:-18090}:8000"
     volumes:
       - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
+      - "${TGYUNYING_TELEGRAM_OWNER_DIR:-/data/tgyunying/shared/telegram-owner}:/run/tgyunying-telegram"
       - "${GROK_CLI_HOME_DIR:-/root/.grok}:/root/.grok"
+    depends_on:
+      telegram-owner:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/health"]
       interval: 15s
@@ -167,6 +197,7 @@ services:
       TG_OPS_WORKER_ID: tgyunying-worker-authorization-abc-sweep
     volumes:
       - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
+      - "${TGYUNYING_TELEGRAM_OWNER_DIR:-/data/tgyunying/shared/telegram-owner}:/run/tgyunying-telegram"
     depends_on:
       backend:
         condition: service_healthy
@@ -192,6 +223,7 @@ services:
       TG_OPS_WORKER_ID: tgyunying-worker-planner
     volumes:
       - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
+      - "${TGYUNYING_TELEGRAM_OWNER_DIR:-/data/tgyunying/shared/telegram-owner}:/run/tgyunying-telegram"
       - "${GROK_CLI_HOME_DIR:-/root/.grok}:/root/.grok"
     depends_on:
       backend:
@@ -213,6 +245,7 @@ services:
       TG_OPS_WORKER_ID: tgyunying-worker-ai-generation
     volumes:
       - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
+      - "${TGYUNYING_TELEGRAM_OWNER_DIR:-/data/tgyunying/shared/telegram-owner}:/run/tgyunying-telegram"
       - "${GROK_CLI_HOME_DIR:-/root/.grok}:/root/.grok"
     depends_on:
       backend:
@@ -236,6 +269,7 @@ services:
       TG_OPS_WORKER_ID: tgyunying-worker-ai-generation-2
     volumes:
       - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
+      - "${TGYUNYING_TELEGRAM_OWNER_DIR:-/data/tgyunying/shared/telegram-owner}:/run/tgyunying-telegram"
       - "${GROK_CLI_HOME_DIR:-/root/.grok}:/root/.grok"
     depends_on:
       backend:
@@ -259,6 +293,7 @@ services:
       TG_OPS_WORKER_ID: tgyunying-worker-ai-generation-3
     volumes:
       - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
+      - "${TGYUNYING_TELEGRAM_OWNER_DIR:-/data/tgyunying/shared/telegram-owner}:/run/tgyunying-telegram"
       - "${GROK_CLI_HOME_DIR:-/root/.grok}:/root/.grok"
     depends_on:
       backend:
@@ -282,6 +317,7 @@ services:
       TG_OPS_WORKER_ID: tgyunying-worker-comment-generation
     volumes:
       - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
+      - "${TGYUNYING_TELEGRAM_OWNER_DIR:-/data/tgyunying/shared/telegram-owner}:/run/tgyunying-telegram"
       - "${GROK_CLI_HOME_DIR:-/root/.grok}:/root/.grok"
     depends_on:
       backend:
@@ -307,6 +343,7 @@ services:
       ACCOUNT_SHARD_INDEX: "0"
     volumes:
       - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
+      - "${TGYUNYING_TELEGRAM_OWNER_DIR:-/data/tgyunying/shared/telegram-owner}:/run/tgyunying-telegram"
       - "${GROK_CLI_HOME_DIR:-/root/.grok}:/root/.grok"
     depends_on:
       backend:
@@ -330,6 +367,7 @@ services:
       ACCOUNT_SHARD_INDEX: "1"
     volumes:
       - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
+      - "${TGYUNYING_TELEGRAM_OWNER_DIR:-/data/tgyunying/shared/telegram-owner}:/run/tgyunying-telegram"
       - "${GROK_CLI_HOME_DIR:-/root/.grok}:/root/.grok"
     depends_on:
       backend:
@@ -351,6 +389,7 @@ services:
       TG_OPS_WORKER_ID: tgyunying-worker-search-dispatcher
     volumes:
       - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
+      - "${TGYUNYING_TELEGRAM_OWNER_DIR:-/data/tgyunying/shared/telegram-owner}:/run/tgyunying-telegram"
       - "${GROK_CLI_HOME_DIR:-/root/.grok}:/root/.grok"
     depends_on:
       backend:
@@ -371,6 +410,7 @@ services:
       WORKER_ROLE: listener
     volumes:
       - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
+      - "${TGYUNYING_TELEGRAM_OWNER_DIR:-/data/tgyunying/shared/telegram-owner}:/run/tgyunying-telegram"
     depends_on:
       backend:
         condition: service_healthy
@@ -391,6 +431,7 @@ services:
       TG_OPS_WORKER_ID: tgyunying-worker-recovery
     volumes:
       - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
+      - "${TGYUNYING_TELEGRAM_OWNER_DIR:-/data/tgyunying/shared/telegram-owner}:/run/tgyunying-telegram"
     depends_on:
       backend:
         condition: service_healthy
@@ -410,6 +451,7 @@ services:
       WORKER_ROLE: account-security
     volumes:
       - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
+      - "${TGYUNYING_TELEGRAM_OWNER_DIR:-/data/tgyunying/shared/telegram-owner}:/run/tgyunying-telegram"
     depends_on:
       backend:
         condition: service_healthy
@@ -429,6 +471,7 @@ services:
       WORKER_ROLE: account-login
     volumes:
       - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
+      - "${TGYUNYING_TELEGRAM_OWNER_DIR:-/data/tgyunying/shared/telegram-owner}:/run/tgyunying-telegram"
     depends_on:
       backend:
         condition: service_healthy
@@ -448,6 +491,7 @@ services:
       WORKER_ROLE: material-cache
     volumes:
       - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
+      - "${TGYUNYING_TELEGRAM_OWNER_DIR:-/data/tgyunying/shared/telegram-owner}:/run/tgyunying-telegram"
     depends_on:
       backend:
         condition: service_healthy
@@ -471,6 +515,7 @@ services:
       WORKER_INTERVAL_SECONDS: ${VOICE_PROFILE_WORKER_INTERVAL_SECONDS:-2.0}
     volumes:
       - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
+      - "${TGYUNYING_TELEGRAM_OWNER_DIR:-/data/tgyunying/shared/telegram-owner}:/run/tgyunying-telegram"
     depends_on:
       backend:
         condition: service_healthy
@@ -492,6 +537,7 @@ services:
       WORKER_INTERVAL_SECONDS: ${ACCOUNT_ONLINE_WORKER_INTERVAL_SECONDS:-5.0}
     volumes:
       - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
+      - "${TGYUNYING_TELEGRAM_OWNER_DIR:-/data/tgyunying/shared/telegram-owner}:/run/tgyunying-telegram"
     depends_on:
       backend:
         condition: service_healthy
@@ -513,6 +559,7 @@ services:
       WORKER_INTERVAL_SECONDS: ${AI_MEMORY_WORKER_INTERVAL_SECONDS:-60.0}
     volumes:
       - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
+      - "${TGYUNYING_TELEGRAM_OWNER_DIR:-/data/tgyunying/shared/telegram-owner}:/run/tgyunying-telegram"
     depends_on:
       backend:
         condition: service_healthy
@@ -534,6 +581,7 @@ services:
       WORKER_INTERVAL_SECONDS: ${METRICS_WORKER_INTERVAL_SECONDS:-10.0}
     volumes:
       - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
+      - "${TGYUNYING_TELEGRAM_OWNER_DIR:-/data/tgyunying/shared/telegram-owner}:/run/tgyunying-telegram"
     depends_on:
       backend:
         condition: service_healthy

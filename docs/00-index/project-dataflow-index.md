@@ -1,5 +1,7 @@
 # 项目数据流转索引
 
+> **2026-09-11 连接归属流转（本地实现，未发布）：** Task/Action → 原 dispatcher 资源与 Attempt → 私有 owner IPC → owner 读取当前账号/授权/App 代次 → 按 AuthKey 串行的正式 Gateway → typed remote fact。监听、在线、安全、素材和登录维护共享同一 owner 的连接；其业务状态机仍由原服务维护。Attempt 保留 owner 实例和发布身份，发送后响应丢失仍为 unknown，业务 worker 退出不能给独立 owner 的调用补终止 ACK。关闭旧缓存不要求旧凭据仍能执行业务；旧 AuthKey 无新业务调用权限。维护恢复在业务暂停时逐阶段独立进程运行，正式案例与真实消息单独读回。
+
 > **2026-09-10 固定直连：** `services/account_runtime_transport.py` 与 `developer_apps.py` 统一普通任务/探测/维护为直连；`telethon_lifecycle.py` 在新建与缓存复用前拒绝任何代理凭据。`engagement_runtime_domains.py` 不再为历史代理绑定预留容量；账号/授权历史代理字段仅作审计。验收入口：`test_telegram_direct_transport.py`、`test_account_direct_egress_postgres.py`，恢复使用原 local activate/verify 正式链。
 
 > **2026-09-10 任务执行修复（1129407a已发布；整批E4未完成）：** Original source deadline → separate uncalled expiry settlement / live claiming; exact typed channel fact + current success Attempt → positive FulfillmentRemoteFact → tenant/task locked monotonic confirmation. Historical unknown calls remain retained for replay protection. 合同：[任务执行修复](../03-feature-designs/task-execution-repair-20260910-prd.md)。

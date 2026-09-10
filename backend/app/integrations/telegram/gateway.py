@@ -812,6 +812,8 @@ class TelethonTelegramGateway(TelegramGateway):
     ) -> tuple[str, str]:
         from telethon.errors import SessionPasswordNeededError
 
+        if self.settings.telegram_owner_mode == "server":
+            await self._lifecycle.invalidate_client(credentials, temporary_session)
         client = self._new_client(credentials, temporary_session)
         await client.connect()
         raw_session = ""
@@ -906,6 +908,10 @@ class TelethonTelegramGateway(TelegramGateway):
         raw_session = decrypt_session(session_ciphertext)
         if not raw_session:
             return AccountHealth(status="需重新登录", health_score=45, detail="账号没有可用 session")
+        if self.settings.telegram_owner_mode == "server":
+            from app.telegram_owner.probes import health
+
+            return await health(self, raw_session, credentials, connect_timeout_seconds=connect_timeout_seconds)
         client = self._new_client(credentials, raw_session)
         operation_error: BaseException | None = None
         try:
@@ -976,6 +982,14 @@ class TelethonTelegramGateway(TelegramGateway):
             if timeout_seconds is None
             else timeout_seconds
         )
+        if self.settings.telegram_owner_mode == "server":
+            return self._run(
+                self._bounded_health_async(
+                    session_ciphertext, self._usable_credentials(credentials), probe_timeout,
+                    connect_timeout_seconds=connect_timeout_seconds,
+                ),
+                timeout_seconds=probe_timeout + ACCOUNT_HEALTH_RUN_GRACE_SECONDS,
+            )
         hard_timeout = probe_timeout + ACCOUNT_HEALTH_DISCONNECT_TIMEOUT_SECONDS
         return self._run_isolated_health(
             self._bounded_health_async(
@@ -1074,9 +1088,12 @@ class TelethonTelegramGateway(TelegramGateway):
     ) -> AuthorizationIdentity:
         from telethon import functions
 
-        client = self._new_client(credentials, raw_session)
+        owned = self.settings.telegram_owner_mode == "server"
+        client = (await self._get_or_create_client(credentials, raw_session)
+                  if owned else self._new_client(credentials, raw_session))
         try:
-            await client.connect()
+            if not owned:
+                await client.connect()
             if not await client.is_user_authorized():
                 raise RuntimeError("session is not authorized")
             user = await client.get_me()
@@ -1096,7 +1113,8 @@ class TelethonTelegramGateway(TelegramGateway):
                 authorization_fingerprint_digest=authorization_fingerprint_digest(current),
             )
         finally:
-            await client.disconnect()
+            if not owned:
+                await client.disconnect()
 
     def authorization_identity(
         self,
@@ -3648,6 +3666,11 @@ class TelethonTelegramGateway(TelegramGateway):
             return SendResult(False, failure_type="cache_peer_unavailable", detail="缺少素材缓存 peer")
         if not source:
             return SendResult(False, failure_type="cache_not_ready", detail="素材缺少来源")
+        if self.settings.telegram_owner_mode == "server":
+            client = await self._get_or_create_client(credentials, raw_session)
+            return await telethon_content.cache_material_source(
+                client, source, cache_peer_id, caption, self._map_send_error,
+            )
         client = self._new_client(credentials, raw_session)
         operation_error: BaseException | None = None
         try:
@@ -4597,5 +4620,11 @@ def _telethon_message_entities(types, content: str, entities: list) -> list:
 def create_gateway(settings: Settings | None = None) -> TelegramGateway:
     active_settings = settings or get_settings()
     if active_settings.tg_gateway_mode == "telethon":
+        if active_settings.telegram_owner_mode == "client":
+            from app.telegram_owner.rpc import OwnerGateway
+
+            return OwnerGateway(active_settings)
+        if active_settings.telegram_owner_mode not in {"local", "server"}:
+            raise ValueError("invalid_telegram_owner_mode")
         return TelethonTelegramGateway(active_settings)
     return TelegramGateway(active_settings)

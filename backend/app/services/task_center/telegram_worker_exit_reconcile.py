@@ -95,6 +95,8 @@ def _preview_row(action, attempt, proofs):
 
 
 def _require_issued_original(action, attempt):
+    if (attempt.result_snapshot or {}).get("transport_owner_kind") == "telegram_owner":
+        raise ValueError("worker_exit_does_not_prove_telegram_owner_exit")
     if (action.task_type not in ENGAGEMENT_TYPES or action.action_type not in EXIT_ACTION_TYPES
             or attempt.status not in ISSUED_STATES or attempt.remote_message_id):
         raise ValueError("worker_exit_legacy_attempt_ineligible")

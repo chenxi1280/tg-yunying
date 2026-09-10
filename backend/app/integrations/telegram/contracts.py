@@ -293,3 +293,9 @@ class DeveloperAppCredentials:
     proxy_port: int | None = None
     proxy_username: str = ""
     proxy_password: str = ""
+    tenant_id: int | None = None
+    account_id: int | None = None
+    authorization_id: int | None = None
+    authorization_generation: int | None = None
+    connection_generation: int | None = None
+    authorization_fact_version: int | None = None

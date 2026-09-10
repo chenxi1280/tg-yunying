@@ -552,6 +552,9 @@ def dispatch_action(
     if _legacy_content_scope_takeover_pending(action):
         return False
     action_id = action.id
+    from app.telegram_owner.request_context import bind_identity, reset_identity
+
+    owner_context = bind_identity("")
     try:
         dispatched = _dispatch_action(
             session,
@@ -565,6 +568,8 @@ def dispatch_action(
     except BaseException:
         _release_runtime_resources(action)
         raise
+    finally:
+        reset_identity(owner_context)
     _finalize_dispatch_action(
         session,
         action,
@@ -11890,6 +11895,9 @@ def _begin_execution_attempt(session: Session, action: Action, account: TgAccoun
 
 
 def _mark_gateway_call_started(session: Session, attempt: ExecutionAttempt, *, commit: bool = True) -> None:
+    from app.telegram_owner.attempts import prepare_attempt
+
+    prepare_attempt(attempt)
     guard_attempt_call_start(session, attempt)
     guard_account_call_start(session, attempt)
     action = session.get(Action, attempt.action_id)
@@ -12174,6 +12182,9 @@ def _merge_attempt_result_snapshot(
         "gateway_request_identity",
         "gateway_request_fingerprint",
         "gateway_target_fingerprint",
+        "transport_owner_kind",
+        "transport_owner_instance_id",
+        "transport_owner_release_sha",
     ):
         if key in frozen:
             merged[key] = frozen[key]

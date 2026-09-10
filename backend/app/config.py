@@ -410,6 +410,8 @@ class Settings:
     db_max_overflow: int = int(os.getenv("DB_MAX_OVERFLOW", "10"))
     db_pool_timeout: int = int(os.getenv("DB_POOL_TIMEOUT", "30"))
     db_pool_recycle: int = int(os.getenv("DB_POOL_RECYCLE", "1800"))
+    telegram_owner_mode: str = os.getenv("TELEGRAM_OWNER_MODE", "local")
+    telegram_owner_socket: str = os.getenv("TELEGRAM_OWNER_SOCKET", "/run/tgyunying-telegram/owner.sock")
     telethon_client_cache_size: int = int(os.getenv("TELETHON_CLIENT_CACHE_SIZE", "200"))
     telethon_client_idle_seconds: int = int(os.getenv("TELETHON_CLIENT_IDLE_SECONDS", "900"))
     telethon_client_connect_timeout_seconds: float = float(os.getenv("TELETHON_CLIENT_CONNECT_TIMEOUT_SECONDS", "15"))

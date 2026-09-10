@@ -1,5 +1,7 @@
 # 项目结构索引
 
+> **2026-09-11 SV Telegram 连接 owner（本地实现，未发布）：** `app/telegram_owner/` 提供私有 JSON IPC、AuthKey 串行调用、数据库凭据代次核验、单实例文件锁、调用回执和健康检查；`telethon_lifecycle.py` 负责共享建连及严格关闭，`gateway.py::create_gateway` 将 server Compose 中的 backend/worker 路由至 owner。`dispatcher.py` 冻结 owner 身份，原 worker-exit 对账拒绝把业务 worker 退出当作独立 owner 退出。`deploy/worker-cutover.sh` 停止旧 backend/owner 并验证 PID，`local_release_readback.py` 核对所有客户端的模式与同一私有挂载。入口测试 `test_telegram_owner_*.py`，阶段证据见[实施 Gate](../05-implementation/telegram-owner-recovery-20260911.md)。
+
 > **2026-09-11 互补备用槽恢复修复（本地 QA）：** `services/authorization_dr/local_activate.py` 按非 current、未禁用的 `role=standby_1` 识别 SV 业务备用，允许合法 physical primary/standby_1 互换；加锁读回强制刷新 ORM 代次，保留正式指纹/CAS/验证链。回归：`test_authorization_dr_local_activate_eligibility.py`、`test_local_activate_complementary_postgres.py`；连接 owner 与实际恢复进度按[专项合同](../03-feature-designs/account-authorization-owner-and-recovery-20260910-prd.md)单独取证。
 
 > **2026-09-10 固定直连：** `services/account_runtime_transport.py` 与 `developer_apps.py` 统一普通任务/探测/维护为直连；`telethon_lifecycle.py` 在新建与缓存复用前拒绝任何代理凭据。`engagement_runtime_domains.py` 不再为历史代理绑定预留容量；账号/授权历史代理字段仅作审计。验收入口：`test_telegram_direct_transport.py`、`test_account_direct_egress_postgres.py`，恢复使用原 local activate/verify 正式链。

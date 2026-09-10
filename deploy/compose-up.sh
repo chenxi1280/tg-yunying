@@ -243,6 +243,7 @@ echo "==> Fencing old workers before migration and contract-version switch"
 fence_image_verification_restart
 trap restore_image_verification_restart EXIT
 stop_all_release_workers
+stop_release_connection_owner
 assert_fenced_image_verification_stopped
 restore_image_verification_restart
 trap - EXIT

@@ -1,5 +1,7 @@
 # TG 运营管理平台 PRD
 
+> **2026-09-10 去代理后的账号安全与功能缺口（维护恢复进行中，owner 本地实现未发布）：** 固定直连不替代授权连接唯一归属；失效账号保留原冻结任务分母并逐项分类恢复，搜索与排名观察保留为待直连适配能力，代理容量不冒充直连容量。具体证据、141+2+1+174 个未删除账号分类及分阶段验收见[授权连接与恢复方案](../03-feature-designs/account-authorization-owner-and-recovery-20260910-prd.md)。
+
 > **2026-09-10 全账号直连补正：** 用户要求所有账号停止使用代理，按[固定直连切换合同](../03-feature-designs/account-direct-egress-cutover-20260910-prd.md)执行。本补正取代本文账号传输的代理选择条款；历史绑定仅作审计，代理专用出口证明不得伪造。切换先停旧连接与代理，SV/MY 各自地域及授权隔离不变。
 
 > **2026-09-10 活群义务投影物化资格（本地实现与定向QA，生产未验收）：** 只有 `state='open'` 的义务投影可以被再次物化；`remote_reconcile_only`、`terminal_shortfall`、`closed_with_unknown_shortfall`、`confirmed` 一律不得再进入 coverage 物化候选，尚无投影的行保留首次物化权。背景：候选谓词原先只排除 `terminal_shortfall`，导致 `remote_reconcile_only` 行被无限重物化并被 `obligation_not_open` 跳过（生产 2026-09-10 当日 1,595 条 skip／104 个义务／单义务最多 72 条），且这批行 `targeted_at` 最旧、长期占据候选队列头部，饥饿 4,310 行真实待物化行。该合同不改变 unknown 不重发、准入、节奏、内容与防重约束。证据与 QA 见 `docs/05-implementation/ai-group-obligation-not-open-loop-20260910.md`。

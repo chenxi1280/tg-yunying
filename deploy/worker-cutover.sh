@@ -24,3 +24,21 @@ stop_all_release_workers() {
   done <<< "$stopped_state"
   echo "WORKER_STOP_COUNT=${#ids[@]} elapsed_seconds=$(( $(date +%s) - started_at ))"
 }
+
+stop_release_connection_owner() {
+  local container_id status pid selected stopped
+  local ids=()
+  selected=$(docker ps -aq --filter 'name=^/tgyunying-(backend|telegram-owner)$') || return
+  while read -r container_id; do
+    [[ -n "$container_id" ]] && ids+=("$container_id")
+  done <<< "$selected"
+  if [[ ${#ids[@]} -eq 0 ]]; then return; fi
+  docker stop --time 90 "${ids[@]}" || return
+  stopped=$(docker inspect --format '{{.Id}} {{.State.Status}} {{.State.Pid}}' "${ids[@]}") || return
+  while read -r container_id status pid; do
+    if [[ "$status" == running || "$pid" != 0 ]]; then
+      echo "Telegram connection owner did not exit: $container_id" >&2
+      return 1
+    fi
+  done <<< "$stopped"
+}

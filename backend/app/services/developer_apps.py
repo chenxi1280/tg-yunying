@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from dataclasses import replace
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -375,7 +376,7 @@ def credentials_for_account(
     if app.credentials_version > account.developer_app_version:
         account.status = AccountStatus.NEED_RELOGIN.value
         raise ValueError("开发者应用凭证已轮换，账号需要重新登录")
-    return credentials_for_developer_app(app)
+    return _bind_account_credentials(credentials_for_developer_app(app), account)
 
 
 def credentials_for_authorization(
@@ -391,7 +392,23 @@ def credentials_for_authorization(
         raise ValueError("授权未绑定开发者应用")
     if authorization.developer_app_api_id_snapshot not in {0, app.api_id}:
         raise ValueError("授权的开发者应用已发生变化")
-    return credentials_for_developer_app(app)
+    account = session.get(TgAccount, authorization.account_id)
+    if account is None:
+        raise ValueError("授权账号不存在")
+    return replace(
+        _bind_account_credentials(credentials_for_developer_app(app), account),
+        authorization_id=authorization.id,
+        authorization_fact_version=authorization.fact_version,
+    )
+
+
+def _bind_account_credentials(credentials, account):
+    return replace(
+        credentials, tenant_id=account.tenant_id, account_id=account.id,
+        authorization_id=account.current_authorization_id,
+        authorization_generation=account.authorization_generation,
+        connection_generation=account.connection_generation,
+    )
 
 
 def credentials_for_task_account(session: Session, account: TgAccount, _task_type: str | None) -> DeveloperAppCredentials:
