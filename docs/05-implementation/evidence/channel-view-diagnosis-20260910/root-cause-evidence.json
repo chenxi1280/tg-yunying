@@ -1,0 +1,505 @@
+{
+  "snapshot.jsonl": [
+    {
+      "label": "clock",
+      "data": [
+        {
+          "observed_at": "2026-09-10 10:52:05.909095+08:00"
+        }
+      ]
+    },
+    {
+      "label": "owner_history",
+      "data": [
+        {
+          "name": "太郎日记",
+          "channel_message_id": 812,
+          "effective_target_snapshot": 1124,
+          "accrual_anchor_at": "2026-09-06 15:10:07.763481+08:00",
+          "active_until": "2026-09-11 00:00:00+08:00",
+          "unbound": 461,
+          "unfrozen": 285,
+          "earliest_unbound_due": "2026-09-10 00:14:14.305762+08:00",
+          "bound_history_cursor": "2026-09-10 23:19:17.880972+08:00",
+          "all_history_cursor": "2026-09-10 23:58:46.321503+08:00",
+          "distant_bound_owners": 106
+        },
+        {
+          "name": "太郎日记",
+          "channel_message_id": 813,
+          "effective_target_snapshot": 1124,
+          "accrual_anchor_at": "2026-09-06 15:10:07.763481+08:00",
+          "active_until": "2026-09-11 00:00:00+08:00",
+          "unbound": 495,
+          "unfrozen": 433,
+          "earliest_unbound_due": "2026-09-10 00:11:28.044258+08:00",
+          "bound_history_cursor": "2026-09-10 22:55:07.185069+08:00",
+          "all_history_cursor": "2026-09-10 22:55:07.185069+08:00",
+          "distant_bound_owners": 8
+        },
+        {
+          "name": "成都阿楠",
+          "channel_message_id": 714,
+          "effective_target_snapshot": 538,
+          "accrual_anchor_at": "2026-09-06 15:10:07.997568+08:00",
+          "active_until": "2026-09-11 00:00:00+08:00",
+          "unbound": 242,
+          "unfrozen": 180,
+          "earliest_unbound_due": "2026-09-10 00:16:30.263502+08:00",
+          "bound_history_cursor": "2026-09-10 22:16:17.823064+08:00",
+          "all_history_cursor": "2026-09-10 23:57:11.346655+08:00",
+          "distant_bound_owners": 24
+        },
+        {
+          "name": "成都阿楠",
+          "channel_message_id": 728,
+          "effective_target_snapshot": 538,
+          "accrual_anchor_at": "2026-09-06 15:10:07.997568+08:00",
+          "active_until": "2026-09-11 00:00:00+08:00",
+          "unbound": 122,
+          "unfrozen": 50,
+          "earliest_unbound_due": "2026-09-10 00:09:22.329641+08:00",
+          "bound_history_cursor": "2026-09-10 22:46:24.521290+08:00",
+          "all_history_cursor": "2026-09-10 23:59:46.483309+08:00",
+          "distant_bound_owners": 39
+        },
+        {
+          "name": "成都阿楠",
+          "channel_message_id": 742,
+          "effective_target_snapshot": 538,
+          "accrual_anchor_at": "2026-09-06 15:10:07.997568+08:00",
+          "active_until": "2026-09-11 00:00:00+08:00",
+          "unbound": 349,
+          "unfrozen": 296,
+          "earliest_unbound_due": "2026-09-10 00:08:21.709030+08:00",
+          "bound_history_cursor": "2026-09-10 23:06:19.131551+08:00",
+          "all_history_cursor": "2026-09-10 23:59:20.081680+08:00",
+          "distant_bound_owners": 21
+        },
+        {
+          "name": "成都阿楠",
+          "channel_message_id": 754,
+          "effective_target_snapshot": 538,
+          "accrual_anchor_at": "2026-09-06 15:10:07.997568+08:00",
+          "active_until": "2026-09-11 00:00:00+08:00",
+          "unbound": 351,
+          "unfrozen": 319,
+          "earliest_unbound_due": "2026-09-10 00:06:04.970892+08:00",
+          "bound_history_cursor": "2026-09-10 22:12:50.610976+08:00",
+          "all_history_cursor": "2026-09-10 23:14:21.900821+08:00",
+          "distant_bound_owners": 10
+        },
+        {
+          "name": "成都阿楠",
+          "channel_message_id": 760,
+          "effective_target_snapshot": 538,
+          "accrual_anchor_at": "2026-09-06 15:10:07.997568+08:00",
+          "active_until": "2026-09-11 00:00:00+08:00",
+          "unbound": 272,
+          "unfrozen": 242,
+          "earliest_unbound_due": "2026-09-10 01:14:28.619256+08:00",
+          "bound_history_cursor": "2026-09-10 21:56:41.109659+08:00",
+          "all_history_cursor": "2026-09-10 23:04:13.006250+08:00",
+          "distant_bound_owners": 7
+        },
+        {
+          "name": "成都阿楠",
+          "channel_message_id": 867,
+          "effective_target_snapshot": 538,
+          "accrual_anchor_at": "2026-09-08 02:16:31.836151+08:00",
+          "active_until": "2026-09-11 00:00:00+08:00",
+          "unbound": 234,
+          "unfrozen": 194,
+          "earliest_unbound_due": "2026-09-10 00:11:02.815259+08:00",
+          "bound_history_cursor": "2026-09-10 19:53:13.174894+08:00",
+          "all_history_cursor": "2026-09-10 23:37:24.260667+08:00",
+          "distant_bound_owners": 4
+        },
+        {
+          "name": "西安焦点",
+          "channel_message_id": 799,
+          "effective_target_snapshot": 806,
+          "accrual_anchor_at": "2026-09-06 15:10:13.471644+08:00",
+          "active_until": "2026-09-11 00:00:00+08:00",
+          "unbound": 122,
+          "unfrozen": 59,
+          "earliest_unbound_due": "2026-09-10 01:23:52.284150+08:00",
+          "bound_history_cursor": "2026-09-10 23:02:23.438331+08:00",
+          "all_history_cursor": "2026-09-10 23:02:23.438331+08:00",
+          "distant_bound_owners": 35
+        },
+        {
+          "name": "西安焦点",
+          "channel_message_id": 800,
+          "effective_target_snapshot": 806,
+          "accrual_anchor_at": "2026-09-06 15:10:13.471644+08:00",
+          "active_until": "2026-09-10 17:52:44+08:00",
+          "unbound": 118,
+          "unfrozen": 46,
+          "earliest_unbound_due": "2026-09-10 00:28:05.515270+08:00",
+          "bound_history_cursor": "2026-09-10 17:24:42.588091+08:00",
+          "all_history_cursor": "2026-09-10 17:29:09.912635+08:00",
+          "distant_bound_owners": 1
+        },
+        {
+          "name": "西安焦点",
+          "channel_message_id": 865,
+          "effective_target_snapshot": 805,
+          "accrual_anchor_at": "2026-09-07 20:06:42.182143+08:00",
+          "active_until": "2026-09-11 00:00:00+08:00",
+          "unbound": 237,
+          "unfrozen": 199,
+          "earliest_unbound_due": "2026-09-10 00:35:24.867467+08:00",
+          "bound_history_cursor": "2026-09-10 22:22:34.499547+08:00",
+          "all_history_cursor": "2026-09-10 23:30:42.779913+08:00",
+          "distant_bound_owners": 7
+        },
+        {
+          "name": "西安焦点",
+          "channel_message_id": 866,
+          "effective_target_snapshot": 806,
+          "accrual_anchor_at": "2026-09-07 20:06:42.460061+08:00",
+          "active_until": "2026-09-11 00:00:00+08:00",
+          "unbound": 164,
+          "unfrozen": 72,
+          "earliest_unbound_due": "2026-09-10 00:06:43.751604+08:00",
+          "bound_history_cursor": "2026-09-10 22:33:42.826488+08:00",
+          "all_history_cursor": "2026-09-10 23:58:29.953452+08:00",
+          "distant_bound_owners": 26
+        },
+        {
+          "name": "郑州精品",
+          "channel_message_id": 818,
+          "effective_target_snapshot": 1002,
+          "accrual_anchor_at": "2026-09-06 15:10:25.427281+08:00",
+          "active_until": "2026-09-11 00:00:00+08:00",
+          "unbound": 262,
+          "unfrozen": 207,
+          "earliest_unbound_due": "2026-09-10 01:49:10.082915+08:00",
+          "bound_history_cursor": "2026-09-10 22:34:51.790595+08:00",
+          "all_history_cursor": "2026-09-10 23:59:01.268068+08:00",
+          "distant_bound_owners": 13
+        },
+        {
+          "name": "郑州精品",
+          "channel_message_id": 819,
+          "effective_target_snapshot": 1002,
+          "accrual_anchor_at": "2026-09-06 15:10:25.427281+08:00",
+          "active_until": "2026-09-11 00:00:00+08:00",
+          "unbound": 159,
+          "unfrozen": 50,
+          "earliest_unbound_due": "2026-09-10 01:57:53.602991+08:00",
+          "bound_history_cursor": "2026-09-10 22:43:53.500549+08:00",
+          "all_history_cursor": "2026-09-10 23:59:11.240997+08:00",
+          "distant_bound_owners": 49
+        },
+        {
+          "name": "郑州精品",
+          "channel_message_id": 820,
+          "effective_target_snapshot": 1002,
+          "accrual_anchor_at": "2026-09-06 15:10:25.427281+08:00",
+          "active_until": "2026-09-11 00:00:00+08:00",
+          "unbound": 77,
+          "unfrozen": 0,
+          "earliest_unbound_due": "2026-09-10 00:44:40.463275+08:00",
+          "bound_history_cursor": "2026-09-10 22:14:43.727965+08:00",
+          "all_history_cursor": "2026-09-10 23:14:23.999946+08:00",
+          "distant_bound_owners": 21
+        },
+        {
+          "name": "郑州精品",
+          "channel_message_id": 882,
+          "effective_target_snapshot": 1,
+          "accrual_anchor_at": "2026-09-10 01:03:12.064241+08:00",
+          "active_until": "2026-09-11 00:00:00+08:00",
+          "unbound": 0,
+          "unfrozen": 0,
+          "earliest_unbound_due": null,
+          "bound_history_cursor": "2026-09-10 02:49:05.561914+08:00",
+          "all_history_cursor": "2026-09-10 02:49:05.561914+08:00",
+          "distant_bound_owners": 0
+        },
+        {
+          "name": "郑州精品",
+          "channel_message_id": 883,
+          "effective_target_snapshot": 1,
+          "accrual_anchor_at": "2026-09-10 01:03:12.170907+08:00",
+          "active_until": "2026-09-11 00:00:00+08:00",
+          "unbound": 0,
+          "unfrozen": 0,
+          "earliest_unbound_due": null,
+          "bound_history_cursor": "2026-09-10 10:14:32.153211+08:00",
+          "all_history_cursor": "2026-09-10 10:14:32.153211+08:00",
+          "distant_bound_owners": 0
+        },
+        {
+          "name": "阿哥日记",
+          "channel_message_id": 822,
+          "effective_target_snapshot": 1110,
+          "accrual_anchor_at": "2026-09-06 15:10:13.635087+08:00",
+          "active_until": "2026-09-11 00:00:00+08:00",
+          "unbound": 483,
+          "unfrozen": 428,
+          "earliest_unbound_due": "2026-09-10 00:20:50.371568+08:00",
+          "bound_history_cursor": "2026-09-10 22:58:50.208254+08:00",
+          "all_history_cursor": "2026-09-10 23:00:16.335845+08:00",
+          "distant_bound_owners": 9
+        },
+        {
+          "name": "阿哥日记",
+          "channel_message_id": 823,
+          "effective_target_snapshot": 1110,
+          "accrual_anchor_at": "2026-09-06 15:10:13.635087+08:00",
+          "active_until": "2026-09-11 00:00:00+08:00",
+          "unbound": 437,
+          "unfrozen": 251,
+          "earliest_unbound_due": "2026-09-10 00:18:34.890677+08:00",
+          "bound_history_cursor": "2026-09-10 23:51:56.368301+08:00",
+          "all_history_cursor": "2026-09-10 23:59:02.451861+08:00",
+          "distant_bound_owners": 106
+        }
+      ]
+    }
+  ],
+  "replay.jsonl": [
+    {
+      "label": "clock",
+      "data": "2026-09-10 10:54:07.067654+08:00"
+    },
+    {
+      "label": "replay",
+      "data": {
+        "name": "郑州精品",
+        "obligation_id": "7a94b622-d4d0-4441-af6d-66d9b8c16d40",
+        "account_id": 343,
+        "source_message_id": 820,
+        "frozen_due": "2026-09-10 00:44:40.463275+08:00",
+        "frozen_release": "2026-09-10 00:48:33.787172+08:00",
+        "bound_history_lower_bound": "2026-09-10 22:14:43.727965+08:00",
+        "replay_release": "2026-09-10 22:16:13.096068",
+        "note": "pure scheduling with bound-owner history lower bound; no production mutation"
+      }
+    },
+    {
+      "label": "replay",
+      "data": {
+        "name": "太郎日记",
+        "obligation_id": "70428827-c4b1-411e-a5b8-0c574e04c676",
+        "account_id": 6,
+        "source_message_id": 813,
+        "frozen_due": "2026-09-10 00:11:28.044258+08:00",
+        "frozen_release": "2026-09-10 00:11:28.044258+08:00",
+        "bound_history_lower_bound": "2026-09-10 22:55:07.185069+08:00",
+        "replay_release": "2026-09-10 22:56:30.108380",
+        "note": "pure scheduling with bound-owner history lower bound; no production mutation"
+      }
+    },
+    {
+      "label": "replay",
+      "data": {
+        "name": "成都阿楠",
+        "obligation_id": "23d08fed-bae8-4f36-b0d1-8a7aac288737",
+        "account_id": 84,
+        "source_message_id": 754,
+        "frozen_due": "2026-09-10 00:06:04.970892+08:00",
+        "frozen_release": "2026-09-10 00:16:13.466905+08:00",
+        "bound_history_lower_bound": "2026-09-10 22:12:50.610976+08:00",
+        "replay_release": "2026-09-10 22:15:55.947244",
+        "note": "pure scheduling with bound-owner history lower bound; no production mutation"
+      }
+    },
+    {
+      "label": "replay",
+      "data": {
+        "name": "阿哥日记",
+        "obligation_id": "a373a5bc-37c4-4e21-8d99-9b805f2e0830",
+        "account_id": 33,
+        "source_message_id": 823,
+        "frozen_due": "2026-09-10 00:18:34.890677+08:00",
+        "frozen_release": "2026-09-10 09:18:56.489355+08:00",
+        "bound_history_lower_bound": "2026-09-10 23:51:56.368301+08:00",
+        "replay_release": "2026-09-10 23:53:21.187063",
+        "note": "pure scheduling with bound-owner history lower bound; no production mutation"
+      }
+    },
+    {
+      "label": "replay",
+      "data": {
+        "name": "西安焦点",
+        "obligation_id": "d451fdc4-a568-4386-abb9-e3386f64991d",
+        "account_id": 2,
+        "source_message_id": 866,
+        "frozen_due": "2026-09-10 00:06:43.751604+08:00",
+        "frozen_release": "2026-09-10 00:16:07.281520+08:00",
+        "bound_history_lower_bound": "2026-09-10 22:33:42.826488+08:00",
+        "replay_release": "2026-09-10 22:35:43.224074",
+        "note": "pure scheduling with bound-owner history lower bound; no production mutation"
+      }
+    },
+    {
+      "label": "old_causes",
+      "data": {
+        "account_id": 30,
+        "affected_count": 1,
+        "samples": [
+          {
+            "attempt_id": "cef548d1-6701-4424-9ce8-fe15b7274069",
+            "action_id": "f2d4803b-5354-4b42-8516-d69beb9fd7c9",
+            "task_id": "2d8af940-69d8-45ab-ab0c-0a1715843d3f",
+            "action_class": "authored_message",
+            "original_day": null,
+            "call_day": "2026-08-05",
+            "status": "result_unknown",
+            "inflight": true,
+            "issues": [
+              "original_task_day_unproven"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "label": "old_causes",
+      "data": {
+        "account_id": 365,
+        "affected_count": 1,
+        "samples": [
+          {
+            "attempt_id": "cd49252b-95ad-435c-84c7-3b3d085bc888",
+            "action_id": "e00fb042-4a41-4051-b18a-ee8747771d8b",
+            "task_id": "d3365706-afe1-4166-9d0d-c2d6404bc8ad",
+            "action_class": "authored_message",
+            "original_day": null,
+            "call_day": "2026-07-31",
+            "status": "result_unknown",
+            "inflight": true,
+            "issues": [
+              "original_task_day_unproven"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "label": "old_causes",
+      "data": {
+        "account_id": 411,
+        "affected_count": 1,
+        "samples": [
+          {
+            "attempt_id": "f78b69b9-3f58-4587-9263-3ae3659bbbc3",
+            "action_id": "ee8403b9-f967-47a0-a2b9-5eaeaab01ef2",
+            "task_id": "cb862a03-0dd1-432e-8854-7f89946bcf06",
+            "action_class": "authored_message",
+            "original_day": null,
+            "call_day": "2026-08-13",
+            "status": "result_unknown",
+            "inflight": true,
+            "issues": [
+              "original_task_day_unproven"
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "admission": [
+    {
+      "name": "郑州精品",
+      "created_at": "2026-09-10 10:49:51.994363+08:00",
+      "decision": "partially_serviceable",
+      "admitted": 1041,
+      "deficit": 82,
+      "timeline_dependencies": [
+        {
+          "kind": "timeline_and_behavior_session",
+          "status": "runtime_gate",
+          "blocking": false,
+          "reason": "timeline_and_behavior_session_requires_runtime_admission",
+          "revision": null
+        }
+      ]
+    },
+    {
+      "name": "太郎日记",
+      "created_at": "2026-09-10 10:50:08.496592+08:00",
+      "decision": "partially_serviceable",
+      "admitted": 1077,
+      "deficit": 47,
+      "timeline_dependencies": [
+        {
+          "kind": "timeline_and_behavior_session",
+          "status": "runtime_gate",
+          "blocking": false,
+          "reason": "timeline_and_behavior_session_requires_runtime_admission",
+          "revision": null
+        }
+      ]
+    },
+    {
+      "name": "成都阿楠",
+      "created_at": "2026-09-10 10:50:19.925758+08:00",
+      "decision": "partially_serviceable",
+      "admitted": 1026,
+      "deficit": 50,
+      "timeline_dependencies": [
+        {
+          "kind": "timeline_and_behavior_session",
+          "status": "runtime_gate",
+          "blocking": false,
+          "reason": "timeline_and_behavior_session_requires_runtime_admission",
+          "revision": null
+        }
+      ]
+    },
+    {
+      "name": "阿哥日记",
+      "created_at": "2026-09-10 10:50:32.591854+08:00",
+      "decision": "partially_serviceable",
+      "admitted": 1059,
+      "deficit": 51,
+      "timeline_dependencies": [
+        {
+          "kind": "timeline_and_behavior_session",
+          "status": "runtime_gate",
+          "blocking": false,
+          "reason": "timeline_and_behavior_session_requires_runtime_admission",
+          "revision": null
+        }
+      ]
+    },
+    {
+      "name": "西安焦点",
+      "created_at": "2026-09-10 10:50:44.694370+08:00",
+      "decision": "partially_serviceable",
+      "admitted": 983,
+      "deficit": 85,
+      "timeline_dependencies": [
+        {
+          "kind": "timeline_and_behavior_session",
+          "status": "runtime_gate",
+          "blocking": false,
+          "reason": "timeline_and_behavior_session_requires_runtime_admission",
+          "revision": null
+        }
+      ]
+    }
+  ],
+  "release_scope": {
+    "initial_sha": "24704522d900b672773415ab5dfec78d60f28630",
+    "final_sha": "047625b4d38b6390c0fa738ca24560d7a117c164",
+    "replay_snapshot_at": "2026-09-10T10:54:07+08:00",
+    "relevant_paths_changed": false,
+    "final_backend_health": "healthy",
+    "final_backend_started_at": "2026-09-10T02:52:16.783307094Z",
+    "backend_restart_count": 0,
+    "backend_oom_killed": false
+  },
+  "query_boundary": {
+    "readonly": true,
+    "statement_timeout_seconds": 10,
+    "initial_snapshot_partial": true,
+    "initial_query_exit_code": 137,
+    "note": "First process interrupted during production container replacement; owner_history completed. Admission retrieval rerun separately with a bounded latest-row query; pure replay completed."
+  }
+}
