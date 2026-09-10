@@ -114,3 +114,19 @@ def test_apply_removes_only_frozen_volume_after_backup_and_reads_back(tmp_path, 
     module.apply_manifest(manifest, output=tmp_path, expected_fingerprint=manifest["fingerprint"])
     assert [args for args in calls if "rm" in args] == [["docker", "volume", "rm", volume["Name"]]]
     assert json.loads((tmp_path / "result.json").read_text())["status"] == "persisted_verified"
+
+
+@pytest.mark.parametrize("labels", [None, {}, {"com.docker.volume.anonymous": ""}])
+def test_docker_anonymous_label_is_recognized(tmp_path, labels):
+    module = _module()
+    volume = {**_volume(module, tmp_path), "Labels": labels}
+    assert module.volume_record(volume)["volume"] == volume
+
+
+@pytest.mark.parametrize("labels", [{"owner": "business"}, {"com.docker.volume.anonymous": "true"},
+                                     {"com.docker.volume.anonymous": "", "owner": "business"}])
+def test_other_volume_labels_remain_protected(tmp_path, labels):
+    module = _module()
+    volume = {**_volume(module, tmp_path), "Labels": labels}
+    with pytest.raises(ValueError, match="identity_invalid"):
+        module.volume_record(volume)

@@ -54,3 +54,7 @@ Task/Action/Attempt、RemoteInvocationFence、准入决策证据和防重身份�
 ## Product Design Complete
 
 原需求、混合读/调用方兼容、后端事务、租户隔离、并发唯一、错误路径、历史转换保护、不可逆回滚边界及验收已闭合。无前端交互变更。design_status=complete；实现中发现差异需resync。
+
+## 生产反查修订：匿名卷标签
+
+生产Docker为匿名卷写入标准标签`com.docker.volume.anonymous=""`。候选身份允许无标签或仅此精确标准标签；任何其他标签仍拒绝。首次preview因该差异显式失败，未删除任何卷。运维脚本修订按人工维护发布，保留独立文件SHA和审计，不改运行应用镜像。

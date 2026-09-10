@@ -88,7 +88,8 @@ def volume_record(volume):
     root = Path(volume["Mountpoint"])
     if (not ANONYMOUS_NAME.fullmatch(name) or root.resolve() != root or
             root != VOLUME_ROOT / name / "_data" or
-            volume["Driver"] != "local" or volume.get("Options") or volume.get("Labels")):
+            volume["Driver"] != "local" or volume.get("Options") or
+            volume.get("Labels") not in (None, {}, {"com.docker.volume.anonymous": ""})):
         raise ValueError("mihomo_volume_identity_invalid")
     if {path.name for path in root.iterdir()} != EXPECTED_FILES:
         raise ValueError("mihomo_volume_file_set_mismatch")
