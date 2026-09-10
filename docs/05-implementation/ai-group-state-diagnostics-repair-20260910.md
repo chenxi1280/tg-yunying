@@ -32,7 +32,7 @@
 
 ## 发布闸门
 
-- release_mode：local_cli；路径：master → release → deploy/local_release.py prepare/deploy → SSH。2026-09-10 本地发布专项合同取代旧 Actions 必经要求，本文 resync。
+- release_mode：local_cli；路径：master → release → deploy/local_release.py prepare/deploy → 镜像包 SCP/load → SSH 安装。2026-09-10 本地发布专项合同取代旧 Actions/GHCR 必经要求，本文 resync。
 - migration_impact：无新增迁移；既有事实、未知、日目标、原预约保持。
 - worker_impact：救援终态保护与结构化诊断在正式 worker 生效；无任务激活、批量恢复或补发。
 - external_platform_impact：没有新增远端操作类别或调用；仅现有调用的状态处理与观测。
@@ -66,3 +66,9 @@
 本地 Docker/Buildx 可用，目标生产为 x86_64；当前 Docker 无 GHCR 登录，GitHub CLI token 不含包写权限，GHCR_USERNAME/GHCR_TOKEN 未配置。该项是镜像推送与本地安装的真实依赖，不能用已构建的旧 SHA 镜像伪造新候选准备清单。
 
 首轮本地 prepare 输出 `local-release-v1` 保留 preparing：前端部署合同仍断言 GNU timeout，未匹配已经生效的跨平台超时入口，因此在测试阶段失败，未进入镜像构建。同步该断言并保留真实超时无重放测试。同时发现 local_release.py 将虚拟环境解释器 resolve 为全局解释器；真实临时虚拟环境测试先复现失败，改为保留入口路径后，21 项本地发布测试和 157 项前端合同测试全部通过（178 passed，4.63 秒）。失败准备记录不覆盖，新候选使用独立输出目录重新执行。
+
+### 已准备制品与安装前配置问题
+
+4279a6a1 的本地 v4 准备完成：56+55+157=268 项定向测试、前端构建和三个 amd64 镜像构建上传通过；后端与原生 OCR 镜像实际隔离导入检查通过。首次安装于 12:23 在 ensure_runtime_env 报 PUBLIC_APP_BASE_URL 缺失，未到镜像拉取、迁移或 worker 切换。12:25:42 独立读回 current=58f2b863、20 个容器均运行健康且启动时间早于本次安装，共享配置 mtime 也早于安装；现有 URL 为 https://tgyunying.telema.cn。原失败回执保持不变，重新安装仅补齐该既有 URL，并记录原回执与制品 hash。
+
+补齐配置后的安装在远端分支冻结检查即停止：release 已新增用户确认的镜像直传提交 8a6cf467，未创建新安装回执或调用远端安装。按新的 v2 archive 合同 resync，重新整合和准备候选，不恢复旧 GHCR 发布流程。

@@ -13,6 +13,7 @@
 - schema_version=2 的 manifest 记录源码 SHA、平台、测试命令、日志 hash、三个镜像内容 ID、包含 SHA+完整 image ID 的本地标签、images.tar.gz 的大小/hash 与 preparation 状态。旧 GHCR 清单不兼容，需重新 prepare，不能静默转回仓库。它是本地受信任操作员的记录，不是 Actions attestation，不提供防恶意本机篡改承诺。
 - deploy 仅接受准备成功的同 SHA 清单，复用该 SHA 的 release.sh、server-install-release.sh、compose-up.sh。镜像包与清单在源码归档之外上传，不写入 Git；远端在原主机发布锁内先核对包 hash、SHA 与 image env，导入后逐个核对镜像 ID 和平台，再允许迁移、worker 完整停启、调度激活、主机锁、在途 unknown 不重放及安装只派发一次规则不变。
 - 安装后独立读取 current/.image.env、backend/worker 的 RELEASE_SHA、实际容器 Image ID、运行健康及共享调度 verify-active。输出 release_passed 与 business_evidence=unproven；失败不自动重新安装。
+- deploy 的调用环境须显式提供既有 `PUBLIC_APP_BASE_URL`（或由 release.sh 根据显式 `TGYUNYING_WEB_HOST` 生成）。迁出 Actions 后不可假定旧工作流变量会自动进入本地进程；部署前只读核对当前 `.image.env` 中的已生效 URL，并向新发布传递同值。运行环境检查失败时保留原 deployment receipt，核对 current、容器和失败阶段后才能明确建立新的安装记录，不能覆盖原回执来重放不确定安装。
 - 执行过程由普通进程顺序运行，逐阶段日志写入输出目录；结果 JSON 可一次读取，不要求模型轮询 Actions。部署开始即记录 deploying；中断留下未完成状态，不产生虚假成功回执。再次调用拒绝重放已有 deployment receipt，先检查生产状态并明确新部署决定。
 
 ## 直传与失败边界
