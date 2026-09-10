@@ -287,7 +287,7 @@ def _ready_row_filters(task, timestamp, *, states, exclude_account_ids, admissib
             TaskAccountDailyCoverage.next_eligible_at.is_(None),
             TaskAccountDailyCoverage.next_eligible_at <= timestamp,
         ),
-        has_no_terminal_shortfall_projection(),
+        has_materializable_obligation_projection(),
     ]
     if exclude_account_ids:
         filters.append(TaskAccountDailyCoverage.account_id.not_in(exclude_account_ids))
@@ -296,12 +296,24 @@ def _ready_row_filters(task, timestamp, *, states, exclude_account_ids, admissib
     return filters
 
 
-def has_no_terminal_shortfall_projection():
+def has_materializable_obligation_projection():
+    """Only an obligation projection still `open` may be materialized again.
+
+    `ensure_action_obligation` rejects every action whose projection is not
+    `open` with `obligation_not_open`, so a row whose projection already left
+    `open` — `remote_reconcile_only`, `terminal_shortfall`,
+    `closed_with_unknown_shortfall`, `confirmed` — can never bind a new Action.
+    Re-selecting those rows made the planner emit unbounded skip-only Actions
+    (production 2026-09-10: 1,518 `obligation_not_open` skips from 104
+    obligations, up to 72 Actions for one obligation) while the real ready
+    backlog starved. A row without a projection yet keeps its first
+    materialization.
+    """
     return ~exists(select(FulfillmentObligationProjection.id).where(
         FulfillmentObligationProjection.task_id == TaskAccountDailyCoverage.task_id,
         FulfillmentObligationProjection.obligation_type == "coverage",
         FulfillmentObligationProjection.obligation_id == TaskAccountDailyCoverage.id,
-        FulfillmentObligationProjection.state == "terminal_shortfall",
+        FulfillmentObligationProjection.state != "open",
     ))
 
 
@@ -321,6 +333,6 @@ __all__ = [
     "SENDABLE_COVERAGE_STATES",
     "advance_coverage_plan_cursor",
     "coverage_plan_totals",
-    "has_no_terminal_shortfall_projection",
+    "has_materializable_obligation_projection",
     "ready_coverage_plan_batch",
 ]

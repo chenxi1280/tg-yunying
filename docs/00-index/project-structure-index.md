@@ -1,5 +1,7 @@
 # 项目结构索引
 
+> **2026-09-10 活群物化资格（本地QA，待发布）：** `daily_coverage_planning.has_no_terminal_shortfall_projection` 更名为 `has_materializable_obligation_projection`，谓词由 `state == 'terminal_shortfall'` 改为 `state != 'open'`：coverage 行只有投影仍 `open`（或无投影）才可物化。该谓词同时服务 `ready_coverage_plan_batch`（`_ready_row_filters`，生产 planner 主路径）与 `executors/group_ai_chat._base_replan_coverage_statement`；`_load_coverage_rows` 只做统计、不参与候选选择。新增回归 `backend/tests/test_ai_reconcile_only_replan.py`。证据见 `docs/05-implementation/ai-group-obligation-not-open-loop-20260910.md`。
+
 > **2026-09-10 发布后镜像清理：** `local_release_cleanup.py` 冻结上一轮制品、成功读回后清理精确旧包/未使用镜像并保存报告；本地按目标保存成功发布指针，服务器复用原发布锁。失败安装不清理，当前/在用/引用变化对象保留，不全局 prune。
 
 > **2026-09-10 镜像直传 resync：** `deploy/local_image_archive.py` 负责流式导出、包校验、服务器导入及镜像 ID/平台核对，兼容服务器 Python 3.6；`server-install-release.sh` 在锁内导入，`compose-up.sh` 只使用本地镜像。正式发布移除 GHCR 登录/上传/拉取，不执行 Actions。
