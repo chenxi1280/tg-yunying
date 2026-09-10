@@ -16,6 +16,7 @@ from app.models import (
     ViewFulfillmentObligation,
 )
 from .production_e4_identity import action_ledger_scope
+from .ai_queue_diagnostics import deadline_state_counts, original_deadline_states
 
 
 SAMPLE_LIMIT = 8
@@ -36,11 +37,15 @@ def ai_open_action_details(
     )))
     error_counts = Counter(_action_error_code(action) for action in actions)
     stage_counts = Counter(_action_generation_stage(action) for action in actions)
+    deadline_states = original_deadline_states(session, ledger, actions)
     return {
         "error_code_counts": _nonempty_counts(error_counts),
         "generation_stage_counts": _nonempty_counts(stage_counts),
+        "original_deadline_state_counts": deadline_state_counts(deadline_states),
         "oldest_open_action_samples": [
-            _ai_action_row(action, ledger_matches=action.id in matched_ids) for action in ordered
+            {**_ai_action_row(action, ledger_matches=action.id in matched_ids),
+             "original_deadline_state": deadline_states[action.id],
+             "original_deadline_at": _iso(ledger.deadline_at)} for action in ordered
         ],
     }
 

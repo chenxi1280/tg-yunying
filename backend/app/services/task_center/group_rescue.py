@@ -11,6 +11,7 @@ from app.services._common import _now
 from app.services.task_center.payloads import InviteGroupAccountPayload
 from app.timezone import as_beijing
 from .account_assignment_eligibility import require_assignment_account
+from .group_rescue_state import refresh_blocked_status, rescue_status
 
 
 GROUP_RESCUE_FAILURE_THRESHOLD = 3
@@ -139,6 +140,9 @@ def refresh_group_rescue_action(
     trigger_reason: str,
     operation_target_id: int | None,
 ) -> GroupRescueResult:
+    blocked = refresh_blocked_status(session, action)
+    if blocked:
+        return GroupRescueResult(blocked, _action_rescue_detail(action), action)
     tenant = session.get(Tenant, task.tenant_id)
     config_error = _rescue_config_error(session, tenant, task)
     if config_error:
@@ -364,16 +368,7 @@ def _action_sort_key(action: Action) -> tuple[datetime, str]:
 
 
 def _action_rescue_status(action: Action) -> str:
-    result = action.result if isinstance(action.result, dict) else {}
-    if action.status == RESCUE_STATUS_UNKNOWN_AFTER_SEND:
-        return RESCUE_STATUS_UNKNOWN_AFTER_SEND
-    if result.get("rescue_status"):
-        return str(result["rescue_status"])
-    if action.status == "success":
-        return RESCUE_STATUS_INVITE_SUCCESS
-    if action.status == "failed":
-        return RESCUE_STATUS_INVITE_FAILED
-    return RESCUE_STATUS_PENDING
+    return rescue_status(action)
 
 
 def _action_rescue_detail(action: Action) -> str:

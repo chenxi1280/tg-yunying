@@ -1,5 +1,7 @@
 # 项目数据流转索引
 
+> **2026-09-10 活群状态与诊断：** 真实 Action/FOP/原 Attempt → 救援终态投影；只读序列化不回写旧记录。显式刷新 → Action 行锁与数据库重读 → 原义务/调用证据检查 → 原许可刷新或保留终态。原发送 ID 后 bounded history → 原始/按钮候选计数、角色查询异常、拒绝分类 → 原 Action 诊断与准入阻塞证据；发送 RPC 异常类型/阶段与远端 mutation 状态独立写入 Action/Attempt。原 ledger 截止 → 排期分类；当前义务/最新 Job → 应急、准入、模型、发送待确认 → 严格匹配 typed 消息事实。各阶段数量不累加，既有未知/截止/发送约束不改变。合同见 `docs/03-feature-designs/ai-group-state-diagnostics-integrity-20260910-prd.md`。
+
 > **2026-09-10 AI生成结算一致性（e62a0d80已发布，整批E4仍未完成）：** 原生成结果持久化后，`ai_generation_ready_settlement`以Task→Action→Job锁、原claim身份和candidate hash，将Action解除生成占用与Job ready一次提交；过期generating Job遇到完整ready候选时保持原窗口/正文并完成本地结算，Gateway/unknown仍走原对账。`emergency_pending`阶段与完整原因分开保存，消除varchar(32)溢出。v2话题前置与绑定共用`fact_id_map`可用事实口径，清洗及路由规则不变。合同：`docs/03-feature-designs/ai-generation-settlement-integrity-20260910-prd.md`。
 
 > **2026-09-10 活群准入与数量供给 resync（本地QA/待发布）：** 当前 PlanningAdmissionSnapshot 的可发送账号集合 → 日覆盖首次候选、后续分页及未物化重排 SQL LIMIT 前过滤 → 原账号/目标/频率检查 → 正文生成与发送时刻。冻结 portfolio 需求保持全账号/日总量，首次预算分配及原 deficit 恢复只使用当前准入集合；加入后追加原未分配量，旧预算预约/unknown身份不移动。natural-opportunity/presence 保留原质量证据并标记 quality_observation_only，普通数量主题供给不因零真人或连续系统发言归零；真实互动续接门不变。membership实际引用与目标引用相同或公开用户名规范化相等时，成员/机器人观察投影保留原目标对应的canonical群，不被URL剥前缀或同名群改绑；不同实际引用不强制归并，旧事实不回填。合同与QA见 [AI活群可执行供给专项PRD](../03-feature-designs/ai-group-executable-supply-and-fallback-20260910-prd.md) 产品口径1/2/4。

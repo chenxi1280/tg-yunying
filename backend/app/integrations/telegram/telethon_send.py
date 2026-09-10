@@ -18,13 +18,16 @@ TYPING_DELAY_SECONDS_PER_CHARACTER = 0.05
 class SendProgress:
     remote_message_id: str | None = None
     send_call_started: bool = False
+    stage: str = "resolve_target"
 
     def mark_started(self) -> None:
         self.send_call_started = True
+        self.stage = "send_call"
 
     def record_message(self, message: Any) -> None:
         fallback = self.remote_message_id or uuid4().hex[:8]
         self.remote_message_id = str(getattr(message, "id", fallback))
+        self.stage = "receipt_received"
 
 
 async def send_content(

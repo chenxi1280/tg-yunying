@@ -23,6 +23,7 @@ class SendResult:
     remote_mutation_started: bool | None = None
     remote_message_ids: tuple[str, ...] = ()
     remote_fact: dict = field(default_factory=dict)
+    diagnostics: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -209,6 +210,7 @@ class GroupMessageSnapshot:
     media_group_index: int = 0
     media_group_total: int = 1
     control_buttons: tuple[GroupControlButtonSnapshot, ...] = ()
+    sender_role_error: str = ""
 
 
 @dataclass(frozen=True)

@@ -345,7 +345,7 @@ _GROUP_SEND_RETRYABLE_VERIFICATION_MARKERS = (
     "不可发言",
 )
 ACTIVE_SEARCH_JOIN_AUTHORIZATION_STATUSES = {"active", "standby"}
-SUCCESS_RESULT_FAILURE_KEYS = frozenset({"error_code", "error_message", "failure_type", "failure_reason", "detail", "raw_error", "raw_response", "exception"})
+SUCCESS_RESULT_FAILURE_KEYS = frozenset({"error_code", "error_message", "failure_type", "failure_reason", "detail", "raw_error", "raw_response", "exception", "send_diagnostics"})
 
 
 @dataclass(frozen=True)
@@ -1895,7 +1895,7 @@ def _migrate_deprecated_group_rescue_action(session: Session, action: Action) ->
     if not result.action:
         _fail(action, FailureType.UNKNOWN.value, result.detail or "旧群聊救援动作迁移失败", validation_stage="rescue")
         return False
-    return True
+    return result.status == "pending"
 
 
 def _refresh_stale_invite_group_account_action(session: Session, action: Action) -> bool:
@@ -1930,7 +1930,7 @@ def _refresh_stale_invite_group_account_action(session: Session, action: Action)
     if not result.action:
         _fail(action, FailureType.UNKNOWN.value, result.detail or "群聊救援执行账号刷新失败", validation_stage="rescue")
         return False
-    return True
+    return result.status == "pending"
 
 
 def _deprecated_group_rescue_group(session: Session, action: Action, payload: DeprecatedGroupRescuePayload) -> TgGroup | None:
@@ -4694,6 +4694,7 @@ def _finalize_group_send(
         result.failure_type or "",
         result.detail or "",
         attempt=attempt,
+        send_diagnostics=getattr(result, "diagnostics", None),
         remote_mutation_started=getattr(
             result, "remote_mutation_started", None,
         ),
@@ -8349,7 +8350,7 @@ def _classify_membership_failure(failure_type: str, detail: str) -> str:
     return failure_type
 
 
-def _apply_send_result(action: Action, account: TgAccount, ok: bool, remote_id: str = "", failure_type: str = "", detail: str = "", *, attempt: ExecutionAttempt | None = None, remote_fact_id: str = "", typed_remote_fact: dict | None = None, remote_mutation_started: bool | None = None) -> None:
+def _apply_send_result(action: Action, account: TgAccount, ok: bool, remote_id: str = "", failure_type: str = "", detail: str = "", *, attempt: ExecutionAttempt | None = None, remote_fact_id: str = "", typed_remote_fact: dict | None = None, remote_mutation_started: bool | None = None, send_diagnostics: dict | None = None) -> None:
     if not ok and is_account_frozen_error(failure_type, detail):
         mark_account_frozen(account)
     if ok:
@@ -8359,6 +8360,8 @@ def _apply_send_result(action: Action, account: TgAccount, ok: bool, remote_id: 
     else:
         _apply_failed_send_result(action, account, failure_type, detail)
     action.executed_at = None if action.status == "pending" else _now()
+    if send_diagnostics:
+        action.result = {**dict(action.result or {}), "send_diagnostics": dict(send_diagnostics)}
     if remote_fact_id:
         action.result = {
             **dict(action.result or {}),
@@ -8549,11 +8552,11 @@ def _maybe_trigger_send_permission_rescue(action: Action, account: TgAccount, de
 
 
 def _record_group_rescue_result(action: Action, result) -> None:
-    action.result = {**(action.result or {}), "group_rescue_status": result.status, "group_rescue_detail": result.detail}
+    from .group_rescue_state import rescue_status
+
+    status = rescue_status(result.action) if result.action and result.status == "pending" else result.status
+    action.result = {**(action.result or {}), "group_rescue_status": status, "group_rescue_detail": result.detail}
     if result.action:
-        if result.status == "pending":
-            result.action.status = "pending"
-            result.action.result = {"rescue_status": "pending"}
         action.result = {**(action.result or {}), "group_rescue_action_id": result.action.id}
 
 

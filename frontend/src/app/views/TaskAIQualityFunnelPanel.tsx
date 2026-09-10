@@ -2,6 +2,7 @@ import React from 'react';
 import { Descriptions, Space, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { TaskCenterDetail } from '../types';
+import { TaskAIRuntimeEvidence } from './TaskAIRuntimeEvidence';
 
 type QualitySample = NonNullable<NonNullable<TaskCenterDetail['ai_quality_funnel']['samples']>[string]>[number];
 
@@ -38,9 +39,10 @@ export function TaskAIQualityFunnelPanel({ funnel }: { funnel: TaskCenterDetail[
     { title: '内容样例', dataIndex: 'content', ellipsis: true },
     { title: '细节', dataIndex: 'detail', width: 180, ellipsis: true, render: (value) => value || '-' },
   ];
-  if (!totals.action_count && !totals.candidate_count) return null;
+  if (!totals.action_count && !totals.candidate_count && !funnel.runtime?.generation_outcomes?.work_count) return null;
   return (
     <Space direction="vertical" size={8} style={{ width: '100%' }}>
+      <TaskAIRuntimeEvidence runtime={funnel.runtime} />
       <Descriptions
         bordered
         size="small"
@@ -48,7 +50,7 @@ export function TaskAIQualityFunnelPanel({ funnel }: { funnel: TaskCenterDetail[
         items={[
           { key: 'candidate', label: '候选数', children: totals.candidate_count || 0 },
           { key: 'passed', label: '通过文本', children: totals.passed_count || 0 },
-          { key: 'sent', label: '最终发送', children: totals.final_send_count || 0 },
+          { key: 'sent', label: '发送回执', children: totals.final_send_count || 0 },
           { key: 'actions', label: '动作数', children: totals.action_count || 0 },
         ]}
       />

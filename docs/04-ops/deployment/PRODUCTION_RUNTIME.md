@@ -1,5 +1,9 @@
 # TG 运营管理平台生产部署说明
 
+## 2026-09-10 活群状态与诊断一致性修复
+
+专项合同 `ai-group-state-diagnostics-integrity-20260910-prd.md`：救援终态与关闭义务优先，刷新锁后核验且不重排既有未知；原 Action/Attempt 保存读取和 RPC 阶段诊断；当前义务结果、原截止队列与历史生成 Job 分开展示。无迁移、批量恢复或新增远端调用。发布后独立核对完整 SHA/runtime，再只读核对旧救援展示、新诊断及 Task→ledger→Action→Attempt→typed fact。状态修复不代替成员权限、消息可见性和日目标验收。Release Gate 见 `docs/05-implementation/ai-group-state-diagnostics-repair-20260910.md`。
+
 ## 2026-09-10 AI生成结算一致性修复
 
 合同`ai-generation-settlement-integrity-20260910-prd.md`：原Action释放和GenerationJob ready同事务提交；仅对原身份、原hash和有效候选窗收口过期生成。Job应急阶段使用32字符字段可容纳的稳定状态，完整原因单独保留；v2话题预检与绑定共用事实清洗口径。无迁移、配置切换或历史终态恢复apply。部署后从实际发布时间只读核对新结算摘要、字段溢出、ready误取消以及Task→ledger→Action→Attempt→typed消息；生成状态正确与日目标完成分别验收。发布闸门见`docs/05-implementation/ai-generation-settlement-repair-20260910.md`。

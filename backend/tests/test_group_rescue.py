@@ -29,6 +29,7 @@ from app.services.tenants import group_rescue_settings_payload, update_group_res
 
 
 NOW = datetime(2026, 6, 22, 10, 0, 0)
+pytestmark = pytest.mark.no_postgres
 
 
 def _permission_denied_send_action(action_id: str, task_id: str, when: datetime) -> Action:

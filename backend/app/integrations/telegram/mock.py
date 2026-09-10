@@ -1043,6 +1043,7 @@ class TelegramGateway:
         *,
         control_only: bool = False,
         after_message_id: int | None = None,
+        include_diagnostics: bool = False,
         timeout_seconds: float | None = None,
         connect_timeout_seconds: float | None = None,
     ) -> list[GroupMessageSnapshot]:
@@ -1056,6 +1057,10 @@ class TelegramGateway:
                 sent_at=now_value,
             )
         ][:limit]
+        if include_diagnostics:
+            from .message_observation import GroupMessageObservation
+
+            return GroupMessageObservation(tuple([] if control_only else snapshots), {"read_status": "mock"})
         return [] if control_only else snapshots
 
     def fetch_group_message(

@@ -83,7 +83,7 @@ def test_runtime_diagnostics_exposes_status_funnel_revisions_and_full_tokens() -
             "accepted_candidates": 1,
             "provider_attempts": 1,
             "ready_actions": 1,
-            "telegram_remote_success": 1,
+            "telegram_remote_success": 0,
         }
         assert result["active_revisions"] == {
             "route": ["general"],

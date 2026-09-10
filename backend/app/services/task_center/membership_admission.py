@@ -26,7 +26,7 @@ MEMBERSHIP_UNKNOWN_STATUS = "unknown_after_send"
 MEMBERSHIP_DONE_STATUSES = {"success", "failed", "skipped", MEMBERSHIP_UNKNOWN_STATUS}
 TEST_MESSAGE_DONE_STATUSES = {"success", "failed", MEMBERSHIP_UNKNOWN_STATUS}
 DELETE_DONE_STATUSES = {"success", "failed", MEMBERSHIP_UNKNOWN_STATUS}
-RESCUE_DONE_STATUSES = {"success", "failed", "skipped", MEMBERSHIP_UNKNOWN_STATUS}
+RESCUE_DONE_STATUSES = {"success", "failed", "skipped", "closed_unknown", MEMBERSHIP_UNKNOWN_STATUS}
 
 
 def lock_membership_admission_snapshot(session: Session, task: Task, now: datetime | None = None) -> list[TaskMembershipAdmissionItem]:
@@ -307,7 +307,7 @@ def _refresh_existing_rescue_action(session: Session, task: Task, item: TaskMemb
         operation_target_id=item.target_id,
     )
     item.rescue_status = result.status
-    item.rescue_failure_detail = "" if result.action else result.detail
+    item.rescue_failure_detail = "" if result.status == "pending" else result.detail
 
 
 def _wake_task(task: Task) -> None:

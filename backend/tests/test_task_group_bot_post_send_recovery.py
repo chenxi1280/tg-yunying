@@ -8,6 +8,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
+from app.integrations.telegram.message_observation import GroupMessageObservation
 from app.models import Action, Task, TaskGroupBotAdmission, Tenant, TgAccount, TgGroup
 from app.services.task_center.task_group_bot_post_send_recovery import (
     POST_SEND_CONTROL_FETCH_LIMIT,
@@ -119,13 +120,18 @@ def _prompt(
 
 def _recover(session: Session, action: Action, fetcher):
     transport = SimpleNamespace(session_ciphertext="cipher", credentials=object())
+    def observed_fetcher(*args, **kwargs):
+        messages = fetcher(*args, **kwargs)
+        if isinstance(messages, GroupMessageObservation):
+            return messages
+        return GroupMessageObservation(tuple(messages), {"read_status": "test_fixture"})
     return recover_post_send_interception(
         session,
         action,
         target_peer="-1007",
         remote_message_id="600",
         transport=transport,
-        fetcher=fetcher,
+        fetcher=observed_fetcher,
     )
 
 
@@ -149,6 +155,7 @@ def test_same_view_admin_prompt_materializes_task_scoped_requirements() -> None:
             "limit": POST_SEND_CONTROL_FETCH_LIMIT,
             "control_only": True,
             "after_message_id": 600,
+            "include_diagnostics": True,
         }
 
 

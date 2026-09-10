@@ -2,12 +2,17 @@ from __future__ import annotations
 
 from datetime import datetime
 
+import pytest
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.models import Action, OperationTarget, Task, TaskMembershipAdmissionItem, Tenant, TgAccount
 from app.services.task_center.membership_admission import sync_membership_admission_items
+
+
+pytestmark = pytest.mark.no_postgres
 
 
 def test_membership_admission_unknown_after_send_waits_for_manual_confirmation() -> None:

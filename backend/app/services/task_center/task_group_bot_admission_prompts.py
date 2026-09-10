@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from collections import Counter
+from dataclasses import dataclass, field
 
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
@@ -34,6 +35,7 @@ class PostSendControlRecovery:
     status: str
     reason: str
     source_message_id: str = ""
+    diagnostics: dict = field(default_factory=dict)
 
 
 def record_post_send_control_facts(
@@ -43,10 +45,15 @@ def record_post_send_control_facts(
 ) -> PostSendControlRecovery:
     candidates = _task_group_candidate_accounts(session, admission)
     last_reason = "post_send_control_missing"
+    reasons = Counter()
+    role_errors = Counter()
     for message in messages:
         reason = _strict_post_send_rejection(admission, message, candidates)
         if reason:
             last_reason = reason
+            reasons[reason] += 1
+            if getattr(message, "sender_role_error", ""):
+                role_errors[message.sender_role_error] += 1
             continue
         message_id = str(getattr(message, "remote_message_id", "") or "")
         content = str(getattr(message, "content", "") or "")
@@ -64,8 +71,10 @@ def record_post_send_control_facts(
         ):
             return PostSendControlRecovery("retry", "c2_observation_version_conflict")
         _record_post_send_control_fact(session, admission, message)
-        return PostSendControlRecovery("matched", "strict_same_view_prompt", message_id)
-    return PostSendControlRecovery("blocked", last_reason)
+        return PostSendControlRecovery("matched", "strict_same_view_prompt", message_id,
+            diagnostics={"rejection_counts": dict(reasons), "source_role_error_counts": dict(role_errors)})
+    return PostSendControlRecovery("blocked", last_reason,
+        diagnostics={"rejection_counts": dict(reasons), "source_role_error_counts": dict(role_errors)})
 
 
 def _task_group_candidate_accounts(
@@ -95,8 +104,14 @@ def _strict_post_send_rejection(
     if not message_id:
         return "post_send_control_message_id_missing"
     sender_role = str(getattr(message, "sender_role", ""))
-    if not getattr(message, "is_bot", False) or sender_role not in {"admin", "owner"}:
-        return "post_send_control_source_untrusted"
+    if not getattr(message, "is_bot", False):
+        return "post_send_control_source_untrusted_non_bot"
+    if getattr(message, "sender_role_error", ""):
+        return "post_send_control_source_role_lookup_failed"
+    if sender_role == "unknown":
+        return "post_send_control_source_role_unknown"
+    if sender_role not in {"admin", "owner"}:
+        return "post_send_control_source_untrusted_non_admin"
     if not bot_peer_id or not _expected_bot_matches(admission, bot_peer_id):
         return "post_send_control_bot_mismatch"
     content = str(getattr(message, "content", "") or "")

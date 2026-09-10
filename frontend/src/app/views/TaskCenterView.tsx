@@ -5,6 +5,7 @@ import { Activity, CirclePause, CirclePlay, RefreshCcw } from 'lucide-react';
 import { api, apiWithMeta, apiErrorFromResponse, ApiError, API_BASE } from '../../shared/api/client';
 import type { Account, AccountPool, ChannelMessage, ChannelMessageComment, MaterialGroup, OperationTarget, PromptTemplate, RuleSet, TaskCenterAction, TaskCenterAnyTaskType, TaskCenterDetail, TaskCenterListItem, TaskCenterPrefill, TaskCenterTask, TaskCenterTaskType, TaskExecutionAttempt, TaskMembershipItem, TaskPrecheck, TenantBotSettings } from '../types';
 import { StatusBadge, StatCard } from '../components/shared';
+import { TaskActionFailureEvidence } from './TaskActionFailureEvidence';
 import { fromBeijingDateTimeLocalValue } from '../time';
 import {
   CREATE_AND_START_ENDPOINT,
@@ -2151,6 +2152,7 @@ export default function TaskCenterView({
     { title: '处理建议', key: 'failure_diagnosis_action', width: 260, ellipsis: true, render: (_, action) => failureDiagnosis(action)?.suggested_action || '-' },
     { title: '失败类型', key: 'failure_type', width: 140, render: (_, action) => action.status === 'success' ? '-' : action.failure_type || action.result?.error_code || '-' },
     { title: '可读原因', key: 'failure_reason', width: 220, ellipsis: true, render: (_, action) => action.status === 'success' ? '-' : action.failure_reason || action.result?.error_message || action.result?.detail || '-' },
+    { title: '调用与读取证据', key: 'failure_evidence', width: 260, render: (_, action) => <TaskActionFailureEvidence result={action.result} /> },
     { title: '运营异常', key: 'operation_issue', width: 130, render: (_, action) => action.operation_issue_rolled_up ? <Tag color="red">已上卷 #{action.operation_issue_id.slice(0, 8)}</Tag> : '-' },
     { title: 'Trace / 原始错误', key: 'trace', width: 220, ellipsis: true, render: (_, action) => action.trace_id || action.raw_error || '-' },
     { title: '结果', key: 'result', width: 220, render: (_, action) => actionResult(action) },

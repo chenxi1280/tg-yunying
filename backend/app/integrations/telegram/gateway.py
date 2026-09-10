@@ -13,6 +13,7 @@ from app.content_safety import CONTENT_BLOCK_REASON, outbound_segments_blocked
 from app.image_fingerprint import image_avatar_perceptual_hash
 from . import telethon_content, telethon_updates
 from .authorization_fingerprint import authorization_fingerprint_digest
+from .message_observation import GroupMessageObservation
 from .mock import TelegramGateway
 from .contracts import (
     AccountAuthorizationSnapshot,
@@ -143,6 +144,9 @@ def _failed_send_result(
     mapped: SendResult,
     remote_message_id: str | None,
     send_call_started: bool,
+    *,
+    rpc_error: Exception | None = None,
+    failure_stage: str = "",
 ) -> SendResult:
     mutation_state = True if remote_message_id else None if send_call_started else False
     return SendResult(
@@ -151,6 +155,13 @@ def _failed_send_result(
         failure_type=mapped.failure_type,
         detail=mapped.detail,
         remote_mutation_started=mutation_state,
+        diagnostics={
+            "rpc_error_type": type(rpc_error).__name__ if rpc_error is not None else "",
+            "rpc_request_type": type(rpc_error.request).__name__ if getattr(rpc_error, "request", None) is not None else "",
+            "failure_stage": failure_stage,
+            "send_call_started": send_call_started,
+            "remote_mutation_state": "true" if mutation_state is True else "false" if mutation_state is False else "unknown",
+        },
     )
 
 
@@ -1691,6 +1702,7 @@ class TelethonTelegramGateway(TelegramGateway):
 
         try:
             target = await resolve_telethon_target(client, peer_id, group_id=group_id)
+            progress.stage = "prepare_send"
             await send_content(
                 client,
                 target,
@@ -1710,6 +1722,8 @@ class TelethonTelegramGateway(TelegramGateway):
                 mapped,
                 progress.remote_message_id,
                 progress.send_call_started,
+                rpc_error=exc,
+                failure_stage=progress.stage,
             )
 
     def send_message(
@@ -3492,8 +3506,9 @@ class TelethonTelegramGateway(TelegramGateway):
         *,
         control_only: bool = False,
         after_message_id: int | None = None,
+        include_diagnostics: bool = False,
         connect_timeout_seconds: float | None = None,
-    ) -> list[GroupMessageSnapshot]:
+    ) -> list[GroupMessageSnapshot] | GroupMessageObservation:
         client = await self._authorized_client(
             session_ciphertext,
             credentials,
@@ -3506,6 +3521,7 @@ class TelethonTelegramGateway(TelegramGateway):
             limit,
             control_only=control_only,
             after_message_id=after_message_id,
+            include_diagnostics=include_diagnostics,
         )
 
     async def _fetch_group_message_async(
@@ -3535,9 +3551,10 @@ class TelethonTelegramGateway(TelegramGateway):
         *,
         control_only: bool = False,
         after_message_id: int | None = None,
+        include_diagnostics: bool = False,
         timeout_seconds: float | None = None,
         connect_timeout_seconds: float | None = None,
-    ) -> list[GroupMessageSnapshot]:
+    ) -> list[GroupMessageSnapshot] | GroupMessageObservation:
         timeout = _listener_rpc_timeout(self.settings, timeout_seconds)
         connect_timeout = _listener_connect_timeout(
             self.settings,
@@ -3550,6 +3567,7 @@ class TelethonTelegramGateway(TelegramGateway):
             limit,
             control_only=control_only,
             after_message_id=after_message_id,
+            include_diagnostics=include_diagnostics,
             connect_timeout_seconds=connect_timeout,
         )
         return self._run(

@@ -6,14 +6,16 @@ from sqlalchemy.orm import Session
 from app.models import (
     Action,
     AiProviderAttempt,
-    FulfillmentRemoteFact,
     FulfillmentShortfallFact,
     GenerationJob,
     Task,
 )
+from .ai_generation_outcome_diagnostics import generation_outcome_diagnostics
+from .ai_queue_diagnostics import task_queue_diagnostics
+from .ai_message_evidence_query import verified_message_action_ids
 
 
-def ai_runtime_diagnostics(session: Session, task: Task) -> dict:
+def ai_runtime_diagnostics(session: Session, task: Task, *, since=None) -> dict:
     job_filter = GenerationJob.task_id == task.id
     action_filter = (
         Action.task_id == task.id,
@@ -21,6 +23,9 @@ def ai_runtime_diagnostics(session: Session, task: Task) -> dict:
         Action.action_type == "send_message",
     )
     return {
+        "generation_outcomes": generation_outcome_diagnostics(session, task, since=since),
+        "generation_stage_scope": "all_historical_jobs",
+        "original_deadline_queue": task_queue_diagnostics(session, task),
         "generation_stage_counts": _grouped_counts(
             session, GenerationJob.generation_stage, job_filter,
         ),
@@ -30,7 +35,7 @@ def ai_runtime_diagnostics(session: Session, task: Task) -> dict:
         ),
         "dialogue_chain_state_counts": _dialogue_counts(session, action_filter),
         "token_ledger": _token_ledger(session, task.id),
-        "conversion_funnel": _conversion_funnel(session, task.id, action_filter),
+        "conversion_funnel": _conversion_funnel(session, task, action_filter),
         "active_revisions": _active_revisions(session, task.id),
     }
 
@@ -78,7 +83,8 @@ def _attempt_counts(session: Session, column, job_filter) -> dict[str, int]:
     return {str(key): int(count or 0) for key, count in rows if key}
 
 
-def _conversion_funnel(session: Session, task_id: str, action_filter: tuple) -> dict:
+def _conversion_funnel(session: Session, task: Task, action_filter: tuple) -> dict:
+    task_id = task.id
     ready = Action.payload["ai_generation_status"].as_string() == "ready"
     return {
         "generation_jobs": _count(session, GenerationJob.id, GenerationJob.task_id == task_id),
@@ -88,11 +94,9 @@ def _conversion_funnel(session: Session, task_id: str, action_filter: tuple) -> 
         ),
         "provider_attempts": _provider_attempt_count(session, task_id),
         "ready_actions": _count(session, Action.id, *action_filter, ready),
-        "telegram_remote_success": _count(
-            session, FulfillmentRemoteFact.fact_id,
-            FulfillmentRemoteFact.task_id == task_id,
-            FulfillmentRemoteFact.fact_kind == "remote_message_observed",
-        ),
+        "telegram_remote_success": int(session.scalar(select(func.count()).select_from(
+            verified_message_action_ids(task).subquery(),
+        )) or 0),
     }
 
 

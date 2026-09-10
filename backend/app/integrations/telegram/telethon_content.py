@@ -21,22 +21,23 @@ from .contracts import (
 )
 from .mock import source_media_hint
 from .telethon_utils import resolve_telethon_target
+from .message_observation import GroupMessageObservation, message_observation
 
 
-async def _sender_role(client, target, sender) -> str:
+async def _sender_role(client, target, sender) -> tuple[str, str]:
     if sender is None:
-        return "unknown"
+        return "unknown", "sender_missing"
     try:
         permissions = await client.get_permissions(target, sender)
-    except Exception:
-        return "unknown"
+    except Exception as exc:
+        return "unknown", type(exc).__name__
     participant = getattr(permissions, "participant", None)
     names = {type(permissions).__name__.lower(), type(participant).__name__.lower() if participant is not None else ""}
     if getattr(permissions, "is_creator", False) or any("creator" in name for name in names):
-        return "owner"
+        return "owner", ""
     if getattr(permissions, "is_admin", False) or any("admin" in name for name in names):
-        return "admin"
-    return "member"
+        return "admin", ""
+    return "member", ""
 
 
 def _sender_peer_type(sender) -> str:
@@ -123,7 +124,8 @@ async def fetch_group_messages(
     *,
     control_only: bool = False,
     after_message_id: int | None = None,
-) -> list[GroupMessageSnapshot]:
+    include_diagnostics: bool = False,
+) -> list[GroupMessageSnapshot] | GroupMessageObservation:
     target = await resolve_telethon_target(client, peer_id, group_id=1)
     if after_message_id is None:
         messages_resp = await client.get_messages(target, limit=limit)
@@ -138,9 +140,14 @@ async def fetch_group_messages(
                 limit=limit,
             )
         ]
+    raw = messages
     if control_only:
         messages = [message for message in messages if _control_buttons(message)]
-    return await _group_message_snapshots(client, target, peer_id, messages)
+    snapshots = await _group_message_snapshots(client, target, peer_id, messages)
+    if include_diagnostics:
+        return message_observation(raw, messages, snapshots, limit=limit,
+            after_message_id=after_message_id, control_only=control_only)
+    return snapshots
 
 
 async def fetch_group_message(client, peer_id: str, message_id: str) -> GroupMessageSnapshot | None:
@@ -157,7 +164,7 @@ async def _group_message_snapshots(client, target, peer_id: str, messages: list[
     viewer_peer_id = str(getattr(viewer, "id", "") or "")
     grouped_totals = _grouped_media_totals(messages)
     grouped_seen: dict[str, int] = {}
-    sender_role_cache: dict[str, str] = {}
+    sender_role_cache: dict[str, tuple[str, str]] = {}
     snapshots: list[GroupMessageSnapshot] = []
     for message in messages:
         snapshot = await _group_message_snapshot(
@@ -190,7 +197,7 @@ async def _group_message_snapshot(
     message: object,
     grouped_totals: dict[str, int],
     grouped_seen: dict[str, int],
-    sender_role_cache: dict[str, str],
+    sender_role_cache: dict[str, tuple[str, str]],
 ) -> GroupMessageSnapshot | None:
     text = getattr(message, "message", "") or ""
     controls = _control_buttons(message)
@@ -219,7 +226,8 @@ async def _group_message_snapshot(
         message_type="media" if media else "text",
         sent_at=getattr(message, "date", None),
         is_bot=bool(getattr(sender, "bot", False)),
-        sender_role=sender_role_cache[role_cache_key],
+        sender_role=sender_role_cache[role_cache_key][0],
+        sender_role_error=sender_role_cache[role_cache_key][1],
         caption=text,
         media_type=media_type,
         media_fingerprint=source_media_hint(peer_id, remote_id, group_id, media_type),

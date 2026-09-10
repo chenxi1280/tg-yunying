@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
@@ -34,7 +35,7 @@ def recover_post_send_interception(
     except (TypeError, ValueError):
         return _block_admission(session, admission, action, "remote_message_id_invalid")
     try:
-        messages = fetcher(
+        observation = fetcher(
             int(action.account_id),
             target_peer,
             transport.session_ciphertext,
@@ -42,16 +43,27 @@ def recover_post_send_interception(
             limit=POST_SEND_CONTROL_FETCH_LIMIT,
             control_only=True,
             after_message_id=after_message_id,
+            include_diagnostics=True,
         )
     except Exception as exc:  # noqa: BLE001 - transport errors retain the hold for retry.
-        return PostSendControlRecovery(
-            "retry",
-            f"post_send_control_fetch_failed:{type(exc).__name__}",
-        )
-    result = record_post_send_control_facts(session, admission, list(messages or ()))
+        return _record_observation(action, PostSendControlRecovery(
+            "retry", f"post_send_control_fetch_failed:{type(exc).__name__}",
+        ), {"read_status": "failed", "error_type": type(exc).__name__,
+            "after_message_id": after_message_id, "limit": POST_SEND_CONTROL_FETCH_LIMIT})
+    result = record_post_send_control_facts(session, admission, list(observation.messages))
+    result = _record_observation(action, result, observation.diagnostics)
     if result.status != "blocked":
         return result
-    return _block_admission(session, admission, action, result.reason)
+    return _block_admission(session, admission, action, result.reason, diagnostics=result.diagnostics)
+
+
+def _record_observation(action, result, diagnostics):
+    merged = {**diagnostics, **result.diagnostics}
+    reason = result.reason
+    if reason == "post_send_control_missing" and merged.get("read_status") == "observed":
+        reason = "post_send_control_no_buttons" if merged["raw_message_count"] else "post_send_control_empty_window"
+    action.result = {**dict(action.result or {}), "post_send_control_diagnostics": merged}
+    return replace(result, reason=reason, diagnostics=merged)
 
 
 def _bound_admission(
@@ -78,6 +90,8 @@ def _block_admission(
     admission: TaskGroupBotAdmission,
     action: Action,
     reason: str,
+    *,
+    diagnostics: dict | None = None,
 ) -> PostSendControlRecovery:
     expected_version = int(admission.version or 1)
     remote_id = str((action.result or {}).get("telegram_msg_id") or "")
@@ -86,6 +100,7 @@ def _block_admission(
         "reason": reason[:120],
         "source_action_id": str(action.id),
         "remote_message_id_hash": hashlib.sha256(remote_id.encode()).hexdigest(),
+        "control_observation": dict(diagnostics or {}),
     }
     changed = session.execute(
         update(TaskGroupBotAdmission)
@@ -105,7 +120,7 @@ def _block_admission(
         return PostSendControlRecovery("retry", "c2_observation_version_conflict")
     session.refresh(admission)
     record_fact(session, admission, "post_follow_visibility", outcome=evidence)
-    return PostSendControlRecovery("blocked", reason)
+    return PostSendControlRecovery("blocked", reason, diagnostics=dict(diagnostics or {}))
 
 
 __all__ = ["POST_SEND_CONTROL_FETCH_LIMIT", "recover_post_send_interception"]

@@ -7698,7 +7698,9 @@ def _action_payload(
     issue: OperationIssue | None = None,
     account: TgAccount | None = None,
 ) -> dict[str, Any]:
-    result = action.result or {}
+    from .group_rescue_state import rescue_result_snapshot
+
+    result = rescue_result_snapshot(action)
     failure_type = _action_failure_type(action)
     failure_reason = _action_failure_reason(action)
     return _ActionPayload(
