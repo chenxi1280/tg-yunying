@@ -1676,3 +1676,5 @@ legacy-only A 冷启动分支固定为 `frozen legacy A -> 原 A Session 只读 
 - 2026-09-10 topic_only配置主题按既有规则提取不到输入证据时，在Provider前记录topic_only_topic_evidence_missing并保留原数量交接已授权应急；scope/route授权/policy/window错误不归并。详见供给与兜底专项PRD第三次生产反查。
 
 - 2026-09-10 应急数量证据：发送memory结果更新保留冻结selection/hash；基本数量用原AiGroupEmergencySelection权威事实核验，历史memory副本hash缺失不改写事实、不重发。见供给与兜底专项PRD第四次生产反查。
+
+2026-09-10 DF-360 resync：Collector channel batch → 锁定当前 Task 生命周期 → 当前 Clone stream；paused 保持暂停且不生成新 SourceEvent，正常 incomplete → final 可恢复。too_long → 旧 stream blocked + continuity_lost，不写完整增量 Ingress、不被较新 final 或同 epoch Start/Resume 清除；显式 Stop/Start 才建立新起点。账号池不足仍等待原绑定，Gateway 顺序和旧 unknown 合同保持。

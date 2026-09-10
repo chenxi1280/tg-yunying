@@ -101,6 +101,13 @@ def _fail_clone_start(session, task, *, stream, exc) -> None:
 
 
 def consume_clone_deliveries(session: Session, task: Task, *, limit: int = 200) -> int:
+    session.flush()
+    current = session.scalar(select(Task).where(Task.id == task.id).with_for_update()
+                             .execution_options(populate_existing=True))
+    if current is None or current.status not in {"pending", "running"}:
+        return 0
+    if current.deleted_at is not None or current.retired_at is not None:
+        return 0
     stream = _stream(session, task, lock=True)
     if stream is None or stream.state not in {"catching_up", "live"}:
         return 0
