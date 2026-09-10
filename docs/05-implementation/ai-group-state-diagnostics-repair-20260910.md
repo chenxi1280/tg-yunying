@@ -4,7 +4,7 @@
 - release_owner / merge_owner / rollback_owner：本任务执行者。
 - 工作树：`/tmp/tgyunying-ai-group-full-recovery-20260910`；分支：`codex/ai-group-full-recovery-20260910`。
 - 原始基线：43640011607f6e1ba166505192a09cecdd4a04f9；其他任务随后在 master 发布 Clone 修复，集成前必须重新检查 ancestry。
-- 状态：本地修复及定向验证完成，集成与生产发布待执行。`production_fixed=false`。
+- 状态：首轮候选已发布并读回；线上发现权限恢复提前返回丢失诊断，已完成 PRD resync 与补修，二次发布待执行。`production_fixed=false`。
 
 ## Product → Dev → QA
 
@@ -36,14 +36,24 @@
 - migration_impact：无新增迁移；既有事实、未知、日目标、原预约保持。
 - worker_impact：救援终态保护与结构化诊断在正式 worker 生效；无任务激活、批量恢复或补发。
 - external_platform_impact：没有新增远端操作类别或调用；仅现有调用的状态处理与观测。
-- ci_or_build：等待集成候选 Prepare Production 全部通过。
+- ci_or_build：首轮候选 ea6e592d 的 Prepare Production 全部通过（7,836 passed，14 skipped，2 xfailed）；补修候选需要再次完整 Prepare。
 - rollback_plan：兼容代码回滚/前向修复；不删除诊断证据、不重放未知、不恢复旧 pending 误投影。
 - observe_window：以实际部署完成时间为锚，独立核对 SHA/容器健康及新 Action/Attempt 诊断，再按 Task→ledger→Action→Attempt→typed fact 报告业务状态。
 - production_status：unproven。真实成员权限、全部消息可见性和完整日目标不能从本地测试/部署成功推断。
 
 ## 生产执行记录
 
-待集成、Prepare、发布、独立读回完成后追加实际 SHA、run ID 和证据结论。
+首轮候选 `ea6e592d3b75314034cdc7da872cb582a2fc0b35`：Prepare [34432262496](https://github.com/chenxi1280/tg-yunying/actions/runs/34432262496) 成功；Deploy [34432815728](https://github.com/chenxi1280/tg-yunying/actions/runs/34432815728) 于 2026-09-10 11:21:36 +08:00 成功。
+
+11:23:56 独立读回 current `/data/tgyunying/releases/20260910031852_ea6e592d`；backend 与 18 个 worker 完整 SHA 一致，图像验证服务按 Prepare 镜像摘要匹配，20 个容器全部 healthy；本地/公网 API ok，实际前端静态目录与发布一致。迁移仍为 `0231_ai_group_emergency_history`。
+
+11:24:05 比较发布前后 1,496 条旧救援记录：身份、stored status、结果 hash 与 Gateway 调用次数全部不变。11:24:53 的 repeatable-read/read-only 快照抽样 21 条旧救援均投影为 closed_unknown；3 条原截止外排期仍独立显示；发布锚点后 8 条严格消息事实只证明局部新消息，10 项日目标均未完成。
+
+### 线上发现后返回 Dev / QA
+
+成都新 Action `1c235c85-dc43-4630-ac06-c8e3700080af` 在发布后发生真实 Gateway 调用，随后权限恢复提前返回绕过 `_finalize_group_send`，Action/Attempt 均缺诊断。新增真实入口回归复现 `KeyError: send_diagnostics`；通用 helper 在常规结算和提前返回两条路径保存原 SendResult 的诊断，保留未知 Action/Attempt/journal 的状态。专项 PRD resync complete，结构/数据流索引同步；35 项定向回归通过，所有命令硬超时 60 秒。
+
+同窗口另有生成合同拒绝：`AiContentJobBindingError/context_route_evidence_missing`，未创建 Gateway Attempt，不能归为旧字段溢出或 Provider 故障；本次不伪造上下文或解除既有证据要求。
 
 ### CI 反馈修复
 

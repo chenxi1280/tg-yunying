@@ -55,3 +55,40 @@ def _assert_persisted_result(result):
             assert action.status == "unknown_after_send"
             assert attempt.status == "result_unknown"
     engine.dispose()
+
+
+def test_permission_recovery_early_return_keeps_original_rpc_evidence(monkeypatch):
+    from app.integrations.telegram.contracts import SendResult
+    from app.services.task_center import dispatcher
+
+    diagnostics = {"rpc_error_type": "ChatWriteForbiddenError", "failure_stage": "send_call",
+        "send_call_started": True, "remote_mutation_state": "unknown"}
+    result = SendResult(False, failure_type="群无权限", detail="cannot send", diagnostics=diagnostics)
+    monkeypatch.setattr("app.services.task_center.group_mutation_authority.ensure_platform_writer_admission", lambda *a, **k: (True, ""))
+    monkeypatch.setattr("app.services.task_center.ai_group_content_allocation.validate_content_intent_for_gateway", lambda *a, **k: None)
+    monkeypatch.setattr(dispatcher, "_outbound_segments", lambda payload: None)
+    monkeypatch.setattr(dispatcher.gateway, "send_message", lambda *a, **k: result)
+    engine = _engine()
+    with Session(engine) as session:
+        action, attempt = _seed_started_attempt(session)
+        bind_gateway_request_identity(action, attempt)
+        account = session.get(TgAccount, action.account_id)
+        context = SimpleNamespace(account=account, credentials=None, content="hello",
+            group=SimpleNamespace(id=1, group_type="supergroup", tg_peer_id="-100123"),
+            payload=SimpleNamespace(emergency_selection_id="", ai_generation_context_mode="",
+                conversation_turn_claim_id="", reply_to_message_id=None, message_text="hello"))
+        monkeypatch.setattr(dispatcher, "_reserve_group_send_attempt", lambda *a, **k: attempt)
+
+        def recover(*args):
+            dispatcher._fail(action, "群无权限", "cannot send", validation_stage="send_permission")
+            dispatcher._finish_execution_attempt(attempt, action, failure_type="群无权限", detail="cannot send")
+            return True
+
+        monkeypatch.setattr(dispatcher, "_recover_send_message_required_channel", recover)
+        assert dispatcher._send_group_message_via_gateway(session, action, context)
+        session.flush()
+        assert action.result["send_diagnostics"] == diagnostics
+        assert attempt.result_snapshot["send_diagnostics"] == diagnostics
+        assert action.status == "unknown_after_send"
+        assert attempt.status == "result_unknown"
+    engine.dispose()

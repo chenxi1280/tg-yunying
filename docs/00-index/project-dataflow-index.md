@@ -1680,3 +1680,5 @@ legacy-only A 冷启动分支固定为 `frozen legacy A -> 原 A Session 只读 
 - 2026-09-10 应急数量证据：发送memory结果更新保留冻结selection/hash；基本数量用原AiGroupEmergencySelection权威事实核验，历史memory副本hash缺失不改写事实、不重发。见供给与兜底专项PRD第四次生产反查。
 
 2026-09-10 DF-360 resync：Collector channel batch → 锁定当前 Task 生命周期 → 当前 Clone stream；paused 保持暂停且不生成新 SourceEvent，正常 incomplete → final 可恢复。too_long → 旧 stream blocked + continuity_lost，不写完整增量 Ingress、不被较新 final 或同 epoch Start/Resume 清除；显式 Stop/Start 才建立新起点。账号池不足仍等待原绑定，Gateway 顺序和旧 unknown 合同保持。
+
+- 群发送 RPC 诊断在常规 `_apply_send_result` 和权限恢复提前返回两条分支均保存到原 Action/Attempt；原 Gateway journal 的 unknown/true/false 不随诊断写入改变。

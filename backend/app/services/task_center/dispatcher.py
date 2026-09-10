@@ -4300,6 +4300,9 @@ def _send_group_message_via_gateway(
         result,
         attempt,
     ):
+        from .send_result_diagnostics import record_send_diagnostics
+
+        record_send_diagnostics(action, getattr(result, "diagnostics", None), attempt=attempt)
         return True
     _lock_post_gateway_dispatch_prefix(session, action)
     _finalize_group_send(session, action, context, result=result, attempt=attempt)
@@ -8360,8 +8363,9 @@ def _apply_send_result(action: Action, account: TgAccount, ok: bool, remote_id: 
     else:
         _apply_failed_send_result(action, account, failure_type, detail)
     action.executed_at = None if action.status == "pending" else _now()
-    if send_diagnostics:
-        action.result = {**dict(action.result or {}), "send_diagnostics": dict(send_diagnostics)}
+    from .send_result_diagnostics import record_send_diagnostics
+
+    record_send_diagnostics(action, send_diagnostics, attempt=attempt)
     if remote_fact_id:
         action.result = {
             **dict(action.result or {}),
