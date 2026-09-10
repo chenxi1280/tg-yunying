@@ -1629,3 +1629,5 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 2026-09-10 生产版本一致性修正：`ai_group_emergency_projection.py` 在选取事务中同步原FOP与Action内容版本；`ai_group_emergency_projection_repair.py` 在正式义务注册/批量维护入口精确对齐同一未调用旧选择，Gateway只校验。0231将历史选择唯一性按原数量+materialization版本记录，当前owner仍由FOP决定。
 
 - 2026-09-10 `ai_message_memory_evidence.py`：执行结果合并时保留应急selection/hash不可变审计字段；`ai_group_emergency`/`daily_group_target`从原选择事实核验应急基本数量，详见供给与兜底专项PRD第四次反查。
+
+2026-09-10 Clone 暂停与差量状态：`telegram_update_channels.py` 承担共享 channel 游标、错误投影和 Clone 来源状态更新，Collector 保留租约/远端读取/Ingress 持久化；状态更新按 Task → Stream 行锁读取当前生命周期。`group_clone_source_stream.py` 暂停消费门禁与 `group_clone_runtime_lifecycle.py` 的连续性检查保留旧 epoch 事实。回归入口 `test_group_clone_channel_lifecycle.py`、`test_group_clone_pause_postgres.py`。

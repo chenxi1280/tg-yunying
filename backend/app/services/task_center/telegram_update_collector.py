@@ -5,7 +5,7 @@ import socket
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.integrations.telegram.update_contracts import TelegramDifferenceBatch
@@ -14,14 +14,12 @@ from app.models import (
     Action,
     ExecutionAttempt,
     GatewayRequestEvidenceJournal,
-    Task,
     TgAccount,
     TgAccountAuthorization,
 )
-from app.models.group_clone import CloneSourceStreamState, TelegramGatewayMutationIdentity
+from app.models.group_clone import TelegramGatewayMutationIdentity
 from app.models.telegram_updates import (
     TelegramAuthorizationUpdateState,
-    TelegramAuthorizationUpdateSubscription,
 )
 from app.services._common import _now, audit, gateway
 from app.services.developer_apps import credentials_for_authorization
@@ -33,9 +31,13 @@ from .telegram_update_ingress import (
     record_outbound_random_id_mapping,
 )
 
+from .telegram_update_channels import (
+    apply_channel_batch, channel_cursors, channels_without_cursor,
+    clear_channel_error_from_tasks, project_channel_error_to_tasks,
+)
+
 COLLECTOR_LEASE_SECONDS = 90
 COLLECTOR_STATES = ("initializing", "catching_up", "live", "gap")
-SOURCE_STREAM_STATES = ("catching_up", "live", "gap")
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -143,7 +145,7 @@ def _drain_claim(session_factory, claim: CollectorClaim, result: CollectorDrainR
         runtime,
         result,
     )
-    for peer_id, pts in _channel_cursors(session_factory, claim.state_id):
+    for peer_id, pts in channel_cursors(session_factory, claim.state_id):
         try:
             channel_batch = gateway.fetch_raw_channel_difference(
                 peer_id,
@@ -166,7 +168,7 @@ def _ensure_subscription_channel_boundaries(
     runtime,
     result: CollectorDrainResult,
 ) -> None:
-    for peer_id in _channels_without_cursor(session_factory, claim.state_id):
+    for peer_id in channels_without_cursor(session_factory, claim.state_id):
         try:
             boundary = gateway.fetch_raw_channel_boundary(
                 peer_id,
@@ -183,41 +185,6 @@ def _ensure_subscription_channel_boundaries(
             peer_id=peer_id,
             boundary=boundary,
         )
-
-
-def _channels_without_cursor(session_factory, state_id: str) -> list[str]:
-    with session_factory() as session:
-        state = session.get(TelegramAuthorizationUpdateState, state_id)
-        channels = dict((state.difference_cursor or {}).get("channels") or {})
-        stream_pts = dict(session.execute(
-            select(
-                CloneSourceStreamState.source_peer_id,
-                func.max(CloneSourceStreamState.channel_pts),
-            )
-            .where(
-                CloneSourceStreamState.authorization_update_state_id == state_id,
-                CloneSourceStreamState.state.in_(SOURCE_STREAM_STATES),
-            )
-            .group_by(CloneSourceStreamState.source_peer_id)
-        ).all())
-        peer_ids = list(session.scalars(
-            select(TelegramAuthorizationUpdateSubscription.source_peer_id)
-            .where(
-                TelegramAuthorizationUpdateSubscription.authorization_update_state_id
-                == state_id,
-                TelegramAuthorizationUpdateSubscription.source_peer_type == "channel",
-                TelegramAuthorizationUpdateSubscription.state.in_(("initializing", "active")),
-            )
-            .distinct()
-        ))
-        return [
-            str(peer_id)
-            for peer_id in peer_ids
-            if max(
-                int((channels.get(str(peer_id)) or {}).get("pts") or 0),
-                int(stream_pts.get(str(peer_id)) or 0),
-            ) <= 0
-        ]
 
 
 def _persist_channel_boundary(
@@ -242,7 +209,7 @@ def _persist_channel_boundary(
         }
         cursor["channels"] = channels
         state.difference_cursor = cursor
-        _clear_channel_error_from_tasks(session, state.id, peer_id)
+        clear_channel_error_from_tasks(session, state.id, peer_id)
         state.lease_expires_at = _now() + timedelta(seconds=COLLECTOR_LEASE_SECONDS)
         state.version = int(state.version or 1) + 1
         session.commit()
@@ -267,63 +234,8 @@ def _record_channel_error(
         }
         cursor["channels"] = channels
         state.difference_cursor = cursor
-        _project_channel_error_to_tasks(session, state.id, peer_id, detail)
+        project_channel_error_to_tasks(session, state.id, peer_id, detail=detail)
         session.commit()
-
-
-def _project_channel_error_to_tasks(
-    session: Session,
-    state_id: str,
-    peer_id: str,
-    detail: str,
-) -> None:
-    subscriptions = list(session.scalars(
-        select(TelegramAuthorizationUpdateSubscription).where(
-            TelegramAuthorizationUpdateSubscription.authorization_update_state_id
-            == state_id,
-            TelegramAuthorizationUpdateSubscription.source_peer_type == "channel",
-            TelegramAuthorizationUpdateSubscription.source_peer_id == str(peer_id),
-            TelegramAuthorizationUpdateSubscription.state == "active",
-        )
-    ))
-    for subscription in subscriptions:
-        task = session.get(Task, subscription.task_id)
-        if task is None or task.task_lifecycle_epoch != subscription.task_epoch:
-            continue
-        errors = dict((task.stats or {}).get("telegram_update_channel_errors") or {})
-        errors[str(peer_id)] = detail
-        task.stats = {
-            **dict(task.stats or {}),
-            "telegram_update_channel_errors": errors,
-        }
-
-
-def _clear_channel_error_from_tasks(
-    session: Session,
-    state_id: str,
-    peer_id: str,
-) -> None:
-    subscriptions = list(session.scalars(
-        select(TelegramAuthorizationUpdateSubscription).where(
-            TelegramAuthorizationUpdateSubscription.authorization_update_state_id
-            == state_id,
-            TelegramAuthorizationUpdateSubscription.source_peer_type == "channel",
-            TelegramAuthorizationUpdateSubscription.source_peer_id == str(peer_id),
-            TelegramAuthorizationUpdateSubscription.state == "active",
-        )
-    ))
-    for subscription in subscriptions:
-        task = session.get(Task, subscription.task_id)
-        if task is None or task.task_lifecycle_epoch != subscription.task_epoch:
-            continue
-        stats = dict(task.stats or {})
-        errors = dict(stats.get("telegram_update_channel_errors") or {})
-        errors.pop(str(peer_id), None)
-        if errors:
-            stats["telegram_update_channel_errors"] = errors
-        else:
-            stats.pop("telegram_update_channel_errors", None)
-        task.stats = stats
 
 
 def _authorization_runtime(session_factory, claim: CollectorClaim):
@@ -377,7 +289,7 @@ def _persist_batch(
         if batch.scope == "common":
             _apply_common_batch(state, batch)
         else:
-            _apply_channel_batch(session, state, batch, peer_id=peer_id)
+            apply_channel_batch(session, state, batch, peer_id=peer_id)
         state.lease_expires_at = _now() + timedelta(seconds=COLLECTOR_LEASE_SECONDS)
         state.version = int(state.version or 1) + 1
         session.commit()
@@ -385,6 +297,8 @@ def _persist_batch(
 
 
 def _persist_updates(session, state, *, claim, batch) -> dict[str, str]:
+    if batch.status == "too_long":
+        return {}
     event_hashes: dict[str, str] = {}
     for update in batch.updates:
         event, _ = ingest_normalized_update(
@@ -476,109 +390,6 @@ def _apply_common_batch(state, batch) -> None:
     state.difference_cursor = current
     state.state = "blocked" if batch.status == "too_long" else "catching_up" if not batch.final else "live"
     state.last_applied_at = _now()
-
-
-def _apply_channel_batch(session, state, batch, *, peer_id) -> None:
-    if not peer_id:
-        raise RuntimeError("telegram_channel_difference_peer_missing")
-    current = dict(state.difference_cursor or {})
-    channels = dict(current.get("channels") or {})
-    channels[peer_id] = {
-        **dict(batch.cursor or {}),
-        "status": batch.status,
-        "final": bool(batch.final),
-    }
-    current["channels"] = channels
-    state.difference_cursor = current
-    state.last_applied_at = _now()
-    _clear_channel_error_from_tasks(session, state.id, peer_id)
-    if batch.status == "too_long" or not batch.final:
-        reason = (
-            "group_clone_channel_difference_too_long"
-            if batch.status == "too_long"
-            else "group_clone_channel_difference_incomplete"
-        )
-        _block_channel_streams(session, state.id, peer_id, reason=reason)
-        return
-    _recover_channel_streams(session, state.id, peer_id)
-
-
-def _channel_cursors(session_factory, state_id: str) -> list[tuple[str, int]]:
-    with session_factory() as session:
-        state = session.get(TelegramAuthorizationUpdateState, state_id)
-        channel_state = dict((state.difference_cursor or {}).get("channels") or {})
-        stream_rows = session.execute(
-            select(
-                CloneSourceStreamState.source_peer_id,
-                func.min(CloneSourceStreamState.channel_pts),
-            )
-            .join(Task, Task.id == CloneSourceStreamState.task_id)
-            .where(
-                CloneSourceStreamState.authorization_update_state_id == state_id,
-                CloneSourceStreamState.state.in_(SOURCE_STREAM_STATES),
-                CloneSourceStreamState.channel_pts > 0,
-                Task.status.in_(("pending", "running", "failed")),
-                Task.task_lifecycle_epoch == CloneSourceStreamState.task_lifecycle_epoch,
-            )
-            .group_by(CloneSourceStreamState.source_peer_id)
-        ).all()
-        subscription_peer_ids = list(session.scalars(
-            select(TelegramAuthorizationUpdateSubscription.source_peer_id)
-            .where(
-                TelegramAuthorizationUpdateSubscription.authorization_update_state_id
-                == state_id,
-                TelegramAuthorizationUpdateSubscription.source_peer_type == "channel",
-                TelegramAuthorizationUpdateSubscription.state == "active",
-            )
-            .distinct()
-        ))
-        cursors = {
-            str(peer_id): int((channel_state.get(str(peer_id)) or {}).get("pts") or 0)
-            for peer_id in subscription_peer_ids
-        }
-        for peer_id, pts in stream_rows:
-            key = str(peer_id)
-            cursors[key] = max(cursors.get(key, 0), int(pts or 0))
-        return [
-            (peer_id, max(pts, int((channel_state.get(peer_id) or {}).get("pts") or 0)))
-            for peer_id, pts in cursors.items()
-            if max(pts, int((channel_state.get(peer_id) or {}).get("pts") or 0)) > 0
-        ]
-
-
-def _block_channel_streams(session, state_id: str, peer_id: str, *, reason: str) -> None:
-    streams = list(session.scalars(select(CloneSourceStreamState).where(
-        CloneSourceStreamState.authorization_update_state_id == state_id,
-        CloneSourceStreamState.source_peer_id == peer_id,
-        CloneSourceStreamState.state.in_(SOURCE_STREAM_STATES),
-    ).with_for_update()))
-    for stream in streams:
-        stream.state = "gap"
-        task = session.get(Task, stream.task_id)
-        if task and task.task_lifecycle_epoch == stream.task_lifecycle_epoch:
-            task.status = "failed"
-            task.last_error = reason
-            task.stats = {**dict(task.stats or {}), "clone_start_state": "runtime_blocked"}
-
-
-def _recover_channel_streams(session, state_id: str, peer_id: str) -> None:
-    streams = list(session.scalars(select(CloneSourceStreamState).where(
-        CloneSourceStreamState.authorization_update_state_id == state_id,
-        CloneSourceStreamState.source_peer_id == peer_id,
-        CloneSourceStreamState.state == "gap",
-    ).with_for_update()))
-    for stream in streams:
-        task = session.get(Task, stream.task_id)
-        if task is None or task.task_lifecycle_epoch != stream.task_lifecycle_epoch:
-            continue
-        stream.state = "catching_up"
-        stream.version = int(stream.version or 1) + 1
-        task.status = "running"
-        task.last_error = ""
-        task.stats = {
-            **dict(task.stats or {}),
-            "clone_start_state": "runtime_recovering",
-        }
 
 
 def _owned_state(session: Session, claim: CollectorClaim):

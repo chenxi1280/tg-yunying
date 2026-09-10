@@ -176,7 +176,7 @@ def test_zero_count_update_must_already_be_covered(clone_ingress_session, count,
 def test_zero_count_requires_same_channel_completed_difference(clone_ingress_session, proof, *, expected):
     from dataclasses import replace
     from app.integrations.telegram.update_contracts import TelegramDifferenceBatch
-    from app.services.task_center.telegram_update_collector import _apply_channel_batch
+    from app.services.task_center.telegram_update_channels import apply_channel_batch
     session, state = clone_ingress_session
     task = session.get(Task, "clone-ingress-task")
     batch = TelegramDifferenceBatch(scope="channel", status="live", cursor={"pts": 101})
@@ -184,7 +184,7 @@ def test_zero_count_requires_same_channel_completed_difference(clone_ingress_ses
     if proof == "too_long": batch = replace(batch, status="too_long")
     if proof == "behind": batch = replace(batch, cursor={"pts": 100})
     if proof != "missing":
-        _apply_channel_batch(session, state, batch, peer_id="-10099" if proof == "other_peer" else "-10011")
+        apply_channel_batch(session, state, batch, peer_id="-10099" if proof == "other_peer" else "-10011")
     ingress = replace(_ingress("channel-zero-count", message_id=11, pts=101), pts_count_evidence=None)
     _write_ingress(session, state, ingress)
     if proof == "state_gap": state.state = "gap"

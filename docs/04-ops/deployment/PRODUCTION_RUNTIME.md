@@ -4,6 +4,10 @@
 
 专项合同 `ai-group-state-diagnostics-integrity-20260910-prd.md`：救援终态与关闭义务优先，刷新锁后核验且不重排既有未知；原 Action/Attempt 保存读取和 RPC 阶段诊断；当前义务结果、原截止队列与历史生成 Job 分开展示。无迁移、批量恢复或新增远端调用。发布后独立核对完整 SHA/runtime，再只读核对旧救援展示、新诊断及 Task→ledger→Action→Attempt→typed fact。状态修复不代替成员权限、消息可见性和日目标验收。Release Gate 见 `docs/05-implementation/ai-group-state-diagnostics-repair-20260910.md`。
 
+## 2026-09-10 群克隆暂停与连续性修复
+
+专项 PRD §6.2/§12.1：共享 Collector 只恢复当前 epoch 的可恢复来源缺口，Task 行锁读回人工暂停；暂停不消费为新 CloneSourceEvent。`ChannelDifferenceTooLong` 保留原水位与 continuity_lost 证据，旧 epoch 为 blocked，不把返回快照当完整增量。原生 Resume/同 epoch Start 不可清除丢失事实；重新测试使用明确的 Stop/Start，新旧事件和 typed fact 分开。无迁移、账号池改写或自动任务激活，部署不恢复旧 unknown。Release Gate 与生产窄范围修正记录见 `docs/05-implementation/group-clone-progress-repair-20260910.md`；发布后分别核对暂停持久化和新增克隆事实。
+
 ## 2026-09-10 AI生成结算一致性修复
 
 合同`ai-generation-settlement-integrity-20260910-prd.md`：原Action释放和GenerationJob ready同事务提交；仅对原身份、原hash和有效候选窗收口过期生成。Job应急阶段使用32字符字段可容纳的稳定状态，完整原因单独保留；v2话题预检与绑定共用事实清洗口径。无迁移、配置切换或历史终态恢复apply。部署后从实际发布时间只读核对新结算摘要、字段溢出、ready误取消以及Task→ledger→Action→Attempt→typed消息；生成状态正确与日目标完成分别验收。发布闸门见`docs/05-implementation/ai-generation-settlement-repair-20260910.md`。

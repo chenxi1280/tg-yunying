@@ -17,6 +17,7 @@ from app.schemas.task_center import GroupCloneConfig, GroupCloneTaskCreate
 
 from .group_clone_precheck import precheck_group_clone, resolve_clone_config
 from .group_clone_start_rows import initialize_start_rows
+from .telegram_update_channels import CHANNEL_TOO_LONG, RECOVERABLE_ERRORS
 from .group_mutation_authority import (
     check_and_claim_exclusive_authority,
     compute_route_hash,
@@ -36,6 +37,7 @@ CANCELLABLE_OBLIGATION_STATES = (
 def start_existing_group_clone(session: Session, task: Task) -> None:
     if task.status not in {"draft", "prepared", "stopped", "failed"}:
         raise ValueError(f"group_clone 当前状态 {task.status} 不可启动")
+    _require_source_continuity(task, _current_stream(session, task))
     payload = _task_payload(task)
     precheck = precheck_group_clone(session, task.tenant_id, payload)
     if precheck.hard_blocks:
@@ -63,7 +65,8 @@ def start_existing_group_clone(session: Session, task: Task) -> None:
 
 
 def pause_group_clone(task: Task) -> None:
-    if task.status not in {"running", "pending"}:
+    source_failed = task.status == "failed" and task.last_error in RECOVERABLE_ERRORS | {CHANNEL_TOO_LONG}
+    if task.status not in {"running", "pending"} and not source_failed:
         raise ValueError(f"group_clone 当前状态 {task.status} 不可暂停")
     task.status = "paused"
     task.next_run_at = None
@@ -74,12 +77,20 @@ def resume_group_clone(session: Session, task: Task) -> None:
     stream = _current_stream(session, task)
     if stream is None:
         raise ValueError("group_clone resume stream missing")
+    _require_source_continuity(task, stream)
     _require_existing_authority(session, task)
     task.status = "running"
     task.next_run_at = None
     next_state = "running" if stream.state == "live" else "runtime_recovering"
     task.stats = {**dict(task.stats or {}), "clone_start_state": next_state}
     task.last_error = ""
+
+
+def _require_source_continuity(task, stream) -> None:
+    lost = stream is not None and (stream.difference_cursor or {}).get("continuity_lost")
+    legacy_lost = task.status != "stopped" and task.last_error == CHANNEL_TOO_LONG
+    if lost or legacy_lost:
+        raise ValueError("group_clone_source_continuity_lost: 保留旧证据，需 Stop/Start 建立新的实时起点")
 
 
 def stop_group_clone_runtime(session: Session, task: Task) -> None:

@@ -488,6 +488,7 @@ Telegram 远端与 PostgreSQL 不存在跨系统原子事务，因此禁止把�
 
 - 发现 `seq/pts/qts/channel_pts` 缺口时可等待 Telegram 推荐的短乱序窗口；缺口未自然补齐则进入 `gap` 并停止该 source 后续 obligation 的 Gateway 推进。
 - gap recovery 必须分页到 final，逐页提交 stream state 和 source event 幂等事实。
+- `ChannelDifferenceTooLong` 表示请求水位后的部分更新已经丢失，不属于可证明连续的分页；该 epoch 的 source stream 进入既有 `blocked`，保留旧水位、原因及返回水位证据。共享 Collector 可继续维护其他订阅，但较新的 `live/empty` 不能清除该 epoch 的历史缺口，返回的消息快照不能作为完整新增事件链写入 durable ingress。需要重新建立实时起点时沿用显式 Stop/Start；旧事件、映射和未知结果保留，不自动 Reset 或重放。
 - worker 重启从数据库 state、owner fencing 和过期 lease 接管，不从内存 cursor 继续。
 - gap 期间已收到的较新事件可以持久化为 pending，但不能越过缺失顺序进入 Sequencer。
 - listener account/session 变化必须创建新的 stream owner version，并先从旧 state 完成 difference 交接；不能清空 PTS。
@@ -708,6 +709,9 @@ desired-state confirmed 可写对应 `clone_*_observed`，但 evidence 必须标
 
 - pause 停止新 source event 物化和新 Gateway mutation，但 listener 可按配置保持 update state；已 Gateway-started/unknown 继续 reconcile。
 - pause 保留 exclusive authority/holder，防止其他平台 writer 在暂停期接管克隆群；它不是释放目标的操作。
+- pause 的 Task 生命周期意图与来源流健康分开：Collector 的 incomplete/too_long/error/recovery 只能更新来源健康，不能将 `paused` 改成 `failed/running`；暂停期间不消费为新的 CloneSourceEvent。Resume 只由正式生命周期操作授权；可恢复的 gap 完整追赶后继续原 epoch，不可恢复的 blocked 必须明确拒绝 Resume 并保留原错误。
+- 对已有 `group_clone_source_pts_gap/group_clone_channel_difference_incomplete/group_clone_channel_difference_too_long` 的 failed Task，运营可通过原生 Pause 明确保持暂停；原 source 状态和错误证据不清除，不借此变为成功或可重放。无关失败不扩大 Pause 接受范围。
+- Collector/消费的 Task 状态判定须在任务行锁下读取当前值，不能使用暂停前的 ORM 缓存覆盖已提交暂停；只允许当前 epoch 且未删除、未退役的 `pending/running` 或由本来源 gap 导致的 `failed` 任务参与自动运行态恢复。其他失败、停止及旧 epoch 不得被恢复；持锁顺序为 Task 再 source stream。Task 锁使用 `FOR NO KEY UPDATE`，与生命周期写操作互斥，同时允许采集器通过外键 `KEY SHARE` 写入新的 durable delivery，不能因消费而阻断共享采集。共享 channel 错误投影仅在该 peer 的错误值确实改变时锁定并重新读取 Task；无待清除错误或相同错误重复投影均为零写、零Task行锁，不能等待无关任务的长事务。
 - resume 不增加 epoch，先完成 gap recovery，再从原 sequencer 恢复。
 - archive 只允许无 executing mutation，且 unknown 已转 remote-reconcile-only 并按 failure policy完成 head decision；随后在单事务中停 subscription、停用 holder，把无 holder 的 authority 置为 `vacant/shared/no_admission`（保留 authority row 作为后续 claim 串行点），证据和 tombstone 保留。
 - delete 走项目现有软删除/审计合同，不级联删除 remote facts；authority 释放条件与 archive 相同，释放失败则 delete 阻断。
@@ -987,7 +991,7 @@ worker/container healthy 不能证明克隆健康。任务健康至少同时观�
 - Album quiet/max deadline、冻结 manifest 与每 part 独立 random-id 已接入 `sendMultiMedia` 原子发送；单媒体在 Gateway 前从冻结 source authorization fresh fetch/download，再由 sender authorization upload/send，Poll 重建题面、选项、匿名/多选/Quiz 正确选项下标而不复制票数。RPC 前的读取/下载/上传失败为 safely-not-started，RPC 后映射不完整进入 unknown；partial policy 成功后记为 degraded，不并入严格成功。当前尚无持久媒体缓存与 source content fingerprint 复核。
 - 通用 Task Center 的 Start/Pause/Resume/Stop/Reset/Delete 已接入 Clone 专用生命周期：Start 建立 stream/subscription/route/control/slot，Pause/Resume 不换 epoch，Stop/Reset 只取消未进入 Gateway 的当前 epoch 工作并释放 holder/binding，Gateway-started/unknown 继续 fail-closed。task 级账号槽在新 epoch 复用，released authority holder 可按同 writer/route 重新领取。
 - precheck 会阻断活动 Clone route 环路，并实时读取 target control 的 Telegram `delete_messages/pin_messages/manage_topics` 权限；前端创建前先独立提交 precheck，使首次创建的 authorization ingress state 能提交给 collector，hard block 明示、warning 二次确认。普通创建后的任务也可经通用 Start 正确启动。
-- channel PTS gap 后，collector 会继续领取 failed/gap stream、执行 `getChannelDifference` 并将任务恢复为 `runtime_recovering -> running/live`；sender binding 会按冻结的 active/guarded/eligible 阈值推进，安全回收仍校验 tenure/未决依赖/VIP，同一源发言人回复自身不再误判账号碰撞。
+- 可恢复的 channel PTS gap 后，collector 继续领取 failed/gap stream、执行 `getChannelDifference`，仅在完整连续证据下将非暂停任务恢复为 `runtime_recovering -> running/live`；`too_long` 的旧 epoch 保持 blocked，暂停意图不被后台覆盖。sender binding 按冻结的 active/guarded/eligible 阈值推进，安全回收仍校验 tenure/未决依赖/VIP，同一源发言人回复自身不再误判账号碰撞。
 - `CloneSourceEvent.config_snapshot` 冻结采集时完整 Clone 配置，旧 waiting obligation 不再读取后来 PATCH 的 pacing/rule/lifecycle；同秒连续 Edit 的 update identity 纳入 PTS。Edit 复用 New 的内容过滤/转换；规则转换或共享出站过滤导致最终文本变化且原消息带 entities 时，New/Edit 均进入显式人工审核，不携带失效偏移继续发送，也不会使 planner 异常退出。
 - 权威 absence evidence 授权的 same-mutation retry 现在可穿过历史 Gateway-started Attempt，但授权在 admission 后只消费一次；manual review 按 error code 返回允许决定，protected/media/entity 等不可释放原因只允许 drop/keep-blocked，避免 release 循环。
 - sender release/rebind 已实现 binding-version CAS、open-obligation 阻断、冻结 pool/available slot 复核、请求幂等和审计；前端 Clone 详情提供原因、释放与指定账号换绑入口。
