@@ -143,8 +143,10 @@ def _inputs(session, tenant_id: int, account_id: int, target_id: int):
 
 
 def _locked_inputs(session, tenant_id: int, account_id: int, target_id: int):
-    account = session.scalar(select(TgAccount).where(TgAccount.id == account_id).with_for_update())
-    target = session.scalar(select(TgAccountAuthorization).where(TgAccountAuthorization.id == target_id).with_for_update())
+    account = session.scalar(select(TgAccount).where(TgAccount.id == account_id)
+                             .with_for_update().execution_options(populate_existing=True))
+    target = session.scalar(select(TgAccountAuthorization).where(TgAccountAuthorization.id == target_id)
+                            .with_for_update().execution_options(populate_existing=True))
     if not account or account.tenant_id != tenant_id or not target or target.account_id != account_id:
         raise AuthorizationDrError("authorization_version_conflict", "Local activate inputs changed")
     if account.status not in {AccountStatus.SESSION_EXPIRED.value, AccountStatus.NEED_RELOGIN.value}:
@@ -165,9 +167,15 @@ def _probe_target(session, account, target):
     return identity
 
 
+def _is_business_standby_slot(target) -> bool:
+    return (target.logical_slot in {"primary", "standby_1"}
+            and target.role == "standby_1" and not target.is_current
+            and target.disabled_at is None)
+
+
 def _require_switchable_target(target) -> None:
     valid = (
-        target.logical_slot == "standby_1"
+        _is_business_standby_slot(target)
         and target.is_slot_current
         and target.provision_region_code == "sv"
         and target.status in {"active", "standby"}

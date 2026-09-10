@@ -1,5 +1,7 @@
 # 马来西亚异地备用 TG Session 灾备 PRD
 
+> **2026-09-10 存量失效恢复评估（方案，未实施）：** 323 个 current-invalid 含 5 个已删除账号，未删除恢复范围318个；141个符合现有备用元数据谓词，8/11受合法互补物理槽误拒绝，407为历史SV standby_2特例，174个无健康备用。健康MY、retained旧SV与needs_repair均不能直接当作local_activate资格。先闭合跨消费者主连接owner，再按[恢复方案](account-authorization-owner-and-recovery-20260910-prd.md)逐项fresh probe/CAS/真实验收，不将无备用推断为永久封号，不把文档中的emergency流程当作已实现入口。
+
 > **2026-09-10 全账号直连补正：** 用户要求所有账号停止使用代理，按[固定直连切换合同](account-direct-egress-cutover-20260910-prd.md)执行。本补正取代本文账号传输的代理选择条款；历史绑定仅作审计，代理专用出口证明不得伪造。切换先停旧连接与代理，SV/MY 各自地域及授权隔离不变。
 
 > **2026-08-26 post-login exact 扩展：** 10账号canary与`all_online_accounts` frozen-N合同不变；`normal_full_init_v1`三条route先持久化`abc_required`并查询本账号owner。已有owner必须attach/readback/reconcile；fixed 2FA/profile完成、复查仍无owner才创建并异人批准`post_login_exact` request，同租户其他open batch只形成`waiting_global_abc`。request排队不连接Telegram、不占MY client、不得追加到frozen-N；当前已本地实现、未发布，生产 E4 未证明。
