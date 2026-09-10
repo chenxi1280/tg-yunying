@@ -123,7 +123,7 @@ def _peer_authorization_views(
             continue
         credentials = credentials_for_developer_app(app)
         yield gateway.list_authorizations(row.session_ciphertext, credentials)
-    if not rows and account.session_ciphertext:
+    if not rows and not account.current_authorization_id and account.session_ciphertext:
         credentials = credentials_for_account(session, account)
         yield gateway.list_authorizations(account.session_ciphertext, credentials)
 

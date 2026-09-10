@@ -118,3 +118,24 @@ Telegram 官方说明：收到 AUTH_KEY_DUPLICATED 时原 session 已被服务�
 只读盘点与本地反例文件位于本次评估目录，恢复清单包含账号/授权 ID，不含手机号、Session、AuthKey 或密钥。现有 dirty 主工作树保持未修改。
 
 参考：[Telegram API 错误合同](https://core.telegram.org/api/errors)、[现行直连切换合同](account-direct-egress-cutover-20260910-prd.md)、[灾备合同](account-malaysia-standby-session-dr-prd.md)、[统一履约合同](unified-engagement-fulfillment-engine-prd.md)。
+
+
+## 2026-09-11 继续修复：备用 App 按现有 C 实际身份选择
+
+用户授权继续修复剩余问题。当前 147 个已恢复账号仍需补齐 SV 冗余；账号 407 已通过正式 `preview_abc_backup/apply_abc_backup` 创建独立备用，并完成主备 UID 相同、AuthKey 不同及原主授权可读的独立验证。当前主授权保持不变。
+
+只读检查发现 33 个账号的当前 MY C 实际使用 App 1，而当前业务主授权使用 App 2。旧 `_sv_backup_assignment` 排除的是全局 `standby_2_my` 默认映射 App 3，错误预选 App 1，会与这些账号已保留的 C 重复。此处沿用灾备 PRD §1 的历史动态三 App 合同：保留当前 A 和实际 slot-current C，B 从三条 active assignment 中选择二者未使用的合格 App。历史 C 是 SV 或 MY 都按其真实 App 保留；没有 C 时沿用既有 B/A 顺序选择，后续 source-less C 再使用剩余 App。不要求当前 A 重登，不唤醒或重写已有 MY 包，不新增第四套 App。
+
+备用 preview 必须携带现有 C 的 authorization ID、App、fact version、slot generation、region 和 wake bundle ID，纳入 fingerprint；apply 在发码前重新读取并比较，C 变化或候选不再唯一时明确失败。审批审计保留选择依据；既有 operation/flow 的 unknown 不因此获得重放权限。仍使用正式独立授权登录、UID/AuthKey/hash qualification 和当前 A 保全读回，不以 metadata 就绪作为备份完成。
+
+验收包含 PostgreSQL 的 current App 2 + MY C App 1 -> SV B App 3、既有 SV C、无 C 的原选择、C 变更前置拒绝、无合格 App 及重复 C 事实拒绝。每项保持 current、Session、账号代次和 C 包不变。113 个不涉及上述冲突的账号沿已发布正式入口逐账号补齐；33 个等待选择修复发布后再使用新 preview，不把分组当作缩小恢复分母。
+
+### 2026-09-11：远端已登录、资产未登记的原流程恢复
+
+实际故障：Telegram sign-in 成功后自身设备 hash 为 0，登记阶段读取已失效的旧主授权失败；不能据此判定新临时授权无效，也不能重新提交同一验证码。登录成功后先持久化原 flow 的临时授权和成功状态，元数据未闭合时保留材料及明确错误。已有 current_authorization_id 时不得降级读取兼容 Session。
+
+维护恢复入口对精确 tenant/account/target flow/observer flow 执行只读 preview 与带 fingerprint 的 apply：两份 flow 必须归属同一账号、未登记且保留临时材料；以正式 owner 网关分别读取 Telegram 身份和设备清单，要求同一 user、不同 AuthKey、目标设备指纹在观察者中唯一命中非零 hash。若历史主授权有 user digest，必须一致；冻结账号代次、flow 版本、材料摘要和设备证明后再 CAS 登记。登记复用普通备用资产入口，原主授权不变；观察者材料保留，目标材料在资产落库后才清空。过期验证码不阻止已登录授权的只读身份核验，但恢复入口不发送验证码、不 sign-in、不改 2FA、不撤销授权。身份或设备证明不完整必须显式失败。之后按现有本地切主与独立读回合同恢复业务，不能以登记成功等同于恢复完成。同 App 的临时观察者不计入 A/B 隔离备份。
+
+观察者也可使用同一账号已登记、健康且当前槽位为 SV 的原 flow 授权，必须冻结该资产版本、App 和材料摘要；不得使用 MY 密封授权。这样先登记并按现有合同激活一份授权后，可复用另一份已经登录的原 flow 完成 B 登记，无需再次登录。本地切主实时身份探测返回自视角 hash=0 时，只能在 user/AuthKey 与已存证明严格一致的情况下保留原非零设备 hash；不能用 0 覆盖已验证的 hash。
+
+既有资产若尚无 user/AuthKey 摘要，切主的 preview 与 apply 仍必须分别从同一资产 Session 读取并冻结实际身份，按原 case/CAS 比对；已有摘要不能冲突。原资产已由设备元数据流程证明的非零 hash 可在上述校验后保留，不要求重新登录补齐历史摘要。没有已证明非零 hash 的资产仍需完成观察证明。

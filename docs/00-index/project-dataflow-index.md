@@ -1711,3 +1711,8 @@ legacy-only A 冷启动分支固定为 `frozen legacy A -> 原 A Session 只读 
 > **2026-09-10 第二轮热点resync：** Listener远端消息ID→全部Attempt状态索引→Action peer归属核验；AI近期历史→同租户同群按计划时间索引→原limit与字段投影；retention→原全部保护引用的NOT EXISTS→原排序/锁定批次→删除前保护复核。不得缩小状态范围或删除保护引用。
 
 > **2026-09-10预关注事务边界：** Task配置+账号目标事实 -> 不可变快照 -> 提交准备事务 -> 并行Gateway关注 -> 成功事实 -> 刷新并核验Action认领/Task生命周期/账号状态 -> 合并当前Action结果或停止旧调用。远端等待期间无父Session事务；认领变化不丢成功事实、不覆盖新owner结果。详见CPU/内存热点修复PRD第三轮。
+
+### 2026-09-11 原登录登记恢复与搜索补给
+
+- 备用登录：正式 owner `finish_login` → 持久化已登录临时 flow → 元数据证明 → `standby_registration` 落库；中间失败保留原授权供 `pending_login_registration` 双授权证明、preview/CAS/apply 使用 → 独立本地切主与验证。原主授权和 MY 密封材料不随登记改动。
+- 搜索：search dispatcher 实际批次入口及 continuous claim 入口的空闲槽 → `search_lane_refill` 到期任务选择 → `_plan_due_task` / Task+wake 锁内复核 → 原 assignment solver 与 Action → 原 claim/lease → 正式 owner gateway → typed click 事实。未知义务沿原不可重放规则保留。

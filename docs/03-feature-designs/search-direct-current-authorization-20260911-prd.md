@@ -78,3 +78,11 @@ AI 活群覆盖候选入口同样遵守当前直连传输政策：不得根据�
 新直连载荷在实际 Gateway 客户端获取入口使用空 metadata 请求，表示复用 owner 已有身份；不补造 device/app/client_identity_key。已有客户端不能因此断开重建，首次连接仍由正式 owner lifecycle 创建。旧合同的 metadata 校验保持显式旧语义；直连非空 metadata 或错误 owner policy 仍拒绝。排名入口同样验证其正式客户端路径，不以 schema/transport 单独通过替代 Gateway 路径验收。
 
 增加直接调用实际 `TelethonTelegramGateway` 公共搜索入口的回归，经过其真实异步方法、生命周期缓存和搜索协议解析，仅替换外部 Telegram 传输。必须证明拿到原 owner 客户端、完成 pure-click typed fact、不调用入群、并保留实际 Gateway 的 transport proof；同时覆盖排名客户端路径与旧载荷拒绝。生产精确暂停/恢复原 Task，既有 6 条 closed_unknown 继续保留。
+
+## 2026-09-11 搜索槽位空闲后的规划补给
+
+生产事实：当前搜索派发并发为 2，fact-first planner 只创建空闲槽数量的动作；全局 planner 一轮约 212 秒，搜索动作约一分钟结束后，空闲槽仍等下一轮全局规划，形成可避免的停顿。搜索 dispatcher 每批 drain 在 claim 前发现有空闲槽时，通过同一 `_plan_due_task` 规划入口补给到期的 `search_click/fact_first_v3` 任务，再按原正式 claim/lease 派发。补给保留 Task 与 planner wake 锁，并在锁内复核 running、未退役、未删除和 wake/next_run 到期，避免全局 planner 刚完成后重复规划。
+
+补给不调用 Telegram、不增加派发并发、不改日目标/期限/账号分母，只使用原 demand/assignment solver、准入、容量、幂等和 unknown 不重放规则。排程尚未到期、暂停任务或没有可执行供给时不强行创建动作。验收同时覆盖槽位满时不规划、释放槽后不等待全局慢循环、wake 改变或任务锁被占用时不重复创建，以及真实新动作的 typed click 事实；吞吐改善不等于完成整日目标。
+
+运行入口核对：当前 search-dispatcher 使用批次执行入口；补给同时接入该实际入口和已有 continuous claim 入口，保留 worker 的现行批次/退出模式。不能只修改未启用的 continuous 分支就声明生产修复。

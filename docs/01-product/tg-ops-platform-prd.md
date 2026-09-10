@@ -1,5 +1,7 @@
 # TG 运营管理平台 PRD
 
+> **2026-09-11 已恢复账号备用补齐：** 当前业务授权与既有 MY 授权保持原身份；SV 备用按该账号实际 C 的 App 选择第三个独立 App，C 身份/版本参与 preview 和发码前漂移校验。默认 App 名称不覆盖历史授权角色，补齐不缩小账号恢复集合。详见[授权恢复专项](../03-feature-designs/account-authorization-owner-and-recovery-20260910-prd.md)。
+
 > **直连适配合同（待实现）：** 搜索点击与排名观察按[当前 SV 授权直连设计](../03-feature-designs/search-direct-current-authorization-20260911-prd.md)实施版本化迁移；旧代理合同不能借空代理字段通过。履约数量、原范围和 unknown 继续保留。
 
 > **2026-09-10 去代理后的账号安全与功能缺口（维护恢复进行中，owner 本地实现未发布）：** 固定直连不替代授权连接唯一归属；失效账号保留原冻结任务分母并逐项分类恢复，搜索与排名观察保留为待直连适配能力，代理容量不冒充直连容量。具体证据、141+2+1+174 个未删除账号分类及分阶段验收见[授权连接与恢复方案](../03-feature-designs/account-authorization-owner-and-recovery-20260910-prd.md)。
@@ -5733,3 +5735,5 @@ canary 通过后，激活 manifest 以单行 `route_epoch` CAS 一次切换 `old
 ### 2026-09-10 AI活群执行供给与应急行为同步
 
 已入群账号独立发送，待入群减少当前正文供给而不缩冻结义务；无上下文使用配置主题；模型故障按批准候选和独立签到/回复表情策略处理；来源发送时间与原账号窗口求交。产品、运行和验收合同见[专项修复PRD](../03-feature-designs/ai-group-executable-supply-and-fallback-20260910-prd.md)，普通质量与实际数量分账，生产结论以发布后真实消息证据为准。
+
+2026-09-11 修复补充：远端已登录但资产未登记时，保留原 flow 授权，按账号授权 owner/recovery 专项的双授权身份及非零设备 hash 证明恢复登记，再走正式本地切主与独立验证；禁止用失效兼容 Session 观察新授权。搜索 `fact_first_v3` 的空闲槽由 search dispatcher 经原 planner 补给到期义务，保留原并发、日目标、生命周期与 unknown 不重放语义，见搜索直连专项。

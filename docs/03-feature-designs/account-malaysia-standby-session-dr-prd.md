@@ -1,5 +1,7 @@
 # 马来西亚异地备用 TG Session 灾备 PRD
 
+> **2026-09-11 SV 冗余补齐选择补正：** B 的排除集合必须使用该账号现有 slot-current C 的实际 Developer App，不以全局 MY 默认映射替代历史 C。冻结 C 身份和版本进入 preview/fingerprint，发码前重读；保留当前 A、C 及 MY 包，按 §1 的三 App 独立合同选剩余 App。详见[继续修复记录](account-authorization-owner-and-recovery-20260910-prd.md#2026-09-11-继续修复备用-app-按现有-c-实际身份选择)。
+
 > **2026-09-10 存量失效恢复（维护批次进行中，owner 本地实现未发布）：** 323 个 current-invalid 含 5 个已删除账号，未删除恢复范围318个；141个符合现有备用元数据谓词，8/11受合法互补物理槽误拒绝，407为历史SV standby_2特例，174个无健康备用。健康MY、retained旧SV与needs_repair均不能直接当作local_activate资格。按用户优先级先在独占维护环境恢复账号，业务流量在连接 owner 验收后恢复；按[恢复方案](account-authorization-owner-and-recovery-20260910-prd.md)逐项fresh probe/CAS/真实验收，不将无备用推断为永久封号，不把文档中的emergency流程当作已实现入口。
 
 > **2026-09-10 全账号直连补正：** 用户要求所有账号停止使用代理，按[固定直连切换合同](account-direct-egress-cutover-20260910-prd.md)执行。本补正取代本文账号传输的代理选择条款；历史绑定仅作审计，代理专用出口证明不得伪造。切换先停旧连接与代理，SV/MY 各自地域及授权隔离不变。

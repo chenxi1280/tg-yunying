@@ -64,6 +64,7 @@ def _pending_generation_action(index: int, generation_id: str = "generation-batc
 
 
 def _max_parallel_dispatches(monkeypatch, claimed: list[SimpleNamespace]) -> int:
+    monkeypatch.setattr(service, "_refill_search_dispatcher", lambda *args, **kwargs: None)
     activity = {"active": 0, "maximum": 0}
     lock = Lock()
 

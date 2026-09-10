@@ -57,3 +57,30 @@ def test_apply_refreshes_locked_state_after_concurrent_generation_change(monkeyp
         session.refresh(account)
         assert account.current_authorization_id != target.id
         assert account.connection_generation == original_generation + 1
+
+
+@pytest.mark.parametrize("has_digests", [True, False])
+def test_local_activate_preserves_peer_hash_when_same_identity_self_hash_is_zero(monkeypatch, owner_engine, has_digests):
+    from dataclasses import replace
+    from app.security import encrypt_secret, decrypt_secret
+    from app.services.authorization_dr.local_activate import _apply_probed_identity
+    with Session(owner_engine) as session:
+        _, _, target = seed_local_activation(session)
+        identity = _identity()
+        target.telegram_user_id_digest = identity.telegram_user_id_digest if has_digests else ""
+        target.auth_key_fingerprint_digest = identity.auth_key_fingerprint_digest if has_digests else ""
+        target.telegram_authorization_hash_ciphertext = encrypt_secret('proved-peer-hash')
+        _apply_probed_identity(target, replace(identity, authorization_hash='0'))
+        assert decrypt_secret(target.telegram_authorization_hash_ciphertext) == 'proved-peer-hash'
+
+
+def test_local_activate_does_not_reuse_hash_from_different_authkey(monkeypatch, owner_engine):
+    from dataclasses import replace
+    from app.security import encrypt_secret
+    from app.services.authorization_dr.local_activate import _apply_probed_identity
+    with Session(owner_engine) as session:
+        _, _, target = seed_local_activation(session)
+        target.auth_key_fingerprint_digest = 'old-key'
+        target.telegram_authorization_hash_ciphertext = encrypt_secret('old-peer-hash')
+        with pytest.raises(AuthorizationDrError, match='no proved device hash'):
+            _apply_probed_identity(target, replace(_identity(), authorization_hash='0'))

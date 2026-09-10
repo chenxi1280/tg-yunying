@@ -8,8 +8,6 @@ from dataclasses import asdict, dataclass
 from sqlalchemy import select
 
 from app.models import (
-    DeveloperAppSlotAssignment,
-    TelegramDeveloperApp,
     TgAccount,
     TgAccountAuthorization,
     TgAuthorizationDrOperation,
@@ -28,6 +26,7 @@ from app.timezone import as_beijing_aware
 from .contracts import AuthorizationDrError, PRIMARY_REGULAR_EGRESS_ID, PRIMARY_REGULAR_EGRESS_VERSION
 from .login_code import bind_login_code
 from .primary_fence import verified_code_source
+from .sv_backup_app_selection import PreservedC, select_sv_backup_app
 
 
 CODE_POLL_SECONDS = 2
@@ -51,6 +50,7 @@ class AbcBackupPreview:
     assignment_version: int
     proxy_id: int | None
     idempotency_key: str
+    preserved_c: PreservedC | None = None
     fingerprint: str = ""
 
 
@@ -120,7 +120,7 @@ def _preview_inputs(
     primary_uid, primary_auth_key = _primary_identity(
         session, primary, bootstrap_missing=bootstrap_missing_primary_identity,
     )
-    assignment, app = _sv_backup_assignment(session, primary)
+    assignment, app, preserved_c = select_sv_backup_app(session, primary)
     _require_no_healthy_b(session, account_id, primary)
     _require_no_active_operation(session, account_id)
     return AbcBackupPreview(
@@ -139,6 +139,7 @@ def _preview_inputs(
         assignment_version=assignment.assignment_version,
         proxy_id=account.proxy_id,
         idempotency_key=idempotency_key.strip(),
+        preserved_c=preserved_c,
     )
 
 
@@ -163,7 +164,8 @@ def _get_or_create_operation(session, preview: dict, requested_by: str, approved
         action="批准 A 保护的 SV standby_1 备份",
         target_type="tg_authorization_dr_operation",
         target_id=operation.id,
-        detail=f"account_id={account.id}; approval_ref={approval_ref}",
+        detail=(f"account_id={account.id}; approval_ref={approval_ref}; "
+                f"preserved_c={json.dumps(preview['preserved_c'], sort_keys=True)}"),
     )
     session.commit()
     return operation
@@ -362,20 +364,6 @@ def _mark_manual(session, operation, exc: Exception) -> None:
     operation.finished_at = _now()
     operation.operation_version += 1
     session.commit()
-
-
-def _sv_backup_assignment(session, primary):
-    c_assignment = session.get(DeveloperAppSlotAssignment, "standby_2_my")
-    excluded = {primary.developer_app_id, c_assignment.developer_app_id if c_assignment else None}
-    for purpose in ("standby_1_sv", "primary_sv"):
-        assignment = session.get(DeveloperAppSlotAssignment, purpose)
-        app = session.get(TelegramDeveloperApp, assignment.developer_app_id) if assignment else None
-        if assignment and assignment.status == "active" and app and app.is_active and app.id not in excluded:
-            return assignment, app
-    raise AuthorizationDrError(
-        "developer_app_slot_assignment_conflict",
-        "No active SV Developer App is distinct from current A and App C",
-    )
 
 
 def _require_no_healthy_b(session, account_id: int, primary) -> None:

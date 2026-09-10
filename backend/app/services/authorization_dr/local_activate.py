@@ -14,7 +14,7 @@ from app.models import (
     TgAccountOnlineState,
     TgAuthorizationLocalActivateCase,
 )
-from app.security import decrypt_session, encrypt_secret
+from app.security import decrypt_secret, decrypt_session, encrypt_secret
 from app.services._common import _now, audit, gateway
 from app.services.account_authorizations import apply_primary_authorization_switch
 from app.services.developer_apps import credentials_for_authorization, credentials_for_developer_app
@@ -247,9 +247,18 @@ def _require_frozen(case, account, target, identity) -> None:
 
 
 def _apply_probed_identity(target, identity) -> None:
+    authorization_hash = str(identity.authorization_hash or "")
+    if authorization_hash in {"", "0"}:
+        same_identity = ((not target.telegram_user_id_digest
+                          or target.telegram_user_id_digest == identity.telegram_user_id_digest)
+                         and (not target.auth_key_fingerprint_digest
+                              or target.auth_key_fingerprint_digest == identity.auth_key_fingerprint_digest))
+        authorization_hash = decrypt_secret(target.telegram_authorization_hash_ciphertext) if same_identity else ""
+        if not authorization_hash or authorization_hash == "0":
+            raise AuthorizationDrError("authorization_hash_unproven", "Local activate has no proved device hash")
     target.telegram_user_id_digest = identity.telegram_user_id_digest
     target.auth_key_fingerprint_digest = identity.auth_key_fingerprint_digest
-    target.telegram_authorization_hash_ciphertext = encrypt_secret(identity.authorization_hash)
+    target.telegram_authorization_hash_ciphertext = encrypt_secret(authorization_hash)
 
 
 def _require_approval(case, actor: str, approval_ref: str, idempotency_key: str) -> None:

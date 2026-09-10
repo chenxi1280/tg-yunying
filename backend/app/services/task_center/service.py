@@ -4948,6 +4948,7 @@ def _plan_due_task(
     *,
     limit: int,
     global_pending: int | None = None,
+    eligible=None,
 ) -> tuple[int, bool, int]:
     from .ai_group_planner_day import prepare_ai_group_task_day
 
@@ -4966,6 +4967,7 @@ def _plan_due_task(
                 limit=limit,
                 plan_limit=plan_limit,
                 global_pending=global_pending,
+                eligible=eligible,
             )
         )
         processed += batch_processed
@@ -4983,6 +4985,7 @@ def _plan_due_task_batch(
     limit: int,
     plan_limit: int,
     global_pending: int | None = None,
+    eligible=None,
 ) -> tuple[int, int, bool, int]:
     with session_factory() as session:
         current_global_pending = (
@@ -4993,37 +4996,41 @@ def _plan_due_task_batch(
         session.info["daily_coverage_plan_limit"] = max(1, plan_limit)
         _refresh_planner_heartbeat(session, process_type, limit, task_id=task_id)
         task = lock_task_for_planning(session, task_id)
-        if task is None:
+        if task is None or (eligible is not None and not eligible(session, task)):
             return 0, 0, False, current_global_pending
-        mark_task_planner_started(session, task)
-        if _check_stop_conditions(session, task):
-            session.commit()
-            return 0, 0, False, current_global_pending
-        task, processed, has_open_actions, open_actions_are_future, current_global_pending = (
-            _prepare_due_task_actions(session, task, limit=limit, current_global_pending=current_global_pending)
-        )
-        if task is None:
-            return processed, 0, False, current_global_pending
-        open_actions_allow_planning = (
-            has_open_actions and requires_planning_with_open_actions(session, task)
-        )
-        if _skip_open_ai_plan(
-            session, task, has_open_actions, allow_planning=open_actions_allow_planning
-        ):
-            complete_task_planner_wake(session, task, next_run_at=task.next_run_at)
-            session.commit()
-            return processed, 0, open_actions_are_future, current_global_pending
-        session.info[PLANNER_GLOBAL_PENDING_SESSION_KEY] = current_global_pending
-        if _planning_backlog_blocked(session, task):
-            _record_planner_backlog_daily_fulfillment(session, task)
-            complete_task_planner_wake(session, task, next_run_at=task.next_run_at)
-            session.commit()
-            return processed, 0, False, current_global_pending
-        planned = build_task_plan(session, task)
-        processed += planned
-        current_global_pending += max(0, int(planned))
-        _commit_planned_task(session, task)
-        return processed, planned, False, current_global_pending
+        return _plan_locked_due_task(session, task, limit=limit, current_global_pending=current_global_pending)
+
+
+def _plan_locked_due_task(session, task, *, limit, current_global_pending):
+    mark_task_planner_started(session, task)
+    if _check_stop_conditions(session, task):
+        session.commit()
+        return 0, 0, False, current_global_pending
+    task, processed, has_open_actions, open_actions_are_future, current_global_pending = (
+        _prepare_due_task_actions(session, task, limit=limit, current_global_pending=current_global_pending)
+    )
+    if task is None:
+        return processed, 0, False, current_global_pending
+    open_actions_allow_planning = (
+        has_open_actions and requires_planning_with_open_actions(session, task)
+    )
+    if _skip_open_ai_plan(
+        session, task, has_open_actions, allow_planning=open_actions_allow_planning
+    ):
+        complete_task_planner_wake(session, task, next_run_at=task.next_run_at)
+        session.commit()
+        return processed, 0, open_actions_are_future, current_global_pending
+    session.info[PLANNER_GLOBAL_PENDING_SESSION_KEY] = current_global_pending
+    if _planning_backlog_blocked(session, task):
+        _record_planner_backlog_daily_fulfillment(session, task)
+        complete_task_planner_wake(session, task, next_run_at=task.next_run_at)
+        session.commit()
+        return processed, 0, False, current_global_pending
+    planned = build_task_plan(session, task)
+    processed += planned
+    current_global_pending += max(0, int(planned))
+    _commit_planned_task(session, task)
+    return processed, planned, False, current_global_pending
 
 
 def _prepare_due_task_actions(session, task, *, limit, current_global_pending):
@@ -5209,6 +5216,8 @@ def _claim_dispatcher_ids(session_factory, *, limit, exclude_task_ids, process_t
     from .telegram_termination import drain_telegram_terminations
 
     drain_telegram_terminations(session_factory)
+    _refill_search_dispatcher(session_factory, limit=limit, exclude_task_ids=exclude_task_ids,
+                              process_type=process_type, execution_lane=execution_lane)
     with session_factory() as session:
         if process_type:
             record_worker_heartbeat(session, process_type=process_type, metadata={"limit": limit})
@@ -5218,17 +5227,21 @@ def _claim_dispatcher_ids(session_factory, *, limit, exclude_task_ids, process_t
         return tuple(action.id for action in claimed)
 
 
-def _run_dispatcher_batch(
-    session_factory,
-    *,
-    limit: int,
-    exclude_task_ids: set[str] | None,
-    process_type: str | None,
-    execution_lane: str,
-) -> int:
+def _refill_search_dispatcher(session_factory, *, limit, exclude_task_ids, process_type, execution_lane):
+    if execution_lane == "search":
+        from .search_lane_refill import refill_search_lane
+
+        refill_search_lane(session_factory, limit=limit, exclude_task_ids=exclude_task_ids,
+            plan_due=lambda task_id, eligible: _plan_due_task(
+                session_factory, task_id, process_type, limit=limit, eligible=eligible))
+
+
+def _claim_dispatcher_batches(session_factory, *, limit, exclude_task_ids, process_type, execution_lane):
     from .telegram_termination import drain_telegram_terminations
 
     drain_telegram_terminations(session_factory)
+    _refill_search_dispatcher(session_factory, limit=limit, exclude_task_ids=exclude_task_ids,
+                              process_type=process_type, execution_lane=execution_lane)
     with session_factory() as session:
         dialect_name = session.bind.dialect.name if session.bind else ""
         effective_concurrency = _lane_concurrency(execution_lane)
@@ -5245,6 +5258,20 @@ def _run_dispatcher_batch(
             execution_lane=execution_lane,
         )
         action_batches = _dispatcher_execution_batches(claimed)
+    return action_batches, dialect_name, effective_concurrency
+
+
+def _run_dispatcher_batch(
+    session_factory,
+    *,
+    limit: int,
+    exclude_task_ids: set[str] | None,
+    process_type: str | None,
+    execution_lane: str,
+) -> int:
+    action_batches, dialect_name, effective_concurrency = _claim_dispatcher_batches(
+        session_factory, limit=limit, exclude_task_ids=exclude_task_ids,
+        process_type=process_type, execution_lane=execution_lane)
     if not action_batches:
         return 0
     concurrency = 1 if dialect_name == "sqlite" else effective_concurrency

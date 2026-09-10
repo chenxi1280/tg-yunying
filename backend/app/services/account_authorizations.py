@@ -19,7 +19,6 @@ from app.models import (
     TgVerificationCode,
 )
 from app.security import decrypt_secret, encrypt_secret, encrypt_session
-from app.timezone import as_beijing_aware
 
 from ._common import _is_expired, _now, audit, gateway, get_account_phone
 from .account_authorization_constants import (
@@ -38,6 +37,7 @@ from .account_authorization_read_model import (
     list_account_authorizations,  # noqa: F401 - compatibility re-export
 )
 from .account_authorization_metadata import read_authorization_metadata
+from .standby_registration import mark_same_role_for_repair as _mark_same_role_for_repair
 from .account_two_fa import rotate_managed_two_fa_after_login
 from .developer_apps import credentials_for_developer_app
 
@@ -540,83 +540,20 @@ def _finish_standby_login(
     if status != AccountStatus.ACTIVE.value or not raw_session:
         session.commit()
         raise ValueError(f"备用授权登录未完成：{status}")
-    target_slot = _standby_target_slot(session, account, flow)
-    _mark_same_role_for_repair(session, account, flow, target_slot=target_slot)
+    # Preserve a successful remote login before metadata reads can fail.
+    flow.temporary_session_ciphertext = encrypt_secret(raw_session)
+    session.commit()
     app = _require_developer_app(session, flow.developer_app_id)
     encrypted_session = encrypt_session(raw_session)
     authorization_hash = _current_authorization_hash_after_login(session, account, flow, app, encrypted_session)
-    asset = TgAccountAuthorization(
-        tenant_id=account.tenant_id,
-        account_id=account.id,
-        role=flow.authorization_role,
-        logical_slot=target_slot,
-        slot_generation=_next_slot_generation(session, account.id, target_slot),
-        developer_app_id=flow.developer_app_id,
-        developer_app_api_id_snapshot=app.api_id,
-        proxy_id=flow.proxy_id,
-        session_ciphertext=encrypted_session,
-        telegram_authorization_hash_ciphertext=encrypt_secret(authorization_hash),
-        status="standby",
-        health_status="healthy",
-        is_current=False,
-        telegram_login_at=as_beijing_aware(_now()),
-        last_success_at=_now(),
-        created_by=actor,
-    )
-    session.add(asset)
-    session.flush()
-    flow.authorization_id = asset.id
-    flow.temporary_session_ciphertext = None
-    flow.phone_code_hash_ciphertext = None
-    audit(
-        session,
-        tenant_id=account.tenant_id,
-        actor=actor,
-        action="完成备用授权登录",
-        target_type="tg_account",
-        target_id=str(account.id),
-        detail=f"role={asset.role}; authorization_id={asset.id}",
-    )
+    from .standby_registration import StandbyRegistration, register_standby_authorization
+
+    asset = register_standby_authorization(session, account, StandbyRegistration(
+        flow=flow, app=app, raw_session=raw_session, authorization_hash=authorization_hash, actor=actor,
+    ))
     session.commit()
     session.refresh(asset)
     return asset
-
-
-def _mark_same_role_for_repair(
-    session: Session, account: TgAccount, flow: TgLoginFlow, *, target_slot: str | None = None,
-) -> None:
-    resolved_slot = target_slot or _standby_target_slot(session, account, flow)
-    rows = _authorization_rows(session, account)
-    for row in rows:
-        conflicts = row.role == flow.authorization_role or row.logical_slot == resolved_slot
-        if not conflicts:
-            continue
-        if row.is_current:
-            raise ValueError("当前业务授权占用备用登录目标槽")
-        row.is_slot_current = False
-        row.status = NEEDS_REPAIR_STATUS
-        row.failure_reason = "同角色备用授权已重新登录，旧授权待确认后停用"
-
-
-def _standby_target_slot(session: Session, account: TgAccount, flow: TgLoginFlow) -> str:
-    if flow.authorization_role != "standby_1":
-        return flow.authorization_role
-    current = (
-        session.get(TgAccountAuthorization, account.current_authorization_id)
-        if account.current_authorization_id
-        else None
-    )
-    if current and current.logical_slot == "standby_1":
-        return "primary"
-    return "standby_1"
-
-
-def _next_slot_generation(session: Session, account_id: int, logical_slot: str) -> int:
-    maximum = session.scalar(select(func.max(TgAccountAuthorization.slot_generation)).where(
-        TgAccountAuthorization.account_id == account_id,
-        TgAccountAuthorization.logical_slot == logical_slot,
-    ))
-    return int(maximum or 0) + 1
 
 
 def _current_authorization_hash_after_login(
