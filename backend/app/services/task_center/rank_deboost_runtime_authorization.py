@@ -4,6 +4,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy.orm import Session
+from app.config import get_settings
+from app.search_transport import is_direct_search
+from app.services.task_center.direct_search_runtime import resolve_direct_search_runtime
 
 from app.integrations.telegram import DeveloperAppCredentials
 from app.models import AccountProxy, AccountStatus, TelegramDeveloperApp, TgAccount
@@ -24,6 +27,13 @@ def resolve_rank_deboost_runtime_authorization(
     payload: Any,
 ) -> RankDeboostRuntimeAuthorization:
     runtime = _runtime_environment(payload)
+    if is_direct_search(runtime):
+        if payload.proxy_airport_node_id is not None:
+            raise ValueError("direct_search_proxy_fields_forbidden")
+        if runtime.get("account_pool_id") != account.pool_id or payload.account_pool_id != account.pool_id:
+            raise ValueError("rank_deboost_account_pool_mismatch")
+        transport = resolve_direct_search_runtime(session, account, runtime, settings=get_settings())
+        return RankDeboostRuntimeAuthorization(transport.session_ciphertext, transport.credentials)
     binding = _binding(session, account, payload, runtime)
     proxy = _runtime_proxy(session, account.tenant_id, binding, runtime)
     app = _developer_app(session, account)

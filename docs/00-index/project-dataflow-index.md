@@ -1,5 +1,7 @@
 # 项目数据流转索引
 
+> **2026-09-11 搜索当前授权直连（本地验证，待发布）：** `search_transport.py` 定义 `sv_current_direct_v1`；`services/task_center/direct_search_runtime.py` / `direct_rank_search.py` 将搜索点击及排名规划、启动和豁免查询接入当前 SV 授权，`integrations/telegram/direct_search.py` 在真实 owner 上下文验证固定出口并写传输证据，`direct_search_results.py` 保留缺证据的远端未知。`search_direct_migration.py` 提供精确 Task 配置的 preview/CAS/apply/审计，保留旧 Action。`ai_group_circuit_eligibility.py` 不再用历史代理熔断排除直连账号；远端 fence 标记实际直连归因。前端 `SearchTransportNotice.tsx` 展示合同与代理容量不适用；`AuthorizationLoginModal.tsx` / `AuthorizationSlotCard.tsx` 从授权面板提取展示，备用登录提交空代理。合同与验收：[搜索直连专项](../03-feature-designs/search-direct-current-authorization-20260911-prd.md)。
+
 > **2026-09-11 连接归属流转（本地实现，未发布）：** Task/Action → 原 dispatcher 资源与 Attempt → 私有 owner IPC → owner 读取当前账号/授权/App 代次 → 按 AuthKey 串行的正式 Gateway → typed remote fact。监听、在线、安全、素材和登录维护共享同一 owner 的连接；其业务状态机仍由原服务维护。Attempt 保留 owner 实例和发布身份，发送后响应丢失仍为 unknown，业务 worker 退出不能给独立 owner 的调用补终止 ACK。关闭旧缓存不要求旧凭据仍能执行业务；旧 AuthKey 无新业务调用权限。维护恢复在业务暂停时逐阶段独立进程运行，正式案例与真实消息单独读回。
 
 > **2026-09-10 固定直连：** `services/account_runtime_transport.py` 与 `developer_apps.py` 统一普通任务/探测/维护为直连；`telethon_lifecycle.py` 在新建与缓存复用前拒绝任何代理凭据。`engagement_runtime_domains.py` 不再为历史代理绑定预留容量；账号/授权历史代理字段仅作审计。验收入口：`test_telegram_direct_transport.py`、`test_account_direct_egress_postgres.py`，恢复使用原 local activate/verify 正式链。

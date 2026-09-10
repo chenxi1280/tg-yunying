@@ -8,6 +8,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.admin_chats import send_admin_chat_broadcast
+from app.config import get_settings
+from app.search_transport import DIRECT_SEARCH_TRANSPORT_VERSION, LEGACY_SEARCH_TRANSPORT_VERSION
 from app.models import Action, BotProtocolSample, OperationTarget, Task, Tenant, TgAccount, TgAccountAuthorization
 from app.search_join_protocol import approved_protocol_profile, is_jisou_bot
 from app.search_keywords import repair_legacy_keyword_materials
@@ -30,6 +32,7 @@ from app.services.proxy_airport_subscription import (
 from app.timezone import BEIJING_TZ, as_beijing
 
 from ..account_pool import select_task_accounts
+from ..direct_search_runtime import DirectSearchEnvironment, build_direct_search_environment
 from ..jisou_selector_accounts import (
     JISOU_FLOW_CONTRACT_VERSION,
     select_jisou_selector_candidates,
@@ -74,7 +77,7 @@ class PayloadInput:
     plan: SearchJoinPlan
     keyword_hash: str
     account: TgAccount
-    environment: SearchJoinEnvironment
+    environment: SearchJoinEnvironment | DirectSearchEnvironment
 
 
 @dataclass(frozen=True)
@@ -515,7 +518,19 @@ def _payload(payload_input: PayloadInput) -> SearchJoinPayload:
     )
 
 
-def _environment(session: Session, account: TgAccount, blockers: dict[str, int]) -> SearchJoinEnvironment | None:
+def _environment(
+    session: Session, account: TgAccount, blockers: dict[str, int], *,
+    transport_contract_version: str = LEGACY_SEARCH_TRANSPORT_VERSION,
+) -> SearchJoinEnvironment | DirectSearchEnvironment | None:
+    if transport_contract_version == DIRECT_SEARCH_TRANSPORT_VERSION:
+        try:
+            return build_direct_search_environment(session, account, settings=get_settings())
+        except ValueError as exc:
+            _count_blocker(blockers, str(exc))
+            return None
+    if transport_contract_version != LEGACY_SEARCH_TRANSPORT_VERSION:
+        _count_blocker(blockers, "search_transport_contract_unknown")
+        return None
     if _clash_subscription_pool_unavailable(session, account.tenant_id):
         _count_blocker(blockers, "airport_all_subscriptions_unavailable")
         return None
@@ -618,7 +633,9 @@ def _keyword_ciphertext(config: dict, keyword_hash: str) -> str:
     raise ValueError("search_join keyword ciphertext missing for keyword hash")
 
 
-def _runtime_environment(environment: SearchJoinEnvironment) -> dict[str, str]:
+def _runtime_environment(environment: SearchJoinEnvironment | DirectSearchEnvironment) -> dict:
+    if isinstance(environment, DirectSearchEnvironment):
+        return dict(environment.runtime_environment)
     return {
         "proxy_egress_guard": "verified",
         "client_metadata_guard": "verified",

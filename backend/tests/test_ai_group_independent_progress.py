@@ -115,7 +115,7 @@ def test_circuit_blocked_prefix_is_filtered_before_batch_limit(session, monkeypa
     assert [row.account_id for row in rows] == [READY_ACCOUNT_ID]
 
 
-def test_all_circuit_domains_block_and_closed_domains_restore(session):
+def test_direct_coverage_ignores_historical_proxy_circuits_and_keeps_account_circuit(session):
     task, _group, _target = _seed(session, prefix_state="ready")
     policy = ExecutionResiliencePolicyRevision(tenant_id=1)
     session.add(policy)
@@ -152,7 +152,7 @@ def test_all_circuit_domains_block_and_closed_domains_restore(session):
     ])
     session.commit()
 
-    assert blocked_coverage_account_ids(session, task) == {1, 2, 3}
+    assert blocked_coverage_account_ids(session, task) == {3}
 
     for circuit in session.scalars(select(ExecutionCircuitState)):
         circuit.state = "closed"

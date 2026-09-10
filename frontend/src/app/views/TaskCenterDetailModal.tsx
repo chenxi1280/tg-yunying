@@ -13,6 +13,7 @@ import { GroupCloneTaskPanel } from './GroupCloneTaskPanel';
 import { GroupCloneCutoverPanel } from './GroupCloneCutoverPanel';
 import { TaskRecentSuccessPanel } from './TaskRecentSuccessPanel';
 import { ChannelSourceProgressPanel } from './ChannelSourceProgressPanel';
+import { SearchTransportNotice } from './SearchTransportNotice';
 
 type DetailProfile = {
   hour: number;
@@ -497,7 +498,7 @@ function SearchRankDeboostStatsPanel({ detail, executedActions, canManageTasks }
     if (typeof result.clicked_count === 'number') {
       totalClicked += result.clicked_count;
     }
-    const exitIp = action.payload?.runtime_environment?.observed_exit_ip;
+    const exitIp = result.transport_evidence?.observed_ip || result.observed_exit_ip;
     if (exitIp) {
       exitIpCounts[exitIp] = (exitIpCounts[exitIp] || 0) + 1;
     }
@@ -531,6 +532,7 @@ function SearchRankDeboostStatsPanel({ detail, executedActions, canManageTasks }
     <Space direction="vertical" size={12} style={{ width: '100%' }}>
       {actionError && <Alert type="error" showIcon message={actionError} closable onClose={() => setActionError('')} />}
       {actionWarning && <Alert type="success" showIcon message={actionWarning} closable onClose={() => setActionWarning('')} />}
+      <SearchTransportNotice task={task} />
 
       {targetProgress && (
         <Descriptions
@@ -908,6 +910,7 @@ export function TaskCenterDetailModal({
             showIcon
             message="排名观察、极搜生态、付费关键词广告和内容健康只作为调研解释，不改写搜索目标点击 action 成功数。"
           />
+          <SearchTransportNotice task={detail.task} />
           <Descriptions bordered size="small" column={3} items={searchJoinDetailItems(detail)} />
         </Space>
       ),

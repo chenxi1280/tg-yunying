@@ -300,6 +300,8 @@ def _union_shared_resources(
             *[(kind, identity) for kind, identity, _ in path.resource_versions],
         }
         for resource in resources:
+            if not resource[1]:
+                continue
             first = first_by_resource.setdefault(resource, node)
             _union(parent, first, node)
 

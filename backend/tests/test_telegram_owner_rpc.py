@@ -9,7 +9,7 @@ import pytest
 from app.config import Settings
 from app.integrations.telegram import AuthorizationIdentity
 from app.telegram_owner.errors import TelegramOwnerOutcomeUnknown, TelegramOwnerUnavailable
-from app.telegram_owner.request_context import bind_identity, reset_identity
+from app.telegram_owner.request_context import bind_identity, reset_identity, expected_instance
 from app.telegram_owner.rpc import OwnerGateway
 from app.telegram_owner.server import OwnerServer, _claim_instance
 from app.telegram_owner.session_identity import authorization_identity
@@ -39,7 +39,7 @@ class InstrumentedGateway:
             self.active -= 1
             self.by_key[key] -= 1
             maximum = self.maximum
-        return AuthorizationIdentity(str(maximum), key, 'user', 'authorization')
+        return AuthorizationIdentity(str(maximum), key, expected_instance(), 'authorization')
 
 
 def _serve(path, ready):
@@ -83,6 +83,12 @@ def test_second_owner_cannot_remove_or_replace_live_socket(owner):
     with pytest.raises(RuntimeError, match='already_running'):
         _claim_instance(Path(directory))
     assert gateway.call('__status__')['instance_id'] == before['instance_id']
+
+
+def test_owner_executor_receives_actual_server_instance_without_caller_hint(owner):
+    gateway, _, _ = owner
+    actual = gateway.call('__status__')['instance_id']
+    assert gateway.authorization_identity(raw_session()).telegram_user_id_digest == actual
 
 
 def test_stale_owner_instance_is_rejected_before_execution(owner):

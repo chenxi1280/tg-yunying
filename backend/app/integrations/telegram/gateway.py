@@ -679,6 +679,13 @@ class TelethonTelegramGateway(TelegramGateway):
         self._lifecycle = TelethonClientLifecycle(self.settings)
         self._pending_clients: dict[int, Any] = {}
         self._pending_qr: dict[int, Any] = {}
+        from app.telegram_owner.request_context import expected_instance
+        from .direct_search import DirectSearchExecution, probe_direct_egress
+
+        self._direct_search_execution = DirectSearchExecution(
+            self.settings, probe=lambda: probe_direct_egress(self.settings),
+            owner_identity=expected_instance,
+        )
 
     @classmethod
     def _get_or_create_loop(cls) -> asyncio.AbstractEventLoop:
@@ -1824,20 +1831,24 @@ class TelethonTelegramGateway(TelegramGateway):
         ),
         image_verification_callback_unknown_fingerprints: frozenset[str] = frozenset(),
     ) -> dict[str, Any]:
-        return self._run(
-            self._execute_search_join_async(
-                session_ciphertext,
-                self._usable_credentials(credentials),
-                payload,
-                keyword_text,
-                image_verification_solver=image_verification_solver,
-                image_verification_challenge_limit=(
-                    image_verification_challenge_limit
-                ),
-                image_verification_callback_unknown_fingerprints=(
-                    image_verification_callback_unknown_fingerprints
-                ),
-            )
+        usable = self._usable_credentials(credentials)
+        return self._direct_search_execution.run(
+            payload, usable,
+            lambda: self._run(
+                self._execute_search_join_async(
+                    session_ciphertext,
+                    self._usable_credentials(credentials),
+                    payload,
+                    keyword_text,
+                    image_verification_solver=image_verification_solver,
+                    image_verification_challenge_limit=(
+                        image_verification_challenge_limit
+                    ),
+                    image_verification_callback_unknown_fingerprints=(
+                        image_verification_callback_unknown_fingerprints
+                    ),
+                )
+            ),
         )
 
     async def _ensure_search_join_membership_async(
@@ -1907,9 +1918,12 @@ class TelethonTelegramGateway(TelegramGateway):
         raw_session = decrypt_session(session_ciphertext)
         if not raw_session:
             return {"success": False, "error_code": FailureType.ACCOUNT_UNAVAILABLE.value, "detail": "账号没有可用 session"}
-        guard = await self._verify_rank_deboost_proxy_guard(credentials, payload)
-        if guard is not None:
-            return guard
+        from app.search_transport import is_direct_search
+
+        if not is_direct_search(_rank_deboost_runtime(payload)):
+            guard = await self._verify_rank_deboost_proxy_guard(credentials, payload)
+            if guard is not None:
+                return guard
         client = await self._get_or_create_client(credentials, raw_session, _rank_deboost_client_metadata(payload))
         if not await client.is_user_authorized():
             return {"success": False, "error_code": FailureType.ACCOUNT_UNAVAILABLE.value, "detail": "session 已失效"}
@@ -1968,7 +1982,8 @@ class TelethonTelegramGateway(TelegramGateway):
         if isinstance(client, dict):
             return client
         result = await search_rank_deboost_candidates_with_client(client, payload, keyword_text=keyword_text)
-        result["observed_exit_ip"] = _rank_deboost_runtime(payload).get("observed_exit_ip", "")
+        if not is_direct_search(_rank_deboost_runtime(payload)):
+            result["observed_exit_ip"] = _rank_deboost_runtime(payload).get("observed_exit_ip", "")
         return result
 
     def search_rank_deboost_candidates(
@@ -1979,8 +1994,12 @@ class TelethonTelegramGateway(TelegramGateway):
         credentials: DeveloperAppCredentials | None = None,
         keyword_text: str = "",
     ) -> dict[str, Any]:
-        return self._run(
-            self._search_rank_deboost_candidates_async(session_ciphertext, self._usable_credentials(credentials), payload, keyword_text)
+        usable = self._usable_credentials(credentials)
+        return self._direct_search_execution.run(
+            payload, usable,
+            lambda: self._run(
+                self._search_rank_deboost_candidates_async(session_ciphertext, self._usable_credentials(credentials), payload, keyword_text)
+            ),
         )
 
     async def _execute_search_rank_deboost_async(
@@ -1994,7 +2013,8 @@ class TelethonTelegramGateway(TelegramGateway):
         if isinstance(client, dict):
             return client
         result = await execute_rank_deboost_with_client(client, payload, keyword_text=keyword_text)
-        result["observed_exit_ip"] = _rank_deboost_runtime(payload).get("observed_exit_ip", "")
+        if not is_direct_search(_rank_deboost_runtime(payload)):
+            result["observed_exit_ip"] = _rank_deboost_runtime(payload).get("observed_exit_ip", "")
         return result
 
     def execute_search_rank_deboost(
@@ -2005,8 +2025,12 @@ class TelethonTelegramGateway(TelegramGateway):
         session_ciphertext: str | None = None,
         credentials: DeveloperAppCredentials | None = None,
     ) -> dict[str, Any]:
-        return self._run(
-            self._execute_search_rank_deboost_async(session_ciphertext, self._usable_credentials(credentials), payload, keyword_text)
+        usable = self._usable_credentials(credentials)
+        return self._direct_search_execution.run(
+            payload, usable,
+            lambda: self._run(
+                self._execute_search_rank_deboost_async(session_ciphertext, self._usable_credentials(credentials), payload, keyword_text)
+            ),
         )
 
     async def _view_channel_message_async(

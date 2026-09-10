@@ -411,6 +411,8 @@ class Settings:
     db_pool_timeout: int = int(os.getenv("DB_POOL_TIMEOUT", "30"))
     db_pool_recycle: int = int(os.getenv("DB_POOL_RECYCLE", "1800"))
     telegram_owner_mode: str = os.getenv("TELEGRAM_OWNER_MODE", "local")
+    telegram_direct_egress_region: str = os.getenv("TELEGRAM_DIRECT_EGRESS_REGION", "")
+    telegram_direct_egress_ip: str = os.getenv("TELEGRAM_DIRECT_EGRESS_IP", "")
     telegram_owner_socket: str = os.getenv("TELEGRAM_OWNER_SOCKET", "/run/tgyunying-telegram/owner.sock")
     telethon_client_cache_size: int = int(os.getenv("TELETHON_CLIENT_CACHE_SIZE", "200"))
     telethon_client_idle_seconds: int = int(os.getenv("TELETHON_CLIENT_IDLE_SECONDS", "900"))

@@ -7,6 +7,8 @@ from typing import Any
 from uuid import uuid4
 
 from sqlalchemy.orm import Session
+from app.search_transport import is_direct_search
+from app.services.task_center.direct_search_results import normalize_direct_search_result
 
 from app.models import AccountStatus, Action, TgAccount
 from app.models.search_rank_deboost import SearchRankDeboostActionStat
@@ -59,9 +61,10 @@ def execute_search_rank_deboost(
     before_gateway_call: Callable[[], None] | None = None,
 ) -> dict:
     binding_id = _binding_id(payload)
-    if binding_id <= 0:
+    direct = is_direct_search(payload.runtime_environment)
+    if not direct and binding_id <= 0:
         return _failure_without_click(session, action, PROXY_EGRESS_GUARD_FAILED, "排名观察任务缺少 group_proxy_binding_id")
-    if probe_exit_ip is not _NO_EXPLICIT_PROBE and not _verify_proxy_egress(session, action, account, binding_id, probe_exit_ip):
+    if not direct and probe_exit_ip is not _NO_EXPLICIT_PROBE and not _verify_proxy_egress(session, action, account, binding_id, probe_exit_ip):
         return _failure_without_click(session, action, PROXY_EGRESS_GUARD_FAILED, "分组级代理出口校验失败，禁止回退本机直连")
     try:
         authorization = resolve_rank_deboost_runtime_authorization(session, account, payload)
@@ -78,7 +81,11 @@ def execute_search_rank_deboost(
         return _failure_without_click(session, action, GATEWAY_CONTRACT_INVALID, "搜索排名观察 Gateway 不可用")
     if not isinstance(gateway_result, dict):
         return _failure_after_gateway(session, action, GATEWAY_CONTRACT_INVALID, "搜索排名观察 Gateway 未返回对象结果")
-    if not _gateway_egress_verified(session, action, account, binding_id, gateway_result, probe_exit_ip):
+    gateway_result = normalize_direct_search_result(payload.runtime_environment, gateway_result)
+    if gateway_result.get("gateway_outcome_unknown"):
+        mark_reservation_unknown(session, action.id)
+        return {**gateway_result, "execution_status": "unknown_after_click"}
+    if not direct and not _gateway_egress_verified(session, action, account, binding_id, gateway_result, probe_exit_ip):
         return _failure_after_gateway(session, action, PROXY_EGRESS_GUARD_FAILED, "分组级代理出口校验失败，禁止回退本机直连")
     return _handle_gateway_result(session, action, account, payload, gateway_result)
 
@@ -154,6 +161,9 @@ def _handle_gateway_result(
     payload: SearchRankDeboostPayload,
     result: dict,
 ) -> dict:
+    if result.get("remote_mutation_started") is False and not result.get("success"):
+        release_reserved_reservation(session, action.id)
+        return result
     if _gateway_reported_no_call(result):
         return _failure_without_click(session, action, _gateway_error_code(result), _gateway_error_message(result))
     status = str(result.get("execution_status") or "").strip()
@@ -281,7 +291,7 @@ def _write_factual_stat(
         action_id=action.id,
         account_id=int(action.account_id or 0),
         account_pool_id=int(payload.account_pool_id),
-        proxy_airport_node_id=int(payload.proxy_airport_node_id) or None,
+        proxy_airport_node_id=payload.proxy_airport_node_id,
         observed_exit_ip=observed_exit_ip,
         bot_username=payload.bot_username,
         keyword_hash=payload.keyword_hash,
@@ -330,6 +340,8 @@ def _gateway_error_message(result: dict) -> str:
 
 
 def _observed_exit_ip(result: dict) -> str:
+    if is_direct_search(result.get("transport_contract")):
+        return str((result.get("transport_evidence") or {}).get("observed_ip") or "")
     return str(result.get("observed_exit_ip") or result.get("probe_exit_ip") or "").strip()
 
 

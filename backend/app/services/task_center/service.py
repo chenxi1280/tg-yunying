@@ -14,6 +14,10 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, object_session
 
 from app.config import get_settings
+from app.search_transport import is_direct_search
+from app.services.task_center.direct_rank_search import direct_rank_transport_fields
+from app.services.task_center.direct_search_runtime import egress_policy
+from app.services.task_center.direct_search_results import normalize_direct_search_result
 from app.integrations.telegram import OperationResult
 from app.models import (
     AccountPool,
@@ -2917,6 +2921,8 @@ def _rank_deboost_exempt_search_results(
         )
     except Exception as exc:
         raise ValueError(f"搜索排名观察真实候选搜索失败：{type(exc).__name__}") from exc
+    if isinstance(result, dict):
+        result = normalize_direct_search_result(payload.runtime_environment, result)
     if (
         not isinstance(result, dict)
         or result.get("execution_status") != "candidates_found"
@@ -2956,9 +2962,7 @@ def _rank_deboost_exempt_payload(
     type_config: dict[str, Any],
 ) -> tuple[SearchRankDeboostPayload, str]:
     keyword_text = _rank_deboost_first_keyword(type_config)
-    binding = _rank_deboost_active_binding(
-        session, task.tenant_id, int(account.pool_id or 0)
-    )
+    transport_fields = _rank_exempt_transport_fields(session, task, account)
     target_refs = require_rank_deboost_target_group_refs(
         session,
         task.tenant_id,
@@ -2973,15 +2977,24 @@ def _rank_deboost_exempt_payload(
         target_group_ids=list(type_config.get("target_group_ids") or []),
         target_group_refs=target_refs,
         account_pool_id=int(account.pool_id or 0),
-        proxy_airport_node_id=int(binding.proxy_airport_node_id),
-        runtime_environment={
+        **transport_fields,
+    ), keyword_text
+
+
+def _rank_exempt_transport_fields(session, task, account) -> dict:
+    if is_direct_search(task.type_config):
+        return direct_rank_transport_fields(session, account)
+    binding = _rank_deboost_active_binding(session, task.tenant_id, int(account.pool_id or 0))
+    return {
+        "proxy_airport_node_id": int(binding.proxy_airport_node_id),
+        "runtime_environment": {
             "group_proxy_binding_id": str(binding.id),
             "runtime_proxy_id": str(binding.runtime_proxy_id or ""),
             "binding_generation": str(binding.binding_generation),
             "account_pool_id": str(account.pool_id or ""),
             "observed_exit_ip": binding.observed_exit_ip or "",
         },
-    ), keyword_text
+    }
 
 
 def _rank_deboost_first_keyword(type_config: dict[str, Any]) -> str:
@@ -3125,6 +3138,8 @@ def _build_rank_deboost_type_config(
     }
     if isinstance(payload.config, dict):
         config.update(payload.config)
+    config["transport_contract_version"] = payload.transport_contract_version
+    config["proxy_airport_node_id"] = None
     return config
 
 
@@ -4470,9 +4485,7 @@ def _assert_rank_deboost_allows_start(
         reference_type=_rank_deboost_target_reference_type(config),
     )
     validate_rank_deboost_protocol_samples(session, tenant_id, bot_username)
-    bindings = _rank_deboost_ready_bindings(
-        session, tenant_id, dict(task.account_config or {})
-    )
+    bindings = _rank_start_transport_bindings(session, tenant_id, task)
     for binding in bindings:
         validate_rank_deboost_preconditions(
             session,
@@ -4504,7 +4517,15 @@ def _prepare_rank_deboost_start(
 def _assert_rank_deboost_account_group_binding(
     session: Session, tenant_id: int, task: Task
 ) -> None:
-    _rank_deboost_ready_bindings(session, tenant_id, dict(task.account_config or {}))
+    _rank_start_transport_bindings(session, tenant_id, task)
+
+
+def _rank_start_transport_bindings(session, tenant_id, task) -> list:
+    if is_direct_search(task.type_config):
+        _rank_deboost_selected_pool_ids(session, tenant_id, dict(task.account_config or {}))
+        egress_policy(get_settings()).validate()
+        return []
+    return _rank_deboost_ready_bindings(session, tenant_id, dict(task.account_config or {}))
 
 
 def _record_rank_deboost_readiness_blocker(task: Task, error: ValueError) -> None:

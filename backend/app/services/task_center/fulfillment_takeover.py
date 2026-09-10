@@ -220,6 +220,8 @@ def _pure_click_config(config: dict) -> dict:
         "search_execution_mode": "click_only",
         "execution_mode": "mtproto_userbot",
         "max_pages": int(config.get("max_pages") or 5),
+        **({"transport_contract_version": config["transport_contract_version"]}
+           if "transport_contract_version" in config else {}),
     }
 
 

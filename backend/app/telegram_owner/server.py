@@ -65,10 +65,19 @@ class OwnerServer:
                 return {'ok': True, 'result': self.status()}
             if request.get('expected_instance') not in {None, '', self.instance_id}:
                 raise TelegramOwnerRequestRejected('telegram_owner_instance_changed_before_issue')
-            result = self.executor.execute(request, caller_connected=lambda: not connection.poll())
+            result = self._execute_owned(request, connection)
             return {'ok': True, 'result': result, 'instance_id': self.instance_id}
         except Exception as exc:
             return {'ok': False, 'error': exception_payload(exc), 'instance_id': self.instance_id}
+
+    def _execute_owned(self, request, connection):
+        from .request_context import bind_identity, reset_identity
+
+        token = bind_identity(str(request.get('root_identity') or ''), self.instance_id)
+        try:
+            return self.executor.execute(request, caller_connected=lambda: not connection.poll())
+        finally:
+            reset_identity(token)
 
     def status(self):
         from app.telethon_lifecycle import TelethonClientLifecycle

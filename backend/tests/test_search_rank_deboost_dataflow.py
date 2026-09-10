@@ -437,14 +437,14 @@ def test_post_search_rank_deboost_reroll_exempt_group(monkeypatch) -> None:
 # --- 旧 payload 也必须先直接创建草稿 ---
 
 
-def test_legacy_rank_create_defers_pool_validation_until_start() -> None:
+def test_direct_rank_create_defers_pool_validation_until_start() -> None:
     engine = _build_engine()
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(AccountPool(id=10, tenant_id=1, name="普通分组", pool_purpose="normal"))
         session.commit()
 
-        payload = _build_payload(account_pool_id=10, proxy_airport_node_id=20)
+        payload = _build_payload(account_pool_id=10, proxy_airport_node_id=None)
         user = _make_user()
 
         task = task_service.create_search_rank_deboost_task(session, 1, payload, user.name)
@@ -452,7 +452,7 @@ def test_legacy_rank_create_defers_pool_validation_until_start() -> None:
         assert task.status == "draft"
 
 
-def test_legacy_rank_create_defers_node_health_until_start() -> None:
+def test_direct_rank_create_ignores_historical_node_health() -> None:
     engine = _build_engine()
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
@@ -460,7 +460,7 @@ def test_legacy_rank_create_defers_node_health_until_start() -> None:
         session.add(ProxyAirportNode(id=20, tenant_id=1, subscription_id=1, status="unhealthy"))
         session.commit()
 
-        payload = _build_payload(account_pool_id=10, proxy_airport_node_id=20)
+        payload = _build_payload(account_pool_id=10, proxy_airport_node_id=None)
         user = _make_user()
 
         task = task_service.create_search_rank_deboost_task(session, 1, payload, user.name)
@@ -468,7 +468,7 @@ def test_legacy_rank_create_defers_node_health_until_start() -> None:
         assert task.status == "draft"
 
 
-def test_legacy_rank_create_defers_node_binding_conflict_until_start() -> None:
+def test_direct_rank_create_ignores_historical_node_binding() -> None:
     engine = _build_engine()
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
@@ -485,7 +485,7 @@ def test_legacy_rank_create_defers_node_binding_conflict_until_start() -> None:
         )
         session.commit()
 
-        payload = _build_payload(account_pool_id=10, proxy_airport_node_id=20)
+        payload = _build_payload(account_pool_id=10, proxy_airport_node_id=None)
         user = _make_user()
 
         task = task_service.create_search_rank_deboost_task(session, 1, payload, user.name)

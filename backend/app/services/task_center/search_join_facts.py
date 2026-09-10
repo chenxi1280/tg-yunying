@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.search_transport import direct_result_proven, is_direct_search
+
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -70,6 +72,8 @@ def has_confirmed_click_fact(result: object) -> bool:
 
 def has_complete_pure_click_fact(result: object) -> bool:
     if not isinstance(result, dict):
+        return False
+    if is_direct_search(result.get("transport_contract")) and not direct_result_proven(result):
         return False
     required_text = (
         "target_username",

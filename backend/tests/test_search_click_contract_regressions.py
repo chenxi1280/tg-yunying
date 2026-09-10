@@ -133,49 +133,19 @@ def _rank_context(session: Session) -> tuple[Task, Action, TgAccount, SearchRank
     return task, action, account, payload
 
 
-def test_rank_runtime_passes_authorized_session_and_group_proxy_to_gateway() -> None:
+def test_legacy_rank_proxy_contract_is_rejected_before_gateway() -> None:
     with Session(_engine()) as session:
         _task, action, account, payload = _rank_context(session)
-        captured: dict[str, object] = {}
-
-        def gateway_execute(account_id, gateway_payload, session_ciphertext, credentials, keyword_text):
-            captured.update({
-                "account_id": account_id,
-                "payload": gateway_payload,
-                "session_ciphertext": session_ciphertext,
-                "credentials": credentials,
-                "keyword_text": keyword_text,
-            })
-            return {
-                "success": True,
-                "execution_status": "confirmed",
-                "observed_exit_ip": "1.1.1.1",
-                "click_outcomes": [{
-                    "status": "confirmed",
-                    "competitor_username": "competitor_a",
-                    "competitor_peer_id": "-1002001",
-                    "competitor_title": "竞争群 A",
-                    "competitor_position": 1,
-                    "row": 0,
-                    "col": 0,
-                    "text": "查看 competitor_a",
-                        "url": "https://t.me/competitor_a",
-                        "effect": "navigate_only",
-                        "joined": False,
-                        "dwell_seconds": 7,
-                    }],
-                }
-
-        result = execute_search_rank_deboost(session, action, account, payload, gateway_execute=gateway_execute)
-
-        assert result["success"] is True
-        assert captured["account_id"] == account.id
-        assert captured["session_ciphertext"] == account.session_ciphertext
-        assert captured["credentials"].proxy_id == 30
-        assert captured["keyword_text"] == "黑搜索关键词"
-        stat = session.query(SearchRankDeboostActionStat).filter_by(action_id=action.id).one()
-        assert stat.competitor_group_username == "competitor_a"
-        assert stat.dwell_seconds == 7
+        calls = []
+        result = execute_search_rank_deboost(
+            session, action, account, payload,
+            gateway_execute=lambda *args, **kwargs: calls.append(True),
+        )
+        assert result["success"] is False
+        assert result["error_code"] == "telegram_account_proxy_forbidden"
+        assert result["remote_mutation_started"] is False
+        assert calls == []
+        assert session.query(SearchRankDeboostActionStat).filter_by(action_id=action.id).count() == 0
 
 
 def test_rank_daily_limit_applies_to_another_task_in_the_same_tenant() -> None:

@@ -1,5 +1,6 @@
 """Read-only production verification, compatible with host Python 3.6."""
 import json
+import ipaddress
 from pathlib import Path
 import subprocess
 import sys
@@ -9,7 +10,7 @@ def output(command):
     return subprocess.check_output(command, universal_newlines=True).strip()
 
 
-def verify_containers(sha, backend_image, backend_id):
+def verify_containers(sha, backend_image, backend_id, *, expected_egress=None):
     ids = output(['docker', 'ps', '-aq', '--filter', 'name=^/tgyunying-']).split()
     containers = json.loads(output(['docker', 'inspect'] + ids)) if ids else []
     rows = []
@@ -29,6 +30,8 @@ def verify_containers(sha, backend_image, backend_id):
         expected_mode = 'server' if name == 'tgyunying-telegram-owner' else 'client'
         if environment.get('TELEGRAM_OWNER_MODE') != expected_mode:
             raise ValueError('runtime_telegram_owner_mode_mismatch:' + name)
+        if expected_egress and any(environment.get(key) != value for key, value in expected_egress.items()):
+            raise ValueError('runtime_direct_egress_policy_mismatch:' + name)
         owner_mounts.add(_owner_mount(container, environment, name))
         rows.append(name)
     if len(owner_mounts) != 1:
@@ -64,11 +67,20 @@ def verify_release(base, sha, manifest):
         if values.get(key) != images[name]:
             raise ValueError('current_image_mismatch:' + name)
     rows = verify_containers(sha, images['tg-yunying-backend'],
-                             manifest['image_ids']['tg-yunying-backend'])
+                             manifest['image_ids']['tg-yunying-backend'],
+                             expected_egress=_direct_egress_policy(values))
     output(['docker', 'exec', 'tgyunying-backend', 'python', '-m',
             'scripts.manage_shared_dispatch_contract', 'verify-active'])
     return {'sha': sha, 'current': str(current), 'containers': rows,
             'runtime': 'passed', 'business_evidence': 'unproven'}
+
+
+def _direct_egress_policy(values):
+    region = values.get('TELEGRAM_DIRECT_EGRESS_REGION', '')
+    ip = values.get('TELEGRAM_DIRECT_EGRESS_IP', '')
+    if region != 'sv' or not ipaddress.ip_address(ip).is_global:
+        raise ValueError('runtime_direct_egress_policy_invalid')
+    return {'TELEGRAM_DIRECT_EGRESS_REGION': region, 'TELEGRAM_DIRECT_EGRESS_IP': ip}
 
 
 def main():

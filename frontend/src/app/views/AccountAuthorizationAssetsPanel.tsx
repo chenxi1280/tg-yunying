@@ -1,37 +1,17 @@
 import React from 'react';
-import { Alert, Button, Card, Empty, Input, Modal, QRCode, Select, Space, Table, Tag, Typography, message } from 'antd';
+import { Alert, Button, Card, Empty, Modal, Space, Table, Tag, Typography, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type {
   AccountAuthorizationAsset,
   AccountAuthorizationRefreshResult,
   AccountAuthorizationSelfHealResult,
-  AccountProxy,
   DeveloperApp,
   LoginFlow,
 } from '../types';
 import { StatusBadge } from '../components/shared';
 import { api } from '../../shared/api/client';
-import { formatBeijingDateTime } from '../time';
-
-const SWITCHABLE_STATUSES = new Set(['active', 'standby']);
-
-const roleLabel = (role: string) => {
-  if (role === 'primary') return '主授权';
-  if (role === 'standby_1') return '备用授权 1';
-  if (role === 'standby_2') return '备用授权 2';
-  if (role === 'standby_repair') return '待修复授权';
-  return role;
-};
-const SLOT_SESSION_LABEL: Record<'primary' | 'standby_1' | 'standby_2', string> = {
-  primary: 'primary session',
-  standby_1: 'standby_1 session',
-  standby_2: 'standby_2 session',
-};
-
-const formatTime = (value: string | null | undefined) => value ? formatBeijingDateTime(value) : '暂无记录';
-const isMalaysiaWakeAsset = (asset: AccountAuthorizationAsset | undefined) => Boolean(
-  asset && (asset.provision_region_code === 'my' || asset.credential_storage_scope === 'malaysia_wake_bundle'),
-);
+import { AuthorizationLoginModal } from './AuthorizationLoginModal';
+import { AuthorizationSlotCard, SWITCHABLE_STATUSES, roleLabel, formatTime, isMalaysiaWakeAsset } from './AuthorizationSlotCard';
 
 export function AccountAuthorizationAssetsPanel({
   accountId,
@@ -52,13 +32,11 @@ export function AccountAuthorizationAssetsPanel({
   const [loginOpen, setLoginOpen] = React.useState(false);
   const [loginLoading, setLoginLoading] = React.useState(false);
   const [developerApps, setDeveloperApps] = React.useState<DeveloperApp[]>([]);
-  const [proxies, setProxies] = React.useState<AccountProxy[]>([]);
   const [loginFlow, setLoginFlow] = React.useState<LoginFlow | null>(null);
   const [loginForm, setLoginForm] = React.useState({
     role: 'standby_1',
     method: 'code',
     developer_app_id: 0,
-    proxy_id: 0,
     code: '',
     password_2fa: '',
   });
@@ -70,8 +48,8 @@ export function AccountAuthorizationAssetsPanel({
     method: loginForm.method,
     role: loginForm.role,
     developer_app_id: loginForm.developer_app_id,
-    proxy_id: loginForm.proxy_id,
-  }), [loginForm.developer_app_id, loginForm.method, loginForm.proxy_id, loginForm.role]);
+    proxy_id: null,
+  }), [loginForm.developer_app_id, loginForm.method, loginForm.role]);
   const loginStartPayloadSignature = React.useMemo(() => JSON.stringify(loginStartPayload), [loginStartPayload]);
   latestLoginStartPayloadSignature.current = loginStartPayloadSignature;
 
@@ -165,19 +143,13 @@ export function AccountAuthorizationAssetsPanel({
     setError('');
     setRefreshError('');
     try {
-      const [apps, proxyRows] = await Promise.all([
-        api<DeveloperApp[]>('/developer-apps'),
-        api<AccountProxy[]>('/account-proxies'),
-      ]);
+      const apps = await api<DeveloperApp[]>('/developer-apps');
       if (!isActiveLoginSession(targetAccountId, loginSeq)) return;
       const firstApp = apps.find((app) => app.is_active && app.health_status === '健康') ?? apps[0];
-      const firstProxy = proxyRows.find((proxy) => proxy.status === 'healthy' || proxy.status === '健康') ?? proxyRows[0];
       setDeveloperApps(apps);
-      setProxies(proxyRows);
       setLoginForm((current) => ({
         ...current,
         developer_app_id: firstApp?.id ?? 0,
-        proxy_id: firstProxy?.id ?? 0,
         code: '',
         password_2fa: '',
       }));
@@ -392,37 +364,9 @@ export function AccountAuthorizationAssetsPanel({
   }
 
   function slotCard(role: 'primary' | 'standby_1' | 'standby_2') {
-    const asset = assetForRole(role);
-    const isPrimary = role === 'primary';
-    const malaysiaWakeAsset = isMalaysiaWakeAsset(asset);
-    const canRecover = !isPrimary && !malaysiaWakeAsset && asset?.session_available && SWITCHABLE_STATUSES.has(asset.status);
-    return (
-      <Card key={role} size="small" className="summary-card">
-        <Space direction="vertical" size={6}>
-          <Space wrap>
-            <Typography.Text strong>{SLOT_SESSION_LABEL[role]}</Typography.Text>
-            <StatusBadge status={asset?.health_status || asset?.status || '缺失'} />
-            {asset?.is_current && <Tag color="green">当前主授权</Tag>}
-            {malaysiaWakeAsset && <Tag color="blue">马来西亚紧急唤起</Tag>}
-          </Space>
-          <Typography.Text type="secondary">开发者应用：{asset?.developer_app_id ? `App #${asset.developer_app_id} / api_id ${asset.developer_app_api_id || '未确认'}` : '未绑定'}</Typography.Text>
-          <Typography.Text type="secondary">代理：{asset?.proxy_id ? `Proxy #${asset.proxy_id}` : '未绑定'}</Typography.Text>
-          <Typography.Text type="secondary">最近健康检查：{formatTime(asset?.last_health_check_at)}</Typography.Text>
-          {asset && <Typography.Text type="secondary">区域 / 代：{asset.provision_region_code.toUpperCase()} / G{asset.slot_generation}</Typography.Text>}
-          {asset && malaysiaWakeAsset && (
-            <Typography.Text type="secondary">
-              唤起包：{asset.recoverable_copy_count}/2 份；恢复密钥 {asset.kms_recovery_status}；恢复探测 {formatTime(asset.last_restore_probe_at)}
-            </Typography.Text>
-          )}
-          <Typography.Text type={asset?.failure_reason ? 'danger' : 'secondary'}>{asset?.failure_reason || '验证码不可读取 / 2FA 未托管 / 代理异常等故障槽位原因会显示在这里'}</Typography.Text>
-          <Space wrap>
-            {!isPrimary && !malaysiaWakeAsset && role !== 'standby_2' && <Button size="small" disabled={!canManage} onClick={() => { setLoginForm((current) => ({ ...current, role })); void openLoginModal(); }}>补齐</Button>}
-            {!isPrimary && <Button size="small" disabled={!canRecover} loading={switchingId === asset?.id} onClick={() => asset && confirmSwitch(asset)}>激活恢复</Button>}
-            {asset?.id && <Button size="small" disabled={!canManage} loading={refreshingId === asset.id} onClick={() => confirmRefresh(asset)}>刷新槽位</Button>}
-          </Space>
-        </Space>
-      </Card>
-    );
+    return <AuthorizationSlotCard key={role} role={role} asset={assetForRole(role)} canManage={canManage}
+      switchingId={switchingId} refreshingId={refreshingId} confirmSwitch={confirmSwitch}
+      confirmRefresh={confirmRefresh} setLoginForm={setLoginForm} openLoginModal={openLoginModal} />;
   }
 
   const healthyStandbyCount = assets.filter((asset) => asset.role.startsWith('standby_') && asset.session_available && SWITCHABLE_STATUSES.has(asset.status)).length;
@@ -466,7 +410,7 @@ export function AccountAuthorizationAssetsPanel({
       width: 130,
       render: (value, asset) => value ? `App #${value} / api_id ${asset.developer_app_api_id || '未确认'}` : '未绑定',
     },
-    { title: '代理', dataIndex: 'proxy_id', key: 'proxy_id', width: 120, render: (value) => value ? `Proxy #${value}` : '未绑定' },
+    { title: '历史代理记录', dataIndex: 'proxy_id', key: 'proxy_id', width: 120, render: (value) => value ? `Proxy #${value}` : '未绑定' },
     { title: '最近切换', key: 'last_switched_at', width: 190, render: (_, asset) => formatTime(asset.last_switched_at) },
     {
       title: '操作',
@@ -531,78 +475,10 @@ export function AccountAuthorizationAssetsPanel({
         scroll={{ x: 1280 }}
         locale={{ emptyText: <Empty description="暂无授权资产" /> }}
       />
-      <Modal
-        title="新增备用授权"
-        open={loginOpen}
-        onCancel={closeLoginModal}
-        footer={null}
-        destroyOnHidden
-      >
-        <Space direction="vertical" size={12} style={{ width: '100%' }}>
-          <Select
-            value={loginForm.role}
-            onChange={(role) => setLoginForm({ ...loginForm, role })}
-            options={[
-              { value: 'standby_1', label: '备用授权 1' },
-            ]}
-          />
-          <Select
-            value={loginForm.developer_app_id || undefined}
-            placeholder="选择开发者应用"
-            onChange={(developer_app_id) => setLoginForm({ ...loginForm, developer_app_id })}
-            options={developerApps.map((app) => ({ value: app.id, label: `${app.app_name} / ${app.health_status}` }))}
-          />
-          <Select
-            value={loginForm.proxy_id || undefined}
-            placeholder="选择代理"
-            onChange={(proxy_id) => setLoginForm({ ...loginForm, proxy_id })}
-            options={proxies.map((proxy) => ({ value: proxy.id, label: `${proxy.name} / ${proxy.status}` }))}
-          />
-          <Select
-            value={loginForm.method}
-            onChange={(method) => setLoginForm({ ...loginForm, method })}
-            options={[{ value: 'code', label: '验证码登录' }, { value: 'qr', label: '扫码登录' }]}
-          />
-          {!loginFlow && (
-            <Button
-              type="primary"
-              loading={loginLoading}
-              disabled={!loginForm.developer_app_id || !loginForm.proxy_id}
-              onClick={startStandbyLogin}
-            >
-              发起登录
-            </Button>
-          )}
-          {loginFlow && loginForm.method === 'code' && (
-            <>
-              <Input
-                value={loginForm.code}
-                placeholder="验证码"
-                onChange={(event) => setLoginForm({ ...loginForm, code: event.target.value })}
-                onPressEnter={verifyStandbyLogin}
-              />
-              <Input.Password
-                value={loginForm.password_2fa}
-                placeholder="2FA 密码（如需要）"
-                onChange={(event) => setLoginForm({ ...loginForm, password_2fa: event.target.value })}
-                onPressEnter={verifyStandbyLogin}
-              />
-              <Button type="primary" loading={loginLoading} onClick={verifyStandbyLogin}>完成备用授权登录</Button>
-            </>
-          )}
-          {loginFlow && loginForm.method === 'qr' && (
-            <>
-              {loginFlow.qr_payload && (
-                <div className="qr-login-preview">
-                  <QRCode value={loginFlow.qr_payload} />
-                </div>
-              )}
-              <Typography.Text type="secondary">二维码仅用于当前备用授权确认，不展示原始扫码内容。</Typography.Text>
-              <Button type="primary" loading={loginLoading} onClick={checkQrLogin}>我已扫码，检查登录</Button>
-            </>
-          )}
-        </Space>
-      </Modal>
+      <AuthorizationLoginModal loginOpen={loginOpen} closeLoginModal={closeLoginModal}
+        loginForm={loginForm} setLoginForm={setLoginForm} developerApps={developerApps}
+        loginFlow={loginFlow} loginLoading={loginLoading} startStandbyLogin={startStandbyLogin}
+        verifyStandbyLogin={verifyStandbyLogin} checkQrLogin={checkQrLogin} />
     </Card>
   );
 }

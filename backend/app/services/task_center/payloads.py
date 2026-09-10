@@ -559,6 +559,8 @@ class SearchJoinPayload(BaseModel):
 
     @model_validator(mode="after")
     def validate_safe_navigation(self) -> "SearchJoinPayload":
+        from app.search_transport import is_direct_search
+
         safe = self.safe_navigation or {}
         total_max = int(safe.get("total_max") or 0)
         if total_max > 3:
@@ -571,7 +573,10 @@ class SearchJoinPayload(BaseModel):
             raise ValueError("search_join requires authorization_id")
         if not self.session_role.strip():
             raise ValueError("search_join requires session_role")
-        if _missing_client_metadata(self.client_metadata):
+        direct = is_direct_search(self.runtime_environment)
+        if direct and self.client_metadata:
+            raise ValueError("direct_search_legacy_environment_forbidden")
+        if not direct and _missing_client_metadata(self.client_metadata):
             raise ValueError("search_join requires complete client_metadata")
         if self.search_execution_mode not in {
             "click_only",
@@ -612,11 +617,22 @@ class SearchRankDeboostPayload(BaseModel):
     target_group_ids: list[int] = Field(default_factory=list)
     target_group_refs: list[dict[str, Any]] = Field(default_factory=list)
     account_pool_id: int = Field(ge=1)
-    proxy_airport_node_id: int = Field(ge=1)
+    proxy_airport_node_id: int | None = Field(default=None, ge=1)
     exempt_group_username: str = ""
     dwell_seconds_min: int = Field(default=10, ge=1, le=600)
     dwell_seconds_max: int = Field(default=30, ge=1, le=600)
     runtime_environment: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_search_transport(self) -> "SearchRankDeboostPayload":
+        from app.search_transport import is_direct_search
+
+        direct = is_direct_search(self.runtime_environment)
+        if direct and self.proxy_airport_node_id is not None:
+            raise ValueError("direct_search_proxy_fields_forbidden")
+        if not direct and self.proxy_airport_node_id is None:
+            raise ValueError("legacy_search_proxy_node_required")
+        return self
 
 
 def _missing_client_metadata(metadata: dict[str, str]) -> bool:

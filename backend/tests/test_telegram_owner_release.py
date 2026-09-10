@@ -45,6 +45,22 @@ def test_readback_requires_one_shared_owner(monkeypatch, change):
             module.verify_containers('sha', 'image', 'image-id')
 
 
+@pytest.mark.parametrize('drift', (False, True))
+def test_readback_checks_frozen_direct_egress_on_every_caller(monkeypatch, drift):
+    module, rows = readback(), inventory()
+    policy = {'TELEGRAM_DIRECT_EGRESS_REGION': 'sv', 'TELEGRAM_DIRECT_EGRESS_IP': '8.8.8.8'}
+    for row in rows:
+        row['Config']['Env'].extend(key + '=' + value for key, value in policy.items())
+    if drift:
+        rows[1]['Config']['Env'][-1] = 'TELEGRAM_DIRECT_EGRESS_IP=1.1.1.1'
+    monkeypatch.setattr(module, 'output', lambda command: 'id' if command[1] == 'ps' else json.dumps(rows))
+    if drift:
+        with pytest.raises(ValueError, match='direct_egress_policy_mismatch'):
+            module.verify_containers('sha', 'image', 'image-id', expected_egress=policy)
+    else:
+        assert len(module.verify_containers('sha', 'image', 'image-id', expected_egress=policy)) == 3
+
+
 @pytest.mark.parametrize('failure', ('none', 'ps', 'stop', 'inspect', 'alive'))
 def test_old_owner_process_exit_required(tmp_path, failure):
     docker = tmp_path / 'docker'

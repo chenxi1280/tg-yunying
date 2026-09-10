@@ -1262,6 +1262,8 @@ class SearchClickConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    transport_contract_version: Literal["legacy_proxy_v1", "sv_current_direct_v1"] = "legacy_proxy_v1"
+
     search_execution_mode: Literal["click_only"] = "click_only"
     target_operation_target_id: int = Field(gt=0)
     target_input: str = Field(min_length=1, max_length=300)
@@ -1475,6 +1477,7 @@ class SearchJoinGroupTaskCreate(TaskCreateCommon, SearchJoinGroupConfig):
 
 
 class SearchClickInternalTaskCreate(TaskCreateCommon, SearchClickConfig):
+    transport_contract_version: Literal["sv_current_direct_v1"] = "sv_current_direct_v1"
     pacing_config: SearchClickPacingConfig = Field(
         default_factory=SearchClickPacingConfig
     )
@@ -1709,6 +1712,7 @@ class SearchJoinGroupTaskConfigUpdate(BaseModel):
 class SearchRankDeboostTaskCreate(BaseModel):
     """搜索排名降权任务创建 schema。"""
 
+    transport_contract_version: Literal["sv_current_direct_v1"] = "sv_current_direct_v1"
     name: str
     search_bots: list[str] = Field(default=["jisou"], description="首版仅支持 jisou")
     keywords: list[dict] = Field(default_factory=list, description="关键词列表")
@@ -1732,6 +1736,15 @@ class SearchRankDeboostTaskCreate(BaseModel):
         default_factory=dict, description="任务配置，含节奏、停留时长、限流"
     )
     notes: str = ""
+
+    @model_validator(mode="after")
+    def validate_direct_transport(self) -> "SearchRankDeboostTaskCreate":
+        if self.proxy_airport_node_id is not None or self.config.get("proxy_airport_node_id") is not None:
+            raise ValueError("direct_search_proxy_fields_forbidden")
+        version = self.config.get("transport_contract_version", self.transport_contract_version)
+        if version != self.transport_contract_version:
+            raise ValueError("direct_search_transport_contract_invalid")
+        return self
 
 
 class SearchRankDeboostTaskConfigUpdate(BaseModel):

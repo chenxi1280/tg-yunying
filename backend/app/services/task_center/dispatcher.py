@@ -23,6 +23,9 @@ from pydantic import ValidationError
 from app.admin_chats import send_admin_chat_broadcast
 from app.integrations.telegram import DeveloperAppCredentials, OperationResult, OutboundSegment
 from app.config import get_settings
+from app.search_transport import is_direct_search, require_direct_declaration
+from .direct_search_runtime import egress_policy, resolve_direct_search_runtime
+from .direct_search_results import normalize_direct_search_result
 from app.models import AccountStatus, Action, AiAccountVoiceProfile, AiGroupMessageMemory, ChannelMessage, CommentFulfillmentObligation, ConsistencyQuarantine, ContentMixCycle, ContentMixCycleSlot, ContentMixObligation, DispatchClaimReservation, DispatchClaimShardAllocation, DispatchClaimWindow, ExecutionAttempt, FailureType, GroupAuthStatus, GroupContextMessage, OperationTarget, ReviewQueue, SearchClickAssignment, SearchClickFulfillmentObligation, SearchClickOpportunityAssignment, SearchProtocolSession, Task, TaskAccountDailyCoverage, TaskDayLedger, TaskGroupBotAdmission, TaskGroupDailyMessageSlot, TaskMembershipAdmissionItem, Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
 from app.models import AccountEnvironmentBinding, AccountProxy, AccountProxyBinding, TelegramDeveloperApp, TgAccountAuthorization
 from app.models.group_clone import TelegramGatewayMutationIdentity
@@ -9102,6 +9105,8 @@ def _search_join_image_verification_kwargs(
 
 
 def _search_join_action_status(result: dict[str, Any]) -> str:
+    if result.get("gateway_outcome_unknown") is True:
+        return "unknown_after_send"
     if result.get("success"):
         return "success"
     if (
@@ -9145,6 +9150,7 @@ def _normalize_pure_search_click_result(
     payload: SearchJoinPayload,
     result: dict,
 ) -> dict:
+    result = normalize_direct_search_result(payload.runtime_environment, result)
     if payload.search_execution_mode != "click_only" or not result.get("success"):
         return result
     normalized = {
@@ -9417,10 +9423,14 @@ def _search_join_gateway_prerequisites(
 
 
 def _search_join_pre_gateway_failure(action: Action, payload: SearchJoinPayload) -> str:
-    if not _search_join_proxy_guard_verified(payload):
+    if is_direct_search(payload.runtime_environment):
+        failure = _direct_search_payload_failure(action, payload)
+        if failure:
+            return failure
+    elif not _search_join_proxy_guard_verified(payload):
         _fail(action, "proxy_egress_guard_missing", "搜索入群缺少已验证代理出口 guard，禁止回退本机直连", validation_stage="search_join_proxy")
         return "proxy_egress_guard_missing"
-    if not _search_join_client_metadata_verified(payload):
+    if not is_direct_search(payload.runtime_environment) and not _search_join_client_metadata_verified(payload):
         _fail(action, "client_metadata_missing", "搜索入群缺少已绑定客户端 metadata，禁止使用默认 MTProto 指纹", validation_stage="search_join_client_metadata")
         return "client_metadata_missing"
     keyword_text = decrypt_secret(payload.keyword_text_ciphertext) or ""
@@ -9430,6 +9440,20 @@ def _search_join_pre_gateway_failure(action: Action, payload: SearchJoinPayload)
     if normalized_keyword_hash(keyword_text) != payload.keyword_hash:
         _fail(action, "keyword_hash_mismatch", "搜索入群关键词密文与审计哈希不一致", validation_stage="search_join_payload")
         return "keyword_hash_mismatch"
+    return ""
+
+
+def _direct_search_payload_failure(action: Action, payload: SearchJoinPayload) -> str:
+    runtime = payload.runtime_environment
+    try:
+        require_direct_declaration(runtime, egress_policy(get_settings()))
+        if payload.client_metadata or payload.session_role != runtime.get("authorization_role"):
+            raise ValueError("direct_search_metadata_or_authorization_role_mismatch")
+        if payload.authorization_id != runtime.get("authorization_id"):
+            raise ValueError("direct_search_payload_authorization_mismatch")
+    except ValueError as exc:
+        _fail(action, str(exc), "搜索直连合同不可用", validation_stage="direct_search_transport")
+        return str(exc)
     return ""
 
 
@@ -9623,7 +9647,7 @@ def _dispatch_search_rank_deboost(session: Session, action: Action, account: TgA
 def _rank_deboost_dispatch_ready(session: Session, action: Action, payload: SearchRankDeboostPayload) -> bool:
     runtime = payload.runtime_environment if isinstance(payload.runtime_environment, dict) else {}
     binding_id = int(runtime.get("group_proxy_binding_id") or 0)
-    if binding_id <= 0:
+    if not is_direct_search(runtime) and binding_id <= 0:
         _skip(action, "proxy_egress_guard_failed", "搜索排名观察任务缺少 group_proxy_binding_id，禁止回退本机直连")
         action.result = {**(action.result or {}), "validation_stage": "search_rank_deboost_proxy"}
         return False
@@ -9702,6 +9726,8 @@ def _record_search_join_proxy_failover(
     payload: SearchJoinPayload,
     result: dict,
 ) -> None:
+    if is_direct_search(payload.runtime_environment):
+        return
     if result.get("success") or not _is_search_join_proxy_failure(result):
         return
     runtime = payload.runtime_environment if isinstance(payload.runtime_environment, dict) else {}
@@ -9855,6 +9881,13 @@ def _search_join_runtime_authorization(
     account: TgAccount,
     payload: SearchJoinPayload | SearchJoinMembershipPayload,
 ) -> SearchJoinRuntimeAuthorization:
+    if is_direct_search(payload.runtime_environment):
+        transport = resolve_direct_search_runtime(
+            session, account, payload.runtime_environment, settings=get_settings(),
+        )
+        if payload.authorization_id != transport.authorization_id:
+            raise ValueError("direct_search_payload_authorization_mismatch")
+        return SearchJoinRuntimeAuthorization(transport.session_ciphertext, transport.credentials)
     authorization = session.get(TgAccountAuthorization, payload.authorization_id)
     if authorization is None or authorization.tenant_id != account.tenant_id:
         raise ValueError("search_join_authorization_not_found")

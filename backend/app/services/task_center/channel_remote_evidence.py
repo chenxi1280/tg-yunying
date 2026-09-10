@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.search_transport import is_direct_search
+
 from dataclasses import dataclass
 
 from sqlalchemy import select
@@ -65,6 +67,9 @@ def remote_mutation_state(
     action: Action,
     attempt: ExecutionAttempt,
 ) -> str:
+    result = dict(action.result or {})
+    if result.get("gateway_outcome_unknown") is True and is_direct_search(result.get("transport_contract")):
+        return "unknown"
     journal_state = _journal_mutation_state(action, attempt)
     if journal_state in {"false", "true"}:
         return journal_state

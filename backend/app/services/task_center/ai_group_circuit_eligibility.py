@@ -1,27 +1,16 @@
 from __future__ import annotations
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import ExecutionCircuitState, Task, TgAccount, TgAccountAuthorization
-from app.models.risk_control import AccountProxyBinding
+from app.models import ExecutionCircuitState, Task
 
 
 def blocked_coverage_account_ids(session: Session, task: Task) -> set[int]:
     if not _uses_circuit_aware_coverage(task):
         return set()
     domain_keys = _blocking_domain_keys(session, task.tenant_id)
-    blocked = set(domain_keys.get("account", ()))
-    route_keys = domain_keys.get("proxy_route", set())
-    egress_keys = domain_keys.get("proxy_egress", set())
-    if not route_keys and not egress_keys:
-        return blocked
-    for account_id, proxy_id, exit_ip in session.execute(_account_domain_rows(task)):
-        route_key = f"proxy:{int(proxy_id or 0)}" if proxy_id else ""
-        egress_key = f"exit:{str(exit_ip).strip()}" if exit_ip else route_key
-        if route_key in route_keys or egress_key in egress_keys:
-            blocked.add(int(account_id))
-    return blocked
+    return set(domain_keys.get("account", ()))
 
 
 def _uses_circuit_aware_coverage(task: Task) -> bool:
@@ -58,29 +47,6 @@ def _domain_value(kind: str, key: str):
     if kind == "account":
         return int(value) if value.isdigit() else None
     return key
-
-
-def _account_domain_rows(task: Task):
-    proxy_id = func.coalesce(TgAccountAuthorization.proxy_id, TgAccount.proxy_id)
-    binding_match = and_(
-        AccountProxyBinding.tenant_id == TgAccount.tenant_id,
-        AccountProxyBinding.account_id == TgAccount.id,
-        AccountProxyBinding.proxy_id == proxy_id,
-        AccountProxyBinding.status == "active",
-        AccountProxyBinding.unbound_at.is_(None),
-    )
-    return (
-        select(TgAccount.id, proxy_id, AccountProxyBinding.observed_exit_ip)
-        .outerjoin(
-            TgAccountAuthorization,
-            and_(
-                TgAccountAuthorization.id == TgAccount.current_authorization_id,
-                TgAccountAuthorization.is_current.is_(True),
-            ),
-        )
-        .outerjoin(AccountProxyBinding, binding_match)
-        .where(TgAccount.tenant_id == task.tenant_id, TgAccount.deleted_at.is_(None))
-    )
 
 
 __all__ = ["blocked_coverage_account_ids"]

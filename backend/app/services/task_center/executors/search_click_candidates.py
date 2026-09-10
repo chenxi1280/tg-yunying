@@ -10,6 +10,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
+from app.search_transport import DIRECT_SEARCH_TRANSPORT_VERSION, LEGACY_SEARCH_TRANSPORT_VERSION
+from ..direct_search_runtime import DirectSearchEnvironment
 from app.models import (
     BotProtocolSample,
     AccountEnvironmentBinding,
@@ -282,7 +284,10 @@ def _account_path_context(
                 value.blockers.get(decision.reason_code, 0) + 1
             )
             return None
-    environment = _environment(value.session, value.account, value.blockers)
+    environment = _environment(
+        value.session, value.account, value.blockers,
+        transport_contract_version=value.base.config.get("transport_contract_version", LEGACY_SEARCH_TRANSPORT_VERSION),
+    )
     if environment is None:
         return None
     candidate = _candidate(value, environment)
@@ -317,7 +322,7 @@ def _candidate(value: _AccountPathInput, environment) -> SearchClickCandidatePat
         account_id=value.account.id,
         authorization_id=environment.authorization_id,
         keyword_hash=value.keyword_hash,
-        proxy_route_id=str(environment.proxy_binding_id),
+        proxy_route_id="" if isinstance(environment, DirectSearchEnvironment) else str(environment.proxy_binding_id),
         protocol_sample_version=value.base.sample.schema_version,
         hard_safe_remaining_capacity=capacity,
         confirmed_click_count_today=_confirmed_for_account(
@@ -383,6 +388,8 @@ def _resource_versions(
     environment,
     capacity: int,
 ) -> tuple[tuple[str, str, str], ...]:
+    if isinstance(environment, DirectSearchEnvironment):
+        return _direct_resource_versions(value, environment, capacity)
     authorization = value.session.get(
         TgAccountAuthorization, environment.authorization_id
     )
@@ -450,3 +457,24 @@ __all__ = [
     "candidate_paths",
     "store_capacity_projection",
 ]
+
+
+def _direct_resource_versions(value, environment, capacity):
+    runtime = environment.runtime_environment
+    resources = (
+        ("account", str(value.account.id), _hash({
+            "status": value.account.status, "identity": value.account.account_identity,
+            "deleted_at": _iso(value.account.deleted_at),
+            "developer_app_version": value.account.developer_app_version,
+        })),
+        ("authorization", str(environment.authorization_id), _hash(runtime)),
+        ("direct_transport", str(environment.authorization_id), _hash(runtime)),
+        ("protocol", value.base.sample.id, _hash({
+            "schema": value.base.sample.schema_version,
+            "sample_hash": value.base.sample.sample_hash,
+            "captured_at": _iso(value.base.sample.captured_at),
+        })),
+        ("account_capacity", str(value.account.id), str(capacity)),
+        ("gateway_contract", "pure_click", DIRECT_SEARCH_TRANSPORT_VERSION),
+    )
+    return tuple(sorted(resources))

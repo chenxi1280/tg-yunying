@@ -423,7 +423,10 @@ def _new_remote_fence(
         attempt_id=attempt.id,
         invocation_identity=attempt.id,
         invocation_kind="telegram_gateway",
-        domain_keys={"account_id": account.id, "proxy_id": account.proxy_id},
+        domain_keys={
+            "account_id": account.id, "transport_mode": "direct", "proxy_id": None,
+            "historical_proxy_id": account.proxy_id, "circuit_scope": "account",
+        },
         resilience_policy_revision_id=policy.id,
     )
 

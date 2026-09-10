@@ -9,6 +9,8 @@ from sqlalchemy.orm import Session
 from app.models import AccountProxy, AccountStatus, SearchRankDeboostExemptGroup, Task, TgAccount
 from app.models.search_rank_deboost import AccountGroupProxyBinding
 from app.security import encrypt_secret
+from app.search_transport import is_direct_search
+from app.services.task_center.direct_rank_search import direct_rank_transport_fields
 from app.services._common import _now
 from app.services.account_usage_policy import apply_rank_deboost_account_filters
 from app.services.proxy_airport_accounts import AVAILABLE_NODE_STATUS, EXECUTABLE_PROXY_PROTOCOLS
@@ -239,9 +241,8 @@ def _create_account_action(
     for keyword in context.keywords:
         keyword_hash = _hash_keyword(keyword)
         account_pool_id = int(account.pool_id or 0)
-        binding = _matching_binding_for_account(session, task, account)
-        payload = _build_payload(context, binding, account_pool_id, keyword_hash, keyword)
         try:
+            payload = _account_payload(session, account, context=context, task=task, keyword=keyword)
             resolve_rank_deboost_runtime_authorization(session, account, payload)
         except ValueError as exc:
             _count_blocker(blockers, str(exc))
@@ -294,6 +295,24 @@ def _record_quiet_hours(session: Session, task: Task, now_value) -> int:
         {"quiet_hours_active": 1},
         pacing_stats,
     )
+
+
+def _account_payload(session, account, *, context, task, keyword) -> SearchRankDeboostPayload:
+    if is_direct_search(context.config):
+        return SearchRankDeboostPayload(
+            bot_username=context.bot_username,
+            keyword_hash=_hash_keyword(keyword),
+            keyword_text_ciphertext=encrypt_secret(keyword),
+            target_group_ids=context.target_group_ids,
+            target_group_refs=context.target_group_refs,
+            account_pool_id=account.pool_id,
+            exempt_group_username=context.exempt_group_username,
+            dwell_seconds_min=context.dwell_seconds_min,
+            dwell_seconds_max=context.dwell_seconds_max,
+            **direct_rank_transport_fields(session, account),
+        )
+    binding = _matching_binding_for_account(session, task, account)
+    return _build_payload(context, binding, account.pool_id, _hash_keyword(keyword), keyword)
 
 
 def _build_payload(
