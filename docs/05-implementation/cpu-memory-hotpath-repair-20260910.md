@@ -17,3 +17,5 @@
 - 第三轮prod-diagnosis -> product complete/resync -> dev：线程栈确认预关注Gateway持有父Session长事务。locked_paths追加task_prejoin_channels.py、Dispatcher异常传播入口、prejoin定向测试及相关合同/索引。快照释放事务并在结果后核验原认领；成功事实保留，旧调用不投影新owner状态。17项单元/准入回归通过，真实PG及Release Gate待完成。
 
 - 第三轮定向QA：17项首批准入/事务单元、45项运行资源/持续调度/关注/退役回归通过；独立PostgreSQL2项通过，实测RPC期间父连接xact_start为空且另一连接可NOWAIT取得账号行锁，认领替换后成功事实仍持久且不覆盖新token。新增无待处理频道/异常传播测试随冻结制品QA复验。没有生产数据改写；Release Gate允许进入本地制品准备，业务验收仍pending。
+
+- 第三轮发布d69a6a26通过：19容器/34参数一致、64项冻结QA+2项真实PG通过，上一轮成功镜像/包精确清理。真实RPC等待仍在而预关注事实长事务三次采样为0；新版本已有完整ledger/Action/Attempt/Gateway/typed-visible链。整体CPU固定降幅、所有任务日目标及其他业务异常不作已修复声明。最终范围验收与证据见`cpu-memory-hotpath-release-verification-20260910.md`。
