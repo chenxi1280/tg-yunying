@@ -55,3 +55,11 @@ design_status=complete（R1/R2），resync=true。已更新专项 PRD §6.2、§
 - 首轮 Prepare Production 34427815869 / b593342d：PostgreSQL分片0失败，其余分片、前端及镜像构建通过。唯一失败是既有 `test_update_consumer_locks_postgres` 的Clone用例：消费端Task `FOR UPDATE` 阻挡Collector插入delivery外键所需的 `KEY SHARE`，发生 `LockNotAvailable`。
 - resync=true，PRD §12.1补正：Task采用 `FOR NO KEY UPDATE`，保持Pause/状态写互斥，允许其他事务建立外键引用。不得降低并发测试断言或扩大锁超时。
 - 本地真实PostgreSQL复现同一失败（14.59秒）；补正后既有AI/评论/Clone消费并发、路由rebind、Pause与生命周期回归22项全部通过（13.20秒，60秒硬超时）。新增断言验证Collector持锁时KEY SHARE可进入、生命周期排他写仍被互斥。Ruff F与diff检查通过。
+
+## 第一轮发布与生产反向检查
+
+- Prepare 34428615955成功，Deploy 34429196287成功；生产current=`20260910022307_24704522`，后端及18worker均为24704522且healthy，应用/Nginx/公网health均ok，schema head=`0231_ai_group_emergency_history`，无本次迁移。
+- 10:13:40正式Stop旧测试，epoch2→3；旧1051SourceEvent、1成功消息映射保留，waiting_binding义务取消。审计1144686。账号2入群调用前预览/指纹校验，10:14:06 joined并独立回读send权限；TgGroupAccount39077，审计1144688–1144690；账号437群主事实不变。
+- 新测试未创建/零发送。正式受控Collector auth1/2398追赶时暴露回归：清除不存在的channel错误也先加Task锁。账号2六个active订阅均无channel错误，但Collector的Task锁已等待其他Planner长事务超过3分钟，阻断共享采集。取消的仅是本次验收启动的Collector进程135，未中断业务worker或数据库后台。
+- 返回product，resync=true：无变化的错误投影必须零Task行锁；PRD §12.1补正后再dev/并发QA/重新发布。不得用修改游标、伪造live、跳过预检或反复重试掩盖该阻塞。
+- 新增PostgreSQL反例在24704522上5.46秒内复现Task锁等待；修复后无操作投影9项、真实错误清理/暂停1项，结合既有Pause、消费并发与生命周期共32项通过（51.75秒，60秒硬超时）。Ruff F/diff检查通过。扩大Clone/共享流回归及拆分批次在本机先后触及60秒硬超时，未观察到断言失败，不能记为通过；完整回归由新候选的Prepare Production重新验收。

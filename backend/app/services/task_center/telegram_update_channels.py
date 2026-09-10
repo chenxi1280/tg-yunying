@@ -160,7 +160,7 @@ def project_channel_error_to_tasks(
         )
     ))
     for subscription in subscriptions:
-        task = _current_subscription_task(session, subscription)
+        task = _changed_channel_error_task(session, subscription, peer_id=peer_id, detail=detail)
         if task is None:
             continue
         errors = dict((task.stats or {}).get("telegram_update_channel_errors") or {})
@@ -186,7 +186,7 @@ def clear_channel_error_from_tasks(
         )
     ))
     for subscription in subscriptions:
-        task = _current_subscription_task(session, subscription)
+        task = _changed_channel_error_task(session, subscription, peer_id=peer_id)
         if task is None:
             continue
         stats = dict(task.stats or {})
@@ -197,6 +197,19 @@ def clear_channel_error_from_tasks(
         else:
             stats.pop("telegram_update_channel_errors", None)
         task.stats = stats
+
+
+def _changed_channel_error_task(session, subscription, *, peer_id, detail=None):
+    session.flush()
+    task = session.get(Task, subscription.task_id, populate_existing=True)
+    if task is None:
+        return None
+    errors = dict((task.stats or {}).get("telegram_update_channel_errors") or {})
+    if detail is None and str(peer_id) not in errors:
+        return None
+    if detail is not None and errors.get(str(peer_id)) == detail:
+        return None
+    return _current_subscription_task(session, subscription)
 
 
 def _current_subscription_task(session, subscription):
