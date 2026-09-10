@@ -66,14 +66,20 @@ def _current_authorization(
         or authorization.tenant_id != account.tenant_id
         or authorization.account_id != account.id
         or not authorization.is_current
-        or authorization.status != "active"
-        or authorization.health_status == "invalid"
-        or authorization.last_authoritative_error_code == "authorization_key_duplicated"
-        or authorization.provision_region_code != "sv"
-        or not authorization.session_ciphertext
+        or not _usable_sv_authorization(authorization)
     ):
         return None
     return authorization
+
+
+def _usable_sv_authorization(authorization: TgAccountAuthorization) -> bool:
+    return bool(
+        authorization.status == "active"
+        and authorization.health_status != "invalid"
+        and authorization.last_authoritative_error_code != "authorization_key_duplicated"
+        and authorization.provision_region_code == "sv"
+        and authorization.session_ciphertext
+    )
 
 
 def _dependency_snapshot(
