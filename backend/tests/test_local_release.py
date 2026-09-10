@@ -2,6 +2,7 @@ import importlib.util
 import json
 from pathlib import Path
 import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -10,16 +11,19 @@ pytestmark = pytest.mark.no_postgres
 ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location('local_release', ROOT / 'deploy/local_release.py')
 release = importlib.util.module_from_spec(spec)
+sys.path.insert(0, str(ROOT / 'deploy'))
 spec.loader.exec_module(release)
 SHA = 'a' * 40
 DIGEST = 'sha256:' + 'b' * 64
 
 
 def manifest():
-    return {'schema_version': 1, 'status': 'prepared', 'sha': SHA,
+    return {'schema_version': 2, 'status': 'prepared', 'sha': SHA,
             'platform': 'linux/amd64', 'tests': ['tests/example.py'],
             'logs': {'test.log': 'digest'},
-            'images': {name: f'{release.REGISTRY}/{name}@{DIGEST}' for name in release.IMAGES}}
+            'images': {name: release.image_reference(name, SHA, DIGEST) for name in release.IMAGES},
+            'image_ids': dict.fromkeys(release.IMAGES, DIGEST),
+            'archive': {'file': 'images.tar.gz', 'sha256': 'c' * 64, 'size': 1}}
 
 
 @pytest.mark.parametrize('change', [
@@ -32,7 +36,7 @@ def test_invalid_preparation_is_rejected(change):
 
 
 @pytest.mark.parametrize('reference', ['untrusted/image@' + DIGEST,
-                                      release.REGISTRY + '/tg-yunying-backend:latest'])
+                                      'tgyunying-local/tg-yunying-backend:latest'])
 def test_only_project_digest_is_deployable(reference):
     value = manifest()
     value['images']['tg-yunying-backend'] = reference
@@ -123,13 +127,15 @@ def test_destination_cannot_inject_remote_shell(host):
 def test_deployment_failure_is_not_replayed(repository, monkeypatch):
     value = manifest()
     value['sha'] = git(repository, 'rev-parse', 'HEAD')
+    value['images'] = {name: release.image_reference(name, value['sha'], DIGEST)
+                       for name in release.IMAGES}
     path = repository / 'manifest.json'
     path.write_text(json.dumps(value))
     options = SimpleNamespace(manifest=path, host='production', user='root', base_dir='/data/app')
-    for name in ['require_commands', 'verify_logs', 'require_frozen_remote', 'require_target_platform']:
+    for name in ['require_commands', 'verify_logs', 'require_frozen_remote', 'require_target_platform', 'verify_archive']:
         monkeypatch.setattr(release, name, lambda *args: None)
-    monkeypatch.setenv('GHCR_USERNAME', 'test')
-    monkeypatch.setenv('GHCR_TOKEN', 'test')
+    monkeypatch.delenv('GHCR_USERNAME', raising=False)
+    monkeypatch.delenv('GHCR_TOKEN', raising=False)
     calls = []
 
     def fail(*args, **kwargs):
@@ -168,11 +174,11 @@ def test_readback_rejects_container_with_correct_sha_but_wrong_image(monkeypatch
     module_spec.loader.exec_module(reader)
     container = {'Name': '/tgyunying-backend', 'Config': {
         'Env': ['RELEASE_SHA=' + SHA], 'Image': 'wrong-image'},
-        'State': {'Status': 'running'}}
+        'State': {'Status': 'running'}, 'Image': DIGEST}
     monkeypatch.setattr(reader, 'output', lambda command: (
         'container-id' if command[1] == 'ps' else json.dumps([container])))
     with pytest.raises(ValueError, match='runtime_image_mismatch'):
-        reader.verify_containers(SHA, 'expected-image')
+        reader.verify_containers(SHA, 'expected-image', DIGEST)
 
 
 def test_prepare_uses_requested_virtual_environment(monkeypatch, tmp_path):

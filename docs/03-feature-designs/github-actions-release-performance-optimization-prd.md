@@ -1,6 +1,6 @@
 # GitHub Actions 生产发布性能优化专项设计
 
-> 2026-09-10 resync：发布入口以 [本地直接发布合同](local-direct-production-release-prd.md) 为准。旧 Actions 准备/发布条款退役；worker 切换、在途保护和业务验收条款继续适用。
+> 2026-09-10 resync：发布入口以 [本地直接发布合同](local-direct-production-release-prd.md) 为准。旧 Actions 与 GHCR 制品交付条款退役，改用本地镜像包直传；worker 切换、在途保护和业务验收条款继续适用。
 
 ## 1. 文档状态
 

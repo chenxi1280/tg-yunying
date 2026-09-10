@@ -15,8 +15,10 @@ import shutil
 import signal
 import subprocess
 import tempfile
+import uuid
 
-REGISTRY = 'ghcr.io/chenxi1280'
+from local_image_archive import (export_archive, image_reference, validate_images,
+                                 verify_archive)
 IMAGES = {
     'tg-yunying-backend': ('Dockerfile.backend', 'TGYUNYING_BACKEND_IMAGE'),
     'tg-yunying-frontend': ('Dockerfile.frontend', 'TGYUNYING_FRONTEND_IMAGE'),
@@ -66,23 +68,9 @@ def source_snapshot(repository, sha):
 
 
 def validate_manifest(value):
-    if value.get('schema_version') != 1 or value.get('status') != 'prepared':
-        raise ValueError('local_preparation_not_ready')
-    if not SHA_PATTERN.fullmatch(value.get('sha', '')):
-        raise ValueError('invalid_candidate_sha')
-    if value.get('platform') not in {'linux/amd64', 'linux/arm64'}:
-        raise ValueError('invalid_platform')
+    validate_images(value)
     if not value.get('tests') or not value.get('logs'):
         raise ValueError('missing_local_test_evidence')
-    images = value.get('images', {})
-    if set(images) != set(IMAGES):
-        raise ValueError('image_set_mismatch')
-    for name, reference in images.items():
-        prefix = f'{REGISTRY}/{name}@'
-        if not isinstance(reference, str) or not reference.startswith(prefix):
-            raise ValueError('image_repository_mismatch')
-        if not DIGEST_PATTERN.fullmatch(reference[len(prefix):]):
-            raise ValueError('invalid_image_digest')
     return value
 
 
@@ -110,22 +98,27 @@ def run_checks(source, options):
 
 
 def build_images(source, options, sha):
-    images, logs = {}, {}
+    images, identities, logs = {}, {}, {}
     for name, (dockerfile, _) in IMAGES.items():
-        metadata = options.output / f'{name}.json'
+        tag = f'tgyunying-build/{name}:{uuid.uuid4().hex}'
         command = ['docker', 'buildx', 'build', '--platform', options.platform,
-            '--file', dockerfile, '--tag', f'{REGISTRY}/{name}:{sha}', '--push',
-            '--metadata-file', str(metadata)]
+                   '--file', dockerfile, '--tag', tag, '--load']
         if name == 'tg-yunying-frontend':
             command += ['--build-arg', 'VITE_API_BASE=/api']
         log_name = f'{name}.log'
         logs[log_name] = execute([*command, '.'], cwd=source,
                                 log=options.output / log_name)
-        digest = json.loads(metadata.read_text())['containerimage.digest']
-        if not isinstance(digest, str) or not DIGEST_PATTERN.fullmatch(digest):
-            raise ValueError(f'invalid_build_digest:{name}')
-        images[name] = f'{REGISTRY}/{name}@{digest}'
-    return images, logs
+        row = json.loads(capture(['docker', 'image', 'inspect', tag]))[0]
+        identity = row['Id']
+        if not DIGEST_PATTERN.fullmatch(identity):
+            raise ValueError(f'invalid_build_image_id:{name}')
+        if row['Os'] + '/' + row['Architecture'] != options.platform:
+            raise ValueError(f'build_platform_mismatch:{name}')
+        reference = image_reference(name, sha, identity)
+        subprocess.run(['docker', 'image', 'tag', identity, reference], check=True)
+        subprocess.run(['docker', 'image', 'rm', tag], check=True)
+        images[name], identities[name] = reference, identity
+    return images, identities, logs
 
 
 def prepare(options, repository):
@@ -134,7 +127,7 @@ def prepare(options, repository):
     subprocess.run(['docker', 'buildx', 'version'], check=True)
     sha = capture(['git', 'rev-parse', f'{options.ref}^{{commit}}'], cwd=repository)
     options.output.mkdir(parents=True, exist_ok=False)
-    value = {'schema_version': 1, 'sha': sha, 'platform': options.platform,
+    value = {'schema_version': 2, 'sha': sha, 'platform': options.platform,
              'tests': options.test, 'status': 'preparing',
              'created_at': datetime.now(timezone.utc).isoformat()}
     save(options.output / 'prepared-release.json', value)
@@ -142,8 +135,10 @@ def prepare(options, repository):
         logs = run_checks(source, options)
     # Fresh snapshot excludes generated and ignored test/build artifacts.
     with source_snapshot(repository, sha) as source:
-        images, build_logs = build_images(source, options, sha)
-    value.update(status='prepared', images=images, logs={**logs, **build_logs})
+        images, identities, build_logs = build_images(source, options, sha)
+    value.update(images=images, image_ids=identities, logs={**logs, **build_logs})
+    value['archive'] = export_archive(options.output, value)
+    value.update(status='prepared')
     save(options.output / 'prepared-release.json', validate_manifest(value))
     print(f"PREPARED_SHA={sha}", flush=True)
 
@@ -189,9 +184,7 @@ def deploy(options, repository):
     verify_logs(directory, manifest)
     require_frozen_remote(repository, manifest['sha'])
     require_target_platform(options, manifest['platform'])
-    for name in ['GHCR_USERNAME', 'GHCR_TOKEN']:
-        if not os.environ.get(name):
-            raise RuntimeError(f'missing_environment:{name}')
+    verify_archive(directory, manifest)
     receipt_path = directory / 'deployment.json'
     receipt = {'sha': manifest['sha'], 'status': 'deploying',
                'host': options.host, 'business_evidence': 'unproven'}
@@ -199,7 +192,9 @@ def deploy(options, repository):
     with receipt_path.open('x') as output:
         json.dump(receipt, output)
     with source_snapshot(repository, manifest['sha']) as source:
-        environment = {**os.environ, 'POST_DEPLOY_CHECKS_ENABLED': '1'}
+        environment = {**os.environ, 'POST_DEPLOY_CHECKS_ENABLED': '1',
+                       'LOCAL_IMAGE_ARCHIVE': str(directory / manifest['archive']['file']),
+                       'LOCAL_IMAGE_MANIFEST': str(options.manifest)}
         environment.update({IMAGES[name][1]: ref for name, ref in manifest['images'].items()})
         try:
             execute(['bash', 'deploy/release.sh', '--host', options.host,
@@ -215,7 +210,7 @@ def deploy(options, repository):
 
 def verify_runtime(source, options, manifest):
     command = shlex.join(['python3', '-', options.base_dir, manifest['sha'],
-                          json.dumps(manifest['images'])])
+                          json.dumps({'images': manifest['images'], 'image_ids': manifest['image_ids']})])
     with (source / 'deploy/local_release_readback.py').open('rb') as script:
         result = subprocess.run(['ssh', '-o', 'BatchMode=yes',
             f'{options.user}@{options.host}', command], stdin=script,

@@ -30,7 +30,7 @@ def _environment(tmp_path, exit_code):
     commands = tmp_path / "commands"
     commands.mkdir()
     _executable(commands, "ssh", '''#!/usr/bin/env bash
-if [[ "${@: -1}" == "true" ]]; then exit 0; fi
+if [[ "${@: -1}" == "true" || "${@: -1}" == "mkdir -p "* ]]; then exit 0; fi
 echo 'install_started' >> "${INSTALL_CALL_LOG}"
 echo 'remote phase failed' >&2
 exit "${INSTALL_EXIT_CODE}"
@@ -38,7 +38,15 @@ exit "${INSTALL_EXIT_CODE}"
     _executable(commands, "scp", "#!/usr/bin/env bash\nexit 0\n")
     _executable(commands, "timeout", '#!/usr/bin/env bash\nshift\nexec "$@"\n')
     _executable(commands, "sleep", "#!/usr/bin/env bash\nexit 0\n")
-    return {**os.environ, "PATH": f"{commands}{os.pathsep}{os.environ['PATH']}",
+    archive = tmp_path / 'images.tar.gz'
+    archive.write_bytes(b'upload-fixture')
+    manifest = tmp_path / 'local-images.json'
+    manifest.write_text('{}')
+    return {**os.environ, 'LOCAL_IMAGE_ARCHIVE': str(archive),
+        'LOCAL_IMAGE_MANIFEST': str(manifest),
+        'TGYUNYING_BACKEND_IMAGE': 'tgyunying-local/backend:test',
+        'TGYUNYING_FRONTEND_IMAGE': 'tgyunying-local/frontend:test',
+        'TGYUNYING_IMAGE_VERIFICATION_IMAGE': 'tgyunying-local/verification:test', "PATH": f"{commands}{os.pathsep}{os.environ['PATH']}",
         "INSTALL_CALL_LOG": str(tmp_path / "install.log"), "INSTALL_EXIT_CODE": str(exit_code),
         "RELEASE_SSH_ATTEMPTS": "3", "RELEASE_SSH_RETRY_DELAY": "1"}
 
