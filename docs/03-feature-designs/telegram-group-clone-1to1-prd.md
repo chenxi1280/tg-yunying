@@ -1112,6 +1112,7 @@ QA必须从实际 _plan_due_task_batch 入口，在超过旧global阈值且生�
 - 单条更新不满足原PTS相邻关系时，只允许当前授权状态ID、当前source peer、当前epoch订阅起点之后的持久化ChannelDifferenceRange证明接续：区间起点不高于已消费channel_pts，终点覆盖该条更新PTS。不得以较新的cursor/final、其他频道、其他授权、旧订阅或一般DifferenceMessages信封代替。取得证明后仍逐条消费、按原有身份去重，不跳过待消费消息，不直接推进到证明终点。
 - 若Task.stats.clone_gap_at仍高于stream.last_consumed_ingress_order_no且缺少上述证明，下一次正式Collector对该peer从stream.channel_pts请求补差，保留原shared cursor和全部durable事件。取得覆盖头部缺口的区间后继续正常shared cursor分页，避免对首个slice反复请求同一页。只针对当前可运行epoch的未证明PTS缺口，不处理paused/stopped/blocked或too_long。已有真实too_long保留不可恢复边界。
 - 缺口标记在普通final投影后仍有效：stream即使已投影为catching_up/live，只要队首缺口尚未消费且没有区间证明，仍从该frontier补差；不得因投影状态变化丢失待补差证据。补差请求本身不直接修改shared cursor，返回批次仍按正式Collector流程持久化。
+- 多页补差必须累积真实连续区间：从当前已消费PTS出发，按区间起点排序合并相邻或重叠的同范围证明，中间未覆盖的区间不得跨越。若累计证明尚未覆盖队首更新，下一次从已证明的连续终点读取下一页；累计覆盖队首后才允许消费。累计证明终点不直接写入Task消费PTS。QA覆盖100→103和103→106两页证明后消费pts105，以及103→104之间缺证时仍拒绝。
 - 无schema迁移、消息体格式或前端API变化。ChannelDifferenceRange属于采集协议证据，不是Telegram消息存在事实。新模块只处理这类证据，复用既有Ingress租约、fencing和幂等键。
 - QA必须复现“frontier=78；先收到pts80/count1；后收到实际请求78→81的频道差量”并保持原顺序/零重复消息；缺少证明、错误授权/peer/epoch、只有较新cursor、Common PTS、too_long均不得放行。补差从未证明frontier发起，获得第一页覆盖头部的证明后继续下页；空正常区间不得生成消息，暂停状态仍稳定。
 

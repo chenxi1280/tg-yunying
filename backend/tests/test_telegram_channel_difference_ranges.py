@@ -140,3 +140,25 @@ def test_gap_recovery_requests_frontier_until_first_page_covers_head(clone_ingre
     session.commit()
     assert channel_cursors(factory, state.id) == [("-10011", 110)]
     assert session.get(type(state), state.id).difference_cursor["channels"]["-10011"]["pts"] == 110
+
+
+@pytest.mark.parametrize("second_start,consumed", [(103, 1), (104, 0)])
+def test_multiple_pages_advance_proven_request_frontier_without_crossing_gap(
+    clone_ingress_session, second_start, consumed,
+):
+    session, state = clone_ingress_session
+    task = session.get(Task, "clone-ingress-task")
+    state.difference_cursor = {"channels": {"-10011": {"pts": 110, "status": "live", "final": True}}}
+    _write_ingress(session, state, replace(_ingress("head", message_id=11, pts=105), cursor_scope="event_only"))
+    assert consume_clone_deliveries(session, task) == 0
+    _range(session, state, start=100, end=103)
+    session.commit()
+    factory = sessionmaker(bind=session.get_bind())
+    assert channel_cursors(factory, state.id) == [("-10011", 103)]
+    _range(session, state, start=second_start, end=106)
+    session.scalar(select(CloneSourceStreamState)).state = "catching_up"
+    task.status = "running"
+    session.commit()
+    assert channel_cursors(factory, state.id) == [("-10011", 110 if consumed else 103)]
+    assert consume_clone_deliveries(session, task) == consumed
+    assert session.scalar(select(CloneSourceStreamState)).channel_pts == (105 if consumed else 100)
