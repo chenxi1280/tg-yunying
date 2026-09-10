@@ -2292,7 +2292,8 @@ def test_deploy_scripts_timeout_planner_smoke_and_remote_install():
 
     assert 'REMOTE_INSTALL_TIMEOUT_SECONDS="${REMOTE_INSTALL_TIMEOUT_SECONDS:-2400}"' in release
     assert 'require_positive_integer REMOTE_INSTALL_TIMEOUT_SECONDS "$REMOTE_INSTALL_TIMEOUT_SECONDS"' in release
-    assert 'timeout "$REMOTE_INSTALL_TIMEOUT_SECONDS" ssh "${SSH_OPTS[@]}"' in release
+    assert ('python3 "$(dirname "${BASH_SOURCE[0]}")/run_with_timeout.py" '
+            '"$REMOTE_INSTALL_TIMEOUT_SECONDS" ssh "${SSH_OPTS[@]}"') in release
     assert 'local timeout_seconds="${TGYUNYING_PLANNER_SMOKE_TIMEOUT_SECONDS:-120}"' in check_web
     assert 'timeout "$timeout_seconds" docker exec tgyunying-worker-planner' in check_web
     assert "python -m app.worker_health --role planner" in check_web

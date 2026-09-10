@@ -173,3 +173,19 @@ def test_readback_rejects_container_with_correct_sha_but_wrong_image(monkeypatch
         'container-id' if command[1] == 'ps' else json.dumps([container])))
     with pytest.raises(ValueError, match='runtime_image_mismatch'):
         reader.verify_containers(SHA, 'expected-image')
+
+
+def test_prepare_uses_requested_virtual_environment(monkeypatch, tmp_path):
+    import sys
+
+    venv = tmp_path / "venv"
+    subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(venv)], check=True, timeout=15)
+    options = SimpleNamespace(operation="prepare", output=tmp_path / "output",
+        python=str(venv / "bin/python"))
+    observed = []
+    monkeypatch.setattr(release, "arguments", lambda: options)
+    monkeypatch.setattr(release, "capture", lambda command: str(tmp_path))
+    monkeypatch.setattr(release, "prepare", lambda selected, repository: observed.append(
+        subprocess.check_output([selected.python, "-c", "import sys; print(sys.prefix)"], text=True).strip()))
+    release.main()
+    assert Path(observed[0]).resolve() == venv.resolve()

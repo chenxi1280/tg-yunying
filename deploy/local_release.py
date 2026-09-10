@@ -246,7 +246,7 @@ def main():
     repository = Path(capture(['git', 'rev-parse', '--show-toplevel']))
     if options.operation == 'prepare':
         options.output = options.output.resolve()
-        options.python = str(Path(options.python).resolve())
+        options.python = str(Path(options.python).expanduser().absolute())
         prepare(options, repository)
     else:
         options.manifest = options.manifest.resolve()

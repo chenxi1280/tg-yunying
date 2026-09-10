@@ -64,3 +64,5 @@
 补修提交 3977dde0 已合入 Clone 58f2b863，候选 60328b26 的 Prepare 34433725617 全部通过。推送 release 前发现该分支新增用户授权的本地发布入口 7704f386；已保留并合入，未覆盖 release 或重启停用的 Actions。合并版本按本地发布合同重新冻结源码、定向测试、前端构建及 linux/amd64 三镜像。
 
 本地 Docker/Buildx 可用，目标生产为 x86_64；当前 Docker 无 GHCR 登录，GitHub CLI token 不含包写权限，GHCR_USERNAME/GHCR_TOKEN 未配置。该项是镜像推送与本地安装的真实依赖，不能用已构建的旧 SHA 镜像伪造新候选准备清单。
+
+首轮本地 prepare 输出 `local-release-v1` 保留 preparing：前端部署合同仍断言 GNU timeout，未匹配已经生效的跨平台超时入口，因此在测试阶段失败，未进入镜像构建。同步该断言并保留真实超时无重放测试。同时发现 local_release.py 将虚拟环境解释器 resolve 为全局解释器；真实临时虚拟环境测试先复现失败，改为保留入口路径后，21 项本地发布测试和 157 项前端合同测试全部通过（178 passed，4.63 秒）。失败准备记录不覆盖，新候选使用独立输出目录重新执行。
