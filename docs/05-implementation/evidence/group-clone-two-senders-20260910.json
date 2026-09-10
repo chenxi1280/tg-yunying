@@ -1,0 +1,151 @@
+{
+  "schema_version": 1,
+  "task_id": "46b91930-e10a-4287-ab90-773325561219",
+  "epoch": 2,
+  "release_sha": "58f2b863db7b9308ddb60a604d45e943926ccd41",
+  "scope": "Two distinct source senders cloned as text through accounts 2 and 437, then paused.",
+  "collector": "existing formal Collector, scoped authorized drain for authorizations 1 and 2398",
+  "planner": "existing task-scoped Planner with original guards",
+  "dispatcher": "normal production Dispatcher workers",
+  "remote_proofs": [
+    {
+      "task_id": "46b91930-e10a-4287-ab90-773325561219",
+      "account_id": 2,
+      "source_message_id": 3077968,
+      "target_message_id": 4,
+      "action_id": "dbbb0cf0-6122-412f-936e-0f8df25fb7ac",
+      "attempt_id": "65b928fe-f6ad-4515-9ed8-f670df04b405",
+      "fact_id": "1e89caf2-3a3f-493e-b24b-85829fb9c93c",
+      "kind": "clone_message_observed",
+      "observed_at": "2026-09-10 11:51:26.298225+08:00",
+      "telegram_visible": true,
+      "telegram_author_matches_account": true,
+      "text_matches": true,
+      "remote_type": "text"
+    },
+    {
+      "task_id": "46b91930-e10a-4287-ab90-773325561219",
+      "account_id": 437,
+      "source_message_id": 3077969,
+      "target_message_id": 5,
+      "action_id": "ec66935d-5747-4aa9-9305-12dac5727dc9",
+      "attempt_id": "177923b0-9c34-4418-a029-8391826e042b",
+      "fact_id": "d7616080-3d48-46ad-8618-e0126973bcf4",
+      "kind": "clone_message_observed",
+      "observed_at": "2026-09-10 11:59:32.850916+08:00",
+      "telegram_visible": true,
+      "telegram_author_matches_account": true,
+      "text_matches": true,
+      "remote_type": "text"
+    }
+  ],
+  "distinct_source_senders": 2,
+  "pause_audit_id": 1144927,
+  "paused_at_beijing": "2026-09-10T11:59:40.018006+08:00",
+  "pause_verification": {
+    "observed_at": "2026-09-10T04:02:57.107864+00:00",
+    "pause_snapshot_stable": true,
+    "task": {
+      "id": "46b91930-e10a-4287-ab90-773325561219",
+      "status": "paused",
+      "epoch": 2,
+      "last_error": "",
+      "clone_start_state": "paused",
+      "config_hash": "6e46f8229f341d1cfcb158e0aa3ef0410b2bfb5e56944fa5c6d845a9a80998c7",
+      "counts": {
+        "CloneSourceEvent": 54,
+        "CloneDeliveryObligation": 4,
+        "Action": 2,
+        "CloneMessagePart": 2
+      },
+      "actions": [
+        [
+          "success",
+          2
+        ]
+      ],
+      "attempts": [
+        [
+          "success",
+          2
+        ]
+      ]
+    }
+  },
+  "post_pause_collector_cycles": 2,
+  "test_processes_stopped": true,
+  "full_clone_prd_accepted": false,
+  "not_verified": [
+    "media/album/reply/topic lifecycle E4",
+    "normal automatic scheduling latency",
+    "multi-page runtime E4 on final release 13e3c93c"
+  ],
+  "post_release_verification": {
+    "release_sha": "13e3c93c96bcb17fac7a2d1550e8b5bee4518df9",
+    "observed_at": "2026-09-10T04:43:27.767712+00:00",
+    "current": "/data/tgyunying/releases/20260910123447_13e3c93c",
+    "backend_and_worker_count": 19,
+    "all_running_healthy_on_expected_sha": true,
+    "api_host_nginx_public_health": "ok",
+    "actual_code_hashes": {
+      "backend/app/services/task_center/telegram_channel_difference_ranges.py": "a41de8c842e8fc6ee52ece31f5bf68015d36627c1782cb4f4066079ff878de15",
+      "backend/app/services/task_center/telegram_update_channels.py": "44906d420a32588e15b6edd09ecd1850f4f9abf773a752b7285457c2100e09d0",
+      "backend/app/services/task_center/telegram_update_collector.py": "e410032ba213a1ca500d8313679e6486e6bcf4bac0eedaccb714be3680065a2c",
+      "backend/app/services/task_center/group_clone_source_stream.py": "9a01cce26f353a06fb8e6ee2eea1f6deae3eb10d70eff9b1d931b928839011b4"
+    },
+    "code_hashes_match_git_candidate": true,
+    "before_release_observed_at": "2026-09-10T04:39:05.054451+00:00",
+    "task_and_evidence_identical_across_release": true,
+    "new_task": {
+      "id": "46b91930-e10a-4287-ab90-773325561219",
+      "status": "paused",
+      "epoch": 2,
+      "clone_start_state": "paused",
+      "config_hash": "6e46f8229f341d1cfcb158e0aa3ef0410b2bfb5e56944fa5c6d845a9a80998c7",
+      "counts": {
+        "CloneSourceEvent": 54,
+        "CloneDeliveryObligation": 4,
+        "Action": 2,
+        "CloneMessagePart": 2
+      },
+      "actions": [
+        [
+          "success",
+          2
+        ]
+      ],
+      "attempts": [
+        [
+          "success",
+          2
+        ]
+      ]
+    },
+    "old_task": {
+      "id": "ce341c64-878e-482a-8b91-598346d5b885",
+      "status": "stopped",
+      "epoch": 3,
+      "clone_start_state": "stopped",
+      "config_hash": "af5fce3b1a7b2e113186ba81398bf6679b9a642884c5eaa4c09b0548c2eea7a7",
+      "counts": {
+        "CloneSourceEvent": 1051,
+        "CloneDeliveryObligation": 2,
+        "Action": 1,
+        "CloneMessagePart": 1
+      },
+      "actions": [
+        [
+          "success",
+          1
+        ]
+      ],
+      "attempts": [
+        [
+          "success",
+          1
+        ]
+      ]
+    },
+    "new_remote_clone_execution_performed": false
+  }
+}
