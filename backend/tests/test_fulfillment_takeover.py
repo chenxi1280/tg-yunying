@@ -851,7 +851,7 @@ def test_running_comment_actions_are_migrated_to_remote_fact_obligations(
 def test_release_fences_workers_during_fulfillment_takeover() -> None:
     script = (PROJECT_ROOT / "deploy/compose-up.sh").read_text()
     stop_index = script.index('stop_all_release_workers')
-    start_index = script.index('compose up -d --no-build --remove-orphans "${WORKER_SERVICES[@]}"')
+    start_index = script.index('compose up -d --no-build --pull never --remove-orphans "${WORKER_SERVICES[@]}"')
     prepare_index = script.index("release_worker_cutover prepare")
     complete_index = script.index("release_worker_cutover complete")
     assert stop_index < prepare_index < start_index < complete_index
