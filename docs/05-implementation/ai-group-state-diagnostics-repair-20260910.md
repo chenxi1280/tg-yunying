@@ -4,7 +4,7 @@
 - release_owner / merge_owner / rollback_owner：本任务执行者。
 - 工作树：`/tmp/tgyunying-ai-group-full-recovery-20260910`；分支：`codex/ai-group-full-recovery-20260910`。
 - 原始基线：43640011607f6e1ba166505192a09cecdd4a04f9；其他任务随后在 master 发布 Clone 修复，集成前必须重新检查 ancestry。
-- 状态：首轮候选已发布并读回；线上发现权限恢复提前返回丢失诊断，已完成 PRD resync 与补修，二次发布待执行。`production_fixed=false`。
+- 状态：通用状态/诊断修复及提前返回补修已发布为 13e3c93c，并完成独立运行读回与真实 RPC 样本核对；完整业务恢复仍未通过。`deployment_status=release_passed`，`production_fixed=false`。
 
 ## Product → Dev → QA
 
@@ -36,7 +36,7 @@
 - migration_impact：无新增迁移；既有事实、未知、日目标、原预约保持。
 - worker_impact：救援终态保护与结构化诊断在正式 worker 生效；无任务激活、批量恢复或补发。
 - external_platform_impact：没有新增远端操作类别或调用；仅现有调用的状态处理与观测。
-- ci_or_build：首轮候选 ea6e592d 的 Prepare Production 全部通过（7,836 passed，14 skipped，2 xfailed）；补修候选需要再次完整 Prepare。
+- ci_or_build：首轮候选 ea6e592d 的 Prepare Production 全部通过（7,836 passed，14 skipped，2 xfailed）；最终候选 13e3c93c 按新本地 archive 合同完成 290 项定向测试、前端构建、三个目标平台镜像及压缩包准备，不将定向范围表述为全量回归。
 - rollback_plan：兼容代码回滚/前向修复；不删除诊断证据、不重放未知、不恢复旧 pending 误投影。
 - observe_window：以实际部署完成时间为锚，独立核对 SHA/容器健康及新 Action/Attempt 诊断，再按 Task→ledger→Action→Attempt→typed fact 报告业务状态。
 - production_status：unproven。真实成员权限、全部消息可见性和完整日目标不能从本地测试/部署成功推断。
@@ -63,7 +63,7 @@
 
 补修提交 3977dde0 已合入 Clone 58f2b863，候选 60328b26 的 Prepare 34433725617 全部通过。推送 release 前发现该分支新增用户授权的本地发布入口 7704f386；已保留并合入，未覆盖 release 或重启停用的 Actions。合并版本按本地发布合同重新冻结源码、定向测试、前端构建及 linux/amd64 三镜像。
 
-本地 Docker/Buildx 可用，目标生产为 x86_64；当前 Docker 无 GHCR 登录，GitHub CLI token 不含包写权限，GHCR_USERNAME/GHCR_TOKEN 未配置。该项是镜像推送与本地安装的真实依赖，不能用已构建的旧 SHA 镜像伪造新候选准备清单。
+旧 GHCR 入口的初次检查中，本地 Docker/Buildx 可用，目标生产为 x86_64；当时 Docker 无 GHCR 登录，GitHub CLI token 不含包写权限。后续用户完成认证；该入口随后被用户确认的镜像直传合同取代，不再是正式发布的凭据前提。
 
 首轮本地 prepare 输出 `local-release-v1` 保留 preparing：前端部署合同仍断言 GNU timeout，未匹配已经生效的跨平台超时入口，因此在测试阶段失败，未进入镜像构建。同步该断言并保留真实超时无重放测试。同时发现 local_release.py 将虚拟环境解释器 resolve 为全局解释器；真实临时虚拟环境测试先复现失败，改为保留入口路径后，21 项本地发布测试和 157 项前端合同测试全部通过（178 passed，4.63 秒）。失败准备记录不覆盖，新候选使用独立输出目录重新执行。
 
@@ -72,3 +72,19 @@
 4279a6a1 的本地 v4 准备完成：56+55+157=268 项定向测试、前端构建和三个 amd64 镜像构建上传通过；后端与原生 OCR 镜像实际隔离导入检查通过。首次安装于 12:23 在 ensure_runtime_env 报 PUBLIC_APP_BASE_URL 缺失，未到镜像拉取、迁移或 worker 切换。12:25:42 独立读回 current=58f2b863、20 个容器均运行健康且启动时间早于本次安装，共享配置 mtime 也早于安装；现有 URL 为 https://tgyunying.telema.cn。原失败回执保持不变，重新安装仅补齐该既有 URL，并记录原回执与制品 hash。
 
 补齐配置后的安装在远端分支冻结检查即停止：release 已新增用户确认的镜像直传提交 8a6cf467，未创建新安装回执或调用远端安装。按新的 v2 archive 合同 resync，重新整合和准备候选，不恢复旧 GHCR 发布流程。
+
+## 最终候选与生产读回
+
+最终代码候选：`13e3c93c96bcb17fac7a2d1550e8b5bee4518df9`，包含既有业务修复、Clone 连续分页修复及镜像直传入口；master/release 原子快进到同一 SHA 后才安装。56+77+157=290 项定向测试与前端构建通过，均在冻结源码上运行，后端每批硬超时 60 秒。三个 linux/amd64 镜像构建完成，v2 压缩包大小 612792508 bytes，SHA-256 为 `c38d344ac9a54307d792f4d0313834f05cdf0374f4913f80a6a284d8be6f7009`。
+
+本地直传安装于 2026-09-10 12:34:43 +08:00 开始、12:41:54.543698 完成，回执 `release_passed`。镜像包经 SCP、hash 校验与 docker load/ID 核对后进入原迁移/worker 切换；没有使用应用镜像仓库。API、前端、Planner 健康及 RapidOCR/ddddocr 实际推理检查通过，现有 Antigravity runtime 保持不变，未进行新模型探测。
+
+12:42:06 独立读取 current `/data/tgyunying/releases/20260910123447_13e3c93c`：backend 与 18 个 worker 完整 SHA 一致，三个镜像的实际 Image ID 与 v2 清单匹配，20 个容器运行且 healthy；本地/公网 API 与实际静态前端匹配。迁移保持 `0231_ai_group_emergency_history`。从旧 `.image.env` 按既有参数名单同值传入的 34 项运行配置，在新 `.image.env` 的整体指纹相同；没有将令牌明文写入源码或验收记录。
+
+12:42:47 与 12:22:51 部署前快照比较：原有 1,496 条救援记录全部保留，stored status、结果 hash 和 Gateway 调用数均无变化。正式只读投影的 21 条样本均为 closed_unknown，源记录无修改；3 条原截止外排期仍独立展示。
+
+发布后真实样本 Action `0a24c46e-e1e1-4fea-beec-a6379818b3a4` / Attempt `fe4c9d89-9240-48e1-b665-8c91113db4ea`：12:43:24 的原始 RPC 为 ChatWriteForbiddenError / SetTypingRequest，failure_stage=prepare_send、send_call_started=false。Action 与 Attempt 的 send_diagnostics 完全一致，证明提前返回分支不再丢失原始诊断。原始 SendResult 观测与权限恢复链路的正式结算分层保留：Action=unknown_after_send、Attempt=result_unknown、journal=unknown；本次没有用诊断字段重判正式未知或授权补发。
+
+12:46:35 的 repeatable-read/read-only 快照覆盖全部 10 个运行活群，以本次安装完成时刻为锚，得到 3 条严格消息事实、涉及 2 项任务；10 项仍低于到期目标。当前仍观察到账号不可用、context_stale、发言权限拒绝与未知结算。该窗口没有新的发后控制提示诊断样本，因此控制提示的真实恢复不宣称通过。`qa_pass` 与通用范围产品接受成立；成员权限、全部消息可见性、时段效率和完整目标仍为 `production_unproven`。
+
+完整制品/部署证据位于 `/tmp/ai-group-live-check-20260910/local-release-v5-archive/`；独立运行、旧记录比较与业务快照分别为 `v5-independent-runtime.json`、`v5-rescue-preservation-comparison.json`、`v5-final-state-diagnostics.jsonl`。原失败准备和安装回执均保留，不覆盖为成功。

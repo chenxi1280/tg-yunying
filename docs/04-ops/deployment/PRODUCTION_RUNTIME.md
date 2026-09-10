@@ -14,7 +14,7 @@ python3 deploy/local_release.py prepare --ref <完整SHA> --platform linux/amd64
 
 本地 Docker daemon、Buildx 与 npm 可用是准备前提；发布不需要 Docker Hub/GHCR 账号或 Token。目标 platform 必须与生产匹配；不会自动切换到远端构建。Docker 本地持久缓存按原 Dockerfile 使用，仍构建三个镜像，不猜测组件影响范围。
 
-部署前按批次将 origin/master 与 origin/release 冻结到同一 SHA，配置可用的 SSH alias 和调用环境中的 PUBLIC_APP_BASE_URL。PUBLIC_APP_BASE_URL 必须先从当前生产 `.image.env` 只读核对并显式传入本地进程；旧 Actions 变量不会自动继承。随后：
+部署前按批次将 origin/master 与 origin/release 冻结到同一 SHA，配置可用的 SSH alias 和调用环境中的 PUBLIC_APP_BASE_URL。当前生产 `.image.env` 的 URL、图像验证和 worker 覆盖参数必须只读核对，按 release.sh 既有参数名单同值传入本地进程；旧 Actions 变量不会自动继承。含密钥的值不写入源码或审计明文；记录配置 hash 并在部署后回读，镜像与 release/static 身份由新候选生成。随后：
 
 ```bash
 python3 deploy/local_release.py deploy \
@@ -31,6 +31,8 @@ prepare 使用 buildx --load 构建单平台镜像，docker save 流式压缩三
 ## 2026-09-10 活群状态与诊断一致性修复
 
 专项合同 `ai-group-state-diagnostics-integrity-20260910-prd.md`：救援终态与关闭义务优先，刷新锁后核验且不重排既有未知；原 Action/Attempt 保存读取和 RPC 阶段诊断；当前义务结果、原截止队列与历史生成 Job 分开展示。无迁移、批量恢复或新增远端调用。发布后独立核对完整 SHA/runtime，再只读核对旧救援展示、新诊断及 Task→ledger→Action→Attempt→typed fact。状态修复不代替成员权限、消息可见性和日目标验收。Release Gate 见 `docs/05-implementation/ai-group-state-diagnostics-repair-20260910.md`。
+
+2026-09-10 12:41:54 +08:00，候选 `13e3c93c96bcb17fac7a2d1550e8b5bee4518df9` 已经镜像包直传发布；290 项定向测试及前端构建通过，20 个容器和三个实际 Image ID 独立读回通过，34 项旧运行覆盖参数指纹相同，1,496 条旧救援身份/状态/结果/调用次数无变。发布后真实权限 RPC 诊断已保存到 Action/Attempt；12:46 快照仅有 3 条新严格消息事实，10 项任务仍低于到期目标，完整业务恢复保持 unproven。
 
 ## 2026-09-10 群克隆暂停与连续性修复
 
