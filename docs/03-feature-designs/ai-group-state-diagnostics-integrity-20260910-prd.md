@@ -40,5 +40,5 @@ SendResult 增加独立 diagnostics：RPC 异常类、request 类、失败阶段
 - API 使用原受权限保护的诊断响应增加字段；既有调用默认列表兼容。前端任务详情增加当前义务结果、原日排期及调用/读取证据；发送回执与可见消息分开命名；救援未知关闭不显示成未触发。
 - QA：真实函数与中性数据库对象复现终态被重排；测试显式刷新绕过、非 open 义务、确定未调用旧配置刷新；采集空/纯文本/非管理员/角色查询异常；发送前/发送中/回执后失败；原截止相等/过期/unknown；应急后 ready、准入拒绝、跨发布锚与重复 Job 不重复计数。
 - 代码审查检查字段逐层传递、源状态无回写、没有新增 Telegram 调用、没有 content/credentials 进入诊断；后端每批硬超时 60 秒。
-- 发布经 Release Gate、master → release → GitHub Actions；独立核对 SHA/health 与新鲜只读诊断。发布成功不等于目标群恢复。回滚应用代码不回滚/重放事实。
+- 发布经 Release Gate、master → release → 本地 deploy/local_release.py prepare/deploy；按 local-direct-production-release-prd.md 的新合同执行，历史 Actions 结果仅作已验证代码基线；独立核对 SHA/health 与新鲜只读诊断。发布成功不等于目标群恢复。回滚应用代码不回滚/重放事实。
 - design_status：complete（通用状态与诊断范围）；生产业务恢复：unproven。

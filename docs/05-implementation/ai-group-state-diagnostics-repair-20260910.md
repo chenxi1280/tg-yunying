@@ -32,7 +32,7 @@
 
 ## 发布闸门
 
-- release_mode：github_actions；路径：master → release → GitHub Actions Deploy Production。
+- release_mode：local_cli；路径：master → release → deploy/local_release.py prepare/deploy → SSH。2026-09-10 本地发布专项合同取代旧 Actions 必经要求，本文 resync。
 - migration_impact：无新增迁移；既有事实、未知、日目标、原预约保持。
 - worker_impact：救援终态保护与结构化诊断在正式 worker 生效；无任务激活、批量恢复或补发。
 - external_platform_impact：没有新增远端操作类别或调用；仅现有调用的状态处理与观测。
@@ -58,3 +58,9 @@
 ### CI 反馈修复
 
 首轮 Prepare `34431678018` 的 no-postgres 分片 0 有一项前端源码合同断言失败（`test_task_center_admission_unknown_labels_are_operator_friendly`），该分片其余 1128 项通过。原因是等义标签表改写破坏固定源码表达式；保留既有 if 分支，仅追加新终态标签，未削弱测试或改动状态语义。完整前端合同测试及前端构建重验后生成新候选，再执行完整 Prepare。
+
+### 发布入口变更后 resync
+
+补修提交 3977dde0 已合入 Clone 58f2b863，候选 60328b26 的 Prepare 34433725617 全部通过。推送 release 前发现该分支新增用户授权的本地发布入口 7704f386；已保留并合入，未覆盖 release 或重启停用的 Actions。合并版本按本地发布合同重新冻结源码、定向测试、前端构建及 linux/amd64 三镜像。
+
+本地 Docker/Buildx 可用，目标生产为 x86_64；当前 Docker 无 GHCR 登录，GitHub CLI token 不含包写权限，GHCR_USERNAME/GHCR_TOKEN 未配置。该项是镜像推送与本地安装的真实依赖，不能用已构建的旧 SHA 镜像伪造新候选准备清单。
