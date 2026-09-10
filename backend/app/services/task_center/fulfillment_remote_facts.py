@@ -13,8 +13,6 @@ from app.models import (
     FulfillmentFactProjectionState,
     FulfillmentObligationProjection,
     FulfillmentRemoteFact,
-    Task,
-    TaskGroupDailyMessageSlot,
 )
 from app.services._common import _now
 from .fact_first_insert import insert_do_nothing as _insert_do_nothing
@@ -22,9 +20,10 @@ from .fulfillment_obligation_materialization import (
     rebind_projection as _rebind_projection,
     skip_obligation_action as _skip_obligation_action,
 )
-from .fulfillment_ledger_owners import resolve_view_task_day_ledger_id
 from .channel_remote_evidence import CHANNEL_REMOTE_ACTION_TYPES, action_remote_mutation_evidence
 from .channel_remote_evidence import remote_mutation_state
+from .channel_confirmed_fact import confirmed_channel_attempt, preserve_channel_confirmation
+from .fulfillment_fact_ledger import _task_day_ledger_id, _bind_projection_ledger, _bind_existing_projection_ledger
 
 
 PROJECTION_KINDS = (
@@ -188,13 +187,15 @@ def persist_remote_fact(session: Session, action: Action) -> FulfillmentRemoteFa
 
 def project_remote_fact(session: Session, fact: FulfillmentRemoteFact) -> None:
     projection = session.scalar(select(FulfillmentObligationProjection).where(
+        FulfillmentObligationProjection.tenant_id == fact.tenant_id,
+        FulfillmentObligationProjection.task_id == fact.task_id,
         FulfillmentObligationProjection.obligation_type == fact.obligation_type,
         FulfillmentObligationProjection.obligation_id == fact.obligation_id,
-    ))
+    ).with_for_update().execution_options(populate_existing=True))
     if projection is None:
         raise RuntimeError("remote_fact_obligation_projection_missing")
     next_state = _projection_state(fact.fact_kind)
-    if projection.state == next_state:
+    if projection.state == next_state or preserve_channel_confirmation(session, fact, projection):
         _complete_projection_state(session, fact.fact_id, "obligation")
         return
     expected_version = int(projection.version or 1)
@@ -445,6 +446,9 @@ def _latest_attempt(session: Session, action_id: str) -> ExecutionAttempt | None
 
 def _fact_attempt(session: Session, action: Action) -> ExecutionAttempt | None:
     if action.action_type in CHANNEL_REMOTE_ACTION_TYPES:
+        confirmed = confirmed_channel_attempt(session, action)
+        if confirmed is not None:
+            return confirmed
         evidence = action_remote_mutation_evidence(session, action)
         return evidence.representative_attempt
     return _latest_attempt(session, action.id)
@@ -452,66 +456,6 @@ def _fact_attempt(session: Session, action: Action) -> ExecutionAttempt | None:
 
 def _payload(action: Action) -> dict:
     return dict(action.payload or {})
-
-
-def _task_day_ledger_id(
-    session: Session,
-    action: Action,
-    *,
-    require_current_ai_send: bool = False,
-) -> str | None:
-    payload_ledger = str(_payload(action).get("task_day_ledger_id") or "")
-    view_ledger = resolve_view_task_day_ledger_id(session, action, payload_ledger)
-    if view_ledger:
-        return view_ledger
-    quantity_id = str(action.primary_quantity_slot_id or "")
-    if not quantity_id:
-        task = session.get(Task, action.task_id)
-        current_ai_send = bool(
-            task
-            and task.fulfillment_contract_version == "fact_first_v3"
-            and action.task_type == "group_ai_chat"
-            and action.action_type == "send_message"
-        )
-        if require_current_ai_send and current_ai_send and not payload_ledger:
-            raise ValueError("fulfillment_ai_ledger_missing")
-        return payload_ledger or None
-    quantity = session.get(TaskGroupDailyMessageSlot, quantity_id)
-    if quantity is None or not quantity.task_day_ledger_id:
-        raise ValueError("fulfillment_quantity_ledger_missing")
-    owner_ledger = str(quantity.task_day_ledger_id)
-    if payload_ledger and payload_ledger != owner_ledger:
-        raise ValueError("fulfillment_ledger_identity_conflict")
-    return payload_ledger or owner_ledger
-
-
-def _bind_projection_ledger(
-    projection: FulfillmentObligationProjection,
-    ledger_id: str | None,
-) -> None:
-    if not ledger_id:
-        return
-    current = str(projection.task_day_ledger_id or "")
-    if current and current != ledger_id:
-        raise ValueError("fulfillment_projection_ledger_conflict")
-    projection.task_day_ledger_id = ledger_id
-
-
-def _bind_existing_projection_ledger(
-    session: Session,
-    obligation_type: str,
-    obligation_id: str,
-    *,
-    ledger_id: str | None,
-) -> None:
-    if not ledger_id:
-        return
-    projection = session.scalar(select(FulfillmentObligationProjection).where(
-        FulfillmentObligationProjection.obligation_type == obligation_type,
-        FulfillmentObligationProjection.obligation_id == obligation_id,
-    ))
-    if projection is not None:
-        _bind_projection_ledger(projection, ledger_id)
 
 
 def _hash(value: str) -> str:

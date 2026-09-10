@@ -152,7 +152,9 @@ def _seed_task_and_action(
         materialization_version=1,
         version=1,
     )
-    session.add_all([task, ledger, slot, action, reservation, projection])
+    for row in (task, ledger, slot, action, reservation, projection):
+        session.add(row)
+        session.flush()
     session.commit()
     return task, action, reservation
 

@@ -1,5 +1,7 @@
 # 项目数据流转索引
 
+> **2026-09-10 任务执行修复（待发布）：** Original source deadline → separate uncalled expiry settlement / live claiming; exact typed channel fact + current success Attempt → positive FulfillmentRemoteFact → tenant/task locked monotonic confirmation. Historical unknown calls remain retained for replay protection. 合同：[任务执行修复](../03-feature-designs/task-execution-repair-20260910-prd.md)。
+
 > **2026-09-10 发布后镜像清理：** `local_release_cleanup.py` 冻结上一轮制品、成功读回后清理精确旧包/未使用镜像并保存报告；本地按目标保存成功发布指针，服务器复用原发布锁。失败安装不清理，当前/在用/引用变化对象保留，不全局 prune。
 
 > **2026-09-10 已过期活群积压处置（生产回读通过）：** 原日账本期限与全历史调用证据 → 精确 ID/关联行指纹预览 → Task 共享锁及写对象行锁重验 → 正式发前未执行结算/生成短缺收口 → Action skipped、FOP terminal_shortfall、数量位 terminal、原预约 missed → 逐批审计与独立回读。1,663 条完成逻辑放弃，物理删除 0；10 条 gateway_reconcile_required 保护、1,496 条原未知救援及全部原调用证据保持。合同见 [过期积压删除与放弃合同](../03-feature-designs/ai-expired-backlog-disposal-20260910.md)。
