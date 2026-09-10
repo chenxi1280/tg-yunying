@@ -137,3 +137,21 @@ def test_username_fallback_is_case_insensitive() -> None:
             action_class="authored_message", source_event_id="event-503",
         )
         assert session.scalar(select(UnownedOutboundActivityObservation)) is not None
+
+
+@pytest.mark.parametrize('attempt_status', ['success', 'result_unknown', 'gateway_call_started', 'failed'])
+def test_owned_lookup_keeps_all_statuses_peer_scope_and_avoids_attempt_hydration(attempt_status):
+    from app.services.task_center.engagement_unowned_activity import _owned_account_id
+    with _session() as session:
+        task, _ = _seed(session)
+        session.add(Action(id='owned-projection', tenant_id=1, task_id=task.id,
+            task_type=task.type, action_type='send_message', account_id=11, payload={'group_id': 7}))
+        session.flush()
+        session.add(ExecutionAttempt(tenant_id=1, action_id='owned-projection', account_id=11,
+            status=attempt_status, remote_message_id='501', result_snapshot={'large': 'x' * 100000}))
+        session.commit()
+        session.expunge_all()
+        args = dict(tenant_id=1, remote_id='501', action_class='authored_message')
+        assert _owned_account_id(session, **args, canonical_peer_id='-1007') == 11
+        assert _owned_account_id(session, **args, canonical_peer_id='-1008') is None
+        assert not any(isinstance(obj, ExecutionAttempt) for obj in session.identity_map.values())

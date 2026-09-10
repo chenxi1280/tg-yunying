@@ -5878,8 +5878,8 @@ def _least_recently_used_items(items: list[dict], recent_counts: dict[str, int],
 
 def _recent_conversation_target_usage(session: Session, task: Task, group: TgGroup) -> dict[str, dict[str, int]]:
     usage = {"topics": {}, "teachers": {}}
-    memory_rows = session.scalars(
-        select(AiGroupMessageMemory)
+    memory_rows = session.execute(
+        select(AiGroupMessageMemory.topic_direction, AiGroupMessageMemory.teacher_target)
         .where(
             AiGroupMessageMemory.tenant_id == task.tenant_id,
             AiGroupMessageMemory.group_id == group.id,
@@ -6226,8 +6226,8 @@ def _recent_planned_ai_messages(session: Session, task: Task, *, limit: int) -> 
 
 
 def _recent_group_memory_messages(session: Session, task: Task, group: TgGroup, *, limit: int) -> list[str]:
-    rows = session.scalars(
-        select(AiGroupMessageMemory)
+    rows = session.execute(
+        select(AiGroupMessageMemory.normalized_text, AiGroupMessageMemory.raw_text)
         .where(
             AiGroupMessageMemory.tenant_id == task.tenant_id,
             AiGroupMessageMemory.group_id == group.id,

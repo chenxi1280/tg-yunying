@@ -306,6 +306,7 @@ class ExecutionAttempt(Base):
     __table_args__ = (
         UniqueConstraint("action_id", "attempt_no", name="uq_execution_attempts_action_attempt"),
         Index("ix_execution_attempts_unfinished", "status", "gateway_call_started_at"),
+        Index("ix_execution_attempts_remote_identity", "remote_message_id", "action_id"),
         Index(
             "ix_execution_attempts_success_remote",
             "remote_message_id",
@@ -605,6 +606,7 @@ class TgAccountOnlineState(Base):
 class AiGroupMessageMemory(Base):
     __tablename__ = "ai_group_message_memory"
     __table_args__ = (
+        Index("ix_ai_group_memory_group_recent", "tenant_id", "group_id", text("planned_at DESC")),
         Index(
             "uq_ai_group_message_memory_reservation_key",
             "reservation_key",
