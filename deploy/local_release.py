@@ -17,6 +17,7 @@ import subprocess
 import tempfile
 import uuid
 
+from local_release_cleanup import clean_local
 from local_image_archive import (export_archive, image_reference, validate_images,
                                  verify_archive)
 IMAGES = {
@@ -187,7 +188,9 @@ def deploy(options, repository):
     verify_archive(directory, manifest)
     receipt_path = directory / 'deployment.json'
     receipt = {'sha': manifest['sha'], 'status': 'deploying',
-               'host': options.host, 'business_evidence': 'unproven'}
+               'host': options.host, 'base_dir': options.base_dir,
+               'started_at': datetime.now(timezone.utc).isoformat(),
+               'business_evidence': 'unproven'}
     # Exclusive creation prevents a repeated invocation from replaying installation.
     with receipt_path.open('x') as output:
         json.dump(receipt, output)
@@ -204,7 +207,18 @@ def deploy(options, repository):
         except Exception:
             save(receipt_path, {**receipt, 'status': 'deployment_unproven'})
             raise
-    save(receipt_path, {**receipt, 'status': 'release_passed'})
+    finalize_deployment(directory, manifest, receipt)
+
+
+def finalize_deployment(directory, manifest, receipt):
+    receipt_path = directory / 'deployment.json'
+    save(receipt_path, {**receipt, 'status': 'release_passed', 'cleanup': 'pending'})
+    try:
+        cleanup = clean_local(directory, manifest, receipt)
+    except Exception:
+        save(receipt_path, {**receipt, 'status': 'release_passed', 'cleanup': 'failed'})
+        raise
+    save(receipt_path, {**receipt, 'status': 'release_passed', 'cleanup': cleanup['status']})
     print(f'RELEASE_RESULT={receipt_path}', flush=True)
 
 

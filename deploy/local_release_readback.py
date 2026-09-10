@@ -31,9 +31,7 @@ def verify_containers(sha, backend_image, backend_id):
     return rows
 
 
-def main():
-    base, sha, images_json = sys.argv[1:]
-    manifest = json.loads(images_json)
+def verify_release(base, sha, manifest):
     images = manifest['images']
     current = (Path(base) / 'current').resolve(strict=True)
     values = dict(line.split('=', 1) for line in (current / '.image.env').read_text().splitlines()
@@ -50,8 +48,13 @@ def main():
                              manifest['image_ids']['tg-yunying-backend'])
     output(['docker', 'exec', 'tgyunying-backend', 'python', '-m',
             'scripts.manage_shared_dispatch_contract', 'verify-active'])
-    print(json.dumps({'sha': sha, 'current': str(current), 'containers': rows,
-                      'runtime': 'passed', 'business_evidence': 'unproven'}))
+    return {'sha': sha, 'current': str(current), 'containers': rows,
+            'runtime': 'passed', 'business_evidence': 'unproven'}
+
+
+def main():
+    base, sha, images_json = sys.argv[1:]
+    print(json.dumps(verify_release(base, sha, json.loads(images_json))))
 
 
 if __name__ == '__main__':

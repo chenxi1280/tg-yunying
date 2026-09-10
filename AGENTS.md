@@ -131,4 +131,5 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 - 生产发布路径是 `master -> release -> 本地 deploy/local_release.py prepare/deploy -> SSH 安装 -> 生产真实业务验收`，镜像由本地 save/压缩后 SCP 直传、服务器 load，不依赖 GitHub Actions、Docker Hub/GHCR 发布仓库或其 Token；详见 `docs/03-feature-designs/local-direct-production-release-prd.md`。
 - L2/L3 或影响生产的任务必须有 Release Gate。
 - 后端测试默认使用 `backend/.venv`。
+- 每次部署及运行验证成功后清理本项目上一轮镜像包和未被容器引用的旧镜像，保留当前版本及清单/日志；失败部署不清理，不执行全局 prune 或强制删除。
 - 不允许 silent fallback、mock success 或未经验证的完成声明。

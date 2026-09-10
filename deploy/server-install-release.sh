@@ -180,6 +180,9 @@ fi
 
 bash "${RELEASE_DIR}/deploy/antigravity-slot-release-plan.sh" >/dev/null
 
+python3 "${RELEASE_DIR}/deploy/local_release_cleanup.py" capture \
+  --base-dir "$BASE_DIR" --release-dir "$RELEASE_DIR"
+
 python3 "${RELEASE_DIR}/deploy/local_image_archive.py" load \
   --manifest "${RELEASE_DIR}/local-images.json" \
   --image-env "${RELEASE_DIR}/.image.env"
@@ -207,6 +210,9 @@ prune_old_releases
 BASE_DIR="${BASE_DIR}" RELEASE_DIR="${RELEASE_DIR}" \
 ANTIGRAVITY_SLOT_LOCK_HELD=1 \
   bash "${RELEASE_DIR}/deploy/restart-antigravity-provider-slots.sh"
+
+python3 "${RELEASE_DIR}/deploy/local_release_cleanup.py" clean \
+  --base-dir "$BASE_DIR" --release-dir "$RELEASE_DIR"
 
 echo "Release ${RELEASE_ID} is live"
 echo "current -> $(readlink -f "$CURRENT_LINK")"

@@ -1,5 +1,13 @@
 # TG 运营管理平台生产部署说明
 
+## 2026-09-10 每次成功部署后清理上一轮镜像
+
+`local_release_cleanup.py` 在原发布锁内保存上一轮精确镜像记录，在安装、健康检查、Provider 检查及运行版本读回全部成功后清理。服务器删除本次传输包、上一轮有校验记录的包和未被任何容器引用的旧应用镜像；不强制删除，不使用全局 prune。当前相同 image ID、在用 ID 或引用发生变化的对象保留并在 image-cleanup.json 中说明。
+
+本地在独立运行读回成功后，按 host/base-dir 和 evidence 父目录清理上一轮成功部署的镜像包及未被本地容器引用的旧镜像；保留本次包、清单、日志以及未发布候选。首次没有成功指针只登记本次，不扫描历史目录。较早的并发完成回调不能清理较新的发布。清理失败会显式报错，本地 deployment.json 保持 release_passed 并标记 cleanup=failed，不能因此重放部署。
+
+旧镜像清理后，回退旧版本需要重新提供旧包或重新构建，且仍受迁移兼容性约束。该规则在新版本实际部署时生效，本次代码更新不立即清理现有生产镜像。
+
 ## 2026-09-10 本地直接发布（取代 Prepare/Deploy Actions）
 
 合同：[本地直接发布](../../03-feature-designs/local-direct-production-release-prd.md)。两个发布 YAML 已改为 `.yml.disabled`，合并后不再注册 Actions；历史发布条款不再要求 Actions run。其他诊断/维护 workflow 保留，普通发布无需调用它们。
@@ -22,7 +30,7 @@ python3 deploy/local_release.py deploy \
   --host silicon-valley-production-server
 ```
 
-prepare 使用 buildx --load 构建单平台镜像，docker save 流式压缩三个应用镜像为 images.tar.gz，prepared-release.json v2 记录源码 SHA、镜像 ID/标签、压缩包大小和 SHA-256。deploy 经 SCP 将包传到服务器 /data/tgyunying/incoming，原发布锁内校验后 docker load，复核三个 ID 和平台后删除本次传输包。安装目录保留 local-images.json；Compose 显式 --pull never --no-build，缺少本地镜像直接失败，不访问镜像仓库。旧 v1 GHCR 清单需重新 prepare。
+prepare 使用 buildx --load 构建单平台镜像，docker save 流式压缩三个应用镜像为 images.tar.gz，prepared-release.json v2 记录源码 SHA、镜像 ID/标签、压缩包大小和 SHA-256。deploy 经 SCP 将包传到服务器 /data/tgyunying/incoming，原发布锁内校验后 docker load，复核三个 ID 和平台；完整部署及运行读回通过后再删除本次传输包。安装目录保留 local-images.json；Compose 显式 --pull never --no-build，缺少本地镜像直接失败，不访问镜像仓库。旧 v1 GHCR 清单需重新 prepare。
 
 本地 Dockerfile 的基础镜像与依赖下载沿用现有来源；这里取消的是应用发布制品的仓库存取，不承诺构建完全离线。发布工具不 push 分支、不 dispatch Actions。`deploy.log` 保存安装输出，`runtime.json` 保存独立只读结果，`deployment.json` 保存状态；后台执行时由终端进程完成，模型只读取阶段日志或最终 JSON。非零安装退出不重新安装；已有 deployment.json 的再次调用拒绝覆盖。中断后的原记录保留，先只读核对实际生产状态，再明确决定是否创建新的准备/部署批次。
 

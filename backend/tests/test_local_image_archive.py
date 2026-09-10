@@ -91,7 +91,7 @@ def test_loaded_identity_and_architecture_are_checked(prepared, monkeypatch, row
     assert (manifest.parent / 'images.tar.gz').exists()
 
 
-def test_successful_import_retains_manifest_and_removes_only_uploaded_archive(prepared, monkeypatch):
+def test_successful_import_retains_package_until_deployment_succeeds(prepared, monkeypatch):
     manifest, env, _ = prepared
     calls = []
     unrelated = manifest.parent / 'unrelated.tar.gz'
@@ -102,7 +102,7 @@ def test_successful_import_retains_manifest_and_removes_only_uploaded_archive(pr
     archive.load_archive(manifest, env)
     assert len(calls) == 1 and calls[0][:3] == ['docker', 'image', 'load']
     assert manifest.exists() and unrelated.exists()
-    assert not (manifest.parent / 'images.tar.gz').exists()
+    assert (manifest.parent / 'images.tar.gz').exists()
 
 
 @pytest.mark.parametrize('change', [

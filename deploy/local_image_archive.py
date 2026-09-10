@@ -109,7 +109,6 @@ def load_archive(manifest_path, image_env):
     archive = verify_archive(manifest_path.parent, value)
     subprocess.run(['docker', 'image', 'load', '--input', str(archive)], check=True)
     inspect_images(value)
-    archive.unlink()
     print('LOCAL_IMAGES_LOADED=' + value['sha'], flush=True)
 
 
