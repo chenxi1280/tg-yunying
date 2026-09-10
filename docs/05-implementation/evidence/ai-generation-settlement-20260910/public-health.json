@@ -1,0 +1,1 @@
+[{"path": "host_nginx", "health": {"status": "ok", "account_batch_login_mode": "enabled"}}, {"path": "public", "health": {"status": "ok", "account_batch_login_mode": "enabled"}}]

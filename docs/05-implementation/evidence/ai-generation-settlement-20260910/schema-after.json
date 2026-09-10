@@ -1,0 +1,1 @@
+{"head": "0231_ai_group_emergency_history", "readonly": "on", "constraints": [{"conname": "uq_ai_group_emergency_action", "definition": "UNIQUE (action_id)"}, {"conname": "uq_ai_group_emergency_quantity_version", "definition": "UNIQUE (primary_quantity_slot_id, materialization_version)"}]}
