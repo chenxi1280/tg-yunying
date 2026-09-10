@@ -2,6 +2,7 @@
 from collections import Counter
 
 from sqlalchemy import and_, func, or_, select
+from sqlalchemy.sql.selectable import Exists
 
 from app.models import Action
 
@@ -20,11 +21,16 @@ def runtime_detail_batch(session, cutoffs, batch_size, *, as_of, lock=True) -> l
         Action.action_type, Action.status, Action.result, Action.executed_at,
         Action.scheduled_at, Action.created_at, age.label("age_at"),
         _target_dimension()).where(expired_action_predicate(cutoffs),
-        *(~func.coalesce(predicate, False) for _name, predicate in protected_dependencies(as_of)),
+        *(_not_protected(predicate) for _name, predicate in protected_dependencies(as_of)),
     ).order_by(age.asc(), Action.created_at.asc(), Action.id.asc()).limit(batch_size)
     if lock:
         statement = statement.with_for_update(of=Action, skip_locked=True)
     return list(session.execute(statement))
+
+
+def _not_protected(predicate):
+    # EXISTS is never NULL; wrapping it prevents PostgreSQL anti-join planning.
+    return ~predicate if isinstance(predicate, Exists) else ~func.coalesce(predicate, False)
 
 
 def _target_dimension():

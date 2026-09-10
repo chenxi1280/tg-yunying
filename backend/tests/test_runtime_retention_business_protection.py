@@ -131,3 +131,23 @@ def test_protected_oldest_row_does_not_starve_next_safe_batch(session):
     assert preview_runtime_details(session, as_of=NOW, batch_size=1)["candidate_ids"] == [safe.id]
     assert cleanup_runtime_details(session, as_of=NOW, batch_size=1) == 2  # One Action and its Attempt.
     assert session.get(Action, protected.id) is protected
+
+
+def test_exists_protection_keeps_null_semantics_without_correlated_coalesce(session):
+    from sqlalchemy import func, select
+    from app.services.task_center.runtime_retention_protection import protected_dependencies
+    from app.services.task_center.runtime_retention_selection import _not_protected
+    task = _task(session)
+    eligible, _, _ = _old_record(session, task, when=NOW-timedelta(days=4))
+    protected, _, _ = _old_record(session, task, when=NOW-timedelta(hours=1))
+    missing, _, fact = _old_record(session, task, when=NOW-timedelta(days=4))
+    session.delete(fact)
+    session.flush()
+    predicates = protected_dependencies(NOW)
+    original = select(Action.id).where(*(~func.coalesce(p, False) for _, p in predicates))
+    revised = select(Action.id).where(*(_not_protected(p) for _, p in predicates))
+    assert set(session.scalars(original)) == set(session.scalars(revised)) == {eligible.id, missing.id}
+    sql = str(revised.compile())
+    assert 'coalesce(EXISTS' not in sql
+    assert 'coalesce(' in sql
+    assert protected.id not in set(session.scalars(revised))

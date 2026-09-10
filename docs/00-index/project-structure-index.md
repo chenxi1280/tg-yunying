@@ -1656,3 +1656,5 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 - `0232_admission_evidence`：新增证据表和可空复合租户引用；有新引用后只允许兼容forward fix。
 
 > **2026-09-10 CPU/内存热点修复：** `managed_presence_queries.py` 负责群活跃统计的 JSON 标量与时间列投影，返回不可变 PresenceAction；`ai_message_duplicate_queries.py` 负责 exact/template 身份列与账号窗口文本投影。`ai_message_memory.py` 在单次判定内复用同一窗口，下一次判定重新读取，保留批次刷新与发送前复查。 设计与验收见 `docs/03-feature-designs/cpu-memory-hotpath-repair-20260910-prd.md`。
+
+> **2026-09-10 第二轮热点resync：** `engagement_unowned_activity._owned_account_id`只读取Action，全部Attempt状态通过remote_identity索引定位；`group_ai_chat`近期记忆分别投影主题/老师和正文列；`runtime_retention_selection`对非NULL EXISTS使用NOT EXISTS。0233并发添加Attempt远端身份、AI记忆群+时间索引。

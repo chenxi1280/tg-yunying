@@ -88,8 +88,8 @@ def _owned_account_id(
     if not remote_id:
         return None
     action_types = _action_types(action_class)
-    rows = session.execute(
-        select(Action, ExecutionAttempt)
+    rows = session.scalars(
+        select(Action)
         .join(ExecutionAttempt, ExecutionAttempt.action_id == Action.id)
         .where(
             Action.tenant_id == tenant_id,
@@ -97,7 +97,7 @@ def _owned_account_id(
             ExecutionAttempt.remote_message_id == remote_id,
         )
     )
-    for action, _attempt in rows:
+    for action in rows:
         if action_activity_scope(session, action).canonical_peer_id == canonical_peer_id:
             return int(action.account_id) if action.account_id else None
     return None

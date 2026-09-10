@@ -25,3 +25,16 @@
 - 无新迁移；可回退本批代码到本次base（不能回退0232前版本）；失败部署保留证据并定位具体阶段，不自动重放。
 
 Product Design Complete：complete（限定以上确定性热点，无全面调度重写）。
+
+## 第二轮：上线反查发现的数据库残留（resync，2026-09-10 17:50）
+
+第一轮1e9358f8已完成发布和运行验证，Planner大JSON解码热点消失；不代表数据库问题闭合。新证据：Listener在`engagement_unowned_activity._owned_account_id`等待，远端消息ID全状态查询不能使用仅success的部分索引，EXPLAIN全表扫描ExecutionAttempt、cost约104106；生产活群2818的recent记忆查询为取120条先读取/排序预计12470条，cost约10549；retention候选查询将非空布尔EXISTS包在COALESCE内，优化器保留数十个关联子计划，总cost约18.21亿。只读EXPLAIN反查去除EXISTS外层COALESCE后可转反连接，总cost约162.7万；这只是估算成本，不能作耗时承诺。
+
+第二轮合同：
+
+1. 为`execution_attempts(remote_message_id, action_id)`补全状态索引，保留原success部分索引及全部归属判定；Listener只加载需要的Action，不再加载未使用的Attempt对象。不得把状态缩成success，不得按消息ID跨peer误判归属，不得改变无归属后的观察流程。
+2. 为`ai_group_message_memory(tenant_id, group_id, planned_at DESC)`增加排序索引；recent用途分别只投影topic/teacher或normalized/raw字段，原状态集合、120/调用方limit、先后顺序、空值和内部提示词过滤不变，不新增缓存。以实际运行群的EXPLAIN与本地规模测试校验有序limit访问。
+3. retention的EXISTS本身恒为非NULL布尔，使用直接NOT EXISTS以允许反连接；只有nullable最近成功时间判定保留COALESCE。所有保护引用、success时间语义、精确批次顺序、锁与删除前复查均保留；不提前limit缩小候选，不取消任何保护条件，不自动修改历史数据。真实PG覆盖引用/并发保护和新旧候选等价。
+4. 两个索引使用新的向前迁移并在PG并发创建；已存在索引必须核对有效/ready和定义，冲突或无效状态显式失败，不自动drop/rebuild。无业务字段迁移与线上手工状态改写。发布前冻结SHA与迁移头，保留第一轮34项配置；成功后再清理上一轮镜像。
+
+第二轮Product Design Complete：complete（以上最小SQL/索引改动）；状态resync已同步开发与QA。上线若仍有慢查询/锁链须继续返回具体路径诊断，不能以资源下降声明全部修复。
