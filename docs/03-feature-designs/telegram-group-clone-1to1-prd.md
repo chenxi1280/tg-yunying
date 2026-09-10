@@ -711,7 +711,7 @@ desired-state confirmed 可写对应 `clone_*_observed`，但 evidence 必须标
 - pause 保留 exclusive authority/holder，防止其他平台 writer 在暂停期接管克隆群；它不是释放目标的操作。
 - pause 的 Task 生命周期意图与来源流健康分开：Collector 的 incomplete/too_long/error/recovery 只能更新来源健康，不能将 `paused` 改成 `failed/running`；暂停期间不消费为新的 CloneSourceEvent。Resume 只由正式生命周期操作授权；可恢复的 gap 完整追赶后继续原 epoch，不可恢复的 blocked 必须明确拒绝 Resume 并保留原错误。
 - 对已有 `group_clone_source_pts_gap/group_clone_channel_difference_incomplete/group_clone_channel_difference_too_long` 的 failed Task，运营可通过原生 Pause 明确保持暂停；原 source 状态和错误证据不清除，不借此变为成功或可重放。无关失败不扩大 Pause 接受范围。
-- Collector/消费的 Task 状态判定须在任务行锁下读取当前值，不能使用暂停前的 ORM 缓存覆盖已提交暂停；只允许当前 epoch 且未删除、未退役的 `pending/running` 或由本来源 gap 导致的 `failed` 任务参与自动运行态恢复。其他失败、停止及旧 epoch 不得被恢复；持锁顺序为 Task 再 source stream。
+- Collector/消费的 Task 状态判定须在任务行锁下读取当前值，不能使用暂停前的 ORM 缓存覆盖已提交暂停；只允许当前 epoch 且未删除、未退役的 `pending/running` 或由本来源 gap 导致的 `failed` 任务参与自动运行态恢复。其他失败、停止及旧 epoch 不得被恢复；持锁顺序为 Task 再 source stream。Task 锁使用 `FOR NO KEY UPDATE`，与生命周期写操作互斥，同时允许采集器通过外键 `KEY SHARE` 写入新的 durable delivery，不能因消费而阻断共享采集。
 - resume 不增加 epoch，先完成 gap recovery，再从原 sequencer 恢复。
 - archive 只允许无 executing mutation，且 unknown 已转 remote-reconcile-only 并按 failure policy完成 head decision；随后在单事务中停 subscription、停用 holder，把无 holder 的 authority 置为 `vacant/shared/no_admission`（保留 authority row 作为后续 claim 串行点），证据和 tombstone 保留。
 - delete 走项目现有软删除/审计合同，不级联删除 remote facts；authority 释放条件与 archive 相同，释放失败则 delete 阻断。

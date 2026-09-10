@@ -44,6 +44,10 @@ def test_collector_serializes_with_operator_pause(database):
     _seed(database)
     with Session(database, autoflush=False) as collector:
         _apply(collector, "slice", final=False)
+        with Session(database) as referencing:
+            assert referencing.scalar(select(Task).where(Task.id == TASK_ID).with_for_update(
+                read=True, key_share=True, nowait=True,
+            )) is not None
         with Session(database) as contender:
             contender.execute(text("SET LOCAL lock_timeout='100ms'"))
             with pytest.raises(OperationalError, match="lock timeout"):

@@ -48,4 +48,10 @@ design_status=complete（R1/R2），resync=true。已更新专项 PRD §6.2、§
 - 真实本地PostgreSQL16独立schema：新增2项Pause并发验证通过；加既有listener订阅锁回归共4项通过（7.90秒）；最后生命周期改动后新增2项复核通过（6.69秒）。数据库为tg_yunying_test，端口55456；未在生产执行测试。
 - 前轮Clone+AI/评论共享流166项通过（31.06秒）；最后补入“source failed正式Pause”和实际pending delivery反例后167项通过（34.91秒，60秒硬超时）。两次新增fixture的初始状态期望/Ingress可写状态错误已纠正，不算生产缺陷。
 - 静态F类（修改生产文件与新增测试）、AST语法/行数限制、git diff --check通过。既有Ingress测试的基线未使用Session导入未扩大清理。
-- 产品验收：R1/R2本地合同已覆盖；R3是单账号配置容量限制，目标测试群数据库只有437可发送记录。新增账号2的成员/发送身份变更已向用户征询，未获输入前不执行该扩展。
+- 产品验收：R1/R2本地合同已覆盖；R3是单账号配置容量限制，目标测试群数据库只有437可发送记录。用户于09-10 10:02明确授权“使用账号 2，完成多人测试后暂停”；使用正式Stop保存旧任务证据，再以相同来源/目标创建发送池[437,2]的新受控测试，两个不同身份均获远端事实后正式Pause。
+
+## CI 反向检查与设计补正
+
+- 首轮 Prepare Production 34427815869 / b593342d：PostgreSQL分片0失败，其余分片、前端及镜像构建通过。唯一失败是既有 `test_update_consumer_locks_postgres` 的Clone用例：消费端Task `FOR UPDATE` 阻挡Collector插入delivery外键所需的 `KEY SHARE`，发生 `LockNotAvailable`。
+- resync=true，PRD §12.1补正：Task采用 `FOR NO KEY UPDATE`，保持Pause/状态写互斥，允许其他事务建立外键引用。不得降低并发测试断言或扩大锁超时。
+- 本地真实PostgreSQL复现同一失败（14.59秒）；补正后既有AI/评论/Clone消费并发、路由rebind、Pause与生命周期回归22项全部通过（13.20秒，60秒硬超时）。新增断言验证Collector持锁时KEY SHARE可进入、生命周期排他写仍被互斥。Ruff F与diff检查通过。

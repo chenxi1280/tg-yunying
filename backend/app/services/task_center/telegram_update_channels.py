@@ -52,7 +52,7 @@ def _locked_channel_streams(session, state_id, peer_id):
             CloneSourceStreamState.state.in_(SOURCE_STREAM_STATES),
             Task.type == "group_clone", Task.status.in_(COLLECTOR_TASK_STATES),
             Task.deleted_at.is_(None), Task.retired_at.is_(None),
-        ).order_by(Task.id).with_for_update(of=Task)
+        ).order_by(Task.id).with_for_update(of=Task, key_share=True)
         .execution_options(populate_existing=True)
     ).all()
     for task in tasks:
@@ -200,7 +200,7 @@ def clear_channel_error_from_tasks(
 
 
 def _current_subscription_task(session, subscription):
-    task = session.get(Task, subscription.task_id, with_for_update=True, populate_existing=True)
+    task = session.get(Task, subscription.task_id, with_for_update={"key_share": True}, populate_existing=True)
     if task is None or task.task_lifecycle_epoch != subscription.task_epoch:
         return None
     if task.deleted_at is not None or task.retired_at is not None:
