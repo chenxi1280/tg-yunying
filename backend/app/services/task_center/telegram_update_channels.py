@@ -259,5 +259,5 @@ def channel_cursors(session_factory, state_id: str) -> list[tuple[str, int]]:
             key = str(peer_id)
             cursors[key] = max(cursors.get(key, 0), int(pts or 0))
         for peer_id, pts in uncovered_channel_gaps(session, state_id).items():
-            cursors[peer_id] = min(cursors.get(peer_id, pts), pts)
+            cursors[peer_id] = pts
         return [(peer_id, pts) for peer_id, pts in cursors.items() if pts > 0]

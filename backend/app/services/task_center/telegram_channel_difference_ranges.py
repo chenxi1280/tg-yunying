@@ -43,7 +43,12 @@ def channel_difference_covers(session, stream, envelope) -> bool:
         or envelope.routing_peer_id != stream.source_peer_id
     ):
         return False
-    proof = select(UpdateEvent.id).join(
+    return 0 < int(envelope.pts_evidence or 0) <= channel_difference_frontier(session, stream)
+
+
+def channel_difference_frontier(session, stream) -> int:
+    start_pts = UpdateEvent.pts_evidence - UpdateEvent.pts_count_evidence
+    proof = select(start_pts, UpdateEvent.pts_evidence).join(
         Subscription,
         Subscription.authorization_update_state_id == UpdateEvent.authorization_update_state_id,
     ).join(Task, Task.id == Subscription.task_id).where(
@@ -52,8 +57,7 @@ def channel_difference_covers(session, stream, envelope) -> bool:
         UpdateEvent.routing_peer_type == stream.source_peer_type,
         UpdateEvent.routing_peer_id == stream.source_peer_id,
         UpdateEvent.pts_count_evidence > 0,
-        UpdateEvent.pts_evidence - UpdateEvent.pts_count_evidence <= stream.channel_pts,
-        UpdateEvent.pts_evidence >= envelope.pts_evidence,
+        UpdateEvent.pts_evidence > stream.channel_pts,
         UpdateEvent.ingress_order_no > Subscription.start_ingress_order,
         Subscription.task_id == stream.task_id,
         Subscription.task_epoch == stream.task_lifecycle_epoch,
@@ -61,8 +65,13 @@ def channel_difference_covers(session, stream, envelope) -> bool:
         Subscription.source_peer_type == stream.source_peer_type,
         Subscription.source_peer_id == stream.source_peer_id,
         Subscription.state == "active",
-    ).limit(1)
-    return session.scalar(proof) is not None
+    ).order_by(start_pts, UpdateEvent.pts_evidence)
+    frontier = int(stream.channel_pts or 0)
+    for start, end in session.execute(proof):
+        if start > frontier:
+            break
+        frontier = max(frontier, end)
+    return frontier
 
 
 def uncovered_channel_gaps(session, state_id) -> dict[str, int]:
@@ -88,5 +97,6 @@ def uncovered_channel_gaps(session, state_id) -> dict[str, int]:
         if head is None or channel_difference_covers(session, stream, head):
             continue
         peer_id = stream.source_peer_id
-        gaps[peer_id] = min(gaps.get(peer_id, stream.channel_pts), stream.channel_pts)
+        frontier = channel_difference_frontier(session, stream)
+        gaps[peer_id] = min(gaps.get(peer_id, frontier), frontier)
     return gaps
