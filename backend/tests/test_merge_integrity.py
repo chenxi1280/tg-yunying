@@ -40,7 +40,7 @@ def test_alembic_versions_have_single_head():
 
     assert all(len(revision) <= 32 for revision in revisions)
     heads = sorted(set(revisions) - referenced)
-    assert heads == ["0232_admission_evidence"]
+    assert heads == ["0233_hotpath_lookup_indexes"]
 
 
 
