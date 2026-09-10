@@ -11,6 +11,8 @@ from .ai_generator import AiGenerationUnavailable
 from .ai_context_information import meaningful_context_text
 from .direct_check_in import requires_direct_check_in
 from .group_ai_scope import CONTENT_SCOPE_CONTRACT_VERSION
+from .message_brief import fact_id_map
+from .ai_provider_routes import route_v2_enabled
 from .payloads import SendMessagePayload
 
 
@@ -30,7 +32,7 @@ def prepare_topic_payload(
         return payload
     if _has_foreign_reference(session, action, payload):
         return payload
-    reason = _topic_reason(session, action, payload)
+    reason = _topic_reason(session, action, payload, task=task)
     if not reason:
         return payload
     topic = _configured_topic(task, payload)
@@ -87,7 +89,7 @@ def _has_foreign_reference(session: Session, action: Action, payload: SendMessag
     return any(row.tenant_id != action.tenant_id or row.group_id != payload.group_id for row in rows)
 
 
-def _topic_reason(session: Session, action: Action, payload: SendMessagePayload) -> str:
+def _topic_reason(session: Session, action: Action, payload: SendMessagePayload, *, task: Task) -> str:
     if payload.ai_generation_context_mode == "topic_only":
         return payload.ai_generation_context_reason or "topic_only_frozen"
     group = session.get(TgGroup, payload.group_id)
@@ -106,13 +108,19 @@ def _topic_reason(session: Session, action: Action, payload: SendMessagePayload)
         GroupContextMessage.content != "",
     ).order_by(func.coalesce(GroupContextMessage.sent_at, GroupContextMessage.created_at).desc(),
                GroupContextMessage.id.desc()).limit(TOPIC_CONTEXT_SCAN_LIMIT))
-    latest = next((row for row in rows if meaningful_context_text(row.content)), None)
+    latest = next((row for row in rows if _usable_context(task, row.content)), None)
     if latest is None:
         return "no_human_context"
     latest_at = latest.sent_at or latest.created_at
     if group.listener_last_polled_at.replace(tzinfo=None) < latest_at.replace(tzinfo=None):
         return "listener_watermark_unproven"
     return ""
+
+
+def _usable_context(task: Task, content: str) -> bool:
+    if route_v2_enabled(task.type_config):
+        return bool(fact_id_map([content]))
+    return bool(meaningful_context_text(content))
 
 
 def _configured_topic(task: Task, payload: SendMessagePayload) -> dict:
@@ -126,9 +134,8 @@ def _configured_topic(task: Task, payload: SendMessagePayload) -> dict:
 def _require_topic_evidence(task, topic) -> None:
     from .ai_content_job_binding import _ADULT_CONTEXT_MARKERS
     from .ai_context_information import meaningful_group_evidence
-    from .ai_provider_routes import route_v2_enabled
-
-    if route_v2_enabled(task.type_config) and not meaningful_group_evidence("", topic, _ADULT_CONTEXT_MARKERS):
+    evidence = meaningful_group_evidence("", topic, _ADULT_CONTEXT_MARKERS)
+    if route_v2_enabled(task.type_config) and not fact_id_map(evidence):
         raise AiGenerationUnavailable("topic_only_topic_evidence_missing")
 
 

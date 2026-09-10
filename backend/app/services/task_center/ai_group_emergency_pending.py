@@ -55,7 +55,10 @@ def mark_emergency_pending(session, request, *, action, reason: str, evidence=No
         raise RuntimeError("emergency_generation_job_scope_invalid")
     claim = SimpleNamespace(action_id=action.id, job_id=job.id, owner=request.claim_owner,
                             job_version=job.job_version, generation_lease_epoch=job.generation_lease_epoch)
-    finish_owned_job(session, claim, job=job, action=action, state="failed", generation_stage=reason)
+    finish_owned_job(session, claim, job=job, action=action, state="failed", generation_stage=PENDING_STATUS)
+    job.evaluator_evidence = {**dict(job.evaluator_evidence or {}), "emergency_generation": {
+        "reason": reason, "evidence": dict(evidence or {}),
+    }}
     data = dict(action.payload or {})
     data["ai_generation_status"] = PENDING_STATUS
     data["ai_generation_result_cache"] = {}

@@ -20,6 +20,7 @@ from .ai_generation_parallel import (
     settle_deferred_parallel_claim,
 )
 from .ai_generation_worker_types import GenerationOutcome, SequentialClaim
+from .ai_generation_ready_settlement import settle_prepared_generation
 
 
 def settle_sequential_outcome(
@@ -72,9 +73,7 @@ def settle_parallel_outcome(session_factory, claim, outcome: GenerationOutcome) 
     if outcome.failure is not None:
         _settle_failed_outcome(session_factory, claim, outcome.failure)
         return 1
-    count = release_prepared_batch(session_factory, claim.owner, claim.token)
-    finish_generation_job(session_factory, claim, state="ready")
-    return count
+    return settle_prepared_generation(session_factory, claim)
 
 
 def _settle_failed_outcome(session_factory, claim, failure: Exception) -> None:

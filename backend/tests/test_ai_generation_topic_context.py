@@ -150,6 +150,26 @@ def test_low_information_context_uses_topic_only():
     assert updated.ai_generation_history == ""
 
 
+@pytest.mark.parametrize("context", ["今日发言量为十条，群内排名第五", "报名链接：https://example.invalid"])
+def test_v2_context_without_sanitized_facts_uses_existing_configured_topic(context):
+    session, task, action, payload = _fixture(listener_error=True)
+    task.type_config = {**task.type_config, "ai_content_route_v2_enabled": True}
+    session.get(TgGroup, 8).listener_last_error = ""
+    session.get(GroupContextMessage, 801).content = context
+    updated = prepare_topic_payload(session, task, action, payload=payload)
+    assert updated.ai_generation_context_reason == "no_human_context"
+    assert updated.ai_generation_topic_direction == TOPIC
+    assert updated.ai_generation_history == ""
+
+
+def test_v2_topic_must_survive_the_same_fact_sanitizer_as_binding():
+    session, task, action, payload = _fixture(listener_error=True)
+    task.type_config = {**task.type_config, "ai_content_route_v2_enabled": True,
+                        "topic_directions": [{"title": "今日发言量与群内排名"}]}
+    with pytest.raises(AiGenerationUnavailable, match="topic_only_topic_evidence_missing"):
+        prepare_topic_payload(session, task, action, payload=payload)
+
+
 def test_legacy_context_contract_is_not_changed():
     session, task, action, payload = _fixture(listener_error=True)
     task.type_config = {"target_group_id": 8, "topic_directions": [TOPIC]}

@@ -212,7 +212,8 @@ def test_unusable_topic_evidence_hands_original_job_to_emergency_without_provide
         assert job.state == "generating"
         return
     assert action.payload["ai_generation_status"] == "emergency_pending" and job.state == "failed"
-    assert job.generation_stage == "topic_only_topic_evidence_missing"
+    assert job.generation_stage == "emergency_pending"
+    assert job.evaluator_evidence["emergency_generation"]["reason"] == "topic_only_topic_evidence_missing"
     assert drain_ai_generation(lambda: Session(session.get_bind(), autoflush=False), limit=1,
                                dependencies=dependencies) == 1
     session.refresh(action)

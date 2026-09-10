@@ -19,6 +19,7 @@ from app.services._common import _now
 from .ai_content_runtime import invalidate_job_pre_gateway_slot
 from .ai_generation_commit import commit_generation_action, load_generation_batch
 from .ai_generation_pending_recovery import recover_pending_generation_residue
+from .ai_generation_ready_settlement import prepare_recovered_candidate
 from .ai_generation_state import generation_result_cache, mark_attempt_outcome
 from .ai_generation_timing import GENERATION_LEASE
 from .ai_generation_unknown_recovery import (
@@ -215,6 +216,8 @@ def _reconcile_claimed_job(session: Session, claim: _ReconcileClaim) -> None:
         raise RuntimeError("generation_reconcile_claim_lost")
     task = session.get(Task, job.task_id)
     action = _current_generation_action(session, job)
+    if action is not None:
+        session.refresh(action, with_for_update={"nowait": True})
     if action is not None and action.status == "success":
         _finish_reconciled_job(
             session, job, claim=claim, state="ready", stage="action_success",
@@ -262,6 +265,13 @@ def _recover_claimed_action(
     claim: _ReconcileClaim,
 ) -> None:
     data = dict(action.payload or {})
+    if data.get("ai_generation_status") == "ready":
+        if not _action_owned_by_expired_worker(action, data, claim.previous_owner):
+            raise RuntimeError("generation_reconcile_action_claim_changed")
+        prepare_recovered_candidate(session, job, action)
+        _finish_reconciled_job(session, job, claim=claim,
+                               state="ready", stage="prepared_result_recovered")
+        return
     if not _is_generating_ai_action(action, data):
         _finish_reconciled_job(
             session, job, claim=claim,

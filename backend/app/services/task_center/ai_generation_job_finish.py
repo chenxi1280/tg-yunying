@@ -36,7 +36,7 @@ def finish_owned_job(
         return
     if state == "ready":
         _require_not_retired(session, job)
-        _require_ready_action(job, action)
+        require_ready_generation_action(job, action)
     expected_job_version = int(job.job_version or 1)
     if expected_job_version < claim.job_version:
         raise RuntimeError("parallel_generation_job_claim_lost")
@@ -92,7 +92,7 @@ def _terminal_finish_already_persisted(
     return True
 
 
-def _require_ready_action(job: GenerationJob, action: Action | None) -> None:
+def require_ready_generation_action(job: GenerationJob, action: Action | None) -> None:
     if action is None:
         raise RuntimeError("parallel_generation_ready_action_invalid")
     payload = dict(action.payload or {})
@@ -139,4 +139,4 @@ def _job_finish_values(job, action, *, state, generation_stage) -> dict:
     return values
 
 
-__all__ = ["finish_owned_job"]
+__all__ = ["finish_owned_job", "require_ready_generation_action"]
