@@ -22,7 +22,7 @@ Action 真实终态优先于 result 中的历史 rescue_status。`unknown_after_
 
 ## 3. 发送错误与远端结果分开
 
-SendResult 增加独立 diagnostics：RPC 异常类、request 类、失败阶段（解析目标/发送调用/回执后）、send_call_started、remote_mutation_state。只提取类名，不记录异常 request 的参数。传递到 Action.result 与 Attempt.result_snapshot 的 `send_diagnostics`。Gateway 返回后，在权限恢复等所有分支返回前保存原始调用诊断；常规最终结算与提前恢复必须保留同一份证据，不能因分支选择丢失。权限错误可同时拥有 unknown 远端结果；错误分类、unknown 判断及既有救援触发规则保持原合同。
+SendResult 增加独立 diagnostics：RPC 异常类、request 类、失败阶段（解析目标/准备发送/发送调用/回执后）、send_call_started、remote_mutation_state。只提取类名，不记录异常 request 的参数。传递到 Action.result 与 Attempt.result_snapshot 的 `send_diagnostics`。Gateway 返回后，在权限恢复等所有分支返回前保存原始调用诊断；常规最终结算与提前恢复必须保留同一份证据，不能因分支选择丢失。权限错误可同时拥有 unknown 远端结果；错误分类、unknown 判断及既有救援触发规则保持原合同。
 
 ## 4. 原期限队列
 

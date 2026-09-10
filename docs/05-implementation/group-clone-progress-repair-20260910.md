@@ -1,12 +1,16 @@
 # 群克隆暂停与来源连续性修复
 
+2026-09-10 11:59:40（北京时间），用户要求的双账号文本测试已完成并正式暂停。账号2和437分别产生1条 `clone_message_observed`，目标消息4/5经过独立可见性、发送身份和内容一致性读回。暂停后两次快照均为paused/epoch2、2个成功Action/Attempt/映射，无在途或未知Action。
+
+该业务证据产生于58f2b863。最后跨页累计补正已随13e3c93c发布；12:43:27独立核验19个后端/worker容器版本及健康、四个Clone文件内容、三层health均通过，测试仍paused且发送记录不变。不将两条文本成功扩大为完整Clone PRD、引用/媒体、常态调度时延或新版本跨页运行验收。
+
 ## Intake / Product Handoff
 
 - intake_id: clone-progress-repair-20260910
 - 用户请求：排查克隆测试未推进，随后明确要求“你来修复问题”。
 - level: L3；流程：prod-diagnosis → product → dev → qa → product → prod-diagnosis。
 - scope: 独立 group_clone / v2_group_clone；生产测试 Task ce341c64-878e-482a-8b91-598346d5b885，tenant 1。
-- merge_owner/release_owner: 当前任务；隔离分支 codex/clone-progress-fix-20260910。
+- merge_owner: 当前任务；隔离分支 codex/clone-progress-fix-20260910。最后跨页补正汇入“诊断线上 AI 活群任务”的合并发布批次，由该任务执行统一发布；本任务负责独立部署与暂停状态读回。
 - 仅锁定 Clone Collector 的 channel 状态模块、Clone source stream/runtime lifecycle、对应测试和本合同/索引；主工作区其他修改保留。
 
 ## 当前证据与根因分组
@@ -33,11 +37,11 @@ design_status=complete（R1/R2），resync=true。已更新专项 PRD §6.2、§
 
 ## Release Gate
 
-- status: local_passed / CI pending
-- release_mode: github_actions；master → Prepare Production → release → Deploy Production。
+- status: release_passed / controlled_two_sender_text_passed / post_release_pause_verified；new_release_multi_page_runtime_e4=unproven；full_clone_prd_accepted=false。
+- release_mode: 58f2b863已通过原Actions发布；用户随后停用Actions，最终发布合同为本地构建镜像、save/压缩、SCP直传、服务器load和安装，不依赖镜像发布仓库。
 - migration_impact: none；frontend/API shape: none；worker_impact: shared Collector channel projection and Clone consumer。
 - external_platform_impact: 发布本身不触发新发送；原测试恢复另按当前 preview、正式服务、审计与读回处理。
-- local_gate / CI / deployed SHA / runtime / production evidence: 待补。
+- local_gate / CI / deployed SHA / runtime / production evidence: 见下述各阶段记录及最终受控双账号验收；不得合并为完整Clone PRD验收。
 
 ## 开发审查与定向 QA
 
@@ -85,3 +89,32 @@ design_status=complete（R1/R2），resync=true。已更新专项 PRD §6.2、§
 
 - 新增真实PostgreSQL跨Session验证：Collector提交两页区间后，独立consumer读取并消费队首，最终消费PTS保持502而非证明终点503；独立运行1项通过（11.07秒）。与多个既有并发文件合并的一批触及60秒硬超时，未声明该整批通过；此前完整CI及定向并发结果分别保留。
 - 本地发布前提读回：Docker27.5.1/Buildx运行，支持linux/amd64；Docker credential helper未发现GHCR凭据，当前GHCR_USERNAME/GHCR_TOKEN环境为空，GitHub登录权限为repo/workflow/gist/read:org，不含write:packages。已请求用户提供现有发布凭据的配置位置，不打印或写入凭据。
+
+
+## 最终受控双账号文本验收（58f2b863）
+
+用户授权：使用账号2参与多人测试，完成后暂停。测试执行时新本地发布入口尚缺少GHCR发布凭据，因此在已经部署并独立核验的58f2b863执行；当时master上的跨页累计补正5aedd236尚未部署，后续部署结果见末节。未重新启用或派发Actions，也未覆盖分叉的release发布规则。
+
+- 原双账号epoch1在暂停期间收到真实too_long，仍维持paused/零发送，来源为blocked；正式Stop于11:48:44保留13条旧SourceEvent并推进epoch2，审计1144918。正式Start审计1144922；Listener建立新边界start_message_id3077967/start_pts5623681。原单账号测试ce341c64仍stopped/epoch3，旧1051事件及1条成功映射不变。
+- 账号2：source3077968 → Action dbbb0cf0-6122-412f-936e-0f8df25fb7ac → Attempt65b928fe-f6ad-4515-9ed8-f670df04b405 → clone_message_observed 1e89caf2-3a3f-493e-b24b-85829fb9c93c → 目标消息4，远端观察时间11:51:26。
+- 账号437：source3077969 → Action ec66935d-5747-4aa9-9305-12dac5727dc9 → Attempt177923b0-9c34-4418-a029-8391826e042b → clone_message_observed d7616080-3d48-46ad-8618-e0126973bcf4 → 目标消息5，远端观察时间11:59:32。
+- 两位来源发言人不同、两个Telegram发送身份不同。独立读取目标消息4/5，均可见、实际作者与对应账号授权身份一致、文字与发送payload一致；没有输出消息正文。证据：[脱敏验收JSON](evidence/group-clone-two-senders-20260910.json)。
+- 11:59:40正式Pause，审计1144927。受控Collector再运行两轮并退出，任务级Planner与达标暂停器均退出。随后两次独立快照一致：Task paused/epoch2；54条历史及当前SourceEvent（其中当前epoch41条）、4个义务、2个success Action、2个success Attempt、2个映射，无pending/executing/unknown Action；暂停后没有新增SourceEvent/Action/Attempt。
+
+### 验收范围与保留问题
+
+本次通过双账号文本克隆和暂停稳定性受控验收，不等于完整Clone PRD或常态自动调度时延验收。采集和Planner均使用既有正式入口按授权Task/账号范围触发，发送由常态Dispatcher执行。
+
+账号2的网关已在11:51:26持久化消息4回执，发送后更新tg_accounts.last_active_at等待账户行锁，阻塞了成功结算；只读观察到锁链64784→44807→44951及约23分钟长事务。未取消这些事务、修改状态或重发；锁链后续释放，原发送自然完成结算。该数据库长事务/结算延迟未在本轮修复。
+
+另外保留1条引用消息waiting_manual_review（reply_lazy_fetch_failed:RuntimeError，Planner禁止远端IO），及第3位来源发言人因双账号槽已占用而waiting_binding。没有删除或伪造这些义务，也不以两条文本成功宣称引用/媒体/主题场景通过。
+
+跨页区间累计代码和真实PostgreSQL回归已在master，最后代码/测试提交5aedd236，随后汇入合并发布批次。最初本地发布入口的GHCR凭据问题已解决；其后用户进一步确认镜像打包直传服务器，最终流程不依赖仓库Token。首次安装因缺少PUBLIC_APP_BASE_URL在切换前停止，独立读回仍为58f2b863、19个容器健康；下一次安装因release更新在联系服务器前停止。发布任务合入直传流程并保留生产配置，最终安装13e3c93c。发布方式切换后，本任务没有派发Actions或重复安装。本次自建本地PG测试实例已在确认零其他连接后正常停止；主工作区其他未跟踪文件保持。
+
+## 最终部署与暂停读回（13e3c93c）
+
+- 最终代码版本：13e3c93c96bcb17fac7a2d1550e8b5bee4518df9，包含5aedd236及之前全部Clone修复；按本地prepare/deploy、镜像包直传/load和正式安装完成发布。
+- 12:43:23–12:43:27（北京时间）本任务独立只读验收：current=/data/tgyunying/releases/20260910123447_13e3c93c；后端及18个worker均running/healthy且RELEASE_SHA一致；应用、主机Nginx、公网health全部ok。
+- 实际容器内telegram_channel_difference_ranges.py、telegram_update_channels.py、telegram_update_collector.py、group_clone_source_stream.py的SHA256与候选Git源码逐一相等，确认跨页补正文件实际部署。
+- 12:39:05发布前与12:43:27发布后使用REPEATABLE READ READ ONLY快照逐项比较：双账号Task仍paused/epoch2、配置指纹相同，54SourceEvent、4义务、2success Action、2success Attempt、2映射完全不变；无在途或未知Action。旧Task仍stopped/epoch3、1051SourceEvent及1条成功映射不变。
+- 结论：代码发布、双账号文本受控测试、用户要求的暂停及跨发布暂停稳定性均通过；完整Clone PRD和新版本跨页运行E4仍unproven。未为新版本重复恢复已按用户要求暂停的测试。

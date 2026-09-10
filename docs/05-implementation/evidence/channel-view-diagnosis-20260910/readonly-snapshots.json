@@ -1,0 +1,1906 @@
+{
+  "scope": {
+    "task_type": "channel_view",
+    "task_status": "running",
+    "deleted": false,
+    "tenant_id": 1,
+    "authorization": "read_only_diagnosis"
+  },
+  "runtime": {
+    "release_sha": "24704522d900b672773415ab5dfec78d60f28630",
+    "backend_started_at": "2026-09-10T02:23:44.183137506Z",
+    "final_readback": "/data/tgyunying/releases/20260910022307_24704522\n{\"status\":\"ok\",\"account_batch_login_mode\":\"enabled\"}/tgyunying-backend running/healthy\n/tgyunying-worker-planner running/healthy\n/tgyunying-worker-dispatcher-1 running/healthy\n/tgyunying-worker-dispatcher-2 running/healthy\n/tgyunying-worker-listener running/healthy\n"
+  },
+  "read_method": {
+    "isolation": "REPEATABLE READ READ ONLY",
+    "statement_timeout_seconds": 20,
+    "lock_timeout_seconds": 2,
+    "remote_transport": "ssh -> docker exec -> SessionLocal -> SELECT"
+  },
+  "detail_snapshot": {
+    "clock": [
+      {
+        "observed_at": "2026-09-10 10:39:42.385683+08:00",
+        "read_only": "on"
+      }
+    ],
+    "target": [
+      {
+        "name": "太郎日记",
+        "sources": 2,
+        "daily_target": 2248,
+        "persisted_due": 994,
+        "oldest_target_update": "2026-09-10 10:37:08.095816+08:00",
+        "newest_target_update": "2026-09-10 10:37:08.095825+08:00"
+      },
+      {
+        "name": "成都阿楠",
+        "sources": 6,
+        "daily_target": 3228,
+        "persisted_due": 1428,
+        "oldest_target_update": "2026-09-10 10:39:16.172444+08:00",
+        "newest_target_update": "2026-09-10 10:39:16.172464+08:00"
+      },
+      {
+        "name": "西安焦点",
+        "sources": 4,
+        "daily_target": 3223,
+        "persisted_due": 1420,
+        "oldest_target_update": "2026-09-10 10:35:47.352120+08:00",
+        "newest_target_update": "2026-09-10 10:35:47.352135+08:00"
+      },
+      {
+        "name": "郑州精品",
+        "sources": 5,
+        "daily_target": 3008,
+        "persisted_due": 1331,
+        "oldest_target_update": "2026-09-10 01:05:39.056831+08:00",
+        "newest_target_update": "2026-09-10 10:36:59.976346+08:00"
+      },
+      {
+        "name": "阿哥日记",
+        "sources": 2,
+        "daily_target": 2220,
+        "persisted_due": 978,
+        "oldest_target_update": "2026-09-10 10:35:15.964323+08:00",
+        "newest_target_update": "2026-09-10 10:35:15.964329+08:00"
+      }
+    ],
+    "participation": [
+      {
+        "name": "郑州精品",
+        "state": "active",
+        "participation_kind": "view_daily_cohort",
+        "rounded_selected_count": 1123,
+        "required_count": 1123,
+        "sampled_ratio_bps": 9334,
+        "policy_eligible": 1203,
+        "selected": 1123
+      },
+      {
+        "name": "太郎日记",
+        "state": "active",
+        "participation_kind": "view_daily_cohort",
+        "rounded_selected_count": 1124,
+        "required_count": 1124,
+        "sampled_ratio_bps": 9346,
+        "policy_eligible": 1203,
+        "selected": 1124
+      },
+      {
+        "name": "成都阿楠",
+        "state": "active",
+        "participation_kind": "view_daily_cohort",
+        "rounded_selected_count": 1076,
+        "required_count": 1076,
+        "sampled_ratio_bps": 8933,
+        "policy_eligible": 1204,
+        "selected": 1076
+      },
+      {
+        "name": "阿哥日记",
+        "state": "active",
+        "participation_kind": "view_daily_cohort",
+        "rounded_selected_count": 1110,
+        "required_count": 1110,
+        "sampled_ratio_bps": 9224,
+        "policy_eligible": 1203,
+        "selected": 1110
+      },
+      {
+        "name": "西安焦点",
+        "state": "active",
+        "participation_kind": "view_daily_cohort",
+        "rounded_selected_count": 1068,
+        "required_count": 1068,
+        "sampled_ratio_bps": 8874,
+        "policy_eligible": 1203,
+        "selected": 1068
+      }
+    ],
+    "allocation": [
+      {
+        "name": "太郎日记",
+        "decision": "achievable",
+        "state": "active",
+        "edge_count": 2248,
+        "source_count": 2,
+        "unallocated_source_count": 0,
+        "source_exposures": [
+          {
+            "message_id": 812,
+            "remote_message_id": 400,
+            "source_revision_id": "a478c0aa-0ae3-49f5-808b-24468eace995",
+            "source_identity": "message:812:remote:400",
+            "forbidden_account_ids": [],
+            "assigned_exposure": 1124
+          },
+          {
+            "message_id": 813,
+            "remote_message_id": 399,
+            "source_revision_id": "0cad33de-b2ad-441b-8847-054ef5983d96",
+            "source_identity": "message:813:remote:399",
+            "forbidden_account_ids": [],
+            "assigned_exposure": 1124
+          }
+        ],
+        "reserved_edges": 2248
+      },
+      {
+        "name": "成都阿楠",
+        "decision": "achievable",
+        "state": "active",
+        "edge_count": 3228,
+        "source_count": 6,
+        "unallocated_source_count": 0,
+        "source_exposures": [
+          {
+            "message_id": 714,
+            "remote_message_id": 96,
+            "source_revision_id": "8a96cbfc-0064-41f2-aa92-dbafe93ddbc7",
+            "source_identity": "message:714:remote:96",
+            "forbidden_account_ids": [],
+            "assigned_exposure": 538
+          },
+          {
+            "message_id": 728,
+            "remote_message_id": 97,
+            "source_revision_id": "530f3df6-54e6-4c79-9f6b-b00c1430c8e7",
+            "source_identity": "message:728:remote:97",
+            "forbidden_account_ids": [],
+            "assigned_exposure": 538
+          },
+          {
+            "message_id": 742,
+            "remote_message_id": 98,
+            "source_revision_id": "3dd120e5-d1aa-44d0-addf-f82d770f4551",
+            "source_identity": "message:742:remote:98",
+            "forbidden_account_ids": [],
+            "assigned_exposure": 538
+          },
+          {
+            "message_id": 754,
+            "remote_message_id": 99,
+            "source_revision_id": "94dbce4a-5390-48fc-ab04-030bf376679f",
+            "source_identity": "message:754:remote:99",
+            "forbidden_account_ids": [],
+            "assigned_exposure": 538
+          },
+          {
+            "message_id": 760,
+            "remote_message_id": 100,
+            "source_revision_id": "6b5b7785-5cf6-4e06-a232-a230853ac25a",
+            "source_identity": "message:760:remote:100",
+            "forbidden_account_ids": [],
+            "assigned_exposure": 538
+          },
+          {
+            "message_id": 867,
+            "remote_message_id": 101,
+            "source_revision_id": "f1507a43-d6b7-410f-ac0e-6d3db01b182f",
+            "source_identity": "message:867:remote:101",
+            "forbidden_account_ids": [],
+            "assigned_exposure": 538
+          }
+        ],
+        "reserved_edges": 3228
+      },
+      {
+        "name": "西安焦点",
+        "decision": "achievable",
+        "state": "active",
+        "edge_count": 3223,
+        "source_count": 4,
+        "unallocated_source_count": 0,
+        "source_exposures": [
+          {
+            "message_id": 800,
+            "remote_message_id": 10,
+            "source_revision_id": "68a2adc7-77d7-410e-a3d9-3c268863603a",
+            "source_identity": "message:800:remote:10",
+            "forbidden_account_ids": [],
+            "assigned_exposure": 806
+          },
+          {
+            "message_id": 799,
+            "remote_message_id": 12,
+            "source_revision_id": "57333c94-ca2a-4bc6-9c6b-305e553e6480",
+            "source_identity": "message:799:remote:12",
+            "forbidden_account_ids": [],
+            "assigned_exposure": 806
+          },
+          {
+            "message_id": 866,
+            "remote_message_id": 13,
+            "source_revision_id": "b649a28d-38fe-4043-a84f-46e732c2b4c8",
+            "source_identity": "message:866:remote:13",
+            "forbidden_account_ids": [],
+            "assigned_exposure": 806
+          },
+          {
+            "message_id": 865,
+            "remote_message_id": 14,
+            "source_revision_id": "54826d3d-7757-4d22-b601-474b4d7c6dee",
+            "source_identity": "message:865:remote:14",
+            "forbidden_account_ids": [],
+            "assigned_exposure": 805
+          }
+        ],
+        "reserved_edges": 3223
+      },
+      {
+        "name": "阿哥日记",
+        "decision": "achievable",
+        "state": "active",
+        "edge_count": 2220,
+        "source_count": 2,
+        "unallocated_source_count": 0,
+        "source_exposures": [
+          {
+            "message_id": 823,
+            "remote_message_id": 133,
+            "source_revision_id": "c21e025b-9b8e-4e76-9749-0659146d9262",
+            "source_identity": "message:823:remote:133",
+            "forbidden_account_ids": [],
+            "assigned_exposure": 1110
+          },
+          {
+            "message_id": 822,
+            "remote_message_id": 134,
+            "source_revision_id": "0e538a9c-4110-4ea2-b675-1fdbd96de1c7",
+            "source_identity": "message:822:remote:134",
+            "forbidden_account_ids": [],
+            "assigned_exposure": 1110
+          }
+        ],
+        "reserved_edges": 2220
+      },
+      {
+        "name": "郑州精品",
+        "decision": "achievable",
+        "state": "active",
+        "edge_count": 3008,
+        "source_count": 5,
+        "unallocated_source_count": 0,
+        "source_exposures": [
+          {
+            "message_id": 820,
+            "remote_message_id": 151,
+            "source_revision_id": "282beddf-00cb-44aa-8fd2-b0e8ff243d0b",
+            "source_identity": "message:820:remote:151",
+            "forbidden_account_ids": [],
+            "assigned_exposure": 1002
+          },
+          {
+            "message_id": 819,
+            "remote_message_id": 152,
+            "source_revision_id": "7306e487-099a-49ee-8bec-eb0df23ebfd4",
+            "source_identity": "message:819:remote:152",
+            "forbidden_account_ids": [],
+            "assigned_exposure": 1002
+          },
+          {
+            "message_id": 818,
+            "remote_message_id": 153,
+            "source_revision_id": "e7788136-6f0e-40d4-8103-38ddc59fa385",
+            "source_identity": "message:818:remote:153",
+            "forbidden_account_ids": [],
+            "assigned_exposure": 1002
+          },
+          {
+            "message_id": 883,
+            "remote_message_id": 155,
+            "source_revision_id": "8ef324b2-fce3-4679-a749-902de2066042",
+            "source_identity": "message:883:remote:155",
+            "forbidden_account_ids": [
+              321,
+              342,
+              343,
+              366,
+              369,
+              370,
+              770
+            ],
+            "assigned_exposure": 1
+          },
+          {
+            "message_id": 882,
+            "remote_message_id": 156,
+            "source_revision_id": "39e6f369-3074-4e33-8b46-2aa256035f95",
+            "source_identity": "message:882:remote:156",
+            "forbidden_account_ids": [
+              321,
+              342,
+              343,
+              366,
+              369,
+              370,
+              770
+            ],
+            "assigned_exposure": 1
+          }
+        ],
+        "reserved_edges": 3008
+      }
+    ],
+    "obligations": [
+      {
+        "name": "成都阿楠",
+        "status": "confirmed",
+        "n": 88,
+        "pacing_due": 88,
+        "no_pacing_due": 0,
+        "unbound": 0,
+        "min_due": "2026-09-10 00:03:07.946547+08:00",
+        "max_due": "2026-09-10 03:06:50.217031+08:00"
+      },
+      {
+        "name": "太郎日记",
+        "status": "open",
+        "n": 925,
+        "pacing_due": 222,
+        "no_pacing_due": 687,
+        "unbound": 925,
+        "min_due": "2026-09-10 00:11:28.044258+08:00",
+        "max_due": "2026-09-10 11:02:32.792834+08:00"
+      },
+      {
+        "name": "西安焦点",
+        "status": "confirmed",
+        "n": 232,
+        "pacing_due": 232,
+        "no_pacing_due": 0,
+        "unbound": 0,
+        "min_due": "2026-09-10 00:04:47.008943+08:00",
+        "max_due": "2026-09-10 05:41:18.379025+08:00"
+      },
+      {
+        "name": "成都阿楠",
+        "status": "open",
+        "n": 1550,
+        "pacing_due": 289,
+        "no_pacing_due": 1261,
+        "unbound": 1550,
+        "min_due": "2026-09-10 00:06:04.970892+08:00",
+        "max_due": "2026-09-10 10:36:08.509633+08:00"
+      },
+      {
+        "name": "西安焦点",
+        "status": "unknown",
+        "n": 4,
+        "pacing_due": 4,
+        "no_pacing_due": 0,
+        "unbound": 0,
+        "min_due": "2026-09-10 00:35:24.070480+08:00",
+        "max_due": "2026-09-10 03:38:43.865885+08:00"
+      },
+      {
+        "name": "阿哥日记",
+        "status": "confirmed",
+        "n": 9,
+        "pacing_due": 9,
+        "no_pacing_due": 0,
+        "unbound": 0,
+        "min_due": "2026-09-10 00:15:19.091461+08:00",
+        "max_due": "2026-09-10 01:22:53.330648+08:00"
+      },
+      {
+        "name": "西安焦点",
+        "status": "pending",
+        "n": 719,
+        "pacing_due": 719,
+        "no_pacing_due": 0,
+        "unbound": 0,
+        "min_due": "2026-09-10 00:04:38.720363+08:00",
+        "max_due": "2026-09-10 09:57:21.296457+08:00"
+      },
+      {
+        "name": "太郎日记",
+        "status": "confirmed",
+        "n": 6,
+        "pacing_due": 6,
+        "no_pacing_due": 0,
+        "unbound": 0,
+        "min_due": "2026-09-10 00:16:05.669531+08:00",
+        "max_due": "2026-09-10 01:20:18.163836+08:00"
+      },
+      {
+        "name": "郑州精品",
+        "status": "confirmed",
+        "n": 236,
+        "pacing_due": 236,
+        "no_pacing_due": 0,
+        "unbound": 0,
+        "min_due": "2026-09-10 00:10:13.808990+08:00",
+        "max_due": "2026-09-10 07:18:03.090398+08:00"
+      },
+      {
+        "name": "郑州精品",
+        "status": "open",
+        "n": 475,
+        "pacing_due": 200,
+        "no_pacing_due": 240,
+        "unbound": 475,
+        "min_due": "2026-09-10 00:44:40.463275+08:00",
+        "max_due": "2026-09-10 11:36:51.302607+08:00"
+      },
+      {
+        "name": "郑州精品",
+        "status": "unknown",
+        "n": 6,
+        "pacing_due": 6,
+        "no_pacing_due": 0,
+        "unbound": 0,
+        "min_due": "2026-09-10 01:34:41.154802+08:00",
+        "max_due": "2026-09-10 05:32:20.714681+08:00"
+      },
+      {
+        "name": "太郎日记",
+        "status": "pending",
+        "n": 393,
+        "pacing_due": 391,
+        "no_pacing_due": 0,
+        "unbound": 0,
+        "min_due": "2026-09-10 00:07:28.928664+08:00",
+        "max_due": "2026-09-10 10:44:48.965862+08:00"
+      },
+      {
+        "name": "成都阿楠",
+        "status": "pending",
+        "n": 477,
+        "pacing_due": 477,
+        "no_pacing_due": 0,
+        "unbound": 0,
+        "min_due": "2026-09-10 00:03:16.618804+08:00",
+        "max_due": "2026-09-10 10:00:37.847007+08:00"
+      },
+      {
+        "name": "郑州精品",
+        "status": "pending",
+        "n": 718,
+        "pacing_due": 697,
+        "no_pacing_due": 0,
+        "unbound": 0,
+        "min_due": "2026-09-10 00:09:41.837670+08:00",
+        "max_due": "2026-09-10 11:21:14.546342+08:00"
+      },
+      {
+        "name": "西安焦点",
+        "status": "open",
+        "n": 609,
+        "pacing_due": 265,
+        "no_pacing_due": 344,
+        "unbound": 609,
+        "min_due": "2026-09-10 00:06:43.751604+08:00",
+        "max_due": "2026-09-10 09:59:34.198380+08:00"
+      },
+      {
+        "name": "阿哥日记",
+        "status": "pending",
+        "n": 401,
+        "pacing_due": 399,
+        "no_pacing_due": 0,
+        "unbound": 0,
+        "min_due": "2026-09-10 00:05:23.447827+08:00",
+        "max_due": "2026-09-10 11:15:47.836920+08:00"
+      },
+      {
+        "name": "阿哥日记",
+        "status": "open",
+        "n": 882,
+        "pacing_due": 209,
+        "no_pacing_due": 641,
+        "unbound": 882,
+        "min_due": "2026-09-10 00:18:34.890677+08:00",
+        "max_due": "2026-09-10 11:22:38.266536+08:00"
+      }
+    ],
+    "facts_by_day": [
+      {
+        "name": "太郎日记",
+        "local_date": "2026-09-08",
+        "views": 8,
+        "distinct_accounts": 8,
+        "last_30m": 0,
+        "last_60m": 0,
+        "last_view": "2026-09-08 23:07:38.030983+08:00",
+        "counter_proven": 0
+      },
+      {
+        "name": "太郎日记",
+        "local_date": "2026-09-09",
+        "views": 177,
+        "distinct_accounts": 175,
+        "last_30m": 0,
+        "last_60m": 0,
+        "last_view": "2026-09-09 23:52:10.968078+08:00",
+        "counter_proven": 0
+      },
+      {
+        "name": "太郎日记",
+        "local_date": "2026-09-10",
+        "views": 6,
+        "distinct_accounts": 6,
+        "last_30m": 2,
+        "last_60m": 6,
+        "last_view": "2026-09-10 10:35:56.670843+08:00",
+        "counter_proven": 0
+      },
+      {
+        "name": "成都阿楠",
+        "local_date": "2026-09-08",
+        "views": 30,
+        "distinct_accounts": 30,
+        "last_30m": 0,
+        "last_60m": 0,
+        "last_view": "2026-09-08 23:31:29.583266+08:00",
+        "counter_proven": 0
+      },
+      {
+        "name": "成都阿楠",
+        "local_date": "2026-09-09",
+        "views": 235,
+        "distinct_accounts": 220,
+        "last_30m": 0,
+        "last_60m": 0,
+        "last_view": "2026-09-09 23:43:35.961878+08:00",
+        "counter_proven": 0
+      },
+      {
+        "name": "成都阿楠",
+        "local_date": "2026-09-10",
+        "views": 88,
+        "distinct_accounts": 88,
+        "last_30m": 16,
+        "last_60m": 28,
+        "last_view": "2026-09-10 10:39:36.153232+08:00",
+        "counter_proven": 0
+      },
+      {
+        "name": "西安焦点",
+        "local_date": "2026-09-08",
+        "views": 132,
+        "distinct_accounts": 78,
+        "last_30m": 0,
+        "last_60m": 0,
+        "last_view": "2026-09-08 23:57:55.554871+08:00",
+        "counter_proven": 0
+      },
+      {
+        "name": "西安焦点",
+        "local_date": "2026-09-09",
+        "views": 634,
+        "distinct_accounts": 363,
+        "last_30m": 0,
+        "last_60m": 0,
+        "last_view": "2026-09-09 23:40:14.131493+08:00",
+        "counter_proven": 0
+      },
+      {
+        "name": "西安焦点",
+        "local_date": "2026-09-10",
+        "views": 232,
+        "distinct_accounts": 232,
+        "last_30m": 24,
+        "last_60m": 52,
+        "last_view": "2026-09-10 10:39:34.990493+08:00",
+        "counter_proven": 0
+      },
+      {
+        "name": "郑州精品",
+        "local_date": "2026-09-08",
+        "views": 69,
+        "distinct_accounts": 40,
+        "last_30m": 0,
+        "last_60m": 0,
+        "last_view": "2026-09-08 23:54:52.372769+08:00",
+        "counter_proven": 0
+      },
+      {
+        "name": "郑州精品",
+        "local_date": "2026-09-09",
+        "views": 378,
+        "distinct_accounts": 262,
+        "last_30m": 0,
+        "last_60m": 0,
+        "last_view": "2026-09-09 23:30:56.567196+08:00",
+        "counter_proven": 0
+      },
+      {
+        "name": "郑州精品",
+        "local_date": "2026-09-10",
+        "views": 236,
+        "distinct_accounts": 236,
+        "last_30m": 20,
+        "last_60m": 38,
+        "last_view": "2026-09-10 10:38:26.457579+08:00",
+        "counter_proven": 0
+      },
+      {
+        "name": "阿哥日记",
+        "local_date": "2026-09-08",
+        "views": 4,
+        "distinct_accounts": 4,
+        "last_30m": 0,
+        "last_60m": 0,
+        "last_view": "2026-09-08 23:05:59.255906+08:00",
+        "counter_proven": 0
+      },
+      {
+        "name": "阿哥日记",
+        "local_date": "2026-09-09",
+        "views": 169,
+        "distinct_accounts": 167,
+        "last_30m": 0,
+        "last_60m": 0,
+        "last_view": "2026-09-09 23:52:34.788480+08:00",
+        "counter_proven": 0
+      },
+      {
+        "name": "阿哥日记",
+        "local_date": "2026-09-10",
+        "views": 9,
+        "distinct_accounts": 9,
+        "last_30m": 4,
+        "last_60m": 8,
+        "last_view": "2026-09-10 10:34:11.258264+08:00",
+        "counter_proven": 0
+      }
+    ],
+    "pending": [
+      {
+        "name": "太郎日记",
+        "status": "pending",
+        "timing": "future_scheduled",
+        "error_code": "",
+        "reservation_state": "bound",
+        "n": 376,
+        "oldest_scheduled": "2026-09-10 10:41:20+08:00",
+        "release_future": 376
+      },
+      {
+        "name": "太郎日记",
+        "status": "pending",
+        "timing": "future_scheduled",
+        "error_code": "account_execution_busy",
+        "reservation_state": "bound",
+        "n": 2,
+        "oldest_scheduled": "2026-09-10 10:39:56.964773+08:00",
+        "release_future": 0
+      },
+      {
+        "name": "太郎日记",
+        "status": "pending",
+        "timing": "scheduled_due",
+        "error_code": "pacing_source_not_before",
+        "reservation_state": "bound",
+        "n": 13,
+        "oldest_scheduled": "2026-09-10 09:06:12.660857+08:00",
+        "release_future": 0
+      },
+      {
+        "name": "太郎日记",
+        "status": "pending",
+        "timing": "scheduled_due",
+        "error_code": "account_execution_busy",
+        "reservation_state": "bound",
+        "n": 1,
+        "oldest_scheduled": "2026-09-10 09:24:03.450566+08:00",
+        "release_future": 0
+      },
+      {
+        "name": "太郎日记",
+        "status": "pending",
+        "timing": "scheduled_due",
+        "error_code": "account_shared_usage_unproven",
+        "reservation_state": "bound",
+        "n": 1,
+        "oldest_scheduled": "2026-09-10 09:43:29.862025+08:00",
+        "release_future": 0
+      },
+      {
+        "name": "成都阿楠",
+        "status": "pending",
+        "timing": "future_scheduled",
+        "error_code": "",
+        "reservation_state": "bound",
+        "n": 455,
+        "oldest_scheduled": "2026-09-10 10:40:00+08:00",
+        "release_future": 455
+      },
+      {
+        "name": "成都阿楠",
+        "status": "pending",
+        "timing": "future_scheduled",
+        "error_code": "pacing_source_not_before",
+        "reservation_state": "bound",
+        "n": 8,
+        "oldest_scheduled": "2026-09-10 10:40:00.787768+08:00",
+        "release_future": 8
+      },
+      {
+        "name": "成都阿楠",
+        "status": "pending",
+        "timing": "future_scheduled",
+        "error_code": "account_execution_busy",
+        "reservation_state": "bound",
+        "n": 1,
+        "oldest_scheduled": "2026-09-10 10:40:03.281982+08:00",
+        "release_future": 0
+      },
+      {
+        "name": "成都阿楠",
+        "status": "pending",
+        "timing": "scheduled_due",
+        "error_code": "pacing_source_not_before",
+        "reservation_state": "bound",
+        "n": 9,
+        "oldest_scheduled": "2026-09-10 05:53:47.165188+08:00",
+        "release_future": 0
+      },
+      {
+        "name": "成都阿楠",
+        "status": "pending",
+        "timing": "scheduled_due",
+        "error_code": "account_execution_busy",
+        "reservation_state": "bound",
+        "n": 2,
+        "oldest_scheduled": "2026-09-10 07:02:10.470110+08:00",
+        "release_future": 0
+      },
+      {
+        "name": "成都阿楠",
+        "status": "pending",
+        "timing": "scheduled_due",
+        "error_code": "account_shared_usage_unproven",
+        "reservation_state": "bound",
+        "n": 2,
+        "oldest_scheduled": "2026-09-10 07:07:02.662367+08:00",
+        "release_future": 0
+      },
+      {
+        "name": "西安焦点",
+        "status": "pending",
+        "timing": "future_scheduled",
+        "error_code": "",
+        "reservation_state": "bound",
+        "n": 663,
+        "oldest_scheduled": "2026-09-10 10:40:00+08:00",
+        "release_future": 663
+      },
+      {
+        "name": "西安焦点",
+        "status": "pending",
+        "timing": "future_scheduled",
+        "error_code": "pacing_source_not_before",
+        "reservation_state": "bound",
+        "n": 18,
+        "oldest_scheduled": "2026-09-10 10:39:50.777054+08:00",
+        "release_future": 18
+      },
+      {
+        "name": "西安焦点",
+        "status": "pending",
+        "timing": "future_scheduled",
+        "error_code": "account_execution_busy",
+        "reservation_state": "bound",
+        "n": 1,
+        "oldest_scheduled": "2026-09-10 10:40:09.064503+08:00",
+        "release_future": 0
+      },
+      {
+        "name": "西安焦点",
+        "status": "pending",
+        "timing": "scheduled_due",
+        "error_code": "pacing_source_not_before",
+        "reservation_state": "bound",
+        "n": 22,
+        "oldest_scheduled": "2026-09-10 07:02:36.783335+08:00",
+        "release_future": 0
+      },
+      {
+        "name": "西安焦点",
+        "status": "pending",
+        "timing": "scheduled_due",
+        "error_code": "account_execution_busy",
+        "reservation_state": "bound",
+        "n": 7,
+        "oldest_scheduled": "2026-09-10 06:46:04.777934+08:00",
+        "release_future": 0
+      },
+      {
+        "name": "西安焦点",
+        "status": "pending",
+        "timing": "scheduled_due",
+        "error_code": "account_shared_usage_unproven",
+        "reservation_state": "bound",
+        "n": 4,
+        "oldest_scheduled": "2026-09-10 03:05:30.956918+08:00",
+        "release_future": 0
+      },
+      {
+        "name": "西安焦点",
+        "status": "pending",
+        "timing": "scheduled_due",
+        "error_code": "execution_circuit_open",
+        "reservation_state": "bound",
+        "n": 2,
+        "oldest_scheduled": "2026-09-10 04:53:13.979670+08:00",
+        "release_future": 0
+      },
+      {
+        "name": "西安焦点",
+        "status": "closed_unknown",
+        "timing": "scheduled_due",
+        "error_code": "unknown_after_send",
+        "reservation_state": "bound",
+        "n": 2,
+        "oldest_scheduled": "2026-09-10 03:41:28.184816+08:00",
+        "release_future": 0
+      },
+      {
+        "name": "西安焦点",
+        "status": "unknown_after_send",
+        "timing": "scheduled_due",
+        "error_code": "unknown_after_send",
+        "reservation_state": "bound",
+        "n": 2,
+        "oldest_scheduled": "2026-09-10 10:16:54.494441+08:00",
+        "release_future": 0
+      },
+      {
+        "name": "西安焦点",
+        "status": "pending",
+        "timing": "scheduled_due",
+        "error_code": "",
+        "reservation_state": "bound",
+        "n": 2,
+        "oldest_scheduled": "2026-09-10 10:39:40+08:00",
+        "release_future": 0
+      },
+      {
+        "name": "郑州精品",
+        "status": "pending",
+        "timing": "future_scheduled",
+        "error_code": "",
+        "reservation_state": "bound",
+        "n": 646,
+        "oldest_scheduled": "2026-09-10 10:40:20+08:00",
+        "release_future": 646
+      },
+      {
+        "name": "郑州精品",
+        "status": "pending",
+        "timing": "future_scheduled",
+        "error_code": "pacing_source_not_before",
+        "reservation_state": "bound",
+        "n": 21,
+        "oldest_scheduled": "2026-09-10 10:39:44.153211+08:00",
+        "release_future": 21
+      },
+      {
+        "name": "郑州精品",
+        "status": "pending",
+        "timing": "future_scheduled",
+        "error_code": "account_execution_busy",
+        "reservation_state": "bound",
+        "n": 1,
+        "oldest_scheduled": "2026-09-10 10:39:56.968624+08:00",
+        "release_future": 0
+      },
+      {
+        "name": "郑州精品",
+        "status": "pending",
+        "timing": "scheduled_due",
+        "error_code": "pacing_source_not_before",
+        "reservation_state": "bound",
+        "n": 42,
+        "oldest_scheduled": "2026-09-10 04:57:05.055049+08:00",
+        "release_future": 0
+      },
+      {
+        "name": "郑州精品",
+        "status": "pending",
+        "timing": "scheduled_due",
+        "error_code": "account_execution_busy",
+        "reservation_state": "bound",
+        "n": 6,
+        "oldest_scheduled": "2026-09-10 03:05:30.351752+08:00",
+        "release_future": 0
+      },
+      {
+        "name": "郑州精品",
+        "status": "closed_unknown",
+        "timing": "scheduled_due",
+        "error_code": "unknown_after_send",
+        "reservation_state": "bound",
+        "n": 5,
+        "oldest_scheduled": "2026-09-10 07:36:55.651719+08:00",
+        "release_future": 0
+      },
+      {
+        "name": "郑州精品",
+        "status": "pending",
+        "timing": "scheduled_due",
+        "error_code": "account_shared_usage_unproven",
+        "reservation_state": "bound",
+        "n": 1,
+        "oldest_scheduled": "2026-09-10 09:04:29.955078+08:00",
+        "release_future": 0
+      },
+      {
+        "name": "郑州精品",
+        "status": "pending",
+        "timing": "scheduled_due",
+        "error_code": "execution_circuit_open",
+        "reservation_state": "bound",
+        "n": 1,
+        "oldest_scheduled": "2026-09-10 08:09:29.750704+08:00",
+        "release_future": 0
+      },
+      {
+        "name": "郑州精品",
+        "status": "unknown_after_send",
+        "timing": "scheduled_due",
+        "error_code": "unknown_after_send",
+        "reservation_state": "bound",
+        "n": 1,
+        "oldest_scheduled": "2026-09-10 10:20:43.469354+08:00",
+        "release_future": 0
+      },
+      {
+        "name": "阿哥日记",
+        "status": "pending",
+        "timing": "future_scheduled",
+        "error_code": "",
+        "reservation_state": "bound",
+        "n": 375,
+        "oldest_scheduled": "2026-09-10 10:40:19.127288+08:00",
+        "release_future": 375
+      },
+      {
+        "name": "阿哥日记",
+        "status": "pending",
+        "timing": "future_scheduled",
+        "error_code": "account_shared_usage_unproven",
+        "reservation_state": "bound",
+        "n": 2,
+        "oldest_scheduled": "2026-09-10 10:40:05.058762+08:00",
+        "release_future": 1
+      },
+      {
+        "name": "阿哥日记",
+        "status": "pending",
+        "timing": "scheduled_due",
+        "error_code": "pacing_source_not_before",
+        "reservation_state": "bound",
+        "n": 23,
+        "oldest_scheduled": "2026-09-10 09:15:08.489355+08:00",
+        "release_future": 0
+      },
+      {
+        "name": "阿哥日记",
+        "status": "pending",
+        "timing": "scheduled_due",
+        "error_code": "account_execution_busy",
+        "reservation_state": "bound",
+        "n": 1,
+        "oldest_scheduled": "2026-09-10 09:46:30.482544+08:00",
+        "release_future": 0
+      }
+    ],
+    "attempts": [
+      {
+        "name": "太郎日记",
+        "status": "skipped_before_gateway",
+        "failure_type": "pacing_source_not_before",
+        "error_code": "pacing_source_not_before",
+        "n": 42,
+        "gateway_started": 0,
+        "last_30m": 4,
+        "latest": "2026-09-10 10:38:24.255393+08:00"
+      },
+      {
+        "name": "太郎日记",
+        "status": "skipped_before_gateway",
+        "failure_type": "account_shared_usage_unproven",
+        "error_code": "account_shared_usage_unproven",
+        "n": 29,
+        "gateway_started": 0,
+        "last_30m": 3,
+        "latest": "2026-09-10 10:38:15.753414+08:00"
+      },
+      {
+        "name": "太郎日记",
+        "status": "success",
+        "failure_type": "",
+        "error_code": "",
+        "n": 6,
+        "gateway_started": 6,
+        "last_30m": 2,
+        "latest": "2026-09-10 10:35:53.674102+08:00"
+      },
+      {
+        "name": "太郎日记",
+        "status": "failed",
+        "failure_type": "账号不可用",
+        "error_code": "",
+        "n": 1,
+        "gateway_started": 0,
+        "last_30m": 0,
+        "latest": "2026-09-10 09:08:21.468639+08:00"
+      },
+      {
+        "name": "成都阿楠",
+        "status": "skipped_before_gateway",
+        "failure_type": "pacing_source_not_before",
+        "error_code": "pacing_source_not_before",
+        "n": 242,
+        "gateway_started": 0,
+        "last_30m": 72,
+        "latest": "2026-09-10 10:39:37.554212+08:00"
+      },
+      {
+        "name": "成都阿楠",
+        "status": "skipped_before_gateway",
+        "failure_type": "account_shared_usage_unproven",
+        "error_code": "account_shared_usage_unproven",
+        "n": 93,
+        "gateway_started": 0,
+        "last_30m": 12,
+        "latest": "2026-09-10 10:32:01.891483+08:00"
+      },
+      {
+        "name": "成都阿楠",
+        "status": "success",
+        "failure_type": "",
+        "error_code": "",
+        "n": 88,
+        "gateway_started": 88,
+        "last_30m": 16,
+        "latest": "2026-09-10 10:39:33.551009+08:00"
+      },
+      {
+        "name": "成都阿楠",
+        "status": "failed",
+        "failure_type": "账号不可用",
+        "error_code": "",
+        "n": 7,
+        "gateway_started": 0,
+        "last_30m": 0,
+        "latest": "2026-09-10 07:17:12.067036+08:00"
+      },
+      {
+        "name": "西安焦点",
+        "status": "skipped_before_gateway",
+        "failure_type": "pacing_source_not_before",
+        "error_code": "pacing_source_not_before",
+        "n": 766,
+        "gateway_started": 0,
+        "last_30m": 88,
+        "latest": "2026-09-10 10:39:36.181743+08:00"
+      },
+      {
+        "name": "西安焦点",
+        "status": "success",
+        "failure_type": "",
+        "error_code": "",
+        "n": 232,
+        "gateway_started": 232,
+        "last_30m": 24,
+        "latest": "2026-09-10 10:39:33.272863+08:00"
+      },
+      {
+        "name": "西安焦点",
+        "status": "skipped_before_gateway",
+        "failure_type": "account_shared_usage_unproven",
+        "error_code": "account_shared_usage_unproven",
+        "n": 174,
+        "gateway_started": 0,
+        "last_30m": 1,
+        "latest": "2026-09-10 10:29:03.868054+08:00"
+      },
+      {
+        "name": "西安焦点",
+        "status": "skipped_before_gateway",
+        "failure_type": "account_legacy_remote_inflight",
+        "error_code": "account_legacy_remote_inflight",
+        "n": 37,
+        "gateway_started": 0,
+        "last_30m": 0,
+        "latest": "2026-09-10 07:27:45.764189+08:00"
+      },
+      {
+        "name": "西安焦点",
+        "status": "failed",
+        "failure_type": "账号不可用",
+        "error_code": "",
+        "n": 8,
+        "gateway_started": 0,
+        "last_30m": 2,
+        "latest": "2026-09-10 10:28:47.493708+08:00"
+      },
+      {
+        "name": "西安焦点",
+        "status": "skipped_before_gateway",
+        "failure_type": "execution_circuit_open",
+        "error_code": "execution_circuit_open",
+        "n": 7,
+        "gateway_started": 0,
+        "last_30m": 0,
+        "latest": "2026-09-10 09:55:59.554427+08:00"
+      },
+      {
+        "name": "西安焦点",
+        "status": "skipped_before_gateway",
+        "failure_type": "execution_circuit_probe_pending",
+        "error_code": "execution_circuit_probe_pending",
+        "n": 5,
+        "gateway_started": 0,
+        "last_30m": 0,
+        "latest": "2026-09-10 08:44:56.375778+08:00"
+      },
+      {
+        "name": "西安焦点",
+        "status": "result_unknown",
+        "failure_type": "unknown_after_send",
+        "error_code": "unknown_after_send",
+        "n": 4,
+        "gateway_started": 4,
+        "last_30m": 2,
+        "latest": "2026-09-10 10:26:13.857739+08:00"
+      },
+      {
+        "name": "郑州精品",
+        "status": "skipped_before_gateway",
+        "failure_type": "pacing_source_not_before",
+        "error_code": "pacing_source_not_before",
+        "n": 847,
+        "gateway_started": 0,
+        "last_30m": 63,
+        "latest": "2026-09-10 10:39:34.302056+08:00"
+      },
+      {
+        "name": "郑州精品",
+        "status": "success",
+        "failure_type": "",
+        "error_code": "",
+        "n": 236,
+        "gateway_started": 236,
+        "last_30m": 20,
+        "latest": "2026-09-10 10:38:24.398446+08:00"
+      },
+      {
+        "name": "郑州精品",
+        "status": "skipped_before_gateway",
+        "failure_type": "account_shared_usage_unproven",
+        "error_code": "account_shared_usage_unproven",
+        "n": 181,
+        "gateway_started": 0,
+        "last_30m": 2,
+        "latest": "2026-09-10 10:32:01.855504+08:00"
+      },
+      {
+        "name": "郑州精品",
+        "status": "skipped_before_gateway",
+        "failure_type": "account_legacy_remote_inflight",
+        "error_code": "account_legacy_remote_inflight",
+        "n": 83,
+        "gateway_started": 0,
+        "last_30m": 0,
+        "latest": "2026-09-10 09:50:25.465139+08:00"
+      },
+      {
+        "name": "郑州精品",
+        "status": "failed",
+        "failure_type": "账号不可用",
+        "error_code": "",
+        "n": 10,
+        "gateway_started": 0,
+        "last_30m": 4,
+        "latest": "2026-09-10 10:35:07.254633+08:00"
+      },
+      {
+        "name": "郑州精品",
+        "status": "result_unknown",
+        "failure_type": "unknown_after_send",
+        "error_code": "unknown_after_send",
+        "n": 6,
+        "gateway_started": 6,
+        "last_30m": 1,
+        "latest": "2026-09-10 10:20:45.785400+08:00"
+      },
+      {
+        "name": "郑州精品",
+        "status": "skipped_before_gateway",
+        "failure_type": "execution_circuit_open",
+        "error_code": "execution_circuit_open",
+        "n": 4,
+        "gateway_started": 0,
+        "last_30m": 0,
+        "latest": "2026-09-10 09:32:56.014562+08:00"
+      },
+      {
+        "name": "阿哥日记",
+        "status": "skipped_before_gateway",
+        "failure_type": "pacing_source_not_before",
+        "error_code": "pacing_source_not_before",
+        "n": 47,
+        "gateway_started": 0,
+        "last_30m": 4,
+        "latest": "2026-09-10 10:32:05.056586+08:00"
+      },
+      {
+        "name": "阿哥日记",
+        "status": "skipped_before_gateway",
+        "failure_type": "account_shared_usage_unproven",
+        "error_code": "account_shared_usage_unproven",
+        "n": 22,
+        "gateway_started": 0,
+        "last_30m": 8,
+        "latest": "2026-09-10 10:39:34.105639+08:00"
+      },
+      {
+        "name": "阿哥日记",
+        "status": "success",
+        "failure_type": "",
+        "error_code": "",
+        "n": 9,
+        "gateway_started": 9,
+        "last_30m": 4,
+        "latest": "2026-09-10 10:34:08.562393+08:00"
+      },
+      {
+        "name": "阿哥日记",
+        "status": "failed",
+        "failure_type": "账号不可用",
+        "error_code": "",
+        "n": 1,
+        "gateway_started": 0,
+        "last_30m": 0,
+        "latest": "2026-09-10 09:19:30.258312+08:00"
+      }
+    ],
+    "fact_integrity": [
+      {
+        "name": "太郎日记",
+        "typed_views": 6,
+        "last_30m": 2,
+        "missing_link": 0,
+        "invalid_attempt": 0,
+        "identity_mismatch": 0
+      },
+      {
+        "name": "成都阿楠",
+        "typed_views": 88,
+        "last_30m": 16,
+        "missing_link": 0,
+        "invalid_attempt": 0,
+        "identity_mismatch": 0
+      },
+      {
+        "name": "西安焦点",
+        "typed_views": 232,
+        "last_30m": 24,
+        "missing_link": 0,
+        "invalid_attempt": 0,
+        "identity_mismatch": 0
+      },
+      {
+        "name": "郑州精品",
+        "typed_views": 236,
+        "last_30m": 20,
+        "missing_link": 0,
+        "invalid_attempt": 0,
+        "identity_mismatch": 0
+      },
+      {
+        "name": "阿哥日记",
+        "typed_views": 9,
+        "last_30m": 4,
+        "missing_link": 0,
+        "invalid_attempt": 0,
+        "identity_mismatch": 0
+      }
+    ],
+    "coverage": []
+  },
+  "boundary_snapshot": {
+    "clock": [
+      {
+        "observed_at": "2026-09-10 10:41:59.164508+08:00"
+      }
+    ],
+    "yesterday_target": [
+      {
+        "name": "太郎日记",
+        "obligation_local_date": "2026-09-09",
+        "lifecycle_status": "closed_closed",
+        "full_target": 2208,
+        "due": 2204,
+        "sources": 2
+      },
+      {
+        "name": "成都阿楠",
+        "obligation_local_date": "2026-09-09",
+        "lifecycle_status": "closed_closed",
+        "full_target": 3201,
+        "due": 3189,
+        "sources": 6
+      },
+      {
+        "name": "西安焦点",
+        "obligation_local_date": "2026-09-09",
+        "lifecycle_status": "closed_closed",
+        "full_target": 3219,
+        "due": 3215,
+        "sources": 4
+      },
+      {
+        "name": "郑州精品",
+        "obligation_local_date": "2026-09-09",
+        "lifecycle_status": "closed_closed",
+        "full_target": 3041,
+        "due": 3037,
+        "sources": 4
+      },
+      {
+        "name": "阿哥日记",
+        "obligation_local_date": "2026-09-09",
+        "lifecycle_status": "closed_closed",
+        "full_target": 2124,
+        "due": 2120,
+        "sources": 2
+      }
+    ],
+    "source_state": [
+      {
+        "name": "太郎日记",
+        "pacing_domain": "view",
+        "last_source_gap_seconds": 38,
+        "last_call_started_at": "2026-09-10 10:41:37.791562+08:00",
+        "next_call_not_before_at": "2026-09-10 10:42:53.791562+08:00",
+        "state": "cancelled_pre_gateway",
+        "admissions": 1,
+        "min_gap": 38,
+        "max_gap": 38,
+        "first_admission": "2026-09-10 09:46:38.764338+08:00",
+        "last_admission": "2026-09-10 09:46:38.764338+08:00"
+      },
+      {
+        "name": "太郎日记",
+        "pacing_domain": "view",
+        "last_source_gap_seconds": 38,
+        "last_call_started_at": "2026-09-10 10:41:37.791562+08:00",
+        "next_call_not_before_at": "2026-09-10 10:42:53.791562+08:00",
+        "state": "finished",
+        "admissions": 1,
+        "min_gap": 38,
+        "max_gap": 38,
+        "first_admission": "2026-09-10 09:42:47.569739+08:00",
+        "last_admission": "2026-09-10 09:42:47.569739+08:00"
+      },
+      {
+        "name": "太郎日记",
+        "pacing_domain": "view",
+        "last_source_gap_seconds": 38,
+        "last_call_started_at": "2026-09-10 10:41:37.791562+08:00",
+        "next_call_not_before_at": "2026-09-10 10:42:53.791562+08:00",
+        "state": "reserved",
+        "admissions": 14,
+        "min_gap": 38,
+        "max_gap": 38,
+        "first_admission": "2026-09-10 09:06:12.660857+08:00",
+        "last_admission": "2026-09-10 10:42:15.791562+08:00"
+      },
+      {
+        "name": "成都阿楠",
+        "pacing_domain": "view",
+        "last_source_gap_seconds": 26,
+        "last_call_started_at": "2026-09-10 10:41:36.084487+08:00",
+        "next_call_not_before_at": "2026-09-10 10:44:28.356590+08:00",
+        "state": "cancelled_pre_gateway",
+        "admissions": 7,
+        "min_gap": 26,
+        "max_gap": 26,
+        "first_admission": "2026-09-10 06:59:16.153858+08:00",
+        "last_admission": "2026-09-10 10:41:52.356590+08:00"
+      },
+      {
+        "name": "成都阿楠",
+        "pacing_domain": "view",
+        "last_source_gap_seconds": 26,
+        "last_call_started_at": "2026-09-10 10:41:36.084487+08:00",
+        "next_call_not_before_at": "2026-09-10 10:44:28.356590+08:00",
+        "state": "finished",
+        "admissions": 2,
+        "min_gap": 26,
+        "max_gap": 26,
+        "first_admission": "2026-09-10 07:06:23.557402+08:00",
+        "last_admission": "2026-09-10 10:41:26.356590+08:00"
+      },
+      {
+        "name": "成都阿楠",
+        "pacing_domain": "view",
+        "last_source_gap_seconds": 26,
+        "last_call_started_at": "2026-09-10 10:41:36.084487+08:00",
+        "next_call_not_before_at": "2026-09-10 10:44:28.356590+08:00",
+        "state": "reserved",
+        "admissions": 12,
+        "min_gap": 26,
+        "max_gap": 26,
+        "first_admission": "2026-09-10 05:53:47.165188+08:00",
+        "last_admission": "2026-09-10 10:44:02.356590+08:00"
+      },
+      {
+        "name": "西安焦点",
+        "pacing_domain": "view",
+        "last_source_gap_seconds": 19,
+        "last_call_started_at": "2026-09-10 10:40:58.861163+08:00",
+        "next_call_not_before_at": "2026-09-10 10:50:10.777054+08:00",
+        "state": "cancelled_pre_gateway",
+        "admissions": 11,
+        "min_gap": 19,
+        "max_gap": 26,
+        "first_admission": "2026-09-10 06:44:40.461519+08:00",
+        "last_admission": "2026-09-10 10:41:53.777054+08:00"
+      },
+      {
+        "name": "西安焦点",
+        "pacing_domain": "view",
+        "last_source_gap_seconds": 19,
+        "last_call_started_at": "2026-09-10 10:40:58.861163+08:00",
+        "next_call_not_before_at": "2026-09-10 10:50:10.777054+08:00",
+        "state": "finished",
+        "admissions": 5,
+        "min_gap": 19,
+        "max_gap": 26,
+        "first_admission": "2026-09-10 03:04:46.369180+08:00",
+        "last_admission": "2026-09-10 08:51:20.852607+08:00"
+      },
+      {
+        "name": "西安焦点",
+        "pacing_domain": "view",
+        "last_source_gap_seconds": 19,
+        "last_call_started_at": "2026-09-10 10:40:58.861163+08:00",
+        "next_call_not_before_at": "2026-09-10 10:50:10.777054+08:00",
+        "state": "reserved",
+        "admissions": 41,
+        "min_gap": 19,
+        "max_gap": 26,
+        "first_admission": "2026-09-10 07:02:36.783335+08:00",
+        "last_admission": "2026-09-10 10:49:51.777054+08:00"
+      },
+      {
+        "name": "郑州精品",
+        "pacing_domain": "view",
+        "last_source_gap_seconds": 28,
+        "last_call_started_at": "2026-09-10 10:40:59.468878+08:00",
+        "next_call_not_before_at": "2026-09-10 10:51:24.153211+08:00",
+        "state": "cancelled_pre_gateway",
+        "admissions": 4,
+        "min_gap": 28,
+        "max_gap": 28,
+        "first_admission": "2026-09-10 03:03:40.158215+08:00",
+        "last_admission": "2026-09-10 09:56:48.153211+08:00"
+      },
+      {
+        "name": "郑州精品",
+        "pacing_domain": "view",
+        "last_source_gap_seconds": 28,
+        "last_call_started_at": "2026-09-10 10:40:59.468878+08:00",
+        "next_call_not_before_at": "2026-09-10 10:51:24.153211+08:00",
+        "state": "finished",
+        "admissions": 2,
+        "min_gap": 28,
+        "max_gap": 28,
+        "first_admission": "2026-09-10 07:01:55.376299+08:00",
+        "last_admission": "2026-09-10 07:54:53.078461+08:00"
+      },
+      {
+        "name": "郑州精品",
+        "pacing_domain": "view",
+        "last_source_gap_seconds": 28,
+        "last_call_started_at": "2026-09-10 10:40:59.468878+08:00",
+        "next_call_not_before_at": "2026-09-10 10:51:24.153211+08:00",
+        "state": "reserved",
+        "admissions": 63,
+        "min_gap": 28,
+        "max_gap": 28,
+        "first_admission": "2026-09-10 04:57:05.055049+08:00",
+        "last_admission": "2026-09-10 10:50:56.153211+08:00"
+      },
+      {
+        "name": "阿哥日记",
+        "pacing_domain": "view",
+        "last_source_gap_seconds": 38,
+        "last_call_started_at": "2026-09-10 10:41:00.754120+08:00",
+        "next_call_not_before_at": "2026-09-10 10:41:38.754120+08:00",
+        "state": "cancelled_pre_gateway",
+        "admissions": 3,
+        "min_gap": 38,
+        "max_gap": 38,
+        "first_admission": "2026-09-10 09:42:07.569739+08:00",
+        "last_admission": "2026-09-10 10:38:46.253535+08:00"
+      },
+      {
+        "name": "阿哥日记",
+        "pacing_domain": "view",
+        "last_source_gap_seconds": 38,
+        "last_call_started_at": "2026-09-10 10:41:00.754120+08:00",
+        "next_call_not_before_at": "2026-09-10 10:41:38.754120+08:00",
+        "state": "reserved",
+        "admissions": 23,
+        "min_gap": 38,
+        "max_gap": 38,
+        "first_admission": "2026-09-10 09:15:08.489355+08:00",
+        "last_admission": "2026-09-10 09:29:42.489355+08:00"
+      }
+    ],
+    "shared_usage_causes": [
+      {
+        "name": "太郎日记",
+        "original_task_day_unproven": true,
+        "actual_call_day_unproven": false,
+        "gateway_owner_mismatch": false,
+        "ledger_mismatch": false,
+        "attempts": 30,
+        "accounts": 4
+      },
+      {
+        "name": "成都阿楠",
+        "original_task_day_unproven": true,
+        "actual_call_day_unproven": false,
+        "gateway_owner_mismatch": false,
+        "ledger_mismatch": false,
+        "attempts": 94,
+        "accounts": 8
+      },
+      {
+        "name": "西安焦点",
+        "original_task_day_unproven": true,
+        "actual_call_day_unproven": false,
+        "gateway_owner_mismatch": false,
+        "ledger_mismatch": false,
+        "attempts": 174,
+        "accounts": 15
+      },
+      {
+        "name": "郑州精品",
+        "original_task_day_unproven": true,
+        "actual_call_day_unproven": false,
+        "gateway_owner_mismatch": false,
+        "ledger_mismatch": false,
+        "attempts": 181,
+        "accounts": 18
+      },
+      {
+        "name": "阿哥日记",
+        "original_task_day_unproven": true,
+        "actual_call_day_unproven": false,
+        "gateway_owner_mismatch": false,
+        "ledger_mismatch": false,
+        "attempts": 22,
+        "accounts": 3
+      }
+    ],
+    "sample_chain": [
+      {
+        "name": "太郎日记",
+        "task_day_ledger_id": "804acd3a-d099-4cd4-a10c-d08da6a19cdf",
+        "obligation_id": "a2b50d4e-41e4-456c-b643-ce96d44d172d",
+        "action_id": "c25b2019-0291-4cbb-bc26-00a44e8a0b86",
+        "attempt_id": "1a8c4db6-fb7e-4987-9304-fce9a4e48e1f",
+        "account_id": 123,
+        "attempt_account": 123,
+        "obligation_account": 123,
+        "channel_message_id": 813,
+        "action_status": "success",
+        "attempt_status": "success",
+        "gateway_call_started_at": "2026-09-10 10:41:37.791562+08:00",
+        "fact_kind": "view_observed",
+        "observed_at": "2026-09-10 10:41:38.450643+08:00"
+      },
+      {
+        "name": "成都阿楠",
+        "task_day_ledger_id": "c6f645cf-d357-4ca1-8cba-40da08ee69ec",
+        "obligation_id": "dc235bcb-3eb1-4ae3-aa7c-ed33cf78060b",
+        "action_id": "f907b9be-d900-4ea5-acb5-47543c007abc",
+        "attempt_id": "d78737ef-dacc-4525-955b-e2f6bfd9fe6b",
+        "account_id": 972,
+        "attempt_account": 972,
+        "obligation_account": 972,
+        "channel_message_id": 867,
+        "action_status": "success",
+        "attempt_status": "success",
+        "gateway_call_started_at": "2026-09-10 10:40:57.972115+08:00",
+        "fact_kind": "view_observed",
+        "observed_at": "2026-09-10 10:41:01.355070+08:00"
+      },
+      {
+        "name": "西安焦点",
+        "task_day_ledger_id": "1c813085-6c98-44f4-82a9-f45c2202e30f",
+        "obligation_id": "f732bc55-48bd-4b73-af6d-c835d316e662",
+        "action_id": "9ae3a0b3-3c4f-43f5-acc9-bcbb45c00593",
+        "attempt_id": "9e695208-b7d9-499b-b19a-19260b702241",
+        "account_id": 674,
+        "attempt_account": 674,
+        "obligation_account": 674,
+        "channel_message_id": 800,
+        "action_status": "success",
+        "attempt_status": "success",
+        "gateway_call_started_at": "2026-09-10 10:40:58.861163+08:00",
+        "fact_kind": "view_observed",
+        "observed_at": "2026-09-10 10:41:00.266884+08:00"
+      },
+      {
+        "name": "阿哥日记",
+        "task_day_ledger_id": "685a3ccc-fb79-49b9-a6cd-83a3dee4c55a",
+        "obligation_id": "1372ff20-99b0-4e2d-ab83-3a0abee1533f",
+        "action_id": "8d0ce1a1-155e-4f70-9c04-7c8c472091ae",
+        "attempt_id": "0b7c5f5d-f759-46f1-9002-c2c71ecfc65f",
+        "account_id": 183,
+        "attempt_account": 183,
+        "obligation_account": 183,
+        "channel_message_id": 823,
+        "action_status": "success",
+        "attempt_status": "success",
+        "gateway_call_started_at": "2026-09-10 10:41:00.754120+08:00",
+        "fact_kind": "view_observed",
+        "observed_at": "2026-09-10 10:41:06.368083+08:00"
+      },
+      {
+        "name": "郑州精品",
+        "task_day_ledger_id": "8bf78b85-b294-42fa-8306-f5c3a1413692",
+        "obligation_id": "61af9d7b-cf10-4427-a0ce-f4e62891bfe6",
+        "action_id": "05ba94b5-09a7-43b2-ad90-5f71fb959be1",
+        "attempt_id": "d2f92114-2226-4c7e-b5d9-250ea7d7120e",
+        "account_id": 1232,
+        "attempt_account": 1232,
+        "obligation_account": 1232,
+        "channel_message_id": 820,
+        "action_status": "success",
+        "attempt_status": "success",
+        "gateway_call_started_at": "2026-09-10 10:40:59.468878+08:00",
+        "fact_kind": "view_observed",
+        "observed_at": "2026-09-10 10:41:02.353136+08:00"
+      }
+    ],
+    "today_source_pacing": [
+      {
+        "name": "太郎日记",
+        "mode": "template",
+        "distribution": null,
+        "windows_per_account": 2,
+        "accounts": 128,
+        "earliest": "2026-09-10 09:06:50.660857+08:00",
+        "latest": "2026-09-10 23:27:20+08:00"
+      },
+      {
+        "name": "太郎日记",
+        "mode": "template",
+        "distribution": null,
+        "windows_per_account": 3,
+        "accounts": 140,
+        "earliest": "2026-09-10 09:06:12.660857+08:00",
+        "latest": "2026-09-10 23:33:20+08:00"
+      },
+      {
+        "name": "太郎日记",
+        "mode": "template",
+        "distribution": null,
+        "windows_per_account": 4,
+        "accounts": 124,
+        "earliest": "2026-09-10 09:08:44.660857+08:00",
+        "latest": "2026-09-10 23:06:00+08:00"
+      },
+      {
+        "name": "成都阿楠",
+        "mode": "template",
+        "distribution": null,
+        "windows_per_account": 2,
+        "accounts": 158,
+        "earliest": "2026-09-10 05:58:07.165188+08:00",
+        "latest": "2026-09-10 23:27:00+08:00"
+      },
+      {
+        "name": "成都阿楠",
+        "mode": "template",
+        "distribution": null,
+        "windows_per_account": 3,
+        "accounts": 161,
+        "earliest": "2026-09-10 05:53:47.165188+08:00",
+        "latest": "2026-09-10 23:52:20+08:00"
+      },
+      {
+        "name": "成都阿楠",
+        "mode": "template",
+        "distribution": null,
+        "windows_per_account": 4,
+        "accounts": 157,
+        "earliest": "2026-09-10 07:02:10.470110+08:00",
+        "latest": "2026-09-10 23:26:00+08:00"
+      },
+      {
+        "name": "西安焦点",
+        "mode": "template",
+        "distribution": null,
+        "windows_per_account": 2,
+        "accounts": 220,
+        "earliest": "2026-09-10 03:05:30.956918+08:00",
+        "latest": "2026-09-10 23:28:00+08:00"
+      },
+      {
+        "name": "西安焦点",
+        "mode": "template",
+        "distribution": null,
+        "windows_per_account": 3,
+        "accounts": 233,
+        "earliest": "2026-09-10 04:53:13.979670+08:00",
+        "latest": "2026-09-10 23:22:20+08:00"
+      },
+      {
+        "name": "西安焦点",
+        "mode": "template",
+        "distribution": null,
+        "windows_per_account": 4,
+        "accounts": 204,
+        "earliest": "2026-09-10 06:46:04.777934+08:00",
+        "latest": "2026-09-10 23:11:00+08:00"
+      },
+      {
+        "name": "郑州精品",
+        "mode": "template",
+        "distribution": null,
+        "windows_per_account": 2,
+        "accounts": 222,
+        "earliest": "2026-09-10 03:05:30.351752+08:00",
+        "latest": "2026-09-10 23:35:20+08:00"
+      },
+      {
+        "name": "郑州精品",
+        "mode": "template",
+        "distribution": null,
+        "windows_per_account": 3,
+        "accounts": 237,
+        "earliest": "2026-09-10 04:57:05.055049+08:00",
+        "latest": "2026-09-10 23:11:00+08:00"
+      },
+      {
+        "name": "郑州精品",
+        "mode": "template",
+        "distribution": null,
+        "windows_per_account": 4,
+        "accounts": 212,
+        "earliest": "2026-09-10 06:46:03.376299+08:00",
+        "latest": "2026-09-10 23:22:00+08:00"
+      },
+      {
+        "name": "阿哥日记",
+        "mode": "template",
+        "distribution": null,
+        "windows_per_account": 2,
+        "accounts": 132,
+        "earliest": "2026-09-10 09:15:46.489355+08:00",
+        "latest": "2026-09-10 23:27:40+08:00"
+      },
+      {
+        "name": "阿哥日记",
+        "mode": "template",
+        "distribution": null,
+        "windows_per_account": 3,
+        "accounts": 148,
+        "earliest": "2026-09-10 09:17:40.489355+08:00",
+        "latest": "2026-09-10 23:33:40+08:00"
+      },
+      {
+        "name": "阿哥日记",
+        "mode": "template",
+        "distribution": null,
+        "windows_per_account": 4,
+        "accounts": 119,
+        "earliest": "2026-09-10 09:15:08.489355+08:00",
+        "latest": "2026-09-10 23:51:56.368301+08:00"
+      }
+    ],
+    "current_window": [
+      {
+        "name": "太郎日记",
+        "session_rank": 1,
+        "actions": 15
+      },
+      {
+        "name": "成都阿楠",
+        "session_rank": 0,
+        "actions": 1
+      },
+      {
+        "name": "成都阿楠",
+        "session_rank": 1,
+        "actions": 12
+      },
+      {
+        "name": "西安焦点",
+        "session_rank": 0,
+        "actions": 3
+      },
+      {
+        "name": "西安焦点",
+        "session_rank": 1,
+        "actions": 35
+      },
+      {
+        "name": "郑州精品",
+        "session_rank": 1,
+        "actions": 52
+      },
+      {
+        "name": "阿哥日记",
+        "session_rank": 0,
+        "actions": 1
+      },
+      {
+        "name": "阿哥日记",
+        "session_rank": 1,
+        "actions": 25
+      }
+    ]
+  },
+  "task_ids": [
+    {
+      "task_id": "0850e817-1602-4124-a3ef-1b7d034f2534",
+      "name": "太郎日记",
+      "ledger_id": "804acd3a-d099-4cd4-a10c-d08da6a19cdf",
+      "ledger_local_date": "2026-09-10"
+    },
+    {
+      "task_id": "11ad0444-bb05-4c75-a4ec-b81397956486",
+      "name": "成都阿楠",
+      "ledger_id": "c6f645cf-d357-4ca1-8cba-40da08ee69ec",
+      "ledger_local_date": "2026-09-10"
+    },
+    {
+      "task_id": "2277970d-920a-4639-a760-3822f3bb2da2",
+      "name": "西安焦点",
+      "ledger_id": "1c813085-6c98-44f4-82a9-f45c2202e30f",
+      "ledger_local_date": "2026-09-10"
+    },
+    {
+      "task_id": "2cf2c126-704d-4c8c-b69e-6ee1e6ce9946",
+      "name": "阿哥日记",
+      "ledger_id": "685a3ccc-fb79-49b9-a6cd-83a3dee4c55a",
+      "ledger_local_date": "2026-09-10"
+    },
+    {
+      "task_id": "c290865d-cb1a-47c1-a851-d7cc6e592499",
+      "name": "郑州精品",
+      "ledger_id": "8bf78b85-b294-42fa-8306-f5c3a1413692",
+      "ledger_local_date": "2026-09-10"
+    }
+  ],
+  "query_script_sha256": {
+    "canonical.py": "4f0c99b3fa7738b5f31c1c7bf7fb6be2d7c145e70225152cdd56db90acf2645e",
+    "detail.py": "5aae84e424e20ca2e65bb26baf593c645daca8e1da7fa0b9e25ebb8ca8d99773",
+    "boundaries.py": "c3621d09e4b33734a8b2c0d26fed6e52ee60f67433a77726b1731d06f1e2765e"
+  }
+}
