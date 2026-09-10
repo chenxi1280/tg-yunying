@@ -33,6 +33,8 @@ def admission_not_before(
         )
         return not_before
     previous = wall_datetime(admission.call_not_before_at)
+    if timestamp >= spec.deadline_at:
+        return max(previous, spec.deadline_at)
     not_before = _call_not_before(action, state, spec) if created else _reused_not_before(
         state,
         admission=admission,
@@ -51,6 +53,8 @@ def admission_not_before(
         )
         not_before = max(not_before, recovery_at)
     admission.call_not_before_at = not_before
+    if not_before >= spec.deadline_at:
+        return not_before
     if created or not_before > previous:
         state.next_call_not_before_at = not_before + timedelta(
             seconds=spec.source_gap_seconds

@@ -17,6 +17,13 @@ PRE_SEND_REVIEW_SECONDS = 1
 TIMING_POLICY = "deadline_only_v1"
 
 
+class GenerationPreparationDeadlineMissed(ValueError):
+    """The existing preparation deadline has elapsed before generation."""
+
+    def __init__(self):
+        super().__init__("generation_timing_preparation_deadline_missed")
+
+
 def bind_generation_timing_config(session, task, *, work: tuple, config: dict, deadline_at, requires_provider: bool = True) -> dict:
     if config.get("engagement_contract_version") != "unified_engagement_v1":
         return config
@@ -80,7 +87,7 @@ def _execution_path(session, task, *, job, config):
 def _deadline_snapshot(binding, *, deadline, now_value) -> dict:
     ready_deadline = deadline - timedelta(seconds=PRE_SEND_REVIEW_SECONDS)
     if (ready_deadline - now_value).total_seconds() < 1:
-        raise ValueError("generation_timing_preparation_deadline_missed")
+        raise GenerationPreparationDeadlineMissed()
     ceiling = binding.llm_timeout_ceiling_seconds
     if type(ceiling) is not int or not 0 < ceiling <= MAX_LLM_INVOCATION_SECONDS:
         raise ValueError("generation_timing_llm_ceiling_invalid")

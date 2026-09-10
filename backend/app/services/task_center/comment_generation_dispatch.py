@@ -45,7 +45,8 @@ from .comment_generation_persistence import (
 from .comment_reply_target_authority import has_authoritative_own_history_target
 from .runtime_resources import _release_runtime_resources
 from .generation_deadlines import latest_safe_send_at
-from .generation_timing_binding import bind_generation_timing_config
+from .generation_timing_binding import bind_generation_timing_config, GenerationPreparationDeadlineMissed
+from .comment_generation_expiry import settle_expired_preparation
 
 
 PRODUCTION_COMMENT_GENERATION_DEPENDENCIES = CommentGenerationDependencies()
@@ -162,13 +163,19 @@ def prepare_comment_generation_request(
     job = _claim_request_job(session, action, payload)
     data["generation_job_id"] = job.id
     _mark_generating(action, data, attempt_id=attempt_id, request_id=request_id)
+    try:
+        config = _generation_config(session, task, action, payload=payload, job=job)
+    except GenerationPreparationDeadlineMissed as exc:
+        settle_expired_preparation(session, action, task=task, job=job)
+        session.commit()
+        raise AiGenerationUnavailable(str(exc)) from exc
     request = CommentGenerationRequest(
         action_id=action.id,
         tenant_id=action.tenant_id,
         task_id=action.task_id,
         account_id=int(action.account_id or 0),
         payload=PostCommentPayload.model_validate(data),
-        config=_generation_config(session, task, action, payload=payload, job=job),
+        config=config,
         attempt_id=attempt_id,
         request_id=request_id,
         claim_owner=str(data.get("ai_generation_claim_owner") or ""),

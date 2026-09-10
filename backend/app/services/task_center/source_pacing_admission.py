@@ -73,7 +73,7 @@ def admit_source_paced_attempt(
         timestamp=timestamp,
     )
     admission.attempt_id = attempt.id
-    if timestamp < not_before or (spec.pacing_domain == "ai_send" and not_before >= spec.deadline_at):
+    if timestamp < not_before or not_before >= spec.deadline_at:
         _defer_until(
             session,
             action=action,
@@ -349,7 +349,8 @@ def _defer_until(
     not_before: datetime,
 ) -> None:
     effective_not_before = min(not_before, spec.deadline_at)
-    admission.state = "reserved"
+    exhausted = spec.pacing_domain != "ai_send" and not_before >= spec.deadline_at
+    admission.state = "cancelled_pre_gateway" if exhausted else "reserved"
     admission.version = int(admission.version or 1) + 1
     advance_owner_release(
         session,
@@ -367,6 +368,10 @@ def _defer_until(
         ),
         not_before=effective_not_before,
     )
+    if exhausted:
+        from .direct_action_claims import reconcile_source_pacing_states
+
+        reconcile_source_pacing_states(session, {admission.source_pacing_state_id})
 
 
 def _defer_identity_failure(
