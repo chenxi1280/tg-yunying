@@ -1,6 +1,6 @@
 # 项目结构索引
 
-> **2026-09-10 任务执行修复（待发布）：** `direct_action_candidates.py` separates expired/live candidate selection; `channel_confirmed_fact.py` matches positive typed facts independently from conservative replay evidence; `fulfillment_fact_ledger.py` contains extracted ledger binding helpers. 合同：[任务执行修复](../03-feature-designs/task-execution-repair-20260910-prd.md)。
+> **2026-09-10 任务执行修复（1129407a已发布；整批E4未完成）：** `direct_action_candidates.py` separates expired/live candidate selection; `channel_confirmed_fact.py` matches positive typed facts independently from conservative replay evidence; `fulfillment_fact_ledger.py` contains extracted ledger binding helpers. 合同：[任务执行修复](../03-feature-designs/task-execution-repair-20260910-prd.md)。
 
 > **2026-09-10 活群物化资格（本地QA，待发布）：** `daily_coverage_planning.has_no_terminal_shortfall_projection` 更名为 `has_materializable_obligation_projection`，谓词由 `state == 'terminal_shortfall'` 改为 `state != 'open'`：coverage 行只有投影仍 `open`（或无投影）才可物化。该谓词同时服务 `ready_coverage_plan_batch`（`_ready_row_filters`，生产 planner 主路径）与 `executors/group_ai_chat._base_replan_coverage_statement`；`_load_coverage_rows` 只做统计、不参与候选选择。新增回归 `backend/tests/test_ai_reconcile_only_replan.py`。证据见 `docs/05-implementation/ai-group-obligation-not-open-loop-20260910.md`。
 

@@ -1,6 +1,6 @@
 # 项目数据流转索引
 
-> **2026-09-10 任务执行修复（待发布）：** Original source deadline → separate uncalled expiry settlement / live claiming; exact typed channel fact + current success Attempt → positive FulfillmentRemoteFact → tenant/task locked monotonic confirmation. Historical unknown calls remain retained for replay protection. 合同：[任务执行修复](../03-feature-designs/task-execution-repair-20260910-prd.md)。
+> **2026-09-10 任务执行修复（1129407a已发布；整批E4未完成）：** Original source deadline → separate uncalled expiry settlement / live claiming; exact typed channel fact + current success Attempt → positive FulfillmentRemoteFact → tenant/task locked monotonic confirmation. Historical unknown calls remain retained for replay protection. 合同：[任务执行修复](../03-feature-designs/task-execution-repair-20260910-prd.md)。
 
 > **2026-09-10 发布后镜像清理：** `local_release_cleanup.py` 冻结上一轮制品、成功读回后清理精确旧包/未使用镜像并保存报告；本地按目标保存成功发布指针，服务器复用原发布锁。失败安装不清理，当前/在用/引用变化对象保留，不全局 prune。
 
