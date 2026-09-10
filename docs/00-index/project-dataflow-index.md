@@ -1,6 +1,8 @@
 # 项目数据流转索引
 
-> **2026-09-10 本地直接发布：** 发布链路：冻结 commit → 隔离源码本地测试 → Docker buildx/GHCR digest → prepared-release.json → release.sh/主机锁/迁移及全量切换 → runtime.json/deployment.json → 四类任务 typed E4。日志和发布清单在本地输出目录，生产凭据不写入清单；不再查询 Actions artifact。 合同见 `local-direct-production-release-prd.md`。
+> **2026-09-10 镜像直传 resync：** `deploy/local_image_archive.py` 负责流式导出、包校验、服务器导入及镜像 ID/平台核对，兼容服务器 Python 3.6；`server-install-release.sh` 在锁内导入，`compose-up.sh` 只使用本地镜像。正式发布移除 GHCR 登录/上传/拉取，不执行 Actions。
+
+> **2026-09-10 本地直接发布：** 发布链路：冻结 commit → 隔离源码本地测试 → Docker buildx --load/save 压缩包 → SCP/checksum/load → prepared-release.json → release.sh/主机锁/迁移及全量切换 → runtime.json/deployment.json → 四类任务 typed E4。日志和发布清单在本地输出目录，生产凭据不写入清单；不再查询 Actions artifact。 合同见 `local-direct-production-release-prd.md`。
 
 > **2026-09-10 活群状态与诊断：** 真实 Action/FOP/原 Attempt → 救援终态投影；只读序列化不回写旧记录。显式刷新 → Action 行锁与数据库重读 → 原义务/调用证据检查 → 原许可刷新或保留终态。原发送 ID 后 bounded history → 原始/按钮候选计数、角色查询异常、拒绝分类 → 原 Action 诊断与准入阻塞证据；发送 RPC 异常类型/阶段与远端 mutation 状态独立写入 Action/Attempt。原 ledger 截止 → 排期分类；当前义务/最新 Job → 应急、准入、模型、发送待确认 → 严格匹配 typed 消息事实。各阶段数量不累加，既有未知/截止/发送约束不改变。合同见 `docs/03-feature-designs/ai-group-state-diagnostics-integrity-20260910-prd.md`。
 

@@ -32,7 +32,7 @@
 
 ## 发布闸门
 
-- release_mode：local_cli；路径：master → release → deploy/local_release.py prepare/deploy → SSH。2026-09-10 本地发布专项合同取代旧 Actions 必经要求，本文 resync。
+- release_mode：local_cli；路径：master → release → deploy/local_release.py prepare/deploy → 镜像包 SCP/load → SSH 安装。2026-09-10 本地发布专项合同取代旧 Actions/GHCR 必经要求，本文 resync。
 - migration_impact：无新增迁移；既有事实、未知、日目标、原预约保持。
 - worker_impact：救援终态保护与结构化诊断在正式 worker 生效；无任务激活、批量恢复或补发。
 - external_platform_impact：没有新增远端操作类别或调用；仅现有调用的状态处理与观测。

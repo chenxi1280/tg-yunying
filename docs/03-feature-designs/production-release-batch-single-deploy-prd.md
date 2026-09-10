@@ -1,6 +1,6 @@
 # 生产发布批次冻结与单次部署合同
 
-> 2026-09-10 resync：发布入口以 [本地直接发布合同](local-direct-production-release-prd.md) 为准。旧 Actions 准备/发布条款退役；worker 切换、在途保护和业务验收条款继续适用。
+> 2026-09-10 resync：发布入口以 [本地直接发布合同](local-direct-production-release-prd.md) 为准。旧 Actions 与 GHCR 制品交付条款退役，改用本地镜像包直传；worker 切换、在途保护和业务验收条款继续适用。
 
 > 2026-09-08 resync：当前执行合同以 `prepared-release-worker-cutover-prd.md` 为准。保留单次冻结、显式发布和完整测试；测试/构建移到 master 的 Prepare Production，Deploy Production 只消费相同 SHA 的成功制品和 digest。下述早期“同一 workflow 内先测试再构建”顺序为历史设计，已由新合同替代。
 

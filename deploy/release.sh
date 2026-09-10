@@ -13,7 +13,6 @@ RELEASE_SSH_ATTEMPTS="${RELEASE_SSH_ATTEMPTS:-3}"
 RELEASE_SSH_RETRY_DELAY="${RELEASE_SSH_RETRY_DELAY:-10}"
 SSH_CONNECT_TIMEOUT="${SSH_CONNECT_TIMEOUT:-60}"
 REMOTE_INSTALL_TIMEOUT_SECONDS="${REMOTE_INSTALL_TIMEOUT_SECONDS:-2400}"
-IMAGE_NAMESPACE="${IMAGE_NAMESPACE:-ghcr.io/chenxi1280}"
 STATIC_KEEP_RELEASES="${STATIC_KEEP_RELEASES:-5}"
 SSH_OPTS=(
   -o "BatchMode=yes"
@@ -168,10 +167,15 @@ fi
 
 short_sha="$(git rev-parse --short "$REF_NAME")"
 full_sha="$(git rev-parse "$REF_NAME")"
-image_tag="${IMAGE_TAG:-$full_sha}"
-TGYUNYING_BACKEND_IMAGE="${TGYUNYING_BACKEND_IMAGE:-${IMAGE_NAMESPACE}/tg-yunying-backend:${image_tag}}"
-TGYUNYING_IMAGE_VERIFICATION_IMAGE="${TGYUNYING_IMAGE_VERIFICATION_IMAGE:-${IMAGE_NAMESPACE}/tg-yunying-image-verification-worker:${image_tag}}"
-TGYUNYING_FRONTEND_IMAGE="${TGYUNYING_FRONTEND_IMAGE:-${IMAGE_NAMESPACE}/tg-yunying-frontend:${image_tag}}"
+for required_image_var in TGYUNYING_BACKEND_IMAGE TGYUNYING_FRONTEND_IMAGE \
+  TGYUNYING_IMAGE_VERIFICATION_IMAGE LOCAL_IMAGE_ARCHIVE LOCAL_IMAGE_MANIFEST; do
+  if [[ -z "${!required_image_var:-}" ]]; then
+    echo "Missing local image input: ${required_image_var}" >&2
+    exit 1
+  fi
+done
+test -f "$LOCAL_IMAGE_ARCHIVE"
+test -f "$LOCAL_IMAGE_MANIFEST"
 release_id="$(date '+%Y%m%d%H%M%S')_${short_sha}"
 release_temp_dir="$(mktemp -d "/tmp/tgyunying-release-${release_id}.XXXXXX")"
 archive_path="${release_temp_dir}/source.tar.gz"
@@ -180,6 +184,8 @@ remote_archive="${BASE_DIR}/incoming/${release_id}.tar.gz"
 remote_tmp_archive="/tmp/tgyunying-release-${release_id}.tar.gz"
 remote_image_env="/tmp/tgyunying-release-${release_id}.image.env"
 remote_release_dir="${BASE_DIR}/releases/${release_id}"
+remote_image_bundle="${BASE_DIR}/incoming/${release_id}.images.tar.gz"
+remote_image_manifest="${BASE_DIR}/incoming/${release_id}.images.json"
 
 trap '[[ "$KEEP_ARCHIVE" == "1" ]] || rm -rf "$release_temp_dir"' EXIT
 
@@ -261,8 +267,6 @@ append_remote_env_if_set() {
   fi
 }
 
-append_remote_env_if_set GHCR_USERNAME
-append_remote_env_if_set GHCR_TOKEN
 append_remote_env_if_set POST_DEPLOY_CHECKS_ENABLED
 append_remote_env_if_set TGYUNYING_CHECK_HOST_NGINX
 append_remote_env_if_set TGYUNYING_CHECK_PUBLIC_URLS
@@ -284,6 +288,13 @@ run_with_retries "Uploading release archive" \
   scp "${SSH_OPTS[@]}" "$archive_path" "${USER_NAME}@${HOST}:${remote_tmp_archive}"
 run_with_retries "Uploading image env" \
   scp "${SSH_OPTS[@]}" "$image_env_path" "${USER_NAME}@${HOST}:${remote_image_env}"
+
+run_with_retries "Preparing image upload directory" \
+  ssh "${SSH_OPTS[@]}" "${USER_NAME}@${HOST}" "mkdir -p '${BASE_DIR}/incoming'"
+run_with_retries "Uploading local Docker archive" \
+  scp "${SSH_OPTS[@]}" "$LOCAL_IMAGE_ARCHIVE" "${USER_NAME}@${HOST}:${remote_image_bundle}"
+run_with_retries "Uploading local image manifest" \
+  scp "${SSH_OPTS[@]}" "$LOCAL_IMAGE_MANIFEST" "${USER_NAME}@${HOST}:${remote_image_manifest}"
 
 echo "==> Installing release ${release_id} on ${HOST}"
 python3 "$(dirname "${BASH_SOURCE[0]}")/run_with_timeout.py" "$REMOTE_INSTALL_TIMEOUT_SECONDS" ssh "${SSH_OPTS[@]}" "${USER_NAME}@${HOST}" "\
@@ -311,6 +322,8 @@ else \
   echo 'Missing release image env: ${remote_image_env}' >&2; \
   exit 1; \
 fi && \
+mv '${remote_image_bundle}' '${remote_release_dir}/images.tar.gz' && \
+ mv '${remote_image_manifest}' '${remote_release_dir}/local-images.json' && \
 ${remote_env_prefix} bash '${remote_release_dir}/deploy/server-install-release.sh' \
   --base-dir '${BASE_DIR}' \
   --release-dir '${remote_release_dir}' \

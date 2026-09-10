@@ -90,19 +90,15 @@ def test_deploy_keeps_shared_docker_cleanup_outside_release() -> None:
         assert command not in script
 
 
-def test_deploy_pulls_large_runtime_images_sequentially() -> None:
+def test_deploy_verifies_imported_images_and_never_pulls_or_builds() -> None:
     script = COMPOSE_UP.read_text()
-
-    backend_pull = 'compose pull "${BACKEND_SERVICES[@]}"'
-    verification_pull = "compose pull image-verification-worker"
-    frontend_pull = 'docker pull "$TGYUNYING_FRONTEND_IMAGE"'
-
-    assert backend_pull in script
-    assert verification_pull in script
-    assert frontend_pull in script
-    assert script.index(backend_pull) < script.index(verification_pull)
-    assert script.index(verification_pull) < script.index(frontend_pull)
-    assert 'compose pull "${RUNTIME_SERVICES[@]}"' not in script
+    verification = 'python3 "$SCRIPT_DIR/local_image_archive.py" verify'
+    assert script.index(verification) < script.index('stop_all_release_workers')
+    assert 'compose pull ' not in script
+    assert 'docker pull ' not in script
+    assert 'docker login ' not in script
+    assert 'docker create --pull=never "$image"' in script
+    assert script.count('compose up -d --no-build --pull never') == 2
 
 
 def test_release_sha_is_injected_into_backend_runtime() -> None:

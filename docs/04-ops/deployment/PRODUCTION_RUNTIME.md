@@ -12,9 +12,9 @@ python3 deploy/local_release.py prepare --ref <完整SHA> --platform linux/amd64
   --test 'tests/test_example.py' --output /absolute/path/release-evidence/<SHA>
 ```
 
-本地 Docker daemon 与 Buildx 可用、登录 GHCR 并有镜像写权限、npm 可用是准备前提。目标 platform 必须与生产匹配；不会自动切换到远端构建。Docker 本地持久缓存按原 Dockerfile 使用，仍构建三个镜像，不猜测组件影响范围。
+本地 Docker daemon、Buildx 与 npm 可用是准备前提；发布不需要 Docker Hub/GHCR 账号或 Token。目标 platform 必须与生产匹配；不会自动切换到远端构建。Docker 本地持久缓存按原 Dockerfile 使用，仍构建三个镜像，不猜测组件影响范围。
 
-部署前按批次将 origin/master 与 origin/release 冻结到同一 SHA，准备环境中的 GHCR_USERNAME/GHCR_TOKEN（不放命令行或源码）、PUBLIC_APP_BASE_URL 及 SSH alias。PUBLIC_APP_BASE_URL 必须先从当前生产 `.image.env` 只读核对并显式传入本地进程；旧 Actions 变量不会自动继承。随后：
+部署前按批次将 origin/master 与 origin/release 冻结到同一 SHA，配置可用的 SSH alias 和调用环境中的 PUBLIC_APP_BASE_URL。PUBLIC_APP_BASE_URL 必须先从当前生产 `.image.env` 只读核对并显式传入本地进程；旧 Actions 变量不会自动继承。随后：
 
 ```bash
 python3 deploy/local_release.py deploy \
@@ -22,7 +22,9 @@ python3 deploy/local_release.py deploy \
   --host silicon-valley-production-server
 ```
 
-发布工具不 push 分支、不 dispatch Actions。`deploy.log` 保存安装输出，`runtime.json` 保存独立只读结果，`deployment.json` 保存状态；后台执行时由终端进程完成，模型只读取阶段日志或最终 JSON。非零安装退出不重新安装；已有 deployment.json 的再次调用拒绝覆盖。中断后的原记录保留，先只读核对实际生产状态，再明确决定是否创建新的准备/部署批次。
+prepare 使用 buildx --load 构建单平台镜像，docker save 流式压缩三个应用镜像为 images.tar.gz，prepared-release.json v2 记录源码 SHA、镜像 ID/标签、压缩包大小和 SHA-256。deploy 经 SCP 将包传到服务器 /data/tgyunying/incoming，原发布锁内校验后 docker load，复核三个 ID 和平台后删除本次传输包。安装目录保留 local-images.json；Compose 显式 --pull never --no-build，缺少本地镜像直接失败，不访问镜像仓库。旧 v1 GHCR 清单需重新 prepare。
+
+本地 Dockerfile 的基础镜像与依赖下载沿用现有来源；这里取消的是应用发布制品的仓库存取，不承诺构建完全离线。发布工具不 push 分支、不 dispatch Actions。`deploy.log` 保存安装输出，`runtime.json` 保存独立只读结果，`deployment.json` 保存状态；后台执行时由终端进程完成，模型只读取阶段日志或最终 JSON。非零安装退出不重新安装；已有 deployment.json 的再次调用拒绝覆盖。中断后的原记录保留，先只读核对实际生产状态，再明确决定是否创建新的准备/部署批次。
 
 `release_passed` 只证明发布与运行验证，活群、浏览、点赞、评论按本次任务 ID、观察起点及 typed fact 验收。缺真实事实为 unproven，不以本地测试或健康代替。该入口首次真实构建、部署与 E4 尚需各自证据，不能从新增脚本推断已经上线。
 

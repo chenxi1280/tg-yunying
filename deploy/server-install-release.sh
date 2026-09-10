@@ -180,6 +180,10 @@ fi
 
 bash "${RELEASE_DIR}/deploy/antigravity-slot-release-plan.sh" >/dev/null
 
+python3 "${RELEASE_DIR}/deploy/local_image_archive.py" load \
+  --manifest "${RELEASE_DIR}/local-images.json" \
+  --image-env "${RELEASE_DIR}/.image.env"
+
 prepare_shared_layout
 bootstrap_shared_env
 upgrade_legacy_runtime_cleanup_interval

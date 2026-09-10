@@ -9,7 +9,7 @@ def output(command):
     return subprocess.check_output(command, universal_newlines=True).strip()
 
 
-def verify_containers(sha, backend_image):
+def verify_containers(sha, backend_image, backend_id):
     ids = output(['docker', 'ps', '-aq', '--filter', 'name=^/tgyunying-']).split()
     containers = json.loads(output(['docker', 'inspect'] + ids)) if ids else []
     rows = []
@@ -18,7 +18,7 @@ def verify_containers(sha, backend_image):
         if name != 'tgyunying-backend' and not name.startswith('tgyunying-worker-'):
             continue
         environment = dict(item.split('=', 1) for item in container['Config']['Env'] if '=' in item)
-        if container['Config']['Image'] != backend_image:
+        if container['Config']['Image'] != backend_image or container['Image'] != backend_id:
             raise ValueError('runtime_image_mismatch:' + name)
         state = container['State']
         if environment.get('RELEASE_SHA') != sha or state['Status'] != 'running':
@@ -33,7 +33,8 @@ def verify_containers(sha, backend_image):
 
 def main():
     base, sha, images_json = sys.argv[1:]
-    images = json.loads(images_json)
+    manifest = json.loads(images_json)
+    images = manifest['images']
     current = (Path(base) / 'current').resolve(strict=True)
     values = dict(line.split('=', 1) for line in (current / '.image.env').read_text().splitlines()
                   if '=' in line)
@@ -45,7 +46,8 @@ def main():
     for name, key in names.items():
         if values.get(key) != images[name]:
             raise ValueError('current_image_mismatch:' + name)
-    rows = verify_containers(sha, images['tg-yunying-backend'])
+    rows = verify_containers(sha, images['tg-yunying-backend'],
+                             manifest['image_ids']['tg-yunying-backend'])
     output(['docker', 'exec', 'tgyunying-backend', 'python', '-m',
             'scripts.manage_shared_dispatch_contract', 'verify-active'])
     print(json.dumps({'sha': sha, 'current': str(current), 'containers': rows,

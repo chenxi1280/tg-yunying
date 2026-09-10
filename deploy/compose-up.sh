@@ -16,21 +16,6 @@ echo "==> Env file: $ENV_FILE"
 
 VERIFICATION_FENCED_CONTAINER_ID=""
 
-docker_login_ghcr() {
-  if [[ "$TGYUNYING_BACKEND_IMAGE" != ghcr.io/* \
-    && "$TGYUNYING_FRONTEND_IMAGE" != ghcr.io/* \
-    && "${TGYUNYING_IMAGE_VERIFICATION_IMAGE:-}" != ghcr.io/* ]]; then
-    return 0
-  fi
-
-  if [[ -z "${GHCR_USERNAME:-}" || -z "${GHCR_TOKEN:-}" ]]; then
-    echo "GHCR_USERNAME and GHCR_TOKEN are required to pull GHCR images." >&2
-    exit 1
-  fi
-
-  printf '%s\n' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin >/dev/null
-}
-
 wait_for_container_ready() {
   local container_name="$1"
   local timeout_seconds="${2:-180}"
@@ -191,7 +176,7 @@ publish_frontend_static() {
   rm -rf "$tmp_dir"
   mkdir -p "$tmp_dir"
 
-  container_id="$(docker create "$image")"
+  container_id="$(docker create --pull=never "$image")"
   cleanup_static_container() {
     if [[ -n "$container_id" ]]; then
       docker rm "$container_id" >/dev/null 2>&1 || true
@@ -214,7 +199,6 @@ publish_frontend_static() {
   prune_static_releases "$releases_dir" "$current_link" "$keep"
 }
 
-docker_login_ghcr
 
 BACKEND_SERVICES=(
   backend
@@ -248,16 +232,9 @@ if verification_remote_enabled; then
   WORKER_SERVICES=(image-verification-worker "${WORKER_SERVICES[@]}")
 fi
 
-echo "==> Pulling shared backend runtime image"
-compose pull "${BACKEND_SERVICES[@]}"
-
-if verification_remote_enabled; then
-  echo "==> Pulling image verification worker image"
-  compose pull image-verification-worker
-fi
-
-echo "==> Pulling frontend static image"
-docker pull "$TGYUNYING_FRONTEND_IMAGE"
+echo "==> Verifying imported local images before worker fence"
+python3 "$SCRIPT_DIR/local_image_archive.py" verify \
+  --manifest "${APP_DIR}/local-images.json" --image-env "$IMAGE_ENV_FILE"
 
 publish_frontend_static "$TGYUNYING_FRONTEND_IMAGE"
 
@@ -272,11 +249,11 @@ trap - EXIT
 workers_stopped_before="$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)"
 
 echo "==> Starting backend and applying migrations"
-compose up -d --no-build --remove-orphans "${BACKEND_SERVICES[@]}"
+compose up -d --no-build --pull never --remove-orphans "${BACKEND_SERVICES[@]}"
 wait_for_container_ready tgyunying-backend "${TGYUNYING_BACKEND_READY_TIMEOUT_SECONDS:-180}"
 
 release_version="${STATIC_RELEASE_ID:-$(basename "$APP_DIR")}"
-release_actor="${SHARED_DISPATCH_RELEASE_ACTOR:-github-actions-deploy}"
+release_actor="${SHARED_DISPATCH_RELEASE_ACTOR:-local-direct-deploy}"
 approval_ref="${SHARED_DISPATCH_APPROVAL_REF:-release:${release_version}}"
 
 echo "==> Preparing all-worker release and selecting contract takeover mode"
@@ -289,7 +266,7 @@ echo "$cutover_plan"
 cutover_plan_id="$(printf '%s' "$cutover_plan" | python3 -c 'import json,sys; print(json.load(sys.stdin)["plan_id"])')"
 
 echo "==> Starting new workers in fenced readiness"
-compose up -d --no-build --remove-orphans "${WORKER_SERVICES[@]}"
+compose up -d --no-build --pull never --remove-orphans "${WORKER_SERVICES[@]}"
 wait_for_container_ready \
   tgyunying-worker-dispatcher-1 \
   "${TGYUNYING_WORKER_READY_TIMEOUT_SECONDS:-180}"
