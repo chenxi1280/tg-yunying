@@ -82,3 +82,6 @@ design_status=complete（R1/R2），resync=true。已更新专项 PRD §6.2、§
 
 - 跨页补正后区间/Collector/Ingress定向35项通过（7.08秒），Ruff F、AST行数和diff检查通过。58f2b863旧Actions部署34433650644成功，独立读回current=20260910033154_58f2b863，19容器版本一致且健康，三层health正常；多人测试仍未恢复。
 - 发布规则变更：用户在“优化本地镜像部署流程”任务中已明确停用两个发布Actions并采用本地镜像发布，远端release加入7704f386，暂与master分叉。此后不再派发或重启Actions；当前跨页补正需要按新的正式本地入口和发布分支完成准备/安装，不能覆盖并行发布规则。
+
+- 新增真实PostgreSQL跨Session验证：Collector提交两页区间后，独立consumer读取并消费队首，最终消费PTS保持502而非证明终点503；独立运行1项通过（11.07秒）。与多个既有并发文件合并的一批触及60秒硬超时，未声明该整批通过；此前完整CI及定向并发结果分别保留。
+- 本地发布前提读回：Docker27.5.1/Buildx运行，支持linux/amd64；Docker credential helper未发现GHCR凭据，当前GHCR_USERNAME/GHCR_TOKEN环境为空，GitHub登录权限为repo/workflow/gist/read:org，不含write:packages。已请求用户提供现有发布凭据的配置位置，不打印或写入凭据。
