@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
-from app.models import AccountProxy, TelegramDeveloperApp, TgAccountAuthorization, TgAccountAuthorizationSnapshot
+from app.models import TelegramDeveloperApp, TgAccountAuthorization, TgAccountAuthorizationSnapshot
 from app.schemas.account_environment import AccountEnvironmentBindingOut
 from app.security import encrypt_secret
 from app.services._common import _now, audit, gateway
@@ -40,8 +40,7 @@ def _refresh_remote_authorization_snapshots(session: Session, tenant_id: int) ->
         app = session.get(TelegramDeveloperApp, authorization.developer_app_id or 0)
         if app is None:
             continue
-        proxy = session.get(AccountProxy, authorization.proxy_id or 0) if authorization.proxy_id else None
-        credentials = credentials_for_developer_app(app, proxy)
+        credentials = credentials_for_developer_app(app)
         snapshots = gateway.list_authorizations(authorization.session_ciphertext, credentials)
         for snapshot in _current_session_snapshots(snapshots):
             session.add(_new_authorization_snapshot(authorization, snapshot))

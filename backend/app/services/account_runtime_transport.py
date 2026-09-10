@@ -31,7 +31,6 @@ def task_account_runtime_transport(
         credentials = credentials_for_authorization(
             session,
             authorization,
-            use_proxy=True,
         )
         return AccountRuntimeTransport(
             account_id=account.id,
@@ -42,7 +41,7 @@ def task_account_runtime_transport(
         )
     if not account.session_ciphertext:
         raise ValueError("account_session_unavailable")
-    credentials = credentials_for_account(session, account, use_proxy=True)
+    credentials = credentials_for_account(session, account)
     return AccountRuntimeTransport(
         account_id=account.id,
         session_ciphertext=str(account.session_ciphertext),
@@ -68,6 +67,9 @@ def _current_authorization(
         or authorization.account_id != account.id
         or not authorization.is_current
         or authorization.status != "active"
+        or authorization.health_status == "invalid"
+        or authorization.last_authoritative_error_code == "authorization_key_duplicated"
+        or authorization.provision_region_code != "sv"
         or not authorization.session_ciphertext
     ):
         return None
@@ -90,7 +92,8 @@ def _dependency_snapshot(
         "authorization_fact_version": int(authorization.fact_version or 0)
         if authorization
         else 0,
-        "proxy_id": authorization.proxy_id if authorization else account.proxy_id,
+        "proxy_id": None,
+        "egress_id": "primary_regular:direct",
     }
 
 

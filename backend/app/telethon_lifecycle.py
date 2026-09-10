@@ -116,6 +116,7 @@ class TelethonClientLifecycle:
         client_metadata: Mapping[str, str] | None = None,
     ) -> Any:
         self._assert_remote_io_allowed()
+        self._proxy_config(credentials)
         try:
             from telethon import TelegramClient
         except ImportError as exc:
@@ -139,6 +140,7 @@ class TelethonClientLifecycle:
         connect_timeout_seconds: float | None = None,
     ) -> Any:
         self._assert_remote_io_allowed()
+        self._proxy_config(credentials)
         await self.prune_idle_clients()
         cache_key = self._cache_key(credentials, raw_session, client_metadata)
         now = time.monotonic()
@@ -269,34 +271,10 @@ class TelethonClientLifecycle:
 
     @staticmethod
     def _proxy_config(credentials: DeveloperAppCredentialsLike):
-        host = getattr(credentials, "proxy_host", "") or ""
-        port = getattr(credentials, "proxy_port", None)
-        if not host or not port:
-            return None
-        protocol = (getattr(credentials, "proxy_protocol", "") or "socks5").lower()
-        TelethonClientLifecycle._validate_proxy_protocol(protocol)
-        try:
-            import socks
-        except ImportError as exc:
-            raise RuntimeError("PySocks package is required for Telegram proxy support") from exc
-        username = getattr(credentials, "proxy_username", "") or None
-        password = getattr(credentials, "proxy_password", "") or None
-        return (TelethonClientLifecycle._proxy_type(socks, protocol), host, int(port), True, username, password)
-
-    @staticmethod
-    def _validate_proxy_protocol(protocol: str) -> None:
-        if protocol not in {"socks5", "socks4", "http", "https"}:
-            raise ValueError(f"不支持的代理协议：{protocol}")
-
-    @staticmethod
-    def _proxy_type(socks_module, protocol: str):
-        if protocol == "socks5":
-            return socks_module.SOCKS5
-        if protocol == "socks4":
-            return socks_module.SOCKS4
-        if protocol in {"http", "https"}:
-            return socks_module.HTTP
-        raise ValueError(f"不支持的代理协议：{protocol}")
+        fields = ("proxy_id", "proxy_protocol", "proxy_host", "proxy_port", "proxy_username", "proxy_password")
+        if any(getattr(credentials, field, None) for field in fields):
+            raise ValueError("telegram_account_proxy_forbidden")
+        return None
 
     @classmethod
     async def shutdown_all(cls) -> int:

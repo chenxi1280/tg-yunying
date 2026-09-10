@@ -286,7 +286,7 @@ def test_external_use_hold_is_peer_source_scoped_and_never_blocks_view() -> None
         reserve_attempt_resources(session, view_action, view_attempt)
 
 
-def test_proxy_bulkhead_isolates_stuck_route_without_blocking_other_proxy() -> None:
+def test_direct_traffic_does_not_reserve_historical_proxy_capacity() -> None:
     with _session() as session:
         task = _seed(session, task_limit=3, pool_limit=3, proxy_limit=1)
         session.add_all(
@@ -301,8 +301,7 @@ def test_proxy_bulkhead_isolates_stuck_route_without_blocking_other_proxy() -> N
         session.flush()
 
         reserve_attempt_resources(session, *_attempt(session, task, 11))
-        with pytest.raises(RuntimeResourceBlocked, match="proxy_route_inflight_full"):
-            reserve_attempt_resources(session, *_attempt(session, task, 12))
+        reserve_attempt_resources(session, *_attempt(session, task, 12))
 
         reserve_attempt_resources(session, *_attempt(session, task, 13))
 
@@ -531,7 +530,7 @@ def test_unconfirmed_timeout_keeps_physical_lease_until_reconciled() -> None:
         assert fence.transport_terminated_at is None
 
 
-def test_two_independent_proxy_unknowns_open_only_that_proxy_circuit() -> None:
+def test_direct_unknowns_do_not_open_historical_proxy_circuit() -> None:
     with _session() as session:
         task = _seed(session, task_limit=4, pool_limit=4, proxy_limit=4)
         session.add_all(
@@ -556,8 +555,7 @@ def test_two_independent_proxy_unknowns_open_only_that_proxy_circuit() -> None:
             settle_attempt_resources(attempt, action, remote_mutation_started=None)
             settle_attempt_resources(attempt, action, remote_mutation_started=None)
 
-        with pytest.raises(RuntimeResourceBlocked, match="execution_circuit_open"):
-            reserve_attempt_resources(session, *_attempt(session, task, 13))
+        reserve_attempt_resources(session, *_attempt(session, task, 13))
         reserve_attempt_resources(session, *_attempt(session, task, 14))
 
         proxy_state = session.scalar(
@@ -566,5 +564,4 @@ def test_two_independent_proxy_unknowns_open_only_that_proxy_circuit() -> None:
                 ExecutionCircuitState.domain_key == "proxy:1",
             )
         )
-        assert proxy_state is not None and proxy_state.state == "open"
-        assert len(proxy_state.failure_times) == 2
+        assert proxy_state is None

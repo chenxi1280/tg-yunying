@@ -1,5 +1,7 @@
 # TG 运营管理平台 PRD
 
+> **2026-09-10 全账号直连补正：** 用户要求所有账号停止使用代理，按[固定直连切换合同](../03-feature-designs/account-direct-egress-cutover-20260910-prd.md)执行。本补正取代本文账号传输的代理选择条款；历史绑定仅作审计，代理专用出口证明不得伪造。切换先停旧连接与代理，SV/MY 各自地域及授权隔离不变。
+
 > **2026-09-10 活群义务投影物化资格（本地实现与定向QA，生产未验收）：** 只有 `state='open'` 的义务投影可以被再次物化；`remote_reconcile_only`、`terminal_shortfall`、`closed_with_unknown_shortfall`、`confirmed` 一律不得再进入 coverage 物化候选，尚无投影的行保留首次物化权。背景：候选谓词原先只排除 `terminal_shortfall`，导致 `remote_reconcile_only` 行被无限重物化并被 `obligation_not_open` 跳过（生产 2026-09-10 当日 1,595 条 skip／104 个义务／单义务最多 72 条），且这批行 `targeted_at` 最旧、长期占据候选队列头部，饥饿 4,310 行真实待物化行。该合同不改变 unknown 不重发、准入、节奏、内容与防重约束。证据与 QA 见 `docs/05-implementation/ai-group-obligation-not-open-loop-20260910.md`。
 
 > **2026-09-10 活群状态与诊断一致性（实现/验证中，生产未验收）：** 救援真实终态和已关闭义务优先于旧 pending 投影，展示不回写执行状态，刷新先锁后读调用证据；发后读取与发送 RPC 保留结构化诊断；原日截止、模型生成阶段、应急后继和 typed 可见完成分别展示。合同见 [专项 PRD](../03-feature-designs/ai-group-state-diagnostics-integrity-20260910-prd.md)。实际权限、排期是否浪费和全量业务 E4 仍需独立证据。

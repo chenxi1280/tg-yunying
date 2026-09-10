@@ -887,7 +887,7 @@ def test_standby_authorization_login_creates_flow_without_overwriting_primary_st
             method="code",
             role="standby_1",
             developer_app_id=32,
-            proxy_id=42,
+            proxy_id=None,
             actor="admin",
         )
         session.refresh(account)
@@ -895,7 +895,7 @@ def test_standby_authorization_login_creates_flow_without_overwriting_primary_st
         assert flow.status == AccountStatus.WAITING_CODE.value
         assert flow.authorization_role == "standby_1"
         assert flow.developer_app_id == 32
-        assert flow.proxy_id == 42
+        assert flow.proxy_id is None
         assert account.status == AccountStatus.ACTIVE.value
         assert account.session_ciphertext == "primary-session"
 
@@ -950,7 +950,7 @@ def test_credentials_for_account_uses_direct_credentials_by_default() -> None:
 
 
 @pytest.mark.no_postgres
-def test_credentials_for_account_can_explicitly_use_proxy() -> None:
+def test_credentials_for_account_rejects_explicit_proxy() -> None:
     with _sqlite_session() as session:
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(
@@ -991,14 +991,8 @@ def test_credentials_for_account_can_explicitly_use_proxy() -> None:
         session.add(account)
         session.commit()
 
-        credentials = credentials_for_account(session, account, use_proxy=True)
-
-        assert credentials.proxy_id == 42
-        assert credentials.proxy_protocol == "socks5"
-        assert credentials.proxy_host == "127.0.0.1"
-        assert credentials.proxy_port == 10042
-        assert credentials.proxy_username == "proxy-user"
-        assert credentials.proxy_password == "proxy-pass"
+        with pytest.raises(ValueError, match="telegram_account_proxy_forbidden"):
+            credentials_for_account(session, account, use_proxy=True)
 
 
 @pytest.mark.no_postgres
@@ -1023,10 +1017,11 @@ def test_credentials_for_authorization_uses_direct_primary_regular_by_default() 
         session.commit()
 
         direct = credentials_for_authorization(session, authorization)
-        proxied = credentials_for_authorization(session, authorization, use_proxy=True)
+        with pytest.raises(ValueError, match="telegram_account_proxy_forbidden"):
+            credentials_for_authorization(session, authorization, use_proxy=True)
 
         assert direct.proxy_id is None
-        assert proxied.proxy_id == 42
+
 
 
 @pytest.mark.no_postgres
@@ -1065,160 +1060,10 @@ def test_credentials_for_account_can_explicitly_bypass_proxy() -> None:
         assert credentials.proxy_host == ""
 
 
-@pytest.mark.no_postgres
-@pytest.mark.parametrize(
-    ("task_type", "expected_proxy_id"),
-    [
-        ("group_ai_chat", 42),
-        ("channel_comment", 42),
-        ("channel_view", 42),
-        ("channel_like", 42),
-        ("search_join_group", 42),
-    ],
-)
-def test_credentials_for_task_account_uses_bound_proxy_credentials(task_type: str, expected_proxy_id: int | None) -> None:
-    with _sqlite_session() as session:
-        session.add(Tenant(id=1, name="默认运营空间"))
-        session.add(
-            TelegramDeveloperApp(
-                id=32,
-                app_name="主应用",
-                api_id=32001,
-                api_hash_ciphertext=encrypt_secret("hash"),
-                is_active=True,
-                health_status="健康",
-            )
-        )
-        session.add(AccountProxy(id=42, tenant_id=1, name="备用代理", protocol="socks5", host="10.0.0.42", port=10042, status="healthy"))
-        account = TgAccount(
-            id=171,
-            tenant_id=1,
-            display_name="带代理账号",
-            phone_masked="171",
-            status=AccountStatus.ACTIVE.value,
-            developer_app_id=32,
-            developer_app_version=1,
-            proxy_id=42,
-        )
-        session.add(account)
-        session.commit()
-
-        credentials = credentials_for_task_account(session, account, task_type)
-
-        assert credentials.proxy_id == expected_proxy_id
 
 
-def test_task_runtime_transport_keeps_current_authorization_session_and_proxy_atomic() -> None:
-    with _sqlite_session() as session:
-        session.add(Tenant(id=1, name="默认运营空间"))
-        session.add(
-            TelegramDeveloperApp(
-                id=32,
-                app_name="主应用",
-                api_id=32001,
-                api_hash_ciphertext=encrypt_secret("hash"),
-                is_active=True,
-                health_status="健康",
-            )
-        )
-        session.add(
-            AccountProxy(
-                id=42,
-                tenant_id=1,
-                name="当前授权代理",
-                protocol="socks5",
-                host="10.0.0.42",
-                port=10042,
-                status="healthy",
-            )
-        )
-        account = TgAccount(
-            id=171,
-            tenant_id=1,
-            display_name="授权切换账号",
-            phone_masked="171",
-            status=AccountStatus.ACTIVE.value,
-            developer_app_id=32,
-            developer_app_version=1,
-            session_ciphertext="stale-account-session",
-        )
-        session.add(account)
-        session.flush()
-        authorization = TgAccountAuthorization(
-            tenant_id=1,
-            account_id=account.id,
-            role="primary",
-            logical_slot="primary",
-            developer_app_id=32,
-            proxy_id=42,
-            session_ciphertext="current-authorization-session",
-            status="active",
-            is_current=True,
-        )
-        session.add(authorization)
-        session.flush()
-        account.current_authorization_id = authorization.id
-        session.commit()
-
-        transport = task_account_runtime_transport(
-            session,
-            account,
-            "group_ai_chat",
-        )
-
-        assert transport.session_ciphertext == "current-authorization-session"
-        assert transport.credentials.proxy_id == 42
-        assert transport.authorization_id == authorization.id
-        assert transport.dependency_snapshot["proxy_id"] == 42
 
 
-@pytest.mark.no_postgres
-def test_standby_authorization_login_uses_selected_proxy_credentials(monkeypatch) -> None:
-    captured: dict[str, object] = {}
-
-    class RecordingGateway(TelegramGateway):
-        def start_login(self, method, flow_id=None, account_id=None, phone=None, credentials=None):
-            captured["proxy_id"] = credentials.proxy_id if credentials else None
-            captured["proxy_host"] = credentials.proxy_host if credentials else ""
-            return LoginChallenge(status=AccountStatus.WAITING_CODE.value, code_preview="12345")
-
-    monkeypatch.setattr(authorization_service, "gateway", RecordingGateway())
-    with _sqlite_session() as session:
-        session.add(Tenant(id=1, name="默认运营空间"))
-        session.add(
-            TelegramDeveloperApp(
-                id=32,
-                app_name="备用应用",
-                api_id=32001,
-                api_hash_ciphertext="encrypted",
-                is_active=True,
-                health_status="健康",
-            )
-        )
-        session.add(AccountProxy(id=42, tenant_id=1, name="备用代理", host="10.0.0.42", port=10042, status="healthy"))
-        account = TgAccount(
-            id=172,
-            tenant_id=1,
-            display_name="备用代理登录账号",
-            phone_masked="172",
-            status=AccountStatus.ACTIVE.value,
-            session_ciphertext="primary-session",
-            health_score=95,
-        )
-        session.add(account)
-        session.commit()
-
-        start_standby_authorization_login(
-            session,
-            account.id,
-            method="code",
-            role="standby_1",
-            developer_app_id=32,
-            proxy_id=42,
-            actor="admin",
-        )
-
-        assert captured == {"proxy_id": 42, "proxy_host": "10.0.0.42"}
 
 
 @pytest.mark.no_postgres
@@ -1285,7 +1130,7 @@ def test_verify_standby_authorization_login_saves_asset_without_overwriting_prim
             method="code",
             role="standby_1",
             developer_app_id=32,
-            proxy_id=42,
+            proxy_id=None,
             actor="admin",
         )
 
@@ -1304,7 +1149,7 @@ def test_verify_standby_authorization_login_saves_asset_without_overwriting_prim
         assert asset.role == "standby_1"
         assert asset.status == "standby"
         assert asset.developer_app_id == 32
-        assert asset.proxy_id == 42
+        assert asset.proxy_id is None
         assert asset.is_current is False
         assert decrypt_session(asset.session_ciphertext).startswith("encrypted-session:")
 

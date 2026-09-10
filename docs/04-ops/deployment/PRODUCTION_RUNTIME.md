@@ -1,5 +1,9 @@
 # TG 运营管理平台生产部署说明
 
+## 2026-09-10 Session 双 IP 止损与全账号直连
+
+按用户授权停止 20 个应用/worker 与 53 个本项目代理容器，代理 restart policy 设为 no，容器身份/旧策略/读回保存于生产 `shared/incidents/session-direct-20260910`。其他项目未操作。账号 513/175/10 通过原 local activate 与 Saved Messages verify 链切到健康 SV 备用授权 3134/314/2850；旧失效授权保持受保护，MY 副本保留。切换先停止旧进程，修复发布成功后才恢复应用；代理保持停止。新传输合同见 `docs/03-feature-designs/account-direct-egress-cutover-20260910-prd.md`。发布与账号验收独立记录，不据此声明日目标完成。
+
 ## 2026-09-10 19:24 CPU/内存热点修复发布
 
 当前应用`d69a6a261abcd9b9168f3b2f6b0b7e1a08d4ccca`，目录`20260910191310_d69a6a26`，迁移`0233_hotpath_lookup_indexes`。本地直传、19容器、34配置指纹与精确旧镜像清理通过；两处热点查询3.03ms/1.94ms，预关注RPC期间长事务路径已验证释放，新版本有完整真实可见消息链。Planner RSS短窗584.5→282.2MiB，但整体CPU固定降幅和全部Task履约仍未证明；完整边界见[热点发布验收](../../05-implementation/cpu-memory-hotpath-release-verification-20260910.md)。后续文档提交不改变实际运行SHA。

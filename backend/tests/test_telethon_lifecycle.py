@@ -224,86 +224,8 @@ def test_telethon_lifecycle_uses_attempt_connect_timeout_override(monkeypatch):
     assert client.is_connected() is True
 
 
-def test_telethon_lifecycle_cache_key_includes_proxy(monkeypatch):
-    reset_lifecycle_state()
-    settings = Settings(
-        telethon_client_cache_size=10,
-        telethon_client_idle_seconds=3600,
-        telethon_client_connect_timeout_seconds=1,
-        telethon_operation_timeout_seconds=1,
-    )
-    lifecycle = TelethonClientLifecycle(settings)
-    first_credentials = DeveloperAppCredentials(
-        app_id=1,
-        api_id=123,
-        api_hash="hash",
-        credentials_version=1,
-        proxy_id=31,
-        proxy_protocol="socks5",
-        proxy_host="127.0.0.1",
-        proxy_port=1080,
-    )
-    second_credentials = DeveloperAppCredentials(
-        app_id=1,
-        api_id=123,
-        api_hash="hash",
-        credentials_version=1,
-        proxy_id=32,
-        proxy_protocol="socks5",
-        proxy_host="127.0.0.1",
-        proxy_port=1081,
-    )
-    clients: list[FakeTelethonClient] = []
-
-    def fake_new_client(credentials, raw_session, client_metadata=None):
-        client = FakeTelethonClient(f"{credentials.proxy_id}:{raw_session}")
-        clients.append(client)
-        return client
-
-    monkeypatch.setattr(lifecycle, "new_client", fake_new_client)
-
-    async def scenario():
-        first = await lifecycle.get_or_create_client(first_credentials, "same-session")
-        second = await lifecycle.get_or_create_client(second_credentials, "same-session")
-        return first, second
-
-    first_client, second_client = asyncio.run(scenario())
-
-    assert first_client is not second_client
-    assert [client.name for client in clients] == ["31:same-session", "32:same-session"]
 
 
-def test_telethon_lifecycle_passes_proxy_to_new_client(monkeypatch):
-    reset_lifecycle_state()
-    settings = Settings(telethon_operation_timeout_seconds=1)
-    lifecycle = TelethonClientLifecycle(settings)
-    credentials = DeveloperAppCredentials(
-        app_id=1,
-        api_id=123,
-        api_hash="hash",
-        credentials_version=1,
-        proxy_id=31,
-        proxy_protocol="socks5",
-        proxy_host="127.0.0.1",
-        proxy_port=1080,
-        proxy_username="user",
-        proxy_password="pass",
-    )
-    captured: dict[str, object] = {}
-
-    class FakeTelegramClient:
-        def __init__(self, session, api_id, api_hash, **kwargs):
-            captured.update({"session": session, "api_id": api_id, "api_hash": api_hash, **kwargs})
-
-    monkeypatch.setattr("telethon.TelegramClient", FakeTelegramClient)
-    monkeypatch.setattr("telethon.sessions.StringSession", lambda value="": f"session:{value}")
-    monkeypatch.setitem(sys.modules, "socks", types.SimpleNamespace(SOCKS5=1, SOCKS4=2, HTTP=3))
-
-    lifecycle.new_client(credentials, "raw")
-
-    assert captured["api_id"] == 123
-    assert captured["api_hash"] == "hash"
-    assert captured["proxy"][1:] == ("127.0.0.1", 1080, True, "user", "pass")
 
 
 def test_telethon_lifecycle_passes_client_metadata_to_new_client(monkeypatch):
@@ -432,7 +354,7 @@ def test_telethon_lifecycle_rejects_unknown_proxy_protocol(monkeypatch):
     monkeypatch.setattr("telethon.TelegramClient", FakeTelegramClient)
     monkeypatch.setattr("telethon.sessions.StringSession", lambda value="": f"session:{value}")
 
-    with pytest.raises(ValueError, match="不支持的代理协议"):
+    with pytest.raises(ValueError, match="telegram_account_proxy_forbidden"):
         lifecycle.new_client(credentials, "raw")
 
 

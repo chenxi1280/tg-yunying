@@ -7,32 +7,15 @@ from app.models import (
     AccountPoolConcurrencyLease,
     ExecutionResiliencePolicyRevision,
     TgAccount,
-    TgAccountAuthorization,
 )
-from app.models.risk_control import AccountProxyBinding
 
 
 ACTIVE_DOMAIN_LEASE_STATES = ("reserved", "call_issued", "remote_unknown")
 
 
 def proxy_domain_keys(session: Session, account: TgAccount) -> tuple[str, str]:
-    authorization = (
-        session.get(TgAccountAuthorization, account.current_authorization_id)
-        if account.current_authorization_id
-        else None
-    )
-    proxy_id = int(
-        (authorization.proxy_id if authorization else None)
-        or account.proxy_id
-        or 0
-    )
-    if proxy_id <= 0:
-        return "", ""
-    binding = _latest_proxy_binding(session, account, proxy_id)
-    route_key = f"proxy:{proxy_id}"
-    exit_ip = str(binding.observed_exit_ip or "").strip() if binding else ""
-    egress_key = f"exit:{exit_ip}" if exit_ip else route_key
-    return route_key, egress_key
+    # All account traffic now shares the region's direct route; old bindings are audit only.
+    return "", ""
 
 
 def proxy_capacity_blocker(
@@ -87,25 +70,6 @@ def new_pool_lease(
         task_group_share_limit=binding.concurrency_limit_per_group,
         proxy_route_key=route_key,
         proxy_egress_key=egress_key,
-    )
-
-
-def _latest_proxy_binding(
-    session: Session,
-    account: TgAccount,
-    proxy_id: int,
-) -> AccountProxyBinding | None:
-    return session.scalar(
-        select(AccountProxyBinding)
-        .where(
-            AccountProxyBinding.tenant_id == account.tenant_id,
-            AccountProxyBinding.account_id == account.id,
-            AccountProxyBinding.proxy_id == proxy_id,
-            AccountProxyBinding.status == "active",
-            AccountProxyBinding.unbound_at.is_(None),
-        )
-        .order_by(AccountProxyBinding.bound_at.desc(), AccountProxyBinding.id.desc())
-        .limit(1)
     )
 
 

@@ -340,6 +340,8 @@ def _replace_slot_assignments(session: Session, desired: dict, apps: dict, versi
 
 
 def credentials_for_developer_app(app: TelegramDeveloperApp, proxy: AccountProxy | None = None) -> DeveloperAppCredentials:
+    if proxy is not None:
+        raise ValueError("telegram_account_proxy_forbidden")
     if not app.is_active:
         raise ValueError("开发者应用未启用")
     if app.health_status != DeveloperAppHealthStatus.HEALTHY.value:
@@ -353,7 +355,6 @@ def credentials_for_developer_app(app: TelegramDeveloperApp, proxy: AccountProxy
         api_hash=api_hash,
         credentials_version=app.credentials_version,
         app_name=app.app_name,
-        **_proxy_credentials(proxy),
     )
 
 
@@ -364,6 +365,8 @@ def credentials_for_account(
     assign_if_missing: bool = False,
     use_proxy: bool = False,
 ) -> DeveloperAppCredentials:
+    if use_proxy:
+        raise ValueError("telegram_account_proxy_forbidden")
     if account.deleted_at is not None:
         raise ValueError("账号已删除")
     app = assign_developer_app_round_robin(session, account) if assign_if_missing or not account.developer_app_id else session.get(TelegramDeveloperApp, account.developer_app_id)
@@ -372,7 +375,7 @@ def credentials_for_account(
     if app.credentials_version > account.developer_app_version:
         account.status = AccountStatus.NEED_RELOGIN.value
         raise ValueError("开发者应用凭证已轮换，账号需要重新登录")
-    return credentials_for_developer_app(app, account.proxy if use_proxy else None)
+    return credentials_for_developer_app(app)
 
 
 def credentials_for_authorization(
@@ -381,13 +384,14 @@ def credentials_for_authorization(
     *,
     use_proxy: bool = False,
 ) -> DeveloperAppCredentials:
+    if use_proxy:
+        raise ValueError("telegram_account_proxy_forbidden")
     app = session.get(TelegramDeveloperApp, authorization.developer_app_id)
     if not app:
         raise ValueError("授权未绑定开发者应用")
     if authorization.developer_app_api_id_snapshot not in {0, app.api_id}:
         raise ValueError("授权的开发者应用已发生变化")
-    proxy = session.get(AccountProxy, authorization.proxy_id) if use_proxy and authorization.proxy_id else None
-    return credentials_for_developer_app(app, proxy)
+    return credentials_for_developer_app(app)
 
 
 def credentials_for_task_account(session: Session, account: TgAccount, _task_type: str | None) -> DeveloperAppCredentials:
@@ -407,22 +411,8 @@ def credentials_for_task_account(session: Session, account: TgAccount, _task_typ
         return credentials_for_authorization(
             session,
             authorization,
-            use_proxy=True,
         )
-    return credentials_for_account(session, account, use_proxy=True)
-
-
-def _proxy_credentials(proxy: AccountProxy | None) -> dict:
-    if proxy is None:
-        return {}
-    return {
-        "proxy_id": proxy.id,
-        "proxy_protocol": proxy.protocol,
-        "proxy_host": proxy.host,
-        "proxy_port": proxy.port,
-        "proxy_username": proxy.username,
-        "proxy_password": decrypt_secret(proxy.password_ciphertext) if proxy.password_ciphertext else "",
-    }
+    return credentials_for_account(session, account)
 
 
 __all__ = [

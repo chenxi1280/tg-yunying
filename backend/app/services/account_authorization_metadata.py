@@ -31,7 +31,7 @@ def read_authorization_metadata(
     session_ciphertext: str,
     exclude_authorization_id: int | None = None,
 ) -> AuthorizationMetadata:
-    credentials = credentials_for_developer_app(app, proxy)
+    credentials = credentials_for_developer_app(app)
     authorizations = gateway.list_authorizations(session_ciphertext, credentials)
     current = _current_authorization(authorizations)
     api_id = int(current.api_id or app.api_id or 0)

@@ -1,5 +1,7 @@
 # 马来西亚异地备用 TG Session 灾备 PRD
 
+> **2026-09-10 全账号直连补正：** 用户要求所有账号停止使用代理，按[固定直连切换合同](account-direct-egress-cutover-20260910-prd.md)执行。本补正取代本文账号传输的代理选择条款；历史绑定仅作审计，代理专用出口证明不得伪造。切换先停旧连接与代理，SV/MY 各自地域及授权隔离不变。
+
 > **2026-08-26 post-login exact 扩展：** 10账号canary与`all_online_accounts` frozen-N合同不变；`normal_full_init_v1`三条route先持久化`abc_required`并查询本账号owner。已有owner必须attach/readback/reconcile；fixed 2FA/profile完成、复查仍无owner才创建并异人批准`post_login_exact` request，同租户其他open batch只形成`waiting_global_abc`。request排队不连接Telegram、不占MY client、不得追加到frozen-N；当前已本地实现、未发布，生产 E4 未证明。
 
 > **2026-08-26 frozen-N one-shot durable full sweep：** 全量 frozen batch 只能由一次外部 `--mode sweep --until-exhausted` 启动；`--max-accounts` 不是 full sweep 的处理上限，也不得作为生产续跑合同。supervisor 对当前全部 remaining pending items 持久逐账号串行执行，SSH 断开或进程重启后从 DB checkpoint 恢复，并在同一生命周期自动继续直到 `pending=0`。内部 `checkpoint_interval=30` 仅用于持久审计、守恒和健康检查，checkpoint 完成后立即继续第 31 项及以后；不得等待人工再次调用。任何时刻仍只有一个账号、一个登录 operation。确定性失败进入统一 `manual_required/deferred_issue` 队列后继续；同一 operation 对账后仍未知才在 runner/client/runtime/A 无漂移门禁下进入 `deferred_reconcile/quarantined` 并继续。只有逐项 A 无漂移、B/SV、C/MY、双副本、restore probe、Saved Messages remote ID 和断连门禁全部通过才计 `succeeded`。
