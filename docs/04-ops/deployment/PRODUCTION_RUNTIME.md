@@ -689,3 +689,8 @@ bash deploy/authorization-online-abc-runner.sh --mode resume --batch-id <same-ba
 `deploy/mihomo_volume_maintenance.py preview/apply`仅识别无现存容器引用、配置为空、Mihomo标准文件和在线地理数据指纹相符的精确匿名卷，持原发布锁，先做root-only内容去重备份再逐卷复验删除；不prune、不force、不触碰在线卷。清单/备份/每项结果保留在本批审计目录。正常Mihomo恢复使用固定`<container>-data`卷，避免反复产生匿名副本。
 
 无效索引维护只允许`ix_actions_hard_hourly_history_scheduled_ccnew`，先核对正式索引有效、定义相同、无维护进程，`manage_invalid_action_index.py`审计后并发删除；失败先readback，不能从超时推断DDL未执行。普通VACUUM与云盘物理空间分别报告。Release Gate：`docs/05-implementation/resource-storage-repair-20260910.md`。
+
+
+### 2026-09-10 资源修复验证
+
+应用e454c82a（0232），合同active_verified；独立维护脚本a5704e16已执行。177个孤立卷已备份删除，系统盘70%→56%。历史归一化900条后因维护内存/CPU压力停止，剩32471条；无效索引因锁超时仍在。整体partial，不是production_fixed。详见`docs/05-implementation/resource-storage-repair-20260910.md`。
