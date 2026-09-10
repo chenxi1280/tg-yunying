@@ -133,7 +133,7 @@ def test_remote_release_values_require_sufficient_terminal_ttl() -> None:
 
 def test_actions_release_persists_verification_runtime_contract() -> None:
     release = (PROJECT_ROOT / "deploy/release.sh").read_text()
-    workflow = (PROJECT_ROOT / ".github/workflows/deploy-production.yml").read_text()
+    workflow = (PROJECT_ROOT / ".github/workflows/deploy-production.yml.disabled").read_text()
     required_names = {
         "IMAGE_VERIFICATION_CONTRACT_ENABLED",
         "IMAGE_VERIFICATION_CALLBACK_ACCEPTANCE_SECONDS",

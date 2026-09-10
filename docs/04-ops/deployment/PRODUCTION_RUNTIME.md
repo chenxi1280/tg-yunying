@@ -1,5 +1,31 @@
 # TG 运营管理平台生产部署说明
 
+## 2026-09-10 本地直接发布（取代 Prepare/Deploy Actions）
+
+合同：[本地直接发布](../../03-feature-designs/local-direct-production-release-prd.md)。两个发布 YAML 已改为 `.yml.disabled`，合并后不再注册 Actions；历史发布条款不再要求 Actions run。其他诊断/维护 workflow 保留，普通发布无需调用它们。
+
+在持有目标 commit 的仓库执行，`--python` 使用已有 backend/.venv 的绝对路径，测试在冻结源码的 backend 目录运行。每个 `--test` 为一个 60 秒批次，范围由本次 Release Gate 指定。PG/Redis 集成测试需要预先配置真实本地依赖和测试环境变量。输出目录必须为新目录：
+
+```bash
+python3 deploy/local_release.py prepare --ref <完整SHA> --platform linux/amd64 \
+  --python /Users/xida/PycharmProjects/tg-yunying/backend/.venv/bin/python \
+  --test 'tests/test_example.py' --output /absolute/path/release-evidence/<SHA>
+```
+
+本地 Docker daemon 与 Buildx 可用、登录 GHCR 并有镜像写权限、npm 可用是准备前提。目标 platform 必须与生产匹配；不会自动切换到远端构建。Docker 本地持久缓存按原 Dockerfile 使用，仍构建三个镜像，不猜测组件影响范围。
+
+部署前按批次将 origin/master 与 origin/release 冻结到同一 SHA，准备环境中的 GHCR_USERNAME/GHCR_TOKEN（不放命令行或源码）及 SSH alias。随后：
+
+```bash
+python3 deploy/local_release.py deploy \
+  --manifest /absolute/path/release-evidence/<SHA>/prepared-release.json \
+  --host silicon-valley-production-server
+```
+
+发布工具不 push 分支、不 dispatch Actions。`deploy.log` 保存安装输出，`runtime.json` 保存独立只读结果，`deployment.json` 保存状态；后台执行时由终端进程完成，模型只读取阶段日志或最终 JSON。非零安装退出不重新安装；已有 deployment.json 的再次调用拒绝覆盖。中断后的原记录保留，先只读核对实际生产状态，再明确决定是否创建新的准备/部署批次。
+
+`release_passed` 只证明发布与运行验证，活群、浏览、点赞、评论按本次任务 ID、观察起点及 typed fact 验收。缺真实事实为 unproven，不以本地测试或健康代替。该入口首次真实构建、部署与 E4 尚需各自证据，不能从新增脚本推断已经上线。
+
 ## 2026-09-10 活群状态与诊断一致性修复
 
 专项合同 `ai-group-state-diagnostics-integrity-20260910-prd.md`：救援终态与关闭义务优先，刷新锁后核验且不重排既有未知；原 Action/Attempt 保存读取和 RPC 阶段诊断；当前义务结果、原截止队列与历史生成 Job 分开展示。无迁移、批量恢复或新增远端调用。发布后独立核对完整 SHA/runtime，再只读核对旧救援展示、新诊断及 Task→ledger→Action→Attempt→typed fact。状态修复不代替成员权限、消息可见性和日目标验收。Release Gate 见 `docs/05-implementation/ai-group-state-diagnostics-repair-20260910.md`。

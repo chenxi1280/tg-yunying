@@ -2328,7 +2328,7 @@ def test_production_deploy_starts_two_dispatcher_workers():
 
 
 def test_production_daily_fulfillment_probe_uses_current_planner_contract():
-    workflow = (PROJECT_ROOT / ".github/workflows/deploy-production.yml").read_text()
+    workflow = (PROJECT_ROOT / ".github/workflows/deploy-production.yml.disabled").read_text()
     tianjin_diagnostics = (PROJECT_ROOT / ".github/scripts/tianjin_admission_diagnostics.py").read_text()
     quality_diagnostics = (PROJECT_ROOT / ".github/scripts/ai_group_quality_diagnostics.py").read_text()
 

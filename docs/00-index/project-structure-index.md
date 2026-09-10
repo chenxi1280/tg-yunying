@@ -1,5 +1,7 @@
 # 项目结构索引
 
+> **2026-09-10 本地直接发布：** 本地发布入口 `deploy/local_release.py` 负责冻结源码、本地定向测试、三镜像 digest 清单及 SSH 发布；`deploy/local_release_readback.py` 独立只读校验生产 current、backend/worker SHA 和调度激活。原 Prepare/Deploy YAML 改为 `.yml.disabled`，不会注册 Actions。 合同见 `local-direct-production-release-prd.md`。
+
 > **2026-09-10 状态与诊断完整性：** `group_rescue_state.py`负责真实救援终态、带锁刷新资格和无写入展示；`message_observation.py`承接 bounded history 原始/筛选数量，`telethon_content`保留角色查询异常；SendResult.diagnostics 经 group send 写入 Action/Attempt。`ai_generation_outcome_diagnostics.py`按当前义务去重与最新 Job 分类，`ai_message_evidence_query.py`限定 ledger/Action/Attempt/typed 消息；`ai_queue_diagnostics.py`读取原截止状态。既有详情 API 增量输出，前端 `TaskAIRuntimeEvidence`、`TaskActionFailureEvidence`展示结果/排期/调用诊断。专项合同：`ai-group-state-diagnostics-integrity-20260910-prd.md`；发布状态见对应 Release Gate。
 
 > **2026-09-10 AI生成结算一致性（e62a0d80已发布，整批E4仍未完成）：** `backend/app/services/task_center/ai_generation_ready_settlement.py`负责同claim的原子ready发布、幂等收据和精确候选恢复；`ai_generation_parallel_settlement.py`将成功分支接入该事务；`ai_generation_recovery.py`在Action锁下区分已准备候选与仍在生成的Job。`ai_group_emergency_pending.py`将稳定阶段与完整原因分开持久化；`ai_generation_topic_context.py`使v2前置与真实绑定共用事实检测。新增SQLite和隔离PostgreSQL反例在`test_ai_generation_atomic_settlement.py`、`test_ai_generation_settlement_postgres.py`，支持夹具`ai_generation_settlement_support.py`。无迁移/API/前端变更。

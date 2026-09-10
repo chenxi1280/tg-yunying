@@ -85,7 +85,7 @@ def test_production_images_isolate_native_ocr_dependencies():
         PROJECT_ROOT / "Dockerfile.image-verification-worker"
     ).read_text()
     pyproject = (PROJECT_ROOT / "backend/pyproject.toml").read_text()
-    workflow = (PROJECT_ROOT / ".github/workflows/deploy-production.yml").read_text()
+    workflow = (PROJECT_ROOT / ".github/workflows/deploy-production.yml.disabled").read_text()
     compose = (PROJECT_ROOT / "docker-compose.server.yml").read_text()
 
     for package in ("rapidocr", "ddddocr", "onnxruntime"):
@@ -96,7 +96,7 @@ def test_production_images_isolate_native_ocr_dependencies():
         assert package in ocr_dockerfile
     assert "install_project_dependencies.py" in ocr_dockerfile
     assert "--extra image-verification-worker" in ocr_dockerfile
-    preparation = (PROJECT_ROOT / ".github/workflows/prepare-production.yml").read_text()
+    preparation = (PROJECT_ROOT / ".github/workflows/prepare-production.yml.disabled").read_text()
     assert "Dockerfile.image-verification-worker" in preparation
     # Grok CLI is optional fallback only; deploy must not fail closed on CLI preflight.
     assert "Preflight production Grok CLI" not in workflow

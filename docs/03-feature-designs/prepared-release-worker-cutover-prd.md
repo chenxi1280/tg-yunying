@@ -1,5 +1,7 @@
 # 预构建发布与全量 worker 切换
 
+> 2026-09-10 resync：发布入口以 [本地直接发布合同](local-direct-production-release-prd.md) 为准。旧 Actions 准备/发布条款退役；worker 切换、在途保护和业务验收条款继续适用。
+
 ## Intake / Product Handoff
 
 - 原始需求：Actions 发布耗时过长，用户选择全部 worker 一次切换，并要求修复流程。

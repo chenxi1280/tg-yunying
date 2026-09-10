@@ -41,7 +41,7 @@ def _workflow_inputs(path: Path) -> dict:
 
 
 def test_identity_operations_use_separate_bounded_workflow():
-    deploy_inputs = _workflow_inputs(PROJECT_ROOT / ".github/workflows/deploy-production.yml")
+    deploy_inputs = _workflow_inputs(PROJECT_ROOT / ".github/workflows/deploy-production.yml.disabled")
     identity_inputs = _workflow_inputs(
         PROJECT_ROOT / ".github/workflows/production-account-profile-identity.yml"
     )

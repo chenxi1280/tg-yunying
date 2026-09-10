@@ -8,7 +8,7 @@ import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = PROJECT_ROOT / ".github/scripts/configure_clash_search_join_live.py"
-WORKFLOW = PROJECT_ROOT / ".github/workflows/deploy-production.yml"
+WORKFLOW = PROJECT_ROOT / ".github/workflows/deploy-production.yml.disabled"
 
 pytestmark = pytest.mark.no_postgres
 

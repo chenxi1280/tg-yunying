@@ -5,8 +5,8 @@ import yaml
 
 
 pytestmark = pytest.mark.no_postgres
-WORKFLOW = Path(__file__).resolve().parents[2] / ".github/workflows/deploy-production.yml"
-PREPARE = WORKFLOW.with_name("prepare-production.yml")
+WORKFLOW = Path(__file__).resolve().parents[2] / ".github/workflows/deploy-production.yml.disabled"
+PREPARE = WORKFLOW.with_name("prepare-production.yml.disabled")
 COMPOSE_UP = Path(__file__).resolve().parents[2] / "deploy/compose-up.sh"
 COMPOSE = Path(__file__).resolve().parents[2] / "docker-compose.server.yml"
 RELEASE = Path(__file__).resolve().parents[2] / "deploy/release.sh"
