@@ -1690,3 +1690,6 @@ legacy-only A 冷启动分支固定为 `frozen legacy A -> 原 A Session 只读 
 - 群发送 RPC 诊断在常规 `_apply_send_result` 和权限恢复提前返回两条分支均保存到原 Action/Attempt；原 Gateway journal 的 unknown/true/false 不随诊断写入改变。
 
 2026-09-10 Clone乱序PTS接续：实际channel difference请求起点/返回终点 → 与更新同事务的ChannelDifferenceRange采集证据 → 当前授权/peer/epoch订阅范围内验证PTS覆盖 → 按原ingress顺序逐条消费与去重。无证明时从当前未消费frontier正式补差；不重写shared cursor、不跳消息、不把Common PTS或too_long当补齐，也不产生发送事实。
+# 2026-09-10 资源存储修复补充
+
+准入资格仍实时读PG → 原paths/decision/dependency hash → 租户+规范化路径hash寻址PlanningAdmissionEvidence → 原PlanningAdmissionSnapshot保存证据引用、原身份/时效/决定/账号集合 → 调用方读取完整路径。旧行混合读仍使用原JSON；受控历史转换preview→锁行hash复核→共享证据→清空旧冗余字段→同事务AuditLog→独立逻辑hash读回，不删除快照或业务事实。非内容准入不查询人格；内容准入只读取每账号最新版本的必要字段。点赞资格直接选账号数组。合同：`docs/03-feature-designs/resource-storage-repair-20260910-prd.md`。

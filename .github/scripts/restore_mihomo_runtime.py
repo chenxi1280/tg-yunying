@@ -275,6 +275,8 @@ def start_container(name, config, network, image):
         "--network",
         network,
         "-v",
+        f"{name}-data:/root/.config/mihomo",
+        "-v",
         f"{config.path}:{MIHOMO_CONFIG_PATH}:ro",
         image,
     ])

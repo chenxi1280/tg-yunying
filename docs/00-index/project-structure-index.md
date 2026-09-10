@@ -1641,3 +1641,11 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 - `backend/app/services/task_center/send_result_diagnostics.py`：常规发送结算及权限恢复提前返回共用原 RPC 诊断保存，不改变远端结果状态。
 
 2026-09-10 Clone乱序PTS接续：`telegram_channel_difference_ranges.py` 负责正式channel RPC区间证据持久化、当前订阅范围内的接续证明与未证明缺口的读取起点；`telegram_update_collector.py` 提供实际请求PTS，`telegram_update_channels.py` 选择需要补差的peer游标，`group_clone_source_stream.py` 保持原消息顺序消费。证明存既有共享事件表，不产生业务消息或新表。
+# 2026-09-10 资源存储修复入口
+
+- `backend/app/models/planning_admission.py`：准入快照及租户隔离的共享证据；原engagement_planning导出不变。
+- `backend/app/services/task_center/planning_admission_evidence.py`：规范化内容寻址与并发复用，不缓存资格。
+- `backend/app/services/task_center/admission_evidence_maintenance.py`、`backend/scripts/manage_admission_evidence.py`：历史表示转换的preview/apply/readback与事务审计。
+- `backend/scripts/manage_invalid_action_index.py`：仅精确无效Action索引的定义/身份保护、并发DROP及审计。
+- `deploy/mihomo_volume_maintenance.py`：精确匿名Mihomo卷的文件指纹、去重备份、引用/运行身份保护和删除读回；`restore_mihomo_runtime.py`复用固定项目卷。
+- `0232_admission_evidence`：新增证据表和可空复合租户引用；有新引用后只允许兼容forward fix。

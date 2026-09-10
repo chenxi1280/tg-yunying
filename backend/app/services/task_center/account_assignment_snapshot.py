@@ -5,6 +5,7 @@ import json
 from sqlalchemy import and_, select
 from app.models import PlanningAdmissionSnapshot, TgAccount, TgAccountAuthorization, TgAccountOnlineState
 from app.services._common import _now
+from .planning_admission_evidence import shared_admission_evidence
 
 
 POLICY = "account_assignment_eligibility_v1"
@@ -28,10 +29,12 @@ def record_assignment_snapshot(session, task, plan):
     paths = [{**dict(row._mapping), "reason": reasons.get(str(row.id), ""), "policy": POLICY} for row in rows]
     paths = json.loads(json.dumps(paths, default=str))
     digest = hashlib.sha256(json.dumps(paths, sort_keys=True).encode()).hexdigest()
+    evidence = shared_admission_evidence(session, task.tenant_id, paths)
     session.add(PlanningAdmissionSnapshot(tenant_id=task.tenant_id, task_id=task.id,
         task_lifecycle_epoch=task.task_lifecycle_epoch, participation_plan_id=plan.id,
         participation_unit=plan.participation_unit, planning_horizon=POLICY,
-        dependency_revision_set_hash=digest, account_paths=paths,
+        dependency_revision_set_hash=digest, account_paths_digest=evidence.digest,
+        paths_evidence=evidence, legacy_account_paths=[],
         admissible_account_ids=[identity for identity in plan.policy_eligible_account_ids if str(identity) not in reasons],
         deficit_account_ids=list(map(int, reasons)),
         decision=summary.get("state") or ("eligible" if plan.policy_eligible_account_ids else "no_eligible_accounts"),

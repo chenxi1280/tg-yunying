@@ -6,8 +6,8 @@ import hashlib
 import json
 from datetime import datetime, timedelta
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session, joinedload, load_only
 
 from app.models import (
     AccountStatus,
@@ -24,6 +24,7 @@ from app.services._common import _now
 
 from .channel_membership import channel_member_accounts
 from .comment_account_profiles import comment_account_profile_ready
+from .planning_admission_evidence import shared_admission_evidence
 
 
 OBSERVATION_TTL = timedelta(minutes=5)
@@ -68,7 +69,7 @@ def ensure_planning_admission_snapshot(
         participation,
         planning_horizon=planning_horizon,
         dependency_hash=dependency_hash,
-        paths=paths,
+        evidence=shared_admission_evidence(session, task.tenant_id, paths),
         admissible=admissible,
         deficits=deficits,
         valid_until=observed_at + OBSERVATION_TTL,
@@ -114,7 +115,7 @@ def _planning_paths(
     accounts = _accounts_by_id(session, task, account_ids)
     authorizations = _authorizations_by_account(session, task, account_ids)
     memberships = _memberships_by_account(session, task, account_ids)
-    masks = _masks_by_account(session, task, account_ids)
+    masks = _masks_by_account(session, task, account_ids) if task.type in CONTENT_TASK_TYPES else {}
     ready_ids = {
         account.id for account in channel_member_accounts(
             session, task, target, list(accounts.values()), require_send=require_send
@@ -142,7 +143,7 @@ def _new_snapshot(
     *,
     planning_horizon: str,
     dependency_hash: str,
-    paths: list[dict],
+    evidence,
     admissible: list[int],
     deficits: list[int],
     valid_until: datetime,
@@ -156,10 +157,12 @@ def _new_snapshot(
         participation_unit=participation.participation_unit,
         planning_horizon=planning_horizon,
         dependency_revision_set_hash=dependency_hash,
-        account_paths=paths,
+        account_paths_digest=evidence.digest,
+        paths_evidence=evidence,
+        legacy_account_paths=[],
         admissible_account_ids=admissible,
         deficit_account_ids=deficits,
-        decision=_decision(len(paths), len(admissible)),
+        decision=_decision(len(evidence.account_paths), len(admissible)),
         valid_until=valid_until,
         decision_hash=decision_hash,
     )
@@ -349,14 +352,18 @@ def _memberships_by_account(session: Session, task: Task, account_ids: list[int]
 
 
 def _masks_by_account(session: Session, task: Task, account_ids: list[int]) -> dict[int, AiAccountVoiceProfile]:
-    rows = session.scalars(select(AiAccountVoiceProfile).where(
+    latest = select(AiAccountVoiceProfile.account_id, func.max(AiAccountVoiceProfile.version).label("version")).where(
         AiAccountVoiceProfile.tenant_id == task.tenant_id,
         AiAccountVoiceProfile.account_id.in_(account_ids),
-    ).order_by(AiAccountVoiceProfile.account_id, AiAccountVoiceProfile.version.desc()))
-    result: dict[int, AiAccountVoiceProfile] = {}
-    for row in rows:
-        result.setdefault(row.account_id, row)
-    return result
+    ).group_by(AiAccountVoiceProfile.account_id).subquery()
+    rows = session.scalars(select(AiAccountVoiceProfile).join(latest,
+        (AiAccountVoiceProfile.account_id == latest.c.account_id) &
+        (AiAccountVoiceProfile.version == latest.c.version),
+    ).where(AiAccountVoiceProfile.tenant_id == task.tenant_id).options(load_only(
+        AiAccountVoiceProfile.account_id, AiAccountVoiceProfile.version, AiAccountVoiceProfile.status,
+        AiAccountVoiceProfile.quality_status, AiAccountVoiceProfile.short_prompt_summary,
+    )))
+    return {row.account_id: row for row in rows}
 
 
 def _snapshot(

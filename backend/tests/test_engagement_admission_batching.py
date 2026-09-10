@@ -1,8 +1,9 @@
 """Batch admission must preserve per-account membership and dependency evidence."""
+from types import SimpleNamespace
 import pytest
-from sqlalchemy import event
+from sqlalchemy import event, inspect
 
-from app.models import AccountProxy, OperationTarget, TgGroup, TgGroupAccount
+from app.models import AccountProxy, AiAccountVoiceProfile, OperationTarget, TgGroup, TgGroupAccount
 from app.services.task_center import engagement_planning_admission as admission
 from tests.test_engagement_participation import _account, _seed, _session
 
@@ -49,3 +50,31 @@ def test_admission_batches_queries_and_preserves_per_account_results():
         assert len(statements) <= MAX_ADMISSION_QUERIES + QUALIFICATION_QUERIES + 2  # expired Task and target
         ready = [row["account_id"] for row in actual if row["admissible"]]
         assert ready == [account_id for account_id in ids if account_id < 999 and account_id % 2 == 0]
+
+
+def test_admission_only_loads_latest_profile_decision_fields():
+    with _session() as session:
+        task, _ = _seed_members(session)
+        for version in (1, 2):
+            session.add(AiAccountVoiceProfile(tenant_id=1, account_id=20, version=version,
+                status="active" if version == 1 else "disabled", short_prompt_summary="summary",
+                persona_experiences=["large historical detail" * 1000]))
+        session.add(AiAccountVoiceProfile(tenant_id=2, account_id=20, version=3, status="active"))
+        session.commit()
+        session.expunge_all()
+        task = SimpleNamespace(tenant_id=1, type="group_ai_chat")
+        masks = admission._masks_by_account(session, task, [20])
+        assert masks[20].version == 2 and masks[20].status == "disabled"
+        assert "persona_experiences" in inspect(masks[20]).unloaded
+        assert admission._mask_check(task, masks[20])["status"] == "deficit"
+        assert len([row for row in session.identity_map.values() if isinstance(row, AiAccountVoiceProfile)]) == 1
+
+
+def test_noncontent_admission_does_not_query_profiles(monkeypatch):
+    with _session() as session:
+        task, target = _seed_members(session)
+        def unexpected(*args):
+            pytest.fail("view admission queried content profiles")
+        monkeypatch.setattr(admission, "_masks_by_account", unexpected)
+        paths = admission._planning_paths(session, task, [20], target=target, require_send=False)
+        assert paths[0]["account_id"] == 20

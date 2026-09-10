@@ -9,6 +9,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.database import Base
 
 from .enums import now
+from .planning_admission import PlanningAdmissionEvidence, PlanningAdmissionSnapshot
 
 
 def _new_uuid() -> str:
@@ -61,37 +62,6 @@ class TaskParticipationUnitPlan(Base):
     selection_seed: Mapped[str] = mapped_column(String(64))
     selection_hash: Mapped[str] = mapped_column(String(64))
     state: Mapped[str] = mapped_column(String(24), default="active")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
-
-
-class PlanningAdmissionSnapshot(Base):
-    __tablename__ = "planning_admission_snapshots"
-    __table_args__ = (
-        UniqueConstraint(
-            "task_id",
-            "task_lifecycle_epoch",
-            "participation_unit",
-            "planning_horizon",
-            "dependency_revision_set_hash",
-            name="uq_planning_admission_dependency_set",
-        ),
-        Index("ix_planning_admission_plan", "participation_plan_id", "decision"),
-    )
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
-    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
-    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"))
-    task_lifecycle_epoch: Mapped[int] = mapped_column(Integer, default=1)
-    participation_plan_id: Mapped[str] = mapped_column(ForeignKey("task_participation_unit_plans.id", ondelete="CASCADE"))
-    participation_unit: Mapped[str] = mapped_column(String(200))
-    planning_horizon: Mapped[str] = mapped_column(String(100))
-    dependency_revision_set_hash: Mapped[str] = mapped_column(String(64))
-    account_paths: Mapped[list[dict]] = mapped_column(JSON, default=list)
-    admissible_account_ids: Mapped[list[int]] = mapped_column(JSON, default=list)
-    deficit_account_ids: Mapped[list[int]] = mapped_column(JSON, default=list)
-    decision: Mapped[str] = mapped_column(String(32))
-    valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    decision_hash: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
@@ -444,6 +414,7 @@ __all__ = [
     "ManagedPresencePlan",
     "NaturalOpportunitySupplyPlanRevision",
     "PlanningAdmissionSnapshot",
+    "PlanningAdmissionEvidence",
     "PortfolioFeasibilityPlanRevision",
     "ReactionCapacityAllocationEpoch",
     "TaskParticipationUnitPlan",

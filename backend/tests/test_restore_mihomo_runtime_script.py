@@ -91,6 +91,18 @@ def test_require_pinned_image_rejects_latest_tag() -> None:
         script.require_pinned_image("metacubex/mihomo:latest")
 
 
+def test_restore_reuses_scoped_data_volume_and_keeps_readonly_config(monkeypatch):
+    script = _load_script()
+    calls = []
+    monkeypatch.setattr(script, "run_command", lambda command: calls.append(command))
+    config = SimpleNamespace(path=Path("/config/proxy.yaml"))
+    for _ in range(2):
+        script.start_container("tgyunying-mihomo-001", config, "network", "image")
+    assert calls[0] == calls[1]
+    assert "tgyunying-mihomo-001-data:/root/.config/mihomo" in calls[0]
+    assert "/config/proxy.yaml:/root/.config/mihomo/config.yaml:ro" in calls[0]
+
+
 def test_public_preview_omits_proxy_consumer_counts() -> None:
     script = _load_script()
 

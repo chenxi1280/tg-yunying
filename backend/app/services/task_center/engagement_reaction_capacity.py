@@ -135,13 +135,13 @@ def reaction_admissible_account_ids(
     _, _, snapshot_ids = _reaction_candidates(
         session, task, ledger, demands=list(epoch.source_demands or []), target=target,
     )
-    rows = session.scalars(select(PlanningAdmissionSnapshot).where(
+    rows = session.scalars(select(PlanningAdmissionSnapshot.admissible_account_ids).where(
         PlanningAdmissionSnapshot.id.in_(snapshot_ids)
     ))
     return {
         int(account_id)
         for row in rows
-        for account_id in row.admissible_account_ids or []
+        for account_id in row or []
     }
 
 
