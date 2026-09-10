@@ -1695,3 +1695,5 @@ legacy-only A 冷启动分支固定为 `frozen legacy A -> 原 A Session 只读 
 # 2026-09-10 资源存储修复补充
 
 准入资格仍实时读PG → 原paths/decision/dependency hash → 租户+规范化路径hash寻址PlanningAdmissionEvidence → 原PlanningAdmissionSnapshot保存证据引用、原身份/时效/决定/账号集合 → 调用方读取完整路径。旧行混合读仍使用原JSON；受控历史转换preview→锁行hash复核→共享证据→清空旧冗余字段→同事务AuditLog→独立逻辑hash读回，不删除快照或业务事实。非内容准入不查询人格；内容准入只读取每账号最新版本的必要字段。点赞资格直接选账号数组。合同：`docs/03-feature-designs/resource-storage-repair-20260910-prd.md`。
+
+> **2026-09-10 CPU/内存热点修复：** Planner presence -> managed_presence_queries -> 群 ID/状态/可见性/时间列 -> 原统计公式；不加载整条 Action JSON。AI 去重 -> exact/group exact ID -> 同一账号窗口一次投影 -> 原顺序 similar/semantic -> template ID；同租户账号范围、时间窗口、预占唯一键和发送前新鲜复查不变。 设计与验收见 `docs/03-feature-designs/cpu-memory-hotpath-repair-20260910-prd.md`。

@@ -1651,3 +1651,5 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 - `backend/scripts/manage_invalid_action_index.py`：仅精确无效Action索引的定义/身份保护、并发DROP及审计。
 - `deploy/mihomo_volume_maintenance.py`：精确匿名Mihomo卷的文件指纹、去重备份、引用/运行身份保护和删除读回；`restore_mihomo_runtime.py`复用固定项目卷。
 - `0232_admission_evidence`：新增证据表和可空复合租户引用；有新引用后只允许兼容forward fix。
+
+> **2026-09-10 CPU/内存热点修复：** `managed_presence_queries.py` 负责群活跃统计的 JSON 标量与时间列投影，返回不可变 PresenceAction；`ai_message_duplicate_queries.py` 负责 exact/template 身份列与账号窗口文本投影。`ai_message_memory.py` 在单次判定内复用同一窗口，下一次判定重新读取，保留批次刷新与发送前复查。 设计与验收见 `docs/03-feature-designs/cpu-memory-hotpath-repair-20260910-prd.md`。

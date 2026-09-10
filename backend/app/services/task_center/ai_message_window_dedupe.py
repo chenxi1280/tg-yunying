@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from sqlalchemy import select
+from sqlalchemy.engine import Row
 from sqlalchemy.orm import Session
 
 from app.models import AiGroupMessageMemory
@@ -20,9 +21,9 @@ def find_group_window_exact_duplicate(
     now: datetime,
     statuses: set[str],
     exclude_id: str = "",
-) -> AiGroupMessageMemory | None:
-    return session.scalar(
-        select(AiGroupMessageMemory)
+) -> Row | None:
+    return session.execute(
+        select(AiGroupMessageMemory.id)
         .where(
             AiGroupMessageMemory.tenant_id == tenant_id,
             AiGroupMessageMemory.group_id == group_id,
@@ -33,7 +34,7 @@ def find_group_window_exact_duplicate(
         )
         .order_by(AiGroupMessageMemory.planned_at.desc())
         .limit(1)
-    )
+    ).first()
 
 
 def group_window_reservation_key(

@@ -5,21 +5,20 @@ import json
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import (
-    Action,
-    ContextTurn,
-    ConversationEvent,
     ManagedPresencePlan,
     ManagedPresencePolicyRevision,
     NaturalOpportunitySupplyPlanRevision,
     Task,
     TaskDayLedger,
     TgGroup,
-    UnownedOutboundActivityObservation,
 )
+
+
+from .managed_presence_queries import PresenceAction, _external_turns, _managed_actions, _unowned_authored
 
 
 SAFE_TERMINAL_ACTION_STATES = frozenset({"failed", "skipped", "cancelled"})
@@ -91,10 +90,10 @@ def _presence_evidence(
         if not _visible_confirmed(action)
         and str(action.status or "") not in SAFE_TERMINAL_ACTION_STATES
     ]
-    latest_human_at = max((turn.last_event_at for turn in turns), default=None)
+    latest_human_at = max(turns, default=None)
     managed_times = [
         *(_action_time(action) for action in [*visible, *protected]),
-        *(_naive(item.observed_at) for item in unowned),
+        *(_naive(observed_at) for observed_at in unowned),
     ]
     trailing = sum(
         1 for occurred_at in managed_times
@@ -122,68 +121,6 @@ def _presence_evidence(
         "latest_human_at": latest_human_at.isoformat() if latest_human_at else None,
         "policy_revision": int(policy.revision),
     }
-
-
-def _external_turns(
-    session: Session,
-    task: Task,
-    ledger: TaskDayLedger,
-    *,
-    group: TgGroup,
-) -> list[ContextTurn]:
-    return list(session.scalars(
-        select(ContextTurn)
-        .join(ConversationEvent, ConversationEvent.id == ContextTurn.anchor_event_id)
-        .where(
-            ContextTurn.tenant_id == task.tenant_id,
-            ContextTurn.surface == "group_ai_chat",
-            ContextTurn.canonical_peer_id == str(group.tg_peer_id),
-            ContextTurn.state == "closed",
-            ConversationEvent.author_class == "external_human",
-            ConversationEvent.is_current.is_(True),
-            ConversationEvent.deleted_at.is_(None),
-            ContextTurn.last_event_at >= ledger.period_start_at,
-            ContextTurn.last_event_at < ledger.deadline_at,
-        )
-    ))
-
-
-def _managed_actions(
-    session: Session,
-    task: Task,
-    ledger: TaskDayLedger,
-    *,
-    group: TgGroup,
-) -> list[Action]:
-    rows = list(session.scalars(select(Action).where(
-        Action.tenant_id == task.tenant_id,
-        Action.task_type == "group_ai_chat",
-        Action.action_type == "send_message",
-        func.coalesce(Action.executed_at, Action.scheduled_at) >= ledger.period_start_at,
-        func.coalesce(Action.executed_at, Action.scheduled_at) < ledger.deadline_at,
-    )))
-    return [
-        action for action in rows
-        if int((action.payload or {}).get("group_id") or 0) == int(group.id)
-    ]
-
-
-def _unowned_authored(
-    session: Session,
-    task: Task,
-    ledger: TaskDayLedger,
-    *,
-    group: TgGroup,
-) -> list[UnownedOutboundActivityObservation]:
-    return list(session.scalars(
-        select(UnownedOutboundActivityObservation).where(
-            UnownedOutboundActivityObservation.tenant_id == task.tenant_id,
-            UnownedOutboundActivityObservation.activity_class == "authored_message",
-            UnownedOutboundActivityObservation.canonical_peer_id == str(group.tg_peer_id),
-            UnownedOutboundActivityObservation.observed_at >= ledger.period_start_at,
-            UnownedOutboundActivityObservation.observed_at < ledger.deadline_at,
-        )
-    ))
 
 
 def _upsert_presence_plan(
@@ -310,15 +247,15 @@ def _project_task(
         task.last_error = ""
 
 
-def _visible_confirmed(action: Action) -> bool:
+def _visible_confirmed(action: PresenceAction) -> bool:
     return (
         str(action.status or "") == "success"
-        and str((action.result or {}).get("visibility_status") or "")
+        and str(action.visibility_status or "")
         == "visible_confirmed"
     )
 
 
-def _action_time(action: Action) -> datetime:
+def _action_time(action: PresenceAction) -> datetime:
     value = action.executed_at or action.scheduled_at
     return _naive(value)
 
