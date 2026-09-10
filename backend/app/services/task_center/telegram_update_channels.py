@@ -9,6 +9,7 @@ from app.models.telegram_updates import (
     TelegramAuthorizationUpdateState, TelegramAuthorizationUpdateSubscription,
 )
 from app.services._common import _now
+from .telegram_channel_difference_ranges import uncovered_channel_gaps
 
 SOURCE_STREAM_STATES = ("catching_up", "live", "gap")
 CHANNEL_TOO_LONG = "group_clone_channel_difference_too_long"
@@ -257,8 +258,6 @@ def channel_cursors(session_factory, state_id: str) -> list[tuple[str, int]]:
         for peer_id, pts in stream_rows:
             key = str(peer_id)
             cursors[key] = max(cursors.get(key, 0), int(pts or 0))
-        return [
-            (peer_id, max(pts, int((channel_state.get(peer_id) or {}).get("pts") or 0)))
-            for peer_id, pts in cursors.items()
-            if max(pts, int((channel_state.get(peer_id) or {}).get("pts") or 0)) > 0
-        ]
+        for peer_id, pts in uncovered_channel_gaps(session, state_id).items():
+            cursors[peer_id] = min(cursors.get(peer_id, pts), pts)
+        return [(peer_id, pts) for peer_id, pts in cursors.items() if pts > 0]

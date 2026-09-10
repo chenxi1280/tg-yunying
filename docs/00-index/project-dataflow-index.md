@@ -1680,3 +1680,5 @@ legacy-only A 冷启动分支固定为 `frozen legacy A -> 原 A Session 只读 
 - 2026-09-10 应急数量证据：发送memory结果更新保留冻结selection/hash；基本数量用原AiGroupEmergencySelection权威事实核验，历史memory副本hash缺失不改写事实、不重发。见供给与兜底专项PRD第四次生产反查。
 
 2026-09-10 DF-360 resync：Collector channel batch → 锁定当前 Task 生命周期 → 当前 Clone stream；paused 保持暂停且不生成新 SourceEvent，正常 incomplete → final 可恢复。too_long → 旧 stream blocked + continuity_lost，不写完整增量 Ingress、不被较新 final 或同 epoch Start/Resume 清除；显式 Stop/Start 才建立新起点。账号池不足仍等待原绑定，Gateway 顺序和旧 unknown 合同保持。
+
+2026-09-10 Clone乱序PTS接续：实际channel difference请求起点/返回终点 → 与更新同事务的ChannelDifferenceRange采集证据 → 当前授权/peer/epoch订阅范围内验证PTS覆盖 → 按原ingress顺序逐条消费与去重。无证明时从当前未消费frontier正式补差；不重写shared cursor、不跳消息、不把Common PTS或too_long当补齐，也不产生发送事实。

@@ -25,6 +25,7 @@ from app.services._common import _now, audit, gateway
 from app.services.developer_apps import credentials_for_authorization
 
 from .telegram_update_reconcile import reconcile_update_mappings
+from .telegram_channel_difference_ranges import record_channel_difference_range
 from .telegram_update_ingress import (
     NormalizedUpdateIngress,
     ingest_normalized_update,
@@ -157,7 +158,9 @@ def _drain_claim(session_factory, claim: CollectorClaim, result: CollectorDrainR
             _record_channel_error(session_factory, claim, peer_id, exc)
             result.error_count += 1
             continue
-        mapping_ids.extend(_persist_batch(session_factory, claim, channel_batch, peer_id=peer_id))
+        mapping_ids.extend(_persist_batch(
+            session_factory, claim, channel_batch, peer_id=peer_id, requested_pts=pts,
+        ))
         _count_batch(result, channel_batch, mapping_ids=[])
     return mapping_ids
 
@@ -275,6 +278,7 @@ def _persist_batch(
     batch: TelegramDifferenceBatch,
     *,
     peer_id: str | None = None,
+    requested_pts: int | None = None,
 ) -> list[str]:
     with session_factory() as session:
         state = _owned_state(session, claim)
@@ -289,6 +293,9 @@ def _persist_batch(
         if batch.scope == "common":
             _apply_common_batch(state, batch)
         else:
+            record_channel_difference_range(
+                session, state, batch, claim=claim, peer_id=peer_id, requested_pts=requested_pts,
+            )
             apply_channel_batch(session, state, batch, peer_id=peer_id)
         state.lease_expires_at = _now() + timedelta(seconds=COLLECTOR_LEASE_SECONDS)
         state.version = int(state.version or 1) + 1
