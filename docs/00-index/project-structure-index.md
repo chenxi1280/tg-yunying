@@ -1633,3 +1633,5 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 2026-09-10 Clone 暂停与差量状态：`telegram_update_channels.py` 承担共享 channel 游标、错误投影和 Clone 来源状态更新，Collector 保留租约/远端读取/Ingress 持久化；状态更新按 Task → Stream 行锁读取当前生命周期。`group_clone_source_stream.py` 暂停消费门禁与 `group_clone_runtime_lifecycle.py` 的连续性检查保留旧 epoch 事实。回归入口 `test_group_clone_channel_lifecycle.py`、`test_group_clone_pause_postgres.py`。
 
 - `backend/app/services/task_center/send_result_diagnostics.py`：常规发送结算及权限恢复提前返回共用原 RPC 诊断保存，不改变远端结果状态。
+
+2026-09-10 Clone乱序PTS接续：`telegram_channel_difference_ranges.py` 负责正式channel RPC区间证据持久化、当前订阅范围内的接续证明与未证明缺口的读取起点；`telegram_update_collector.py` 提供实际请求PTS，`telegram_update_channels.py` 选择需要补差的peer游标，`group_clone_source_stream.py` 保持原消息顺序消费。证明存既有共享事件表，不产生业务消息或新表。

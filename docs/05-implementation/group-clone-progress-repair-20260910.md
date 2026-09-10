@@ -63,3 +63,18 @@ design_status=complete（R1/R2），resync=true。已更新专项 PRD §6.2、§
 - 新测试未创建/零发送。正式受控Collector auth1/2398追赶时暴露回归：清除不存在的channel错误也先加Task锁。账号2六个active订阅均无channel错误，但Collector的Task锁已等待其他Planner长事务超过3分钟，阻断共享采集。取消的仅是本次验收启动的Collector进程135，未中断业务worker或数据库后台。
 - 返回product，resync=true：无变化的错误投影必须零Task行锁；PRD §12.1补正后再dev/并发QA/重新发布。不得用修改游标、伪造live、跳过预检或反复重试掩盖该阻塞。
 - 新增PostgreSQL反例在24704522上5.46秒内复现Task锁等待；修复后无操作投影9项、真实错误清理/暂停1项，结合既有Pause、消费并发与生命周期共32项通过（51.75秒，60秒硬超时）。Ruff F/diff检查通过。扩大Clone/共享流回归及拆分批次在本机先后触及60秒硬超时，未观察到断言失败，不能记为通过；完整回归由新候选的Prepare Production重新验收。
+
+## 第二轮部署与双账号测试反向检查
+
+- 候选047625b4：Prepare34430457225、Deploy34431043598全部成功。生产current=20260910025140_047625b4；后端及18worker版本一致、健康、三层health全部ok。此前Task无操作锁阻塞已解除，正式Collector两轮后账号2/437均live，并连续采集。
+- 预检无阻塞/警告，目标authority v7，确认两个Telegram身份不同。10:56:57创建双账号测试46b91930-e10a-4287-ab90-773325561219，epoch1，发送池[437,2]；listener正式建立start_message_id3077722/start_pts5623033。
+- 常态Planner尚未领取新任务（wake_revision1/planned_revision0/last_started空）；按已授权测试范围通过现有_plan_due_task触发该Task，保留任务/wake锁、Planner IO禁令和常态Dispatcher。这是受控验收触发，不证明常态调度延迟已解决。
+- 消费13个SourceEvent后暴露原有PTS乱序处理缺陷：frontier5623078，head ingress4371为UpdateNewChannelMessage pts5623080/count1；随后ingress4374已有DifferenceMessages pts5623081/count3，另含历史消息删除更新。头部始终阻止消费，Task在source_pts_gap和正常final恢复之间切换；零义务/Action/Attempt/远端事实。
+- 正式Pause新测试，保留epoch1和全部证据；受控Planner、证据等待器停止，Collector完成两轮暂停后采集并退出。多人E4仍未通过，不能宣称production_fixed。
+- 返回product完成上述乱序差量证明合同与索引resync；进入dev实现ChannelDifferenceRange、实际请求PTS传递、当前订阅证明和未证明头部的正式补差。不得凭现有Common/DifferenceMessages的数字回填假证明，不手改游标或历史状态。
+
+## 乱序PTS修复开发与QA
+
+- 已完成真实频道请求区间持久化、当前授权/peer/epoch订阅证明，以及队首未证明缺口补差；补差只改变下一次远端读取起点，不直接重写共享游标。普通final投影后保留clone_gap_at的恢复依据，获得本页区间后正常续页。区间空items，零消息投递/业务事件，too_long和Common不产生证明。
+- 新增区间正反例及Collector实际调用回归19项通过（6.76秒）；暂停PostgreSQL并发、无操作投影、生命周期、Clone/AI/评论共享消费回归54项通过（25.08秒），每批60秒硬超时。AST语法与生产代码行数限制通过。
+- 再次只读线上确认新测试仍paused/epoch1、13SourceEvent、零义务/Action/Attempt/映射；原任务stopped/epoch3、旧事实未增加。多人E4等待此候选通过Prepare/部署后重新验收。

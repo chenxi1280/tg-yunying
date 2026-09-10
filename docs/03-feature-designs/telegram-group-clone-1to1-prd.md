@@ -1103,3 +1103,16 @@ QA必须从实际 _plan_due_task_batch 入口，在超过旧global阈值且生�
 `design_status=complete/resync=true`：遵循[Telegram Updates协议](https://core.telegram.org/api/updates)，无计数按0处理；既有连续性式pts-count<=当前channel_pts仍必须成立，且pts必须为正、count不得为负。零/空count仅可消费已被当前PTS覆盖的事件，不允许以0跨越未来PTS缺口；不手改游标、不删除durable记录。QA用真实消费入口覆盖0/None同PTS、0/None未来PTS仍gap、负count拒绝，结合正式Planner入口回归。
 
 反向检查补齐证据来源：后续durable ingress748为pts5605574/count0，单凭任务游标5605573不能确认；共享Collector已完成该channel的difference并原子持久化全部delivery和channel cursor。因此无计数更新采用明确的两类连续性证据：已消费Task PTS覆盖，或同authorization update state、同peer的正式Collector `state=live`、channel `status=live/empty`、`final=true` 且完成PTS覆盖该事件。后一依据只用于count=0，不把未知缺口当连续、不使用其他群/common PTS、过期generation或too_long/slice证明完整。消费仍按durable ingress顺序逐项推进实际event PTS，不直接跳到Collector尾部；旧快照无需改写。QA须从正式_apply_channel_batch提交证据，并覆盖其他peer/authorization、未完成、too_long、缺失与不足PTS拒绝。该证据合同替代仅按单条pts_count复核difference的错误假设，resync=true。
+
+### 2026-09-10：乱序到达的频道差量区间证明
+
+生产反向检查：单条channel update先于覆盖它的channel difference到达，原消费器按ingress顺序停在单条更新上，无法处理稍后已持久化的补差。Telegram的Common PTS与各频道PTS是独立序列，不能把通用DifferenceMessages的数字直接当频道连续性证明。协议依据：[Working with Updates](https://core.telegram.org/api/updates)、[channelDifference](https://core.telegram.org/constructor/updates.channelDifference)。以下是本系统的证据与消费合同。
+
+- Collector将实际 `getChannelDifference(requested_pts)` 的正常响应区间 `(requested_pts, response_pts]` 与该批更新同事务写入共享事件表，内部constructor为 `ChannelDifferenceRange`，空normalized_items，不产生消息投递、SourceEvent、义务或发送成功。Common difference、too_long、未知/无效请求起点不得生成证明；正常未结束分页仅证明本页实际返回的区间。
+- 单条更新不满足原PTS相邻关系时，只允许当前授权状态ID、当前source peer、当前epoch订阅起点之后的持久化ChannelDifferenceRange证明接续：区间起点不高于已消费channel_pts，终点覆盖该条更新PTS。不得以较新的cursor/final、其他频道、其他授权、旧订阅或一般DifferenceMessages信封代替。取得证明后仍逐条消费、按原有身份去重，不跳过待消费消息，不直接推进到证明终点。
+- 若Task.stats.clone_gap_at仍高于stream.last_consumed_ingress_order_no且缺少上述证明，下一次正式Collector对该peer从stream.channel_pts请求补差，保留原shared cursor和全部durable事件。取得覆盖头部缺口的区间后继续正常shared cursor分页，避免对首个slice反复请求同一页。只针对当前可运行epoch的未证明PTS缺口，不处理paused/stopped/blocked或too_long。已有真实too_long保留不可恢复边界。
+- 缺口标记在普通final投影后仍有效：stream即使已投影为catching_up/live，只要队首缺口尚未消费且没有区间证明，仍从该frontier补差；不得因投影状态变化丢失待补差证据。补差请求本身不直接修改shared cursor，返回批次仍按正式Collector流程持久化。
+- 无schema迁移、消息体格式或前端API变化。ChannelDifferenceRange属于采集协议证据，不是Telegram消息存在事实。新模块只处理这类证据，复用既有Ingress租约、fencing和幂等键。
+- QA必须复现“frontier=78；先收到pts80/count1；后收到实际请求78→81的频道差量”并保持原顺序/零重复消息；缺少证明、错误授权/peer/epoch、只有较新cursor、Common PTS、too_long均不得放行。补差从未证明frontier发起，获得第一页覆盖头部的证明后继续下页；空正常区间不得生成消息，暂停状态仍稳定。
+
+Product Design Complete：本节作为生产反向检查后的resync补正；原暂停、too_long、发送池和完整Clone验收边界均保持。

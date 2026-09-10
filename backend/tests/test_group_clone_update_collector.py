@@ -95,6 +95,11 @@ def test_collector_takes_over_and_persists_channel_delivery(
         stream = session.scalar(select(CloneSourceStreamState))
         assert event is not None and event.source_message_id == 11
         assert stream.channel_pts == 501
+        from app.models.telegram_updates import TelegramAuthorizationUpdateEvent
+        proof = session.scalar(select(TelegramAuthorizationUpdateEvent).where(
+            TelegramAuthorizationUpdateEvent.constructor_name == "ChannelDifferenceRange",
+        ))
+        assert (proof.pts_evidence, proof.pts_count_evidence) == (501, 1)
 
 
 def test_active_foreign_owner_is_not_stolen(collector_runtime, monkeypatch) -> None:

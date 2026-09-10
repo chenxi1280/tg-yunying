@@ -21,6 +21,7 @@ from app.models.telegram_updates import (
 from app.services._common import _now, gateway
 from app.services.developer_apps import credentials_for_authorization
 from .group_mutation_authority import release_exclusive_authority
+from .telegram_channel_difference_ranges import channel_difference_covers
 
 logger = logging.getLogger(__name__)
 
@@ -265,7 +266,9 @@ def _pts_continuous(session, stream, envelope) -> bool:
         return False
     if pts - count <= int(stream.channel_pts or 0):
         return True
-    return count == 0 and pts <= _completed_channel_pts(session, stream, envelope)
+    if count == 0 and pts <= _completed_channel_pts(session, stream, envelope):
+        return True
+    return channel_difference_covers(session, stream, envelope)
 
 
 def _completed_channel_pts(session, stream, envelope) -> int:
