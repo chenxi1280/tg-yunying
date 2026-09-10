@@ -14,7 +14,7 @@ python3 deploy/local_release.py prepare --ref <完整SHA> --platform linux/amd64
 
 本地 Docker daemon 与 Buildx 可用、登录 GHCR 并有镜像写权限、npm 可用是准备前提。目标 platform 必须与生产匹配；不会自动切换到远端构建。Docker 本地持久缓存按原 Dockerfile 使用，仍构建三个镜像，不猜测组件影响范围。
 
-部署前按批次将 origin/master 与 origin/release 冻结到同一 SHA，准备环境中的 GHCR_USERNAME/GHCR_TOKEN（不放命令行或源码）及 SSH alias。随后：
+部署前按批次将 origin/master 与 origin/release 冻结到同一 SHA，准备环境中的 GHCR_USERNAME/GHCR_TOKEN（不放命令行或源码）、PUBLIC_APP_BASE_URL 及 SSH alias。PUBLIC_APP_BASE_URL 必须先从当前生产 `.image.env` 只读核对并显式传入本地进程；旧 Actions 变量不会自动继承。随后：
 
 ```bash
 python3 deploy/local_release.py deploy \

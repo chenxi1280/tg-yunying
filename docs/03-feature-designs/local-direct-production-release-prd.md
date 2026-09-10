@@ -10,6 +10,7 @@
 - master 汇总、release 冻结继续追踪同一个已提交 SHA。prepare 从 Git 对象建立隔离源码，不打包工作区脏文件。deploy 前读取 origin 的 master/release，要求均为清单 SHA；不会自动合并、移动分支或选择旁边提交。
 - prepare 保留用户指定虚拟环境解释器的入口路径，不解析其最终符号链接为全局解释器；对冻结源码执行用户指定的定向 pytest（每批硬超时 60 秒）、前端构建及三个 Docker 镜像构建，目标平台显式传入。pytest 范围写入清单，不伪称全量回归。迁移/共享调度/授权变更由 Release Gate 指定相应集成回归；不能用本地检查代替生产 E4。
 - 镜像继续存于 GHCR，但不调用 GitHub Actions。构建以 SHA 标签上传，发布只使用构建返回的不可变 digest。Docker 登录由现有本地 credential store 管理；远端拉取继续使用现有 GHCR_USERNAME/GHCR_TOKEN 环境配置。凭据不进入清单。
+- deploy 的调用环境须显式提供既有 `PUBLIC_APP_BASE_URL`（或由 release.sh 根据显式 `TGYUNYING_WEB_HOST` 生成）。迁出 Actions 后不可假定旧工作流变量会自动进入本地进程；部署前只读核对当前 `.image.env` 中的已生效 URL，并向新发布传递同值。运行环境检查失败时保留原 deployment receipt，核对 current、容器和失败阶段后才能明确建立新的安装记录，不能覆盖原回执来重放不确定安装。
 - manifest 记录源码 SHA、平台、测试命令、日志 hash、三个镜像 digest 与 preparation 状态。它是本地受信任操作员的记录，不是 Actions attestation，不提供防恶意本机篡改承诺。
 - deploy 仅接受准备成功的同 SHA 清单，复用该 SHA 的 release.sh、server-install-release.sh、compose-up.sh。原先镜像先拉取、迁移、worker 完整停启、调度激活、主机锁、在途 unknown 不重放及安装只派发一次规则不变。
 - 安装后独立读取 current/.image.env、backend/worker 的 RELEASE_SHA、运行健康及共享调度 verify-active。输出 release_passed 与 business_evidence=unproven；失败不自动重新安装。
