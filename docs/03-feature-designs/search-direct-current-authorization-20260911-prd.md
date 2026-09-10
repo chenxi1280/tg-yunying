@@ -70,3 +70,11 @@ AI 活群覆盖候选入口同样遵守当前直连传输政策：不得根据�
 - 原 `fact_first_v3` 不使用旧静默窗口/速率字段。迁移后自然产生的新义务按当前合同执行，不为验收修改日目标或复用未知义务。
 - 本次短暂停止精确搜索 Task 的新工作，沿正式 pause/resume 入口审计并保留 unknown；发布后恢复原运行状态。其他业务及账号授权不随此问题停用。
 - 验证必须覆盖真实跨进程 caller→owner→caller 识别请求与 typed decision、错误/断线、未知引用拒绝、普通 owner RPC 回归；部署后检查新搜索 Action→Attempt→owner→typed click。此前未知动作不自动重放。
+
+## 8. 实际 Gateway 客户端身份入口补正（2026-09-11）
+
+`d9818794` 已通过账号与 owner 验证，修复后的新搜索请求获得真实 owner/出口证明；实际 Gateway 的 `_search_join_client_metadata` 仍套用旧搜索指纹必填条件，导致 `search_join client_metadata incomplete`，目标点击尚未完成。此处必须按已批准的 owner-managed 合同补正。
+
+新直连载荷在实际 Gateway 客户端获取入口使用空 metadata 请求，表示复用 owner 已有身份；不补造 device/app/client_identity_key。已有客户端不能因此断开重建，首次连接仍由正式 owner lifecycle 创建。旧合同的 metadata 校验保持显式旧语义；直连非空 metadata 或错误 owner policy 仍拒绝。排名入口同样验证其正式客户端路径，不以 schema/transport 单独通过替代 Gateway 路径验收。
+
+增加直接调用实际 `TelethonTelegramGateway` 公共搜索入口的回归，经过其真实异步方法、生命周期缓存和搜索协议解析，仅替换外部 Telegram 传输。必须证明拿到原 owner 客户端、完成 pure-click typed fact、不调用入群、并保留实际 Gateway 的 transport proof；同时覆盖排名客户端路径与旧载荷拒绝。生产精确暂停/恢复原 Task，既有 6 条 closed_unknown 继续保留。

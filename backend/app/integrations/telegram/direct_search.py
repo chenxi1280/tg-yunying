@@ -9,7 +9,7 @@ from typing import Callable
 import requests
 
 from app.search_transport import (
-    DIRECT_FENCE_FIELDS, DIRECT_PROOF_SOURCE, DirectEgressPolicy,
+    DIRECT_FENCE_FIELDS, DIRECT_PROOF_SOURCE, DIRECT_METADATA_POLICY, DirectEgressPolicy, is_direct_search,
     require_direct_declaration,
 )
 
@@ -111,3 +111,14 @@ def probe_direct_egress(settings) -> str:
                                timeout=settings.telethon_client_connect_timeout_seconds)
         response.raise_for_status()
         return response.text.strip()
+
+
+def owner_client_metadata(payload: dict) -> dict[str, str]:
+    runtime = payload.get("runtime_environment") or {}
+    if not is_direct_search(runtime) or runtime.get("transport_mode") != "direct":
+        raise ValueError("direct_search_transport_contract_invalid")
+    if runtime.get("client_metadata_policy") != DIRECT_METADATA_POLICY:
+        raise ValueError("direct_search_metadata_policy_invalid")
+    if payload.get("client_metadata") not in (None, {}):
+        raise ValueError("direct_search_legacy_environment_forbidden")
+    return {}

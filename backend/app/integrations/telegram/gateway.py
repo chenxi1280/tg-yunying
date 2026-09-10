@@ -224,6 +224,11 @@ def _button_at(message: Any, row: int, col: int) -> Any | None:
 
 
 def _search_join_client_metadata(payload: dict[str, Any]) -> dict[str, str]:
+    from app.search_transport import is_direct_search
+    from .direct_search import owner_client_metadata
+
+    if is_direct_search(payload.get("runtime_environment")):
+        return owner_client_metadata(payload)
     metadata = payload.get("client_metadata") if isinstance(payload, dict) else None
     if not isinstance(metadata, dict):
         raise ValueError("search_join client_metadata missing")
@@ -244,6 +249,11 @@ def _search_transport_unavailable(exc: Exception) -> dict[str, Any]:
 
 
 def _rank_deboost_client_metadata(payload: dict[str, Any]) -> dict[str, str]:
+    from app.search_transport import is_direct_search
+    from .direct_search import owner_client_metadata
+
+    if is_direct_search(payload.get("runtime_environment")):
+        return owner_client_metadata(payload)
     metadata = payload.get("client_metadata") if isinstance(payload, dict) else None
     if not isinstance(metadata, dict):
         return {}

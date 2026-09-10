@@ -1,5 +1,6 @@
 # 项目结构索引
 
+> **2026-09-11 Gateway 身份入口补正：** `direct_search.owner_client_metadata` 供实际搜索和排名 Gateway 获取客户端时校验 owner-managed 空 metadata；复用原 owner lifecycle 缓存，不构造旧指纹。`test_direct_search_gateway_path.py` 覆盖公共 Gateway、生命周期、搜索协议与 Dispatcher typed fact 规范化，以及验证码和非法载荷拒绝。
 > **2026-09-11 搜索 owner 回调补正：** `telegram_owner/callbacks.py` 在单次已认证 IPC 内将图片识别请求回传 caller，保留原 solver/OCR/deadline，再返回 typed decision；函数和数据库 Session 不经序列化。`rpc.py` 将编码失败明确归为未提交，`server.py` 在 owner 调用前绑定回调引用；实际 Telegram 操作仍只由 owner 执行。测试入口 `test_telegram_owner_callbacks.py`，合同见[搜索直连](../03-feature-designs/search-direct-current-authorization-20260911-prd.md#7-owner-图片识别回调补正2026-09-11)。
 > **2026-09-11 搜索当前授权直连（本地验证，待发布）：** `search_transport.py` 定义 `sv_current_direct_v1`；`services/task_center/direct_search_runtime.py` / `direct_rank_search.py` 将搜索点击及排名规划、启动和豁免查询接入当前 SV 授权，`integrations/telegram/direct_search.py` 在真实 owner 上下文验证固定出口并写传输证据，`direct_search_results.py` 保留缺证据的远端未知。`search_direct_migration.py` 提供精确 Task 配置的 preview/CAS/apply/审计，保留旧 Action。`ai_group_circuit_eligibility.py` 不再用历史代理熔断排除直连账号；远端 fence 标记实际直连归因。前端 `SearchTransportNotice.tsx` 展示合同与代理容量不适用；`AuthorizationLoginModal.tsx` / `AuthorizationSlotCard.tsx` 从授权面板提取展示，备用登录提交空代理。合同与验收：[搜索直连专项](../03-feature-designs/search-direct-current-authorization-20260911-prd.md)。
 
