@@ -10,7 +10,7 @@ import pytest
 pytestmark = pytest.mark.no_postgres
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SSH_RETRY_SCRIPT = PROJECT_ROOT / "deploy/ssh_retry.sh"
-DEPLOY_WORKFLOW = PROJECT_ROOT / ".github/workflows/deploy-production.yml"
+DEPLOY_WORKFLOW = PROJECT_ROOT / ".github/workflows/deploy-production.yml.disabled"
 
 
 def _fake_ssh(tmp_path: Path) -> Path:

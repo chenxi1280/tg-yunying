@@ -30,7 +30,7 @@ def test_release_runs_preparing_readiness_takeover_then_activation() -> None:
 
 
 def test_post_deploy_requires_active_contract_verification() -> None:
-    workflow = (ROOT / ".github" / "workflows" / "deploy-production.yml").read_text()
+    workflow = (ROOT / ".github" / "workflows" / "deploy-production.yml.disabled").read_text()
     assert "Verify active shared dispatch contract" in workflow
     assert "manage_shared_dispatch_contract verify-active" in workflow
 

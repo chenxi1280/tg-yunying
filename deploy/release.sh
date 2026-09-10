@@ -136,6 +136,7 @@ require_command ssh
 require_command scp
 require_command mktemp
 require_command tar
+require_command python3
 require_positive_integer RELEASE_SSH_ATTEMPTS "$RELEASE_SSH_ATTEMPTS"
 require_positive_integer RELEASE_SSH_RETRY_DELAY "$RELEASE_SSH_RETRY_DELAY"
 require_positive_integer SSH_CONNECT_TIMEOUT "$SSH_CONNECT_TIMEOUT"
@@ -172,14 +173,15 @@ TGYUNYING_BACKEND_IMAGE="${TGYUNYING_BACKEND_IMAGE:-${IMAGE_NAMESPACE}/tg-yunyin
 TGYUNYING_IMAGE_VERIFICATION_IMAGE="${TGYUNYING_IMAGE_VERIFICATION_IMAGE:-${IMAGE_NAMESPACE}/tg-yunying-image-verification-worker:${image_tag}}"
 TGYUNYING_FRONTEND_IMAGE="${TGYUNYING_FRONTEND_IMAGE:-${IMAGE_NAMESPACE}/tg-yunying-frontend:${image_tag}}"
 release_id="$(date '+%Y%m%d%H%M%S')_${short_sha}"
-archive_path="$(mktemp "/tmp/tgyunying-release-${release_id}.XXXXXX.tar.gz")"
-image_env_path="$(mktemp "/tmp/tgyunying-image-env-${release_id}.XXXXXX.env")"
+release_temp_dir="$(mktemp -d "/tmp/tgyunying-release-${release_id}.XXXXXX")"
+archive_path="${release_temp_dir}/source.tar.gz"
+image_env_path="${release_temp_dir}/image.env"
 remote_archive="${BASE_DIR}/incoming/${release_id}.tar.gz"
 remote_tmp_archive="/tmp/tgyunying-release-${release_id}.tar.gz"
 remote_image_env="/tmp/tgyunying-release-${release_id}.image.env"
 remote_release_dir="${BASE_DIR}/releases/${release_id}"
 
-trap '[[ "$KEEP_ARCHIVE" == "1" ]] || rm -f "$archive_path" "$image_env_path"' EXIT
+trap '[[ "$KEEP_ARCHIVE" == "1" ]] || rm -rf "$release_temp_dir"' EXIT
 
 cat >"$image_env_path" <<EOF
 TGYUNYING_BACKEND_IMAGE=${TGYUNYING_BACKEND_IMAGE}
@@ -284,7 +286,7 @@ run_with_retries "Uploading image env" \
   scp "${SSH_OPTS[@]}" "$image_env_path" "${USER_NAME}@${HOST}:${remote_image_env}"
 
 echo "==> Installing release ${release_id} on ${HOST}"
-timeout "$REMOTE_INSTALL_TIMEOUT_SECONDS" ssh "${SSH_OPTS[@]}" "${USER_NAME}@${HOST}" "\
+python3 "$(dirname "${BASH_SOURCE[0]}")/run_with_timeout.py" "$REMOTE_INSTALL_TIMEOUT_SECONDS" ssh "${SSH_OPTS[@]}" "${USER_NAME}@${HOST}" "\
 set -euo pipefail && \
 mkdir -p '${BASE_DIR}/incoming' '${BASE_DIR}/releases' && \
 existing_image_env='' && \

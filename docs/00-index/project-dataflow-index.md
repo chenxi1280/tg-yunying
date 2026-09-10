@@ -1,5 +1,7 @@
 # 项目数据流转索引
 
+> **2026-09-10 本地直接发布：** 发布链路：冻结 commit → 隔离源码本地测试 → Docker buildx/GHCR digest → prepared-release.json → release.sh/主机锁/迁移及全量切换 → runtime.json/deployment.json → 四类任务 typed E4。日志和发布清单在本地输出目录，生产凭据不写入清单；不再查询 Actions artifact。 合同见 `local-direct-production-release-prd.md`。
+
 > **2026-09-10 活群状态与诊断：** 真实 Action/FOP/原 Attempt → 救援终态投影；只读序列化不回写旧记录。显式刷新 → Action 行锁与数据库重读 → 原义务/调用证据检查 → 原许可刷新或保留终态。原发送 ID 后 bounded history → 原始/按钮候选计数、角色查询异常、拒绝分类 → 原 Action 诊断与准入阻塞证据；发送 RPC 异常类型/阶段与远端 mutation 状态独立写入 Action/Attempt。原 ledger 截止 → 排期分类；当前义务/最新 Job → 应急、准入、模型、发送待确认 → 严格匹配 typed 消息事实。各阶段数量不累加，既有未知/截止/发送约束不改变。合同见 `docs/03-feature-designs/ai-group-state-diagnostics-integrity-20260910-prd.md`。
 
 > **2026-09-10 AI生成结算一致性（e62a0d80已发布，整批E4仍未完成）：** 原生成结果持久化后，`ai_generation_ready_settlement`以Task→Action→Job锁、原claim身份和candidate hash，将Action解除生成占用与Job ready一次提交；过期generating Job遇到完整ready候选时保持原窗口/正文并完成本地结算，Gateway/unknown仍走原对账。`emergency_pending`阶段与完整原因分开保存，消除varchar(32)溢出。v2话题前置与绑定共用`fact_id_map`可用事实口径，清洗及路由规则不变。合同：`docs/03-feature-designs/ai-generation-settlement-integrity-20260910-prd.md`。

@@ -128,7 +128,7 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 ## 发布和验证
 
-- 生产发布路径默认是 `master -> release -> GitHub Actions Deploy Production`。
+- 生产发布路径是 `master -> release -> 本地 deploy/local_release.py prepare/deploy -> SSH 安装 -> 生产真实业务验收`，不依赖 GitHub Actions；详见 `docs/03-feature-designs/local-direct-production-release-prd.md`。
 - L2/L3 或影响生产的任务必须有 Release Gate。
 - 后端测试默认使用 `backend/.venv`。
 - 不允许 silent fallback、mock success 或未经验证的完成声明。
