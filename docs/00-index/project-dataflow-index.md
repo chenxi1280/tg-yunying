@@ -1702,3 +1702,5 @@ legacy-only A 冷启动分支固定为 `frozen legacy A -> 原 A Session 只读 
 > **2026-09-10 CPU/内存热点修复：** Planner presence -> managed_presence_queries -> 群 ID/状态/可见性/时间列 -> 原统计公式；不加载整条 Action JSON。AI 去重 -> exact/group exact ID -> 同一账号窗口一次投影 -> 原顺序 similar/semantic -> template ID；同租户账号范围、时间窗口、预占唯一键和发送前新鲜复查不变。 设计与验收见 `docs/03-feature-designs/cpu-memory-hotpath-repair-20260910-prd.md`。
 
 > **2026-09-10 第二轮热点resync：** Listener远端消息ID→全部Attempt状态索引→Action peer归属核验；AI近期历史→同租户同群按计划时间索引→原limit与字段投影；retention→原全部保护引用的NOT EXISTS→原排序/锁定批次→删除前保护复核。不得缩小状态范围或删除保护引用。
+
+> **2026-09-10预关注事务边界：** Task配置+账号目标事实 -> 不可变快照 -> 提交准备事务 -> 并行Gateway关注 -> 成功事实 -> 刷新并核验Action认领/Task生命周期/账号状态 -> 合并当前Action结果或停止旧调用。远端等待期间无父Session事务；认领变化不丢成功事实、不覆盖新owner结果。详见CPU/内存热点修复PRD第三轮。

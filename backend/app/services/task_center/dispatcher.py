@@ -140,6 +140,7 @@ from .engagement_runtime_resources import (
     settle_attempt_resources as settle_engagement_attempt_resources,
 )
 from .task_retirement import TaskGatewayFenced, guard_attempt_call_start
+from .task_prejoin_channels import PrejoinOwnershipChanged
 from app.services.account_freeze import AccountFrozenBeforeGateway, guard_account_call_start, mark_account_frozen
 from app.integrations.telegram.account_freeze import is_account_frozen_error
 from .legacy_anchor_rewrite import reject_legacy_anchor_rewrite_before_send
@@ -550,6 +551,7 @@ def dispatch_action(
         return False
     if _legacy_content_scope_takeover_pending(action):
         return False
+    action_id = action.id
     try:
         dispatched = _dispatch_action(
             session,
@@ -557,6 +559,9 @@ def dispatch_action(
             generation_dependencies=generation_dependencies,
             comment_generation_dependencies=comment_generation_dependencies,
         )
+    except PrejoinOwnershipChanged:
+        logger.warning("prejoin dispatch ownership changed action_id=%s", action_id)
+        return False
     except BaseException:
         _release_runtime_resources(action)
         raise
@@ -1362,7 +1367,7 @@ def _dispatch_action(
         _update_reply_payload_error_stats(action)
         _fail(action, FailureType.UNKNOWN.value, payload_error_message(exc))
         return True
-    except SQLAlchemyError:
+    except (SQLAlchemyError, PrejoinOwnershipChanged):
         raise
     except Exception as exc:  # noqa: BLE001 - worker must keep draining.
         return _handle_dispatch_exception(session, action, exc)

@@ -38,3 +38,11 @@ Product Design Complete：complete（限定以上确定性热点，无全面调�
 4. 两个索引使用新的向前迁移并在PG并发创建；已存在索引必须核对有效/ready和定义，冲突或无效状态显式失败，不自动drop/rebuild。无业务字段迁移与线上手工状态改写。发布前冻结SHA与迁移头，保留第一轮34项配置；成功后再清理上一轮镜像。
 
 第二轮Product Design Complete：complete（以上最小SQL/索引改动）；状态resync已同步开发与QA。上线若仍有慢查询/锁链须继续返回具体路径诊断，不能以资源下降声明全部修复。
+
+## 第三轮：预关注远端调用持有事务（resync）
+
+生产1129407a已包含第二轮改动：归属点查4.1ms，真实活群recent120条55.4ms，0233索引valid/ready；但仍出现279—296秒idle-in-transaction。只读线程栈确认多个Dispatcher停在`task_prejoin_channels._follow_parallel`等待Gateway，父Session的最后查询为预关注事实读取。
+
+第三轮只修改该路径的事务边界：读取频道列表、已关注事实后，用不可变快照保存远端所需账号ID/会话密文及Action认领身份、Task生命周期，提交准备事务，再执行既有并行关注；线程不得读取ORM对象，从而避免commit过期加载重新开启事务。远端返回后重新锁定并刷新Action、读取Task生命周期；只有status/owner/token/account/task epoch及Task状态/epoch/退役标记均未变化才能更新Action并继续原调用链。认领或生命周期变化时保留确认成功的关注事实，显式记录停止旧调用，跳过旧Action终态投影；运行资源仍由现有精确owner作用域释放。失败结果保持原有错误与重试语义，异常不伪装成功，不增加超时、重试、降并发或历史状态改写。
+
+成功事实按原账号/目标群/频道身份幂等写入，不能因认领改变而丢失；Action结果合并使用刷新后的当前值，不能覆盖并发新增字段。无待关注频道不额外提交事务。QA覆盖远端期间Session无事务、commit过期对象不被线程读取、部分成功复用、认领改变/任务暂停后不覆盖或继续发送、异常传播及既有准入流程。第三轮Product Design Complete：complete，范围限定该已证实的远端等待路径；不据此声明全系统所有远端调用均无长事务。

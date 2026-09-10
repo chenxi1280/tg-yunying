@@ -291,6 +291,8 @@ surface_identity_hash
 
 任务配置的 `group_ai_prejoin_channel_ids` 是 C2 的前置事实，不因账号已在群或历史 membership Action 为 `already_joined` 而跳过。Dispatcher 在 fact-first 正文前复核该账号-目标的 `configured_channel_follow` facts；缺少的频道才调用 Gateway，全部成功后才允许 observation/正文，失败则保持当前 Action pending 并保留逐频道失败明细。
 
+2026-09-10事务修正：预关注Gateway只接收不可变数据快照，远端等待期间不持有父Session事务或账号行锁；返回后重新核验Action认领、Task生命周期与账号可用性。旧认领已变化时只保留确认成功的账号-目标关注事实，不覆盖新Action结果或继续正文，原精确owner资源作用域负责释放。完整并发验收见`cpu-memory-hotpath-repair-20260910-prd.md`第三轮。
+
 Action 失败按远端 mutation 边界分流：明确 `remote_mutation_state=false` 或未进 Gateway 时，旧 Action 保持终态并以同一 requirement key 创建递增 `replan_attempt` 的替代 Action；Gateway 已开始且为 `true|unknown`、已有远端事实或 `closed_unknown` 时保留原绑定，不清空、不通用重试；账号不可用、目标无效、admission version stale 不重建同一账号动作。旧链路存量只允许按同样证据做可审计的 pre-Gateway 接管，不删除历史 Action/Attempt/远端事实。
 
 ### 6.3 requirement 集合闭合与 ready CAS

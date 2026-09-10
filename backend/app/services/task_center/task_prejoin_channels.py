@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -13,6 +14,37 @@ from app.services._common import _now, gateway
 
 
 MAX_PREJOIN_CHANNELS = 3
+
+
+class PrejoinOwnershipChanged(RuntimeError):
+    """The completed prerequisite no longer belongs to this dispatch."""
+
+
+@dataclass(frozen=True)
+class PrejoinSnapshot:
+    action_id: str
+    tenant_id: int
+    account_id: int
+    group_id: int
+    task_id: str
+    claim: tuple
+    task_state: tuple
+    account_state: tuple
+    session_ciphertext: str = field(repr=False)
+
+
+def _claim_state(action: Action) -> tuple:
+    return (action.status, action.claim_owner, action.claim_token,
+            action.account_id, action.task_id, action.task_lifecycle_epoch)
+
+
+def _task_state(task: Task) -> tuple:
+    return (task.status, task.task_lifecycle_epoch, task.retired_at,
+            task.deleted_at, tuple(_configured_refs(task)))
+
+
+def _account_state(account: TgAccount) -> tuple:
+    return (account.status, account.deleted_at, account.telegram_frozen)
 
 
 def ensure_prejoin_channels(
@@ -27,27 +59,31 @@ def ensure_prejoin_channels(
     refs = _configured_refs(task)
     if not refs:
         return True
-    followed = _persisted_followed_refs(session, action, account, target_group)
+    followed = _persisted_followed_refs(session, action, account, target_group=target_group)
     followed.update((action.result or {}).get("configured_channel_followed_refs") or [])
     pending = [ref for ref in refs if ref not in followed]
     if not pending:
         return True
-    results = _follow_parallel(account, credentials, pending)
+    snapshot = PrejoinSnapshot(
+        action_id=action.id, tenant_id=action.tenant_id, account_id=account.id,
+        group_id=target_group.id, task_id=task.id, claim=_claim_state(action),
+        task_state=_task_state(task), account_state=_account_state(account),
+        session_ciphertext=account.session_ciphertext,
+    )
+    session.commit()
+    results = _follow_parallel(snapshot, credentials, pending)
+    _record_successes(session, snapshot, results)
+    _refresh_ownership(session, snapshot)
+    return _apply_results(action, followed, results)
+
+
+def _apply_results(action: Action, followed: set[str], results: dict) -> bool:
     failures = {ref: result.detail for ref, result in results.items() if not result.ok}
-    for ref, result in results.items():
-        if result.ok:
-            followed.add(ref)
-            _record_follow_fact(
-                session,
-                action,
-                account=account,
-                target_group=target_group,
-                channel_ref=ref,
-                detail=result.detail,
-            )
+    completed = (followed | {ref for ref, result in results.items() if result.ok}
+                 | set((action.result or {}).get("configured_channel_followed_refs") or []))
     action.result = {
         **dict(action.result or {}),
-        "configured_channel_followed_refs": sorted(followed),
+        "configured_channel_followed_refs": sorted(completed),
     }
     if not failures:
         return True
@@ -59,10 +95,35 @@ def ensure_prejoin_channels(
     return False
 
 
+def _record_successes(session: Session, snapshot: PrejoinSnapshot, results: dict) -> None:
+    for ref, result in results.items():
+        if result.ok:
+            _record_follow_fact(session, snapshot, channel_ref=ref, detail=result.detail)
+
+
+def _refresh_ownership(session: Session, snapshot: PrejoinSnapshot) -> None:
+    action = session.scalar(select(Action).where(Action.id == snapshot.action_id)
+        .with_for_update().execution_options(populate_existing=True))
+    task = session.get(Task, snapshot.task_id, populate_existing=True)
+    account = session.get(TgAccount, snapshot.account_id, populate_existing=True)
+    current = (
+        action is not None and _claim_state(action) == snapshot.claim
+        and task is not None and _task_state(task) == snapshot.task_state
+        and account is not None and _account_state(account) == snapshot.account_state
+        and account.session_ciphertext == snapshot.session_ciphertext
+    )
+    if current:
+        return
+    # A confirmed follow remains true even when this dispatch loses ownership.
+    session.commit()
+    raise PrejoinOwnershipChanged("configured_channel_follow_dispatch_changed")
+
+
 def _persisted_followed_refs(
     session: Session,
     action: Action,
     account: TgAccount,
+    *,
     target_group: TgGroup,
 ) -> set[str]:
     facts = session.scalars(
@@ -80,12 +141,12 @@ def _persisted_followed_refs(
     }
 
 
-def _follow_parallel(account: TgAccount, credentials, refs: list[str]) -> dict:
+def _follow_parallel(snapshot: PrejoinSnapshot, credentials, refs: list[str]) -> dict:
     def follow(ref: str):
         return gateway.ensure_channel_membership(
-            account.id,
+            snapshot.account_id,
             ref,
-            account.session_ciphertext,
+            snapshot.session_ciphertext,
             credentials,
             invite_link=ref,
         )
@@ -96,20 +157,18 @@ def _follow_parallel(account: TgAccount, credentials, refs: list[str]) -> dict:
 
 def _record_follow_fact(
     session: Session,
-    action: Action,
+    snapshot: PrejoinSnapshot,
     *,
-    account: TgAccount,
-    target_group: TgGroup,
     channel_ref: str,
     detail: str,
 ) -> None:
     identity = hashlib.sha256(
-        f"{account.id}:{target_group.id}:{channel_ref}".encode()
+        f"{snapshot.account_id}:{snapshot.group_id}:{channel_ref}".encode()
     ).hexdigest()
     values = {
-        "tenant_id": action.tenant_id,
-        "account_id": account.id,
-        "target_group_id": target_group.id,
+        "tenant_id": snapshot.tenant_id,
+        "account_id": snapshot.account_id,
+        "target_group_id": snapshot.group_id,
         "fact_kind": "configured_channel_follow",
         "fact_identity_hash": identity,
         "fact_version": 1,

@@ -12,3 +12,8 @@
 
 - 第一轮1e9358f8发布通过：19应用容器、34配置指纹、API/static/OCR/合同验证通过；Planner栈不再解码完整Action JSON。第二轮resync：Listener全状态remote_id扫描、按群记忆排序扫描、retention COALESCE(EXISTS)关联子查询，PRD已补齐；追加locked_paths=engagement_unowned_activity.py、group_ai_chat.py近期记忆投影入口/新模块、runtime_retention_selection.py、模型索引/0233迁移与专项测试。不得弱化保护或跳过业务来消除等待。
 - 第二轮自审/QA：45项相关单元通过，新增retention三值逻辑等价后19项通过（重叠）；真PG首批6项通过（含0233迁移），第二批6项通过（含12000行索引计划/低于1秒点查和5项真实并发FK保护）。查询保护谓词、消息状态/peer范围与去重不变。线上antijoin试算仍触发15秒只读超时，当前仅确认计划可优化，耗时需发布后复测；未以EXPLAIN成本替代实测。
+
+- 第二轮由合并发布1129407a实际安装：独立读回19容器、34配置一致、0233索引valid/ready，真实查询4.1ms/55.4ms；不得重装此前被维护锁拦截的2df94a9d候选。
+- 第三轮prod-diagnosis -> product complete/resync -> dev：线程栈确认预关注Gateway持有父Session长事务。locked_paths追加task_prejoin_channels.py、Dispatcher异常传播入口、prejoin定向测试及相关合同/索引。快照释放事务并在结果后核验原认领；成功事实保留，旧调用不投影新owner状态。17项单元/准入回归通过，真实PG及Release Gate待完成。
+
+- 第三轮定向QA：17项首批准入/事务单元、45项运行资源/持续调度/关注/退役回归通过；独立PostgreSQL2项通过，实测RPC期间父连接xact_start为空且另一连接可NOWAIT取得账号行锁，认领替换后成功事实仍持久且不覆盖新token。新增无待处理频道/异常传播测试随冻结制品QA复验。没有生产数据改写；Release Gate允许进入本地制品准备，业务验收仍pending。
