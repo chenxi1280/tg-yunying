@@ -24,9 +24,12 @@ type DetailSectionKind = 'aiCycles' | 'messageGroups' | 'relayBatches' | 'admiss
 type DetailPagination = { current: number; pageSize: number; total: number; loading?: boolean };
 
 const rescueStatusLabel = (status: string) => {
+  if (status === 'pending') return '已触发';
+  if (status === 'invite_success') return '邀请成功';
+  if (status === 'invite_failed') return '邀请失败';
+  if (status === 'unconfigured') return '救援配置缺失';
+  if (status === 'unknown_after_send') return '结果未知';
   const labels: Record<string, string> = {
-    pending: '已触发', invite_success: '邀请成功', invite_failed: '邀请失败',
-    unconfigured: '救援配置缺失', unknown_after_send: '结果未知',
     closed_unknown: '未知结果已到期收口', skipped: '救援已跳过',
     cancelled: '救援已取消', expired: '救援已过期',
   };

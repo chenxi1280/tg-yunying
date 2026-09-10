@@ -24,7 +24,7 @@
 - 状态/统计/发送诊断：24 passed；查询优化及只读序列化变更后对应 21 个用例再次通过。
 - 控制提示观测、发后恢复和 E4 身份：60 passed。
 - 独立 PostgreSQL：3 passed，覆盖旧缓存覆盖并发终态、锁超时无状态修改和 PostgreSQL 查询执行。
-- 外发安全闭环、控制按钮和 Telethon 生命周期附加回归：57 passed。共 194 个独立用例通过。
+- 外发安全闭环、控制按钮和 Telethon 生命周期附加回归：57 passed。共 194 个独立用例通过。集成最新主线后，43 项关键回归通过。
 - 所有后端测试命令硬超时 60 秒；早期大批启动超时已明确记录，随后按真实依赖拆分运行，不计超时为通过。
 - 前端 TypeScript 和 Vite build 通过；Playwright 使用实际新组件和中性测试数据验证展示，截图 `output/playwright/ai-state-diagnostics.png`。该截图不构成生产证据。
 - 生产只读试算：在 `REPEATABLE READ READ ONLY` 进程中加载候选诊断函数，10 个运行活群输出结果分类及原日队列；无 Telegram/Provider 调用、无数据写入、无落地修改生产代码。确认 3 条原截止外排期仍单独显示。
@@ -44,3 +44,7 @@
 ## 生产执行记录
 
 待集成、Prepare、发布、独立读回完成后追加实际 SHA、run ID 和证据结论。
+
+### CI 反馈修复
+
+首轮 Prepare `34431678018` 的 no-postgres 分片 0 有一项前端源码合同断言失败（`test_task_center_admission_unknown_labels_are_operator_friendly`），该分片其余 1128 项通过。原因是等义标签表改写破坏固定源码表达式；保留既有 if 分支，仅追加新终态标签，未削弱测试或改动状态语义。完整前端合同测试及前端构建重验后生成新候选，再执行完整 Prepare。
