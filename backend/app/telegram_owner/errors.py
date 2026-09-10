@@ -22,6 +22,10 @@ class TelegramOwnerOutcomeUnknown(TelethonOperationTimeout):
         self.args = ("telegram_owner_response_lost_after_submit",)
 
 
+class TelegramOwnerCallbackError(RuntimeError):
+    remote_mutation_started = None
+
+
 class TelegramOwnerRemoteError(RuntimeError):
     def __init__(self, code: str):
         super().__init__(code)
@@ -36,13 +40,15 @@ def exception_payload(exc: Exception) -> dict:
 
 def raise_remote(payload: dict) -> None:
     name, message = payload["type"], payload["message"]
+    if name == "TelegramOwnerCallbackError":
+        raise TelegramOwnerCallbackError(message)
     if name == "TelegramOwnerRequestRejected":
         raise TelegramOwnerRequestRejected(message)
     if name == "TelethonOperationTimeout":
         raise TelethonOperationTimeout(
             transport_termination_acknowledged=payload["termination_acknowledged"] is True,
         )
-    builtins = {"ValueError": ValueError, "RuntimeError": RuntimeError,
+    builtins = {"ValueError": ValueError, "TypeError": TypeError, "RuntimeError": RuntimeError,
                 "TimeoutError": TimeoutError, "ConnectionError": ConnectionError}
     if name in builtins:
         raise builtins[name](message)

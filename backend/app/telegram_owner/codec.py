@@ -19,12 +19,18 @@ def loads(value: bytes):
 @lru_cache(maxsize=1)
 def _contracts() -> dict[str, type]:
     from app.integrations.telegram import contracts, message_observation, update_contracts
+    from app.integrations.telegram.search_join import (
+        ImageVerificationRequest, ImageVerificationDecision, ImageVerificationVote,
+    )
 
     modules = (contracts, message_observation, update_contracts)
-    return {
+    known = {
         name: value for module in modules for name, value in vars(module).items()
         if isinstance(value, type) and dataclasses.is_dataclass(value)
     }
+    return {**known, **{cls.__name__: cls for cls in (
+        ImageVerificationRequest, ImageVerificationDecision, ImageVerificationVote,
+    )}}
 
 
 def _encode(value):

@@ -13,6 +13,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from . import codec
+from .callbacks import restore_callbacks
 from .errors import exception_payload, TelegramOwnerRequestRejected
 from .executor import InvocationExecutor
 from .journal import InvocationJournal
@@ -65,7 +66,7 @@ class OwnerServer:
                 return {'ok': True, 'result': self.status()}
             if request.get('expected_instance') not in {None, '', self.instance_id}:
                 raise TelegramOwnerRequestRejected('telegram_owner_instance_changed_before_issue')
-            result = self._execute_owned(request, connection)
+            result = self._execute_owned(restore_callbacks(request, connection), connection)
             return {'ok': True, 'result': result, 'instance_id': self.instance_id}
         except Exception as exc:
             return {'ok': False, 'error': exception_payload(exc), 'instance_id': self.instance_id}

@@ -58,3 +58,15 @@ AI 活群覆盖候选入口同样遵守当前直连传输政策：不得根据�
 - 发布：冻结本地 linux/amd64 制品、正式导入/ID/平台/版本读回，所有 caller 指向唯一 owner。已有 144+3 恢复授权作为保全基线，部署前后核对新增失效。真实搜索点击/排名证据与剩余未恢复账号分别报告。
 
 关联：[授权归属与恢复](account-authorization-owner-and-recovery-20260910-prd.md)、[搜索点击](search-click-boost-prd.md)、[排名观察](search-rank-deboost-hardening-design.md)、[直连切换](account-direct-egress-cutover-20260910-prd.md)、[本地发布](local-direct-production-release-prd.md)。
+
+## 7. Owner 图片识别回调补正（2026-09-11）
+
+`9f709650` 已安装并通过运行、账号保全和唯一 owner 读回；配置迁移前后 14,834 条既有 Action 与受保护状态哈希一致。新动作暴露 `telegram_owner_unsupported_value_type:function`：正式搜索传入图片验证码 solver，原 IPC 不支持函数。当前搜索业务 E4 未通过，不能据发布成功关闭问题。
+
+- 识别函数及其 Provider/runtime 留在 caller 进程；不序列化函数、闭包、代码或数据库 Session。只有 `execute_search_join.image_verification_solver` 这一现有参数支持显式回调引用。
+- 在同一条已认证、单次 invocation 的 IPC 上交换带 request/callback/call identity 的识别请求和结果。只传既有 ImageVerificationRequest/Decision/Vote 的封闭数据结构；图片不写 owner journal。owner 仍独占 Telegram 连接与验证码按钮提交。
+- caller 在原调用线程执行识别，保持原 deadline、共识、模型和 OCR 策略；既有 RuntimeContract/ConsensusUnavailable 识别异常连同 code、votes 和原 monotonic deadline 原样恢复给 Gateway，保留既有未知 OCR 刷新和业务阻塞语义；其他识别错误按 callback 异常显式失败，不跳过验证码或伪造识别成功。
+- 无效引用、身份不匹配及未允许的函数参数明确拒绝；发送前序列化失败必须标记为确认未提交。提交后断线或回调期间异常仍保留原远端不确定性，不据回调错误推断 Telegram 未执行。
+- 原 `fact_first_v3` 不使用旧静默窗口/速率字段。迁移后自然产生的新义务按当前合同执行，不为验收修改日目标或复用未知义务。
+- 本次短暂停止精确搜索 Task 的新工作，沿正式 pause/resume 入口审计并保留 unknown；发布后恢复原运行状态。其他业务及账号授权不随此问题停用。
+- 验证必须覆盖真实跨进程 caller→owner→caller 识别请求与 typed decision、错误/断线、未知引用拒绝、普通 owner RPC 回归；部署后检查新搜索 Action→Attempt→owner→typed click。此前未知动作不自动重放。

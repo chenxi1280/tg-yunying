@@ -9,7 +9,8 @@ from multiprocessing.connection import Client
 from uuid import uuid4
 
 from . import codec
-from .errors import TelegramOwnerOutcomeUnknown, TelegramOwnerUnavailable, raise_remote
+from .errors import TelegramOwnerOutcomeUnknown, TelegramOwnerUnavailable, TelegramOwnerRequestRejected, raise_remote
+from .callbacks import CallbackClient
 
 
 @functools.lru_cache(maxsize=1)
@@ -43,8 +44,17 @@ class OwnerGateway:
         if method != "__status__":
             TelethonClientLifecycle._assert_remote_io_allowed()
 
-        request = codec.dumps({"method": method, "args": args, "kwargs": kwargs,
-                               "request_id": str(uuid4()), "root_identity": current_identity(), "expected_instance": expected_instance()})
+        request_id = str(uuid4())
+        callbacks = CallbackClient(request_id)
+        args, kwargs = callbacks.prepare(method, args, kwargs)
+        try:
+            request = codec.dumps({"method": method, "args": args, "kwargs": kwargs,
+                                   "request_id": request_id, "root_identity": current_identity(),
+                                   "expected_instance": expected_instance()})
+        except (TypeError, ValueError) as exc:
+            raise TelegramOwnerRequestRejected(
+                "telegram_owner_request_encoding_failed_before_submit:" + type(exc).__name__
+            ) from exc
         try:
             connection = Client(self.settings.telegram_owner_socket, family="AF_UNIX", authkey=ipc_key(self.settings))
         except (OSError, EOFError) as exc:
@@ -52,7 +62,7 @@ class OwnerGateway:
         with connection:
             try:
                 connection.send_bytes(request)
-                response = codec.loads(connection.recv_bytes())
+                response = callbacks.receive(connection)
             except (OSError, EOFError) as exc:
                 raise TelegramOwnerOutcomeUnknown() from exc
         if not response["ok"]:
