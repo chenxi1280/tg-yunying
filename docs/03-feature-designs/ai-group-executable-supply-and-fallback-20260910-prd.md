@@ -111,3 +111,10 @@
 03:28:33西安只读逐Action验收：15条typed可见消息、daily缓存9、直接只读重算也9；6条应急均Action/同账号Attempt成功、quantity_credit_eligible=true、FOP confirmed、memory正文/身份/状态正确，但发送结果同步用`memory.result=result`覆盖原content_hash，导致`emergency_memory_matches`拒绝日数量计入。target刷新时间晚于最新成功事实，因此不是普通异步延迟。其它Task差额仍须分别核验，不按差值猜测。
 
 本子切片resync，修正合同（design_status=complete）：消息记忆更新执行结果时保留应急选择ID与content_hash这两个冻结审计字段，不能被后续普通结果替换/擦除。计数和发送校验以不可变AiGroupEmergencySelection事实的content_hash及原Action/tenant/task/quantity/account/group/materialization/source身份为权威，不能仅依赖可替换的memory.result副本。历史已成功且丢失memory hash的记录按现存选择事实、memory完整身份/正文及原成功/可计数量门槛验证后自然计入，禁止补造选择事实、伪造hash或重发消息；不做生产手工数据回填。选择事实缺失、选择错绑、正文变化或身份不一致仍拒绝。现有普通消息、quantity_credit_eligible、同账号成功Attempt、质量独立分账保持。QA必须覆盖真实mark_group_ai_message_result成功同步后仍计数量，以及已有副本hash丢失可由原选择事实核验的历史路径；错hash/错owner/无选择/不可计slot/未知或无成功Attempt必须不计。
+
+## 2026-09-11 生成恢复一致性修复
+
+- 已持久化为 unknown 的 GenerationJob 是生成结果未知的权威事实。旧 Action 仍为 generating 时，不得仅因 Action 缺少 provider-start 投影将作业重置 pending，也不得无限尝试 generating 状态 CAS。
+- 正式恢复持有 Action 恢复 claim，并锁定、重新读取同身份 Job；仅当 Job 为无 owner/lease 的 unknown、仍绑定当前 Action，且未进入 Gateway 时，将 Action 投影收口为 ai_result_persist_unknown。Job 版本、未知、费用与调用记录保持不变，恢复 claim 由原入口提交释放。
+- 其它身份、后继 Action、活跃 owner/lease 或 Gateway 边界均不适用该收口；按原竞争失败或远端对账路径处理。此操作不授权重新调用 Provider、重新发送或改变原日数量。
+- 验收覆盖缺少 Action provider-start 的历史残留、当前版本与后继身份、Gateway 边界、重复恢复及 Job 未知/版本保持；在隔离 PostgreSQL 验证。

@@ -19,6 +19,7 @@ from app.models import (
 
 from .source_pacing import SourcePacingSlot, wall_datetime
 from .pacing_persistence import PacingOwnerImmutableConflict
+from .source_owner_recovery_history import frozen_owner_recovery_history
 
 
 PACING_OWNER_MODELS = {
@@ -86,6 +87,8 @@ def attach_owner_history(
             source_hash=key[2],
             excluded_owner_ids=[slot.owner_id for slot in group],
         )
+        recoverable, recovery_history = frozen_owner_recovery_history(
+            session, task, group, owner_model=owner_model)
         ordinal = _include_frozen_group_ordinal(group, ordinal)
         allocated = _allocate_new_ordinals(
             group,
@@ -97,6 +100,7 @@ def attach_owner_history(
                 slot,
                 historical_cursor_at=cursor,
                 historical_max_ordinal=ordinal,
+                recovery_source_history=recovery_history if slot.owner_id in recoverable else None,
             )
     return [enriched[slot.slot_key] for slot in slots]
 

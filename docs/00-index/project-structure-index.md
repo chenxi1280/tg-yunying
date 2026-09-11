@@ -1676,3 +1676,9 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 - `backend/app/services/standby_registration.py`：普通登录与原 flow 恢复共享的 SV 备用资产登记；提交由调用方控制。
 - `backend/app/services/authorization_dr/pending_login_registration.py`：已登录原 flow 的只读 preview、身份/设备证明与 CAS 登记恢复；不调用 sign-in。
 - `backend/app/services/task_center/search_lane_refill.py`：search lane 空闲槽补给，复用正式 planner 并在任务锁内复核到期条件。
+
+- `backend/app/services/task_center/generation_unknown_projection.py`：锁定并验证已收口 unknown 作业与当前生成 Action 的身份，供旧 generating 投影恢复使用；不重置未知作业或调用 Provider/Gateway。
+
+- `backend/app/services/task_center/group_clone_authorization_refresh.py`：stopped 克隆任务同账号控制授权恢复的 preview/CAS/apply 与审计；保留旧 epoch 执行身份，新 Start 仍校验权限。
+
+- `source_owner_recovery_history.py` / `source_frozen_recovery.py`（`backend/app/services/task_center/`）：来源锁内读取未绑定冻结频道义务和具体预约，按原窗口空隙恢复；新义务继续使用原 cursor/ordinal。

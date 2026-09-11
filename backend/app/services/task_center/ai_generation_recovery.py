@@ -22,6 +22,7 @@ from .ai_generation_pending_recovery import recover_pending_generation_residue
 from .ai_generation_ready_settlement import prepare_recovered_candidate
 from .ai_generation_state import generation_result_cache, mark_attempt_outcome
 from .ai_generation_timing import GENERATION_LEASE
+from .generation_unknown_projection import owns_settled_unknown_projection
 from .ai_generation_unknown_recovery import (
     recover_cached_unknown_jobs,
     reset_generation_job_for_cached_retry as _reset_generation_job_for_cached_retry,
@@ -126,7 +127,10 @@ def recover_stale_pre_gateway_generation(
     sess = session or object_session(action)
     job = _find_generation_job(sess, action, data) if sess is not None else None
     attempt_id = str(data.get("ai_generation_attempt_id") or "")
-    expected_owner = _payload_claim_owner(data)
+    if sess is not None and job is not None and owns_settled_unknown_projection(sess, job, action):
+        _mark_action_generation_unknown(action, data, attempt_id, clear_claim=False)
+        return True
+    expected_owner = str(data.get("ai_generation_claim_owner") or "")
     provider_started = bool((action.result or {}).get("ai_provider_call_started_at"))
     if provider_started:
         _mark_action_generation_unknown(action, data, attempt_id, clear_claim=False)
@@ -410,10 +414,6 @@ def _mark_action_generation_unknown(
     data["ai_generation_status"] = "ai_result_persist_unknown"
     _reset_action_for_recovery(action, data, clear_claim=clear_claim)
     action.executed_at = None
-
-
-def _payload_claim_owner(data: dict) -> str:
-    return str(data.get("ai_generation_claim_owner") or "")
 
 
 def _mark_action_generation_pending(

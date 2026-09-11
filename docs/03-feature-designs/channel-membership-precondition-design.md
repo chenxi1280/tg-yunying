@@ -559,3 +559,13 @@ QA 使用真实入口证明“可信提示识别 → handler → 持久阶段 �
 ## 2026-09-09 审批群私聊验证补充
 
 公开group的新入群申请接入管理员机器人私聊数学callback协议，精确合同见`ai-conversation-humanization-and-group-bot-admission-prd.md`末节。InviteRequestSentError是已提交申请、尚未成为成员，不能标joined或按普通权限失败重发申请。新题绑定原账号/目标/管理员bot/申请前游标；一次callback后独立GetParticipant确认，再走发言权限与C2。未确认保留不可重放状态和pending_approval业务事实；历史unknown不重试。无迁移，resync=true。
+
+## 2026-09-11 已冻结频道义务恢复排程
+
+线上反例：点赞任务的未绑定 open 义务原 due 已到期、原 deadline 尚未到期，但其它义务的 release 位于 deadline 或远期尾部；旧恢复器将 max(release) 当成所有义务的下限，返回零个排程点，重复规划也无法恢复。
+
+- 浏览/点赞恢复只作用于仍为 open、无 current_action_id 的既有冻结义务。保留原 due、ordinal、plan_total、epoch、原来源窗口与 deadline；原 release 只能保持或向后推进，已绑定 Action、已调用/未知事实和数量目标不改。
+- 在原来源 advisory 锁内读取其它 owner 的具体冻结点。有效点采用 max(due, release)，原窗口以外的不可执行预约不占用窗口内空隙；历史行保留。未来点占用它自己的时间位置，不再将其最大值当作所有到期旧义务的统一下限。
+- 未来已冻结的合法点保持；到期旧义务从不早于 now/原 release/原 due 的位置按原来源名义间隔和稳定 jitter 搜索空隙，与两侧预约保持双方间隔的最大值。无空隙则保留显式短缺，不延长窗口、不压缩间隔。新义务仍沿原 ordinal/cursor 合同；账号 Session 交集、账号预算、成员资格与正式 Gateway 准入继续独立校验。
+- 同批一个义务已被推进到 deadline，不能让循环提前退出并跳过其它仍有窗口的义务。恢复不回拨这条已到 deadline 的义务。
+- 验收：真实 PostgreSQL 来源锁与跨批预约读回；远期尾部及 deadline 哨兵不会饿死早期空隙；不同计划间隔、连续规划幂等、未来冻结点不回拨、不可执行义务不阻断其它义务、无空隙显式不足、新 ordinal 规则保持。

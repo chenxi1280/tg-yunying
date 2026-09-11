@@ -1117,3 +1117,9 @@ QA必须从实际 _plan_due_task_batch 入口，在超过旧global阈值且生�
 - QA必须复现“frontier=78；先收到pts80/count1；后收到实际请求78→81的频道差量”并保持原顺序/零重复消息；缺少证明、错误授权/peer/epoch、只有较新cursor、Common PTS、too_long均不得放行。补差从未证明frontier发起，获得第一页覆盖头部的证明后继续下页；空正常区间不得生成消息，暂停状态仍稳定。
 
 Product Design Complete：本节作为生产反向检查后的resync补正；原暂停、too_long、发送池和完整Clone验收边界均保持。
+
+### 2026-09-11 同账号控制授权恢复
+
+已恢复账号的新 current 授权不得自动替换旧 epoch 的冻结执行身份。旧流有不可恢复缺口时，沿正式 Stop 保留旧事件/映射/未知结果并推进 epoch；在 stopped 状态通过受控控制授权刷新入口，将配置绑定改为同一个 control_account 的健康 current 授权，然后按正式 Start 建立新的实时起点。目标、来源、账号、发送池、授权模式与内容规则均保持不变。
+
+刷新采用 preview/apply：冻结 Task 配置 hash、revision/epoch、旧/新授权 id；锁 Task 和账号/授权后重新核对 current 指针、active/healthy、同 tenant/account、Telegram 身份 digest 相同且非空。CAS 不匹配或存在旧未决执行时拒绝修改。只递增配置 revision 并留审计，旧授权、冻结执行快照和远端未知不改；新 Start 仍执行新鲜权限与 Update Ingress 检查。本入口不进行授权切换或 Telegram mutation。

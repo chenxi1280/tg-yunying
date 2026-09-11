@@ -28,6 +28,7 @@ class SourcePacingSlot:
     pacing_source_key_hash: str = ""
     historical_cursor_at: datetime | None = None
     historical_max_ordinal: int | None = None
+    recovery_source_history: tuple[tuple[datetime, int], ...] | None = None
     source_capacity_plan_hash: str | None = None
     source_capacity_slot_ordinal: int | None = None
 
@@ -161,6 +162,13 @@ def _source_recovery_points(
     seed_id: str,
 ) -> dict[str, SourcePacingPoint]:
     now_at = wall_datetime(now_at)
+    if any(slot.recovery_source_history is not None for slot in slots):
+        from .source_frozen_recovery import recover_frozen_source_points
+
+        other = [slot for slot in slots if slot.recovery_source_history is None]
+        return recover_frozen_source_points(slots, due_by_slot, now_at=now_at, seed_id=seed_id,
+            other_points=_source_recovery_points(other, due_by_slot, now_at=now_at, seed_id=seed_id)
+            if other else {})
     history = [
         wall_datetime(slot.historical_cursor_at)
         for slot in slots
