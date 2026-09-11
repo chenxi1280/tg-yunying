@@ -121,25 +121,33 @@ def _reaction_plan(
     if message is None:
         return None
     source = _reaction_source_identity(message)
-    return _matching_source_plan(session, action, source, obligation=obligation)
+    return _reaction_creation_plan(session, action, obligation, source_identity=source)
 
 
-def _matching_source_plan(
+def _reaction_creation_plan(
     session: Session,
     action: Action,
-    source_identity: str,
+    obligation: ReactionFulfillmentObligation,
     *,
-    obligation: ReactionFulfillmentObligation | None = None,
+    source_identity: str,
 ) -> TaskParticipationUnitPlan | None:
-    task_day = _origin_task_day(session, action, obligation=obligation)
+    if obligation.created_at is None:
+        raise ValueError("engagement_origin_obligation_created_at_missing")
+    task_day = as_beijing(obligation.created_at).date()
     unit = f"task_day:{task_day.isoformat()}:source:{source_identity}"
-    return session.scalar(select(TaskParticipationUnitPlan).where(
+    plans = session.scalars(select(TaskParticipationUnitPlan).where(
         TaskParticipationUnitPlan.tenant_id == action.tenant_id,
         TaskParticipationUnitPlan.task_id == action.task_id,
         TaskParticipationUnitPlan.task_lifecycle_epoch == action.task_lifecycle_epoch,
         TaskParticipationUnitPlan.participation_unit == unit,
-        TaskParticipationUnitPlan.state == "active",
-    ))
+        TaskParticipationUnitPlan.created_at <= obligation.created_at,
+        TaskParticipationUnitPlan.state.in_(("active", "superseded")),
+    ).order_by(TaskParticipationUnitPlan.created_at.desc(),
+                TaskParticipationUnitPlan.plan_revision.desc(), TaskParticipationUnitPlan.id))
+    for plan in plans:
+        if action.account_id in (plan.selected_account_ids or []) and str(action.account_id) in (plan.selected_origin_groups or {}):
+            return plan
+    return None
 
 
 def _origin_task_day(session: Session, action: Action, *, obligation=None):
@@ -163,7 +171,7 @@ def _origin_task_day(session: Session, action: Action, *, obligation=None):
 
 
 def _validate_reaction_owner(action: Action, obligation: ReactionFulfillmentObligation) -> None:
-    if (obligation.tenant_id, obligation.task_id) != (action.tenant_id, action.task_id):
+    if (obligation.tenant_id, obligation.task_id, obligation.account_id) != (action.tenant_id, action.task_id, action.account_id):
         raise ValueError("engagement_origin_obligation_owner_mismatch")
     if obligation.task_lifecycle_epoch is not None and obligation.task_lifecycle_epoch != action.task_lifecycle_epoch:
         raise ValueError("engagement_origin_obligation_owner_mismatch")

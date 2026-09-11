@@ -1682,3 +1682,7 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 - `backend/app/services/task_center/group_clone_authorization_refresh.py`：stopped 克隆任务同账号控制授权恢复的 preview/CAS/apply 与审计；保留旧 epoch 执行身份，新 Start 仍校验权限。
 
 - `source_owner_recovery_history.py` / `source_frozen_recovery.py`（`backend/app/services/task_center/`）：来源锁内读取未绑定冻结频道义务和具体预约，按原窗口空隙恢复；新义务继续使用原 cursor/ordinal。
+
+2026-09-11：`source_pacing_gap.py` 的来源行锁空隙分配覆盖 AI、浏览和点赞；点赞邻居的有效窗口取冻结账号预约截止。
+
+2026-09-11：`engagement_account_origin.py` 的点赞来源沿义务创建时的参与计划；`dispatcher.py:_reserve_channel_action_attempt` 先预约账号资源，来源延后时调用正式资源结算。

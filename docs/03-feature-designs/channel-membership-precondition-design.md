@@ -569,3 +569,13 @@ QA 使用真实入口证明“可信提示识别 → handler → 持久阶段 �
 - 未来已冻结的合法点保持；到期旧义务从不早于 now/原 release/原 due 的位置按原来源名义间隔和稳定 jitter 搜索空隙，与两侧预约保持双方间隔的最大值。无空隙则保留显式短缺，不延长窗口、不压缩间隔。新义务仍沿原 ordinal/cursor 合同；账号 Session 交集、账号预算、成员资格与正式 Gateway 准入继续独立校验。
 - 同批一个义务已被推进到 deadline，不能让循环提前退出并跳过其它仍有窗口的义务。恢复不回拨这条已到 deadline 的义务。
 - 验收：真实 PostgreSQL 来源锁与跨批预约读回；远期尾部及 deadline 哨兵不会饿死早期空隙；不同计划间隔、连续规划幂等、未来冻结点不回拨、不可执行义务不阻断其它义务、无空隙显式不足、新 ordinal 规则保持。
+
+### 运行时来源预约空隙（2026-09-11 resync）
+
+上述 owner 恢复之外，浏览/点赞 Action 的 SourcePacingAdmission 也必须读取具体有效预约，不能用来源尾游标代替最早可执行空隙。保持原 release、effective_claim、来源间隔与截止，复用来源行锁下的空隙分配。浏览/AI 预约继续要求 open ledger；点赞使用冻结 AccountPacingReservation.source_deadline_at（message period 不是 ledger ID），不因没有 ledger 被漏掉。原窗口外、旧 epoch、已取消预约不占新空隙；Gateway-started/unknown 和最后调用间隔仍保留。此切片不改变单消息名义间隔，不开启未配置的 source_capacity_v2，也不改写历史 due/release 或重放未知调用。验收需 PostgreSQL 实际点赞 period、有效邻居预约、远期尾游标和原截止读回。
+
+### 跨日点赞的冻结参与来源（2026-09-11 resync）
+
+线上义务在 9 月 6 日创建并冻结账号，随机 due 位于 9 月 7 日；按 due 的日期查参与计划错误地选到次日另一批账号。点赞的资源归属应沿创建义务时的来源参与计划：同 tenant/Task/epoch、同真实来源、原义务创建日，计划创建不晚于义务且明确包含该账号和冻结分组；同日修订取当时最新版本，历史 superseded 计划可作原归属证据。不得用当前账号池或后来一天的计划替换。没有可证明计划仍显式 origin_plan_missing。due 和 release 不改写。验收覆盖跨日 due、同日历史修订、后建计划不可借用和外 Task/epoch 拒绝。
+
+频道动作先核对并预约账号资源，再获得来源调用资格；若来源尚未到时，正式释放本次账号预算/租约/fence 后提交延后。资源归属或预算失败不得提前写来源 last_call_started_at，避免未调用也消耗整段来源间隔。历史 last-call 不按缺失时间戳直接回拨。

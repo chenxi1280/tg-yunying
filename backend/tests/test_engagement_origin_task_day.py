@@ -3,7 +3,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from app.models import Action, TgAccount
+from app.models import Action, TgAccount, TaskParticipationUnitPlan
+from sqlalchemy import select
 from app.services.task_center.channel_fulfillment import ensure_reaction_obligation
 from app.services.task_center.daily_ledgers import ensure_task_day_ledger
 from app.services.task_center.engagement_account_origin import _origin_task_day, _reaction_plan, _task_day_plans, resolve_frozen_account_origin
@@ -22,6 +23,9 @@ def seed_original_plan(session):
     epoch = ensure_reaction_capacity_epoch(session, task, ledger, messages=[message], target=channel)
     account_id = epoch.source_allocations[0]["allocated_account_ids"][0]
     obligation = ensure_reaction_obligation(session, task, message, account_id)
+    obligation.created_at = NOW
+    for plan in session.scalars(select(TaskParticipationUnitPlan)):
+        plan.created_at = NOW - timedelta(seconds=1)
     obligation.pacing_due_at = NOW
     obligation.release_not_before_at = NOW + timedelta(days=1)
     action = Action(task_id=task.id, tenant_id=task.tenant_id, account_id=account_id,
@@ -44,7 +48,10 @@ def test_other_day_plan_does_not_replace_missing_original_source():
     with _session() as session:
         task, channel, message, _, _, action = seed_original_plan(session)
         original = _reaction_plan(session, action, action.payload)
-        original.participation_unit += ":unrelated"
+        original_unit = original.participation_unit
+        for plan in session.scalars(select(TaskParticipationUnitPlan)):
+            if plan.participation_unit == original_unit:
+                plan.participation_unit += ":unrelated"
         tomorrow = ensure_task_day_ledger(session, task, now=NOW + timedelta(days=1))
         ensure_reaction_capacity_epoch(session, task, tomorrow, messages=[message], target=channel)
         session.flush()

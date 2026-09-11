@@ -4519,10 +4519,11 @@ def _reserve_channel_action_attempt(
         return None
     attempt = _begin_execution_attempt(session, action, account)
     _mark_executing(action)
-    if not admit_source_paced_attempt(session, action, attempt):
+    if not _admit_engagement_attempt_resources(session, action, attempt):
         session.commit()
         return None
-    if not _admit_engagement_attempt_resources(session, action, attempt):
+    if not admit_source_paced_attempt(session, action, attempt):
+        settle_engagement_attempt_resources(attempt, action, remote_mutation_started=False)
         session.commit()
         return None
     _mark_gateway_call_started(session, attempt, commit=False)

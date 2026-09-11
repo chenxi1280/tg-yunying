@@ -29,7 +29,7 @@ def test_impossible_slot_does_not_advance_shared_cursor(task_type, action_type, 
     state = SourcePacingState(next_call_not_before_at=tail)
     admission = SourcePacingAdmission(call_not_before_at=NOW)
     spec = SourceAdmissionSpec(domain, "neutral-source", "neutral-owner", "owner", 1,
-        "period", "plan", NOW, deadline, 60)
+        "period", "plan", tail, deadline, 60)
     action = Action(id="neutral-action", task_type=task_type, action_type=action_type,
                     status="claiming", effective_claim_at=NOW)
     assert admission_not_before(action, state, session=SimpleNamespace(), admission=admission,

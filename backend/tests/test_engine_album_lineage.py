@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from types import SimpleNamespace as NS
 
 import pytest
@@ -27,6 +27,9 @@ def test_album_child_resolves_the_exact_logical_source_participation_plan():
         epoch = ensure_reaction_capacity_epoch(session, task, ledger, messages=[rows[0]], target=channel)
         account_id = epoch.source_allocations[0]["allocated_account_ids"][0]
         child = ensure_reaction_obligation(session, task, rows[1], account_id)
+        child.created_at = now
+        for frozen in session.scalars(select(TaskParticipationUnitPlan)):
+            frozen.created_at = now - timedelta(seconds=1)
         action = Action(task_id=task.id, task_lifecycle_epoch=task.task_lifecycle_epoch,
             tenant_id=task.tenant_id, scheduled_at=now, account_id=account_id)
         plan = _reaction_plan(session, action, {"reaction_fulfillment_obligation_id": child.id})

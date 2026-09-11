@@ -1123,3 +1123,5 @@ Product Design Complete：本节作为生产反向检查后的resync补正；原
 已恢复账号的新 current 授权不得自动替换旧 epoch 的冻结执行身份。旧流有不可恢复缺口时，沿正式 Stop 保留旧事件/映射/未知结果并推进 epoch；在 stopped 状态通过受控控制授权刷新入口，将配置绑定改为同一个 control_account 的健康 current 授权，然后按正式 Start 建立新的实时起点。目标、来源、账号、发送池、授权模式与内容规则均保持不变。
 
 刷新采用 preview/apply：冻结 Task 配置 hash、revision/epoch、旧/新授权 id；锁 Task 和账号/授权后重新核对 current 指针、active/healthy、同 tenant/account、Telegram 身份 digest 相同且非空。CAS 不匹配或存在旧未决执行时拒绝修改。只递增配置 revision 并留审计，旧授权、冻结执行快照和远端未知不改；新 Start 仍执行新鲜权限与 Update Ingress 检查。本入口不进行授权切换或 Telegram mutation。
+
+2026-09-11 更新监听准备补充：同账号授权刷新前先核对新 current 授权身份/健康，缺失的更新监听状态通过 `get_or_create_authorization_update_state` 注册为 initializing 并审计提交，由正式采集器取得 owner/lease 和 live 事实；禁止直接写 live 或游标。该步骤不改变克隆路由、原订阅或旧 unknown。

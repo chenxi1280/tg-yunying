@@ -1,8 +1,8 @@
-"""Allocate AI source slots under the caller's source-row lock."""
+"""Allocate source slots under the caller's source-row lock."""
 from collections.abc import Callable, Iterable
 from datetime import datetime, timedelta
 
-from sqlalchemy import and_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -27,7 +27,7 @@ SESSION_POLICIES = frozenset((
 UNIFIED_CONTRACT = "unified_engagement_v1"
 
 
-def ai_source_not_before(
+def source_gap_not_before(
     session: Session,
     action: Action,
     state: SourcePacingState,
@@ -42,6 +42,8 @@ def ai_source_not_before(
     if state.last_call_started_at is not None:
         gap = max(int(state.last_source_gap_seconds or 0), spec.source_gap_seconds)
         desired = max(desired, wall_datetime(state.last_call_started_at) + timedelta(seconds=gap))
+    if desired >= spec.deadline_at:
+        return desired
     windows = _action_windows(session, action, deadline=spec.deadline_at, timestamp=timestamp)
     peers = _future_reservations(session, admission, timestamp=timestamp)
     return earliest_source_gap(
@@ -133,7 +135,7 @@ def _reservation_query(admission: SourcePacingAdmission, *, timestamp: datetime)
                Action.release_not_before_at, Action.effective_claim_at)
         .join(Action, Action.id == SourcePacingAdmission.action_id)
         .join(Task, Task.id == SourcePacingAdmission.task_id)
-        .join(TaskDayLedger, TaskDayLedger.id == SourcePacingAdmission.pacing_period_key)
+        .outerjoin(TaskDayLedger, TaskDayLedger.id == SourcePacingAdmission.pacing_period_key)
         .outerjoin(AccountPacingReservation, and_(
             AccountPacingReservation.action_id == Action.id,
             AccountPacingReservation.state.in_(("reserved", "bound")),
@@ -149,7 +151,11 @@ def _reservation_query(admission: SourcePacingAdmission, *, timestamp: datetime)
             SourcePacingAdmission.pacing_plan_hash == Action.pacing_plan_hash,
             Task.status == "running",
             Action.status.in_(OPEN_ACTION_STATUSES),
-            TaskDayLedger.lifecycle_status == "open",
+            or_(
+                TaskDayLedger.lifecycle_status == "open",
+                and_(Action.action_type == "like_message",
+                     AccountPacingReservation.source_deadline_at.is_not(None)),
+            ),
         )
     )
 
