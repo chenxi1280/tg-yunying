@@ -257,6 +257,8 @@ from .planner_wake import (
 )
 from .engagement_conversation_wake import drain_conversation_wake_transactions
 from .engagement_membership_wake import drain_membership_wake_transactions
+from .engagement_runtime_error import RuntimeResourceBlocked
+from .planner_resource_retry import record_planner_resource_retry as _record_planner_resource_retry
 from .ai_generation_recovery import (
     GenerationRecoveryClaimLost,
     recover_stale_pre_gateway_generation,
@@ -1409,6 +1411,10 @@ def update_task_settings(
     validate_engagement_timezone(task.type, task.type_config or {}, task.timezone)
     synchronize_task_binding(session, task)
     prejoin_changed = _advance_settings_revisions(task, previous)
+    if prejoin_changed and _unchanged_content_authority(task, previous["config"]):
+        from .ai_content_binding_revision import carry_prejoin_content_binding
+
+        carry_prejoin_content_binding(session, task, source_revision=previous["revision"], actor=actor)
     activate_task_ai_content_config(session, task)
     initialize_all_account_task_scope(session, task)
     content_only = _apply_settings_plan_effects(
@@ -1424,6 +1430,12 @@ def update_task_settings(
     session.commit()
     session.refresh(task)
     return task
+
+
+def _unchanged_content_authority(task, previous_config):
+    fields = ("ai_content_route_v2_enabled", "ai_content_policy_version_id",
+        "ai_content_allowed_routes", "ai_content_attestation_ids")
+    return all((task.type_config or {}).get(key) == previous_config.get(key) for key in fields)
 
 
 def _task_settings_snapshot(task):
@@ -1686,7 +1698,6 @@ def update_group_ai_chat_config(
     task = _get_task(session, tenant_id, task_id)
     require_task_not_retired(session, task)
     previous_refs = list(task.group_ai_prejoin_channel_ids or [])
-    previous_revision = int(task.config_revision or 1)
     if field in payload.model_fields_set:
         task.group_ai_prejoin_channel_ids = list(payload.group_ai_prejoin_channel_ids)
     task = _apply_type_config_data(
@@ -1696,10 +1707,8 @@ def update_group_ai_chat_config(
         "group_ai_chat",
         update_data,
         actor,
+        previous_prejoin_refs=previous_refs,
     )
-    refs_changed = previous_refs != list(task.group_ai_prejoin_channel_ids or [])
-    if refs_changed and task.config_revision == previous_revision:
-        task.config_revision += 1
     session.commit()
     session.refresh(task)
     return task
@@ -4854,6 +4863,10 @@ def _drain_task_planner(
             logger.error("planner_task_pacing_conflict task_id=%s", task_id)
             _record_planner_pacing_conflict(session_factory, task_id, exc)
             continue
+        except RuntimeResourceBlocked as exc:
+            logger.info("planner_resource_busy task_id=%s code=%s", task_id, exc.code)
+            _record_planner_resource_retry(session_factory, task_id, exc)
+            continue
         except Exception as exc:
             logger.exception("planner_task_failed task_id=%s", task_id)
             _record_planner_runtime_error(session_factory, task_id, exc)
@@ -4934,10 +4947,12 @@ def _clear_planner_runtime_error(task: Task) -> None:
     if (
         "planner_runtime_error" not in stats
         and "planner_pacing_target_conflict" not in stats
+        and "planner_resource_busy" not in stats
     ):
         return
     stats.pop("planner_runtime_error", None)
     stats.pop("planner_pacing_target_conflict", None)
+    stats.pop("planner_resource_busy", None)
     task.stats = stats
 
 
@@ -5006,9 +5021,12 @@ def _plan_locked_due_task(session, task, *, limit, current_global_pending):
     if _check_stop_conditions(session, task):
         session.commit()
         return 0, 0, False, current_global_pending
-    task, processed, has_open_actions, open_actions_are_future, current_global_pending = (
-        _prepare_due_task_actions(session, task, limit=limit, current_global_pending=current_global_pending)
-    )
+    from .planner_timing import measure_planner_phase
+
+    with measure_planner_phase(session, task.id, phase="prepare_actions"):
+        task, processed, has_open_actions, open_actions_are_future, current_global_pending = (
+            _prepare_due_task_actions(session, task, limit=limit, current_global_pending=current_global_pending)
+        )
     if task is None:
         return processed, 0, False, current_global_pending
     open_actions_allow_planning = (
@@ -5026,7 +5044,9 @@ def _plan_locked_due_task(session, task, *, limit, current_global_pending):
         complete_task_planner_wake(session, task, next_run_at=task.next_run_at)
         session.commit()
         return processed, 0, False, current_global_pending
-    planned = build_task_plan(session, task)
+    with measure_planner_phase(session, task.id, phase="build_plan") as timing:
+        planned = build_task_plan(session, task)
+        timing.created_count = planned
     processed += planned
     current_global_pending += max(0, int(planned))
     _commit_planned_task(session, task)
@@ -7286,6 +7306,7 @@ def _apply_type_config_data(
     actor: str,
     *,
     remove_fields: tuple[str, ...] = (),
+    previous_prejoin_refs: list[str] | None = None,
 ) -> Task:
     update_data = dict(update_data)
     task = _get_task(session, tenant_id, task_id)
@@ -7309,7 +7330,8 @@ def _apply_type_config_data(
         previous_revision=previous_revision,
         observed_at=change_observed_at,
     )
-    activate_task_ai_content_config(session, task)
+    _activate_updated_type_content(session, task, actor=actor, previous_config=previous_config,
+        previous_revision=previous_revision, previous_prejoin_refs=previous_prejoin_refs)
     if not is_content_policy_only_change(task, previous_config=previous_config):
         _clear_unfinished_plan(session, task)
         _requeue_updated_task(task)
@@ -7325,6 +7347,20 @@ def _apply_type_config_data(
         detail=_content_policy_change_detail(task, previous_config),
     )
     return task
+
+
+def _activate_updated_type_content(session, task, *, actor, previous_config,
+        previous_revision, previous_prejoin_refs):
+    changed = (previous_prejoin_refs is not None and
+        previous_prejoin_refs != list(task.group_ai_prejoin_channel_ids or []))
+    if changed:
+        if task.config_revision == previous_revision:
+            task.config_revision += 1
+        if _unchanged_content_authority(task, previous_config):
+            from .ai_content_binding_revision import carry_prejoin_content_binding
+
+            carry_prejoin_content_binding(session, task, source_revision=previous_revision, actor=actor)
+    activate_task_ai_content_config(session, task)
 
 
 def _apply_validated_type_config(session, task, update_data, *, remove_fields):

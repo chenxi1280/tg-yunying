@@ -118,3 +118,7 @@
 - 正式恢复持有 Action 恢复 claim，并锁定、重新读取同身份 Job；仅当 Job 为无 owner/lease 的 unknown、仍绑定当前 Action，且未进入 Gateway 时，将 Action 投影收口为 ai_result_persist_unknown。Job 版本、未知、费用与调用记录保持不变，恢复 claim 由原入口提交释放。
 - 其它身份、后继 Action、活跃 owner/lease 或 Gateway 边界均不适用该收口；按原竞争失败或远端对账路径处理。此操作不授权重新调用 Provider、重新发送或改变原日数量。
 - 验收覆盖缺少 Action provider-start 的历史残留、当前版本与后继身份、Gateway 边界、重复恢复及 Job 未知/版本保持；在隔离 PostgreSQL 验证。
+
+## 2026-09-11 健康供给推进与状态一致性补充
+
+按[健康供给履约修复合同](ai-group-healthy-supply-fulfillment-repair-20260911-prd.md)修复已准入账号的候选、资源冲突、原窗口、生成与事实投影链路。不可用账号不派发是正确行为，不作为本轮恢复前提；原冻结目标/独立覆盖及未知调用约束保留。锁忙不能被误结算为不可恢复的生成合同错误。实现、发布及业务验收状态见对应修复记录，不从设计反推已上线。

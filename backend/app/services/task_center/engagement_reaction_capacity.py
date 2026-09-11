@@ -315,7 +315,7 @@ def _preserved_allocations(
     if previous is None:
         return allocated
     for item in previous.source_allocations or []:
-        message_id = source_ids.get(item["source_identity"], int(item["channel_message_id"]))
+        message_id = source_ids.get(item["source_identity"])
         if message_id not in allocated:
             continue
         allocated[message_id] = [

@@ -23,6 +23,7 @@ from app.services._common import _now
 from app.services.task_center import dispatcher, service
 from app.services.task_center.channel_fulfillment import ensure_view_obligation
 from app.services.task_center.pacing_persistence import PacingOwnerImmutableConflict
+from app.services.task_center.engagement_runtime_error import RuntimeResourceBlocked
 from app.services.task_center.channel_fulfillment_queries import (
     reaction_account_ids_for_messages,
     view_account_ids_for_messages,
@@ -300,6 +301,46 @@ def test_planner_pacing_conflict_uses_typed_blocker_and_long_backoff(
         assert broken.next_run_at - _now() >= timedelta(minutes=55)
 
 
+def test_planner_defers_transient_resource_block_instead_of_failing_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """资源互斥记录为专用暂态原因，其他任务继续；原路径也会重试。"""
+    session_factory = _session_factory()
+    monkeypatch.setattr(
+        service,
+        "_normal_planner_task_ids",
+        lambda *_args, **_kwargs: ["task-planner-broken", "task-planner-ready"],
+    )
+    monkeypatch.setattr(service, "planner_global_pending", lambda *_args: 0)
+
+    def fake_plan(_factory, task_id, *_args, **kwargs):
+        if task_id == "task-planner-broken":
+            raise RuntimeResourceBlocked("ai_group_surface_busy", "群内容状态正在更新")
+        return 2, False, int(kwargs.get("global_pending") or 0)
+
+    monkeypatch.setattr(service, "_plan_due_task", fake_plan)
+    _add_planner_tasks(session_factory)
+
+    processed, _ = service._drain_task_planner(
+        session_factory,
+        limit=5,
+        process_type=None,
+    )
+
+    assert processed == 2
+    with session_factory() as current:
+        broken = current.get(Task, "task-planner-broken")
+        # 不得写成通用规划错误
+        assert "planner_runtime_error" not in (broken.stats or {})
+        busy = broken.stats["planner_resource_busy"]
+        assert busy["code"] == "ai_group_surface_busy"
+        assert busy["detail"] == "群内容状态正在更新"
+        # 按异常自带的 retry_after_seconds 短退避，不是 30 秒通用重试以外的长退避
+        assert broken.next_run_at is not None
+        delay = broken.next_run_at - _now()
+        assert timedelta(seconds=1) <= delay <= timedelta(minutes=5)
+
+
 def test_planner_clears_pacing_conflict_blocker_after_success() -> None:
     """规划成功路径（_commit_planned_task → _clear_planner_runtime_error）必须同时
     清除 pacing 冲突 typed blocker，不得残留过期状态。"""
@@ -307,12 +348,14 @@ def test_planner_clears_pacing_conflict_blocker_after_success() -> None:
     task.stats = {
         "planner_runtime_error": {"error_type": "ValueError"},
         "planner_pacing_target_conflict": {"error_type": "PacingOwnerImmutableConflict"},
+        "planner_resource_busy": {"code": "ai_group_surface_busy"},
     }
 
     service._clear_planner_runtime_error(task)
 
     assert "planner_runtime_error" not in task.stats
     assert "planner_pacing_target_conflict" not in task.stats
+    assert "planner_resource_busy" not in task.stats
 
 
 def test_content_mix_replan_reads_metadata_from_failed_empty_action(
@@ -399,6 +442,7 @@ def _session_factory():
 def _add_planner_tasks(session_factory) -> None:
     with session_factory() as current:
         current.add(Tenant(id=1, name="默认运营空间"))
+        current.flush()
         for task_id in ("task-planner-broken", "task-planner-ready"):
             current.add(
                 Task(

@@ -1686,3 +1686,11 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 2026-09-11：`source_pacing_gap.py` 的来源行锁空隙分配覆盖 AI、浏览和点赞；点赞邻居的有效窗口取冻结账号预约截止。
 
 2026-09-11：`engagement_account_origin.py` 的点赞来源沿义务创建时的参与计划；`dispatcher.py:_reserve_channel_action_attempt` 先预约账号资源，来源延后时调用正式资源结算。
+
+### 2026-09-11 AI健康供给修复入口
+
+- `services/task_center/planner_resource_retry.py`：Planner typed资源冲突按原retry时间重排，保留其他Task独立推进。
+- `services/task_center/ai_content_binding_revision.py`：相邻非内容修订验证原策略/证明后追加当前绑定，旧window与未知Job继续使用旧证据；不扩权、不延长到期。
+- `backend/scripts/repair_ai_group_policy_revision.py`：精确Task缺失绑定的preview/apply/readback CLI，运行SHA、manifest/hash、审计及独立读回。合同见`docs/03-feature-designs/ai-group-healthy-supply-fulfillment-repair-20260911-prd.md`。
+- `services/task_center/planner_timing.py`：每Task准备/建计划阶段与SQL调用点耗时，不采集SQL文本或参数，跨事务连接跟踪并在异常后注销监听。
+- `engagement_reaction_capacity.py`：来源revision改变后按新source_identity规划，不迁移旧revision选人。
