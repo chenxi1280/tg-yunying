@@ -17,6 +17,7 @@ from app.services.material_action_references import action_material_reference_co
 
 pytestmark = pytest.mark.isolated_postgres
 HISTORY_ROWS = 310_000
+MATERIAL_COUNT = 312
 
 
 def migration_module():
@@ -106,12 +107,14 @@ def test_index_on_existing_history_and_bounded_results(reference_engine):
             FROM generate_series(1, :rows) i'''), {'rows': HISTORY_ROWS})
         connection.execute(text("UPDATE actions SET payload=CAST(:payload AS json) WHERE id IN ('1','2')"), {"payload": json.dumps({"material_id": 1})})
     migration = upgrade(reference_engine)
+    params = {'tenant_id': 1, 'material_ids': [str(value) for value in range(1, MATERIAL_COUNT + 1)]}
     with Session(reference_engine) as session:
-        session.execute(text('ANALYZE actions'))
-        params = {'tenant_id': 1, 'material_ids': ['1', '2']}
+        before = session.execute(text('EXPLAIN (FORMAT JSON) ' + str(ACTION_REFERENCE_COUNTS)), params).scalar()[0]
+        assert migration.INDEX_NAME in index_names(before['Plan'])
+    with Session(reference_engine) as session:
         plan = session.execute(text('EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ' + str(ACTION_REFERENCE_COUNTS)), params).scalar()[0]
         assert migration.INDEX_NAME in index_names(plan['Plan'])
-        assert action_material_reference_counts(session, 1, material_ids={1, 2}) == {1: 2}
+        assert action_material_reference_counts(session, 1, material_ids=set(range(1, MATERIAL_COUNT + 1))) == {1: 2}
         assert len(session.identity_map) == 0
         print(json.dumps({'history_rows': HISTORY_ROWS, 'execution_ms': plan['Execution Time'],
                           'shared_hit_blocks': plan['Plan']['Shared Hit Blocks'], 'plan': plan}))

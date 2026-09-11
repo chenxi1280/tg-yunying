@@ -2,18 +2,19 @@
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+# Keep each indexed condition selective even when a page requests every material.
+# The per-material aggregate keeps PostgreSQL from flattening this into a broad scan.
 ACTION_REFERENCE_COUNTS = text("""
-    SELECT referenced.material_id, count(*)
-    FROM actions
+    SELECT requested.material_id, counts.reference_count
+    FROM unnest(CAST(:material_ids AS text[])) AS requested(material_id)
     CROSS JOIN LATERAL (
-        SELECT DISTINCT material_id
-        FROM unnest(material_reference_ids_v1(payload) || material_reference_ids_v1(result)) material_id
-        WHERE material_id = ANY(CAST(:material_ids AS text[]))
-    ) referenced
-    WHERE tenant_id = :tenant_id
-      AND (material_reference_ids_v1(payload) || material_reference_ids_v1(result))
-          && CAST(:material_ids AS text[])
-    GROUP BY referenced.material_id
+        SELECT count(*) AS reference_count
+        FROM actions
+        WHERE tenant_id = :tenant_id
+          AND (material_reference_ids_v1(payload) || material_reference_ids_v1(result))
+              && ARRAY[requested.material_id]
+    ) counts
+    WHERE counts.reference_count > 0
 """)
 
 
