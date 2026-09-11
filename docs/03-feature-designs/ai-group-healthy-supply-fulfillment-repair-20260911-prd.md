@@ -39,3 +39,7 @@
 存量修复可显式指定 `restore_original_references=true`：仅在当前证明引用已漂移、原绑定的完整证明仍通过原hash/当前scope/有效期校验且policy/routes不变时恢复原证据的successor引用。该选项进入preview指纹和审计；正常配置更新不启用，不把现有错误引用当新授权。
 
 预关注字段在Pydantic导出中被排除，是否变更须比较Task独立字段，不能从model_dump键推断；同时修改非内容字段仍须保证最终revision的原授权绑定一致，内容授权字段变化则走原新授权校验。
+
+## 已定位修复切片：共享规划器浏览义务批量冻结
+
+运行阶段日志显示两个channel_view任务单次build产生9999/13851次SQL，45秒进程栈采样确认逐条ensure_view_obligation是重复读取路径。浏览规划须按本轮完整(message, account)集合批量加载原ledger义务与绑定Action，仅对缺失义务批量执行相同账号资格加锁校验并一次flush；不得限缩候选数量或跳过资格检查。原confirmed不释放，原pending/executing/unknown绑定不重放；terminal与错配归属继续使用原正式释放语义。原slot ordinal与source pacing规则不变。PostgreSQL验证新旧混合、重复输入、终态/未知/confirmed、资格拒绝与查询数量随批次而非逐条增长。

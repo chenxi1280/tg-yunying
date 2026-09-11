@@ -1722,3 +1722,5 @@ legacy-only A 冷启动分支固定为 `frozen legacy A -> 原 A Session 只读 
 `预关注配置更新 -> 最终Task revision -> 原同epoch策略/attestation/hash/scope复核 -> 追加原到期证明及binding successor -> 同事务提交 -> 新无window Job使用当前绑定`。旧window/Job/未知结果不改绑定；缺失存量走精确manifest preview/CAS/apply/audit/readback，数据库修复与typed消息履约分开验收。Planner资源忙进入既有延期，其他Task继续。
 
 Planner每Task准备/建计划输出耗时、查询数及真实created数，慢SQL只记录代码调用点；新点赞来源revision使用自身冻结需求，旧allocation/调用事实留在原身份。
+
+- 共享Planner浏览义务：`channel_view_pacing._freeze_view_plan_items` → `channel_view_obligation_batch.ensure_view_obligations` 批量读取/资格加锁/追加原日义务；`channel_obligation_lifecycle` 复用原终态绑定规则，保留confirmed与unknown，不改冻结需求/节奏。

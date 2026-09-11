@@ -1694,3 +1694,5 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 - `backend/scripts/repair_ai_group_policy_revision.py`：精确Task缺失绑定的preview/apply/readback CLI，运行SHA、manifest/hash、审计及独立读回。合同见`docs/03-feature-designs/ai-group-healthy-supply-fulfillment-repair-20260911-prd.md`。
 - `services/task_center/planner_timing.py`：每Task准备/建计划阶段与SQL调用点耗时，不采集SQL文本或参数，跨事务连接跟踪并在异常后注销监听。
 - `engagement_reaction_capacity.py`：来源revision改变后按新source_identity规划，不迁移旧revision选人。
+
+- 共享Planner浏览义务：`channel_view_pacing._freeze_view_plan_items` → `channel_view_obligation_batch.ensure_view_obligations` 批量读取/资格加锁/追加原日义务；`channel_obligation_lifecycle` 复用原终态绑定规则，保留confirmed与unknown，不改冻结需求/节奏。

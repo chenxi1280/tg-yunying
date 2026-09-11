@@ -25,7 +25,7 @@ from ..account_pacing_guard import (
     bind_account_pacing_reservation,
     reserve_account_pacing,
 )
-from ..channel_fulfillment import ensure_view_obligation
+from ..channel_view_obligation_batch import ensure_view_obligations
 from ..datetime_compat import utc_storage_as_beijing_wall
 from ..pacing_persistence import freeze_action_pacing, freeze_pacing_owner
 from ..source_pacing import (
@@ -273,8 +273,9 @@ def _freeze_view_plan_items(
 ) -> list[ViewPlanItem]:
     next_ordinals: dict[int, int] = {}
     items: list[ViewPlanItem] = []
+    owners = ensure_view_obligations(session, task, ledger=context.ledger, actions=actions)
     for message, account_id in actions:
-        obligation = ensure_view_obligation(session, context.ledger, message, account_id)
+        obligation = owners[(message.id, account_id)]
         if obligation.pacing_slot_ordinal is None:
             next_ordinal = _next_view_ordinal(
                 session, context, message, cached=next_ordinals.get(message.id),
