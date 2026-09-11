@@ -1698,3 +1698,5 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 - 共享Planner浏览义务：`channel_view_pacing._freeze_view_plan_items` → `channel_view_obligation_batch.ensure_view_obligations` 批量读取/资格加锁/追加原日义务；`channel_obligation_lifecycle` 复用原终态绑定规则，保留confirmed与unknown，不改冻结需求/节奏。
 
 - `backend/tests/test_telegram_owner_handshake.py`：owner 认证前断连、实例存活及系统错误显式暴露回归；生产入口 `backend/app/telegram_owner/server.py`。
+
+- `backend/app/services/material_action_references.py`：素材列表/详情的 Action 引用索引查询与数据库聚合；`0234_material_reference_index.py` 提供不可变提取函数与并发 GIN 索引，避免 API 加载历史 Action。

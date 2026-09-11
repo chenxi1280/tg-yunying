@@ -1724,3 +1724,5 @@ legacy-only A 冷启动分支固定为 `frozen legacy A -> 原 A Session 只读 
 Planner每Task准备/建计划输出耗时、查询数及真实created数，慢SQL只记录代码调用点；新点赞来源revision使用自身冻结需求，旧allocation/调用事实留在原身份。
 
 - 共享Planner浏览义务：`channel_view_pacing._freeze_view_plan_items` → `channel_view_obligation_batch.ensure_view_obligations` 批量读取/资格加锁/追加原日义务；`channel_obligation_lifecycle` 复用原终态绑定规则，保留confirmed与unknown，不改冻结需求/节奏。
+
+- 素材引用摘要：`ai_config.material_reference_summaries` → `material_action_references.action_material_reference_counts` → Action JSON 表达式 GIN 索引 → 按素材 ID 聚合；payload/result 写入时 PostgreSQL 自动维护索引，应用只接收计数。

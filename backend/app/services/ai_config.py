@@ -20,6 +20,7 @@ from app.ai_gateway import (
     AiUsage,
     normalize_ai_model_name,
 )
+from app.services.material_action_references import action_material_reference_counts
 from app.auth import CurrentUser
 from app.config import get_settings
 from app.models import (
@@ -867,20 +868,21 @@ def _apply_direct_material_reference_counts(
     )
     for material_id, count in message_counts:
         summaries[int(material_id)].message_task_count = int(count or 0)
-    reference_specs = (
-        (select(Action).where(Action.tenant_id == tenant_id), ["payload", "result"], "action_count"),
-        (
-            select(RuleSetVersion).where(RuleSetVersion.tenant_id == tenant_id),
-            ["filters", "output_checks", "transforms", "routing", "account_strategy", "rate_limits", "retry_policy"],
-            "rule_version_count",
-        ),
-    )
-    for stmt, fields, attribute in reference_specs:
-        counts = _count_json_references_for_materials(
-            session, stmt, fields, material_ids,
+    if session.get_bind().dialect.name == "postgresql":
+        action_counts = action_material_reference_counts(session, tenant_id, material_ids=material_ids)
+    else:  # Existing SQLite unit-test compatibility, never a PostgreSQL error fallback.
+        action_counts = _count_json_references_for_materials(
+            session, select(Action).where(Action.tenant_id == tenant_id), ["payload", "result"], material_ids,
         )
-        for material_id, count in counts.items():
-            setattr(summaries[material_id], attribute, count)
+    for material_id, count in action_counts.items():
+        summaries[material_id].action_count = count
+    rule_counts = _count_json_references_for_materials(
+        session, select(RuleSetVersion).where(RuleSetVersion.tenant_id == tenant_id),
+        ["filters", "output_checks", "transforms", "routing", "account_strategy", "rate_limits", "retry_policy"],
+        material_ids,
+    )
+    for material_id, count in rule_counts.items():
+        summaries[material_id].rule_version_count = count
 
 
 def _apply_operation_plan_reference_counts(
