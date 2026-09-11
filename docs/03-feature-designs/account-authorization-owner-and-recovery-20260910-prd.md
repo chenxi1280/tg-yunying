@@ -139,3 +139,9 @@ Telegram 官方说明：收到 AUTH_KEY_DUPLICATED 时原 session 已被服务�
 观察者也可使用同一账号已登记、健康且当前槽位为 SV 的原 flow 授权，必须冻结该资产版本、App 和材料摘要；不得使用 MY 密封授权。这样先登记并按现有合同激活一份授权后，可复用另一份已经登录的原 flow 完成 B 登记，无需再次登录。本地切主实时身份探测返回自视角 hash=0 时，只能在 user/AuthKey 与已存证明严格一致的情况下保留原非零设备 hash；不能用 0 覆盖已验证的 hash。
 
 既有资产若尚无 user/AuthKey 摘要，切主的 preview 与 apply 仍必须分别从同一资产 Session 读取并冻结实际身份，按原 case/CAS 比对；已有摘要不能冲突。原资产已由设备元数据流程证明的非零 hash 可在上述校验后保留，不要求重新登录补齐历史摘要。没有已证明非零 hash 的资产仍需完成观察证明。
+
+## 2026-09-11 主机失去响应后的 IPC 断连修复
+
+15:35 owner 在 Listener.accept 的认证 challenge 写入时遇到 BrokenPipeError，异常退出；同一时间主机持续大量磁盘读取，二者因果未证实。修复范围为认证完成前对端断连的处理：EOFError、BrokenPipeError、ConnectionResetError 只终结该未提交连接，记录 telegram_owner_ipc_handshake_disconnected 和异常类型，继续接受其他请求，保持 owner 身份及已有连接。认证拒绝仍明确记录；其他系统错误继续上抛，不把文件描述符耗尽等错误变成忙循环。此处不得执行业务、重放请求或新增 Telegram 客户端；已提交后的 unknown 与回执合同不变。
+
+验收必须覆盖真实 Unix socket 在 challenge 前/后断开后，同一 owner 实例仍能响应状态与既有测试网关调用；三类断连逐项验证日志及零业务派发；非断连 OSError 必须上抛。生产只使用本地 IPC 状态查询与认证前断连验证，不发送 Telegram 消息。发布恢复不代表整机卡死根因已解决；持续磁盘读取的进程来源仍需独立证据。

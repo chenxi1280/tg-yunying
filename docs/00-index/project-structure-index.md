@@ -1696,3 +1696,5 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 - `engagement_reaction_capacity.py`：来源revision改变后按新source_identity规划，不迁移旧revision选人。
 
 - 共享Planner浏览义务：`channel_view_pacing._freeze_view_plan_items` → `channel_view_obligation_batch.ensure_view_obligations` 批量读取/资格加锁/追加原日义务；`channel_obligation_lifecycle` 复用原终态绑定规则，保留confirmed与unknown，不改冻结需求/节奏。
+
+- `backend/tests/test_telegram_owner_handshake.py`：owner 认证前断连、实例存活及系统错误显式暴露回归；生产入口 `backend/app/telegram_owner/server.py`。

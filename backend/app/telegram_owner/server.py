@@ -42,6 +42,11 @@ class OwnerServer:
             except AuthenticationError:
                 logging.getLogger(__name__).warning("telegram_owner_ipc_authentication_rejected")
                 continue
+            except (EOFError, BrokenPipeError, ConnectionResetError) as exc:
+                logging.getLogger(__name__).warning(
+                    "telegram_owner_ipc_handshake_disconnected error_type=%s", type(exc).__name__
+                )
+                continue
             thread = threading.Thread(target=self._handle, args=(connection,), daemon=False)
             with self._threads_lock:
                 self._threads.add(thread)
